@@ -15,6 +15,26 @@ export function bindRerunEvents({ eventSource, eventTypes, controller, isEnabled
   return true;
 }
 
+export function bindStableFloorEvents({ eventSource, eventTypes, controller, isEnabled = () => true, logger = console } = {}) {
+  if (!eventSource?.on || !eventTypes || !controller?.invalidate || !controller?.run) return false;
+  let scheduled = false;
+  const rerun = () => {
+    controller.invalidate();
+    if (!isEnabled()) return;
+    if (scheduled) return;
+    scheduled = true;
+    Promise.resolve().then(() => { scheduled = false; return controller.run(); }).catch(() => logger.warn('[qianqianjie] 稳定楼刷新失败'));
+  };
+  const names = ['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED'];
+  let bound = 0;
+  for (const name of names) {
+    if (!eventTypes[name]) continue;
+    eventSource.on(eventTypes[name], rerun);
+    bound += 1;
+  }
+  return bound > 0;
+}
+
 export function createRerunOrchestrator({ demo, formal, isEnabled = () => true, logger = console } = {}) {
   let serial = Promise.resolve(); let epoch = 0;
   const invalidate = () => { epoch += 1; demo?.invalidate?.(); formal?.invalidate?.(); };

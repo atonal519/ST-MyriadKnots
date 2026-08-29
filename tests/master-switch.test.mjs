@@ -51,6 +51,50 @@ test('生产 runtime 识别在途关闭：迟到结果不覆盖 disabled UI', as
   assert.equal((await pending).status, 'disabled'); assert.equal(states.at(-1).status, 'disabled'); assert.equal(states.some(state => state.status === 'route_ready'), false); assert.equal(invalidations, 1);
 });
 
+test('生产 runtime 在正式状态后调用 stableFloors seam 并公开嵌套结果', async () => {
+  let stableCalls = 0; const states = [];
+  const runtime = createRuntimeRunner({
+    orchestrator: { run: async () => ({ status: 'ready' }) },
+    people: { getPeople: async () => ({ status: 'ready' }) },
+    stableFloors: { refresh: async () => { stableCalls += 1; return { status: 'unchanged', changeKind: 'append', firstDifferenceFloor: 2, rollbackBoundary: 1 }; } },
+    setState: state => states.push(state),
+  });
+  const result = await runtime.run();
+  assert.equal(stableCalls, 1);
+  assert.equal(result.people.status, 'ready');
+  assert.equal(result.stableFloors.changeKind, 'append');
+  assert.equal(states.at(-1).stableFloors.rollbackBoundary, 1);
+});
+
+test('生产 runtime 只恢复已有首次生成 draft，不主动开始新 AI', async () => {
+  let resumeCalls = 0; const states = [];
+  const runtime = createRuntimeRunner({
+    orchestrator: { run: async () => ({ status: 'ready' }) }, people: { getPeople: async () => ({ status: 'ready' }) },
+    stableFloors: { refresh: async () => ({ status: 'unchanged' }) }, peopleFoundation: { initialize: async () => ({ status: 'ready' }) },
+    initialRelations: { resume: async () => { resumeCalls += 1; return { status: 'ready', zeroAi: true }; } }, setState: state => states.push(state),
+  });
+  const result = await runtime.run(); assert.equal(resumeCalls, 1); assert.equal(result.initialRelations.zeroAi, true); assert.equal(states.at(-1).initialRelations.status, 'ready');
+});
+
+test('runtime 新实例以 foundation 持久首次状态为权威，并在 resume 完成前显示 generating/applying', async t => {
+  for (const status of ['generating', 'applying']) await t.test(status, async () => {
+    let release, resumeStarted = false; const states = [];
+    const runtime = createRuntimeRunner({
+      orchestrator: { run: async () => ({ status: 'ready' }) }, people: { getPeople: async () => ({ status: 'ready' }) },
+      stableFloors: { refresh: async () => ({ status: 'unchanged' }) },
+      peopleFoundation: { initialize: async () => ({ status: 'ready', state: { initialGeneration: { schemaVersion: 1, status, operationId: 'persisted-operation' } }, profiles: [] }) },
+      initialRelations: {
+        getState: () => ({ schemaVersion: 1, status: 'uninitialized' }),
+        resume: async () => { resumeStarted = true; await new Promise(resolve => { release = resolve; }); return { status, zeroAi: true }; },
+      },
+      setState: value => states.push(value),
+    });
+    const pending = runtime.run(); while (!resumeStarted) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(states.at(-1).initialRelations.status, status); assert.equal(states.at(-1).initialRelations.operationId, 'persisted-operation');
+    release(); const result = await pending; assert.equal(result.initialRelations.status, status);
+  });
+});
+
 test('真实 bootstrap 识别异常迟到：关闭后的最终 UI 仍为 disabled', async () => {
   const { bootstrap } = await import('../dist/index.js?identify-close-ui=1');
   let enabled = true, rejectIdentify, identifyStarted = false; const states = [];

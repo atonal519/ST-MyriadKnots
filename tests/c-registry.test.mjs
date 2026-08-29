@@ -165,6 +165,74 @@ test('C Registry AI 在途时来源内容/status 改变：使用起始快照完�
 test('C Registry CAS 409 后来源改变：仍使用起始快照完成', async () => { let source = '来源旧'; let puts = 0; const changingRoute = { collectAnalysisSources: async () => ({ greeting: { swipeId: 0, fingerprint: 'sha256:' + '1'.repeat(64), content: source }, worldInfoEntries: [] }) }; const client = fakeClient(); const originalPut = client.put; client.put = async (...args) => { puts += 1; source = '来源新'; return originalPut(...args); }; const adapter = createCRegistryAdapter({ client, contextProvider: context, routeSource: changingRoute, generateTask: async () => ({ confirmed: [], candidate: [], discarded: [] }) }); const result = await adapter.identify(); assert.equal(result.status, 'ready'); assert.ok(puts >= 1); });
 test('C Registry 稳定 UUID、selection 与可恢复搁置', async () => { const client = fakeClient(); const adapter = createCRegistryAdapter({ client, contextProvider: context, routeSource: route, generateTask: async () => ({ confirmed: [{ name: '确认者', sourceAnchor: '重要人物', primarySourceRef: { kind: 'greeting', locator: 'greeting:0:0' }, sourceRefs: [{ kind: 'greeting', locator: 'greeting:0:0' }] }], candidate: [], discarded: [] }) }); const first = await adapter.identify(); const identity = first.index.confirmed[0].identityId; const profile = await client.get(`chat-${id}-people`, identity); assert.equal(profile.data.selection.status, 'unselected'); await adapter.shelve({ identityId: identity }); const shelved = await adapter.getPeople(); assert.equal(shelved.shelved[0].identityId, identity); assert.equal(shelved.shelved[0].selection.status, 'unselected'); await adapter.restore({ identityId: identity }); const restored = await adapter.getPeople(); assert.equal(restored.confirmed[0].identityId, identity); assert.equal(restored.confirmed[0].selection.status, 'unselected'); });
 
+test('C Registry 生产 writer 遇到未来 profile schema/合同只读暂停且零 PUT/零新增 AI', async () => {
+  for (const futurePatch of [{ schemaVersion: 2 }, { peopleContractVersion: 2 }]) {
+    const client = fakeClient(); let aiCalls = 0;
+    const answer = { confirmed: [{ name: '确认者', sourceAnchor: '重要人物', primarySourceRef: { kind: 'greeting', locator: 'greeting:0:0' }, sourceRefs: [{ kind: 'greeting', locator: 'greeting:0:0' }] }], candidate: [], discarded: [] };
+    const adapter = createCRegistryAdapter({ client, contextProvider: context, routeSource: route, generateTask: async () => { aiCalls += 1; return answer; } });
+    const first = await adapter.identify(); const identity = first.index.confirmed[0].identityId;
+    Object.assign(client.records.get(`chat-${id}-people/${identity}`).data, futurePatch);
+    const writes = client.calls.filter(call => call[0] === 'put').length;
+    const restored = await adapter.identify();
+    assert.equal(restored.status, 'future_schema_readonly');
+    assert.equal(restored.readonly, true);
+    assert.equal(client.calls.filter(call => call[0] === 'put').length, writes);
+    assert.equal(aiCalls, 1);
+    const renamed = await adapter.editDisplayName({ identityId: identity, displayName: '不得写回未来档' });
+    assert.equal(renamed.status, 'future_schema_readonly');
+    assert.equal(client.calls.filter(call => call[0] === 'put').length, writes);
+    assert.equal(client.records.get(`chat-${id}-people/${identity}`).data.displayName, '确认者');
+  }
+});
+
+test('C Registry profile CAS 竞争胜出者升级为未来版本时不覆盖、不降级', async () => {
+  const client = fakeClient(); let aiCalls = 0;
+  const answer = { confirmed: [{ name: '确认者', sourceAnchor: '重要人物', primarySourceRef: { kind: 'greeting', locator: 'greeting:0:0' }, sourceRefs: [{ kind: 'greeting', locator: 'greeting:0:0' }] }], candidate: [], discarded: [] };
+  const adapter = createCRegistryAdapter({ client, contextProvider: context, routeSource: route, generateTask: async () => { aiCalls += 1; return answer; } });
+  const first = await adapter.identify(); const identity = first.index.confirmed[0].identityId;
+  client.records.get(`chat-${id}/people-index`).data.confirmed[0].selection = { status: 'selected' };
+  const originalPut = client.put; let raced = false;
+  client.put = async (collection, key, data, revision) => {
+    if (!raced && collection === `chat-${id}-people` && key === identity) {
+      raced = true;
+      const winner = structuredClone(client.records.get(`${collection}/${key}`));
+      winner.revision += 1; winner.data.schemaVersion = 2; winner.data.futureField = { keep: true };
+      client.records.set(`${collection}/${key}`, winner);
+      throw Object.assign(new Error('409'), { status: 409 });
+    }
+    return originalPut(collection, key, data, revision);
+  };
+  const result = await adapter.identify();
+  assert.equal(result.status, 'future_schema_readonly'); assert.equal(raced, true); assert.equal(aiCalls, 1);
+  const winner = client.records.get(`chat-${id}-people/${identity}`).data;
+  assert.equal(winner.schemaVersion, 2); assert.equal(winner.futureField.keep, true); assert.equal(winner.selection.status, 'unselected');
+});
+
+test('C Registry profile 来源引用采用稳定保序并集，历史与 future refs 均不删除', async () => {
+  const client = fakeClient(); let aiCalls = 0;
+  const answer = { confirmed: [{ name: '确认者', sourceAnchor: '重要人物', primarySourceRef: { kind: 'greeting', locator: 'greeting:0:0' }, sourceRefs: [{ kind: 'greeting', locator: 'greeting:0:0' }] }], candidate: [], discarded: [] };
+  const adapter = createCRegistryAdapter({ client, contextProvider: context, routeSource: route, generateTask: async () => { aiCalls += 1; return answer; } });
+  const first = await adapter.identify(); const identity = first.index.confirmed[0].identityId;
+  const profile = client.records.get(`chat-${id}-people/${identity}`);
+  profile.data.sourceRefs = [
+    { kind: 'greeting', locator: 'greeting:legacy' },
+    { kind: 'future-ref', locator: 'future:1', extension: true },
+    { kind: 'greeting', locator: 'greeting:0:0', extension: '保留首项' },
+    { kind: 'future-ref', locator: 'future:1', duplicate: true },
+  ];
+  const indexRecord = client.records.get(`chat-${id}/people-index`);
+  indexRecord.data.confirmed[0].sourceRefs = [{ kind: 'greeting', locator: 'greeting:0:0' }, { kind: 'worldbook', locator: '人物书:2' }];
+  const recovered = await adapter.identify();
+  assert.equal(recovered.status, 'ready'); assert.equal(aiCalls, 1);
+  const refs = client.records.get(`chat-${id}-people/${identity}`).data.sourceRefs;
+  assert.deepEqual(refs, [
+    { kind: 'greeting', locator: 'greeting:legacy' },
+    { kind: 'future-ref', locator: 'future:1', extension: true },
+    { kind: 'greeting', locator: 'greeting:0:0', extension: '保留首项' },
+    { kind: 'worldbook', locator: '人物书:2' },
+  ]);
+});
+
 test('C Registry 来源指纹变化仍复用 UUID 和用户显示名，tombstone 不复活', async () => {
   const client = fakeClient(); let revision = 1; const changingRoute = { collectAnalysisSources: async () => ({ greeting: { swipeId: 0, fingerprint: `sha256:${String(revision).repeat(64)}`, content: `重要人物${revision}` }, worldInfoEntries: [] }) };
   const result = () => ({ confirmed: [{ name: '模型原名', sourceAnchor: '重要人物', primarySourceRef: { kind: 'greeting', locator: 'greeting:0:0' }, sourceRefs: [{ kind: 'greeting', locator: 'greeting:0:0' }] }], candidate: [], discarded: [] });
@@ -494,7 +562,7 @@ test('C Registry 归一化稳定跳过重复 sourceKey，内部索引仍通过�
 
 test('formal-aware 真实 batch→generateTask seam：不调用 scanner 且额外条目不入 prompt', async () => {
   let scans = 0; const frozen = '冻结人物：甲'; const context = { chat: [{ mes: '开场' }, { mes: '第1楼禁止' }], chatMetadata: { qianqianjie: { chatId: id } }, loadWorldInfoBatch: async () => new Map([['书', { entries: { '1': { content: frozen }, '9': { content: '额外人物' } } }]]), simulateWorldInfoActivation: async () => { scans++; return { activatedEntries: [] }; } };
-  const routeSource = createRouteSourceAdapter({ contextProvider: () => context }); const route = { state: 'ready', greeting: { floor: 0, swipeId: 0, fingerprint: 'sha256:' + '0'.repeat(64), content: '开场' }, worldInfoEntries: [{ world: '书', uid: '1', fingerprint: 'sha256:' + '0'.repeat(64) }] }; let ai = 0;
+  const routeSource = createRouteSourceAdapter({ contextProvider: () => context }); const route = { state: 'ready', greeting: { floor: 0, swipeId: 0, fingerprint: `sha256:${await sha256('floor=0\nswipe=0\ncontent=开场')}`, content: '开场' }, worldInfoEntries: [{ world: '书', uid: '1', fingerprint: `sha256:${await sha256(frozen)}` }] }; let ai = 0;
   const adapter = createCRegistryAdapter({ client: fakeClient(), formal: { getFormalState: async () => ({ status: 'route_ready', route }) }, contextProvider: () => context, routeSource, generateTask: async ({ taskMessages }) => { ai++; assert.match(taskMessages[0].content, /冻结人物：甲/); assert.doesNotMatch(taskMessages[0].content, /额外人物|第1楼/); return { confirmed: [], candidate: [], discarded: [] }; } });
   assert.equal((await adapter.identify()).status, 'ready'); assert.equal(ai, 1); assert.equal(scans, 0);
 });
@@ -508,7 +576,7 @@ function formalAwareWorldbookScenario({ initialContent, changedContent, generate
     simulateWorldInfoActivation: async ({ coreChat }) => {
       scannerCalls += 1;
       assert.equal(coreChat.length, 1);
-      return { activatedEntries: [{ world: '人物书', uid: '1', content: initialContent }] };
+      return { activatedEntries: [{ world: '人物书', uid: '1', content: batchContent === initialContent ? initialContent : changedContent }] };
     },
     loadWorldInfoBatch: async worlds => {
       assert.deepEqual(worlds, ['人物书']);
@@ -576,7 +644,7 @@ test('真实生产 seam：同 primary 混合 exact/改锚保留旧甲乙 UUID，
   assert.equal([...scenario.client.records.keys()].filter(key => key.startsWith(`chat-${id}-people/`)).length, 2);
   assert.equal([...scenario.client.records.keys()].filter(key => key.startsWith(`chat-${id}-people/`)).some(key => !changed.index.confirmed.some(item => key.endsWith(item.identityId))), false);
   assert.equal(validateRegistryIndex(scenario.client.records.get(`chat-${id}/people-index`), id), true);
-  assert.equal(scenario.scannerCalls, 1);
+  assert.equal(scenario.scannerCalls, 2);
 });
 
 test('真实生产 seam：全部 anchor 改变时旧 confirmed/UUID 保留，新结果进入 candidate 且索引有效', async () => {

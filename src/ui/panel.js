@@ -4,15 +4,16 @@ import css from './panel.css?inline';
 const types = [['single', '单人', '围绕一位角色，建立清晰的关系档案。'], ['multi', '多人', '记录群像关系与多角色互动。'], ['open_world', '大世界', '让角色档案连接到更大的世界。'], ['simulator', '模拟器', '用于测试关系变化与叙事走向。']];
 const shellCss = ':host{position:fixed;inset:0;z-index:1001;width:100dvw;height:100dvh;pointer-events:none;background:transparent}:host([hidden]){display:none!important;pointer-events:none!important}.panel{position:fixed;top:80px;right:20px;width:360px;max-width:calc(100vw - 40px);max-height:85vh;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;pointer-events:auto}.body{min-height:0;max-height:none;overflow-y:auto}.tabs{min-width:0;overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(max-width:640px){.panel{top:calc(20px + env(safe-area-inset-top,0px));left:50%;right:auto;bottom:auto;transform:translateX(-50%);width:calc(100dvw - 20px);max-width:calc(100dvw - 20px);height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));max-height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));min-height:0;border-radius:14px}.body{min-height:0;overflow-y:auto}.choices{grid-template-columns:1fr}.tab{padding-left:9px;padding-right:9px}}';
 
-export function createPanel({ formal, people, settings, apiTools, onPluginEnabledChange, onClose } = {}) {
+export function createPanel({ formal, people, settings, apiTools, loadState, initialRelations, reviewActions, onPluginEnabledChange, onClose } = {}) {
   const host = document.createElement('div');
   host.id = 'qqj-panel-host'; host.hidden = true; host.setAttribute('aria-hidden', 'true');
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = '<style>' + css + shellCss + '</style>' + html;
   const view = root.querySelector('.view'), label = root.querySelector('.status-label'), meta = root.querySelector('.status-meta'), dot = root.querySelector('.status-dot');
-  let state = { status: 'loading' }, selected = null, busy = false, trigger = null, screen = 'people', settingsDraftKey = '', settingsRenderEpoch = 0;
+  let state = { status: 'loading' }, selected = null, selectedProfileId = null, busy = false, trigger = null, screen = 'people', activeTab = 'people', settingsDraftKey = '', settingsRenderEpoch = 0;
+  let actionEpoch = 0, localRelationStatus = null, basicEditing = false, basicBusy = false, basicMessage = null;
   const focusables = () => [...root.querySelectorAll('button,input,select,textarea,[href],[tabindex]:not([tabindex="-1"])')].filter(item => !item.disabled && item.offsetParent !== null);
-  const close = () => { host.hidden = true; host.setAttribute('aria-hidden', 'true'); const old = trigger; trigger = null; onClose?.(); old?.focus?.(); };
+  const close = () => { actionEpoch += 1; host.hidden = true; host.setAttribute('aria-hidden', 'true'); const old = trigger; trigger = null; onClose?.(); old?.focus?.(); };
 
   const apiErrorCopy = error => {
     const code = String(error?.code || '');
@@ -160,22 +161,37 @@ export function createPanel({ formal, people, settings, apiTools, onPluginEnable
     return button;
   };
 
-  const renderReady = () => {
+  const element = (tag, className, text) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+
+  const bindPeopleActions = container => {
+    container.querySelectorAll('[data-edit]').forEach(button => button.addEventListener('click', async () => {
+      const confirmed = Array.isArray(state.people?.confirmed) ? state.people.confirmed : [];
+      const name = globalThis.prompt?.('新的显示名', confirmed.find(item => item.identityId === button.dataset.edit)?.displayName ?? '');
+      if (name?.trim() && people?.editDisplayName) await applyPeopleOperation(() => people.editDisplayName({ identityId: button.dataset.edit, displayName: name }));
+    }));
+    container.querySelectorAll('[data-select]').forEach(button => button.addEventListener('click', () => applyPeopleOperation(() => people.select({ identityId: button.dataset.select }))));
+    container.querySelectorAll('[data-unselect]').forEach(button => button.addEventListener('click', () => applyPeopleOperation(() => people.unselect({ identityId: button.dataset.unselect }))));
+    container.querySelectorAll('[data-shelve]').forEach(button => button.addEventListener('click', async () => {
+      if (globalThis.confirm?.('搁置后人物会从主列表隐藏，但可随时恢复。继续吗？') && people?.shelve) await applyPeopleOperation(() => people.shelve({ identityId: button.dataset.shelve }));
+    }));
+    container.querySelectorAll('[data-restore]').forEach(button => button.addEventListener('click', () => applyPeopleOperation(() => people.restore({ identityId: button.dataset.restore }))));
+  };
+
+  const renderPeoplePool = container => {
     const confirmed = Array.isArray(state.people?.confirmed) ? state.people.confirmed : [];
     const candidates = Array.isArray(state.people?.candidate) ? state.people.candidate : [];
     const shelved = Array.isArray(state.people?.shelved) ? state.people.shelved : [];
     const warnings = Array.isArray(state.people?.warnings) ? state.people.warnings : [];
     const normalizationWarning = warnings.some(item => String(item?.code || '').startsWith('NORMALIZATION_'));
     const sourceWarning = warnings.some(item => !String(item?.code || '').startsWith('NORMALIZATION_'));
-    view.replaceChildren();
-    const empty = document.createElement('div'); empty.className = 'empty';
-    const eyebrow = document.createElement('div'); eyebrow.className = 'eyebrow'; eyebrow.textContent = 'FORMAL PROFILE / READY';
-    const title = document.createElement('h2'); title.textContent = '关系档案已就绪';
-    const intro = document.createElement('p'); intro.textContent = '“选择”只表示你当前想关注和发展这位人物，可多选；不代表已经恋爱或发生关系。未选择人物会继续保留。';
-    empty.append(eyebrow, title, intro);
-    if (sourceWarning) { const warning = document.createElement('p'); warning.className = 'error'; warning.textContent = '部分原设来源当前不可用，已按其余来源继续。'; empty.append(warning); }
-    if (normalizationWarning) { const warning = document.createElement('p'); warning.className = 'error'; warning.textContent = '部分人物格式已自动修正或跳过。'; empty.append(warning); }
-    if (state.peopleError) { const error = document.createElement('p'); error.className = 'error'; error.textContent = state.peopleError; empty.append(error); }
+    if (sourceWarning) container.append(element('p', 'error', '部分原设来源当前不可用，已按其余来源继续。'));
+    if (normalizationWarning) container.append(element('p', 'error', '部分人物格式已自动修正或跳过。'));
+    if (state.peopleError) container.append(element('p', 'error', state.peopleError));
 
     if (confirmed.length) {
       const list = document.createElement('section'); list.className = 'people-list';
@@ -193,9 +209,9 @@ export function createPanel({ formal, people, settings, apiTools, onPluginEnable
         );
         article.append(name, hint, actions); list.append(article);
       });
-      empty.append(list);
+      container.append(list);
     } else if (!sourceWarning && !state.peopleError) {
-      const none = document.createElement('p'); none.textContent = '当前来源尚未登记明确人物。'; empty.append(none);
+      container.append(element('p', 'pool-empty', '当前来源尚未登记明确人物。'));
     }
 
     if (candidates.length) {
@@ -207,7 +223,7 @@ export function createPanel({ formal, people, settings, apiTools, onPluginEnable
         const hint = document.createElement('small'); hint.textContent = '身份或重要性仍需判断 · 未选择';
         article.append(name, hint); pending.append(article);
       });
-      empty.append(pending);
+      container.append(pending);
     }
 
     if (shelved.length) {
@@ -221,28 +237,303 @@ export function createPanel({ formal, people, settings, apiTools, onPluginEnable
         const actions = document.createElement('div'); actions.className = 'person-actions'; actions.append(actionButton('恢复', 'restore', item.identityId));
         article.append(name, hint, actions); list.append(article);
       });
-      details.append(list); empty.append(details);
+      details.append(list); container.append(details);
     }
+    bindPeopleActions(container);
+  };
 
-    const modules = document.createElement('div'); modules.className = 'modules';
-    ['双丝网', '千事', '千结'].forEach(moduleName => { const article = document.createElement('article'); article.className = 'module'; const name = document.createElement('b'); name.textContent = moduleName; const hint = document.createElement('small'); hint.textContent = '尚未接入业务数据'; article.append(name, hint); modules.append(article); });
-    empty.append(modules); view.append(empty);
+  const relationCopy = status => ({
+    uninitialized: ['生成首次档案', '读取当前 Persona、已选择人物、作者设定与稳定聊天，整理出有来源的关系档案。'],
+    generating: ['正在整理人物与关系', '正在生成首次档案；人物骨架和已保存内容不会被清空。'],
+    applying: ['正在保存关系档案', '正在把已生成内容安全写入人物档案；继续时不会重复调用 AI。'],
+    cancelled: ['已停止', '人物骨架和已保存进度都还在，可以稍后继续。'],
+    failed_retryable: ['这次没有生成完成', '已有档案保持原样，可以重新尝试。'],
+    storage_error: ['保存暂时失败', '已保存的部分仍在，可以重新加载后继续。'],
+    conflict: ['档案刚刚发生变化', '请重新加载最新档案，再决定下一步。'],
+    stale: ['当前页面已经过期', '聊天、Persona 或来源发生了变化，请重新加载。'],
+    blocked_source_changed: ['作者来源已经变化', '可采用当前开场白与激活世界书；重新读取状态本身不会更新作者来源。'],
+    adopted_sources: ['作者来源已更新', '当前开场白与世界书已经重新锚定；确认无误后，可生成首次档案。'],
+    adopting_sources: ['正在采用当前作者来源', '正在重新锚定当前开场白与激活世界书，不会调用 AI。'],
+    requires_rebuild: ['已有首次档案', '当前档案已经写入首次内容，不能直接换来源；需要另行重算。'],
+    input_too_large: ['当前材料太长', '本次没有截断或生成内容；请先缩小来源范围。'],
+    mismatch: ['身份需要确认', '当前聊天、角色或 Persona 与档案绑定不一致，本页保持只读。'],
+    future_schema_readonly: ['档案来自更新版本', '当前版本只读显示，不会覆盖数据。'],
+  })[status] || ['首次档案尚未完成', '重新加载后再试。'];
 
-    view.querySelectorAll('[data-edit]').forEach(button => button.addEventListener('click', async () => {
-      const name = globalThis.prompt?.('新的显示名', confirmed.find(item => item.identityId === button.dataset.edit)?.displayName ?? '');
-      if (name?.trim() && people?.editDisplayName) await applyPeopleOperation(() => people.editDisplayName({ identityId: button.dataset.edit, displayName: name }));
-    }));
-    view.querySelectorAll('[data-select]').forEach(button => button.addEventListener('click', () => applyPeopleOperation(() => people.select({ identityId: button.dataset.select }))));
-    view.querySelectorAll('[data-unselect]').forEach(button => button.addEventListener('click', () => applyPeopleOperation(() => people.unselect({ identityId: button.dataset.unselect }))));
-    view.querySelectorAll('[data-shelve]').forEach(button => button.addEventListener('click', async () => {
-      if (globalThis.confirm?.('搁置后人物会从主列表隐藏，但可随时恢复。继续吗？') && people?.shelve) await applyPeopleOperation(() => people.shelve({ identityId: button.dataset.shelve }));
-    }));
-    view.querySelectorAll('[data-restore]').forEach(button => button.addEventListener('click', () => applyPeopleOperation(() => people.restore({ identityId: button.dataset.restore }))));
+  const sourceLabel = item => {
+    const kinds = [...new Set((Array.isArray(item?.sourceRefs) ? item.sourceRefs : []).map(ref => ({ persona: 'Persona', card: '角色卡', greeting: '开场白', worldbook: '世界书', chat: '稳定聊天' })[ref?.kind]).filter(Boolean))];
+    return kinds.length ? kinds.join(' · ') : '来源未标注';
+  };
+
+  const relationTargetLabel = (item, names) => item?.relationToIdentityId && names.has(item.relationToIdentityId) ? `关系对象：${names.get(item.relationToIdentityId)}` : '';
+
+  const renderFactLayer = (profile, key, title, description, names, { initialGenerated = true, canonCount = null } = {}) => {
+    const section = element('section', `profile-layer ${key === 'sourceFacts' ? 'facts' : 'interpretations'}`);
+    const heading = element('div', 'profile-layer-head'); heading.append(element('h3', '', title), element('p', '', description)); section.append(heading);
+    const items = Array.isArray(profile?.[key]) ? profile[key] : [];
+    if (!items.length) section.append(element('p', 'layer-empty', !initialGenerated ? '首次档案尚未生成。'
+      : key === 'sourceFacts' ? '当前作者来源没有可展示的明确事实。'
+        : canonCount === 0 ? '当前没有稳定聊天可供归纳。' : '当前稳定聊天没有可展示的 AI 归纳。'));
+    for (const item of items) {
+      const article = element('article', 'fact-item');
+      article.append(element('p', 'fact-value', item?.value ?? ''), element('span', 'fact-source', sourceLabel(item)));
+      const target = relationTargetLabel(item, names); if (target) article.append(element('span', 'fact-target', target));
+      section.append(article);
+    }
+    return section;
+  };
+
+  const runInitialAction = async mode => {
+    if (busy || !initialRelations?.[mode]) return;
+    busy = true; localRelationStatus = mode === 'resume' ? 'applying' : mode === 'adoptCurrentSources' ? 'adopting_sources' : 'generating'; const mine = ++actionEpoch; renderReady();
+    try {
+      await initialRelations[mode]();
+      if (mine !== actionEpoch || host.hidden) return;
+      localRelationStatus = null; busy = false;
+      await loadState?.();
+    } finally { if (mine === actionEpoch) { busy = false; if (localRelationStatus) { localRelationStatus = null; renderReady(); } } }
+  };
+
+  const cancelInitialAction = () => {
+    if (!initialRelations?.cancel) return;
+    actionEpoch += 1; initialRelations.cancel(); busy = false; localRelationStatus = 'cancelled'; renderReady();
+  };
+
+  const resolveReview = async (profile, item, decision, card, focusTarget) => {
+    if (card.dataset.busy === 'true' || !reviewActions?.resolvePendingReview || !reviewActions?.itemDigest) return;
+    card.dataset.busy = 'true'; card.querySelectorAll('button').forEach(button => { button.disabled = true; });
+    const mine = ++actionEpoch;
+    try {
+      const expectedItemDigest = await reviewActions.itemDigest(item);
+      const result = await reviewActions.resolvePendingReview({ identityId: profile.identityId, pendingItemId: item.id, decision, expectedItemDigest });
+      if (mine !== actionEpoch || host.hidden) return;
+      await loadState?.();
+      if (host.hidden) return;
+      if (result?.status !== 'ready') {
+        state = { ...state, reviewError: result?.status === 'conflict' ? '这条建议已经变化，请重新加载后再处理。' : '当前档案已变化，本次没有操作。' };
+        renderReady();
+      }
+      (root.querySelector('.profile-tab.active') || focusTarget)?.focus?.();
+    } catch {
+      if (mine === actionEpoch) { state = { ...state, reviewError: '当前无法处理这条建议，原档案保持不变。' }; renderReady(); }
+    }
+  };
+
+  const renderPending = (profile, names) => {
+    const section = element('section', 'pending-section');
+    const heading = element('div', 'section-heading'); heading.append(element('h3', '', '需要确认'), element('span', '', '只在你确认后加入正式档案')); section.append(heading);
+    const items = Array.isArray(profile?.pendingReview) ? profile.pendingReview : [];
+    if (!items.length) section.append(element('p', 'layer-empty', '当前没有需要你确认的内容。'));
+    for (const item of items) {
+      const card = element('article', 'pending-card');
+      card.append(element('p', 'pending-value', item?.value ?? ''), element('p', 'pending-reason', item?.reason ? `为什么需要确认：${item.reason}` : '这条内容需要你判断。'));
+      const metaLine = element('div', 'pending-meta');
+      metaLine.append(element('span', '', item?.proposedLayer === 'sourceFacts' ? '拟加入：来源事实' : '拟加入：AI 归纳'), element('span', '', sourceLabel(item)));
+      const target = relationTargetLabel(item, names); if (target) metaLine.append(element('span', '', target)); card.append(metaLine);
+      const actions = element('div', 'pending-actions');
+      const accept = element('button', 'primary-action', '确认加入'), reject = element('button', 'secondary-action', '拒绝');
+      accept.type = reject.type = 'button'; actions.append(accept, reject); card.append(actions); section.append(card);
+      accept.addEventListener('click', () => resolveReview(profile, item, 'accept', card, section));
+      reject.addEventListener('click', () => resolveReview(profile, item, 'reject', card, section));
+    }
+    return section;
+  };
+
+  const basicFieldDefinitions = [
+    ['name', '姓名'], ['gender', '性别'], ['age', '年龄'], ['appearance', '外貌'], ['personality', '性格'], ['identity', '身份'], ['nsfwPreferences', 'NSFW 喜好'],
+    ['abilities', '能力'], ['likes', '喜好'], ['dislikes', '厌恶'], ['principles', '原则'], ['relationships', '人际关系'],
+  ];
+  const basicFieldRows = [
+    ['name', 'gender', 'age'],
+    ['appearance', 'personality', 'identity'],
+    ['abilities', 'principles', 'nsfwPreferences'],
+    ['likes', 'dislikes'],
+    ['relationships'],
+  ];
+
+  const runBasicExtraction = async profile => {
+    if (busy || basicBusy || !initialRelations?.extractBasicInfo) return;
+    basicBusy = true; basicMessage = { kind: '', text: '正在提取基础信息…' }; renderReady(); const mine = ++actionEpoch;
+    try {
+      const result = await initialRelations.extractBasicInfo({ identityId: profile.identityId });
+      if (mine !== actionEpoch || host.hidden) return;
+      if (result?.status === 'ready') {
+        const accepted = Number(result.acceptedFields) || 0, rejected = Number(result.rejectedFields) || 0;
+        basicMessage = accepted === 0 && rejected > 0
+          ? { kind: 'error', text: `AI 返回了 ${rejected} 项，但格式未能采用；原有基础信息保持不变。` }
+          : { kind: 'success', text: result.emptyResult ? '提取完成，没有发现可可靠填写的新信息。' : `提取完成，采用了 ${accepted} 项。` };
+        basicBusy = false;
+        await loadState?.();
+      } else basicMessage = { kind: 'error', text: result?.status === 'conflict' ? '档案刚刚发生变化，请重新加载后再试。' : result?.status === 'no_selected_character' ? '当前没有已选择人物，请先到人物池选择 C。' : '提取失败，原有基础信息保持不变。' };
+    } catch { if (mine === actionEpoch) basicMessage = { kind: 'error', text: '提取失败，原有基础信息保持不变。' }; }
+    finally { if (mine === actionEpoch) { basicBusy = false; renderReady(); } }
+  };
+
+  const saveBasicEdits = async (profile, registryName, section) => {
+    if (busy || basicBusy) return;
+    const controls = new Map([...section.querySelectorAll('[data-basic-field]')].map(node => [node.dataset.basicField, node]));
+    basicBusy = true; basicMessage = { kind: '', text: '正在保存基础信息…' }; renderReady(); const mine = ++actionEpoch;
+    try {
+      const name = controls.get('name')?.value?.trim?.() || '';
+      if (!name) throw new Error('姓名不能为空');
+      if (name !== registryName) {
+        const renamed = await people?.editDisplayName?.({ identityId: profile.identityId, displayName: name });
+        if (renamed?.status === 'conflict' || renamed?.status === 'future_schema_readonly') throw new Error('姓名保存冲突');
+      }
+      for (const [field] of basicFieldDefinitions.slice(1)) {
+        const value = controls.get(field)?.value ?? '';
+        const previous = profile.basicFields?.[field]?.value ?? '';
+        if (String(value).replace(/\r\n?/g, '\n').trim() === String(previous).replace(/\r\n?/g, '\n').trim()) continue;
+        const saved = await initialRelations?.saveBasicField?.({ identityId: profile.identityId, field, value });
+        if (saved?.status !== 'ready') throw new Error('字段保存冲突');
+      }
+      if (mine !== actionEpoch || host.hidden) return;
+      basicEditing = false; basicMessage = { kind: 'success', text: '基础信息已保存；用户填写内容不会被重新提取覆盖。' };
+      basicBusy = false;
+      await loadState?.();
+    } catch (error) { if (mine === actionEpoch) basicMessage = { kind: 'error', text: error?.message === '姓名不能为空' ? '姓名不能为空。' : '保存未全部完成；部分已成功字段可能已保存，请重新加载确认。' }; }
+    finally { if (mine === actionEpoch) { basicBusy = false; renderReady(); } }
+  };
+
+  const renderBasicInfo = (profile, registryName) => {
+    const section = element('section', 'basic-info');
+    const head = element('div', 'basic-info-head');
+    const copy = element('div'); copy.append(element('h3', '', '基础信息'), element('p', '', '只记录稳定且有依据的角色信息；缺失不会猜测。')); head.append(copy);
+    const actions = element('div', 'basic-info-actions');
+    if (!basicEditing) {
+      const hasExtracted = Object.values(profile.basicFields || {}).some(item => item?.value);
+      const extract = element('button', 'secondary-action', basicBusy ? '正在提取…' : hasExtracted ? '重新提取' : '提取基础信息'); extract.type = 'button'; extract.disabled = basicBusy; extract.addEventListener('click', () => runBasicExtraction(profile));
+      const edit = element('button', 'secondary-action', '编辑'); edit.type = 'button'; edit.disabled = basicBusy; edit.addEventListener('click', () => { basicEditing = true; basicMessage = null; renderReady(); }); actions.append(extract, edit);
+    }
+    head.append(actions); section.append(head);
+    const grid = element('div', 'basic-fields');
+    const renderField = ([field, labelText]) => {
+      const item = element('div', 'basic-field'); item.append(element('span', 'basic-label', labelText));
+      const stored = field === 'name' ? registryName : profile.basicFields?.[field]?.value;
+      if (basicEditing) {
+        const input = document.createElement(field === 'name' || ['gender', 'age'].includes(field) ? 'input' : 'textarea'); input.dataset.basicField = field; input.value = stored || ''; input.maxLength = field === 'name' ? 120 : 2400; input.setAttribute('aria-label', labelText); item.append(input);
+      } else {
+        item.append(element('p', `basic-value ${stored ? '' : 'missing'}`.trim(), stored || '未提及'));
+        if (field !== 'name' && stored) item.append(element('small', 'basic-source', profile.basicFields?.[field]?.provenance === 'user' ? '用户填写' : sourceLabel(profile.basicFields?.[field])));
+      }
+      return item;
+    };
+    const definitions = new Map(basicFieldDefinitions.map(definition => [definition[0], definition]));
+    for (const fields of basicFieldRows) {
+      const rowClass = fields.length === 3 ? 'basic-row-three' : fields.length === 2 ? 'basic-row-two basic-preference-row' : 'basic-row-one basic-relationships-row';
+      const row = element('div', `basic-row ${rowClass}`);
+      for (const field of fields) row.append(renderField(definitions.get(field)));
+      grid.append(row);
+    }
+    section.append(grid);
+    if (basicEditing) {
+      const editActions = element('div', 'basic-edit-actions');
+      const save = element('button', 'primary-action', basicBusy ? '正在保存…' : '保存基础信息'), cancel = element('button', 'secondary-action', '取消'); save.type = cancel.type = 'button'; save.disabled = cancel.disabled = basicBusy;
+      save.addEventListener('click', () => saveBasicEdits(profile, registryName, section)); cancel.addEventListener('click', () => { basicEditing = false; basicMessage = null; renderReady(); }); editActions.append(save, cancel); section.append(editActions);
+    }
+    if (basicMessage) section.append(element('p', `basic-message ${basicMessage.kind}`.trim(), basicMessage.text));
+    return section;
+  };
+
+  const renderGenerationBanner = (activeIds, hasSelectedCharacter) => {
+    const persisted = state.initialRelations || state.peopleFoundation?.state?.initialGeneration || { status: 'uninitialized', completedMemberIds: [] };
+    const lastAttempt = persisted.lastAttempt || state.peopleFoundation?.state?.lastAttempt;
+    const adopted = lastAttempt?.action === 'adopt_current_sources' && lastAttempt?.status === 'ready';
+    const status = localRelationStatus || (adopted && ['blocked_source_changed', 'uninitialized'].includes(persisted.status) ? 'adopted_sources' : persisted.status) || 'uninitialized';
+    const completed = new Set(persisted.completedMemberIds || []), hasMissing = activeIds.some(id => !completed.has(id));
+    const emptyResult = lastAttempt?.emptyResult === true;
+    if (status === 'ready' && !hasMissing && !emptyResult) return null;
+    const banner = element('section', 'generation-banner'); banner.setAttribute('aria-live', 'polite'); banner.setAttribute('aria-busy', String(['generating', 'applying'].includes(status)));
+    const [title, description] = status === 'ready' && !hasMissing && emptyResult ? ['首次整理已完成', '没有可靠结果；人物骨架和用户内容保持不变。']
+      : status === 'ready' && hasMissing ? ['有新人物等待补充', '只会为尚未完成的已选择人物生成首次档案。'] : relationCopy(status);
+    banner.append(element('h3', '', title), element('p', '', description));
+    if (persisted.status === 'blocked_source_changed' && lastAttempt?.sourceDiagnostics) {
+      const diagnostic = lastAttempt.sourceDiagnostics;
+      const greeting = diagnostic.greeting === 'changed' ? '开场白已变化' : diagnostic.greeting === 'unavailable' ? '开场白暂时无法读取' : '开场白未变化';
+      const unreadable = Number(diagnostic.worldbookUnreadable) || 0;
+      const unreadableCopy = unreadable > 0 ? `，暂时无法读取 ${unreadable} 条` : '';
+      banner.append(element('p', 'source-change-summary', `${greeting}；世界书 ${Number(diagnostic.worldbookChanged) || 0} 条变化，${Number(diagnostic.worldbookMissing) || 0} 条缺失${unreadableCopy}。`));
+    }
+    const actions = element('div', 'generation-actions');
+    if (['generating', 'applying'].includes(status)) {
+      const cancel = element('button', 'secondary-action', '停止，稍后继续'); cancel.type = 'button'; cancel.addEventListener('click', cancelInitialAction); actions.append(cancel);
+    } else if (status === 'blocked_source_changed') {
+      const adopt = element('button', 'primary-action', '采用当前作者来源'); adopt.type = 'button'; adopt.disabled = busy; adopt.addEventListener('click', () => runInitialAction('adoptCurrentSources')); actions.append(adopt);
+    } else if (!(status === 'ready' && !hasMissing) && !['mismatch', 'future_schema_readonly', 'input_too_large', 'requires_rebuild'].includes(status)) {
+      const start = element('button', 'primary-action', status === 'ready' && hasMissing ? '为新人物补充档案' : status === 'cancelled' ? '继续整理档案' : '生成首次档案');
+      start.type = 'button'; start.disabled = busy; start.addEventListener('click', () => runInitialAction(persisted.status === 'applying' ? 'resume' : 'start')); actions.append(start);
+    }
+    if (!['generating', 'applying'].includes(status)) {
+      const reload = element('button', 'secondary-action', status === 'blocked_source_changed' ? '重新读取状态' : '重新加载'); reload.type = 'button'; reload.addEventListener('click', () => loadState?.({ announceLoading: true })); actions.append(reload);
+    }
+    if (!hasSelectedCharacter && status === 'uninitialized') banner.append(element('p', 'generation-hint', '还没有选择 C；可以先到“管理人物池”选择人物。'));
+    if (actions.children?.length || actions.childNodes?.length) banner.append(actions);
+    return banner;
+  };
+
+  const renderReady = () => {
+    view.replaceChildren();
+    const foundation = state.peopleFoundation;
+    if (foundation?.status !== 'ready' || !Array.isArray(foundation.profiles)) {
+      const fallback = element('div', 'empty'); fallback.append(element('div', 'eyebrow', 'PEOPLE / POOL'), element('h2', '', '先管理当前人物'), element('p', '', '选择只表示你当前想关注这位人物，不代表已经恋爱或发生关系。关系档案骨架尚未就绪时，人物池仍可查看和管理。'));
+      renderPeoplePool(fallback); view.append(fallback); return;
+    }
+    const selectedCharacters = (Array.isArray(state.people?.confirmed) ? state.people.confirmed : []).filter(item => item.selection?.status === 'selected');
+    const selectedIds = new Set(selectedCharacters.map(item => item.identityId));
+    const registryNames = new Map(selectedCharacters.map(item => [item.identityId, item.displayName || '未命名人物']));
+    const activeIds = [...selectedIds];
+    const profiles = foundation.profiles.filter(profile => profile.subject === 'character' && selectedIds.has(profile.identityId));
+    const profileMap = new Map(profiles.map(profile => [profile.identityId, profile]));
+    if (!selectedProfileId || !profileMap.has(selectedProfileId)) selectedProfileId = profiles[0]?.identityId || null;
+    const current = profileMap.get(selectedProfileId);
+    const persisted = state.initialRelations || foundation.state?.initialGeneration || { status: 'uninitialized', completedMemberIds: [] };
+    const completed = new Set(persisted.completedMemberIds || []);
+    const canonCount = Number.isInteger(persisted.lastAttempt?.canonCount) ? persisted.lastAttempt.canonCount
+      : Number.isInteger(foundation.state?.lastAttempt?.canonCount) ? foundation.state.lastAttempt.canonCount
+        : Number.isInteger(foundation.state?.canonRef?.canonLength) ? foundation.state.canonRef.canonLength : null;
+    const names = new Map([[foundation.state?.personaId, '我'], ...profiles.map(profile => [profile.identityId, registryNames.get(profile.identityId) || profile.displayName || '未命名人物'])]);
+    const page = element('div', 'people-page');
+    const banner = renderGenerationBanner(activeIds, profiles.length > 0); if (banner) page.append(banner);
+    const switcher = element('div', 'profile-switcher'); switcher.setAttribute('role', 'tablist'); switcher.setAttribute('aria-label', '切换人物档案');
+    for (const profile of profiles) {
+      const button = element('button', `profile-tab ${profile.identityId === selectedProfileId ? 'active' : ''}`.trim()); button.type = 'button'; button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', String(profile.identityId === selectedProfileId));
+      button.append(element('span', 'subject-tag tag-c', 'C'), element('span', '', names.get(profile.identityId)));
+      button.addEventListener('click', () => { selectedProfileId = profile.identityId; basicEditing = false; basicMessage = null; renderReady(); }); switcher.append(button);
+    }
+    page.append(switcher);
+    if (!current) page.append(element('p', 'layer-empty', '还没有已选择的 C。请展开“管理人物池”并选择一位人物。'));
+    else {
+      const dossier = element('section', 'dossier-card');
+      const summary = element('header', 'profile-summary'); summary.append(element('span', 'subject-tag tag-c', 'C'));
+      const heading = element('div'); heading.append(element('h2', '', names.get(current.identityId)), element('p', '', '当前已选择人物的稳定关系档案')); summary.append(heading); dossier.append(summary);
+      dossier.append(renderBasicInfo(current, names.get(current.identityId)));
+      const layerOptions = { initialGenerated: completed.has(current.identityId), canonCount };
+      dossier.append(renderFactLayer(current, 'sourceFacts', '来源事实', '来自 Persona、角色卡、开场白或世界书的明确内容', names, layerOptions));
+      dossier.append(renderFactLayer(current, 'interpretations', 'AI 归纳', '只根据稳定聊天整理，不覆盖来源事实', names, layerOptions));
+      if (state.reviewError) dossier.append(element('p', 'error review-error', state.reviewError));
+      dossier.append(renderPending(current, names)); page.append(dossier);
+    }
+    const pool = element('details', 'people-pool');
+    const summary = element('summary', '', '管理人物池'); pool.append(summary);
+    const intro = element('p', 'pool-intro', '选择、取消选择、改名、搁置或恢复人物。这里的选择只表示当前关注，不代表关系已经成立。'); pool.append(intro);
+    renderPeoplePool(pool); page.append(pool); view.append(page);
+  };
+
+  const renderUnavailableModule = () => {
+    const names = { bonds: '双丝网', milestones: '千事', knots: '千结' };
+    const empty = element('div', 'empty');
+    empty.append(element('div', 'eyebrow', 'COMING LATER'), element('h2', '', names[activeTab] || '此模块'), element('p', '', '尚未接入业务数据。本次只完成千人关系档案。'));
+    view.replaceChildren(empty);
   };
 
   const setState = next => {
+    if (localRelationStatus === 'cancelled' && next?.status === 'stale' && ['ready', 'route_ready'].includes(state?.status)) {
+      busy = false; renderReady(); return;
+    }
+    actionEpoch += 1; busy = false; localRelationStatus = null;
     state = next || { status: 'error' };
     if (screen === 'settings') return;
+    if (activeTab !== 'people') return renderUnavailableModule();
     const status = state.status;
     const recognitionFailed = ['ready', 'route_ready'].includes(status) && state.peopleRecognitionFailed;
     const normalizationWarning = Array.isArray(state.people?.warnings) && state.people.warnings.some(item => String(item?.code || '').startsWith('NORMALIZATION_'));
@@ -260,8 +551,10 @@ export function createPanel({ formal, people, settings, apiTools, onPluginEnable
               : status === 'preparing' ? ['正在恢复档案', '请稍候，档案恢复完成前不能操作人物。']
                 : status === 'renaming' ? ['正在恢复人物改名', '上次改名尚未完成，正在核对人物档案与列表。']
                 : ['正在准备档案', '正式状态尚未就绪，请稍后重试。'];
-    view.innerHTML = '<div class="empty"><div class="eyebrow">QIANQIANJIE / ' + status.toUpperCase() + '</div><h2>' + copy[0] + '</h2><p>' + copy[1] + '</p>' + (status === 'disabled' ? '<button class="open-settings" type="button">打开设置</button>' : '') + '</div>';
-    view.querySelector?.('.open-settings')?.addEventListener('click', renderSettings);
+    const empty = element('div', 'empty');
+    empty.append(element('div', 'eyebrow', 'QIANQIANJIE'), element('h2', '', copy[0]), element('p', '', copy[1]));
+    if (status === 'disabled') { const button = element('button', 'open-settings', '打开设置'); button.type = 'button'; button.addEventListener('click', renderSettings); empty.append(button); }
+    view.replaceChildren(empty);
   };
 
   const applyPeopleOperation = async operation => {
@@ -270,6 +563,7 @@ export function createPanel({ formal, people, settings, apiTools, onPluginEnable
     try {
       const result = await operation();
       if (result?.status === 'conflict' || result?.status === 'error') { setState({ ...state, status: ['ready', 'route_ready'].includes(state.status) ? state.status : result.status, people: state.people, peopleError: '档案发生冲突，请稍后重试' }); return; }
+      if (typeof loadState === 'function') { await loadState(); return; }
       const refreshed = people?.getPeople ? await people.getPeople() : result;
       setState(state.peopleRecognitionFailed ? { ...state, people: refreshed } : { ...state, people: refreshed, peopleError: null });
     } catch { setState({ ...state, status: ['ready', 'route_ready'].includes(state.status) ? state.status : 'error', people: state.people, peopleError: '操作失败，原人物列表已保留' }); }
@@ -284,8 +578,8 @@ export function createPanel({ formal, people, settings, apiTools, onPluginEnable
     else if (!event.shiftKey && root.activeElement === last) { event.preventDefault(); first.focus(); }
   });
   root.querySelector('.close').addEventListener('click', close);
-  root.querySelector('.settings-btn')?.addEventListener('click', () => { if (screen === 'settings') { settingsRenderEpoch += 1; screen = 'people'; const first = root.querySelector('.tab'); first?.classList.toggle('active', true); first?.setAttribute('aria-selected', 'true'); setState(state); } else renderSettings(); });
-  root.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => { settingsRenderEpoch += 1; screen = 'people'; root.querySelectorAll('.tab').forEach(item => { const active = item === tab; item.classList.toggle('active', active); item.setAttribute('aria-selected', String(active)); }); setState(state); }));
+  root.querySelector('.settings-btn')?.addEventListener('click', () => { if (screen === 'settings') { settingsRenderEpoch += 1; screen = 'people'; activeTab = 'people'; root.querySelectorAll('.tab').forEach((item, index) => { item.classList.toggle('active', index === 0); item.setAttribute('aria-selected', String(index === 0)); }); setState(state); } else renderSettings(); });
+  root.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => { settingsRenderEpoch += 1; screen = 'people'; activeTab = tab.dataset.tab || 'people'; root.querySelectorAll('.tab').forEach(item => { const active = item === tab; item.classList.toggle('active', active); item.setAttribute('aria-selected', String(active)); }); setState(state); }));
   setState(state);
   return { host, root, show, close, setState, showSettings: renderSettings, getState: () => ({ ...state }) };
 }

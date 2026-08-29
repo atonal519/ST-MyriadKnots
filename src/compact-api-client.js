@@ -15,7 +15,19 @@ const timeoutSeconds = value => {
   return Number.isInteger(number) && number >= 5 && number <= 600 ? number : DEFAULT_TIMEOUT;
 };
 const abortError = () => new DOMException('The operation was aborted.', 'AbortError');
-const safeError = (code, status = 0) => {
+const FORMAT_STAGES = Object.freeze({
+  'http-response-json': 'http_response_json',
+  'stream-event-json': 'stream_event_json',
+  'completion-json': 'completion_json',
+  'output-truncated': 'output_truncated',
+});
+const normalizeFinishReason = value => {
+  const reason = String(value ?? '').trim().toLowerCase();
+  if (!reason) return '';
+  return ['stop', 'length', 'max_tokens', 'content_filter', 'tool_calls', 'function_call'].includes(reason) ? reason : 'other';
+};
+const truncatedFinishReason = value => ['length', 'max_tokens'].includes(normalizeFinishReason(value));
+const safeError = (code, status = 0, details = {}) => {
   const messages = {
     config: 'API 配置不完整，请检查 URL 和 Key',
     timeout: 'API 请求超时，请检查网络或调高超时时间',
@@ -28,11 +40,18 @@ const safeError = (code, status = 0) => {
     format: '模型返回的 JSON 格式无效',
     models: '接口没有返回可用模型',
     unsupported: '当前响应格式不受支持',
+    'http-response-json': 'API 响应不是合法 JSON',
+    'stream-event-json': '流式响应事件不是合法 JSON',
+    'completion-json': '模型输出中没有唯一完整 JSON 对象',
+    'output-truncated': '模型输出疑似被截断',
   };
   const error = new Error(messages[code] || 'API 请求失败');
   error.code = `QQJ_${String(code).toUpperCase().replace(/-/g, '_')}`;
   if (status) error.status = status;
-  if (code === 'format') error.retryableRecognitionFormat = true;
+  if (code === 'format' || FORMAT_STAGES[code]) error.retryableRecognitionFormat = true;
+  if (FORMAT_STAGES[code]) error.formatStage = FORMAT_STAGES[code];
+  const finishReason = normalizeFinishReason(details.finishReason);
+  if (finishReason) error.finishReason = finishReason;
   return error;
 };
 
@@ -44,35 +63,99 @@ function mapHttpError(status) {
   return safeError('unsupported', status);
 }
 
-export function extractCompletion(data) {
+function completionDetails(data) {
+  const finishReason = normalizeFinishReason(data?.choices?.[0]?.finish_reason);
+  if (truncatedFinishReason(finishReason)) throw safeError('output-truncated', 0, { finishReason });
   const content = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? data?.content ?? '';
   const text = typeof content === 'string' ? content.trim() : '';
-  if (!text || ['none', '<none>'].includes(text.toLowerCase())) throw safeError('empty');
-  return text;
+  if (!text || ['none', '<none>'].includes(text.toLowerCase())) {
+    const error = safeError('empty'); if (finishReason) error.finishReason = finishReason; throw error;
+  }
+  return { text, finishReason };
 }
 
-export function parseJsonOutput(value) {
+export function extractCompletion(data) { return completionDetails(data).text; }
+
+function balancedObjects(text) {
+  const candidates = []; let objectDepth = 0, arrayDepth = 0, start = -1, quoted = false, escaped = false, unclosed = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') quoted = false;
+      continue;
+    }
+    if (char === '"') { quoted = true; continue; }
+    if (char === '[') { if (objectDepth === 0) arrayDepth += 1; continue; }
+    if (char === ']') { if (objectDepth === 0 && arrayDepth > 0) arrayDepth -= 1; continue; }
+    if (char === '{') {
+      if (objectDepth === 0 && arrayDepth === 0) start = index;
+      objectDepth += 1;
+      continue;
+    }
+    if (char === '}' && objectDepth > 0) {
+      objectDepth -= 1;
+      if (objectDepth === 0 && start >= 0) { candidates.push(text.slice(start, index + 1)); start = -1; }
+    }
+  }
+  if (objectDepth > 0 || quoted && start >= 0) unclosed = true;
+  return { candidates, unclosed };
+}
+
+export function parseJsonOutput(value, { finishReason } = {}) {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value;
-  let text = String(value ?? '').trim();
-  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  if (fenced) text = fenced[1].trim();
+  const normalizedFinishReason = normalizeFinishReason(finishReason);
+  if (truncatedFinishReason(normalizedFinishReason)) throw safeError('output-truncated', 0, { finishReason: normalizedFinishReason });
+  const text = String(value ?? '').trim();
+  const failCompletion = () => { throw safeError('completion-json', 0, { finishReason: normalizedFinishReason }); };
+  const parseObject = candidate => {
+    let parsed;
+    try { parsed = JSON.parse(candidate); } catch { return null; }
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  };
   try {
     const parsed = JSON.parse(text);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('shape');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return failCompletion();
     return parsed;
-  } catch { throw safeError('format'); }
+  } catch (error) { if (error?.code === 'QQJ_COMPLETION_JSON') throw error; }
+  const fencePattern = /```(?:json)?\s*([\s\S]*?)\s*```/gi;
+  const fences = [...text.matchAll(fencePattern)];
+  const fenceMarkers = text.match(/```/g)?.length || 0;
+  if (fenceMarkers % 2 === 1) throw safeError('output-truncated', 0, { finishReason: normalizedFinishReason });
+  if (fences.length) {
+    if (fences.length !== 1) return failCompletion();
+    const outside = `${text.slice(0, fences[0].index)}${text.slice((fences[0].index || 0) + fences[0][0].length)}`;
+    const outsideObjects = balancedObjects(outside);
+    if (outsideObjects.unclosed) throw safeError('output-truncated', 0, { finishReason: normalizedFinishReason });
+    if (outsideObjects.candidates.length) return failCompletion();
+    const parsed = parseObject(fences[0][1].trim());
+    if (!parsed) return failCompletion();
+    return parsed;
+  }
+  const balanced = balancedObjects(text);
+  if (balanced.unclosed) throw safeError('output-truncated', 0, { finishReason: normalizedFinishReason });
+  if (balanced.candidates.length !== 1) return failCompletion();
+  const parsed = parseObject(balanced.candidates[0]);
+  if (!parsed) return failCompletion();
+  return parsed;
 }
 
-export async function readSseContent(response) {
+async function readSseResponse(response) {
   const reader = response.body?.getReader?.();
-  if (!reader) return extractCompletion(await response.json());
-  const decoder = new TextDecoder(); let buffer = '', output = '', event = [];
+  if (!reader) {
+    let data; try { data = await response.json(); } catch { throw safeError('http-response-json'); }
+    return completionDetails(data);
+  }
+  const decoder = new TextDecoder(); let buffer = '', output = '', event = [], finishReason = '';
   const flush = () => {
     if (!event.length) return;
     const payload = event.join('\n').trim(); event = [];
     if (!payload || payload === '[DONE]') return;
-    let value; try { value = JSON.parse(payload); } catch { throw safeError('format'); }
+    let value; try { value = JSON.parse(payload); } catch { throw safeError('stream-event-json'); }
     if (value?.error) throw safeError('unsupported');
+    const currentFinishReason = normalizeFinishReason(value?.choices?.[0]?.finish_reason);
+    if (currentFinishReason) finishReason = currentFinishReason;
     const delta = value?.choices?.[0]?.delta?.content ?? value?.choices?.[0]?.message?.content ?? value?.choices?.[0]?.text;
     if (typeof delta === 'string') output += delta;
   };
@@ -88,9 +171,12 @@ export async function readSseContent(response) {
     const lines = buffer.split('\n'); buffer = lines.pop() || '';
     lines.forEach(line);
   }
-  if (!output.trim()) throw safeError('empty');
-  return output.trim();
+  if (truncatedFinishReason(finishReason)) throw safeError('output-truncated', 0, { finishReason });
+  if (!output.trim()) { const error = safeError('empty'); if (finishReason) error.finishReason = finishReason; throw error; }
+  return { text: output.trim(), finishReason };
 }
+
+export async function readSseContent(response) { return (await readSseResponse(response)).text; }
 
 function wait(ms, signal) {
   return new Promise((resolve, reject) => {
@@ -124,7 +210,8 @@ export function createCompactApiClient({ fetchImpl = globalThis.fetch, headers =
           }
           throw mapHttpError(response.status);
         }
-        return stream ? await readSseContent(response) : await response.json();
+        if (stream) return readSseResponse(response);
+        try { return await response.json(); } catch { throw safeError('http-response-json'); }
       } catch (error) {
         if (linked.timedOut()) throw safeError('timeout');
         if (signal?.aborted || error?.name === 'AbortError') throw abortError();
@@ -132,14 +219,16 @@ export function createCompactApiClient({ fetchImpl = globalThis.fetch, headers =
           attempt += 1; linked.cleanup(); await retryWait(Math.min(400 * 2 ** attempt, 2000), signal); continue;
         }
         if (error instanceof TypeError) throw safeError('network');
-        if (error instanceof SyntaxError) throw safeError('format');
+        if (error instanceof SyntaxError) throw safeError('http-response-json');
         throw error;
       } finally { linked.cleanup(); }
     }
   };
-  const generateTask = async ({ config, taskMessages, jsonSchema, signal, maxTokens = 12000, temperature = 0.2 } = {}) => {
+  const generateTask = async ({ config, taskMessages, jsonSchema, signal, maxTokens = 12000, temperature = 0.2, systemPrompt } = {}) => {
     const compactMessages = [
-      { role: 'system', content: 'You extract people only from the supplied frozen sources. Return only JSON matching the requested schema.' },
+      { role: 'system', content: typeof systemPrompt === 'string' && systemPrompt.trim()
+        ? systemPrompt.trim()
+        : 'You extract people only from the supplied frozen sources. Return only JSON matching the requested schema.' },
       ...(Array.isArray(taskMessages) ? taskMessages : []).filter(message => ['system', 'user'].includes(message?.role) && typeof message.content === 'string').map(message => ({ role: message.role, content: message.content })),
     ];
     const body = {
@@ -152,8 +241,8 @@ export function createCompactApiClient({ fetchImpl = globalThis.fetch, headers =
       const key = String(item).trim(); if (key && !PROTECTED_BODY_KEYS.has(key)) delete body[key];
     }
     const response = await request({ path: '/api/backends/chat-completions/generate', body, config, signal, stream: body.stream === true });
-    const text = body.stream === true ? response : extractCompletion(response);
-    return { jsonData: parseJsonOutput(text) };
+    const completion = body.stream === true ? response : completionDetails(response);
+    return { jsonData: parseJsonOutput(completion.text, { finishReason: completion.finishReason }), taskMetadata: { ...(completion.finishReason ? { finishReason: completion.finishReason } : {}) } };
   };
   const testConnection = async ({ config, signal } = {}) => {
     const schema = { type: 'object', additionalProperties: false, required: ['ok'], properties: { ok: { type: 'boolean', const: true } } };

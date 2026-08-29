@@ -3,7 +3,7 @@ import { createFab } from './ui/fab.js';
 import { installWandEntry } from './ui/wand-entry.js';
 import { mapPeopleError } from './c-registry.js';
 
-export function bootstrap({ formal, people, settings, apiTools, onPluginEnabledChange, documentRef = globalThis.document, panelFactory = createPanel, fabFactory = createFab, wandInstaller = installWandEntry, enableFab = false } = {}) {
+export function bootstrap({ formal, people, settings, apiTools, loadState, initialRelations, reviewActions, onPluginEnabledChange, documentRef = globalThis.document, panelFactory = createPanel, fabFactory = createFab, wandInstaller = installWandEntry, enableFab = false } = {}) {
   if (!documentRef) return { setState() {}, show() {} };
   const existing = documentRef.getElementById('qqj-panel-host');
   if (existing) return existing.__qqjInstance;
@@ -27,20 +27,29 @@ export function bootstrap({ formal, people, settings, apiTools, onPluginEnabledC
       return { ...result, status: ['ready', 'route_ready'].includes(result?.status) ? result.status : 'people_error', people: current, peopleError: mapPeopleError(error), peopleRecognitionFailed: true };
     }
   };
-  const open = event => {
-    panel.host.style.display = 'block'; panel.show(event?.currentTarget || event?.target || documentRef.activeElement);
-    if (!enabled()) { panel.setState({ status: 'disabled' }); return; }
-    if (typeof formal?.getFormalState === 'function') {
-      const mine = uiEpoch;
-      panel.setState({ status: 'loading' });
-      Promise.resolve()
-        .then(() => enabled() && mine === uiEpoch ? formal.getFormalState() : invalidState())
-        .then(result => readPeople(result, mine))
-        .then(result => { if (mine === uiEpoch) setState(enabled() ? result : { status: 'disabled' }); })
-        .catch(() => { if (mine === uiEpoch) setState(enabled() ? { status: 'error' } : { status: 'disabled' }); });
+  let panel;
+  const reload = async ({ announceLoading = false } = {}) => {
+    const mine = ++uiEpoch;
+    if (!enabled()) { const value = { status: 'disabled' }; if (mine === uiEpoch) panel?.setState(value); return value; }
+    if (announceLoading) panel?.setState({ status: 'loading' });
+    try {
+      const result = typeof loadState === 'function'
+        ? await loadState()
+        : await readPeople(typeof formal?.getFormalState === 'function' ? await formal.getFormalState() : { status: 'error' }, mine);
+      const value = enabled() && mine === uiEpoch ? result : invalidState();
+      if (mine === uiEpoch) setState(value);
+      return value;
+    } catch {
+      const value = enabled() ? { status: 'error' } : { status: 'disabled' };
+      if (mine === uiEpoch) setState(value);
+      return value;
     }
   };
-  const panel = panelFactory({ formal, people, settings, apiTools, onPluginEnabledChange, onClose: () => { panel.host.style.display = 'none'; } });
+  const open = event => {
+    panel.host.style.display = 'block'; panel.show(event?.currentTarget || event?.target || documentRef.activeElement);
+    void reload({ announceLoading: true });
+  };
+  panel = panelFactory({ formal, people, settings, apiTools, loadState: typeof loadState === 'function' ? reload : undefined, initialRelations, reviewActions, onPluginEnabledChange, onClose: () => { uiEpoch += 1; panel.host.style.display = 'none'; } });
   const setState = state => { panel.setState(state); if (state?.status === 'people_error') { const view = panel.root?.querySelector?.('.view'); const message = documentRef.createElement?.('p'); if (message) { message.className = 'error'; message.textContent = state.peopleError || '人物识别失败：暂时无法读取人物结果，请稍后重试。'; view?.append?.(message); } } };
   panel.host.style.display = 'none';
   documentRef.body.append(panel.host);

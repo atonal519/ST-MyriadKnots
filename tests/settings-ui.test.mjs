@@ -58,7 +58,7 @@ test('真实 dist 设置 UI：关闭态一步进入、右下角角标、Key 遮�
     };
     const instance = bootstrap({ settings, apiTools, formal: { getFormalState: async () => { formalReads += 1; return { status: 'ready' }; } }, people: { getPeople: async () => { peopleReads += 1; return { status: 'ready' }; } }, documentRef, wandInstaller: open => { wandOpen = open; }, onPluginEnabledChange: async enabled => { enabledChanges += 1; assert.equal(enabled, true); } });
     wandOpen({}); await new Promise(resolve => setImmediate(resolve)); assert.equal(formalReads, 0); assert.equal(peopleReads, 0);
-    const root = instance.host.shadowRoot, view = root.nodes['.view']; assert.ok(view.nodes['.open-settings']); await view.nodes['.open-settings'].fire('click');
+    const root = instance.host.shadowRoot, view = root.nodes['.view']; const openSettings = view.querySelector('.open-settings'); assert.ok(openSettings); await openSettings.fire('click');
     const keyInput = view.nodes['[data-setting="key"]']; assert.equal(keyInput.type, 'password'); assert.equal(keyInput.value, ''); assert.equal(JSON.stringify(extensionSettings.qianqianjie).includes('INHERITED_KEY'), false);
     await view.nodes['[data-action="key-toggle"]'].fire('click'); assert.equal(keyInput.type, 'text'); assert.equal(keyInput.value, 'LOCAL_KEY'); await view.nodes['[data-action="key-toggle"]'].fire('click'); assert.equal(keyInput.type, 'password'); assert.equal(keyInput.value, '');
     assert.match(view.nodes['.api-source-label'].textContent, /构画机械预设/); assert.equal(view.nodes['[data-action="test"]'].disabled, true); assert.equal(view.nodes['[data-action="models"]'].disabled, true);

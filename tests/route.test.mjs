@@ -115,8 +115,85 @@ test('严格 EJS greeting 可通过生产 route source 进入 formal CAS，普�
 
 test('冻结来源正式 batch 直读：scanner=0、额外条目排除、缺失非阻断', async () => {
   let scans = 0; const context = { chat: [{ mes: '锁定问候', swipe_id: 0 }, { mes: '后续正文不得读取' }], simulateWorldInfoActivation: async () => { scans += 1; return { activatedEntries: [] }; }, loadWorldInfoBatch: async names => new Map(names.map(name => [name, { entries: { '1': { content: '冻结人物' }, '9': { content: '额外条目' } } }])) };
-  const source = createRouteSourceAdapter({ contextProvider: () => context }); const route = { state: 'ready', greeting: { floor: 0, swipeId: 0, fingerprint: 'sha256:' + '0'.repeat(64), content: '锁定问候' }, worldInfoEntries: [{ world: 'book', uid: '1', fingerprint: 'sha256:' + '0'.repeat(64) }, { world: 'missing', uid: '2', fingerprint: 'sha256:' + '0'.repeat(64) }] };
+  const source = createRouteSourceAdapter({ contextProvider: () => context }); const route = { state: 'ready', greeting: { floor: 0, swipeId: 0, fingerprint: `sha256:${await sha256('floor=0\nswipe=0\ncontent=锁定问候')}`, content: '锁定问候' }, worldInfoEntries: [{ world: 'book', uid: '1', fingerprint: `sha256:${await sha256('冻结人物')}` }, { world: 'missing', uid: '2', fingerprint: 'sha256:' + '0'.repeat(64) }] };
   const result = await source.collectFrozenAnalysisSources(route); assert.equal(scans, 0); assert.equal(result.status, 'ready'); assert.deepEqual(result.sources.worldInfoEntries.map(item => item.uid), ['1']); assert.doesNotMatch(JSON.stringify(result.sources), /额外条目|后续正文/); assert.ok(result.warnings.some(item => item.code === 'WORLDBOOK_ENTRY_MISSING'));
+  assert.deepEqual(result.diagnostics, { greeting: 'same', worldbookTotal: 2, worldbookChanged: 0, worldbookMissing: 1, worldbookUnreadable: 0, codes: ['WORLDBOOK_ENTRY_MISSING'] });
+  assert.doesNotMatch(JSON.stringify(result.diagnostics), /冻结人物|锁定问候|"book"|"missing"/);
+});
+
+test('新 route 用 raw 世界书指纹，processed 内容不同但来源未改仍为 same', async () => {
+  let scans = 0; let batches = 0;
+  const rawContent = '<b>原始人物</b>'; const processedContent = '激活后人物';
+  const context = greetingContext({
+    simulateWorldInfoActivation: async () => { scans += 1; return { activatedEntries: [{ world: 'book', uid: 1, content: processedContent }] }; },
+    loadWorldInfoBatch: async names => { batches += 1; return new Map(names.map(name => [name, { entries: { '1': { content: rawContent } } }])); },
+  });
+  const source = createRouteSourceAdapter({ contextProvider: () => context });
+  const route = await source.collect();
+  assert.equal(route.worldInfoEntries[0].fingerprint, `sha256:${await sha256(rawContent)}`);
+  assert.notEqual(route.worldInfoEntries[0].fingerprint, `sha256:${await sha256(processedContent)}`);
+  const frozen = await source.collectFrozenAnalysisSources(route);
+  assert.equal(scans, 1); assert.equal(batches, 2);
+  assert.equal(frozen.sources.worldInfoEntries[0].content, '原始人物');
+  assert.deepEqual(frozen.diagnostics, { greeting: 'same', worldbookTotal: 1, worldbookChanged: 0, worldbookMissing: 0, worldbookUnreadable: 0, codes: [] });
+});
+
+test('旧 activated 指纹 route 只做一次回退，匹配时返回安全 activated 内容并判 same', async () => {
+  let scans = 0; const rawContent = '<b>原始人物</b>'; const processedContent = '<i>激活后人物</i>';
+  const context = greetingContext({
+    simulateWorldInfoActivation: async () => { scans += 1; return { activatedEntries: [{ world: 'book', uid: 1, content: processedContent }] }; },
+    loadWorldInfoBatch: async names => new Map(names.map(name => [name, { entries: { '1': { content: rawContent } } }])),
+  });
+  const source = createRouteSourceAdapter({ contextProvider: () => context });
+  const greeting = await normalizeGreeting(context);
+  const route = { state: 'ready', greeting: { ...greeting, content: '开场' }, worldInfoEntries: [{ world: 'book', uid: '1', fingerprint: `sha256:${await sha256(processedContent)}` }] };
+  const frozen = await source.collectFrozenAnalysisSources(route);
+  assert.equal(scans, 1);
+  assert.equal(frozen.sources.worldInfoEntries[0].content, '激活后人物');
+  assert.deepEqual(frozen.diagnostics, { greeting: 'same', worldbookTotal: 1, worldbookChanged: 0, worldbookMissing: 0, worldbookUnreadable: 0, codes: [] });
+});
+
+test('raw 内容真实修改时 changed，missing 仍为 missing 且不触发逐项扫描', async () => {
+  let scans = 0; const context = greetingContext({
+    simulateWorldInfoActivation: async () => { scans += 1; return { activatedEntries: [{ world: 'book', uid: '1', content: '激活后新内容' }] }; },
+    loadWorldInfoBatch: async names => new Map(names.map(name => [name, { entries: name === 'book' ? { '1': { content: '原始新内容' } } : {} }])),
+  });
+  const source = createRouteSourceAdapter({ contextProvider: () => context }); const greeting = await normalizeGreeting(context);
+  const route = { state: 'ready', greeting: { ...greeting, content: '开场' }, worldInfoEntries: [
+    { world: 'book', uid: '1', fingerprint: `sha256:${await sha256('原始旧内容')}` },
+    { world: 'missing', uid: '2', fingerprint: `sha256:${await sha256('不存在')}` },
+  ] };
+  const frozen = await source.collectFrozenAnalysisSources(route);
+  assert.equal(scans, 1);
+  assert.deepEqual(frozen.diagnostics, { greeting: 'same', worldbookTotal: 2, worldbookChanged: 1, worldbookMissing: 1, worldbookUnreadable: 0, codes: ['WORLDBOOK_ENTRY_MISSING', 'WORLDBOOK_VERSION_CHANGED'] });
+  assert.equal(frozen.warnings.filter(item => item.code === 'WORLDBOOK_VERSION_CHANGED').length, 1);
+  assert.equal(frozen.warnings.filter(item => item.code === 'WORLDBOOK_ENTRY_MISSING').length, 1);
+});
+
+test('新 route raw 条目缺失或 batch 读取失败均 fail closed', async () => {
+  const activated = async () => ({ activatedEntries: [{ world: 'book', uid: '1', content: '处理后内容' }] });
+  const missing = createRouteSourceAdapter({ contextProvider: () => greetingContext({ simulateWorldInfoActivation: activated, loadWorldInfoBatch: async () => new Map([['book', { entries: {} }]]) }) });
+  await assert.rejects(missing.collect(), error => error.failClosed === true && error.diagnosticCode === 'ENTRY_INVALID');
+  const failed = createRouteSourceAdapter({ contextProvider: () => greetingContext({ simulateWorldInfoActivation: activated, loadWorldInfoBatch: async () => { throw new Error('secret'); } }) });
+  await assert.rejects(failed.collect(), error => error.failClosed === true && error.diagnosticCode === 'SCAN_FAILED' && !('cause' in error));
+});
+
+test('冻结 batch 整体读取失败归类 unreadable，不伪报 missing/changed 且不泄漏正文', async () => {
+  let scans = 0; const context = greetingContext({
+    simulateWorldInfoActivation: async () => { scans += 1; return { activatedEntries: [{ world: 'book', uid: '1', content: 'SECRET 激活正文' }] }; },
+    loadWorldInfoBatch: async () => { throw new Error('SECRET batch 正文'); },
+  });
+  const source = createRouteSourceAdapter({ contextProvider: () => context }); const greeting = await normalizeGreeting(context);
+  const route = { state: 'ready', greeting: { ...greeting, content: '开场' }, worldInfoEntries: [
+    { world: 'book', uid: '1', fingerprint: `sha256:${await sha256('旧内容一')}` },
+    { world: 'book', uid: '2', fingerprint: `sha256:${await sha256('旧内容二')}` },
+  ] };
+  const frozen = await source.collectFrozenAnalysisSources(route);
+  assert.equal(scans, 0); assert.deepEqual(frozen.sources.worldInfoEntries, []);
+  assert.deepEqual(frozen.diagnostics, { greeting: 'same', worldbookTotal: 2, worldbookChanged: 0, worldbookMissing: 0, worldbookUnreadable: 2, codes: ['WORLDBOOK_READ_FAILED'] });
+  assert.equal(frozen.warnings.filter(item => item.code === 'WORLDBOOK_READ_FAILED').length, 1);
+  assert.equal(frozen.warnings.some(item => item.code === 'WORLDBOOK_ENTRY_MISSING' || item.code === 'WORLDBOOK_VERSION_CHANGED'), false);
+  assert.doesNotMatch(JSON.stringify({ diagnostics: frozen.diagnostics, warnings: frozen.warnings }), /SECRET|正文|旧内容|"book"/);
 });
 
 test('formal route_unavailable 只返回安全最小状态并保持零 PUT，未知码归一 UNKNOWN', async () => {

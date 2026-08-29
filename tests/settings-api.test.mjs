@@ -66,6 +66,32 @@ test('酒馆 fallback 使用真实 abortSignal 合同，API 工具继承构画�
   await tools.testConnection({ apiMode: 'auto' }); assert.equal(testedKey, 'INHERITED_KEY'); assert.equal(settings.get().apiKey, '');
 });
 
+test('调用方 external signal 可中止统一人物/关系任务路由', async () => {
+  let seenSignal; const compactClient = { generateTask: async options => { seenSignal = options.signal; await new Promise((_, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })); } };
+  const router = createPeopleTaskRouter({ resolver: { resolve: () => ({ kind: 'independent', config: { url: 'x', key: 'y' } }) }, compactClient });
+  const controller = new AbortController(), pending = router.generatePeopleTask({ signal: controller.signal, systemPrompt: 'relation' });
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(seenSignal instanceof AbortSignal, true); controller.abort();
+  await assert.rejects(pending, error => error.name === 'AbortError'); assert.equal(router.getActiveCount(), 0);
+});
+
+test('人物任务结果与错误只附带有界 API 来源/模型元数据，tavern 不伪造模型', async () => {
+  const independent = createPeopleTaskRouter({
+    resolver: { resolve: () => ({ kind: 'independent', source: 'seven-utility', sourceLabel: '构画机械预设 · G3.5F', config: { url: 'https://SECRET.example', key: 'SECRET_KEY', model: 'gemini-3-flash-preview' } }) },
+    compactClient: { generateTask: async () => ({ jsonData: { ok: true }, taskMetadata: { finishReason: 'stop' } }) },
+  });
+  const result = await independent.generatePeopleTask({});
+  assert.deepEqual(result.taskMetadata, { source: 'seven-utility', sourceLabel: '构画机械预设 · G3.5F', model: 'gemini-3-flash-preview', finishReason: 'stop' });
+  assert.doesNotMatch(JSON.stringify(result.taskMetadata), /SECRET|https?:\/\//i);
+  const failed = createPeopleTaskRouter({
+    resolver: { resolve: () => ({ kind: 'independent', source: 'local', sourceLabel: '本地', config: { url: 'SECRET_URL', key: 'SECRET_KEY', model: 'safe-model' } }) },
+    compactClient: { generateTask: async () => { const error = new Error('安全失败'); error.code = 'QQJ_COMPLETION_JSON'; error.formatStage = 'completion_json'; throw error; } },
+  });
+  await assert.rejects(failed.generatePeopleTask({}), error => error.taskMetadata?.source === 'local' && error.taskMetadata?.model === 'safe-model' && !JSON.stringify(error.taskMetadata).includes('SECRET'));
+  const tavern = createPeopleTaskRouter({ resolver: { resolve: () => ({ kind: 'tavern', source: 'tavern', sourceLabel: '酒馆当前模型', config: null }) }, compactClient: { generateTask() {} }, fallbackGenerateTask: async () => ({ schemaVersion: 1, patches: [] }) });
+  const fallback = await tavern.generatePeopleTask({});
+  assert.equal(fallback.taskMetadata.source, 'tavern'); assert.equal(fallback.taskMetadata.model, 'current'); assert.deepEqual(fallback.jsonData, { schemaVersion: 1, patches: [] });
+});
+
 test('关闭态测试/模型列表零启动，在途两类工具统一 abortAll 且迟到结果不可成功', async () => {
   let enabled = false, testCalls = 0, modelCalls = 0, testRelease, modelRelease;
   const resolver = { resolve: () => ({ kind: 'independent', config: configured('x', 'x') }), describe: () => ({}) };

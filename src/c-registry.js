@@ -34,6 +34,10 @@ const selection = value => ({ status: validSelection(value) ? value.status : 'un
 const refKey = value => `${value.kind}:${value.locator}`;
 const ref = value => ({ kind: value.kind, locator: value.locator });
 const validRef = value => object(value) && Object.keys(value).length === 2 && ['greeting', 'worldbook'].includes(value.kind) && typeof value.locator === 'string' && value.locator.length > 0 && value.locator.length <= 300;
+const compatibleProfileRef = value => object(value) && ['greeting', 'worldbook'].includes(value.kind) && typeof value.locator === 'string' && value.locator.length > 0 && value.locator.length <= 300;
+const futureProfile = record => envelope(record) && (Number.isInteger(record.data.schemaVersion) && record.data.schemaVersion > 1
+  || Number.isInteger(record.data.peopleContractVersion) && record.data.peopleContractVersion > 1);
+const readonlyProfile = () => ({ status: 'future_schema_readonly', readonly: true, recoverable: false });
 const sourceKey = item => object(item) && typeof item.sourceAnchor === 'string' && validRef(item.primarySourceRef) ? `${refKey(item.primarySourceRef)}:${item.sourceAnchor.trim().toLocaleLowerCase()}` : null;
 const envelope = record => object(record) && record.schemaVersion === 1 && Number.isInteger(record.revision) && record.revision > 0 && uuid(record.generationId) && typeof record.createdAt === 'string' && typeof record.updatedAt === 'string' && object(record.data);
 const normalizeRefs = refs => [...new Map((Array.isArray(refs) ? refs : []).filter(validRef).map(item => [refKey(item), ref(item)])).values()].sort((a, b) => refKey(a).localeCompare(refKey(b)));
@@ -280,12 +284,13 @@ const validBinding = (item, lifecycle = null) => object(item) && uuid(item.ident
   && validRef(item.primarySourceRef) && Array.isArray(item.sourceRefs) && item.sourceRefs.length > 0 && item.sourceRefs.length <= 12 && item.sourceRefs.every(validRef)
   && item.sourceRefs.some(value => refKey(value) === refKey(item.primarySourceRef)) && item.sourceKey === sourceKey(item)
   && (item.selection === undefined || validSelection(item.selection)) && (!lifecycle || item.lifecycle === lifecycle);
-const validProfile = (record, identityId, chatId) => envelope(record) && record.data.kind === PROFILE && record.data.identityId === identityId && record.data.chatId === chatId
+const validProfile = (record, identityId, chatId) => envelope(record) && record.data.schemaVersion === 1 && [undefined, 1].includes(record.data.peopleContractVersion)
+  && record.data.kind === PROFILE && record.data.identityId === identityId && record.data.chatId === chatId
   && record.data.subject === 'character' && normalizeName(record.data.displayName) && record.data.category === 'confirmed' && validSelection(record.data.selection)
   && Array.isArray(record.data.sourceFacts) && Array.isArray(record.data.userFacts) && Array.isArray(record.data.interpretations) && Array.isArray(record.data.locks) && Array.isArray(record.data.pendingReview)
   && typeof record.data.sourceAnchor === 'string' && record.data.sourceAnchor.trim().length > 0 && validRef(record.data.primarySourceRef)
-  && Array.isArray(record.data.sourceRefs) && record.data.sourceRefs.length > 0 && record.data.sourceRefs.every(validRef)
-  && record.data.sourceRefs.some(value => refKey(value) === refKey(record.data.primarySourceRef)) && record.data.sourceKey === sourceKey(record.data)
+  && Array.isArray(record.data.sourceRefs) && record.data.sourceRefs.length > 0
+  && record.data.sourceRefs.some(value => compatibleProfileRef(value) && refKey(value) === refKey(record.data.primarySourceRef)) && record.data.sourceKey === sourceKey(record.data)
   && ['active', 'shelved', 'deleted'].includes(record.data.lifecycle);
 const validCandidate = item => object(item) && Object.keys(item).sort().join(',') === 'name,primarySourceRef,sourceAnchor,sourceKey,sourceRefs'
   && normalizeName(item.name) && typeof item.sourceAnchor === 'string' && item.sourceAnchor.trim().length >= 1 && item.sourceAnchor.trim().length <= 80
@@ -349,10 +354,23 @@ export function validateRegistryIndex(record, chatId) {
 }
 
 const profileData = (binding, chatId, identityId, displayName = binding.name, userFacts = [], lifecycle = 'active', selected = { status: 'unselected' }) => ({
-  schemaVersion: 1, kind: PROFILE, identityId, subject: 'character', displayName, category: 'confirmed', selection: selection(selected), sourceFacts: [], userFacts,
+  schemaVersion: 1, peopleContractVersion: 1, kind: PROFILE, identityId, subject: 'character', displayName, category: 'confirmed', selection: selection(selected), sourceFacts: [], userFacts,
   interpretations: [], locks: [], pendingReview: [], sourceAnchor: binding.sourceAnchor, primarySourceRef: ref(binding.primarySourceRef), sourceKey: binding.sourceKey || sourceKey(binding),
   sourceRefs: normalizeRefs(binding.sourceRefs), lifecycle, chatId,
 });
+const stableRefKey = value => {
+  if (object(value) && typeof value.kind === 'string' && value.kind.trim() && typeof value.locator === 'string' && value.locator.trim()) return `ref:${value.kind.trim()}\u0000${value.locator.trim()}`;
+  try { return `raw:${JSON.stringify(value)}`; } catch { return `raw:${String(value)}`; }
+};
+const mergeProfileSourceRefs = (existing, current) => {
+  const output = [], seen = new Set();
+  for (const item of [...(Array.isArray(existing) ? existing : []), ...normalizeRefs(current)]) {
+    const key = stableRefKey(item);
+    if (seen.has(key)) continue;
+    seen.add(key); output.push(item);
+  }
+  return output;
+};
 const asCandidate = item => ({ name: item.name.trim(), sourceAnchor: item.sourceAnchor.trim(), primarySourceRef: ref(item.primarySourceRef), sourceRefs: normalizeRefs(item.sourceRefs), sourceKey: sourceKey(item) });
 const asDiscarded = item => ({ ...asCandidate(item), lifecycle: 'discarded' });
 
@@ -437,6 +455,7 @@ function createLegacyCRegistryAdapter({ client, contextProvider, routeSource, ge
       if (error.status !== 409) throw error;
       if (liveGuard) await liveGuard();
       const winner = await client.get(collection, key);
+      if (collection.endsWith('-people') && futureProfile(winner)) return { ...winner, conflict: true, futureReadonly: true };
       if (!envelope(winner) || (validate && !validate(winner))) throw Object.assign(fail('C CAS winner 校验失败'), { conflict: true });
       if (liveGuard) await liveGuard();
       return { ...winner, conflict: true };
@@ -465,18 +484,28 @@ function createLegacyCRegistryAdapter({ client, contextProvider, routeSource, ge
     return false;
   }
 
+  async function hasFutureProfile(id, data, check = async () => {}) {
+    for (const binding of [...(data?.confirmed || []), ...legacyShelved(data)]) {
+      const profile = await getProfile(id, binding.identityId); await check();
+      if (profile && futureProfile(profile)) return true;
+    }
+    return false;
+  }
+
   async function recoverRename(token, id, record, expected = null) {
     const check = async () => { if (liveGuard) await liveGuard(); if (expected) guardIdentity(token, id, expected); else if (!liveGuard) await guardSources(token, id); };
     await check();
     if (!record || !validateRegistryIndex(record, id) || record.data.status !== 'renaming' || !validPendingRename(record.data.pendingRename)) return renameConflict();
     const intent = record.data.pendingRename;
     let profile = await getProfile(id, intent.identityId); await check();
+    if (futureProfile(profile)) return readonlyProfile();
     if (!profile || !validProfile(profile, intent.identityId, id)) throw fail('人物档案无效');
     if (!profileHasRename(profile, intent, id)) {
       if (profile.data.displayName !== intent.oldDisplayName) return renameConflict();
       const desired = { ...profile.data, displayName: intent.newDisplayName, userFacts: desiredRenameFacts(profile.data.userFacts, intent.newDisplayName), lifecycle: 'active' };
       const updated = await put(`chat-${id}-people`, intent.identityId, desired, profile.revision, value => validProfile(value, intent.identityId, id));
       await check();
+      if (updated.futureReadonly) return readonlyProfile();
       if (updated.conflict && !profileHasRename(updated, intent, id)) return renameConflict();
       profile = updated;
     }
@@ -498,16 +527,17 @@ function createLegacyCRegistryAdapter({ client, contextProvider, routeSource, ge
     const selected = lifecycle === 'shelved' ? { status: 'unselected' } : selection(binding.selection);
     if (!existing) {
       const created = await put(`chat-${id}-people`, binding.identityId, profileData(binding, id, binding.identityId, binding.displayName, [], lifecycle, selected), 0, value => validProfile(value, binding.identityId, id));
-      await guardSources(token, id); return created.conflict ? { conflict: true } : { profile: created };
+      await guardSources(token, id); return created.futureReadonly ? { readonly: true } : created.conflict ? { conflict: true } : { profile: created };
     }
+    if (futureProfile(existing)) return { readonly: true };
     if (!validProfile(existing, binding.identityId, id)) throw fail('人物档案与索引绑定不一致');
     if (existing.data.displayName !== binding.displayName) return { conflict: true, pending: 'rename' };
-    const next = { ...existing.data, selection: selected, sourceAnchor: binding.sourceAnchor, primarySourceRef: ref(binding.primarySourceRef), sourceKey: binding.sourceKey, sourceRefs: normalizeRefs(binding.sourceRefs), lifecycle };
+    const next = { ...existing.data, selection: selected, sourceAnchor: binding.sourceAnchor, primarySourceRef: ref(binding.primarySourceRef), sourceKey: binding.sourceKey, sourceRefs: mergeProfileSourceRefs(existing.data.sourceRefs, binding.sourceRefs), lifecycle };
     const unchanged = existing.data.lifecycle === next.lifecycle && existing.data.selection.status === next.selection.status && existing.data.sourceKey === next.sourceKey && existing.data.sourceAnchor === next.sourceAnchor
       && refKey(existing.data.primarySourceRef) === refKey(next.primarySourceRef) && sameRefs(existing.data.sourceRefs, next.sourceRefs);
     if (unchanged) return { profile: existing };
     const updated = await put(`chat-${id}-people`, binding.identityId, next, existing.revision, value => validProfile(value, binding.identityId, id));
-    await guardSources(token, id); return updated.conflict ? { conflict: true } : { profile: updated };
+    await guardSources(token, id); return updated.futureReadonly ? { readonly: true } : updated.conflict ? { conflict: true } : { profile: updated };
   }
 
   async function recover(token, id, record) {
@@ -530,11 +560,13 @@ function createLegacyCRegistryAdapter({ client, contextProvider, routeSource, ge
     }
     for (let index = 0; index < data.confirmed.length; index += 1) {
       const binding = data.confirmed[index], synced = await syncProfile(token, id, binding, 'active');
+      if (synced.readonly) return readonlyProfile();
       if (synced.conflict) return synced.pending === 'rename' ? renameConflict() : { status: 'conflict', recoverable: true };
       data.confirmed[index] = { ...binding, displayName: synced.profile.data.displayName, selection: selection(binding.selection ?? synced.profile.data.selection) };
     }
     for (let index = 0; index < data.shelved.length; index += 1) {
       const binding = currentBinding(data.shelved[index], 'shelved'), synced = await syncProfile(token, id, binding, 'shelved');
+      if (synced.readonly) return readonlyProfile();
       if (synced.conflict) return synced.pending === 'rename' ? renameConflict() : { status: 'conflict', recoverable: true };
       data.shelved[index] = { ...binding, displayName: synced.profile.data.displayName };
     }
@@ -577,6 +609,7 @@ function createLegacyCRegistryAdapter({ client, contextProvider, routeSource, ge
     if (expected.sourceFingerprint && expected.sourceFingerprint !== fingerprint) throw stale();
     await liveGuard(); let old = await getIndex(id); await liveGuard();
     if (old && !validateRegistryIndex(old, id)) throw fail('people-index 校验失败');
+    if (old && await hasFutureProfile(id, old.data, liveGuard)) return readonlyProfile();
     if (old?.data?.status === 'renaming') {
       const renamed = await recoverRename(token, id, old);
       if (renamed.status !== 'ready') return renamed;
@@ -681,6 +714,9 @@ function createLegacyCRegistryAdapter({ client, contextProvider, routeSource, ge
       const binding = index.data.confirmed.find(item => item.identityId === identityId);
       if (!binding) throw fail('人物不存在');
       if (binding.displayName === name) return index.data;
+      const existingProfile = await getProfile(id, identityId); guardIdentity(token, id, expected, current);
+      if (futureProfile(existingProfile)) return readonlyProfile();
+      if (!existingProfile || !validProfile(existingProfile, identityId, id)) throw fail('人物档案无效');
       const intent = { identityId, oldDisplayName: binding.displayName, newDisplayName: name };
       const data = normalizedData(index.data);
       const started = await put(`chat-${id}`, INDEX, { ...data, status: 'renaming', pendingRename: intent }, index.revision, value => validateRegistryIndex(value, id));

@@ -4,6 +4,19 @@ const validConfig = config => Boolean(config?.url && config?.key);
 const sevenDaysPresets = value => Array.isArray(value?.apiPresets) ? value.apiPresets.map(normalizePreset).filter(item => item.id) : [];
 const abortError = () => new DOMException('The operation was aborted.', 'AbortError');
 const disabledError = () => { const error = new Error('千千结已关闭'); error.code = 'QQJ_DISABLED'; return error; };
+const bounded = (value, length, fallback = '') => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, length) || fallback;
+const taskMetadata = (route, finishReason = '') => ({
+  source: bounded(route?.source, 80, 'unknown'),
+  sourceLabel: bounded(route?.sourceLabel, 160, route?.kind === 'tavern' ? '酒馆当前模型' : '未命名 API'),
+  model: route?.kind === 'tavern' ? 'current' : bounded(route?.config?.model, 160, 'unknown'),
+  ...(finishReason ? { finishReason: bounded(finishReason, 32) } : {}),
+});
+const withTaskMetadata = (result, route) => {
+  const finishReason = result?.taskMetadata?.finishReason || result?.finishReason;
+  const metadata = taskMetadata(route, finishReason);
+  if (result && typeof result === 'object' && !Array.isArray(result) && Object.hasOwn(result, 'jsonData')) return { ...result, taskMetadata: metadata };
+  return { jsonData: result, taskMetadata: metadata };
+};
 
 export function createApiResolver({ settings } = {}) {
   if (!settings?.get || !settings?.localConfig || !settings?.sevenDaysSettings) throw new Error('API 配置解析器依赖不可用');
@@ -61,22 +74,32 @@ export function createPeopleTaskRouter({ resolver, compactClient, fallbackGenera
     const mine = epoch, route = resolver.resolve();
     if (!isEnabled() || mine !== epoch) throw abortError();
     const controller = new AbortController(); active.add(controller);
+    const externalSignal = options?.signal;
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal?.aborted) controller.abort(); else externalSignal?.addEventListener?.('abort', onExternalAbort, { once: true });
     try {
       if (route.kind === 'tavern') {
         if (typeof fallbackGenerateTask !== 'function') throw new Error('酒馆当前模型不可用');
-        const result = await fallbackGenerateTask({ ...options, abortSignal: controller.signal });
+        const taskMessages = typeof options?.systemPrompt === 'string' && options.systemPrompt.trim()
+          ? [{ role: 'system', content: options.systemPrompt.trim() }, ...(Array.isArray(options.taskMessages) ? options.taskMessages : [])]
+          : options?.taskMessages;
+        const { signal: _signal, systemPrompt: _systemPrompt, ...fallbackOptions } = options || {};
+        const result = await fallbackGenerateTask({ ...fallbackOptions, taskMessages, abortSignal: controller.signal });
         if (!isEnabled() || mine !== epoch) throw abortError();
-        return result;
+        return withTaskMetadata(result, route);
       }
       const result = await compactClient.generateTask({ ...options, config: { ...route.config }, signal: controller.signal });
       if (!isEnabled() || mine !== epoch) throw abortError();
-      return result;
+      return withTaskMetadata(result, route);
     }
     catch (error) {
       if (controller.signal.aborted || !isEnabled() || mine !== epoch) throw abortError();
+      if (error && (typeof error === 'object' || typeof error === 'function')) {
+        try { error.taskMetadata = taskMetadata(route, error?.finishReason || error?.taskMetadata?.finishReason); } catch { /* a frozen foreign error remains safe but cannot be annotated */ }
+      }
       throw error;
     }
-    finally { active.delete(controller); }
+    finally { externalSignal?.removeEventListener?.('abort', onExternalAbort); active.delete(controller); }
   };
   return { generatePeopleTask, abortAll, getActiveCount: () => active.size };
 }
