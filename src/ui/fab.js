@@ -1,0 +1,24 @@
+const KEY = 'qqj-fab-pos';
+const SIZE = 36;
+const mobile = () => globalThis.innerWidth <= 540 || globalThis.matchMedia?.('(max-width: 540px)').matches;
+const viewport = () => ({ width: Number(globalThis.innerWidth) || 0, height: Number(globalThis.innerHeight) || 0 });
+const clamp = (value, max) => Math.max(0, Math.min(Math.max(0, max - SIZE), value));
+
+export function createFab({ onClick } = {}) {
+  const host = document.createElement('div'); host.id = 'qqj-fab-host'; host.attachShadow({ mode: 'open' });
+  const root = host.shadowRoot;
+  root.innerHTML = `<style>:host{position:fixed;right:16px;top:calc(100dvh - 80px - 44px);z-index:1000;touch-action:none}button{width:36px;height:36px;border:0;border-radius:50%;background:#B23A48;color:#fff;cursor:pointer;box-shadow:0 7px 18px rgba(178,58,72,.32);touch-action:none;display:grid;place-items:center;padding:4px}button:focus-visible{outline:2px solid #23262D;outline-offset:3px}svg{width:28px;height:28px;display:block}@media(max-width:540px){:host{right:14px}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}</style><button type="button" aria-label="打开千千结"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none"><circle cx="32" cy="32" r="25" stroke="currentColor" stroke-width="0.9"/><g stroke="currentColor" stroke-width="0.7" stroke-linecap="round" stroke-linejoin="round"><path d="M 30.72 28.58 C 27.3 26.5, 24.5 25.3, 20.46 25.38 C 17.2 25.45, 15.53 28.1, 15.55 31.36 C 15.57 35.1, 17.6 37.8, 19.82 39.05 C 21.5 40.0, 23.4 39.9, 24.74 39.48 L 40.12 30.29"/><path d="M 32.85 36.06 C 35.6 37.7, 37.8 39.2, 38.84 39.48 C 42.8 40.6, 46.0 38.3, 47.60 34.99 C 49.0 31.8, 47.6 28.5, 44.61 26.02 C 42.7 24.5, 39.2 24.7, 36.91 26.02 L 27.94 31.57"/><path d="M 23.45 30.29 L 30.72 34.56"/><path d="M 26.02 33.07 L 23.67 34.35"/><path d="M 35.63 31.57 L 32.85 30.08"/><path d="M 37.34 33.07 L 39.91 34.35"/></g></svg></button>`;
+  const button = root.querySelector('button'); let gesture = null; let suppressClick = false; let desktopPosition = null;
+  const applyDefault = () => { host.style.left = ''; host.style.top = 'calc(100dvh - 80px - 44px)'; host.style.right = mobile() ? '14px' : '16px'; };
+  const readPosition = () => { if (mobile()) return null; try { const value = JSON.parse(globalThis.localStorage?.getItem(KEY) || 'null'); return Number.isFinite(value?.x) && Number.isFinite(value?.y) ? value : null; } catch { return null; } };
+  const applyPosition = position => { const size = viewport(); if (!size.width || !size.height || !position) return; const x = clamp(position.x, size.width); const y = clamp(position.y, size.height); host.style.left = `${x}px`; host.style.top = `${y}px`; host.style.right = 'auto'; desktopPosition = { x, y }; };
+  const savePosition = () => { if (mobile()) return; const rect = host.getBoundingClientRect(); const size = viewport(); const position = { x: clamp(rect.left, size.width), y: clamp(rect.top, size.height) }; desktopPosition = position; try { globalThis.localStorage?.setItem(KEY, JSON.stringify({ x: Math.round(position.x), y: Math.round(position.y) })); } catch { /* disposable UI position */ } };
+  const restore = () => { applyDefault(); if (!mobile()) applyPosition(desktopPosition || readPosition()); };
+  const onResize = () => { if (mobile()) applyDefault(); else applyPosition(desktopPosition || readPosition()); };
+  const pointerDown = event => { gesture = { startX: event.clientX, startY: event.clientY, origX: host.getBoundingClientRect().left, origY: host.getBoundingClientRect().top, dragging: false }; suppressClick = false; button.setPointerCapture?.(event.pointerId); };
+  const pointerMove = event => { if (!gesture) return; const dx = event.clientX - gesture.startX; const dy = event.clientY - gesture.startY; if (!gesture.dragging && Math.hypot(dx, dy) <= 5) return; gesture.dragging = true; event.preventDefault?.(); const size = viewport(); host.style.left = `${clamp(gesture.origX + dx, size.width)}px`; host.style.top = `${clamp(gesture.origY + dy, size.height)}px`; host.style.right = 'auto'; };
+  const clearGesture = event => { if (!gesture) return; suppressClick = gesture.dragging; if (gesture.dragging) savePosition(); gesture = null; button.releasePointerCapture?.(event?.pointerId); };
+  button.addEventListener('pointerdown', pointerDown); button.addEventListener('pointermove', pointerMove); button.addEventListener('pointerup', clearGesture); button.addEventListener('pointercancel', () => { gesture = null; suppressClick = false; });
+  button.addEventListener('click', event => { if (suppressClick) { event.preventDefault(); suppressClick = false; return; } onClick?.(event); }); globalThis.addEventListener?.('resize', onResize); restore();
+  return { host, root, button, restore, onResize, destroy: () => globalThis.removeEventListener?.('resize', onResize) };
+}

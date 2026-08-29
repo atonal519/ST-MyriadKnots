@@ -1,0 +1,26 @@
+# Local dependencies
+node_modules/
+
+# Environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Logs, temporary files, and test output
+*.log
+*.tmp
+*.temp
+coverage/
+test-results/
+
+# Local user data and editor/OS files
+data/
+*.sqlite
+*.sqlite3
+.DS_Store
+.idea/
+.vscode/
+
+# Keep the production bundle in dist/ tracked.
