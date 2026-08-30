@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createInitialRelationGenerationAdapter, INITIAL_RELATION_LIMITS, INITIAL_RELATION_SYSTEM_PROMPT, validateBasicInfoResult } from '../src/initial-relation-generation.js';
+import { createInitialRelationGenerationAdapter, DYNAMIC_INFO_SYSTEM_PROMPT, INITIAL_RELATION_LIMITS, INITIAL_RELATION_SYSTEM_PROMPT, validateBasicInfoResult, validateDynamicInfoResult, validateInitialRelationResult } from '../src/initial-relation-generation.js';
 import { computeStableFloorSnapshot, createStableLedger } from '../src/stable-floor.js';
 import { fingerprintGreeting } from '../src/route-source.js';
 import { sha256 } from '../src/identity.js';
+import { createBaiBaiBookMemoryAdapter } from '../src/baibai-book-memory.js';
 
 const CHAT = '11111111-1111-4111-8111-111111111111';
 const CARD = '22222222-2222-4222-8222-222222222222';
@@ -18,18 +19,19 @@ function envelope(data, revision = 1) {
   return { schemaVersion: 1, revision, generationId: GENERATION, createdAt: '2026-08-29T00:00:00.000Z', updatedAt: '2026-08-29T00:00:00.000Z', data: clone(data) };
 }
 
-async function makeHarness({ generate, selected = [C1], profilePutFailure, oversized = false } = {}) {
+async function makeHarness({ generate, selected = [C1], profilePutFailure, oversized = false, characterDescription, assistantStableText, memoryText, memorySource } = {}) {
   const greeting = '冻结开场：霜城的钟声响起。';
   const chat = [
     { is_user: false, is_system: false, mes: greeting, send_date: 'g0', swipe_id: 0 },
     { is_user: true, is_system: false, mes: '我走进钟楼，叫住了林岚。', send_date: 'u1', name: 'U' },
-    { is_user: false, is_system: false, mes: '林岚回头，递来一枚旧钥匙。', send_date: 'a1', swipe_id: 0, name: '林岚' },
+    { is_user: false, is_system: false, mes: assistantStableText || '林岚回头，递来一枚旧钥匙。', send_date: 'a1', swipe_id: 0, name: '林岚' },
     { is_user: true, is_system: false, mes: '我收下钥匙，并答应明天再来。', send_date: 'u2', name: 'U' },
   ];
+  const resolvedCharacterDescription = oversized ? `人物设定${'甲'.repeat(INITIAL_RELATION_LIMITS.maxSourceChars + 1)}` : characterDescription || '林岚是霜城钟楼的守门人。';
   const ctx = {
     characterId: 0, groupId: null, chatId: 'host-chat', userAvatar: 'me.png', name1: '旅人', name2: '林岚',
     chatMetadata: { qianqianjie: { schemaVersion: 1, chatId: CHAT } }, chat,
-    characters: [{ avatar: 'char.png', data: { name: '林岚', description: oversized ? `人物设定${'甲'.repeat(INITIAL_RELATION_LIMITS.maxSourceChars + 1)}` : '林岚是霜城钟楼的守门人。', personality: '寡言但守信。' } }],
+    characters: [{ avatar: 'char.png', data: { name: '林岚', description: resolvedCharacterDescription, personality: '寡言但守信。' } }],
     powerUserSettings: { persona_descriptions: { 'me.png': { description: '旅人重视承诺，也害怕被遗忘。' } } },
   };
   const snapshot = await computeStableFloorSnapshot(chat);
@@ -98,8 +100,10 @@ async function makeHarness({ generate, selected = [C1], profilePutFailure, overs
     ] : [] } };
   };
   const generateRelationTask = async options => { calls.ai.push(options); return (generate || defaultGenerate)(options, { ctx, snapshot, route, records, calls }); };
-  const adapter = createInitialRelationGenerationAdapter({ client, contextProvider: () => ctx, routeSource, generateRelationTask });
-  return { adapter, ctx, records, calls, client, routeSource, routeState, snapshot, key, route, generateRelationTask };
+  let currentMemoryText = memoryText === undefined ? resolvedCharacterDescription : memoryText;
+  const effectiveMemorySource = memorySource || { readRelativeText: () => currentMemoryText };
+  const adapter = createInitialRelationGenerationAdapter({ client, contextProvider: () => ctx, routeSource, generateRelationTask, memorySource: effectiveMemorySource });
+  return { adapter, ctx, records, calls, client, routeSource, routeState, snapshot, key, route, generateRelationTask, memorySource: effectiveMemorySource, setMemoryText: value => { currentMemoryText = value; } };
 }
 
 async function changeCurrentRoute(h) {
@@ -531,6 +535,72 @@ test('基础字段中文与固定英文栏目别名确定性归一，未知字�
   assert.deepEqual(new Set(aliases.diagnostics.rejectionCodes), new Set(['unknown_field', 'unknown_evidence', 'invalid_text']));
 });
 
+test('三条 evidence 验证链兼容短代号字符串并拒绝宽松捞取', () => {
+  const sources = Array.from({ length: 8 }, (_, index) => ({
+    kind: 'card', locator: `card:compat:${index + 1}`, fingerprint: `sha256:${String(index + 1).repeat(64)}`, content: '银发。守门人。',
+  }));
+  const realFormats = [
+    ['A8', ['A8']],
+    ['[A8]', ['A8']],
+    ['[A2][A4][A8]', ['A2', 'A4', 'A8']],
+    [['A2', 'A4', 'A8'], ['A2', 'A4', 'A8']],
+  ];
+  const basic = value => validateBasicInfoResult({ fields: [{ field: 'appearance', text: '银发。', evidence: value }] }, { sources });
+  const dynamic = value => validateDynamicInfoResult({ fields: [{ field: 'currentSituation', text: '守门人。', evidence: value }] }, { sources });
+  const relation = value => validateInitialRelationResult({ items: [{ person: 'C1', type: 'source_fact', text: '守门人。', evidence: value }] }, {
+    targetIdentityIds: [C1], allIdentityIds: [USER, C1], sources,
+  });
+  for (const [evidence, expectedCodes] of realFormats) {
+    const basicResult = basic(evidence);
+    assert.equal(basicResult.diagnostics.acceptedFields, 1, `basic ${JSON.stringify(evidence)}`);
+    assert.deepEqual(basicResult.fields.appearance.sourceRefs.map(ref => ref.locator), expectedCodes.map(code => `card:compat:${code.slice(1)}`));
+    const dynamicResult = dynamic(evidence);
+    assert.equal(dynamicResult.diagnostics.acceptedFields, 1, `dynamic ${JSON.stringify(evidence)}`);
+    assert.deepEqual(dynamicResult.fields.currentSituation.sourceRefs.map(ref => ref.locator), expectedCodes.map(code => `card:compat:${code.slice(1)}`));
+    const relationResult = relation(evidence);
+    assert.equal(relationResult.itemDiagnostics.acceptedItems, 1, `relation ${JSON.stringify(evidence)}`);
+    assert.deepEqual(relationResult.patches[0].sourceFacts[0].sourceRefs.map(ref => ref.locator), expectedCodes.map(code => `card:compat:${code.slice(1)}`));
+  }
+  const dynamicLegacy = validateDynamicInfoResult({ fields: [
+    { field: 'currentSituation', text: '守门人。', evidence: '[A2]' },
+    { field: 'wellbeing', text: '银发。', evidence: ['A1'] },
+  ] }, { sources });
+  assert.equal(dynamicLegacy.diagnostics.acceptedFields, 2);
+  const malformed = basic('[A1] garbage');
+  assert.deepEqual(malformed.diagnostics.rejectionCodes, ['invalid_evidence']);
+  const uuid = basic('A1-11111111-1111-4111-8111-111111111111');
+  assert.deepEqual(uuid.diagnostics.rejectionCodes, ['invalid_evidence']);
+  const mixed = basic('[A1][A99]');
+  assert.deepEqual(mixed.diagnostics.rejectionCodes, ['unknown_evidence']);
+  const strictCases = [
+    ['locator:A2', 'invalid_evidence'],
+    ['正文提到 A2', 'invalid_evidence'],
+    ['[A2][garbage]', 'invalid_evidence'],
+    [['A2', 'garbage'], 'invalid_evidence'],
+    ['[A2][A99]', 'unknown_evidence'],
+    [['A2', 'A99'], 'unknown_evidence'],
+  ];
+  for (const [evidence, rejectionCode] of strictCases) {
+    assert.deepEqual(basic(evidence).diagnostics.rejectionCodes, [rejectionCode], `basic rejects ${JSON.stringify(evidence)}`);
+    assert.deepEqual(dynamic(evidence).diagnostics.rejectionCodes, [rejectionCode], `dynamic rejects ${JSON.stringify(evidence)}`);
+    const relationMixed = validateInitialRelationResult({ items: [
+      { person: 'C1', type: 'source_fact', text: '合法。', evidence: 'A8' },
+      { person: 'C1', type: 'source_fact', text: '拒绝。', evidence },
+    ] }, { targetIdentityIds: [C1], allIdentityIds: [USER, C1], sources });
+    assert.equal(relationMixed.itemDiagnostics.acceptedItems, 1, `relation accepts only valid item beside ${JSON.stringify(evidence)}`);
+    assert.equal(relationMixed.itemDiagnostics.rejectedItems, 1, `relation rejects ${JSON.stringify(evidence)}`);
+    assert.deepEqual(relationMixed.itemDiagnostics.rejectionCodes, [rejectionCode]);
+  }
+  const relationLegacy = validateInitialRelationResult({ items: [
+    { person: 'C1', type: 'source_fact', text: '银发。', evidence: '[A1]' },
+    { person: 'C1', type: 'source_fact', text: '守门人。', evidence: ['A2'] },
+    { person: 'C1', type: 'source_fact', text: '拒绝。', evidence: '[A1]垃圾' },
+    { person: 'C1', type: 'source_fact', text: '未知。', evidence: '[A99]' },
+  ] }, { targetIdentityIds: [C1], allIdentityIds: [USER, C1], sources });
+  assert.equal(relationLegacy.itemDiagnostics.acceptedItems, 2);
+  assert.deepEqual(new Set(relationLegacy.itemDiagnostics.rejectionCodes), new Set(['invalid_evidence', 'unknown_evidence']));
+});
+
 test('lastBasicAttempt 有界记录成功、空结果、全拒、失败与 profile 写入，不保存正文', async t => {
   await t.test('mixed_success', async () => {
     const h = await makeHarness({ generate: async () => ({
@@ -722,6 +792,359 @@ test('模拟器卡永不作为 C 基础来源，其他允许来源与非模拟�
     h.records.get(h.key(`chat-${CHAT}`, 'meta')).data.cardType = cardType;
     const result = await h.adapter.extractBasicInfo({ identityId: C1 }); assert.equal(result.status, 'ready');
     assert.equal(h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastBasicAttempt.sourceKinds.card, 2);
+  });
+});
+
+test('动态六字段中英文别名、证据与语义边界逐项校验', () => {
+  const sources = [
+    { kind: 'memory', locator: 'baibai-book:injected-history:relativeText', fingerprint: `sha256:${'a'.repeat(64)}`, content: '林岚现阶段表现得格外谨慎；当前目标是寻找失踪的妹妹；受城防追捕，暂时无法公开身份；她仍在隐瞒王族身份；旧伤持续限制行动；多年来逐渐变得谨慎，已稳定形成先观察后行动的习惯。' },
+    { kind: 'chat', locator: 'chat:1', fingerprint: `sha256:${'b'.repeat(64)}`, content: '林岚今天顺手扶起了倒下的路牌。' },
+  ];
+  const valid = validateDynamicInfoResult({ fields: [
+    { field: '当前性格状态', text: '现阶段表现得格外谨慎', evidence: ['M1'] },
+    { field: 'goals', text: '当前目标是寻找失踪的妹妹', evidence: ['M1'] },
+    { field: 'predicament', text: '受城防追捕，暂时无法公开身份', evidence: ['M1'] },
+    { field: 'secrets', text: '仍在隐瞒王族身份', evidence: ['M1'] },
+    { field: 'physical-mental-state', text: '旧伤持续限制行动', evidence: ['M1'] },
+    { field: 'long term changes', text: '已稳定形成先观察后行动的习惯', evidence: ['M1'] },
+  ] }, { sources, relationshipNames: ['旅人'] });
+  assert.equal(valid.diagnostics.acceptedFields, 6); assert.equal(valid.diagnostics.rejectedFields, 0);
+  assert.deepEqual(Object.keys(valid.fields).sort(), ['personalityState', 'currentGoals', 'currentSituation', 'currentSecrets', 'wellbeing', 'stableChanges'].sort());
+
+  const mixed = validateDynamicInfoResult({ fields: [
+    { field: 'current_goals', text: '正在修复钟楼', evidence: ['H1'] },
+    { field: 'current_secrets', text: '可能暗中效忠王族', evidence: ['M1'] },
+    { field: 'stable_changes', text: '林岚今天顺手扶起了倒下的路牌', evidence: ['H1'] },
+    { field: 'currentSituation', text: '对 U 的好感进入暧昧阶段', evidence: ['M1'] },
+    { field: '动态近似字段', text: '不可采用', evidence: ['M1'] },
+    { field: 'wellbeing', text: '坏来源', evidence: ['H9'] },
+  ] }, { sources, relationshipNames: ['旅人'] });
+  assert.equal(mixed.diagnostics.acceptedFields, 0); assert.equal(mixed.diagnostics.rejectedFields, 6);
+  assert.deepEqual(new Set(mixed.diagnostics.rejectionCodes), new Set(['evidence_mismatch', 'uncertain_secret', 'insufficient_stability', 'relationship_scope', 'unknown_field', 'unknown_evidence']));
+});
+
+test('动态生产来源只使用目标相关柏宝书 M 与稳定 Canon H', async () => {
+  const h = await makeHarness({
+    memoryText: '柏宝书压缩历史：林岚当前目标是寻找失踪的妹妹。',
+    generate: async options => {
+      const prompt = options.taskMessages[0].content;
+      assert.match(prompt, /\[M1\] type=memory\n柏宝书压缩历史：林岚当前目标是寻找失踪的妹妹/);
+      assert.match(prompt, /\[H1\] type=chat/);
+      assert.match(prompt, /M 是柏宝书压缩历史，H 是当前 Canon 中的近期精确正文/);
+      assert.match(prompt, /M 与 H 冲突时优先信任更新的 H/);
+      assert.doesNotMatch(prompt, /寡言但守信|钟楼钥匙只交给可信之人|冻结开场/);
+      return { jsonData: { fields: [{ field: 'currentGoals', text: '当前目标是寻找失踪的妹妹', evidence: ['M1'] }] } };
+    },
+  });
+  const result = await h.adapter.updateDynamicFields({ identityId: C1 });
+  assert.equal(result.status, 'ready'); assert.equal(result.acceptedFields, 1);
+  const field = h.records.get(h.key(`chat-${CHAT}-people`, C1)).data.dynamicFields.currentGoals;
+  assert.equal(field.provenance, 'ai'); assert.equal(field.sourceRefs[0].kind, 'memory'); assert.match(field.sourceRefs[0].fingerprint, /^sha256:/);
+  const attempt = h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt;
+  assert.deepEqual(attempt.sourceKinds, { card: 0, greeting: 0, worldbook: 0, chat: 2, memory: 1 });
+  assert.doesNotMatch(JSON.stringify(attempt), /寻找失踪的妹妹|柏宝书压缩历史/);
+});
+
+test('柏宝书 API 不可用且 M/H 均未点名目标时动态零 AI，并忽略世界书目标资料', async t => {
+  const roots = [
+    {},
+    { STBaiBaiBook: {} },
+    { STBaiBaiBook: { getInjectedHistory: () => { throw new Error('私密正文'); } } },
+    { STBaiBaiBook: { getInjectedHistory: () => ({ relativeText: '   ' }) } },
+  ];
+  for (const [index, root] of roots.entries()) await t.test(`unavailable_${index}`, async () => {
+    const memorySource = createBaiBaiBookMemoryAdapter({ globalProvider: () => root });
+    const h = await makeHarness({ selected: [C1, C2], memorySource, generate: async () => { throw new Error('不应调用 AI'); } });
+    h.routeState.currentRoute.worldInfoEntries[0].content = '白榆当前目标是夺回王城。';
+    const result = await h.adapter.updateDynamicFields({ identityId: C2 });
+    assert.equal(result.status, 'ready'); assert.equal(result.zeroAi, true); assert.equal(result.zeroWrite, true); assert.equal(h.calls.ai.length, 0);
+    const attempt = h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt;
+    assert.equal(attempt.aiCalled, false); assert.equal(attempt.emptyResult, true);
+    assert.deepEqual(attempt.sourceKinds, { card: 0, greeting: 0, worldbook: 0, chat: 0, memory: 0 });
+    assert.doesNotMatch(JSON.stringify(attempt), /白榆|王城|私密正文/);
+  });
+});
+
+test('未点名目标的柏宝书压缩记忆不进入动态 prompt', async () => {
+  const h = await makeHarness({ memoryText: '白榆正在远方养伤。', generate: async options => {
+    assert.doesNotMatch(options.taskMessages[0].content, /白榆|type=memory|\[M1\]/);
+    assert.match(options.taskMessages[0].content, /\[H1\] type=chat/);
+    return { jsonData: { fields: [] } };
+  } });
+  const result = await h.adapter.updateDynamicFields({ identityId: C1 });
+  assert.equal(result.status, 'ready');
+  assert.equal(h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt.sourceKinds.memory, 0);
+});
+
+test('动态 AI pending 期间柏宝书记忆变化时 profile 与 people-state 零写并保留旧诊断', async () => {
+  let release, markStarted;
+  const gate = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { markStarted = resolve; });
+  const h = await makeHarness({ memoryText: '林岚当前目标是守住城门。', generate: async () => {
+    markStarted(); await gate;
+    return { jsonData: { fields: [{ field: 'currentGoals', text: '当前目标是守住城门', evidence: ['M1'] }] } };
+  } });
+  const oldAttempt = { schemaVersion: 1, attemptedAt: '2026-08-30T00:00:00.000Z', status: 'ready', marker: 'old-memory-diagnostic' };
+  h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt = clone(oldAttempt);
+  const pending = h.adapter.updateDynamicFields({ identityId: C1 }); await started;
+  const profileWrites = h.calls.put.filter(([collection]) => collection.endsWith('-people')).length;
+  const stateWrites = h.calls.put.filter(([collection, id]) => collection === `chat-${CHAT}` && id === 'people-state').length;
+  h.setMemoryText('林岚当前目标已经改为寻找失踪的妹妹。'); release();
+  const result = await pending;
+  assert.equal(result.status, 'stale'); assert.equal(h.calls.put.filter(([collection]) => collection.endsWith('-people')).length, profileWrites);
+  assert.equal(h.calls.put.filter(([collection, id]) => collection === `chat-${CHAT}` && id === 'people-state').length, stateWrites);
+  assert.equal(h.records.get(h.key(`chat-${CHAT}-people`, C1)).data.dynamicFields, undefined);
+  assert.deepEqual(h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt, oldAttempt);
+});
+
+test('动态 AI 失败时若柏宝书记忆同时变化仍以 stale 零写退出', async () => {
+  let release, markStarted;
+  const gate = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { markStarted = resolve; });
+  const h = await makeHarness({ memoryText: '林岚当前目标是守住城门。', generate: async () => {
+    markStarted(); await gate; throw new Error('AI 失败正文');
+  } });
+  const oldAttempt = { schemaVersion: 1, attemptedAt: '2026-08-30T00:00:00.000Z', status: 'ready', marker: 'old-memory-diagnostic' };
+  h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt = clone(oldAttempt);
+  const pending = h.adapter.updateDynamicFields({ identityId: C1 }); await started;
+  const writes = h.calls.put.length;
+  h.setMemoryText('林岚当前目标已经改为寻找失踪的妹妹。'); release();
+  const result = await pending;
+  assert.equal(result.status, 'stale'); assert.equal(h.calls.put.length, writes);
+  assert.equal(h.records.get(h.key(`chat-${CHAT}-people`, C1)).data.dynamicFields, undefined);
+  assert.deepEqual(h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt, oldAttempt);
+});
+
+test('动态类别门槛只检查实际 excerpt，不从同一来源的相邻句借标记', () => {
+  const sources = [{
+    kind: 'memory', locator: 'baibai-book:injected-history:relativeText', fingerprint: `sha256:${'c'.repeat(64)}`,
+    content: '当前目标是守住城门。林岚喝茶。秘密是出身平民。林岚扶起路牌。十年来一直守护钟楼。林岚整理衣袖。',
+  }];
+  const rejected = validateDynamicInfoResult({ fields: [
+    { field: 'currentGoals', text: '林岚喝茶', evidence: ['M1'] },
+    { field: 'currentSecrets', text: '林岚扶起路牌', evidence: ['M1'] },
+    { field: 'stableChanges', text: '林岚整理衣袖', evidence: ['M1'] },
+  ] }, { sources });
+  assert.equal(rejected.diagnostics.acceptedFields, 0); assert.equal(rejected.diagnostics.rejectedFields, 3);
+  assert.deepEqual(new Set(rejected.diagnostics.rejectionCodes), new Set(['evidence_mismatch', 'insufficient_stability']));
+
+  const accepted = validateDynamicInfoResult({ fields: [
+    { field: 'currentGoals', text: '当前目标是守住城门', evidence: ['M1'] },
+    { field: 'currentSecrets', text: '秘密是出身平民', evidence: ['M1'] },
+    { field: 'stableChanges', text: '十年来一直守护钟楼', evidence: ['M1'] },
+  ] }, { sources });
+  assert.equal(accepted.diagnostics.acceptedFields, 3); assert.equal(accepted.diagnostics.rejectedFields, 0);
+});
+
+test('动态生产 seam 保守拒绝瞬时情绪、Persona 实名关系目标、推测或证据不相干字段', async () => {
+  const h = await makeHarness({
+    characterDescription: '林岚当前目标是守住城门；她从未告诉任何人，自己出身平民。',
+    assistantStableText: '林岚十年来，每次天亮前都会早起。她想和旅人建立亲密关系。',
+    generate: async () => ({ jsonData: { fields: [
+    { field: 'personalityState', text: '刚才突然很开心', evidence: ['H1'] },
+    { field: 'currentGoals', text: '想和旅人建立亲密关系', evidence: ['H2'] },
+    { field: 'currentSecrets', text: '从未告诉任何人，也许自己出身平民', evidence: ['M1'] },
+    { field: 'currentGoals', text: '当前目标是寻找妹妹', evidence: ['M1'] },
+    { field: 'currentSecrets', text: '从未告诉任何人，自己出身王族', evidence: ['M1'] },
+    { field: 'stableChanges', text: '十年来，每次行动前都会确认退路', evidence: ['H2'] },
+  ] } }),
+  });
+  const beforeProfile = h.calls.put.filter(([collection]) => collection.endsWith('-people')).length;
+  const result = await h.adapter.updateDynamicFields({ identityId: C1 });
+  assert.equal(result.status, 'ready'); assert.equal(result.acceptedFields, 0); assert.equal(result.rejectedFields, 6); assert.equal(result.zeroWrite, true);
+  assert.equal(h.calls.put.filter(([collection]) => collection.endsWith('-people')).length, beforeProfile);
+  const attempt = h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt;
+  assert.deepEqual(new Set(attempt.rejectionCodes), new Set(['transient_state', 'relationship_scope', 'uncertain_secret', 'evidence_mismatch']));
+  assert.doesNotMatch(JSON.stringify(attempt), /开心|旅人|王族|妹妹|退路/);
+});
+
+test('动态 extraction-only 接受单条来源中的明确秘密与长期变化原文片段', async () => {
+  const h = await makeHarness({
+    characterDescription: '林岚从未告诉任何人，旧伤会限制能力。',
+    assistantStableText: '林岚十年来，每次行动前都会确认退路。',
+    generate: async () => ({ jsonData: { fields: [
+      { field: 'currentSecrets', text: '从未告诉任何人, 旧伤会限制能力', evidence: ['M1'] },
+      { field: 'stableChanges', text: '十年来，每次行动前都会确认退路', evidence: ['H2'] },
+    ] } }),
+  });
+  const result = await h.adapter.updateDynamicFields({ identityId: C1 });
+  assert.equal(result.status, 'ready'); assert.equal(result.acceptedFields, 2); assert.equal(result.rejectedFields, 0);
+  const fields = h.records.get(h.key(`chat-${CHAT}-people`, C1)).data.dynamicFields;
+  assert.equal(fields.currentSecrets.value, '从未告诉任何人, 旧伤会限制能力'); assert.equal(fields.currentSecrets.provenance, 'ai');
+  assert.equal(fields.stableChanges.value, '十年来，每次行动前都会确认退路'); assert.equal(fields.stableChanges.provenance, 'ai');
+});
+
+test('已有基础档案可独立更新动态六字段；用户字段不覆盖、未返回旧值与未知字段保留', async () => {
+  let calls = 0;
+  const h = await makeHarness({
+    characterDescription: '林岚在压力下更为谨慎；独自承担守城压力；仍隐瞒旧伤会限制能力；旧伤持续影响行动；钟楼修复进入最后阶段。',
+    assistantStableText: '林岚说当前目标是修复钟楼机关；她多年来逐渐养成行动前确认退路的习惯。',
+    generate: async options => {
+    assert.equal(options.jsonSchema?.name, 'qianqianjie_dynamic_info_v1'); calls += 1;
+    if (calls === 1) return { taskMetadata: { source: 'local', model: 'dynamic-model', finishReason: 'stop' }, jsonData: { fields: [
+      { field: '当前性格状态', text: '在压力下更为谨慎', evidence: ['M1'] },
+      { field: 'current_goals', text: '当前目标是修复钟楼机关', evidence: ['H2'] },
+      { field: 'currentSituation', text: '独自承担守城压力', evidence: ['M1'] },
+      { field: '秘密', text: '仍隐瞒旧伤会限制能力', evidence: ['M1'] },
+      { field: 'well_being', text: '旧伤持续影响行动', evidence: ['M1'] },
+      { field: 'stable_changes', text: '逐渐养成行动前确认退路的习惯', evidence: ['H2'] },
+    ] } };
+    return { jsonData: { fields: [
+      { field: 'currentGoals', text: '当前目标是修复钟楼机关', evidence: ['H2'] },
+      { field: 'currentSituation', text: '钟楼修复进入最后阶段', evidence: ['M1'] },
+    ] } };
+    },
+  });
+  const first = await h.adapter.updateDynamicFields({ identityId: C1 });
+  assert.equal(first.status, 'ready'); assert.equal(first.acceptedFields, 6); assert.equal(first.rejectedFields, 0); assert.equal(h.calls.ai.length, 1);
+  const request = h.calls.ai[0]; assert.equal(request.systemPrompt, DYNAMIC_INFO_SYSTEM_PROMPT); assert.equal(request.includeCharacterCard, false); assert.equal(request.worldInfoSource, 'none');
+  assert.match(request.taskMessages[0].content, /严格排除 C→U \/ U→C/); assert.match(request.taskMessages[0].content, /不得把一次行为扩成 stableChanges/);
+  assert.match(request.systemPrompt, /continuous excerpt from exactly one cited source/); assert.match(request.taskMessages[0].content, /连续原文片段；禁止改写、概括、替换关键对象或跨来源拼接/);
+  let profile = h.records.get(h.key(`chat-${CHAT}-people`, C1)).data;
+  assert.equal(Object.keys(profile.dynamicFields).length, 6); assert.equal(profile.dynamicFields.currentSecrets.writerId, 'qianqianjie.dynamic-info.v1'); assert.equal(profile.dynamicFields.currentGoals.provenance, 'ai');
+  const firstAttempt = h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt;
+  assert.equal(firstAttempt.status, 'ready'); assert.equal(firstAttempt.acceptedFields, 6); assert.equal(firstAttempt.profileWrites, 1); assert.equal(firstAttempt.apiSource, 'local'); assert.equal(firstAttempt.model, 'dynamic-model');
+  assert.doesNotMatch(JSON.stringify(firstAttempt), /旧伤|修复钟楼|退路/);
+
+  assert.equal((await h.adapter.saveDynamicField({ identityId: C1, field: 'currentGoals', value: '用户目标：找到妹妹' })).status, 'ready');
+  profile = h.records.get(h.key(`chat-${CHAT}-people`, C1)).data; profile.dynamicFields.futureDynamic = { value: '未知扩展必须保留', future: true }; profile.unknownDynamicTop = { keep: true };
+  const second = await h.adapter.updateDynamicFields({ identityId: C1 }); assert.equal(second.status, 'ready'); assert.equal(second.skippedUserFields, 1);
+  profile = h.records.get(h.key(`chat-${CHAT}-people`, C1)).data;
+  assert.equal(profile.dynamicFields.currentGoals.value, '用户目标：找到妹妹'); assert.equal(profile.dynamicFields.currentGoals.provenance, 'user');
+  assert.equal(profile.dynamicFields.currentSituation.value, '钟楼修复进入最后阶段'); assert.equal(profile.dynamicFields.currentSecrets.value, '仍隐瞒旧伤会限制能力');
+  assert.equal(profile.dynamicFields.futureDynamic.value, '未知扩展必须保留'); assert.deepEqual(profile.unknownDynamicTop, { keep: true });
+  assert.equal((await h.adapter.saveDynamicField({ identityId: C1, field: 'currentSecrets', value: '   ' })).status, 'ready');
+  assert.equal(h.records.get(h.key(`chat-${CHAT}-people`, C1)).data.dynamicFields.currentSecrets, undefined);
+});
+
+test('动态更新合法空、非空全拒与模拟器来源诊断安全', async t => {
+  await t.test('empty', async () => {
+    const h = await makeHarness({ generate: async () => ({ jsonData: { fields: [] } }) });
+    const result = await h.adapter.updateDynamicFields({ identityId: C1 }); assert.equal(result.status, 'ready'); assert.equal(result.emptyResult, true); assert.equal(result.zeroWrite, true);
+    const attempt = h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt;
+    assert.equal(attempt.emptyResult, true); assert.equal(attempt.acceptedFields, 0); assert.equal(attempt.rejectedFields, 0); assert.equal(attempt.profileWrites, 0);
+  });
+  await t.test('all_rejected', async () => {
+    const h = await makeHarness({ generate: async () => ({ jsonData: { fields: [
+      { field: 'currentSecrets', text: '可能藏有秘密正文', evidence: ['M1'] },
+      { field: 'currentGoals', text: '想追求 U 并进入恋爱阶段', evidence: ['M1'] },
+    ] } }) });
+    const result = await h.adapter.updateDynamicFields({ identityId: C1 }); assert.equal(result.status, 'ready'); assert.equal(result.acceptedFields, 0); assert.equal(result.rejectedFields, 2); assert.equal(result.emptyResult, false); assert.equal(result.zeroWrite, true);
+    const attempt = h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt;
+    assert.deepEqual(new Set(attempt.rejectionCodes), new Set(['uncertain_secret', 'relationship_scope'])); assert.doesNotMatch(JSON.stringify(attempt), /秘密正文|追求 U/);
+  });
+  await t.test('simulator', async () => {
+    const h = await makeHarness({ memoryText: '', generate: async options => {
+      assert.doesNotMatch(options.taskMessages[0].content, /林岚是霜城钟楼的守门人|寡言但守信|冻结开场|钟楼钥匙/);
+      assert.match(options.taskMessages[0].content, /叫住了林岚/);
+      return { jsonData: { fields: [{ field: 'currentSituation', text: '我走进钟楼，叫住了林岚', evidence: ['H1'] }] } };
+    } });
+    h.records.get(h.key(`chat-${CHAT}`, 'meta')).data.cardType = 'simulator';
+    const result = await h.adapter.updateDynamicFields({ identityId: C1 }); assert.equal(result.status, 'ready'); assert.equal(result.acceptedFields, 1);
+    const attempt = h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt;
+    assert.deepEqual(attempt.sourceKinds, { card: 0, greeting: 0, worldbook: 0, chat: 2, memory: 0 });
+  });
+});
+
+test('动态更新守住无选择、迟到、route/Canon/profile 变化、CAS 与未来 schema', async t => {
+  await t.test('no_selected', async () => {
+    const h = await makeHarness({ selected: [], generate: async () => { throw new Error('不应调用'); } });
+    const result = await h.adapter.updateDynamicFields({ identityId: C1 }); assert.equal(result.status, 'no_selected_character'); assert.equal(h.calls.ai.length, 0);
+  });
+  for (const mode of ['persona', 'unselect', 'cancel', 'route', 'canon', 'profile']) await t.test(mode, async () => {
+    let release, markStarted; const gate = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { markStarted = resolve; });
+    const h = await makeHarness({ generate: async () => { markStarted(); await gate; return { jsonData: { fields: [{ field: 'currentSituation', text: '仍在承担守城压力', evidence: ['H1'] }] } }; } });
+    const oldAttempt = { schemaVersion: 1, attemptedAt: '2026-08-30T00:00:00.000Z', status: 'ready', marker: 'old-dynamic-diagnostic' };
+    h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt = clone(oldAttempt);
+    const before = h.calls.put.filter(([collection]) => collection.endsWith('-people')).length;
+    const pending = h.adapter.updateDynamicFields({ identityId: C1 }); await started;
+    const beforeState = h.calls.put.filter(([collection, id]) => collection === `chat-${CHAT}` && id === 'people-state').length;
+    if (mode === 'persona') h.ctx.userAvatar = 'other.png';
+    if (mode === 'unselect') h.records.get(h.key(`chat-${CHAT}`, 'people-index')).data.confirmed[0].selection = { status: 'unselected' };
+    if (mode === 'cancel') h.adapter.cancel();
+    if (mode === 'route') await changeCurrentRoute(h);
+    if (mode === 'canon') h.records.get(h.key(`chat-${CHAT}`, 'runtime')).data.stableFloorLedger.entries[0].signature = 'changed-canon';
+    if (mode === 'profile') { const key = h.key(`chat-${CHAT}-people`, C1), record = h.records.get(key); h.records.set(key, envelope(record.data, record.revision + 1)); }
+    release(); const result = await pending;
+    assert.equal(['stale', 'mismatch', 'blocked_source_changed'].includes(result.status), true);
+    assert.equal(h.calls.put.filter(([collection]) => collection.endsWith('-people')).length, before);
+    assert.equal(h.records.get(h.key(`chat-${CHAT}-people`, C1)).data.dynamicFields, undefined);
+    assert.equal(h.calls.put.filter(([collection, id]) => collection === `chat-${CHAT}` && id === 'people-state').length, beforeState);
+    assert.deepEqual(h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt, oldAttempt);
+  });
+  await t.test('profile_cas', async () => {
+    const h = await makeHarness({ generate: async () => ({ jsonData: { fields: [{ field: 'currentSituation', text: '林岚是霜城钟楼的守门人', evidence: ['M1'] }] } }) });
+    const original = h.client.put.bind(h.client); let raced = false;
+    h.client.put = async (collection, id, data, revision) => {
+      if (!raced && collection === `chat-${CHAT}-people` && id === C1 && data.dynamicFields) {
+        raced = true; const current = h.records.get(h.key(collection, id)); h.records.set(h.key(collection, id), envelope({ ...current.data, dynamicWinner: true }, revision + 1)); throw httpError(409);
+      }
+      return original(collection, id, data, revision);
+    };
+    const result = await h.adapter.updateDynamicFields({ identityId: C1 }); assert.equal(result.status, 'conflict');
+    assert.equal(h.records.get(h.key(`chat-${CHAT}-people`, C1)).data.dynamicWinner, true); assert.equal(h.records.get(h.key(`chat-${CHAT}-people`, C1)).data.dynamicFields, undefined);
+    assert.equal(h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt.status, 'conflict');
+  });
+  await t.test('future_schema', async () => {
+    const h = await makeHarness(); h.records.get(h.key(`chat-${CHAT}-people`, C1)).data.peopleContractVersion = 2; const before = h.calls.put.length;
+    assert.equal((await h.adapter.updateDynamicFields({ identityId: C1 })).status, 'future_schema_readonly'); assert.equal(h.calls.put.length, before); assert.equal(h.calls.ai.length, 0);
+  });
+  await t.test('diagnostic_cas_does_not_rollback_profile', async () => {
+    const h = await makeHarness({ generate: async () => ({ jsonData: { fields: [{ field: 'currentSituation', text: '林岚是霜城钟楼的守门人', evidence: ['M1'] }] } }) });
+    const original = h.client.put.bind(h.client);
+    h.client.put = async (collection, id, data, revision) => collection === `chat-${CHAT}` && id === 'people-state' && data.lastDynamicAttempt ? Promise.reject(httpError(409)) : original(collection, id, data, revision);
+    const result = await h.adapter.updateDynamicFields({ identityId: C1 }); assert.equal(result.status, 'ready'); assert.equal(h.records.get(h.key(`chat-${CHAT}-people`, C1)).data.dynamicFields.currentSituation.value, '林岚是霜城钟楼的守门人');
+  });
+});
+
+test('动态 AI 失败期间 baseline 变化时不写入或覆盖旧 lastDynamicAttempt', async t => {
+  const cases = {
+    async route(h) { await changeCurrentRoute(h); },
+    async canon_runtime(h) { h.records.get(h.key(`chat-${CHAT}`, 'runtime')).data.stableFloorLedger.entries[0].signature = 'changed-dynamic-runtime-signature'; },
+    async selected_c(h) { h.records.get(h.key(`chat-${CHAT}`, 'people-index')).data.confirmed[0].selection = { status: 'unselected' }; },
+    async profile_revision(h) {
+      const key = h.key(`chat-${CHAT}-people`, C1), current = h.records.get(key);
+      h.records.set(key, envelope(current.data, current.revision + 1));
+    },
+  };
+  for (const [name, mutate] of Object.entries(cases)) await t.test(name, async () => {
+    let release, markStarted; const gate = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { markStarted = resolve; });
+    const h = await makeHarness({ generate: async () => { markStarted(); await gate; throw new Error('动态 AI 原始失败'); } });
+    const oldAttempt = { schemaVersion: 1, attemptedAt: '2026-08-30T00:00:00.000Z', status: 'ready', marker: 'old-dynamic-diagnostic' };
+    h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt = clone(oldAttempt);
+    const pending = h.adapter.updateDynamicFields({ identityId: C1 }); await started;
+    const beforeState = h.calls.put.filter(([collection, id]) => collection === `chat-${CHAT}` && id === 'people-state').length;
+    await mutate(h); release(); const result = await pending;
+    assert.equal(result.status, 'storage_error');
+    assert.equal(h.calls.put.filter(([collection, id]) => collection === `chat-${CHAT}` && id === 'people-state').length, beforeState);
+    assert.deepEqual(h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt, oldAttempt);
+    assert.equal(h.records.get(h.key(`chat-${CHAT}-people`, C1)).data.dynamicFields, undefined);
+  });
+});
+
+test('动态 AI 正常失败仍只记录安全 failed 诊断', async () => {
+  const h = await makeHarness({ generate: async () => { throw new Error('动态模型原始失败正文'); } });
+  const result = await h.adapter.updateDynamicFields({ identityId: C1 }); assert.equal(result.status, 'storage_error');
+  const attempt = h.records.get(h.key(`chat-${CHAT}`, 'people-state')).data.lastDynamicAttempt;
+  assert.equal(attempt.status, 'failed'); assert.equal(attempt.aiCalled, true); assert.equal(attempt.profileWrites, 0);
+  assert.doesNotMatch(JSON.stringify(attempt), /动态模型原始失败正文/);
+});
+
+test('动态字段用户保存的清空、CAS 与未来 schema 均为单 profile 权威写入', async t => {
+  await t.test('save_and_clear', async () => {
+    const h = await makeHarness(); assert.equal((await h.adapter.saveDynamicField({ identityId: C1, field: 'wellbeing', value: '用户填写：旧伤未愈' })).status, 'ready');
+    let field = h.records.get(h.key(`chat-${CHAT}-people`, C1)).data.dynamicFields.wellbeing; assert.equal(field.provenance, 'user'); assert.equal(field.locked, true);
+    assert.equal((await h.adapter.saveDynamicField({ identityId: C1, field: 'wellbeing', value: '' })).status, 'ready'); field = h.records.get(h.key(`chat-${CHAT}-people`, C1)).data.dynamicFields.wellbeing; assert.equal(field, undefined);
+  });
+  await t.test('future', async () => {
+    const h = await makeHarness(); h.records.get(h.key(`chat-${CHAT}-people`, C1)).data.peopleContractVersion = 2;
+    assert.equal((await h.adapter.saveDynamicField({ identityId: C1, field: 'wellbeing', value: '旧伤' })).status, 'future_schema_readonly');
+  });
+  await t.test('cas', async () => {
+    const h = await makeHarness(); const original = h.client.put.bind(h.client); let raced = false;
+    h.client.put = async (collection, id, data, revision) => {
+      if (!raced && collection.endsWith('-people') && id === C1) { raced = true; const current = h.records.get(h.key(collection, id)); h.records.set(h.key(collection, id), envelope({ ...current.data, external: true }, revision + 1)); throw httpError(409); }
+      return original(collection, id, data, revision);
+    };
+    assert.equal((await h.adapter.saveDynamicField({ identityId: C1, field: 'wellbeing', value: '旧伤' })).status, 'conflict'); assert.equal(h.records.get(h.key(`chat-${CHAT}-people`, C1)).data.dynamicFields, undefined);
   });
 });
 

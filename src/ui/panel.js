@@ -1,8 +1,9 @@
 import html from './panel.html?raw';
 import css from './panel.css?inline';
+import { createPanelGeometryController } from './layout.js';
 
 const types = [['single', '单人', '围绕一位角色，建立清晰的关系档案。'], ['multi', '多人', '记录群像关系与多角色互动。'], ['open_world', '大世界', '让角色档案连接到更大的世界。'], ['simulator', '模拟器', '用于测试关系变化与叙事走向。']];
-const shellCss = ':host{position:fixed;inset:0;z-index:1001;width:100dvw;height:100dvh;pointer-events:none;background:transparent}:host([hidden]){display:none!important;pointer-events:none!important}.panel{position:fixed;top:80px;right:20px;width:360px;max-width:calc(100vw - 40px);max-height:85vh;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;pointer-events:auto}.body{min-height:0;max-height:none;overflow-y:auto}.tabs{min-width:0;overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(max-width:640px){.panel{top:calc(20px + env(safe-area-inset-top,0px));left:50%;right:auto;bottom:auto;transform:translateX(-50%);width:calc(100dvw - 20px);max-width:calc(100dvw - 20px);height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));max-height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));min-height:0;border-radius:14px}.body{min-height:0;overflow-y:auto}.choices{grid-template-columns:1fr}.tab{padding-left:9px;padding-right:9px}}';
+const shellCss = ':host{position:fixed;inset:0;z-index:1001;width:100dvw;height:100dvh;pointer-events:none;background:transparent}:host([hidden]){display:none!important;pointer-events:none!important}.panel{position:fixed;top:40px;right:20px;width:720px;height:min(780px,calc(100dvh - 80px));max-width:calc(100dvw - 20px);max-height:calc(100dvh - 20px);display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;pointer-events:auto}.body{min-height:0;max-height:none;overflow-y:auto}.tabs{min-width:0;overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(max-width:640px){.panel{top:calc(20px + env(safe-area-inset-top,0px));left:50%;right:auto;bottom:auto;transform:translateX(-50%);width:calc(100dvw - 20px);max-width:calc(100dvw - 20px);height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));max-height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));min-height:0;border-radius:14px}.body{min-height:0;overflow-y:auto}.choices{grid-template-columns:1fr}.tab{padding-left:9px;padding-right:9px}}';
 
 export function createPanel({ formal, people, settings, apiTools, loadState, initialRelations, reviewActions, onPluginEnabledChange, onClose } = {}) {
   const host = document.createElement('div');
@@ -10,10 +11,87 @@ export function createPanel({ formal, people, settings, apiTools, loadState, ini
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = '<style>' + css + shellCss + '</style>' + html;
   const view = root.querySelector('.view'), label = root.querySelector('.status-label'), meta = root.querySelector('.status-meta'), dot = root.querySelector('.status-dot');
-  let state = { status: 'loading' }, selected = null, selectedProfileId = null, busy = false, trigger = null, screen = 'people', activeTab = 'people', settingsDraftKey = '', settingsRenderEpoch = 0;
-  let actionEpoch = 0, localRelationStatus = null, basicEditing = false, basicBusy = false, basicMessage = null;
+  let state = { status: 'loading' }, selected = null, busy = false, trigger = null, screen = 'people', activeTab = 'people', settingsDraftKey = '', settingsRenderEpoch = 0;
+  let actionEpoch = 0, profileActionEpoch = 0, localRelationStatus = null, basicEditing = false, basicBusy = false, basicMessage = null;
+  let dynamicEditing = false, dynamicBusy = false, dynamicMessage = null;
+  const viewStateByChat = new Map(), railWidthsByChat = new Map();
+  let currentViewKey = null, railResizeObserver = null, railMeasureQueued = false, pendingRailFocus = null, panelGeometry = null;
   const focusables = () => [...root.querySelectorAll('button,input,select,textarea,[href],[tabindex]:not([tabindex="-1"])')].filter(item => !item.disabled && item.offsetParent !== null);
-  const close = () => { actionEpoch += 1; host.hidden = true; host.setAttribute('aria-hidden', 'true'); const old = trigger; trigger = null; onClose?.(); old?.focus?.(); };
+  const invalidateProfileActions = () => {
+    profileActionEpoch += 1; basicBusy = false; dynamicBusy = false; basicEditing = false; dynamicEditing = false; basicMessage = null; dynamicMessage = null;
+  };
+  const close = () => { actionEpoch += 1; invalidateProfileActions(); pendingRailFocus = null; railResizeObserver?.disconnect?.(); railResizeObserver = null; panelGeometry?.cancelGesture?.(); host.hidden = true; host.setAttribute('aria-hidden', 'true'); const old = trigger; trigger = null; onClose?.(); old?.focus?.(); };
+
+  const stableValue = value => {
+    if (Array.isArray(value)) return value.map(stableValue);
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(Object.keys(value).sort().map(key => [key, stableValue(value[key])]));
+  };
+  const profileFingerprint = profile => JSON.stringify(stableValue(profile));
+  const chatViewKey = value => String(value?.chatId || value?.peopleFoundation?.state?.chatId || value?.people?.chatId || 'unknown-chat');
+  const moveToNewest = (items, identityId) => [...items.filter(id => id !== identityId), identityId];
+  const selectedProfileData = value => {
+    const selectedCharacters = (Array.isArray(value?.people?.confirmed) ? value.people.confirmed : []).filter(item => item.selection?.status === 'selected');
+    const selectedIds = new Set(selectedCharacters.map(item => item.identityId));
+    const profiles = (Array.isArray(value?.peopleFoundation?.profiles) ? value.peopleFoundation.profiles : []).filter(profile => profile?.subject === 'character' && selectedIds.has(profile.identityId));
+    return { selectedCharacters, selectedIds, profiles, profileMap: new Map(profiles.map(profile => [profile.identityId, profile])) };
+  };
+  const currentViewState = () => currentViewKey ? viewStateByChat.get(currentViewKey) : null;
+  const rankedProfileIds = (bucket, profiles) => {
+    const sourceOrder = new Map(profiles.map((profile, index) => [profile.identityId, index]));
+    const updated = new Map(bucket.updatedOrder.map((id, index) => [id, index]));
+    const viewed = new Map(bucket.viewedOrder.map((id, index) => [id, index]));
+    return profiles.map(profile => profile.identityId).sort((a, b) => {
+      if (a === bucket.selectedProfileId) return -1;
+      if (b === bucket.selectedProfileId) return 1;
+      const unreadDelta = Number(bucket.unreadUpdatedIds.has(b)) - Number(bucket.unreadUpdatedIds.has(a));
+      if (unreadDelta) return unreadDelta;
+      const updatedDelta = (updated.get(b) ?? -1) - (updated.get(a) ?? -1);
+      if (updatedDelta) return updatedDelta;
+      const viewedDelta = (viewed.get(b) ?? -1) - (viewed.get(a) ?? -1);
+      if (viewedDelta) return viewedDelta;
+      return sourceOrder.get(a) - sourceOrder.get(b);
+    });
+  };
+  const displayedRailIds = (bucket, profiles) => {
+    const visible = new Set(bucket.railIds); return profiles.map(profile => profile.identityId).filter(id => visible.has(id));
+  };
+  const syncViewState = next => {
+    if (next?.peopleFoundation?.status !== 'ready' || !Array.isArray(next.peopleFoundation.profiles)) return null;
+    const key = chatViewKey(next), { profiles, profileMap } = selectedProfileData(next), validIds = new Set(profiles.map(profile => profile.identityId));
+    let bucket = viewStateByChat.get(key);
+    if (!bucket) {
+      const first = profiles[0]?.identityId || null;
+      bucket = { contentMode: 'dossier', selectedProfileId: first, railIds: [...validIds], viewedOrder: first ? [first] : [], updatedOrder: [], unreadUpdatedIds: new Set(), profileFingerprints: new Map(profiles.map(profile => [profile.identityId, profileFingerprint(profile)])) };
+      viewStateByChat.set(key, bucket);
+    } else {
+      bucket.railIds = bucket.railIds.filter(id => validIds.has(id));
+      bucket.viewedOrder = bucket.viewedOrder.filter(id => validIds.has(id));
+      bucket.updatedOrder = bucket.updatedOrder.filter(id => validIds.has(id));
+      bucket.unreadUpdatedIds = new Set([...bucket.unreadUpdatedIds].filter(id => validIds.has(id)));
+      const widths = railWidthsByChat.get(key); if (widths) for (const id of [...widths.keys()]) if (!validIds.has(id)) widths.delete(id);
+      for (const id of [...bucket.profileFingerprints.keys()]) if (!validIds.has(id)) bucket.profileFingerprints.delete(id);
+      for (const profile of profiles) {
+        const fingerprint = profileFingerprint(profile), previous = bucket.profileFingerprints.get(profile.identityId);
+        if (previous !== undefined && previous !== fingerprint) {
+          bucket.updatedOrder = moveToNewest(bucket.updatedOrder, profile.identityId);
+          bucket.unreadUpdatedIds.add(profile.identityId);
+          if (!bucket.railIds.includes(profile.identityId)) bucket.railIds.push(profile.identityId);
+        }
+        if (previous === undefined && !bucket.railIds.includes(profile.identityId)) bucket.railIds.push(profile.identityId);
+        bucket.profileFingerprints.set(profile.identityId, fingerprint);
+      }
+      if (!bucket.selectedProfileId || !profileMap.has(bucket.selectedProfileId)) bucket.selectedProfileId = profiles[0]?.identityId || null;
+      if (bucket.selectedProfileId && !bucket.railIds.includes(bucket.selectedProfileId)) bucket.railIds.unshift(bucket.selectedProfileId);
+      if (profiles.length <= 2) bucket.railIds = profiles.map(profile => profile.identityId);
+      else if (bucket.railIds.length < 2) {
+        for (const id of rankedProfileIds(bucket, profiles)) { if (!bucket.railIds.includes(id)) bucket.railIds.push(id); if (bucket.railIds.length >= 2) break; }
+      }
+      if (!['dossier', 'more', 'fateBook'].includes(bucket.contentMode)) bucket.contentMode = 'dossier';
+    }
+    currentViewKey = key;
+    return bucket;
+  };
 
   const apiErrorCopy = error => {
     const code = String(error?.code || '');
@@ -261,7 +339,7 @@ export function createPanel({ formal, people, settings, apiTools, loadState, ini
   })[status] || ['首次档案尚未完成', '重新加载后再试。'];
 
   const sourceLabel = item => {
-    const kinds = [...new Set((Array.isArray(item?.sourceRefs) ? item.sourceRefs : []).map(ref => ({ persona: 'Persona', card: '角色卡', greeting: '开场白', worldbook: '世界书', chat: '稳定聊天' })[ref?.kind]).filter(Boolean))];
+    const kinds = [...new Set((Array.isArray(item?.sourceRefs) ? item.sourceRefs : []).map(ref => ({ persona: 'Persona', card: '角色卡', greeting: '开场白', worldbook: '世界书', chat: '稳定聊天', memory: '柏宝书记忆' })[ref?.kind]).filter(Boolean))];
     return kinds.length ? kinds.join(' · ') : '来源未标注';
   };
 
@@ -352,11 +430,11 @@ export function createPanel({ formal, people, settings, apiTools, loadState, ini
   ];
 
   const runBasicExtraction = async profile => {
-    if (busy || basicBusy || !initialRelations?.extractBasicInfo) return;
-    basicBusy = true; basicMessage = { kind: '', text: '正在提取基础信息…' }; renderReady(); const mine = ++actionEpoch;
+    if (busy || basicBusy || dynamicBusy || !initialRelations?.extractBasicInfo) return;
+    basicBusy = true; basicMessage = { kind: '', text: '正在提取基础信息…' }; renderReady(); const mine = ++profileActionEpoch;
     try {
       const result = await initialRelations.extractBasicInfo({ identityId: profile.identityId });
-      if (mine !== actionEpoch || host.hidden) return;
+      if (mine !== profileActionEpoch || host.hidden) return;
       if (result?.status === 'ready') {
         const accepted = Number(result.acceptedFields) || 0, rejected = Number(result.rejectedFields) || 0;
         basicMessage = accepted === 0 && rejected > 0
@@ -365,14 +443,14 @@ export function createPanel({ formal, people, settings, apiTools, loadState, ini
         basicBusy = false;
         await loadState?.();
       } else basicMessage = { kind: 'error', text: result?.status === 'conflict' ? '档案刚刚发生变化，请重新加载后再试。' : result?.status === 'no_selected_character' ? '当前没有已选择人物，请先到人物池选择 C。' : '提取失败，原有基础信息保持不变。' };
-    } catch { if (mine === actionEpoch) basicMessage = { kind: 'error', text: '提取失败，原有基础信息保持不变。' }; }
-    finally { if (mine === actionEpoch) { basicBusy = false; renderReady(); } }
+    } catch { if (mine === profileActionEpoch) basicMessage = { kind: 'error', text: '提取失败，原有基础信息保持不变。' }; }
+    finally { if (mine === profileActionEpoch) { basicBusy = false; renderReady(); } }
   };
 
   const saveBasicEdits = async (profile, registryName, section) => {
-    if (busy || basicBusy) return;
+    if (busy || basicBusy || dynamicBusy) return;
     const controls = new Map([...section.querySelectorAll('[data-basic-field]')].map(node => [node.dataset.basicField, node]));
-    basicBusy = true; basicMessage = { kind: '', text: '正在保存基础信息…' }; renderReady(); const mine = ++actionEpoch;
+    basicBusy = true; basicMessage = { kind: '', text: '正在保存基础信息…' }; renderReady(); const mine = ++profileActionEpoch;
     try {
       const name = controls.get('name')?.value?.trim?.() || '';
       if (!name) throw new Error('姓名不能为空');
@@ -387,12 +465,12 @@ export function createPanel({ formal, people, settings, apiTools, loadState, ini
         const saved = await initialRelations?.saveBasicField?.({ identityId: profile.identityId, field, value });
         if (saved?.status !== 'ready') throw new Error('字段保存冲突');
       }
-      if (mine !== actionEpoch || host.hidden) return;
+      if (mine !== profileActionEpoch || host.hidden) return;
       basicEditing = false; basicMessage = { kind: 'success', text: '基础信息已保存；用户填写内容不会被重新提取覆盖。' };
       basicBusy = false;
       await loadState?.();
-    } catch (error) { if (mine === actionEpoch) basicMessage = { kind: 'error', text: error?.message === '姓名不能为空' ? '姓名不能为空。' : '保存未全部完成；部分已成功字段可能已保存，请重新加载确认。' }; }
-    finally { if (mine === actionEpoch) { basicBusy = false; renderReady(); } }
+    } catch (error) { if (mine === profileActionEpoch) basicMessage = { kind: 'error', text: error?.message === '姓名不能为空' ? '姓名不能为空。' : '保存未全部完成；部分已成功字段可能已保存，请重新加载确认。' }; }
+    finally { if (mine === profileActionEpoch) { basicBusy = false; renderReady(); } }
   };
 
   const renderBasicInfo = (profile, registryName) => {
@@ -402,8 +480,8 @@ export function createPanel({ formal, people, settings, apiTools, loadState, ini
     const actions = element('div', 'basic-info-actions');
     if (!basicEditing) {
       const hasExtracted = Object.values(profile.basicFields || {}).some(item => item?.value);
-      const extract = element('button', 'secondary-action', basicBusy ? '正在提取…' : hasExtracted ? '重新提取' : '提取基础信息'); extract.type = 'button'; extract.disabled = basicBusy; extract.addEventListener('click', () => runBasicExtraction(profile));
-      const edit = element('button', 'secondary-action', '编辑'); edit.type = 'button'; edit.disabled = basicBusy; edit.addEventListener('click', () => { basicEditing = true; basicMessage = null; renderReady(); }); actions.append(extract, edit);
+      const extract = element('button', 'secondary-action', basicBusy ? '正在提取…' : hasExtracted ? '重新提取' : '提取基础信息'); extract.type = 'button'; extract.disabled = basicBusy || dynamicBusy; extract.addEventListener('click', () => runBasicExtraction(profile));
+      const edit = element('button', 'secondary-action', '编辑'); edit.type = 'button'; edit.disabled = basicBusy || dynamicBusy; edit.addEventListener('click', () => { basicEditing = true; basicMessage = null; renderReady(); }); actions.append(extract, edit);
     }
     head.append(actions); section.append(head);
     const grid = element('div', 'basic-fields');
@@ -432,6 +510,88 @@ export function createPanel({ formal, people, settings, apiTools, loadState, ini
       save.addEventListener('click', () => saveBasicEdits(profile, registryName, section)); cancel.addEventListener('click', () => { basicEditing = false; basicMessage = null; renderReady(); }); editActions.append(save, cancel); section.append(editActions);
     }
     if (basicMessage) section.append(element('p', `basic-message ${basicMessage.kind}`.trim(), basicMessage.text));
+    return section;
+  };
+
+  const dynamicFieldDefinitions = [
+    ['personalityState', '当前性格状态'], ['currentGoals', '当前目标'], ['currentSituation', '当前处境'],
+    ['currentSecrets', '当前秘密'], ['wellbeing', '当前身心状态'], ['stableChanges', '长期稳定变化'],
+  ];
+  const dynamicFieldRows = [
+    ['personalityState'], ['currentGoals', 'currentSituation'], ['currentSecrets'], ['wellbeing', 'stableChanges'],
+  ];
+
+  const runDynamicUpdate = async profile => {
+    if (busy || basicBusy || dynamicBusy || !initialRelations?.updateDynamicFields) return;
+    dynamicBusy = true; dynamicMessage = { kind: '', text: '正在更新动态状态…' }; renderReady(); const mine = ++profileActionEpoch;
+    try {
+      const result = await initialRelations.updateDynamicFields({ identityId: profile.identityId });
+      if (mine !== profileActionEpoch || host.hidden) return;
+      if (result?.status === 'ready') {
+        const accepted = Number(result.acceptedFields) || 0, rejected = Number(result.rejectedFields) || 0;
+        dynamicMessage = accepted === 0 && rejected > 0
+          ? { kind: 'error', text: `AI 返回了 ${rejected} 项动态状态，但格式或范围未能采用；原有状态保持不变。` }
+          : { kind: 'success', text: result.emptyResult ? '更新完成，没有发现可可靠填写的当前状态。' : `更新完成，采用了 ${accepted} 项动态状态。` };
+        dynamicBusy = false;
+        await loadState?.();
+      } else dynamicMessage = { kind: 'error', text: result?.status === 'conflict' ? '档案刚刚发生变化，请重新加载后再试。' : result?.status === 'no_selected_character' ? '当前没有已选择人物，请先到人物池选择 C。' : '动态状态更新失败，原有内容保持不变。' };
+    } catch { if (mine === profileActionEpoch) dynamicMessage = { kind: 'error', text: '动态状态更新失败，原有内容保持不变。' }; }
+    finally { if (mine === profileActionEpoch) { dynamicBusy = false; renderReady(); } }
+  };
+
+  const saveDynamicEdits = async (profile, section) => {
+    if (busy || basicBusy || dynamicBusy) return;
+    const controls = new Map([...section.querySelectorAll('[data-dynamic-field]')].map(node => [node.dataset.dynamicField, node]));
+    dynamicBusy = true; dynamicMessage = { kind: '', text: '正在保存当前状态…' }; renderReady(); const mine = ++profileActionEpoch;
+    try {
+      for (const [field] of dynamicFieldDefinitions) {
+        const value = controls.get(field)?.value ?? '', previous = profile.dynamicFields?.[field]?.value ?? '';
+        if (String(value).replace(/\r\n?/g, '\n').trim() === String(previous).replace(/\r\n?/g, '\n').trim()) continue;
+        const saved = await initialRelations?.saveDynamicField?.({ identityId: profile.identityId, field, value });
+        if (saved?.status !== 'ready') throw new Error('字段保存冲突');
+      }
+      if (mine !== profileActionEpoch || host.hidden) return;
+      dynamicEditing = false; dynamicMessage = { kind: 'success', text: '当前状态已保存；用户填写内容不会被 AI 更新覆盖。' };
+      dynamicBusy = false;
+      await loadState?.();
+    } catch { if (mine === profileActionEpoch) dynamicMessage = { kind: 'error', text: '保存未全部完成；部分已成功字段可能已保存，请重新加载确认。' }; }
+    finally { if (mine === profileActionEpoch) { dynamicBusy = false; renderReady(); } }
+  };
+
+  const renderDynamicInfo = profile => {
+    const section = element('section', 'dynamic-info');
+    const head = element('div', 'dynamic-info-head');
+    const copy = element('div'); copy.append(element('h3', '', '当前状态'), element('p', '', '记录这个 C 当前仍成立的个人状态；不记录对 U 的态度或关系阶段。')); head.append(copy);
+    const actions = element('div', 'dynamic-info-actions');
+    if (!dynamicEditing) {
+      const update = element('button', 'secondary-action', dynamicBusy ? '正在更新…' : '更新动态状态'); update.type = 'button'; update.disabled = dynamicBusy || basicBusy; update.addEventListener('click', () => runDynamicUpdate(profile));
+      const edit = element('button', 'secondary-action', '编辑'); edit.type = 'button'; edit.disabled = dynamicBusy || basicBusy; edit.addEventListener('click', () => { dynamicEditing = true; dynamicMessage = null; renderReady(); }); actions.append(update, edit);
+    }
+    head.append(actions); section.append(head);
+    const grid = element('div', 'dynamic-fields'), definitions = new Map(dynamicFieldDefinitions.map(definition => [definition[0], definition]));
+    const renderField = ([field, labelText]) => {
+      const item = element('div', 'dynamic-field'); item.append(element('span', 'dynamic-label', labelText));
+      const stored = profile.dynamicFields?.[field]?.value;
+      if (dynamicEditing) {
+        const input = document.createElement('textarea'); input.dataset.dynamicField = field; input.value = stored || ''; input.maxLength = 2400; input.setAttribute('aria-label', labelText); item.append(input);
+      } else {
+        item.append(element('p', `dynamic-value ${stored ? '' : 'missing'}`.trim(), stored || '未提及'));
+        if (stored) item.append(element('small', 'dynamic-source', profile.dynamicFields?.[field]?.provenance === 'user' ? '用户填写' : sourceLabel(profile.dynamicFields?.[field])));
+      }
+      return item;
+    };
+    for (const fields of dynamicFieldRows) {
+      const row = element('div', `dynamic-row ${fields.length === 2 ? 'dynamic-row-two' : 'dynamic-row-one'}`);
+      for (const field of fields) row.append(renderField(definitions.get(field)));
+      grid.append(row);
+    }
+    section.append(grid);
+    if (dynamicEditing) {
+      const editActions = element('div', 'dynamic-edit-actions');
+      const save = element('button', 'primary-action', dynamicBusy ? '正在保存…' : '保存当前状态'), cancel = element('button', 'secondary-action', '取消'); save.type = cancel.type = 'button'; save.disabled = cancel.disabled = dynamicBusy;
+      save.addEventListener('click', () => saveDynamicEdits(profile, section)); cancel.addEventListener('click', () => { dynamicEditing = false; dynamicMessage = null; renderReady(); }); editActions.append(save, cancel); section.append(editActions);
+    }
+    if (dynamicMessage) section.append(element('p', `dynamic-message ${dynamicMessage.kind}`.trim(), dynamicMessage.text));
     return section;
   };
 
@@ -466,9 +626,107 @@ export function createPanel({ formal, people, settings, apiTools, loadState, ini
     if (!['generating', 'applying'].includes(status)) {
       const reload = element('button', 'secondary-action', status === 'blocked_source_changed' ? '重新读取状态' : '重新加载'); reload.type = 'button'; reload.addEventListener('click', () => loadState?.({ announceLoading: true })); actions.append(reload);
     }
-    if (!hasSelectedCharacter && status === 'uninitialized') banner.append(element('p', 'generation-hint', '还没有选择 C；可以先到“管理人物池”选择人物。'));
+    if (!hasSelectedCharacter && status === 'uninitialized') banner.append(element('p', 'generation-hint', '还没有选择 C；可以先到“因缘簿”选择人物。'));
     if (actions.children?.length || actions.childNodes?.length) banner.append(actions);
     return banner;
+  };
+
+  const clearProfileDrafts = () => invalidateProfileActions();
+  const focusRailControl = descriptor => {
+    if (!descriptor) return false;
+    const selector = descriptor.kind === 'profile' ? '.profile-tab' : '.profile-tool', dataKey = descriptor.kind === 'profile' ? 'profileId' : 'contentMode';
+    const target = [...view.querySelectorAll(selector)].find(item => item.dataset[dataKey] === descriptor.id);
+    target?.focus?.(); target?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    return Boolean(target);
+  };
+  const focusedRailControl = () => {
+    const active = root.activeElement;
+    if (active?.dataset?.profileId) return { kind: 'profile', id: active.dataset.profileId };
+    if (active?.dataset?.contentMode) return { kind: 'tool', id: active.dataset.contentMode };
+    return null;
+  };
+  const restoreRailFocus = () => {
+    const descriptor = pendingRailFocus; pendingRailFocus = null; return focusRailControl(descriptor);
+  };
+  const openProfile = (identityId, { restoreFocus = false } = {}) => {
+    const bucket = currentViewState();
+    if (!bucket) return;
+    bucket.selectedProfileId = identityId; bucket.contentMode = 'dossier'; bucket.viewedOrder = moveToNewest(bucket.viewedOrder, identityId); bucket.unreadUpdatedIds.delete(identityId);
+    if (!bucket.railIds.includes(identityId)) bucket.railIds.push(identityId);
+    if (restoreFocus) pendingRailFocus = { kind: 'profile', id: identityId };
+    clearProfileDrafts(); renderReady(); restoreRailFocus();
+  };
+  const settlePeopleRail = ({ availableWidth, itemWidths = {} } = {}, shouldRender = true) => {
+    const bucket = currentViewState(), { profiles } = selectedProfileData(state), focusedBeforeLayout = focusedRailControl();
+    if (!bucket) { pendingRailFocus = null; return { changed: false, railIds: [] }; }
+    if (profiles.length <= 2) {
+      const all = profiles.map(profile => profile.identityId), changed = all.join('|') !== bucket.railIds.join('|'); bucket.railIds = all;
+      pendingRailFocus = null; if (changed && shouldRender) { renderReady(); focusRailControl(focusedBeforeLayout); }
+      return { changed, railIds: [...bucket.railIds] };
+    }
+    const width = Number(availableWidth), ranked = rankedProfileIds(bucket, profiles), previous = displayedRailIds(bucket, profiles);
+    if (!(width > 0)) { pendingRailFocus = null; return { changed: false, railIds: previous }; }
+    let widths = railWidthsByChat.get(currentViewKey); if (!widths) { widths = new Map(); railWidthsByChat.set(currentViewKey, widths); }
+    const entries = itemWidths instanceof Map ? itemWidths : new Map(Object.entries(itemWidths || {}));
+    for (const [id, value] of entries) if (Number(value) > 0) widths.set(id, Number(value));
+    const itemWidth = id => widths.get(id) || 72;
+    const keep = new Set(ranked.filter(id => id === bucket.selectedProfileId || bucket.unreadUpdatedIds.has(id)));
+    let occupied = [...keep].reduce((sum, id) => sum + itemWidth(id), Math.max(0, keep.size - 1) * 7);
+    for (const id of ranked) {
+      if (keep.has(id)) continue;
+      const addition = itemWidth(id) + (keep.size ? 7 : 0);
+      if (keep.size < 2 || occupied + addition <= width) { keep.add(id); occupied += addition; }
+    }
+    const next = profiles.map(profile => profile.identityId).filter(id => keep.has(id));
+    const changed = next.join('|') !== previous.join('|');
+    if (changed) {
+      bucket.railIds = next;
+      if (shouldRender) { renderReady(); focusRailControl(focusedBeforeLayout); }
+    }
+    pendingRailFocus = null;
+    return { changed, railIds: [...next] };
+  };
+  const scheduleRailMeasurement = switcher => {
+    if (!switcher || railMeasureQueued) return;
+    railMeasureQueued = true;
+    const run = () => {
+      railMeasureQueued = false;
+      const currentSwitcher = root.querySelector('.profile-switcher');
+      if (currentSwitcher !== switcher) { if (currentSwitcher) scheduleRailMeasurement(currentSwitcher); return; }
+      const availableWidth = Number(switcher.clientWidth);
+      if (!(availableWidth > 0)) { pendingRailFocus = null; return; }
+      const itemWidths = new Map([...switcher.querySelectorAll('.profile-tab')].map(button => [button.dataset.profileId, Number(button.getBoundingClientRect?.().width || button.offsetWidth || 0)]));
+      settlePeopleRail({ availableWidth, itemWidths });
+    };
+    if (typeof globalThis.requestAnimationFrame === 'function') globalThis.requestAnimationFrame(run);
+    else globalThis.queueMicrotask?.(run);
+  };
+  const observePeopleRail = switcher => {
+    railResizeObserver?.disconnect?.(); railResizeObserver = null;
+    scheduleRailMeasurement(switcher);
+    if (typeof globalThis.ResizeObserver === 'function') {
+      railResizeObserver = new globalThis.ResizeObserver(() => scheduleRailMeasurement(switcher)); railResizeObserver.observe(switcher);
+    }
+  };
+  const renderMoreView = (page, profiles, names, railIds) => {
+    const outside = profiles.filter(profile => !railIds.has(profile.identityId));
+    const section = element('section', 'people-content more-view');
+    const heading = element('div', 'content-heading'); heading.append(element('h2', '', `更多人物（${outside.length}）`), element('p', '', '这些人物仍在关注中，只是暂时退出快捷轨道。点击即可回到档案并提高轨道优先级。')); section.append(heading);
+    if (!outside.length) section.append(element('p', 'layer-empty', '当前没有退出快捷轨道的人物。'));
+    else {
+      const list = element('div', 'more-list');
+      for (const profile of outside) {
+        const button = element('button', 'more-person'); button.type = 'button'; button.dataset.profileId = profile.identityId;
+        button.append(element('span', 'subject-tag tag-c', 'C'), element('span', '', names.get(profile.identityId))); button.addEventListener('click', () => openProfile(profile.identityId, { restoreFocus: true })); list.append(button);
+      }
+      section.append(list);
+    }
+    page.append(section);
+  };
+  const renderFateBookView = page => {
+    const section = element('section', 'people-content fate-book-view');
+    const heading = element('div', 'content-heading'); heading.append(element('h2', '', '因缘簿'), element('p', '', '管理候选人物与关注状态；这里的“选择”只表示当前关注，不代表关系已经成立。')); section.append(heading);
+    renderPeoplePool(section); page.append(section);
   };
 
   const renderReady = () => {
@@ -478,45 +736,45 @@ export function createPanel({ formal, people, settings, apiTools, loadState, ini
       const fallback = element('div', 'empty'); fallback.append(element('div', 'eyebrow', 'PEOPLE / POOL'), element('h2', '', '先管理当前人物'), element('p', '', '选择只表示你当前想关注这位人物，不代表已经恋爱或发生关系。关系档案骨架尚未就绪时，人物池仍可查看和管理。'));
       renderPeoplePool(fallback); view.append(fallback); return;
     }
-    const selectedCharacters = (Array.isArray(state.people?.confirmed) ? state.people.confirmed : []).filter(item => item.selection?.status === 'selected');
-    const selectedIds = new Set(selectedCharacters.map(item => item.identityId));
+    const bucket = syncViewState(state), { selectedCharacters, selectedIds, profiles, profileMap } = selectedProfileData(state);
     const registryNames = new Map(selectedCharacters.map(item => [item.identityId, item.displayName || '未命名人物']));
     const activeIds = [...selectedIds];
-    const profiles = foundation.profiles.filter(profile => profile.subject === 'character' && selectedIds.has(profile.identityId));
-    const profileMap = new Map(profiles.map(profile => [profile.identityId, profile]));
-    if (!selectedProfileId || !profileMap.has(selectedProfileId)) selectedProfileId = profiles[0]?.identityId || null;
-    const current = profileMap.get(selectedProfileId);
-    const persisted = state.initialRelations || foundation.state?.initialGeneration || { status: 'uninitialized', completedMemberIds: [] };
-    const completed = new Set(persisted.completedMemberIds || []);
-    const canonCount = Number.isInteger(persisted.lastAttempt?.canonCount) ? persisted.lastAttempt.canonCount
-      : Number.isInteger(foundation.state?.lastAttempt?.canonCount) ? foundation.state.lastAttempt.canonCount
-        : Number.isInteger(foundation.state?.canonRef?.canonLength) ? foundation.state.canonRef.canonLength : null;
+    const current = profileMap.get(bucket?.selectedProfileId);
     const names = new Map([[foundation.state?.personaId, '我'], ...profiles.map(profile => [profile.identityId, registryNames.get(profile.identityId) || profile.displayName || '未命名人物'])]);
     const page = element('div', 'people-page');
     const banner = renderGenerationBanner(activeIds, profiles.length > 0); if (banner) page.append(banner);
-    const switcher = element('div', 'profile-switcher'); switcher.setAttribute('role', 'tablist'); switcher.setAttribute('aria-label', '切换人物档案');
-    for (const profile of profiles) {
-      const button = element('button', `profile-tab ${profile.identityId === selectedProfileId ? 'active' : ''}`.trim()); button.type = 'button'; button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', String(profile.identityId === selectedProfileId));
-      button.append(element('span', 'subject-tag tag-c', 'C'), element('span', '', names.get(profile.identityId)));
-      button.addEventListener('click', () => { selectedProfileId = profile.identityId; basicEditing = false; basicMessage = null; renderReady(); }); switcher.append(button);
+    const railShell = element('div', 'profile-rail-shell'), switcher = element('div', 'profile-switcher'); switcher.setAttribute('role', 'tablist'); switcher.setAttribute('aria-label', '切换人物档案');
+    const railProfiles = displayedRailIds(bucket, profiles).map(id => profileMap.get(id)).filter(Boolean);
+    for (const profile of railProfiles) {
+      const dossierActive = bucket.contentMode === 'dossier' && profile.identityId === bucket.selectedProfileId;
+      const unread = bucket.unreadUpdatedIds.has(profile.identityId), displayName = names.get(profile.identityId);
+      const button = element('button', `profile-tab ${dossierActive ? 'active' : ''} ${unread ? 'has-update' : ''}`.trim()); button.type = 'button'; button.dataset.profileId = profile.identityId; button.tabIndex = 0;
+      button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', String(dossierActive)); button.setAttribute('aria-label', `C ${displayName}${unread ? '，有新更新' : ''}`);
+      button.append(element('span', 'subject-tag tag-c', 'C'), element('span', 'profile-tab-name', displayName));
+      if (unread) { const updateDot = element('span', 'profile-update-dot'); updateDot.setAttribute('aria-hidden', 'true'); button.append(updateDot); }
+      button.addEventListener('click', () => openProfile(profile.identityId, { restoreFocus: true })); switcher.append(button);
     }
-    page.append(switcher);
-    if (!current) page.append(element('p', 'layer-empty', '还没有已选择的 C。请展开“管理人物池”并选择一位人物。'));
+    const tools = element('div', 'profile-tools');
+    for (const [mode, text] of [['more', '更多'], ['fateBook', '因缘簿']]) {
+      const button = element('button', `profile-tool ${bucket.contentMode === mode ? 'active' : ''}`.trim(), text); button.type = 'button'; button.dataset.contentMode = mode; button.setAttribute('aria-pressed', String(bucket.contentMode === mode));
+      button.addEventListener('click', () => {
+        if (bucket.contentMode === mode && current) { openProfile(current.identityId, { restoreFocus: true }); return; }
+        bucket.contentMode = mode; clearProfileDrafts(); pendingRailFocus = { kind: 'tool', id: mode }; renderReady(); restoreRailFocus();
+      }); tools.append(button);
+    }
+    railShell.append(switcher, tools); page.append(railShell);
+    if (bucket.contentMode === 'more') renderMoreView(page, profiles, names, new Set(bucket.railIds));
+    else if (bucket.contentMode === 'fateBook') renderFateBookView(page);
+    else if (!current) page.append(element('p', 'layer-empty', '还没有已选择的 C。请打开“因缘簿”选择一位人物。'));
     else {
       const dossier = element('section', 'dossier-card');
       const summary = element('header', 'profile-summary'); summary.append(element('span', 'subject-tag tag-c', 'C'));
       const heading = element('div'); heading.append(element('h2', '', names.get(current.identityId)), element('p', '', '当前已选择人物的稳定关系档案')); summary.append(heading); dossier.append(summary);
       dossier.append(renderBasicInfo(current, names.get(current.identityId)));
-      const layerOptions = { initialGenerated: completed.has(current.identityId), canonCount };
-      dossier.append(renderFactLayer(current, 'sourceFacts', '来源事实', '来自 Persona、角色卡、开场白或世界书的明确内容', names, layerOptions));
-      dossier.append(renderFactLayer(current, 'interpretations', 'AI 归纳', '只根据稳定聊天整理，不覆盖来源事实', names, layerOptions));
-      if (state.reviewError) dossier.append(element('p', 'error review-error', state.reviewError));
-      dossier.append(renderPending(current, names)); page.append(dossier);
+      dossier.append(renderDynamicInfo(current));
+      page.append(dossier);
     }
-    const pool = element('details', 'people-pool');
-    const summary = element('summary', '', '管理人物池'); pool.append(summary);
-    const intro = element('p', 'pool-intro', '选择、取消选择、改名、搁置或恢复人物。这里的选择只表示当前关注，不代表关系已经成立。'); pool.append(intro);
-    renderPeoplePool(pool); page.append(pool); view.append(page);
+    view.append(page); observePeopleRail(switcher);
   };
 
   const renderUnavailableModule = () => {
@@ -529,6 +787,12 @@ export function createPanel({ formal, people, settings, apiTools, loadState, ini
   const setState = next => {
     if (localRelationStatus === 'cancelled' && next?.status === 'stale' && ['ready', 'route_ready'].includes(state?.status)) {
       busy = false; renderReady(); return;
+    }
+    const nextReady = ['ready', 'route_ready'].includes(next?.status) && next?.peopleFoundation?.status === 'ready';
+    if (!nextReady) { invalidateProfileActions(); pendingRailFocus = null; }
+    else {
+      const nextKey = chatViewKey(next), nextProfiles = selectedProfileData(next).profileMap, bucket = currentViewState();
+      if ((currentViewKey && nextKey !== currentViewKey) || (bucket?.selectedProfileId && !nextProfiles.has(bucket.selectedProfileId))) { invalidateProfileActions(); pendingRailFocus = null; }
     }
     actionEpoch += 1; busy = false; localRelationStatus = null;
     state = next || { status: 'error' };
@@ -569,7 +833,7 @@ export function createPanel({ formal, people, settings, apiTools, loadState, ini
     } catch { setState({ ...state, status: ['ready', 'route_ready'].includes(state.status) ? state.status : 'error', people: state.people, peopleError: '操作失败，原人物列表已保留' }); }
     finally { busy = false; }
   };
-  const show = (source = document.activeElement) => { trigger = source; host.hidden = false; host.setAttribute('aria-hidden', 'false'); root.querySelector('.close').focus(); };
+  const show = (source = document.activeElement) => { trigger = source; panelGeometry?.restore?.(); host.hidden = false; host.setAttribute('aria-hidden', 'false'); observePeopleRail(root.querySelector('.profile-switcher')); root.querySelector('.close').focus(); };
   root.addEventListener('keydown', event => {
     if (event.key === 'Escape') { event.preventDefault(); close(); return; }
     if (event.key !== 'Tab') return;
@@ -580,6 +844,7 @@ export function createPanel({ formal, people, settings, apiTools, loadState, ini
   root.querySelector('.close').addEventListener('click', close);
   root.querySelector('.settings-btn')?.addEventListener('click', () => { if (screen === 'settings') { settingsRenderEpoch += 1; screen = 'people'; activeTab = 'people'; root.querySelectorAll('.tab').forEach((item, index) => { item.classList.toggle('active', index === 0); item.setAttribute('aria-selected', String(index === 0)); }); setState(state); } else renderSettings(); });
   root.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => { settingsRenderEpoch += 1; screen = 'people'; activeTab = tab.dataset.tab || 'people'; root.querySelectorAll('.tab').forEach(item => { const active = item === tab; item.classList.toggle('active', active); item.setAttribute('aria-selected', String(active)); }); setState(state); }));
+  panelGeometry = createPanelGeometryController({ panel: root.querySelector('.panel'), dragHandle: root.querySelector('.topbar'), resizeHandle: root.querySelector('.panel-resize-handle') });
   setState(state);
-  return { host, root, show, close, setState, showSettings: renderSettings, getState: () => ({ ...state }) };
+  return { host, root, show, close, setState, settlePeopleRail, showSettings: renderSettings, getState: () => ({ ...state }) };
 }

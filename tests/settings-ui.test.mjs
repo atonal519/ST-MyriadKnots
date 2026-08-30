@@ -73,6 +73,8 @@ test('真实 dist 设置 UI：关闭态一步进入、右下角角标、Key 遮�
 test('真实 dist 包含右下角设置热区、手机安全区与紧凑设置布局', async () => {
   const source = await readFile(new URL('../src/ui/panel.html', import.meta.url), 'utf8'), dist = await readFile(new URL('../dist/index.js', import.meta.url), 'utf8');
   assert.match(source, /<footer[\s\S]*settings-btn[\s\S]*<\/footer>/); assert.match(dist, /settings-btn/); assert.match(dist, /flex:0 0 36px/); assert.match(dist, /safe-area-inset-bottom/); assert.match(dist, /grid-template-columns:minmax\(0,1fr\)/); assert.match(dist, /new-password/);
+  assert.match(source, /panel-resize-handle[\s\S]*settings-btn/); assert.equal((source.match(/panel-resize-handle/g) || []).length, 1); assert.equal((source.match(/settings-btn/g) || []).length, 1);
+  assert.match(dist, /panel-resize-handle/); assert.match(dist, /flex:0 0 44px/); assert.match(dist, /@media ?(?:\(max-width:640px\)|\(width<=640px\))[^{]*\{[\s\S]*panel-resize-handle\{display:none/);
 });
 
 test('源 CSS 与真实 dist 同时保留主体主题和设置样式，防止整段覆盖', async () => {

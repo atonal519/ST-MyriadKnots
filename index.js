@@ -17,6 +17,7 @@ import { createStableFloorAdapter } from './src/stable-floor-storage.js';
 import { createFoundationAwarePeopleAdapter, createPeopleFoundationAdapter } from './src/people-foundation.js';
 import { createInitialRelationGenerationAdapter } from './src/initial-relation-generation.js';
 import { createPendingReviewAdapter } from './src/pending-review.js';
+import { createBaiBaiBookMemoryAdapter } from './src/baibai-book-memory.js';
 
 const ctx = () => globalThis.Luker?.getContext?.();
 const client = createBackendClient({ headers: () => ctx()?.getRequestHeaders?.() ?? {} });
@@ -31,7 +32,8 @@ const routeSource = createRouteSourceAdapter({ contextProvider });
 const formal = createFormalAdapter({ client, contextProvider, routeSource });
 const stableFloors = createStableFloorAdapter({ client, contextProvider });
 const peopleFoundation = createPeopleFoundationAdapter({ client, contextProvider });
-const initialRelations = createInitialRelationGenerationAdapter({ client, contextProvider, routeSource, generateRelationTask: peopleTaskRouter.generatePeopleTask, isEnabled: settings.isEnabled });
+const memorySource = createBaiBaiBookMemoryAdapter();
+const initialRelations = createInitialRelationGenerationAdapter({ client, contextProvider, routeSource, generateRelationTask: peopleTaskRouter.generatePeopleTask, memorySource, isEnabled: settings.isEnabled });
 const pendingReviews = createPendingReviewAdapter({ client, contextProvider, isEnabled: settings.isEnabled });
 const peopleRegistry = createCRegistryAdapter({ client, contextProvider, routeSource, formal, generatePeopleTask: peopleTaskRouter.generatePeopleTask, isEnabled: settings.isEnabled });
 const people = createFoundationAwarePeopleAdapter({ people: peopleRegistry, foundation: peopleFoundation, stableFloors });
@@ -70,6 +72,8 @@ registerIntegration({
   adoptCurrentInitialRelationSources: gated(initialRelations.adoptCurrentSources),
   extractSelectedCharacterBasicInfo: gated(initialRelations.extractBasicInfo),
   saveSelectedCharacterBasicField: gated(initialRelations.saveBasicField),
+  updateSelectedCharacterDynamicFields: gated(initialRelations.updateDynamicFields),
+  saveSelectedCharacterDynamicField: gated(initialRelations.saveDynamicField),
   cancelInitialRelationGeneration: () => { initialRelations.cancel(); return settings.isEnabled() ? { status: 'cancelled' } : disabledState(); },
   resolvePendingReview: gated(pendingReviews.resolvePendingReview),
 });

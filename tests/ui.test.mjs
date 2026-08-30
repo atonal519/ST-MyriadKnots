@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { mobilePanelRect } from '../src/ui/layout.js';
+import { createPanelGeometryController, desktopPanelPosition, desktopPanelSize, mobilePanelRect } from '../src/ui/layout.js';
 
 class FakeButton {
   constructor() { this.events = {}; this.disabled = false; }
@@ -61,7 +61,7 @@ test('正式 SVG、dialog 语义、来源徽标和 manifest 均在生产源中',
 
 test('生产构建包含桌面/手机窗口壳与独立正文滚动约束', async () => {
   const dist = await readFile(new URL('../dist/index.js', import.meta.url), 'utf8');
-  assert.match(dist, /width:360px/); assert.match(dist, /top:80px/); assert.match(dist, /right:20px/); assert.match(dist, /max-height:85vh/);
+  assert.match(dist, /width:720px/); assert.match(dist, /top:40px/); assert.match(dist, /right:20px/); assert.match(dist, /height:min\(780px,calc\(100dvh - 80px\)\)/);
   assert.match(dist, /pointer-events:none/); assert.match(dist, /pointer-events:auto/); assert.match(dist, /100dvw/); assert.match(dist, /safe-area-inset-top/); assert.match(dist, /border-radius:14px/); assert.match(dist, /min-height:0/); assert.match(dist, /overflow-y:auto/); assert.doesNotMatch(dist, /cssText="position:fixed;inset:0/); assert.doesNotMatch(dist, /@keyframes in\{from\{opacity:0;transform/);
 });
 
@@ -85,6 +85,80 @@ test('手机窗口纯布局 seam 在320/390宽视口左右各10px，短屏仍保
   for (const [width, height] of [[320, 640], [390, 844]]) { const rect = mobilePanelRect(width, height); assert.equal(rect.left, 10); assert.equal(rect.width, width - 20); assert.equal(rect.right, 10); assert.equal(rect.top, 20); assert.equal(rect.height, height - 40); }
   const safe = mobilePanelRect(320, 640, 24, 12); assert.equal(safe.top, 44); assert.equal(safe.bottom, 32); assert.equal(safe.height, 564);
   const dist = await readFile(new URL('../dist/index.js', import.meta.url), 'utf8'); assert.match(dist, /grid-template-rows:auto auto minmax\(0,1fr\) auto/); assert.match(dist, /\.body\{min-height:0/);
+});
+
+class GeometryTarget {
+  constructor() { this.events = {}; }
+  addEventListener(name, fn) { (this.events[name] ||= []).push(fn); }
+  removeEventListener(name, fn) { this.events[name] = (this.events[name] || []).filter(item => item !== fn); }
+  fire(name, event = {}) { for (const fn of this.events[name] || []) fn({ pointerId: 1, button: 0, clientX: 0, clientY: 0, target: this, preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; }, ...event }); }
+  setPointerCapture() { this.captured = true; }
+  releasePointerCapture() { this.captured = false; }
+  closest() { return null; }
+}
+
+class GeometryPanel extends GeometryTarget {
+  constructor(viewport) {
+    super(); this.viewport = viewport; this.style = {};
+    const classes = new Set(); this.classList = { add: value => classes.add(value), remove: value => classes.delete(value), contains: value => classes.has(value) };
+  }
+  get offsetWidth() { return Number.parseFloat(this.style.width) || 0; }
+  get offsetHeight() { return Number.parseFloat(this.style.height) || 0; }
+  getBoundingClientRect() {
+    const width = this.offsetWidth, height = this.offsetHeight;
+    const left = this.style.left !== '' && this.style.left !== undefined ? Number.parseFloat(this.style.left) || 0 : this.viewport.innerWidth - width - (Number.parseFloat(this.style.right) || 0);
+    return { left, top: Number.parseFloat(this.style.top) || 0, width, height };
+  }
+}
+
+function geometryHarness({ width = 1920, height = 1080, saved = {} } = {}) {
+  const store = new Map(Object.entries(saved));
+  const viewport = new GeometryTarget(); viewport.innerWidth = width; viewport.innerHeight = height;
+  let frameId = 0; const frames = new Map();
+  viewport.requestAnimationFrame = fn => { const id = ++frameId; frames.set(id, fn); return id; };
+  viewport.cancelAnimationFrame = id => frames.delete(id);
+  viewport.flush = () => { const pending = [...frames.values()]; frames.clear(); for (const fn of pending) fn(); };
+  const panel = new GeometryPanel(viewport), dragHandle = new GeometryTarget(), resizeHandle = new GeometryTarget();
+  const storage = { getItem: key => store.get(key) ?? null, setItem: (key, value) => store.set(key, value) };
+  const controller = createPanelGeometryController({ panel, dragHandle, resizeHandle, storage, viewport });
+  return { controller, panel, dragHandle, resizeHandle, storage, store, viewport };
+}
+
+test('桌面几何覆盖 1920、1366 与 641，损坏和越界偏好安全回退或 clamp', () => {
+  assert.deepEqual(desktopPanelSize(1920, 1080), { width: 720, height: 780, minWidth: 500, minHeight: 420, maxWidth: 1900, maxHeight: 1060 });
+  assert.deepEqual(desktopPanelSize(1366, 768), { width: 720, height: 688, minWidth: 500, minHeight: 420, maxWidth: 1346, maxHeight: 748 });
+  assert.deepEqual(desktopPanelSize(641, 700), { width: 621, height: 620, minWidth: 500, minHeight: 420, maxWidth: 621, maxHeight: 680 });
+  assert.deepEqual(desktopPanelSize(1366, 768, { width: -1, height: '坏值' }).width, 720);
+  assert.deepEqual(desktopPanelSize(1366, 768, { width: 9999, height: 9999 }).width, 1346);
+  assert.deepEqual(desktopPanelPosition(1366, 768, 720, 688, { left: -900, top: 9999 }), { left: 10, top: 70 });
+  const corrupt = geometryHarness({ saved: { 'qqj-panel-size': '{坏 JSON', 'qqj-panel-pos': '{坏 JSON' } }); assert.equal(corrupt.panel.style.width, '720px'); assert.equal(corrupt.panel.style.top, '40px');
+});
+
+test('桌面拖动仅主键且排除控件，超过 5px 才拖；cancel/lost capture 清理且位置不越界', () => {
+  const harness = geometryHarness(), { dragHandle, panel, store } = harness;
+  dragHandle.fire('pointerdown', { button: 2, clientX: 100, clientY: 100 }); dragHandle.fire('pointermove', { clientX: 300, clientY: 300 }); dragHandle.fire('pointerup'); assert.equal(store.has('qqj-panel-pos'), false);
+  const control = { closest: () => ({}) }; dragHandle.fire('pointerdown', { target: control, clientX: 100, clientY: 100 }); dragHandle.fire('pointermove', { clientX: 300, clientY: 300 }); dragHandle.fire('pointerup'); assert.equal(store.has('qqj-panel-pos'), false);
+  dragHandle.fire('pointerdown', { clientX: 100, clientY: 100 }); dragHandle.fire('pointermove', { clientX: 105, clientY: 100 }); dragHandle.fire('pointerup'); assert.equal(store.has('qqj-panel-pos'), false); assert.equal(panel.style.right, '20px');
+  dragHandle.fire('pointerdown', { clientX: 100, clientY: 100 }); dragHandle.fire('pointermove', { clientX: -5000, clientY: -5000 }); dragHandle.fire('pointerup', { clientX: -5000, clientY: -5000 });
+  assert.deepEqual(JSON.parse(store.get('qqj-panel-pos')), { left: 10, top: 10 }); assert.equal(panel.style.willChange, '');
+  const saved = store.get('qqj-panel-pos'); dragHandle.fire('pointerdown', { clientX: 10, clientY: 10 }); dragHandle.fire('pointermove', { clientX: 100, clientY: 100 }); dragHandle.fire('pointercancel'); assert.equal(store.get('qqj-panel-pos'), saved); assert.equal(panel.classList.contains('is-gesturing'), false);
+  dragHandle.fire('pointerdown', { clientX: 10, clientY: 10 }); dragHandle.fire('pointermove', { clientX: 100, clientY: 100 }); dragHandle.fire('lostpointercapture'); assert.equal(store.get('qqj-panel-pos'), saved);
+  dragHandle.fire('pointerdown', { clientX: 10, clientY: 10 }); dragHandle.fire('pointermove', { clientX: 100, clientY: 100 }); harness.viewport.fire('resize'); assert.equal(panel.classList.contains('is-gesturing'), false); assert.equal(store.get('qqj-panel-pos'), saved);
+});
+
+test('桌面拉伸按视口和 500×420 clamp，只写设备偏好；临时缩屏与手机切换不污染保存值', () => {
+  const harness = geometryHarness({ saved: { 'qqj-panel-size': JSON.stringify({ width: 900, height: 700 }), 'qqj-panel-pos': '{坏 JSON' } });
+  const { panel, resizeHandle, viewport, store } = harness; assert.equal(panel.style.width, '900px'); assert.equal(panel.style.height, '700px'); assert.equal(panel.style.right, '20px');
+  resizeHandle.fire('pointerdown', { clientX: 0, clientY: 0 }); resizeHandle.fire('pointermove', { clientX: -5000, clientY: -5000 }); resizeHandle.fire('pointerup', { clientX: -5000, clientY: -5000 });
+  assert.equal(panel.style.width, '500px'); assert.equal(panel.style.height, '420px'); assert.deepEqual(JSON.parse(store.get('qqj-panel-size')), { width: 500, height: 420 });
+  resizeHandle.fire('pointerdown', { clientX: 0, clientY: 0 }); resizeHandle.fire('pointermove', { clientX: 5000, clientY: 5000 }); resizeHandle.fire('pointerup', { clientX: 5000, clientY: 5000 });
+  assert.equal(panel.style.width, '910px'); assert.equal(panel.style.height, '1030px'); assert.deepEqual(JSON.parse(store.get('qqj-panel-size')), { width: 910, height: 1030 });
+  store.set('qqj-panel-size', JSON.stringify({ width: 900, height: 700 })); viewport.innerWidth = 800; viewport.innerHeight = 600; viewport.fire('resize');
+  assert.equal(panel.style.width, '780px'); assert.equal(panel.style.height, '580px'); assert.deepEqual(JSON.parse(store.get('qqj-panel-size')), { width: 900, height: 700 });
+  viewport.innerWidth = 640; viewport.innerHeight = 900; viewport.fire('resize');
+  for (const property of ['left', 'top', 'right', 'width', 'height', 'maxWidth', 'maxHeight', 'transform']) assert.equal(panel.style[property], '');
+  resizeHandle.fire('pointerdown', { clientX: 0, clientY: 0 }); resizeHandle.fire('pointermove', { clientX: 100, clientY: 100 }); resizeHandle.fire('pointerup'); assert.deepEqual(JSON.parse(store.get('qqj-panel-size')), { width: 900, height: 700 });
+  viewport.innerWidth = 1920; viewport.innerHeight = 1080; viewport.fire('resize'); assert.equal(panel.style.width, '900px'); assert.equal(panel.style.height, '700px');
 });
 
 test('真实 dist bootstrap 生命周期：默认隐藏、唯一打开、关闭/Escape恢复焦点且 setState 不自动打开', async () => {

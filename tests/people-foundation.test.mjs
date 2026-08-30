@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BASIC_FIELD_KEYS, createFoundationAwarePeopleAdapter, createPeopleFoundationAdapter, normalizePeopleProfile, PEOPLE_STATE_RECORD_ID } from '../src/people-foundation.js';
+import { BASIC_FIELD_KEYS, DYNAMIC_FIELD_KEYS, createFoundationAwarePeopleAdapter, createPeopleFoundationAdapter, normalizePeopleProfile, PEOPLE_STATE_RECORD_ID } from '../src/people-foundation.js';
 import { createCRegistryAdapter } from '../src/c-registry.js';
 import { createRuntimeRunner } from '../src/runtime-runner.js';
 
@@ -160,6 +160,7 @@ test('宽松补全旧档保留事实、锁、待确认、未知顶层与扩展 s
     locks: { field: 'name' }, pendingReview: '待确认',
     sourceRefs: [{ kind: 'future-ref', locator: 'extension:x', extra: { keep: true } }, 'legacy-ref'],
     basicFields: { appearance: { value: '旧外貌', provenance: 'user', futureMeta: { keep: true } }, futureField: { value: '保留未知字段' } },
+    dynamicFields: { currentGoals: { value: '寻找失踪的妹妹', provenance: 'user', futureMeta: { keep: true } }, futureDynamic: { value: '保留未知动态字段' } },
     futureExtension: { nested: ['必须保留'] },
   });
   const records = baseRecords(); records[`${profiles}/${c1}`] = envelope(legacy);
@@ -176,12 +177,14 @@ test('宽松补全旧档保留事实、锁、待确认、未知顶层与扩展 s
   assert.deepEqual(saved.sourceRefs[0], { kind: 'future-ref', locator: 'extension:x', extra: { keep: true } });
   assert.equal(saved.sourceRefs.includes('legacy-ref'), true);
   assert.deepEqual(saved.basicFields.appearance.futureMeta, { keep: true }); assert.equal(saved.basicFields.futureField.value, '保留未知字段');
+  assert.deepEqual(saved.dynamicFields.currentGoals.futureMeta, { keep: true }); assert.equal(saved.dynamicFields.futureDynamic.value, '保留未知动态字段');
   assert.equal(client.records.get(`${profiles}/${personaId}`).data.unknownTop, 42);
   assert.equal(puts(client).some(call => call.collection === profiles && call.id === personaId), false);
 });
 
 test('纯函数读取宽容但关键身份失败关闭；高版本保守只读', () => {
   assert.deepEqual(BASIC_FIELD_KEYS, ['gender', 'age', 'appearance', 'personality', 'identity', 'nsfwPreferences', 'abilities', 'likes', 'dislikes', 'principles', 'relationships']);
+  assert.deepEqual(DYNAMIC_FIELD_KEYS, ['personalityState', 'currentGoals', 'currentSituation', 'currentSecrets', 'wellbeing', 'stableChanges']);
   const required = { chatId, identityId: personaId, subject: 'user', sourceRefs: [{ kind: 'persona', locator: 'me.png' }], sourceBinding: { kind: 'persona', identityId: personaId, locator: 'me.png' } };
   assert.equal(normalizePeopleProfile({ schemaVersion: '1', subject: 'persona', sourceFacts: '旧事实' }, required).data.sourceFacts[0], '旧事实');
   assert.throws(() => normalizePeopleProfile({ identityId: c1 }, required), error => error.foundationStatus === 'identity_mismatch');

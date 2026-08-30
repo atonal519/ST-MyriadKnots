@@ -57,11 +57,11 @@ async function load(identifier) {
     module = new SourceTextModule(await readFile(path, 'utf8'), { context, identifier });
   }
   cache.set(identifier, module);
-  if (module instanceof SourceTextModule) await module.link((specifier, referencing) => load(new URL(specifier, referencing.identifier).href));
   return module;
 }
 
 const entry = await load(pathToFileURL(resolve(root, 'index.js')).href);
+await entry.link((specifier, referencing) => load(new URL(specifier, referencing.identifier).href));
 await entry.evaluate();
 assert.equal(entry.status, 'evaluated');
 assert.equal(registrations.length, 1);
@@ -75,6 +75,8 @@ assert.equal(typeof registrations[0].api.startInitialRelationGeneration, 'functi
 assert.equal(typeof registrations[0].api.resumeInitialRelationGeneration, 'function');
 assert.equal(typeof registrations[0].api.getInitialRelationGenerationState, 'function');
 assert.equal(typeof registrations[0].api.adoptCurrentInitialRelationSources, 'function');
+assert.equal(typeof registrations[0].api.updateSelectedCharacterDynamicFields, 'function');
+assert.equal(typeof registrations[0].api.saveSelectedCharacterDynamicField, 'function');
 assert.equal(typeof registrations[0].api.cancelInitialRelationGeneration, 'function');
 assert.equal(typeof registrations[0].api.resolvePendingReview, 'function');
 for (const eventName of Object.values(host.eventTypes)) assert.equal(typeof eventHandlers.get(eventName), 'function', `missing event handler: ${eventName}`);

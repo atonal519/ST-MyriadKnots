@@ -5,6 +5,7 @@ export const PEOPLE_FOUNDATION_SCHEMA_VERSION = 1;
 export const PEOPLE_FOUNDATION_CONTRACT_VERSION = 1;
 export const PEOPLE_STATE_RECORD_ID = 'people-state';
 export const BASIC_FIELD_KEYS = Object.freeze(['gender', 'age', 'appearance', 'personality', 'identity', 'nsfwPreferences', 'abilities', 'likes', 'dislikes', 'principles', 'relationships']);
+export const DYNAMIC_FIELD_KEYS = Object.freeze(['personalityState', 'currentGoals', 'currentSituation', 'currentSecrets', 'wellbeing', 'stableChanges']);
 
 const INDEX_RECORD_ID = 'people-index';
 const PROFILE_KIND = 'people-profile';
@@ -92,7 +93,10 @@ export function normalizePeopleProfile(data, binding) {
   next.subject = normalizeSubject(input.subject, binding.subject);
   if (binding.displayName && (input.displayName === undefined || input.displayName === null || input.displayName === '')) next.displayName = binding.displayName;
   for (const key of ['sourceFacts', 'userFacts', 'interpretations', 'locks', 'pendingReview']) next[key] = looseList(input[key]);
-  if (binding.subject === 'character') next.basicFields = object(input.basicFields) ? clone(input.basicFields) : {};
+  if (binding.subject === 'character') {
+    next.basicFields = object(input.basicFields) ? clone(input.basicFields) : {};
+    next.dynamicFields = object(input.dynamicFields) ? clone(input.dynamicFields) : {};
+  }
   next.sourceRefs = mergeSourceRefs(input.sourceRefs, binding.sourceRefs || []);
   next.sourceBinding = mergeSourceBinding(input.sourceBinding, binding.sourceBinding);
   if (input.lifecycle === undefined || input.lifecycle === null || input.lifecycle === '') next.lifecycle = 'active';

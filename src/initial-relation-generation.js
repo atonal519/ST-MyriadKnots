@@ -3,7 +3,7 @@ import { sha256 } from './identity.js';
 import { computeStableFloorSnapshot } from './stable-floor.js';
 import { sameRouteSnapshot, summarizeFrozenSourceDiagnostics } from './route-source.js';
 import { parseJsonOutput } from './compact-api-client.js';
-import { BASIC_FIELD_KEYS } from './people-foundation.js';
+import { BASIC_FIELD_KEYS, DYNAMIC_FIELD_KEYS } from './people-foundation.js';
 
 export const INITIAL_RELATION_SCHEMA_VERSION = 1;
 export const INITIAL_RELATION_WRITER_ID = 'qianqianjie.initial-relation.v1';
@@ -13,7 +13,7 @@ export const LAST_ATTEMPT_MAX_CHARS = 4096;
 export const INITIAL_RELATION_SYSTEM_PROMPT = [
   'Create short evidence-backed relationship items for Myriad Knots.',
   'Return one JSON object with an items array. Each item uses only person, type, text, evidence, and optional relatedTo.',
-  'Use only the supplied U/C person codes and A/H evidence codes. Never return UUIDs, locators, fingerprints, quotes, confidence, or storage fields.',
+  'Use only the supplied U/C person codes and A/H evidence codes. evidence must be an array, for example "evidence":["A8"]; for multiple sources use "evidence":["A2","A4"]. Never return UUIDs, locators, fingerprints, quotes, confidence, or storage fields.',
   'source_fact uses only A evidence. interpretation includes at least one H evidence. Uncertain content uses review.',
   'One statement per item. It is valid to return an empty items array when there is no reliable result.',
 ].join(' ');
@@ -22,12 +22,27 @@ export const BASIC_INFO_LIMITS = Object.freeze({ maxItems: 12, maxFieldChars: 24
 export const BASIC_INFO_SYSTEM_PROMPT = [
   'Extract only explicit, stable character basics for Myriad Knots.',
   'Return one JSON object with a fields array. Each item uses only field, text, and evidence.',
-  `field is one of: ${BASIC_FIELD_KEYS.join(', ')}. Use only supplied A/H evidence codes.`,
+  `field is one of: ${BASIC_FIELD_KEYS.join(', ')}. Use only supplied A/H evidence codes; evidence must be an array, for example "evidence":["A8"], or "evidence":["A2","A4"].`,
   'Reasonable classification, synonym mapping, and concise rephrasing are allowed only when they add no facts.',
   'Map explicit source headings and synonyms: skills / abilities / 能力 / 技能 / 专长 / explicitly skilled at -> abilities; likes / preferences / 喜好 / 爱好 / explicitly prefers -> likes; dislikes / aversions / 厌恶 / 雷点 / explicitly dislikes -> dislikes; values_and_drives / values / principles / 原则 / 价值观 / stable drives -> principles; relationships / family / connections / 人际关系 / 亲属关系 / 稳定社会关系 -> relationships.',
   'Do not guess missing information. Do not include relationship stages, affection, or the character current attitude toward the user.',
   'Do not infer abilities, likes, dislikes, or principles from common knowledge, appearance, tone, or a single action.',
   'For relationships, extract only explicit stable family, friendship, colleague, hierarchy, or faction ties. Exclude current affection, emotion, romantic stage, and temporary conflict.',
+  'It is valid to return an empty fields array.',
+].join(' ');
+export const DYNAMIC_INFO_WRITER_ID = 'qianqianjie.dynamic-info.v1';
+export const DYNAMIC_INFO_LIMITS = Object.freeze({ maxItems: 6, maxFieldChars: 2400, maxOutputChars: 16000, maxTokens: 4000 });
+export const DYNAMIC_INFO_SYSTEM_PROMPT = [
+  'Extract only evidence-backed current personal state for the single target character in Myriad Knots.',
+  'Return one JSON object with a fields array. Each item uses only field, text, and evidence.',
+  `field is one of: ${DYNAMIC_FIELD_KEYS.join(', ')}. Use only supplied M/H evidence codes; evidence must be an array, for example "evidence":["M1"], or "evidence":["M1","H2"].`,
+  'M is compressed BaiBaiBook history and H is exact recent stable chat text. Prefer newer H when M and H differ, and never expand a compressed summary into a new fact.',
+  'Map fixed headings and synonyms to the allowed keys, but never invent a new field or unsupported fact.',
+  'personalityState is the currently expressed personality state; currentGoals are active personal or plot goals; currentSituation is the current predicament, pressure, environment, or position; currentSecrets are explicit still-hidden secrets; wellbeing is an ongoing physical or mental condition; stableChanges are genuinely established long-term changes.',
+  'Exclude momentary emotion, event logs, ordinary world events, equipment inventories, and unrelated NPC memories.',
+  'Never include affection, attitude, romantic intent, or relationship stage between the target and U. These belong to the relationship system.',
+  'A secret must be explicit rather than uncertain speculation. stableChanges requires repeated, long-term, or explicitly established change evidence; one action is insufficient.',
+  'For text, copy the shortest semantically complete continuous excerpt from exactly one cited source. Never paraphrase, summarize, substitute an object, or combine text across sources.',
   'It is valid to return an empty fields array.',
 ].join(' ');
 
@@ -54,6 +69,21 @@ const stale = () => Object.assign(new Error('首次关系生成已失效'), { st
 const chatCollection = chatId => `chat-${chatId}`;
 const profileCollection = chatId => `chat-${chatId}-people`;
 const normalizeText = value => String(value ?? '').replace(/\r\n?/g, '\n').trim();
+const EVIDENCE_CODE = /^[AHM]\d+$/iu;
+function normalizeEvidence(value) {
+  let codes;
+  if (typeof value === 'string') {
+    const plain = value.trim();
+    if (EVIDENCE_CODE.test(plain)) codes = [plain];
+    else if (/^(?:\[\s*[AHM]\d+\s*\])+$/iu.test(plain)) codes = [...plain.matchAll(/\[\s*([AHM]\d+)\s*\]/giu)].map(match => match[1]);
+    else return null;
+  } else if (Array.isArray(value)) {
+    if (value.length < 1 || value.length > 12 || value.some(code => typeof code !== 'string' || !EVIDENCE_CODE.test(code.trim()))) return null;
+    codes = value.map(code => code.trim());
+  } else return null;
+  const normalized = [...new Set(codes.map(code => code.toUpperCase()))];
+  return normalized.length >= 1 && normalized.length <= 12 ? normalized : null;
+}
 const basicAliasKey = value => normalizeText(value).normalize('NFKC').toLocaleLowerCase().replace(/[\s_-]+/gu, '_').replace(/^_+|_+$/g, '');
 const BASIC_FIELD_ALIASES = new Map();
 for (const [field, aliases] of Object.entries({
@@ -70,6 +100,16 @@ for (const [field, aliases] of Object.entries({
   relationships: ['relationships', 'relationship', 'family', 'connections', 'connection', '人际关系', '亲属关系', '稳定社会关系'],
 })) for (const alias of aliases) BASIC_FIELD_ALIASES.set(basicAliasKey(alias), field);
 const normalizeBasicField = value => BASIC_FIELD_ALIASES.get(basicAliasKey(value)) || null;
+const DYNAMIC_FIELD_ALIASES = new Map();
+for (const [field, aliases] of Object.entries({
+  personalityState: ['personalityState', 'personality_state', 'current_personality', 'current_personality_state', '当前性格状态', '性格状态'],
+  currentGoals: ['currentGoals', 'current_goals', 'current_goal', 'goals', 'goal', '当前目标', '目标'],
+  currentSituation: ['currentSituation', 'current_situation', 'situation', 'predicament', '当前处境', '处境'],
+  currentSecrets: ['currentSecrets', 'current_secrets', 'current_secret', 'secrets', 'secret', '当前秘密', '秘密'],
+  wellbeing: ['wellbeing', 'well_being', 'current_wellbeing', 'physical_mental_state', '当前身心状态', '身心状态'],
+  stableChanges: ['stableChanges', 'stable_changes', 'stable_change', 'long_term_changes', 'long_term_change', '长期稳定变化', '稳定变化'],
+})) for (const alias of aliases) DYNAMIC_FIELD_ALIASES.set(basicAliasKey(alias), field);
+const normalizeDynamicField = value => DYNAMIC_FIELD_ALIASES.get(basicAliasKey(value)) || null;
 const stableJson = value => JSON.stringify(value, (_key, item) => object(item)
   ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
 const digest = async value => `sha256:${await sha256(typeof value === 'string' ? value : stableJson(value))}`;
@@ -83,6 +123,7 @@ const API_SOURCES = new Set(['seven-utility', 'seven-main', 'seven-preset', 'loc
 const FINISH_REASONS = new Set(['stop', 'length', 'max_tokens', 'content_filter', 'tool_calls', 'function_call', 'other']);
 const BASIC_ATTEMPT_STATUSES = new Set(['ready', 'failed', 'conflict', 'stale', 'cancelled']);
 const BASIC_REJECTION_CODES = new Set(['item_not_object', 'item_too_large', 'unknown_property', 'unknown_field', 'invalid_text', 'invalid_evidence', 'unknown_evidence', 'duplicate_field', 'item_limit']);
+const DYNAMIC_REJECTION_CODES = new Set([...BASIC_REJECTION_CODES, 'relationship_scope', 'transient_state', 'uncertain_secret', 'evidence_mismatch', 'insufficient_stability']);
 const safeFormatStage = value => FORMAT_STAGES.has(value) ? value : 'none';
 const safeApiSource = value => API_SOURCES.has(value) ? value : 'unknown';
 const safeModel = value => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160) || 'unknown';
@@ -174,7 +215,7 @@ function captureTaskDiagnostics(attempt, value, { resetFormatStage = false } = {
 }
 
 function newBasicAttempt(targetIdentityId, sources) {
-  const sourceKinds = { card: 0, greeting: 0, worldbook: 0, chat: 0 };
+  const sourceKinds = { card: 0, greeting: 0, worldbook: 0, chat: 0, memory: 0 };
   for (const source of sources) if (Object.hasOwn(sourceKinds, source?.kind)) sourceKinds[source.kind] += 1;
   return {
     attemptedAt: new Date().toISOString(), status: 'failed', aiCalled: false, targetIdentityId,
@@ -203,6 +244,13 @@ function basicAttemptRecord(attempt, status = attempt.status) {
   };
 }
 
+function dynamicAttemptRecord(attempt, status = attempt.status) {
+  const output = basicAttemptRecord(attempt, status);
+  output.sourceKinds.memory = safeCount(attempt.sourceKinds?.memory);
+  output.rejectionCodes = [...new Set((Array.isArray(attempt.rejectionCodes) ? attempt.rejectionCodes : []).filter(code => DYNAMIC_REJECTION_CODES.has(code)))].slice(0, 12);
+  return output;
+}
+
 const relationFailure = (formatStage, message) => {
   const error = fail('failed_retryable', message, true);
   error.formatStage = formatStage;
@@ -227,7 +275,7 @@ export const INITIAL_RELATION_PATCH_SCHEMA = Object.freeze({
   $defs: {
     item: { type: 'object', additionalProperties: true, required: ['person', 'type', 'text', 'evidence'], properties: {
       person: { type: 'string' }, type: { type: 'string' }, text: { type: 'string', minLength: 1, maxLength: INITIAL_RELATION_LIMITS.maxItemChars },
-      evidence: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'string' } }, relatedTo: { type: 'string' },
+      evidence: { anyOf: [{ type: 'string' }, { type: 'array', minItems: 1, maxItems: 12, items: { type: 'string' } }] }, relatedTo: { type: 'string' },
     } },
   },
 });
@@ -237,7 +285,17 @@ export const BASIC_INFO_SCHEMA = Object.freeze({
   properties: {
     fields: { type: 'array', maxItems: BASIC_INFO_LIMITS.maxItems, items: { type: 'object', additionalProperties: true, required: ['field', 'text', 'evidence'], properties: {
       field: { type: 'string' }, text: { type: 'string', minLength: 1, maxLength: BASIC_INFO_LIMITS.maxFieldChars },
-      evidence: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'string' } },
+      evidence: { anyOf: [{ type: 'string' }, { type: 'array', minItems: 1, maxItems: 12, items: { type: 'string' } }] },
+    } } },
+  },
+});
+
+export const DYNAMIC_INFO_SCHEMA = Object.freeze({
+  type: 'object', additionalProperties: true,
+  properties: {
+    fields: { type: 'array', maxItems: DYNAMIC_INFO_LIMITS.maxItems, items: { type: 'object', additionalProperties: true, required: ['field', 'text', 'evidence'], properties: {
+      field: { type: 'string' }, text: { type: 'string', minLength: 1, maxLength: DYNAMIC_INFO_LIMITS.maxFieldChars },
+      evidence: { anyOf: [{ type: 'string' }, { type: 'array', minItems: 1, maxItems: 12, items: { type: 'string' } }] },
     } } },
   },
 });
@@ -261,14 +319,90 @@ export function validateBasicInfoResult(response, { sources } = {}) {
     if (!field || !BASIC_FIELD_KEYS.includes(field)) { rejected.push('unknown_field'); continue; }
     const text = normalizeText(raw.text);
     if (!text || text.length > BASIC_INFO_LIMITS.maxFieldChars) { rejected.push('invalid_text'); continue; }
-    if (!Array.isArray(raw.evidence) || raw.evidence.length < 1 || raw.evidence.length > 12) { rejected.push('invalid_evidence'); continue; }
-    const codes = [...new Set(raw.evidence.map(code => String(code ?? '').trim().toUpperCase()))];
+    const codes = normalizeEvidence(raw.evidence);
+    if (!codes) { rejected.push('invalid_evidence'); continue; }
     if (!codes.length || codes.some(code => !evidence.has(code))) { rejected.push('unknown_evidence'); continue; }
     if (accepted.has(field)) { rejected.push('duplicate_field'); continue; }
     const sourceRefs = codes.map(code => clone(evidence.get(code)));
     accepted.set(field, { value: text, provenance: codes.some(code => code.startsWith('H')) ? 'ai' : 'source', sourceRefs });
   }
   if (rawFields.length > BASIC_INFO_LIMITS.maxItems) rejected.push('item_limit');
+  return { fields: Object.fromEntries(accepted), diagnostics: { acceptedFields: accepted.size, rejectedFields: rejected.length, rejectionCodes: [...new Set(rejected)].slice(0, 12), emptyResult: rawFields.length === 0 } };
+}
+
+const RELATIONSHIP_DYNAMIC_TEXT = /(?:\b[CU]\s*(?:->|→)\s*[CU]\b|好感|关系阶段|恋爱阶段|暧昧阶段|(?:对|向)\s*(?:U|用户|\{\{user\}\}).{0,24}(?:态度|喜欢|爱慕|恋爱|追求|暧昧|结婚)|(?:想|要|试图|打算).{0,12}(?:追求|恋爱|结婚).{0,12}(?:U|用户|\{\{user\}\}))/iu;
+const RELATIONSHIP_ACTION = '(?:好感|态度|喜欢|爱慕|恋爱|追求|暧昧|结婚|表白|爱上|亲密(?:关系)?|关系阶段)';
+const TRANSIENT_DYNAMIC_TEXT = /(?:(?:此刻|刚才|刚刚|一时|突然|当下|这一刻|片刻|短暂).{0,18}(?:高兴|开心|愤怒|生气|害怕|恐惧|难过|悲伤|紧张|焦虑|震惊|尴尬|兴奋|沮丧|情绪|心情)|(?:高兴|开心|愤怒|生气|害怕|恐惧|难过|悲伤|紧张|焦虑|震惊|尴尬|兴奋|沮丧).{0,8}(?:一下|片刻|一会儿))/iu;
+const UNCERTAIN_SECRET_TEXT = /(?:可能|也许|或许|疑似|似乎|大概|不确定|推测|猜测|speculat|uncertain|\bmaybe\b|\bperhaps\b)/iu;
+const STABLE_CHANGE_EVIDENCE = /(?:(?:\d+|[一二三四五六七八九十百]+)年(?:来|以来)?|多年|年来|每次|总是|反复|一直|逐渐|养成|形成.{0,10}习惯|长期|长久|已经改变|已改变|从此|不再|稳定|permanent|long[- ]term|repeated|always|gradually|established|changed for good)/iu;
+const GOAL_EVIDENCE = /(?:目标|计划|打算|决定|致力于|试图|正在(?:寻找|追查|修复|完成|保护|守护|逃离|调查)|\bgoal\b|\bplan(?:s|ned)?\b|intend|seek|trying to)/iu;
+const SECRET_EVIDENCE = /(?:秘密|隐瞒|瞒着|未公开|保密|无人(?:知道|知晓)|没有人知道|不为人知|(?:从未|未曾).{0,16}(?:告诉|说过|透露)|\bsecret\b|conceal|hidden|never told|no one knows)/iu;
+
+const regexEscape = value => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function isRelationshipDynamicText(text, relationshipNames = []) {
+  if (RELATIONSHIP_DYNAMIC_TEXT.test(text)) return true;
+  return relationshipNames.some(rawName => {
+    const name = normalizeText(rawName);
+    if (name.length < 2) return false;
+    const escaped = regexEscape(name);
+    return new RegExp(`(?:${RELATIONSHIP_ACTION}.{0,18}${escaped}|${escaped}.{0,18}${RELATIONSHIP_ACTION})`, 'iu').test(text);
+  });
+}
+
+const EXCERPT_PUNCTUATION = new Map([
+  [',', '，'], ['，', '，'], [';', '；'], ['；', '；'], [':', '：'], ['：', '：'], ['.', '。'], ['。', '。'],
+  ['!', '！'], ['！', '！'], ['?', '？'], ['？', '？'], ['“', '"'], ['”', '"'], ['‘', "'"], ['’', "'"], ['—', '-'], ['–', '-'],
+]);
+function normalizeExcerpt(value) {
+  return normalizeText(value).normalize('NFKC').toLocaleLowerCase()
+    .replace(/\s+/gu, ' ')
+    .replace(/\s*([,，;；:：.。!?！？“”‘’—–])\s*/gu, mark => EXCERPT_PUNCTUATION.get(mark.trim()) || mark.trim())
+    .trim();
+}
+
+function supportingExcerptSources(text, contents) {
+  const excerpt = normalizeExcerpt(text);
+  if (!excerpt) return [];
+  return contents.filter(content => normalizeExcerpt(content).includes(excerpt));
+}
+
+export function validateDynamicInfoResult(response, { sources, relationshipNames = [] } = {}) {
+  const value = unwrapResult(response);
+  if (stableJson(value).length > DYNAMIC_INFO_LIMITS.maxOutputChars) throw fail('failed_retryable', '动态状态输出超过保存预算');
+  const rawFields = value.fields === undefined ? [] : value.fields;
+  if (!Array.isArray(rawFields)) throw fail('failed_retryable', '动态状态 fields 外壳无效');
+  const evidence = new Map(); let authorIndex = 0, historyIndex = 0, memoryIndex = 0;
+  for (const source of sources || []) {
+    const code = source?.kind === 'memory' ? `M${++memoryIndex}` : source?.kind === 'chat' ? `H${++historyIndex}` : `A${++authorIndex}`;
+    evidence.set(code, { ref: { kind: source.kind, locator: source.locator, fingerprint: source.fingerprint }, content: normalizeText(source.content) });
+  }
+  const accepted = new Map(), rejected = [];
+  for (const raw of rawFields.slice(0, DYNAMIC_INFO_LIMITS.maxItems)) {
+    if (!object(raw)) { rejected.push('item_not_object'); continue; }
+    if (stableJson(raw).length > DYNAMIC_INFO_LIMITS.maxFieldChars * 4) { rejected.push('item_too_large'); continue; }
+    if (Object.keys(raw).some(key => !['field', 'text', 'evidence'].includes(key))) { rejected.push('unknown_property'); continue; }
+    const field = normalizeDynamicField(raw.field);
+    if (!field || !DYNAMIC_FIELD_KEYS.includes(field)) { rejected.push('unknown_field'); continue; }
+    const text = normalizeText(raw.text);
+    if (!text || text.length > DYNAMIC_INFO_LIMITS.maxFieldChars) { rejected.push('invalid_text'); continue; }
+    const codes = normalizeEvidence(raw.evidence);
+    if (!codes) { rejected.push('invalid_evidence'); continue; }
+    if (!codes.length || codes.some(code => !evidence.has(code))) { rejected.push('unknown_evidence'); continue; }
+    if (isRelationshipDynamicText(text, relationshipNames)) { rejected.push('relationship_scope'); continue; }
+    if (TRANSIENT_DYNAMIC_TEXT.test(text)) { rejected.push('transient_state'); continue; }
+    if (field === 'currentSecrets' && UNCERTAIN_SECRET_TEXT.test(text)) { rejected.push('uncertain_secret'); continue; }
+    const contents = codes.map(code => evidence.get(code).content);
+    const supportingSources = supportingExcerptSources(text, contents);
+    if (!supportingSources.length) { rejected.push('evidence_mismatch'); continue; }
+    const normalizedExcerpt = normalizeExcerpt(text);
+    if (field === 'currentGoals' && !GOAL_EVIDENCE.test(normalizedExcerpt)) { rejected.push('evidence_mismatch'); continue; }
+    if (field === 'currentSecrets' && !SECRET_EVIDENCE.test(normalizedExcerpt)) { rejected.push('evidence_mismatch'); continue; }
+    if (field === 'stableChanges' && !STABLE_CHANGE_EVIDENCE.test(normalizedExcerpt)) { rejected.push('insufficient_stability'); continue; }
+    if (accepted.has(field)) { rejected.push('duplicate_field'); continue; }
+    const sourceRefs = codes.map(code => clone(evidence.get(code).ref));
+    accepted.set(field, { value: text, provenance: codes.some(code => code.startsWith('H') || code.startsWith('M')) ? 'ai' : 'source', sourceRefs });
+  }
+  if (rawFields.length > DYNAMIC_INFO_LIMITS.maxItems) rejected.push('item_limit');
   return { fields: Object.fromEntries(accepted), diagnostics: { acceptedFields: accepted.size, rejectedFields: rejected.length, rejectionCodes: [...new Set(rejected)].slice(0, 12), emptyResult: rawFields.length === 0 } };
 }
 
@@ -340,8 +474,8 @@ export function validateInitialRelationResult(response, { targetIdentityIds, all
     if (!type) { rejected('unknown_type'); continue; }
     const text = normalizeText(raw.text);
     if (!text || text.length > INITIAL_RELATION_LIMITS.maxItemChars) { rejected('invalid_text'); continue; }
-    if (!Array.isArray(raw.evidence) || raw.evidence.length < 1 || raw.evidence.length > 12) { rejected('invalid_evidence'); continue; }
-    const codes = [...new Set(raw.evidence.map(code => String(code ?? '').trim().toUpperCase()))];
+    const codes = normalizeEvidence(raw.evidence);
+    if (!codes) { rejected('invalid_evidence'); continue; }
     if (!codes.length || codes.some(code => !evidence.has(code))) { rejected('unknown_evidence'); continue; }
     if ((type === 'source_fact' && codes.some(code => !code.startsWith('A'))) || (type === 'interpretation' && !codes.some(code => code.startsWith('H')))) { rejected('evidence_policy'); continue; }
     const relatedCode = raw.relatedTo === undefined || raw.relatedTo === null || raw.relatedTo === '' ? '' : String(raw.relatedTo).trim().toUpperCase();
@@ -436,6 +570,7 @@ function promptFor(plan, retry = false) {
   }).join('\n\n');
   return [
     '返回 {"items":[...]}。每条只写 person、type、text、evidence，可选 relatedTo。一个内容一个 item；不要求覆盖每个目标。',
+    'evidence 必须是数组，例如 "evidence":["A8"]；多来源写成 "evidence":["A2","A4"]。',
     'type 只用 source_fact、interpretation、review。source_fact 只引用 A；interpretation 至少引用一个 H；不确定内容用 review。',
     '只复制 U/C 与 A/H 短代号。不要输出 UUID、locator、fingerprint、anchor、confidence、sourceRefs 或任何存储字段。没有可靠内容时返回 {"items":[]}。',
     ...(retry ? ['上一次没有得到可安全采用的 item。只修正 JSON、人物代号、类型和证据代号，不得新增来源。'] : []),
@@ -453,6 +588,7 @@ function basicInfoPrompt(plan, target, sources) {
   }).join('\n\n');
   return [
     '返回 {"fields":[...]}。每条只写 field、text、evidence；同一 field 最多一条。',
+    'evidence 必须是数组，例如 "evidence":["A8"]；多来源写成 "evidence":["A2","A4"]。',
     `field 只允许：${BASIC_FIELD_KEYS.join('、')}。`,
     '只提取明确且稳定的角色基础信息。没有证据的字段不要返回；不要猜测，不要用“未知”“未提及”等占位。',
     '允许不增加事实的合理分类、同义栏目映射和简洁整理。明确映射：skills / abilities / 能力 / 技能 / 专长 / 明确擅长 → abilities；likes / preferences / 喜好 / 爱好 / 明确偏爱 → likes；dislikes / aversions / 厌恶 / 雷点 / 明确不喜欢 → dislikes；values_and_drives / values / principles / 原则 / 价值观 / 稳定驱动力 → principles；relationships / family / connections / 人际关系 / 亲属关系 / 稳定社会关系 → relationships。',
@@ -460,6 +596,29 @@ function basicInfoPrompt(plan, target, sources) {
     '不得从常识、外貌、语气或一次行为推测能力、喜好、厌恶或原则。',
     'relationships 只记录来源明确且相对稳定的亲属、朋友、同僚、上下级或所属势力等，例如“郑柠：亲生妹妹”“U：自幼相识的至交”；不得写当前好感、情绪、暧昧/关系阶段或临时矛盾。',
     '不要写关系阶段、好感、角色对 U 的当前态度。只使用 A/H 短代号，不要输出 UUID、locator、fingerprint 或存储字段。',
+    `目标 C：${target.displayName || '(unnamed)'}`,
+    `证据表：\n${evidence}`,
+  ].join('\n\n');
+}
+
+function dynamicInfoPrompt(target, sources) {
+  let historyIndex = 0, memoryIndex = 0;
+  const evidence = sources.map(source => {
+    const code = source.kind === 'memory' ? `M${++memoryIndex}` : `H${++historyIndex}`;
+    return `[${code}] type=${source.kind}\n${source.content}`;
+  }).join('\n\n');
+  return [
+    '返回 {"fields":[...]}。每条只写 field、text、evidence；同一 field 最多一条。',
+    'evidence 必须是数组，例如 "evidence":["M1"]；多来源写成 "evidence":["M1","H2"]。',
+    'M 是柏宝书压缩历史，H 是当前 Canon 中的近期精确正文；H 按时间从旧到新编号。M 与 H 冲突时优先信任更新的 H，不得把压缩摘要扩写成新事实。',
+    `field 只允许：${DYNAMIC_FIELD_KEYS.join('、')}。`,
+    '固定映射：personality_state / current_personality / 当前性格状态 → personalityState；goals / current_goals / 当前目标 → currentGoals；situation / predicament / 当前处境 → currentSituation；secrets / current_secrets / 当前秘密 → currentSecrets；wellbeing / physical_mental_state / 当前身心状态 → wellbeing；stable_changes / long_term_changes / 长期稳定变化 → stableChanges。',
+    '只整理目标 C 目前仍成立的个人状态。text 必须复制某一条所引证据里的最短但语义完整的连续原文片段；禁止改写、概括、替换关键对象或跨来源拼接。资料不足就不返回该字段，不写“未知”“未提及”等占位。',
+    'personalityState 写基础性格在当前阶段的表现或尚未稳定的偏移；currentGoals 写正在追求的个人或剧情目标；currentSituation 写现实压力、困局、环境或立场处境；currentSecrets 只写来源明确且仍未公开/仍在隐瞒的秘密；wellbeing 写持续的伤病、精神压力或能力受限；stableChanges 只写反复出现、长期形成或来源明确宣告已经稳定的改变。',
+    '不得把一次行为扩成 stableChanges；不得把可能、猜测或不确定推断写成 currentSecrets。',
+    '排除瞬时情绪、当前事件流水、普通世界事件、装备资产清单和无关 NPC 记忆。',
+    '严格排除 C→U / U→C 的态度、好感、恋爱或关系目标、暧昧与关系阶段，即使来源出现也不要写入任何动态字段。',
+    '只使用 M/H 短代号，不要输出 UUID、locator、fingerprint、writerId、operationId 或其他存储字段。',
     `目标 C：${target.displayName || '(unnamed)'}`,
     `证据表：\n${evidence}`,
   ].join('\n\n');
@@ -501,6 +660,20 @@ function basicInfoSources(plan, target, ctx) {
     if (source.kind === 'chat') return basicTargetText(source, target);
     return false;
   });
+}
+
+async function dynamicMemorySnapshot(memorySource) {
+  const text = normalizeText(memorySource?.readRelativeText?.());
+  return { text, fingerprint: await digest(text) };
+}
+
+async function dynamicInfoSources(plan, target, memorySnapshot) {
+  const sources = [];
+  if (memorySnapshot.text && basicTargetText({ content: memorySnapshot.text }, target)) sources.push({
+    kind: 'memory', locator: 'baibai-book:injected-history:relativeText', fingerprint: memorySnapshot.fingerprint, content: memorySnapshot.text,
+  });
+  for (const source of plan.sources) if (source.kind === 'chat' && basicTargetText(source, target)) sources.push(source);
+  return sources;
 }
 
 async function materializePatch(patch, operationId, baselineDigest) {
@@ -583,7 +756,7 @@ async function validateRecoveryDraft(draft, plan) {
   return draft;
 }
 
-export function createInitialRelationGenerationAdapter({ client, contextProvider, routeSource, generateRelationTask, isEnabled = () => true } = {}) {
+export function createInitialRelationGenerationAdapter({ client, contextProvider, routeSource, generateRelationTask, memorySource, isEnabled = () => true } = {}) {
   if (!client?.get || !client?.put || typeof contextProvider !== 'function' || !routeSource?.collectFrozenAnalysisSources || typeof generateRelationTask !== 'function') throw new Error('首次关系生成依赖不可用');
   let generation = 0, invalidationEpoch = 0, serial = Promise.resolve(), activeController = null;
   const cache = new Map();
@@ -745,6 +918,15 @@ export function createInitialRelationGenerationAdapter({ client, contextProvider
 
   async function persistBasicAttempt(run, plan, attempt, status = attempt.status) {
     const desired = { ...clone(plan.stateRecord.data), lastBasicAttempt: basicAttemptRecord(attempt, status) };
+    try {
+      const record = await write(run, chatCollection(run.state.chatId), 'people-state', desired, plan.stateRecord.revision);
+      plan.stateRecord = record;
+      return true;
+    } catch { return false; }
+  }
+
+  async function persistDynamicAttempt(run, plan, attempt, status = attempt.status) {
+    const desired = { ...clone(plan.stateRecord.data), lastDynamicAttempt: dynamicAttemptRecord(attempt, status) };
     try {
       const record = await write(run, chatCollection(run.state.chatId), 'people-state', desired, plan.stateRecord.revision);
       plan.stateRecord = record;
@@ -1074,6 +1256,81 @@ export function createInitialRelationGenerationAdapter({ client, contextProvider
     return { status: 'ready', operationId, ...validated.diagnostics, skippedUserFields };
   }
 
+  async function updateDynamicFieldsRun(run, options = {}) {
+    const plan = await loadPlan(run);
+    if (plan.blockedStatus) return { status: plan.blockedStatus, zeroAi: true };
+    const characters = plan.members.filter(item => item.subject === 'character');
+    const target = options.identityId ? characters.find(item => item.identityId === options.identityId) : characters[0];
+    if (!target || !plan.profiles.has(target.identityId)) return { status: 'no_selected_character', zeroAi: true };
+    const memoryBefore = await dynamicMemorySnapshot(memorySource); check(run);
+    const sources = await dynamicInfoSources(plan, target, memoryBefore);
+    const attempt = newBasicAttempt(target.identityId, sources);
+    const chars = sources.reduce((sum, source) => sum + source.content.length, 0);
+    if (sources.length > INITIAL_RELATION_LIMITS.maxSources || chars > INITIAL_RELATION_LIMITS.maxInputChars || sources.some(source => source.content.length > INITIAL_RELATION_LIMITS.maxSourceChars)) {
+      await persistDynamicAttempt(run, plan, attempt, 'failed');
+      return { status: 'input_too_large', zeroAi: true };
+    }
+    if (!sources.length) {
+      attempt.emptyResult = true;
+      await persistDynamicAttempt(run, plan, attempt, 'ready');
+      return { status: 'ready', zeroAi: true, zeroWrite: true, acceptedFields: 0, rejectedFields: 0, rejectionCodes: [], emptyResult: true };
+    }
+    activeController = new AbortController();
+    let validated;
+    const assertMemoryStable = async () => {
+      const currentMemory = await dynamicMemorySnapshot(memorySource); check(run);
+      if (currentMemory.fingerprint !== memoryBefore.fingerprint) throw stale();
+    };
+    try {
+      attempt.aiCalled = true;
+      const response = await generateRelationTask({
+        includeCharacterCard: false, worldInfoSource: 'none', substituteMacros: false, systemPrompt: DYNAMIC_INFO_SYSTEM_PROMPT,
+        taskMessages: [{ role: 'user', content: dynamicInfoPrompt(target, sources) }], jsonSchema: { name: 'qianqianjie_dynamic_info_v1', value: DYNAMIC_INFO_SCHEMA, strict: false },
+        signal: activeController.signal, maxTokens: DYNAMIC_INFO_LIMITS.maxTokens, temperature: 0.1,
+      });
+      check(run); await assertMemoryStable(); captureTaskDiagnostics(attempt, response);
+      const relationshipNames = plan.members.filter(item => item.subject === 'user').map(item => item.displayName).filter(Boolean);
+      validated = validateDynamicInfoResult(response, { sources, relationshipNames });
+      attempt.acceptedFields = validated.diagnostics.acceptedFields;
+      attempt.rejectedFields = validated.diagnostics.rejectedFields;
+      attempt.rejectionCodes = validated.diagnostics.rejectionCodes;
+      attempt.emptyResult = validated.diagnostics.emptyResult;
+    } catch (error) {
+      captureTaskDiagnostics(attempt, error);
+      if (!error.stale && error.name !== 'AbortError') {
+        await assertMemoryStable();
+        try {
+          const authoritative = await assertBaseline(run, plan.baseline);
+          await persistDynamicAttempt(run, authoritative, attempt, error.relationStatus === 'conflict' ? 'conflict' : 'failed');
+        } catch { /* failed diagnostics must not outlive their authoritative baseline */ }
+      }
+      throw error;
+    } finally { activeController = null; }
+    const current = await assertBaseline(run, plan.baseline);
+    await assertMemoryStable();
+    const record = current.profiles.get(target.identityId);
+    if (!record) throw fail('mismatch', '当前 C 档案已变化');
+    const dynamicFields = object(record.data.dynamicFields) ? clone(record.data.dynamicFields) : {};
+    const operationId = newUuid(); let changed = false, skippedUserFields = 0;
+    for (const [field, value] of Object.entries(validated.fields)) {
+      if (dynamicFields[field]?.provenance === 'user') { skippedUserFields += 1; continue; }
+      dynamicFields[field] = { ...clone(value), writerId: DYNAMIC_INFO_WRITER_ID, operationId };
+      changed = true;
+    }
+    if (!changed) {
+      await persistDynamicAttempt(run, current, attempt, 'ready');
+      return { status: 'ready', zeroWrite: true, ...validated.diagnostics, skippedUserFields };
+    }
+    const desired = { ...clone(record.data), dynamicFields };
+    try { await write(run, profileCollection(run.state.chatId), target.identityId, desired, record.revision); attempt.profileWrites = 1; }
+    catch (error) {
+      if (error.status === 409) { await persistDynamicAttempt(run, current, attempt, 'conflict'); return { status: 'conflict', recoverable: true }; }
+      await persistDynamicAttempt(run, current, attempt, 'failed'); throw error;
+    }
+    await persistDynamicAttempt(run, current, attempt, 'ready');
+    return { status: 'ready', operationId, ...validated.diagnostics, skippedUserFields };
+  }
+
   async function saveBasicFieldRun(run, { identityId, field, value } = {}) {
     if (!BASIC_FIELD_KEYS.includes(field)) throw fail('mismatch', '基础字段无效');
     const text = normalizeText(value);
@@ -1083,6 +1340,21 @@ export function createInitialRelationGenerationAdapter({ client, contextProvider
     if (text) basicFields[field] = { value: text, provenance: 'user', sourceRefs: [], locked: true, writerId: 'qianqianjie.user', operationId: newUuid() };
     else delete basicFields[field];
     const desired = { ...clone(current.profile.data), basicFields };
+    if (same(desired, current.profile.data)) return { status: 'ready', unchanged: true };
+    try { await write(run, profileCollection(run.state.chatId), identityId, desired, current.profile.revision); }
+    catch (error) { if (error.status === 409) return { status: 'conflict', recoverable: true }; throw error; }
+    return { status: 'ready', field, cleared: !text };
+  }
+
+  async function saveDynamicFieldRun(run, { identityId, field, value } = {}) {
+    if (!DYNAMIC_FIELD_KEYS.includes(field)) throw fail('mismatch', '动态字段无效');
+    const text = normalizeText(value);
+    if (text.length > DYNAMIC_INFO_LIMITS.maxFieldChars) throw fail('invalid_text', '动态字段内容过长');
+    const current = await loadSelectedProfile(run, identityId);
+    const dynamicFields = object(current.profile.data.dynamicFields) ? clone(current.profile.data.dynamicFields) : {};
+    if (text) dynamicFields[field] = { value: text, provenance: 'user', sourceRefs: [], locked: true, writerId: 'qianqianjie.user', operationId: newUuid() };
+    else delete dynamicFields[field];
+    const desired = { ...clone(current.profile.data), dynamicFields };
     if (same(desired, current.profile.data)) return { status: 'ready', unchanged: true };
     try { await write(run, profileCollection(run.state.chatId), identityId, desired, current.profile.revision); }
     catch (error) { if (error.status === 409) return { status: 'conflict', recoverable: true }; throw error; }
@@ -1107,6 +1379,8 @@ export function createInitialRelationGenerationAdapter({ client, contextProvider
     start: () => enqueue(startRun), resume: () => enqueue(resumeRun), adoptCurrentSources: () => enqueue(adoptCurrentSourcesRun), cancel: invalidate, invalidate,
     extractBasicInfo: options => enqueue(run => extractBasicInfoRun(run, options)),
     saveBasicField: options => enqueue(run => saveBasicFieldRun(run, options)),
+    updateDynamicFields: options => enqueue(run => updateDynamicFieldsRun(run, options)),
+    saveDynamicField: options => enqueue(run => saveDynamicFieldRun(run, options)),
     getState: () => { const state = snapshot().state; return state.ok ? clone(cache.get(state.chatId) || { schemaVersion: 1, status: 'uninitialized', completedMemberIds: [] }) : { status: 'mismatch' }; },
   };
 }
