@@ -18,25 +18,25 @@ test('旧设置只补缺省且构画配置永不复制到千千结段', () => {
   settings.sevenDaysSettings(); assert.equal(extensionSettings.qianqianjie.apiKey, ''); assert.equal(JSON.stringify(extensionSettings.qianqianjie).includes('INHERITED_KEY'), false);
 });
 
-test('auto 动态选择构画 utility → 主 API，显式构画预设只存 id', () => {
+test('千千结直接使用 schedule-planner 主 API 与共享预设池', () => {
   const utility = configured('机械', 'utility'), selected = configured('人物', 'people');
   const extensionSettings = { 'schedule-planner': { utilityPresetId: utility.id, apiPresets: [utility, selected], apiUrl: 'https://main.example.test/v1', apiKey: 'MAIN_KEY', apiModel: 'main-model' } };
   const { settings } = setup(extensionSettings), resolver = createApiResolver({ settings });
-  assert.equal(resolver.resolve().source, 'seven-utility');
-  extensionSettings['schedule-planner'].apiPresets[0].key = '';
-  assert.equal(resolver.resolve().source, 'seven-main');
-  settings.update({ apiMode: 'seven-preset', selectedSevenDaysPresetId: selected.id });
-  const exact = resolver.resolve(); assert.equal(exact.source, 'seven-preset'); assert.equal(exact.config.model, 'test-model');
-  assert.equal(settings.get().selectedSevenDaysPresetId, selected.id); assert.equal(settings.get().apiKey, '');
+  assert.equal(resolver.resolve().source, 'shared-api'); assert.equal(resolver.resolve().config.model, 'main-model');
+  assert.deepEqual(settings.presets().map(item => item.id), ['utility', 'people']);
+  settings.update({ apiModel: 'shared-model' }); assert.equal(extensionSettings['schedule-planner'].apiModel, 'shared-model');
+  settings.upsertPreset('人物更新', { ...selected, model: 'shared-preset-model' }, selected.id);
+  assert.equal(extensionSettings['schedule-planner'].apiPresets.find(item => item.id === selected.id).model, 'shared-preset-model');
+  assert.equal(settings.get().apiKey, '');
 });
 
-test('构画缺失时本地预设接力，再安全回退酒馆；悬空构画 id 自愈', () => {
+test('构画未安装时仍创建共享 API 池，填写后构画可直接读取', () => {
   const extensionSettings = {}; const { settings, saves } = setup(extensionSettings), resolver = createApiResolver({ settings });
-  const id = settings.upsertPreset('本地', configured('本地', 'ignored', 'LOCAL_KEY'));
-  settings.update({ apiPresetActiveId: id }); assert.equal(resolver.resolve().source, 'local-preset');
-  settings.deletePreset(id); assert.equal(resolver.resolve().source, 'tavern');
-  settings.update({ apiMode: 'seven-preset', selectedSevenDaysPresetId: 'gone' });
-  assert.equal(resolver.resolve().source, 'tavern'); assert.equal(settings.get().apiMode, 'auto'); assert.equal(settings.get().selectedSevenDaysPresetId, ''); assert.ok(saves() >= 1);
+  assert.equal(resolver.resolve().source, 'tavern');
+  settings.update({ apiUrl: 'https://shared.example.test/v1', apiKey: 'SHARED_KEY', apiModel: 'shared-model' });
+  const id = settings.upsertPreset('共享', configured('共享', 'ignored', 'SHARED_KEY'));
+  assert.equal(resolver.resolve().source, 'shared-api'); assert.equal(extensionSettings['schedule-planner'].apiKey, 'SHARED_KEY');
+  assert.equal(extensionSettings['schedule-planner'].apiPresets[0].id, id); assert.ok(saves() >= 2);
 });
 
 test('人物任务路由冻结本次配置，下一次才读取变化且在途可中止', async () => {
@@ -51,7 +51,7 @@ test('人物任务路由冻结本次配置，下一次才读取变化且在途�
   await router.generatePeopleTask({}); assert.equal(calls[1].config.key, 'KEY_TWO');
 });
 
-test('酒馆 fallback 使用真实 abortSignal 合同，API 工具继承构画但不暴露 key 描述', async () => {
+test('酒馆 fallback 使用真实 abortSignal 合同，API 工具使用共享配置但不暴露 key 描述', async () => {
   let seenSignal; const injected = {
     profileResolver: () => ({ requestApi: 'openai', apiSettingsOverride: null }), worldInfoResolver: async () => ({ worldInfoBeforeEntries: [], worldInfoAfterEntries: [] }),
     builder: ({ messages }) => messages, rawPromptBuilder: messages => messages.map(item => item.content).join('\n'), substituteParams: value => value,
@@ -62,8 +62,8 @@ test('酒馆 fallback 使用真实 abortSignal 合同，API 工具继承构画�
   const extensionSettings = { 'schedule-planner': { apiUrl: 'https://main.example.test/v1', apiKey: 'INHERITED_KEY', apiModel: 'model' } };
   const { settings } = setup(extensionSettings), resolver = createApiResolver({ settings }); let testedKey = '';
   const tools = createApiTools({ resolver, compactClient: { testConnection: async ({ config }) => { testedKey = config.key; return { ok: true }; }, fetchModels: async () => ['model'] } });
-  const description = tools.describe(); assert.equal(description.source, 'seven-main'); assert.equal(Object.hasOwn(description, 'config'), false); assert.equal(JSON.stringify(description).includes('INHERITED_KEY'), false);
-  await tools.testConnection({ apiMode: 'auto' }); assert.equal(testedKey, 'INHERITED_KEY'); assert.equal(settings.get().apiKey, '');
+  const description = tools.describe(); assert.equal(description.source, 'shared-api'); assert.equal(Object.hasOwn(description, 'config'), false); assert.equal(JSON.stringify(description).includes('INHERITED_KEY'), false);
+  await tools.testConnection(); assert.equal(testedKey, 'INHERITED_KEY'); assert.equal(settings.get().apiKey, '');
 });
 
 test('调用方 external signal 可中止统一人物/关系任务路由', async () => {

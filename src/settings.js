@@ -1,4 +1,5 @@
 export const SETTINGS_ID = 'qianqianjie';
+export const SHARED_API_SETTINGS_ID = 'schedule-planner';
 
 export const DEFAULT_SETTINGS = Object.freeze({
   pluginEnabled: true,
@@ -12,6 +13,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   apiStream: false,
   apiPresets: [],
   apiPresetActiveId: '',
+  sharedApiMigrated: false,
 });
 
 const API_MODES = new Set(['auto', 'seven-preset', 'local', 'tavern']);
@@ -57,23 +59,44 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     return settings;
   };
   const notify = () => { try { save(); } catch { /* host save failures surface on its own UI */ } };
+  const sharedApiSettings = () => {
+    const ownSettings = get();
+    const shared = extensionSettings[SHARED_API_SETTINGS_ID] ??= {};
+    if (!Array.isArray(shared.apiExcludeParams)) shared.apiExcludeParams = [];
+    if (!Array.isArray(shared.apiPresets)) shared.apiPresets = [];
+    shared.apiTimeoutSec = normalizeTimeout(shared.apiTimeoutSec);
+    shared.apiStream = shared.apiStream === true;
+    if (!ownSettings.sharedApiMigrated) {
+      const sharedHasMain = Boolean(text(shared.apiUrl).trim() || text(shared.apiKey).trim() || text(shared.apiModel).trim());
+      const ownHasMain = Boolean(text(ownSettings.apiUrl).trim() || text(ownSettings.apiKey).trim() || text(ownSettings.apiModel).trim());
+      if (!sharedHasMain && ownHasMain) {
+        shared.apiUrl = text(ownSettings.apiUrl).trim(); shared.apiKey = text(ownSettings.apiKey).trim(); shared.apiModel = text(ownSettings.apiModel).trim();
+        shared.apiExcludeParams = parseExcludeParams(ownSettings.apiExcludeParams); shared.apiTimeoutSec = normalizeTimeout(ownSettings.apiTimeoutSec); shared.apiStream = ownSettings.apiStream === true;
+      }
+      if (!shared.apiPresets.length && ownSettings.apiPresets.length) shared.apiPresets = ownSettings.apiPresets.map(normalizePreset).filter(item => item.id);
+      if (!text(shared.apiPresetActiveId).trim()) shared.apiPresetActiveId = text(ownSettings.apiPresetActiveId).trim();
+      ownSettings.sharedApiMigrated = true;
+    }
+    return shared;
+  };
   const update = patch => {
     const settings = get();
     if (own(patch, 'pluginEnabled')) settings.pluginEnabled = patch.pluginEnabled !== false;
     if (own(patch, 'apiMode')) settings.apiMode = API_MODES.has(patch.apiMode) ? patch.apiMode : 'auto';
     if (own(patch, 'selectedSevenDaysPresetId')) settings.selectedSevenDaysPresetId = text(patch.selectedSevenDaysPresetId).trim();
-    if (own(patch, 'apiUrl')) settings.apiUrl = text(patch.apiUrl).trim();
-    if (own(patch, 'apiKey')) settings.apiKey = text(patch.apiKey).trim();
-    if (own(patch, 'apiModel')) settings.apiModel = text(patch.apiModel).trim();
-    if (own(patch, 'apiExcludeParams')) settings.apiExcludeParams = parseExcludeParams(patch.apiExcludeParams);
-    if (own(patch, 'apiTimeoutSec')) settings.apiTimeoutSec = normalizeTimeout(patch.apiTimeoutSec);
-    if (own(patch, 'apiStream')) settings.apiStream = patch.apiStream === true;
-    if (own(patch, 'apiPresetActiveId')) settings.apiPresetActiveId = text(patch.apiPresetActiveId).trim();
+    const shared = sharedApiSettings();
+    if (own(patch, 'apiUrl')) shared.apiUrl = text(patch.apiUrl).trim();
+    if (own(patch, 'apiKey')) shared.apiKey = text(patch.apiKey).trim();
+    if (own(patch, 'apiModel')) shared.apiModel = text(patch.apiModel).trim();
+    if (own(patch, 'apiExcludeParams')) shared.apiExcludeParams = parseExcludeParams(patch.apiExcludeParams);
+    if (own(patch, 'apiTimeoutSec')) shared.apiTimeoutSec = normalizeTimeout(patch.apiTimeoutSec);
+    if (own(patch, 'apiStream')) shared.apiStream = patch.apiStream === true;
+    if (own(patch, 'apiPresetActiveId')) shared.apiPresetActiveId = text(patch.apiPresetActiveId).trim();
     notify();
     return settings;
   };
   const localConfig = () => {
-    const settings = get();
+    const settings = sharedApiSettings();
     return normalizePreset({
       url: settings.apiUrl,
       key: settings.apiKey,
@@ -83,9 +106,9 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
       stream: settings.apiStream,
     });
   };
-  const presets = () => get().apiPresets.map(normalizePreset).filter(item => item.id);
+  const presets = () => sharedApiSettings().apiPresets.map(normalizePreset).filter(item => item.id);
   const upsertPreset = (name, config, id = '') => {
-    const settings = get();
+    const settings = sharedApiSettings();
     const list = presets();
     const existingId = text(id).trim();
     const preset = normalizePreset({ ...config, id: existingId || createPresetId(now, random), name });
@@ -97,21 +120,18 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     return preset.id;
   };
   const renamePreset = (id, name) => {
-    const settings = get(), list = presets(), preset = list.find(item => item.id === id), nextName = text(name).trim();
+    const settings = sharedApiSettings(), list = presets(), preset = list.find(item => item.id === id), nextName = text(name).trim();
     if (!preset || !nextName) return false;
     preset.name = nextName; settings.apiPresets = list; notify(); return true;
   };
   const deletePreset = id => {
-    const settings = get(), list = presets(), next = list.filter(item => item.id !== id);
+    const settings = sharedApiSettings(), list = presets(), next = list.filter(item => item.id !== id);
     if (next.length === list.length) return false;
     settings.apiPresets = next;
     if (settings.apiPresetActiveId === id) settings.apiPresetActiveId = '';
     notify(); return true;
   };
-  const sevenDaysSettings = () => {
-    const value = extensionSettings['schedule-planner'];
-    return value && typeof value === 'object' ? value : null;
-  };
+  const sevenDaysSettings = () => sharedApiSettings();
   return {
     get,
     update,
@@ -120,6 +140,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     upsertPreset,
     renamePreset,
     deletePreset,
+    sharedApiSettings,
     sevenDaysSettings,
     isEnabled: () => get().pluginEnabled !== false,
   };

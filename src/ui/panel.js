@@ -3,11 +3,20 @@ import css from './panel.css?inline';
 import { createPanelGeometryController } from './layout.js';
 
 const types = [['single', '单人', '围绕一位角色，建立清晰的关系档案。'], ['multi', '多人', '记录群像关系与多角色互动。'], ['open_world', '大世界', '让角色档案连接到更大的世界。'], ['simulator', '模拟器', '用于测试关系变化与叙事走向。']];
-const shellCss = ':host{position:fixed;inset:0;z-index:1001;width:100dvw;height:100dvh;pointer-events:none;background:transparent}:host([hidden]){display:none!important;pointer-events:none!important}.panel{position:fixed;top:40px;right:20px;width:720px;height:min(780px,calc(100dvh - 80px));max-width:calc(100dvw - 20px);max-height:calc(100dvh - 20px);display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;pointer-events:auto}.body{min-height:0;max-height:none;overflow-y:auto}.tabs{min-width:0;overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(max-width:640px){.panel{top:calc(20px + env(safe-area-inset-top,0px));left:50%;right:auto;bottom:auto;transform:translateX(-50%);width:calc(100dvw - 20px);max-width:calc(100dvw - 20px);height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));max-height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));min-height:0;border-radius:14px}.body{min-height:0;overflow-y:auto}.choices{grid-template-columns:1fr}.tab{padding-left:9px;padding-right:9px}}';
+const shellCss = ':host{position:fixed;inset:0;z-index:4000;width:100dvw;height:100dvh;pointer-events:none;background:transparent}:host([hidden]){display:none!important;pointer-events:none!important}.panel{position:fixed;top:80px;right:20px;width:360px;height:min(600px,85dvh);max-width:calc(100dvw - 40px);max-height:85dvh;display:grid;grid-template-rows:auto auto minmax(0,1fr) 24px;pointer-events:auto}.body{min-height:0;max-height:none;overflow-y:auto;scrollbar-gutter:stable}.tabs{min-width:0;overflow:hidden;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(max-width:640px){.panel{top:calc(20px + env(safe-area-inset-top,0px));left:50%;right:auto;bottom:auto;transform:translateX(-50%);width:calc(100dvw - 20px);max-width:calc(100dvw - 20px);height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));max-height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));min-height:0;border-radius:14px;grid-template-rows:auto auto minmax(0,1fr)}.body{min-height:0;overflow-y:auto;scrollbar-gutter:stable}.tabs{overflow-x:auto;overflow-y:hidden;scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}.choices{grid-template-columns:1fr}.tab{padding-left:9px;padding-right:9px}}';
 
 export function createPanel({ formal, people, settings, apiTools, loadState, initialRelations, reviewActions, onPluginEnabledChange, onClose } = {}) {
   const host = document.createElement('div');
   host.id = 'qqj-panel-host'; host.hidden = true; host.setAttribute('aria-hidden', 'true');
+  // Shadow DOM does not block inherited text effects or filters applied to its host.
+  // Pin this boundary so SillyTavern's configurable blur cannot affect the panel.
+  host.style?.setProperty?.('text-shadow', 'none', 'important');
+  host.style?.setProperty?.('filter', 'none', 'important');
+  host.style?.setProperty?.('backdrop-filter', 'none', 'important');
+  host.style?.setProperty?.('-webkit-backdrop-filter', 'none', 'important');
+  host.style?.setProperty?.('mix-blend-mode', 'normal', 'important');
+  host.style?.setProperty?.('isolation', 'isolate', 'important');
+  host.style?.setProperty?.('z-index', '4000', 'important');
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = '<style>' + css + shellCss + '</style>' + html;
   const view = root.querySelector('.view'), label = root.querySelector('.status-label'), meta = root.querySelector('.status-meta'), dot = root.querySelector('.status-dot');
@@ -101,7 +110,7 @@ export function createPanel({ formal, people, settings, apiTools, loadState, ini
       QQJ_RATE_LIMIT: '请求过于频繁，请稍后再试。', QQJ_SERVER: 'API 服务暂时异常，请稍后再试。',
       QQJ_NETWORK: '无法连接 API，请检查地址和网络。', QQJ_EMPTY: '模型没有返回内容，请更换模型或检查配置。',
       QQJ_FORMAT: '模型没有按约定返回测试结果。', QQJ_MODELS: '接口没有返回可用模型。',
-      QQJ_TAVERN: '当前走酒馆创作预设，无法独立测试；请选择构画或千千结本地 API。',
+      QQJ_TAVERN: 'API 尚未配置，请填写 Base URL 和 API Key。',
       QQJ_DISABLED: '千千结已关闭；启用并保存后才能测试连接。',
     };
     return known[code] || '连接失败，请检查 API 配置后重试。';
@@ -118,13 +127,7 @@ export function createPanel({ formal, people, settings, apiTools, loadState, ini
       stream: view.querySelector?.('[data-setting="stream"]')?.checked === true,
     };
   };
-  const selectedApiDraft = () => {
-    const value = view.querySelector?.('[data-setting="source"]')?.value || 'auto';
-    if (value.startsWith('seven:')) return { apiMode: 'seven-preset', selectedSevenDaysPresetId: value.slice(6) };
-    if (value === 'local') return { apiMode: 'local', selectedSevenDaysPresetId: '', localConfig: currentLocalDraft() };
-    if (value === 'tavern') return { apiMode: 'tavern', selectedSevenDaysPresetId: '' };
-    return { apiMode: 'auto', selectedSevenDaysPresetId: '' };
-  };
+  const selectedApiDraft = () => ({ localConfig: currentLocalDraft() });
   const settingsResult = (message, tone = '') => {
     const target = view.querySelector?.('.settings-result');
     if (target) { target.textContent = message; target.className = `settings-result ${tone}`.trim(); }
@@ -136,30 +139,36 @@ export function createPanel({ formal, people, settings, apiTools, loadState, ini
     settingsDraftKey = config?.key || ''; if (key) { key.value = ''; key.placeholder = settingsDraftKey ? '已保存（输入新值可替换）' : '输入 API Key'; key.type = 'password'; }
   };
 
-  const renderSettings = () => {
+  const renderSettings = (options = {}) => {
     const renderEpoch = ++settingsRenderEpoch;
     if (!settings?.get) { settingsResult('设置存储暂不可用。', 'error'); return; }
+    const preserveDrawers = options?.preserveDrawers === true;
+    const generalWasOpen = preserveDrawers && view.querySelector?.('.settings-drawer')?.open === true;
+    const apiWasOpen = preserveDrawers && view.querySelector?.('.settings-subdrawer')?.open === true;
     screen = 'settings';
     root.querySelectorAll('.tab').forEach(item => { item.classList.toggle('active', false); item.setAttribute('aria-selected', 'false'); });
-    const current = settings.get(), local = settings.localConfig(), description = apiTools?.describe?.() || { sourceLabel: '尚未解析', sevenDaysPresets: [] };
-    label.textContent = '千千结设置'; meta.textContent = 'LOCAL'; dot.className = `status-dot ${current.pluginEnabled !== false ? 'ready' : 'warn'}`;
-    view.innerHTML = '<section class="settings-view"><div class="settings-heading"><div><div class="eyebrow">THREAD CONTROL</div><h2>连接与总开关</h2></div><label class="master-switch"><input data-setting="enabled" type="checkbox"><span>启用千千结</span></label></div><div class="api-source-card"><span>当前请求来源</span><strong class="api-source-label"></strong><small>构画配置只读继承，密钥不会复制到千千结。</small></div><label class="field"><span>API 来源</span><select data-setting="source"></select></label><section class="settings-section"><div class="section-title"><div><b>千千结本地 API</b><small>构画不可用时自动接力，也可手动选择。</small></div></div><label class="field"><span>本地预设</span><select data-setting="local-preset"></select></label><div class="preset-actions"><button type="button" data-action="preset-new">新增</button><button type="button" data-action="preset-update">更新</button><button type="button" data-action="preset-rename">改名</button><button type="button" data-action="preset-delete">删除</button></div><label class="field"><span>Base URL</span><input data-setting="url" type="url" autocomplete="off" placeholder="https://api.example.com/v1"></label><label class="field"><span>API Key</span><span class="key-row"><input data-setting="key" type="password" autocomplete="new-password"><button type="button" data-action="key-toggle" aria-label="显示或隐藏 Key">显示</button><button type="button" data-action="key-clear">清除</button></span></label><label class="field"><span>模型</span><span class="model-row"><input data-setting="model" type="text" autocomplete="off" placeholder="gpt-4o-mini"><button type="button" data-action="models">拉取模型</button></span></label><div class="model-results" hidden></div><details class="advanced"><summary>高级设置</summary><label class="field"><span>剔除参数（每行一个）</span><textarea data-setting="exclude" rows="3" placeholder="frequency_penalty"></textarea></label><div class="advanced-row"><label class="field"><span>超时（5–600 秒）</span><input data-setting="timeout" type="number" min="5" max="600"></label><label class="check-field"><input data-setting="stream" type="checkbox"><span>流式响应</span></label></div></details></section><div class="settings-actions"><button class="secondary-action" type="button" data-action="test">测试连接</button><button class="primary-action" type="button" data-action="save">保存设置</button></div><p class="settings-result" role="status" aria-live="polite"></p></section>';
+    const current = settings.get(), shared = settings.sharedApiSettings?.() || {}, local = settings.localConfig();
+    label.textContent = '千千结设置'; meta.textContent = ''; dot.className = `status-dot ${current.pluginEnabled !== false ? 'ready' : 'warn'}`;
+    view.innerHTML = `<section class="settings-view"><div class="master-control"><span class="master-label">总开关</span><label class="master-switch"><input data-setting="enabled" type="checkbox"><span>启用千千结</span></label></div><details class="settings-drawer"${generalWasOpen ? ' open' : ''}><summary><span>基础通用设置</span></summary><div class="settings-drawer-body"><details class="settings-subdrawer"${apiWasOpen ? ' open' : ''}><summary><span>API</span></summary><section class="settings-section"><label class="field"><span>预设</span><select data-setting="preset"></select></label><div class="preset-actions"><button type="button" data-action="preset-new">新增</button><button type="button" data-action="preset-update">更新</button><button type="button" data-action="preset-rename">改名</button><button type="button" data-action="preset-delete">删除</button></div><label class="field"><span>Base URL</span><input data-setting="url" type="url" autocomplete="off" placeholder="https://api.example.com/v1"></label><label class="field"><span>API Key</span><span class="key-row"><input data-setting="key" type="password" autocomplete="new-password"><button type="button" data-action="key-toggle" aria-label="显示或隐藏 Key">显示</button><button type="button" data-action="key-clear">清除</button></span></label><label class="field"><span>模型</span><span class="model-row"><input data-setting="model" type="text" autocomplete="off" placeholder="gpt-4o-mini"><button type="button" data-action="models">拉取模型</button></span></label><div class="model-results" hidden></div><details class="advanced"><summary>高级设置</summary><label class="field"><span>剔除参数（每行一个）</span><textarea data-setting="exclude" rows="3" placeholder="frequency_penalty"></textarea></label><div class="advanced-row"><label class="field"><span>超时（5–600 秒）</span><input data-setting="timeout" type="number" min="5" max="600"></label><label class="check-field"><input data-setting="stream" type="checkbox"><span>流式响应</span></label></div></details><div class="settings-actions"><button class="secondary-action" type="button" data-action="test">测试连接</button><button class="primary-action" type="button" data-action="save">保存 API 配置</button></div></section></details></div></details><p class="settings-result" role="status" aria-live="polite"></p></section>`;
     const enabledInput = view.querySelector('[data-setting="enabled"]'); if (enabledInput) enabledInput.checked = current.pluginEnabled !== false;
-    const sourceLabel = view.querySelector('.api-source-label'); if (sourceLabel) sourceLabel.textContent = description.sourceLabel;
-    const source = view.querySelector('[data-setting="source"]');
-    appendOption(source, 'auto', '自动继承构画');
-    for (const preset of description.sevenDaysPresets || []) appendOption(source, `seven:${preset.id}`, `构画预设 · ${preset.name}`);
-    appendOption(source, 'local', '千千结本地 API'); appendOption(source, 'tavern', '酒馆当前模型');
-    if (source) source.value = current.apiMode === 'seven-preset' ? `seven:${current.selectedSevenDaysPresetId}` : current.apiMode || 'auto';
-    const localSelect = view.querySelector('[data-setting="local-preset"]'); appendOption(localSelect, '', '当前本地配置');
+    const localSelect = view.querySelector('[data-setting="preset"]'); appendOption(localSelect, '', '当前配置');
     for (const preset of settings.presets()) appendOption(localSelect, preset.id, preset.name);
-    if (localSelect) localSelect.value = current.apiPresetActiveId || '';
-    const activeLocalPreset = settings.presets().find(item => item.id === current.apiPresetActiveId);
+    if (localSelect) localSelect.value = shared.apiPresetActiveId || '';
+    const activeLocalPreset = settings.presets().find(item => item.id === shared.apiPresetActiveId);
     fillLocalDraft(activeLocalPreset || local);
     const apiActionsEnabled = current.pluginEnabled !== false;
     const testButton = view.querySelector('[data-action="test"]'), modelsButton = view.querySelector('[data-action="models"]');
     if (testButton) testButton.disabled = !apiActionsEnabled; if (modelsButton) modelsButton.disabled = !apiActionsEnabled;
 
+    enabledInput?.addEventListener('change', async event => {
+      const enabled = event.currentTarget.checked !== false;
+      if (settings.isEnabled() === enabled) return;
+      event.currentTarget.disabled = true;
+      settings.update({ pluginEnabled: enabled });
+      await onPluginEnabledChange?.(enabled);
+      renderSettings({ preserveDrawers: true });
+      settingsResult(enabled ? '千千结已启用。' : '千千结已关闭。', 'success');
+    });
     localSelect?.addEventListener('change', () => {
       const preset = settings.presets().find(item => item.id === localSelect.value);
       fillLocalDraft(preset || settings.localConfig());
@@ -170,31 +179,29 @@ export function createPanel({ formal, people, settings, apiTools, loadState, ini
       if (input.type === 'password') { if (!input.value && settingsDraftKey) input.value = settingsDraftKey; input.type = 'text'; event.currentTarget.textContent = '隐藏'; }
       else { settingsDraftKey = input.value; input.value = ''; input.type = 'password'; input.placeholder = settingsDraftKey ? '已保存（输入新值可替换）' : '输入 API Key'; event.currentTarget.textContent = '显示'; }
     });
-    view.querySelector('[data-action="key-clear"]')?.addEventListener('click', () => { settingsDraftKey = ''; const input = view.querySelector('[data-setting="key"]'); if (input) { input.value = ''; input.placeholder = '输入 API Key'; } settingsResult('保存后会清除千千结本地 Key。'); });
+    view.querySelector('[data-action="key-clear"]')?.addEventListener('click', () => { settingsDraftKey = ''; const input = view.querySelector('[data-setting="key"]'); if (input) { input.value = ''; input.placeholder = '输入 API Key'; } settingsResult('保存后会清除 API Key。'); });
     view.querySelector('[data-action="preset-new"]')?.addEventListener('click', () => {
       const name = globalThis.prompt?.('新预设名称', '新预设')?.trim(); if (!name) return;
-      const id = settings.upsertPreset(name, currentLocalDraft()); settings.update({ apiPresetActiveId: id }); renderSettings(); settingsResult(`已新增本地预设「${name}」。`, 'success');
+      const id = settings.upsertPreset(name, currentLocalDraft()); settings.update({ apiPresetActiveId: id }); renderSettings({ preserveDrawers: true }); settingsResult(`已新增预设「${name}」。`, 'success');
     });
     view.querySelector('[data-action="preset-update"]')?.addEventListener('click', () => {
-      const id = view.querySelector('[data-setting="local-preset"]')?.value, preset = settings.presets().find(item => item.id === id);
-      if (!preset) return settingsResult('请先选择要更新的本地预设。', 'error');
-      settings.upsertPreset(preset.name, currentLocalDraft(), id); renderSettings(); settingsResult(`已更新本地预设「${preset.name}」。`, 'success');
+      const id = view.querySelector('[data-setting="preset"]')?.value, preset = settings.presets().find(item => item.id === id);
+      if (!preset) return settingsResult('请先选择要更新的预设。', 'error');
+      settings.upsertPreset(preset.name, currentLocalDraft(), id); renderSettings({ preserveDrawers: true }); settingsResult(`已更新预设「${preset.name}」。`, 'success');
     });
     view.querySelector('[data-action="preset-rename"]')?.addEventListener('click', () => {
-      const id = view.querySelector('[data-setting="local-preset"]')?.value, preset = settings.presets().find(item => item.id === id); if (!preset) return settingsResult('请先选择要改名的本地预设。', 'error');
-      const name = globalThis.prompt?.('新的预设名称', preset.name)?.trim(); if (!name) return; settings.renamePreset(id, name); renderSettings(); settingsResult(`已改名为「${name}」。`, 'success');
+      const id = view.querySelector('[data-setting="preset"]')?.value, preset = settings.presets().find(item => item.id === id); if (!preset) return settingsResult('请先选择要改名的预设。', 'error');
+      const name = globalThis.prompt?.('新的预设名称', preset.name)?.trim(); if (!name) return; settings.renamePreset(id, name); renderSettings({ preserveDrawers: true }); settingsResult(`已改名为「${name}」。`, 'success');
     });
     view.querySelector('[data-action="preset-delete"]')?.addEventListener('click', () => {
-      const id = view.querySelector('[data-setting="local-preset"]')?.value, preset = settings.presets().find(item => item.id === id); if (!preset) return settingsResult('请先选择要删除的本地预设。', 'error');
-      if (globalThis.confirm?.(`删除本地预设「${preset.name}」？`)) { settings.deletePreset(id); renderSettings(); settingsResult('本地预设已删除。', 'success'); }
+      const id = view.querySelector('[data-setting="preset"]')?.value, preset = settings.presets().find(item => item.id === id); if (!preset) return settingsResult('请先选择要删除的预设。', 'error');
+      if (globalThis.confirm?.(`删除预设「${preset.name}」？`)) { settings.deletePreset(id); renderSettings({ preserveDrawers: true }); settingsResult('预设已删除。', 'success'); }
     });
     view.querySelector('[data-action="save"]')?.addEventListener('click', async () => {
       const draft = currentLocalDraft();
       if (!Number.isInteger(draft.timeoutSec) || draft.timeoutSec < 5 || draft.timeoutSec > 600) return settingsResult('超时时间必须是 5–600 秒的整数。', 'error');
-      const selection = selectedApiDraft(), wasEnabled = settings.isEnabled();
-      settings.update({ ...selection, pluginEnabled: enabledInput?.checked !== false, apiUrl: draft.url, apiKey: draft.key, apiModel: draft.model, apiExcludeParams: draft.excludeParams, apiTimeoutSec: draft.timeoutSec, apiStream: draft.stream, apiPresetActiveId: view.querySelector('[data-setting="local-preset"]')?.value || '' });
-      const isEnabled = settings.isEnabled(); if (wasEnabled !== isEnabled) await onPluginEnabledChange?.(isEnabled);
-      renderSettings(); settingsResult('设置已保存。', 'success');
+      settings.update({ apiUrl: draft.url, apiKey: draft.key, apiModel: draft.model, apiExcludeParams: draft.excludeParams, apiTimeoutSec: draft.timeoutSec, apiStream: draft.stream, apiPresetActiveId: view.querySelector('[data-setting="preset"]')?.value || '' });
+      renderSettings({ preserveDrawers: true }); settingsResult('API 设置已保存。', 'success');
     });
     view.querySelector('[data-action="test"]')?.addEventListener('click', async event => {
       if (!settings.isEnabled()) { settingsResult('千千结已关闭；启用并保存后才能测试连接。', 'error'); return; }

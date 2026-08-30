@@ -35,9 +35,9 @@ class Node {
   get innerHTML() { return this.markup || ''; }
   installSettingsNodes() {
     const add = (selector, tag = 'div') => { const node = new Node(tag); this.nodes[selector] = node; this.children.push(node); return node; };
-    for (const [name, tag] of [['enabled', 'input'], ['source', 'select'], ['local-preset', 'select'], ['url', 'input'], ['key', 'input'], ['model', 'input'], ['exclude', 'textarea'], ['timeout', 'input'], ['stream', 'input']]) add(`[data-setting="${name}"]`, tag);
+    for (const [name, tag] of [['enabled', 'input'], ['preset', 'select'], ['url', 'input'], ['key', 'input'], ['model', 'input'], ['exclude', 'textarea'], ['timeout', 'input'], ['stream', 'input']]) add(`[data-setting="${name}"]`, tag);
     for (const action of ['key-toggle', 'key-clear', 'preset-new', 'preset-update', 'preset-rename', 'preset-delete', 'save', 'test', 'models']) add(`[data-action="${action}"]`, 'button');
-    add('.api-source-label'); add('.settings-result'); add('.model-results');
+    add('.settings-result'); add('.model-results');
   }
   attachShadow() {
     const root = new Node('shadow-root'); this.shadowRoot = root; return root;
@@ -52,8 +52,7 @@ test('真实 dist 设置 UI：关闭态一步进入、右下角角标、Key 遮�
   try {
     const { bootstrap } = await import('../dist/index.js?real-settings-ui=1'); let wandOpen;
     const apiTools = {
-      describe: () => ({ source: 'seven-utility', sourceLabel: '构画机械预设 · 构画机械', configured: true, sevenDaysPresets: [{ id: 'utility', name: '构画机械' }] }),
-      testConnection: async selection => { tests += 1; assert.deepEqual(selection, { apiMode: 'auto', selectedSevenDaysPresetId: '' }); return { ok: true, model: 'small-model' }; },
+      testConnection: async selection => { tests += 1; assert.equal(selection.localConfig.key, 'LOCAL_KEY'); return { ok: true, model: 'small-model' }; },
       fetchModels: async () => { models += 1; return ['a-model', 'b-model']; },
     };
     const instance = bootstrap({ settings, apiTools, formal: { getFormalState: async () => { formalReads += 1; return { status: 'ready' }; } }, people: { getPeople: async () => { peopleReads += 1; return { status: 'ready' }; } }, documentRef, wandInstaller: open => { wandOpen = open; }, onPluginEnabledChange: async enabled => { enabledChanges += 1; assert.equal(enabled, true); } });
@@ -61,20 +60,21 @@ test('真实 dist 设置 UI：关闭态一步进入、右下角角标、Key 遮�
     const root = instance.host.shadowRoot, view = root.nodes['.view']; const openSettings = view.querySelector('.open-settings'); assert.ok(openSettings); await openSettings.fire('click');
     const keyInput = view.nodes['[data-setting="key"]']; assert.equal(keyInput.type, 'password'); assert.equal(keyInput.value, ''); assert.equal(JSON.stringify(extensionSettings.qianqianjie).includes('INHERITED_KEY'), false);
     await view.nodes['[data-action="key-toggle"]'].fire('click'); assert.equal(keyInput.type, 'text'); assert.equal(keyInput.value, 'LOCAL_KEY'); await view.nodes['[data-action="key-toggle"]'].fire('click'); assert.equal(keyInput.type, 'password'); assert.equal(keyInput.value, '');
-    assert.match(view.nodes['.api-source-label'].textContent, /构画机械预设/); assert.equal(view.nodes['[data-action="test"]'].disabled, true); assert.equal(view.nodes['[data-action="models"]'].disabled, true);
+    assert.doesNotMatch(view.markup, /当前请求来源|API 来源|只读继承|千千结本地 API|总开关与 API|>保存设置</); assert.match(view.markup, /master-control/); assert.match(view.markup, /<details class="settings-drawer"><summary><span>基础通用设置/); assert.match(view.markup, /<details class="settings-subdrawer"><summary><span>API/); assert.match(view.markup, />保存 API 配置</); assert.equal(view.nodes['[data-action="test"]'].disabled, true); assert.equal(view.nodes['[data-action="models"]'].disabled, true);
     await view.nodes['[data-action="test"]'].fire('click'); await view.nodes['[data-action="models"]'].fire('click'); assert.equal(tests + models, 0); assert.equal(view.nodes['.settings-result'].textContent, '');
-    view.nodes['[data-setting="enabled"]'].checked = true; await view.nodes['[data-action="save"]'].fire('click'); assert.equal(settings.isEnabled(), true); assert.equal(enabledChanges, 1); assert.equal(extensionSettings.qianqianjie.apiKey, 'LOCAL_KEY');
+    view.nodes['[data-setting="enabled"]'].checked = true; await view.nodes['[data-setting="enabled"]'].fire('change'); assert.equal(settings.isEnabled(), true); assert.equal(enabledChanges, 1);
+    await view.nodes['[data-action="save"]'].fire('click'); assert.equal(enabledChanges, 1); assert.equal(extensionSettings['schedule-planner'].apiKey, 'LOCAL_KEY');
     await view.nodes['[data-action="test"]'].fire('click'); assert.equal(tests, 1); assert.match(view.nodes['.settings-result'].textContent, /连接成功/);
     await view.nodes['[data-action="models"]'].fire('click'); assert.equal(models, 1); assert.equal(view.nodes['.model-results'].children.length, 2); await view.nodes['.model-results'].children[1].fire('click'); assert.equal(view.nodes['[data-setting="model"]'].value, 'b-model');
     await root.nodes['.settings-btn'].fire('click'); assert.equal(root.nodeLists['.tab'][0].className.includes('active'), true);
   } finally { globalThis.document = previousDocument; }
 });
 
-test('真实 dist 包含右下角设置热区、手机安全区与紧凑设置布局', async () => {
+test('真实 dist 将设置放在标题栏、缩放把手固定右下角，并保留手机紧凑布局', async () => {
   const source = await readFile(new URL('../src/ui/panel.html', import.meta.url), 'utf8'), dist = await readFile(new URL('../dist/index.js', import.meta.url), 'utf8');
-  assert.match(source, /<footer[\s\S]*settings-btn[\s\S]*<\/footer>/); assert.match(dist, /settings-btn/); assert.match(dist, /flex:0 0 36px/); assert.match(dist, /safe-area-inset-bottom/); assert.match(dist, /grid-template-columns:minmax\(0,1fr\)/); assert.match(dist, /new-password/);
-  assert.match(source, /panel-resize-handle[\s\S]*settings-btn/); assert.equal((source.match(/panel-resize-handle/g) || []).length, 1); assert.equal((source.match(/settings-btn/g) || []).length, 1);
-  assert.match(dist, /panel-resize-handle/); assert.match(dist, /flex:0 0 44px/); assert.match(dist, /@media ?(?:\(max-width:640px\)|\(width<=640px\))[^{]*\{[\s\S]*panel-resize-handle\{display:none/);
+  assert.doesNotMatch(source, /<footer/); assert.match(source, /<header[\s\S]*settings-btn[\s\S]*close[\s\S]*<\/header>/); assert.match(dist, /settings-btn/); assert.match(dist, /grid-template-columns:minmax\(0,1fr\)/); assert.match(dist, /new-password/);
+  assert.match(source, /settings-btn[\s\S]*panel-resize-handle/); assert.equal((source.match(/panel-resize-handle/g) || []).length, 1); assert.equal((source.match(/settings-btn/g) || []).length, 1);
+  assert.match(dist, /panel-resize-handle/); assert.match(dist, /position:absolute/); assert.match(dist, /@media ?(?:\(max-width:640px\)|\(width<=640px\))[^{]*\{[\s\S]*panel-resize-handle\{display:none/);
 });
 
 test('源 CSS 与真实 dist 同时保留主体主题和设置样式，防止整段覆盖', async () => {
