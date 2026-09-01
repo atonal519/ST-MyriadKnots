@@ -14,6 +14,29 @@ const ARCHIVE_V2_ROOT_KEYS = new Set([
   'nextSteps',
   'progress',
 ]);
+const OWNERSHIP_ORIGINS = new Set(['source', 'ai', 'user']);
+const BOND_KEYS = new Set([
+  'identityId', 'stage', 'nativeSignals', 'cToU', 'uToC', 'recentChanges', 'sourceRefs', 'updatedThroughFloor',
+]);
+const BOND_REQUIRED_KEYS = ['identityId', 'nativeSignals', 'cToU', 'uToC', 'sourceRefs', 'updatedThroughFloor'];
+const BOND_C_TO_U_KEYS = new Set(['view', 'emotion', 'desire', 'goal', 'concern', 'secret']);
+const BOND_U_TO_C_KEYS = new Set(['view', 'emotion', 'plan', 'boundary', 'expectation']);
+const BOND_OWNERSHIP_KEYS = new Set(['value', 'origin', 'sourceRefs', 'userProtected']);
+const BOND_SIGNAL_KEYS = new Set(['label', 'path', 'value', 'sourceRefs']);
+const SOURCE_REF_KEYS = new Set(['kind', 'locator', 'fingerprint']);
+const BOND_LIMITS = Object.freeze({
+  bonds: 100,
+  fieldCharacters: 2000,
+  signals: 40,
+  rootSourceRefs: 400,
+  fieldSourceRefs: 20,
+  labelCharacters: 240,
+  pathCharacters: 1000,
+  nativeStringCharacters: 1200,
+  sourceKindCharacters: 64,
+  sourceLocatorCharacters: 2000,
+});
+const SHA256_FINGERPRINT = /^sha256:[0-9a-f]{64}$/;
 
 export const ARCHIVE_V2_WARNING = Object.freeze({
   PERSONA_MISMATCH: 'persona_mismatch',
@@ -123,6 +146,107 @@ function validateOwnership(value, path, valueKind) {
   if (valueKind === 'string-array'
     && (!Array.isArray(value.value) || value.value.some(item => typeof item !== 'string'))) {
     fail(`${path}.value 必须是字符串数组`, 'ARCHIVE_V2_FIELD_INVALID');
+  }
+}
+
+function exactKnownKeys(value, allowed, path) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) fail(`${path} 包含未知字段`, 'ARCHIVE_V2_BOND_INVALID');
+  }
+}
+
+function validateBondSourceRef(value, path) {
+  validateSourceRef(value, path);
+  const keys = Object.keys(value);
+  if (keys.length !== SOURCE_REF_KEYS.size || keys.some(key => !SOURCE_REF_KEYS.has(key))) {
+    fail(`${path} 字段无效`, 'ARCHIVE_V2_BOND_INVALID');
+  }
+  if (!value.kind.trim() || value.kind.length > BOND_LIMITS.sourceKindCharacters
+    || !value.locator.trim() || value.locator.length > BOND_LIMITS.sourceLocatorCharacters
+    || !SHA256_FINGERPRINT.test(value.fingerprint)) {
+    fail(`${path} 内容无效`, 'ARCHIVE_V2_BOND_INVALID');
+  }
+}
+
+function validateBondOwnership(value, path) {
+  requireObject(value, path);
+  const keys = Object.keys(value);
+  if (keys.length !== BOND_OWNERSHIP_KEYS.size || keys.some(key => !BOND_OWNERSHIP_KEYS.has(key))) {
+    fail(`${path} 字段无效`, 'ARCHIVE_V2_BOND_INVALID');
+  }
+  if (typeof value.value !== 'string' || !value.value.trim() || value.value.length > BOND_LIMITS.fieldCharacters) {
+    fail(`${path}.value 必须是非空字符串`, 'ARCHIVE_V2_BOND_INVALID');
+  }
+  if (!OWNERSHIP_ORIGINS.has(value.origin)) {
+    fail(`${path}.origin 无效`, 'ARCHIVE_V2_BOND_INVALID');
+  }
+  requireArray(value.sourceRefs, `${path}.sourceRefs`);
+  if (value.sourceRefs.length > BOND_LIMITS.fieldSourceRefs) fail(`${path}.sourceRefs 过多`, 'ARCHIVE_V2_BOND_INVALID');
+  value.sourceRefs.forEach((ref, index) => validateBondSourceRef(ref, `${path}.sourceRefs[${index}]`));
+  if (typeof value.userProtected !== 'boolean'
+    || (value.origin === 'user' && value.userProtected !== true)
+    || (value.userProtected === true && value.origin !== 'user')) {
+    fail(`${path} 所有权无效`, 'ARCHIVE_V2_BOND_INVALID');
+  }
+}
+
+function validateBondSide(value, allowed, path) {
+  requireObject(value, path);
+  exactKnownKeys(value, allowed, path);
+  for (const key of Object.keys(value)) validateBondOwnership(value[key], `${path}.${key}`);
+}
+
+function validateBondSignal(value, path) {
+  requireObject(value, path);
+  const keys = Object.keys(value);
+  if (keys.length !== BOND_SIGNAL_KEYS.size || keys.some(key => !BOND_SIGNAL_KEYS.has(key))) {
+    fail(`${path} 字段无效`, 'ARCHIVE_V2_BOND_INVALID');
+  }
+  requireNonEmptyString(value.label, `${path}.label`);
+  requireNonEmptyString(value.path, `${path}.path`);
+  if (value.label.length > BOND_LIMITS.labelCharacters || value.path.length > BOND_LIMITS.pathCharacters) {
+    fail(`${path} 文本过长`, 'ARCHIVE_V2_BOND_INVALID');
+  }
+  const scalar = value.value === null || ['string', 'boolean'].includes(typeof value.value)
+    || (typeof value.value === 'number' && Number.isFinite(value.value));
+  if (!scalar) fail(`${path}.value 必须是 JSON 标量`, 'ARCHIVE_V2_BOND_INVALID');
+  if (typeof value.value === 'string' && value.value.length > BOND_LIMITS.nativeStringCharacters) {
+    fail(`${path}.value 过长`, 'ARCHIVE_V2_BOND_INVALID');
+  }
+  requireArray(value.sourceRefs, `${path}.sourceRefs`);
+  if (value.sourceRefs.length > BOND_LIMITS.fieldSourceRefs) fail(`${path}.sourceRefs 过多`, 'ARCHIVE_V2_BOND_INVALID');
+  value.sourceRefs.forEach((ref, index) => validateBondSourceRef(ref, `${path}.sourceRefs[${index}]`));
+}
+
+function validateBonds(value, people) {
+  requireObject(value, 'archive.bonds');
+  if (Object.keys(value).length > BOND_LIMITS.bonds) fail('archive.bonds 人物过多', 'ARCHIVE_V2_BOND_INVALID');
+  for (const identityId of Object.keys(value)) {
+    if (!Object.hasOwn(people.byId, identityId)) {
+      fail('archive.bonds 指向陌生人物', 'ARCHIVE_V2_BOND_PERSON_UNKNOWN');
+    }
+    const bond = value[identityId];
+    const path = `archive.bonds.${identityId}`;
+    requireObject(bond, path);
+    exactKnownKeys(bond, BOND_KEYS, path);
+    for (const key of BOND_REQUIRED_KEYS) {
+      if (!Object.hasOwn(bond, key)) fail(`${path}.${key} 缺失`, 'ARCHIVE_V2_BOND_INVALID');
+    }
+    if (bond.identityId !== identityId) fail(`${path}.identityId 与索引不一致`, 'ARCHIVE_V2_BOND_INVALID');
+    if (Object.hasOwn(bond, 'stage')) validateBondOwnership(bond.stage, `${path}.stage`);
+    requireArray(bond.nativeSignals, `${path}.nativeSignals`);
+    if (bond.nativeSignals.length > BOND_LIMITS.signals) fail(`${path}.nativeSignals 过多`, 'ARCHIVE_V2_BOND_INVALID');
+    bond.nativeSignals.forEach((signal, index) => validateBondSignal(signal, `${path}.nativeSignals[${index}]`));
+    validateBondSide(bond.cToU, BOND_C_TO_U_KEYS, `${path}.cToU`);
+    validateBondSide(bond.uToC, BOND_U_TO_C_KEYS, `${path}.uToC`);
+    if (Object.hasOwn(bond, 'recentChanges')) validateBondOwnership(bond.recentChanges, `${path}.recentChanges`);
+    requireArray(bond.sourceRefs, `${path}.sourceRefs`);
+    if (bond.sourceRefs.length > BOND_LIMITS.rootSourceRefs) fail(`${path}.sourceRefs 过多`, 'ARCHIVE_V2_BOND_INVALID');
+    bond.sourceRefs.forEach((ref, index) => validateBondSourceRef(ref, `${path}.sourceRefs[${index}]`));
+    if (bond.updatedThroughFloor !== null
+      && (!Number.isSafeInteger(bond.updatedThroughFloor) || bond.updatedThroughFloor < 0)) {
+      fail(`${path}.updatedThroughFloor 无效`, 'ARCHIVE_V2_BOND_INVALID');
+    }
   }
 }
 
@@ -241,7 +365,7 @@ function validateArchiveV2Internal(data, expectedChatId) {
 
   validatePeople(data.people);
   requireArray(data.events, 'archive.events');
-  requireObject(data.bonds, 'archive.bonds');
+  validateBonds(data.bonds, data.people);
   requireObject(data.nextSteps, 'archive.nextSteps');
   requireArray(data.nextSteps.items, 'archive.nextSteps.items');
   requireObject(data.progress, 'archive.progress');

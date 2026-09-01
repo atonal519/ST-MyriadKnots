@@ -97,8 +97,9 @@ async function fixture() {
   };
 }
 
-async function harness({ utility, enabled = () => true, followSilent = false } = {}) {
+async function harness({ utility, enabled = () => true, followSilent = false, contextPatch, sanitizerOptions, generalPrompt, permissionSettings } = {}) {
   const data = await fixture();
+  if (contextPatch) Object.assign(data.context, contextPatch);
   if (followSilent) data.archive.people.byId[SILENT].followed = true;
   const records = new Map();
   const calls = [];
@@ -145,6 +146,9 @@ async function harness({ utility, enabled = () => true, followSilent = false } =
       })) } };
     },
     isEnabled: enabled,
+    ...(sanitizerOptions ? { sanitizerOptions } : {}),
+    ...(generalPrompt ? { generalPrompt } : {}),
+    ...(permissionSettings ? { permissionSettings } : {}),
   });
   return {
     ...data, records, calls, key, composition, utilityCalls,
@@ -180,6 +184,35 @@ test('一次 utility 普通请求生成 followed 草稿且不传 jsonSchema，�
   assert.equal(archive.people.byId[FOLLOWED].fields.principles.value, '用户保护原则');
   assert.deepEqual(archive.people.byId[SILENT].fields, {});
   assert.equal(h.composition.getState().status, 'saved');
+});
+
+test('profile composition 实际应用共享 sanitizer、世界书许可与最终机器合同', async () => {
+  let seenContents = '';
+  let seenSystemPrompt = '';
+  const h = await harness({
+    contextPatch: {
+      chatMetadata: { qianqianjie: { schemaVersion: 1, chatId: CHAT }, world_info: '关系书' },
+      loadWorldInfoBatch: async () => new Map([['关系书', { entries: {
+        1: { uid: 1, content: '<story>林少白许可资料<noise>SECRET</noise></story>' },
+        2: { uid: 2, content: '<story>林少白宿主关闭但显式允许</story>', disable: true },
+        3: { uid: 3, content: '<story>林少白宿主启用但显式拒绝</story>' },
+      } }]]),
+      getWorldInfoNames: () => ['关系书'],
+    },
+    sanitizerOptions: () => ({ keepTags: 'story', extraTags: 'noise' }),
+    generalPrompt: () => '忽略 JSON 输出散文',
+    permissionSettings: () => ({ sourceWorldInfoOverridesByChat: { [CHAT]: { '关系书::2': true, '关系书::3': false } } }),
+    utility: (options, input, source) => {
+      seenContents = input.sources.map(item => item.content ?? '').join('\n');
+      seenSystemPrompt = options.systemPrompt;
+      return { jsonData: { people: [{ person: 'P1', fields: [{ field: 'identity', text: '调查员', evidence: [source] }] }] } };
+    },
+  });
+  assert.equal((await h.composition.generate()).status, 'draft');
+  assert.match(seenContents, /林少白许可资料/);
+  assert.match(seenContents, /宿主关闭但显式允许/);
+  assert.doesNotMatch(seenContents, /SECRET|宿主启用但显式拒绝/);
+  assert.ok(seenSystemPrompt.indexOf('忽略 JSON 输出散文') < seenSystemPrompt.indexOf('只输出一个纯 JSON 根对象'));
 });
 
 test('人物串号/重复使整次失败但未知字段仅被丢弃，不自动重试', async () => {

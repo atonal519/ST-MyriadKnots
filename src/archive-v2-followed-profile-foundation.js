@@ -90,33 +90,44 @@ function resultBatchIndexes(person) {
 
 function matchFollowedPeople(archive, peopleResult) {
   const followed = archive.people.order
-    .map(identityId => archive.people.byId[identityId])
-    .filter(person => person.followed === true);
+    .map((identityId, archiveIndex) => ({ person: archive.people.byId[identityId], archiveIndex }))
+    .filter(item => item.person.followed === true);
   const used = new Set();
-  return followed.map((person, index) => {
+  return followed.map(({ person, archiveIndex }, index) => {
     const displayName = typeof person.displayName?.value === 'string' ? person.displayName.value.trim() : '';
     if (!displayName) fail('关注人物姓名无效');
     const batches = archiveBatchIndexes(person);
+    const stableCandidate = peopleResult.people[archiveIndex];
+    const stableMatch = stableCandidate && !used.has(stableCandidate.localId)
+      && sameNumbers(resultBatchIndexes(stableCandidate), batches) ? stableCandidate : null;
     const matches = peopleResult.people.filter(candidate => !used.has(candidate.localId)
       && normalized(candidate.displayName) === normalized(displayName)
       && sameNumbers(resultBatchIndexes(candidate), batches));
-    if (matches.length !== 1) {
+    const memoryPerson = stableMatch ?? (matches.length === 1 ? matches[0] : null);
+    if (!memoryPerson) {
       fail('关注人物无法唯一对应 memory 人物', 'ARCHIVE_V2_FOLLOWED_PROFILE_PERSON_MISMATCH');
     }
-    used.add(matches[0].localId);
+    used.add(memoryPerson.localId);
+    const matchNames = [...new Set([
+      displayName,
+      ...(Array.isArray(person.aliases) ? person.aliases : []),
+      memoryPerson.displayName,
+      ...(Array.isArray(memoryPerson.aliases) ? memoryPerson.aliases : []),
+    ].map(value => String(value ?? '').trim()).filter(Boolean))];
     return {
       person: `P${index + 1}`,
       identityId: person.identityId,
       displayName,
-      memoryPerson: matches[0],
+      memoryPerson,
+      matchNames,
     };
   });
 }
 
-function relevantMemoryRows(batch, displayName) {
-  const matches = batch.rows.people.filter(row => normalized(row.displayName) === normalized(displayName));
-  if (matches.length !== 1) return null;
-  const confirmedLocalId = matches[0].localId;
+function relevantMemoryRows(batch, memoryPerson) {
+  const ref = memoryPerson.sourcePeopleRefs.find(item => item.batchIndex === batch.batchIndex);
+  if (!ref || !batch.rows.people.some(row => row.localId === ref.localId)) return null;
+  const confirmedLocalId = ref.localId;
   const relations = batch.rows.relations.filter(row => row.subjectLocalId === confirmedLocalId
     || (row.objectKind === 'person' && row.objectLocalId === confirmedLocalId));
   const events = batch.rows.events.filter(row => row.participantLocalIds.includes(confirmedLocalId));
@@ -154,9 +165,9 @@ function safeRouteSources(sources, people) {
     if (candidate.kind === 'worldbook' && candidate.availability !== 'activated') {
       const content = normalized(candidate.content);
       assignedPeople = people
-        .filter(person => content.includes(normalized(person.displayName)))
+        .filter(person => person.matchNames.some(name => content.includes(normalized(name))))
         .map(person => person.person);
-      if (!assignedPeople.length) continue;
+      if (assignedPeople.length !== 1) continue;
     }
     const key = `${candidate.kind}\u0000${candidate.locator}`;
     if (seen.has(key)) continue;
@@ -221,7 +232,7 @@ export function createArchiveV2FollowedProfilePlan({
     for (const batchIndex of resultBatchIndexes(person.memoryPerson)) {
       const batch = batches[batchIndex];
       if (!batch || batch.batchIndex !== batchIndex) fail('人物 memory batch 不存在');
-      const rows = relevantMemoryRows(batch, person.displayName);
+      const rows = relevantMemoryRows(batch, person.memoryPerson);
       if (!rows) continue;
       const content = JSON.stringify(rows);
       person.sourceCodes.push(addSource({
@@ -242,7 +253,7 @@ export function createArchiveV2FollowedProfilePlan({
   return Object.freeze({
     chatId: safeArchive.chatId,
     baseRevision: revision,
-    people: Object.freeze(people.map(({ memoryPerson: _memoryPerson, ...person }) => Object.freeze({
+    people: Object.freeze(people.map(({ memoryPerson: _memoryPerson, matchNames: _matchNames, ...person }) => Object.freeze({
       ...person,
       sourceCodes: Object.freeze([...person.sourceCodes]),
     }))),

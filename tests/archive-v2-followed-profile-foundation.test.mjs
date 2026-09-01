@@ -112,17 +112,17 @@ function routeSources() {
   ];
 }
 
-test('计划只处理 followed，世界书采用激活或确认姓名规则且别名不能单独命中', async () => {
+test('计划只处理 followed，世界书采用激活或稳定姓名/别名规则', async () => {
   const data = await fixture();
   const plan = createArchiveV2FollowedProfilePlan({ ...data, revision: 7, sources: routeSources() });
   assert.equal(ARCHIVE_V2_FOLLOWED_PROFILE_FIELD_KEYS.length, 11);
   assert.deepEqual(plan.people.map(person => [person.person, person.identityId, person.displayName]), [['P1', FOLLOWED, '林少白']]);
-  assert.deepEqual(plan.sources.filter(source => source.kind === 'worldbook').map(source => source.locator), ['主世界:1', '主世界:2', '主世界:5']);
-  assert.equal(plan.sources.some(source => source.locator === '主世界:3'), false);
+  assert.deepEqual(plan.sources.filter(source => source.kind === 'worldbook').map(source => source.locator), ['主世界:1', '主世界:2', '主世界:3', '主世界:5']);
+  assert.equal(plan.sources.some(source => source.locator === '主世界:3'), true);
   assert.equal(plan.sources.some(source => source.locator === '主世界:4'), false);
   const prompt = archiveV2FollowedProfilePrompt(plan);
   assert.match(prompt, /林少白|当前实际开场白|常驻世界背景/);
-  assert.doesNotMatch(prompt, /Charles|Ethan|11111111|memory-batch:|sha256:|主世界:2/);
+  assert.doesNotMatch(prompt, /11111111|memory-batch:|sha256:|主世界:2/);
   assert.match(prompt, /person|source|memory/);
 
   const memory = JSON.parse(plan.sources.find(source => source.kind === 'chat').content);
@@ -150,12 +150,12 @@ test('enabled 世界书按确认姓名绑定人物，跨人物引用会被校验
   const personB = plan.people.find(person => person.displayName === '陆离');
   const onlyA = plan.sources.find(source => source.locator === '主世界:2');
   const both = plan.sources.find(source => source.locator === '主世界:5');
+  const sharedActivated = plan.sources.find(source => source.locator === '主世界:1');
   assert.deepEqual(onlyA.people, [personA.person]);
   assert.equal(personA.sourceCodes.includes(onlyA.code), true);
   assert.equal(personB.sourceCodes.includes(onlyA.code), false);
-  assert.deepEqual(both.people, [personA.person, personB.person]);
-  assert.equal(personA.sourceCodes.includes(both.code), true);
-  assert.equal(personB.sourceCodes.includes(both.code), true);
+  assert.equal(both, undefined, '同时命中多人物的非激活条目安全丢弃，避免串源');
+  assert.deepEqual(sharedActivated.people, [personA.person, personB.person]);
 
   assert.throws(() => createArchiveV2FollowedProfileDraft({ plan, output: { people: [
     { person: personA.person, fields: [] },
@@ -163,10 +163,20 @@ test('enabled 世界书按确认姓名绑定人物，跨人物引用会被校验
   ] } }), error => error?.code === 'ARCHIVE_V2_FOLLOWED_PROFILE_SOURCE_MISMATCH');
 
   const valid = createArchiveV2FollowedProfileDraft({ plan, output: { people: [
-    { person: personA.person, fields: [{ field: 'relationships', text: '与陆离有共同设定', evidence: [both.code] }] },
-    { person: personB.person, fields: [{ field: 'relationships', text: '与林少白有共同设定', evidence: [both.code] }] },
+    { person: personA.person, fields: [{ field: 'relationships', text: '与陆离有共同设定', evidence: [sharedActivated.code] }] },
+    { person: personB.person, fields: [{ field: 'relationships', text: '与林少白有共同设定', evidence: [sharedActivated.code] }] },
   ] } });
   assert.deepEqual(valid.people.map(person => Object.keys(person.fields)), [['relationships'], ['relationships']]);
+});
+
+test('用户改名后仍按稳定顺序对应 memory 人物并用原姓名路由世界书', async () => {
+  const data = await fixture();
+  data.archive.people.byId[FOLLOWED].displayName = owned('用户改名林先生', data.archive.people.byId[FOLLOWED].sourceRefs, true);
+  const plan = createArchiveV2FollowedProfilePlan({
+    ...data, archive: validateArchiveV2(data.archive), revision: 7, sources: routeSources(),
+  });
+  assert.equal(plan.people[0].displayName, '用户改名林先生');
+  assert.ok(plan.sources.some(source => source.locator === '主世界:2' && source.people.includes('P1')));
 });
 
 test('稀疏结果保留 11 字段中的有效项，逐字段丢弃未知/坏证据且串号阻断', async () => {

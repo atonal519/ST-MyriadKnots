@@ -220,7 +220,7 @@ test('必要 ownership 外壳类型错误按结构类别拒绝', () => {
   }
 });
 
-test('未来人物字段、ownership 元数据及未建模内容完整保留', () => {
+test('未来人物字段、ownership 元数据及仍未建模内容完整保留；bonds 进入严格业务校验', () => {
   const data = initializedArchive();
   const person = data.people.byId['person-1'];
   person.futurePersonState = { arbitrary: ['内容', 7] };
@@ -230,7 +230,6 @@ test('未来人物字段、ownership 元数据及未建模内容完整保留', (
     futureStructuredValue: ownership({ arbitrary: ['JSON', 7] }),
   };
   data.events = [{ futureEvent: { prose: '不解析事件语义' } }];
-  data.bonds = { futureBond: ['任意', { score: '不是数字也保留' }] };
   data.nextSteps = { items: [{ futureStep: '不解析' }], futureMetadata: true };
   const safe = validateArchiveV2(data);
   assert.deepEqual(safe.people.byId['person-1'].futurePersonState, person.futurePersonState);
@@ -238,7 +237,7 @@ test('未来人物字段、ownership 元数据及未建模内容完整保留', (
   assert.equal(safe.people.byId['person-1'].fields.futureFreeText.value.length > 10000, true);
   assert.deepEqual(safe.people.byId['person-1'].fields.futureStructuredValue.value, { arbitrary: ['JSON', 7] });
   assert.deepEqual(safe.events, data.events);
-  assert.deepEqual(safe.bonds, data.bonds);
+  assert.deepEqual(safe.bonds, {});
   assert.deepEqual(safe.nextSteps, data.nextSteps);
 });
 

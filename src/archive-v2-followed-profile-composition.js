@@ -5,9 +5,10 @@ import {
   createArchiveV2FollowedProfileDraft,
   createArchiveV2FollowedProfilePlan,
 } from './archive-v2-followed-profile-foundation.js';
-import { createArchiveV2MemorySnapshot } from './archive-v2-memory-foundation.js';
 import { createArchiveV2MemoryStore } from './archive-v2-memory-store.js';
-import { collectArchiveV2ProfileSources } from './archive-v2-sources.js';
+import { readArchiveV2ReadyMemory } from './archive-v2-ready-memory.js';
+import { collectArchiveV2PermittedSources } from './archive-v2-sources.js';
+import { composeArchiveV2SystemPrompt } from './archive-v2-prompt.js';
 import { parseJsonOutput } from './compact-api-client.js';
 import { isUuid, readHostState } from './host-context.js';
 
@@ -64,6 +65,9 @@ export function createArchiveV2FollowedProfileComposition({
   contextProvider,
   generateUtilityTask,
   isEnabled = true,
+  permissionSettings = () => ({}),
+  sanitizerOptions = () => ({}),
+  generalPrompt = () => '',
 } = {}) {
   if (typeof client?.get !== 'function' || typeof client?.put !== 'function') {
     throw new TypeError('followed profile client 必须提供 get 和 put');
@@ -126,29 +130,6 @@ export function createArchiveV2FollowedProfileComposition({
     return operation;
   }
 
-  async function readReadyMemory(raw, operation) {
-    const read = await memoryStore.readManifest();
-    if (!operation.current()) return { status: operation.status() };
-    if (read?.status !== 'ready' || read.manifest.status !== 'ready') {
-      return { status: read?.status === 'ready' ? 'memory_not_ready' : (read?.status ?? 'memory_not_ready') };
-    }
-    if (!Array.isArray(raw?.chat)) fail('当前聊天正文不可用', 'ARCHIVE_V2_FOLLOWED_PROFILE_CONTEXT_INVALID');
-    const snapshot = await createArchiveV2MemorySnapshot({
-      ...raw,
-      chat: raw.chat.slice(0, read.manifest.targetFloor + 1),
-    });
-    if (!operation.current()) return { status: operation.status() };
-    if (snapshot.sourceFingerprint !== read.manifest.sourceFingerprint
-      || snapshot.batches.length !== read.manifest.totalBatches) return { status: 'source_changed' };
-    const ready = await memoryStore.readReadyBatches({ manifest: read.manifest, plans: snapshot.batches });
-    if (!operation.current()) return { status: operation.status() };
-    if (ready?.status !== 'ready') return { status: ready?.status ?? 'memory_not_ready' };
-    const people = await memoryStore.readPeopleResult(ready);
-    if (!operation.current()) return { status: operation.status() };
-    if (people?.status !== 'ready') return { status: people?.status === 'missing' ? 'people_missing' : (people?.status ?? 'people_missing') };
-    return { ...ready, peopleResult: people.result };
-  }
-
   function publicArchiveState(read) {
     const order = Array.isArray(read.archive?.people?.order) ? read.archive.people.order : [];
     const followed = order.map(identityId => read.archive.people.byId[identityId]).filter(person => person?.followed === true);
@@ -187,12 +168,16 @@ export function createArchiveV2FollowedProfileComposition({
         const followedCount = archiveRead.archive.people.order
           .filter(identityId => archiveRead.archive.people.byId[identityId]?.followed === true).length;
         if (!followedCount) return setState({ status: 'empty', followedCount: 0, enrichedCount: 0 }, context.identity);
-        const memory = await readReadyMemory(context.raw, operation);
+        const memory = await readArchiveV2ReadyMemory({ raw: context.raw, memoryStore, operation });
         if (!operation.current()) return { status: operation.status() };
         if (memory.status !== 'ready') {
           return setState({ status: memory.status, followedCount }, context.identity);
         }
-        const collected = await collectArchiveV2ProfileSources(context.raw);
+        const collected = await collectArchiveV2PermittedSources(context.raw, {
+          chatId: context.identity.chatId,
+          permissionSettings: permissionSettings(),
+          sanitizerOptions: sanitizerOptions(),
+        });
         if (!operation.current()) return { status: operation.status() };
         const plan = createArchiveV2FollowedProfilePlan({
           archive: archiveRead.archive,
@@ -208,7 +193,7 @@ export function createArchiveV2FollowedProfileComposition({
             includeCharacterCard: false,
             worldInfoSource: 'none',
             substituteMacros: false,
-            systemPrompt: systemPrompt(),
+            systemPrompt: composeArchiveV2SystemPrompt({ generalPrompt, machineContract: systemPrompt() }),
             taskMessages: [{ role: 'user', content: archiveV2FollowedProfilePrompt(plan) }],
             signal: operation.controller.signal,
             maxTokens: 30000,

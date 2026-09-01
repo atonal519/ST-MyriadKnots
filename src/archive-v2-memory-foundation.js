@@ -155,7 +155,7 @@ function normalizeOptions(options) {
   };
 }
 
-function selectedContent(message) {
+export function selectArchiveV2MemoryAssistantContent(message) {
   const swipes = message.swipes;
   if (swipes !== undefined) {
     if (!Array.isArray(swipes)) return { ok: false, code: ARCHIVE_V2_MEMORY_WARNING.SWIPE_UNSTABLE };
@@ -244,7 +244,7 @@ export async function createArchiveV2MemorySnapshot(context, options) {
       warnings.push({ code: ARCHIVE_V2_MEMORY_WARNING.ROLE_UNKNOWN, sourceIndex });
       continue;
     }
-    const selected = selectedContent(message);
+    const selected = selectArchiveV2MemoryAssistantContent(message);
     if (!selected.ok) {
       warnings.push({ code: selected.code, sourceIndex });
       continue;
