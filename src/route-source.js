@@ -9,6 +9,7 @@ const text = (value, diagnosticCode) => {
   if (typeof value !== 'string') throw fail(diagnosticCode);
   return value;
 };
+const hiddenMessage = value => value?.is_hidden === true || value?.extra?.is_hidden === true;
 
 export async function fingerprintGreeting(greeting) {
   if (!greeting || greeting.floor !== 0 || !Number.isInteger(greeting.swipeId) || greeting.swipeId < 0) throw fail('GREETING_INVALID');
@@ -21,7 +22,7 @@ export async function normalizeGreeting(ctx) {
   const marker = first?.is_ejs_processed;
   const ejsProcessed = marker === true || (Array.isArray(marker) && marker.length > 0 && marker.every(value => value === true));
   const ejsSystem = first?.is_system === true && ejsProcessed;
-  if (!first || first.is_user === true || (first.is_system === true && !ejsSystem) || typeof first.mes !== 'string') throw fail('GREETING_INVALID');
+  if (!first || hiddenMessage(first) || first.is_user === true || (first.is_system === true && !ejsSystem) || typeof first.mes !== 'string') throw fail('GREETING_INVALID');
   const rawSwipeId = first.swipe_id;
   if (ejsSystem && (!Number.isInteger(rawSwipeId) || rawSwipeId < 0)) throw fail('GREETING_INVALID');
   const swipeId = rawSwipeId === undefined ? 0 : rawSwipeId;
@@ -115,9 +116,83 @@ export async function collectAnalysisSources(ctx) {
   return { greeting: { ...normalized, content: cleanAnalysisText(ctx.chat[0].mes) }, worldInfoEntries: entries };
 }
 
+const CARD_SOURCE_FIELDS = Object.freeze([
+  ['description', '角色描述'], ['personality', '角色性格'], ['scenario', '场景设定'], ['mes_example', '对话示例'],
+  ['system_prompt', '角色系统设定'], ['post_history_instructions', '历史后指令'], ['creator_notes', '创作者备注'],
+]);
+const sourceId = source => `${source.kind}:${source.locator}`;
+const currentCharacter = ctx => Array.isArray(ctx?.characters) ? ctx.characters[ctx.characterId] : ctx?.characters?.[ctx.characterId];
+const entryLabel = (world, uid, entry) => {
+  const comment = typeof entry?.comment === 'string' ? entry.comment.trim() : '';
+  const keys = Array.isArray(entry?.key) ? entry.key.map(value => String(value).trim()).filter(Boolean).join('、') : '';
+  return `${world} · ${comment || keys || `条目 ${uid}`}`.slice(0, 240);
+};
+
+export async function collectSourceCatalogCandidates(ctx) {
+  const character = currentCharacter(ctx) || {}, card = character.data || character;
+  const avatar = String(character?.avatar ?? ctx?.characterAvatar ?? '').trim();
+  const candidates = [], warnings = [];
+  for (const [field, label] of CARD_SOURCE_FIELDS) {
+    const content = typeof (card?.[field] ?? character?.[field]) === 'string' ? (card[field] ?? character[field]) : '';
+    if (!content.trim()) continue;
+    const source = { kind: 'card', locator: `card:${avatar}#${field}`, fingerprint: `sha256:${await sha256(content)}`, content };
+    candidates.push({ id: sourceId(source), ...source, label, availability: 'card', selected: true, activated: false, linked: true });
+  }
+  const greeting = await normalizeGreeting(ctx);
+  const greetingContent = ctx.chat[0].mes;
+  const greetingSource = { kind: 'greeting', locator: `greeting:0:${greeting.swipeId}`, fingerprint: greeting.fingerprint, content: greetingContent };
+  candidates.push({ id: sourceId(greetingSource), ...greetingSource, label: '当前开场白', availability: 'greeting', selected: true, activated: false, linked: true });
+
+  if (typeof ctx?.simulateWorldInfoActivation !== 'function') throw fail('SCANNER_UNAVAILABLE');
+  let activated;
+  try { activated = activatedEntries(await ctx.simulateWorldInfoActivation({ coreChat: Array.isArray(ctx.chat) ? ctx.chat.slice(0, 1) : ctx.chat, dryRun: true })); }
+  catch (error) { if (error?.diagnosticCode) throw error; throw fail('SCAN_FAILED'); }
+  const activatedMap = new Map();
+  for (const raw of activated) {
+    const part = entryParts(raw), key = `${part.world}\u0000${part.uid}`;
+    if (!activatedMap.has(key)) activatedMap.set(key, raw);
+  }
+
+  const primary = typeof card?.extensions?.world === 'string' ? card.extensions.world.trim() : '';
+  let auxiliary = [];
+  if (typeof ctx?.getCharaAuxWorlds === 'function' && typeof ctx?.getCharaFilename === 'function') {
+    try { auxiliary = ctx.getCharaAuxWorlds(ctx.getCharaFilename(ctx.characterId)) || []; }
+    catch { warnings.push({ code: 'CHARACTER_AUX_WORLDS_UNAVAILABLE' }); }
+  } else warnings.push({ code: 'CHARACTER_AUX_WORLDS_UNAVAILABLE' });
+  const linkedWorlds = new Set([primary, ...(Array.isArray(auxiliary) ? auxiliary : [])].map(value => String(value || '').trim()).filter(Boolean));
+  const allWorlds = [...new Set([...linkedWorlds, ...[...activatedMap.values()].map(entry => String(entry.world).trim())])];
+  let books = new Map();
+  if (allWorlds.length) {
+    if (typeof ctx?.loadWorldInfoBatch !== 'function') warnings.push({ code: 'WORLDBOOK_BATCH_UNAVAILABLE', count: allWorlds.length });
+    else {
+      try { books = await ctx.loadWorldInfoBatch(allWorlds); }
+      catch { warnings.push({ code: 'WORLDBOOK_READ_FAILED', count: allWorlds.length }); books = new Map(); }
+    }
+  }
+  const refs = new Map();
+  for (const world of allWorlds) {
+    const data = books instanceof Map ? books.get(world) : null;
+    const entries = Array.isArray(data) ? data : batchEntries(world, data);
+    if (linkedWorlds.has(world) && (!data || !entries.length)) warnings.push({ code: 'WORLDBOOK_READ_FAILED', world: world.slice(0, 120) });
+    for (const entry of entries) refs.set(`${world}\u0000${String(entry.uid)}`, { world, uid: String(entry.uid), entry });
+  }
+  for (const [key, raw] of activatedMap) if (!refs.has(key)) refs.set(key, { world: String(raw.world).trim(), uid: String(raw.uid), entry: raw });
+  const ordered = [...refs.values()].sort((a, b) => compareRouteKey(a.world, b.world) || compareRouteKey(a.uid, b.uid));
+  for (const { world, uid, entry } of ordered) {
+    const content = typeof entry?.content === 'string' ? entry.content : '';
+    if (!content) continue;
+    const isActivated = activatedMap.has(`${world}\u0000${uid}`), linked = linkedWorlds.has(world), disabled = entry?.disable === true;
+    if (!isActivated && !linked) continue;
+    const source = { kind: 'worldbook', locator: `${world}:${uid}`, fingerprint: `sha256:${await sha256(content)}`, content };
+    const availability = disabled ? 'disabled' : isActivated ? 'activated' : 'enabled';
+    candidates.push({ id: sourceId(source), ...source, label: entryLabel(world, uid, entry), availability, selected: !disabled, activated: isActivated, linked });
+  }
+  return { candidates, warnings: warnings.slice(0, 40) };
+}
+
 function batchEntries(world, data) {
   const values = data?.entries && typeof data.entries === 'object' ? Object.entries(data.entries) : [];
-  return values.map(([uid, entry]) => ({ world, uid: entry?.uid ?? entry?.id ?? uid, content: entry?.content })).filter(entry => entry.uid !== undefined && typeof entry.content === 'string');
+  return values.map(([uid, entry]) => ({ ...(entry || {}), world, uid: entry?.uid ?? entry?.id ?? uid, content: entry?.content })).filter(entry => entry.uid !== undefined && typeof entry.content === 'string');
 }
 
 async function readFrozenEntries(ctx, route) {
@@ -236,6 +311,7 @@ export function createRouteSourceAdapter({ contextProvider } = {}) {
       return { state: 'ready', greeting: { ...greeting, content: cleanAnalysisText(ctx.chat[0].mes) }, worldInfoEntries };
     },
     async collectAnalysisSources() { return collectAnalysisSources(contextProvider()); },
+    async collectSourceCatalogCandidates() { return collectSourceCatalogCandidates(contextProvider()); },
     async collectFrozenAnalysisSources(route) {
       if (!route || route.state !== 'ready' || !Array.isArray(route.worldInfoEntries)) throw fail('ROUTE_INVALID');
       const ctx = contextProvider();

@@ -3,7 +3,7 @@ import { sha256 } from './identity.js';
 import { computeStableFloorSnapshot } from './stable-floor.js';
 import { sameRouteSnapshot, summarizeFrozenSourceDiagnostics } from './route-source.js';
 import { parseJsonOutput } from './compact-api-client.js';
-import { BASIC_FIELD_KEYS, DYNAMIC_FIELD_KEYS } from './people-foundation.js';
+import { BASIC_FIELD_KEYS, DYNAMIC_FIELD_KEYS, isCharacterRegistrySourceBinding } from './people-foundation.js';
 
 export const INITIAL_RELATION_SCHEMA_VERSION = 1;
 export const INITIAL_RELATION_WRITER_ID = 'qianqianjie.initial-relation.v1';
@@ -119,10 +119,10 @@ const emptySourceDiagnostics = () => ({ greeting: 'unavailable', worldbookTotal:
 const safeCount = value => Number.isInteger(value) && value >= 0 ? Math.min(value, 100000) : 0;
 const safeCode = value => String(value || 'unknown').replace(/[^a-z0-9_:-]/gi, '_').slice(0, 80) || 'unknown';
 const FORMAT_STAGES = new Set(['none', 'http_response_json', 'stream_event_json', 'completion_json', 'output_truncated', 'relation_schema', 'relation_semantic']);
-const API_SOURCES = new Set(['seven-utility', 'seven-main', 'seven-preset', 'local-preset', 'local', 'tavern', 'unknown']);
+const API_SOURCES = new Set(['shared-main', 'shared-preset', 'seven-utility', 'seven-main', 'seven-preset', 'local-preset', 'local', 'tavern', 'unknown']);
 const FINISH_REASONS = new Set(['stop', 'length', 'max_tokens', 'content_filter', 'tool_calls', 'function_call', 'other']);
 const BASIC_ATTEMPT_STATUSES = new Set(['ready', 'failed', 'conflict', 'stale', 'cancelled']);
-const BASIC_REJECTION_CODES = new Set(['item_not_object', 'item_too_large', 'unknown_property', 'unknown_field', 'invalid_text', 'invalid_evidence', 'unknown_evidence', 'duplicate_field', 'item_limit']);
+const BASIC_REJECTION_CODES = new Set(['item_not_object', 'item_too_large', 'unknown_property', 'unknown_field', 'invalid_text', 'invalid_evidence', 'unknown_evidence', 'duplicate_field', 'relationship_scope', 'item_limit']);
 const DYNAMIC_REJECTION_CODES = new Set([...BASIC_REJECTION_CODES, 'relationship_scope', 'transient_state', 'uncertain_secret', 'evidence_mismatch', 'insufficient_stability']);
 const safeFormatStage = value => FORMAT_STAGES.has(value) ? value : 'none';
 const safeApiSource = value => API_SOURCES.has(value) ? value : 'unknown';
@@ -300,7 +300,20 @@ export const DYNAMIC_INFO_SCHEMA = Object.freeze({
   },
 });
 
-export function validateBasicInfoResult(response, { sources } = {}) {
+const RELATIONSHIP_DYNAMIC_TEXT = /(?:\b[CU]\s*(?:->|→)\s*[CU]\b|好感|关系阶段|恋爱阶段|暧昧阶段|恋人|情侣|爱人|伴侣|配偶|夫妻|男友|女友|未婚夫|未婚妻|(?:对|向)\s*(?:U|用户|\{\{user\}\}).{0,24}(?:态度|喜欢|爱慕|恋爱|追求|暧昧|结婚)|(?:想|要|试图|打算).{0,12}(?:追求|恋爱|结婚).{0,12}(?:U|用户|\{\{user\}\}))/iu;
+const RELATIONSHIP_ACTION = '(?:好感|态度|喜欢|爱慕|恋爱|恋人|情侣|爱人|伴侣|配偶|夫妻|男友|女友|未婚夫|未婚妻|追求|暧昧|结婚|表白|爱上|亲密(?:关系)?|关系阶段)';
+const regexEscape = value => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function isRelationshipDynamicText(text, relationshipNames = []) {
+  if (RELATIONSHIP_DYNAMIC_TEXT.test(text)) return true;
+  return relationshipNames.some(rawName => {
+    const name = normalizeText(rawName);
+    if (name.length < 2) return false;
+    const escaped = regexEscape(name);
+    return new RegExp(`(?:${RELATIONSHIP_ACTION}.{0,18}${escaped}|${escaped}.{0,18}${RELATIONSHIP_ACTION})`, 'iu').test(text);
+  });
+}
+
+export function validateBasicInfoResult(response, { sources, relationshipNames = [] } = {}) {
   const value = unwrapResult(response);
   if (stableJson(value).length > BASIC_INFO_LIMITS.maxOutputChars) throw fail('failed_retryable', '基础信息输出超过保存预算');
   const rawFields = value.fields === undefined ? [] : value.fields;
@@ -319,6 +332,7 @@ export function validateBasicInfoResult(response, { sources } = {}) {
     if (!field || !BASIC_FIELD_KEYS.includes(field)) { rejected.push('unknown_field'); continue; }
     const text = normalizeText(raw.text);
     if (!text || text.length > BASIC_INFO_LIMITS.maxFieldChars) { rejected.push('invalid_text'); continue; }
+    if (field === 'relationships' && isRelationshipDynamicText(text, relationshipNames)) { rejected.push('relationship_scope'); continue; }
     const codes = normalizeEvidence(raw.evidence);
     if (!codes) { rejected.push('invalid_evidence'); continue; }
     if (!codes.length || codes.some(code => !evidence.has(code))) { rejected.push('unknown_evidence'); continue; }
@@ -329,25 +343,11 @@ export function validateBasicInfoResult(response, { sources } = {}) {
   if (rawFields.length > BASIC_INFO_LIMITS.maxItems) rejected.push('item_limit');
   return { fields: Object.fromEntries(accepted), diagnostics: { acceptedFields: accepted.size, rejectedFields: rejected.length, rejectionCodes: [...new Set(rejected)].slice(0, 12), emptyResult: rawFields.length === 0 } };
 }
-
-const RELATIONSHIP_DYNAMIC_TEXT = /(?:\b[CU]\s*(?:->|→)\s*[CU]\b|好感|关系阶段|恋爱阶段|暧昧阶段|(?:对|向)\s*(?:U|用户|\{\{user\}\}).{0,24}(?:态度|喜欢|爱慕|恋爱|追求|暧昧|结婚)|(?:想|要|试图|打算).{0,12}(?:追求|恋爱|结婚).{0,12}(?:U|用户|\{\{user\}\}))/iu;
-const RELATIONSHIP_ACTION = '(?:好感|态度|喜欢|爱慕|恋爱|追求|暧昧|结婚|表白|爱上|亲密(?:关系)?|关系阶段)';
 const TRANSIENT_DYNAMIC_TEXT = /(?:(?:此刻|刚才|刚刚|一时|突然|当下|这一刻|片刻|短暂).{0,18}(?:高兴|开心|愤怒|生气|害怕|恐惧|难过|悲伤|紧张|焦虑|震惊|尴尬|兴奋|沮丧|情绪|心情)|(?:高兴|开心|愤怒|生气|害怕|恐惧|难过|悲伤|紧张|焦虑|震惊|尴尬|兴奋|沮丧).{0,8}(?:一下|片刻|一会儿))/iu;
 const UNCERTAIN_SECRET_TEXT = /(?:可能|也许|或许|疑似|似乎|大概|不确定|推测|猜测|speculat|uncertain|\bmaybe\b|\bperhaps\b)/iu;
 const STABLE_CHANGE_EVIDENCE = /(?:(?:\d+|[一二三四五六七八九十百]+)年(?:来|以来)?|多年|年来|每次|总是|反复|一直|逐渐|养成|形成.{0,10}习惯|长期|长久|已经改变|已改变|从此|不再|稳定|permanent|long[- ]term|repeated|always|gradually|established|changed for good)/iu;
 const GOAL_EVIDENCE = /(?:目标|计划|打算|决定|致力于|试图|正在(?:寻找|追查|修复|完成|保护|守护|逃离|调查)|\bgoal\b|\bplan(?:s|ned)?\b|intend|seek|trying to)/iu;
 const SECRET_EVIDENCE = /(?:秘密|隐瞒|瞒着|未公开|保密|无人(?:知道|知晓)|没有人知道|不为人知|(?:从未|未曾).{0,16}(?:告诉|说过|透露)|\bsecret\b|conceal|hidden|never told|no one knows)/iu;
-
-const regexEscape = value => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-function isRelationshipDynamicText(text, relationshipNames = []) {
-  if (RELATIONSHIP_DYNAMIC_TEXT.test(text)) return true;
-  return relationshipNames.some(rawName => {
-    const name = normalizeText(rawName);
-    if (name.length < 2) return false;
-    const escaped = regexEscape(name);
-    return new RegExp(`(?:${RELATIONSHIP_ACTION}.{0,18}${escaped}|${escaped}.{0,18}${RELATIONSHIP_ACTION})`, 'iu').test(text);
-  });
-}
 
 const EXCERPT_PUNCTUATION = new Map([
   [',', '，'], ['，', '，'], [';', '；'], ['；', '；'], [':', '：'], ['：', '：'], ['.', '。'], ['。', '。'],
@@ -504,7 +504,13 @@ function currentCharacter(ctx) {
   return Array.isArray(ctx?.characters) ? ctx.characters[ctx.characterId] : ctx?.characters?.[ctx.characterId];
 }
 
-async function authorSources(ctx, state, meta, routeSource) {
+async function authorSources(ctx, state, meta, routeSource, sourceCatalog) {
+  if (typeof sourceCatalog?.getConfirmedSources === 'function') {
+    const confirmed = await sourceCatalog.getConfirmedSources({ formalState: { cardId: meta.cardId, personaId: meta.personaId, cardType: meta.cardType } });
+    if (Array.isArray(confirmed?.sources) && confirmed.sources.length) {
+      return { sources: confirmed.sources.map(source => ({ kind: source.kind, locator: source.locator, fingerprint: source.fingerprint, content: source.content })), sourceDiagnostics: emptySourceDiagnostics() };
+    }
+  }
   const character = currentCharacter(ctx) || {}, card = character.data || character;
   const fields = ['description', 'personality', 'scenario', 'mes_example', 'system_prompt', 'post_history_instructions', 'creator_notes'];
   const sources = [];
@@ -756,7 +762,7 @@ async function validateRecoveryDraft(draft, plan) {
   return draft;
 }
 
-export function createInitialRelationGenerationAdapter({ client, contextProvider, routeSource, generateRelationTask, memorySource, isEnabled = () => true } = {}) {
+export function createInitialRelationGenerationAdapter({ client, contextProvider, routeSource, sourceCatalog, generateRelationTask, memorySource, isEnabled = () => true } = {}) {
   if (!client?.get || !client?.put || typeof contextProvider !== 'function' || !routeSource?.collectFrozenAnalysisSources || typeof generateRelationTask !== 'function') throw new Error('首次关系生成依赖不可用');
   let generation = 0, invalidationEpoch = 0, serial = Promise.resolve(), activeController = null;
   const cache = new Map();
@@ -818,7 +824,7 @@ export function createInitialRelationGenerationAdapter({ client, contextProvider
       checkEnvelopeData(record, 'people-profile', run.state.chatId);
       if (record.data.identityId !== member.identityId || record.data.subject !== member.subject || Number(record.data.peopleContractVersion || 1) > 1) throw fail('future_schema_readonly', '人物档案身份或版本不兼容');
       const binding = record.data.sourceBinding;
-      const bindingValid = object(binding) && binding.identityId === member.identityId && binding.kind === 'c-registry';
+      const bindingValid = isCharacterRegistrySourceBinding(binding, member.identityId, meta.data.cardId, meta.data.cardType);
       if (!bindingValid) throw fail('mismatch', '人物档案 sourceBinding 与当前 foundation 不一致');
       profiles.set(member.identityId, record);
     }
@@ -826,7 +832,7 @@ export function createInitialRelationGenerationAdapter({ client, contextProvider
     if (Number(initialGeneration.schemaVersion || 1) > 1) throw fail('future_schema_readonly', '首次生成状态来自未来版本');
     const done = completedIds(initialGeneration), targetIdentityIds = characterMembers.map(item => item.identityId).filter(id => !done.has(id));
     let author;
-    try { author = await authorSources(run.ctx, run.state, meta.data, routeSource); check(run); }
+    try { author = await authorSources(run.ctx, run.state, meta.data, routeSource, sourceCatalog); check(run); }
     catch (error) {
       if (error.relationStatus === 'blocked_source_changed') return { meta, index, stateRecord, runtime, profiles, members, targetIdentityIds, initialGeneration, sourceDiagnostics: normalizeSourceDiagnostics(error.sourceDiagnostics), canonCount: runtime.data.stableFloorLedger?.entries?.length || 0, blockedStatus: 'blocked_source_changed', blockedError: error.message };
       throw error;
@@ -862,7 +868,7 @@ export function createInitialRelationGenerationAdapter({ client, contextProvider
     const profile = await read(run, profileCollection(run.state.chatId), identityId);
     checkEnvelopeData(profile, 'people-profile', run.state.chatId);
     if (Number(profile.data.peopleContractVersion || 1) > 1) throw fail('future_schema_readonly', '人物档案来自未来版本');
-    if (profile.data.identityId !== identityId || profile.data.subject !== 'character' || profile.data.sourceBinding?.kind !== 'c-registry' || profile.data.sourceBinding?.identityId !== identityId) throw fail('mismatch', '目标 C 档案绑定不一致');
+    if (profile.data.identityId !== identityId || profile.data.subject !== 'character' || !isCharacterRegistrySourceBinding(profile.data.sourceBinding, identityId, meta.data.cardId, meta.data.cardType)) throw fail('mismatch', '目标 C 档案绑定不一致');
     return { meta, index, stateRecord, binding, profile };
   }
 
@@ -1212,7 +1218,7 @@ export function createInitialRelationGenerationAdapter({ client, contextProvider
         taskMessages: [{ role: 'user', content: basicInfoPrompt(plan, target, sources) }], jsonSchema: { name: 'qianqianjie_basic_info_v1', value: BASIC_INFO_SCHEMA, strict: false },
         signal: activeController.signal, maxTokens: BASIC_INFO_LIMITS.maxTokens, temperature: 0.1,
       });
-      check(run); captureTaskDiagnostics(attempt, response); validated = validateBasicInfoResult(response, { sources });
+      check(run); captureTaskDiagnostics(attempt, response); validated = validateBasicInfoResult(response, { sources, relationshipNames: plan.members.map(item => item.displayName).filter(Boolean) });
       attempt.acceptedFields = validated.diagnostics.acceptedFields;
       attempt.rejectedFields = validated.diagnostics.rejectedFields;
       attempt.rejectionCodes = validated.diagnostics.rejectionCodes;
@@ -1289,7 +1295,7 @@ export function createInitialRelationGenerationAdapter({ client, contextProvider
         signal: activeController.signal, maxTokens: DYNAMIC_INFO_LIMITS.maxTokens, temperature: 0.1,
       });
       check(run); await assertMemoryStable(); captureTaskDiagnostics(attempt, response);
-      const relationshipNames = plan.members.filter(item => item.subject === 'user').map(item => item.displayName).filter(Boolean);
+      const relationshipNames = plan.members.map(item => item.displayName).filter(Boolean);
       validated = validateDynamicInfoResult(response, { sources, relationshipNames });
       attempt.acceptedFields = validated.diagnostics.acceptedFields;
       attempt.rejectedFields = validated.diagnostics.rejectedFields;

@@ -1,9 +1,9 @@
 export const DESKTOP_PANEL_BREAKPOINT = 641;
 export const PANEL_SAFETY_MARGIN = 10;
-export const PANEL_MIN_WIDTH = 500;
-export const PANEL_MIN_HEIGHT = 420;
-export const PANEL_POSITION_KEY = 'qqj-panel-pos';
-export const PANEL_SIZE_KEY = 'qqj-panel-size';
+export const PANEL_MIN_WIDTH = 320;
+export const PANEL_MIN_HEIGHT = 300;
+export const PANEL_POSITION_KEY = 'qqj-panel-pos-v2';
+export const PANEL_SIZE_KEY = 'qqj-panel-size-v2';
 
 const finite = value => Number.isFinite(Number(value));
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
@@ -19,8 +19,8 @@ export function desktopPanelSize(width, height, saved = null) {
   const maximumHeight = Math.max(0, viewport.height - PANEL_SAFETY_MARGIN * 2);
   const minimumWidth = Math.min(PANEL_MIN_WIDTH, maximumWidth);
   const minimumHeight = Math.min(PANEL_MIN_HEIGHT, maximumHeight);
-  const preferredWidth = finite(saved?.width) && Number(saved.width) > 0 ? Number(saved.width) : 720;
-  const defaultHeight = Math.min(780, Math.max(0, viewport.height - 80));
+  const preferredWidth = finite(saved?.width) && Number(saved.width) > 0 ? Number(saved.width) : 360;
+  const defaultHeight = Math.min(600, Math.max(0, viewport.height * 0.85));
   const preferredHeight = finite(saved?.height) && Number(saved.height) > 0 ? Number(saved.height) : defaultHeight;
   return {
     width: clamp(preferredWidth, minimumWidth, maximumWidth),
@@ -41,7 +41,7 @@ export function desktopPanelPosition(width, height, panelWidth, panelHeight, sav
   const minimumTop = Math.min(PANEL_SAFETY_MARGIN, availableY);
   const maximumTop = Math.max(minimumTop, availableY - PANEL_SAFETY_MARGIN);
   const defaultLeft = clamp(availableX - 20, minimumLeft, maximumLeft);
-  const defaultTop = clamp(40, minimumTop, maximumTop);
+  const defaultTop = clamp(80, minimumTop, maximumTop);
   return {
     left: clamp(finite(saved?.left) ? Number(saved.left) : defaultLeft, minimumLeft, maximumLeft),
     top: clamp(finite(saved?.top) ? Number(saved.top) : defaultTop, minimumTop, maximumTop),

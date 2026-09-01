@@ -1,6 +1,7 @@
 import { readHostState } from './host-context.js';
 import { isUuid, sha256 } from './identity.js';
 import { INITIAL_RELATION_WRITER_ID } from './initial-relation-generation.js';
+import { isCharacterRegistrySourceBinding } from './people-foundation.js';
 
 const PROFILE_LAYERS = ['sourceFacts', 'userFacts', 'interpretations', 'pendingReview'];
 const TARGET_LAYERS = ['sourceFacts', 'interpretations'];
@@ -109,7 +110,7 @@ export function createPendingReviewAdapter({ client, contextProvider, isEnabled 
       if (profile.sourceBinding?.kind !== 'persona' || profile.sourceBinding.identityId !== identityId || profile.sourceBinding.locator !== run.state.personaAvatar) throw fail('mismatch', 'U 来源绑定不一致');
     } else {
       const selected = (index.confirmed || []).filter(item => item?.identityId === identityId && selectionStatus(item.selection) === 'selected');
-      if (selected.length !== 1 || profile.sourceBinding?.kind !== 'c-registry' || profile.sourceBinding.identityId !== identityId) throw fail('mismatch', 'C 不在当前已选择人物中');
+      if (selected.length !== 1 || !isCharacterRegistrySourceBinding(profile.sourceBinding, identityId, meta.cardId, meta.cardType)) throw fail('mismatch', 'C 不在当前已选择人物中');
     }
     const identityIds = new Set((foundation.initializedMembers || []).filter(item => item?.active === true).map(item => item.identityId));
     return { profileRecord, profile, identityIds };

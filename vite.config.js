@@ -1,2 +1,13 @@
 import { defineConfig } from 'vite';
-export default defineConfig({ build: { lib: { entry: 'src/bootstrap.js', formats: ['es'], fileName: () => 'index.js' }, outDir: 'dist', emptyOutDir: true, codeSplitting: false } });
+export default defineConfig(({ mode }) => {
+  const uiBuild = mode === 'ui';
+  return {
+    build: {
+      lib: { entry: uiBuild ? 'src/bootstrap.js' : 'index.js', formats: ['es'], fileName: () => uiBuild ? 'index.js' : 'qqj-app.js' },
+      outDir: 'dist',
+      emptyOutDir: false,
+      codeSplitting: false,
+      rollupOptions: uiBuild ? {} : { external: ['/scripts/personas.js', '/scripts/extensions.js', '/script.js'] },
+    },
+  };
+});

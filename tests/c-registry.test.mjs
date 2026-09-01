@@ -75,6 +75,34 @@ test('C Registry single-flight seam：并发只发一次且传输 Schema 完整�
   await assert.rejects(() => retry.identify()); assert.equal((await retry.identify()).status, 'ready'); assert.equal(attempts, 2); assert.equal(values[0].status, 'ready');
 });
 
+test('来源许可识别遇到格式错误也只调用一次 AI，不进行隐式第二次修复', async () => {
+  const sources = normalizeRegistrySources(await route.collectAnalysisSources()); let calls = 0;
+  const adapter = createCRegistryAdapter({
+    client: fakeClient(), contextProvider: context, routeSource: route,
+    snapshotProvider: async () => ({ snapshot: captureSnapshot({ contextProvider: context, sourceStatus: 'ready' }), sources, strategy: { sourceCatalogPermit: true } }),
+    generateTask: async () => { calls += 1; return { confirmed: 'invalid', candidate: [], discarded: [] }; },
+  });
+  await assert.rejects(adapter.identify(), error => error.retryableRecognitionFormat === true); assert.equal(calls, 1);
+});
+
+test('生产 catalog 人物识别必须消费真实一次性许可，缺失、伪造或复用均零 AI', async () => {
+  const sources = normalizeRegistrySources(await route.collectAnalysisSources()); let calls = 0;
+  const issued = { status: 'claimed', operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }; let available = true;
+  const adapter = createCRegistryAdapter({
+    client: fakeClient(), contextProvider: context, routeSource: route,
+    sourceCatalog: {
+      getConfirmedSources: async () => ({ sources }),
+      consumeRecognitionClaim: claim => claim === issued && available ? (available = false, true) : false,
+    },
+    snapshotProvider: async () => ({ snapshot: captureSnapshot({ contextProvider: context, sourceStatus: 'ready' }), sources, strategy: { sourceCatalogPermit: true } }),
+    generateTask: async () => { calls += 1; return { confirmed: [], candidate: [], discarded: [] }; },
+  });
+  await assert.rejects(adapter.identify(), /一次性来源许可/); assert.equal(calls, 0);
+  await assert.rejects(adapter.identify({ sourceCatalogClaim: { ...issued } }), /一次性来源许可/); assert.equal(calls, 0);
+  assert.equal((await adapter.identify({ sourceCatalogClaim: issued })).status, 'ready'); assert.equal(calls, 1);
+  await assert.rejects(adapter.identify({ sourceCatalogClaim: issued }), /一次性来源许可/); assert.equal(calls, 1);
+});
+
 test('C Registry 实时身份快照变化：AI 迟到结果零写，并覆盖脱敏错误映射', async () => {
   const state = { characterId: 'old-role' }; const liveContext = () => ({ ...context(), ...state }); const client = fakeClient(); let release;
   const adapter = createCRegistryAdapter({ client, contextProvider: liveContext, routeSource: route, generateTask: async () => { await new Promise(resolve => { release = resolve; }); return { confirmed: [], candidate: [], discarded: [] }; } });
@@ -233,6 +261,30 @@ test('C Registry profile 来源引用采用稳定保序并集，历史与 future
   ]);
 });
 
+test('profile 中 card ref 只允许严格 single-card-main 绑定；普通档案拒绝，合法 single 改名仍通过', async () => {
+  const generic = fakeClient();
+  const genericAdapter = createCRegistryAdapter({ client: generic, contextProvider: context, routeSource: route, generateTask: async () => ({
+    confirmed: [{ name: '确认者', sourceAnchor: '重要人物', primarySourceRef: greetingRef, sourceRefs: [greetingRef] }], candidate: [], discarded: [],
+  }) });
+  const genericResult = await genericAdapter.identify(), genericIdentity = genericResult.index.confirmed[0].identityId;
+  const genericProfile = generic.records.get(`chat-${id}-people/${genericIdentity}`).data, cardRef = singleRef('description');
+  genericProfile.primarySourceRef = cardRef; genericProfile.sourceRefs = [cardRef]; genericProfile.sourceKey = `card:${cardRef.locator}:${genericProfile.sourceAnchor.toLocaleLowerCase()}`;
+  const putsBefore = generic.calls.filter(call => call[0] === 'put').length;
+  await assert.rejects(() => genericAdapter.editDisplayName({ identityId: genericIdentity, displayName: '不得改名' }), /人物档案无效/);
+  assert.equal(generic.calls.filter(call => call[0] === 'put').length, putsBefore);
+  genericProfile.sourceBinding = { kind: 'single-card-main', cardId: wrongIdentityId };
+  await assert.rejects(() => genericAdapter.editDisplayName({ identityId: genericIdentity, displayName: '错槽仍不得改名' }), /人物档案无效/);
+  assert.equal(generic.calls.filter(call => call[0] === 'put').length, putsBefore);
+
+  const single = singleScenario({ cardData: { description: '本卡唯一主 C 是程砚舟。' }, generateTask: async () => ({
+    confirmed: [singleItem('程砚舟', '程砚舟', singleRef('description'))], candidate: [], discarded: [],
+  }) });
+  const singleResult = await single.adapter.identify();
+  assert.equal(singleResult.index.confirmed[0].identityId, singleCardId);
+  const renamed = await single.adapter.editDisplayName({ identityId: singleCardId, displayName: '用户命名' });
+  assert.equal(renamed.status, 'ready'); assert.equal(renamed.index.confirmed[0].displayName, '用户命名');
+});
+
 test('C Registry 来源指纹变化仍复用 UUID 和用户显示名，tombstone 不复活', async () => {
   const client = fakeClient(); let revision = 1; const changingRoute = { collectAnalysisSources: async () => ({ greeting: { swipeId: 0, fingerprint: `sha256:${String(revision).repeat(64)}`, content: `重要人物${revision}` }, worldInfoEntries: [] }) };
   const result = () => ({ confirmed: [{ name: '模型原名', sourceAnchor: '重要人物', primarySourceRef: { kind: 'greeting', locator: 'greeting:0:0' }, sourceRefs: [{ kind: 'greeting', locator: 'greeting:0:0' }] }], candidate: [], discarded: [] });
@@ -252,7 +304,7 @@ test('C Registry 动态恢复：preparing 同指纹零生成，搁置为单记�
   assert.equal(client.calls.filter(call => call[0] === 'put').length, putsBefore + 1);
 });
 
-test('全量人物合同、三类定义与合同版本：同源升级恰好重识别一次', async () => {
+test('缺 selection 的旧全量人物合同不误恢复，手动识别可升级', async () => {
   const client = fakeClient(); let calls = 0; let prompt = '';
   const richRoute = { collectAnalysisSources: async () => ({ greeting: { swipeId: 0, fingerprint: 'sha256:' + '3'.repeat(64), content: '甲是核心人物；乙是重要配角；神秘客身份不明；路人甲路过' }, worldInfoEntries: [] }) };
   const answer = { confirmed: [
@@ -263,30 +315,60 @@ test('全量人物合同、三类定义与合同版本：同源升级恰好重�
   const first = await adapter.identify(); assert.equal(first.index.confirmed.length, 2); assert.equal(first.index.candidate.length, 1); assert.equal(first.index.discarded.length, 1);
   for (const text of ['全部重要人物', '不得替用户挑选', 'confirmed：', 'candidate：', 'discarded：', '宁可把有证据的重要人物']) assert.match(prompt, new RegExp(text));
   const stored = client.records.get(`chat-${id}/people-index`); delete stored.data.contractVersion; stored.data.confirmed.forEach(item => { delete item.selection; }); delete stored.data.shelved;
-  assert.equal((await adapter.getPeople()).status, 'stale');
+  assert.equal((await adapter.getPeople()).status, 'uninitialized');
   const upgraded = await adapter.identify(); assert.equal(upgraded.status, 'ready'); assert.equal(calls, 2); assert.equal(upgraded.index.contractVersion, REGISTRY_CONTRACT_VERSION);
   assert.equal((await adapter.identify()).reused, true); assert.equal(calls, 2);
 });
 
-test('显式 contractVersion:1 合法旧索引同源恰好自动重识别一次并升级当前合同', async () => {
+test('显式 contractVersion:1 但缺 selection 的旧索引不误恢复，手动识别可升级', async () => {
   const client = fakeClient(); let calls = 0;
   const result = { confirmed: [{ name: '旧人物', sourceAnchor: '重要人物', primarySourceRef: { kind: 'greeting', locator: 'greeting:0:0' }, sourceRefs: [{ kind: 'greeting', locator: 'greeting:0:0' }] }], candidate: [], discarded: [] };
   const adapter = createCRegistryAdapter({ client, contextProvider: context, routeSource: route, generateTask: async () => { calls += 1; return result; } });
   await adapter.identify(); const stored = client.records.get(`chat-${id}/people-index`);
   stored.data.contractVersion = 1; stored.data.confirmed.forEach(item => { delete item.selection; }); delete stored.data.shelved;
-  assert.equal(validateRegistryIndex(stored, id), true); assert.equal((await adapter.getPeople()).status, 'stale');
+  assert.equal(validateRegistryIndex(stored, id), true); assert.equal((await adapter.getPeople()).status, 'uninitialized');
   const upgraded = await adapter.identify(); assert.equal(upgraded.status, 'ready'); assert.equal(upgraded.index.contractVersion, REGISTRY_CONTRACT_VERSION); assert.equal(calls, 2);
   assert.equal((await adapter.identify()).reused, true); assert.equal(calls, 2);
 });
 
-test('无 contractVersion 合法旧索引同源恰好自动重识别一次并升级当前合同', async () => {
+test('无 contractVersion 且缺 selection 的旧索引不误恢复，手动识别可升级', async () => {
   const client = fakeClient(); let calls = 0;
   const result = { confirmed: [{ name: '旧人物', sourceAnchor: '重要人物', primarySourceRef: { kind: 'greeting', locator: 'greeting:0:0' }, sourceRefs: [{ kind: 'greeting', locator: 'greeting:0:0' }] }], candidate: [], discarded: [] };
   const adapter = createCRegistryAdapter({ client, contextProvider: context, routeSource: route, generateTask: async () => { calls += 1; return result; } });
   await adapter.identify(); const stored = client.records.get(`chat-${id}/people-index`);
   delete stored.data.contractVersion; stored.data.confirmed.forEach(item => { delete item.selection; }); delete stored.data.shelved;
-  assert.equal(validateRegistryIndex(stored, id), true); assert.equal((await adapter.getPeople()).status, 'stale');
+  assert.equal(validateRegistryIndex(stored, id), true); assert.equal((await adapter.getPeople()).status, 'uninitialized');
   const upgraded = await adapter.identify(); assert.equal(upgraded.index.contractVersion, REGISTRY_CONTRACT_VERSION); assert.equal(calls, 2); await adapter.identify(); assert.equal(calls, 2);
+});
+
+test('旧多人档案 confirmed/selected 与 profiles 合法时直接恢复基础/动态数据，零 AI 且仅建议手动刷新', async () => {
+  const client = fakeClient(); let calls = 0;
+  const result = { confirmed: [{ name: '旧人物', sourceAnchor: '重要人物', primarySourceRef: { kind: 'greeting', locator: 'greeting:0:0' }, sourceRefs: [{ kind: 'greeting', locator: 'greeting:0:0' }] }], candidate: [], discarded: [] };
+  const adapter = createCRegistryAdapter({ client, contextProvider: context, routeSource: route, generateTask: async () => { calls += 1; return result; } });
+  const created = await adapter.identify(); const identityId = created.index.confirmed[0].identityId;
+  await adapter.select({ identityId });
+  const index = client.records.get(`chat-${id}/people-index`); index.data.contractVersion = 2;
+  const profile = client.records.get(`chat-${id}-people/${identityId}`); profile.data.sourceFacts = [{ field: 'appearance', value: '银发', provenance: 'source' }]; profile.data.dynamicFields = { currentSituation: { value: '守城', provenance: 'ai' } };
+  const loaded = await adapter.getPeople();
+  assert.equal(loaded.status, 'ready'); assert.equal(loaded.refreshRecommended, true); assert.equal(loaded.confirmed[0].selection.status, 'selected'); assert.equal(calls, 1);
+  assert.equal(profile.data.sourceFacts[0].value, '银发'); assert.equal(profile.data.dynamicFields.currentSituation.value, '守城');
+});
+
+test('损坏旧档、confirmed 缺有效 profile 或身份不一致不误恢复，保持手动初始化且零 AI', async t => {
+  for (const variant of ['missing_profile', 'identity_mismatch', 'broken_index']) await t.test(variant, async () => {
+    const client = fakeClient(); let calls = 0;
+    const result = { confirmed: [{ name: '旧人物', sourceAnchor: '重要人物', primarySourceRef: { kind: 'greeting', locator: 'greeting:0:0' }, sourceRefs: [{ kind: 'greeting', locator: 'greeting:0:0' }] }], candidate: [], discarded: [] };
+    const adapter = createCRegistryAdapter({ client, contextProvider: context, routeSource: route, generateTask: async () => { calls += 1; return result; } });
+    const created = await adapter.identify(); const identityId = created.index.confirmed[0].identityId;
+    await adapter.select({ identityId });
+    const index = client.records.get(`chat-${id}/people-index`); index.data.contractVersion = 2;
+    const profileKey = `chat-${id}-people/${identityId}`;
+    if (variant === 'missing_profile') client.records.delete(profileKey);
+    if (variant === 'identity_mismatch') client.records.get(profileKey).data.chatId = '223e4567-e89b-12d3-a456-426614174001';
+    if (variant === 'broken_index') index.data.confirmed[0].identityId = 'not-a-uuid';
+    const loaded = await adapter.getPeople();
+    assert.equal(loaded.status, 'uninitialized'); assert.equal(loaded.legacyInvalid, true); assert.equal(loaded.confirmed.length, 0); assert.equal(calls, 1);
+  });
 });
 
 test('v2 超时后普通人物操作始终保留 v2，后续识别可重试且成功后才升级 v3', async () => {
@@ -302,7 +384,7 @@ test('v2 超时后普通人物操作始终保留 v2，后续识别可重试且�
   await adapter.editDisplayName({ identityId, displayName: '用户命名的郑楠' }); assert.equal(currentRecord().data.contractVersion, 2); assert.equal(currentRecord().data.confirmed[0].displayName, '用户命名的郑楠');
   await adapter.shelve({ identityId }); assert.equal(currentRecord().data.contractVersion, 2); assert.equal(currentRecord().data.confirmed.length, 0); assert.equal(currentRecord().data.shelved[0].identityId, identityId);
   await adapter.restore({ identityId }); assert.equal(currentRecord().data.contractVersion, 2); assert.equal(currentRecord().data.confirmed[0].identityId, identityId); assert.equal(currentRecord().data.shelved.length, 0);
-  assert.equal((await adapter.getPeople()).status, 'stale'); assert.equal(aiCalls, 2);
+  assert.equal((await adapter.getPeople()).status, 'uninitialized'); assert.equal(aiCalls, 2);
   mode = 'ready'; const upgraded = await adapter.identify(); assert.equal(aiCalls, 3); assert.equal(upgraded.index.contractVersion, 3); assert.equal(upgraded.index.confirmed[0].identityId, identityId); assert.equal(upgraded.index.confirmed[0].displayName, '用户命名的郑楠');
   await adapter.identify(); assert.equal(aiCalls, 3);
 });
@@ -733,4 +815,299 @@ for (const status of ['route_unavailable', 'mismatch', 'stale']) test(`formal ${
   const routeSource = { collectFrozenAnalysisSources: async () => { frozenReads += 1; return { status: 'ready', sources: { greeting: { swipeId: 0, fingerprint: 'sha256:' + '1'.repeat(64), content: '旧路线' }, worldInfoEntries: [] } }; }, collectAnalysisSources: async () => { dynamicReads += 1; return await route.collectAnalysisSources(); } };
   const adapter = createCRegistryAdapter({ client, formal: { getFormalState: async () => ({ status, route: { state: 'ready' } }) }, contextProvider: context, routeSource, generateTask: async () => { aiCalls += 1; return { confirmed: [], candidate: [], discarded: [] }; } });
   assert.equal((await adapter.identify()).status, status); assert.equal(frozenReads, 0); assert.equal(dynamicReads, 0); assert.equal(aiCalls, 0); assert.equal(client.calls.filter(call => call[0] === 'put').length, 0);
+});
+
+const singleCardId = '223e4567-e89b-12d3-a456-426614174001';
+const wrongIdentityId = '423e4567-e89b-12d3-a456-426614174003';
+const singleRef = field => ({ kind: 'card', locator: `card:hero.png#${field}` });
+const greetingRef = { kind: 'greeting', locator: 'greeting:0:0' };
+const singleItem = (name, sourceAnchor, primarySourceRef, sourceRefs = [primarySourceRef]) => ({ name, sourceAnchor, primarySourceRef, sourceRefs });
+
+function singleScenario({ cardData = {}, greeting = '开场', worldInfoEntries = [], generateTask, cardType = 'single' } = {}) {
+  const client = fakeClient();
+  let frozenReads = 0, formalReads = 0;
+  const characterData = { name: '作品线路【代号】', ...cardData };
+  const host = {
+    groupId: null, characterId: 0, chatId: 'host-single-chat', name2: '酒馆回退名', userAvatar: 'persona.png',
+    characters: [{ avatar: 'hero.png', name: '角色列表名', data: characterData }],
+    chatMetadata: { qianqianjie: { schemaVersion: 1, chatId: id } },
+    chat: [{ mes: greeting, swipe_id: 0 }, { mes: '后续聊天正文绝不进入 single 来源' }],
+  };
+  const formalState = { status: 'route_ready', cardType, cardId: singleCardId, route: { state: 'ready', greeting: { floor: 0, swipeId: 0, fingerprint: 'sha256:greeting' }, worldInfoEntries: worldInfoEntries.map(item => ({ world: item.world, uid: item.uid, fingerprint: item.fingerprint })) } };
+  const frozen = { greeting: { swipeId: 0, fingerprint: 'sha256:greeting', content: greeting }, worldInfoEntries: structuredClone(worldInfoEntries) };
+  const adapter = createCRegistryAdapter({
+    client,
+    formal: { getFormalState: async () => { formalReads += 1; return structuredClone(formalState); } },
+    contextProvider: () => host,
+    routeSource: { collectFrozenAnalysisSources: async () => { frozenReads += 1; return { status: 'ready', sources: structuredClone(frozen) }; } },
+    generateTask,
+  });
+  return { adapter, client, host, characterData, formalState, frozen, get frozenReads() { return frozenReads; }, get formalReads() { return formalReads; } };
+}
+
+test('single 单次 runtimeSnapshot 在 get→identify→final read 复用同一份 formal/卡/冻结来源，下一次运行重新读取', async () => {
+  const phases = [];
+  const scenario = singleScenario({
+    cardData: { description: '本卡唯一主 C 是沈砚。', personality: '沈砚沉静克制。' },
+    generateTask: async () => ({ confirmed: [singleItem('沈砚', '沈砚', singleRef('description'))], candidate: [], discarded: [] }),
+  });
+  const runtimeSnapshot = { formalState: structuredClone(scenario.formalState) };
+  assert.equal((await scenario.adapter.getPeople({ runtimeSnapshot })).status, 'uninitialized');
+  assert.equal((await scenario.adapter.identify({ runtimeSnapshot, onPhase: phase => phases.push(phase) })).status, 'ready');
+  assert.equal((await scenario.adapter.getPeople({ runtimeSnapshot })).status, 'ready');
+  assert.equal(scenario.formalReads, 0); assert.equal(scenario.frozenReads, 1);
+  assert.deepEqual(phases, ['reading_sources', 'waiting_ai', 'saving_people']);
+
+  const nextRuntimeSnapshot = { formalState: structuredClone(scenario.formalState) };
+  assert.equal((await scenario.adapter.getPeople({ runtimeSnapshot: nextRuntimeSnapshot })).status, 'ready');
+  assert.equal(scenario.formalReads, 0); assert.equal(scenario.frozenReads, 2);
+  assert.notEqual(nextRuntimeSnapshot.prepared, runtimeSnapshot.prepared);
+});
+
+test('single-main-v1：作品名仅作弱提示，正文真名成为全新 cardId 已选主槽且配角不顶替、不持久化正文', async () => {
+  const cardText = '本卡实际扮演人物是沈砚，别名阿砚；负责与旅人共同推进剧情。';
+  let calls = 0; let request;
+  const scenario = singleScenario({
+    cardData: { description: `<b>${cardText}</b>`, personality: '沈砚性格沉静。' },
+    greeting: '跑堂阿福先来传话；后续聊天秘密不应出现。',
+    generateTask: async options => {
+      calls += 1; request = options;
+      return {
+        confirmed: [singleItem('沈砚', '沈砚，别名阿砚', singleRef('description'))],
+        candidate: [{ name: '阿福', sourceAnchor: '阿福', primarySourceRef: greetingRef, sourceRefs: [greetingRef] }],
+        discarded: [],
+      };
+    },
+  });
+  const result = await scenario.adapter.identify();
+  assert.equal(result.status, 'ready'); assert.equal(calls, 1);
+  assert.equal(request.includeCharacterCard, false); assert.equal(request.worldInfoSource, 'none'); assert.equal(request.substituteMacros, false);
+  assert.equal(request.jsonSchema.name, 'qianqianjie_single_main_registry_v1'); assert.ok(request.jsonSchema.value.$defs.ref.properties.kind.enum.includes('card'));
+  assert.equal(request.jsonSchema.value.properties.confirmed.minItems, 1); assert.equal(request.jsonSchema.value.properties.confirmed.maxItems, 1);
+  assert.match(request.taskMessages[0].content, /卡文件\/酒馆显示名弱提示：作品线路【代号】/); assert.match(request.taskMessages[0].content, /本卡实际扮演人物是沈砚/);
+  assert.doesNotMatch(request.taskMessages[0].content, /后续聊天正文绝不进入 single 来源/);
+  assert.equal(result.index.confirmed.length, 1); assert.equal(result.index.confirmed[0].identityId, singleCardId); assert.equal(result.index.confirmed[0].displayName, '沈砚');
+  assert.deepEqual(result.index.confirmed[0].selection, { status: 'selected' });
+  assert.deepEqual(result.index.recognitionPolicy, { kind: 'single-main', version: 1 }); assert.equal(result.index.candidate[0].name, '阿福');
+  const profile = scenario.client.records.get(`chat-${id}-people/${singleCardId}`).data;
+  assert.deepEqual(profile.sourceBinding, { kind: 'single-card-main', cardId: singleCardId }); assert.equal(profile.selection.status, 'selected');
+  assert.equal('aliases' in result.index.confirmed[0], false); assert.equal('sourceSignature' in result.index.confirmed[0], false);
+  assert.equal('aliases' in profile, false); assert.equal('sourceSignature' in profile, false);
+  const writes = scenario.client.calls.filter(call => call[0] === 'put');
+  assert.deepEqual(writes.map(call => [call[1], call[2], call[3].status]), [[`chat-${id}`, 'people-index', 'preparing'], [`chat-${id}-people`, singleCardId, undefined], [`chat-${id}`, 'people-index', 'ready']]);
+  assert.deepEqual(writes[0][3].pendingRecognition.recognitionPolicy, { kind: 'single-main', version: 1 }); assert.equal('previousStatus' in writes[0][3].pendingRecognition, false);
+  assert.equal(JSON.stringify(result.index).includes(cardText), false); assert.equal(JSON.stringify(profile).includes(cardText), false);
+  assert.equal((await scenario.adapter.getPeople()).status, 'ready'); assert.equal((await scenario.adapter.identify()).reused, true); assert.equal(calls, 1);
+});
+
+test('single-main-v1：主 C 只在冻结 worldbook 出现仍可 ready，card 来源不被强制引用', async () => {
+  const world = { world: '人物密卷', uid: '7', fingerprint: 'sha256:world', content: '本卷明确记载主角顾临川；顾临川是当前角色卡实际扮演者。' };
+  const worldRef = { kind: 'worldbook', locator: '人物密卷:7' };
+  const scenario = singleScenario({
+    cardData: { description: '这是一条未在正文写出真名的单人线路。' }, worldInfoEntries: [world],
+    generateTask: async () => ({ confirmed: [singleItem('顾临川', '主角顾临川', worldRef)], candidate: [], discarded: [] }),
+  });
+  const result = await scenario.adapter.identify();
+  assert.equal(result.status, 'ready'); assert.equal(result.index.confirmed[0].identityId, singleCardId);
+  assert.deepEqual(result.index.confirmed[0].sourceRefs, [worldRef]); assert.equal(result.index.confirmed[0].sourceRefs.some(item => item.kind === 'card'), false);
+});
+
+test('single-main-v1：现场外形的对象 confirmed、locator 字符串 refs 与 candidates 别名可归一化后进入标准 pending', async () => {
+  const locator = 'card:hero.png#description';
+  const scenario = singleScenario({
+    cardData: { description: '本卡实际扮演人物是程砚舟；程砚舟是唯一主 C。' },
+    greeting: '韩叙只是负责递信的配角。',
+    generateTask: async () => ({
+      confirmed: { name: '程砚舟', sourceAnchor: '程砚舟', primarySourceRef: locator, sourceRefs: locator },
+      candidates: [],
+      discarded: [{ name: '韩叙', sourceAnchor: '韩叙', primarySourceRef: 'greeting:0:0', sourceRefs: ['greeting:0:0'] }],
+    }),
+  });
+  const result = await scenario.adapter.identify();
+  assert.equal(result.status, 'ready'); assert.equal(result.index.confirmed.length, 1); assert.equal(result.index.confirmed[0].displayName, '程砚舟');
+  assert.equal(result.index.discarded.some(item => item.name === '韩叙'), true);
+  const preparing = scenario.client.calls.find(call => call[0] === 'put' && call[3].status === 'preparing')[3].pendingRecognition;
+  assert.deepEqual(preparing.confirmed[0].primarySourceRef, singleRef('description'));
+  assert.deepEqual(preparing.confirmed[0].sourceRefs, [singleRef('description')]);
+  assert.equal(Array.isArray(preparing.confirmed), true); assert.equal(validateRegistryIndex(scenario.client.records.get(`chat-${id}/people-index`), id), true);
+});
+
+test('single-main-v1：对象 confirmed 的字符串 locator 仅接受当前来源唯一匹配，未知、歧义与错 anchor 都拒绝', () => {
+  const card = { kind: 'card', locator: 'card:hero.png#description', content: '本卡唯一主 C 是程砚舟。' };
+  const make = (primarySourceRef, sourceAnchor = '程砚舟') => ({
+    confirmed: { name: '程砚舟', sourceAnchor, primarySourceRef, sourceRefs: [primarySourceRef] }, candidate: [], discarded: [],
+  });
+  assert.deepEqual(normalizeExternalRecognitionResult(make(card.locator), [card], { singleMain: true }).value.confirmed[0], {
+    name: '程砚舟', sourceAnchor: '程砚舟', primarySourceRef: singleRef('description'), sourceRefs: [singleRef('description')],
+  });
+  assert.throws(() => normalizeExternalRecognitionResult(make('card:hero.png#unknown'), [card], { singleMain: true }), /无可用人物/);
+  assert.throws(() => normalizeExternalRecognitionResult(make(card.locator), [card, { ...card, kind: 'worldbook', content: '程砚舟' }], { singleMain: true }), /无可用人物/);
+  assert.throws(() => normalizeExternalRecognitionResult(make(card.locator, '不存在的锚点'), [card], { singleMain: true }), /无可用人物/);
+  assert.throws(() => normalizeExternalRecognitionResult(make(singleRef('description'), '不存在的锚点'), [card], { singleMain: true }), /无可用人物/);
+});
+
+test('single-main-v1：confirmed 单元素数组仍通过，空对象、空数组、非法字符串与两条数组仍拒绝；非 single 不接受对象分类', () => {
+  const card = { kind: 'card', locator: 'card:hero.png#description', content: '程砚舟是主 C。' };
+  const main = singleItem('程砚舟', '程砚舟', singleRef('description'));
+  assert.equal(normalizeExternalRecognitionResult({ confirmed: [main], candidate: [], discarded: [] }, [card], { singleMain: true }).value.confirmed.length, 1);
+  for (const confirmed of [{}, [], '非法字符串', [main, structuredClone(main)]]) {
+    assert.throws(() => normalizeExternalRecognitionResult({ confirmed, candidate: [], discarded: [] }, [card], { singleMain: true }), /结构无效|原始 confirmed|无可用人物/);
+  }
+  assert.throws(() => normalizeExternalRecognitionResult({ confirmed: main, candidate: [], discarded: [] }, [card]), /结构无效/);
+  for (const category of ['candidate', 'discarded']) {
+    assert.throws(() => normalizeExternalRecognitionResult({ confirmed: [main], candidate: [], discarded: [], [category]: main }, [card], { singleMain: true }), /结构无效/);
+  }
+});
+
+test('single-main-v1：漏主 C、两个 confirmed、姓名无显式证据均各纠错一次，两轮仍失败零写', async () => {
+  const invalidResults = [
+    () => ({ confirmed: [], candidate: [{ name: '阿福', sourceAnchor: '阿福', primarySourceRef: greetingRef, sourceRefs: [greetingRef] }], discarded: [] }),
+    () => ({ confirmed: [singleItem('沈砚', '沈砚', singleRef('description')), singleItem('阿福', '阿福', greetingRef)], candidate: [], discarded: [] }),
+    () => ({ confirmed: [singleItem('虚构真名', '本卡实际扮演人物', singleRef('description'))], candidate: [], discarded: [] }),
+  ];
+  for (const result of invalidResults) {
+    let calls = 0; const prompts = [];
+    const scenario = singleScenario({ cardData: { description: '本卡实际扮演人物沈砚；沈砚是唯一主 C。' }, greeting: 'NPC 阿福只负责传话。', generateTask: async ({ taskMessages }) => { calls += 1; prompts.push(taskMessages[0].content); return result(); } });
+    await assert.rejects(() => scenario.adapter.identify(), /single 主 C|姓名/);
+    assert.equal(calls, 2); assert.match(prompts[1], /上一次结果没有满足 single 主 C 策略/);
+    assert.equal(scenario.client.calls.filter(call => call[0] === 'put').length, 0); assert.equal(scenario.client.records.size, 0);
+  }
+});
+
+test('single-main-v1：已有 ready 权威索引在新来源两轮纠错仍失败时保持原样且失败阶段零 PUT', async () => {
+  let mode = 'ready'; let calls = 0;
+  const scenario = singleScenario({
+    cardData: { description: '第一版唯一主 C 沈砚。' }, greeting: 'NPC 阿福传话。',
+    generateTask: async () => { calls += 1; return mode === 'ready'
+      ? { confirmed: [singleItem('沈砚', '沈砚', singleRef('description'))], candidate: [], discarded: [] }
+      : { confirmed: [], candidate: [{ name: '阿福', sourceAnchor: '阿福', primarySourceRef: greetingRef, sourceRefs: [greetingRef] }], discarded: [] }; },
+  });
+  await scenario.adapter.identify(); const indexKey = `chat-${id}/people-index`;
+  const before = structuredClone(scenario.client.records.get(indexKey)); const putsBefore = scenario.client.calls.filter(call => call[0] === 'put').length;
+  mode = 'bad'; scenario.characterData.description = '第二版仍然明确唯一主 C 沈砚。';
+  await assert.rejects(() => scenario.adapter.identify(), /single 主 C/);
+  assert.equal(calls, 3); assert.equal(scenario.client.calls.filter(call => call[0] === 'put').length, putsBefore); assert.deepEqual(scenario.client.records.get(indexKey), before);
+});
+
+test('single-main-v1：原始两个 confirmed 即使同 sourceKey 也必须纠错，不能靠去重静默变成一个', async () => {
+  let calls = 0; const prompts = [];
+  const scenario = singleScenario({
+    cardData: { description: '本卡唯一主 C 沈砚。' },
+    generateTask: async ({ taskMessages }) => {
+      calls += 1; prompts.push(taskMessages[0].content);
+      const main = singleItem('沈砚', '沈砚', singleRef('description'));
+      return calls === 1 ? { confirmed: [main, structuredClone(main)], candidate: [], discarded: [] } : { confirmed: [main], candidate: [], discarded: [] };
+    },
+  });
+  const result = await scenario.adapter.identify();
+  assert.equal(result.status, 'ready'); assert.equal(calls, 2); assert.match(prompts[1], /上一次结果没有满足 single 主 C 策略/);
+  assert.equal(result.index.confirmed.length, 1); assert.equal(result.index.confirmed[0].identityId, singleCardId);
+});
+
+test('single-main-v1：getPeople 重新读取当前显式来源，card/greeting/worldbook 任一变化都只报 stale、不调用 AI', async t => {
+  const world = { world: '人物书', uid: '1', fingerprint: 'sha256:world', content: '沈砚载于人物书。' };
+  const cases = {
+    card(s) { s.characterData.description = '卡正文已变化，主 C 仍为沈砚。'; },
+    greeting(s) { s.frozen.greeting.content = '冻结开场已变化，沈砚仍在。'; },
+    worldbook(s) { s.frozen.worldInfoEntries[0].content = '世界书已变化，沈砚仍在。'; },
+  };
+  for (const [name, mutate] of Object.entries(cases)) await t.test(name, async () => {
+    let aiCalls = 0;
+    const scenario = singleScenario({
+      cardData: { description: '初始卡正文，唯一主 C 沈砚。' }, greeting: '初始开场沈砚。', worldInfoEntries: [world],
+      generateTask: async () => { aiCalls += 1; return { confirmed: [singleItem('沈砚', '沈砚', singleRef('description'))], candidate: [], discarded: [] }; },
+    });
+    assert.equal((await scenario.adapter.identify()).status, 'ready');
+    assert.equal((await scenario.adapter.getPeople()).status, 'ready');
+    const puts = scenario.client.calls.filter(call => call[0] === 'put').length;
+    mutate(scenario);
+    assert.equal((await scenario.adapter.getPeople()).status, 'stale');
+    assert.equal(aiCalls, 1); assert.equal(scenario.client.calls.filter(call => call[0] === 'put').length, puts);
+  });
+});
+
+test('single-main-v1：同 fingerprint 的旧 generic preparing 不得恢复随机人物，必须重新识别并建立 cardId 主槽', async () => {
+  const greeting = '旧错人物只是 NPC；当前单人卡实际扮演的主 C 是沈砚。'; let aiCalls = 0;
+  const scenario = singleScenario({
+    greeting,
+    generateTask: async () => { aiCalls += 1; return { confirmed: [singleItem('沈砚', '主 C 是沈砚', greetingRef)], candidate: [], discarded: [] }; },
+  });
+  const fingerprint = await fingerprintRegistrySources(normalizeRegistrySources({
+    greeting: { swipeId: 0, fingerprint: 'sha256:greeting', content: greeting }, worldInfoEntries: [],
+  }));
+  const wrongBinding = { identityId: wrongIdentityId, displayName: '旧错人物', sourceAnchor: '旧错人物', primarySourceRef: greetingRef, sourceKey: 'greeting:greeting:0:0:旧错人物', sourceRefs: [greetingRef], selection: { status: 'selected' } };
+  const pendingRecognition = { contractVersion: 3, sourceFingerprint: fingerprint, confirmed: [wrongBinding], candidate: [], discarded: [], shelved: [] };
+  const oldIndex = { schemaVersion: 1, kind: 'people-index', chatId: id, contractVersion: 3, sourceFingerprint: fingerprint, status: 'preparing', confirmed: [wrongBinding], candidate: [], discarded: [], shelved: [], tombstones: [], pendingRecognition };
+  const wrongProfile = { schemaVersion: 1, peopleContractVersion: 1, kind: 'people-profile', identityId: wrongIdentityId, subject: 'character', displayName: '旧错人物', category: 'confirmed', selection: { status: 'selected' }, sourceFacts: [], userFacts: [{ value: '旧档不得改写', provenance: 'user', locked: true }], interpretations: [], locks: [], pendingReview: [], sourceAnchor: '旧错人物', primarySourceRef: greetingRef, sourceKey: wrongBinding.sourceKey, sourceRefs: [greetingRef], lifecycle: 'active', chatId: id };
+  const envelope = data => ({ schemaVersion: 1, revision: 1, generationId: id, createdAt: 'x', updatedAt: 'x', data });
+  scenario.client.records.set(`chat-${id}/people-index`, envelope(oldIndex)); scenario.client.records.set(`chat-${id}-people/${wrongIdentityId}`, envelope(wrongProfile));
+  const wrongBefore = structuredClone(scenario.client.records.get(`chat-${id}-people/${wrongIdentityId}`));
+  const result = await scenario.adapter.identify();
+  assert.equal(aiCalls, 1); assert.equal(result.status, 'ready'); assert.equal(result.index.confirmed[0].identityId, singleCardId);
+  assert.deepEqual(result.index.recognitionPolicy, { kind: 'single-main', version: 1 }); assert.deepEqual(scenario.client.records.get(`chat-${id}-people/${wrongIdentityId}`), wrongBefore);
+  assert.deepEqual(scenario.client.records.get(`chat-${id}-people/${singleCardId}`).data.sourceBinding, { kind: 'single-card-main', cardId: singleCardId });
+});
+
+test('旧 single 缺 recognitionPolicy 但 selected/profile 合法时先直接恢复，手动识别后再切严格 cardId 槽', async () => {
+  let aiCalls = 0;
+  const scenario = singleScenario({ cardData: { description: '当前卡实际扮演者是沈砚。' }, greeting: '李承赫只是旧识别错误样本。', generateTask: async () => { aiCalls += 1; return { confirmed: [singleItem('沈砚', '沈砚', singleRef('description'))], candidate: [], discarded: [] }; } });
+  const wrongBinding = { identityId: wrongIdentityId, displayName: '用户改过的李承赫', sourceAnchor: '李承赫', primarySourceRef: greetingRef, sourceKey: 'greeting:greeting:0:0:李承赫', sourceRefs: [greetingRef], selection: { status: 'selected' } };
+  const wrongIndex = { schemaVersion: 1, kind: 'people-index', chatId: id, contractVersion: 3, sourceFingerprint: 'sha256:legacy', status: 'ready', confirmed: [wrongBinding], candidate: [], discarded: [], shelved: [], tombstones: [] };
+  const wrongProfile = { schemaVersion: 1, peopleContractVersion: 1, kind: 'people-profile', identityId: wrongIdentityId, subject: 'character', displayName: '用户改过的李承赫', category: 'confirmed', selection: { status: 'selected' }, sourceFacts: [{ field: 'appearance', value: '黑发', provenance: 'source' }], dynamicFields: { currentSituation: { value: '正在远行', provenance: 'ai' } }, userFacts: [{ value: '旧错误事实', provenance: 'user' }, { value: '用户改过的李承赫', provenance: 'user.displayName', locked: true }], interpretations: [], locks: [], pendingReview: [], sourceAnchor: '李承赫', primarySourceRef: greetingRef, sourceKey: 'greeting:greeting:0:0:李承赫', sourceRefs: [greetingRef], lifecycle: 'active', chatId: id };
+  const envelope = data => ({ schemaVersion: 1, revision: 1, generationId: id, createdAt: 'x', updatedAt: 'x', data });
+  scenario.client.records.set(`chat-${id}/people-index`, envelope(wrongIndex)); scenario.client.records.set(`chat-${id}-people/${wrongIdentityId}`, envelope(wrongProfile));
+  const wrongProfileBefore = structuredClone(scenario.client.records.get(`chat-${id}-people/${wrongIdentityId}`));
+  const legacy = await scenario.adapter.getPeople();
+  assert.equal(legacy.status, 'ready'); assert.equal(legacy.refreshRecommended, true); assert.equal(legacy.confirmed[0].displayName, '用户改过的李承赫'); assert.equal(aiCalls, 0); assert.equal(scenario.frozenReads, 0);
+  assert.equal(scenario.client.records.get(`chat-${id}-people/${wrongIdentityId}`).data.sourceFacts[0].value, '黑发');
+  assert.equal(scenario.client.records.get(`chat-${id}-people/${wrongIdentityId}`).data.dynamicFields.currentSituation.value, '正在远行');
+  const migrated = await scenario.adapter.identify(); const main = migrated.index.confirmed[0], profile = scenario.client.records.get(`chat-${id}-people/${singleCardId}`).data;
+  assert.equal(aiCalls, 1);
+  assert.equal(main.identityId, singleCardId); assert.equal(main.displayName, '沈砚'); assert.equal(main.selection.status, 'selected');
+  assert.equal(profile.displayName, '沈砚'); assert.deepEqual(profile.userFacts, []); assert.equal(profile.selection.status, 'selected');
+  assert.deepEqual(scenario.client.records.get(`chat-${id}-people/${wrongIdentityId}`), wrongProfileBefore);
+});
+
+test('single-main-v1：同 cardId 主槽重识别严格保留权威 selection、用户改名与 userFacts', async () => {
+  let generation = 1;
+  const scenario = singleScenario({
+    cardData: { description: '第一版主 C 名为沈砚。' },
+    generateTask: async () => generation === 1
+      ? { confirmed: [singleItem('沈砚', '沈砚', singleRef('description'))], candidate: [], discarded: [] }
+      : generation === 2
+        ? { confirmed: [singleItem('沈砚本名', '沈砚本名', singleRef('description'))], candidate: [], discarded: [] }
+        : { confirmed: [singleItem('沈砚真名', '沈砚真名', singleRef('description'))], candidate: [], discarded: [] },
+  });
+  const first = await scenario.adapter.identify(); assert.equal(first.index.confirmed[0].identityId, singleCardId); assert.equal(first.index.confirmed[0].selection.status, 'selected');
+  await scenario.adapter.editDisplayName({ identityId: singleCardId, displayName: '用户命名' });
+  scenario.client.records.get(`chat-${id}-people/${singleCardId}`).data.userFacts.push({ value: '用户锁定事实', provenance: 'user', locked: true });
+  generation = 2; scenario.characterData.description = '第二版确认沈砚本名，也使用阿砚这个别名。';
+  const changed = await scenario.adapter.identify(); let main = changed.index.confirmed[0], profile = scenario.client.records.get(`chat-${id}-people/${singleCardId}`).data;
+  assert.equal(main.identityId, singleCardId); assert.equal(main.displayName, '用户命名'); assert.equal(main.selection.status, 'selected');
+  assert.equal(profile.displayName, '用户命名'); assert.equal(profile.selection.status, 'selected'); assert.ok(profile.userFacts.some(item => item.value === '用户锁定事实')); assert.ok(profile.userFacts.some(item => item.provenance === 'user.displayName'));
+  await scenario.adapter.unselect({ identityId: singleCardId });
+  scenario.client.records.get(`chat-${id}-people/${singleCardId}`).data.selection = { status: 'selected' };
+  generation = 3; scenario.characterData.description = '第三版确认沈砚真名，来源再次变化。';
+  const unselected = await scenario.adapter.identify(); main = unselected.index.confirmed[0]; profile = scenario.client.records.get(`chat-${id}-people/${singleCardId}`).data;
+  assert.equal(main.selection.status, 'unselected'); assert.equal(profile.selection.status, 'unselected'); assert.equal(main.displayName, '用户命名'); assert.ok(profile.userFacts.some(item => item.value === '用户锁定事实'));
+});
+
+test('非 single 路径继续使用原 Schema、广泛多个 confirmed、随机身份复用且不读取 card 正文', async () => {
+  let calls = 0; let request;
+  const scenario = singleScenario({
+    cardType: 'multi', cardData: { description: 'multi 卡正文秘密不应进入原 C Registry prompt。' }, greeting: '甲人物；乙人物',
+    generateTask: async options => { calls += 1; request = options; return { confirmed: [{ name: '甲', sourceAnchor: '甲人物', primarySourceRef: greetingRef, sourceRefs: [greetingRef] }, { name: '乙', sourceAnchor: '乙人物', primarySourceRef: greetingRef, sourceRefs: [greetingRef] }], candidate: [], discarded: [] }; },
+  });
+  const first = await scenario.adapter.identify(); const identities = first.index.confirmed.map(item => item.identityId);
+  assert.equal(request.jsonSchema.name, 'qianqianjie_c_registry'); assert.equal(request.jsonSchema.value.$defs.ref.properties.kind.enum.includes('card'), false); assert.doesNotMatch(request.taskMessages[0].content, /multi 卡正文秘密/);
+  assert.equal(first.index.confirmed.length, 2); assert.equal(identities.includes(singleCardId), false); assert.equal(new Set(identities).size, 2);
+  const readsBeforeGet = scenario.frozenReads; assert.equal((await scenario.adapter.getPeople()).status, 'ready'); assert.equal(scenario.frozenReads, readsBeforeGet);
+  const second = await scenario.adapter.identify(); assert.equal(second.reused, true); assert.deepEqual(second.index.confirmed.map(item => item.identityId), identities); assert.equal(calls, 1);
+});
+
+test('无 single recognitionPolicy 的旧索引继续拒绝 card ref，不放宽非 single 持久化合同', () => {
+  const cardRef = singleRef('description');
+  const binding = { identityId: wrongIdentityId, displayName: '甲', sourceAnchor: '甲', primarySourceRef: cardRef, sourceKey: 'card:card:hero.png#description:甲', sourceRefs: [cardRef], selection: { status: 'unselected' } };
+  const record = { schemaVersion: 1, revision: 1, generationId: id, createdAt: 'x', updatedAt: 'x', data: { schemaVersion: 1, kind: 'people-index', chatId: id, contractVersion: 3, sourceFingerprint: 'sha256:x', status: 'ready', confirmed: [binding], candidate: [], discarded: [], shelved: [], tombstones: [] } };
+  assert.equal(validateRegistryIndex(record, id), false);
 });

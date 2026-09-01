@@ -8,6 +8,7 @@ const invalid = (sourceIndex, code) => ({ sourceIndex, code });
 const text = value => typeof value === 'string' ? value : null;
 const normalizedText = value => value.replace(/\r\n?/g, '\n');
 const roleOf = message => message?.is_system ? 'system' : message?.is_user ? 'user' : 'assistant';
+const hiddenMessage = message => message?.is_hidden === true || message?.extra?.is_hidden === true;
 const normalizedDate = value => {
   if (typeof value === 'string') return value.trim();
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
@@ -116,6 +117,7 @@ export async function computeStableFloorSnapshot(messages) {
   for (let sourceIndex = 0; sourceIndex < messages.length; sourceIndex += 1) {
     const message = messages[sourceIndex];
     if (!message || typeof message !== 'object') { errors.push(invalid(sourceIndex, 'MESSAGE_NOT_OBJECT')); continue; }
+    if (hiddenMessage(message)) continue;
     if (typeof message.is_user !== 'boolean') { errors.push(invalid(sourceIndex, 'MISSING_ROLE')); continue; }
     const role = roleOf(message);
     if (role === 'system') continue;

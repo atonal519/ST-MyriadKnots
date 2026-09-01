@@ -9,6 +9,27 @@ const sseResponse = chunks => {
   return { ok: true, status: 200, body: { getReader: () => ({ read: async () => index < chunks.length ? { done: false, value: encoder.encode(chunks[index++]) } : { done: true } }) } };
 };
 
+test('未注入 fetch 时在请求发生时读取宿主最新实现，显式注入不受全局替换影响', async () => {
+  const previousFetch = globalThis.fetch;
+  let earlyCalls = 0, lateCalls = 0, injectedCalls = 0, globalCalls = 0;
+  try {
+    globalThis.fetch = async () => { earlyCalls += 1; throw new Error('不应调用提前存在的 fetch'); };
+    const dynamic = createCompactApiClient();
+    globalThis.fetch = async () => { lateCalls += 1; return jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] }); };
+    assert.deepEqual((await dynamic.generateTask({ config: config(), taskMessages: [] })).jsonData, { ok: true });
+    assert.deepEqual({ earlyCalls, lateCalls }, { earlyCalls: 0, lateCalls: 1 });
+
+    const injected = createCompactApiClient({ fetchImpl: async () => { injectedCalls += 1; return jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] }); } });
+    globalThis.fetch = async () => { globalCalls += 1; throw new Error('显式注入时不应调用全局 fetch'); };
+    assert.deepEqual((await injected.generateTask({ config: config(), taskMessages: [] })).jsonData, { ok: true });
+    assert.deepEqual({ injectedCalls, globalCalls }, { injectedCalls: 1, globalCalls: 0 });
+
+    globalThis.fetch = undefined;
+    const unavailable = createCompactApiClient();
+    await assert.rejects(unavailable.generateTask({ config: config(), taskMessages: [] }), error => error.message === 'fetch 不可用');
+  } finally { globalThis.fetch = previousFetch; }
+});
+
 test('Base URL 规范化且独立请求只含紧凑 system/user、schema 与代理字段', async () => {
   assert.equal(normalizeApiUrl('https://api.example.test/'), 'https://api.example.test/v1'); assert.equal(normalizeApiUrl('https://api.example.test/v1/chat/completions'), 'https://api.example.test/v1');
   let request;
@@ -17,7 +38,7 @@ test('Base URL 规范化且独立请求只含紧凑 system/user、schema 与代�
   assert.deepEqual(result.jsonData, { confirmed: [], candidate: [], discarded: [] }); assert.equal(request.path, '/api/backends/chat-completions/generate');
   assert.equal(request.body.reverse_proxy, 'https://api.example.test/v1'); assert.equal(request.body.proxy_password, 'TEST_KEY'); assert.equal(request.body.model, 'compact-model');
   assert.deepEqual(request.body.messages.map(item => item.role), ['system', 'user']); assert.match(request.body.messages[1].content, /冻结来源/); assert.doesNotMatch(JSON.stringify(request.body.messages), /后续聊天正文|sanctuary|jailbreak/i);
-  assert.equal(request.body.response_format.type, 'json_schema'); assert.equal(request.body.response_format.json_schema.name, 'people'); assert.equal(request.body.temperature, 0.2); assert.equal(request.body.max_tokens, 12000);
+  assert.deepEqual(request.body.json_schema, { name: 'people', value: { type: 'object' }, strict: true }); assert.equal(Object.hasOwn(request.body, 'response_format'), false); assert.equal(request.body.temperature, 0.2); assert.equal(request.body.max_tokens, 12000);
 });
 
 test('任务可注入独立 system 文案并显式传递 maxTokens，默认人物 system 行为不变', async () => {
@@ -28,10 +49,10 @@ test('任务可注入独立 system 文案并显式传递 maxTokens，默认人�
   assert.match(bodies[1].messages[0].content, /extract people only/i);
 });
 
-test('剔除参数不允许删除代理必需字段，可明确删除 response_format', async () => {
+test('剔除参数不允许删除代理与 schema 必需字段，且不发送上游 response_format', async () => {
   let body; const client = createCompactApiClient({ fetchImpl: async (path, options) => { body = JSON.parse(options.body); return jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] }); } });
-  await client.generateTask({ config: config({ excludeParams: ['model', 'messages', 'proxy_password', 'chat_completion_source', 'reverse_proxy', 'temperature', 'response_format'] }), taskMessages: [{ role: 'user', content: 'x' }], jsonSchema: { name: 'x', value: { type: 'object' } } });
-  for (const key of ['model', 'messages', 'proxy_password', 'chat_completion_source', 'reverse_proxy']) assert.equal(Object.hasOwn(body, key), true);
+  await client.generateTask({ config: config({ excludeParams: ['model', 'messages', 'proxy_password', 'chat_completion_source', 'reverse_proxy', 'json_schema', 'temperature', 'response_format'] }), taskMessages: [{ role: 'user', content: 'x' }], jsonSchema: { name: 'x', value: { type: 'object' } } });
+  for (const key of ['model', 'messages', 'proxy_password', 'chat_completion_source', 'reverse_proxy', 'json_schema']) assert.equal(Object.hasOwn(body, key), true);
   assert.equal(Object.hasOwn(body, 'temperature'), false); assert.equal(Object.hasOwn(body, 'response_format'), false);
 });
 

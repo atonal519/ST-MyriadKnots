@@ -19,7 +19,7 @@ function envelope(data, revision = 1) {
   return { schemaVersion: 1, revision, generationId: GENERATION, createdAt: '2026-08-29T00:00:00.000Z', updatedAt: '2026-08-29T00:00:00.000Z', data: clone(data) };
 }
 
-async function makeHarness({ generate, selected = [C1], profilePutFailure, oversized = false, characterDescription, assistantStableText, memoryText, memorySource } = {}) {
+async function makeHarness({ generate, selected = [C1], profilePutFailure, oversized = false, characterDescription, assistantStableText, memoryText, memorySource, sourceCatalog } = {}) {
   const greeting = '冻结开场：霜城的钟声响起。';
   const chat = [
     { is_user: false, is_system: false, mes: greeting, send_date: 'g0', swipe_id: 0 },
@@ -102,7 +102,7 @@ async function makeHarness({ generate, selected = [C1], profilePutFailure, overs
   const generateRelationTask = async options => { calls.ai.push(options); return (generate || defaultGenerate)(options, { ctx, snapshot, route, records, calls }); };
   let currentMemoryText = memoryText === undefined ? resolvedCharacterDescription : memoryText;
   const effectiveMemorySource = memorySource || { readRelativeText: () => currentMemoryText };
-  const adapter = createInitialRelationGenerationAdapter({ client, contextProvider: () => ctx, routeSource, generateRelationTask, memorySource: effectiveMemorySource });
+  const adapter = createInitialRelationGenerationAdapter({ client, contextProvider: () => ctx, routeSource, sourceCatalog, generateRelationTask, memorySource: effectiveMemorySource });
   return { adapter, ctx, records, calls, client, routeSource, routeState, snapshot, key, route, generateRelationTask, memorySource: effectiveMemorySource, setMemoryText: value => { currentMemoryText = value; } };
 }
 
@@ -462,12 +462,42 @@ test('公开 start seam 严格核验 selected C foundation sourceBinding，错�
   const cases = {
     missing_character(profile) { delete profile.data.sourceBinding; },
     cross_character(profile) { profile.data.sourceBinding.identityId = C2; },
+    forged_single_on_other_card(profile) { profile.data.sourceBinding = { kind: 'single-card-main', cardId: C1 }; },
   };
   for (const [name, mutate] of Object.entries(cases)) await t.test(name, async () => {
     const h = await makeHarness(); mutate(h.records.get(h.key(`chat-${CHAT}-people`, C1)));
     const result = await h.adapter.start(); assert.equal(result.status, 'mismatch'); assert.equal(h.calls.ai.length, 0);
     assert.equal(h.calls.put.filter(([collection]) => collection.endsWith('-people')).length, 0);
   });
+});
+
+test('严格合法 single-card-main 可通过首次关系、基础保存与动态保存入口，binding 始终保留', async () => {
+  const h = await makeHarness({ generate: async options => options.jsonSchema?.name === 'qianqianjie_initial_relation_items_v2' ? { jsonData: { items: [] } } : { jsonData: { fields: [] } } });
+  for (const recordId of ['meta', 'people-state', 'runtime']) h.records.get(h.key(`chat-${CHAT}`, recordId)).data.cardId = C1;
+  const profile = h.records.get(h.key(`chat-${CHAT}-people`, C1)); profile.data.sourceBinding = { kind: 'single-card-main', cardId: C1 };
+  assert.equal((await h.adapter.start()).status, 'ready');
+  assert.equal((await h.adapter.extractBasicInfo({ identityId: C1 })).status, 'ready');
+  assert.equal((await h.adapter.updateDynamicFields({ identityId: C1 })).status, 'ready');
+  assert.equal((await h.adapter.saveBasicField({ identityId: C1, field: 'identity', value: '用户填写的身份' })).status, 'ready');
+  assert.equal((await h.adapter.saveDynamicField({ identityId: C1, field: 'currentGoals', value: '用户填写的目标' })).status, 'ready');
+  const saved = h.records.get(h.key(`chat-${CHAT}-people`, C1)).data;
+  assert.deepEqual(saved.sourceBinding, { kind: 'single-card-main', cardId: C1 }); assert.equal(saved.basicFields.identity.value, '用户填写的身份'); assert.equal(saved.dynamicFields.currentGoals.value, '用户填写的目标');
+});
+
+test('formal 主槽即使 identityId 相同也拒绝 legacy c-registry，首次关系/基础/动态入口均零 AI零 profile PUT', async () => {
+  for (const action of [
+    h => h.adapter.start(),
+    h => h.adapter.extractBasicInfo({ identityId: C1 }),
+    h => h.adapter.updateDynamicFields({ identityId: C1 }),
+  ]) {
+    const h = await makeHarness();
+    for (const recordId of ['meta', 'people-state', 'runtime']) h.records.get(h.key(`chat-${CHAT}`, recordId)).data.cardId = C1;
+    const profile = h.records.get(h.key(`chat-${CHAT}-people`, C1));
+    assert.deepEqual(profile.data.sourceBinding, { kind: 'c-registry', identityId: C1 });
+    const result = await action(h);
+    assert.equal(result.status, 'mismatch'); assert.equal(h.calls.ai.length, 0);
+    assert.equal(h.calls.put.filter(([collection]) => collection.endsWith('-people')).length, 0);
+  }
 });
 
 test('已 ready 的 selected C 可独立提取六字段，逐项拒绝坏字段且 U 零写', async () => {
@@ -508,6 +538,69 @@ test('能力、喜好、厌恶、原则、人际关系五字段可独立接纳�
   const fields = h.records.get(h.key(`chat-${CHAT}-people`, C1)).data.basicFields;
   for (const field of ['abilities', 'likes', 'dislikes', 'principles', 'relationships']) {
     assert.equal(typeof fields[field].value, 'string'); assert.equal(fields[field].provenance, 'source'); assert.equal(fields[field].sourceRefs.length, 1); assert.equal(fields[field].writerId, 'qianqianjie.basic-info.v1');
+  }
+});
+
+test('基础人际关系拒绝当前好感与关系阶段，但保留稳定亲属和社会关系', () => {
+  const sources = [{ kind: 'card', locator: 'card:char.png#description', fingerprint: `sha256:${'a'.repeat(64)}` }];
+  const stage = validateBasicInfoResult({ fields: [
+    { field: 'relationships', text: '当前关系阶段：暧昧期，对 U 的好感正在上升', evidence: ['A1'] },
+  ] }, { sources });
+  assert.equal(stage.diagnostics.acceptedFields, 0);
+  assert.deepEqual(stage.diagnostics.rejectionCodes, ['relationship_scope']);
+
+  const romantic = validateBasicInfoResult({ fields: [
+    { field: 'relationships', text: '当前关系阶段：U 是 C 的恋人', evidence: ['A1'] },
+  ] }, { sources, relationshipNames: ['林岚', '旅人'] });
+  assert.equal(romantic.diagnostics.acceptedFields, 0);
+  assert.deepEqual(romantic.diagnostics.rejectionCodes, ['relationship_scope']);
+
+  const stable = validateBasicInfoResult({ fields: [
+    { field: 'relationships', text: '郑柠：亲生妹妹；顾言：共事十年的同僚', evidence: ['A1'] },
+  ] }, { sources });
+  assert.equal(stable.diagnostics.acceptedFields, 1);
+  assert.equal(stable.fields.relationships.value, '郑柠：亲生妹妹；顾言：共事十年的同僚');
+});
+
+test('动态写入拒绝目标与 Persona 的恋人正文，保留非浪漫处境', () => {
+  const sources = [{ kind: 'memory', locator: 'memory:1', fingerprint: `sha256:${'d'.repeat(64)}`, content: '林岚与旅人已经成为恋人。林岚目前受城防追捕。' }];
+  const result = validateDynamicInfoResult({ fields: [
+    { field: 'currentSituation', text: '林岚与旅人已经成为恋人', evidence: ['M1'] },
+    { field: 'wellbeing', text: '林岚目前受城防追捕', evidence: ['M1'] },
+  ] }, { sources, relationshipNames: ['林岚', '旅人'] });
+  assert.equal(result.fields.currentSituation, undefined);
+  assert.equal(result.fields.wellbeing.value, '林岚目前受城防追捕');
+  assert.ok(result.diagnostics.rejectionCodes.includes('relationship_scope'));
+
+  const implicit = validateDynamicInfoResult({ fields: [
+    { field: 'currentSituation', text: '两人已经成为恋人', evidence: ['M1'] },
+  ] }, { sources: [{ ...sources[0], content: '两人已经成为恋人。' }] });
+  assert.equal(implicit.diagnostics.acceptedFields, 0);
+  assert.deepEqual(implicit.diagnostics.rejectionCodes, ['relationship_scope']);
+});
+
+test('确认后的来源 catalog 是首次关系与基础抽取的作者资料快照', async () => {
+  const selectedSources = [
+    { kind: 'card', locator: 'card:char.png#description', fingerprint: `sha256:${'b'.repeat(64)}`, content: 'CATALOG_SELECTED：林岚是远航船长。' },
+    { kind: 'worldbook', locator: 'worldbook:航海录:9', fingerprint: `sha256:${'c'.repeat(64)}`, content: 'CATALOG_RELATION：林岚与郑柠是亲生姐妹。' },
+  ];
+  let catalogReads = 0;
+  const h = await makeHarness({
+    characterDescription: 'LIVE_UNSELECTED：林岚是钟楼守门人。',
+    sourceCatalog: { async getConfirmedSources() { catalogReads += 1; return { stage: 'completed', sources: clone(selectedSources) }; } },
+    generate: async options => options.jsonSchema?.name === 'qianqianjie_basic_info_v1'
+      ? { jsonData: { fields: [] } }
+      : { jsonData: { items: [] } },
+  });
+  assert.equal((await h.adapter.start()).status, 'ready');
+  assert.equal((await h.adapter.extractBasicInfo({ identityId: C1 })).status, 'ready');
+  assert.ok(catalogReads >= 2);
+  assert.equal(h.routeState.calls, 0);
+  for (const request of h.calls.ai) {
+    const prompt = request.taskMessages[0].content;
+    assert.match(prompt, /CATALOG_SELECTED/);
+    assert.match(prompt, /CATALOG_RELATION/);
+    assert.doesNotMatch(prompt, /LIVE_UNSELECTED|冻结开场：霜城的钟声响起|钟楼钥匙只交给可信之人/);
   }
 });
 

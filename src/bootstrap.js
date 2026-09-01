@@ -1,12 +1,16 @@
-import { createPanel } from './ui/panel.js';
+import { createPanel, safePeopleErrorCopy } from './ui/panel.js';
 import { createFab } from './ui/fab.js';
 import { installWandEntry } from './ui/wand-entry.js';
 import { mapPeopleError } from './c-registry.js';
+import { createArchiveV2InitializationView } from './ui/archive-v2-initialization-view.js';
 
-export function bootstrap({ formal, people, settings, apiTools, loadState, initialRelations, reviewActions, onPluginEnabledChange, documentRef = globalThis.document, panelFactory = createPanel, fabFactory = createFab, wandInstaller = installWandEntry, enableFab = false } = {}) {
+export function bootstrap({ formal, people, sourceCatalog, settings, apiTools, loadState, initialRelations, reviewActions, onPluginEnabledChange, archiveV2Composition, archiveV2Memory, archiveV2FollowedProfiles, archiveV2Dossier, archiveV2ViewFactory = createArchiveV2InitializationView, documentRef = globalThis.document, panelFactory = createPanel, fabFactory = createFab, wandInstaller = installWandEntry, enableFab = false } = {}) {
   if (!documentRef) return { setState() {}, show() {} };
   const existing = documentRef.getElementById('qqj-panel-host');
   if (existing) return existing.__qqjInstance;
+  const archiveV2InitializationView = archiveV2Composition
+    ? archiveV2ViewFactory({ composition: archiveV2Composition, memory: archiveV2Memory, followedProfiles: archiveV2FollowedProfiles, dossier: archiveV2Dossier, documentRef })
+    : undefined;
   const enabled = () => settings?.isEnabled?.() !== false;
   let uiEpoch = 0;
   const invalidState = () => enabled() ? { status: 'stale' } : { status: 'disabled' };
@@ -15,7 +19,11 @@ export function bootstrap({ formal, people, settings, apiTools, loadState, initi
     if (!currentRun() || typeof people?.getPeople !== 'function') return currentRun() ? result : invalidState();
     const current = await people.getPeople();
     if (!currentRun()) return invalidState();
-    if (!['uninitialized', 'preparing', 'deleting', 'restoring', 'renaming', 'conflict', 'stale'].includes(current?.status) || typeof people.identify !== 'function') return { ...result, people: current };
+    const pending = ['uninitialized', 'preparing', 'deleting', 'restoring', 'renaming', 'conflict', 'stale'].includes(current?.status);
+    const catalog = pending && typeof sourceCatalog?.getState === 'function' ? await sourceCatalog.getState({ formalState: result }) : null;
+    if (!currentRun()) return invalidState();
+    if (!pending || typeof people.identify !== 'function') return { ...result, people: current, ...(catalog ? { sourceCatalog: catalog } : {}) };
+    if (typeof sourceCatalog?.getState === 'function') return { ...result, people: { ...current, recognitionRequired: true }, sourceCatalog: catalog || { status: 'uninitialized', stage: 'uninitialized', candidates: [], permit: { status: 'none' } } };
     try {
       const refreshed = await people.identify({ onPhase: phase => { if (currentRun()) setState({ ...result, status: phase }); } });
       if (!currentRun()) return invalidState();
@@ -28,13 +36,13 @@ export function bootstrap({ formal, people, settings, apiTools, loadState, initi
     }
   };
   let panel;
-  const reload = async ({ announceLoading = false } = {}) => {
+  const reload = async ({ announceLoading = false, allowIdentification = false, retryRecognition = false } = {}) => {
     const mine = ++uiEpoch;
     if (!enabled()) { const value = { status: 'disabled' }; if (mine === uiEpoch) panel?.setState(value); return value; }
     if (announceLoading) panel?.setState({ status: 'loading' });
     try {
       const result = typeof loadState === 'function'
-        ? await loadState()
+        ? await loadState({ setState: value => { if (enabled() && mine === uiEpoch) setState(value); }, isCurrent: () => enabled() && mine === uiEpoch, allowIdentification, retryRecognition })
         : await readPeople(typeof formal?.getFormalState === 'function' ? await formal.getFormalState() : { status: 'error' }, mine);
       const value = enabled() && mine === uiEpoch ? result : invalidState();
       if (mine === uiEpoch) setState(value);
@@ -46,18 +54,21 @@ export function bootstrap({ formal, people, settings, apiTools, loadState, initi
     }
   };
   const open = event => {
+    const openEnabled = enabled();
+    if (!openEnabled) panel?.setState({ status: 'disabled' });
     panel.host.style.display = 'block'; panel.show(event?.currentTarget || event?.target || documentRef.activeElement);
-    void reload({ announceLoading: true });
+    if (!openEnabled) return;
+    void reload();
   };
-  panel = panelFactory({ formal, people, settings, apiTools, loadState: typeof loadState === 'function' ? reload : undefined, initialRelations, reviewActions, onPluginEnabledChange, onClose: () => { uiEpoch += 1; panel.host.style.display = 'none'; } });
-  const setState = state => { panel.setState(state); if (state?.status === 'people_error') { const view = panel.root?.querySelector?.('.view'); const message = documentRef.createElement?.('p'); if (message) { message.className = 'error'; message.textContent = state.peopleError || '人物识别失败：暂时无法读取人物结果，请稍后重试。'; view?.append?.(message); } } };
+  panel = panelFactory({ formal, people, sourceCatalog, settings, apiTools, loadState: typeof loadState === 'function' ? reload : undefined, initialRelations, reviewActions, onPluginEnabledChange, archiveV2InitializationView, onClose: () => { uiEpoch += 1; panel.host.style.display = 'none'; } });
+  const setState = state => { const rendered = panel.setState(state); if (rendered !== false && state?.status === 'people_error') { const view = panel.root?.querySelector?.('.view'); const message = documentRef.createElement?.('p'); if (message) { message.className = 'error'; message.textContent = safePeopleErrorCopy(state.peopleError); view?.append?.(message); } } };
   panel.host.style.display = 'none';
   documentRef.body.append(panel.host);
   const fab = (enableFab || typeof documentRef.createElement !== 'function') ? fabFactory({ onClick: open }) : { host: null };
   if (fab.host) { fab.host.style ||= {}; fab.host.style.display = enabled() ? '' : 'none'; documentRef.body.append(fab.host); }
   wandInstaller(open);
   documentRef.addEventListener('keydown', event => { if (event.key === 'Escape' && !panel.host.hidden) panel.close(); });
-  const setEnabled = value => { uiEpoch += 1; if (fab.host?.style) fab.host.style.display = value ? '' : 'none'; if (!value) setState({ status: 'disabled' }); };
+  const setEnabled = value => { uiEpoch += 1; if (fab.host?.style) fab.host.style.display = value ? '' : 'none'; if (!value) { panel.invalidateInitialization?.(); setState({ status: 'disabled' }); } };
   const instance = { ...panel, fab, setState, setEnabled, show: open };
   panel.host.__qqjInstance = instance;
   return instance;

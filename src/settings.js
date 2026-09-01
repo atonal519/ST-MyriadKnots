@@ -12,6 +12,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   apiStream: false,
   apiPresets: [],
   apiPresetActiveId: '',
+  sharedApiMigrationVersion: 0,
 });
 
 const API_MODES = new Set(['auto', 'seven-preset', 'local', 'tavern']);
@@ -112,6 +113,133 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     const value = extensionSettings['schedule-planner'];
     return value && typeof value === 'object' ? value : null;
   };
+  const ensureSevenDaysSettings = () => {
+    const current = sevenDaysSettings();
+    if (current) return current;
+    const created = {};
+    extensionSettings['schedule-planner'] = created;
+    return created;
+  };
+  const sharedUtilityPresetId = () => text(sevenDaysSettings()?.utilityPresetId).trim();
+  const setSharedUtilityPresetId = id => {
+    const shared = ensureSevenDaysSettings();
+    shared.utilityPresetId = text(id).trim();
+    notify();
+    return shared.utilityPresetId;
+  };
+  const sharedMainConfig = () => {
+    const shared = sevenDaysSettings() || {};
+    return normalizePreset({
+      name: '主配置',
+      url: shared.apiUrl,
+      key: shared.apiKey,
+      model: shared.apiModel,
+      excludeParams: shared.apiExcludeParams,
+      timeoutSec: shared.apiTimeoutSec,
+      stream: shared.apiStream,
+    });
+  };
+  const sharedPresets = () => {
+    const list = sevenDaysSettings()?.apiPresets;
+    if (!Array.isArray(list)) return [];
+    return list.map(value => value && typeof value === 'object' ? { ...value, ...normalizePreset(value) } : null).filter(value => value?.id);
+  };
+  const saveSharedMainConfig = config => {
+    const shared = ensureSevenDaysSettings(), normalized = normalizePreset(config);
+    shared.apiUrl = normalized.url;
+    shared.apiKey = normalized.key;
+    shared.apiModel = normalized.model;
+    shared.apiExcludeParams = normalized.excludeParams;
+    shared.apiTimeoutSec = normalized.timeoutSec;
+    shared.apiStream = normalized.stream;
+    notify();
+    return sharedMainConfig();
+  };
+  const upsertSharedPreset = (name, config, id = '') => {
+    // Every mutation re-reads the shared source so a concurrently changed preset pool is never replaced from a stale UI snapshot.
+    const shared = ensureSevenDaysSettings();
+    const list = Array.isArray(shared.apiPresets) ? [...shared.apiPresets] : [];
+    const requestedId = text(id).trim();
+    const presetId = requestedId || createPresetId(now, random).replace(/^q/, 'p');
+    const index = list.findIndex(value => value && typeof value === 'object' && text(value.id).trim() === presetId);
+    const normalized = normalizePreset({ ...config, id: presetId, name });
+    const snapshot = {
+      name: normalized.name,
+      url: normalized.url,
+      key: normalized.key,
+      model: normalized.model,
+      excludeParams: normalized.excludeParams,
+      timeoutSec: normalized.timeoutSec,
+      stream: normalized.stream,
+    };
+    if (index >= 0) list[index] = { ...list[index], ...snapshot, id: presetId };
+    else list.push({ ...snapshot, id: presetId });
+    shared.apiPresets = list;
+    shared.apiPresetActiveId = presetId;
+    notify();
+    return presetId;
+  };
+  const renameSharedPreset = (id, name) => {
+    const presetId = text(id).trim(), nextName = text(name).trim();
+    if (!presetId || !nextName) return false;
+    const shared = ensureSevenDaysSettings();
+    const list = Array.isArray(shared.apiPresets) ? [...shared.apiPresets] : [];
+    const index = list.findIndex(value => value && typeof value === 'object' && text(value.id).trim() === presetId);
+    if (index < 0) return false;
+    list[index] = { ...list[index], name: nextName };
+    shared.apiPresets = list;
+    notify();
+    return true;
+  };
+  const deleteSharedPreset = id => {
+    const presetId = text(id).trim();
+    if (!presetId) return false;
+    const shared = ensureSevenDaysSettings();
+    const list = Array.isArray(shared.apiPresets) ? shared.apiPresets : [];
+    const next = list.filter(value => !(value && typeof value === 'object' && text(value.id).trim() === presetId));
+    if (next.length === list.length) return false;
+    shared.apiPresets = next;
+    if (shared.apiPresetActiveId === presetId) shared.apiPresetActiveId = '';
+    if (text(shared.utilityPresetId).trim() === presetId) shared.utilityPresetId = '';
+    notify();
+    return true;
+  };
+  const sharedSnapshotKey = () => {
+    const shared = sevenDaysSettings() || {};
+    return JSON.stringify({
+      main: sharedMainConfig(),
+      presets: Array.isArray(shared.apiPresets) ? shared.apiPresets : [],
+      apiPresetActiveId: shared.apiPresetActiveId || '',
+      utilityPresetId: sharedUtilityPresetId(),
+    });
+  };
+  const migrateLegacyApiSettings = () => {
+    const current = get();
+    if (Number(current.sharedApiMigrationVersion) >= 1) return false;
+    const shared = ensureSevenDaysSettings();
+    let changed = false;
+    const legacyFields = [
+      ['apiUrl', current.apiUrl], ['apiKey', current.apiKey], ['apiModel', current.apiModel],
+      ['apiExcludeParams', parseExcludeParams(current.apiExcludeParams)], ['apiTimeoutSec', normalizeTimeout(current.apiTimeoutSec)], ['apiStream', current.apiStream === true],
+    ];
+    for (const [key, value] of legacyFields) {
+      if (!own(shared, key)) { shared[key] = Array.isArray(value) ? [...value] : value; changed = true; }
+    }
+    const sharedList = Array.isArray(shared.apiPresets) ? [...shared.apiPresets] : [];
+    const ids = new Set(sharedList.map(value => value && typeof value === 'object' ? text(value.id).trim() : '').filter(Boolean));
+    for (const legacy of presets()) {
+      if (ids.has(legacy.id)) continue;
+      sharedList.push({ ...legacy }); ids.add(legacy.id); changed = true;
+    }
+    if (!Array.isArray(shared.apiPresets) || changed) shared.apiPresets = sharedList;
+    const legacySelectedId = text(current.apiPresetActiveId).trim();
+    if (!current.selectedSevenDaysPresetId && legacySelectedId && ids.has(legacySelectedId)) {
+      current.apiMode = 'seven-preset'; current.selectedSevenDaysPresetId = legacySelectedId; changed = true;
+    }
+    current.sharedApiMigrationVersion = 1;
+    notify();
+    return changed;
+  };
   return {
     get,
     update,
@@ -121,6 +249,16 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     renamePreset,
     deletePreset,
     sevenDaysSettings,
+    sharedUtilityPresetId,
+    setSharedUtilityPresetId,
+    sharedMainConfig,
+    sharedPresets,
+    saveSharedMainConfig,
+    upsertSharedPreset,
+    renameSharedPreset,
+    deleteSharedPreset,
+    sharedSnapshotKey,
+    migrateLegacyApiSettings,
     isEnabled: () => get().pluginEnabled !== false,
   };
 }

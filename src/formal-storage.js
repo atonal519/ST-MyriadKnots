@@ -50,6 +50,12 @@ function validRoute(route) {
   return true;
 }
 const validMetaRecord = (record, expected, requestedType) => validEnvelope(record) && validMetaShape(record.data, expected, requestedType);
+const isPersonaOnlyMismatch = (record, expected, requestedType) => {
+  if (!validEnvelope(record)) return false;
+  const boundLocator = typeof record.data?.source?.persona?.locator === 'string' ? record.data.source.persona.locator : '';
+  if (!boundLocator || boundLocator === expected.personaAvatar) return false;
+  return validMetaShape(record.data, { ...expected, personaAvatar: boundLocator }, requestedType);
+};
 const validMetaWinner = (record, expected, base, authority, requestedType) => validMetaRecord(record, expected, requestedType) && record.data.chatId === base.chatId && record.data.cardId === base.cardId && record.data.personaId === base.personaId && record.data.source.card.locator === base.source.card.locator && record.data.source.persona.locator === base.source.persona.locator && (!authority || (record.data.chatId === authority.demo.data.chatId && record.data.cardId === authority.demo.data.cardId && record.data.personaId === authority.demo.data.personaId && record.data.source.card.locator === expected.characterAvatar && record.data.source.persona.locator === expected.personaAvatar));
 const validRouteWinner = (record, expected, base, authority, route) => validMetaWinner(record, expected, base, authority) && record.data.route?.state === 'ready' && sameRouteSnapshot(record.data.route, route);
 
@@ -58,7 +64,13 @@ function validCard(data, meta, characterAvatar, requestedType) {
 }
 const validCardRecord = (record, meta, characterAvatar, requestedType) => validEnvelope(record) && validCard(record.data, meta, characterAvatar, requestedType);
 
-const cleanState = (state, formal = null) => ({ chatId: state.chatId, characterAvatar: state.characterAvatar, personaAvatar: state.personaAvatar, formal: formal ? { status: formal.status, cardType: formal.data?.cardType ?? null } : null });
+const cleanState = (state, formal = null) => ({
+  chatId: state.chatId,
+  characterAvatar: state.characterAvatar,
+  personaAvatar: state.personaAvatar,
+  ...(formal?.data && isUuid(formal.data.cardId) ? { cardId: formal.data.cardId, personaId: formal.data.personaId, cardType: formal.data.cardType ?? null } : {}),
+  formal: formal ? { status: formal.status, cardType: formal.data?.cardType ?? null } : null,
+});
 
 export function createFormalAdapter({ client, contextProvider, guard, routeSource } = {}) {
   if (!client || typeof client.get !== 'function' || typeof client.put !== 'function') throw new Error('正式后端客户端不可用');
@@ -76,10 +88,20 @@ export function createFormalAdapter({ client, contextProvider, guard, routeSourc
 
   async function getDemoAuthority(run) {
     const ids = await identityIds(run.state); check(run);
-    let demo; let cardMap; let personaMap;
-    try { demo = await client.get(collections.chats, run.state.chatId); check(run); } catch (e) { if (e.status === 404) { check(run); return null; } throw e; }
-    try { cardMap = await client.get(collections.cards, ids.cardRecordId); check(run); } catch (e) { if (e.status === 404) { check(run); return null; } throw e; }
-    try { personaMap = await client.get(collections.personas, ids.personaRecordId); check(run); } catch (e) { if (e.status === 404) { check(run); return null; } throw e; }
+    const settled = await Promise.allSettled([
+      client.get(collections.chats, run.state.chatId),
+      client.get(collections.cards, ids.cardRecordId),
+      client.get(collections.personas, ids.personaRecordId),
+    ]);
+    check(run);
+    // 请求并发发出，但裁决严格保持旧串行顺序：chat → card → persona。
+    // 较早的 404 会终止旧路径，因此不得被较晚请求的 500 抢先覆盖。
+    for (const result of settled) {
+      if (result.status === 'fulfilled') continue;
+      if (result.reason?.status === 404) return null;
+      throw result.reason;
+    }
+    const [demo, cardMap, personaMap] = settled.map(result => result.value);
     const validMap = (r, kind, locator) => r?.data?.schemaVersion === 1 && r.data.kind === kind && r.data.avatar === locator && isUuid(r.data.identityId) && positiveRevision(r.revision);
     if (!validMap(cardMap, 'identity-card', run.state.characterAvatar) || !validMap(personaMap, 'identity-persona', run.state.personaAvatar) || demo?.data?.schemaVersion !== 1 || demo.data.kind !== 'chat-demo-profile' || demo.data.chatId !== run.state.chatId || !isUuid(demo.data.cardId) || !isUuid(demo.data.personaId) || demo.data.cardId !== cardMap.data.identityId || demo.data.personaId !== personaMap.data.identityId || demo.data.source?.characterAvatar !== run.state.characterAvatar || demo.data.source?.personaAvatar !== run.state.personaAvatar || !positiveRevision(demo.revision)) throw validationError('Demo 档案不可迁移');
     return { demo, cardMap, personaMap };
@@ -105,8 +127,8 @@ export function createFormalAdapter({ client, contextProvider, guard, routeSourc
       return { status: 'route_ready', record: winner };
     }
   }
-  async function migrateMeta(run) {
-    const authority = await getDemoAuthority(run); if (!authority) throw validationError('Demo 档案不完整，无法迁移');
+  async function migrateMeta(run, authority) {
+    if (!authority) throw validationError('Demo 档案不完整，无法迁移');
     const { demo, cardMap, personaMap } = authority;
     const data = { schemaVersion: 1, kind: 'chat-profile', chatId: run.state.chatId, cardId: demo.data.cardId, personaId: demo.data.personaId, source: { card: { locator: run.state.characterAvatar }, persona: { locator: run.state.personaAvatar } }, cardType: null, route: { state: 'uninitialized' }, parentChatId: null, forkFloor: null, canonCheckpoint: null, provisional: null, status: 'awaiting_card_type', rebuildState: 'idle', migration: { source: DEMO_SOURCE, state: 'complete', sourceRevisions: { chatMeta: demo.revision, cardMapping: cardMap.revision, personaMapping: personaMap.revision } } };
     if (!validMetaShape(data, run.state)) throw validationError('正式聊天档案无效');
@@ -116,15 +138,17 @@ export function createFormalAdapter({ client, contextProvider, guard, routeSourc
   }
   async function formalStateRun(run) {
     if (!run.state.ok || !run.state.chatId) return { status: 'stopped', reason: run.state.reason ?? '正式聊天尚未初始化' };
-    const record = await readMeta(run); let result;
+    const [metaResult, authorityResult] = await Promise.allSettled([readMeta(run), getDemoAuthority(run)]);
+    if (metaResult.status === 'rejected') throw metaResult.reason;
+    const record = metaResult.value; let result;
+    if (record && !validMetaRecord(record, run.state)) return { status: 'mismatch', ...(isPersonaOnlyMismatch(record, run.state) ? { mismatchReason: 'persona' } : {}), ...cleanState(run.state) };
+    if (authorityResult.status === 'rejected') throw authorityResult.reason;
+    const authority = authorityResult.value;
     if (record) {
-      if (!validMetaRecord(record, run.state)) return { status: 'mismatch', ...cleanState(run.state) };
-      const authority = await getDemoAuthority(run);
       if (authority && (record.data.cardId !== authority.demo.data.cardId || record.data.personaId !== authority.demo.data.personaId)) return { status: 'mismatch', ...cleanState(run.state) };
       result = { record, migrated: false };
-    } else result = await migrateMeta(run);
+    } else result = await migrateMeta(run, authority);
     if (result.conflict) return { status: 'mismatch', ...cleanState(run.state) };
-    const authority = await getDemoAuthority(run);
     const routeResult = await initializeRouteRun(run, result.record, result.record.data, authority);
     if (routeResult.status === 'route_unavailable') return { ...routeResult, formal: { status: 'ready', cardType: result.record.data.cardType } };
     return { status: result.migrated ? 'migrated' : routeResult.status, ...cleanState(run.state, routeResult.record), route: routeResult.record?.data?.route ?? null };
@@ -132,9 +156,12 @@ export function createFormalAdapter({ client, contextProvider, guard, routeSourc
   async function initializeCardRun(run, cardType) {
     if (!CARD_TYPES.includes(cardType)) return { status: 'invalid_card_type' };
     if (!run.state.ok || !run.state.chatId) return { status: 'stopped', reason: run.state.reason ?? '正式聊天尚未初始化' };
-    const meta = await readMeta(run);
-    if (!meta || !validMetaRecord(meta, run.state)) return { status: meta ? 'mismatch' : 'not_initialized' };
-    const authority = await getDemoAuthority(run);
+    const [metaResult, authorityResult] = await Promise.allSettled([readMeta(run), getDemoAuthority(run)]);
+    if (metaResult.status === 'rejected') throw metaResult.reason;
+    const meta = metaResult.value;
+    if (!meta || !validMetaRecord(meta, run.state)) return { status: meta ? 'mismatch' : 'not_initialized', ...(meta && isPersonaOnlyMismatch(meta, run.state) ? { mismatchReason: 'persona' } : {}) };
+    if (authorityResult.status === 'rejected') throw authorityResult.reason;
+    const authority = authorityResult.value;
     if (authority && (meta.data.cardId !== authority.demo.data.cardId || meta.data.personaId !== authority.demo.data.personaId)) return { status: 'mismatch' };
     const keys = formalKeys(run.state.chatId, meta.data.cardId); let card;
     try {

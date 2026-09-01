@@ -1,4 +1,4 @@
-const PROTECTED_BODY_KEYS = new Set(['chat_completion_source', 'reverse_proxy', 'proxy_password', 'model', 'messages']);
+const PROTECTED_BODY_KEYS = new Set(['chat_completion_source', 'reverse_proxy', 'proxy_password', 'model', 'messages', 'json_schema']);
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const DEFAULT_TIMEOUT = 180;
 
@@ -194,8 +194,13 @@ function linkedController(signal, timeoutSec, timeoutMs) {
   return { controller, timedOut: () => timedOut, cleanup: () => { clearTimeout(timer); signal?.removeEventListener?.('abort', onAbort); } };
 }
 
-export function createCompactApiClient({ fetchImpl = globalThis.fetch, headers = () => ({}), retryWait = wait, timeoutMs = seconds => seconds * 1000 } = {}) {
-  if (typeof fetchImpl !== 'function') throw new Error('fetch 不可用');
+export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryWait = wait, timeoutMs = seconds => seconds * 1000 } = {}) {
+  if (fetchImpl !== undefined && typeof fetchImpl !== 'function') throw new Error('fetch 不可用');
+  const resolveFetch = () => {
+    const current = fetchImpl === undefined ? globalThis.fetch : fetchImpl;
+    if (typeof current !== 'function') throw new Error('fetch 不可用');
+    return current;
+  };
   const request = async ({ path, body, config, signal, stream = false, retries = 2 }) => {
     if (!config?.url || !config?.key) throw safeError('config');
     let attempt = 0;
@@ -203,7 +208,7 @@ export function createCompactApiClient({ fetchImpl = globalThis.fetch, headers =
       if (signal?.aborted) throw abortError();
       const linked = linkedController(signal, config.timeoutSec, timeoutMs);
       try {
-        const response = await fetchImpl(path, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: linked.controller.signal });
+        const response = await resolveFetch()(path, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: linked.controller.signal });
         if (!response.ok) {
           if ((response.status === 429 || response.status >= 500) && attempt < retries) {
             attempt += 1; linked.cleanup(); await retryWait(Math.min(400 * 2 ** attempt, 2000), signal); continue;
@@ -236,7 +241,7 @@ export function createCompactApiClient({ fetchImpl = globalThis.fetch, headers =
       model: config?.model || DEFAULT_MODEL, messages: compactMessages, stream: config?.stream === true,
       temperature, max_tokens: maxTokens,
     };
-    if (jsonSchema) body.response_format = { type: 'json_schema', json_schema: { name: jsonSchema.name || 'qianqianjie_people', schema: jsonSchema.value || jsonSchema.schema, strict: jsonSchema.strict !== false } };
+    if (jsonSchema) body.json_schema = { name: jsonSchema.name || 'qianqianjie_people', value: jsonSchema.value || jsonSchema.schema, strict: jsonSchema.strict !== false };
     for (const item of config?.excludeParams || []) {
       const key = String(item).trim(); if (key && !PROTECTED_BODY_KEYS.has(key)) delete body[key];
     }

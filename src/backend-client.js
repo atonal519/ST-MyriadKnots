@@ -1,13 +1,21 @@
 import { API_BASE, NAMESPACE } from './constants.js';
 
 function safeError(status) { return new Error(`后端请求失败（HTTP ${status}）`); }
-export function createBackendClient({ fetchImpl = globalThis.fetch, headers = () => ({}), baseUrl = API_BASE } = {}) {
+function timeoutError() { const error = new Error('后端请求超时'); error.name = 'TimeoutError'; error.code = 'BACKEND_TIMEOUT'; return error; }
+export function createBackendClient({ fetchImpl = globalThis.fetch, headers = () => ({}), baseUrl = API_BASE, timeoutMs = 15000 } = {}) {
   if (typeof fetchImpl !== 'function') throw new Error('fetch 不可用');
   const request = async (path, options = {}) => {
-    const response = await fetchImpl(`${baseUrl}${path}`, { ...options, headers: { Accept: 'application/json', ...headers(), ...(options.body ? { 'Content-Type': 'application/json' } : {}) } });
-    let body = null; try { body = await response.json(); } catch { /* empty */ }
-    if (!response.ok) { const error = safeError(response.status); error.status = response.status; throw error; }
-    return body;
+    const controller = new AbortController(), outerSignal = options.signal; let timedOut = false;
+    const abortFromOuter = () => controller.abort(outerSignal?.reason);
+    if (outerSignal?.aborted) abortFromOuter(); else outerSignal?.addEventListener?.('abort', abortFromOuter, { once: true });
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, Math.max(1, Number(timeoutMs) || 15000));
+    try {
+      const response = await fetchImpl(`${baseUrl}${path}`, { ...options, signal: controller.signal, headers: { Accept: 'application/json', ...headers(), ...(options.body ? { 'Content-Type': 'application/json' } : {}) } });
+      let body = null; try { body = await response.json(); } catch { /* empty */ }
+      if (!response.ok) { const error = safeError(response.status); error.status = response.status; throw error; }
+      return body;
+    } catch (error) { if (timedOut) throw timeoutError(); throw error; }
+    finally { clearTimeout(timer); outerSignal?.removeEventListener?.('abort', abortFromOuter); }
   };
   const key = (collection, recordId) => `/v1/records/${encodeURIComponent(NAMESPACE)}/${encodeURIComponent(collection)}/${encodeURIComponent(recordId)}`;
   return {
@@ -17,7 +25,7 @@ export function createBackendClient({ fetchImpl = globalThis.fetch, headers = ()
       return result;
     },
     async get(collection, recordId) { return request(key(collection, recordId)); },
-    async put(collection, recordId, data, expectedRevision) { return request(key(collection, recordId), { method: 'PUT', body: JSON.stringify({ data, expectedRevision }) }); },
+    async put(collection, recordId, data, expectedRevision, { signal } = {}) { return request(key(collection, recordId), { method: 'PUT', body: JSON.stringify({ data, expectedRevision }), signal }); },
   };
 }
 

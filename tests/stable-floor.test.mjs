@@ -123,6 +123,19 @@ test('Luker 合法隐藏 system 楼被跳过，number/Date send_date 通过生�
   assert.equal(result.canon[2].creationDate, '2026-08-29T00:03:00.000Z');
 });
 
+test('is_hidden 与 extra.is_hidden 楼完全排除，不进入 Canon 也不因缺字段阻断', async () => {
+  const messages = [
+    greeting(),
+    { is_hidden: true, mes: '隐藏且故意缺少角色与时间' },
+    user('可见一', 1),
+    assistant('隐藏 AI', 2, { extra: { is_hidden: true } }),
+    user('可见二', 3),
+  ];
+  const result = await computeStableFloorSnapshot(messages);
+  assert.equal(result.status, 'ready'); assert.deepEqual(result.canon.map(item => item.sourceIndex), [2, 4]);
+  assert.equal(JSON.stringify(result).includes('隐藏'), false);
+});
+
 test('生产存储 seam 首次原子写入，重复运行零 PUT，纯追加使用 revision CAS', async () => {
   const ctx = host([greeting(), user('一', 1), assistant('二', 2)]);
   const client = fakeClient(envelope(meta()));

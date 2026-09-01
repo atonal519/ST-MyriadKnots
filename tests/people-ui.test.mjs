@@ -19,7 +19,8 @@ class Node {
   querySelectorAll(selector) {
     const nodes = this.descendants();
     if (selector === 'button') return nodes.filter(item => item.tagName === 'button');
-    if (selector === 'button,input,select,textarea,[href],[tabindex]:not([tabindex="-1"])') return nodes.filter(item => ['button', 'input', 'select', 'textarea'].includes(item.tagName));
+    if (selector === 'input') return nodes.filter(item => item.tagName === 'input');
+    if (selector === 'button,input,select,textarea,summary,[href],[tabindex]:not([tabindex="-1"])') return nodes.filter(item => ['button', 'input', 'select', 'textarea', 'summary'].includes(item.tagName));
     if (selector.startsWith('[data-')) { const key = selector.slice(6, -1).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()); return nodes.filter(item => Object.hasOwn(item.dataset, key)); }
     if (selector.startsWith('.')) { const names = selector.slice(1).split('.'); return nodes.filter(item => names.every(name => item.className.split(/\s+/).includes(name))); }
     return [];
@@ -27,7 +28,15 @@ class Node {
   querySelector(selector) { return this.nodes?.[selector] || this.querySelectorAll(selector)[0] || null; }
   get textContent() { return this._text ?? this.children.map(item => item?.textContent ?? '').join(''); }
   set textContent(value) { this._text = String(value); }
-  set innerHTML(value) { this.markup = String(value); this.children = []; }
+  set innerHTML(value) {
+    this.markup = String(value); this.children = [];
+    if (this.markup.includes('name="qqj-card-type"')) {
+      for (const value of ['single', 'multi', 'open_world', 'simulator']) {
+        const choice = new Node('label'); choice.className = 'choice'; const input = new Node('input'); input.value = value; input.checked = false; choice.append(input); this.append(choice);
+      }
+      const button = new Node('button'); button.className = 'init'; button.disabled = true; this.append(button);
+    }
+  }
   get innerHTML() { return this.markup || ''; }
   attachShadow() {
     const root = new Node();
@@ -86,6 +95,179 @@ test('生产 bootstrap 打开只调用一次权威 loadState，不并行读取�
   instance.show(); await settle();
   assert.equal(loads, 1); assert.equal(formalReads, 0); assert.equal(peopleReads, 0);
   assert.match(instance.host.shadowRoot.nodes['.view'].textContent, /林岚/); assert.doesNotMatch(instance.host.shadowRoot.nodes['.view'].textContent, /旅人|旧 profile 名/);
+});
+
+test('Persona mismatch 明确提示且运行层 0 人物写/0 AI，切回原 Persona 后完整档案直接恢复', async () => {
+  let peopleReads = 0, peopleWrites = 0, aiCalls = 0;
+  const runtime = createRuntimeRunner({
+    orchestrator: { run: async () => ({ status: 'mismatch', mismatchReason: 'persona', chatId: '323e4567-e89b-42d3-a456-426614174002' }) },
+    people: { getPeople: async () => { peopleReads += 1; }, identify: async () => { peopleWrites += 1; } },
+    peopleFoundation: { initialize: async () => { peopleWrites += 1; } },
+    initialRelations: { resume: async () => { aiCalls += 1; } },
+  });
+  const mismatch = await runtime.run(); assert.equal(mismatch.mismatchReason, 'persona'); assert.equal(peopleReads + peopleWrites + aiCalls, 0);
+
+  const { bootstrap } = await import('../dist/index.js?persona-mismatch-restore=1');
+  const documentRef = documentHarness(), instance = bootstrap({ documentRef, wandInstaller() {} });
+  instance.setState(mismatch); let view = instance.host.shadowRoot.nodes['.view'];
+  assert.match(view.textContent, /当前 user 与档案绑定的 user 不一致，请确认或切换后重试/); assert.doesNotMatch(view.textContent, /林岚|银发|修复钟楼机关/);
+  instance.setState(authorityState('ready', [])); view = instance.host.shadowRoot.nodes['.view'];
+  assert.match(view.textContent, /林岚/); assert.match(view.textContent, /银发/); assert.match(view.textContent, /修复钟楼机关/);
+});
+
+test('空档稳定显示开始整理来源；本地预检零 AI，确认后才显式放行识别', async () => {
+  const { bootstrap } = await import('../dist/index.js?source-catalog-ui=1');
+  const documentRef = documentHarness(); let starts = 0, confirms = 0, aiCalls = 0; const loadOptions = [];
+  const base = { status: 'route_ready', cardId: C, personaId: U, people: { status: 'uninitialized', confirmed: [], candidate: [], shelved: [] }, sourceCatalog: { status: 'uninitialized', stage: 'uninitialized', candidates: [], permit: { status: 'none' } } };
+  const draft = { status: 'ready', stage: 'draft', permit: { status: 'none' }, candidates: [
+    { id: 'card:card:x#description', label: '角色描述', availability: 'card', selected: true },
+    { id: 'worldbook:book:2', label: '禁用条目', availability: 'disabled', selected: false },
+  ] };
+  const instance = bootstrap({
+    documentRef, wandInstaller() {},
+    sourceCatalog: { start: async () => { starts += 1; return draft; }, setSelected: async () => draft, confirm: async () => { confirms += 1; return { ...draft, stage: 'confirmed', permit: { status: 'ready' } }; } },
+    loadState: async options => { loadOptions.push(options); if (options?.allowIdentification) { aiCalls += 1; return authorityState('uninitialized', []); } return base; },
+  });
+  instance.show(); await settle(); let view = instance.host.shadowRoot.nodes['.view'];
+  assert.equal(instance.host.shadowRoot.nodes['.status-label'].textContent, '开始整理来源'); assert.ok(view.querySelector('.source-start')); assert.equal(aiCalls, 0);
+  view.querySelector('.source-start').fire('click'); await settle(); view = instance.host.shadowRoot.nodes['.view'];
+  assert.equal(starts, 1); assert.equal(aiCalls, 0); assert.match(view.textContent, /选择人物初始化来源/); assert.equal(view.querySelectorAll('.source-row').length, 2);
+  view.querySelector('.source-confirm').fire('click'); await settle();
+  assert.equal(confirms, 1); assert.equal(aiCalls, 1); assert.equal(loadOptions.at(-1).allowIdentification, true);
+});
+
+test('合法旧档先展示基础/动态内容，仅在用户点击手动刷新后进入来源整理与一次识别', async () => {
+  const { bootstrap } = await import('../dist/index.js?legacy-refresh-ui=1');
+  const documentRef = documentHarness(); let starts = 0, confirms = 0, aiCalls = 0;
+  const legacy = authorityState('ready', []); legacy.people.refreshRecommended = true;
+  const draft = { status: 'ready', stage: 'draft', permit: { status: 'none' }, candidates: [{ id: 'card:card:x#description', label: '角色描述', availability: 'card', selected: true }] };
+  const instance = bootstrap({
+    documentRef, wandInstaller() {},
+    sourceCatalog: { start: async () => { starts += 1; return draft; }, setSelected: async () => draft, confirm: async () => { confirms += 1; return { ...draft, stage: 'confirmed', permit: { status: 'ready' } }; } },
+    loadState: async options => { if (options?.allowIdentification) { aiCalls += 1; return authorityState('ready', []); } return legacy; },
+  });
+  instance.show(); await settle(); let view = instance.host.shadowRoot.nodes['.view'];
+  assert.match(view.textContent, /银发|修复钟楼机关|旧人物档案已正常恢复/); assert.equal(aiCalls, 0); assert.ok(view.querySelector('.source-refresh'));
+  view.querySelector('.source-refresh').fire('click'); await settle(); view = instance.host.shadowRoot.nodes['.view'];
+  assert.equal(starts, 1); assert.equal(aiCalls, 0); assert.match(view.textContent, /选择人物初始化来源/);
+  view.querySelector('.source-confirm').fire('click'); await settle();
+  assert.equal(confirms, 1); assert.equal(aiCalls, 1);
+});
+
+test('新卡选完卡型后继续完整 loadState，快速重复点击只初始化一次且不自动选人', async () => {
+  const { bootstrap } = await import('../dist/index.js?people-card-bootstrap=1');
+  const documentRef = documentHarness(), initGate = deferred(); let loads = 0, initializes = 0;
+  const ready = authorityState('uninitialized', []); ready.people.confirmed[0].selection = { status: 'unselected' }; ready.peopleFoundation.state.activeMemberIds = [];
+  const instance = bootstrap({ documentRef, wandInstaller() {}, formal: { initializeCard: async () => { initializes += 1; await initGate.promise; return { status: 'route_ready', cardType: 'single' }; } }, loadState: async () => (++loads === 1 ? { status: 'awaiting_card_type' } : ready) });
+  instance.show(); await settle(); const view = instance.host.shadowRoot.nodes['.view'], radio = view.querySelectorAll('input')[0]; radio.checked = true; radio.fire('change');
+  const initialize = view.querySelector('.init'); initialize.fire('click'); initialize.fire('click'); assert.equal(initializes, 1); assert.equal(initialize.disabled, true);
+  initGate.resolve(); await settle();
+  assert.equal(loads, 2); assert.equal(instance.getState().peopleFoundation.status, 'ready'); assert.equal(instance.host.shadowRoot.nodes['.status-label'].textContent, '来源已锚定，正式档案已就绪');
+  assert.equal(ready.people.confirmed[0].selection.status, 'unselected'); assert.equal(instance.host.shadowRoot.nodes['.view'].querySelectorAll('.profile-tab').length, 0);
+});
+
+test('新卡初始化关闭后迟到结果不继续识别，重开后按钮不会永久锁定', async () => {
+  const { bootstrap } = await import('../dist/index.js?people-card-close=1');
+  const documentRef = documentHarness(), initGate = deferred(); let loads = 0;
+  const instance = bootstrap({ documentRef, wandInstaller() {}, formal: { initializeCard: async () => { await initGate.promise; return { status: 'route_ready', cardType: 'single' }; } }, loadState: async () => { loads += 1; return { status: 'awaiting_card_type' }; } });
+  instance.show(); await settle(); let view = instance.host.shadowRoot.nodes['.view'], radio = view.querySelectorAll('input')[0]; radio.checked = true; radio.fire('change'); view.querySelector('.init').fire('click');
+  instance.close(); initGate.resolve(); await settle(); assert.equal(loads, 1); assert.equal(instance.getState().status, 'awaiting_card_type'); assert.equal(instance.host.hidden, true);
+  instance.show(); await settle(); view = instance.host.shadowRoot.nodes['.view']; radio = view.querySelectorAll('input')[0]; radio.checked = true; radio.fire('change'); assert.equal(view.querySelector('.init').disabled, false);
+});
+
+test('新卡 runtime 在途关闭再重开由新 UI 接管，同一底层 run 收敛且已存字段仍可见', async () => {
+  const { bootstrap } = await import('../dist/index.js?people-card-runtime-close=1');
+  const documentRef = documentHarness(), runtimeGate = deferred(), ready = authorityState('uninitialized', []); let instance, loads = 0, runtimeRuns = 0;
+  ready.peopleFoundation.state.initialGeneration = { schemaVersion: 1, status: 'generating', completedMemberIds: [] };
+  const runtime = createRuntimeRunner({
+    orchestrator: { run: async () => { runtimeRuns += 1; await runtimeGate.promise; return { status: 'route_ready', chatId: ready.chatId }; } },
+    people: { getPeople: async () => ready.people }, stableFloors: { refresh: async () => ({ status: 'ready', ledger: { entries: [] } }) }, peopleFoundation: { initialize: async () => ready.peopleFoundation },
+    initialRelations: { getState: () => ready.peopleFoundation.state.initialGeneration, resume: async () => ({ status: 'ready', completedMemberIds: [] }) },
+    setState: value => instance?.setState(value),
+  });
+  instance = bootstrap({ documentRef, wandInstaller() {}, formal: { initializeCard: async () => ({ status: 'route_ready', cardType: 'single' }) }, loadState: options => (++loads === 1 ? Promise.resolve({ status: 'awaiting_card_type' }) : runtime.run(options)) });
+  instance.show(); await settle(); let view = instance.host.shadowRoot.nodes['.view'], radio = view.querySelectorAll('input')[0]; radio.checked = true; radio.fire('change'); view.querySelector('.init').fire('click');
+  while (runtimeRuns < 1) await new Promise(resolve => setImmediate(resolve)); instance.close(); instance.show(); await settle();
+  assert.equal(loads, 3); assert.equal(runtimeRuns, 1); assert.equal(instance.getState().status, 'awaiting_card_type');
+  runtimeGate.resolve(); await settle(); view = instance.host.shadowRoot.nodes['.view'];
+  assert.equal(instance.getState().chatId, ready.chatId); assert.equal(instance.host.shadowRoot.nodes['.status-label'].textContent, '来源已锚定，正式档案已就绪');
+  assert.match(view.textContent, /银发/); assert.match(view.textContent, /旧伤仍限制行动/); assert.equal(instance.host.hidden, false);
+});
+
+test('人物识别失败时状态诚实且因缘簿有同一重试出口；重试失败解锁，成功后候选人仍未自动选中', async () => {
+  const { bootstrap } = await import('../dist/index.js?people-bootstrap-retry=1');
+  const documentRef = documentHarness(), retryGate = deferred(); let loads = 0;
+  const failed = { status: 'route_ready', chatId: '323e4567-e89b-42d3-a456-426614174002', people: { status: 'uninitialized', confirmed: [], candidate: [], shelved: [] }, peopleRecognitionFailed: true, peopleError: 'API 认证失败，请检查配置后重试' };
+  const failedAgain = { ...failed, peopleError: '人物识别结果格式无效' };
+  const ready = authorityState('uninitialized', []); ready.people.confirmed[0].selection = { status: 'unselected' }; ready.peopleFoundation.state.activeMemberIds = [];
+  let mode = 'initial';
+  const instance = bootstrap({ documentRef, wandInstaller() {}, loadState: async () => { loads += 1; if (mode === 'initial') return failed; if (mode === 'pending') return retryGate.promise; return ready; } });
+  instance.show(); await settle(); let view = instance.host.shadowRoot.nodes['.view'];
+  assert.equal(instance.host.shadowRoot.nodes['.status-label'].textContent, '人物识别失败，已保留旧列表'); assert.doesNotMatch(instance.host.shadowRoot.nodes['.status-label'].textContent, /已就绪/);
+  assert.match(view.textContent, /API 认证失败/); assert.ok(view.querySelector('.people-retry')); assert.ok(view.querySelector('.open-fate-book'));
+  view.querySelector('.open-fate-book').fire('click'); view = instance.host.shadowRoot.nodes['.view']; assert.ok(view.querySelector('.fate-book-view')); assert.ok(view.querySelector('.people-retry'));
+  mode = 'pending'; const retry = view.querySelector('.people-retry'); retry.fire('click'); retry.fire('click'); view = instance.host.shadowRoot.nodes['.view']; assert.equal(loads, 2); assert.equal(view.querySelector('.people-retry').disabled, true);
+  retryGate.resolve(failedAgain); await settle(); view = instance.host.shadowRoot.nodes['.view']; assert.match(view.textContent, /人物识别结果格式无效/); assert.equal(view.querySelector('.people-retry').disabled, false);
+  mode = 'ready'; view.querySelector('.people-retry').fire('click'); await settle(); view = instance.host.shadowRoot.nodes['.view'];
+  assert.equal(loads, 3); assert.equal(ready.people.confirmed[0].selection.status, 'unselected'); assert.equal(view.querySelectorAll('.profile-tab').length, 0); assert.match(view.textContent, /还没有已选择的 C/);
+  view.querySelector('.profile-tools').children[1].fire('click'); assert.match(view.textContent, /林岚/); assert.ok(view.querySelector('[data-select]'));
+});
+
+test('人物重试进入 runtime 后关闭，迟到 publish 不改状态且重开不残留 busy', async () => {
+  const { bootstrap } = await import('../dist/index.js?people-retry-runtime-close=1');
+  const documentRef = documentHarness(), runtimeGate = deferred(), ready = authorityState('uninitialized', []); let instance, loads = 0, runtimeStarted = false;
+  const failed = { status: 'route_ready', chatId: ready.chatId, people: { status: 'uninitialized', confirmed: [], candidate: [], shelved: [] }, peopleRecognitionFailed: true, peopleError: '人物识别失败，请稍后重试' };
+  const runtime = createRuntimeRunner({
+    orchestrator: { run: async () => { runtimeStarted = true; await runtimeGate.promise; return { status: 'route_ready', chatId: ready.chatId }; } }, people: { getPeople: async () => ready.people },
+    stableFloors: { refresh: async () => ({ status: 'ready', ledger: { entries: [] } }) }, peopleFoundation: { initialize: async () => ready.peopleFoundation }, setState: value => instance?.setState(value),
+  });
+  instance = bootstrap({ documentRef, wandInstaller() {}, loadState: options => (++loads === 1 ? Promise.resolve(failed) : runtime.run(options)) });
+  instance.show(); await settle(); instance.host.shadowRoot.nodes['.view'].querySelector('.people-retry').fire('click'); while (!runtimeStarted) await new Promise(resolve => setImmediate(resolve));
+  instance.close(); runtimeGate.resolve(); await settle(); assert.equal(instance.getState().peopleRecognitionFailed, true); assert.equal(instance.host.hidden, true);
+  instance.show(); await settle(); assert.equal(instance.getState().peopleFoundation.status, 'ready'); assert.equal(instance.host.shadowRoot.nodes['.view'].querySelectorAll('.people-retry').length, 0);
+});
+
+test('人物重试期间切 chat，旧 runtime 不得覆盖保留状态/新聊天且按钮自然解锁', async () => {
+  const { bootstrap } = await import('../dist/index.js?people-retry-chat-switch=1');
+  const documentRef = documentHarness(), gateA = deferred(), gateB = deferred(), readyA = authorityState('uninitialized', []), readyB = authorityState('uninitialized', []);
+  readyA.chatId = 'a23e4567-e89b-42d3-a456-426614174002'; readyB.chatId = 'b23e4567-e89b-42d3-a456-426614174002'; readyB.peopleFoundation.state.chatId = readyB.chatId;
+  let instance, loads = 0, currentChat = 'A', startedA = false, startedB = false;
+  const failed = { status: 'route_ready', chatId: readyA.chatId, people: { status: 'uninitialized', confirmed: [], candidate: [], shelved: [] }, peopleRecognitionFailed: true, peopleError: '人物识别失败，请稍后重试' };
+  const runtime = createRuntimeRunner({
+    orchestrator: { run: async () => { const chat = currentChat; if (chat === 'A') { startedA = true; await gateA.promise; return { status: 'route_ready', chatId: readyA.chatId }; } startedB = true; await gateB.promise; return { status: 'route_ready', chatId: readyB.chatId }; } },
+    people: { getPeople: async () => (currentChat === 'A' ? readyA.people : readyB.people) }, stableFloors: { refresh: async () => ({ status: 'ready', ledger: { entries: [] } }) }, peopleFoundation: { initialize: async () => (currentChat === 'A' ? readyA.peopleFoundation : readyB.peopleFoundation) }, setState: value => instance?.setState(value),
+  });
+  instance = bootstrap({ documentRef, wandInstaller() {}, loadState: options => (++loads === 1 ? Promise.resolve(failed) : runtime.run(options)) });
+  instance.show(); await settle(); instance.host.shadowRoot.nodes['.view'].querySelector('.people-retry').fire('click'); while (!startedA) await new Promise(resolve => setImmediate(resolve));
+  currentChat = 'B'; runtime.invalidate(); instance.show(); while (!startedB) await new Promise(resolve => setImmediate(resolve)); assert.equal(instance.getState().status, 'route_ready');
+  gateA.resolve(); await settle(); assert.equal(instance.getState().status, 'route_ready');
+  gateB.resolve(); await settle(); assert.equal(instance.getState().chatId, readyB.chatId); assert.equal(instance.host.shadowRoot.nodes['.view'].querySelectorAll('.people-retry').length, 0);
+});
+
+test('foundation 非 ready 时显示诚实原因与重试出口，重试复用 loadState 后收敛', async () => {
+  const { bootstrap } = await import('../dist/index.js?people-foundation-retry=1');
+  const documentRef = documentHarness(), ready = authorityState('uninitialized', []); let loads = 0;
+  const blocked = { ...ready, peopleFoundation: { status: 'storage_error' }, runtimeIssue: { stage: 'people_foundation', code: 'foundation_storage_error', retryable: true } };
+  const instance = bootstrap({ documentRef, wandInstaller() {}, loadState: async () => (++loads === 1 ? blocked : ready) }); instance.show(); await settle(); let view = instance.host.shadowRoot.nodes['.view'];
+  assert.equal(instance.host.shadowRoot.nodes['.status-label'].textContent, '人物档案尚未就绪'); assert.match(view.textContent, /暂时无法保存/); assert.ok(view.querySelector('.people-retry'));
+  view.querySelector('.people-retry').fire('click'); await settle(); assert.equal(loads, 2); assert.equal(instance.getState().peopleFoundation.status, 'ready');
+});
+
+test('真实 dist people_error 未知原文统一降级为安全文案，不显示 key/请求正文', async () => {
+  const { bootstrap } = await import('../dist/index.js?people-error-safety=1'); const documentRef = documentHarness(), instance = bootstrap({ documentRef, wandInstaller() {} });
+  instance.setState({ status: 'people_error', peopleError: 'api_key=super-secret full_request=private-chat-body' }); const text = instance.host.shadowRoot.nodes['.view'].textContent;
+  assert.match(text, /人物识别失败，请稍后重试/); assert.doesNotMatch(text, /super-secret|private-chat-body|api_key|full_request/);
+});
+
+test('运行器失败只暴露轻量阶段码，重跑复用原识别链并自然收敛', async () => {
+  let peopleState = { status: 'uninitialized', confirmed: [], candidate: [], shelved: [] }, identifyCalls = 0, foundationCalls = 0;
+  const runner = createRuntimeRunner({
+    orchestrator: { run: async () => ({ status: 'route_ready' }) }, stableFloors: { refresh: async () => ({ status: 'ready', ledger: { entries: [] } }) },
+    people: { getPeople: async () => peopleState, identify: async () => { identifyCalls += 1; if (identifyCalls === 1) throw new Error('private-request-must-not-leak'); peopleState = { status: 'ready', confirmed: [{ identityId: C, displayName: '林岚', selection: { status: 'unselected' } }], candidate: [], shelved: [] }; return { status: 'ready' }; } },
+    peopleFoundation: { initialize: async () => { foundationCalls += 1; return { status: 'ready', state: { personaId: U, activeMemberIds: [] }, profiles: [] }; } }, mapError: () => '人物识别失败，请稍后重试',
+  });
+  const failed = await runner.run(); assert.deepEqual(failed.runtimeIssue, { stage: 'people_recognition', code: 'identify_failed', retryable: true }); assert.equal(failed.peopleRecognitionFailed, true); assert.doesNotMatch(JSON.stringify(failed), /private-request/);
+  const ready = await runner.run(); assert.equal(identifyCalls, 2); assert.equal(foundationCalls, 1); assert.equal(ready.peopleFoundation.status, 'ready'); assert.equal(ready.people.confirmed[0].selection.status, 'unselected');
 });
 
 test('千人档案只展示基础与动态字段，旧三板块及底部人物池不再渲染', async () => {
@@ -200,7 +382,8 @@ test('首次生成防双击，取消保留本地停止状态且迟到结果不�
   const documentRef = documentHarness(); let starts = 0, cancels = 0, release;
   const gate = new Promise(resolve => { release = resolve; });
   const instance = bootstrap({ documentRef, wandInstaller() {}, initialRelations: { start: async () => { starts += 1; await gate; return { status: 'ready' }; }, cancel: () => { cancels += 1; } } });
-  instance.setState(authorityState('uninitialized'));
+  const missing = authorityState('uninitialized'); missing.peopleFoundation.profiles[0].basicFields = {}; missing.peopleFoundation.profiles[0].dynamicFields = {};
+  instance.setState(missing);
   const view = instance.host.shadowRoot.nodes['.view']; const start = view.querySelector('.generation-actions').querySelectorAll('button')[0];
   start.fire('click'); start.fire('click'); await settle(); assert.equal(starts, 1);
   const cancel = view.querySelector('.generation-actions').querySelectorAll('button')[0]; cancel.fire('click'); assert.equal(cancels, 1); assert.match(view.textContent, /已停止/);
@@ -233,20 +416,38 @@ test('来源阻断显示安全摘要与采用按钮；采用成功只重载状�
   instance.show(); await settle(); const view = instance.host.shadowRoot.nodes['.view'];
   assert.match(view.textContent, /开场白已变化；世界书 19 条变化，0 条缺失，暂时无法读取 2 条/); assert.match(view.textContent, /采用当前作者来源/); assert.match(view.textContent, /重新读取状态/);
   view.querySelector('.generation-actions').querySelectorAll('button')[0].fire('click'); await settle();
-  assert.equal(adopts, 1); assert.equal(starts, 0); assert.equal(loads, 2); assert.match(view.textContent, /作者来源已更新/); assert.match(view.textContent, /生成首次档案/);
+  assert.equal(adopts, 1); assert.equal(starts, 0); assert.equal(loads, 2); assert.match(view.textContent, /作者来源已更新/); assert.deepEqual(view.querySelector('.generation-actions').querySelectorAll('button').map(button => button.textContent), ['重新加载']);
 });
 
 test('旧来源与归纳层即使为空也不再产生档案 DOM 文案', async () => {
   const { bootstrap } = await import('../dist/index.js?people-empty-copy=1');
   const documentRef = documentHarness(); const instance = bootstrap({ documentRef, wandInstaller() {} });
   const uninitialized = authorityState('uninitialized');
-  for (const profile of uninitialized.peopleFoundation.profiles) { profile.sourceFacts = []; profile.interpretations = []; }
+  for (const profile of uninitialized.peopleFoundation.profiles) { profile.basicFields = {}; profile.dynamicFields = {}; profile.sourceFacts = []; profile.interpretations = []; }
   instance.setState(uninitialized); assert.match(instance.host.shadowRoot.nodes['.view'].textContent, /生成首次档案/); assert.doesNotMatch(instance.host.shadowRoot.nodes['.view'].textContent, /首次档案尚未生成/);
   const ready = authorityState('ready');
   for (const profile of ready.peopleFoundation.profiles) { profile.sourceFacts = []; profile.interpretations = []; }
   ready.initialRelations.lastAttempt = { action: 'initial_start', status: 'ready', canonCount: 0 }; ready.peopleFoundation.state.lastAttempt = ready.initialRelations.lastAttempt;
   instance.setState(ready); const text = instance.host.shadowRoot.nodes['.view'].textContent;
   assert.doesNotMatch(text, /当前作者来源没有可展示的明确事实|当前没有稳定聊天可供归纳|首次档案尚未生成/);
+});
+
+test('首次档案 marker 缺失时以基础与动态有效内容判定 CTA，工具页始终不显示', async () => {
+  const { bootstrap } = await import('../dist/index.js?people-established-dossier-cta=1');
+  const documentRef = documentHarness(), instance = bootstrap({ documentRef, wandInstaller() {} });
+  const established = authorityState('uninitialized', []);
+  established.initialRelations.lastAttempt = { action: 'initial_start', status: 'ready', stage: 'complete' };
+  established.peopleFoundation.state.lastAttempt = established.initialRelations.lastAttempt;
+  instance.setState(established); let view = instance.host.shadowRoot.nodes['.view'];
+  assert.ok(view.querySelector('.dossier-card')); assert.equal(view.querySelector('.generation-banner'), null); assert.doesNotMatch(view.textContent, /生成首次档案/);
+
+  const basicOnly = structuredClone(established); basicOnly.peopleFoundation.profiles[0].dynamicFields = {}; instance.setState(basicOnly); view = instance.host.shadowRoot.nodes['.view'];
+  assert.ok(view.querySelector('.generation-banner')); assert.match(view.textContent, /生成首次档案/);
+
+  const allEmpty = structuredClone(established); allEmpty.peopleFoundation.profiles[0].basicFields = {}; allEmpty.peopleFoundation.profiles[0].dynamicFields = {}; instance.setState(allEmpty); view = instance.host.shadowRoot.nodes['.view'];
+  assert.ok(view.querySelector('.generation-banner')); assert.match(view.textContent, /生成首次档案/);
+  view.querySelector('.profile-tools').children[0].fire('click'); assert.ok(view.querySelector('.more-view')); assert.equal(view.querySelector('.generation-banner'), null);
+  view.querySelector('.profile-tools').children[1].fire('click'); assert.ok(view.querySelector('.fate-book-view')); assert.equal(view.querySelector('.generation-banner'), null);
 });
 
 test('轻量 AI 合法空结果显示安全完成文案且不提供重复生成按钮', async () => {
@@ -260,7 +461,7 @@ test('轻量 AI 合法空结果显示安全完成文案且不提供重复生成�
   assert.doesNotMatch(view.textContent, /生成首次档案|为新人物补充档案/);
 });
 
-test('adopt 后权威 runtime.run → resume → UI 保留 adopt/ready 并显示生成入口，AI 为零', async () => {
+test('adopt 后权威 runtime.run → resume → UI 保留 adopt/ready，已有有效档案不显示生成入口且 AI 为零', async () => {
   const { bootstrap } = await import('../dist/index.js?people-adopt-runtime=1');
   const documentRef = documentHarness(); let aiCalls = 0, adoptCalls = 0, resumeCalls = 0;
   const blockedAttempt = { schemaVersion: 1, action: 'initial_start', attemptedAt: '2026-08-29T00:00:00.000Z', status: 'blocked_source_changed', stage: 'collecting_sources', errorCode: 'blocked_source_changed', aiCalled: false, profileWrites: 0, targetCount: 2, canonCount: 0, sourceDiagnostics: { greeting: 'changed', worldbookTotal: 1, worldbookChanged: 1, worldbookMissing: 0, codes: ['WORLDBOOK_VERSION_CHANGED'] } };
@@ -288,7 +489,7 @@ test('adopt 后权威 runtime.run → resume → UI 保留 adopt/ready 并显示
   assert.match(view.textContent, /采用当前作者来源/); view.querySelector('.generation-actions').querySelectorAll('button')[0].fire('click'); await settle();
   assert.equal(adoptCalls, 1); assert.equal(resumeCalls, 2); assert.equal(aiCalls, 0);
   assert.equal(relation.lastAttempt.action, 'adopt_current_sources'); assert.equal(relation.lastAttempt.status, 'ready'); assert.equal(relation.lastAttempt.aiCalled, false);
-  assert.match(view.textContent, /作者来源已更新/); assert.match(view.textContent, /生成首次档案/); assert.doesNotMatch(view.textContent, /采用当前作者来源/);
+  assert.match(view.textContent, /作者来源已更新/); assert.doesNotMatch(view.textContent, /采用当前作者来源/); assert.deepEqual(view.querySelector('.generation-actions').querySelectorAll('button').map(button => button.textContent), ['重新加载']);
 });
 
 test('真实 dist 人物轨道：双人永久保留，多人物竞争才收敛且当前人物不消散', async () => {
@@ -360,7 +561,7 @@ test('真实 dist profile 更新只提优先级与加静态圆点，不跳当前
   assert.ok(view.querySelector('.fate-book-view')); assert.equal(view.querySelector('.profile-summary'), null); assert.ok(view.querySelectorAll('.profile-tab').find(button => button.dataset.profileId === data.ids[3]).querySelector('.profile-update-dot'));
 });
 
-test('真实 dist 因缘簿复用完整人物池操作，操作后不跳视图且新选择进入轨道', async () => {
+test('真实 dist 因缘簿明确选择成功后回到所选 C 档案且新选择进入轨道', async () => {
   const { bootstrap } = await import('../dist/index.js?people-fate-book=1');
   const documentRef = documentHarness(), data = multiAuthority(1), extraId = 'f23e4567-e89b-42d3-a456-426614174009';
   data.authority.people.confirmed.push({ identityId: extraId, displayName: '候选新 C', selection: { status: 'unselected' } });
@@ -369,7 +570,20 @@ test('真实 dist 因缘簿复用完整人物池操作，操作后不跳视图�
   const people = { getPeople: async () => currentPeople, select: async ({ identityId }) => { selects += 1; currentPeople = { ...currentPeople, confirmed: currentPeople.confirmed.map(item => item.identityId === identityId ? { ...item, selection: { status: 'selected' } } : item) }; return currentPeople; } };
   const instance = bootstrap({ documentRef, people, wandInstaller() {} }); instance.setState(data.authority); let view = instance.host.shadowRoot.nodes['.view']; view.querySelector('.profile-tools').children[1].fire('click'); assert.equal(view.querySelector('.profile-tools').children[1].focused, true);
   assert.match(view.textContent, /因缘簿[\s\S]*明确人物/); const select = view.querySelector('[data-select]'); assert.ok(select); select.fire('click'); await settle(); view = instance.host.shadowRoot.nodes['.view'];
-  assert.equal(selects, 1); assert.ok(view.querySelector('.fate-book-view')); assert.equal(view.querySelectorAll('.profile-tab').some(button => button.dataset.profileId === extraId), true); assert.equal(view.querySelector('.profile-summary'), null);
+  assert.equal(selects, 1); assert.equal(view.querySelector('.fate-book-view'), null); assert.equal(view.querySelectorAll('.profile-tab').some(button => button.dataset.profileId === extraId), true); assert.match(view.querySelector('.profile-summary').textContent, /候选新 C/);
+});
+
+test('真实 dist 无有效档案变为首档案时回 dossier；CTA 仅在档案标题后且工具页不显示', async () => {
+  const { bootstrap } = await import('../dist/index.js?people-first-dossier-cta=1');
+  const documentRef = documentHarness(), empty = authorityState('uninitialized', []); empty.peopleFoundation.profiles[0].basicFields = {}; empty.peopleFoundation.profiles[0].dynamicFields = {}; empty.people.confirmed[0].selection = { status: 'unselected' }; empty.peopleFoundation.state.activeMemberIds = [];
+  const instance = bootstrap({ documentRef, wandInstaller() {} }); instance.setState(empty); let view = instance.host.shadowRoot.nodes['.view'];
+  view.querySelector('.profile-tools').children[1].fire('click'); assert.ok(view.querySelector('.fate-book-view')); assert.equal(view.querySelector('.generation-banner'), null);
+  const first = structuredClone(empty); first.people.confirmed[0].selection = { status: 'selected' }; first.peopleFoundation.state.activeMemberIds = [C]; instance.setState(first); view = instance.host.shadowRoot.nodes['.view'];
+  const dossier = view.querySelector('.dossier-card'); assert.ok(dossier); assert.match(dossier.querySelector('.profile-summary').textContent, /林岚/);
+  assert.equal(dossier.children[0].className, 'profile-summary'); assert.equal(dossier.children[1].className, 'generation-banner');
+  view.querySelector('.profile-tools').children[0].fire('click'); assert.ok(view.querySelector('.more-view')); assert.equal(view.querySelector('.generation-banner'), null);
+  view.querySelector('.profile-tools').children[1].fire('click'); assert.ok(view.querySelector('.fate-book-view')); assert.equal(view.querySelector('.generation-banner'), null);
+  instance.close(); assert.equal(instance.host.hidden, true);
 });
 
 test('真实 dist 更多与因缘簿首次进入工具页，二次点击各自回到此前 C；无有效 C 时安全留在工具页', async () => {

@@ -24,6 +24,15 @@ const same = (left, right) => {
 };
 const clone = value => value === undefined ? undefined : structuredClone(value);
 
+export function isCharacterRegistrySourceBinding(value, identityId, cardId = null, cardType = null) {
+  if (!object(value) || !isUuid(identityId)) return false;
+  const strictSingle = () => Object.keys(value).sort().join(',') === 'cardId,kind' && value.kind === 'single-card-main' && isUuid(value.cardId)
+    && value.cardId === identityId && value.cardId === cardId;
+  // 只有 single 的正式 cardId 主槽强制严格绑定；其他卡型即使 UUID 恰好相同也保留旧 c-registry 合同。
+  if (cardType === 'single' && identityId === cardId) return strictSingle();
+  return value.kind === 'c-registry' && value.identityId === identityId;
+}
+
 function schemaVersion(value, label) {
   if (value === undefined || value === null || value === '' || value === '1') return 1;
   if (!Number.isInteger(value) || value < 1) throw fail('invalid_record', `${label}版本无效`);
@@ -70,7 +79,7 @@ function normalizeSubject(value, expected) {
 function mergeSourceBinding(current, required) {
   if (current === undefined || current === null) return clone(required);
   if (!object(current)) throw fail('identity_mismatch', '人物来源绑定无效');
-  const criticalKeys = required.kind === 'persona' ? ['kind', 'identityId', 'locator'] : ['kind', 'identityId'];
+  const criticalKeys = required.kind === 'persona' ? ['kind', 'identityId', 'locator'] : required.kind === 'single-card-main' ? ['kind', 'cardId'] : ['kind', 'identityId'];
   for (const key of criticalKeys) {
     if (current[key] !== undefined && required[key] !== undefined && current[key] !== required[key]) throw fail('identity_mismatch', '人物来源绑定冲突');
   }
@@ -109,6 +118,17 @@ function normalizeSelection(value) {
   return 'unselected';
 }
 
+const registrySourceBinding = (item, cardId = null, cardType = null) => {
+  if (item?.sourceBinding === undefined) {
+    if (cardType === 'single' && item?.identityId === cardId) return null;
+    return { kind: 'c-registry', identityId: item?.identityId, ...(typeof item?.sourceKey === 'string' && item.sourceKey ? { sourceKey: item.sourceKey } : {}) };
+  }
+  if (!isCharacterRegistrySourceBinding(item?.sourceBinding, item?.identityId, cardId, cardType)) return null;
+  return item.sourceBinding.kind === 'single-card-main'
+    ? { kind: 'single-card-main', cardId: item.identityId }
+    : { kind: 'c-registry', identityId: item.identityId, ...(typeof item?.sourceKey === 'string' && item.sourceKey ? { sourceKey: item.sourceKey } : {}) };
+};
+
 function normalizeRegistryIndex(record, expected) {
   if (!envelope(record)) throw fail('invalid_record', '人物池外壳无效');
   const data = record.data;
@@ -125,14 +145,13 @@ function normalizeRegistryIndex(record, expected) {
     const sourceRefs = Array.isArray(item.sourceRefs) ? clone(item.sourceRefs) : item.sourceRefs == null ? [] : [clone(item.sourceRefs)];
     const primary = canonicalRef(item.primarySourceRef);
     if (primary && !sourceRefs.some(value => canonicalRef(value) && refKey(canonicalRef(value)) === refKey(primary))) sourceRefs.push(primary);
+    const sourceBinding = registrySourceBinding(item, expected.cardId, expected.cardType);
+    if (!sourceBinding) throw fail('identity_mismatch', '已选择人物来源绑定与当前卡不一致');
     selected.push({
       identityId: item.identityId,
       displayName: item.displayName.trim(),
       sourceRefs,
-      sourceBinding: {
-        kind: 'c-registry', identityId: item.identityId,
-        ...(typeof item.sourceKey === 'string' && item.sourceKey ? { sourceKey: item.sourceKey } : {}),
-      },
+      sourceBinding,
     });
   }
   return selected;
@@ -241,7 +260,7 @@ export function createPeopleFoundationAdapter({ client, contextProvider, guard }
     if (!envelope(result)) throw fail('storage_error', '千人写入响应外壳无效');
     return result;
   };
-  const bindingFor = (state, meta) => ({ ...state, cardId: meta.cardId, personaId: meta.personaId });
+  const bindingFor = (state, meta) => ({ ...state, cardId: meta.cardId, cardType: meta.cardType, personaId: meta.personaId });
   const clean = (status, record = null, profiles = [], extra = {}) => {
     const state = record?.data ? clone(record.data) : null;
     if (state) {
@@ -353,7 +372,9 @@ export function createPeopleFoundationAdapter({ client, contextProvider, guard }
         || Number.isInteger(record.data?.peopleContractVersion) && record.data.peopleContractVersion > PEOPLE_FOUNDATION_CONTRACT_VERSION) {
         return clean('future_schema_readonly', stateRecord, [...profiles, record], { readonly: true, restored: true });
       }
-      const normalized = normalizePeopleProfile(record.data, { chatId: binding.chatId, identityId: member.identityId, subject: member.subject, sourceRefs: [], sourceBinding: { kind: member.subject === 'user' ? 'persona' : 'c-registry', identityId: member.identityId } });
+      const sourceBinding = registrySourceBinding(record.data, binding.cardId, binding.cardType);
+      if (!sourceBinding) throw fail('identity_mismatch', '人物档案来源绑定与当前卡不一致');
+      const normalized = normalizePeopleProfile(record.data, { chatId: binding.chatId, identityId: member.identityId, subject: member.subject, sourceRefs: [], sourceBinding });
       profiles.push({ ...record, data: normalized.data });
     }
     const status = stateRecord.data.status === 'ready' ? 'ready' : 'recoverable';

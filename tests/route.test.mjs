@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRouteSourceAdapter, normalizeGreeting, normalizeWorldInfoEntries } from '../src/route-source.js';
+import { collectSourceCatalogCandidates, createRouteSourceAdapter, normalizeGreeting, normalizeWorldInfoEntries } from '../src/route-source.js';
 import { createFormalAdapter } from '../src/formal-storage.js';
 import { sha256 } from '../src/identity.js';
 
@@ -45,6 +45,45 @@ test('世界书按 world+uid 去重排序并指纹，冲突或缺字段 fail clo
   assert.deepEqual(entries.map(x => `${x.world}:${x.uid}`), ['a:1', 'b:2']); assert.match(entries[0].fingerprint, /^sha256:/);
   await assert.rejects(normalizeWorldInfoEntries([{ world: 'b', uid: 2, content: 'B' }, { world: 'b', uid: 2, content: 'other' }]), error => error.diagnosticCode === 'ENTRY_INVALID');
   await assert.rejects(normalizeWorldInfoEntries([{ world: 'b', content: 'B' }]), error => error.diagnosticCode === 'ENTRY_INVALID');
+});
+
+test('人物来源预检覆盖 dry-run 激活与角色主辅世界书，并保留 disabled 但不勾选', async () => {
+  let batches = 0, writes = 0;
+  const context = greetingContext({
+    characterId: 0, characters: [{ avatar: 'char.png', data: { description: '角色卡原文', extensions: { world: 'main' } } }],
+    getCharaFilename: () => 'char', getCharaAuxWorlds: () => ['aux'],
+    simulateWorldInfoActivation: async ({ dryRun }) => { assert.equal(dryRun, true); return { activatedEntries: [{ world: 'global', uid: 9, content: '处理后激活原文' }, { world: 'main', uid: 1, content: '处理后主书原文' }] }; },
+    loadWorldInfoBatch: async names => {
+      batches += 1; assert.deepEqual(new Set(names), new Set(['main', 'aux', 'global']));
+      return new Map([
+        ['main', { entries: { 1: { uid: 1, comment: '主书人物', content: '原始主书原文', disable: false }, 2: { uid: 2, comment: '禁用人物', content: '禁用原文', disable: true } } }],
+        ['aux', { entries: { 3: { uid: 3, key: ['角色'], content: '辅助原文', disable: false } } }],
+        ['global', { entries: { 9: { uid: 9, comment: '激活项', content: '原始激活原文', disable: false } } }],
+      ]);
+    }, saveWorldInfo: async () => { writes += 1; },
+  });
+  const result = await collectSourceCatalogCandidates(context);
+  assert.equal(batches, 1); assert.equal(writes, 0);
+  assert.ok(result.candidates.some(item => item.kind === 'card' && item.selected));
+  assert.ok(result.candidates.some(item => item.kind === 'greeting' && item.selected));
+  assert.equal(result.candidates.find(item => item.locator === 'main:1').availability, 'activated');
+  assert.equal(result.candidates.find(item => item.locator === 'main:2').availability, 'disabled');
+  assert.equal(result.candidates.find(item => item.locator === 'main:2').selected, false);
+  assert.equal(result.candidates.find(item => item.locator === 'aux:3').availability, 'enabled');
+  assert.equal(result.candidates.find(item => item.locator === 'global:9').content, '原始激活原文');
+});
+
+test('隐藏开场白不进入 catalog，也不传给世界书 dry-run', async () => {
+  for (const hidden of [{ is_hidden: true }, { extra: { is_hidden: true } }]) {
+    let scans = 0;
+    const context = greetingContext({
+      chat: [{ mes: '隐藏开场', swipe_id: 0, ...hidden }],
+      characterId: 0, characters: [{ avatar: 'char.png', data: { description: '角色卡原文' } }],
+      simulateWorldInfoActivation: async () => { scans += 1; return { activatedEntries: [] }; },
+    });
+    await assert.rejects(collectSourceCatalogCandidates(context), error => error.diagnosticCode === 'GREETING_INVALID');
+    assert.equal(scans, 0);
+  }
 });
 
 test('世界书排序使用 locale-independent 复合键比较', async () => {

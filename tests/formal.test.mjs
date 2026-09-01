@@ -29,19 +29,88 @@ test('Demo 三记录缺失、错误 kind/locator/UUID/revision 均零正式 PUT'
 
 test('Demo 合法时仅迁移正式 meta，二次运行正式层优先零 PUT', async () => { const keys = await demoKeys(); const source = validDemo(); source[`identity-cards/${keys.card}`] = source['identity-cards']; source[`identity-personas/${keys.persona}`] = source['identity-personas']; const client = fakeClient(source); const adapter = adapterFor(client); assert.equal((await adapter.getFormalState()).status, 'migrated'); assert.deepEqual(client.calls.filter(x => x.op === 'put').map(x => x.collection), ['chat-123e4567-e89b-12d3-a456-426614174000']); const writes = client.calls.filter(x => x.op === 'put').length; assert.equal((await adapter.getFormalState()).status, 'awaiting_card_type'); assert.equal(client.calls.filter(x => x.op === 'put').length, writes); });
 
+test('formal 单次运行只读一份 meta/authority，三条独立 authority 并发且不因 404 改写语义', async () => {
+  const keys = await demoKeys(), records = validDemo();
+  records[`chat-${chatUuid}/meta`] = rec(formalMeta('single')); records[`identity-cards/${keys.card}`] = records['identity-cards']; records[`identity-personas/${keys.persona}`] = records['identity-personas'];
+  const releases = [], calls = [];
+  const client = {
+    get: async (collection, id) => { calls.push({ collection, id }); await new Promise(resolve => releases.push(resolve)); const key = collection === 'chat-meta' ? collection : `${collection}/${id}`; if (!(key in records)) throw Object.assign(new Error('404'), { status: 404 }); return records[key]; },
+    put: async () => { throw new Error('不应写入'); },
+  };
+  const pending = adapterFor(client).getFormalState();
+  while (calls.length < 4) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.filter(call => call.collection === `chat-${chatUuid}` && call.id === 'meta').length, 1);
+  assert.equal(calls.filter(call => ['chat-meta', 'identity-cards', 'identity-personas'].includes(call.collection)).length, 3);
+  releases.splice(0).forEach(resolve => resolve());
+  assert.equal((await pending).status, 'ready'); assert.equal(calls.length, 4);
+
+  const missing = structuredClone(records); delete missing[`identity-personas/${keys.persona}`];
+  const missingClient = fakeClient(missing); assert.equal((await adapterFor(missingClient).getFormalState()).status, 'ready');
+  assert.equal(missingClient.calls.filter(call => call.op === 'get' && ['chat-meta', 'identity-cards', 'identity-personas'].includes(call.collection)).length, 3);
+});
+
+test('formal 并行读取按旧串行可达顺序裁决 meta/authority 的 404、校验与 500', async t => {
+  const keys = await demoKeys(), authority = validDemo();
+  const makeClient = ({ meta = formalMeta('single'), demo = authority['chat-meta'], card = authority['identity-cards'], persona = authority['identity-personas'] } = {}) => ({
+    async get(collection, id) {
+      const value = collection === `chat-${chatUuid}` && id === 'meta' ? meta
+        : collection === 'chat-meta' ? demo
+          : collection === 'identity-cards' && id === keys.card ? card
+            : collection === 'identity-personas' && id === keys.persona ? persona : undefined;
+      if (value === '404' || value === undefined) throw Object.assign(new Error('missing'), { status: 404 });
+      if (value === '500') throw Object.assign(new Error('authority boom'), { status: 500 });
+      return collection === `chat-${chatUuid}` ? rec(value) : value;
+    },
+    async put() { throw new Error('不应写入'); },
+  });
+
+  await t.test('invalid meta 足以 mismatch，忽略并发 authority 500', async () => {
+    const invalid = { ...formalMeta('single'), migration: null };
+    assert.equal((await adapterFor(makeClient({ meta: invalid, demo: '500' })).getFormalState()).status, 'mismatch');
+  });
+  await t.test('initialize 的 meta 404 足以 not_initialized，忽略并发 authority 500', async () => {
+    assert.equal((await adapterFor(makeClient({ meta: '404', demo: '500' })).initializeCard({ cardType: 'single' })).status, 'not_initialized');
+  });
+  await t.test('较早 authority 404 终止旧路径，较晚并发 500 不得抢先覆盖', async () => {
+    assert.equal((await adapterFor(makeClient({ demo: '404', card: '500' })).getFormalState()).status, 'ready');
+  });
+  await t.test('合法 meta 且旧路径会到达的 authority 500 继续抛出', async () => {
+    await assert.rejects(adapterFor(makeClient({ demo: '500' })).getFormalState(), /authority boom/);
+  });
+});
+
 test('已有正式 meta 严格校验，Demo 权威 UUID 冲突与残缺 shape mismatch', async () => { const keys = await demoKeys(); const source = validDemo(); source[`chat-${chatUuid}/meta`] = rec({ ...formalMeta(), cardId: '423e4567-e89b-12d3-a456-426614174003' }); source[`identity-cards/${keys.card}`] = source['identity-cards']; source[`identity-personas/${keys.persona}`] = source['identity-personas']; const client = fakeClient(source); assert.equal((await adapterFor(client).getFormalState()).status, 'mismatch'); assert.equal(client.calls.filter(x => x.op === 'put').length, 0); source[`chat-${chatUuid}/meta`] = rec({ ...formalMeta(), migration: { source: 'qianqianjie-demo-v1', state: 'complete', sourceRevisions: { chatMeta: 0, cardMapping: 3, personaMapping: 4 } } }); assert.equal((await adapterFor(fakeClient(source)).getFormalState()).status, 'mismatch'); });
 
 test('正式 meta 404→409 同值胜出，异值或畸形胜出 mismatch', async () => { const keys = await demoKeys(); const source = validDemo(); source[`identity-cards/${keys.card}`] = source['identity-cards']; source[`identity-personas/${keys.persona}`] = source['identity-personas']; for (const winner of [formalMeta(), { ...formalMeta(), cardId: '423e4567-e89b-12d3-a456-426614174003' }, { ...formalMeta(), migration: null }, { ...formalMeta(), source: { card: { locator: 'other.png' }, persona: { locator: 'me.png' } } }]) { const records = { ...source }; let first = true; const client = fakeClient(records, { put: ({ collection, records: db }) => { if (collection.startsWith('chat-') && first) { first = false; db[`${collection}/meta`] = rec(winner); throw Object.assign(new Error('409'), { status: 409 }); } } }); assert.equal((await adapterFor(client).getFormalState()).status, winner.cardId === cardUuid && winner.migration && winner.source.card.locator === 'char.png' ? 'awaiting_card_type' : 'mismatch'); assert.equal(client.calls.filter(x => x.op === 'put').length, 1); } });
 
 test('四种 cardType 成功，非法类型零 GET/PUT；card 校验严格请求类型', async () => { const keys = await demoKeys(); for (const type of CARD_TYPES) { const records = validDemo(); records[`chat-${chatUuid}/meta`] = rec(formalMeta()); records[`identity-cards/${keys.card}`] = records['identity-cards']; records[`identity-personas/${keys.persona}`] = records['identity-personas']; const client = fakeClient(records); const result = await adapterFor(client).initializeCard({ cardType: type }); assert.equal(result.status, 'ready'); assert.equal(records[`cards/${cardUuid}`].data.cardType, type); } const records = validDemo(); records[`chat-${chatUuid}/meta`] = rec(formalMeta()); records[`identity-cards/${keys.card}`] = records['identity-cards']; records[`identity-personas/${keys.persona}`] = records['identity-personas']; const client = fakeClient(records); assert.equal((await adapterFor(client).initializeCard({ cardType: 'invalid' })).status, 'invalid_card_type'); assert.equal(client.calls.length, 0); });
 
+test('formal getFormalState 只在合法 ready 权威状态公开稳定 cardId/cardType，route_unavailable 保持旧最小合同', async () => {
+  const keys = await demoKeys(); const records = validDemo();
+  records[`chat-${chatUuid}/meta`] = rec(formalMeta('single')); records[`identity-cards/${keys.card}`] = records['identity-cards']; records[`identity-personas/${keys.persona}`] = records['identity-personas'];
+  const ready = await adapterFor(fakeClient(structuredClone(records))).getFormalState();
+  assert.equal(ready.status, 'ready'); assert.equal(ready.cardId, cardUuid); assert.equal(ready.cardType, 'single'); assert.equal(ready.formal.cardType, 'single');
+  const unavailable = createFormalAdapter({ client: fakeClient(structuredClone(records)), contextProvider: state, routeSource: { collect: async () => { throw Object.assign(new Error('扫描不可用'), { diagnosticCode: 'SCAN_FAILED' }); } } });
+  const blocked = await unavailable.getFormalState(); assert.equal(blocked.status, 'route_unavailable'); assert.equal(blocked.cardId, undefined); assert.equal(blocked.cardType, undefined); assert.equal(blocked.formal.cardType, 'single'); assert.equal(blocked.diagnosticCode, 'SCAN_FAILED');
+  const malformed = structuredClone(records); malformed[`chat-${chatUuid}/meta`].data.cardId = 'bad'; const mismatch = await adapterFor(fakeClient(malformed)).getFormalState();
+  assert.equal(mismatch.status, 'mismatch'); assert.equal(mismatch.cardId, undefined);
+});
+
+test('同 chat/card 的真实旧档在 Persona locator 不同时明确分类且零写，切回后原档直接 ready', async () => {
+  const keys = await demoKeys(), records = validDemo();
+  records[`chat-${chatUuid}/meta`] = rec(formalMeta('single')); records[`identity-cards/${keys.card}`] = records['identity-cards']; records[`identity-personas/${keys.persona}`] = records['identity-personas'];
+  const ctx = state(); ctx.userAvatar = 'new-persona.png'; const client = fakeClient(records), adapter = adapterFor(client, ctx);
+  const mismatch = await adapter.getFormalState(); assert.deepEqual({ status: mismatch.status, reason: mismatch.mismatchReason }, { status: 'mismatch', reason: 'persona' }); assert.equal(client.calls.filter(call => call.op === 'put').length, 0);
+  ctx.userAvatar = 'me.png'; const restored = await adapter.getFormalState(); assert.equal(restored.status, 'ready'); assert.equal(restored.cardId, cardUuid); assert.equal(restored.personaId, personaUuid); assert.equal(client.calls.filter(call => call.op === 'put').length, 0);
+});
+
 test('已有 card、card409 同值成功；异 type/persona/locator conflict；card 成功后 meta 500 可恢复', async () => { const keys = await demoKeys(); const base = validDemo(); base[`chat-${chatUuid}/meta`] = rec(formalMeta()); base[`identity-cards/${keys.card}`] = base['identity-cards']; base[`identity-personas/${keys.persona}`] = base['identity-personas']; base[`cards/${cardUuid}`] = rec(formalCard()); const client = fakeClient(base); assert.equal((await adapterFor(client).initializeCard({ cardType: 'single' })).status, 'ready'); assert.equal(client.calls.filter(x => x.op === 'put').length, 1); for (const badCard of [formalCard('multi'), formalCard('single', { boundPersonaId: '423e4567-e89b-12d3-a456-426614174003' }), formalCard('single', { sourceLocator: 'other.png' })]) { const records = { ...base, [`chat-${chatUuid}/meta`]: rec(formalMeta()), [`cards/${cardUuid}`]: rec(badCard) }; assert.equal((await adapterFor(fakeClient(records)).initializeCard({ cardType: 'single' })).status, 'conflict'); } let fail = true; const recoverRecords = { ...base, [`chat-${chatUuid}/meta`]: rec(formalMeta()) }; delete recoverRecords[`cards/${cardUuid}`]; const recover = fakeClient(recoverRecords, { put: args => { if (args.collection.startsWith('chat-') && fail) { fail = false; throw Object.assign(new Error('500'), { status: 500 }); } const key = args.collection === 'chat-meta' ? args.collection : `${args.collection}/${args.id}`; const result = rec(args.data, args.expectedRevision + 1); args.records[key] = result; return result; } }); await assert.rejects(adapterFor(recover).initializeCard({ cardType: 'single' }), /后端请求失败|500/); assert.equal((await adapterFor(recover).initializeCard({ cardType: 'single' })).status, 'ready'); assert.equal(recover.calls.filter(x => x.op === 'put' && x.collection === 'cards').length, 1); });
 
 test('正式 GET 在途切聊天/Persona并 invalidate 后，旧 run 无后续 PUT', async () => { const keys = await demoKeys(); const records = validDemo(); records['chat-meta'] = rec(formalMeta()); records[`identity-cards/${keys.card}`] = records['identity-cards']; records[`identity-personas/${keys.persona}`] = records['identity-personas']; let release; const ctx = state(); const client = { get: async (...args) => { await new Promise(resolve => { release = resolve; }); return records[args[0] === 'chat-meta' ? 'chat-meta' : `${args[0]}/${args[1]}`]; }, put: async () => { throw new Error('不应写入'); } }; const adapter = adapterFor(client, ctx); const pending = adapter.getFormalState(); while (!release) await new Promise(resolve => setImmediate(resolve)); ctx.userAvatar = 'other.png'; adapter.invalidate(); release(); assert.equal((await pending).status, 'stale'); });
 
-test('正式 GET 在途 hostChatId 改变并 invalidate 后同样失效', async () => { let release; const ctx = state(); const client = { get: async () => { await new Promise(resolve => { release = resolve; }); }, put: async () => { throw new Error('不应写入'); } }; const adapter = adapterFor(client, ctx); const pending = adapter.getFormalState(); while (!release) await new Promise(resolve => setImmediate(resolve)); ctx.chatId = 'other-host-chat'; adapter.invalidate(); release(); assert.equal((await pending).status, 'stale'); });
+test('正式 GET 在途 hostChatId 改变并 invalidate 后同样失效', async () => { const releases = []; const ctx = state(); const client = { get: async () => { await new Promise(resolve => { releases.push(resolve); }); }, put: async () => { throw new Error('不应写入'); } }; const adapter = adapterFor(client, ctx); const pending = adapter.getFormalState(); while (releases.length < 4) await new Promise(resolve => setImmediate(resolve)); ctx.chatId = 'other-host-chat'; adapter.invalidate(); releases.splice(0).forEach(resolve => resolve()); assert.equal((await pending).status, 'stale'); });
 
-test('正式队列积压后 invalidate：旧排队任务开始前零新增 GET/PUT', async () => { let release, gets = 0; const client = { get: async () => { gets += 1; await new Promise(resolve => { release = resolve; }); throw Object.assign(new Error('404'), { status: 404 }); }, put: async () => { throw new Error('不应写入'); } }; const adapter = adapterFor(client); const first = adapter.getFormalState(); while (!release) await new Promise(resolve => setImmediate(resolve)); const queued = adapter.getFormalState(); adapter.invalidate(); release(); assert.equal((await first).status, 'stale'); assert.equal((await queued).status, 'stale'); assert.equal(gets, 1); });
+test('正式队列积压后 invalidate：旧排队任务开始前零新增 GET/PUT', async () => { const releases = []; let gets = 0; const client = { get: async () => { gets += 1; await new Promise(resolve => { releases.push(resolve); }); throw Object.assign(new Error('404'), { status: 404 }); }, put: async () => { throw new Error('不应写入'); } }; const adapter = adapterFor(client); const first = adapter.getFormalState(); while (releases.length < 4) await new Promise(resolve => setImmediate(resolve)); const admittedGets = gets, queued = adapter.getFormalState(); adapter.invalidate(); releases.splice(0).forEach(resolve => resolve()); assert.equal((await first).status, 'stale'); assert.equal((await queued).status, 'stale'); assert.equal(gets, admittedGets); assert.equal(admittedGets, 4); });
 
 test('初始/CHAT_CHANGED/PERSONA_CHANGED 入口均实际调用 formal seam', async () => { let formalCalls = 0; const formal = { invalidate() {}, getFormalState: async () => { formalCalls += 1; return { status: 'stopped' }; } }; const demo = { invalidate() {}, runDemo: async () => ({ status: 'stopped' }) }; const orchestrator = createRerunOrchestrator({ demo, formal }); startInitialRun(orchestrator); const handlers = {}; bindRerunEvents({ eventSource: { on: (name, fn) => { handlers[name] = fn; } }, eventTypes: { CHAT_CHANGED: 'chat', PERSONA_CHANGED: 'persona' }, controller: orchestrator }); await new Promise(resolve => setImmediate(resolve)); handlers.chat(); handlers.persona(); await new Promise(resolve => setImmediate(resolve)); assert.equal(formalCalls, 3); });
 

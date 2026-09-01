@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BASIC_FIELD_KEYS, DYNAMIC_FIELD_KEYS, createFoundationAwarePeopleAdapter, createPeopleFoundationAdapter, normalizePeopleProfile, PEOPLE_STATE_RECORD_ID } from '../src/people-foundation.js';
+import { BASIC_FIELD_KEYS, DYNAMIC_FIELD_KEYS, createFoundationAwarePeopleAdapter, createPeopleFoundationAdapter, isCharacterRegistrySourceBinding, normalizePeopleProfile, PEOPLE_STATE_RECORD_ID } from '../src/people-foundation.js';
 import { createCRegistryAdapter } from '../src/c-registry.js';
 import { createRuntimeRunner } from '../src/runtime-runner.js';
 
@@ -67,6 +67,55 @@ test('生产存储 seam 只初始化已选择 C，保留 personaId 且不新建 
   assert.equal(JSON.stringify(state).includes('hugeLedgerField'), false);
   assert.equal(client.records.has(`${profiles}/${personaId}`), false);
   assert.equal(client.records.get(`${profiles}/${c1}`).data.sourceBinding.identityId, c1);
+});
+
+test('single-card-main 主槽被用户选择后，foundation 保留 cardId binding 并可正常收敛', async () => {
+  const cardRef = { kind: 'card', locator: 'card:char.png#description' };
+  const mainBinding = {
+    identityId: cardId, displayName: '沈砚', sourceAnchor: '沈砚', primarySourceRef: cardRef, sourceKey: 'card:card:char.png#description:沈砚', sourceRefs: [cardRef], selection: { status: 'selected' },
+    sourceBinding: { kind: 'single-card-main', cardId },
+  };
+  const mainProfile = cProfile(cardId, '沈砚', {
+    sourceAnchor: '沈砚', primarySourceRef: cardRef, sourceKey: 'card:card:char.png#description:沈砚', sourceRefs: [cardRef],
+    sourceBinding: { kind: 'single-card-main', cardId },
+    userFacts: [{ value: '用户保留事实', provenance: 'user', locked: true }],
+  });
+  const peopleIndex = index({ confirmed: [mainBinding], overrides: { recognitionPolicy: { kind: 'single-main', version: 1 }, sourceFingerprint: 'sha256:single-source' } });
+  const client = fakeClient({ [`${collection}/meta`]: envelope(meta()), [`${collection}/people-index`]: envelope(peopleIndex), [`${profiles}/${cardId}`]: envelope(mainProfile) });
+  const result = await adapter(client).initialize({ stableFloorState: stable });
+  assert.equal(result.status, 'ready'); assert.deepEqual(result.state.activeMemberIds, [cardId]);
+  const saved = client.records.get(`${profiles}/${cardId}`).data;
+  assert.deepEqual(saved.sourceBinding, { kind: 'single-card-main', cardId }); assert.ok(saved.userFacts.some(item => item.value === '用户保留事实'));
+  const restored = await adapter(client).restore(); assert.equal(restored.status, 'ready'); assert.deepEqual(restored.profiles[0].sourceBinding, { kind: 'single-card-main', cardId });
+  const writes = puts(client).length;
+  client.records.get(`${profiles}/${cardId}`).data.sourceBinding = { kind: 'c-registry', identityId: cardId };
+  assert.equal((await adapter(client).restore()).status, 'identity_mismatch'); assert.equal(puts(client).length, writes);
+});
+
+test('foundation 在 formal 主槽严格拒绝同 UUID 的 legacy c-registry，非主槽 legacy 仍兼容', async () => {
+  const mainBinding = {
+    ...binding(cardId, '旧主槽'), sourceBinding: { kind: 'c-registry', identityId: cardId },
+  };
+  const mainProfile = cProfile(cardId, '旧主槽', { sourceBinding: { kind: 'c-registry', identityId: cardId } });
+  const client = fakeClient({
+    [`${collection}/meta`]: envelope(meta()),
+    [`${collection}/people-index`]: envelope(index({ confirmed: [mainBinding] })),
+    [`${profiles}/${cardId}`]: envelope(mainProfile),
+  });
+  const result = await adapter(client).initialize({ stableFloorState: stable });
+  assert.equal(result.status, 'identity_mismatch'); assert.equal(puts(client).length, 0);
+  assert.equal(isCharacterRegistrySourceBinding({ kind: 'c-registry', identityId: c1 }, c1, cardId, 'single'), true);
+});
+
+test('非 single 即使 C identityId 恰等于 cardId 也继续接受 legacy c-registry', async () => {
+  const mainBinding = { ...binding(cardId, '多人卡角色'), sourceBinding: { kind: 'c-registry', identityId: cardId } };
+  const client = fakeClient({
+    [`${collection}/meta`]: envelope(meta({ cardType: 'multi' })),
+    [`${collection}/people-index`]: envelope(index({ confirmed: [mainBinding] })),
+    [`${profiles}/${cardId}`]: envelope(cProfile(cardId, '多人卡角色', { sourceBinding: { kind: 'c-registry', identityId: cardId } })),
+  });
+  const result = await adapter(client).initialize({ stableFloorState: stable });
+  assert.equal(result.status, 'ready'); assert.equal(client.records.get(`${profiles}/${cardId}`).data.sourceBinding.kind, 'c-registry'); assert.equal(client.records.get(`${profiles}/${cardId}`).data.sourceBinding.identityId, cardId);
 });
 
 test('重复初始化完全幂等；新实例刷新只读恢复且不触发重复写入', async () => {
@@ -189,6 +238,13 @@ test('纯函数读取宽容但关键身份失败关闭；高版本保守只读',
   assert.equal(normalizePeopleProfile({ schemaVersion: '1', subject: 'persona', sourceFacts: '旧事实' }, required).data.sourceFacts[0], '旧事实');
   assert.throws(() => normalizePeopleProfile({ identityId: c1 }, required), error => error.foundationStatus === 'identity_mismatch');
   assert.throws(() => normalizePeopleProfile({ schemaVersion: 2 }, required), error => error.foundationStatus === 'future_schema_readonly');
+  assert.equal(isCharacterRegistrySourceBinding({ kind: 'c-registry', identityId: c1, sourceKey: '旧扩展可保留' }, c1, cardId, 'single'), true);
+  assert.equal(isCharacterRegistrySourceBinding({ kind: 'c-registry', identityId: cardId }, cardId, cardId, 'single'), false);
+  assert.equal(isCharacterRegistrySourceBinding({ kind: 'c-registry', identityId: cardId }, cardId, cardId, 'multi'), true);
+  assert.equal(isCharacterRegistrySourceBinding({ kind: 'single-card-main', cardId }, cardId, cardId, 'single'), true);
+  assert.equal(isCharacterRegistrySourceBinding({ kind: 'single-card-main', cardId }, cardId, c1, 'single'), false);
+  assert.equal(isCharacterRegistrySourceBinding({ kind: 'single-card-main', cardId, extra: true }, cardId, cardId, 'single'), false);
+  assert.equal(isCharacterRegistrySourceBinding({ kind: 'single-card-main', cardId: c1 }, cardId, cardId, 'single'), false);
 });
 
 test('未来 people-state/profile 与 Persona/card 绑定冲突均零写入', async () => {

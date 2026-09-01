@@ -25,7 +25,7 @@ function makeHarness({ subject = 'character', pending = item(), putHook } = {}) 
   const identityId = subject === 'user' ? USER : CHARACTER;
   const ctx = { characterId: 0, groupId: null, chatId: 'host-chat', characters: [{ avatar: 'char.png' }], userAvatar: 'me.png', chatMetadata: { qianqianjie: { schemaVersion: 1, chatId: CHAT } } };
   const records = new Map([
-    [key(collection, 'meta'), envelope({ schemaVersion: 1, kind: 'chat-profile', chatId: CHAT, cardId: CARD, personaId: USER, source: { card: { locator: 'char.png' }, persona: { locator: 'me.png' } }, status: 'ready' })],
+    [key(collection, 'meta'), envelope({ schemaVersion: 1, kind: 'chat-profile', chatId: CHAT, cardId: CARD, cardType: 'multi', personaId: USER, source: { card: { locator: 'char.png' }, persona: { locator: 'me.png' } }, status: 'ready' })],
     [key(collection, 'people-index'), envelope({ schemaVersion: 1, kind: 'people-index', chatId: CHAT, contractVersion: 3, confirmed: [{ identityId: CHARACTER, displayName: '林岚', selection: { status: 'selected' } }] })],
     [key(collection, 'people-state'), envelope({ schemaVersion: 1, kind: 'people-foundation-state', chatId: CHAT, cardId: CARD, personaId: USER, contractVersion: 1, source: { card: { locator: 'char.png' }, persona: { locator: 'me.png' } }, status: 'ready', activeMemberIds: [USER, CHARACTER], initializedMembers: [{ identityId: USER, subject: 'user', active: true }, { identityId: CHARACTER, subject: 'character', active: true }] })],
     [key(profiles, identityId), envelope({ schemaVersion: 1, peopleContractVersion: 1, kind: 'people-profile', chatId: CHAT, identityId, subject, displayName: subject === 'user' ? '旅人' : '林岚', sourceBinding: subject === 'user' ? { kind: 'persona', identityId: USER, locator: 'me.png' } : { kind: 'c-registry', identityId: CHARACTER }, sourceFacts: [{ id: 'source-existing', value: '旧事实' }], userFacts: [{ id: 'user-owned', value: '用户内容' }], interpretations: [{ id: 'ai-existing', value: '旧归纳' }], locks: [{ id: 'lock' }], pendingReview: [pending], futureExtension: { keep: true } })],
@@ -67,6 +67,22 @@ test('reject 单次 CAS 只移除目标 pending，不改变其他层', async () 
   const saved = h.records.get(key(profiles, h.identityId)).data; assert.deepEqual(saved.pendingReview, []);
   for (const layer of ['sourceFacts', 'userFacts', 'interpretations', 'locks']) assert.deepEqual(saved[layer], before[layer]);
   assert.deepEqual(saved.futureExtension, before.futureExtension);
+});
+
+test('pending-review 接受严格 single-card-main，错正式 cardId、错槽或额外字段仍零写拒绝', async t => {
+  const valid = makeHarness();
+  valid.records.get(key(collection, 'meta')).data.cardId = CHARACTER; valid.records.get(key(collection, 'meta')).data.cardType = 'single'; valid.records.get(key(collection, 'people-state')).data.cardId = CHARACTER;
+  valid.records.get(key(profiles, CHARACTER)).data.sourceBinding = { kind: 'single-card-main', cardId: CHARACTER };
+  assert.equal((await valid.adapter.resolvePendingReview({ identityId: CHARACTER, pendingItemId: valid.pending.id, decision: 'reject', expectedItemDigest: await pendingReviewDigest(valid.pending) })).status, 'ready');
+  for (const [name, configure] of Object.entries({
+    forged_on_other_card(h) { h.records.get(key(profiles, CHARACTER)).data.sourceBinding = { kind: 'single-card-main', cardId: CHARACTER }; },
+    legacy_on_formal_main(h) { h.records.get(key(collection, 'meta')).data.cardId = CHARACTER; h.records.get(key(collection, 'meta')).data.cardType = 'single'; h.records.get(key(collection, 'people-state')).data.cardId = CHARACTER; },
+    wrong_slot(h) { h.records.get(key(collection, 'meta')).data.cardId = CHARACTER; h.records.get(key(collection, 'meta')).data.cardType = 'single'; h.records.get(key(collection, 'people-state')).data.cardId = CHARACTER; h.records.get(key(profiles, CHARACTER)).data.sourceBinding = { kind: 'single-card-main', cardId: CARD }; },
+    extra_field(h) { h.records.get(key(collection, 'meta')).data.cardId = CHARACTER; h.records.get(key(collection, 'meta')).data.cardType = 'single'; h.records.get(key(collection, 'people-state')).data.cardId = CHARACTER; h.records.get(key(profiles, CHARACTER)).data.sourceBinding = { kind: 'single-card-main', cardId: CHARACTER, extra: true }; },
+  })) await t.test(name, async () => {
+    const h = makeHarness(); configure(h); const result = await h.adapter.resolvePendingReview({ identityId: CHARACTER, pendingItemId: h.pending.id, decision: 'reject', expectedItemDigest: await pendingReviewDigest(h.pending) });
+    assert.equal(result.status, 'mismatch'); assert.equal(puts(h).length, 0);
+  });
 });
 
 test('轻量首次生成 pending 无 confidence/anchor 时 accept 与 reject 均正常', async () => {

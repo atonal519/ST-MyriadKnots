@@ -4,8 +4,11 @@ import { cleanAnalysisText } from './route-source.js';
 
 export const REGISTRY_LIMITS = Object.freeze({ maxSources: 80, maxSourceChars: 24000, maxTotalChars: 120000, maxItems: 80, maxNameChars: 120, maxAnchorChars: 80, maxRefs: 12 });
 export const REGISTRY_CONTRACT_VERSION = 3;
+export const SINGLE_MAIN_RECOGNITION_POLICY = Object.freeze({ kind: 'single-main', version: 1 });
 const INDEX = 'people-index', PROFILE = 'people-profile';
 const SELECTIONS = ['selected', 'unselected'];
+const CARD_FIELDS = Object.freeze(['description', 'personality', 'scenario', 'mes_example', 'system_prompt', 'post_history_instructions', 'creator_notes']);
+const REF_KINDS = Object.freeze(['card', 'greeting', 'worldbook']);
 const IDENTITY_SNAPSHOT_KEYS = ['chatId', 'hostChatId', 'characterId', 'characterAvatar', 'personaId', 'personaAvatar', 'personaName', 'role'];
 const C_REGISTRY_SCHEMA = Object.freeze({
   type: 'object', additionalProperties: false, required: ['confirmed', 'candidate', 'discarded'],
@@ -24,6 +27,23 @@ const C_REGISTRY_SCHEMA = Object.freeze({
     } },
   },
 });
+const SINGLE_C_REGISTRY_SCHEMA = Object.freeze({
+  type: 'object', additionalProperties: false, required: ['confirmed', 'candidate', 'discarded'],
+  properties: {
+    confirmed: { type: 'array', minItems: 1, maxItems: 1, items: { $ref: '#/$defs/item' } },
+    candidate: { type: 'array', items: { $ref: '#/$defs/item' } },
+    discarded: { type: 'array', items: { $ref: '#/$defs/item' } },
+  },
+  $defs: {
+    item: { type: 'object', additionalProperties: false, required: ['name', 'sourceAnchor', 'primarySourceRef', 'sourceRefs'], properties: {
+      name: { type: 'string', minLength: 1, maxLength: 120 }, sourceAnchor: { type: 'string', minLength: 1, maxLength: 80 }, primarySourceRef: { $ref: '#/$defs/ref' },
+      sourceRefs: { type: 'array', minItems: 1, maxItems: 12, items: { $ref: '#/$defs/ref' } },
+    } },
+    ref: { type: 'object', additionalProperties: false, required: ['kind', 'locator'], properties: {
+      kind: { type: 'string', enum: REF_KINDS }, locator: { type: 'string', minLength: 1, maxLength: 300 },
+    } },
+  },
+});
 const fail = message => Object.assign(new Error(message), { failClosed: true });
 const stale = () => Object.assign(new Error('C Registry 请求已失效'), { stale: true });
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
@@ -33,8 +53,9 @@ const validSelection = value => object(value) && Object.keys(value).length === 1
 const selection = value => ({ status: validSelection(value) ? value.status : 'unselected' });
 const refKey = value => `${value.kind}:${value.locator}`;
 const ref = value => ({ kind: value.kind, locator: value.locator });
-const validRef = value => object(value) && Object.keys(value).length === 2 && ['greeting', 'worldbook'].includes(value.kind) && typeof value.locator === 'string' && value.locator.length > 0 && value.locator.length <= 300;
+const validRef = value => object(value) && Object.keys(value).length === 2 && REF_KINDS.includes(value.kind) && typeof value.locator === 'string' && value.locator.length > 0 && value.locator.length <= 300;
 const compatibleProfileRef = value => object(value) && ['greeting', 'worldbook'].includes(value.kind) && typeof value.locator === 'string' && value.locator.length > 0 && value.locator.length <= 300;
+const compatibleCardProfileRef = value => object(value) && value.kind === 'card' && typeof value.locator === 'string' && value.locator.length > 0 && value.locator.length <= 300;
 const futureProfile = record => envelope(record) && (Number.isInteger(record.data.schemaVersion) && record.data.schemaVersion > 1
   || Number.isInteger(record.data.peopleContractVersion) && record.data.peopleContractVersion > 1);
 const readonlyProfile = () => ({ status: 'future_schema_readonly', readonly: true, recoverable: false });
@@ -43,6 +64,10 @@ const envelope = record => object(record) && record.schemaVersion === 1 && Numbe
 const normalizeRefs = refs => [...new Map((Array.isArray(refs) ? refs : []).filter(validRef).map(item => [refKey(item), ref(item)])).values()].sort((a, b) => refKey(a).localeCompare(refKey(b)));
 const sameRefs = (a, b) => JSON.stringify(normalizeRefs(a)) === JSON.stringify(normalizeRefs(b));
 const bindingPrimary = item => item?.primarySourceRef ? refKey(item.primarySourceRef) : '';
+const sameSinglePolicy = value => object(value) && Object.keys(value).sort().join(',') === 'kind,version'
+  && value.kind === SINGLE_MAIN_RECOGNITION_POLICY.kind && value.version === SINGLE_MAIN_RECOGNITION_POLICY.version;
+const validSingleSourceBinding = (value, cardId) => object(value) && Object.keys(value).sort().join(',') === 'cardId,kind'
+  && value.kind === 'single-card-main' && value.cardId === cardId && uuid(value.cardId);
 const CATEGORY_ALIASES = Object.freeze({
   confirmed: ['confirmedPeople', 'confirmedCharacters', 'confirmed_people'],
   candidate: ['candidates', 'candidatePeople', 'candidateCharacters', 'candidate_people'],
@@ -107,7 +132,13 @@ function normalizedMatches(content, value) {
   }
   return matches;
 }
-const normalizeExternalRef = (value, diagnostics) => {
+const normalizeExternalRef = (value, diagnostics, sourceByLocator = null) => {
+  if (typeof value === 'string') {
+    const locator = value.trim(), matches = sourceByLocator?.get(locator) || [];
+    if (!locator || matches.length !== 1) return null;
+    diagnostics.add('NORMALIZATION_VALUE_REPAIRED');
+    return ref(matches[0]);
+  }
   if (!object(value)) return null;
   const kind = typeof value.kind === 'string' ? value.kind.trim().toLowerCase() : '';
   const locator = typeof value.locator === 'string' ? value.locator.trim() : '';
@@ -123,23 +154,29 @@ const uniqueSourceMatch = (source, anchor, name) => {
   return normalizedMatches(source.content, name).length === 1;
 };
 
-export function normalizeExternalRecognitionResult(value, sources) {
+export function normalizeExternalRecognitionResult(value, sources, { singleMain = false } = {}) {
   if (!object(value) || !Array.isArray(sources)) throw formatFailure('C 识别结果结构无效');
   const diagnostics = warningCollector(), lists = {}, usedTopKeys = new Set(); let rawItemCount = 0, recognizedCategoryCount = 0;
   for (const category of Object.keys(CATEGORY_ALIASES)) {
     const resolved = aliasedValue(value, category, CATEGORY_ALIASES[category], diagnostics);
-    if (resolved.ambiguous || (resolved.found && !Array.isArray(resolved.value))) throw formatFailure('C 识别结果结构无效');
+    if (resolved.ambiguous || (resolved.found && !Array.isArray(resolved.value) && !(singleMain && category === 'confirmed' && object(resolved.value)))) throw formatFailure('C 识别结果结构无效');
     const matchedKeys = [category, ...CATEGORY_ALIASES[category]].filter(key => Object.prototype.hasOwnProperty.call(value, key));
     matchedKeys.forEach(key => usedTopKeys.add(key));
-    lists[category] = resolved.found ? resolved.value : [];
+    lists[category] = !resolved.found ? [] : Array.isArray(resolved.value) ? resolved.value : [resolved.value];
+    if (resolved.found && !Array.isArray(resolved.value)) diagnostics.add('NORMALIZATION_VALUE_REPAIRED');
     if (resolved.found) recognizedCategoryCount += 1;
     if (!resolved.found) diagnostics.add('NORMALIZATION_MISSING_CATEGORY_FILLED');
     rawItemCount += lists[category].length;
   }
   if (recognizedCategoryCount === 0) throw formatFailure('C 识别结果结构无效');
+  // single 的“恰好一个”约束针对模型原始 confirmed 数量；不能让后续宽容清洗、
+  // 跳过无效项或 sourceKey 去重把两个回答悄悄变成一个。
+  if (singleMain && lists.confirmed.length !== 1) throw formatFailure('single 主 C 原始 confirmed 必须且只能有一个');
   if (Object.keys(value).some(key => !usedTopKeys.has(key))) diagnostics.add('NORMALIZATION_EXTRA_FIELDS_IGNORED');
 
   const sourceByKey = new Map(sources.map(source => [refKey(source), source]));
+  const sourceByLocator = new Map();
+  if (singleMain) for (const source of sources) sourceByLocator.set(source.locator, [...(sourceByLocator.get(source.locator) || []), source]);
   const seen = new Set(), output = { confirmed: [], candidate: [], discarded: [] };
   for (const category of Object.keys(output)) for (const rawItem of lists[category]) {
     if (Object.values(output).reduce((sum, list) => sum + list.length, 0) >= REGISTRY_LIMITS.maxItems) { diagnostics.add('NORMALIZATION_ITEM_SKIPPED'); continue; }
@@ -157,13 +194,18 @@ export function normalizeExternalRecognitionResult(value, sources) {
     if (name !== values.name || anchor !== values.sourceAnchor) diagnostics.add('NORMALIZATION_VALUE_REPAIRED');
     if (ambiguous || !normalizeName(name)) { diagnostics.add('NORMALIZATION_ITEM_SKIPPED'); continue; }
 
-    const rawRefs = Array.isArray(values.sourceRefs) ? values.sourceRefs : [];
+    const scalarSourceRef = singleMain && typeof values.sourceRefs === 'string';
+    const rawRefs = Array.isArray(values.sourceRefs) ? values.sourceRefs : scalarSourceRef ? [values.sourceRefs] : [];
     if (values.sourceRefs !== undefined && !Array.isArray(values.sourceRefs)) diagnostics.add('NORMALIZATION_VALUE_REPAIRED');
-    const normalizedRefs = rawRefs.map(item => normalizeExternalRef(item, diagnostics)).filter(Boolean);
+    const normalizedRefValues = rawRefs.map(item => normalizeExternalRef(item, diagnostics, singleMain ? sourceByLocator : null));
+    if (singleMain && rawRefs.some((item, index) => typeof item === 'string' && !normalizedRefValues[index])) { diagnostics.add('NORMALIZATION_ITEM_SKIPPED'); continue; }
+    const normalizedRefs = normalizedRefValues.filter(Boolean);
     if (normalizedRefs.length < rawRefs.length) diagnostics.add('NORMALIZATION_UNKNOWN_REF_DROPPED', rawRefs.length - normalizedRefs.length);
     let refs = normalizeRefs(normalizedRefs.filter(item => sourceByKey.has(refKey(item))));
     if (refs.length < normalizedRefs.length) diagnostics.add('NORMALIZATION_UNKNOWN_REF_DROPPED', normalizedRefs.length - refs.length);
-    let primary = normalizeExternalRef(values.primarySourceRef, diagnostics);
+    const stringPrimary = singleMain && typeof values.primarySourceRef === 'string';
+    let primary = normalizeExternalRef(values.primarySourceRef, diagnostics, singleMain ? sourceByLocator : null);
+    if (stringPrimary && !primary) { diagnostics.add('NORMALIZATION_ITEM_SKIPPED'); continue; }
     const primaryKnown = primary && sourceByKey.has(refKey(primary));
     if (!primaryKnown) {
       if (!primary && refs.length === 1) { primary = refs[0]; diagnostics.add('NORMALIZATION_VALUE_REPAIRED'); }
@@ -177,6 +219,7 @@ export function normalizeExternalRecognitionResult(value, sources) {
     if (refs.length > REGISTRY_LIMITS.maxRefs) { refs = refs.slice(0, REGISTRY_LIMITS.maxRefs); if (!refs.some(item => refKey(item) === refKey(primary))) refs[refs.length - 1] = ref(primary); refs = normalizeRefs(refs); diagnostics.add('NORMALIZATION_UNKNOWN_REF_DROPPED'); }
 
     const source = sourceByKey.get(refKey(primary)); let canonicalAnchor = anchor;
+    if (singleMain && (!canonicalAnchor || !source.content.includes(canonicalAnchor))) { diagnostics.add('NORMALIZATION_ITEM_SKIPPED'); continue; }
     if (!canonicalAnchor || !source.content.includes(canonicalAnchor)) {
       const anchorMatches = normalizedMatches(source.content, canonicalAnchor);
       if (anchorMatches.length === 1) canonicalAnchor = anchorMatches[0];
@@ -205,9 +248,41 @@ export function normalizeRegistrySources(input) {
     if (!object(entry) || typeof entry.world !== 'string' || !entry.world || typeof entry.uid !== 'string' || !entry.uid || typeof entry.fingerprint !== 'string' || typeof entry.content !== 'string') throw fail('C 世界书来源无效');
     sources.push({ kind: 'worldbook', locator: `${entry.world}:${entry.uid}`, fingerprint: entry.fingerprint, content: cleanAnalysisText(entry.content) });
   }
-  const total = sources.reduce((sum, item) => sum + item.content.length, 0);
-  if (sources.length > 80 || sources.some(item => item.content.length > 24000) || total > 120000) throw fail('C 来源超过输入预算');
+  validateSourceBudget(sources);
   return sources;
+}
+
+function validateSourceBudget(sources) {
+  const total = sources.reduce((sum, item) => sum + item.content.length, 0);
+  if (sources.length > REGISTRY_LIMITS.maxSources || sources.some(item => item.content.length > REGISTRY_LIMITS.maxSourceChars) || total > REGISTRY_LIMITS.maxTotalChars) throw fail('C 来源超过输入预算');
+}
+function normalizeCatalogSources(input) {
+  const sources = (Array.isArray(input) ? input : []).map(item => {
+    if (!object(item) || !REF_KINDS.includes(item.kind) || typeof item.locator !== 'string' || !item.locator
+      || typeof item.fingerprint !== 'string' || typeof item.content !== 'string') throw fail('C 来源资料快照无效');
+    return { kind: item.kind, locator: item.locator, fingerprint: item.fingerprint, content: cleanAnalysisText(item.content) };
+  });
+  validateSourceBudget(sources);
+  return sources;
+}
+function currentCharacter(context) {
+  return Array.isArray(context?.characters) ? context.characters[context.characterId] : context?.characters?.[context.characterId];
+}
+const cardNameHint = context => {
+  const character = currentCharacter(context) || {};
+  return [character?.data?.name, character?.name, context?.name2].map(value => typeof value === 'string' ? value.trim() : '').find(Boolean)?.slice(0, REGISTRY_LIMITS.maxNameChars) || '';
+};
+async function addSingleCardSources(sources, context) {
+  const character = currentCharacter(context) || {}, card = character.data || character;
+  const avatar = String(character?.avatar ?? context?.characterAvatar ?? '').trim();
+  const cardSources = (await Promise.all(CARD_FIELDS.map(async field => {
+    const content = cleanAnalysisText(card?.[field] ?? character?.[field] ?? '');
+    if (!content) return null;
+    return { kind: 'card', locator: `card:${avatar}#${field}`, fingerprint: `sha256:${await sha256(content)}`, content };
+  }))).filter(Boolean);
+  const output = [...cardSources, ...sources];
+  validateSourceBudget(output);
+  return output;
 }
 
 export function captureSnapshot({ contextProvider, routeFingerprint = '', sourceFingerprint = '', sourceStatus = '' } = {}) {
@@ -225,7 +300,7 @@ export function captureSnapshot({ contextProvider, routeFingerprint = '', source
 }
 export const isSnapshotCurrent = (expected, actual) => JSON.stringify(expected) === JSON.stringify(actual);
 
-function withIdentifySingleFlight(adapter, contextProvider, snapshotProvider, isEnabled = () => true) {
+function withIdentifySingleFlight(adapter, contextProvider, snapshotProvider, isEnabled = () => true, consumeRecognitionClaim = null) {
   const active = new Map(), pending = new Map(); let epoch = 0;
   const identityKey = snapshot => JSON.stringify(snapshot);
   const identitySnapshot = () => captureSnapshot({ contextProvider });
@@ -239,9 +314,14 @@ function withIdentifySingleFlight(adapter, contextProvider, snapshotProvider, is
     const promise = Promise.resolve().then(async () => {
       const current = () => admitted && isEnabled() && mine === epoch;
       if (!current()) return { status: 'stale' };
+      if (typeof consumeRecognitionClaim === 'function' && consumeRecognitionClaim(options.sourceCatalogClaim) !== true) throw fail('人物识别缺少有效的一次性来源许可');
       options.onPhase?.('reading_sources');
-      const captured = typeof snapshotProvider === 'function' ? await snapshotProvider({ guard: () => { if (!current()) throw stale(); } }) : captureSnapshot({ contextProvider });
+      const runtimeSnapshot = options.runtimeSnapshot && typeof options.runtimeSnapshot === 'object' ? options.runtimeSnapshot : null;
+      const captured = runtimeSnapshot?.prepared || (typeof snapshotProvider === 'function'
+        ? await snapshotProvider({ guard: () => { if (!current()) throw stale(); }, formalState: runtimeSnapshot?.formalState, sourceCatalogClaim: options.sourceCatalogClaim })
+        : captureSnapshot({ contextProvider }));
       if (!current()) return { status: 'stale' };
+      if (runtimeSnapshot && captured?.snapshot) runtimeSnapshot.prepared = captured;
       const asyncSnapshot = captured?.snapshot || captured;
       if (!identityMatches(entryIdentity, identitySnapshot())) return { status: 'stale' };
       const expectedSnapshot = Object.freeze({ ...asyncSnapshot, ...Object.fromEntries(IDENTITY_SNAPSHOT_KEYS.map(key => [key, entryIdentity[key]])) });
@@ -249,7 +329,7 @@ function withIdentifySingleFlight(adapter, contextProvider, snapshotProvider, is
       if (active.has(key)) return active.get(key);
       if (!current()) return { status: 'stale' };
       active.set(key, promise);
-      return adapter.identify({ ...options, expectedSnapshot, expectedSources: captured?.sources, expectedWarnings: captured?.warnings });
+      return adapter.identify({ ...options, expectedSnapshot, expectedSources: captured?.sources, expectedWarnings: captured?.warnings, strategy: captured?.strategy });
     }).catch(error => { if (error?.stale) return { status: 'stale' }; throw error; });
     pending.set(provisional, promise);
     promise.finally(() => { if (pending.get(provisional) === promise) pending.delete(provisional); for (const [key, value] of active) if (value === promise) active.delete(key); }).catch(() => {});
@@ -258,24 +338,60 @@ function withIdentifySingleFlight(adapter, contextProvider, snapshotProvider, is
 }
 
 export function createCRegistryAdapter(options = {}) {
-  const { formal, routeSource } = options;
+  const { formal, routeSource, sourceCatalog } = options;
   const isEnabled = typeof options.isEnabled === 'function' ? options.isEnabled : () => true;
-  const defaultSnapshotProvider = async ({ guard = () => {} } = {}) => {
-    let route, frozen; let status = 'ready';
+  const readFormalSources = async ({ guard = () => {}, formalState: suppliedFormalState = undefined, sourceCatalogClaim = null } = {}) => {
+    let route, frozen; let status = 'ready'; let formalState = suppliedFormalState ?? null;
+    if (suppliedFormalState === undefined && formal?.getFormalState) { guard(); formalState = await formal.getFormalState(); guard(); }
+    const cardType = formalState?.cardType ?? formalState?.formal?.cardType ?? null;
+    const cardId = formalState?.cardId ?? null;
+    const context = options.contextProvider?.() || {};
+    const catalogValue = sourceCatalogClaim?.status === 'claimed'
+      ? sourceCatalogClaim
+      : typeof sourceCatalog?.getConfirmedSources === 'function' ? await sourceCatalog.getConfirmedSources({ formalState }) : null;
+    guard();
+    if (catalogValue?.sources?.length) {
+      if (catalogValue.binding?.chatId !== captureSnapshot({ contextProvider: options.contextProvider }).chatId
+        || catalogValue.binding?.cardId !== cardId || (formalState?.personaId && catalogValue.binding?.personaId !== formalState.personaId)) throw stale();
+      const sources = normalizeCatalogSources(catalogValue.sources);
+      return { route: formalState?.route, status: 'ready', formalState, cardType, cardId, cardName: cardNameHint(context), sources, warnings: [], catalog: true };
+    }
     if (formal?.getFormalState && routeSource?.collectFrozenAnalysisSources) {
-      guard(); const state = await formal.getFormalState(); guard(); status = state?.status || 'source_unavailable'; route = state?.route;
+      status = formalState?.status || 'source_unavailable'; route = formalState?.route;
       if (!route && ['ready', 'route_ready'].includes(status)) status = 'route_unavailable';
-      if (!['ready', 'route_ready'].includes(status) || !route || route.state !== 'ready') return { snapshot: captureSnapshot({ contextProvider: options.contextProvider, routeFingerprint: JSON.stringify(route || null), sourceStatus: status }), sources: [], warnings: [] };
+      if (!['ready', 'route_ready'].includes(status) || !route || route.state !== 'ready') return { route, status, formalState, sources: [], warnings: [] };
       guard(); frozen = await routeSource.collectFrozenAnalysisSources(route); guard();
     } else if (routeSource?.collectAnalysisSources) { guard(); frozen = { status: 'ready', sources: await routeSource.collectAnalysisSources() }; guard(); }
-    if (!frozen?.sources) return { snapshot: captureSnapshot({ contextProvider: options.contextProvider, routeFingerprint: JSON.stringify(route || null), sourceStatus: frozen?.status || status }), sources: [], warnings: frozen?.warnings };
+    if (!frozen?.sources) return { route, status: frozen?.status || status, formalState, sources: [], warnings: frozen?.warnings };
     let sources;
     try { sources = normalizeRegistrySources(frozen.sources); }
-    catch { return { snapshot: captureSnapshot({ contextProvider: options.contextProvider, routeFingerprint: JSON.stringify(route || null), sourceStatus: frozen?.status || 'route_unavailable' }), sources: [], warnings: frozen?.warnings }; }
-    return { snapshot: captureSnapshot({ contextProvider: options.contextProvider, routeFingerprint: JSON.stringify(route || null), sourceFingerprint: await fingerprintRegistrySources(sources), sourceStatus: frozen.status || status }), sources, warnings: frozen.warnings };
+    catch { return { route, status: frozen?.status || 'route_unavailable', formalState, sources: [], warnings: frozen?.warnings }; }
+    if (cardType === 'single') { guard(); sources = await addSingleCardSources(sources, context); guard(); }
+    return { route, status: frozen.status || status, formalState, cardType, cardId, cardName: cardNameHint(context), sources, warnings: frozen.warnings };
+  };
+  const defaultSnapshotProvider = async ({ guard = () => {}, formalState = undefined, sourceCatalogClaim = null } = {}) => {
+    const captured = await readFormalSources({ guard, formalState, sourceCatalogClaim });
+    const fingerprint = captured.sources.length ? await fingerprintRegistrySources(captured.sources) : '';
+    const snapshot = captureSnapshot({ contextProvider: options.contextProvider, routeFingerprint: JSON.stringify(captured.route || null), sourceFingerprint: fingerprint, sourceStatus: captured.status });
+    if (captured.cardType !== 'single') return { snapshot, sources: captured.sources, warnings: captured.warnings, formalState: captured.formalState, strategy: { cardType: captured.cardType, cardId: captured.cardId, sourceCatalogPermit: sourceCatalogClaim?.status === 'claimed' } };
+    if (!uuid(captured.cardId)) return { snapshot: { ...snapshot, sourceStatus: 'mismatch' }, sources: [], warnings: captured.warnings, formalState: captured.formalState, strategy: { cardType: 'single', cardId: captured.cardId } };
+    return { snapshot, sources: captured.sources, warnings: captured.warnings, formalState: captured.formalState, strategy: { cardType: 'single', cardId: captured.cardId, cardName: captured.cardName, sourceCatalogPermit: sourceCatalogClaim?.status === 'claimed' } };
+  };
+  const currentSingleSnapshotProvider = async ({ guard = () => {}, formalState = undefined } = {}) => {
+    const captured = await readFormalSources({ guard, formalState });
+    const sourceFingerprint = captured.sources.length ? await fingerprintRegistrySources(captured.sources) : '';
+    return {
+      cardId: captured.cardId,
+      cardType: captured.cardType,
+      sourceFingerprint,
+      status: captured.status,
+    };
   };
   const snapshotProvider = typeof options.snapshotProvider === 'function' ? options.snapshotProvider : defaultSnapshotProvider;
-  return withIdentifySingleFlight(createLegacyCRegistryAdapter({ ...options, isEnabled }), options.contextProvider, snapshotProvider, isEnabled);
+  const consumeRecognitionClaim = typeof sourceCatalog?.getConfirmedSources === 'function'
+    ? claim => sourceCatalog.consumeRecognitionClaim?.(claim) === true
+    : null;
+  return withIdentifySingleFlight(createLegacyCRegistryAdapter({ ...options, currentSingleSnapshotProvider, prepareSnapshot: defaultSnapshotProvider, isEnabled }), options.contextProvider, snapshotProvider, isEnabled, consumeRecognitionClaim);
 }
 export async function fingerprintRegistrySources(sources) { return `sha256:${await sha256(sources.map(item => `${item.kind}\n${item.locator}\n${item.fingerprint}\n${item.content}`).join('\n'))}`; }
 
@@ -283,15 +399,26 @@ const validBinding = (item, lifecycle = null) => object(item) && uuid(item.ident
   && typeof item.sourceAnchor === 'string' && item.sourceAnchor.trim().length > 0 && item.sourceAnchor.trim().length <= 80
   && validRef(item.primarySourceRef) && Array.isArray(item.sourceRefs) && item.sourceRefs.length > 0 && item.sourceRefs.length <= 12 && item.sourceRefs.every(validRef)
   && item.sourceRefs.some(value => refKey(value) === refKey(item.primarySourceRef)) && item.sourceKey === sourceKey(item)
-  && (item.selection === undefined || validSelection(item.selection)) && (!lifecycle || item.lifecycle === lifecycle);
+  && (item.selection === undefined || validSelection(item.selection)) && (!lifecycle || item.lifecycle === lifecycle)
+  && (item.sourceBinding === undefined || validSingleSourceBinding(item.sourceBinding, item.identityId));
+const validProfileRefs = (data, identityId) => {
+  const singleMain = validSingleSourceBinding(data.sourceBinding, identityId);
+  const compatible = value => compatibleProfileRef(value) || (singleMain && compatibleCardProfileRef(value));
+  if (!compatible(data.primarySourceRef)) return false;
+  if (data.sourceRefs.some(value => value?.kind === 'card' && !singleMain)) return false;
+  return data.sourceRefs.every(value => value?.kind !== 'card' || compatibleCardProfileRef(value))
+    && data.sourceRefs.some(value => compatible(value) && refKey(value) === refKey(data.primarySourceRef));
+};
 const validProfile = (record, identityId, chatId) => envelope(record) && record.data.schemaVersion === 1 && [undefined, 1].includes(record.data.peopleContractVersion)
   && record.data.kind === PROFILE && record.data.identityId === identityId && record.data.chatId === chatId
   && record.data.subject === 'character' && normalizeName(record.data.displayName) && record.data.category === 'confirmed' && validSelection(record.data.selection)
   && Array.isArray(record.data.sourceFacts) && Array.isArray(record.data.userFacts) && Array.isArray(record.data.interpretations) && Array.isArray(record.data.locks) && Array.isArray(record.data.pendingReview)
   && typeof record.data.sourceAnchor === 'string' && record.data.sourceAnchor.trim().length > 0 && validRef(record.data.primarySourceRef)
   && Array.isArray(record.data.sourceRefs) && record.data.sourceRefs.length > 0
-  && record.data.sourceRefs.some(value => compatibleProfileRef(value) && refKey(value) === refKey(record.data.primarySourceRef)) && record.data.sourceKey === sourceKey(record.data)
+  && validProfileRefs(record.data, identityId) && record.data.sourceKey === sourceKey(record.data)
   && ['active', 'shelved', 'deleted'].includes(record.data.lifecycle);
+const validSingleProfile = (record, cardId, chatId) => validProfile(record, cardId, chatId)
+  && validSingleSourceBinding(record.data.sourceBinding, cardId);
 const validCandidate = item => object(item) && Object.keys(item).sort().join(',') === 'name,primarySourceRef,sourceAnchor,sourceKey,sourceRefs'
   && normalizeName(item.name) && typeof item.sourceAnchor === 'string' && item.sourceAnchor.trim().length >= 1 && item.sourceAnchor.trim().length <= 80
   && item.sourceKey === sourceKey(item) && validRef(item.primarySourceRef) && Array.isArray(item.sourceRefs) && item.sourceRefs.length > 0 && item.sourceRefs.length <= 12
@@ -311,12 +438,17 @@ const validRegistryLists = data => {
   for (const item of data.shelved) { if (ids.has(item.identityId)) return false; ids.add(item.identityId); }
   return true;
 };
-const validPendingRecognition = value => object(value) && Object.keys(value).sort().join(',') === 'candidate,confirmed,contractVersion,discarded,shelved,sourceFingerprint'
+const validPendingRecognition = value => object(value)
+  && ['candidate,confirmed,contractVersion,discarded,shelved,sourceFingerprint', 'candidate,confirmed,contractVersion,discarded,recognitionPolicy,shelved,sourceFingerprint'].includes(Object.keys(value).sort().join(','))
   && Number.isInteger(value.contractVersion) && value.contractVersion >= 1 && value.contractVersion <= REGISTRY_CONTRACT_VERSION
-  && typeof value.sourceFingerprint === 'string' && validRegistryLists(value);
+  && typeof value.sourceFingerprint === 'string' && validRegistryLists(value)
+  && (value.recognitionPolicy === undefined || (value.contractVersion === REGISTRY_CONTRACT_VERSION && sameSinglePolicy(value.recognitionPolicy)
+    && value.sourceFingerprint.length > 0 && value.confirmed.length === 1 && value.shelved.length === 0
+    && validSingleSourceBinding(value.confirmed[0].sourceBinding, value.confirmed[0].identityId)));
 const currentBinding = (item, lifecycle) => ({
   identityId: item.identityId, displayName: item.displayName, sourceAnchor: item.sourceAnchor, primarySourceRef: ref(item.primarySourceRef),
   sourceKey: item.sourceKey || sourceKey(item), sourceRefs: normalizeRefs(item.sourceRefs), selection: lifecycle === 'shelved' ? { status: 'unselected' } : selection(item.selection),
+  ...(validSingleSourceBinding(item.sourceBinding, item.identityId) ? { sourceBinding: { kind: 'single-card-main', cardId: item.identityId } } : {}),
   ...(lifecycle ? { lifecycle } : {}),
 });
 const legacyShelved = data => {
@@ -333,6 +465,17 @@ export function validateRegistryIndex(record, chatId) {
   if (data.schemaVersion !== 1 || data.kind !== INDEX || data.chatId !== chatId || !uuid(chatId) || !['preparing', 'deleting', 'restoring', 'renaming', 'ready', 'stale'].includes(data.status)
     || typeof data.sourceFingerprint !== 'string' || ![undefined, 1, 2, REGISTRY_CONTRACT_VERSION].includes(data.contractVersion)
     || !Array.isArray(data.confirmed) || !Array.isArray(data.candidate) || !Array.isArray(data.discarded) || !Array.isArray(data.tombstones) || (data.shelved !== undefined && !Array.isArray(data.shelved))) return false;
+  const pendingSingle = validPendingRecognition(data.pendingRecognition) && sameSinglePolicy(data.pendingRecognition?.recognitionPolicy);
+  if (data.recognitionPolicy !== undefined && !sameSinglePolicy(data.recognitionPolicy)) return false;
+  if (data.recognitionPolicy !== undefined) {
+    const slots = [...data.confirmed, ...(data.shelved || [])].filter(item => validSingleSourceBinding(item?.sourceBinding, item?.identityId));
+    if (slots.length !== 1 || data.confirmed.length > 1 || data.confirmed.some(item => !validSingleSourceBinding(item.sourceBinding, item.identityId))) return false;
+  } else {
+    const hasCardRef = list => Array.isArray(list) && list.some(item => item?.primarySourceRef?.kind === 'card'
+      || (Array.isArray(item?.sourceRefs) && item.sourceRefs.some(value => value?.kind === 'card')));
+    if ([data.confirmed, data.candidate, data.discarded, data.shelved, data.tombstones].some(hasCardRef)) return false;
+    if (!pendingSingle && [data.pendingRecognition?.confirmed, data.pendingRecognition?.candidate, data.pendingRecognition?.discarded, data.pendingRecognition?.shelved].some(hasCardRef)) return false;
+  }
   if (data.status === 'deleting' ? !validBinding(data.pendingDelete) : data.pendingDelete !== undefined) return false;
   if (data.status === 'restoring' ? !validBinding(data.pendingRestore) : data.pendingRestore !== undefined) return false;
   if (data.status === 'renaming' ? !validPendingRename(data.pendingRename) : data.pendingRename !== undefined) return false;
@@ -357,6 +500,7 @@ const profileData = (binding, chatId, identityId, displayName = binding.name, us
   schemaVersion: 1, peopleContractVersion: 1, kind: PROFILE, identityId, subject: 'character', displayName, category: 'confirmed', selection: selection(selected), sourceFacts: [], userFacts,
   interpretations: [], locks: [], pendingReview: [], sourceAnchor: binding.sourceAnchor, primarySourceRef: ref(binding.primarySourceRef), sourceKey: binding.sourceKey || sourceKey(binding),
   sourceRefs: normalizeRefs(binding.sourceRefs), lifecycle, chatId,
+  ...(validSingleSourceBinding(binding.sourceBinding, identityId) ? { sourceBinding: { kind: 'single-card-main', cardId: identityId } } : {}),
 });
 const stableRefKey = value => {
   if (object(value) && typeof value.kind === 'string' && value.kind.trim() && typeof value.locator === 'string' && value.locator.trim()) return `ref:${value.kind.trim()}\u0000${value.locator.trim()}`;
@@ -393,11 +537,12 @@ function unwrapGenerateTaskResult(response) {
   }
   return value;
 }
-export function validateRecognitionResult(value, sources) {
+export function validateRecognitionResult(value, sources, { singleMain = false } = {}) {
   if (!object(value) || Object.keys(value).length !== 3 || !['confirmed', 'candidate', 'discarded'].every(key => Array.isArray(value[key]))) throw fail('C 识别结果结构无效');
   const known = new Set(sources.map(refKey)), seen = new Set(), output = { confirmed: [], candidate: [], discarded: [] };
   for (const category of Object.keys(output)) for (const item of value[category]) {
-    if (!object(item) || Object.keys(item).sort().join(',') !== 'name,primarySourceRef,sourceAnchor,sourceRefs' || !normalizeName(item.name) || typeof item.sourceAnchor !== 'string' || !item.sourceAnchor.trim() || item.sourceAnchor.trim().length > 80
+    const expectedKeys = 'name,primarySourceRef,sourceAnchor,sourceRefs';
+    if (!object(item) || Object.keys(item).sort().join(',') !== expectedKeys || !normalizeName(item.name) || typeof item.sourceAnchor !== 'string' || !item.sourceAnchor.trim() || item.sourceAnchor.trim().length > 80
       || !validRef(item.primarySourceRef) || !known.has(refKey(item.primarySourceRef)) || !Array.isArray(item.sourceRefs) || item.sourceRefs.length < 1 || item.sourceRefs.length > 12 || !item.sourceRefs.every(value => validRef(value) && known.has(refKey(value)))
       || !item.sourceRefs.some(value => refKey(value) === refKey(item.primarySourceRef))) throw fail('C 项字段无效');
     const source = sources.find(value => refKey(value) === refKey(item.primarySourceRef)), key = sourceKey(item);
@@ -405,6 +550,16 @@ export function validateRecognitionResult(value, sources) {
     seen.add(key); output[category].push(category === 'confirmed' ? { name: item.name.trim(), sourceAnchor: item.sourceAnchor.trim(), primarySourceRef: ref(item.primarySourceRef), sourceRefs: normalizeRefs(item.sourceRefs) } : category === 'candidate' ? asCandidate(item) : asDiscarded(item));
   }
   if (Object.values(output).reduce((sum, list) => sum + list.length, 0) > 80) throw fail('C 项目超过上限');
+  return output;
+}
+function validateSingleMainResult(value, sources) {
+  const output = validateRecognitionResult(value, sources, { singleMain: true });
+  if (output.confirmed.length !== 1) throw formatFailure('single 主 C 必须且只能 confirmed 一个');
+  const main = output.confirmed[0], mainName = normalizedNeedle(main.name);
+  if ([...output.candidate, ...output.discarded].some(item => mainName === normalizedNeedle(item.name))) throw formatFailure('single 主 C 不得同时进入其他分类');
+  const sourceByKey = new Map(sources.map(source => [refKey(source), source]));
+  const identitySources = main.sourceRefs.map(value => sourceByKey.get(refKey(value))).filter(Boolean);
+  if (!identitySources.some(source => normalizedMatches(source.content, main.name).length > 0)) throw formatFailure('single 主 C 姓名缺少显式来源');
   return output;
 }
 const promptForSources = (sources, retry = false) => [
@@ -418,9 +573,19 @@ const promptForSources = (sources, retry = false) => [
   ...(retry ? ['上一次返回无法安全归一化。请只修正 JSON 分类、字段名、来源引用和锚点格式；仍只使用下列同一批锁定来源，不补充任何聊天正文或新事实。'] : []),
   ...sources.map(item => `[${item.kind}] ${item.locator}\n${item.content}`),
 ].join('\n\n');
+const promptForSingleMain = (sources, nameHint, retry = false) => [
+  '当前 cardType=single。任务是识别“这张单人角色卡实际扮演的唯一核心人物”，不是挑选开场白里最活跃、最先出现或唯一出现的人。',
+  'confirmed 必须且只能有一个：角色卡实际扮演的主 C。NPC、配角、亲友、敌人、用户角色都只能进入 candidate 或 discarded，绝不能顶替主 C。',
+  `卡文件/酒馆显示名弱提示：${nameHint || '(无)'}。它可能是作品名、线路名、代号或符号，不得仅凭这个提示确认姓名。`,
+  '真实姓名必须从下方显式角色卡正文、冻结开场白、冻结世界书综合识别；不得读取或推断后续聊天正文。',
+  '每项必须返回 name、sourceAnchor、primarySourceRef、sourceRefs；sourceAnchor 必须逐字出现在 primarySourceRef 对应来源中，姓名也必须真实出现在所列显式来源。sourceRefs 应只列出支持该身份归属的证据。',
+  '不要因为某个 NPC 只出现一次、措辞更像姓名或开场更活跃就将其放入 confirmed；不确定唯一主 C 时不要伪造答案。',
+  ...(retry ? ['上一次结果没有满足 single 主 C 策略。只纠正 JSON、唯一主 C 分类、姓名、来源引用和锚点；仍使用同一批锁定来源，不补充聊天正文或新事实。'] : []),
+  ...sources.map(item => `[${item.kind}] ${item.locator}\n${item.content}`),
+].join('\n\n');
 
 // The index is the atomic UI authority. Profiles retain identity/user facts and are reconciled during identify/recovery.
-function createLegacyCRegistryAdapter({ client, contextProvider, routeSource, generatePeopleTask, generateTask, onPhase, isEnabled = () => true } = {}) {
+function createLegacyCRegistryAdapter({ client, formal, contextProvider, routeSource, generatePeopleTask, generateTask, onPhase, currentSingleSnapshotProvider, prepareSnapshot, isEnabled = () => true } = {}) {
   if (!client?.get || !client?.put || typeof contextProvider !== 'function') throw Error('C Registry 依赖不可用');
   const generatePeople = generatePeopleTask ?? generateTask;
   let generation = 0, invalidationEpoch = 0, queue = Promise.resolve(), liveGuard = null;
@@ -443,7 +608,9 @@ function createLegacyCRegistryAdapter({ client, contextProvider, routeSource, ge
   const guard = (token, id, current = () => true) => { if (!current() || token !== generation || chatId() !== id) throw stale(); };
   const guardIdentity = (token, id, expected, current = () => true) => { guard(token, id, current); const actual = captureSnapshot({ contextProvider }); if (!IDENTITY_SNAPSHOT_KEYS.every(key => expected[key] === actual[key])) throw stale(); };
   const readSources = async () => normalizeRegistrySources(await routeSource.collectAnalysisSources());
-  const guardSources = async (token, id) => { if (liveGuard) await liveGuard(); else guard(token, id); };
+  const guardSources = async (token, id) => {
+    if (liveGuard) await liveGuard(); else guard(token, id);
+  };
   const put = async (collection, key, data, revision, validate) => {
     try {
       if (liveGuard) await liveGuard();
@@ -492,6 +659,27 @@ function createLegacyCRegistryAdapter({ client, contextProvider, routeSource, ge
     return false;
   }
 
+  const idlePeople = (id, reason = 'legacy_invalid') => ({
+    schemaVersion: 1, kind: INDEX, chatId: id, status: 'uninitialized', confirmed: [], candidate: [], discarded: [], shelved: [], tombstones: [], legacyInvalid: true, legacyInvalidReason: reason,
+  });
+  async function confirmedProfilesState(id, data, check = async () => {}) {
+    for (const binding of data.confirmed || []) {
+      const profile = await getProfile(id, binding.identityId); await check();
+      if (futureProfile(profile)) return { status: 'future' };
+      if (!validProfile(profile, binding.identityId, id) || profile.data.lifecycle !== 'active'
+        || profile.data.displayName !== binding.displayName || profile.data.sourceKey !== binding.sourceKey) return { status: 'invalid' };
+    }
+    return { status: 'valid' };
+  }
+  async function readableLegacy(id, data, presented, check = async () => {}) {
+    if (data.status !== 'ready' || data.recognitionPolicy !== undefined || !Array.isArray(data.confirmed) || data.confirmed.length === 0) return null;
+    if (!data.confirmed.every(item => validSelection(item.selection)) || !data.confirmed.some(item => item.selection.status === 'selected')) return idlePeople(id, 'legacy_selection_invalid');
+    const profiles = await confirmedProfilesState(id, data, check);
+    if (profiles.status === 'future') return readonlyProfile();
+    if (profiles.status !== 'valid') return idlePeople(id, 'legacy_profile_invalid');
+    return { ...presented, status: 'ready', refreshRecommended: true };
+  }
+
   async function recoverRename(token, id, record, expected = null) {
     const check = async () => { if (liveGuard) await liveGuard(); if (expected) guardIdentity(token, id, expected); else if (!liveGuard) await guardSources(token, id); };
     await check();
@@ -525,18 +713,25 @@ function createLegacyCRegistryAdapter({ client, contextProvider, routeSource, ge
   async function syncProfile(token, id, binding, lifecycle) {
     await guardSources(token, id); const existing = await getProfile(id, binding.identityId); await guardSources(token, id);
     const selected = lifecycle === 'shelved' ? { status: 'unselected' } : selection(binding.selection);
+    const singleMain = validSingleSourceBinding(binding.sourceBinding, binding.identityId);
     if (!existing) {
-      const created = await put(`chat-${id}-people`, binding.identityId, profileData(binding, id, binding.identityId, binding.displayName, [], lifecycle, selected), 0, value => validProfile(value, binding.identityId, id));
+      const created = await put(`chat-${id}-people`, binding.identityId, profileData(binding, id, binding.identityId, binding.displayName, [], lifecycle, selected), 0, value => singleMain ? validSingleProfile(value, binding.identityId, id) : validProfile(value, binding.identityId, id));
       await guardSources(token, id); return created.futureReadonly ? { readonly: true } : created.conflict ? { conflict: true } : { profile: created };
     }
     if (futureProfile(existing)) return { readonly: true };
     if (!validProfile(existing, binding.identityId, id)) throw fail('人物档案与索引绑定不一致');
-    if (existing.data.displayName !== binding.displayName) return { conflict: true, pending: 'rename' };
-    const next = { ...existing.data, selection: selected, sourceAnchor: binding.sourceAnchor, primarySourceRef: ref(binding.primarySourceRef), sourceKey: binding.sourceKey, sourceRefs: mergeProfileSourceRefs(existing.data.sourceRefs, binding.sourceRefs), lifecycle };
-    const unchanged = existing.data.lifecycle === next.lifecycle && existing.data.selection.status === next.selection.status && existing.data.sourceKey === next.sourceKey && existing.data.sourceAnchor === next.sourceAnchor
-      && refKey(existing.data.primarySourceRef) === refKey(next.primarySourceRef) && sameRefs(existing.data.sourceRefs, next.sourceRefs);
+    if (!singleMain && existing.data.displayName !== binding.displayName) return { conflict: true, pending: 'rename' };
+    const displayName = singleMain && hasUserRename(existing) ? existing.data.displayName : binding.displayName;
+    const next = {
+      ...existing.data, displayName, selection: selected, sourceAnchor: binding.sourceAnchor, primarySourceRef: ref(binding.primarySourceRef), sourceKey: binding.sourceKey,
+      sourceRefs: mergeProfileSourceRefs(existing.data.sourceRefs, binding.sourceRefs), lifecycle,
+      ...(singleMain ? { sourceBinding: { kind: 'single-card-main', cardId: binding.identityId } } : {}),
+    };
+    const unchanged = existing.data.displayName === next.displayName && existing.data.lifecycle === next.lifecycle && existing.data.selection.status === next.selection.status && existing.data.sourceKey === next.sourceKey && existing.data.sourceAnchor === next.sourceAnchor
+      && refKey(existing.data.primarySourceRef) === refKey(next.primarySourceRef) && sameRefs(existing.data.sourceRefs, next.sourceRefs)
+      && (!singleMain || validSingleSourceBinding(existing.data.sourceBinding, binding.identityId));
     if (unchanged) return { profile: existing };
-    const updated = await put(`chat-${id}-people`, binding.identityId, next, existing.revision, value => validProfile(value, binding.identityId, id));
+    const updated = await put(`chat-${id}-people`, binding.identityId, next, existing.revision, value => singleMain ? validSingleProfile(value, binding.identityId, id) : validProfile(value, binding.identityId, id));
     await guardSources(token, id); return updated.futureReadonly ? { readonly: true } : updated.conflict ? { conflict: true } : { profile: updated };
   }
 
@@ -571,7 +766,11 @@ function createLegacyCRegistryAdapter({ client, contextProvider, routeSource, ge
       data.shelved[index] = { ...binding, displayName: synced.profile.data.displayName };
     }
     await guardSources(token, id);
-    const readyData = { ...data, status: 'ready', contractVersion: pendingRecognition?.contractVersion ?? data.contractVersion, pendingDelete: undefined, pendingRestore: undefined, pendingRecognition: undefined };
+    const readyData = {
+      ...data, status: 'ready', contractVersion: pendingRecognition?.contractVersion ?? data.contractVersion,
+      recognitionPolicy: pendingRecognition?.recognitionPolicy ?? data.recognitionPolicy,
+      pendingDelete: undefined, pendingRestore: undefined, pendingRecognition: undefined,
+    };
     if (JSON.stringify(readyData) === JSON.stringify(record.data)) return { status: 'ready', index: readyData, reused: true };
     const ready = await put(`chat-${id}`, INDEX, readyData, record.revision, value => validateRegistryIndex(value, id) && value.data.status === 'ready');
     await guardSources(token, id); return ready.conflict ? { status: 'conflict', recoverable: true } : { status: 'ready', index: ready.data, reused: true };
@@ -600,7 +799,12 @@ function createLegacyCRegistryAdapter({ client, contextProvider, routeSource, ge
   };
   const dedupeConfirmed = items => { const identities = new Set(), keys = new Set(); return items.filter(item => { const key = sourceKey(item); if (identities.has(item.identityId) || keys.has(key)) return false; identities.add(item.identityId); keys.add(key); return true; }); };
 
-  async function identify(token, expectedSnapshot, expectedSources, expectedWarnings, callPhase, current) {
+  const singleSlot = (data, cardId) => [...(data?.confirmed || []), ...legacyShelved(data)].find(item => item.identityId === cardId && validSingleSourceBinding(item.sourceBinding, cardId));
+  const currentSinglePolicy = (data, cardId, sourceFingerprint) => sameSinglePolicy(data?.recognitionPolicy) && data.sourceFingerprint === sourceFingerprint
+    && Boolean(singleSlot(data, cardId));
+  const hasUserRename = profile => Array.isArray(profile?.data?.userFacts) && profile.data.userFacts.some(item => item?.provenance === 'user.displayName' && item?.locked === true);
+
+  async function identify(token, expectedSnapshot, expectedSources, expectedWarnings, callPhase, current, strategy = {}) {
     const expected = expectedSnapshot || captureSnapshot({ contextProvider }), id = expected.chatId;
     if (!uuid(id)) throw fail('聊天 UUID 无效');
     if (expectedSources && (!['ready', 'route_ready'].includes(expected.sourceStatus) || expectedSources.length === 0)) return { status: expected.sourceStatus || 'route_unavailable' };
@@ -609,7 +813,7 @@ function createLegacyCRegistryAdapter({ client, contextProvider, routeSource, ge
     if (expected.sourceFingerprint && expected.sourceFingerprint !== fingerprint) throw stale();
     await liveGuard(); let old = await getIndex(id); await liveGuard();
     if (old && !validateRegistryIndex(old, id)) throw fail('people-index 校验失败');
-    if (old && await hasFutureProfile(id, old.data, liveGuard)) return readonlyProfile();
+    if (old && strategy.cardType !== 'single' && await hasFutureProfile(id, old.data, liveGuard)) return readonlyProfile();
     if (old?.data?.status === 'renaming') {
       const renamed = await recoverRename(token, id, old);
       if (renamed.status !== 'ready') return renamed;
@@ -617,7 +821,12 @@ function createLegacyCRegistryAdapter({ client, contextProvider, routeSource, ge
       if (!old || !validateRegistryIndex(old, id)) throw fail('people-index 校验失败');
     }
     if (old?.data?.status === 'preparing' && validPendingRecognition(old.data.pendingRecognition)
-      && old.data.pendingRecognition.contractVersion === REGISTRY_CONTRACT_VERSION && old.data.pendingRecognition.sourceFingerprint === fingerprint) {
+      && old.data.pendingRecognition.contractVersion === REGISTRY_CONTRACT_VERSION && old.data.pendingRecognition.sourceFingerprint === fingerprint
+      && ((strategy.cardType !== 'single' && old.data.pendingRecognition.recognitionPolicy === undefined)
+        || (strategy.cardType === 'single' && sameSinglePolicy(old.data.pendingRecognition.recognitionPolicy)
+          && old.data.pendingRecognition.confirmed.length === 1
+          && old.data.pendingRecognition.confirmed[0].identityId === strategy.cardId
+          && validSingleSourceBinding(old.data.pendingRecognition.confirmed[0].sourceBinding, strategy.cardId)))) {
       const recovered = await recover(token, id, old);
       return expectedWarnings?.length && recovered?.index ? { ...recovered, warnings: expectedWarnings.slice(0, 80) } : recovered;
     }
@@ -627,35 +836,63 @@ function createLegacyCRegistryAdapter({ client, contextProvider, routeSource, ge
       old = await getIndex(id); await liveGuard();
       if (!old || !validateRegistryIndex(old, id)) throw fail('people-index 校验失败');
     }
-    if (old?.data?.status === 'ready' && await hasUnintendedNameSplit(id, old.data, liveGuard)) return renameConflict();
-    if (old?.data?.sourceFingerprint === fingerprint && old.data.contractVersion === REGISTRY_CONTRACT_VERSION && ['ready', 'preparing', 'deleting', 'restoring', 'renaming'].includes(old.data.status)) return recover(token, id, old);
+    if (old?.data?.status === 'ready' && strategy.cardType !== 'single' && await hasUnintendedNameSplit(id, old.data, liveGuard)) return renameConflict();
+    if (strategy.cardType === 'single' && old?.data?.status === 'ready' && currentSinglePolicy(old.data, strategy.cardId, fingerprint)) {
+      const singleProfile = await getProfile(id, strategy.cardId); await liveGuard();
+      if (futureProfile(singleProfile)) return readonlyProfile();
+      if (validSingleProfile(singleProfile, strategy.cardId, id)) return recover(token, id, old);
+    }
+    if (strategy.cardType !== 'single' && old?.data?.sourceFingerprint === fingerprint && old.data.contractVersion === REGISTRY_CONTRACT_VERSION && ['ready', 'preparing', 'deleting', 'restoring', 'renaming'].includes(old.data.status)) return recover(token, id, old);
     if (typeof generatePeople !== 'function') throw fail('宿主不支持结构化生成');
     await guardSources(token, id); (callPhase || onPhase)?.('waiting_ai');
     let normalized;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    const attemptLimit = strategy.sourceCatalogPermit ? 1 : 2;
+    for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
       try {
-        const response = await generatePeople({ includeCharacterCard: false, worldInfoSource: 'none', substituteMacros: false, taskMessages: [{ role: 'user', content: promptForSources(sources, attempt === 1) }], jsonSchema: { name: 'qianqianjie_c_registry', value: C_REGISTRY_SCHEMA, strict: true } });
+        const singleMain = strategy.cardType === 'single';
+        const response = await generatePeople({ includeCharacterCard: false, worldInfoSource: 'none', substituteMacros: false, taskMessages: [{ role: 'user', content: singleMain ? promptForSingleMain(sources, strategy.cardName, attempt === 1) : promptForSources(sources, attempt === 1) }], jsonSchema: { name: singleMain ? 'qianqianjie_single_main_registry_v1' : 'qianqianjie_c_registry', value: singleMain ? SINGLE_C_REGISTRY_SCHEMA : C_REGISTRY_SCHEMA, strict: true } });
         await liveGuard(); await guardSources(token, id);
-        normalized = normalizeExternalRecognitionResult(unwrapGenerateTaskResult(response), sources);
-        validateRecognitionResult(normalized.value, sources);
+        normalized = normalizeExternalRecognitionResult(unwrapGenerateTaskResult(response), sources, { singleMain });
+        if (singleMain) validateSingleMainResult(normalized.value, sources); else validateRecognitionResult(normalized.value, sources);
         break;
       } catch (error) {
         await liveGuard(); await guardSources(token, id);
-        if (!error?.retryableRecognitionFormat || attempt === 1) throw error;
+        if (!error?.retryableRecognitionFormat || attempt === attemptLimit - 1) throw error;
       }
     }
-    const result = validateRecognitionResult(normalized.value, sources), shelved = legacyShelved(old?.data), resolver = createBindingResolver(result.confirmed, old, shelved);
-    const preserved = (old?.data?.confirmed || []).filter(oldItem => result.confirmed.some(item => resolver.ambiguous(item) && bindingPrimary(item) === bindingPrimary(oldItem)));
-    const confirmed = dedupeConfirmed([
-      ...preserved.map(item => currentBinding(item)),
-      ...result.confirmed.filter(item => !resolver.ambiguous(item) && !shelved.some(value => value.identityId === resolver.prior(item)?.identityId)).map(item => {
-        const prior = resolver.prior(item);
-        return currentBinding({ identityId: prior?.identityId || newUuid(), displayName: prior?.displayName || item.name, sourceAnchor: item.sourceAnchor, primarySourceRef: item.primarySourceRef, sourceKey: sourceKey(item), sourceRefs: item.sourceRefs, selection: selection(prior?.selection) });
-      }),
-    ]);
-    const candidate = [...result.candidate, ...result.confirmed.filter(item => resolver.ambiguous(item)).map(asCandidate)];
+    const result = strategy.cardType === 'single' ? validateSingleMainResult(normalized.value, sources) : validateRecognitionResult(normalized.value, sources);
+    const shelved = legacyShelved(old?.data), resolver = createBindingResolver(result.confirmed, old, shelved);
+    let confirmed, candidate;
+    if (strategy.cardType === 'single') {
+      const main = result.confirmed[0], cardId = strategy.cardId;
+      await guardSources(token, id); const existing = await getProfile(id, cardId); await guardSources(token, id);
+      if (futureProfile(existing)) return readonlyProfile();
+      if (existing && !validProfile(existing, cardId, id)) throw fail('single 主 C 档案绑定无效');
+      const prior = [...(old?.data?.confirmed || []), ...shelved].find(item => item.identityId === cardId);
+      confirmed = [currentBinding({
+        identityId: cardId, displayName: hasUserRename(existing) ? existing.data.displayName : main.name,
+        sourceAnchor: main.sourceAnchor, primarySourceRef: main.primarySourceRef, sourceKey: sourceKey(main), sourceRefs: main.sourceRefs,
+        selection: prior ? selection(prior.selection) : { status: 'selected' }, sourceBinding: { kind: 'single-card-main', cardId },
+      })];
+      candidate = result.candidate;
+    } else {
+      const preserved = (old?.data?.confirmed || []).filter(oldItem => result.confirmed.some(item => resolver.ambiguous(item) && bindingPrimary(item) === bindingPrimary(oldItem)));
+      confirmed = dedupeConfirmed([
+        ...preserved.map(item => currentBinding(item)),
+        ...result.confirmed.filter(item => !resolver.ambiguous(item) && !shelved.some(value => value.identityId === resolver.prior(item)?.identityId)).map(item => {
+          const prior = resolver.prior(item);
+          return currentBinding({ identityId: prior?.identityId || newUuid(), displayName: prior?.displayName || item.name, sourceAnchor: item.sourceAnchor, primarySourceRef: item.primarySourceRef, sourceKey: sourceKey(item), sourceRefs: item.sourceRefs, selection: selection(prior?.selection) });
+        }),
+      ]);
+      candidate = [...result.candidate, ...result.confirmed.filter(item => resolver.ambiguous(item)).map(asCandidate)];
+    }
     const base = old ? normalizedData(old.data) : { schemaVersion: 1, kind: INDEX, chatId: id, sourceFingerprint: fingerprint, status: 'ready', confirmed: [], candidate: [], discarded: [], shelved: [], tombstones: [] };
-    const preparing = { ...base, status: 'preparing', pendingDelete: undefined, pendingRestore: undefined, pendingRename: undefined, pendingRecognition: { contractVersion: REGISTRY_CONTRACT_VERSION, sourceFingerprint: fingerprint, confirmed, candidate, discarded: result.discarded, shelved } };
+    const pendingRecognition = {
+      contractVersion: REGISTRY_CONTRACT_VERSION, sourceFingerprint: fingerprint, confirmed, candidate, discarded: result.discarded,
+      shelved: strategy.cardType === 'single' ? [] : shelved,
+      ...(strategy.cardType === 'single' ? { recognitionPolicy: { ...SINGLE_MAIN_RECOGNITION_POLICY } } : {}),
+    };
+    const preparing = { ...base, status: 'preparing', recognitionPolicy: strategy.cardType === 'single' ? base.recognitionPolicy : undefined, pendingDelete: undefined, pendingRestore: undefined, pendingRename: undefined, pendingRecognition };
     (callPhase || onPhase)?.('saving_people'); await guardSources(token, id);
     const saved = await put(`chat-${id}`, INDEX, preparing, old?.revision || 0, value => validateRegistryIndex(value, id) && value.data.status === 'preparing');
     if (saved.conflict) return { status: 'conflict', recoverable: true };
@@ -689,18 +926,59 @@ function createLegacyCRegistryAdapter({ client, contextProvider, routeSource, ge
   });
 
   return {
-    getPeople: () => enqueue(async (entryEpoch, current) => {
+    getPeople: (options = {}) => enqueue(async (entryEpoch, current) => {
       try {
         if (!current()) throw stale();
         const expected = captureSnapshot({ contextProvider }), id = chatId(), check = async () => { if (!current()) throw stale(); const actual = captureSnapshot({ contextProvider }); if (!IDENTITY_SNAPSHOT_KEYS.every(key => expected[key] === actual[key])) throw stale(); };
         await check(); const record = await getIndex(id); await check();
         if (!record) return { schemaVersion: 1, kind: INDEX, chatId: id, status: 'uninitialized', confirmed: [], candidate: [], discarded: [], shelved: [], tombstones: [] };
-        if (!validateRegistryIndex(record, id)) throw fail('people-index 校验失败');
-        if (await hasUnintendedNameSplit(id, record.data, check)) return renameConflictPeople(record.data);
-        return presentationIndex(record.data);
+        if (!validateRegistryIndex(record, id)) {
+          const future = envelope(record) && (Number(record.data?.schemaVersion) > 1 || Number(record.data?.contractVersion) > REGISTRY_CONTRACT_VERSION);
+          return future ? readonlyProfile() : idlePeople(id, 'legacy_index_invalid');
+        }
+        const presented = presentationIndex(record.data);
+        let single = false;
+        if (typeof formal?.getFormalState === 'function') {
+          const runtimeSnapshot = options.runtimeSnapshot && typeof options.runtimeSnapshot === 'object' ? options.runtimeSnapshot : null;
+          const state = runtimeSnapshot?.prepared?.formalState || runtimeSnapshot?.formalState || await formal.getFormalState(); await check();
+          const cardType = state?.cardType ?? state?.formal?.cardType, cardId = state?.cardId;
+          single = cardType === 'single';
+          if (cardType === 'single') {
+            if (record.data.recognitionPolicy === undefined) {
+              const legacy = await readableLegacy(id, record.data, presented, check);
+              if (legacy) return legacy;
+            }
+            let prepared = runtimeSnapshot?.prepared;
+            if (!prepared && typeof prepareSnapshot === 'function') {
+              prepared = await prepareSnapshot({ guard: check, formalState: state });
+              if (runtimeSnapshot) runtimeSnapshot.prepared = prepared;
+            }
+            const currentSources = prepared?.snapshot ? {
+              cardId: prepared.strategy?.cardId, cardType: prepared.strategy?.cardType,
+              sourceFingerprint: prepared.snapshot.sourceFingerprint, status: prepared.snapshot.sourceStatus,
+            } : typeof currentSingleSnapshotProvider === 'function' ? await currentSingleSnapshotProvider({ guard: check, formalState: state }) : null;
+            await check();
+            if (!currentSources || !['ready', 'route_ready'].includes(currentSources.status) || currentSources.cardType !== 'single'
+              || currentSources.cardId !== cardId || !uuid(cardId) || !currentSources.sourceFingerprint) return { ...presented, status: 'stale' };
+            if (record.data.status === 'preparing') {
+              const pending = record.data.pendingRecognition;
+              return validPendingRecognition(pending) && sameSinglePolicy(pending.recognitionPolicy) && pending.confirmed[0].identityId === cardId
+                && pending.sourceFingerprint === currentSources.sourceFingerprint ? presented : { ...presented, status: 'stale' };
+            }
+            if (!currentSinglePolicy(record.data, cardId, currentSources.sourceFingerprint)) return { ...presented, status: 'stale' };
+            const profile = await getProfile(id, cardId); await check();
+            if (!validSingleProfile(profile, cardId, id)) return { ...presented, status: 'stale' };
+          }
+        }
+        if (!single && await hasUnintendedNameSplit(id, record.data, check)) return renameConflictPeople(record.data);
+        if (!single && record.data.contractVersion !== REGISTRY_CONTRACT_VERSION) {
+          const legacy = await readableLegacy(id, record.data, presented, check);
+          if (legacy) return legacy;
+        }
+        return presented;
       } catch (error) { if (error.stale) return { status: 'stale' }; throw error; }
     }),
-    identify: (options = {}) => enqueue(async (_entryEpoch, current) => { if (!current()) return { status: 'stale' }; const token = ++generation; try { return await identify(token, options.expectedSnapshot, options.expectedSources, options.expectedWarnings, options.onPhase, current); } catch (error) { if (error.stale) return { status: 'stale' }; throw error; } finally { liveGuard = null; } }),
+    identify: (options = {}) => enqueue(async (_entryEpoch, current) => { if (!current()) return { status: 'stale' }; const token = ++generation; try { return await identify(token, options.expectedSnapshot, options.expectedSources, options.expectedWarnings, options.onPhase, current, options.strategy); } catch (error) { if (error.stale) return { status: 'stale' }; throw error; } finally { liveGuard = null; } }),
     editDisplayName: ({ identityId, displayName } = {}) => enqueue(async (_entryEpoch, current) => {
       const token = ++generation, expected = captureSnapshot({ contextProvider }), id = expected.chatId, name = typeof displayName === 'string' ? displayName.trim() : '';
       if (!uuid(identityId) || name.length < 1 || name.length > 120) throw fail('显示名长度必须为 1..120');
