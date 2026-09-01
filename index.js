@@ -12,6 +12,8 @@ import { createArchiveV2Composition } from './src/archive-v2-composition.js';
 import { createArchiveV2MemoryComposition } from './src/archive-v2-memory-composition.js';
 import { createArchiveV2FollowedProfileComposition } from './src/archive-v2-followed-profile-composition.js';
 import { createArchiveV2DossierComposition } from './src/archive-v2-dossier-composition.js';
+import { createArchiveV2BondComposition } from './src/archive-v2-bond-composition.js';
+import { createArchiveV2SourcePermissionController } from './src/archive-v2-source-permission.js';
 
 const hostContext = () => globalThis.Luker?.getContext?.();
 const contextProvider = () => ({ ...hostContext(), userAvatar: user_avatar });
@@ -29,23 +31,41 @@ const taskRouter = createArchiveV2TaskRouter({
 const apiTools = createApiTools({ resolver: apiResolver, compactClient, isEnabled: settings.isEnabled });
 const session = createArchiveV2Session({ contextProvider, isEnabled: settings.isEnabled });
 const archiveV2 = createArchiveV2Composition({ client: backendClient, contextProvider, isEnabled: settings.isEnabled });
+const sourcePermissions = createArchiveV2SourcePermissionController({ settings, contextProvider });
+const sourceSettings = () => settings.sourcePermissionSnapshot();
+const sanitizerOptions = () => ({ keepTags: settings.get().sourceKeepTags, extraTags: settings.get().sourceExtraTags });
+const generalPrompt = () => settings.get().generalPrompt;
 const archiveV2Memory = createArchiveV2MemoryComposition({
   client: backendClient,
   contextProvider,
   generatePrimaryTask: taskRouter.generatePrimaryTask,
   generateUtilityTask: taskRouter.generateUtilityTask,
   isEnabled: settings.isEnabled,
+  sanitizerOptions,
+  generalPrompt,
 });
 const archiveV2FollowedProfiles = createArchiveV2FollowedProfileComposition({
   client: backendClient,
   contextProvider,
   generateUtilityTask: taskRouter.generateUtilityTask,
   isEnabled: settings.isEnabled,
+  permissionSettings: sourceSettings,
+  sanitizerOptions,
+  generalPrompt,
 });
 const archiveV2Dossier = createArchiveV2DossierComposition({
   client: backendClient,
   contextProvider,
   isEnabled: settings.isEnabled,
+});
+const archiveV2Bonds = createArchiveV2BondComposition({
+  client: backendClient,
+  contextProvider,
+  generateUtilityTask: taskRouter.generateUtilityTask,
+  isEnabled: settings.isEnabled,
+  permissionSettings: sourceSettings,
+  sanitizerOptions,
+  generalPrompt,
 });
 
 let ui;
@@ -59,10 +79,12 @@ ui = bootstrap({
   archiveV2Memory,
   archiveV2FollowedProfiles,
   archiveV2Dossier,
+  archiveV2Bonds,
+  sourcePermissions,
 });
 lifecycle = createArchiveV2Lifecycle({
   session,
-  compositions: [archiveV2, archiveV2Memory, archiveV2FollowedProfiles, archiveV2Dossier],
+  compositions: [archiveV2, archiveV2Memory, archiveV2FollowedProfiles, archiveV2Dossier, archiveV2Bonds],
   aborters: [taskRouter, apiTools],
   isEnabled: settings.isEnabled,
   getUi: () => ui,

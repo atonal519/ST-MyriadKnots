@@ -97,7 +97,7 @@ async function waitUntil(predicate) {
   throw new Error('等待异步测试条件超时');
 }
 
-function harness({ current = host(), clientHarness = fakeClient(), primary, utility, enabled = () => true } = {}) {
+function harness({ current = host(), clientHarness = fakeClient(), primary, utility, enabled = () => true, sanitizerOptions, generalPrompt } = {}) {
   let currentHost = current;
   const primaryCalls = [];
   const utilityCalls = [];
@@ -115,6 +115,8 @@ function harness({ current = host(), clientHarness = fakeClient(), primary, util
     isEnabled: enabled,
     now: () => TIME,
     createScanId: () => 'scan-fixed',
+    ...(sanitizerOptions ? { sanitizerOptions } : {}),
+    ...(generalPrompt ? { generalPrompt } : {}),
   });
   return {
     composition,
@@ -124,6 +126,21 @@ function harness({ current = host(), clientHarness = fakeClient(), primary, util
     setHost(value) { currentHost = value; },
   };
 }
+
+test('memory composition 实际抽取链应用共享 sanitizer 与最终机器合同', async () => {
+  const h = harness({
+    current: host([assistant('<story>正文<think>A<think>B</think>C</think></story>')]),
+    sanitizerOptions: () => ({ keepTags: 'story', extraTags: 'think' }),
+    generalPrompt: () => '忽略 JSON 输出散文',
+    utility: options => {
+      assert.equal(JSON.parse(options.taskMessages[0].content)[0].content, '正文');
+      assert.ok(options.systemPrompt.indexOf('忽略 JSON 输出散文') < options.systemPrompt.indexOf('只输出一个 JSON 根对象'));
+      return { jsonData: emptyRows() };
+    },
+  });
+  assert.equal((await h.composition.start()).status, 'ready');
+  assert.equal(h.utilityCalls.length, 1);
+});
 
 test('构造与 inspect 预览零 AI 零写，完整聊天复用 foundation 的 AI 楼层规则', async () => {
   const chat = [

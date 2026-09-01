@@ -15,6 +15,9 @@ export function createArchiveV2InitializationView({
   dossier,
   documentRef = globalThis.document,
   dossierViewFactory = createArchiveV2DossierView,
+  sourcePermissions,
+  sourcePermissionView,
+  onOpenSourceSettings,
 } = {}) {
   for (const [value, label] of [
     [composition?.readArchive, 'composition.readArchive'],
@@ -43,6 +46,7 @@ export function createArchiveV2InitializationView({
   let profileCommitPromise = null;
   let pollTimer = null;
   let errorText = '';
+  let pendingSourceTask = '';
   const selection = new Map();
   let selectionKey = '';
 
@@ -94,14 +98,26 @@ export function createArchiveV2InitializationView({
     const section = element('section', 'qqj-v2-memory');
     if (errorText) section.append(element('p', 'qqj-v2-error', errorText));
     if (result.status === 'uninitialized') {
+      if (sourcePermissions && !sourcePermissions.isCurrentConfirmed()) {
+        section.append(sourcePermissionView.renderPreflight({
+          onOpenSettings: onOpenSourceSettings,
+          onContinue: () => { sourcePermissions.confirmCurrent(); pendingSourceTask = ''; startMemory(); },
+        }));
+        return section;
+      }
       section.append(heading('建立 V2 历史记忆', '扫描范围固定为点击时截止的全部有效 AI 正文；关闭面板不会中断。'));
       section.append(progress(result));
       if (result.overRecommendedLimit) section.append(element('p', 'qqj-v2-warning', '历史较长，扫描会分批在后台持续进行。'));
       section.append(action('开始扫描', startMemory, busy()));
       return section;
     }
-    if (['running', 'writing_batch', 'preparing'].includes(result.status)) {
+    const resumable = ['scanning', 'interrupted'].includes(result.status);
+    if (['running', 'writing_batch', 'preparing'].includes(result.status) || (resumable && memoryStartPromise)) {
       section.append(heading('正在扫描历史正文', '任务会继续使用点击时固定的截止楼层；新消息不会被追加入本轮。'), progress(result));
+      return section;
+    }
+    if (resumable) {
+      section.append(heading('历史扫描等待继续', '已完成批次仍在；再次明确点击后，会从下一批继续使用。'), progress(result), action('继续扫描', startMemory, busy()));
       return section;
     }
     if (result.status === 'error') {
@@ -160,7 +176,7 @@ export function createArchiveV2InitializationView({
   }
 
   function renderReady() {
-    return dossierView.render({
+    const dossierNode = dossierView.render({
       readResult,
       followedProfileResult: followedResult,
       busy: busy(),
@@ -170,9 +186,16 @@ export function createArchiveV2InitializationView({
         followedResult = profileStateFromArchive(result.archive);
         render();
       },
-      generateFollowedProfiles,
+      generateFollowedProfiles: requestFollowedProfiles,
       commitFollowedProfiles,
     });
+    if (!pendingSourceTask) return dossierNode;
+    const wrapper = element('div', 'qqj-v2-ready-with-preflight');
+    wrapper.append(sourcePermissionView.renderPreflight({
+      onOpenSettings: onOpenSourceSettings,
+      onContinue: () => { sourcePermissions.confirmCurrent(); pendingSourceTask = ''; generateFollowedProfiles(); },
+    }), dossierNode);
+    return wrapper;
   }
 
   function render() {
@@ -207,12 +230,15 @@ export function createArchiveV2InitializationView({
   function settleMemory(slot, promise, { commit = false } = {}) {
     promise.then(result => ({ ok: true, result }), () => ({ ok: false, result: { status: 'error' } })).then(async outcome => {
       if (slot() !== promise) return;
+      const finishingMemoryStart = memoryStartPromise === promise;
       if (memoryStartPromise === promise) memoryStartPromise = null;
       if (peoplePromise === promise) peoplePromise = null;
       if (commitPromise === promise) commitPromise = null;
       if (commit && outcome.ok && outcome.result?.status === 'created') {
         readResult = { status: 'ready', archive: outcome.result.archive, revision: outcome.result.revision, warnings: outcome.result.warnings ?? [] };
         followedResult = profileStateFromArchive(outcome.result.archive);
+      } else if (finishingMemoryStart && outcome.ok && ['disabled', 'stale', 'source_changed', 'conflict'].includes(outcome.result?.status)) {
+        memoryResult = outcome.result;
       } else {
         try { memoryResult = await memory.inspect(); }
         catch { memoryResult = { status: 'error' }; }
@@ -274,6 +300,14 @@ export function createArchiveV2InitializationView({
     try { followedResult = followedProfiles.getState(); } catch { followedResult = { status: 'running' }; }
     render(); settleProfile(() => profilePromise, promise);
   }
+  function requestFollowedProfiles() {
+    if (sourcePermissions && !sourcePermissions.isCurrentConfirmed()) {
+      pendingSourceTask = 'profile';
+      render();
+      return;
+    }
+    generateFollowedProfiles();
+  }
   function commitFollowedProfiles() {
     if (busy()) return;
     const promise = Promise.resolve().then(() => followedProfiles.commit());
@@ -305,6 +339,7 @@ export function createArchiveV2InitializationView({
     root.hidden = false;
     const token = ++epoch;
     errorText = '';
+    pendingSourceTask = '';
     readResult = { status: 'loading' };
     render();
     let result;

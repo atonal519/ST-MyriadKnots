@@ -1,11 +1,19 @@
 import { parseJsonOutput } from './compact-api-client.js';
 import { createArchiveV2MemoryBatch } from './archive-v2-memory-foundation.js';
-import { sanitizeMemoryContent } from './memory-content-sanitizer.js';
+import { sanitizeArchiveV2SourceContent } from './memory-content-sanitizer.js';
+import { composeArchiveV2SystemPrompt } from './archive-v2-prompt.js';
 
 export const ARCHIVE_V2_MEMORY_EXTRACTION_SCHEMA_VERSION = 1;
 
 const EMPTY_ROWS = Object.freeze({ people: Object.freeze([]), facts: Object.freeze([]), relations: Object.freeze([]), events: Object.freeze([]) });
 const TASK_METADATA_KEYS = Object.freeze(['source', 'sourceLabel', 'model', 'finishReason']);
+const ROW_KEYS = Object.freeze({
+  people: Object.freeze(['localId', 'displayName', 'aliases', 'sourceFloors']),
+  facts: Object.freeze(['subjectLocalId', 'category', 'value', 'sourceFloors']),
+  relations: Object.freeze(['subjectLocalId', 'objectKind', 'objectLocalId', 'category', 'summary', 'sourceFloors']),
+  events: Object.freeze(['localId', 'title', 'summary', 'participantLocalIds', 'involvesUser', 'significance', 'sourceFloors']),
+});
+const NORMALIZATION_LIMITS = Object.freeze({ aliases: 100, participantLocalIds: 500, sourceFloors: 1000 });
 
 export class ArchiveV2MemoryExtractionError extends Error {
   constructor(message, code = 'ARCHIVE_V2_MEMORY_EXTRACTION_INVALID') {
@@ -86,10 +94,79 @@ function unwrapTaskResult(response) {
   return { rows: parseJsonOutput(rows, { finishReason }), taskMetadata: metadata };
 }
 
-function promptRows(plan) {
+function normalizedAliasKey(value) {
+  return value.normalize('NFKC').trim().toLowerCase();
+}
+
+function normalizeAliases(value, displayName) {
+  if (!Array.isArray(value) || value.length > NORMALIZATION_LIMITS.aliases) return value;
+  const seen = new Set(typeof displayName === 'string' ? [normalizedAliasKey(displayName)] : []);
+  const aliases = [];
+  for (const alias of value) {
+    if (typeof alias !== 'string') {
+      aliases.push(alias);
+      continue;
+    }
+    const trimmed = alias.trim();
+    if (!trimmed) continue;
+    const key = normalizedAliasKey(trimmed);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    aliases.push(trimmed);
+  }
+  return aliases;
+}
+
+function normalizeSourceFloors(value) {
+  if (!Array.isArray(value) || value.length > NORMALIZATION_LIMITS.sourceFloors || !value.every(Number.isSafeInteger)) return value;
+  return [...new Set(value)].sort((left, right) => left - right);
+}
+
+function normalizeParticipantLocalIds(value) {
+  if (!Array.isArray(value) || value.length > NORMALIZATION_LIMITS.participantLocalIds) return value;
+  const seen = new Set();
+  const localIds = [];
+  for (const localId of value) {
+    if (typeof localId !== 'string') {
+      localIds.push(localId);
+      continue;
+    }
+    const trimmed = localId.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    localIds.push(trimmed);
+  }
+  return localIds;
+}
+
+function normalizeRow(kind, value) {
+  if (!isPlainObject(value)) return value;
+  const row = {};
+  for (const key of ROW_KEYS[kind]) {
+    if (Object.hasOwn(value, key)) row[key] = value[key];
+  }
+  if (kind === 'people' && Object.hasOwn(row, 'aliases')) row.aliases = normalizeAliases(row.aliases, row.displayName);
+  if (kind === 'events' && Object.hasOwn(row, 'participantLocalIds')) {
+    row.participantLocalIds = normalizeParticipantLocalIds(row.participantLocalIds);
+  }
+  if (Object.hasOwn(row, 'sourceFloors')) row.sourceFloors = normalizeSourceFloors(row.sourceFloors);
+  return row;
+}
+
+export function normalizeArchiveV2MemoryExtractionRows(value) {
+  if (!isPlainObject(value)) return value;
+  const rows = {};
+  for (const kind of Object.keys(ROW_KEYS)) {
+    if (!Object.hasOwn(value, kind)) continue;
+    rows[kind] = Array.isArray(value[kind]) ? value[kind].map(row => normalizeRow(kind, row)) : value[kind];
+  }
+  return rows;
+}
+
+function promptRows(plan, sanitizerOptions) {
   return JSON.stringify(plan.floors.map(floor => ({
     sourceFloor: floor.sourceIndex,
-    content: sanitizeMemoryContent(floor.content),
+    content: sanitizeArchiveV2SourceContent(floor.content, sanitizerOptions),
   })));
 }
 
@@ -122,7 +199,7 @@ function cloneAndValidateInput(manifest, plan, createdAt) {
   }
 }
 
-export function createArchiveV2MemoryBatchExtractor({ contextProvider, generateTask, isEnabled = true } = {}) {
+export function createArchiveV2MemoryBatchExtractor({ contextProvider, generateTask, isEnabled = true, sanitizerOptions = () => ({}), generalPrompt = () => '' } = {}) {
   if (typeof contextProvider !== 'function') throw new TypeError('contextProvider 必须是函数');
   if (typeof generateTask !== 'function') throw new TypeError('generateTask 必须是函数');
   if (typeof isEnabled !== 'boolean' && typeof isEnabled !== 'function') throw new TypeError('isEnabled 无效');
@@ -168,8 +245,8 @@ export function createArchiveV2MemoryBatchExtractor({ contextProvider, generateT
           includeCharacterCard: false,
           worldInfoSource: 'none',
           substituteMacros: false,
-          systemPrompt: systemPrompt(),
-          taskMessages: [{ role: 'user', content: promptRows(safePlan) }],
+          systemPrompt: composeArchiveV2SystemPrompt({ generalPrompt, machineContract: systemPrompt() }),
+          taskMessages: [{ role: 'user', content: promptRows(safePlan, sanitizerOptions()) }],
           signal: controller.signal,
           maxTokens: 30000,
           temperature: 0.1,
@@ -185,6 +262,7 @@ export function createArchiveV2MemoryBatchExtractor({ contextProvider, generateT
       let batch;
       try {
         ({ rows, taskMetadata } = unwrapTaskResult(response));
+        rows = normalizeArchiveV2MemoryExtractionRows(rows);
         batch = createArchiveV2MemoryBatch({ manifest: safeManifest, plan: safePlan, rows, createdAt });
       } catch {
         if (!current(operation)) return { status: 'stale' };

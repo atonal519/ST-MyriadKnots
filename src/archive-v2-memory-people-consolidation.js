@@ -1,5 +1,6 @@
 import { parseJsonOutput } from './compact-api-client.js';
 import { createArchiveV2MemoryPeopleResult } from './archive-v2-memory-people-foundation.js';
+import { composeArchiveV2SystemPrompt } from './archive-v2-prompt.js';
 
 export class ArchiveV2MemoryPeopleConsolidationError extends Error {
   constructor(message, code = 'ARCHIVE_V2_MEMORY_PEOPLE_CONSOLIDATION_INVALID') {
@@ -85,6 +86,7 @@ export function createArchiveV2MemoryPeopleConsolidator({
   generateTask,
   isEnabled = true,
   now = () => new Date().toISOString(),
+  generalPrompt = () => '',
 } = {}) {
   if (typeof contextProvider !== 'function') throw new TypeError('contextProvider 必须是函数');
   if (typeof generateTask !== 'function') throw new TypeError('generateTask 必须是函数');
@@ -118,7 +120,7 @@ export function createArchiveV2MemoryPeopleConsolidator({
           includeCharacterCard: false,
           worldInfoSource: 'none',
           substituteMacros: false,
-          systemPrompt: systemPrompt(),
+          systemPrompt: composeArchiveV2SystemPrompt({ generalPrompt, machineContract: systemPrompt() }),
           taskMessages: [{ role: 'user', content: taskInput(batches) }],
           signal: operation.controller.signal,
           maxTokens: 30000,

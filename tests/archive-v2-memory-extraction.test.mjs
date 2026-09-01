@@ -67,7 +67,7 @@ const validRows = (sourceFloor = 0) => ({
   }],
 });
 
-function harness({ generateTask, isEnabled = true, context = identity() } = {}) {
+function harness({ generateTask, isEnabled = true, context = identity(), sanitizerOptions, generalPrompt } = {}) {
   let current = context;
   const calls = [];
   const extractor = createArchiveV2MemoryBatchExtractor({
@@ -77,6 +77,8 @@ function harness({ generateTask, isEnabled = true, context = identity() } = {}) 
       calls.push(options);
       return generateTask ? generateTask(options) : { jsonData: validRows() };
     },
+    ...(sanitizerOptions ? { sanitizerOptions } : {}),
+    ...(generalPrompt ? { generalPrompt } : {}),
   });
   return { extractor, calls, setContext(value) { current = value; } };
 }
@@ -154,6 +156,20 @@ test('只清洗发给 AI 的楼层副本，sourceFloor、原 plan、manifest 与
   assert.deepEqual(plan.floors.map(floor => floor.content), contents);
 });
 
+test('memory 实际 AI seam 使用自定义保留/剔除标签，附加提示词位于严格合同前', async () => {
+  const { manifest, plan } = await fixture(['<story>正文<noise>删除</noise></story>']);
+  const h = harness({
+    sanitizerOptions: () => ({ keepTags: 'story', extraTags: 'noise' }),
+    generalPrompt: () => '语言更简洁',
+    generateTask: async options => {
+      assert.equal(JSON.parse(options.taskMessages[0].content)[0].content, '正文');
+      assert.ok(options.systemPrompt.indexOf('语言更简洁') < options.systemPrompt.indexOf('只输出一个 JSON 根对象'));
+      return { jsonData: emptyRows() };
+    },
+  });
+  assert.equal((await h.extractor.extract({ manifest, plan, createdAt: TIME })).status, 'ready');
+});
+
 test('四表全空的普通 JSON 与单个 fenced JSON 均进入现有严格验收，不强迫制造内容且不重试', async () => {
   const { manifest, plan } = await fixture();
   for (const response of [JSON.stringify(emptyRows()), `\`\`\`json\n${JSON.stringify(emptyRows())}\n\`\`\``]) {
@@ -165,19 +181,51 @@ test('四表全空的普通 JSON 与单个 fenced JSON 均进入现有严格验�
   }
 });
 
-test('无依据行、跨批楼层、未知人物引用、额外字段与枚举错误整批拒绝且不重试', async () => {
+test('AI 行白名单、alias、楼层与参与者的无语义机械格式被归一化后通过严格验收', async () => {
+  const { manifest, plan } = await fixture(['第一楼', '第二楼']);
+  const rows = validRows();
+  rows.people[0] = {
+    ...rows.people[0], displayName: ' Alice ', aliases: [' Alice ', 'ＡＬＩＣＥ', ' ally ', 'Ally', 'ＡＬＬＹ', '   '],
+    sourceFloors: [1, 0, 1], ignored: 'drop',
+  };
+  rows.facts[0] = { ...rows.facts[0], sourceFloors: [1, 0, 1], ignored: 'drop' };
+  rows.relations[0] = { ...rows.relations[0], sourceFloors: [1, 0, 1], ignored: 'drop' };
+  rows.events[0] = {
+    ...rows.events[0], participantLocalIds: [' P1 ', 'P1', '   '], sourceFloors: [1, 0, 1], ignored: 'drop',
+  };
+  rows.ignored = 'drop';
+  const h = harness({ generateTask: async () => ({ jsonData: rows }) });
+  const result = await h.extractor.extract({ manifest, plan, createdAt: TIME });
+  assert.equal(result.status, 'ready');
+  assert.equal(h.calls.length, 1);
+  assert.equal(result.batch.rows.people[0].displayName, 'Alice');
+  assert.deepEqual(result.batch.rows.people[0].aliases, ['ally']);
+  assert.deepEqual(result.batch.rows.events[0].participantLocalIds, ['P1']);
+  for (const kind of ['people', 'facts', 'relations', 'events']) {
+    assert.deepEqual(result.batch.rows[kind][0].sourceFloors, [0, 1]);
+    assert.equal(Object.hasOwn(result.batch.rows[kind][0], 'ignored'), false);
+  }
+  assert.equal(Object.hasOwn(result.batch.rows, 'ignored'), false);
+});
+
+test('错误类型、越界或空楼层、悬空引用、缺失字段与安全上限仍整批拒绝且不重试', async () => {
   const { manifest, plan } = await fixture();
   const invalid = [
     { ...validRows(), people: [{ ...validRows().people[0], sourceFloors: [] }] },
     { ...validRows(), people: [{ ...validRows().people[0], sourceFloors: [99] }] },
+    { ...validRows(), people: [{ ...validRows().people[0], sourceFloors: [0, 1.5] }] },
+    { ...validRows(), people: [{ ...validRows().people[0], aliases: [1] }] },
+    { ...validRows(), people: [{ ...validRows().people[0], aliases: Array(101).fill('  ') }] },
     { ...validRows(), facts: [{ ...validRows().facts[0], subjectLocalId: 'P9' }] },
     { ...validRows(), relations: [{ ...validRows().relations[0], objectKind: 'person', objectLocalId: 'P9' }] },
     { ...validRows(), events: [{ ...validRows().events[0], participantLocalIds: ['P9'] }] },
-    { ...validRows(), extra: true },
-    { ...validRows(), people: [{ ...validRows().people[0], confidence: 1 }] },
+    { ...validRows(), events: [{ ...validRows().events[0], participantLocalIds: [1] }] },
+    { ...validRows(), events: [{ ...validRows().events[0], participantLocalIds: Array(501).fill('  ') }] },
     { ...validRows(), people: [{ localId: 'P1', displayName: '沈砚', sourceFloors: [0] }] },
     { ...validRows(), facts: [{ ...validRows().facts[0], category: 'made-up' }] },
     { ...validRows(), events: [{ ...validRows().events[0], significance: 'critical' }] },
+    { people: [], facts: [], relations: [] },
+    [],
   ];
   for (const rows of invalid) {
     const h = harness({ generateTask: async () => ({ jsonData: rows }) });

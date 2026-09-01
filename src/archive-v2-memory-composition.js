@@ -40,6 +40,8 @@ export function createArchiveV2MemoryComposition({
   now,
   createScanId,
   createIdentityId = () => newIdentityUuid(),
+  sanitizerOptions = () => ({}),
+  generalPrompt = () => '',
 } = {}) {
   if (typeof client?.get !== 'function' || typeof client?.put !== 'function') {
     throw new TypeError('memory composition client 必须提供 get 和 put');
@@ -104,6 +106,8 @@ export function createArchiveV2MemoryComposition({
     contextProvider: identityContextProvider,
     generateTask: generateUtilityTask,
     isEnabled,
+    sanitizerOptions,
+    generalPrompt,
   });
   const runnerStore = Object.freeze({
     readManifest: (...args) => store.readManifest(...args),
@@ -128,6 +132,7 @@ export function createArchiveV2MemoryComposition({
     generateTask: generatePrimaryTask,
     isEnabled,
     now: effectiveNow,
+    generalPrompt,
   });
   const committer = createArchiveV2MemoryPeopleCommitter({
     archiveAdapter,

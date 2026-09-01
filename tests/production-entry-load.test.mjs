@@ -9,7 +9,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 import 且可隔离加载', async () => {
   const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
-  assert.equal(manifest.js, 'dist/qqj-app.js?v=20260901.15');
+  assert.equal(manifest.js, 'dist/qqj-app.js?v=20260901.22');
   assert.equal(manifest.version, '0.2.27');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
@@ -100,6 +100,7 @@ test('生产入口行为接线：memory 同时收到主/副 API，关注人设�
 
   let memoryOptions;
   let followedOptions;
+  let bondOptions;
   const inertComposition = () => ({ invalidate() {} });
   const modules = new Map();
   const define = (specifier, exports) => {
@@ -112,7 +113,7 @@ test('生产入口行为接线：memory 同时收到主/副 API，关注人设�
   define('/script.js', { saveSettingsDebounced() {} });
   define('./src/backend-client.js', { createBackendClient: () => ({}) });
   define('./src/bootstrap.js', { bootstrap: () => ({ refresh() {}, setEnabled() {} }) });
-  define('./src/settings.js', { createSettingsStore: () => ({ migrateLegacyApiSettings() {}, isEnabled: () => false }) });
+  define('./src/settings.js', { createSettingsStore: () => ({ migrateLegacyApiSettings() {}, isEnabled: () => false, get: () => ({}) }) });
   define('./src/api-routing.js', {
     createApiResolver: () => ({}),
     createApiTools: () => ({ abortAll() {} }),
@@ -131,6 +132,10 @@ test('生产入口行为接线：memory 同时收到主/副 API，关注人设�
     createArchiveV2FollowedProfileComposition: options => { followedOptions = options; return inertComposition(); },
   });
   define('./src/archive-v2-dossier-composition.js', { createArchiveV2DossierComposition: inertComposition });
+  define('./src/archive-v2-bond-composition.js', {
+    createArchiveV2BondComposition: options => { bondOptions = options; return inertComposition(); },
+  });
+  define('./src/archive-v2-source-permission.js', { createArchiveV2SourcePermissionController: () => ({}) });
 
   const entry = new SourceTextModule(entrySource, { context, identifier: pathToFileURL(resolve(root, 'index.js')).href });
   await entry.link(specifier => {
@@ -145,4 +150,6 @@ test('生产入口行为接线：memory 同时收到主/副 API，关注人设�
   assert.equal(memoryOptions.generateUtilityTask, utilityTask);
   assert.equal(followedOptions.generateUtilityTask, utilityTask);
   assert.equal(Object.hasOwn(followedOptions, 'generatePrimaryTask'), false);
+  assert.equal(bondOptions.generateUtilityTask, utilityTask);
+  assert.equal(Object.hasOwn(bondOptions, 'generatePrimaryTask'), false);
 });
