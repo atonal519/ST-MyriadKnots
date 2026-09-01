@@ -1,3 +1,5 @@
+import { normalizeArchiveV2TagList } from './memory-content-sanitizer.js';
+
 export const SETTINGS_ID = 'qianqianjie';
 
 export const DEFAULT_SETTINGS = Object.freeze({
@@ -13,11 +15,24 @@ export const DEFAULT_SETTINGS = Object.freeze({
   apiPresets: [],
   apiPresetActiveId: '',
   sharedApiMigrationVersion: 0,
+  sourceWorldInfoDisabledByChat: {},
+  sourceWorldInfoOverridesByChat: {},
+  sourceWorldInfoExcludedBooks: [],
+  sourceWorldInfoConfirmedChats: {},
+  sourceKeepTags: 'content',
+  sourceExtraTags: '',
+  generalPrompt: '',
+  appearanceTheme: 'auto',
+  appearanceScale: 1,
+  appearanceFontCssUrl: '',
+  appearanceFontFamily: '',
 });
 
 const API_MODES = new Set(['auto', 'seven-preset']);
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 const text = value => typeof value === 'string' ? value : '';
+const APPEARANCE_THEMES = new Set(['auto', 'day', 'night']);
+const normalizeScale = value => Math.min(1.5, Math.max(0.75, Number.isFinite(Number(value)) ? Number(value) : 1));
 
 export function normalizeTimeout(value) {
   const number = Number(value);
@@ -50,10 +65,18 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
   if (!extensionSettings || typeof extensionSettings !== 'object') throw new Error('千千结设置存储不可用');
   const get = () => {
     const settings = extensionSettings[SETTINGS_ID] ??= { ...DEFAULT_SETTINGS, apiExcludeParams: [], apiPresets: [] };
-    for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) if (!own(settings, key)) settings[key] = Array.isArray(value) ? [] : value;
+    for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) if (!own(settings, key)) {
+      settings[key] = Array.isArray(value) ? [] : (value && typeof value === 'object' ? {} : value);
+    }
     if (!API_MODES.has(settings.apiMode)) settings.apiMode = 'auto';
     if (!Array.isArray(settings.apiExcludeParams)) settings.apiExcludeParams = [];
     if (!Array.isArray(settings.apiPresets)) settings.apiPresets = [];
+    if (!settings.sourceWorldInfoDisabledByChat || typeof settings.sourceWorldInfoDisabledByChat !== 'object' || Array.isArray(settings.sourceWorldInfoDisabledByChat)) settings.sourceWorldInfoDisabledByChat = {};
+    if (!settings.sourceWorldInfoOverridesByChat || typeof settings.sourceWorldInfoOverridesByChat !== 'object' || Array.isArray(settings.sourceWorldInfoOverridesByChat)) settings.sourceWorldInfoOverridesByChat = {};
+    if (!Array.isArray(settings.sourceWorldInfoExcludedBooks)) settings.sourceWorldInfoExcludedBooks = [];
+    if (!settings.sourceWorldInfoConfirmedChats || typeof settings.sourceWorldInfoConfirmedChats !== 'object' || Array.isArray(settings.sourceWorldInfoConfirmedChats)) settings.sourceWorldInfoConfirmedChats = {};
+    if (!APPEARANCE_THEMES.has(settings.appearanceTheme)) settings.appearanceTheme = 'auto';
+    settings.appearanceScale = normalizeScale(settings.appearanceScale);
     settings.apiTimeoutSec = normalizeTimeout(settings.apiTimeoutSec);
     return settings;
   };
@@ -70,6 +93,17 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'apiTimeoutSec')) settings.apiTimeoutSec = normalizeTimeout(patch.apiTimeoutSec);
     if (own(patch, 'apiStream')) settings.apiStream = patch.apiStream === true;
     if (own(patch, 'apiPresetActiveId')) settings.apiPresetActiveId = text(patch.apiPresetActiveId).trim();
+    if (own(patch, 'sourceWorldInfoDisabledByChat') && patch.sourceWorldInfoDisabledByChat && typeof patch.sourceWorldInfoDisabledByChat === 'object' && !Array.isArray(patch.sourceWorldInfoDisabledByChat)) settings.sourceWorldInfoDisabledByChat = patch.sourceWorldInfoDisabledByChat;
+    if (own(patch, 'sourceWorldInfoOverridesByChat') && patch.sourceWorldInfoOverridesByChat && typeof patch.sourceWorldInfoOverridesByChat === 'object' && !Array.isArray(patch.sourceWorldInfoOverridesByChat)) settings.sourceWorldInfoOverridesByChat = patch.sourceWorldInfoOverridesByChat;
+    if (own(patch, 'sourceWorldInfoExcludedBooks')) settings.sourceWorldInfoExcludedBooks = Array.isArray(patch.sourceWorldInfoExcludedBooks) ? patch.sourceWorldInfoExcludedBooks : [];
+    if (own(patch, 'sourceWorldInfoConfirmedChats') && patch.sourceWorldInfoConfirmedChats && typeof patch.sourceWorldInfoConfirmedChats === 'object' && !Array.isArray(patch.sourceWorldInfoConfirmedChats)) settings.sourceWorldInfoConfirmedChats = patch.sourceWorldInfoConfirmedChats;
+    if (own(patch, 'sourceKeepTags')) settings.sourceKeepTags = normalizeArchiveV2TagList(patch.sourceKeepTags).join(',');
+    if (own(patch, 'sourceExtraTags')) settings.sourceExtraTags = normalizeArchiveV2TagList(patch.sourceExtraTags).join(',');
+    if (own(patch, 'generalPrompt')) settings.generalPrompt = text(patch.generalPrompt);
+    if (own(patch, 'appearanceTheme')) settings.appearanceTheme = APPEARANCE_THEMES.has(patch.appearanceTheme) ? patch.appearanceTheme : 'auto';
+    if (own(patch, 'appearanceScale')) settings.appearanceScale = normalizeScale(patch.appearanceScale);
+    if (own(patch, 'appearanceFontCssUrl')) settings.appearanceFontCssUrl = text(patch.appearanceFontCssUrl).trim();
+    if (own(patch, 'appearanceFontFamily')) settings.appearanceFontFamily = text(patch.appearanceFontFamily).trim();
     notify();
     return settings;
   };
@@ -120,6 +154,36 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     extensionSettings['schedule-planner'] = created;
     return created;
   };
+  const normalizeWorldBookNames = value => {
+    if (!Array.isArray(value)) return [];
+    const seen = new Set();
+    return value.map(item => text(item).trim()).filter(item => {
+      if (!item) return false;
+      const key = item.normalize('NFKD').replace(/\p{M}/gu, '').toLocaleLowerCase('zh-Hans-CN');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+  const sharedWorldInfoExcludedBooks = () => {
+    try { return normalizeWorldBookNames(sevenDaysSettings()?.wiExcludeBooks); }
+    catch { return []; }
+  };
+  const setSharedWorldInfoExcluded = (bookName, excluded) => {
+    const name = text(bookName).trim();
+    if (!name) throw new TypeError('世界书名称无效');
+    const canonical = value => value.normalize('NFKD').replace(/\p{M}/gu, '').toLocaleLowerCase('zh-Hans-CN');
+    const shared = ensureSevenDaysSettings();
+    const next = sharedWorldInfoExcludedBooks().filter(item => canonical(item) !== canonical(name));
+    if (excluded === true) next.push(name);
+    shared.wiExcludeBooks = next;
+    notify();
+    return [...next];
+  };
+  const sourcePermissionSnapshot = () => ({
+    ...get(),
+    sourceWorldInfoExcludedBooks: sharedWorldInfoExcludedBooks(),
+  });
   const sharedUtilityPresetId = () => text(sevenDaysSettings()?.utilityPresetId).trim();
   const setSharedUtilityPresetId = id => {
     const shared = ensureSevenDaysSettings();
@@ -258,6 +322,9 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     renameSharedPreset,
     deleteSharedPreset,
     sharedSnapshotKey,
+    sharedWorldInfoExcludedBooks,
+    setSharedWorldInfoExcluded,
+    sourcePermissionSnapshot,
     migrateLegacyApiSettings,
     isEnabled: () => get().pluginEnabled !== false,
   };

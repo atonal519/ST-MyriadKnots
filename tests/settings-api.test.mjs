@@ -169,6 +169,30 @@ test('副 API getter/setter 即时读写共享字段，snapshot、删除清悬�
   assert.equal(raw.saves(), 1);
 });
 
+test('整本排除双向共享 schedule-planner.wiExcludeBooks，保留未知字段且缺失／损坏安全返回零排除', () => {
+  const extensionSettings = {
+    qianqianjie: { sourceWorldInfoExcludedBooks: Array.from({ length: 43 }, (_, index) => `错误目录${index}`) },
+    'schedule-planner': { wiExcludeBooks: ['甲书'], unknownTop: { keep: true } },
+  };
+  const { settings, saves } = setup(extensionSettings);
+  assert.deepEqual(settings.sharedWorldInfoExcludedBooks(), ['甲书']);
+  assert.deepEqual(settings.sourcePermissionSnapshot().sourceWorldInfoExcludedBooks, ['甲书']);
+  extensionSettings['schedule-planner'].wiExcludeBooks = ['构画侧新排除'];
+  assert.deepEqual(settings.sharedWorldInfoExcludedBooks(), ['构画侧新排除']);
+  settings.setSharedWorldInfoExcluded('乙书', true);
+  assert.deepEqual(extensionSettings['schedule-planner'].wiExcludeBooks, ['构画侧新排除', '乙书']);
+  settings.setSharedWorldInfoExcluded('构画侧新排除', false);
+  assert.deepEqual(extensionSettings['schedule-planner'].wiExcludeBooks, ['乙书']);
+  assert.deepEqual(extensionSettings['schedule-planner'].unknownTop, { keep: true });
+  assert.equal(saves(), 2);
+  extensionSettings['schedule-planner'].wiExcludeBooks = { damaged: true };
+  assert.deepEqual(settings.sharedWorldInfoExcludedBooks(), []);
+
+  const missing = setup({ qianqianjie: { sourceWorldInfoExcludedBooks: ['旧错误值'] } });
+  assert.deepEqual(missing.settings.sharedWorldInfoExcludedBooks(), []);
+  assert.deepEqual(missing.settings.sourcePermissionSnapshot().sourceWorldInfoExcludedBooks, []);
+});
+
 test('有效副 API 精确走机械预设，人物任务仍走当前人物预设且元数据不泄密', async () => {
   const utility = { ...configured('机械预设', 'utility', 'UTILITY_SECRET'), model: 'utility-model' };
   const people = { ...configured('人物预设', 'people', 'PEOPLE_SECRET'), model: 'people-model' };

@@ -134,7 +134,21 @@ export function parseJsonOutput(value, { finishReason } = {}) {
     return parsed;
   }
   const balanced = balancedObjects(text);
-  if (balanced.unclosed) throw safeError('output-truncated', 0, { finishReason: normalizedFinishReason });
+  if (balanced.unclosed) {
+    // Some compatible endpoints report `stop` after omitting one object-closing
+    // brace in the final structural suffix. Accept only a unique, mechanically
+    // provable one-brace insertion near the end; broader truncation still fails.
+    if (normalizedFinishReason === 'stop') {
+      const repairs = [];
+      for (let index = Math.max(0, text.length - 64); index <= text.length; index += 1) {
+        if (index < text.length && !/[}\]]/u.test(text[index])) continue;
+        const repaired = parseObject(`${text.slice(0, index)}}${text.slice(index)}`);
+        if (repaired) repairs.push(repaired);
+      }
+      if (repairs.length === 1) return repairs[0];
+    }
+    throw safeError('output-truncated', 0, { finishReason: normalizedFinishReason });
+  }
   if (balanced.candidates.length !== 1) return failCompletion();
   const parsed = parseObject(balanced.candidates[0]);
   if (!parsed) return failCompletion();

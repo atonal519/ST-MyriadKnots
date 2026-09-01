@@ -18,12 +18,13 @@ test('世界书按 world+uid 去重排序并指纹，冲突 fail closed', async 
   await assert.rejects(normalizeWorldInfoEntries([{ world: 'A', uid: 1, content: 'a' }, { world: 'A', uid: 1, content: 'changed' }]));
 });
 
-test('V2 来源只纳入当前角色卡、实际开场白与当前启用世界书；disabled IF 线不勾选', async () => {
+test('V2 来源目录与 UI 共用 char/global 发现；disabled IF 线进入目录但保留宿主关闭状态', async () => {
   const calls = [];
   const context = {
     characterId: 0,
     characters: [{ avatar: 'char.png', data: { description: '沈辞情的角色卡', extensions: { world: '当前世界' } } }],
     chat: [{ is_user: false, mes: '采用的开场白', swipe_id: 0, swipes: ['采用的开场白'] }],
+    chatWorldInfo: { globalSelection: ['实际 IF'] },
     simulateWorldInfoActivation: async options => { calls.push(options); return { activatedEntries: [{ world: '实际 IF', uid: 3, content: '池逾白登场', disable: false }] }; },
     getCharaFilename: () => 'char',
     getCharaAuxWorlds: () => [],
@@ -40,7 +41,7 @@ test('V2 来源只纳入当前角色卡、实际开场白与当前启用世界�
   assert.equal(calls[0].dryRun, true);
   assert.deepEqual(result.candidates.map(item => item.kind), ['card', 'greeting', 'worldbook', 'worldbook', 'worldbook']);
   assert.equal(result.candidates.find(item => item.locator === '当前世界:1').selected, true);
-  assert.equal(result.candidates.find(item => item.locator === '当前世界:2').selected, false);
+  assert.equal(result.candidates.find(item => item.locator === '当前世界:2').availability, 'disabled');
   assert.equal(result.candidates.find(item => item.locator === '实际 IF:3').availability, 'activated');
 });
 

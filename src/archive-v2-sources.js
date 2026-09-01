@@ -1,4 +1,7 @@
-import { cleanAnalysisText, collectSourceCatalogCandidates } from './route-source.js';
+import { collectCardGreetingCandidates } from './route-source.js';
+import { sanitizeArchiveV2SourceContent } from './memory-content-sanitizer.js';
+import { filterArchiveV2SourcesByPermission } from './archive-v2-source-permission.js';
+import { createArchiveV2WorldInfoSourceCandidates, scanArchiveV2WorldInfo } from './archive-v2-source-scanner.js';
 
 export const ARCHIVE_V2_SOURCE_WARNING = Object.freeze({
   GREETING_TRANSIENT_SWIPE_MISMATCH: 'greeting_transient_swipe_mismatch',
@@ -16,7 +19,6 @@ const WARNING_MAP = Object.freeze({
 const KINDS = new Set(['card', 'greeting', 'worldbook']);
 const plain = value => value && typeof value === 'object' && !Array.isArray(value);
 const normalizedText = value => value.replace(/\r\n?/g, '\n');
-const bind = (target, name) => typeof target?.[name] === 'function' ? (...args) => target[name](...args) : target?.[name];
 
 function greetingCompatibleContext(ctx) {
   const first = Array.isArray(ctx?.chat) ? ctx.chat[0] : null;
@@ -30,49 +32,13 @@ function greetingCompatibleContext(ctx) {
   return safe;
 }
 
-function scanSafeContext(ctx, onFailure) {
-  const safe = Object.create(ctx && typeof ctx === 'object' ? ctx : null);
-  const scanner = ctx?.simulateWorldInfoActivation;
-  safe.simulateWorldInfoActivation = async (...args) => {
-    if (typeof scanner !== 'function') { onFailure(); return { activatedEntries: [] }; }
-    try { return await scanner.apply(ctx, args); }
-    catch { onFailure(); return { activatedEntries: [] }; }
-  };
-  for (const name of ['loadWorldInfoBatch', 'getCharaAuxWorlds', 'getCharaFilename']) {
-    const value = bind(ctx, name);
-    if (value !== undefined) safe[name] = value;
-  }
-  return safe;
-}
-
-function characterWithoutWorldbooks(ctx) {
-  const characters = Array.isArray(ctx?.characters) ? ctx.characters.slice() : { ...(ctx?.characters || {}) };
-  const character = characters[ctx?.characterId];
-  if (!plain(character)) return characters;
-  const copy = { ...character };
-  if (plain(character.data)) copy.data = { ...character.data, extensions: { ...(character.data.extensions || {}), world: '' } };
-  else copy.extensions = { ...(character.extensions || {}), world: '' };
-  characters[ctx.characterId] = copy;
-  return characters;
-}
-
-function worldbooklessContext(ctx) {
-  const safe = Object.create(ctx && typeof ctx === 'object' ? ctx : null);
-  safe.characters = characterWithoutWorldbooks(ctx);
-  safe.simulateWorldInfoActivation = async () => ({ activatedEntries: [] });
-  safe.getCharaFilename = () => '';
-  safe.getCharaAuxWorlds = () => [];
-  safe.loadWorldInfoBatch = async () => new Map();
-  return safe;
-}
-
-function sanitize(candidate) {
+function sanitize(candidate, sanitizerOptions) {
   if (!plain(candidate) || !KINDS.has(candidate.kind) || typeof candidate.locator !== 'string' || !candidate.locator
     || typeof candidate.fingerprint !== 'string' || !candidate.fingerprint.startsWith('sha256:')) return null;
-  const content = cleanAnalysisText(candidate.content);
+  const content = sanitizeArchiveV2SourceContent(candidate.content, sanitizerOptions);
   if (!content) return null;
   const availability = typeof candidate.availability === 'string' ? candidate.availability : candidate.kind;
-  if (availability === 'disabled' || (candidate.kind === 'worldbook' && candidate.selected !== true)) return null;
+  if (candidate.kind === 'worldbook' && candidate.selected !== true) return null;
   return {
     id: `${candidate.kind}:${candidate.locator}`,
     kind: candidate.kind,
@@ -82,6 +48,12 @@ function sanitize(candidate) {
     content,
     selected: true,
     availability,
+    ...(candidate.kind === 'worldbook' ? {
+      world: typeof candidate.world === 'string' ? candidate.world : candidate.locator.split(':').slice(0, -1).join(':'),
+      uid: candidate.uid === undefined || candidate.uid === null ? candidate.locator.split(':').at(-1) : String(candidate.uid),
+      permissionKey: typeof candidate.permissionKey === 'string' ? candidate.permissionKey : undefined,
+      hostEnabled: candidate.hostEnabled !== false,
+    } : {}),
   };
 }
 
@@ -94,26 +66,23 @@ function transientGreeting(ctx) {
     || normalizedText(first.mes) !== normalizedText(first.swipes[swipeId]);
 }
 
-export async function collectArchiveV2ProfileSources(ctx) {
+export async function collectArchiveV2ProfileSources(ctx, { sanitizerOptions } = {}) {
   const warnings = [];
   const warningSet = new Set();
   const addWarning = code => {
     if (!warningSet.has(code)) { warningSet.add(code); warnings.push({ code }); }
   };
   const compatible = greetingCompatibleContext(ctx);
-  let scanFailed = false;
-  let result;
-  try { result = await collectSourceCatalogCandidates(scanSafeContext(compatible, () => { scanFailed = true; })); }
-  catch {
-    scanFailed = true;
-    result = await collectSourceCatalogCandidates(worldbooklessContext(compatible));
-  }
-  if (scanFailed) addWarning(ARCHIVE_V2_SOURCE_WARNING.WORLDBOOK_SCAN_FAILED);
-  for (const warning of Array.isArray(result?.warnings) ? result.warnings : []) {
+  const ordinary = await collectCardGreetingCandidates(compatible);
+  let catalog;
+  try { catalog = await scanArchiveV2WorldInfo(compatible); }
+  catch { catalog = { entries: [], warnings: [{ code: 'WORLDBOOK_SCAN_FAILED' }] }; }
+  for (const warning of Array.isArray(catalog?.warnings) ? catalog.warnings : []) {
     const code = WARNING_MAP[warning?.code];
-    if (code) addWarning(code);
+    if (code) addWarning(code); else if (warning?.code) addWarning(ARCHIVE_V2_SOURCE_WARNING.WORLDBOOK_SCAN_FAILED);
   }
-  let candidates = Array.isArray(result?.candidates) ? result.candidates.map(sanitize).filter(Boolean) : [];
+  const worldbooks = await createArchiveV2WorldInfoSourceCandidates(catalog);
+  let candidates = [...ordinary, ...worldbooks].map(candidate => sanitize(candidate, sanitizerOptions)).filter(Boolean);
   if (transientGreeting(ctx)) {
     addWarning(ARCHIVE_V2_SOURCE_WARNING.GREETING_TRANSIENT_SWIPE_MISMATCH);
     candidates = candidates.filter(candidate => candidate.kind !== 'greeting');
@@ -127,4 +96,19 @@ export async function collectArchiveV2ProfileSources(ctx) {
     unique.push(candidate);
   }
   return { status: 'ready', candidates: unique, warnings };
+}
+
+export async function collectArchiveV2PermittedSources(ctx, { chatId, permissionSettings, sanitizerOptions } = {}) {
+  const result = await collectArchiveV2ProfileSources(ctx, { sanitizerOptions });
+  const permitted = filterArchiveV2SourcesByPermission({ candidates: result.candidates, chatId, settings: permissionSettings });
+  return {
+    ...result,
+    // Downstream profile/bond planners treat availability="disabled" as an
+    // unconditional safety stop. A host-disabled entry only reaches this point
+    // when the current chat has an explicit QQJ allow override, so expose its
+    // effective permission without losing the original hostEnabled marker.
+    candidates: permitted.map(candidate => candidate?.kind === 'worldbook' && candidate.availability === 'disabled'
+      ? { ...candidate, availability: 'enabled' }
+      : candidate),
+  };
 }

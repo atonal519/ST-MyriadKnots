@@ -84,6 +84,25 @@ test('completion JSON 拒绝多对象、顶层数组和普通乱码；未闭合�
   }
 });
 
+test('finish_reason=stop 时只纠正结构尾部唯一缺失的对象右花括号', async () => {
+  const recovered = parseJsonOutput('{"people":[{"person":"P1"}]', { finishReason: 'stop' });
+  assert.deepEqual(recovered, { people: [{ person: 'P1' }] });
+  assert.deepEqual(
+    parseJsonOutput('{"people":[{"person":"P1"]}', { finishReason: 'stop' }),
+    { people: [{ person: 'P1' }] },
+  );
+  for (const value of ['{"people":[{"person":"P1"}', '{"people":[{"person":"P1}]}']) {
+    assert.throws(
+      () => parseJsonOutput(value, { finishReason: 'stop' }),
+      error => error.code === 'QQJ_OUTPUT_TRUNCATED',
+    );
+  }
+  const client = createCompactApiClient({ fetchImpl: async () => jsonResponse({
+    choices: [{ finish_reason: 'stop', message: { content: '{"people":[{"person":"P1"}]' } }],
+  }) });
+  assert.deepEqual((await client.generateTask({ config: config(), taskMessages: [] })).jsonData, { people: [{ person: 'P1' }] });
+});
+
 test('HTTP JSON、SSE event 与 finish_reason 截断使用独立安全阶段', async () => {
   const http = createCompactApiClient({ fetchImpl: async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('SECRET body'); } }) });
   await assert.rejects(http.generateTask({ config: config(), taskMessages: [] }), error => error.code === 'QQJ_HTTP_RESPONSE_JSON' && error.formatStage === 'http_response_json' && !String(error.message).includes('SECRET'));
