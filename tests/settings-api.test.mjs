@@ -2,8 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createSettingsStore } from '../src/settings.js';
-import { createApiResolver, createApiTools, createPeopleTaskRouter } from '../src/api-routing.js';
-import { generateTask as hostGenerateTask } from '../../../../generate-task.js';
+import { createApiResolver, createApiTools, createArchiveV2TaskRouter } from '../src/api-routing.js';
+
+const createPeopleTaskRouter = options => {
+  const router = createArchiveV2TaskRouter(options);
+  return { ...router, generatePeopleTask: router.generatePrimaryTask };
+};
 
 const configured = (name, id, key = 'TEST_KEY') => ({ id, name, url: 'https://api.example.test/v1', key, model: 'test-model', excludeParams: [], timeoutSec: 30, stream: false });
 const setup = extensionSettings => {
@@ -88,14 +92,7 @@ test('test、models 与人物任务从同一共享预设解析同一套完整配
   assert.deepEqual(seen.map(([kind, config]) => [kind, config]), [['task', preset], ['test', preset], ['models', preset]]);
 });
 
-test('兼容酒馆 fallback 仍使用真实 abortSignal；共享 API 工具描述与调用读取同一完整对象', async () => {
-  let seenSignal; const injected = {
-    profileResolver: () => ({ requestApi: 'openai', apiSettingsOverride: null }), worldInfoResolver: async () => ({ worldInfoBeforeEntries: [], worldInfoAfterEntries: [] }),
-    builder: ({ messages }) => messages, rawPromptBuilder: messages => messages.map(item => item.content).join('\n'), substituteParams: value => value,
-    senders: { sendOpenAIRequest: async (_type, _payload, abortSignal) => { seenSignal = abortSignal; await new Promise((_, reject) => abortSignal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })); } },
-  };
-  const router = createPeopleTaskRouter({ resolver: { resolve: () => ({ kind: 'tavern' }) }, compactClient: { generateTask() {} }, fallbackGenerateTask: options => hostGenerateTask(options, { _injected: injected }) });
-  const fallback = router.generatePeopleTask({ taskMessages: [] }); await new Promise(resolve => setImmediate(resolve)); assert.equal(seenSignal instanceof AbortSignal, true); router.abortAll(); assert.equal(seenSignal.aborted, true); await assert.rejects(fallback, error => error.name === 'AbortError');
+test('共享 API 工具描述与调用读取同一完整对象', async () => {
   const extensionSettings = { 'schedule-planner': { apiUrl: 'https://main.example.test/v1', apiKey: 'INHERITED_KEY', apiModel: 'model' } };
   const { settings } = setup(extensionSettings), resolver = createApiResolver({ settings }); let testedKey = '';
   const tools = createApiTools({ resolver, compactClient: { testConnection: async ({ config }) => { testedKey = config.key; return { ok: true }; }, fetchModels: async () => ['model'] } });
@@ -111,7 +108,7 @@ test('调用方 external signal 可中止统一人物/关系任务路由', async
   await assert.rejects(pending, error => error.name === 'AbortError'); assert.equal(router.getActiveCount(), 0);
 });
 
-test('人物任务结果与错误只附带有界 API 来源/模型元数据，tavern 不伪造模型', async () => {
+test('V2 主任务结果与错误只附带有界 API 来源/模型元数据', async () => {
   const independent = createPeopleTaskRouter({
     resolver: { resolve: () => ({ kind: 'independent', source: 'seven-utility', sourceLabel: '构画机械预设 · G3.5F', config: { url: 'https://SECRET.example', key: 'SECRET_KEY', model: 'gemini-3-flash-preview' } }) },
     compactClient: { generateTask: async () => ({ jsonData: { ok: true }, taskMetadata: { finishReason: 'stop' } }) },
@@ -124,9 +121,6 @@ test('人物任务结果与错误只附带有界 API 来源/模型元数据，ta
     compactClient: { generateTask: async () => { const error = new Error('安全失败'); error.code = 'QQJ_COMPLETION_JSON'; error.formatStage = 'completion_json'; throw error; } },
   });
   await assert.rejects(failed.generatePeopleTask({}), error => error.taskMetadata?.source === 'local' && error.taskMetadata?.model === 'safe-model' && !JSON.stringify(error.taskMetadata).includes('SECRET'));
-  const tavern = createPeopleTaskRouter({ resolver: { resolve: () => ({ kind: 'tavern', source: 'tavern', sourceLabel: '酒馆当前模型', config: null }) }, compactClient: { generateTask() {} }, fallbackGenerateTask: async () => ({ schemaVersion: 1, patches: [] }) });
-  const fallback = await tavern.generatePeopleTask({});
-  assert.equal(fallback.taskMetadata.source, 'tavern'); assert.equal(fallback.taskMetadata.model, 'current'); assert.deepEqual(fallback.jsonData, { schemaVersion: 1, patches: [] });
 });
 
 test('关闭态测试/模型列表零启动，在途两类工具统一 abortAll 且迟到结果不可成功', async () => {

@@ -12,8 +12,8 @@ const unavailableError = route => {
 const bounded = (value, length, fallback = '') => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, length) || fallback;
 const taskMetadata = (route, finishReason = '') => ({
   source: bounded(route?.source, 80, 'unknown'),
-  sourceLabel: bounded(route?.sourceLabel, 160, route?.kind === 'tavern' ? '酒馆当前模型' : '未命名 API'),
-  model: route?.kind === 'tavern' ? 'current' : bounded(route?.config?.model, 160, 'unknown'),
+  sourceLabel: bounded(route?.sourceLabel, 160, '未命名 API'),
+  model: bounded(route?.config?.model, 160, 'unknown'),
   ...(finishReason ? { finishReason: bounded(finishReason, 32) } : {}),
 });
 const withTaskMetadata = (result, route) => {
@@ -66,8 +66,8 @@ export function createApiResolver({ settings } = {}) {
   return { resolve, resolveUtility, describe, describeSevenDaysPresets };
 }
 
-export function createPeopleTaskRouter({ resolver, compactClient, fallbackGenerateTask, isEnabled = () => true } = {}) {
-  if (!resolver?.resolve || !compactClient?.generateTask) throw new Error('人物识别路由依赖不可用');
+export function createArchiveV2TaskRouter({ resolver, compactClient, isEnabled = () => true } = {}) {
+  if (!resolver?.resolve || !compactClient?.generateTask) throw new Error('V2 API 路由依赖不可用');
   const active = new Set(); let epoch = 0;
   const abortAll = () => { epoch += 1; for (const controller of active) controller.abort(); active.clear(); };
   const run = async (options, resolveRoute) => {
@@ -77,22 +77,13 @@ export function createPeopleTaskRouter({ resolver, compactClient, fallbackGenera
       ? { ...resolved, config: Object.freeze({ ...resolved.config, excludeParams: Object.freeze([...(resolved.config.excludeParams || [])]) }) }
       : resolved;
     if (route.kind === 'unavailable') throw unavailableError(route);
+    if (route.kind !== 'independent') throw new Error('V2 API 路由类型不受支持');
     if (!isEnabled() || mine !== epoch) throw abortError();
     const controller = new AbortController(); active.add(controller);
     const externalSignal = options?.signal;
     const onExternalAbort = () => controller.abort();
     if (externalSignal?.aborted) controller.abort(); else externalSignal?.addEventListener?.('abort', onExternalAbort, { once: true });
     try {
-      if (route.kind === 'tavern') {
-        if (typeof fallbackGenerateTask !== 'function') throw new Error('酒馆当前模型不可用');
-        const taskMessages = typeof options?.systemPrompt === 'string' && options.systemPrompt.trim()
-          ? [{ role: 'system', content: options.systemPrompt.trim() }, ...(Array.isArray(options.taskMessages) ? options.taskMessages : [])]
-          : options?.taskMessages;
-        const { signal: _signal, systemPrompt: _systemPrompt, ...fallbackOptions } = options || {};
-        const result = await fallbackGenerateTask({ ...fallbackOptions, taskMessages, abortSignal: controller.signal });
-        if (!isEnabled() || mine !== epoch) throw abortError();
-        return withTaskMetadata(result, route);
-      }
       const result = await compactClient.generateTask({ ...options, config: route.config, signal: controller.signal });
       if (!isEnabled() || mine !== epoch) throw abortError();
       return withTaskMetadata(result, route);
@@ -106,12 +97,12 @@ export function createPeopleTaskRouter({ resolver, compactClient, fallbackGenera
     }
     finally { externalSignal?.removeEventListener?.('abort', onExternalAbort); active.delete(controller); }
   };
-  const generatePeopleTask = options => run(options, () => resolver.resolve());
+  const generatePrimaryTask = options => run(options, () => resolver.resolve());
   const generateUtilityTask = options => run(options, () => {
     if (typeof resolver.resolveUtility !== 'function') throw new Error('副 API 配置解析器不可用');
     return resolver.resolveUtility();
   });
-  return { generatePeopleTask, generateUtilityTask, abortAll, getActiveCount: () => active.size };
+  return { generatePrimaryTask, generateUtilityTask, abortAll, getActiveCount: () => active.size };
 }
 
 export function createApiTools({ resolver, compactClient, isEnabled = () => true } = {}) {

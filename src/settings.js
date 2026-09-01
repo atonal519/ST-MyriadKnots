@@ -15,7 +15,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   sharedApiMigrationVersion: 0,
 });
 
-const API_MODES = new Set(['auto', 'seven-preset', 'local', 'tavern']);
+const API_MODES = new Set(['auto', 'seven-preset']);
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 const text = value => typeof value === 'string' ? value : '';
 

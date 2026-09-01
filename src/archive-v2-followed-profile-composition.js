@@ -7,7 +7,7 @@ import {
 } from './archive-v2-followed-profile-foundation.js';
 import { createArchiveV2MemorySnapshot } from './archive-v2-memory-foundation.js';
 import { createArchiveV2MemoryStore } from './archive-v2-memory-store.js';
-import { collectArchiveV2InitializationSources } from './archive-v2-sources.js';
+import { collectArchiveV2ProfileSources } from './archive-v2-sources.js';
 import { parseJsonOutput } from './compact-api-client.js';
 import { isUuid, readHostState } from './host-context.js';
 
@@ -192,7 +192,7 @@ export function createArchiveV2FollowedProfileComposition({
         if (memory.status !== 'ready') {
           return setState({ status: memory.status, followedCount }, context.identity);
         }
-        const collected = await collectArchiveV2InitializationSources(context.raw);
+        const collected = await collectArchiveV2ProfileSources(context.raw);
         if (!operation.current()) return { status: operation.status() };
         const plan = createArchiveV2FollowedProfilePlan({
           archive: archiveRead.archive,

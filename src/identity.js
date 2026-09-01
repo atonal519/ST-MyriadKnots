@@ -9,7 +9,3 @@ export async function sha256(value) {
   }
   throw new Error('宿主缺少 SHA-256');
 }
-export async function identityIds(state) {
-  const [cardHash, personaHash] = await Promise.all([sha256(state.characterAvatar), sha256(state.personaAvatar)]);
-  return { cardRecordId: `avatar-${cardHash}`, personaRecordId: `avatar-${personaHash}` };
-}

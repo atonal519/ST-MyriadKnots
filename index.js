@@ -1,123 +1,72 @@
-import { createBackendClient } from './src/backend-client.js';
-import { createDemoController } from './src/demo-controller.js';
-import { bindRerunEvents, bindStableFloorEvents, createRerunOrchestrator, registerIntegration, startInitialRun } from './src/integration-port.js';
-import { createFormalAdapter } from './src/formal-storage.js';
-import { createRouteSourceAdapter } from './src/route-source.js';
 import { user_avatar } from '/scripts/personas.js';
-import { bootstrap } from './src/bootstrap.js';
-import { createCRegistryAdapter, mapPeopleError } from './src/c-registry.js';
 import { extension_settings } from '/scripts/extensions.js';
 import { saveSettingsDebounced } from '/script.js';
+import { createBackendClient } from './src/backend-client.js';
+import { bootstrap } from './src/bootstrap.js';
 import { createSettingsStore } from './src/settings.js';
-import { createApiResolver, createApiTools, createPeopleTaskRouter } from './src/api-routing.js';
+import { createApiResolver, createApiTools, createArchiveV2TaskRouter } from './src/api-routing.js';
 import { createCompactApiClient } from './src/compact-api-client.js';
-import { createPluginGate } from './src/plugin-gate.js';
-import { createRuntimeRunner } from './src/runtime-runner.js';
-import { createStableFloorAdapter } from './src/stable-floor-storage.js';
-import { createFoundationAwarePeopleAdapter, createPeopleFoundationAdapter } from './src/people-foundation.js';
-import { createInitialRelationGenerationAdapter } from './src/initial-relation-generation.js';
-import { createPendingReviewAdapter } from './src/pending-review.js';
-import { createBaiBaiBookMemoryAdapter } from './src/baibai-book-memory.js';
-import { createSourceCatalogAdapter } from './src/source-catalog.js';
+import { createArchiveV2Session } from './src/archive-v2-session.js';
+import { createArchiveV2Lifecycle } from './src/archive-v2-lifecycle.js';
 import { createArchiveV2Composition } from './src/archive-v2-composition.js';
-import { createArchiveV2FollowedProfileComposition } from './src/archive-v2-followed-profile-composition.js';
 import { createArchiveV2MemoryComposition } from './src/archive-v2-memory-composition.js';
+import { createArchiveV2FollowedProfileComposition } from './src/archive-v2-followed-profile-composition.js';
 import { createArchiveV2DossierComposition } from './src/archive-v2-dossier-composition.js';
 
-const ctx = () => globalThis.Luker?.getContext?.();
-const client = createBackendClient({ headers: () => ctx()?.getRequestHeaders?.() ?? {} });
+const hostContext = () => globalThis.Luker?.getContext?.();
+const contextProvider = () => ({ ...hostContext(), userAvatar: user_avatar });
 const settings = createSettingsStore({ extensionSettings: extension_settings, save: saveSettingsDebounced });
 settings.migrateLegacyApiSettings();
-const compactClient = createCompactApiClient({ headers: () => ctx()?.getRequestHeaders?.() ?? {} });
+
+const backendClient = createBackendClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
+const compactClient = createCompactApiClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
 const apiResolver = createApiResolver({ settings });
-const peopleTaskRouter = createPeopleTaskRouter({ resolver: apiResolver, compactClient, fallbackGenerateTask: options => contextProvider().generateTask(options), isEnabled: settings.isEnabled });
+const taskRouter = createArchiveV2TaskRouter({
+  resolver: apiResolver,
+  compactClient,
+  isEnabled: settings.isEnabled,
+});
 const apiTools = createApiTools({ resolver: apiResolver, compactClient, isEnabled: settings.isEnabled });
-const controller = createDemoController({ client, contextProvider: () => ({ ...ctx(), userAvatar: user_avatar }) });
-const contextProvider = () => ({ ...ctx(), userAvatar: user_avatar });
-const archiveV2 = createArchiveV2Composition({ client, contextProvider, generateTask: peopleTaskRouter.generatePeopleTask, isEnabled: settings.isEnabled });
-const archiveV2Memory = createArchiveV2MemoryComposition({ client, contextProvider, generateUtilityTask: peopleTaskRouter.generateUtilityTask, isEnabled: settings.isEnabled });
-const archiveV2FollowedProfiles = createArchiveV2FollowedProfileComposition({ client, contextProvider, generateUtilityTask: peopleTaskRouter.generateUtilityTask, isEnabled: settings.isEnabled });
-const archiveV2Dossier = createArchiveV2DossierComposition({ client, contextProvider, isEnabled: settings.isEnabled });
-const routeSource = createRouteSourceAdapter({ contextProvider });
-const formal = createFormalAdapter({ client, contextProvider, routeSource });
-const sourceCatalog = createSourceCatalogAdapter({ client, contextProvider, formal, routeSource, isEnabled: settings.isEnabled });
-const stableFloors = createStableFloorAdapter({ client, contextProvider });
-const peopleFoundation = createPeopleFoundationAdapter({ client, contextProvider });
-const memorySource = createBaiBaiBookMemoryAdapter();
-const initialRelations = createInitialRelationGenerationAdapter({ client, contextProvider, routeSource, sourceCatalog, generateRelationTask: peopleTaskRouter.generatePeopleTask, memorySource, isEnabled: settings.isEnabled });
-const pendingReviews = createPendingReviewAdapter({ client, contextProvider, isEnabled: settings.isEnabled });
-const peopleRegistry = createCRegistryAdapter({ client, contextProvider, routeSource, sourceCatalog, formal, generatePeopleTask: peopleTaskRouter.generatePeopleTask, isEnabled: settings.isEnabled });
-const people = createFoundationAwarePeopleAdapter({ people: peopleRegistry, foundation: peopleFoundation, stableFloors });
-const orchestrator = createRerunOrchestrator({ demo: controller, formal, isEnabled: settings.isEnabled });
-const disabledState = () => ({ status: 'disabled', pluginEnabled: false });
+const session = createArchiveV2Session({ contextProvider, isEnabled: settings.isEnabled });
+const archiveV2 = createArchiveV2Composition({ client: backendClient, contextProvider, isEnabled: settings.isEnabled });
+const archiveV2Memory = createArchiveV2MemoryComposition({
+  client: backendClient,
+  contextProvider,
+  generatePrimaryTask: taskRouter.generatePrimaryTask,
+  generateUtilityTask: taskRouter.generateUtilityTask,
+  isEnabled: settings.isEnabled,
+});
+const archiveV2FollowedProfiles = createArchiveV2FollowedProfileComposition({
+  client: backendClient,
+  contextProvider,
+  generateUtilityTask: taskRouter.generateUtilityTask,
+  isEnabled: settings.isEnabled,
+});
+const archiveV2Dossier = createArchiveV2DossierComposition({
+  client: backendClient,
+  contextProvider,
+  isEnabled: settings.isEnabled,
+});
+
 let ui;
-const attemptInvalidations = operations => {
-  let firstError;
-  for (const operation of operations) {
-    try { operation(); } catch (error) { firstError ??= error; }
-  }
-  if (firstError) throw firstError;
-};
-const runtime = createRuntimeRunner({
-  isEnabled: settings.isEnabled, orchestrator, people, sourceCatalog, stableFloors, peopleFoundation, initialRelations, disabledState, mapError: mapPeopleError,
-  setState: state => ui?.setState(state),
-  invalidateDependencies: () => attemptInvalidations([
-    () => ui?.invalidateInitialization?.(),
-    () => archiveV2FollowedProfiles.invalidate(),
-    () => archiveV2Dossier.invalidate(),
-    () => archiveV2Memory.invalidate(),
-    () => archiveV2.invalidate(),
-    () => peopleTaskRouter.abortAll(),
-    () => apiTools.abortAll(),
-    () => people.invalidate(),
-    () => sourceCatalog.invalidate(),
-    () => stableFloors.invalidate(),
-    () => peopleFoundation.invalidate(),
-    () => initialRelations.invalidate(),
-    () => pendingReviews.invalidate(),
-    () => orchestrator.invalidate(),
-  ]),
+let lifecycle;
+ui = bootstrap({
+  settings,
+  apiTools,
+  prepareSession: () => session.prepare(),
+  onPluginEnabledChange: enabled => lifecycle?.setEnabled(enabled),
+  archiveV2Composition: archiveV2,
+  archiveV2Memory,
+  archiveV2FollowedProfiles,
+  archiveV2Dossier,
 });
-const { run, invalidate } = runtime;
-const pluginGate = createPluginGate({ initiallyEnabled: settings.isEnabled(), invalidate, run, disabledState, setUiEnabled: enabled => { ui?.setEnabled(enabled); if (!enabled) ui?.setState(disabledState()); } });
-const onPluginEnabledChange = enabled => pluginGate.setEnabled(enabled);
-ui = bootstrap({ formal, people, sourceCatalog, settings, apiTools, loadState: run, initialRelations, reviewActions: pendingReviews, onPluginEnabledChange, archiveV2Composition: archiveV2, archiveV2Memory, archiveV2FollowedProfiles, archiveV2Dossier });
-const gated = (operation, fallback = disabledState) => (...args) => settings.isEnabled() ? operation(...args) : Promise.resolve(fallback());
-registerIntegration({
-  runDemo: run,
-  getState: () => settings.isEnabled() ? controller.getState() : disabledState(),
-  getFormalState: gated(formal.getFormalState),
-  initializeCard: gated(formal.initializeCard),
-  getPeople: gated(people.getPeople),
-  identifyPeople: gated(() => run({ allowIdentification: true })),
-  getPeopleSourceCatalog: gated(sourceCatalog.getState),
-  startPeopleSourceCatalog: gated(sourceCatalog.start),
-  setPeopleSourceSelected: gated(sourceCatalog.setSelected),
-  confirmPeopleSourceCatalog: gated(sourceCatalog.confirm),
-  retryPeopleRecognitionPermit: gated(sourceCatalog.retry),
-  readCurrentPeopleRawSources: gated(sourceCatalog.readCurrentRawSources),
-  readPeopleRawSourcesByRefs: gated(sourceCatalog.readRawSourcesByRefs),
-  selectPerson: gated(people.selectPerson),
-  unselectPerson: gated(people.unselectPerson),
-  shelvePerson: gated(people.shelve),
-  restorePerson: gated(people.restore),
-  refreshStableFloors: gated(stableFloors.refresh),
-  getStableFloorState: () => settings.isEnabled() ? stableFloors.getCommittedState() : disabledState(),
-  initializePeopleFoundation: gated(peopleFoundation.initialize),
-  restorePeopleFoundation: gated(peopleFoundation.restore),
-  getPeopleFoundationState: () => settings.isEnabled() ? peopleFoundation.getState() : disabledState(),
-  startInitialRelationGeneration: gated(initialRelations.start),
-  resumeInitialRelationGeneration: gated(initialRelations.resume),
-  getInitialRelationGenerationState: () => settings.isEnabled() ? initialRelations.getState() : disabledState(),
-  adoptCurrentInitialRelationSources: gated(initialRelations.adoptCurrentSources),
-  extractSelectedCharacterBasicInfo: gated(initialRelations.extractBasicInfo),
-  saveSelectedCharacterBasicField: gated(initialRelations.saveBasicField),
-  updateSelectedCharacterDynamicFields: gated(initialRelations.updateDynamicFields),
-  saveSelectedCharacterDynamicField: gated(initialRelations.saveDynamicField),
-  cancelInitialRelationGeneration: () => { initialRelations.cancel(); return settings.isEnabled() ? { status: 'cancelled' } : disabledState(); },
-  resolvePendingReview: gated(pendingReviews.resolvePendingReview),
+lifecycle = createArchiveV2Lifecycle({
+  session,
+  compositions: [archiveV2, archiveV2Memory, archiveV2FollowedProfiles, archiveV2Dossier],
+  aborters: [taskRouter, apiTools],
+  isEnabled: settings.isEnabled,
+  getUi: () => ui,
 });
-const host = ctx();
-bindRerunEvents({ eventSource: host?.eventSource, eventTypes: host?.eventTypes, controller: { invalidate, run }, isEnabled: settings.isEnabled });
-bindStableFloorEvents({ eventSource: host?.eventSource, eventTypes: host?.eventTypes, controller: { invalidate: stableFloors.invalidate, run: stableFloors.refresh }, isEnabled: settings.isEnabled });
-startInitialRun({ run }, console, settings.isEnabled);
+const host = hostContext();
+lifecycle.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes });
+void lifecycle.start().catch(error => console.warn('[qianqianjie] V2 身份准备失败', error));

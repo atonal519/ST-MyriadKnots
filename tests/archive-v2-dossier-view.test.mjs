@@ -131,7 +131,7 @@ function harness({ followedCount = 1, omitFollowedIndex = null, withProfileField
 
 const findButton = (root, label) => root.querySelectorAll('button').find(item => item.textContent === label) ?? null;
 
-test('ready 使用 V1 rail/dossier/basic-info 并展示 11 字段与安全来源标签', () => {
+test('ready 使用 V2 rail/dossier/basic-info 并展示 11 字段与安全来源标签', () => {
   const h = harness();
   assert.ok(h.container.querySelector('.profile-rail-shell'));
   assert.ok(h.container.querySelector('.dossier-card'));
@@ -269,10 +269,10 @@ test('CAS 冲突、切聊天或禁用时不误报保存成功', async () => {
   }
 });
 
-test('新视图只复用原 V1 样式并保留窄屏单列布局', async () => {
+test('V2 档案视图保留人物轨道、因缘簿与窄屏单列布局', async () => {
   const css = await readFile(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
   assert.match(css, /\.profile-rail-shell/);
   assert.match(css, /\.dossier-card/);
-  assert.match(css, /\.fate-book-view/);
-  assert.match(css, /@media\(max-width:390px\)[^{]*\{\.basic-row-three\{grid-template-columns:minmax\(0,1fr\)/);
+  assert.match(css, /\.people-content/);
+  assert.match(css, /@media\(max-width:390px\)[^{]*\{[\s\S]*?\.basic-row-three\{grid-template-columns:1fr/);
 });

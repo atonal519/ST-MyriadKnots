@@ -97,12 +97,17 @@ async function waitUntil(predicate) {
   throw new Error('等待异步测试条件超时');
 }
 
-function harness({ current = host(), clientHarness = fakeClient(), utility, enabled = () => true } = {}) {
+function harness({ current = host(), clientHarness = fakeClient(), primary, utility, enabled = () => true } = {}) {
   let currentHost = current;
+  const primaryCalls = [];
   const utilityCalls = [];
   const composition = createArchiveV2MemoryComposition({
     client: clientHarness.client,
     contextProvider: () => currentHost,
+    generatePrimaryTask: async options => {
+      primaryCalls.push(options);
+      return primary ? primary(options) : { jsonData: onePersonResult() };
+    },
     generateUtilityTask: async options => {
       utilityCalls.push(options);
       return utility ? utility(options) : { jsonData: emptyRows() };
@@ -114,6 +119,7 @@ function harness({ current = host(), clientHarness = fakeClient(), utility, enab
   return {
     composition,
     clientHarness,
+    primaryCalls,
     utilityCalls,
     setHost(value) { currentHost = value; },
   };
@@ -154,6 +160,7 @@ test('start 真实组合 snapshot→utility→batch→manifest，utility 只收�
   const result = await h.composition.start();
   assert.equal(result.status, 'ready');
   assert.equal(h.utilityCalls.length, 1);
+  assert.equal(h.primaryCalls.length, 0);
   const prompt = h.utilityCalls[0].taskMessages[0].content;
   assert.match(prompt, /可见 AI/);
   assert.match(prompt, /隐藏 AI/);
@@ -269,22 +276,29 @@ test('inspect 切身份/disabled 与 invalidate 安全终止，不泄露依赖�
   assert.equal(h.composition.getState().status, 'disabled');
 });
 
-test('ready 后仅手动一次归并，已有候选不重复 AI；确认后全部人物同档并正确 followed', async () => {
-  const h = harness({ utility: options => options.systemPrompt.includes('跨批人物归并器')
-    ? { jsonData: onePersonResult() }
-    : { jsonData: onePersonRows() } });
+test('扫描只走副 API、跨批人物归并只走主 API；已有候选不重复 AI', async () => {
+  const h = harness({
+    utility: () => ({ jsonData: onePersonRows(), taskMetadata: { source: 'shared-utility' } }),
+    primary: () => ({ jsonData: onePersonResult(), taskMetadata: { source: 'shared-main' } }),
+  });
   assert.equal((await h.composition.start()).status, 'ready');
   assert.equal(h.utilityCalls.length, 1);
+  assert.equal(h.primaryCalls.length, 0);
+  assert.match(h.utilityCalls[0].systemPrompt, /单批故事记忆抽取器/);
   const inspected = await h.composition.inspect();
   assert.equal(inspected.peopleStatus, 'uninitialized');
   assert.equal(h.utilityCalls.length, 1);
+  assert.equal(h.primaryCalls.length, 0);
 
   const consolidated = await h.composition.consolidatePeople();
   assert.equal(consolidated.status, 'ready');
-  assert.equal(h.utilityCalls.length, 2);
+  assert.equal(h.utilityCalls.length, 1);
+  assert.equal(h.primaryCalls.length, 1);
+  assert.match(h.primaryCalls[0].systemPrompt, /跨批人物归并器/);
   assert.equal(h.composition.getState().peopleStatus, 'ready');
   assert.equal((await h.composition.consolidatePeople()).reused, true);
-  assert.equal(h.utilityCalls.length, 2);
+  assert.equal(h.utilityCalls.length, 1);
+  assert.equal(h.primaryCalls.length, 1);
 
   const committed = await h.composition.confirmPeople({ selectedLocalIds: ['C1'] });
   assert.equal(committed.status, 'created');
@@ -298,12 +312,14 @@ test('ready 后仅手动一次归并，已有候选不重复 AI；确认后全�
 
 test('人物归并失败保留 batch 并允许人工重试；切聊天或禁用使迟到结果不写入', async () => {
   let attempts = 0;
-  const retry = harness({ utility: options => {
-    if (!options.systemPrompt.includes('跨批人物归并器')) return { jsonData: onePersonRows() };
-    attempts += 1;
-    if (attempts === 1) throw new Error('SECRET');
-    return { jsonData: onePersonResult() };
-  } });
+  const retry = harness({
+    utility: () => ({ jsonData: onePersonRows() }),
+    primary: () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('SECRET');
+      return { jsonData: onePersonResult() };
+    },
+  });
   await retry.composition.start();
   const batchKeys = [...retry.clientHarness.records.keys()].filter(key => key.includes('/memory-batch-'));
   await assert.rejects(retry.composition.consolidatePeople());
@@ -317,8 +333,8 @@ test('人物归并失败保留 batch 并允许人工重试；切聊天或禁用�
     let release;
     const late = harness({
       enabled: () => enabled,
-      utility: options => {
-        if (!options.systemPrompt.includes('跨批人物归并器')) return { jsonData: onePersonRows() };
+      utility: () => ({ jsonData: onePersonRows() }),
+      primary: () => {
         return new Promise(resolve => { release = () => resolve({ jsonData: onePersonResult() }); });
       },
     });

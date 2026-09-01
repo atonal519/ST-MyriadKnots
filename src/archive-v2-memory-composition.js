@@ -34,6 +34,7 @@ function frozenProgress(value) {
 export function createArchiveV2MemoryComposition({
   client,
   contextProvider,
+  generatePrimaryTask,
   generateUtilityTask,
   isEnabled = true,
   now,
@@ -44,6 +45,9 @@ export function createArchiveV2MemoryComposition({
     throw new TypeError('memory composition client 必须提供 get 和 put');
   }
   if (typeof contextProvider !== 'function') throw new TypeError('memory composition contextProvider 必须是函数');
+  if (typeof generatePrimaryTask !== 'function') {
+    throw new TypeError('memory composition generatePrimaryTask 必须是函数');
+  }
   if (typeof generateUtilityTask !== 'function') {
     throw new TypeError('memory composition generateUtilityTask 必须是函数');
   }
@@ -121,7 +125,7 @@ export function createArchiveV2MemoryComposition({
   const effectiveNow = now ?? (() => new Date().toISOString());
   const consolidator = createArchiveV2MemoryPeopleConsolidator({
     contextProvider: identityContextProvider,
-    generateTask: generateUtilityTask,
+    generateTask: generatePrimaryTask,
     isEnabled,
     now: effectiveNow,
   });

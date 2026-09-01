@@ -28,13 +28,3 @@ export function createBackendClient({ fetchImpl = globalThis.fetch, headers = ()
     async put(collection, recordId, data, expectedRevision, { signal } = {}) { return request(key(collection, recordId), { method: 'PUT', body: JSON.stringify({ data, expectedRevision }), signal }); },
   };
 }
-
-export async function getOrCreateIdentity(client, collection, recordId, data, guard = () => {}) {
-  try { const record = await client.get(collection, recordId); guard(); return { record, created: false }; }
-  catch (error) {
-    if (error.status !== 404) throw error;
-    guard();
-    try { guard(); const record = await client.put(collection, recordId, data, 0); guard(); return { record, created: true }; }
-    catch (race) { if (race.status !== 409) throw race; const record = await client.get(collection, recordId); guard(); return { record, created: false }; }
-  }
-}
