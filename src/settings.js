@@ -4,6 +4,8 @@ export const SETTINGS_ID = 'qianqianjie';
 
 export const DEFAULT_SETTINGS = Object.freeze({
   pluginEnabled: true,
+  autoMemoryEnabled: false,
+  autoMemoryBatchSize: 2,
   apiMode: 'auto',
   selectedSevenDaysPresetId: '',
   apiUrl: '',
@@ -34,6 +36,11 @@ const text = value => typeof value === 'string' ? value : '';
 const APPEARANCE_THEMES = new Set(['auto', 'day', 'night']);
 const normalizeScale = value => Math.min(1.5, Math.max(0.75, Number.isFinite(Number(value)) ? Number(value) : 1));
 
+export function normalizeAutoMemoryBatchSize(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 1 && number <= 20 ? number : 2;
+}
+
 export function normalizeTimeout(value) {
   const number = Number(value);
   return Number.isInteger(number) && number >= 5 && number <= 600 ? number : 180;
@@ -61,6 +68,39 @@ export function createPresetId(now = Date.now, random = Math.random) {
   return `q${now().toString(36)}${random().toString(36).slice(2, 7)}`;
 }
 
+const pluginEnabledFlows = new WeakMap();
+
+export async function applyPluginEnabledImmediately({ settings, enabled, onChange } = {}) {
+  if (!settings || typeof settings.update !== 'function' || typeof settings.isEnabled !== 'function') throw new TypeError('千千结总开关设置存储无效');
+  const previous = settings.isEnabled();
+  const desired = enabled === true;
+  const flow = pluginEnabledFlows.get(settings) ?? { sequence: 0, tail: Promise.resolve() };
+  pluginEnabledFlows.set(settings, flow);
+  const sequence = ++flow.sequence;
+  try { settings.update({ pluginEnabled: desired }, { observeSaveFailure: true }); }
+  catch (error) {
+    try { settings.update({ pluginEnabled: previous }); } catch { /* restore the in-memory truth even if host scheduling also fails */ }
+    throw error;
+  }
+  const task = flow.tail.catch(() => {}).then(async () => {
+    if (sequence !== flow.sequence) return Object.freeze({ enabled: settings.isEnabled(), previous, persistence: 'scheduled', stale: true });
+    try {
+      await onChange?.(desired);
+      if (sequence !== flow.sequence) return Object.freeze({ enabled: settings.isEnabled(), previous, persistence: 'scheduled', stale: true });
+      return Object.freeze({ enabled: desired, previous, persistence: 'scheduled', stale: false });
+    } catch (error) {
+      if (sequence !== flow.sequence) return Object.freeze({ enabled: settings.isEnabled(), previous, persistence: 'scheduled', stale: true });
+      if (sequence === flow.sequence) {
+        try { settings.update({ pluginEnabled: previous }); } catch { /* in-memory rollback happens before host save scheduling */ }
+        try { await onChange?.(previous); } catch { /* rollback is best effort */ }
+      }
+      throw error;
+    }
+  });
+  flow.tail = task.catch(() => {});
+  return task;
+}
+
 export function createSettingsStore({ extensionSettings, save = () => {}, now, random } = {}) {
   if (!extensionSettings || typeof extensionSettings !== 'object') throw new Error('千千结设置存储不可用');
   const get = () => {
@@ -78,12 +118,18 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (!APPEARANCE_THEMES.has(settings.appearanceTheme)) settings.appearanceTheme = 'auto';
     settings.appearanceScale = normalizeScale(settings.appearanceScale);
     settings.apiTimeoutSec = normalizeTimeout(settings.apiTimeoutSec);
+    settings.autoMemoryBatchSize = normalizeAutoMemoryBatchSize(settings.autoMemoryBatchSize);
     return settings;
   };
-  const notify = () => { try { save(); } catch { /* host save failures surface on its own UI */ } };
-  const update = patch => {
+  const notify = (observeSaveFailure = false) => {
+    try { return save(); }
+    catch (error) { if (observeSaveFailure) throw error; }
+  };
+  const update = (patch, { observeSaveFailure = false } = {}) => {
     const settings = get();
     if (own(patch, 'pluginEnabled')) settings.pluginEnabled = patch.pluginEnabled !== false;
+    if (own(patch, 'autoMemoryEnabled')) settings.autoMemoryEnabled = patch.autoMemoryEnabled === true;
+    if (own(patch, 'autoMemoryBatchSize')) settings.autoMemoryBatchSize = normalizeAutoMemoryBatchSize(patch.autoMemoryBatchSize);
     if (own(patch, 'apiMode')) settings.apiMode = API_MODES.has(patch.apiMode) ? patch.apiMode : 'auto';
     if (own(patch, 'selectedSevenDaysPresetId')) settings.selectedSevenDaysPresetId = text(patch.selectedSevenDaysPresetId).trim();
     if (own(patch, 'apiUrl')) settings.apiUrl = text(patch.apiUrl).trim();
@@ -104,7 +150,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'appearanceScale')) settings.appearanceScale = normalizeScale(patch.appearanceScale);
     if (own(patch, 'appearanceFontCssUrl')) settings.appearanceFontCssUrl = text(patch.appearanceFontCssUrl).trim();
     if (own(patch, 'appearanceFontFamily')) settings.appearanceFontFamily = text(patch.appearanceFontFamily).trim();
-    notify();
+    notify(observeSaveFailure);
     return settings;
   };
   const localConfig = () => {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { createSettingsStore } from '../src/settings.js';
+import { applyPluginEnabledImmediately, createSettingsStore, normalizeAutoMemoryBatchSize } from '../src/settings.js';
 import { createApiResolver, createApiTools, createArchiveV2TaskRouter } from '../src/api-routing.js';
 
 const createPeopleTaskRouter = options => {
@@ -15,6 +15,83 @@ const setup = extensionSettings => {
   const settings = createSettingsStore({ extensionSettings, save: () => { saves += 1; }, now: () => 1, random: () => 0.5 });
   return { settings, saves: () => saves };
 };
+
+test('自动记忆默认显式关闭，批次只接受 1–20 的整数并即时持久化', () => {
+  const extensionSettings = {};
+  const { settings, saves } = setup(extensionSettings);
+  assert.equal(settings.get().autoMemoryEnabled, false);
+  assert.equal(settings.get().autoMemoryBatchSize, 2);
+  assert.equal(normalizeAutoMemoryBatchSize(1), 1);
+  assert.equal(normalizeAutoMemoryBatchSize(20), 20);
+  for (const invalid of [0, 21, 1.5, 'abc']) assert.equal(normalizeAutoMemoryBatchSize(invalid), 2);
+  settings.update({ autoMemoryEnabled: true, autoMemoryBatchSize: 20 });
+  assert.equal(extensionSettings.qianqianjie.autoMemoryEnabled, true);
+  assert.equal(extensionSettings.qianqianjie.autoMemoryBatchSize, 20);
+  assert.equal(saves(), 1);
+});
+
+test('剔除包裹符设置保留标签名与字面起止符混合配置', () => {
+  const extensionSettings = {};
+  const { settings } = setup(extensionSettings);
+  settings.update({ sourceExtraTags: ' THINK，[[...]]\nreasoning ' });
+  assert.equal(settings.get().sourceExtraTags, 'think,[[...]],reasoning');
+});
+
+test('总开关 change 立即持久化并调用运行时；运行时失败时恢复原真值', async () => {
+  const extensionSettings = {};
+  const { settings, saves } = setup(extensionSettings);
+  const runtimeValues = [];
+  const disabled = await applyPluginEnabledImmediately({ settings, enabled: false, onChange: async value => { runtimeValues.push(value); } });
+  assert.equal(disabled.enabled, false);
+  assert.equal(disabled.persistence, 'scheduled');
+  assert.equal(disabled.stale, false);
+  assert.equal(settings.isEnabled(), false);
+  assert.equal(extensionSettings.qianqianjie.pluginEnabled, false);
+  assert.deepEqual(runtimeValues, [false]);
+  assert.equal(saves(), 1);
+
+  await assert.rejects(applyPluginEnabledImmediately({ settings, enabled: true, onChange: async value => {
+    runtimeValues.push(value);
+    if (value) throw new Error('模拟运行时切换失败');
+  } }), /模拟运行时切换失败/);
+  assert.equal(settings.isEnabled(), false);
+  assert.equal(extensionSettings.qianqianjie.pluginEnabled, false);
+  assert.deepEqual(runtimeValues.slice(-2), [true, false]);
+});
+
+test('总开关快速连续切换与面板重建共用顺序，最后选择获胜', async () => {
+  const extensionSettings = {};
+  const { settings } = setup(extensionSettings);
+  const runtimeValues = [];
+  let releaseFirst, firstStartedResolve;
+  const firstStarted = new Promise(resolve => { firstStartedResolve = resolve; });
+  const onChange = async value => {
+    runtimeValues.push(value);
+    if (!value) {
+      firstStartedResolve();
+      await new Promise(resolve => { releaseFirst = resolve; });
+    }
+  };
+  const firstPanelChange = applyPluginEnabledImmediately({ settings, enabled: false, onChange });
+  await firstStarted;
+  const rebuiltPanelChange = applyPluginEnabledImmediately({ settings, enabled: true, onChange });
+  assert.equal(settings.isEnabled(), true, '新面板的最后选择应立即成为设置真值');
+  releaseFirst();
+  const [older, latest] = await Promise.all([firstPanelChange, rebuiltPanelChange]);
+  assert.equal(older.stale, true);
+  assert.equal(latest.stale, false);
+  assert.equal(latest.enabled, true);
+  assert.deepEqual(runtimeValues, [false, true]);
+  assert.equal(settings.isEnabled(), true);
+});
+
+test('总开关可检测的同步保存调度失败会恢复原值，不谎报已保存', async () => {
+  const extensionSettings = {};
+  const settings = createSettingsStore({ extensionSettings, save: () => { throw new Error('宿主保存调度失败'); } });
+  assert.equal(settings.isEnabled(), true);
+  await assert.rejects(applyPluginEnabledImmediately({ settings, enabled: false }), /宿主保存调度失败/);
+  assert.equal(settings.isEnabled(), true);
+});
 
 test('旧本地 API 只做一次幂等非破坏迁移，共享段既有值优先', () => {
   const extensionSettings = { qianqianjie: { pluginEnabled: false, apiMode: 'local', apiUrl: 'legacy-url', apiKey: 'LEGACY_KEY', apiModel: 'legacy-model', apiPresets: [configured('旧预设', 'legacy')], apiPresetActiveId: 'legacy' }, 'schedule-planner': { apiKey: 'SHARED_KEY', unknownTop: { keep: true } } };

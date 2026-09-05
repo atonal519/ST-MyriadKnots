@@ -4,21 +4,26 @@ import { installWandEntry } from './ui/wand-entry.js';
 import { createArchiveV2InitializationView } from './ui/archive-v2-initialization-view.js';
 import { createArchiveV2BondView } from './ui/archive-v2-bond-view.js';
 import { createArchiveV2SourcePermissionView } from './ui/archive-v2-source-permission-view.js';
+import { createV3FoundationView } from './ui/v3-foundation-view.js';
 
 export function bootstrap({
   settings,
   apiTools,
   prepareSession,
   onPluginEnabledChange,
+  onAutomationSettingsChange,
   archiveV2Composition,
   archiveV2Memory,
   archiveV2FollowedProfiles,
   archiveV2Dossier,
   archiveV2Bonds,
   sourcePermissions,
+  v3FoundationRuntime,
+  v3RecallRuntime,
   archiveV2ViewFactory = createArchiveV2InitializationView,
   archiveV2BondViewFactory = createArchiveV2BondView,
   sourcePermissionViewFactory = createArchiveV2SourcePermissionView,
+  v3FoundationViewFactory = createV3FoundationView,
   documentRef = globalThis.document,
   panelFactory = createPanel,
   fabFactory = createFab,
@@ -44,6 +49,7 @@ export function bootstrap({
     onOpenSourceSettings: openSourceSettings,
   });
   const bondView = archiveV2BondViewFactory({ composition: archiveV2Bonds, documentRef, sourcePermissions, sourcePermissionView, onOpenSourceSettings: openSourceSettings });
+  const foundationView = v3FoundationViewFactory({ runtime: v3FoundationRuntime, recallRuntime: v3RecallRuntime, documentRef });
   const enabled = () => settings?.isEnabled?.() !== false;
   const ensureReady = async () => {
     if (!enabled()) return { status: 'disabled' };
@@ -56,9 +62,7 @@ export function bootstrap({
     }
     try {
       const result = await panel.show(event?.currentTarget || event?.target || documentRef.activeElement);
-      if (['disabled', 'stale'].includes(result?.status)) {
-        panel.showStatus(result.status === 'disabled' ? '千千结已关闭' : '当前聊天身份已变化，请重新打开。');
-      }
+      if (result?.status === 'disabled') panel.showStatus('千千结已关闭');
     } catch {
       panel.showStatus('当前聊天暂时无法建立稳定身份。');
     }
@@ -68,8 +72,10 @@ export function bootstrap({
     apiTools,
     archiveV2InitializationView: archiveView,
     archiveV2BondView: bondView,
+    v3FoundationView: foundationView,
     sourcePermissionView,
     onPluginEnabledChange,
+    onAutomationSettingsChange,
     onOpenPeople: ensureReady,
     onOpenBonds: ensureReady,
     documentRef,

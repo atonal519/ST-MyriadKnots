@@ -1,8 +1,18 @@
 const TAG_NAME_PATTERN = /^[\p{L}][\p{L}\p{N}_-]*~?$/u;
+const LITERAL_WRAPPER_SEPARATOR = '...';
+
+function literalWrapperRule(value) {
+  const separator = value.indexOf(LITERAL_WRAPPER_SEPARATOR);
+  if (separator <= 0 || separator !== value.lastIndexOf(LITERAL_WRAPPER_SEPARATOR) || separator + LITERAL_WRAPPER_SEPARATOR.length >= value.length) return null;
+  return Object.freeze({ start: value.slice(0, separator), end: value.slice(separator + LITERAL_WRAPPER_SEPARATOR.length) });
+}
 
 export function normalizeArchiveV2TagList(value) {
-  return String(value || '').split(/[,，\n]/).map(item => String(item).trim().toLowerCase())
-    .filter(item => TAG_NAME_PATTERN.test(item) && !/~~|~.+/.test(item));
+  return String(value || '').split(/[,，\n]/).map(item => String(item).trim()).map(item => {
+    if (literalWrapperRule(item)) return item;
+    const tagName = item.toLowerCase();
+    return TAG_NAME_PATTERN.test(tagName) && !/~~|~.+/.test(tagName) ? tagName : '';
+  }).filter(Boolean);
 }
 
 export const normalizeMemoryTagList = normalizeArchiveV2TagList;
@@ -44,13 +54,31 @@ function pairedDropIntervals(tokens, keep) {
   return merged;
 }
 
+function dropLiteralWrappedContent(content, rules) {
+  let result = content;
+  for (const { start, end } of rules) {
+    let cursor = 0;
+    let output = '';
+    while (cursor < result.length) {
+      const opening = result.indexOf(start, cursor);
+      if (opening < 0) { output += result.slice(cursor); break; }
+      const closing = result.indexOf(end, opening + start.length);
+      if (closing < 0) { output += result.slice(cursor); break; }
+      output += result.slice(cursor, opening);
+      cursor = closing + end.length;
+    }
+    result = output;
+  }
+  return result;
+}
+
 export function sanitizeArchiveV2SourceContent(raw, options = {}) {
   if (!raw) return '';
-  const keep = normalizeArchiveV2TagList(options.keepTags ?? 'content');
-  // Normalize extra even though every non-kept paired tag is stripped by default.
-  // Keeping this call preserves the public setting contract and validation path.
-  normalizeArchiveV2TagList(options.extraTags ?? '');
+  const keep = normalizeArchiveV2TagList(options.keepTags ?? 'content').filter(item => TAG_NAME_PATTERN.test(item));
+  const extra = normalizeArchiveV2TagList(options.extraTags ?? '');
+  const literalDropRules = extra.map(literalWrapperRule).filter(Boolean);
   let content = String(raw);
+  content = dropLiteralWrappedContent(content, literalDropRules);
   content = content.replace(/<!--[\s\S]*?-->/g, '');
   const tokens = tagTokens(content);
   const intervals = pairedDropIntervals(tokens, new Set(keep));

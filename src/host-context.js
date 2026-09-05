@@ -1,6 +1,5 @@
 export function getHostContext() {
-  const luker = globalThis.Luker;
-  const ctx = luker?.getContext?.();
+  const ctx = globalThis.SillyTavern?.getContext?.() ?? globalThis.Luker?.getContext?.();
   if (!ctx || typeof ctx !== 'object') throw new Error('宿主上下文不可用');
   return ctx;
 }
@@ -16,7 +15,7 @@ export function readHostState(ctx = getHostContext()) {
   if (!characterAvatar) return { ok: false, reason: '缺少角色身份' };
   if (!personaAvatar) return { ok: false, reason: '缺少 Persona 身份' };
   const metadata = ctx.chatMetadata?.qianqianjie;
-  return { ok: true, hostChatId: chatId, chatId: isUuid(metadata?.chatId) && metadata.schemaVersion === 1 ? metadata.chatId : null, characterAvatar, personaAvatar, characterId: String(characterId) };
+  return { ok: true, hostChatId: chatId, chatId: isUuid(metadata?.chatId) && [1, 2].includes(metadata.schemaVersion) ? metadata.chatId : null, characterAvatar, personaAvatar, characterId: String(characterId) };
 }
 
 export function isUuid(value) { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
@@ -28,10 +27,10 @@ export function newUuid() {
 
 export async function persistChatId(ctx, chatId) {
   const metadata = ctx.chatMetadata ?? {};
-  if (metadata.qianqianjie?.chatId === chatId && metadata.qianqianjie.schemaVersion === 1) return false;
+  if (metadata.qianqianjie?.chatId === chatId && metadata.qianqianjie.schemaVersion === 2) return false;
   if (typeof ctx.saveMetadata !== 'function' && typeof ctx.saveChatMetadata !== 'function') throw new Error('宿主不支持聊天元数据保存');
   const previous = metadata.qianqianjie;
-  metadata.qianqianjie = { schemaVersion: 1, chatId };
+  metadata.qianqianjie = { schemaVersion: 2, chatId };
   try { await (ctx.saveMetadata ?? ctx.saveChatMetadata)(); }
   catch (error) { if (previous === undefined) delete metadata.qianqianjie; else metadata.qianqianjie = previous; throw error; }
   return true;

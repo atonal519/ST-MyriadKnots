@@ -10,16 +10,17 @@ const unavailableError = route => {
   return error;
 };
 const bounded = (value, length, fallback = '') => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, length) || fallback;
-const taskMetadata = (route, finishReason = '') => ({
+const taskMetadata = (route, finishReason = '', transportAttempts = null) => ({
   source: bounded(route?.source, 80, 'unknown'),
   sourceLabel: bounded(route?.sourceLabel, 160, '未命名 API'),
   model: bounded(route?.config?.model, 160, 'unknown'),
   ...(finishReason ? { finishReason: bounded(finishReason, 32) } : {}),
+  ...(Number.isSafeInteger(transportAttempts) ? { transportAttempts } : {}),
 });
 const withTaskMetadata = (result, route) => {
   const finishReason = result?.taskMetadata?.finishReason || result?.finishReason;
-  const metadata = taskMetadata(route, finishReason);
-  if (result && typeof result === 'object' && !Array.isArray(result) && Object.hasOwn(result, 'jsonData')) return { ...result, taskMetadata: metadata };
+  const metadata = taskMetadata(route, finishReason, result?.taskMetadata?.transportAttempts);
+  if (result && typeof result === 'object' && !Array.isArray(result) && (Object.hasOwn(result, 'jsonData') || Object.hasOwn(result, 'textData'))) return { ...result, taskMetadata: metadata };
   return { jsonData: result, taskMetadata: metadata };
 };
 
@@ -91,7 +92,7 @@ export function createArchiveV2TaskRouter({ resolver, compactClient, isEnabled =
     catch (error) {
       if (controller.signal.aborted || !isEnabled() || mine !== epoch) throw abortError();
       if (error && (typeof error === 'object' || typeof error === 'function')) {
-        try { error.taskMetadata = taskMetadata(route, error?.finishReason || error?.taskMetadata?.finishReason); } catch { /* a frozen foreign error remains safe but cannot be annotated */ }
+        try { error.taskMetadata = taskMetadata(route, error?.finishReason || error?.taskMetadata?.finishReason, error?.transportAttempts ?? error?.taskMetadata?.transportAttempts); } catch { /* a frozen foreign error remains safe but cannot be annotated */ }
       }
       throw error;
     }

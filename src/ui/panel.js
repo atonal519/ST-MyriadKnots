@@ -3,11 +3,11 @@ import css from './panel.css?inline';
 import { createPanelGeometryController } from './layout.js';
 import { applyArchiveV2Appearance } from './archive-v2-appearance.js';
 import { createSettingsDrawer, createSettingsDrawerState } from './settings-drawer.js';
+import { applyPluginEnabledImmediately } from '../settings.js';
 
 const shellCss = ':host{position:fixed;inset:0;z-index:4000;width:100dvw;height:100dvh;pointer-events:none;background:transparent;text-shadow:none!important;isolation:isolate}:host([hidden]){display:none!important}.panel{position:fixed;top:80px;right:20px;width:360px;height:min(600px,85dvh);max-width:calc(100dvw - 40px);max-height:85dvh;display:grid;grid-template-rows:auto auto minmax(0,1fr) 24px;pointer-events:auto}.body{min-height:0;overflow-y:auto;scrollbar-gutter:stable}.tabs{overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(max-width:640px){.panel{top:calc(20px + env(safe-area-inset-top,0px));left:50%;right:auto;transform:translateX(-50%);width:calc(100dvw - 20px);max-width:calc(100dvw - 20px);height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));max-height:none;grid-template-rows:auto auto minmax(0,1fr)}.panel-resize-handle{display:none}.tabs{scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}}';
 
 const PLACEHOLDERS = Object.freeze({
-  events: ['千事', '时间轴与审核游标将在后续版本接入。'],
   next: ['下一步', '行动建议与人工保留项将在后续版本接入。'],
 });
 
@@ -16,8 +16,10 @@ export function createPanel({
   apiTools,
   archiveV2InitializationView,
   archiveV2BondView,
+  v3FoundationView,
   sourcePermissionView,
   onPluginEnabledChange,
+  onAutomationSettingsChange,
   onOpenPeople,
   onOpenBonds,
   documentRef = globalThis.document,
@@ -28,6 +30,9 @@ export function createPanel({
   }
   if (!archiveV2BondView || ['mount', 'activate', 'deactivate'].some(name => typeof archiveV2BondView[name] !== 'function')) {
     throw new TypeError('archiveV2BondView 无效');
+  }
+  if (!v3FoundationView || ['mount', 'activate', 'deactivate'].some(name => typeof v3FoundationView[name] !== 'function')) {
+    throw new TypeError('v3FoundationView 无效');
   }
   const host = documentRef.createElement('div');
   host.id = 'qqj-panel-host';
@@ -50,6 +55,7 @@ export function createPanel({
   let screen = 'content';
   let mounted = false;
   let bondsMounted = false;
+  let foundationMounted = false;
   let enabled = settings?.isEnabled?.() !== false;
   let trigger = null;
   let activationEpoch = 0;
@@ -76,9 +82,11 @@ export function createPanel({
   const unmountArchive = () => {
     archiveV2InitializationView.deactivate();
     archiveV2BondView.deactivate();
+    v3FoundationView.deactivate();
     view.replaceChildren();
     mounted = false;
     bondsMounted = false;
+    foundationMounted = false;
   };
   const showStatus = text => {
     activationEpoch += 1;
@@ -103,10 +111,12 @@ export function createPanel({
     label.textContent = '正在读取 V2 档案';
     if (!mounted) {
       archiveV2BondView.deactivate();
+      v3FoundationView.deactivate();
       view.replaceChildren();
       archiveV2InitializationView.mount(view);
       mounted = true;
       bondsMounted = false;
+      foundationMounted = false;
     }
     const result = await archiveV2InitializationView.activate();
     if (mine === activationEpoch && !host.hidden) label.textContent = result?.status === 'ready' ? '千人档案' : 'V2 历史初始化';
@@ -130,10 +140,12 @@ export function createPanel({
     label.textContent = '正在读取双丝网';
     if (!bondsMounted) {
       archiveV2InitializationView.deactivate();
+      v3FoundationView.deactivate();
       view.replaceChildren();
       archiveV2BondView.mount(view);
       bondsMounted = true;
       mounted = false;
+      foundationMounted = false;
     }
     const result = await archiveV2BondView.activate();
     if (mine === activationEpoch && !host.hidden) label.textContent = '双丝网';
@@ -150,6 +162,25 @@ export function createPanel({
     return activateBonds();
   }
 
+  async function activateFoundation() {
+    if (host.hidden || activeTab !== 'events' || screen !== 'content') return { status: 'closed' };
+    if (!enabled) { showStatus('千千结当前已关闭。V3 地基不会读取后端或写入数据。'); return { status: 'disabled' }; }
+    const mine = ++activationEpoch;
+    label.textContent = 'V3 地基诊断';
+    if (!foundationMounted) {
+      archiveV2InitializationView.deactivate();
+      archiveV2BondView.deactivate();
+      view.replaceChildren();
+      v3FoundationView.mount(view);
+      foundationMounted = true;
+      mounted = false;
+      bondsMounted = false;
+    }
+    const result = await v3FoundationView.activate();
+    if (mine === activationEpoch && !host.hidden) label.textContent = result?.status === 'ready' ? 'V3 地基可用' : 'V3 地基诊断';
+    return result;
+  }
+
   function selectTab(tab) {
     activationEpoch += 1;
     screen = 'content';
@@ -160,6 +191,7 @@ export function createPanel({
       node.setAttribute('aria-selected', String(active));
     });
     if (tab === 'people') void openPeople().catch(() => showStatus('当前聊天暂时无法建立稳定身份。'));
+    else if (tab === 'events') void activateFoundation().catch(() => showStatus('当前聊天暂时无法读取 V3 地基。'));
     else if (tab === 'bonds') void openBonds().catch(() => showStatus('当前聊天暂时无法读取双丝网。'));
     else renderPlaceholder(tab);
   }
@@ -178,10 +210,12 @@ export function createPanel({
     screen = 'settings';
     archiveV2InitializationView.deactivate();
     archiveV2BondView.deactivate();
+    v3FoundationView.deactivate();
     view.replaceChildren();
     mounted = false;
     bondsMounted = false;
-    label.textContent = 'V2 设置';
+    foundationMounted = false;
+    label.textContent = '千千结设置';
     const current = settings.get();
     const sharedMain = settings.sharedMainConfig();
     const presets = settings.sharedPresets();
@@ -206,8 +240,75 @@ export function createPanel({
     const enabledInput = element('input');
     enabledInput.type = 'checkbox';
     enabledInput.checked = current.pluginEnabled !== false;
-    toggle.append(enabledInput, element('span', '', '启用千千结 V2'));
-    generalBody.append(toggle, element('p', 'settings-hint', '关闭后不读取后端、不调用 AI；已有记录保持原样。'));
+    toggle.append(enabledInput, element('span', '', '启用千千结'));
+    const enabledResult = element('p', 'settings-result');
+    enabledInput.addEventListener('change', async () => {
+      const previous = settings.isEnabled();
+      const desired = enabledInput.checked;
+      enabledInput.disabled = true;
+      enabledResult.textContent = desired ? '正在开启并保存…' : '正在关闭并保存…';
+      enabledResult.className = 'settings-result';
+      try {
+        const applied = await applyPluginEnabledImmediately({ settings, enabled: desired, onChange: onPluginEnabledChange });
+        if (applied.stale) return;
+        enabled = applied.enabled;
+        setEnabled(desired);
+        enabledResult.textContent = desired ? '千千结已开启；酒馆正在后台保存设置。' : '千千结已关闭，后台读取、AI 与召回注入均已停止；已有档案保留，酒馆正在后台保存设置。';
+        enabledResult.className = 'settings-result success';
+      } catch (error) {
+        enabled = previous;
+        enabledInput.checked = previous;
+        setEnabled(previous);
+        enabledResult.textContent = `切换失败，已恢复原状态：${error?.message || '未知错误'}`;
+        enabledResult.className = 'settings-result error';
+      } finally {
+        enabledInput.disabled = false;
+      }
+    });
+    const autoToggle = element('label', 'setting-switch');
+    const autoMemoryInput = element('input');
+    autoMemoryInput.type = 'checkbox';
+    autoMemoryInput.checked = current.autoMemoryEnabled === true;
+    autoToggle.append(autoMemoryInput, element('span', '', '自动维护追平后的新楼'));
+    const autoBatchSize = element('input', 'settings-input');
+    autoBatchSize.type = 'number'; autoBatchSize.min = '1'; autoBatchSize.max = '20'; autoBatchSize.step = '1'; autoBatchSize.value = String(current.autoMemoryBatchSize ?? 2);
+    const autoResult = element('p', 'settings-result');
+    const applyAutomation = async () => {
+      const previous = settings.get();
+      const previousEnabled = previous.autoMemoryEnabled === true;
+      const previousBatchSize = previous.autoMemoryBatchSize;
+      autoMemoryInput.disabled = true; autoBatchSize.disabled = true;
+      autoResult.textContent = '正在保存自动记忆设置…'; autoResult.className = 'settings-result';
+      try {
+        const saved = settings.update({ autoMemoryEnabled: autoMemoryInput.checked, autoMemoryBatchSize: Number(autoBatchSize.value) });
+        autoMemoryInput.checked = saved.autoMemoryEnabled === true;
+        autoBatchSize.value = String(saved.autoMemoryBatchSize);
+        await onAutomationSettingsChange?.();
+        autoResult.textContent = saved.autoMemoryEnabled
+          ? `自动维护已开启：历史追平后，每 ${saved.autoMemoryBatchSize} 个稳定 AI 新楼会自动维护；既有历史仍须在地基页手动开始。`
+          : '自动记忆已关闭；手动提取与已有档案不受影响。';
+        autoResult.className = 'settings-result success';
+      } catch (error) {
+        const restored = settings.update({ autoMemoryEnabled: previousEnabled, autoMemoryBatchSize: previousBatchSize });
+        autoMemoryInput.checked = restored.autoMemoryEnabled === true; autoBatchSize.value = String(restored.autoMemoryBatchSize);
+        try { await onAutomationSettingsChange?.(); } catch { /* rollback is best effort */ }
+        autoResult.textContent = `自动记忆设置失败，已恢复原值：${error?.message || '未知错误'}`;
+        autoResult.className = 'settings-result error';
+      } finally {
+        autoMemoryInput.disabled = false; autoBatchSize.disabled = false;
+      }
+    };
+    autoMemoryInput.addEventListener('change', applyAutomation);
+    autoBatchSize.addEventListener('change', applyAutomation);
+    generalBody.append(
+      toggle,
+      element('p', 'settings-hint', '关闭后不读取后端、不调用 AI；已有记录保持原样。'),
+      enabledResult,
+      autoToggle,
+      field('每批稳定 AI 楼数（1–20）', autoBatchSize),
+      element('p', 'settings-hint', '默认关闭。它只维护历史已追平后的稳定 AI 新楼，不会自动重建既有聊天；历史欠账请在地基页手动开始或继续。'),
+      autoResult,
+    );
     page.append(general);
 
     const source = sourcePermissionView?.renderSettings?.({
@@ -218,7 +319,7 @@ export function createPanel({
 
     const { drawer: prompts, body: promptsBody } = drawer('prompts', '提示词与包裹符');
     const keepTags = element('input', 'settings-input'); keepTags.value = current.sourceKeepTags ?? 'content'; keepTags.placeholder = 'content';
-    const extraTags = element('input', 'settings-input'); extraTags.value = current.sourceExtraTags ?? ''; extraTags.placeholder = 'think, reasoning';
+    const extraTags = element('input', 'settings-input'); extraTags.value = current.sourceExtraTags ?? ''; extraTags.placeholder = '示例（不会自动生效）：think, reasoning, [[...]]';
     const generalPrompt = element('textarea', 'settings-input'); generalPrompt.value = current.generalPrompt ?? ''; generalPrompt.placeholder = '留空则不追加通用提示词';
     promptsBody.append(field('保留正文的包裹符', keepTags), field('连同内容剔除的包裹符', extraTags), field('通用附加提示词', generalPrompt));
     promptsBody.append(element('p', 'settings-hint', '机器 JSON 合同始终最后生效；正文只在进入 AI 前经过一次共享净化。'));
@@ -278,14 +379,13 @@ export function createPanel({
     const streamLabel = element('label', 'setting-switch'); streamLabel.append(stream, element('span', '', '流式请求')); apiBody.append(streamLabel);
     const actions = element('div', 'settings-actions');
     const save = button('保存设置', 'primary-action', async () => {
-      const wasEnabled = settings.isEnabled();
       if (mainSelect.value) {
         const selected = presets.find(item => item.id === mainSelect.value);
         if (selected) settings.upsertSharedPreset(selected.name, draft(), selected.id);
-        settings.update({ apiMode: 'seven-preset', selectedSevenDaysPresetId: mainSelect.value, pluginEnabled: enabledInput.checked });
+        settings.update({ apiMode: 'seven-preset', selectedSevenDaysPresetId: mainSelect.value });
       } else {
         settings.saveSharedMainConfig(draft());
-        settings.update({ apiMode: 'auto', selectedSevenDaysPresetId: '', pluginEnabled: enabledInput.checked });
+        settings.update({ apiMode: 'auto', selectedSevenDaysPresetId: '' });
       }
       settings.setSharedUtilityPresetId(utilitySelect.value);
       settings.update({
@@ -299,7 +399,6 @@ export function createPanel({
       });
       applyArchiveV2Appearance({ host, root, settings, documentRef });
       enabled = settings.isEnabled();
-      if (wasEnabled !== enabled) await onPluginEnabledChange?.(enabled);
       result.textContent = '设置已保存。'; result.className = 'settings-result success';
     });
     const create = button('另存为预设', 'secondary-action', () => {
@@ -329,6 +428,7 @@ export function createPanel({
     let result = { status: 'ready' };
     if (screen === 'settings') renderSettings();
     else if (activeTab === 'people') result = openPeople();
+    else if (activeTab === 'events') result = activateFoundation();
     else if (activeTab === 'bonds') result = openBonds();
     else renderPlaceholder(activeTab);
     root.querySelector('.close')?.focus?.();
@@ -339,6 +439,7 @@ export function createPanel({
     activationEpoch += 1;
     archiveV2InitializationView.deactivate();
     archiveV2BondView.deactivate();
+    v3FoundationView.deactivate();
     geometry.cancelGesture();
     host.hidden = true;
     host.setAttribute('aria-hidden', 'true');
@@ -353,8 +454,10 @@ export function createPanel({
       activationEpoch += 1;
       archiveV2InitializationView.deactivate();
       archiveV2BondView.deactivate();
+      v3FoundationView.deactivate();
       if (!host.hidden && screen === 'content') showStatus('千千结当前已关闭。设置仍可打开，旧档案不会被修改。');
     } else if (!host.hidden && screen === 'content' && activeTab === 'people') void openPeople().catch(() => showStatus('当前聊天暂时无法建立稳定身份。'));
+    else if (!host.hidden && screen === 'content' && activeTab === 'events') void activateFoundation().catch(() => showStatus('当前聊天暂时无法读取 V3 地基。'));
     else if (!host.hidden && screen === 'content' && activeTab === 'bonds') void openBonds().catch(() => showStatus('当前聊天暂时无法读取双丝网。'));
   }
 
@@ -370,17 +473,22 @@ export function createPanel({
     host,
     root,
     show,
+    openMemory(nextTrigger) { selectTab('events'); return show(nextTrigger); },
     close,
     setEnabled,
     showStatus,
     openSourceSettings: () => renderSettings({ focusSources: true }),
     activatePeople,
     activateBonds,
+    activateFoundation,
     async refresh() {
-      if (host.hidden || screen !== 'content' || !['people', 'bonds'].includes(activeTab)) return { status: 'closed' };
+      if (host.hidden || screen !== 'content' || !['people', 'events', 'bonds'].includes(activeTab)) return { status: 'closed' };
       archiveV2InitializationView.deactivate();
       archiveV2BondView.deactivate();
-      return activeTab === 'people' ? openPeople() : openBonds();
+      v3FoundationView.deactivate();
+      if (activeTab === 'people') return openPeople();
+      if (activeTab === 'events') return activateFoundation();
+      return openBonds();
     },
     getState: () => ({ enabled, activeTab, screen, open: !host.hidden }),
   });

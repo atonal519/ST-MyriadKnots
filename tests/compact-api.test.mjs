@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCompactApiClient, normalizeApiUrl, parseJsonOutput } from '../src/compact-api-client.js';
+import { createArchiveV2TaskRouter } from '../src/api-routing.js';
 
 const config = overrides => ({ url: 'https://api.example.test', key: 'TEST_KEY', model: 'compact-model', excludeParams: [], timeoutSec: 5, stream: false, ...overrides });
 const jsonResponse = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
@@ -65,6 +66,21 @@ test('流式 SSE 与非流式 JSON 都经生产解析 seam，空输出/坏 JSON 
   }
 });
 
+test('semantic parseMode 把模型原文交给业务 normalizer，不被通用严格 JSON 解析提前拦截', async () => {
+  const content = '说明\n```json\n[{"summary":"有效摘要",}]\n```\n完毕';
+  const client = createCompactApiClient({ fetchImpl: async () => jsonResponse({ choices: [{ message: { content } }] }) });
+  const result = await client.generateTask({ config: config(), taskMessages: [], parseMode: 'semantic' });
+  assert.equal(result.textData, content);
+  assert.equal(Object.hasOwn(result, 'jsonData'), false);
+  const router = createArchiveV2TaskRouter({
+    resolver: { resolve: () => ({ kind: 'independent', source: 'main', sourceLabel: '主配置', config: config() }), resolveUtility: () => ({ kind: 'independent', source: 'utility', sourceLabel: '副配置', config: config() }) },
+    compactClient: client,
+  });
+  const routed = await router.generateUtilityTask({ taskMessages: [], parseMode: 'semantic' });
+  assert.equal(routed.textData, content);
+  assert.equal(routed.taskMetadata.source, 'utility');
+});
+
 test('completion JSON 兼容纯对象、完整围栏、单个说明围栏与唯一平衡对象', () => {
   const expected = { schemaVersion: 1, patches: [] };
   for (const value of [
@@ -116,16 +132,55 @@ test('timeout、主动 abort、401/404/429/5xx 均映射为有限脱敏错误', 
   const hanging = createCompactApiClient({ timeoutMs: () => 5, fetchImpl: async (path, options) => new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })) });
   await assert.rejects(hanging.generateTask({ config: config(), taskMessages: [] }), error => error.code === 'QQJ_TIMEOUT');
   const controller = new AbortController(); controller.abort(); await assert.rejects(hanging.generateTask({ config: config(), taskMessages: [], signal: controller.signal }), error => error.name === 'AbortError');
-  for (const [status, code] of [[401, 'QQJ_AUTH'], [404, 'QQJ_NOT_FOUND'], [429, 'QQJ_RATE_LIMIT'], [503, 'QQJ_SERVER']]) {
+  for (const [status, code] of [[401, 'QQJ_AUTH'], [403, 'QQJ_AUTH'], [404, 'QQJ_NOT_FOUND'], [429, 'QQJ_RATE_LIMIT'], [503, 'QQJ_SERVER']]) {
     let calls = 0; const client = createCompactApiClient({ retryWait: async () => {}, fetchImpl: async () => { calls += 1; return jsonResponse({}, status); } });
     await assert.rejects(client.generateTask({ config: config(), taskMessages: [] }), error => error.code === code && !error.message.includes('TEST_KEY'));
     assert.equal(calls, status === 429 || status >= 500 ? 3 : 1);
   }
 });
 
+test('HTTP 400/422 只保留标识符与模板化摘要，不泄露正文、Key、URL 或请求体', async () => {
+  let calls = 0;
+  const storyEcho = '明确叙事，林岑伸手取走钥匙。';
+  const badRequest = createCompactApiClient({ fetchImpl: async () => {
+    calls += 1;
+    return jsonResponse({ error: { code: 400, status: 'INVALID_ARGUMENT', message: `Request contains an invalid argument. canonicalContent=${storyEcho}; credential=TEST_KEY; url=https://api.example.test; requestBody=DO_NOT_COPY_BODY` }, requestBody: 'DO_NOT_COPY_BODY' }, 400);
+  } });
+  await assert.rejects(badRequest.generateTask({ config: config(), taskMessages: [] }), error => {
+    assert.equal(error.code, 'QQJ_REQUEST_FORMAT');
+    assert.equal(error.status, 400); assert.equal(error.httpStatus, 400);
+    assert.deepEqual(error.providerError, { code: '400', status: 'INVALID_ARGUMENT', message: '上游拒绝了请求参数' });
+    assert.doesNotMatch(JSON.stringify(error.providerError), /林岑|钥匙|canonicalContent|DO_NOT_COPY_BODY|TEST_KEY|api\.example\.test|requestBody/);
+    return true;
+  });
+  assert.equal(calls, 1, '400 参数错误不应盲目重试');
+
+  const unsafeText = `Authorization: Bearer TEST_KEY at https://api.example.test ${'request payload '.repeat(600)}`;
+  const unprocessable = createCompactApiClient({ fetchImpl: async () => ({ ok: false, status: 422, text: async () => unsafeText }) });
+  await assert.rejects(unprocessable.generateTask({ config: config(), taskMessages: [] }), error => {
+    assert.equal(error.code, 'QQJ_REQUEST_FORMAT'); assert.equal(error.httpStatus, 422);
+    assert.deepEqual(error.providerError, { message: '上游认证或权限检查失败' });
+    assert.doesNotMatch(JSON.stringify(error), /TEST_KEY|api\.example\.test|request payload/);
+    return true;
+  });
+
+  const exactSecret = createCompactApiClient({ fetchImpl: async () => jsonResponse({ error: { message: 'credential TEST_KEY failed' } }, 400) });
+  await assert.rejects(exactSecret.generateTask({ config: config(), taskMessages: [] }), error => error.providerError.message === '上游认证或权限检查失败' && !JSON.stringify(error).includes('TEST_KEY'));
+
+  const longText = 'invalid field '.repeat(100);
+  const encoder = new TextEncoder(); let reads = 0, cancelled = false;
+  const bounded = createCompactApiClient({ fetchImpl: async () => ({ ok: false, status: 422, body: { getReader: () => ({ read: async () => { reads += 1; return { done: false, value: encoder.encode(longText.repeat(10)) }; }, cancel: async () => { cancelled = true; } }) } }) });
+  await assert.rejects(bounded.generateTask({ config: config(), taskMessages: [] }), error => error.providerError.message === '上游拒绝了请求参数');
+  assert.equal(reads, 1); assert.equal(cancelled, true, '错误体达到上限后应停止继续读取');
+
+  const malformed = createCompactApiClient({ fetchImpl: async () => ({ ok: false, status: 400, text: async () => '{"error":{"message":"partial request body DO_NOT_COPY_BODY"' }) });
+  await assert.rejects(malformed.generateTask({ config: config(), taskMessages: [] }), error => error.providerError.message === '上游返回了无法安全解析的错误 JSON' && !JSON.stringify(error).includes('DO_NOT_COPY_BODY'));
+});
+
 test('模型列表与测试连接走安全代理；短测试不含聊天、人物或档案数据', async () => {
   const requests = []; const client = createCompactApiClient({ fetchImpl: async (path, options) => { const body = JSON.parse(options.body); requests.push({ path, body }); return path.endsWith('/status') ? jsonResponse({ data: [{ id: 'z-model' }, { id: 'a-model' }] }) : jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] }); } });
   assert.deepEqual(await client.fetchModels({ config: config() }), ['a-model', 'z-model']); assert.deepEqual(await client.testConnection({ config: config() }), { ok: true, model: 'compact-model' });
   assert.equal(requests[0].path, '/api/backends/chat-completions/status'); const testBody = requests[1].body; assert.equal(testBody.max_tokens, 48); assert.equal(testBody.temperature, 0); assert.equal(testBody.stream, false);
-  assert.doesNotMatch(JSON.stringify(testBody.messages), /人物甲|档案|worldbook|greeting|聊天正文/i); assert.equal(testBody.messages.length, 2);
+  assert.doesNotMatch(JSON.stringify(testBody.messages), /人物甲|档案|worldbook|greeting|聊天正文/i); assert.equal(testBody.messages.length, 2); assert.equal(Object.hasOwn(testBody, 'json_schema'), false);
+  assert.match(testBody.messages[0].content, /JSON text connection check/);
 });
