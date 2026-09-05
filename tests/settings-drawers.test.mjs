@@ -37,3 +37,14 @@ test('来源跳转强制展开世界书，普通重渲沿用用户本次开合�
   assert.equal(rerendered.drawer.open, false);
   assert.equal(state.isOpen('prompts'), true);
 });
+
+test('分层级别决定 details 类名与标题标签：group 用 h3，sub 用 h4', () => {
+  const group = createSettingsDrawer({ documentRef, title: '通用设置', level: 'group' });
+  const sub = createSettingsDrawer({ documentRef, title: 'API 配置', level: 'sub' });
+  assert.equal(group.drawer.className, 'settings-group');
+  assert.equal(group.heading.tagName, 'h3');
+  assert.equal(group.body.className, 'settings-group-body');
+  assert.equal(sub.drawer.className, 'settings-sub');
+  assert.equal(sub.heading.tagName, 'h4');
+  assert.equal(sub.body.className, 'settings-sub-body');
+});

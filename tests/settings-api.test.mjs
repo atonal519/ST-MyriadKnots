@@ -16,16 +16,16 @@ const setup = extensionSettings => {
   return { settings, saves: () => saves };
 };
 
-test('自动记忆默认显式关闭，批次只接受 1–20 的整数并即时持久化', () => {
+test('记忆提取周期由主开关统管：无独立自动记忆开关，批次只接受 1–20 的整数并即时持久化', () => {
   const extensionSettings = {};
   const { settings, saves } = setup(extensionSettings);
-  assert.equal(settings.get().autoMemoryEnabled, false);
+  assert.equal('autoMemoryEnabled' in settings.get(), false);
   assert.equal(settings.get().autoMemoryBatchSize, 2);
   assert.equal(normalizeAutoMemoryBatchSize(1), 1);
   assert.equal(normalizeAutoMemoryBatchSize(20), 20);
   for (const invalid of [0, 21, 1.5, 'abc']) assert.equal(normalizeAutoMemoryBatchSize(invalid), 2);
   settings.update({ autoMemoryEnabled: true, autoMemoryBatchSize: 20 });
-  assert.equal(extensionSettings.qianqianjie.autoMemoryEnabled, true);
+  assert.equal('autoMemoryEnabled' in extensionSettings.qianqianjie, false);
   assert.equal(extensionSettings.qianqianjie.autoMemoryBatchSize, 20);
   assert.equal(saves(), 1);
 });

@@ -19,7 +19,7 @@ class Node {
 const documentRef = { createElement: tag => new Node(tag), defaultView: { getComputedStyle: node => ({ overflowY: node.className === 'host-scroll' ? 'auto' : 'visible' }) } };
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-test('世界书 UI 的整本勾选=排除，计数准确；条目按最终许可显示并保留书级开合与滚动', async () => {
+test('世界书排除 UI 只做整本排除：标题正确、勾选=排除、无任何条目级 UI', async () => {
   const snapshot = {
     status: 'ready', bookNames: ['甲书', '乙书'], excludedBooks: ['甲书'], warnings: [],
     entries: [
@@ -31,8 +31,8 @@ test('世界书 UI 的整本勾选=排除，计数准确；条目按最终许可
   const permissions = {
     inspectCurrent: async () => structuredClone(snapshot),
     setBookExcluded(name, excluded) { snapshot.excludedBooks = excluded ? [...new Set([...snapshot.excludedBooks, name])] : snapshot.excludedBooks.filter(item => item !== name); },
-    setEntryAllowed(key, allowed) { snapshot.allowedKeys = allowed ? [...new Set([...snapshot.allowedKeys, key])] : snapshot.allowedKeys.filter(item => item !== key); },
-    setEntriesAllowed(states) { for (const state of states) this.setEntryAllowed(state.key, state.allowed); },
+    setEntryAllowed() { throw new Error('世界书排除视图不应操作条目'); },
+    setEntriesAllowed() { throw new Error('世界书排除视图不应操作条目'); },
   };
   const view = createArchiveV2SourcePermissionView({ permissions, documentRef });
   const root = view.renderSettings({ open: true });
@@ -40,24 +40,21 @@ test('世界书 UI 的整本勾选=排除，计数准确；条目按最终许可
   await flush();
   assert.equal(root.tagName, 'details');
   assert.equal(root.open, true);
-  assert.match(root.textContent, /整本排除 · 已排除 1 \/ 共 2 本/);
+  assert.match(root.textContent, /世界书排除/);
+  assert.match(root.textContent, /已排除 1 \/ 共 2 本/);
+  // 条目级 UI 全部拆除
+  assert.equal(root.descendants().some(node => node.className?.includes?.('source-book-group')), false);
+  assert.equal(root.descendants().some(node => node.className === 'source-entry-content'), false);
+  assert.equal(root.textContent.includes('当前列表全部条目'), false);
+  assert.equal(root.textContent.includes('构画与千千结'), false);
+  // 每本一个整本排除勾选，状态准确
   const labels = root.descendants().filter(node => node.tagName === 'label');
   const excludedRow = labels.find(node => /甲书/.test(node.textContent));
-  const includedRow = labels.find(node => /乙书/.test(node.textContent) && /构画与千千结/.test(node.textContent));
+  const includedRow = labels.find(node => /乙书/.test(node.textContent));
   assert.equal(excludedRow.children[0].checked, true);
   assert.equal(includedRow.children[0].checked, false);
-  const entryRows = labels.filter(node => /条目/.test(node.textContent));
-  assert.equal(entryRows.find(node => /启用条目/.test(node.textContent)).children[0].checked, true);
-  assert.equal(entryRows.find(node => /关闭条目/.test(node.textContent)).children[0].checked, false);
-  assert.match(root.textContent, /宿主当前关闭；千千结可单独覆盖/);
-
-  const bookGroup = root.descendants().find(node => node.className === 'source-group source-book-group');
-  bookGroup.open = false; await bookGroup.fire('toggle');
-  hostScroll.scrollTop = 37;
-  const closedEntry = entryRows.find(node => /关闭条目/.test(node.textContent)).children[0];
-  closedEntry.checked = true; await closedEntry.fire('change'); await flush();
-  const refreshedGroup = root.descendants().find(node => node.className === 'source-group source-book-group');
-  assert.equal(refreshedGroup.open, false);
-  assert.equal(hostScroll.scrollTop, 37);
-  assert.equal(snapshot.allowedKeys.includes('乙书::2'), true);
+  // 勾选乙书 => 整本排除
+  const toggle = includedRow.children[0];
+  toggle.checked = true; await toggle.fire('change'); await flush();
+  assert.equal(snapshot.excludedBooks.includes('乙书'), true);
 });

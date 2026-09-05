@@ -24,3 +24,6 @@ data/
 .vscode/
 
 # Keep the production bundle in dist/ tracked.
+
+# Claude Code local session/config
+.claude/

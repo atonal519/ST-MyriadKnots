@@ -59,7 +59,7 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   generateUtilityTask: taskRouter.generateUtilityTask,
   isEnabled: settings.isEnabled,
   automationSettings: () => ({
-    enabled: settings.get().autoMemoryEnabled === true,
+    enabled: settings.isEnabled(),
     batchSize: settings.get().autoMemoryBatchSize,
   }),
   notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
@@ -71,7 +71,7 @@ const v3RecallRuntime = createV3RecallRuntime({
   store: foundationStore,
   hostAdapter,
   isEnabled: settings.isEnabled,
-  automationSettings: () => ({ enabled: settings.get().autoMemoryEnabled === true }),
+  automationSettings: () => ({ enabled: settings.isEnabled() }),
   memoryStatus: () => v3MemoryRuntime.getState(),
   historicalMaintenance: () => v3MemoryRuntime.shouldBlockMainGeneration(),
   realtimeOrigin: () => v3MemoryRuntime.allowsRealtimeTailFromEmpty(),

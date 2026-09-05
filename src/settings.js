@@ -4,7 +4,6 @@ export const SETTINGS_ID = 'qianqianjie';
 
 export const DEFAULT_SETTINGS = Object.freeze({
   pluginEnabled: true,
-  autoMemoryEnabled: false,
   autoMemoryBatchSize: 2,
   apiMode: 'auto',
   selectedSevenDaysPresetId: '',
@@ -128,7 +127,6 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
   const update = (patch, { observeSaveFailure = false } = {}) => {
     const settings = get();
     if (own(patch, 'pluginEnabled')) settings.pluginEnabled = patch.pluginEnabled !== false;
-    if (own(patch, 'autoMemoryEnabled')) settings.autoMemoryEnabled = patch.autoMemoryEnabled === true;
     if (own(patch, 'autoMemoryBatchSize')) settings.autoMemoryBatchSize = normalizeAutoMemoryBatchSize(patch.autoMemoryBatchSize);
     if (own(patch, 'apiMode')) settings.apiMode = API_MODES.has(patch.apiMode) ? patch.apiMode : 'auto';
     if (own(patch, 'selectedSevenDaysPresetId')) settings.selectedSevenDaysPresetId = text(patch.selectedSevenDaysPresetId).trim();

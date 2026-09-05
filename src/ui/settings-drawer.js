@@ -8,27 +8,35 @@ export function createSettingsDrawerState(initial = {}) {
   });
 }
 
+const DRAWER_LEVELS = Object.freeze({
+  block: { drawer: 'settings-block settings-drawer', summary: 'settings-drawer-summary', heading: 'h3', body: 'settings-drawer-body' },
+  group: { drawer: 'settings-group', summary: 'settings-group-summary', heading: 'h3', body: 'settings-group-body' },
+  sub: { drawer: 'settings-sub', summary: 'settings-sub-summary', heading: 'h4', body: 'settings-sub-body' },
+});
+
 export function createSettingsDrawer({
   documentRef = globalThis.document,
   title,
   className = '',
   id = '',
   open = false,
+  level = 'block',
   onToggle,
 } = {}) {
   if (!documentRef?.createElement) throw new TypeError('settings drawer documentRef 无效');
+  const spec = DRAWER_LEVELS[level] ?? DRAWER_LEVELS.block;
   const drawer = documentRef.createElement('details');
-  drawer.className = ['settings-block', 'settings-drawer', className].filter(Boolean).join(' ');
+  drawer.className = [spec.drawer, className].filter(Boolean).join(' ');
   if (id) drawer.id = id;
   drawer.open = open === true;
   const summary = documentRef.createElement('summary');
-  summary.className = 'settings-drawer-summary';
-  const heading = documentRef.createElement('h3');
+  summary.className = spec.summary;
+  const heading = documentRef.createElement(spec.heading);
   heading.textContent = String(title ?? '设置');
   summary.append(heading);
   const body = documentRef.createElement('div');
-  body.className = 'settings-drawer-body';
+  body.className = spec.body;
   drawer.append(summary, body);
   drawer.addEventListener('toggle', () => onToggle?.(drawer.open));
-  return Object.freeze({ drawer, summary, body });
+  return Object.freeze({ drawer, summary, heading, body });
 }
