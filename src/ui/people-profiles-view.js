@@ -142,8 +142,10 @@ export function createPeopleProfilesView({ runtime, documentRef = globalThis.doc
     const bar = element('div', 'qqj-profile-switcher'); bar.setAttribute?.('role', 'tablist'); bar.setAttribute?.('aria-label', '重要人物切换');
     selected.forEach((person, index) => {
       const selectedTab = person.entityId === currentEntityId;
-      const button = element('button', `qqj-profile-tab${selectedTab ? ' active' : ''}`, person.displayName || person.entityDisplayName);
+      const displayName = person.displayName || person.entityDisplayName;
+      const button = element('button', `qqj-profile-tab${selectedTab ? ' active' : ''}`, displayName);
       button.type = 'button'; button.tabIndex = selectedTab ? 0 : -1; button.setAttribute?.('role', 'tab'); button.setAttribute?.('aria-selected', selectedTab ? 'true' : 'false');
+      button.setAttribute?.('title', displayName);
       button.addEventListener('click', () => { currentEntityId = person.entityId; showMore = false; feedback = ''; render(state); });
       button.addEventListener('keydown', event => {
         const offsets = { ArrowLeft: -1, ArrowRight: 1 }, offset = offsets[event.key];

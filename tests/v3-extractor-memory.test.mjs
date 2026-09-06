@@ -72,7 +72,7 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
     name1: '林岚', personaId: 'persona-linlan', characterId: 0, groupId: null, chatId: 'host-chat', characters: [{ avatar: 'character.png' }], userAvatar: 'persona.png',
     chatMetadata: { qianqianjie: { schemaVersion: 1, chatId: CHAT } }, chat: initialChat ?? [user('继续'), assistant(text), assistant('用于确认上一楼稳定。')],
   };
-  context.eventTypes = eventTypes ?? context.eventTypes ?? Object.fromEntries(['GENERATION_STARTED', 'GENERATION_STOPPED', 'GENERATION_ENDED', 'CHAT_CHANGED', 'MESSAGE_RECEIVED', 'CHARACTER_MESSAGE_RENDERED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MORE_MESSAGES_LOADED'].map(name => [name, name]));
+  context.eventTypes = eventTypes ?? context.eventTypes ?? Object.fromEntries(['GENERATION_STARTED', 'GENERATION_STOPPED', 'GENERATION_ENDED', 'STREAM_TOKEN_RECEIVED', 'CHAT_CHANGED', 'MESSAGE_RECEIVED', 'MESSAGE_UPDATED', 'CHARACTER_MESSAGE_RENDERED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MORE_MESSAGES_LOADED'].map(name => [name, name]));
   context.eventSource = { on(name, listener) { const values = handlers.get(name) ?? []; values.push(listener); handlers.set(name, values); } };
   const globalRef = host === 'luker' ? { Luker: { getContext: () => context } } : { SillyTavern: { getContext: () => context } };
   const baseHostAdapter = createHostAdapter({ globalRef });
@@ -1016,7 +1016,7 @@ test('分支移除曾被 baseline 复用的角色实体后，重新提取与 CSE
 });
 
 test('同楼只修隐藏时间戳时会标记旧时间过期，重提后用新戳更新 chronology 并传入 CSE', async () => {
-  const stamped = (start, end) => `<!-- myknots-start | date=10月4日 | weekday=周二 | time=${start} -->裴晚生在钟楼等你。<!-- myknots-end | date=10月4日 | weekday=周二 | time=${end} -->`;
+  const stamped = (start, end) => `<!-- QQJ-start | date=10月4日 | weekday=周二 | time=${start} -->裴晚生在钟楼等你。<!-- QQJ-end | date=10月4日 | weekday=周二 | time=${end} -->`;
   const cseInputs = [];
   const h = harness({
     initialChat: [user('继续'), assistant(stamped('15:30', '16:00')), assistant('确认上一楼稳定。')],
@@ -1044,6 +1044,39 @@ test('同楼只修隐藏时间戳时会标记旧时间过期，重提后用新�
   assert.doesNotMatch(floor.memory.chronology[0].time.sourceText, /15:30/);
   await h.runtime.retryStateAnalysis(floor.floorId);
   assert.match(JSON.stringify(cseInputs.at(-1)), /18:10.*18:40/);
+});
+
+test('CSE 分析期间 pending-only 刷新不推进正式 root，假模型结果仍按原守卫提交', async () => {
+  let releaseCse, markCseStarted;
+  const cseStarted = new Promise(resolve => { markCseStarted = resolve; });
+  const h = harness({
+    initialChat: [assistant('稳定目标楼。'), assistant('待定尾楼旧版本。')],
+    utility: options => {
+      if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { summary: '稳定目标楼摘要。' } };
+      markCseStarted();
+      return new Promise(resolve => { releaseCse = () => resolve({ jsonData: { noMaterialChange: true } }); });
+    },
+  });
+  await h.runtime.start();
+  const floorId = h.runtime.getState().floors[0].floorId;
+  await h.runtime.extractFloor(floorId, { analyzeState: false });
+
+  const analysis = h.runtime.retryStateAnalysis(floorId);
+  await cseStarted;
+  const beforePending = await h.store.readReachable({ mode: 'runtime' });
+  h.context.chat[1] = assistant('待定尾楼新版本。');
+  await h.foundationRuntime.refreshStatus();
+  const during = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(during.rootRevision, beforePending.rootRevision);
+  assert.equal(during.root.headCheckpointId, beforePending.root.headCheckpointId);
+
+  releaseCse();
+  await analysis;
+  const after = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(after.stateDeltas.length, 1);
+  assert.equal(after.stateDeltas[0].floorId, floorId);
+  assert.equal(h.runtime.getState().floors[0].cse.status, 'noChange');
+  assert.equal(h.runtime.getState().lastCseError, null);
 });
 
 test('残缺同楼时间戳进入同次提取并作非 exact 兜底，前序参照只取目标楼之前且不读取未来楼', async () => {
@@ -1386,6 +1419,71 @@ test('runtime 的缺失或非法批次兜底为 1，首个稳定楼即可正常�
   }
 });
 
+test('CSE 失败不再拖停后续摘要，同一稳定快照只有限尝试且手动继续按序补齐', async () => {
+  let cseCalls = 0;
+  let failCse = true;
+  const notifications = [];
+  const h = harness({
+    initialChat: [user('开始'), assistant('旧楼已由用户完成维护。'), assistant('第一条实时回复。')],
+    automation: { enabled: false, batchSize: 1 },
+    notifyUser: value => notifications.push(value),
+    utility: options => {
+      if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) {
+        const content = JSON.parse(options.taskMessages[0].content).payload.canonicalContent;
+        return { jsonData: { summary: `摘要-${content}` } };
+      }
+      cseCalls += 1;
+      if (failCse && cseCalls > 1) throw Object.assign(new Error('模拟人物状态服务失败'), { transportAttempts: 3 });
+      return { jsonData: { noMaterialChange: true } };
+    },
+  });
+  await primeRealtimeTail(h);
+  notifications.splice(0);
+  const completedOld = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(Object.hasOwn(completedOld.run?.diagnostics ?? {}, 'realtimeOriginV1'), false, '用户完成的旧前缀不依赖 realtimeOrigin');
+
+  h.context.chat.push(assistant('第二条实时回复。'));
+  h.emit('MESSAGE_RECEIVED');
+  await waitFor(() => h.runtime.getState().lastAutoMemory?.status === 'failed' && !h.runtime.getState().memoryWorkBusy);
+  let state = h.runtime.getState();
+  assert.equal(state.rememberedCount, 2, 'CSE 失败前摘要必须已经保存');
+  assert.equal(state.rebuildCompletedCount, 1);
+  assert.equal(state.summaryCompletedCount, 2);
+  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 1);
+  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 1);
+  assert.equal(notifications.filter(item => item.kind === 'warning').length, 1);
+  assert.match(notifications.at(-1).text, /已保存新楼摘要.*人物状态分析失败.*后续.*有限重试/);
+
+  h.context.chat.push(assistant('第三条实时回复。'));
+  h.emit('MESSAGE_RECEIVED');
+  await waitFor(() => h.runtime.getState().lastAutoMemory?.status === 'failed' && h.runtime.getState().rememberedCount === 3 && !h.runtime.getState().memoryWorkBusy);
+  state = h.runtime.getState();
+  assert.equal(state.summaryCompletedCount, 3, '没有 realtimeOrigin 的正常已建前缀仍应继续补新摘要');
+  assert.equal(state.rebuildCompletedCount, 1, '旧 CSE 缺口失败时不得越过它写后楼 delta');
+  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 2);
+  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 2, '新稳定输入只重试最早 CSE 一次');
+
+  const callsAtSettledSnapshot = h.calls.length;
+  h.emit('MESSAGE_RECEIVED');
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(h.calls.length, callsAtSettledSnapshot, '同一稳定快照重复事件不得重复摘要或 CSE');
+
+  const warningsBeforeManualRetry = notifications.filter(item => item.kind === 'warning').length;
+  await h.runtime.startHistoricalRebuild();
+  await waitFor(() => h.runtime.getState().lastAutoMemory?.status === 'failed' && !h.runtime.getState().memoryWorkBusy);
+  assert.equal(notifications.filter(item => item.kind === 'warning').length, warningsBeforeManualRetry + 1, '同一快照下用户手动发起的新逻辑任务失败仍须提示一次');
+  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 3, '一次逻辑任务即使内部记录 3 次 transport，也只形成一次最终失败提示');
+
+  failCse = false;
+  const extractorCallsBeforeContinue = h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length;
+  await h.runtime.startHistoricalRebuild();
+  await waitFor(() => h.runtime.getState().rebuildStatus === 'caughtUp' && !h.runtime.getState().memoryWorkBusy);
+  state = h.runtime.getState();
+  assert.equal(state.rebuildCompletedCount, 3);
+  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, extractorCallsBeforeContinue, '手动继续不得重提已保存摘要');
+  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 5, '手动继续只按顺序补两处人物状态');
+});
+
 test('完全重构用新 root 切断旧派生图，同一模型输出仍重新逐楼生成且不会撞旧不可变记录', async () => {
   const h = harness({
     initialChat: [user('开始'), assistant('第一楼'), assistant('第二楼'), assistant('待确认尾楼')],
@@ -1557,6 +1655,186 @@ test('dry-run GENERATION_STARTED 不会占用主生成事实，历史按钮仍�
   assert.deepEqual(h.calls.map(call => call.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
   assert.deepEqual(notifications, [{ kind: 'success', text: '千千结已完成第 1、3 楼的历史记忆重建。' }]);
   assert.equal(h.runtime.shouldBlockMainGeneration(), false);
+});
+
+test('不配对的嵌套 STARTED 不泄漏真实生成生命周期，唯一 ENDED 后历史入口正常释放', async () => {
+  for (const order of ['nestedDry', 'dryBeforeReal', 'nestedContinue', 'nestedNormal']) {
+    const h = harness({
+      initialChat: [user('开始'), assistant('历史一'), assistant('历史二'), assistant('待确认尾楼')],
+      automation: { enabled: true, batchSize: 2 },
+      isMainGenerationActive: () => false,
+    });
+    await h.runtime.start();
+    if (order === 'nestedDry') {
+      h.emit('GENERATION_STARTED', 'normal', {}, false);
+      h.emit('GENERATION_STARTED', 'normal', {}, true);
+    } else if (order === 'dryBeforeReal') {
+      h.emit('GENERATION_STARTED', 'normal', {}, true);
+      h.emit('GENERATION_STARTED', 'normal', {}, false);
+    } else {
+      h.emit('GENERATION_STARTED', 'normal', {}, false);
+      h.emit('GENERATION_STARTED', order === 'nestedContinue' ? 'continue' : 'normal', {}, false);
+    }
+    h.emit('GENERATION_ENDED');
+    await h.runtime.startHistoricalRebuild();
+    await waitFor(() => h.runtime.getState().rebuildStatus === 'caughtUp' && !h.runtime.getState().activeAutoMemory, `${order} 后生成门禁未释放`);
+    assert.equal(h.runtime.getState().rememberedCount, 2);
+  }
+});
+
+test('首个流式正文提前固定上一楼，重复 token 与 ENDED→RECEIVED 不重复摘要或 CSE', async () => {
+  const h = harness({
+    initialChat: [assistant('上一楼正文')],
+    automation: { enabled: true, batchSize: 1 },
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: '上一楼摘要' } }
+      : { jsonData: { noMaterialChange: true } },
+  });
+  await h.runtime.start();
+  const putsBeforeStart = h.backend.calls.filter(call => call[0] === 'put').length;
+  h.context.chat.push(user('继续'));
+  h.emit('GENERATION_STARTED', 'normal', {}, false);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.calls.length, 0, 'STARTED 只能武装，不能调用模型');
+  assert.equal(h.backend.calls.filter(call => call[0] === 'put').length, putsBeforeStart, 'STARTED 不能写地基');
+
+  h.context.chat.push(assistant(''));
+  h.emit('STREAM_TOKEN_RECEIVED', '当前楼首字');
+  await waitFor(() => h.runtime.getState().rememberedCount === 1 && !h.runtime.getState().activeAutoMemory, '首 token 后上一楼未在 final 前完成');
+  assert.deepEqual(h.calls.map(call => call.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
+  assert.equal(h.foundationRuntime.getReachable().floors[0].content.canonicalContent, '上一楼正文');
+  assert.equal(h.foundationRuntime.getReachable().floors.some(floor => floor.hostLocator.messageIndex === 2), false, '空生成槽不得落 FloorRecord');
+
+  h.emit('STREAM_TOKEN_RECEIVED', '当前楼更多正文');
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(h.calls.length, 2, '重复 token 不得重复逻辑任务');
+  h.emit('GENERATION_ENDED');
+  h.context.chat[2] = assistant('当前楼完整正文');
+  h.emit('MESSAGE_RECEIVED', 2, 'continue');
+  await waitFor(() => h.foundationRuntime.getState().pending?.assistantSeq === 2, 'final 后当前楼未进入正常 pending');
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(h.calls.length, 2, '同次 final 不得取消后重跑上一楼任务');
+});
+
+test('不同槽或 first_message 的 MESSAGE_RECEIVED 不冒充已武装 normal final', async () => {
+  let releaseExtractor, markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const h = harness({
+    initialChat: [assistant('上一楼正文')],
+    automation: { enabled: true, batchSize: 1 },
+    utility: options => {
+      if (options.systemPrompt !== EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { noMaterialChange: true } };
+      markStarted();
+      return new Promise(resolve => { releaseExtractor = () => resolve({ jsonData: { summary: '不应提交的迟到摘要' } }); });
+    },
+  });
+  await h.runtime.start();
+  h.context.chat.push(user('继续'));
+  h.emit('GENERATION_STARTED', 'normal');
+  h.context.chat.push(assistant(''));
+  h.emit('STREAM_TOKEN_RECEIVED', '当前楼首字');
+  await started;
+  h.emit('MESSAGE_RECEIVED', 0, 'first_message');
+  releaseExtractor();
+  await waitFor(() => !h.runtime.getState().activeAutoMemory && !h.runtime.getState().activeExtraction);
+  assert.equal(h.runtime.getState().rememberedCount, 0, '无关 MESSAGE_RECEIVED 必须走原取消路径，迟到摘要不得提交');
+});
+
+test('提前触发忽略空正文、非 normal、dry-run、嵌套 token 与停止后的迟到 token', async () => {
+  const cases = [
+    ['regenerate', false, false],
+    ['swipe', false, false],
+    ['continue', false, false],
+    ['quiet', false, false],
+    ['impersonate', false, false],
+    ['normal', true, false],
+    ['normal', false, true],
+  ];
+  for (const [type, dryRun, nested] of cases) {
+    const h = harness({ initialChat: [assistant('上一楼正文')], automation: { enabled: true, batchSize: 1 } });
+    await h.runtime.start();
+    h.context.chat.push(user('继续'));
+    h.emit('GENERATION_STARTED', type, {}, dryRun);
+    if (nested) h.emit('GENERATION_STARTED', 'normal', {}, false);
+    h.context.chat.push(assistant(''));
+    h.emit('STREAM_TOKEN_RECEIVED', '正文');
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(h.calls.length, 0, `${type}/${dryRun ? 'dry' : nested ? 'nested' : 'direct'} 不得提前调用`);
+  }
+
+  const stopped = harness({ initialChat: [assistant('上一楼正文')], automation: { enabled: true, batchSize: 1 } });
+  await stopped.runtime.start();
+  stopped.context.chat.push(user('继续'));
+  stopped.emit('GENERATION_STARTED', 'normal');
+  stopped.context.chat.push(assistant(''));
+  stopped.emit('GENERATION_STOPPED');
+  stopped.emit('STREAM_TOKEN_RECEIVED', '停止后的迟到正文');
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(stopped.calls.length, 0);
+});
+
+test('切聊天及正文结构事件会撤销提前武装，迟到 token 不得写入或调用模型', async () => {
+  for (const mutation of ['CHAT_CHANGED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']) {
+    const h = harness({ initialChat: [assistant('上一楼正文')], automation: { enabled: true, batchSize: 1 } });
+    await h.runtime.start();
+    h.context.chat.push(user('继续'));
+    h.emit('GENERATION_STARTED', 'normal');
+    h.context.chat.push(assistant(''));
+    if (mutation === 'CHAT_CHANGED') {
+      h.context.chatId = 'host-other';
+      h.context.chatMetadata = { qianqianjie: { schemaVersion: 1, chatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' } };
+    }
+    h.emit(mutation, 0);
+    h.emit('STREAM_TOKEN_RECEIVED', '迟到正文');
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(h.calls.length, 0, `${mutation} 后不得触发旧楼任务`);
+  }
+});
+
+test('STOPPED 会中止已在 root 提交点等待的提前地基，释放后不新增稳定楼', async () => {
+  const h = harness({ initialChat: [assistant('上一楼正文')], automation: { enabled: true, batchSize: 1 } });
+  await h.runtime.start();
+  h.context.chat.push(user('继续'));
+  h.emit('GENERATION_STARTED', 'normal');
+  h.context.chat.push(assistant(''));
+  const gate = h.backend.holdNextRootPut();
+  h.emit('STREAM_TOKEN_RECEIVED', '当前楼首字');
+  await gate.started;
+  h.emit('GENERATION_STOPPED');
+  gate.release();
+  await waitFor(() => !h.runtime.getState().activeAutoMemory && !h.runtime.getState().activeExtraction);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(h.backend.records.has(`chat-${CHAT}/v3-root`), false, '中止后的 early root 不得迟到提交');
+  assert.equal(h.calls.length, 0);
+});
+
+test('Luker MESSAGE_UPDATED 只认启动后新 assistant 槽，非流式 final 保留安全回退', async () => {
+  const utility = options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+    ? { jsonData: { summary: '上一楼摘要' } }
+    : { jsonData: { noMaterialChange: true } };
+  const takeover = harness({ initialChat: [assistant('上一楼正文')], host: 'luker', automation: { enabled: true, batchSize: 1 }, utility });
+  await takeover.runtime.start();
+  takeover.context.chat.push(user('继续'));
+  takeover.emit('GENERATION_STARTED', 'normal');
+  takeover.emit('MESSAGE_UPDATED', 0);
+  takeover.context.chat.push(assistant('...'));
+  takeover.emit('MESSAGE_UPDATED', 2);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(takeover.calls.length, 0, '旧槽更新与占位均不得触发');
+  takeover.context.chat[2].mes = 'takeover 首段';
+  takeover.emit('MESSAGE_UPDATED', 2);
+  await waitFor(() => takeover.runtime.getState().rememberedCount === 1 && !takeover.runtime.getState().activeAutoMemory);
+  assert.deepEqual(takeover.calls.map(call => call.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
+
+  const nonstream = harness({ initialChat: [assistant('非流式上一楼')], automation: { enabled: true, batchSize: 1 }, utility });
+  await nonstream.runtime.start();
+  nonstream.context.chat.push(user('继续'));
+  nonstream.emit('GENERATION_STARTED', 'normal');
+  nonstream.context.chat.push(assistant('非流式当前楼'));
+  nonstream.emit('GENERATION_ENDED');
+  nonstream.emit('MESSAGE_RECEIVED', 2);
+  await waitFor(() => nonstream.runtime.getState().rememberedCount === 1 && !nonstream.runtime.getState().activeAutoMemory, '非流式 final 未走原回退');
+  assert.deepEqual(nonstream.calls.map(call => call.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
 });
 
 test('生成生命周期常量不齐时整体回退 isGenerating，不会产生只开不关的临时状态', async () => {

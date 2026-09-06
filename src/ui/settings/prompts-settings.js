@@ -36,7 +36,7 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
   const restoreDefault = button('恢复默认', 'secondary-action', () => { storyClockPrompt.value = ''; settings.update({ storyClockPrompt: '' }); refreshClock(); });
   const clockActions = element('div', 'v3-foundation-actions'); clockActions.append(loadDefault, restoreDefault);
   const clockToggle = element('label', 'setting-switch'); clockToggle.append(storyClockEnabled, element('span', '', '启用正文时间戳'));
-  storyClockBody.append(clockToggle, storyClockStatus, element('p', 'settings-hint', '自定义内容会原样发送。若删掉 myknots 的完整 start/end 或 date、weekday、time 字段，千千结可能无法读取时间。'), field('完整自定义提示词', storyClockPrompt), clockActions);
+  storyClockBody.append(clockToggle, storyClockStatus, element('p', 'settings-hint', '默认使用 QQJ-start/end。自定义内容会原样发送；QQJ、SDC 与旧 myknots 格式均可读取，但必须保留成对的 start/end 及 date、weekday、time 字段。'), field('完整自定义提示词', storyClockPrompt), clockActions);
 
   const promptEditor = ({ body: editorBody, control, key, defaultText, label }) => {
     control.addEventListener('change', () => settings.update({ [key]: control.value }));

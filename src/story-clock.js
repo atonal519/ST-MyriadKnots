@@ -2,13 +2,13 @@ export const MYKNOTS_STORY_CLOCK_KEY = 'myknots_story_clock';
 export const STORY_CLOCK_DEPTH = 0;
 
 export const DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT = [
-  '【故事时间戳 myknots｜每楼附加元数据】',
+  '【故事时间戳 QQJ｜每楼附加元数据】',
   '请在本楼正文最前与最后各放一个 HTML 注释，作为本楼的附加故事时间元数据。HTML 注释不会显示给读者。',
   '日期与时间的表达方式应与当前故事背景及正文保持一致。沿用正文已经使用的纪年、历法和计时方式，不因示例而切换格式。',
   '格式示例（仅示意字段结构，不指定故事年代或计时方式；请替换为本楼实际内容）：',
-  '  <!-- myknots-start | date=10月4日 | weekday=周二 | time=15:30 -->正文<!-- myknots-end | date=10月4日 | weekday=周二 | time=16:00 -->',
-  'start 与 end 都必须同时填写 date、weekday、time；weekday 只能使用周一至周日。上下文已有完整故事纪年时，date 原样复制年号与年份；未知年份时只写月日，不得猜现实年份。日期、历法、状态栏、时间戳等其他世界书要求仍须完整执行，myknots 不替代、不合并、不改写它们。',
-  '通常以上一楼 end 为参考推进本楼时间；若本楼没有可用参考，按当前剧情设定合理填写。除这两个注释外，不要在正文中讨论 myknots。',
+  '  <!-- QQJ-start | date=10月4日 | weekday=周二 | time=15:30 -->正文<!-- QQJ-end | date=10月4日 | weekday=周二 | time=16:00 -->',
+  'start 与 end 都必须同时填写 date、weekday、time；weekday 只能使用周一至周日。上下文已有完整故事纪年时，date 原样复制年号与年份；未知年份时只写月日，不得猜现实年份。日期、历法、状态栏、时间戳等其他世界书要求仍须完整执行，QQJ 不替代、不合并、不改写它们。',
+  '通常以上一楼 end 为参考推进本楼时间；若本楼没有可用参考，按当前剧情设定合理填写。除这两个注释外，不要在正文中讨论 QQJ。',
 ].join('\n');
 
 const text = value => typeof value === 'string' ? value : '';
@@ -47,7 +47,7 @@ function namespaceCandidate(source, namespace) {
 
 export function parseSharedStoryClock(value) {
   const source = text(value);
-  const candidates = ['SDC', 'myknots'].map(namespace => namespaceCandidate(source, namespace)).filter(Boolean);
+  const candidates = ['SDC', 'QQJ', 'myknots'].map(namespace => namespaceCandidate(source, namespace)).filter(Boolean);
   if (!candidates.length) return null;
   return candidates.sort((left, right) => Number(right.complete) - Number(left.complete) || left.sourceIndex - right.sourceIndex)[0];
 }

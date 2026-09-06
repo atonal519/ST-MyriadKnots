@@ -15,9 +15,10 @@ import {
 
 const pair = (namespace, start = '10月4日 | weekday=周二 | time=15:30', end = '10月4日 | weekday=周二 | time=16:00') => `<!-- ${namespace}-start | date=${start} -->正文<!-- ${namespace}-end | date=${end} -->`;
 
-test('默认 myknots、SDC 与星期别名均能读成完整时间戳', () => {
-  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /myknots-start/);
-  for (const namespace of ['myknots', 'SDC']) {
+test('默认 QQJ，且 QQJ、SDC、旧 myknots 与星期别名均能读成完整时间戳', () => {
+  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /QQJ-start/);
+  assert.doesNotMatch(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /myknots-start/);
+  for (const namespace of ['QQJ', 'myknots', 'SDC']) {
     const parsed = parseSharedStoryClock(pair(namespace));
     assert.equal(parsed.namespace, namespace);
     assert.equal(parsed.complete, true);
@@ -46,12 +47,14 @@ test('peer 状态变化后 refresh 同步刷新已挂载的协调文案', () => 
   assert.equal(project().status, 'adapted-sdc'); assert.equal(statusNode.textContent, '已适配构画时间戳');
 });
 
-test('双前缀各自配对，合法并存不算重复，残缺 SDC 可回退完整 myknots', () => {
-  const both = parseSharedStoryClock(`${pair('SDC')}\n${pair('myknots')}`);
+test('三前缀各自配对，合法并存不算重复，残缺格式按完整与正文位置回退', () => {
+  const both = parseSharedStoryClock(`${pair('SDC')}\n${pair('QQJ')}\n${pair('myknots')}`);
   assert.equal(both.namespace, 'SDC'); assert.equal(both.complete, true); assert.equal(both.duplicate, false);
-  const fallback = parseSharedStoryClock(`<!-- SDC-start | date=10月4日 | weekday=周二 | time=15:30 -->${pair('myknots')}`);
-  assert.equal(fallback.namespace, 'myknots'); assert.equal(fallback.complete, true);
-  const duplicate = parseSharedStoryClock(`${pair('myknots')}<!-- myknots-start | date=10月4日 | weekday=周二 | time=16:10 -->`);
+  const fallback = parseSharedStoryClock(`<!-- SDC-start | date=10月4日 | weekday=周二 | time=15:30 -->${pair('QQJ')}`);
+  assert.equal(fallback.namespace, 'QQJ'); assert.equal(fallback.complete, true);
+  const legacyFallback = parseSharedStoryClock(`<!-- QQJ-start | date=10月4日 | weekday=周二 | time=15:30 -->${pair('myknots')}`);
+  assert.equal(legacyFallback.namespace, 'myknots'); assert.equal(legacyFallback.complete, true);
+  const duplicate = parseSharedStoryClock(`${pair('QQJ')}<!-- QQJ-start | date=10月4日 | weekday=周二 | time=16:10 -->`);
   assert.equal(duplicate.complete, false); assert.equal(duplicate.duplicate, true);
   assert.notEqual(storyClockSignature(duplicate), '', '残缺同楼时间戳也必须参与 raw 元数据变化检测');
 });

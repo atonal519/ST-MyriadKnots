@@ -10,6 +10,7 @@ export function bootstrap({
   apiTools,
   onPluginEnabledChange,
   onStoryClockChange,
+  isSevenDaysAvailable,
   sourcePermissions,
   v3FoundationRuntime,
   v3RecallRuntime,
@@ -53,11 +54,15 @@ export function bootstrap({
     sourcePermissionView,
     onPluginEnabledChange,
     onStoryClockChange,
+    isSevenDaysAvailable,
     documentRef,
   });
   panel.host.hidden = true;
   documentRef.body.append(panel.host);
-  const fab = (enableFab || typeof documentRef.createElement !== 'function') ? fabFactory({ onClick: open }) : { host: null };
+  const toggle = event => panel.host.hidden ? open(event) : panel.close();
+  const fab = (enableFab || typeof documentRef.createElement !== 'function')
+    ? fabFactory({ onClick: toggle, documentRef, windowRef: documentRef.defaultView ?? globalThis })
+    : { host: null };
   if (fab.host) {
     fab.host.style ||= {};
     fab.host.style.display = enabled() ? '' : 'none';

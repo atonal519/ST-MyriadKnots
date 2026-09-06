@@ -29,7 +29,7 @@ export async function foundationInputSnapshot(candidates, stableCount) {
     version: 1,
     stableCount,
     latestStatus: stableCount === source.length ? 'confirmed' : 'pending',
-    floors: source.map(candidate => ({
+    floors: source.slice(0, stableCount).map(candidate => ({
       assistantSeq: candidate.assistantSeq,
       rawFingerprint: candidate.rawFingerprint,
       canonicalFingerprint: candidate.canonicalFingerprint,

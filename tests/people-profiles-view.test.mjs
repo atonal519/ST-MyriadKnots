@@ -116,6 +116,7 @@ test('千人页横向切换只显示一份常显资料，草稿跨人物保留�
   const h = runtimeHarness({ selected: [A, B] }), container = new Node('main'); const view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
   assert.equal(flatten(container).filter(node => node.className === 'qqj-profile-card').length, 1);
   const tabs = flatten(container).filter(node => node.attributes.role === 'tab'); assert.deepEqual(tabs.map(node => node.textContent), ['甲', '乙']);
+  assert.deepEqual(tabs.map(node => node.attributes.title), ['甲', '乙'], '截断显示仍保留完整姓名提示');
   assert.equal(tabs[0].attributes['aria-selected'], 'true'); assert.match(visible(container), /姓名.*甲.*别名.*甲别名/);
   assert.deepEqual(flatten(container).find(node => node.className === 'qqj-profile-summary').children.map(node => node.textContent), ['甲', '推荐', '待建档']);
   assert.deepEqual(flatten(container).find(node => node.className === 'qqj-profile-save-row').children.map(node => node.textContent), ['编辑资料', '移出关注']);

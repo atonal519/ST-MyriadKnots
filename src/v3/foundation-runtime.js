@@ -181,6 +181,7 @@ export function createFoundationRuntime({
   let activeOperation = null;
   let scheduled = null;
   let dirtyReason = null;
+  let dirtyStableThrough = null;
   let bound = false;
   let lastRun = null;
   let lastError = null;
@@ -236,6 +237,7 @@ export function createFoundationRuntime({
     activeOperation = null;
     scheduled = null;
     dirtyReason = null;
+    dirtyStableThrough = null;
     cache = null;
     pending = null;
     emptyRealtimeObservation = null;
@@ -279,8 +281,17 @@ export function createFoundationRuntime({
     lastRun = runSummary(loaded.run, 'recovered');
     return cache;
   }
-  function stableCountFor(candidates, floors, confirmLatest) {
+  function stableCountFor(candidates, floors, confirmLatest, stableThrough = null) {
     if (confirmLatest) return candidates.length;
+    if (stableThrough) {
+      const boundaryIndex = candidates.findIndex(candidate => candidate.assistantSeq === stableThrough.assistantSeq
+        && candidate.hostLocator.messageIndex === stableThrough.messageIndex
+        && candidate.canonicalFingerprint === stableThrough.canonicalFingerprint);
+      const trustedPrefix = boundaryIndex >= 0 && floors.length <= boundaryIndex + 1
+        && floors.every((floor, index) => floor.content.canonicalFingerprint === candidates[index]?.canonicalFingerprint);
+      if (trustedPrefix) return boundaryIndex + 1;
+      throw statusError('stale', '提前稳定边界已变化，本次操作不再提交。');
+    }
     let count = Math.max(0, candidates.length - 1);
     const prefixMatches = floors.length <= candidates.length
       && floors.every((floor, index) => floor.content.canonicalFingerprint === candidates[index]?.canonicalFingerprint);
@@ -349,12 +360,12 @@ export function createFoundationRuntime({
     return store.putRecord(record, { signal: operation.controller.signal });
   }
 
-  async function scanCurrentSnapshot(operation, { confirmLatest = false } = {}) {
+  async function scanCurrentSnapshot(operation, { confirmLatest = false, stableThrough = operation?.stableThrough ?? null } = {}) {
     if (current(operation) !== 'current') throw statusError('stale');
     const captured = capture();
     const candidates = await scanAssistantCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions() });
     if (current(operation) !== 'current') throw statusError('stale');
-    const stableCount = stableCountFor(candidates, cache?.floors ?? [], confirmLatest);
+    const stableCount = stableCountFor(candidates, cache?.floors ?? [], confirmLatest, stableThrough);
     const snapshot = await foundationInputSnapshot(candidates, stableCount);
     return { candidates, stableCount, snapshot };
   }
@@ -376,7 +387,7 @@ export function createFoundationRuntime({
     return null;
   }
 
-  async function seal(operation, { candidates, stableCount, confirmLatest = false, sourceSnapshot = null, rebaseAttempt = 0 }) {
+  async function seal(operation, { candidates, stableCount, confirmLatest = false, stableThrough = operation?.stableThrough ?? null, sourceSnapshot = null, rebaseAttempt = 0 }) {
     const snapshot = sourceSnapshot ?? await foundationInputSnapshot(candidates, stableCount);
     const existing = cache.floors;
     const stableCandidates = candidates.slice(0, stableCount);
@@ -441,7 +452,7 @@ export function createFoundationRuntime({
     const floorIds = floors.map(floor => floor.id);
     const newFloors = floors.slice(prefixLength);
     const priorRealtimeOrigin = realtimeOriginFromReachable(cache);
-    const carriesRealtimeOrigin = operation.reason === 'MESSAGE_RECEIVED' && !isBranch
+    const carriesRealtimeOrigin = ['MESSAGE_RECEIVED', 'earlyAssistantStarted'].includes(operation.reason) && !isBranch
       && ((!cache.root && emptyRealtimeObservation?.chatId === operation.chatId) || priorRealtimeOrigin !== null);
     const realtimeOrigin = carriesRealtimeOrigin ? {
       chatId: operation.chatId,
@@ -482,7 +493,7 @@ export function createFoundationRuntime({
     run = await persistRunPhase(operation, 'committing', { completedFloorIds: newFloors.map(floor => floor.id) });
     const freshness = current(operation);
     if (freshness !== 'current') throw statusError(freshness);
-    const beforeCommit = await scanCurrentSnapshot(operation, { confirmLatest });
+    const beforeCommit = await scanCurrentSnapshot(operation, { confirmLatest, stableThrough });
     if (beforeCommit.snapshot.fingerprint !== snapshot.fingerprint) {
       const staleRun = await persistRunPhase(operation, 'stale', { completedFloorIds: newFloors.map(floor => floor.id) });
       lastRun = runSummary(staleRun, 'sourceChangedBeforeCommit');
@@ -541,7 +552,7 @@ export function createFoundationRuntime({
     if (committed.status === 'conflict') {
       unreachableCount += newFloors.length + indexes.length + 2;
       const winner = await store.readReachable();
-      const currentInput = await scanCurrentSnapshot(operation, { confirmLatest });
+      const currentInput = await scanCurrentSnapshot(operation, { confirmLatest, stableThrough });
       const samePreparedWinner = winner.status === 'ready'
         && winner.checkpoint.runId === runId
         && winner.root.sourceSnapshotFingerprint === snapshot.fingerprint;
@@ -564,7 +575,7 @@ export function createFoundationRuntime({
           return publishOperation(operation, 'ready');
         }
         if (rebaseAttempt < 2) {
-          return seal(operation, { candidates, stableCount, confirmLatest, sourceSnapshot: snapshot, rebaseAttempt: rebaseAttempt + 1 });
+          return seal(operation, { candidates, stableCount, confirmLatest, stableThrough, sourceSnapshot: snapshot, rebaseAttempt: rebaseAttempt + 1 });
         }
       }
       lastRun = runSummary(staleRun, 'casConflict');
@@ -575,15 +586,15 @@ export function createFoundationRuntime({
     if (committed.status !== 'saved') throw statusError(committed.status, 'V3 root 提交失败');
     cache = { root, rootRevision: committed.revision, checkpoint: actualCheckpoint, run: actualRun, floors: activeFloorViews(actualFloors, stableCandidates), floorMemories: actualMemories, entities: actualEntities, baseline, stateDeltas: actualDeltas, currentStates: actualCurrentStates, indexes: actualIndexes, indexesMissing: false };
     pending = candidates[stableCount] ?? null;
-    const afterCommit = await scanCurrentSnapshot(operation, { confirmLatest });
+    const afterCommit = await scanCurrentSnapshot(operation, { confirmLatest, stableThrough });
     if (afterCommit.snapshot.fingerprint !== snapshot.fingerprint) {
       const staleRun = await persistRunPhase(operation, 'stale', { completedFloorIds: newFloors.map(floor => floor.id) });
       cache.run = staleRun;
       lastRun = runSummary(staleRun, 'sourceChangedAfterCommit');
       lastError = '提交响应返回时正文已变化，正在自动收敛到最新快照。';
       if (rebaseAttempt < 2) {
-        const latest = await scanCurrentSnapshot(operation, { confirmLatest: false });
-        return seal(operation, { ...latest, confirmLatest: false, sourceSnapshot: latest.snapshot, rebaseAttempt: rebaseAttempt + 1 });
+        const latest = await scanCurrentSnapshot(operation, { confirmLatest: false, stableThrough });
+        return seal(operation, { ...latest, confirmLatest: false, stableThrough, sourceSnapshot: latest.snapshot, rebaseAttempt: rebaseAttempt + 1 });
       }
       dirtyReason = 'sourceChangedAfterCommit';
       return publishOperation(operation, 'stale');
@@ -597,12 +608,16 @@ export function createFoundationRuntime({
     return publishOperation(operation, 'ready');
   }
 
-  async function reconcile(reason = 'manualRefresh', { confirmLatest = false } = {}) {
+  async function reconcile(reason = 'manualRefresh', { confirmLatest = false, stableThrough = null } = {}) {
     if (!enabled()) return publish('disabled');
-    if (activeOperation) { dirtyReason = reason; return activeOperation.promise; }
+    if (activeOperation) {
+      dirtyReason = reason;
+      if (stableThrough) dirtyStableThrough = stableThrough;
+      return activeOperation.promise;
+    }
     const operation = {
       id: newUuid(), chatId: null, epoch: sessionEpoch, controller: new AbortController(), reason, phase: 'capturing',
-      startedAt: timestamp(now()), promise: null, runBase: null, runRecord: null, runRevision: 0,
+      startedAt: timestamp(now()), promise: null, runBase: null, runRecord: null, runRevision: 0, stableThrough,
     };
     activeOperation = operation;
     publishOperation(operation, 'running');
@@ -624,7 +639,7 @@ export function createFoundationRuntime({
         const elapsed = (globalThis.performance?.now?.() ?? Date.now()) - started;
         if (current(operation) !== 'current') return publishOperation(operation, 'stale');
         metrics = Object.freeze({ assistantFloors: candidates.length, canonicalCharacters: candidates.reduce((sum, item) => sum + item.canonicalContent.length, 0), scanMs: elapsed, maximumChunkMs: scanMetrics.maximumChunkMs ?? elapsed, algorithm: 'ordered-O(n)' });
-        const stableCount = stableCountFor(candidates, loaded.floors, confirmLatest);
+        const stableCount = stableCountFor(candidates, loaded.floors, confirmLatest, stableThrough);
         const sourceSnapshot = await foundationInputSnapshot(candidates, stableCount);
         if (!loaded.root && stableCount === 0) {
           emptyRealtimeObservation = Object.freeze({ chatId: operation.chatId });
@@ -633,10 +648,10 @@ export function createFoundationRuntime({
           lastError = null;
           return publishOperation(operation, 'uninitialized');
         }
-        return await seal(operation, { candidates, stableCount, confirmLatest, sourceSnapshot });
+        return await seal(operation, { candidates, stableCount, confirmLatest, stableThrough, sourceSnapshot });
       } catch (error) {
         const operationState = current(operation);
-        if (operationState === 'stale' || operationState === 'disabled') {
+        if (operationState === 'stale' || operationState === 'disabled' || error?.operationStatus === 'stale') {
           try {
             const staleRun = await settleStaleRun(operation);
             if (staleRun) lastRun = runSummary(staleRun);
@@ -657,8 +672,11 @@ export function createFoundationRuntime({
       } finally {
         if (activeOperation === operation) activeOperation = null;
         if (dirtyReason && enabled()) {
-          const nextReason = dirtyReason; dirtyReason = null;
-          Promise.resolve().then(() => reconcile(nextReason)).catch(error => { lastError = error?.message || 'V3 地基调度失败'; publish('error'); });
+          const nextReason = dirtyReason;
+          const nextStableThrough = dirtyStableThrough;
+          dirtyReason = null;
+          dirtyStableThrough = null;
+          Promise.resolve().then(() => reconcile(nextReason, { stableThrough: nextStableThrough })).catch(error => { lastError = error?.message || 'V3 地基调度失败'; publish('error'); });
         }
       }
     })();
@@ -679,6 +697,19 @@ export function createFoundationRuntime({
       return publish('error');
     });
     return scheduled;
+  }
+  function cancelEarlyStabilization(reason = 'earlyStabilizationCancelled') {
+    let cancelled = false;
+    if (activeOperation?.reason === 'earlyAssistantStarted') {
+      activeOperation.controller.abort(reason);
+      cancelled = true;
+    }
+    if (dirtyStableThrough) {
+      dirtyStableThrough = null;
+      if (dirtyReason === 'earlyAssistantStarted') dirtyReason = null;
+      cancelled = true;
+    }
+    return cancelled;
   }
   function bind({ eventSource, eventTypes } = hostAdapter.snapshot()) {
     if (bound || !eventSource?.on || !eventTypes) return false;
@@ -718,6 +749,8 @@ export function createFoundationRuntime({
     start: () => enabled() ? reconcile('start') : Promise.resolve(publish('disabled')),
     reconcile,
     refreshStatus: () => reconcile('manualRefresh'),
+    stabilizeThrough: boundary => reconcile('earlyAssistantStarted', { stableThrough: boundary }),
+    cancelEarlyStabilization,
     confirmLatest: () => pending ? reconcile('manualConfirm', { confirmLatest: true }) : Promise.resolve(publish('ready')),
     invalidate, setEnabled, adoptReachable, getState: () => publicState,
     getReachable: () => cache,

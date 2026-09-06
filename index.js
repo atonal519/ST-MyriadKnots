@@ -25,6 +25,10 @@ const contextProvider = () => ({ ...hostContext(), userAvatar: user_avatar });
 const settings = createSettingsStore({ extensionSettings: extension_settings, save: saveSettingsDebounced });
 settings.migrateLegacyApiSettings();
 const sevenDaysClockState = () => extensionStoryClockState({ extensionNames, disabledExtensions: extension_settings.disabledExtensions, extensionSuffix: '/ST-SevenDaysCal', peerSettings: extension_settings['schedule-planner'] });
+const isSevenDaysAvailable = () => {
+  const extensionId = extensionNames.find(name => String(name).endsWith('/ST-SevenDaysCal'));
+  return Boolean(extensionId && !extension_settings.disabledExtensions?.includes(extensionId));
+};
 const storyClockController = createMyKnotsStoryClockController({ context: hostContext, settings: () => settings.get(), peerState: sevenDaysClockState });
 const STORY_CLOCK_COORDINATION_EVENT = 'qqj-sdc-story-clock-settings-changed';
 const storyClockLabel = state => ({
@@ -49,7 +53,12 @@ globalThis.addEventListener?.(STORY_CLOCK_COORDINATION_EVENT, event => { if (eve
 const sanitizerOptions = () => ({ keepTags: settings.get().sourceKeepTags, extraTags: settings.get().sourceExtraTags });
 
 const backendClient = createBackendClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
-const compactClient = createCompactApiClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
+let ui;
+let lifecycle;
+const compactClient = createCompactApiClient({
+  headers: () => hostContext()?.getRequestHeaders?.() ?? {},
+  onBusyChange: busy => ui?.fab?.setBusy?.(busy),
+});
 const apiResolver = createApiResolver({ settings });
 const taskRouter = createTaskRouter({
   resolver: apiResolver,
@@ -124,8 +133,6 @@ const publicMemoryBridgeMount = installPublicMemoryBridge({
 });
 globalThis.addEventListener?.('beforeunload', publicMemoryBridgeMount.cleanup, { once: true });
 globalThis.qqj_v3_recall_interceptor = (coreChat, contextSize, abort, type) => v3RecallRuntime.intercept(coreChat, contextSize, abort, type);
-let ui;
-let lifecycle;
 const setAllEnabled = async enabled => {
   refreshStoryClock({ announce: true });
   if (!enabled) {
@@ -146,10 +153,12 @@ ui = bootstrap({
   apiTools,
   onPluginEnabledChange: setAllEnabled,
   onStoryClockChange: options => refreshStoryClock({ ...options, announce: options?.readOnly !== true }),
+  isSevenDaysAvailable,
   sourcePermissions,
   v3FoundationRuntime: v3MemoryRuntime,
   v3RecallRuntime,
   peopleWorkspaceRuntime,
+  enableFab: true,
 });
 lifecycle = createPluginLifecycle({
   session,

@@ -59,11 +59,19 @@ test('完整诊断必须显式确认，clipboard 不可用时显示可选择文�
   const fallback = flatten(container).find(node => node.className === 'v3-diagnostic-fallback'); assert.match(fallback.value, /canonicalContent/);
 });
 
-test('Extractor 失败且尚无 FloorMemory 时仍可复制安全/完整会话诊断', () => {
+test('Extractor 失败且尚无 FloorMemory 时仍可复制诊断并直接提取摘要', async () => {
+  let extractedFloorId = null;
+  let confirmations = 0;
   const state = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 0, unprocessedCount: 1, failedCount: 1, reviewCount: 0, pending: null, headCheckpointId: 'checkpoint', activeRun: null, lastRun: null, lastError: null, lastExtractorError: { message: '失败' }, unreachableCount: 0, metrics: {}, floors: [{ floorId: 'floor', assistantSeq: 1, messageIndex: 2, status: 'failed', memoryId: null, summary: '', counts: {}, error: '失败', memory: null }] };
-  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => state, copySafeDiagnostic: () => '{"safe":true}', copyFullDiagnostic: () => '{"sessionCandidate":{}}' };
-  const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef, navigatorRef: {} }); view.mount(container);
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async floorId => { extractedFloorId = floorId; return state; }, copySafeDiagnostic: () => '{"safe":true}', copyFullDiagnostic: () => '{"sessionCandidate":{}}' };
+  const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef, navigatorRef: {}, confirmImpl: () => { confirmations += 1; return true; } }); view.mount(container);
   const copy = flatten(container).map(node => node.textContent); assert.ok(copy.includes('复制安全诊断')); assert.ok(copy.includes('复制完整诊断'));
+  view.setPage('memories');
+  const extract = flatten(container).find(node => node.textContent === '提取摘要');
+  assert.ok(extract); assert.equal(extract.disabled, false);
+  extract.click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(extractedFloorId, 'floor');
+  assert.equal(confirmations, 0, '无摘要楼的首次提取不是破坏性操作，不弹重提确认');
 });
 
 test('面板顶部显示 CSE 分层状态、原因/来源与待分析重试入口，不创建楼内聊天渲染', async () => {
@@ -254,6 +262,17 @@ test('历史欠账按钮显式开始/继续，运行中可暂停且不依赖自�
   flatten(container).find(node => node.textContent === '完全重构').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(resetChatId, CHAT, '完全重构必须携带用户当前看到的聊天 ID');
+
+  state = { ...base, rebuildStatus: 'waitingRealtime', rebuildHasActionableWork: true };
+  view.render(state);
+  assert.equal(flatten(container).find(node => node.textContent === '继续')?.disabled, false, '等待新楼状态下仍有稳定欠账时继续必须可用');
+  state = { ...state, status: 'running', memoryWorkBusy: true, activeMemoryWork: { phase: 'analyzingCse' } };
+  view.render(state);
+  const busyAction = flatten(container).find(node => node.textContent === '正在分析人物状态');
+  assert.ok(busyAction); assert.equal(busyAction.disabled, true, '真实任务忙碌时仍保留并发锁并显示阶段');
+  state = { ...base, rebuildStatus: 'waitingRealtime', rebuildHasActionableWork: false };
+  view.render(state);
+  assert.equal(flatten(container).find(node => node.textContent === '继续')?.disabled, true, '确实没有稳定待办时继续才置灰');
 
   state = { ...base, status: 'running', memoryWorkBusy: true, rebuildStatus: 'rebuilding', activeAutoMemory: { phase: 'extracting', mode: 'historical', floorIds: ['floor-3'] } };
   view.render(state);

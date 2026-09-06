@@ -162,6 +162,46 @@ test('同一任务的运输重试复用启动时提示词快照', async () => {
   assert.doesNotMatch(bodies[1].messages[0].content, /摘要指导第二版/);
 });
 
+test('统一 request 忙灯覆盖并发、运输重试、失败和取消，最后一个请求结束才熄灭', async () => {
+  const busy = [], resolvers = [];
+  const concurrent = createCompactApiClient({
+    onBusyChange: value => busy.push(value),
+    fetchImpl: async () => new Promise(resolve => resolvers.push(resolve)),
+  });
+  const first = concurrent.generateTask({ config: config(), taskMessages: [] });
+  const second = concurrent.generateTask({ config: config(), taskMessages: [] });
+  await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(busy, [true]);
+  resolvers[0](jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] })); await first; assert.deepEqual(busy, [true]);
+  resolvers[1](jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] })); await second; assert.deepEqual(busy, [true, false]);
+
+  const streamBusy = []; let releaseStream, reads = 0; const encoder = new TextEncoder();
+  const streaming = createCompactApiClient({
+    onBusyChange: value => streamBusy.push(value),
+    fetchImpl: async () => ({ ok: true, status: 200, body: { getReader: () => ({ read: async () => {
+      if (reads++ === 0) await new Promise(resolve => { releaseStream = resolve; });
+      return reads === 1 ? { done: false, value: encoder.encode('data: {"choices":[{"delta":{"content":"{\\"ok\\":true}"},"finish_reason":"stop"}]}\n\n') } : { done: true };
+    } }) } }),
+  });
+  const streamResult = streaming.generateTask({ config: config({ stream: true }), taskMessages: [] });
+  await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(streamBusy, [true], '收到响应头但 SSE 正文未完成时仍须保持忙灯');
+  releaseStream(); assert.deepEqual((await streamResult).jsonData, { ok: true }); assert.deepEqual(streamBusy, [true, false]);
+
+  const retryBusy = []; let attempts = 0;
+  const retrying = createCompactApiClient({
+    onBusyChange: value => retryBusy.push(value),
+    retryWait: async () => { assert.deepEqual(retryBusy, [true]); },
+    fetchImpl: async () => ++attempts === 1 ? jsonResponse({}, 503) : jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] }),
+  });
+  await retrying.generateTask({ config: config(), taskMessages: [] }); assert.deepEqual(retryBusy, [true, false]); assert.equal(attempts, 2);
+
+  const failedBusy = [];
+  const failing = createCompactApiClient({ onBusyChange: value => failedBusy.push(value), fetchImpl: async () => jsonResponse({}, 401) });
+  await assert.rejects(failing.generateTask({ config: config(), taskMessages: [] }), error => error.code === 'QQJ_AUTH'); assert.deepEqual(failedBusy, [true, false]);
+  const cancelledBusy = [], controller = new AbortController(); controller.abort();
+  const cancelled = createCompactApiClient({ onBusyChange: value => cancelledBusy.push(value), fetchImpl: async () => jsonResponse({}) });
+  await assert.rejects(cancelled.generateTask({ config: config(), taskMessages: [], signal: controller.signal }), error => error.name === 'AbortError'); assert.deepEqual(cancelledBusy, [true, false]);
+});
+
 test('HTTP 400/422 只保留标识符与模板化摘要，不泄露正文、Key、URL 或请求体', async () => {
   let calls = 0;
   const storyEcho = '明确叙事，林岑伸手取走钥匙。';

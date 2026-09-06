@@ -148,6 +148,81 @@ test('纯扫描只枚举有效 AI 楼，3 楼得到 2 stable + 1 pending；确�
   assert.deepEqual(state.stableBoundary.assistantSeq, 3);
 });
 
+test('新楼首正文边界只晋升启动前 pending，空占位不落 Floor 且后续刷新保持稳定', async () => {
+  const h = harness([assistant('上一楼正文')]);
+  let state = await h.runtime.start();
+  const boundary = structuredClone(state.pending);
+  assert.equal(state.stableCount, 0);
+
+  h.context.chat.push(user('继续'), assistant(''));
+  state = await h.runtime.stabilizeThrough(boundary);
+  assert.equal(state.stableCount, 1);
+  assert.equal(state.pending, null);
+  assert.equal(h.runtime.getReachable().floors[0].content.canonicalContent, '上一楼正文');
+  assert.equal(h.runtime.getReachable().floors.some(floor => floor.hostLocator.messageIndex === 2), false, '空占位不得成为 FloorRecord');
+
+  state = await h.runtime.refreshStatus();
+  assert.equal(state.stableCount, 1, '同一生成期间普通 refresh 不得把提前稳定楼退回 pending');
+  h.context.chat[2] = assistant('当前楼首段');
+  state = await h.runtime.refreshStatus();
+  assert.equal(state.stableCount, 1);
+  assert.equal(state.pending.assistantSeq, 2);
+  assert.equal(state.pending.messageIndex, 2);
+});
+
+test('提前边界是精确上限，首 token 后即使出现多个后继 assistant 也只封启动前旧楼', async () => {
+  const h = harness([assistant('启动前旧楼')]);
+  const boundary = structuredClone((await h.runtime.start()).pending);
+  h.context.chat.push(user('继续'), assistant('工具中间楼'), assistant('递归当前楼'));
+  const state = await h.runtime.stabilizeThrough(boundary);
+  assert.equal(state.stableCount, 1);
+  assert.deepEqual(h.runtime.getReachable().floors.map(floor => floor.content.canonicalContent), ['启动前旧楼']);
+  assert.equal(state.pending.assistantSeq, 2);
+  assert.equal(state.pending.messageIndex, 2);
+});
+
+test('提前边界正文指纹或位置失配时 stale 且零 root 提交', async () => {
+  for (const mutation of ['canonical', 'locator']) {
+    const h = harness([assistant('启动前旧楼')]);
+    const boundary = structuredClone((await h.runtime.start()).pending);
+    if (mutation === 'canonical') h.context.chat[0] = assistant('已变化的旧楼');
+    else h.context.chat.unshift(user('插入导致位置变化'));
+    h.context.chat.push(user('继续'), assistant(''));
+    h.backend.calls.splice(0);
+    const state = await h.runtime.stabilizeThrough(boundary);
+    assert.equal(state.status, 'stale', mutation);
+    assert.equal(h.backend.calls.some(call => call[0] === 'put' && call[2] === 'v3-root'), false, `${mutation} 失配不得提交 root`);
+    assert.equal(h.runtime.getReachable()?.floors?.length ?? 0, 0);
+  }
+});
+
+test('已有 reconcile 占用时排队的提前边界不会丢失，释放后精确封存旧 pending', async () => {
+  let hold = false, release, markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const h = harness([assistant('已稳定楼'), assistant('启动前 pending')], {
+    prepareSession: async () => {
+      if (!hold) return;
+      hold = false;
+      markStarted();
+      await new Promise(resolve => { release = resolve; });
+    },
+  });
+  const initial = await h.runtime.start();
+  const boundary = structuredClone(initial.pending);
+  hold = true;
+  const refresh = h.runtime.refreshStatus();
+  await started;
+  h.context.chat.push(user('继续'), assistant(''));
+  const queued = h.runtime.stabilizeThrough(boundary);
+  release();
+  await refresh;
+  await queued;
+  for (let attempt = 0; attempt < 100 && h.runtime.getState().stableCount !== 2; attempt += 1) await new Promise(resolve => setTimeout(resolve, 2));
+  assert.equal(h.runtime.getState().stableCount, 2);
+  assert.deepEqual(h.runtime.getReachable().floors.map(floor => floor.content.canonicalContent), ['已稳定楼', '启动前 pending']);
+  assert.equal(h.runtime.getReachable().floors.some(floor => floor.hostLocator.messageIndex === 3), false);
+});
+
 test('V3 真实 AI 判定保留各类隐藏 AI，只排除带宿主 type 的真系统楼', async () => {
   const chat = [
     assistant('普通 AI'),
@@ -216,17 +291,70 @@ test('user 楼漂移只更新 locator 索引，不改变 floorId 或 assistantSe
 test('pending swipe 只换候选；stable swipe 新建世代并保留可信前缀', async () => {
   const h = harness([assistant('A'), assistant('B'), assistant('C')], { enhanced: true });
   let state = await h.runtime.start();
-  const generation = h.backend.records.get(`chat-${CHAT}/v3-root`).data.narrativeGeneration;
+  const rootKey = `chat-${CHAT}/v3-root`;
+  const rootBeforePending = structuredClone(h.backend.records.get(rootKey));
+  const generation = rootBeforePending.data.narrativeGeneration;
+  const pendingFingerprint = state.pending.canonicalFingerprint;
+  h.backend.calls.splice(0);
   h.context.chat[2] = assistant('C2');
   state = await h.runtime.refreshStatus();
   assert.equal(state.stableCount, 2);
-  assert.equal(h.backend.records.get(`chat-${CHAT}/v3-root`).data.narrativeGeneration, generation);
+  assert.notEqual(state.pending.canonicalFingerprint, pendingFingerprint);
+  assert.deepEqual(h.backend.records.get(rootKey), rootBeforePending, 'pending-only 变化不得推进 root revision/head');
+  assert.equal(h.backend.calls.some(call => call[0] === 'put'), false, 'pending-only 变化不得写正式图');
   h.context.chat[1] = assistant('B2');
   state = await h.runtime.refreshStatus();
-  const nextRoot = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
+  const nextRoot = h.backend.records.get(rootKey).data;
   assert.notEqual(nextRoot.narrativeGeneration, generation);
   assert.equal(state.lastRun.result, 'trustedPrefix:1');
   assert.equal(state.stableCount, 2);
+});
+
+test('旧全候选 snapshot 首次刷新只对齐一次，后续 pending-only 变化保持 root 不动', async () => {
+  const h = harness([assistant('A'), assistant('B'), assistant('C')]);
+  await h.runtime.start();
+  const candidates = await scanAssistantCandidates(h.context.chat);
+  const legacyPayload = {
+    version: 1,
+    stableCount: 2,
+    latestStatus: 'pending',
+    floors: candidates.map(candidate => ({
+      assistantSeq: candidate.assistantSeq,
+      rawFingerprint: candidate.rawFingerprint,
+      canonicalFingerprint: candidate.canonicalFingerprint,
+      sanitizerFingerprint: candidate.sanitizerFingerprint,
+      messageIndex: candidate.hostLocator.messageIndex,
+      swipeId: candidate.hostLocator.swipeId,
+      selectedSwipeIndex: candidate.hostLocator.selectedSwipeIndex,
+    })),
+  };
+  const legacyFingerprint = `sha256:${createHash('sha256').update(JSON.stringify(legacyPayload)).digest('hex')}`;
+  const rootKey = `chat-${CHAT}/v3-root`;
+  const rootRecord = h.backend.records.get(rootKey);
+  const checkpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${rootRecord.data.headCheckpointId}`);
+  const run = h.backend.records.get(`chat-${CHAT}/v3-run-${checkpoint.data.runId}`);
+  assert.notEqual(rootRecord.data.sourceSnapshotFingerprint, legacyFingerprint);
+  rootRecord.data.sourceSnapshotFingerprint = legacyFingerprint;
+  checkpoint.data.sourceSnapshotFingerprint = legacyFingerprint;
+  run.data.inputSnapshotFingerprint = legacyFingerprint;
+  const cached = structuredClone(h.runtime.getReachable());
+  cached.root.sourceSnapshotFingerprint = legacyFingerprint;
+  cached.checkpoint.sourceSnapshotFingerprint = legacyFingerprint;
+  cached.run.inputSnapshotFingerprint = legacyFingerprint;
+  assert.equal(h.runtime.adoptReachable(cached), true);
+
+  const revisionBeforeAlignment = rootRecord.revision;
+  await h.runtime.refreshStatus();
+  const aligned = structuredClone(h.backend.records.get(rootKey));
+  assert.equal(aligned.revision, revisionBeforeAlignment + 1);
+  assert.notEqual(aligned.data.sourceSnapshotFingerprint, legacyFingerprint);
+
+  h.backend.calls.splice(0);
+  h.context.chat[2] = assistant('C2');
+  const state = await h.runtime.refreshStatus();
+  assert.equal(state.pending.assistantSeq, 3);
+  assert.deepEqual(h.backend.records.get(rootKey), aligned);
+  assert.equal(h.backend.calls.some(call => call[0] === 'put'), false);
 });
 
 test('canonical 相同的稳定编辑不重建；标点级变化直接从最早楼 branchReplay', async () => {

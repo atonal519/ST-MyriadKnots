@@ -105,7 +105,7 @@ function hostCoverageConfirmed(reachable, snapshot, hostCandidates) {
 
 export function assessMemoryCoverage({ reachable, snapshot, hostCandidates, realtimeOrigin = false } = {}) {
   if (!reachable?.root || !Array.isArray(reachable.floors) || !hostCoverageConfirmed(reachable, snapshot, hostCandidates)) {
-    return Object.freeze({ status: 'unknown', completed: 0, total: reachable?.floors?.length ?? 0, nextAssistantSeq: null, pendingFloorIds: Object.freeze([]), realtimeProtected: false, hasPartialWork: false });
+    return Object.freeze({ status: 'unknown', completed: 0, total: reachable?.floors?.length ?? 0, nextAssistantSeq: null, pendingFloorIds: Object.freeze([]), realtimeProtected: false, hasPartialWork: false, summaryStatus: 'unknown', summaryCompleted: 0, summaryNextAssistantSeq: null, summaryPendingFloorIds: Object.freeze([]), summaryRealtimeProtected: false, summaryHasPartialWork: false });
   }
   const floors = reachable.floors;
   const memoryByFloor = activeMemoriesByFloor(reachable);
@@ -113,8 +113,11 @@ export function assessMemoryCoverage({ reachable, snapshot, hostCandidates, real
   try {
     deltaByFloor = new Map(filterReachableDeltas({ floors, floorMemories: reachable.floorMemories ?? [], stateDeltas: reachable.stateDeltas ?? [] }).map(delta => [delta.floorId, delta]));
   } catch {
-    return Object.freeze({ status: 'unknown', completed: 0, total: floors.length, nextAssistantSeq: floors[0]?.assistantSeq ?? null, pendingFloorIds: Object.freeze(floors.map(floor => floor.id)), realtimeProtected: false, hasPartialWork: false });
+    return Object.freeze({ status: 'unknown', completed: 0, total: floors.length, nextAssistantSeq: floors[0]?.assistantSeq ?? null, pendingFloorIds: Object.freeze(floors.map(floor => floor.id)), realtimeProtected: false, hasPartialWork: false, summaryStatus: 'unknown', summaryCompleted: 0, summaryNextAssistantSeq: floors[0]?.assistantSeq ?? null, summaryPendingFloorIds: Object.freeze(floors.map(floor => floor.id)), summaryRealtimeProtected: false, summaryHasPartialWork: false });
   }
+  let summaryCompleted = 0;
+  while (summaryCompleted < floors.length && memoryByFloor.has(floors[summaryCompleted].id)) summaryCompleted += 1;
+  const summaryPending = floors.slice(summaryCompleted);
   let completed = 0;
   while (completed < floors.length) {
     const floor = floors[completed];
@@ -124,14 +127,20 @@ export function assessMemoryCoverage({ reachable, snapshot, hostCandidates, real
     completed += 1;
   }
   const pending = floors.slice(completed);
-  if (!pending.length) return Object.freeze({ status: 'caughtUp', completed, total: floors.length, nextAssistantSeq: null, pendingFloorIds: Object.freeze([]), realtimeProtected: false, hasPartialWork: false });
+  if (!pending.length) return Object.freeze({ status: 'caughtUp', completed, total: floors.length, nextAssistantSeq: null, pendingFloorIds: Object.freeze([]), realtimeProtected: false, hasPartialWork: false, summaryStatus: 'caughtUp', summaryCompleted, summaryNextAssistantSeq: null, summaryPendingFloorIds: Object.freeze([]), summaryRealtimeProtected: false, summaryHasPartialWork: false });
   const recent = recentVisibleIndexes(snapshot.chat);
   const realtimeProtected = realtimeOrigin === true
     || pending.every(floor => recent.has(floor.hostLocator.messageIndex) && visibleAssistant(snapshot.chat[floor.hostLocator.messageIndex]));
   const hasPartialWork = pending.some(floor => memoryByFloor.has(floor.id) || deltaByFloor.has(floor.id));
   const branchRebuild = reachable.run?.mode === 'branchReplay';
   const status = (completed > 0 || realtimeOrigin === true) && realtimeProtected && !hasPartialWork && !branchRebuild ? 'realtimeTail' : 'historicalDebt';
-  return Object.freeze({ status, completed, total: floors.length, nextAssistantSeq: pending[0]?.assistantSeq ?? null, pendingFloorIds: Object.freeze(pending.map(floor => floor.id)), realtimeProtected, hasPartialWork });
+  const summaryRealtimeProtected = summaryPending.length > 0 && (realtimeOrigin === true
+    || summaryPending.every(floor => recent.has(floor.hostLocator.messageIndex) && visibleAssistant(snapshot.chat[floor.hostLocator.messageIndex])));
+  const summaryHasPartialWork = summaryPending.some(floor => memoryByFloor.has(floor.id));
+  const summaryStatus = !summaryPending.length
+    ? 'caughtUp'
+    : (summaryCompleted > 0 || realtimeOrigin === true) && summaryRealtimeProtected && !summaryHasPartialWork && !branchRebuild ? 'realtimeTail' : 'historicalDebt';
+  return Object.freeze({ status, completed, total: floors.length, nextAssistantSeq: pending[0]?.assistantSeq ?? null, pendingFloorIds: Object.freeze(pending.map(floor => floor.id)), realtimeProtected, hasPartialWork, summaryStatus, summaryCompleted, summaryNextAssistantSeq: summaryPending[0]?.assistantSeq ?? null, summaryPendingFloorIds: Object.freeze(summaryPending.map(floor => floor.id)), summaryRealtimeProtected, summaryHasPartialWork });
 }
 
 export async function assessMemoryCoverageFromHost({ reachable, snapshot, sanitizerOptions = {}, captureGuard = false, realtimeOrigin = false } = {}) {
@@ -143,7 +152,7 @@ export async function assessMemoryCoverageFromHost({ reachable, snapshot, saniti
     Object.defineProperty(guarded, HOST_GUARD, { value: captureHostGuard(snapshot, hostCandidates) });
     return Object.freeze(guarded);
   } catch {
-    const unknown = { status: 'unknown', completed: 0, total: reachable?.floors?.length ?? 0, nextAssistantSeq: null, pendingFloorIds: Object.freeze([]), realtimeProtected: false, hasPartialWork: false };
+    const unknown = { status: 'unknown', completed: 0, total: reachable?.floors?.length ?? 0, nextAssistantSeq: null, pendingFloorIds: Object.freeze([]), realtimeProtected: false, hasPartialWork: false, summaryStatus: 'unknown', summaryCompleted: 0, summaryNextAssistantSeq: null, summaryPendingFloorIds: Object.freeze([]), summaryRealtimeProtected: false, summaryHasPartialWork: false };
     return Object.freeze(unknown);
   }
 }

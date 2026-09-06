@@ -294,8 +294,16 @@ function linkedController(signal, timeoutSec, timeoutMs) {
   return { controller, timedOut: () => timedOut, cleanup: () => { clearTimeout(timer); signal?.removeEventListener?.('abort', onAbort); } };
 }
 
-export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryWait = wait, timeoutMs = seconds => seconds * 1000 } = {}) {
+export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryWait = wait, timeoutMs = seconds => seconds * 1000, onBusyChange = () => {} } = {}) {
   if (fetchImpl !== undefined && typeof fetchImpl !== 'function') throw new Error('fetch 不可用');
+  let activeRequests = 0;
+  const changeBusy = delta => {
+    const wasBusy = activeRequests > 0;
+    activeRequests = Math.max(0, activeRequests + delta);
+    const busy = activeRequests > 0;
+    if (busy === wasBusy) return;
+    try { onBusyChange(busy); } catch { /* UI 状态不能影响请求 */ }
+  };
   const resolveFetch = () => {
     const current = fetchImpl === undefined ? globalThis.fetch : fetchImpl;
     if (typeof current !== 'function') throw new Error('fetch 不可用');
@@ -303,37 +311,42 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
   };
   const request = async ({ path, body, config, signal, stream = false, retries = 2, transportBudget = null }) => {
     if (!config?.url || !config?.key) throw safeError('config');
-    let attempt = 0;
-    for (;;) {
-      if (signal?.aborted) throw abortError();
-      if (transportBudget) {
-        if (!Number.isSafeInteger(transportBudget.remaining) || !Number.isSafeInteger(transportBudget.used) || transportBudget.remaining < 1 || transportBudget.used < 0) {
-          const error = safeError('transport-budget'); error.transportAttempts = Math.max(0, Number(transportBudget.used) || 0); throw error;
+    changeBusy(1);
+    try {
+      let attempt = 0;
+      for (;;) {
+        if (signal?.aborted) throw abortError();
+        if (transportBudget) {
+          if (!Number.isSafeInteger(transportBudget.remaining) || !Number.isSafeInteger(transportBudget.used) || transportBudget.remaining < 1 || transportBudget.used < 0) {
+            const error = safeError('transport-budget'); error.transportAttempts = Math.max(0, Number(transportBudget.used) || 0); throw error;
+          }
+          transportBudget.remaining -= 1;
+          transportBudget.used += 1;
         }
-        transportBudget.remaining -= 1;
-        transportBudget.used += 1;
-      }
-      const linked = linkedController(signal, config.timeoutSec, timeoutMs);
-      try {
-        const response = await resolveFetch()(path, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: linked.controller.signal });
-        if (!response.ok) {
-          if ((response.status === 429 || response.status >= 500) && attempt < retries) {
+        const linked = linkedController(signal, config.timeoutSec, timeoutMs);
+        try {
+          const response = await resolveFetch()(path, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: linked.controller.signal });
+          if (!response.ok) {
+            if ((response.status === 429 || response.status >= 500) && attempt < retries) {
+              attempt += 1; linked.cleanup(); await retryWait(Math.min(400 * 2 ** attempt, 2000), signal); continue;
+            }
+            throw mapHttpError(response.status, await readProviderError(response, [config.key, config.url, normalizeApiUrl(config.url)]));
+          }
+          if (stream) return await readSseResponse(response);
+          try { return await response.json(); } catch { throw safeError('http-response-json'); }
+        } catch (error) {
+          if (linked.timedOut()) throw safeError('timeout');
+          if (signal?.aborted || error?.name === 'AbortError') throw abortError();
+          if (error instanceof TypeError && attempt < retries) {
             attempt += 1; linked.cleanup(); await retryWait(Math.min(400 * 2 ** attempt, 2000), signal); continue;
           }
-          throw mapHttpError(response.status, await readProviderError(response, [config.key, config.url, normalizeApiUrl(config.url)]));
-        }
-        if (stream) return readSseResponse(response);
-        try { return await response.json(); } catch { throw safeError('http-response-json'); }
-      } catch (error) {
-        if (linked.timedOut()) throw safeError('timeout');
-        if (signal?.aborted || error?.name === 'AbortError') throw abortError();
-        if (error instanceof TypeError && attempt < retries) {
-          attempt += 1; linked.cleanup(); await retryWait(Math.min(400 * 2 ** attempt, 2000), signal); continue;
-        }
-        if (error instanceof TypeError) throw safeError('network');
-        if (error instanceof SyntaxError) throw safeError('http-response-json');
-        throw error;
-      } finally { linked.cleanup(); }
+          if (error instanceof TypeError) throw safeError('network');
+          if (error instanceof SyntaxError) throw safeError('http-response-json');
+          throw error;
+        } finally { linked.cleanup(); }
+      }
+    } finally {
+      changeBusy(-1);
     }
   };
   const generateTask = async ({ config, taskMessages, jsonSchema, signal, maxTokens = 12000, temperature = 0.2, systemPrompt, transportBudget = null, parseMode = 'strict' } = {}) => {

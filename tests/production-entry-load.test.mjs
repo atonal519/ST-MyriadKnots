@@ -81,7 +81,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.0.2');
+  assert.equal(manifest.version, '0.0.3');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
@@ -185,6 +185,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   let peopleStoreOptions;
   let publicMemoryBridgeOptions;
   let bootstrapOptions;
+  let compactOptions;
   const modules = new Map();
   const define = (specifier, exports) => {
     modules.set(specifier, new SyntheticModule(Object.keys(exports), function initialize() {
@@ -192,7 +193,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
     }, { context, identifier: `mock:${specifier}` }));
   };
   define('/scripts/personas.js', { user_avatar: 'me.png' });
-  define('/scripts/extensions.js', { extension_settings: {}, extensionNames: [] });
+  define('/scripts/extensions.js', { extension_settings: { disabledExtensions: [] }, extensionNames: ['third-party/ST-SevenDaysCal'] });
   const isGenerating = () => false;
   define('/script.js', { isGenerating, saveSettingsDebounced() {} });
   const backendClient = {};
@@ -204,7 +205,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
     createApiTools: () => ({ abortAll() {} }),
     createTaskRouter: () => ({ generateUtilityTask: utilityTask, abortAll() {} }),
   });
-  define('./src/compact-api-client.js', { createCompactApiClient: () => ({}) });
+  define('./src/compact-api-client.js', { createCompactApiClient: options => { compactOptions = options; return {}; } });
   define('./src/chat-session.js', { createChatSession: options => {
     sessionOptions = options;
     return { prepare() {}, identity: () => ({ chatId: 'test' }), invalidate() {} };
@@ -258,6 +259,9 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   assert.equal(peopleWorkspaceOptions.profilePromptGuidance(), '人物资料指导');
   assert.ok(peopleWorkspaceOptions.session); assert.ok(peopleWorkspaceOptions.foundationRuntime); assert.ok(peopleWorkspaceOptions.memoryRuntime);
   assert.equal(bootstrapOptions.peopleWorkspaceRuntime, peopleWorkspaceRuntime);
+  assert.equal(bootstrapOptions.enableFab, true);
+  assert.equal(bootstrapOptions.isSevenDaysAvailable(), true);
+  assert.equal(typeof compactOptions.onBusyChange, 'function');
   assert.ok(publicMemoryBridgeOptions.session);
   assert.ok(publicMemoryBridgeOptions.store);
   assert.ok(publicMemoryBridgeOptions.hostAdapter);
@@ -292,8 +296,8 @@ test('生产 bundle 在 official-only 且插件启用时真实进入身份绑定
   const clockCalls = result.promptCalls.filter(call => call[0] === 'myknots_story_clock');
   assert.deepEqual(clockCalls[0], ['myknots_story_clock', '']);
   assert.equal(clockCalls.length, 2);
-  assert.match(clockCalls[1][1], /<!-- myknots-start/);
-  assert.match(clockCalls[1][1], /<!-- myknots-end/);
+  assert.match(clockCalls[1][1], /<!-- QQJ-start/);
+  assert.match(clockCalls[1][1], /<!-- QQJ-end/);
   assert.deepEqual(clockCalls[1].slice(2), [17, 0, false, 29]);
 });
 

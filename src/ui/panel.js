@@ -18,6 +18,7 @@ export function createPanel({
   sourcePermissionView,
   onPluginEnabledChange,
   onStoryClockChange,
+  isSevenDaysAvailable,
   documentRef = globalThis.document,
 } = {}) {
   if (!documentRef?.createElement) throw new TypeError('panel documentRef 无效');
@@ -176,6 +177,7 @@ export function createPanel({
       open: subOpen('api'), onToggle: subToggle('api'),
       advancedOpen: subOpen('api-advanced'), onAdvancedToggle: subToggle('api-advanced'),
       rerender: () => renderSettings(),
+      isSevenDaysAvailable,
     });
     const worldbook = sourcePermissionView?.renderSettings?.({
       open: subOpen('worldbook'), onDrawerToggle: subToggle('worldbook'),
