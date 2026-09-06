@@ -1,23 +1,37 @@
 import { sha256 } from '../identity.js';
-import { scanArchiveV2WorldInfo } from '../archive-v2-source-scanner.js';
-import { sanitizeArchiveV2SourceContent } from '../memory-content-sanitizer.js';
+import { repairJsonWithUniqueMissingObjectClose } from '../compact-api-client.js';
+import { scanWorldInfo } from '../world-info-scanner.js';
+import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 import { deterministicUuid } from './foundation-domain.js';
 import { validateEntityRecord } from './memory-schema.js';
 import { sanitizeDiagnosticValue, sanitizeTaskMetadata } from './safe-metadata.js';
 import { stateFingerprint, validateBaselineRecord, validateCurrentStateRecord, validateStateDeltaRecord } from './cse-schema.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-1';
-export const CSE_COMPILER_VERSION = `${CSE_PROMPT_VERSION}/after-state-compiler-1`;
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-4';
+export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/after-state-compiler-4';
 
-export const CSE_SYSTEM_PROMPT = `你是“千千结”的人物状态理解器。请完整阅读本楼正文，并结合结构化楼层记忆、此前状态与相关初始设定，说明人物在本楼结束后处于什么状态以及原因。
+export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。请完整阅读本楼正文，并结合结构化楼层记忆、此前状态与相关初始设定，说明人物在本楼结束后处于什么状态以及原因。`;
 
-正文 canonicalContent 是本楼事实的最高来源；结构化楼层记忆只是证据索引，冲突时以正文为准。初始设定属于作者设定，不等于任何角色已经知道它。私密想法只属于其本人，不能自动变成其他人物的认知。
+export const CSE_FIXED_CONTRACT = `【固定事实与隐私边界】
+正文 canonicalContent 是本楼事实的最高来源；结构化楼层记忆和 subjectRelevantEvidence 只是证据索引，可能稀疏或缺项，冲突时以正文为准。某个结构数组为空或没有某人物，不等于正文没有发生相关事件，也不等于该人物不知道。初始设定属于作者设定，不等于任何角色已经知道它。私密想法只属于其本人，不能自动变成其他人物的认知。
 
-只为输入中的 trackedSubjects 输出完整状态；knownPeople 仅用于 toward 对象绑定，不代表他们本楼也要输出状态。Core 是长期核心人格：首次可建立；以后如正文真正挑战 Core，请把挑战写进 coreChallenges，不要直接改写旧 Core。Adaptive 是可长期演化的应对方式或关系状态；涉及对象时写 toward。Situational 是短期状态；只有正文给出明确时间流逝时，才可按常识写 reasonableProgression，不能补造新事件。不要输出好感度、强度分数或数据库 ID。
+subjectRelevantEvidence 按 tracked subject 汇集角色相关条目，relationToSubject 只说明该人物在既有 FloorMemory 条目里的结构角色，不是“此人已知证据”。participant 的 mentioned/privateCognitionOnly 不表示本人在场；行动 target 不表示本人知情，completion 为 intended/attempted/interrupted/uncertain 时尤其不能写成已完成；信息发送者只证明其说出或发出了相应内容，不证明消息内容客观为真，只有正文或实际送达证据才能支持接收者知情；承诺或指令的 target 不自动表示收到、同意或执行，plan 也不能写成已执行；cseSignal 的 object 只表示相关对象。远程行为与通信要按正文中的行为主体、对象、消息来源、接收者、渠道和完成状态分别理解，待转告不等于已经转告。不得把正文明确写出的人物认知反写为不知；人物被提及、被计划涉及或从叙述中推断出相关性，也不等于本人在场、参与或知情。
+
+previousState 只放人物自己的前态；authorialOtherStateContext 是经过隐私过滤的作者态连续性参考，不代表相应人物知道其他人的状态。作者态推断与人物本人已知必须分开：observable 只用于正文中实际可观察的状态，private 只属于该人物的内心或明确知情，authorial 只作作者塑造参考。
+
+只可为输入中的 trackedSubjects 输出状态；trackedSubjects 是候选范围，不要求逐人补写。先在每个新增或更新的状态条目里用 reason 简短说明正文依据，再写 text 状态。若本楼没有足够新依据，可省略该人物；若只支持某些分类，可省略其他分类，让编译器沿用旧状态。不要用“本楼未出现”“状态无变化”之类空话替换旧状态，也不要因为缺少证据而反推“不知道”。knownPeople 仅用于 toward 对象绑定，不代表他们本楼也要输出状态。Core 是长期核心人格：首次可建立；以后如正文真正挑战 Core，请把挑战写进 coreChallenges，不要直接改写旧 Core。Adaptive 是可长期演化的应对方式或关系状态；涉及对象时写 toward。Situational 是短期状态；只有正文给出明确时间流逝时，才可按常识写 reasonableProgression，不能补造新事件。不要输出好感度、强度分数或数据库 ID。
 
 返回一个 JSON 对象。推荐结构：
-{"subjects":[{"subject":"人物名","core":[{"text":"核心特征","visibility":"authorial","reason":"依据"}],"adaptive":[{"text":"对某人的应对方式","toward":"对象名","visibility":"observable","reason":"依据"}],"situational":[{"text":"此刻状态","visibility":"private","reason":"依据","origin":"floor"}],"changeSummary":["变化摘要"],"coreChallenges":["对既有 Core 的挑战"]}],"noMaterialChange":false}
-字段可以少，条目也可以直接写成字符串；不确定的可选项宁可省略。只输出 JSON，不要解释。`;
+{"subjects":[{"subject":"人物名","core":[{"reason":"正文依据","text":"核心特征","visibility":"authorial"}],"adaptive":[{"reason":"正文依据","text":"对某人的应对方式","toward":"对象名","visibility":"observable"}],"situational":[{"reason":"正文依据","text":"此刻状态","visibility":"private","origin":"floor"}],"changeSummary":["变化摘要"],"coreChallenges":["对既有 Core 的挑战"]}],"noMaterialChange":false}
+不确定的可选人物或分类宁可省略；需要新增或更新的状态条目请使用带 reason 的对象。只输出 JSON，不要解释。`;
+
+export function buildCseSystemPrompt(guidance = '') {
+  const custom = typeof guidance === 'string' ? guidance : '';
+  const businessGuidance = custom.trim() ? custom : DEFAULT_CSE_GUIDANCE;
+  return `${businessGuidance}\n\n${CSE_FIXED_CONTRACT}`;
+}
+
+export const CSE_SYSTEM_PROMPT = buildCseSystemPrompt();
 
 const normalized = value => String(value ?? '').normalize('NFKC').trim().toLocaleLowerCase();
 const text = (value, maximum = 4000) => typeof value === 'string' ? value.trim().slice(0, maximum) : '';
@@ -46,7 +60,7 @@ function entityLabels(entity) {
 }
 
 async function roleEntity({ chatId, narrativeGeneration, role, name, aliases = [], now }) {
-  const id = await deterministicUuid(['v3-cse-role-entity', chatId, role]);
+  const id = await deterministicUuid(['v3-cse-role-entity', chatId, narrativeGeneration, role]);
   const displayName = text(name, 500) || (role === 'user' ? '用户' : '角色');
   const names = [...new Set([displayName, ...aliases.map(value => text(value, 500)).filter(Boolean)])];
   return validateEntityRecord({
@@ -72,11 +86,11 @@ export async function captureCseBaseline({ hostAdapter, chatId, narrativeGenerat
     ?? (matchingCharacter.length === 1 ? matchingCharacter[0] : null)
     ?? await roleEntity({ chatId, narrativeGeneration, role: 'char', name: characterName, aliases: [characterName, '{{char}}'], now });
   let catalog = { entries: [], warnings: [] };
-  try { catalog = await scanArchiveV2WorldInfo(ctx); } catch { /* Luker/旧宿主缺少世界书接口时安全降级为空 */ }
+  try { catalog = await scanWorldInfo(ctx); } catch { /* Luker/旧宿主缺少世界书接口时安全降级为空 */ }
   const worldInfoSources = [];
   for (const entry of catalog.entries ?? []) {
     if (entry.hostEnabled === false || entry.disabled === true) continue;
-    const content = sanitizeArchiveV2SourceContent(entry.content, sanitizerOptions);
+    const content = sanitizeMemoryContent(entry.content, sanitizerOptions);
     if (!content) continue;
     worldInfoSources.push({
       sourceKind: 'worldbook', sourceName: text(entry.source, 512), scope: text(entry.scope, 80) || 'unknown',
@@ -90,7 +104,7 @@ export async function captureCseBaseline({ hostAdapter, chatId, narrativeGenerat
     worldInfoSources,
   };
   const fingerprint = `sha256:${await sha256(JSON.stringify(payload))}`;
-  const id = await deterministicUuid(['v3-cse-baseline', chatId]);
+  const id = await deterministicUuid(['v3-cse-baseline', chatId, narrativeGeneration]);
   const baseline = validateBaselineRecord({ schemaVersion: 3, recordType: 'baseline', id, chatId, narrativeGeneration, ...payload, fingerprint, createdAt: now, updatedAt: now, recordStatus: 'active', supersedes: null }, { expectedChatId: chatId });
   return Object.freeze({ baseline, roleEntities: Object.freeze([user, characterEntity]), warnings: Object.freeze(catalog.warnings ?? []) });
 }
@@ -107,7 +121,9 @@ export async function createBaselineRoleEntities(baseline) {
 function memoryEntityIds(memory) {
   const result = new Set();
   const add = value => { if (typeof value === 'string') result.add(value); };
-  memory.participants?.forEach(item => add(item.entityId));
+  memory.participants?.forEach(item => { if (item.presence === 'present' || item.presence === 'remote') add(item.entityId); });
+  memory.actions?.forEach(item => { add(item.actorEntityId); item.targetEntityIds?.forEach(add); });
+  memory.informationTransfers?.forEach(item => { add(item.fromEntityId); item.toEntityIds?.forEach(add); });
   memory.privateCognition?.forEach(item => add(item.ownerEntityId));
   memory.commitments?.forEach(item => { add(item.speakerEntityId); item.targetEntityIds?.forEach(add); });
   memory.cseSignals?.forEach(item => { add(item.subjectEntityId); add(item.objectEntityId); });
@@ -147,6 +163,38 @@ function semanticMemory(memory, entities) {
   };
 }
 
+function subjectRelevantEvidence(memory, tracked, entities) {
+  const semantic = semanticMemory(memory, entities);
+  const related = (items, relationFor) => (items ?? []).flatMap((item, index) => {
+    const relationToSubject = relationFor(index);
+    return relationToSubject.length ? [{ ...item, relationToSubject }] : [];
+  });
+  return tracked.map(entity => {
+    const sections = {
+      participants: related(semantic.participants, index => memory.participants?.[index]?.entityId === entity.id ? ['participant'] : []),
+      actions: related(semantic.actions, index => {
+        const item = memory.actions?.[index];
+        return [item?.actorEntityId === entity.id ? 'actor' : null, item?.targetEntityIds?.includes(entity.id) ? 'target' : null].filter(Boolean);
+      }),
+      observations: related(semantic.observations, index => memory.observations?.[index]?.subjectEntityId === entity.id ? ['subject'] : []),
+      informationTransfers: related(semantic.informationTransfers, index => {
+        const item = memory.informationTransfers?.[index];
+        return [item?.fromEntityId === entity.id ? 'sender' : null, item?.toEntityIds?.includes(entity.id) ? 'recipient' : null].filter(Boolean);
+      }),
+      privateCognition: related(semantic.privateCognition, index => memory.privateCognition?.[index]?.ownerEntityId === entity.id ? ['owner'] : []),
+      commitments: related(semantic.commitments, index => {
+        const item = memory.commitments?.[index];
+        return [item?.speakerEntityId === entity.id ? 'speaker' : null, item?.targetEntityIds?.includes(entity.id) ? 'target' : null].filter(Boolean);
+      }),
+      cseSignals: related(semantic.cseSignals, index => {
+        const item = memory.cseSignals?.[index];
+        return [item?.subjectEntityId === entity.id ? 'subject' : null, item?.objectEntityId === entity.id ? 'object' : null].filter(Boolean);
+      }),
+    };
+    return { subject: entity.displayName, ...Object.fromEntries(Object.entries(sections).filter(([, items]) => items.length)) };
+  });
+}
+
 function semanticItems(items, entities) {
   const byId = new Map(entities.map(entity => [entity.id, entity.displayName]));
   return items.map(item => ({ text: item.text, visibility: item.visibility, reason: item.reason, origin: item.origin, ...(item.towardEntityId ? { toward: byId.get(item.towardEntityId) ?? null } : {}) }));
@@ -156,13 +204,23 @@ function previousForPrompt(currentState, tracked, entities) {
   const trackedIds = new Set(tracked.map(entity => entity.id));
   return (currentState?.subjects ?? []).filter(subject => trackedIds.has(subject.subjectEntityId)).map(subject => {
     const owner = entities.find(entity => entity.id === subject.subjectEntityId);
-    const visible = items => items.filter(item => item.visibility !== 'private' && item.visibility !== 'authorial');
-    return { subject: owner?.displayName ?? '未知人物', ownState: { core: semanticItems(subject.core, entities), adaptive: semanticItems(subject.adaptive, entities), situational: semanticItems(subject.situational, entities) }, publicStateOfOthers: (currentState.subjects ?? []).filter(other => other.subjectEntityId !== subject.subjectEntityId).map(other => ({ subject: entities.find(entity => entity.id === other.subjectEntityId)?.displayName ?? '未知人物', core: semanticItems(visible(other.core), entities), adaptive: semanticItems(visible(other.adaptive), entities), situational: semanticItems(visible(other.situational), entities) })) };
+    return { subject: owner?.displayName ?? '未知人物', ownState: { core: semanticItems(subject.core, entities), adaptive: semanticItems(subject.adaptive, entities), situational: semanticItems(subject.situational, entities) } };
   });
 }
 
-export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities }) {
+function authorialOtherStateContext(currentState, entities) {
+  const visible = items => items.filter(item => item.visibility !== 'private' && item.visibility !== 'authorial');
+  return (currentState?.subjects ?? []).map(subject => ({
+    subject: entities.find(entity => entity.id === subject.subjectEntityId)?.displayName ?? '未知人物',
+    core: semanticItems(visible(subject.core), entities),
+    adaptive: semanticItems(visible(subject.adaptive), entities),
+    situational: semanticItems(visible(subject.situational), entities),
+  }));
+}
+
+export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, worldInfoSources = null }) {
   const activeKnownEntities = entities.filter(entity => entity.recordStatus !== 'invalidated' && entity.status !== 'merged' && entity.status !== 'invalidated');
+  const requestWorldInfoSources = Array.isArray(worldInfoSources) ? worldInfoSources : baseline.worldInfoSources;
   return Object.freeze({
     request: Object.freeze({ task: 'understandCharacterStateAfterFloor', locale: 'zh-CN', payload: {
       canonicalContent: floor.content.canonicalContent,
@@ -171,8 +229,10 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       relevantBaseline: {
         userPersona: { name: baseline.userPersona.name, description: baseline.userPersona.description, visibility: 'authorial' },
         characterCard: { name: baseline.characterCard.name, description: baseline.characterCard.description, personality: baseline.characterCard.personality, scenario: baseline.characterCard.scenario, visibility: 'authorial' },
-        worldInfo: baseline.worldInfoSources.map(source => ({ source: source.sourceName, content: source.content, visibility: 'authorial', activated: source.activated })),
+        worldInfo: requestWorldInfoSources.map(source => ({ source: source.sourceName, content: source.content, visibility: 'authorial', activated: source.activated })),
       },
+      subjectRelevantEvidence: subjectRelevantEvidence(floorMemory, trackedSubjects, entities),
+      authorialOtherStateContext: authorialOtherStateContext(currentState, entities),
       trackedSubjects: trackedSubjects.map(entity => ({ name: entity.displayName, aliases: entityLabels(entity) })),
       knownPeople: activeKnownEntities.filter(entity => entity.entityType === 'person' || entity.specialRole !== 'none').map(entity => ({ name: entity.displayName, aliases: entityLabels(entity) })),
     } }),
@@ -184,13 +244,15 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
   });
 }
 
-function parsePacket(value) {
+function parsePacket(value, { finishReason } = {}) {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value;
   let raw = String(value ?? '').trim();
   const fence = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/iu); if (fence) raw = fence[1].trim();
   try { const parsed = JSON.parse(raw); return Array.isArray(parsed) ? { subjects: parsed } : parsed; } catch { /* limited wrapper recovery */ }
   const start = raw.indexOf('{'), end = raw.lastIndexOf('}');
   if (start >= 0 && end > start) { try { return JSON.parse(raw.slice(start, end + 1)); } catch { /* fail below */ } }
+  const repaired = repairJsonWithUniqueMissingObjectClose(raw, { finishReason, allowArray: true });
+  if (repaired) return Array.isArray(repaired) ? { subjects: repaired } : repaired;
   const error = new TypeError('CSE 返回不是可识别的 JSON。'); error.code = 'V3_CSE_FORMAT_INVALID'; throw error;
 }
 
@@ -226,8 +288,8 @@ async function compileItems({ raw, category, binding, knownBindings, deltaId, fl
   return output;
 }
 
-export async function compileCseResponse({ response, envelope, previousCurrentState, now, deltaId }) {
-  const packet = parsePacket(response);
+export async function compileCseResponse({ response, finishReason, envelope, previousCurrentState, now, deltaId }) {
+  const packet = parsePacket(response, { finishReason });
   const isolated = [];
   const previousById = new Map((previousCurrentState?.subjects ?? []).map(subject => [subject.subjectEntityId, subject]));
   const compiled = new Map();
@@ -255,19 +317,20 @@ export async function compileCseResponse({ response, envelope, previousCurrentSt
   for (const binding of envelope.scope.trackedBindings) if (!compiled.has(binding.entityId) && !previousById.has(binding.entityId)) compiled.set(binding.entityId, { subjectEntityId: binding.entityId, core: [], adaptive: [], situational: [], changeSummary: [], coreChallenges: [] });
   const subjectSnapshots = [...compiled.values()];
   const material = subjectSnapshots.some(subject => JSON.stringify(storedProjection(previousById.get(subject.subjectEntityId) ?? { core: [], adaptive: [], situational: [] })) !== JSON.stringify(storedProjection(subject)));
-  const noMaterialChange = field(packet, ['noMaterialChange', 'noChange', '无实质变化']) === true || !material;
+  const noMaterialChange = !material;
   const fingerprint = `sha256:${await sha256(JSON.stringify([envelope.scope.floorId, envelope.scope.floorMemoryId, subjectSnapshots, noMaterialChange]))}`;
   const delta = validateStateDeltaRecord({ schemaVersion: 3, recordType: 'stateDelta', id: deltaId, chatId: envelope.scope.chatId, narrativeGeneration: envelope.scope.narrativeGeneration, floorId: envelope.scope.floorId, floorMemoryId: envelope.scope.floorMemoryId, baselineId: envelope.scope.baselineId, previousCurrentStateId: previousCurrentState?.id ?? null, subjectSnapshots, noMaterialChange, fingerprint, source: { promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION }, createdAt: now, updatedAt: now, recordStatus: 'active', supersedes: null }, { expectedChatId: envelope.scope.chatId });
   return Object.freeze({ delta, isolated: Object.freeze(isolated) });
 }
 
-export async function runCseRequest({ generateUtilityTask, envelope, previousCurrentState, now, deltaId, signal }) {
+export async function runCseRequest({ generateUtilityTask, envelope, previousCurrentState, now, deltaId, promptGuidance = '', signal }) {
   let candidate = null;
   const transportBudget = { remaining: 3, used: 0 };
   try {
-    const result = await generateUtilityTask({ systemPrompt: CSE_SYSTEM_PROMPT, taskMessages: [{ role: 'user', content: JSON.stringify(envelope.request) }], maxTokens: 30000, temperature: 0, signal, includeCharacterCard: false, worldInfoSource: 'none', transportBudget, parseMode: 'semantic' });
+    const systemPrompt = buildCseSystemPrompt(promptGuidance);
+    const result = await generateUtilityTask({ systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(envelope.request) }], maxTokens: 30000, temperature: 0, signal, includeCharacterCard: false, worldInfoSource: 'none', transportBudget, parseMode: 'semantic' });
     candidate = result?.jsonData ?? result?.textData ?? result;
-    const compiled = await compileCseResponse({ response: candidate, envelope, previousCurrentState, now, deltaId });
+    const compiled = await compileCseResponse({ response: candidate, finishReason: result?.taskMetadata?.finishReason, envelope, previousCurrentState, now, deltaId });
     return Object.freeze({ ...compiled, metadata: sanitizeTaskMetadata(result?.taskMetadata), attempts: 1, transportAttempts: transportBudget.used || result?.taskMetadata?.transportAttempts || null, responseFingerprint: `sha256:${await sha256(JSON.stringify(candidate))}` });
   } catch (error) {
     if (signal?.aborted || error?.name === 'AbortError') throw error;

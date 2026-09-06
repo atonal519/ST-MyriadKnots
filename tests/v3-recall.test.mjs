@@ -6,6 +6,8 @@ import { createV3RecallRuntime, RECALL_PROMPT_SLOT, RECALL_RECEIPT_KEY, RECALL_R
 import { sha256 } from '../src/identity.js';
 import { assessMemoryCoverageFromHost } from '../src/v3/memory-coverage.js';
 import { scanAssistantCandidates } from '../src/v3/foundation-domain.js';
+import { createExtractorEnvelope, normalizeExtractorResponse } from '../src/v3/extractor.js';
+import { rankRecallDocuments, tokenizeRecallText } from '../src/v3/recall-ranking.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GEN = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -21,6 +23,7 @@ const fingerprintText = async value => `sha256:${await sha256(String(value ?? ''
 
 const receiptFingerprint = async receipt => fingerprintText(JSON.stringify([
   receipt.schemaVersion, receipt.pluginVersion, receipt.chatId, receipt.narrativeGeneration,
+  receipt.headCheckpointId, receipt.rootRevision,
   receipt.userMessageIndex, receipt.userContentFingerprint, receipt.queryFingerprint, receipt.generationType,
   receipt.selectedFloors, receipt.selectedStates, receipt.coverage, receipt.injectionText, receipt.stages, receipt.skipReasons, receipt.completionStatus, receipt.createdAt,
 ]));
@@ -135,6 +138,55 @@ function selectorSource({ complete = true, memories = null, currentState = null 
   };
 }
 
+test('生产 normalize → recall source/selector 保留行动主体对象、完成结果与私有/共享人物边界', async () => {
+  const canonicalContent = '沈砚打开柜子，把地图交给顾舟。他心里担心追兵，又写信告诉顾舟北门可走，并答应顾舟守到天亮。';
+  const floor = { id: FLOOR1, chatId: CHAT, narrativeGeneration: GEN, assistantSeq: 1, content: { canonicalContent } };
+  const envelope = await createExtractorEnvelope({ batchId: 'aaaaaaaa-1111-4111-8111-111111111111', chatId: CHAT, narrativeGeneration: GEN, floor, userIdentity: { displayName: '林岚', aliases: ['林岚', '你'] } });
+  const normalized = await normalizeExtractorResponse({
+    response: {
+      summary: '沈砚取出地图交给顾舟，并传递北门消息。',
+      people: [{ name: '沈砚', presence: 'present' }, { name: '顾舟', presence: 'present' }],
+      actions: [{ actor: '沈砚', target: '顾舟', action: '打开柜子', completion: 'completed', result: '取出地图' }],
+      privateThoughts: [{ holder: '沈砚', thought: '担心追兵' }],
+      informationTransfers: [{ from: '沈砚', recipient: '顾舟', claimText: '北门可走', channel: 'written' }],
+      commitments: [{ issuer: '沈砚', recipient: '顾舟', content: '守到天亮' }],
+    },
+    envelope, floor, existingEntities: [], now: NOW, expectedScope: envelope.scope,
+  });
+  const reachableValue = {
+    status: 'ready', rootRevision: 1,
+    root: { chatId: CHAT, narrativeGeneration: GEN, headCheckpointId: 'candidate-head' }, checkpoint: { id: 'candidate-head' }, baseline: null,
+    floors: [floor], floorMemories: [normalized.memory], entities: normalized.newEntities, stateDeltas: [], currentStates: [],
+  };
+  const projected = await readRecallSource({ store: { readReachable: async () => structuredClone(reachableValue) }, now: () => new Date(NOW) });
+  const dto = projected.floorMemories[0];
+  const entityByName = new Map(projected.entities.map(entity => [entity.displayName, entity.entityId]));
+  assert.equal(dto.actions[0].actorEntityId, entityByName.get('沈砚'));
+  assert.deepEqual(dto.actions[0].targetEntityIds, [entityByName.get('顾舟')]);
+  assert.equal(dto.actions[0].completion, 'completed');
+  assert.equal(dto.actions[0].result, '取出地图');
+  assert.equal(dto.privateCognition[0].ownerEntityId, entityByName.get('沈砚'));
+  assert.deepEqual(dto.informationTransfers[0].toEntityIds, [entityByName.get('顾舟')]);
+  assert.deepEqual(dto.commitments[0].targetEntityIds, [entityByName.get('顾舟')]);
+
+  const floorMemories = [dto, ...Array.from({ length: 7 }, (_, index) => recallMemory(index + 2))];
+  const source = {
+    ...projected,
+    coverage: { stableAiFloors: 8, stableThroughAssistantSeq: 8, rememberedAiFloors: 8, missingAssistantSeq: [], cseThroughAssistantSeq: 8, memoryComplete: true, cseCurrent: true },
+    floorMemories, currentState: [],
+  };
+  const selected = selectRecall({ source, queryContext: { text: '沈砚打开柜子、担心追兵后，顾舟拿到的地图和北门消息是什么？', latestUserText: '沈砚打开柜子、担心追兵后，顾舟拿到的地图和北门消息是什么？', messageCount: 1 } });
+  const items = selected.floors.flatMap(value => value.items);
+  const action = items.find(value => value.kind === 'action');
+  assert.equal(action.actorEntityId, entityByName.get('沈砚'));
+  assert.deepEqual(action.targetEntityIds, [entityByName.get('顾舟')]);
+  assert.equal(action.completion, 'completed');
+  assert.ok(items.some(value => value.category === 'private' && value.ownerEntityId === entityByName.get('沈砚')));
+  assert.ok(items.some(value => value.category === 'transfer' && value.toEntityIds.includes(entityByName.get('顾舟'))));
+  assert.match(selected.injectionText, /主体：沈砚；对象：顾舟.*已完成：打开柜子；记录结果：取出地图/u);
+  assert.match(selected.injectionText, /沈砚 → 顾舟.*北门可走/u);
+});
+
 test('query 按最近 assistant turn 划窗，包含其间 user/assistant；N=0 只退化到最后 user', () => {
   const coreChat = [
     { is_user: false, is_system: false, mes: '旧 AI' },
@@ -150,6 +202,170 @@ test('query 按最近 assistant turn 划窗，包含其间 user/assistant；N=0 
   assert.equal(zero.text, '用户:现在去钟楼');
   const continued = buildRecallQueryContext({ coreChat: [...coreChat, { is_user: false, is_system: false, mes: '正在续写的 AI 回复不得改变原 user 收据查询' }], assistantTurns: 1 });
   assert.equal(continued.text, one.text, 'continue/regenerate 的 user 楼之后 assistant 内容不得让查询漂移');
+});
+
+test('BM25 使用中文双字与英文数字词，并且不会把全库泛词的低 IDF 命中放大到满分', () => {
+  assert.deepEqual(tokenizeRecallText('铁皮盒 Alpha_7 2048'), ['铁皮', '皮盒', 'alpha_7', '2048']);
+  const ranked = rankRecallDocuments({
+    documents: Array.from({ length: 12 }, (_, index) => ({ id: index, text: `大家现在继续讨论普通事项 ${index}` })),
+    queries: [{ key: 'latestUser', text: '现在怎么办', weight: 1 }],
+  });
+  assert.ok(Math.max(...ranked.map(value => value.branchScores.latestUser)) < 0.2, '全库共有的“现在”只能保留低 IDF 分数，不能归一成 1');
+});
+
+test('selector 独立归一最新 user / 最近 AI / 上一 user，当前话题权重大于相反背景', () => {
+  const memories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
+  memories[0] = recallMemory(1, { events: [{ title: '铁皮盒', description: '铁皮饼干盒仍放在桌上', candidateStatus: 'accepted' }] });
+  memories[1] = recallMemory(2, { events: [{ title: '雨伞', description: '蓝雨伞仍靠在门边', candidateStatus: 'accepted' }] });
+  const result = selectRecall({
+    source: selectorSource({ memories }),
+    queryContext: { text: '旧话题雨伞；现在说铁皮饼干盒', latestUserText: '铁皮饼干盒还在桌上吗', recentAssistantText: '蓝雨伞靠在门边', previousUserText: '继续说蓝雨伞', messageCount: 3 },
+  });
+  const items = result.floors.flatMap(floor => floor.items);
+  const box = items.find(value => value.text.includes('铁皮饼干盒'));
+  const umbrella = items.find(value => value.text.includes('蓝雨伞'));
+  assert.ok(box && umbrella);
+  assert.ok(box.rankScore > umbrella.rankScore, '0.7 的本轮用户分路应压过合计 0.3 的背景分路');
+  assert.ok(box.rankBranches.latestUser > 0);
+  assert.ok(umbrella.rankBranches.recentAssistant > 0);
+});
+
+test('人物名只辅助该条事实的结构化主体/对象，人物提问可召回其承诺', () => {
+  const memories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
+  memories[0] = recallMemory(1, {
+    participants: [{ entityId: PERSON, presence: 'present' }],
+    commitments: [{ speakerEntityId: PERSON, targetEntityIds: [], kind: 'promise', content: '守到天亮', status: 'made', exactAnchorId: null }],
+    events: [{ title: '无关旧事', description: '陌生人在集市买了花', candidateStatus: 'accepted' }],
+  });
+  const result = selectRecall({ source: selectorSource({ memories }), queryContext: { text: '阿裴当时答应了什么？', latestUserText: '阿裴当时答应了什么？', messageCount: 1 } });
+  const items = result.floors.flatMap(floor => floor.items);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].kind, 'commitment');
+  assert.match(result.injectionText, /守到天亮/u);
+  assert.ok(items[0].rankEntityBranches.latestUser > 0);
+  assert.doesNotMatch(result.injectionText, /陌生人在集市买了花/u, '人物名不能给同楼或其他楼的无关事实资格');
+});
+
+test('通用第二人称别名不参与事实人物辅助，逗号后的普通提问不会误召回 user 旧承诺', () => {
+  const user = '88888888-7777-4777-8777-777777777777';
+  const memories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
+  memories[0] = recallMemory(1, {
+    participants: [{ entityId: user, presence: 'present' }],
+    commitments: [{ speakerEntityId: user, targetEntityIds: [], kind: 'promise', content: '守到天亮', status: 'made', exactAnchorId: null }],
+  });
+  const result = selectRecall({ source: selectorSource({ memories }), queryContext: { text: '你，接下来怎么办？', latestUserText: '你，接下来怎么办？', messageCount: 1 } });
+  assert.equal(result.floors.length, 0);
+  assert.doesNotMatch(result.injectionText, /守到天亮/u);
+});
+
+test('65 楼盒子回归：17 条 CSE 与第 50 楼盒子事件、背景地点按软配额共存', () => {
+  const memories = Array.from({ length: 65 }, (_, index) => recallMemory(index + 1, { summary: `第 ${index + 1} 楼反复谈论港口与天气` }));
+  memories[49] = recallMemory(50, {
+    summary: '裴晚生把铁皮饼干盒留在桌上，之后众人又谈到港口。',
+    events: [{ title: '留下铁皮盒', description: '铁皮饼干盒仍放在桌上，像剪不断的毛线团', candidateStatus: 'accepted' }],
+    locations: [{ name: '港口', change: 'present', entityId: null, participantEntityIds: [PERSON] }],
+  });
+  const currentState = [{
+    subjectEntityId: PERSON,
+    core: Array.from({ length: 17 }, (_, index) => ({ text: `人物稳定状态 ${index + 1}`, visibility: 'authorial', reason: 'CSE 档案', origin: 'baseline', towardEntityId: null, sourceAssistantSeq: 49 })),
+    adaptive: [], situational: [],
+  }];
+  const source = selectorSource({ memories, currentState });
+  source.coverage = { stableAiFloors: 65, stableThroughAssistantSeq: 65, rememberedAiFloors: 65, missingAssistantSeq: [], cseThroughAssistantSeq: 65, memoryComplete: true, cseCurrent: true };
+  const result = selectRecall({
+    source,
+    queryContext: { text: '背景一直谈港口与天气；现在问桌上的铁皮饼干盒', latestUserText: '铁皮饼干盒还放在桌上吗', recentAssistantText: '港口天气反复变化，港口仍有风', previousUserText: '先前一直聊港口', messageCount: 3 },
+    contextSize: 12000,
+  });
+  assert.equal(result.states.length, 16, '两条相关历史占位后，其余容量应借回给 CSE');
+  assert.equal(result.floors.flatMap(floor => floor.items).length, 2);
+  assert.match(result.injectionText, /AI #50.*铁皮饼干盒仍放在桌上/u);
+  assert.match(result.injectionText, /地点[:：]港口/u, '背景分路明确提及的地点仍可作为相关事实保留');
+  assert.ok(result.injectionText.length <= result.limits.maxCharacters);
+});
+
+test('summary 只能辅助已命中事实，不会让同楼无关事实获得分数或注入资格', () => {
+  const memories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
+  memories[1] = recallMemory(2, {
+    summary: '铁皮饼干盒留在桌上，窗外同时下起大雨。',
+    events: [{ title: '铁皮盒', description: '铁皮饼干盒留在桌上', candidateStatus: 'accepted' }],
+    observations: [{ subjectEntityId: null, kind: 'weather', description: '窗外下起大雨' }],
+  });
+  const result = selectRecall({ source: selectorSource({ memories }), queryContext: { text: '铁皮饼干盒在哪里', latestUserText: '铁皮饼干盒在哪里', messageCount: 1 } });
+  const items = result.floors.flatMap(floor => floor.items);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].kind, 'event');
+  assert.doesNotMatch(result.injectionText, /窗外下起大雨/u);
+});
+
+test('软配额先保留两组，再把未用项数借给有候选的一组', () => {
+  const memories = Array.from({ length: 10 }, (_, index) => recallMemory(index + 1, {
+    events: [{ title: `钥匙事件 ${index + 1}`, description: `第 ${index + 1} 把钥匙开启石门`, candidateStatus: 'accepted' }],
+  }));
+  const currentState = [{
+    subjectEntityId: PERSON,
+    core: Array.from({ length: 16 }, (_, index) => ({ text: `钥匙相关状态 ${index + 1}`, visibility: 'authorial', reason: 'CSE', origin: 'baseline', towardEntityId: null, sourceAssistantSeq: 1 })),
+    adaptive: [], situational: [],
+  }];
+  const source = selectorSource({ memories, currentState });
+  source.coverage = { ...source.coverage, stableAiFloors: 10, stableThroughAssistantSeq: 10, rememberedAiFloors: 10, cseThroughAssistantSeq: 10 };
+  const both = selectRecall({ source, queryContext: { text: '钥匙石门', latestUserText: '钥匙石门', messageCount: 1 }, contextSize: 12000 });
+  assert.ok(both.states.length >= 12);
+  assert.ok(both.floors.flatMap(floor => floor.items).length >= 1, 'CSE 很多时仍应保留历史软配额');
+  assert.equal(both.states.length + both.floors.flatMap(floor => floor.items).length, 18);
+
+  const stateOnly = selectRecall({ source: selectorSource({ memories: Array.from({ length: 8 }, (_, index) => recallMemory(index + 1)), currentState }), queryContext: { text: '钥匙状态', latestUserText: '钥匙状态', messageCount: 1 }, contextSize: 12000 });
+  assert.equal(stateOnly.floors.length, 0);
+  assert.equal(stateOnly.states.length, 16, '没有历史匹配时不得凑旧事，空出的历史额度可由状态使用');
+});
+
+test('字符软份额可双向互借，且始终以最终格式后的总字符上限为准', () => {
+  const longState = `长状态${'仍需保留'.repeat(90)}`;
+  const stateOnly = selectRecall({
+    source: selectorSource({
+      memories: Array.from({ length: 8 }, (_, index) => recallMemory(index + 1)),
+      currentState: [{ subjectEntityId: PERSON, core: [{ text: longState, visibility: 'authorial', reason: 'CSE', origin: 'baseline', towardEntityId: null, sourceAssistantSeq: 1 }], adaptive: [], situational: [] }],
+    }),
+    queryContext: { text: '长状态', latestUserText: '长状态', messageCount: 1 }, contextSize: 1000,
+  });
+  assert.equal(stateOnly.states.length, 1);
+  assert.ok(stateOnly.injectionText.length > stateOnly.limits.stateCharacterTarget, '状态应能借用未使用的历史字符份额');
+  assert.ok(stateOnly.injectionText.length <= stateOnly.limits.maxCharacters);
+
+  const longHistory = `长旧事${'仍需召回'.repeat(90)}`;
+  const memories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
+  memories[0] = recallMemory(1, { events: [{ title: '长旧事', description: longHistory, candidateStatus: 'accepted' }] });
+  const historyOnly = selectRecall({ source: selectorSource({ memories }), queryContext: { text: '长旧事', latestUserText: '长旧事', messageCount: 1 }, contextSize: 1000 });
+  assert.equal(historyOnly.floors.flatMap(floor => floor.items).length, 1);
+  assert.ok(historyOnly.injectionText.length > historyOnly.limits.historyCharacterTarget, '历史应能借用未使用的状态字符份额');
+  assert.ok(historyOnly.injectionText.length <= historyOnly.limits.maxCharacters);
+});
+
+test('未最终入选的同文状态不能提前删除旧事；同文不同主体、可见性或状态均保留', () => {
+  const other = '99999999-7777-4777-8777-777777777777';
+  const user = '88888888-7777-4777-8777-777777777777';
+  const memories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
+  memories[0] = recallMemory(1, { privateCognition: [{ ownerEntityId: PERSON, kind: 'thought', content: '铁皮盒' }] });
+  memories[1] = recallMemory(2, { privateCognition: [{ ownerEntityId: other, kind: 'thought', content: '共同秘密' }] });
+  memories[2] = recallMemory(3, { observations: [{ subjectEntityId: PERSON, kind: 'seen', description: '共同秘密' }] });
+  memories[3] = recallMemory(4, { commitments: [
+    { speakerEntityId: PERSON, targetEntityIds: [user], kind: 'promise', content: '守住秘密', status: 'made', exactAnchorId: null },
+    { speakerEntityId: PERSON, targetEntityIds: [user], kind: 'promise', content: '守住秘密', status: 'refused', exactAnchorId: null },
+  ] });
+  const currentState = [{ subjectEntityId: PERSON, core: [
+    { text: '铁皮盒和红钥匙完整线索', visibility: 'private', reason: '高相关状态', origin: 'baseline', towardEntityId: null, sourceAssistantSeq: 1 },
+    { text: '铁皮盒', visibility: 'private', reason: '较短状态', origin: 'baseline', towardEntityId: null, sourceAssistantSeq: 1 },
+    { text: '共同秘密', visibility: 'private', reason: '人物边界', origin: 'baseline', towardEntityId: null, sourceAssistantSeq: 1 },
+  ], adaptive: [], situational: [] }];
+  const limited = selectRecall({ source: selectorSource({ memories, currentState }), queryContext: { text: '铁皮盒和红钥匙', latestUserText: '铁皮盒和红钥匙', messageCount: 1 }, maxItems: 2, contextSize: 12000 });
+  assert.equal(limited.states.length, 1);
+  assert.match(limited.injectionText, /AI #1.*铁皮盒/u, '未入选的短状态不得压掉同文旧事');
+
+  const boundaries = selectRecall({ source: selectorSource({ memories, currentState }), queryContext: { text: '共同秘密以及守住秘密', latestUserText: '共同秘密以及守住秘密', messageCount: 1 }, contextSize: 12000 });
+  const items = boundaries.floors.flatMap(floor => floor.items);
+  assert.ok(items.some(value => value.category === 'private' && value.ownerEntityId === other), '同文但主体不同应保留');
+  assert.ok(items.some(value => value.kind === 'observation' && value.category === 'objective'), '同文但可见性不同应保留');
+  assert.equal(items.filter(value => value.kind === 'commitment' && value.text.includes('守住秘密')).length, 2, '同文但状态不同应保留');
 });
 
 test('selector 命中人名/别名、中文地点、承诺、open loop 与 exact quote，排除近 3 楼后按故事顺序注入', () => {
@@ -197,7 +413,7 @@ test('selector exactAnchor 继承最严格 typed fact 边界；孤立原句不�
   });
   const result = selectRecall({
     source: selectorSource({ memories }),
-    queryContext: { text: '暗门后有人，月落前离开；暗号是雨落三声。不要相信镜子。无边界秘密是什么？', latestUserText: '回忆这些原句', messageCount: 1 },
+    queryContext: { text: '暗门后有人，月落前离开；暗号是雨落三声。不要相信镜子。无边界秘密是什么？', latestUserText: '暗门后有人，月落前离开；暗号是雨落三声。不要相信镜子。无边界秘密是什么？', messageCount: 1 },
   });
   const bySeq = new Map(result.floors.map(floor => [floor.assistantSeq, floor]));
   assert.deepEqual(bySeq.get(1).items.map(value => value.category), ['private'], '内心同文原句只属于 owner-private');
@@ -230,10 +446,10 @@ test('selector 无可靠命中不凑数；楼数、总项和字符上限均生�
 
 test('selector 去掉与当前常驻状态或其他候选重复的旧楼内容，不浪费召回额度', () => {
   const memories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
-  memories[1] = recallMemory(2, { summary: '旧楼人物概览', participants: [{ entityId: PERSON, presence: 'present' }], privateCognition: [{ ownerEntityId: PERSON, kind: 'thought', content: '裴晚生冷静克制' }] });
-  memories[2] = recallMemory(3, { summary: '另一楼人物概览', participants: [{ entityId: PERSON, presence: 'present' }], privateCognition: [{ ownerEntityId: PERSON, kind: 'thought', content: '裴晚生冷静克制' }] });
-  const currentState = [{ subjectEntityId: PERSON, core: [{ text: '裴晚生冷静克制', visibility: 'authorial', reason: '人设', origin: 'baseline', towardEntityId: null, sourceAssistantSeq: 1 }], adaptive: [], situational: [] }];
-  const result = selectRecall({ source: selectorSource({ memories, currentState }), queryContext: { text: '阿裴现在如何', latestUserText: '阿裴现在如何', messageCount: 1 } });
+  memories[1] = recallMemory(2, { summary: '旧楼人物概览', participants: [{ entityId: PERSON, presence: 'present' }], privateCognition: [{ ownerEntityId: PERSON, kind: 'thought', content: '冷静克制' }] });
+  memories[2] = recallMemory(3, { summary: '另一楼人物概览', participants: [{ entityId: PERSON, presence: 'present' }], privateCognition: [{ ownerEntityId: PERSON, kind: 'thought', content: '冷静克制' }] });
+  const currentState = [{ subjectEntityId: PERSON, core: [{ text: '冷静克制', visibility: 'private', reason: '人设', origin: 'baseline', towardEntityId: null, sourceAssistantSeq: 1 }], adaptive: [], situational: [] }];
+  const result = selectRecall({ source: selectorSource({ memories, currentState }), queryContext: { text: '阿裴是否仍然冷静克制', latestUserText: '阿裴是否仍然冷静克制', messageCount: 1 } });
   assert.deepEqual(result.floors, []);
   assert.equal(result.states.length, 1);
   assert.equal(result.stages.dropPersistent, 2);
@@ -514,11 +730,11 @@ test('runtime normal 先完成一次 prompt commit，再最多保存一次 compl
   assert.match(injection[1], /<qqj_recalled_context>/);
   assert.equal(harness.saves, 1, '正常路径只在 prompt commit 后保存一次完成态回执');
   const receipt = harness.userMessage.extra?.[RECALL_RECEIPT_KEY];
-  assert.equal(RECALL_RECEIPT_SCHEMA_VERSION, 5, '双阶段 pending 协议退出后旧收据必须失效');
-  assert.equal(receipt.schemaVersion, 5);
+  assert.equal(RECALL_RECEIPT_SCHEMA_VERSION, 6, '完全重构后旧 head 收据必须失效');
+  assert.equal(receipt.schemaVersion, 6);
   assert.equal(receipt.chatId, CHAT);
-  assert.equal(Object.hasOwn(receipt, 'headCheckpointId'), false);
-  assert.equal(Object.hasOwn(receipt, 'rootRevision'), false);
+  assert.equal(receipt.headCheckpointId, harness.source.headCheckpointId);
+  assert.equal(receipt.rootRevision, harness.source.rootRevision);
   assert.equal(receipt.userMessageIndex, 1);
   assert.match(receipt.userContentFingerprint, /^sha256:/);
   assert.match(receipt.queryFingerprint, /^sha256:/);
@@ -602,7 +818,7 @@ test('runtime 将单次 reachable 来源读取带入可观察耗时诊断', asyn
   assert.deepEqual(result.lastRecall.timings.sourceReadAttempts, source.sourceReadAttempts);
 });
 
-test('runtime 刷新后从最新 user 楼恢复合法 schema5 completed 回执，仅作历史展示且不碰 prompt/save/source', async () => {
+test('runtime 刷新后从最新 user 楼恢复合法 schema6 completed 回执，仅作历史展示且不碰 prompt/save/source', async () => {
   let sourceCalls = 0, rootCalls = 0, currentHead = 'head', currentRevision = 1;
   const harness = createRuntimeHarness({
     sourceReader: async () => { sourceCalls += 1; return runtimeFixture(); },
@@ -720,7 +936,7 @@ test('runtime restore 在指纹 await 期间原始回执变形时只使用同步
   let armed = false, releaseDigest, enteredDigest;
   const entered = new Promise(resolve => { enteredDigest = resolve; });
   const fingerprint = async value => {
-    if (armed && String(value).startsWith('[5,"0.2.27"')) {
+    if (armed && String(value).startsWith('[6,"0.2.27"')) {
       enteredDigest();
       await new Promise(resolve => { releaseDigest = resolve; });
     }
@@ -746,7 +962,7 @@ test('runtime restore 验签期间回执 key 换代时旧恢复安静退出，�
   let armed = false, releaseDigest, enteredDigest;
   const entered = new Promise(resolve => { enteredDigest = resolve; });
   const fingerprint = async value => {
-    if (armed && String(value).startsWith('[5,"0.2.27"')) {
+    if (armed && String(value).startsWith('[6,"0.2.27"')) {
       enteredDigest();
       await new Promise(resolve => { releaseDigest = resolve; });
     }
@@ -778,7 +994,7 @@ test('runtime reuse 在指纹 await 期间原地篡改回执时绝不注入未�
   let armed = false, releaseDigest, enteredDigest;
   const entered = new Promise(resolve => { enteredDigest = resolve; });
   const fingerprint = async value => {
-    if (armed && String(value).startsWith('[5,"0.2.27"')) {
+    if (armed && String(value).startsWith('[6,"0.2.27"')) {
       enteredDigest();
       await new Promise(resolve => { releaseDigest = resolve; });
     }
@@ -852,7 +1068,7 @@ test('runtime regenerate/swipe/continue 复用合法收据，不重新调用 sel
   assert.equal(harness.prompts.filter(call => call[1]).length, 4);
 });
 
-test('runtime 内容或已选引用改变时拒绝旧收据，但 head/revision 正常推进仍复用', async () => {
+test('runtime 内容、来源 head/revision 或已选引用改变时都拒绝旧收据', async () => {
   let selectorCalls = 0;
   let currentSource = runtimeFixture();
   const harness = createRuntimeHarness({
@@ -871,10 +1087,10 @@ test('runtime 内容或已选引用改变时拒绝旧收据，但 head/revision 
   assert.equal(selectorCalls, 3, '用户内容变化必须重算');
   currentSource = { ...currentSource, headCheckpointId: 'changed-head', rootRevision: 2 };
   await harness.runtime.intercept(harness.chat, 12000, null, 'continue');
-  assert.equal(selectorCalls, 3, 'head/revision 正常推进但叙事和已选引用仍有效时必须复用');
+  assert.equal(selectorCalls, 4, '新 head 必须拒绝旧图生成的 ready/empty 收据');
   currentSource = { ...currentSource, floorMemories: currentSource.floorMemories.filter(value => value.assistantSeq !== 2) };
   await harness.runtime.intercept(harness.chat, 12000, null, 'swipe');
-  assert.equal(selectorCalls, 4, '选中引用不再存在时必须重算');
+  assert.equal(selectorCalls, 5, '选中引用不再存在时必须重算');
 });
 
 test('runtime disabled/quiet/impersonate/无 user 均安全清槽跳过，且从不碰 source 或 abort', async () => {

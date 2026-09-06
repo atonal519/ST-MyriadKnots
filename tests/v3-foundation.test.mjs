@@ -6,8 +6,8 @@ import { createFoundationStore, reverseRefCandidateKeys } from '../src/v3/founda
 import { buildFoundationIndexes, createFoundationRuntime, validatePreparedFoundation } from '../src/v3/foundation-runtime.js';
 import { deterministicUuid, reverseRefShardPrefix, scanAssistantCandidates } from '../src/v3/foundation-domain.js';
 import { sha256 } from '../src/identity.js';
-import { createArchiveV2Session } from '../src/archive-v2-session.js';
-import { createArchiveV2Lifecycle } from '../src/archive-v2-lifecycle.js';
+import { createChatSession } from '../src/chat-session.js';
+import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OTHER_CHAT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -40,6 +40,7 @@ function backendHarness() {
   let conflictRoot = false;
   let failPutPrefix = null;
   let beforePut = null;
+  let beforeGet = null;
   const runPhases = [];
   const envelope = (data, revision, createdAt) => ({
     schemaVersion: 1,
@@ -57,9 +58,11 @@ function backendHarness() {
     setConflictRoot(value) { conflictRoot = value; },
     setFailPutPrefix(value) { failPutPrefix = value; },
     setBeforePut(value) { beforePut = value; },
+    setBeforeGet(value) { beforeGet = value; },
     client: {
       async get(collection, key) {
         calls.push(['get', collection, key]);
+        if (beforeGet) await beforeGet({ collection, key });
         const record = records.get(`${collection}/${key}`);
         if (!record) throw error(404);
         return envelope(record.data, record.revision, record.createdAt);
@@ -1112,6 +1115,54 @@ test('root CAS 前重读并校验真实落盘图，写完后被篡改的 index �
   assert.equal(h.backend.records.has(`chat-${CHAT}/v3-root`), false);
 });
 
+test('root 校验发现缺失记录后仍等待其他在途读取收拢，且不发 CAS', async () => {
+  const h = harness();
+  await h.runtime.start();
+  const rootKey = `chat-${CHAT}/v3-root`;
+  const rootEnvelope = structuredClone(h.backend.records.get(rootKey));
+  const checkpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${rootEnvelope.data.headCheckpointId}`).data;
+  const missingKey = `v3-floor-${checkpoint.producedRefs.floors[0]}`;
+  h.backend.records.delete(`chat-${CHAT}/${missingKey}`);
+  let checkpointRead = false;
+  let activeReads = 0;
+  let startedReads = 0;
+  let completedReads = 0;
+  let releaseReads;
+  let inflightResolve;
+  const readGate = new Promise(resolve => { releaseReads = resolve; });
+  const inflight = new Promise(resolve => { inflightResolve = resolve; });
+  h.backend.setBeforeGet(async ({ key }) => {
+    if (!checkpointRead) {
+      assert.match(key, /^v3-checkpoint-/);
+      checkpointRead = true;
+      return;
+    }
+    if (key === missingKey) return;
+    startedReads += 1;
+    activeReads += 1;
+    inflightResolve();
+    await readGate;
+    activeReads -= 1;
+    completedReads += 1;
+  });
+  const store = createFoundationStore({
+    client: h.backend.client,
+    contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }),
+  });
+  let settled = false;
+  const pending = store.commitRoot(rootEnvelope.data, rootEnvelope.revision).finally(() => { settled = true; });
+  await inflight;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, '缺失结果不得让提交在其他读取仍在途时提前结束');
+  assert.ok(activeReads > 0);
+  assert.equal(h.backend.calls.filter(call => call[0] === 'put' && call[2] === 'v3-root').length, 1, '只存在初始化 root PUT');
+  releaseReads();
+  await assert.rejects(pending, error => error?.code === 'V3_STORE_FLOOR_MISSING');
+  assert.equal(activeReads, 0);
+  assert.equal(completedReads, startedReads);
+  assert.deepEqual(h.backend.records.get(rootKey), rootEnvelope, '失败校验不得改变 root revision 或内容');
+});
+
 test('runtime 前置校验后、真实 store commitRoot 前篡改 backing index，最终封口仍拒绝发布', async () => {
   const h = harness();
   const baseStore = createFoundationStore({
@@ -1237,7 +1288,7 @@ test('legacy root manifest 缺项只进入 needsReseal，重封口后恢复精�
   assert.deepEqual(new Set(upgraded.root.indexManifest.floor), new Set(expectedFloorKeys));
 });
 
-test('真实 V2 session + lifecycle + V3 runtime 在 CHAT_CHANGED UUID 时序下只建立一份身份', async () => {
+test('真实聊天 session + lifecycle + V3 runtime 在 CHAT_CHANGED UUID 时序下只建立一份身份', async () => {
   const context = hostContext([assistant('A'), assistant('B')]);
   delete context.chatMetadata.qianqianjie;
   const handlers = new Map();
@@ -1246,7 +1297,7 @@ test('真实 V2 session + lifecycle + V3 runtime 在 CHAT_CHANGED UUID 时序下
   context.eventSource = { on(name, handler) { const list = handlers.get(name) ?? []; list.push(handler); handlers.set(name, list); } };
   const backend = backendHarness();
   let ensureCalls = 0;
-  const session = createArchiveV2Session({
+  const session = createChatSession({
     contextProvider: () => context,
     ensureChatId: async raw => {
       ensureCalls += 1;
@@ -1255,7 +1306,7 @@ test('真实 V2 session + lifecycle + V3 runtime 在 CHAT_CHANGED UUID 时序下
       return CHAT;
     },
   });
-  const lifecycle = createArchiveV2Lifecycle({ session, getUi: () => null, logger: { warn() {} } });
+  const lifecycle = createPluginLifecycle({ session, getUi: () => null, logger: { warn() {} } });
   const store = createFoundationStore({ client: backend.client, contextProvider: () => session.identity() });
   const runtime = createFoundationRuntime({
     hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => context } } }),

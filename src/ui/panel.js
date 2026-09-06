@@ -1,42 +1,31 @@
 import html from './panel.html?raw';
 import css from './panel.css?inline';
 import { createPanelGeometryController } from './layout.js';
-import { applyArchiveV2Appearance } from './archive-v2-appearance.js';
+import { applyAppearance } from './appearance.js';
 import { createSettingsDrawer, createSettingsDrawerState } from './settings-drawer.js';
 import { createApiSettings } from './settings/api-settings.js';
 import { createPromptsSettings } from './settings/prompts-settings.js';
 import { createAppearanceSettings } from './settings/appearance-settings.js';
-import { createMemorySettings } from './settings/memory-settings.js';
 import { applyPluginEnabledImmediately } from '../settings.js';
 
 const shellCss = ':host{position:fixed;inset:0;z-index:4000;width:100dvw;height:100dvh;pointer-events:none;background:transparent;text-shadow:none!important;isolation:isolate}:host([hidden]){display:none!important}.panel{position:fixed;top:80px;right:20px;width:360px;height:min(600px,85dvh);max-width:calc(100dvw - 40px);max-height:85dvh;display:grid;grid-template-rows:auto auto minmax(0,1fr) 24px;pointer-events:auto}.body{min-height:0;overflow-y:auto;scrollbar-gutter:stable}.tabs{overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(max-width:640px){.panel{top:calc(20px + env(safe-area-inset-top,0px));left:50%;right:auto;transform:translateX(-50%);width:calc(100dvw - 20px);max-width:calc(100dvw - 20px);height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));max-height:none;grid-template-rows:auto auto minmax(0,1fr)}.panel-resize-handle{display:none}.tabs{scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}}';
 
-const PLACEHOLDERS = Object.freeze({
-  next: ['下一步', '行动建议与人工保留项将在后续版本接入。'],
-});
-
 export function createPanel({
   settings,
   apiTools,
-  archiveV2InitializationView,
-  archiveV2BondView,
   v3FoundationView,
+  peopleProfilesView,
   sourcePermissionView,
   onPluginEnabledChange,
-  onAutomationSettingsChange,
-  onOpenPeople,
-  onOpenBonds,
+  onStoryClockChange,
   documentRef = globalThis.document,
 } = {}) {
   if (!documentRef?.createElement) throw new TypeError('panel documentRef 无效');
-  if (!archiveV2InitializationView || ['mount', 'activate', 'deactivate'].some(name => typeof archiveV2InitializationView[name] !== 'function')) {
-    throw new TypeError('archiveV2InitializationView 无效');
-  }
-  if (!archiveV2BondView || ['mount', 'activate', 'deactivate'].some(name => typeof archiveV2BondView[name] !== 'function')) {
-    throw new TypeError('archiveV2BondView 无效');
-  }
   if (!v3FoundationView || ['mount', 'activate', 'deactivate'].some(name => typeof v3FoundationView[name] !== 'function')) {
     throw new TypeError('v3FoundationView 无效');
+  }
+  if (!peopleProfilesView || ['mount', 'activate', 'deactivate'].some(name => typeof peopleProfilesView[name] !== 'function')) {
+    throw new TypeError('peopleProfilesView 无效');
   }
   const host = documentRef.createElement('div');
   host.id = 'qqj-panel-host';
@@ -45,6 +34,7 @@ export function createPanel({
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = `<style>${shellCss}\n${css}</style>${html}`;
   const panel = root.querySelector('.panel');
+  const body = root.querySelector('.body');
   const view = root.querySelector('.view');
   const label = root.querySelector('.status-label');
   const tabs = [...root.querySelectorAll('.tab')];
@@ -54,16 +44,15 @@ export function createPanel({
     resizeHandle: root.querySelector('.panel-resize-handle'),
     viewport: documentRef.defaultView ?? globalThis,
   });
-  applyArchiveV2Appearance({ host, root, settings, documentRef });
-  let activeTab = 'people';
+  applyAppearance({ host, root, settings, documentRef });
+  let activeTab = 'profiles';
   let screen = 'content';
-  let mounted = false;
-  let bondsMounted = false;
-  let foundationMounted = false;
+  let mountedContentView = null;
   let enabled = settings?.isEnabled?.() !== false;
   let trigger = null;
   let activationEpoch = 0;
   const settingsDrawerState = createSettingsDrawerState();
+  const scrollPositions = new Map();
 
   const element = (tag, className = '', text = '') => {
     const node = documentRef.createElement(tag);
@@ -71,115 +60,49 @@ export function createPanel({
     if (text !== '') node.textContent = text;
     return node;
   };
-  const button = (text, className, action) => {
-    const node = element('button', className, text);
-    node.type = 'button';
-    node.addEventListener('click', action);
-    return node;
-  };
-  const unmountArchive = () => {
-    archiveV2InitializationView.deactivate();
-    archiveV2BondView.deactivate();
+  const unmountContent = () => {
     v3FoundationView.deactivate();
+    peopleProfilesView.deactivate();
     view.replaceChildren();
-    mounted = false;
-    bondsMounted = false;
-    foundationMounted = false;
+    mountedContentView = null;
   };
+  const scrollKey = () => screen === 'settings' ? 'settings' : activeTab;
+  const rememberScroll = () => { if (body) scrollPositions.set(scrollKey(), body.scrollTop || 0); };
+  const restoreScroll = key => { if (body) body.scrollTop = scrollPositions.get(key) || 0; };
   const showStatus = text => {
     activationEpoch += 1;
-    unmountArchive();
+    unmountContent();
     const box = element('section', 'empty-state');
     box.append(element('h2', '', '千千结'), element('p', '', text));
     view.append(box);
   };
-  const renderPlaceholder = tab => {
-    unmountArchive();
-    const [title, copy] = PLACEHOLDERS[tab] ?? ['千千结', '该模块尚未实现。'];
-    const box = element('section', 'empty-state qqj-v2-placeholder');
-    box.append(element('h2', '', title), element('p', '', copy));
-    view.append(box);
-    label.textContent = `${title} · 延期项`;
-  };
-
-  async function activatePeople() {
-    if (host.hidden || activeTab !== 'people' || screen !== 'content') return { status: 'closed' };
-    if (!enabled) { showStatus('千千结当前已关闭。设置仍可打开，旧档案不会被修改。'); return { status: 'disabled' }; }
-    const mine = ++activationEpoch;
-    label.textContent = '正在读取 V2 档案';
-    if (!mounted) {
-      archiveV2BondView.deactivate();
-      v3FoundationView.deactivate();
-      view.replaceChildren();
-      archiveV2InitializationView.mount(view);
-      mounted = true;
-      bondsMounted = false;
-      foundationMounted = false;
-    }
-    const result = await archiveV2InitializationView.activate();
-    if (mine === activationEpoch && !host.hidden) label.textContent = result?.status === 'ready' ? '千人档案' : 'V2 历史初始化';
-    return result;
-  }
-
-  async function openPeople() {
-    if (!enabled) return activatePeople();
-    const prepared = typeof onOpenPeople === 'function' ? await onOpenPeople() : { status: 'ready' };
-    if (prepared?.status !== 'ready') {
-      showStatus(prepared?.status === 'disabled' ? '千千结当前已关闭。' : '当前聊天身份已经变化，请重试。');
-      return prepared;
-    }
-    return activatePeople();
-  }
-
-  async function activateBonds() {
-    if (host.hidden || activeTab !== 'bonds' || screen !== 'content') return { status: 'closed' };
-    if (!enabled) { showStatus('千千结当前已关闭。设置仍可打开，旧档案不会被修改。'); return { status: 'disabled' }; }
-    const mine = ++activationEpoch;
-    label.textContent = '正在读取双丝网';
-    if (!bondsMounted) {
-      archiveV2InitializationView.deactivate();
-      v3FoundationView.deactivate();
-      view.replaceChildren();
-      archiveV2BondView.mount(view);
-      bondsMounted = true;
-      mounted = false;
-      foundationMounted = false;
-    }
-    const result = await archiveV2BondView.activate();
-    if (mine === activationEpoch && !host.hidden) label.textContent = '双丝网';
-    return result;
-  }
-
-  async function openBonds() {
-    if (!enabled) return activateBonds();
-    const prepared = typeof onOpenBonds === 'function' ? await onOpenBonds() : { status: 'ready' };
-    if (prepared?.status !== 'ready') {
-      showStatus(prepared?.status === 'disabled' ? '千千结当前已关闭。' : '当前聊天身份已经变化，请重试。');
-      return prepared;
-    }
-    return activateBonds();
-  }
-
   async function activateFoundation() {
-    if (host.hidden || activeTab !== 'events' || screen !== 'content') return { status: 'closed' };
-    if (!enabled) { showStatus('千千结当前已关闭。V3 地基不会读取后端或写入数据。'); return { status: 'disabled' }; }
+    if (host.hidden || screen !== 'content') return { status: 'closed' };
+    if (!enabled) { showStatus('千千结当前已关闭。记忆不会读取后端或写入数据。'); return { status: 'disabled' }; }
     const mine = ++activationEpoch;
-    label.textContent = 'V3 地基诊断';
-    if (!foundationMounted) {
-      archiveV2InitializationView.deactivate();
-      archiveV2BondView.deactivate();
-      view.replaceChildren();
-      v3FoundationView.mount(view);
-      foundationMounted = true;
-      mounted = false;
-      bondsMounted = false;
+    const pageName = activeTab === 'profiles' ? '千人' : activeTab === 'people' ? '双丝网' : '千结';
+    label.textContent = `正在读取${pageName}`;
+    if (activeTab === 'profiles') {
+      if (mountedContentView !== 'profiles') {
+        unmountContent(); peopleProfilesView.mount(view); mountedContentView = 'profiles';
+      }
+      restoreScroll(activeTab);
+      const result = await peopleProfilesView.activate();
+      if (mine === activationEpoch && !host.hidden) label.textContent = result?.status === 'ready' ? pageName : `${pageName}状态`;
+      return result;
     }
+    v3FoundationView.setPage?.(activeTab === 'people' ? 'people' : 'memories');
+    if (mountedContentView !== 'foundation') {
+      unmountContent(); v3FoundationView.mount(view); mountedContentView = 'foundation';
+    }
+    restoreScroll(activeTab);
     const result = await v3FoundationView.activate();
-    if (mine === activationEpoch && !host.hidden) label.textContent = result?.status === 'ready' ? 'V3 地基可用' : 'V3 地基诊断';
+    if (mine === activationEpoch && !host.hidden) label.textContent = result?.status === 'ready' ? pageName : `${pageName}状态`;
     return result;
   }
 
   function selectTab(tab) {
+    rememberScroll();
     activationEpoch += 1;
     screen = 'content';
     activeTab = tab;
@@ -188,22 +111,14 @@ export function createPanel({
       node.classList.toggle('active', active);
       node.setAttribute('aria-selected', String(active));
     });
-    if (tab === 'people') void openPeople().catch(() => showStatus('当前聊天暂时无法建立稳定身份。'));
-    else if (tab === 'events') void activateFoundation().catch(() => showStatus('当前聊天暂时无法读取 V3 地基。'));
-    else if (tab === 'bonds') void openBonds().catch(() => showStatus('当前聊天暂时无法读取双丝网。'));
-    else renderPlaceholder(tab);
+    void activateFoundation().catch(() => showStatus('当前聊天暂时无法读取千千结记忆。'));
   }
 
   function renderSettings({ focusSources = false } = {}) {
+    rememberScroll();
     activationEpoch += 1;
     screen = 'settings';
-    archiveV2InitializationView.deactivate();
-    archiveV2BondView.deactivate();
-    v3FoundationView.deactivate();
-    view.replaceChildren();
-    mounted = false;
-    bondsMounted = false;
-    foundationMounted = false;
+    unmountContent();
     label.textContent = '千千结设置';
     if (focusSources) { settingsDrawerState.open('general'); settingsDrawerState.open('worldbook'); }
 
@@ -244,6 +159,8 @@ export function createPanel({
     master.append(toggle, enabledResult);
     page.append(master);
 
+    const managementMount = element('div', 'qqj-settings-management');
+
     const groupOf = (key, title) => createSettingsDrawer({
       documentRef, title, level: 'group', id: `qqj-settings-group-${key}`,
       open: settingsDrawerState.isOpen(key, false),
@@ -263,26 +180,25 @@ export function createPanel({
     const worldbook = sourcePermissionView?.renderSettings?.({
       open: subOpen('worldbook'), onDrawerToggle: subToggle('worldbook'),
     });
-    const prompts = createPromptsSettings({ settings, documentRef, open: subOpen('prompts'), onToggle: subToggle('prompts') });
+    const prompts = createPromptsSettings({ settings, documentRef, open: subOpen('prompts'), onToggle: subToggle('prompts'), onStoryClockChange });
     const appearance = createAppearanceSettings({
       settings, documentRef, open: subOpen('appearance'), onToggle: subToggle('appearance'),
-      applyAppearance: () => applyArchiveV2Appearance({ host, root, settings, documentRef }),
+      applyAppearance: () => applyAppearance({ host, root, settings, documentRef }),
     });
     generalBody.append(api.node);
     if (worldbook) generalBody.append(worldbook);
     generalBody.append(prompts.node, appearance.node);
     page.append(general);
 
-    // 记忆设置：记忆提取周期（每 N 楼提取一次），为后续记忆项预留。
-    const { drawer: memoryGroup, body: memoryBody } = groupOf('memory', '记忆设置');
-    const memory = createMemorySettings({
-      settings, documentRef, open: subOpen('memory-period'), onToggle: subToggle('memory-period'),
-      onAutomationChange: onAutomationSettingsChange,
-    });
-    memoryBody.append(memory.node);
-    page.append(memoryGroup);
+    // 当前聊天的记忆操作紧跟通用设置，避免与总开关混成同一层级。
+    page.append(managementMount);
 
+    v3FoundationView.mount(managementMount);
+    mountedContentView = 'foundation-settings';
+    v3FoundationView.setPage?.('management');
     view.append(page);
+    if (enabled) void v3FoundationView.activate().catch(() => { label.textContent = '记忆管理暂时无法读取'; });
+    restoreScroll('settings');
     if (focusSources) worldbook?.scrollIntoView?.({ block: 'start' });
   }
 
@@ -293,18 +209,14 @@ export function createPanel({
     geometry.restore();
     let result = { status: 'ready' };
     if (screen === 'settings') renderSettings();
-    else if (activeTab === 'people') result = openPeople();
-    else if (activeTab === 'events') result = activateFoundation();
-    else if (activeTab === 'bonds') result = openBonds();
-    else renderPlaceholder(activeTab);
+    else result = activateFoundation();
     root.querySelector('.close')?.focus?.();
     return result;
   }
 
   function close() {
+    rememberScroll();
     activationEpoch += 1;
-    archiveV2InitializationView.deactivate();
-    archiveV2BondView.deactivate();
     v3FoundationView.deactivate();
     geometry.cancelGesture();
     host.hidden = true;
@@ -318,13 +230,10 @@ export function createPanel({
     enabled = value === true;
     if (!enabled) {
       activationEpoch += 1;
-      archiveV2InitializationView.deactivate();
-      archiveV2BondView.deactivate();
       v3FoundationView.deactivate();
-      if (!host.hidden && screen === 'content') showStatus('千千结当前已关闭。设置仍可打开，旧档案不会被修改。');
-    } else if (!host.hidden && screen === 'content' && activeTab === 'people') void openPeople().catch(() => showStatus('当前聊天暂时无法建立稳定身份。'));
-    else if (!host.hidden && screen === 'content' && activeTab === 'events') void activateFoundation().catch(() => showStatus('当前聊天暂时无法读取 V3 地基。'));
-    else if (!host.hidden && screen === 'content' && activeTab === 'bonds') void openBonds().catch(() => showStatus('当前聊天暂时无法读取双丝网。'));
+      if (!host.hidden && screen === 'content') showStatus('千千结当前已关闭。设置仍可打开。');
+    } else if (!host.hidden && screen === 'content') void activateFoundation().catch(() => showStatus('当前聊天暂时无法读取千结记忆。'));
+    else if (!host.hidden && screen === 'settings') void v3FoundationView.activate().catch(() => { label.textContent = '记忆管理暂时无法读取'; });
   }
 
   root.querySelector('.close')?.addEventListener('click', close);
@@ -344,17 +253,11 @@ export function createPanel({
     setEnabled,
     showStatus,
     openSourceSettings: () => renderSettings({ focusSources: true }),
-    activatePeople,
-    activateBonds,
     activateFoundation,
     async refresh() {
-      if (host.hidden || screen !== 'content' || !['people', 'events', 'bonds'].includes(activeTab)) return { status: 'closed' };
-      archiveV2InitializationView.deactivate();
-      archiveV2BondView.deactivate();
+      if (host.hidden || screen !== 'content') return { status: 'closed' };
       v3FoundationView.deactivate();
-      if (activeTab === 'people') return openPeople();
-      if (activeTab === 'events') return activateFoundation();
-      return openBonds();
+      return activateFoundation();
     },
     getState: () => ({ enabled, activeTab, screen, open: !host.hidden }),
   });

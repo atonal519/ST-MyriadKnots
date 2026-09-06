@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPromptsSettings } from '../src/ui/settings/prompts-settings.js';
-import { createMemorySettings } from '../src/ui/settings/memory-settings.js';
 import { createAppearanceSettings } from '../src/ui/settings/appearance-settings.js';
 import { createApiSettings } from '../src/ui/settings/api-settings.js';
+import { DEFAULT_EXTRACTOR_GUIDANCE } from '../src/v3/extractor.js';
+import { DEFAULT_CSE_GUIDANCE } from '../src/v3/cse-engine.js';
 
 class Node {
   constructor(tag) {
@@ -36,17 +37,42 @@ test('提示词模块字段 change 即持久化', () => {
   assert.deepEqual(patches.at(-1), { sourceKeepTags: 'content,summary' });
 });
 
-test('记忆模块只存周期数并触发自动化刷新', async () => {
-  const patches = []; let refreshed = 0;
-  const store = { autoMemoryBatchSize: 2 };
-  const settings = { get: () => ({ ...store }), update: patch => { Object.assign(store, patch); patches.push(patch); return { ...store }; } };
-  const { node } = createMemorySettings({ settings, documentRef, onAutomationChange: async () => { refreshed += 1; } });
-  const batch = fieldControl(node, '每 N 楼提取一次记忆');
-  assert.equal(batch.value, '2');
-  batch.value = '5'; await batch.fire('change'); await flush();
-  assert.deepEqual(patches.at(-1), { autoMemoryBatchSize: 5 });
-  assert.equal(refreshed, 1);
-  assert.equal(node.find(n => n.type === 'checkbox'), undefined);
+test('提示词模块提供时间戳开关、原样自定义、恢复默认与协调状态', async () => {
+  const current = { sourceKeepTags: 'content', sourceExtraTags: '', generalPrompt: '', storyClockEnabled: true, storyClockPrompt: '' };
+  const patches = [], refreshes = [];
+  const settings = { get: () => ({ ...current }), update: patch => { Object.assign(current, patch); patches.push(patch); return { ...current }; } };
+  const { node } = createPromptsSettings({ settings, documentRef, onStoryClockChange: options => { refreshes.push(options ?? {}); return { label: current.storyClockPrompt ? '使用自定义时间戳提示词' : '已调用千千结时间戳' }; } });
+  assert.equal(node.find(n => n.id === 'qqj-story-clock-status').textContent, '已调用千千结时间戳');
+  const textarea = node.find(n => n.tagName === 'textarea' && /千千结/.test(n.placeholder));
+  textarea.value = '  自定义\n'; await textarea.fire('change');
+  assert.deepEqual(patches.at(-1), { storyClockPrompt: '  自定义\n' });
+  assert.equal(node.find(n => n.id === 'qqj-story-clock-status').textContent, '使用自定义时间戳提示词');
+  await node.find(n => n.tagName === 'button' && n.textContent === '恢复默认').fire('click');
+  assert.deepEqual(patches.at(-1), { storyClockPrompt: '' }); assert.equal(textarea.value, '');
+  assert.equal(refreshes[0].readOnly, true); assert.ok(refreshes.length >= 3);
+});
+
+test('摘要与 CSE 指导各自 change 即存，可载入内置文本并恢复默认', async () => {
+  const current = { sourceKeepTags: 'content', sourceExtraTags: '', generalPrompt: '', storyClockEnabled: true, storyClockPrompt: '', summaryPrompt: '', csePrompt: '' };
+  const patches = [];
+  const settings = { get: () => ({ ...current }), update: patch => { Object.assign(current, patch); patches.push(patch); return { ...current }; } };
+  const { node } = createPromptsSettings({ settings, documentRef });
+  const summaryDrawer = node.find(n => n.id === 'qqj-settings-summary-prompt');
+  const cseDrawer = node.find(n => n.id === 'qqj-settings-cse-prompt');
+  const summary = fieldControl(summaryDrawer, '摘要内容要求');
+  const cse = fieldControl(cseDrawer, 'CSE 推演要求');
+
+  summary.value = '  用户摘要要求\n'; await summary.fire('change');
+  cse.value = '  用户 CSE 要求\n'; await cse.fire('change');
+  assert.deepEqual(patches.slice(-2), [{ summaryPrompt: '  用户摘要要求\n' }, { csePrompt: '  用户 CSE 要求\n' }]);
+
+  await summaryDrawer.find(n => n.tagName === 'button' && n.textContent === '载入默认再改').fire('click');
+  await cseDrawer.find(n => n.tagName === 'button' && n.textContent === '载入默认再改').fire('click');
+  assert.equal(summary.value, DEFAULT_EXTRACTOR_GUIDANCE); assert.equal(cse.value, DEFAULT_CSE_GUIDANCE);
+  await summaryDrawer.find(n => n.tagName === 'button' && n.textContent === '恢复默认').fire('click');
+  await cseDrawer.find(n => n.tagName === 'button' && n.textContent === '恢复默认').fire('click');
+  assert.deepEqual(patches.slice(-2), [{ summaryPrompt: '' }, { csePrompt: '' }]);
+  assert.equal(summary.value, ''); assert.equal(cse.value, '');
 });
 
 test('外观模块 change 即存并即时应用；改 URL 时清空缓存 family', () => {

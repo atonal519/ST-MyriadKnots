@@ -182,6 +182,20 @@ function balancedObjects(text) {
   return { candidates, unclosed };
 }
 
+export function repairJsonWithUniqueMissingObjectClose(value, { finishReason, allowArray = false } = {}) {
+  if (normalizeFinishReason(finishReason) !== 'stop') return null;
+  const text = String(value ?? '').trim();
+  const repairs = [];
+  for (let index = Math.max(0, text.length - 64); index <= text.length; index += 1) {
+    if (index < text.length && !/[}\]]/u.test(text[index])) continue;
+    try {
+      const parsed = JSON.parse(`${text.slice(0, index)}}${text.slice(index)}`);
+      if (parsed && typeof parsed === 'object' && (allowArray || !Array.isArray(parsed))) repairs.push(parsed);
+    } catch { /* try the next mechanically possible suffix position */ }
+  }
+  return repairs.length === 1 ? repairs[0] : null;
+}
+
 export function parseJsonOutput(value, { finishReason } = {}) {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value;
   const normalizedFinishReason = normalizeFinishReason(finishReason);
@@ -217,15 +231,8 @@ export function parseJsonOutput(value, { finishReason } = {}) {
     // Some compatible endpoints report `stop` after omitting one object-closing
     // brace in the final structural suffix. Accept only a unique, mechanically
     // provable one-brace insertion near the end; broader truncation still fails.
-    if (normalizedFinishReason === 'stop') {
-      const repairs = [];
-      for (let index = Math.max(0, text.length - 64); index <= text.length; index += 1) {
-        if (index < text.length && !/[}\]]/u.test(text[index])) continue;
-        const repaired = parseObject(`${text.slice(0, index)}}${text.slice(index)}`);
-        if (repaired) repairs.push(repaired);
-      }
-      if (repairs.length === 1) return repairs[0];
-    }
+    const repaired = repairJsonWithUniqueMissingObjectClose(text, { finishReason: normalizedFinishReason });
+    if (repaired) return repaired;
     throw safeError('output-truncated', 0, { finishReason: normalizedFinishReason });
   }
   if (balanced.candidates.length !== 1) return failCompletion();
@@ -333,7 +340,7 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
     const compactMessages = [
       { role: 'system', content: typeof systemPrompt === 'string' && systemPrompt.trim()
         ? systemPrompt.trim()
-        : 'You extract people only from the supplied frozen sources. Return only JSON matching the requested schema.' },
+        : 'Process only the supplied task input. Return only JSON matching the requested schema.' },
       ...(Array.isArray(taskMessages) ? taskMessages : []).filter(message => ['system', 'user'].includes(message?.role) && typeof message.content === 'string').map(message => ({ role: message.role, content: message.content })),
     ];
     const body = {
@@ -341,7 +348,7 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
       model: config?.model || DEFAULT_MODEL, messages: compactMessages, stream: config?.stream === true,
       temperature, max_tokens: maxTokens,
     };
-    if (jsonSchema) body.json_schema = { name: jsonSchema.name || 'qianqianjie_people', value: jsonSchema.value || jsonSchema.schema, strict: jsonSchema.strict !== false };
+    if (jsonSchema) body.json_schema = { name: jsonSchema.name || 'qianqianjie_task', value: jsonSchema.value || jsonSchema.schema, strict: jsonSchema.strict !== false };
     for (const item of config?.excludeParams || []) {
       const key = String(item).trim(); if (key && !PROTECTED_BODY_KEYS.has(key)) delete body[key];
     }

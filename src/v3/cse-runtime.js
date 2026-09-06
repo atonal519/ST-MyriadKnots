@@ -3,6 +3,7 @@ import { buildFoundationIndexes } from './foundation-runtime.js';
 import { deterministicUuid } from './foundation-domain.js';
 import { validateFoundationCheckpoint, validateFoundationRoot, validateFoundationRun } from './foundation-schema.js';
 import { validateCseGraph } from './cse-schema.js';
+import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 import {
   CSE_COMPILER_VERSION, CSE_PROMPT_VERSION, captureCseBaseline, createBaselineRoleEntities,
   createCseEnvelope, filterReachableDeltas, replayCurrentState, runCseRequest, selectTrackedSubjects, verifyCseBaselineFingerprint,
@@ -10,13 +11,15 @@ import {
 import { sanitizeDiagnosticValue, sanitizeSensitiveText } from './safe-metadata.js';
 
 const emptyManifest = () => ({ floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] });
+const PHASE_A_PERSIST_CONCURRENCY = 6;
 const nowIso = now => { const value = now()?.toISOString?.() ?? String(now()); if (!Number.isFinite(Date.parse(value))) throw new TypeError('V3_CSE_TIME_INVALID'); return value; };
 const hash = async value => `sha256:${await sha256(JSON.stringify(value))}`;
 const errorWith = (code, message) => { const error = new Error(message ?? code); error.code = code; return error; };
 
-export function createCseRuntime({ store, hostAdapter, generateUtilityTask, isEnabled = true, sanitizerOptions = () => ({}), now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
+export function createCseRuntime({ store, hostAdapter, generateUtilityTask, isEnabled = true, promptGuidance = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), storyClockSignatureForFloor = () => '', onGraphCommitted = null, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
   if (!store || ['readReachable', 'putRecord', 'commitRoot', 'recordKey'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 CSE store 无效');
   if (typeof generateUtilityTask !== 'function') throw new TypeError('V3 CSE utility route 无效');
+  if (typeof filterWorldInfoSources !== 'function') throw new TypeError('V3 CSE 世界书过滤器无效');
   let epoch = 0, active = null, reachable = null, replayed = null, lastFailure = null, replayDiagnostic = null;
   const subscribers = new Set();
   const enabled = () => { try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; } catch { return false; } };
@@ -45,6 +48,7 @@ export function createCseRuntime({ store, hostAdapter, generateUtilityTask, isEn
 
   function getState() {
     const floors = reachable?.floors ?? [];
+    const entities = new Map((reachable?.entities ?? []).map(entity => [entity.id, entity]));
     const memoryByFloor = new Map((reachable?.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => [memory.floorId, memory]));
     const deltaByFloor = new Map(filterReachableDeltas({ floors, floorMemories: reachable?.floorMemories ?? [], stateDeltas: reachable?.stateDeltas ?? [] }).map(delta => [delta.floorId, delta]));
     const cseFloors = floors.map(floor => {
@@ -52,9 +56,18 @@ export function createCseRuntime({ store, hostAdapter, generateUtilityTask, isEn
       const running = active?.floorId === floor.id;
       const failure = lastFailure?.floorId === floor.id ? lastFailure : null;
       const status = !memory ? 'notApplicable' : running ? 'running' : delta ? (delta.noMaterialChange ? 'noChange' : 'ready') : failure && failure.code !== 'V3_CSE_PREVIOUS_GAP' ? 'failed' : 'pending';
-      return Object.freeze({ floorId: floor.id, floorMemoryId: memory?.id ?? null, status, deltaId: delta?.id ?? null, noMaterialChange: delta?.noMaterialChange ?? false, error: failure?.message ?? null });
+      const record = delta ? Object.freeze({
+        noMaterialChange: delta.noMaterialChange === true,
+        subjects: Object.freeze(delta.subjectSnapshots.map(subject => Object.freeze({
+          displayName: entities.get(subject.subjectEntityId)?.displayName ?? '未知人物',
+          changeSummary: Object.freeze([...(subject.changeSummary ?? [])]),
+          core: Object.freeze((subject.core ?? []).map(item => item.text)),
+          adaptive: Object.freeze((subject.adaptive ?? []).map(item => item.text)),
+          situational: Object.freeze((subject.situational ?? []).map(item => item.text)),
+        }))),
+      }) : null;
+      return Object.freeze({ floorId: floor.id, floorMemoryId: memory?.id ?? null, status, deltaId: delta?.id ?? null, noMaterialChange: delta?.noMaterialChange ?? false, record, error: failure?.message ?? null });
     });
-    const entities = new Map((reachable?.entities ?? []).map(entity => [entity.id, entity]));
     const floorSeq = new Map(floors.map(floor => [floor.id, floor.assistantSeq]));
     const subjects = (replayed?.subjects ?? []).map(subject => ({
       subjectEntityId: subject.subjectEntityId,
@@ -64,7 +77,11 @@ export function createCseRuntime({ store, hostAdapter, generateUtilityTask, isEn
       situational: subject.situational.map(item => ({ ...item, sourceAssistantSeq: floorSeq.get(item.sourceFloorId) ?? null })),
     }));
     const pendingCount = cseFloors.filter(item => item.status === 'pending').length;
-    return Object.freeze({ cseReady: reachable?.root?.capabilities?.cseReady === true, baselineId: reachable?.baseline?.id ?? null, currentStateId: reachable?.currentStates?.at(-1)?.id ?? null, replayedCurrentState: replayed, cseSubjects: Object.freeze(subjects), cseFloors: Object.freeze(cseFloors), csePendingCount: pendingCount, cseFailedCount: cseFloors.filter(item => item.status === 'failed').length, activeCse: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, lastCseError: lastFailure, cseReplayDiagnostic: replayDiagnostic, csePromptVersion: CSE_PROMPT_VERSION, cseCompilerVersion: CSE_COMPILER_VERSION });
+    const mainCharacterEntityId = reachable?.baseline?.characterCard?.entityId ?? null;
+    const mainCharacterDisplayName = mainCharacterEntityId
+      ? entities.get(mainCharacterEntityId)?.displayName ?? reachable?.baseline?.characterCard?.name ?? null
+      : null;
+    return Object.freeze({ cseReady: reachable?.root?.capabilities?.cseReady === true, baselineId: reachable?.baseline?.id ?? null, mainCharacterEntityId, mainCharacterDisplayName, currentStateId: reachable?.currentStates?.at(-1)?.id ?? null, replayedCurrentState: replayed, cseSubjects: Object.freeze(subjects), cseFloors: Object.freeze(cseFloors), csePendingCount: pendingCount, cseFailedCount: cseFloors.filter(item => item.status === 'failed').length, activeCse: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, lastCseError: lastFailure, cseReplayDiagnostic: replayDiagnostic, csePromptVersion: CSE_PROMPT_VERSION, cseCompilerVersion: CSE_COMPILER_VERSION });
   }
 
   async function persist(records, signal) {
@@ -73,6 +90,27 @@ export function createCseRuntime({ store, hostAdapter, generateUtilityTask, isEn
       const result = await store.putRecord(record, { signal });
       if (!['saved', 'reused'].includes(result.status)) throw errorWith('V3_CSE_PERSIST_FAILED', `CSE 记录写入失败：${result.status}`);
     }
+  }
+
+  async function persistPhaseA(records, signal) {
+    let cursor = 0;
+    let firstError = null;
+    async function worker() {
+      while (firstError === null) {
+        const index = cursor;
+        if (index >= records.length) return;
+        cursor += 1;
+        try {
+          if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+          const result = await store.putRecord(records[index], { signal });
+          if (!['saved', 'reused'].includes(result.status)) throw errorWith('V3_CSE_PERSIST_FAILED', `CSE 记录写入失败：${result.status}`);
+        } catch (error) {
+          firstError ??= error;
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(PHASE_A_PERSIST_CONCURRENCY, records.length) }, () => worker()));
+    if (firstError) throw firstError;
   }
 
   async function ensureBaseline(value, operation) {
@@ -98,11 +136,11 @@ export function createCseRuntime({ store, hostAdapter, generateUtilityTask, isEn
   }
 
   async function commitDelta(operation, initial, result, roleEntities) {
-    const current = await store.readReachable();
+    const current = await store.readReachable({ mode: 'runtime' });
     if (current.status !== 'ready' || current.rootRevision !== initial.rootRevision || current.root.headCheckpointId !== initial.root.headCheckpointId || current.root.narrativeGeneration !== initial.root.narrativeGeneration) throw errorWith('V3_CSE_STALE', '聊天或记忆在分析期间已变化，迟到状态不会写入。');
     const floor = current.floors.find(item => item.id === operation.floorId);
     const memory = current.floorMemories.find(item => item.id === operation.floorMemoryId && item.floorId === operation.floorId && item.recordStatus === 'active');
-    if (!floor || !memory || floor.content.canonicalFingerprint !== operation.floorFingerprint) throw errorWith('V3_CSE_STALE', '当前楼正文或 FloorMemory 已变化，迟到状态不会写入。');
+    if (!floor || !memory || floor.content.canonicalFingerprint !== operation.floorFingerprint || floor.content.rawFingerprint !== operation.floorRawFingerprint || storyClockSignatureForFloor(floor) !== operation.storyClockSignature) throw errorWith('V3_CSE_STALE', '当前楼正文、时间戳或 FloorMemory 已变化，迟到状态不会写入。');
     const floorOrder = new Map(current.floors.map((item, index) => [item.id, index]));
     const deltas = filterReachableDeltas({ floors: current.floors, floorMemories: current.floorMemories, stateDeltas: current.stateDeltas })
       .filter(delta => floorOrder.get(delta.floorId) < floorOrder.get(floor.id));
@@ -121,18 +159,20 @@ export function createCseRuntime({ store, hostAdapter, generateUtilityTask, isEn
     const cseReady = activeMemories.length > 0 && activeMemories.every(item => deltas.some(delta => delta.floorId === item.floorId && delta.floorMemoryId === item.id));
     const capabilities = { foundationReady: true, memoryReady: activeMemories.length > 0, cseReady, recallReady: false };
     const stateGraphFingerprint = await hash([current.root.narrativeGeneration, current.floors.map(item => item.id), current.floors.map(item => item.content.canonicalFingerprint)]);
-    const run = validateFoundationRun({ schemaVersion: 3, recordType: 'run', id: runId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, inputSnapshotFingerprint: current.root.sourceSnapshotFingerprint, mode: 'cse', sessionEpoch: operation.epoch, inputFloorIds: [floor.id], phase: 'completed', completedFloorIds: [floor.id], failedItems: [], preparedRecordRefs: [store.recordKey(result.delta), store.recordKey(currentState), ...indexKeys, `v3-checkpoint-${checkpointId}`], diagnostics: { kind: 'cse', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, floorId: floor.id, floorMemoryId: memory.id, api: result.metadata, attempts: result.attempts, transportAttempts: result.transportAttempts, responseFingerprint: result.responseFingerprint, isolated: result.isolated.slice(-40) }, startedAt: operation.startedAt, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
+    const run = validateFoundationRun({ schemaVersion: 3, recordType: 'run', id: runId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, inputSnapshotFingerprint: current.root.sourceSnapshotFingerprint, mode: 'cse', sessionEpoch: operation.epoch, inputFloorIds: [floor.id], phase: 'completed', completedFloorIds: [floor.id], failedItems: [], preparedRecordRefs: [store.recordKey(result.delta), store.recordKey(currentState), ...indexKeys, `v3-checkpoint-${checkpointId}`], diagnostics: { ...diagnosticsWithRealtimeOrigin(current.run?.diagnostics, realtimeOriginFromReachable(current)), kind: 'cse', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, floorId: floor.id, floorMemoryId: memory.id, api: result.metadata, attempts: result.attempts, transportAttempts: result.transportAttempts, responseFingerprint: result.responseFingerprint, isolated: result.isolated.slice(-40) }, startedAt: operation.startedAt, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
     const checkpoint = validateFoundationCheckpoint({ schemaVersion: 3, recordType: 'checkpoint', id: checkpointId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, runId, sourceSnapshotFingerprint: current.root.sourceSnapshotFingerprint, capabilities, floorRange: { fromAssistantSeq: current.floors.length ? 1 : 0, toAssistantSeq: current.floors.length, floorIds: current.floors.map(item => item.id) }, inputFingerprints: current.floors.map(item => ({ floorId: item.id, canonicalFingerprint: item.content.canonicalFingerprint })), producedRefs: { floors: current.floors.map(item => item.id), floorMemories: current.floorMemories.map(item => item.id), entities: entities.map(item => item.id), events: [], claims: [], knowledge: [], stateDeltas: deltas.map(item => item.id), currentStates: [currentState.id], stateProjections: [], episodes: [], threads: [], indexes: indexKeys }, validation: { schemaValid: true, referencesValid: true, orderedReplayValid: true, stateFingerprint: stateGraphFingerprint }, sealedAt: nowValue, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
     const root = validateFoundationRoot({ ...current.root, capabilities, headCheckpointId: checkpointId, indexManifest: { ...emptyManifest(), floor: indexKeys.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-')), entity: indexKeys.filter(key => key.includes('-entity-')), reverseRef: indexKeys.filter(key => key.includes('-reverseRef-')) }, activeStateRefs: [currentState.id], updatedAt: nowValue }, { expectedChatId: current.root.chatId });
     await validateCseGraph({ root, checkpoint, run, floors: current.floors, floorMemories: current.floorMemories, entities, indexes, indexKeys, baseline: current.baseline, stateDeltas: deltas, currentStates: [currentState] });
     const newEntities = entities.filter(entity => !current.entities.some(old => old.id === entity.id));
-    await persist([...newEntities, result.delta, currentState, ...indexes, run, checkpoint], operation.controller.signal);
+    await persistPhaseA([...newEntities, result.delta, currentState, ...indexes], operation.controller.signal);
+    await persist([run, checkpoint], operation.controller.signal);
     if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_CSE_STALE', 'CSE 操作已取消。');
     const committed = await store.commitRoot(root, current.rootRevision, { signal: operation.controller.signal });
     if (committed.status !== 'saved') throw errorWith(committed.status === 'conflict' ? 'V3_CSE_CAS_CONFLICT' : 'V3_CSE_COMMIT_FAILED', 'CSE 提交遇到并发更新，未覆盖新数据。');
-    const next = await store.readReachable();
-    if (next.status !== 'ready') throw errorWith('V3_CSE_COLD_READ_FAILED', 'CSE 提交后冷读取失败。');
-    reachable = next; await calculateReplay(next); lastFailure = null; return notify();
+    if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_CSE_STALE', 'CSE 操作已取消。');
+    const next = committed.reachable;
+    if (next?.status !== 'ready') throw errorWith('V3_CSE_COMMIT_SNAPSHOT_INVALID', 'CSE 提交后的已验证快照无效。');
+    reachable = next; await calculateReplay(next); onGraphCommitted?.(next); lastFailure = null; return notify();
   }
 
   async function analyzeFloor(floorId) {
@@ -143,7 +183,10 @@ export function createCseRuntime({ store, hostAdapter, generateUtilityTask, isEn
     const floor = value?.floors?.find(item => item.id === floorId);
     const memory = value?.floorMemories?.find(item => item.floorId === floorId && item.recordStatus === 'active');
     if (!floor || !memory) throw errorWith('V3_CSE_FLOOR_UNAVAILABLE', '只有当前可达且已有 FloorMemory 的楼可以分析状态。');
-    const operation = { floorId, floorMemoryId: memory.id, floorFingerprint: floor.content.canonicalFingerprint, epoch, controller: new AbortController(), runId: await deterministicUuid(['v3-cse-run', value.root.headCheckpointId, memory.id, newUuid()]), startedAt: nowIso(now), phase: 'baseline' };
+    const expectedClockSignature = value.run?.diagnostics?.floorProvenance?.[floorId]?.storyClockSignature;
+    const liveClockSignature = storyClockSignatureForFloor(floor);
+    if (typeof expectedClockSignature === 'string' && expectedClockSignature !== liveClockSignature) throw errorWith('V3_CSE_STALE', '本楼时间戳已变化，请先重新提取本楼记忆。');
+    const operation = { floorId, floorMemoryId: memory.id, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: floor.content.rawFingerprint, storyClockSignature: liveClockSignature, epoch, controller: new AbortController(), runId: await deterministicUuid(['v3-cse-run', value.root.headCheckpointId, memory.id, newUuid()]), startedAt: nowIso(now), phase: 'baseline' };
     active = operation; notify();
     try {
       value = await ensureBaseline(value, operation); reachable = value; await calculateReplay(value);
@@ -155,6 +198,7 @@ export function createCseRuntime({ store, hostAdapter, generateUtilityTask, isEn
       const targetIndex = value.floors.findIndex(item => item.id === floor.id);
       const precedingFloors = value.floors.slice(0, targetIndex);
       const precedingFloorIds = new Set(precedingFloors.map(item => item.id));
+      const trackedFloorIds = new Set(value.floors.slice(0, targetIndex + 1).map(item => item.id));
       const precedingMemoryRecords = value.floorMemories.filter(item => precedingFloorIds.has(item.floorId));
       const precedingMemories = precedingMemoryRecords.filter(item => item.recordStatus === 'active');
       const brokenMemoryFloor = precedingFloors.some(precedingFloor => {
@@ -168,10 +212,14 @@ export function createCseRuntime({ store, hostAdapter, generateUtilityTask, isEn
         : null;
       const storedPrevious = value.currentStates?.at(-1) ?? null;
       const previousCurrentState = rebuiltPrevious && storedPrevious?.fingerprint === rebuiltPrevious.fingerprint ? storedPrevious : rebuiltPrevious;
-      const tracked = selectTrackedSubjects({ baseline: value.baseline, entities, floorMemories: value.floorMemories, floorMemory: memory });
-      const envelope = createCseEnvelope({ floor, floorMemory: memory, baseline: value.baseline, currentState: previousCurrentState, trackedSubjects: tracked, entities });
+      const trackedMemories = value.floorMemories.filter(item => item.recordStatus === 'active' && trackedFloorIds.has(item.floorId));
+      const tracked = selectTrackedSubjects({ baseline: value.baseline, entities, floorMemories: trackedMemories, floorMemory: memory });
+      const requestWorldInfoSources = filterWorldInfoSources(value.baseline.worldInfoSources);
+      if (!Array.isArray(requestWorldInfoSources)) throw errorWith('V3_CSE_WORLDBOOK_FILTER_INVALID', '世界书排除结果无效。');
+      const envelope = createCseEnvelope({ floor, floorMemory: memory, baseline: value.baseline, currentState: previousCurrentState, trackedSubjects: tracked, entities, worldInfoSources: requestWorldInfoSources });
       const deltaId = await deterministicUuid(['v3-cse-delta', operation.runId, floor.id, memory.id]);
-      const result = await runCseRequest({ generateUtilityTask, envelope, previousCurrentState, now: nowIso(now), deltaId, signal: operation.controller.signal });
+      const promptGuidanceSnapshot = typeof promptGuidance === 'function' ? promptGuidance() : promptGuidance;
+      const result = await runCseRequest({ generateUtilityTask, envelope, previousCurrentState, now: nowIso(now), deltaId, promptGuidance: promptGuidanceSnapshot, signal: operation.controller.signal });
       if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_CSE_STALE', '聊天已变化，迟到 CSE 结果已丢弃。');
       operation.phase = 'committing'; notify();
       await commitDelta(operation, value, result, roleEntities);

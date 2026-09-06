@@ -2,6 +2,7 @@ const MAX_QUERY_CHARACTERS = 8000;
 const MAX_RECALLED_FLOORS = 8;
 const MAX_TOTAL_ITEMS = 18;
 import { RECENT_VISIBLE_AI_FLOORS } from './memory-coverage.js';
+import { rankRecallDocuments } from './recall-ranking.js';
 
 const clean = (value, maximum = 4000) => String(value ?? '').normalize('NFKC').replace(/<[^>]*>/g, ' ').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
 const cleanLiteral = (value, maximum = 4000) => String(value ?? '').replace(/<[^>]*>/g, ' ').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
@@ -13,15 +14,6 @@ const playable = message => {
 };
 const entityLabels = entity => [entity.displayName, ...(entity.aliases ?? [])].map(value => clean(value, 500)).filter(Boolean);
 const genericAlias = value => /^(?:\{\{user\}\}|\{\{char\}\}|user|char|player|你|用户|主角)$/iu.test(value);
-
-function terms(value) {
-  const normalized = clean(value, MAX_QUERY_CHARACTERS).toLocaleLowerCase('zh-CN');
-  const result = new Set(normalized.match(/[a-z0-9_]{2,}|[\p{Script=Han}]{2,}/gu) ?? []);
-  for (const chunk of normalized.match(/[\p{Script=Han}]{2,}/gu) ?? []) {
-    for (const width of [2, 3, 4]) for (let index = 0; index + width <= chunk.length; index += 1) result.add(chunk.slice(index, index + width));
-  }
-  return result;
-}
 
 export function buildRecallQueryFrame({ coreChat = [], assistantTurns = 1 } = {}) {
   const chat = Array.isArray(coreChat) ? coreChat : [];
@@ -61,24 +53,19 @@ export function buildRecallQueryFrame({ coreChat = [], assistantTurns = 1 } = {}
 export function buildRecallQueryContext({ coreChat = [], assistantTurns = 1 } = {}) {
   const frame = buildRecallQueryFrame({ coreChat, assistantTurns });
   const parts = frame.messages.map(message => `${message.role === 'user' ? '用户' : 'AI'}：${message.text}`).filter(value => value.length > 3);
+  const beforeLatest = frame.messages.filter(message => message.index !== frame.latestUserCoreIndex);
+  const previousUser = [...beforeLatest].reverse().find(message => message.role === 'user');
+  const recentAssistant = [...beforeLatest].reverse().find(message => message.role === 'assistant');
   return Object.freeze({
     text: clean(parts.join('\n'), MAX_QUERY_CHARACTERS),
     latestUserText: frame.latestUserText,
+    recentAssistantText: clean(recentAssistant?.text, 4000),
+    previousUserText: clean(previousUser?.text, 4000),
+    backgroundText: clean(beforeLatest.map(message => `${message.role === 'user' ? '用户' : 'AI'}：${message.text}`).join('\n'), MAX_QUERY_CHARACTERS),
     latestUserCoreIndex: frame.latestUserCoreIndex,
     messageCount: frame.messages.length,
     assistantTurns: frame.assistantTurns,
   });
-}
-
-function matchStrength(value, queryCompact, queryTerms, { exact = false } = {}) {
-  const source = clean(value, 4000);
-  const valueCompact = compact(source);
-  if (!valueCompact) return 0;
-  if (valueCompact.length >= 2 && queryCompact.includes(valueCompact)) return exact ? 120 : 80;
-  const valueTerms = terms(source);
-  let overlap = 0;
-  for (const term of valueTerms) if (term.length >= 2 && queryTerms.has(term)) overlap += term.length >= 4 ? 3 : term.length === 3 ? 2 : 1;
-  return overlap ? Math.min(exact ? 100 : 60, overlap * (exact ? 12 : 8)) : 0;
 }
 
 function item(category, text, priority, { preserveForm = false, ...extra } = {}) {
@@ -116,37 +103,25 @@ function exactAnchorDisplay(anchor, { standalonePrivate = false } = {}) {
   return `${standalonePrivate ? '仅该人物可用的' : ''}原句「${cleanLiteral(anchor.exactText, 2000)}」${reason ? `（${reason}）` : ''}`;
 }
 
-function candidateFor(memory, entityMentions, queryCompact, queryTerms, newestAssistantSeq) {
-  const involvedIds = new Set();
-  memory.participants.forEach(value => involvedIds.add(value.entityId));
-  memory.locations.forEach(value => { if (value.entityId) involvedIds.add(value.entityId); value.participantEntityIds.forEach(id => involvedIds.add(id)); });
-  memory.commitments.forEach(value => { involvedIds.add(value.speakerEntityId); value.targetEntityIds.forEach(id => involvedIds.add(id)); });
-  memory.actions.forEach(value => { involvedIds.add(value.actorEntityId); value.targetEntityIds.forEach(id => involvedIds.add(id)); });
-  memory.observations.forEach(value => { if (value.subjectEntityId) involvedIds.add(value.subjectEntityId); });
-  memory.privateCognition.forEach(value => involvedIds.add(value.ownerEntityId));
-  memory.informationTransfers.forEach(value => { if (value.fromEntityId) involvedIds.add(value.fromEntityId); value.toEntityIds.forEach(id => involvedIds.add(id)); });
-  const mentionedHere = [...entityMentions].filter(id => involvedIds.has(id));
-  let score = mentionedHere.length * 140;
-  const reasons = mentionedHere.length ? ['entity'] : [];
-  const items = [];
-  const add = value => { if (value) items.push(value); };
-  const summaryMatch = matchStrength(memory.summary, queryCompact, queryTerms);
-  // Summary is deliberately retrieval-only: it has no trustworthy knowledge boundary.
-  // Only typed facts below may become prompt material.
-  if (summaryMatch) { score += 20 + summaryMatch; reasons.push('summary'); }
-  const anchorAssignments = new Map(), standaloneAnchors = [];
+const entityNameText = (ids, entityById) => [...new Set((ids ?? []).filter(Boolean))]
+  .flatMap(id => entityLabels(entityById.get(id) ?? {}).filter(label => !genericAlias(label))).join(' ');
+
+function historyFacts(memory, entityById) {
+  const result = [], anchorAssignments = new Map(), standaloneAnchors = [];
+  const add = (value, rankText, involvedEntityIds, statusKey = '') => {
+    if (!value) return;
+    const visibilityKey = value.category === 'private' ? 'private' : ['shared', 'transfer'].includes(value.category) ? 'shared' : 'observable';
+    result.push({ ...value, _rankText: rankText, _entityText: entityNameText(involvedEntityIds, entityById), _coreText: rankText, _summary: memory.summary, _subjectKey: [...new Set((involvedEntityIds ?? []).filter(Boolean))].sort().join(','), _visibilityKey: visibilityKey, _statusKey: statusKey, _sourceOrder: result.length });
+  };
   const assignAnchor = (fact, anchor) => anchorAssignments.set(fact, [...(anchorAssignments.get(fact) ?? []), anchor]);
-  for (const value of memory.exactAnchors) {
-    const strength = matchStrength(value.exactText, queryCompact, queryTerms, { exact: true });
-    if (!strength) continue;
-    score += 100 + strength; reasons.push('exactAnchor');
-    const privateFact = memory.privateCognition.find(fact => sameExactText(fact.content, value.exactText) && (!value.speakerEntityId || fact.ownerEntityId === value.speakerEntityId));
-    const transferFact = memory.informationTransfers.find(fact => sameExactText(fact.claimText, value.exactText) && (!value.speakerEntityId || !fact.fromEntityId || fact.fromEntityId === value.speakerEntityId));
-    const commitmentFact = memory.commitments.find(fact => (fact.exactAnchorId === value.anchorId && (!value.speakerEntityId || fact.speakerEntityId === value.speakerEntityId))
-      || (sameExactText(fact.content, value.exactText) && (!value.speakerEntityId || fact.speakerEntityId === value.speakerEntityId)));
+  for (const anchor of memory.exactAnchors) {
+    const privateFact = memory.privateCognition.find(fact => sameExactText(fact.content, anchor.exactText) && (!anchor.speakerEntityId || fact.ownerEntityId === anchor.speakerEntityId));
+    const transferFact = memory.informationTransfers.find(fact => sameExactText(fact.claimText, anchor.exactText) && (!anchor.speakerEntityId || !fact.fromEntityId || fact.fromEntityId === anchor.speakerEntityId));
+    const commitmentFact = memory.commitments.find(fact => (fact.exactAnchorId === anchor.anchorId && (!anchor.speakerEntityId || fact.speakerEntityId === anchor.speakerEntityId))
+      || (sameExactText(fact.content, anchor.exactText) && (!anchor.speakerEntityId || fact.speakerEntityId === anchor.speakerEntityId)));
     const boundaryFact = privateFact ?? transferFact ?? commitmentFact;
-    if (boundaryFact) assignAnchor(boundaryFact, value);
-    else if (value.speakerEntityId) standaloneAnchors.push({ value, strength });
+    if (boundaryFact) assignAnchor(boundaryFact, anchor);
+    else if (anchor.speakerEntityId) standaloneAnchors.push(anchor);
   }
   const decorate = (text, fact) => {
     const anchors = anchorAssignments.get(fact) ?? [];
@@ -154,54 +129,24 @@ function candidateFor(memory, entityMentions, queryCompact, queryTerms, newestAs
     if (anchors.length === 1 && sameExactText(text, anchors[0].exactText)) return exactAnchorDisplay(anchors[0]);
     return `${text}；${anchors.map(anchor => exactAnchorDisplay(anchor)).join('；')}`;
   };
-  for (const { value, strength } of standaloneAnchors) add(item('private', exactAnchorDisplay(value, { standalonePrivate: true }), 160 + strength, { kind: 'exactAnchor', anchorKind: value.kind, ownerEntityId: value.speakerEntityId, preserveForm: true }));
+  for (const anchor of standaloneAnchors) add(item('private', exactAnchorDisplay(anchor, { standalonePrivate: true }), 160, { kind: 'exactAnchor', anchorKind: anchor.kind, ownerEntityId: anchor.speakerEntityId, preserveForm: true }), anchor.exactText, [anchor.speakerEntityId]);
   for (const value of memory.commitments) {
-    const strength = matchStrength(value.content, queryCompact, queryTerms);
-    if (!strength && !anchorAssignments.has(value) && !mentionedHere.includes(value.speakerEntityId) && !value.targetEntityIds.some(id => mentionedHere.includes(id))) continue;
     const isShared = value.targetEntityIds.length > 0 && value.status !== 'uncertain' && (value.kind !== 'plan' || value.status === 'accepted');
-    score += 65 + strength; reasons.push('commitment'); add(item(isShared ? 'shared' : 'private', decorate(commitmentDisplay(value), value), 120 + strength, { kind: 'commitment', commitmentKind: value.kind, speakerEntityId: value.speakerEntityId, ownerEntityId: value.speakerEntityId, targetEntityIds: value.targetEntityIds, status: value.status, preserveForm: true }));
+    add(item(isShared ? 'shared' : 'private', decorate(commitmentDisplay(value), value), 120, { kind: 'commitment', commitmentKind: value.kind, speakerEntityId: value.speakerEntityId, ownerEntityId: value.speakerEntityId, targetEntityIds: value.targetEntityIds, status: value.status, preserveForm: true }), `${value.content} ${(anchorAssignments.get(value) ?? []).map(anchor => anchor.exactText).join(' ')}`, [value.speakerEntityId, ...value.targetEntityIds], value.status);
   }
-  for (const value of memory.openLoops) {
-    const strength = matchStrength(value.description, queryCompact, queryTerms);
-    if (!strength && !value.ownerEntityIds.some(id => mentionedHere.includes(id))) continue;
-    score += 60 + strength; reasons.push('openLoop'); add(item('objective', `未结事项：${value.description}`, 110 + strength, { kind: 'openLoop' }));
-  }
-  for (const value of memory.locations) {
-    const strength = matchStrength(value.name, queryCompact, queryTerms);
-    if (!strength) continue;
-    score += 55 + strength; reasons.push('location'); add(item('objective', `地点：${value.name}（${value.change}）`, 100 + strength, { kind: 'location' }));
-  }
-  for (const value of memory.events) {
-    const strength = matchStrength(`${value.title} ${value.description}`, queryCompact, queryTerms);
-    if (!strength) continue;
-    score += 45 + strength; reasons.push('event'); add(item('objective', `${value.title}：${value.description}`, 90 + strength, { kind: 'event' }));
-  }
-  for (const value of memory.actions) {
-    const strength = matchStrength(`${value.action} ${value.result ?? ''}`, queryCompact, queryTerms);
-    if (!strength) continue;
-    score += 35 + strength; reasons.push('action'); add(item('objective', actionDisplay(value), 75 + strength, { kind: 'action', completion: value.completion, preserveForm: true }));
-  }
-  for (const value of memory.observations) {
-    const strength = matchStrength(value.description, queryCompact, queryTerms);
-    if (!strength) continue;
-    score += 30 + strength; reasons.push('observation'); add(item('objective', value.description, 70 + strength, { kind: 'observation' }));
-  }
-  for (const value of memory.privateCognition) {
-    const strength = matchStrength(value.content, queryCompact, queryTerms);
-    if (!strength && !anchorAssignments.has(value) && !mentionedHere.includes(value.ownerEntityId)) continue;
-    score += 40 + strength; reasons.push('private'); add(item('private', decorate(value.content, value), 85 + strength, { kind: value.kind, ownerEntityId: value.ownerEntityId, preserveForm: anchorAssignments.has(value) }));
-  }
+  for (const value of memory.openLoops) add(item('objective', `未结事项：${value.description}`, 110, { kind: 'openLoop' }), value.description, value.ownerEntityIds);
+  for (const value of memory.locations) add(item('objective', `地点：${value.name}（${value.change}）`, 100, { kind: 'location' }), value.name, [value.entityId, ...value.participantEntityIds], value.change);
+  for (const value of memory.events) add(item('objective', `${value.title}：${value.description}`, 90, { kind: 'event' }), `${value.title} ${value.description}`, [], value.candidateStatus);
+  for (const value of memory.actions) add(item('objective', actionDisplay(value), 75, { kind: 'action', actorEntityId: value.actorEntityId, targetEntityIds: value.targetEntityIds, completion: value.completion, preserveForm: true }), `${value.action} ${value.result ?? ''}`, [value.actorEntityId, ...value.targetEntityIds], value.completion);
+  for (const value of memory.observations) add(item('objective', value.description, 70, { kind: 'observation', subjectEntityId: value.subjectEntityId }), value.description, [value.subjectEntityId]);
+  for (const value of memory.privateCognition) add(item('private', decorate(value.content, value), 85, { kind: value.kind, ownerEntityId: value.ownerEntityId, preserveForm: anchorAssignments.has(value) }), `${value.content} ${(anchorAssignments.get(value) ?? []).map(anchor => anchor.exactText).join(' ')}`, [value.ownerEntityId]);
   for (const value of memory.informationTransfers) {
-    const strength = matchStrength(value.claimText, queryCompact, queryTerms);
-    if (!strength && !anchorAssignments.has(value) && !value.toEntityIds.some(id => mentionedHere.includes(id)) && !mentionedHere.includes(value.fromEntityId)) continue;
-    score += 40 + strength; reasons.push('shared');
     const effectiveFromEntityId = value.fromEntityId ?? anchorAssignments.get(value)?.[0]?.speakerEntityId ?? null;
-    if (value.toEntityIds.length) add(item('transfer', decorate(value.claimText, value), 85 + strength, { kind: value.channel, fromEntityId: effectiveFromEntityId, toEntityIds: value.toEntityIds, preserveForm: anchorAssignments.has(value) }));
-    else if (effectiveFromEntityId) add(item('private', decorate(`未确认已告知他人：${value.claimText}`, value), 75 + strength, { kind: value.channel, ownerEntityId: effectiveFromEntityId, preserveForm: anchorAssignments.has(value) }));
+    const rankText = `${value.claimText} ${(anchorAssignments.get(value) ?? []).map(anchor => anchor.exactText).join(' ')}`;
+    if (value.toEntityIds.length) add(item('transfer', decorate(value.claimText, value), 85, { kind: value.channel, fromEntityId: effectiveFromEntityId, toEntityIds: value.toEntityIds, preserveForm: anchorAssignments.has(value) }), rankText, [effectiveFromEntityId, ...value.toEntityIds]);
+    else if (effectiveFromEntityId) add(item('private', decorate(`未确认已告知他人：${value.claimText}`, value), 75, { kind: value.channel, ownerEntityId: effectiveFromEntityId, preserveForm: anchorAssignments.has(value) }), rankText, [effectiveFromEntityId]);
   }
-  if (!score || !items.length) return null;
-  score += Math.max(0, 10 - Math.max(0, newestAssistantSeq - memory.assistantSeq));
-  return { floorId: memory.floorId, floorMemoryId: memory.floorMemoryId, assistantSeq: memory.assistantSeq, score, reasons: [...new Set(reasons)], items };
+  return result.map(value => ({ ...value, floorId: memory.floorId, floorMemoryId: memory.floorMemoryId, assistantSeq: memory.assistantSeq }));
 }
 
 function stateCandidates(source, involvedIds) {
@@ -227,6 +172,12 @@ function stateCandidates(source, involvedIds) {
         visibility,
         sourceAssistantSeq: value.sourceAssistantSeq,
         priority: layer === 'core' ? 150 : layer === 'adaptive' ? 115 : 95,
+        _rankText: `${value.text} ${value.reason}`,
+        _entityText: entityNameText([subject.subjectEntityId, value.towardEntityId], entityById),
+        _coreText: value.text,
+        _subjectKey: subject.subjectEntityId,
+        _visibilityKey: visibility,
+        _statusKey: '',
       });
     }
   }
@@ -268,6 +219,10 @@ export function formatRecallInjection({ coverage, floors, states, entityById }) 
         const targets = (value.targetEntityIds ?? []).map(id => entityName(id, entityById)).join('、');
         const boundary = speaker ? `（${speaker}${targets ? ` → ${targets}` : ''}）` : '';
         shared.push(`${prefix}${boundary}：${value.text}`);
+      } else if (value.kind === 'action') {
+        const actor = entityName(value.actorEntityId, entityById);
+        const targets = (value.targetEntityIds ?? []).map(id => entityName(id, entityById)).join('、');
+        objective.push(`${prefix}（主体：${actor}${targets ? `；对象：${targets}` : ''}）：${value.text}`);
       } else objective.push(`${prefix}：${value.text}`);
     }
     if (objective.length) { lines.push('[客观相关旧事]'); objective.forEach(value => lines.push(`- ${value}`)); }
@@ -282,55 +237,149 @@ export function formatRecallInjection({ coverage, floors, states, entityById }) 
   return lines.join('\n');
 }
 
+// The .7/.2/.1 branch blend follows the STBME shared-ranking.js starting point
+// (AGPL-3.0, commit 593b061b29b2ecc8153b7346df985a6d229a4973).
+function recallQueries(queryContext, fallbackText) {
+  const definitions = [
+    { key: 'latestUser', text: clean(queryContext?.latestUserText, 4000) || fallbackText, weight: 0.7 },
+    { key: 'recentAssistant', text: clean(queryContext?.recentAssistantText, 4000), weight: 0.2 },
+    { key: 'previousUser', text: clean(queryContext?.previousUserText, 4000), weight: 0.1 },
+  ].filter(value => value.text);
+  const weightTotal = definitions.reduce((sum, value) => sum + value.weight, 0) || 1;
+  return definitions.map(value => ({ ...value, normalizedWeight: value.weight / weightTotal }));
+}
+
+function scoreCandidates(candidates, queries, { summaryAssist = false, keepUnmatched = false } = {}) {
+  if (!candidates.length) return [];
+  const documents = candidates.map((value, index) => ({ id: index, text: value._rankText }));
+  const ranked = rankRecallDocuments({ documents, queries });
+  const entityRanked = rankRecallDocuments({ documents: candidates.map((value, index) => ({ id: index, text: value._entityText })), queries });
+  const summaries = summaryAssist ? rankRecallDocuments({ documents: candidates.map((value, index) => ({ id: index, text: value._summary })), queries }) : [];
+  return candidates.map((value, index) => {
+    const ranking = ranked[index], entityRanking = entityRanked[index], summary = summaries[index];
+    const branchScores = {}, entityBranchScores = {}, summaryScores = {};
+    let score = 0, summaryScore = 0;
+    for (const query of queries) {
+      const contentScore = ranking.branchScores[query.key] ?? 0;
+      const entityScore = entityRanking.branchScores[query.key] ?? 0;
+      const branchScore = Math.min(1, contentScore + entityScore * 0.15);
+      branchScores[query.key] = branchScore;
+      entityBranchScores[query.key] = entityScore;
+      score += branchScore * query.normalizedWeight;
+      const auxiliary = summary?.branchScores?.[query.key] ?? 0;
+      summaryScores[query.key] = auxiliary;
+      summaryScore += auxiliary * query.normalizedWeight;
+    }
+    // A floor summary may break ties between facts that already match, but it
+    // must never turn another fact from that floor into prompt material.
+    const finalScore = score > 0 ? score * (summaryAssist ? 1 + summaryScore * 0.12 : 1) : 0;
+    return { ...value, score: finalScore, branchScores: Object.freeze(branchScores), entityBranchScores: Object.freeze(entityBranchScores), summaryScores: Object.freeze(summaryScores) };
+  }).filter(value => keepUnmatched || value.score > 0);
+}
+
+const duplicateKey = value => [compact(value._coreText), value._subjectKey, value._visibilityKey, value._statusKey ?? ''].join('|');
+const publicItem = value => {
+  const { _rankText, _entityText, _coreText, _summary, _subjectKey, _visibilityKey, _statusKey, _sourceOrder, floorId, floorMemoryId, assistantSeq, branchScores, entityBranchScores, summaryScores, score, ...rest } = value;
+  return { ...rest, rankScore: Number(score.toFixed(6)), rankBranches: branchScores, rankEntityBranches: entityBranchScores };
+};
+
 export function selectRecall({ source, queryContext, contextSize = 8192, maxFloors = MAX_RECALLED_FLOORS, maxItems = MAX_TOTAL_ITEMS } = {}) {
   if (source?.status !== 'ready') return Object.freeze({ status: 'empty', injectionText: '', floors: Object.freeze([]), states: Object.freeze([]), stages: Object.freeze({ input: 0, candidates: 0, dropRecent: 0, dropPersistent: 0, dropVisibility: 0, selected: 0 }), skipReasons: Object.freeze(['sourceUnavailable']) });
   const query = clean(queryContext?.text, MAX_QUERY_CHARACTERS);
   if (!query) return Object.freeze({ status: 'empty', injectionText: '', floors: Object.freeze([]), states: Object.freeze([]), coverage: source.coverage, stages: Object.freeze({ input: 0, candidates: source.floorMemories.length, dropRecent: 0, dropPersistent: 0, dropVisibility: 0, selected: 0 }), skipReasons: Object.freeze(['emptyQuery']) });
-  const queryCompact = compact(query), queryTerms = terms(query);
+  const queries = recallQueries(queryContext, query);
+  const queryCompact = compact(query);
   const entityMentions = new Set();
   for (const entity of source.entities) if (entityLabels(entity).some(label => !genericAlias(label) && compact(label).length >= 2 && queryCompact.includes(compact(label)))) entityMentions.add(entity.entityId);
   const newestAssistantSeq = source.coverage.stableThroughAssistantSeq ?? Math.max(0, ...source.floorMemories.map(memory => memory.assistantSeq));
   const recentBoundary = Math.max(0, newestAssistantSeq - RECENT_VISIBLE_AI_FLOORS + 1);
   const oldMemories = source.floorMemories.filter(memory => memory.assistantSeq < recentBoundary);
-  const ranked = oldMemories.map(memory => candidateFor(memory, entityMentions, queryCompact, queryTerms, newestAssistantSeq)).filter(Boolean).sort((a, b) => b.score - a.score || b.assistantSeq - a.assistantSeq || a.floorId.localeCompare(b.floorId));
+  const entityById = new Map(source.entities.map(entity => [entity.entityId, entity]));
+  const historical = scoreCandidates(oldMemories.flatMap(memory => historyFacts(memory, entityById)), queries, { summaryAssist: true })
+    .sort((a, b) => b.score - a.score || b.priority - a.priority || b.assistantSeq - a.assistantSeq || a.floorId.localeCompare(b.floorId) || a._sourceOrder - b._sourceOrder);
   const involvedIds = new Set(source.entities.filter(entity => ['user', 'char'].includes(entity.specialRole)).map(entity => entity.entityId));
   entityMentions.forEach(id => involvedIds.add(id));
-  const stateRanked = stateCandidates(source, involvedIds).sort((a, b) => b.priority - a.priority || a.subject.localeCompare(b.subject, 'zh-CN') || a.layer.localeCompare(b.layer));
-  const allowedItems = Math.max(0, Math.min(MAX_TOTAL_ITEMS, maxItems));
-  const selectedStates = stateRanked.slice(0, allowedItems);
-  const persistentTexts = new Set(selectedStates.map(value => compact(value.text)).filter(Boolean));
-  const recalledTexts = new Set();
+  const stateRanked = scoreCandidates(stateCandidates(source, involvedIds), queries, { keepUnmatched: true })
+    .sort((a, b) => ((b.layer === 'core' && (b.branchScores.latestUser ?? 0) > 0) ? 1 : 0) - ((a.layer === 'core' && (a.branchScores.latestUser ?? 0) > 0) ? 1 : 0)
+      || (b.branchScores.latestUser ?? 0) - (a.branchScores.latestUser ?? 0) || b.score - a.score || b.priority - a.priority || a.subject.localeCompare(b.subject, 'zh-CN') || a.layer.localeCompare(b.layer));
+  const allowedItems = Math.max(0, Math.min(MAX_TOTAL_ITEMS, Math.floor(Number(maxItems) || 0)));
+  const stateTarget = Math.round(allowedItems * 2 / 3), historyTarget = allowedItems - stateTarget;
   let dropPersistent = 0;
-  const uniqueRanked = ranked.map(floor => {
-    const items = floor.items.filter(value => {
-      const key = compact(value.text);
-      if (key && (persistentTexts.has(key) || recalledTexts.has(key))) { dropPersistent += 1; return false; }
-      if (key) recalledTexts.add(key);
-      return true;
-    });
-    return { ...floor, items };
-  }).filter(floor => floor.items.length);
+  const historyKeys = new Set();
+  const uniqueHistory = historical.filter(value => {
+    const key = duplicateKey(value);
+    if (historyKeys.has(key)) { dropPersistent += 1; return false; }
+    historyKeys.add(key);
+    return true;
+  });
+  const stateKeys = new Set();
+  const uniqueStates = stateRanked.filter(value => {
+    const key = duplicateKey(value);
+    if (stateKeys.has(key)) { dropPersistent += 1; return false; }
+    stateKeys.add(key);
+    return true;
+  });
   const floorLimit = Math.max(0, Math.min(10, Number.isSafeInteger(maxFloors) ? maxFloors : MAX_RECALLED_FLOORS));
-  const chosen = uniqueRanked.slice(0, floorLimit);
-  const floorItems = chosen.flatMap(floor => floor.items.map((value, index) => ({ floor, value, index }))).sort((a, b) => b.value.priority - a.value.priority || b.floor.score - a.floor.score || b.floor.assistantSeq - a.floor.assistantSeq || a.index - b.index);
-  const remaining = Math.max(0, allowedItems - selectedStates.length);
-  const selectedFloorItems = new Set(floorItems.slice(0, remaining));
-  let floors = chosen.map(floor => ({ ...floor, items: floorItems.filter(entry => entry.floor === floor && selectedFloorItems.has(entry)).map(entry => entry.value) })).filter(floor => floor.items.length).sort((a, b) => a.assistantSeq - b.assistantSeq || a.floorId.localeCompare(b.floorId));
-  let states = selectedStates;
-  const entityById = new Map(source.entities.map(entity => [entity.entityId, entity]));
   const charLimit = Math.max(800, Math.min(12000, Math.floor((Number(contextSize) || 8192) * 0.55)));
-  let injectionText = formatRecallInjection({ coverage: source.coverage, floors, states, entityById });
-  while (injectionText.length > charLimit && (floors.some(floor => floor.items.length) || states.length)) {
-    const lowestFloor = floors.flatMap(floor => floor.items.map((value, index) => ({ floor, value, index }))).sort((a, b) => a.value.priority - b.value.priority || a.floor.assistantSeq - b.floor.assistantSeq)[0];
-    const lowestState = [...states].sort((a, b) => a.priority - b.priority)[0];
-    if (lowestFloor && (!lowestState || lowestFloor.value.priority <= lowestState.priority)) {
-      floors = floors.map(floor => floor === lowestFloor.floor ? { ...floor, items: floor.items.filter((_, index) => index !== lowestFloor.index) } : floor).filter(floor => floor.items.length);
-    } else if (lowestState) states = states.filter(value => value !== lowestState);
-    injectionText = formatRecallInjection({ coverage: source.coverage, floors, states, entityById });
+  const stateCharTarget = Math.floor(charLimit * 2 / 3), historyCharTarget = charLimit - stateCharTarget;
+  const chosenStates = [], chosenHistory = [], chosenFloorIds = new Set();
+  const rejectedDuplicates = new WeakSet();
+  const rejectDuplicate = value => {
+    if (!rejectedDuplicates.has(value)) { rejectedDuplicates.add(value); dropPersistent += 1; }
+    return false;
+  };
+  const render = (states = chosenStates, history = chosenHistory) => {
+    const floorMap = new Map();
+    for (const value of history) {
+      const floor = floorMap.get(value.floorId) ?? { floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq, score: 0, reasons: new Set(), items: [] };
+      floor.score = Math.max(floor.score, value.score);
+      floor.reasons.add(value.kind);
+      for (const [branch, branchScore] of Object.entries(value.branchScores)) if (branchScore > 0) floor.reasons.add(`bm25:${branch}`);
+      if (Object.values(value.entityBranchScores).some(score => score > 0)) floor.reasons.add('entity');
+      if (Object.values(value.summaryScores).some(score => score > 0)) floor.reasons.add('summary');
+      floor.items.push(publicItem(value));
+      floorMap.set(value.floorId, floor);
+    }
+    const floors = [...floorMap.values()].map(floor => ({ ...floor, reasons: [...floor.reasons] })).sort((a, b) => a.assistantSeq - b.assistantSeq || a.floorId.localeCompare(b.floorId));
+    const publicStates = states.map(publicItem);
+    return { floors, states: publicStates, text: formatRecallInjection({ coverage: source.coverage, floors, states: publicStates, entityById }) };
+  };
+  const canAddState = (value, groupLimit = null) => {
+    if (chosenStates.includes(value) || chosenStates.length + chosenHistory.length >= allowedItems) return false;
+    if (chosenHistory.some(selected => duplicateKey(selected) === duplicateKey(value))) return rejectDuplicate(value);
+    if (groupLimit !== null && render([...chosenStates, value], []).text.length > groupLimit) return false;
+    return render([...chosenStates, value], chosenHistory).text.length <= charLimit;
+  };
+  const canAddHistory = (value, groupLimit = null) => {
+    if (chosenHistory.includes(value) || chosenStates.length + chosenHistory.length >= allowedItems) return false;
+    if (chosenStates.some(selected => duplicateKey(selected) === duplicateKey(value))) return rejectDuplicate(value);
+    const newFloor = !chosenFloorIds.has(value.floorId);
+    if (newFloor && chosenFloorIds.size >= floorLimit) return false;
+    if (groupLimit !== null && render([], [...chosenHistory, value]).text.length > groupLimit) return false;
+    return render(chosenStates, [...chosenHistory, value]).text.length <= charLimit;
+  };
+  const addState = value => { chosenStates.push(value); };
+  const addHistory = value => { chosenHistory.push(value); chosenFloorIds.add(value.floorId); };
+  for (const value of uniqueStates) if (chosenStates.length < stateTarget && canAddState(value, stateCharTarget)) addState(value);
+  for (const value of uniqueHistory) if (chosenHistory.length < historyTarget && canAddHistory(value, historyCharTarget)) addHistory(value);
+  for (const value of uniqueHistory) if (chosenHistory.length < historyTarget && canAddHistory(value)) addHistory(value);
+  for (const value of uniqueStates) if (chosenStates.length < stateTarget && canAddState(value)) addState(value);
+  const remainder = [
+    ...uniqueStates.filter(value => !chosenStates.includes(value)).map((value, order) => ({ type: 'state', value, order })),
+    ...uniqueHistory.filter(value => !chosenHistory.includes(value)).map((value, order) => ({ type: 'history', value, order })),
+  ].sort((a, b) => b.value.score - a.value.score
+    || b.value.priority - a.value.priority
+    || a.type.localeCompare(b.type)
+    || a.order - b.order);
+  for (const entry of remainder) {
+    if (chosenStates.length + chosenHistory.length >= allowedItems) break;
+    if (entry.type === 'state' ? canAddState(entry.value) : canAddHistory(entry.value)) (entry.type === 'state' ? addState : addHistory)(entry.value);
   }
+  const rendered = render();
+  const floors = rendered.floors, states = rendered.states, injectionText = rendered.text;
   const skipReasons = [...(source.degradedReasons ?? [])];
   if (source.floorMemories.length !== oldMemories.length) skipReasons.push('recentRawWindow');
-  if (!ranked.length) skipReasons.push('noReliableMemoryMatch');
+  if (!historical.length) skipReasons.push('noReliableMemoryMatch');
   if (dropPersistent) skipReasons.push('persistentStateDuplicate');
   if (!source.coverage.cseCurrent) skipReasons.push('dynamicStateCoverageIncomplete');
   return Object.freeze({
@@ -342,6 +391,6 @@ export function selectRecall({ source, queryContext, contextSize = 8192, maxFloo
     states: Object.freeze(states.map(value => Object.freeze(value))),
     stages: Object.freeze({ input: queryContext?.messageCount ?? 0, candidates: source.floorMemories.length, dropRecent: source.floorMemories.length - oldMemories.length, dropPersistent, dropVisibility: source.coverage.cseCurrent ? 0 : source.currentState.reduce((sum, subject) => sum + subject.adaptive.length + subject.situational.length, 0), selected: floors.length }),
     skipReasons: Object.freeze(skipReasons),
-    limits: Object.freeze({ maxFloors: floorLimit, maxItems: allowedItems, maxCharacters: charLimit, actualCharacters: injectionText.length }),
+    limits: Object.freeze({ maxFloors: floorLimit, maxItems: allowedItems, maxCharacters: charLimit, actualCharacters: injectionText.length, stateItemTarget: stateTarget, historyItemTarget: historyTarget, stateCharacterTarget: stateCharTarget, historyCharacterTarget: historyCharTarget }),
   });
 }

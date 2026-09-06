@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCompactApiClient, normalizeApiUrl, parseJsonOutput } from '../src/compact-api-client.js';
-import { createArchiveV2TaskRouter } from '../src/api-routing.js';
+import { createTaskRouter } from '../src/api-routing.js';
+import { buildExtractorSystemPrompt } from '../src/v3/extractor.js';
 
 const config = overrides => ({ url: 'https://api.example.test', key: 'TEST_KEY', model: 'compact-model', excludeParams: [], timeoutSec: 5, stream: false, ...overrides });
 const jsonResponse = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
@@ -42,12 +43,12 @@ test('Base URL 规范化且独立请求只含紧凑 system/user、schema 与代�
   assert.deepEqual(request.body.json_schema, { name: 'people', value: { type: 'object' }, strict: true }); assert.equal(Object.hasOwn(request.body, 'response_format'), false); assert.equal(request.body.temperature, 0.2); assert.equal(request.body.max_tokens, 12000);
 });
 
-test('任务可注入独立 system 文案并显式传递 maxTokens，默认人物 system 行为不变', async () => {
+test('任务可注入独立 system 文案并显式传递 maxTokens，默认任务 system 保持中性', async () => {
   const bodies = []; const client = createCompactApiClient({ fetchImpl: async (_path, options) => { bodies.push(JSON.parse(options.body)); return jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] }); } });
   await client.generateTask({ config: config(), systemPrompt: 'RELATION SYSTEM {{user}} {{char}}', taskMessages: [{ role: 'user', content: 'x' }], maxTokens: 16000 });
   await client.generateTask({ config: config(), taskMessages: [{ role: 'user', content: 'x' }] });
   assert.equal(bodies[0].messages[0].content, 'RELATION SYSTEM {{user}} {{char}}'); assert.equal(bodies[0].max_tokens, 16000);
-  assert.match(bodies[1].messages[0].content, /extract people only/i);
+  assert.match(bodies[1].messages[0].content, /supplied task input/i);
 });
 
 test('剔除参数不允许删除代理与 schema 必需字段，且不发送上游 response_format', async () => {
@@ -72,7 +73,7 @@ test('semantic parseMode 把模型原文交给业务 normalizer，不被通用�
   const result = await client.generateTask({ config: config(), taskMessages: [], parseMode: 'semantic' });
   assert.equal(result.textData, content);
   assert.equal(Object.hasOwn(result, 'jsonData'), false);
-  const router = createArchiveV2TaskRouter({
+  const router = createTaskRouter({
     resolver: { resolve: () => ({ kind: 'independent', source: 'main', sourceLabel: '主配置', config: config() }), resolveUtility: () => ({ kind: 'independent', source: 'utility', sourceLabel: '副配置', config: config() }) },
     compactClient: client,
   });
@@ -137,6 +138,26 @@ test('timeout、主动 abort、401/404/429/5xx 均映射为有限脱敏错误', 
     await assert.rejects(client.generateTask({ config: config(), taskMessages: [] }), error => error.code === code && !error.message.includes('TEST_KEY'));
     assert.equal(calls, status === 429 || status >= 500 ? 3 : 1);
   }
+});
+
+test('同一任务的运输重试复用启动时提示词快照', async () => {
+  let selected = '摘要指导第一版';
+  const bodies = [];
+  const client = createCompactApiClient({
+    retryWait: async () => { selected = '摘要指导第二版'; },
+    fetchImpl: async (path, options) => {
+      bodies.push(JSON.parse(options.body));
+      return bodies.length === 1
+        ? jsonResponse({}, 503)
+        : jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] });
+    },
+  });
+  const promptSnapshot = buildExtractorSystemPrompt(selected);
+  await client.generateTask({ config: config(), systemPrompt: promptSnapshot, taskMessages: [{ role: 'user', content: '{}' }] });
+  assert.equal(selected, '摘要指导第二版');
+  assert.equal(bodies.length, 2);
+  assert.deepEqual(bodies.map(body => body.messages[0].content), [promptSnapshot, promptSnapshot]);
+  assert.doesNotMatch(bodies[1].messages[0].content, /摘要指导第二版/);
 });
 
 test('HTTP 400/422 只保留标识符与模板化摘要，不泄露正文、Key、URL 或请求体', async () => {

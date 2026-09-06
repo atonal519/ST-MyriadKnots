@@ -20,6 +20,7 @@ import {
 import { collectFloorMemoryEntityIds, entityIndexKey, validateMemoryGraph } from './memory-schema.js';
 import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
 import { validateCseGraph } from './cse-schema.js';
+import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 
 const EVENTS = Object.freeze([
   'CHAT_CHANGED', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED',
@@ -185,6 +186,7 @@ export function createFoundationRuntime({
   let lastError = null;
   let unreachableCount = 0;
   let metrics = Object.freeze({});
+  let emptyRealtimeObservation = null;
   const subscribers = new Set();
 
   const enabled = () => {
@@ -236,6 +238,7 @@ export function createFoundationRuntime({
     dirtyReason = null;
     cache = null;
     pending = null;
+    emptyRealtimeObservation = null;
     store.invalidate();
     publish(enabled() ? 'idle' : 'disabled');
   }
@@ -420,24 +423,35 @@ export function createFoundationRuntime({
     }
     const floorIdSet = new Set(floors.map(floor => floor.id));
     const floorMemories = (cache.floorMemories ?? []).filter(memory => floorIdSet.has(memory.floorId));
-    const stateDeltas = filterReachableDeltas({ floors, floorMemories, stateDeltas: cache.stateDeltas ?? [] });
+    let stateDeltas = filterReachableDeltas({ floors, floorMemories, stateDeltas: cache.stateDeltas ?? [] });
     const referencedEntityIds = new Set();
     floorMemories.forEach(memory => collectFloorMemoryEntityIds(memory).forEach(id => referencedEntityIds.add(id)));
     stateDeltas.forEach(delta => delta.subjectSnapshots.forEach(subject => { referencedEntityIds.add(subject.subjectEntityId); subject.adaptive.forEach(item => { if (item.towardEntityId) referencedEntityIds.add(item.towardEntityId); }); }));
     if (cache.baseline) { referencedEntityIds.add(cache.baseline.userPersona.entityId); referencedEntityIds.add(cache.baseline.characterCard.entityId); }
-    const entities = (cache.entities ?? []).filter(entity => referencedEntityIds.has(entity.id) || (entity.firstSeenFloorId && floorIdSet.has(entity.firstSeenFloorId)));
+    const entities = (cache.entities ?? []).filter(entity => (referencedEntityIds.has(entity.id) || (entity.firstSeenFloorId && floorIdSet.has(entity.firstSeenFloorId))) && (!entity.firstSeenFloorId || floorIdSet.has(entity.firstSeenFloorId)));
+    const entityIds = new Set(entities.map(entity => entity.id));
+    const baseline = cache.baseline && entityIds.has(cache.baseline.userPersona.entityId) && entityIds.has(cache.baseline.characterCard.entityId) ? cache.baseline : null;
+    if (!baseline) stateDeltas = [];
     const memoryReady = floorMemories.some(memory => memory.recordStatus === 'active');
     const cseReady = memoryReady && floorMemories.filter(memory => memory.recordStatus === 'active').every(memory => stateDeltas.some(delta => delta.floorId === memory.floorId && delta.floorMemoryId === memory.id));
     const capabilities = { ...FOUNDATION_CAPABILITIES, memoryReady, cseReady };
-    const currentState = cache.baseline ? await replayCurrentState({ chatId: operation.chatId, narrativeGeneration, baselineId: cache.baseline.id, floors, floorMemories, stateDeltas, now: nowValue, id: await deterministicUuid(['v3-cse-current-state', checkpointId]), previousId: cache.currentStates?.at(-1)?.id ?? null }) : null;
+    const currentState = baseline ? await replayCurrentState({ chatId: operation.chatId, narrativeGeneration, baselineId: baseline.id, floors, floorMemories, stateDeltas, now: nowValue, id: await deterministicUuid(['v3-cse-current-state', checkpointId]), previousId: cache.currentStates?.at(-1)?.id ?? null }) : null;
     const indexes = await buildFoundationIndexes({ chatId: operation.chatId, narrativeGeneration, checkpointId, floors, candidates: stableCandidates, entities, now: nowValue });
     const indexKeys = indexes.map(index => store.recordKey(index));
     const floorIds = floors.map(floor => floor.id);
     const newFloors = floors.slice(prefixLength);
+    const priorRealtimeOrigin = realtimeOriginFromReachable(cache);
+    const carriesRealtimeOrigin = operation.reason === 'MESSAGE_RECEIVED' && !isBranch
+      && ((!cache.root && emptyRealtimeObservation?.chatId === operation.chatId) || priorRealtimeOrigin !== null);
+    const realtimeOrigin = carriesRealtimeOrigin ? {
+      chatId: operation.chatId,
+      narrativeGeneration,
+      sourceSnapshotFingerprint: snapshot.fingerprint,
+    } : null;
     operation.runBase = {
       ...commonRecord({ recordType: 'run', id: runId, chatId: operation.chatId, narrativeGeneration, now: nowValue }),
       parentCheckpointId, inputSnapshotFingerprint: snapshot.fingerprint,
-      mode, sessionEpoch: operation.epoch, inputFloorIds: newFloors.map(floor => floor.id), completedFloorIds: [], failedItems: [], diagnostics: cache.run?.diagnostics ?? null,
+      mode, sessionEpoch: operation.epoch, inputFloorIds: newFloors.map(floor => floor.id), completedFloorIds: [], failedItems: [], diagnostics: diagnosticsWithRealtimeOrigin(cache.run?.diagnostics, realtimeOrigin),
       preparedRecordRefs: [...newFloors.map(floor => `v3-floor-${floor.id}`), ...(currentState ? [store.recordKey(currentState)] : []), ...indexKeys, `v3-checkpoint-${checkpointId}`], startedAt: operation.startedAt,
     };
     let run = await persistRunPhase(operation, 'capturing');
@@ -518,11 +532,11 @@ export function createFoundationRuntime({
       status: 'ready', capabilities: clone(capabilities), headCheckpointId: actualCheckpoint.id,
       sourceSnapshotFingerprint: actualCheckpoint.sourceSnapshotFingerprint,
       stableBoundary: { assistantSeq: actualFloors.length, floorId: boundaryFloor?.id ?? null, canonicalFingerprint: boundaryFloor?.content?.canonicalFingerprint ?? null },
-      baselineId: cache.baseline?.id ?? null, activeRunId: null,
+      baselineId: baseline?.id ?? null, activeRunId: null,
       indexManifest: { ...emptyIndexManifest(), floor: actualIndexKeys.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-')), entity: actualIndexKeys.filter(key => key.includes('-entity-')), reverseRef: actualIndexKeys.filter(key => key.includes('-reverseRef-')) },
       activeStateRefs: actualCurrentStates.map(state => state.id), activeThreadRefs: [],
     }, { expectedChatId: operation.chatId });
-    await validateCseGraph({ root, checkpoint: actualCheckpoint, run: actualRun, floors: actualFloors, floorMemories: actualMemories, entities: actualEntities, indexes: actualIndexes, indexKeys: actualIndexKeys, baseline: cache.baseline ?? null, stateDeltas: actualDeltas, currentStates: actualCurrentStates });
+    await validateCseGraph({ root, checkpoint: actualCheckpoint, run: actualRun, floors: actualFloors, floorMemories: actualMemories, entities: actualEntities, indexes: actualIndexes, indexKeys: actualIndexKeys, baseline, stateDeltas: actualDeltas, currentStates: actualCurrentStates });
     const committed = await store.commitRoot(root, cache.rootRevision ?? 0, { signal: operation.controller.signal });
     if (committed.status === 'conflict') {
       unreachableCount += newFloors.length + indexes.length + 2;
@@ -559,7 +573,7 @@ export function createFoundationRuntime({
       return publishOperation(operation, 'conflict');
     }
     if (committed.status !== 'saved') throw statusError(committed.status, 'V3 root 提交失败');
-    cache = { root, rootRevision: committed.revision, checkpoint: actualCheckpoint, run: actualRun, floors: activeFloorViews(actualFloors, stableCandidates), floorMemories: actualMemories, entities: actualEntities, baseline: cache.baseline ?? null, stateDeltas: actualDeltas, currentStates: actualCurrentStates, indexes: actualIndexes, indexesMissing: false };
+    cache = { root, rootRevision: committed.revision, checkpoint: actualCheckpoint, run: actualRun, floors: activeFloorViews(actualFloors, stableCandidates), floorMemories: actualMemories, entities: actualEntities, baseline, stateDeltas: actualDeltas, currentStates: actualCurrentStates, indexes: actualIndexes, indexesMissing: false };
     pending = candidates[stableCount] ?? null;
     const afterCommit = await scanCurrentSnapshot(operation, { confirmLatest });
     if (afterCommit.snapshot.fingerprint !== snapshot.fingerprint) {
@@ -575,7 +589,8 @@ export function createFoundationRuntime({
       return publishOperation(operation, 'stale');
     }
     const completedRun = await persistRunPhase(operation, 'completed', { completedFloorIds: newFloors.map(floor => floor.id) });
-    cache = { root, rootRevision: committed.revision, checkpoint: actualCheckpoint, run: completedRun, floors: activeFloorViews(actualFloors, stableCandidates), floorMemories: actualMemories, entities: actualEntities, baseline: cache.baseline ?? null, stateDeltas: actualDeltas, currentStates: actualCurrentStates, indexes: actualIndexes, indexesMissing: false };
+    cache = { root, rootRevision: committed.revision, checkpoint: actualCheckpoint, run: completedRun, floors: activeFloorViews(actualFloors, stableCandidates), floorMemories: actualMemories, entities: actualEntities, baseline, stateDeltas: actualDeltas, currentStates: actualCurrentStates, indexes: actualIndexes, indexesMissing: false };
+    emptyRealtimeObservation = null;
     pending = candidates[stableCount] ?? null;
     lastRun = runSummary(completedRun, isBranch ? `trustedPrefix:${prefixLength}` : 'committed');
     lastError = null;
@@ -612,6 +627,7 @@ export function createFoundationRuntime({
         const stableCount = stableCountFor(candidates, loaded.floors, confirmLatest);
         const sourceSnapshot = await foundationInputSnapshot(candidates, stableCount);
         if (!loaded.root && stableCount === 0) {
+          emptyRealtimeObservation = Object.freeze({ chatId: operation.chatId });
           pending = candidates[0] ?? null;
           lastRun = null;
           lastError = null;
@@ -687,13 +703,23 @@ export function createFoundationRuntime({
     if (value !== true) { invalidate(); return publish('disabled'); }
     return reconcile('enabled');
   }
+  function adoptReachable(value) {
+    if (!value?.root || !Number.isSafeInteger(value.rootRevision)) return false;
+    let identity;
+    try { identity = capture().identity; } catch { return false; }
+    if (value.root.chatId !== identity.chatId || (cache?.rootRevision ?? 0) > value.rootRevision) return false;
+    cache = value;
+    lastRun = runSummary(cache.run, 'adopted');
+    publish('ready');
+    return true;
+  }
   return Object.freeze({
     bind,
     start: () => enabled() ? reconcile('start') : Promise.resolve(publish('disabled')),
     reconcile,
     refreshStatus: () => reconcile('manualRefresh'),
     confirmLatest: () => pending ? reconcile('manualConfirm', { confirmLatest: true }) : Promise.resolve(publish('ready')),
-    invalidate, setEnabled, getState: () => publicState,
+    invalidate, setEnabled, adoptReachable, getState: () => publicState,
     getReachable: () => cache,
     subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('V3 foundation listener 必须是函数'); subscribers.add(listener); return () => subscribers.delete(listener); },
     identityProvider: () => normalizedIdentity(contextProvider),

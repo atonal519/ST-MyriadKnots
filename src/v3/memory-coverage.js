@@ -11,6 +11,29 @@ const visibleAssistant = message => message
   && typeof message.mes === 'string'
   && Boolean(message.mes.trim());
 
+export function realtimeOriginFromReachable(reachable) {
+  const root = reachable?.root;
+  const marker = reachable?.run?.diagnostics?.realtimeOriginV1;
+  if (!root || reachable?.run?.mode === 'branchReplay' || !marker || typeof marker !== 'object' || Array.isArray(marker)) return null;
+  if (marker.chatId !== root.chatId
+    || marker.narrativeGeneration !== root.narrativeGeneration
+    || marker.sourceSnapshotFingerprint !== root.sourceSnapshotFingerprint) return null;
+  return Object.freeze({
+    chatId: marker.chatId,
+    narrativeGeneration: marker.narrativeGeneration,
+    sourceSnapshotFingerprint: marker.sourceSnapshotFingerprint,
+  });
+}
+
+export function diagnosticsWithRealtimeOrigin(diagnostics, realtimeOrigin = null) {
+  const next = diagnostics && typeof diagnostics === 'object' && !Array.isArray(diagnostics)
+    ? structuredClone(diagnostics)
+    : {};
+  delete next.realtimeOriginV1;
+  if (realtimeOrigin) next.realtimeOriginV1 = { ...realtimeOrigin };
+  return next;
+}
+
 function captureHostGuard(snapshot, hostCandidates) {
   return Object.freeze({
     chatId: currentChatId(snapshot),
@@ -92,7 +115,8 @@ export function assessMemoryCoverage({ reachable, snapshot, hostCandidates, real
   const pending = floors.slice(completed);
   if (!pending.length) return Object.freeze({ status: 'caughtUp', completed, total: floors.length, nextAssistantSeq: null, pendingFloorIds: Object.freeze([]), realtimeProtected: false, hasPartialWork: false });
   const recent = recentVisibleIndexes(snapshot.chat);
-  const realtimeProtected = pending.every(floor => recent.has(floor.hostLocator.messageIndex) && visibleAssistant(snapshot.chat[floor.hostLocator.messageIndex]));
+  const realtimeProtected = realtimeOrigin === true
+    || pending.every(floor => recent.has(floor.hostLocator.messageIndex) && visibleAssistant(snapshot.chat[floor.hostLocator.messageIndex]));
   const hasPartialWork = pending.some(floor => memoryByFloor.has(floor.id) || deltaByFloor.has(floor.id));
   const branchRebuild = reachable.run?.mode === 'branchReplay';
   const status = (completed > 0 || realtimeOrigin === true) && realtimeProtected && !hasPartialWork && !branchRebuild ? 'realtimeTail' : 'historicalDebt';

@@ -6,7 +6,7 @@ import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
 import { createV3MemoryRuntime } from '../src/v3/memory-runtime.js';
 import { EXTRACTOR_SYSTEM_PROMPT } from '../src/v3/extractor.js';
 import { createChatIdentityCoordinator, CHAT_IDENTITY_COLLECTION } from '../src/chat-identity.js';
-import { createArchiveV2Session } from '../src/archive-v2-session.js';
+import { createChatSession } from '../src/chat-session.js';
 
 const SOURCE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NOW = '2026-09-05T00:00:00.000Z';
@@ -70,7 +70,7 @@ test('复制分支只领独立身份，源记忆零读零搬运，按钮授权�
   const backend = backendHarness();
   let activeContext = context('原聊天', SOURCE, [user('开始'), assistant('公共 A'), assistant('公共 B'), assistant('旧线 C'), assistant('旧线 pending')]);
   const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => activeContext } } });
-  const sourceSession = createArchiveV2Session({
+  const sourceSession = createChatSession({
     contextProvider: () => activeContext,
     identityCoordinator: createChatIdentityCoordinator({ client: backend.client, now: () => new Date(NOW) }),
   });
@@ -105,7 +105,7 @@ test('复制分支只领独立身份，源记忆零读零搬运，按钮授权�
     },
     async put(collection, key, data, expectedRevision) { return backend.client.put(collection, key, data, expectedRevision); },
   };
-  const cloneSession = createArchiveV2Session({
+  const cloneSession = createChatSession({
     contextProvider: () => activeContext,
     identityCoordinator: createChatIdentityCoordinator({ client: cloneClient, now: () => new Date(NOW) }),
   });
@@ -151,7 +151,7 @@ test('无 binding 的旧 root 不再猜原分支：相同正文的两宿主按�
     };
     const ids = {};
     for (const name of order) {
-      const session = createArchiveV2Session({
+      const session = createChatSession({
         contextProvider: () => hosts[name],
         identityCoordinator: createChatIdentityCoordinator({ client: backend.client, now: () => new Date(NOW) }),
       });
@@ -174,7 +174,7 @@ test('无 binding 的旧 root 不再猜原分支：相同正文的两宿主按�
 test('复制到不同角色卡也只建独立身份，不读旧卡记忆', async () => {
   const backend = backendHarness();
   const source = context('原角色聊天', SOURCE, [], 'old-character.png');
-  await createArchiveV2Session({
+  await createChatSession({
     contextProvider: () => source,
     identityCoordinator: createChatIdentityCoordinator({ client: backend.client, now: () => new Date(NOW) }),
   }).prepare();
@@ -186,7 +186,7 @@ test('复制到不同角色卡也只建独立身份，不读旧卡记忆', async
     },
     async put(collection, key, data, expectedRevision) { return backend.client.put(collection, key, data, expectedRevision); },
   };
-  const result = await createArchiveV2Session({
+  const result = await createChatSession({
     contextProvider: () => clone,
     identityCoordinator: createChatIdentityCoordinator({ client: guardedClient, now: () => new Date(NOW) }),
   }).prepare();

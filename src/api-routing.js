@@ -67,8 +67,8 @@ export function createApiResolver({ settings } = {}) {
   return { resolve, resolveUtility, describe, describeSevenDaysPresets };
 }
 
-export function createArchiveV2TaskRouter({ resolver, compactClient, isEnabled = () => true } = {}) {
-  if (!resolver?.resolve || !compactClient?.generateTask) throw new Error('V2 API 路由依赖不可用');
+export function createTaskRouter({ resolver, compactClient, isEnabled = () => true } = {}) {
+  if (!resolver?.resolve || !compactClient?.generateTask) throw new Error('API 路由依赖不可用');
   const active = new Set(); let epoch = 0;
   const abortAll = () => { epoch += 1; for (const controller of active) controller.abort(); active.clear(); };
   const run = async (options, resolveRoute) => {
@@ -78,7 +78,7 @@ export function createArchiveV2TaskRouter({ resolver, compactClient, isEnabled =
       ? { ...resolved, config: Object.freeze({ ...resolved.config, excludeParams: Object.freeze([...(resolved.config.excludeParams || [])]) }) }
       : resolved;
     if (route.kind === 'unavailable') throw unavailableError(route);
-    if (route.kind !== 'independent') throw new Error('V2 API 路由类型不受支持');
+    if (route.kind !== 'independent') throw new Error('API 路由类型不受支持');
     if (!isEnabled() || mine !== epoch) throw abortError();
     const controller = new AbortController(); active.add(controller);
     const externalSignal = options?.signal;
@@ -98,12 +98,11 @@ export function createArchiveV2TaskRouter({ resolver, compactClient, isEnabled =
     }
     finally { externalSignal?.removeEventListener?.('abort', onExternalAbort); active.delete(controller); }
   };
-  const generatePrimaryTask = options => run(options, () => resolver.resolve());
   const generateUtilityTask = options => run(options, () => {
     if (typeof resolver.resolveUtility !== 'function') throw new Error('副 API 配置解析器不可用');
     return resolver.resolveUtility();
   });
-  return { generatePrimaryTask, generateUtilityTask, abortAll, getActiveCount: () => active.size };
+  return { generateUtilityTask, abortAll, getActiveCount: () => active.size };
 }
 
 export function createApiTools({ resolver, compactClient, isEnabled = () => true } = {}) {

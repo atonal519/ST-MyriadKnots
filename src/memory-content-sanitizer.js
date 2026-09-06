@@ -7,15 +7,13 @@ function literalWrapperRule(value) {
   return Object.freeze({ start: value.slice(0, separator), end: value.slice(separator + LITERAL_WRAPPER_SEPARATOR.length) });
 }
 
-export function normalizeArchiveV2TagList(value) {
+export function normalizeMemoryTagList(value) {
   return String(value || '').split(/[,，\n]/).map(item => String(item).trim()).map(item => {
     if (literalWrapperRule(item)) return item;
     const tagName = item.toLowerCase();
     return TAG_NAME_PATTERN.test(tagName) && !/~~|~.+/.test(tagName) ? tagName : '';
   }).filter(Boolean);
 }
-
-export const normalizeMemoryTagList = normalizeArchiveV2TagList;
 
 const TAG_PATTERN = /<(\/?)\s*([\p{L}][\p{L}\p{N}_-]*~?)(?:\s[^>]*)?(\/?)>/giu;
 
@@ -72,10 +70,10 @@ function dropLiteralWrappedContent(content, rules) {
   return result;
 }
 
-export function sanitizeArchiveV2SourceContent(raw, options = {}) {
+export function sanitizeMemoryContent(raw, options = {}) {
   if (!raw) return '';
-  const keep = normalizeArchiveV2TagList(options.keepTags ?? 'content').filter(item => TAG_NAME_PATTERN.test(item));
-  const extra = normalizeArchiveV2TagList(options.extraTags ?? '');
+  const keep = normalizeMemoryTagList(options.keepTags ?? 'content').filter(item => TAG_NAME_PATTERN.test(item));
+  const extra = normalizeMemoryTagList(options.extraTags ?? '');
   const literalDropRules = extra.map(literalWrapperRule).filter(Boolean);
   let content = String(raw);
   content = dropLiteralWrappedContent(content, literalDropRules);
@@ -104,6 +102,3 @@ export function sanitizeArchiveV2SourceContent(raw, options = {}) {
   output += visibleText(cursor, content.length);
   return output.replace(/\n{3,}/g, '\n\n').trim();
 }
-
-// Compatibility name. All V2 AI inputs call the shared sanitizer above.
-export const sanitizeMemoryContent = sanitizeArchiveV2SourceContent;

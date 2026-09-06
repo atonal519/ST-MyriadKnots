@@ -101,6 +101,50 @@ function activeFloorViews(floors, indexes) {
   }));
 }
 
+function buildReachableResult({
+  root,
+  rootRevision,
+  checkpoint,
+  runResult,
+  floorResults,
+  memoryResults,
+  entityResults,
+  baselineResult,
+  deltaResults,
+  currentStateResults,
+  indexResults,
+  indexesMissing = false,
+  manifestNeedsReseal = false,
+  indexesComplete,
+  readMode,
+}) {
+  const indexes = indexResults.filter(result => result.status === 'ready').map(result => result.data);
+  return {
+    status: indexesMissing || manifestNeedsReseal ? 'needsReseal' : 'ready',
+    root,
+    rootRevision,
+    checkpoint,
+    run: runResult.data,
+    runRevision: runResult.revision,
+    floors: activeFloorViews(floorResults.map(result => result.data), indexes),
+    floorRevisions: Object.fromEntries(floorResults.map(result => [result.data.id, result.revision])),
+    floorMemories: memoryResults.map(result => result.data),
+    memoryRevisions: Object.fromEntries(memoryResults.map(result => [result.data.id, result.revision])),
+    entities: entityResults.map(result => result.data),
+    entityRevisions: Object.fromEntries(entityResults.map(result => [result.data.id, result.revision])),
+    baseline: baselineResult?.data ?? null,
+    baselineRevision: baselineResult?.revision ?? null,
+    stateDeltas: deltaResults.map(result => result.data),
+    deltaRevisions: Object.fromEntries(deltaResults.map(result => [result.data.id, result.revision])),
+    currentStates: currentStateResults.map(result => result.data),
+    currentStateRevisions: Object.fromEntries(currentStateResults.map(result => [result.data.id, result.revision])),
+    indexes,
+    indexesMissing: indexesMissing || manifestNeedsReseal,
+    indexesComplete,
+    readMode,
+  };
+}
+
 export async function reverseRefCandidateKeys(indexManifest, targetRecordId) {
   const prefix = await reverseRefShardPrefix(targetRecordId);
   const marker = `v3-index-reverseRef-${prefix}-`;
@@ -207,24 +251,45 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     const checkpointResult = await read(current, `${RECORD_PREFIX.checkpoint}${root.headCheckpointId}`, validateFoundationCheckpoint);
     if (checkpointResult.status !== 'ready') fail('V3_STORE_CHECKPOINT_MISSING');
     const checkpoint = checkpointResult.data;
-    const floorResults = await Promise.all(checkpoint.producedRefs.floors.map(id => (
-      read(current, `${RECORD_PREFIX.floor}${id}`, validateFoundationFloor)
-    )));
-    if (floorResults.some(result => result.status !== 'ready')) fail('V3_STORE_FLOOR_MISSING');
+    const readConcurrency = 16;
+    async function readGroup(values, loader) {
+      const results = new Array(values.length);
+      let cursor = 0;
+      let firstError = null;
+      async function worker() {
+        while (firstError === null) {
+          const index = cursor;
+          if (index >= values.length) return;
+          cursor += 1;
+          try { results[index] = await loader(values[index]); }
+          catch (error) { firstError ??= error; }
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(readConcurrency, values.length) }, () => worker()));
+      if (firstError) throw firstError;
+      return results;
+    }
     const indexKeys = Object.values(root.indexManifest).flat();
-    const indexResults = await Promise.all(indexKeys.map(key => read(current, key, validateFoundationIndex)));
+    const settledGroups = await Promise.allSettled([
+      readGroup(checkpoint.producedRefs.floors, id => read(current, `${RECORD_PREFIX.floor}${id}`, validateFoundationFloor)),
+      readGroup(indexKeys, key => read(current, key, validateFoundationIndex)),
+      read(current, `${RECORD_PREFIX.run}${checkpoint.runId}`, validateFoundationRun),
+      readGroup(checkpoint.producedRefs.floorMemories, id => read(current, `${RECORD_PREFIX.floorMemory}${id}`, validateFloorMemory)),
+      readGroup(checkpoint.producedRefs.entities, id => read(current, `${RECORD_PREFIX.entity}${id}`, validateEntityRecord)),
+      root.baselineId ? read(current, `${RECORD_PREFIX.baseline}${root.baselineId}`, validateBaselineRecord) : Promise.resolve(null),
+      readGroup(checkpoint.producedRefs.stateDeltas, id => read(current, `${RECORD_PREFIX.stateDelta}${id}`, validateStateDeltaRecord)),
+      readGroup(checkpoint.producedRefs.currentStates, id => read(current, `${RECORD_PREFIX.currentState}${id}`, validateCurrentStateRecord)),
+    ]);
+    const rejected = settledGroups.find(result => result.status === 'rejected');
+    if (rejected) throw rejected.reason;
+    const [floorResults, indexResults, runResult, memoryResults, entityResults, baselineResult, deltaResults, currentStateResults] = settledGroups.map(result => result.value);
+    if (floorResults.some(result => result.status !== 'ready')) fail('V3_STORE_FLOOR_MISSING');
     if (indexResults.some(result => result.status !== 'ready')) fail('V3_STORE_INDEX_MISSING');
-    const runResult = await read(current, `${RECORD_PREFIX.run}${checkpoint.runId}`, validateFoundationRun);
     if (runResult.status !== 'ready') fail('V3_STORE_RUN_MISSING');
-    const memoryResults = await Promise.all(checkpoint.producedRefs.floorMemories.map(id => read(current, `${RECORD_PREFIX.floorMemory}${id}`, validateFloorMemory)));
     if (memoryResults.some(result => result.status !== 'ready')) fail('V3_STORE_FLOOR_MEMORY_MISSING');
-    const entityResults = await Promise.all(checkpoint.producedRefs.entities.map(id => read(current, `${RECORD_PREFIX.entity}${id}`, validateEntityRecord)));
     if (entityResults.some(result => result.status !== 'ready')) fail('V3_STORE_ENTITY_MISSING');
-    const baselineResult = root.baselineId ? await read(current, `${RECORD_PREFIX.baseline}${root.baselineId}`, validateBaselineRecord) : null;
     if (baselineResult && baselineResult.status !== 'ready') fail('V3_STORE_BASELINE_MISSING');
-    const deltaResults = await Promise.all(checkpoint.producedRefs.stateDeltas.map(id => read(current, `${RECORD_PREFIX.stateDelta}${id}`, validateStateDeltaRecord)));
     if (deltaResults.some(result => result.status !== 'ready')) fail('V3_STORE_STATE_DELTA_MISSING');
-    const currentStateResults = await Promise.all(checkpoint.producedRefs.currentStates.map(id => read(current, `${RECORD_PREFIX.currentState}${id}`, validateCurrentStateRecord)));
     if (currentStateResults.some(result => result.status !== 'ready')) fail('V3_STORE_CURRENT_STATE_MISSING');
     await validateCseGraph({
       root,
@@ -239,6 +304,17 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       stateDeltas: deltaResults.map(result => result.data),
       currentStates: currentStateResults.map(result => result.data),
     });
+    return {
+      checkpoint,
+      runResult,
+      floorResults,
+      memoryResults,
+      entityResults,
+      baselineResult,
+      deltaResults,
+      currentStateResults,
+      indexResults,
+    };
   }
   function commitRoot(root, expectedRevision, { signal } = {}) {
     return execute(async current => {
@@ -246,12 +322,23 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) fail('V3_STORE_REVISION_INVALID');
       // Backing records are content-addressed and create-if-absent. The backend must keep them immutable
       // throughout this final read/validate/root-CAS sequence; the records API has no multi-record transaction.
-      await validateCommitGraph(current, safe);
+      const validatedGraph = await validateCommitGraph(current, safe);
       try {
         const envelope = await client.put(collection(current), V3_ROOT_RECORD_ID, safe, expectedRevision, { signal });
         const saved = validateEnvelope(envelope, validateFoundationRoot, current.chatId);
         if (!sameJson(saved.data, safe)) fail('V3_STORE_RESPONSE_MISMATCH');
-        return { status: 'saved', ...saved, recordId: V3_ROOT_RECORD_ID };
+        return {
+          status: 'saved',
+          ...saved,
+          recordId: V3_ROOT_RECORD_ID,
+          reachable: buildReachableResult({
+            root: saved.data,
+            rootRevision: saved.revision,
+            ...validatedGraph,
+            indexesComplete: true,
+            readMode: V3_READ_MODES.full,
+          }),
+        };
       } catch (error) {
         if (error?.status === 409) return { status: 'conflict' };
         throw error;
@@ -301,54 +388,51 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     const indexesMissing = indexResults.some(result => result.status === 'missing');
     if (indexResults.some(result => !['ready', 'missing'].includes(result.status))) fail('V3_STORE_INDEX_UNAVAILABLE');
     if (indexesMissing && !legacySnapshot) fail('V3_STORE_INDEX_MISSING');
-    const floors = floorResults.map(result => result.data);
     const memoryResults = await Promise.all(checkpoint.producedRefs.floorMemories.map(id => readRecord('floorMemory', id)));
     if (memoryResults.some(result => result.status !== 'ready')) fail('V3_STORE_FLOOR_MEMORY_MISSING');
     const entityResults = await Promise.all(checkpoint.producedRefs.entities.map(id => readRecord('entity', id)));
     if (entityResults.some(result => result.status !== 'ready')) fail('V3_STORE_ENTITY_MISSING');
-    const floorMemories = memoryResults.map(result => result.data);
-    const entities = entityResults.map(result => result.data);
     const baselineResult = root.baselineId ? await readRecord('baseline', root.baselineId) : null;
     if (baselineResult && baselineResult.status !== 'ready') fail('V3_STORE_BASELINE_MISSING');
     const deltaResults = await Promise.all(checkpoint.producedRefs.stateDeltas.map(id => readRecord('stateDelta', id)));
     if (deltaResults.some(result => result.status !== 'ready')) fail('V3_STORE_STATE_DELTA_MISSING');
     const currentStateResults = await Promise.all(checkpoint.producedRefs.currentStates.map(id => readRecord('currentState', id)));
     if (currentStateResults.some(result => result.status !== 'ready')) fail('V3_STORE_CURRENT_STATE_MISSING');
-    const stateDeltas = deltaResults.map(result => result.data);
-    const currentStates = currentStateResults.map(result => result.data);
     const indexes = indexResults.filter(result => result.status === 'ready').map(result => result.data);
     const indexKeys = indexResults.filter(result => result.status === 'ready').map(result => result.recordId);
     const indexesComplete = effectiveMode === V3_READ_MODES.full;
     const manifestNeedsReseal = indexesComplete && legacySnapshot && !manifestMatchesIndexes(root, indexes, indexKeys);
     await validateCseGraph({
-      root, checkpoint, run: runResult.data, floors, floorMemories, entities, indexes, indexKeys,
-      baseline: baselineResult?.data ?? null, stateDeltas, currentStates,
+      root,
+      checkpoint,
+      run: runResult.data,
+      floors: floorResults.map(result => result.data),
+      floorMemories: memoryResults.map(result => result.data),
+      entities: entityResults.map(result => result.data),
+      indexes,
+      indexKeys,
+      baseline: baselineResult?.data ?? null,
+      stateDeltas: deltaResults.map(result => result.data),
+      currentStates: currentStateResults.map(result => result.data),
       allowMissingIndexes: !indexesComplete || (indexesMissing && legacySnapshot), allowLegacySnapshot: true,
     });
-    return {
-      status: indexesMissing || manifestNeedsReseal ? 'needsReseal' : 'ready',
+    return buildReachableResult({
       root,
       rootRevision: rootResult.revision,
       checkpoint,
-      run: runResult.data,
-      runRevision: runResult.revision,
-      floors: activeFloorViews(floors, indexes),
-      floorRevisions: Object.fromEntries(floorResults.map(result => [result.data.id, result.revision])),
-      floorMemories,
-      memoryRevisions: Object.fromEntries(memoryResults.map(result => [result.data.id, result.revision])),
-      entities,
-      entityRevisions: Object.fromEntries(entityResults.map(result => [result.data.id, result.revision])),
-      baseline: baselineResult?.data ?? null,
-      baselineRevision: baselineResult?.revision ?? null,
-      stateDeltas,
-      deltaRevisions: Object.fromEntries(deltaResults.map(result => [result.data.id, result.revision])),
-      currentStates,
-      currentStateRevisions: Object.fromEntries(currentStateResults.map(result => [result.data.id, result.revision])),
-      indexes,
-      indexesMissing: indexesMissing || manifestNeedsReseal,
+      runResult,
+      floorResults,
+      memoryResults,
+      entityResults,
+      baselineResult,
+      deltaResults,
+      currentStateResults,
+      indexResults,
+      indexesMissing,
+      manifestNeedsReseal,
       indexesComplete,
       readMode: effectiveMode,
-    };
+    });
   }
   return Object.freeze({
     readRoot,

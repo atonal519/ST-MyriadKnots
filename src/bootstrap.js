@@ -1,29 +1,22 @@
 import { createPanel } from './ui/panel.js';
 import { createFab } from './ui/fab.js';
 import { installWandEntry } from './ui/wand-entry.js';
-import { createArchiveV2InitializationView } from './ui/archive-v2-initialization-view.js';
-import { createArchiveV2BondView } from './ui/archive-v2-bond-view.js';
-import { createArchiveV2SourcePermissionView } from './ui/archive-v2-source-permission-view.js';
+import { createSourcePermissionView } from './ui/source-permission-view.js';
 import { createV3FoundationView } from './ui/v3-foundation-view.js';
+import { createPeopleProfilesView } from './ui/people-profiles-view.js';
 
 export function bootstrap({
   settings,
   apiTools,
-  prepareSession,
   onPluginEnabledChange,
-  onAutomationSettingsChange,
-  archiveV2Composition,
-  archiveV2Memory,
-  archiveV2FollowedProfiles,
-  archiveV2Dossier,
-  archiveV2Bonds,
+  onStoryClockChange,
   sourcePermissions,
   v3FoundationRuntime,
   v3RecallRuntime,
-  archiveV2ViewFactory = createArchiveV2InitializationView,
-  archiveV2BondViewFactory = createArchiveV2BondView,
-  sourcePermissionViewFactory = createArchiveV2SourcePermissionView,
+  peopleWorkspaceRuntime,
+  sourcePermissionViewFactory = createSourcePermissionView,
   v3FoundationViewFactory = createV3FoundationView,
+  peopleProfilesViewFactory = createPeopleProfilesView,
   documentRef = globalThis.document,
   panelFactory = createPanel,
   fabFactory = createFab,
@@ -37,24 +30,9 @@ export function bootstrap({
     ? sourcePermissionViewFactory({ permissions: sourcePermissions, documentRef })
     : null;
   let panel;
-  const openSourceSettings = () => panel?.openSourceSettings?.();
-  const archiveView = archiveV2ViewFactory({
-    composition: archiveV2Composition,
-    memory: archiveV2Memory,
-    followedProfiles: archiveV2FollowedProfiles,
-    dossier: archiveV2Dossier,
-    documentRef,
-    sourcePermissions,
-    sourcePermissionView,
-    onOpenSourceSettings: openSourceSettings,
-  });
-  const bondView = archiveV2BondViewFactory({ composition: archiveV2Bonds, documentRef, sourcePermissions, sourcePermissionView, onOpenSourceSettings: openSourceSettings });
-  const foundationView = v3FoundationViewFactory({ runtime: v3FoundationRuntime, recallRuntime: v3RecallRuntime, documentRef });
+  const foundationView = v3FoundationViewFactory({ runtime: v3FoundationRuntime, recallRuntime: v3RecallRuntime, peopleRuntime: peopleWorkspaceRuntime, documentRef });
+  const peopleProfilesView = peopleProfilesViewFactory({ runtime: peopleWorkspaceRuntime, documentRef });
   const enabled = () => settings?.isEnabled?.() !== false;
-  const ensureReady = async () => {
-    if (!enabled()) return { status: 'disabled' };
-    return typeof prepareSession === 'function' ? prepareSession() : { status: 'ready' };
-  };
   const open = async event => {
     if (!enabled()) {
       panel.show(event?.currentTarget || event?.target || documentRef.activeElement);
@@ -70,14 +48,11 @@ export function bootstrap({
   panel = panelFactory({
     settings,
     apiTools,
-    archiveV2InitializationView: archiveView,
-    archiveV2BondView: bondView,
     v3FoundationView: foundationView,
+    peopleProfilesView,
     sourcePermissionView,
     onPluginEnabledChange,
-    onAutomationSettingsChange,
-    onOpenPeople: ensureReady,
-    onOpenBonds: ensureReady,
+    onStoryClockChange,
     documentRef,
   });
   panel.host.hidden = true;

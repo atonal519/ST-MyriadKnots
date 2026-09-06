@@ -2,12 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { applyPluginEnabledImmediately, createSettingsStore, normalizeAutoMemoryBatchSize } from '../src/settings.js';
-import { createApiResolver, createApiTools, createArchiveV2TaskRouter } from '../src/api-routing.js';
-
-const createPeopleTaskRouter = options => {
-  const router = createArchiveV2TaskRouter(options);
-  return { ...router, generatePeopleTask: router.generatePrimaryTask };
-};
+import { createApiResolver, createApiTools, createTaskRouter } from '../src/api-routing.js';
 
 const configured = (name, id, key = 'TEST_KEY') => ({ id, name, url: 'https://api.example.test/v1', key, model: 'test-model', excludeParams: [], timeoutSec: 30, stream: false });
 const setup = extensionSettings => {
@@ -16,18 +11,31 @@ const setup = extensionSettings => {
   return { settings, saves: () => saves };
 };
 
-test('记忆提取周期由主开关统管：无独立自动记忆开关，批次只接受 1–20 的整数并即时持久化', () => {
+test('记忆提取周期固定为 1，旧配置与更新请求都不能继续生效', () => {
   const extensionSettings = {};
   const { settings, saves } = setup(extensionSettings);
   assert.equal('autoMemoryEnabled' in settings.get(), false);
-  assert.equal(settings.get().autoMemoryBatchSize, 2);
+  assert.equal(settings.get().autoMemoryBatchSize, 1);
   assert.equal(normalizeAutoMemoryBatchSize(1), 1);
-  assert.equal(normalizeAutoMemoryBatchSize(20), 20);
-  for (const invalid of [0, 21, 1.5, 'abc']) assert.equal(normalizeAutoMemoryBatchSize(invalid), 2);
+  assert.equal(normalizeAutoMemoryBatchSize(20), 1);
+  for (const invalid of [undefined, null, 0, 21, 1.5, 'abc']) assert.equal(normalizeAutoMemoryBatchSize(invalid), 1);
   settings.update({ autoMemoryEnabled: true, autoMemoryBatchSize: 20 });
   assert.equal('autoMemoryEnabled' in extensionSettings.qianqianjie, false);
-  assert.equal(extensionSettings.qianqianjie.autoMemoryBatchSize, 20);
+  assert.equal(extensionSettings.qianqianjie.autoMemoryBatchSize, 1);
   assert.equal(saves(), 1);
+
+  settings.update({ autoMemoryBatchSize: 2 });
+  assert.equal(settings.get().autoMemoryBatchSize, 1);
+});
+
+test('时间戳功能默认开启，三类自定义提示词保留用户原文', () => {
+  const extensionSettings = {};
+  const { settings } = setup(extensionSettings);
+  assert.equal(settings.get().storyClockEnabled, true); assert.equal(settings.get().storyClockPrompt, '');
+  assert.equal(settings.get().summaryPrompt, ''); assert.equal(settings.get().csePrompt, '');
+  settings.update({ storyClockEnabled: false, storyClockPrompt: '  原样换行\n', summaryPrompt: '  摘要要求\n', csePrompt: '  CSE 要求\n' });
+  assert.equal(settings.get().storyClockEnabled, false); assert.equal(settings.get().storyClockPrompt, '  原样换行\n');
+  assert.equal(settings.get().summaryPrompt, '  摘要要求\n'); assert.equal(settings.get().csePrompt, '  CSE 要求\n');
 });
 
 test('剔除包裹符设置保留标签名与字面起止符混合配置', () => {
@@ -114,8 +122,8 @@ test('主配置与显式预设都从共享真源即时解析；失效预设不�
   extensionSettings['schedule-planner'].apiPresets = extensionSettings['schedule-planner'].apiPresets.filter(item => item.id !== selected.id);
   assert.equal(resolver.resolve().kind, 'unavailable'); assert.equal(resolver.resolve().reason, 'preset_missing');
   let calls = 0; const client = { generateTask: async () => { calls += 1; }, testConnection: async () => { calls += 1; }, fetchModels: async () => { calls += 1; } };
-  const router = createPeopleTaskRouter({ resolver, compactClient: client }), tools = createApiTools({ resolver, compactClient: client });
-  await assert.rejects(router.generatePeopleTask({}), error => error.code === 'QQJ_PRESET_INVALID'); await assert.rejects(tools.testConnection(), error => error.code === 'QQJ_PRESET_INVALID'); await assert.rejects(tools.fetchModels(), error => error.code === 'QQJ_PRESET_INVALID');
+  const tools = createApiTools({ resolver, compactClient: client });
+  await assert.rejects(tools.testConnection(), error => error.code === 'QQJ_PRESET_INVALID'); await assert.rejects(tools.fetchModels(), error => error.code === 'QQJ_PRESET_INVALID');
   assert.equal(calls, 0); assert.equal(settings.get().selectedSevenDaysPresetId, selected.id);
 });
 
@@ -143,19 +151,19 @@ test('双向共享真实 schedule-planner 形状，按 id 写入保留未知字�
   delete globalThis.__QQJ_SEVEN_TEST_SETTINGS__; delete globalThis.__QQJ_SEVEN_TEST_SAVES__;
 });
 
-test('人物任务路由冻结本次配置，下一次才读取变化且在途可中止', async () => {
+test('记忆任务路由冻结本次配置，下一次才读取变化且在途可中止', async () => {
   let current = configured('一', 'one', 'KEY_ONE'), release; const calls = [];
-  const resolver = { resolve: () => ({ kind: 'independent', source: 'local', config: { ...current } }) };
+  const resolver = { resolve: () => ({ kind: 'independent', source: 'local', config: { ...current } }), resolveUtility: () => ({ kind: 'independent', source: 'local', config: { ...current } }) };
   const compactClient = { generateTask: async options => { calls.push(options); await new Promise(resolve => { release = resolve; }); if (options.signal.aborted) throw new DOMException('Aborted', 'AbortError'); return { jsonData: {} }; } };
-  const router = createPeopleTaskRouter({ resolver, compactClient });
-  const pending = router.generatePeopleTask({ taskMessages: [{ role: 'user', content: 'frozen' }] });
+  const router = createTaskRouter({ resolver, compactClient });
+  const pending = router.generateUtilityTask({ taskMessages: [{ role: 'user', content: 'frozen' }] });
   await new Promise(resolve => setImmediate(resolve)); current = configured('二', 'two', 'KEY_TWO');
   assert.equal(calls[0].config.key, 'KEY_ONE'); router.abortAll(); release(); await assert.rejects(pending, error => error.name === 'AbortError'); assert.equal(router.getActiveCount(), 0);
   compactClient.generateTask = async options => { calls.push(options); return { jsonData: {} }; };
-  await router.generatePeopleTask({}); assert.equal(calls[1].config.key, 'KEY_TWO');
+  await router.generateUtilityTask({}); assert.equal(calls[1].config.key, 'KEY_TWO');
 });
 
-test('test、models 与人物任务从同一共享预设解析同一套完整配置', async () => {
+test('test、models 与记忆任务从同一共享预设解析同一套完整配置', async () => {
   const preset = { ...configured('共同预设', 'shared'), excludeParams: ['temperature'], timeoutSec: 77, stream: true };
   const extensionSettings = { qianqianjie: { apiMode: 'seven-preset', selectedSevenDaysPresetId: 'shared' }, 'schedule-planner': { apiPresets: [preset] } };
   const { settings } = setup(extensionSettings), resolver = createApiResolver({ settings }), seen = [];
@@ -164,8 +172,8 @@ test('test、models 与人物任务从同一共享预设解析同一套完整配
     testConnection: async ({ config }) => { seen.push(['test', config]); return { ok: true }; },
     fetchModels: async ({ config }) => { seen.push(['models', config]); return ['test-model']; },
   };
-  const router = createPeopleTaskRouter({ resolver, compactClient }), tools = createApiTools({ resolver, compactClient });
-  await router.generatePeopleTask({}); await tools.testConnection(); await tools.fetchModels();
+  const router = createTaskRouter({ resolver, compactClient }), tools = createApiTools({ resolver, compactClient });
+  await router.generateUtilityTask({}); await tools.testConnection(); await tools.fetchModels();
   assert.deepEqual(seen.map(([kind, config]) => [kind, config]), [['task', preset], ['test', preset], ['models', preset]]);
 });
 
@@ -177,27 +185,27 @@ test('共享 API 工具描述与调用读取同一完整对象', async () => {
   await tools.testConnection({ apiMode: 'auto' }); assert.equal(testedKey, 'INHERITED_KEY'); assert.equal(settings.get().apiKey, '');
 });
 
-test('调用方 external signal 可中止统一人物/关系任务路由', async () => {
+test('调用方 external signal 可中止记忆任务路由', async () => {
   let seenSignal; const compactClient = { generateTask: async options => { seenSignal = options.signal; await new Promise((_, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })); } };
-  const router = createPeopleTaskRouter({ resolver: { resolve: () => ({ kind: 'independent', config: { url: 'x', key: 'y' } }) }, compactClient });
-  const controller = new AbortController(), pending = router.generatePeopleTask({ signal: controller.signal, systemPrompt: 'relation' });
+  const router = createTaskRouter({ resolver: { resolve: () => ({ kind: 'independent', config: { url: 'x', key: 'y' } }), resolveUtility: () => ({ kind: 'independent', config: { url: 'x', key: 'y' } }) }, compactClient });
+  const controller = new AbortController(), pending = router.generateUtilityTask({ signal: controller.signal, systemPrompt: 'memory' });
   await new Promise(resolve => setImmediate(resolve)); assert.equal(seenSignal instanceof AbortSignal, true); controller.abort();
   await assert.rejects(pending, error => error.name === 'AbortError'); assert.equal(router.getActiveCount(), 0);
 });
 
-test('V2 主任务结果与错误只附带有界 API 来源/模型元数据', async () => {
-  const independent = createPeopleTaskRouter({
-    resolver: { resolve: () => ({ kind: 'independent', source: 'seven-utility', sourceLabel: '构画机械预设 · G3.5F', config: { url: 'https://SECRET.example', key: 'SECRET_KEY', model: 'gemini-3-flash-preview' } }) },
+test('记忆任务结果与错误只附带有界 API 来源/模型元数据', async () => {
+  const independent = createTaskRouter({
+    resolver: { resolve: () => ({ kind: 'independent', config: {} }), resolveUtility: () => ({ kind: 'independent', source: 'seven-utility', sourceLabel: '构画机械预设 · G3.5F', config: { url: 'https://SECRET.example', key: 'SECRET_KEY', model: 'gemini-3-flash-preview' } }) },
     compactClient: { generateTask: async () => ({ jsonData: { ok: true }, taskMetadata: { finishReason: 'stop' } }) },
   });
-  const result = await independent.generatePeopleTask({});
+  const result = await independent.generateUtilityTask({});
   assert.deepEqual(result.taskMetadata, { source: 'seven-utility', sourceLabel: '构画机械预设 · G3.5F', model: 'gemini-3-flash-preview', finishReason: 'stop' });
   assert.doesNotMatch(JSON.stringify(result.taskMetadata), /SECRET|https?:\/\//i);
-  const failed = createPeopleTaskRouter({
-    resolver: { resolve: () => ({ kind: 'independent', source: 'local', sourceLabel: '本地', config: { url: 'SECRET_URL', key: 'SECRET_KEY', model: 'safe-model' } }) },
+  const failed = createTaskRouter({
+    resolver: { resolve: () => ({ kind: 'independent', config: {} }), resolveUtility: () => ({ kind: 'independent', source: 'local', sourceLabel: '本地', config: { url: 'SECRET_URL', key: 'SECRET_KEY', model: 'safe-model' } }) },
     compactClient: { generateTask: async () => { const error = new Error('安全失败'); error.code = 'QQJ_COMPLETION_JSON'; error.formatStage = 'completion_json'; throw error; } },
   });
-  await assert.rejects(failed.generatePeopleTask({}), error => error.taskMetadata?.source === 'local' && error.taskMetadata?.model === 'safe-model' && !JSON.stringify(error.taskMetadata).includes('SECRET'));
+  await assert.rejects(failed.generateUtilityTask({}), error => error.taskMetadata?.source === 'local' && error.taskMetadata?.model === 'safe-model' && !JSON.stringify(error.taskMetadata).includes('SECRET'));
 });
 
 test('关闭态测试/模型列表零启动，在途两类工具统一 abortAll 且迟到结果不可成功', async () => {
@@ -270,7 +278,7 @@ test('整本排除双向共享 schedule-planner.wiExcludeBooks，保留未知字
   assert.deepEqual(missing.settings.sourcePermissionSnapshot().sourceWorldInfoExcludedBooks, []);
 });
 
-test('有效副 API 精确走机械预设，人物任务仍走当前人物预设且元数据不泄密', async () => {
+test('有效副 API 精确走机械预设且元数据不泄密', async () => {
   const utility = { ...configured('机械预设', 'utility', 'UTILITY_SECRET'), model: 'utility-model' };
   const people = { ...configured('人物预设', 'people', 'PEOPLE_SECRET'), model: 'people-model' };
   const extensionSettings = {
@@ -280,18 +288,15 @@ test('有效副 API 精确走机械预设，人物任务仍走当前人物预设
   const { settings } = setup(extensionSettings);
   const resolver = createApiResolver({ settings });
   const seen = [];
-  const router = createPeopleTaskRouter({
+  const router = createTaskRouter({
     resolver,
     compactClient: { generateTask: async options => { seen.push(options); return { jsonData: { ok: true } }; } },
   });
   const utilityResult = await router.generateUtilityTask({ taskMessages: [] });
-  const peopleResult = await router.generatePeopleTask({ taskMessages: [] });
   assert.equal(seen[0].config.key, 'UTILITY_SECRET');
-  assert.equal(seen[1].config.key, 'PEOPLE_SECRET');
   assert.equal(Object.isFrozen(seen[0].config), true);
   assert.deepEqual(utilityResult.taskMetadata, { source: 'shared-utility', sourceLabel: '机械预设', model: 'utility-model' });
-  assert.equal(peopleResult.taskMetadata.source, 'shared-preset');
-  assert.doesNotMatch(JSON.stringify([utilityResult.taskMetadata, peopleResult.taskMetadata]), /SECRET|https?:\/\//);
+  assert.doesNotMatch(JSON.stringify(utilityResult.taskMetadata), /SECRET|https?:\/\//);
 });
 
 test('副 API 空、悬空或缺 Key 均即时回退当前主路由且不修复共享设置', async () => {
@@ -304,7 +309,7 @@ test('副 API 空、悬空或缺 Key 均即时回退当前主路由且不修复�
     } };
     const { settings, saves } = setup(extensionSettings);
     const seen = [];
-    const router = createPeopleTaskRouter({
+    const router = createTaskRouter({
       resolver: createApiResolver({ settings }),
       compactClient: { generateTask: async options => { seen.push(options); return { jsonData: {} }; } },
     });
@@ -322,7 +327,7 @@ test('副 API 空、悬空或缺 Key 均即时回退当前主路由且不修复�
   };
   const selected = setup(selectedSettings);
   const seen = [];
-  const router = createPeopleTaskRouter({
+  const router = createTaskRouter({
     resolver: createApiResolver({ settings: selected.settings }),
     compactClient: { generateTask: async options => { seen.push(options); return { jsonData: {} }; } },
   });
@@ -334,10 +339,10 @@ test('副 API 空、悬空或缺 Key 均即时回退当前主路由且不修复�
   assert.equal(selected.saves(), 0);
 });
 
-test('副 API 与主路由都不可用时零 client；人物与副任务共享 active/epoch/abortAll 且配置按调用冻结', async () => {
+test('副 API 与主路由都不可用时零 client；记忆任务 active/epoch/abortAll 且配置按调用冻结', async () => {
   const invalidSettings = setup({ 'schedule-planner': { utilityPresetId: 'bad', apiPresets: [configured('坏机械', 'bad', '')] } }).settings;
   let invalidCalls = 0;
-  const invalidRouter = createPeopleTaskRouter({
+  const invalidRouter = createTaskRouter({
     resolver: createApiResolver({ settings: invalidSettings }),
     compactClient: { generateTask: async () => { invalidCalls += 1; } },
   });
@@ -353,7 +358,7 @@ test('副 API 与主路由都不可用时零 client；人物与副任务共享 a
   const { settings } = setup(extensionSettings);
   const calls = [];
   const releases = [];
-  const router = createPeopleTaskRouter({
+  const router = createTaskRouter({
     resolver: createApiResolver({ settings }),
     compactClient: { generateTask: options => new Promise((resolve, reject) => {
       calls.push(options);
@@ -361,19 +366,17 @@ test('副 API 与主路由都不可用时零 client；人物与副任务共享 a
     }) },
   });
   const utilityPending = router.generateUtilityTask({});
-  const peoplePending = router.generatePeopleTask({});
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(router.getActiveCount(), 2);
+  assert.equal(router.getActiveCount(), 1);
   extensionSettings['schedule-planner'].apiPresets[0].key = 'UTILITY_TWO';
   assert.equal(calls[0].config.key, 'UTILITY_ONE');
   assert.equal(Object.isFrozen(calls[0].config), true);
   router.abortAll();
   releases.forEach(release => release());
   await assert.rejects(utilityPending, error => error.name === 'AbortError');
-  await assert.rejects(peoplePending, error => error.name === 'AbortError');
   assert.equal(router.getActiveCount(), 0);
   const next = [];
-  const nextRouter = createPeopleTaskRouter({
+  const nextRouter = createTaskRouter({
     resolver: createApiResolver({ settings }),
     compactClient: { generateTask: async options => { next.push(options.config.key); return { jsonData: {} }; } },
   });
@@ -385,7 +388,7 @@ test('副任务沿用统一 disabled 与 external signal 守卫', async () => {
   let enabled = false;
   let calls = 0;
   let seenSignal;
-  const router = createPeopleTaskRouter({
+  const router = createTaskRouter({
     resolver: {
       resolve: () => ({ kind: 'independent', source: 'shared-main', config: configured('主', 'main') }),
       resolveUtility: () => ({ kind: 'independent', source: 'shared-utility', config: configured('机械', 'utility') }),

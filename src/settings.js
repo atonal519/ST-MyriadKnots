@@ -1,10 +1,12 @@
-import { normalizeArchiveV2TagList } from './memory-content-sanitizer.js';
+import { normalizeMemoryTagList } from './memory-content-sanitizer.js';
 
 export const SETTINGS_ID = 'qianqianjie';
 
 export const DEFAULT_SETTINGS = Object.freeze({
   pluginEnabled: true,
-  autoMemoryBatchSize: 2,
+  storyClockEnabled: true,
+  storyClockPrompt: '',
+  autoMemoryBatchSize: 1,
   apiMode: 'auto',
   selectedSevenDaysPresetId: '',
   apiUrl: '',
@@ -23,6 +25,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   sourceKeepTags: 'content',
   sourceExtraTags: '',
   generalPrompt: '',
+  summaryPrompt: '',
+  csePrompt: '',
   appearanceTheme: 'auto',
   appearanceScale: 1,
   appearanceFontCssUrl: '',
@@ -36,8 +40,7 @@ const APPEARANCE_THEMES = new Set(['auto', 'day', 'night']);
 const normalizeScale = value => Math.min(1.5, Math.max(0.75, Number.isFinite(Number(value)) ? Number(value) : 1));
 
 export function normalizeAutoMemoryBatchSize(value) {
-  const number = Number(value);
-  return Number.isInteger(number) && number >= 1 && number <= 20 ? number : 2;
+  return 1;
 }
 
 export function normalizeTimeout(value) {
@@ -127,6 +130,8 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
   const update = (patch, { observeSaveFailure = false } = {}) => {
     const settings = get();
     if (own(patch, 'pluginEnabled')) settings.pluginEnabled = patch.pluginEnabled !== false;
+    if (own(patch, 'storyClockEnabled')) settings.storyClockEnabled = patch.storyClockEnabled !== false;
+    if (own(patch, 'storyClockPrompt')) settings.storyClockPrompt = text(patch.storyClockPrompt);
     if (own(patch, 'autoMemoryBatchSize')) settings.autoMemoryBatchSize = normalizeAutoMemoryBatchSize(patch.autoMemoryBatchSize);
     if (own(patch, 'apiMode')) settings.apiMode = API_MODES.has(patch.apiMode) ? patch.apiMode : 'auto';
     if (own(patch, 'selectedSevenDaysPresetId')) settings.selectedSevenDaysPresetId = text(patch.selectedSevenDaysPresetId).trim();
@@ -141,9 +146,11 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'sourceWorldInfoOverridesByChat') && patch.sourceWorldInfoOverridesByChat && typeof patch.sourceWorldInfoOverridesByChat === 'object' && !Array.isArray(patch.sourceWorldInfoOverridesByChat)) settings.sourceWorldInfoOverridesByChat = patch.sourceWorldInfoOverridesByChat;
     if (own(patch, 'sourceWorldInfoExcludedBooks')) settings.sourceWorldInfoExcludedBooks = Array.isArray(patch.sourceWorldInfoExcludedBooks) ? patch.sourceWorldInfoExcludedBooks : [];
     if (own(patch, 'sourceWorldInfoConfirmedChats') && patch.sourceWorldInfoConfirmedChats && typeof patch.sourceWorldInfoConfirmedChats === 'object' && !Array.isArray(patch.sourceWorldInfoConfirmedChats)) settings.sourceWorldInfoConfirmedChats = patch.sourceWorldInfoConfirmedChats;
-    if (own(patch, 'sourceKeepTags')) settings.sourceKeepTags = normalizeArchiveV2TagList(patch.sourceKeepTags).join(',');
-    if (own(patch, 'sourceExtraTags')) settings.sourceExtraTags = normalizeArchiveV2TagList(patch.sourceExtraTags).join(',');
+    if (own(patch, 'sourceKeepTags')) settings.sourceKeepTags = normalizeMemoryTagList(patch.sourceKeepTags).join(',');
+    if (own(patch, 'sourceExtraTags')) settings.sourceExtraTags = normalizeMemoryTagList(patch.sourceExtraTags).join(',');
     if (own(patch, 'generalPrompt')) settings.generalPrompt = text(patch.generalPrompt);
+    if (own(patch, 'summaryPrompt')) settings.summaryPrompt = text(patch.summaryPrompt);
+    if (own(patch, 'csePrompt')) settings.csePrompt = text(patch.csePrompt);
     if (own(patch, 'appearanceTheme')) settings.appearanceTheme = APPEARANCE_THEMES.has(patch.appearanceTheme) ? patch.appearanceTheme : 'auto';
     if (own(patch, 'appearanceScale')) settings.appearanceScale = normalizeScale(patch.appearanceScale);
     if (own(patch, 'appearanceFontCssUrl')) settings.appearanceFontCssUrl = text(patch.appearanceFontCssUrl).trim();

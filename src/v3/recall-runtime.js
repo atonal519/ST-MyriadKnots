@@ -6,7 +6,7 @@ import { buildRecallQueryContext, buildRecallQueryFrame, selectRecall } from './
 
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
-export const RECALL_RECEIPT_SCHEMA_VERSION = 5;
+export const RECALL_RECEIPT_SCHEMA_VERSION = 6;
 
 const SUPPORTED_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 const MAIN_GENERATION_TYPES = new Set([...SUPPORTED_TYPES, 'impersonate']);
@@ -44,7 +44,7 @@ function sourceRefsValid(receipt, source) {
 }
 
 const receiptMaterial = receipt => [
-  receipt.schemaVersion, receipt.pluginVersion, receipt.chatId, receipt.narrativeGeneration,
+  receipt.schemaVersion, receipt.pluginVersion, receipt.chatId, receipt.narrativeGeneration, receipt.headCheckpointId, receipt.rootRevision,
   receipt.userMessageIndex, receipt.userContentFingerprint, receipt.queryFingerprint, receipt.generationType,
   receipt.selectedFloors, receipt.selectedStates, receipt.coverage, receipt.injectionText, receipt.stages, receipt.skipReasons, receipt.completionStatus, receipt.createdAt,
 ];
@@ -59,6 +59,8 @@ function receiptShapeValid(receipt) {
     || !boundedString(receipt.pluginVersion, 120)
     || !boundedString(receipt.chatId, 500)
     || !boundedString(receipt.narrativeGeneration, 500)
+    || !boundedString(receipt.headCheckpointId, 500)
+    || !Number.isSafeInteger(receipt.rootRevision) || receipt.rootRevision < 1
     || !nonNegativeInteger(receipt.userMessageIndex)
     || !boundedString(receipt.userContentFingerprint, 200)
     || !boundedString(receipt.queryFingerprint, 200)
@@ -100,6 +102,8 @@ async function receiptValid(receipt, { source, userIndex, userFingerprint, query
       || snapshot.pluginVersion !== pluginVersion
       || snapshot.chatId !== source.chatId
       || snapshot.narrativeGeneration !== source.narrativeGeneration
+      || snapshot.headCheckpointId !== source.headCheckpointId
+      || snapshot.rootRevision !== source.rootRevision
       || snapshot.userMessageIndex !== userIndex
       || snapshot.userContentFingerprint !== userFingerprint
       || snapshot.queryFingerprint !== queryFingerprint
@@ -209,7 +213,7 @@ export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, au
     try { prompt('', null); return true; }
     catch (error) { logger?.warn?.('[qianqianjie] V3 recall prompt cleanup failed', { code: error?.code ?? error?.name ?? 'V3_RECALL_CLEAR_FAILED' }); return false; }
   };
-  const sessionKey = ({ source, userIndex, userFingerprint, queryFingerprint }) => [source.chatId, source.narrativeGeneration, userIndex, userFingerprint, queryFingerprint].join('|');
+  const sessionKey = ({ source, userIndex, userFingerprint, queryFingerprint }) => [source.chatId, source.narrativeGeneration, source.headCheckpointId, source.rootRevision, userIndex, userFingerprint, queryFingerprint].join('|');
 
   const bindLastRecall = (snapshot, user) => {
     lastRecallBinding = snapshot && user ? Object.freeze({ chatId: currentChatId(snapshot), message: user.message, text: user.message.mes }) : null;
@@ -379,6 +383,8 @@ export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, au
         pluginVersion,
         chatId: source.chatId,
         narrativeGeneration: source.narrativeGeneration,
+        headCheckpointId: source.headCheckpointId,
+        rootRevision: source.rootRevision,
         userMessageIndex: user.index,
         userContentFingerprint: userFingerprint,
         queryFingerprint,

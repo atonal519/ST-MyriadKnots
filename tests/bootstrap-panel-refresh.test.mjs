@@ -11,10 +11,9 @@ async function loadBootstrap() {
     './ui/panel.js': { createPanel: () => null },
     './ui/fab.js': { createFab: () => ({ host: null }) },
     './ui/wand-entry.js': { installWandEntry() {} },
-    './ui/archive-v2-initialization-view.js': { createArchiveV2InitializationView: () => null },
-    './ui/archive-v2-bond-view.js': { createArchiveV2BondView: () => null },
-    './ui/archive-v2-source-permission-view.js': { createArchiveV2SourcePermissionView: () => null },
+    './ui/source-permission-view.js': { createSourcePermissionView: () => null },
     './ui/v3-foundation-view.js': { createV3FoundationView: () => null },
+    './ui/people-profiles-view.js': { createPeopleProfilesView: () => null },
   };
   await entry.link(specifier => new SyntheticModule(Object.keys(factories[specifier]), function initialize() {
     for (const [name, value] of Object.entries(factories[specifier])) this.setExport(name, value);
@@ -38,9 +37,9 @@ async function harness(result) {
   const stubView = () => ({ mount() {}, activate: async () => ({ status: 'ready' }), deactivate() {} });
   const instance = bootstrap({
     settings: { isEnabled: () => true },
-    archiveV2ViewFactory: stubView,
-    archiveV2BondViewFactory: stubView,
     v3FoundationViewFactory: () => ({ ...stubView(), deactivate() { deactivations.foundation += 1; } }),
+    peopleProfilesViewFactory: stubView,
+    peopleWorkspaceRuntime: { getState: () => ({ status: 'ready' }) },
     documentRef: { activeElement: null, getElementById: () => null, createElement: () => ({}), body: { append() {} } },
     panelFactory: () => panel,
     wandInstaller() {},
