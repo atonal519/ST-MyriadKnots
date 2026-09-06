@@ -28,14 +28,22 @@ test('记忆提取周期固定为 1，旧配置与更新请求都不能继续生
   assert.equal(settings.get().autoMemoryBatchSize, 1);
 });
 
-test('时间戳功能默认开启，三类自定义提示词保留用户原文', () => {
+test('时间戳功能默认开启，四类自定义提示词保留用户原文', () => {
   const extensionSettings = {};
   const { settings } = setup(extensionSettings);
   assert.equal(settings.get().storyClockEnabled, true); assert.equal(settings.get().storyClockPrompt, '');
-  assert.equal(settings.get().summaryPrompt, ''); assert.equal(settings.get().csePrompt, '');
-  settings.update({ storyClockEnabled: false, storyClockPrompt: '  原样换行\n', summaryPrompt: '  摘要要求\n', csePrompt: '  CSE 要求\n' });
+  assert.equal(settings.get().summaryPrompt, ''); assert.equal(settings.get().csePrompt, ''); assert.equal(settings.get().profilePrompt, '');
+  settings.update({ storyClockEnabled: false, storyClockPrompt: '  原样换行\n', summaryPrompt: '  摘要要求\n', csePrompt: '  CSE 要求\n', profilePrompt: '  人物资料要求\n' });
   assert.equal(settings.get().storyClockEnabled, false); assert.equal(settings.get().storyClockPrompt, '  原样换行\n');
-  assert.equal(settings.get().summaryPrompt, '  摘要要求\n'); assert.equal(settings.get().csePrompt, '  CSE 要求\n');
+  assert.equal(settings.get().summaryPrompt, '  摘要要求\n'); assert.equal(settings.get().csePrompt, '  CSE 要求\n'); assert.equal(settings.get().profilePrompt, '  人物资料要求\n');
+});
+
+test('退役通用附加入口不清理已有残留设置', () => {
+  const extensionSettings = { qianqianjie: { generalPrompt: '旧通用附加内容' } };
+  const { settings } = setup(extensionSettings);
+  assert.equal(settings.get().generalPrompt, '旧通用附加内容');
+  settings.update({ summaryPrompt: '摘要新要求' });
+  assert.equal(extensionSettings.qianqianjie.generalPrompt, '旧通用附加内容');
 });
 
 test('剔除包裹符设置保留标签名与字面起止符混合配置', () => {
@@ -183,6 +191,30 @@ test('共享 API 工具描述与调用读取同一完整对象', async () => {
   const tools = createApiTools({ resolver, compactClient: { testConnection: async ({ config }) => { testedKey = config.key; return { ok: true }; }, fetchModels: async () => ['model'] } });
   const description = tools.describe(); assert.equal(description.source, 'shared-main'); assert.equal(Object.hasOwn(description, 'config'), false);
   await tools.testConnection({ apiMode: 'auto' }); assert.equal(testedKey, 'INHERITED_KEY'); assert.equal(settings.get().apiKey, '');
+});
+
+test('设置页测试与拉模型可显式使用未保存草稿，记忆任务仍只走已保存路由', async () => {
+  const saved = configured('已保存摘要', 'saved-summary', 'SAVED_KEY');
+  const draft = { url: 'https://draft.test/v1', key: 'DRAFT_KEY', model: 'draft-model', excludeParams: 'seed\ntop_p', timeoutSec: 55, stream: true };
+  const seen = [];
+  const resolver = {
+    resolve: () => ({ kind: 'independent', source: 'shared-preset', config: saved }),
+    resolveUtility: () => ({ kind: 'independent', source: 'shared-preset', config: saved }),
+  };
+  const compactClient = {
+    testConnection: async ({ config }) => { seen.push(['test', config]); return { ok: true }; },
+    fetchModels: async ({ config }) => { seen.push(['models', config]); return ['draft-model']; },
+    generateTask: async ({ config }) => { seen.push(['task', config]); return { jsonData: {} }; },
+  };
+  const tools = createApiTools({ resolver, compactClient });
+  const router = createTaskRouter({ resolver, compactClient });
+  const selection = { apiMode: 'seven-preset', selectedSevenDaysPresetId: 'saved-summary', config: draft };
+  await tools.testConnection(selection);
+  await tools.fetchModels(selection);
+  await router.generateUtilityTask({});
+  assert.deepEqual(seen[0], ['test', { id: '', name: '未命名', url: 'https://draft.test/v1', key: 'DRAFT_KEY', model: 'draft-model', excludeParams: ['seed', 'top_p'], timeoutSec: 55, stream: true }]);
+  assert.deepEqual(seen[1], ['models', seen[0][1]]);
+  assert.deepEqual(seen[2], ['task', saved]);
 });
 
 test('调用方 external signal 可中止记忆任务路由', async () => {

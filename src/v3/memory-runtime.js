@@ -66,7 +66,7 @@ const SESSION_CANDIDATE_MAX_ENTRIES = 8;
 const SESSION_CANDIDATE_MAX_CHARACTERS = 96000;
 const normalizeAutoBatchSize = () => 1;
 
-export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onFullRebuildCommitted = null, customGuidance = () => '', extractorPromptGuidance = () => '', csePromptGuidance = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
+export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onFullRebuildCommitted = null, extractorPromptGuidance = () => '', csePromptGuidance = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
   if (!foundationRuntime || ['start', 'refreshStatus', 'confirmLatest', 'setEnabled', 'bind', 'getState'].some(name => typeof foundationRuntime[name] !== 'function')) throw new TypeError('V3 memory foundation runtime 无效');
   if (!store || ['readReachable', 'readRecord', 'putRecord', 'commitRoot', 'recordKey', 'invalidate'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 memory store 无效');
   if (typeof generateUtilityTask !== 'function') throw new TypeError('V3 memory utility route 无效');
@@ -345,11 +345,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const userIdentity = typeof hostAdapter?.getUserIdentity === 'function'
         ? hostAdapter.getUserIdentity()
         : hostAdapter?.snapshot?.().userIdentity ?? null;
-      const expectedScope = { batchId: operation.runId, chatId: source.root.chatId, narrativeGeneration: source.root.narrativeGeneration, checkpointId: source.root.headCheckpointId, floorId: floor.id, rawContentFingerprint: sourceRawFingerprint };
+      const expectedScope = { batchId: operation.runId, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration, checkpointId: source.root.headCheckpointId, floorId: floor.id, rawContentFingerprint: sourceRawFingerprint };
       const floorIndex = source.floors.findIndex(item => item.id === floor.id);
       let previousStoryClock = null;
       for (let index = floorIndex - 1; index >= 0 && !previousStoryClock; index -= 1) previousStoryClock = clockEvidence(currentRawSelection(hostAdapter, source.floors[index])).clock;
-      const envelope = await createExtractorEnvelope({ ...expectedScope, floor, entities: source.entities, userIdentity, identityHints: [], customGuidance: customGuidance(), storyClock: sourceClock.clock, previousStoryClock });
+      const envelope = await createExtractorEnvelope({ ...expectedScope, floor, entities: source.entities, userIdentity, identityHints: [], storyClock: sourceClock.clock, previousStoryClock });
       const promptGuidanceSnapshot = typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : extractorPromptGuidance;
       const result = await runExtractorRequest({ generateUtilityTask, envelope, floor, existingEntities: source.entities, now: nowIso(now), supersedes: oldMemory?.id ?? null, preservedSummary: oldMemory?.summary?.effectiveSource === 'user' ? oldMemory.summary : null, expectedScope, promptGuidance: promptGuidanceSnapshot, signal: operation.controller.signal });
       operation.phase = 'validating'; notify();

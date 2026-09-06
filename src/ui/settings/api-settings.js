@@ -24,7 +24,6 @@ export function createApiSettings({
   const { drawer, body } = subDrawer({ title: 'API 配置', id: 'qqj-settings-api', open, onToggle });
 
   const current = settings.get();
-  const sharedMain = settings.sharedMainConfig();
   const presets = settings.sharedPresets();
 
   const analysisSelect = element('select', 'settings-input');
@@ -37,7 +36,14 @@ export function createApiSettings({
   for (const preset of presets) appendOption(summarySelect, preset.id, preset.name);
   summarySelect.value = presets.some(item => item.id === settings.sharedUtilityPresetId()) ? settings.sharedUtilityPresetId() : '';
 
-  const selectedConfig = () => presets.find(item => item.id === analysisSelect.value) ?? sharedMain;
+  let editingRole = 'analysis';
+  const presetById = id => settings.sharedPresets().find(item => item.id === id) ?? null;
+  const editingTarget = () => {
+    const followsAnalysis = editingRole === 'summary' && !summarySelect.value;
+    const presetId = followsAnalysis || editingRole === 'analysis' ? analysisSelect.value : summarySelect.value;
+    const config = presetId ? presetById(presetId) : settings.sharedMainConfig();
+    return Object.freeze({ sourceRole: editingRole, followsAnalysis, presetId, config, label: presetId ? (config?.name || '已失效预设') : '主配置' });
+  };
 
   const url = element('input', 'settings-input'); url.placeholder = 'API URL';
   const key = element('input', 'settings-input'); key.type = 'password'; key.placeholder = '留空保持原 Key';
@@ -46,9 +52,11 @@ export function createApiSettings({
   const exclude = element('textarea', 'settings-input'); exclude.placeholder = '排除参数，每行一个';
   const timeout = element('input', 'settings-input'); timeout.type = 'number'; timeout.min = '5'; timeout.max = '600';
   const stream = element('input'); stream.type = 'checkbox';
+  const editingHint = element('p', 'settings-hint');
 
   const fill = () => {
-    const config = selectedConfig();
+    const target = editingTarget();
+    const config = target.config ?? {};
     url.value = config.url ?? '';
     key.value = '';
     key.placeholder = config.key ? '已保存，留空保持不变' : '输入 API Key';
@@ -56,19 +64,29 @@ export function createApiSettings({
     exclude.value = (config.excludeParams ?? []).join('\n');
     timeout.value = String(config.timeoutSec ?? 180);
     stream.checked = config.stream === true;
+    editingHint.textContent = target.followsAnalysis
+      ? `正在编辑：摘要 API 跟随分析 · ${target.label}。直接保存会更新共享配置；另存可建立摘要专用预设。`
+      : `正在编辑：${target.sourceRole === 'summary' ? '摘要' : '分析'} API · ${target.label}`;
   };
   fill();
 
   // 分析/摘要角色选择：change 即存。
   analysisSelect.addEventListener('change', () => {
     settings.update({ apiMode: analysisSelect.value ? 'seven-preset' : 'auto', selectedSevenDaysPresetId: analysisSelect.value });
+    editingRole = 'analysis';
     fill();
   });
-  summarySelect.addEventListener('change', () => settings.setSharedUtilityPresetId(summarySelect.value));
+  summarySelect.addEventListener('change', () => {
+    settings.setSharedUtilityPresetId(summarySelect.value);
+    editingRole = 'summary';
+    fill();
+  });
+  analysisSelect.addEventListener('focus', () => { editingRole = 'analysis'; fill(); });
+  summarySelect.addEventListener('focus', () => { editingRole = 'summary'; fill(); });
 
   const draft = () => ({
     url: url.value.trim(),
-    key: key.value.trim() || selectedConfig().key || '',
+    key: key.value.trim() || editingTarget().config?.key || '',
     model: model.value.trim(),
     excludeParams: exclude.value,
     timeoutSec: Number(timeout.value),
@@ -76,7 +94,10 @@ export function createApiSettings({
   });
 
   const result = element('p', 'settings-result');
-  const selection = () => ({ apiMode: analysisSelect.value ? 'seven-preset' : 'auto', selectedSevenDaysPresetId: analysisSelect.value });
+  const selection = () => {
+    const target = editingTarget();
+    return { apiMode: target.presetId ? 'seven-preset' : 'auto', selectedSevenDaysPresetId: target.presetId, config: draft() };
+  };
 
   const fetchBtn = button('拉取模型', 'secondary-action', async () => {
     result.textContent = '正在拉取模型…'; result.className = 'settings-result';
@@ -94,22 +115,22 @@ export function createApiSettings({
   });
 
   const save = button('保存设置', 'primary-action', () => {
-    if (analysisSelect.value) {
-      const selected = presets.find(item => item.id === analysisSelect.value);
-      if (selected) settings.upsertSharedPreset(selected.name, draft(), selected.id);
-      settings.update({ apiMode: 'seven-preset', selectedSevenDaysPresetId: analysisSelect.value });
+    const target = editingTarget();
+    if (target.presetId) {
+      if (target.config) settings.upsertSharedPreset(target.config.name, draft(), target.presetId);
     } else {
       settings.saveSharedMainConfig(draft());
-      settings.update({ apiMode: 'auto', selectedSevenDaysPresetId: '' });
     }
-    settings.setSharedUtilityPresetId(summarySelect.value);
+    if (target.sourceRole === 'analysis') settings.update({ apiMode: target.presetId ? 'seven-preset' : 'auto', selectedSevenDaysPresetId: target.presetId });
     result.textContent = 'API 设置已保存。'; result.className = 'settings-result success';
+    fill();
   });
   const create = button('另存为预设', 'secondary-action', () => {
     const name = globalThis.prompt?.('新预设名称', '千千结预设')?.trim();
     if (!name) return;
     const id = settings.upsertSharedPreset(name, draft());
-    settings.update({ apiMode: 'seven-preset', selectedSevenDaysPresetId: id });
+    if (editingRole === 'summary') settings.setSharedUtilityPresetId(id);
+    else settings.update({ apiMode: 'seven-preset', selectedSevenDaysPresetId: id });
     rerender?.();
   });
   const test = button('测试连接', 'secondary-action', async () => {
@@ -135,6 +156,7 @@ export function createApiSettings({
   body.append(
     field('分析API（建议高质模型）', analysisSelect),
     field('摘要API（建议快速模型）', summarySelect),
+    editingHint,
     element('div', 'settings-divider'),
     field('URL', url),
     field('Key', key),

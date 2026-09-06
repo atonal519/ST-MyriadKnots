@@ -3,6 +3,7 @@ const MAX_RECALLED_FLOORS = 8;
 const MAX_TOTAL_ITEMS = 18;
 import { RECENT_VISIBLE_AI_FLOORS } from './memory-coverage.js';
 import { rankRecallDocuments } from './recall-ranking.js';
+import { formatChronologyAnchor } from './recall-source.js';
 
 const clean = (value, maximum = 4000) => String(value ?? '').normalize('NFKC').replace(/<[^>]*>/g, ' ').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
 const cleanLiteral = (value, maximum = 4000) => String(value ?? '').replace(/<[^>]*>/g, ' ').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
@@ -146,7 +147,7 @@ function historyFacts(memory, entityById) {
     if (value.toEntityIds.length) add(item('transfer', decorate(value.claimText, value), 85, { kind: value.channel, fromEntityId: effectiveFromEntityId, toEntityIds: value.toEntityIds, preserveForm: anchorAssignments.has(value) }), rankText, [effectiveFromEntityId, ...value.toEntityIds]);
     else if (effectiveFromEntityId) add(item('private', decorate(`未确认已告知他人：${value.claimText}`, value), 75, { kind: value.channel, ownerEntityId: effectiveFromEntityId, preserveForm: anchorAssignments.has(value) }), rankText, [effectiveFromEntityId]);
   }
-  return result.map(value => ({ ...value, floorId: memory.floorId, floorMemoryId: memory.floorMemoryId, assistantSeq: memory.assistantSeq }));
+  return result.map(value => ({ ...value, floorId: memory.floorId, floorMemoryId: memory.floorMemoryId, assistantSeq: memory.assistantSeq, _chronology: memory.chronology }));
 }
 
 function stateCandidates(source, involvedIds) {
@@ -206,7 +207,8 @@ export function formatRecallInjection({ coverage, floors, states, entityById }) 
     lines.push('', '[聚焦召回旧事]');
     const objective = [], shared = [], privateByOwner = new Map();
     for (const floor of floors) for (const value of floor.items) {
-      const prefix = `AI #${floor.assistantSeq}`;
+      const time = formatChronologyAnchor(floor.chronology);
+      const prefix = `AI #${floor.assistantSeq}${time ? `（${time}）` : ''}`;
       if (value.category === 'private') {
         const owner = entityName(value.ownerEntityId, entityById);
         privateByOwner.set(owner, [...(privateByOwner.get(owner) ?? []), `${prefix}：${value.text}`]);
@@ -279,7 +281,7 @@ function scoreCandidates(candidates, queries, { summaryAssist = false, keepUnmat
 
 const duplicateKey = value => [compact(value._coreText), value._subjectKey, value._visibilityKey, value._statusKey ?? ''].join('|');
 const publicItem = value => {
-  const { _rankText, _entityText, _coreText, _summary, _subjectKey, _visibilityKey, _statusKey, _sourceOrder, floorId, floorMemoryId, assistantSeq, branchScores, entityBranchScores, summaryScores, score, ...rest } = value;
+  const { _rankText, _entityText, _coreText, _summary, _subjectKey, _visibilityKey, _statusKey, _sourceOrder, _chronology, floorId, floorMemoryId, assistantSeq, branchScores, entityBranchScores, summaryScores, score, ...rest } = value;
   return { ...rest, rankScore: Number(score.toFixed(6)), rankBranches: branchScores, rankEntityBranches: entityBranchScores };
 };
 
@@ -331,7 +333,7 @@ export function selectRecall({ source, queryContext, contextSize = 8192, maxFloo
   const render = (states = chosenStates, history = chosenHistory) => {
     const floorMap = new Map();
     for (const value of history) {
-      const floor = floorMap.get(value.floorId) ?? { floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq, score: 0, reasons: new Set(), items: [] };
+      const floor = floorMap.get(value.floorId) ?? { floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq, chronology: value._chronology ?? [], score: 0, reasons: new Set(), items: [] };
       floor.score = Math.max(floor.score, value.score);
       floor.reasons.add(value.kind);
       for (const [branch, branchScore] of Object.entries(value.branchScores)) if (branchScore > 0) floor.reasons.add(`bm25:${branch}`);

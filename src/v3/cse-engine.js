@@ -6,11 +6,16 @@ import { deterministicUuid } from './foundation-domain.js';
 import { validateEntityRecord } from './memory-schema.js';
 import { sanitizeDiagnosticValue, sanitizeTaskMetadata } from './safe-metadata.js';
 import { stateFingerprint, validateBaselineRecord, validateCurrentStateRecord, validateStateDeltaRecord } from './cse-schema.js';
+import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-4';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-6';
 export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/after-state-compiler-4';
 
-export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。请完整阅读本楼正文，并结合结构化楼层记忆、此前状态与相关初始设定，说明人物在本楼结束后处于什么状态以及原因。`;
+export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。完整阅读本楼正文，并结合结构化楼层记忆、人物此前状态与相关初始设定，分析人物在本楼结束时的状态。
+
+优先识别正文真正造成的变化，也保留有连续性价值的稳定状态；不要为了显得有变化而改写人物。关注人物的核心倾向、可长期演化的应对方式或关系状态、当前短期情境，以及人物面对不同对象时采取的不同态度和行为模式。长期核心、逐渐形成的适应模式与一时情绪要分层表达；涉及特定对象时明确 toward。
+
+按正文信息量决定详略。用清楚、具体、便于后续连续理解的短句说明状态，避免空泛形容、同义反复、好感度分数和无证据的心理诊断。新增或更新状态时尽量给出简短 reason，指出正文中的行为、表达、想法或事件依据；正文没有依据时不要为了补 reason 编造。`;
 
 export const CSE_FIXED_CONTRACT = `【固定事实与隐私边界】
 正文 canonicalContent 是本楼事实的最高来源；结构化楼层记忆和 subjectRelevantEvidence 只是证据索引，可能稀疏或缺项，冲突时以正文为准。某个结构数组为空或没有某人物，不等于正文没有发生相关事件，也不等于该人物不知道。初始设定属于作者设定，不等于任何角色已经知道它。私密想法只属于其本人，不能自动变成其他人物的认知。
@@ -19,16 +24,16 @@ subjectRelevantEvidence 按 tracked subject 汇集角色相关条目，relationT
 
 previousState 只放人物自己的前态；authorialOtherStateContext 是经过隐私过滤的作者态连续性参考，不代表相应人物知道其他人的状态。作者态推断与人物本人已知必须分开：observable 只用于正文中实际可观察的状态，private 只属于该人物的内心或明确知情，authorial 只作作者塑造参考。
 
-只可为输入中的 trackedSubjects 输出状态；trackedSubjects 是候选范围，不要求逐人补写。先在每个新增或更新的状态条目里用 reason 简短说明正文依据，再写 text 状态。若本楼没有足够新依据，可省略该人物；若只支持某些分类，可省略其他分类，让编译器沿用旧状态。不要用“本楼未出现”“状态无变化”之类空话替换旧状态，也不要因为缺少证据而反推“不知道”。knownPeople 仅用于 toward 对象绑定，不代表他们本楼也要输出状态。Core 是长期核心人格：首次可建立；以后如正文真正挑战 Core，请把挑战写进 coreChallenges，不要直接改写旧 Core。Adaptive 是可长期演化的应对方式或关系状态；涉及对象时写 toward。Situational 是短期状态；只有正文给出明确时间流逝时，才可按常识写 reasonableProgression，不能补造新事件。不要输出好感度、强度分数或数据库 ID。
+只可为输入中的 trackedSubjects 输出状态；trackedSubjects 是候选范围，不要求逐人补写。若本楼没有足够新依据，可省略该人物；若只支持某些分类，可省略其他分类，让编译器沿用旧状态。不要用“本楼未出现”“状态无变化”之类空话替换旧状态，也不要因为缺少证据而反推“不知道”。knownPeople 仅用于 toward 对象绑定，不代表他们本楼也要输出状态。Core 首次可建立；已有 Core 只有在正文真正挑战它时才写入 coreChallenges，不能直接改写旧 Core。Adaptive 涉及对象时使用 toward。Situational 只有在正文给出明确时间流逝时才可写 reasonableProgression，不能补造新事件。新增或更新的状态推荐使用带简短 reason 的对象；如果正文没有可引用依据，可省略 reason，程序仍会接收并清楚标记为“未提供依据”，不要为凑字段编造。不要输出数据库 ID。
 
 返回一个 JSON 对象。推荐结构：
-{"subjects":[{"subject":"人物名","core":[{"reason":"正文依据","text":"核心特征","visibility":"authorial"}],"adaptive":[{"reason":"正文依据","text":"对某人的应对方式","toward":"对象名","visibility":"observable"}],"situational":[{"reason":"正文依据","text":"此刻状态","visibility":"private","origin":"floor"}],"changeSummary":["变化摘要"],"coreChallenges":["对既有 Core 的挑战"]}],"noMaterialChange":false}
-不确定的可选人物或分类宁可省略；需要新增或更新的状态条目请使用带 reason 的对象。只输出 JSON，不要解释。`;
+{"subjects":[{"subject":"人物名","core":[{"reason":"正文依据","text":"核心特征","visibility":"authorial"}],"adaptive":[{"reason":"正文依据","text":"对某人的应对方式","toward":"对象名","visibility":"observable"}],"situational":[{"reason":"正文依据","text":"此刻状态","visibility":"private","origin":"floor"}],"changeSummary":["变化摘要"],"coreChallenges":["对既有 Core 的挑战"]}]}
+不确定的可选人物或分类宁可省略。只输出 JSON，不要解释。`;
 
 export function buildCseSystemPrompt(guidance = '') {
   const custom = typeof guidance === 'string' ? guidance : '';
   const businessGuidance = custom.trim() ? custom : DEFAULT_CSE_GUIDANCE;
-  return `${businessGuidance}\n\n${CSE_FIXED_CONTRACT}`;
+  return withBaseProcessingPrompt(`${businessGuidance}\n\n${CSE_FIXED_CONTRACT}`);
 }
 
 export const CSE_SYSTEM_PROMPT = buildCseSystemPrompt();
@@ -283,7 +288,7 @@ async function compileItems({ raw, category, binding, knownBindings, deltaId, fl
       towardEntityId = toward.entityId;
     }
     const reason = typeof item === 'object' ? text(field(item, ['reason', 'because', '依据', '原因']), 4000) : '';
-    output.push({ id: await deterministicUuid(['v3-cse-state-item', deltaId, binding.entityId, category, index, value, towardEntityId]), text: value, visibility: visibility(typeof item === 'object' ? field(item, ['visibility', '可见性']) : null), reason: reason || '本楼状态投影', origin: origin(typeof item === 'object' ? field(item, ['origin', '来源']) : null), towardEntityId, sourceFloorId: floorId, sourceDeltaId: deltaId });
+    output.push({ id: await deterministicUuid(['v3-cse-state-item', deltaId, binding.entityId, category, index, value, towardEntityId]), text: value, visibility: visibility(typeof item === 'object' ? field(item, ['visibility', '可见性']) : null), reason: reason || '未提供依据', origin: origin(typeof item === 'object' ? field(item, ['origin', '来源']) : null), towardEntityId, sourceFloorId: floorId, sourceDeltaId: deltaId });
   }
   return output;
 }

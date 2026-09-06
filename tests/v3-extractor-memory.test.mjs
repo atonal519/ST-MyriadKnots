@@ -9,6 +9,7 @@ import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
 import { readRecallSource } from '../src/v3/recall-source.js';
 import { buildExtractorSystemPrompt, createExtractorEnvelope, DEFAULT_EXTRACTOR_GUIDANCE, EXTRACTOR_FIXED_CONTRACT, EXTRACTOR_OUTPUT_CONTRACT, EXTRACTOR_SYSTEM_PROMPT, normalizeExtractorResponse, runExtractorRequest } from '../src/v3/extractor.js';
 import { buildCseSystemPrompt, CSE_FIXED_CONTRACT, CSE_SYSTEM_PROMPT, createCseEnvelope, DEFAULT_CSE_GUIDANCE } from '../src/v3/cse-engine.js';
+import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GENERATION = '22222222-2222-4222-8222-222222222222';
@@ -49,9 +50,10 @@ function backendHarness() {
   const calls = [];
   let conflictRoot = false;
   let rootGate = null;
+  let abortAfterPut = null;
   const envelope = (data, revision) => ({ schemaVersion: 1, revision, generationId: '11111111-1111-4111-8111-111111111111', createdAt: NOW, updatedAt: NOW, data: structuredClone(data) });
   const error = status => Object.assign(new Error(`HTTP ${status}`), { status });
-  return { records, calls, setConflictRoot(value) { conflictRoot = value; }, holdNextRootPut() {
+  return { records, calls, setConflictRoot(value) { conflictRoot = value; }, abortAfterNextPut(predicate) { abortAfterPut = predicate; }, holdNextRootPut() {
     let release, markStarted;
     const started = new Promise(resolve => { markStarted = resolve; });
     const wait = new Promise(resolve => { release = resolve; });
@@ -59,11 +61,11 @@ function backendHarness() {
     return { started, release };
   }, client: {
     async get(collection, key) { calls.push(['get', collection, key]); const found = records.get(`${collection}/${key}`); if (!found) throw error(404); return envelope(found.data, found.revision); },
-    async put(collection, key, data, expectedRevision, options = {}) { calls.push(['put', collection, key, expectedRevision]); const mapKey = `${collection}/${key}`, previous = records.get(mapKey); if (key === 'v3-root' && rootGate) { const gate = rootGate; rootGate = null; gate.started(); await gate.wait; if (options.signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' }); } if (key === 'v3-root' && conflictRoot) throw error(409); if ((previous?.revision ?? 0) !== expectedRevision) throw error(409); const revision = (previous?.revision ?? 0) + 1; records.set(mapKey, { revision, data: structuredClone(data) }); return envelope(data, revision); },
+    async put(collection, key, data, expectedRevision, options = {}) { calls.push(['put', collection, key, expectedRevision]); const mapKey = `${collection}/${key}`, previous = records.get(mapKey); if (key === 'v3-root' && rootGate) { const gate = rootGate; rootGate = null; gate.started(); await gate.wait; if (options.signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' }); } if (key === 'v3-root' && conflictRoot) throw error(409); if ((previous?.revision ?? 0) !== expectedRevision) throw error(409); const revision = (previous?.revision ?? 0) + 1; records.set(mapKey, { revision, data: structuredClone(data) }); if (abortAfterPut?.(key, data)) { abortAfterPut = null; throw Object.assign(new Error('aborted after durable write'), { name: 'AbortError' }); } return envelope(data, revision); },
   } };
 }
 
-function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, customGuidance, extractorPromptGuidance, csePromptGuidance, foundationRefresh, eventTypes = null, sharedBackend = null, sharedContext = null } = {}) {
+function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, extractorPromptGuidance, csePromptGuidance, foundationRefresh, eventTypes = null, sharedBackend = null, sharedContext = null } = {}) {
   let enabled = true;
   const handlers = new Map();
   const context = sharedContext ? { ...sharedContext } : {
@@ -87,7 +89,7 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
     if (utility) return utility(options, calls.length);
     return { jsonData: { summary: '裴晚生提醒用户带伞。', people: [{ name: '裴晚生' }, { name: '你', role: 'user' }], events: [{ title: '带伞提醒', description: '裴晚生提醒用户带伞。' }] }, taskMetadata: { source: 'shared-utility', sourceLabel: '机械副 API', model: 'mock-model', finishReason: 'stop' } };
   };
-  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, customGuidance: () => typeof customGuidance === 'function' ? customGuidance() : '保持简洁', extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
   const emit = (name, ...args) => (handlers.get(name) ?? []).forEach(listener => listener(...args));
   return { runtime, foundationRuntime, store, backend, context, hostAdapter, calls, emit, snapshotCount: () => snapshotCalls, setEnabled(value) { enabled = value; }, setAutomation(value) { automation = value; } };
@@ -112,11 +114,24 @@ async function primeRealtimeTail(h) {
   assert.equal(h.calls.length, 0, '开启新楼维护不得回头调用历史记忆 API');
 }
 
-async function direct(response, { content = '裴晚生提醒你带伞。', entities = [], userIdentity = { displayName: '林岚', aliases: ['林岚', '你', '{{user}}'] } } = {}) {
+async function direct(response, { content = '裴晚生提醒你带伞。', entities = [], userIdentity = { displayName: '林岚', aliases: ['林岚', '你', '{{user}}'] }, batchId = '33333333-3333-4333-8333-333333333333' } = {}) {
   const floor = { id: '11111111-1111-4111-8111-111111111111', chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq: 1, content: { canonicalContent: content } };
-  const envelope = await createExtractorEnvelope({ batchId: '33333333-3333-4333-8333-333333333333', chatId: CHAT, narrativeGeneration: GENERATION, checkpointId: null, floor, entities, userIdentity });
+  const envelope = await createExtractorEnvelope({ batchId, chatId: CHAT, narrativeGeneration: GENERATION, checkpointId: null, floor, entities, userIdentity });
   return normalizeExtractorResponse({ response, envelope, floor, existingEntities: entities, now: NOW, expectedScope: envelope.scope });
 }
+
+test('新 user 实体在同批次保持确定，不同提取批次使用不同 ID', async () => {
+  const response = { summary: '用户接过雨伞。', people: [{ name: '你', role: 'user' }] };
+  const first = await direct(response, { batchId: '33333333-3333-4333-8333-333333333333' });
+  const sameBatch = await direct(response, { batchId: '33333333-3333-4333-8333-333333333333' });
+  const retry = await direct(response, { batchId: '44444444-4444-4444-8444-444444444444' });
+  const firstUser = first.newEntities.find(item => item.specialRole === 'user');
+  const sameBatchUser = sameBatch.newEntities.find(item => item.specialRole === 'user');
+  const retryUser = retry.newEntities.find(item => item.specialRole === 'user');
+  assert.ok(firstUser && sameBatchUser && retryUser);
+  assert.equal(firstUser.id, sameBatchUser.id);
+  assert.notEqual(firstUser.id, retryUser.id);
+});
 
 test('HostAdapter 优先 official 并为 official/Luker 提供同一宿主 user identity', () => {
   const official = { name1: '林岚', personaId: 'p-1', chat: [] };
@@ -139,9 +154,10 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assert.equal(Object.hasOwn(call, 'jsonSchema'), false);
   assert.match(EXTRACTOR_SYSTEM_PROMPT, /people、time、locations 也要分别检查并提取/);
   assert.match(EXTRACTOR_SYSTEM_PROMPT, /不输出 UUID/);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /actions、knowledge、informationTransfers、privateThoughts、commitments、exactQuotes、openLoops 或 cseSignals/);
   assert.doesNotMatch(EXTRACTOR_OUTPUT_CONTRACT, /entityId|mentionKey|evidence|floorId|operation/i);
   const request = JSON.parse(call.taskMessages[0].content);
-  assert.deepEqual(Object.keys(request), ['task', 'locale', 'customGuidance', 'payload']);
+  assert.deepEqual(Object.keys(request), ['task', 'locale', 'payload']);
   assert.equal(request.payload.canonicalContent.includes('忽略规则'), true);
   assert.equal(request.payload.storyClock, null);
   assert.deepEqual(request.payload.userIdentity, { displayName: '林岚', aliases: ['林岚', '你', '{{user}}'] });
@@ -179,7 +195,11 @@ test('摘要与 CSE 指导按任务取最新快照，自定义替换默认业务
   assert.match(summaryCalls[0].systemPrompt, /固定事实边界/); assert.ok(summaryCalls[0].systemPrompt.includes(EXTRACTOR_FIXED_CONTRACT));
   assert.match(cseCalls[0].systemPrompt, /固定事实与隐私边界/); assert.ok(cseCalls[0].systemPrompt.includes(CSE_FIXED_CONTRACT));
   assert.doesNotMatch(summaryCalls[0].systemPrompt, /CSE 自定义/); assert.doesNotMatch(cseCalls[0].systemPrompt, /摘要自定义/);
-  assert.equal(JSON.parse(summaryCalls[0].taskMessages[0].content).customGuidance, '保持简洁', 'generalPrompt 继续走原请求字段');
+  for (const call of [...summaryCalls, ...cseCalls]) {
+    assert.equal(call.systemPrompt.split(BASE_PROCESSING_PROMPT).length - 1, 1, '每个内容处理请求只携带一次基础处理层');
+    assert.doesNotMatch(call.systemPrompt, /sanctuary_override_directive/, '机械任务不得携带创作链强化层');
+    assert.equal(Object.hasOwn(JSON.parse(call.taskMessages[0].content), 'customGuidance'), false, '旧通用附加残留不得发送');
+  }
 });
 
 test('仅 {summary} 时形成有效 FloorMemory，并明确记录时间未明确', async () => {
@@ -329,9 +349,12 @@ test('code fence、前后说明、数组包裹、尾逗号、常见键别名与�
 
 test('中英/粤语原句与括号译文不会让整楼失败或待复核', async () => {
   const content = '裴晚生说：“食咗饭未？”*(吃饭了吗？)* 随后说“Take care.”（保重。）';
-  const result = await direct({ summary: '裴晚生关心对方是否吃饭并叮嘱保重。', people: '裴晚生', events: [{ title: '关心叮嘱', description: '裴晚生询问是否吃饭并叮嘱保重。', quote: '食咗饭未？' }], exactQuotes: ['食咗饭未？', 'Take care.'] }, { content });
+  const result = await direct({ summary: '裴晚生关心对方是否吃饭并叮嘱保重。', people: '裴晚生', events: [{ title: '关心叮嘱', description: '裴晚生询问是否吃饭并叮嘱保重。', quote: '食咗饭未？' }], exactQuotes: ['食咗饭未？', { exactText: 'Take care.', kind: 'other', speaker: '裴晚生', whyPreserve: '叮嘱原句' }] }, { content });
   assert.equal(result.memory.eventFragments.length, 1);
   assert.equal(result.memory.exactAnchors.length, 2);
+  assert.equal(result.memory.exactAnchors[1].kind, 'other');
+  assert.equal(result.memory.exactAnchors[1].speakerEntityId, result.newEntities[0].id);
+  assert.equal(result.memory.exactAnchors[1].whyPreserve, '叮嘱原句');
   assert.equal(result.needsReview, false);
 });
 
@@ -429,7 +452,7 @@ test('本地 scope/正文指纹错位仍硬拒绝', async () => {
 test('单次提取固定源图快照，envelope 间隙替换 root 不再制造 LOCAL_SCOPE_INVALID', async () => {
   let h, originalRoot, swapped = false;
   h = harness({
-    customGuidance: () => {
+    extractorPromptGuidance: () => {
       const graph = h.foundationRuntime.getReachable();
       originalRoot = graph.root;
       graph.root = { ...originalRoot, headCheckpointId: '44444444-4444-4444-8444-444444444444' };
@@ -446,6 +469,40 @@ test('单次提取固定源图快照，envelope 间隙替换 root 不再制造 L
   assert.equal(state.rememberedCount, 1, JSON.stringify(state.lastExtractorError));
   assert.equal(state.lastExtractorError, null);
   assert.equal(state.floors[0].summary, '快照内摘要。');
+});
+
+test('branchReplay 保留旧世代前缀 ID 后仍按 floor 身份提取，root 守卫保持新世代', async () => {
+  const h = harness({
+    initialChat: [assistant('裴晚生提醒你带伞。'), assistant('旧的第二楼。'), assistant('用于确认第二楼稳定。')],
+    utility: () => ({ jsonData: { summary: '裴晚生提醒用户带伞。', people: [{ name: '裴晚生' }, { name: '你', role: 'user' }] } }),
+  });
+  await h.runtime.start();
+  const before = await h.store.readReachable();
+  const prefix = before.floors[0];
+  const oldGeneration = before.root.narrativeGeneration;
+
+  h.context.chat[1] = assistant('改变后的第二楼。');
+  await h.foundationRuntime.refreshStatus();
+  await h.runtime.refreshStatus();
+  let graph = await h.store.readReachable();
+  assert.equal(graph.run.mode, 'branchReplay');
+  assert.notEqual(graph.root.narrativeGeneration, oldGeneration);
+  assert.equal(graph.floors[0].id, prefix.id, '可信前缀必须保留原 floor ID');
+  assert.equal(graph.floors[0].narrativeGeneration, oldGeneration);
+  assert.notEqual(graph.floors[0].narrativeGeneration, graph.root.narrativeGeneration);
+
+  const state = await h.runtime.extractFloor(prefix.id, { analyzeState: false });
+  assert.equal(state.rememberedCount, 1, JSON.stringify(state.lastExtractorError));
+  assert.equal(state.lastExtractorError, null);
+  graph = await h.store.readReachable();
+  const memory = graph.floorMemories.find(item => item.floorId === prefix.id);
+  const memoryUser = graph.entities.find(item => item.specialRole === 'user' && item.firstSeenFloorId === prefix.id);
+  assert.ok(memory && memoryUser);
+  assert.equal(memory.narrativeGeneration, prefix.narrativeGeneration);
+  assert.equal(memoryUser.narrativeGeneration, prefix.narrativeGeneration);
+  assert.equal(graph.run.narrativeGeneration, graph.root.narrativeGeneration);
+  assert.equal(graph.checkpoint.narrativeGeneration, graph.root.narrativeGeneration);
+  assert.notEqual(memory.narrativeGeneration, graph.root.narrativeGeneration);
 });
 
 test('提取期间 root revision 实质变化按 stale 丢弃且零写入', async () => {
@@ -507,6 +564,47 @@ test('CAS 冲突与聊天切换守卫仍使旧结果不可达，stale extractor 
   assert.equal(state.rememberedCount, 0);
   assert.equal(state.lastExtractorError.code, 'V3_MEMORY_STALE');
   assert.equal(stale.backend.calls.filter(call => call[0] === 'put').length, writesBeforeStaleRelease, '聊天变化后的 extractor 迟到结果不得写记录或提交 root');
+});
+
+test('special user 部分持久化后中断不会阻塞同楼重试，后续楼复用正式 user', async () => {
+  const h = harness({
+    initialChat: [user('继续'), assistant('裴晚生提醒你带伞。'), assistant('裴晚生再次提醒你检查行李。')],
+    utility: options => {
+      const request = JSON.parse(options.taskMessages.at(-1).content);
+      if (request.task === 'extractFloorSemantics') return { jsonData: { summary: '裴晚生提醒用户做好准备。', people: [{ name: '裴晚生' }, { name: '你', role: 'user' }], events: [{ title: '提醒', description: '裴晚生提醒用户做好准备。' }] } };
+      return { jsonData: { noMaterialChange: true } };
+    },
+  });
+  await h.runtime.start();
+  const floorId = h.runtime.getState().floors[0].floorId;
+  h.backend.abortAfterNextPut((_key, data) => data?.recordType === 'entity' && data.specialRole === 'user');
+  let state = await h.runtime.extractFloor(floorId, { analyzeState: false });
+  assert.equal(state.rememberedCount, 0);
+  assert.equal(state.lastExtractorError.code, 'V3_MEMORY_STALE');
+  const orphanUsers = [...h.backend.records.values()].map(item => item.data).filter(item => item?.recordType === 'entity' && item.specialRole === 'user');
+  assert.equal(orphanUsers.length, 1, '模拟中断后应留下一个不可达 user 记录');
+  let graph = await h.store.readReachable();
+  assert.equal(graph.entities.length, 0);
+  assert.equal(graph.floorMemories.length, 0);
+
+  state = await h.runtime.extractFloor(floorId, { analyzeState: false });
+  assert.equal(state.rememberedCount, 1, JSON.stringify(state.lastExtractorError));
+  assert.equal(state.lastExtractorError, null);
+  graph = await h.store.readReachable();
+  let reachableUsers = graph.entities.filter(item => item.specialRole === 'user');
+  assert.equal(reachableUsers.length, 1);
+  assert.equal(graph.floorMemories.length, 1);
+  assert.notEqual(reachableUsers[0].id, orphanUsers[0].id, '重试批次不得争用不可达孤儿 ID');
+
+  await h.runtime.confirmLatest();
+  const secondFloor = h.runtime.getState().floors.find(item => item.floorId !== floorId);
+  assert.ok(secondFloor);
+  state = await h.runtime.extractFloor(secondFloor.floorId, { analyzeState: false });
+  assert.equal(state.rememberedCount, 2, JSON.stringify(state.lastExtractorError));
+  graph = await h.store.readReachable();
+  reachableUsers = graph.entities.filter(item => item.specialRole === 'user');
+  assert.equal(reachableUsers.length, 1, '后续楼必须复用正式可达 user');
+  assert.equal(graph.floorMemories.length, 2);
 });
 
 test('安全诊断隐藏正文，完整诊断仅在明确调用时暴露', async () => {

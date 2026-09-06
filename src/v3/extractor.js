@@ -2,9 +2,10 @@ import { isUuid, sha256 } from '../identity.js';
 import { deterministicUuid } from './foundation-domain.js';
 import { EXACT_ANCHOR_LIMIT, FLOOR_MEMORY_ITEM_LIMIT, validateEntityRecord, validateFloorMemory } from './memory-schema.js';
 import { sanitizeDiagnosticValue, sanitizeTaskMetadata } from './safe-metadata.js';
+import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 
 export const EXTRACTOR_SCHEMA_VERSION = 3;
-export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-11';
+export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-13';
 export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-3/semantic-compiler-4`;
 const ARRAY_FIELDS = Object.freeze(['chronology', 'locations', 'participants', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'exactAnchors', 'openLoops', 'ambiguities', 'cseSignals']);
 const ENTITY_TYPES = ['person', 'organization', 'place', 'object', 'creature', 'concept', 'unknown'];
@@ -48,13 +49,16 @@ export const EXTRACTOR_RESPONSE_SCHEMA = Object.freeze({
     locations: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, change: { type: 'string', enum: ['present', 'entered', 'left', 'movedThrough', 'mentioned'] }, people: { type: 'array', items: { type: 'string' } } } } },
     events: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' } } } },
     actions: { type: 'array', items: { type: 'object', properties: { actor: { type: 'string' }, targets: { type: 'array', items: { type: 'string' } }, action: { type: 'string' }, completion: { type: 'string', enum: ['intended', 'attempted', 'completed', 'interrupted', 'uncertain'] }, result: { type: ['string', 'null'] } } } },
-    knowledge: { type: 'array' },
+    knowledge: { type: 'array', items: { type: 'object', properties: { subject: { type: ['string', 'null'] }, kind: { type: 'string', enum: ['physical', 'injury', 'object', 'environment', 'situational', 'other'] }, description: { type: 'string' } } } },
     informationTransfers: { type: 'array', items: { type: 'object', properties: { from: { type: ['string', 'null'] }, to: { type: 'array', items: { type: 'string' } }, claimText: { type: 'string' }, channel: { type: 'string', enum: ['told', 'shown', 'written', 'overheard', 'discovered'] } } } },
-    privateThoughts: { type: 'array', items: { type: 'object', properties: { holder: { type: 'string' }, thought: { type: 'string' }, kind: { type: 'string' } } } },
-    commitments: { type: 'array', items: { type: 'object', properties: { issuer: { type: 'string' }, recipient: { type: ['string', 'array'] }, content: { type: 'string' }, kind: { type: 'string' }, status: { type: 'string' } } } },
-    exactQuotes: { type: 'array' },
-    openLoops: { type: 'array' },
-    cseSignals: { type: 'array', items: { type: 'object', properties: { subject: { type: 'string' }, object: { type: ['string', 'null'] }, signalType: { type: 'string' }, description: { type: 'string' } } } },
+    privateThoughts: { type: 'array', items: { type: 'object', properties: { holder: { type: 'string' }, thought: { type: 'string' }, kind: { type: 'string', enum: ['thought', 'emotion', 'intention', 'dream', 'privateDecision', 'suspicion'] } } } },
+    commitments: { type: 'array', items: { type: 'object', properties: { issuer: { type: 'string' }, recipient: { type: ['string', 'array'] }, content: { type: 'string' }, kind: { type: 'string', enum: ['promise', 'agreement', 'command', 'codePhrase', 'plan', 'boundary'] }, status: { type: 'string', enum: ['made', 'accepted', 'refused', 'uncertain'] } } } },
+    exactQuotes: { type: 'array', items: { anyOf: [
+      { type: 'string', description: '需要逐字保留且确实出现在本楼正文中的原句' },
+      { type: 'object', properties: { exactText: { type: 'string' }, kind: { type: 'string', enum: ['promise', 'codePhrase', 'wording', 'number', 'date', 'riddle', 'title', 'other'] }, speaker: { type: ['string', 'null'] }, whyPreserve: { type: 'string' } } },
+    ] } },
+    openLoops: { type: 'array', items: { type: 'object', properties: { description: { type: 'string' }, owners: { type: 'array', items: { type: 'string' } } } } },
+    cseSignals: { type: 'array', items: { type: 'object', properties: { subject: { type: 'string' }, object: { type: ['string', 'null'] }, signalType: { type: 'string', enum: ['emotion', 'boundary', 'conflict', 'reconciliation', 'vulnerability', 'trust', 'betrayal', 'repeatedPattern', 'relationDefinition', 'persistentCondition', 'other'] }, description: { type: 'string' } } } },
   },
 });
 
@@ -62,7 +66,7 @@ export const EXTRACTOR_OUTPUT_CONTRACT = JSON.stringify(EXTRACTOR_RESPONSE_SCHEM
 
 export const DEFAULT_EXTRACTOR_GUIDANCE = `你是“千千结”的剧情语义记录员。完整阅读 canonicalContent，用浅层 JSON 说清这一楼发生了什么。
 
-summary 应按本楼实际信息量完整记录，不强迫压成一句。可以分段，并按发生顺序说明人物做了什么、对象是谁、事情怎样经过以及结果如何；原因只在正文明确时写。保留会改变剧情走向或人物理解的关键对话含义、约定与条件、数字、物品或信息的归属、承诺、伏笔和未决事项。明确区分意图、尝试与完成，传闻与事实，以及只属于特定人物的私密思想。可供后续记忆使用的关键事实也应写入对应的 events、actions、informationTransfers、privateThoughts、commitments、openLoops 或 exactQuotes 等结构字段，不能因为 summary 已经写过就省略。简短楼可以简短，复杂楼不要为了短而漏掉事件；在完整保留关键事实的前提下去掉重复与无助于记忆的叙述修饰，不补造正文没有的内容，也不要为了填满字段而编造。`;
+summary 应按本楼实际信息量完整记录，不强迫压成一句。可以分段，并按发生顺序说明人物做了什么、对象是谁、事情怎样经过以及结果如何；原因只在正文明确时写。保留会改变剧情走向或人物理解的关键对话含义、约定与条件、数字、物品或信息的归属、承诺、伏笔和未决事项。明确区分意图、尝试与完成，传闻与事实，以及只属于特定人物的私密思想。简短楼可以简短，复杂楼不要为了短而漏掉事件；在完整保留关键事实的前提下去掉重复与无助于记忆的叙述修饰，不补造正文没有的内容，也不要为了填满字段而编造。`;
 
 export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
 1. canonicalContent 是本楼剧情事实的主要来源。payload.storyClock 若存在，是同一楼原始正文中的隐藏时间线索，可能只有日期或时刻；payload.previousStoryClock 仅是目标楼之前最近一楼的时间参照，只能用于理解本楼明确的相对时间，不能把前楼时刻冒充本楼时刻。已知人物和用户身份只用于判断“这个称谓是谁”，不能证明本楼发生过任何事。
@@ -72,12 +76,13 @@ export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
 
 【固定输出边界】
 1. 只输出语义，不输出 UUID、记录 ID、楼层指针、哈希、create/update/delete 操作、mentionKey、entityKey 或证据坐标。
-2. people 只写人能读懂的姓名、别名和角色。当正文中的“你”、{{user}} 或用户姓名指向宿主用户时，role 写 user。被 actions、informationTransfers、privateThoughts、commitments 或 cseSignals 引用的人物也要列入 people，人物字段使用 people 中的姓名或别名。
+2. people 只写人能读懂的姓名、别名和角色。当正文中的“你”、{{user}} 或用户姓名指向宿主用户时，role 写 user。被 actions、knowledge、informationTransfers、privateThoughts、commitments、exactQuotes、openLoops 或 cseSignals 引用的人物也要列入 people，人物字段使用 people 中的姓名或别名。
 3. people.presence 区分本人在场 present、远程参与 remote、仅被提及 mentioned、只有其私密认知 privateCognitionOnly；提及或推断不等于本人在场或知情，不确定时写 mentioned。
 4. actions 要分清 actor 行为主体、targets 受事者或受益者、completion 完成状态与 result 结果；意图或尝试不能写成已完成。informationTransfers 要分清消息来源 from、接收者 to、内容 claimText 与正文明确的 channel；无法确定渠道时不要猜成 told。
 5. privateThoughts 的 holder 是思想所属人物，commitments 的 issuer 是作出承诺者、recipient 是对象；转述某人的话不等于说话者本人在场，也不自动把内容确立为事实。
-6. exactQuotes 只在逐字措辞确有保留价值时使用；复制正文原文即可，不需定位坐标。
-7. 有正文依据的相关字段应充分记录；无内容的字段可以留空，不要为了满足数据库 Schema 凑数或编造。
+6. knowledge 用于正文明确呈现的观察或事实：subject 是事实关联的人物（无明确人物可留空），kind 区分身体、伤势、物品、环境、情境或其他；某人得知了什么应写 informationTransfers，只属于人物内心的内容应写 privateThoughts。cseSignals 只记录正文支持的人物情绪、边界、冲突/和解、脆弱、信任/背叛、重复模式、关系定义或持续状况等状态信号，不要把普通剧情事实都改写成状态信号。
+7. exactQuotes 只在措辞确有长期保留价值且原句实际出现在正文时填写；可直接写原句字符串，也可写含 exactText、kind、speaker、whyPreserve 的对象。能确认说话人时应写 speaker，以保留原句归属；不能确认时不要猜。openLoops 的每项包含 description 和可选 owners，用于确实尚未解决的目标、疑问或风险；已经完成的事项不要继续列为未决。
+8. summary 中可供后续记忆使用的关键事实若对应 events、actions、knowledge、informationTransfers、privateThoughts、commitments、openLoops、exactQuotes 或 cseSignals，也必须进入相应结构字段，不能因为 summary 已写过就省略。有正文依据的相关字段应充分记录；无内容的字段可以留空，不要为了满足数据库 Schema 凑数或编造。
 
 参考结构：
 ${EXTRACTOR_OUTPUT_CONTRACT}
@@ -88,7 +93,7 @@ ${EXTRACTOR_OUTPUT_CONTRACT}
 export function buildExtractorSystemPrompt(guidance = '') {
   const custom = typeof guidance === 'string' ? guidance : '';
   const businessGuidance = custom.trim() ? custom : DEFAULT_EXTRACTOR_GUIDANCE;
-  return `${businessGuidance}\n\n${EXTRACTOR_FIXED_CONTRACT}`;
+  return withBaseProcessingPrompt(`${businessGuidance}\n\n${EXTRACTOR_FIXED_CONTRACT}`);
 }
 
 export const EXTRACTOR_SYSTEM_PROMPT = buildExtractorSystemPrompt();
@@ -221,11 +226,11 @@ function safeIdentity(value) {
   return Object.freeze({ displayName, aliases: Object.freeze(aliases) });
 }
 
-export async function createExtractorEnvelope({ batchId, chatId, narrativeGeneration, checkpointId, floor, entities = [], userIdentity = null, identityHints = [], customGuidance = '', storyClock = null, previousStoryClock = null }) {
+export async function createExtractorEnvelope({ batchId, chatId, narrativeGeneration, checkpointId, floor, entities = [], userIdentity = null, identityHints = [], storyClock = null, previousStoryClock = null }) {
   const catalogSnapshot = catalogEntries(entities);
   const normalizedUserIdentity = safeIdentity(userIdentity);
   const request = Object.freeze({
-    task: 'extractFloorSemantics', locale: 'zh-CN', customGuidance: String(customGuidance ?? '').slice(0, 4000),
+    task: 'extractFloorSemantics', locale: 'zh-CN',
     payload: {
       canonicalContent: floor.content.canonicalContent,
       storyClock,
@@ -333,7 +338,7 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
   for (const mention of mentions.values()) {
     if (mention.identity !== 'new') continue;
     const entityId = mention.specialRole === 'user'
-      ? await deterministicUuid(['v3-entity-special-user', floor.chatId, floor.narrativeGeneration])
+      ? await deterministicUuid(['v3-entity-special-user', floor.chatId, floor.narrativeGeneration, floor.id, expectedScope.batchId])
       : await deterministicUuid(['v3-entity', floor.chatId, floor.narrativeGeneration, floor.id, expectedScope.batchId, mention.surface.normalize('NFKC').toLocaleLowerCase()]);
     const entity = validateEntityRecord({
       schemaVersion: 3, recordType: 'entity', id: entityId, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration,
@@ -730,7 +735,7 @@ async function compileSemanticPacket({ response, envelope, floor, existingEntiti
   for (const [index, item] of boundedItems(['knowledge', 'facts', 'observations', 'information', '知识', '事实', '观察'], 'knowledge').entries()) {
     const description = semanticText(item, ['description', 'content', 'fact', 'text', 'knowledge', '内容', '描述']);
     if (!description) { issue('knowledge', index, 'V3_EXTRACTOR_OPTIONAL_ITEM_INVALID', `knowledge[${index}]`); continue; }
-    const kind = enumOr(semanticText(item, ['kind', 'type']), { physical: 'physical', injury: 'injury', object: 'object', environment: 'environment', situational: 'situational', '身体': 'physical', '受伤': 'injury', '环境': 'environment', '情境': 'situational' }, 'other');
+    const kind = enumOr(semanticText(item, ['kind', 'type']), { physical: 'physical', injury: 'injury', object: 'object', environment: 'environment', situational: 'situational', other: 'other', '身体': 'physical', '受伤': 'injury', '环境': 'environment', '情境': 'situational' }, 'other');
     target.observations.push({ subjectMentionKey: mentionFor(field(item, ['subject', 'person', 'owner'])), kind, description, evidence: evidence(item) });
   }
   for (const [index, item] of boundedItems(['informationTransfers', 'transfers', 'communications', '信息转交', '消息转交', '通信'], 'informationTransfers').entries()) {
@@ -759,7 +764,7 @@ async function compileSemanticPacket({ response, envelope, floor, existingEntiti
     const ownerMentionKey = mentionFor(field(item, ['owner', 'holder', 'person', 'subject']));
     if (!content) { issue('privateThoughts', index, 'V3_EXTRACTOR_OPTIONAL_ITEM_INVALID', `privateThoughts[${index}].content`); continue; }
     if (!ownerMentionKey) { issue('privateThoughts', index, 'V3_EXTRACTOR_OPTIONAL_ITEM_INVALID', `privateThoughts[${index}].owner`); continue; }
-    const kind = enumOr(semanticText(item, ['kind', 'type']), { emotion: 'emotion', intention: 'intention', dream: 'dream', privatedecision: 'privateDecision', suspicion: 'suspicion', '情绪': 'emotion', '意图': 'intention', '决定': 'privateDecision', '怀疑': 'suspicion' }, 'thought');
+    const kind = enumOr(semanticText(item, ['kind', 'type']), { thought: 'thought', emotion: 'emotion', intention: 'intention', dream: 'dream', privatedecision: 'privateDecision', suspicion: 'suspicion', '情绪': 'emotion', '意图': 'intention', '决定': 'privateDecision', '怀疑': 'suspicion' }, 'thought');
     target.privateCognition.push({ ownerMentionKey, kind, content, expressedPublicly: false, evidence: evidence(item) });
   }
   for (const [index, item] of boundedItems(['commitments', 'promises', 'agreements', '承诺', '约定'], 'commitments').entries()) {
@@ -767,8 +772,8 @@ async function compileSemanticPacket({ response, envelope, floor, existingEntiti
     const speakerMentionKey = mentionFor(field(item, ['speaker', 'issuer', 'from', 'person']));
     if (!content) { issue('commitments', index, 'V3_EXTRACTOR_OPTIONAL_ITEM_INVALID', `commitments[${index}].content`); continue; }
     if (!speakerMentionKey) { issue('commitments', index, 'V3_EXTRACTOR_OPTIONAL_ITEM_INVALID', `commitments[${index}].speaker`); continue; }
-    const kind = enumOr(semanticText(item, ['kind', 'type']), { agreement: 'agreement', command: 'command', codephrase: 'codePhrase', plan: 'plan', boundary: 'boundary', '约定': 'agreement', '命令': 'command', '暗号': 'codePhrase', '计划': 'plan', '边界': 'boundary' }, 'promise');
-    const status = enumOr(semanticText(item, ['status', 'state']), { accepted: 'accepted', refused: 'refused', uncertain: 'uncertain', '接受': 'accepted', '拒绝': 'refused', '不确定': 'uncertain' }, 'made');
+    const kind = enumOr(semanticText(item, ['kind', 'type']), { promise: 'promise', agreement: 'agreement', command: 'command', codephrase: 'codePhrase', plan: 'plan', boundary: 'boundary', '约定': 'agreement', '命令': 'command', '暗号': 'codePhrase', '计划': 'plan', '边界': 'boundary' }, 'promise');
+    const status = enumOr(semanticText(item, ['status', 'state']), { made: 'made', accepted: 'accepted', refused: 'refused', uncertain: 'uncertain', '接受': 'accepted', '拒绝': 'refused', '不确定': 'uncertain' }, 'made');
     const exactText = semanticText(item, ['exactQuote', 'exactText', 'quote', '原话'], 2000) || null;
     target.commitments.push({ speakerMentionKey, targetMentionKeys: list(field(item, ['targets', 'target', 'to', 'recipient', 'recipients', 'people'])).map(mentionFor).filter(Boolean), kind, content, status, exactText, evidence: evidence(item) });
   }
@@ -779,7 +784,7 @@ async function compileSemanticPacket({ response, envelope, floor, existingEntiti
       issue('exactQuotes', index, 'V3_EXTRACTOR_ANCHOR_NOT_FOUND', `exactQuotes[${index}]`);
       continue;
     }
-    const kind = enumOr(semanticText(item, ['kind', 'type']), { promise: 'promise', codephrase: 'codePhrase', number: 'number', date: 'date', riddle: 'riddle', title: 'title', '承诺': 'promise', '暗号': 'codePhrase', '数字': 'number', '日期': 'date', '谜语': 'riddle', '标题': 'title' }, 'wording');
+    const kind = enumOr(semanticText(item, ['kind', 'type']), { promise: 'promise', codephrase: 'codePhrase', wording: 'wording', number: 'number', date: 'date', riddle: 'riddle', title: 'title', other: 'other', '承诺': 'promise', '暗号': 'codePhrase', '数字': 'number', '日期': 'date', '谜语': 'riddle', '标题': 'title' }, 'wording');
     target.exactAnchors.push({ kind, exactText, speakerMentionKey: mentionFor(field(item, ['speaker', 'person'])), whyPreserve: semanticText(item, ['why', 'reason', 'whyPreserve', '原因'], 1000) || '关键原句' });
   }
   for (const [index, item] of boundedItems(['openLoops', 'unresolved', 'unfinished', 'looseEnds', '未决事项', '悬念'], 'openLoops').entries()) {
@@ -791,7 +796,7 @@ async function compileSemanticPacket({ response, envelope, floor, existingEntiti
     const description = semanticText(item, ['description', 'content', 'text', '内容', '描述']);
     const subjectMentionKey = mentionFor(field(item, ['subject', 'person', 'from']));
     if (!description || !subjectMentionKey) { issue('cseSignals', index, 'V3_EXTRACTOR_OPTIONAL_ITEM_INVALID', `cseSignals[${index}]`); continue; }
-    const signalType = enumOr(semanticText(item, ['signalType', 'type', 'kind']), { emotion: 'emotion', boundary: 'boundary', conflict: 'conflict', reconciliation: 'reconciliation', vulnerability: 'vulnerability', trust: 'trust', betrayal: 'betrayal', repeatedpattern: 'repeatedPattern', relationdefinition: 'relationDefinition', persistentcondition: 'persistentCondition', '情绪': 'emotion', '边界': 'boundary', '冲突': 'conflict', '和解': 'reconciliation', '信任': 'trust', '背叛': 'betrayal' }, 'other');
+    const signalType = enumOr(semanticText(item, ['signalType', 'type', 'kind']), { emotion: 'emotion', boundary: 'boundary', conflict: 'conflict', reconciliation: 'reconciliation', vulnerability: 'vulnerability', trust: 'trust', betrayal: 'betrayal', repeatedpattern: 'repeatedPattern', relationdefinition: 'relationDefinition', persistentcondition: 'persistentCondition', other: 'other', '情绪': 'emotion', '边界': 'boundary', '冲突': 'conflict', '和解': 'reconciliation', '信任': 'trust', '背叛': 'betrayal' }, 'other');
     target.cseSignals.push({ subjectMentionKey, objectMentionKey: mentionFor(field(item, ['object', 'target', 'to'])), signalType, description, evidence: evidence(item) });
   }
   const normalized = await normalizeLegacyExtractorResponse({ response: legacy, envelope, floor, existingEntities, now, supersedes, preservedSummary, expectedScope });

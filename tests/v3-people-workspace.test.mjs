@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, PEOPLE_WORKSPACE_RECORD_ID } from '../src/v3/people-workspace.js';
+import { buildPeopleProfileSystemPrompt, createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, DEFAULT_PROFILE_GUIDANCE, PEOPLE_WORKSPACE_RECORD_ID, PROFILE_FIXED_CONTRACT } from '../src/v3/people-workspace.js';
 import { filterSourcesByPermission } from '../src/source-permission.js';
+import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
 
 const CHAT_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const CHAT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -27,7 +28,7 @@ function backend() {
 function entity(id, name, extra = {}) {
   return { id, entityType: 'person', displayName: name, aliases: [{ name: `${name}别名` }], specialRole: 'none', firstSeenFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', lastSeenFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', status: 'established', recordStatus: 'active', ...extra };
 }
-function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many = false, permissionSettings = null, sourceCandidates = null } = {}) {
+function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many = false, permissionSettings = null, sourceCandidates = null, profilePromptGuidance = () => '' } = {}) {
   const db = backend(); let identity = { chatId: CHAT_A, hostChatId: 'host-a', characterLocator: 'char.png', personaLocator: 'persona.png' };
   const peopleEntities = ids.slice(0, many ? 12 : 4).map((id, index) => entity(id, `人物${index + 1}`));
   let reachable = {
@@ -41,7 +42,7 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
   const sourceTrace = [];
   const runtime = createPeopleWorkspaceRuntime({
     store: createPeopleWorkspaceStore({ client: db.client }), session: { identity: () => structuredClone(identity) },
-    foundationRuntime: { getReachable: () => reachable }, memoryRuntime, generateUtilityTask: generate,
+    foundationRuntime: { getReachable: () => reachable }, memoryRuntime, generateUtilityTask: generate, profilePromptGuidance,
     sourcePermissions: { filterCandidates({ chatId, candidates }) { sourceTrace.push(['filter', chatId, candidates.map(item => item.id)]); return permissionSettings ? filterSourcesByPermission({ chatId, candidates, settings: permissionSettings }) : candidates.filter(item => item.id !== 'worldbook:excluded'); } },
     contextProvider: () => ({ chat: [], marker: identity.chatId }),
     scanner: async context => { sourceTrace.push(['scan', context.marker]); return { entries: [{ content: '<secret>DROP</secret><content>ALLOWED</content>' }, { content: 'EXCLUDED' }] }; },
@@ -50,6 +51,41 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
   });
   return { db, runtime, peopleEntities, sourceTrace, get identity() { return identity; }, setIdentity(value) { identity = value; }, setReachable(value) { reachable = value; }, get memoryState() { return memoryState; } };
 }
+
+test('人物资料业务指导可替换，固定合同与基础处理层始终恰好一次', () => {
+  const builtIn = buildPeopleProfileSystemPrompt();
+  assert.match(builtIn, new RegExp(DEFAULT_PROFILE_GUIDANCE.slice(0, 20)));
+  assert.match(builtIn, /人物卡和世界书属于明确设定/);
+  assert.equal(builtIn.split(BASE_PROCESSING_PROMPT).length - 1, 1);
+  const custom = buildPeopleProfileSystemPrompt('用户自定人物整理风格');
+  assert.match(custom, /用户自定人物整理风格/);
+  assert.doesNotMatch(custom, /人物卡和世界书属于明确设定/);
+  assert.match(custom, new RegExp(PROFILE_FIXED_CONTRACT.slice(0, 16)));
+  assert.match(custom, /personKey 必须逐字使用/);
+  assert.equal(custom.split(BASE_PROCESSING_PROMPT).length - 1, 1);
+});
+
+test('人物资料运行时冻结本次自定义指导，设置变化只在下一次整理生效', async () => {
+  let guidance = '第一版人物资料要求';
+  const prompts = [];
+  const h = harness({
+    profilePromptGuidance: () => guidance,
+    generate: async options => {
+      prompts.push(options.systemPrompt);
+      if (prompts.length === 1) guidance = '第二版人物资料要求';
+      const request = JSON.parse(options.taskMessages[0].content);
+      return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, name: person.currentName, aliases: [], background: '', appearance: '', personality: '', notes: '' })) } };
+    },
+  });
+  await h.runtime.refresh();
+  await h.runtime.setSelectedEntityIds([h.peopleEntities[0].id]);
+  await h.runtime.generateMissingProfiles();
+  await h.runtime.setSelectedEntityIds([h.peopleEntities[0].id, h.peopleEntities[1].id]);
+  await h.runtime.generateMissingProfiles();
+  assert.match(prompts[0], /第一版人物资料要求/); assert.doesNotMatch(prompts[0], /第二版人物资料要求/);
+  assert.match(prompts[1], /第二版人物资料要求/); assert.doesNotMatch(prompts[1], /第一版人物资料要求/);
+  assert.ok(prompts.every(prompt => prompt.split(BASE_PROCESSING_PROMPT).length - 1 === 1));
+});
 
 test('重要人物允许 0、多个和超过常见小上限，持久重载与聊天隔离且不改变 CSE 候选', async () => {
   const h = harness({ many: true });
@@ -91,8 +127,9 @@ test('首次人工保存包括全空资料才建档，已有资料无改动零�
 });
 
 test('一次整理只覆盖未建档人物，严格过滤世界书并使用本次 personKey 绑定', async () => {
-  let request;
+  let request, systemPrompt;
   const h = harness({ generate: async options => {
+    systemPrompt = options.systemPrompt;
     request = JSON.parse(options.taskMessages[0].content);
     return { jsonData: { profiles: [{ personKey: 'person-1', name: '人物2资料名', aliases: ['小二'], background: '背景', appearance: '', personality: '沉稳', notes: '' }] } };
   } });
@@ -104,6 +141,8 @@ test('一次整理只覆盖未建档人物，严格过滤世界书并使用本�
   assert.equal(request.allowedWorldInfo.length, 1); assert.equal(request.allowedWorldInfo[0].source, '允许书');
   assert.equal(JSON.stringify(request).includes('EXCLUDED'), false); assert.equal(JSON.stringify(request).includes('DROP'), false); assert.equal(JSON.stringify(request).includes('ALLOWED'), true);
   assert.deepEqual(h.sourceTrace.map(item => item[0]), ['scan', 'candidates', 'filter']);
+  assert.equal(systemPrompt.split(BASE_PROCESSING_PROMPT).length - 1, 1, '人物资料任务只携带一次基础处理层');
+  assert.match(systemPrompt, /personKey 必须逐字使用/); assert.doesNotMatch(systemPrompt, /sanctuary_override_directive/);
   const state = h.runtime.getState(); assert.equal(state.profilesByEntityId[first.id].source, 'manual'); assert.equal(state.profilesByEntityId[second.id].source, 'generated');
   assert.deepEqual(state.selectedEntityIds, [first.id, second.id], '生成与选择保存必须分离');
 });

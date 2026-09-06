@@ -286,8 +286,10 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.equal(compiled.delta.subjectSnapshots[0].situational[0].reason, '正文明确写出甲亲耳听见并记住');
   assert.equal(compiled.delta.source.promptVersion, CSE_PROMPT_VERSION);
   assert.equal(compiled.delta.source.compilerVersion, CSE_COMPILER_VERSION);
-  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-4');
+  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-6');
   assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/after-state-compiler-4');
+  assert.match(CSE_SYSTEM_PROMPT, /未提供依据/);
+  assert.doesNotMatch(CSE_SYSTEM_PROMPT, /"noMaterialChange"/);
 });
 
 test('CSE Phase A 最多 6 路并发，完成后仍按 run → checkpoint → root 屏障提交且只保留提交前 runtime 回读', async () => {
@@ -746,6 +748,8 @@ test('浅层双语编译绑定唯一 user，A→B 分开，Core 后续冻结并�
   assert.equal(userSnapshot.adaptive[0].towardEntityId, B);
   assert.equal(aSnapshot.adaptive[0].towardEntityId, B, '可以指向本楼未追踪的已知人物');
   assert.equal(aSnapshot.adaptive[0].visibility, 'private', '缺失 visibility 必须绝对防全知');
+  assert.equal(aSnapshot.adaptive[0].reason, '未提供依据', '缺 reason 的有效状态继续接收，但不能冒充已有正文依据');
+  assert.equal(userSnapshot.core[0].reason, '初始表现', '模型明确给出的 reason 必须原样保留');
   assert.ok(first.isolated.some(item => item.code === 'V3_CSE_OPTIONAL_ITEM_INVALID'));
   const previous = { id: 'aaaaaaaa-1111-4111-8111-111111111111', subjects: first.delta.subjectSnapshots.map(({ changeSummary, coreChallenges, ...subject }) => subject) };
   const envelope2 = createCseEnvelope({ floor: floor(FLOOR2, '第二楼'), floorMemory: memory(MEMORY2), baseline, currentState: previous, trackedSubjects: tracked, entities });

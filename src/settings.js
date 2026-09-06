@@ -24,9 +24,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
   sourceWorldInfoConfirmedChats: {},
   sourceKeepTags: 'content',
   sourceExtraTags: '',
-  generalPrompt: '',
   summaryPrompt: '',
   csePrompt: '',
+  profilePrompt: '',
   appearanceTheme: 'auto',
   appearanceScale: 1,
   appearanceFontCssUrl: '',
@@ -148,9 +148,9 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'sourceWorldInfoConfirmedChats') && patch.sourceWorldInfoConfirmedChats && typeof patch.sourceWorldInfoConfirmedChats === 'object' && !Array.isArray(patch.sourceWorldInfoConfirmedChats)) settings.sourceWorldInfoConfirmedChats = patch.sourceWorldInfoConfirmedChats;
     if (own(patch, 'sourceKeepTags')) settings.sourceKeepTags = normalizeMemoryTagList(patch.sourceKeepTags).join(',');
     if (own(patch, 'sourceExtraTags')) settings.sourceExtraTags = normalizeMemoryTagList(patch.sourceExtraTags).join(',');
-    if (own(patch, 'generalPrompt')) settings.generalPrompt = text(patch.generalPrompt);
     if (own(patch, 'summaryPrompt')) settings.summaryPrompt = text(patch.summaryPrompt);
     if (own(patch, 'csePrompt')) settings.csePrompt = text(patch.csePrompt);
+    if (own(patch, 'profilePrompt')) settings.profilePrompt = text(patch.profilePrompt);
     if (own(patch, 'appearanceTheme')) settings.appearanceTheme = APPEARANCE_THEMES.has(patch.appearanceTheme) ? patch.appearanceTheme : 'auto';
     if (own(patch, 'appearanceScale')) settings.appearanceScale = normalizeScale(patch.appearanceScale);
     if (own(patch, 'appearanceFontCssUrl')) settings.appearanceFontCssUrl = text(patch.appearanceFontCssUrl).trim();

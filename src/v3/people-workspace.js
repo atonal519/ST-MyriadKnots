@@ -1,14 +1,28 @@
 import { isUuid } from '../host-context.js';
 import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 import { scanWorldInfo, createWorldInfoSourceCandidates } from '../world-info-scanner.js';
+import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 
 export const PEOPLE_WORKSPACE_RECORD_ID = 'v3-people-workspace';
 export const PEOPLE_WORKSPACE_SCHEMA_VERSION = 1;
 
 const PROFILE_FIELDS = Object.freeze(['name', 'aliases', 'background', 'appearance', 'personality', 'notes']);
-const PROFILE_SYSTEM_PROMPT = `你只整理输入材料中有明确依据的人物基础资料，不推测、不续写剧情，也不输出临时情绪或关系变化。
-只返回一个 JSON 对象：{"profiles":[{"personKey":"person-1","name":"","aliases":[],"background":"","appearance":"","personality":"","notes":""}]}。
-personKey 必须逐字使用输入中的键；每个人恰好返回一次。没有依据的字段返回空字符串或空数组。`;
+export const DEFAULT_PROFILE_GUIDANCE = `你是“千千结”的人物基础资料整理员。只整理输入材料中有明确依据、适合长期建档的目标人物资料，不推测或续写剧情。
+
+人物卡和世界书属于明确设定；楼层摘要是对已发生剧情的归纳；CSE Core 是已有的人物分析，不自动等同作者明确设定。按目标人物和来源归属整理信息，不要把不同人物、不同来源或彼此冲突的说法擅自拼成同一事实。遇到有依据的差异，可在 notes 简短注明来源差异；无法判断时保留不确定，不替作者裁决。
+
+记录稳定的姓名、别名、身份背景、外貌与基础性格。短期情绪、当前关系变化和一时应对不应写成固定人格；只有材料明确支持长期特征时才归入 personality。完整保留有长期使用价值的明确资料，同时去掉重复和无助于建档的修饰。`;
+
+export const PROFILE_FIXED_CONTRACT = `【固定人物资料合同】
+1. 只处理输入 people 中的目标人物。characterCard、allowedWorldInfo、summaries 与 cseCoreTraits 是分开的来源，不得把一个人物的材料写给另一个人物。
+2. 只返回一个 JSON 对象：{"profiles":[{"personKey":"person-1","name":"","aliases":[],"background":"","appearance":"","personality":"","notes":""}]}。
+3. personKey 必须逐字使用输入中的键；每个输入人物恰好返回一次，不得新增、遗漏或合并人物。没有依据的字段返回空字符串或空数组。
+4. 不输出解释、剧情续写、数据库 ID 或 JSON 之外的内容。`;
+
+export function buildPeopleProfileSystemPrompt(guidance = '') {
+  const custom = typeof guidance === 'string' ? guidance : '';
+  return withBaseProcessingPrompt(`${custom.trim() ? custom : DEFAULT_PROFILE_GUIDANCE}\n\n${PROFILE_FIXED_CONTRACT}`);
+}
 
 function errorWith(code, message) { return Object.assign(new Error(message), { code }); }
 function clone(value) { return structuredClone(value); }
@@ -131,7 +145,7 @@ function effectiveSummary(memory) { return memory?.summary?.effectiveSource === 
 export function createPeopleWorkspaceRuntime({
   store, session, foundationRuntime, memoryRuntime, generateUtilityTask, sourcePermissions,
   contextProvider, sanitizerOptions = () => ({}), scanner = scanWorldInfo,
-  sourceCandidateFactory = createWorldInfoSourceCandidates, isEnabled = true, now = () => new Date(), logger = console,
+  sourceCandidateFactory = createWorldInfoSourceCandidates, profilePromptGuidance = () => '', isEnabled = true, now = () => new Date(), logger = console,
 } = {}) {
   if (!store || typeof store.read !== 'function' || typeof store.put !== 'function') throw new TypeError('人物工作区 store 无效');
   if (!session || typeof session.identity !== 'function') throw new TypeError('人物工作区 session 无效');
@@ -280,12 +294,14 @@ export function createPeopleWorkspaceRuntime({
   }
   async function generateMissingProfiles() {
     const operation = begin('generating');
+    const guidanceSnapshot = typeof profilePromptGuidance === 'function' ? profilePromptGuidance() : profilePromptGuidance;
+    const systemPrompt = buildPeopleProfileSystemPrompt(guidanceSnapshot);
     return settle(operation, async () => {
       const targets = candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace).filter(person => person.selected && !person.profiled);
       if (!targets.length) throw errorWith('QQJ_PEOPLE_NOTHING_TO_GENERATE', '选中的人物都已有基础资料。');
       const envelope = await generationEnvelope(operation, targets);
       assertCurrent(operation);
-      const result = await generateUtilityTask({ systemPrompt: PROFILE_SYSTEM_PROMPT, taskMessages: [{ role: 'user', content: JSON.stringify(envelope.request) }],
+      const result = await generateUtilityTask({ systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(envelope.request) }],
         maxTokens: 30000, temperature: 0, signal: operation.controller.signal, includeCharacterCard: false, worldInfoSource: 'none' });
       assertCurrent(operation);
       const generated = parseGenerated(result, envelope.keys);

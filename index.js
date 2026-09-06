@@ -16,6 +16,7 @@ import { createFoundationRuntime } from './src/v3/foundation-runtime.js';
 import { createV3MemoryRuntime } from './src/v3/memory-runtime.js';
 import { createV3RecallRuntime } from './src/v3/recall-runtime.js';
 import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime } from './src/v3/people-workspace.js';
+import { installPublicMemoryBridge } from './src/v3/public-memory-bridge.js';
 import { createMyKnotsStoryClockController, createStoryClockStatusProjection, extensionStoryClockState } from './src/story-clock.js';
 
 const hostAdapter = createHostAdapter();
@@ -59,9 +60,9 @@ const apiTools = createApiTools({ resolver: apiResolver, compactClient, isEnable
 const identityCoordinator = createChatIdentityCoordinator({ client: backendClient });
 const session = createChatSession({ contextProvider, isEnabled: settings.isEnabled, identityCoordinator });
 const sourcePermissions = createSourcePermissionController({ settings, contextProvider });
-const generalPrompt = () => settings.get().generalPrompt;
 const summaryPrompt = () => settings.get().summaryPrompt;
 const csePrompt = () => settings.get().csePrompt;
+const profilePrompt = () => settings.get().profilePrompt;
 const foundationStore = createFoundationStore({ client: backendClient, contextProvider: () => session.identity(), isEnabled: settings.isEnabled });
 const foundationRuntime = createFoundationRuntime({
   hostAdapter,
@@ -85,7 +86,6 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
   isMainGenerationActive: isGenerating,
   onFullRebuildCommitted: () => v3RecallRuntime?.invalidate('fullRebuild'),
-  customGuidance: generalPrompt,
   extractorPromptGuidance: summaryPrompt,
   csePromptGuidance: csePrompt,
   filterWorldInfoSources: sourcePermissions.filterWorldInfoSources,
@@ -112,8 +112,17 @@ const peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
   sourcePermissions,
   contextProvider,
   sanitizerOptions,
+  profilePromptGuidance: profilePrompt,
   isEnabled: settings.isEnabled,
 });
+const publicMemoryBridgeMount = installPublicMemoryBridge({
+  session,
+  store: foundationStore,
+  hostAdapter,
+  isEnabled: settings.isEnabled,
+  sanitizerOptions,
+});
+globalThis.addEventListener?.('beforeunload', publicMemoryBridgeMount.cleanup, { once: true });
 globalThis.qqj_v3_recall_interceptor = (coreChat, contextSize, abort, type) => v3RecallRuntime.intercept(coreChat, contextSize, abort, type);
 let ui;
 let lifecycle;

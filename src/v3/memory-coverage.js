@@ -42,6 +42,7 @@ function captureHostGuard(snapshot, hostCandidates) {
       swipeId: candidate.hostLocator.swipeId,
       selectedSwipeIndex: candidate.hostLocator.selectedSwipeIndex,
       rawContent: candidate.rawContent,
+      rawFingerprint: candidate.rawFingerprint,
     }))),
   });
 }
@@ -56,6 +57,16 @@ export function coverageHostGuardCurrent(readiness, snapshot) {
       && current.selectedSwipeIndex === expected.selectedSwipeIndex
       && current.rawContent === expected.rawContent;
   });
+}
+
+export function coverageHostFloorRawFingerprint(readiness, floor) {
+  const guard = readiness?.[HOST_GUARD];
+  const locator = floor?.hostLocator;
+  if (!guard || !locator || !Array.isArray(guard.candidates)) return null;
+  const candidate = guard.candidates.find(value => value.messageIndex === locator.messageIndex
+    && value.swipeId === locator.swipeId
+    && value.selectedSwipeIndex === locator.selectedSwipeIndex);
+  return typeof candidate?.rawFingerprint === 'string' ? candidate.rawFingerprint : null;
 }
 
 function activeMemoriesByFloor(reachable) {

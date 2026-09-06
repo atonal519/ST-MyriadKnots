@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readRecallSource } from '../src/v3/recall-source.js';
+import { formatChronologyAnchor, readRecallSource } from '../src/v3/recall-source.js';
 import { buildRecallQueryContext, selectRecall } from '../src/v3/recall-selector.js';
 import { createV3RecallRuntime, RECALL_PROMPT_SLOT, RECALL_RECEIPT_KEY, RECALL_RECEIPT_SCHEMA_VERSION } from '../src/v3/recall-runtime.js';
 import { sha256 } from '../src/identity.js';
@@ -107,6 +107,55 @@ test('recall source 不暴露 staged、superseded、孤儿或旧分支 FloorMemo
   assert.doesNotMatch(JSON.stringify(result), /旧 swipe|未提交 staged|孤儿旧分支/);
 });
 
+test('recall source 只投影有效保存时间：自动时间核对当前原文，人工与 legacy 时间保留', async () => {
+  const chat = [
+    { is_user: false, is_system: false, mes: '第一楼原始正文' },
+    { is_user: false, is_system: false, mes: '第二楼原始正文' },
+  ];
+  const candidates = await scanAssistantCandidates(chat);
+  const value = reachable();
+  value.floors = value.floors.map((floor, index) => ({ ...floor, hostLocator: candidates[index].hostLocator, content: { rawFingerprint: candidates[index].rawFingerprint, canonicalFingerprint: candidates[index].canonicalFingerprint } }));
+  value.floorMemories[0].chronology = [{ itemId: ITEM, time: { kind: 'relative', sourceText: '次日清晨', normalized: null, precision: 'unresolved', relativeToFloorId: FLOOR2 }, description: '次日清晨', evidenceRefs: [] }];
+  value.run = { diagnostics: { floorProvenance: { [FLOOR1]: { rawFingerprint: candidates[0].rawFingerprint, timeEdited: false } } } };
+  const snapshot = { context: { chatMetadata: { qianqianjie: { chatId: CHAT } } }, chat };
+  const read = hostSnapshot => readRecallSource({ store: { readReachable: async () => structuredClone(value) }, hostSnapshot, now: () => new Date(NOW) });
+
+  let result = await read(snapshot);
+  assert.equal(result.floorMemories[0].chronology.length, 1);
+  assert.equal(result.floorMemories[0].chronology[0].time.relativeToAssistantSeq, 2);
+  assert.equal(Object.hasOwn(result.floorMemories[0].chronology[0].time, 'relativeToFloorId'), false);
+
+  const changed = structuredClone(snapshot); changed.chat[0].mes = '第一楼时间戳已变化';
+  result = await read(changed);
+  assert.deepEqual(result.floorMemories[0].chronology, [], '自动时间与当前宿主原文不一致时不得继续投影');
+  result = await read(null);
+  assert.deepEqual(result.floorMemories[0].chronology, [], '有 provenance 的自动时间无法核对当前原文时保守省略');
+
+  value.run.diagnostics.floorProvenance[FLOOR1].timeEdited = true;
+  result = await read(changed);
+  assert.equal(result.floorMemories[0].chronology.length, 1, '人工时间优先于自动原文失配');
+  delete value.run.diagnostics.floorProvenance[FLOOR1].timeEdited;
+  delete value.run.diagnostics.floorProvenance[FLOOR1].rawFingerprint;
+  result = await read(changed);
+  assert.equal(result.floorMemories[0].chronology.length, 1, '旧档无 provenance raw 时保留既有时间');
+});
+
+test('共享时间 formatter 保留明确、相对、顺序、未知与不确定性，不推算年份或暴露 floorId', () => {
+  const chronology = [
+    { time: { kind: 'explicit', sourceText: '五月三日傍晚', normalized: null, precision: 'approximate', relativeToAssistantSeq: null }, description: '' },
+    { time: { kind: 'relative', sourceText: '三小时后', normalized: null, precision: 'unresolved', relativeToAssistantSeq: 7 }, description: '' },
+    { time: { kind: 'sequenceOnly', sourceText: '在会面之后', normalized: null, precision: 'unresolved', relativeToAssistantSeq: null }, description: '' },
+    { time: { kind: 'unknown', sourceText: null, normalized: null, precision: 'unresolved', relativeToAssistantSeq: null }, description: '具体时间不明' },
+  ];
+  const text = formatChronologyAnchor(chronology);
+  assert.match(text, /明确时间（约略）：五月三日傍晚/);
+  assert.match(text, /相对时间（未解析；相对 AI #7）：三小时后/);
+  assert.match(text, /先后顺序（未解析）：在会面之后/);
+  assert.match(text, /时间未知（未解析）：具体时间不明/);
+  assert.doesNotMatch(text, /20\d\d|floor-/);
+  assert.equal(formatChronologyAnchor([]), '');
+});
+
 test('recall source 的 CSE 重放损坏时逐级退化，仍保留可用 FloorMemory 且不输出动态状态', async () => {
   const value = reachable();
   value.stateDeltas[0].subjectSnapshots[0].subjectEntityId = 'not-a-valid-entity-id';
@@ -120,7 +169,22 @@ test('recall source 的 CSE 重放损坏时逐级退化，仍保留可用 FloorM
 
 const recallMemory = (assistantSeq, patch = {}) => ({
   floorId: `floor-${assistantSeq}`, floorMemoryId: `memory-${assistantSeq}`, assistantSeq, summary: patch.summary ?? `第 ${assistantSeq} 楼普通摘要`,
+  chronology: patch.chronology ?? [],
   participants: patch.participants ?? [], locations: patch.locations ?? [], commitments: patch.commitments ?? [], openLoops: patch.openLoops ?? [], exactAnchors: patch.exactAnchors ?? [], events: patch.events ?? [], actions: patch.actions ?? [], observations: patch.observations ?? [], privateCognition: patch.privateCognition ?? [], informationTransfers: patch.informationTransfers ?? [],
+});
+
+test('选中旧事才附带本楼时间，不参与候选匹配且计入最终字符预算', () => {
+  const memories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
+  memories[1] = recallMemory(2, {
+    chronology: [{ time: { kind: 'explicit', sourceText: '冬至夜约十一点', normalized: null, precision: 'approximate', relativeToAssistantSeq: null }, description: '' }],
+    events: [{ title: '交付钥匙', description: '裴晚生把钟楼钥匙交给用户。', candidateStatus: 'accepted' }],
+  });
+  const withoutTimeQuery = selectRecall({ source: selectorSource({ memories }), queryContext: { text: '冬至夜十一点', latestUserText: '冬至夜十一点', messageCount: 1 }, contextSize: 1800 });
+  assert.equal(withoutTimeQuery.status, 'empty', '时间文本不能单独把无事实命中的楼选入召回');
+  const result = selectRecall({ source: selectorSource({ memories }), queryContext: { text: '钟楼钥匙', latestUserText: '钟楼钥匙', messageCount: 1 }, contextSize: 1800 });
+  assert.match(result.injectionText, /AI #2（明确时间（约略）：冬至夜约十一点）/);
+  assert.equal(result.limits.actualCharacters, result.injectionText.length);
+  assert.ok(result.injectionText.length <= result.limits.maxCharacters);
 });
 
 function selectorSource({ complete = true, memories = null, currentState = null } = {}) {

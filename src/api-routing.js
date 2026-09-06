@@ -109,6 +109,11 @@ export function createApiTools({ resolver, compactClient, isEnabled = () => true
   const active = new Set(); let epoch = 0;
   const abortAll = () => { epoch += 1; for (const controller of active) controller.abort(); active.clear(); };
   const independent = (selection = null) => {
+    if (selection?.config) {
+      const config = normalizePreset(selection.config);
+      if (!validConfig(config)) throw unavailableError({ reason: selection?.selectedSevenDaysPresetId ? 'preset_missing' : 'main_incomplete' });
+      return config;
+    }
     const route = resolver.resolve(selection);
     if (route.kind === 'unavailable') throw unavailableError(route);
     if (route.kind !== 'independent') { const error = new Error('当前没有可测试的独立 API'); error.code = 'QQJ_TAVERN'; throw error; }

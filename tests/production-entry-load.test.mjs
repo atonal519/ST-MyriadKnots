@@ -69,7 +69,8 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
   await entry.evaluate();
   await new Promise(resolvePromise => setImmediate(resolvePromise));
   for (const type of invokeTypes) await context.qqj_v3_recall_interceptor([], 8192, () => { abortCalls += 1; }, type);
-  return { status: entry.status, backendCalls, eventRegistrations, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, promptCalls, abortCalls };
+  const publicBridgeReadStatus = enabled ? null : (await context.qqj_v3_public_bridge_v1?.readMemory?.())?.status;
+  return { status: entry.status, backendCalls, eventRegistrations, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, publicBridgeReadStatus, promptCalls, abortCalls };
 }
 
 test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 import 且可隔离加载', async () => {
@@ -80,7 +81,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.2.27');
+  assert.equal(manifest.version, '0.0.2');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
@@ -182,6 +183,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   let lifecycleOptions;
   let peopleWorkspaceOptions;
   let peopleStoreOptions;
+  let publicMemoryBridgeOptions;
   let bootstrapOptions;
   const modules = new Map();
   const define = (specifier, exports) => {
@@ -196,7 +198,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   const backendClient = {};
   define('./src/backend-client.js', { createBackendClient: () => backendClient });
   define('./src/bootstrap.js', { bootstrap: options => { bootstrapOptions = options; return { refresh() {}, setEnabled() {} }; } });
-  define('./src/settings.js', { createSettingsStore: () => ({ migrateLegacyApiSettings() {}, isEnabled: () => false, get: () => ({ generalPrompt: '通用附加', summaryPrompt: '摘要指导', csePrompt: 'CSE 指导' }) }) });
+  define('./src/settings.js', { createSettingsStore: () => ({ migrateLegacyApiSettings() {}, isEnabled: () => false, get: () => ({ generalPrompt: '旧通用附加残留', summaryPrompt: '摘要指导', csePrompt: 'CSE 指导', profilePrompt: '人物资料指导' }) }) });
   define('./src/api-routing.js', {
     createApiResolver: () => ({}),
     createApiTools: () => ({ abortAll() {} }),
@@ -225,6 +227,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
     createPeopleWorkspaceStore: options => { peopleStoreOptions = options; return { read() {}, put() {} }; },
     createPeopleWorkspaceRuntime: options => { peopleWorkspaceOptions = options; return peopleWorkspaceRuntime; },
   });
+  define('./src/v3/public-memory-bridge.js', { installPublicMemoryBridge: options => { publicMemoryBridgeOptions = options; return { bridge: {}, cleanup() {} }; } });
   define('./src/story-clock.js', { createMyKnotsStoryClockController: () => ({ refresh: () => ({ status: 'closed' }), getState: () => ({ status: 'closed' }), clear() {} }), createStoryClockStatusProjection: ({ controller, labelFor }) => options => ({ ...controller.refresh(options), label: labelFor(controller.getState()) }), extensionStoryClockState: () => ({ active: false, custom: false }) });
 
   const entry = new SourceTextModule(entrySource, { context, identifier: pathToFileURL(resolve(root, 'index.js')).href });
@@ -238,7 +241,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
 
   assert.equal(v3MemoryOptions.generateUtilityTask, utilityTask);
   assert.equal(v3MemoryOptions.isMainGenerationActive, isGenerating);
-  assert.equal(v3MemoryOptions.customGuidance(), '通用附加');
+  assert.equal(Object.hasOwn(v3MemoryOptions, 'customGuidance'), false, '退役通用附加不得继续接入运行时');
   assert.equal(v3MemoryOptions.extractorPromptGuidance(), '摘要指导');
   assert.equal(v3MemoryOptions.csePromptGuidance(), 'CSE 指导');
   assert.equal(typeof v3MemoryOptions.sanitizerOptions, 'function');
@@ -252,8 +255,14 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   assert.ok(lifecycleOptions.aborters.includes(peopleWorkspaceRuntime));
   assert.equal(peopleStoreOptions.client, backendClient);
   assert.equal(peopleWorkspaceOptions.generateUtilityTask, utilityTask);
+  assert.equal(peopleWorkspaceOptions.profilePromptGuidance(), '人物资料指导');
   assert.ok(peopleWorkspaceOptions.session); assert.ok(peopleWorkspaceOptions.foundationRuntime); assert.ok(peopleWorkspaceOptions.memoryRuntime);
   assert.equal(bootstrapOptions.peopleWorkspaceRuntime, peopleWorkspaceRuntime);
+  assert.ok(publicMemoryBridgeOptions.session);
+  assert.ok(publicMemoryBridgeOptions.store);
+  assert.ok(publicMemoryBridgeOptions.hostAdapter);
+  assert.equal(typeof publicMemoryBridgeOptions.isEnabled, 'function');
+  assert.equal(typeof publicMemoryBridgeOptions.sanitizerOptions, 'function');
   assert.ok(v3RecallOptions.store);
   assert.ok(v3RecallOptions.hostAdapter);
   assert.equal(typeof v3RecallOptions.isEnabled, 'function');
@@ -265,6 +274,8 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
 test('生产 bundle 在 Luker-only 兼容全局下也可隔离加载，关闭时零后端请求', async () => {
   const result = await isolateBundle('Luker');
   assert.equal(result.status, 'evaluated');
+  assert.equal(result.publicBridgeType, 'object');
+  assert.equal(result.publicBridgeReadStatus, 'disabled');
   assert.equal(result.backendCalls, 0);
 });
 

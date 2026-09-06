@@ -1,17 +1,50 @@
 import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
-import { assessMemoryCoverageFromHost } from './memory-coverage.js';
+import { assessMemoryCoverageFromHost, coverageHostFloorRawFingerprint } from './memory-coverage.js';
 
 const safeText = (value, maximum = 4000) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
 const aliasText = alias => safeText(typeof alias === 'string' ? alias : alias?.name, 500);
 const summaryText = memory => safeText(memory.summary?.effectiveSource === 'user' ? memory.summary?.userText : memory.summary?.aiText);
 const sourceStatus = value => value?.status === 'stale' ? 'stale' : 'unavailable';
 
-function memoryDto(memory, floor) {
+const chronologyText = item => safeText(item?.time?.sourceText || item?.time?.normalized || item?.description, 2000);
+const CHRONOLOGY_KIND = Object.freeze({ explicit: '明确时间', relative: '相对时间', sequenceOnly: '先后顺序', unknown: '时间未知' });
+const CHRONOLOGY_PRECISION = Object.freeze({ approximate: '约略', unresolved: '未解析' });
+
+export function formatChronologyAnchor(chronology) {
+  const values = [];
+  for (const item of Array.isArray(chronology) ? chronology : []) {
+    const content = chronologyText(item);
+    if (!content) continue;
+    const kind = CHRONOLOGY_KIND[item?.time?.kind] ?? CHRONOLOGY_KIND.unknown;
+    const qualifiers = [];
+    if (CHRONOLOGY_PRECISION[item?.time?.precision]) qualifiers.push(CHRONOLOGY_PRECISION[item.time.precision]);
+    if (Number.isSafeInteger(item?.time?.relativeToAssistantSeq) && item.time.relativeToAssistantSeq > 0) qualifiers.push(`相对 AI #${item.time.relativeToAssistantSeq}`);
+    const value = `${kind}${qualifiers.length ? `（${qualifiers.join('；')}）` : ''}：${content}`;
+    if (!values.includes(value)) values.push(value);
+  }
+  return values.join('；');
+}
+
+function chronologyDto(memory, floorSeqById) {
+  return Object.freeze((memory.chronology ?? []).map(item => Object.freeze({
+    time: Object.freeze({
+      kind: item.time.kind,
+      sourceText: item.time.sourceText === null ? null : safeText(item.time.sourceText, 500),
+      normalized: item.time.normalized === null ? null : safeText(item.time.normalized, 500),
+      precision: item.time.precision,
+      relativeToAssistantSeq: item.time.relativeToFloorId ? (floorSeqById.get(item.time.relativeToFloorId) ?? null) : null,
+    }),
+    description: safeText(item.description, 2000),
+  })));
+}
+
+function memoryDto(memory, floor, { chronologyAllowed = true, floorSeqById = new Map() } = {}) {
   return Object.freeze({
     floorId: floor.id,
     floorMemoryId: memory.id,
     assistantSeq: floor.assistantSeq,
     summary: summaryText(memory),
+    chronology: chronologyAllowed ? chronologyDto(memory, floorSeqById) : Object.freeze([]),
     participants: Object.freeze((memory.participants ?? []).map(item => ({ entityId: item.entityId, presence: item.presence }))),
     locations: Object.freeze((memory.locations ?? []).map(item => ({ name: safeText(item.name, 500), change: item.change, entityId: item.entityId ?? null, participantEntityIds: Object.freeze([...(item.participantEntityIds ?? [])]) }))),
     commitments: Object.freeze((memory.commitments ?? []).map(item => ({ speakerEntityId: item.speakerEntityId, targetEntityIds: Object.freeze([...(item.targetEntityIds ?? [])]), kind: item.kind, content: safeText(item.content), status: item.status, exactAnchorId: item.exactAnchorId ?? null }))),
@@ -75,6 +108,15 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     specialRole: entity.specialRole,
   })));
   const floorSeq = new Map(floors.map(floor => [floor.id, floor.assistantSeq]));
+  const readiness = hostSnapshot ? await assessMemoryCoverageFromHost({ reachable: first, snapshot: hostSnapshot, sanitizerOptions, captureGuard: true, realtimeOrigin }) : null;
+  const provenance = first.run?.diagnostics?.floorProvenance && typeof first.run.diagnostics.floorProvenance === 'object' ? first.run.diagnostics.floorProvenance : {};
+  const chronologyAllowed = floor => {
+    const metadata = provenance[floor.id];
+    if (metadata?.timeEdited === true) return true;
+    if (typeof metadata?.rawFingerprint !== 'string') return true;
+    const currentRawFingerprint = coverageHostFloorRawFingerprint(readiness, floor);
+    return typeof currentRawFingerprint === 'string' && currentRawFingerprint === metadata.rawFingerprint;
+  };
   const missingAssistantSeq = Object.freeze(floors.filter(floor => !(memoryGroups.get(floor.id) ?? []).some(memory => activeMemoryIds.has(memory.id))).map(floor => floor.assistantSeq));
   const throughAssistantSeq = floorSeq.get(trustedDeltas.at(-1)?.floorId) ?? 0;
   const stableThroughAssistantSeq = floors.at(-1)?.assistantSeq ?? 0;
@@ -96,11 +138,14 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     headCheckpointId: first.root.headCheckpointId,
     rootRevision: first.rootRevision,
     sourceReadAttempts,
-    readiness: hostSnapshot ? await assessMemoryCoverageFromHost({ reachable: first, snapshot: hostSnapshot, sanitizerOptions, captureGuard: true, realtimeOrigin }) : null,
+    readiness,
     coverage,
     degradedReasons: Object.freeze(degradedReasons),
     entities,
-    floorMemories: Object.freeze(activeMemories.map(memory => memoryDto(memory, floorById.get(memory.floorId)))),
+    floorMemories: Object.freeze(activeMemories.map(memory => {
+      const floor = floorById.get(memory.floorId);
+      return memoryDto(memory, floor, { chronologyAllowed: chronologyAllowed(floor), floorSeqById: floorSeq });
+    })),
     currentState: stateDto(replayed, entities, floorSeq),
   });
 }

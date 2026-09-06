@@ -2,6 +2,7 @@ import { createSettingsKit } from './kit.js';
 import { DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT } from '../../story-clock.js';
 import { DEFAULT_EXTRACTOR_GUIDANCE } from '../../v3/extractor.js';
 import { DEFAULT_CSE_GUIDANCE } from '../../v3/cse-engine.js';
+import { DEFAULT_PROFILE_GUIDANCE } from '../../v3/people-workspace.js';
 
 // 提示词与包裹符：字段 change 即存；业务指导可编辑，机器合同由运行时固定维护。
 export function createPromptsSettings({ settings, documentRef = globalThis.document, open = false, onToggle, onStoryClockChange } = {}) {
@@ -11,7 +12,6 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
 
   const keepTags = element('input', 'settings-input'); keepTags.value = current.sourceKeepTags ?? 'content'; keepTags.placeholder = 'content';
   const extraTags = element('input', 'settings-input'); extraTags.value = current.sourceExtraTags ?? ''; extraTags.placeholder = '示例（不会自动生效）：think, reasoning, [[...]]';
-  const generalPrompt = element('textarea', 'settings-input'); generalPrompt.value = current.generalPrompt ?? ''; generalPrompt.placeholder = '留空则不追加通用提示词';
   const storyClockEnabled = element('input'); storyClockEnabled.type = 'checkbox'; storyClockEnabled.checked = current.storyClockEnabled !== false;
   const storyClockPrompt = element('textarea', 'settings-input'); storyClockPrompt.value = current.storyClockPrompt ?? ''; storyClockPrompt.placeholder = '留空＝使用千千结内置默认时间戳提示词';
   const storyClockStatus = element('p', 'settings-result', onStoryClockChange?.({ readOnly: true })?.label ?? '时间戳状态会在下一次正文生成前刷新。');
@@ -19,12 +19,13 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
   const { drawer: storyClockDrawer, body: storyClockBody } = subDrawer({ title: '时间戳提示词', id: 'qqj-settings-story-clock' });
   const summaryPrompt = element('textarea', 'settings-input'); summaryPrompt.value = current.summaryPrompt ?? ''; summaryPrompt.placeholder = '留空＝使用千千结内置默认摘要指导';
   const csePrompt = element('textarea', 'settings-input'); csePrompt.value = current.csePrompt ?? ''; csePrompt.placeholder = '留空＝使用千千结内置默认 CSE 指导';
+  const profilePrompt = element('textarea', 'settings-input'); profilePrompt.value = current.profilePrompt ?? ''; profilePrompt.placeholder = '留空＝使用千千结内置默认人物资料指导';
   const { drawer: summaryDrawer, body: summaryBody } = subDrawer({ title: '摘要内容指导', id: 'qqj-settings-summary-prompt' });
   const { drawer: cseDrawer, body: cseBody } = subDrawer({ title: 'CSE 内容指导', id: 'qqj-settings-cse-prompt' });
+  const { drawer: profileDrawer, body: profileBody } = subDrawer({ title: '人物资料内容指导', id: 'qqj-settings-profile-prompt' });
 
   keepTags.addEventListener('change', () => settings.update({ sourceKeepTags: keepTags.value }));
   extraTags.addEventListener('change', () => settings.update({ sourceExtraTags: extraTags.value }));
-  generalPrompt.addEventListener('change', () => settings.update({ generalPrompt: generalPrompt.value }));
   const refreshClock = () => {
     const result = onStoryClockChange?.() ?? null;
     storyClockStatus.textContent = result?.label ?? '时间戳状态会在下一次正文生成前刷新。';
@@ -50,14 +51,15 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
   };
   promptEditor({ body: summaryBody, control: summaryPrompt, key: 'summaryPrompt', defaultText: DEFAULT_EXTRACTOR_GUIDANCE, label: '摘要内容要求' });
   promptEditor({ body: cseBody, control: csePrompt, key: 'csePrompt', defaultText: DEFAULT_CSE_GUIDANCE, label: 'CSE 推演要求' });
+  promptEditor({ body: profileBody, control: profilePrompt, key: 'profilePrompt', defaultText: DEFAULT_PROFILE_GUIDANCE, label: '人物资料整理要求' });
 
   body.append(
     field('保留正文的包裹符', keepTags),
     field('连同内容剔除的包裹符', extraTags),
-    field('通用附加提示词', generalPrompt),
     storyClockDrawer,
     summaryDrawer,
     cseDrawer,
+    profileDrawer,
   );
   return { node: drawer };
 }

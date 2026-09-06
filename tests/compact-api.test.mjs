@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createCompactApiClient, normalizeApiUrl, parseJsonOutput } from '../src/compact-api-client.js';
 import { createTaskRouter } from '../src/api-routing.js';
 import { buildExtractorSystemPrompt } from '../src/v3/extractor.js';
+import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
 
 const config = overrides => ({ url: 'https://api.example.test', key: 'TEST_KEY', model: 'compact-model', excludeParams: [], timeoutSec: 5, stream: false, ...overrides });
 const jsonResponse = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
@@ -157,6 +158,7 @@ test('同一任务的运输重试复用启动时提示词快照', async () => {
   assert.equal(selected, '摘要指导第二版');
   assert.equal(bodies.length, 2);
   assert.deepEqual(bodies.map(body => body.messages[0].content), [promptSnapshot, promptSnapshot]);
+  assert.deepEqual(bodies.map(body => body.messages[0].content.split(BASE_PROCESSING_PROMPT).length - 1), [1, 1]);
   assert.doesNotMatch(bodies[1].messages[0].content, /摘要指导第二版/);
 });
 
@@ -204,4 +206,5 @@ test('模型列表与测试连接走安全代理；短测试不含聊天、人�
   assert.equal(requests[0].path, '/api/backends/chat-completions/status'); const testBody = requests[1].body; assert.equal(testBody.max_tokens, 48); assert.equal(testBody.temperature, 0); assert.equal(testBody.stream, false);
   assert.doesNotMatch(JSON.stringify(testBody.messages), /人物甲|档案|worldbook|greeting|聊天正文/i); assert.equal(testBody.messages.length, 2); assert.equal(Object.hasOwn(testBody, 'json_schema'), false);
   assert.match(testBody.messages[0].content, /JSON text connection check/);
+  assert.equal(testBody.messages[0].content.includes(BASE_PROCESSING_PROMPT), false, '连接测试不得携带内容处理层');
 });

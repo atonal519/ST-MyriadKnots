@@ -10,7 +10,7 @@ test('生产入口只装配 V3 记忆与独立人物工作区，面板提供千�
     readFile(new URL('../src/bootstrap.js', import.meta.url), 'utf8'),
     readFile(new URL('../dist/qqj-app.js', import.meta.url), 'utf8'),
   ]);
-  for (const factory of ['createChatSession', 'createPluginLifecycle', 'createHostAdapter', 'createFoundationStore', 'createFoundationRuntime', 'createV3MemoryRuntime', 'createV3RecallRuntime', 'createPeopleWorkspaceStore', 'createPeopleWorkspaceRuntime']) {
+  for (const factory of ['createChatSession', 'createPluginLifecycle', 'createHostAdapter', 'createFoundationStore', 'createFoundationRuntime', 'createV3MemoryRuntime', 'createV3RecallRuntime', 'createPeopleWorkspaceStore', 'createPeopleWorkspaceRuntime', 'installPublicMemoryBridge']) {
     assert.equal((entry.match(new RegExp(`${factory}\\s*\\(`, 'g')) || []).length, 1, factory);
   }
   assert.match(entry, /filterWorldInfoSources:\s*sourcePermissions\.filterWorldInfoSources/, '生产入口必须把共享整本排除过滤器注入 V3 memory runtime');
