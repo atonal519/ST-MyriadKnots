@@ -62,6 +62,22 @@ test('完整诊断必须显式确认，clipboard 不可用时显示可选择文�
   const fallback = flatten(container).find(node => node.className === 'v3-diagnostic-fallback'); assert.match(fallback.value, /canonicalContent/);
 });
 
+test('没有摘要楼时仍可复制界面滚动诊断，并复用只读文本框fallback', async () => {
+  const state = { status: 'idle', pluginEnabled: true, chatId: null, foundationStatus: 'uninitialized', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, activeRun: null, lastError: null, floors: [], rebuildStatus: 'caughtUp' };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  let reads = 0;
+  const uiDiagnosticProvider = () => { reads += 1; return '{"schemaVersion":1,"records":[]}'; };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, uiDiagnosticProvider, documentRef, navigatorRef: { clipboard: { writeText: async () => { throw new Error('clipboard denied'); } } } }); view.mount(container);
+  const button = flatten(container).find(node => node.textContent === '复制界面诊断');
+  assert.ok(button, '界面诊断入口不应依赖已存在的摘要楼');
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /不含聊天正文或输入内容/);
+  button.click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reads, 1);
+  const fallback = flatten(container).find(node => node.className === 'v3-diagnostic-fallback');
+  assert.equal(fallback?.readOnly, true); assert.match(fallback?.value ?? '', /"records":\[\]/);
+});
+
 test('四项破坏性记忆操作等待异步确认，取消时零业务动作', async () => {
   const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
   const floor = { floorId: 'floor', assistantSeq: 1, messageIndex: 2, status: 'ready', memoryId: 'memory', summary: '摘要', summarySource: 'ai', aiSummary: '摘要', extractorVersion: 'v', counts: {}, api: null, memory, cse: { status: 'ready', deltaId: 'delta' } };
@@ -78,6 +94,60 @@ test('四项破坏性记忆操作等待异步确认，取消时零业务动作',
   view.setPage('management'); flatten(container).find(node => node.textContent === '完全重构').click(); await new Promise(resolve => setImmediate(resolve));
   flatten(container).find(node => node.textContent === '复制完整诊断').click(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(calls, []);
+});
+
+test('删除当前聊天记忆使用自绘异步确认，取消零写且确认说明保留边界', async () => {
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, activeRun: null, memoryWorkBusy: false, activeAutoMemory: null, activeExtraction: null, activeCse: null, rebuildStatus: 'caughtUp', rebuildHasActionableWork: false, floors: [] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  let calls = 0, confirmation = null;
+  const memoryManagement = { getState: () => ({ status: 'idle' }), deleteCurrent: async () => { calls += 1; return { status: 'completed' }; } };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, memoryManagement, documentRef, confirmImpl: async options => { confirmation = options; return false; } });
+  view.mount(container);
+  flatten(container).find(node => node.textContent === '删除当前聊天记忆').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 0);
+  assert.match(confirmation.body, /摘要、人物状态、人物资料、召回记录及历史派生版本/);
+  assert.match(confirmation.body, /聊天正文和全局 API、提示词设置会保留/);
+  assert.match(confirmation.note, /移入回收站.*不代表永久擦除/);
+});
+
+test('删除部分失败后管理页保留同聊天继续入口，成功后呈空档反馈', async () => {
+  let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, unprocessedCount: 0, pending: null, activeRun: null, memoryWorkBusy: false, activeAutoMemory: null, activeExtraction: null, activeCse: null, rebuildStatus: 'caughtUp', rebuildHasActionableWork: false, floors: [] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  let management = { status: 'idle', targetChatId: null, error: null }, attempts = 0;
+  const listeners = new Set();
+  const memoryManagement = {
+    getState: () => management,
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    async deleteCurrent() {
+      attempts += 1;
+      if (attempts === 1) { management = { status: 'failed', targetChatId: CHAT, error: '版本冲突' }; for (const listener of listeners) listener(management); throw new Error('版本冲突'); }
+      management = { status: 'completed', targetChatId: CHAT, error: null }; state = { ...state, status: 'idle', chatId: null, foundationStatus: 'uninitialized', stableCount: 0, rememberedCount: 0 }; for (const listener of listeners) listener(management); return management;
+    },
+  };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, memoryManagement, documentRef, confirmImpl: async () => true }); view.mount(container);
+  flatten(container).find(node => node.textContent === '删除当前聊天记忆').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /继续删除当前聊天记忆|已保留原聊天身份/);
+  flatten(container).find(node => node.textContent === '继续删除当前聊天记忆').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(attempts, 2);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /当前聊天记忆已清空/);
+});
+
+test('A删除失败后切到B重绘不会沿用A失败文案或禁用B的普通管理动作', () => {
+  const stateA = { status: 'idle', pluginEnabled: true, chatId: CHAT, foundationStatus: 'uninitialized', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, activeRun: null, memoryWorkBusy: false, activeAutoMemory: null, activeExtraction: null, activeCse: null, rebuildStatus: 'pendingRebuild', rebuildHasActionableWork: true, floors: [] };
+  const stateB = { ...stateA, status: 'ready', chatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', foundationStatus: 'ready' };
+  let current = stateA, currentManagement = { status: 'failed', targetChatId: CHAT, error: 'A版本冲突' };
+  const runtime = { getState: () => current, refreshStatus: async () => current, confirmLatest: async () => current, startHistoricalRebuild: async () => current, fullRebuild: async () => current };
+  const memoryManagement = { getState: () => currentManagement, deleteCurrent: async () => ({ status: 'completed' }) };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, memoryManagement, documentRef }); view.mount(container);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /继续删除当前聊天记忆|A版本冲突/);
+  current = stateB; currentManagement = { status: 'idle', blockedByOtherChat: true }; view.render(current);
+  const copy = flatten(container).map(node => node.textContent).join('|');
+  assert.doesNotMatch(copy, /继续删除当前聊天记忆|A版本冲突|已保留原聊天身份/);
+  assert.equal(flatten(container).find(node => node.textContent === '继续').disabled, false, 'B普通记忆管理不应被A删除失败阻塞');
+  assert.equal(flatten(container).find(node => node.textContent === '删除当前聊天记忆').disabled, true, '单一删除流程未收口前B不能另起删除');
 });
 
 test('Extractor 失败且尚无 FloorMemory 时仍可复制诊断并直接提取摘要', async () => {

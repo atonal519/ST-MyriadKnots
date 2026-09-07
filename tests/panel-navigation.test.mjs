@@ -37,6 +37,7 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   const documentEvents = {};
   const documentRef = { defaultView: { innerWidth: 390, matchMedia: () => ({ matches: true }) }, body: new Node('body'), createElement(tag) { if (firstElement) { firstElement = false; return host; } return new Node(tag); }, addEventListener(name, listener) { documentEvents[name] = listener; } };
   const drawer = () => { const node = new Node('details'), drawerBody = new Node('div'); node.append(drawerBody); return { drawer: node, body: drawerBody }; };
+  const diagnostics = { starts: 0, stops: 0, marks: 0, records: [{ page: 'settings', defaultPrevented: false }] };
   const modules = {
     './panel.html?raw': { default: '' }, './panel.css?inline': { default: '' },
     './layout.js': { createPanelGeometryController: () => ({ restore() {}, cancelGesture() {} }) },
@@ -45,6 +46,7 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
     './settings/api-settings.js': { createApiSettings: () => ({ node: new Node() }) },
     './settings/prompts-settings.js': { createPromptsSettings: () => ({ node: new Node() }) },
     './settings/appearance-settings.js': { createAppearanceSettings: () => ({ node: new Node() }) },
+    './scroll-diagnostics.js': { createScrollDiagnostics: () => ({ start() { diagnostics.starts += 1; }, stop() { diagnostics.stops += 1; }, markQqjSwipeIntercepted() { diagnostics.marks += 1; }, snapshot: () => ({ schemaVersion: 1, records: diagnostics.records }) }) },
     '../settings.js': { applyPluginEnabledImmediately: async ({ enabled }) => ({ enabled, stale: false }) },
   };
   const context = createContext({ console });
@@ -81,6 +83,8 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   const panel = entry.namespace.createPanel({ settings, v3FoundationView, peopleProfilesView, documentRef, dialog: { setAppearance() {}, closeAll() { dialogActive = false; }, hasActive: () => dialogActive, cancelTop() { dialogCancels += 1; dialogActive = false; } }, onFabShowChange: value => { fabVisible = value; }, onAutoHideChange: async value => { autoHideApplies.push(value); return autoHideApplyStatus ? { status: autoHideApplyStatus } : undefined; } });
 
   await panel.show();
+  assert.equal(diagnostics.starts, 1); assert.match(root.innerHTML, /\.body\{[^}]*touch-action:pan-y/);
+  assert.deepEqual(JSON.parse(panel.getUiDiagnostic()).records, diagnostics.records);
   assert.ok(calls.some(([kind]) => kind === 'profiles-activate'));
   body.scrollTop = 31; eventTab.fire('click');
   assert.equal(body.scrollTop, 0); assert.deepEqual(calls.filter(([kind]) => kind === 'page').at(-1), ['page', 'memories']);
@@ -130,6 +134,8 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   assert.doesNotMatch(panelCss, /\.status-(?:line|dot|label)\b/, '重复状态行的专用样式应一并删除');
   assert.match(panelCss, /\.icon-btn svg\{width:18px;height:18px;[^}]*stroke-width:1\.8/);
   assert.doesNotMatch(panelCss, /@media\(max-width:640px\)[^}]*\.icon-btn\{width:30px/, '手机端不应再次缩小三枚顶部按钮的实际图形或点击框');
+  assert.doesNotMatch(panelCss, /\.qqj-profile-switcher\{touch-action:pan-x\}/, '人物横条不得用pan-x-only阻断从条内起步的整页纵向滚动');
+  assert.match(panelCss, /\.source-permission-list,.qqj-inline-select-options,.qqj-model-list-items\{touch-action:pan-y\}/, '内部纵向列表应保留自己的原生纵向滚动');
   for (const surface of [
     /\.icon-btn\{[^}]*background:var\(--panel\)/,
     /\.v3-memory-status\{[^}]*background:color-mix\([^}]*var\(--panel\)\)/,
@@ -149,6 +155,7 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   if (!summaryEnd.defaultPrevented) summaryTarget.click();
   assert.equal(summaryMove.defaultPrevented, true); assert.equal(summaryEnd.defaultPrevented, true); assert.equal(summaryClicks, 0, 'summary 起始的横滑不得合成展开点击');
   assert.equal(panel.getState().activeTab, 'events', 'summary 起始横滑应进入下一个主内容页');
+  assert.ok(diagnostics.marks >= 2, 'QQJ横滑每次preventDefault都应显式标记给诊断模块');
   body.fire('touchstart', touchEvent({ touches: [touch(120, 100)], target: summaryTarget }));
   const summaryTapEnd = touchEvent({ changedTouches: [touch(122, 100)], target: summaryTarget }); body.fire('touchend', summaryTapEnd);
   if (!summaryTapEnd.defaultPrevented) summaryTarget.click();
@@ -181,9 +188,15 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   body.fire('touchend', { changedTouches: [touch(200, 105)], target: swipeTarget });
   assert.equal(panel.getState().activeTab, 'people'); assert.equal(panel.getState().screen, 'content', '设置页右滑应回到双丝网');
   body.fire('touchstart', { touches: [touch(200, 100)], target: swipeTarget });
-  body.fire('touchmove', { touches: [touch(190, 190)], target: swipeTarget, preventDefault() {} });
-  body.fire('touchend', { changedTouches: [touch(185, 220)], target: swipeTarget });
+  const verticalMove = touchEvent({ touches: [touch(190, 190)], target: swipeTarget }); body.fire('touchmove', verticalMove);
+  const verticalEnd = touchEvent({ changedTouches: [touch(185, 220)], target: swipeTarget }); body.fire('touchend', verticalEnd);
+  assert.equal(verticalMove.defaultPrevented, false); assert.equal(verticalEnd.defaultPrevented, false, '纯纵向手势不得被QQJ横滑监听器取消');
   assert.equal(panel.getState().activeTab, 'people', '纵向滚动不得误触主 tab 切页');
+  body.fire('touchstart', touchEvent({ touches: [touch(220, 100)], target: swipeTarget }));
+  body.fire('touchmove', touchEvent({ touches: [touch(190, 103)], target: swipeTarget }));
+  body.fire('touchcancel', touchEvent({ changedTouches: [touch(190, 103)], target: swipeTarget }));
+  body.fire('touchend', touchEvent({ changedTouches: [touch(100, 104)], target: swipeTarget }));
+  assert.equal(panel.getState().activeTab, 'people', '取消后的旧手势不得残留并触发切页');
   const profileStripTarget = { closest: selector => selector.includes('.qqj-profile-switcher') ? {} : null };
   body.fire('touchstart', { touches: [touch(260, 100)], target: profileStripTarget });
   body.fire('touchend', { changedTouches: [touch(100, 100)], target: profileStripTarget });
@@ -201,6 +214,11 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   assert.equal(dialogCancels, 1); assert.equal(panel.getState().open, true, 'Esc 应先关顶层自绘弹窗，不连带关闭面板');
   documentEvents.keydown({ key: 'Escape', preventDefault() {} });
   assert.equal(panel.getState().open, false);
+  assert.equal(diagnostics.stops, 1, '关闭面板应停止采集但由诊断模块保留既有记录');
+  await panel.show();
+  body.fire('touchend', touchEvent({ changedTouches: [touch(80, 100)], target: swipeTarget }));
+  assert.equal(panel.getState().screen, 'settings', '重新打开后不得沿用关闭前的横滑状态');
+  panel.close(); assert.equal(diagnostics.starts, 2); assert.equal(diagnostics.stops, 2);
   panel.showStatus('保留模块错误空态');
   assert.equal(view.children[0]?.className, 'empty-state'); assert.equal(view.children[0]?.children[1]?.textContent, '保留模块错误空态', '删除小行后 showStatus 错误空态仍须保留');
 });

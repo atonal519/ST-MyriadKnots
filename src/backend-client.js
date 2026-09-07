@@ -17,14 +17,17 @@ export function createBackendClient({ fetchImpl = globalThis.fetch, headers = ()
     } catch (error) { if (timedOut) throw timeoutError(); throw error; }
     finally { clearTimeout(timer); outerSignal?.removeEventListener?.('abort', abortFromOuter); }
   };
-  const key = (collection, recordId) => `/v1/records/${encodeURIComponent(NAMESPACE)}/${encodeURIComponent(collection)}/${encodeURIComponent(recordId)}`;
+  const collectionKey = collection => `/v1/records/${encodeURIComponent(NAMESPACE)}/${encodeURIComponent(collection)}`;
+  const key = (collection, recordId) => `${collectionKey(collection)}/${encodeURIComponent(recordId)}`;
   return {
     async health() {
       const result = await request('/v1/health');
       if (!result?.ok || result.api?.current !== 1 || !result.api?.supported?.includes(1) || result.capabilities?.records !== true || result.capabilities?.optimisticRevision !== true) throw new Error('后端能力不兼容');
       return result;
     },
+    async list(collection, { signal } = {}) { return request(collectionKey(collection), { signal }); },
     async get(collection, recordId) { return request(key(collection, recordId)); },
     async put(collection, recordId, data, expectedRevision, { signal } = {}) { return request(key(collection, recordId), { method: 'PUT', body: JSON.stringify({ data, expectedRevision }), signal }); },
+    async remove(collection, recordId, expectedRevision, { signal } = {}) { return request(key(collection, recordId), { method: 'DELETE', body: JSON.stringify({ expectedRevision }), signal }); },
   };
 }

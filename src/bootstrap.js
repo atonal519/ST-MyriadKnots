@@ -18,6 +18,7 @@ export function bootstrap({
   v3FoundationRuntime,
   v3RecallRuntime,
   peopleWorkspaceRuntime,
+  chatMemoryManagement,
   sourcePermissionViewFactory = createSourcePermissionView,
   v3FoundationViewFactory = createV3FoundationView,
   peopleProfilesViewFactory = createPeopleProfilesView,
@@ -37,7 +38,7 @@ export function bootstrap({
   let panel, fab;
   const dialog = dialogFactory({ documentRef, $: globalThis.jQuery ?? globalThis.$, subscribeContextChange: subscribeDialogContextChange });
   if (dialog?.host) (documentRef.documentElement ?? documentRef.body).append(dialog.host);
-  const foundationView = v3FoundationViewFactory({ runtime: v3FoundationRuntime, recallRuntime: v3RecallRuntime, peopleRuntime: peopleWorkspaceRuntime, documentRef, confirmImpl: options => dialog.confirm(options), infoImpl: options => dialog.info(options) });
+  const foundationView = v3FoundationViewFactory({ runtime: v3FoundationRuntime, recallRuntime: v3RecallRuntime, peopleRuntime: peopleWorkspaceRuntime, memoryManagement: chatMemoryManagement, uiDiagnosticProvider: () => panel?.getUiDiagnostic?.() ?? '{}', documentRef, confirmImpl: options => dialog.confirm(options), infoImpl: options => dialog.info(options) });
   const peopleProfilesView = peopleProfilesViewFactory({ runtime: peopleWorkspaceRuntime, documentRef });
   let pluginEnabled = settings?.isEnabled?.() !== false;
   const enabled = () => pluginEnabled;

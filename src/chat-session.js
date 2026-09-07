@@ -20,6 +20,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
 
   let epoch = 0;
   let active = null;
+  let suspension = null;
   let state = Object.freeze({ status: 'idle' });
   const enabled = () => {
     try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; }
@@ -58,6 +59,12 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     let context;
     try { context = capture(); }
     catch (error) { return Promise.reject(error); }
+    if (suspension) {
+      if (sameHost(suspension.host, context.host) && context.host.chatId === suspension.identity.chatId) {
+        state = Object.freeze({ status: 'suspended', identity: suspension.identity });
+        return Promise.resolve(state);
+      }
+    }
     if (active && sameHost(active.host, context.host)) return active.promise;
     if (state.status === 'ready'
       && state.identity?.hostChatId === context.host.hostChatId
@@ -136,6 +143,9 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
   function identity() {
     if (!enabled()) throw new ChatSessionError('千千结已关闭', 'CHAT_SESSION_DISABLED');
     const host = capture().host;
+    if (suspension && sameHost(suspension.host, host) && host.chatId === suspension.identity.chatId) {
+      throw new ChatSessionError('当前聊天记忆正在清理，请等待完成或重试', 'CHAT_SESSION_SUSPENDED');
+    }
     if (!isUuid(host.chatId)) throw new ChatSessionError('当前聊天尚未建立稳定 chatId', 'CHAT_SESSION_NOT_READY');
     if (identityCoordinator && (state.status !== 'ready'
       || state.identity?.chatId !== host.chatId
@@ -149,8 +159,37 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     epoch += 1;
     active?.controller?.abort('sessionInvalidated');
     active = null;
-    state = Object.freeze({ status: enabled() ? 'idle' : 'disabled' });
+    let suspendedHere = false;
+    if (suspension) {
+      try { const host = capture().host; suspendedHere = sameHost(suspension.host, host) && host.chatId === suspension.identity.chatId; }
+      catch { /* invalid host remains idle until it can be captured again */ }
+    }
+    state = Object.freeze(!enabled() ? { status: 'disabled' } : suspendedHere ? { status: 'suspended', identity: suspension.identity } : { status: 'idle' });
   }
 
-  return Object.freeze({ prepare, rename, identity, invalidate, getState: () => state });
+  function suspend(chatId) {
+    if (!enabled()) throw new ChatSessionError('千千结已关闭', 'CHAT_SESSION_DISABLED');
+    const context = capture();
+    if (!isUuid(chatId) || context.host.chatId !== chatId || state.status !== 'ready' || state.identity?.chatId !== chatId) {
+      throw new ChatSessionError('当前聊天身份尚未准备好，不能清理记忆', 'CHAT_SESSION_NOT_READY');
+    }
+    epoch += 1;
+    active?.controller?.abort('sessionSuspended');
+    active = null;
+    suspension = Object.freeze({ host: context.host, identity: state.identity });
+    state = Object.freeze({ status: 'suspended', identity: suspension.identity });
+    return state;
+  }
+
+  function resume(chatId) {
+    if (!suspension || suspension.identity.chatId !== chatId) return false;
+    epoch += 1;
+    active?.controller?.abort('sessionResumed');
+    active = null;
+    suspension = null;
+    state = Object.freeze({ status: enabled() ? 'idle' : 'disabled' });
+    return true;
+  }
+
+  return Object.freeze({ prepare, rename, identity, invalidate, suspend, resume, getState: () => state });
 }

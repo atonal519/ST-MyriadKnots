@@ -142,3 +142,24 @@ test('禁用时零元数据操作；切聊天后旧 prepare 返回 stale', async
     release();
     assert.equal((await pending).status, 'stale');
 });
+
+test('删除暂停只拦目标 UUID，切到其他聊天可用且回原聊天仍保持暂停', async () => {
+  const original = chatContext('原聊天', UUID);
+  const otherId = '223e4567-e89b-42d3-a456-426614174000';
+  const other = chatContext('其他聊天', otherId);
+  let current = original;
+  const session = createChatSession({ contextProvider: () => current });
+  assert.equal((await session.prepare()).status, 'ready');
+  assert.equal(session.suspend(UUID).status, 'suspended');
+  await assert.rejects(async () => session.identity(), error => error.code === 'CHAT_SESSION_SUSPENDED');
+  current = other;
+  session.invalidate();
+  assert.equal((await session.prepare()).identity.chatId, otherId);
+  assert.equal(session.identity().chatId, otherId);
+  current = original;
+  session.invalidate();
+  assert.equal((await session.prepare()).status, 'suspended');
+  await assert.rejects(async () => session.identity(), error => error.code === 'CHAT_SESSION_SUSPENDED');
+  assert.equal(session.resume(UUID), true);
+  assert.equal((await session.prepare()).identity.chatId, UUID);
+});

@@ -83,7 +83,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.0.4');
+  assert.equal(manifest.version, '0.0.5');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
@@ -190,6 +190,8 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   let peopleStoreOptions;
   let publicMemoryBridgeOptions;
   let autoHideOptions;
+  let memoryManagementOptions;
+  let chatMemoryManagement;
   let bootstrapOptions;
   let compactOptions;
   const modules = new Map();
@@ -219,6 +221,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
     return { prepare() {}, identity: () => ({ chatId: 'test' }), invalidate() {} };
   } });
   define('./src/chat-identity.js', { createChatIdentityCoordinator: options => { identityOptions = options; return { prepare() {} }; } });
+  define('./src/chat-memory-management.js', { createChatMemoryManagement: options => { memoryManagementOptions = options; chatMemoryManagement = { getState: () => ({ status: 'idle' }), deleteCurrent() {} }; return chatMemoryManagement; } });
   define('./src/plugin-lifecycle.js', {
     createPluginLifecycle: options => {
       lifecycleOptions = options;
@@ -271,6 +274,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   assert.equal(peopleWorkspaceOptions.profilePromptGuidance(), '人物资料指导');
   assert.ok(peopleWorkspaceOptions.session); assert.ok(peopleWorkspaceOptions.foundationRuntime); assert.ok(peopleWorkspaceOptions.memoryRuntime);
   assert.equal(bootstrapOptions.peopleWorkspaceRuntime, peopleWorkspaceRuntime);
+  assert.equal(bootstrapOptions.chatMemoryManagement, chatMemoryManagement);
   assert.equal(bootstrapOptions.enableFab, true);
   assert.equal(typeof bootstrapOptions.subscribeDialogContextChange, 'function');
   assert.equal(bootstrapOptions.isSevenDaysAvailable(), true);
@@ -283,6 +287,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   assert.ok(v3RecallOptions.store);
   assert.ok(v3RecallOptions.hostAdapter);
   assert.ok(autoHideOptions.hostAdapter); assert.equal(autoHideOptions.memoryRuntime, v3MemoryRuntime);
+  assert.equal(memoryManagementOptions.client, backendClient); assert.equal(memoryManagementOptions.session, lifecycleOptions.session); assert.equal(memoryManagementOptions.memoryRuntime, v3MemoryRuntime); assert.equal(typeof memoryManagementOptions.isMainGenerationActive, 'function');
   assert.equal(typeof v3RecallOptions.isEnabled, 'function');
   assert.equal(typeof v3RecallOptions.historicalMaintenance, 'function');
   assert.equal(typeof v3RecallOptions.realtimeOrigin, 'function');

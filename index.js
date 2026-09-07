@@ -9,6 +9,7 @@ import { createApiResolver, createApiTools, createTaskRouter } from './src/api-r
 import { createCompactApiClient } from './src/compact-api-client.js';
 import { createChatSession } from './src/chat-session.js';
 import { createChatIdentityCoordinator } from './src/chat-identity.js';
+import { createChatMemoryManagement } from './src/chat-memory-management.js';
 import { createPluginLifecycle } from './src/plugin-lifecycle.js';
 import { createSourcePermissionController } from './src/source-permission.js';
 import { createHostAdapter } from './src/v3/host-adapter.js';
@@ -133,6 +134,17 @@ const autoHideController = createAutoHideController({
   settings,
   notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
 });
+const chatMemoryManagement = createChatMemoryManagement({
+  client: backendClient,
+  session,
+  hostAdapter,
+  foundationRuntime,
+  memoryRuntime: v3MemoryRuntime,
+  recallRuntime: v3RecallRuntime,
+  peopleRuntime: peopleWorkspaceRuntime,
+  autoHideController,
+  isMainGenerationActive: isGenerating,
+});
 const publicMemoryBridgeMount = installPublicMemoryBridge({
   session,
   store: foundationStore,
@@ -177,6 +189,7 @@ ui = bootstrap({
   v3FoundationRuntime: v3MemoryRuntime,
   v3RecallRuntime,
   peopleWorkspaceRuntime,
+  chatMemoryManagement,
   enableFab: true,
 });
 lifecycle = createPluginLifecycle({

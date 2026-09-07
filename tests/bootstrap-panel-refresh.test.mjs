@@ -66,7 +66,7 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   const fabHost = { style: {} };
   const dialogHost = { id: 'dialog-host' };
   const bootstrap = await loadBootstrap({ './ui/fab.js': { createFab: options => { fabOptions = options; return { host: fabHost, setBusy() {} }; } } });
-  const panel = { host: { hidden: true }, show() { shows += 1; this.host.hidden = false; return { status: 'ready' }; }, close() { closes += 1; this.host.hidden = true; }, setEnabled() {}, refresh: async () => ({ status: 'ready' }), syncAppearance: () => ({ mode: 'auto', effectiveTheme: 'day' }) };
+  const panel = { host: { hidden: true }, show() { shows += 1; this.host.hidden = false; return { status: 'ready' }; }, close() { closes += 1; this.host.hidden = true; }, setEnabled() {}, refresh: async () => ({ status: 'ready' }), getUiDiagnostic: () => '{"schemaVersion":1}', syncAppearance: () => ({ mode: 'auto', effectiveTheme: 'day' }) };
   const stubView = () => ({ mount() {}, activate: async () => ({ status: 'ready' }), deactivate() {} });
   const current = { fabShow: true };
   const instance = bootstrap({
@@ -77,6 +77,7 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   });
   assert.deepEqual(appended, [dialogHost], '弹窗 host 应挂在 documentElement，避免手机宿主 body 布局裁切');
   assert.deepEqual(bodyAppended, [panel.host, fabHost]); assert.equal(typeof fabOptions.onClick, 'function'); assert.equal(typeof foundationOptions.infoImpl, 'function');
+  assert.equal(foundationOptions.uiDiagnosticProvider(), '{"schemaVersion":1}', '只读provider应在panel创建后导出界面诊断且不触发TDZ');
   await fabOptions.onClick({ currentTarget: fabHost }); assert.equal(shows, 1); assert.equal(panel.host.hidden, false);
   await fabOptions.onClick({ currentTarget: fabHost }); assert.equal(closes, 1); assert.equal(panel.host.hidden, true);
   instance.setEnabled(false); assert.equal(fabHost.style.display, 'none'); instance.setEnabled(true); assert.equal(fabHost.style.display, '');

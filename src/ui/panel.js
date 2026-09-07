@@ -6,9 +6,10 @@ import { createSettingsDrawer, createSettingsDrawerState } from './settings-draw
 import { createApiSettings } from './settings/api-settings.js';
 import { createPromptsSettings } from './settings/prompts-settings.js';
 import { createAppearanceSettings } from './settings/appearance-settings.js';
+import { createScrollDiagnostics } from './scroll-diagnostics.js';
 import { applyPluginEnabledImmediately } from '../settings.js';
 
-const shellCss = ':host{position:fixed;inset:0;z-index:4000;width:100dvw;height:100dvh;pointer-events:none;background:transparent;text-shadow:none!important;isolation:isolate}:host([hidden]){display:none!important}.panel{position:fixed;top:80px;right:20px;width:360px;height:min(600px,85dvh);max-width:calc(100dvw - 40px);max-height:85dvh;display:grid;grid-template-rows:auto auto minmax(0,1fr) 24px;pointer-events:auto}.body{min-height:0;overflow-y:auto;scrollbar-gutter:stable}.tabs{overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(max-width:640px){.panel{top:calc(20px + env(safe-area-inset-top,0px));left:50%;right:auto;transform:translateX(-50%);width:calc(100dvw - 20px);max-width:calc(100dvw - 20px);height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));max-height:none;grid-template-rows:auto auto minmax(0,1fr)}.panel-resize-handle{display:none}.tabs{scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}}';
+const shellCss = ':host{position:fixed;inset:0;z-index:4000;width:100dvw;height:100dvh;pointer-events:none;background:transparent;text-shadow:none!important;isolation:isolate}:host([hidden]){display:none!important}.panel{position:fixed;top:80px;right:20px;width:360px;height:min(600px,85dvh);max-width:calc(100dvw - 40px);max-height:85dvh;display:grid;grid-template-rows:auto auto minmax(0,1fr) 24px;pointer-events:auto}.body{min-height:0;overflow-y:auto;scrollbar-gutter:stable;touch-action:pan-y}.tabs{overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(max-width:640px){.panel{top:calc(20px + env(safe-area-inset-top,0px));left:50%;right:auto;transform:translateX(-50%);width:calc(100dvw - 20px);max-width:calc(100dvw - 20px);height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));max-height:none;grid-template-rows:auto auto minmax(0,1fr)}.panel-resize-handle{display:none}.tabs{scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}}';
 
 export function createPanel({
   settings,
@@ -60,6 +61,12 @@ export function createPanel({
   const fabToggleButton = root.querySelector('.fab-toggle-btn');
   let swipeGesture = null;
   let settingsManagementError = null;
+  const scrollDiagnostics = createScrollDiagnostics({
+    target: body,
+    getPage: () => screen === 'settings' ? 'settings' : activeTab,
+    windowRef: documentRef.defaultView ?? globalThis,
+    navigatorRef: documentRef.defaultView?.navigator ?? globalThis.navigator,
+  });
 
   const syncHeader = appearance => {
     const mode = settings?.get?.().appearanceTheme ?? 'auto';
@@ -287,6 +294,7 @@ export function createPanel({
     trigger = nextTrigger ?? trigger;
     host.hidden = false;
     host.setAttribute('aria-hidden', 'false');
+    scrollDiagnostics.start();
     geometry.restore();
     let result = { status: 'ready' };
     if (screen === 'settings') renderSettings();
@@ -301,6 +309,7 @@ export function createPanel({
     v3FoundationView.deactivate();
     geometry.cancelGesture();
     swipeGesture = null;
+    scrollDiagnostics.stop();
     dialog?.closeAll?.();
     host.hidden = true;
     host.setAttribute('aria-hidden', 'true');
@@ -331,13 +340,14 @@ export function createPanel({
     if (!swipeGesture) return; const touch = point(event); if (!touch) return;
     swipeGesture.dx = touch.clientX - swipeGesture.x; swipeGesture.dy = touch.clientY - swipeGesture.y;
     if (!swipeGesture.horizontal && Math.abs(swipeGesture.dy) > Math.abs(swipeGesture.dx)) { swipeGesture = null; return; }
-    if (Math.abs(swipeGesture.dx) >= 12 && Math.abs(swipeGesture.dx) > Math.abs(swipeGesture.dy) * 1.35) { swipeGesture.horizontal = true; event.preventDefault?.(); }
+    if (Math.abs(swipeGesture.dx) >= 12 && Math.abs(swipeGesture.dx) > Math.abs(swipeGesture.dy) * 1.35) { swipeGesture.horizontal = true; event.preventDefault?.(); scrollDiagnostics.markQqjSwipeIntercepted(); }
   }, { passive: false });
   body?.addEventListener?.('touchend', event => {
     if (!swipeGesture) return; const touch = point(event); if (touch) { swipeGesture.dx = touch.clientX - swipeGesture.x; swipeGesture.dy = touch.clientY - swipeGesture.y; }
     const gesture = swipeGesture; swipeGesture = null;
     if (Math.abs(gesture.dx) < 60 || Math.abs(gesture.dx) <= Math.abs(gesture.dy) * 1.35) return;
     event.preventDefault?.();
+    scrollDiagnostics.markQqjSwipeIntercepted();
     const swipeTabs = ['profiles', 'events', 'people', 'settings'], current = screen === 'settings' ? 'settings' : activeTab, index = swipeTabs.indexOf(current), next = index + (gesture.dx < 0 ? 1 : -1);
     if (next >= 0 && next < swipeTabs.length) selectTab(swipeTabs[next]);
   }, { passive: false });
@@ -373,6 +383,7 @@ export function createPanel({
       v3FoundationView.deactivate();
       return activateFoundation();
     },
+    getUiDiagnostic: () => JSON.stringify(scrollDiagnostics.snapshot(), null, 2),
     getState: () => ({ enabled, activeTab, screen, open: !host.hidden }),
   });
 }

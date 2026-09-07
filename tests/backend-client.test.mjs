@@ -35,3 +35,18 @@ test('backend PUT 可选 signal 传给 fetch，不传时仍兼容', async () => 
   assert.notEqual(calls[0].signal, controller.signal);
   assert.ok(calls[1].signal instanceof AbortSignal);
 });
+
+test('backend list/remove 使用当前 namespace 与精确 revision', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, status: 200, json: async () => options.method === 'DELETE' ? { trashId: 'trash' } : [] };
+  };
+  const client = createBackendClient({ fetchImpl, baseUrl: '/api/plugins/bainiaodata/v1', timeoutMs: 50 });
+  assert.deepEqual(await client.list('chat/a b'), []);
+  await client.remove('chat/a b', 'root/id', 7);
+  assert.match(calls[0].url, /\/records\/qianqianjie\/chat%2Fa%20b$/);
+  assert.match(calls[1].url, /\/records\/qianqianjie\/chat%2Fa%20b\/root%2Fid$/);
+  assert.equal(calls[1].options.method, 'DELETE');
+  assert.deepEqual(JSON.parse(calls[1].options.body), { expectedRevision: 7 });
+});
