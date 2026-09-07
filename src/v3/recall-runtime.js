@@ -506,6 +506,7 @@ export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, au
     on('GENERATION_STOPPED', onGenerationStopped);
     on('GENERATION_ENDED', onGenerationEnded);
     on('CHAT_CHANGED', () => invalidate('chatChanged'));
+    on('CHAT_RENAMED', () => invalidate('chatChanged'));
     for (const name of ['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']) on(name, () => {
       const current = hostAdapter.snapshot();
       const user = latestUser(current);

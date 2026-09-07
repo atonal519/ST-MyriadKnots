@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { applyPluginEnabledImmediately, createSettingsStore, normalizeAutoMemoryBatchSize } from '../src/settings.js';
+import { applyPluginEnabledImmediately, createSettingsStore, normalizeAutoHideKeepAiCount, normalizeAutoMemoryBatchSize } from '../src/settings.js';
 import { createApiResolver, createApiTools, createTaskRouter } from '../src/api-routing.js';
 
 const configured = (name, id, key = 'TEST_KEY') => ({ id, name, url: 'https://api.example.test/v1', key, model: 'test-model', excludeParams: [], timeoutSec: 30, stream: false });
@@ -28,6 +28,19 @@ test('记忆提取周期固定为 1，旧配置与更新请求都不能继续生
   assert.equal(settings.get().autoMemoryBatchSize, 1);
 });
 
+test('自动隐藏默认关闭并保留最近 3 个 AI 楼，数量只接受合理正整数', () => {
+  const extensionSettings = {};
+  const { settings, saves } = setup(extensionSettings);
+  assert.equal(settings.get().autoHideEnabled, false);
+  assert.equal(settings.get().autoHideKeepAiCount, 3);
+  assert.equal(normalizeAutoHideKeepAiCount(1), 1); assert.equal(normalizeAutoHideKeepAiCount(50), 50);
+  for (const invalid of [undefined, null, 0, 51, 2.5, 'abc']) assert.equal(normalizeAutoHideKeepAiCount(invalid), 3);
+  settings.update({ autoHideEnabled: true, autoHideKeepAiCount: 7 });
+  assert.equal(settings.get().autoHideEnabled, true); assert.equal(settings.get().autoHideKeepAiCount, 7); assert.equal(saves(), 1);
+  settings.update({ autoHideKeepAiCount: -2 });
+  assert.equal(settings.get().autoHideKeepAiCount, 3);
+});
+
 test('时间戳功能默认开启，四类自定义提示词保留用户原文', () => {
   const extensionSettings = {};
   const { settings } = setup(extensionSettings);
@@ -36,6 +49,14 @@ test('时间戳功能默认开启，四类自定义提示词保留用户原文',
   settings.update({ storyClockEnabled: false, storyClockPrompt: '  原样换行\n', summaryPrompt: '  摘要要求\n', csePrompt: '  CSE 要求\n', profilePrompt: '  人物资料要求\n' });
   assert.equal(settings.get().storyClockEnabled, false); assert.equal(settings.get().storyClockPrompt, '  原样换行\n');
   assert.equal(settings.get().summaryPrompt, '  摘要要求\n'); assert.equal(settings.get().csePrompt, '  CSE 要求\n'); assert.equal(settings.get().profilePrompt, '  人物资料要求\n');
+});
+
+test('悬浮球偏好默认显示并独立持久化', () => {
+  const extensionSettings = {};
+  const { settings, saves } = setup(extensionSettings);
+  assert.equal(settings.get().fabShow, true);
+  settings.update({ fabShow: false });
+  assert.equal(settings.get().fabShow, false); assert.equal(extensionSettings.qianqianjie.fabShow, false); assert.equal(saves(), 1);
 });
 
 test('退役通用附加入口不清理已有残留设置', () => {

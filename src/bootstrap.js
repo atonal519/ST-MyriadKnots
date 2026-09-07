@@ -4,12 +4,15 @@ import { installWandEntry } from './ui/wand-entry.js';
 import { createSourcePermissionView } from './ui/source-permission-view.js';
 import { createV3FoundationView } from './ui/v3-foundation-view.js';
 import { createPeopleProfilesView } from './ui/people-profiles-view.js';
+import { createDialogManager } from './ui/dialog.js';
 
 export function bootstrap({
   settings,
   apiTools,
   onPluginEnabledChange,
   onStoryClockChange,
+  onAutoHideChange,
+  subscribeDialogContextChange,
   isSevenDaysAvailable,
   sourcePermissions,
   v3FoundationRuntime,
@@ -22,6 +25,7 @@ export function bootstrap({
   panelFactory = createPanel,
   fabFactory = createFab,
   wandInstaller = installWandEntry,
+  dialogFactory = createDialogManager,
   enableFab = false,
 } = {}) {
   if (!documentRef) return { show() {}, refresh() {}, setEnabled() {} };
@@ -30,10 +34,13 @@ export function bootstrap({
   const sourcePermissionView = sourcePermissions
     ? sourcePermissionViewFactory({ permissions: sourcePermissions, documentRef })
     : null;
-  let panel;
-  const foundationView = v3FoundationViewFactory({ runtime: v3FoundationRuntime, recallRuntime: v3RecallRuntime, peopleRuntime: peopleWorkspaceRuntime, documentRef });
+  let panel, fab;
+  const dialog = dialogFactory({ documentRef, $: globalThis.jQuery ?? globalThis.$, subscribeContextChange: subscribeDialogContextChange });
+  if (dialog?.host) (documentRef.documentElement ?? documentRef.body).append(dialog.host);
+  const foundationView = v3FoundationViewFactory({ runtime: v3FoundationRuntime, recallRuntime: v3RecallRuntime, peopleRuntime: peopleWorkspaceRuntime, documentRef, confirmImpl: options => dialog.confirm(options), infoImpl: options => dialog.info(options) });
   const peopleProfilesView = peopleProfilesViewFactory({ runtime: peopleWorkspaceRuntime, documentRef });
-  const enabled = () => settings?.isEnabled?.() !== false;
+  let pluginEnabled = settings?.isEnabled?.() !== false;
+  const enabled = () => pluginEnabled;
   const open = async event => {
     if (!enabled()) {
       panel.show(event?.currentTarget || event?.target || documentRef.activeElement);
@@ -54,28 +61,37 @@ export function bootstrap({
     sourcePermissionView,
     onPluginEnabledChange,
     onStoryClockChange,
+    onAutoHideChange,
     isSevenDaysAvailable,
+    dialog,
+    onFabShowChange: () => syncFabVisibility(),
+    onAppearanceChange: value => fab?.setAppearance?.(value),
     documentRef,
   });
   panel.host.hidden = true;
   documentRef.body.append(panel.host);
   const toggle = event => panel.host.hidden ? open(event) : panel.close();
-  const fab = (enableFab || typeof documentRef.createElement !== 'function')
+  fab = (enableFab || typeof documentRef.createElement !== 'function')
     ? fabFactory({ onClick: toggle, documentRef, windowRef: documentRef.defaultView ?? globalThis })
     : { host: null };
+  const fabShown = () => settings?.get?.().fabShow !== false;
+  const syncFabVisibility = () => { if (fab?.host?.style) fab.host.style.display = enabled() && fabShown() ? '' : 'none'; };
   if (fab.host) {
     fab.host.style ||= {};
-    fab.host.style.display = enabled() ? '' : 'none';
+    syncFabVisibility();
     documentRef.body.append(fab.host);
+    fab.setAppearance?.(panel.syncAppearance?.());
   }
   wandInstaller(open);
   const instance = {
     ...panel,
     fab,
+    dialog,
     show: open,
     setEnabled(value) {
-      panel.setEnabled(value);
-      if (fab.host?.style) fab.host.style.display = value ? '' : 'none';
+      pluginEnabled = value === true;
+      panel.setEnabled(pluginEnabled);
+      syncFabVisibility();
     },
     async refresh() {
       if (panel.host.hidden || !enabled()) return { status: enabled() ? 'closed' : 'disabled' };

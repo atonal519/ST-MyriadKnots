@@ -23,7 +23,7 @@ import { validateCseGraph } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 
 const EVENTS = Object.freeze([
-  'CHAT_CHANGED', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED',
+  'CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED',
   'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MORE_MESSAGES_LOADED',
 ]);
 const INDEX_SHARD_LIMIT = 512;
@@ -717,7 +717,7 @@ export function createFoundationRuntime({
       const eventName = eventTypes[name];
       if (!eventName) continue;
       eventSource.on(eventName, (...args) => {
-        if (name === 'CHAT_CHANGED') {
+        if (name === 'CHAT_CHANGED' || name === 'CHAT_RENAMED') {
           invalidate();
           if (enabled()) void schedule(name);
           return;

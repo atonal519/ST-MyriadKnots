@@ -5,11 +5,12 @@ import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 import { deterministicUuid } from './foundation-domain.js';
 import { validateEntityRecord } from './memory-schema.js';
 import { sanitizeDiagnosticValue, sanitizeTaskMetadata } from './safe-metadata.js';
-import { stateFingerprint, validateBaselineRecord, validateCurrentStateRecord, validateStateDeltaRecord } from './cse-schema.js';
+import { CSE_VISIBILITIES, stateFingerprint, validateBaselineRecord, validateCurrentStateRecord, validateStateDeltaRecord } from './cse-schema.js';
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
+import { buildEntityIdentityDirectory } from './entity-identity.js';
 
 export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-6';
-export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/after-state-compiler-4';
+export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/after-state-compiler-5';
 
 export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。完整阅读本楼正文，并结合结构化楼层记忆、人物此前状态与相关初始设定，分析人物在本楼结束时的状态。
 
@@ -39,6 +40,7 @@ export function buildCseSystemPrompt(guidance = '') {
 export const CSE_SYSTEM_PROMPT = buildCseSystemPrompt();
 
 const normalized = value => String(value ?? '').normalize('NFKC').trim().toLocaleLowerCase();
+const errorWith = (code, message) => { const error = new TypeError(message ?? code); error.code = code; return error; };
 const text = (value, maximum = 4000) => typeof value === 'string' ? value.trim().slice(0, maximum) : '';
 const list = value => value === undefined || value === null ? [] : Array.isArray(value) ? value : [value];
 const field = (value, names) => {
@@ -224,7 +226,10 @@ function authorialOtherStateContext(currentState, entities) {
 }
 
 export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, worldInfoSources = null }) {
-  const activeKnownEntities = entities.filter(entity => entity.recordStatus !== 'invalidated' && entity.status !== 'merged' && entity.status !== 'invalidated');
+  const directory = buildEntityIdentityDirectory({ entities });
+  const directoryById = new Map(directory.map(entry => [entry.entityId, entry]));
+  const labelsFor = entity => directoryById.get(entity.id)?.labels ?? entityLabels(entity);
+  const activeKnownEntities = directory.filter(entry => entry.entityType === 'person' || entry.specialRole !== 'none');
   const requestWorldInfoSources = Array.isArray(worldInfoSources) ? worldInfoSources : baseline.worldInfoSources;
   return Object.freeze({
     request: Object.freeze({ task: 'understandCharacterStateAfterFloor', locale: 'zh-CN', payload: {
@@ -238,13 +243,13 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       },
       subjectRelevantEvidence: subjectRelevantEvidence(floorMemory, trackedSubjects, entities),
       authorialOtherStateContext: authorialOtherStateContext(currentState, entities),
-      trackedSubjects: trackedSubjects.map(entity => ({ name: entity.displayName, aliases: entityLabels(entity) })),
-      knownPeople: activeKnownEntities.filter(entity => entity.entityType === 'person' || entity.specialRole !== 'none').map(entity => ({ name: entity.displayName, aliases: entityLabels(entity) })),
+      trackedSubjects: trackedSubjects.map(entity => ({ name: entity.displayName, aliases: labelsFor(entity) })),
+      knownPeople: activeKnownEntities.map(entry => ({ name: entry.displayName, aliases: entry.labels })),
     } }),
     scope: Object.freeze({
       floorId: floor.id, floorMemoryId: floorMemory.id, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration, baselineId: baseline.id,
-      trackedBindings: trackedSubjects.map(entity => ({ entityId: entity.id, labels: entityLabels(entity), specialRole: entity.specialRole })),
-      knownBindings: activeKnownEntities.map(entity => ({ entityId: entity.id, labels: entityLabels(entity), specialRole: entity.specialRole })),
+      trackedBindings: trackedSubjects.map(entity => ({ entityId: entity.id, labels: labelsFor(entity), specialRole: entity.specialRole })),
+      knownBindings: activeKnownEntities.map(entry => ({ entityId: entry.entityId, labels: entry.labels, specialRole: entry.specialRole })),
     }),
   });
 }
@@ -328,6 +333,93 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
   return Object.freeze({ delta, isolated: Object.freeze(isolated) });
 }
 
+const manualItemMeaning = (item, category) => [item.text, item.visibility, category === 'adaptive' ? item.towardEntityId ?? null : null];
+
+async function manualStateItems({ edits, originals, category, subjectEntityId, floorId, oldDeltaId, deltaId, allowedTowardEntityIds }) {
+  if (!Array.isArray(edits) || edits.length > 120) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', `${category} 编辑内容无效。`);
+  const originalById = new Map(originals.map(item => [item.id, item]));
+  const usedIds = new Set();
+  const output = [];
+  for (const [index, raw] of edits.entries()) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', `${category} 第 ${index + 1} 项无效。`);
+    const itemId = typeof raw.itemId === 'string' && raw.itemId ? raw.itemId : null;
+    const original = itemId ? originalById.get(itemId) : null;
+    if (itemId && (!original || usedIds.has(itemId))) throw errorWith('V3_CSE_MANUAL_INPUT_STALE', `${category} 第 ${index + 1} 项已变化，请重新打开编辑。`);
+    if (itemId) usedIds.add(itemId);
+    const itemText = typeof raw.text === 'string' ? raw.text.trim() : '';
+    if (!itemText || itemText.length > 4000 || !CSE_VISIBILITIES.includes(raw.visibility)) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', `${category} 第 ${index + 1} 项内容或可见性无效。`);
+    const towardEntityId = category === 'adaptive' && typeof raw.towardEntityId === 'string' && raw.towardEntityId ? raw.towardEntityId : null;
+    if (towardEntityId && !allowedTowardEntityIds.has(towardEntityId)) throw errorWith('V3_CSE_MANUAL_TOWARD_INVALID', '关系对象不在当前锚点可用人物范围内。');
+    const nextMeaning = [itemText, raw.visibility, towardEntityId];
+    if (original && JSON.stringify(manualItemMeaning(original, category)) === JSON.stringify(nextMeaning)) {
+      if (original.sourceDeltaId !== oldDeltaId) { output.push(original); continue; }
+      const rebased = { ...original, sourceDeltaId: deltaId };
+      rebased.id = await deterministicUuid(['v3-cse-manual-rebase-item', deltaId, original.id, subjectEntityId, category, index]);
+      output.push(rebased);
+      continue;
+    }
+    const next = {
+      id: await deterministicUuid(['v3-cse-manual-state-item', deltaId, subjectEntityId, category, index, itemText, raw.visibility, towardEntityId]),
+      text: itemText,
+      visibility: raw.visibility,
+      reason: '用户纠正当前状态',
+      origin: 'manual',
+      towardEntityId,
+      sourceFloorId: floorId,
+      sourceDeltaId: deltaId,
+    };
+    output.push(next);
+  }
+  return output;
+}
+
+export async function createManualCseCorrection({ anchorDelta, currentState, subjectEntityId, edits, allowedTowardEntityIds = [], deltaId, now }) {
+  const currentSubject = currentState?.subjects?.find(subject => subject.subjectEntityId === subjectEntityId);
+  if (!currentSubject || !anchorDelta?.subjectSnapshots || typeof deltaId !== 'string') throw errorWith('V3_CSE_MANUAL_TARGET_INVALID', '当前人物状态或纠正锚点不可用。');
+  const allowed = new Set(allowedTowardEntityIds);
+  const categories = ['core', 'adaptive', 'situational'];
+  const normalizedEdits = Object.fromEntries(categories.map(category => [category, Array.isArray(edits?.[category]) ? edits[category] : null]));
+  if (categories.some(category => normalizedEdits[category] === null)) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', '人物状态编辑内容不完整。');
+  const unchanged = categories.every(category => JSON.stringify(normalizedEdits[category].map(item => [String(item?.text ?? '').trim(), item?.visibility, category === 'adaptive' ? item?.towardEntityId || null : null])) === JSON.stringify(currentSubject[category].map(item => manualItemMeaning(item, category))));
+  if (unchanged) return Object.freeze({ status: 'unchanged', delta: null });
+
+  const corrected = { subjectEntityId, changeSummary: ['用户纠正当前状态'], coreChallenges: [] };
+  for (const category of categories) corrected[category] = await manualStateItems({ edits: normalizedEdits[category], originals: currentSubject[category], category, subjectEntityId, floorId: anchorDelta.floorId, oldDeltaId: anchorDelta.id, deltaId, allowedTowardEntityIds: allowed });
+  const snapshots = [];
+  let replaced = false;
+  for (const snapshot of anchorDelta.subjectSnapshots) {
+    if (snapshot.subjectEntityId === subjectEntityId) { snapshots.push(corrected); replaced = true; continue; }
+    const copy = structuredClone(snapshot);
+    for (const category of categories) {
+      copy[category] = await Promise.all(copy[category].map(async (item, index) => {
+        if (item.sourceDeltaId !== anchorDelta.id) return item;
+        const rebased = { ...item, sourceDeltaId: deltaId };
+        rebased.id = await deterministicUuid(['v3-cse-manual-rebase-item', deltaId, item.id, copy.subjectEntityId, category, index]);
+        return rebased;
+      }));
+    }
+    snapshots.push(copy);
+  }
+  if (!replaced) snapshots.push(corrected);
+  const manualSubjectEntityIds = [...new Set([...(anchorDelta.source?.manualSubjectEntityIds ?? []), subjectEntityId])];
+  const noMaterialChange = false;
+  const fingerprint = `sha256:${await sha256(JSON.stringify([anchorDelta.floorId, anchorDelta.floorMemoryId, snapshots, noMaterialChange]))}`;
+  const delta = validateStateDeltaRecord({
+    ...anchorDelta,
+    id: deltaId,
+    previousCurrentStateId: anchorDelta.previousCurrentStateId,
+    subjectSnapshots: snapshots,
+    noMaterialChange,
+    fingerprint,
+    source: { promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, manualSubjectEntityIds },
+    createdAt: now,
+    updatedAt: now,
+    recordStatus: 'active',
+    supersedes: anchorDelta.id,
+  }, { expectedChatId: anchorDelta.chatId });
+  return Object.freeze({ status: 'ready', delta });
+}
+
 export async function runCseRequest({ generateUtilityTask, envelope, previousCurrentState, now, deltaId, promptGuidance = '', signal }) {
   let candidate = null;
   const transportBudget = { remaining: 3, used: 0 };
@@ -382,7 +474,8 @@ export async function replayCurrentState({ chatId, narrativeGeneration, baseline
   const subjects = new Map();
   for (const delta of deltas) for (const snapshot of delta.subjectSnapshots) {
     const previous = subjects.get(snapshot.subjectEntityId);
-    subjects.set(snapshot.subjectEntityId, { subjectEntityId: snapshot.subjectEntityId, core: previous?.core?.length ? previous.core : snapshot.core, adaptive: snapshot.adaptive, situational: snapshot.situational });
+    const manualCore = delta.source?.manualSubjectEntityIds?.includes(snapshot.subjectEntityId) === true;
+    subjects.set(snapshot.subjectEntityId, { subjectEntityId: snapshot.subjectEntityId, core: manualCore ? snapshot.core : previous?.core?.length ? previous.core : snapshot.core, adaptive: snapshot.adaptive, situational: snapshot.situational });
   }
   const subjectList = [...subjects.values()];
   const appliedDeltaIds = deltas.map(delta => delta.id);

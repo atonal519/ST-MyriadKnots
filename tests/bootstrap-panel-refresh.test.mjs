@@ -14,6 +14,7 @@ async function loadBootstrap(overrides = {}) {
     './ui/source-permission-view.js': { createSourcePermissionView: () => null },
     './ui/v3-foundation-view.js': { createV3FoundationView: () => null },
     './ui/people-profiles-view.js': { createPeopleProfilesView: () => null },
+    './ui/dialog.js': { createDialogManager: () => ({ host: null, confirm() {}, info() {}, setAppearance() {} }) },
     ...overrides,
   };
   await entry.link(specifier => new SyntheticModule(Object.keys(factories[specifier]), function initialize() {
@@ -61,19 +62,23 @@ test('bootstrap 保留 transient stale 时的已挂载面板，disabled 仍显�
 });
 
 test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步显隐', async () => {
-  let fabOptions, shows = 0, closes = 0; const appended = [];
+  let fabOptions, foundationOptions, shows = 0, closes = 0; const appended = [], bodyAppended = [];
   const fabHost = { style: {} };
+  const dialogHost = { id: 'dialog-host' };
   const bootstrap = await loadBootstrap({ './ui/fab.js': { createFab: options => { fabOptions = options; return { host: fabHost, setBusy() {} }; } } });
-  const panel = { host: { hidden: true }, show() { shows += 1; this.host.hidden = false; return { status: 'ready' }; }, close() { closes += 1; this.host.hidden = true; }, setEnabled() {}, refresh: async () => ({ status: 'ready' }) };
+  const panel = { host: { hidden: true }, show() { shows += 1; this.host.hidden = false; return { status: 'ready' }; }, close() { closes += 1; this.host.hidden = true; }, setEnabled() {}, refresh: async () => ({ status: 'ready' }), syncAppearance: () => ({ mode: 'auto', effectiveTheme: 'day' }) };
   const stubView = () => ({ mount() {}, activate: async () => ({ status: 'ready' }), deactivate() {} });
+  const current = { fabShow: true };
   const instance = bootstrap({
-    settings: { isEnabled: () => true }, enableFab: true,
-    v3FoundationViewFactory: stubView, peopleProfilesViewFactory: stubView, peopleWorkspaceRuntime: { getState: () => ({}) },
-    documentRef: { activeElement: null, defaultView: {}, getElementById: () => null, createElement: () => ({}), body: { append: node => appended.push(node) } },
-    panelFactory: () => panel, wandInstaller() {},
+    settings: { isEnabled: () => true, get: () => current }, enableFab: true,
+    v3FoundationViewFactory: options => { foundationOptions = options; return stubView(); }, peopleProfilesViewFactory: stubView, peopleWorkspaceRuntime: { getState: () => ({}) },
+    documentRef: { activeElement: null, defaultView: {}, getElementById: () => null, createElement: () => ({}), documentElement: { append: node => appended.push(node) }, body: { append: node => bodyAppended.push(node) } },
+    panelFactory: () => panel, dialogFactory: () => ({ host: dialogHost, confirm() {}, info() {}, setAppearance() {} }), wandInstaller() {},
   });
-  assert.deepEqual(appended, [panel.host, fabHost]); assert.equal(typeof fabOptions.onClick, 'function');
+  assert.deepEqual(appended, [dialogHost], '弹窗 host 应挂在 documentElement，避免手机宿主 body 布局裁切');
+  assert.deepEqual(bodyAppended, [panel.host, fabHost]); assert.equal(typeof fabOptions.onClick, 'function'); assert.equal(typeof foundationOptions.infoImpl, 'function');
   await fabOptions.onClick({ currentTarget: fabHost }); assert.equal(shows, 1); assert.equal(panel.host.hidden, false);
   await fabOptions.onClick({ currentTarget: fabHost }); assert.equal(closes, 1); assert.equal(panel.host.hidden, true);
   instance.setEnabled(false); assert.equal(fabHost.style.display, 'none'); instance.setEnabled(true); assert.equal(fabHost.style.display, '');
+  current.fabShow = false; instance.setEnabled(true); assert.equal(fabHost.style.display, 'none', '悬浮球独立开关应与插件总开关共同决定显示');
 });

@@ -45,7 +45,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
   });
   const currentFor = operation => {
     if (!enabled()) return 'disabled';
-    if (operation.epoch !== epoch) return 'stale';
+    if (operation.epoch !== epoch || operation.controller?.signal.aborted) return 'stale';
     try { return sameHost(operation.host, capture().host) ? 'current' : 'stale'; }
     catch { return 'stale'; }
   };
@@ -68,18 +68,56 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
       state = Object.freeze({ status: 'ready', identity: publicIdentity(context.host) });
       return Promise.resolve(state);
     }
-    const operation = { epoch, host: context.host };
+    const operation = { epoch, host: context.host, controller: new AbortController() };
     state = Object.freeze({ status: 'preparing' });
     operation.promise = (async () => {
       try {
         const chatId = identityCoordinator
-          ? await identityCoordinator.prepare(context.raw, context.host)
+          ? await identityCoordinator.prepare(context.raw, context.host, { signal: operation.controller.signal })
           : await ensureChatId(context.raw, context.host);
         const current = currentFor(operation);
         if (current !== 'current') return Object.freeze({ status: current });
         const refreshed = capture().host;
         if (!isUuid(refreshed.chatId) || refreshed.chatId !== chatId) {
           throw new ChatSessionError('稳定 chatId 保存后未能读回', 'CHAT_SESSION_PERSIST_FAILED');
+        }
+        state = Object.freeze({ status: 'ready', identity: publicIdentity(refreshed) });
+        return state;
+      } catch (error) {
+        const current = currentFor(operation);
+        if (current !== 'current') return Object.freeze({ status: current });
+        state = Object.freeze({ status: 'error', error });
+        throw error;
+      }
+    })();
+    active = operation;
+    operation.promise.finally(() => { if (active === operation) active = null; }).catch(() => {});
+    return operation.promise;
+  }
+
+  function rename(event, previousIdentity, preparedIdentity) {
+    if (!enabled()) return Promise.resolve(Object.freeze({ status: 'disabled' }));
+    if (typeof identityCoordinator?.rename !== 'function') {
+      return Promise.reject(new ChatSessionError('当前身份协调器不支持聊天改名', 'CHAT_SESSION_RENAME_UNAVAILABLE'));
+    }
+    let context;
+    try { context = capture(); }
+    catch (error) { return Promise.reject(error); }
+    const operation = { epoch, host: context.host, controller: new AbortController() };
+    state = Object.freeze({ status: 'preparing' });
+    operation.promise = (async () => {
+      try {
+        const chatId = await identityCoordinator.rename(context.raw, context.host, {
+          event,
+          previousIdentity,
+          preparedIdentity,
+          signal: operation.controller.signal,
+        });
+        const current = currentFor(operation);
+        if (current !== 'current') return Object.freeze({ status: current });
+        const refreshed = capture().host;
+        if (!isUuid(refreshed.chatId) || refreshed.chatId !== chatId) {
+          throw new ChatSessionError('改名身份保存后未能读回', 'CHAT_SESSION_PERSIST_FAILED');
         }
         state = Object.freeze({ status: 'ready', identity: publicIdentity(refreshed) });
         return state;
@@ -109,9 +147,10 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
 
   function invalidate() {
     epoch += 1;
+    active?.controller?.abort('sessionInvalidated');
     active = null;
     state = Object.freeze({ status: enabled() ? 'idle' : 'disabled' });
   }
 
-  return Object.freeze({ prepare, identity, invalidate, getState: () => state });
+  return Object.freeze({ prepare, rename, identity, invalidate, getState: () => state });
 }

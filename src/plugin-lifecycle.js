@@ -16,6 +16,7 @@ export function createPluginLifecycle({
   };
   let prepareEpoch = 0;
   let bound = false;
+  let renameTransition = null;
 
   function invalidate() {
     prepareEpoch += 1;
@@ -37,18 +38,69 @@ export function createPluginLifecycle({
     return result;
   }
 
-  function onIdentityChange() {
+  function scheduleIdentityPrepare() {
+    if (!enabled()) return Promise.resolve({ status: 'disabled' });
+    return Promise.resolve().then(() => prepare()).catch(error => {
+      logger?.warn?.('[qianqianjie] 聊天身份准备失败', error);
+      return { status: 'error', error };
+    });
+  }
+
+  function onChatChanged() {
+    const previous = session.getState?.();
+    const transition = previous?.status === 'ready' && previous.identity
+      ? { previousIdentity: Object.freeze({ ...previous.identity }), preparePromise: null }
+      : null;
     try { invalidate(); }
     catch (error) { logger?.warn?.('[qianqianjie] 插件生命周期失效失败', error); }
-    if (!enabled()) return;
-    Promise.resolve().then(() => prepare()).catch(error => logger?.warn?.('[qianqianjie] 聊天身份准备失败', error));
+    const preparePromise = scheduleIdentityPrepare();
+    if (transition) {
+      transition.preparePromise = preparePromise;
+      renameTransition = Object.freeze(transition);
+    } else {
+      renameTransition = null;
+    }
+  }
+
+  function onIdentityChange() {
+    renameTransition = null;
+    try { invalidate(); }
+    catch (error) { logger?.warn?.('[qianqianjie] 插件生命周期失效失败', error); }
+    scheduleIdentityPrepare();
+  }
+
+  async function onChatRenamed(event) {
+    const transition = renameTransition;
+    if (!enabled()) return { status: 'disabled' };
+    if (!transition?.previousIdentity || typeof session.rename !== 'function') {
+      logger?.warn?.('[qianqianjie] 聊天改名缺少连续身份凭据，已保持当前独立档案');
+      return { status: 'unverified' };
+    }
+    const prepared = await transition.preparePromise;
+    if (renameTransition !== transition || prepared?.status !== 'ready' || !prepared.identity) {
+      logger?.warn?.('[qianqianjie] 聊天改名期间身份已经变化，已保持当前独立档案');
+      return { status: 'stale' };
+    }
+    renameTransition = null;
+    try { invalidate(); }
+    catch (error) { logger?.warn?.('[qianqianjie] 插件生命周期失效失败', error); }
+    const mine = ++prepareEpoch;
+    try {
+      const result = await session.rename(event, transition.previousIdentity, prepared.identity);
+      if (mine !== prepareEpoch || !enabled()) return { status: enabled() ? 'stale' : 'disabled' };
+      await getUi()?.refresh?.();
+      return result;
+    } catch (error) {
+      logger?.warn?.('[qianqianjie] 聊天改名身份恢复失败', { code: error?.code ?? error?.name ?? 'QQJ_CHAT_RENAME_FAILED' });
+      return { status: 'error', error };
+    }
   }
 
   function bind({ eventSource, eventTypes } = {}) {
     if (bound || !eventSource?.on || !eventTypes) return false;
-    for (const name of ['CHAT_CHANGED', 'PERSONA_CHANGED']) {
-      if (eventTypes[name]) eventSource.on(eventTypes[name], onIdentityChange);
-    }
+    if (eventTypes.CHAT_CHANGED) eventSource.on(eventTypes.CHAT_CHANGED, onChatChanged);
+    if (eventTypes.PERSONA_CHANGED) eventSource.on(eventTypes.PERSONA_CHANGED, onIdentityChange);
+    if (eventTypes.CHAT_RENAMED) eventSource.on(eventTypes.CHAT_RENAMED, onChatRenamed);
     bound = true;
     return true;
   }
@@ -70,5 +122,5 @@ export function createPluginLifecycle({
     return prepare({ refresh: false });
   }
 
-  return Object.freeze({ bind, invalidate, prepare, setEnabled, start, onIdentityChange });
+  return Object.freeze({ bind, invalidate, prepare, setEnabled, start, onIdentityChange, onChatChanged, onChatRenamed });
 }

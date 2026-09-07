@@ -3,13 +3,16 @@ import assert from 'node:assert/strict';
 import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
 
 class Node {
-  constructor(tag) { this.tag = tag; this.children = []; this.listeners = {}; this.textContent = ''; this.className = ''; this.disabled = false; this.replaceCount = 0; this.value = ''; this.open = false; this.selectionStart = 0; this.selectionEnd = 0; }
+  constructor(tag) { this.tag = tag; this.children = []; this.listeners = {}; this.textContent = ''; this.className = ''; this.disabled = false; this.replaceCount = 0; this.value = ''; this.open = false; this.selectionStart = 0; this.selectionEnd = 0; this.attributes = {}; }
   append(...nodes) { this.children.push(...nodes); }
   replaceChildren(...nodes) { this.replaceCount += 1; this.children = [...nodes]; }
   addEventListener(name, handler) { this.listeners[name] = handler; }
-  click() { return this.listeners.click?.(); }
-  fire(name) { return this.listeners[name]?.(); }
-  focus() { documentRef.activeElement = this; }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  click() { return this.listeners.click?.({ target: this, currentTarget: this, stopPropagation() {}, preventDefault() {} }); }
+  fire(name, event = {}) { return this.listeners[name]?.({ target: this, currentTarget: this, stopPropagation() {}, preventDefault() {}, ...event }); }
+  focus(options) { documentRef.activeElement = this; this.focusOptions = options; }
+  contains(target) { return target === this || flatten(this).includes(target); }
+  get classList() { return { add: value => { if (!this.className.split(' ').includes(value)) this.className += `${this.className ? ' ' : ''}${value}`; }, remove: value => { this.className = this.className.split(' ').filter(item => item && item !== value).join(' '); } }; }
 }
 const documentRef = { activeElement: null, createElement: tag => new Node(tag) };
 const flatten = node => [node, ...(node.children ?? []).flatMap(flatten)];
@@ -57,6 +60,24 @@ test('完整诊断必须显式确认，clipboard 不可用时显示可选择文�
   assert.equal(flatten(container).some(node => node.className === 'v3-diagnostic-fallback'), false);
   confirmed = true; full = flatten(container).find(node => node.textContent === '复制完整诊断'); full.click(); await new Promise(resolve => setImmediate(resolve));
   const fallback = flatten(container).find(node => node.className === 'v3-diagnostic-fallback'); assert.match(fallback.value, /canonicalContent/);
+});
+
+test('四项破坏性记忆操作等待异步确认，取消时零业务动作', async () => {
+  const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
+  const floor = { floorId: 'floor', assistantSeq: 1, messageIndex: 2, status: 'ready', memoryId: 'memory', summary: '摘要', summarySource: 'ai', aiSummary: '摘要', extractorVersion: 'v', counts: {}, api: null, memory, cse: { status: 'ready', deltaId: 'delta' } };
+  const state = { status: 'ready', pluginEnabled: true, chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, unprocessedCount: 0, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'checkpoint', activeRun: null, activeExtraction: null, activeCse: null, memoryWorkBusy: false, activeAutoMemory: null, lastRun: null, lastError: null, lastExtractorError: null, lastCseError: null, unreachableCount: 0, metrics: {}, cseReady: true, csePendingCount: 0, cseFailedCount: 0, baselineId: 'baseline', cseSubjects: [], floors: [floor] };
+  const calls = [];
+  const runtime = {
+    getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    extractFloor: async () => { calls.push('extract'); return state; }, retryStateAnalysis: async () => { calls.push('cse'); return state; },
+    fullRebuild: async () => { calls.push('rebuild'); return state; }, copyFullDiagnostic: () => { calls.push('full'); return '{}'; }, copySafeDiagnostic: () => '{}',
+  };
+  const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef, confirmImpl: async () => false }); view.mount(container);
+  view.setPage('memories'); flatten(container).find(node => node.textContent === '重新提取').click(); await new Promise(resolve => setImmediate(resolve));
+  view.setPage('people'); flatten(container).find(node => node.textContent === '重新分析').click(); await new Promise(resolve => setImmediate(resolve));
+  view.setPage('management'); flatten(container).find(node => node.textContent === '完全重构').click(); await new Promise(resolve => setImmediate(resolve));
+  flatten(container).find(node => node.textContent === '复制完整诊断').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, []);
 });
 
 test('Extractor 失败且尚无 FloorMemory 时仍可复制诊断并直接提取摘要', async () => {
@@ -198,9 +219,9 @@ test('已完成人物状态可确认后重新分析，取消不调用且忙碌�
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(retries, ['floor-no-change', 'floor-ready'], '逐楼记录按最新楼在前操作同一 floorId');
   assert.equal(confirmations.length, 2);
-  assert.match(confirmations[0], /重新分析本楼人物状态.*后续楼层人物状态需依次重算.*摘要保持不变/);
+  assert.match(`${confirmations[0].title} ${confirmations[0].body}`, /重新分析人物状态.*后续楼层人物状态需依次重算.*摘要保持不变/);
 
-  confirmed = false;
+  confirmed = Promise.resolve(false);
   flatten(container).find(node => node.textContent === '重新分析').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(retries, ['floor-no-change', 'floor-ready'], '取消后不得调用 runtime');
@@ -686,6 +707,83 @@ test('重要人物缺少 CSE 时显示紧凑真实折叠空态，更多人物抽
   view.setPage('memories'); view.setPage('people');
   assert.match(flatten(container).map(node => node.textContent).join('|'), /裴晚生.*旁人/);
   assert.equal(flatten(container).filter(node => node.className === 'v3-cse-subject')[0].open, false);
+});
+
+test('双丝网按实体 ID 展示已有 user 状态，且不建立千人操作或错误空态', () => {
+  const userId = '11111111-1111-4111-8111-111111111111';
+  const characterId = '22222222-2222-4222-8222-222222222222';
+  let state = {
+    status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1,
+    cseReady: true, csePendingCount: 0, cseFailedCount: 0, floors: [],
+    memoryEntities: [{ entityId: userId, displayName: '林岚', specialRole: 'user' }, { entityId: characterId, displayName: '裴晚生', specialRole: 'char' }],
+    cseSubjects: [{ subjectEntityId: userId, displayName: '林岚', core: [{ text: '冷静', reason: '已有状态', visibility: 'authorial' }], adaptive: [], situational: [] }],
+  };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  const sharedPeople = peopleRuntime([{ entityId: characterId, displayName: '裴晚生', entityDisplayName: '裴晚生' }], []);
+  const container = new Node('main'); const view = createV3FoundationView({ runtime, peopleRuntime: sharedPeople, documentRef }); view.setPage('people'); view.mount(container);
+  let copy = flatten(container).map(node => node.textContent).join('|');
+  assert.match(copy, /林岚.*人物状态.*冷静.*已有状态/); assert.doesNotMatch(copy, /尚未选择重要人物|暂无人物状态/);
+  const cards = flatten(container).filter(node => node.className === 'v3-cse-subject');
+  assert.equal(cards.length, 2, '主区 user 状态与更多人物原入口都保留'); assert.equal(cards[0].open, true);
+  assert.equal(flatten(cards[0]).some(node => ['设为重要', '移出重要'].includes(node.textContent)), false, 'user 状态卡不提供千人选择操作');
+
+  state = { ...state, cseSubjects: [] }; view.render(state); copy = flatten(container).map(node => node.textContent).join('|');
+  assert.match(copy, /尚未选择重要人物/); assert.doesNotMatch(copy, /林岚.*人物状态/);
+  sharedPeople.setSelectedEntityIds([characterId]);
+  state = { ...state, cseSubjects: [{ subjectEntityId: userId, displayName: '林岚', core: [], adaptive: [], situational: [] }] };
+  view.render(state); copy = flatten(container).map(node => node.textContent).join('|');
+  assert.match(copy, /林岚.*裴晚生/); assert.doesNotMatch(copy, /尚未选择重要人物|暂无人物状态/);
+});
+
+test('人物状态编辑保存期间冻结全部草稿控件并复制输入，成功留在抽屉、失败保留草稿', async () => {
+  const userId = '11111111-1111-4111-8111-111111111111';
+  let state = {
+    status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1,
+    memoryWorkBusy: false, activeMemoryWork: null, activeCse: null, cseReady: true, csePendingCount: 0, cseFailedCount: 0, floors: [],
+    currentStateId: '22222222-2222-4222-8222-222222222222', currentStateFingerprint: `sha256:${'a'.repeat(64)}`,
+    cseTowardCandidates: [{ entityId: userId, displayName: '林岚' }],
+    memoryEntities: [{ entityId: userId, displayName: '林岚', specialRole: 'user' }],
+    cseSubjects: [{ subjectEntityId: userId, displayName: '林岚', core: [], adaptive: [], situational: [{ id: '33333333-3333-4333-8333-333333333333', text: '紧张', reason: '正文', visibility: 'private', towardEntityId: null }] }],
+  };
+  let pending = null;
+  const calls = [];
+  const runtime = {
+    getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    correctSubjectState: (subjectEntityId, payload) => {
+      calls.push({ subjectEntityId, payload });
+      return new Promise((resolve, reject) => { pending = { resolve, reject }; });
+    },
+  };
+  const infoCalls = [];
+  const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef, infoImpl: options => { infoCalls.push(options); return true; } }); view.setPage('people'); view.mount(container);
+  flatten(container).find(node => node.textContent === '编辑状态').click();
+  let editor = flatten(container).find(node => node.className === 'qqj-cse-edit');
+  assert.equal(flatten(editor).some(node => node.tag === 'select'), false, 'CSE 信息范围与对象不得使用手机原生选择器');
+  let situational = flatten(editor).find(node => node.placeholder === '当前情境内容');
+  situational.value = '已经平静'; situational.fire('input');
+  flatten(editor).find(node => node.className === 'qqj-cse-help').click();
+  assert.equal(infoCalls.length, 1); assert.match(`${infoCalls[0].body}\n${infoCalls[0].note}`, /不是上传或隐私权限.*私密：.*已表达：.*可观察：.*共享：.*作者设定：/s);
+  assert.equal(situational.value, '已经平静', '打开信息范围帮助不得重建或清空编辑草稿');
+  flatten(editor).find(node => node.textContent === '保存').click();
+  assert.equal(calls.length, 1); assert.equal(calls[0].subjectEntityId, userId);
+  assert.ok(flatten(editor).filter(node => ['textarea', 'select', 'button'].includes(node.tag)).every(node => node.disabled === true), '异步保存期间全部输入、选择与增删按钮都应禁用');
+  situational.value = '迟到改动'; situational.fire('input');
+  assert.equal(calls[0].payload.situational[0].text, '已经平静', '本次保存使用点击时复制的草稿，不被迟到输入改写');
+  state = { ...state, currentStateId: '44444444-4444-4444-8444-444444444444', currentStateFingerprint: `sha256:${'b'.repeat(64)}`, cseSubjects: [{ ...state.cseSubjects[0], situational: [{ ...state.cseSubjects[0].situational[0], text: '已经平静', origin: 'manual', reason: '用户纠正当前状态' }] }] };
+  pending.resolve(state); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(flatten(container).some(node => node.className === 'qqj-cse-edit'), false);
+  assert.equal(flatten(container).find(node => node.className === 'v3-cse-subject').open, true, '保存成功后人物抽屉保持展开');
+
+  flatten(container).find(node => node.textContent === '编辑状态').click();
+  editor = flatten(container).find(node => node.className === 'qqj-cse-edit');
+  situational = flatten(editor).find(node => node.placeholder === '当前情境内容');
+  situational.value = '失败时保留'; situational.fire('input');
+  flatten(editor).find(node => node.textContent === '保存').click();
+  pending.reject(new Error('模拟写入失败')); await new Promise(resolve => setImmediate(resolve));
+  editor = flatten(container).find(node => node.className === 'qqj-cse-edit');
+  assert.ok(editor); assert.match(flatten(editor).map(node => node.textContent).join('|'), /保存失败：模拟写入失败/);
+  assert.equal(flatten(editor).find(node => node.placeholder === '当前情境内容').value, '失败时保留');
+  assert.ok(flatten(editor).filter(node => ['textarea', 'select', 'button'].includes(node.tag)).every(node => node.disabled === false), '保存失败后同一草稿恢复可编辑');
 });
 
 test('地基刷新失败不吞掉已恢复回执，错误文案明确两条链独立', async () => {

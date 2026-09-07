@@ -31,7 +31,14 @@ export async function persistChatId(ctx, chatId) {
   if (typeof ctx.saveMetadata !== 'function' && typeof ctx.saveChatMetadata !== 'function') throw new Error('宿主不支持聊天元数据保存');
   const previous = metadata.qianqianjie;
   metadata.qianqianjie = { schemaVersion: 2, chatId };
-  try { await (ctx.saveMetadata ?? ctx.saveChatMetadata)(); }
+  try {
+    if (typeof ctx.saveChatMetadata === 'function') {
+      const saved = await ctx.saveChatMetadata();
+      if (saved !== true) throw new Error('聊天元数据未能持久化');
+    } else {
+      await ctx.saveMetadata();
+    }
+  }
   catch (error) { if (previous === undefined) delete metadata.qianqianjie; else metadata.qianqianjie = previous; throw error; }
   return true;
 }

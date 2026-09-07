@@ -59,12 +59,14 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
     let module;
     if (path === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'me.png' });
     else if (path === '/scripts/extensions.js') module = synthetic(identifier, { extension_settings: { qianqianjie: { pluginEnabled: enabled }, 'schedule-planner': {} }, extensionNames: [] });
-    else if (path === '/script.js') module = synthetic(identifier, { isGenerating: () => false, saveSettingsDebounced() {} });
+    else if (path === '/script.js') module = synthetic(identifier, { is_send_press: false, saveSettingsDebounced() {} });
+    else if (path === '/scripts/group-chats.js') module = synthetic(identifier, { is_group_generating: false });
     else module = new SourceTextModule(await readFile(path, 'utf8'), { context, identifier });
     cache.set(identifier, module);
     return module;
   }
-  const entry = await load(pathToFileURL(bundlePath).href);
+  const entryPath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : bundlePath;
+  const entry = await load(pathToFileURL(entryPath).href);
   await entry.link((specifier, referencing) => load(new URL(specifier, referencing.identifier).href));
   await entry.evaluate();
   await new Promise(resolvePromise => setImmediate(resolvePromise));
@@ -81,7 +83,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.0.3');
+  assert.equal(manifest.version, '0.0.4');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
@@ -143,14 +145,16 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
     let module;
     if (path === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'me.png' });
     else if (path === '/scripts/extensions.js') module = synthetic(identifier, { extension_settings: { qianqianjie: { pluginEnabled: false }, 'schedule-planner': {} }, extensionNames: [] });
-    else if (path === '/script.js') module = synthetic(identifier, { isGenerating: () => false, saveSettingsDebounced() {} });
+    else if (path === '/script.js') module = synthetic(identifier, { is_send_press: false, saveSettingsDebounced() {} });
+    else if (path === '/scripts/group-chats.js') module = synthetic(identifier, { is_group_generating: false });
     else module = new SourceTextModule(await readFile(path, 'utf8'), { context, identifier });
     cache.set(identifier, module);
     return module;
   }
-  const entry = await load(pathToFileURL(bundlePath).href);
-  assert.deepEqual((entry.moduleRequests || []).map(item => item.specifier), ['/scripts/personas.js', '/scripts/extensions.js', '/script.js']);
+  const entryPath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : bundlePath;
+  const entry = await load(pathToFileURL(entryPath).href);
   await entry.link((specifier, referencing) => load(new URL(specifier, referencing.identifier).href));
+  assert.deepEqual((entry.moduleRequests || []).map(item => item.specifier), ['/scripts/personas.js', '/scripts/extensions.js', '/script.js', '/scripts/group-chats.js']);
   await entry.evaluate();
   await new Promise(resolvePromise => setImmediate(resolvePromise));
   assert.equal(entry.status, 'evaluated');
@@ -177,6 +181,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   const utilityTask = async () => ({ jsonData: 'utility' });
 
   let v3MemoryOptions;
+  let v3MemoryRuntime;
   let v3RecallOptions;
   let identityOptions;
   let sessionOptions;
@@ -184,18 +189,21 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   let peopleWorkspaceOptions;
   let peopleStoreOptions;
   let publicMemoryBridgeOptions;
+  let autoHideOptions;
   let bootstrapOptions;
   let compactOptions;
   const modules = new Map();
   const define = (specifier, exports) => {
-    modules.set(specifier, new SyntheticModule(Object.keys(exports), function initialize() {
+    const module = new SyntheticModule(Object.keys(exports), function initialize() {
       for (const [name, value] of Object.entries(exports)) this.setExport(name, value);
-    }, { context, identifier: `mock:${specifier}` }));
+    }, { context, identifier: `mock:${specifier}` });
+    modules.set(specifier, module);
+    return module;
   };
   define('/scripts/personas.js', { user_avatar: 'me.png' });
   define('/scripts/extensions.js', { extension_settings: { disabledExtensions: [] }, extensionNames: ['third-party/ST-SevenDaysCal'] });
-  const isGenerating = () => false;
-  define('/script.js', { isGenerating, saveSettingsDebounced() {} });
+  const scriptModule = define('/script.js', { is_send_press: false, saveSettingsDebounced() {} });
+  const groupModule = define('/scripts/group-chats.js', { is_group_generating: false });
   const backendClient = {};
   define('./src/backend-client.js', { createBackendClient: () => backendClient });
   define('./src/bootstrap.js', { bootstrap: options => { bootstrapOptions = options; return { refresh() {}, setEnabled() {} }; } });
@@ -221,8 +229,9 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   define('./src/v3/host-adapter.js', { createHostAdapter: () => ({ getContext: () => ({}), snapshot: () => ({}) }) });
   define('./src/v3/foundation-store.js', { createFoundationStore: () => ({}) });
   define('./src/v3/foundation-runtime.js', { createFoundationRuntime: () => ({}) });
-  define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; return { bind() {}, async start() {}, async setEnabled() {}, getState: () => ({}), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; } });
+  define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind() {}, async start() {}, async setEnabled() {}, getState: () => ({}), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
   define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; return { bind() {}, async setEnabled() {}, async intercept() {}, getState: () => ({}) }; } });
+  define('./src/v3/auto-hide.js', { createAutoHideController: options => { autoHideOptions = options; return { applySettings() {}, stop() {}, dispose() {} }; } });
   const peopleWorkspaceRuntime = { async start() {}, async setEnabled() {}, invalidate() {}, getState: () => ({ status: 'ready' }) };
   define('./src/v3/people-workspace.js', {
     createPeopleWorkspaceStore: options => { peopleStoreOptions = options; return { read() {}, put() {} }; },
@@ -241,7 +250,10 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   await new Promise(resolvePromise => setImmediate(resolvePromise));
 
   assert.equal(v3MemoryOptions.generateUtilityTask, utilityTask);
-  assert.equal(v3MemoryOptions.isMainGenerationActive, isGenerating);
+  assert.equal(v3MemoryOptions.isMainGenerationActive(), false);
+  scriptModule.setExport('is_send_press', true); assert.equal(v3MemoryOptions.isMainGenerationActive(), true, '单聊生成状态必须读取宿主实时导出');
+  scriptModule.setExport('is_send_press', false); groupModule.setExport('is_group_generating', true); assert.equal(v3MemoryOptions.isMainGenerationActive(), true, '群聊生成状态必须参与同一 OR 判断');
+  groupModule.setExport('is_group_generating', false); assert.equal(v3MemoryOptions.isMainGenerationActive(), false);
   assert.equal(Object.hasOwn(v3MemoryOptions, 'customGuidance'), false, '退役通用附加不得继续接入运行时');
   assert.equal(v3MemoryOptions.extractorPromptGuidance(), '摘要指导');
   assert.equal(v3MemoryOptions.csePromptGuidance(), 'CSE 指导');
@@ -260,6 +272,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   assert.ok(peopleWorkspaceOptions.session); assert.ok(peopleWorkspaceOptions.foundationRuntime); assert.ok(peopleWorkspaceOptions.memoryRuntime);
   assert.equal(bootstrapOptions.peopleWorkspaceRuntime, peopleWorkspaceRuntime);
   assert.equal(bootstrapOptions.enableFab, true);
+  assert.equal(typeof bootstrapOptions.subscribeDialogContextChange, 'function');
   assert.equal(bootstrapOptions.isSevenDaysAvailable(), true);
   assert.equal(typeof compactOptions.onBusyChange, 'function');
   assert.ok(publicMemoryBridgeOptions.session);
@@ -269,6 +282,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   assert.equal(typeof publicMemoryBridgeOptions.sanitizerOptions, 'function');
   assert.ok(v3RecallOptions.store);
   assert.ok(v3RecallOptions.hostAdapter);
+  assert.ok(autoHideOptions.hostAdapter); assert.equal(autoHideOptions.memoryRuntime, v3MemoryRuntime);
   assert.equal(typeof v3RecallOptions.isEnabled, 'function');
   assert.equal(typeof v3RecallOptions.historicalMaintenance, 'function');
   assert.equal(typeof v3RecallOptions.realtimeOrigin, 'function');

@@ -117,7 +117,7 @@ test('复制分支只领独立身份，源记忆零读零搬运，按钮授权�
   assert.equal(chatRecords(backend.records, SOURCE), sourceBefore, '源聊天全部记录必须不变');
   const targetBinding = backend.records.get(`${CHAT_IDENTITY_COLLECTION}/binding-${targetChatId}`).data;
   assert.equal(targetBinding.state, 'ready');
-  assert.equal(targetBinding.sourceChatId, null);
+  assert.equal(targetBinding.sourceChatId, SOURCE);
 
   const targetStore = createFoundationStore({ client: backend.client, contextProvider: () => identity('复制聊天', targetChatId) });
   assert.equal((await targetStore.readReachable()).status, 'uninitialized');

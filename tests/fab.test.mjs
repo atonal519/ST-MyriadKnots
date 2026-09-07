@@ -20,7 +20,8 @@ function harness({ width = 1000, height = 800, saved = null } = {}) {
   const button = new FakeButton();
   const root = { html: '', querySelector: selector => selector === 'button' ? button : null, set innerHTML(value) { this.html = value; }, get innerHTML() { return this.html; } };
   const host = {
-    style: {}, shadowRoot: null,
+    attributes: {}, style: { setProperty(name, value) { this[name] = value; } }, shadowRoot: null,
+    setAttribute(name, value) { this.attributes[name] = String(value); },
     attachShadow() { this.shadowRoot = root; return root; },
     getBoundingClientRect() { return { left: Number.parseFloat(this.style.left) || 100, top: Number.parseFloat(this.style.top) || 100 }; },
   };
@@ -37,8 +38,13 @@ function harness({ width = 1000, height = 800, saved = null } = {}) {
 test('悬浮球使用构画同款视觉 token、独立位置和真实忙灯', () => {
   const h = harness({ saved: { x: 980, y: 790 } });
   assert.equal(h.host.id, 'qqj-fab-host'); assert.equal(h.host.style.left, '964px'); assert.equal(h.host.style.top, '764px');
-  for (const token of ['width:36px', 'height:36px', 'opacity:.45', '1.5px solid', 'z-index:2000000', 'right:60px', 'right:58px', 'width:24px', '1.4s ease-in-out infinite', '0 0 28px', 'prefers-reduced-motion']) assert.match(h.root.innerHTML, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  assert.match(h.root.innerHTML, /--SmartThemeQuoteColor/); assert.match(h.root.innerHTML, /--SmartThemeBodyColor/);
+  for (const token of ['width:36px', 'height:36px', 'background:var(--qqj-fab-surface)', '1.5px solid', 'z-index:2000000', 'right:60px', 'right:58px', 'width:24px', '1.4s ease-in-out infinite', '0 0 28px', 'prefers-reduced-motion']) assert.match(h.root.innerHTML, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.doesNotMatch(h.root.innerHTML, /opacity:/, '悬浮球及忙状态不得再以透明度露出页面底色');
+  assert.doesNotMatch(h.root.innerHTML, /--SmartTheme(?:Quote|Body)Color/, 'FAB 使用统一解析后的实色 palette，不绕过透明回退');
+  assert.match(h.root.innerHTML, /stroke-width="1\.8"/);
+  h.fab.setAppearance({ mode: 'auto', effectiveTheme: 'night', palette: { knot: '#resolved-knot', ink: '#resolved-ink', panel: '#resolved-panel' } });
+  assert.equal(h.host.style['--qqj-fab-primary'], '#resolved-knot'); assert.equal(h.host.style['--qqj-fab-ink'], '#resolved-ink');
+  assert.equal(h.host.style['--qqj-fab-surface'], '#resolved-panel');
   assert.equal(h.button.attributes['aria-busy'], 'false');
   assert.equal(h.fab.setBusy(true), true); assert.equal(h.button.classList.contains('busy'), true); assert.equal(h.button.attributes['aria-busy'], 'true');
   assert.equal(h.fab.setBusy(false), false); assert.equal(h.button.classList.contains('busy'), false); assert.equal(h.button.attributes['aria-busy'], 'false');

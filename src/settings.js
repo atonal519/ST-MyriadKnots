@@ -7,6 +7,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   storyClockEnabled: true,
   storyClockPrompt: '',
   autoMemoryBatchSize: 1,
+  autoHideEnabled: false,
+  autoHideKeepAiCount: 3,
   apiMode: 'auto',
   selectedSevenDaysPresetId: '',
   apiUrl: '',
@@ -28,6 +30,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   csePrompt: '',
   profilePrompt: '',
   appearanceTheme: 'auto',
+  fabShow: true,
   appearanceScale: 1,
   appearanceFontCssUrl: '',
   appearanceFontFamily: '',
@@ -41,6 +44,11 @@ const normalizeScale = value => Math.min(1.5, Math.max(0.75, Number.isFinite(Num
 
 export function normalizeAutoMemoryBatchSize(value) {
   return 1;
+}
+
+export function normalizeAutoHideKeepAiCount(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 1 && number <= 50 ? number : 3;
 }
 
 export function normalizeTimeout(value) {
@@ -118,9 +126,12 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (!Array.isArray(settings.sourceWorldInfoExcludedBooks)) settings.sourceWorldInfoExcludedBooks = [];
     if (!settings.sourceWorldInfoConfirmedChats || typeof settings.sourceWorldInfoConfirmedChats !== 'object' || Array.isArray(settings.sourceWorldInfoConfirmedChats)) settings.sourceWorldInfoConfirmedChats = {};
     if (!APPEARANCE_THEMES.has(settings.appearanceTheme)) settings.appearanceTheme = 'auto';
+    settings.fabShow = settings.fabShow !== false;
     settings.appearanceScale = normalizeScale(settings.appearanceScale);
     settings.apiTimeoutSec = normalizeTimeout(settings.apiTimeoutSec);
     settings.autoMemoryBatchSize = normalizeAutoMemoryBatchSize(settings.autoMemoryBatchSize);
+    settings.autoHideEnabled = settings.autoHideEnabled === true;
+    settings.autoHideKeepAiCount = normalizeAutoHideKeepAiCount(settings.autoHideKeepAiCount);
     return settings;
   };
   const notify = (observeSaveFailure = false) => {
@@ -133,6 +144,8 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'storyClockEnabled')) settings.storyClockEnabled = patch.storyClockEnabled !== false;
     if (own(patch, 'storyClockPrompt')) settings.storyClockPrompt = text(patch.storyClockPrompt);
     if (own(patch, 'autoMemoryBatchSize')) settings.autoMemoryBatchSize = normalizeAutoMemoryBatchSize(patch.autoMemoryBatchSize);
+    if (own(patch, 'autoHideEnabled')) settings.autoHideEnabled = patch.autoHideEnabled === true;
+    if (own(patch, 'autoHideKeepAiCount')) settings.autoHideKeepAiCount = normalizeAutoHideKeepAiCount(patch.autoHideKeepAiCount);
     if (own(patch, 'apiMode')) settings.apiMode = API_MODES.has(patch.apiMode) ? patch.apiMode : 'auto';
     if (own(patch, 'selectedSevenDaysPresetId')) settings.selectedSevenDaysPresetId = text(patch.selectedSevenDaysPresetId).trim();
     if (own(patch, 'apiUrl')) settings.apiUrl = text(patch.apiUrl).trim();
@@ -152,6 +165,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'csePrompt')) settings.csePrompt = text(patch.csePrompt);
     if (own(patch, 'profilePrompt')) settings.profilePrompt = text(patch.profilePrompt);
     if (own(patch, 'appearanceTheme')) settings.appearanceTheme = APPEARANCE_THEMES.has(patch.appearanceTheme) ? patch.appearanceTheme : 'auto';
+    if (own(patch, 'fabShow')) settings.fabShow = patch.fabShow !== false;
     if (own(patch, 'appearanceScale')) settings.appearanceScale = normalizeScale(patch.appearanceScale);
     if (own(patch, 'appearanceFontCssUrl')) settings.appearanceFontCssUrl = text(patch.appearanceFontCssUrl).trim();
     if (own(patch, 'appearanceFontFamily')) settings.appearanceFontFamily = text(patch.appearanceFontFamily).trim();

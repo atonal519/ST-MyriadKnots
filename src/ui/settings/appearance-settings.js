@@ -1,16 +1,21 @@
 import { createSettingsKit } from './kit.js';
+import { createInlineSelect } from '../inline-select.js';
 
 // 外观：主题 / 界面缩放 / 自定义字体 CSS URL（无 family 字段，字体名自动解析）。change 即存并即时应用。
 export function createAppearanceSettings({ settings, documentRef = globalThis.document, open = false, onToggle, applyAppearance } = {}) {
-  const { element, field, appendOption, subDrawer } = createSettingsKit(documentRef);
+  const { element, field, subDrawer } = createSettingsKit(documentRef);
   const { drawer, body } = subDrawer({ title: '外观', id: 'qqj-settings-appearance', open, onToggle });
   const current = settings.get();
   const apply = () => applyAppearance?.();
 
-  const theme = element('select', 'settings-input');
-  for (const [value, copy] of [['auto', '自动'], ['day', '日间'], ['night', '夜间']]) appendOption(theme, value, copy);
-  theme.value = current.appearanceTheme ?? 'auto';
-  theme.addEventListener('change', () => { settings.update({ appearanceTheme: theme.value }); apply(); });
+  const theme = createInlineSelect({
+    documentRef,
+    options: [['auto', '跟随酒馆'], ['day', '日间'], ['night', '夜间']].map(([value, label]) => ({ value, label })),
+    value: current.appearanceTheme ?? 'auto',
+    ariaLabel: '主题',
+    onChange: value => { settings.update({ appearanceTheme: value }); apply(); },
+  }).node;
+  theme.id = 'qqj-appearance-theme';
 
   const scaleWrap = element('div', 'settings-scale');
   const scale = element('input', 'settings-input'); scale.type = 'range'; scale.min = '0.75'; scale.max = '1.5'; scale.step = '0.05';

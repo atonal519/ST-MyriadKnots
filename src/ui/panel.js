@@ -1,7 +1,7 @@
 import html from './panel.html?raw';
 import css from './panel.css?inline';
 import { createPanelGeometryController } from './layout.js';
-import { applyAppearance } from './appearance.js';
+import { createAppearanceController } from './appearance.js';
 import { createSettingsDrawer, createSettingsDrawerState } from './settings-drawer.js';
 import { createApiSettings } from './settings/api-settings.js';
 import { createPromptsSettings } from './settings/prompts-settings.js';
@@ -18,7 +18,11 @@ export function createPanel({
   sourcePermissionView,
   onPluginEnabledChange,
   onStoryClockChange,
+  onAutoHideChange,
   isSevenDaysAvailable,
+  dialog,
+  onFabShowChange,
+  onAppearanceChange,
   documentRef = globalThis.document,
 } = {}) {
   if (!documentRef?.createElement) throw new TypeError('panel documentRef 无效');
@@ -37,7 +41,6 @@ export function createPanel({
   const panel = root.querySelector('.panel');
   const body = root.querySelector('.body');
   const view = root.querySelector('.view');
-  const label = root.querySelector('.status-label');
   const tabs = [...root.querySelectorAll('.tab')];
   const geometry = createPanelGeometryController({
     panel,
@@ -45,7 +48,6 @@ export function createPanel({
     resizeHandle: root.querySelector('.panel-resize-handle'),
     viewport: documentRef.defaultView ?? globalThis,
   });
-  applyAppearance({ host, root, settings, documentRef });
   let activeTab = 'profiles';
   let screen = 'content';
   let mountedContentView = null;
@@ -54,6 +56,36 @@ export function createPanel({
   let activationEpoch = 0;
   const settingsDrawerState = createSettingsDrawerState();
   const scrollPositions = new Map();
+  const themeButton = root.querySelector('.theme-btn');
+  const fabToggleButton = root.querySelector('.fab-toggle-btn');
+  let swipeGesture = null;
+  let settingsManagementError = null;
+
+  const syncHeader = appearance => {
+    const mode = settings?.get?.().appearanceTheme ?? 'auto';
+    const next = mode === 'auto' ? '日间' : mode === 'day' ? '夜间' : '跟随酒馆';
+    const labelCopy = mode === 'auto' ? '跟随酒馆' : mode === 'day' ? '日间' : '夜间';
+    if (themeButton) {
+      themeButton.dataset.themeMode = mode;
+      themeButton.title = `主题：${labelCopy}（点击切换到${next}）`;
+      themeButton.setAttribute('aria-label', `主题：${labelCopy}`);
+      const icon = themeButton.querySelector?.('svg');
+      if (icon) icon.innerHTML = mode === 'day'
+        ? '<circle cx="12" cy="12" r="4"></circle><path d="M12 3v2M12 19v2M5.64 5.64l1.42 1.42M16.94 16.94l1.42 1.42M3 12h2M19 12h2M5.64 18.36l1.42-1.42M16.94 7.06l1.42-1.42"></path>'
+        : mode === 'night' ? '<path d="M21 15.5A9 9 0 0 1 8.5 3 9 9 0 1 0 21 15.5Z"></path>'
+          : '<path d="M12 3a9 9 0 1 0 0 18V3Z"></path><circle cx="12" cy="12" r="9"></circle>';
+    }
+    const showFab = settings?.get?.().fabShow !== false;
+    if (fabToggleButton) {
+      fabToggleButton.classList.toggle('active', showFab);
+      fabToggleButton.title = `悬浮球：${showFab ? '显示' : '隐藏'}`;
+      fabToggleButton.setAttribute('aria-label', showFab ? '隐藏悬浮球' : '显示悬浮球');
+      fabToggleButton.setAttribute('aria-pressed', String(showFab));
+    }
+    dialog?.setAppearance?.(appearance);
+    onAppearanceChange?.(appearance);
+  };
+  const appearance = createAppearanceController({ host, root, settings, documentRef, onChange: syncHeader });
 
   const element = (tag, className = '', text = '') => {
     const node = documentRef.createElement(tag);
@@ -61,11 +93,23 @@ export function createPanel({
     if (text !== '') node.textContent = text;
     return node;
   };
+  const activateManagement = async () => {
+    const mine = activationEpoch, errorNode = settingsManagementError;
+    if (errorNode) { errorNode.hidden = true; errorNode.textContent = ''; }
+    try { return await v3FoundationView.activate(); }
+    catch (error) {
+      if (mine !== activationEpoch || screen !== 'settings' || !errorNode || settingsManagementError !== errorNode) return { status: 'stale' };
+      errorNode.textContent = `记忆管理暂时无法读取：${error?.message || '未知错误'}`;
+      errorNode.hidden = false;
+      return { status: 'error', error };
+    }
+  };
   const unmountContent = () => {
     v3FoundationView.deactivate();
     peopleProfilesView.deactivate();
     view.replaceChildren();
     mountedContentView = null;
+    settingsManagementError = null;
   };
   const scrollKey = () => screen === 'settings' ? 'settings' : activeTab;
   const rememberScroll = () => { if (body) scrollPositions.set(scrollKey(), body.scrollTop || 0); };
@@ -80,16 +124,13 @@ export function createPanel({
   async function activateFoundation() {
     if (host.hidden || screen !== 'content') return { status: 'closed' };
     if (!enabled) { showStatus('千千结当前已关闭。记忆不会读取后端或写入数据。'); return { status: 'disabled' }; }
-    const mine = ++activationEpoch;
-    const pageName = activeTab === 'profiles' ? '千人' : activeTab === 'people' ? '双丝网' : '千结';
-    label.textContent = `正在读取${pageName}`;
+    activationEpoch += 1;
     if (activeTab === 'profiles') {
       if (mountedContentView !== 'profiles') {
         unmountContent(); peopleProfilesView.mount(view); mountedContentView = 'profiles';
       }
       restoreScroll(activeTab);
       const result = await peopleProfilesView.activate();
-      if (mine === activationEpoch && !host.hidden) label.textContent = result?.status === 'ready' ? pageName : `${pageName}状态`;
       return result;
     }
     v3FoundationView.setPage?.(activeTab === 'people' ? 'people' : 'memories');
@@ -98,20 +139,21 @@ export function createPanel({
     }
     restoreScroll(activeTab);
     const result = await v3FoundationView.activate();
-    if (mine === activationEpoch && !host.hidden) label.textContent = result?.status === 'ready' ? pageName : `${pageName}状态`;
     return result;
   }
 
   function selectTab(tab) {
+    if (tab === 'settings') { if (screen !== 'settings') renderSettings(); return; }
     rememberScroll();
     activationEpoch += 1;
     screen = 'content';
     activeTab = tab;
     tabs.forEach(node => {
-      const active = node.dataset.tab === tab;
+      const active = node.dataset.tab === activeTab;
       node.classList.toggle('active', active);
       node.setAttribute('aria-selected', String(active));
     });
+    swipeGesture = null;
     void activateFoundation().catch(() => showStatus('当前聊天暂时无法读取千千结记忆。'));
   }
 
@@ -119,8 +161,8 @@ export function createPanel({
     rememberScroll();
     activationEpoch += 1;
     screen = 'settings';
+    tabs.forEach(node => { const active = node.dataset.tab === 'settings'; node.classList.toggle('active', active); node.setAttribute('aria-selected', String(active)); });
     unmountContent();
-    label.textContent = '千千结设置';
     if (focusSources) { settingsDrawerState.open('general'); settingsDrawerState.open('worldbook'); }
 
     const page = element('section', 'settings-page');
@@ -161,6 +203,8 @@ export function createPanel({
     page.append(master);
 
     const managementMount = element('div', 'qqj-settings-management');
+    settingsManagementError = element('p', 'v3-foundation-feedback error');
+    settingsManagementError.hidden = true;
 
     const groupOf = (key, title) => createSettingsDrawer({
       documentRef, title, level: 'group', id: `qqj-settings-group-${key}`,
@@ -178,28 +222,63 @@ export function createPanel({
       advancedOpen: subOpen('api-advanced'), onAdvancedToggle: subToggle('api-advanced'),
       rerender: () => renderSettings(),
       isSevenDaysAvailable,
+      confirmImpl: options => dialog?.confirm?.(options) ?? false,
+      promptImpl: options => dialog?.prompt?.(options) ?? null,
     });
     const worldbook = sourcePermissionView?.renderSettings?.({
       open: subOpen('worldbook'), onDrawerToggle: subToggle('worldbook'),
     });
     const prompts = createPromptsSettings({ settings, documentRef, open: subOpen('prompts'), onToggle: subToggle('prompts'), onStoryClockChange });
-    const appearance = createAppearanceSettings({
+    const appearanceSettings = createAppearanceSettings({
       settings, documentRef, open: subOpen('appearance'), onToggle: subToggle('appearance'),
-      applyAppearance: () => applyAppearance({ host, root, settings, documentRef }),
+      applyAppearance: () => appearance.apply(),
     });
     generalBody.append(api.node);
     if (worldbook) generalBody.append(worldbook);
-    generalBody.append(prompts.node, appearance.node);
+    generalBody.append(prompts.node, appearanceSettings.node);
     page.append(general);
 
+    const { drawer: memoryGroup, body: memoryBody } = groupOf('memory', '记忆设置');
+    const autoHideToggle = element('label', 'setting-switch');
+    const autoHideInput = element('input'); autoHideInput.type = 'checkbox'; autoHideInput.checked = settings.get().autoHideEnabled === true;
+    autoHideToggle.append(autoHideInput, element('span', '', '自动隐藏已记忆旧楼'));
+    const keepRow = element('label', 'qqj-auto-hide-row');
+    keepRow.append(element('span', '', '隐藏 AI 楼层数'));
+    const keepInput = element('input', 'settings-input settings-num'); keepInput.type = 'number'; keepInput.min = '1'; keepInput.max = '50'; keepInput.step = '1'; keepInput.value = String(settings.get().autoHideKeepAiCount ?? 3);
+    keepRow.append(keepInput);
+    const autoHideResult = element('p', 'settings-result');
+    const applyAutoHide = async patch => {
+      autoHideInput.disabled = true; keepInput.disabled = true; autoHideResult.className = 'settings-result'; autoHideResult.textContent = '正在保存并整理当前聊天…';
+      try {
+        settings.update(patch);
+        const current = settings.get();
+        autoHideInput.checked = current.autoHideEnabled === true; keepInput.value = String(current.autoHideKeepAiCount);
+        const applied = await onAutoHideChange?.({ enabled: current.autoHideEnabled, keepAiCount: current.autoHideKeepAiCount });
+        if (applied?.status === 'disabled') {
+          autoHideResult.textContent = '设置已保存；重新启用千千结后生效。';
+          autoHideResult.className = 'settings-result success';
+          return;
+        }
+        autoHideResult.textContent = current.autoHideEnabled ? `已开启；保留最近 ${current.autoHideKeepAiCount} 个 AI 楼。` : '已关闭；千千结拥有的隐藏楼已恢复。';
+        autoHideResult.className = 'settings-result success';
+      } catch (error) {
+        autoHideResult.textContent = `设置已保存，但当前聊天整理未完成：${error?.message || '未知错误'} 请再次调整设置重试。`;
+        autoHideResult.className = 'settings-result error';
+      } finally { autoHideInput.disabled = false; keepInput.disabled = false; }
+    };
+    autoHideInput.addEventListener('change', () => { void applyAutoHide({ autoHideEnabled: autoHideInput.checked }); });
+    keepInput.addEventListener('change', () => { void applyAutoHide({ autoHideKeepAiCount: Number(keepInput.value) }); });
+    memoryBody.append(autoHideToggle, keepRow, element('p', 'settings-hint', '保留最近 N 个 AI 楼及其用户上下文，隐藏更早且已完成记忆的楼。'), autoHideResult);
+    page.append(memoryGroup);
+
     // 当前聊天的记忆操作紧跟通用设置，避免与总开关混成同一层级。
-    page.append(managementMount);
+    page.append(managementMount, settingsManagementError);
 
     v3FoundationView.mount(managementMount);
     mountedContentView = 'foundation-settings';
     v3FoundationView.setPage?.('management');
     view.append(page);
-    if (enabled) void v3FoundationView.activate().catch(() => { label.textContent = '记忆管理暂时无法读取'; });
+    if (enabled) void activateManagement();
     restoreScroll('settings');
     if (focusSources) worldbook?.scrollIntoView?.({ block: 'start' });
   }
@@ -221,6 +300,8 @@ export function createPanel({
     activationEpoch += 1;
     v3FoundationView.deactivate();
     geometry.cancelGesture();
+    swipeGesture = null;
+    dialog?.closeAll?.();
     host.hidden = true;
     host.setAttribute('aria-hidden', 'true');
     const previous = trigger;
@@ -235,16 +316,46 @@ export function createPanel({
       v3FoundationView.deactivate();
       if (!host.hidden && screen === 'content') showStatus('千千结当前已关闭。设置仍可打开。');
     } else if (!host.hidden && screen === 'content') void activateFoundation().catch(() => showStatus('当前聊天暂时无法读取千结记忆。'));
-    else if (!host.hidden && screen === 'settings') void v3FoundationView.activate().catch(() => { label.textContent = '记忆管理暂时无法读取'; });
+    else if (!host.hidden && screen === 'settings') void activateManagement();
   }
 
+  const mobile = () => Number(documentRef.defaultView?.innerWidth) <= 640 || documentRef.defaultView?.matchMedia?.('(max-width: 640px)')?.matches === true;
+  const blocksSwipe = target => Boolean(target?.closest?.('input,textarea,select,[contenteditable="true"],.qqj-inline-select,.qqj-profile-switcher,.qqj-model-list-items,.source-permission-list,.v3-memory-json,.v3-recall-injection,.qqj-dialog-overlay'));
+  const point = event => event.touches?.[0] ?? event.changedTouches?.[0] ?? null;
+  body?.addEventListener?.('touchstart', event => {
+    const touch = point(event);
+    if (!mobile() || !touch || event.touches?.length !== 1 || blocksSwipe(event.target)) { swipeGesture = null; return; }
+    swipeGesture = { x: touch.clientX, y: touch.clientY, dx: 0, dy: 0, horizontal: false };
+  }, { passive: true });
+  body?.addEventListener?.('touchmove', event => {
+    if (!swipeGesture) return; const touch = point(event); if (!touch) return;
+    swipeGesture.dx = touch.clientX - swipeGesture.x; swipeGesture.dy = touch.clientY - swipeGesture.y;
+    if (!swipeGesture.horizontal && Math.abs(swipeGesture.dy) > Math.abs(swipeGesture.dx)) { swipeGesture = null; return; }
+    if (Math.abs(swipeGesture.dx) >= 12 && Math.abs(swipeGesture.dx) > Math.abs(swipeGesture.dy) * 1.35) { swipeGesture.horizontal = true; event.preventDefault?.(); }
+  }, { passive: false });
+  body?.addEventListener?.('touchend', event => {
+    if (!swipeGesture) return; const touch = point(event); if (touch) { swipeGesture.dx = touch.clientX - swipeGesture.x; swipeGesture.dy = touch.clientY - swipeGesture.y; }
+    const gesture = swipeGesture; swipeGesture = null;
+    if (Math.abs(gesture.dx) < 60 || Math.abs(gesture.dx) <= Math.abs(gesture.dy) * 1.35) return;
+    event.preventDefault?.();
+    const swipeTabs = ['profiles', 'events', 'people', 'settings'], current = screen === 'settings' ? 'settings' : activeTab, index = swipeTabs.indexOf(current), next = index + (gesture.dx < 0 ? 1 : -1);
+    if (next >= 0 && next < swipeTabs.length) selectTab(swipeTabs[next]);
+  }, { passive: false });
+  body?.addEventListener?.('touchcancel', () => { swipeGesture = null; }, { passive: true });
+
   root.querySelector('.close')?.addEventListener('click', close);
-  root.querySelector('.settings-btn')?.addEventListener('click', () => {
-    if (screen === 'settings') selectTab(activeTab);
-    else renderSettings();
+  themeButton?.addEventListener('click', () => {
+    const current = settings.get().appearanceTheme ?? 'auto';
+    settings.update({ appearanceTheme: current === 'auto' ? 'day' : current === 'day' ? 'night' : 'auto' });
+    appearance.apply();
+    const select = root.querySelector('#qqj-appearance-theme'); if (select) select.value = settings.get().appearanceTheme;
+  });
+  fabToggleButton?.addEventListener('click', () => {
+    const showFab = settings.get().fabShow === false;
+    settings.update({ fabShow: showFab }); syncHeader(appearance.getState()); onFabShowChange?.(showFab);
   });
   tabs.forEach(tab => tab.addEventListener('click', () => selectTab(tab.dataset.tab)));
-  documentRef.addEventListener?.('keydown', event => { if (event.key === 'Escape' && !host.hidden) close(); });
+  documentRef.addEventListener?.('keydown', event => { if (event.key !== 'Escape' || host.hidden) return; if (dialog?.hasActive?.()) { dialog.cancelTop(); event.preventDefault?.(); return; } close(); });
 
   return Object.freeze({
     host,
@@ -256,6 +367,7 @@ export function createPanel({
     showStatus,
     openSourceSettings: () => renderSettings({ focusSources: true }),
     activateFoundation,
+    syncAppearance: () => appearance.apply(),
     async refresh() {
       if (host.hidden || screen !== 'content') return { status: 'closed' };
       v3FoundationView.deactivate();

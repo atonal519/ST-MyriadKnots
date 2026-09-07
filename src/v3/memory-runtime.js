@@ -11,8 +11,9 @@ import { validateCseGraph } from './cse-schema.js';
 import { assessMemoryCoverageFromHost, diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 import { selectAssistantMessage } from './foundation-domain.js';
 import { parseSharedStoryClock, storyClockSignature } from '../story-clock.js';
+import { entitiesThroughFloorIds } from './entity-identity.js';
 
-const EVENTS = Object.freeze(['CHAT_CHANGED', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
+const EVENTS = Object.freeze(['CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
 const HISTORY_MUTATION_EVENTS = new Set(['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
 const MANUAL_HISTORY_REASON = 'manualHistoricalRebuild';
 const emptyManifest = () => ({ floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] });
@@ -86,6 +87,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   let historicalAuthorization = null;
   let formalGenerationActive = false;
   let generationArm = null;
+  let tailSwipeContext = null;
   let emptyRealtimeOrigin = null;
   let coverage = unknownCoverage(0);
   let lastAutomaticInputKey = null;
@@ -127,7 +129,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
   };
   const cancelEarlyStabilization = reason => { try { foundationRuntime.cancelEarlyStabilization?.(reason); } catch { /* foundation cancellation is best-effort */ } };
-  const invalidate = () => { cancelEarlyStabilization('memoryInvalidated'); cancelAutomation(); epoch += 1; active?.controller.abort(); active = null; workRun = null; reachable = null; timeFallbackByFloor = new Map(); coverage = unknownCoverage(0); emptyRealtimeOrigin = null; formalGenerationActive = false; generationArm = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; sessionCandidates.clear(); cseRuntime.invalidate(); notify(); };
+  const invalidate = () => { cancelEarlyStabilization('memoryInvalidated'); cancelAutomation(); epoch += 1; active?.controller.abort(); active = null; workRun = null; reachable = null; timeFallbackByFloor = new Map(); coverage = unknownCoverage(0); emptyRealtimeOrigin = null; formalGenerationActive = false; generationArm = null; tailSwipeContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; sessionCandidates.clear(); cseRuntime.invalidate(); notify(); };
   cseRuntime.subscribe(() => notify());
   function runManualWork(reason, task) {
     if (workRun) return Promise.resolve(getState());
@@ -360,11 +362,12 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         : hostAdapter?.snapshot?.().userIdentity ?? null;
       const expectedScope = { batchId: operation.runId, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration, checkpointId: source.root.headCheckpointId, floorId: floor.id, rawContentFingerprint: sourceRawFingerprint };
       const floorIndex = source.floors.findIndex(item => item.id === floor.id);
+      const scopedEntities = entitiesThroughFloorIds(source.entities, new Set(source.floors.slice(0, floorIndex + 1).map(item => item.id)));
       let previousStoryClock = null;
       for (let index = floorIndex - 1; index >= 0 && !previousStoryClock; index -= 1) previousStoryClock = clockEvidence(currentRawSelection(hostAdapter, source.floors[index])).clock;
-      const envelope = await createExtractorEnvelope({ ...expectedScope, floor, entities: source.entities, userIdentity, identityHints: [], storyClock: sourceClock.clock, previousStoryClock });
+      const envelope = await createExtractorEnvelope({ ...expectedScope, floor, entities: scopedEntities, userIdentity, identityHints: [], storyClock: sourceClock.clock, previousStoryClock });
       const promptGuidanceSnapshot = typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : extractorPromptGuidance;
-      const result = await runExtractorRequest({ generateUtilityTask, envelope, floor, existingEntities: source.entities, now: nowIso(now), supersedes: oldMemory?.id ?? null, preservedSummary: oldMemory?.summary?.effectiveSource === 'user' ? oldMemory.summary : null, expectedScope, promptGuidance: promptGuidanceSnapshot, signal: operation.controller.signal });
+      const result = await runExtractorRequest({ generateUtilityTask, envelope, floor, existingEntities: scopedEntities, now: nowIso(now), supersedes: oldMemory?.id ?? null, preservedSummary: oldMemory?.summary?.effectiveSource === 'user' ? oldMemory.summary : null, expectedScope, promptGuidance: promptGuidanceSnapshot, signal: operation.controller.signal });
       operation.phase = 'validating'; notify();
       const foundationAfter = await foundationRuntime.refreshStatus();
       if (foundationAfter.status !== 'ready') throw errorWith('V3_MEMORY_STALE', '正文地基在提取期间发生变化，本次结果已作废。');
@@ -548,6 +551,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   async function runAutomationBatch(reason = 'stableAssistant') {
     const config = automation();
     const manualHistorical = reason === MANUAL_HISTORY_REASON;
+    const userInitiated = manualHistorical || reason === 'manualRetry';
     const authorizedChatId = manualHistorical ? historicalAuthorization : null;
     if (!enabled() || (!manualHistorical && !config.enabled) || (manualHistorical && !authorizedChatId) || workRun || active || cseRuntime.getState().activeCse) return getState();
     const operation = { kind: 'auto', token: ++autoEpoch, reason, phase: 'reconciling', mode: manualHistorical ? 'historical' : 'realtime', floorIds: [], promise: null };
@@ -561,9 +565,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         let historical = manualHistorical;
         let resumed = false;
         let processed = 0;
+        let cseProcessed = 0;
         let fromAssistantSeq = null;
         let toAssistantSeq = null;
         const processedMessageIndexes = [];
+        let capturedFloorIds = null;
         while (allowed()) {
           operation.phase = 'reconciling';
           notify();
@@ -574,75 +580,65 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           if (manualHistorical && reachable.root.chatId !== authorizedChatId) return getState();
           const assessment = await refreshCoverage();
           if (assessment.status === 'unknown') throw errorWith('V3_MEMORY_COVERAGE_UNCONFIRMED', '当前聊天的可达覆盖尚未确认，历史重建已暂停。');
-          if (historical && assessment.status === 'caughtUp') {
+          capturedFloorIds ??= Object.freeze((reachable.floors ?? []).map(floor => floor.id));
+          const capturedFloorSet = new Set(capturedFloorIds);
+          const capturedTotal = capturedFloorIds.length;
+          if (historical && assessment.completed >= capturedTotal && assessment.summaryCompleted >= capturedTotal) {
             if (manualHistorical && historicalAuthorization === authorizedChatId) historicalAuthorization = null;
-            lastAutoRun = processed
-              ? Object.freeze({ status: 'completed', reason, mode: historical ? 'historical' : 'realtime', batchSize: config.batchSize, recovered: resumed, fromAssistantSeq, toAssistantSeq, processed })
+            lastAutoRun = processed || cseProcessed
+              ? Object.freeze({ status: 'completed', reason, mode: historical ? 'historical' : 'realtime', batchSize: config.batchSize, recovered: resumed, fromAssistantSeq, toAssistantSeq, processed, cseProcessed })
               : Object.freeze({ status: 'caughtUp', reason, mode: 'historical', batchSize: config.batchSize, available: 0, fromAssistantSeq: null, toAssistantSeq: null, processed: 0 });
-            if (processed) try { notifyUser?.({ kind: 'success', text: manualHistorical ? `千千结已完成${completedFloorCopy(processedMessageIndexes)}的历史记忆重建。` : `千千结已自动更新${completedFloorCopy(processedMessageIndexes)}的记忆与状态。` }); } catch { /* notification must not affect committed memory */ }
+            if (processed || cseProcessed) try { notifyUser?.({ kind: 'success', text: `千千结已完成历史记忆维护：新增摘要 ${processed} 楼，补齐人物状态 ${cseProcessed} 楼。` }); } catch { /* notification must not affect committed memory */ }
             return notify();
           }
           const inputKey = currentInputKey();
-          if (!historical && lastAutomaticInputKey === inputKey) {
-            lastAutoRun = Object.freeze({ status: 'waiting', reason, mode: 'realtime', batchSize: config.batchSize, available: Math.max(0, assessment.total - assessment.summaryCompleted), fromAssistantSeq: assessment.summaryNextAssistantSeq, toAssistantSeq: reachable.floors.at(-1)?.assistantSeq ?? null, processed: 0 });
-            return notify();
-          }
-          if (!historical && assessment.summaryStatus === 'caughtUp') {
-            if (assessment.status === 'caughtUp') {
-              lastAutoRun = Object.freeze({ status: 'caughtUp', reason, mode: 'realtime', batchSize: config.batchSize, available: 0, fromAssistantSeq: null, toAssistantSeq: null, processed: 0 });
-            } else {
-              lastAutoRun = Object.freeze({ status: 'authorizationRequired', reason, mode: 'historical', batchSize: config.batchSize, available: assessment.total - assessment.completed, fromAssistantSeq: assessment.nextAssistantSeq, toAssistantSeq: reachable.floors.at(-1)?.assistantSeq ?? null, processed: 0 });
-              notifyOnce(`authorization:${inputKey}:${assessment.nextAssistantSeq}`, { kind: 'warning', text: '千千结摘要已保存，但人物状态仍有顺序缺口；可在记忆管理中点击继续恢复。' });
-            }
-            return notify();
-          }
-          if (!historical && assessment.summaryStatus === 'historicalDebt') {
-            lastAutoRun = Object.freeze({ status: 'authorizationRequired', reason, mode: 'historical', batchSize: config.batchSize, available: assessment.total - assessment.summaryCompleted, fromAssistantSeq: assessment.summaryNextAssistantSeq, toAssistantSeq: reachable.floors.at(-1)?.assistantSeq ?? null, processed: 0 });
-            notifyOnce(`authorization:${inputKey}:${assessment.summaryNextAssistantSeq}`, { kind: 'warning', text: '千千结发现需要用户确认的历史摘要缺口；请在记忆管理中点击继续。' });
+          if (!userInitiated && lastAutomaticInputKey === inputKey) {
+            if (lastAutoRun?.status === 'failed') return notify();
+            lastAutoRun = Object.freeze({ status: 'waiting', reason, mode: 'realtime', batchSize: config.batchSize, available: Math.max(0, assessment.total - assessment.completed), fromAssistantSeq: assessment.nextAssistantSeq, toAssistantSeq: reachable.floors.at(-1)?.assistantSeq ?? null, processed: 0, cseProcessed: 0 });
             return notify();
           }
           operation.mode = historical ? 'historical' : 'realtime';
-          const pending = (reachable.floors ?? []).slice(historical ? assessment.completed : assessment.summaryCompleted);
-          if (!historical && pending.length < config.batchSize) {
-            lastAutoRun = Object.freeze({ status: 'waiting', reason, mode: 'realtime', batchSize: config.batchSize, available: pending.length, fromAssistantSeq: pending[0]?.assistantSeq ?? null, toAssistantSeq: pending.at(-1)?.assistantSeq ?? null });
-            return notify();
-          }
-          const targets = pending.slice(0, historical ? Math.min(config.batchSize, pending.length) : config.batchSize);
-          if (!targets.length) return notify();
-          if (!historical) lastAutomaticInputKey = inputKey;
+          const summaryPending = (reachable.floors ?? []).slice(assessment.summaryCompleted)
+            .filter(floor => capturedFloorSet.has(floor.id));
+          const targets = historical
+            ? summaryPending.slice(0, Math.min(config.batchSize, summaryPending.length))
+            : assessment.summaryStatus === 'realtimeTail' && summaryPending.length >= config.batchSize
+              ? summaryPending.slice(0, config.batchSize)
+              : [];
           resumed ||= historical ? assessment.hasPartialWork : assessment.summaryHasPartialWork;
-          operation.floorIds = targets.map(floor => floor.id);
-          operation.phase = 'extracting';
-          notify();
-          for (const floor of targets) {
-            if (!allowed()) return getState();
-            const memory = currentMemoryMap(reachable).get(floor.id);
-            if (memory?.recordStatus !== 'active') await extractFloorInternal(floor.id, { analyzeState: false });
-            if (!allowed()) return getState();
-            const currentFloor = getState().floors.find(item => item.floorId === floor.id);
-            if (!currentFloor?.memoryId || !['ready', 'needsReview'].includes(currentFloor.status)) {
-              if (manualHistorical && historicalAuthorization === authorizedChatId) historicalAuthorization = null;
-              lastAutoRun = Object.freeze({ status: 'failed', reason, mode: operation.mode, phase: 'extracting', batchSize: config.batchSize, floorId: floor.id, assistantSeq: floor.assistantSeq, message: getState().lastExtractorError?.message ?? 'FloorMemory 提取失败，可点击继续重建后从本楼重试。' });
-              notifyOnce(`extracting:${operation.token}:${inputKey}:${floor.id}`, { kind: 'error', text: `千千结摘要提取失败：${safeErrorMessage(lastAutoRun.message)} 可在记忆管理中点击继续。` });
-              return notify();
+          if (targets.length) {
+            operation.floorIds = targets.map(floor => floor.id);
+            operation.phase = 'extracting';
+            notify();
+            for (const floor of targets) {
+              if (!allowed()) return getState();
+              const memory = currentMemoryMap(reachable).get(floor.id);
+              if (memory?.recordStatus !== 'active') await extractFloorInternal(floor.id, { analyzeState: false });
+              if (!allowed()) return getState();
+              const currentFloor = getState().floors.find(item => item.floorId === floor.id);
+              if (!currentFloor?.memoryId || !['ready', 'needsReview'].includes(currentFloor.status)) {
+                if (manualHistorical && historicalAuthorization === authorizedChatId) historicalAuthorization = null;
+                if (!historical) lastAutomaticInputKey = currentInputKey() ?? inputKey;
+                lastAutoRun = Object.freeze({ status: 'failed', reason, mode: operation.mode, phase: 'extracting', batchSize: config.batchSize, floorId: floor.id, assistantSeq: floor.assistantSeq, message: getState().lastExtractorError?.message ?? 'FloorMemory 提取失败，可点击继续重建后从本楼重试。' });
+                notifyOnce(`extracting:${operation.token}:${inputKey}:${floor.id}`, { kind: 'error', text: `千千结摘要提取失败：${safeErrorMessage(lastAutoRun.message)} 可在记忆管理中点击继续。` });
+                return notify();
+              }
+              fromAssistantSeq ??= floor.assistantSeq;
+              toAssistantSeq = floor.assistantSeq;
+              processedMessageIndexes.push(floor.hostLocator?.messageIndex);
+              processed += 1;
             }
           }
           if (!allowed()) return getState();
           await load();
-          const afterExtraction = await refreshCoverage();
+          let afterExtraction = await refreshCoverage();
           if (afterExtraction.status === 'unknown') throw errorWith('V3_MEMORY_COVERAGE_UNCONFIRMED', '摘要保存后覆盖校验未确认，人物状态分析已暂停。');
-          const cseTargets = historical
-            ? targets
-            : (() => {
-                const floor = reachable.floors?.[afterExtraction.completed];
-                return floor && currentMemoryMap(reachable).get(floor.id)?.recordStatus === 'active' ? [floor] : [];
-              })();
-          if (cseTargets.length) {
+          while (allowed() && afterExtraction.completed < capturedTotal) {
+            const floor = reachable.floors?.[afterExtraction.completed];
+            if (!floor || !capturedFloorSet.has(floor.id) || currentMemoryMap(reachable).get(floor.id)?.recordStatus !== 'active') break;
             operation.phase = 'analyzingCse';
-            operation.floorIds = [...new Set([...operation.floorIds, ...cseTargets.map(floor => floor.id)])];
+            operation.floorIds = [...new Set([...operation.floorIds, floor.id])];
             notify();
-          }
-          for (const floor of cseTargets) {
             if (!allowed()) return getState();
             const before = getState().floors.find(item => item.floorId === floor.id);
             if (!['ready', 'noChange'].includes(before?.cse?.status)) await cseRuntime.analyzeFloor(floor.id);
@@ -650,24 +646,36 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             const after = getState().floors.find(item => item.floorId === floor.id);
             if (!['ready', 'noChange'].includes(after?.cse?.status)) {
               if (manualHistorical && historicalAuthorization === authorizedChatId) historicalAuthorization = null;
+              if (!historical) lastAutomaticInputKey = currentInputKey() ?? inputKey;
               lastAutoRun = Object.freeze({ status: 'failed', reason, mode: operation.mode, phase: 'analyzingCse', batchSize: config.batchSize, floorId: floor.id, assistantSeq: floor.assistantSeq, message: getState().lastCseError?.message ?? 'CSE 分析失败，可点击继续重建后从本楼重试。' });
-              const prefix = historical ? '千千结人物状态分析失败' : '千千结已保存新楼摘要，但最早待处理楼的人物状态分析失败';
+              const prefix = historical ? '千千结人物状态分析失败'
+                : processed > 0 ? '千千结已保存新楼摘要，但最早待处理楼的人物状态分析失败'
+                  : '千千结人物状态追赶失败';
               notifyOnce(`analyzingCse:${operation.token}:${inputKey}:${floor.id}`, { kind: 'warning', text: `${prefix}：${safeErrorMessage(lastAutoRun.message)} 后续合资格稳定楼会有限重试，也可现在点击继续。` });
               return notify();
             }
+            cseProcessed += 1;
+            await load();
+            afterExtraction = await refreshCoverage();
+            if (afterExtraction.status === 'unknown') throw errorWith('V3_MEMORY_COVERAGE_UNCONFIRMED', '人物状态保存后覆盖校验未确认，自动追赶已暂停。');
           }
-          await load();
-          fromAssistantSeq ??= targets[0].assistantSeq;
-          toAssistantSeq = targets.at(-1).assistantSeq;
-          processedMessageIndexes.push(...targets.map(floor => floor.hostLocator?.messageIndex).filter(value => Number.isSafeInteger(value) && value >= 0));
-          processed += targets.length;
           if (!historical) {
-            const cseCompleted = cseTargets.length > 0;
-            lastAutoRun = Object.freeze({ status: 'completed', reason, mode: 'realtime', phase: cseCompleted ? 'analyzingCse' : 'extracting', batchSize: config.batchSize, recovered: resumed, fromAssistantSeq, toAssistantSeq, processed, cseCompleted });
-            const text = cseCompleted
-              ? `千千结已自动更新${completedFloorCopy(processedMessageIndexes)}的摘要与人物状态。`
-              : `千千结已自动更新${completedFloorCopy(processedMessageIndexes)}的摘要；人物状态仍按顺序等待处理。`;
-            try { notifyUser?.({ kind: 'success', text }); } catch { /* notification must not affect committed memory */ }
+            lastAutomaticInputKey = null;
+            const summaryDebt = afterExtraction.summaryStatus === 'historicalDebt' && afterExtraction.summaryCompleted < capturedTotal;
+            if (summaryDebt) {
+              lastAutoRun = Object.freeze({ status: 'authorizationRequired', reason, mode: 'historical', phase: cseProcessed ? 'analyzingCse' : 'extracting', batchSize: config.batchSize, available: capturedTotal - afterExtraction.summaryCompleted, fromAssistantSeq: afterExtraction.summaryNextAssistantSeq, toAssistantSeq: reachable.floors.at(capturedTotal - 1)?.assistantSeq ?? null, processed, cseProcessed });
+              notifyOnce(`authorization:${inputKey}:${afterExtraction.summaryNextAssistantSeq}:${cseProcessed}`, { kind: 'warning', text: cseProcessed ? `千千结已补齐 ${cseProcessed} 楼人物状态；后续历史摘要缺口仍需在记忆管理中点击继续。` : '千千结发现需要用户确认的历史摘要缺口；请在记忆管理中点击继续。' });
+              return notify();
+            }
+            const summaryWaiting = afterExtraction.summaryCompleted < capturedTotal;
+            if (summaryWaiting) {
+              lastAutoRun = Object.freeze({ status: 'waiting', reason, mode: 'realtime', phase: cseProcessed ? 'analyzingCse' : 'extracting', batchSize: config.batchSize, available: capturedTotal - afterExtraction.summaryCompleted, fromAssistantSeq: afterExtraction.summaryNextAssistantSeq, toAssistantSeq: reachable.floors.at(capturedTotal - 1)?.assistantSeq ?? null, processed, cseProcessed });
+              if (cseProcessed) try { notifyUser?.({ kind: 'success', text: `千千结已补齐 ${cseProcessed} 楼人物状态；新摘要继续等待稳定批次。` }); } catch { /* notification must not affect committed memory */ }
+              return notify();
+            }
+            const didWork = processed > 0 || cseProcessed > 0;
+            lastAutoRun = Object.freeze({ status: didWork ? 'completed' : 'caughtUp', reason, mode: 'realtime', phase: cseProcessed ? 'analyzingCse' : 'extracting', batchSize: config.batchSize, recovered: resumed, fromAssistantSeq, toAssistantSeq, processed, cseProcessed, cseCompleted: cseProcessed > 0 });
+            if (didWork) try { notifyUser?.({ kind: 'success', text: `千千结已自动维护完成：新增摘要 ${processed} 楼，补齐人物状态 ${cseProcessed} 楼。` }); } catch { /* notification must not affect committed memory */ }
             return notify();
           }
         }
@@ -675,6 +683,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       } catch (error) {
         if (operation.token === autoEpoch) {
           if (manualHistorical && historicalAuthorization === authorizedChatId) historicalAuthorization = null;
+          if (!manualHistorical) lastAutomaticInputKey = currentInputKey();
           lastAutoRun = Object.freeze({ status: 'failed', reason, phase: operation.phase, batchSize: config.batchSize, floorId: operation.floorIds[0] ?? null, assistantSeq: null, message: safeErrorMessage(error?.message ?? '自动记忆失败，将在下一次稳定回复后重试。') });
           logger?.warn?.('[qianqianjie] V3 automatic memory failed', { code: error?.code ?? error?.name ?? 'V3_AUTO_MEMORY_FAILED' });
           notifyOnce(`outer:${operation.token}:${currentInputKey()}:${operation.phase}`, { kind: 'error', text: `千千结自动记忆未完成：${lastAutoRun.message} 可在记忆管理中点击继续。` });
@@ -723,6 +732,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         active?.controller.abort();
         cseRuntime.cancelActive?.();
       }
+    } else if (getState().cseFloors.some(floor => floor.status === 'pending')) {
+      return scheduleAutomation('automationEnabledCatchup');
     }
     return Promise.resolve(notify());
   }
@@ -738,6 +749,32 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       && (arm.narrativeGeneration === null || arm.narrativeGeneration === currentIdentity.narrativeGeneration));
   };
   const isAssistantSlot = message => Boolean(message && typeof message === 'object' && message.is_user === false && !(message.is_system === true && message.extra?.type));
+  function tailSwipeBoundary(messageIndex, expected = null) {
+    if (!Number.isSafeInteger(messageIndex)) return null;
+    let snapshot;
+    try { snapshot = hostAdapter.snapshot(); } catch { return null; }
+    if (expected && !sameGenerationIdentity(expected, snapshot)) return null;
+    const stableFloor = reachable?.floors?.at(-1) ?? null;
+    const stableMessageIndex = stableFloor?.hostLocator?.messageIndex;
+    const pending = foundationRuntime.getState()?.pending;
+    if (!stableFloor || !Number.isSafeInteger(stableMessageIndex)
+      || !pending || pending.messageIndex !== messageIndex
+      || messageIndex <= stableMessageIndex || messageIndex !== snapshot.chat?.length - 1
+      || !isAssistantSlot(snapshot.chat?.[messageIndex])) return null;
+    if (expected && (expected.messageIndex !== messageIndex || expected.stableFloorId !== stableFloor.id
+      || expected.stableMessageIndex !== stableMessageIndex)) return null;
+    return Object.freeze({
+      ...generationIdentity(snapshot),
+      messageIndex,
+      stableFloorId: stableFloor.id,
+      stableMessageIndex,
+    });
+  }
+  const mutationMessageIndex = (name, args) => {
+    if (name === 'MESSAGE_SWIPED') return Number.isSafeInteger(args[0]) ? args[0] : null;
+    if (name === 'MESSAGE_SWIPE_DELETED') return Number.isSafeInteger(args[0]?.messageId) ? args[0].messageId : null;
+    return null;
+  };
   const meaningfulText = value => {
     const text = typeof value === 'string' ? value.trim() : '';
     return text !== '' && text !== '...';
@@ -830,6 +867,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (generationStartedEvent && generationStoppedEvent && generationEndedEvent) {
       eventSource.on(generationStartedEvent, (type, _options, dryRun) => {
         if (dryRun === true) return;
+        if (type !== 'swipe' || tailSwipeContext?.stopped === true) tailSwipeContext = null;
+        else if (tailSwipeContext && !tailSwipeBoundary(tailSwipeContext.messageIndex, tailSwipeContext)) tailSwipeContext = null;
         if (formalGenerationActive) {
           if (type === undefined || type === null || type === '' || type === 'normal') generationArm = null;
           return;
@@ -841,6 +880,13 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       eventSource.on(generationStoppedEvent, () => {
         formalGenerationActive = false;
         generationArm = null;
+        if (tailSwipeContext && tailSwipeContext.stopped !== true && tailSwipeBoundary(tailSwipeContext.messageIndex, tailSwipeContext)) {
+          tailSwipeContext = Object.freeze({ ...tailSwipeContext, stopped: true });
+          awaitingFoundation = true;
+          notify();
+          return;
+        }
+        tailSwipeContext = null;
         cancelEarlyStabilization('generationStopped');
         cancelAutomation();
       });
@@ -857,6 +903,24 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const eventName = eventTypes[name]; if (!eventName) continue;
       eventSource.on(eventName, (...args) => {
         const finalType = args[1];
+        const tailMutationIndex = mutationMessageIndex(name, args);
+        const tailBoundary = tailMutationIndex === null ? null : tailSwipeBoundary(tailMutationIndex);
+        if (tailBoundary) {
+          if (name === 'MESSAGE_SWIPED' && args[1]?.pendingGeneration === true) tailSwipeContext = tailBoundary;
+          awaitingFoundation = true;
+          notify();
+          return;
+        }
+        const sameTailFinal = name === 'MESSAGE_RECEIVED' && finalType === 'swipe' && tailSwipeContext
+          && args[0] === tailSwipeContext?.messageIndex
+          && Boolean(tailSwipeBoundary(tailSwipeContext.messageIndex, tailSwipeContext));
+        if (sameTailFinal) {
+          tailSwipeContext = null;
+          generationArm = null;
+          awaitingFoundation = true;
+          notify();
+          return;
+        }
         const sameEarlyFinal = name === 'MESSAGE_RECEIVED' && generationArm?.proven
           && args[0] === generationArm.messageIndex
           && (finalType === undefined || finalType === null || finalType === '' || finalType === 'normal' || finalType === 'continue') && (() => {
@@ -874,6 +938,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           return;
         }
         generationArm = null;
+        tailSwipeContext = null;
         cancelEarlyStabilization(name);
         cancelAutomation();
         epoch += 1;
@@ -889,13 +954,19 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         awaitingFoundation = true;
         if (name !== 'MESSAGE_RECEIVED') { emptyRealtimeOrigin = null; lastAutomaticInputKey = null; lastNoticeKey = null; }
         if (name === 'MESSAGE_RECEIVED' && automation().enabled) autoTriggerReason = name;
-        if (name === 'CHAT_CHANGED' || HISTORY_MUTATION_EVENTS.has(name)) lastAutoRun = null;
+        if (name === 'CHAT_CHANGED' || name === 'CHAT_RENAMED' || HISTORY_MUTATION_EVENTS.has(name)) lastAutoRun = null;
         notify();
       });
     }
     bound = true; return true;
   }
-  async function start() { if (!enabled()) return notify(); await foundationRuntime.start(); return load(); }
+  async function start() {
+    if (!enabled()) return notify();
+    await foundationRuntime.start();
+    const state = await load();
+    if (automation().enabled && state.cseFloors.some(floor => floor.status === 'pending')) void scheduleAutomation('startupCatchup');
+    return state;
+  }
   async function setEnabled(value) { if (value !== true) invalidate(); await foundationRuntime.setEnabled(value); if (value !== true) return notify(); return load(); }
   async function startHistoricalRebuild() {
     while (autoScheduled || workRun?.promise) await (autoScheduled ?? workRun.promise);
@@ -945,5 +1016,6 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   };
   const analyzeNextState = () => runManualWork('analyzingCse', async operation => { operation.phase = 'analyzingCse'; notify(); await cseRuntime.analyzeNext(); return notify(); });
   const retryStateAnalysis = floorId => runManualWork('analyzingCse', async operation => { operation.floorIds = [floorId]; operation.phase = 'analyzingCse'; notify(); await cseRuntime.analyzeFloor(floorId); return notify(); });
-  return Object.freeze({ bind, start, setEnabled, refreshAutomation, startHistoricalRebuild, pauseHistoricalRebuild, retryAutomation, fullRebuild, invalidate, refreshStatus, confirmLatest, extractNext, extractFloor, analyzeNextState, retryStateAnalysis, editSummary, editMemory, restoreAi, markError, copySafeDiagnostic, copyFullDiagnostic, shouldBlockMainGeneration, allowsRealtimeTailFromEmpty, getState, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
+  const correctSubjectState = (subjectEntityId, edits) => runManualWork('revisingCse', async operation => { operation.phase = 'revisingCse'; notify(); await cseRuntime.correctSubjectState({ subjectEntityId, ...edits }); return load(); });
+  return Object.freeze({ bind, start, setEnabled, refreshAutomation, startHistoricalRebuild, pauseHistoricalRebuild, retryAutomation, fullRebuild, invalidate, refreshStatus, confirmLatest, extractNext, extractFloor, analyzeNextState, retryStateAnalysis, correctSubjectState, editSummary, editMemory, restoreAi, markError, copySafeDiagnostic, copyFullDiagnostic, shouldBlockMainGeneration, allowsRealtimeTailFromEmpty, getState, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

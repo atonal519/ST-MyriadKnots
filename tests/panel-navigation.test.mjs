@@ -7,32 +7,40 @@ import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
 class Node {
   constructor(tag = 'div') {
     this.tag = tag; this.children = []; this.listeners = {}; this.hidden = false; this.scrollTop = 0; this.dataset = {}; this.className = ''; this.textContent = '';
-    this.classList = { toggle() {} };
+    this.attributes = {}; this.style = { setProperty() {} };
+    this.classList = { toggle: (name, enabled) => { this.dataset[`class_${name}`] = Boolean(enabled); } };
   }
   append(...nodes) { this.children.push(...nodes); }
   replaceChildren(...nodes) { this.children = [...nodes]; }
   addEventListener(name, handler) { this.listeners[name] = handler; }
-  fire(name) { return this.listeners[name]?.(); }
-  setAttribute() {}
+  fire(name, event = {}) { return this.listeners[name]?.(event); }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  querySelector() { return null; }
   focus() {}
 }
 
 test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢复各页滚动位置', async () => {
-  const source = await readFile(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const [source, panelHtml, panelCss] = await Promise.all([
+    readFile(new URL('../src/ui/panel.js', import.meta.url), 'utf8'),
+    readFile(new URL('../src/ui/panel.html', import.meta.url), 'utf8'),
+    readFile(new URL('../src/ui/panel.css', import.meta.url), 'utf8'),
+  ]);
   const calls = [];
-  const panelNode = new Node('section'), body = new Node('main'), view = new Node('div'), label = new Node('span');
-  const topbar = new Node('header'), resize = new Node('button'), close = new Node('button'), settingsButton = new Node('button');
-  const profileTab = new Node('button'), eventTab = new Node('button'), peopleTab = new Node('button'); profileTab.dataset.tab = 'profiles'; eventTab.dataset.tab = 'events'; peopleTab.dataset.tab = 'people';
-  const nodeMap = new Map([['.panel', panelNode], ['.body', body], ['.view', view], ['.status-label', label], ['.topbar', topbar], ['.panel-resize-handle', resize], ['.close', close], ['.settings-btn', settingsButton]]);
-  const root = { innerHTML: '', querySelector: selector => nodeMap.get(selector) ?? null, querySelectorAll: selector => selector === '.tab' ? [profileTab, eventTab, peopleTab] : [] };
+  const panelNode = new Node('section'), body = new Node('main'), view = new Node('div');
+  const topbar = new Node('header'), resize = new Node('button'), close = new Node('button'), themeButton = new Node('button'), fabButton = new Node('button');
+  const themeSvg = new Node('svg'); themeButton.querySelector = selector => selector === 'svg' ? themeSvg : null;
+  const profileTab = new Node('button'), eventTab = new Node('button'), peopleTab = new Node('button'), settingsTab = new Node('button'); profileTab.dataset.tab = 'profiles'; eventTab.dataset.tab = 'events'; peopleTab.dataset.tab = 'people'; settingsTab.dataset.tab = 'settings';
+  const nodeMap = new Map([['.panel', panelNode], ['.body', body], ['.view', view], ['.topbar', topbar], ['.panel-resize-handle', resize], ['.close', close], ['.theme-btn', themeButton], ['.fab-toggle-btn', fabButton]]);
+  const root = { innerHTML: '', querySelector: selector => nodeMap.get(selector) ?? null, querySelectorAll: selector => selector === '.tab' ? [profileTab, eventTab, peopleTab, settingsTab] : [] };
   const host = new Node('host'); host.attachShadow = () => root;
   let firstElement = true;
-  const documentRef = { defaultView: {}, body: new Node('body'), createElement(tag) { if (firstElement) { firstElement = false; return host; } return new Node(tag); }, addEventListener() {} };
+  const documentEvents = {};
+  const documentRef = { defaultView: { innerWidth: 390, matchMedia: () => ({ matches: true }) }, body: new Node('body'), createElement(tag) { if (firstElement) { firstElement = false; return host; } return new Node(tag); }, addEventListener(name, listener) { documentEvents[name] = listener; } };
   const drawer = () => { const node = new Node('details'), drawerBody = new Node('div'); node.append(drawerBody); return { drawer: node, body: drawerBody }; };
   const modules = {
     './panel.html?raw': { default: '' }, './panel.css?inline': { default: '' },
     './layout.js': { createPanelGeometryController: () => ({ restore() {}, cancelGesture() {} }) },
-    './appearance.js': { applyAppearance() {} },
+    './appearance.js': { createAppearanceController: ({ onChange }) => { const state = { mode: 'auto', effectiveTheme: 'day', palette: {} }; onChange?.(state); return { apply() { onChange?.(state); return state; }, getState: () => state, destroy() {} }; } },
     './settings-drawer.js': { createSettingsDrawer: drawer, createSettingsDrawerState: () => ({ open() {}, set() {}, isOpen: (_key, fallback) => fallback }) },
     './settings/api-settings.js': { createApiSettings: () => ({ node: new Node() }) },
     './settings/prompts-settings.js': { createPromptsSettings: () => ({ node: new Node() }) },
@@ -52,10 +60,11 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   };
   const foundationRuntime = { getState: () => foundationState, refreshStatus: async () => foundationState, confirmLatest: async () => foundationState };
   const actualFoundationView = createV3FoundationView({ runtime: foundationRuntime, documentRef });
+  let rejectFoundationActivation = false;
   const v3FoundationView = {
     setPage(value) { calls.push(['page', value]); actualFoundationView.setPage(value); },
     mount(target) { calls.push(['mount', target]); actualFoundationView.mount(target); },
-    activate() { return actualFoundationView.activate(); },
+    activate() { return rejectFoundationActivation ? Promise.reject(new Error('management offline')) : actualFoundationView.activate(); },
     deactivate() { calls.push(['deactivate']); actualFoundationView.deactivate(); },
   };
   const peopleProfilesView = {
@@ -63,8 +72,13 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
     async activate() { calls.push(['profiles-activate']); return { status: 'ready' }; },
     deactivate() { calls.push(['profiles-deactivate']); },
   };
-  const settings = { isEnabled: () => true, get: () => ({ pluginEnabled: true }), update(value) { return value; } };
-  const panel = entry.namespace.createPanel({ settings, v3FoundationView, peopleProfilesView, documentRef });
+  const values = { pluginEnabled: true, appearanceTheme: 'auto', fabShow: true, autoHideEnabled: false, autoHideKeepAiCount: 3 };
+  const updates = [];
+  const settings = { isEnabled: () => true, get: () => values, update(value) { Object.assign(values, value); updates.push(value); return value; } };
+  let fabVisible = true, dialogActive = false, dialogCancels = 0;
+  const autoHideApplies = [];
+  let autoHideApplyStatus = null;
+  const panel = entry.namespace.createPanel({ settings, v3FoundationView, peopleProfilesView, documentRef, dialog: { setAppearance() {}, closeAll() { dialogActive = false; }, hasActive: () => dialogActive, cancelTop() { dialogCancels += 1; dialogActive = false; } }, onFabShowChange: value => { fabVisible = value; }, onAutoHideChange: async value => { autoHideApplies.push(value); return autoHideApplyStatus ? { status: autoHideApplyStatus } : undefined; } });
 
   await panel.show();
   assert.ok(calls.some(([kind]) => kind === 'profiles-activate'));
@@ -72,14 +86,28 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   assert.equal(body.scrollTop, 0); assert.deepEqual(calls.filter(([kind]) => kind === 'page').at(-1), ['page', 'memories']);
   body.scrollTop = 71; peopleTab.fire('click');
   assert.equal(body.scrollTop, 0); assert.deepEqual(calls.at(-1), ['page', 'people']);
-  body.scrollTop = 39; settingsButton.fire('click');
+  body.scrollTop = 39; settingsTab.fire('click');
   assert.ok(calls.some(([kind, value]) => kind === 'page' && value === 'management'));
   assert.equal(view.children[0]?.className, 'settings-page', '设置页应真实占据面板内容容器');
   assert.equal(view.children[0]?.children.some(node => node.className === 'master-switch'), true, '设置首开不得被真实 setPage 重绘清掉总开关');
-  assert.equal(view.children[0]?.children.filter(node => node.tag === 'details').length, 1, '设置首开只保留通用设置，周期设置已移除');
+  const settingsGroups = view.children[0]?.children.filter(node => node.tag === 'details');
+  assert.equal(settingsGroups.length, 2, '设置页保留通用设置，并恢复同级记忆设置抽屉');
+  const memoryControls = settingsGroups[1].children[0].children;
+  const autoHideInput = memoryControls.find(node => node.tag === 'label')?.children.find(node => node.tag === 'input');
+  const keepInput = memoryControls.find(node => node.className === 'qqj-auto-hide-row')?.children.find(node => node.tag === 'input');
+  assert.equal(autoHideInput?.checked, false); assert.equal(keepInput?.value, '3'); assert.equal(keepInput?.className, 'settings-input settings-num');
+  assert.equal(memoryControls.find(node => node.className === 'qqj-auto-hide-row')?.children[0]?.textContent, '隐藏 AI 楼层数');
+  assert.match(memoryControls.find(node => node.className === 'settings-hint')?.textContent ?? '', /保留最近 N 个 AI 楼及其用户上下文/);
+  autoHideInput.checked = true; autoHideInput.fire('change'); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(autoHideApplies.at(-1).enabled, true); assert.equal(autoHideApplies.at(-1).keepAiCount, 3);
+  keepInput.value = '6'; keepInput.fire('change'); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(autoHideApplies.at(-1).enabled, true); assert.equal(autoHideApplies.at(-1).keepAiCount, 6);
+  autoHideApplyStatus = 'disabled'; values.pluginEnabled = false; keepInput.value = '7'; keepInput.fire('change'); await new Promise(resolve => setImmediate(resolve));
+  assert.match(memoryControls.find(node => node.className?.split?.(' ').includes('settings-result'))?.textContent ?? '', /重新启用千千结后生效/);
+  autoHideApplyStatus = null; values.pluginEnabled = true;
   const managementMount = view.children[0]?.children.find(node => node.className === 'qqj-settings-management');
   assert.equal(managementMount?.children[0]?.className, 'qqj-page qqj-management-page', '真实管理视图应挂载在设置页内部');
-  body.scrollTop = 18; settingsButton.fire('click');
+  body.scrollTop = 18; peopleTab.fire('click');
   assert.equal(body.scrollTop, 39, '从设置返回双丝网时恢复其滚动位置');
   assert.deepEqual(calls.filter(([kind]) => kind === 'mount').at(-1), ['mount', view], '返回内容页应重新挂载到主视图容器');
   assert.equal(view.children[0]?.className, 'qqj-page qqj-people-page', '返回内容页应移除设置 DOM 并呈现真实内容视图');
@@ -87,4 +115,92 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   assert.equal(body.scrollTop, 71, '回到千结时恢复千结滚动位置');
   profileTab.fire('click');
   assert.equal(body.scrollTop, 31, '回到千人时恢复千人滚动位置');
+
+  themeButton.fire('click');
+  assert.equal(updates.at(-1).appearanceTheme, 'day', '顶部主题按钮应按跟随酒馆、日间、夜间循环并即时保存');
+  assert.match(themeSvg.innerHTML, /M12 3v2/); assert.match(themeSvg.innerHTML, /M19 12h2/, '动态日间图标实际图形应覆盖约 3..21 的统一边界');
+  themeButton.fire('click');
+  assert.equal(updates.at(-1).appearanceTheme, 'night'); assert.match(themeSvg.innerHTML, /M21 15\.5/, '动态夜间图标应与同组按钮图形边界一致');
+  fabButton.fire('click');
+  assert.equal(updates.at(-1).fabShow, false); assert.equal(fabVisible, false);
+
+  assert.match(panelHtml, /fab-toggle-btn[^>]*>[\s\S]*?<circle cx="12" cy="12" r="9"/);
+  assert.match(panelHtml, /class="icon-btn close"[\s\S]*?M3\.5 3\.5l17 17M20\.5 3\.5l-17 17/);
+  assert.doesNotMatch(panelHtml, /status-(?:line|dot|label)/, '导航下方不应再渲染重复页名与装饰菱形');
+  assert.doesNotMatch(panelCss, /\.status-(?:line|dot|label)\b/, '重复状态行的专用样式应一并删除');
+  assert.match(panelCss, /\.icon-btn svg\{width:18px;height:18px;[^}]*stroke-width:1\.8/);
+  assert.doesNotMatch(panelCss, /@media\(max-width:640px\)[^}]*\.icon-btn\{width:30px/, '手机端不应再次缩小三枚顶部按钮的实际图形或点击框');
+  for (const surface of [
+    /\.icon-btn\{[^}]*background:var\(--panel\)/,
+    /\.v3-memory-status\{[^}]*background:color-mix\([^}]*var\(--panel\)\)/,
+    /\.v3-cse-current\{[^}]*background:color-mix\([^}]*var\(--panel\)\)/,
+    /\.qqj-model-list-item\{[^}]*background:var\(--paper\)/,
+    /button:disabled\{[^}]*background:var\(--line\)/,
+  ]) assert.match(panelCss, surface, '实际绘制表面应以实色 palette 为底');
+
+  const touch = (x, y) => ({ clientX: x, clientY: y });
+  const touchEvent = values => ({ defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...values });
+  const swipeTarget = { closest: () => null };
+  let summaryClicks = 0;
+  const summaryTarget = { closest: selector => selector.split(',').some(part => part.trim() === 'summary') ? summaryTarget : null, click: () => { summaryClicks += 1; } };
+  body.fire('touchstart', touchEvent({ touches: [touch(260, 100)], target: summaryTarget }));
+  const summaryMove = touchEvent({ touches: [touch(170, 105)], target: summaryTarget }); body.fire('touchmove', summaryMove);
+  const summaryEnd = touchEvent({ changedTouches: [touch(160, 105)], target: summaryTarget }); body.fire('touchend', summaryEnd);
+  if (!summaryEnd.defaultPrevented) summaryTarget.click();
+  assert.equal(summaryMove.defaultPrevented, true); assert.equal(summaryEnd.defaultPrevented, true); assert.equal(summaryClicks, 0, 'summary 起始的横滑不得合成展开点击');
+  assert.equal(panel.getState().activeTab, 'events', 'summary 起始横滑应进入下一个主内容页');
+  body.fire('touchstart', touchEvent({ touches: [touch(120, 100)], target: summaryTarget }));
+  const summaryTapEnd = touchEvent({ changedTouches: [touch(122, 100)], target: summaryTarget }); body.fire('touchend', summaryTapEnd);
+  if (!summaryTapEnd.defaultPrevented) summaryTarget.click();
+  assert.equal(summaryClicks, 1, '横滑结束后的下一次真实轻触仍应展开 summary');
+
+  let buttonClicks = 0;
+  const buttonTarget = { closest: selector => selector.split(',').some(part => part.trim() === 'button') ? buttonTarget : null, click: () => { buttonClicks += 1; } };
+  body.fire('touchstart', touchEvent({ touches: [touch(260, 100)], target: buttonTarget }));
+  const buttonEnd = touchEvent({ changedTouches: [touch(160, 105)], target: buttonTarget }); body.fire('touchend', buttonEnd);
+  if (!buttonEnd.defaultPrevented) buttonTarget.click();
+  assert.equal(buttonEnd.defaultPrevented, true); assert.equal(buttonClicks, 0, '按钮起始的横滑不得触发业务点击');
+  assert.equal(panel.getState().activeTab, 'people', '按钮起始横滑应进入双丝网');
+  body.fire('touchstart', touchEvent({ touches: [touch(120, 100)], target: buttonTarget }));
+  const buttonTapEnd = touchEvent({ changedTouches: [touch(120, 100)], target: buttonTarget }); body.fire('touchend', buttonTapEnd);
+  if (!buttonTapEnd.defaultPrevented) buttonTarget.click();
+  assert.equal(buttonClicks, 1, '同一按钮后续真实轻触不得被吞');
+
+  body.fire('touchstart', { touches: [touch(260, 100)], target: swipeTarget });
+  body.fire('touchend', { changedTouches: [touch(160, 105)], target: swipeTarget });
+  assert.equal(panel.getState().screen, 'settings', '第三次左滑应进入设置页');
+  const settingsInputTarget = { closest: selector => selector.includes('input') ? {} : null };
+  body.fire('touchstart', { touches: [touch(100, 100)], target: settingsInputTarget });
+  body.fire('touchend', { changedTouches: [touch(200, 105)], target: settingsInputTarget });
+  assert.equal(panel.getState().screen, 'settings', '设置页输入控件应保留自身触摸，不触发切页');
+  const inlineSelectTarget = { closest: selector => selector.includes('.qqj-inline-select') ? {} : null };
+  body.fire('touchstart', { touches: [touch(100, 100)], target: inlineSelectTarget });
+  body.fire('touchend', { changedTouches: [touch(220, 105)], target: inlineSelectTarget });
+  assert.equal(panel.getState().screen, 'settings', '内联选择器横向操作应保留自身手势，不触发切页');
+  body.fire('touchstart', { touches: [touch(100, 100)], target: swipeTarget });
+  body.fire('touchend', { changedTouches: [touch(200, 105)], target: swipeTarget });
+  assert.equal(panel.getState().activeTab, 'people'); assert.equal(panel.getState().screen, 'content', '设置页右滑应回到双丝网');
+  body.fire('touchstart', { touches: [touch(200, 100)], target: swipeTarget });
+  body.fire('touchmove', { touches: [touch(190, 190)], target: swipeTarget, preventDefault() {} });
+  body.fire('touchend', { changedTouches: [touch(185, 220)], target: swipeTarget });
+  assert.equal(panel.getState().activeTab, 'people', '纵向滚动不得误触主 tab 切页');
+  const profileStripTarget = { closest: selector => selector.includes('.qqj-profile-switcher') ? {} : null };
+  body.fire('touchstart', { touches: [touch(260, 100)], target: profileStripTarget });
+  body.fire('touchend', { changedTouches: [touch(100, 100)], target: profileStripTarget });
+  assert.equal(panel.getState().activeTab, 'people', '人物横滑条应保留自身原生手势');
+
+  rejectFoundationActivation = true;
+  settingsTab.fire('click'); await new Promise(resolve => setImmediate(resolve));
+  const failedSettingsPage = view.children[0];
+  const managementError = failedSettingsPage.children.find(node => node.className === 'v3-foundation-feedback error');
+  assert.equal(managementError?.hidden, false); assert.match(managementError?.textContent ?? '', /记忆管理暂时无法读取/);
+  assert.equal(failedSettingsPage.children.some(node => node.className === 'master-switch'), true, '记忆管理加载异常不得重建或丢失设置表单');
+
+  dialogActive = true;
+  documentEvents.keydown({ key: 'Escape', preventDefault() {} });
+  assert.equal(dialogCancels, 1); assert.equal(panel.getState().open, true, 'Esc 应先关顶层自绘弹窗，不连带关闭面板');
+  documentEvents.keydown({ key: 'Escape', preventDefault() {} });
+  assert.equal(panel.getState().open, false);
+  panel.showStatus('保留模块错误空态');
+  assert.equal(view.children[0]?.className, 'empty-state'); assert.equal(view.children[0]?.children[1]?.textContent, '保留模块错误空态', '删除小行后 showStatus 错误空态仍须保留');
 });

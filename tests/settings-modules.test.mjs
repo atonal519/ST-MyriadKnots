@@ -17,8 +17,10 @@ class Node {
   replaceChildren(...nodes) { this.children = [...nodes]; }
   setAttribute(name, value) { this.attributes[name] = value; }
   addEventListener(name, handler) { (this.events[name] ||= []).push(handler); }
-  async fire(name) { for (const handler of this.events[name] || []) await handler({ currentTarget: this, target: this, stopPropagation() {} }); }
-  get classList() { return { add: c => { this.className = `${this.className ? `${this.className} ` : ''}${c}`; }, contains: c => this.className.split(' ').includes(c) }; }
+  async fire(name, overrides = {}) { for (const handler of this.events[name] || []) await handler({ currentTarget: this, target: this, stopPropagation() {}, preventDefault() {}, ...overrides }); }
+  focus(options) { this.focusOptions = options; }
+  contains(target) { return target === this || this.descendants().includes(target); }
+  get classList() { return { add: c => { if (!this.className.split(' ').includes(c)) this.className = `${this.className ? `${this.className} ` : ''}${c}`; }, remove: c => { this.className = this.className.split(' ').filter(value => value && value !== c).join(' '); }, contains: c => this.className.split(' ').includes(c) }; }
   get textContent() { return this._text || this.children.map(child => child?.textContent ?? '').join(''); }
   set textContent(value) { this._text = String(value); }
   descendants() { return this.children.flatMap(child => child instanceof Node ? [child, ...child.descendants()] : []); }
@@ -28,6 +30,14 @@ class Node {
 const documentRef = { createElement: tag => new Node(tag) };
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const fieldControl = (node, label) => node.find(n => n.tagName === 'label' && n.children[0]?.textContent === label)?.children[1];
+const inlineTrigger = control => control.find(n => n.className.split(' ').includes('qqj-inline-select-trigger'));
+const chooseInline = async (control, value) => {
+  await inlineTrigger(control).fire('click');
+  const option = control.find(n => n.attributes['data-value'] === value);
+  assert.ok(option, `缺少内联选项 ${value}`);
+  await option.fire('click');
+};
+const focusInline = control => inlineTrigger(control).fire('focus');
 
 test('提示词模块字段 change 即持久化', () => {
   const patches = [];
@@ -85,13 +95,17 @@ test('摘要、CSE 与人物资料指导各自 change 即存，可载入内置�
   assert.equal(summary.value, ''); assert.equal(cse.value, ''); assert.equal(profile.value, '');
 });
 
-test('外观模块 change 即存并即时应用；改 URL 时清空缓存 family', () => {
+test('外观模块内联选择即存并即时应用；程序设置同步标签，改 URL 清空缓存 family', async () => {
   const patches = []; let applied = 0;
   const settings = { get: () => ({ appearanceTheme: 'auto', appearanceScale: 1, appearanceFontCssUrl: '' }), update: patch => { patches.push(patch); return patch; } };
   const { node } = createAppearanceSettings({ settings, documentRef, applyAppearance: () => { applied += 1; } });
+  assert.equal(node.find(n => n.tagName === 'select'), undefined, '外观设置不得唤起手机原生选择器');
   const theme = fieldControl(node, '主题');
-  theme.value = 'night'; theme.fire('change');
+  await chooseInline(theme, 'night');
   assert.deepEqual(patches.at(-1), { appearanceTheme: 'night' });
+  assert.equal(theme.find(n => n.className === 'qqj-inline-select-value').textContent, '夜间');
+  theme.value = 'day';
+  assert.equal(theme.find(n => n.className === 'qqj-inline-select-value').textContent, '日间', '顶栏程序化切换应同步内联标签');
   const url = fieldControl(node, '自定义字体 CSS URL');
   url.value = 'https://f.test/a.css'; url.fire('change');
   assert.deepEqual(patches.at(-1), { appearanceFontCssUrl: 'https://f.test/a.css', appearanceFontFamily: '' });
@@ -125,14 +139,16 @@ test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调�
     testConnection: async selection => { toolCalls.push(['test', structuredClone(selection)]); return { model: selection.config.model }; },
   };
   let rerenders = 0;
-  const { node } = createApiSettings({ settings, apiTools, documentRef, rerender: () => { rerenders += 1; } });
+  const promptCalls = []; let promptResponse = null;
+  const { node } = createApiSettings({ settings, apiTools, documentRef, promptImpl: options => { promptCalls.push(options); return promptResponse; }, rerender: () => { rerenders += 1; } });
   assert.equal(node.find(n => n.tagName === 'button' && n.textContent === '清除 Key'), undefined);
   const analysis = fieldControl(node, '分析API（建议高质模型）');
   const summary = fieldControl(node, '摘要API（建议快速模型）');
+  assert.equal(node.find(n => n.tagName === 'select'), undefined, 'API 角色预设不得唤起手机原生选择器');
   const url = fieldControl(node, 'URL'), key = fieldControl(node, 'Key');
   const model = fieldControl(node, '模型').find(n => n.tagName === 'input');
   assert.equal(url.value, 'https://main.test/v1');
-  await summary.fire('focus');
+  await focusInline(summary);
   assert.equal(url.value, 'https://fast.test/v1');
   assert.equal(model.value, 'fast-model');
   assert.match(node.find(n => n.className === 'settings-hint').textContent, /摘要 API · 摘要快速/);
@@ -160,7 +176,7 @@ test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调�
   assert.equal(presets.find(item => item.id === 'fast').key, 'FAST_KEY', 'Key 留空必须保留摘要预设原值');
   assert.deepEqual(analysisUpdates, [], '保存摘要配置不得切换分析 API');
 
-  summary.value = ''; await summary.fire('change');
+  await chooseInline(summary, '');
   assert.equal(utilityUpdates.at(-1), '');
   assert.equal(url.value, 'https://main.test/v1');
   assert.match(node.find(n => n.className === 'settings-hint').textContent, /摘要 API 跟随分析/);
@@ -170,11 +186,12 @@ test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调�
   assert.equal(main.key, 'MAIN_KEY', '跟随分析时 Key 留空必须保留实际主配置原值');
   assert.deepEqual(analysisUpdates, [], '通过跟随摘要保存共享目标不得改分析选择');
 
-  const originalPrompt = globalThis.prompt;
-  globalThis.prompt = () => '摘要专用新预设';
-  try {
-    await node.find(n => n.tagName === 'button' && n.textContent === '另存为预设').fire('click');
-  } finally { globalThis.prompt = originalPrompt; }
+  const saveCountBeforePrompt = saves.length;
+  await node.find(n => n.tagName === 'button' && n.textContent === '另存为预设').fire('click');
+  assert.equal(saves.length, saveCountBeforePrompt, '取消另存输入不得创建预设'); assert.equal(rerenders, 0);
+  promptResponse = '摘要专用新预设';
+  await node.find(n => n.tagName === 'button' && n.textContent === '另存为预设').fire('click');
+  assert.equal(promptCalls[1].title, '另存为预设');
   assert.equal(utilityPresetId, 'summary-new');
   assert.equal(presets.find(item => item.id === 'summary-new').name, '摘要专用新预设');
   assert.deepEqual(analysisUpdates, [], '摘要另存只能切摘要角色');
@@ -211,10 +228,10 @@ test('API 预设删除按当前编辑角色清理引用，取消/主配置/失�
     const view = createApiSettings({
       settings, apiTools: { fetchModels: async () => [], testConnection: async () => ({}) }, documentRef,
       isSevenDaysAvailable: () => sevenDays,
-      confirmImpl: message => { confirmations.push(message); return confirmImpl({ message, presets, current, setPresets: value => { presets = value; } }); },
+      confirmImpl: options => { confirmations.push(options); return confirmImpl({ message: `${options.title}\n${options.body}\n${options.note}`, presets, current, setPresets: value => { presets = value; } }); },
       rerender: () => { rerenders += 1; },
     }).node;
-    if (role === 'summary') fieldControl(view, '摘要API（建议快速模型）').fire('focus');
+    if (role === 'summary') focusInline(fieldControl(view, '摘要API（建议快速模型）'));
     return { view, current, get utility() { return utility; }, get presets() { return presets; }, updates, confirmations, get rerenders() { return rerenders; } };
   };
   const remove = state => state.view.find(n => n.tagName === 'button' && n.textContent === '删除当前预设').fire('click');
@@ -224,27 +241,27 @@ test('API 预设删除按当前编辑角色清理引用，取消/主配置/失�
   await remove(main); assert.equal(main.confirmations.length, 0); assert.equal(main.presets.length, 2);
 
   const cancelled = mount({ confirmImpl: () => false });
-  await remove(cancelled); assert.equal(cancelled.presets.length, 2); assert.deepEqual(cancelled.updates, []); assert.match(cancelled.confirmations[0], /删除预设「待删预设」/);
+  await remove(cancelled); assert.equal(cancelled.presets.length, 2); assert.deepEqual(cancelled.updates, []); assert.match(`${cancelled.confirmations[0].body}\n${cancelled.confirmations[0].note}`, /删除预设「待删预设」/);
 
   const analysisOnly = mount();
   await remove(analysisOnly);
   assert.deepEqual(analysisOnly.current, { apiMode: 'auto', selectedSevenDaysPresetId: '' });
   assert.equal(analysisOnly.utility, 'keep'); assert.deepEqual(analysisOnly.presets.map(item => item.id), ['keep']); assert.equal(analysisOnly.rerenders, 1);
-  assert.match(analysisOnly.confirmations[0], /分析 API 将回退到主配置/); assert.doesNotMatch(analysisOnly.confirmations[0], /摘要 API 将改为跟随分析|构画/);
-  assert.doesNotMatch(analysisOnly.confirmations[0], /SECRET|https?:/);
+  assert.match(analysisOnly.confirmations[0].note, /分析 API 将回退到主配置/); assert.doesNotMatch(analysisOnly.confirmations[0].note, /摘要 API 将改为跟随分析|构画/);
+  assert.doesNotMatch(JSON.stringify(analysisOnly.confirmations[0]), /SECRET|https?:/);
 
   const summaryOnly = mount({ analysisId: 'keep', utilityId: 'target', role: 'summary' });
   await remove(summaryOnly);
   assert.deepEqual(summaryOnly.current, { apiMode: 'seven-preset', selectedSevenDaysPresetId: 'keep' }); assert.equal(summaryOnly.utility, '');
-  assert.match(summaryOnly.confirmations[0], /摘要 API 将改为跟随分析/); assert.doesNotMatch(summaryOnly.confirmations[0], /分析 API 将回退/);
+  assert.match(summaryOnly.confirmations[0].note, /摘要 API 将改为跟随分析/); assert.doesNotMatch(summaryOnly.confirmations[0].note, /分析 API 将回退/);
 
   const shared = mount({ analysisId: 'target', utilityId: 'target', sevenDays: true });
   await remove(shared);
   assert.deepEqual(shared.current, { apiMode: 'auto', selectedSevenDaysPresetId: '' }); assert.equal(shared.utility, '');
-  assert.match(shared.confirmations[0], /分析 API 将回退到主配置/); assert.match(shared.confirmations[0], /摘要 API 将改为跟随分析/); assert.match(shared.confirmations[0], /构画中也会移除/);
+  assert.match(shared.confirmations[0].note, /分析 API 将回退到主配置/); assert.match(shared.confirmations[0].note, /摘要 API 将改为跟随分析/); assert.match(shared.confirmations[0].note, /构画中也会移除/);
 
   const follows = mount({ analysisId: 'target', utilityId: '', role: 'summary' });
-  await remove(follows); assert.match(follows.confirmations[0], /摘要 API 当前跟随分析，也将随分析回退到主配置/);
+  await remove(follows); assert.match(follows.confirmations[0].note, /摘要 API 当前跟随分析，也将随分析回退到主配置/);
 
   const raced = mount({ analysisId: 'target', utilityId: 'keep', confirmImpl: ({ current, setPresets }) => { setPresets([{ id: 'keep', name: '保留预设' }]); current.selectedSevenDaysPresetId = 'keep'; return true; } });
   await remove(raced); assert.deepEqual(raced.current, { apiMode: 'seven-preset', selectedSevenDaysPresetId: 'keep' }); assert.deepEqual(raced.updates, []); assert.equal(raced.rerenders, 0);
@@ -271,12 +288,12 @@ test('模型内联列表搜索、空匹配与点击回填生效，旧目标迟�
   const section = node.find(n => n.className === 'qqj-model-list-section');
   const fetching = node.find(n => n.textContent === '拉取模型').fire('click');
   await flush();
-  await summary.fire('focus');
+  await focusInline(summary);
   assert.equal(model.value, 'summary-model'); assert.equal(section.hidden, true);
   resolveModels(['analysis-only', 'another-analysis']); await fetching;
   assert.equal(model.value, 'summary-model'); assert.equal(section.hidden, true); assert.doesNotMatch(section.textContent, /analysis-only/);
 
-  analysis.value = 'analysis'; await analysis.fire('change');
+  await chooseInline(analysis, 'analysis');
   const emptyTools = { fetchModels: async () => ['Alpha', 'Beta'], testConnection: async () => ({}) };
   const second = createApiSettings({ settings, apiTools: emptyTools, documentRef }).node;
   await second.find(n => n.tagName === 'button' && n.textContent === '拉取模型').fire('click');
@@ -294,7 +311,7 @@ test('模型内联列表搜索、空匹配与点击回填生效，旧目标迟�
   const failedLater = new Promise((_resolve, reject) => { rejectOld = reject; });
   const third = createApiSettings({ settings, apiTools: { fetchModels: () => failedLater, testConnection: async () => ({}) }, documentRef }).node;
   const staleFailure = third.find(n => n.tagName === 'button' && n.textContent === '拉取模型').fire('click'); await flush();
-  await fieldControl(third, '摘要API（建议快速模型）').fire('focus');
+  await focusInline(fieldControl(third, '摘要API（建议快速模型）'));
   rejectOld(Object.assign(new Error('旧目标失败'), { code: 'QQJ_TIMEOUT' })); await staleFailure;
   assert.equal(third.find(n => n.className === 'settings-result').textContent, '');
 });

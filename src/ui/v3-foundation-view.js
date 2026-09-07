@@ -1,3 +1,5 @@
+import { createInlineSelect } from './inline-select.js';
+
 function text(value, fallback = '—') { return value === null || value === undefined || value === '' ? fallback : String(value); }
 
 function statusCopy(value) {
@@ -43,7 +45,7 @@ const generationTypeCopy = value => ({ normal: '正常生成', regenerate: '重 
 const workBusy = state => Boolean(state.memoryWorkBusy || state.activeAutoMemory || state.activeExtraction || state.activeCse);
 const memoryBusy = state => Boolean(state.activeExtraction || ['revising', 'extracting', 'reconciling', 'committing'].includes(state.activeMemoryWork?.phase) || state.activeAutoMemory?.phase === 'extracting');
 const cseBusy = state => Boolean(state.activeCse || state.activeMemoryWork?.phase === 'analyzingCse' || state.activeAutoMemory?.phase === 'analyzingCse');
-const workPhaseCopy = state => ({ reconciling: '正在核对稳定楼', extracting: '正在提取摘要', analyzingCse: '正在分析人物状态', committing: '正在保存结果', resetting: '正在重建地基', revising: '正在保存修订' })[state.activeMemoryWork?.phase ?? state.activeAutoMemory?.phase ?? state.activeExtraction?.phase ?? state.activeCse?.phase] ?? '正在处理';
+const workPhaseCopy = state => ({ reconciling: '正在核对稳定楼', extracting: '正在提取摘要', analyzingCse: '正在分析人物状态', revisingCse: '正在保存人物状态', committing: '正在保存结果', resetting: '正在重建地基', revising: '正在保存修订' })[state.activeMemoryWork?.phase ?? state.activeAutoMemory?.phase ?? state.activeExtraction?.phase ?? state.activeCse?.phase] ?? '正在处理';
 const splitPeople = value => [...new Set(String(value ?? '').split(/[、,，\n]/u).map(item => item.trim()).filter(Boolean))];
 const timeDisplay = chronology => [...new Set((chronology ?? []).map(item => item?.time?.sourceText || item?.time?.normalized || item?.description).map(item => String(item ?? '').trim()).filter(Boolean))].join('；');
 const comparableLocations = locations => (locations ?? []).map(item => ({ itemId: item?.itemId ?? null, name: String(item?.name ?? '').trim() })).filter(item => item.name);
@@ -53,8 +55,11 @@ const unchangedDraft = (draft, payload) => String(payload.summary ?? '').trim() 
   && sameList(comparableLocations(payload.locations), comparableLocations(draft.originalLocations))
   && sameList(payload.participantNames, draft.originalParticipantNames)
   && !String(payload.revisionNote ?? '').trim();
+const CSE_VISIBILITY_OPTIONS = Object.freeze([['private', '私密'], ['expressed', '已表达'], ['observable', '可观察'], ['shared', '共享'], ['authorial', '作者设定']]);
+const visibilityCopy = value => Object.fromEntries(CSE_VISIBILITY_OPTIONS)[value] ?? text(value);
+const originCopy = value => ({ baseline: '聊天基线', floor: '本楼分析', reasonableProgression: '合理进展', manual: '用户纠正' })[value] ?? '本地重放';
 
-export function createV3FoundationView({ runtime, recallRuntime = null, peopleRuntime = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = message => globalThis.confirm?.(message) === true } = {}) {
+export function createV3FoundationView({ runtime, recallRuntime = null, peopleRuntime = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, infoImpl = () => Promise.resolve(true) } = {}) {
   if (!runtime || ['getState', 'refreshStatus', 'confirmLatest'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('V3 foundation view runtime 无效');
   if (recallRuntime && typeof recallRuntime.getState !== 'function') throw new TypeError('V3 recall view runtime 无效');
   if (peopleRuntime && typeof peopleRuntime.getState !== 'function') throw new TypeError('V3 people workspace runtime 无效');
@@ -64,6 +69,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   let page = 'management';
   let foundationState = runtime.getState(), recallState = recallRuntime?.getState?.() ?? null, peopleState = peopleRuntime?.getState?.() ?? null, chatId = foundationState?.chatId ?? null, healthNode = null;
   const drafts = new Map();
+  const cseDrafts = new Map();
   const openState = new Map();
 
   const element = (tag, className = '', value = '') => {
@@ -80,7 +86,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   };
   const resetForChat = nextChatId => {
     if (nextChatId === chatId) return false;
-    chatId = nextChatId; drafts.clear(); openState.clear(); fallbackText = ''; feedback = '';
+    chatId = nextChatId; drafts.clear(); cseDrafts.clear(); openState.clear(); fallbackText = ''; feedback = '';
     return true;
   };
   const sourceChanged = (previous, next) => {
@@ -165,7 +171,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     return valid;
   }
   function adoptFoundationState(state = runtime.getState()) {
-    if (sourceChanged(foundationState, state)) epoch += 1;
+    if (sourceChanged(foundationState, state)) { epoch += 1; cseDrafts.clear(); }
     const chatChanged = resetForChat(state?.chatId ?? null);
     const draftsValid = validateDrafts(state);
     foundationState = state;
@@ -238,7 +244,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         const edit = element('button', 'secondary-action', '编辑'); edit.type = 'button'; edit.disabled = workBusy(state);
         edit.addEventListener('click', () => { const memory = floor.memory; const names = new Map((state.memoryEntities ?? []).map(entity => [entity.entityId, entity.displayName])); const originalTimeText = timeDisplay(memory?.chronology) || floor.timeFallback || ''; const locations = (memory?.locations ?? []).map(item => ({ itemId: item.itemId, name: item.name ?? '' })); const participantNames = (memory?.participants ?? []).map(item => names.get(item.entityId)).filter(Boolean); drafts.set(key, { floorId: floor.floorId, canonicalFingerprint: floor.canonicalFingerprint, rawFingerprint: floor.rawFingerprint, summary: floor.summary, originalSummary: floor.summary, timeText: originalTimeText, originalTimeText, locations, originalLocations: locations.map(item => ({ ...item })), peopleText: participantNames.join('、'), originalParticipantNames: participantNames, note: '', saving: false, saveError: '' }); render(foundationState); });
         const extract = element('button', 'secondary-action', '重新提取'); extract.type = 'button'; extract.disabled = workBusy(state) || typeof runtime.extractFloor !== 'function';
-        extract.addEventListener('click', () => { if (!confirmImpl('重新提取会替换本楼摘要，并重新衔接本楼及后续人物状态。确定继续吗？')) { feedback = '已取消重新提取。'; render(foundationState); return; } void run('重新提取', () => runtime.extractFloor(floor.floorId)); });
+        extract.addEventListener('click', async () => { if (!await Promise.resolve(confirmImpl({ title: '重新提取本楼摘要', body: '重新提取会替换本楼摘要，并重新衔接本楼及后续人物状态，也可能覆盖之后的人工纠正。', confirmText: '重新提取', cancelText: '取消' }))) { feedback = '已取消重新提取。'; render(foundationState); return; } void run('重新提取', () => runtime.extractFloor(floor.floorId)); });
         actions.append(edit, extract);
       } else {
         const extract = element('button', 'secondary-action', '提取摘要'); extract.type = 'button'; extract.disabled = workBusy(state) || typeof runtime.extractFloor !== 'function';
@@ -262,7 +268,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   }
 
   const appendSubjectGroups = (card, subject, state) => {
-    const item = value => { const node = element('li', 'v3-cse-item'); const source = value.sourceFloorId || value.sourceAssistantSeq ? sourceFloorCopy(state, value) : value.origin === 'baseline' ? '来源：聊天基线' : '来源：本地重放'; node.append(element('span', 'v3-cse-item-text', value.text), element('small', 'v3-cse-item-meta', `${value.reason} · ${source} · ${value.visibility}`)); return node; };
+    const item = value => { const node = element('li', 'v3-cse-item'); const source = value.sourceFloorId || value.sourceAssistantSeq ? sourceFloorCopy(state, value) : value.origin === 'baseline' ? '来源：聊天基线' : '来源：本地重放'; node.append(element('span', 'v3-cse-item-text', value.text), element('small', 'v3-cse-item-meta', [...new Set([value.reason, originCopy(value.origin), source, visibilityCopy(value.visibility)])].join(' · '))); return node; };
     const addGroup = (label, values, groupByTarget = false) => {
       const block = element('div', 'v3-cse-group'); block.append(element('h5', '', label));
       if (!values.length) { block.append(element('p', 'settings-hint', '暂无')); card.append(block); return; }
@@ -274,15 +280,73 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     };
     addGroup('核心特质', subject.core ?? []); addGroup('长期倾向', subject.adaptive ?? [], true); addGroup('当前情境', subject.situational ?? []);
   };
+  function renderCseEditor(body, draft, state, key) {
+    const editor = element('div', 'qqj-cse-edit');
+    const controls = [], disabled = draft.saving === true || workBusy(state);
+    editor.append(element('p', 'settings-hint', '修改会直接成为当前人物状态。重新提取或重算较早楼层时，之后的人工纠正可能被覆盖。'));
+    const scopeHeading = element('div', 'qqj-cse-scope-heading');
+    const scopeHelp = element('button', 'qqj-cse-help', '?'); scopeHelp.type = 'button'; scopeHelp.disabled = disabled; scopeHelp.setAttribute('aria-label', '查看信息范围说明');
+    scopeHelp.addEventListener('click', () => { void Promise.resolve(infoImpl({ title: '信息范围', body: '信息范围用于描述人物状态在故事里的可知程度，不是上传或隐私权限，也不表示所有人物都知道。', note: '私密：本人内心或私有认知\n已表达：已经说出或表现，不代表人人收到\n可观察：剧情中外表、动作等可观察状态，不等于读心\n共享：已向相关人传达或共同知晓，不代表全员知情\n作者设定：塑造人物的参考，不代表角色知道', confirmText: '知道了' })); });
+    scopeHeading.append(element('span', '', '信息范围'), scopeHelp); editor.append(scopeHeading); controls.push(scopeHelp);
+    const category = (field, label, { toward = false } = {}) => {
+      const group = element('section', 'qqj-cse-edit-group');
+      group.append(element('strong', '', label));
+      draft[field].forEach((item, index) => {
+        const rowNode = element('div', `qqj-cse-edit-row${toward ? ' has-toward' : ''}`);
+        const input = element('textarea', 'settings-input'); input.value = item.text; input.placeholder = `${label}内容`; input.disabled = disabled; input.addEventListener('input', () => { item.text = input.value; }); controls.push(input);
+        const visibility = createInlineSelect({ documentRef, options: CSE_VISIBILITY_OPTIONS.map(([value, optionLabel]) => ({ value, label: optionLabel })), value: item.visibility, ariaLabel: `${label}信息范围`, onChange: value => { item.visibility = value; } }).node;
+        visibility.disabled = disabled; controls.push(visibility);
+        const meta = element('div', 'qqj-cse-edit-meta'); meta.append(visibility);
+        rowNode.append(input, meta);
+        if (toward) {
+          const target = createInlineSelect({ documentRef, options: [{ value: '', label: '未指定对象' }, ...(state.cseTowardCandidates ?? []).map(candidate => ({ value: candidate.entityId, label: candidate.displayName }))], value: item.towardEntityId ?? '', ariaLabel: `${label}对象`, onChange: value => { item.towardEntityId = value || null; } }).node;
+          target.disabled = disabled; controls.push(target); meta.append(target);
+        }
+        const remove = element('button', 'secondary-action', '删除'); remove.type = 'button'; remove.disabled = disabled; remove.addEventListener('click', () => { draft[field].splice(index, 1); render(foundationState); }); controls.push(remove); meta.append(remove); group.append(rowNode);
+      });
+      const add = element('button', 'secondary-action', `添加${label}`); add.type = 'button'; add.disabled = disabled; add.addEventListener('click', () => { draft[field].push({ itemId: null, text: '', visibility: field === 'core' ? 'authorial' : 'private', towardEntityId: null }); render(foundationState); }); controls.push(add); group.append(add); return group;
+    };
+    editor.append(category('core', '核心特质'), category('adaptive', '长期倾向', { toward: true }), category('situational', '当前情境'));
+    if (draft.saveError) editor.append(element('p', 'v3-foundation-feedback error', draft.saveError));
+    const actions = element('div', 'v3-foundation-actions');
+    const save = element('button', 'primary-action', draft.saving ? '保存中…' : '保存'); save.type = 'button'; save.disabled = draft.saving === true || workBusy(state) || typeof runtime.correctSubjectState !== 'function';
+    const cancel = element('button', 'secondary-action', '取消'); cancel.type = 'button'; cancel.disabled = draft.saving === true || workBusy(state);
+    draft.controls = [...controls, save, cancel];
+    save.addEventListener('click', () => {
+      const saveIdentity = {}; draft.saveIdentity = saveIdentity; draft.saving = true; draft.saveError = ''; save.textContent = '保存中…';
+      for (const control of draft.controls) control.disabled = true;
+      const currentDraft = () => cseDrafts.get(key) === draft && draft.saveIdentity === saveIdentity && (runtime.getState?.() ?? foundationState)?.chatId === draft.chatId;
+      const cloneItems = items => items.map(item => ({ ...item }));
+      const payload = { expectedCurrentStateId: draft.expectedCurrentStateId, expectedCurrentStateFingerprint: draft.expectedCurrentStateFingerprint, core: cloneItems(draft.core), adaptive: cloneItems(draft.adaptive), situational: cloneItems(draft.situational) };
+      void run('保存人物状态', () => runtime.correctSubjectState(draft.subjectEntityId, payload), {
+        after: () => { if (!currentDraft()) return false; cseDrafts.delete(key); openState.set(`subject:${draft.subjectEntityId}`, true); return true; },
+        failed: error => { if (!currentDraft()) return false; draft.saving = false; draft.saveError = `保存失败：${error?.message || '未知错误'}`; return true; },
+      });
+    });
+    cancel.addEventListener('click', () => { cseDrafts.delete(key); feedback = '已取消编辑人物状态。'; render(foundationState); });
+    actions.append(save, cancel); editor.append(actions); body.append(editor);
+  }
   function renderSubject(subject, state, { person = null, defaultOpen = false } = {}) {
     const entityId = subject?.subjectEntityId ?? person?.entityId;
     const displayName = person?.displayName || subject?.displayName || '未知人物';
+    const key = `${state.chatId ?? 'no-chat'}:${entityId}`;
     const card = setDetailsState(element('details', 'v3-cse-subject'), `subject:${entityId}`, defaultOpen);
     const summary = element('summary', 'qqj-person-summary'); summary.append(element('strong', '', displayName), element('span', 'v3-memory-status', subject ? '人物状态' : '暂无状态')); card.append(summary);
     const body = element('div', 'qqj-person-body');
-    if (subject) appendSubjectGroups(body, subject, state);
+    const draft = cseDrafts.get(key);
+    if (subject && draft) renderCseEditor(body, draft, state, key);
+    else if (subject) appendSubjectGroups(body, subject, state);
     else body.append(element('p', 'settings-hint', '这个重要人物还没有已保存的状态分析；后台摘要与 CSE 会继续正常处理。'));
-    if (peopleRuntime && person) {
+    if (subject && !draft) {
+      const edit = element('button', 'secondary-action', '编辑状态'); edit.type = 'button'; edit.disabled = workBusy(state) || typeof runtime.correctSubjectState !== 'function' || !state.currentStateId || !state.currentStateFingerprint;
+      edit.addEventListener('click', () => {
+        const copyItems = values => (values ?? []).map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: item.towardEntityId ?? null }));
+        cseDrafts.set(key, { chatId: state.chatId, subjectEntityId: entityId, expectedCurrentStateId: state.currentStateId, expectedCurrentStateFingerprint: state.currentStateFingerprint, core: copyItems(subject.core), adaptive: copyItems(subject.adaptive), situational: copyItems(subject.situational), saving: false, saveError: '' });
+        openState.set(`subject:${entityId}`, true); render(foundationState);
+      });
+      body.append(edit);
+    }
+    if (!draft && peopleRuntime && person) {
       const selected = new Set(peopleState?.selectedEntityIds ?? []), action = element('button', 'secondary-action', person.selected ? '移出重要' : '设为重要');
       action.type = 'button'; action.disabled = Boolean(peopleState?.active && peopleState.active.kind !== 'generating');
       action.addEventListener('click', () => {
@@ -298,7 +362,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const status = floor.cse?.status; if (!['pending', 'failed', 'ready', 'noChange'].includes(status)) return null;
     const completed = ['ready', 'noChange'].includes(status); const label = completed ? '重新分析' : status === 'failed' ? '重试分析' : '分析本楼';
     const button = element('button', completed ? 'secondary-action' : 'primary-action', label); button.type = 'button'; button.disabled = workBusy(state);
-    button.addEventListener('click', () => { if (completed && !confirmImpl('确定重新分析本楼人物状态吗？成功后，后续楼层人物状态需依次重算；本楼摘要保持不变。')) { feedback = '已取消重新分析人物状态。'; render(foundationState); return; } void run(label, () => runtime.retryStateAnalysis(floor.floorId)); });
+    button.addEventListener('click', async () => { if (completed && !await Promise.resolve(confirmImpl({ title: '重新分析人物状态', body: '成功后，后续楼层人物状态需依次重算，也可能覆盖之后的人工纠正；本楼摘要保持不变。', confirmText: '重新分析', cancelText: '取消' }))) { feedback = '已取消重新分析人物状态。'; render(foundationState); return; } void run(label, () => runtime.retryStateAnalysis(floor.floorId)); });
     return button;
   }
   function renderCseHistory(state) {
@@ -328,10 +392,12 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const pageNode = element('section', 'qqj-page qqj-people-page'); pageNode.append(heading('双丝网', '查看人物在当前故事节点的状态。', state));
     if (feedback) pageNode.append(element('p', `v3-foundation-feedback${feedback.includes('失败') ? ' error' : ''}`, feedback));
     const subjects = state.cseSubjects ?? [], subjectById = new Map(subjects.map(subject => [subject.subjectEntityId, subject]));
-    const candidates = peopleState?.people ?? [], important = candidates.filter(person => person.selected), more = candidates.filter(person => !person.selected);
+    const userEntity = (state.memoryEntities ?? []).find(entity => entity.specialRole === 'user'), userSubject = userEntity ? subjectById.get(userEntity.entityId) : null;
+    const candidates = (peopleState?.people ?? []).filter(person => person.entityId !== userEntity?.entityId), important = candidates.filter(person => person.selected), more = candidates.filter(person => !person.selected);
     const list = element('div', 'v3-cse-subjects');
+    if (userSubject) list.append(renderSubject(userSubject, state, { defaultOpen: true }));
     for (const person of important) list.append(renderSubject(subjectById.get(person.entityId), state, { person, defaultOpen: true }));
-    if (!important.length) list.append(element('div', 'qqj-inline-empty', peopleRuntime ? '尚未选择重要人物。千人页的选择会同步显示在这里。' : '暂无人物状态。'));
+    if (!userSubject && !important.length) list.append(element('div', 'qqj-inline-empty', peopleRuntime ? '尚未选择重要人物。千人页的选择会同步显示在这里。' : '暂无人物状态。'));
     pageNode.append(list);
     const drawer = setDetailsState(element('details', 'qqj-more-people qqj-cse-more'), 'cse-more-people', false);
     const summary = element('summary', 'qqj-section-summary'); summary.append(element('strong', '', '更多人物'), element('span', 'v3-memory-status', `${more.length} 位`)); drawer.append(summary);
@@ -372,7 +438,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       for (const floor of [...(state.floors ?? [])].reverse()) {
         const diagnostic = element('div', 'qqj-diagnostic-row'); diagnostic.append(element('span', '', floorCopy(state, floor)));
         const safe = element('button', 'secondary-action', '复制安全诊断'); safe.type = 'button'; safe.addEventListener('click', () => { void run('复制安全诊断', async () => { feedback = await copy(runtime.copySafeDiagnostic(floor.floorId)); return runtime.getState(); }); });
-        const full = element('button', 'secondary-action', '复制完整诊断'); full.type = 'button'; full.addEventListener('click', () => { void run('复制完整诊断', async () => { if (!confirmImpl('完整诊断包含本楼正文与证据原文。确认复制吗？')) { feedback = '已取消完整诊断复制。'; return runtime.getState(); } feedback = await copy(runtime.copyFullDiagnostic(floor.floorId)); return runtime.getState(); }); });
+        const full = element('button', 'secondary-action', '复制完整诊断'); full.type = 'button'; full.addEventListener('click', () => { void run('复制完整诊断', async () => { if (!await Promise.resolve(confirmImpl({ title: '复制完整诊断', body: '完整诊断包含本楼正文与证据原文。确认复制吗？', confirmText: '复制', cancelText: '取消' }))) { feedback = '已取消完整诊断复制。'; return runtime.getState(); } feedback = await copy(runtime.copyFullDiagnostic(floor.floorId)); return runtime.getState(); }); });
         diagnostic.append(safe, full); body.append(diagnostic);
       }
     }
@@ -385,7 +451,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const actions = element('div', 'v3-foundation-actions qqj-management-actions'), busy = workBusy(state);
     if (state.rebuildStatus === 'rebuilding' && typeof runtime.pauseHistoricalRebuild === 'function') { const pause = element('button', 'primary-action', '暂停'); pause.type = 'button'; pause.disabled = !state.activeAutoMemory; pause.addEventListener('click', () => { void run('暂停', () => runtime.pauseHistoricalRebuild()); }); actions.append(pause); }
     else { const begin = runtime.startHistoricalRebuild ?? runtime.retryAutomation; const actionable = state.rebuildHasActionableWork ?? !['caughtUp', 'waitingRealtime'].includes(state.rebuildStatus); const proceed = element('button', 'primary-action', busy ? workPhaseCopy(state) : '继续'); proceed.type = 'button'; proceed.disabled = busy || typeof begin !== 'function' || !actionable; proceed.addEventListener('click', () => { void run('继续', () => begin.call(runtime)); }); actions.append(proceed); }
-    const reset = element('button', 'secondary-action', '完全重构'); reset.type = 'button'; reset.disabled = busy || typeof runtime.fullRebuild !== 'function'; reset.addEventListener('click', () => { if (!confirmImpl('当前聊天的摘要及人物状态将从头重新生成，人工修订也会被替换；聊天正文和插件设置保留。确定继续吗？')) { feedback = '已取消完全重构。'; render(foundationState); return; } void run('完全重构', () => runtime.fullRebuild(state.chatId)); }); actions.append(reset);
+    const reset = element('button', 'secondary-action', '完全重构'); reset.type = 'button'; reset.disabled = busy || typeof runtime.fullRebuild !== 'function'; reset.addEventListener('click', async () => { if (!await Promise.resolve(confirmImpl({ title: '完全重构当前聊天记忆', body: '当前聊天的摘要及人物状态将从头重新生成，人工修订也会被替换；聊天正文和插件设置保留。', confirmText: '完全重构', cancelText: '取消' }))) { feedback = '已取消完全重构。'; render(foundationState); return; } void run('完全重构', () => runtime.fullRebuild(state.chatId)); }); actions.append(reset);
     pageNode.append(actions, element('p', `v3-foundation-feedback${errorCopy(state) ? ' error' : ''}`, feedback || errorCopy(state) || '状态已显示。'), renderRecallDetails(), renderDiagnostics(state)); return pageNode;
   }
 
@@ -399,6 +465,10 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const { state, mustReplace } = adoptFoundationState(snapshot);
     if (page === 'memories' && drafts.size && !mustReplace) {
       for (const draft of drafts.values()) for (const control of draft.controls ?? []) control.disabled = draft.saving === true || workBusy(state);
+      updateHealth(state); return;
+    }
+    if (page === 'people' && cseDrafts.size && !mustReplace) {
+      for (const draft of cseDrafts.values()) for (const control of draft.controls ?? []) control.disabled = draft.saving === true || workBusy(state);
       updateHealth(state); return;
     }
     renderAdopted(state);

@@ -1,6 +1,7 @@
 import { user_avatar } from '/scripts/personas.js';
 import { extension_settings, extensionNames } from '/scripts/extensions.js';
-import { isGenerating, saveSettingsDebounced } from '/script.js';
+import { is_send_press, saveSettingsDebounced } from '/script.js';
+import { is_group_generating } from '/scripts/group-chats.js';
 import { createBackendClient } from './src/backend-client.js';
 import { bootstrap } from './src/bootstrap.js';
 import { createSettingsStore } from './src/settings.js';
@@ -15,10 +16,12 @@ import { createFoundationStore } from './src/v3/foundation-store.js';
 import { createFoundationRuntime } from './src/v3/foundation-runtime.js';
 import { createV3MemoryRuntime } from './src/v3/memory-runtime.js';
 import { createV3RecallRuntime } from './src/v3/recall-runtime.js';
+import { createAutoHideController } from './src/v3/auto-hide.js';
 import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime } from './src/v3/people-workspace.js';
 import { installPublicMemoryBridge } from './src/v3/public-memory-bridge.js';
 import { createMyKnotsStoryClockController, createStoryClockStatusProjection, extensionStoryClockState } from './src/story-clock.js';
 
+const isGenerating = () => Boolean(is_send_press || is_group_generating);
 const hostAdapter = createHostAdapter();
 const hostContext = () => hostAdapter.getContext();
 const contextProvider = () => ({ ...hostContext(), userAvatar: user_avatar });
@@ -124,6 +127,12 @@ const peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
   profilePromptGuidance: profilePrompt,
   isEnabled: settings.isEnabled,
 });
+const autoHideController = createAutoHideController({
+  hostAdapter,
+  memoryRuntime: v3MemoryRuntime,
+  settings,
+  notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
+});
 const publicMemoryBridgeMount = installPublicMemoryBridge({
   session,
   store: foundationStore,
@@ -132,10 +141,12 @@ const publicMemoryBridgeMount = installPublicMemoryBridge({
   sanitizerOptions,
 });
 globalThis.addEventListener?.('beforeunload', publicMemoryBridgeMount.cleanup, { once: true });
+globalThis.addEventListener?.('beforeunload', autoHideController.dispose, { once: true });
 globalThis.qqj_v3_recall_interceptor = (coreChat, contextSize, abort, type) => v3RecallRuntime.intercept(coreChat, contextSize, abort, type);
 const setAllEnabled = async enabled => {
   refreshStoryClock({ announce: true });
   if (!enabled) {
+    autoHideController.stop();
     await peopleWorkspaceRuntime.setEnabled(false);
     await v3RecallRuntime.setEnabled(false);
     const v3Result = await v3MemoryRuntime.setEnabled(false);
@@ -153,6 +164,14 @@ ui = bootstrap({
   apiTools,
   onPluginEnabledChange: setAllEnabled,
   onStoryClockChange: options => refreshStoryClock({ ...options, announce: options?.readOnly !== true }),
+  onAutoHideChange: options => autoHideController.applySettings(options),
+  subscribeDialogContextChange: handler => {
+    const currentHost = hostContext();
+    const eventName = currentHost?.eventTypes?.CHAT_CHANGED;
+    if (!eventName || !currentHost?.eventSource?.on) return () => {};
+    currentHost.eventSource.on(eventName, handler);
+    return () => currentHost.eventSource.removeListener?.(eventName, handler);
+  },
   isSevenDaysAvailable,
   sourcePermissions,
   v3FoundationRuntime: v3MemoryRuntime,

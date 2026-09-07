@@ -67,7 +67,7 @@ test('同一 QQJ chatId 被复制到不同宿主聊天后直接获得独立 read
     chatId: prepared.identity.chatId,
     owner: { hostChatId: '复制聊天', characterLocator: 'char.png', personaLocator: 'me.png' },
     state: 'ready',
-    sourceChatId: null,
+    sourceChatId: UUID,
     createdAt: '2026-09-04T00:00:00.000Z',
     updatedAt: '2026-09-04T00:00:00.000Z',
   });
@@ -99,7 +99,7 @@ test('旧 preparing 认领不复用已搬入的 root，当前宿主改领无继�
   assert.deepEqual(backend.records.get(`${CHAT_IDENTITY_COLLECTION}/binding-${UUID}`).data, oldBinding);
   assert.deepEqual(backend.records.get(`chat-${UUID}/v3-root`).data, { copied: true });
   assert.equal(backend.records.get(`${CHAT_IDENTITY_COLLECTION}/binding-${prepared.identity.chatId}`).data.state, 'ready');
-  assert.equal(backend.records.get(`${CHAT_IDENTITY_COLLECTION}/binding-${prepared.identity.chatId}`).data.sourceChatId, null);
+  assert.equal(backend.records.get(`${CHAT_IDENTITY_COLLECTION}/binding-${prepared.identity.chatId}`).data.sourceChatId, UUID);
   assert.equal(backend.records.has(`chat-${prepared.identity.chatId}/v3-root`), false);
 });
 

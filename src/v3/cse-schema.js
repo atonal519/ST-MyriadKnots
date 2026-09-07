@@ -2,7 +2,7 @@ import { isUuid, sha256 } from '../identity.js';
 import { validateMemoryGraph } from './memory-schema.js';
 
 export const CSE_VISIBILITIES = Object.freeze(['private', 'expressed', 'observable', 'shared', 'authorial']);
-export const CSE_ORIGINS = Object.freeze(['baseline', 'floor', 'reasonableProgression']);
+export const CSE_ORIGINS = Object.freeze(['baseline', 'floor', 'reasonableProgression', 'manual']);
 const HASH = /^sha256:[0-9a-f]{64}$/;
 const STATUSES = new Set(['active', 'superseded', 'invalidated']);
 
@@ -104,6 +104,15 @@ export function validateStateDeltaRecord(input, { expectedChatId } = {}) {
   object(value.source, 'V3_STATEDELTA_INVALID', 'source');
   text(value.source.promptVersion, 'V3_STATEDELTA_INVALID', 'source.promptVersion', { maximum: 160 });
   text(value.source.compilerVersion, 'V3_STATEDELTA_INVALID', 'source.compilerVersion', { maximum: 160 });
+  if (Object.hasOwn(value.source, 'manualSubjectEntityIds')) {
+    const subjectIds = new Set(value.subjectSnapshots.map(subject => subject.subjectEntityId));
+    const seen = new Set();
+    array(value.source.manualSubjectEntityIds, 'V3_STATEDELTA_INVALID', 'source.manualSubjectEntityIds', 80).forEach((id, index) => {
+      uuid(id, 'V3_STATEDELTA_INVALID', `source.manualSubjectEntityIds[${index}]`);
+      if (seen.has(id) || !subjectIds.has(id)) fail('V3_STATEDELTA_INVALID', `source.manualSubjectEntityIds[${index}]`);
+      seen.add(id);
+    });
+  }
   return Object.freeze(value);
 }
 

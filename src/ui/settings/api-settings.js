@@ -1,4 +1,5 @@
 import { createSettingsKit } from './kit.js';
+import { createInlineSelect } from '../inline-select.js';
 
 function apiErrorCopy(error) {
   return {
@@ -19,26 +20,27 @@ export function createApiSettings({
   advancedOpen = false,
   onAdvancedToggle,
   rerender,
-  confirmImpl = message => globalThis.confirm?.(message) === true,
+  confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true,
+  promptImpl = options => globalThis.prompt?.(typeof options === 'string' ? options : options?.title, typeof options === 'string' ? '' : options?.initialValue) ?? null,
   isSevenDaysAvailable = () => false,
 } = {}) {
-  const { element, button, field, appendOption, subDrawer } = createSettingsKit(documentRef);
+  const { element, button, field, subDrawer } = createSettingsKit(documentRef);
   const { drawer, body } = subDrawer({ title: 'API 配置', id: 'qqj-settings-api', open, onToggle });
 
   const current = settings.get();
   const presets = settings.sharedPresets();
 
-  const analysisSelect = element('select', 'settings-input');
-  appendOption(analysisSelect, '', '主配置');
-  for (const preset of presets) appendOption(analysisSelect, preset.id, preset.name);
-  analysisSelect.value = current.apiMode === 'seven-preset' ? current.selectedSevenDaysPresetId : '';
-
-  const summarySelect = element('select', 'settings-input');
-  appendOption(summarySelect, '', '跟随分析API');
-  for (const preset of presets) appendOption(summarySelect, preset.id, preset.name);
-  summarySelect.value = presets.some(item => item.id === settings.sharedUtilityPresetId()) ? settings.sharedUtilityPresetId() : '';
-
   let editingRole = 'analysis';
+  const presetOptions = first => [{ value: '', label: first }, ...presets.map(preset => ({ value: preset.id, label: preset.name }))];
+  const analysisPicker = createInlineSelect({
+    documentRef, options: presetOptions('主配置'), value: current.apiMode === 'seven-preset' ? current.selectedSevenDaysPresetId : '', ariaLabel: '分析 API',
+    onFocus: () => setEditingRole('analysis'), onChange: value => changeAnalysis(value),
+  });
+  const summaryPicker = createInlineSelect({
+    documentRef, options: presetOptions('跟随分析API'), value: presets.some(item => item.id === settings.sharedUtilityPresetId()) ? settings.sharedUtilityPresetId() : '', ariaLabel: '摘要 API',
+    onFocus: () => setEditingRole('summary'), onChange: value => changeSummary(value),
+  });
+  const analysisSelect = analysisPicker.node, summarySelect = summaryPicker.node;
   const presetById = id => settings.sharedPresets().find(item => item.id === id) ?? null;
   const editingTarget = () => {
     const followsAnalysis = editingRole === 'summary' && !summarySelect.value;
@@ -108,21 +110,20 @@ export function createApiSettings({
     if (remove) remove.disabled = !target.presetId || !target.config;
   };
 
-  // 分析/摘要角色选择：change 即存。
-  analysisSelect.addEventListener('change', () => {
-    settings.update({ apiMode: analysisSelect.value ? 'seven-preset' : 'auto', selectedSevenDaysPresetId: analysisSelect.value });
+  // 分析/摘要角色选择：内联选中即存，打开时切换当前编辑目标。
+  function changeAnalysis(value) {
+    settings.update({ apiMode: value ? 'seven-preset' : 'auto', selectedSevenDaysPresetId: value });
     editingRole = 'analysis';
     result.textContent = ''; result.className = 'settings-result';
     fill();
-  });
-  summarySelect.addEventListener('change', () => {
-    settings.setSharedUtilityPresetId(summarySelect.value);
+  }
+  function changeSummary(value) {
+    settings.setSharedUtilityPresetId(value);
     editingRole = 'summary';
     result.textContent = ''; result.className = 'settings-result';
     fill();
-  });
-  analysisSelect.addEventListener('focus', () => { editingRole = 'analysis'; result.textContent = ''; result.className = 'settings-result'; fill(); });
-  summarySelect.addEventListener('focus', () => { editingRole = 'summary'; result.textContent = ''; result.className = 'settings-result'; fill(); });
+  }
+  function setEditingRole(role) { editingRole = role; result.textContent = ''; result.className = 'settings-result'; fill(); }
 
   const draft = () => ({
     url: url.value.trim(),
@@ -174,8 +175,8 @@ export function createApiSettings({
     result.textContent = 'API 设置已保存。'; result.className = 'settings-result success';
     fill();
   });
-  const create = button('另存为预设', 'secondary-action', () => {
-    const name = globalThis.prompt?.('新预设名称', '千千结预设')?.trim();
+  const create = button('另存为预设', 'secondary-action', async () => {
+    const name = String(await Promise.resolve(promptImpl({ title: '另存为预设', body: '为当前 API 配置输入一个名称。', initialValue: '千千结预设', placeholder: '预设名称', confirmText: '保存', validate: value => String(value ?? '').trim() ? '' : '请输入预设名称。' })) ?? '').trim();
     if (!name) return;
     const id = settings.upsertSharedPreset(name, draft());
     if (editingRole === 'summary') settings.setSharedUtilityPresetId(id);
@@ -203,7 +204,7 @@ export function createApiSettings({
     if (!effects.length) effects.push('当前分析和摘要 API 不会切换。');
     const sevenDaysAvailable = typeof isSevenDaysAvailable === 'function' ? isSevenDaysAvailable() : isSevenDaysAvailable === true;
     if (sevenDaysAvailable) effects.push('构画中也会移除这个共享预设。');
-    const confirmed = await Promise.resolve(confirmImpl(`删除预设「${target.config.name}」？\n\n${effects.join('\n')}`));
+    const confirmed = await Promise.resolve(confirmImpl({ title: '删除 API 预设', body: `删除预设「${target.config.name}」？`, note: effects.join('\n'), confirmText: '删除', cancelText: '取消' }));
     if (!confirmed) {
       result.textContent = '已取消删除。'; result.className = 'settings-result';
       return;

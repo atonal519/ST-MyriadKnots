@@ -3,12 +3,13 @@ import { deterministicUuid } from './foundation-domain.js';
 import { EXACT_ANCHOR_LIMIT, FLOOR_MEMORY_ITEM_LIMIT, validateEntityRecord, validateFloorMemory } from './memory-schema.js';
 import { sanitizeDiagnosticValue, sanitizeTaskMetadata } from './safe-metadata.js';
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
+import { buildEntityIdentityDirectory, identityLabelKey } from './entity-identity.js';
 
 export const EXTRACTOR_SCHEMA_VERSION = 3;
-export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-13';
-export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-3/semantic-compiler-4`;
+export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-15';
+export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-3/semantic-compiler-6`;
 const ARRAY_FIELDS = Object.freeze(['chronology', 'locations', 'participants', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'exactAnchors', 'openLoops', 'ambiguities', 'cseSignals']);
-const ENTITY_TYPES = ['person', 'organization', 'place', 'object', 'creature', 'concept', 'unknown'];
+const ENTITY_TYPES = ['person', 'group', 'organization', 'place', 'object', 'creature', 'concept', 'unknown'];
 const MENTION_KEY = Object.freeze({ type: 'string' });
 const NULLABLE_MENTION_KEY = Object.freeze({ type: ['string', 'null'] });
 const EVIDENCE_SEGMENT_LIMIT = 8;
@@ -44,7 +45,7 @@ export const EXTRACTOR_RESPONSE_SCHEMA = Object.freeze({
   required: ['summary'],
   properties: {
     summary: { type: 'string' },
-    people: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, aliases: { type: 'array', items: { type: 'string' } }, role: { type: 'string' }, presence: { type: 'string', enum: ['present', 'remote', 'mentioned', 'privateCognitionOnly'] } } } },
+    people: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, aliases: { type: 'array', items: { type: 'string' } }, role: { type: 'string' }, presence: { type: 'string', enum: ['present', 'remote', 'mentioned', 'privateCognitionOnly'] }, entityKind: { type: 'string', enum: ['individual', 'group'] }, sameAsEntityKey: { type: 'string', description: '仅可复制 payload.knownPeople 中本次提供的 catalog-N' } } } },
     time: { type: 'array', items: { type: 'object', properties: { sourceText: { type: 'string' }, description: { type: 'string' }, kind: { type: 'string', enum: ['explicit', 'relative', 'sequenceOnly', 'unknown'] }, normalized: { type: ['string', 'null'] }, precision: { type: 'string', enum: ['exact', 'approximate', 'unresolved'] } } } },
     locations: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, change: { type: 'string', enum: ['present', 'entered', 'left', 'movedThrough', 'mentioned'] }, people: { type: 'array', items: { type: 'string' } } } } },
     events: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' } } } },
@@ -75,19 +76,20 @@ export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
 4. summary 必须是有信息的本楼总结。people、time、locations 也要分别检查并提取：正文有依据时写出，没有依据时可留空；不要为了填字段猜人、猜地点或猜现实日期。剧情明确的相对时间应保留为 relative。
 
 【固定输出边界】
-1. 只输出语义，不输出 UUID、记录 ID、楼层指针、哈希、create/update/delete 操作、mentionKey、entityKey 或证据坐标。
-2. people 只写人能读懂的姓名、别名和角色。当正文中的“你”、{{user}} 或用户姓名指向宿主用户时，role 写 user。被 actions、knowledge、informationTransfers、privateThoughts、commitments、exactQuotes、openLoops 或 cseSignals 引用的人物也要列入 people，人物字段使用 people 中的姓名或别名。
-3. people.presence 区分本人在场 present、远程参与 remote、仅被提及 mentioned、只有其私密认知 privateCognitionOnly；提及或推断不等于本人在场或知情，不确定时写 mentioned。
-4. actions 要分清 actor 行为主体、targets 受事者或受益者、completion 完成状态与 result 结果；意图或尝试不能写成已完成。informationTransfers 要分清消息来源 from、接收者 to、内容 claimText 与正文明确的 channel；无法确定渠道时不要猜成 told。
-5. privateThoughts 的 holder 是思想所属人物，commitments 的 issuer 是作出承诺者、recipient 是对象；转述某人的话不等于说话者本人在场，也不自动把内容确立为事实。
-6. knowledge 用于正文明确呈现的观察或事实：subject 是事实关联的人物（无明确人物可留空），kind 区分身体、伤势、物品、环境、情境或其他；某人得知了什么应写 informationTransfers，只属于人物内心的内容应写 privateThoughts。cseSignals 只记录正文支持的人物情绪、边界、冲突/和解、脆弱、信任/背叛、重复模式、关系定义或持续状况等状态信号，不要把普通剧情事实都改写成状态信号。
-7. exactQuotes 只在措辞确有长期保留价值且原句实际出现在正文时填写；可直接写原句字符串，也可写含 exactText、kind、speaker、whyPreserve 的对象。能确认说话人时应写 speaker，以保留原句归属；不能确认时不要猜。openLoops 的每项包含 description 和可选 owners，用于确实尚未解决的目标、疑问或风险；已经完成的事项不要继续列为未决。
-8. summary 中可供后续记忆使用的关键事实若对应 events、actions、knowledge、informationTransfers、privateThoughts、commitments、openLoops、exactQuotes 或 cseSignals，也必须进入相应结构字段，不能因为 summary 已写过就省略。有正文依据的相关字段应充分记录；无内容的字段可以留空，不要为了满足数据库 Schema 凑数或编造。
+1. 只输出语义，不输出 UUID、记录 ID、楼层指针、哈希、create/update/delete 操作、mentionKey、普通 entityKey 或证据坐标。唯一例外是 people.sameAsEntityKey：只在确认同一身份时逐字复制 payload.knownPeople 本次给出的 catalog-N；不得自造、猜测或输出其他内部键。
+2. payload.userIdentity.displayName 非空时，summary 及其他语义描述必须使用这个实际显示名；{{user}} 只可作为 canonicalContent 或 aliases 中的输入别名，不得原样写入生成的语义文本。exactQuotes.exactText、承诺原话及证据引文必须逐字照抄正文，不得因这条规则改写。
+3. people 只写人能读懂的姓名、别名和角色。entityKind=individual 表示单人，entityKind=group 表示正文暂时只能整体辨认的多人集合；缺省按 individual 兼容。已知同一身份时优先填写 sameAsEntityKey；否则只可依据同类型的完整姓名或有效别名唯一精确对应，不得用相似、包含或模糊匹配。群体 aliases 只收整体称谓，不能把成员姓名塞成群体别名；成员能分别辨认时分别列 individual，无法辨认时不要编造个体。“别人”“客户”等泛称通常不是稳定人物别名。当正文中的“你”、{{user}} 或用户姓名指向宿主用户时，role 写 user。被 actions、knowledge、informationTransfers、privateThoughts、commitments、exactQuotes、openLoops 或 cseSignals 引用的人物也要列入 people，人物字段使用 people 中的姓名或别名。
+4. people.presence 区分本人在场 present、远程参与 remote、仅被提及 mentioned、只有其私密认知 privateCognitionOnly；提及或推断不等于本人在场或知情，不确定时写 mentioned。
+5. actions 要分清 actor 行为主体、targets 受事者或受益者、completion 完成状态与 result 结果；意图或尝试不能写成已完成。informationTransfers 要分清消息来源 from、接收者 to、内容 claimText 与正文明确的 channel；无法确定渠道时不要猜成 told。
+6. privateThoughts 的 holder 是思想所属人物，commitments 的 issuer 是作出承诺者、recipient 是对象；转述某人的话不等于说话者本人在场，也不自动把内容确立为事实。
+7. knowledge 用于正文明确呈现的观察或事实：subject 是事实关联的人物（无明确人物可留空），kind 区分身体、伤势、物品、环境、情境或其他；某人得知了什么应写 informationTransfers，只属于人物内心的内容应写 privateThoughts。cseSignals 只记录正文支持的人物情绪、边界、冲突/和解、脆弱、信任/背叛、重复模式、关系定义或持续状况等状态信号，不要把普通剧情事实都改写成状态信号。
+8. exactQuotes 只在措辞确有长期保留价值且原句实际出现在正文时填写；可直接写原句字符串，也可写含 exactText、kind、speaker、whyPreserve 的对象。能确认说话人时应写 speaker，以保留原句归属；不能确认时不要猜。openLoops 的每项包含 description 和可选 owners，用于确实尚未解决的目标、疑问或风险；已经完成的事项不要继续列为未决。
+9. summary 中可供后续记忆使用的关键事实若对应 events、actions、knowledge、informationTransfers、privateThoughts、commitments、openLoops、exactQuotes 或 cseSignals，也必须进入相应结构字段，不能因为 summary 已写过就省略。有正文依据的相关字段应充分记录；无内容的字段可以留空，不要为了满足数据库 Schema 凑数或编造。
 
 参考结构：
 ${EXTRACTOR_OUTPUT_CONTRACT}
 
-示例：{"summary":"裴晚生打电话告诉用户旧桥已封闭，要求用户改走北门；两人约定晚上八点在钟楼会合，用户答应带上仓库钥匙。失联向导是否安全仍待确认。","people":[{"name":"裴晚生","aliases":[],"role":"other","presence":"remote"},{"name":"你","aliases":["{{user}}"],"role":"user","presence":"remote"}],"events":[{"title":"通话告知与会合约定","description":"裴晚生在通话中告知旧桥封闭，并与用户约定晚上八点在钟楼会合；改道、会合和携带钥匙尚未执行。"}],"informationTransfers":[{"from":"裴晚生","to":["你"],"claimText":"旧桥已经封闭","channel":"told"}],"commitments":[{"issuer":"裴晚生","recipient":"你","content":"晚上八点在钟楼会合","kind":"agreement","status":"accepted"},{"issuer":"你","recipient":"裴晚生","content":"会合时带上仓库钥匙","kind":"promise","status":"made"}],"openLoops":[{"description":"失联向导是否安全仍待确认","owners":["裴晚生","你"]}]}
+示例（此例的 payload.userIdentity.displayName 为“林岚”）：{"summary":"裴晚生打电话告诉林岚旧桥已封闭，要求林岚改走北门；两人约定晚上八点在钟楼会合，林岚答应带上仓库钥匙。失联向导是否安全仍待确认。","people":[{"name":"裴晚生","aliases":[],"role":"other","presence":"remote"},{"name":"林岚","aliases":["你","{{user}}"],"role":"user","presence":"remote"}],"events":[{"title":"通话告知与会合约定","description":"裴晚生在通话中告知旧桥封闭，并与林岚约定晚上八点在钟楼会合；改道、会合和携带钥匙尚未执行。"}],"informationTransfers":[{"from":"裴晚生","to":["林岚"],"claimText":"旧桥已经封闭","channel":"told"}],"commitments":[{"issuer":"裴晚生","recipient":"林岚","content":"晚上八点在钟楼会合","kind":"agreement","status":"accepted"},{"issuer":"林岚","recipient":"裴晚生","content":"会合时带上仓库钥匙","kind":"promise","status":"made"}],"openLoops":[{"description":"失联向导是否安全仍待确认","owners":["裴晚生","林岚"]}]}
 输出一个 JSON 对象，不要解释。`;
 
 export function buildExtractorSystemPrompt(guidance = '') {
@@ -207,12 +209,13 @@ function compileEvidenceSegments(content, value, path) {
   return chain;
 }
 function catalogEntries(entities) {
-  return entities
-    .filter(entity => entity.recordStatus === 'active' && entity.status !== 'merged' && entity.status !== 'invalidated')
-    .map((entity, index) => ({
+  return buildEntityIdentityDirectory({ entities })
+    .filter(entry => entry.entityType === 'person' || entry.entityType === 'group' || entry.specialRole !== 'none')
+    .map((entry, index) => ({
       entityKey: `catalog-${index + 1}`,
-      entity,
-      semantic: { entityKey: `catalog-${index + 1}`, displayName: entity.displayName, aliases: entity.aliases.map(alias => alias.name), entityType: entity.entityType, specialRole: entity.specialRole },
+      entity: entry.entity,
+      labels: entry.labels,
+      semantic: { entityKey: `catalog-${index + 1}`, displayName: entry.displayName, aliases: entry.aliases, entityKind: entry.entityType === 'group' ? 'group' : 'individual', specialRole: entry.specialRole },
     }));
 }
 function safeIdentity(value) {
@@ -236,7 +239,7 @@ export async function createExtractorEnvelope({ batchId, chatId, narrativeGenera
       storyClock,
       previousStoryClock,
       userIdentity: normalizedUserIdentity,
-      knownPeople: catalogSnapshot.map(entry => ({ displayName: entry.entity.displayName, aliases: entry.entity.aliases.map(alias => alias.name), specialRole: entry.entity.specialRole })),
+      knownPeople: catalogSnapshot.map(entry => entry.semantic),
       identityHints: identityHints.filter(hint => typeof hint === 'string').slice(0, 20).map(hint => hint.slice(0, 500)),
     },
   });
@@ -244,7 +247,7 @@ export async function createExtractorEnvelope({ batchId, chatId, narrativeGenera
     batchId, chatId, narrativeGeneration, checkpointId: checkpointId ?? null, floorId: floor.id,
     canonicalContentFingerprint: await sha256(String(floor.content.canonicalContent ?? '')),
     rawContentFingerprint: floor.content.rawFingerprint ?? null,
-    catalogBindings: Object.freeze(catalogSnapshot.map(entry => Object.freeze({ entityKey: entry.entityKey, entityId: entry.entity.id }))),
+    catalogBindings: Object.freeze(catalogSnapshot.map(entry => Object.freeze({ entityKey: entry.entityKey, entityId: entry.entity.id, entityType: entry.entity.entityType, specialRole: entry.entity.specialRole, labels: entry.labels }))),
     userIdentity: normalizedUserIdentity,
   });
   return Object.freeze({ request, scope });
@@ -257,6 +260,7 @@ function normalizeMention(raw, catalog) {
   const entityKey = raw.entityKey === null ? null : boundedText(raw.entityKey, `entityMentions.${mentionKey}.entityKey`, 160);
   if (raw.identity === 'existing' && (!entityKey || !catalog.has(entityKey))) throw extractorError('V3_EXTRACTOR_ENTITY_KEY_INVALID', `entityMentions.${mentionKey}.entityKey`);
   if (raw.identity !== 'existing' && entityKey !== null) throw extractorError('V3_EXTRACTOR_ENTITY_KEY_INVALID', `entityMentions.${mentionKey}.entityKey`);
+  if (raw.identity === 'existing' && catalog.get(entityKey)?.entityType !== raw.entityType) throw extractorError('V3_EXTRACTOR_ENTITY_TYPE_CONFLICT', `entityMentions.${mentionKey}.entityType`);
   return { mentionKey, surface, aliases: [...new Set(aliases.filter(alias => alias !== surface))], entityType: raw.entityType, identity: raw.identity, entityKey, specialRole: raw.localSpecialRole === 'user' ? 'user' : 'none' };
 }
 
@@ -268,17 +272,27 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
   if (!Array.isArray(scope.catalogBindings)) throw extractorError('V3_EXTRACTOR_LOCAL_CATALOG_INVALID', 'localScope.catalogBindings');
   const semanticCatalog = envelope?.request?.payload?.knownPeople;
   if (!Array.isArray(semanticCatalog) || semanticCatalog.length !== scope.catalogBindings.length) throw extractorError('V3_EXTRACTOR_LOCAL_CATALOG_INVALID', 'localScope.catalogBindings');
-  const currentEntityIds = new Set(existingEntities.filter(entity => entity.recordStatus === 'active' && entity.status !== 'merged' && entity.status !== 'invalidated').map(entity => entity.id));
+  const currentDirectory = buildEntityIdentityDirectory({ entities: existingEntities });
+  const currentEntityById = new Map(currentDirectory.map(entry => [entry.entityId, entry]));
   const catalog = new Map();
   for (const [index, binding] of scope.catalogBindings.entries()) {
-    if (!binding || typeof binding.entityKey !== 'string' || !isUuid(binding.entityId) || catalog.has(binding.entityKey) || !currentEntityIds.has(binding.entityId)) throw extractorError('V3_EXTRACTOR_LOCAL_CATALOG_INVALID', `localScope.catalogBindings[${index}]`);
-    catalog.set(binding.entityKey, binding.entityId);
+    const current = currentEntityById.get(binding?.entityId);
+    if (!binding || typeof binding.entityKey !== 'string' || !isUuid(binding.entityId) || catalog.has(binding.entityKey) || !current
+      || binding.entityType !== current.entityType || binding.specialRole !== current.specialRole) throw extractorError('V3_EXTRACTOR_LOCAL_CATALOG_INVALID', `localScope.catalogBindings[${index}]`);
+    catalog.set(binding.entityKey, current);
   }
   assertObject(response, 'response');
   if (response.schemaVersion !== 3 || response.task !== 'extractFloorMemory' || response.promptVersion !== EXTRACTOR_PROMPT_VERSION) throw extractorError('V3_EXTRACTOR_RESPONSE_SCOPE_INVALID', 'response');
   if (!Array.isArray(response.floors) || response.floors.length !== 1) throw extractorError('V3_EXTRACTOR_FLOOR_MISMATCH', 'floors');
   const raw = assertObject(response.floors[0], 'floors[0]');
-  const summary = boundedText(raw.summary, 'floors[0].summary', 4000);
+  const userDisplayName = typeof envelope?.request?.payload?.userIdentity?.displayName === 'string'
+    ? envelope.request.payload.userIdentity.displayName.trim()
+    : '';
+  const generatedText = (value, path, maximum = 4000) => {
+    const text = boundedText(value, path, maximum);
+    return userDisplayName ? boundedText(text.replaceAll('{{user}}', userDisplayName), path, maximum) : text;
+  };
+  const summary = generatedText(raw.summary, 'floors[0].summary', 4000);
   const isolated = [];
   const isolate = (field, index, error, fallbackPath = field) => {
     if (isolated.length >= 80) return;
@@ -295,7 +309,6 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
   };
   if (!['ok', 'needsReview'].includes(raw.status)) isolate('status', -1, extractorError('V3_EXTRACTOR_ENUM_INVALID', 'floors[0].status'));
   const mentions = new Map();
-  const claimedCatalogKeys = new Set();
   for (const [index, item] of sourceArray('entityMentions').entries()) {
     try {
       const path = `entityMentions[${index}]`;
@@ -320,9 +333,7 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
       mention.index = index;
       mention.evidenceSources = evidenceSources;
       if (mentions.has(mention.mentionKey)) throw extractorError('V3_EXTRACTOR_MENTION_DUPLICATE', `${path}.mentionKey`);
-      if (mention.entityKey && claimedCatalogKeys.has(mention.entityKey)) throw extractorError('V3_EXTRACTOR_ENTITY_KEY_DUPLICATE', `${path}.entityKey`);
       mentions.set(mention.mentionKey, mention);
-      if (mention.entityKey) claimedCatalogKeys.add(mention.entityKey);
       if (mention.identity === 'uncertain') isolate('entityMentions', index, extractorError('V3_EXTRACTOR_ENTITY_UNRESOLVED', `${path}.identity`));
     } catch (error) { isolate('entityMentions', index, error, `entityMentions[${index}]`); }
   }
@@ -347,7 +358,32 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
     }, { expectedChatId: floor.chatId });
     newEntities.push(entity); mention.resolvedEntityId = entityId;
   }
-  for (const mention of mentions.values()) if (mention.identity === 'existing') mention.resolvedEntityId = catalog.get(mention.entityKey);
+  for (const mention of mentions.values()) if (mention.identity === 'existing') mention.resolvedEntityId = catalog.get(mention.entityKey).entityId;
+  const learnedLabels = new Map();
+  for (const mention of mentions.values()) {
+    if (mention.identity !== 'existing') continue;
+    const target = catalog.get(mention.entityKey);
+    const known = new Set([...(target?.labels ?? []), ...(learnedLabels.get(target.entityId) ?? [])].map(identityLabelKey));
+    const additions = [];
+    for (const label of [mention.surface, ...mention.aliases]) {
+      const key = identityLabelKey(label);
+      if (!key || known.has(key)) continue;
+      known.add(key); additions.push(label);
+    }
+    if (!additions.length) continue;
+    learnedLabels.set(target.entityId, [...(learnedLabels.get(target.entityId) ?? []), ...additions]);
+  }
+  for (const [targetId, labels] of learnedLabels) {
+    const target = currentEntityById.get(targetId)?.entity;
+    if (!target || !labels.length) continue;
+    const normalizedLabels = labels.map(identityLabelKey).sort();
+    const entityId = await deterministicUuid(['v3-entity-merged-alias', target.id, floor.id, expectedScope.batchId, normalizedLabels]);
+    newEntities.push(validateEntityRecord({
+      schemaVersion: 3, recordType: 'entity', id: entityId, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration,
+      entityType: target.entityType, displayName: labels[0], aliases: labels.slice(1).map(name => ({ name, normalized: identityLabelKey(name), kind: 'uncertain', evidenceRefs: [], baselineClaimIds: [] })), specialRole: target.specialRole, firstSeenFloorId: floor.id, lastSeenFloorId: floor.id,
+      status: 'merged', mergedIntoEntityId: target.id, mergeEvidenceRefs: [], baselineClaimIds: [], createdAt: now, updatedAt: now, recordStatus: 'active', supersedes: null,
+    }, { expectedChatId: floor.chatId }));
+  }
   const pointer = (value, path, { nullable = false } = {}) => {
     if (value === null && nullable) return null;
     const mentionKey = boundedText(value, path, 160);
@@ -370,7 +406,7 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
         assertObject(item, itemPath);
         const located = compileEvidenceSegments(floor.content.canonicalContent, item.quoteSegments, `${itemPath}.quoteSegments`);
         if (!['explicit', 'witnessed', 'reported', 'privateCognition'].includes(item.evidenceMode)) throw extractorError('V3_EXTRACTOR_SCHEMA_INVALID', `${itemPath}.evidenceMode`);
-        const supports = boundedText(item.supports, `${itemPath}.supports`, 2000);
+        const supports = generatedText(item.supports, `${itemPath}.supports`, 2000);
         const sourceEntityId = pointer(item.sourceMentionKey, `${itemPath}.sourceMentionKey`, { nullable: true });
         if (result.length + located.length > EVIDENCE_REF_LIMIT) throw extractorError('V3_EXTRACTOR_EVIDENCE_REFS_TRUNCATED', itemPath);
         result.push(...located.map(segment => ({ floorId: floor.id, anchorId: null, quotedText: segment.quotedText, occurrence: segment.occurrence, evidenceMode: item.evidenceMode, supports, sourceEntityId })));
@@ -392,15 +428,15 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
   };
   const content = floor.content.canonicalContent;
   const optionalEvidence = (item, path) => evidence(item.evidence, path, { required: false });
-  const chronology = await convert('chronology', async item => ({ itemId: await itemId('chronology', item), time: { ...item.time, relativeToFloorId: null }, description: boundedText(item.description, 'chronology.description', 2000), evidenceRefs: optionalEvidence(item, 'chronology.evidence') }));
+  const chronology = await convert('chronology', async item => ({ itemId: await itemId('chronology', item), time: { ...item.time, relativeToFloorId: null }, description: generatedText(item.description, 'chronology.description', 2000), evidenceRefs: optionalEvidence(item, 'chronology.evidence') }));
   const locations = await convert('locations', async item => ({ itemId: await itemId('locations', item), entityId: pointer(item.entityMentionKey, 'locations.entityMentionKey', { nullable: true }), name: boundedText(item.name, 'locations.name', 500), change: item.change, participantEntityIds: array(item.participantMentionKeys, 'locations.participantMentionKeys', 40).map((key, i) => pointer(key, `locations.participantMentionKeys[${i}]`)), evidenceRefs: optionalEvidence(item, 'locations.evidence') }));
   const participants = await convert('participants', async item => ({ entityId: pointer(item.mentionKey, 'participants.mentionKey'), presence: item.presence, evidenceRefs: optionalEvidence(item, 'participants.evidence') }));
-  const actions = await convert('actions', async item => ({ itemId: await itemId('actions', item), actorEntityId: pointer(item.actorMentionKey, 'actions.actorMentionKey'), targetEntityIds: array(item.targetMentionKeys, 'actions.targetMentionKeys', 40).map((key, i) => pointer(key, `actions.targetMentionKeys[${i}]`)), action: boundedText(item.action, 'actions.action', 2000), completion: item.completion, result: item.result === null ? null : boundedText(item.result, 'actions.result', 2000), evidenceRefs: optionalEvidence(item, 'actions.evidence') }));
-  const observations = await convert('observations', async item => ({ itemId: await itemId('observations', item), subjectEntityId: pointer(item.subjectMentionKey, 'observations.subjectMentionKey', { nullable: true }), kind: item.kind, description: boundedText(item.description, 'observations.description', 2000), evidenceRefs: optionalEvidence(item, 'observations.evidence') }));
-  const informationTransfers = await convert('informationTransfers', async item => ({ itemId: await itemId('informationTransfers', item), fromEntityId: pointer(item.fromMentionKey, 'informationTransfers.fromMentionKey', { nullable: true }), toEntityIds: array(item.toMentionKeys, 'informationTransfers.toMentionKeys', 40).map((key, i) => pointer(key, `informationTransfers.toMentionKeys[${i}]`)), claimText: boundedText(item.claimText, 'informationTransfers.claimText', 2000), channel: item.channel, evidenceRefs: optionalEvidence(item, 'informationTransfers.evidence') }));
-  const privateCognition = await convert('privateCognition', async item => ({ itemId: await itemId('privateCognition', item), ownerEntityId: pointer(item.ownerMentionKey, 'privateCognition.ownerMentionKey'), kind: item.kind, content: boundedText(item.content, 'privateCognition.content', 2000), expressedPublicly: false, evidenceRefs: optionalEvidence(item, 'privateCognition.evidence') }));
+  const actions = await convert('actions', async item => ({ itemId: await itemId('actions', item), actorEntityId: pointer(item.actorMentionKey, 'actions.actorMentionKey'), targetEntityIds: array(item.targetMentionKeys, 'actions.targetMentionKeys', 40).map((key, i) => pointer(key, `actions.targetMentionKeys[${i}]`)), action: generatedText(item.action, 'actions.action', 2000), completion: item.completion, result: item.result === null ? null : generatedText(item.result, 'actions.result', 2000), evidenceRefs: optionalEvidence(item, 'actions.evidence') }));
+  const observations = await convert('observations', async item => ({ itemId: await itemId('observations', item), subjectEntityId: pointer(item.subjectMentionKey, 'observations.subjectMentionKey', { nullable: true }), kind: item.kind, description: generatedText(item.description, 'observations.description', 2000), evidenceRefs: optionalEvidence(item, 'observations.evidence') }));
+  const informationTransfers = await convert('informationTransfers', async item => ({ itemId: await itemId('informationTransfers', item), fromEntityId: pointer(item.fromMentionKey, 'informationTransfers.fromMentionKey', { nullable: true }), toEntityIds: array(item.toMentionKeys, 'informationTransfers.toMentionKeys', 40).map((key, i) => pointer(key, `informationTransfers.toMentionKeys[${i}]`)), claimText: generatedText(item.claimText, 'informationTransfers.claimText', 2000), channel: item.channel, evidenceRefs: optionalEvidence(item, 'informationTransfers.evidence') }));
+  const privateCognition = await convert('privateCognition', async item => ({ itemId: await itemId('privateCognition', item), ownerEntityId: pointer(item.ownerMentionKey, 'privateCognition.ownerMentionKey'), kind: item.kind, content: generatedText(item.content, 'privateCognition.content', 2000), expressedPublicly: false, evidenceRefs: optionalEvidence(item, 'privateCognition.evidence') }));
   const anchorOccurrences = new Map();
-  const exactAnchors = await convert('exactAnchors', async item => { const exactText = boundedText(item.exactText, 'exactAnchors.exactText', 2000); const nextOccurrence = (anchorOccurrences.get(exactText) ?? 0) + 1; anchorOccurrences.set(exactText, nextOccurrence); if (occurrence(content, exactText) < nextOccurrence) throw extractorError('V3_EXTRACTOR_ANCHOR_OCCURRENCE_INVALID', 'exactAnchors.exactText'); return { anchorId: await deterministicUuid(['v3-anchor', floor.id, item.kind, exactText, nextOccurrence]), kind: item.kind, exactText, occurrence: nextOccurrence, speakerEntityId: pointer(item.speakerMentionKey, 'exactAnchors.speakerMentionKey', { nullable: true }), whyPreserve: boundedText(item.whyPreserve, 'exactAnchors.whyPreserve', 1000) }; });
+  const exactAnchors = await convert('exactAnchors', async item => { const exactText = boundedText(item.exactText, 'exactAnchors.exactText', 2000); const nextOccurrence = (anchorOccurrences.get(exactText) ?? 0) + 1; anchorOccurrences.set(exactText, nextOccurrence); if (occurrence(content, exactText) < nextOccurrence) throw extractorError('V3_EXTRACTOR_ANCHOR_OCCURRENCE_INVALID', 'exactAnchors.exactText'); return { anchorId: await deterministicUuid(['v3-anchor', floor.id, item.kind, exactText, nextOccurrence]), kind: item.kind, exactText, occurrence: nextOccurrence, speakerEntityId: pointer(item.speakerMentionKey, 'exactAnchors.speakerMentionKey', { nullable: true }), whyPreserve: generatedText(item.whyPreserve, 'exactAnchors.whyPreserve', 1000) }; });
   const anchorByText = new Map();
   for (const anchor of exactAnchors) anchorByText.set(anchor.exactText, [...(anchorByText.get(anchor.exactText) ?? []), anchor.anchorId]);
   const commitmentAnchorOffsets = new Map();
@@ -413,12 +449,12 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
       exactAnchorId = content.includes(exactText) ? (anchorByText.get(exactText)?.[anchorOffset] ?? null) : null;
       if (!exactAnchorId) isolate('commitments', index, extractorError('V3_EXTRACTOR_ANCHOR_NOT_FOUND', `commitments[${index}].exactText`));
     }
-    return { itemId: await itemId('commitments', item), speakerEntityId: pointer(item.speakerMentionKey, 'commitments.speakerMentionKey'), targetEntityIds: array(item.targetMentionKeys, 'commitments.targetMentionKeys', 40).map((key, i) => pointer(key, `commitments.targetMentionKeys[${i}]`)), kind: item.kind, content: boundedText(item.content, 'commitments.content', 2000), status: item.status, exactAnchorId, evidenceRefs: optionalEvidence(item, 'commitments.evidence') };
+    return { itemId: await itemId('commitments', item), speakerEntityId: pointer(item.speakerMentionKey, 'commitments.speakerMentionKey'), targetEntityIds: array(item.targetMentionKeys, 'commitments.targetMentionKeys', 40).map((key, i) => pointer(key, `commitments.targetMentionKeys[${i}]`)), kind: item.kind, content: generatedText(item.content, 'commitments.content', 2000), status: item.status, exactAnchorId, evidenceRefs: optionalEvidence(item, 'commitments.evidence') };
   });
-  const eventFragments = await convert('eventFragments', async item => ({ itemId: await itemId('eventFragments', item), title: boundedText(item.title, 'eventFragments.title', 500), description: boundedText(item.description, 'eventFragments.description', 2000), candidateStatus: 'candidate', eventId: null, evidenceRefs: optionalEvidence(item, 'eventFragments.evidence') }));
-  const openLoops = await convert('openLoops', async item => ({ itemId: await itemId('openLoops', item), description: boundedText(item.description, 'openLoops.description', 2000), ownerEntityIds: array(item.ownerMentionKeys, 'openLoops.ownerMentionKeys', 40).map((key, i) => pointer(key, `openLoops.ownerMentionKeys[${i}]`)), candidateThreadId: null, evidenceRefs: optionalEvidence(item, 'openLoops.evidence') }));
-  const ambiguities = await convert('ambiguities', async item => ({ itemId: await itemId('ambiguities', item), question: boundedText(item.question, 'ambiguities.question', 2000), possibleReadings: array(item.possibleReadings, 'ambiguities.possibleReadings', 12).map((reading, i) => boundedText(reading, `ambiguities.possibleReadings[${i}]`, 1000)), evidenceRefs: evidence(item.evidence, 'ambiguities.evidence', { required: false }) }));
-  const cseSignals = await convert('cseSignals', async item => ({ itemId: await itemId('cseSignals', item), subjectEntityId: pointer(item.subjectMentionKey, 'cseSignals.subjectMentionKey'), objectEntityId: pointer(item.objectMentionKey, 'cseSignals.objectMentionKey', { nullable: true }), signalType: item.signalType, description: boundedText(item.description, 'cseSignals.description', 2000), evidenceRefs: optionalEvidence(item, 'cseSignals.evidence') }));
+  const eventFragments = await convert('eventFragments', async item => ({ itemId: await itemId('eventFragments', item), title: generatedText(item.title, 'eventFragments.title', 500), description: generatedText(item.description, 'eventFragments.description', 2000), candidateStatus: 'candidate', eventId: null, evidenceRefs: optionalEvidence(item, 'eventFragments.evidence') }));
+  const openLoops = await convert('openLoops', async item => ({ itemId: await itemId('openLoops', item), description: generatedText(item.description, 'openLoops.description', 2000), ownerEntityIds: array(item.ownerMentionKeys, 'openLoops.ownerMentionKeys', 40).map((key, i) => pointer(key, `openLoops.ownerMentionKeys[${i}]`)), candidateThreadId: null, evidenceRefs: optionalEvidence(item, 'openLoops.evidence') }));
+  const ambiguities = await convert('ambiguities', async item => ({ itemId: await itemId('ambiguities', item), question: generatedText(item.question, 'ambiguities.question', 2000), possibleReadings: array(item.possibleReadings, 'ambiguities.possibleReadings', 12).map((reading, i) => generatedText(reading, `ambiguities.possibleReadings[${i}]`, 1000)), evidenceRefs: evidence(item.evidence, 'ambiguities.evidence', { required: false }) }));
+  const cseSignals = await convert('cseSignals', async item => ({ itemId: await itemId('cseSignals', item), subjectEntityId: pointer(item.subjectMentionKey, 'cseSignals.subjectMentionKey'), objectEntityId: pointer(item.objectMentionKey, 'cseSignals.objectMentionKey', { nullable: true }), signalType: item.signalType, description: generatedText(item.description, 'cseSignals.description', 2000), evidenceRefs: optionalEvidence(item, 'cseSignals.evidence') }));
   const memoryId = await deterministicUuid(['v3-floor-memory', floor.chatId, floor.narrativeGeneration, floor.id, expectedScope.batchId, EXTRACTOR_VERSION, response, supersedes]);
   const memory = validateFloorMemory({ schemaVersion: 3, recordType: 'floorMemory', id: memoryId, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration, floorId: floor.id, extractorVersion: EXTRACTOR_VERSION,
     summary: { aiText: summary, userText: preservedSummary?.userText ?? null, effectiveSource: preservedSummary?.effectiveSource === 'user' && preservedSummary.userText ? 'user' : 'ai', revisionNote: preservedSummary?.effectiveSource === 'user' ? '重新提取后保留用户摘要' : null }, summaryEvidenceRefs,
@@ -616,13 +652,15 @@ async function compileSemanticPacket({ response, envelope, floor, existingEntiti
     if (isolated.length < 80) isolated.push({ field: fieldName, index, code, path });
   };
   const identity = safeIdentity(envelope?.scope?.userIdentity);
-  const userAliases = new Set(identity.aliases.map(normalizedKey));
-  const activeEntities = existingEntities.filter(entity => entity.recordStatus === 'active' && entity.status !== 'merged' && entity.status !== 'invalidated');
+  const userAliases = new Set(identity.aliases.map(identityLabelKey));
+  const directory = buildEntityIdentityDirectory({ entities: existingEntities });
+  const activeEntities = directory.map(entry => entry.entity);
   const bindings = envelope?.scope?.catalogBindings ?? [];
   const catalogKeyById = new Map(bindings.map(binding => [binding.entityId, binding.entityKey]));
-  const entityLabels = entity => [entity.displayName, ...(entity.aliases ?? []).map(alias => alias.name)].map(normalizedKey).filter(Boolean);
+  const directoryById = new Map(directory.map(entry => [entry.entityId, entry]));
+  const catalogByKey = new Map(bindings.map(binding => [binding.entityKey, directoryById.get(binding.entityId)]));
   const entityByLabel = new Map();
-  for (const entity of activeEntities) for (const label of entityLabels(entity)) entityByLabel.set(label, [...(entityByLabel.get(label) ?? []), entity]);
+  for (const entry of directory) for (const label of entry.labels.map(identityLabelKey)) entityByLabel.set(label, [...(entityByLabel.get(label) ?? []), entry.entity]);
   const existingUser = activeEntities.find(entity => entity.specialRole === 'user') ?? null;
   const rawPeople = list(field(packet, ['people', 'persons', 'characters', 'entities', 'participants', '人物', '角色']));
   const people = [];
@@ -631,19 +669,36 @@ async function compileSemanticPacket({ response, envelope, floor, existingEntiti
     if (!name) { issue('people', index, 'V3_EXTRACTOR_OPTIONAL_ITEM_INVALID', `people[${index}].name`); continue; }
     const aliases = [...new Set(list(field(item, ['aliases', 'alias', 'otherNames', 'aka', '别名', '称谓'])).map(value => semanticText(value, [], 500)).filter(Boolean))];
     const role = semanticText(item, ['role', 'specialRole', 'type', '角色'], 80);
-    const referenceTokens = [name, ...aliases].flatMap(value => value.split(/[\/,|／、]/u)).map(normalizedKey).filter(Boolean);
+    const rawEntityKind = item && typeof item === 'object' && !Array.isArray(item)
+      ? semanticText(item, ['entityKind', 'kind', 'identityKind', '实体类型', '身份类型'], 80)
+      : '';
+    const entityKind = normalizedKey(rawEntityKind) === 'group' || normalizedKey(rawEntityKind) === '群体' ? 'group' : 'individual';
+    if (!rawEntityKind) issue('people', index, 'V3_EXTRACTOR_ENTITY_KIND_DEFAULTED', `people[${index}].entityKind`);
+    else if (!['individual', 'group', '个体', '群体'].includes(normalizedKey(rawEntityKind))) { issue('people', index, 'V3_EXTRACTOR_ENTITY_KIND_INVALID', `people[${index}].entityKind`); continue; }
+    const expectedEntityType = entityKind === 'group' ? 'group' : 'person';
+    const referenceTokens = [name, ...aliases].flatMap(value => value.split(/[\/,|／、]/u)).map(identityLabelKey).filter(Boolean);
     const roleClaimsUser = ['user', 'player', 'protagonist', 'secondperson', '用户', '玩家', '主角', '第二人称'].includes(normalizedKey(role));
     const isUser = referenceTokens.some(token => userAliases.has(token));
     if (roleClaimsUser && !isUser) issue('people', index, 'V3_EXTRACTOR_USER_ROLE_CONFLICT', `people[${index}].role`);
+    if (entityKind === 'group' && (roleClaimsUser || isUser)) { issue('people', index, 'V3_EXTRACTOR_USER_ROLE_CONFLICT', `people[${index}].entityKind`); continue; }
     const displayName = isUser && identity.displayName ? identity.displayName : name;
     const mergedAliases = [...new Set([...(isUser ? identity.aliases : []), name, ...aliases].filter(value => value !== displayName))];
-    const labels = [displayName, ...mergedAliases].map(normalizedKey).filter(Boolean);
+    const labels = [displayName, ...mergedAliases].map(identityLabelKey).filter(Boolean);
     let matched = isUser ? existingUser : null;
-    if (!matched && !isUser) {
-      const matches = [...new Set(labels.flatMap(label => entityByLabel.get(label) ?? []))];
+    const sameAsRaw = field(item, ['sameAsEntityKey']);
+    if (sameAsRaw !== undefined && sameAsRaw !== null && String(sameAsRaw).trim()) {
+      const sameAsEntityKey = typeof sameAsRaw === 'string' ? sameAsRaw.trim() : '';
+      const explicit = catalogByKey.get(sameAsEntityKey);
+      if (!explicit) { issue('people', index, 'V3_EXTRACTOR_ENTITY_KEY_INVALID', `people[${index}].sameAsEntityKey`); continue; }
+      if (explicit.entityType !== expectedEntityType) { issue('people', index, 'V3_EXTRACTOR_ENTITY_TYPE_CONFLICT', `people[${index}].entityKind`); continue; }
+      if (explicit.specialRole === 'user' && !isUser) { issue('people', index, 'V3_EXTRACTOR_USER_ROLE_CONFLICT', `people[${index}].sameAsEntityKey`); continue; }
+      matched = explicit.entity;
+    } else if (!matched && !isUser) {
+      const matches = [...new Set(labels.flatMap(label => entityByLabel.get(label) ?? []).filter(entity => entity.entityType === expectedEntityType))];
       if (matches.length === 1) matched = matches[0];
       else if (matches.length > 1) { issue('people', index, 'V3_EXTRACTOR_ENTITY_AMBIGUOUS', `people[${index}].name`); continue; }
     }
+    if (matched && matched.entityType !== expectedEntityType) { issue('people', index, 'V3_EXTRACTOR_ENTITY_TYPE_CONFLICT', `people[${index}].entityKind`); continue; }
     const identityMode = matched ? 'existing' : 'new';
     const entityKey = matched ? catalogKeyById.get(matched.id) ?? null : null;
     if (matched && !entityKey) { issue('people', index, 'V3_EXTRACTOR_LOCAL_CATALOG_INVALID', `people[${index}].name`); continue; }
@@ -657,7 +712,7 @@ async function compileSemanticPacket({ response, envelope, floor, existingEntiti
     }[normalizedKey(rawPresence)] ?? null;
     const prior = people.find(person => person.dedupeKey === dedupeKey);
     if (prior) {
-      prior.aliases = [...new Set([...prior.aliases, ...mergedAliases])];
+      prior.aliases = [...new Set([...prior.aliases, ...(displayName !== prior.surface ? [displayName] : []), ...mergedAliases])];
       if (explicitPresence) {
         const presenceRank = { mentioned: 0, privateCognitionOnly: 1, remote: 2, present: 3 };
         if (!prior.presenceExplicit || presenceRank[explicitPresence] > presenceRank[prior.presence]) prior.presence = explicitPresence;
@@ -665,20 +720,35 @@ async function compileSemanticPacket({ response, envelope, floor, existingEntiti
       }
       continue;
     }
-    people.push({ dedupeKey, mentionKey: `person-${people.length + 1}`, surface: displayName, aliases: mergedAliases, entityType: 'person', identity: identityMode, entityKey, localSpecialRole: isUser ? 'user' : 'none', presence: explicitPresence ?? 'mentioned', presenceExplicit: Boolean(explicitPresence), evidence: semanticEvidence(item, floor.content.canonicalContent) });
+    people.push({ sourceIndex: index, dedupeKey, mentionKey: `person-${people.length + 1}`, surface: displayName, aliases: mergedAliases, entityType: expectedEntityType, identity: identityMode, entityKey, localSpecialRole: isUser ? 'user' : 'none', presence: explicitPresence ?? 'mentioned', presenceExplicit: Boolean(explicitPresence), evidence: semanticEvidence(item, floor.content.canonicalContent) });
   }
   if (rawPeople.length > FLOOR_MEMORY_ITEM_LIMIT) issue('people', FLOOR_MEMORY_ITEM_LIMIT, 'V3_EXTRACTOR_ARRAY_TRUNCATED', 'people');
+  const individualLabels = new Set(people.filter(person => person.entityType === 'person')
+    .flatMap(person => [person.surface, ...person.aliases]).map(identityLabelKey).filter(Boolean));
+  for (const person of people) {
+    if (person.entityType !== 'group') continue;
+    person.aliases = person.aliases.filter(alias => {
+      if (!individualLabels.has(identityLabelKey(alias))) return true;
+      issue('people', person.sourceIndex, 'V3_EXTRACTOR_GROUP_ALIAS_MEMBER_CONFLICT', `people[${person.sourceIndex}].aliases`);
+      return false;
+    });
+  }
   const referenceName = value => semanticText(value, ['name', 'displayName', 'person', 'character', 'surface', 'owner', 'holder', 'speaker', 'issuer', 'subject', 'actor', 'sender', 'recipient', 'from', 'to', '姓名'], 500);
   const mentionFor = value => {
     const name = referenceName(value);
-    const key = normalizedKey(name);
-    return people.find(person => [person.surface, ...person.aliases].map(normalizedKey).includes(key))?.mentionKey ?? null;
+    const key = identityLabelKey(name);
+    if (!key) return null;
+    const exact = people.filter(person => identityLabelKey(person.surface) === key);
+    if (exact.length === 1) return exact[0].mentionKey;
+    if (exact.length > 1) return null;
+    const aliases = people.filter(person => person.aliases.some(alias => identityLabelKey(alias) === key));
+    return aliases.length === 1 ? aliases[0].mentionKey : null;
   };
   const evidence = item => semanticEvidence(item, floor.content.canonicalContent);
   const legacy = {
     schemaVersion: 3, task: 'extractFloorMemory', promptVersion: EXTRACTOR_PROMPT_VERSION,
     floors: [{
-      status: 'ok', summary, summaryEvidence: [], entityMentions: people.map(({ dedupeKey, presence, presenceExplicit, ...person }) => person),
+      status: 'ok', summary, summaryEvidence: [], entityMentions: people.map(({ sourceIndex, dedupeKey, presence, presenceExplicit, ...person }) => person),
       chronology: [], locations: [], participants: people.map(person => ({ mentionKey: person.mentionKey, presence: person.presence, evidence: person.evidence })),
       actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [],
     }],

@@ -7,9 +7,10 @@ import { createV3MemoryRuntime, projectMemoryPersonEntities } from '../src/v3/me
 import { createV3RecallRuntime } from '../src/v3/recall-runtime.js';
 import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
 import { readRecallSource } from '../src/v3/recall-source.js';
-import { buildExtractorSystemPrompt, createExtractorEnvelope, DEFAULT_EXTRACTOR_GUIDANCE, EXTRACTOR_FIXED_CONTRACT, EXTRACTOR_OUTPUT_CONTRACT, EXTRACTOR_SYSTEM_PROMPT, normalizeExtractorResponse, runExtractorRequest } from '../src/v3/extractor.js';
+import { buildExtractorSystemPrompt, createExtractorEnvelope, DEFAULT_EXTRACTOR_GUIDANCE, EXTRACTOR_FIXED_CONTRACT, EXTRACTOR_OUTPUT_CONTRACT, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_SYSTEM_PROMPT, normalizeExtractorResponse, runExtractorRequest } from '../src/v3/extractor.js';
 import { buildCseSystemPrompt, CSE_FIXED_CONTRACT, CSE_SYSTEM_PROMPT, createCseEnvelope, DEFAULT_CSE_GUIDANCE } from '../src/v3/cse-engine.js';
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
+import { buildEntityIdentityDirectory } from '../src/v3/entity-identity.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GENERATION = '22222222-2222-4222-8222-222222222222';
@@ -114,10 +115,10 @@ async function primeRealtimeTail(h) {
   assert.equal(h.calls.length, 0, '开启新楼维护不得回头调用历史记忆 API');
 }
 
-async function direct(response, { content = '裴晚生提醒你带伞。', entities = [], userIdentity = { displayName: '林岚', aliases: ['林岚', '你', '{{user}}'] }, batchId = '33333333-3333-4333-8333-333333333333' } = {}) {
+async function direct(response, { content = '裴晚生提醒你带伞。', entities = [], userIdentity = { displayName: '林岚', aliases: ['林岚', '你', '{{user}}'] }, batchId = '33333333-3333-4333-8333-333333333333', preservedSummary = null } = {}) {
   const floor = { id: '11111111-1111-4111-8111-111111111111', chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq: 1, content: { canonicalContent: content } };
   const envelope = await createExtractorEnvelope({ batchId, chatId: CHAT, narrativeGeneration: GENERATION, checkpointId: null, floor, entities, userIdentity });
-  return normalizeExtractorResponse({ response, envelope, floor, existingEntities: entities, now: NOW, expectedScope: envelope.scope });
+  return normalizeExtractorResponse({ response, envelope, floor, existingEntities: entities, now: NOW, preservedSummary, expectedScope: envelope.scope });
 }
 
 test('新 user 实体在同批次保持确定，不同提取批次使用不同 ID', async () => {
@@ -209,6 +210,79 @@ test('仅 {summary} 时形成有效 FloorMemory，并明确记录时间未明确
   assert.equal(result.memory.chronology[0].time.sourceText, '时间未明确');
   for (const key of ['locations', 'participants', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'exactAnchors', 'openLoops', 'ambiguities', 'cseSignals']) assert.deepEqual(result.memory[key], [], key);
   assert.equal(result.needsReview, false);
+});
+
+test('模型生成语义中的精确 user 宏使用实际用户名，逐字内容、结构字段和手写摘要保持原样', async () => {
+  const content = '地点牌写着“{{user}}的房间”。稍后，{{user}}对沈砚说：“{{user}}会回来。”普通 user 与用户字样仍在。';
+  const result = await direct({
+    summary: '{{user}}与{{user}}会面；普通 user 与用户字样仍在。',
+    people: [{ name: '{{user}}', role: 'user' }, { name: '沈砚' }],
+    time: [{ sourceText: '{{user}}之后', description: '{{user}}之后继续', kind: 'relative', precision: 'unresolved' }],
+    locations: [{ name: '{{user}}的房间', people: ['{{user}}', '沈砚'] }],
+    events: [{ title: '{{user}}会面', description: '{{user}}与沈砚会面。' }],
+    actions: [{ actor: '{{user}}', targets: ['沈砚'], action: '{{user}}告诉沈砚安排', result: '{{user}}完成说明', quote: '{{user}}会回来。' }],
+    knowledge: [{ subject: '{{user}}', description: '{{user}}知道普通 user 字样。' }],
+    informationTransfers: [{ from: '{{user}}', to: ['沈砚'], claimText: '{{user}}会回来', channel: 'told' }],
+    privateThoughts: [{ holder: '{{user}}', thought: '{{user}}仍在考虑。' }],
+    commitments: [{ issuer: '{{user}}', recipient: '沈砚', content: '{{user}}答应回来', exactQuote: '{{user}}会回来。' }],
+    exactQuotes: [{ exactText: '{{user}}会回来。', speaker: '{{user}}', whyPreserve: '{{user}}的关键承诺' }],
+    openLoops: [{ description: '{{user}}何时返回仍未解决', owners: ['{{user}}'] }],
+    cseSignals: [{ subject: '{{user}}', object: '沈砚', signalType: 'trust', description: '{{user}}向沈砚作出承诺' }],
+  }, { content, preservedSummary: { userText: '手写 {{user}} 摘要', effectiveSource: 'user' } });
+
+  assert.equal(result.memory.summary.aiText, '林岚与林岚会面；普通 user 与用户字样仍在。');
+  assert.equal(result.memory.summary.userText, '手写 {{user}} 摘要');
+  assert.equal(result.memory.summary.effectiveSource, 'user');
+  assert.equal(result.memory.chronology[0].description, '林岚之后继续');
+  assert.equal(result.memory.chronology[0].time.sourceText, '{{user}}之后');
+  assert.equal(result.memory.locations[0].name, '{{user}}的房间');
+  assert.equal(result.memory.eventFragments[0].title, '林岚会面');
+  assert.equal(result.memory.eventFragments[0].description, '林岚与沈砚会面。');
+  assert.equal(result.memory.actions[0].action, '林岚告诉沈砚安排');
+  assert.equal(result.memory.actions[0].result, '林岚完成说明');
+  assert.equal(result.memory.observations[0].description, '林岚知道普通 user 字样。');
+  assert.equal(result.memory.informationTransfers[0].claimText, '林岚会回来');
+  assert.equal(result.memory.privateCognition[0].content, '林岚仍在考虑。');
+  assert.equal(result.memory.commitments[0].content, '林岚答应回来');
+  assert.equal(result.memory.openLoops[0].description, '林岚何时返回仍未解决');
+  assert.equal(result.memory.cseSignals[0].description, '林岚向沈砚作出承诺');
+  assert.equal(result.memory.exactAnchors[0].whyPreserve, '林岚的关键承诺');
+  assert.equal(result.memory.exactAnchors[0].exactText, '{{user}}会回来。');
+  assert.equal(result.memory.actions[0].evidenceRefs[0].quotedText, '{{user}}会回来。');
+  assert.equal(result.memory.commitments[0].exactAnchorId, result.memory.exactAnchors[0].anchorId);
+  assert.equal(result.newEntities.find(entity => entity.specialRole === 'user')?.displayName, '林岚');
+  assert.equal(content.includes('{{user}}'), true, 'canonicalContent 测试输入必须保持原样');
+});
+
+test('空 displayName 不猜用户名，严格响应只改生成说明而保留证据引文', async () => {
+  const emptyIdentity = await direct({ summary: '{{user}}提醒普通 user 与用户。' }, { userIdentity: { displayName: '', aliases: ['{{user}}'] } });
+  assert.equal(emptyIdentity.memory.summary.aiText, '{{user}}提醒普通 user 与用户。');
+
+  const emptyArrays = Object.fromEntries(['entityMentions', 'chronology', 'locations', 'participants', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'exactAnchors', 'openLoops', 'ambiguities', 'cseSignals'].map(key => [key, []]));
+  const strict = await direct({
+    schemaVersion: 3,
+    task: 'extractFloorMemory',
+    promptVersion: EXTRACTOR_PROMPT_VERSION,
+    floors: [{
+      status: 'ok',
+      summary: '{{user}}看到歧义。',
+      summaryEvidence: [{ quoteSegments: ['{{user}}'], supports: '{{user}}是叙述对象', evidenceMode: 'explicit', sourceMentionKey: null }],
+      ...emptyArrays,
+      ambiguities: [{ question: '{{user}}是否离开？', possibleReadings: ['{{user}}已经离开', '{{user}}仍在现场'], evidence: [] }],
+    }],
+  }, { content: '{{user}}看到歧义。' });
+  assert.equal(strict.memory.summaryEvidenceRefs[0].supports, '林岚是叙述对象');
+  assert.equal(strict.memory.summaryEvidenceRefs[0].quotedText, '{{user}}');
+  assert.equal(strict.memory.ambiguities[0].question, '林岚是否离开？');
+  assert.deepEqual(strict.memory.ambiguities[0].possibleReadings, ['林岚已经离开', '林岚仍在现场']);
+});
+
+test('extractor 固定合同要求语义使用 displayName，并明确保护逐字内容', () => {
+  const customPrompt = buildExtractorSystemPrompt('只记录本楼事实。');
+  assert.match(customPrompt, /payload\.userIdentity\.displayName/);
+  assert.match(customPrompt, /\{\{user\}\} 只可作为 canonicalContent 或 aliases 中的输入别名/);
+  assert.match(customPrompt, /exactQuotes\.exactText、承诺原话及证据引文必须逐字照抄正文/);
+  assert.match(customPrompt, /此例的 payload\.userIdentity\.displayName 为“林岚”/);
 });
 
 test('模型漏 time 时只从本楼开头或明确时间栏提取时间，不把段中回忆日期冒充当前时间', async () => {
@@ -327,6 +401,86 @@ test('运行时首次需要时建立唯一 user Entity，重提取不重复创�
   checkpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${root.headCheckpointId}`).data;
   entities = checkpoint.producedRefs.entities.map(id => h.backend.records.get(`chat-${CHAT}/v3-entity-${id}`).data);
   assert.equal(entities.filter(entity => entity.specialRole === 'user').length, 1);
+});
+
+test('群体多称谓沿不可变 merged 目录复用，成员保持独立且早楼看不到未来别名', async () => {
+  const csePayloads = [];
+  const extractorPayloads = [];
+  const h = harness({
+    initialChat: [user('开始'), assistant('第0段：守夜人和张三、李四出现。'), assistant('第4段：门卫们再次出现。'), assistant('第8段：保安组继续值守。'), assistant('用于确认第8段稳定。')],
+    utility: options => {
+      const request = JSON.parse(options.taskMessages[0].content);
+      if (request.task === 'understandCharacterStateAfterFloor') {
+        csePayloads.push(request.payload);
+        return { jsonData: { subjects: request.payload.trackedSubjects.map(subject => ({ subject: subject.name, situational: [{ text: `${subject.name}的独立状态`, reason: '本楼', visibility: 'private' }] })) } };
+      }
+      extractorPayloads.push(structuredClone(request.payload));
+      const group = request.payload.knownPeople.find(person => person.entityKind === 'group');
+      if (request.payload.canonicalContent.includes('第0段')) return { jsonData: { summary: '守夜人与两名成员出现。', people: [{ name: '守夜人', aliases: ['夜班保安', '张三', '李四'], entityKind: 'group', presence: 'present' }, { name: '张三', entityKind: 'individual', presence: 'present' }, { name: '李四', entityKind: 'individual', presence: 'present' }], actions: [{ actor: '张三', action: '检查门锁' }] } };
+      if (request.payload.canonicalContent.includes('第4段')) return { jsonData: { summary: '门卫们再次出现。', people: [{ name: '门卫们', entityKind: 'group', sameAsEntityKey: group?.entityKey, presence: 'present' }, { name: '张三', entityKind: 'individual', presence: 'present' }, { name: '李四', entityKind: 'individual', presence: 'present' }] } };
+      return { jsonData: { summary: '保安组继续值守。', people: [{ name: '保安组', entityKind: 'group', sameAsEntityKey: group?.entityKey, presence: 'present' }, { name: '张三', entityKind: 'individual', presence: 'present' }, { name: '李四', entityKind: 'individual', presence: 'present' }] } };
+    },
+  });
+  await h.runtime.start();
+  await h.runtime.extractNext();
+  let cold = await h.store.readReachable({ mode: 'runtime' });
+  const canonicalGroup = cold.entities.find(entity => entity.entityType === 'group' && entity.status !== 'merged');
+  const firstMemory = cold.floorMemories.find(memory => memory.floorId === h.runtime.getState().floors[0].floorId);
+  const firstZhang = cold.entities.find(entity => entity.entityType === 'person' && entity.displayName === '张三' && entity.status !== 'merged');
+  assert.equal(firstMemory.actions[0].actorEntityId, firstZhang.id, '成员名必须优先绑定 individual，不能被群体 alias 抢占');
+  const originalGroupEnvelope = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-entity-${canonicalGroup.id}`));
+  await h.runtime.extractNext();
+  await h.runtime.extractNext();
+  cold = await h.store.readReachable({ mode: 'runtime' });
+  const groups = cold.entities.filter(entity => entity.entityType === 'group');
+  const people = cold.entities.filter(entity => entity.entityType === 'person' && ['张三', '李四'].includes(entity.displayName) && entity.status !== 'merged');
+  assert.equal(groups.filter(entity => entity.status !== 'merged').length, 1);
+  assert.deepEqual(new Set(groups.filter(entity => entity.status === 'merged').map(entity => entity.mergedIntoEntityId)), new Set([canonicalGroup.id]));
+  assert.deepEqual(people.map(entity => entity.displayName).sort(), ['张三', '李四']);
+  assert.deepEqual([...buildEntityIdentityDirectory({ entities: cold.entities }).find(entry => entry.entityId === canonicalGroup.id).labels].sort(), ['保安组', '夜班保安', '守夜人', '门卫们'].sort());
+  assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-entity-${canonicalGroup.id}`), originalGroupEnvelope, '学习别名不得原地修改 canonical Entity');
+  assert.equal(csePayloads.every(payload => payload.knownPeople.every(person => !['守夜人', '门卫们', '保安组'].includes(person.name))), true, 'group 不得进入 CSE knownPeople/trackedSubjects');
+  assert.equal(csePayloads.every(payload => payload.trackedSubjects.every(person => !['守夜人', '门卫们', '保安组'].includes(person.name))), true);
+  const latestStates = cold.currentStates.at(-1)?.subjects ?? [];
+  assert.ok(people.every(person => latestStates.some(subject => subject.subjectEntityId === person.id && subject.situational.some(item => item.text === `${person.displayName}的独立状态`))), '两个成员必须保持各自 CSE 状态');
+
+  const firstFloorId = h.runtime.getState().floors[0].floorId;
+  await h.runtime.extractFloor(firstFloorId, { analyzeState: false });
+  const firstRequests = extractorPayloads.filter(payload => payload.canonicalContent.includes('第0段'));
+  const earlyLabels = firstRequests.at(-1).knownPeople.flatMap(person => [person.displayName, ...person.aliases]);
+  assert.equal(earlyLabels.includes('门卫们') || earlyLabels.includes('保安组'), false, '重提早楼不得看到未来才学习的群体别名');
+});
+
+test('sameAs 只接受局部同类型精确绑定，错误键、用户冒绑与同名歧义均隔离', async () => {
+  const base = (id, displayName, { specialRole = 'none', aliases = [] } = {}) => ({ id, chatId: CHAT, narrativeGeneration: GENERATION, entityType: 'person', displayName, aliases: aliases.map(name => ({ name })), specialRole, firstSeenFloorId: null, lastSeenFloorId: null, status: 'established', recordStatus: 'active' });
+  const entities = [
+    base('10000000-0000-4000-8000-000000000001', '裴晚生', { specialRole: 'char' }),
+    base('10000000-0000-4000-8000-000000000002', '林岚', { specialRole: 'user' }),
+    base('10000000-0000-4000-8000-000000000003', '甲', { aliases: ['共同称呼', '阿砚'] }),
+    base('10000000-0000-4000-8000-000000000004', '乙', { aliases: ['共同称呼'] }),
+  ];
+  const result = await direct({
+    summary: '身份绑定检查。',
+    people: [
+      { name: '裴先生', entityKind: 'individual', sameAsEntityKey: 'catalog-1' },
+      { name: '晚生', entityKind: 'individual', sameAsEntityKey: 'catalog-1' },
+      { name: '守卫组', entityKind: 'group', sameAsEntityKey: 'catalog-1' },
+      { name: '冒名者', entityKind: 'individual', sameAsEntityKey: 'catalog-2' },
+      { name: '共同称呼', entityKind: 'individual' },
+      { name: '错误键', entityKind: 'individual', sameAsEntityKey: 'catalog-99' },
+      { name: '阿', entityKind: 'individual' },
+    ],
+    actions: [{ actor: '裴先生', action: '确认身份' }],
+  }, { entities, content: '裴先生确认身份，晚生点头；守卫组、冒名者、共同称呼、错误键与阿只是测试称谓。' });
+  assert.equal(result.memory.participants.filter(item => item.entityId === entities[0].id).length, 1, '同一 canonical 的重复 mentions 应去重');
+  assert.equal(result.memory.actions[0].actorEntityId, entities[0].id, 'char 的合法局部 sameAs 必须可用');
+  const aliasRecords = result.newEntities.filter(entity => entity.status === 'merged');
+  assert.equal(aliasRecords.length, 1);
+  assert.equal(aliasRecords[0].mergedIntoEntityId, entities[0].id);
+  assert.deepEqual([aliasRecords[0].displayName, ...aliasRecords[0].aliases.map(alias => alias.name)].sort(), ['晚生', '裴先生'].sort());
+  assert.ok(result.newEntities.some(entity => entity.status !== 'merged' && entity.displayName === '阿'), '包含匹配不得把“阿”误并入“阿砚”');
+  for (const code of ['V3_EXTRACTOR_ENTITY_TYPE_CONFLICT', 'V3_EXTRACTOR_USER_ROLE_CONFLICT', 'V3_EXTRACTOR_ENTITY_AMBIGUOUS', 'V3_EXTRACTOR_ENTITY_KEY_INVALID']) assert.ok(result.isolated.some(item => item.code === code), code);
+  assert.equal(result.newEntities.some(entity => ['守卫组', '冒名者', '共同称呼', '错误键'].includes(entity.displayName)), false, '显式错误或歧义不能回退新建');
 });
 
 test('code fence、前后说明、数组包裹、尾逗号、常见键别名与单值数组均可有限容错', async () => {
@@ -1079,6 +1233,102 @@ test('CSE 分析期间 pending-only 刷新不推进正式 root，假模型结果
   assert.equal(h.runtime.getState().lastCseError, null);
 });
 
+test('未稳定尾楼 swipe、停止、接收与删除事件不取消更早稳定楼 CSE，尾楼仍保持 pending', async () => {
+  for (const scenario of ['rerollStoppedAndReceived', 'selectExistingSwipe', 'deleteSwipe']) {
+    let releaseCse, markCseStarted;
+    const cseStarted = new Promise(resolve => { markCseStarted = resolve; });
+    let cseSignal = null;
+    const h = harness({
+      initialChat: [user('继续'), assistant('稳定六楼。'), assistant('稳定八楼。'), assistant('待定十楼旧版本。')],
+      utility: options => {
+        if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { summary: '稳定楼摘要。' } };
+        cseSignal = options.signal;
+        markCseStarted();
+        return new Promise(resolve => { releaseCse = () => resolve({ jsonData: { noMaterialChange: true } }); });
+      },
+    });
+    await h.runtime.start();
+    const [target, prerequisite] = h.runtime.getState().floors;
+    await h.runtime.extractFloor(target.floorId, { analyzeState: false });
+    await h.runtime.extractFloor(prerequisite.floorId, { analyzeState: false });
+    const formalSnapshot = value => ({
+      rootRevision: value.rootRevision,
+      headCheckpointId: value.root.headCheckpointId,
+      sourceSnapshotFingerprint: value.root.sourceSnapshotFingerprint,
+      floors: value.floors.map(floor => ({ id: floor.id, canonicalFingerprint: floor.content.canonicalFingerprint })),
+    });
+    const analysis = h.runtime.retryStateAnalysis(target.floorId);
+    await cseStarted;
+    const beforeTailRefresh = await h.store.readReachable({ mode: 'runtime' });
+    const oldPendingFingerprint = h.foundationRuntime.getState().pending.canonicalFingerprint;
+    h.context.chat[3] = { ...assistant('待定十楼新版本。'), swipes: ['待定十楼旧版本。', '待定十楼新版本。'], swipe_id: 1 };
+    if (scenario === 'rerollStoppedAndReceived') {
+      h.emit('MESSAGE_SWIPED', 3, { pendingGeneration: true, previousSwipeId: 0, nextSwipeId: 1 });
+      h.emit('GENERATION_STARTED', 'swipe', {}, false);
+      h.emit('GENERATION_STOPPED');
+      h.emit('MESSAGE_RECEIVED', 3, 'swipe');
+    } else if (scenario === 'selectExistingSwipe') {
+      h.emit('MESSAGE_SWIPED', 3, { pendingGeneration: false, previousSwipeId: 0, nextSwipeId: 1 });
+    } else {
+      h.emit('MESSAGE_SWIPE_DELETED', { messageId: 3, swipeId: 0, newSwipeId: 1 });
+    }
+    assert.equal(cseSignal?.aborted, false, `${scenario} 不得中止更早稳定楼 CSE`);
+    await waitFor(() => h.foundationRuntime.getState().status === 'ready'
+      && h.foundationRuntime.getState().pending?.canonicalFingerprint !== oldPendingFingerprint, `${scenario} 后地基未完成 pending 刷新`);
+    const duringTailRefresh = await h.store.readReachable({ mode: 'runtime' });
+    assert.deepEqual(formalSnapshot(duringTailRefresh), formalSnapshot(beforeTailRefresh), `${scenario} 的 pending 刷新不得改写正式 root 或稳定前缀`);
+    assert.equal(duringTailRefresh.floors.some(floor => floor.hostLocator.messageIndex === 3), false);
+    releaseCse();
+    await analysis;
+
+    const after = await h.store.readReachable({ mode: 'runtime' });
+    assert.equal(after.floors.length, 2, `${scenario} 不得把正在处理的尾楼封入正式 root`);
+    assert.equal(after.floors.some(floor => floor.hostLocator.messageIndex === 3), false);
+    assert.equal(h.foundationRuntime.getState().pending?.messageIndex, 3);
+    assert.equal(after.stateDeltas.some(delta => delta.floorId === target.floorId), true);
+    assert.equal(h.runtime.getState().lastCseError, null);
+  }
+});
+
+test('稳定楼或未知范围 swipe 仍会取消在途 CSE 并阻止迟到写入', async () => {
+  for (const scenario of ['stableFloor', 'unknownRange', 'nextSwipeGeneration']) {
+    let releaseCse, markCseStarted;
+    const cseStarted = new Promise(resolve => { markCseStarted = resolve; });
+    let cseSignal = null;
+    const h = harness({
+      initialChat: [user('继续'), assistant('稳定六楼。'), assistant('稳定八楼。'), assistant('待定十楼。')],
+      utility: options => {
+        if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { summary: '稳定楼摘要。' } };
+        cseSignal = options.signal;
+        markCseStarted();
+        return new Promise(resolve => { releaseCse = () => resolve({ jsonData: { noMaterialChange: true } }); });
+      },
+    });
+    await h.runtime.start();
+    const [target] = h.runtime.getState().floors;
+    await h.runtime.extractFloor(target.floorId, { analyzeState: false });
+    const analysis = h.runtime.retryStateAnalysis(target.floorId);
+    await cseStarted;
+    if (scenario === 'stableFloor') h.emit('MESSAGE_SWIPED', 1, { pendingGeneration: false });
+    else if (scenario === 'unknownRange') h.emit('MESSAGE_SWIPED');
+    else {
+      h.context.chat[3] = { ...assistant('待定十楼新版本。'), swipes: ['待定十楼。', '待定十楼新版本。'], swipe_id: 1 };
+      h.emit('MESSAGE_SWIPED', 3, { pendingGeneration: true, previousSwipeId: 0, nextSwipeId: 1 });
+      h.emit('GENERATION_STARTED', 'swipe', {}, false);
+      h.emit('GENERATION_STOPPED');
+      assert.equal(cseSignal?.aborted, false, '本次尾楼停止不得中止更早稳定楼 CSE');
+      h.emit('GENERATION_STARTED', 'swipe', {}, false);
+      h.emit('GENERATION_STOPPED');
+      h.emit('MESSAGE_RECEIVED', 3, 'swipe');
+    }
+    assert.equal(cseSignal?.aborted, true, `${scenario} 必须中止旧 CSE`);
+    releaseCse();
+    await analysis;
+    const after = await h.store.readReachable({ mode: 'runtime' });
+    assert.equal(after.stateDeltas.length, 0, '取消后的迟到 CSE 不得写入');
+  }
+});
+
 test('残缺同楼时间戳进入同次提取并作非 exact 兜底，前序参照只取目标楼之前且不读取未来楼', async () => {
   const full = (date, start, end) => `<!-- myknots-start | date=${date} | weekday=周二 | time=${start} -->正文<!-- myknots-end | date=${date} | weekday=周二 | time=${end} -->`;
   const partial = '<!-- myknots-start | date=10月5日 | time=10:15 -->目标楼正文。';
@@ -1484,6 +1734,60 @@ test('CSE 失败不再拖停后续摘要，同一稳定快照只有限尝试且�
   assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 5, '手动继续只按顺序补两处人物状态');
 });
 
+test('启动自动维护会在无新楼时按固定边界追完已有摘要的 CSE，普通刷新不重复失败输入', async () => {
+  const initial = harness({
+    initialChat: [user('开始'), assistant('第0楼'), assistant('第2楼'), assistant('第4楼'), assistant('稳定尾楼')],
+    automation: { enabled: false, batchSize: 1 },
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: `摘要-${JSON.parse(options.taskMessages[0].content).payload.canonicalContent}` } }
+      : { jsonData: { noMaterialChange: true } },
+  });
+  await initial.runtime.start();
+  await initial.runtime.startHistoricalRebuild();
+  await waitFor(() => initial.runtime.getState().rebuildStatus === 'caughtUp');
+  const secondFloor = initial.runtime.getState().floors[1];
+  await initial.runtime.editSummary(secondFloor.floorId, '用户修订但仍是有效摘要');
+  assert.equal(initial.runtime.getState().summaryCompletedCount, 3);
+  assert.equal(initial.runtime.getState().rebuildCompletedCount, 1);
+
+  const notifications = [];
+  const resumed = harness({
+    automation: { enabled: true, batchSize: 1 }, sharedBackend: initial.backend, sharedContext: initial.context,
+    notifyUser: value => notifications.push(value),
+    utility: options => {
+      assert.equal(options.systemPrompt, CSE_SYSTEM_PROMPT, '已有摘要的追赶不得重新调用 extractor');
+      return { jsonData: { noMaterialChange: true } };
+    },
+  });
+  await resumed.runtime.start();
+  await waitFor(() => resumed.runtime.getState().rebuildStatus === 'caughtUp' && !resumed.runtime.getState().memoryWorkBusy);
+  assert.deepEqual(resumed.calls.map(call => call.systemPrompt), [CSE_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
+  assert.equal(resumed.runtime.getState().lastAutoMemory.cseProcessed, 2);
+  assert.equal(resumed.runtime.getState().lastAutoMemory.processed, 0);
+  assert.match(notifications.at(-1).text, /新增摘要 0 楼，补齐人物状态 2 楼/);
+
+  await resumed.runtime.editSummary(secondFloor.floorId, '再次修订以制造人物状态缺口');
+  let failedCalls = 0;
+  let failCatchup = true;
+  const failed = harness({
+    automation: { enabled: true, batchSize: 1 }, sharedBackend: initial.backend, sharedContext: initial.context,
+    notifyUser: value => notifications.push(value),
+    utility: options => { failedCalls += 1; assert.equal(options.systemPrompt, CSE_SYSTEM_PROMPT); if (failCatchup) throw new Error('模拟追赶失败'); return { jsonData: { noMaterialChange: true } }; },
+  });
+  await failed.runtime.start();
+  await waitFor(() => failed.runtime.getState().lastAutoMemory?.status === 'failed' && !failed.runtime.getState().memoryWorkBusy);
+  assert.equal(failedCalls, 1);
+  assert.match(notifications.at(-1).text, /人物状态追赶失败/);
+  await failed.runtime.refreshStatus();
+  await failed.runtime.refreshAutomation();
+  assert.equal(failedCalls, 1, '相同失败输入的刷新与自动设置同步不得重复调用 CSE');
+  assert.equal(failed.runtime.getState().lastAutoMemory.status, 'failed', '失败状态与继续入口不得被重复调度覆盖成 waiting');
+  failCatchup = false;
+  await failed.runtime.retryAutomation();
+  await waitFor(() => failed.runtime.getState().rebuildStatus === 'caughtUp' && !failed.runtime.getState().memoryWorkBusy);
+  assert.equal(failedCalls, 3, '手动继续应从最早缺口恢复并顺序补完两楼');
+});
+
 test('完全重构用新 root 切断旧派生图，同一模型输出仍重新逐楼生成且不会撞旧不可变记录', async () => {
   const h = harness({
     initialChat: [user('开始'), assistant('第一楼'), assistant('第二楼'), assistant('待确认尾楼')],
@@ -1653,7 +1957,7 @@ test('dry-run GENERATION_STARTED 不会占用主生成事实，历史按钮仍�
 
   assert.equal(h.runtime.getState().rememberedCount, 2);
   assert.deepEqual(h.calls.map(call => call.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
-  assert.deepEqual(notifications, [{ kind: 'success', text: '千千结已完成第 1、3 楼的历史记忆重建。' }]);
+  assert.deepEqual(notifications, [{ kind: 'success', text: '千千结已完成历史记忆维护：新增摘要 2 楼，补齐人物状态 2 楼。' }]);
   assert.equal(h.runtime.shouldBlockMainGeneration(), false);
 });
 
@@ -1858,7 +2162,7 @@ test('生成生命周期常量不齐时整体回退 isGenerating，不会产生�
 
     assert.equal(h.runtime.getState().rememberedCount, 2);
     assert.deepEqual(h.calls.map(call => call.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
-    assert.deepEqual(notifications, [{ kind: 'success', text: '千千结已完成第 1、2 楼的历史记忆重建。' }]);
+    assert.deepEqual(notifications, [{ kind: 'success', text: '千千结已完成历史记忆维护：新增摘要 2 楼，补齐人物状态 2 楼。' }]);
     assert.equal(h.runtime.shouldBlockMainGeneration(), false);
   }
 });

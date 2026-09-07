@@ -5,7 +5,7 @@ export const FLOOR_MEMORY_ITEM_LIMIT = 80;
 export const EXACT_ANCHOR_LIMIT = 60;
 
 const RECORD_STATUSES = new Set(['active', 'superseded', 'invalidated']);
-const ENTITY_TYPES = new Set(['person', 'organization', 'place', 'object', 'creature', 'concept', 'unknown']);
+const ENTITY_TYPES = new Set(['person', 'group', 'organization', 'place', 'object', 'creature', 'concept', 'unknown']);
 const ARRAY_FIELDS = Object.freeze([
   'chronology', 'locations', 'participants', 'actions', 'observations', 'informationTransfers',
   'privateCognition', 'commitments', 'eventFragments', 'exactAnchors', 'openLoops', 'ambiguities', 'cseSignals',
