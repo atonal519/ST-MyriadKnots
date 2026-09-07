@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { formatChronologyAnchor, readRecallSource } from '../src/v3/recall-source.js';
 import { buildRecallQueryContext, selectRecall } from '../src/v3/recall-selector.js';
-import { createV3RecallRuntime, RECALL_PROMPT_SLOT, RECALL_RECEIPT_KEY, RECALL_RECEIPT_SCHEMA_VERSION } from '../src/v3/recall-runtime.js';
+import { createV3RecallRuntime, projectHistoricalRecallReceipt, RECALL_PROMPT_SLOT, RECALL_RECEIPT_KEY, RECALL_RECEIPT_SCHEMA_VERSION } from '../src/v3/recall-runtime.js';
 import { sha256 } from '../src/identity.js';
 import { assessMemoryCoverageFromHost } from '../src/v3/memory-coverage.js';
 import { scanAssistantCandidates } from '../src/v3/foundation-domain.js';
@@ -911,6 +911,42 @@ test('runtime 刷新后从最新 user 楼恢复合法 schema6 completed 回执�
   assert.equal(sourceCalls, sourceCount, '恢复展示不得重新读取当前 source/head');
   assert.equal(rootCalls, rootCount, '当前 head 已推进也不得拿实时 root 否定历史回执');
   assert.notEqual(harness.contextWrappers.at(-1), harness.contextWrappers.at(-2), 'ready 恢复的前后 snapshot 必须使用不同 context wrapper');
+});
+
+test('历史楼只读 projector 按每楼正文、chat、index 与自签回执核验，且不受当前插件版本推进影响', async () => {
+  const harness = createRuntimeHarness();
+  await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  const receipt = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
+  const index = receipt.userMessageIndex;
+  const message = { is_user: true, is_system: false, mes: harness.userMessage.mes, extra: { [RECALL_RECEIPT_KEY]: receipt } };
+  const projected = await projectHistoricalRecallReceipt(message, { chatId: CHAT, userMessageIndex: index });
+  assert.equal(projected.restoredReceipt, true);
+  assert.equal(projected.receiptPersistence, 'persisted');
+  assert.equal(projected.injectionText, receipt.injectionText);
+  assert.deepEqual(projected.selectedFloors, receipt.selectedFloors);
+  assert.deepEqual(harness.runtime.getState().lastRecallBinding, { chatId: CHAT, userMessageIndex: index });
+
+  assert.equal(await projectHistoricalRecallReceipt(message, { chatId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', userMessageIndex: index }), null);
+  assert.equal(await projectHistoricalRecallReceipt(message, { chatId: CHAT, userMessageIndex: index + 1 }), null);
+  const edited = { ...message, mes: `${message.mes}（已编辑）` };
+  assert.equal(await projectHistoricalRecallReceipt(edited, { chatId: CHAT, userMessageIndex: index }), null);
+  const changedPluginInCurrentCodeDoesNotMatter = await projectHistoricalRecallReceipt(message, { chatId: CHAT, userMessageIndex: index });
+  assert.equal(changedPluginInCurrentCodeDoesNotMatter?.injectionText, receipt.injectionText);
+  const tampered = structuredClone(message); tampered.extra[RECALL_RECEIPT_KEY].injectionText += '篡改';
+  assert.equal(await projectHistoricalRecallReceipt(tampered, { chatId: CHAT, userMessageIndex: index }), null);
+});
+
+test('历史楼 projector 对 schema4 仅沿用既有 chat/index 只读边界，不迁移或伪造签名', async () => {
+  const message = { is_user: true, mes: '旧楼正文', extra: { [RECALL_RECEIPT_KEY]: {
+    schemaVersion: 4, chatId: CHAT, userMessageIndex: 7,
+    injectionText: '<qqj_recalled_context>旧回执正文</qqj_recalled_context>',
+    selectedFloors: [{ assistantSeq: 2 }, null], selectedStates: [],
+  } } };
+  const projected = await projectHistoricalRecallReceipt(message, { chatId: CHAT, userMessageIndex: 7 });
+  assert.equal(projected.legacyReadOnly, true);
+  assert.equal(projected.injectionText.includes('旧回执正文'), true);
+  assert.equal(await projectHistoricalRecallReceipt(message, { chatId: CHAT, userMessageIndex: 8 }), null);
+  assert.equal(await projectHistoricalRecallReceipt(message, { chatId: 'wrong', userMessageIndex: 7 }), null);
 });
 
 test('runtime 从当前 user 楼宽松恢复 Schema 4 为只读历史，不注入、不保存且不进入 session receipt', async () => {

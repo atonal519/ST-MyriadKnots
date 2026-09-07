@@ -1,3 +1,5 @@
+import { parseJsonWithSymbolRepair, repairJsonWithUniqueMissingObjectClose } from './json-symbol-repair.js';
+
 const PROTECTED_BODY_KEYS = new Set(['chat_completion_source', 'reverse_proxy', 'proxy_password', 'model', 'messages', 'json_schema']);
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const DEFAULT_TIMEOUT = 180;
@@ -182,19 +184,7 @@ function balancedObjects(text) {
   return { candidates, unclosed };
 }
 
-export function repairJsonWithUniqueMissingObjectClose(value, { finishReason, allowArray = false } = {}) {
-  if (normalizeFinishReason(finishReason) !== 'stop') return null;
-  const text = String(value ?? '').trim();
-  const repairs = [];
-  for (let index = Math.max(0, text.length - 64); index <= text.length; index += 1) {
-    if (index < text.length && !/[}\]]/u.test(text[index])) continue;
-    try {
-      const parsed = JSON.parse(`${text.slice(0, index)}}${text.slice(index)}`);
-      if (parsed && typeof parsed === 'object' && (allowArray || !Array.isArray(parsed))) repairs.push(parsed);
-    } catch { /* try the next mechanically possible suffix position */ }
-  }
-  return repairs.length === 1 ? repairs[0] : null;
-}
+export { repairJsonWithUniqueMissingObjectClose } from './json-symbol-repair.js';
 
 export function parseJsonOutput(value, { finishReason } = {}) {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value;
@@ -202,9 +192,14 @@ export function parseJsonOutput(value, { finishReason } = {}) {
   if (truncatedFinishReason(normalizedFinishReason)) throw safeError('output-truncated', 0, { finishReason: normalizedFinishReason });
   const text = String(value ?? '').trim();
   const failCompletion = () => { throw safeError('completion-json', 0, { finishReason: normalizedFinishReason }); };
-  const parseObject = candidate => {
-    let parsed;
-    try { parsed = JSON.parse(candidate); } catch { return null; }
+  const parseObject = (candidate, { repair = false } = {}) => {
+    if (!repair) {
+      try {
+        const parsed = JSON.parse(candidate);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+      } catch { return null; }
+    }
+    const parsed = parseJsonWithSymbolRepair(candidate, { finishReason: normalizedFinishReason })?.value;
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
   };
   try {
@@ -212,6 +207,8 @@ export function parseJsonOutput(value, { finishReason } = {}) {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return failCompletion();
     return parsed;
   } catch (error) { if (error?.code === 'QQJ_COMPLETION_JSON') throw error; }
+  const direct = parseObject(text, { repair: true });
+  if (direct) return direct;
   const fencePattern = /```(?:json)?\s*([\s\S]*?)\s*```/gi;
   const fences = [...text.matchAll(fencePattern)];
   const fenceMarkers = text.match(/```/g)?.length || 0;
@@ -222,7 +219,7 @@ export function parseJsonOutput(value, { finishReason } = {}) {
     const outsideObjects = balancedObjects(outside);
     if (outsideObjects.unclosed) throw safeError('output-truncated', 0, { finishReason: normalizedFinishReason });
     if (outsideObjects.candidates.length) return failCompletion();
-    const parsed = parseObject(fences[0][1].trim());
+    const parsed = parseObject(fences[0][1].trim(), { repair: true });
     if (!parsed) return failCompletion();
     return parsed;
   }

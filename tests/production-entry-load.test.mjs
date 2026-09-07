@@ -192,6 +192,8 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   let autoHideOptions;
   let memoryManagementOptions;
   let chatMemoryManagement;
+  let inlineRendererOptions;
+  const inlineEnabled = [];
   let bootstrapOptions;
   let compactOptions;
   const modules = new Map();
@@ -235,6 +237,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind() {}, async start() {}, async setEnabled() {}, getState: () => ({}), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
   define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; return { bind() {}, async setEnabled() {}, async intercept() {}, getState: () => ({}) }; } });
   define('./src/v3/auto-hide.js', { createAutoHideController: options => { autoHideOptions = options; return { applySettings() {}, stop() {}, dispose() {} }; } });
+  define('./src/ui/inline-renderer.js', { createInlineRenderer: options => { inlineRendererOptions = options; return { setEnabled(value) { inlineEnabled.push(value); }, destroy() {} }; } });
   const peopleWorkspaceRuntime = { async start() {}, async setEnabled() {}, invalidate() {}, getState: () => ({ status: 'ready' }) };
   define('./src/v3/people-workspace.js', {
     createPeopleWorkspaceStore: options => { peopleStoreOptions = options; return { read() {}, put() {} }; },
@@ -287,6 +290,8 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   assert.ok(v3RecallOptions.store);
   assert.ok(v3RecallOptions.hostAdapter);
   assert.ok(autoHideOptions.hostAdapter); assert.equal(autoHideOptions.memoryRuntime, v3MemoryRuntime);
+  assert.equal(inlineRendererOptions.memoryRuntime, v3MemoryRuntime); assert.equal(inlineRendererOptions.recallRuntime.getState() !== undefined, true); assert.ok(inlineRendererOptions.hostAdapter);
+  assert.deepEqual(inlineEnabled, [false], '入口应在其他异步runtime启动前按总开关启动或停用楼内渲染');
   assert.equal(memoryManagementOptions.client, backendClient); assert.equal(memoryManagementOptions.session, lifecycleOptions.session); assert.equal(memoryManagementOptions.memoryRuntime, v3MemoryRuntime); assert.equal(typeof memoryManagementOptions.isMainGenerationActive, 'function');
   assert.equal(typeof v3RecallOptions.isEnabled, 'function');
   assert.equal(typeof v3RecallOptions.historicalMaintenance, 'function');

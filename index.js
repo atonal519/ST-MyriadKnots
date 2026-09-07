@@ -21,6 +21,7 @@ import { createAutoHideController } from './src/v3/auto-hide.js';
 import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime } from './src/v3/people-workspace.js';
 import { installPublicMemoryBridge } from './src/v3/public-memory-bridge.js';
 import { createMyKnotsStoryClockController, createStoryClockStatusProjection, extensionStoryClockState } from './src/story-clock.js';
+import { createInlineRenderer } from './src/ui/inline-renderer.js';
 
 const isGenerating = () => Boolean(is_send_press || is_group_generating);
 const hostAdapter = createHostAdapter();
@@ -134,6 +135,7 @@ const autoHideController = createAutoHideController({
   settings,
   notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
 });
+const inlineRenderer = createInlineRenderer({ memoryRuntime: v3MemoryRuntime, recallRuntime: v3RecallRuntime, hostAdapter });
 const chatMemoryManagement = createChatMemoryManagement({
   client: backendClient,
   session,
@@ -154,10 +156,12 @@ const publicMemoryBridgeMount = installPublicMemoryBridge({
 });
 globalThis.addEventListener?.('beforeunload', publicMemoryBridgeMount.cleanup, { once: true });
 globalThis.addEventListener?.('beforeunload', autoHideController.dispose, { once: true });
+globalThis.addEventListener?.('beforeunload', inlineRenderer.destroy, { once: true });
 globalThis.qqj_v3_recall_interceptor = (coreChat, contextSize, abort, type) => v3RecallRuntime.intercept(coreChat, contextSize, abort, type);
 const setAllEnabled = async enabled => {
   refreshStoryClock({ announce: true });
   if (!enabled) {
+    inlineRenderer.setEnabled(false);
     autoHideController.stop();
     await peopleWorkspaceRuntime.setEnabled(false);
     await v3RecallRuntime.setEnabled(false);
@@ -165,6 +169,7 @@ const setAllEnabled = async enabled => {
     const lifecycleResult = await lifecycle?.setEnabled(false);
     return v3Result ?? lifecycleResult;
   }
+  inlineRenderer.setEnabled(true);
   const lifecycleResult = await lifecycle?.setEnabled(enabled);
   const v3Result = await v3MemoryRuntime.setEnabled(enabled);
   await v3RecallRuntime.setEnabled(enabled);
@@ -208,6 +213,7 @@ for (const name of ['CHAT_CHANGED', 'GENERATION_STARTED']) {
   if (eventName) host?.eventSource?.on?.(eventName, () => refreshStoryClock());
 }
 void (async () => {
+  inlineRenderer.setEnabled(settings.isEnabled());
   await lifecycle.start();
   await v3MemoryRuntime.start();
   await peopleWorkspaceRuntime.start();

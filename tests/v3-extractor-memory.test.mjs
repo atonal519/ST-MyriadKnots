@@ -542,6 +542,39 @@ test('可选项错误不会发起第二次格式修复 API', async () => {
   assert.equal(result.memory.eventFragments.length, 0);
 });
 
+test('extractor 真实 semantic 请求只在 stop 后共享修复缺失键引号', async () => {
+  const floor = { id: '11111111-1111-4111-8111-111111111111', chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq: 1, content: { canonicalContent: '裴晚生提醒你继续前进。' } };
+  const envelope = await createExtractorEnvelope({ batchId: '34343434-3434-4434-8434-343434343434', chatId: CHAT, narrativeGeneration: GENERATION, floor, userIdentity: { displayName: '林岚' } });
+  const malformed = '{"summary":"裴晚生提醒用户继续前进。","actions":[{"targets":[],action":"继续"}]}';
+  const recovered = await runExtractorRequest({
+    generateUtilityTask: async () => ({ textData: malformed, taskMetadata: { finishReason: 'stop' } }),
+    envelope,
+    floor,
+    expectedScope: envelope.scope,
+    now: NOW,
+  });
+  assert.equal(recovered.memory.summary.aiText, '裴晚生提醒用户继续前进。');
+  assert.equal(recovered.metadata.finishReason, 'stop');
+  const fenced = await runExtractorRequest({
+    generateUtilityTask: async () => ({ textData: `结果：\n\`\`\`json\n${malformed}\n\`\`\`\n完毕。`, taskMetadata: { finishReason: 'stop' } }),
+    envelope,
+    floor,
+    expectedScope: envelope.scope,
+    now: NOW,
+  });
+  assert.equal(fenced.memory.summary.aiText, '裴晚生提醒用户继续前进。');
+  const legalWrapped = await normalizeExtractorResponse({ response: '{"summary":"合法内部片段。"} 完毕。', finishReason: 'stop', envelope, floor, expectedScope: envelope.scope, now: NOW });
+  assert.equal(legalWrapped.memory.summary.aiText, '合法内部片段。');
+  await assert.rejects(
+    runExtractorRequest({ generateUtilityTask: async () => ({ textData: malformed, taskMetadata: {} }), envelope, floor, expectedScope: envelope.scope, now: NOW }),
+    error => error.code === 'V3_EXTRACTOR_SUMMARY_INVALID',
+  );
+  await assert.rejects(
+    runExtractorRequest({ generateUtilityTask: async () => ({ textData: `${malformed} 完毕。`, taskMetadata: { finishReason: 'stop' } }), envelope, floor, expectedScope: envelope.scope, now: NOW }),
+    error => error.code === 'V3_EXTRACTOR_SUMMARY_INVALID',
+  );
+});
+
 test('摘要同义字段、常见嵌套与已返回语义可确定性降级，且不混入技术元数据', async () => {
   assert.equal((await direct({ 概述: '裴晚生提醒用户带伞。' })).memory.summary.aiText, '裴晚生提醒用户带伞。');
   assert.equal((await direct({ summary: '', overview: '空摘要后的有效概述。' })).memory.summary.aiText, '空摘要后的有效概述。');

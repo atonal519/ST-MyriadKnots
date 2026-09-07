@@ -765,6 +765,36 @@ test('CSE 真实请求链只在 finish_reason=stop 且唯一缺人物右花括�
   assert.deepEqual(recovered.delta.subjectSnapshots[11].changeSummary, ['虚构变化-12']);
   assert.equal(recovered.metadata.finishReason, 'stop');
 
+  const symbolPacket = '{"subjects":[{"subject":"林岚",situational:[{"text":"保持警觉","visibility":"observable"}]}]}';
+  const symbolRecovered = await runCseRequest({
+    generateUtilityTask: async () => ({ textData: symbolPacket, taskMetadata: { finishReason: 'stop' } }),
+    envelope,
+    previousCurrentState: null,
+    now: NOW,
+    deltaId: '18181818-1818-4181-8181-181818181818',
+  });
+  assert.equal(symbolRecovered.delta.subjectSnapshots[0].situational[0].text, '保持警觉');
+  const fencedSymbolRecovered = await compileCseResponse({
+    response: `说明如下：\n\`\`\`json\n${symbolPacket}\n\`\`\`\n完毕。`,
+    finishReason: 'stop',
+    envelope,
+    previousCurrentState: null,
+    now: NOW,
+    deltaId: '20202020-2020-4202-8202-202020202020',
+  });
+  assert.equal(fencedSymbolRecovered.delta.subjectSnapshots[0].situational[0].text, '保持警觉');
+  const legalWrapped = '说明：{"subjects":[{"subject":"林岚","situational":[{"text":"合法片段"}]}]} 完毕。';
+  const legalWrappedResult = await compileCseResponse({ response: legalWrapped, finishReason: 'stop', envelope, previousCurrentState: null, now: NOW, deltaId: '21212121-2121-4212-8212-212121212121' });
+  assert.equal(legalWrappedResult.delta.subjectSnapshots[0].situational[0].text, '合法片段');
+  await assert.rejects(
+    compileCseResponse({ response: symbolPacket, envelope, previousCurrentState: null, now: NOW, deltaId: '19191919-1919-4191-8191-191919191919' }),
+    error => error.code === 'V3_CSE_FORMAT_INVALID',
+  );
+  await assert.rejects(
+    compileCseResponse({ response: `说明：${symbolPacket} 完毕。`, finishReason: 'stop', envelope, previousCurrentState: null, now: NOW, deltaId: '22222222-2222-4222-8222-222222222222' }),
+    error => error.code === 'V3_CSE_FORMAT_INVALID',
+  );
+
   await assert.rejects(run(), error => error.code === 'V3_CSE_FORMAT_INVALID');
   await assert.rejects(run('length'), error => error.code === 'V3_CSE_FORMAT_INVALID');
 

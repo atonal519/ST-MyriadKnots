@@ -1,5 +1,5 @@
 import { sha256 } from '../identity.js';
-import { repairJsonWithUniqueMissingObjectClose } from '../compact-api-client.js';
+import { parseJsonWithSymbolRepair, repairJsonWithUniqueMissingObjectClose } from '../json-symbol-repair.js';
 import { scanWorldInfo } from '../world-info-scanner.js';
 import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 import { deterministicUuid } from './foundation-domain.js';
@@ -257,10 +257,16 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
 function parsePacket(value, { finishReason } = {}) {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value;
   let raw = String(value ?? '').trim();
-  const fence = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/iu); if (fence) raw = fence[1].trim();
+  const fences = [...raw.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/giu)];
+  if (fences.length) raw = fences[0][1].trim();
   try { const parsed = JSON.parse(raw); return Array.isArray(parsed) ? { subjects: parsed } : parsed; } catch { /* limited wrapper recovery */ }
+  const symbolRepaired = fences.length <= 1 ? parseJsonWithSymbolRepair(raw, { finishReason })?.value : null;
+  if (symbolRepaired) return Array.isArray(symbolRepaired) ? { subjects: symbolRepaired } : symbolRepaired;
   const start = raw.indexOf('{'), end = raw.lastIndexOf('}');
-  if (start >= 0 && end > start) { try { return JSON.parse(raw.slice(start, end + 1)); } catch { /* fail below */ } }
+  if (start >= 0 && end > start) {
+    const bounded = raw.slice(start, end + 1);
+    try { return JSON.parse(bounded); } catch { /* fail below */ }
+  }
   const repaired = repairJsonWithUniqueMissingObjectClose(raw, { finishReason, allowArray: true });
   if (repaired) return Array.isArray(repaired) ? { subjects: repaired } : repaired;
   const error = new TypeError('CSE 返回不是可识别的 JSON。'); error.code = 'V3_CSE_FORMAT_INVALID'; throw error;

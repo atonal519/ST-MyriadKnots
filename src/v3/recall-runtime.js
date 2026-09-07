@@ -179,6 +179,25 @@ function legacyStateFromReceipt(receipt, { chatId, userIndex }) {
   });
 }
 
+export async function projectHistoricalRecallReceipt(message, { chatId, userMessageIndex, fingerprint = hashText } = {}) {
+  if (!message || typeof message !== 'object' || typeof message.mes !== 'string'
+    || typeof chatId !== 'string' || !chatId.trim()
+    || !Number.isSafeInteger(userMessageIndex) || userMessageIndex < 0
+    || typeof fingerprint !== 'function') return null;
+  const receipt = message.extra?.[RECALL_RECEIPT_KEY];
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return null;
+  if (receipt.schemaVersion === RECALL_RECEIPT_SCHEMA_VERSION) {
+    const snapshot = await persistedReceiptValid(receipt, {
+      chatId: chatId.trim(),
+      userIndex: userMessageIndex,
+      userFingerprint: await fingerprint(message.mes),
+      pluginVersion: receipt.pluginVersion,
+    }, fingerprint);
+    return snapshot ? stateFromReceipt(snapshot, { restoredReceipt: true }) : null;
+  }
+  return legacyStateFromReceipt(receipt, { chatId: chatId.trim(), userIndex: userMessageIndex });
+}
+
 export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, automationSettings = () => ({ enabled: false }), memoryStatus = () => null, historicalMaintenance = () => false, realtimeOrigin = () => false, notifyUser = null, sourceReader = readRecallSource, selector = selectRecall, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), now = () => new Date(), pluginVersion = '0.2.27', logger = console } = {}) {
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 recall host adapter 无效');
@@ -216,10 +235,10 @@ export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, au
   const sessionKey = ({ source, userIndex, userFingerprint, queryFingerprint }) => [source.chatId, source.narrativeGeneration, source.headCheckpointId, source.rootRevision, userIndex, userFingerprint, queryFingerprint].join('|');
 
   const bindLastRecall = (snapshot, user) => {
-    lastRecallBinding = snapshot && user ? Object.freeze({ chatId: currentChatId(snapshot), message: user.message, text: user.message.mes }) : null;
+    lastRecallBinding = snapshot && user ? Object.freeze({ chatId: currentChatId(snapshot), userMessageIndex: user.index, message: user.message, text: user.message.mes }) : null;
   };
   const bindOperationRecall = operation => {
-    lastRecallBinding = operation?.user ? Object.freeze({ chatId: operation.chatId, message: operation.user.message, text: operation.userText }) : null;
+    lastRecallBinding = operation?.user ? Object.freeze({ chatId: operation.chatId, userMessageIndex: operation.user.index, message: operation.user.message, text: operation.userText }) : null;
   };
   const abortReason = operation => {
     const reason = operation?.controller?.signal?.reason;
@@ -229,8 +248,9 @@ export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, au
   function getState() {
     return Object.freeze({
       recallStatus: active ? 'running' : lastRecall?.status ?? (lastError ? 'error' : 'idle'),
-      activeRecall: active ? Object.freeze({ token: active.token, generationType: active.type, phase: active.phase }) : null,
+      activeRecall: active ? Object.freeze({ token: active.token, generationType: active.type, phase: active.phase, chatId: active.chatId ?? null, userMessageIndex: active.user?.index ?? null }) : null,
       lastRecall,
+      lastRecallBinding: lastRecallBinding ? Object.freeze({ chatId: lastRecallBinding.chatId, userMessageIndex: lastRecallBinding.userMessageIndex }) : null,
       lastRecallError: lastError,
     });
   }

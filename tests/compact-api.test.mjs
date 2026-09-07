@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCompactApiClient, normalizeApiUrl, parseJsonOutput } from '../src/compact-api-client.js';
+import { parseJsonWithSafeTrailingCommas, parseJsonWithSymbolRepair } from '../src/json-symbol-repair.js';
 import { createTaskRouter } from '../src/api-routing.js';
 import { buildExtractorSystemPrompt } from '../src/v3/extractor.js';
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
@@ -119,6 +120,80 @@ test('finish_reason=stop 时只纠正结构尾部唯一缺失的对象右花括�
     choices: [{ finish_reason: 'stop', message: { content: '{"people":[{"person":"P1"}]' } }],
   }) });
   assert.deepEqual((await client.generateTask({ config: config(), taskMessages: [] })).jsonData, { people: [{ person: 'P1' }] });
+});
+
+test('共享 JSON 符号修复只在真实 stop 后确定性补键、冒号、明确逗号和尾逗号', () => {
+  const actual = '{"summary":"有效摘要","actions":[{"targets":[],action":"继续"}],"meta" {trace_id:"虚构-一号",},}';
+  const repaired = parseJsonWithSymbolRepair(actual, { finishReason: 'stop' });
+  assert.deepEqual(repaired.value, {
+    summary: '有效摘要',
+    actions: [{ targets: [], action: '继续' }],
+    meta: { trace_id: '虚构-一号' },
+  });
+  assert.equal(repaired.repaired, true);
+  assert.deepEqual(repaired.operations.map(item => item.type), [
+    'insert-key-opening-quote', 'insert-colon', 'quote-bare-key', 'remove-trailing-comma', 'remove-trailing-comma',
+  ]);
+  assert.deepEqual(parseJsonOutput(actual, { finishReason: 'stop' }), repaired.value);
+  assert.deepEqual(parseJsonOutput(`\`\`\`json\n${actual}\n\`\`\``, { finishReason: 'stop' }), repaired.value);
+  assert.throws(() => parseJsonOutput(`说明：${actual} 完毕。`, { finishReason: 'stop' }), error => /^QQJ_(?:COMPLETION_JSON|OUTPUT_TRUNCATED)$/u.test(error.code));
+  for (const finishReason of [undefined, '', 'other', 'length', 'max_tokens', 'content_filter']) {
+    assert.equal(parseJsonWithSymbolRepair(actual, { finishReason }), null);
+  }
+
+  const valid = '{"a":1,"a":2,"text":"逗号, 冒号: 与 \\"action\\\": {x:1}"}';
+  const unchanged = parseJsonWithSymbolRepair(valid);
+  assert.equal(unchanged.repaired, false);
+  assert.equal(unchanged.text, valid);
+  assert.deepEqual(unchanged.operations, []);
+  assert.equal(unchanged.value.text, '逗号, 冒号: 与 "action": {x:1}');
+
+  const missingCommas = parseJsonWithSymbolRepair('{"a":1 "b":true "c":[]}', { finishReason: 'stop' });
+  assert.deepEqual(missingCommas?.value, { a: 1, b: true, c: [] });
+  assert.deepEqual(missingCommas?.operations.map(item => item.type), ['insert-comma', 'insert-comma']);
+
+  const safeTrailing = parseJsonWithSafeTrailingCommas('{"summary":"保留 ,} 与 ,] 片段","items":[{"value":",}",},],}');
+  assert.deepEqual(safeTrailing?.value, { summary: '保留 ,} 与 ,] 片段', items: [{ value: ',}' }] });
+  assert.equal(safeTrailing?.operations.every(item => item.type === 'remove-trailing-comma'), true);
+});
+
+test('共享 JSON 符号修复拒绝内容猜测、截断、重复键和多 JSON', () => {
+  const rejected = [
+    '{a:1,"\\u0061":2}',
+    '{"a" 1,"\\u0061":2}',
+    '{"text":"未转义 "action":"不能误判"}',
+    '{"text":"未转义 " "action":"不能误判"}',
+    '{"text":"未写完}',
+    '{"text":"坏转义\\x"}',
+    '{"a":}',
+    '{"a""b"}',
+    '{"a":null "b":}',
+    '{"a":1e}',
+    '{"a":1.}',
+    '{"a":-}',
+    '{"a":01}',
+    '{"a":tru}',
+    '{"a":None}',
+    '{"a":True}',
+    '{"a":undefined}',
+    '{"a":NaN}',
+    '{"a":1,,"b":2}',
+    '[1 2]',
+    '[true false]',
+    '["a""b"]',
+    '{"a":1}{"b":2}',
+    '{"a":1 // 注释\n}',
+    '{"a":1,...}',
+    '[{"a":1}',
+    '{"a":1,"a":2',
+  ];
+  for (const value of rejected) {
+    assert.equal(parseJsonWithSymbolRepair(value, { finishReason: 'stop' }), null, value);
+    if (value === '{"a":1,"a":2') assert.throws(() => parseJsonOutput(value, { finishReason: 'stop' }), error => error.code === 'QQJ_OUTPUT_TRUNCATED');
+  }
+
+  const nested = parseJsonWithSymbolRepair('{outer:{a:1},other:{a:2},list:[{"甲":1}{"乙":2}]}', { finishReason: 'stop' });
+  assert.deepEqual(nested?.value, { outer: { a: 1 }, other: { a: 2 }, list: [{ 甲: 1 }, { 乙: 2 }] });
 });
 
 test('HTTP JSON、SSE event 与 finish_reason 截断使用独立安全阶段', async () => {

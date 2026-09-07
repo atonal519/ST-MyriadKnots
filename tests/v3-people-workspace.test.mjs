@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { buildPeopleProfileSystemPrompt, createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, DEFAULT_PROFILE_GUIDANCE, PEOPLE_WORKSPACE_RECORD_ID, PROFILE_FIXED_CONTRACT } from '../src/v3/people-workspace.js';
 import { filterSourcesByPermission } from '../src/source-permission.js';
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
+import { createCompactApiClient } from '../src/compact-api-client.js';
 
 const CHAT_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const CHAT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -85,6 +86,29 @@ test('人物资料运行时冻结本次自定义指导，设置变化只在下�
   assert.match(prompts[0], /第一版人物资料要求/); assert.doesNotMatch(prompts[0], /第二版人物资料要求/);
   assert.match(prompts[1], /第二版人物资料要求/); assert.doesNotMatch(prompts[1], /第一版人物资料要求/);
   assert.ok(prompts.every(prompt => prompt.split(BASE_PROCESSING_PROMPT).length - 1 === 1));
+});
+
+test('人物资料真实 strict 生成链使用共享符号修复后仍校验 personKey 绑定', async () => {
+  const client = createCompactApiClient({
+    fetchImpl: async (_url, options) => {
+      const requestBody = JSON.parse(options.body);
+      const envelope = JSON.parse(requestBody.messages.at(-1).content);
+      const person = envelope.people[0];
+      const malformed = `{"profiles":[{"personKey":${JSON.stringify(person.personKey)},name:${JSON.stringify(person.currentName)},"aliases":[],"background":"","appearance":"","personality":"","notes":""}]}`;
+      return { ok: true, status: 200, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: malformed } }] }) };
+    },
+  });
+  const h = harness({
+    generate: options => client.generateTask({
+      ...options,
+      config: { url: 'https://api.example.test/v1', key: 'TEST_KEY', model: 'mock-model', excludeParams: [], timeoutSec: 5, stream: false },
+    }),
+  });
+  await h.runtime.refresh();
+  const person = h.peopleEntities[0];
+  await h.runtime.setSelectedEntityIds([person.id]);
+  await h.runtime.generateMissingProfiles();
+  assert.equal(h.runtime.getState().profilesByEntityId[person.id].name, person.displayName);
 });
 
 test('重要人物允许 0、多个和超过常见小上限，持久重载与聊天隔离且不改变 CSE 候选', async () => {

@@ -1,4 +1,5 @@
 import { isUuid, sha256 } from '../identity.js';
+import { parseJsonWithSafeTrailingCommas, parseJsonWithSymbolRepair } from '../json-symbol-repair.js';
 import { deterministicUuid } from './foundation-domain.js';
 import { EXACT_ANCHOR_LIMIT, FLOOR_MEMORY_ITEM_LIMIT, validateEntityRecord, validateFloorMemory } from './memory-schema.js';
 import { sanitizeDiagnosticValue, sanitizeTaskMetadata } from './safe-metadata.js';
@@ -576,25 +577,28 @@ function fallbackSummary(packet) {
   return parts.join('；').slice(0, 4000);
 }
 
-function parseSemanticCandidate(value) {
+function parseSemanticCandidate(value, { finishReason } = {}) {
   if (Array.isArray(value)) return value;
   if (value && typeof value === 'object') return value;
   if (typeof value !== 'string') throw extractorError('V3_EXTRACTOR_SUMMARY_INVALID', 'summary');
   const text = value.trim();
   if (!text) throw extractorError('V3_EXTRACTOR_SUMMARY_INVALID', 'summary');
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/iu)?.[1] ?? text;
+  const fences = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/giu)];
+  const fenced = fences[0]?.[1] ?? text;
   const jsonLike = /^[\[{]/u.test(fenced.trim()) || /```\s*json\b/iu.test(text);
-  if (jsonLike && hasUnbalancedStructure(text)) throw extractorError('V3_EXTRACTOR_SUMMARY_INVALID', 'summary');
   if (jsonLike) {
-    const candidates = [fenced];
+    const safeTrailing = fences.length <= 1 ? parseJsonWithSafeTrailingCommas(fenced)?.value : undefined;
+    if (safeTrailing !== undefined) return parseSemanticCandidate(safeTrailing, { finishReason });
+    const primaryRepair = fences.length <= 1 ? parseJsonWithSymbolRepair(fenced, { finishReason })?.value : undefined;
+    if (primaryRepair !== undefined) return parseSemanticCandidate(primaryRepair, { finishReason });
+    if (hasUnbalancedStructure(text)) throw extractorError('V3_EXTRACTOR_SUMMARY_INVALID', 'summary');
+    const candidates = [];
     const firstObject = fenced.indexOf('{'), lastObject = fenced.lastIndexOf('}');
     const firstArray = fenced.indexOf('['), lastArray = fenced.lastIndexOf(']');
     if (firstObject >= 0 && lastObject > firstObject) candidates.push(fenced.slice(firstObject, lastObject + 1));
     if (firstArray >= 0 && lastArray > firstArray) candidates.push(fenced.slice(firstArray, lastArray + 1));
     for (const candidate of candidates) {
-      for (const source of [candidate, candidate.replace(/,\s*([}\]])/gu, '$1')]) {
-        try { return parseSemanticCandidate(JSON.parse(source)); } catch { /* try the next bounded form */ }
-      }
+      try { return parseSemanticCandidate(JSON.parse(candidate), { finishReason }); } catch { /* fail below */ }
     }
     throw extractorError('V3_EXTRACTOR_SUMMARY_INVALID', 'summary');
   }
@@ -603,15 +607,15 @@ function parseSemanticCandidate(value) {
   return { summary: summary.slice(0, 4000) };
 }
 
-function semanticPacket(value) {
-  let packet = parseSemanticCandidate(value);
+function semanticPacket(value, { finishReason } = {}) {
+  let packet = parseSemanticCandidate(value, { finishReason });
   const packets = [];
   for (let depth = 0; depth < 6; depth += 1) {
     if (packet?.task === 'extractFloorMemory' && Array.isArray(packet.floors)) return { legacy: packet };
     packets.push(packet);
     const wrapped = field(packet, SUMMARY_WRAPPER_KEYS);
     if (wrapped === undefined || wrapped === null || wrapped === '' || (Array.isArray(wrapped) && wrapped.length === 0) || wrapped === packet) break;
-    packet = parseSemanticCandidate(wrapped);
+    packet = parseSemanticCandidate(wrapped, { finishReason });
   }
   if (packets.at(-1) !== packet) packets.push(packet);
   const summary = packets.map(explicitSummary).find(Boolean)
@@ -643,8 +647,8 @@ function enumOr(value, mappings, fallback) {
   return mappings[key] ?? fallback;
 }
 
-async function compileSemanticPacket({ response, envelope, floor, existingEntities, now, supersedes, preservedSummary, expectedScope }) {
-  const parsed = semanticPacket(response);
+async function compileSemanticPacket({ response, finishReason, envelope, floor, existingEntities, now, supersedes, preservedSummary, expectedScope }) {
+  const parsed = semanticPacket(response, { finishReason });
   if (parsed.legacy) return normalizeLegacyExtractorResponse({ response: parsed.legacy, envelope, floor, existingEntities, now, supersedes, preservedSummary, expectedScope });
   const { packet, summary } = parsed;
   const isolated = [];
@@ -917,7 +921,7 @@ export async function runExtractorRequest({ generateUtilityTask, envelope, floor
       candidate = result?.jsonData ?? result?.textData ?? result;
       metadata = sanitizeTaskMetadata(result?.taskMetadata);
       responseFingerprint = `sha256:${await sha256(JSON.stringify(candidate))}`;
-      const normalized = await normalizeExtractorResponse({ response: candidate, envelope, floor, existingEntities, now, supersedes, preservedSummary, expectedScope });
+      const normalized = await normalizeExtractorResponse({ response: candidate, finishReason: result?.taskMetadata?.finishReason, envelope, floor, existingEntities, now, supersedes, preservedSummary, expectedScope });
       const successfulIssues = normalized.isolated.map(item => ({ code: item.code, path: item.path, field: item.field, index: item.index }));
       return Object.freeze({ ...normalized, attempts: 1, transportAttempts: transportBudget.used || metadata.transportAttempts, metadata, responseFingerprint, validationErrors: Object.freeze([...validationErrors, ...successfulIssues].slice(-20)) });
     } catch (error) {
