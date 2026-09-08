@@ -1,6 +1,6 @@
 import { newIdentityUuid, sha256 } from '../identity.js';
 import { buildFoundationIndexes } from './foundation-runtime.js';
-import { deterministicUuid } from './foundation-domain.js';
+import { deterministicUuid, selectAssistantMessage } from './foundation-domain.js';
 import { validateFoundationCheckpoint, validateFoundationRoot, validateFoundationRun } from './foundation-schema.js';
 import { validateCseGraph } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
@@ -17,7 +17,35 @@ const nowIso = now => { const value = now()?.toISOString?.() ?? String(now()); i
 const hash = async value => `sha256:${await sha256(JSON.stringify(value))}`;
 const errorWith = (code, message) => { const error = new Error(message ?? code); error.code = code; return error; };
 
-function dependencySnapshot(value, floorId, entities, previousState, storyClockSignatureForFloor) {
+const normalizedMessageText = value => String(value ?? '').replace(/\r\n?/g, '\n');
+const coreMeaning = items => JSON.stringify((items ?? []).map(item => [item.text, item.visibility, item.towardEntityId ?? null]));
+
+async function captureCurrentUserInput({ hostAdapter, floor, expectedChatId }) {
+  const snapshot = hostAdapter.snapshot();
+  const qqjChatId = String(snapshot.context?.chatMetadata?.qianqianjie?.chatId ?? '').trim();
+  const messageIndex = floor?.hostLocator?.messageIndex;
+  const selected = Number.isSafeInteger(messageIndex) ? selectAssistantMessage(snapshot.chat[messageIndex]) : null;
+  if (qqjChatId !== expectedChatId || !selected || `sha256:${await sha256(selected.rawContent)}` !== floor.content.rawFingerprint) {
+    throw errorWith('V3_CSE_STALE', '目标楼当前选中正文或聊天身份已变化，迟到状态不会写入。');
+  }
+  if (messageIndex === 0) return null;
+  const previous = snapshot.chat[messageIndex - 1];
+  if (!previous || previous.is_user !== true || previous.is_system === true) return null;
+  let content = '';
+  let selectedSwipeIndex = null;
+  let swipeId = null;
+  if (Array.isArray(previous.swipes)) {
+    selectedSwipeIndex = Number.isSafeInteger(previous.swipe_id) ? previous.swipe_id : 0;
+    const selectedUser = previous.swipes[selectedSwipeIndex];
+    if (typeof selectedUser !== 'string') return null;
+    content = normalizedMessageText(selectedUser);
+    swipeId = previous.swipe_id ?? selectedSwipeIndex;
+  } else if (typeof previous.mes === 'string') content = normalizedMessageText(previous.mes);
+  if (!content.trim()) return null;
+  return Object.freeze({ messageIndex: messageIndex - 1, swipeId, selectedSwipeIndex, content, fingerprint: `sha256:${await sha256(content)}` });
+}
+
+function dependencySnapshot(value, floorId, entities, previousState, storyClockSignatureForFloor, currentUserInput, coreUserEditedSubjectEntityIds = []) {
   const targetIndex = value?.floors?.findIndex(floor => floor.id === floorId) ?? -1;
   if (targetIndex < 0 || !value?.baseline) return null;
   const floors = value.floors.slice(0, targetIndex + 1);
@@ -44,6 +72,8 @@ function dependencySnapshot(value, floorId, entities, previousState, storyClockS
     targetDeltaId: deltaByFloor.get(floorId) ?? null,
     previousStateFingerprint: previousState?.fingerprint ?? null,
     identityDirectory,
+    currentUserInput: currentUserInput ? { messageIndex: currentUserInput.messageIndex, swipeId: currentUserInput.swipeId, selectedSwipeIndex: currentUserInput.selectedSwipeIndex, fingerprint: currentUserInput.fingerprint } : null,
+    coreUserEditedSubjectEntityIds: [...coreUserEditedSubjectEntityIds].sort(),
   };
 }
 
@@ -58,6 +88,34 @@ export function createCseRuntime({ store, hostAdapter, generateUtilityTask, isEn
   const enabled = () => { try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; } catch { return false; } };
   const notify = () => { const state = getState(); for (const listener of subscribers) { try { listener(state); } catch { /* listener isolation */ } } return state; };
 
+  async function coreUserEditedSubjects(deltas) {
+    const protectedIds = new Set();
+    const cache = new Map(deltas.map(delta => [delta.id, delta]));
+    for (const activeDelta of deltas) {
+      for (const audit of activeDelta.source?.calibrationAudit ?? []) {
+        if (audit.category === 'core' && audit.evidence?.some(evidence => evidence.source === 'currentUserInput')) protectedIds.add(audit.subjectEntityId);
+      }
+      let delta = activeDelta;
+      const visited = new Set();
+      while (delta?.source?.manualSubjectEntityIds?.length && !visited.has(delta.id)) {
+        visited.add(delta.id);
+        let anchor = delta.supersedes ? cache.get(delta.supersedes) : null;
+        if (!anchor && delta.supersedes && typeof store.readRecord === 'function') {
+          const read = await store.readRecord('stateDelta', delta.supersedes);
+          if (read.status === 'ready') { anchor = read.data; cache.set(anchor.id, anchor); }
+        }
+        for (const subjectId of delta.source.manualSubjectEntityIds) {
+          const currentSubject = delta.subjectSnapshots.find(subject => subject.subjectEntityId === subjectId);
+          const anchorSubject = anchor?.subjectSnapshots?.find(subject => subject.subjectEntityId === subjectId);
+          if (currentSubject?.core?.some(item => item.origin === 'manual')
+            || (anchorSubject && coreMeaning(currentSubject?.core) !== coreMeaning(anchorSubject.core))) protectedIds.add(subjectId);
+        }
+        delta = anchor;
+      }
+    }
+    return [...protectedIds];
+  }
+
   async function calculateReplay(value) {
     if (!value?.baseline) { replayed = null; replayDiagnostic = null; return; }
     const stored = value.currentStates?.at(-1) ?? null;
@@ -69,7 +127,7 @@ export function createCseRuntime({ store, hostAdapter, generateUtilityTask, isEn
   }
 
   async function load(providedReachable = null) {
-    const value = providedReachable ?? await store.readReachable({ mode: 'projection' });
+    const value = providedReachable ?? await store.readReachable({ mode: 'runtime' });
     if (!['ready', 'needsReseal'].includes(value.status)) {
       if (value.status === 'uninitialized') { reachable = null; replayed = null; return notify(); }
       throw errorWith('V3_CSE_LOAD_FAILED', `CSE 图读取失败：${value.status}`);
@@ -218,7 +276,9 @@ export function createCseRuntime({ store, hostAdapter, generateUtilityTask, isEn
     const dependencyPreviousState = dependencyPrecedingDeltas.length
       ? await replayCurrentState({ chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, baselineId: current.baseline?.id, floors: dependencyPrecedingFloors, floorMemories: dependencyPrecedingMemories, stateDeltas: dependencyPrecedingDeltas, now: nowIso(now) })
       : null;
-    const currentDependency = dependencySnapshot(current, operation.floorId, [...dependencyEntitiesById.values()], dependencyPreviousState, storyClockSignatureForFloor);
+    const currentUserInput = await captureCurrentUserInput({ hostAdapter, floor, expectedChatId: current.root.chatId });
+    const coreUserEditedSubjectEntityIds = await coreUserEditedSubjects(dependencyPrecedingDeltas);
+    const currentDependency = dependencySnapshot(current, operation.floorId, [...dependencyEntitiesById.values()], dependencyPreviousState, storyClockSignatureForFloor, currentUserInput, coreUserEditedSubjectEntityIds);
     if (!sameDependencySnapshot(operation.dependencySnapshot, currentDependency)) throw errorWith('V3_CSE_STALE', '人物状态所依赖的楼层前缀、摘要、前态或身份目录已变化，迟到状态不会写入。');
     const floorOrder = new Map(current.floors.map((item, index) => [item.id, index]));
     const deltas = filterReachableDeltas({ floors: current.floors, floorMemories: current.floorMemories, stateDeltas: current.stateDeltas })
@@ -270,11 +330,13 @@ export function createCseRuntime({ store, hostAdapter, generateUtilityTask, isEn
       const previousCurrentState = rebuiltPrevious && storedPrevious?.fingerprint === rebuiltPrevious.fingerprint ? storedPrevious : rebuiltPrevious;
       const trackedMemories = value.floorMemories.filter(item => item.recordStatus === 'active' && trackedFloorIds.has(item.floorId));
       const tracked = selectTrackedSubjects({ baseline: value.baseline, entities: scopedEntities, floorMemories: trackedMemories, floorMemory: memory });
-      operation.dependencySnapshot = dependencySnapshot(value, floor.id, entities, previousCurrentState, storyClockSignatureForFloor);
+      const currentUserInput = await captureCurrentUserInput({ hostAdapter, floor, expectedChatId: value.root.chatId });
+      const coreUserEditedSubjectEntityIds = await coreUserEditedSubjects(precedingDeltas);
+      operation.dependencySnapshot = dependencySnapshot(value, floor.id, entities, previousCurrentState, storyClockSignatureForFloor, currentUserInput, coreUserEditedSubjectEntityIds);
       if (!operation.dependencySnapshot) throw errorWith('V3_CSE_STALE', '人物状态分析依赖的楼层前缀不可用。');
       const requestWorldInfoSources = filterWorldInfoSources(value.baseline.worldInfoSources);
       if (!Array.isArray(requestWorldInfoSources)) throw errorWith('V3_CSE_WORLDBOOK_FILTER_INVALID', '世界书排除结果无效。');
-      const envelope = createCseEnvelope({ floor, floorMemory: memory, baseline: value.baseline, currentState: previousCurrentState, trackedSubjects: tracked, entities: scopedEntities, worldInfoSources: requestWorldInfoSources });
+      const envelope = createCseEnvelope({ floor, floorMemory: memory, baseline: value.baseline, currentState: previousCurrentState, trackedSubjects: tracked, entities: scopedEntities, worldInfoSources: requestWorldInfoSources, currentUserInput, coreUserEditedSubjectEntityIds });
       const deltaId = await deterministicUuid(['v3-cse-delta', operation.runId, floor.id, memory.id]);
       const promptGuidanceSnapshot = typeof promptGuidance === 'function' ? promptGuidance() : promptGuidance;
       const result = await runCseRequest({ generateUtilityTask, envelope, previousCurrentState, now: nowIso(now), deltaId, promptGuidance: promptGuidanceSnapshot, signal: operation.controller.signal });

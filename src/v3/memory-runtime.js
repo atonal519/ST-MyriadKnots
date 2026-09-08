@@ -756,13 +756,13 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (expected && !sameGenerationIdentity(expected, snapshot)) return null;
     const stableFloor = reachable?.floors?.at(-1) ?? null;
     const stableMessageIndex = stableFloor?.hostLocator?.messageIndex;
-    const pending = foundationRuntime.getState()?.pending;
     if (!stableFloor || !Number.isSafeInteger(stableMessageIndex)
-      || !pending || pending.messageIndex !== messageIndex
       || messageIndex <= stableMessageIndex || messageIndex !== snapshot.chat?.length - 1
       || !isAssistantSlot(snapshot.chat?.[messageIndex])) return null;
     if (expected && (expected.messageIndex !== messageIndex || expected.stableFloorId !== stableFloor.id
       || expected.stableMessageIndex !== stableMessageIndex)) return null;
+    const pending = foundationRuntime.getState()?.pending;
+    if (!expected && (!pending || pending.messageIndex !== messageIndex)) return null;
     return Object.freeze({
       ...generationIdentity(snapshot),
       messageIndex,

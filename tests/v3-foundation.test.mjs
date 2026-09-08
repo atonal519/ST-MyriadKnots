@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { createHostAdapter } from '../src/v3/host-adapter.js';
 import { createFoundationStore, reverseRefCandidateKeys } from '../src/v3/foundation-store.js';
 import { buildFoundationIndexes, createFoundationRuntime, validatePreparedFoundation } from '../src/v3/foundation-runtime.js';
-import { deterministicUuid, reverseRefShardPrefix, scanAssistantCandidates } from '../src/v3/foundation-domain.js';
+import { deterministicUuid, foundationInputSnapshot, reverseRefShardPrefix, scanAssistantCandidates } from '../src/v3/foundation-domain.js';
 import { sha256 } from '../src/identity.js';
 import { createChatSession } from '../src/chat-session.js';
 import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
@@ -308,6 +308,19 @@ test('pending swipe 只换候选；stable swipe 新建世代并保留可信前�
   assert.notEqual(nextRoot.narrativeGeneration, generation);
   assert.equal(state.lastRun.result, 'trustedPrefix:1');
   assert.equal(state.stableCount, 2);
+});
+
+test('稳定前缀指纹不受尾楼 pending 暂时消失影响，稳定正文变化仍会换指纹', async () => {
+  const withPending = await scanAssistantCandidates([assistant('A'), assistant('B'), assistant('尾楼')]);
+  const pendingSnapshot = await foundationInputSnapshot(withPending, 2);
+  const emptyTailSnapshot = await foundationInputSnapshot(withPending.slice(0, 2), 2);
+  assert.equal(pendingSnapshot.payload.latestStatus, 'pending');
+  assert.equal(emptyTailSnapshot.payload.latestStatus, 'confirmed');
+  assert.equal(emptyTailSnapshot.fingerprint, pendingSnapshot.fingerprint, '瞬时 pending 投影不得进入稳定前缀持久指纹');
+
+  const changedPrefix = await scanAssistantCandidates([assistant('A'), assistant('B 已修改')]);
+  const changedSnapshot = await foundationInputSnapshot(changedPrefix, 2);
+  assert.notEqual(changedSnapshot.fingerprint, pendingSnapshot.fingerprint, '稳定前缀正文变化必须继续换指纹');
 });
 
 test('旧全候选 snapshot 首次刷新只对齐一次，后续 pending-only 变化保持 root 不动', async () => {

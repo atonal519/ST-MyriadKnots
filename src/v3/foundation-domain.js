@@ -39,7 +39,12 @@ export async function foundationInputSnapshot(candidates, stableCount) {
       selectedSwipeIndex: candidate.hostLocator?.selectedSwipeIndex ?? null,
     })),
   };
-  return Object.freeze({ payload: Object.freeze(payload), fingerprint: await prefixedHash(JSON.stringify(payload)) });
+  const stablePrefix = {
+    version: payload.version,
+    stableCount: payload.stableCount,
+    floors: payload.floors,
+  };
+  return Object.freeze({ payload: Object.freeze(payload), fingerprint: await prefixedHash(JSON.stringify(stablePrefix)) });
 }
 
 export async function reverseRefShardPrefix(recordId) {

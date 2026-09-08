@@ -5,12 +5,13 @@ import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 import { deterministicUuid } from './foundation-domain.js';
 import { validateEntityRecord } from './memory-schema.js';
 import { sanitizeDiagnosticValue, sanitizeTaskMetadata } from './safe-metadata.js';
-import { CSE_VISIBILITIES, stateFingerprint, validateBaselineRecord, validateCurrentStateRecord, validateStateDeltaRecord } from './cse-schema.js';
+import { CSE_VISIBILITIES, LATEST_CSE_CALIBRATION_VERSION, isSupportedCseCalibrationVersion, stateFingerprint, validateBaselineRecord, validateCurrentStateRecord, validateStateDeltaRecord } from './cse-schema.js';
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory } from './entity-identity.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-6';
-export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/after-state-compiler-5';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-7';
+export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-6';
+export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
 export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。完整阅读本楼正文，并结合结构化楼层记忆、人物此前状态与相关初始设定，分析人物在本楼结束时的状态。
 
@@ -25,10 +26,17 @@ subjectRelevantEvidence 按 tracked subject 汇集角色相关条目，relationT
 
 previousState 只放人物自己的前态；authorialOtherStateContext 是经过隐私过滤的作者态连续性参考，不代表相应人物知道其他人的状态。作者态推断与人物本人已知必须分开：observable 只用于正文中实际可观察的状态，private 只属于该人物的内心或明确知情，authorial 只作作者塑造参考。
 
-只可为输入中的 trackedSubjects 输出状态；trackedSubjects 是候选范围，不要求逐人补写。若本楼没有足够新依据，可省略该人物；若只支持某些分类，可省略其他分类，让编译器沿用旧状态。不要用“本楼未出现”“状态无变化”之类空话替换旧状态，也不要因为缺少证据而反推“不知道”。knownPeople 仅用于 toward 对象绑定，不代表他们本楼也要输出状态。Core 首次可建立；已有 Core 只有在正文真正挑战它时才写入 coreChallenges，不能直接改写旧 Core。Adaptive 涉及对象时使用 toward。Situational 只有在正文给出明确时间流逝时才可写 reasonableProgression，不能补造新事件。新增或更新的状态推荐使用带简短 reason 的对象；如果正文没有可引用依据，可省略 reason，程序仍会接收并清楚标记为“未提供依据”，不要为凑字段编造。不要输出数据库 ID。
+只可为输入中的 trackedSubjects 输出状态；trackedSubjects 是候选范围，不要求逐人补写。若本楼没有足够新依据，可省略该人物；若只支持某些分类，可省略其他分类，让编译器沿用旧状态。不要用“本楼未出现”“状态无变化”之类空话替换旧状态，也不要因为缺少证据而反推“不知道”。knownPeople 仅用于 toward 对象绑定，不代表他们本楼也要输出状态。Adaptive 涉及对象时使用 toward。Situational 只有在正文给出明确时间流逝时才可写 reasonableProgression，不能补造新事件。新增或更新的状态推荐使用带简短 reason 的对象；如果正文没有可引用依据，可省略 reason，程序仍会接收并清楚标记为“未提供依据”，不要为凑字段编造。不要输出数据库 ID。
+
+【持续校准合同】
+每次都审视本楼相关人物的已有 Core 与 Adaptive。旧结论本身及其旧 reason 不能自证；不要求每楼改写，没有新依据时保持原项。Core 以明确作者设定为锚，普通单楼情绪、动作或台词不足以新增或改写 Core；Adaptive 可随新事实、反例和旧依据不足而保持、收窄或撤回。coreUserEdited 为 true 时，只有 currentUserInput 中明确的作者纠正才可改变 Core；它不锁定 Adaptive。
+
+currentUserInput 只在目标 AI 楼紧邻上一条确为 user 时提供。它可能是普通角色台词、动作、插件参考，也可能是作者明确校正；必须按语义区分，不能把整条输入一律当可信设定。引用只能使用 evidenceSourceCatalog 中的 source，quote 必须逐字存在于对应实际材料。userPersona 只支持用户本人，characterCard 只支持对应角色；worldbook 需判断人物归属。引用可定位不等于语义必然成立，仍须判断其是否真的支持操作。
+
+Core/Adaptive 每类采用 review/additions 新协议，或沿用旧的直接 after-state 数组，不能同时使用两套。review 以 previousText（Adaptive 同名时再用 toward）精确指向旧项，action 只能是 keep、refine、remove；refine 还需 text。未提到项保留。新增项放 additions。refine、remove、addition 都必须给 evidence:[{source,quote}]；keep 可不带证据。不要把 previousState、旧 reason 或 authorialOtherStateContext 写成 evidence source。
 
 返回一个 JSON 对象。推荐结构：
-{"subjects":[{"subject":"人物名","core":[{"reason":"正文依据","text":"核心特征","visibility":"authorial"}],"adaptive":[{"reason":"正文依据","text":"对某人的应对方式","toward":"对象名","visibility":"observable"}],"situational":[{"reason":"正文依据","text":"此刻状态","visibility":"private","origin":"floor"}],"changeSummary":["变化摘要"],"coreChallenges":["对既有 Core 的挑战"]}]}
+{"subjects":[{"subject":"人物名","review":{"core":[{"previousText":"旧核心","action":"keep"}],"adaptive":[{"previousText":"旧模式","toward":"对象名","action":"refine","text":"收窄后的模式","reason":"为何调整","evidence":[{"source":"canonicalContent","quote":"正文原句"}]}]},"additions":{"core":[],"adaptive":[]},"situational":[{"reason":"正文依据","text":"此刻状态","visibility":"private","origin":"floor"}],"changeSummary":["变化摘要"]}]}
 不确定的可选人物或分类宁可省略。只输出 JSON，不要解释。`;
 
 export function buildCseSystemPrompt(guidance = '') {
@@ -207,12 +215,23 @@ function semanticItems(items, entities) {
   return items.map(item => ({ text: item.text, visibility: item.visibility, reason: item.reason, origin: item.origin, ...(item.towardEntityId ? { toward: byId.get(item.towardEntityId) ?? null } : {}) }));
 }
 
-function previousForPrompt(currentState, tracked, entities) {
+function previousForPrompt(currentState, tracked, entities, coreUserEditedSubjectEntityIds) {
   const trackedIds = new Set(tracked.map(entity => entity.id));
   return (currentState?.subjects ?? []).filter(subject => trackedIds.has(subject.subjectEntityId)).map(subject => {
     const owner = entities.find(entity => entity.id === subject.subjectEntityId);
-    return { subject: owner?.displayName ?? '未知人物', ownState: { core: semanticItems(subject.core, entities), adaptive: semanticItems(subject.adaptive, entities), situational: semanticItems(subject.situational, entities) } };
+    return { subject: owner?.displayName ?? '未知人物', coreUserEdited: coreUserEditedSubjectEntityIds.has(subject.subjectEntityId), ownState: { core: semanticItems(subject.core, entities), adaptive: semanticItems(subject.adaptive, entities), situational: semanticItems(subject.situational, entities) } };
   });
+}
+
+function cseEvidenceSources({ floor, baseline, currentUserInput, worldInfoSources }) {
+  const sources = [
+    { source: 'canonicalContent', kind: 'story', subjectEntityId: null, contents: [floor.content.canonicalContent] },
+    { source: 'userPersona', kind: 'authorialSetting', subjectEntityId: baseline.userPersona.entityId, contents: [baseline.userPersona.description] },
+    { source: 'characterCard', kind: 'authorialSetting', subjectEntityId: baseline.characterCard.entityId, contents: [baseline.characterCard.description, baseline.characterCard.personality, baseline.characterCard.scenario] },
+    ...worldInfoSources.map((entry, index) => ({ source: `worldbook:${index + 1}`, kind: 'authorialSetting', subjectEntityId: null, contents: [entry.content] })),
+  ];
+  if (currentUserInput?.content) sources.push({ source: 'currentUserInput', kind: 'userInput', subjectEntityId: null, contents: [currentUserInput.content] });
+  return sources;
 }
 
 function authorialOtherStateContext(currentState, entities) {
@@ -225,31 +244,39 @@ function authorialOtherStateContext(currentState, entities) {
   }));
 }
 
-export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, worldInfoSources = null }) {
+export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, worldInfoSources = null, currentUserInput = null, coreUserEditedSubjectEntityIds = [] }) {
   const directory = buildEntityIdentityDirectory({ entities });
   const directoryById = new Map(directory.map(entry => [entry.entityId, entry]));
   const labelsFor = entity => directoryById.get(entity.id)?.labels ?? entityLabels(entity);
   const activeKnownEntities = directory.filter(entry => entry.entityType === 'person' || entry.specialRole !== 'none');
   const requestWorldInfoSources = Array.isArray(worldInfoSources) ? worldInfoSources : baseline.worldInfoSources;
+  const evidenceSources = cseEvidenceSources({ floor, baseline, currentUserInput, worldInfoSources: requestWorldInfoSources });
+  const coreUserEdited = new Set(coreUserEditedSubjectEntityIds);
+  const nameForSubjectId = entityId => directoryById.get(entityId)?.displayName
+    ?? (entityId === baseline.userPersona.entityId ? baseline.userPersona.name : entityId === baseline.characterCard.entityId ? baseline.characterCard.name : null);
   return Object.freeze({
     request: Object.freeze({ task: 'understandCharacterStateAfterFloor', locale: 'zh-CN', payload: {
       canonicalContent: floor.content.canonicalContent,
       floorMemory: semanticMemory(floorMemory, entities),
-      previousState: previousForPrompt(currentState, trackedSubjects, entities),
+      previousState: previousForPrompt(currentState, trackedSubjects, entities, coreUserEdited),
       relevantBaseline: {
         userPersona: { name: baseline.userPersona.name, description: baseline.userPersona.description, visibility: 'authorial' },
         characterCard: { name: baseline.characterCard.name, description: baseline.characterCard.description, personality: baseline.characterCard.personality, scenario: baseline.characterCard.scenario, visibility: 'authorial' },
-        worldInfo: requestWorldInfoSources.map(source => ({ source: source.sourceName, content: source.content, visibility: 'authorial', activated: source.activated })),
+        worldInfo: requestWorldInfoSources.map((source, index) => ({ source: source.sourceName, evidenceSource: `worldbook:${index + 1}`, content: source.content, visibility: 'authorial', activated: source.activated })),
       },
+      currentUserInput: currentUserInput?.content ? { source: 'currentUserInput', messageIndex: currentUserInput.messageIndex, content: currentUserInput.content } : null,
+      evidenceSourceCatalog: evidenceSources.map(source => ({ source: source.source, kind: source.kind, ...(source.subjectEntityId ? { subject: nameForSubjectId(source.subjectEntityId) } : {}) })),
       subjectRelevantEvidence: subjectRelevantEvidence(floorMemory, trackedSubjects, entities),
       authorialOtherStateContext: authorialOtherStateContext(currentState, entities),
-      trackedSubjects: trackedSubjects.map(entity => ({ name: entity.displayName, aliases: labelsFor(entity) })),
+      trackedSubjects: trackedSubjects.map(entity => ({ name: entity.displayName, aliases: labelsFor(entity), coreUserEdited: coreUserEdited.has(entity.id) })),
       knownPeople: activeKnownEntities.map(entry => ({ name: entry.displayName, aliases: entry.labels })),
     } }),
     scope: Object.freeze({
       floorId: floor.id, floorMemoryId: floorMemory.id, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration, baselineId: baseline.id,
       trackedBindings: trackedSubjects.map(entity => ({ entityId: entity.id, labels: labelsFor(entity), specialRole: entity.specialRole })),
       knownBindings: activeKnownEntities.map(entry => ({ entityId: entry.entityId, labels: entry.labels, specialRole: entry.specialRole })),
+      evidenceSources,
+      coreUserEditedSubjectEntityIds: [...coreUserEdited],
     }),
   });
 }
@@ -304,27 +331,168 @@ async function compileItems({ raw, category, binding, knownBindings, deltaId, fl
   return output;
 }
 
+const categoryNames = category => category === 'core' ? ['core', '核心', '核心人格'] : ['adaptive', '适应', '长期适应'];
+const sameItemMeaning = (left, right) => normalized(left?.text) === normalized(right?.text)
+  && (left?.towardEntityId ?? null) === (right?.towardEntityId ?? null)
+  && left?.visibility === right?.visibility;
+
+function calibratedEvidence(raw, { envelope, binding, category, index, isolated }) {
+  const evidence = [];
+  for (const [evidenceIndex, item] of list(field(raw, ['evidence', '证据'])).slice(0, 20).entries()) {
+    const sourceName = text(field(item, ['source', '来源']), 160);
+    const quote = text(field(item, ['quote', '引用']), 2000);
+    const source = envelope.scope.evidenceSources.find(candidate => candidate.source === sourceName);
+    const path = `${category}.${index}.evidence.${evidenceIndex}`;
+    if (!source || !quote || !source.contents.some(content => typeof content === 'string' && content.includes(quote))) {
+      isolated.push({ field: path, code: 'V3_CSE_EVIDENCE_UNLOCATED' });
+      continue;
+    }
+    if (source.subjectEntityId && source.subjectEntityId !== binding.entityId) {
+      isolated.push({ field: path, code: 'V3_CSE_EVIDENCE_SUBJECT_MISMATCH' });
+      continue;
+    }
+    evidence.push({ source: source.source, kind: source.kind, quote });
+  }
+  return evidence;
+}
+
+function calibratedMutationAllowed({ category, evidence, manualCore }) {
+  if (!evidence.length) return false;
+  if (category !== 'core') return true;
+  if (manualCore) return evidence.some(item => item.source === 'currentUserInput');
+  return evidence.some(item => item.kind === 'authorialSetting' || item.source === 'currentUserInput');
+}
+
+function reasonWithEvidence(raw, evidence) {
+  const reason = text(field(raw, ['reason', 'because', '依据', '原因']), 2600);
+  const audit = evidence.map(item => `${item.source}「${item.quote}」`).join('；');
+  return `${reason || '基于本次可定位证据'}（证据：${audit}）`.slice(0, 4000);
+}
+
+async function calibratedStateItem({ raw, category, binding, knownBindings, deltaId, floorId, index, isolated, evidence, original = null }) {
+  const value = itemSemantic(raw);
+  if (!value) { isolated.push({ field: category, index, code: 'V3_CSE_OPTIONAL_ITEM_INVALID' }); return null; }
+  let towardEntityId = category === 'adaptive' ? original?.towardEntityId ?? null : null;
+  const towardRaw = typeof raw === 'object' ? field(raw, ['toward', 'target', 'object', '对谁', '对象']) : null;
+  if (category === 'adaptive' && towardRaw !== undefined && towardRaw !== null && String(towardRaw).trim()) {
+    const toward = bindingFor(towardRaw, knownBindings);
+    if (!toward) { isolated.push({ field: category, index, code: 'V3_CSE_TOWARD_UNBOUND' }); return null; }
+    towardEntityId = toward.entityId;
+  }
+  const visibilityRaw = typeof raw === 'object' ? field(raw, ['visibility', '可见性']) : null;
+  const sourceOrigin = evidence.every(item => item.kind === 'authorialSetting') ? 'baseline' : 'floor';
+  return {
+    id: await deterministicUuid(['v3-cse-calibrated-state-item', deltaId, binding.entityId, category, index, value, towardEntityId]),
+    text: value,
+    visibility: visibilityRaw === undefined || visibilityRaw === null ? original?.visibility ?? 'private' : visibility(visibilityRaw),
+    reason: reasonWithEvidence(raw, evidence),
+    origin: sourceOrigin,
+    towardEntityId,
+    sourceFloorId: floorId,
+    sourceDeltaId: deltaId,
+  };
+}
+
+function calibrationAuditEntry({ binding, category, action, original = null, item = null, raw, evidence }) {
+  return {
+    subjectEntityId: binding.entityId,
+    category,
+    action,
+    previousText: original?.text ?? null,
+    previousTowardEntityId: original?.towardEntityId ?? null,
+    text: item?.text ?? null,
+    towardEntityId: item?.towardEntityId ?? null,
+    reason: text(field(raw, ['reason', 'because', '依据', '原因']), 4000) || '基于本次可定位证据',
+    evidence: evidence.map(({ source, quote }) => ({ source, quote })),
+  };
+}
+
+async function compileCalibratedCategory({ rawSubject, category, binding, previous, envelope, deltaId, isolated, calibrationAudit }) {
+  const reviewContainer = field(rawSubject, ['review', '复核']);
+  const additionsContainer = field(rawSubject, ['additions', '新增']);
+  const reviewRaw = field(reviewContainer, categoryNames(category));
+  const additionsRaw = field(additionsContainer, categoryNames(category));
+  const directRaw = field(rawSubject, categoryNames(category));
+  const usesCalibration = reviewRaw !== undefined || additionsRaw !== undefined;
+  if (!usesCalibration) return null;
+  if (directRaw !== undefined) isolated.push({ field: category, code: 'V3_CSE_CATEGORY_PROTOCOL_MIXED' });
+
+  const original = previous[category] ?? [];
+  const output = [...original];
+  const reviewedIds = new Set();
+  const manualCore = category === 'core' && (envelope.scope.coreUserEditedSubjectEntityIds.includes(binding.entityId) || original.some(item => item.origin === 'manual'));
+  for (const [index, review] of list(reviewRaw).slice(0, 120).entries()) {
+    if (!review || typeof review !== 'object' || Array.isArray(review)) { isolated.push({ field: `${category}.review`, index, code: 'V3_CSE_REVIEW_INVALID' }); continue; }
+    const previousText = text(field(review, ['previousText', 'previous', '旧内容']), 4000);
+    const action = normalized(field(review, ['action', '操作']));
+    if (!previousText || !['keep', 'refine', 'remove'].includes(action)) { isolated.push({ field: `${category}.review`, index, code: 'V3_CSE_REVIEW_INVALID' }); continue; }
+    let towardEntityId;
+    const towardRaw = field(review, ['toward', 'target', 'object', '对谁', '对象']);
+    if (category === 'adaptive' && towardRaw !== undefined && towardRaw !== null && String(towardRaw).trim()) {
+      const toward = bindingFor(towardRaw, envelope.scope.knownBindings);
+      if (!toward) { isolated.push({ field: `${category}.review`, index, code: 'V3_CSE_TOWARD_UNBOUND' }); continue; }
+      towardEntityId = toward.entityId;
+    }
+    const matches = original.filter(item => normalized(item.text) === normalized(previousText)
+      && (towardEntityId === undefined || item.towardEntityId === towardEntityId));
+    if (matches.length !== 1 || reviewedIds.has(matches[0]?.id)) { isolated.push({ field: `${category}.review`, index, code: 'V3_CSE_REVIEW_TARGET_AMBIGUOUS' }); continue; }
+    const matched = matches[0];
+    reviewedIds.add(matched.id);
+    if (action === 'keep') continue;
+    const evidence = calibratedEvidence(review, { envelope, binding, category, index, isolated });
+    if (!calibratedMutationAllowed({ category, evidence, manualCore })) { isolated.push({ field: `${category}.review`, index, code: 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT' }); continue; }
+    const currentIndex = output.findIndex(item => item.id === matched.id);
+    if (currentIndex < 0) { isolated.push({ field: `${category}.review`, index, code: 'V3_CSE_REVIEW_TARGET_AMBIGUOUS' }); continue; }
+    if (action === 'remove') {
+      output.splice(currentIndex, 1);
+      calibrationAudit.push(calibrationAuditEntry({ binding, category, action, original: matched, raw: review, evidence }));
+      continue;
+    }
+    const replacement = await calibratedStateItem({ raw: review, category, binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, index, isolated, evidence, original: matched });
+    if (replacement && !sameItemMeaning(matched, replacement)) {
+      output.splice(currentIndex, 1, replacement);
+      calibrationAudit.push(calibrationAuditEntry({ binding, category, action, original: matched, item: replacement, raw: review, evidence }));
+    }
+  }
+
+  for (const [index, addition] of list(additionsRaw).slice(0, 120).entries()) {
+    if (!addition || typeof addition !== 'object' || Array.isArray(addition)) { isolated.push({ field: `${category}.additions`, index, code: 'V3_CSE_OPTIONAL_ITEM_INVALID' }); continue; }
+    const evidence = calibratedEvidence(addition, { envelope, binding, category, index, isolated });
+    if (!calibratedMutationAllowed({ category, evidence, manualCore })) { isolated.push({ field: `${category}.additions`, index, code: 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT' }); continue; }
+    const item = await calibratedStateItem({ raw: addition, category, binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, index: original.length + index, isolated, evidence });
+    if (item && !output.some(existing => normalized(existing.text) === normalized(item.text) && existing.towardEntityId === item.towardEntityId)) {
+      output.push(item);
+      calibrationAudit.push(calibrationAuditEntry({ binding, category, action: 'add', item, raw: addition, evidence }));
+    }
+  }
+  return output;
+}
+
 export async function compileCseResponse({ response, finishReason, envelope, previousCurrentState, now, deltaId }) {
   const packet = parsePacket(response, { finishReason });
   const isolated = [];
   const previousById = new Map((previousCurrentState?.subjects ?? []).map(subject => [subject.subjectEntityId, subject]));
   const compiled = new Map();
+  const calibrationAudit = [];
   const rawSubjects = list(field(packet, ['subjects', 'people', 'characters', 'states', '人物', '角色', '状态']));
   for (const [subjectIndex, raw] of rawSubjects.slice(0, 80).entries()) {
     const binding = bindingFor(raw, envelope.scope.trackedBindings);
     if (!binding) { isolated.push({ field: 'subjects', index: subjectIndex, code: 'V3_CSE_SUBJECT_UNBOUND' }); continue; }
     if (compiled.has(binding.entityId)) { isolated.push({ field: 'subjects', index: subjectIndex, code: 'V3_CSE_SUBJECT_DUPLICATE' }); continue; }
     const previous = previousById.get(binding.entityId) ?? { core: [], adaptive: [], situational: [] };
-    const hasCore = field(raw, ['core', '核心', '核心人格']) !== undefined;
-    const hasAdaptive = field(raw, ['adaptive', '适应', '长期适应']) !== undefined;
+    const hasCore = field(raw, categoryNames('core')) !== undefined;
+    const hasAdaptive = field(raw, categoryNames('adaptive')) !== undefined;
     const hasSituational = field(raw, ['situational', 'situation', '短期状态', '情境']) !== undefined;
-    const proposedCore = hasCore ? await compileItems({ raw: field(raw, ['core', '核心', '核心人格']), category: 'core', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous, isolated }) : previous.core;
-    const adaptive = hasAdaptive ? await compileItems({ raw: field(raw, ['adaptive', '适应', '长期适应']), category: 'adaptive', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous, isolated }) : previous.adaptive;
+    const calibratedCore = await compileCalibratedCategory({ rawSubject: raw, category: 'core', binding, previous, envelope, deltaId, isolated, calibrationAudit });
+    const calibratedAdaptive = await compileCalibratedCategory({ rawSubject: raw, category: 'adaptive', binding, previous, envelope, deltaId, isolated, calibrationAudit });
+    const proposedCore = calibratedCore ?? (hasCore ? await compileItems({ raw: field(raw, categoryNames('core')), category: 'core', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous, isolated }) : previous.core);
+    const adaptive = calibratedAdaptive ?? (hasAdaptive ? await compileItems({ raw: field(raw, categoryNames('adaptive')), category: 'adaptive', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous, isolated }) : previous.adaptive);
     const situational = hasSituational ? await compileItems({ raw: field(raw, ['situational', 'situation', '短期状态', '情境']), category: 'situational', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous, isolated }) : previous.situational;
     const explicitChallenges = list(field(raw, ['coreChallenges', 'coreChallenge', '核心挑战'])).map(itemSemantic).filter(Boolean);
     let core = proposedCore;
     const challenges = [...explicitChallenges];
-    if (previous.core.length) {
+    const manualCoreProtected = envelope.scope.coreUserEditedSubjectEntityIds.includes(binding.entityId) || previous.core.some(item => item.origin === 'manual');
+    if ((previous.core.length || manualCoreProtected) && calibratedCore === null) {
       core = previous.core;
       if (hasCore && JSON.stringify(proposedCore.map(item => item.text)) !== JSON.stringify(previous.core.map(item => item.text))) challenges.push(...proposedCore.map(item => `AI 建议改写 Core：${item.text}`));
     }
@@ -335,7 +503,7 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
   const material = subjectSnapshots.some(subject => JSON.stringify(storedProjection(previousById.get(subject.subjectEntityId) ?? { core: [], adaptive: [], situational: [] })) !== JSON.stringify(storedProjection(subject)));
   const noMaterialChange = !material;
   const fingerprint = `sha256:${await sha256(JSON.stringify([envelope.scope.floorId, envelope.scope.floorMemoryId, subjectSnapshots, noMaterialChange]))}`;
-  const delta = validateStateDeltaRecord({ schemaVersion: 3, recordType: 'stateDelta', id: deltaId, chatId: envelope.scope.chatId, narrativeGeneration: envelope.scope.narrativeGeneration, floorId: envelope.scope.floorId, floorMemoryId: envelope.scope.floorMemoryId, baselineId: envelope.scope.baselineId, previousCurrentStateId: previousCurrentState?.id ?? null, subjectSnapshots, noMaterialChange, fingerprint, source: { promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION }, createdAt: now, updatedAt: now, recordStatus: 'active', supersedes: null }, { expectedChatId: envelope.scope.chatId });
+  const delta = validateStateDeltaRecord({ schemaVersion: 3, recordType: 'stateDelta', id: deltaId, chatId: envelope.scope.chatId, narrativeGeneration: envelope.scope.narrativeGeneration, floorId: envelope.scope.floorId, floorMemoryId: envelope.scope.floorMemoryId, baselineId: envelope.scope.baselineId, previousCurrentStateId: previousCurrentState?.id ?? null, subjectSnapshots, noMaterialChange, fingerprint, source: { promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, calibrationVersion: CSE_CALIBRATION_VERSION, ...(calibrationAudit.length ? { calibrationAudit } : {}) }, createdAt: now, updatedAt: now, recordStatus: 'active', supersedes: null }, { expectedChatId: envelope.scope.chatId });
   return Object.freeze({ delta, isolated: Object.freeze(isolated) });
 }
 
@@ -417,7 +585,13 @@ export async function createManualCseCorrection({ anchorDelta, currentState, sub
     subjectSnapshots: snapshots,
     noMaterialChange,
     fingerprint,
-    source: { promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, manualSubjectEntityIds },
+    source: {
+      promptVersion: CSE_PROMPT_VERSION,
+      compilerVersion: CSE_COMPILER_VERSION,
+      ...(isSupportedCseCalibrationVersion(anchorDelta.source?.calibrationVersion) ? { calibrationVersion: anchorDelta.source.calibrationVersion } : {}),
+      ...(Array.isArray(anchorDelta.source?.calibrationAudit) ? { calibrationAudit: anchorDelta.source.calibrationAudit } : {}),
+      manualSubjectEntityIds,
+    },
     createdAt: now,
     updatedAt: now,
     recordStatus: 'active',
@@ -481,7 +655,8 @@ export async function replayCurrentState({ chatId, narrativeGeneration, baseline
   for (const delta of deltas) for (const snapshot of delta.subjectSnapshots) {
     const previous = subjects.get(snapshot.subjectEntityId);
     const manualCore = delta.source?.manualSubjectEntityIds?.includes(snapshot.subjectEntityId) === true;
-    subjects.set(snapshot.subjectEntityId, { subjectEntityId: snapshot.subjectEntityId, core: manualCore ? snapshot.core : previous?.core?.length ? previous.core : snapshot.core, adaptive: snapshot.adaptive, situational: snapshot.situational });
+    const calibrated = isSupportedCseCalibrationVersion(delta.source?.calibrationVersion);
+    subjects.set(snapshot.subjectEntityId, { subjectEntityId: snapshot.subjectEntityId, core: calibrated || manualCore ? snapshot.core : previous?.core?.length ? previous.core : snapshot.core, adaptive: snapshot.adaptive, situational: snapshot.situational });
   }
   const subjectList = [...subjects.values()];
   const appliedDeltaIds = deltas.map(delta => delta.id);

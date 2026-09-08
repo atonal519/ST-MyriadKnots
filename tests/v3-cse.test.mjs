@@ -6,9 +6,9 @@ import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
 import { createV3MemoryRuntime } from '../src/v3/memory-runtime.js';
 import { EXTRACTOR_SYSTEM_PROMPT } from '../src/v3/extractor.js';
 import {
-  CSE_COMPILER_VERSION, CSE_PROMPT_VERSION, CSE_SYSTEM_PROMPT, captureCseBaseline, compileCseResponse, createCseEnvelope, createManualCseCorrection, replayCurrentState, runCseRequest, selectTrackedSubjects,
+  CSE_CALIBRATION_VERSION, CSE_COMPILER_VERSION, CSE_PROMPT_VERSION, CSE_SYSTEM_PROMPT, captureCseBaseline, compileCseResponse, createCseEnvelope, createManualCseCorrection, replayCurrentState, runCseRequest, selectTrackedSubjects,
 } from '../src/v3/cse-engine.js';
-import { stateFingerprint } from '../src/v3/cse-schema.js';
+import { stateFingerprint, validateStateDeltaRecord } from '../src/v3/cse-schema.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GEN = '22222222-2222-4222-8222-222222222222';
@@ -126,6 +126,8 @@ test('自动 CSE 输入同时含正文、FloorMemory、previousState、baseline�
   const request = JSON.parse(cseCall.taskMessages[0].content);
   assert.deepEqual(Object.keys(request.payload).slice(0, 4), ['canonicalContent', 'floorMemory', 'previousState', 'relevantBaseline']);
   assert.match(request.payload.canonicalContent, /裴晚生提醒你带伞/);
+  assert.deepEqual(request.payload.currentUserInput, { source: 'currentUserInput', messageIndex: 0, content: '继续' });
+  assert.ok(request.payload.evidenceSourceCatalog.some(item => item.source === 'currentUserInput' && item.kind === 'userInput'));
   assert.match(JSON.stringify(request.payload.floorMemory), /提醒用户带伞/);
   assert.equal(request.payload.relevantBaseline.worldInfo[0].visibility, 'authorial');
   assert.deepEqual(request.payload.trackedSubjects.map(item => item.name).sort(), ['林岚', '裴晚生'].sort(), 'user 永远追踪，承诺强证据自动追踪其他人物');
@@ -240,6 +242,7 @@ test('人工纠正以末 delta 为锚不可变替换，支持增删清空 core�
   await h.runtime.extractNext();
   const nextRequest = JSON.parse(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).at(-1).taskMessages[0].content);
   assert.ok(nextRequest.payload.previousState.some(subject => subject.subject === '林岚' && subject.ownState.adaptive.some(item => item.text === '逐渐信任裴晚生')), '后续模型分析必须读取人工纠正后的前态');
+  assert.ok(nextRequest.payload.previousState.some(subject => subject.subject === '林岚' && subject.coreUserEdited === true && subject.ownState.core.length === 0), '人工清空 Core 后也必须继续标记为用户已编辑，不能被旧 baseline 自动补回');
   assert.equal(h.backend.records.get(`chat-${CHAT}/v3-root`).revision > initialRoot.revision, true);
 });
 
@@ -420,8 +423,10 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.equal(compiled.delta.subjectSnapshots[0].situational[0].reason, '正文明确写出甲亲耳听见并记住');
   assert.equal(compiled.delta.source.promptVersion, CSE_PROMPT_VERSION);
   assert.equal(compiled.delta.source.compilerVersion, CSE_COMPILER_VERSION);
-  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-6');
-  assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/after-state-compiler-5');
+  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-7');
+  assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-6');
+  assert.equal(compiled.delta.source.calibrationVersion, CSE_CALIBRATION_VERSION);
+  assert.throws(() => validateStateDeltaRecord({ ...compiled.delta, source: { ...compiled.delta.source, calibrationVersion: 2 } }, { expectedChatId: CHAT }), error => error.code === 'V3_STATEDELTA_INVALID');
   assert.match(CSE_SYSTEM_PROMPT, /未提供依据/);
   assert.doesNotMatch(CSE_SYSTEM_PROMPT, /"noMaterialChange"/);
 });
@@ -1110,7 +1115,8 @@ test('他人状态移入独立作者态上下文并保持隐私过滤；空 delt
   const envelope = createCseEnvelope({ floor: floor(FLOOR1, '正文'), floorMemory: memory(MEMORY1), baseline, currentState: current, trackedSubjects: entities.slice(0, 2), entities });
   const forUser = envelope.request.payload.previousState.find(item => item.subject === '林岚');
   assert.equal('publicStateOfOthers' in forUser, false);
-  assert.deepEqual(Object.keys(forUser), ['subject', 'ownState']);
+  assert.deepEqual(Object.keys(forUser), ['subject', 'coreUserEdited', 'ownState']);
+  assert.equal(forUser.coreUserEdited, false);
   const authorialForA = envelope.request.payload.authorialOtherStateContext.find(item => item.subject === '甲');
   assert.deepEqual(authorialForA.core, []);
   assert.deepEqual(authorialForA.situational.map(item => item.text), ['公开动作']);
@@ -1139,4 +1145,134 @@ test('直接 baseline 捕获在 official 宿主缺少世界书 API 时安全降�
   const result = await captureCseBaseline({ hostAdapter, chatId: CHAT, narrativeGeneration: GEN, now: NOW });
   assert.equal(result.baseline.userPersona.name, '用户');
   assert.deepEqual(result.baseline.worldInfoSources, []);
+});
+
+test('review/additions 连续校准会收窄错误 Adaptive，后续 keep 保留纠正后的 ID 与来源', async () => {
+  const floor3 = '31313131-1111-4111-8111-313131313131';
+  const memory3 = '32323232-1111-4111-8111-323232323232';
+  const floor4 = '43434343-1111-4111-8111-434343434343';
+  const memory4 = '44434343-1111-4111-8111-444343434343';
+  const firstEnvelope = createCseEnvelope({ floor: floor(FLOOR1, '林岚这一次在压力下退让。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [entities[0]], entities });
+  const first = await compileCseResponse({
+    response: { subjects: [{ subject: '林岚', additions: {
+      core: [{ text: '重视独立判断', visibility: 'authorial', reason: '用户设定明确', evidence: [{ source: 'userPersona', quote: '用户设定' }] }],
+      adaptive: [{ text: '遇到冲突便一味退让', visibility: 'private', reason: '本楼表现', evidence: [{ source: 'canonicalContent', quote: '这一次在压力下退让' }] }],
+    } }] },
+    envelope: firstEnvelope, previousCurrentState: null, now: NOW, deltaId: '33333333-1111-4111-8111-333333333333',
+  });
+  const initial = first.delta.subjectSnapshots[0];
+  assert.deepEqual(initial.core.map(item => item.text), ['重视独立判断']);
+  assert.match(initial.core[0].reason, /userPersona.*用户设定/);
+
+  const previous = { id: '34343434-1111-4111-8111-343434343434', subjects: first.delta.subjectSnapshots };
+  const secondEnvelope = createCseEnvelope({ floor: floor(FLOOR2, '她拒绝签字并夺回文件，只在体力受制时暂时停手。'), floorMemory: memory(MEMORY2), baseline, currentState: previous, trackedSubjects: [entities[0]], entities });
+  const second = await compileCseResponse({
+    response: { subjects: [{ subject: '林岚', review: {
+      core: [{ previousText: '重视独立判断', action: 'keep' }],
+      adaptive: [{ previousText: '遇到冲突便一味退让', action: 'refine', text: '体力受制时可能暂时让步', visibility: 'private', reason: '反例限制了旧泛化', evidence: [{ source: 'canonicalContent', quote: '拒绝签字并夺回文件' }] }],
+    } }] },
+    envelope: secondEnvelope, previousCurrentState: previous, now: NOW, deltaId: '35353535-1111-4111-8111-353535353535',
+  });
+  const narrowed = second.delta.subjectSnapshots[0];
+  assert.equal(narrowed.core[0].id, initial.core[0].id, 'keep 必须复用旧 Core 对象');
+  assert.notEqual(narrowed.adaptive[0].id, initial.adaptive[0].id, 'refine 才创建新项');
+  assert.equal(narrowed.adaptive[0].text, '体力受制时可能暂时让步');
+
+  const replayed2 = await replayCurrentState({
+    chatId: CHAT, narrativeGeneration: GEN, baselineId: baseline.id,
+    floors: [floor(FLOOR1, '林岚这一次在压力下退让。'), floor(FLOOR2, '她拒绝签字并夺回文件，只在体力受制时暂时停手。')],
+    floorMemories: [{ ...memory(MEMORY1), floorId: FLOOR1, recordStatus: 'active' }, { ...memory(MEMORY2), floorId: FLOOR2, recordStatus: 'active' }],
+    stateDeltas: [first.delta, second.delta], now: NOW,
+  });
+  const correctedItem = replayed2.subjects[0].adaptive[0];
+  const thirdEnvelope = createCseEnvelope({ floor: floor(floor3, '此楼没有改变该长期模式的新事实。'), floorMemory: memory(memory3), baseline, currentState: replayed2, trackedSubjects: [entities[0]], entities });
+  const third = await compileCseResponse({ response: { subjects: [{ subject: '林岚', review: { adaptive: [{ previousText: '体力受制时可能暂时让步', action: 'keep' }] } }] }, envelope: thirdEnvelope, previousCurrentState: replayed2, now: NOW, deltaId: '36363636-1111-4111-8111-363636363636' });
+  assert.equal(third.delta.subjectSnapshots[0].adaptive[0].id, correctedItem.id);
+  assert.equal(third.delta.subjectSnapshots[0].adaptive[0].sourceDeltaId, correctedItem.sourceDeltaId);
+  const thirdState = { id: '45454545-1111-4111-8111-454545454545', subjects: third.delta.subjectSnapshots };
+  const fourthEnvelope = createCseEnvelope({ floor: floor(floor4, '她已摆脱外力限制，旧模式不再适用。'), floorMemory: memory(memory4), baseline, currentState: thirdState, trackedSubjects: [entities[0]], entities });
+  const fourth = await compileCseResponse({ response: { subjects: [{ subject: '林岚', review: { adaptive: [{ previousText: '体力受制时可能暂时让步', action: 'remove', reason: '限制条件已结束', evidence: [{ source: 'canonicalContent', quote: '已摆脱外力限制' }] }] } }] }, envelope: fourthEnvelope, previousCurrentState: thirdState, now: NOW, deltaId: '46464646-1111-4111-8111-464646464646' });
+  assert.deepEqual(fourth.delta.subjectSnapshots[0].adaptive, []);
+  assert.deepEqual(fourth.delta.source.calibrationAudit[0], {
+    subjectEntityId: USER, category: 'adaptive', action: 'remove', previousText: '体力受制时可能暂时让步', previousTowardEntityId: null,
+    text: null, towardEntityId: null, reason: '限制条件已结束', evidence: [{ source: 'canonicalContent', quote: '已摆脱外力限制' }],
+  });
+});
+
+test('校准证据必须能定位且符合 Core 来源边界，manual Core 只有 currentUserInput 可改', async () => {
+  const initialEnvelope = createCseEnvelope({ floor: floor(FLOOR1, '甲与林岚各自作出选择。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: entities.slice(0, 2), entities });
+  const initial = await compileCseResponse({ response: { subjects: [
+    { subject: '林岚', additions: { core: [{ text: '重视自主', evidence: [{ source: 'userPersona', quote: '用户设定' }] }] } },
+    { subject: '甲', additions: { core: [{ text: '遵守作者事实', evidence: [{ source: 'worldbook:1', quote: '作者事实' }] }] } },
+  ] }, envelope: initialEnvelope, previousCurrentState: null, now: NOW, deltaId: '37373737-1111-4111-8111-373737373737' });
+  const initialState = { id: '38383838-1111-4111-8111-383838383838', subjects: initial.delta.subjectSnapshots };
+  const manual = await createManualCseCorrection({
+    anchorDelta: initial.delta,
+    currentState: initialState,
+    subjectEntityId: USER,
+    edits: {
+      core: [{ itemId: initialState.subjects[0].core[0].id, text: '人工确认的自主边界', visibility: 'private', towardEntityId: null }],
+      adaptive: [], situational: [],
+    },
+    allowedTowardEntityIds: [USER, A], deltaId: '39393939-1111-4111-8111-393939393939', now: NOW,
+  });
+  assert.equal(manual.delta.source.calibrationVersion, 1, '人工替换必须继承新版完整快照标记');
+  const replayed = await replayCurrentState({ chatId: CHAT, narrativeGeneration: GEN, baselineId: baseline.id, floors: [floor(FLOOR1, '甲与林岚各自作出选择。')], floorMemories: [{ ...memory(MEMORY1), floorId: FLOOR1, recordStatus: 'active' }], stateDeltas: [manual.delta], now: NOW });
+  assert.deepEqual(replayed.subjects.find(subject => subject.subjectEntityId === A).core.map(item => item.text), ['遵守作者事实'], '手改一人后，另一人物同楼新版 Core 仍须重放');
+
+  const correctionInput = { messageIndex: 2, content: '作者说明：林岚并非回避冲突，而是会明确维护自己的决定。' };
+  const protectedEnvelope = createCseEnvelope({ floor: floor(FLOOR2, '林岚继续行动。'), floorMemory: memory(MEMORY2), baseline, currentState: replayed, trackedSubjects: [entities[0]], entities, currentUserInput: correctionInput, coreUserEditedSubjectEntityIds: [USER] });
+  assert.equal(protectedEnvelope.request.payload.previousState[0].coreUserEdited, true);
+  assert.equal(protectedEnvelope.request.payload.trackedSubjects[0].coreUserEdited, true);
+  const baselineRejected = await compileCseResponse({ response: { subjects: [{ subject: '林岚', review: { core: [{ previousText: '人工确认的自主边界', action: 'refine', text: '被旧设定覆盖', evidence: [{ source: 'userPersona', quote: '用户设定' }] }] } }] }, envelope: protectedEnvelope, previousCurrentState: replayed, now: NOW, deltaId: '40404040-1111-4111-8111-404040404040' });
+  assert.deepEqual(baselineRejected.delta.subjectSnapshots[0].core.map(item => item.text), ['人工确认的自主边界']);
+  assert.ok(baselineRejected.isolated.some(item => item.code === 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT'));
+
+  const userCorrected = await compileCseResponse({ response: { subjects: [{ subject: '林岚', review: { core: [{ previousText: '人工确认的自主边界', action: 'refine', text: '会明确维护自己的决定', evidence: [{ source: 'currentUserInput', quote: '会明确维护自己的决定' }] }] } }] }, envelope: protectedEnvelope, previousCurrentState: replayed, now: NOW, deltaId: '41414141-1111-4111-8111-414141414141' });
+  assert.deepEqual(userCorrected.delta.subjectSnapshots[0].core.map(item => item.text), ['会明确维护自己的决定']);
+  assert.match(userCorrected.delta.subjectSnapshots[0].core[0].reason, /currentUserInput/);
+
+  const replayedCorrection = await replayCurrentState({
+    chatId: CHAT, narrativeGeneration: GEN, baselineId: baseline.id,
+    floors: [floor(FLOOR1, '甲与林岚各自作出选择。'), floor(FLOOR2, '林岚继续行动。')],
+    floorMemories: [{ ...memory(MEMORY1), floorId: FLOOR1, recordStatus: 'active' }, { ...memory(MEMORY2), floorId: FLOOR2, recordStatus: 'active' }],
+    stateDeltas: [manual.delta, userCorrected.delta], now: NOW,
+  });
+  assert.deepEqual(replayedCorrection.subjects.find(subject => subject.subjectEntityId === USER).core.map(item => item.text), ['会明确维护自己的决定']);
+  const nextFloorEnvelope = createCseEnvelope({ floor: floor('47474747-1111-4111-8111-474747474747', '下一楼没有新的作者纠正。'), floorMemory: memory('48484848-1111-4111-8111-484848484848'), baseline, currentState: replayedCorrection, trackedSubjects: [entities[0]], entities, coreUserEditedSubjectEntityIds: [USER] });
+  const rollbackRejected = await compileCseResponse({ response: { subjects: [{ subject: '林岚', review: { core: [{ previousText: '会明确维护自己的决定', action: 'refine', text: '被旧设定再次覆盖', evidence: [{ source: 'userPersona', quote: '用户设定' }] }] } }] }, envelope: nextFloorEnvelope, previousCurrentState: replayedCorrection, now: NOW, deltaId: '49494949-1111-4111-8111-494949494949' });
+  assert.deepEqual(rollbackRejected.delta.subjectSnapshots[0].core.map(item => item.text), ['会明确维护自己的决定'], '已接受的 user Core 纠正不能在下一楼被旧 baseline 改回');
+  assert.ok(rollbackRejected.isolated.some(item => item.code === 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT'));
+
+  const inventedQuote = await compileCseResponse({ response: { subjects: [{ subject: '林岚', additions: { adaptive: [{ text: '凭空新增', evidence: [{ source: 'canonicalContent', quote: '正文不存在的句子' }] }] } }] }, envelope: protectedEnvelope, previousCurrentState: replayed, now: NOW, deltaId: '42424242-1111-4111-8111-424242424242' });
+  assert.equal(inventedQuote.delta.subjectSnapshots[0].adaptive.length, 0);
+  assert.ok(inventedQuote.isolated.some(item => item.code === 'V3_CSE_EVIDENCE_UNLOCATED'));
+});
+
+test('runtime 精确绑定紧邻 user；实际 user 改动拒绝迟到写入，0 楼与非紧邻均不借更早输入', async () => {
+  let releaseCse;
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const h = runtimeHarness({ chat: [user('原始作者输入'), assistant('第一楼。'), assistant('确认第一楼。')], cse: () => new Promise(resolve => { releaseCse = () => resolve({ jsonData: { noMaterialChange: true } }); markStarted(); }) });
+  const pending = h.runtime.start().then(() => h.runtime.extractNext());
+  await started;
+  const request = JSON.parse(h.calls.find(call => call.systemPrompt === CSE_SYSTEM_PROMPT).taskMessages[0].content);
+  assert.deepEqual(request.payload.currentUserInput, { source: 'currentUserInput', messageIndex: 0, content: '原始作者输入' });
+  h.context.chat[0].mes = '调用期间被改过的作者输入';
+  releaseCse();
+  await pending;
+  const reachable = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(reachable.stateDeltas.length, 0);
+  assert.equal(h.runtime.getState().lastCseError?.code, 'V3_CSE_STALE');
+
+  const zero = runtimeHarness({ chat: [assistant('零号位置的 AI 楼。'), assistant('确认。')] });
+  await zero.runtime.start().then(() => zero.runtime.extractNext());
+  const zeroRequest = JSON.parse(zero.calls.find(call => call.systemPrompt === CSE_SYSTEM_PROMPT).taskMessages[0].content);
+  assert.equal(zeroRequest.payload.currentUserInput, null);
+
+  const notAdjacent = runtimeHarness({ chat: [user('更早输入'), assistant('第一楼。'), assistant('第二楼。'), assistant('确认第二楼。')] });
+  await notAdjacent.runtime.start().then(() => notAdjacent.runtime.extractNext());
+  await notAdjacent.runtime.extractNext();
+  const cseRequests = notAdjacent.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).map(call => JSON.parse(call.taskMessages[0].content));
+  assert.equal(cseRequests.at(-1).payload.currentUserInput, null, '上一条为 AI 时不能越过它借用更早 user');
 });

@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createHostAdapter } from '../src/v3/host-adapter.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
 import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
 import { createV3MemoryRuntime, projectMemoryPersonEntities } from '../src/v3/memory-runtime.js';
+import { scanAssistantCandidates } from '../src/v3/foundation-domain.js';
 import { createV3RecallRuntime } from '../src/v3/recall-runtime.js';
 import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
 import { readRecallSource } from '../src/v3/recall-source.js';
@@ -1229,8 +1231,14 @@ test('同楼只修隐藏时间戳时会标记旧时间过期，重提后用新�
   assert.equal(floor.metadataStale, false);
   assert.match(floor.memory.chronology[0].time.sourceText, /18:10.*18:40/);
   assert.doesNotMatch(floor.memory.chronology[0].time.sourceText, /15:30/);
+  const cseCallsBeforeRetry = cseInputs.length;
   await h.runtime.retryStateAnalysis(floor.floorId);
+  state = h.runtime.getState(); floor = state.floors[0];
+  assert.equal(cseInputs.length, cseCallsBeforeRetry + 1, '新时间戳重提后必须真正再调用一次 CSE');
   assert.match(JSON.stringify(cseInputs.at(-1)), /18:10.*18:40/);
+  assert.doesNotMatch(JSON.stringify(cseInputs.at(-1)), /15:30.*16:00/);
+  assert.equal(floor.cse.status, 'noChange');
+  assert.equal(state.lastCseError, null);
 });
 
 test('CSE 分析期间 pending-only 刷新不推进正式 root，假模型结果仍按原守卫提交', async () => {
@@ -1264,6 +1272,247 @@ test('CSE 分析期间 pending-only 刷新不推进正式 root，假模型结果
   assert.equal(after.stateDeltas[0].floorId, floorId);
   assert.equal(h.runtime.getState().floors[0].cse.status, 'noChange');
   assert.equal(h.runtime.getState().lastCseError, null);
+});
+
+test('修复前稳定指纹首次刷新只对齐一次 head，保留楼、摘要与 API 调用次数', async () => {
+  const h = harness({
+    initialChat: [assistant('稳定正文。'), assistant('待定尾楼。')],
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: '已保存的稳定摘要。' } }
+      : { jsonData: { noMaterialChange: true } },
+  });
+  await h.runtime.start();
+  await h.runtime.extractNext();
+  const before = await h.store.readReachable({ mode: 'runtime' });
+  const callsBefore = h.calls.length;
+  const candidates = await scanAssistantCandidates(h.context.chat);
+  const oldPayload = {
+    version: 1,
+    stableCount: 1,
+    latestStatus: 'pending',
+    floors: candidates.slice(0, 1).map(candidate => ({
+      assistantSeq: candidate.assistantSeq,
+      rawFingerprint: candidate.rawFingerprint,
+      canonicalFingerprint: candidate.canonicalFingerprint,
+      sanitizerFingerprint: candidate.sanitizerFingerprint,
+      messageIndex: candidate.hostLocator.messageIndex,
+      swipeId: candidate.hostLocator.swipeId,
+      selectedSwipeIndex: candidate.hostLocator.selectedSwipeIndex,
+    })),
+  };
+  const oldFingerprint = `sha256:${createHash('sha256').update(JSON.stringify(oldPayload)).digest('hex')}`;
+  assert.notEqual(oldFingerprint, before.root.sourceSnapshotFingerprint);
+
+  const rootKey = `chat-${CHAT}/v3-root`;
+  const rootEnvelope = h.backend.records.get(rootKey);
+  const checkpointEnvelope = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${rootEnvelope.data.headCheckpointId}`);
+  const runEnvelope = h.backend.records.get(`chat-${CHAT}/v3-run-${checkpointEnvelope.data.runId}`);
+  rootEnvelope.data.sourceSnapshotFingerprint = oldFingerprint;
+  checkpointEnvelope.data.sourceSnapshotFingerprint = oldFingerprint;
+  runEnvelope.data.inputSnapshotFingerprint = oldFingerprint;
+  const cached = structuredClone(h.foundationRuntime.getReachable());
+  cached.root.sourceSnapshotFingerprint = oldFingerprint;
+  cached.checkpoint.sourceSnapshotFingerprint = oldFingerprint;
+  cached.run.inputSnapshotFingerprint = oldFingerprint;
+  assert.equal(h.foundationRuntime.adoptReachable(cached), true);
+
+  await h.runtime.refreshStatus();
+  const aligned = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(aligned.rootRevision, before.rootRevision + 1, '旧指纹首次刷新只推进一次 root revision');
+  assert.notEqual(aligned.root.headCheckpointId, before.root.headCheckpointId, '旧指纹首次刷新应对齐新 head');
+  assert.deepEqual(aligned.floors.map(floor => floor.id), before.floors.map(floor => floor.id));
+  assert.deepEqual(aligned.floorMemories.map(memory => memory.id), before.floorMemories.map(memory => memory.id));
+  assert.deepEqual(aligned.floorMemories.map(memory => memory.summary), before.floorMemories.map(memory => memory.summary));
+  assert.equal(h.calls.length, callsBefore, '指纹对齐不得重新调用摘要或 CSE API');
+
+  await h.runtime.refreshStatus();
+  const second = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(second.rootRevision, aligned.rootRevision, '第二次刷新必须保持 no-op');
+  assert.equal(second.root.headCheckpointId, aligned.root.headCheckpointId);
+  assert.deepEqual(second.floorMemories.map(memory => memory.id), before.floorMemories.map(memory => memory.id));
+  assert.equal(h.calls.length, callsBefore);
+});
+
+test('4 楼摘要在途时 6 楼空 swipe 异步窗口不换稳定 head、不取消也不重复调用', async () => {
+  let releaseTarget;
+  let markTargetStarted;
+  let targetSignal = null;
+  let targetCalls = 0;
+  const targetStarted = new Promise(resolve => { markTargetStarted = resolve; });
+  const targetText = '四楼稳定待摘要。';
+  const h = harness({
+    initialChat: [
+      assistant('零楼稳定。'),
+      user('一楼用户输入。'),
+      assistant('二楼稳定。'),
+      user('三楼用户输入。'),
+      assistant(targetText),
+      user('五楼用户输入保持不动。'),
+      assistant('六楼旧版本。'),
+    ],
+    automation: { enabled: true, batchSize: 1 },
+    utility: options => {
+      if (options.systemPrompt !== EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { noMaterialChange: true } };
+      const content = JSON.parse(options.taskMessages[0].content).payload.canonicalContent;
+      if (content !== targetText) return { jsonData: { summary: `${content}摘要` } };
+      targetCalls += 1;
+      if (targetCalls > 1) return { jsonData: { summary: '不应发生的重复四楼摘要。' } };
+      targetSignal = options.signal;
+      markTargetStarted();
+      return new Promise(resolve => { releaseTarget = () => resolve({ jsonData: { summary: '四楼唯一摘要。' } }); });
+    },
+  });
+  await h.runtime.start();
+  const initialFloors = h.runtime.getState().floors;
+  await h.runtime.extractFloor(initialFloors[0].floorId, { analyzeState: false });
+  await h.runtime.extractFloor(initialFloors[1].floorId, { analyzeState: false });
+  const target = h.runtime.getState().floors.find(floor => floor.messageIndex === 4);
+  const extraction = h.runtime.extractFloor(target.floorId, { analyzeState: false });
+  await targetStarted;
+  const beforeTail = await h.store.readReachable({ mode: 'runtime' });
+
+  h.context.chat[6] = { ...assistant(''), mes: '', swipes: ['六楼旧版本。', ''], swipe_id: 1 };
+  h.emit('MESSAGE_SWIPED', 6, { pendingGeneration: true, previousSwipeId: 0, nextSwipeId: 1 });
+  await waitFor(() => h.foundationRuntime.getState().status === 'ready' && h.foundationRuntime.getState().pending === null, '未进入真实空 swipe 地基窗口');
+  const duringEmptyTail = await h.store.readReachable({ mode: 'runtime' });
+
+  h.emit('GENERATION_STARTED', 'swipe', {}, false);
+  h.context.chat[6] = { ...assistant('六楼新版本。'), swipes: ['六楼旧版本。', '六楼新版本。'], swipe_id: 1 };
+  h.emit('GENERATION_ENDED');
+  h.emit('MESSAGE_RECEIVED', 6, 'swipe');
+  await waitFor(() => h.foundationRuntime.getState().status === 'ready' && h.foundationRuntime.getState().pending?.messageIndex === 6, '六楼完成后地基未恢复 pending');
+  for (let attempt = 0; attempt < 100 && targetCalls < 2; attempt += 1) await new Promise(resolve => setTimeout(resolve, 2));
+
+  assert.deepEqual({
+    aborted: targetSignal?.aborted,
+    targetCalls,
+    rootRevisionStable: duringEmptyTail.rootRevision === beforeTail.rootRevision,
+    headStable: duringEmptyTail.root.headCheckpointId === beforeTail.root.headCheckpointId,
+    fingerprintStable: duringEmptyTail.root.sourceSnapshotFingerprint === beforeTail.root.sourceSnapshotFingerprint,
+  }, {
+    aborted: false,
+    targetCalls: 1,
+    rootRevisionStable: true,
+    headStable: true,
+    fingerprintStable: true,
+  });
+
+  releaseTarget();
+  await extraction;
+  await waitFor(() => !h.runtime.getState().activeExtraction && !h.runtime.getState().activeAutoMemory);
+  const finalState = h.runtime.getState();
+  const finalTarget = finalState.floors.find(floor => floor.messageIndex === 4);
+  assert.equal(targetCalls, 1);
+  assert.equal(finalTarget.summary, '四楼唯一摘要。');
+  assert.equal(finalState.lastExtractorError, null);
+});
+
+test('同一尾槽连续两次合法空 swipe reroll 都不取消在途旧楼摘要', async () => {
+  let releaseTarget;
+  let markTargetStarted;
+  let targetSignal = null;
+  let targetCalls = 0;
+  const targetStarted = new Promise(resolve => { markTargetStarted = resolve; });
+  const targetText = '四楼连续 reroll 期间仍应稳定。';
+  const h = harness({
+    initialChat: [
+      assistant('零楼稳定。'), user('一楼用户。'), assistant('二楼稳定。'), user('三楼用户。'),
+      assistant(targetText), user('五楼固定用户输入。'), assistant('六楼旧版本。'),
+    ],
+    utility: options => {
+      if (options.systemPrompt !== EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { noMaterialChange: true } };
+      const content = JSON.parse(options.taskMessages[0].content).payload.canonicalContent;
+      if (content !== targetText) return { jsonData: { summary: `${content}摘要` } };
+      targetCalls += 1;
+      targetSignal = options.signal;
+      markTargetStarted();
+      return new Promise(resolve => { releaseTarget = () => resolve({ jsonData: { summary: '连续 reroll 后成功摘要。' } }); });
+    },
+  });
+  await h.runtime.start();
+  const target = h.runtime.getState().floors.find(floor => floor.messageIndex === 4);
+  const extraction = h.runtime.extractFloor(target.floorId, { analyzeState: false });
+  await targetStarted;
+
+  const reroll = async ({ previousText, nextText, previousSwipeId, nextSwipeId }) => {
+    const swipes = previousSwipeId === 0 ? [previousText, ''] : ['六楼旧版本。', previousText, ''];
+    h.context.chat[6] = { ...assistant(''), mes: '', swipes, swipe_id: nextSwipeId };
+    h.emit('MESSAGE_SWIPED', 6, { pendingGeneration: true, previousSwipeId, nextSwipeId });
+    await waitFor(() => h.foundationRuntime.getState().status === 'ready' && h.foundationRuntime.getState().pending === null, '连续 reroll 未进入空 swipe 窗口');
+    h.emit('GENERATION_STARTED', 'swipe', {}, false);
+    swipes[nextSwipeId] = nextText;
+    h.context.chat[6] = { ...assistant(nextText), swipes, swipe_id: nextSwipeId };
+    h.emit('GENERATION_ENDED');
+    h.emit('MESSAGE_RECEIVED', 6, 'swipe');
+    await waitFor(() => h.foundationRuntime.getState().status === 'ready'
+      && h.foundationRuntime.getState().pending?.messageIndex === 6
+      && h.foundationRuntime.getState().pending?.canonicalFingerprint, '连续 reroll 完成后 pending 未恢复');
+  };
+
+  await reroll({ previousText: '六楼旧版本。', nextText: '六楼新版本一。', previousSwipeId: 0, nextSwipeId: 1 });
+  assert.equal(targetSignal?.aborted, false, '第一次合法尾楼 reroll 不得取消四楼摘要');
+  await reroll({ previousText: '六楼新版本一。', nextText: '六楼新版本二。', previousSwipeId: 1, nextSwipeId: 2 });
+  assert.equal(targetSignal?.aborted, false, '第二次合法尾楼 reroll 也不得取消四楼摘要');
+
+  releaseTarget();
+  await extraction;
+  const finalTarget = h.runtime.getState().floors.find(floor => floor.messageIndex === 4);
+  assert.equal(targetCalls, 1);
+  assert.equal(finalTarget.summary, '连续 reroll 后成功摘要。');
+  assert.equal(h.runtime.getState().lastExtractorError, null);
+});
+
+test('尾楼手动停止、选择已有 swipe 或删除 swipe 都不取消更早在途摘要', async () => {
+  for (const scenario of ['stopped', 'selectExistingSwipe', 'deleteSwipe']) {
+    let releaseTarget;
+    let markTargetStarted;
+    let targetSignal = null;
+    const targetStarted = new Promise(resolve => { markTargetStarted = resolve; });
+    const targetText = `四楼 ${scenario} 期间稳定。`;
+    const h = harness({
+      initialChat: [
+        assistant('零楼稳定。'), user('一楼用户。'), assistant('二楼稳定。'), user('三楼用户。'),
+        assistant(targetText), user('五楼固定用户输入。'), assistant('六楼旧版本。'),
+      ],
+      utility: options => {
+        if (options.systemPrompt !== EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { noMaterialChange: true } };
+        const content = JSON.parse(options.taskMessages[0].content).payload.canonicalContent;
+        if (content !== targetText) return { jsonData: { summary: `${content}摘要` } };
+        targetSignal = options.signal;
+        markTargetStarted();
+        return new Promise(resolve => { releaseTarget = () => resolve({ jsonData: { summary: `${scenario} 后摘要成功。` } }); });
+      },
+    });
+    await h.runtime.start();
+    const target = h.runtime.getState().floors.find(floor => floor.messageIndex === 4);
+    const extraction = h.runtime.extractFloor(target.floorId, { analyzeState: false });
+    await targetStarted;
+
+    if (scenario === 'stopped') {
+      h.context.chat[6] = { ...assistant(''), mes: '', swipes: ['六楼旧版本。', ''], swipe_id: 1 };
+      h.emit('MESSAGE_SWIPED', 6, { pendingGeneration: true, previousSwipeId: 0, nextSwipeId: 1 });
+      await waitFor(() => h.foundationRuntime.getState().status === 'ready' && h.foundationRuntime.getState().pending === null, '停止场景未进入空 swipe 窗口');
+      h.emit('GENERATION_STARTED', 'swipe', {}, false);
+      h.context.chat[6] = { ...assistant('六楼停止时已有正文。'), swipes: ['六楼旧版本。', '六楼停止时已有正文。'], swipe_id: 1 };
+      h.emit('GENERATION_STOPPED');
+      h.emit('MESSAGE_RECEIVED', 6, 'swipe');
+    } else if (scenario === 'selectExistingSwipe') {
+      h.context.chat[6] = { ...assistant('六楼已有版本。'), swipes: ['六楼旧版本。', '六楼已有版本。'], swipe_id: 1 };
+      h.emit('MESSAGE_SWIPED', 6, { pendingGeneration: false, previousSwipeId: 0, nextSwipeId: 1 });
+    } else {
+      h.context.chat[6] = { ...assistant('六楼删除后版本。'), swipes: ['六楼删除后版本。'], swipe_id: 0 };
+      h.emit('MESSAGE_SWIPE_DELETED', { messageId: 6, swipeId: 1, newSwipeId: 0 });
+    }
+    await waitFor(() => h.foundationRuntime.getState().status === 'ready'
+      && h.foundationRuntime.getState().pending?.messageIndex === 6, `${scenario} 后地基未恢复尾楼 pending`);
+    assert.equal(targetSignal?.aborted, false, `${scenario} 不得取消更早在途摘要`);
+
+    releaseTarget();
+    await extraction;
+    const finalTarget = h.runtime.getState().floors.find(floor => floor.messageIndex === 4);
+    assert.equal(finalTarget.summary, `${scenario} 后摘要成功。`);
+    assert.equal(h.runtime.getState().lastExtractorError, null);
+  }
 });
 
 test('未稳定尾楼 swipe、停止、接收与删除事件不取消更早稳定楼 CSE，尾楼仍保持 pending', async () => {

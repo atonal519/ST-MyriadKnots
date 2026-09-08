@@ -3,6 +3,10 @@ import { validateMemoryGraph } from './memory-schema.js';
 
 export const CSE_VISIBILITIES = Object.freeze(['private', 'expressed', 'observable', 'shared', 'authorial']);
 export const CSE_ORIGINS = Object.freeze(['baseline', 'floor', 'reasonableProgression', 'manual']);
+export const LATEST_CSE_CALIBRATION_VERSION = 1;
+export const isSupportedCseCalibrationVersion = value => Number.isSafeInteger(value)
+  && value >= 1
+  && value <= LATEST_CSE_CALIBRATION_VERSION;
 const HASH = /^sha256:[0-9a-f]{64}$/;
 const STATUSES = new Set(['active', 'superseded', 'invalidated']);
 
@@ -104,6 +108,30 @@ export function validateStateDeltaRecord(input, { expectedChatId } = {}) {
   object(value.source, 'V3_STATEDELTA_INVALID', 'source');
   text(value.source.promptVersion, 'V3_STATEDELTA_INVALID', 'source.promptVersion', { maximum: 160 });
   text(value.source.compilerVersion, 'V3_STATEDELTA_INVALID', 'source.compilerVersion', { maximum: 160 });
+  if (Object.hasOwn(value.source, 'calibrationVersion') && !isSupportedCseCalibrationVersion(value.source.calibrationVersion)) fail('V3_STATEDELTA_INVALID', 'source.calibrationVersion');
+  if (Object.hasOwn(value.source, 'calibrationAudit')) {
+    if (!isSupportedCseCalibrationVersion(value.source.calibrationVersion)) fail('V3_STATEDELTA_INVALID', 'source.calibrationAudit');
+    array(value.source.calibrationAudit, 'V3_STATEDELTA_INVALID', 'source.calibrationAudit', 480).forEach((entry, index) => {
+      const path = `source.calibrationAudit[${index}]`;
+      object(entry, 'V3_STATEDELTA_INVALID', path);
+      uuid(entry.subjectEntityId, 'V3_STATEDELTA_INVALID', `${path}.subjectEntityId`);
+      if (!['core', 'adaptive'].includes(entry.category) || !['refine', 'remove', 'add'].includes(entry.action)) fail('V3_STATEDELTA_INVALID', path);
+      text(entry.previousText, 'V3_STATEDELTA_INVALID', `${path}.previousText`, { nullable: true, maximum: 4000 });
+      uuid(entry.previousTowardEntityId, 'V3_STATEDELTA_INVALID', `${path}.previousTowardEntityId`, { nullable: true });
+      text(entry.text, 'V3_STATEDELTA_INVALID', `${path}.text`, { nullable: true, maximum: 4000 });
+      uuid(entry.towardEntityId, 'V3_STATEDELTA_INVALID', `${path}.towardEntityId`, { nullable: true });
+      text(entry.reason, 'V3_STATEDELTA_INVALID', `${path}.reason`, { maximum: 4000 });
+      if ((entry.action === 'add' && (entry.previousText !== null || entry.text === null))
+        || (entry.action === 'remove' && (entry.previousText === null || entry.text !== null))
+        || (entry.action === 'refine' && (entry.previousText === null || entry.text === null))) fail('V3_STATEDELTA_INVALID', path);
+      array(entry.evidence, 'V3_STATEDELTA_INVALID', `${path}.evidence`, 20).forEach((evidence, evidenceIndex) => {
+        object(evidence, 'V3_STATEDELTA_INVALID', `${path}.evidence[${evidenceIndex}]`);
+        text(evidence.source, 'V3_STATEDELTA_INVALID', `${path}.evidence[${evidenceIndex}].source`, { maximum: 160 });
+        text(evidence.quote, 'V3_STATEDELTA_INVALID', `${path}.evidence[${evidenceIndex}].quote`, { maximum: 2000 });
+      });
+      if (!entry.evidence.length) fail('V3_STATEDELTA_INVALID', `${path}.evidence`);
+    });
+  }
   if (Object.hasOwn(value.source, 'manualSubjectEntityIds')) {
     const subjectIds = new Set(value.subjectSnapshots.map(subject => subject.subjectEntityId));
     const seen = new Set();
@@ -173,6 +201,9 @@ export async function validateCseGraph({ root = null, checkpoint, run = null, fl
         if (item.sourceFloorId && (!floorsById.has(item.sourceFloorId) || floorOrder.get(item.sourceFloorId) > floorOrder.get(delta.floorId))) fail('V3_CSE_GRAPH_SOURCE_REF_INVALID');
         if (item.sourceDeltaId && (!deltaIds.has(item.sourceDeltaId) || !acceptedDeltaIds.has(item.sourceDeltaId))) fail('V3_CSE_GRAPH_SOURCE_REF_INVALID');
       }
+    }
+    for (const audit of delta.source?.calibrationAudit ?? []) {
+      if (!entityIds.has(audit.subjectEntityId) || (audit.previousTowardEntityId && !entityIds.has(audit.previousTowardEntityId)) || (audit.towardEntityId && !entityIds.has(audit.towardEntityId))) fail('V3_CSE_GRAPH_ENTITY_REF_INVALID');
     }
   }
   const current = states.at(-1) ?? null;
