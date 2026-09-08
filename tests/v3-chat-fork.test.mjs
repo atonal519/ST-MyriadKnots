@@ -11,7 +11,7 @@ import { createChatSession } from '../src/chat-session.js';
 const SOURCE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NOW = '2026-09-05T00:00:00.000Z';
 const assistant = mes => ({ is_user: false, is_system: false, mes, swipes: [mes], swipe_id: 0 });
-const user = mes => ({ is_user: true, is_system: false, mes });
+const user = mes => ({ is_user: true, is_system: false, mes, send_date: `test-user:${mes}` });
 const uuidFactory = () => { let value = 1000; return () => `${(++value).toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`; };
 
 function backendHarness() {
@@ -68,7 +68,13 @@ function chatRecords(records, chatId) {
 
 test('复制分支只领独立身份，源记忆零读零搬运，按钮授权后才自行重建', async () => {
   const backend = backendHarness();
-  let activeContext = context('原聊天', SOURCE, [user('开始'), assistant('公共 A'), assistant('公共 B'), assistant('旧线 C'), assistant('旧线 pending')]);
+  let activeContext = context('原聊天', SOURCE, [
+    user('开始'),
+    assistant('公共 A'), user('继续 A'),
+    assistant('公共 B'), user('继续 B'),
+    assistant('旧线 C'), user('继续 C'),
+    assistant('旧线 pending'),
+  ]);
   const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => activeContext } } });
   const sourceSession = createChatSession({
     contextProvider: () => activeContext,
@@ -97,7 +103,13 @@ test('复制分支只领独立身份，源记忆零读零搬运，按钮授权�
   const sourceBefore = chatRecords(backend.records, SOURCE);
   const callsBeforeClone = apiCalls;
 
-  activeContext = context('复制聊天', SOURCE, [user('开始'), assistant('公共 A'), assistant('公共 B'), assistant('新线 X'), assistant('新线 pending')]);
+  activeContext = context('复制聊天', SOURCE, [
+    user('开始'),
+    assistant('公共 A'), user('继续 A'),
+    assistant('公共 B'), user('继续 B'),
+    assistant('新线 X'), user('继续 X'),
+    assistant('新线 pending'),
+  ]);
   const cloneClient = {
     async get(collection, key) {
       assert.notEqual(collection, `chat-${SOURCE}`, '建立复制分支身份不得读源聊天记忆');
@@ -139,7 +151,7 @@ test('复制分支只领独立身份，源记忆零读零搬运，按钮授权�
 test('无 binding 的旧 root 不再猜原分支：相同正文的两宿主按任何顺序打开都各领稳定新 ID', async () => {
   const openInOrder = async order => {
     const backend = backendHarness();
-    const body = [user('开始'), assistant('公共 A'), assistant('公共 B'), assistant('pending')];
+    const body = [user('开始'), assistant('公共 A'), user('继续 A'), assistant('公共 B'), user('继续 B'), assistant('pending')];
     const legacyHost = context('旧 root 建造宿主', SOURCE, body);
     const sourceAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => legacyHost } } });
     const sourceStore = createFoundationStore({ client: backend.client, contextProvider: () => identity('旧 root 建造宿主', SOURCE) });

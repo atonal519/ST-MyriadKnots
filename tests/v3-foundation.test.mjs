@@ -13,8 +13,14 @@ const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OTHER_CHAT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const assistant = (mes, extra = {}) => ({ is_user: false, is_system: false, mes, swipes: [mes], swipe_id: 0, extra, ...extra });
 const hiddenAssistant = mes => ({ ...assistant(mes), is_system: true, extra: {} });
-const user = mes => ({ is_user: true, is_system: false, mes });
+const user = mes => ({ is_user: true, is_system: false, mes, send_date: `test-user:${mes}` });
 const system = (mes, type = 'generic') => ({ is_user: false, is_system: true, mes, extra: { type } });
+const legacyScanner = async (chat, options) => {
+  const candidates = await scanAssistantCandidates(chat, options);
+  return Object.freeze(candidates.map((candidate, index) => index < candidates.length - 1 || candidate.stabilityProof
+    ? Object.freeze({ ...candidate, stabilityProof: Object.freeze({ kind: 'nextUser', messageIndex: candidate.hostLocator.messageIndex + 1, fingerprint: `sha256:${createHash('sha256').update(`legacy-test-${index}`).digest('hex')}` }) })
+    : candidate));
+};
 const uuidFactory = (start = 0) => {
   let value = start;
   return () => `${(++value).toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`;
@@ -85,11 +91,11 @@ function backendHarness() {
   };
 }
 
-function harness(chat = [assistant('A'), assistant('B'), assistant('C')], { enhanced = false, prepareSession = null } = {}) {
+function harness(chat = [assistant('A'), assistant('B'), assistant('C')], { enhanced = false, prepareSession = null, modernAnchors = false } = {}) {
   let context = hostContext(chat);
   let enabled = true;
   const handlers = new Map();
-  context.eventTypes = Object.fromEntries(['CHAT_CHANGED', 'MESSAGE_RECEIVED', 'CHARACTER_MESSAGE_RENDERED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MORE_MESSAGES_LOADED', 'MESSAGE_UPDATED'].map(name => [name, name]));
+  context.eventTypes = Object.fromEntries(['CHAT_CHANGED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'CHARACTER_MESSAGE_RENDERED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MORE_MESSAGES_LOADED', 'MESSAGE_UPDATED'].map(name => [name, name]));
   context.eventSource = { on: (name, handler) => handlers.set(name, handler) };
   const standard = { getContext: () => context };
   const globalRef = enhanced ? { SillyTavern: standard, Luker: { getContext: () => context } } : { SillyTavern: standard };
@@ -102,6 +108,7 @@ function harness(chat = [assistant('A'), assistant('B'), assistant('C')], { enha
     store,
     contextProvider: () => context,
     prepareSession,
+    scanCandidates: modernAnchors ? scanAssistantCandidates : legacyScanner,
     isEnabled: () => enabled,
     newUuid: uuidFactory(),
     now: () => new Date('2026-09-02T00:00:00.000Z'),
@@ -114,6 +121,11 @@ function harness(chat = [assistant('A'), assistant('B'), assistant('C')], { enha
     setChat(next, uuid = CHAT) { context.chat = next; context.chatMetadata.qianqianjie.chatId = uuid; context.chatId = `host-${uuid}`; },
     setEnabled(value) { enabled = value; },
   };
+}
+
+async function anchorLatest(h, label = 'legacy test anchor') {
+  h.context.chat.push(user(label));
+  return h.runtime.refreshStatus();
 }
 
 test('HostAdapter 优先 official-only SillyTavern，且增强能力只由真实 metadata 字段触发', () => {
@@ -132,7 +144,7 @@ test('HostAdapter 优先 official-only SillyTavern，且增强能力只由真实
   assert.equal(lukerAdapter.snapshot().mode, 'standard');
 });
 
-test('纯扫描只枚举有效 AI 楼，3 楼得到 2 stable + 1 pending；确认后得到 3 stable', async () => {
+test('纯扫描只枚举有效 AI 楼；无 user 锚时确认入口也不能越过 pending', async () => {
   const chat = [user('不要保存'), assistant('<content>A</content>'), system('系统'), assistant('B'), user('继续'), assistant('C')];
   const candidates = await scanAssistantCandidates(chat);
   assert.deepEqual(candidates.map(item => [item.assistantSeq, item.hostLocator.messageIndex, item.canonicalContent]), [[1, 1, 'A'], [2, 3, 'B'], [3, 5, 'C']]);
@@ -142,10 +154,10 @@ test('纯扫描只枚举有效 AI 楼，3 楼得到 2 stable + 1 pending；确�
   assert.equal(state.stableCount, 2);
   assert.equal(state.pending.assistantSeq, 3);
   state = await h.runtime.confirmLatest();
-  assert.equal(state.stableCount, 3);
-  assert.equal(state.pending, null);
+  assert.equal(state.stableCount, 2);
+  assert.equal(state.pending.assistantSeq, 3);
   assert.equal(state.foundationStatus, 'ready');
-  assert.deepEqual(state.stableBoundary.assistantSeq, 3);
+  assert.deepEqual(state.stableBoundary.assistantSeq, 2);
 });
 
 test('新楼首正文边界只晋升启动前 pending，空占位不落 Floor 且后续刷新保持稳定', async () => {
@@ -256,7 +268,7 @@ test('初始化时 /hide AI 与普通 AI 共用相同 stable／pending 规则', 
   assert.equal(state.stableCount, 1);
   assert.equal(state.pending.assistantSeq, 2);
   assert.equal(state.pending.messageIndex, 1);
-  state = await hiddenPending.runtime.confirmLatest();
+  state = await anchorLatest(hiddenPending);
   assert.equal(state.stableCount, 2);
   assert.equal(state.pending, null);
 });
@@ -274,7 +286,7 @@ test('缺失或未知 is_user 角色绝不被当作 AI 楼持久化', async () =
 test('user 楼漂移只更新 locator 索引，不改变 floorId 或 assistantSeq', async () => {
   const h = harness([assistant('A'), user('x'), assistant('B'), assistant('C')]);
   await h.runtime.start();
-  await h.runtime.confirmLatest();
+  await anchorLatest(h);
   const firstRoot = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
   const firstCheckpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${firstRoot.headCheckpointId}`).data;
   const ids = firstCheckpoint.floorRange.floorIds;
@@ -421,7 +433,7 @@ test('CAS 冲突时 root 不前移，staged 不成为 active', async () => {
 test('CAS 冲突前旧 root 可达 checkpoint、floors、indexes 逐字不变，locator-only 也走 COW', async () => {
   const h = harness([assistant('A'), user('x'), assistant('B'), assistant('C')]);
   await h.runtime.start();
-  await h.runtime.confirmLatest();
+  await anchorLatest(h);
   const rootKey = `chat-${CHAT}/v3-root`;
   const oldRoot = structuredClone(h.backend.records.get(rootKey));
   const oldCheckpointKey = `chat-${CHAT}/v3-checkpoint-${oldRoot.data.headCheckpointId}`;
@@ -508,7 +520,7 @@ test('后端恢复得到相同 stableBoundary，warm reconcile 不按楼读取�
     client: h.backend.client,
     contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }),
   });
-  const secondRuntime = createFoundationRuntime({ hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }), store: secondStore, contextProvider: () => h.context, newUuid: uuidFactory(), now: () => new Date('2026-09-02T00:00:00.000Z'), logger: { warn() {} } });
+  const secondRuntime = createFoundationRuntime({ hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }), store: secondStore, contextProvider: () => h.context, scanCandidates: legacyScanner, newUuid: uuidFactory(), now: () => new Date('2026-09-02T00:00:00.000Z'), logger: { warn() {} } });
   const recovered = await secondRuntime.start();
   assert.deepEqual(recovered.stableBoundary, first.stableBoundary);
   const coldReads = h.backend.calls.filter(call => call[0] === 'get').length - readsBefore;
@@ -531,7 +543,7 @@ test('明确 legacy 快照缺失可重建索引时从 root 可达 FloorRecord �
   delete run.inputSnapshotFingerprint;
   h.backend.records.delete(`chat-${CHAT}/${checkpoint.producedRefs.indexes[0]}`);
   const store = createFoundationStore({ client: h.backend.client, contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }) });
-  const runtime = createFoundationRuntime({ hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }), store, contextProvider: () => h.context, newUuid: uuidFactory(10000), now: () => new Date('2026-09-02T00:00:00.000Z'), logger: { warn() {} } });
+  const runtime = createFoundationRuntime({ hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }), store, contextProvider: () => h.context, scanCandidates: legacyScanner, newUuid: uuidFactory(10000), now: () => new Date('2026-09-02T00:00:00.000Z'), logger: { warn() {} } });
   const state = await runtime.start();
   assert.equal(state.status, 'ready');
   assert.equal(state.stableCount, 2);
@@ -577,7 +589,7 @@ test('现代 active manifest 指向缺失索引时拒绝 ready，不冒充 legac
   await assert.rejects(store.readReachable(), error => error?.code === 'V3_STORE_INDEX_MISSING');
 });
 
-test('150 AI 楼为 149 stable，手动确认后 150；不持久化 user 正文并记录线性性能证据', async () => {
+test('150 AI 楼为 149 stable，追加 user 锚后 150；不持久化 user 正文并记录线性性能证据', async () => {
   const chat = [];
   for (let index = 1; index <= 150; index += 1) chat.push(user(`USER-SECRET-${index}`), assistant(`AI-${index}`));
   const h = harness(chat);
@@ -585,7 +597,7 @@ test('150 AI 楼为 149 stable，手动确认后 150；不持久化 user 正文�
   assert.equal(state.stableCount, 149);
   assert.equal(state.metrics.algorithm, 'ordered-O(n)');
   assert.ok(state.metrics.maximumChunkMs >= 0);
-  state = await h.runtime.confirmLatest();
+  state = await anchorLatest(h);
   assert.equal(state.stableCount, 150);
   const persisted = JSON.stringify([...h.backend.records.values()].map(item => item.data));
   assert.equal(persisted.includes('USER-SECRET'), false);
@@ -734,7 +746,7 @@ test('CHAT_CHANGED 先于 UUID 落盘时复用 session.prepare，最终 ready �
   const store = createFoundationStore({ client: backend.client, contextProvider: identityProvider });
   const runtime = createFoundationRuntime({
     hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => context } } }),
-    store, contextProvider: () => context, prepareSession, newUuid: uuidFactory(8000),
+    store, contextProvider: () => context, prepareSession, scanCandidates: legacyScanner, newUuid: uuidFactory(8000),
     now: () => new Date('2026-09-02T00:00:00.000Z'), logger: { warn() {} },
   });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
@@ -759,7 +771,7 @@ test('同 chat 两个并发 run 只有一个 root CAS 合法提交', async () =>
   });
   const second = createFoundationRuntime({
     hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }),
-    store: secondStore, contextProvider: () => h.context, newUuid: uuidFactory(9000),
+    store: secondStore, contextProvider: () => h.context, scanCandidates: legacyScanner, newUuid: uuidFactory(9000),
     now: () => new Date('2026-09-02T00:00:00.000Z'), logger: { warn() {} },
   });
   let releaseFirst;
@@ -789,7 +801,7 @@ test('swipe 删除：未选项不回退，当前选中项删除从该楼分歧',
   const swiped = (values, selected) => ({ is_user: false, is_system: false, mes: values[selected], swipes: values, swipe_id: selected });
   const h = harness([swiped(['A0', 'A1'], 0), assistant('B'), assistant('C')]);
   await h.runtime.start();
-  await h.runtime.confirmLatest();
+  await anchorLatest(h);
   const rootBefore = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`).data);
   h.context.chat[0] = swiped(['A0'], 0);
   let state = await h.runtime.refreshStatus();
@@ -800,20 +812,15 @@ test('swipe 删除：未选项不回退，当前选中项删除从该楼分歧',
   assert.notEqual(state.stableBoundary.floorId, rootBefore.stableBoundary.floorId);
 });
 
-test('user 楼编辑不改正式链，删除只更新 locator index；大面积回退仍为 f-1', async () => {
+test('user 楼编辑不改正式链；稳定 AI 大面积重写仍为 f-1', async () => {
   const h = harness([assistant('A'), user('x'), assistant('B'), user('y'), assistant('C'), assistant('D')]);
   await h.runtime.start();
-  await h.runtime.confirmLatest();
+  await anchorLatest(h);
   const before = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
-  const beforeCheckpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${before.headCheckpointId}`).data;
   h.context.chat[1].mes = 'edited user only';
   let state = await h.runtime.refreshStatus();
   assert.equal(state.headCheckpointId, before.headCheckpointId);
-  h.context.chat.splice(1, 1);
-  state = await h.runtime.refreshStatus();
-  const locatorCheckpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${state.headCheckpointId}`).data;
-  assert.deepEqual(locatorCheckpoint.floorRange.floorIds, beforeCheckpoint.floorRange.floorIds);
-  h.context.chat.splice(1, 2, assistant('B-rewritten'), assistant('C-rewritten'));
+  h.context.chat.splice(2, 2, assistant('B-rewritten'), user('replacement-anchor'));
   state = await h.runtime.refreshStatus();
   assert.equal(state.lastRun.result, 'trustedPrefix:1');
 });
@@ -882,7 +889,7 @@ test('FloorRecord 正文与 canonicalFingerprint 必须本地互证，冷读取�
   });
   const stagedRuntime = createFoundationRuntime({
     hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => staged.context } } }),
-    store: stagedStore, contextProvider: () => staged.context, newUuid: uuidFactory(13500),
+    store: stagedStore, contextProvider: () => staged.context, scanCandidates: legacyScanner, newUuid: uuidFactory(13500),
     now: () => new Date('2026-09-02T00:30:00.000Z'), logger: { warn() {} },
   });
   const stagedState = await stagedRuntime.start();
@@ -904,7 +911,7 @@ test('active checkpoint 的 committing run 冷启动幂等收敛 completed，非
   });
   const coldRuntime = createFoundationRuntime({
     hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }),
-    store: coldStore, contextProvider: () => h.context, newUuid: uuidFactory(13700),
+    store: coldStore, contextProvider: () => h.context, scanCandidates: legacyScanner, newUuid: uuidFactory(13700),
     now: () => new Date('2026-09-02T00:45:00.000Z'), logger: { warn() {} },
   });
   const recovered = await coldRuntime.start();
@@ -924,7 +931,7 @@ test('active checkpoint 的 committing run 冷启动幂等收敛 completed，非
   });
   const latestRuntime = createFoundationRuntime({
     hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }),
-    store: latestStore, contextProvider: () => h.context, newUuid: uuidFactory(13800),
+    store: latestStore, contextProvider: () => h.context, scanCandidates: legacyScanner, newUuid: uuidFactory(13800),
     now: () => new Date('2026-09-02T00:50:00.000Z'), logger: { warn() {} },
   });
   assert.equal((await latestRuntime.start()).status, 'ready');
@@ -969,7 +976,7 @@ test('root indexManifest 对 checkpoint 三类 foundation index 必须精确覆�
 test('513+ fingerprint/reverseRef entries 自动追加分片且冷恢复可读', async () => {
   const h = harness(Array.from({ length: 513 }, () => assistant('same-content')));
   await h.runtime.start();
-  const state = await h.runtime.confirmLatest();
+  const state = await anchorLatest(h);
   assert.equal(state.stableCount, 513);
   const root = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
   const checkpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${root.headCheckpointId}`).data;
@@ -1000,7 +1007,7 @@ test('A-old/B/C 与 A-new/B/C 交错 CAS 后自动收敛，新快照 run 安全�
   });
   const second = createFoundationRuntime({
     hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }),
-    store: secondStore, contextProvider: () => h.context, newUuid: uuidFactory(12000),
+    store: secondStore, contextProvider: () => h.context, scanCandidates: legacyScanner, newUuid: uuidFactory(12000),
     now: () => new Date('2026-09-02T00:00:01.000Z'), logger: { warn() {} },
   });
   let rootArrival = 0;
@@ -1154,7 +1161,7 @@ test('部分 FloorRecord 写完后冷启动复用 staged，不重复写相同 Fl
   const store = createFoundationStore({ client: h.backend.client, contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }) });
   const runtime = createFoundationRuntime({
     hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }),
-    store, contextProvider: () => h.context, newUuid: uuidFactory(14000),
+    store, contextProvider: () => h.context, scanCandidates: legacyScanner, newUuid: uuidFactory(14000),
     now: () => new Date('2026-09-02T01:00:00.000Z'), logger: { warn() {} },
   });
   const recovered = await runtime.start();
@@ -1183,7 +1190,7 @@ test('staged fingerprint index entries 被篡改但保留旧摘要时，冷启�
   });
   const runtime = createFoundationRuntime({
     hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }),
-    store, contextProvider: () => h.context, newUuid: uuidFactory(14100),
+    store, contextProvider: () => h.context, scanCandidates: legacyScanner, newUuid: uuidFactory(14100),
     now: () => new Date('2026-09-02T01:10:00.000Z'), logger: { warn() {} },
   });
   const recovered = await runtime.start();
@@ -1212,7 +1219,7 @@ test('staged checkpoint inputFingerprints 被篡改但保留旧状态摘要时�
   });
   const runtime = createFoundationRuntime({
     hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }),
-    store, contextProvider: () => h.context, newUuid: uuidFactory(14200),
+    store, contextProvider: () => h.context, scanCandidates: legacyScanner, newUuid: uuidFactory(14200),
     now: () => new Date('2026-09-02T01:20:00.000Z'), logger: { warn() {} },
   });
   const recovered = await runtime.start();
@@ -1220,6 +1227,22 @@ test('staged checkpoint inputFingerprints 被篡改但保留旧状态摘要时�
   assert.match(recovered.lastError, /V3 staged 记录内容冲突/);
   assert.equal(h.backend.records.has(`chat-${CHAT}/v3-root`), false);
   assert.equal((await store.readReachable()).status, 'uninitialized');
+
+  const proof = harness([assistant('A'), assistant('B')]);
+  proof.backend.setConflictRoot(true);
+  assert.equal((await proof.runtime.start()).status, 'conflict');
+  const proofCheckpoint = [...proof.backend.records.values()].find(item => item.data.recordType === 'checkpoint');
+  proofCheckpoint.data.inputFingerprints[0].stabilityFingerprint = `sha256:${'a'.repeat(64)}`;
+  proof.backend.setConflictRoot(false);
+  const proofStore = createFoundationStore({ client: proof.backend.client, contextProvider: () => ({ hostChatId: proof.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }) });
+  const proofRuntime = createFoundationRuntime({
+    hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => proof.context } } }),
+    store: proofStore, contextProvider: () => proof.context, scanCandidates: legacyScanner, newUuid: uuidFactory(14250),
+    now: () => new Date('2026-09-02T01:25:00.000Z'), logger: { warn() {} },
+  });
+  const proofRecovered = await proofRuntime.start();
+  assert.equal(proofRecovered.status, 'error');
+  assert.match(proofRecovered.lastError, /V3 staged 记录内容冲突/);
 });
 
 test('putRecord 409 只复用完整内容等价记录，相同摘要下的不等价 index 返回 conflict', async () => {
@@ -1326,6 +1349,7 @@ test('runtime 前置校验后、真实 store commitRoot 前篡改 backing index�
     hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }),
     store,
     contextProvider: () => h.context,
+    scanCandidates: legacyScanner,
     newUuid: uuidFactory(14300),
     now: () => new Date('2026-09-02T01:30:00.000Z'),
     logger: { warn() {} },
@@ -1350,7 +1374,7 @@ test('staged 与当前输入 snapshot 不同则绝不复用', async () => {
   const store = createFoundationStore({ client: h.backend.client, contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }) });
   const runtime = createFoundationRuntime({
     hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }),
-    store, contextProvider: () => h.context, newUuid: uuidFactory(14500),
+    store, contextProvider: () => h.context, scanCandidates: legacyScanner, newUuid: uuidFactory(14500),
     now: () => new Date('2026-09-02T02:00:00.000Z'), logger: { warn() {} },
   });
   assert.equal((await runtime.start()).status, 'ready');
@@ -1391,7 +1415,7 @@ test('读取第一轮未发布 V3 记录后原地重封口，不删除旧记录'
   assert.equal((await store.readReachable()).status, 'ready');
   const runtime = createFoundationRuntime({
     hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }),
-    store, contextProvider: () => h.context, newUuid: uuidFactory(14800),
+    store, contextProvider: () => h.context, scanCandidates: legacyScanner, newUuid: uuidFactory(14800),
     now: () => new Date('2026-09-02T03:00:00.000Z'), logger: { warn() {} },
   });
   assert.equal((await runtime.start()).status, 'ready');
@@ -1419,7 +1443,7 @@ test('legacy root manifest 缺项只进入 needsReseal，重封口后恢复精�
   assert.equal((await store.readReachable()).status, 'needsReseal');
   const runtime = createFoundationRuntime({
     hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }),
-    store, contextProvider: () => h.context, newUuid: uuidFactory(14900),
+    store, contextProvider: () => h.context, scanCandidates: legacyScanner, newUuid: uuidFactory(14900),
     now: () => new Date('2026-09-02T03:30:00.000Z'), logger: { warn() {} },
   });
   assert.equal((await runtime.start()).status, 'ready');
@@ -1452,7 +1476,7 @@ test('真实聊天 session + lifecycle + V3 runtime 在 CHAT_CHANGED UUID 时序
   const runtime = createFoundationRuntime({
     hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => context } } }),
     store, contextProvider: () => context, prepareSession: () => session.prepare(),
-    newUuid: uuidFactory(15000), now: () => new Date('2026-09-02T00:00:00.000Z'), logger: { warn() {} },
+    scanCandidates: legacyScanner, newUuid: uuidFactory(15000), now: () => new Date('2026-09-02T00:00:00.000Z'), logger: { warn() {} },
   });
   lifecycle.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
@@ -1469,4 +1493,68 @@ test('真实聊天 session + lifecycle + V3 runtime 在 CHAT_CHANGED UUID 时序
   assert.deepEqual(unhandled, []);
 });
 
-const EVENT_NAMES = ['CHAT_CHANGED', 'MESSAGE_RECEIVED', 'CHARACTER_MESSAGE_RENDERED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MORE_MESSAGES_LOADED'];
+test('生产 scanner 只用紧邻普通 user 稳定 AI，真 system 不算而 auto-hide user 算', async () => {
+  const autoHideUser = { is_user: true, is_system: true, mes: '已自动隐藏的用户消息', send_date: 'anchor-auto-hide', extra: { qianqianjieAutoHide: true } };
+  const trueSystem = { is_user: true, is_system: true, mes: '真实系统消息', send_date: 'system-1', extra: { type: 'narrator' } };
+  const candidates = await scanAssistantCandidates([
+    assistant('AI0'), user('U1'), assistant('AI2'), trueSystem, assistant('AI4'), autoHideUser, assistant('AI6'),
+  ]);
+  assert.deepEqual(candidates.map(item => item.stabilityProof?.kind ?? null), ['nextUser', null, 'nextUser', null]);
+  assert.deepEqual(candidates.map(item => item.stabilityProof?.messageIndex ?? null), [1, null, 5, null]);
+});
+
+test('MESSAGE_SENT 在 user 入列时稳定前一 AI；重复事件、同锚正文编辑与尾楼 reroll 均不破坏前缀', async () => {
+  const h = harness([assistant('AI0')], { modernAnchors: true });
+  let state = await h.runtime.start();
+  assert.equal(state.stableCount, 0);
+  state = await h.runtime.confirmLatest();
+  assert.equal(state.stableCount, 0, '无 user 锚时旧确认入口不得写入最新 AI');
+
+  h.context.chat.push(user('U1'));
+  assert.equal(h.handlers.get('MESSAGE_SENT')(1), undefined, '宿主事件 listener 不等待异步持久化');
+  for (let attempt = 0; attempt < 100 && h.runtime.getState().stableCount !== 1; attempt += 1) await new Promise(resolve => setTimeout(resolve, 2));
+  state = h.runtime.getState();
+  assert.equal(state.stableCount, 1);
+  const firstRoot = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`));
+  const firstGeneration = h.runtime.getReachable().root.narrativeGeneration;
+
+  h.handlers.get('MESSAGE_SENT')(1);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), firstRoot, '重复 MESSAGE_SENT 不得重复提交');
+  h.context.chat[1].mes = 'U1 编辑后正文';
+  state = await h.runtime.refreshStatus();
+  assert.equal(h.runtime.getReachable().root.narrativeGeneration, firstGeneration);
+  assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), firstRoot, '同一 user 身份的正文编辑不撤锚');
+
+  h.context.chat.push(assistant('AI2-old'));
+  state = await h.runtime.refreshStatus();
+  assert.equal(state.stableCount, 1);
+  h.context.chat[2] = assistant('AI2-reroll');
+  state = await h.runtime.refreshStatus();
+  assert.equal(state.stableCount, 1);
+  assert.equal(h.runtime.getReachable().root.narrativeGeneration, firstGeneration);
+  assert.equal(h.runtime.getReachable().floors[0].content.canonicalContent, 'AI0');
+});
+
+test('替换或删除 user 锚会分支并按连续前缀撤回', async () => {
+  const h = harness([assistant('AI0'), user('U1'), assistant('AI2'), user('U3'), assistant('AI4')], { modernAnchors: true });
+  let state = await h.runtime.start();
+  assert.equal(state.stableCount, 2);
+  const oldGeneration = h.runtime.getReachable().root.narrativeGeneration;
+  const oldFloorIds = h.runtime.getReachable().floors.map(floor => floor.id);
+
+  h.context.chat[1] = { ...user('U1 replacement'), send_date: 'replacement-anchor-1' };
+  state = await h.runtime.refreshStatus();
+  assert.equal(state.stableCount, 2);
+  assert.notEqual(h.runtime.getReachable().root.narrativeGeneration, oldGeneration, '同位置新 user 身份必须使第一楼分支');
+  assert.notDeepEqual(h.runtime.getReachable().floors.map(floor => floor.id), oldFloorIds);
+
+  h.context.chat.splice(1, 1);
+  h.handlers.get('MESSAGE_DELETED')(1);
+  for (let attempt = 0; attempt < 100 && h.runtime.getState().stableCount !== 0; attempt += 1) await new Promise(resolve => setTimeout(resolve, 2));
+  state = h.runtime.getState();
+  assert.equal(state.stableCount, 0, '中间 user 删除后只能保留其前方连续稳定前缀');
+  assert.equal(h.runtime.getReachable().floors.length, 0);
+});
+
+const EVENT_NAMES = ['CHAT_CHANGED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'CHARACTER_MESSAGE_RENDERED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MORE_MESSAGES_LOADED'];

@@ -371,6 +371,27 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     return button;
   }
   function renderCseHistory(state) {
+    const categoryCopy = { core: '核心特质', adaptive: '长期倾向', situational: '当前情境' };
+    const changeCopy = change => {
+      const category = categoryCopy[change.category] ?? '人物状态', before = change.before ?? { text: change.beforeText }, after = change.after ?? { text: change.afterText };
+      let main;
+      if (before?.text && before.text === after?.text) main = `${category}属性更新：${after.text}`;
+      else if (change.action === 'refine') main = `${category}调整：${before?.text} → ${after?.text}`;
+      else if (change.action === 'update') main = `${category}更新：${before?.text} → ${after?.text}`;
+      else if (change.action === 'remove') main = `移除${category}：${before?.text}`;
+      else main = `新增${category}：${after?.text}`;
+      const details = [], changed = (field, copy, label) => {
+        const left = copy(before?.[field]), right = copy(after?.[field]);
+        if (change.action === 'add' && right) details.push(`${label}：${right}`);
+        else if (change.action === 'remove' && left) details.push(`${label}：${left}`);
+        else if (left !== right) details.push(`${label}：${left || '未指定'} → ${right || '未指定'}`);
+      };
+      changed('towardDisplayName', value => value ?? '', '对象');
+      changed('visibility', value => value ? visibilityCopy(value) : '', '信息范围');
+      changed('reason', value => value ?? '', '依据');
+      changed('origin', value => value ? originCopy(value) : '', '来源');
+      return { main, details };
+    };
     const section = setDetailsState(element('details', 'qqj-cse-history'), 'cse-history', false);
     const summary = element('summary', 'qqj-section-summary'); summary.append(element('strong', '', '状态分析记录'), element('span', 'v3-memory-status', `${state.csePendingCount ?? 0} 待分析 · ${state.cseFailedCount ?? 0} 失败`)); section.append(summary);
     const list = element('div', 'qqj-cse-history-list');
@@ -382,10 +403,25 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       if (record?.noMaterialChange) body.append(element('p', 'settings-hint', '本楼无实质人物状态变化。'));
       for (const subject of record?.subjects ?? []) {
         const subjectNode = element('section', 'qqj-cse-record-subject'); subjectNode.append(element('strong', '', subject.displayName));
-        const changes = subject.changeSummary?.length ? subject.changeSummary : [...(subject.core ?? []), ...(subject.adaptive ?? []), ...(subject.situational ?? [])];
-        if (changes.length) { const listNode = element('ul', 'v3-cse-items'); for (const value of changes) listNode.append(element('li', 'v3-cse-item', value)); subjectNode.append(listNode); }
+        const changes = subject.changes ?? [];
+        if (changes.length) { const listNode = element('ul', 'v3-cse-items'); for (const value of changes) { const copy = changeCopy(value), item = element('li', 'v3-cse-item'); item.append(element('span', 'v3-cse-item-text', copy.main)); if (copy.details.length) item.append(element('small', 'v3-cse-item-meta', copy.details.join(' · '))); listNode.append(item); } subjectNode.append(listNode); }
         else subjectNode.append(element('p', 'settings-hint', '这个人物本楼没有记录到变化。'));
         body.append(subjectNode);
+      }
+      if (record?.isolationSummary) body.append(element('p', 'qqj-cse-isolation-hint', record.noMaterialChange
+        ? `有内容未通过校验；本楼未产生人物状态变化（${record.isolationSummary.count} 项校验记录）。`
+        : `部分内容未通过校验，已保留有效结果（${record.isolationSummary.count} 项校验记录）。`));
+      if (record?.endStateSubjects) {
+        const stateNode = setDetailsState(element('details', 'qqj-cse-floor-state'), `cse-floor-state:${floor.floorId}`, false);
+        const stateSummary = element('summary', 'qqj-cse-floor-state-summary', '查看本楼结束状态'); stateNode.append(stateSummary);
+        const stateBody = element('div', 'qqj-cse-floor-state-body');
+        for (const subject of record.endStateSubjects) {
+          const subjectNode = element('section', 'qqj-cse-record-subject'); subjectNode.append(element('strong', '', subject.displayName));
+          appendSubjectGroups(subjectNode, subject, state);
+          stateBody.append(subjectNode);
+        }
+        if (!record.endStateSubjects.length) stateBody.append(element('p', 'settings-hint', '本楼结束时没有已保存状态。'));
+        stateNode.append(stateBody); body.append(stateNode);
       }
       if (!record && !floor.cse?.error) body.append(element('p', 'settings-hint', '本楼还没有已保存的状态分析记录。'));
       if (floor.cse?.error) body.append(element('p', 'v3-foundation-feedback error', floor.cse.error)); const action = cseActionFor(floor, state); if (action) body.append(action); rowNode.append(body); list.append(rowNode);

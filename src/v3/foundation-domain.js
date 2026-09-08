@@ -10,6 +10,7 @@ export const FOUNDATION_CAPABILITIES = Object.freeze({
 
 export const FOUNDATION_FORMAT_VERSION = 1;
 const SANITIZER_VERSION = 'memory-content-sanitizer-v1';
+const INPUT_SNAPSHOT_VERSION = 2;
 
 const prefixedHash = async value => `sha256:${await sha256(value)}`;
 const normalizeRaw = value => String(value ?? '').replace(/\r\n?/g, '\n');
@@ -26,7 +27,7 @@ export async function foundationInputSnapshot(candidates, stableCount) {
     throw new TypeError('V3_INPUT_SNAPSHOT_BOUNDARY_INVALID');
   }
   const payload = {
-    version: 1,
+    version: INPUT_SNAPSHOT_VERSION,
     stableCount,
     latestStatus: stableCount === source.length ? 'confirmed' : 'pending',
     floors: source.slice(0, stableCount).map(candidate => ({
@@ -37,6 +38,7 @@ export async function foundationInputSnapshot(candidates, stableCount) {
       messageIndex: candidate.hostLocator?.messageIndex ?? null,
       swipeId: candidate.hostLocator?.swipeId ?? null,
       selectedSwipeIndex: candidate.hostLocator?.selectedSwipeIndex ?? null,
+      stabilityFingerprint: candidate.stabilityProof?.fingerprint ?? null,
     })),
   };
   const stablePrefix = {
@@ -45,6 +47,21 @@ export async function foundationInputSnapshot(candidates, stableCount) {
     floors: payload.floors,
   };
   return Object.freeze({ payload: Object.freeze(payload), fingerprint: await prefixedHash(JSON.stringify(stablePrefix)) });
+}
+
+export function createCheckpointInputFingerprints(floors, { candidates = [], previous = [] } = {}) {
+  const priorByFloorId = new Map((Array.isArray(previous) ? previous : []).map(item => [item?.floorId, item]));
+  return (Array.isArray(floors) ? floors : []).map((floor, index) => {
+    const stabilityFingerprint = candidates[index]?.stabilityProof?.fingerprint
+      ?? priorByFloorId.get(floor.id)?.stabilityFingerprint
+      ?? floor.stability?.proof?.fingerprint
+      ?? null;
+    return {
+      floorId: floor.id,
+      canonicalFingerprint: floor.content.canonicalFingerprint,
+      ...(stabilityFingerprint ? { stabilityFingerprint } : {}),
+    };
+  });
 }
 
 export async function reverseRefShardPrefix(recordId) {
@@ -62,6 +79,16 @@ export function selectAssistantMessage(message) {
   }
   if (typeof message.mes !== 'string') return null;
   return { rawContent: normalizeRaw(message.mes), swipeId: message.swipe_id ?? null, selectedSwipeIndex: null };
+}
+
+export function selectUserStabilityAnchor(message) {
+  if (!message || typeof message !== 'object' || message.is_user !== true) return null;
+  if (message.is_system === true && message.extra?.type) return null;
+  return Object.freeze({
+    sentAt: typeof message.send_date === 'string' || typeof message.send_date === 'number' ? String(message.send_date) : null,
+    name: typeof message.name === 'string' ? message.name.trim().slice(0, 200) : '',
+    isSystem: message.is_system === true,
+  });
 }
 
 export async function sanitizerFingerprint(options = {}) {
@@ -96,6 +123,14 @@ export async function scanAssistantCandidates(chat, {
       prefixedHash(selected.rawContent),
       prefixedHash(canonicalContent),
     ]);
+    const anchor = selectUserStabilityAnchor(source[messageIndex + 1]);
+    const stabilityProof = anchor ? Object.freeze({
+      kind: 'nextUser',
+      messageIndex: messageIndex + 1,
+      fingerprint: await prefixedHash(JSON.stringify(anchor.sentAt
+        ? ['sendDate', anchor.sentAt]
+        : ['position', messageIndex + 1, anchor.name, anchor.isSystem])),
+    }) : null;
     candidates.push(Object.freeze({
       assistantSeq,
       hostLocator: Object.freeze({
@@ -108,6 +143,7 @@ export async function scanAssistantCandidates(chat, {
       canonicalFingerprint,
       sanitizerFingerprint: sanitizerHash,
       canonicalContent,
+      stabilityProof,
     }));
     if (assistantSeq % Math.max(1, yieldEvery) === 0) {
       const now = globalThis.performance?.now?.() ?? Date.now();
@@ -136,7 +172,7 @@ export function createFloorRecord({
   narrativeGeneration,
   candidate,
   predecessorFloorId = null,
-  stabilizedBy = 'nextAssistant',
+  stabilizedBy = 'nextUser',
   runId,
   checkpointId = null,
   now,
@@ -158,7 +194,10 @@ export function createFloorRecord({
       sanitizerFingerprint: candidate.sanitizerFingerprint,
       formatVersion: FOUNDATION_FORMAT_VERSION,
     },
-    stability: { status: 'stable', stabilizedAt: now, stabilizedBy },
+    stability: {
+      status: 'stable', stabilizedAt: now, stabilizedBy,
+      ...(candidate.stabilityProof ? { proof: { ...candidate.stabilityProof } } : {}),
+    },
     processing: {
       sourceSaved: true,
       memoryReady: false,
@@ -181,5 +220,6 @@ export function candidateSummary(candidate) {
     assistantSeq: candidate.assistantSeq,
     messageIndex: candidate.hostLocator.messageIndex,
     canonicalFingerprint: candidate.canonicalFingerprint,
+    stabilityProof: candidate.stabilityProof ? Object.freeze({ ...candidate.stabilityProof }) : null,
   });
 }

@@ -3,6 +3,18 @@ import { validateMemoryGraph } from './memory-schema.js';
 
 export const CSE_VISIBILITIES = Object.freeze(['private', 'expressed', 'observable', 'shared', 'authorial']);
 export const CSE_ORIGINS = Object.freeze(['baseline', 'floor', 'reasonableProgression', 'manual']);
+export const CSE_ISOLATION_CODES = Object.freeze([
+  'V3_CSE_OPTIONAL_ITEM_INVALID',
+  'V3_CSE_TOWARD_UNBOUND',
+  'V3_CSE_EVIDENCE_UNLOCATED',
+  'V3_CSE_EVIDENCE_SUBJECT_MISMATCH',
+  'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT',
+  'V3_CSE_REVIEW_INVALID',
+  'V3_CSE_REVIEW_TARGET_AMBIGUOUS',
+  'V3_CSE_CATEGORY_PROTOCOL_MIXED',
+  'V3_CSE_SUBJECT_UNBOUND',
+  'V3_CSE_SUBJECT_DUPLICATE',
+]);
 export const LATEST_CSE_CALIBRATION_VERSION = 1;
 export const isSupportedCseCalibrationVersion = value => Number.isSafeInteger(value)
   && value >= 1
@@ -108,6 +120,17 @@ export function validateStateDeltaRecord(input, { expectedChatId } = {}) {
   object(value.source, 'V3_STATEDELTA_INVALID', 'source');
   text(value.source.promptVersion, 'V3_STATEDELTA_INVALID', 'source.promptVersion', { maximum: 160 });
   text(value.source.compilerVersion, 'V3_STATEDELTA_INVALID', 'source.compilerVersion', { maximum: 160 });
+  if (Object.hasOwn(value.source, 'isolationSummary')) {
+    const summary = object(value.source.isolationSummary, 'V3_STATEDELTA_INVALID', 'source.isolationSummary');
+    if (Object.keys(summary).some(key => !['count', 'codes'].includes(key))
+      || !Number.isSafeInteger(summary.count) || summary.count < 1 || summary.count > 1_000_000) fail('V3_STATEDELTA_INVALID', 'source.isolationSummary.count');
+    const seen = new Set();
+    array(summary.codes, 'V3_STATEDELTA_INVALID', 'source.isolationSummary.codes', CSE_ISOLATION_CODES.length).forEach((code, index) => {
+      if (!CSE_ISOLATION_CODES.includes(code) || seen.has(code)) fail('V3_STATEDELTA_INVALID', `source.isolationSummary.codes[${index}]`);
+      seen.add(code);
+    });
+    if (!summary.codes.length || summary.codes.length > summary.count) fail('V3_STATEDELTA_INVALID', 'source.isolationSummary.codes');
+  }
   if (Object.hasOwn(value.source, 'calibrationVersion') && !isSupportedCseCalibrationVersion(value.source.calibrationVersion)) fail('V3_STATEDELTA_INVALID', 'source.calibrationVersion');
   if (Object.hasOwn(value.source, 'calibrationAudit')) {
     if (!isSupportedCseCalibrationVersion(value.source.calibrationVersion)) fail('V3_STATEDELTA_INVALID', 'source.calibrationAudit');

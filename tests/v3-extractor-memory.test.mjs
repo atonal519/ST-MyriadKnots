@@ -18,7 +18,13 @@ const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GENERATION = '22222222-2222-4222-8222-222222222222';
 const NOW = '2026-09-02T00:00:00.000Z';
 const assistant = mes => ({ is_user: false, is_system: false, mes, swipes: [mes], swipe_id: 0 });
-const user = mes => ({ is_user: true, is_system: false, mes });
+const user = mes => ({ is_user: true, is_system: false, mes, send_date: `test-user:${mes}` });
+const legacyScanner = async (chat, options) => {
+  const candidates = await scanAssistantCandidates(chat, options);
+  return Object.freeze(candidates.map((candidate, index) => index < candidates.length - 1 || candidate.stabilityProof
+    ? Object.freeze({ ...candidate, stabilityProof: Object.freeze({ kind: 'nextUser', messageIndex: candidate.hostLocator.messageIndex + 1, fingerprint: `sha256:${createHash('sha256').update(`legacy-memory-test-${index}`).digest('hex')}` }) })
+    : candidate));
+};
 const uuidFactory = () => { let value = 0; return () => `${(++value).toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`; };
 
 function viewHarness(runtime) {
@@ -68,14 +74,14 @@ function backendHarness() {
   } };
 }
 
-function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, extractorPromptGuidance, csePromptGuidance, foundationRefresh, eventTypes = null, sharedBackend = null, sharedContext = null } = {}) {
+function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, extractorPromptGuidance, csePromptGuidance, foundationRefresh, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false } = {}) {
   let enabled = true;
   const handlers = new Map();
   const context = sharedContext ? { ...sharedContext } : {
     name1: '林岚', personaId: 'persona-linlan', characterId: 0, groupId: null, chatId: 'host-chat', characters: [{ avatar: 'character.png' }], userAvatar: 'persona.png',
     chatMetadata: { qianqianjie: { schemaVersion: 1, chatId: CHAT } }, chat: initialChat ?? [user('继续'), assistant(text), assistant('用于确认上一楼稳定。')],
   };
-  context.eventTypes = eventTypes ?? context.eventTypes ?? Object.fromEntries(['GENERATION_STARTED', 'GENERATION_STOPPED', 'GENERATION_ENDED', 'STREAM_TOKEN_RECEIVED', 'CHAT_CHANGED', 'MESSAGE_RECEIVED', 'MESSAGE_UPDATED', 'CHARACTER_MESSAGE_RENDERED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MORE_MESSAGES_LOADED'].map(name => [name, name]));
+  context.eventTypes = eventTypes ?? context.eventTypes ?? Object.fromEntries(['GENERATION_STARTED', 'GENERATION_STOPPED', 'GENERATION_ENDED', 'STREAM_TOKEN_RECEIVED', 'CHAT_CHANGED', 'MESSAGE_SENT', 'USER_MESSAGE_RENDERED', 'MESSAGE_RECEIVED', 'MESSAGE_UPDATED', 'CHARACTER_MESSAGE_RENDERED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MORE_MESSAGES_LOADED'].map(name => [name, name]));
   context.eventSource = { on(name, listener) { const values = handlers.get(name) ?? []; values.push(listener); handlers.set(name, values); } };
   const globalRef = host === 'luker' ? { Luker: { getContext: () => context } } : { SillyTavern: { getContext: () => context } };
   const baseHostAdapter = createHostAdapter({ globalRef });
@@ -84,7 +90,7 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
   const backend = sharedBackend ?? backendHarness();
   const identityProvider = () => ({ hostChatId: context.chatId, chatId: context.chatMetadata.qianqianjie.chatId, characterLocator: 'character.png', personaLocator: 'persona.png' });
   const store = createFoundationStore({ client: backend.client, contextProvider: identityProvider, isEnabled: () => enabled });
-  const foundationBase = createFoundationRuntime({ hostAdapter, store, contextProvider: () => context, isEnabled: () => enabled, newUuid: uuidFactory(), now: () => new Date(NOW), logger: { warn() {} } });
+  const foundationBase = createFoundationRuntime({ hostAdapter, store, contextProvider: () => context, isEnabled: () => enabled, scanCandidates: modernAnchors ? scanAssistantCandidates : legacyScanner, newUuid: uuidFactory(), now: () => new Date(NOW), logger: { warn() {} } });
   const foundationRuntime = typeof foundationRefresh === 'function' ? { ...foundationBase, refreshStatus: () => foundationRefresh(foundationBase) } : foundationBase;
   const calls = [];
   const generateUtilityTask = async options => {
@@ -785,7 +791,8 @@ test('special user 部分持久化后中断不会阻塞同楼重试，后续楼�
   assert.equal(graph.floorMemories.length, 1);
   assert.notEqual(reachableUsers[0].id, orphanUsers[0].id, '重试批次不得争用不可达孤儿 ID');
 
-  await h.runtime.confirmLatest();
+  h.context.chat.push(user('legacy test anchor'));
+  await h.runtime.refreshStatus();
   const secondFloor = h.runtime.getState().floors.find(item => item.floorId !== floorId);
   assert.ok(secondFloor);
   state = await h.runtime.extractFloor(secondFloor.floorId, { analyzeState: false });
@@ -1000,8 +1007,8 @@ test('正文原位编辑即使 locator/swipe 不变也会拦截旧召回，并�
   await h.runtime.start();
   assert.equal(h.calls.length, 0);
   await h.runtime.startHistoricalRebuild();
-  await waitFor(() => h.runtime.getState().rebuildStatus === 'caughtUp' && !h.runtime.getState().activeAutoMemory, '五楼历史未完成初始记忆');
-  assert.equal(h.runtime.getState().rememberedCount, 5);
+  await waitFor(() => h.runtime.getState().rebuildStatus === 'caughtUp' && !h.runtime.getState().activeAutoMemory, '六楼历史未完成初始记忆');
+  assert.equal(h.runtime.getState().rememberedCount, 6);
 
   const prompts = [];
   h.context.constants = { promptTypes: { IN_CHAT: 23 }, promptRoles: { SYSTEM: 47 } };
@@ -1069,7 +1076,7 @@ test('正文原位编辑即使 locator/swipe 不变也会拦截旧召回，并�
   await h.runtime.startHistoricalRebuild();
   await waitFor(() => h.runtime.getState().rebuildStatus === 'caughtUp' && !h.runtime.getState().activeAutoMemory, '正文编辑后未手动重建追平');
   const rebuiltContents = h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).map(call => JSON.parse(call.taskMessages[0].content).payload.canonicalContent);
-  assert.equal(rebuiltContents.length, 5);
+  assert.equal(rebuiltContents.length, 6);
   assert.equal(rebuiltContents[0], newText, '必须从最早受影响楼使用当前正文重建');
   assert.equal(rebuiltContents.includes(oldText), false);
   const reachable = await h.store.readReachable();
@@ -2737,4 +2744,177 @@ test('手动 workRun 忙碌期间关闭自动记忆会清掉旧待触发，不�
   assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 1);
   assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 0);
   assert.equal(h.runtime.getState().lastAutoMemory, null);
+});
+
+test('生产 user 锚在 MESSAGE_SENT 后立即提取前一 AI，重复事件不重复调用且关闭自动维护时零 API', async () => {
+  const h = harness({
+    initialChat: [assistant('AI0 等待用户锚。')],
+    modernAnchors: true,
+    automation: { enabled: true, batchSize: 1 },
+  });
+  await h.runtime.start();
+  assert.equal(h.foundationRuntime.getState().stableCount, 0);
+  assert.equal(h.calls.length, 0);
+
+  h.context.chat.push({ ...user('U1 正式入列。'), send_date: 'anchor-u1' });
+  h.emit('MESSAGE_SENT', 1);
+  await waitFor(() => h.runtime.getState().rememberedCount === 1 && h.runtime.getState().cseReady, 'user 锚入列后未及时完成前一 AI 的摘要与 CSE');
+  const callsAfterFirst = h.calls.length;
+  assert.equal(callsAfterFirst, 2);
+  h.emit('MESSAGE_SENT', 1);
+  h.emit('USER_MESSAGE_RENDERED', 1);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(h.calls.length, callsAfterFirst, '重复 sent/rendered 事件不得重复摘要或 CSE');
+
+  const disabled = harness({
+    initialChat: [assistant('关闭自动维护的 AI0。')],
+    modernAnchors: true,
+    automation: { enabled: false, batchSize: 1 },
+  });
+  await disabled.runtime.start();
+  disabled.context.chat.push({ ...user('U1'), send_date: 'disabled-anchor' });
+  disabled.emit('MESSAGE_SENT', 1);
+  await waitFor(() => disabled.foundationRuntime.getState().stableCount === 1, '关闭自动维护时地基仍应接受 user 锚');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(disabled.calls.length, 0);
+});
+
+test('user 锚删除会撤回活动链并使在途摘要失效；重加新锚必须重新提取', async () => {
+  let releaseExtraction;
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  let extractorCalls = 0;
+  const h = harness({
+    initialChat: [assistant('需要稳定的 AI0。')],
+    modernAnchors: true,
+    automation: { enabled: true, batchSize: 1 },
+    utility: options => {
+      if (options.systemPrompt !== EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { noMaterialChange: true } };
+      extractorCalls += 1;
+      if (extractorCalls === 1) {
+        markStarted();
+        return new Promise(resolve => { releaseExtraction = () => resolve({ jsonData: { summary: '不应落库的迟到摘要。' } }); });
+      }
+      return { jsonData: { summary: '新锚后的摘要。' } };
+    },
+  });
+  await h.runtime.start();
+  h.context.chat.push({ ...user('第一次 U1'), send_date: 'anchor-first' });
+  h.emit('MESSAGE_SENT', 1);
+  await started;
+  h.context.chat.splice(1, 1);
+  h.emit('MESSAGE_DELETED', 1);
+  releaseExtraction();
+  await waitFor(() => h.foundationRuntime.getState().stableCount === 0 && !h.runtime.getState().activeExtraction, '删锚后在途摘要未失效');
+  let graph = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(graph.floors.length, 0);
+  assert.equal(graph.floorMemories.length, 0);
+  assert.equal(graph.stateDeltas.length, 0);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  await h.runtime.refreshStatus();
+
+  h.context.chat.push({ ...user('重新加入的 U1'), send_date: 'anchor-second' });
+  h.emit('MESSAGE_SENT', 1);
+  for (let attempt = 0; attempt < 5000 && !(h.runtime.getState().rememberedCount === 1 && h.runtime.getState().cseReady); attempt += 1) await new Promise(resolve => setTimeout(resolve, 2));
+  assert.equal(h.runtime.getState().rememberedCount === 1 && h.runtime.getState().cseReady, true, JSON.stringify(h.runtime.getState()));
+  graph = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(extractorCalls, 2);
+  assert.equal(graph.floorMemories.length, 1);
+  assert.equal(graph.floorMemories[0].summary.aiText, '新锚后的摘要。');
+});
+
+test('已保存派生记录在删锚后退出活动链但保留物理记录，重加锚生成全新闭环', async () => {
+  const h = harness({
+    initialChat: [assistant('AI0 已完成内容。')],
+    modernAnchors: true,
+    automation: { enabled: true, batchSize: 1 },
+  });
+  await h.runtime.start();
+  h.context.chat.push({ ...user('U1'), send_date: 'saved-anchor-first' });
+  h.emit('MESSAGE_SENT', 1);
+  await waitFor(() => h.runtime.getState().rememberedCount === 1 && h.runtime.getState().cseReady, '首个锚未形成完整派生记录');
+  const before = await h.store.readReachable({ mode: 'runtime' });
+  const oldIds = {
+    floor: before.floors[0].id,
+    memory: before.floorMemories[0].id,
+    delta: before.stateDeltas[0].id,
+    currentStates: before.currentStates.map(item => item.id),
+  };
+
+  h.context.chat.splice(1, 1);
+  h.emit('MESSAGE_DELETED', 1);
+  await waitFor(() => h.foundationRuntime.getState().stableCount === 0 && h.runtime.getState().floors.length === 0, '已保存锚删除后活动链未撤回');
+  await h.runtime.refreshStatus();
+  const retracted = await h.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual([retracted.floors.length, retracted.floorMemories.length, retracted.stateDeltas.length, retracted.currentStates.length], [0, 0, 0, 0]);
+  assert.deepEqual([h.runtime.getState().floors.length, h.runtime.getState().cseFloors.length, h.runtime.getState().cseSubjects.length], [0, 0, 0]);
+  assert.equal((await h.store.readRecord('floor', oldIds.floor)).status, 'ready');
+  assert.equal((await h.store.readRecord('floorMemory', oldIds.memory)).status, 'ready');
+  assert.equal((await h.store.readRecord('stateDelta', oldIds.delta)).status, 'ready');
+  for (const id of oldIds.currentStates) assert.equal((await h.store.readRecord('currentState', id)).status, 'ready');
+
+  await new Promise(resolve => setTimeout(resolve, 20));
+  await h.runtime.refreshStatus();
+  h.context.chat.push({ ...user('U1 再次加入'), send_date: 'saved-anchor-second' });
+  h.emit('MESSAGE_SENT', 1);
+  await waitFor(() => h.runtime.getState().rememberedCount === 1 && h.runtime.getState().cseReady, '重加锚后未生成新闭环');
+  const after = await h.store.readReachable({ mode: 'runtime' });
+  assert.notEqual(after.floors[0].id, oldIds.floor);
+  assert.notEqual(after.floorMemories[0].id, oldIds.memory);
+  assert.notEqual(after.stateDeltas[0].id, oldIds.delta);
+});
+
+test('24 楼旧 nextAssistant 数据在真实 user 邻接下原代升级，保留 floor/memory/delta 且零重提取', async () => {
+  const chat = Array.from({ length: 24 }, (_, index) => [
+    assistant(`旧档 AI-${index + 1}`),
+    { ...user(`旧档 U-${index + 1}`), send_date: `legacy-anchor-${index + 1}` },
+  ]).flat();
+  const initial = harness({
+    initialChat: chat,
+    automation: { enabled: true, batchSize: 24 },
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: '旧档已保存摘要。' } }
+      : { jsonData: { noMaterialChange: true } },
+  });
+  await initial.runtime.start();
+  await initial.runtime.startHistoricalRebuild();
+  for (let attempt = 0; attempt < 15000 && !(initial.runtime.getState().rebuildStatus === 'caughtUp' && !initial.runtime.getState().activeAutoMemory); attempt += 1) await new Promise(resolve => setTimeout(resolve, 2));
+  assert.equal(initial.runtime.getState().rebuildStatus === 'caughtUp' && !initial.runtime.getState().activeAutoMemory, true, JSON.stringify(initial.runtime.getState()));
+  const before = await initial.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual([before.floors.length, before.floorMemories.length, before.stateDeltas.length], [24, 24, 24]);
+  const beforeIds = {
+    generation: before.root.narrativeGeneration,
+    floors: before.floors.map(item => item.id),
+    memories: before.floorMemories.map(item => item.id),
+    deltas: before.stateDeltas.map(item => item.id),
+  };
+
+  for (const envelope of initial.backend.records.values()) {
+    if (envelope.data.recordType === 'floor') {
+      envelope.data.stability.stabilizedBy = 'nextAssistant';
+      delete envelope.data.stability.proof;
+    }
+    if (envelope.data.recordType === 'checkpoint') {
+      for (const item of envelope.data.inputFingerprints) delete item.stabilityFingerprint;
+    }
+  }
+  const upgraded = harness({
+    automation: { enabled: true, batchSize: 24 },
+    modernAnchors: true,
+    sharedBackend: initial.backend,
+    sharedContext: initial.context,
+  });
+  await upgraded.runtime.start();
+  await waitFor(() => upgraded.foundationRuntime.getState().status === 'ready');
+  const after = await upgraded.store.readReachable({ mode: 'runtime' });
+  assert.equal(after.root.narrativeGeneration, beforeIds.generation);
+  assert.deepEqual(after.floors.map(item => item.id), beforeIds.floors);
+  assert.deepEqual(after.floorMemories.map(item => item.id), beforeIds.memories);
+  assert.deepEqual(after.stateDeltas.map(item => item.id), beforeIds.deltas);
+  assert.ok(after.checkpoint.inputFingerprints.every(item => /^sha256:[0-9a-f]{64}$/u.test(item.stabilityFingerprint)));
+  assert.equal(upgraded.calls.length, 0, '旧档升级只能重封口，不得重跑摘要或 CSE');
+
+  upgraded.context.chat.splice(1, 1);
+  await upgraded.foundationRuntime.refreshStatus();
+  assert.equal(upgraded.foundationRuntime.getState().stableCount, 0, '旧 nextAssistant 字段不得在 user 锚删除后救回活动前缀');
 });

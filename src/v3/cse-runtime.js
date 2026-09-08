@@ -1,12 +1,12 @@
 import { newIdentityUuid, sha256 } from '../identity.js';
 import { buildFoundationIndexes } from './foundation-runtime.js';
-import { deterministicUuid, selectAssistantMessage } from './foundation-domain.js';
+import { createCheckpointInputFingerprints, deterministicUuid, selectAssistantMessage } from './foundation-domain.js';
 import { validateFoundationCheckpoint, validateFoundationRoot, validateFoundationRun } from './foundation-schema.js';
 import { validateCseGraph } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 import {
   CSE_COMPILER_VERSION, CSE_PROMPT_VERSION, captureCseBaseline, createBaselineRoleEntities,
-  createCseEnvelope, createManualCseCorrection, filterReachableDeltas, replayCurrentState, runCseRequest, selectTrackedSubjects, verifyCseBaselineFingerprint,
+  createCseEnvelope, createManualCseCorrection, deriveCseTimeline, filterReachableDeltas, replayCurrentState, runCseRequest, selectTrackedSubjects, verifyCseBaselineFingerprint,
 } from './cse-engine.js';
 import { sanitizeDiagnosticValue, sanitizeSensitiveText } from './safe-metadata.js';
 import { buildEntityIdentityDirectory, entitiesThroughFloorIds, identityLabelKey } from './entity-identity.js';
@@ -144,24 +144,47 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const memoryByFloor = new Map((reachable?.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => [memory.floorId, memory]));
     const reachableDeltas = filterReachableDeltas({ floors, floorMemories: reachable?.floorMemories ?? [], stateDeltas: reachable?.stateDeltas ?? [] });
     const deltaByFloor = new Map(reachableDeltas.map(delta => [delta.floorId, delta]));
+    const timelineByFloor = new Map(deriveCseTimeline(reachableDeltas).map(item => [item.floorId, item]));
+    const floorSeq = new Map(floors.map(floor => [floor.id, floor.assistantSeq]));
+    const historyItem = item => item ? Object.freeze({
+      text: item.text,
+      visibility: item.visibility,
+      reason: item.reason,
+      origin: item.origin,
+      towardDisplayName: entities.get(item.towardEntityId)?.displayName ?? null,
+      sourceFloorId: item.sourceFloorId ?? null,
+      sourceAssistantSeq: floorSeq.get(item.sourceFloorId) ?? null,
+    }) : null;
     const cseFloors = floors.map(floor => {
-      const memory = memoryByFloor.get(floor.id), delta = deltaByFloor.get(floor.id);
+      const memory = memoryByFloor.get(floor.id), delta = deltaByFloor.get(floor.id), timeline = timelineByFloor.get(floor.id);
       const running = active?.floorId === floor.id;
       const failure = lastFailure?.floorId === floor.id ? lastFailure : null;
-      const status = !memory ? 'notApplicable' : running ? 'running' : delta ? (delta.noMaterialChange ? 'noChange' : 'ready') : failure && failure.code !== 'V3_CSE_PREVIOUS_GAP' ? 'failed' : 'pending';
+      const status = !memory ? 'notApplicable' : running ? 'running' : delta ? (timeline?.noMaterialChange ? 'noChange' : 'ready') : failure && failure.code !== 'V3_CSE_PREVIOUS_GAP' ? 'failed' : 'pending';
       const record = delta ? Object.freeze({
-        noMaterialChange: delta.noMaterialChange === true,
-        subjects: Object.freeze(delta.subjectSnapshots.map(subject => Object.freeze({
+        noMaterialChange: timeline?.noMaterialChange ?? true,
+        isolationSummary: timeline?.isolationSummary ?? null,
+        subjects: Object.freeze((timeline?.changes ?? []).map(subject => Object.freeze({
+          subjectEntityId: subject.subjectEntityId,
           displayName: entities.get(subject.subjectEntityId)?.displayName ?? '未知人物',
-          changeSummary: Object.freeze([...(subject.changeSummary ?? [])]),
-          core: Object.freeze((subject.core ?? []).map(item => item.text)),
-          adaptive: Object.freeze((subject.adaptive ?? []).map(item => item.text)),
-          situational: Object.freeze((subject.situational ?? []).map(item => item.text)),
+          changes: Object.freeze(subject.items.map(item => Object.freeze({
+            category: item.category,
+            action: item.action,
+            beforeText: item.before?.text ?? null,
+            afterText: item.after?.text ?? null,
+            before: historyItem(item.before),
+            after: historyItem(item.after),
+          }))),
+        }))),
+        endStateSubjects: Object.freeze((timeline?.endStateSubjects ?? []).filter(subject => ['core', 'adaptive', 'situational'].some(category => subject[category]?.length)).map(subject => Object.freeze({
+          subjectEntityId: subject.subjectEntityId,
+          displayName: entities.get(subject.subjectEntityId)?.displayName ?? '未知人物',
+          core: Object.freeze((subject.core ?? []).map(historyItem)),
+          adaptive: Object.freeze((subject.adaptive ?? []).map(historyItem)),
+          situational: Object.freeze((subject.situational ?? []).map(historyItem)),
         }))),
       }) : null;
-      return Object.freeze({ floorId: floor.id, floorMemoryId: memory?.id ?? null, status, deltaId: delta?.id ?? null, noMaterialChange: delta?.noMaterialChange ?? false, record, error: failure?.message ?? null });
+      return Object.freeze({ floorId: floor.id, floorMemoryId: memory?.id ?? null, status, deltaId: delta?.id ?? null, noMaterialChange: timeline?.noMaterialChange ?? false, record, error: failure?.message ?? null });
     });
-    const floorSeq = new Map(floors.map(floor => [floor.id, floor.assistantSeq]));
     const subjects = (replayed?.subjects ?? []).map(subject => ({
       subjectEntityId: subject.subjectEntityId,
       displayName: entities.get(subject.subjectEntityId)?.displayName ?? (subject.subjectEntityId === reachable?.baseline?.userPersona?.entityId ? reachable.baseline.userPersona.name : reachable?.baseline?.characterCard?.name) ?? '未知人物',
@@ -246,7 +269,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const capabilities = { foundationReady: true, memoryReady: activeMemories.length > 0, cseReady, recallReady: false };
     const stateGraphFingerprint = await hash([current.root.narrativeGeneration, current.floors.map(item => item.id), current.floors.map(item => item.content.canonicalFingerprint)]);
     const run = validateFoundationRun({ schemaVersion: 3, recordType: 'run', id: runId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, inputSnapshotFingerprint: current.root.sourceSnapshotFingerprint, mode: 'cse', sessionEpoch: operation.epoch, inputFloorIds: [floor.id], phase: 'completed', completedFloorIds: [floor.id], failedItems: [], preparedRecordRefs: [store.recordKey(delta), store.recordKey(currentState), ...indexKeys, `v3-checkpoint-${checkpointId}`], diagnostics: { ...diagnosticsWithRealtimeOrigin(current.run?.diagnostics, realtimeOriginFromReachable(current)), ...diagnostics, floorId: floor.id, floorMemoryId: memory.id }, startedAt: operation.startedAt, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
-    const checkpoint = validateFoundationCheckpoint({ schemaVersion: 3, recordType: 'checkpoint', id: checkpointId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, runId, sourceSnapshotFingerprint: current.root.sourceSnapshotFingerprint, capabilities, floorRange: { fromAssistantSeq: current.floors.length ? 1 : 0, toAssistantSeq: current.floors.length, floorIds: current.floors.map(item => item.id) }, inputFingerprints: current.floors.map(item => ({ floorId: item.id, canonicalFingerprint: item.content.canonicalFingerprint })), producedRefs: { floors: current.floors.map(item => item.id), floorMemories: current.floorMemories.map(item => item.id), entities: entities.map(item => item.id), events: [], claims: [], knowledge: [], stateDeltas: deltas.map(item => item.id), currentStates: [currentState.id], stateProjections: [], episodes: [], threads: [], indexes: indexKeys }, validation: { schemaValid: true, referencesValid: true, orderedReplayValid: true, stateFingerprint: stateGraphFingerprint }, sealedAt: nowValue, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
+    const checkpoint = validateFoundationCheckpoint({ schemaVersion: 3, recordType: 'checkpoint', id: checkpointId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, runId, sourceSnapshotFingerprint: current.root.sourceSnapshotFingerprint, capabilities, floorRange: { fromAssistantSeq: current.floors.length ? 1 : 0, toAssistantSeq: current.floors.length, floorIds: current.floors.map(item => item.id) }, inputFingerprints: createCheckpointInputFingerprints(current.floors, { previous: current.checkpoint?.inputFingerprints }), producedRefs: { floors: current.floors.map(item => item.id), floorMemories: current.floorMemories.map(item => item.id), entities: entities.map(item => item.id), events: [], claims: [], knowledge: [], stateDeltas: deltas.map(item => item.id), currentStates: [currentState.id], stateProjections: [], episodes: [], threads: [], indexes: indexKeys }, validation: { schemaValid: true, referencesValid: true, orderedReplayValid: true, stateFingerprint: stateGraphFingerprint }, sealedAt: nowValue, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
     const root = validateFoundationRoot({ ...current.root, capabilities, headCheckpointId: checkpointId, indexManifest: { ...emptyManifest(), floor: indexKeys.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-')), entity: indexKeys.filter(key => key.includes('-entity-')), reverseRef: indexKeys.filter(key => key.includes('-reverseRef-')) }, activeStateRefs: [currentState.id], updatedAt: nowValue }, { expectedChatId: current.root.chatId });
     await validateCseGraph({ root, checkpoint, run, floors: current.floors, floorMemories: current.floorMemories, entities, indexes, indexKeys, baseline: current.baseline, stateDeltas: deltas, currentStates: [currentState] });
     const newEntities = entities.filter(entity => !current.entities.some(old => old.id === entity.id));

@@ -1,14 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createHostAdapter } from '../src/v3/host-adapter.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
 import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
 import { createV3MemoryRuntime } from '../src/v3/memory-runtime.js';
 import { EXTRACTOR_SYSTEM_PROMPT } from '../src/v3/extractor.js';
 import {
-  CSE_CALIBRATION_VERSION, CSE_COMPILER_VERSION, CSE_PROMPT_VERSION, CSE_SYSTEM_PROMPT, captureCseBaseline, compileCseResponse, createCseEnvelope, createManualCseCorrection, replayCurrentState, runCseRequest, selectTrackedSubjects,
+  CSE_CALIBRATION_VERSION, CSE_COMPILER_VERSION, CSE_PROMPT_VERSION, CSE_SYSTEM_PROMPT, captureCseBaseline, compileCseResponse, createCseEnvelope, createManualCseCorrection, deriveCseTimeline, replayCurrentState, runCseRequest, selectTrackedSubjects,
 } from '../src/v3/cse-engine.js';
 import { stateFingerprint, validateStateDeltaRecord } from '../src/v3/cse-schema.js';
+import { scanAssistantCandidates } from '../src/v3/foundation-domain.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GEN = '22222222-2222-4222-8222-222222222222';
@@ -22,6 +24,12 @@ const B = '77777777-1111-4111-8111-111111111111';
 const NOW = '2026-09-03T00:00:00.000Z';
 const assistant = mes => ({ is_user: false, is_system: false, mes, swipes: [mes], swipe_id: 0 });
 const user = mes => ({ is_user: true, is_system: false, mes });
+const legacyScanner = async (chat, options) => {
+  const candidates = await scanAssistantCandidates(chat, options);
+  return Object.freeze(candidates.map((candidate, index) => index < candidates.length - 1 || candidate.stabilityProof
+    ? Object.freeze({ ...candidate, stabilityProof: Object.freeze({ kind: 'nextUser', messageIndex: candidate.hostLocator.messageIndex + 1, fingerprint: `sha256:${createHash('sha256').update(`legacy-cse-test-${index}`).digest('hex')}` }) })
+    : candidate));
+};
 const uuidFactory = () => { let value = 100; return () => `${(++value).toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`; };
 
 function backendHarness({ conflictRootPut = null, beforeGet = null, beforePut = null } = {}) {
@@ -60,7 +68,7 @@ function runtimeHarness({ cse, extractor, host = 'official', backendOptions, sha
     readReachable(options) { readModes.push(options?.mode ?? 'full'); return baseStore.readReachable(options); },
     async commitRoot(...args) { const result = await baseStore.commitRoot(...args); commitResults.push(result); return result; },
   };
-  const foundationRuntime = createFoundationRuntime({ hostAdapter, store, contextProvider: () => context, isEnabled: () => enabled, now: clock, newUuid: uuidFactory(), logger: { warn() {} } });
+  const foundationRuntime = createFoundationRuntime({ hostAdapter, store, contextProvider: () => context, isEnabled: () => enabled, scanCandidates: legacyScanner, now: clock, newUuid: uuidFactory(), logger: { warn() {} } });
   const generateUtilityTask = async options => {
     calls.push({ ...options, testRoute: 'utility' });
     assert.equal(options.systemPrompt, EXTRACTOR_SYSTEM_PROMPT, 'Extractor 必须只走摘要路由');
@@ -478,8 +486,12 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.equal(compiled.delta.subjectSnapshots[0].situational[0].reason, '正文明确写出甲亲耳听见并记住');
   assert.equal(compiled.delta.source.promptVersion, CSE_PROMPT_VERSION);
   assert.equal(compiled.delta.source.compilerVersion, CSE_COMPILER_VERSION);
-  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-8');
-  assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-7');
+  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-10');
+  assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-9');
+  assert.match(CSE_SYSTEM_PROMPT, /单次情绪、动作或台词默认只支持 Situational/);
+  assert.match(CSE_SYSTEM_PROMPT, /人物被提及不等于本人在场/);
+  assert.match(CSE_SYSTEM_PROMPT, /最新作者设定、明确用户纠正和本楼正文/);
+  assert.match(CSE_SYSTEM_PROMPT, /根级 changeSummary\/summary 不会被当作人物状态/);
   assert.equal(compiled.delta.source.calibrationVersion, CSE_CALIBRATION_VERSION);
   assert.throws(() => validateStateDeltaRecord({ ...compiled.delta, source: { ...compiled.delta.source, calibrationVersion: 2 } }, { expectedChatId: CHAT }), error => error.code === 'V3_STATEDELTA_INVALID');
   assert.match(CSE_SYSTEM_PROMPT, /未提供依据/);
@@ -1394,6 +1406,131 @@ test('校准证据必须能定位且符合 Core 来源边界，manual Core 只�
   const inventedQuote = await compileCseResponse({ response: { subjects: [{ subject: '林岚', additions: { adaptive: [{ text: '凭空新增', evidence: [{ source: 'canonicalContent', quote: '正文不存在的句子' }] }] } }] }, envelope: protectedEnvelope, previousCurrentState: replayed, now: NOW, deltaId: '42424242-1111-4111-8111-424242424242' });
   assert.equal(inventedQuote.delta.subjectSnapshots[0].adaptive.length, 0);
   assert.ok(inventedQuote.isolated.some(item => item.code === 'V3_CSE_EVIDENCE_UNLOCATED'));
+});
+
+test('同一校准操作的证据组必须全部有效，坏证据不连坐其他独立操作', async () => {
+  const oldAdaptive = {
+    id: '60606060-1111-4111-8111-606060606060',
+    text: '会谨慎信任他人', visibility: 'private', reason: '旧依据', origin: 'floor', towardEntityId: null,
+    sourceFloorId: FLOOR1, sourceDeltaId: '61616161-1111-4111-8111-616161616161',
+  };
+  const previous = { id: '62626262-1111-4111-8111-626262626262', subjects: [{ subjectEntityId: A, core: [], adaptive: [oldAdaptive], situational: [] }] };
+  const content = '本楼明确只否定无条件服从。甲仍会先核对事实。';
+  const envelope = createCseEnvelope({ floor: floor(FLOOR2, content), floorMemory: memory(MEMORY2), baseline, currentState: previous, trackedSubjects: [entities[1]], entities });
+  const mixed = await compileCseResponse({
+    response: { subjects: [{
+      subject: '甲',
+      review: { adaptive: [{ previousText: oldAdaptive.text, action: 'refine', text: '在风险中会核对后再信任', evidence: [
+        { source: 'canonicalContent', quote: '只否定无条件服从' },
+        { source: 'canonicalContent', quote: '正文不存在的多次正向证明' },
+      ] }] },
+      additions: { adaptive: [{ text: '遇到风险会先核对事实', evidence: [{ source: 'canonicalContent', quote: '仍会先核对事实' }] }] },
+    }] },
+    envelope, previousCurrentState: previous, now: NOW, deltaId: '63636363-1111-4111-8111-636363636363',
+  });
+  assert.deepEqual(mixed.delta.subjectSnapshots[0].adaptive.map(item => item.text), [oldAdaptive.text, '遇到风险会先核对事实']);
+  assert.ok(mixed.isolated.some(item => item.code === 'V3_CSE_EVIDENCE_UNLOCATED'));
+  assert.ok(mixed.isolated.some(item => item.code === 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT'));
+  assert.deepEqual(mixed.delta.source.calibrationAudit.map(item => [item.action, item.text]), [['add', '遇到风险会先核对事实']]);
+
+  const fullyGrounded = await compileCseResponse({
+    response: { subjects: [{ subject: '甲', review: { adaptive: [{ previousText: oldAdaptive.text, action: 'refine', text: '在风险中会核对后再信任', evidence: [
+      { source: 'canonicalContent', quote: '只否定无条件服从' },
+      { source: 'canonicalContent', quote: '仍会先核对事实' },
+    ] }] } }] },
+    envelope, previousCurrentState: previous, now: NOW, deltaId: '64646464-1111-4111-8111-646464646464',
+  });
+  assert.deepEqual(fullyGrounded.delta.subjectSnapshots[0].adaptive.map(item => item.text), ['在风险中会核对后再信任']);
+  assert.equal(fullyGrounded.isolated.length, 0);
+});
+
+test('逐楼 timeline 只报告编译后实际变化，覆盖拒绝摘要、Situational 增改删、历史截止与重建 ID', async () => {
+  const firstEnvelope = createCseEnvelope({ floor: floor(FLOOR1, '甲连续两次核对后仍保持警惕。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [entities[1]], entities });
+  const first = await compileCseResponse({
+    response: { changeSummary: '根级摘要不得参与', subjects: [{ subject: '甲', additions: { adaptive: [{ text: '遇事会反复核对', evidence: [{ source: 'canonicalContent', quote: '连续两次核对' }] }] }, situational: [{ text: '保持警惕', visibility: 'private', reason: '本楼结尾' }], changeSummary: ['模型声称建立长期习惯'] }] },
+    envelope: firstEnvelope, previousCurrentState: null, now: NOW, deltaId: '50505050-1111-4111-8111-505050505050',
+  });
+  const firstWithoutRootSummary = await compileCseResponse({
+    response: { subjects: [{ subject: '甲', additions: { adaptive: [{ text: '遇事会反复核对', evidence: [{ source: 'canonicalContent', quote: '连续两次核对' }] }] }, situational: [{ text: '保持警惕', visibility: 'private', reason: '本楼结尾' }], changeSummary: ['模型声称建立长期习惯'] }] },
+    envelope: firstEnvelope, previousCurrentState: null, now: NOW, deltaId: '50505050-1111-4111-8111-505050505050',
+  });
+  assert.deepEqual(firstWithoutRootSummary.delta, first.delta, '根级摘要存在与否不能改变编译结果');
+  const previous = { id: '51515151-1111-4111-8111-515151515151', subjects: first.delta.subjectSnapshots };
+  const secondEnvelope = createCseEnvelope({ floor: floor(FLOOR2, '甲松开握紧的手，暂时平静下来。'), floorMemory: memory(MEMORY2), baseline, currentState: previous, trackedSubjects: [entities[1]], entities });
+  const second = await compileCseResponse({
+    response: { changeSummary: '另一个根级摘要', subjects: [{ subject: '甲', review: { adaptive: [{ previousText: '遇事会反复核对', action: 'refine', text: '从不再核对', evidence: [{ source: 'canonicalContent', quote: '正文里没有这句话' }] }] }, situational: [{ text: '暂时平静', visibility: 'private', reason: '松开握紧的手' }], changeSummary: ['长期习惯已经成功反转'] }] },
+    envelope: secondEnvelope, previousCurrentState: previous, now: NOW, deltaId: '52525252-1111-4111-8111-525252525252',
+  });
+  assert.equal(second.delta.source.isolationSummary.count, second.isolated.length);
+  assert.deepEqual(second.delta.source.isolationSummary.codes, ['V3_CSE_EVIDENCE_UNLOCATED', 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT']);
+  const timeline = deriveCseTimeline([first.delta, second.delta]);
+  assert.ok(timeline[0].changes[0].items.some(item => item.category === 'situational' && item.action === 'add'));
+  assert.deepEqual(timeline[1].changes[0].items.map(item => [item.category, item.action, item.before?.text, item.after?.text]), [
+    ['situational', 'update', '保持警惕', '暂时平静'],
+  ]);
+  assert.equal(JSON.stringify(timeline[1]).includes('长期习惯已经成功反转'), false, '被拒操作的模型摘要不能进入实际变化');
+  assert.deepEqual(timeline[0].endStateSubjects[0].situational.map(item => item.text), ['保持警惕'], '旧楼结束态不能混入后楼');
+  assert.deepEqual(timeline[1].endStateSubjects[0].situational.map(item => item.text), ['暂时平静']);
+
+  const changedSummary = structuredClone(second.delta);
+  changedSummary.subjectSnapshots[0].changeSummary = ['完全不同的模型说明'];
+  assert.deepEqual(deriveCseTimeline([first.delta, changedSummary])[1].changes, timeline[1].changes, '人物或根级摘要差异不改变实际 timeline');
+
+  const rebuiltIds = structuredClone(second.delta);
+  rebuiltIds.id = '53535353-1111-4111-8111-535353535353'; rebuiltIds.floorId = '54545454-1111-4111-8111-545454545454';
+  for (const category of ['core', 'adaptive', 'situational']) for (const item of rebuiltIds.subjectSnapshots[0][category]) {
+    item.id = item.id === second.delta.subjectSnapshots[0][category][0]?.id ? '55535353-1111-4111-8111-555353535353' : item.id;
+    item.sourceDeltaId = rebuiltIds.id; item.sourceFloorId = rebuiltIds.floorId;
+  }
+  const idTimeline = deriveCseTimeline([first.delta, second.delta, rebuiltIds]);
+  assert.equal(idTimeline[2].noMaterialChange, true, '仅重建 id/sourceDeltaId/sourceFloorId 不算状态变化');
+
+  const removed = structuredClone(rebuiltIds);
+  removed.id = '56565656-1111-4111-8111-565656565656'; removed.floorId = '57575757-1111-4111-8111-575757575757'; removed.subjectSnapshots[0].situational = [];
+  const removedTimeline = deriveCseTimeline([first.delta, second.delta, rebuiltIds, removed]);
+  assert.deepEqual(removedTimeline[3].changes[0].items.map(item => [item.category, item.action, item.before?.text]), [['situational', 'remove', '暂时平静']]);
+});
+
+test('timeline 与 replay 共用 legacy Core 保护，manual override 可生效且旧 isolation 字段保持未知兼容', async () => {
+  const envelope = createCseEnvelope({ floor: floor(FLOOR1, '甲作出选择。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [entities[1]], entities });
+  const compiled = await compileCseResponse({ response: { subjects: [{ subject: '甲', core: [{ text: '坚持己见', visibility: 'private', reason: '首次状态' }] }] }, envelope, previousCurrentState: null, now: NOW, deltaId: '58585858-1111-4111-8111-585858585858' });
+  const legacyFirst = structuredClone(compiled.delta); delete legacyFirst.source.calibrationVersion;
+  const legacyOverwrite = structuredClone(legacyFirst);
+  legacyOverwrite.id = '59595959-1111-4111-8111-595959595959'; legacyOverwrite.floorId = FLOOR2; legacyOverwrite.floorMemoryId = MEMORY2;
+  legacyOverwrite.subjectSnapshots[0].core[0] = { ...legacyOverwrite.subjectSnapshots[0].core[0], id: '60606060-1111-4111-8111-606060606060', text: '轻易动摇', sourceFloorId: FLOOR2, sourceDeltaId: legacyOverwrite.id };
+  const protectedTimeline = deriveCseTimeline([legacyFirst, legacyOverwrite]);
+  assert.equal(protectedTimeline[1].noMaterialChange, true);
+  assert.deepEqual(protectedTimeline[1].endStateSubjects[0].core.map(item => item.text), ['坚持己见']);
+  const manualOverwrite = structuredClone(legacyOverwrite); manualOverwrite.id = '61616161-1111-4111-8111-616161616161'; manualOverwrite.source.manualSubjectEntityIds = [A];
+  const manualTimeline = deriveCseTimeline([legacyFirst, manualOverwrite]);
+  assert.deepEqual(manualTimeline[1].changes[0].items.map(item => [item.action, item.before?.text, item.after?.text]), [['remove', '坚持己见', undefined], ['add', undefined, '轻易动摇']]);
+
+  const withIsolation = structuredClone(compiled.delta);
+  withIsolation.source.isolationSummary = { count: 2, codes: ['V3_CSE_OPTIONAL_ITEM_INVALID'] };
+  assert.equal(validateStateDeltaRecord(withIsolation, { expectedChatId: CHAT }).source.isolationSummary.count, 2);
+  delete withIsolation.source.isolationSummary;
+  assert.equal(validateStateDeltaRecord(withIsolation, { expectedChatId: CHAT }).source.isolationSummary, undefined, '旧 delta 缺字段表示未知');
+  withIsolation.source.isolationSummary = { count: 1, codes: ['V3_CSE_NOT_CONTROLLED'] };
+  assert.throws(() => validateStateDeltaRecord(withIsolation, { expectedChatId: CHAT }), error => error.code === 'V3_STATEDELTA_INVALID');
+
+  const fullyIsolated = await compileCseResponse({ response: { subjects: [{ subject: '甲', adaptive: [{ text: '' }], changeSummary: ['模型声称已经写入'] }] }, envelope, previousCurrentState: null, now: NOW, deltaId: '62626262-1111-4111-8111-626262626262' });
+  const isolatedTimeline = deriveCseTimeline([fullyIsolated.delta]);
+  assert.equal(isolatedTimeline[0].noMaterialChange, true);
+  assert.equal(isolatedTimeline[0].changes.length, 0);
+  assert.deepEqual(fullyIsolated.delta.source.isolationSummary, { count: 1, codes: ['V3_CSE_OPTIONAL_ITEM_INVALID'] });
+});
+
+test('真实 runtime 投影只暴露有效 pre/post 变化与安全隔离摘要，不透传模型成功自报', async () => {
+  const h = runtimeHarness({ cse: () => ({ jsonData: { changeSummary: '根级成功说明', subjects: [{ subject: '主角', adaptive: [{ text: '' }], situational: [{ text: '记得带伞', visibility: 'private', reason: '收到提醒' }], changeSummary: ['核心人格已经改变'] }] } }) });
+  let state = await h.runtime.start().then(() => h.runtime.extractNext());
+  state = await h.runtime.retryStateAnalysis(state.floors[0].floorId);
+  const record = state.cseFloors[0].record;
+  assert.equal(state.cseFloors[0].status, 'ready');
+  assert.deepEqual(record.subjects[0].changes.map(change => ({ category: change.category, action: change.action, beforeText: change.beforeText, afterText: change.afterText })), [{ category: 'situational', action: 'add', beforeText: null, afterText: '记得带伞' }]);
+  assert.equal(record.subjects[0].changes[0].after.reason, '收到提醒');
+  assert.equal(JSON.stringify(record).includes('核心人格已经改变'), false);
+  assert.deepEqual(record.isolationSummary, { count: 1, codes: ['V3_CSE_OPTIONAL_ITEM_INVALID'] });
+  assert.deepEqual(record.endStateSubjects[0].situational.map(item => item.text), ['记得带伞']);
 });
 
 test('runtime 精确绑定紧邻 user；实际 user 改动拒绝迟到写入，0 楼与非紧邻均不借更早输入', async () => {

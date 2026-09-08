@@ -3,11 +3,14 @@ import { readHostState } from '../host-context.js';
 import {
   FOUNDATION_CAPABILITIES,
   candidateSummary,
+  createCheckpointInputFingerprints,
   createFloorRecord,
   deterministicUuid,
   foundationInputSnapshot,
   reverseRefShardPrefix,
   scanAssistantCandidates,
+  selectAssistantMessage,
+  selectUserStabilityAnchor,
 } from './foundation-domain.js';
 import {
   validateFoundationCheckpoint,
@@ -23,7 +26,7 @@ import { validateCseGraph } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 
 const EVENTS = Object.freeze([
-  'CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED',
+  'CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED',
   'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MORE_MESSAGES_LOADED',
 ]);
 const INDEX_SHARD_LIMIT = 512;
@@ -168,6 +171,7 @@ export function createFoundationRuntime({
   prepareSession = null,
   isEnabled = true,
   sanitizerOptions = () => ({}),
+  scanCandidates = scanAssistantCandidates,
   now = () => new Date(),
   newUuid = newIdentityUuid,
   logger = console,
@@ -175,6 +179,7 @@ export function createFoundationRuntime({
   if (typeof hostAdapter?.snapshot !== 'function') throw new TypeError('V3 runtime HostAdapter 无效');
   if (!store || ['readReachable', 'readRecord', 'putRecord', 'replaceRecord', 'settleRun', 'commitRoot', 'invalidate', 'recordKey'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 runtime store 无效');
   if (prepareSession !== null && typeof prepareSession !== 'function') throw new TypeError('V3 runtime prepareSession 无效');
+  if (typeof scanCandidates !== 'function') throw new TypeError('V3 runtime candidate scanner 无效');
   let sessionEpoch = 0;
   let cache = null;
   let pending = null;
@@ -282,21 +287,18 @@ export function createFoundationRuntime({
     return cache;
   }
   function stableCountFor(candidates, floors, confirmLatest, stableThrough = null) {
-    if (confirmLatest) return candidates.length;
     if (stableThrough) {
       const boundaryIndex = candidates.findIndex(candidate => candidate.assistantSeq === stableThrough.assistantSeq
         && candidate.hostLocator.messageIndex === stableThrough.messageIndex
         && candidate.canonicalFingerprint === stableThrough.canonicalFingerprint);
       const trustedPrefix = boundaryIndex >= 0 && floors.length <= boundaryIndex + 1
+        && candidates[boundaryIndex]?.stabilityProof?.kind === 'nextUser'
         && floors.every((floor, index) => floor.content.canonicalFingerprint === candidates[index]?.canonicalFingerprint);
       if (trustedPrefix) return boundaryIndex + 1;
       throw statusError('stale', '提前稳定边界已变化，本次操作不再提交。');
     }
-    let count = Math.max(0, candidates.length - 1);
-    const prefixMatches = floors.length <= candidates.length
-      && floors.every((floor, index) => floor.content.canonicalFingerprint === candidates[index]?.canonicalFingerprint);
-    if (prefixMatches) count = Math.max(count, floors.length);
-    else if (!pending && floors.length >= candidates.length) count = candidates.length;
+    let count = 0;
+    while (candidates[count]?.stabilityProof?.kind === 'nextUser') count += 1;
     return count;
   }
 
@@ -363,7 +365,7 @@ export function createFoundationRuntime({
   async function scanCurrentSnapshot(operation, { confirmLatest = false, stableThrough = operation?.stableThrough ?? null } = {}) {
     if (current(operation) !== 'current') throw statusError('stale');
     const captured = capture();
-    const candidates = await scanAssistantCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions() });
+    const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions() });
     if (current(operation) !== 'current') throw statusError('stale');
     const stableCount = stableCountFor(candidates, cache?.floors ?? [], confirmLatest, stableThrough);
     const snapshot = await foundationInputSnapshot(candidates, stableCount);
@@ -393,8 +395,13 @@ export function createFoundationRuntime({
     const stableCandidates = candidates.slice(0, stableCount);
     let divergence = null;
     const common = Math.min(existing.length, stableCandidates.length);
+    const priorInputs = cache.checkpoint?.inputFingerprints ?? [];
     for (let index = 0; index < common; index += 1) {
-      if (existing[index].content.canonicalFingerprint !== stableCandidates[index].canonicalFingerprint) { divergence = index + 1; break; }
+      const priorStabilityFingerprint = priorInputs[index]?.floorId === existing[index].id ? priorInputs[index].stabilityFingerprint : null;
+      if (existing[index].content.canonicalFingerprint !== stableCandidates[index].canonicalFingerprint
+        || (priorStabilityFingerprint && priorStabilityFingerprint !== stableCandidates[index].stabilityProof?.fingerprint)) {
+        divergence = index + 1; break;
+      }
     }
     if (divergence === null && existing.length !== stableCandidates.length) divergence = common + 1;
     const locatorChanged = existing.length === stableCandidates.length && existing.some((floor, index) => !sameLocator(floor.hostLocator, stableCandidates[index]?.hostLocator));
@@ -429,7 +436,7 @@ export function createFoundationRuntime({
       floors.push(createFloorRecord({
         id: await deterministicUuid(['floor', operation.chatId, narrativeGeneration, runId, index + 1, stableCandidates[index].rawFingerprint, stableCandidates[index].canonicalFingerprint]),
         chatId: operation.chatId, narrativeGeneration, candidate: stableCandidates[index], predecessorFloorId: floors.at(-1)?.id ?? null,
-        stabilizedBy: confirmLatest && index === stableCount - 1 ? 'manual' : 'nextAssistant', runId, checkpointId, now: nowValue,
+        stabilizedBy: stableCandidates[index].stabilityProof ? 'nextUser' : 'manual', runId, checkpointId, now: nowValue,
       }));
     }
     const floorIdSet = new Set(floors.map(floor => floor.id));
@@ -452,8 +459,8 @@ export function createFoundationRuntime({
     const floorIds = floors.map(floor => floor.id);
     const newFloors = floors.slice(prefixLength);
     const priorRealtimeOrigin = realtimeOriginFromReachable(cache);
-    const carriesRealtimeOrigin = ['MESSAGE_RECEIVED', 'earlyAssistantStarted'].includes(operation.reason) && !isBranch
-      && ((!cache.root && emptyRealtimeObservation?.chatId === operation.chatId) || priorRealtimeOrigin !== null);
+    const carriesRealtimeOrigin = ['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'earlyAssistantStarted'].includes(operation.reason) && !isBranch
+      && (emptyRealtimeObservation?.chatId === operation.chatId || priorRealtimeOrigin !== null);
     const realtimeOrigin = carriesRealtimeOrigin ? {
       chatId: operation.chatId,
       narrativeGeneration,
@@ -472,7 +479,7 @@ export function createFoundationRuntime({
       ...commonRecord({ recordType: 'checkpoint', id: checkpointId, chatId: operation.chatId, narrativeGeneration, now: nowValue, recordStatus: 'active' }),
       parentCheckpointId, runId, sourceSnapshotFingerprint: snapshot.fingerprint, capabilities: clone(capabilities),
       floorRange: { fromAssistantSeq: floors.length ? 1 : 0, toAssistantSeq: floors.length, floorIds },
-      inputFingerprints: floors.map(floor => ({ floorId: floor.id, canonicalFingerprint: floor.content.canonicalFingerprint })),
+      inputFingerprints: createCheckpointInputFingerprints(floors, { candidates: stableCandidates, previous: cache.checkpoint?.inputFingerprints }),
       producedRefs: { floors: floorIds, floorMemories: floorMemories.map(memory => memory.id), entities: entities.map(entity => entity.id), events: [], claims: [], knowledge: [], stateDeltas: stateDeltas.map(delta => delta.id), currentStates: currentState ? [currentState.id] : [], stateProjections: [], episodes: [], threads: [], indexes: indexKeys },
       validation: { schemaValid: true, referencesValid: true, orderedReplayValid: true, stateFingerprint },
       sealedAt: nowValue,
@@ -601,7 +608,7 @@ export function createFoundationRuntime({
     }
     const completedRun = await persistRunPhase(operation, 'completed', { completedFloorIds: newFloors.map(floor => floor.id) });
     cache = { root, rootRevision: committed.revision, checkpoint: actualCheckpoint, run: completedRun, floors: activeFloorViews(actualFloors, stableCandidates), floorMemories: actualMemories, entities: actualEntities, baseline, stateDeltas: actualDeltas, currentStates: actualCurrentStates, indexes: actualIndexes, indexesMissing: false };
-    emptyRealtimeObservation = null;
+    emptyRealtimeObservation = floors.length === 0 ? Object.freeze({ chatId: operation.chatId }) : null;
     pending = candidates[stableCount] ?? null;
     lastRun = runSummary(completedRun, isBranch ? `trustedPrefix:${prefixLength}` : 'committed');
     lastError = null;
@@ -635,7 +642,7 @@ export function createFoundationRuntime({
         if (!loaded || current(operation) !== 'current') return publishOperation(operation, 'stale');
         const scanMetrics = {};
         const started = globalThis.performance?.now?.() ?? Date.now();
-        const candidates = await scanAssistantCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions(), metrics: scanMetrics });
+        const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions(), metrics: scanMetrics });
         const elapsed = (globalThis.performance?.now?.() ?? Date.now()) - started;
         if (current(operation) !== 'current') return publishOperation(operation, 'stale');
         metrics = Object.freeze({ assistantFloors: candidates.length, canonicalCharacters: candidates.reduce((sum, item) => sum + item.canonicalContent.length, 0), scanMs: elapsed, maximumChunkMs: scanMetrics.maximumChunkMs ?? elapsed, algorithm: 'ordered-O(n)' });
@@ -711,6 +718,13 @@ export function createFoundationRuntime({
     }
     return cancelled;
   }
+  function validSentUserIndex(value) {
+    if (!Number.isSafeInteger(value)) return false;
+    try {
+      const chat = hostAdapter.snapshot().chat;
+      return Boolean(selectUserStabilityAnchor(chat?.[value]) && selectAssistantMessage(chat?.[value - 1]));
+    } catch { return false; }
+  }
   function bind({ eventSource, eventTypes } = hostAdapter.snapshot()) {
     if (bound || !eventSource?.on || !eventTypes) return false;
     for (const name of EVENTS) {
@@ -723,6 +737,7 @@ export function createFoundationRuntime({
           return;
         }
         if (name === 'MORE_MESSAGES_LOADED') return;
+        if (name === 'MESSAGE_SENT' && !validSentUserIndex(args[0])) return;
         hostAdapter.mutationMetadata(args);
         void schedule(name);
       });

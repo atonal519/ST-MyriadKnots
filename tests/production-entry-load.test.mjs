@@ -166,10 +166,11 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   assert.equal(registrations, 0);
   assert.equal(typeof eventHandlers.get('chat'), 'function');
   assert.equal(typeof eventHandlers.get('persona'), 'function');
-  assert.equal(eventHandlers.has('sent'), false);
+  assert.equal(typeof eventHandlers.get('sent'), 'function');
   assert.equal(typeof eventHandlers.get('received'), 'function');
   eventHandlers.get('chat')();
   eventHandlers.get('persona')();
+  eventHandlers.get('sent')();
   eventHandlers.get('received')();
   await new Promise(resolvePromise => setImmediate(resolvePromise));
   assert.equal(aiCalls, 0);

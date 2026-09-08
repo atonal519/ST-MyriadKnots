@@ -139,9 +139,17 @@ export function validateFoundationFloor(input, { expectedChatId } = {}) {
   fingerprint(value.content.canonicalFingerprint, 'V3_FLOOR_INVALID');
   fingerprint(value.content.sanitizerFingerprint, 'V3_FLOOR_INVALID');
   integer(value.content.formatVersion, 'V3_FLOOR_INVALID', 1);
-  exact(value.stability, ['status', 'stabilizedAt', 'stabilizedBy'], 'V3_FLOOR_INVALID');
-  if (value.stability.status !== 'stable' || !['nextAssistant', 'manual'].includes(value.stability.stabilizedBy)) fail('V3_FLOOR_INVALID');
+  const hasStabilityProof = Object.hasOwn(value.stability, 'proof');
+  exact(value.stability, hasStabilityProof ? ['status', 'stabilizedAt', 'stabilizedBy', 'proof'] : ['status', 'stabilizedAt', 'stabilizedBy'], 'V3_FLOOR_INVALID');
+  if (value.stability.status !== 'stable' || !['nextAssistant', 'nextUser', 'manual'].includes(value.stability.stabilizedBy)) fail('V3_FLOOR_INVALID');
   timestamp(value.stability.stabilizedAt, 'V3_FLOOR_INVALID');
+  if (hasStabilityProof) {
+    exact(value.stability.proof, ['kind', 'messageIndex', 'fingerprint'], 'V3_FLOOR_INVALID');
+    if (value.stability.proof.kind !== 'nextUser') fail('V3_FLOOR_INVALID');
+    integer(value.stability.proof.messageIndex, 'V3_FLOOR_INVALID');
+    fingerprint(value.stability.proof.fingerprint, 'V3_FLOOR_INVALID');
+  }
+  if (value.stability.stabilizedBy === 'nextUser' && !hasStabilityProof) fail('V3_FLOOR_INVALID');
   exact(value.processing, ['sourceSaved', 'memoryReady', 'cseRequired', 'cseReady', 'recallReady', 'runId', 'checkpointId'], 'V3_FLOOR_INVALID');
   if (value.processing.sourceSaved !== true || [value.processing.memoryReady, value.processing.cseRequired, value.processing.cseReady, value.processing.recallReady].some(Boolean)) fail('V3_FLOOR_INVALID');
   uuid(value.processing.runId, 'V3_FLOOR_INVALID');
@@ -196,8 +204,10 @@ export function validateFoundationCheckpoint(input, { expectedChatId } = {}) {
   floorIds.forEach(id => uuid(id, 'V3_CHECKPOINT_INVALID'));
   if (floorIds.length !== value.floorRange.toAssistantSeq || (floorIds.length && value.floorRange.fromAssistantSeq !== 1)) fail('V3_CHECKPOINT_INVALID');
   array(value.inputFingerprints, 'V3_CHECKPOINT_INVALID').forEach(item => {
-    exact(item, ['floorId', 'canonicalFingerprint'], 'V3_CHECKPOINT_INVALID');
+    const hasStabilityFingerprint = Object.hasOwn(item, 'stabilityFingerprint');
+    exact(item, hasStabilityFingerprint ? ['floorId', 'canonicalFingerprint', 'stabilityFingerprint'] : ['floorId', 'canonicalFingerprint'], 'V3_CHECKPOINT_INVALID');
     uuid(item.floorId, 'V3_CHECKPOINT_INVALID'); fingerprint(item.canonicalFingerprint, 'V3_CHECKPOINT_INVALID');
+    if (hasStabilityFingerprint) fingerprint(item.stabilityFingerprint, 'V3_CHECKPOINT_INVALID');
   });
   exact(value.producedRefs, ['floors', 'floorMemories', 'entities', 'events', 'claims', 'knowledge', 'stateDeltas', 'currentStates', 'stateProjections', 'episodes', 'threads', 'indexes'], 'V3_CHECKPOINT_INVALID');
   for (const refs of Object.values(value.producedRefs)) array(refs, 'V3_CHECKPOINT_INVALID').forEach(ref => text(ref, 'V3_CHECKPOINT_INVALID'));
@@ -280,7 +290,8 @@ export async function validateFoundationGraph({ root = null, checkpoint, run = n
     const input = safeCheckpoint.inputFingerprints[index];
     if (floor.assistantSeq !== index + 1
       || floor.predecessorFloorId !== (safeFloors[index - 1]?.id ?? null)) fail('V3_GRAPH_FLOOR_ORDER_INVALID');
-    if (input.floorId !== floor.id || input.canonicalFingerprint !== floor.content.canonicalFingerprint) fail('V3_GRAPH_FINGERPRINT_LIST_INVALID');
+    if (input.floorId !== floor.id || input.canonicalFingerprint !== floor.content.canonicalFingerprint
+      || (floor.stability.proof && input.stabilityFingerprint !== floor.stability.proof.fingerprint)) fail('V3_GRAPH_FINGERPRINT_LIST_INVALID');
   }
   const expectedStateFingerprint = `sha256:${await sha256(JSON.stringify([
     safeCheckpoint.narrativeGeneration,
