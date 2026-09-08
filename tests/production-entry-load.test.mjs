@@ -61,6 +61,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
     else if (path === '/scripts/extensions.js') module = synthetic(identifier, { extension_settings: { qianqianjie: { pluginEnabled: enabled }, 'schedule-planner': {} }, extensionNames: [] });
     else if (path === '/script.js') module = synthetic(identifier, { is_send_press: false, saveSettingsDebounced() {} });
     else if (path === '/scripts/group-chats.js') module = synthetic(identifier, { is_group_generating: false });
+    else if (path === '/scripts/world-info.js') module = synthetic(identifier, { loadWorldInfo: async () => null, selected_world_info: [], world_info: {}, world_info_case_sensitive: false, world_info_match_whole_words: false, world_names: [] });
     else module = new SourceTextModule(await readFile(path, 'utf8'), { context, identifier });
     cache.set(identifier, module);
     return module;
@@ -83,7 +84,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.0.6');
+  assert.equal(manifest.version, '0.0.7');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
@@ -147,6 +148,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
     else if (path === '/scripts/extensions.js') module = synthetic(identifier, { extension_settings: { qianqianjie: { pluginEnabled: false }, 'schedule-planner': {} }, extensionNames: [] });
     else if (path === '/script.js') module = synthetic(identifier, { is_send_press: false, saveSettingsDebounced() {} });
     else if (path === '/scripts/group-chats.js') module = synthetic(identifier, { is_group_generating: false });
+    else if (path === '/scripts/world-info.js') module = synthetic(identifier, { loadWorldInfo: async () => null, selected_world_info: [], world_info: {}, world_info_case_sensitive: false, world_info_match_whole_words: false, world_names: [] });
     else module = new SourceTextModule(await readFile(path, 'utf8'), { context, identifier });
     cache.set(identifier, module);
     return module;
@@ -154,7 +156,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const entryPath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : bundlePath;
   const entry = await load(pathToFileURL(entryPath).href);
   await entry.link((specifier, referencing) => load(new URL(specifier, referencing.identifier).href));
-  assert.deepEqual((entry.moduleRequests || []).map(item => item.specifier), ['/scripts/personas.js', '/scripts/extensions.js', '/script.js', '/scripts/group-chats.js']);
+  assert.deepEqual((entry.moduleRequests || []).map(item => item.specifier), ['/scripts/personas.js', '/scripts/extensions.js', '/script.js', '/scripts/group-chats.js', '/scripts/world-info.js']);
   await entry.evaluate();
   await new Promise(resolvePromise => setImmediate(resolvePromise));
   assert.equal(entry.status, 'evaluated');
@@ -175,10 +177,11 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   assert.equal(metadataWrites, 0);
 });
 
-test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecycle 与 recall 保持装配', async () => {
+test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/lifecycle 与 recall 保持装配', async () => {
   const context = createContext({ console });
   const entrySource = await readFile(resolve(root, 'index.js'), 'utf8');
   const utilityTask = async () => ({ jsonData: 'utility' });
+  const analysisTask = async () => ({ jsonData: 'analysis' });
 
   let v3MemoryOptions;
   let v3MemoryRuntime;
@@ -193,6 +196,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   let memoryManagementOptions;
   let chatMemoryManagement;
   let inlineRendererOptions;
+  let hostAdapterOptions;
   const inlineEnabled = [];
   let bootstrapOptions;
   let compactOptions;
@@ -208,6 +212,9 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   define('/scripts/extensions.js', { extension_settings: { disabledExtensions: [] }, extensionNames: ['third-party/ST-SevenDaysCal'] });
   const scriptModule = define('/script.js', { is_send_press: false, saveSettingsDebounced() {} });
   const groupModule = define('/scripts/group-chats.js', { is_group_generating: false });
+  const nativeWorld = { entries: {} };
+  const nativeWorldSettings = { charLore: [] };
+  define('/scripts/world-info.js', { loadWorldInfo: async () => nativeWorld, selected_world_info: ['全局书'], world_info: nativeWorldSettings, world_info_case_sensitive: true, world_info_match_whole_words: true, world_names: ['全局书'] });
   const backendClient = {};
   define('./src/backend-client.js', { createBackendClient: () => backendClient });
   define('./src/bootstrap.js', { bootstrap: options => { bootstrapOptions = options; return { refresh() {}, setEnabled() {} }; } });
@@ -215,7 +222,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   define('./src/api-routing.js', {
     createApiResolver: () => ({}),
     createApiTools: () => ({ abortAll() {} }),
-    createTaskRouter: () => ({ generateUtilityTask: utilityTask, abortAll() {} }),
+    createTaskRouter: () => ({ generateAnalysisTask: analysisTask, generateUtilityTask: utilityTask, abortAll() {} }),
   });
   define('./src/compact-api-client.js', { createCompactApiClient: options => { compactOptions = options; return {}; } });
   define('./src/chat-session.js', { createChatSession: options => {
@@ -231,7 +238,7 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
     },
   });
   define('./src/source-permission.js', { createSourcePermissionController: () => ({}) });
-  define('./src/v3/host-adapter.js', { createHostAdapter: () => ({ getContext: () => ({}), snapshot: () => ({}) }) });
+  define('./src/v3/host-adapter.js', { createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => ({}), snapshot: () => ({}) }; } });
   define('./src/v3/foundation-store.js', { createFoundationStore: () => ({}) });
   define('./src/v3/foundation-runtime.js', { createFoundationRuntime: () => ({}) });
   define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind() {}, async start() {}, async setEnabled() {}, getState: () => ({}), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
@@ -255,7 +262,15 @@ test('生产入口行为接线：V3 memory 收到统一副 API，session/lifecyc
   await entry.evaluate();
   await new Promise(resolvePromise => setImmediate(resolvePromise));
 
+  assert.equal(v3MemoryOptions.generateAnalysisTask, analysisTask);
   assert.equal(v3MemoryOptions.generateUtilityTask, utilityTask);
+  assert.notEqual(v3MemoryOptions.generateAnalysisTask, v3MemoryOptions.generateUtilityTask);
+  assert.equal(await hostAdapterOptions.worldInfoBindings.loadWorldInfo('全局书'), nativeWorld);
+  assert.deepEqual(hostAdapterOptions.worldInfoBindings.getSelectedWorldInfo(), ['全局书']);
+  assert.equal(hostAdapterOptions.worldInfoBindings.getWorldInfoSettings(), nativeWorldSettings);
+  assert.deepEqual(hostAdapterOptions.worldInfoBindings.getWorldInfoNames(), ['全局书']);
+  assert.equal(hostAdapterOptions.worldInfoBindings.getDefaultCaseSensitive(), true);
+  assert.equal(hostAdapterOptions.worldInfoBindings.getDefaultMatchWholeWords(), true);
   assert.equal(v3MemoryOptions.isMainGenerationActive(), false);
   scriptModule.setExport('is_send_press', true); assert.equal(v3MemoryOptions.isMainGenerationActive(), true, '单聊生成状态必须读取宿主实时导出');
   scriptModule.setExport('is_send_press', false); groupModule.setExport('is_group_generating', true); assert.equal(v3MemoryOptions.isMainGenerationActive(), true, '群聊生成状态必须参与同一 OR 判断');

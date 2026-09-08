@@ -352,6 +352,72 @@ test('有效副 API 精确走机械预设且元数据不泄密', async () => {
   assert.doesNotMatch(JSON.stringify(utilityResult.taskMetadata), /SECRET|https?:\/\//);
 });
 
+test('分析任务与摘要任务按各自设置路由，摘要跟随分析时才使用同一预设', async () => {
+  const analysis = { ...configured('分析预设', 'analysis', 'ANALYSIS_SECRET'), model: 'glm-5.2' };
+  const summary = { ...configured('摘要预设', 'summary', 'SUMMARY_SECRET'), model: 'gemini-3.1-pro' };
+  const extensionSettings = {
+    qianqianjie: { apiMode: 'seven-preset', selectedSevenDaysPresetId: 'analysis' },
+    'schedule-planner': { utilityPresetId: 'summary', apiPresets: [analysis, summary] },
+  };
+  const { settings } = setup(extensionSettings);
+  const seen = [];
+  const router = createTaskRouter({
+    resolver: createApiResolver({ settings }),
+    compactClient: { generateTask: async options => { seen.push(options.config); return { jsonData: {} }; } },
+  });
+
+  const analysisResult = await router.generateAnalysisTask({});
+  const summaryResult = await router.generateUtilityTask({});
+  assert.deepEqual(seen.map(config => [config.key, config.model]), [
+    ['ANALYSIS_SECRET', 'glm-5.2'],
+    ['SUMMARY_SECRET', 'gemini-3.1-pro'],
+  ]);
+  assert.equal(analysisResult.taskMetadata.model, 'glm-5.2');
+  assert.equal(summaryResult.taskMetadata.model, 'gemini-3.1-pro');
+
+  extensionSettings['schedule-planner'].apiPresets[1].key = 'SUMMARY_CHANGED';
+  await router.generateAnalysisTask({});
+  assert.equal(seen.at(-1).key, 'ANALYSIS_SECRET', '修改摘要预设不得改变 CSE 分析路由');
+
+  extensionSettings['schedule-planner'].utilityPresetId = '';
+  await router.generateUtilityTask({});
+  assert.equal(seen.at(-1).key, 'ANALYSIS_SECRET', '摘要明确跟随分析时才回到当前分析路由');
+});
+
+test('分析预设失效不借用有效摘要预设，且分析调用冻结在途路由快照', async () => {
+  const analysis = { ...configured('分析预设', 'analysis', 'ANALYSIS_ONE'), model: 'glm-5.2' };
+  const summary = { ...configured('摘要预设', 'summary', 'SUMMARY_SECRET'), model: 'gemini-3.1-pro' };
+  const extensionSettings = {
+    qianqianjie: { apiMode: 'seven-preset', selectedSevenDaysPresetId: 'missing-analysis' },
+    'schedule-planner': { utilityPresetId: 'summary', apiPresets: [analysis, summary] },
+  };
+  const { settings } = setup(extensionSettings);
+  let calls = 0;
+  const invalidRouter = createTaskRouter({
+    resolver: createApiResolver({ settings }),
+    compactClient: { generateTask: async () => { calls += 1; return { jsonData: {} }; } },
+  });
+  await assert.rejects(invalidRouter.generateAnalysisTask({}), error => error.code === 'QQJ_PRESET_INVALID');
+  const utility = await invalidRouter.generateUtilityTask({});
+  assert.equal(utility.taskMetadata.model, 'gemini-3.1-pro');
+  assert.equal(calls, 1, '失效分析预设必须在 client 前失败，不能借摘要配置发出请求');
+
+  extensionSettings.qianqianjie.selectedSevenDaysPresetId = 'analysis';
+  let release;
+  const seen = [];
+  const router = createTaskRouter({
+    resolver: createApiResolver({ settings }),
+    compactClient: { generateTask: options => new Promise(resolve => { seen.push(options.config); release = () => resolve({ jsonData: {} }); }) },
+  });
+  const pending = router.generateAnalysisTask({});
+  await new Promise(resolve => setImmediate(resolve));
+  extensionSettings['schedule-planner'].apiPresets[0].key = 'ANALYSIS_TWO';
+  assert.equal(seen[0].key, 'ANALYSIS_ONE');
+  assert.equal(Object.isFrozen(seen[0]), true);
+  release();
+  await pending;
+});
+
 test('副 API 空、悬空或缺 Key 均即时回退当前主路由且不修复共享设置', async () => {
   for (const utilityPresetId of ['', 'gone', 'incomplete']) {
     const incomplete = configured('缺 Key', 'incomplete', '');

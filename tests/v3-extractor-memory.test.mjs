@@ -92,7 +92,7 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
     if (utility) return utility(options, calls.length);
     return { jsonData: { summary: '裴晚生提醒用户带伞。', people: [{ name: '裴晚生' }, { name: '你', role: 'user' }], events: [{ title: '带伞提醒', description: '裴晚生提醒用户带伞。' }] }, taskMetadata: { source: 'shared-utility', sourceLabel: '机械副 API', model: 'mock-model', finishReason: 'stop' } };
   };
-  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
   const emit = (name, ...args) => (handlers.get(name) ?? []).forEach(listener => listener(...args));
   return { runtime, foundationRuntime, store, backend, context, hostAdapter, calls, emit, snapshotCount: () => snapshotCalls, setEnabled(value) { enabled = value; }, setAutomation(value) { automation = value; } };
@@ -842,7 +842,8 @@ test('foundation reload 单飞会消费运行中到达的尾部 ready，旧 epoc
   const eventHandlers = new Map();
   const eventTypes = Object.fromEntries(['CHAT_CHANGED', 'MESSAGE_RECEIVED', 'CHARACTER_MESSAGE_RENDERED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED'].map(name => [name, name]));
   const eventSource = { on(name, listener) { const values = eventHandlers.get(name) ?? []; values.push(listener); eventHandlers.set(name, values); } };
-  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter: {}, generateUtilityTask: async () => ({}), isEnabled: true, logger: { warn() {} } });
+  const generateTask = async () => ({});
+  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter: {}, generateAnalysisTask: generateTask, generateUtilityTask: generateTask, isEnabled: true, logger: { warn() {} } });
   runtime.bind({ eventSource, eventTypes });
   await runtime.start();
   assert.equal(eventHandlers.has('CHARACTER_MESSAGE_RENDERED'), false);

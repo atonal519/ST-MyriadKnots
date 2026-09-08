@@ -87,7 +87,7 @@ test('复制分支只领独立身份，源记忆零读零搬运，按钮授权�
     return { jsonData: { noMaterialChange: true }, taskMetadata: { source: 'test', sourceLabel: '测试', model: 'mock' } };
   };
   const sourceMemory = createV3MemoryRuntime({
-    foundationRuntime: sourceFoundation, store: sourceStore, hostAdapter, generateUtilityTask,
+    foundationRuntime: sourceFoundation, store: sourceStore, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask,
     now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} },
   });
   await sourceMemory.start();
@@ -123,7 +123,7 @@ test('复制分支只领独立身份，源记忆零读零搬运，按钮授权�
   assert.equal((await targetStore.readReachable()).status, 'uninitialized');
   const targetFoundation = createFoundationRuntime({ hostAdapter, store: targetStore, contextProvider: () => activeContext, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
   const targetMemory = createV3MemoryRuntime({
-    foundationRuntime: targetFoundation, store: targetStore, hostAdapter, generateUtilityTask,
+    foundationRuntime: targetFoundation, store: targetStore, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask,
     now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} },
   });
   await targetMemory.start();

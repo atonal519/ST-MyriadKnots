@@ -30,7 +30,7 @@ function userIdentityFrom(context, source) {
   });
 }
 
-export function createHostAdapter({ globalRef = globalThis, mutationMetadataCapability = false } = {}) {
+export function createHostAdapter({ globalRef = globalThis, mutationMetadataCapability = false, worldInfoBindings = {} } = {}) {
   const standardContext = () => contextFrom(globalRef?.SillyTavern);
   const fallbackContext = () => contextFrom(globalRef?.Luker);
   let observedMutationMetadata = mutationMetadataCapability === true;
@@ -83,7 +83,9 @@ export function createHostAdapter({ globalRef = globalThis, mutationMetadataCapa
     return null;
   }
 
-  return Object.freeze({ getContext, getUserIdentity, snapshot, mutationMetadata });
+  function getWorldInfoBindings() { return worldInfoBindings && typeof worldInfoBindings === 'object' ? worldInfoBindings : {}; }
+
+  return Object.freeze({ getContext, getUserIdentity, getWorldInfoBindings, snapshot, mutationMetadata });
 }
 
 export function getPreferredHostContext(globalRef = globalThis) {

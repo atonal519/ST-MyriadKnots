@@ -9,8 +9,8 @@ import { CSE_VISIBILITIES, LATEST_CSE_CALIBRATION_VERSION, isSupportedCseCalibra
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory } from './entity-identity.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-7';
-export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-6';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-8';
+export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-7';
 export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
 export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。完整阅读本楼正文，并结合结构化楼层记忆、人物此前状态与相关初始设定，分析人物在本楼结束时的状态。
@@ -32,10 +32,13 @@ previousState 只放人物自己的前态；authorialOtherStateContext 是经过
 每次都审视本楼相关人物的已有 Core 与 Adaptive。旧结论本身及其旧 reason 不能自证；不要求每楼改写，没有新依据时保持原项。Core 以明确作者设定为锚，普通单楼情绪、动作或台词不足以新增或改写 Core；Adaptive 可随新事实、反例和旧依据不足而保持、收窄或撤回。coreUserEdited 为 true 时，只有 currentUserInput 中明确的作者纠正才可改变 Core；它不锁定 Adaptive。
 
 currentUserInput 只在目标 AI 楼紧邻上一条确为 user 时提供。它可能是普通角色台词、动作、插件参考，也可能是作者明确校正；必须按语义区分，不能把整条输入一律当可信设定。引用只能使用 evidenceSourceCatalog 中的 source，quote 必须逐字存在于对应实际材料。userPersona 只支持用户本人，characterCard 只支持对应角色；worldbook 需判断人物归属。引用可定位不等于语义必然成立，仍须判断其是否真的支持操作。
+authorNote 是作者侧持续参考，其中的未来要求、写作风格或塑造方向不等于已经发生的事实、所有人物已经知情或人物的永久性格。它不能单独作为新增或改写 Core 的证据。
 
 Core/Adaptive 每类采用 review/additions 新协议，或沿用旧的直接 after-state 数组，不能同时使用两套。review 以 previousText（Adaptive 同名时再用 toward）精确指向旧项，action 只能是 keep、refine、remove；refine 还需 text。未提到项保留。新增项放 additions。refine、remove、addition 都必须给 evidence:[{source,quote}]；keep 可不带证据。不要把 previousState、旧 reason 或 authorialOtherStateContext 写成 evidence source。
 
-返回一个 JSON 对象。推荐结构：
+返回一个 JSON 对象。所有 JSON 字符串都必须使用标准 JSON 转义：字符串内容中的英文双引号写成 \\", 反斜杠写成 \\\\, 实际换行写成 \\n；evidence.quote 引用正文原句时也必须遵守同一转义规则。JSON 解码后的 quote 必须保留原文字面，不得换成其他引号、删去字符或改写内容。
+英文 schema 键必须保持示例写法；所有面向用户显示的状态 text、reason 和 changeSummary 内容使用中文。changeSummary 只概括人物的实际状态变化，不要输出字段名说明或格式解释。
+推荐结构：
 {"subjects":[{"subject":"人物名","review":{"core":[{"previousText":"旧核心","action":"keep"}],"adaptive":[{"previousText":"旧模式","toward":"对象名","action":"refine","text":"收窄后的模式","reason":"为何调整","evidence":[{"source":"canonicalContent","quote":"正文原句"}]}]},"additions":{"core":[],"adaptive":[]},"situational":[{"reason":"正文依据","text":"此刻状态","visibility":"private","origin":"floor"}],"changeSummary":["变化摘要"]}]}
 不确定的可选人物或分类宁可省略。只输出 JSON，不要解释。`;
 
@@ -101,7 +104,7 @@ export async function captureCseBaseline({ hostAdapter, chatId, narrativeGenerat
     ?? (matchingCharacter.length === 1 ? matchingCharacter[0] : null)
     ?? await roleEntity({ chatId, narrativeGeneration, role: 'char', name: characterName, aliases: [characterName, '{{char}}'], now });
   let catalog = { entries: [], warnings: [] };
-  try { catalog = await scanWorldInfo(ctx); } catch { /* Luker/旧宿主缺少世界书接口时安全降级为空 */ }
+  try { catalog = await scanWorldInfo(ctx, { bindings: hostAdapter.getWorldInfoBindings?.() ?? {} }); } catch { /* Luker/旧宿主缺少世界书接口时安全降级为空 */ }
   const worldInfoSources = [];
   for (const entry of catalog.entries ?? []) {
     if (entry.hostEnabled === false || entry.disabled === true) continue;
@@ -223,13 +226,17 @@ function previousForPrompt(currentState, tracked, entities, coreUserEditedSubjec
   });
 }
 
-function cseEvidenceSources({ floor, baseline, currentUserInput, worldInfoSources }) {
+function cseEvidenceSources({ floor, baseline, currentUserInput, requestSources }) {
+  const userPersona = requestSources.userPersona ?? baseline.userPersona;
+  const characterCard = requestSources.characterCard ?? baseline.characterCard;
+  const worldInfoSources = requestSources.worldInfoSources ?? baseline.worldInfoSources;
   const sources = [
     { source: 'canonicalContent', kind: 'story', subjectEntityId: null, contents: [floor.content.canonicalContent] },
-    { source: 'userPersona', kind: 'authorialSetting', subjectEntityId: baseline.userPersona.entityId, contents: [baseline.userPersona.description] },
-    { source: 'characterCard', kind: 'authorialSetting', subjectEntityId: baseline.characterCard.entityId, contents: [baseline.characterCard.description, baseline.characterCard.personality, baseline.characterCard.scenario] },
+    { source: 'userPersona', kind: 'authorialSetting', subjectEntityId: baseline.userPersona.entityId, contents: [userPersona.description] },
+    { source: 'characterCard', kind: 'authorialSetting', subjectEntityId: baseline.characterCard.entityId, contents: [characterCard.description, characterCard.personality, characterCard.scenario] },
     ...worldInfoSources.map((entry, index) => ({ source: `worldbook:${index + 1}`, kind: 'authorialSetting', subjectEntityId: null, contents: [entry.content] })),
   ];
+  if (requestSources.authorNote?.content) sources.push({ source: 'authorNote', kind: 'authorialReference', subjectEntityId: null, contents: [requestSources.authorNote.content] });
   if (currentUserInput?.content) sources.push({ source: 'currentUserInput', kind: 'userInput', subjectEntityId: null, contents: [currentUserInput.content] });
   return sources;
 }
@@ -244,13 +251,23 @@ function authorialOtherStateContext(currentState, entities) {
   }));
 }
 
-export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, worldInfoSources = null, currentUserInput = null, coreUserEditedSubjectEntityIds = [] }) {
+export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, requestSources = null, worldInfoSources = null, currentUserInput = null, coreUserEditedSubjectEntityIds = [] }) {
   const directory = buildEntityIdentityDirectory({ entities });
   const directoryById = new Map(directory.map(entry => [entry.entityId, entry]));
   const labelsFor = entity => directoryById.get(entity.id)?.labels ?? entityLabels(entity);
   const activeKnownEntities = directory.filter(entry => entry.entityType === 'person' || entry.specialRole !== 'none');
   const requestWorldInfoSources = Array.isArray(worldInfoSources) ? worldInfoSources : baseline.worldInfoSources;
-  const evidenceSources = cseEvidenceSources({ floor, baseline, currentUserInput, worldInfoSources: requestWorldInfoSources });
+  const effectiveSources = requestSources && typeof requestSources === 'object' ? requestSources : {
+    userPersona: baseline.userPersona,
+    characterCard: baseline.characterCard,
+    worldInfoSources: requestWorldInfoSources,
+    authorNote: Object.freeze({ content: '' }),
+    fingerprint: null,
+  };
+  const effectiveUserPersona = effectiveSources.userPersona ?? baseline.userPersona;
+  const effectiveCharacterCard = effectiveSources.characterCard ?? baseline.characterCard;
+  const effectiveWorldInfoSources = Array.isArray(effectiveSources.worldInfoSources) ? effectiveSources.worldInfoSources : requestWorldInfoSources;
+  const evidenceSources = cseEvidenceSources({ floor, baseline, currentUserInput, requestSources: { ...effectiveSources, worldInfoSources: effectiveWorldInfoSources } });
   const coreUserEdited = new Set(coreUserEditedSubjectEntityIds);
   const nameForSubjectId = entityId => directoryById.get(entityId)?.displayName
     ?? (entityId === baseline.userPersona.entityId ? baseline.userPersona.name : entityId === baseline.characterCard.entityId ? baseline.characterCard.name : null);
@@ -260,9 +277,10 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       floorMemory: semanticMemory(floorMemory, entities),
       previousState: previousForPrompt(currentState, trackedSubjects, entities, coreUserEdited),
       relevantBaseline: {
-        userPersona: { name: baseline.userPersona.name, description: baseline.userPersona.description, visibility: 'authorial' },
-        characterCard: { name: baseline.characterCard.name, description: baseline.characterCard.description, personality: baseline.characterCard.personality, scenario: baseline.characterCard.scenario, visibility: 'authorial' },
-        worldInfo: requestWorldInfoSources.map((source, index) => ({ source: source.sourceName, evidenceSource: `worldbook:${index + 1}`, content: source.content, visibility: 'authorial', activated: source.activated })),
+        userPersona: { name: effectiveUserPersona.name, description: effectiveUserPersona.description, visibility: 'authorial' },
+        characterCard: { name: effectiveCharacterCard.name, description: effectiveCharacterCard.description, personality: effectiveCharacterCard.personality, scenario: effectiveCharacterCard.scenario, visibility: 'authorial' },
+        worldInfo: effectiveWorldInfoSources.map((source, index) => ({ source: source.sourceName, evidenceSource: `worldbook:${index + 1}`, content: source.content, visibility: 'authorial', activated: source.activated })),
+        authorNote: effectiveSources.authorNote?.content ? { evidenceSource: 'authorNote', content: effectiveSources.authorNote.content, visibility: 'authorialReference' } : null,
       },
       currentUserInput: currentUserInput?.content ? { source: 'currentUserInput', messageIndex: currentUserInput.messageIndex, content: currentUserInput.content } : null,
       evidenceSourceCatalog: evidenceSources.map(source => ({ source: source.source, kind: source.kind, ...(source.subjectEntityId ? { subject: nameForSubjectId(source.subjectEntityId) } : {}) })),
@@ -276,6 +294,7 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       trackedBindings: trackedSubjects.map(entity => ({ entityId: entity.id, labels: labelsFor(entity), specialRole: entity.specialRole })),
       knownBindings: activeKnownEntities.map(entry => ({ entityId: entry.entityId, labels: entry.labels, specialRole: entry.specialRole })),
       evidenceSources,
+      sourceSnapshotFingerprint: typeof effectiveSources.fingerprint === 'string' ? effectiveSources.fingerprint : null,
       coreUserEditedSubjectEntityIds: [...coreUserEdited],
     }),
   });
@@ -483,8 +502,15 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
     const hasCore = field(raw, categoryNames('core')) !== undefined;
     const hasAdaptive = field(raw, categoryNames('adaptive')) !== undefined;
     const hasSituational = field(raw, ['situational', 'situation', '短期状态', '情境']) !== undefined;
-    const calibratedCore = await compileCalibratedCategory({ rawSubject: raw, category: 'core', binding, previous, envelope, deltaId, isolated, calibrationAudit });
+    let calibratedCore = await compileCalibratedCategory({ rawSubject: raw, category: 'core', binding, previous, envelope, deltaId, isolated, calibrationAudit });
     const calibratedAdaptive = await compileCalibratedCategory({ rawSubject: raw, category: 'adaptive', binding, previous, envelope, deltaId, isolated, calibrationAudit });
+    const hasAuthorNote = envelope.scope.evidenceSources.some(source => source.source === 'authorNote');
+    if (calibratedCore === null && hasCore && previous.core.length === 0 && hasAuthorNote) {
+      calibratedCore = await compileCalibratedCategory({
+        rawSubject: { additions: { core: field(raw, categoryNames('core')) } },
+        category: 'core', binding, previous, envelope, deltaId, isolated, calibrationAudit,
+      });
+    }
     const proposedCore = calibratedCore ?? (hasCore ? await compileItems({ raw: field(raw, categoryNames('core')), category: 'core', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous, isolated }) : previous.core);
     const adaptive = calibratedAdaptive ?? (hasAdaptive ? await compileItems({ raw: field(raw, categoryNames('adaptive')), category: 'adaptive', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous, isolated }) : previous.adaptive);
     const situational = hasSituational ? await compileItems({ raw: field(raw, ['situational', 'situation', '短期状态', '情境']), category: 'situational', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous, isolated }) : previous.situational;
@@ -600,12 +626,12 @@ export async function createManualCseCorrection({ anchorDelta, currentState, sub
   return Object.freeze({ status: 'ready', delta });
 }
 
-export async function runCseRequest({ generateUtilityTask, envelope, previousCurrentState, now, deltaId, promptGuidance = '', signal }) {
+export async function runCseRequest({ generateAnalysisTask, envelope, previousCurrentState, now, deltaId, promptGuidance = '', signal }) {
   let candidate = null;
   const transportBudget = { remaining: 3, used: 0 };
   try {
     const systemPrompt = buildCseSystemPrompt(promptGuidance);
-    const result = await generateUtilityTask({ systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(envelope.request) }], maxTokens: 30000, temperature: 0, signal, includeCharacterCard: false, worldInfoSource: 'none', transportBudget, parseMode: 'semantic' });
+    const result = await generateAnalysisTask({ systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(envelope.request) }], maxTokens: 30000, temperature: 0, signal, includeCharacterCard: false, worldInfoSource: 'none', transportBudget, parseMode: 'semantic' });
     candidate = result?.jsonData ?? result?.textData ?? result;
     const compiled = await compileCseResponse({ response: candidate, finishReason: result?.taskMetadata?.finishReason, envelope, previousCurrentState, now, deltaId });
     return Object.freeze({ ...compiled, metadata: sanitizeTaskMetadata(result?.taskMetadata), attempts: 1, transportAttempts: transportBudget.used || result?.taskMetadata?.transportAttempts || null, responseFingerprint: `sha256:${await sha256(JSON.stringify(candidate))}` });

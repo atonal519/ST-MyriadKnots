@@ -2,6 +2,7 @@ import { user_avatar } from '/scripts/personas.js';
 import { extension_settings, extensionNames } from '/scripts/extensions.js';
 import { is_send_press, saveSettingsDebounced } from '/script.js';
 import { is_group_generating } from '/scripts/group-chats.js';
+import { loadWorldInfo, selected_world_info, world_info, world_info_case_sensitive, world_info_match_whole_words, world_names } from '/scripts/world-info.js';
 import { createBackendClient } from './src/backend-client.js';
 import { bootstrap } from './src/bootstrap.js';
 import { createSettingsStore } from './src/settings.js';
@@ -24,7 +25,14 @@ import { createMyKnotsStoryClockController, createStoryClockStatusProjection, ex
 import { createInlineRenderer } from './src/ui/inline-renderer.js';
 
 const isGenerating = () => Boolean(is_send_press || is_group_generating);
-const hostAdapter = createHostAdapter();
+const hostAdapter = createHostAdapter({ worldInfoBindings: {
+  loadWorldInfo,
+  getSelectedWorldInfo: () => selected_world_info,
+  getWorldInfoSettings: () => world_info,
+  getWorldInfoNames: () => world_names,
+  getDefaultCaseSensitive: () => world_info_case_sensitive,
+  getDefaultMatchWholeWords: () => world_info_match_whole_words,
+} });
 const hostContext = () => hostAdapter.getContext();
 const contextProvider = () => ({ ...hostContext(), userAvatar: user_avatar });
 const settings = createSettingsStore({ extensionSettings: extension_settings, save: saveSettingsDebounced });
@@ -91,6 +99,7 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   foundationRuntime,
   store: foundationStore,
   hostAdapter,
+  generateAnalysisTask: taskRouter.generateAnalysisTask,
   generateUtilityTask: taskRouter.generateUtilityTask,
   isEnabled: settings.isEnabled,
   automationSettings: () => ({

@@ -5,6 +5,6 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     codeSplitting: false,
-    rollupOptions: { external: ['/scripts/personas.js', '/scripts/extensions.js', '/script.js', '/scripts/group-chats.js'] },
+    rollupOptions: { external: ['/scripts/personas.js', '/scripts/extensions.js', '/script.js', '/scripts/group-chats.js', '/scripts/world-info.js'] },
   },
 });

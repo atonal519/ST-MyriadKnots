@@ -102,7 +102,8 @@ export function createTaskRouter({ resolver, compactClient, isEnabled = () => tr
     if (typeof resolver.resolveUtility !== 'function') throw new Error('副 API 配置解析器不可用');
     return resolver.resolveUtility();
   });
-  return { generateUtilityTask, abortAll, getActiveCount: () => active.size };
+  const generateAnalysisTask = options => run(options, () => resolver.resolve());
+  return { generateAnalysisTask, generateUtilityTask, abortAll, getActiveCount: () => active.size };
 }
 
 export function createApiTools({ resolver, compactClient, isEnabled = () => true } = {}) {

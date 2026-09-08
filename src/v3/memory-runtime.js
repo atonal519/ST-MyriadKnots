@@ -67,9 +67,10 @@ const SESSION_CANDIDATE_MAX_ENTRIES = 8;
 const SESSION_CANDIDATE_MAX_CHARACTERS = 96000;
 const normalizeAutoBatchSize = () => 1;
 
-export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onFullRebuildCommitted = null, extractorPromptGuidance = () => '', csePromptGuidance = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
+export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onFullRebuildCommitted = null, extractorPromptGuidance = () => '', csePromptGuidance = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
   if (!foundationRuntime || ['start', 'refreshStatus', 'confirmLatest', 'setEnabled', 'bind', 'getState'].some(name => typeof foundationRuntime[name] !== 'function')) throw new TypeError('V3 memory foundation runtime 无效');
   if (!store || ['readReachable', 'readRecord', 'putRecord', 'commitRoot', 'recordKey', 'invalidate'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 memory store 无效');
+  if (typeof generateAnalysisTask !== 'function') throw new TypeError('V3 memory analysis route 无效');
   if (typeof generateUtilityTask !== 'function') throw new TypeError('V3 memory utility route 无效');
   let epoch = 0;
   let active = null;
@@ -96,7 +97,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   const sessionCandidates = new Map();
   const subscribers = new Set();
   const currentClockSignature = floor => clockEvidence(currentRawSelection(hostAdapter, floor)).signature;
-  const cseRuntime = createCseRuntime({ store, hostAdapter, generateUtilityTask, isEnabled, promptGuidance: csePromptGuidance, filterWorldInfoSources, sanitizerOptions, storyClockSignatureForFloor: currentClockSignature, onGraphCommitted: value => foundationRuntime.adoptReachable?.(value), now, newUuid, logger });
+  const cseRuntime = createCseRuntime({ store, hostAdapter, generateAnalysisTask, isEnabled, promptGuidance: csePromptGuidance, filterWorldInfoSources, sanitizerOptions, storyClockSignatureForFloor: currentClockSignature, onGraphCommitted: value => foundationRuntime.adoptReachable?.(value), now, newUuid, logger });
   const enabled = () => { try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; } catch { return false; } };
   const mainGenerationActive = () => {
     if (formalGenerationActive) return true;
