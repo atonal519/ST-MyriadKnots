@@ -79,7 +79,7 @@ function g({ fetchImpl: e = globalThis.fetch, headers: t = () => ({}), baseUrl: 
 }
 //#endregion
 //#region src/ui/panel.html?raw
-var _ = "<section class=\"panel\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"qqj-dialog-title\">\n<header class=\"topbar\"><div class=\"brand\"><span class=\"mark\" id=\"qqj-dialog-title\">千<span class=\"em\">千</span>结</span><span class=\"sub\">Myriad Knots</span></div><div class=\"header-actions\"><button class=\"icon-btn theme-btn\" type=\"button\" aria-label=\"主题：跟随酒馆\" title=\"主题：跟随酒馆（点击切换到日间）\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 3a9 9 0 1 0 0 18V3Z\"></path><circle cx=\"12\" cy=\"12\" r=\"9\"></circle></svg></button><button class=\"icon-btn fab-toggle-btn active\" type=\"button\" aria-label=\"隐藏悬浮球\" title=\"悬浮球：显示\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\"></circle><circle cx=\"12\" cy=\"12\" r=\"2.7\"></circle></svg></button><button class=\"icon-btn close\" type=\"button\" aria-label=\"关闭\" title=\"关闭\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M3.5 3.5l17 17M20.5 3.5l-17 17\"></path></svg></button></div></header>\n<nav class=\"tabs\" role=\"tablist\" aria-label=\"记忆模块\"><button class=\"tab active\" type=\"button\" role=\"tab\" aria-selected=\"true\" data-tab=\"profiles\">千人</button><button class=\"tab\" type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab=\"events\">千结</button><button class=\"tab\" type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab=\"people\">双丝网</button><button class=\"tab\" type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab=\"settings\">设置</button></nav>\n<main class=\"body\"><div class=\"view\"></div></main>\n<button class=\"panel-resize-handle\" type=\"button\" aria-label=\"调整千千结面板大小\" title=\"拖动调整面板大小\"><span class=\"resize-grip\" aria-hidden=\"true\"></span></button>\n</section>\n", v = ":host{--paper:#e8ecec;--panel:#f6f8f8;--ink:#22282b;--soft:#5c6a70;--faint:#93a1a5;--line:#d0d9db;--thread:#c1ccce;--crimson:#a8322f;--knot:#a8322f;--blue:#4f8781;--success:#4b7d63;color:var(--ink);font:calc(13px * var(--qqj-ui-scale,1))/1.55 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif}:host([data-qqj-theme=night]){--paper:#13181b;--panel:#1c2327;--ink:#e7ecee;--soft:#9db0b5;--faint:#6c7c81;--line:#2b363b;--thread:#33424a;--crimson:#d9707a;--knot:#d9707a;--blue:#77b0aa;--success:#77b193}*{box-sizing:border-box}button,input,select,textarea{font:inherit}.panel{border:1px solid var(--line);background:var(--paper);border-radius:12px;overflow:hidden;box-shadow:0 16px 54px #121c213d}.topbar{border-bottom:1px solid var(--line);background:var(--panel);cursor:move;-webkit-user-select:none;user-select:none;align-items:center;gap:10px;min-height:52px;padding:9px 12px;display:flex}.brand{align-items:baseline;gap:8px;min-width:0;display:flex}.mark{letter-spacing:.12em;font:700 18px/1 宋体,Songti SC,serif}.mark .em{color:var(--crimson)}.sub{color:var(--faint);letter-spacing:.16em;font-size:8px}.header-actions{flex:none;align-items:center;gap:2px;margin-left:auto;display:flex}.icon-btn{background:var(--panel);width:32px;height:32px;color:var(--soft);cursor:pointer;border:0;border-radius:50%;place-items:center;padding:0;transition:background .15s,color .15s;display:grid}.icon-btn:hover{color:var(--ink);background:color-mix(in srgb,var(--ink) 7%,var(--panel))}.icon-btn.active{color:var(--knot)}.icon-btn svg{fill:none;stroke:currentColor;stroke-width:1.8px;stroke-linecap:round;stroke-linejoin:round;width:18px;height:18px}.tabs{border-bottom:1px solid var(--line);background:var(--panel);display:flex;position:relative;overflow:auto hidden}.tab{background:var(--panel);color:var(--soft);white-space:nowrap;border:0;flex:1 0 auto;padding:10px 13px;position:relative}.tab.active{color:var(--ink);font-weight:700}.tab.active:after{content:\"\";z-index:1;background:var(--knot);width:10px;height:10px;transition:background .18s;position:absolute;bottom:-5px;left:50%;transform:translate(-50%)rotate(45deg)}.body{padding:12px 14px 18px}.view{min-width:0}.empty-state{text-align:center;place-items:center;gap:8px;min-height:230px;display:grid}.empty-state h2,.settings-page h2{margin:0;font:700 20px 宋体,Songti SC,serif}.empty-state p{max-width:27em;color:var(--soft);margin:0}.panel-resize-handle{background:var(--paper);width:24px;height:24px;color:var(--faint);cursor:nwse-resize;border:0;place-items:center;margin-left:auto;display:grid}.resize-grip{width:13px;height:13px;position:relative}.resize-grip:before,.resize-grip:after{content:\"\";border-bottom:1.5px solid;border-right:1.5px solid;position:absolute;bottom:1px;right:1px}.resize-grip:before{width:10px;height:10px}.resize-grip:after{width:5px;height:5px}.settings-page{gap:13px;display:grid}.settings-page>h2{letter-spacing:.04em;margin:0 2px 1px;font:700 20px/1.2 宋体,Songti SC,serif}.settings-block{border:1px solid var(--line);background:var(--panel);border-radius:10px;gap:11px;padding:13px 14px;display:grid}.settings-block h3{letter-spacing:.03em;margin:0;font:700 13.5px 宋体,Songti SC,serif}.settings-field{color:var(--soft);gap:5px;font-size:11px;display:grid}.settings-field>span{letter-spacing:.02em;color:var(--soft);font-weight:600}.settings-row{grid-template-columns:1fr 1fr;gap:9px;display:grid}.settings-subhead{border-top:1px dashed var(--line);color:var(--faint);letter-spacing:.08em;margin:4px 0 -3px;padding-top:10px;font-size:10px;font-weight:700}.settings-input,.settings-field input,.settings-field select,.settings-field textarea{border:1px solid var(--line);background:var(--paper);width:100%;min-width:0;color:var(--ink);border-radius:8px;padding:8px 9px;transition:border-color .15s,box-shadow .15s}.settings-field input:focus,.settings-field select:focus,.settings-field textarea:focus,.settings-input:focus{border-color:var(--knot);box-shadow:0 0 0 2px color-mix(in srgb,var(--knot) 18%,transparent);outline:none}.settings-field textarea{resize:vertical;min-height:62px;line-height:1.5}.setting-switch{color:var(--ink);align-items:center;gap:9px;padding:2px 0;font-size:12px;display:flex}.setting-switch input{width:15px;height:15px;accent-color:var(--knot);flex:none}.settings-scale{align-items:center;gap:9px;display:flex}.settings-scale input{flex:1}.settings-scale output{min-width:3.2em;color:var(--soft);text-align:right;flex:none;font-size:11px}.settings-hint{color:var(--faint);margin:-1px 0 0;font-size:10.5px;line-height:1.6}.settings-result{color:var(--soft);margin:1px 0 0;font-size:10.5px}.settings-result.success{color:var(--success)}.settings-result.error{color:var(--crimson)}.settings-actions{flex-wrap:wrap;gap:8px;margin-top:2px;display:flex}.primary-action,.secondary-action{cursor:pointer;border-radius:7px;padding:7px 10px}.primary-action{border:1px solid var(--crimson);background:var(--crimson);color:#fff}.secondary-action{border:1px solid var(--line);background:var(--panel);color:var(--ink)}button:disabled{border-color:var(--line);background:var(--line);color:var(--soft);cursor:not-allowed}.source-permission-list{gap:7px;max-height:min(40vh,320px);display:grid;overflow-y:auto}.source-toggle-row{align-items:flex-start;gap:7px;padding:6px 2px;display:flex}.source-toggle-row span{min-width:0;display:grid}.source-toggle-row input{accent-color:var(--crimson);margin-top:3px}@media (width<=640px){.topbar{padding-inline:10px}.header-actions{gap:0}.tab{min-width:0;padding-inline:9px}}@media (width<=390px){.body{padding-left:10px;padding-right:10px}.settings-actions{display:grid}.settings-actions button{width:100%}}.settings-drawer{padding:0;overflow:hidden}.settings-drawer-summary{cursor:pointer;align-items:center;gap:8px;padding:10px 11px;list-style:none;display:flex}.settings-drawer-summary::-webkit-details-marker{display:none}.settings-drawer-summary:before{content:\"›\";color:var(--soft);flex:none;font-size:18px;line-height:1;transition:transform .15s}.settings-drawer[open]>.settings-drawer-summary:before{transform:rotate(90deg)}.settings-drawer-summary h3{min-width:0;margin:0}.settings-drawer-body{gap:8px;padding:0 11px 11px;display:grid}@media (width<=520px){.settings-drawer-summary,.settings-drawer-body{padding-inline:9px}}.v3-foundation{gap:11px;display:grid}.v3-foundation-heading{gap:4px;display:grid}.v3-foundation-heading h2{margin:0;font:700 19px 宋体,Songti SC,serif}.v3-foundation-heading p,.v3-foundation-metrics,.v3-foundation-feedback{color:var(--soft);margin:0;font-size:10px}.v3-foundation-grid{border:1px solid var(--line);background:var(--panel);border-radius:9px;gap:0;margin:0;display:grid;overflow:hidden}.v3-foundation-row{border-bottom:1px solid var(--line);grid-template-columns:92px minmax(0,1fr);gap:8px;padding:7px 9px;display:grid}.v3-foundation-row:last-child{border-bottom:0}.v3-foundation-row dt{color:var(--soft)}.v3-foundation-row dd{overflow-wrap:anywhere;margin:0}.v3-foundation-actions{flex-wrap:wrap;gap:6px;display:flex}.v3-foundation-feedback.error{color:var(--crimson)}.v3-memory-list{gap:8px;display:grid}.v3-memory-floor{border:1px solid var(--line);background:var(--panel);border-radius:9px;overflow:hidden}.v3-memory-floor[open]{border-color:color-mix(in srgb,var(--blue) 45%,var(--line))}.v3-memory-floor-summary{cursor:pointer;justify-content:space-between;align-items:center;gap:8px;padding:9px 10px;display:flex}.v3-memory-floor-summary strong{font-size:11px}.v3-memory-status{background:color-mix(in srgb,var(--blue) 10%,var(--panel));color:var(--blue);border-radius:999px;flex:none;padding:2px 6px;font-size:9px}.status-failed .v3-memory-status,.status-error .v3-memory-status{background:color-mix(in srgb,var(--crimson) 10%,var(--panel));color:var(--crimson)}.status-ready .v3-memory-status{background:color-mix(in srgb,var(--success) 10%,var(--panel));color:var(--success)}.v3-memory-floor-body{border-top:1px solid var(--line);gap:8px;padding:0 10px 10px;display:grid}.v3-memory-effective{white-space:pre-wrap;margin:9px 0 0}.v3-memory-counts{color:var(--soft);margin:0;font-size:9px}.v3-memory-json{background:color-mix(in srgb,var(--blue) 6%,var(--paper));white-space:pre-wrap;overflow-wrap:anywhere;border-radius:7px;max-height:240px;margin:0;padding:8px;font-size:9px;overflow:auto}.v3-memory-edit{gap:6px;display:grid}.v3-memory-edit textarea{resize:vertical;min-height:72px}.v3-diagnostic-fallback{border:1px solid var(--line);background:var(--panel);width:100%;min-height:180px;color:var(--ink);border-radius:7px;padding:8px;font:9px/1.45 monospace}.v3-cse-current{border:1px solid color-mix(in srgb,var(--blue) 30%,var(--line));background:color-mix(in srgb,var(--blue) 8%,var(--panel));border-radius:10px;gap:9px;padding:10px;display:grid}.v3-cse-heading{justify-content:space-between;align-items:center;gap:8px;display:flex}.v3-cse-heading h3,.v3-cse-subject h4,.v3-cse-group h5,.v3-cse-group h6{margin:0}.v3-cse-heading h3{font:700 14px 宋体,Songti SC,serif}.v3-cse-subjects{gap:8px;display:grid}.v3-cse-subject{border:1px solid var(--line);background:var(--panel);border-radius:8px;overflow:hidden}.v3-cse-subject h4{font:700 13px 宋体,Songti SC,serif}.v3-cse-group{gap:5px;display:grid}.v3-cse-group h5{color:var(--blue);font-size:10px}.v3-cse-group h6{color:var(--soft);font-size:9px}.v3-cse-items{gap:5px;margin:0;padding:0;list-style:none;display:grid}.v3-cse-item{border-left:2px solid var(--blue);background:color-mix(in srgb,var(--blue) 6%,var(--panel));border-radius:0 6px 6px 0;gap:2px;padding:6px 7px;display:grid}.v3-cse-item-text{overflow-wrap:anywhere}.v3-cse-item-meta{color:var(--soft);overflow-wrap:anywhere;font-size:8px}.v3-recall-preview{border:1px solid color-mix(in srgb,var(--success) 34%,var(--line));background:color-mix(in srgb,var(--success) 8%,var(--panel));border-radius:10px;gap:9px;padding:10px;display:grid}.v3-recall-injection{border:1px solid var(--line);background:var(--panel);white-space:pre-wrap;overflow-wrap:anywhere;border-radius:8px;max-height:260px;margin:0;padding:9px;font-size:9px;line-height:1.5;overflow:auto}.settings-page{gap:10px}.master-switch{border:1px solid var(--line);border-left:3px solid var(--crimson);background:var(--panel);border-radius:10px;gap:4px;padding:10px 12px;display:grid}.master-switch .setting-switch{font-weight:600}.master-switch .settings-result:empty{display:none}.settings-group{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:0;overflow:hidden}.settings-group>.settings-group-summary{cursor:pointer;align-items:center;gap:8px;padding:11px 13px;list-style:none;display:flex}.settings-group-summary::-webkit-details-marker{display:none}.settings-group-summary:before{content:\"›\";color:var(--soft);flex:none;font-size:17px;line-height:1;transition:transform .15s}.settings-group[open]>.settings-group-summary:before{transform:rotate(90deg)}.settings-group-summary h3{letter-spacing:.02em;min-width:0;margin:0;font:700 14px 宋体,Songti SC,serif}.settings-group-body{gap:0;padding:0 12px 8px;display:grid}.settings-sub{border:0;border-top:1px solid var(--line);background:var(--panel);border-radius:0;padding:0}.settings-sub>.settings-sub-summary{cursor:pointer;align-items:center;gap:7px;padding:10px 2px;list-style:none;display:flex}.settings-sub-summary::-webkit-details-marker{display:none}.settings-sub-summary:before{content:\"›\";color:var(--faint);flex:none;font-size:14px;line-height:1;transition:transform .15s}.settings-sub[open]>.settings-sub-summary:before{transform:rotate(90deg)}.settings-sub-summary h4{min-width:0;color:var(--ink);margin:0;font:700 12.5px 宋体,Songti SC,serif}.settings-sub-body{gap:9px;padding:2px 2px 12px;display:grid}.settings-sub.sub-advanced{border-top-style:dashed;margin-top:2px}.settings-sub.sub-advanced>.settings-sub-summary h4{color:var(--soft)}.settings-divider{background:var(--line);height:1px;margin:3px 0}.settings-inline{grid-template-columns:minmax(0,1fr) auto;align-items:stretch;gap:7px;display:grid}.settings-inline>.secondary-action{white-space:nowrap;align-self:stretch}.qqj-inline-select{min-width:0;display:grid}.qqj-inline-select-trigger{text-align:left;cursor:pointer;justify-content:space-between;align-items:center;gap:8px;min-height:34px;display:flex}.qqj-inline-select-value{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.qqj-inline-select-chevron{flex:none;font-size:15px;line-height:1;transition:transform .15s;transform:rotate(90deg)}.qqj-inline-select.open>.qqj-inline-select-trigger .qqj-inline-select-chevron{transform:rotate(-90deg)}.qqj-inline-select-options{overscroll-behavior:contain;border:1px solid var(--line);background:var(--paper);border-radius:8px;max-height:220px;margin-top:4px;padding:3px;display:grid;overflow:hidden auto}.qqj-inline-select-options[hidden]{display:none}.qqj-inline-select-option{border:1px solid var(--paper);background:var(--paper);width:100%;min-width:0;color:var(--ink);text-align:left;overflow-wrap:anywhere;cursor:pointer;border-radius:6px;padding:7px 8px;display:block}.qqj-inline-select-option:hover{background:color-mix(in srgb,var(--knot) 6%,var(--paper))}.qqj-inline-select-option.active{border-color:var(--knot);background:color-mix(in srgb,var(--knot) 9%,var(--paper));color:var(--knot)}.qqj-inline-select-option:focus-visible{outline:2px solid var(--knot);outline-offset:-2px}.qqj-model-list-section{border:1px solid var(--line);background:var(--panel);border-radius:8px;overflow:hidden}.qqj-model-list-section[hidden]{display:none}.qqj-model-list-summary{color:var(--soft);cursor:pointer;-webkit-user-select:none;user-select:none;background:var(--panel);align-items:center;gap:8px;padding:8px 11px;font-size:10.5px;list-style:none;display:flex}.qqj-model-list-summary::-webkit-details-marker{display:none}.qqj-model-list-summary:hover{background:color-mix(in srgb,var(--knot) 6%,var(--panel))}.qqj-model-list-chevron{font-size:14px;line-height:1;transition:transform .15s}.qqj-model-list-section[open] .qqj-model-list-chevron{transform:rotate(90deg)}.qqj-model-list-body{border-top:1px solid var(--line);background:var(--panel);flex-direction:column;gap:6px;padding:8px 10px 10px;display:flex}.qqj-model-list-search{font-size:10.5px}.qqj-model-list-items{overscroll-behavior:contain;background:var(--paper);flex-direction:column;gap:3px;max-height:260px;padding-right:2px;display:flex;overflow:hidden auto}.qqj-model-list-items::-webkit-scrollbar{width:4px}.qqj-model-list-items::-webkit-scrollbar-thumb{background:var(--line);border-radius:2px}.qqj-model-list-item{border:1px solid var(--paper);background:var(--paper);width:100%;color:var(--ink);text-align:left;word-break:break-all;cursor:pointer;border-radius:6px;padding:8px 10px;transition:background .12s,border-color .12s,color .12s;display:block}.qqj-model-list-item:hover{background:color-mix(in srgb,var(--knot) 6%,var(--paper))}.qqj-model-list-item:active{background:color-mix(in srgb,var(--knot) 10%,var(--paper))}.qqj-model-list-item.active{border-color:var(--knot);background:color-mix(in srgb,var(--knot) 8%,var(--paper));color:var(--knot)}.qqj-model-list-empty{color:var(--soft);text-align:center;background:var(--paper);padding:14px;font-size:10px}.settings-input.settings-num{text-align:center;width:64px}.qqj-auto-hide-row{min-height:34px;color:var(--ink);justify-content:space-between;align-items:center;gap:10px;font-size:12px;display:flex}.qqj-auto-hide-row>.settings-num{flex:0 0 64px;height:34px;padding-block:5px}.settings-input[type=number]{-moz-appearance:textfield}.settings-input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}.settings-input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}.source-exclude-count{color:var(--soft);margin:0 0 2px;font-size:10.5px}.qqj-page{gap:12px;display:grid}.qqj-view-heading{gap:4px;display:grid}.qqj-view-heading h2{letter-spacing:.04em;margin:0;font:700 20px/1.2 宋体,Songti SC,serif}.qqj-view-heading>p{color:var(--soft);margin:0;font-size:10.5px}.qqj-page-health{border-left:3px solid var(--blue);background:color-mix(in srgb,var(--blue) 7%,var(--panel));color:var(--soft);border-radius:0 7px 7px 0;align-items:center;gap:7px;padding:7px 9px;font-size:10px;display:flex}.qqj-page-health.error{border-left-color:var(--crimson);color:var(--crimson);background:color-mix(in srgb,var(--crimson) 7%,var(--panel))}.qqj-memory-card{border:1px solid var(--line);border-left:3px solid var(--thread);background:var(--panel);border-radius:9px;overflow:hidden}.qqj-memory-card.status-ready{border-left-color:var(--blue)}.qqj-memory-card.status-failed,.qqj-memory-card.status-error{border-left-color:var(--crimson)}.qqj-memory-card-head{cursor:pointer;justify-content:space-between;align-items:center;gap:10px;padding:11px 12px;list-style:none;display:flex}.qqj-memory-card-head::-webkit-details-marker{display:none}.qqj-memory-card-head:before{content:\"›\";color:var(--soft);flex:none;font-size:17px;line-height:1;transition:transform .15s}.qqj-memory-card[open]>.qqj-memory-card-head:before{transform:rotate(90deg)}.qqj-memory-card-body{border-top:1px solid var(--line);gap:9px;padding:0 12px 11px;display:grid}.qqj-floor-number{font-variant-numeric:tabular-nums;letter-spacing:.02em;margin-right:auto;font:700 14px/1.2 宋体,Songti SC,serif}.qqj-memory-facts{border:1px solid var(--line);border-radius:8px;gap:0;margin:10px 0 0;display:grid;overflow:hidden}.qqj-memory-edit-field,.qqj-memory-edit-group{gap:6px;display:grid}.qqj-memory-edit-field>span,.qqj-memory-edit-group>strong{color:var(--soft);font-size:10px}.qqj-memory-edit-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:6px;display:grid}.qqj-memory-edit-group:nth-of-type(3) .qqj-memory-edit-row{grid-template-columns:minmax(0,1fr) auto}.qqj-memory-person-option{grid-template-columns:auto minmax(0,1fr) minmax(110px,.8fr);align-items:center;gap:7px;display:grid}.qqj-memory-person-option input{accent-color:var(--knot)}.qqj-card-actions{flex-wrap:wrap;justify-content:flex-end;gap:6px;display:flex}.qqj-inline-empty,.qqj-main-character-empty{border:1px dashed var(--line);background:var(--panel);color:var(--soft);text-align:center;border-radius:9px;padding:18px 14px}.qqj-main-character-empty{text-align:left;gap:9px;display:grid}.qqj-person-summary::-webkit-details-marker{display:none}.qqj-section-summary::-webkit-details-marker{display:none}.v3-cse-subject[open]>.qqj-person-summary:before,.qqj-cse-history[open]>.qqj-section-summary:before,.qqj-management-drawer[open]>.qqj-section-summary:before{transform:rotate(90deg)}.v3-cse-subject.is-main{border-color:color-mix(in srgb,var(--crimson) 38%,var(--line))}.v3-cse-subject.is-main>.qqj-person-summary{box-shadow:inset 3px 0 var(--crimson)}.qqj-people-toolbar{justify-content:space-between;align-items:center;gap:8px;display:flex}.qqj-person-summary,.qqj-section-summary{cursor:pointer;justify-content:space-between;align-items:center;gap:8px;padding:10px 11px;list-style:none;display:flex}.qqj-person-summary::-webkit-details-marker{display:none}.qqj-section-summary::-webkit-details-marker{display:none}.qqj-person-summary:before,.qqj-section-summary:before{content:\"›\";color:var(--soft);flex:none;font-size:17px;line-height:1;transition:transform .15s}.v3-cse-subject[open]>.qqj-person-summary:before,.qqj-cse-history[open]>.qqj-section-summary:before,.qqj-management-drawer[open]>.qqj-section-summary:before,.qqj-more-people[open]>.qqj-section-summary:before{transform:rotate(90deg)}.qqj-person-summary strong,.qqj-section-summary strong{margin-right:auto;font:700 13px 宋体,Songti SC,serif}.qqj-person-body{border-top:1px solid var(--line);gap:8px;padding:9px 11px 11px;display:grid}.qqj-cse-edit,.qqj-cse-edit-group{gap:7px;display:grid}.qqj-cse-edit-group>strong{color:var(--blue);font-size:10px}.qqj-cse-scope-heading{color:var(--soft);align-items:center;gap:5px;font-size:10px;font-weight:600;display:flex}.qqj-cse-help{border:1px solid var(--line);background:var(--panel);width:19px;height:19px;color:var(--soft);cursor:pointer;border-radius:50%;place-items:center;padding:0;font:700 11px/1 inherit;display:grid}.qqj-cse-edit-row{grid-template-columns:minmax(0,1fr);align-items:start;gap:6px;display:grid}.qqj-cse-edit-row textarea{resize:vertical;width:100%;min-height:64px}.qqj-cse-edit-meta{flex-wrap:wrap;align-items:flex-start;gap:6px;display:flex}.qqj-cse-edit-meta>.qqj-inline-select{flex:110px;max-width:220px}.qqj-cse-edit-meta>.secondary-action{flex:none;min-height:34px;margin-left:auto}.qqj-profile-toolbar{gap:7px;display:grid}.qqj-profile-switch-row{grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;display:grid}.qqj-profile-switcher{overscroll-behavior-x:contain;scrollbar-width:none;gap:6px;min-width:0;padding:2px;display:flex;overflow-x:auto}.qqj-profile-switcher::-webkit-scrollbar{display:none}.qqj-profile-tab{box-sizing:border-box;border:1px solid var(--line);background:var(--panel);min-width:0;max-width:min(170px,100%);color:var(--soft);text-overflow:ellipsis;white-space:nowrap;cursor:pointer;border-radius:999px;flex:none;padding:6px 10px;overflow:hidden}.qqj-profile-tab.active{border-color:var(--knot);background:color-mix(in srgb,var(--knot) 9%,var(--panel));color:var(--ink);font-weight:700}.qqj-profile-switch-empty{color:var(--faint);white-space:nowrap;align-self:center;padding:6px 4px;font-size:10px}.qqj-profile-more{white-space:nowrap}.qqj-profile-more.active{border-color:var(--knot);color:var(--knot)}.qqj-profile-toolbar-actions{flex-wrap:wrap;justify-content:flex-end;gap:6px;display:flex}.qqj-profile-card,.qqj-profile-picker,.qqj-more-people{border:1px solid var(--line);background:var(--panel);border-radius:9px;overflow:hidden}.qqj-profile-summary,.qqj-profile-picker-heading{align-items:center;gap:8px;padding:10px 11px;display:flex}.qqj-profile-summary strong,.qqj-profile-picker-heading strong{font:700 14px 宋体,Songti SC,serif}.qqj-profile-picker-heading strong{margin-right:auto}.qqj-profile-summary>.v3-memory-status{margin-left:auto}.qqj-profile-body{border-top:1px solid var(--line);gap:9px;padding:9px 11px 11px;display:grid}.qqj-recommend-badge{background:color-mix(in srgb,var(--blue) 11%,var(--panel));color:var(--blue);border-radius:999px;padding:2px 6px;font-size:9px}.qqj-profile-facts{border:1px solid var(--line);border-radius:8px;gap:0;margin:0;display:grid;overflow:hidden}.qqj-profile-fact{border-bottom:1px solid var(--line);grid-template-columns:78px minmax(0,1fr);gap:8px;padding:7px 9px;display:grid}.qqj-profile-fact:last-child{border-bottom:0}.qqj-profile-fact dt{color:var(--soft);font-size:10px}.qqj-profile-fact dd{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}.qqj-profile-form{gap:8px;display:grid}.qqj-profile-field{gap:5px;display:grid}.qqj-profile-field>span{color:var(--soft);font-size:10px}.qqj-profile-field textarea{resize:vertical;min-height:58px}.qqj-profile-save-row{flex-wrap:wrap;align-items:center;gap:8px;display:flex}.qqj-profile-save-result{min-width:0;color:var(--soft);overflow-wrap:anywhere;margin:0;font-size:10.5px}.qqj-profile-save-result.success{color:var(--success)}.qqj-profile-save-result.error{color:var(--crimson)}.qqj-more-people-list{border-top:1px solid var(--line);gap:7px;padding:9px;display:grid}.qqj-more-person-row{border:1px solid var(--line);background:var(--paper);border-radius:8px;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:8px 9px;display:grid}.qqj-more-person-copy{gap:2px;min-width:0;display:grid}.qqj-more-person-copy strong{font:700 12px 宋体,Songti SC,serif}.qqj-more-person-copy small{color:var(--soft);overflow-wrap:anywhere;font-size:9px}.qqj-cse-more>.qqj-more-people-list>.v3-cse-subject{background:var(--paper)}.qqj-cse-history,.qqj-management-drawer{border:1px solid var(--line);background:var(--panel);border-radius:9px;overflow:hidden}.qqj-cse-history-list,.qqj-management-drawer-body{border-top:1px solid var(--line);gap:8px;padding:10px;display:grid}.qqj-cse-history-row{border:1px solid var(--line);background:var(--paper);border-radius:8px;overflow:hidden}.qqj-cse-floor-summary{cursor:pointer;justify-content:space-between;align-items:center;gap:7px;padding:8px 9px;list-style:none;display:flex}.qqj-cse-floor-summary::-webkit-details-marker{display:none}.qqj-cse-floor-summary:before{content:\"›\";color:var(--soft);font-size:16px;line-height:1;transition:transform .15s}.qqj-cse-history-row[open]>.qqj-cse-floor-summary:before{transform:rotate(90deg)}.qqj-cse-floor-summary>span:first-of-type{margin-right:auto}.qqj-cse-floor-body{border-top:1px solid var(--line);gap:8px;padding:9px;display:grid}.qqj-cse-record-subject{gap:6px;display:grid}.qqj-cse-record-subject>strong{font:700 12px 宋体,Songti SC,serif}.qqj-management-notice{border-left:3px solid var(--crimson);background:color-mix(in srgb,var(--crimson) 6%,var(--panel));color:var(--soft);margin:0;padding:9px 10px;font-size:10.5px;line-height:1.55}.qqj-management-actions{padding:1px 0}.qqj-diagnostic-row{border-bottom:1px solid var(--line);grid-template-columns:minmax(72px,1fr) auto auto;align-items:center;gap:6px;padding:7px 0;display:grid}.qqj-diagnostic-row:last-child{border-bottom:0}.qqj-settings-management{border:1px solid var(--line);background:var(--panel);border-radius:10px;gap:10px;padding:13px 14px;display:grid}.qqj-settings-management .qqj-page{gap:10px}.qqj-settings-management .qqj-view-heading>h2{font-size:16px}.qqj-settings-management .qqj-view-heading>p{display:none}.qqj-cse-isolation-hint{border-left:2px solid var(--thread);background:color-mix(in srgb,var(--thread) 7%,var(--panel));color:var(--soft);margin:0;padding:7px 8px;font-size:9.5px;line-height:1.5}.qqj-cse-floor-state{border-top:1px dashed var(--line);overflow:hidden}.qqj-cse-floor-state-summary{color:var(--soft);cursor:pointer;padding:7px 2px;font-size:10px;list-style:none}.qqj-cse-floor-state-summary::-webkit-details-marker{display:none}.qqj-cse-floor-state-summary:before{content:\"›\";margin-right:5px;transition:transform .15s;display:inline-block}.qqj-cse-floor-state[open]>.qqj-cse-floor-state-summary:before{transform:rotate(90deg)}.qqj-cse-floor-state-body{gap:8px;padding:2px 0 3px;display:grid}.qqj-cse-state-group{gap:4px;display:grid}.qqj-cse-state-label{color:var(--soft);font-size:9px}button:focus-visible,summary:focus-visible{outline:2px solid var(--knot);outline-offset:2px}@media (prefers-reduced-motion:reduce){.qqj-person-summary:before,.qqj-section-summary:before,.qqj-memory-card-head:before,.qqj-cse-floor-summary:before,.qqj-cse-floor-state-summary:before{transition:none}}@media (width<=390px){.qqj-memory-card-head,.qqj-memory-card-body{padding-inline:10px}.qqj-card-actions{grid-template-columns:1fr 1fr;display:grid}.qqj-card-actions button{width:100%}.qqj-memory-edit-row,.qqj-memory-person-option{grid-template-columns:minmax(0,1fr)}.qqj-memory-edit-row button{width:100%}.qqj-diagnostic-row{grid-template-columns:minmax(0,1fr) auto}.qqj-diagnostic-row>button{grid-column:1/-1;width:100%}.qqj-settings-management{padding-inline:10px}.qqj-more-person-row{grid-template-columns:minmax(0,1fr)}.qqj-more-person-row button{width:100%}.qqj-profile-switch-row{grid-template-columns:minmax(0,1fr)}.qqj-profile-toolbar-actions{justify-content:flex-start}.qqj-profile-save-row{align-items:stretch}.qqj-profile-save-row button{flex:auto}.qqj-profile-save-result{flex-basis:100%}.qqj-profile-fact{grid-template-columns:64px minmax(0,1fr)}.qqj-cse-edit-meta>.qqj-inline-select{max-width:none}.qqj-cse-edit-meta>.secondary-action{width:auto}.qqj-auto-hide-row{flex-wrap:wrap}}.source-permission-list,.qqj-inline-select-options,.qqj-model-list-items{touch-action:pan-y}.qqj-ui-diagnostic-action{flex-wrap:wrap;align-items:center;gap:7px;display:flex}.qqj-ui-diagnostic-action .settings-hint{margin:0}", y = "qqj-panel-pos-v2", b = "qqj-panel-size-v2", x = (e) => Number.isFinite(Number(e)), S = (e, t, n) => Math.min(n, Math.max(t, e)), C = (e, t) => ({
+var _ = "<section class=\"panel\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"qqj-dialog-title\">\n<header class=\"topbar\"><div class=\"brand\"><span class=\"mark\" id=\"qqj-dialog-title\">千<span class=\"em\">千</span>结</span><span class=\"sub\">Myriad Knots</span></div><div class=\"header-actions\"><button class=\"icon-btn theme-btn\" type=\"button\" aria-label=\"主题：跟随酒馆\" title=\"主题：跟随酒馆（点击切换到日间）\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 3a9 9 0 1 0 0 18V3Z\"></path><circle cx=\"12\" cy=\"12\" r=\"9\"></circle></svg></button><button class=\"icon-btn fab-toggle-btn active\" type=\"button\" aria-label=\"隐藏悬浮球\" title=\"悬浮球：显示\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\"></circle><circle cx=\"12\" cy=\"12\" r=\"2.7\"></circle></svg></button><button class=\"icon-btn close\" type=\"button\" aria-label=\"关闭\" title=\"关闭\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M3.5 3.5l17 17M20.5 3.5l-17 17\"></path></svg></button></div></header>\n<nav class=\"tabs\" role=\"tablist\" aria-label=\"记忆模块\"><button class=\"tab active\" type=\"button\" role=\"tab\" aria-selected=\"true\" data-tab=\"profiles\">千人</button><button class=\"tab\" type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab=\"events\">千结</button><button class=\"tab\" type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab=\"people\">双丝网</button><button class=\"tab\" type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab=\"settings\">设置</button></nav>\n<main class=\"body\"><div class=\"view\"></div></main>\n<button class=\"panel-resize-handle\" type=\"button\" aria-label=\"调整千千结面板大小\" title=\"拖动调整面板大小\"><span class=\"resize-grip\" aria-hidden=\"true\"></span></button>\n</section>\n", v = ":host{--paper:#f7f8fa;--panel:#fff;--ink:#22282b;--soft:#637077;--faint:#929da2;--line:#dce2e5;--thread:#cbd4d8;--crimson:#b63745;--knot:#b63745;--blue:#4f8781;--success:#4b7d63;color:var(--ink);font:calc(13px * var(--qqj-ui-scale,1))/1.55 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif}:host([data-qqj-theme=night]){--paper:#13181b;--panel:#1c2327;--ink:#e7ecee;--soft:#9db0b5;--faint:#6c7c81;--line:#2b363b;--thread:#33424a;--crimson:#d9707a;--knot:#d9707a;--blue:#77b0aa;--success:#77b193}*{box-sizing:border-box}button,input,select,textarea{font:inherit}.panel{border:1px solid var(--line);background:var(--paper);border-radius:14px;overflow:hidden;box-shadow:0 18px 54px #121c212e}.topbar{border-bottom:1px solid var(--line);background:var(--paper);cursor:move;-webkit-user-select:none;user-select:none;align-items:center;gap:10px;min-height:52px;padding:12px 16px;display:flex}.brand{align-items:baseline;gap:8px;min-width:0;display:flex}.mark{letter-spacing:.12em;font:700 19px/1 宋体,Songti SC,serif}.mark .em{color:var(--crimson)}.sub{color:var(--faint);letter-spacing:.18em;font-size:8px}.header-actions{flex:none;align-items:center;gap:2px;margin-left:auto;display:flex}.icon-btn{background:var(--panel);width:32px;height:32px;color:var(--soft);cursor:pointer;border:0;border-radius:50%;place-items:center;padding:0;transition:background .15s,color .15s;display:grid}.icon-btn:hover{color:var(--ink);background:color-mix(in srgb,var(--ink) 7%,var(--panel))}.icon-btn.active{color:var(--knot)}.icon-btn svg{fill:none;stroke:currentColor;stroke-width:1.8px;stroke-linecap:round;stroke-linejoin:round;width:18px;height:18px}.tabs{border-bottom:1px solid var(--line);background:var(--paper);display:flex;position:relative;overflow:auto hidden}.tab{background:var(--paper);color:var(--soft);white-space:nowrap;border:0;flex:1 0 auto;padding:11px 13px;position:relative}.tab.active{color:var(--ink);font-weight:700}.tab.active:after{content:\"\";background:var(--knot);height:2px;transition:background .18s;position:absolute;bottom:-1px;left:27%;right:27%}.body{padding:12px 17px 20px}.view{min-width:0}.empty-state{text-align:center;place-items:center;gap:8px;min-height:230px;display:grid}.empty-state h2,.settings-page h2{margin:0;font:700 20px 宋体,Songti SC,serif}.empty-state p{max-width:27em;color:var(--soft);margin:0}.panel-resize-handle{background:var(--paper);width:24px;height:24px;color:var(--faint);cursor:nwse-resize;border:0;place-items:center;margin-left:auto;display:grid}.resize-grip{width:13px;height:13px;position:relative}.resize-grip:before,.resize-grip:after{content:\"\";border-bottom:1.5px solid;border-right:1.5px solid;position:absolute;bottom:1px;right:1px}.resize-grip:before{width:10px;height:10px}.resize-grip:after{width:5px;height:5px}.settings-page{gap:13px;display:grid}.settings-page>h2{letter-spacing:.04em;margin:0 2px 1px;font:700 20px/1.2 宋体,Songti SC,serif}.settings-block{border:1px solid var(--line);background:var(--panel);border-radius:10px;gap:11px;padding:13px 14px;display:grid}.settings-block h3{letter-spacing:.03em;margin:0;font:700 13.5px 宋体,Songti SC,serif}.settings-field{color:var(--soft);gap:5px;font-size:11px;display:grid}.settings-field>span{letter-spacing:.02em;color:var(--soft);font-weight:600}.settings-row{grid-template-columns:1fr 1fr;gap:9px;display:grid}.settings-subhead{border-top:1px dashed var(--line);color:var(--faint);letter-spacing:.08em;margin:4px 0 -3px;padding-top:10px;font-size:10px;font-weight:700}.settings-input,.settings-field input,.settings-field select,.settings-field textarea{border:1px solid var(--line);background:var(--paper);width:100%;min-width:0;color:var(--ink);border-radius:8px;padding:8px 9px;transition:border-color .15s,box-shadow .15s}.settings-field input:focus,.settings-field select:focus,.settings-field textarea:focus,.settings-input:focus{border-color:var(--knot);box-shadow:0 0 0 2px color-mix(in srgb,var(--knot) 18%,transparent);outline:none}.settings-field textarea{resize:vertical;min-height:62px;line-height:1.5}.setting-switch{color:var(--ink);align-items:center;gap:9px;padding:2px 0;font-size:12px;display:flex}.setting-switch input{width:15px;height:15px;accent-color:var(--knot);flex:none}.settings-scale{align-items:center;gap:9px;display:flex}.settings-scale input{flex:1}.settings-scale output{min-width:3.2em;color:var(--soft);text-align:right;flex:none;font-size:11px}.settings-hint{color:var(--faint);margin:-1px 0 0;font-size:10.5px;line-height:1.6}.settings-result{color:var(--soft);margin:1px 0 0;font-size:10.5px}.settings-result.success{color:var(--success)}.settings-result.error{color:var(--crimson)}.settings-actions{flex-wrap:wrap;gap:8px;margin-top:2px;display:flex}.primary-action,.secondary-action{cursor:pointer;border-radius:7px;padding:7px 10px}.primary-action{border:1px solid var(--crimson);background:var(--crimson);color:#fff}.secondary-action{border:1px solid var(--line);background:var(--panel);color:var(--ink)}button:disabled{border-color:var(--line);background:var(--line);color:var(--soft);cursor:not-allowed}.source-permission-list{gap:7px;max-height:min(40vh,320px);display:grid;overflow-y:auto}.source-toggle-row{align-items:flex-start;gap:7px;padding:6px 2px;display:flex}.source-toggle-row span{min-width:0;display:grid}.source-toggle-row input{accent-color:var(--crimson);margin-top:3px}@media (width<=640px){.topbar{padding-inline:10px}.header-actions{gap:0}.tab{min-width:0;padding-inline:9px}}@media (width<=390px){.body{padding-left:10px;padding-right:10px}.settings-actions{display:grid}.settings-actions button{width:100%}}.settings-drawer{padding:0;overflow:hidden}.settings-drawer-summary{cursor:pointer;align-items:center;gap:8px;padding:10px 11px;list-style:none;display:flex}.settings-drawer-summary::-webkit-details-marker{display:none}.settings-drawer-summary:before{content:\"›\";color:var(--soft);flex:none;font-size:18px;line-height:1;transition:transform .15s}.settings-drawer[open]>.settings-drawer-summary:before{transform:rotate(90deg)}.settings-drawer-summary h3{min-width:0;margin:0}.settings-drawer-body{gap:8px;padding:0 11px 11px;display:grid}@media (width<=520px){.settings-drawer-summary,.settings-drawer-body{padding-inline:9px}}.v3-foundation{gap:11px;display:grid}.v3-foundation-heading{gap:4px;display:grid}.v3-foundation-heading h2{margin:0;font:700 19px 宋体,Songti SC,serif}.v3-foundation-heading p,.v3-foundation-metrics,.v3-foundation-feedback{color:var(--soft);margin:0;font-size:10px}.v3-foundation-grid{border:1px solid var(--line);background:var(--panel);border-radius:9px;gap:0;margin:0;display:grid;overflow:hidden}.v3-foundation-row{border-bottom:1px solid var(--line);grid-template-columns:92px minmax(0,1fr);gap:8px;padding:7px 9px;display:grid}.v3-foundation-row:last-child{border-bottom:0}.v3-foundation-row dt{color:var(--soft)}.v3-foundation-row dd{overflow-wrap:anywhere;margin:0}.v3-foundation-actions{flex-wrap:wrap;gap:6px;display:flex}.v3-foundation-feedback.error{color:var(--crimson)}.v3-memory-floor{border:1px solid var(--line);background:var(--panel);border-radius:9px;overflow:hidden}.v3-memory-floor[open]{border-color:color-mix(in srgb,var(--blue) 45%,var(--line))}.v3-memory-floor-summary{cursor:pointer;justify-content:space-between;align-items:center;gap:8px;padding:9px 10px;display:flex}.v3-memory-floor-summary strong{font-size:11px}.v3-memory-status{background:color-mix(in srgb,var(--blue) 10%,var(--panel));color:var(--blue);border-radius:999px;flex:none;padding:2px 6px;font-size:9px}.status-failed .v3-memory-status,.status-error .v3-memory-status{background:color-mix(in srgb,var(--crimson) 10%,var(--panel));color:var(--crimson)}.status-ready .v3-memory-status{background:color-mix(in srgb,var(--success) 10%,var(--panel));color:var(--success)}.v3-memory-floor-body{border-top:1px solid var(--line);gap:8px;padding:0 10px 10px;display:grid}.v3-memory-effective{white-space:pre-wrap;margin:9px 0 0}.v3-memory-counts{color:var(--soft);margin:0;font-size:9px}.v3-memory-json{background:color-mix(in srgb,var(--blue) 6%,var(--paper));white-space:pre-wrap;overflow-wrap:anywhere;border-radius:7px;max-height:240px;margin:0;padding:8px;font-size:9px;overflow:auto}.v3-memory-edit{gap:6px;display:grid}.v3-memory-edit textarea{resize:vertical;min-height:72px}.v3-diagnostic-fallback{border:1px solid var(--line);background:var(--panel);width:100%;min-height:180px;color:var(--ink);border-radius:7px;padding:8px;font:9px/1.45 monospace}.v3-cse-current{border:1px solid color-mix(in srgb,var(--blue) 30%,var(--line));background:color-mix(in srgb,var(--blue) 8%,var(--panel));border-radius:10px;gap:9px;padding:10px;display:grid}.v3-cse-heading{justify-content:space-between;align-items:center;gap:8px;display:flex}.v3-cse-heading h3,.v3-cse-subject h4,.v3-cse-group h5,.v3-cse-group h6{margin:0}.v3-cse-heading h3{font:700 14px 宋体,Songti SC,serif}.v3-cse-subjects{gap:8px;display:grid}.v3-cse-subject{border:1px solid var(--line);background:var(--panel);border-radius:8px;overflow:hidden}.v3-cse-subject h4{font:700 13px 宋体,Songti SC,serif}.v3-cse-group{gap:5px;display:grid}.v3-cse-group h5{color:var(--blue);font-size:10px}.v3-cse-group h6{color:var(--soft);font-size:9px}.v3-cse-items{gap:5px;margin:0;padding:0;list-style:none;display:grid}.v3-cse-item{border-left:2px solid var(--blue);background:color-mix(in srgb,var(--blue) 6%,var(--panel));border-radius:0 6px 6px 0;gap:2px;padding:6px 7px;display:grid}.v3-cse-item-text{overflow-wrap:anywhere}.v3-cse-item-meta{color:var(--soft);overflow-wrap:anywhere;font-size:8px}.v3-recall-preview{border:1px solid color-mix(in srgb,var(--success) 34%,var(--line));background:color-mix(in srgb,var(--success) 8%,var(--panel));border-radius:10px;gap:9px;padding:10px;display:grid}.v3-recall-injection{border:1px solid var(--line);background:var(--panel);white-space:pre-wrap;overflow-wrap:anywhere;border-radius:8px;max-height:260px;margin:0;padding:9px;font-size:9px;line-height:1.5;overflow:auto}.settings-page{gap:10px}.master-switch{border:1px solid var(--line);border-left:3px solid var(--crimson);background:var(--panel);border-radius:10px;gap:4px;padding:10px 12px;display:grid}.master-switch .setting-switch{font-weight:600}.master-switch .settings-result:empty{display:none}.settings-group{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:0;overflow:hidden}.settings-group>.settings-group-summary{cursor:pointer;align-items:center;gap:8px;padding:11px 13px;list-style:none;display:flex}.settings-group-summary::-webkit-details-marker{display:none}.settings-group-summary:before{content:\"›\";color:var(--soft);flex:none;font-size:17px;line-height:1;transition:transform .15s}.settings-group[open]>.settings-group-summary:before{transform:rotate(90deg)}.settings-group-summary h3{letter-spacing:.02em;min-width:0;margin:0;font:700 14px 宋体,Songti SC,serif}.settings-group-body{gap:0;padding:0 12px 8px;display:grid}.settings-sub{border:0;border-top:1px solid var(--line);background:var(--panel);border-radius:0;padding:0}.settings-sub>.settings-sub-summary{cursor:pointer;align-items:center;gap:7px;padding:10px 2px;list-style:none;display:flex}.settings-sub-summary::-webkit-details-marker{display:none}.settings-sub-summary:before{content:\"›\";color:var(--faint);flex:none;font-size:14px;line-height:1;transition:transform .15s}.settings-sub[open]>.settings-sub-summary:before{transform:rotate(90deg)}.settings-sub-summary h4{min-width:0;color:var(--ink);margin:0;font:700 12.5px 宋体,Songti SC,serif}.settings-sub-body{gap:9px;padding:2px 2px 12px;display:grid}.settings-sub.sub-advanced{border-top-style:dashed;margin-top:2px}.settings-sub.sub-advanced>.settings-sub-summary h4{color:var(--soft)}.settings-divider{background:var(--line);height:1px;margin:3px 0}.settings-inline{grid-template-columns:minmax(0,1fr) auto;align-items:stretch;gap:7px;display:grid}.settings-inline>.secondary-action{white-space:nowrap;align-self:stretch}.qqj-inline-select{min-width:0;display:grid}.qqj-inline-select-trigger{text-align:left;cursor:pointer;justify-content:space-between;align-items:center;gap:8px;min-height:34px;display:flex}.qqj-inline-select-value{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.qqj-inline-select-chevron{flex:none;font-size:15px;line-height:1;transition:transform .15s;transform:rotate(90deg)}.qqj-inline-select.open>.qqj-inline-select-trigger .qqj-inline-select-chevron{transform:rotate(-90deg)}.qqj-inline-select-options{overscroll-behavior:contain;border:1px solid var(--line);background:var(--paper);border-radius:8px;max-height:220px;margin-top:4px;padding:3px;display:grid;overflow:hidden auto}.qqj-inline-select-options[hidden]{display:none}.qqj-inline-select-option{border:1px solid var(--paper);background:var(--paper);width:100%;min-width:0;color:var(--ink);text-align:left;overflow-wrap:anywhere;cursor:pointer;border-radius:6px;padding:7px 8px;display:block}.qqj-inline-select-option:hover{background:color-mix(in srgb,var(--knot) 6%,var(--paper))}.qqj-inline-select-option.active{border-color:var(--knot);background:color-mix(in srgb,var(--knot) 9%,var(--paper));color:var(--knot)}.qqj-inline-select-option:focus-visible{outline:2px solid var(--knot);outline-offset:-2px}.qqj-model-list-section{border:1px solid var(--line);background:var(--panel);border-radius:8px;overflow:hidden}.qqj-model-list-section[hidden]{display:none}.qqj-model-list-summary{color:var(--soft);cursor:pointer;-webkit-user-select:none;user-select:none;background:var(--panel);align-items:center;gap:8px;padding:8px 11px;font-size:10.5px;list-style:none;display:flex}.qqj-model-list-summary::-webkit-details-marker{display:none}.qqj-model-list-summary:hover{background:color-mix(in srgb,var(--knot) 6%,var(--panel))}.qqj-model-list-chevron{font-size:14px;line-height:1;transition:transform .15s}.qqj-model-list-section[open] .qqj-model-list-chevron{transform:rotate(90deg)}.qqj-model-list-body{border-top:1px solid var(--line);background:var(--panel);flex-direction:column;gap:6px;padding:8px 10px 10px;display:flex}.qqj-model-list-search{font-size:10.5px}.qqj-model-list-items{overscroll-behavior:contain;background:var(--paper);flex-direction:column;gap:3px;max-height:260px;padding-right:2px;display:flex;overflow:hidden auto}.qqj-model-list-items::-webkit-scrollbar{width:4px}.qqj-model-list-items::-webkit-scrollbar-thumb{background:var(--line);border-radius:2px}.qqj-model-list-item{border:1px solid var(--paper);background:var(--paper);width:100%;color:var(--ink);text-align:left;word-break:break-all;cursor:pointer;border-radius:6px;padding:8px 10px;transition:background .12s,border-color .12s,color .12s;display:block}.qqj-model-list-item:hover{background:color-mix(in srgb,var(--knot) 6%,var(--paper))}.qqj-model-list-item:active{background:color-mix(in srgb,var(--knot) 10%,var(--paper))}.qqj-model-list-item.active{border-color:var(--knot);background:color-mix(in srgb,var(--knot) 8%,var(--paper));color:var(--knot)}.qqj-model-list-empty{color:var(--soft);text-align:center;background:var(--paper);padding:14px;font-size:10px}.settings-input.settings-num{text-align:center;width:64px}.qqj-auto-hide-row{min-height:34px;color:var(--ink);justify-content:space-between;align-items:center;gap:10px;font-size:12px;display:flex}.qqj-auto-hide-row>.settings-num{flex:0 0 64px;height:34px;padding-block:5px}.settings-input[type=number]{-moz-appearance:textfield}.settings-input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}.settings-input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}.source-exclude-count{color:var(--soft);margin:0 0 2px;font-size:10.5px}.qqj-page{gap:12px;display:grid}.qqj-view-heading{gap:4px;display:grid}.qqj-view-heading h2{letter-spacing:.04em;margin:0;font:700 20px/1.2 宋体,Songti SC,serif}.qqj-view-heading>p{color:var(--soft);margin:0;font-size:10.5px}.qqj-page-health{border-left:3px solid var(--blue);background:color-mix(in srgb,var(--blue) 7%,var(--panel));color:var(--soft);border-radius:0 7px 7px 0;align-items:center;gap:7px;padding:7px 9px;font-size:10px;display:flex}.qqj-page-health.error{border-left-color:var(--crimson);color:var(--crimson);background:color-mix(in srgb,var(--crimson) 7%,var(--panel))}.qqj-memories-page{gap:0}.qqj-memories-page>.qqj-page-health{margin-bottom:4px}.v3-memory-list{gap:0;display:grid}.qqj-memory-card{border:0;border-bottom:1px solid var(--line);background:0 0;border-radius:0;overflow:visible}.qqj-memory-card:first-child{border-top:0}.qqj-memory-card-head{cursor:pointer;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:8px;padding:12px 0;list-style:none;display:grid}.qqj-memory-card-head::-webkit-details-marker{display:none}.qqj-floor-number{font-variant-numeric:tabular-nums;letter-spacing:.02em;white-space:nowrap;font:800 12px/1.2 宋体,Songti SC,serif}.qqj-memory-card[open]>.qqj-memory-card-head .qqj-floor-number{color:var(--knot)}.qqj-floor-time{min-width:0;color:var(--faint);text-overflow:ellipsis;white-space:nowrap;font-size:9px;overflow:hidden}.qqj-memory-card-head>.v3-memory-status{white-space:nowrap;justify-content:center;align-items:center;min-height:18px;display:inline-flex}.qqj-memory-card-head>.v3-memory-status.is-user{background:color-mix(in srgb,var(--knot) 10%,var(--panel));color:var(--knot)}.qqj-memory-chevron{color:var(--faint);font-size:16px;line-height:1;transition:transform .15s}.qqj-memory-card[open]>.qqj-memory-card-head .qqj-memory-chevron{transform:rotate(90deg)}.qqj-memory-card-body{border:0;border-left:1px solid var(--line);gap:9px;margin:0 0 3px 4px;padding:2px 0 14px 15px;display:grid;position:relative}.qqj-memory-card-body:before{content:\"\";background:var(--knot);border-radius:1px;width:5px;height:5px;position:absolute;top:11px;left:-3px;transform:rotate(45deg)}.qqj-memory-main{color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;margin:0 32px 1px 0;font:500 12px/1.8 宋体,Songti SC,serif}.qqj-memory-main.is-empty{color:var(--soft);font-family:inherit;font-style:italic}.qqj-memory-meta{color:var(--soft);flex-wrap:wrap;gap:5px 11px;padding-right:30px;font-size:9px;line-height:1.5;display:flex}.qqj-memory-meta-item{gap:4px;min-width:0;display:inline-flex}.qqj-memory-meta strong{color:var(--ink);font-weight:600}.qqj-memory-meta-item>span{overflow-wrap:anywhere}.qqj-memory-menu{position:absolute;top:-1px;right:-2px}.qqj-memory-menu>summary{list-style:none}.qqj-memory-menu>summary::-webkit-details-marker{display:none}.qqj-memory-menu-toggle{width:29px;height:29px;color:var(--soft);cursor:pointer;border-radius:7px;place-items:center;font-size:19px;line-height:1;display:grid}.qqj-memory-menu-toggle:hover{color:var(--knot);background:color-mix(in srgb,var(--knot) 7%,var(--panel))}.qqj-memory-menu-pop{z-index:4;border:1px solid var(--line);background:var(--panel);border-radius:9px;min-width:132px;padding:5px;display:none;position:absolute;top:30px;right:0;box-shadow:0 10px 24px #121c2124}.qqj-memory-menu[open]>.qqj-memory-menu-pop{display:grid}.qqj-memory-menu-action{width:100%;color:var(--ink);text-align:left;white-space:nowrap;cursor:pointer;background:0 0;border:0;border-radius:6px;padding:8px 9px;font-size:11px;display:block}.qqj-memory-menu-action:hover{background:color-mix(in srgb,var(--knot) 7%,var(--panel))}.qqj-memory-menu-action:disabled{color:var(--faint);cursor:not-allowed;background:0 0}.status-failed>.qqj-memory-card-head .v3-memory-status,.status-error>.qqj-memory-card-head .v3-memory-status{background:color-mix(in srgb,var(--crimson) 10%,var(--panel));color:var(--crimson)}.status-ready>.qqj-memory-card-head .v3-memory-status{background:color-mix(in srgb,var(--success) 10%,var(--panel));color:var(--success)}.status-ready>.qqj-memory-card-head .v3-memory-status.is-user{background:color-mix(in srgb,var(--knot) 10%,var(--panel));color:var(--knot)}.qqj-memory-edit-field,.qqj-memory-edit-group{gap:6px;display:grid}.qqj-memory-edit-field>span,.qqj-memory-edit-group>strong{color:var(--soft);font-size:10px}.qqj-memory-edit-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:6px;display:grid}.qqj-memory-edit-group:nth-of-type(3) .qqj-memory-edit-row{grid-template-columns:minmax(0,1fr) auto}.qqj-memory-person-option{grid-template-columns:auto minmax(0,1fr) minmax(110px,.8fr);align-items:center;gap:7px;display:grid}.qqj-memory-person-option input{accent-color:var(--knot)}.qqj-card-actions{flex-wrap:wrap;justify-content:flex-end;gap:6px;display:flex}.qqj-inline-empty,.qqj-main-character-empty{border:1px dashed var(--line);background:var(--panel);color:var(--soft);text-align:center;border-radius:9px;padding:18px 14px}.qqj-main-character-empty{text-align:left;gap:9px;display:grid}.qqj-person-summary::-webkit-details-marker{display:none}.qqj-section-summary::-webkit-details-marker{display:none}.v3-cse-subject[open]>.qqj-person-summary:before,.qqj-cse-history[open]>.qqj-section-summary:before,.qqj-management-drawer[open]>.qqj-section-summary:before{transform:rotate(90deg)}.v3-cse-subject.is-main{border-color:color-mix(in srgb,var(--crimson) 38%,var(--line))}.v3-cse-subject.is-main>.qqj-person-summary{box-shadow:inset 3px 0 var(--crimson)}.qqj-people-toolbar{justify-content:space-between;align-items:center;gap:8px;display:flex}.qqj-person-summary,.qqj-section-summary{cursor:pointer;justify-content:space-between;align-items:center;gap:8px;padding:10px 11px;list-style:none;display:flex}.qqj-person-summary::-webkit-details-marker{display:none}.qqj-section-summary::-webkit-details-marker{display:none}.qqj-person-summary:before,.qqj-section-summary:before{content:\"›\";color:var(--soft);flex:none;font-size:17px;line-height:1;transition:transform .15s}.v3-cse-subject[open]>.qqj-person-summary:before,.qqj-cse-history[open]>.qqj-section-summary:before,.qqj-management-drawer[open]>.qqj-section-summary:before,.qqj-more-people[open]>.qqj-section-summary:before{transform:rotate(90deg)}.qqj-person-summary strong,.qqj-section-summary strong{margin-right:auto;font:700 13px 宋体,Songti SC,serif}.qqj-person-body{border-top:1px solid var(--line);gap:8px;padding:9px 11px 11px;display:grid}.qqj-cse-edit,.qqj-cse-edit-group{gap:7px;display:grid}.qqj-cse-edit-group>strong{color:var(--blue);font-size:10px}.qqj-cse-scope-heading{color:var(--soft);align-items:center;gap:5px;font-size:10px;font-weight:600;display:flex}.qqj-cse-help{border:1px solid var(--line);background:var(--panel);width:19px;height:19px;color:var(--soft);cursor:pointer;border-radius:50%;place-items:center;padding:0;font:700 11px/1 inherit;display:grid}.qqj-cse-edit-row{grid-template-columns:minmax(0,1fr);align-items:start;gap:6px;display:grid}.qqj-cse-edit-row textarea{resize:vertical;width:100%;min-height:64px}.qqj-cse-edit-meta{flex-wrap:wrap;align-items:flex-start;gap:6px;display:flex}.qqj-cse-edit-meta>.qqj-inline-select{flex:110px;max-width:220px}.qqj-cse-edit-meta>.secondary-action{flex:none;min-height:34px;margin-left:auto}.qqj-profiles-page{gap:0}.qqj-profile-toolbar{gap:7px;margin-bottom:19px;display:grid}.qqj-profile-switch-row{border-bottom:1px solid var(--line);grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding-bottom:12px;display:grid}.qqj-profile-switcher{overscroll-behavior-x:contain;scrollbar-width:none;gap:3px;min-width:0;padding:0 0 2px;display:flex;overflow-x:auto}.qqj-profile-switcher::-webkit-scrollbar{display:none}.qqj-profile-tab{box-sizing:border-box;min-width:0;max-width:min(170px,100%);color:var(--soft);text-overflow:ellipsis;white-space:nowrap;cursor:pointer;background:0 0;border:0;border-radius:6px;flex:none;padding:6px 9px;font-size:12px;overflow:hidden}.qqj-profile-tab:hover{color:var(--knot);background:color-mix(in srgb,var(--knot) 6%,var(--paper))}.qqj-profile-tab.active{background:color-mix(in srgb,var(--knot) 10%,var(--paper));color:var(--knot);font-weight:700}.qqj-profile-switch-empty{color:var(--faint);white-space:nowrap;align-self:center;padding:6px 4px;font-size:10px}.qqj-profile-more{white-space:nowrap}.qqj-profile-more.active{border-color:var(--knot);color:var(--knot)}.qqj-profile-toolbar-actions{flex-wrap:wrap;justify-content:flex-end;gap:6px;display:flex}.qqj-profile-card{background:0 0;border:0;border-radius:0;overflow:visible}.qqj-profile-picker,.qqj-more-people{border:1px solid var(--line);background:var(--panel);border-radius:9px;overflow:hidden}.qqj-profile-summary{border-bottom:1px solid var(--line);grid-template-columns:50px minmax(0,1fr) auto;align-items:start;gap:13px;padding:0 0 20px;display:grid}.qqj-profile-mark{border:1px solid var(--line);background:var(--panel);width:50px;height:50px;color:var(--knot);border-radius:10px;place-items:center;display:grid}.qqj-profile-mark svg{width:38px;height:25px;display:block}.qqj-profile-identity{min-width:0;padding-top:1px}.qqj-profile-identity h2{letter-spacing:.05em;overflow-wrap:anywhere;margin:0;font:600 27px/1.25 宋体,Songti SC,serif}.qqj-profile-alias{color:var(--soft);white-space:pre-wrap;overflow-wrap:anywhere;margin:5px 0 0;font-size:11px;line-height:1.55}.qqj-profile-badges{flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:5px;padding-top:3px;display:flex}.qqj-profile-picker-heading{align-items:center;gap:8px;padding:10px 11px;display:flex}.qqj-profile-picker-heading strong{margin-right:auto;font:700 14px 宋体,Songti SC,serif}.qqj-profile-body{gap:0;padding:0;display:grid}.qqj-recommend-badge{background:color-mix(in srgb,var(--knot) 10%,var(--panel));color:var(--knot);border-radius:999px;padding:2px 6px;font-size:9px}.qqj-profile-reading{display:grid}.qqj-profile-section{margin:0;padding:17px 0 0}.qqj-profile-section h3{color:var(--soft);letter-spacing:.08em;align-items:center;gap:8px;margin:0 0 7px;font-size:11px;font-weight:500;display:flex}.qqj-profile-section h3:after{content:\"\";background:var(--line);flex:1;height:1px}.qqj-profile-section p{color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font-size:13px;line-height:1.9}.qqj-profile-section.lead{padding-top:18px}.qqj-profile-section.lead p{font-size:14px}.qqj-profile-form{gap:12px;padding-top:17px;display:grid}.qqj-profile-field{gap:5px;display:grid}.qqj-profile-field>span{color:var(--soft);font-size:11px}.qqj-profile-field textarea{resize:vertical;min-height:80px;line-height:1.7}.qqj-profile-save-row{border-top:1px solid var(--line);flex-wrap:wrap;align-items:center;gap:8px;margin-top:17px;padding-top:14px;display:flex}.qqj-profile-save-result{min-width:0;color:var(--soft);overflow-wrap:anywhere;margin:0;font-size:10.5px}.qqj-profile-save-result.success{color:var(--success)}.qqj-profile-save-result.error{color:var(--crimson)}.qqj-more-people-list{border-top:1px solid var(--line);gap:7px;padding:9px;display:grid}.qqj-more-person-row{border:1px solid var(--line);background:var(--paper);border-radius:8px;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:8px 9px;display:grid}.qqj-more-person-copy{gap:2px;min-width:0;display:grid}.qqj-more-person-copy strong{overflow-wrap:anywhere;font:700 12px 宋体,Songti SC,serif}.qqj-more-person-copy small{color:var(--soft);overflow-wrap:anywhere;font-size:9px}.qqj-cse-more>.qqj-more-people-list>.v3-cse-subject{background:var(--paper)}.qqj-profile-menu{position:relative}.qqj-profile-menu>summary{list-style:none}.qqj-profile-menu>summary::-webkit-details-marker{display:none}.qqj-profile-menu-toggle{width:29px;height:29px;color:var(--soft);cursor:pointer;background:0 0;border:0;border-radius:7px;place-items:center;font-size:19px;line-height:1;display:grid}.qqj-profile-menu-toggle:hover{color:var(--knot);background:color-mix(in srgb,var(--knot) 7%,var(--panel))}.qqj-profile-menu-pop{z-index:3;border:1px solid var(--line);background:var(--panel);border-radius:9px;min-width:166px;padding:5px;display:none;position:absolute;top:34px;right:0;box-shadow:0 10px 24px #121c2124}.qqj-profile-menu[open]>.qqj-profile-menu-pop{display:grid}.qqj-profile-menu-pop .qqj-profile-menu-action{width:100%;color:var(--ink);text-align:left;white-space:nowrap;cursor:pointer;background:0 0;border:0;border-radius:6px;padding:8px 9px;font-size:11px;display:block}.qqj-profile-menu-pop .qqj-profile-menu-action:hover{background:color-mix(in srgb,var(--knot) 7%,var(--panel))}.qqj-profile-menu-pop .qqj-profile-menu-action.danger{color:var(--crimson)}.qqj-profile-menu-pop .qqj-profile-menu-action:disabled{color:var(--faint);cursor:not-allowed;background:0 0}.qqj-profile-menu-separator{background:var(--line);height:1px;margin:4px 5px}.qqj-profile-reading-result{border-top:1px solid var(--line);margin-top:17px;padding-top:12px}.qqj-cse-history,.qqj-management-drawer{border:1px solid var(--line);background:var(--panel);border-radius:9px;overflow:hidden}.qqj-cse-history-list,.qqj-management-drawer-body{border-top:1px solid var(--line);gap:8px;padding:10px;display:grid}.qqj-cse-history-row{border:1px solid var(--line);background:var(--paper);border-radius:8px;overflow:hidden}.qqj-cse-floor-summary{cursor:pointer;justify-content:space-between;align-items:center;gap:7px;padding:8px 9px;list-style:none;display:flex}.qqj-cse-floor-summary::-webkit-details-marker{display:none}.qqj-cse-floor-summary:before{content:\"›\";color:var(--soft);font-size:16px;line-height:1;transition:transform .15s}.qqj-cse-history-row[open]>.qqj-cse-floor-summary:before{transform:rotate(90deg)}.qqj-cse-floor-summary>span:first-of-type{margin-right:auto}.qqj-cse-floor-body{border-top:1px solid var(--line);gap:8px;padding:9px;display:grid}.qqj-cse-record-subject{gap:6px;display:grid}.qqj-cse-record-subject>strong{font:700 12px 宋体,Songti SC,serif}.qqj-management-notice{border-left:3px solid var(--crimson);background:color-mix(in srgb,var(--crimson) 6%,var(--panel));color:var(--soft);margin:0;padding:9px 10px;font-size:10.5px;line-height:1.55}.qqj-management-actions{padding:1px 0}.qqj-diagnostic-row{border-bottom:1px solid var(--line);grid-template-columns:minmax(72px,1fr) auto auto;align-items:center;gap:6px;padding:7px 0;display:grid}.qqj-diagnostic-row:last-child{border-bottom:0}.qqj-settings-management{border:1px solid var(--line);background:var(--panel);border-radius:10px;gap:10px;padding:13px 14px;display:grid}.qqj-settings-management .qqj-page{gap:10px}.qqj-settings-management .qqj-view-heading>h2{font-size:16px}.qqj-settings-management .qqj-view-heading>p{display:none}.qqj-cse-isolation-hint{border-left:2px solid var(--thread);background:color-mix(in srgb,var(--thread) 7%,var(--panel));color:var(--soft);margin:0;padding:7px 8px;font-size:9.5px;line-height:1.5}.qqj-cse-floor-state{border-top:1px dashed var(--line);overflow:hidden}.qqj-cse-floor-state-summary{color:var(--soft);cursor:pointer;padding:7px 2px;font-size:10px;list-style:none}.qqj-cse-floor-state-summary::-webkit-details-marker{display:none}.qqj-cse-floor-state-summary:before{content:\"›\";margin-right:5px;transition:transform .15s;display:inline-block}.qqj-cse-floor-state[open]>.qqj-cse-floor-state-summary:before{transform:rotate(90deg)}.qqj-cse-floor-state-body{gap:8px;padding:2px 0 3px;display:grid}.qqj-cse-state-group{gap:4px;display:grid}.qqj-cse-state-label{color:var(--soft);font-size:9px}button:focus-visible,summary:focus-visible{outline:2px solid var(--knot);outline-offset:2px}@media (prefers-reduced-motion:reduce){.qqj-person-summary:before,.qqj-section-summary:before,.qqj-memory-chevron,.qqj-cse-floor-summary:before,.qqj-cse-floor-state-summary:before{transition:none}}@media (width<=390px){.qqj-memory-card-head{padding-inline:0}.qqj-memory-card-body{padding-left:15px;padding-right:0}.qqj-card-actions{grid-template-columns:1fr 1fr;display:grid}.qqj-card-actions button{width:100%}.qqj-memory-edit-row,.qqj-memory-person-option{grid-template-columns:minmax(0,1fr)}.qqj-memory-edit-row button{width:100%}.qqj-diagnostic-row{grid-template-columns:minmax(0,1fr) auto}.qqj-diagnostic-row>button{grid-column:1/-1;width:100%}.qqj-settings-management{padding-inline:10px}.qqj-more-person-row{grid-template-columns:minmax(0,1fr)}.qqj-more-person-row button{width:100%}.qqj-profile-switch-row{grid-template-columns:minmax(0,1fr)}.qqj-profile-toolbar-actions{justify-content:flex-start}.qqj-profile-summary{grid-template-columns:46px minmax(0,1fr);gap:11px}.qqj-profile-mark{width:46px;height:46px}.qqj-profile-badges{grid-column:2;justify-content:flex-start;padding-top:0}.qqj-profile-save-row{align-items:stretch}.qqj-profile-save-row button{flex:auto}.qqj-profile-save-result{flex-basis:100%}.qqj-cse-edit-meta>.qqj-inline-select{max-width:none}.qqj-cse-edit-meta>.secondary-action{width:auto}.qqj-auto-hide-row{flex-wrap:wrap}}.source-permission-list,.qqj-inline-select-options,.qqj-model-list-items{touch-action:pan-y}.qqj-ui-diagnostic-action{flex-wrap:wrap;align-items:center;gap:7px;display:flex}.qqj-ui-diagnostic-action .settings-hint{margin:0}.qqj-people-page,.qqj-cse-history-page{gap:12px}.qqj-people-page>.qqj-page-health,.qqj-cse-history-page>.qqj-page-health{margin:0}.qqj-user-anchor{border-bottom:1px solid var(--line);gap:10px;padding:13px 0 14px;display:grid}.qqj-user-anchor-title{align-items:center;gap:8px;display:flex}.qqj-user-anchor-title>strong{overflow-wrap:anywhere;font:800 20px/1.2 宋体,Songti SC,serif}.qqj-user-anchor .v3-cse-group,.qqj-relation-note .v3-cse-group{gap:4px}.qqj-user-anchor .v3-cse-group h5,.qqj-relation-note .v3-cse-group h5{color:var(--soft);align-items:center;gap:8px;font-size:10px;font-weight:600;display:flex}.qqj-user-anchor .v3-cse-group h5:after,.qqj-relation-note .v3-cse-group h5:after{content:\"\";background:var(--line);flex:1;height:1px}.qqj-user-anchor .v3-cse-items,.qqj-relation-note .v3-cse-items{gap:4px}.qqj-user-anchor .v3-cse-item,.qqj-relation-note .v3-cse-item{background:0 0;padding:3px 0 3px 10px}.qqj-cse-edit-action{justify-self:start}.qqj-cse-page-heading{align-items:center;gap:8px;margin-top:2px;display:flex}.qqj-cse-page-heading>strong{font:800 15px/1.3 宋体,Songti SC,serif}.qqj-cse-page-heading>.v3-memory-status{margin-left:auto}.qqj-cse-view-toggle{white-space:nowrap;margin-left:auto;padding:5px 9px}.qqj-relation-switcher{overscroll-behavior-x:contain;scrollbar-width:none;gap:7px;min-width:0;padding-bottom:3px;display:flex;overflow-x:auto}.qqj-relation-switcher::-webkit-scrollbar{display:none}.qqj-relation-person{border:1px solid var(--line);background:var(--panel);max-width:170px;color:var(--soft);text-overflow:ellipsis;white-space:nowrap;cursor:pointer;border-radius:8px;flex:none;padding:7px 12px;font-size:11px;overflow:hidden}.qqj-relation-person.active{border-color:color-mix(in srgb,var(--knot) 42%,var(--line));background:color-mix(in srgb,var(--knot) 9%,var(--panel));color:var(--knot);font-weight:700}.qqj-people-page>.v3-cse-subject{background:0 0}.qqj-people-page>.v3-cse-subject>.qqj-person-summary{padding-inline:2px}.qqj-people-page>.v3-cse-subject>.qqj-person-body{border-top:1px solid var(--line);padding-inline:2px}.qqj-relation-card{border:1px solid var(--line);background:var(--panel);border-radius:12px;overflow:visible}.qqj-relation-head{border-bottom:1px solid var(--line);align-items:center;gap:8px;padding:12px;display:flex}.qqj-relation-head>strong{overflow-wrap:anywhere;font:800 18px/1.2 宋体,Songti SC,serif}.qqj-relation-head>span{color:var(--faint);font-size:12px}.qqj-relation-menu{margin-left:auto;position:relative;top:auto;right:auto}.qqj-relation-menu .qqj-memory-menu-pop{z-index:5}.qqj-relation-menu .qqj-memory-menu-action.danger{color:var(--crimson)}.qqj-relation-dual{grid-template-columns:minmax(0,1fr) 1px minmax(0,1fr);padding:12px;display:grid}.qqj-relation-divider{background:linear-gradient(to bottom,transparent,var(--line) 10%,var(--line) 90%,transparent);width:1px;min-height:54px}.qqj-relation-lane{min-width:0;padding:0 10px}.qqj-relation-lane:first-child{padding-left:0}.qqj-relation-lane:last-child{padding-right:0}.qqj-relation-lane-title{color:var(--soft);overflow-wrap:anywhere;margin-bottom:8px;font-size:10px;display:block}.qqj-relation-lane.from-user .qqj-relation-lane-title{color:var(--knot)}.qqj-relation-items{gap:0;margin:0;padding:0;list-style:none;display:grid}.qqj-relation-item{border-top:1px solid var(--line);gap:2px;padding:7px 0;display:grid}.qqj-relation-item:first-child{border-top:0}.qqj-relation-item .v3-cse-item-text{white-space:pre-wrap;font-size:11px;line-height:1.55}.qqj-relation-item .v3-cse-item-meta{line-height:1.45}.qqj-relation-lane>.settings-hint{margin:0;padding:7px 0}.qqj-other-relations{border-top:1px solid var(--line);overflow:hidden}.qqj-other-relations>.qqj-section-summary{padding-inline:2px}.qqj-other-relations[open]>.qqj-section-summary:before{transform:rotate(90deg)}.qqj-other-relations-body{gap:8px;padding:8px 2px 2px;display:grid}.qqj-other-relation{border:1px solid var(--line);background:var(--panel);border-radius:8px;gap:3px;padding:8px 9px;display:grid}.qqj-other-relation>strong{color:var(--soft);font-size:9px}.qqj-other-relation>.qqj-relation-item{list-style:none}.qqj-cse-history-page>.qqj-cse-history-list{border-top:0;padding:0}.qqj-cse-floor-result{gap:8px;display:grid}.qqj-cse-floor-result-title{font:700 12px/1.3 宋体,Songti SC,serif}.qqj-cse-floor-changes{border-top:1px dashed var(--line);overflow:hidden}.qqj-cse-floor-changes[open]>.qqj-cse-floor-state-summary:before{transform:rotate(90deg)}.qqj-cse-floor-changes-body{gap:8px;padding:2px 0 3px;display:grid}.qqj-cse-change.is-add{border-left-color:var(--success);background:color-mix(in srgb,var(--success) 7%,var(--panel))}.qqj-cse-change.is-update,.qqj-cse-change.is-refine{background:color-mix(in srgb,#ad7b2f 8%,var(--panel));border-left-color:#ad7b2f}.qqj-cse-change.is-remove{border-left-color:var(--faint);background:color-mix(in srgb,var(--faint) 8%,var(--panel));color:var(--soft)}@media (width<=390px){.qqj-relation-dual{grid-template-columns:minmax(0,1fr);gap:10px}.qqj-relation-divider{width:100%;height:1px;min-height:0}.qqj-relation-lane{padding:0}.qqj-cse-page-heading{align-items:flex-start}.qqj-cse-page-heading>.v3-memory-status{display:none}}.qqj-page-status{gap:4px;display:grid}.qqj-page-health{margin:0}.qqj-memories-page,.qqj-profiles-page{gap:12px}.qqj-profile-health{margin:0}.qqj-profile-toolbar{margin-bottom:0}.qqj-relation-switch-row{align-items:center;gap:7px;min-width:0;display:flex}.qqj-relation-switch-row>.qqj-relation-switcher{flex:auto}.qqj-relation-more-toggle{text-overflow:ellipsis;white-space:nowrap;flex:none;max-width:42%;overflow:hidden}.qqj-relation-more-toggle.active{border-color:var(--knot);color:var(--knot)}.qqj-cse-change.is-remove .v3-cse-item-text{color:var(--faint);text-decoration:line-through;-webkit-text-decoration-color:color-mix(in srgb,var(--faint) 55%,transparent);text-decoration-color:color-mix(in srgb,var(--faint) 55%,transparent);text-decoration-thickness:1px}.qqj-relation-note{border-top:1px solid var(--line);background:color-mix(in srgb,var(--panel) 94%,var(--line));border-radius:0 0 12px 12px;min-width:0;padding:9px 12px 11px}.qqj-relation-note-body{gap:10px;min-width:0;display:grid}.qqj-relation-note .v3-cse-item{border-left-color:var(--knot)}.qqj-relation-note .v3-cse-item-text{white-space:pre-wrap}.qqj-relation-note .settings-hint{margin:0}.qqj-relation-head>strong{min-width:0}.qqj-relation-head>span{white-space:nowrap;flex-shrink:0}", y = "qqj-panel-pos-v2", b = "qqj-panel-size-v2", x = (e) => Number.isFinite(Number(e)), S = (e, t, n) => Math.min(n, Math.max(t, e)), C = (e, t) => ({
 	width: Math.max(0, Number(e) || 0),
 	height: Math.max(0, Number(t) || 0)
 });
@@ -325,15 +325,15 @@ function j(e) {
 }
 var M = Object.freeze({
 	day: Object.freeze({
-		paper: "#e8ecec",
-		panel: "#f6f8f8",
+		paper: "#f7f8fa",
+		panel: "#ffffff",
 		ink: "#22282b",
-		soft: "#5c6a70",
-		faint: "#93a1a5",
-		line: "#d0d9db",
-		thread: "#c1ccce",
-		crimson: "#a8322f",
-		knot: "#a8322f",
+		soft: "#637077",
+		faint: "#929da2",
+		line: "#dce2e5",
+		thread: "#cbd4d8",
+		crimson: "#b63745",
+		knot: "#b63745",
 		blue: "#4f8781",
 		success: "#4b7d63"
 	}),
@@ -350,13 +350,28 @@ var M = Object.freeze({
 		blue: "#77b0aa",
 		success: "#77b193"
 	})
-}), N = (e) => {
+}), N = Object.freeze({
+	day: Object.freeze({
+		paper: "#e8ecec",
+		panel: "#f6f8f8",
+		ink: "#22282b",
+		soft: "#5c6a70",
+		faint: "#93a1a5",
+		line: "#d0d9db",
+		thread: "#c1ccce",
+		crimson: "#a8322f",
+		knot: "#a8322f",
+		blue: "#4f8781",
+		success: "#4b7d63"
+	}),
+	night: M.night
+}), P = (e) => {
 	let t = e.map((e) => e.endsWith("%") ? Math.round(Math.min(100, Math.max(0, Number.parseFloat(e))) * 2.55) : Math.round(Math.min(255, Math.max(0, Number.parseFloat(e)))));
 	return {
 		value: `rgb(${t.join(", ")})`,
 		rgb: t
 	};
-}, P = (e, t) => {
+}, F = (e, t) => {
 	let n = k(t);
 	if (!n || n.toLowerCase() === "transparent") return null;
 	let r = /^#([\da-f]{3,8})$/iu.exec(n);
@@ -374,7 +389,7 @@ var M = Object.freeze({
 		};
 	}
 	let i = /^rgba?\(\s*([\d.]+%?)\s*(?:,|\s)\s*([\d.]+%?)\s*(?:,|\s)\s*([\d.]+%?)(?:\s*(?:,|\/)\s*[\d.]+%?)?\s*\)$/iu.exec(n);
-	if (i) return N(i.slice(1, 4));
+	if (i) return P(i.slice(1, 4));
 	try {
 		let t = (e?.createElement?.("canvas"))?.getContext?.("2d");
 		if (!t || (t.fillStyle = "#010203", t.fillStyle = n, t.fillStyle === "#010203" && n.toLowerCase() !== "#010203")) return null;
@@ -391,7 +406,7 @@ var M = Object.freeze({
 	} catch {
 		return null;
 	}
-}, F = ({ documentRef: e, windowRef: t }) => {
+}, ee = ({ documentRef: e, windowRef: t }) => {
 	try {
 		let n = t?.getComputedStyle?.(e?.documentElement);
 		if (!n) return {};
@@ -406,23 +421,23 @@ var M = Object.freeze({
 	} catch {
 		return {};
 	}
-}, ee = (e) => Math.min(255, Math.max(0, Number(e) || 0)), I = (e) => e?.rgb ? .2126 * ee(e.rgb[0]) + .7152 * ee(e.rgb[1]) + .0722 * ee(e.rgb[2]) : null;
-function L({ value: e = {}, documentRef: t = globalThis.document, windowRef: n = t?.defaultView ?? globalThis } = {}) {
+}, I = (e) => Math.min(255, Math.max(0, Number(e) || 0)), L = (e) => e?.rgb ? .2126 * I(e.rgb[0]) + .7152 * I(e.rgb[1]) + .0722 * I(e.rgb[2]) : null;
+function R({ value: e = {}, documentRef: t = globalThis.document, windowRef: n = t?.defaultView ?? globalThis } = {}) {
 	let r = [
 		"auto",
 		"day",
 		"night"
-	].includes(e.appearanceTheme) ? e.appearanceTheme : "auto", i = F({
+	].includes(e.appearanceTheme) ? e.appearanceTheme : "auto", i = ee({
 		documentRef: t,
 		windowRef: n
-	}), a = P(t, i.body), o = a ? (I(a) ?? 0) > 127 ? "night" : "day" : null, s = n?.matchMedia?.("(prefers-color-scheme: light)")?.matches ? "day" : "night", c = r === "auto" ? o ?? s : r, l = M[c];
+	}), a = F(t, i.body), o = a ? (L(a) ?? 0) > 127 ? "night" : "day" : null, s = n?.matchMedia?.("(prefers-color-scheme: light)")?.matches ? "day" : "night", c = r === "auto" ? o ?? s : r, l = (r === "auto" ? N : M)[c];
 	if (r !== "auto") return {
 		mode: r,
 		effectiveTheme: c,
 		palette: l,
 		hasHostSignal: !!o
 	};
-	let u = (e, n) => P(t, e)?.value ?? n;
+	let u = (e, n) => F(t, e)?.value ?? n;
 	return {
 		mode: r,
 		effectiveTheme: c,
@@ -439,8 +454,8 @@ function L({ value: e = {}, documentRef: t = globalThis.document, windowRef: n =
 		}
 	};
 }
-function R({ host: e, root: t, settings: n, documentRef: r = globalThis.document, windowRef: i = r?.defaultView ?? globalThis, fetchImpl: a = globalThis.fetch } = {}) {
-	let o = n?.get?.() ?? n ?? {}, s = L({
+function z({ host: e, root: t, settings: n, documentRef: r = globalThis.document, windowRef: i = r?.defaultView ?? globalThis, fetchImpl: a = globalThis.fetch } = {}) {
+	let o = n?.get?.() ?? n ?? {}, s = R({
 		value: o,
 		documentRef: r,
 		windowRef: i
@@ -476,8 +491,8 @@ function R({ host: e, root: t, settings: n, documentRef: r = globalThis.document
 		fontReady: p
 	};
 }
-function z({ host: e, root: t, settings: n, documentRef: r = globalThis.document, windowRef: i = r?.defaultView ?? globalThis, fetchImpl: a = globalThis.fetch, onChange: o } = {}) {
-	let s = !1, c = null, l = () => s ? c : (c = R({
+function B({ host: e, root: t, settings: n, documentRef: r = globalThis.document, windowRef: i = r?.defaultView ?? globalThis, fetchImpl: a = globalThis.fetch, onChange: o } = {}) {
+	let s = !1, c = null, l = () => s ? c : (c = z({
 		host: e,
 		root: t,
 		settings: n,
@@ -493,7 +508,7 @@ function z({ host: e, root: t, settings: n, documentRef: r = globalThis.document
 	});
 	let f = i?.matchMedia?.("(prefers-color-scheme: light)"), p = () => {
 		let e = n?.get?.() ?? n ?? {};
-		e.appearanceTheme === "auto" && !L({
+		e.appearanceTheme === "auto" && !R({
 			value: e,
 			documentRef: r,
 			windowRef: i
@@ -509,7 +524,7 @@ function z({ host: e, root: t, settings: n, documentRef: r = globalThis.document
 }
 //#endregion
 //#region src/ui/settings-drawer.js
-function B(e = {}) {
+function V(e = {}) {
 	let t = new Map(Object.entries(e).map(([e, t]) => [e, t === !0]));
 	return Object.freeze({
 		isOpen: (e, n = !1) => t.has(e) ? t.get(e) : n === !0,
@@ -522,7 +537,7 @@ function B(e = {}) {
 		snapshot: () => Object.fromEntries(t)
 	});
 }
-var V = Object.freeze({
+var H = Object.freeze({
 	block: {
 		drawer: "settings-block settings-drawer",
 		summary: "settings-drawer-summary",
@@ -542,9 +557,9 @@ var V = Object.freeze({
 		body: "settings-sub-body"
 	}
 });
-function te({ documentRef: e = globalThis.document, title: t, className: n = "", id: r = "", open: i = !1, level: a = "block", onToggle: o } = {}) {
+function U({ documentRef: e = globalThis.document, title: t, className: n = "", id: r = "", open: i = !1, level: a = "block", onToggle: o } = {}) {
 	if (!e?.createElement) throw TypeError("settings drawer documentRef 无效");
-	let s = V[a] ?? V.block, c = e.createElement("details");
+	let s = H[a] ?? H.block, c = e.createElement("details");
 	c.className = [s.drawer, n].filter(Boolean).join(" "), r && (c.id = r), c.open = i === !0;
 	let l = e.createElement("summary");
 	l.className = s.summary;
@@ -560,7 +575,7 @@ function te({ documentRef: e = globalThis.document, title: t, className: n = "",
 }
 //#endregion
 //#region src/ui/settings/kit.js
-function H(e = globalThis.document) {
+function te(e = globalThis.document) {
 	let t = (t, n = "", r = "") => {
 		let i = e.createElement(t);
 		return n && (i.className = n), r !== "" && (i.textContent = r), i;
@@ -579,7 +594,7 @@ function H(e = globalThis.document) {
 			let i = t("option", "", r);
 			return i.value = n, e.append(i), i;
 		},
-		subDrawer: ({ title: t, id: n = "", open: r = !1, onToggle: i } = {}) => te({
+		subDrawer: ({ title: t, id: n = "", open: r = !1, onToggle: i } = {}) => U({
 			documentRef: e,
 			title: t,
 			id: n,
@@ -591,13 +606,13 @@ function H(e = globalThis.document) {
 }
 //#endregion
 //#region src/ui/inline-select.js
-var U = (e) => (Array.isArray(e) ? e : []).map((e) => ({
+var W = (e) => (Array.isArray(e) ? e : []).map((e) => ({
 	value: String(e?.value ?? ""),
 	label: String(e?.label ?? e?.value ?? "")
 }));
-function W({ documentRef: e = globalThis.document, options: t = [], value: n = "", ariaLabel: r = "选择", onChange: i = null, onFocus: a = null } = {}) {
+function G({ documentRef: e = globalThis.document, options: t = [], value: n = "", ariaLabel: r = "选择", onChange: i = null, onFocus: a = null } = {}) {
 	if (!e?.createElement) throw TypeError("inline select documentRef 无效");
-	let o = U(t), s = e.createElement("div");
+	let o = W(t), s = e.createElement("div");
 	s.className = "qqj-inline-select";
 	let c = e.createElement("button");
 	c.type = "button", c.className = "settings-input qqj-inline-select-trigger", c.setAttribute("aria-label", r), c.setAttribute("aria-haspopup", "listbox"), c.setAttribute("aria-expanded", "false");
@@ -713,7 +728,7 @@ function W({ documentRef: e = globalThis.document, options: t = [], value: n = "
 }
 //#endregion
 //#region src/ui/settings/api-settings.js
-function G(e) {
+function ne(e) {
 	return {
 		QQJ_DISABLED: "千千结当前已关闭。",
 		QQJ_CONFIG: "主 API 配置不完整。",
@@ -721,8 +736,8 @@ function G(e) {
 		QQJ_TIMEOUT: "API 请求超时。"
 	}[e?.code] ?? "API 操作没有完成。";
 }
-function ne({ settings: e, apiTools: t, documentRef: n = globalThis.document, open: r = !1, onToggle: i, advancedOpen: a = !1, onAdvancedToggle: o, rerender: s, confirmImpl: c = (e) => globalThis.confirm?.(typeof e == "string" ? e : `${e?.title ?? "请确认"}\n\n${e?.body ?? ""}`) === !0, promptImpl: l = (e) => globalThis.prompt?.(typeof e == "string" ? e : e?.title, typeof e == "string" ? "" : e?.initialValue) ?? null, isSevenDaysAvailable: u = () => !1 } = {}) {
-	let { element: d, button: f, field: p, subDrawer: m } = H(n), { drawer: h, body: g } = m({
+function re({ settings: e, apiTools: t, documentRef: n = globalThis.document, open: r = !1, onToggle: i, advancedOpen: a = !1, onAdvancedToggle: o, rerender: s, confirmImpl: c = (e) => globalThis.confirm?.(typeof e == "string" ? e : `${e?.title ?? "请确认"}\n\n${e?.body ?? ""}`) === !0, promptImpl: l = (e) => globalThis.prompt?.(typeof e == "string" ? e : e?.title, typeof e == "string" ? "" : e?.initialValue) ?? null, isSevenDaysAvailable: u = () => !1 } = {}) {
+	let { element: d, button: f, field: p, subDrawer: m } = te(n), { drawer: h, body: g } = m({
 		title: "API 配置",
 		id: "qqj-settings-api",
 		open: r,
@@ -733,14 +748,14 @@ function ne({ settings: e, apiTools: t, documentRef: n = globalThis.document, op
 	}, ...v.map((e) => ({
 		value: e.id,
 		label: e.name
-	}))], x = W({
+	}))], x = G({
 		documentRef: n,
 		options: b("主配置"),
 		value: _.apiMode === "seven-preset" ? _.selectedSevenDaysPresetId : "",
 		ariaLabel: "分析 API",
 		onFocus: () => oe("analysis"),
 		onChange: (e) => ie(e)
-	}), S = W({
+	}), S = G({
 		documentRef: n,
 		options: b("跟随分析API"),
 		value: v.some((t) => t.id === e.sharedUtilityPresetId()) ? e.sharedUtilityPresetId() : "",
@@ -774,7 +789,7 @@ function ne({ settings: e, apiTools: t, documentRef: n = globalThis.document, op
 	L.type = "number", L.min = "5", L.max = "600";
 	let R = d("input");
 	R.type = "checkbox";
-	let z = d("p", "settings-hint"), B, V = [], te = 0, U = (e = F.value) => {
+	let z = d("p", "settings-hint"), B, V = [], H = 0, U = (e = F.value) => {
 		N.textContent = `已加载 ${V.length} 个模型`;
 		let t = String(e ?? "").trim().toLocaleLowerCase(), n = t ? V.filter((e) => e.toLocaleLowerCase().includes(t)) : V;
 		if (!n.length) {
@@ -787,10 +802,10 @@ function ne({ settings: e, apiTools: t, documentRef: n = globalThis.document, op
 			});
 			return t.setAttribute("data-model", e), t;
 		}));
-	}, ne = () => {
-		te += 1, V = [], F.value = "", A.open = !1, A.hidden = !0, U("");
+	}, W = () => {
+		H += 1, V = [], F.value = "", A.open = !1, A.hidden = !0, U("");
 	}, re = () => {
-		ne();
+		W();
 		let e = E(), t = e.config ?? {};
 		D.value = t.url ?? "", O.value = "", O.placeholder = t.key ? "已保存，留空保持不变" : "输入 API Key", k.value = t.model ?? "", I.value = (t.excludeParams ?? []).join("\n"), L.value = String(t.timeoutSec ?? 180), R.checked = t.stream === !0, z.textContent = e.followsAnalysis ? `正在编辑：摘要 API 跟随分析 · ${e.label}。直接保存会更新共享配置；另存可建立摘要专用预设。` : `正在编辑：${e.sourceRole === "summary" ? "摘要" : "分析"} API · ${e.label}`, B && (B.disabled = !e.presetId || !e.config);
 	};
@@ -822,14 +837,14 @@ function ne({ settings: e, apiTools: t, documentRef: n = globalThis.document, op
 		};
 	}, ce = f("拉取模型", "secondary-action", async () => {
 		K.textContent = "正在拉取模型…", K.className = "settings-result", ce.disabled = !0;
-		let e = te, n = q();
+		let e = H, n = q();
 		try {
 			let r = await t.fetchModels(n);
-			if (e !== te) return;
+			if (e !== H) return;
 			V = [...r], !k.value.trim() && r[0] && (k.value = r[0]), A.hidden = !1, A.open = !0, U(""), K.textContent = `已拉取 ${r.length} 个模型`, K.className = "settings-result success";
 		} catch (t) {
-			if (e !== te) return;
-			K.textContent = G(t), K.className = "settings-result error";
+			if (e !== H) return;
+			K.textContent = ne(t), K.className = "settings-result error";
 		} finally {
 			ce.disabled = !1;
 		}
@@ -896,7 +911,7 @@ function ne({ settings: e, apiTools: t, documentRef: n = globalThis.document, op
 			let e = await t.testConnection(q());
 			K.textContent = `连接成功 · ${e?.model || "当前模型"}`, K.className = "settings-result success";
 		} catch (e) {
-			K.textContent = G(e), K.className = "settings-result error";
+			K.textContent = ne(e), K.className = "settings-result error";
 		}
 	}), fe = d("div", "settings-inline");
 	fe.append(k, ce);
@@ -914,7 +929,7 @@ function ne({ settings: e, apiTools: t, documentRef: n = globalThis.document, op
 }
 //#endregion
 //#region src/story-clock.js
-var re = "myknots_story_clock", ie = [
+var ie = "myknots_story_clock", ae = [
 	"【故事时间戳 QQJ｜每楼附加元数据】",
 	"请在本楼正文最前与最后各放一个 HTML 注释，作为本楼的附加故事时间元数据。HTML 注释不会显示给读者。",
 	"日期与时间的表达方式应与当前故事背景及正文保持一致。沿用正文已经使用的纪年、历法和计时方式，不因示例而切换格式。",
@@ -922,9 +937,9 @@ var re = "myknots_story_clock", ie = [
 	"  <!-- QQJ-start | date=10月4日 | weekday=周二 | time=15:30 -->正文<!-- QQJ-end | date=10月4日 | weekday=周二 | time=16:00 -->",
 	"start 与 end 都必须同时填写 date、weekday、time；weekday 只能使用周一至周日。上下文已有完整故事纪年时，date 原样复制年号与年份；未知年份时只写月日，不得猜现实年份。日期、历法、状态栏、时间戳等其他世界书要求仍须完整执行，QQJ 不替代、不合并、不改写它们。",
 	"通常以上一楼 end 为参考推进本楼时间；若本楼没有可用参考，按当前剧情设定合理填写。除这两个注释外，不要在正文中讨论 QQJ。"
-].join("\n"), ae = (e) => typeof e == "string" ? e : "", oe = (e, t) => RegExp(`(?:^|[|｜,，;；\\n])\\s*(?:${t})\\s*[=＝:]\\s*([^|｜,，;；\\n]+)`, "iu").exec(e)?.[1]?.trim() || null;
-function se(e) {
-	let t = ae(e).trim(), n = oe(t, "date"), r = oe(t, "weekday|星期"), i = oe(t, "time"), a = /^(?:周|週|星期|礼拜|禮拜)[一二三四五六日天]$/u.test(r ?? "");
+].join("\n"), oe = (e) => typeof e == "string" ? e : "", se = (e, t) => RegExp(`(?:^|[|｜,，;；\\n])\\s*(?:${t})\\s*[=＝:]\\s*([^|｜,，;；\\n]+)`, "iu").exec(e)?.[1]?.trim() || null;
+function K(e) {
+	let t = oe(e).trim(), n = se(t, "date"), r = se(t, "weekday|星期"), i = se(t, "time"), a = /^(?:周|週|星期|礼拜|禮拜)[一二三四五六日天]$/u.test(r ?? "");
 	return Object.freeze({
 		raw: t,
 		date: n,
@@ -933,10 +948,10 @@ function se(e) {
 		complete: !!(n && a && i)
 	});
 }
-function K(e, t) {
+function q(e, t) {
 	let n = RegExp(`<!--\\s*${t}-start\\s+([\\s\\S]*?)\\s*-->`, "igu"), r = RegExp(`<!--\\s*${t}-end\\s+([\\s\\S]*?)\\s*-->`, "igu"), i = [...e.matchAll(n)], a = [...e.matchAll(r)];
 	if (!i.length && !a.length) return null;
-	let o = i[0] ?? null, s = a[0] ?? null, c = i.length !== 1 || a.length !== 1, l = !!(o && s && s.index >= o.index + o[0].length), u = o ? se(o[1]) : null, d = s ? se(s[1]) : null;
+	let o = i[0] ?? null, s = a[0] ?? null, c = i.length !== 1 || a.length !== 1, l = !!(o && s && s.index >= o.index + o[0].length), u = o ? K(o[1]) : null, d = s ? K(s[1]) : null;
 	return Object.freeze({
 		namespace: t,
 		start: u?.raw ?? null,
@@ -948,26 +963,26 @@ function K(e, t) {
 		sourceIndex: Math.min(o?.index ?? Infinity, s?.index ?? Infinity)
 	});
 }
-function q(e) {
-	let t = ae(e), n = [
+function ce(e) {
+	let t = oe(e), n = [
 		"SDC",
 		"QQJ",
 		"myknots"
-	].map((e) => K(t, e)).filter(Boolean);
+	].map((e) => q(t, e)).filter(Boolean);
 	return n.length ? n.sort((e, t) => Number(t.complete) - Number(e.complete) || e.sourceIndex - t.sourceIndex)[0] : null;
 }
-function ce(e) {
+function le(e) {
 	return e ? JSON.stringify([
 		e.namespace.toLocaleLowerCase(),
 		e.start ?? null,
 		e.end ?? null
 	]) : "";
 }
-function le(e = {}) {
-	let t = ae(e.storyClockPrompt);
-	return t.trim() ? t : ie;
+function ue(e = {}) {
+	let t = oe(e.storyClockPrompt);
+	return t.trim() ? t : ae;
 }
-function ue({ owner: e, ownActive: t, ownCustom: n, peerActive: r, peerCustom: i } = {}) {
+function de({ owner: e, ownActive: t, ownCustom: n, peerActive: r, peerCustom: i } = {}) {
 	return Object.freeze(t ? n ? {
 		inject: !0,
 		status: "custom"
@@ -985,14 +1000,14 @@ function ue({ owner: e, ownActive: t, ownCustom: n, peerActive: r, peerCustom: i
 		status: "closed"
 	});
 }
-function de({ extensionNames: e = [], disabledExtensions: t = [], extensionSuffix: n, peerSettings: r } = {}) {
+function fe({ extensionNames: e = [], disabledExtensions: t = [], extensionSuffix: n, peerSettings: r } = {}) {
 	let i = e.find((e) => String(e).endsWith(n)) ?? null, a = !!(i && !t.includes(i) && r && r.pluginEnabled !== !1 && r.storyClockEnabled !== !1);
 	return Object.freeze({
 		active: a,
 		custom: a && typeof r.storyClockPrompt == "string" && r.storyClockPrompt.trim().length > 0
 	});
 }
-function fe({ context: e, settings: t, peerState: n = () => ({
+function pe({ context: e, settings: t, peerState: n = () => ({
 	active: !1,
 	custom: !1
 }) } = {}) {
@@ -1007,27 +1022,27 @@ function fe({ context: e, settings: t, peerState: n = () => ({
 				inject: !1,
 				status: "unavailable"
 			});
-			let o = t?.() ?? {}, s = n?.() ?? {}, c = ue({
+			let o = t?.() ?? {}, s = n?.() ?? {}, c = de({
 				owner: "myknots",
 				ownActive: o.pluginEnabled !== !1 && o.storyClockEnabled !== !1,
-				ownCustom: ae(o.storyClockPrompt).trim().length > 0,
+				ownCustom: oe(o.storyClockPrompt).trim().length > 0,
 				peerActive: s.active === !0,
 				peerCustom: s.custom === !0
 			});
-			if (a(re, ""), c.inject) {
+			if (a(ie, ""), c.inject) {
 				let e = i.constants?.promptTypes?.IN_CHAT ?? 1, t = i.constants?.promptRoles?.SYSTEM ?? 0;
-				a(re, le(o), e, 0, !1, t);
+				a(ie, ue(o), e, 0, !1, t);
 			}
 			return r = c;
 		},
-		clear: () => (e?.()?.setExtensionPrompt?.(re, ""), r = Object.freeze({
+		clear: () => (e?.()?.setExtensionPrompt?.(ie, ""), r = Object.freeze({
 			inject: !1,
 			status: "closed"
 		}), r),
 		getState: () => r
 	});
 }
-function pe({ controller: e, documentRef: t = globalThis.document, labelFor: n = (e) => e?.status ?? "" } = {}) {
+function me({ controller: e, documentRef: t = globalThis.document, labelFor: n = (e) => e?.status ?? "" } = {}) {
 	if (!e || typeof e.refresh != "function" || typeof e.getState != "function") throw TypeError("story clock controller 无效");
 	return ({ readOnly: r = !1 } = {}) => {
 		let i = r ? e.getState() : e.refresh(), a = Object.freeze({
@@ -1043,16 +1058,16 @@ function pe({ controller: e, documentRef: t = globalThis.document, labelFor: n =
 }
 //#endregion
 //#region src/identity.js
-var me = new TextEncoder();
-function he(e) {
+var he = new TextEncoder();
+function ge(e) {
 	return typeof e == "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(e);
 }
-function ge() {
+function _e() {
 	if (typeof globalThis.crypto?.randomUUID == "function") return globalThis.crypto.randomUUID();
 	throw Error("宿主缺少 UUID 生成能力");
 }
-async function _e(e) {
-	let t = me.encode(String(e));
+async function J(e) {
+	let t = he.encode(String(e));
 	if (globalThis.crypto?.subtle) {
 		let e = await globalThis.crypto.subtle.digest("SHA-256", t);
 		return [...new Uint8Array(e)].map((e) => e.toString(16).padStart(2, "0")).join("");
@@ -1078,14 +1093,40 @@ function Ce(e, { trailingCommasOnly: t = !1, requireOperations: n = !0 } = {}) {
 		let t = r;
 		for (; /\s/u.test(e[r] ?? "");) r += 1;
 		return i += e.slice(t, r), r - t;
-	}, l = (e) => e === "{" || e === "[" || e === "\"" || e === "-" || /[0-9]/u.test(e ?? "") || e === "t" || e === "f" || e === "n", u = () => {
+	}, l = (e) => e === "{" || e === "[" || e === "\"" || e === "-" || /[0-9]/u.test(e ?? "") || e === "t" || e === "f" || e === "n", u = ({ value: t = !1 } = {}) => {
 		if (e[r] !== "\"") return null;
-		let t = r;
+		let n = "\"";
 		for (r += 1; r < e.length;) {
-			let n = e[r];
-			if (n === "\"") {
-				r += 1;
-				let n = e.slice(t, r), a;
+			let a = e[r];
+			if (a === "\"") {
+				if (t) {
+					let t = r + 1;
+					for (; /\s/u.test(e[t] ?? "");) t += 1;
+					let i = t > r + 1 && (l(e[t]) || ve.test(e[t] ?? ""));
+					if (!(t === e.length || [
+						",",
+						"}",
+						"]"
+					].includes(e[t]) || i)) {
+						let t = r + 1;
+						for (; t < e.length;) {
+							if (e[t] === "\\") {
+								t += 2;
+								continue;
+							}
+							if (e[t] === "\"") break;
+							t += 1;
+						}
+						if (t >= e.length || t === r + 1) return null;
+						let i = t + 1;
+						for (; /\s/u.test(e[i] ?? "");) i += 1;
+						if (e[i] === ":") return null;
+						s("escape-string-quote", r, "\\"), n += "\\\"", r += 1;
+						continue;
+					}
+				}
+				n += "\"", r += 1;
+				let a;
 				try {
 					a = JSON.parse(n);
 				} catch {
@@ -1096,20 +1137,21 @@ function Ce(e, { trailingCommasOnly: t = !1, requireOperations: n = !0 } = {}) {
 					decoded: a
 				};
 			}
-			if (n === "\\") {
+			if (a === "\\") {
+				let t = r;
 				r += 1;
-				let t = e[r];
-				if (t === "u") {
+				let i = e[r];
+				if (i === "u") {
 					if (!/^[0-9a-fA-F]{4}$/u.test(e.slice(r + 1, r + 5))) return null;
-					r += 5;
+					r += 5, n += e.slice(t, r);
 					continue;
 				}
-				if (!/["\\/bfnrt]/u.test(t ?? "")) return null;
-				r += 1;
+				if (!/["\\/bfnrt]/u.test(i ?? "")) return null;
+				r += 1, n += e.slice(t, r);
 				continue;
 			}
-			if (n.charCodeAt(0) <= 31) return null;
-			r += 1;
+			if (a.charCodeAt(0) <= 31) return null;
+			n += a, r += 1;
 		}
 		return null;
 	}, d = () => {
@@ -1194,7 +1236,7 @@ function Ce(e, { trailingCommasOnly: t = !1, requireOperations: n = !0 } = {}) {
 		let t = e[r];
 		if (t === "{") return h();
 		if (t === "[") return g();
-		if (t === "\"") return u();
+		if (t === "\"") return u({ value: !0 });
 		for (let t of [
 			"true",
 			"false",
@@ -1230,7 +1272,7 @@ function Ce(e, { trailingCommasOnly: t = !1, requireOperations: n = !0 } = {}) {
 				continue;
 			}
 			let h = f(r), g = h && (h.colon || l(e[h.valueAt]));
-			if (!(h && g && (h.kind === "quoted" && d > 0 && u.kind !== "string" || u.kind === "object" || u.kind === "array"))) return null;
+			if (!(h && g && (d > 0 || u.kind === "object" || u.kind === "array"))) return null;
 			s("insert-comma", r, ","), i += ",";
 		}
 		return null;
@@ -1251,7 +1293,7 @@ function Ce(e, { trailingCommasOnly: t = !1, requireOperations: n = !0 } = {}) {
 				continue;
 			}
 			let n = e[r];
-			if (t.kind !== "object" && t.kind !== "array" || n !== "{" && n !== "[") return null;
+			if (!(gap > 0 && l(n)) && (t.kind !== "object" && t.kind !== "array" || n !== "{" && n !== "[")) return null;
 			s("insert-comma", r, ","), i += ",";
 		}
 		return null;
@@ -1399,9 +1441,9 @@ var Ie = Object.freeze({
 	memoryReady: !1,
 	cseReady: !1,
 	recallReady: !1
-}), Le = "memory-content-sanitizer-v1", Re = 2, ze = async (e) => `sha256:${await _e(e)}`, Be = (e) => String(e ?? "").replace(/\r\n?/g, "\n");
-async function J(e) {
-	let t = await _e(JSON.stringify(e)), n = `${t.slice(0, 12)}5${t.slice(13, 16)}8${t.slice(17, 32)}`;
+}), Le = "memory-content-sanitizer-v1", Re = 2, ze = async (e) => `sha256:${await J(e)}`, Be = (e) => String(e ?? "").replace(/\r\n?/g, "\n");
+async function Y(e) {
+	let t = await J(JSON.stringify(e)), n = `${t.slice(0, 12)}5${t.slice(13, 16)}8${t.slice(17, 32)}`;
 	return `${n.slice(0, 8)}-${n.slice(8, 12)}-${n.slice(12, 16)}-${n.slice(16, 20)}-${n.slice(20, 32)}`;
 }
 async function Ve(e, t) {
@@ -1443,7 +1485,7 @@ function He(e, { candidates: t = [], previous: n = [] } = {}) {
 	});
 }
 async function Ue(e) {
-	return (await _e(String(e))).slice(0, 2);
+	return (await J(String(e))).slice(0, 2);
 }
 function We(e) {
 	if (!e || typeof e != "object" || e.is_user !== !1 || e.is_system === !0 && e.extra?.type) return null;
@@ -1577,56 +1619,56 @@ var Xe = /^sha256:[0-9a-f]{64}$/, Ze = [
 	"entity",
 	"index"
 ]);
-function Y(e) {
+function X(e) {
 	throw Object.assign(TypeError(e), { code: e });
 }
 function $e(e, t) {
-	return (!e || typeof e != "object" || Array.isArray(e)) && Y(t), e;
+	return (!e || typeof e != "object" || Array.isArray(e)) && X(t), e;
 }
 function et(e, t) {
-	return Array.isArray(e) || Y(t), e;
+	return Array.isArray(e) || X(t), e;
 }
 function tt(e, t, { nullable: n = !1 } = {}) {
-	return n && e === null || (typeof e != "string" || !e.trim()) && Y(t), e;
+	return n && e === null || (typeof e != "string" || !e.trim()) && X(t), e;
 }
 function nt(e, t, { nullable: n = !1 } = {}) {
-	return n && e === null || he(e) || Y(t), e;
+	return n && e === null || ge(e) || X(t), e;
 }
 function rt(e, t) {
-	(typeof e != "string" || !Number.isFinite(Date.parse(e))) && Y(t);
+	(typeof e != "string" || !Number.isFinite(Date.parse(e))) && X(t);
 }
 function it(e, t, { nullable: n = !1 } = {}) {
-	return n && e === null || (typeof e != "string" || !Xe.test(e)) && Y(t), e;
+	return n && e === null || (typeof e != "string" || !Xe.test(e)) && X(t), e;
 }
 function at(e, t, n = 0) {
-	return (!Number.isSafeInteger(e) || e < n) && Y(t), e;
+	return (!Number.isSafeInteger(e) || e < n) && X(t), e;
 }
 function ot(e, t, n) {
 	$e(e, n);
 	let r = Object.keys(e).sort(), i = [...t].sort();
-	(r.length !== i.length || r.some((e, t) => e !== i[t])) && Y(n);
+	(r.length !== i.length || r.some((e, t) => e !== i[t])) && X(n);
 }
 function st(e, t = /* @__PURE__ */ new WeakSet()) {
 	if (e === null || typeof e == "string" || typeof e == "boolean") return e;
-	if (typeof e == "number") return Number.isFinite(e) || Y("V3_JSON_INVALID"), e;
-	(typeof e != "object" || t.has(e)) && Y("V3_JSON_INVALID");
+	if (typeof e == "number") return Number.isFinite(e) || X("V3_JSON_INVALID"), e;
+	(typeof e != "object" || t.has(e)) && X("V3_JSON_INVALID");
 	let n = Object.getOwnPropertyDescriptors(e), r = Reflect.ownKeys(n);
-	r.some((e) => typeof e != "string") && Y("V3_JSON_INVALID"), t.add(e);
+	r.some((e) => typeof e != "string") && X("V3_JSON_INVALID"), t.add(e);
 	try {
 		if (Array.isArray(e)) {
 			let r = [];
 			for (let i = 0; i < e.length; i += 1) {
 				let e = n[String(i)];
-				(!e?.enumerable || !Object.hasOwn(e, "value")) && Y("V3_JSON_INVALID"), r.push(st(e.value, t));
+				(!e?.enumerable || !Object.hasOwn(e, "value")) && X("V3_JSON_INVALID"), r.push(st(e.value, t));
 			}
 			return r;
 		}
 		let i = Object.getPrototypeOf(e);
-		i !== Object.prototype && i !== null && Y("V3_JSON_INVALID");
+		i !== Object.prototype && i !== null && X("V3_JSON_INVALID");
 		let a = {};
 		for (let e of r) {
 			let r = n[e];
-			(!r?.enumerable || !Object.hasOwn(r, "value")) && Y("V3_JSON_INVALID"), a[e] = st(r.value, t);
+			(!r?.enumerable || !Object.hasOwn(r, "value")) && X("V3_JSON_INVALID"), a[e] = st(r.value, t);
 		}
 		return a;
 	} finally {
@@ -1645,15 +1687,15 @@ function lt(e, t) {
 	}
 }
 function ut(e, t) {
-	ot(e, Ze, t), (e.foundationReady !== !0 || typeof e.memoryReady != "boolean" || typeof e.cseReady != "boolean" || e.recallReady !== !1) && Y(t);
+	ot(e, Ze, t), (e.foundationReady !== !0 || typeof e.memoryReady != "boolean" || typeof e.cseReady != "boolean" || e.recallReady !== !1) && X(t);
 }
 function dt(e, t) {
-	(e.schemaVersion !== 3 || e.recordType !== t || !Qe.has(t)) && Y(`V3_${t.toUpperCase()}_INVALID`), tt(e.id, `V3_${t.toUpperCase()}_INVALID`), nt(e.chatId, `V3_${t.toUpperCase()}_INVALID`), nt(e.narrativeGeneration, `V3_${t.toUpperCase()}_INVALID`), rt(e.createdAt, `V3_${t.toUpperCase()}_INVALID`), rt(e.updatedAt, `V3_${t.toUpperCase()}_INVALID`), Date.parse(e.updatedAt) < Date.parse(e.createdAt) && Y(`V3_${t.toUpperCase()}_INVALID`), [
+	(e.schemaVersion !== 3 || e.recordType !== t || !Qe.has(t)) && X(`V3_${t.toUpperCase()}_INVALID`), tt(e.id, `V3_${t.toUpperCase()}_INVALID`), nt(e.chatId, `V3_${t.toUpperCase()}_INVALID`), nt(e.narrativeGeneration, `V3_${t.toUpperCase()}_INVALID`), rt(e.createdAt, `V3_${t.toUpperCase()}_INVALID`), rt(e.updatedAt, `V3_${t.toUpperCase()}_INVALID`), Date.parse(e.updatedAt) < Date.parse(e.createdAt) && X(`V3_${t.toUpperCase()}_INVALID`), [
 		"active",
 		"superseded",
 		"invalidated",
 		"staged"
-	].includes(e.recordStatus) || Y(`V3_${t.toUpperCase()}_INVALID`), e.supersedes !== null && tt(e.supersedes, `V3_${t.toUpperCase()}_INVALID`);
+	].includes(e.recordStatus) || X(`V3_${t.toUpperCase()}_INVALID`), e.supersedes !== null && tt(e.supersedes, `V3_${t.toUpperCase()}_INVALID`);
 }
 function ft(e, { expectedChatId: t } = {}) {
 	let n = st(e);
@@ -1677,17 +1719,17 @@ function ft(e, { expectedChatId: t } = {}) {
 		"updatedAt",
 		"recordStatus",
 		"supersedes"
-	], "V3_ROOT_INVALID"), dt(n, "root"), (n.id !== "root" || t && n.chatId !== t) && Y("V3_ROOT_INVALID"), [
+	], "V3_ROOT_INVALID"), dt(n, "root"), (n.id !== "root" || t && n.chatId !== t) && X("V3_ROOT_INVALID"), [
 		"uninitialized",
 		"initializing",
 		"ready",
 		"rebuilding",
 		"error"
-	].includes(n.status) || Y("V3_ROOT_INVALID"), ut(n.capabilities, "V3_ROOT_INVALID"), nt(n.headCheckpointId, "V3_ROOT_INVALID", { nullable: !0 }), it(n.sourceSnapshotFingerprint, "V3_ROOT_INVALID", { nullable: !0 }), ot(n.stableBoundary, [
+	].includes(n.status) || X("V3_ROOT_INVALID"), ut(n.capabilities, "V3_ROOT_INVALID"), nt(n.headCheckpointId, "V3_ROOT_INVALID", { nullable: !0 }), it(n.sourceSnapshotFingerprint, "V3_ROOT_INVALID", { nullable: !0 }), ot(n.stableBoundary, [
 		"assistantSeq",
 		"floorId",
 		"canonicalFingerprint"
-	], "V3_ROOT_INVALID"), at(n.stableBoundary.assistantSeq, "V3_ROOT_INVALID"), nt(n.stableBoundary.floorId, "V3_ROOT_INVALID", { nullable: !0 }), it(n.stableBoundary.canonicalFingerprint, "V3_ROOT_INVALID", { nullable: !0 }), n.stableBoundary.assistantSeq === 0 != (n.stableBoundary.floorId === null) && Y("V3_ROOT_INVALID"), n.baselineId !== null && tt(n.baselineId, "V3_ROOT_INVALID"), nt(n.activeRunId, "V3_ROOT_INVALID", { nullable: !0 }), ot(n.indexManifest, [
+	], "V3_ROOT_INVALID"), at(n.stableBoundary.assistantSeq, "V3_ROOT_INVALID"), nt(n.stableBoundary.floorId, "V3_ROOT_INVALID", { nullable: !0 }), it(n.stableBoundary.canonicalFingerprint, "V3_ROOT_INVALID", { nullable: !0 }), n.stableBoundary.assistantSeq === 0 != (n.stableBoundary.floorId === null) && X("V3_ROOT_INVALID"), n.baselineId !== null && tt(n.baselineId, "V3_ROOT_INVALID"), nt(n.activeRunId, "V3_ROOT_INVALID", { nullable: !0 }), ot(n.indexManifest, [
 		"floor",
 		"entity",
 		"event",
@@ -1700,7 +1742,7 @@ function ft(e, { expectedChatId: t } = {}) {
 		"reverseRef"
 	], "V3_ROOT_INVALID");
 	for (let e of Object.values(n.indexManifest)) et(e, "V3_ROOT_INVALID").forEach((e) => tt(e, "V3_ROOT_INVALID"));
-	return et(n.activeStateRefs, "V3_ROOT_INVALID"), et(n.activeThreadRefs, "V3_ROOT_INVALID"), (n.recordStatus !== "active" || n.supersedes !== null) && Y("V3_ROOT_INVALID"), Object.freeze(n);
+	return et(n.activeStateRefs, "V3_ROOT_INVALID"), et(n.activeThreadRefs, "V3_ROOT_INVALID"), (n.recordStatus !== "active" || n.supersedes !== null) && X("V3_ROOT_INVALID"), Object.freeze(n);
 }
 function pt(e, { expectedChatId: t } = {}) {
 	let n = st(e);
@@ -1720,17 +1762,17 @@ function pt(e, { expectedChatId: t } = {}) {
 		"updatedAt",
 		"recordStatus",
 		"supersedes"
-	], "V3_FLOOR_INVALID"), dt(n, "floor"), nt(n.id, "V3_FLOOR_INVALID"), t && n.chatId !== t && Y("V3_FLOOR_INVALID"), at(n.assistantSeq, "V3_FLOOR_INVALID", 1), nt(n.predecessorFloorId, "V3_FLOOR_INVALID", { nullable: !0 }), ot(n.hostLocator, [
+	], "V3_FLOOR_INVALID"), dt(n, "floor"), nt(n.id, "V3_FLOOR_INVALID"), t && n.chatId !== t && X("V3_FLOOR_INVALID"), at(n.assistantSeq, "V3_FLOOR_INVALID", 1), nt(n.predecessorFloorId, "V3_FLOOR_INVALID", { nullable: !0 }), ot(n.hostLocator, [
 		"messageIndex",
 		"swipeId",
 		"selectedSwipeIndex"
-	], "V3_FLOOR_INVALID"), at(n.hostLocator.messageIndex, "V3_FLOOR_INVALID"), n.hostLocator.swipeId !== null && !["string", "number"].includes(typeof n.hostLocator.swipeId) && Y("V3_FLOOR_INVALID"), n.hostLocator.selectedSwipeIndex !== null && at(n.hostLocator.selectedSwipeIndex, "V3_FLOOR_INVALID"), ot(n.content, [
+	], "V3_FLOOR_INVALID"), at(n.hostLocator.messageIndex, "V3_FLOOR_INVALID"), n.hostLocator.swipeId !== null && !["string", "number"].includes(typeof n.hostLocator.swipeId) && X("V3_FLOOR_INVALID"), n.hostLocator.selectedSwipeIndex !== null && at(n.hostLocator.selectedSwipeIndex, "V3_FLOOR_INVALID"), ot(n.content, [
 		"canonicalContent",
 		"rawFingerprint",
 		"canonicalFingerprint",
 		"sanitizerFingerprint",
 		"formatVersion"
-	], "V3_FLOOR_INVALID"), (typeof n.content.canonicalContent != "string" || !n.content.canonicalContent) && Y("V3_FLOOR_INVALID"), it(n.content.rawFingerprint, "V3_FLOOR_INVALID"), it(n.content.canonicalFingerprint, "V3_FLOOR_INVALID"), it(n.content.sanitizerFingerprint, "V3_FLOOR_INVALID"), at(n.content.formatVersion, "V3_FLOOR_INVALID", 1);
+	], "V3_FLOOR_INVALID"), (typeof n.content.canonicalContent != "string" || !n.content.canonicalContent) && X("V3_FLOOR_INVALID"), it(n.content.rawFingerprint, "V3_FLOOR_INVALID"), it(n.content.canonicalFingerprint, "V3_FLOOR_INVALID"), it(n.content.sanitizerFingerprint, "V3_FLOOR_INVALID"), at(n.content.formatVersion, "V3_FLOOR_INVALID", 1);
 	let r = Object.hasOwn(n.stability, "proof");
 	return ot(n.stability, r ? [
 		"status",
@@ -1745,11 +1787,11 @@ function pt(e, { expectedChatId: t } = {}) {
 		"nextAssistant",
 		"nextUser",
 		"manual"
-	].includes(n.stability.stabilizedBy)) && Y("V3_FLOOR_INVALID"), rt(n.stability.stabilizedAt, "V3_FLOOR_INVALID"), r && (ot(n.stability.proof, [
+	].includes(n.stability.stabilizedBy)) && X("V3_FLOOR_INVALID"), rt(n.stability.stabilizedAt, "V3_FLOOR_INVALID"), r && (ot(n.stability.proof, [
 		"kind",
 		"messageIndex",
 		"fingerprint"
-	], "V3_FLOOR_INVALID"), n.stability.proof.kind !== "nextUser" && Y("V3_FLOOR_INVALID"), at(n.stability.proof.messageIndex, "V3_FLOOR_INVALID"), it(n.stability.proof.fingerprint, "V3_FLOOR_INVALID")), n.stability.stabilizedBy === "nextUser" && !r && Y("V3_FLOOR_INVALID"), ot(n.processing, [
+	], "V3_FLOOR_INVALID"), n.stability.proof.kind !== "nextUser" && X("V3_FLOOR_INVALID"), at(n.stability.proof.messageIndex, "V3_FLOOR_INVALID"), it(n.stability.proof.fingerprint, "V3_FLOOR_INVALID")), n.stability.stabilizedBy === "nextUser" && !r && X("V3_FLOOR_INVALID"), ot(n.processing, [
 		"sourceSaved",
 		"memoryReady",
 		"cseRequired",
@@ -1762,11 +1804,11 @@ function pt(e, { expectedChatId: t } = {}) {
 		n.processing.cseRequired,
 		n.processing.cseReady,
 		n.processing.recallReady
-	].some(Boolean)) && Y("V3_FLOOR_INVALID"), nt(n.processing.runId, "V3_FLOOR_INVALID"), nt(n.processing.checkpointId, "V3_FLOOR_INVALID", { nullable: !0 }), Object.freeze(n);
+	].some(Boolean)) && X("V3_FLOOR_INVALID"), nt(n.processing.runId, "V3_FLOOR_INVALID"), nt(n.processing.checkpointId, "V3_FLOOR_INVALID", { nullable: !0 }), Object.freeze(n);
 }
 async function mt(e, { expectedChatId: t } = {}) {
-	let n = pt(e, { expectedChatId: t }), r = `sha256:${await _e(n.content.canonicalContent)}`;
-	return n.content.canonicalFingerprint !== r && Y("V3_GRAPH_FLOOR_CANONICAL_FINGERPRINT_INVALID"), n;
+	let n = pt(e, { expectedChatId: t }), r = `sha256:${await J(n.content.canonicalContent)}`;
+	return n.content.canonicalFingerprint !== r && X("V3_GRAPH_FLOOR_CANONICAL_FINGERPRINT_INVALID"), n;
 }
 function ht(e, { expectedChatId: t } = {}) {
 	let n = st(e);
@@ -1791,14 +1833,14 @@ function ht(e, { expectedChatId: t } = {}) {
 		"updatedAt",
 		"recordStatus",
 		"supersedes"
-	], "V3_RUN_INVALID"), dt(n, "run"), nt(n.id, "V3_RUN_INVALID"), t && n.chatId !== t && Y("V3_RUN_INVALID"), nt(n.parentCheckpointId, "V3_RUN_INVALID", { nullable: !0 }), it(n.inputSnapshotFingerprint, "V3_RUN_INVALID", { nullable: !0 }), [
+	], "V3_RUN_INVALID"), dt(n, "run"), nt(n.id, "V3_RUN_INVALID"), t && n.chatId !== t && X("V3_RUN_INVALID"), nt(n.parentCheckpointId, "V3_RUN_INVALID", { nullable: !0 }), it(n.inputSnapshotFingerprint, "V3_RUN_INVALID", { nullable: !0 }), [
 		"initialize",
 		"incremental",
 		"localReextract",
 		"branchReplay",
 		"rebuild",
 		"cse"
-	].includes(n.mode) || Y("V3_RUN_INVALID"), at(n.sessionEpoch, "V3_RUN_INVALID");
+	].includes(n.mode) || X("V3_RUN_INVALID"), at(n.sessionEpoch, "V3_RUN_INVALID");
 	for (let e of [n.inputFloorIds, n.completedFloorIds]) et(e, "V3_RUN_INVALID").forEach((e) => nt(e, "V3_RUN_INVALID"));
 	return [
 		"capturing",
@@ -1811,7 +1853,7 @@ function ht(e, { expectedChatId: t } = {}) {
 		"retryableError",
 		"cancelled",
 		"stale"
-	].includes(n.phase) || Y("V3_RUN_INVALID"), et(n.failedItems, "V3_RUN_INVALID"), et(n.preparedRecordRefs, "V3_RUN_INVALID").forEach((e) => tt(e, "V3_RUN_INVALID")), n.diagnostics !== null && st($e(n.diagnostics, "V3_RUN_INVALID")), rt(n.startedAt, "V3_RUN_INVALID"), Object.freeze(n);
+	].includes(n.phase) || X("V3_RUN_INVALID"), et(n.failedItems, "V3_RUN_INVALID"), et(n.preparedRecordRefs, "V3_RUN_INVALID").forEach((e) => tt(e, "V3_RUN_INVALID")), n.diagnostics !== null && st($e(n.diagnostics, "V3_RUN_INVALID")), rt(n.startedAt, "V3_RUN_INVALID"), Object.freeze(n);
 }
 function gt(e, { expectedChatId: t } = {}) {
 	let n = st(e);
@@ -1834,13 +1876,13 @@ function gt(e, { expectedChatId: t } = {}) {
 		"updatedAt",
 		"recordStatus",
 		"supersedes"
-	], "V3_CHECKPOINT_INVALID"), dt(n, "checkpoint"), nt(n.id, "V3_CHECKPOINT_INVALID"), t && n.chatId !== t && Y("V3_CHECKPOINT_INVALID"), nt(n.parentCheckpointId, "V3_CHECKPOINT_INVALID", { nullable: !0 }), nt(n.runId, "V3_CHECKPOINT_INVALID"), it(n.sourceSnapshotFingerprint, "V3_CHECKPOINT_INVALID", { nullable: !0 }), ut(n.capabilities, "V3_CHECKPOINT_INVALID"), ot(n.floorRange, [
+	], "V3_CHECKPOINT_INVALID"), dt(n, "checkpoint"), nt(n.id, "V3_CHECKPOINT_INVALID"), t && n.chatId !== t && X("V3_CHECKPOINT_INVALID"), nt(n.parentCheckpointId, "V3_CHECKPOINT_INVALID", { nullable: !0 }), nt(n.runId, "V3_CHECKPOINT_INVALID"), it(n.sourceSnapshotFingerprint, "V3_CHECKPOINT_INVALID", { nullable: !0 }), ut(n.capabilities, "V3_CHECKPOINT_INVALID"), ot(n.floorRange, [
 		"fromAssistantSeq",
 		"toAssistantSeq",
 		"floorIds"
 	], "V3_CHECKPOINT_INVALID"), at(n.floorRange.fromAssistantSeq, "V3_CHECKPOINT_INVALID"), at(n.floorRange.toAssistantSeq, "V3_CHECKPOINT_INVALID");
 	let r = et(n.floorRange.floorIds, "V3_CHECKPOINT_INVALID");
-	r.forEach((e) => nt(e, "V3_CHECKPOINT_INVALID")), (r.length !== n.floorRange.toAssistantSeq || r.length && n.floorRange.fromAssistantSeq !== 1) && Y("V3_CHECKPOINT_INVALID"), et(n.inputFingerprints, "V3_CHECKPOINT_INVALID").forEach((e) => {
+	r.forEach((e) => nt(e, "V3_CHECKPOINT_INVALID")), (r.length !== n.floorRange.toAssistantSeq || r.length && n.floorRange.fromAssistantSeq !== 1) && X("V3_CHECKPOINT_INVALID"), et(n.inputFingerprints, "V3_CHECKPOINT_INVALID").forEach((e) => {
 		let t = Object.hasOwn(e, "stabilityFingerprint");
 		ot(e, t ? [
 			"floorId",
@@ -1867,7 +1909,7 @@ function gt(e, { expectedChatId: t } = {}) {
 		"referencesValid",
 		"orderedReplayValid",
 		"stateFingerprint"
-	], "V3_CHECKPOINT_INVALID"), (n.validation.schemaValid !== !0 || n.validation.referencesValid !== !0 || n.validation.orderedReplayValid !== !0) && Y("V3_CHECKPOINT_INVALID"), it(n.validation.stateFingerprint, "V3_CHECKPOINT_INVALID"), rt(n.sealedAt, "V3_CHECKPOINT_INVALID"), n.recordStatus !== "active" && Y("V3_CHECKPOINT_INVALID"), Object.freeze(n);
+	], "V3_CHECKPOINT_INVALID"), (n.validation.schemaValid !== !0 || n.validation.referencesValid !== !0 || n.validation.orderedReplayValid !== !0) && X("V3_CHECKPOINT_INVALID"), it(n.validation.stateFingerprint, "V3_CHECKPOINT_INVALID"), rt(n.sealedAt, "V3_CHECKPOINT_INVALID"), n.recordStatus !== "active" && X("V3_CHECKPOINT_INVALID"), Object.freeze(n);
 }
 function _t(e, { expectedChatId: t } = {}) {
 	let n = st(e);
@@ -1887,27 +1929,27 @@ function _t(e, { expectedChatId: t } = {}) {
 		"updatedAt",
 		"recordStatus",
 		"supersedes"
-	], "V3_INDEX_INVALID"), dt(n, "index"), t && n.chatId !== t && Y("V3_INDEX_INVALID"), [
+	], "V3_INDEX_INVALID"), dt(n, "index"), t && n.chatId !== t && X("V3_INDEX_INVALID"), [
 		"floorOrder",
 		"fingerprint",
 		"entity",
 		"reverseRef"
-	].includes(n.kind) || Y("V3_INDEX_INVALID"), tt(n.shard, "V3_INDEX_INVALID"), nt(n.sourceCheckpointId, "V3_INDEX_INVALID"), et(n.entries, "V3_INDEX_INVALID").forEach((e) => {
+	].includes(n.kind) || X("V3_INDEX_INVALID"), tt(n.shard, "V3_INDEX_INVALID"), nt(n.sourceCheckpointId, "V3_INDEX_INVALID"), et(n.entries, "V3_INDEX_INVALID").forEach((e) => {
 		ot(e, ["key", "refs"], "V3_INDEX_INVALID"), tt(e.key, "V3_INDEX_INVALID");
 		let t = et(e.refs, "V3_INDEX_INVALID");
-		t.length || Y("V3_INDEX_INVALID"), t.forEach((e) => {
+		t.length || X("V3_INDEX_INVALID"), t.forEach((e) => {
 			ot(e, [
 				"recordType",
 				"recordId",
 				"itemId"
 			], "V3_INDEX_INVALID"), tt(e.recordType, "V3_INDEX_INVALID"), tt(e.recordId, "V3_INDEX_INVALID"), e.itemId !== null && tt(e.itemId, "V3_INDEX_INVALID");
 		});
-	}), n.entryCount !== n.entries.length && Y("V3_INDEX_INVALID"), it(n.contentFingerprint, "V3_INDEX_INVALID"), Object.freeze(n);
+	}), n.entryCount !== n.entries.length && X("V3_INDEX_INVALID"), it(n.contentFingerprint, "V3_INDEX_INVALID"), Object.freeze(n);
 }
 function vt(e, t) {
 	return e.length === t.length && e.every((e, n) => e === t[n]);
 }
-var yt = async (e) => `sha256:${await _e(JSON.stringify([
+var yt = async (e) => `sha256:${await J(JSON.stringify([
 	e.kind,
 	e.shard,
 	e.entries
@@ -1920,104 +1962,104 @@ var yt = async (e) => `sha256:${await _e(JSON.stringify([
 };
 async function St({ root: e = null, checkpoint: t, run: n = null, floors: r = [], indexes: i = [], indexKeys: a = [], entityIds: o = [], allowMissingIndexes: s = !1, allowLegacySnapshot: c = !1 } = {}) {
 	let l = e?.chatId ?? t?.chatId, u = e ? ft(e, { expectedChatId: l }) : null, d = gt(t, { expectedChatId: l }), f = n ? ht(n, { expectedChatId: l }) : null, p = await Promise.all(r.map((e) => mt(e, { expectedChatId: l }))), m = i.map((e) => _t(e, { expectedChatId: l })), h = p.map((e) => e.id), g = new Set(h), _ = new Set(o), v = new Map(p.map((e) => [e.id, e])), y = d.sourceSnapshotFingerprint === null || f && f.inputSnapshotFingerprint === null || u && u.sourceSnapshotFingerprint === null;
-	y && !c && Y("V3_GRAPH_SOURCE_SNAPSHOT_MISSING"), u && (u.headCheckpointId !== d.id || u.narrativeGeneration !== d.narrativeGeneration || !y && u.sourceSnapshotFingerprint !== d.sourceSnapshotFingerprint) && Y("V3_GRAPH_ROOT_MISMATCH"), f && (f.id !== d.runId || f.narrativeGeneration !== d.narrativeGeneration || !y && f.parentCheckpointId !== d.parentCheckpointId || !y && f.inputSnapshotFingerprint !== d.sourceSnapshotFingerprint) && Y("V3_GRAPH_RUN_MISMATCH"), (!vt(d.floorRange.floorIds, h) || d.floorRange.toAssistantSeq !== p.length || d.floorRange.fromAssistantSeq !== +!!p.length) && Y("V3_GRAPH_FLOOR_RANGE_INVALID"), d.inputFingerprints.length !== p.length && Y("V3_GRAPH_FINGERPRINT_LIST_INVALID");
+	y && !c && X("V3_GRAPH_SOURCE_SNAPSHOT_MISSING"), u && (u.headCheckpointId !== d.id || u.narrativeGeneration !== d.narrativeGeneration || !y && u.sourceSnapshotFingerprint !== d.sourceSnapshotFingerprint) && X("V3_GRAPH_ROOT_MISMATCH"), f && (f.id !== d.runId || f.narrativeGeneration !== d.narrativeGeneration || !y && f.parentCheckpointId !== d.parentCheckpointId || !y && f.inputSnapshotFingerprint !== d.sourceSnapshotFingerprint) && X("V3_GRAPH_RUN_MISMATCH"), (!vt(d.floorRange.floorIds, h) || d.floorRange.toAssistantSeq !== p.length || d.floorRange.fromAssistantSeq !== +!!p.length) && X("V3_GRAPH_FLOOR_RANGE_INVALID"), d.inputFingerprints.length !== p.length && X("V3_GRAPH_FINGERPRINT_LIST_INVALID");
 	for (let e = 0; e < p.length; e += 1) {
 		let t = p[e], n = d.inputFingerprints[e];
-		(t.assistantSeq !== e + 1 || t.predecessorFloorId !== (p[e - 1]?.id ?? null)) && Y("V3_GRAPH_FLOOR_ORDER_INVALID"), (n.floorId !== t.id || n.canonicalFingerprint !== t.content.canonicalFingerprint || t.stability.proof && n.stabilityFingerprint !== t.stability.proof.fingerprint) && Y("V3_GRAPH_FINGERPRINT_LIST_INVALID");
+		(t.assistantSeq !== e + 1 || t.predecessorFloorId !== (p[e - 1]?.id ?? null)) && X("V3_GRAPH_FLOOR_ORDER_INVALID"), (n.floorId !== t.id || n.canonicalFingerprint !== t.content.canonicalFingerprint || t.stability.proof && n.stabilityFingerprint !== t.stability.proof.fingerprint) && X("V3_GRAPH_FINGERPRINT_LIST_INVALID");
 	}
-	let b = `sha256:${await _e(JSON.stringify([
+	let b = `sha256:${await J(JSON.stringify([
 		d.narrativeGeneration,
 		h,
 		p.map((e) => e.content.canonicalFingerprint)
 	]))}`;
-	if (d.validation.stateFingerprint !== b && Y("V3_GRAPH_STATE_FINGERPRINT_INVALID"), u) {
+	if (d.validation.stateFingerprint !== b && X("V3_GRAPH_STATE_FINGERPRINT_INVALID"), u) {
 		let e = p.at(-1) ?? null;
-		(u.stableBoundary.assistantSeq !== p.length || u.stableBoundary.floorId !== (e?.id ?? null) || u.stableBoundary.canonicalFingerprint !== (e?.content.canonicalFingerprint ?? null)) && Y("V3_GRAPH_BOUNDARY_INVALID");
+		(u.stableBoundary.assistantSeq !== p.length || u.stableBoundary.floorId !== (e?.id ?? null) || u.stableBoundary.canonicalFingerprint !== (e?.content.canonicalFingerprint ?? null)) && X("V3_GRAPH_BOUNDARY_INVALID");
 	}
 	let x = d.producedRefs.indexes;
-	!s && !vt(a, x) && Y("V3_GRAPH_INDEX_LIST_INVALID"), a.some((e) => !x.includes(e)) && Y("V3_GRAPH_INDEX_LIST_INVALID");
+	!s && !vt(a, x) && X("V3_GRAPH_INDEX_LIST_INVALID"), a.some((e) => !x.includes(e)) && X("V3_GRAPH_INDEX_LIST_INVALID");
 	let S = /* @__PURE__ */ new Map(), C = [], w = /* @__PURE__ */ new Map(), T = /* @__PURE__ */ new Map(), E = /* @__PURE__ */ new Map(), D = /* @__PURE__ */ new Set(), O = /* @__PURE__ */ new Map();
 	for (let e = 0; e < m.length; e += 1) {
 		let t = m[e], n = a[e];
-		(t.sourceCheckpointId !== d.id || t.narrativeGeneration !== d.narrativeGeneration) && Y("V3_GRAPH_INDEX_CHECKPOINT_INVALID"), n !== bt(t) && Y("V3_GRAPH_INDEX_ROUTE_INVALID"), t.id !== await J([
+		(t.sourceCheckpointId !== d.id || t.narrativeGeneration !== d.narrativeGeneration) && X("V3_GRAPH_INDEX_CHECKPOINT_INVALID"), n !== bt(t) && X("V3_GRAPH_INDEX_ROUTE_INVALID"), t.id !== await Y([
 			"index",
 			t.sourceCheckpointId,
 			t.kind,
 			t.shard,
 			t.entries
-		]) && Y("V3_GRAPH_INDEX_ROUTE_INVALID"), t.contentFingerprint !== await yt(t) && Y("V3_GRAPH_INDEX_FINGERPRINT_INVALID"), t.entryCount > 512 && Y("V3_GRAPH_INDEX_SHARD_INVALID");
+		]) && X("V3_GRAPH_INDEX_ROUTE_INVALID"), t.contentFingerprint !== await yt(t) && X("V3_GRAPH_INDEX_FINGERPRINT_INVALID"), t.entryCount > 512 && X("V3_GRAPH_INDEX_SHARD_INVALID");
 		let r = t.kind === "floorOrder" ? null : xt(t.shard), i = y && c && t.kind === "reverseRef" && /^\d+$/.test(t.shard);
-		if (t.kind !== "floorOrder" && !r && !i && Y("V3_GRAPH_INDEX_SHARD_INVALID"), r) {
+		if (t.kind !== "floorOrder" && !r && !i && X("V3_GRAPH_INDEX_SHARD_INVALID"), r) {
 			let e = `${t.kind}:${r.prefix}`, n = O.get(e) ?? /* @__PURE__ */ new Map();
-			n.has(r.overflow) && Y("V3_GRAPH_INDEX_SHARD_INVALID"), n.set(r.overflow, t.entryCount), O.set(e, n);
+			n.has(r.overflow) && X("V3_GRAPH_INDEX_SHARD_INVALID"), n.set(r.overflow, t.entryCount), O.set(e, n);
 		}
 		for (let e of t.entries) {
-			if (t.kind === "reverseRef" && (g.has(e.key) || Y("V3_GRAPH_INDEX_REF_INVALID"), !i && r.prefix !== await Ue(e.key) && Y("V3_GRAPH_INDEX_SHARD_INVALID")), t.kind === "floorOrder") {
+			if (t.kind === "reverseRef" && (g.has(e.key) || X("V3_GRAPH_INDEX_REF_INVALID"), !i && r.prefix !== await Ue(e.key) && X("V3_GRAPH_INDEX_SHARD_INVALID")), t.kind === "floorOrder") {
 				let n = Number(e.key);
-				(!Number.isSafeInteger(n) || n < 1 || t.shard !== String(Math.floor((n - 1) / 128))) && Y("V3_GRAPH_FLOOR_ORDER_INDEX_INVALID");
+				(!Number.isSafeInteger(n) || n < 1 || t.shard !== String(Math.floor((n - 1) / 128))) && X("V3_GRAPH_FLOOR_ORDER_INDEX_INVALID");
 			}
-			t.kind === "fingerprint" && (it(e.key, "V3_GRAPH_FINGERPRINT_INDEX_INVALID"), r.prefix !== e.key.slice(7, 9) && Y("V3_GRAPH_INDEX_SHARD_INVALID")), t.kind === "entity" && (it(e.key, "V3_GRAPH_ENTITY_INDEX_INVALID"), r.prefix !== e.key.slice(7, 9) && Y("V3_GRAPH_INDEX_SHARD_INVALID"));
+			t.kind === "fingerprint" && (it(e.key, "V3_GRAPH_FINGERPRINT_INDEX_INVALID"), r.prefix !== e.key.slice(7, 9) && X("V3_GRAPH_INDEX_SHARD_INVALID")), t.kind === "entity" && (it(e.key, "V3_GRAPH_ENTITY_INDEX_INVALID"), r.prefix !== e.key.slice(7, 9) && X("V3_GRAPH_INDEX_SHARD_INVALID"));
 			for (let n of e.refs) {
 				if (t.kind === "reverseRef") {
-					(n.recordType !== "checkpoint" || n.recordId !== d.id || n.itemId !== null) && Y("V3_GRAPH_INDEX_REF_INVALID"), w.has(e.key) && Y("V3_GRAPH_INDEX_COVERAGE_INVALID"), w.set(e.key, n.recordId);
+					(n.recordType !== "checkpoint" || n.recordId !== d.id || n.itemId !== null) && X("V3_GRAPH_INDEX_REF_INVALID"), w.has(e.key) && X("V3_GRAPH_INDEX_COVERAGE_INVALID"), w.set(e.key, n.recordId);
 					continue;
 				}
 				if (t.kind === "entity") {
-					(n.recordType !== "entity" || !_.has(n.recordId) || n.itemId !== null) && Y("V3_GRAPH_INDEX_REF_INVALID"), D.add(n.recordId);
+					(n.recordType !== "entity" || !_.has(n.recordId) || n.itemId !== null) && X("V3_GRAPH_INDEX_REF_INVALID"), D.add(n.recordId);
 					continue;
 				}
-				(n.recordType !== "floor" || !g.has(n.recordId)) && Y("V3_GRAPH_INDEX_REF_INVALID");
+				(n.recordType !== "floor" || !g.has(n.recordId)) && X("V3_GRAPH_INDEX_REF_INVALID");
 				let r = v.get(n.recordId);
 				if (t.kind === "floorOrder") {
-					(e.key !== String(r.assistantSeq) || S.has(r.id)) && Y("V3_GRAPH_FLOOR_ORDER_INDEX_INVALID");
+					(e.key !== String(r.assistantSeq) || S.has(r.id)) && X("V3_GRAPH_FLOOR_ORDER_INDEX_INVALID");
 					let t;
 					try {
 						t = JSON.parse(n.itemId);
 					} catch {
-						Y("V3_GRAPH_FLOOR_ORDER_INDEX_INVALID");
+						X("V3_GRAPH_FLOOR_ORDER_INDEX_INVALID");
 					}
 					ot(t, [
 						"messageIndex",
 						"swipeId",
 						"selectedSwipeIndex"
-					], "V3_GRAPH_FLOOR_ORDER_INDEX_INVALID"), at(t.messageIndex, "V3_GRAPH_FLOOR_ORDER_INDEX_INVALID"), t.swipeId !== null && !["string", "number"].includes(typeof t.swipeId) && Y("V3_GRAPH_FLOOR_ORDER_INDEX_INVALID"), t.selectedSwipeIndex !== null && at(t.selectedSwipeIndex, "V3_GRAPH_FLOOR_ORDER_INDEX_INVALID"), S.set(r.id, e.key), C.push(r.assistantSeq);
+					], "V3_GRAPH_FLOOR_ORDER_INDEX_INVALID"), at(t.messageIndex, "V3_GRAPH_FLOOR_ORDER_INDEX_INVALID"), t.swipeId !== null && !["string", "number"].includes(typeof t.swipeId) && X("V3_GRAPH_FLOOR_ORDER_INDEX_INVALID"), t.selectedSwipeIndex !== null && at(t.selectedSwipeIndex, "V3_GRAPH_FLOOR_ORDER_INDEX_INVALID"), S.set(r.id, e.key), C.push(r.assistantSeq);
 				}
 				if (t.kind === "fingerprint") {
 					let t = n.itemId === "canonical" ? r.content.canonicalFingerprint : null;
-					n.itemId === "canonical" && e.key !== t && Y("V3_GRAPH_FINGERPRINT_INDEX_INVALID"), ["canonical", "raw"].includes(n.itemId) || Y("V3_GRAPH_FINGERPRINT_INDEX_INVALID");
+					n.itemId === "canonical" && e.key !== t && X("V3_GRAPH_FINGERPRINT_INDEX_INVALID"), ["canonical", "raw"].includes(n.itemId) || X("V3_GRAPH_FINGERPRINT_INDEX_INVALID");
 					let i = n.itemId === "canonical" ? E : T;
-					i.has(r.id) && Y("V3_GRAPH_INDEX_COVERAGE_INVALID"), i.set(r.id, e.key);
+					i.has(r.id) && X("V3_GRAPH_INDEX_COVERAGE_INVALID"), i.set(r.id, e.key);
 				}
 			}
 		}
 	}
 	if (!s) for (let e of O.values()) {
 		let t = [...e.keys()].sort((e, t) => e - t);
-		t.some((e, t) => e !== t) && Y("V3_GRAPH_INDEX_SHARD_INVALID");
-		for (let n = 0; n < t.length - 1; n += 1) e.get(t[n]) !== 512 && Y("V3_GRAPH_INDEX_SHARD_INVALID");
+		t.some((e, t) => e !== t) && X("V3_GRAPH_INDEX_SHARD_INVALID");
+		for (let n = 0; n < t.length - 1; n += 1) e.get(t[n]) !== 512 && X("V3_GRAPH_INDEX_SHARD_INVALID");
 	}
-	if (!s && p.length && (S.size !== p.length || w.size !== p.length || E.size !== p.length || T.size !== p.length) && Y("V3_GRAPH_INDEX_COVERAGE_INVALID"), !s && _.size && D.size !== _.size && Y("V3_GRAPH_ENTITY_INDEX_INVALID"), !s && C.some((e, t) => e !== t + 1) && Y("V3_GRAPH_FLOOR_ORDER_INDEX_INVALID"), u) {
+	if (!s && p.length && (S.size !== p.length || w.size !== p.length || E.size !== p.length || T.size !== p.length) && X("V3_GRAPH_INDEX_COVERAGE_INVALID"), !s && _.size && D.size !== _.size && X("V3_GRAPH_ENTITY_INDEX_INVALID"), !s && C.some((e, t) => e !== t + 1) && X("V3_GRAPH_FLOOR_ORDER_INDEX_INVALID"), u) {
 		let e = Object.keys(u.indexManifest), t = Object.fromEntries(e.map((e) => [e, []]));
 		for (let e = 0; e < m.length; e += 1) {
 			let n = m[e];
 			t[n.kind === "reverseRef" ? "reverseRef" : n.kind === "entity" ? "entity" : "floor"].push(a[e]);
 		}
 		let n = e.flatMap((e) => u.indexManifest[e]);
-		new Set(n).size !== n.length && Y("V3_GRAPH_ROOT_INDEX_MANIFEST_INVALID");
+		new Set(n).size !== n.length && X("V3_GRAPH_ROOT_INDEX_MANIFEST_INVALID");
 		let r = y && c, i = s && !r;
 		for (let n of e) {
 			let e = u.indexManifest[n], a = t[n];
 			if (i) {
 				let t = (e) => String(e).startsWith("v3-index-reverseRef-") ? "reverseRef" : String(e).startsWith("v3-index-entity-") ? "entity" : String(e).startsWith("v3-index-floorOrder-") || String(e).startsWith("v3-index-fingerprint-") ? "floor" : null;
-				(e.some((e) => !x.includes(e) || t(e) !== n) || a.some((t) => !e.includes(t))) && Y("V3_GRAPH_ROOT_INDEX_MANIFEST_INVALID");
+				(e.some((e) => !x.includes(e) || t(e) !== n) || a.some((t) => !e.includes(t))) && X("V3_GRAPH_ROOT_INDEX_MANIFEST_INVALID");
 				continue;
 			}
 			if (r) {
 				let t = (e) => String(e).startsWith("v3-index-reverseRef-") ? "reverseRef" : String(e).startsWith("v3-index-floorOrder-") || String(e).startsWith("v3-index-fingerprint-") ? "floor" : null;
-				e.some((e) => !a.includes(e) && !(s && x.includes(e) && t(e) === n)) && Y("V3_GRAPH_ROOT_INDEX_MANIFEST_INVALID");
+				e.some((e) => !a.includes(e) && !(s && x.includes(e) && t(e) === n)) && X("V3_GRAPH_ROOT_INDEX_MANIFEST_INVALID");
 				continue;
 			}
-			(e.length !== a.length || e.some((e) => !a.includes(e)) || a.some((t) => !e.includes(t))) && Y("V3_GRAPH_ROOT_INDEX_MANIFEST_INVALID");
+			(e.length !== a.length || e.some((e) => !a.includes(e)) || a.some((t) => !e.includes(t))) && X("V3_GRAPH_ROOT_INDEX_MANIFEST_INVALID");
 		}
 	}
 	return Object.freeze({
@@ -2073,7 +2115,7 @@ function At(e, t, n, { nullable: r = !1, max: i = 12e3 } = {}) {
 	return r && e === null || (typeof e != "string" || !e.trim() || e.length > i) && Et(t, n), e;
 }
 function jt(e, t, n, { nullable: r = !1 } = {}) {
-	return r && e === null || he(e) || Et(t, n), e;
+	return r && e === null || ge(e) || Et(t, n), e;
 }
 function Mt(e, t, n) {
 	(typeof e != "string" || !Number.isFinite(Date.parse(e))) && Et(t, n);
@@ -2426,7 +2468,7 @@ function Ht(e, { expectedChatId: t } = {}) {
 }
 function Ut(e) {
 	let t = /* @__PURE__ */ new Set(), n = (e) => {
-		he(e) && t.add(e);
+		ge(e) && t.add(e);
 	}, r = (e) => (Array.isArray(e) ? e : []).forEach(n);
 	e.summaryEvidenceRefs.forEach((e) => n(e.sourceEntityId)), e.locations.forEach((e) => {
 		n(e.entityId), r(e.participantEntityIds);
@@ -2515,7 +2557,7 @@ async function Wt({ root: e = null, checkpoint: t, run: n = null, floors: r = []
 	});
 }
 async function Gt(e) {
-	return `sha256:${await _e(String(e ?? "").normalize("NFKC").trim().toLocaleLowerCase())}`;
+	return `sha256:${await J(String(e ?? "").normalize("NFKC").trim().toLocaleLowerCase())}`;
 }
 //#endregion
 //#region src/v3/safe-metadata.js
@@ -3228,33 +3270,33 @@ function En(e = "") {
 	return en(`${t.trim() ? t : wn}\n\n${Tn}`);
 }
 En();
-function X(e, t = "", n = e) {
+function Z(e, t = "", n = e) {
 	let r = TypeError(n);
 	return r.code = e, r.validationPath = t, r;
 }
 function Dn(e, t) {
-	if (!e || typeof e != "object" || Array.isArray(e)) throw X("V3_EXTRACTOR_SCHEMA_INVALID", t);
+	if (!e || typeof e != "object" || Array.isArray(e)) throw Z("V3_EXTRACTOR_SCHEMA_INVALID", t);
 	return e;
 }
 function On(e, t, n = 4e3, r = !1) {
 	if (r && e === null) return null;
-	if (typeof e != "string" || !e.trim() || e.length > n) throw X("V3_EXTRACTOR_SCHEMA_INVALID", t);
+	if (typeof e != "string" || !e.trim() || e.length > n) throw Z("V3_EXTRACTOR_SCHEMA_INVALID", t);
 	return e.trim();
 }
 function kn(e, t, n = 80) {
-	if (!Array.isArray(e) || e.length > n) throw X("V3_EXTRACTOR_SCHEMA_INVALID", t);
+	if (!Array.isArray(e) || e.length > n) throw Z("V3_EXTRACTOR_SCHEMA_INVALID", t);
 	return e;
 }
 function An(e, t, n) {
 	let r = Array.isArray(t?.type) ? t.type : [t?.type], i = e === null ? "null" : Array.isArray(e) ? "array" : typeof e == "number" && Number.isInteger(e) ? "integer" : typeof e;
-	if (t?.type && !r.includes(i) && !(i === "integer" && r.includes("number")) || Object.hasOwn(t ?? {}, "const") && e !== t.const || t?.enum && !t.enum.includes(e) || i === "string" && (!e.trim() || t.maxLength && e.length > t.maxLength)) throw X("V3_EXTRACTOR_SCHEMA_INVALID", n);
+	if (t?.type && !r.includes(i) && !(i === "integer" && r.includes("number")) || Object.hasOwn(t ?? {}, "const") && e !== t.const || t?.enum && !t.enum.includes(e) || i === "string" && (!e.trim() || t.maxLength && e.length > t.maxLength)) throw Z("V3_EXTRACTOR_SCHEMA_INVALID", n);
 	if (i === "array") {
-		if ((t.minItems ?? 0) > e.length || (t.maxItems ?? Infinity) < e.length) throw X("V3_EXTRACTOR_SCHEMA_INVALID", n);
+		if ((t.minItems ?? 0) > e.length || (t.maxItems ?? Infinity) < e.length) throw Z("V3_EXTRACTOR_SCHEMA_INVALID", n);
 		e.forEach((e, r) => An(e, t.items ?? {}, `${n}[${r}]`));
 	}
 	if (i === "object") {
 		let r = Object.keys(e), i = Object.keys(t.properties ?? {});
-		if (t.additionalProperties === !1 && r.some((e) => !i.includes(e)) || (t.required ?? []).some((t) => !Object.hasOwn(e, t))) throw X("V3_EXTRACTOR_SCHEMA_INVALID", n);
+		if (t.additionalProperties === !1 && r.some((e) => !i.includes(e)) || (t.required ?? []).some((t) => !Object.hasOwn(e, t))) throw Z("V3_EXTRACTOR_SCHEMA_INVALID", n);
 		for (let i of r) t.properties?.[i] && An(e[i], t.properties[i], `${n}.${i}`);
 	}
 	return e;
@@ -3262,7 +3304,7 @@ function An(e, t, n) {
 function jn(e, t, n) {
 	Dn(e, n);
 	let r = t?.properties ?? {};
-	for (let r of t?.required ?? []) if (r !== "evidence" && !Object.hasOwn(e, r)) throw X("V3_EXTRACTOR_SCHEMA_INVALID", `${n}.${r}`);
+	for (let r of t?.required ?? []) if (r !== "evidence" && !Object.hasOwn(e, r)) throw Z("V3_EXTRACTOR_SCHEMA_INVALID", `${n}.${r}`);
 	for (let [t, i] of Object.entries(r)) t !== "evidence" && Object.hasOwn(e, t) && An(e[t], i, `${n}.${t}`);
 	return e;
 }
@@ -3272,7 +3314,7 @@ function Mn(e, t) {
 	return n;
 }
 function Nn(e, t) {
-	if (typeof e != "string" || !e.trim() || e.length > 2e3) throw X("V3_EXTRACTOR_SCHEMA_INVALID", t);
+	if (typeof e != "string" || !e.trim() || e.length > 2e3) throw Z("V3_EXTRACTOR_SCHEMA_INVALID", t);
 	return e.replace(/\r\n/g, "\n");
 }
 function Pn(e) {
@@ -3304,16 +3346,16 @@ function Fn(e, t, n) {
 		if (r += 1, i === n) return r;
 		if (i > n) break;
 	}
-	throw X("V3_EXTRACTOR_EVIDENCE_SPAN_INVALID");
+	throw Z("V3_EXTRACTOR_EVIDENCE_SPAN_INVALID");
 }
 function In(e, t, n, r) {
 	let i = [], a = -1;
 	for (; (a = t.text.indexOf(n, a + 1)) !== -1;) {
-		if (i.length >= mn) throw X("V3_EXTRACTOR_EVIDENCE_CHAIN_LIMIT", r);
+		if (i.length >= mn) throw Z("V3_EXTRACTOR_EVIDENCE_CHAIN_LIMIT", r);
 		let o = t.offsets[a], s = t.offsets[a + n.length - 1];
-		if (!o || !s) throw X("V3_EXTRACTOR_EVIDENCE_SPAN_INVALID", r);
+		if (!o || !s) throw Z("V3_EXTRACTOR_EVIDENCE_SPAN_INVALID", r);
 		let c = e.slice(o.start, s.end);
-		if (!c || c.length > 2e3) throw X("V3_EXTRACTOR_EVIDENCE_SPAN_INVALID", r);
+		if (!c || c.length > 2e3) throw Z("V3_EXTRACTOR_EVIDENCE_SPAN_INVALID", r);
 		i.push({
 			start: o.start,
 			end: s.end,
@@ -3321,11 +3363,11 @@ function In(e, t, n, r) {
 			occurrence: Fn(e, c, o.start)
 		});
 	}
-	if (!i.length) throw X("V3_EXTRACTOR_EVIDENCE_NOT_FOUND", r);
+	if (!i.length) throw Z("V3_EXTRACTOR_EVIDENCE_NOT_FOUND", r);
 	return i;
 }
 function Ln(e, t, n) {
-	if (!Array.isArray(t) || t.length < 1 || t.length > pn) throw X("V3_EXTRACTOR_SCHEMA_INVALID", n);
+	if (!Array.isArray(t) || t.length < 1 || t.length > pn) throw Z("V3_EXTRACTOR_SCHEMA_INVALID", n);
 	let r = Pn(e), i = t.map((t, i) => In(e, r, Nn(t, `${n}[${i}]`), `${n}[${i}]`)), a = [i[0].map(() => ({
 		count: 1,
 		previous: -1
@@ -3342,8 +3384,8 @@ function Ln(e, t, n) {
 		a.push(r);
 	}
 	let o = a.at(-1), s = o.reduce((e, t) => Math.min(2, e + t.count), 0);
-	if (s === 0) throw X("V3_EXTRACTOR_EVIDENCE_CHAIN_NOT_FOUND", n);
-	if (s > 1) throw X("V3_EXTRACTOR_EVIDENCE_CHAIN_AMBIGUOUS", n);
+	if (s === 0) throw Z("V3_EXTRACTOR_EVIDENCE_CHAIN_NOT_FOUND", n);
+	if (s > 1) throw Z("V3_EXTRACTOR_EVIDENCE_CHAIN_AMBIGUOUS", n);
 	let c = Array(i.length), l = o.findIndex((e) => e.count === 1);
 	for (let e = i.length - 1; e >= 0; --e) c[e] = i[e][l], l = a[e][l].previous;
 	return c;
@@ -3392,7 +3434,7 @@ async function Bn({ batchId: e, chatId: t, narrativeGeneration: n, checkpointId:
 		narrativeGeneration: n,
 		checkpointId: r ?? null,
 		floorId: i.id,
-		canonicalContentFingerprint: await _e(String(i.content.canonicalContent ?? "")),
+		canonicalContentFingerprint: await J(String(i.content.canonicalContent ?? "")),
 		rawContentFingerprint: i.content.rawFingerprint ?? null,
 		catalogBindings: Object.freeze(u.map((e) => Object.freeze({
 			entityKey: e.entityKey,
@@ -3414,10 +3456,10 @@ function Vn(e, t) {
 		"existing",
 		"new",
 		"uncertain"
-	].includes(e.identity)) throw X("V3_EXTRACTOR_SCHEMA_INVALID", `entityMentions.${n}`);
+	].includes(e.identity)) throw Z("V3_EXTRACTOR_SCHEMA_INVALID", `entityMentions.${n}`);
 	let i = kn(e.aliases, `entityMentions.${n}.aliases`, 20).map((e, t) => On(e, `entityMentions.${n}.aliases[${t}]`, 500)), a = e.entityKey === null ? null : On(e.entityKey, `entityMentions.${n}.entityKey`, 160);
-	if (e.identity === "existing" && (!a || !t.has(a)) || e.identity !== "existing" && a !== null) throw X("V3_EXTRACTOR_ENTITY_KEY_INVALID", `entityMentions.${n}.entityKey`);
-	if (e.identity === "existing" && t.get(a)?.entityType !== e.entityType) throw X("V3_EXTRACTOR_ENTITY_TYPE_CONFLICT", `entityMentions.${n}.entityType`);
+	if (e.identity === "existing" && (!a || !t.has(a)) || e.identity !== "existing" && a !== null) throw Z("V3_EXTRACTOR_ENTITY_KEY_INVALID", `entityMentions.${n}.entityKey`);
+	if (e.identity === "existing" && t.get(a)?.entityType !== e.entityType) throw Z("V3_EXTRACTOR_ENTITY_TYPE_CONFLICT", `entityMentions.${n}.entityType`);
 	return {
 		mentionKey: n,
 		surface: r,
@@ -3429,19 +3471,19 @@ function Vn(e, t) {
 	};
 }
 async function Hn({ response: e, envelope: t, floor: n, existingEntities: r = [], now: i, supersedes: a = null, preservedSummary: o = null, expectedScope: s = null }) {
-	let c = t?.scope, l = await _e(String(n?.content?.canonicalContent ?? ""));
-	if (!c || c.floorId !== n?.id || c.chatId !== n?.chatId || c.narrativeGeneration !== n?.narrativeGeneration || c.canonicalContentFingerprint !== l || s && (c.batchId !== s.batchId || c.chatId !== s.chatId || c.narrativeGeneration !== s.narrativeGeneration || c.checkpointId !== s.checkpointId || c.floorId !== s.floorId || s.rawContentFingerprint !== void 0 && c.rawContentFingerprint !== s.rawContentFingerprint)) throw X("V3_EXTRACTOR_LOCAL_SCOPE_INVALID", "localScope");
-	if (!Array.isArray(c.catalogBindings)) throw X("V3_EXTRACTOR_LOCAL_CATALOG_INVALID", "localScope.catalogBindings");
+	let c = t?.scope, l = await J(String(n?.content?.canonicalContent ?? ""));
+	if (!c || c.floorId !== n?.id || c.chatId !== n?.chatId || c.narrativeGeneration !== n?.narrativeGeneration || c.canonicalContentFingerprint !== l || s && (c.batchId !== s.batchId || c.chatId !== s.chatId || c.narrativeGeneration !== s.narrativeGeneration || c.checkpointId !== s.checkpointId || c.floorId !== s.floorId || s.rawContentFingerprint !== void 0 && c.rawContentFingerprint !== s.rawContentFingerprint)) throw Z("V3_EXTRACTOR_LOCAL_SCOPE_INVALID", "localScope");
+	if (!Array.isArray(c.catalogBindings)) throw Z("V3_EXTRACTOR_LOCAL_CATALOG_INVALID", "localScope.catalogBindings");
 	let u = t?.request?.payload?.knownPeople;
-	if (!Array.isArray(u) || u.length !== c.catalogBindings.length) throw X("V3_EXTRACTOR_LOCAL_CATALOG_INVALID", "localScope.catalogBindings");
+	if (!Array.isArray(u) || u.length !== c.catalogBindings.length) throw Z("V3_EXTRACTOR_LOCAL_CATALOG_INVALID", "localScope.catalogBindings");
 	let d = sn({ entities: r }), f = new Map(d.map((e) => [e.entityId, e])), p = /* @__PURE__ */ new Map();
 	for (let [e, t] of c.catalogBindings.entries()) {
 		let n = f.get(t?.entityId);
-		if (!t || typeof t.entityKey != "string" || !he(t.entityId) || p.has(t.entityKey) || !n || t.entityType !== n.entityType || t.specialRole !== n.specialRole) throw X("V3_EXTRACTOR_LOCAL_CATALOG_INVALID", `localScope.catalogBindings[${e}]`);
+		if (!t || typeof t.entityKey != "string" || !ge(t.entityId) || p.has(t.entityKey) || !n || t.entityType !== n.entityType || t.specialRole !== n.specialRole) throw Z("V3_EXTRACTOR_LOCAL_CATALOG_INVALID", `localScope.catalogBindings[${e}]`);
 		p.set(t.entityKey, n);
 	}
-	if (Dn(e, "response"), e.schemaVersion !== 3 || e.task !== "extractFloorMemory" || e.promptVersion !== "qqj-v3-extractor-prompt-15") throw X("V3_EXTRACTOR_RESPONSE_SCOPE_INVALID", "response");
-	if (!Array.isArray(e.floors) || e.floors.length !== 1) throw X("V3_EXTRACTOR_FLOOR_MISMATCH", "floors");
+	if (Dn(e, "response"), e.schemaVersion !== 3 || e.task !== "extractFloorMemory" || e.promptVersion !== "qqj-v3-extractor-prompt-15") throw Z("V3_EXTRACTOR_RESPONSE_SCOPE_INVALID", "response");
+	if (!Array.isArray(e.floors) || e.floors.length !== 1) throw Z("V3_EXTRACTOR_FLOOR_MISMATCH", "floors");
 	let m = Dn(e.floors[0], "floors[0]"), h = typeof t?.request?.payload?.userIdentity?.displayName == "string" ? t.request.payload.userIdentity.displayName.trim() : "", g = (e, t, n = 4e3) => {
 		let r = On(e, t, n);
 		return h ? On(r.replaceAll("{{user}}", h), t, n) : r;
@@ -3454,15 +3496,15 @@ async function Hn({ response: e, envelope: t, floor: n, existingEntities: r = []
 		});
 	}, b = (e, t = e === "exactAnchors" ? 60 : 80) => {
 		let n = m[e];
-		return Array.isArray(n) ? (n.length > t && y(e, t, X("V3_EXTRACTOR_ARRAY_TRUNCATED", e)), n.slice(0, t)) : (y(e, -1, X("V3_EXTRACTOR_ARRAY_INVALID", e)), []);
+		return Array.isArray(n) ? (n.length > t && y(e, t, Z("V3_EXTRACTOR_ARRAY_TRUNCATED", e)), n.slice(0, t)) : (y(e, -1, Z("V3_EXTRACTOR_ARRAY_INVALID", e)), []);
 	};
-	["ok", "needsReview"].includes(m.status) || y("status", -1, X("V3_EXTRACTOR_ENUM_INVALID", "floors[0].status"));
+	["ok", "needsReview"].includes(m.status) || y("status", -1, Z("V3_EXTRACTOR_ENUM_INVALID", "floors[0].status"));
 	let x = /* @__PURE__ */ new Map();
 	for (let [e, t] of b("entityMentions").entries()) try {
 		let r = `entityMentions[${e}]`;
 		jn(t, xn.entityMentions.items, r);
 		let i = Array.isArray(t.evidence) ? t.evidence : [];
-		!Array.isArray(t.evidence) && Object.hasOwn(t, "evidence") && y("entityMentions", e, X("V3_EXTRACTOR_EVIDENCE_INVALID", `${r}.evidence`)), i.length > 40 && y("entityMentions", e, X("V3_EXTRACTOR_EVIDENCE_TRUNCATED", `${r}.evidence`));
+		!Array.isArray(t.evidence) && Object.hasOwn(t, "evidence") && y("entityMentions", e, Z("V3_EXTRACTOR_EVIDENCE_INVALID", `${r}.evidence`)), i.length > 40 && y("entityMentions", e, Z("V3_EXTRACTOR_EVIDENCE_TRUNCATED", `${r}.evidence`));
 		let a = 0, o = [];
 		for (let [t, s] of i.slice(0, 40).entries()) try {
 			if (Dn(s, `${r}.evidence[${t}]`), Ln(n.content.canonicalContent, s.quoteSegments, `${r}.evidence[${t}].quoteSegments`), On(s.supports, `${r}.evidence[${t}].supports`, 2e3), ![
@@ -3470,7 +3512,7 @@ async function Hn({ response: e, envelope: t, floor: n, existingEntities: r = []
 				"witnessed",
 				"reported",
 				"privateCognition"
-			].includes(s.evidenceMode)) throw X("V3_EXTRACTOR_SCHEMA_INVALID", `${r}.evidence[${t}].evidenceMode`);
+			].includes(s.evidenceMode)) throw Z("V3_EXTRACTOR_SCHEMA_INVALID", `${r}.evidence[${t}].evidenceMode`);
 			An(s.sourceMentionKey, fn, `${r}.evidence[${t}].sourceMentionKey`), s.sourceMentionKey !== null && o.push({
 				mentionKey: s.sourceMentionKey,
 				evidenceIndex: t
@@ -3479,25 +3521,25 @@ async function Hn({ response: e, envelope: t, floor: n, existingEntities: r = []
 			y("entityMentions", e, n, `${r}.evidence[${t}]`);
 		}
 		let s = Vn(t, p);
-		if (s.index = e, s.evidenceSources = o, x.has(s.mentionKey)) throw X("V3_EXTRACTOR_MENTION_DUPLICATE", `${r}.mentionKey`);
-		x.set(s.mentionKey, s), s.identity === "uncertain" && y("entityMentions", e, X("V3_EXTRACTOR_ENTITY_UNRESOLVED", `${r}.identity`));
+		if (s.index = e, s.evidenceSources = o, x.has(s.mentionKey)) throw Z("V3_EXTRACTOR_MENTION_DUPLICATE", `${r}.mentionKey`);
+		x.set(s.mentionKey, s), s.identity === "uncertain" && y("entityMentions", e, Z("V3_EXTRACTOR_ENTITY_UNRESOLVED", `${r}.identity`));
 	} catch (t) {
 		y("entityMentions", e, t, `entityMentions[${e}]`);
 	}
 	for (let e of x.values()) for (let t of e.evidenceSources) {
 		let n = x.get(t.mentionKey), r = `entityMentions[${e.index}].evidence[${t.evidenceIndex}].sourceMentionKey`;
-		n ? n.identity === "uncertain" && y("entityMentions", e.index, X("V3_EXTRACTOR_ENTITY_UNRESOLVED", r)) : y("entityMentions", e.index, X("V3_EXTRACTOR_ENTITY_POINTER_INVALID", r));
+		n ? n.identity === "uncertain" && y("entityMentions", e.index, Z("V3_EXTRACTOR_ENTITY_UNRESOLVED", r)) : y("entityMentions", e.index, Z("V3_EXTRACTOR_ENTITY_POINTER_INVALID", r));
 	}
 	let S = [];
 	for (let e of x.values()) {
 		if (e.identity !== "new") continue;
-		let t = e.specialRole === "user" ? await J([
+		let t = e.specialRole === "user" ? await Y([
 			"v3-entity-special-user",
 			n.chatId,
 			n.narrativeGeneration,
 			n.id,
 			s.batchId
-		]) : await J([
+		]) : await Y([
 			"v3-entity",
 			n.chatId,
 			n.narrativeGeneration,
@@ -3547,7 +3589,7 @@ async function Hn({ response: e, envelope: t, floor: n, existingEntities: r = []
 	for (let [e, t] of C) {
 		let r = f.get(e)?.entity;
 		if (!r || !t.length) continue;
-		let a = t.map(an).sort(), o = await J([
+		let a = t.map(an).sort(), o = await Y([
 			"v3-entity-merged-alias",
 			r.id,
 			n.id,
@@ -3585,17 +3627,17 @@ async function Hn({ response: e, envelope: t, floor: n, existingEntities: r = []
 	let w = (e, t, { nullable: n = !1 } = {}) => {
 		if (e === null && n) return null;
 		let r = On(e, t, 160), i = x.get(r);
-		if (!i) throw X("V3_EXTRACTOR_ENTITY_POINTER_INVALID", t);
-		if (!i.resolvedEntityId) throw X("V3_EXTRACTOR_ENTITY_UNRESOLVED", t);
+		if (!i) throw Z("V3_EXTRACTOR_ENTITY_POINTER_INVALID", t);
+		if (!i.resolvedEntityId) throw Z("V3_EXTRACTOR_ENTITY_UNRESOLVED", t);
 		return i.resolvedEntityId;
 	}, T = (e, t, { required: r = !0, issueField: i = t, ownerIndex: a = null } = {}) => {
 		let o = [];
 		if (!Array.isArray(e)) {
-			let e = X("V3_EXTRACTOR_EVIDENCE_INVALID", t);
-			if (y(i, a ?? -1, e), r) throw X("V3_EXTRACTOR_EVIDENCE_REQUIRED", t);
+			let e = Z("V3_EXTRACTOR_EVIDENCE_INVALID", t);
+			if (y(i, a ?? -1, e), r) throw Z("V3_EXTRACTOR_EVIDENCE_REQUIRED", t);
 			return o;
 		}
-		e.length > 40 && y(i, a ?? 40, X("V3_EXTRACTOR_EVIDENCE_TRUNCATED", t));
+		e.length > 40 && y(i, a ?? 40, Z("V3_EXTRACTOR_EVIDENCE_TRUNCATED", t));
 		for (let [r, s] of e.slice(0, 40).entries()) {
 			let e = `${t}[${r}]`;
 			try {
@@ -3606,9 +3648,9 @@ async function Hn({ response: e, envelope: t, floor: n, existingEntities: r = []
 					"witnessed",
 					"reported",
 					"privateCognition"
-				].includes(s.evidenceMode)) throw X("V3_EXTRACTOR_SCHEMA_INVALID", `${e}.evidenceMode`);
+				].includes(s.evidenceMode)) throw Z("V3_EXTRACTOR_SCHEMA_INVALID", `${e}.evidenceMode`);
 				let r = g(s.supports, `${e}.supports`, 2e3), i = w(s.sourceMentionKey, `${e}.sourceMentionKey`, { nullable: !0 });
-				if (o.length + t.length > hn) throw X("V3_EXTRACTOR_EVIDENCE_REFS_TRUNCATED", e);
+				if (o.length + t.length > hn) throw Z("V3_EXTRACTOR_EVIDENCE_REFS_TRUNCATED", e);
 				o.push(...t.map((e) => ({
 					floorId: n.id,
 					anchorId: null,
@@ -3622,12 +3664,12 @@ async function Hn({ response: e, envelope: t, floor: n, existingEntities: r = []
 				y(i, a ?? r, t, e);
 			}
 		}
-		if (r && !o.length) throw X("V3_EXTRACTOR_EVIDENCE_REQUIRED", t);
+		if (r && !o.length) throw Z("V3_EXTRACTOR_EVIDENCE_REQUIRED", t);
 		return o;
 	}, E = T(m.summaryEvidence, "summaryEvidence", {
 		required: !1,
 		issueField: "summaryEvidence"
-	}), D = 0, O = async (e, t) => J([
+	}), D = 0, O = async (e, t) => Y([
 		"v3-floor-memory-item",
 		n.id,
 		e,
@@ -3690,9 +3732,9 @@ async function Hn({ response: e, envelope: t, floor: n, existingEntities: r = []
 		evidenceRefs: j(e, "privateCognition.evidence")
 	})), R = /* @__PURE__ */ new Map(), z = await k("exactAnchors", async (e) => {
 		let t = On(e.exactText, "exactAnchors.exactText", 2e3), r = (R.get(t) ?? 0) + 1;
-		if (R.set(t, r), Mn(A, t) < r) throw X("V3_EXTRACTOR_ANCHOR_OCCURRENCE_INVALID", "exactAnchors.exactText");
+		if (R.set(t, r), Mn(A, t) < r) throw Z("V3_EXTRACTOR_ANCHOR_OCCURRENCE_INVALID", "exactAnchors.exactText");
 		return {
-			anchorId: await J([
+			anchorId: await Y([
 				"v3-anchor",
 				n.id,
 				e.kind,
@@ -3707,11 +3749,11 @@ async function Hn({ response: e, envelope: t, floor: n, existingEntities: r = []
 		};
 	}), B = /* @__PURE__ */ new Map();
 	for (let e of z) B.set(e.exactText, [...B.get(e.exactText) ?? [], e.anchorId]);
-	let V = /* @__PURE__ */ new Map(), te = await k("commitments", async (e, t) => {
+	let V = /* @__PURE__ */ new Map(), H = await k("commitments", async (e, t) => {
 		let n = e.exactText === null ? null : On(e.exactText, "commitments.exactText", 2e3), r = null;
 		if (n) {
 			let e = V.get(n) ?? 0;
-			V.set(n, e + 1), r = A.includes(n) ? B.get(n)?.[e] ?? null : null, r || y("commitments", t, X("V3_EXTRACTOR_ANCHOR_NOT_FOUND", `commitments[${t}].exactText`));
+			V.set(n, e + 1), r = A.includes(n) ? B.get(n)?.[e] ?? null : null, r || y("commitments", t, Z("V3_EXTRACTOR_ANCHOR_NOT_FOUND", `commitments[${t}].exactText`));
 		}
 		return {
 			itemId: await O("commitments", e),
@@ -3723,14 +3765,14 @@ async function Hn({ response: e, envelope: t, floor: n, existingEntities: r = []
 			exactAnchorId: r,
 			evidenceRefs: j(e, "commitments.evidence")
 		};
-	}), H = await k("eventFragments", async (e) => ({
+	}), U = await k("eventFragments", async (e) => ({
 		itemId: await O("eventFragments", e),
 		title: g(e.title, "eventFragments.title", 500),
 		description: g(e.description, "eventFragments.description", 2e3),
 		candidateStatus: "candidate",
 		eventId: null,
 		evidenceRefs: j(e, "eventFragments.evidence")
-	})), U = await k("openLoops", async (e) => ({
+	})), te = await k("openLoops", async (e) => ({
 		itemId: await O("openLoops", e),
 		description: g(e.description, "openLoops.description", 2e3),
 		ownerEntityIds: kn(e.ownerMentionKeys, "openLoops.ownerMentionKeys", 40).map((e, t) => w(e, `openLoops.ownerMentionKeys[${t}]`)),
@@ -3751,7 +3793,7 @@ async function Hn({ response: e, envelope: t, floor: n, existingEntities: r = []
 	})), ne = Vt({
 		schemaVersion: 3,
 		recordType: "floorMemory",
-		id: await J([
+		id: await Y([
 			"v3-floor-memory",
 			n.chatId,
 			n.narrativeGeneration,
@@ -3779,10 +3821,10 @@ async function Hn({ response: e, envelope: t, floor: n, existingEntities: r = []
 		observations: ee,
 		informationTransfers: I,
 		privateCognition: L,
-		commitments: te,
-		eventFragments: H,
+		commitments: H,
+		eventFragments: U,
 		exactAnchors: z,
-		openLoops: U,
+		openLoops: te,
 		ambiguities: W,
 		cseSignals: G,
 		createdAt: i,
@@ -3823,7 +3865,7 @@ var Un = (e) => String(e ?? "").normalize("NFKC").toLocaleLowerCase().replace(/[
 	"response",
 	"floor",
 	"floors"
-]), Yn = new Set((/* @__PURE__ */ "events.event.eventFragments.actions.action.observations.observation.knowledge.facts.information.informationTransfers.privateThoughts.privateCognition.commitments.openLoops.cseSignals.chronology.timeline.事件.行动.动作.观察.知识.事实.信息.私下想法.内心.承诺.约定.未决事项.悬念.关系信号.时间线".split(".")).map(Un)), Xn = new Set((/* @__PURE__ */ "description.event.action.observation.content.text.detail.narrative.story.plot.fact.knowledge.claimText.thought.promise.result.描述.事件.行动.动作.观察.内容.文本.文本内容.详情.叙述.叙事.剧情.故事.情节.事实.知识.主张.想法.承诺.结果".split(".")).map(Un)), Z = (e, t = [], n = 2e3) => {
+]), Yn = new Set((/* @__PURE__ */ "events.event.eventFragments.actions.action.observations.observation.knowledge.facts.information.informationTransfers.privateThoughts.privateCognition.commitments.openLoops.cseSignals.chronology.timeline.事件.行动.动作.观察.知识.事实.信息.私下想法.内心.承诺.约定.未决事项.悬念.关系信号.时间线".split(".")).map(Un)), Xn = new Set((/* @__PURE__ */ "description.event.action.observation.content.text.detail.narrative.story.plot.fact.knowledge.claimText.thought.promise.result.描述.事件.行动.动作.观察.内容.文本.文本内容.详情.叙述.叙事.剧情.故事.情节.事实.知识.主张.想法.承诺.结果".split(".")).map(Un)), Q = (e, t = [], n = 2e3) => {
 	let r = typeof e == "string" || typeof e == "number" ? e : Wn(e, t);
 	return typeof r == "string" || typeof r == "number" ? String(r).replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, n) : "";
 };
@@ -3852,7 +3894,7 @@ function Zn(e) {
 function Qn(e) {
 	if (typeof e != "string") return "";
 	let t = e.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
-	if (!t || he(t) || /^[a-f0-9]{16,}$/iu.test(t) || /^(?:hash|sha(?:-?\d+)?|(?:run|memory|floor|checkpoint|chat|entity|batch|record)[_\s-]*id)\s*[:=：]\s*[a-z0-9][a-z0-9._:/-]*$/iu.test(t) || !/[\p{L}\p{N}]/u.test(t)) return "";
+	if (!t || ge(t) || /^[a-f0-9]{16,}$/iu.test(t) || /^(?:hash|sha(?:-?\d+)?|(?:run|memory|floor|checkpoint|chat|entity|batch|record)[_\s-]*id)\s*[:=：]\s*[a-z0-9][a-z0-9._:/-]*$/iu.test(t) || !/[\p{L}\p{N}]/u.test(t)) return "";
 	if (/^[\[{]/u.test(t)) try {
 		return JSON.parse(t), "";
 	} catch {}
@@ -3898,25 +3940,25 @@ function tr(e) {
 }
 function nr(e, { finishReason: t } = {}) {
 	if (Array.isArray(e) || e && typeof e == "object") return e;
-	if (typeof e != "string") throw X("V3_EXTRACTOR_SUMMARY_INVALID", "summary");
+	if (typeof e != "string") throw Z("V3_EXTRACTOR_SUMMARY_INVALID", "summary");
 	let n = e.trim();
-	if (!n) throw X("V3_EXTRACTOR_SUMMARY_INVALID", "summary");
+	if (!n) throw Z("V3_EXTRACTOR_SUMMARY_INVALID", "summary");
 	let r = [...n.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/giu)], i = r[0]?.[1] ?? n;
 	if (/^[\[{]/u.test(i.trim()) || /```\s*json\b/iu.test(n)) {
 		let e = r.length <= 1 ? Te(i)?.value : void 0;
 		if (e !== void 0) return nr(e, { finishReason: t });
 		let a = r.length <= 1 ? we(i, { finishReason: t })?.value : void 0;
 		if (a !== void 0) return nr(a, { finishReason: t });
-		if (Zn(n)) throw X("V3_EXTRACTOR_SUMMARY_INVALID", "summary");
+		if (Zn(n)) throw Z("V3_EXTRACTOR_SUMMARY_INVALID", "summary");
 		let o = [], s = i.indexOf("{"), c = i.lastIndexOf("}"), l = i.indexOf("["), u = i.lastIndexOf("]");
 		s >= 0 && c > s && o.push(i.slice(s, c + 1)), l >= 0 && u > l && o.push(i.slice(l, u + 1));
 		for (let e of o) try {
 			return nr(JSON.parse(e), { finishReason: t });
 		} catch {}
-		throw X("V3_EXTRACTOR_SUMMARY_INVALID", "summary");
+		throw Z("V3_EXTRACTOR_SUMMARY_INVALID", "summary");
 	}
 	let a = n.replace(/^(?:summary|摘要|总结)\s*[:：]\s*/iu, "").trim();
-	if (!a) throw X("V3_EXTRACTOR_SUMMARY_INVALID", "summary");
+	if (!a) throw Z("V3_EXTRACTOR_SUMMARY_INVALID", "summary");
 	return { summary: a.slice(0, 4e3) };
 }
 function rr(e, { finishReason: t } = {}) {
@@ -3930,7 +3972,7 @@ function rr(e, { finishReason: t } = {}) {
 	}
 	r.at(-1) !== n && r.push(n);
 	let i = r.map($n).find(Boolean) || [...r].reverse().map(tr).find(Boolean) || "";
-	if (!i) throw X("V3_EXTRACTOR_SUMMARY_INVALID", "summary");
+	if (!i) throw Z("V3_EXTRACTOR_SUMMARY_INVALID", "summary");
 	if (Array.isArray(n)) {
 		let e = {};
 		for (let t of n.flat(Infinity)) if (!(!t || typeof t != "object" || Array.isArray(t))) for (let [n, r] of Object.entries(t)) e[n] = Object.hasOwn(e, n) ? [...Gn(e[n]), ...Gn(r)] : r;
@@ -3942,7 +3984,7 @@ function rr(e, { finishReason: t } = {}) {
 	};
 }
 function ir(e, t) {
-	let n = Z(e, [
+	let n = Q(e, [
 		"exactQuote",
 		"quote",
 		"sourceText",
@@ -3991,7 +4033,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 		"角色"
 	])), T = [];
 	for (let [e, t] of w.slice(0, 80).entries()) {
-		let n = Z(t, [
+		let n = Q(t, [
 			"name",
 			"displayName",
 			"person",
@@ -4011,12 +4053,12 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			"aka",
 			"别名",
 			"称谓"
-		])).map((e) => Z(e, [], 500)).filter(Boolean))], a = Z(t, [
+		])).map((e) => Q(e, [], 500)).filter(Boolean))], a = Q(t, [
 			"role",
 			"specialRole",
 			"type",
 			"角色"
-		], 80), o = t && typeof t == "object" && !Array.isArray(t) ? Z(t, [
+		], 80), o = t && typeof t == "object" && !Array.isArray(t) ? Q(t, [
 			"entityKind",
 			"kind",
 			"identityKind",
@@ -4099,7 +4141,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			privatecognitiononly: "privateCognitionOnly",
 			仅私密认知: "privateCognitionOnly",
 			仅内心: "privateCognitionOnly"
-		}[Un(Z(t, [
+		}[Un(Q(t, [
 			"presence",
 			"participation",
 			"presenceType",
@@ -4140,7 +4182,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 	w.length > 80 && p("people", 80, "V3_EXTRACTOR_ARRAY_TRUNCATED", "people");
 	let E = new Set(T.filter((e) => e.entityType === "person").flatMap((e) => [e.surface, ...e.aliases]).map(an).filter(Boolean));
 	for (let e of T) e.entityType === "group" && (e.aliases = e.aliases.filter((t) => !E.has(an(t)) || (p("people", e.sourceIndex, "V3_EXTRACTOR_GROUP_ALIAS_MEMBER_CONFLICT", `people[${e.sourceIndex}].aliases`), !1)));
-	let D = (e) => Z(e, [
+	let D = (e) => Q(e, [
 		"name",
 		"displayName",
 		"person",
@@ -4203,14 +4245,14 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 		"timeline",
 		"时间"
 	], "time").entries()) {
-		let n = Z(t, [
+		let n = Q(t, [
 			"sourceText",
 			"time",
 			"value",
 			"text",
 			"时间",
 			"原文"
-		], 500), r = Z(t, [
+		], 500), r = Q(t, [
 			"description",
 			"text",
 			"time",
@@ -4222,7 +4264,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			p("time", e, "V3_EXTRACTOR_OPTIONAL_ITEM_INVALID", `time[${e}]`);
 			continue;
 		}
-		let i = ar(Z(t, [
+		let i = ar(Q(t, [
 			"kind",
 			"type",
 			"时间类型"
@@ -4235,14 +4277,14 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			相对: "relative",
 			顺序: "sequenceOnly",
 			未知: "unknown"
-		}, "unknown"), a = ar(Z(t, ["precision", "精度"]), {
+		}, "unknown"), a = ar(Q(t, ["precision", "精度"]), {
 			exact: "exact",
 			approximate: "approximate",
 			unresolved: "unresolved",
 			精确: "exact",
 			大约: "approximate",
 			未解析: "unresolved"
-		}, i === "explicit" ? "exact" : "unresolved"), o = Z(t, [
+		}, i === "explicit" ? "exact" : "unresolved"), o = Q(t, [
 			"normalized",
 			"normalizedTime",
 			"标准时间"
@@ -4266,7 +4308,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 		"地点",
 		"场景"
 	], "locations").entries()) {
-		let n = Z(t, [
+		let n = Q(t, [
 			"name",
 			"location",
 			"place",
@@ -4278,7 +4320,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			p("locations", e, "V3_EXTRACTOR_OPTIONAL_ITEM_INVALID", `locations[${e}]`);
 			continue;
 		}
-		let r = ar(Z(t, [
+		let r = ar(Q(t, [
 			"change",
 			"state",
 			"action"
@@ -4312,7 +4354,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 		"eventFragments",
 		"事件"
 	], "events").entries()) {
-		let n = Z(t, [
+		let n = Q(t, [
 			"description",
 			"summary",
 			"event",
@@ -4325,7 +4367,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			p("events", e, "V3_EXTRACTOR_OPTIONAL_ITEM_INVALID", `events[${e}]`);
 			continue;
 		}
-		let r = Z(t, [
+		let r = Q(t, [
 			"title",
 			"name",
 			"标题"
@@ -4342,7 +4384,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 		"行动",
 		"动作"
 	], "actions").entries()) {
-		let n = Z(t, [
+		let n = Q(t, [
 			"action",
 			"description",
 			"summary",
@@ -4367,7 +4409,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			"执行者"
 		]);
 		if (r == null) {
-			let e = Z(t, [
+			let e = Q(t, [
 				"title",
 				"name",
 				"标题"
@@ -4384,7 +4426,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			p("actions", e, "V3_EXTRACTOR_OPTIONAL_ITEM_INVALID", `actions[${e}].actor`);
 			continue;
 		}
-		let a = ar(Z(t, [
+		let a = ar(Q(t, [
 			"completion",
 			"status",
 			"state",
@@ -4420,7 +4462,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			"受事者",
 			"对象",
 			"受益者"
-		])).map(O).filter(Boolean), s = Z(t, [
+		])).map(O).filter(Boolean), s = Q(t, [
 			"result",
 			"outcome",
 			"结果"
@@ -4443,7 +4485,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 		"事实",
 		"观察"
 	], "knowledge").entries()) {
-		let n = Z(t, [
+		let n = Q(t, [
 			"description",
 			"content",
 			"fact",
@@ -4456,7 +4498,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			p("knowledge", e, "V3_EXTRACTOR_OPTIONAL_ITEM_INVALID", `knowledge[${e}]`);
 			continue;
 		}
-		let r = ar(Z(t, ["kind", "type"]), {
+		let r = ar(Q(t, ["kind", "type"]), {
 			physical: "physical",
 			injury: "injury",
 			object: "object",
@@ -4487,7 +4529,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 		"消息转交",
 		"通信"
 	], "informationTransfers").entries()) {
-		let n = Z(t, [
+		let n = Q(t, [
 			"claimText",
 			"claim",
 			"content",
@@ -4548,7 +4590,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			discovered: "discovered",
 			discover: "discovered",
 			发现: "discovered"
-		}[Un(Z(t, [
+		}[Un(Q(t, [
 			"channel",
 			"method",
 			"mode",
@@ -4574,7 +4616,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 		"私下想法",
 		"内心"
 	], "privateThoughts").entries()) {
-		let n = Z(t, [
+		let n = Q(t, [
 			"content",
 			"thought",
 			"description",
@@ -4595,7 +4637,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			p("privateThoughts", e, "V3_EXTRACTOR_OPTIONAL_ITEM_INVALID", `privateThoughts[${e}].owner`);
 			continue;
 		}
-		let i = ar(Z(t, ["kind", "type"]), {
+		let i = ar(Q(t, ["kind", "type"]), {
 			thought: "thought",
 			emotion: "emotion",
 			intention: "intention",
@@ -4622,7 +4664,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 		"承诺",
 		"约定"
 	], "commitments").entries()) {
-		let n = Z(t, [
+		let n = Q(t, [
 			"content",
 			"description",
 			"promise",
@@ -4643,7 +4685,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			p("commitments", e, "V3_EXTRACTOR_OPTIONAL_ITEM_INVALID", `commitments[${e}].speaker`);
 			continue;
 		}
-		let i = ar(Z(t, ["kind", "type"]), {
+		let i = ar(Q(t, ["kind", "type"]), {
 			promise: "promise",
 			agreement: "agreement",
 			command: "command",
@@ -4655,7 +4697,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			暗号: "codePhrase",
 			计划: "plan",
 			边界: "boundary"
-		}, "promise"), a = ar(Z(t, ["status", "state"]), {
+		}, "promise"), a = ar(Q(t, ["status", "state"]), {
 			made: "made",
 			accepted: "accepted",
 			refused: "refused",
@@ -4663,7 +4705,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			接受: "accepted",
 			拒绝: "refused",
 			不确定: "uncertain"
-		}, "made"), o = Z(t, [
+		}, "made"), o = Q(t, [
 			"exactQuote",
 			"exactText",
 			"quote",
@@ -4693,7 +4735,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 		"原句",
 		"引文"
 	], "exactQuotes").entries()) {
-		let n = Z(t, [
+		let n = Q(t, [
 			"text",
 			"exactText",
 			"quote",
@@ -4709,7 +4751,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			p("exactQuotes", e, "V3_EXTRACTOR_ANCHOR_NOT_FOUND", `exactQuotes[${e}]`);
 			continue;
 		}
-		let i = ar(Z(t, ["kind", "type"]), {
+		let i = ar(Q(t, ["kind", "type"]), {
 			promise: "promise",
 			codephrase: "codePhrase",
 			wording: "wording",
@@ -4729,7 +4771,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			kind: i,
 			exactText: n,
 			speakerMentionKey: O(Wn(t, ["speaker", "person"])),
-			whyPreserve: Z(t, [
+			whyPreserve: Q(t, [
 				"why",
 				"reason",
 				"whyPreserve",
@@ -4745,7 +4787,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 		"未决事项",
 		"悬念"
 	], "openLoops").entries()) {
-		let n = Z(t, [
+		let n = Q(t, [
 			"description",
 			"content",
 			"text",
@@ -4772,7 +4814,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 		"relationshipSignals",
 		"关系信号"
 	], "cseSignals").entries()) {
-		let n = Z(t, [
+		let n = Q(t, [
 			"description",
 			"content",
 			"text",
@@ -4787,7 +4829,7 @@ async function or({ response: e, finishReason: t, envelope: n, floor: r, existin
 			p("cseSignals", e, "V3_EXTRACTOR_OPTIONAL_ITEM_INVALID", `cseSignals[${e}]`);
 			continue;
 		}
-		let i = ar(Z(t, [
+		let i = ar(Q(t, [
 			"signalType",
 			"type",
 			"kind"
@@ -4846,7 +4888,7 @@ async function sr(e) {
 		e?.weekday,
 		e?.time
 	].filter(Boolean).join(" "), a = i(n?.start), o = i(n?.end), s = r ? `${a} → ${o}`.slice(0, 500) : [...new Set([a, o].filter(Boolean))].join(" → ").slice(0, 500), c = cr(e.floor?.content?.canonicalContent), l = s || c?.text || "时间未明确", u = [{
-		itemId: await J([
+		itemId: await Y([
 			"v3-floor-memory-story-clock",
 			e.expectedScope.batchId,
 			e.floor.id,
@@ -4887,7 +4929,7 @@ function cr(e) {
 }
 async function lr({ generateUtilityTask: e, envelope: t, floor: n, existingEntities: r = [], now: i, supersedes: a = null, preservedSummary: o = null, expectedScope: s, promptGuidance: c = "", signal: l }) {
 	if (typeof e != "function") throw TypeError("V3 Extractor utility route unavailable");
-	if (!s) throw X("V3_EXTRACTOR_LOCAL_SCOPE_INVALID", "expectedScope");
+	if (!s) throw Z("V3_EXTRACTOR_LOCAL_SCOPE_INVALID", "expectedScope");
 	let u = [], d = {
 		remaining: 3,
 		used: 0
@@ -4908,7 +4950,7 @@ async function lr({ generateUtilityTask: e, envelope: t, floor: n, existingEntit
 				worldInfoSource: "none",
 				transportBudget: d,
 				parseMode: "semantic"
-			}), f = h?.jsonData ?? h?.textData ?? h, p = Qt(h?.taskMetadata), m = `sha256:${await _e(JSON.stringify(f))}`;
+			}), f = h?.jsonData ?? h?.textData ?? h, p = Qt(h?.taskMetadata), m = `sha256:${await J(JSON.stringify(f))}`;
 			let g = await sr({
 				response: f,
 				finishReason: h?.taskMetadata?.finishReason,
@@ -5163,7 +5205,7 @@ async function Dr(e) {
 		world: e.source,
 		uid: e.uid,
 		permissionKey: e.key,
-		fingerprint: `sha256:${await _e(e.content)}`,
+		fingerprint: `sha256:${await J(e.content)}`,
 		label: `${e.source} · ${e.label}`.slice(0, 240),
 		content: e.content,
 		selected: !0,
@@ -5203,7 +5245,7 @@ var Or = Object.freeze([
 	"superseded",
 	"invalidated"
 ]);
-function Q(e, t = "") {
+function $(e, t = "") {
 	let n = TypeError(t ? `${e}:${t}` : e);
 	throw n.code = e, n.validationPath = t, n;
 }
@@ -5211,32 +5253,32 @@ function Pr(e) {
 	try {
 		return structuredClone(e);
 	} catch {
-		Q("V3_CSE_JSON_INVALID");
+		$("V3_CSE_JSON_INVALID");
 	}
 }
 function Fr(e, t, n) {
-	return (!e || typeof e != "object" || Array.isArray(e)) && Q(t, n), e;
+	return (!e || typeof e != "object" || Array.isArray(e)) && $(t, n), e;
 }
 function Ir(e, t, n, r = 160) {
-	return (!Array.isArray(e) || e.length > r) && Q(t, n), e;
+	return (!Array.isArray(e) || e.length > r) && $(t, n), e;
 }
 function Lr(e, t, n, { nullable: r = !1, maximum: i = 12e3 } = {}) {
-	return r && e === null || (typeof e != "string" || !e.trim() || e.length > i) && Q(t, n), e;
+	return r && e === null || (typeof e != "string" || !e.trim() || e.length > i) && $(t, n), e;
 }
 function Rr(e, t, n, { nullable: r = !1 } = {}) {
-	return r && e === null || he(e) || Q(t, n), e;
+	return r && e === null || ge(e) || $(t, n), e;
 }
 function zr(e, t, n) {
-	(typeof e != "string" || !Number.isFinite(Date.parse(e))) && Q(t, n);
+	(typeof e != "string" || !Number.isFinite(Date.parse(e))) && $(t, n);
 }
 function Br(e, t, n) {
-	(typeof e != "string" || !Mr.test(e)) && Q(t, n);
+	(typeof e != "string" || !Mr.test(e)) && $(t, n);
 }
 function Vr(e, t, n) {
-	(e.schemaVersion !== 3 || e.recordType !== t) && Q(`V3_${t.toUpperCase()}_INVALID`), Rr(e.id, `V3_${t.toUpperCase()}_INVALID`, "id"), Rr(e.chatId, `V3_${t.toUpperCase()}_INVALID`, "chatId"), n && e.chatId !== n && Q(`V3_${t.toUpperCase()}_INVALID`, "chatId"), Rr(e.narrativeGeneration, `V3_${t.toUpperCase()}_INVALID`, "narrativeGeneration"), zr(e.createdAt, `V3_${t.toUpperCase()}_INVALID`, "createdAt"), zr(e.updatedAt, `V3_${t.toUpperCase()}_INVALID`, "updatedAt"), Date.parse(e.updatedAt) < Date.parse(e.createdAt) && Q(`V3_${t.toUpperCase()}_INVALID`, "updatedAt"), Nr.has(e.recordStatus) || Q(`V3_${t.toUpperCase()}_INVALID`, "recordStatus"), Rr(e.supersedes, `V3_${t.toUpperCase()}_INVALID`, "supersedes", { nullable: !0 });
+	(e.schemaVersion !== 3 || e.recordType !== t) && $(`V3_${t.toUpperCase()}_INVALID`), Rr(e.id, `V3_${t.toUpperCase()}_INVALID`, "id"), Rr(e.chatId, `V3_${t.toUpperCase()}_INVALID`, "chatId"), n && e.chatId !== n && $(`V3_${t.toUpperCase()}_INVALID`, "chatId"), Rr(e.narrativeGeneration, `V3_${t.toUpperCase()}_INVALID`, "narrativeGeneration"), zr(e.createdAt, `V3_${t.toUpperCase()}_INVALID`, "createdAt"), zr(e.updatedAt, `V3_${t.toUpperCase()}_INVALID`, "updatedAt"), Date.parse(e.updatedAt) < Date.parse(e.createdAt) && $(`V3_${t.toUpperCase()}_INVALID`, "updatedAt"), Nr.has(e.recordStatus) || $(`V3_${t.toUpperCase()}_INVALID`, "recordStatus"), Rr(e.supersedes, `V3_${t.toUpperCase()}_INVALID`, "supersedes", { nullable: !0 });
 }
 function Hr(e, t) {
-	return Fr(e, "V3_CSE_STATE_ITEM_INVALID", t), Rr(e.id, "V3_CSE_STATE_ITEM_INVALID", `${t}.id`), Lr(e.text, "V3_CSE_STATE_ITEM_INVALID", `${t}.text`, { maximum: 4e3 }), Or.includes(e.visibility) || Q("V3_CSE_STATE_ITEM_INVALID", `${t}.visibility`), Lr(e.reason, "V3_CSE_STATE_ITEM_INVALID", `${t}.reason`, { maximum: 4e3 }), kr.includes(e.origin) || Q("V3_CSE_STATE_ITEM_INVALID", `${t}.origin`), Rr(e.towardEntityId, "V3_CSE_STATE_ITEM_INVALID", `${t}.towardEntityId`, { nullable: !0 }), Rr(e.sourceFloorId, "V3_CSE_STATE_ITEM_INVALID", `${t}.sourceFloorId`, { nullable: !0 }), Rr(e.sourceDeltaId, "V3_CSE_STATE_ITEM_INVALID", `${t}.sourceDeltaId`, { nullable: !0 }), e;
+	return Fr(e, "V3_CSE_STATE_ITEM_INVALID", t), Rr(e.id, "V3_CSE_STATE_ITEM_INVALID", `${t}.id`), Lr(e.text, "V3_CSE_STATE_ITEM_INVALID", `${t}.text`, { maximum: 4e3 }), Or.includes(e.visibility) || $("V3_CSE_STATE_ITEM_INVALID", `${t}.visibility`), Lr(e.reason, "V3_CSE_STATE_ITEM_INVALID", `${t}.reason`, { maximum: 4e3 }), kr.includes(e.origin) || $("V3_CSE_STATE_ITEM_INVALID", `${t}.origin`), Rr(e.towardEntityId, "V3_CSE_STATE_ITEM_INVALID", `${t}.towardEntityId`, { nullable: !0 }), Rr(e.sourceFloorId, "V3_CSE_STATE_ITEM_INVALID", `${t}.sourceFloorId`, { nullable: !0 }), Rr(e.sourceDeltaId, "V3_CSE_STATE_ITEM_INVALID", `${t}.sourceDeltaId`, { nullable: !0 }), e;
 }
 function Ur(e, t, { current: n = !1 } = {}) {
 	Fr(e, "V3_CSE_SUBJECT_INVALID", t), Rr(e.subjectEntityId, "V3_CSE_SUBJECT_INVALID", `${t}.subjectEntityId`);
@@ -5249,12 +5291,12 @@ function Ur(e, t, { current: n = !1 } = {}) {
 }
 function Wr(e, { expectedChatId: t } = {}) {
 	let n = Pr(e);
-	Vr(n, "baseline", t), Fr(n.userPersona, "V3_BASELINE_INVALID", "userPersona"), Rr(n.userPersona.entityId, "V3_BASELINE_INVALID", "userPersona.entityId"), Lr(n.userPersona.name, "V3_BASELINE_INVALID", "userPersona.name", { maximum: 500 }), (typeof n.userPersona.description != "string" || n.userPersona.description.length > 4e4) && Q("V3_BASELINE_INVALID", "userPersona.description"), Ir(n.userPersona.aliases, "V3_BASELINE_INVALID", "userPersona.aliases", 40).forEach((e, t) => Lr(e, "V3_BASELINE_INVALID", `userPersona.aliases[${t}]`, { maximum: 500 })), Fr(n.characterCard, "V3_BASELINE_INVALID", "characterCard"), Rr(n.characterCard.entityId, "V3_BASELINE_INVALID", "characterCard.entityId"), Lr(n.characterCard.name, "V3_BASELINE_INVALID", "characterCard.name", { maximum: 500 });
+	Vr(n, "baseline", t), Fr(n.userPersona, "V3_BASELINE_INVALID", "userPersona"), Rr(n.userPersona.entityId, "V3_BASELINE_INVALID", "userPersona.entityId"), Lr(n.userPersona.name, "V3_BASELINE_INVALID", "userPersona.name", { maximum: 500 }), (typeof n.userPersona.description != "string" || n.userPersona.description.length > 4e4) && $("V3_BASELINE_INVALID", "userPersona.description"), Ir(n.userPersona.aliases, "V3_BASELINE_INVALID", "userPersona.aliases", 40).forEach((e, t) => Lr(e, "V3_BASELINE_INVALID", `userPersona.aliases[${t}]`, { maximum: 500 })), Fr(n.characterCard, "V3_BASELINE_INVALID", "characterCard"), Rr(n.characterCard.entityId, "V3_BASELINE_INVALID", "characterCard.entityId"), Lr(n.characterCard.name, "V3_BASELINE_INVALID", "characterCard.name", { maximum: 500 });
 	for (let e of [
 		"description",
 		"personality",
 		"scenario"
-	]) (typeof n.characterCard[e] != "string" || n.characterCard[e].length > 4e4) && Q("V3_BASELINE_INVALID", `characterCard.${e}`);
+	]) (typeof n.characterCard[e] != "string" || n.characterCard[e].length > 4e4) && $("V3_BASELINE_INVALID", `characterCard.${e}`);
 	return Ir(n.worldInfoSources, "V3_BASELINE_INVALID", "worldInfoSources", 5e3).forEach((e, t) => {
 		let n = `worldInfoSources[${t}]`;
 		Fr(e, "V3_BASELINE_INVALID", n);
@@ -5265,7 +5307,7 @@ function Wr(e, { expectedChatId: t } = {}) {
 			"locator",
 			"content"
 		]) Lr(e[t], "V3_BASELINE_INVALID", `${n}.${t}`, { maximum: t === "content" ? 4e4 : 512 });
-		(e.enabled !== !0 || typeof e.activated != "boolean") && Q("V3_BASELINE_INVALID", `${n}.enabled`), Br(e.fingerprint, "V3_BASELINE_INVALID", `${n}.fingerprint`), e.visibility !== "authorial" && Q("V3_BASELINE_INVALID", `${n}.visibility`);
+		(e.enabled !== !0 || typeof e.activated != "boolean") && $("V3_BASELINE_INVALID", `${n}.enabled`), Br(e.fingerprint, "V3_BASELINE_INVALID", `${n}.fingerprint`), e.visibility !== "authorial" && $("V3_BASELINE_INVALID", `${n}.visibility`);
 	}), Br(n.fingerprint, "V3_BASELINE_INVALID", "fingerprint"), Object.freeze(n);
 }
 function Gr(e, { expectedChatId: t } = {}) {
@@ -5276,33 +5318,33 @@ function Gr(e, { expectedChatId: t } = {}) {
 		"floorMemoryId",
 		"baselineId"
 	]) Rr(n[e], "V3_STATEDELTA_INVALID", e);
-	if (Rr(n.previousCurrentStateId, "V3_STATEDELTA_INVALID", "previousCurrentStateId", { nullable: !0 }), Ir(n.subjectSnapshots, "V3_STATEDELTA_INVALID", "subjectSnapshots", 80).forEach((e, t) => Ur(e, `subjectSnapshots[${t}]`)), typeof n.noMaterialChange != "boolean" && Q("V3_STATEDELTA_INVALID", "noMaterialChange"), Br(n.fingerprint, "V3_STATEDELTA_INVALID", "fingerprint"), Fr(n.source, "V3_STATEDELTA_INVALID", "source"), Lr(n.source.promptVersion, "V3_STATEDELTA_INVALID", "source.promptVersion", { maximum: 160 }), Lr(n.source.compilerVersion, "V3_STATEDELTA_INVALID", "source.compilerVersion", { maximum: 160 }), Object.hasOwn(n.source, "isolationSummary")) {
+	if (Rr(n.previousCurrentStateId, "V3_STATEDELTA_INVALID", "previousCurrentStateId", { nullable: !0 }), Ir(n.subjectSnapshots, "V3_STATEDELTA_INVALID", "subjectSnapshots", 80).forEach((e, t) => Ur(e, `subjectSnapshots[${t}]`)), typeof n.noMaterialChange != "boolean" && $("V3_STATEDELTA_INVALID", "noMaterialChange"), Br(n.fingerprint, "V3_STATEDELTA_INVALID", "fingerprint"), Fr(n.source, "V3_STATEDELTA_INVALID", "source"), Lr(n.source.promptVersion, "V3_STATEDELTA_INVALID", "source.promptVersion", { maximum: 160 }), Lr(n.source.compilerVersion, "V3_STATEDELTA_INVALID", "source.compilerVersion", { maximum: 160 }), Object.hasOwn(n.source, "isolationSummary")) {
 		let e = Fr(n.source.isolationSummary, "V3_STATEDELTA_INVALID", "source.isolationSummary");
-		(Object.keys(e).some((e) => !["count", "codes"].includes(e)) || !Number.isSafeInteger(e.count) || e.count < 1 || e.count > 1e6) && Q("V3_STATEDELTA_INVALID", "source.isolationSummary.count");
+		(Object.keys(e).some((e) => !["count", "codes"].includes(e)) || !Number.isSafeInteger(e.count) || e.count < 1 || e.count > 1e6) && $("V3_STATEDELTA_INVALID", "source.isolationSummary.count");
 		let t = /* @__PURE__ */ new Set();
 		Ir(e.codes, "V3_STATEDELTA_INVALID", "source.isolationSummary.codes", Ar.length).forEach((e, n) => {
-			(!Ar.includes(e) || t.has(e)) && Q("V3_STATEDELTA_INVALID", `source.isolationSummary.codes[${n}]`), t.add(e);
-		}), (!e.codes.length || e.codes.length > e.count) && Q("V3_STATEDELTA_INVALID", "source.isolationSummary.codes");
+			(!Ar.includes(e) || t.has(e)) && $("V3_STATEDELTA_INVALID", `source.isolationSummary.codes[${n}]`), t.add(e);
+		}), (!e.codes.length || e.codes.length > e.count) && $("V3_STATEDELTA_INVALID", "source.isolationSummary.codes");
 	}
-	if (Object.hasOwn(n.source, "calibrationVersion") && !jr(n.source.calibrationVersion) && Q("V3_STATEDELTA_INVALID", "source.calibrationVersion"), Object.hasOwn(n.source, "calibrationAudit") && (jr(n.source.calibrationVersion) || Q("V3_STATEDELTA_INVALID", "source.calibrationAudit"), Ir(n.source.calibrationAudit, "V3_STATEDELTA_INVALID", "source.calibrationAudit", 480).forEach((e, t) => {
+	if (Object.hasOwn(n.source, "calibrationVersion") && !jr(n.source.calibrationVersion) && $("V3_STATEDELTA_INVALID", "source.calibrationVersion"), Object.hasOwn(n.source, "calibrationAudit") && (jr(n.source.calibrationVersion) || $("V3_STATEDELTA_INVALID", "source.calibrationAudit"), Ir(n.source.calibrationAudit, "V3_STATEDELTA_INVALID", "source.calibrationAudit", 480).forEach((e, t) => {
 		let n = `source.calibrationAudit[${t}]`;
 		Fr(e, "V3_STATEDELTA_INVALID", n), Rr(e.subjectEntityId, "V3_STATEDELTA_INVALID", `${n}.subjectEntityId`), (!["core", "adaptive"].includes(e.category) || ![
 			"refine",
 			"remove",
 			"add"
-		].includes(e.action)) && Q("V3_STATEDELTA_INVALID", n), Lr(e.previousText, "V3_STATEDELTA_INVALID", `${n}.previousText`, {
+		].includes(e.action)) && $("V3_STATEDELTA_INVALID", n), Lr(e.previousText, "V3_STATEDELTA_INVALID", `${n}.previousText`, {
 			nullable: !0,
 			maximum: 4e3
 		}), Rr(e.previousTowardEntityId, "V3_STATEDELTA_INVALID", `${n}.previousTowardEntityId`, { nullable: !0 }), Lr(e.text, "V3_STATEDELTA_INVALID", `${n}.text`, {
 			nullable: !0,
 			maximum: 4e3
-		}), Rr(e.towardEntityId, "V3_STATEDELTA_INVALID", `${n}.towardEntityId`, { nullable: !0 }), Lr(e.reason, "V3_STATEDELTA_INVALID", `${n}.reason`, { maximum: 4e3 }), (e.action === "add" && (e.previousText !== null || e.text === null) || e.action === "remove" && (e.previousText === null || e.text !== null) || e.action === "refine" && (e.previousText === null || e.text === null)) && Q("V3_STATEDELTA_INVALID", n), Ir(e.evidence, "V3_STATEDELTA_INVALID", `${n}.evidence`, 20).forEach((e, t) => {
+		}), Rr(e.towardEntityId, "V3_STATEDELTA_INVALID", `${n}.towardEntityId`, { nullable: !0 }), Lr(e.reason, "V3_STATEDELTA_INVALID", `${n}.reason`, { maximum: 4e3 }), (e.action === "add" && (e.previousText !== null || e.text === null) || e.action === "remove" && (e.previousText === null || e.text !== null) || e.action === "refine" && (e.previousText === null || e.text === null)) && $("V3_STATEDELTA_INVALID", n), Ir(e.evidence, "V3_STATEDELTA_INVALID", `${n}.evidence`, 20).forEach((e, t) => {
 			Fr(e, "V3_STATEDELTA_INVALID", `${n}.evidence[${t}]`), Lr(e.source, "V3_STATEDELTA_INVALID", `${n}.evidence[${t}].source`, { maximum: 160 }), Lr(e.quote, "V3_STATEDELTA_INVALID", `${n}.evidence[${t}].quote`, { maximum: 2e3 });
-		}), e.evidence.length || Q("V3_STATEDELTA_INVALID", `${n}.evidence`);
+		}), e.evidence.length || $("V3_STATEDELTA_INVALID", `${n}.evidence`);
 	})), Object.hasOwn(n.source, "manualSubjectEntityIds")) {
 		let e = new Set(n.subjectSnapshots.map((e) => e.subjectEntityId)), t = /* @__PURE__ */ new Set();
 		Ir(n.source.manualSubjectEntityIds, "V3_STATEDELTA_INVALID", "source.manualSubjectEntityIds", 80).forEach((n, r) => {
-			Rr(n, "V3_STATEDELTA_INVALID", `source.manualSubjectEntityIds[${r}]`), (t.has(n) || !e.has(n)) && Q("V3_STATEDELTA_INVALID", `source.manualSubjectEntityIds[${r}]`), t.add(n);
+			Rr(n, "V3_STATEDELTA_INVALID", `source.manualSubjectEntityIds[${r}]`), (t.has(n) || !e.has(n)) && $("V3_STATEDELTA_INVALID", `source.manualSubjectEntityIds[${r}]`), t.add(n);
 		});
 	}
 	return Object.freeze(n);
@@ -5312,7 +5354,7 @@ function Kr(e, { expectedChatId: t } = {}) {
 	return Vr(n, "currentState", t), Rr(n.baselineId, "V3_CURRENTSTATE_INVALID", "baselineId"), Ir(n.subjects, "V3_CURRENTSTATE_INVALID", "subjects", 80).forEach((e, t) => Ur(e, `subjects[${t}]`, { current: !0 })), Ir(n.appliedDeltaIds, "V3_CURRENTSTATE_INVALID", "appliedDeltaIds", 1e4).forEach((e, t) => Rr(e, "V3_CURRENTSTATE_INVALID", `appliedDeltaIds[${t}]`)), Rr(n.headFloorId, "V3_CURRENTSTATE_INVALID", "headFloorId", { nullable: !0 }), Br(n.fingerprint, "V3_CURRENTSTATE_INVALID", "fingerprint"), Object.freeze(n);
 }
 async function qr(e, t, n) {
-	return `sha256:${await _e(JSON.stringify([
+	return `sha256:${await J(JSON.stringify([
 		e,
 		t,
 		n
@@ -5332,7 +5374,7 @@ async function Jr({ root: e = null, checkpoint: t, run: n = null, floors: r = []
 		allowLegacySnapshot: f
 	});
 	let p = e?.chatId ?? t?.chatId, m = c ? Wr(c, { expectedChatId: p }) : null, h = l.map((e) => Gr(e, { expectedChatId: p })), g = u.map((e) => Kr(e, { expectedChatId: p }));
-	(e?.baselineId ?? null) !== (m?.id ?? null) && Q("V3_CSE_GRAPH_BASELINE_REF_INVALID"), (t.producedRefs.stateDeltas.length !== h.length || t.producedRefs.stateDeltas.some((e, t) => e !== h[t]?.id)) && Q("V3_CSE_GRAPH_DELTA_LIST_INVALID"), (t.producedRefs.currentStates.length !== g.length || t.producedRefs.currentStates.some((e, t) => e !== g[t]?.id)) && Q("V3_CSE_GRAPH_CURRENT_LIST_INVALID");
+	(e?.baselineId ?? null) !== (m?.id ?? null) && $("V3_CSE_GRAPH_BASELINE_REF_INVALID"), (t.producedRefs.stateDeltas.length !== h.length || t.producedRefs.stateDeltas.some((e, t) => e !== h[t]?.id)) && $("V3_CSE_GRAPH_DELTA_LIST_INVALID"), (t.producedRefs.currentStates.length !== g.length || t.producedRefs.currentStates.some((e, t) => e !== g[t]?.id)) && $("V3_CSE_GRAPH_CURRENT_LIST_INVALID");
 	let _ = new Map(r.map((e) => [e.id, e])), v = new Map(r.map((e, t) => [e.id, t])), y = /* @__PURE__ */ new Map();
 	for (let e of i) y.set(e.floorId, [...y.get(e.floorId) ?? [], e]);
 	let b = /* @__PURE__ */ new Map();
@@ -5348,24 +5390,24 @@ async function Jr({ root: e = null, checkpoint: t, run: n = null, floors: r = []
 			C.push(e);
 		}
 	}
-	(h.length > C.length || h.some((e, t) => e.floorId !== C[t]?.id)) && Q("V3_CSE_GRAPH_DELTA_PREFIX_INVALID");
+	(h.length > C.length || h.some((e, t) => e.floorId !== C[t]?.id)) && $("V3_CSE_GRAPH_DELTA_PREFIX_INVALID");
 	let w = /* @__PURE__ */ new Set(), T = /* @__PURE__ */ new Set();
 	for (let e of h) {
-		(!m || e.baselineId !== m.id || !_.has(e.floorId) || b.get(e.floorId)?.id !== e.floorMemoryId || w.has(e.floorId)) && Q("V3_CSE_GRAPH_DELTA_REF_INVALID"), w.add(e.floorId), T.add(e.id);
+		(!m || e.baselineId !== m.id || !_.has(e.floorId) || b.get(e.floorId)?.id !== e.floorMemoryId || w.has(e.floorId)) && $("V3_CSE_GRAPH_DELTA_REF_INVALID"), w.add(e.floorId), T.add(e.id);
 		for (let t of e.subjectSnapshots) {
-			x.has(t.subjectEntityId) || Q("V3_CSE_GRAPH_ENTITY_REF_INVALID");
+			x.has(t.subjectEntityId) || $("V3_CSE_GRAPH_ENTITY_REF_INVALID");
 			for (let n of [
 				...t.core,
 				...t.adaptive,
 				...t.situational
-			]) n.towardEntityId && !x.has(n.towardEntityId) && Q("V3_CSE_GRAPH_ENTITY_REF_INVALID"), n.sourceFloorId && (!_.has(n.sourceFloorId) || v.get(n.sourceFloorId) > v.get(e.floorId)) && Q("V3_CSE_GRAPH_SOURCE_REF_INVALID"), n.sourceDeltaId && (!S.has(n.sourceDeltaId) || !T.has(n.sourceDeltaId)) && Q("V3_CSE_GRAPH_SOURCE_REF_INVALID");
+			]) n.towardEntityId && !x.has(n.towardEntityId) && $("V3_CSE_GRAPH_ENTITY_REF_INVALID"), n.sourceFloorId && (!_.has(n.sourceFloorId) || v.get(n.sourceFloorId) > v.get(e.floorId)) && $("V3_CSE_GRAPH_SOURCE_REF_INVALID"), n.sourceDeltaId && (!S.has(n.sourceDeltaId) || !T.has(n.sourceDeltaId)) && $("V3_CSE_GRAPH_SOURCE_REF_INVALID");
 		}
-		for (let t of e.source?.calibrationAudit ?? []) (!x.has(t.subjectEntityId) || t.previousTowardEntityId && !x.has(t.previousTowardEntityId) || t.towardEntityId && !x.has(t.towardEntityId)) && Q("V3_CSE_GRAPH_ENTITY_REF_INVALID");
+		for (let t of e.source?.calibrationAudit ?? []) (!x.has(t.subjectEntityId) || t.previousTowardEntityId && !x.has(t.previousTowardEntityId) || t.towardEntityId && !x.has(t.towardEntityId)) && $("V3_CSE_GRAPH_ENTITY_REF_INVALID");
 	}
 	let E = g.at(-1) ?? null;
-	(g.length > 1 || E && (!m || E.baselineId !== m.id || E.appliedDeltaIds.some((e) => !h.some((t) => t.id === e)))) && Q("V3_CSE_GRAPH_CURRENT_REF_INVALID"), E && E.fingerprint !== await qr(E.subjects, E.appliedDeltaIds, E.headFloorId) && Q("V3_CSE_GRAPH_CURRENT_FINGERPRINT_INVALID");
+	(g.length > 1 || E && (!m || E.baselineId !== m.id || E.appliedDeltaIds.some((e) => !h.some((t) => t.id === e)))) && $("V3_CSE_GRAPH_CURRENT_REF_INVALID"), E && E.fingerprint !== await qr(E.subjects, E.appliedDeltaIds, E.headFloorId) && $("V3_CSE_GRAPH_CURRENT_FINGERPRINT_INVALID");
 	let D = i.filter((e) => e.recordStatus === "active"), O = D.length > 0 && D.every((e) => h.some((t) => t.floorId === e.floorId && t.floorMemoryId === e.id));
-	return (t.capabilities.cseReady !== O || e && e.capabilities.cseReady !== O) && Q("V3_CSE_GRAPH_CAPABILITY_INVALID"), Object.freeze({
+	return (t.capabilities.cseReady !== O || e && e.capabilities.cseReady !== O) && $("V3_CSE_GRAPH_CAPABILITY_INVALID"), Object.freeze({
 		schemaValid: !0,
 		referencesValid: !0,
 		orderedReplayValid: !0
@@ -5402,13 +5444,13 @@ async function ui(e) {
 		characterCard: e.characterCard,
 		worldInfoSources: e.worldInfoSources
 	};
-	return e.fingerprint === `sha256:${await _e(JSON.stringify(t))}`;
+	return e.fingerprint === `sha256:${await J(JSON.stringify(t))}`;
 }
 function di(e) {
 	return [e.displayName, ...(e.aliases ?? []).map((e) => e.name)].map(ti).filter(Boolean);
 }
 async function fi({ chatId: e, narrativeGeneration: t, role: n, name: r, aliases: i = [], now: a }) {
-	let o = await J([
+	let o = await Y([
 		"v3-cse-role-entity",
 		e,
 		t,
@@ -5470,7 +5512,7 @@ async function pi({ hostAdapter: e, chatId: t, narrativeGeneration: n, entities:
 			enabled: !0,
 			activated: e.activated === !0,
 			content: t,
-			fingerprint: `sha256:${await _e(t)}`,
+			fingerprint: `sha256:${await J(t)}`,
 			visibility: "authorial"
 		});
 	}
@@ -5489,10 +5531,10 @@ async function pi({ hostAdapter: e, chatId: t, narrativeGeneration: n, entities:
 			scenario: ci(l, ["scenario"])
 		},
 		worldInfoSources: h
-	}, _ = `sha256:${await _e(JSON.stringify(g))}`, v = Wr({
+	}, _ = `sha256:${await J(JSON.stringify(g))}`, v = Wr({
 		schemaVersion: 3,
 		recordType: "baseline",
-		id: await J([
+		id: await Y([
 			"v3-cse-baseline",
 			t,
 			n
@@ -5949,7 +5991,7 @@ async function ji({ raw: e, category: t, binding: n, knownBindings: r, deltaId: 
 			"原因"
 		]), 4e3) : "";
 		c.push({
-			id: await J([
+			id: await Y([
 				"v3-cse-state-item",
 				i,
 				n.entityId,
@@ -5977,12 +6019,42 @@ var Mi = (e) => e === "core" ? [
 	"adaptive",
 	"适应",
 	"长期适应"
-], Ni = (e, t) => ti(e?.text) === ti(t?.text) && (e?.towardEntityId ?? null) === (t?.towardEntityId ?? null) && e?.visibility === t?.visibility;
-function Pi(e, { envelope: t, binding: n, category: r, index: i, isolated: a }) {
+], Ni = (e, t) => ti(e?.text) === ti(t?.text) && (e?.towardEntityId ?? null) === (t?.towardEntityId ?? null) && e?.visibility === t?.visibility, Pi = Object.freeze({
+	"\"": "\"",
+	"“": "\"",
+	"”": "\"",
+	"„": "\"",
+	"‟": "\"",
+	"＂": "\"",
+	"「": "\"",
+	"」": "\"",
+	"'": "'",
+	"‘": "'",
+	"’": "'",
+	"‚": "'",
+	"‛": "'",
+	"＇": "'",
+	"『": "'",
+	"』": "'"
+});
+function Fi(e) {
+	return [...e].map((e) => Pi[e] ?? e).join("");
+}
+function Ii(e, t) {
+	for (let n of e) if (typeof n == "string" && n.includes(t)) return t;
+	let n = Fi(t);
+	for (let r of e) {
+		if (typeof r != "string") continue;
+		let e = Fi(r).indexOf(n);
+		if (e >= 0) return r.slice(e, e + t.length);
+	}
+	return null;
+}
+function Li(e, { envelope: t, binding: n, category: r, index: i, isolated: a }) {
 	let o = [], s = ii(ai(e, ["evidence", "证据"])), c = s.slice(0, 20);
 	for (let [e, s] of c.entries()) {
-		let c = ri(ai(s, ["source", "来源"]), 160), l = ri(ai(s, ["quote", "引用"]), 2e3), u = t.scope.evidenceSources.find((e) => e.source === c), d = `${r}.${i}.evidence.${e}`;
-		if (!u || !l || !u.contents.some((e) => typeof e == "string" && e.includes(l))) {
+		let c = ri(ai(s, ["source", "来源"]), 160), l = ri(ai(s, ["quote", "引用"]), 2e3), u = t.scope.evidenceSources.find((e) => e.source === c), d = `${r}.${i}.evidence.${e}`, f = u && l ? Ii(u.contents, l) : null;
+		if (!u || !l || !f) {
 			a.push({
 				field: d,
 				code: "V3_CSE_EVIDENCE_UNLOCATED"
@@ -5999,7 +6071,7 @@ function Pi(e, { envelope: t, binding: n, category: r, index: i, isolated: a }) 
 		o.push({
 			source: u.source,
 			kind: u.kind,
-			quote: l
+			quote: f
 		});
 	}
 	return Object.freeze({
@@ -6007,10 +6079,10 @@ function Pi(e, { envelope: t, binding: n, category: r, index: i, isolated: a }) 
 		complete: c.length > 0 && s.length === c.length && o.length === c.length
 	});
 }
-function Fi({ category: e, evidence: t, manualCore: n }) {
+function Ri({ category: e, evidence: t, manualCore: n }) {
 	return t.length ? e === "core" ? n ? t.some((e) => e.source === "currentUserInput") : t.some((e) => e.kind === "authorialSetting" || e.source === "currentUserInput") : !0 : !1;
 }
-function Ii(e, t) {
+function zi(e, t) {
 	let n = ri(ai(e, [
 		"reason",
 		"because",
@@ -6019,7 +6091,7 @@ function Ii(e, t) {
 	]), 2600), r = t.map((e) => `${e.source}「${e.quote}」`).join("；");
 	return `${n || "基于本次可定位证据"}（证据：${r}）`.slice(0, 4e3);
 }
-async function Li({ raw: e, category: t, binding: n, knownBindings: r, deltaId: i, floorId: a, index: o, isolated: s, evidence: c, original: l = null }) {
+async function Bi({ raw: e, category: t, binding: n, knownBindings: r, deltaId: i, floorId: a, index: o, isolated: s, evidence: c, original: l = null }) {
 	let u = Oi(e);
 	if (!u) return s.push({
 		field: t,
@@ -6044,7 +6116,7 @@ async function Li({ raw: e, category: t, binding: n, knownBindings: r, deltaId: 
 	}
 	let p = typeof e == "object" ? ai(e, ["visibility", "可见性"]) : null, m = c.every((e) => e.kind === "authorialSetting") ? "baseline" : "floor";
 	return {
-		id: await J([
+		id: await Y([
 			"v3-cse-calibrated-state-item",
 			i,
 			n.entityId,
@@ -6055,14 +6127,14 @@ async function Li({ raw: e, category: t, binding: n, knownBindings: r, deltaId: 
 		]),
 		text: u,
 		visibility: p == null ? l?.visibility ?? "private" : Ei(p),
-		reason: Ii(e, c),
+		reason: zi(e, c),
 		origin: m,
 		towardEntityId: d,
 		sourceFloorId: a,
 		sourceDeltaId: i
 	};
 }
-function Ri({ binding: e, category: t, action: n, original: r = null, item: i = null, raw: a, evidence: o }) {
+function Vi({ binding: e, category: t, action: n, original: r = null, item: i = null, raw: a, evidence: o }) {
 	return {
 		subjectEntityId: e.entityId,
 		category: t,
@@ -6083,7 +6155,7 @@ function Ri({ binding: e, category: t, action: n, original: r = null, item: i = 
 		}))
 	};
 }
-async function zi({ rawSubject: e, category: t, binding: n, previous: r, envelope: i, deltaId: a, isolated: o, calibrationAudit: s }) {
+async function Hi({ rawSubject: e, category: t, binding: n, previous: r, envelope: i, deltaId: a, isolated: o, calibrationAudit: s }) {
 	let c = ai(e, ["review", "复核"]), l = ai(e, ["additions", "新增"]), u = ai(c, Mi(t)), d = ai(l, Mi(t)), f = ai(e, Mi(t));
 	if (u === void 0 && d === void 0) return null;
 	f !== void 0 && o.push({
@@ -6147,14 +6219,14 @@ async function zi({ rawSubject: e, category: t, binding: n, previous: r, envelop
 		}
 		let _ = f[0];
 		if (h.add(_.id), l === "keep") continue;
-		let v = Pi(r, {
+		let v = Li(r, {
 			envelope: i,
 			binding: n,
 			category: t,
 			index: e,
 			isolated: o
 		}), y = v.evidence;
-		if (!v.complete || !Fi({
+		if (!v.complete || !Ri({
 			category: t,
 			evidence: y,
 			manualCore: g
@@ -6176,7 +6248,7 @@ async function zi({ rawSubject: e, category: t, binding: n, previous: r, envelop
 			continue;
 		}
 		if (l === "remove") {
-			m.splice(b, 1), s.push(Ri({
+			m.splice(b, 1), s.push(Vi({
 				binding: n,
 				category: t,
 				action: l,
@@ -6186,7 +6258,7 @@ async function zi({ rawSubject: e, category: t, binding: n, previous: r, envelop
 			}));
 			continue;
 		}
-		let x = await Li({
+		let x = await Bi({
 			raw: r,
 			category: t,
 			binding: n,
@@ -6198,7 +6270,7 @@ async function zi({ rawSubject: e, category: t, binding: n, previous: r, envelop
 			evidence: y,
 			original: _
 		});
-		x && !Ni(_, x) && (m.splice(b, 1, x), s.push(Ri({
+		x && !Ni(_, x) && (m.splice(b, 1, x), s.push(Vi({
 			binding: n,
 			category: t,
 			action: l,
@@ -6217,14 +6289,14 @@ async function zi({ rawSubject: e, category: t, binding: n, previous: r, envelop
 			});
 			continue;
 		}
-		let c = Pi(r, {
+		let c = Li(r, {
 			envelope: i,
 			binding: n,
 			category: t,
 			index: e,
 			isolated: o
 		}), l = c.evidence;
-		if (!c.complete || !Fi({
+		if (!c.complete || !Ri({
 			category: t,
 			evidence: l,
 			manualCore: g
@@ -6236,7 +6308,7 @@ async function zi({ rawSubject: e, category: t, binding: n, previous: r, envelop
 			});
 			continue;
 		}
-		let u = await Li({
+		let u = await Bi({
 			raw: r,
 			category: t,
 			binding: n,
@@ -6247,7 +6319,7 @@ async function zi({ rawSubject: e, category: t, binding: n, previous: r, envelop
 			isolated: o,
 			evidence: l
 		});
-		u && !m.some((e) => ti(e.text) === ti(u.text) && e.towardEntityId === u.towardEntityId) && (m.push(u), s.push(Ri({
+		u && !m.some((e) => ti(e.text) === ti(u.text) && e.towardEntityId === u.towardEntityId) && (m.push(u), s.push(Vi({
 			binding: n,
 			category: t,
 			action: "add",
@@ -6258,7 +6330,7 @@ async function zi({ rawSubject: e, category: t, binding: n, previous: r, envelop
 	}
 	return m;
 }
-async function Bi({ response: e, finishReason: t, envelope: n, previousCurrentState: r, now: i, deltaId: a }) {
+async function Ui({ response: e, finishReason: t, envelope: n, previousCurrentState: r, now: i, deltaId: a }) {
 	let o = wi(e, { finishReason: t }), s = [], c = new Map((r?.subjects ?? []).map((e) => [e.subjectEntityId, e])), l = /* @__PURE__ */ new Map(), u = [], d = ii(ai(o, [
 		"subjects",
 		"people",
@@ -6295,7 +6367,7 @@ async function Bi({ response: e, finishReason: t, envelope: n, previousCurrentSt
 			"situation",
 			"短期状态",
 			"情境"
-		]) !== void 0, p = await zi({
+		]) !== void 0, p = await Hi({
 			rawSubject: t,
 			category: "core",
 			binding: r,
@@ -6304,7 +6376,7 @@ async function Bi({ response: e, finishReason: t, envelope: n, previousCurrentSt
 			deltaId: a,
 			isolated: s,
 			calibrationAudit: u
-		}), m = await zi({
+		}), m = await Hi({
 			rawSubject: t,
 			category: "adaptive",
 			binding: r,
@@ -6314,7 +6386,7 @@ async function Bi({ response: e, finishReason: t, envelope: n, previousCurrentSt
 			isolated: s,
 			calibrationAudit: u
 		}), h = n.scope.evidenceSources.some((e) => e.source === "authorNote");
-		p === null && o && i.core.length === 0 && h && (p = await zi({
+		p === null && o && i.core.length === 0 && h && (p = await Hi({
 			rawSubject: { additions: { core: ai(t, Mi("core")) } },
 			category: "core",
 			binding: r,
@@ -6366,12 +6438,7 @@ async function Bi({ response: e, finishReason: t, envelope: n, previousCurrentSt
 			core: b,
 			adaptive: _,
 			situational: v,
-			changeSummary: ii(ai(t, [
-				"changeSummary",
-				"changes",
-				"变化摘要",
-				"变化"
-			])).map(Oi).filter(Boolean).slice(0, 40),
+			changeSummary: [],
 			coreChallenges: [...new Set(x)].slice(0, 40)
 		});
 	}
@@ -6383,11 +6450,25 @@ async function Bi({ response: e, finishReason: t, envelope: n, previousCurrentSt
 		changeSummary: [],
 		coreChallenges: []
 	});
-	let f = [...l.values()], p = !f.some((e) => JSON.stringify(Ai(c.get(e.subjectEntityId) ?? {
+	let f = [...l.values()].map((e) => {
+		let t = c.get(e.subjectEntityId) ?? {
+			core: [],
+			adaptive: [],
+			situational: []
+		}, r = u.filter((t) => t.subjectEntityId === e.subjectEntityId);
+		return {
+			...e,
+			changeSummary: ea({
+				before: t,
+				after: e,
+				audits: r
+			}).map((e) => na(e, n.scope.knownBindings)).slice(0, 40)
+		};
+	}), p = !f.some((e) => JSON.stringify(Ai(c.get(e.subjectEntityId) ?? {
 		core: [],
 		adaptive: [],
 		situational: []
-	})) !== JSON.stringify(Ai(e))), m = `sha256:${await _e(JSON.stringify([
+	})) !== JSON.stringify(Ai(e))), m = `sha256:${await J(JSON.stringify([
 		n.scope.floorId,
 		n.scope.floorMemoryId,
 		f,
@@ -6425,12 +6506,12 @@ async function Bi({ response: e, finishReason: t, envelope: n, previousCurrentSt
 		isolated: Object.freeze(s)
 	});
 }
-var Vi = (e, t) => [
+var Wi = (e, t) => [
 	e.text,
 	e.visibility,
 	t === "adaptive" ? e.towardEntityId ?? null : null
 ];
-async function Hi({ edits: e, originals: t, category: n, subjectEntityId: r, floorId: i, oldDeltaId: a, deltaId: o, allowedTowardEntityIds: s }) {
+async function Gi({ edits: e, originals: t, category: n, subjectEntityId: r, floorId: i, oldDeltaId: a, deltaId: o, allowedTowardEntityIds: s }) {
 	if (!Array.isArray(e) || e.length > 120) throw ni("V3_CSE_MANUAL_INPUT_INVALID", `${n} 编辑内容无效。`);
 	let c = new Map(t.map((e) => [e.id, e])), l = /* @__PURE__ */ new Set(), u = [];
 	for (let [t, d] of e.entries()) {
@@ -6447,7 +6528,7 @@ async function Hi({ edits: e, originals: t, category: n, subjectEntityId: r, flo
 			d.visibility,
 			m
 		];
-		if (f && JSON.stringify(Vi(f, n)) === JSON.stringify(h)) {
+		if (f && JSON.stringify(Wi(f, n)) === JSON.stringify(h)) {
 			if (f.sourceDeltaId !== a) {
 				u.push(f);
 				continue;
@@ -6456,7 +6537,7 @@ async function Hi({ edits: e, originals: t, category: n, subjectEntityId: r, flo
 				...f,
 				sourceDeltaId: o
 			};
-			e.id = await J([
+			e.id = await Y([
 				"v3-cse-manual-rebase-item",
 				o,
 				f.id,
@@ -6467,7 +6548,7 @@ async function Hi({ edits: e, originals: t, category: n, subjectEntityId: r, flo
 			continue;
 		}
 		let g = {
-			id: await J([
+			id: await Y([
 				"v3-cse-manual-state-item",
 				o,
 				r,
@@ -6489,7 +6570,7 @@ async function Hi({ edits: e, originals: t, category: n, subjectEntityId: r, flo
 	}
 	return u;
 }
-async function Ui({ anchorDelta: e, currentState: t, subjectEntityId: n, edits: r, allowedTowardEntityIds: i = [], deltaId: a, now: o }) {
+async function Ki({ anchorDelta: e, currentState: t, subjectEntityId: n, edits: r, allowedTowardEntityIds: i = [], deltaId: a, now: o }) {
 	let s = t?.subjects?.find((e) => e.subjectEntityId === n);
 	if (!s || !e?.subjectSnapshots || typeof a != "string") throw ni("V3_CSE_MANUAL_TARGET_INVALID", "当前人物状态或纠正锚点不可用。");
 	let c = new Set(i), l = [
@@ -6502,7 +6583,7 @@ async function Ui({ anchorDelta: e, currentState: t, subjectEntityId: n, edits: 
 		String(t?.text ?? "").trim(),
 		t?.visibility,
 		e === "adaptive" && t?.towardEntityId || null
-	])) === JSON.stringify(s[e].map((t) => Vi(t, e))))) return Object.freeze({
+	])) === JSON.stringify(s[e].map((t) => Wi(t, e))))) return Object.freeze({
 		status: "unchanged",
 		delta: null
 	});
@@ -6511,7 +6592,7 @@ async function Ui({ anchorDelta: e, currentState: t, subjectEntityId: n, edits: 
 		changeSummary: ["用户纠正当前状态"],
 		coreChallenges: []
 	};
-	for (let t of l) d[t] = await Hi({
+	for (let t of l) d[t] = await Gi({
 		edits: u[t],
 		originals: s[t],
 		category: t,
@@ -6534,7 +6615,7 @@ async function Ui({ anchorDelta: e, currentState: t, subjectEntityId: n, edits: 
 				...n,
 				sourceDeltaId: a
 			};
-			return o.id = await J([
+			return o.id = await Y([
 				"v3-cse-manual-rebase-item",
 				a,
 				n.id,
@@ -6546,7 +6627,7 @@ async function Ui({ anchorDelta: e, currentState: t, subjectEntityId: n, edits: 
 		f.push(r);
 	}
 	p || f.push(d);
-	let m = [.../* @__PURE__ */ new Set([...e.source?.manualSubjectEntityIds ?? [], n])], h = `sha256:${await _e(JSON.stringify([
+	let m = [.../* @__PURE__ */ new Set([...e.source?.manualSubjectEntityIds ?? [], n])], h = `sha256:${await J(JSON.stringify([
 		e.floorId,
 		e.floorMemoryId,
 		f,
@@ -6576,7 +6657,7 @@ async function Ui({ anchorDelta: e, currentState: t, subjectEntityId: n, edits: 
 		delta: g
 	});
 }
-async function Wi({ generateAnalysisTask: e, envelope: t, previousCurrentState: n, now: r, deltaId: i, promptGuidance: a = "", signal: o }) {
+async function qi({ generateAnalysisTask: e, envelope: t, previousCurrentState: n, now: r, deltaId: i, promptGuidance: a = "", signal: o }) {
 	let s = null, c = {
 		remaining: 3,
 		used: 0
@@ -6597,7 +6678,7 @@ async function Wi({ generateAnalysisTask: e, envelope: t, previousCurrentState: 
 			parseMode: "semantic"
 		});
 		s = l?.jsonData ?? l?.textData ?? l;
-		let u = await Bi({
+		let u = await Ui({
 			response: s,
 			finishReason: l?.taskMetadata?.finishReason,
 			envelope: t,
@@ -6610,7 +6691,7 @@ async function Wi({ generateAnalysisTask: e, envelope: t, previousCurrentState: 
 			metadata: Qt(l?.taskMetadata),
 			attempts: 1,
 			transportAttempts: c.used || l?.taskMetadata?.transportAttempts || null,
-			responseFingerprint: `sha256:${await _e(JSON.stringify(s))}`
+			responseFingerprint: `sha256:${await J(JSON.stringify(s))}`
 		});
 	} catch (e) {
 		throw o?.aborted || e?.name === "AbortError" || (e.cseDiagnostics = {
@@ -6628,7 +6709,7 @@ async function Wi({ generateAnalysisTask: e, envelope: t, previousCurrentState: 
 		}), e;
 	}
 }
-function Gi({ floors: e = [], floorMemories: t = [], stateDeltas: n = [] }) {
+function Ji({ floors: e = [], floorMemories: t = [], stateDeltas: n = [] }) {
 	let r = new Map(e.map((e, t) => [e.id, t])), i = /* @__PURE__ */ new Map();
 	for (let e of t) i.set(e.floorId, [...i.get(e.floorId) ?? [], e]);
 	let a = /* @__PURE__ */ new Map();
@@ -6655,16 +6736,16 @@ function Gi({ floors: e = [], floorMemories: t = [], stateDeltas: n = [] }) {
 	}
 	return s;
 }
-var Ki = Object.freeze({
+var Yi = Object.freeze({
 	core: Object.freeze([]),
 	adaptive: Object.freeze([]),
 	situational: Object.freeze([])
-}), qi = Object.freeze([
+}), Xi = Object.freeze([
 	"core",
 	"adaptive",
 	"situational"
-]), Ji = (e) => JSON.stringify(ki(e));
-function Yi(e, t, n) {
+]), Zi = (e) => JSON.stringify(ki(e));
+function Qi(e, t, n) {
 	let r = e.get(n.subjectEntityId), i = t.source?.manualSubjectEntityIds?.includes(n.subjectEntityId) === !0, a = jr(t.source?.calibrationVersion), o = {
 		subjectEntityId: n.subjectEntityId,
 		core: a || i ? n.core : r?.core?.length ? r.core : n.core,
@@ -6673,8 +6754,8 @@ function Yi(e, t, n) {
 	};
 	return e.set(n.subjectEntityId, o), o;
 }
-function Xi({ before: e, after: t, category: n, audits: r }) {
-	let i = /* @__PURE__ */ new Set(), a = /* @__PURE__ */ new Set(), o = [], s = e.map(Ji), c = t.map(Ji);
+function $i({ before: e, after: t, category: n, audits: r }) {
+	let i = /* @__PURE__ */ new Set(), a = /* @__PURE__ */ new Set(), o = [], s = e.map(Zi), c = t.map(Zi);
 	for (let t = 0; t < e.length; t += 1) {
 		let e = c.findIndex((e, n) => !a.has(n) && e === s[t]);
 		e >= 0 && (i.add(t), a.add(e));
@@ -6741,12 +6822,50 @@ function Xi({ before: e, after: t, category: n, audits: r }) {
 	});
 	return o;
 }
-function Zi(e = []) {
+function ea({ before: e, after: t, audits: n }) {
+	return Xi.flatMap((r) => $i({
+		before: e[r] ?? [],
+		after: t[r] ?? [],
+		category: r,
+		audits: n.filter((e) => e.category === r)
+	}));
+}
+function ta(e, t, n) {
+	let r = [];
+	if (t === "adaptive" && e?.towardEntityId) {
+		let t = n.find((t) => t.entityId === e.towardEntityId)?.labels?.[0];
+		r.push(`对象：${t || "已绑定人物"}`);
+	}
+	let i = {
+		private: "私密",
+		expressed: "已表达",
+		observable: "可观察",
+		shared: "共享",
+		authorial: "作者设定"
+	}[e?.visibility];
+	i && r.push(`信息范围：${i}`);
+	let a = {
+		baseline: "初始设定",
+		floor: "本楼",
+		reasonableProgression: "合理进展",
+		manual: "用户纠正"
+	}[e?.origin];
+	return a && r.push(`来源：${a}`), `${e?.text ?? ""}${r.length ? `（${r.join("；")}）` : ""}`;
+}
+function na(e, t) {
+	let n = {
+		core: "核心人格",
+		adaptive: "长期适应",
+		situational: "情境状态"
+	}[e.category] ?? "人物状态", r = e.before ? ta(e.before, e.category, t) : "", i = e.after ? ta(e.after, e.category, t) : "";
+	return e.action === "refine" ? `调整${n}：${r} → ${i}`.slice(0, 2e3) : e.action === "update" ? `更新${n}：${r} → ${i}`.slice(0, 2e3) : e.action === "remove" ? `移除${n}：${r}`.slice(0, 2e3) : `新增${n}：${i}`.slice(0, 2e3);
+}
+function ra(e = []) {
 	let t = /* @__PURE__ */ new Map(), n = [];
 	for (let r of e) {
 		let e = [];
 		for (let n of r.subjectSnapshots) {
-			let i = t.get(n.subjectEntityId) ?? Ki, a = Yi(t, r, n), o = (r.source?.calibrationAudit ?? []).filter((e) => e.subjectEntityId === n.subjectEntityId), s = qi.flatMap((e) => Xi({
+			let i = t.get(n.subjectEntityId) ?? Yi, a = Qi(t, r, n), o = (r.source?.calibrationAudit ?? []).filter((e) => e.subjectEntityId === n.subjectEntityId), s = Xi.flatMap((e) => $i({
 				before: i[e] ?? [],
 				after: a[e] ?? [],
 				category: e,
@@ -6777,18 +6896,18 @@ function Zi(e = []) {
 	}
 	return Object.freeze(n);
 }
-async function Qi({ chatId: e, narrativeGeneration: t, baselineId: n, floors: r = [], floorMemories: i = [], stateDeltas: a = [], now: o, id: s = null, previousId: c = null }) {
-	let l = Gi({
+async function ia({ chatId: e, narrativeGeneration: t, baselineId: n, floors: r = [], floorMemories: i = [], stateDeltas: a = [], now: o, id: s = null, previousId: c = null }) {
+	let l = Ji({
 		floors: r,
 		floorMemories: i,
 		stateDeltas: a
 	}), u = /* @__PURE__ */ new Map();
-	for (let e of l) for (let t of e.subjectSnapshots) Yi(u, e, t);
+	for (let e of l) for (let t of e.subjectSnapshots) Qi(u, e, t);
 	let d = [...u.values()], f = l.map((e) => e.id), p = l.at(-1)?.floorId ?? null, m = await qr(d, f, p);
 	return Kr({
 		schemaVersion: 3,
 		recordType: "currentState",
-		id: s ?? await J([
+		id: s ?? await Y([
 			"v3-cse-current-state",
 			e,
 			t,
@@ -6809,12 +6928,12 @@ async function Qi({ chatId: e, narrativeGeneration: t, baselineId: n, floors: r 
 }
 //#endregion
 //#region src/host-context.js
-function $i() {
+function aa() {
 	let e = globalThis.SillyTavern?.getContext?.() ?? globalThis.Luker?.getContext?.();
 	if (!e || typeof e != "object") throw Error("宿主上下文不可用");
 	return e;
 }
-function ea(e = $i()) {
+function oa(e = aa()) {
 	let t = e.characterId;
 	if (e.groupId || t == null || t === "") return {
 		ok: !1,
@@ -6837,20 +6956,20 @@ function ea(e = $i()) {
 	return {
 		ok: !0,
 		hostChatId: a,
-		chatId: ta(o?.chatId) && [1, 2].includes(o.schemaVersion) ? o.chatId : null,
+		chatId: sa(o?.chatId) && [1, 2].includes(o.schemaVersion) ? o.chatId : null,
 		characterAvatar: r,
 		personaAvatar: i,
 		characterId: String(t)
 	};
 }
-function ta(e) {
+function sa(e) {
 	return typeof e == "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(e);
 }
-function na() {
+function ca() {
 	if (typeof globalThis.crypto?.randomUUID == "function") return globalThis.crypto.randomUUID();
 	throw Error("宿主缺少 UUID 生成能力");
 }
-async function ra(e, t) {
+async function la(e, t) {
 	let n = e.chatMetadata ?? {};
 	if (n.qianqianjie?.chatId === t && n.qianqianjie.schemaVersion === 2) return !1;
 	if (typeof e.saveMetadata != "function" && typeof e.saveChatMetadata != "function") throw Error("宿主不支持聊天元数据保存");
@@ -6868,77 +6987,77 @@ async function ra(e, t) {
 	}
 	return !0;
 }
-async function ia(e, t) {
+async function ua(e, t) {
 	if (t.chatId) return t.chatId;
-	let n = na();
-	return await ra(e, n), n;
+	let n = ca();
+	return await la(e, n), n;
 }
 //#endregion
 //#region src/v3/people-workspace.js
-var aa = "v3-people-workspace", oa = Object.freeze([
+var da = "v3-people-workspace", fa = Object.freeze([
 	"name",
 	"aliases",
 	"background",
 	"appearance",
 	"personality",
 	"notes"
-]), sa = "你是“千千结”的人物基础资料整理员。只整理输入材料中有明确依据、适合长期建档的目标人物资料，不推测或续写剧情。\n\n人物卡和世界书属于明确设定；楼层摘要是对已发生剧情的归纳；CSE Core 是已有的人物分析，不自动等同作者明确设定。按目标人物和来源归属整理信息，不要把不同人物、不同来源或彼此冲突的说法擅自拼成同一事实。遇到有依据的差异，可在 notes 简短注明来源差异；无法判断时保留不确定，不替作者裁决。\n\n记录稳定的姓名、别名、身份背景、外貌与基础性格。短期情绪、当前关系变化和一时应对不应写成固定人格；只有材料明确支持长期特征时才归入 personality。完整保留有长期使用价值的明确资料，同时去掉重复和无助于建档的修饰。", ca = "【固定人物资料合同】\n1. 只处理输入 people 中的目标人物。characterCard、allowedWorldInfo、summaries 与 cseCoreTraits 是分开的来源，不得把一个人物的材料写给另一个人物。\n2. 只返回一个 JSON 对象：{\"profiles\":[{\"personKey\":\"person-1\",\"name\":\"\",\"aliases\":[],\"background\":\"\",\"appearance\":\"\",\"personality\":\"\",\"notes\":\"\"}]}。\n3. personKey 必须逐字使用输入中的键；每个输入人物恰好返回一次，不得新增、遗漏或合并人物。没有依据的字段返回空字符串或空数组。\n4. 不输出解释、剧情续写、数据库 ID 或 JSON 之外的内容。";
-function la(e = "") {
+]), pa = "你是“千千结”的人物基础资料整理员。只整理输入材料中有明确依据、适合长期建档的目标人物资料，不推测或续写剧情。\n\n人物卡和世界书属于明确设定；楼层摘要是对已发生剧情的归纳；CSE Core 是已有的人物分析，不自动等同作者明确设定。按目标人物和来源归属整理信息，不要把不同人物、不同来源或彼此冲突的说法擅自拼成同一事实。遇到有依据的差异，可在 notes 简短注明来源差异；无法判断时保留不确定，不替作者裁决。\n\n记录稳定的姓名、别名、身份背景、外貌与基础性格。短期情绪、当前关系变化和一时应对不应写成固定人格；只有材料明确支持长期特征时才归入 personality。完整保留有长期使用价值的明确资料，同时去掉重复和无助于建档的修饰。", ma = "【固定人物资料合同】\n1. 只处理输入 people 中的目标人物。characterCard、allowedWorldInfo、summaries 与 cseCoreTraits 是分开的来源，不得把一个人物的材料写给另一个人物。\n2. 只返回一个 JSON 对象：{\"profiles\":[{\"personKey\":\"person-1\",\"name\":\"\",\"aliases\":[],\"background\":\"\",\"appearance\":\"\",\"personality\":\"\",\"notes\":\"\"}]}。\n3. personKey 必须逐字使用输入中的键；每个输入人物恰好返回一次，不得新增、遗漏或合并人物。没有依据的字段返回空字符串或空数组。\n4. 不输出解释、剧情续写、数据库 ID 或 JSON 之外的内容。";
+function ha(e = "") {
 	let t = typeof e == "string" ? e : "";
-	return en(`${t.trim() ? t : sa}\n\n${ca}`);
+	return en(`${t.trim() ? t : pa}\n\n${ma}`);
 }
-function ua(e, t) {
+function ga(e, t) {
 	return Object.assign(Error(t), { code: e });
 }
-function da(e) {
+function _a(e) {
 	return structuredClone(e);
 }
-function fa(e, t = 2e4) {
+function va(e, t = 2e4) {
 	let n = typeof e == "string" ? e.trim() : "";
-	if (n.length > t) throw ua("QQJ_PEOPLE_PROFILE_FIELD_TOO_LONG", "人物资料字段过长，请缩短后重试。");
+	if (n.length > t) throw ga("QQJ_PEOPLE_PROFILE_FIELD_TOO_LONG", "人物资料字段过长，请缩短后重试。");
 	return n;
 }
-function pa(e) {
-	return Array.isArray(e) ? [...new Set(e.map((e) => fa(e, 500)).filter(Boolean))].join("、") : fa(e);
+function ya(e) {
+	return Array.isArray(e) ? [...new Set(e.map((e) => va(e, 500)).filter(Boolean))].join("、") : va(e);
 }
-function ma(e) {
+function ba(e) {
 	let t = e()?.toISOString?.() ?? String(e());
-	if (!Number.isFinite(Date.parse(t))) throw ua("QQJ_PEOPLE_TIME_INVALID", "人物资料时间无效。");
+	if (!Number.isFinite(Date.parse(t))) throw ga("QQJ_PEOPLE_TIME_INVALID", "人物资料时间无效。");
 	return t;
 }
-function ha(e, t) {
+function xa(e, t) {
 	return e?.chatId === t?.chatId && e?.hostChatId === t?.hostChatId && e?.characterLocator === t?.characterLocator && e?.personaLocator === t?.personaLocator;
 }
-function ga(e = {}) {
+function Sa(e = {}) {
 	return Object.freeze({
-		name: fa(e.name),
-		aliases: pa(e.aliases),
-		background: fa(e.background),
-		appearance: fa(e.appearance),
-		personality: fa(e.personality),
-		notes: fa(e.notes)
+		name: va(e.name),
+		aliases: ya(e.aliases),
+		background: va(e.background),
+		appearance: va(e.appearance),
+		personality: va(e.personality),
+		notes: va(e.notes)
 	});
 }
-function _a(e, t) {
-	if (!e || typeof e != "object" || Array.isArray(e) || e.entityId !== t || !ta(t)) throw ua("QQJ_PEOPLE_WORKSPACE_INVALID", "人物资料记录损坏，已停止读取。");
-	if (!["manual", "generated"].includes(e.source) || !Number.isFinite(Date.parse(e.createdAt)) || !Number.isFinite(Date.parse(e.updatedAt))) throw ua("QQJ_PEOPLE_WORKSPACE_INVALID", "人物资料来源或时间无效，已停止读取。");
+function Ca(e, t) {
+	if (!e || typeof e != "object" || Array.isArray(e) || e.entityId !== t || !sa(t)) throw ga("QQJ_PEOPLE_WORKSPACE_INVALID", "人物资料记录损坏，已停止读取。");
+	if (!["manual", "generated"].includes(e.source) || !Number.isFinite(Date.parse(e.createdAt)) || !Number.isFinite(Date.parse(e.updatedAt))) throw ga("QQJ_PEOPLE_WORKSPACE_INVALID", "人物资料来源或时间无效，已停止读取。");
 	return Object.freeze({
 		entityId: t,
-		...ga(e),
+		...Sa(e),
 		source: e.source,
 		createdAt: e.createdAt,
 		updatedAt: e.updatedAt
 	});
 }
-function va(e, t) {
-	if (!e || typeof e != "object" || Array.isArray(e) || e.schemaVersion !== 1 || e.kind !== "qqj-v3-people-workspace" || !ta(e.chatId) || e.chatId !== t || !Array.isArray(e.selectedEntityIds) || !e.profilesByEntityId || typeof e.profilesByEntityId != "object" || Array.isArray(e.profilesByEntityId) || !Number.isFinite(Date.parse(e.createdAt)) || !Number.isFinite(Date.parse(e.updatedAt))) throw ua("QQJ_PEOPLE_WORKSPACE_INVALID", "人物工作区记录损坏，已停止读取以避免串档。");
+function wa(e, t) {
+	if (!e || typeof e != "object" || Array.isArray(e) || e.schemaVersion !== 1 || e.kind !== "qqj-v3-people-workspace" || !sa(e.chatId) || e.chatId !== t || !Array.isArray(e.selectedEntityIds) || !e.profilesByEntityId || typeof e.profilesByEntityId != "object" || Array.isArray(e.profilesByEntityId) || !Number.isFinite(Date.parse(e.createdAt)) || !Number.isFinite(Date.parse(e.updatedAt))) throw ga("QQJ_PEOPLE_WORKSPACE_INVALID", "人物工作区记录损坏，已停止读取以避免串档。");
 	let n = [];
 	for (let t of e.selectedEntityIds) {
-		if (!ta(t)) throw ua("QQJ_PEOPLE_WORKSPACE_INVALID", "重要人物标识无效。");
+		if (!sa(t)) throw ga("QQJ_PEOPLE_WORKSPACE_INVALID", "重要人物标识无效。");
 		n.includes(t) || n.push(t);
 	}
 	let r = {};
-	for (let [t, n] of Object.entries(e.profilesByEntityId)) r[t] = _a(n, t);
+	for (let [t, n] of Object.entries(e.profilesByEntityId)) r[t] = Ca(n, t);
 	return Object.freeze({
 		schemaVersion: 1,
 		kind: "qqj-v3-people-workspace",
@@ -6949,16 +7068,16 @@ function va(e, t) {
 		updatedAt: e.updatedAt
 	});
 }
-function ya({ client: e } = {}) {
+function Ta({ client: e } = {}) {
 	if (!e || typeof e.get != "function" || typeof e.put != "function") throw TypeError("人物工作区需要 record/CAS client");
 	let t = (e) => `chat-${e}`;
 	async function n(n) {
-		if (!ta(n?.chatId)) throw ua("QQJ_PEOPLE_IDENTITY_INVALID", "当前聊天身份不可用。");
+		if (!sa(n?.chatId)) throw ga("QQJ_PEOPLE_IDENTITY_INVALID", "当前聊天身份不可用。");
 		try {
-			let r = await e.get(t(n.chatId), aa);
-			if (!Number.isSafeInteger(r?.revision) || r.revision < 1) throw ua("QQJ_PEOPLE_WORKSPACE_INVALID", "人物工作区版本无效。");
+			let r = await e.get(t(n.chatId), da);
+			if (!Number.isSafeInteger(r?.revision) || r.revision < 1) throw ga("QQJ_PEOPLE_WORKSPACE_INVALID", "人物工作区版本无效。");
 			return Object.freeze({
-				data: va(r.data, n.chatId),
+				data: wa(r.data, n.chatId),
 				revision: r.revision
 			});
 		} catch (e) {
@@ -6970,11 +7089,11 @@ function ya({ client: e } = {}) {
 		}
 	}
 	async function r(n, r, i, { signal: a } = {}) {
-		if (!Number.isSafeInteger(i) || i < 0) throw ua("QQJ_PEOPLE_REVISION_INVALID", "人物工作区版本无效。");
-		let o = va(r, n?.chatId), s = await e.put(t(n.chatId), aa, o, i, { signal: a });
-		if (!Number.isSafeInteger(s?.revision) || s.revision !== i + 1) throw ua("QQJ_PEOPLE_WORKSPACE_INVALID", "人物工作区写入回读版本无效。");
+		if (!Number.isSafeInteger(i) || i < 0) throw ga("QQJ_PEOPLE_REVISION_INVALID", "人物工作区版本无效。");
+		let o = wa(r, n?.chatId), s = await e.put(t(n.chatId), da, o, i, { signal: a });
+		if (!Number.isSafeInteger(s?.revision) || s.revision !== i + 1) throw ga("QQJ_PEOPLE_WORKSPACE_INVALID", "人物工作区写入回读版本无效。");
 		return Object.freeze({
-			data: va(s.data, n.chatId),
+			data: wa(s.data, n.chatId),
 			revision: s.revision
 		});
 	}
@@ -6983,14 +7102,14 @@ function ya({ client: e } = {}) {
 		put: r
 	});
 }
-function ba(e) {
+function Ea(e) {
 	return (e?.entities ?? []).filter((e) => e?.entityType === "person" && e.recordStatus === "active" && e.status !== "merged" && e.status !== "invalidated" && e.specialRole !== "user");
 }
-function xa(e, t, n) {
+function Da(e, t, n) {
 	let r = /* @__PURE__ */ new Map();
 	for (let t of e?.floorMemories ?? []) if (t.recordStatus === "active") for (let e of t.participants ?? []) r.set(e.entityId, (r.get(e.entityId) ?? 0) + 1);
 	let i = new Map((t?.cseSubjects ?? []).map((e) => [e.subjectEntityId, e])), a = new Set(n?.selectedEntityIds ?? []);
-	return Object.freeze(ba(e).filter((e) => {
+	return Object.freeze(Ea(e).filter((e) => {
 		let t = i.get(e.id), n = [
 			...t?.core ?? [],
 			...t?.adaptive ?? [],
@@ -7014,7 +7133,7 @@ function xa(e, t, n) {
 		});
 	}).sort((e, t) => Number(t.selected) - Number(e.selected) || Number(t.recommended) - Number(e.recommended) || t.appearanceCount - e.appearanceCount || e.displayName.localeCompare(t.displayName, "zh-Hans-CN")));
 }
-function Sa(e, t) {
+function Oa(e, t) {
 	return Object.freeze({
 		schemaVersion: 1,
 		kind: "qqj-v3-people-workspace",
@@ -7025,13 +7144,13 @@ function Sa(e, t) {
 		updatedAt: t
 	});
 }
-function Ca(e, t) {
-	return oa.every((n) => String(e?.[n] ?? "") === String(t?.[n] ?? ""));
+function ka(e, t) {
+	return fa.every((n) => String(e?.[n] ?? "") === String(t?.[n] ?? ""));
 }
-function wa(e) {
+function Aa(e) {
 	return e?.summary?.effectiveSource === "user" ? e.summary.userText : e?.summary?.aiText;
 }
-function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, generateUtilityTask: i, sourcePermissions: a, contextProvider: o, sanitizerOptions: s = () => ({}), scanner: c = Er, sourceCandidateFactory: l = Dr, profilePromptGuidance: u = () => "", isEnabled: d = !0, now: f = () => /* @__PURE__ */ new Date(), logger: p = console } = {}) {
+function ja({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, generateUtilityTask: i, sourcePermissions: a, contextProvider: o, sanitizerOptions: s = () => ({}), scanner: c = Er, sourceCandidateFactory: l = Dr, profilePromptGuidance: u = () => "", isEnabled: d = !0, now: f = () => /* @__PURE__ */ new Date(), logger: p = console } = {}) {
 	if (!e || typeof e.read != "function" || typeof e.put != "function") throw TypeError("人物工作区 store 无效");
 	if (!t || typeof t.identity != "function") throw TypeError("人物工作区 session 无效");
 	if (!n || typeof n.getReachable != "function") throw TypeError("人物工作区 foundationRuntime 无效");
@@ -7053,14 +7172,14 @@ function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 	}, T = () => Object.freeze({ ...t.identity() }), E = (e) => {
 		if (!C() || e.epoch !== m || e.controller.signal.aborted) return !1;
 		try {
-			return ha(e.identity, T());
+			return xa(e.identity, T());
 		} catch {
 			return !1;
 		}
 	}, D = (e) => {
-		if (!E(e)) throw ua("QQJ_PEOPLE_STALE", "聊天已变化，迟到的人物资料结果没有写入。");
+		if (!E(e)) throw ga("QQJ_PEOPLE_STALE", "聊天已变化，迟到的人物资料结果没有写入。");
 	}, O = () => {
-		y = xa(n.getReachable?.(), r.getState(), g);
+		y = Da(n.getReachable?.(), r.getState(), g);
 	};
 	function k() {
 		let e = Object.freeze([...g?.selectedEntityIds ?? []]), t = Object.freeze({ ...g?.profilesByEntityId ?? {} });
@@ -7077,9 +7196,9 @@ function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 		});
 	}
 	function A(e) {
-		if (!C()) throw ua("QQJ_PEOPLE_DISABLED", "千千结已关闭。");
+		if (!C()) throw ga("QQJ_PEOPLE_DISABLED", "千千结已关闭。");
 		let t = h?.kind === "generating" && ["savingProfile", "savingSelection"].includes(e);
-		if (h && !t) throw ua("QQJ_PEOPLE_BUSY", "人物资料正在处理，请稍候。");
+		if (h && !t) throw ga("QQJ_PEOPLE_BUSY", "人物资料正在处理，请稍候。");
 		let n = {
 			kind: e,
 			epoch: m,
@@ -7089,7 +7208,7 @@ function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 		return t ? x.add(n) : h = n, b = null, w(), n;
 	}
 	function j(e, t) {
-		D(e), g = t.data ?? Sa(e.identity.chatId, ma(f)), _ = t.revision, v = e.identity.chatId, O();
+		D(e), g = t.data ?? Oa(e.identity.chatId, ba(f)), _ = t.revision, v = e.identity.chatId, O();
 	}
 	async function M(t) {
 		let n = await e.read(t.identity);
@@ -7097,7 +7216,7 @@ function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 	}
 	async function N(t, n) {
 		for (let r = 0; r < 4; r += 1) {
-			let r = await M(t), i = n(r.data ?? Sa(t.identity.chatId, ma(f)));
+			let r = await M(t), i = n(r.data ?? Oa(t.identity.chatId, ba(f)));
 			if (!i) return j(t, r), {
 				changed: !1,
 				state: k()
@@ -7112,7 +7231,7 @@ function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 				throw e;
 			}
 		}
-		throw ua("QQJ_PEOPLE_CAS_CONFLICT", "人物资料同时发生多次修改，本次没有覆盖新数据，请重试。");
+		throw ga("QQJ_PEOPLE_CAS_CONFLICT", "人物资料同时发生多次修改，本次没有覆盖新数据，请重试。");
 	}
 	async function P(e, t) {
 		try {
@@ -7120,7 +7239,7 @@ function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 		} catch (t) {
 			throw E(e) && t?.name !== "AbortError" && t?.code !== "QQJ_PEOPLE_STALE" && (b = Object.freeze({
 				code: String(t?.code ?? "QQJ_PEOPLE_FAILED"),
-				message: fa(t?.message || "人物资料处理失败。", 500)
+				message: va(t?.message || "人物资料处理失败。", 500)
 			})), t;
 		} finally {
 			h === e && (h = null), x.delete(e), w();
@@ -7135,15 +7254,15 @@ function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 	async function ee(e) {
 		let t = A("savingSelection");
 		return P(t, async () => {
-			let i = JSON.stringify(g?.selectedEntityIds ?? []), a = new Set(xa(n.getReachable?.(), r.getState(), g).map((e) => e.entityId)), o = [...new Set((Array.isArray(e) ? e : []).map(String))];
-			if (o.some((e) => !ta(e) || !a.has(e))) throw ua("QQJ_PEOPLE_SELECTION_INVALID", "重要人物选择包含当前聊天不可用的人物。");
+			let i = JSON.stringify(g?.selectedEntityIds ?? []), a = new Set(Da(n.getReachable?.(), r.getState(), g).map((e) => e.entityId)), o = [...new Set((Array.isArray(e) ? e : []).map(String))];
+			if (o.some((e) => !sa(e) || !a.has(e))) throw ga("QQJ_PEOPLE_SELECTION_INVALID", "重要人物选择包含当前聊天不可用的人物。");
 			let s = await N(t, (e) => {
 				if (JSON.stringify(e.selectedEntityIds) === JSON.stringify(o)) return null;
-				if (JSON.stringify(e.selectedEntityIds) !== i) throw ua("QQJ_PEOPLE_SELECTION_CONFLICT", "重要人物选择已在其他页面更新，本次没有覆盖新选择，请重试。");
+				if (JSON.stringify(e.selectedEntityIds) !== i) throw ga("QQJ_PEOPLE_SELECTION_CONFLICT", "重要人物选择已在其他页面更新，本次没有覆盖新选择，请重试。");
 				return {
-					...da(e),
+					..._a(e),
 					selectedEntityIds: o,
-					updatedAt: ma(f)
+					updatedAt: ba(f)
 				};
 			});
 			return b = null, s.state;
@@ -7153,16 +7272,16 @@ function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 		let i = A("savingProfile");
 		return P(i, async () => {
 			let a = g?.profilesByEntityId?.[e] ?? null;
-			if (!xa(n.getReachable?.(), r.getState(), g).find((t) => t.entityId === e)) throw ua("QQJ_PEOPLE_PROFILE_ENTITY_INVALID", "这个人物已不在当前聊天的可用人物中。");
-			let o = ga(t), s = await N(i, (t) => {
+			if (!Da(n.getReachable?.(), r.getState(), g).find((t) => t.entityId === e)) throw ga("QQJ_PEOPLE_PROFILE_ENTITY_INVALID", "这个人物已不在当前聊天的可用人物中。");
+			let o = Sa(t), s = await N(i, (t) => {
 				let n = t.profilesByEntityId[e];
-				if (n && Ca(n, o)) return null;
-				if (JSON.stringify(n ?? null) !== JSON.stringify(a)) throw ua("QQJ_PEOPLE_PROFILE_CONFLICT", "这个人物资料已在其他页面更新，本次没有覆盖新内容，请重试。");
-				let r = ma(f);
+				if (n && ka(n, o)) return null;
+				if (JSON.stringify(n ?? null) !== JSON.stringify(a)) throw ga("QQJ_PEOPLE_PROFILE_CONFLICT", "这个人物资料已在其他页面更新，本次没有覆盖新内容，请重试。");
+				let r = ba(f);
 				return {
-					...da(t),
+					..._a(t),
 					profilesByEntityId: {
-						...da(t.profilesByEntityId),
+						..._a(t.profilesByEntityId),
 						[e]: {
 							entityId: e,
 							...o,
@@ -7178,8 +7297,8 @@ function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 		});
 	}
 	async function L(e, t) {
-		let i = n.getReachable?.(), u = r.getState(), d = new Map(ba(i).map((e) => [e.id, e])), f = new Map((u.cseSubjects ?? []).map((e) => [e.subjectEntityId, e])), p = t.map((e, t) => {
-			let n = d.get(e.entityId), r = f.get(e.entityId), a = (i?.floorMemories ?? []).filter((t) => t.recordStatus === "active" && (t.participants ?? []).some((t) => t.entityId === e.entityId)).map((e) => fa(wa(e), 4e3)).filter(Boolean).slice(-12), o = i?.baseline?.characterCard?.entityId === e.entityId ? i.baseline.characterCard : null;
+		let i = n.getReachable?.(), u = r.getState(), d = new Map(Ea(i).map((e) => [e.id, e])), f = new Map((u.cseSubjects ?? []).map((e) => [e.subjectEntityId, e])), p = t.map((e, t) => {
+			let n = d.get(e.entityId), r = f.get(e.entityId), a = (i?.floorMemories ?? []).filter((t) => t.recordStatus === "active" && (t.participants ?? []).some((t) => t.entityId === e.entityId)).map((e) => va(Aa(e), 4e3)).filter(Boolean).slice(-12), o = i?.baseline?.characterCard?.entityId === e.entityId ? i.baseline.characterCard : null;
 			return {
 				personKey: `person-${t + 1}`,
 				currentName: n?.displayName ?? e.entityDisplayName,
@@ -7202,7 +7321,7 @@ function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 			chatId: e.identity.chatId,
 			candidates: h
 		});
-		if (!Array.isArray(g)) throw ua("QQJ_PEOPLE_WORLDBOOK_FILTER_INVALID", "世界书许可过滤结果无效。");
+		if (!Array.isArray(g)) throw ga("QQJ_PEOPLE_WORLDBOOK_FILTER_INVALID", "世界书许可过滤结果无效。");
 		let _ = typeof s == "function" ? s() : s, v = {
 			task: "整理选中人物的静态基础资料",
 			people: p,
@@ -7212,7 +7331,7 @@ function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 				content: Fe(e.content, _)
 			})).filter((e) => e.content)
 		};
-		if (JSON.stringify(v).length > 3e5) throw ua("QQJ_PEOPLE_GENERATION_TOO_LARGE", "选中人物或可用资料过多，本次整理输入超过安全大小；选择与现有资料均已保留。");
+		if (JSON.stringify(v).length > 3e5) throw ga("QQJ_PEOPLE_GENERATION_TOO_LARGE", "选中人物或可用资料过多，本次整理输入超过安全大小；选择与现有资料均已保留。");
 		return {
 			request: v,
 			keys: new Map(p.map((e, n) => [e.personKey, t[n].entityId]))
@@ -7220,21 +7339,21 @@ function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 	}
 	function R(e, t) {
 		let n = e?.jsonData ?? e?.textData ?? e;
-		if (!n || typeof n != "object" || Array.isArray(n) || !Array.isArray(n.profiles)) throw ua("QQJ_PEOPLE_GENERATION_INVALID", "人物资料回复格式无效，可重新整理。");
+		if (!n || typeof n != "object" || Array.isArray(n) || !Array.isArray(n.profiles)) throw ga("QQJ_PEOPLE_GENERATION_INVALID", "人物资料回复格式无效，可重新整理。");
 		let r = /* @__PURE__ */ new Map();
 		for (let e of n.profiles) {
-			let n = fa(e?.personKey, 80);
-			if (!t.has(n) || r.has(n)) throw ua("QQJ_PEOPLE_GENERATION_BINDING_INVALID", "人物资料回复含未知或重复人物，未写入任何资料。");
-			r.set(n, ga(e));
+			let n = va(e?.personKey, 80);
+			if (!t.has(n) || r.has(n)) throw ga("QQJ_PEOPLE_GENERATION_BINDING_INVALID", "人物资料回复含未知或重复人物，未写入任何资料。");
+			r.set(n, Sa(e));
 		}
-		if (r.size !== t.size) throw ua("QQJ_PEOPLE_GENERATION_BINDING_INVALID", "人物资料回复遗漏人物，未写入任何资料。");
+		if (r.size !== t.size) throw ga("QQJ_PEOPLE_GENERATION_BINDING_INVALID", "人物资料回复遗漏人物，未写入任何资料。");
 		return new Map([...r].map(([e, n]) => [t.get(e), n]));
 	}
 	async function z() {
-		let e = A("generating"), t = la(typeof u == "function" ? u() : u);
+		let e = A("generating"), t = ha(typeof u == "function" ? u() : u);
 		return P(e, async () => {
-			let a = xa(n.getReachable?.(), r.getState(), g).filter((e) => e.selected && !e.profiled);
-			if (!a.length) throw ua("QQJ_PEOPLE_NOTHING_TO_GENERATE", "选中的人物都已有基础资料。");
+			let a = Da(n.getReachable?.(), r.getState(), g).filter((e) => e.selected && !e.profiled);
+			if (!a.length) throw ga("QQJ_PEOPLE_NOTHING_TO_GENERATE", "选中的人物都已有基础资料。");
 			let o = await L(e, a);
 			D(e);
 			let s = await i({
@@ -7251,7 +7370,7 @@ function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 			});
 			D(e);
 			let c = R(s, o.keys), l = await N(e, (e) => {
-				let t = { ...da(e.profilesByEntityId) }, n = !1, r = ma(f);
+				let t = { ..._a(e.profilesByEntityId) }, n = !1, r = ba(f);
 				for (let [e, i] of c) t[e] || (t[e] = {
 					entityId: e,
 					...i,
@@ -7260,7 +7379,7 @@ function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 					updatedAt: r
 				}, n = !0);
 				return n ? {
-					...da(e),
+					..._a(e),
 					profilesByEntityId: t,
 					updatedAt: r
 				} : null;
@@ -7276,7 +7395,7 @@ function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 	async function V(e) {
 		return e === !0 ? F() : (B(), k());
 	}
-	let te = typeof r.subscribe == "function" ? r.subscribe(() => {
+	let H = typeof r.subscribe == "function" ? r.subscribe(() => {
 		if (!(!g || h)) try {
 			if (T().chatId !== v) return;
 			O(), w();
@@ -7297,14 +7416,14 @@ function Ta({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 			return S.add(e), () => S.delete(e);
 		},
 		destroy() {
-			te?.(), B();
+			H?.(), B();
 		}
 	});
 }
 //#endregion
 //#region src/ui/settings/prompts-settings.js
-function Ea({ settings: e, documentRef: t = globalThis.document, open: n = !1, onToggle: r, onStoryClockChange: i } = {}) {
-	let { element: a, button: o, field: s, subDrawer: c } = H(t), { drawer: l, body: u } = c({
+function Ma({ settings: e, documentRef: t = globalThis.document, open: n = !1, onToggle: r, onStoryClockChange: i } = {}) {
+	let { element: a, button: o, field: s, subDrawer: c } = te(t), { drawer: l, body: u } = c({
 		title: "提示词与包裹符",
 		id: "qqj-settings-prompts",
 		open: n,
@@ -7349,7 +7468,7 @@ function Ea({ settings: e, documentRef: t = globalThis.document, open: n = !1, o
 		e.update({ storyClockPrompt: h.value }), O();
 	});
 	let k = o("载入默认再改", "secondary-action", () => {
-		h.value = ie, e.update({ storyClockPrompt: h.value }), O();
+		h.value = ae, e.update({ storyClockPrompt: h.value }), O();
 	}), A = o("恢复默认", "secondary-action", () => {
 		h.value = "", e.update({ storyClockPrompt: "" }), O();
 	}), j = a("div", "v3-foundation-actions");
@@ -7381,19 +7500,19 @@ function Ea({ settings: e, documentRef: t = globalThis.document, open: n = !1, o
 		body: D,
 		control: x,
 		key: "profilePrompt",
-		defaultText: sa,
+		defaultText: pa,
 		label: "人物资料整理要求"
 	}), u.append(s("保留正文的包裹符", f), s("连同内容剔除的包裹符", p), _, S, w, E), { node: l };
 }
 //#endregion
 //#region src/ui/settings/appearance-settings.js
-function Da({ settings: e, documentRef: t = globalThis.document, open: n = !1, onToggle: r, applyAppearance: i } = {}) {
-	let { element: a, field: o, subDrawer: s } = H(t), { drawer: c, body: l } = s({
+function Na({ settings: e, documentRef: t = globalThis.document, open: n = !1, onToggle: r, applyAppearance: i } = {}) {
+	let { element: a, field: o, subDrawer: s } = te(t), { drawer: c, body: l } = s({
 		title: "外观",
 		id: "qqj-settings-appearance",
 		open: n,
 		onToggle: r
-	}), u = e.get(), d = () => i?.(), f = W({
+	}), u = e.get(), d = () => i?.(), f = G({
 		documentRef: t,
 		options: [
 			["auto", "跟随酒馆"],
@@ -7428,8 +7547,8 @@ function Da({ settings: e, documentRef: t = globalThis.document, open: n = !1, o
 }
 //#endregion
 //#region src/ui/scroll-diagnostics.js
-var Oa = 24, ka = (e) => Number.isFinite(Number(e)) ? Number(e) : 0, Aa = (e) => Math.round(ka(e));
-function ja(e) {
+var Pa = 24, Fa = (e) => Number.isFinite(Number(e)) ? Number(e) : 0, Ia = (e) => Math.round(Fa(e));
+function La(e) {
 	let t = (t) => {
 		try {
 			return !!e?.closest?.(t);
@@ -7439,15 +7558,15 @@ function ja(e) {
 	};
 	return t(".qqj-profile-switcher") ? "profile-strip" : t(".qqj-model-list-items") ? "model-list" : t(".source-permission-list") ? "source-list" : t(".qqj-inline-select") ? "inline-select" : t(".v3-memory-json,.v3-recall-injection") ? "diagnostic-content" : t(".qqj-dialog-overlay") ? "dialog" : t("textarea") ? "textarea" : t("select") ? "select" : t("input") ? "input" : t("button") ? "button" : t("summary") ? "summary" : t("[contenteditable=\"true\"]") ? "editable" : "content";
 }
-function Ma(e) {
+function Ra(e) {
 	return e?.touches?.[0] ?? e?.changedTouches?.[0] ?? null;
 }
-function Na({ target: e, getPage: t = () => "unknown", windowRef: n = globalThis, navigatorRef: r = globalThis.navigator, maxRecords: i = Oa, now: a = () => (/* @__PURE__ */ new Date()).toISOString(), queueMicrotaskRef: o = globalThis.queueMicrotask?.bind(globalThis) ?? ((e) => Promise.resolve().then(e)) } = {}) {
+function za({ target: e, getPage: t = () => "unknown", windowRef: n = globalThis, navigatorRef: r = globalThis.navigator, maxRecords: i = Pa, now: a = () => (/* @__PURE__ */ new Date()).toISOString(), queueMicrotaskRef: o = globalThis.queueMicrotask?.bind(globalThis) ?? ((e) => Promise.resolve().then(e)) } = {}) {
 	if (!e?.addEventListener) throw TypeError("滚动诊断 target 无效");
-	let s = Number.isSafeInteger(i) && i > 0 ? i : Oa, c = [], l = !1, u = null, d = () => ({
-		scrollTop: Aa(e.scrollTop),
-		scrollHeight: Aa(e.scrollHeight),
-		clientHeight: Aa(e.clientHeight)
+	let s = Number.isSafeInteger(i) && i > 0 ? i : Pa, c = [], l = !1, u = null, d = () => ({
+		scrollTop: Ia(e.scrollTop),
+		scrollHeight: Ia(e.scrollHeight),
+		clientHeight: Ia(e.clientHeight)
 	}), f = () => {
 		try {
 			let t = n?.getComputedStyle?.(e);
@@ -7462,8 +7581,8 @@ function Na({ target: e, getPage: t = () => "unknown", windowRef: n = globalThis
 			};
 		}
 	}, p = () => ({
-		width: Aa(n?.innerWidth),
-		height: Aa(n?.innerHeight)
+		width: Ia(n?.innerWidth),
+		height: Ia(n?.innerHeight)
 	}), m = (e, t) => {
 		e.cancelable ||= t?.cancelable === !0, o(() => {
 			e.defaultPrevented ||= t?.defaultPrevented === !0;
@@ -7474,8 +7593,8 @@ function Na({ target: e, getPage: t = () => "unknown", windowRef: n = globalThis
 		if (!u) return;
 		let n = u;
 		u = null;
-		let r = Ma(e);
-		r && (n.dx = Aa(r.clientX - n.startX), n.dy = Aa(r.clientY - n.startY)), m(n, e);
+		let r = Ra(e);
+		r && (n.dx = Ia(r.clientX - n.startX), n.dy = Ia(r.clientY - n.startY)), m(n, e);
 		let i = d();
 		n.outcome = t, n.endScrollTop = i.scrollTop, n.endScrollHeight = i.scrollHeight, n.endClientHeight = i.clientHeight, n.endStyle = f(), o(() => {
 			delete n.startX, delete n.startY, h(n);
@@ -7488,15 +7607,15 @@ function Na({ target: e, getPage: t = () => "unknown", windowRef: n = globalThis
 					u = null;
 					return;
 				}
-				let n = Ma(e);
+				let n = Ra(e);
 				if (!n) return;
 				let r = d();
 				u = {
 					recordedAt: a(),
 					page: String(t?.() ?? "unknown"),
-					target: ja(e.target),
-					startX: ka(n.clientX),
-					startY: ka(n.clientY),
+					target: La(e.target),
+					startX: Fa(n.clientX),
+					startY: Fa(n.clientY),
 					dx: 0,
 					dy: 0,
 					startScrollTop: r.scrollTop,
@@ -7516,8 +7635,8 @@ function Na({ target: e, getPage: t = () => "unknown", windowRef: n = globalThis
 			"touchmove",
 			(e) => {
 				if (!u) return;
-				let t = Ma(e);
-				t && (u.dx = Aa(t.clientX - u.startX), u.dy = Aa(t.clientY - u.startY)), m(u, e);
+				let t = Ra(e);
+				t && (u.dx = Ia(t.clientX - u.startX), u.dy = Ia(t.clientY - u.startY)), m(u, e);
 			},
 			{ passive: !0 }
 		],
@@ -7578,7 +7697,7 @@ function Na({ target: e, getPage: t = () => "unknown", windowRef: n = globalThis
 }
 //#endregion
 //#region src/settings.js
-var Pa = "qianqianjie", Fa = Object.freeze({
+var Ba = "qianqianjie", Va = Object.freeze({
 	pluginEnabled: !0,
 	storyClockEnabled: !0,
 	storyClockPrompt: "",
@@ -7610,49 +7729,49 @@ var Pa = "qianqianjie", Fa = Object.freeze({
 	appearanceScale: 1,
 	appearanceFontCssUrl: "",
 	appearanceFontFamily: ""
-}), Ia = /* @__PURE__ */ new Set(["auto", "seven-preset"]), La = (e, t) => Object.prototype.hasOwnProperty.call(e, t), Ra = (e) => typeof e == "string" ? e : "", za = /* @__PURE__ */ new Set([
+}), Ha = /* @__PURE__ */ new Set(["auto", "seven-preset"]), Ua = (e, t) => Object.prototype.hasOwnProperty.call(e, t), Wa = (e) => typeof e == "string" ? e : "", Ga = /* @__PURE__ */ new Set([
 	"auto",
 	"day",
 	"night"
-]), Ba = (e) => Math.min(1.5, Math.max(.75, Number.isFinite(Number(e)) ? Number(e) : 1));
-function Va(e) {
+]), Ka = (e) => Math.min(1.5, Math.max(.75, Number.isFinite(Number(e)) ? Number(e) : 1));
+function qa(e) {
 	return 1;
 }
-function Ha(e) {
+function Ja(e) {
 	let t = Number(e);
 	return Number.isInteger(t) && t >= 1 && t <= 50 ? t : 3;
 }
-function Ua(e) {
+function Ya(e) {
 	let t = Number(e);
 	return Number.isInteger(t) && t >= 5 && t <= 600 ? t : 180;
 }
-function Wa(e) {
+function Xa(e) {
 	let t = Array.isArray(e) ? e : String(e ?? "").split(/[\n,，]/);
 	return [...new Set(t.map((e) => String(e).trim()).filter(Boolean))];
 }
-function Ga(e = {}) {
+function Za(e = {}) {
 	return {
-		id: Ra(e.id).trim(),
-		name: Ra(e.name).trim() || "未命名",
-		url: Ra(e.url).trim(),
-		key: Ra(e.key).trim(),
-		model: Ra(e.model).trim(),
-		excludeParams: Wa(e.excludeParams),
-		timeoutSec: Ua(e.timeoutSec),
+		id: Wa(e.id).trim(),
+		name: Wa(e.name).trim() || "未命名",
+		url: Wa(e.url).trim(),
+		key: Wa(e.key).trim(),
+		model: Wa(e.model).trim(),
+		excludeParams: Xa(e.excludeParams),
+		timeoutSec: Ya(e.timeoutSec),
 		stream: e.stream === !0
 	};
 }
-function Ka(e = Date.now, t = Math.random) {
+function Qa(e = Date.now, t = Math.random) {
 	return `q${e().toString(36)}${t().toString(36).slice(2, 7)}`;
 }
-var qa = /* @__PURE__ */ new WeakMap();
-async function Ja({ settings: e, enabled: t, onChange: n } = {}) {
+var $a = /* @__PURE__ */ new WeakMap();
+async function eo({ settings: e, enabled: t, onChange: n } = {}) {
 	if (!e || typeof e.update != "function" || typeof e.isEnabled != "function") throw TypeError("千千结总开关设置存储无效");
-	let r = e.isEnabled(), i = t === !0, a = qa.get(e) ?? {
+	let r = e.isEnabled(), i = t === !0, a = $a.get(e) ?? {
 		sequence: 0,
 		tail: Promise.resolve()
 	};
-	qa.set(e, a);
+	$a.set(e, a);
 	let o = ++a.sequence;
 	try {
 		e.update({ pluginEnabled: i }, { observeSaveFailure: !0 });
@@ -7701,16 +7820,16 @@ async function Ja({ settings: e, enabled: t, onChange: n } = {}) {
 	});
 	return a.tail = s.catch(() => {}), s;
 }
-function Ya({ extensionSettings: e, save: t = () => {}, now: n, random: r } = {}) {
+function to({ extensionSettings: e, save: t = () => {}, now: n, random: r } = {}) {
 	if (!e || typeof e != "object") throw Error("千千结设置存储不可用");
 	let i = () => {
-		let t = e[Pa] ??= {
-			...Fa,
+		let t = e[Ba] ??= {
+			...Va,
 			apiExcludeParams: [],
 			apiPresets: []
 		};
-		for (let [e, n] of Object.entries(Fa)) La(t, e) || (t[e] = Array.isArray(n) ? [] : n && typeof n == "object" ? {} : n);
-		return Ia.has(t.apiMode) || (t.apiMode = "auto"), Array.isArray(t.apiExcludeParams) || (t.apiExcludeParams = []), Array.isArray(t.apiPresets) || (t.apiPresets = []), (!t.sourceWorldInfoDisabledByChat || typeof t.sourceWorldInfoDisabledByChat != "object" || Array.isArray(t.sourceWorldInfoDisabledByChat)) && (t.sourceWorldInfoDisabledByChat = {}), (!t.sourceWorldInfoOverridesByChat || typeof t.sourceWorldInfoOverridesByChat != "object" || Array.isArray(t.sourceWorldInfoOverridesByChat)) && (t.sourceWorldInfoOverridesByChat = {}), Array.isArray(t.sourceWorldInfoExcludedBooks) || (t.sourceWorldInfoExcludedBooks = []), (!t.sourceWorldInfoConfirmedChats || typeof t.sourceWorldInfoConfirmedChats != "object" || Array.isArray(t.sourceWorldInfoConfirmedChats)) && (t.sourceWorldInfoConfirmedChats = {}), za.has(t.appearanceTheme) || (t.appearanceTheme = "auto"), t.fabShow = t.fabShow !== !1, t.appearanceScale = Ba(t.appearanceScale), t.apiTimeoutSec = Ua(t.apiTimeoutSec), t.autoMemoryBatchSize = Va(t.autoMemoryBatchSize), t.autoHideEnabled = t.autoHideEnabled === !0, t.autoHideKeepAiCount = Ha(t.autoHideKeepAiCount), t;
+		for (let [e, n] of Object.entries(Va)) Ua(t, e) || (t[e] = Array.isArray(n) ? [] : n && typeof n == "object" ? {} : n);
+		return Ha.has(t.apiMode) || (t.apiMode = "auto"), Array.isArray(t.apiExcludeParams) || (t.apiExcludeParams = []), Array.isArray(t.apiPresets) || (t.apiPresets = []), (!t.sourceWorldInfoDisabledByChat || typeof t.sourceWorldInfoDisabledByChat != "object" || Array.isArray(t.sourceWorldInfoDisabledByChat)) && (t.sourceWorldInfoDisabledByChat = {}), (!t.sourceWorldInfoOverridesByChat || typeof t.sourceWorldInfoOverridesByChat != "object" || Array.isArray(t.sourceWorldInfoOverridesByChat)) && (t.sourceWorldInfoOverridesByChat = {}), Array.isArray(t.sourceWorldInfoExcludedBooks) || (t.sourceWorldInfoExcludedBooks = []), (!t.sourceWorldInfoConfirmedChats || typeof t.sourceWorldInfoConfirmedChats != "object" || Array.isArray(t.sourceWorldInfoConfirmedChats)) && (t.sourceWorldInfoConfirmedChats = {}), Ga.has(t.appearanceTheme) || (t.appearanceTheme = "auto"), t.fabShow = t.fabShow !== !1, t.appearanceScale = Ka(t.appearanceScale), t.apiTimeoutSec = Ya(t.apiTimeoutSec), t.autoMemoryBatchSize = qa(t.autoMemoryBatchSize), t.autoHideEnabled = t.autoHideEnabled === !0, t.autoHideKeepAiCount = Ja(t.autoHideKeepAiCount), t;
 	}, a = (e = !1) => {
 		try {
 			return t();
@@ -7719,10 +7838,10 @@ function Ya({ extensionSettings: e, save: t = () => {}, now: n, random: r } = {}
 		}
 	}, o = (e, { observeSaveFailure: t = !1 } = {}) => {
 		let n = i();
-		return La(e, "pluginEnabled") && (n.pluginEnabled = e.pluginEnabled !== !1), La(e, "storyClockEnabled") && (n.storyClockEnabled = e.storyClockEnabled !== !1), La(e, "storyClockPrompt") && (n.storyClockPrompt = Ra(e.storyClockPrompt)), La(e, "autoMemoryBatchSize") && (n.autoMemoryBatchSize = Va(e.autoMemoryBatchSize)), La(e, "autoHideEnabled") && (n.autoHideEnabled = e.autoHideEnabled === !0), La(e, "autoHideKeepAiCount") && (n.autoHideKeepAiCount = Ha(e.autoHideKeepAiCount)), La(e, "apiMode") && (n.apiMode = Ia.has(e.apiMode) ? e.apiMode : "auto"), La(e, "selectedSevenDaysPresetId") && (n.selectedSevenDaysPresetId = Ra(e.selectedSevenDaysPresetId).trim()), La(e, "apiUrl") && (n.apiUrl = Ra(e.apiUrl).trim()), La(e, "apiKey") && (n.apiKey = Ra(e.apiKey).trim()), La(e, "apiModel") && (n.apiModel = Ra(e.apiModel).trim()), La(e, "apiExcludeParams") && (n.apiExcludeParams = Wa(e.apiExcludeParams)), La(e, "apiTimeoutSec") && (n.apiTimeoutSec = Ua(e.apiTimeoutSec)), La(e, "apiStream") && (n.apiStream = e.apiStream === !0), La(e, "apiPresetActiveId") && (n.apiPresetActiveId = Ra(e.apiPresetActiveId).trim()), La(e, "sourceWorldInfoDisabledByChat") && e.sourceWorldInfoDisabledByChat && typeof e.sourceWorldInfoDisabledByChat == "object" && !Array.isArray(e.sourceWorldInfoDisabledByChat) && (n.sourceWorldInfoDisabledByChat = e.sourceWorldInfoDisabledByChat), La(e, "sourceWorldInfoOverridesByChat") && e.sourceWorldInfoOverridesByChat && typeof e.sourceWorldInfoOverridesByChat == "object" && !Array.isArray(e.sourceWorldInfoOverridesByChat) && (n.sourceWorldInfoOverridesByChat = e.sourceWorldInfoOverridesByChat), La(e, "sourceWorldInfoExcludedBooks") && (n.sourceWorldInfoExcludedBooks = Array.isArray(e.sourceWorldInfoExcludedBooks) ? e.sourceWorldInfoExcludedBooks : []), La(e, "sourceWorldInfoConfirmedChats") && e.sourceWorldInfoConfirmedChats && typeof e.sourceWorldInfoConfirmedChats == "object" && !Array.isArray(e.sourceWorldInfoConfirmedChats) && (n.sourceWorldInfoConfirmedChats = e.sourceWorldInfoConfirmedChats), La(e, "sourceKeepTags") && (n.sourceKeepTags = Ae(e.sourceKeepTags).join(",")), La(e, "sourceExtraTags") && (n.sourceExtraTags = Ae(e.sourceExtraTags).join(",")), La(e, "summaryPrompt") && (n.summaryPrompt = Ra(e.summaryPrompt)), La(e, "csePrompt") && (n.csePrompt = Ra(e.csePrompt)), La(e, "profilePrompt") && (n.profilePrompt = Ra(e.profilePrompt)), La(e, "appearanceTheme") && (n.appearanceTheme = za.has(e.appearanceTheme) ? e.appearanceTheme : "auto"), La(e, "fabShow") && (n.fabShow = e.fabShow !== !1), La(e, "appearanceScale") && (n.appearanceScale = Ba(e.appearanceScale)), La(e, "appearanceFontCssUrl") && (n.appearanceFontCssUrl = Ra(e.appearanceFontCssUrl).trim()), La(e, "appearanceFontFamily") && (n.appearanceFontFamily = Ra(e.appearanceFontFamily).trim()), a(t), n;
+		return Ua(e, "pluginEnabled") && (n.pluginEnabled = e.pluginEnabled !== !1), Ua(e, "storyClockEnabled") && (n.storyClockEnabled = e.storyClockEnabled !== !1), Ua(e, "storyClockPrompt") && (n.storyClockPrompt = Wa(e.storyClockPrompt)), Ua(e, "autoMemoryBatchSize") && (n.autoMemoryBatchSize = qa(e.autoMemoryBatchSize)), Ua(e, "autoHideEnabled") && (n.autoHideEnabled = e.autoHideEnabled === !0), Ua(e, "autoHideKeepAiCount") && (n.autoHideKeepAiCount = Ja(e.autoHideKeepAiCount)), Ua(e, "apiMode") && (n.apiMode = Ha.has(e.apiMode) ? e.apiMode : "auto"), Ua(e, "selectedSevenDaysPresetId") && (n.selectedSevenDaysPresetId = Wa(e.selectedSevenDaysPresetId).trim()), Ua(e, "apiUrl") && (n.apiUrl = Wa(e.apiUrl).trim()), Ua(e, "apiKey") && (n.apiKey = Wa(e.apiKey).trim()), Ua(e, "apiModel") && (n.apiModel = Wa(e.apiModel).trim()), Ua(e, "apiExcludeParams") && (n.apiExcludeParams = Xa(e.apiExcludeParams)), Ua(e, "apiTimeoutSec") && (n.apiTimeoutSec = Ya(e.apiTimeoutSec)), Ua(e, "apiStream") && (n.apiStream = e.apiStream === !0), Ua(e, "apiPresetActiveId") && (n.apiPresetActiveId = Wa(e.apiPresetActiveId).trim()), Ua(e, "sourceWorldInfoDisabledByChat") && e.sourceWorldInfoDisabledByChat && typeof e.sourceWorldInfoDisabledByChat == "object" && !Array.isArray(e.sourceWorldInfoDisabledByChat) && (n.sourceWorldInfoDisabledByChat = e.sourceWorldInfoDisabledByChat), Ua(e, "sourceWorldInfoOverridesByChat") && e.sourceWorldInfoOverridesByChat && typeof e.sourceWorldInfoOverridesByChat == "object" && !Array.isArray(e.sourceWorldInfoOverridesByChat) && (n.sourceWorldInfoOverridesByChat = e.sourceWorldInfoOverridesByChat), Ua(e, "sourceWorldInfoExcludedBooks") && (n.sourceWorldInfoExcludedBooks = Array.isArray(e.sourceWorldInfoExcludedBooks) ? e.sourceWorldInfoExcludedBooks : []), Ua(e, "sourceWorldInfoConfirmedChats") && e.sourceWorldInfoConfirmedChats && typeof e.sourceWorldInfoConfirmedChats == "object" && !Array.isArray(e.sourceWorldInfoConfirmedChats) && (n.sourceWorldInfoConfirmedChats = e.sourceWorldInfoConfirmedChats), Ua(e, "sourceKeepTags") && (n.sourceKeepTags = Ae(e.sourceKeepTags).join(",")), Ua(e, "sourceExtraTags") && (n.sourceExtraTags = Ae(e.sourceExtraTags).join(",")), Ua(e, "summaryPrompt") && (n.summaryPrompt = Wa(e.summaryPrompt)), Ua(e, "csePrompt") && (n.csePrompt = Wa(e.csePrompt)), Ua(e, "profilePrompt") && (n.profilePrompt = Wa(e.profilePrompt)), Ua(e, "appearanceTheme") && (n.appearanceTheme = Ga.has(e.appearanceTheme) ? e.appearanceTheme : "auto"), Ua(e, "fabShow") && (n.fabShow = e.fabShow !== !1), Ua(e, "appearanceScale") && (n.appearanceScale = Ka(e.appearanceScale)), Ua(e, "appearanceFontCssUrl") && (n.appearanceFontCssUrl = Wa(e.appearanceFontCssUrl).trim()), Ua(e, "appearanceFontFamily") && (n.appearanceFontFamily = Wa(e.appearanceFontFamily).trim()), a(t), n;
 	}, s = () => {
 		let e = i();
-		return Ga({
+		return Za({
 			url: e.apiUrl,
 			key: e.apiKey,
 			model: e.apiModel,
@@ -7730,15 +7849,15 @@ function Ya({ extensionSettings: e, save: t = () => {}, now: n, random: r } = {}
 			timeoutSec: e.apiTimeoutSec,
 			stream: e.apiStream
 		});
-	}, c = () => i().apiPresets.map(Ga).filter((e) => e.id), l = (e, t, o = "") => {
-		let s = i(), l = c(), u = Ra(o).trim(), d = Ga({
+	}, c = () => i().apiPresets.map(Za).filter((e) => e.id), l = (e, t, o = "") => {
+		let s = i(), l = c(), u = Wa(o).trim(), d = Za({
 			...t,
-			id: u || Ka(n, r),
+			id: u || Qa(n, r),
 			name: e
 		}), f = l.findIndex((e) => e.id === d.id);
 		return f >= 0 ? l[f] = d : l.push(d), s.apiPresets = l, s.apiPresetActiveId = d.id, a(), d.id;
 	}, u = (e, t) => {
-		let n = i(), r = c(), o = r.find((t) => t.id === e), s = Ra(t).trim();
+		let n = i(), r = c(), o = r.find((t) => t.id === e), s = Wa(t).trim();
 		return !o || !s ? !1 : (o.name = s, n.apiPresets = r, a(), !0);
 	}, d = (e) => {
 		let t = i(), n = c(), r = n.filter((t) => t.id !== e);
@@ -7754,7 +7873,7 @@ function Ya({ extensionSettings: e, save: t = () => {}, now: n, random: r } = {}
 	}, m = (e) => {
 		if (!Array.isArray(e)) return [];
 		let t = /* @__PURE__ */ new Set();
-		return e.map((e) => Ra(e).trim()).filter((e) => {
+		return e.map((e) => Wa(e).trim()).filter((e) => {
 			if (!e) return !1;
 			let n = e.normalize("NFKD").replace(/\p{M}/gu, "").toLocaleLowerCase("zh-Hans-CN");
 			return !t.has(n) && (t.add(n), !0);
@@ -7766,19 +7885,19 @@ function Ya({ extensionSettings: e, save: t = () => {}, now: n, random: r } = {}
 			return [];
 		}
 	}, g = (e, t) => {
-		let n = Ra(e).trim();
+		let n = Wa(e).trim();
 		if (!n) throw TypeError("世界书名称无效");
 		let r = (e) => e.normalize("NFKD").replace(/\p{M}/gu, "").toLocaleLowerCase("zh-Hans-CN"), i = p(), o = h().filter((e) => r(e) !== r(n));
 		return t === !0 && o.push(n), i.wiExcludeBooks = o, a(), [...o];
 	}, _ = () => ({
 		...i(),
 		sourceWorldInfoExcludedBooks: h()
-	}), v = () => Ra(f()?.utilityPresetId).trim(), y = (e) => {
+	}), v = () => Wa(f()?.utilityPresetId).trim(), y = (e) => {
 		let t = p();
-		return t.utilityPresetId = Ra(e).trim(), a(), t.utilityPresetId;
+		return t.utilityPresetId = Wa(e).trim(), a(), t.utilityPresetId;
 	}, b = () => {
 		let e = f() || {};
-		return Ga({
+		return Za({
 			name: "主配置",
 			url: e.apiUrl,
 			key: e.apiKey,
@@ -7804,15 +7923,15 @@ function Ya({ extensionSettings: e, save: t = () => {}, now: n, random: r } = {}
 			let e = f()?.apiPresets;
 			return Array.isArray(e) ? e.map((e) => e && typeof e == "object" ? {
 				...e,
-				...Ga(e)
+				...Za(e)
 			} : null).filter((e) => e?.id) : [];
 		},
 		saveSharedMainConfig: (e) => {
-			let t = p(), n = Ga(e);
+			let t = p(), n = Za(e);
 			return t.apiUrl = n.url, t.apiKey = n.key, t.apiModel = n.model, t.apiExcludeParams = n.excludeParams, t.apiTimeoutSec = n.timeoutSec, t.apiStream = n.stream, a(), b();
 		},
 		upsertSharedPreset: (e, t, i = "") => {
-			let o = p(), s = Array.isArray(o.apiPresets) ? [...o.apiPresets] : [], c = Ra(i).trim() || Ka(n, r).replace(/^q/, "p"), l = s.findIndex((e) => e && typeof e == "object" && Ra(e.id).trim() === c), u = Ga({
+			let o = p(), s = Array.isArray(o.apiPresets) ? [...o.apiPresets] : [], c = Wa(i).trim() || Qa(n, r).replace(/^q/, "p"), l = s.findIndex((e) => e && typeof e == "object" && Wa(e.id).trim() === c), u = Za({
 				...t,
 				id: c,
 				name: e
@@ -7835,19 +7954,19 @@ function Ya({ extensionSettings: e, save: t = () => {}, now: n, random: r } = {}
 			}), o.apiPresets = s, o.apiPresetActiveId = c, a(), c;
 		},
 		renameSharedPreset: (e, t) => {
-			let n = Ra(e).trim(), r = Ra(t).trim();
+			let n = Wa(e).trim(), r = Wa(t).trim();
 			if (!n || !r) return !1;
-			let i = p(), o = Array.isArray(i.apiPresets) ? [...i.apiPresets] : [], s = o.findIndex((e) => e && typeof e == "object" && Ra(e.id).trim() === n);
+			let i = p(), o = Array.isArray(i.apiPresets) ? [...i.apiPresets] : [], s = o.findIndex((e) => e && typeof e == "object" && Wa(e.id).trim() === n);
 			return s < 0 ? !1 : (o[s] = {
 				...o[s],
 				name: r
 			}, i.apiPresets = o, a(), !0);
 		},
 		deleteSharedPreset: (e) => {
-			let t = Ra(e).trim();
+			let t = Wa(e).trim();
 			if (!t) return !1;
-			let n = p(), r = Array.isArray(n.apiPresets) ? n.apiPresets : [], i = r.filter((e) => !(e && typeof e == "object" && Ra(e.id).trim() === t));
-			return i.length !== r.length && (n.apiPresets = i, n.apiPresetActiveId === t && (n.apiPresetActiveId = ""), Ra(n.utilityPresetId).trim() === t && (n.utilityPresetId = ""), a(), !0);
+			let n = p(), r = Array.isArray(n.apiPresets) ? n.apiPresets : [], i = r.filter((e) => !(e && typeof e == "object" && Wa(e.id).trim() === t));
+			return i.length !== r.length && (n.apiPresets = i, n.apiPresetActiveId === t && (n.apiPresetActiveId = ""), Wa(n.utilityPresetId).trim() === t && (n.utilityPresetId = ""), a(), !0);
 		},
 		sharedSnapshotKey: () => {
 			let e = f() || {};
@@ -7868,15 +7987,15 @@ function Ya({ extensionSettings: e, save: t = () => {}, now: n, random: r } = {}
 				["apiUrl", e.apiUrl],
 				["apiKey", e.apiKey],
 				["apiModel", e.apiModel],
-				["apiExcludeParams", Wa(e.apiExcludeParams)],
-				["apiTimeoutSec", Ua(e.apiTimeoutSec)],
+				["apiExcludeParams", Xa(e.apiExcludeParams)],
+				["apiTimeoutSec", Ya(e.apiTimeoutSec)],
 				["apiStream", e.apiStream === !0]
 			];
-			for (let [e, i] of r) La(t, e) || (t[e] = Array.isArray(i) ? [...i] : i, n = !0);
-			let o = Array.isArray(t.apiPresets) ? [...t.apiPresets] : [], s = new Set(o.map((e) => e && typeof e == "object" ? Ra(e.id).trim() : "").filter(Boolean));
+			for (let [e, i] of r) Ua(t, e) || (t[e] = Array.isArray(i) ? [...i] : i, n = !0);
+			let o = Array.isArray(t.apiPresets) ? [...t.apiPresets] : [], s = new Set(o.map((e) => e && typeof e == "object" ? Wa(e.id).trim() : "").filter(Boolean));
 			for (let e of c()) s.has(e.id) || (o.push({ ...e }), s.add(e.id), n = !0);
 			(!Array.isArray(t.apiPresets) || n) && (t.apiPresets = o);
-			let l = Ra(e.apiPresetActiveId).trim();
+			let l = Wa(e.apiPresetActiveId).trim();
 			return !e.selectedSevenDaysPresetId && l && s.has(l) && (e.apiMode = "seven-preset", e.selectedSevenDaysPresetId = l, n = !0), e.sharedApiMigrationVersion = 1, a(), n;
 		},
 		isEnabled: () => i().pluginEnabled !== !1
@@ -7884,8 +8003,8 @@ function Ya({ extensionSettings: e, save: t = () => {}, now: n, random: r } = {}
 }
 //#endregion
 //#region src/ui/panel.js
-var Xa = ":host{position:fixed;inset:0;z-index:4000;width:100dvw;height:100dvh;pointer-events:none;background:transparent;text-shadow:none!important;isolation:isolate}:host([hidden]){display:none!important}.panel{position:fixed;top:80px;right:20px;width:360px;height:min(600px,85dvh);max-width:calc(100dvw - 40px);max-height:85dvh;display:grid;grid-template-rows:auto auto minmax(0,1fr) 24px;pointer-events:auto}.body{min-height:0;overflow-y:auto;scrollbar-gutter:stable;touch-action:pan-y}.tabs{overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(max-width:640px){.panel{top:calc(20px + env(safe-area-inset-top,0px));left:50%;right:auto;transform:translateX(-50%);width:calc(100dvw - 20px);max-width:calc(100dvw - 20px);height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));max-height:none;grid-template-rows:auto auto minmax(0,1fr)}.panel-resize-handle{display:none}.tabs{scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}}";
-function Za({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView: r, sourcePermissionView: i, onPluginEnabledChange: a, onStoryClockChange: o, onAutoHideChange: s, isSevenDaysAvailable: c, dialog: l, onFabShowChange: u, onAppearanceChange: d, documentRef: f = globalThis.document } = {}) {
+var no = ":host{position:fixed;inset:0;z-index:4000;width:100dvw;height:100dvh;pointer-events:none;background:transparent;text-shadow:none!important;isolation:isolate}:host([hidden]){display:none!important}.panel{position:fixed;top:80px;right:20px;width:360px;height:min(600px,85dvh);max-width:calc(100dvw - 40px);max-height:85dvh;display:grid;grid-template-rows:auto auto minmax(0,1fr) 24px;pointer-events:auto}.body{min-height:0;overflow-y:auto;scrollbar-gutter:stable;touch-action:pan-y}.tabs{overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(max-width:640px){.panel{top:calc(20px + env(safe-area-inset-top,0px));left:50%;right:auto;transform:translateX(-50%);width:calc(100dvw - 20px);max-width:calc(100dvw - 20px);height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));max-height:none;grid-template-rows:auto auto minmax(0,1fr)}.panel-resize-handle{display:none}.tabs{scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}}";
+function ro({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView: r, sourcePermissionView: i, onPluginEnabledChange: a, onStoryClockChange: o, onAutoHideChange: s, isSevenDaysAvailable: c, dialog: l, onFabShowChange: u, onAppearanceChange: d, documentRef: f = globalThis.document } = {}) {
 	if (!f?.createElement) throw TypeError("panel documentRef 无效");
 	if (!n || [
 		"mount",
@@ -7900,13 +8019,13 @@ function Za({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 	let p = f.createElement("div");
 	p.id = "qqj-panel-host", p.hidden = !0, p.setAttribute("aria-hidden", "true");
 	let m = p.attachShadow({ mode: "open" });
-	m.innerHTML = `<style>${Xa}\n${v}</style>${_}`;
+	m.innerHTML = `<style>${no}\n${v}</style>${_}`;
 	let h = m.querySelector(".panel"), g = m.querySelector(".body"), y = m.querySelector(".view"), b = [...m.querySelectorAll(".tab")], x = O({
 		panel: h,
 		dragHandle: m.querySelector(".topbar"),
 		resizeHandle: m.querySelector(".panel-resize-handle"),
 		viewport: f.defaultView ?? globalThis
-	}), S = "profiles", C = "content", w = null, T = e?.isEnabled?.() !== !1, E = null, D = 0, k = B(), A = /* @__PURE__ */ new Map(), j = m.querySelector(".theme-btn"), M = m.querySelector(".fab-toggle-btn"), N = null, P = null, F = Na({
+	}), S = "profiles", C = "content", w = null, T = e?.isEnabled?.() !== !1, E = null, D = 0, k = V(), A = /* @__PURE__ */ new Map(), j = m.querySelector(".theme-btn"), M = m.querySelector(".fab-toggle-btn"), N = null, P = null, F = za({
 		target: g,
 		getPage: () => C === "settings" ? "settings" : S,
 		windowRef: f.defaultView ?? globalThis,
@@ -7920,7 +8039,7 @@ function Za({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 		}
 		let a = e?.get?.().fabShow !== !1;
 		M && (M.classList.toggle("active", a), M.title = `悬浮球：${a ? "显示" : "隐藏"}`, M.setAttribute("aria-label", a ? "隐藏悬浮球" : "显示悬浮球"), M.setAttribute("aria-pressed", String(a))), l?.setAppearance?.(t), d?.(t);
-	}, I = z({
+	}, I = B({
 		host: p,
 		root: m,
 		settings: e,
@@ -7940,35 +8059,35 @@ function Za({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 				error: n
 			});
 		}
-	}, V = () => {
+	}, z = () => {
 		n.deactivate(), r.deactivate(), y.replaceChildren(), w = null, P = null;
-	}, H = () => C === "settings" ? "settings" : S, U = () => {
+	}, H = () => C === "settings" ? "settings" : S, te = () => {
 		g && A.set(H(), g.scrollTop || 0);
 	}, W = (e) => {
 		g && (g.scrollTop = A.get(e) || 0);
 	}, G = (e) => {
-		D += 1, V();
+		D += 1, z();
 		let t = L("section", "empty-state");
 		t.append(L("h2", "", "千千结"), L("p", "", e)), y.append(t);
 	};
-	async function re() {
-		return p.hidden || C !== "content" ? { status: "closed" } : T ? (D += 1, S === "profiles" ? (w !== "profiles" && (V(), r.mount(y), w = "profiles"), W(S), await r.activate()) : (n.setPage?.(S === "people" ? "people" : "memories"), w !== "foundation" && (V(), n.mount(y), w = "foundation"), W(S), await n.activate())) : (G("千千结当前已关闭。记忆不会读取后端或写入数据。"), { status: "disabled" });
+	async function ne() {
+		return p.hidden || C !== "content" ? { status: "closed" } : T ? (D += 1, S === "profiles" ? (w !== "profiles" && (z(), r.mount(y), w = "profiles"), W(S), await r.activate()) : (n.setPage?.(S === "people" ? "people" : "memories"), w !== "foundation" && (z(), n.mount(y), w = "foundation"), W(S), await n.activate())) : (G("千千结当前已关闭。记忆不会读取后端或写入数据。"), { status: "disabled" });
 	}
 	function ie(e) {
 		if (e === "settings") {
 			C !== "settings" && ae();
 			return;
 		}
-		U(), D += 1, C = "content", S = e, b.forEach((e) => {
+		te(), D += 1, C = "content", S = e, b.forEach((e) => {
 			let t = e.dataset.tab === S;
 			e.classList.toggle("active", t), e.setAttribute("aria-selected", String(t));
-		}), N = null, re().catch(() => G("当前聊天暂时无法读取千千结记忆。"));
+		}), N = null, ne().catch(() => G("当前聊天暂时无法读取千千结记忆。"));
 	}
 	function ae({ focusSources: r = !1 } = {}) {
-		U(), D += 1, C = "settings", b.forEach((e) => {
+		te(), D += 1, C = "settings", b.forEach((e) => {
 			let t = e.dataset.tab === "settings";
 			e.classList.toggle("active", t), e.setAttribute("aria-selected", String(t));
-		}), V(), r && (k.open("general"), k.open("worldbook"));
+		}), z(), r && (k.open("general"), k.open("worldbook"));
 		let u = L("section", "settings-page");
 		u.append(L("h2", "", "千千结设置"));
 		let d = L("div", "master-switch"), p = L("label", "setting-switch"), m = L("input");
@@ -7978,7 +8097,7 @@ function Za({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 			let t = e.isEnabled(), n = m.checked;
 			m.disabled = !0, h.textContent = n ? "正在开启并保存…" : "正在关闭并保存…", h.className = "settings-result";
 			try {
-				let t = await Ja({
+				let t = await eo({
 					settings: e,
 					enabled: n,
 					onChange: a
@@ -7993,14 +8112,14 @@ function Za({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 		}), d.append(p, h), u.append(d);
 		let g = L("div", "qqj-settings-management");
 		P = L("p", "v3-foundation-feedback error"), P.hidden = !0;
-		let _ = (e, t) => te({
+		let _ = (e, t) => U({
 			documentRef: f,
 			title: t,
 			level: "group",
 			id: `qqj-settings-group-${e}`,
 			open: k.isOpen(e, !1),
 			onToggle: (t) => k.set(e, t)
-		}), v = (e) => k.isOpen(e, !1), x = (e) => (t) => k.set(e, t), { drawer: S, body: E } = _("general", "通用设置"), O = ne({
+		}), v = (e) => k.isOpen(e, !1), x = (e) => (t) => k.set(e, t), { drawer: S, body: E } = _("general", "通用设置"), O = re({
 			settings: e,
 			apiTools: t,
 			documentRef: f,
@@ -8015,13 +8134,13 @@ function Za({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 		}), A = i?.renderSettings?.({
 			open: v("worldbook"),
 			onDrawerToggle: x("worldbook")
-		}), j = Ea({
+		}), j = Ma({
 			settings: e,
 			documentRef: f,
 			open: v("prompts"),
 			onToggle: x("prompts"),
 			onStoryClockChange: o
-		}), M = Da({
+		}), M = Na({
 			settings: e,
 			documentRef: f,
 			open: v("appearance"),
@@ -8029,18 +8148,18 @@ function Za({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 			applyAppearance: () => I.apply()
 		});
 		E.append(O.node), A && E.append(A), E.append(j.node, M.node), u.append(S);
-		let { drawer: N, body: F } = _("memory", "记忆设置"), ee = L("label", "setting-switch"), z = L("input");
-		z.type = "checkbox", z.checked = e.get().autoHideEnabled === !0, ee.append(z, L("span", "", "自动隐藏已记忆旧楼"));
-		let B = L("label", "qqj-auto-hide-row");
-		B.append(L("span", "", "隐藏 AI 楼层数"));
+		let { drawer: N, body: F } = _("memory", "记忆设置"), ee = L("label", "setting-switch"), B = L("input");
+		B.type = "checkbox", B.checked = e.get().autoHideEnabled === !0, ee.append(B, L("span", "", "自动隐藏已记忆旧楼"));
+		let V = L("label", "qqj-auto-hide-row");
+		V.append(L("span", "", "隐藏 AI 楼层数"));
 		let H = L("input", "settings-input settings-num");
-		H.type = "number", H.min = "1", H.max = "50", H.step = "1", H.value = String(e.get().autoHideKeepAiCount ?? 3), B.append(H);
-		let G = L("p", "settings-result"), re = async (t) => {
-			z.disabled = !0, H.disabled = !0, G.className = "settings-result", G.textContent = "正在保存并整理当前聊天…";
+		H.type = "number", H.min = "1", H.max = "50", H.step = "1", H.value = String(e.get().autoHideKeepAiCount ?? 3), V.append(H);
+		let G = L("p", "settings-result"), ne = async (t) => {
+			B.disabled = !0, H.disabled = !0, G.className = "settings-result", G.textContent = "正在保存并整理当前聊天…";
 			try {
 				e.update(t);
 				let n = e.get();
-				if (z.checked = n.autoHideEnabled === !0, H.value = String(n.autoHideKeepAiCount), (await s?.({
+				if (B.checked = n.autoHideEnabled === !0, H.value = String(n.autoHideKeepAiCount), (await s?.({
 					enabled: n.autoHideEnabled,
 					keepAiCount: n.autoHideKeepAiCount
 				}))?.status === "disabled") {
@@ -8051,27 +8170,27 @@ function Za({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 			} catch (e) {
 				G.textContent = `设置已保存，但当前聊天整理未完成：${e?.message || "未知错误"} 请再次调整设置重试。`, G.className = "settings-result error";
 			} finally {
-				z.disabled = !1, H.disabled = !1;
+				B.disabled = !1, H.disabled = !1;
 			}
 		};
-		z.addEventListener("change", () => {
-			re({ autoHideEnabled: z.checked });
+		B.addEventListener("change", () => {
+			ne({ autoHideEnabled: B.checked });
 		}), H.addEventListener("change", () => {
-			re({ autoHideKeepAiCount: Number(H.value) });
-		}), F.append(ee, B, L("p", "settings-hint", "保留最近 N 个 AI 楼及其用户上下文，隐藏更早且已完成记忆的楼。"), G), u.append(N), u.append(g, P), n.mount(g), w = "foundation-settings", n.setPage?.("management"), y.append(u), T && R(), W("settings"), r && A?.scrollIntoView?.({ block: "start" });
+			ne({ autoHideKeepAiCount: Number(H.value) });
+		}), F.append(ee, V, L("p", "settings-hint", "保留最近 N 个 AI 楼及其用户上下文，隐藏更早且已完成记忆的楼。"), G), u.append(N), u.append(g, P), n.mount(g), w = "foundation-settings", n.setPage?.("management"), y.append(u), T && R(), W("settings"), r && A?.scrollIntoView?.({ block: "start" });
 	}
 	function oe(e) {
 		E = e ?? E, p.hidden = !1, p.setAttribute("aria-hidden", "false"), F.start(), x.restore();
 		let t = { status: "ready" };
-		return C === "settings" ? ae() : t = re(), m.querySelector(".close")?.focus?.(), t;
+		return C === "settings" ? ae() : t = ne(), m.querySelector(".close")?.focus?.(), t;
 	}
 	function se() {
-		U(), D += 1, n.deactivate(), x.cancelGesture(), N = null, F.stop(), l?.closeAll?.(), p.hidden = !0, p.setAttribute("aria-hidden", "true");
+		te(), D += 1, n.deactivate(), x.cancelGesture(), N = null, F.stop(), l?.closeAll?.(), p.hidden = !0, p.setAttribute("aria-hidden", "true");
 		let e = E;
 		E = null, e?.focus?.();
 	}
 	function K(e) {
-		T = e === !0, T ? !p.hidden && C === "content" ? re().catch(() => G("当前聊天暂时无法读取千结记忆。")) : !p.hidden && C === "settings" && R() : (D += 1, n.deactivate(), !p.hidden && C === "content" && G("千千结当前已关闭。设置仍可打开。"));
+		T = e === !0, T ? !p.hidden && C === "content" ? ne().catch(() => G("当前聊天暂时无法读取千结记忆。")) : !p.hidden && C === "settings" && R() : (D += 1, n.deactivate(), !p.hidden && C === "content" && G("千千结当前已关闭。设置仍可打开。"));
 	}
 	let q = () => Number(f.defaultView?.innerWidth) <= 640 || f.defaultView?.matchMedia?.("(max-width: 640px)")?.matches === !0, ce = (e) => !!e?.closest?.("input,textarea,select,[contenteditable=\"true\"],.qqj-inline-select,.qqj-profile-switcher,.qqj-model-list-items,.source-permission-list,.v3-memory-json,.v3-recall-injection,.qqj-dialog-overlay"), le = (e) => e.touches?.[0] ?? e.changedTouches?.[0] ?? null;
 	return g?.addEventListener?.("touchstart", (e) => {
@@ -8140,10 +8259,10 @@ function Za({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 		setEnabled: K,
 		showStatus: G,
 		openSourceSettings: () => ae({ focusSources: !0 }),
-		activateFoundation: re,
+		activateFoundation: ne,
 		syncAppearance: () => I.apply(),
 		async refresh() {
-			return p.hidden || C !== "content" ? { status: "closed" } : (n.deactivate(), re());
+			return p.hidden || C !== "content" ? { status: "closed" } : (n.deactivate(), ne());
 		},
 		getUiDiagnostic: () => JSON.stringify(F.snapshot(), null, 2),
 		getState: () => ({
@@ -8156,51 +8275,61 @@ function Za({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 }
 //#endregion
 //#region src/ui/brand.js
-var Qa = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"13.5 22.5 37.5 20\" fill=\"none\" aria-hidden=\"true\"><g stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M 30.72 28.58 C 27.3 26.5, 24.5 25.3, 20.46 25.38 C 17.2 25.45, 15.53 28.1, 15.55 31.36 C 15.57 35.1, 17.6 37.8, 19.82 39.05 C 21.5 40.0, 23.4 39.9, 24.74 39.48 L 40.12 30.29\"/><path d=\"M 32.85 36.06 C 35.6 37.7, 37.8 39.2, 38.84 39.48 C 42.8 40.6, 46.0 38.3, 47.60 34.99 C 49.0 31.8, 47.6 28.5, 44.61 26.02 C 42.7 24.5, 39.2 24.7, 36.91 26.02 L 27.94 31.57\"/><path d=\"M 23.45 30.29 L 30.72 34.56\"/><path d=\"M 26.02 33.07 L 23.67 34.35\"/><path d=\"M 35.63 31.57 L 32.85 30.08\"/><path d=\"M 37.34 33.07 L 39.91 34.35\"/></g></svg>", $a = "qqj-fab-pos", eo = 36, to = (e, t) => Math.max(0, Math.min(Math.max(0, t - eo), e));
-function no({ onClick: e, documentRef: t = globalThis.document, windowRef: n = globalThis, storage: r = n.localStorage } = {}) {
+var io = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"13.5 22.5 37.5 20\" fill=\"none\" aria-hidden=\"true\"><g stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M 30.72 28.58 C 27.3 26.5, 24.5 25.3, 20.46 25.38 C 17.2 25.45, 15.53 28.1, 15.55 31.36 C 15.57 35.1, 17.6 37.8, 19.82 39.05 C 21.5 40.0, 23.4 39.9, 24.74 39.48 L 40.12 30.29\"/><path d=\"M 32.85 36.06 C 35.6 37.7, 37.8 39.2, 38.84 39.48 C 42.8 40.6, 46.0 38.3, 47.60 34.99 C 49.0 31.8, 47.6 28.5, 44.61 26.02 C 42.7 24.5, 39.2 24.7, 36.91 26.02 L 27.94 31.57\"/><path d=\"M 23.45 30.29 L 30.72 34.56\"/><path d=\"M 26.02 33.07 L 23.67 34.35\"/><path d=\"M 35.63 31.57 L 32.85 30.08\"/><path d=\"M 37.34 33.07 L 39.91 34.35\"/></g></svg>", ao = "qqj-fab-pos", oo = 36, so = (e, t) => Math.max(0, Math.min(Math.max(0, t - oo), e));
+function co({ onClick: e, documentRef: t = globalThis.document, windowRef: n = globalThis, storage: r = n.localStorage } = {}) {
 	let i = () => Number(n.innerWidth) <= 640 || n.matchMedia?.("(max-width: 640px)").matches, a = () => ({
 		width: Number(n.innerWidth) || 0,
 		height: Number(n.innerHeight) || 0
 	}), o = t.createElement("div");
 	o.id = "qqj-fab-host", o.attachShadow({ mode: "open" });
 	let s = o.shadowRoot;
-	s.innerHTML = `<style>:host{--qqj-fab-primary:#a8322f;--qqj-fab-ink:#22282b;--qqj-fab-surface:#f6f8f8;--qqj-fab-glow:color-mix(in srgb,var(--qqj-fab-primary) 45%,var(--qqj-fab-surface));position:fixed;right:60px;top:calc(100dvh - 80px - 44px);z-index:2000000;touch-action:none}:host([data-theme-mode="day"]){--qqj-fab-primary:#a8322f;--qqj-fab-ink:#22282b;--qqj-fab-surface:#f6f8f8}:host([data-theme-mode="night"]){--qqj-fab-primary:#d9707a;--qqj-fab-ink:#e7ecee;--qqj-fab-surface:#1c2327}:host([data-theme-mode="auto"][data-effective-theme="night"]){--qqj-fab-primary:#d9707a;--qqj-fab-ink:#e7ecee;--qqj-fab-surface:#1c2327}button{width:36px;height:36px;border:1.5px solid color-mix(in srgb,var(--qqj-fab-primary) 45%,var(--qqj-fab-surface));border-radius:50%;background:var(--qqj-fab-surface);color:var(--qqj-fab-ink);cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.4);touch-action:none;display:grid;place-items:center;padding:0;transition:transform .15s,box-shadow .15s,color .15s,background .15s}button:hover{transform:scale(1.1);box-shadow:0 6px 20px rgba(0,0,0,.5)}button:active{transform:scale(.95)}button.busy{color:var(--qqj-fab-primary);animation:qqj-fab-breathe 1.4s ease-in-out infinite}button:focus-visible{outline:2px solid var(--qqj-fab-ink);outline-offset:3px}svg{width:24px;height:24px;display:block}@keyframes qqj-fab-breathe{0%,100%{box-shadow:0 0 4px var(--qqj-fab-glow),0 0 12px var(--qqj-fab-glow)}50%{box-shadow:0 0 10px var(--qqj-fab-glow),0 0 28px var(--qqj-fab-glow),0 0 50px var(--qqj-fab-glow)}}@media(max-width:640px){:host{right:58px;top:calc(100dvh - 100px - 44px)}}@media(prefers-reduced-motion:reduce){button{transition-duration:.01ms!important}button.busy{animation-duration:.01ms!important;animation-iteration-count:1!important}button:active{transform:none}}</style><button type="button" aria-label="打开千千结" aria-busy="false">${Qa}</button>`;
-	let c = s.querySelector("button"), l = null, u = !1, d = null, f = () => {
+	s.innerHTML = `<style>:host{--qqj-fab-primary:#a8322f;--qqj-fab-ink:#22282b;--qqj-fab-surface:#f6f8f8;--qqj-fab-glow:color-mix(in srgb,var(--qqj-fab-primary) 45%,var(--qqj-fab-surface));position:fixed;right:60px;top:calc(100dvh - 80px - 44px);z-index:2000000;touch-action:none}:host([data-theme-mode="day"]){--qqj-fab-primary:#a8322f;--qqj-fab-ink:#22282b;--qqj-fab-surface:#f6f8f8}:host([data-theme-mode="night"]){--qqj-fab-primary:#d9707a;--qqj-fab-ink:#e7ecee;--qqj-fab-surface:#1c2327}:host([data-theme-mode="auto"][data-effective-theme="night"]){--qqj-fab-primary:#d9707a;--qqj-fab-ink:#e7ecee;--qqj-fab-surface:#1c2327}button{width:36px;height:36px;border:1.5px solid color-mix(in srgb,var(--qqj-fab-primary) 45%,var(--qqj-fab-surface));border-radius:50%;background:transparent;color:var(--qqj-fab-ink);cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.4);touch-action:none;display:grid;place-items:center;padding:0;transition:transform .15s,box-shadow .15s,color .15s,background .15s}button:hover{transform:scale(1.1);box-shadow:0 6px 20px rgba(0,0,0,.5)}button:active{transform:scale(.95)}button.busy{color:var(--qqj-fab-primary);animation:qqj-fab-breathe 1.4s ease-in-out infinite}button:focus-visible{outline:2px solid var(--qqj-fab-ink);outline-offset:3px}svg{width:24px;height:24px;display:block}@keyframes qqj-fab-breathe{0%,100%{box-shadow:0 0 4px var(--qqj-fab-glow),0 0 12px var(--qqj-fab-glow)}50%{box-shadow:0 0 10px var(--qqj-fab-glow),0 0 28px var(--qqj-fab-glow),0 0 50px var(--qqj-fab-glow)}}@media(max-width:640px){:host{right:58px;top:calc(100dvh - 100px - 44px)}}@media(prefers-reduced-motion:reduce){button{transition-duration:.01ms!important}button.busy{animation-duration:.01ms!important;animation-iteration-count:1!important}button:active{transform:none}}</style><button type="button" aria-label="打开千千结" aria-busy="false">${io}</button>`;
+	let c = s.querySelector("button"), l = null, u = !1, d = null, f = null, p = () => {
 		o.style.left = "", o.style.top = i() ? "calc(100dvh - 100px - 44px)" : "calc(100dvh - 80px - 44px)", o.style.right = i() ? "58px" : "60px";
-	}, p = () => {
+	}, m = () => {
 		if (i()) return null;
 		try {
-			let e = JSON.parse(r?.getItem($a) || "null");
+			let e = JSON.parse(r?.getItem(ao) || "null");
 			return Number.isFinite(e?.x) && Number.isFinite(e?.y) ? e : null;
 		} catch {
 			return null;
 		}
-	}, m = (e) => {
-		let t = a();
-		if (!t.width || !t.height || !e) return;
-		let n = to(e.x, t.width), r = to(e.y, t.height);
-		o.style.left = `${n}px`, o.style.top = `${r}px`, o.style.right = "auto", d = {
-			x: n,
-			y: r
+	}, h = (e, t = "desktop") => {
+		let n = a();
+		if (!n.width || !n.height || !e) return;
+		let r = so(e.x, n.width), i = so(e.y, n.height);
+		o.style.left = `${r}px`, o.style.top = `${i}px`, o.style.right = "auto", t === "mobile" ? f = {
+			x: r,
+			y: i
+		} : d = {
+			x: r,
+			y: i
 		};
-	}, h = () => {
-		if (i()) return;
+	}, g = () => {
 		let e = o.getBoundingClientRect(), t = a(), n = {
-			x: to(e.left, t.width),
-			y: to(e.top, t.height)
+			x: so(e.left, t.width),
+			y: so(e.top, t.height)
 		};
+		if (i()) {
+			f = n;
+			return;
+		}
 		d = n;
 		try {
-			r?.setItem($a, JSON.stringify({
+			r?.setItem(ao, JSON.stringify({
 				x: Math.round(n.x),
 				y: Math.round(n.y)
 			}));
 		} catch {}
-	}, g = () => {
-		f(), i() || m(d || p());
 	}, _ = () => {
-		i() ? f() : m(d || p());
-	}, v = (e) => {
+		p(), i() ? h(f, "mobile") : h(d || m());
+	}, v = () => {
+		if (i()) p(), h(f, "mobile");
+		else {
+			let e = d || m();
+			e ? h(e) : p();
+		}
+	}, y = (e) => {
 		l = {
 			startX: e.clientX,
 			startY: e.clientY,
@@ -8208,41 +8337,41 @@ function no({ onClick: e, documentRef: t = globalThis.document, windowRef: n = g
 			origY: o.getBoundingClientRect().top,
 			dragging: !1
 		}, u = !1, c.setPointerCapture?.(e.pointerId);
-	}, y = (e) => {
+	}, b = (e) => {
 		if (!l) return;
 		let t = e.clientX - l.startX, n = e.clientY - l.startY;
 		if (!l.dragging && Math.hypot(t, n) <= 5) return;
 		l.dragging = !0, e.preventDefault?.();
 		let r = a();
-		o.style.left = `${to(l.origX + t, r.width)}px`, o.style.top = `${to(l.origY + n, r.height)}px`, o.style.right = "auto";
-	}, b = (e) => {
-		l && (u = l.dragging, l.dragging && h(), l = null, c.releasePointerCapture?.(e?.pointerId));
+		o.style.left = `${so(l.origX + t, r.width)}px`, o.style.top = `${so(l.origY + n, r.height)}px`, o.style.right = "auto";
 	}, x = (e) => {
+		l && (u = l.dragging, l.dragging && g(), l = null, c.releasePointerCapture?.(e?.pointerId));
+	}, S = (e) => {
 		let t = e === !0;
 		return c.classList.toggle("busy", t), c.setAttribute("aria-busy", String(t)), t;
 	};
-	return x(!1), c.addEventListener("pointerdown", v), c.addEventListener("pointermove", y), c.addEventListener("pointerup", b), c.addEventListener("pointercancel", b), c.addEventListener("click", (t) => {
+	return S(!1), c.addEventListener("pointerdown", y), c.addEventListener("pointermove", b), c.addEventListener("pointerup", x), c.addEventListener("pointercancel", x), c.addEventListener("click", (t) => {
 		if (u) {
 			t.preventDefault(), u = !1;
 			return;
 		}
 		e?.(t);
-	}), n.addEventListener?.("resize", _), g(), {
+	}), n.addEventListener?.("resize", v), _(), {
 		host: o,
 		root: s,
 		button: c,
-		restore: g,
-		onResize: _,
-		setBusy: x,
+		restore: _,
+		onResize: v,
+		setBusy: S,
 		setAppearance: ({ mode: e = "auto", effectiveTheme: t = "day", palette: n = {} } = {}) => {
 			o.setAttribute?.("data-theme-mode", e), o.setAttribute?.("data-effective-theme", t), n.knot && o.style?.setProperty?.("--qqj-fab-primary", n.knot), n.ink && o.style?.setProperty?.("--qqj-fab-ink", n.ink), n.panel && o.style?.setProperty?.("--qqj-fab-surface", n.panel);
 		},
-		destroy: () => n.removeEventListener?.("resize", _)
+		destroy: () => n.removeEventListener?.("resize", v)
 	};
 }
 //#endregion
 //#region src/ui/wand-entry.js
-function ro(e) {
+function lo(e) {
 	let t, n, r = () => {
 		if (t?.isConnected) return n?.disconnect(), !0;
 		let r = document.querySelector("#sp_wand_container") || document.querySelector("#extensionsMenu");
@@ -8259,10 +8388,10 @@ function ro(e) {
 }
 //#endregion
 //#region src/ui/source-permission-view.js
-function io(e) {
+function uo(e) {
 	return String(e ?? "").trim().normalize("NFKD").replace(/\p{M}/gu, "").toLocaleLowerCase("zh-Hans-CN");
 }
-function ao({ permissions: e, documentRef: t = globalThis.document } = {}) {
+function fo({ permissions: e, documentRef: t = globalThis.document } = {}) {
 	if (typeof e?.inspectCurrent != "function") throw TypeError("来源许可控制器无效");
 	let n = (e, n = "", r = "") => {
 		let i = t.createElement(e);
@@ -8284,7 +8413,7 @@ function ao({ permissions: e, documentRef: t = globalThis.document } = {}) {
 		};
 	};
 	function a({ open: a = !1, onDrawerToggle: o } = {}) {
-		let { drawer: s, body: c } = te({
+		let { drawer: s, body: c } = U({
 			documentRef: t,
 			title: "世界书排除",
 			className: "source-permission-settings",
@@ -8297,7 +8426,7 @@ function ao({ permissions: e, documentRef: t = globalThis.document } = {}) {
 		let d = n("div", "source-permission-list");
 		c.append(l, u, d);
 		let f = null, p = 0, m = 0, h = () => {
-			let e = new Set(f.excludedBooks.map(io)), t = f.bookNames.filter((t) => e.has(io(t))).length;
+			let e = new Set(f.excludedBooks.map(uo)), t = f.bookNames.filter((t) => e.has(uo(t))).length;
 			l.textContent = `已排除 ${t} / 共 ${f.bookNames.length} 本`;
 		}, g = async () => {
 			let t = ++p, i = r(d);
@@ -8314,7 +8443,7 @@ function ao({ permissions: e, documentRef: t = globalThis.document } = {}) {
 				l.textContent = "", d.append(n("p", "settings-hint", "当前世界书暂时无法读取。角色卡与开场白仍按原规则可用。"));
 				return;
 			}
-			let t = u.value.trim().toLocaleLowerCase("zh-Hans-CN"), a = new Set(f.excludedBooks.map(io));
+			let t = u.value.trim().toLocaleLowerCase("zh-Hans-CN"), a = new Set(f.excludedBooks.map(uo));
 			h();
 			let o = f.bookNames.filter((e) => !t || e.toLocaleLowerCase("zh-Hans-CN").includes(t));
 			if (!o.length) {
@@ -8322,7 +8451,7 @@ function ao({ permissions: e, documentRef: t = globalThis.document } = {}) {
 				return;
 			}
 			for (let t of o) {
-				let { row: n } = i(t, a.has(io(t)), (n) => {
+				let { row: n } = i(t, a.has(uo(t)), (n) => {
 					let r = e.setBookExcluded(t, n.currentTarget.checked);
 					f = {
 						...f,
@@ -8339,11 +8468,36 @@ function ao({ permissions: e, documentRef: t = globalThis.document } = {}) {
 	return Object.freeze({ renderSettings: a });
 }
 //#endregion
+//#region src/ui/operation-menu-controller.js
+function po(e) {
+	let t = /* @__PURE__ */ new Set(), n = !1, r = (e) => {
+		let n = typeof e?.composedPath == "function" ? e.composedPath() : [];
+		for (let r of t) {
+			let t = n.includes(r) || !n.length && r.contains?.(e?.target);
+			r.open && !t && (r.open = !1);
+		}
+	};
+	return Object.freeze({
+		reset() {
+			t.clear();
+		},
+		register(e) {
+			return t.add(e), e;
+		},
+		activate() {
+			n || typeof e?.addEventListener != "function" || (e.addEventListener("click", r), n = !0);
+		},
+		deactivate() {
+			n && e.removeEventListener?.("click", r), n = !1, t.clear();
+		}
+	});
+}
+//#endregion
 //#region src/ui/v3-foundation-view.js
-function oo(e, t = "—") {
+function mo(e, t = "—") {
 	return e == null || e === "" ? t : String(e);
 }
-function so(e) {
+function ho(e) {
 	return {
 		uninitialized: "等待首个稳定 AI 楼",
 		ready: "可用",
@@ -8361,37 +8515,37 @@ function so(e) {
 		pending: "待分析",
 		noChange: "无实质变化",
 		notApplicable: "尚无摘要"
-	}[e] ?? oo(e, "尚未初始化");
+	}[e] ?? mo(e, "尚未初始化");
 }
-var co = (e) => e.status === "idle" ? e.foundationStatus : e.status, lo = (e) => Number.isSafeInteger(e) && e >= 0, uo = (e, t = {}) => {
-	if (lo(t.messageIndex)) return t.messageIndex;
+var go = (e) => e.status === "idle" ? e.foundationStatus : e.status, _o = (e) => Number.isSafeInteger(e) && e >= 0, vo = (e, t = {}) => {
+	if (_o(t.messageIndex)) return t.messageIndex;
 	let n = e?.floors ?? [];
 	if (t.floorId !== void 0 && t.floorId !== null) {
 		let e = n.find((e) => e.floorId === t.floorId);
-		return lo(e?.messageIndex) ? e.messageIndex : null;
+		return _o(e?.messageIndex) ? e.messageIndex : null;
 	}
 	if (Number.isSafeInteger(t.assistantSeq) && t.assistantSeq > 0) {
 		let e = n.find((e) => e.assistantSeq === t.assistantSeq);
-		return lo(e?.messageIndex) ? e.messageIndex : null;
+		return _o(e?.messageIndex) ? e.messageIndex : null;
 	}
 	return null;
-}, fo = (e, t, n = "楼号未提供") => {
-	let r = uo(e, t);
+}, yo = (e, t, n = "楼号未提供") => {
+	let r = vo(e, t);
 	return r === null ? n : `第 ${r} 楼`;
-}, po = (e, t) => {
-	let n = fo(e, t.sourceFloorId ? { floorId: t.sourceFloorId } : { assistantSeq: t.sourceAssistantSeq }, "");
+}, bo = (e, t) => {
+	let n = yo(e, t.sourceFloorId ? { floorId: t.sourceFloorId } : { assistantSeq: t.sourceAssistantSeq }, "");
 	return n ? `来源：${n}` : "来源楼号未提供";
-}, mo = (e) => lo(e) ? `第 ${e} 楼` : "旧记录未提供", ho = (e) => !e || !Number.isFinite(Date.parse(e)) ? "旧记录未提供" : new Date(e).toLocaleString("zh-CN", { hour12: !1 }), go = (e) => ({
+}, xo = (e) => _o(e) ? `第 ${e} 楼` : "旧记录未提供", So = (e) => !e || !Number.isFinite(Date.parse(e)) ? "旧记录未提供" : new Date(e).toLocaleString("zh-CN", { hour12: !1 }), Co = (e) => ({
 	normal: "正常生成",
 	regenerate: "重 Roll（regenerate）",
 	swipe: "重 Roll（swipe）",
 	continue: "继续生成（continue）"
-})[e] ?? oo(e, "旧记录未提供"), _o = (e) => !!(e.memoryWorkBusy || e.activeAutoMemory || e.activeExtraction || e.activeCse), vo = (e) => !!(e.activeExtraction || [
+})[e] ?? mo(e, "旧记录未提供"), wo = (e) => !!(e.memoryWorkBusy || e.activeAutoMemory || e.activeExtraction || e.activeCse), To = (e) => !!(e.activeExtraction || [
 	"revising",
 	"extracting",
 	"reconciling",
 	"committing"
-].includes(e.activeMemoryWork?.phase) || e.activeAutoMemory?.phase === "extracting"), yo = (e) => !!(e.activeCse || e.activeMemoryWork?.phase === "analyzingCse" || e.activeAutoMemory?.phase === "analyzingCse"), bo = (e) => ({
+].includes(e.activeMemoryWork?.phase) || e.activeAutoMemory?.phase === "extracting"), Eo = (e) => !!(e.activeCse || e.activeMemoryWork?.phase === "analyzingCse" || e.activeAutoMemory?.phase === "analyzingCse"), Do = (e) => ({
 	reconciling: "正在核对稳定楼",
 	extracting: "正在提取摘要",
 	analyzingCse: "正在分析人物状态",
@@ -8399,22 +8553,22 @@ var co = (e) => e.status === "idle" ? e.foundationStatus : e.status, lo = (e) =>
 	committing: "正在保存结果",
 	resetting: "正在重建地基",
 	revising: "正在保存修订"
-})[e.activeMemoryWork?.phase ?? e.activeAutoMemory?.phase ?? e.activeExtraction?.phase ?? e.activeCse?.phase] ?? "正在处理", xo = (e) => [...new Set(String(e ?? "").split(/[、,，\n]/u).map((e) => e.trim()).filter(Boolean))], So = (e) => [...new Set((e ?? []).map((e) => e?.time?.sourceText || e?.time?.normalized || e?.description).map((e) => String(e ?? "").trim()).filter(Boolean))].join("；"), Co = (e) => (e ?? []).map((e) => ({
+})[e.activeMemoryWork?.phase ?? e.activeAutoMemory?.phase ?? e.activeExtraction?.phase ?? e.activeCse?.phase] ?? "正在处理", Oo = (e) => [...new Set(String(e ?? "").split(/[、,，\n]/u).map((e) => e.trim()).filter(Boolean))], ko = (e) => [...new Set((e ?? []).map((e) => e?.time?.sourceText || e?.time?.normalized || e?.description).map((e) => String(e ?? "").trim()).filter(Boolean))].join("；"), Ao = (e) => (e ?? []).map((e) => ({
 	itemId: e?.itemId ?? null,
 	name: String(e?.name ?? "").trim()
-})).filter((e) => e.name), wo = (e, t) => JSON.stringify(e) === JSON.stringify(t), To = (e, t) => String(t.summary ?? "").trim() === String(e.originalSummary ?? "").trim() && String(t.timeText ?? "").trim() === String(e.originalTimeText ?? "").trim() && wo(Co(t.locations), Co(e.originalLocations)) && wo(t.participantNames, e.originalParticipantNames) && !String(t.revisionNote ?? "").trim(), Eo = Object.freeze([
+})).filter((e) => e.name), jo = (e, t) => JSON.stringify(e) === JSON.stringify(t), Mo = (e, t) => String(t.summary ?? "").trim() === String(e.originalSummary ?? "").trim() && String(t.timeText ?? "").trim() === String(e.originalTimeText ?? "").trim() && jo(Ao(t.locations), Ao(e.originalLocations)) && jo(t.participantNames, e.originalParticipantNames) && !String(t.revisionNote ?? "").trim(), No = Object.freeze([
 	["private", "私密"],
 	["expressed", "已表达"],
 	["observable", "可观察"],
 	["shared", "共享"],
 	["authorial", "作者设定"]
-]), Do = (e) => Object.fromEntries(Eo)[e] ?? oo(e), Oo = (e) => ({
+]), Po = (e) => Object.fromEntries(No)[e] ?? mo(e), Fo = (e) => ({
 	baseline: "聊天基线",
 	floor: "本楼分析",
 	reasonableProgression: "合理进展",
 	manual: "用户纠正"
 })[e] ?? "本地重放";
-function ko({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memoryManagement: r = null, uiDiagnosticProvider: i = null, documentRef: a = globalThis.document, navigatorRef: o = globalThis.navigator, confirmImpl: s = (e) => globalThis.confirm?.(typeof e == "string" ? e : `${e?.title ?? "请确认"}\n\n${e?.body ?? ""}`) === !0, infoImpl: c = () => Promise.resolve(!0) } = {}) {
+function Io({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memoryManagement: r = null, uiDiagnosticProvider: i = null, documentRef: a = globalThis.document, navigatorRef: o = globalThis.navigator, confirmImpl: s = (e) => globalThis.confirm?.(typeof e == "string" ? e : `${e?.title ?? "请确认"}\n\n${e?.body ?? ""}`) === !0, infoImpl: c = () => Promise.resolve(!0) } = {}) {
 	if (!e || [
 		"getState",
 		"refreshStatus",
@@ -8425,181 +8579,194 @@ function ko({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 	if (r && (typeof r.getState != "function" || typeof r.deleteCurrent != "function")) throw TypeError("当前聊天记忆管理器无效");
 	if (i !== null && typeof i != "function") throw TypeError("界面诊断 provider 无效");
 	if (!a?.createElement) throw TypeError("V3 foundation view documentRef 无效");
-	let l = null, u = !1, d = 0, f = "", p = "", m = "", h = null, g = "management", _ = e.getState(), v = t?.getState?.() ?? null, y = n?.getState?.() ?? null, b = r?.getState?.() ?? null, x = _?.chatId ?? null, S = null, C = /* @__PURE__ */ new Map(), w = /* @__PURE__ */ new Map(), T = /* @__PURE__ */ new Map(), E = (e, t = "", n = "") => {
+	let l = null, u = !1, d = 0, f = "", p = "", m = "", h = null, g = "management", _ = "current", v = null, y = !1, b = e.getState(), x = t?.getState?.() ?? null, S = n?.getState?.() ?? null, C = r?.getState?.() ?? null, w = b?.chatId ?? null, T = null, E = /* @__PURE__ */ new Map(), D = /* @__PURE__ */ new Map(), O = /* @__PURE__ */ new Map(), k = /* @__PURE__ */ new Map([["current", 0], ["history", 0]]), A = po(a), j = (e, t = "", n = "") => {
 		let r = a.createElement(e);
 		return t && (r.className = t), n !== "" && (r.textContent = n), r;
-	}, D = (e, t) => {
-		let n = E("div", "v3-foundation-row");
-		return n.append(E("dt", "", e), E("dd", "", oo(t))), n;
-	}, O = (e, t, n = !1) => (e.open = T.has(t) ? T.get(t) : n, e.addEventListener("toggle", () => T.set(t, e.open === !0)), e), k = (e) => e !== x && (x = e, C.clear(), w.clear(), T.clear(), m = "", f = "", !0), A = (e, t) => {
+	}, M = (e, t) => {
+		let n = j("div", "v3-foundation-row");
+		return n.append(j("dt", "", e), j("dd", "", mo(t))), n;
+	}, N = (e, t, n = !1) => (e.open = O.has(t) ? O.get(t) : n, e.addEventListener("toggle", () => O.set(t, e.open === !0)), e), P = (e) => e !== w && (w = e, E.clear(), D.clear(), O.clear(), _ = "current", v = null, y = !1, k.set("current", 0), k.set("history", 0), m = "", f = "", !0), F = (e, t) => {
 		if ((e?.chatId ?? null) !== (t?.chatId ?? null)) return !0;
 		let n = new Map((e?.floors ?? []).map((e) => [e.floorId, `${e.canonicalFingerprint ?? ""}:${e.rawFingerprint ?? ""}`])), r = new Map((t?.floors ?? []).map((e) => [e.floorId, `${e.canonicalFingerprint ?? ""}:${e.rawFingerprint ?? ""}`]));
 		if (n.size !== r.size) return !0;
 		for (let [e, t] of n) if (!r.has(e) || r.get(e) !== t) return !0;
 		return !1;
-	}, j = (e) => typeof e == "string" ? e : e?.message || "", M = (e) => {
+	}, ee = (e) => typeof e == "string" ? e : e?.message || "", I = (e) => {
 		if (e.pluginEnabled === !1) return "";
-		let t = j(e.lastError);
+		let t = ee(e.lastError);
 		if (t) return `共享记忆：${t}`;
-		let n = co(e);
-		if (!["ready", "running"].includes(n)) return `共享记忆${so(n)}`;
-		let r = j(y?.lastError);
-		return r ? `重要人物选择：${r}` : y && [
+		let n = go(e);
+		if (!["ready", "running"].includes(n)) return `共享记忆${ho(n)}`;
+		let r = ee(S?.lastError);
+		return r ? `重要人物选择：${r}` : S && [
 			"idle",
 			"stale",
 			"error",
 			"disabled"
-		].includes(y.status) ? `重要人物选择${so(y.status)}` : "";
-	}, N = (e) => g === "memories" ? e.lastExtractorError?.message || j(e.lastError) : g === "people" ? M(e) || e.lastCseError?.message || "" : e.lastCseError?.message || e.lastExtractorError?.message || j(e.lastError), P = (e) => {
+		].includes(S.status) ? `重要人物选择${ho(S.status)}` : "";
+	}, L = (e) => g === "memories" ? e.lastExtractorError?.message || ee(e.lastError) : g === "people" ? I(e) || e.lastCseError?.message || "" : e.lastCseError?.message || e.lastExtractorError?.message || ee(e.lastError), R = (e) => {
 		if (e.pluginEnabled === !1) return "千千结已关闭";
 		if (g === "memories") {
-			if (vo(e)) return `正在处理摘要 · ${e.rememberedCount ?? 0}/${e.stableCount ?? 0} 楼`;
-			let t = N(e);
+			if (To(e)) return `正在处理摘要 · ${e.rememberedCount ?? 0}/${e.stableCount ?? 0} 楼`;
+			let t = L(e);
 			return t ? `摘要需要处理 · ${t}` : `已记忆 ${e.rememberedCount ?? 0}/${e.stableCount ?? 0} 楼 · 待摘要 ${e.unprocessedCount ?? 0} 楼`;
 		}
 		if (g === "people") {
-			if (yo(e)) return `正在分析人物状态 · 待分析 ${e.csePendingCount ?? 0} 楼`;
-			let t = N(e);
+			if (Eo(e)) return `正在分析人物状态 · 待分析 ${e.csePendingCount ?? 0} 楼`;
+			let t = L(e);
 			return t ? `人物状态需要处理 · ${t}` : `人物状态 ${Math.max(0, (e.rememberedCount ?? 0) - (e.csePendingCount ?? 0) - (e.cseFailedCount ?? 0))}/${e.rememberedCount ?? 0} 楼 · 待分析 ${e.csePendingCount ?? 0} 楼`;
 		}
-		if (_o(e) || e.status === "running") return `${bo(e)} · ${e.rebuildCompletedCount ?? e.rememberedCount ?? 0}/${e.rebuildTotalCount ?? e.stableCount ?? 0} 楼`;
-		let t = N(e);
+		if (wo(e) || e.status === "running") return `${Do(e)} · ${e.rebuildCompletedCount ?? e.rememberedCount ?? 0}/${e.rebuildTotalCount ?? e.stableCount ?? 0} 楼`;
+		let t = L(e);
 		return t ? `需要处理 · ${t}` : `已记忆 ${e.rememberedCount ?? 0}/${e.stableCount ?? 0} 楼 · 人物状态 ${e.cseReady ? "已跟上" : `待分析 ${e.csePendingCount ?? 0} 楼`}`;
-	}, F = (e) => {
-		S && (S.textContent = P(e), S.className = `qqj-page-health${N(e) ? " error" : ""}`);
-	}, ee = (e, t, n) => {
-		let r = E("header", "qqj-view-heading");
-		return r.append(E("h2", "", e), E("p", "", t)), S = E("p", `qqj-page-health${N(n) ? " error" : ""}`, P(n)), r.append(S), r;
+	}, z = (e) => {
+		T && (T.textContent = R(e), T.className = `qqj-page-health${L(e) ? " error" : ""}`);
+	}, B = (e) => {
+		let t = j("div", "qqj-page-status");
+		T = j("p", `qqj-page-health${L(e) ? " error" : ""}`, R(e));
+		let n = f || L(e) || "记忆状态已显示。";
+		return t.append(T, j("p", `v3-foundation-feedback${n.includes("失败") || !f && L(e) ? " error" : ""}`, n)), t;
+	}, V = (e, t, n) => {
+		let r = j("header", "qqj-view-heading");
+		return r.append(j("h2", "", e), j("p", "", t)), T = j("p", `qqj-page-health${L(n) ? " error" : ""}`, R(n)), r.append(T), r;
 	};
-	async function I(e) {
+	async function H(e) {
 		if (o?.clipboard?.writeText) try {
 			return await o.clipboard.writeText(e), m = "", "已复制。";
 		} catch {}
 		return m = e, "浏览器不允许直接复制，请在下方文本框长按全选复制。";
 	}
-	async function L(t, n, { after: r, failed: i } = {}) {
+	async function U(t, n, { after: r, failed: i } = {}) {
 		let a = ++d;
-		f = `${t}…`, F(_);
+		f = `${t}…`, z(b);
 		try {
 			let i = await n(), o = e.getState?.() ?? i, s = r?.(o) === !0;
-			return u ? a === d ? ((!f || f.endsWith("…")) && (f = o?.status === "ready" ? `${t}完成。` : `${t}结束：${so(o?.status)}`), K(o), i) : (s && (f = `${t}完成。`, K(o)), i) : i;
+			return u ? a === d ? ((!f || f.endsWith("…")) && (f = o?.status === "ready" ? `${t}完成。` : `${t}结束：${ho(o?.status)}`), _e(o), i) : (s && (f = `${t}完成。`, _e(o)), i) : i;
 		} catch (n) {
 			let r = i?.(n) === !0;
-			return !u || a !== d && !r ? { status: "stale" } : (f = `${t}失败：${n?.message || "未知错误"}`, K(e.getState()), {
+			return !u || a !== d && !r ? { status: "stale" } : (f = `${t}失败：${n?.message || "未知错误"}`, _e(e.getState()), {
 				status: "error",
 				error: n
 			});
 		}
 	}
-	function R(e) {
+	function te(e) {
 		let t = !0, n = new Map((e.floors ?? []).map((e) => [e.floorId, e]));
-		for (let [e, r] of C) {
+		for (let [e, r] of E) {
 			let i = n.get(r.floorId);
-			(!i || i.canonicalFingerprint !== r.canonicalFingerprint || r.rawFingerprint && i.rawFingerprint !== r.rawFingerprint) && (C.delete(e), t = !1);
+			(!i || i.canonicalFingerprint !== r.canonicalFingerprint || r.rawFingerprint && i.rawFingerprint !== r.rawFingerprint) && (E.delete(e), t = !1);
 		}
 		return t;
 	}
-	function z(t = e.getState()) {
-		A(_, t) && (d += 1, w.clear());
-		let n = k(t?.chatId ?? null), r = R(t);
-		return _ = t, {
+	function W(t = e.getState()) {
+		F(b, t) && (d += 1, D.clear());
+		let n = P(t?.chatId ?? null), r = te(t);
+		return b = t, {
 			state: t,
 			mustReplace: n || t?.pluginEnabled === !1 || !r
 		};
 	}
-	function B(t, n) {
-		let r = `${n.chatId ?? "no-chat"}:${t.floorId}`, i = O(E("details", `qqj-memory-card status-${t.status}`), `memory:${r}`, !1), a = E("summary", "qqj-memory-card-head");
-		a.append(E("strong", "qqj-floor-number", fo(n, t)), E("span", "v3-memory-status", t.summarySource === "user" ? "人工修订" : so(t.status))), i.append(a);
-		let o = E("div", "qqj-memory-card-body"), c = C.get(r);
-		if (c) {
-			let i = E("div", "v3-memory-edit"), a = (e, t) => {
-				let n = E("label", "qqj-memory-edit-field");
-				return n.append(E("span", "", e), t), n;
-			}, s = E("input", "settings-input");
-			s.value = c.timeText, s.placeholder = "日期、时间范围或相对时间", s.addEventListener("input", () => {
-				c.timeText = s.value;
-			}), i.append(a("时间", s)), i.append(((e, t, n, r, i) => {
-				let a = E("div", "qqj-memory-edit-group");
-				a.append(E("strong", "", e)), t.forEach((e, r) => {
-					let i = E("div", "qqj-memory-edit-row");
+	function ne(t, n) {
+		let r = `${n.chatId ?? "no-chat"}:${t.floorId}`, i = N(j("details", `qqj-memory-card status-${t.status}`), `memory:${r}`, !1), a = j("summary", "qqj-memory-card-head"), o = t.memory, c = t.manualTime ? ko(o?.chronology) || "时间未明确" : t.metadataStale ? "时间戳已变化" : ko(o?.chronology) || t.timeFallback || "时间未明确", l = j("span", "qqj-floor-time", c);
+		l.setAttribute("title", c);
+		let u = t.summarySource === "user" && t.status === "ready" ? "人工修订" : ho(t.status), d = j("span", `v3-memory-status${t.summarySource === "user" && t.status === "ready" ? " is-user" : ""}`, u), p = j("span", "qqj-memory-chevron", "›");
+		p.setAttribute("aria-hidden", "true"), a.append(j("strong", "qqj-floor-number", yo(n, t)), l, d, p), i.append(a);
+		let m = j("div", "qqj-memory-card-body"), h = E.get(r);
+		if (h) {
+			let i = j("div", "v3-memory-edit"), a = (e, t) => {
+				let n = j("label", "qqj-memory-edit-field");
+				return n.append(j("span", "", e), t), n;
+			}, o = j("input", "settings-input");
+			o.value = h.timeText, o.placeholder = "日期、时间范围或相对时间", o.addEventListener("input", () => {
+				h.timeText = o.value;
+			}), i.append(a("时间", o)), i.append(((e, t, n, r, i) => {
+				let a = j("div", "qqj-memory-edit-group");
+				a.append(j("strong", "", e)), t.forEach((e, r) => {
+					let i = j("div", "qqj-memory-edit-row");
 					for (let [t, r] of n) {
-						let n = E("input", "settings-input");
+						let n = j("input", "settings-input");
 						n.value = e[t] ?? "", n.placeholder = r, n.addEventListener("input", () => {
 							e[t] = n.value;
 						}), i.append(n);
 					}
-					let o = E("button", "secondary-action", "删除");
+					let o = j("button", "secondary-action", "删除");
 					o.type = "button", o.addEventListener("click", () => {
-						t.splice(r, 1), K(_);
+						t.splice(r, 1), _e(b);
 					}), i.append(o), a.append(i);
 				});
-				let o = E("button", "secondary-action", r);
+				let o = j("button", "secondary-action", r);
 				return o.type = "button", o.addEventListener("click", () => {
-					t.push({ ...i }), K(_);
+					t.push({ ...i }), _e(b);
 				}), a.append(o), a;
-			})("地点", c.locations, [["name", "地点名称"]], "添加地点", {
+			})("地点", h.locations, [["name", "地点名称"]], "添加地点", {
 				itemId: null,
 				name: ""
 			}));
-			let l = E("textarea", "settings-input");
-			l.value = c.peopleText, l.placeholder = "张三、李四、路人甲", l.addEventListener("input", () => {
-				c.peopleText = l.value;
-			}), i.append(a("人物", l));
-			let u = E("textarea", "settings-input");
-			u.value = c.summary, u.placeholder = "输入用户修订摘要", u.addEventListener("input", () => {
-				c.summary = u.value;
-			}), i.append(a("摘要", u));
-			let d = E("input", "settings-input");
-			d.value = c.note, d.placeholder = "修订说明（可选）", d.addEventListener("input", () => {
-				c.note = d.value;
+			let s = j("textarea", "settings-input");
+			s.value = h.peopleText, s.placeholder = "张三、李四、路人甲", s.addEventListener("input", () => {
+				h.peopleText = s.value;
+			}), i.append(a("人物", s));
+			let c = j("textarea", "settings-input");
+			c.value = h.summary, c.placeholder = "输入用户修订摘要", c.addEventListener("input", () => {
+				h.summary = c.value;
+			}), i.append(a("摘要", c));
+			let l = j("input", "settings-input");
+			l.value = h.note, l.placeholder = "修订说明（可选）", l.addEventListener("input", () => {
+				h.note = l.value;
 			});
-			let p = E("div", "v3-foundation-actions");
-			c.saveError && i.append(E("p", "v3-foundation-feedback error", c.saveError));
-			let m = E("button", "primary-action", c.saving ? "保存中…" : "保存");
-			m.type = "button", m.disabled = c.saving === !0 || _o(n);
-			let h = E("button", "secondary-action", "取消");
-			h.type = "button", h.disabled = c.saving === !0 || _o(n), c.controls = [m, h], m.addEventListener("click", () => {
+			let u = j("div", "v3-foundation-actions");
+			h.saveError && i.append(j("p", "v3-foundation-feedback error", h.saveError));
+			let d = j("button", "primary-action", h.saving ? "保存中…" : "保存");
+			d.type = "button", d.disabled = h.saving === !0 || wo(n);
+			let p = j("button", "secondary-action", "取消");
+			p.type = "button", p.disabled = h.saving === !0 || wo(n), h.controls = [d, p], d.addEventListener("click", () => {
 				let i = {
-					summary: c.summary,
-					timeText: c.timeText,
-					originalTimeText: c.originalTimeText,
-					timeChanged: String(c.timeText ?? "").trim() !== String(c.originalTimeText ?? "").trim(),
-					locations: c.locations,
-					participantNames: xo(c.peopleText),
-					revisionNote: c.note
+					summary: h.summary,
+					timeText: h.timeText,
+					originalTimeText: h.originalTimeText,
+					timeChanged: String(h.timeText ?? "").trim() !== String(h.originalTimeText ?? "").trim(),
+					locations: h.locations,
+					participantNames: Oo(h.peopleText),
+					revisionNote: h.note
 				};
-				if (To(c, i)) {
-					C.delete(r), f = "未修改内容。", K(_);
+				if (Mo(h, i)) {
+					E.delete(r), f = "未修改内容。", _e(b);
 					return;
 				}
 				let a = {};
-				c.saveIdentity = a, c.saving = !0, c.saveError = "", m.textContent = "保存中…", m.disabled = !0, h.disabled = !0;
+				h.saveIdentity = a, h.saving = !0, h.saveError = "", d.textContent = "保存中…", d.disabled = !0, p.disabled = !0;
 				let o = () => {
-					let i = e.getState?.() ?? _, o = i?.floors?.find((e) => e.floorId === t.floorId);
-					return C.get(r) === c && c.saveIdentity === a && i?.chatId === n.chatId && o?.canonicalFingerprint === c.canonicalFingerprint && (!c.rawFingerprint || o?.rawFingerprint === c.rawFingerprint);
+					let i = e.getState?.() ?? b, o = i?.floors?.find((e) => e.floorId === t.floorId);
+					return E.get(r) === h && h.saveIdentity === a && i?.chatId === n.chatId && o?.canonicalFingerprint === h.canonicalFingerprint && (!h.rawFingerprint || o?.rawFingerprint === h.rawFingerprint);
 				};
-				L("保存本楼记忆", typeof e.editMemory == "function" ? () => e.editMemory(t.floorId, i) : () => e.editSummary(t.floorId, i.summary, i.revisionNote), {
-					after: () => o() ? (C.delete(r), !0) : !1,
-					failed: (e) => o() ? (c.saving = !1, c.saveError = `保存失败：${e?.message || "未知错误"}`, !0) : !1
+				U("保存本楼记忆", typeof e.editMemory == "function" ? () => e.editMemory(t.floorId, i) : () => e.editSummary(t.floorId, i.summary, i.revisionNote), {
+					after: () => o() ? (E.delete(r), !0) : !1,
+					failed: (e) => o() ? (h.saving = !1, h.saveError = `保存失败：${e?.message || "未知错误"}`, !0) : !1
 				});
-			}), h.addEventListener("click", () => {
-				C.delete(r), f = "已取消编辑。", K(_);
-			}), p.append(m, h), i.append(a("修订说明（可选）", d), p), o.append(i), u.focus?.();
+			}), p.addEventListener("click", () => {
+				E.delete(r), f = "已取消编辑。", _e(b);
+			}), u.append(d, p), i.append(a("修订说明（可选）", l), u), m.append(i), c.focus?.();
 		} else {
-			let i = t.memory;
-			if (i) {
-				let e = E("dl", "qqj-memory-facts"), r = t.manualTime ? So(i.chronology) || "时间未明确" : t.metadataStale ? "时间戳已变化，请重新提取" : So(i.chronology) || t.timeFallback || "时间未明确", a = (i.locations ?? []).map((e) => e.name).filter(Boolean).join("、") || "未提取", s = new Map((n.memoryEntities ?? []).map((e) => [e.entityId, e.displayName])), c = (i.participants ?? []).map((e) => s.get(e.entityId) ?? "未知人物").join("、") || "未提取";
-				e.append(D("时间", r), D("地点", a), D("人物", c), D("摘要", t.summary || "暂无摘要。")), o.append(e);
-			} else o.append(E("p", "v3-memory-effective", t.summary || (t.status === "unprocessed" ? "这一楼尚未生成摘要。" : "暂无摘要。")));
-			let a = E("div", "qqj-card-actions");
+			if (o) {
+				let e = (o.locations ?? []).map((e) => e.name).filter(Boolean).join("、") || "未提取", r = new Map((n.memoryEntities ?? []).map((e) => [e.entityId, e.displayName])), i = (o.participants ?? []).map((e) => r.get(e.entityId) ?? "未知人物").join("、") || "未提取";
+				m.append(j("p", "qqj-memory-main", t.summary || "暂无摘要。"));
+				let a = j("div", "qqj-memory-meta"), s = (e, t) => {
+					let n = j("span", "qqj-memory-meta-item");
+					return n.append(j("strong", "", e), j("span", "", t)), n;
+				};
+				a.append(s("人物", i), s("地点", e)), m.append(a);
+			} else m.append(j("p", "qqj-memory-main is-empty", t.summary || (t.status === "unprocessed" ? "这一楼尚未生成摘要。" : "暂无摘要。")));
+			let i = A.register(j("details", "qqj-memory-menu")), a = j("summary", "qqj-memory-menu-toggle", "⋮");
+			a.setAttribute("aria-label", `${yo(n, t)}操作`), a.setAttribute("title", "本楼操作");
+			let c = j("div", "qqj-memory-menu-pop");
 			if (t.memoryId) {
-				let i = E("button", "secondary-action", "编辑");
-				i.type = "button", i.disabled = _o(n), i.addEventListener("click", () => {
-					let e = t.memory, i = new Map((n.memoryEntities ?? []).map((e) => [e.entityId, e.displayName])), a = So(e?.chronology) || t.timeFallback || "", o = (e?.locations ?? []).map((e) => ({
+				let i = j("button", "qqj-memory-menu-action", "编辑");
+				i.type = "button", i.disabled = wo(n), i.addEventListener("click", () => {
+					let e = t.memory, i = new Map((n.memoryEntities ?? []).map((e) => [e.entityId, e.displayName])), a = ko(e?.chronology) || t.timeFallback || "", o = (e?.locations ?? []).map((e) => ({
 						itemId: e.itemId,
 						name: e.name ?? ""
 					})), s = (e?.participants ?? []).map((e) => i.get(e.entityId)).filter(Boolean);
-					C.set(r, {
+					E.set(r, {
 						floorId: t.floorId,
 						canonicalFingerprint: t.canonicalFingerprint,
 						rawFingerprint: t.rawFingerprint,
@@ -8614,76 +8781,80 @@ function ko({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 						note: "",
 						saving: !1,
 						saveError: ""
-					}), K(_);
+					}), _e(b);
 				});
-				let o = E("button", "secondary-action", "重新提取");
-				o.type = "button", o.disabled = _o(n) || typeof e.extractFloor != "function", o.addEventListener("click", async () => {
+				let a = j("button", "qqj-memory-menu-action", "重新提取");
+				a.type = "button", a.disabled = wo(n) || typeof e.extractFloor != "function", a.addEventListener("click", async () => {
 					if (!await Promise.resolve(s({
 						title: "重新提取本楼摘要",
 						body: "重新提取会替换本楼摘要，并重新衔接本楼及后续人物状态，也可能覆盖之后的人工纠正。",
 						confirmText: "重新提取",
 						cancelText: "取消"
 					}))) {
-						f = "已取消重新提取。", K(_);
+						f = "已取消重新提取。", _e(b);
 						return;
 					}
-					L("重新提取", () => e.extractFloor(t.floorId));
-				}), a.append(i, o);
+					U("重新提取", () => e.extractFloor(t.floorId));
+				}), c.append(i, a);
 			} else {
-				let r = E("button", "secondary-action", "提取摘要");
-				r.type = "button", r.disabled = _o(n) || typeof e.extractFloor != "function", r.addEventListener("click", () => {
-					L("提取摘要", () => e.extractFloor(t.floorId));
-				}), a.append(r);
+				let r = j("button", "qqj-memory-menu-action", "提取摘要");
+				r.type = "button", r.disabled = wo(n) || typeof e.extractFloor != "function", r.addEventListener("click", () => {
+					U("提取摘要", () => e.extractFloor(t.floorId));
+				}), c.append(r);
 			}
-			o.append(a);
+			i.append(a, c), m.append(i);
 		}
-		return t.error && o.append(E("p", "v3-foundation-feedback error", t.error)), i.append(o), i;
+		return t.error && m.append(j("p", "v3-foundation-feedback error", t.error)), i.append(m), i;
 	}
-	function V(e) {
-		let t = E("section", "qqj-page qqj-memories-page");
-		t.append(ee("千结", "逐楼校对故事摘要；最新楼在前。", e)), f && t.append(E("p", `v3-foundation-feedback${f.includes("失败") ? " error" : ""}`, f));
-		let n = E("div", "v3-memory-list"), r = [...e.floors ?? []].sort((e, t) => (t.messageIndex ?? t.assistantSeq ?? 0) - (e.messageIndex ?? e.assistantSeq ?? 0));
-		for (let t of r) n.append(B(t, e));
-		return r.length || n.append(E("div", "qqj-inline-empty", "这里还没有稳定 AI 楼。新楼稳定后，摘要会出现在这里。")), t.append(n), t;
+	function re(e) {
+		let t = j("section", "qqj-page qqj-memories-page");
+		t.append(B(e));
+		let n = j("div", "v3-memory-list"), r = [...e.floors ?? []].sort((e, t) => (t.messageIndex ?? t.assistantSeq ?? 0) - (e.messageIndex ?? e.assistantSeq ?? 0));
+		for (let t of r) n.append(ne(t, e));
+		return r.length || n.append(j("div", "qqj-inline-empty", "这里还没有稳定 AI 楼。新楼稳定后，摘要会出现在这里。")), t.append(n), t;
 	}
-	let te = (e, t, n) => {
-		let r = (e) => {
-			let t = E("li", "v3-cse-item"), r = e.sourceFloorId || e.sourceAssistantSeq ? po(n, e) : e.origin === "baseline" ? "来源：聊天基线" : "来源：本地重放";
-			return t.append(E("span", "v3-cse-item-text", e.text), E("small", "v3-cse-item-meta", [.../* @__PURE__ */ new Set([
-				e.reason,
-				Oo(e.origin),
-				r,
-				Do(e.visibility)
-			])].join(" · "))), t;
-		}, i = (t, n, i = !1) => {
-			let a = E("div", "v3-cse-group");
-			if (a.append(E("h5", "", t)), !n.length) {
-				a.append(E("p", "settings-hint", "暂无")), e.append(a);
+	let ie = (e, t, n, { core: r = t.core ?? [], adaptive: i = t.adaptive ?? [], situational: a = t.situational ?? [], empty: o = !0, showMeta: s = !0, groupAdaptiveByTarget: c = !0 } = {}) => {
+		let l = (e) => {
+			let t = j("li", "v3-cse-item");
+			if (t.append(j("span", "v3-cse-item-text", e.text)), s) {
+				let r = e.sourceFloorId || e.sourceAssistantSeq ? bo(n, e) : e.origin === "baseline" ? "来源：聊天基线" : "来源：本地重放";
+				t.append(j("small", "v3-cse-item-meta", [.../* @__PURE__ */ new Set([
+					e.reason,
+					Fo(e.origin),
+					r,
+					Po(e.visibility)
+				])].join(" · ")));
+			}
+			return t;
+		}, u = (t, n, r = !1) => {
+			let i = j("div", "v3-cse-group");
+			if (i.append(j("h5", "", t)), !n.length) {
+				o && (i.append(j("p", "settings-hint", "暂无")), e.append(i));
 				return;
 			}
-			if (i) {
+			if (r) {
 				let e = /* @__PURE__ */ new Map();
 				for (let t of n) {
 					let n = t.towardDisplayName || "未指定对象";
 					e.set(n, [...e.get(n) ?? [], t]);
 				}
 				for (let [t, n] of e) {
-					a.append(E("h6", "", `对 ${t}`));
-					let e = E("ul", "v3-cse-items");
-					n.forEach((t) => e.append(r(t))), a.append(e);
+					i.append(j("h6", "", `对 ${t}`));
+					let e = j("ul", "v3-cse-items");
+					n.forEach((t) => e.append(l(t))), i.append(e);
 				}
 			} else {
-				let e = E("ul", "v3-cse-items");
-				n.forEach((t) => e.append(r(t))), a.append(e);
+				let e = j("ul", "v3-cse-items");
+				n.forEach((t) => e.append(l(t))), i.append(e);
 			}
-			e.append(a);
+			e.append(i);
 		};
-		i("核心特质", t.core ?? []), i("长期倾向", t.adaptive ?? [], !0), i("当前情境", t.situational ?? []);
+		u("核心特质", r), u("长期倾向", i, c), u("当前情境", a);
 	};
-	function H(t, n, r, i) {
-		let o = E("div", "qqj-cse-edit"), s = [], l = n.saving === !0 || _o(r);
-		o.append(E("p", "settings-hint", "修改会直接成为当前人物状态。重新提取或重算较早楼层时，之后的人工纠正可能被覆盖。"));
-		let u = E("div", "qqj-cse-scope-heading"), d = E("button", "qqj-cse-help", "?");
+	function ae(t, n, r, i) {
+		let o = j("div", "qqj-cse-edit"), s = [], l = n.saving === !0 || wo(r);
+		o.append(j("p", "settings-hint", "修改会直接成为当前人物状态。重新提取或重算较早楼层时，之后的人工纠正可能被覆盖。"));
+		let u = j("div", "qqj-cse-scope-heading"), d = j("button", "qqj-cse-help", "?");
 		d.type = "button", d.disabled = l, d.setAttribute("aria-label", "查看信息范围说明"), d.addEventListener("click", () => {
 			Promise.resolve(c({
 				title: "信息范围",
@@ -8691,17 +8862,17 @@ function ko({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 				note: "私密：本人内心或私有认知\n已表达：已经说出或表现，不代表人人收到\n可观察：剧情中外表、动作等可观察状态，不等于读心\n共享：已向相关人传达或共同知晓，不代表全员知情\n作者设定：塑造人物的参考，不代表角色知道",
 				confirmText: "知道了"
 			}));
-		}), u.append(E("span", "", "信息范围"), d), o.append(u), s.push(d);
+		}), u.append(j("span", "", "信息范围"), d), o.append(u), s.push(d);
 		let p = (e, t, { toward: i = !1 } = {}) => {
-			let o = E("section", "qqj-cse-edit-group");
-			o.append(E("strong", "", t)), n[e].forEach((c, u) => {
-				let d = E("div", `qqj-cse-edit-row${i ? " has-toward" : ""}`), f = E("textarea", "settings-input");
+			let o = j("section", "qqj-cse-edit-group");
+			o.append(j("strong", "", t)), n[e].forEach((c, u) => {
+				let d = j("div", `qqj-cse-edit-row${i ? " has-toward" : ""}`), f = j("textarea", "settings-input");
 				f.value = c.text, f.placeholder = `${t}内容`, f.disabled = l, f.addEventListener("input", () => {
 					c.text = f.value;
 				}), s.push(f);
-				let p = W({
+				let p = G({
 					documentRef: a,
-					options: Eo.map(([e, t]) => ({
+					options: No.map(([e, t]) => ({
 						value: e,
 						label: t
 					})),
@@ -8712,9 +8883,9 @@ function ko({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 					}
 				}).node;
 				p.disabled = l, s.push(p);
-				let m = E("div", "qqj-cse-edit-meta");
+				let m = j("div", "qqj-cse-edit-meta");
 				if (m.append(p), d.append(f, m), i) {
-					let e = W({
+					let e = G({
 						documentRef: a,
 						options: [{
 							value: "",
@@ -8731,26 +8902,26 @@ function ko({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 					}).node;
 					e.disabled = l, s.push(e), m.append(e);
 				}
-				let h = E("button", "secondary-action", "删除");
+				let h = j("button", "secondary-action", "删除");
 				h.type = "button", h.disabled = l, h.addEventListener("click", () => {
-					n[e].splice(u, 1), K(_);
+					n[e].splice(u, 1), _e(b);
 				}), s.push(h), m.append(h), o.append(d);
 			});
-			let c = E("button", "secondary-action", `添加${t}`);
+			let c = j("button", "secondary-action", `添加${t}`);
 			return c.type = "button", c.disabled = l, c.addEventListener("click", () => {
 				n[e].push({
 					itemId: null,
 					text: "",
 					visibility: e === "core" ? "authorial" : "private",
 					towardEntityId: null
-				}), K(_);
+				}), _e(b);
 			}), s.push(c), o.append(c), o;
 		};
-		o.append(p("core", "核心特质"), p("adaptive", "长期倾向", { toward: !0 }), p("situational", "当前情境")), n.saveError && o.append(E("p", "v3-foundation-feedback error", n.saveError));
-		let m = E("div", "v3-foundation-actions"), h = E("button", "primary-action", n.saving ? "保存中…" : "保存");
-		h.type = "button", h.disabled = n.saving === !0 || _o(r) || typeof e.correctSubjectState != "function";
-		let g = E("button", "secondary-action", "取消");
-		g.type = "button", g.disabled = n.saving === !0 || _o(r), n.controls = [
+		o.append(p("core", "核心特质"), p("adaptive", "长期倾向", { toward: !0 }), p("situational", "当前情境")), n.saveError && o.append(j("p", "v3-foundation-feedback error", n.saveError));
+		let m = j("div", "v3-foundation-actions"), h = j("button", "primary-action", n.saving ? "保存中…" : "保存");
+		h.type = "button", h.disabled = n.saving === !0 || wo(r) || typeof e.correctSubjectState != "function";
+		let g = j("button", "secondary-action", "取消");
+		g.type = "button", g.disabled = n.saving === !0 || wo(r), n.controls = [
 			...s,
 			h,
 			g
@@ -8758,37 +8929,46 @@ function ko({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 			let t = {};
 			n.saveIdentity = t, n.saving = !0, n.saveError = "", h.textContent = "保存中…";
 			for (let e of n.controls) e.disabled = !0;
-			let r = () => w.get(i) === n && n.saveIdentity === t && (e.getState?.() ?? _)?.chatId === n.chatId, a = (e) => e.map((e) => ({ ...e })), o = {
+			let r = () => D.get(i) === n && n.saveIdentity === t && (e.getState?.() ?? b)?.chatId === n.chatId, a = (e) => e.map((e) => ({ ...e })), o = {
 				expectedCurrentStateId: n.expectedCurrentStateId,
 				expectedCurrentStateFingerprint: n.expectedCurrentStateFingerprint,
 				core: a(n.core),
 				adaptive: a(n.adaptive),
 				situational: a(n.situational)
 			};
-			L("保存人物状态", () => e.correctSubjectState(n.subjectEntityId, o), {
-				after: () => r() ? (w.delete(i), T.set(`subject:${n.subjectEntityId}`, !0), !0) : !1,
+			U("保存人物状态", () => e.correctSubjectState(n.subjectEntityId, o), {
+				after: () => r() ? (D.delete(i), O.set(`subject:${n.subjectEntityId}`, !0), !0) : !1,
 				failed: (e) => r() ? (n.saving = !1, n.saveError = `保存失败：${e?.message || "未知错误"}`, !0) : !1
 			});
 		}), g.addEventListener("click", () => {
-			w.delete(i), f = "已取消编辑人物状态。", K(_);
+			D.delete(i), f = "已取消编辑人物状态。", _e(b);
 		}), m.append(h, g), o.append(m), t.append(o);
 	}
-	function U(t, r, { person: i = null, defaultOpen: a = !1 } = {}) {
-		let o = t?.subjectEntityId ?? i?.entityId, s = i?.displayName || t?.displayName || "未知人物", c = `${r.chatId ?? "no-chat"}:${o}`, l = O(E("details", "v3-cse-subject"), `subject:${o}`, a), u = E("summary", "qqj-person-summary");
-		u.append(E("strong", "", s), E("span", "v3-memory-status", t ? "人物状态" : "暂无状态")), l.append(u);
-		let d = E("div", "qqj-person-body"), f = w.get(c);
-		if (t && f ? H(d, f, r, c) : t ? te(d, t, r) : d.append(E("p", "settings-hint", "这个重要人物还没有已保存的状态分析；后台摘要与 CSE 会继续正常处理。")), t && !f) {
-			let n = E("button", "secondary-action", "编辑状态");
-			n.type = "button", n.disabled = _o(r) || typeof e.correctSubjectState != "function" || !r.currentStateId || !r.currentStateFingerprint, n.addEventListener("click", () => {
+	function oe(t, r, { person: i = null, defaultOpen: a = !1, ownOnly: o = !1, title: s = null, relationNote: c = !1, actionsContainer: l = null } = {}) {
+		let u = t?.subjectEntityId ?? i?.entityId, d = i?.displayName || t?.displayName || "未知人物", f = `${r.chatId ?? "no-chat"}:${u}`, p = c ? j("section", "qqj-relation-note") : N(j("details", "v3-cse-subject"), `subject:${u}`, a);
+		if (c) p.setAttribute("aria-label", `${d}自身状态`);
+		else {
+			let e = j("summary", "qqj-person-summary");
+			e.append(j("strong", "", s ?? d), j("span", "v3-memory-status", t ? "人物状态" : "暂无状态")), p.append(e);
+		}
+		let m = j("div", c ? "qqj-relation-note-body" : "qqj-person-body"), h = l ?? m, g = D.get(f);
+		if (t && g ? ae(m, g, r, f) : t ? ie(m, t, r, o ? {
+			adaptive: (t.adaptive ?? []).filter((e) => !e.towardEntityId),
+			showMeta: !1,
+			groupAdaptiveByTarget: !1,
+			empty: !c
+		} : {}) : m.append(j("p", "settings-hint", "这个重要人物还没有已保存的状态分析；后台摘要与 CSE 会继续正常处理。")), t && !g) {
+			let n = j("button", l ? "qqj-memory-menu-action" : "secondary-action", "编辑状态");
+			n.type = "button", n.disabled = wo(r) || typeof e.correctSubjectState != "function" || !r.currentStateId || !r.currentStateFingerprint, n.addEventListener("click", () => {
 				let e = (e) => (e ?? []).map((e) => ({
 					itemId: e.id,
 					text: e.text,
 					visibility: e.visibility,
 					towardEntityId: e.towardEntityId ?? null
 				}));
-				w.set(c, {
+				D.set(f, {
 					chatId: r.chatId,
-					subjectEntityId: o,
+					subjectEntityId: u,
 					expectedCurrentStateId: r.currentStateId,
 					expectedCurrentStateFingerprint: r.currentStateFingerprint,
 					core: e(t.core),
@@ -8796,18 +8976,18 @@ function ko({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 					situational: e(t.situational),
 					saving: !1,
 					saveError: ""
-				}), T.set(`subject:${o}`, !0), K(_);
-			}), d.append(n);
+				}), O.set(`subject:${u}`, !0), _e(b);
+			}), h.append(n);
 		}
-		if (!f && n && i) {
-			let e = new Set(y?.selectedEntityIds ?? []), t = E("button", "secondary-action", i.selected ? "移出重要" : "设为重要");
-			t.type = "button", t.disabled = !!(y?.active && y.active.kind !== "generating"), t.addEventListener("click", () => {
-				i.selected ? e.delete(i.entityId) : e.add(i.entityId), L(i.selected ? "移出重要人物" : "加入重要人物", () => n.setSelectedEntityIds([...e]));
-			}), d.append(t);
+		if (!g && n && i) {
+			let e = l ? `qqj-memory-menu-action${i.selected ? " danger" : ""}` : "secondary-action", t = new Set(S?.selectedEntityIds ?? []), r = j("button", e, i.selected ? "移出重要" : "设为重要");
+			r.type = "button", r.disabled = !!(S?.active && S.active.kind !== "generating"), r.addEventListener("click", () => {
+				i.selected ? t.delete(i.entityId) : t.add(i.entityId), U(i.selected ? "移出重要人物" : "加入重要人物", () => n.setSelectedEntityIds([...t]));
+			}), h.append(r);
 		}
-		return l.append(d), l;
+		return p.append(m), p;
 	}
-	function G(t, n) {
+	function se(t, n) {
 		if (!t.memoryId || typeof e.retryStateAnalysis != "function") return null;
 		let r = t.cse?.status;
 		if (![
@@ -8816,21 +8996,21 @@ function ko({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 			"ready",
 			"noChange"
 		].includes(r)) return null;
-		let i = ["ready", "noChange"].includes(r), a = i ? "重新分析" : r === "failed" ? "重试分析" : "分析本楼", o = E("button", i ? "secondary-action" : "primary-action", a);
-		return o.type = "button", o.disabled = _o(n), o.addEventListener("click", async () => {
+		let i = ["ready", "noChange"].includes(r), a = i ? "重新分析" : r === "failed" ? "重试分析" : "分析本楼", o = j("button", i ? "secondary-action" : "primary-action", a);
+		return o.type = "button", o.disabled = wo(n), o.addEventListener("click", async () => {
 			if (i && !await Promise.resolve(s({
 				title: "重新分析人物状态",
 				body: "成功后，后续楼层人物状态需依次重算，也可能覆盖之后的人工纠正；本楼摘要保持不变。",
 				confirmText: "重新分析",
 				cancelText: "取消"
 			}))) {
-				f = "已取消重新分析人物状态。", K(_);
+				f = "已取消重新分析人物状态。", _e(b);
 				return;
 			}
-			L(a, () => e.retryStateAnalysis(t.floorId));
+			U(a, () => e.retryStateAnalysis(t.floorId));
 		}), o;
 	}
-	function ne(e) {
+	function K(e) {
 		let t = {
 			core: "核心特质",
 			adaptive: "长期倾向",
@@ -8842,82 +9022,213 @@ function ko({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 				let s = n(r?.[t]), c = n(i?.[t]);
 				e.action === "add" && c ? o.push(`${a}：${c}`) : e.action === "remove" && s ? o.push(`${a}：${s}`) : s !== c && o.push(`${a}：${s || "未指定"} → ${c || "未指定"}`);
 			};
-			return s("towardDisplayName", (e) => e ?? "", "对象"), s("visibility", (e) => e ? Do(e) : "", "信息范围"), s("reason", (e) => e ?? "", "依据"), s("origin", (e) => e ? Oo(e) : "", "来源"), {
+			return s("towardDisplayName", (e) => e ?? "", "对象"), s("visibility", (e) => e ? Po(e) : "", "信息范围"), s("reason", (e) => e ?? "", "依据"), s("origin", (e) => e ? Fo(e) : "", "来源"), {
 				main: a,
 				details: o
 			};
-		}, r = O(E("details", "qqj-cse-history"), "cse-history", !1), i = E("summary", "qqj-section-summary");
-		i.append(E("strong", "", "状态分析记录"), E("span", "v3-memory-status", `${e.csePendingCount ?? 0} 待分析 · ${e.cseFailedCount ?? 0} 失败`)), r.append(i);
-		let a = E("div", "qqj-cse-history-list"), o = [...e.floors ?? []].filter((e) => e.memoryId).sort((e, t) => (t.messageIndex ?? 0) - (e.messageIndex ?? 0));
-		for (let t of o) {
-			let r = O(E("details", "qqj-cse-history-row"), `cse-floor:${t.floorId}`, !1), i = E("summary", "qqj-cse-floor-summary");
-			i.append(E("span", "", fo(e, t)), E("span", "v3-memory-status", so(t.cse?.status))), r.append(i);
-			let o = E("div", "qqj-cse-floor-body"), s = t.cse?.record;
-			s?.noMaterialChange && o.append(E("p", "settings-hint", "本楼无实质人物状态变化。"));
-			for (let e of s?.subjects ?? []) {
-				let t = E("section", "qqj-cse-record-subject");
-				t.append(E("strong", "", e.displayName));
-				let r = e.changes ?? [];
-				if (r.length) {
-					let e = E("ul", "v3-cse-items");
-					for (let t of r) {
-						let r = n(t), i = E("li", "v3-cse-item");
-						i.append(E("span", "v3-cse-item-text", r.main)), r.details.length && i.append(E("small", "v3-cse-item-meta", r.details.join(" · "))), e.append(i);
+		}, r = j("section", "qqj-page qqj-cse-history-page");
+		r.append(B(e));
+		let i = j("header", "qqj-cse-page-heading");
+		i.append(j("strong", "", "分析记录"), j("span", "v3-memory-status", `${e.csePendingCount ?? 0} 待分析 · ${e.cseFailedCount ?? 0} 失败`));
+		let a = j("button", "secondary-action qqj-cse-view-toggle", "返回当前状态");
+		a.type = "button", a.addEventListener("click", () => ce("current")), i.append(a), r.append(i);
+		let o = j("div", "qqj-cse-history-list"), s = [...e.floors ?? []].filter((e) => e.memoryId).sort((e, t) => (t.messageIndex ?? 0) - (e.messageIndex ?? 0));
+		for (let r of s) {
+			let i = N(j("details", "qqj-cse-history-row"), `cse-floor:${r.floorId}`, !1), a = j("summary", "qqj-cse-floor-summary");
+			a.append(j("span", "", yo(e, r)), j("span", "v3-memory-status", ho(r.cse?.status))), i.append(a);
+			let s = j("div", "qqj-cse-floor-body"), c = r.cse?.record;
+			if (c) {
+				let i = (c.subjects ?? []).flatMap((e) => (e.changes ?? []).map((t) => ({
+					...t,
+					displayName: e.displayName
+				}))), a = i.filter((e) => e.action !== "remove"), o = j("section", "qqj-cse-floor-result");
+				o.append(j("strong", "qqj-cse-floor-result-title", "本楼新增与调整"));
+				let l = j("div", "qqj-cse-floor-state-body");
+				for (let e of c.subjects ?? []) {
+					let n = (e.changes ?? []).filter((e) => e.action !== "remove");
+					if (!n.length) continue;
+					let r = j("section", "qqj-cse-record-subject"), i = j("ul", "v3-cse-items");
+					r.append(j("strong", "", e.displayName));
+					for (let e of n) {
+						let n = e.after ?? { text: e.afterText }, r = j("li", `v3-cse-item qqj-cse-change is-${e.action ?? "add"}`);
+						r.append(j("span", "v3-cse-item-text", `${t[e.category] ?? "人物状态"}：${n?.text ?? "状态内容未提供"}`)), i.append(r);
 					}
-					t.append(e);
-				} else t.append(E("p", "settings-hint", "这个人物本楼没有记录到变化。"));
-				o.append(t);
-			}
-			if (s?.isolationSummary && o.append(E("p", "qqj-cse-isolation-hint", s.noMaterialChange ? `有内容未通过校验；本楼未产生人物状态变化（${s.isolationSummary.count} 项校验记录）。` : `部分内容未通过校验，已保留有效结果（${s.isolationSummary.count} 项校验记录）。`)), s?.endStateSubjects) {
-				let n = O(E("details", "qqj-cse-floor-state"), `cse-floor-state:${t.floorId}`, !1), r = E("summary", "qqj-cse-floor-state-summary", "查看本楼结束状态");
-				n.append(r);
-				let i = E("div", "qqj-cse-floor-state-body");
-				for (let t of s.endStateSubjects) {
-					let n = E("section", "qqj-cse-record-subject");
-					n.append(E("strong", "", t.displayName)), te(n, t, e), i.append(n);
+					r.append(i), l.append(r);
 				}
-				s.endStateSubjects.length || i.append(E("p", "settings-hint", "本楼结束时没有已保存状态。")), n.append(i), o.append(n);
+				a.length || l.append(j("p", "settings-hint", i.some((e) => e.action === "remove") ? "本楼有状态移除，展开变更详情查看。" : "本楼没有新增或调整的人物状态。")), o.append(l), s.append(o);
+				let u = N(j("details", "qqj-cse-floor-changes"), `cse-floor-changes:${r.floorId}`, !1), d = j("summary", "qqj-cse-floor-state-summary", `变更详情 · ${i.length} 项`);
+				u.append(d);
+				let f = j("div", "qqj-cse-floor-changes-body");
+				for (let e of c.subjects ?? []) {
+					let t = j("section", "qqj-cse-record-subject");
+					if (t.append(j("strong", "", e.displayName)), e.changes?.length) {
+						let r = j("ul", "v3-cse-items");
+						for (let t of e.changes) {
+							let e = n(t), i = j("li", `v3-cse-item qqj-cse-change is-${t.action ?? "add"}`);
+							i.append(j("span", "v3-cse-item-text", e.main)), e.details.length && i.append(j("small", "v3-cse-item-meta", e.details.join(" · "))), r.append(i);
+						}
+						t.append(r);
+					} else t.append(j("p", "settings-hint", "这个人物本楼没有记录到变化。"));
+					f.append(t);
+				}
+				if (i.length || f.append(j("p", "settings-hint", "本楼无实质人物状态变化。")), c.isolationSummary && f.append(j("p", "qqj-cse-isolation-hint", c.noMaterialChange ? `有内容未通过校验；本楼未产生人物状态变化（${c.isolationSummary.count} 项校验记录）。` : `部分内容未通过校验，已保留有效结果（${c.isolationSummary.count} 项校验记录）。`)), u.append(f), s.append(u), c.endStateSubjects) {
+					let t = N(j("details", "qqj-cse-floor-state"), `cse-floor-state:${r.floorId}`, !1);
+					t.append(j("summary", "qqj-cse-floor-state-summary", "查看本楼完整状态"));
+					let n = j("div", "qqj-cse-floor-state-body");
+					for (let t of c.endStateSubjects) {
+						let r = j("section", "qqj-cse-record-subject");
+						r.append(j("strong", "", t.displayName)), ie(r, t, e), n.append(r);
+					}
+					c.endStateSubjects.length || n.append(j("p", "settings-hint", "本楼结束时没有已保存状态。")), t.append(n), s.append(t);
+				}
 			}
-			!s && !t.cse?.error && o.append(E("p", "settings-hint", "本楼还没有已保存的状态分析记录。")), t.cse?.error && o.append(E("p", "v3-foundation-feedback error", t.cse.error));
-			let c = G(t, e);
-			c && o.append(c), r.append(o), a.append(r);
+			!c && !r.cse?.error && s.append(j("p", "settings-hint", "本楼还没有已保存的状态分析记录。")), r.cse?.error && s.append(j("p", "v3-foundation-feedback error", r.cse.error));
+			let l = se(r, e);
+			l && s.append(l), i.append(s), o.append(i);
 		}
-		return o.length || a.append(E("p", "settings-hint", "生成摘要后，这里会显示逐楼人物状态分析记录。")), r.append(a), r;
+		return s.length || o.append(j("p", "settings-hint", "生成摘要后，这里会显示逐楼人物状态分析记录。")), r.append(o), e.cseReplayDiagnostic?.message && r.append(j("p", "v3-foundation-feedback error", e.cseReplayDiagnostic.message)), r;
 	}
-	function re(e) {
-		let t = E("section", "qqj-page qqj-people-page");
-		t.append(ee("双丝网", "查看人物在当前故事节点的状态。", e)), f && t.append(E("p", `v3-foundation-feedback${f.includes("失败") ? " error" : ""}`, f));
-		let r = e.cseSubjects ?? [], i = new Map(r.map((e) => [e.subjectEntityId, e])), a = (e.memoryEntities ?? []).find((e) => e.specialRole === "user"), o = a ? i.get(a.entityId) : null, s = (y?.people ?? []).filter((e) => e.entityId !== a?.entityId), c = s.filter((e) => e.selected), l = s.filter((e) => !e.selected), u = E("div", "v3-cse-subjects");
-		o && u.append(U(o, e, { defaultOpen: !0 }));
-		for (let t of c) u.append(U(i.get(t.entityId), e, {
-			person: t,
-			defaultOpen: !0
-		}));
-		!o && !c.length && u.append(E("div", "qqj-inline-empty", n ? "尚未选择重要人物。千人页的选择会同步显示在这里。" : "暂无人物状态。")), t.append(u);
-		let d = O(E("details", "qqj-more-people qqj-cse-more"), "cse-more-people", !1), p = E("summary", "qqj-section-summary");
-		p.append(E("strong", "", "更多人物"), E("span", "v3-memory-status", `${l.length} 位`)), d.append(p);
-		let m = E("div", "qqj-more-people-list");
-		for (let t of l) m.append(U(i.get(t.entityId), e, { person: t }));
-		return l.length || m.append(E("p", "settings-hint", "当前没有其他已识别人物。")), d.append(m), t.append(d, ne(e)), e.cseReplayDiagnostic?.message && t.append(E("p", "v3-foundation-feedback error", e.cseReplayDiagnostic.message)), t;
+	function q() {
+		return l?.parentElement ?? l;
 	}
-	function ie(e = v) {
-		let t = O(E("details", "qqj-management-drawer"), "recall-details", !1), n = e?.lastRecall ?? null, r = e?.recallStatus ?? "idle", i = n?.legacyReadOnly ? "旧版只读记录 · 不代表本轮已注入" : n?.restoredReceipt ? "已落盘回执 · 恢复显示" : so(r), a = E("summary", "qqj-section-summary");
-		a.append(E("strong", "", n?.restoredReceipt ? "最近一次召回结果" : "最近召回回执"), E("span", "v3-memory-status", i)), t.append(a);
-		let o = E("div", "qqj-management-drawer-body");
-		if (p && o.append(E("p", "v3-foundation-feedback error", p)), !n) return o.append(E("p", "settings-hint", e?.activeRecall ? `正在处理 ${e.activeRecall.generationType} · ${e.activeRecall.phase}` : "下一次正文生成后，这里会保留最近一次召回结果。")), t.append(o), t;
+	function ce(e) {
+		if (!["current", "history"].includes(e) || e === _) return;
+		let t = q();
+		k.set(_, t?.scrollTop || 0), _ = e, _e(b), t && (t.scrollTop = k.get(e) || 0);
+	}
+	let le = (e, t, { showMeta: n = !1 } = {}) => {
+		let r = j("li", "qqj-relation-item");
+		if (r.append(j("span", "v3-cse-item-text", e.text)), n) {
+			let n = e.sourceFloorId || e.sourceAssistantSeq ? bo(t, e) : e.origin === "baseline" ? "来源：聊天基线" : "来源：本地重放";
+			r.append(j("small", "v3-cse-item-meta", [.../* @__PURE__ */ new Set([
+				e.reason,
+				Fo(e.origin),
+				n,
+				Po(e.visibility)
+			])].join(" · ")));
+		}
+		return r;
+	};
+	function ue(e, t, n, r) {
+		let i = j("section", `qqj-relation-lane ${r}`);
+		if (i.append(j("strong", "qqj-relation-lane-title", e)), !t.length) i.append(j("p", "settings-hint", "暂无已保存的关系状态。"));
+		else {
+			let e = j("ul", "qqj-relation-items");
+			for (let r of t) e.append(le(r, n));
+			i.append(e);
+		}
+		return i;
+	}
+	function de(t, n, r) {
+		let i = j("section", "qqj-user-anchor"), a = j("div", "qqj-user-anchor-title");
+		if (a.append(j("strong", "", n?.displayName || t?.displayName || "你")), i.append(a), !t) return i.append(j("p", "settings-hint", "还没有已保存的用户状态。")), i;
+		let o = `${r.chatId ?? "no-chat"}:${t.subjectEntityId}`, s = D.get(o);
+		if (s) ae(i, s, r, o);
+		else {
+			ie(i, t, r, {
+				adaptive: (t.adaptive ?? []).filter((e) => !e.towardEntityId),
+				showMeta: !1,
+				groupAdaptiveByTarget: !1
+			});
+			let n = j("button", "secondary-action qqj-cse-edit-action", "编辑我的状态");
+			n.type = "button", n.disabled = wo(r) || typeof e.correctSubjectState != "function" || !r.currentStateId || !r.currentStateFingerprint, n.addEventListener("click", () => {
+				let e = (e) => (e ?? []).map((e) => ({
+					itemId: e.id,
+					text: e.text,
+					visibility: e.visibility,
+					towardEntityId: e.towardEntityId ?? null
+				}));
+				D.set(o, {
+					chatId: r.chatId,
+					subjectEntityId: t.subjectEntityId,
+					expectedCurrentStateId: r.currentStateId,
+					expectedCurrentStateFingerprint: r.currentStateFingerprint,
+					core: e(t.core),
+					adaptive: e(t.adaptive),
+					situational: e(t.situational),
+					saving: !1,
+					saveError: ""
+				}), _e(b);
+			}), i.append(n);
+		}
+		return i;
+	}
+	function fe(e) {
+		if (_ === "history") return K(e);
+		let t = j("section", "qqj-page qqj-people-page");
+		t.append(B(e));
+		let r = e.cseSubjects ?? [], i = new Map(r.map((e) => [e.subjectEntityId, e])), a = (e.memoryEntities ?? []).find((e) => e.specialRole === "user"), o = a ? i.get(a.entityId) : null, s = (S?.people ?? []).filter((e) => e.entityId !== a?.entityId), c = s.filter((e) => e.selected), l = s.filter((e) => !e.selected);
+		(!v || !c.some((e) => e.entityId === v)) && (v = c[0]?.entityId ?? null), t.append(de(o, a, e));
+		let u = j("header", "qqj-cse-page-heading");
+		u.append(j("strong", "", "关系往来"));
+		let d = j("button", "secondary-action qqj-cse-view-toggle", "分析记录");
+		d.type = "button", d.addEventListener("click", () => ce("history")), u.append(d), t.append(u);
+		let f = j("div", "qqj-relation-switch-row"), p = j("div", "qqj-relation-switcher");
+		for (let e of c) {
+			let t = j("button", `qqj-relation-person${e.entityId === v ? " active" : ""}`, e.displayName);
+			t.type = "button", t.setAttribute("aria-pressed", String(e.entityId === v)), t.addEventListener("click", () => {
+				v = e.entityId, y = !1, _e(b);
+			}), p.append(t);
+		}
+		c.length || p.append(j("span", "qqj-profile-switch-empty", n ? "尚未选择重要人物" : "暂无人物状态"));
+		let m = j("button", `secondary-action qqj-relation-more-toggle${y ? " active" : ""}`, y ? "返回关系" : `更多人物（${l.length}）`);
+		m.type = "button", m.setAttribute("aria-pressed", String(y)), m.addEventListener("click", () => {
+			y = !y, _e(b);
+		}), f.append(p, m), t.append(f);
+		let h = c.find((e) => e.entityId === v), g = h ? i.get(h.entityId) : null;
+		if (y) {
+			let n = j("section", "qqj-profile-picker qqj-cse-more"), r = j("header", "qqj-profile-picker-heading");
+			r.append(j("strong", "", "更多人物"), j("span", "v3-memory-status", `${l.length} 位`)), n.append(r);
+			let a = j("div", "qqj-more-people-list");
+			for (let t of l) a.append(oe(i.get(t.entityId), e, {
+				person: t,
+				ownOnly: !0
+			}));
+			l.length || a.append(j("p", "settings-hint", "当前没有其他已识别人物。")), n.append(a), t.append(n);
+		} else if (h) {
+			let n = j("section", "qqj-relation-card"), r = j("header", "qqj-relation-head"), i = j("details", "qqj-memory-menu qqj-relation-menu"), s = j("summary", "qqj-memory-menu-toggle", "⋮");
+			s.setAttribute("aria-label", "关系操作"), s.setAttribute("title", "关系操作");
+			let c = j("div", "qqj-memory-menu-pop");
+			r.append(j("strong", "", h.displayName), j("span", "", "⇄ 你")), n.append(r);
+			let l = j("div", "qqj-relation-dual"), u = (o?.adaptive ?? []).filter((e) => e.towardEntityId === h.entityId), d = (g?.adaptive ?? []).filter((e) => e.towardEntityId === a?.entityId), f = oe(g, e, {
+				person: h,
+				ownOnly: !0,
+				relationNote: !0,
+				actionsContainer: c
+			});
+			c.children.length && (i.append(s, c), r.append(A.register(i))), l.append(ue(`你 → ${h.displayName}`, u, e, "from-user"), j("span", "qqj-relation-divider"), ue(`${h.displayName} → 你`, d, e, "toward-user")), n.append(l, f), t.append(n);
+			let p = (g?.adaptive ?? []).filter((e) => e.towardEntityId && e.towardEntityId !== a?.entityId && e.towardEntityId !== h.entityId);
+			if (p.length) {
+				let n = N(j("details", "qqj-other-relations"), `other-relations:${h.entityId}`, !1), r = j("summary", "qqj-section-summary");
+				r.append(j("strong", "", `${h.displayName}与其他人物`), j("span", "v3-memory-status", `${p.length} 条`)), n.append(r);
+				let i = j("div", "qqj-other-relations-body"), a = new Map((e.memoryEntities ?? []).map((e) => [e.entityId, e.displayName]));
+				for (let t of p) {
+					let n = j("section", "qqj-other-relation"), r = j("ul", "qqj-relation-items");
+					r.append(le(t, e)), n.append(j("strong", "", `${h.displayName} → ${a.get(t.towardEntityId) ?? t.towardDisplayName ?? "未知人物"}`), r), i.append(n);
+				}
+				n.append(i), t.append(n);
+			}
+		}
+		return e.cseReplayDiagnostic?.message && t.append(j("p", "v3-foundation-feedback error", e.cseReplayDiagnostic.message)), t;
+	}
+	function pe(e = x) {
+		let t = N(j("details", "qqj-management-drawer"), "recall-details", !1), n = e?.lastRecall ?? null, r = e?.recallStatus ?? "idle", i = n?.legacyReadOnly ? "旧版只读记录 · 不代表本轮已注入" : n?.restoredReceipt ? "已落盘回执 · 恢复显示" : ho(r), a = j("summary", "qqj-section-summary");
+		a.append(j("strong", "", n?.restoredReceipt ? "最近一次召回结果" : "最近召回回执"), j("span", "v3-memory-status", i)), t.append(a);
+		let o = j("div", "qqj-management-drawer-body");
+		if (p && o.append(j("p", "v3-foundation-feedback error", p)), !n) return o.append(j("p", "settings-hint", e?.activeRecall ? `正在处理 ${e.activeRecall.generationType} · ${e.activeRecall.phase}` : "下一次正文生成后，这里会保留最近一次召回结果。")), t.append(o), t;
 		let s = n.coverage, c = n.stages, l = n.timings, u = l?.sourceReadAttempts, d = u ? `完整快照 ${u.reachableReads} 次 · 退出 ${{
 			ready: "读取成功",
 			stale: "读取时已失效",
 			unavailable: "来源不可用"
-		}[u.exitPoint] ?? "未知"}` : n.restoredReceipt ? "历史回执不重新读取来源" : "未记录", f = (n.selectedFloors ?? []).map((e) => fo(_, e, "来源楼号未提供")).join("、") || "无", m = (n.selectedStates ?? []).map((e) => `${e.subject} / ${e.layer}`).join("、") || "无", h = E("dl", "v3-foundation-grid");
-		h.append(D("触发用户楼", mo(n.userMessageIndex)), D("生成时间", ho(n.createdAt)), D("生成类型", go(n.generationType)), D("收据", n.legacyReadOnly ? "旧版只读记录" : n.restoredReceipt ? "已落盘回执 · 仅恢复历史展示，不会再次注入" : `${n.reusedReceipt ? "复用" : "新算"} · ${n.receiptPersistence ?? "none"}`), D("召回旧楼", f), D("人物状态", m), D("覆盖范围", s ? `记忆 ${s.rememberedAiFloors}/${s.stableAiFloors} · ${s.cseThroughAssistantSeq ? `CSE 到${fo(_, { assistantSeq: s.cseThroughAssistantSeq }, "终点楼号未提供")}` : "CSE 尚未覆盖"}` : "本轮未读取"), D("筛选阶段", c ? `输入 ${c.input} → 候选 ${c.candidates} → 去近期 ${c.dropRecent} → 去常驻重复 ${c.dropPersistent ?? 0} → 去越界 ${c.dropVisibility} → 选中 ${c.selected}` : "收据复用或未执行"), D("耗时", l ? `${Number(l.totalMs || 0).toFixed(1)} ms` : n.reusedReceipt ? "复用收据" : "未记录"), D("来源读取", d), D("跳过原因", (n.skipReasons ?? []).join("、") || "无")), o.append(h);
+		}[u.exitPoint] ?? "未知"}` : n.restoredReceipt ? "历史回执不重新读取来源" : "未记录", f = (n.selectedFloors ?? []).map((e) => yo(b, e, "来源楼号未提供")).join("、") || "无", m = (n.selectedStates ?? []).map((e) => `${e.subject} / ${e.layer}`).join("、") || "无", h = j("dl", "v3-foundation-grid");
+		h.append(M("触发用户楼", xo(n.userMessageIndex)), M("生成时间", So(n.createdAt)), M("生成类型", Co(n.generationType)), M("收据", n.legacyReadOnly ? "旧版只读记录" : n.restoredReceipt ? "已落盘回执 · 仅恢复历史展示，不会再次注入" : `${n.reusedReceipt ? "复用" : "新算"} · ${n.receiptPersistence ?? "none"}`), M("召回旧楼", f), M("人物状态", m), M("覆盖范围", s ? `记忆 ${s.rememberedAiFloors}/${s.stableAiFloors} · ${s.cseThroughAssistantSeq ? `CSE 到${yo(b, { assistantSeq: s.cseThroughAssistantSeq }, "终点楼号未提供")}` : "CSE 尚未覆盖"}` : "本轮未读取"), M("筛选阶段", c ? `输入 ${c.input} → 候选 ${c.candidates} → 去近期 ${c.dropRecent} → 去常驻重复 ${c.dropPersistent ?? 0} → 去越界 ${c.dropVisibility} → 选中 ${c.selected}` : "收据复用或未执行"), M("耗时", l ? `${Number(l.totalMs || 0).toFixed(1)} ms` : n.reusedReceipt ? "复用收据" : "未记录"), M("来源读取", d), M("跳过原因", (n.skipReasons ?? []).join("、") || "无")), o.append(h);
 		let g = e?.lastRecallError?.message || n.error?.message;
-		return g && o.append(E("p", "v3-foundation-feedback error", g)), n.legacyReadOnly && o.append(E("p", "settings-hint", "这是旧版只读记录，不会复用、注入或升级为当前 Schema 6 回执。")), n.injectionText ? o.append(E("pre", "v3-recall-injection", n.injectionText)) : n.status === "empty" || n.status === "completed-empty" ? o.append(E("p", "settings-hint", "本轮没有需要注入的记忆。")) : (n.skipReasons ?? []).includes("sourceStale") ? o.append(E("p", "settings-hint", "记忆来源正在更新，本轮已安全跳过召回注入。")) : (n.skipReasons ?? []).includes("sourceUnavailable") ? o.append(E("p", "settings-hint", "记忆来源暂不可用，本轮已安全跳过召回注入。")) : (n.skipReasons ?? []).includes("memoryRebuilding") ? o.append(E("p", "settings-hint", "历史记忆正在后台重建；本轮没有注入不完整的记忆。")) : (n.skipReasons ?? []).includes("memoryNotReady") && o.append(E("p", "settings-hint", (n.skipReasons ?? []).includes("historicalRebuildRequired") ? "当前存在历史记忆缺口；请在记忆管理中开始或继续重建。" : "当前记忆覆盖尚未确认；本轮没有注入不完整的记忆。")), t.append(o), t;
+		return g && o.append(j("p", "v3-foundation-feedback error", g)), n.legacyReadOnly && o.append(j("p", "settings-hint", "这是旧版只读记录，不会复用、注入或升级为当前 Schema 6 回执。")), n.injectionText ? o.append(j("pre", "v3-recall-injection", n.injectionText)) : n.status === "empty" || n.status === "completed-empty" ? o.append(j("p", "settings-hint", "本轮没有需要注入的记忆。")) : (n.skipReasons ?? []).includes("sourceStale") ? o.append(j("p", "settings-hint", "记忆来源正在更新，本轮已安全跳过召回注入。")) : (n.skipReasons ?? []).includes("sourceUnavailable") ? o.append(j("p", "settings-hint", "记忆来源暂不可用，本轮已安全跳过召回注入。")) : (n.skipReasons ?? []).includes("memoryRebuilding") ? o.append(j("p", "settings-hint", "历史记忆正在后台重建；本轮没有注入不完整的记忆。")) : (n.skipReasons ?? []).includes("memoryNotReady") && o.append(j("p", "settings-hint", (n.skipReasons ?? []).includes("historicalRebuildRequired") ? "当前存在历史记忆缺口；请在记忆管理中开始或继续重建。" : "当前记忆覆盖尚未确认；本轮没有注入不完整的记忆。")), t.append(o), t;
 	}
-	function ae(t) {
-		let n = O(E("details", "qqj-management-drawer"), "diagnostics", !1), r = E("summary", "qqj-section-summary");
-		r.append(E("strong", "", "详细诊断"), E("span", "v3-memory-status", "按需展开")), n.append(r);
-		let a = E("div", "qqj-management-drawer-body"), o = E("dl", "v3-foundation-grid"), c = {
+	function me(t) {
+		let n = N(j("details", "qqj-management-drawer"), "diagnostics", !1), r = j("summary", "qqj-section-summary");
+		r.append(j("strong", "", "详细诊断"), j("span", "v3-memory-status", "按需展开")), n.append(r);
+		let a = j("div", "qqj-management-drawer-body"), o = j("dl", "v3-foundation-grid"), c = {
 			rebuilding: "正在重建",
 			paused: "已暂停",
 			waitingRealtime: "等待新楼",
@@ -8926,58 +9237,58 @@ function ko({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 			pendingRebuild: "等待开始",
 			notReady: "覆盖待确认"
 		}[t.rebuildStatus] ?? "尚未判断";
-		if (o.append(D("当前 chat", t.chatId), D("地基状态", so(co(t))), D("自动维护新楼", t.autoMemoryEnabled ? "已开启 · 每楼更新" : "已关闭"), D("历史重建", `${c} · ${t.rebuildCompletedCount ?? 0}/${t.rebuildTotalCount ?? t.stableCount ?? 0}`), D("CSE 待分析 / 失败", `${t.csePendingCount ?? 0} / ${t.cseFailedCount ?? 0}`), D("Head checkpoint", t.headCheckpointId), D("最近记忆错误", t.lastExtractorError?.message || t.lastError || "无"), D("最近 CSE 错误", t.lastCseError?.message || "无")), a.append(o), i) {
-			let t = E("div", "qqj-ui-diagnostic-action"), n = E("button", "secondary-action", "复制界面诊断");
+		if (o.append(M("当前 chat", t.chatId), M("地基状态", ho(go(t))), M("自动维护新楼", t.autoMemoryEnabled ? "已开启 · 每楼更新" : "已关闭"), M("历史重建", `${c} · ${t.rebuildCompletedCount ?? 0}/${t.rebuildTotalCount ?? t.stableCount ?? 0}`), M("CSE 待分析 / 失败", `${t.csePendingCount ?? 0} / ${t.cseFailedCount ?? 0}`), M("Head checkpoint", t.headCheckpointId), M("最近记忆错误", t.lastExtractorError?.message || t.lastError || "无"), M("最近 CSE 错误", t.lastCseError?.message || "无")), a.append(o), i) {
+			let t = j("div", "qqj-ui-diagnostic-action"), n = j("button", "secondary-action", "复制界面诊断");
 			n.type = "button", n.addEventListener("click", () => {
-				L("复制界面诊断", async () => {
+				U("复制界面诊断", async () => {
 					let t = i();
-					return f = await I(typeof t == "string" ? t : JSON.stringify(t, null, 2)), e.getState();
+					return f = await H(typeof t == "string" ? t : JSON.stringify(t, null, 2)), e.getState();
 				});
-			}), t.append(n, E("span", "settings-hint", "只含界面滚动状态，不含聊天正文或输入内容。")), a.append(t);
+			}), t.append(n, j("span", "settings-hint", "只含界面滚动状态，不含聊天正文或输入内容。")), a.append(t);
 		}
 		if (typeof e.copySafeDiagnostic == "function" && typeof e.copyFullDiagnostic == "function") for (let n of [...t.floors ?? []].reverse()) {
-			let r = E("div", "qqj-diagnostic-row");
-			r.append(E("span", "", fo(t, n)));
-			let i = E("button", "secondary-action", "复制安全诊断");
+			let r = j("div", "qqj-diagnostic-row");
+			r.append(j("span", "", yo(t, n)));
+			let i = j("button", "secondary-action", "复制安全诊断");
 			i.type = "button", i.addEventListener("click", () => {
-				L("复制安全诊断", async () => (f = await I(e.copySafeDiagnostic(n.floorId)), e.getState()));
+				U("复制安全诊断", async () => (f = await H(e.copySafeDiagnostic(n.floorId)), e.getState()));
 			});
-			let o = E("button", "secondary-action", "复制完整诊断");
+			let o = j("button", "secondary-action", "复制完整诊断");
 			o.type = "button", o.addEventListener("click", () => {
-				L("复制完整诊断", async () => await Promise.resolve(s({
+				U("复制完整诊断", async () => await Promise.resolve(s({
 					title: "复制完整诊断",
 					body: "完整诊断包含本楼正文与证据原文。确认复制吗？",
 					confirmText: "复制",
 					cancelText: "取消"
-				})) ? (f = await I(e.copyFullDiagnostic(n.floorId)), e.getState()) : (f = "已取消完整诊断复制。", e.getState()));
+				})) ? (f = await H(e.copyFullDiagnostic(n.floorId)), e.getState()) : (f = "已取消完整诊断复制。", e.getState()));
 			}), r.append(i, o), a.append(r);
 		}
 		if (m) {
-			let e = E("textarea", "v3-diagnostic-fallback");
-			e.value = m, e.textContent = m, e.readOnly = !0, a.append(E("p", "settings-hint", "诊断文本（长按全选复制）"), e);
+			let e = j("textarea", "v3-diagnostic-fallback");
+			e.value = m, e.textContent = m, e.readOnly = !0, a.append(j("p", "settings-hint", "诊断文本（长按全选复制）"), e);
 		}
 		return n.append(a), n;
 	}
-	function oe(t) {
-		let n = E("section", "qqj-page qqj-management-page");
-		n.append(ee("记忆管理", "管理当前聊天的现有记忆任务。", t)), ([
+	function he(t) {
+		let n = j("section", "qqj-page qqj-management-page");
+		n.append(V("记忆管理", "管理当前聊天的现有记忆任务。", t)), ([
 			"pendingRebuild",
 			"paused",
 			"failed"
-		].includes(t.rebuildStatus) || t.rebuildStatus === "waitingRealtime" && t.rebuildHasActionableWork) && n.append(E("p", "qqj-management-notice", "记忆尚未完整。点击继续会从最早的摘要或人物状态缺口按顺序恢复；刷新页面不会自动续跑旧档。"));
-		let i = b?.status === "deleting", a = b?.status === "failed", o = E("div", "v3-foundation-actions qqj-management-actions"), c = _o(t) || i || a;
+		].includes(t.rebuildStatus) || t.rebuildStatus === "waitingRealtime" && t.rebuildHasActionableWork) && n.append(j("p", "qqj-management-notice", "记忆尚未完整。点击继续会从最早的摘要或人物状态缺口按顺序恢复；刷新页面不会自动续跑旧档。"));
+		let i = C?.status === "deleting", a = C?.status === "failed", o = j("div", "v3-foundation-actions qqj-management-actions"), c = wo(t) || i || a;
 		if (t.rebuildStatus === "rebuilding" && typeof e.pauseHistoricalRebuild == "function") {
-			let n = E("button", "primary-action", "暂停");
+			let n = j("button", "primary-action", "暂停");
 			n.type = "button", n.disabled = !t.activeAutoMemory, n.addEventListener("click", () => {
-				L("暂停", () => e.pauseHistoricalRebuild());
+				U("暂停", () => e.pauseHistoricalRebuild());
 			}), o.append(n);
 		} else {
-			let n = e.startHistoricalRebuild ?? e.retryAutomation, r = t.rebuildHasActionableWork ?? !["caughtUp", "waitingRealtime"].includes(t.rebuildStatus), i = E("button", "primary-action", c ? bo(t) : "继续");
+			let n = e.startHistoricalRebuild ?? e.retryAutomation, r = t.rebuildHasActionableWork ?? !["caughtUp", "waitingRealtime"].includes(t.rebuildStatus), i = j("button", "primary-action", c ? Do(t) : "继续");
 			i.type = "button", i.disabled = c || typeof n != "function" || !r, i.addEventListener("click", () => {
-				L("继续", () => n.call(e));
+				U("继续", () => n.call(e));
 			}), o.append(i);
 		}
-		let l = E("button", "secondary-action", "完全重构");
+		let l = j("button", "secondary-action", "完全重构");
 		if (l.type = "button", l.disabled = c || typeof e.fullRebuild != "function", l.addEventListener("click", async () => {
 			if (!await Promise.resolve(s({
 				title: "完全重构当前聊天记忆",
@@ -8985,13 +9296,13 @@ function ko({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 				confirmText: "完全重构",
 				cancelText: "取消"
 			}))) {
-				f = "已取消完全重构。", K(_);
+				f = "已取消完全重构。", _e(b);
 				return;
 			}
-			L("完全重构", () => e.fullRebuild(t.chatId));
+			U("完全重构", () => e.fullRebuild(t.chatId));
 		}), o.append(l), r) {
-			let e = E("button", "secondary-action", i ? "删除中…" : a ? "继续删除当前聊天记忆" : "删除当前聊天记忆");
-			e.type = "button", e.disabled = i || b?.blockedByOtherChat === !0 || !a && (_o(t) || !t.chatId), e.addEventListener("click", async () => {
+			let e = j("button", "secondary-action", i ? "删除中…" : a ? "继续删除当前聊天记忆" : "删除当前聊天记忆");
+			e.type = "button", e.disabled = i || C?.blockedByOtherChat === !0 || !a && (C?.workBusy === !0 || !t.chatId), e.addEventListener("click", async () => {
 				if (!await Promise.resolve(s({
 					title: "删除当前聊天记忆",
 					body: "将删除本聊天的摘要、人物状态、人物资料、召回记录及历史派生版本。聊天正文和全局 API、提示词设置会保留；下次建档需要从头开始。",
@@ -8999,61 +9310,61 @@ function ko({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 					confirmText: a ? "继续删除" : "删除记忆",
 					cancelText: "取消"
 				}))) {
-					f = "已取消删除当前聊天记忆。", K(_);
+					f = "已取消删除当前聊天记忆。", _e(b);
 					return;
 				}
-				L(a ? "继续删除当前聊天记忆" : "删除当前聊天记忆", () => r.deleteCurrent(), {
-					after: () => (b = r.getState(), f = "当前聊天记忆已删除；聊天正文与全局设置均已保留。", !0),
-					failed: () => (b = r.getState(), !0)
+				U(a ? "继续删除当前聊天记忆" : "删除当前聊天记忆", () => r.deleteCurrent(), {
+					after: () => (C = r.getState(), f = "当前聊天记忆已删除；聊天正文与全局设置均已保留。", !0),
+					failed: () => (C = r.getState(), !0)
 				});
 			}), o.append(e);
 		}
-		return a && b.error ? n.append(E("p", "v3-foundation-feedback error", `上次删除未完成：${b.error} 已保留原聊天身份，可继续删除剩余记录。`)) : b?.status === "completed" && n.append(E("p", "v3-foundation-feedback", "当前聊天记忆已清空；聊天正文和全局设置仍保留。")), n.append(o, E("p", `v3-foundation-feedback${N(t) ? " error" : ""}`, f || N(t) || "状态已显示。"), ie(), ae(t)), n;
+		return a && C.error ? n.append(j("p", "v3-foundation-feedback error", `上次删除未完成：${C.error} 已保留原聊天身份，可继续删除剩余记录。`)) : C?.status === "completed" && n.append(j("p", "v3-foundation-feedback", "当前聊天记忆已清空；聊天正文和全局设置仍保留。")), n.append(o, j("p", `v3-foundation-feedback${L(t) ? " error" : ""}`, f || L(t) || "状态已显示。"), pe(), me(t)), n;
 	}
-	function se(e) {
-		l && (v = t?.getState?.() ?? v, y = n?.getState?.() ?? y, b = r?.getState?.() ?? b, S = null, l.replaceChildren(g === "memories" ? V(e) : g === "people" ? re(e) : oe(e)));
+	function ge(e) {
+		l && (A.reset(), x = t?.getState?.() ?? x, S = n?.getState?.() ?? S, C = r?.getState?.() ?? C, T = null, l.replaceChildren(g === "memories" ? re(e) : g === "people" ? fe(e) : he(e)));
 	}
-	function K(t = e.getState()) {
-		se(z(t).state);
+	function _e(t = e.getState()) {
+		ge(W(t).state);
 	}
-	function q(e) {
-		let { state: t, mustReplace: n } = z(e);
-		if (g === "memories" && C.size && !n) {
-			for (let e of C.values()) for (let n of e.controls ?? []) n.disabled = e.saving === !0 || _o(t);
-			F(t);
+	function J(e) {
+		let { state: t, mustReplace: n } = W(e);
+		if (g === "memories" && E.size && !n) {
+			for (let e of E.values()) for (let n of e.controls ?? []) n.disabled = e.saving === !0 || wo(t);
+			z(t);
 			return;
 		}
-		if (g === "people" && w.size && !n) {
-			for (let e of w.values()) for (let n of e.controls ?? []) n.disabled = e.saving === !0 || _o(t);
-			F(t);
+		if (g === "people" && _ === "current" && D.size && !n) {
+			for (let e of D.values()) for (let n of e.controls ?? []) n.disabled = e.saving === !0 || wo(t);
+			z(t);
 			return;
 		}
-		se(t);
+		ge(t);
 	}
-	function ce() {
+	function ve() {
 		if (!u || !l || h) return;
 		let i = [];
 		if (typeof e.subscribe == "function") {
 			let t = e.subscribe((e) => {
-				e?.status === "ready" && f === so("stale") && (f = "记忆状态已刷新。"), u && l && q(e);
+				e?.status === "ready" && f === ho("stale") && (f = "记忆状态已刷新。"), u && l && J(e);
 			});
 			typeof t == "function" && i.push(t);
 		}
 		if (typeof t?.subscribe == "function") {
 			let e = t.subscribe((e) => {
-				v = e, u && l && g === "management" && K(_);
+				x = e, u && l && g === "management" && _e(b);
 			});
 			typeof e == "function" && i.push(e);
 		}
 		if (typeof n?.subscribe == "function") {
 			let e = n.subscribe((e) => {
-				y = e, u && l && g === "people" && K(_);
+				S = e, u && l && g === "people" && _e(b);
 			});
 			typeof e == "function" && i.push(e);
 		}
 		if (typeof r?.subscribe == "function") {
 			let e = r.subscribe((e) => {
-				b = e, u && l && g === "management" && K(_);
+				C = e, u && l && g === "management" && _e(b);
 			});
 			typeof e == "function" && i.push(e);
 		}
@@ -9063,21 +9374,21 @@ function ko({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 			} catch {}
 		};
 	}
-	function le() {
+	function ye() {
 		let e = h;
 		h = null;
 		try {
 			e?.();
 		} catch {}
 	}
-	function ue(n) {
-		le(), l = n, u = !0, v = t?.getState?.() ?? null, K(e.getState()), ce();
+	function be(n) {
+		ye(), A.deactivate(), l = n, u = !0, x = t?.getState?.() ?? null, _e(e.getState()), A.activate(), ve();
 	}
-	async function de() {
+	async function xe() {
 		if (!l) throw Error("V3 foundation view 尚未挂载");
-		u = !0, ce();
+		u = !0, A.activate(), ve();
 		let r = ++d;
-		f = "正在读取最新状态…", p = "", F(e.getState());
+		f = "正在读取最新状态…", p = "", z(e.getState());
 		let [i, a] = await Promise.allSettled([e.refreshStatus(), t?.restorePersistedReceipt?.()]);
 		if (!u || r !== d) return { status: "stale" };
 		let o = g === "people" && n?.refresh ? await Promise.resolve(n.refresh({ refreshMemory: !1 })).then((e) => ({
@@ -9093,58 +9404,63 @@ function ko({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 		if (!u || r !== d) return { status: "stale" };
 		a.status === "rejected" && (p = `历史召回回执恢复失败：${a.reason?.message || "未知错误"}；不影响记忆读取。`);
 		let s = o.status === "rejected" ? `重要人物选择读取失败：${o.reason?.message || "未知错误"}；人物状态仍可查看。` : "";
-		if (i.status === "rejected") return f = `记忆读取失败：${i.reason?.message || "未知错误"}；历史召回回执已独立处理。`, K(e.getState()), {
+		if (i.status === "rejected") return f = `记忆读取失败：${i.reason?.message || "未知错误"}；历史召回回执已独立处理。`, _e(e.getState()), {
 			status: "error",
 			error: i.reason
 		};
 		let c = i.value;
-		return f = s || (c?.status === "ready" ? "记忆状态已刷新。" : so(c?.status)), K(c), c;
+		return f = s || (c?.status === "ready" ? "记忆状态已刷新。" : ho(c?.status)), _e(c), c;
 	}
-	function fe() {
-		u = !1, d += 1, le();
+	function Se() {
+		u = !1, d += 1, A.deactivate(), ye();
 	}
-	function pe(e) {
+	function Ce(e) {
 		if (![
 			"memories",
 			"people",
 			"management"
 		].includes(e)) throw TypeError("V3 view page 无效");
-		g = e, l && K(_);
+		g = e, l && _e(b);
 	}
 	return Object.freeze({
-		mount: ue,
-		activate: de,
-		deactivate: fe,
-		render: K,
-		setPage: pe,
+		mount: be,
+		activate: xe,
+		deactivate: Se,
+		render: _e,
+		setPage: Ce,
 		getPage: () => g
 	});
 }
 //#endregion
 //#region src/ui/people-profiles-view.js
-var Ao = Object.freeze([
+var Lo = Object.freeze([
 	"name",
 	"aliases",
 	"background",
 	"appearance",
 	"personality",
 	"notes"
-]), jo = Object.freeze({
+]), Ro = Object.freeze({
 	name: "姓名",
 	aliases: "别名",
 	background: "身份背景",
 	appearance: "外貌",
 	personality: "基础性格",
 	notes: "补充说明"
-}), Mo = Object.freeze({
+}), zo = Object.freeze({
 	name: "人物姓名",
 	aliases: "多个别名可用顿号或换行分隔",
 	background: "仅填写不会随剧情变化的身份与背景",
 	appearance: "稳定外貌特征",
 	personality: "基础性格，不写临时情绪",
 	notes: "其他静态基础信息"
-});
-function No(e) {
+}), Bo = Object.freeze([
+	"background",
+	"appearance",
+	"personality",
+	"notes"
+]);
+function Vo(e) {
 	let t = e?.profile;
 	return {
 		name: t ? t.name : e?.entityDisplayName ?? "",
@@ -9155,10 +9471,10 @@ function No(e) {
 		notes: t?.notes ?? ""
 	};
 }
-function Po(e, t) {
-	return Ao.every((n) => String(e?.[n] ?? "") === String(t?.[n] ?? ""));
+function Ho(e, t) {
+	return Lo.every((n) => String(e?.[n] ?? "") === String(t?.[n] ?? ""));
 }
-function Fo({ runtime: e, documentRef: t = globalThis.document } = {}) {
+function Uo({ runtime: e, documentRef: t = globalThis.document } = {}) {
 	if (!e || [
 		"getState",
 		"refresh",
@@ -9167,29 +9483,29 @@ function Fo({ runtime: e, documentRef: t = globalThis.document } = {}) {
 		"generateMissingProfiles"
 	].some((t) => typeof e[t] != "function")) throw TypeError("千人人物资料 runtime 无效");
 	if (!t?.createElement) throw TypeError("千人人物资料 documentRef 无效");
-	let n = null, r = !1, i = 0, a = null, o = e.getState(), s = o.chatId ?? null, c = "", l = null, u = !1, d = /* @__PURE__ */ new Map(), f = (e, n = "", r = "") => {
+	let n = null, r = !1, i = 0, a = null, o = e.getState(), s = o.chatId ?? null, c = "人物资料状态已显示。", l = null, u = !1, d = /* @__PURE__ */ new Map(), f = po(t), p = (e, n = "", r = "") => {
 		let i = t.createElement(e);
 		return n && (i.className = n), r !== "" && (i.textContent = r), i;
-	}, p = (e) => !!(e.active && e.active.kind !== "generating"), m = (e) => e.status === "disabled" ? "千千结已关闭" : e.active?.kind === "loading" ? "正在读取当前聊天的人物资料" : e.active?.kind === "generating" ? `正在整理 ${e.unprofiledSelectedCount} 位未建档人物` : e.active?.kind === "savingSelection" ? "正在保存重要人物选择" : e.active?.kind === "savingProfile" ? "正在保存人物资料" : e.lastError?.message ? `需要处理 · ${e.lastError.message}` : `已选 ${e.people.filter((e) => e.selected).length} 位重要人物 · ${e.unprofiledSelectedCount} 位待建档`;
-	function h(e) {
-		s !== e && (s = e, d.clear(), l = null, u = !1, c = "");
+	}, m = (e) => !!(e.active && e.active.kind !== "generating"), h = (e) => e.status === "disabled" ? "千千结已关闭" : e.active?.kind === "loading" ? "正在读取当前聊天的人物资料" : e.active?.kind === "generating" ? `正在整理 ${e.unprofiledSelectedCount} 位未建档人物` : e.active?.kind === "savingSelection" ? "正在保存重要人物选择" : e.active?.kind === "savingProfile" ? "正在保存人物资料" : e.lastError?.message ? `需要处理 · ${e.lastError.message}` : `已选 ${e.people.filter((e) => e.selected).length} 位重要人物 · ${e.unprofiledSelectedCount} 位待建档`;
+	function g(e) {
+		s !== e && (s = e, d.clear(), l = null, u = !1, c = "人物资料状态已显示。");
 	}
-	async function g(t, n, { after: a = null } = {}) {
+	async function _(t, n, { after: a = null } = {}) {
 		let l = ++i, u = s;
-		c = `${t}…`, w(o);
+		c = `${t}…`, E(o);
 		try {
 			let s = await n();
-			return o = e.getState(), (o.chatId ?? null) === u && a?.(o), r && l === i && (c = `${t}完成。`, w(o)), s;
+			return o = e.getState(), (o.chatId ?? null) === u && a?.(o), r && l === i && (c = `${t}完成。`, E(o)), s;
 		} catch (n) {
-			return o = e.getState(), r && l === i && (c = `${t}失败：${n?.message || "未知错误"}`, w(o)), {
+			return o = e.getState(), r && l === i && (c = `${t}失败：${n?.message || "未知错误"}`, E(o)), {
 				status: "error",
 				error: n
 			};
 		}
 	}
-	function _(t, n) {
-		let r = new Set(n), i = f("button", t.selected ? "secondary-action" : "primary-action", t.selected ? "移出关注" : "设为重要");
-		return i.type = "button", i.disabled = p(o), i.addEventListener("click", () => {
+	function v(t, n) {
+		let r = new Set(n), i = p("button", t.selected ? "secondary-action" : "primary-action", t.selected ? "移出关注" : "设为重要");
+		return i.type = "button", i.disabled = m(o), i.addEventListener("click", () => {
 			let n = s, i = o.people.filter((e) => e.selected).map((e) => e.entityId), a = t.selected && l === t.entityId, c = l;
 			if (t.selected) {
 				if (r.delete(t.entityId), a) {
@@ -9197,15 +9513,15 @@ function Fo({ runtime: e, documentRef: t = globalThis.document } = {}) {
 					c = i[e + 1] ?? i[e - 1] ?? null;
 				}
 			} else r.add(t.entityId), l || (c = t.entityId);
-			g(t.selected ? "移出关注人物" : "加入重要人物", () => e.setSelectedEntityIds([...r]), { after: (e) => {
+			_(t.selected ? "移出关注人物" : "加入重要人物", () => e.setSelectedEntityIds([...r]), { after: (e) => {
 				(e.chatId ?? null) === n && (l = c);
 			} });
 		}), i;
 	}
-	function v(e, t = !1) {
+	function y(e, t = !1) {
 		let n = d.get(e.entityId), r = t || n?.editing === !0;
 		if (n && e.profiled && !n.wasProfiled && !n.dirty && !n.saving && (n = null, r = !0), !n) {
-			let t = No(e);
+			let t = Vo(e);
 			n = {
 				...t,
 				original: { ...t },
@@ -9219,24 +9535,24 @@ function Fo({ runtime: e, documentRef: t = globalThis.document } = {}) {
 		}
 		return t && (n.editing = !0), n;
 	}
-	function y(t, n) {
-		let i = No(t);
-		if (t.profiled && Po(n, i)) {
-			n.editing = !1, n.notice = "未修改内容", n.error = "", w(o);
+	function b(t, n) {
+		let i = Vo(t);
+		if (t.profiled && Ho(n, i)) {
+			n.editing = !1, n.notice = "未修改内容", n.error = "", E(o);
 			return;
 		}
 		let a = Object.freeze({
 			chatId: s,
 			entityId: t.entityId,
 			draft: n
-		}), c = Object.fromEntries(Ao.map((e) => [e, n[e]]));
-		n.saving = !0, n.notice = "保存中…", n.error = "", w(o), e.saveProfile(t.entityId, c).then(() => {
+		}), c = Object.fromEntries(Lo.map((e) => [e, n[e]]));
+		n.saving = !0, n.notice = "保存中…", n.error = "", E(o), e.saveProfile(t.entityId, c).then(() => {
 			let t = e.getState();
 			if (o = t, (t.chatId ?? null) !== a.chatId || d.get(a.entityId) !== a.draft) return;
 			let n = t.people.find((e) => e.entityId === a.entityId);
 			if (!n?.profiled) a.draft.saving = !1, a.draft.notice = "", a.draft.error = "保存失败：没有读到已保存资料";
 			else {
-				let e = No(n);
+				let e = Vo(n);
 				d.set(a.entityId, {
 					...e,
 					original: { ...e },
@@ -9248,150 +9564,168 @@ function Fo({ runtime: e, documentRef: t = globalThis.document } = {}) {
 					notice: "已保存"
 				});
 			}
-			r && w(t);
+			r && E(t);
 		}, (t) => {
 			let n = e.getState();
-			o = n, (n.chatId ?? null) === a.chatId && d.get(a.entityId) === a.draft && (a.draft.saving = !1, a.draft.editing = !0, a.draft.notice = "", a.draft.error = `保存失败：${t?.message || "未知错误"}`, r && w(n));
+			o = n, (n.chatId ?? null) === a.chatId && d.get(a.entityId) === a.draft && (a.draft.saving = !1, a.draft.editing = !0, a.draft.notice = "", a.draft.error = `保存失败：${t?.message || "未知错误"}`, r && E(n));
 		});
 	}
-	function b(e) {
-		let t = f("section", "qqj-profile-card"), n = f("header", "qqj-profile-summary");
-		n.append(f("strong", "", e.displayName || e.entityDisplayName)), e.recommended && n.append(f("span", "qqj-recommend-badge", "推荐")), n.append(f("span", "v3-memory-status", e.profiled ? "已建档" : "待建档")), t.append(n);
-		let r = f("div", "qqj-profile-body"), i = d.has(e.entityId) ? v(e) : null;
-		if (i?.editing) {
-			let t = f("div", "qqj-profile-form");
-			for (let e of Ao) {
-				let n = f("label", "qqj-profile-field");
-				n.append(f("span", "", jo[e]));
-				let r = f(e === "name" ? "input" : "textarea", "settings-input");
-				r.value = i[e], r.placeholder = Mo[e], r.disabled = i.saving || p(o), r.addEventListener("input", () => {
-					i[e] = r.value, i.dirty = !Po(i, i.original), i.notice = "", i.error = "";
-				}), n.append(r), t.append(n);
-			}
-			let n = f("div", "qqj-profile-save-row"), a = f("button", "primary-action", i.saving ? "保存中…" : "保存资料");
-			a.type = "button", a.disabled = i.saving || p(o), a.addEventListener("click", () => y(e, i)), n.append(a);
-			let s = f("button", "secondary-action", "取消");
-			s.type = "button", s.disabled = i.saving || p(o), s.addEventListener("click", () => {
-				d.delete(e.entityId), w(o);
-			}), n.append(s, _(e, o.selectedEntityIds)), (i.notice || i.error) && n.append(x(i)), t.append(n), r.append(t);
-		} else {
-			let t = No(e), n = f("dl", "qqj-profile-facts");
-			for (let e of Ao) {
-				let r = f("div", "qqj-profile-fact");
-				r.append(f("dt", "", jo[e]), f("dd", "", t[e] || "未填写")), n.append(r);
-			}
-			r.append(n);
-			let a = f("div", "qqj-profile-save-row"), s = f("button", "primary-action", "编辑资料");
-			s.type = "button", s.disabled = p(o), s.addEventListener("click", () => {
-				v(e, !0), w(o);
-			}), a.append(s, _(e, o.selectedEntityIds)), (i?.notice || i?.error) && a.append(x(i)), r.append(a);
-		}
-		return t.append(r), t;
-	}
-	function x(e) {
-		let t = f("p", `qqj-profile-save-result${e.error ? " error" : e.notice === "已保存" ? " success" : ""}`, e.error || e.notice);
-		return t.setAttribute?.("role", "status"), t.setAttribute?.("aria-live", "polite"), t;
+	function x(t = "secondary-action") {
+		let n = p("button", t, o.active?.kind === "generating" ? "正在整理…" : `整理基础资料${o.unprofiledSelectedCount ? `（${o.unprofiledSelectedCount}）` : ""}`);
+		return n.type = "button", n.disabled = !!o.active || o.unprofiledSelectedCount < 1, n.addEventListener("click", () => {
+			_("整理基础资料", () => e.generateMissingProfiles());
+		}), n;
 	}
 	function S(e) {
-		let t = f("div", "qqj-profile-switcher");
+		let t = p("section", "qqj-profile-card"), n = Vo(e), r = d.has(e.entityId) ? y(e) : null, i = p("header", "qqj-profile-summary"), a = p("span", "qqj-profile-mark");
+		a.innerHTML = io, a.setAttribute?.("aria-hidden", "true");
+		let s = p("div", "qqj-profile-identity"), c = p("h2", "", n.name || e.displayName || e.entityDisplayName || "未命名人物");
+		c.setAttribute?.("title", c.textContent), c.setAttribute?.("aria-label", `姓名：${c.textContent}`), s.append(c, p("p", "qqj-profile-alias", `别名 · ${n.aliases || "未填写"}`));
+		let l = p("div", "qqj-profile-badges");
+		if (e.recommended && l.append(p("span", "qqj-recommend-badge", "推荐")), l.append(p("span", "v3-memory-status", e.profiled ? "已建档" : "待建档")), !r?.editing) {
+			let t = f.register(p("details", "qqj-profile-menu")), n = p("summary", "qqj-profile-menu-toggle", "⋮");
+			n.setAttribute?.("aria-label", "人物操作"), n.setAttribute?.("title", "人物操作");
+			let r = p("div", "qqj-profile-menu-pop"), i = p("button", "qqj-profile-menu-action", "编辑资料");
+			i.type = "button", i.disabled = m(o), i.addEventListener("click", () => {
+				y(e, !0), E(o);
+			});
+			let a = v(e, o.selectedEntityIds);
+			a.className = `${a.className} qqj-profile-menu-action danger`, r.append(x("qqj-profile-menu-action"), i, p("span", "qqj-profile-menu-separator"), a), t.append(n, r), l.append(t);
+		}
+		i.append(a, s, l), t.append(i);
+		let u = p("div", "qqj-profile-body");
+		if (r?.editing) {
+			let t = p("div", "qqj-profile-form");
+			for (let e of Lo) {
+				let n = p("label", "qqj-profile-field");
+				n.append(p("span", "", Ro[e]));
+				let i = p(e === "name" ? "input" : "textarea", "settings-input");
+				i.value = r[e], i.placeholder = zo[e], i.disabled = r.saving || m(o), i.addEventListener("input", () => {
+					r[e] = i.value, r.dirty = !Ho(r, r.original), r.notice = "", r.error = "";
+				}), n.append(i), t.append(n);
+			}
+			let n = p("div", "qqj-profile-save-row"), i = p("button", "primary-action", r.saving ? "保存中…" : "保存资料");
+			i.type = "button", i.disabled = r.saving || m(o), i.addEventListener("click", () => b(e, r)), n.append(i);
+			let a = p("button", "secondary-action", "取消");
+			a.type = "button", a.disabled = r.saving || m(o), a.addEventListener("click", () => {
+				d.delete(e.entityId), E(o);
+			}), n.append(a, v(e, o.selectedEntityIds), x()), (r.notice || r.error) && n.append(C(r)), t.append(n), u.append(t);
+		} else {
+			let e = p("div", "qqj-profile-reading");
+			for (let t of Bo) {
+				let r = p("section", `qqj-profile-section${t === "background" ? " lead" : ""}`);
+				r.append(p("h3", "", Ro[t]), p("p", "", n[t] || "未填写")), e.append(r);
+			}
+			if (u.append(e), r?.notice || r?.error) {
+				let e = C(r);
+				e.className += " qqj-profile-reading-result", u.append(e);
+			}
+		}
+		return t.append(u), t;
+	}
+	function C(e) {
+		let t = p("p", `qqj-profile-save-result${e.error ? " error" : e.notice === "已保存" ? " success" : ""}`, e.error || e.notice);
+		return t.setAttribute?.("role", "status"), t.setAttribute?.("aria-live", "polite"), t;
+	}
+	function w(e) {
+		let t = p("div", "qqj-profile-switcher");
 		return t.setAttribute?.("role", "tablist"), t.setAttribute?.("aria-label", "重要人物切换"), e.forEach((r, i) => {
-			let a = r.entityId === l, s = r.displayName || r.entityDisplayName, d = f("button", `qqj-profile-tab${a ? " active" : ""}`, s);
-			d.type = "button", d.tabIndex = a ? 0 : -1, d.setAttribute?.("role", "tab"), d.setAttribute?.("aria-selected", a ? "true" : "false"), d.setAttribute?.("title", s), d.addEventListener("click", () => {
-				l = r.entityId, u = !1, c = "", w(o);
-			}), d.addEventListener("keydown", (t) => {
+			let a = r.entityId === l, s = r.displayName || r.entityDisplayName, c = p("button", `qqj-profile-tab${a ? " active" : ""}`, s);
+			c.type = "button", c.tabIndex = a ? 0 : -1, c.setAttribute?.("role", "tab"), c.setAttribute?.("aria-selected", a ? "true" : "false"), c.setAttribute?.("title", s), c.addEventListener("click", () => {
+				l = r.entityId, u = !1, E(o);
+			}), c.addEventListener("keydown", (t) => {
 				let r = {
 					ArrowLeft: -1,
 					ArrowRight: 1
 				}[t.key], a = t.key === "Home" ? 0 : t.key === "End" ? e.length - 1 : Number.isInteger(r) ? (i + r + e.length) % e.length : null;
-				a === null || !e[a] || (t.preventDefault?.(), l = e[a].entityId, u = !1, w(o), n?.querySelector?.(".qqj-profile-tab.active")?.focus?.());
-			}), t.append(d);
-		}), e.length || t.append(f("span", "qqj-profile-switch-empty", "尚未选择重要人物")), t;
+				a === null || !e[a] || (t.preventDefault?.(), l = e[a].entityId, u = !1, E(o), n?.querySelector?.(".qqj-profile-tab.active")?.focus?.());
+			}), t.append(c);
+		}), e.length || t.append(p("span", "qqj-profile-switch-empty", "尚未选择重要人物")), t;
 	}
-	function C(e) {
-		let t = f("section", "qqj-profile-picker"), n = f("header", "qqj-profile-picker-heading");
-		n.append(f("strong", "", "更多人物"), f("span", "v3-memory-status", `${e.length} 位已识别人物`)), t.append(n);
-		let r = f("div", "qqj-more-people-list");
+	function T(e) {
+		let t = p("section", "qqj-profile-picker"), n = p("header", "qqj-profile-picker-heading");
+		n.append(p("strong", "", "更多人物"), p("span", "v3-memory-status", `${e.length} 位已识别人物`)), t.append(n);
+		let r = p("div", "qqj-more-people-list");
 		for (let t of e) {
-			let e = f("div", "qqj-more-person-row"), n = f("div", "qqj-more-person-copy");
-			n.append(f("strong", "", t.displayName || t.entityDisplayName));
+			let e = p("div", "qqj-more-person-row"), n = p("div", "qqj-more-person-copy");
+			n.append(p("strong", "", t.displayName || t.entityDisplayName));
 			let i = [
 				t.selected ? "已选重要" : "",
 				t.profiled ? "已建档" : "",
 				t.aliases.length ? `别名：${t.aliases.join("、")}` : "",
 				t.appearanceCount ? `出现 ${t.appearanceCount} 楼` : "",
 				t.recommended ? "推荐" : ""
-			].filter(Boolean).join(" · ");
-			n.append(f("small", "", i || "已发现人物")), e.append(n, _(t, o.selectedEntityIds)), r.append(e);
+			].filter(Boolean).join("，");
+			n.append(p("small", "", i || "已发现人物")), e.append(n, v(t, o.selectedEntityIds)), r.append(e);
 		}
-		return e.length || r.append(f("p", "settings-hint", "当前没有已识别人物。后续摘要和状态分析仍会正常发现人物。")), t.append(r), t;
+		return e.length || r.append(p("p", "settings-hint", "当前没有已识别人物。后续摘要和状态分析仍会正常发现人物。")), t.append(r), t;
 	}
-	function w(t = e.getState()) {
-		if (o = t, h(o.chatId ?? null), !n) return;
-		let r = f("section", "qqj-page qqj-profiles-page"), i = f("header", "qqj-view-heading");
-		i.append(f("h2", "", "千人"), f("p", "", "自由选择重要人物，并维护不会随剧情自动变化的基础资料。")), i.append(f("p", `qqj-page-health${o.lastError ? " error" : ""}`, m(o))), r.append(i), c && r.append(f("p", `v3-foundation-feedback${c.includes("失败") ? " error" : ""}`, c));
-		let a = o.people.filter((e) => e.selected), s = o.people.length - a.length;
-		a.some((e) => e.entityId === l) || (l = a[0]?.entityId ?? null);
-		let d = f("div", "qqj-profile-toolbar"), p = f("div", "qqj-profile-switch-row");
-		p.append(S(a));
-		let _ = f("div", "qqj-profile-toolbar-actions"), v = f("button", "secondary-action", o.active?.kind === "generating" ? "正在整理…" : `整理基础资料${o.unprofiledSelectedCount ? `（${o.unprofiledSelectedCount}）` : ""}`);
-		v.type = "button", v.disabled = !!o.active || o.unprofiledSelectedCount < 1, v.addEventListener("click", () => {
-			g("整理基础资料", () => e.generateMissingProfiles());
-		}), _.append(v);
-		let y = f("button", `secondary-action qqj-profile-more${u ? " active" : ""}`, u ? "返回资料" : `更多人物（${s}）`);
+	function E(t = e.getState()) {
+		if (o = t, g(o.chatId ?? null), !n) return;
+		f.reset();
+		let r = p("section", "qqj-page qqj-profiles-page"), i = p("div", "qqj-page-status"), a = p("p", `qqj-page-health qqj-profile-health${o.lastError ? " error" : ""}`, h(o));
+		a.setAttribute?.("role", "status"), i.append(a, p("p", `v3-foundation-feedback${c.includes("失败") ? " error" : ""}`, c)), r.append(i);
+		let s = o.people.filter((e) => e.selected), d = o.people.length - s.length;
+		s.some((e) => e.entityId === l) || (l = s[0]?.entityId ?? null);
+		let m = p("div", "qqj-profile-toolbar"), _ = p("div", "qqj-profile-switch-row");
+		_.append(w(s));
+		let v = p("div", "qqj-profile-toolbar-actions");
+		(u || !l) && v.append(x());
+		let y = p("button", `secondary-action qqj-profile-more${u ? " active" : ""}`, u ? "返回资料" : `更多人物（${d}）`);
 		if (y.type = "button", y.addEventListener("click", () => {
-			u = !u, c = "", w(o);
-		}), _.append(y), p.append(_), d.append(p), r.append(d), u) r.append(C(o.people));
+			u = !u, E(o);
+		}), v.append(y), _.append(v), m.append(_), r.append(m), u) r.append(T(o.people));
 		else {
-			let e = a.find((e) => e.entityId === l);
-			e ? r.append(b(e)) : r.append(f("div", "qqj-inline-empty", "尚未选择重要人物。点击上方“更多人物”即可自由选择，选择 0 位也完全可以。"));
+			let e = s.find((e) => e.entityId === l);
+			e ? r.append(S(e)) : r.append(p("div", "qqj-inline-empty", "尚未选择重要人物。点击上方“更多人物”即可自由选择，选择 0 位也完全可以。"));
 		}
-		let x = o.selectedEntityIds.length - a.length;
-		x > 0 && r.append(f("p", "settings-hint", `有 ${x} 个旧人物选择在当前记忆图中暂不可匹配；其选择与资料仍保留。`)), n.replaceChildren(r);
+		let b = o.selectedEntityIds.length - s.length;
+		b > 0 && r.append(p("p", "settings-hint", `有 ${b} 个旧人物选择在当前记忆图中暂不可匹配；其选择与资料仍保留。`)), n.replaceChildren(r);
 	}
-	function T() {
+	function D() {
 		if (!r || a || typeof e.subscribe != "function") return;
 		let t = e.subscribe((e) => {
-			o = e, r && n && w(e);
+			o = e, r && n && E(e);
 		});
 		typeof t == "function" && (a = t);
 	}
-	function E(t) {
-		a?.(), a = null, n = t, r = !0, w(e.getState()), T();
+	function O(t) {
+		a?.(), a = null, f.deactivate(), n = t, r = !0, E(e.getState()), f.activate(), D();
 	}
-	async function D() {
+	async function k() {
 		if (!n) throw Error("千人人物资料 view 尚未挂载");
-		r = !0, T();
+		r = !0, f.activate(), D();
 		let t = ++i;
-		c = "正在读取当前聊天…", w(e.getState());
+		c = "正在读取当前聊天…", E(e.getState());
 		try {
 			let n = await e.refresh();
-			return !r || t !== i ? { status: "stale" } : (o = n, c = "", w(n), n);
+			return !r || t !== i ? { status: "stale" } : (o = n, c = "人物资料读取完成。", E(n), n);
 		} catch (n) {
-			return !r || t !== i ? { status: "stale" } : (o = e.getState(), c = `读取失败：${n?.message || "未知错误"}`, w(o), {
+			return !r || t !== i ? { status: "stale" } : (o = e.getState(), c = `读取失败：${n?.message || "未知错误"}`, E(o), {
 				status: "error",
 				error: n
 			});
 		}
 	}
-	function O() {
-		r = !1, i += 1, a?.(), a = null;
+	function A() {
+		r = !1, i += 1, f.deactivate(), a?.(), a = null;
 	}
 	return Object.freeze({
-		mount: E,
-		activate: D,
-		deactivate: O,
-		render: w
+		mount: O,
+		activate: k,
+		deactivate: A,
+		render: E
 	});
 }
 //#endregion
 //#region src/ui/gouhua-dialog-core.js
-var Io = "sp-addon-dialog";
-function Lo(e) {
+var Wo = "sp-addon-dialog";
+function Go(e) {
 	return String(e ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
-function Ro({ $: e, mount: t, getRootClass: n = () => "", subscribeContextChange: r = () => () => {}, removeOverlay: i = null, captureFocus: a = () => null, restoreFocus: o = () => {}, schedule: s = setTimeout } = {}) {
+function Ko({ $: e, mount: t, getRootClass: n = () => "", subscribeContextChange: r = () => () => {}, removeOverlay: i = null, captureFocus: a = () => null, restoreFocus: o = () => {}, schedule: s = setTimeout } = {}) {
 	if (typeof e != "function" || !t?.appendChild) throw TypeError("弹窗管理器缺少 DOM 依赖");
-	let c = i || (() => e(`#${Io}`).remove()), l = null;
+	let c = i || (() => e(`#${Wo}`).remove()), l = null;
 	function u() {
 		return l ? (l(), !0) : !1;
 	}
@@ -9422,11 +9756,11 @@ function Ro({ $: e, mount: t, getRootClass: n = () => "", subscribeContextChange
 	function p({ title: t = "", body: n = "", note: r = "", choices: i = [] } = {}) {
 		return !Array.isArray(i) || !i.length ? Promise.resolve(null) : new Promise((c) => {
 			d();
-			let l = a(), u = i.map((e, t) => `<button class="sp-dialog-button sp-dialog-button-${e.primary ? "primary" : "secondary"}" type="button" data-dialog-choice="${t}">${Lo(e.label)}</button>`).join(""), p = e(`<div id="${Io}" class="sp-dialog-overlay">
+			let l = a(), u = i.map((e, t) => `<button class="sp-dialog-button sp-dialog-button-${e.primary ? "primary" : "secondary"}" type="button" data-dialog-choice="${t}">${Go(e.label)}</button>`).join(""), p = e(`<div id="${Wo}" class="sp-dialog-overlay">
                 <div class="sp-dialog-sheet" role="dialog" aria-modal="true" aria-labelledby="sp-dialog-title">
-                    <div id="sp-dialog-title" class="sp-dialog-head">${Lo(t)}</div>
-                    <div class="sp-dialog-body">${Lo(n)}</div>
-                    ${r ? `<div class="sp-dialog-note">${Lo(r)}</div>` : ""}
+                    <div id="sp-dialog-title" class="sp-dialog-head">${Go(t)}</div>
+                    <div class="sp-dialog-body">${Go(n)}</div>
+                    ${r ? `<div class="sp-dialog-note">${Go(r)}</div>` : ""}
                     <div class="sp-dialog-actions">${u}</div>
                 </div>
             </div>`), m = f(p, c, { onClose: () => o(l) });
@@ -9454,21 +9788,21 @@ function Ro({ $: e, mount: t, getRootClass: n = () => "", subscribeContextChange
 	function h({ title: t = "", body: n = "", initialValue: r = "", placeholder: i = "", maxLength: c = 40, confirmText: l = "保存", cancelText: u = "取消", validate: p } = {}) {
 		return new Promise((m) => {
 			d();
-			let h = a(), g = Number(c) > 0 ? Number(c) : 40, _ = e(`<div id="${Io}" class="sp-dialog-overlay">
+			let h = a(), g = Number(c) > 0 ? Number(c) : 40, _ = e(`<div id="${Wo}" class="sp-dialog-overlay">
                 <div class="sp-dialog-sheet" role="dialog" aria-modal="true" aria-labelledby="sp-dialog-title">
-                    <div id="sp-dialog-title" class="sp-dialog-head">${Lo(t)}</div>
-                    ${n ? `<div class="sp-dialog-body">${Lo(n)}</div>` : ""}
-                    <input type="text" class="sp-dialog-input" value="${Lo(r)}" placeholder="${Lo(i)}" maxlength="${g}" autocomplete="off">
+                    <div id="sp-dialog-title" class="sp-dialog-head">${Go(t)}</div>
+                    ${n ? `<div class="sp-dialog-body">${Go(n)}</div>` : ""}
+                    <input type="text" class="sp-dialog-input" value="${Go(r)}" placeholder="${Go(i)}" maxlength="${g}" autocomplete="off">
                     <div class="sp-dialog-input-error" aria-live="polite"></div>
                     <div class="sp-dialog-actions">
-                        <button class="sp-dialog-button sp-dialog-button-secondary sp-dialog-cancel" type="button">${Lo(u)}</button>
-                        <button class="sp-dialog-button sp-dialog-button-primary sp-dialog-submit" type="button">${Lo(l)}</button>
+                        <button class="sp-dialog-button sp-dialog-button-secondary sp-dialog-cancel" type="button">${Go(u)}</button>
+                        <button class="sp-dialog-button sp-dialog-button-primary sp-dialog-submit" type="button">${Go(l)}</button>
                     </div>
                 </div>
             </div>`), v = f(_, m, { onClose: () => o(h) }), y = () => {
 				let e = String(_.find(".sp-dialog-input").val() ?? "").trim(), t = typeof p == "function" ? p(e) : "", n = typeof t == "string" ? t : "";
 				if (n) {
-					_.find(".sp-dialog-input-error").html(`<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> ${Lo(n)}`), _.find(".sp-dialog-input").trigger("focus");
+					_.find(".sp-dialog-input-error").html(`<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> ${Go(n)}`), _.find(".sp-dialog-input").trigger("focus");
 					return;
 				}
 				v.finish(e);
@@ -9488,18 +9822,18 @@ function Ro({ $: e, mount: t, getRootClass: n = () => "", subscribeContextChange
 }
 //#endregion
 //#region src/ui/gouhua-dialog-style.js
-var zo = "\n:host{position:fixed;top:0;left:0;width:100vw;width:100dvw;height:100vh;height:100dvh;z-index:2000003;display:block;overflow:hidden;pointer-events:none}\n*{box-sizing:border-box}\n.sp-root{\n    --sp-scale:1;\n    --sp-font:var(--qqj-dialog-font,-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif);\n    --sp-fs-72:calc(11.52px * var(--sp-scale));\n    --sp-fs-75:calc(12px * var(--sp-scale));\n    --sp-fs-83:calc(13.28px * var(--sp-scale));\n    --sp-fs-85:calc(13.6px * var(--sp-scale));\n    --sp-fs-95:calc(15.2px * var(--sp-scale));\n    --sp-fs-100:calc(16px * var(--sp-scale));\n    --sp-sheet-bg:var(--qqj-dialog-sheet,#f6f8f8);\n    --sp-sheet-bg-legacy:var(--qqj-dialog-sheet,#f6f8f8);\n    --sp-on-surface:var(--qqj-dialog-ink,#22282b);\n    --sp-subtle:var(--qqj-dialog-soft,#5c6a70);\n    --sp-primary:var(--qqj-dialog-primary,#a8322f);\n    --sp-on-primary:#fff;\n    --sp-divider:var(--qqj-dialog-divider,#d0d9db);\n    --sp-surface-high:var(--qqj-dialog-surface,#e8ecec);\n    --sp-hover-bg:color-mix(in srgb,var(--sp-primary) 9%,var(--sp-sheet-bg));\n    position:fixed;\n    z-index:2000001;\n    font-family:var(--sp-font);\n    font-size:var(--sp-fs-100);\n    line-height:normal;\n    letter-spacing:normal;\n    word-spacing:normal;\n    text-indent:0;\n    text-align:left;\n    text-transform:none;\n    font-style:normal;\n    font-variant:normal;\n    white-space:normal;\n}\n.sp-root,.sp-root *{text-shadow:none!important}\n.sp-night{--sp-shadow:0 8px 40px rgba(0,0,0,.65),0 2px 10px rgba(0,0,0,.45)}\n.sp-day{--sp-shadow:0 8px 40px rgba(0,0,0,.12),0 2px 10px rgba(0,0,0,.07)}\n@media(max-width:640px){.sp-root{position:fixed;top:0;left:0;right:auto;bottom:auto;width:100dvw;height:100dvh;pointer-events:none}}\n@keyframes sp-wi-fullview-in{from{opacity:0}to{opacity:1}}\n.sp-dialog-overlay{position:fixed;inset:0;box-sizing:border-box;z-index:2000002;pointer-events:auto;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:20px;animation:sp-wi-fullview-in .15s ease-out}\n.sp-dialog-sheet{background-color:var(--sp-sheet-bg-legacy);background-image:linear-gradient(var(--sp-sheet-bg),var(--sp-sheet-bg));border-radius:12px;width:min(400px,calc(100vw - 40px));max-width:100%;padding:16px 18px 14px;box-shadow:var(--sp-shadow);display:flex;flex-direction:column;gap:10px}\n.sp-dialog-head{font-size:var(--sp-fs-95);font-weight:600;color:var(--sp-on-surface)}\n.sp-dialog-body{font-size:var(--sp-fs-85);line-height:1.65;color:var(--sp-on-surface);white-space:pre-wrap;word-break:break-word}\n.sp-dialog-note{font-size:var(--sp-fs-75);color:var(--sp-subtle);line-height:1.55;padding:8px 10px;background:var(--sp-hover-bg);border-radius:6px;border-left:2px solid var(--sp-divider)}\n.sp-dialog-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:4px}\n.sp-dialog-button{padding:6px 16px;border-radius:8px;border:none;font-size:var(--sp-fs-83);cursor:pointer;font-weight:500;transition:opacity .15s}\n.sp-dialog-button-secondary{background:transparent;color:var(--sp-subtle);border:1px solid var(--sp-divider)}\n.sp-dialog-button-secondary:hover{color:var(--sp-on-surface);border-color:var(--sp-surface-high)}\n.sp-dialog-button-primary{background:var(--sp-primary);color:var(--sp-on-primary)}\n.sp-dialog-button-primary:hover{opacity:.88}\n.sp-dialog-input{width:100%;padding:7px 11px;box-sizing:border-box;background-color:var(--sp-sheet-bg-legacy);background-image:linear-gradient(var(--sp-sheet-bg),var(--sp-sheet-bg));border:1px solid var(--sp-divider);border-radius:8px;color:var(--sp-on-surface);font-size:var(--sp-fs-85);font-family:var(--sp-font);outline:none}\n.sp-dialog-input:focus{border-color:var(--sp-primary)}\n.sp-dialog-input-error{min-height:1em;color:var(--sp-on-surface);font-size:var(--sp-fs-72);line-height:1.4}\n.sp-dialog-input-error i{color:var(--sp-subtle);margin-right:3px}\n@media(prefers-reduced-motion:reduce){.sp-root,.sp-root *{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}\n", Bo = (e) => {
+var qo = "\n:host{position:fixed;top:0;left:0;width:100vw;width:100dvw;height:100vh;height:100dvh;z-index:2000003;display:block;overflow:hidden;pointer-events:none}\n*{box-sizing:border-box}\n.sp-root{\n    --sp-scale:1;\n    --sp-font:var(--qqj-dialog-font,-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif);\n    --sp-fs-72:calc(11.52px * var(--sp-scale));\n    --sp-fs-75:calc(12px * var(--sp-scale));\n    --sp-fs-83:calc(13.28px * var(--sp-scale));\n    --sp-fs-85:calc(13.6px * var(--sp-scale));\n    --sp-fs-95:calc(15.2px * var(--sp-scale));\n    --sp-fs-100:calc(16px * var(--sp-scale));\n    --sp-sheet-bg:var(--qqj-dialog-sheet,#f6f8f8);\n    --sp-sheet-bg-legacy:var(--qqj-dialog-sheet,#f6f8f8);\n    --sp-on-surface:var(--qqj-dialog-ink,#22282b);\n    --sp-subtle:var(--qqj-dialog-soft,#5c6a70);\n    --sp-primary:var(--qqj-dialog-primary,#a8322f);\n    --sp-on-primary:#fff;\n    --sp-divider:var(--qqj-dialog-divider,#d0d9db);\n    --sp-surface-high:var(--qqj-dialog-surface,#e8ecec);\n    --sp-hover-bg:color-mix(in srgb,var(--sp-primary) 9%,var(--sp-sheet-bg));\n    position:fixed;\n    z-index:2000001;\n    font-family:var(--sp-font);\n    font-size:var(--sp-fs-100);\n    line-height:normal;\n    letter-spacing:normal;\n    word-spacing:normal;\n    text-indent:0;\n    text-align:left;\n    text-transform:none;\n    font-style:normal;\n    font-variant:normal;\n    white-space:normal;\n}\n.sp-root,.sp-root *{text-shadow:none!important}\n.sp-night{--sp-shadow:0 8px 40px rgba(0,0,0,.65),0 2px 10px rgba(0,0,0,.45)}\n.sp-day{--sp-shadow:0 8px 40px rgba(0,0,0,.12),0 2px 10px rgba(0,0,0,.07)}\n@media(max-width:640px){.sp-root{position:fixed;top:0;left:0;right:auto;bottom:auto;width:100dvw;height:100dvh;pointer-events:none}}\n@keyframes sp-wi-fullview-in{from{opacity:0}to{opacity:1}}\n.sp-dialog-overlay{position:fixed;inset:0;box-sizing:border-box;z-index:2000002;pointer-events:auto;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:20px;animation:sp-wi-fullview-in .15s ease-out}\n.sp-dialog-sheet{background-color:var(--sp-sheet-bg-legacy);background-image:linear-gradient(var(--sp-sheet-bg),var(--sp-sheet-bg));border-radius:12px;width:min(400px,calc(100vw - 40px));max-width:100%;padding:16px 18px 14px;box-shadow:var(--sp-shadow);display:flex;flex-direction:column;gap:10px}\n.sp-dialog-head{font-size:var(--sp-fs-95);font-weight:600;color:var(--sp-on-surface)}\n.sp-dialog-body{font-size:var(--sp-fs-85);line-height:1.65;color:var(--sp-on-surface);white-space:pre-wrap;word-break:break-word}\n.sp-dialog-note{font-size:var(--sp-fs-75);color:var(--sp-subtle);line-height:1.55;padding:8px 10px;background:var(--sp-hover-bg);border-radius:6px;border-left:2px solid var(--sp-divider)}\n.sp-dialog-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:4px}\n.sp-dialog-button{padding:6px 16px;border-radius:8px;border:none;font-size:var(--sp-fs-83);cursor:pointer;font-weight:500;transition:opacity .15s}\n.sp-dialog-button-secondary{background:transparent;color:var(--sp-subtle);border:1px solid var(--sp-divider)}\n.sp-dialog-button-secondary:hover{color:var(--sp-on-surface);border-color:var(--sp-surface-high)}\n.sp-dialog-button-primary{background:var(--sp-primary);color:var(--sp-on-primary)}\n.sp-dialog-button-primary:hover{opacity:.88}\n.sp-dialog-input{width:100%;padding:7px 11px;box-sizing:border-box;background-color:var(--sp-sheet-bg-legacy);background-image:linear-gradient(var(--sp-sheet-bg),var(--sp-sheet-bg));border:1px solid var(--sp-divider);border-radius:8px;color:var(--sp-on-surface);font-size:var(--sp-fs-85);font-family:var(--sp-font);outline:none}\n.sp-dialog-input:focus{border-color:var(--sp-primary)}\n.sp-dialog-input-error{min-height:1em;color:var(--sp-on-surface);font-size:var(--sp-fs-72);line-height:1.4}\n.sp-dialog-input-error i{color:var(--sp-subtle);margin-right:3px}\n@media(prefers-reduced-motion:reduce){.sp-root,.sp-root *{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}\n", Jo = (e) => {
 	let t = e?.activeElement ?? null;
 	for (; t?.shadowRoot?.activeElement;) t = t.shadowRoot.activeElement;
 	return t;
-}, Vo = (e) => {
+}, Yo = (e) => {
 	try {
 		e?.focus?.({ preventScroll: !0 });
 	} catch {
 		e?.focus?.();
 	}
 };
-function Ho({ documentRef: e = globalThis.document, $: t = globalThis.jQuery ?? globalThis.$, schedule: n, subscribeContextChange: r } = {}) {
+function Xo({ documentRef: e = globalThis.document, $: t = globalThis.jQuery ?? globalThis.$, schedule: n, subscribeContextChange: r } = {}) {
 	if (!e?.createElement) throw TypeError("dialog documentRef 无效");
 	if (typeof t != "function") throw TypeError("dialog jQuery 宿主依赖无效");
 	let i = e.createElement("div");
@@ -9513,8 +9847,8 @@ function Ho({ documentRef: e = globalThis.document, $: t = globalThis.jQuery ?? 
 		pointerEvents: "none"
 	});
 	let a = i.attachShadow({ mode: "open" });
-	a.innerHTML = `<style>${zo}</style>`;
-	let o = "day", s = Ro({
+	a.innerHTML = `<style>${qo}</style>`;
+	let o = "day", s = Ko({
 		$: t,
 		mount: { appendChild: (e) => a.appendChild(e) },
 		removeOverlay: () => {
@@ -9522,8 +9856,8 @@ function Ho({ documentRef: e = globalThis.document, $: t = globalThis.jQuery ?? 
 			e && t(e).remove();
 		},
 		getRootClass: () => `sp-root sp-${o}`,
-		captureFocus: () => Bo(e),
-		restoreFocus: Vo,
+		captureFocus: () => Jo(e),
+		restoreFocus: Yo,
 		schedule: n,
 		subscribeContextChange: r
 	});
@@ -9559,99 +9893,101 @@ function Ho({ documentRef: e = globalThis.document, $: t = globalThis.jQuery ?? 
 }
 //#endregion
 //#region src/bootstrap.js
-function Uo({ settings: e, apiTools: t, onPluginEnabledChange: n, onStoryClockChange: r, onAutoHideChange: i, subscribeDialogContextChange: a, isSevenDaysAvailable: o, sourcePermissions: s, v3FoundationRuntime: c, v3RecallRuntime: l, peopleWorkspaceRuntime: u, chatMemoryManagement: d, sourcePermissionViewFactory: f = ao, v3FoundationViewFactory: p = ko, peopleProfilesViewFactory: m = Fo, documentRef: h = globalThis.document, panelFactory: g = Za, fabFactory: _ = no, wandInstaller: v = ro, dialogFactory: y = Ho, enableFab: b = !1 } = {}) {
-	if (!h) return {
+function Zo({ settings: e, apiTools: t, onPluginEnabledChange: n, onStoryClockChange: r, onAutoHideChange: i, subscribeDialogContextChange: a, isSevenDaysAvailable: o, sourcePermissions: s, v3FoundationRuntime: c, v3RecallRuntime: l, peopleWorkspaceRuntime: u, chatMemoryManagement: d, inlineRenderer: f, sourcePermissionViewFactory: p = fo, v3FoundationViewFactory: m = Io, peopleProfilesViewFactory: h = Uo, documentRef: g = globalThis.document, panelFactory: _ = ro, fabFactory: v = co, wandInstaller: y = lo, dialogFactory: b = Xo, enableFab: x = !1 } = {}) {
+	if (!g) return {
 		show() {},
 		refresh() {},
 		setEnabled() {}
 	};
-	let x = h.getElementById?.("qqj-panel-host");
-	if (x?.__qqjInstance) return x.__qqjInstance;
-	let S = s ? f({
+	let S = g.getElementById?.("qqj-panel-host");
+	if (S?.__qqjInstance) return S.__qqjInstance;
+	let C = s ? p({
 		permissions: s,
-		documentRef: h
-	}) : null, C, w, T = y({
-		documentRef: h,
+		documentRef: g
+	}) : null, w, T, E = b({
+		documentRef: g,
 		$: globalThis.jQuery ?? globalThis.$,
 		subscribeContextChange: a
 	});
-	T?.host && (h.documentElement ?? h.body).append(T.host);
-	let E = p({
+	E?.host && (g.documentElement ?? g.body).append(E.host);
+	let D = m({
 		runtime: c,
 		recallRuntime: l,
 		peopleRuntime: u,
 		memoryManagement: d,
-		uiDiagnosticProvider: () => C?.getUiDiagnostic?.() ?? "{}",
-		documentRef: h,
-		confirmImpl: (e) => T.confirm(e),
-		infoImpl: (e) => T.info(e)
-	}), D = m({
+		uiDiagnosticProvider: () => w?.getUiDiagnostic?.() ?? "{}",
+		documentRef: g,
+		confirmImpl: (e) => E.confirm(e),
+		infoImpl: (e) => E.info(e)
+	}), O = h({
 		runtime: u,
-		documentRef: h
-	}), O = e?.isEnabled?.() !== !1, k = () => O, A = async (e) => {
-		if (!k()) return C.show(e?.currentTarget || e?.target || h.activeElement), C.setEnabled(!1);
+		documentRef: g
+	}), k = (e) => {
+		T?.setAppearance?.(e), f?.setAppearance?.(e);
+	}, A = e?.isEnabled?.() !== !1, j = () => A, M = async (e) => {
+		if (!j()) return w.show(e?.currentTarget || e?.target || g.activeElement), w.setEnabled(!1);
 		try {
-			(await C.show(e?.currentTarget || e?.target || h.activeElement))?.status === "disabled" && C.showStatus("千千结已关闭");
+			(await w.show(e?.currentTarget || e?.target || g.activeElement))?.status === "disabled" && w.showStatus("千千结已关闭");
 		} catch {
-			C.showStatus("当前聊天暂时无法建立稳定身份。");
+			w.showStatus("当前聊天暂时无法建立稳定身份。");
 		}
 	};
-	C = g({
+	w = _({
 		settings: e,
 		apiTools: t,
-		v3FoundationView: E,
-		peopleProfilesView: D,
-		sourcePermissionView: S,
+		v3FoundationView: D,
+		peopleProfilesView: O,
+		sourcePermissionView: C,
 		onPluginEnabledChange: n,
 		onStoryClockChange: r,
 		onAutoHideChange: i,
 		isSevenDaysAvailable: o,
-		dialog: T,
-		onFabShowChange: () => M(),
-		onAppearanceChange: (e) => w?.setAppearance?.(e),
-		documentRef: h
-	}), C.host.hidden = !0, h.body.append(C.host), w = b || typeof h.createElement != "function" ? _({
-		onClick: (e) => C.host.hidden ? A(e) : C.close(),
-		documentRef: h,
-		windowRef: h.defaultView ?? globalThis
+		dialog: E,
+		onFabShowChange: () => P(),
+		onAppearanceChange: k,
+		documentRef: g
+	}), w.host.hidden = !0, g.body.append(w.host), T = x || typeof g.createElement != "function" ? v({
+		onClick: (e) => w.host.hidden ? M(e) : w.close(),
+		documentRef: g,
+		windowRef: g.defaultView ?? globalThis
 	}) : { host: null };
-	let j = () => e?.get?.().fabShow !== !1, M = () => {
-		w?.host?.style && (w.host.style.display = k() && j() ? "" : "none");
+	let N = () => e?.get?.().fabShow !== !1, P = () => {
+		T?.host?.style && (T.host.style.display = j() && N() ? "" : "none");
 	};
-	w.host && (w.host.style ||= {}, M(), h.body.append(w.host), w.setAppearance?.(C.syncAppearance?.())), v(A);
-	let N = {
-		...C,
-		fab: w,
-		dialog: T,
-		show: A,
+	T.host && (T.host.style ||= {}, P(), g.body.append(T.host)), k(w.syncAppearance?.()), y(M);
+	let F = {
+		...w,
+		fab: T,
+		dialog: E,
+		show: M,
 		setEnabled(e) {
-			O = e === !0, C.setEnabled(O), M();
+			A = e === !0, w.setEnabled(A), P();
 		},
 		async refresh() {
-			return C.host.hidden || !k() ? { status: k() ? "closed" : "disabled" } : C.refresh();
+			return w.host.hidden || !j() ? { status: j() ? "closed" : "disabled" } : w.refresh();
 		}
 	};
-	return C.host.__qqjInstance = N, N;
+	return w.host.__qqjInstance = F, F;
 }
 //#endregion
 //#region src/api-routing.js
-var Wo = (e) => !!(e?.url && e?.key), Go = (e) => Array.isArray(e?.apiPresets) ? e.apiPresets.map((e) => e && typeof e == "object" ? {
+var Qo = (e) => !!(e?.url && e?.key), $o = (e) => Array.isArray(e?.apiPresets) ? e.apiPresets.map((e) => e && typeof e == "object" ? {
 	...e,
-	...Ga(e)
-} : null).filter((e) => e?.id) : [], Ko = () => new DOMException("The operation was aborted.", "AbortError"), qo = () => {
+	...Za(e)
+} : null).filter((e) => e?.id) : [], es = () => new DOMException("The operation was aborted.", "AbortError"), ts = () => {
 	let e = /* @__PURE__ */ Error("千千结已关闭");
 	return e.code = "QQJ_DISABLED", e;
-}, Jo = (e) => {
+}, ns = (e) => {
 	let t = /* @__PURE__ */ Error(e?.reason === "preset_missing" ? "所选 API 预设已失效，请重新选择或保存" : "共享 API 主配置不完整，请先保存 URL 和 Key");
 	return t.code = e?.reason === "preset_missing" ? "QQJ_PRESET_INVALID" : "QQJ_CONFIG", t;
-}, Yo = (e, t, n = "") => String(e ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, t) || n, Xo = (e, t = "", n = null) => ({
-	source: Yo(e?.source, 80, "unknown"),
-	sourceLabel: Yo(e?.sourceLabel, 160, "未命名 API"),
-	model: Yo(e?.config?.model, 160, "unknown"),
-	...t ? { finishReason: Yo(t, 32) } : {},
+}, rs = (e, t, n = "") => String(e ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, t) || n, is = (e, t = "", n = null) => ({
+	source: rs(e?.source, 80, "unknown"),
+	sourceLabel: rs(e?.sourceLabel, 160, "未命名 API"),
+	model: rs(e?.config?.model, 160, "unknown"),
+	...t ? { finishReason: rs(t, 32) } : {},
 	...Number.isSafeInteger(n) ? { transportAttempts: n } : {}
-}), Zo = (e, t) => {
-	let n = Xo(t, e?.taskMetadata?.finishReason || e?.finishReason, e?.taskMetadata?.transportAttempts);
+}), as = (e, t) => {
+	let n = is(t, e?.taskMetadata?.finishReason || e?.finishReason, e?.taskMetadata?.transportAttempts);
 	return e && typeof e == "object" && !Array.isArray(e) && (Object.hasOwn(e, "jsonData") || Object.hasOwn(e, "textData")) ? {
 		...e,
 		taskMetadata: n
@@ -9660,9 +9996,9 @@ var Wo = (e) => !!(e?.url && e?.key), Go = (e) => Array.isArray(e?.apiPresets) ?
 		taskMetadata: n
 	};
 };
-function Qo({ settings: e } = {}) {
+function os({ settings: e } = {}) {
 	if (!e?.get || !e?.sevenDaysSettings) throw Error("API 配置解析器依赖不可用");
-	let t = () => Go(e.sevenDaysSettings()).map(({ id: e, name: t, url: n, key: r, model: i, excludeParams: a, timeoutSec: o, stream: s }) => ({
+	let t = () => $o(e.sevenDaysSettings()).map(({ id: e, name: t, url: n, key: r, model: i, excludeParams: a, timeoutSec: o, stream: s }) => ({
 		id: e,
 		name: t,
 		url: n,
@@ -9672,7 +10008,7 @@ function Qo({ settings: e } = {}) {
 		timeoutSec: o,
 		stream: s
 	})), n = () => {
-		let t = e.sevenDaysSettings(), n = Ga({
+		let t = e.sevenDaysSettings(), n = Za({
 			name: "主配置",
 			url: t?.apiUrl,
 			key: t?.apiKey,
@@ -9681,7 +10017,7 @@ function Qo({ settings: e } = {}) {
 			timeoutSec: t?.apiTimeoutSec,
 			stream: t?.apiStream
 		});
-		return Wo(n) ? {
+		return Qo(n) ? {
 			kind: "independent",
 			source: "shared-main",
 			sourceLabel: "主配置",
@@ -9696,8 +10032,8 @@ function Qo({ settings: e } = {}) {
 	}, r = (t = null) => {
 		let r = e.get(), i = t?.apiMode || r.apiMode, a = t?.selectedSevenDaysPresetId ?? r.selectedSevenDaysPresetId;
 		if (i === "seven-preset") {
-			let t = Go(e.sevenDaysSettings()).find((e) => e.id === a);
-			return t && Wo(t) ? {
+			let t = $o(e.sevenDaysSettings()).find((e) => e.id === a);
+			return t && Qo(t) ? {
 				kind: "independent",
 				source: "shared-preset",
 				sourceLabel: t.name,
@@ -9716,8 +10052,8 @@ function Qo({ settings: e } = {}) {
 	return {
 		resolve: r,
 		resolveUtility: () => {
-			let t = typeof e.sharedUtilityPresetId == "function" ? e.sharedUtilityPresetId() : String(e.sevenDaysSettings()?.utilityPresetId ?? "").trim(), n = t ? Go(e.sevenDaysSettings()).find((e) => e.id === t) : null;
-			if (n && Wo(n)) {
+			let t = typeof e.sharedUtilityPresetId == "function" ? e.sharedUtilityPresetId() : String(e.sevenDaysSettings()?.utilityPresetId ?? "").trim(), n = t ? $o(e.sevenDaysSettings()).find((e) => e.id === t) : null;
+			if (n && Qo(n)) {
 				let e = Object.freeze({
 					...n,
 					excludeParams: Object.freeze([...n.excludeParams])
@@ -9744,14 +10080,14 @@ function Qo({ settings: e } = {}) {
 		describeSevenDaysPresets: t
 	};
 }
-function $o({ resolver: e, compactClient: t, isEnabled: n = () => !0 } = {}) {
+function ss({ resolver: e, compactClient: t, isEnabled: n = () => !0 } = {}) {
 	if (!e?.resolve || !t?.generateTask) throw Error("API 路由依赖不可用");
 	let r = /* @__PURE__ */ new Set(), i = 0, a = () => {
 		i += 1;
 		for (let e of r) e.abort();
 		r.clear();
 	}, o = async (e, a) => {
-		if (!n()) throw qo();
+		if (!n()) throw ts();
 		let o = i, s = a(), c = s?.config ? {
 			...s,
 			config: Object.freeze({
@@ -9759,9 +10095,9 @@ function $o({ resolver: e, compactClient: t, isEnabled: n = () => !0 } = {}) {
 				excludeParams: Object.freeze([...s.config.excludeParams || []])
 			})
 		} : s;
-		if (c.kind === "unavailable") throw Jo(c);
+		if (c.kind === "unavailable") throw ns(c);
 		if (c.kind !== "independent") throw Error("API 路由类型不受支持");
-		if (!n() || o !== i) throw Ko();
+		if (!n() || o !== i) throw es();
 		let l = new AbortController();
 		r.add(l);
 		let u = e?.signal, d = () => l.abort();
@@ -9772,12 +10108,12 @@ function $o({ resolver: e, compactClient: t, isEnabled: n = () => !0 } = {}) {
 				config: c.config,
 				signal: l.signal
 			});
-			if (!n() || o !== i) throw Ko();
-			return Zo(r, c);
+			if (!n() || o !== i) throw es();
+			return as(r, c);
 		} catch (e) {
-			if (l.signal.aborted || !n() || o !== i) throw Ko();
+			if (l.signal.aborted || !n() || o !== i) throw es();
 			if (e && (typeof e == "object" || typeof e == "function")) try {
-				e.taskMetadata = Xo(c, e?.finishReason || e?.taskMetadata?.finishReason, e?.transportAttempts ?? e?.taskMetadata?.transportAttempts);
+				e.taskMetadata = is(c, e?.finishReason || e?.taskMetadata?.finishReason, e?.transportAttempts ?? e?.taskMetadata?.transportAttempts);
 			} catch {}
 			throw e;
 		} finally {
@@ -9794,28 +10130,28 @@ function $o({ resolver: e, compactClient: t, isEnabled: n = () => !0 } = {}) {
 		getActiveCount: () => r.size
 	};
 }
-function es({ resolver: e, compactClient: t, isEnabled: n = () => !0 } = {}) {
+function cs({ resolver: e, compactClient: t, isEnabled: n = () => !0 } = {}) {
 	let r = /* @__PURE__ */ new Set(), i = 0, a = () => {
 		i += 1;
 		for (let e of r) e.abort();
 		r.clear();
 	}, o = (t = null) => {
 		if (t?.config) {
-			let e = Ga(t.config);
-			if (!Wo(e)) throw Jo({ reason: t?.selectedSevenDaysPresetId ? "preset_missing" : "main_incomplete" });
+			let e = Za(t.config);
+			if (!Qo(e)) throw ns({ reason: t?.selectedSevenDaysPresetId ? "preset_missing" : "main_incomplete" });
 			return e;
 		}
 		let n = e.resolve(t);
-		if (n.kind === "unavailable") throw Jo(n);
+		if (n.kind === "unavailable") throw ns(n);
 		if (n.kind !== "independent") {
 			let e = /* @__PURE__ */ Error("当前没有可测试的独立 API");
 			throw e.code = "QQJ_TAVERN", e;
 		}
 		return n.config;
 	}, s = async (e, a) => {
-		if (!n()) throw qo();
+		if (!n()) throw ts();
 		let s = i, c = o(a);
-		if (!n() || s !== i) throw Ko();
+		if (!n() || s !== i) throw es();
 		let l = new AbortController();
 		r.add(l);
 		try {
@@ -9823,7 +10159,7 @@ function es({ resolver: e, compactClient: t, isEnabled: n = () => !0 } = {}) {
 				config: c,
 				signal: l.signal
 			});
-			if (!n() || s !== i) throw Ko();
+			if (!n() || s !== i) throw es();
 			return r;
 		} finally {
 			r.delete(l);
@@ -9839,27 +10175,27 @@ function es({ resolver: e, compactClient: t, isEnabled: n = () => !0 } = {}) {
 }
 //#endregion
 //#region src/compact-api-client.js
-var ts = /* @__PURE__ */ new Set([
+var ls = /* @__PURE__ */ new Set([
 	"chat_completion_source",
 	"reverse_proxy",
 	"proxy_password",
 	"model",
 	"messages",
 	"json_schema"
-]), ns = "gpt-4o-mini", rs = 180, is = 4096, as = /(?:\b(?:https?|wss?):\/\/|\bauthorization\b|\bbasic\b|\bbearer\b|\b(?:cookie|set-cookie)\b|\b(?:api[-_ ]?key|x-api-key|proxy_password)\b|\bsecret(?:[_-][a-z0-9]+)?\b|\bsk-[a-z0-9_-]{3,}\b)/i;
-function os(e) {
+]), us = "gpt-4o-mini", ds = 180, fs = 4096, ps = /(?:\b(?:https?|wss?):\/\/|\bauthorization\b|\bbasic\b|\bbearer\b|\b(?:cookie|set-cookie)\b|\b(?:api[-_ ]?key|x-api-key|proxy_password)\b|\bsecret(?:[_-][a-z0-9]+)?\b|\bsk-[a-z0-9_-]{3,}\b)/i;
+function ms(e) {
 	let t = String(e || "").trim().replace(/\/+$/, "");
 	return t ? /\/chat\/completions$/i.test(t) ? t.replace(/\/chat\/completions$/i, "") : /^https?:\/\/[^/?#]+$/i.test(t) ? `${t}/v1` : t : "";
 }
-var ss = (e) => {
+var hs = (e) => {
 	let t = Number(e);
-	return Number.isInteger(t) && t >= 5 && t <= 600 ? t : rs;
-}, cs = () => new DOMException("The operation was aborted.", "AbortError"), ls = Object.freeze({
+	return Number.isInteger(t) && t >= 5 && t <= 600 ? t : ds;
+}, gs = () => new DOMException("The operation was aborted.", "AbortError"), _s = Object.freeze({
 	"http-response-json": "http_response_json",
 	"stream-event-json": "stream_event_json",
 	"completion-json": "completion_json",
 	"output-truncated": "output_truncated"
-}), us = (e) => {
+}), vs = (e) => {
 	let t = String(e ?? "").trim().toLowerCase();
 	return t ? [
 		"stop",
@@ -9869,7 +10205,7 @@ var ss = (e) => {
 		"tool_calls",
 		"function_call"
 	].includes(t) ? t : "other" : "";
-}, ds = (e) => ["length", "max_tokens"].includes(us(e)), fs = (e, t = 0, n = {}) => {
+}, ys = (e) => ["length", "max_tokens"].includes(vs(e)), bs = (e, t = 0, n = {}) => {
 	let r = Error({
 		config: "API 配置不完整，请检查 URL 和 Key",
 		timeout: "API 请求超时，请检查网络或调高超时时间",
@@ -9889,29 +10225,29 @@ var ss = (e) => {
 		"output-truncated": "模型输出疑似被截断",
 		"transport-budget": "本次任务的网络尝试次数已用完，请稍后重试"
 	}[e] || "API 请求失败");
-	r.code = `QQJ_${String(e).toUpperCase().replace(/-/g, "_")}`, t && (r.status = t, r.httpStatus = t), n.providerError && typeof n.providerError == "object" && (r.providerError = Object.freeze({ ...n.providerError })), (e === "format" || ls[e]) && (r.retryableRecognitionFormat = !0), ls[e] && (r.formatStage = ls[e]);
-	let i = us(n.finishReason);
+	r.code = `QQJ_${String(e).toUpperCase().replace(/-/g, "_")}`, t && (r.status = t, r.httpStatus = t), n.providerError && typeof n.providerError == "object" && (r.providerError = Object.freeze({ ...n.providerError })), (e === "format" || _s[e]) && (r.retryableRecognitionFormat = !0), _s[e] && (r.formatStage = _s[e]);
+	let i = vs(n.finishReason);
 	return i && (r.finishReason = i), r;
 };
-function ps(e, t = null) {
-	return fs(e === 401 || e === 403 ? "auth" : e === 404 ? "not-found" : e === 429 ? "rate-limit" : e >= 500 ? "server" : e === 400 || e === 422 ? "request-format" : "unsupported", e, t ? { providerError: t } : {});
+function xs(e, t = null) {
+	return bs(e === 401 || e === 403 ? "auth" : e === 404 ? "not-found" : e === 429 ? "rate-limit" : e >= 500 ? "server" : e === 400 || e === 422 ? "request-format" : "unsupported", e, t ? { providerError: t } : {});
 }
-var ms = (e, t, n = []) => {
+var Ss = (e, t, n = []) => {
 	if (![
 		"string",
 		"number",
 		"boolean"
 	].includes(typeof e) || !Number.isFinite(t) || t < 1) return null;
 	let r = String(e).replace(/[\u0000-\u001f\u007f]/g, " ").trim();
-	return r ? as.test(r) || n.some((e) => e && r.includes(String(e))) ? "[REDACTED]" : r.slice(0, t) : null;
-}, hs = (e, t = []) => {
-	let n = ms(e, 120, t);
+	return r ? ps.test(r) || n.some((e) => e && r.includes(String(e))) ? "[REDACTED]" : r.slice(0, t) : null;
+}, Cs = (e, t = []) => {
+	let n = Ss(e, 120, t);
 	return !n || n === "[REDACTED]" || /^[a-z0-9_.:-]+$/iu.test(n) ? n : "[REDACTED]";
-}, gs = (e) => {
+}, ws = (e) => {
 	let t = String(e ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").toLowerCase();
 	return t.trim() ? /json[_ -]?schema|response[_ -]?format|structured output|schema validation/u.test(t) ? "上游不接受当前 JSON 响应格式" : /invalid (?:argument|request|parameter|field)|invalid_argument|unprocessable/u.test(t) ? "上游拒绝了请求参数" : /context.{0,20}(?:length|limit|window)|token.{0,20}(?:limit|maximum)|request.{0,20}too long/u.test(t) ? "上游认为请求内容超过限制" : /rate.?limit|too many requests/u.test(t) ? "上游请求频率受限" : /unauthori[sz]ed|authorization|authentication|permission|forbidden|bearer|credential|api.?key/u.test(t) ? "上游认证或权限检查失败" : /not found/u.test(t) ? "上游未找到请求的资源" : /time.?out/u.test(t) ? "上游处理请求超时" : "上游错误详情已隐藏" : null;
 };
-async function _s(e, t = is) {
+async function Ts(e, t = fs) {
 	let n = e?.body?.getReader?.();
 	if (n) {
 		let e = new TextDecoder(), r = "";
@@ -9944,8 +10280,8 @@ async function _s(e, t = is) {
 	} catch {}
 	return "";
 }
-async function vs(e, t = []) {
-	let n = (await _s(e)).trim();
+async function Es(e, t = []) {
+	let n = (await Ts(e)).trim();
 	if (!n) return null;
 	let r = null, i = !1;
 	try {
@@ -9956,22 +10292,22 @@ async function vs(e, t = []) {
 	}
 	if (i) return Object.freeze({ message: "上游返回了无法安全解析的错误 JSON" });
 	let a = r ? {
-		code: hs(r.code, t),
-		status: hs(r.status, t),
-		message: gs(r.message)
+		code: Cs(r.code, t),
+		status: Cs(r.status, t),
+		message: ws(r.message)
 	} : {
 		code: null,
 		status: null,
-		message: gs(n)
+		message: ws(n)
 	}, o = Object.fromEntries(Object.entries(a).filter(([, e]) => e !== null));
 	return Object.keys(o).length ? Object.freeze(o) : null;
 }
-function ys(e) {
-	let t = us(e?.choices?.[0]?.finish_reason);
-	if (ds(t)) throw fs("output-truncated", 0, { finishReason: t });
+function Ds(e) {
+	let t = vs(e?.choices?.[0]?.finish_reason);
+	if (ys(t)) throw bs("output-truncated", 0, { finishReason: t });
 	let n = e?.choices?.[0]?.message?.content ?? e?.choices?.[0]?.text ?? e?.content ?? "", r = typeof n == "string" ? n.trim() : "";
 	if (!r || ["none", "<none>"].includes(r.toLowerCase())) {
-		let e = fs("empty");
+		let e = bs("empty");
 		throw t && (e.finishReason = t), e;
 	}
 	return {
@@ -9979,7 +10315,7 @@ function ys(e) {
 		finishReason: t
 	};
 }
-function bs(e) {
+function Os(e) {
 	let t = [], n = 0, r = 0, i = -1, a = !1, o = !1, s = !1;
 	for (let s = 0; s < e.length; s += 1) {
 		let c = e[s];
@@ -10010,12 +10346,12 @@ function bs(e) {
 		unclosed: s
 	};
 }
-function xs(e, { finishReason: t } = {}) {
+function ks(e, { finishReason: t } = {}) {
 	if (e && typeof e == "object" && !Array.isArray(e)) return e;
-	let n = us(t);
-	if (ds(n)) throw fs("output-truncated", 0, { finishReason: n });
+	let n = vs(t);
+	if (ys(n)) throw bs("output-truncated", 0, { finishReason: n });
 	let r = String(e ?? "").trim(), i = () => {
-		throw fs("completion-json", 0, { finishReason: n });
+		throw bs("completion-json", 0, { finishReason: n });
 	}, a = (e, { repair: t = !1 } = {}) => {
 		if (!t) try {
 			let t = JSON.parse(e);
@@ -10035,31 +10371,31 @@ function xs(e, { finishReason: t } = {}) {
 	let o = a(r, { repair: !0 });
 	if (o) return o;
 	let s = [...r.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi)];
-	if ((r.match(/```/g)?.length || 0) % 2 == 1) throw fs("output-truncated", 0, { finishReason: n });
+	if ((r.match(/```/g)?.length || 0) % 2 == 1) throw bs("output-truncated", 0, { finishReason: n });
 	if (s.length) {
 		if (s.length !== 1) return i();
-		let e = bs(`${r.slice(0, s[0].index)}${r.slice((s[0].index || 0) + s[0][0].length)}`);
-		if (e.unclosed) throw fs("output-truncated", 0, { finishReason: n });
+		let e = Os(`${r.slice(0, s[0].index)}${r.slice((s[0].index || 0) + s[0][0].length)}`);
+		if (e.unclosed) throw bs("output-truncated", 0, { finishReason: n });
 		return e.candidates.length ? i() : a(s[0][1].trim(), { repair: !0 }) || i();
 	}
-	let c = bs(r);
+	let c = Os(r);
 	if (c.unclosed) {
 		let e = Ee(r, { finishReason: n });
 		if (e) return e;
-		throw fs("output-truncated", 0, { finishReason: n });
+		throw bs("output-truncated", 0, { finishReason: n });
 	}
 	return c.candidates.length === 1 && a(c.candidates[0]) || i();
 }
-async function Ss(e) {
+async function As(e) {
 	let t = e.body?.getReader?.();
 	if (!t) {
 		let t;
 		try {
 			t = await e.json();
 		} catch {
-			throw fs("http-response-json");
+			throw bs("http-response-json");
 		}
-		return ys(t);
+		return Ds(t);
 	}
 	let n = new TextDecoder(), r = "", i = "", a = [], o = "", s = () => {
 		if (!a.length) return;
@@ -10069,10 +10405,10 @@ async function Ss(e) {
 		try {
 			t = JSON.parse(e);
 		} catch {
-			throw fs("stream-event-json");
+			throw bs("stream-event-json");
 		}
-		if (t?.error) throw fs("unsupported");
-		let n = us(t?.choices?.[0]?.finish_reason);
+		if (t?.error) throw bs("unsupported");
+		let n = vs(t?.choices?.[0]?.finish_reason);
 		n && (o = n);
 		let r = t?.choices?.[0]?.delta?.content ?? t?.choices?.[0]?.message?.content ?? t?.choices?.[0]?.text;
 		typeof r == "string" && (i += r);
@@ -10091,9 +10427,9 @@ async function Ss(e) {
 		let a = r.split("\n");
 		r = a.pop() || "", a.forEach(c);
 	}
-	if (ds(o)) throw fs("output-truncated", 0, { finishReason: o });
+	if (ys(o)) throw bs("output-truncated", 0, { finishReason: o });
 	if (!i.trim()) {
-		let e = fs("empty");
+		let e = bs("empty");
 		throw o && (e.finishReason = o), e;
 	}
 	return {
@@ -10101,21 +10437,21 @@ async function Ss(e) {
 		finishReason: o
 	};
 }
-function Cs(e, t) {
+function js(e, t) {
 	return new Promise((n, r) => {
-		if (t?.aborted) return r(cs());
+		if (t?.aborted) return r(gs());
 		let i = setTimeout(n, e);
 		t?.addEventListener("abort", () => {
-			clearTimeout(i), r(cs());
+			clearTimeout(i), r(gs());
 		}, { once: !0 });
 	});
 }
-function ws(e, t, n) {
+function Ms(e, t, n) {
 	let r = new AbortController(), i = !1, a = () => r.abort();
 	e?.aborted ? r.abort() : e?.addEventListener?.("abort", a, { once: !0 });
 	let o = setTimeout(() => {
 		i = !0, r.abort();
-	}, n(ss(t)));
+	}, n(hs(t)));
 	return {
 		controller: r,
 		timedOut: () => i,
@@ -10124,7 +10460,7 @@ function ws(e, t, n) {
 		}
 	};
 }
-function Ts({ fetchImpl: e, headers: t = () => ({}), retryWait: n = Cs, timeoutMs: r = (e) => e * 1e3, onBusyChange: i = () => {} } = {}) {
+function Ns({ fetchImpl: e, headers: t = () => ({}), retryWait: n = js, timeoutMs: r = (e) => e * 1e3, onBusyChange: i = () => {} } = {}) {
 	if (e !== void 0 && typeof e != "function") throw Error("fetch 不可用");
 	let a = 0, o = (e) => {
 		let t = a > 0;
@@ -10138,20 +10474,20 @@ function Ts({ fetchImpl: e, headers: t = () => ({}), retryWait: n = Cs, timeoutM
 		if (typeof t != "function") throw Error("fetch 不可用");
 		return t;
 	}, c = async ({ path: e, body: i, config: a, signal: c, stream: l = !1, retries: u = 2, transportBudget: d = null }) => {
-		if (!a?.url || !a?.key) throw fs("config");
+		if (!a?.url || !a?.key) throw bs("config");
 		o(1);
 		try {
 			let o = 0;
 			for (;;) {
-				if (c?.aborted) throw cs();
+				if (c?.aborted) throw gs();
 				if (d) {
 					if (!Number.isSafeInteger(d.remaining) || !Number.isSafeInteger(d.used) || d.remaining < 1 || d.used < 0) {
-						let e = fs("transport-budget");
+						let e = bs("transport-budget");
 						throw e.transportAttempts = Math.max(0, Number(d.used) || 0), e;
 					}
 					--d.remaining, d.used += 1;
 				}
-				let f = ws(c, a.timeoutSec, r);
+				let f = Ms(c, a.timeoutSec, r);
 				try {
 					let r = await s()(e, {
 						method: "POST",
@@ -10167,26 +10503,26 @@ function Ts({ fetchImpl: e, headers: t = () => ({}), retryWait: n = Cs, timeoutM
 							o += 1, f.cleanup(), await n(Math.min(400 * 2 ** o, 2e3), c);
 							continue;
 						}
-						throw ps(r.status, await vs(r, [
+						throw xs(r.status, await Es(r, [
 							a.key,
 							a.url,
-							os(a.url)
+							ms(a.url)
 						]));
 					}
-					if (l) return await Ss(r);
+					if (l) return await As(r);
 					try {
 						return await r.json();
 					} catch {
-						throw fs("http-response-json");
+						throw bs("http-response-json");
 					}
 				} catch (e) {
-					if (f.timedOut()) throw fs("timeout");
-					if (c?.aborted || e?.name === "AbortError") throw cs();
+					if (f.timedOut()) throw bs("timeout");
+					if (c?.aborted || e?.name === "AbortError") throw gs();
 					if (e instanceof TypeError && o < u) {
 						o += 1, f.cleanup(), await n(Math.min(400 * 2 ** o, 2e3), c);
 						continue;
 					}
-					throw e instanceof TypeError ? fs("network") : e instanceof SyntaxError ? fs("http-response-json") : e;
+					throw e instanceof TypeError ? bs("network") : e instanceof SyntaxError ? bs("http-response-json") : e;
 				} finally {
 					f.cleanup();
 				}
@@ -10203,9 +10539,9 @@ function Ts({ fetchImpl: e, headers: t = () => ({}), retryWait: n = Cs, timeoutM
 			content: e.content
 		}))], d = {
 			chat_completion_source: "openai",
-			reverse_proxy: os(e?.url),
+			reverse_proxy: ms(e?.url),
 			proxy_password: e?.key,
-			model: e?.model || ns,
+			model: e?.model || us,
 			messages: u,
 			stream: e?.stream === !0,
 			temperature: a,
@@ -10218,7 +10554,7 @@ function Ts({ fetchImpl: e, headers: t = () => ({}), retryWait: n = Cs, timeoutM
 		});
 		for (let t of e?.excludeParams || []) {
 			let e = String(t).trim();
-			e && !ts.has(e) && delete d[e];
+			e && !ls.has(e) && delete d[e];
 		}
 		let f;
 		try {
@@ -10233,9 +10569,9 @@ function Ts({ fetchImpl: e, headers: t = () => ({}), retryWait: n = Cs, timeoutM
 		} catch (e) {
 			throw e && (typeof e == "object" || typeof e == "function") && s && (e.transportAttempts = s.used), e;
 		}
-		let p = d.stream === !0 ? f : ys(f);
+		let p = d.stream === !0 ? f : Ds(f);
 		return {
-			...l === "semantic" ? { textData: p.text } : { jsonData: xs(p.text, { finishReason: p.finishReason }) },
+			...l === "semantic" ? { textData: p.text } : { jsonData: ks(p.text, { finishReason: p.finishReason }) },
 			taskMetadata: {
 				...p.finishReason ? { finishReason: p.finishReason } : {},
 				...s ? { transportAttempts: s.used } : {}
@@ -10258,16 +10594,16 @@ function Ts({ fetchImpl: e, headers: t = () => ({}), retryWait: n = Cs, timeoutM
 				signal: t,
 				maxTokens: 48,
 				temperature: 0
-			}))?.jsonData?.ok !== !0) throw fs("format");
+			}))?.jsonData?.ok !== !0) throw bs("format");
 			return {
 				ok: !0,
-				model: e?.model || ns
+				model: e?.model || us
 			};
 		},
 		fetchModels: async ({ config: e, signal: t } = {}) => {
 			let n = {
 				chat_completion_source: "openai",
-				reverse_proxy: os(e?.url),
+				reverse_proxy: ms(e?.url),
 				proxy_password: e?.key
 			}, r = await c({
 				path: "/api/backends/chat-completions/status",
@@ -10276,19 +10612,19 @@ function Ts({ fetchImpl: e, headers: t = () => ({}), retryWait: n = Cs, timeoutM
 				signal: t,
 				retries: 1
 			}), i = (Array.isArray(r?.data) ? r.data : Array.isArray(r?.models) ? r.models : []).map((e) => typeof e == "string" ? e : e?.id).filter(Boolean).map(String).sort();
-			if (!i.length) throw fs("models");
+			if (!i.length) throw bs("models");
 			return [...new Set(i)];
 		}
 	};
 }
 //#endregion
 //#region src/chat-session.js
-var Es = class extends Error {
+var Ps = class extends Error {
 	constructor(e, t = "CHAT_SESSION_INVALID") {
 		super(e), this.name = "ChatSessionError", this.code = t;
 	}
-}, Ds = (e, t) => e.hostChatId === t.hostChatId && e.characterAvatar === t.characterAvatar && e.personaAvatar === t.personaAvatar;
-function Os({ contextProvider: e, isEnabled: t = !0, ensureChatId: n = ia, identityCoordinator: r = null } = {}) {
+}, Fs = (e, t) => e.hostChatId === t.hostChatId && e.characterAvatar === t.characterAvatar && e.personaAvatar === t.personaAvatar;
+function Is({ contextProvider: e, isEnabled: t = !0, ensureChatId: n = ua, identityCoordinator: r = null } = {}) {
 	if (typeof e != "function") throw TypeError("session contextProvider 必须是函数");
 	if (typeof t != "boolean" && typeof t != "function") throw TypeError("session isEnabled 无效");
 	if (typeof n != "function") throw TypeError("session ensureChatId 必须是函数");
@@ -10302,11 +10638,11 @@ function Os({ contextProvider: e, isEnabled: t = !0, ensureChatId: n = ia, ident
 	}, l = () => {
 		let t, n;
 		try {
-			t = e(), n = ea(t);
+			t = e(), n = oa(t);
 		} catch {
-			throw new Es("当前聊天身份不可用", "CHAT_SESSION_CONTEXT_INVALID");
+			throw new Ps("当前聊天身份不可用", "CHAT_SESSION_CONTEXT_INVALID");
 		}
-		if (n?.ok !== !0) throw new Es(n?.reason || "当前聊天身份不可用", "CHAT_SESSION_CONTEXT_INVALID");
+		if (n?.ok !== !0) throw new Ps(n?.reason || "当前聊天身份不可用", "CHAT_SESSION_CONTEXT_INVALID");
 		return {
 			raw: t,
 			host: n
@@ -10320,7 +10656,7 @@ function Os({ contextProvider: e, isEnabled: t = !0, ensureChatId: n = ia, ident
 		if (!c()) return "disabled";
 		if (e.epoch !== i || e.controller?.signal.aborted) return "stale";
 		try {
-			return Ds(e.host, l().host) ? "current" : "stale";
+			return Fs(e.host, l().host) ? "current" : "stale";
 		} catch {
 			return "stale";
 		}
@@ -10333,13 +10669,13 @@ function Os({ contextProvider: e, isEnabled: t = !0, ensureChatId: n = ia, ident
 		} catch (e) {
 			return Promise.reject(e);
 		}
-		if (o && Ds(o.host, e.host) && e.host.chatId === o.identity.chatId) return s = Object.freeze({
+		if (o && Fs(o.host, e.host) && e.host.chatId === o.identity.chatId) return s = Object.freeze({
 			status: "suspended",
 			identity: o.identity
 		}), Promise.resolve(s);
-		if (a && Ds(a.host, e.host)) return a.promise;
+		if (a && Fs(a.host, e.host)) return a.promise;
 		if (s.status === "ready" && s.identity?.hostChatId === e.host.hostChatId && s.identity?.chatId === e.host.chatId && s.identity?.characterLocator === e.host.characterAvatar && s.identity?.personaLocator === e.host.personaAvatar) return Promise.resolve(s);
-		if (ta(e.host.chatId) && !r) return s = Object.freeze({
+		if (sa(e.host.chatId) && !r) return s = Object.freeze({
 			status: "ready",
 			identity: u(e.host)
 		}), Promise.resolve(s);
@@ -10353,7 +10689,7 @@ function Os({ contextProvider: e, isEnabled: t = !0, ensureChatId: n = ia, ident
 				let i = r ? await r.prepare(e.raw, e.host, { signal: t.controller.signal }) : await n(e.raw, e.host), a = d(t);
 				if (a !== "current") return Object.freeze({ status: a });
 				let o = l().host;
-				if (!ta(o.chatId) || o.chatId !== i) throw new Es("稳定 chatId 保存后未能读回", "CHAT_SESSION_PERSIST_FAILED");
+				if (!sa(o.chatId) || o.chatId !== i) throw new Ps("稳定 chatId 保存后未能读回", "CHAT_SESSION_PERSIST_FAILED");
 				return s = Object.freeze({
 					status: "ready",
 					identity: u(o)
@@ -10372,7 +10708,7 @@ function Os({ contextProvider: e, isEnabled: t = !0, ensureChatId: n = ia, ident
 	}
 	function p(e, t, n) {
 		if (!c()) return Promise.resolve(Object.freeze({ status: "disabled" }));
-		if (typeof r?.rename != "function") return Promise.reject(new Es("当前身份协调器不支持聊天改名", "CHAT_SESSION_RENAME_UNAVAILABLE"));
+		if (typeof r?.rename != "function") return Promise.reject(new Ps("当前身份协调器不支持聊天改名", "CHAT_SESSION_RENAME_UNAVAILABLE"));
 		let o;
 		try {
 			o = l();
@@ -10394,7 +10730,7 @@ function Os({ contextProvider: e, isEnabled: t = !0, ensureChatId: n = ia, ident
 				}), a = d(f);
 				if (a !== "current") return Object.freeze({ status: a });
 				let c = l().host;
-				if (!ta(c.chatId) || c.chatId !== i) throw new Es("改名身份保存后未能读回", "CHAT_SESSION_PERSIST_FAILED");
+				if (!sa(c.chatId) || c.chatId !== i) throw new Ps("改名身份保存后未能读回", "CHAT_SESSION_PERSIST_FAILED");
 				return s = Object.freeze({
 					status: "ready",
 					identity: u(c)
@@ -10412,11 +10748,11 @@ function Os({ contextProvider: e, isEnabled: t = !0, ensureChatId: n = ia, ident
 		}).catch(() => {}), f.promise;
 	}
 	function m() {
-		if (!c()) throw new Es("千千结已关闭", "CHAT_SESSION_DISABLED");
+		if (!c()) throw new Ps("千千结已关闭", "CHAT_SESSION_DISABLED");
 		let e = l().host;
-		if (o && Ds(o.host, e) && e.chatId === o.identity.chatId) throw new Es("当前聊天记忆正在清理，请等待完成或重试", "CHAT_SESSION_SUSPENDED");
-		if (!ta(e.chatId)) throw new Es("当前聊天尚未建立稳定 chatId", "CHAT_SESSION_NOT_READY");
-		if (r && (s.status !== "ready" || s.identity?.chatId !== e.chatId || s.identity?.hostChatId !== e.hostChatId)) throw new Es("当前聊天身份尚未完成后端认领", "CHAT_SESSION_NOT_READY");
+		if (o && Fs(o.host, e) && e.chatId === o.identity.chatId) throw new Ps("当前聊天记忆正在清理，请等待完成或重试", "CHAT_SESSION_SUSPENDED");
+		if (!sa(e.chatId)) throw new Ps("当前聊天尚未建立稳定 chatId", "CHAT_SESSION_NOT_READY");
+		if (r && (s.status !== "ready" || s.identity?.chatId !== e.chatId || s.identity?.hostChatId !== e.hostChatId)) throw new Ps("当前聊天身份尚未完成后端认领", "CHAT_SESSION_NOT_READY");
 		return u(e);
 	}
 	function h() {
@@ -10424,7 +10760,7 @@ function Os({ contextProvider: e, isEnabled: t = !0, ensureChatId: n = ia, ident
 		let e = !1;
 		if (o) try {
 			let t = l().host;
-			e = Ds(o.host, t) && t.chatId === o.identity.chatId;
+			e = Fs(o.host, t) && t.chatId === o.identity.chatId;
 		} catch {}
 		s = Object.freeze(c() ? e ? {
 			status: "suspended",
@@ -10432,9 +10768,9 @@ function Os({ contextProvider: e, isEnabled: t = !0, ensureChatId: n = ia, ident
 		} : { status: "idle" } : { status: "disabled" });
 	}
 	function g(e) {
-		if (!c()) throw new Es("千千结已关闭", "CHAT_SESSION_DISABLED");
+		if (!c()) throw new Ps("千千结已关闭", "CHAT_SESSION_DISABLED");
 		let t = l();
-		if (!ta(e) || t.host.chatId !== e || s.status !== "ready" || s.identity?.chatId !== e) throw new Es("当前聊天身份尚未准备好，不能清理记忆", "CHAT_SESSION_NOT_READY");
+		if (!sa(e) || t.host.chatId !== e || s.status !== "ready" || s.identity?.chatId !== e) throw new Ps("当前聊天身份尚未准备好，不能清理记忆", "CHAT_SESSION_NOT_READY");
 		return i += 1, a?.controller?.abort("sessionSuspended"), a = null, o = Object.freeze({
 			host: t.host,
 			identity: s.identity
@@ -10458,27 +10794,27 @@ function Os({ contextProvider: e, isEnabled: t = !0, ensureChatId: n = ia, ident
 }
 //#endregion
 //#region src/chat-identity.js
-var ks = "chat-identity-bindings", As = "binding-";
-function js(e, t) {
+var Ls = "chat-identity-bindings", Rs = "binding-";
+function zs(e, t) {
 	return Object.assign(Error(t), { code: e });
 }
-function Ms(e) {
+function Bs(e) {
 	return Object.freeze({
 		hostChatId: String(e.hostChatId ?? ""),
 		characterLocator: String(e.characterAvatar ?? ""),
 		personaLocator: String(e.personaAvatar ?? "")
 	});
 }
-function Ns(e, t) {
+function Vs(e, t) {
 	return e?.hostChatId === t?.hostChatId && e?.characterLocator === t?.characterLocator;
 }
-function Ps(e, t) {
-	return Ns(e, t) && e?.personaLocator === t?.personaLocator;
+function Hs(e, t) {
+	return Vs(e, t) && e?.personaLocator === t?.personaLocator;
 }
-function Fs(e) {
+function Us(e) {
 	return String(e ?? "").trim().replace(/\.jsonl$/i, "");
 }
-function Is({ chatId: e, owner: t, state: n = "ready", sourceChatId: r = null, createdAt: i }) {
+function Ws({ chatId: e, owner: t, state: n = "ready", sourceChatId: r = null, createdAt: i }) {
 	return Object.freeze({
 		schemaVersion: 1,
 		kind: "qqj-chat-identity-binding",
@@ -10490,25 +10826,25 @@ function Is({ chatId: e, owner: t, state: n = "ready", sourceChatId: r = null, c
 		updatedAt: i
 	});
 }
-function Ls(e, t) {
+function Gs(e, t) {
 	let n = e?.data;
-	if (!Number.isSafeInteger(e?.revision) || e.revision < 1 || !n || n.schemaVersion !== 1 || n.kind !== "qqj-chat-identity-binding" || n.chatId !== t || !ta(n.chatId) || !n.owner || typeof n.owner != "object" || !String(n.owner.hostChatId ?? "") || !String(n.owner.characterLocator ?? "") || !String(n.owner.personaLocator ?? "") || !["preparing", "ready"].includes(n.state) || n.sourceChatId !== null && !ta(n.sourceChatId)) throw js("QQJ_CHAT_BINDING_INVALID", "聊天身份认领记录损坏，已停止读写以避免串档。");
+	if (!Number.isSafeInteger(e?.revision) || e.revision < 1 || !n || n.schemaVersion !== 1 || n.kind !== "qqj-chat-identity-binding" || n.chatId !== t || !sa(n.chatId) || !n.owner || typeof n.owner != "object" || !String(n.owner.hostChatId ?? "") || !String(n.owner.characterLocator ?? "") || !String(n.owner.personaLocator ?? "") || !["preparing", "ready"].includes(n.state) || n.sourceChatId !== null && !sa(n.sourceChatId)) throw zs("QQJ_CHAT_BINDING_INVALID", "聊天身份认领记录损坏，已停止读写以避免串档。");
 	return Object.freeze({
 		data: n,
 		revision: e.revision
 	});
 }
-function Rs({ client: e, persist: t = ra, freshUuid: n = na, now: r = () => /* @__PURE__ */ new Date() } = {}) {
+function Ks({ client: e, persist: t = la, freshUuid: n = ca, now: r = () => /* @__PURE__ */ new Date() } = {}) {
 	if (!e || typeof e.get != "function" || typeof e.put != "function") throw TypeError("聊天身份协调器需要 record/CAS client");
 	if (typeof t != "function" || typeof n != "function") throw TypeError("聊天身份协调器参数无效");
-	let i = (e) => `${As}${e}`, a = () => {
+	let i = (e) => `${Rs}${e}`, a = () => {
 		let e = r()?.toISOString?.() ?? String(r());
-		if (!Number.isFinite(Date.parse(e))) throw js("QQJ_CHAT_BINDING_TIME_INVALID", "聊天身份认领时间无效。");
+		if (!Number.isFinite(Date.parse(e))) throw zs("QQJ_CHAT_BINDING_TIME_INVALID", "聊天身份认领时间无效。");
 		return e;
 	};
 	async function o(t) {
 		try {
-			return Ls(await e.get(ks, i(t)), t);
+			return Gs(await e.get(Ls, i(t)), t);
 		} catch (e) {
 			if (e?.status === 404) return null;
 			throw e;
@@ -10516,11 +10852,11 @@ function Rs({ client: e, persist: t = ra, freshUuid: n = na, now: r = () => /* @
 	}
 	async function s(t) {
 		try {
-			return Ls(await e.put(ks, i(t.chatId), t, 0), t.chatId);
+			return Gs(await e.put(Ls, i(t.chatId), t, 0), t.chatId);
 		} catch (e) {
 			if (e?.status !== 409) throw e;
 			let n = await o(t.chatId);
-			if (!n) throw js("QQJ_CHAT_BINDING_CONFLICT", "聊天身份认领冲突且无法读取胜出记录。");
+			if (!n) throw zs("QQJ_CHAT_BINDING_CONFLICT", "聊天身份认领冲突且无法读取胜出记录。");
 			return n;
 		}
 	}
@@ -10535,22 +10871,22 @@ function Rs({ client: e, persist: t = ra, freshUuid: n = na, now: r = () => /* @
 	let l = Promise.resolve();
 	function u(e, t) {
 		let n = l.then(async () => {
-			if (t?.aborted) throw js("QQJ_CHAT_PREPARE_STALE", "聊天身份准备已过期。");
+			if (t?.aborted) throw zs("QQJ_CHAT_PREPARE_STALE", "聊天身份准备已过期。");
 			return e();
 		});
 		return l = n.then(() => void 0, () => void 0), n;
 	}
 	async function d(e, n, r, i = null) {
-		let o = await s(Is({
+		let o = await s(Ws({
 			chatId: r,
 			owner: n,
 			sourceChatId: i,
 			createdAt: a()
 		}));
-		return !Ns(o.data.owner, n) || o.data.state !== "ready" ? null : (await t(e, r), r);
+		return !Vs(o.data.owner, n) || o.data.state !== "ready" ? null : (await t(e, r), r);
 	}
 	async function f(e, t, r) {
-		let i = Ms(t), a = ta(r) ? r : null, o = await d(e, i, await J([
+		let i = Bs(t), a = sa(r) ? r : null, o = await d(e, i, await Y([
 			"qqj-chat-independent-v2",
 			r,
 			i.hostChatId,
@@ -10563,21 +10899,21 @@ function Rs({ client: e, persist: t = ra, freshUuid: n = na, now: r = () => /* @
 			let o = await d(e, i, t, a);
 			if (o) return o;
 		}
-		throw js("QQJ_CHAT_BINDING_CONFLICT", "无法为当前聊天建立独立身份，请刷新后重试。");
+		throw zs("QQJ_CHAT_BINDING_CONFLICT", "无法为当前聊天建立独立身份，请刷新后重试。");
 	}
 	async function p(e, r) {
-		let i = Ms(r);
-		if (!ta(r.chatId)) return await d(e, i, n()) || f(e, r, "new-chat");
+		let i = Bs(r);
+		if (!sa(r.chatId)) return await d(e, i, n()) || f(e, r, "new-chat");
 		let l = await o(r.chatId);
 		if (!l) {
 			if (await c(r.chatId)) return f(e, r, r.chatId);
-			l = await s(Is({
+			l = await s(Ws({
 				chatId: r.chatId,
 				owner: i,
 				createdAt: a()
 			}));
 		}
-		return Ns(l.data.owner, i) && l.data.state === "ready" ? (await t(e, l.data.chatId), l.data.chatId) : f(e, r, r.chatId);
+		return Vs(l.data.owner, i) && l.data.state === "ready" ? (await t(e, l.data.chatId), l.data.chatId) : f(e, r, r.chatId);
 	}
 	function m(e, t, { signal: n } = {}) {
 		return u(() => p(e, t), n);
@@ -10592,17 +10928,17 @@ function Rs({ client: e, persist: t = ra, freshUuid: n = na, now: r = () => /* @
 			throw e;
 		}
 		let r = n?.data;
-		if (!r || r.chatId !== t || r.recordType !== "root") throw js("QQJ_CHAT_RENAME_TEMP_INVALID", "改名期间建立的临时记忆档无法安全核验，已停止自动恢复。");
-		if (r.baselineId || r.activeRunId || h(r.activeStateRefs) || h(r.activeThreadRefs)) throw js("QQJ_CHAT_RENAME_TEMP_HAS_MEMORY", "改名期间的新档已经产生业务记忆，请先人工确认后再恢复旧档。");
+		if (!r || r.chatId !== t || r.recordType !== "root") throw zs("QQJ_CHAT_RENAME_TEMP_INVALID", "改名期间建立的临时记忆档无法安全核验，已停止自动恢复。");
+		if (r.baselineId || r.activeRunId || h(r.activeStateRefs) || h(r.activeThreadRefs)) throw zs("QQJ_CHAT_RENAME_TEMP_HAS_MEMORY", "改名期间的新档已经产生业务记忆，请先人工确认后再恢复旧档。");
 		if (!r.headCheckpointId) return;
 		let i;
 		try {
 			i = await e.get(`chat-${t}`, `v3-checkpoint-${r.headCheckpointId}`);
 		} catch (e) {
-			throw e?.status === 404 ? js("QQJ_CHAT_RENAME_TEMP_INVALID", "改名期间的新档缺少 checkpoint，已停止自动恢复。") : e;
+			throw e?.status === 404 ? zs("QQJ_CHAT_RENAME_TEMP_INVALID", "改名期间的新档缺少 checkpoint，已停止自动恢复。") : e;
 		}
 		let a = i?.data;
-		if (!a || a.chatId !== t || a.id !== r.headCheckpointId || a.recordType !== "checkpoint") throw js("QQJ_CHAT_RENAME_TEMP_INVALID", "改名期间的新档 checkpoint 无法安全核验，已停止自动恢复。");
+		if (!a || a.chatId !== t || a.id !== r.headCheckpointId || a.recordType !== "checkpoint") throw zs("QQJ_CHAT_RENAME_TEMP_INVALID", "改名期间的新档 checkpoint 无法安全核验，已停止自动恢复。");
 		let o = a.producedRefs;
 		if (!o || [
 			"floorMemories",
@@ -10615,27 +10951,27 @@ function Rs({ client: e, persist: t = ra, freshUuid: n = na, now: r = () => /* @
 			"stateProjections",
 			"episodes",
 			"threads"
-		].some((e) => !Array.isArray(o[e]) || o[e].length > 0)) throw js("QQJ_CHAT_RENAME_TEMP_HAS_MEMORY", "改名期间的新档已经产生业务记忆，请先人工确认后再恢复旧档。");
+		].some((e) => !Array.isArray(o[e]) || o[e].length > 0)) throw zs("QQJ_CHAT_RENAME_TEMP_HAS_MEMORY", "改名期间的新档已经产生业务记忆，请先人工确认后再恢复旧档。");
 	}
 	async function _(n, r, s, c, l) {
-		let u = Ms(r), d = c?.chatId, f = String(c?.hostChatId ?? ""), p = Fs(s?.oldFileName);
-		if (!ta(d) || !f || !p || p !== f || s?.groupId || Fs(s?.newFileName) === "" || u.hostChatId === f || u.characterLocator !== c?.characterLocator || u.personaLocator !== c?.personaLocator || s?.avatarId !== void 0 && s?.avatarId !== null && String(s.avatarId) !== u.characterLocator) throw js("QQJ_CHAT_RENAME_EVIDENCE_INVALID", "聊天改名证据与当前身份不一致，已保持独立档案。");
-		if (l?.hostChatId !== u.hostChatId || l?.chatId !== r.chatId || l?.characterLocator !== u.characterLocator || l?.personaLocator !== u.personaLocator) throw js("QQJ_CHAT_RENAME_RECEIPT_INVALID", "当前聊天身份不是本次切换准备的结果，已保持独立档案。");
+		let u = Bs(r), d = c?.chatId, f = String(c?.hostChatId ?? ""), p = Us(s?.oldFileName);
+		if (!sa(d) || !f || !p || p !== f || s?.groupId || Us(s?.newFileName) === "" || u.hostChatId === f || u.characterLocator !== c?.characterLocator || u.personaLocator !== c?.personaLocator || s?.avatarId !== void 0 && s?.avatarId !== null && String(s.avatarId) !== u.characterLocator) throw zs("QQJ_CHAT_RENAME_EVIDENCE_INVALID", "聊天改名证据与当前身份不一致，已保持独立档案。");
+		if (l?.hostChatId !== u.hostChatId || l?.chatId !== r.chatId || l?.characterLocator !== u.characterLocator || l?.personaLocator !== u.personaLocator) throw zs("QQJ_CHAT_RENAME_RECEIPT_INVALID", "当前聊天身份不是本次切换准备的结果，已保持独立档案。");
 		let m = await o(d), h = {
 			hostChatId: f,
 			characterLocator: c.characterLocator,
 			personaLocator: c.personaLocator
 		};
-		if (!m || m.data.state !== "ready" || !Ps(m.data.owner, h) && !Ps(m.data.owner, u)) throw js("QQJ_CHAT_RENAME_SOURCE_INVALID", "原聊天身份已变化，已停止改名恢复以避免覆盖其它档案。");
+		if (!m || m.data.state !== "ready" || !Hs(m.data.owner, h) && !Hs(m.data.owner, u)) throw zs("QQJ_CHAT_RENAME_SOURCE_INVALID", "原聊天身份已变化，已停止改名恢复以避免覆盖其它档案。");
 		let _ = r.chatId;
 		if (_ !== null && _ !== d) {
-			if (!ta(_)) throw js("QQJ_CHAT_RENAME_TARGET_INVALID", "当前聊天身份无效，已停止改名恢复。");
+			if (!sa(_)) throw zs("QQJ_CHAT_RENAME_TARGET_INVALID", "当前聊天身份无效，已停止改名恢复。");
 			let e = await o(_);
-			if (!e || e.data.state !== "ready" || e.data.sourceChatId !== d || !Ps(e.data.owner, u)) throw js("QQJ_CHAT_RENAME_TARGET_INVALID", "当前聊天并非本次改名产生的临时身份，已保持独立档案。");
+			if (!e || e.data.state !== "ready" || e.data.sourceChatId !== d || !Hs(e.data.owner, u)) throw zs("QQJ_CHAT_RENAME_TARGET_INVALID", "当前聊天并非本次改名产生的临时身份，已保持独立档案。");
 			await g(_);
 		}
 		let v = m;
-		if (!Ps(m.data.owner, u)) {
+		if (!Hs(m.data.owner, u)) {
 			let t = Object.freeze({
 				...m.data,
 				owner: {
@@ -10645,15 +10981,15 @@ function Rs({ client: e, persist: t = ra, freshUuid: n = na, now: r = () => /* @
 				updatedAt: a()
 			});
 			try {
-				v = Ls(await e.put(ks, i(d), t, m.revision), d);
+				v = Gs(await e.put(Ls, i(d), t, m.revision), d);
 			} catch (e) {
 				if (e?.status !== 409) throw e;
 				let t = await o(d);
-				if (!t || t.data.state !== "ready" || !Ps(t.data.owner, u)) throw js("QQJ_CHAT_RENAME_CONFLICT", "原聊天身份改名时发生冲突，未覆盖胜出记录。");
+				if (!t || t.data.state !== "ready" || !Hs(t.data.owner, u)) throw zs("QQJ_CHAT_RENAME_CONFLICT", "原聊天身份改名时发生冲突，未覆盖胜出记录。");
 				v = t;
 			}
 		}
-		if (!Ps(v.data.owner, u)) throw js("QQJ_CHAT_RENAME_CONFLICT", "原聊天身份未能安全更新，已停止恢复。");
+		if (!Hs(v.data.owner, u)) throw zs("QQJ_CHAT_RENAME_CONFLICT", "原聊天身份未能安全更新，已停止恢复。");
 		return await t(n, d), d;
 	}
 	function v(e, t, { event: n, previousIdentity: r, preparedIdentity: i, signal: a } = {}) {
@@ -10667,11 +11003,11 @@ function Rs({ client: e, persist: t = ra, freshUuid: n = na, now: r = () => /* @
 }
 //#endregion
 //#region src/v3/foundation-store.js
-var zs = "v3-root", Bs = Object.freeze({
+var qs = "v3-root", Js = Object.freeze({
 	full: "full",
 	runtime: "runtime",
 	projection: "projection"
-}), Vs = Object.freeze({
+}), Ys = Object.freeze({
 	floor: "v3-floor-",
 	run: "v3-run-",
 	checkpoint: "v3-checkpoint-",
@@ -10682,27 +11018,27 @@ var zs = "v3-root", Bs = Object.freeze({
 	currentState: "v3-current-state-",
 	index: "v3-index-"
 });
-function $(e) {
+function Xs(e) {
 	throw Object.assign(TypeError(e), { code: e });
 }
-function Hs(e) {
-	return (!e || typeof e != "object" || Array.isArray(e) || !he(e.chatId)) && $("V3_STORE_CONTEXT_INVALID"), Object.freeze({
+function Zs(e) {
+	return (!e || typeof e != "object" || Array.isArray(e) || !ge(e.chatId)) && Xs("V3_STORE_CONTEXT_INVALID"), Object.freeze({
 		chatId: e.chatId,
 		hostChatId: String(e.hostChatId ?? ""),
 		characterLocator: String(e.characterLocator ?? ""),
 		personaLocator: String(e.personaLocator ?? "")
 	});
 }
-function Us(e, t) {
+function Qs(e, t) {
 	return e.chatId === t.chatId && e.hostChatId === t.hostChatId && e.characterLocator === t.characterLocator && e.personaLocator === t.personaLocator;
 }
-function Ws(e, t, n) {
-	return (!e || typeof e != "object" || Array.isArray(e) || !Number.isSafeInteger(e.revision) || e.revision < 1) && $("V3_STORE_ENVELOPE_INVALID"), Object.freeze({
+function $s(e, t, n) {
+	return (!e || typeof e != "object" || Array.isArray(e) || !Number.isSafeInteger(e.revision) || e.revision < 1) && Xs("V3_STORE_ENVELOPE_INVALID"), Object.freeze({
 		data: t(e.data, { expectedChatId: n }),
 		revision: e.revision
 	});
 }
-function Gs(e) {
+function ec(e) {
 	let t = {
 		root: ft,
 		floor: pt,
@@ -10715,18 +11051,18 @@ function Gs(e) {
 		checkpoint: gt,
 		index: _t
 	}[e];
-	return t || $("V3_STORE_RECORD_TYPE_INVALID"), t;
+	return t || Xs("V3_STORE_RECORD_TYPE_INVALID"), t;
 }
-function Ks(e) {
-	if (e.recordType === "root") return zs;
-	if (e.recordType === "index") return `${Vs.index}${e.kind}-${e.shard}-${e.id}`;
-	let t = Vs[e.recordType];
-	return t || $("V3_STORE_RECORD_TYPE_INVALID"), `${t}${e.id}`;
+function tc(e) {
+	if (e.recordType === "root") return qs;
+	if (e.recordType === "index") return `${Ys.index}${e.kind}-${e.shard}-${e.id}`;
+	let t = Ys[e.recordType];
+	return t || Xs("V3_STORE_RECORD_TYPE_INVALID"), `${t}${e.id}`;
 }
-function qs(e, t) {
+function nc(e, t) {
 	return JSON.stringify(e) === JSON.stringify(t);
 }
-function Js(e, t, n) {
+function rc(e, t, n) {
 	let r = Object.fromEntries(Object.keys(e.indexManifest).map((e) => [e, []]));
 	for (let e = 0; e < t.length; e += 1) r[t[e].kind === "reverseRef" ? "reverseRef" : t[e].kind === "entity" ? "entity" : "floor"].push(n[e]);
 	let i = Object.values(e.indexManifest).flat();
@@ -10735,7 +11071,7 @@ function Js(e, t, n) {
 		return n.length === r[t].length && n.every((e) => r[t].includes(e));
 	});
 }
-function Ys(e, t) {
+function ic(e, t) {
 	let n = /* @__PURE__ */ new Map(), r = /* @__PURE__ */ new Map();
 	for (let e of t) for (let t of e.entries) for (let i of t.refs) {
 		if (e.kind === "floorOrder" && i.itemId) try {
@@ -10753,7 +11089,7 @@ function Ys(e, t) {
 		} : e.content
 	}));
 }
-function Xs({ root: e, rootRevision: t, checkpoint: n, runResult: r, floorResults: i, memoryResults: a, entityResults: o, baselineResult: s, deltaResults: c, currentStateResults: l, indexResults: u, indexesMissing: d = !1, manifestNeedsReseal: f = !1, indexesComplete: p, readMode: m }) {
+function ac({ root: e, rootRevision: t, checkpoint: n, runResult: r, floorResults: i, memoryResults: a, entityResults: o, baselineResult: s, deltaResults: c, currentStateResults: l, indexResults: u, indexesMissing: d = !1, manifestNeedsReseal: f = !1, indexesComplete: p, readMode: m }) {
 	let h = u.filter((e) => e.status === "ready").map((e) => e.data);
 	return {
 		status: d || f ? "needsReseal" : "ready",
@@ -10762,7 +11098,7 @@ function Xs({ root: e, rootRevision: t, checkpoint: n, runResult: r, floorResult
 		checkpoint: n,
 		run: r.data,
 		runRevision: r.revision,
-		floors: Ys(i.map((e) => e.data), h),
+		floors: ic(i.map((e) => e.data), h),
 		floorRevisions: Object.fromEntries(i.map((e) => [e.data.id, e.revision])),
 		floorMemories: a.map((e) => e.data),
 		memoryRevisions: Object.fromEntries(a.map((e) => [e.data.id, e.revision])),
@@ -10780,7 +11116,7 @@ function Xs({ root: e, rootRevision: t, checkpoint: n, runResult: r, floorResult
 		readMode: m
 	};
 }
-function Zs({ client: e, contextProvider: t, isEnabled: n = !0 } = {}) {
+function oc({ client: e, contextProvider: t, isEnabled: n = !0 } = {}) {
 	if (typeof e?.get != "function" || typeof e?.put != "function") throw TypeError("V3 store client 必须提供 get/put");
 	if (typeof t != "function") throw TypeError("V3 store contextProvider 必须是函数");
 	let r = 0, i = () => {
@@ -10789,11 +11125,11 @@ function Zs({ client: e, contextProvider: t, isEnabled: n = !0 } = {}) {
 		} catch {
 			return !1;
 		}
-	}, a = () => Hs(t()), o = (e) => `chat-${e.chatId}`, s = (e) => {
+	}, a = () => Zs(t()), o = (e) => `chat-${e.chatId}`, s = (e) => {
 		if (e.epoch !== r) return "stale";
 		if (!i()) return "disabled";
 		try {
-			return Us(e.identity, a()) ? "current" : "stale";
+			return Qs(e.identity, a()) ? "current" : "stale";
 		} catch {
 			return "stale";
 		}
@@ -10819,7 +11155,7 @@ function Zs({ client: e, contextProvider: t, isEnabled: n = !0 } = {}) {
 	}
 	async function l(t, n, r, i = "missing") {
 		try {
-			let i = Ws(await e.get(o(t), n), r, t.chatId);
+			let i = $s(await e.get(o(t), n), r, t.chatId);
 			return r === pt && await mt(i.data, { expectedChatId: t.chatId }), {
 				status: "ready",
 				...i,
@@ -10831,19 +11167,19 @@ function Zs({ client: e, contextProvider: t, isEnabled: n = !0 } = {}) {
 		}
 	}
 	function u() {
-		return c((e) => l(e, zs, ft, "uninitialized"));
+		return c((e) => l(e, qs, ft, "uninitialized"));
 	}
 	function d(e, t) {
-		return c((n) => l(n, String(t).startsWith("v3-") ? String(t) : `${Vs[e] ?? ""}${t}`, Gs(e)));
+		return c((n) => l(n, String(t).startsWith("v3-") ? String(t) : `${Ys[e] ?? ""}${t}`, ec(e)));
 	}
 	function f(t, { signal: n } = {}) {
 		return c(async (r) => {
-			let i = Gs(t?.recordType), a = i(t, { expectedChatId: r.chatId });
+			let i = ec(t?.recordType), a = i(t, { expectedChatId: r.chatId });
 			a.recordType === "floor" && await mt(a, { expectedChatId: r.chatId });
-			let s = Ks(a);
+			let s = tc(a);
 			try {
-				let t = Ws(await e.put(o(r), s, a, 0, { signal: n }), i, r.chatId);
-				return qs(t.data, a) || $("V3_STORE_RESPONSE_MISMATCH"), {
+				let t = $s(await e.put(o(r), s, a, 0, { signal: n }), i, r.chatId);
+				return nc(t.data, a) || Xs("V3_STORE_RESPONSE_MISMATCH"), {
 					status: "saved",
 					...t,
 					recordId: s
@@ -10864,12 +11200,12 @@ function Zs({ client: e, contextProvider: t, isEnabled: n = !0 } = {}) {
 	}
 	function p(t, n, { signal: r } = {}) {
 		return c(async (i) => {
-			let a = Gs(t?.recordType), s = a(t, { expectedChatId: i.chatId });
-			s.recordType === "floor" && await mt(s, { expectedChatId: i.chatId }), (!Number.isSafeInteger(n) || n < 1) && $("V3_STORE_REVISION_INVALID");
-			let c = Ks(s);
+			let a = ec(t?.recordType), s = a(t, { expectedChatId: i.chatId });
+			s.recordType === "floor" && await mt(s, { expectedChatId: i.chatId }), (!Number.isSafeInteger(n) || n < 1) && Xs("V3_STORE_REVISION_INVALID");
+			let c = tc(s);
 			try {
-				let t = Ws(await e.put(o(i), c, s, n, { signal: r }), a, i.chatId);
-				return qs(t.data, s) || $("V3_STORE_RESPONSE_MISMATCH"), {
+				let t = $s(await e.put(o(i), c, s, n, { signal: r }), a, i.chatId);
+				return nc(t.data, s) || Xs("V3_STORE_RESPONSE_MISMATCH"), {
 					status: "saved",
 					...t,
 					recordId: c
@@ -10884,9 +11220,9 @@ function Zs({ client: e, contextProvider: t, isEnabled: n = !0 } = {}) {
 		});
 	}
 	async function m(e, t) {
-		t.headCheckpointId || $("V3_STORE_CHECKPOINT_MISSING");
-		let n = await l(e, `${Vs.checkpoint}${t.headCheckpointId}`, gt);
-		n.status !== "ready" && $("V3_STORE_CHECKPOINT_MISSING");
+		t.headCheckpointId || Xs("V3_STORE_CHECKPOINT_MISSING");
+		let n = await l(e, `${Ys.checkpoint}${t.headCheckpointId}`, gt);
+		n.status !== "ready" && Xs("V3_STORE_CHECKPOINT_MISSING");
 		let r = n.data;
 		async function i(e, t) {
 			let n = Array(e.length), r = 0, i = null;
@@ -10906,18 +11242,18 @@ function Zs({ client: e, contextProvider: t, isEnabled: n = !0 } = {}) {
 			return n;
 		}
 		let a = Object.values(t.indexManifest).flat(), o = await Promise.allSettled([
-			i(r.producedRefs.floors, (t) => l(e, `${Vs.floor}${t}`, pt)),
+			i(r.producedRefs.floors, (t) => l(e, `${Ys.floor}${t}`, pt)),
 			i(a, (t) => l(e, t, _t)),
-			l(e, `${Vs.run}${r.runId}`, ht),
-			i(r.producedRefs.floorMemories, (t) => l(e, `${Vs.floorMemory}${t}`, Vt)),
-			i(r.producedRefs.entities, (t) => l(e, `${Vs.entity}${t}`, Ht)),
-			t.baselineId ? l(e, `${Vs.baseline}${t.baselineId}`, Wr) : Promise.resolve(null),
-			i(r.producedRefs.stateDeltas, (t) => l(e, `${Vs.stateDelta}${t}`, Gr)),
-			i(r.producedRefs.currentStates, (t) => l(e, `${Vs.currentState}${t}`, Kr))
+			l(e, `${Ys.run}${r.runId}`, ht),
+			i(r.producedRefs.floorMemories, (t) => l(e, `${Ys.floorMemory}${t}`, Vt)),
+			i(r.producedRefs.entities, (t) => l(e, `${Ys.entity}${t}`, Ht)),
+			t.baselineId ? l(e, `${Ys.baseline}${t.baselineId}`, Wr) : Promise.resolve(null),
+			i(r.producedRefs.stateDeltas, (t) => l(e, `${Ys.stateDelta}${t}`, Gr)),
+			i(r.producedRefs.currentStates, (t) => l(e, `${Ys.currentState}${t}`, Kr))
 		]), s = o.find((e) => e.status === "rejected");
 		if (s) throw s.reason;
 		let [c, u, d, f, p, m, h, g] = o.map((e) => e.value);
-		return c.some((e) => e.status !== "ready") && $("V3_STORE_FLOOR_MISSING"), u.some((e) => e.status !== "ready") && $("V3_STORE_INDEX_MISSING"), d.status !== "ready" && $("V3_STORE_RUN_MISSING"), f.some((e) => e.status !== "ready") && $("V3_STORE_FLOOR_MEMORY_MISSING"), p.some((e) => e.status !== "ready") && $("V3_STORE_ENTITY_MISSING"), m && m.status !== "ready" && $("V3_STORE_BASELINE_MISSING"), h.some((e) => e.status !== "ready") && $("V3_STORE_STATE_DELTA_MISSING"), g.some((e) => e.status !== "ready") && $("V3_STORE_CURRENT_STATE_MISSING"), await Jr({
+		return c.some((e) => e.status !== "ready") && Xs("V3_STORE_FLOOR_MISSING"), u.some((e) => e.status !== "ready") && Xs("V3_STORE_INDEX_MISSING"), d.status !== "ready" && Xs("V3_STORE_RUN_MISSING"), f.some((e) => e.status !== "ready") && Xs("V3_STORE_FLOOR_MEMORY_MISSING"), p.some((e) => e.status !== "ready") && Xs("V3_STORE_ENTITY_MISSING"), m && m.status !== "ready" && Xs("V3_STORE_BASELINE_MISSING"), h.some((e) => e.status !== "ready") && Xs("V3_STORE_STATE_DELTA_MISSING"), g.some((e) => e.status !== "ready") && Xs("V3_STORE_CURRENT_STATE_MISSING"), await Jr({
 			root: t,
 			checkpoint: r,
 			run: d.data,
@@ -10944,20 +11280,20 @@ function Zs({ client: e, contextProvider: t, isEnabled: n = !0 } = {}) {
 	function h(t, n, { signal: r } = {}) {
 		return c(async (i) => {
 			let a = ft(t, { expectedChatId: i.chatId });
-			(!Number.isSafeInteger(n) || n < 0) && $("V3_STORE_REVISION_INVALID");
+			(!Number.isSafeInteger(n) || n < 0) && Xs("V3_STORE_REVISION_INVALID");
 			let s = await m(i, a);
 			try {
-				let t = Ws(await e.put(o(i), zs, a, n, { signal: r }), ft, i.chatId);
-				return qs(t.data, a) || $("V3_STORE_RESPONSE_MISMATCH"), {
+				let t = $s(await e.put(o(i), qs, a, n, { signal: r }), ft, i.chatId);
+				return nc(t.data, a) || Xs("V3_STORE_RESPONSE_MISMATCH"), {
 					status: "saved",
 					...t,
-					recordId: zs,
-					reachable: Xs({
+					recordId: qs,
+					reachable: ac({
 						root: t.data,
 						rootRevision: t.revision,
 						...s,
 						indexesComplete: !0,
-						readMode: Bs.full
+						readMode: Js.full
 					})
 				};
 			} catch (e) {
@@ -10968,29 +11304,29 @@ function Zs({ client: e, contextProvider: t, isEnabled: n = !0 } = {}) {
 	}
 	async function g(t, n, r) {
 		if (!i()) return { status: "disabled" };
-		let a = Hs(r), s = ht(t, { expectedChatId: a.chatId });
+		let a = Zs(r), s = ht(t, { expectedChatId: a.chatId });
 		[
 			"stale",
 			"retryableError",
 			"cancelled"
-		].includes(s.phase) || $("V3_STORE_SETTLE_PHASE_INVALID"), (!Number.isSafeInteger(n) || n < 1) && $("V3_STORE_REVISION_INVALID");
+		].includes(s.phase) || Xs("V3_STORE_SETTLE_PHASE_INVALID"), (!Number.isSafeInteger(n) || n < 1) && Xs("V3_STORE_REVISION_INVALID");
 		try {
-			let t = Ws(await e.put(o(a), Ks(s), s, n), ht, a.chatId);
-			return qs(t.data, s) || $("V3_STORE_RESPONSE_MISMATCH"), {
+			let t = $s(await e.put(o(a), tc(s), s, n), ht, a.chatId);
+			return nc(t.data, s) || Xs("V3_STORE_RESPONSE_MISMATCH"), {
 				status: "saved",
 				...t,
-				recordId: Ks(s)
+				recordId: tc(s)
 			};
 		} catch (e) {
 			if (e?.status === 409) return {
 				status: "conflict",
-				recordId: Ks(s)
+				recordId: tc(s)
 			};
 			throw e;
 		}
 	}
-	async function _({ mode: e = Bs.full } = {}) {
-		Object.values(Bs).includes(e) || $("V3_STORE_READ_MODE_INVALID");
+	async function _({ mode: e = Js.full } = {}) {
+		Object.values(Js).includes(e) || Xs("V3_STORE_READ_MODE_INVALID");
 		let t = await u();
 		if (t.status !== "ready") return t;
 		let n = t.data;
@@ -11001,26 +11337,26 @@ function Zs({ client: e, contextProvider: t, isEnabled: n = !0 } = {}) {
 			indexes: []
 		};
 		let r = await d("checkpoint", n.headCheckpointId);
-		r.status !== "ready" && $("V3_STORE_CHECKPOINT_MISSING");
+		r.status !== "ready" && Xs("V3_STORE_CHECKPOINT_MISSING");
 		let i = r.data;
-		(i.narrativeGeneration !== n.narrativeGeneration || !i.capabilities.foundationReady) && $("V3_STORE_CHECKPOINT_MISMATCH");
+		(i.narrativeGeneration !== n.narrativeGeneration || !i.capabilities.foundationReady) && Xs("V3_STORE_CHECKPOINT_MISMATCH");
 		let a = await d("run", i.runId);
-		a.status !== "ready" && $("V3_STORE_RUN_MISSING");
-		let o = n.sourceSnapshotFingerprint === null || i.sourceSnapshotFingerprint === null || a.data.inputSnapshotFingerprint === null, s = o ? Bs.full : e, c = s === Bs.full ? i.producedRefs.indexes : s === Bs.runtime ? i.producedRefs.indexes.filter((e) => String(e).startsWith("v3-index-floorOrder-") || String(e).startsWith("v3-index-fingerprint-")) : [], l = await Promise.all(i.producedRefs.floors.map((e) => d("floor", e)));
-		l.some((e) => e.status !== "ready") && $("V3_STORE_FLOOR_MISSING");
+		a.status !== "ready" && Xs("V3_STORE_RUN_MISSING");
+		let o = n.sourceSnapshotFingerprint === null || i.sourceSnapshotFingerprint === null || a.data.inputSnapshotFingerprint === null, s = o ? Js.full : e, c = s === Js.full ? i.producedRefs.indexes : s === Js.runtime ? i.producedRefs.indexes.filter((e) => String(e).startsWith("v3-index-floorOrder-") || String(e).startsWith("v3-index-fingerprint-")) : [], l = await Promise.all(i.producedRefs.floors.map((e) => d("floor", e)));
+		l.some((e) => e.status !== "ready") && Xs("V3_STORE_FLOOR_MISSING");
 		let f = await Promise.all(c.map((e) => d("index", e))), p = f.some((e) => e.status === "missing");
-		f.some((e) => !["ready", "missing"].includes(e.status)) && $("V3_STORE_INDEX_UNAVAILABLE"), p && !o && $("V3_STORE_INDEX_MISSING");
+		f.some((e) => !["ready", "missing"].includes(e.status)) && Xs("V3_STORE_INDEX_UNAVAILABLE"), p && !o && Xs("V3_STORE_INDEX_MISSING");
 		let m = await Promise.all(i.producedRefs.floorMemories.map((e) => d("floorMemory", e)));
-		m.some((e) => e.status !== "ready") && $("V3_STORE_FLOOR_MEMORY_MISSING");
+		m.some((e) => e.status !== "ready") && Xs("V3_STORE_FLOOR_MEMORY_MISSING");
 		let h = await Promise.all(i.producedRefs.entities.map((e) => d("entity", e)));
-		h.some((e) => e.status !== "ready") && $("V3_STORE_ENTITY_MISSING");
+		h.some((e) => e.status !== "ready") && Xs("V3_STORE_ENTITY_MISSING");
 		let g = n.baselineId ? await d("baseline", n.baselineId) : null;
-		g && g.status !== "ready" && $("V3_STORE_BASELINE_MISSING");
+		g && g.status !== "ready" && Xs("V3_STORE_BASELINE_MISSING");
 		let _ = await Promise.all(i.producedRefs.stateDeltas.map((e) => d("stateDelta", e)));
-		_.some((e) => e.status !== "ready") && $("V3_STORE_STATE_DELTA_MISSING");
+		_.some((e) => e.status !== "ready") && Xs("V3_STORE_STATE_DELTA_MISSING");
 		let v = await Promise.all(i.producedRefs.currentStates.map((e) => d("currentState", e)));
-		v.some((e) => e.status !== "ready") && $("V3_STORE_CURRENT_STATE_MISSING");
-		let y = f.filter((e) => e.status === "ready").map((e) => e.data), b = f.filter((e) => e.status === "ready").map((e) => e.recordId), x = s === Bs.full, S = x && o && !Js(n, y, b);
+		v.some((e) => e.status !== "ready") && Xs("V3_STORE_CURRENT_STATE_MISSING");
+		let y = f.filter((e) => e.status === "ready").map((e) => e.data), b = f.filter((e) => e.status === "ready").map((e) => e.recordId), x = s === Js.full, S = x && o && !rc(n, y, b);
 		return await Jr({
 			root: n,
 			checkpoint: i,
@@ -11035,7 +11371,7 @@ function Zs({ client: e, contextProvider: t, isEnabled: n = !0 } = {}) {
 			currentStates: v.map((e) => e.data),
 			allowMissingIndexes: !x || p && o,
 			allowLegacySnapshot: !0
-		}), Xs({
+		}), ac({
 			root: n,
 			rootRevision: t.revision,
 			checkpoint: i,
@@ -11064,16 +11400,16 @@ function Zs({ client: e, contextProvider: t, isEnabled: n = !0 } = {}) {
 		invalidate() {
 			r += 1;
 		},
-		recordKey: Ks
+		recordKey: tc
 	});
 }
 //#endregion
 //#region src/chat-memory-management.js
-var Qs = "qqj_v3_recall_receipt", $s = (e, t) => Object.assign(Error(t), { code: e }), ec = (e) => structuredClone(e);
-function tc(e) {
+var sc = "qqj_v3_recall_receipt", cc = (e, t) => Object.assign(Error(t), { code: e }), lc = (e) => structuredClone(e);
+function uc(e) {
 	return e?.status === 409 ? "后端记录已被其他操作更新，本次没有覆盖新数据；请重试。" : String(e?.message || "删除未完成，请重试。");
 }
-function nc({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memoryRuntime: i, recallRuntime: a, peopleRuntime: o, autoHideController: s, isMainGenerationActive: c = () => !1, fetchImpl: l = globalThis.fetch, logger: u = console } = {}) {
+function dc({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memoryRuntime: i, recallRuntime: a, peopleRuntime: o, autoHideController: s, isMainGenerationActive: c = () => !1, fetchImpl: l = globalThis.fetch, logger: u = console } = {}) {
 	if (!e?.list || !e?.get || !e?.remove || !t?.identity || !t?.suspend || !t?.resume || !n?.snapshot || !s?.restoreOwned || typeof l != "function") throw TypeError("当前聊天记忆删除依赖无效");
 	let d = null, f = null, p = null, m = /* @__PURE__ */ new Set(), h = (e, t = !0) => {
 		try {
@@ -11093,7 +11429,8 @@ function nc({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 			phase: e?.phase ?? null,
 			error: t?.error ?? null,
 			deletedCount: t?.deletedCount ?? (n ? p.deletedCount : 0),
-			blockedByOtherChat: !!(f && !t || d && !e)
+			blockedByOtherChat: !!(f && !t || d && !e),
+			workBusy: y()
 		});
 	}, _ = () => {
 		let e = g();
@@ -11103,12 +11440,14 @@ function nc({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 		return e;
 	}, v = (e) => {
 		let t = n.snapshot();
-		if (t.chatId !== e.hostChatId || t.context?.chatMetadata?.qianqianjie?.chatId !== e.chatId) throw $s("QQJ_DELETE_CHAT_CHANGED", "当前聊天已经变化，未删除其他聊天的数据。");
+		if (t.chatId !== e.hostChatId || t.context?.chatMetadata?.qianqianjie?.chatId !== e.chatId) throw cc("QQJ_DELETE_CHAT_CHANGED", "当前聊天已经变化，未删除其他聊天的数据。");
 		return t;
-	}, y = () => {
+	};
+	function y() {
 		let e = i?.getState?.() ?? {}, t = r?.getState?.() ?? {}, n = a?.getState?.() ?? {}, s = o?.getState?.() ?? {};
 		return !!(c?.() || e.memoryWorkBusy || e.activeAutoMemory || e.activeExtraction || e.activeCse || t.activeRun || n.activeRecall || s.active);
-	}, b = () => {
+	}
+	let b = () => {
 		try {
 			i?.invalidate?.();
 		} catch {}
@@ -11127,7 +11466,7 @@ function nc({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 	};
 	async function x(e, { requireMetadata: t = !0 } = {}) {
 		let r = t ? v(e) : n.snapshot();
-		if (r.chatId !== e.hostChatId) throw $s("QQJ_DELETE_CHAT_CHANGED", "当前聊天已经变化，未删除其他聊天的数据。");
+		if (r.chatId !== e.hostChatId) throw cc("QQJ_DELETE_CHAT_CHANGED", "当前聊天已经变化，未删除其他聊天的数据。");
 		let i = r.context, a = Array.isArray(i.characters) ? i.characters[i.characterId] : i.characters?.[i.characterId], o = await l("/api/chats/get", {
 			method: "POST",
 			cache: "no-cache",
@@ -11138,11 +11477,11 @@ function nc({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 				avatar_url: e.characterLocator
 			})
 		});
-		if (!o?.ok) throw $s("QQJ_DELETE_HOST_VERIFY_FAILED", "宿主保存后无法读回当前聊天。");
+		if (!o?.ok) throw cc("QQJ_DELETE_HOST_VERIFY_FAILED", "宿主保存后无法读回当前聊天。");
 		let s = await o.json();
-		if (!Array.isArray(s)) throw $s("QQJ_DELETE_HOST_VERIFY_FAILED", "宿主读回的当前聊天格式无效。");
+		if (!Array.isArray(s)) throw cc("QQJ_DELETE_HOST_VERIFY_FAILED", "宿主读回的当前聊天格式无效。");
 		let c = s[0]?.chat_metadata && typeof s[0].chat_metadata == "object" ? s[0] : null;
-		if (!c) throw $s("QQJ_DELETE_HOST_VERIFY_FAILED", "宿主读回缺少当前聊天元数据头。");
+		if (!c) throw cc("QQJ_DELETE_HOST_VERIFY_FAILED", "宿主读回缺少当前聊天元数据头。");
 		return {
 			metadata: c.chat_metadata,
 			messages: s.slice(1)
@@ -11152,20 +11491,20 @@ function nc({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 		let t = v(e), n = [];
 		for (let e of t.chat) {
 			let t = e?.extra;
-			if (!t || typeof t != "object" || Array.isArray(t) || !Object.hasOwn(t, Qs)) continue;
+			if (!t || typeof t != "object" || Array.isArray(t) || !Object.hasOwn(t, sc)) continue;
 			n.push({
 				message: e,
 				extra: t
 			});
 			let r = { ...t };
-			delete r[Qs], e.extra = r;
+			delete r[sc], e.extra = r;
 		}
 		if (!n.length) return 0;
 		try {
-			if (typeof t.context?.saveChat != "function") throw $s("QQJ_DELETE_CHAT_SAVE_UNAVAILABLE", "宿主不支持保存聊天回执清理结果。");
+			if (typeof t.context?.saveChat != "function") throw cc("QQJ_DELETE_CHAT_SAVE_UNAVAILABLE", "宿主不支持保存聊天回执清理结果。");
 			await t.context.saveChat(), v(e);
 			let r = await x(e);
-			if (r.messages.length !== t.chat.length || r.messages.some((e) => e?.extra && Object.hasOwn(e.extra, Qs))) throw $s("QQJ_DELETE_RECEIPT_VERIFY_FAILED", "聊天回执没有完成持久化；原身份已保留，可重试。");
+			if (r.messages.length !== t.chat.length || r.messages.some((e) => e?.extra && Object.hasOwn(e.extra, sc))) throw cc("QQJ_DELETE_RECEIPT_VERIFY_FAILED", "聊天回执没有完成持久化；原身份已保留，可重试。");
 			return v(e), n.length;
 		} catch (e) {
 			for (let e of n) e.message.extra = e.extra;
@@ -11173,21 +11512,21 @@ function nc({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 		}
 	}
 	async function C(e) {
-		let t = v(e).context, n = t.chatMetadata, r = ec(n.qianqianjie);
+		let t = v(e).context, n = t.chatMetadata, r = lc(n.qianqianjie);
 		delete n.qianqianjie;
 		try {
 			if (typeof t.saveChatMetadata == "function") {
-				if (await t.saveChatMetadata() !== !0) throw $s("QQJ_DELETE_METADATA_SAVE_FAILED", "聊天元数据未能持久化。");
+				if (await t.saveChatMetadata() !== !0) throw cc("QQJ_DELETE_METADATA_SAVE_FAILED", "聊天元数据未能持久化。");
 			} else if (typeof t.saveMetadata == "function") await t.saveMetadata();
-			else throw $s("QQJ_DELETE_METADATA_SAVE_UNAVAILABLE", "宿主不支持保存聊天元数据。");
-			if (t.chatMetadata?.qianqianjie !== void 0) throw $s("QQJ_DELETE_METADATA_VERIFY_FAILED", "聊天元数据清理后未能读回。");
-			if ((await x(e, { requireMetadata: !1 })).metadata?.qianqianjie !== void 0) throw $s("QQJ_DELETE_METADATA_VERIFY_FAILED", "聊天元数据没有完成持久化；原身份已保留，可重试。");
+			else throw cc("QQJ_DELETE_METADATA_SAVE_UNAVAILABLE", "宿主不支持保存聊天元数据。");
+			if (t.chatMetadata?.qianqianjie !== void 0) throw cc("QQJ_DELETE_METADATA_VERIFY_FAILED", "聊天元数据清理后未能读回。");
+			if ((await x(e, { requireMetadata: !1 })).metadata?.qianqianjie !== void 0) throw cc("QQJ_DELETE_METADATA_VERIFY_FAILED", "聊天元数据没有完成持久化；原身份已保留，可重试。");
 		} catch (e) {
 			throw n.qianqianjie = r, e;
 		}
 	}
 	async function w(t, n, r) {
-		if (!n || typeof n.recordId != "string" || !Number.isSafeInteger(n.revision) || n.revision < 1) throw $s("QQJ_DELETE_RECORD_INVALID", "后端返回了无法安全删除的记录版本。");
+		if (!n || typeof n.recordId != "string" || !Number.isSafeInteger(n.revision) || n.revision < 1) throw cc("QQJ_DELETE_RECORD_INVALID", "后端返回了无法安全删除的记录版本。");
 		try {
 			await e.remove(t, n.recordId, n.revision, { signal: r });
 		} catch (e) {
@@ -11199,18 +11538,18 @@ function nc({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 		if (!n.visibilityRestored) {
 			n.phase = "restoringVisibility", _(), v(r);
 			let e = await s.restoreOwned();
-			if (!["applied", "unchanged"].includes(e?.status)) throw $s("QQJ_DELETE_VISIBILITY_RESTORE_FAILED", "本插件隐藏的聊天楼层尚未恢复，已停止删除记忆。");
+			if (!["applied", "unchanged"].includes(e?.status)) throw cc("QQJ_DELETE_VISIBILITY_RESTORE_FAILED", "本插件隐藏的聊天楼层尚未恢复，已停止删除记忆。");
 			n.visibilityRestored = !0;
 		}
 		v(r), b(), n.phase = "deletingRecords", _();
 		let o = await e.list(a, { signal: i.signal });
-		if (!Array.isArray(o)) throw $s("QQJ_DELETE_LIST_INVALID", "后端没有返回可核对的记录清单。");
-		let c = [...o], l = c.filter((e) => e?.recordId !== zs), u = c.filter((e) => e?.recordId === zs);
+		if (!Array.isArray(o)) throw cc("QQJ_DELETE_LIST_INVALID", "后端没有返回可核对的记录清单。");
+		let c = [...o], l = c.filter((e) => e?.recordId !== qs), u = c.filter((e) => e?.recordId === qs);
 		for (let e of [...l, ...u]) v(r), await w(a, e, i.signal), n.deletedCount += 1;
 		n.phase = "deletingBinding", _();
 		try {
-			await w(ks, {
-				...await e.get(ks, `binding-${r.chatId}`),
+			await w(Ls, {
+				...await e.get(Ls, `binding-${r.chatId}`),
 				recordId: `binding-${r.chatId}`
 			}, i.signal), n.deletedCount += 1;
 		} catch (e) {
@@ -11224,11 +11563,11 @@ function nc({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 		});
 	}
 	function E() {
-		if (d) return h(d.identity) ? d.promise : Promise.reject($s("QQJ_DELETE_OTHER_CHAT_ACTIVE", "另一聊天正在删除记忆；当前聊天没有执行删除。"));
+		if (d) return h(d.identity) ? d.promise : Promise.reject(cc("QQJ_DELETE_OTHER_CHAT_ACTIVE", "另一聊天正在删除记忆；当前聊天没有执行删除。"));
 		let e;
 		try {
-			if (f && !h(f.identity)) throw $s("QQJ_DELETE_OTHER_CHAT_PENDING", "另一聊天的记忆删除尚未完成；切回原聊天可继续删除。");
-			if (e = f?.identity ?? t.identity(), v(e), !f && y()) throw $s("QQJ_DELETE_BUSY", "当前正在生成或处理记忆，请等待完成后再删除。");
+			if (f && !h(f.identity)) throw cc("QQJ_DELETE_OTHER_CHAT_PENDING", "另一聊天的记忆删除尚未完成；切回原聊天可继续删除。");
+			if (e = f?.identity ?? t.identity(), v(e), !f && y()) throw cc("QQJ_DELETE_BUSY", "当前正在生成或处理记忆，请等待完成后再删除。");
 			f || t.suspend(e.chatId);
 		} catch (e) {
 			return Promise.reject(e);
@@ -11244,7 +11583,7 @@ function nc({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 		return d = n, f = null, p = null, _(), n.promise = T(n).then((e) => (p = e, e)).catch((t) => {
 			throw f = Object.freeze({
 				identity: e,
-				error: tc(t),
+				error: uc(t),
 				deletedCount: n.deletedCount,
 				visibilityRestored: n.visibilityRestored
 			}), u?.warn?.("[qianqianjie] current chat memory deletion incomplete", { code: t?.code ?? t?.name ?? "QQJ_DELETE_FAILED" }), t;
@@ -11263,7 +11602,7 @@ function nc({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 }
 //#endregion
 //#region src/plugin-gate.js
-function rc({ initiallyEnabled: e = !0, invalidate: t = () => {}, run: n = async () => ({ status: "disabled" }), setUiEnabled: r = () => {}, disabledState: i = () => ({
+function fc({ initiallyEnabled: e = !0, invalidate: t = () => {}, run: n = async () => ({ status: "disabled" }), setUiEnabled: r = () => {}, disabledState: i = () => ({
 	status: "disabled",
 	pluginEnabled: !1
 }) } = {}) {
@@ -11286,7 +11625,7 @@ function rc({ initiallyEnabled: e = !0, invalidate: t = () => {}, run: n = async
 }
 //#endregion
 //#region src/plugin-lifecycle.js
-function ic({ session: e, aborters: t = [], isEnabled: n = !0, getUi: r = () => null, logger: i = console } = {}) {
+function pc({ session: e, aborters: t = [], isEnabled: n = !0, getUi: r = () => null, logger: i = console } = {}) {
 	if (typeof e?.prepare != "function" || typeof e?.invalidate != "function") throw TypeError("lifecycle session 无效");
 	let a = () => {
 		try {
@@ -11368,7 +11707,7 @@ function ic({ session: e, aborters: t = [], isEnabled: n = !0, getUi: r = () => 
 	function h({ eventSource: e, eventTypes: t } = {}) {
 		return s || !e?.on || !t ? !1 : (t.CHAT_CHANGED && e.on(t.CHAT_CHANGED, f), t.PERSONA_CHANGED && e.on(t.PERSONA_CHANGED, p), t.CHAT_RENAMED && e.on(t.CHAT_RENAMED, m), s = !0, !0);
 	}
-	let g = rc({
+	let g = fc({
 		initiallyEnabled: a(),
 		invalidate: l,
 		run: () => u(),
@@ -11391,102 +11730,102 @@ function ic({ session: e, aborters: t = [], isEnabled: n = !0, getUi: r = () => 
 }
 //#endregion
 //#region src/source-permission.js
-var ac = Object.freeze({
+var mc = Object.freeze({
 	chats: 2e3,
 	disabledPerChat: 2e4,
 	overridesPerChat: 2e4,
 	excludedBooks: 2e3,
 	keyCharacters: 1200
 });
-function oc(e) {
+function hc(e) {
 	return typeof e == "string" ? e.trim() : "";
 }
-function sc(e) {
-	return oc(e).normalize("NFKD").replace(/\p{M}/gu, "").toLocaleLowerCase("zh-Hans-CN");
+function gc(e) {
+	return hc(e).normalize("NFKD").replace(/\p{M}/gu, "").toLocaleLowerCase("zh-Hans-CN");
 }
-function cc(e, t) {
-	return Array.isArray(e) ? [...new Set(e.map(oc).filter((e) => e && e.length <= ac.keyCharacters))].slice(0, t) : [];
+function _c(e, t) {
+	return Array.isArray(e) ? [...new Set(e.map(hc).filter((e) => e && e.length <= mc.keyCharacters))].slice(0, t) : [];
 }
-function lc(e) {
+function vc(e) {
 	if (!e || typeof e != "object" || Array.isArray(e)) return {};
 	let t = {};
-	for (let [n, r] of Object.entries(e).slice(0, ac.chats)) ta(n) && (t[n] = cc(r, ac.disabledPerChat));
+	for (let [n, r] of Object.entries(e).slice(0, mc.chats)) sa(n) && (t[n] = _c(r, mc.disabledPerChat));
 	return t;
 }
-function uc(e) {
+function yc(e) {
 	if (!e || typeof e != "object" || Array.isArray(e)) return {};
 	let t = {};
-	for (let [n, r] of Object.entries(e).slice(0, ac.chats)) ta(n) && r === !0 && (t[n] = !0);
+	for (let [n, r] of Object.entries(e).slice(0, mc.chats)) sa(n) && r === !0 && (t[n] = !0);
 	return t;
 }
-function dc(e) {
+function bc(e) {
 	if (!e || typeof e != "object" || Array.isArray(e)) return {};
 	let t = {};
-	for (let [n, r] of Object.entries(e).slice(0, ac.chats)) {
-		if (!ta(n) || !r || typeof r != "object" || Array.isArray(r)) continue;
+	for (let [n, r] of Object.entries(e).slice(0, mc.chats)) {
+		if (!sa(n) || !r || typeof r != "object" || Array.isArray(r)) continue;
 		let e = {};
-		for (let [t, n] of Object.entries(r).slice(0, ac.overridesPerChat)) {
-			let r = oc(t);
-			r && r.length <= ac.keyCharacters && typeof n == "boolean" && (e[r] = n);
+		for (let [t, n] of Object.entries(r).slice(0, mc.overridesPerChat)) {
+			let r = hc(t);
+			r && r.length <= mc.keyCharacters && typeof n == "boolean" && (e[r] = n);
 		}
 		t[n] = e;
 	}
 	return t;
 }
-function fc(e) {
+function xc(e) {
 	return {
-		disabledByChat: lc(e?.sourceWorldInfoDisabledByChat),
-		overridesByChat: dc(e?.sourceWorldInfoOverridesByChat),
-		excludedBooks: cc(e?.sourceWorldInfoExcludedBooks, ac.excludedBooks),
-		confirmedChats: uc(e?.sourceWorldInfoConfirmedChats)
+		disabledByChat: vc(e?.sourceWorldInfoDisabledByChat),
+		overridesByChat: bc(e?.sourceWorldInfoOverridesByChat),
+		excludedBooks: _c(e?.sourceWorldInfoExcludedBooks, mc.excludedBooks),
+		confirmedChats: yc(e?.sourceWorldInfoConfirmedChats)
 	};
 }
-function pc(e) {
+function Sc(e) {
 	return e?.hostEnabled !== !1 && e?.availability !== "disabled";
 }
-function mc(e, t, n, r = !0, i = null) {
+function Cc(e, t, n, r = !0, i = null) {
 	let a = e.overridesByChat[t] ?? {};
 	return Object.prototype.hasOwnProperty.call(a, n) ? a[n] === !0 : !(i ?? new Set(e.disabledByChat[t] ?? [])).has(n) && r === !0;
 }
-function hc(e) {
-	let t = oc(e?.permissionKey);
+function wc(e) {
+	let t = hc(e?.permissionKey);
 	if (t) return t;
-	let n = oc(e?.world), r = oc(e?.uid);
+	let n = hc(e?.world), r = hc(e?.uid);
 	if (n && r) return `${n}::${r}`;
-	let i = oc(e?.locator), a = i.lastIndexOf(":");
+	let i = hc(e?.locator), a = i.lastIndexOf(":");
 	return a > 0 ? `${i.slice(0, a)}::${i.slice(a + 1)}` : "";
 }
-function gc(e) {
-	let t = oc(e?.world);
+function Tc(e) {
+	let t = hc(e?.world);
 	if (t) return t;
-	let n = hc(e), r = n.lastIndexOf("::");
+	let n = wc(e), r = n.lastIndexOf("::");
 	return r > 0 ? n.slice(0, r) : "";
 }
-function _c({ candidates: e, settings: t } = {}) {
-	let n = Array.isArray(e) ? e : [], r = fc(t), i = new Set(r.excludedBooks.map(sc));
+function Ec({ candidates: e, settings: t } = {}) {
+	let n = Array.isArray(e) ? e : [], r = xc(t), i = new Set(r.excludedBooks.map(gc));
 	return n.filter((e) => {
 		if (e?.kind !== "worldbook") return !0;
-		let t = gc(e);
-		return !!t && pc(e) && !i.has(sc(t));
+		let t = Tc(e);
+		return !!t && Sc(e) && !i.has(gc(t));
 	});
 }
-function vc({ sources: e, settings: t } = {}) {
-	let n = Array.isArray(e) ? e : [], r = fc(t), i = new Set(r.excludedBooks.map(sc));
-	return i.size ? n.filter((e) => !i.has(sc(e?.sourceName))) : n;
+function Dc({ sources: e, settings: t } = {}) {
+	let n = Array.isArray(e) ? e : [], r = xc(t), i = new Set(r.excludedBooks.map(gc));
+	return i.size ? n.filter((e) => !i.has(gc(e?.sourceName))) : n;
 }
-function yc({ settings: e, contextProvider: t, scanner: n = Er } = {}) {
+function Oc({ settings: e, contextProvider: t, scanner: n = Er } = {}) {
 	if (typeof e?.get != "function" || typeof e?.update != "function") throw TypeError("来源许可 settings 无效");
 	if (typeof t != "function") throw TypeError("来源许可 contextProvider 无效");
 	if (typeof n != "function") throw TypeError("来源许可 scanner 无效");
 	let r = () => {
-		let e = t(), n = ea(e);
-		if (!n.ok || !ta(n.chatId)) throw Error("当前聊天稳定身份不可用");
+		let e = t(), n = oa(e);
+		if (!n.ok || !sa(n.chatId)) throw Error("当前聊天稳定身份不可用");
 		return {
 			raw: e,
 			chatId: n.chatId,
 			hostChatId: n.hostChatId
 		};
-	}, i = () => typeof e.sourcePermissionSnapshot == "function" ? e.sourcePermissionSnapshot() : e.get(), a = () => fc(i()), o = (t) => e.update({
+	}, i = () => typeof e.sourcePermissionSnapshot == "function" ? e.sourcePermissionSnapshot() : e.get(), a = () => xc(i()), o = (t) => e.update({
 		sourceWorldInfoDisabledByChat: t.disabledByChat,
 		sourceWorldInfoOverridesByChat: t.overridesByChat,
 		sourceWorldInfoConfirmedChats: t.confirmedChats
@@ -11506,37 +11845,37 @@ function yc({ settings: e, contextProvider: t, scanner: n = Er } = {}) {
 		};
 	}
 	function l(e, t) {
-		let { chatId: n } = r(), i = oc(e);
-		if (!i || i.length > ac.keyCharacters) throw TypeError("世界书条目键无效");
+		let { chatId: n } = r(), i = hc(e);
+		if (!i || i.length > mc.keyCharacters) throw TypeError("世界书条目键无效");
 		let s = a(), c = { ...s.overridesByChat[n] ?? {} };
-		c[i] = t === !0, s.overridesByChat[n] = Object.fromEntries(Object.entries(c).slice(-ac.overridesPerChat)), o(s);
+		c[i] = t === !0, s.overridesByChat[n] = Object.fromEntries(Object.entries(c).slice(-mc.overridesPerChat)), o(s);
 	}
 	function u(e) {
 		let { chatId: t } = r();
 		if (!Array.isArray(e)) throw TypeError("世界书条目选择无效");
 		let n = a(), i = { ...n.overridesByChat[t] ?? {} };
 		for (let t of e) {
-			let e = oc(t?.key);
-			!e || e.length > ac.keyCharacters || (i[e] = t.allowed === !0);
+			let e = hc(t?.key);
+			!e || e.length > mc.keyCharacters || (i[e] = t.allowed === !0);
 		}
-		n.overridesByChat[t] = Object.fromEntries(Object.entries(i).slice(-ac.overridesPerChat)), o(n);
+		n.overridesByChat[t] = Object.fromEntries(Object.entries(i).slice(-mc.overridesPerChat)), o(n);
 	}
 	function d(t, n) {
-		let r = oc(t);
-		if (!r || r.length > ac.keyCharacters) throw TypeError("世界书名称无效");
+		let r = hc(t);
+		if (!r || r.length > mc.keyCharacters) throw TypeError("世界书名称无效");
 		if (typeof e.setSharedWorldInfoExcluded == "function") return e.setSharedWorldInfoExcluded(r, n === !0);
 		let i = a();
-		return i.excludedBooks = i.excludedBooks.filter((e) => sc(e) !== sc(r)), n === !0 && i.excludedBooks.push(r), e.update({ sourceWorldInfoExcludedBooks: i.excludedBooks }), [...i.excludedBooks];
+		return i.excludedBooks = i.excludedBooks.filter((e) => gc(e) !== gc(r)), n === !0 && i.excludedBooks.push(r), e.update({ sourceWorldInfoExcludedBooks: i.excludedBooks }), [...i.excludedBooks];
 	}
 	function f({ chatId: e, candidates: t } = {}) {
-		return _c({
+		return Ec({
 			candidates: t,
 			chatId: e,
 			settings: i()
 		});
 	}
 	function p(e) {
-		return vc({
+		return Dc({
 			sources: e,
 			settings: i()
 		});
@@ -11544,8 +11883,8 @@ function yc({ settings: e, contextProvider: t, scanner: n = Er } = {}) {
 	async function m() {
 		let e = r(), t = await n(e.raw), i = r();
 		if (e.chatId !== i.chatId || e.hostChatId !== i.hostChatId) return { status: "stale" };
-		let o = a(), s = new Set(o.excludedBooks.map(sc)), c = t.entries.filter((e) => !s.has(sc(e.source))), l = new Set(o.disabledByChat[e.chatId] ?? []), u = c.filter((t) => mc(o, e.chatId, t.key, t.hostEnabled !== !1, l)), d = /* @__PURE__ */ new Set(), f = t.bookNames.filter((e) => {
-			let t = sc(e);
+		let o = a(), s = new Set(o.excludedBooks.map(gc)), c = t.entries.filter((e) => !s.has(gc(e.source))), l = new Set(o.disabledByChat[e.chatId] ?? []), u = c.filter((t) => Cc(o, e.chatId, t.key, t.hostEnabled !== !1, l)), d = /* @__PURE__ */ new Set(), f = t.bookNames.filter((e) => {
+			let t = gc(e);
 			return !t || d.has(t) ? !1 : (d.add(t), !0);
 		});
 		return Object.freeze({
@@ -11580,7 +11919,7 @@ function yc({ settings: e, contextProvider: t, scanner: n = Er } = {}) {
 }
 //#endregion
 //#region src/v3/host-adapter.js
-var bc = Object.freeze([
+var kc = Object.freeze([
 	"messageId",
 	"messageIndex",
 	"previous",
@@ -11589,15 +11928,15 @@ var bc = Object.freeze([
 	"mutation",
 	"mutationType"
 ]);
-function xc(e) {
+function Ac(e) {
 	let t = e?.getContext?.();
 	return t && typeof t == "object" ? t : null;
 }
-function Sc(e, t = 500) {
+function jc(e, t = 500) {
 	return (typeof e == "string" ? e.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim() : "").slice(0, t);
 }
-function Cc(e, t) {
-	let n = Sc(e?.name1 ?? e?.userName ?? e?.username ?? e?.persona?.name), r = Sc(e?.personaId ?? e?.persona?.id ?? e?.userAvatar ?? e?.personaAvatar ?? e?.user_avatar), i = [...new Set([
+function Mc(e, t) {
+	let n = jc(e?.name1 ?? e?.userName ?? e?.username ?? e?.persona?.name), r = jc(e?.personaId ?? e?.persona?.id ?? e?.userAvatar ?? e?.personaAvatar ?? e?.user_avatar), i = [...new Set([
 		n,
 		"你",
 		"{{user}}"
@@ -11609,8 +11948,8 @@ function Cc(e, t) {
 		source: t
 	});
 }
-function wc({ globalRef: e = globalThis, mutationMetadataCapability: t = !1, worldInfoBindings: n = {} } = {}) {
-	let r = () => xc(e?.SillyTavern), i = () => xc(e?.Luker), a = t === !0;
+function Nc({ globalRef: e = globalThis, mutationMetadataCapability: t = !1, worldInfoBindings: n = {} } = {}) {
+	let r = () => Ac(e?.SillyTavern), i = () => Ac(e?.Luker), a = t === !0;
 	function o() {
 		let e = r() ?? i();
 		if (!e) throw Error("宿主上下文不可用");
@@ -11632,19 +11971,19 @@ function wc({ globalRef: e = globalThis, mutationMetadataCapability: t = !1, wor
 			eventTypes: n.eventTypes ?? {},
 			mode: o ? "enhanced" : "standard",
 			source: e ? "SillyTavern" : "Luker",
-			userIdentity: Cc(n, e ? "SillyTavern" : "Luker"),
+			userIdentity: Mc(n, e ? "SillyTavern" : "Luker"),
 			capabilities: Object.freeze({ mutationMetadata: o })
 		});
 	}
 	function c() {
 		let e = r(), t = e ?? i();
 		if (!t) throw Error("宿主上下文不可用");
-		return Cc(t, e ? "SillyTavern" : "Luker");
+		return Mc(t, e ? "SillyTavern" : "Luker");
 	}
 	function l(e = []) {
 		for (let t = e.length - 1; t >= 0; --t) {
 			let n = e[t];
-			if (!(!n || typeof n != "object" || Array.isArray(n)) && bc.some((e) => Object.hasOwn(n, e))) return a = !0, n;
+			if (!(!n || typeof n != "object" || Array.isArray(n)) && kc.some((e) => Object.hasOwn(n, e))) return a = !0, n;
 		}
 		return null;
 	}
@@ -11659,8 +11998,8 @@ function wc({ globalRef: e = globalThis, mutationMetadataCapability: t = !1, wor
 		mutationMetadata: l
 	});
 }
-var Tc = Symbol("qqjCoverageHostGuard"), Ec = (e) => String(e?.context?.chatMetadata?.qianqianjie?.chatId ?? "").trim(), Dc = (e) => e && e.is_user === !1 && e.is_system !== !0 && typeof e.mes == "string" && !!e.mes.trim();
-function Oc(e) {
+var Pc = Symbol("qqjCoverageHostGuard"), Fc = (e) => String(e?.context?.chatMetadata?.qianqianjie?.chatId ?? "").trim(), Ic = (e) => e && e.is_user === !1 && e.is_system !== !0 && typeof e.mes == "string" && !!e.mes.trim();
+function Lc(e) {
 	let t = e?.root, n = e?.run?.diagnostics?.realtimeOriginV1;
 	return !t || e?.run?.mode === "branchReplay" || !n || typeof n != "object" || Array.isArray(n) || n.chatId !== t.chatId || n.narrativeGeneration !== t.narrativeGeneration || n.sourceSnapshotFingerprint !== t.sourceSnapshotFingerprint ? null : Object.freeze({
 		chatId: n.chatId,
@@ -11668,13 +12007,13 @@ function Oc(e) {
 		sourceSnapshotFingerprint: n.sourceSnapshotFingerprint
 	});
 }
-function kc(e, t = null) {
+function Rc(e, t = null) {
 	let n = e && typeof e == "object" && !Array.isArray(e) ? structuredClone(e) : {};
 	return delete n.realtimeOriginV1, t && (n.realtimeOriginV1 = { ...t }), n;
 }
-function Ac(e, t) {
+function zc(e, t) {
 	return Object.freeze({
-		chatId: Ec(e),
+		chatId: Fc(e),
 		candidates: Object.freeze(t.map((e) => Object.freeze({
 			messageIndex: e.hostLocator.messageIndex,
 			swipeId: e.hostLocator.swipeId,
@@ -11684,31 +12023,31 @@ function Ac(e, t) {
 		})))
 	});
 }
-function jc(e, t) {
-	let n = e?.[Tc];
-	return !n || n.chatId !== Ec(t) || !Array.isArray(n.candidates) || !Array.isArray(t?.chat) ? !1 : n.candidates.every((e) => {
+function Bc(e, t) {
+	let n = e?.[Pc];
+	return !n || n.chatId !== Fc(t) || !Array.isArray(n.candidates) || !Array.isArray(t?.chat) ? !1 : n.candidates.every((e) => {
 		let n = We(t.chat[e.messageIndex]);
 		return n && n.swipeId === e.swipeId && n.selectedSwipeIndex === e.selectedSwipeIndex && n.rawContent === e.rawContent;
 	});
 }
-function Mc(e, t) {
-	let n = e?.[Tc], r = t?.hostLocator;
+function Vc(e, t) {
+	let n = e?.[Pc], r = t?.hostLocator;
 	if (!n || !r || !Array.isArray(n.candidates)) return null;
 	let i = n.candidates.find((e) => e.messageIndex === r.messageIndex && e.swipeId === r.swipeId && e.selectedSwipeIndex === r.selectedSwipeIndex);
 	return typeof i?.rawFingerprint == "string" ? i.rawFingerprint : null;
 }
-function Nc(e) {
+function Hc(e) {
 	let t = /* @__PURE__ */ new Map();
 	for (let n of e?.floorMemories ?? []) n?.recordStatus === "active" && t.set(n.floorId, [...t.get(n.floorId) ?? [], n]);
 	return new Map([...t].filter(([, e]) => e.length === 1).map(([e, t]) => [e, t[0]]));
 }
-function Pc(e) {
+function Uc(e) {
 	let t = /* @__PURE__ */ new Set();
-	for (let n = e.length - 1; n >= 0 && t.size < 3; --n) Dc(e[n]) && t.add(n);
+	for (let n = e.length - 1; n >= 0 && t.size < 3; --n) Ic(e[n]) && t.add(n);
 	return t;
 }
-function Fc(e, t, n) {
-	if (Array.isArray(t?.chat) && t.chat, !e?.root?.chatId || Ec(t) !== e.root.chatId || !Array.isArray(n)) return !1;
+function Wc(e, t, n) {
+	if (Array.isArray(t?.chat) && t.chat, !e?.root?.chatId || Fc(t) !== e.root.chatId || !Array.isArray(n)) return !1;
 	let r = new Map(n.map((e) => [e.hostLocator.messageIndex, e]));
 	for (let t of e.floors ?? []) {
 		let e = r.get(t.hostLocator?.messageIndex);
@@ -11717,8 +12056,8 @@ function Fc(e, t, n) {
 	let i = n.length;
 	return (e.floors?.length ?? 0) >= Math.max(0, i - 1) && (e.floors?.length ?? 0) <= i;
 }
-function Ic({ reachable: e, snapshot: t, hostCandidates: n, realtimeOrigin: r = !1 } = {}) {
-	if (!e?.root || !Array.isArray(e.floors) || !Fc(e, t, n)) return Object.freeze({
+function Gc({ reachable: e, snapshot: t, hostCandidates: n, realtimeOrigin: r = !1 } = {}) {
+	if (!e?.root || !Array.isArray(e.floors) || !Wc(e, t, n)) return Object.freeze({
 		status: "unknown",
 		completed: 0,
 		total: e?.floors?.length ?? 0,
@@ -11733,9 +12072,9 @@ function Ic({ reachable: e, snapshot: t, hostCandidates: n, realtimeOrigin: r = 
 		summaryRealtimeProtected: !1,
 		summaryHasPartialWork: !1
 	});
-	let i = e.floors, a = Nc(e), o;
+	let i = e.floors, a = Hc(e), o;
 	try {
-		o = new Map(Gi({
+		o = new Map(Ji({
 			floors: i,
 			floorMemories: e.floorMemories ?? [],
 			stateDeltas: e.stateDeltas ?? []
@@ -11781,7 +12120,7 @@ function Ic({ reachable: e, snapshot: t, hostCandidates: n, realtimeOrigin: r = 
 		summaryRealtimeProtected: !1,
 		summaryHasPartialWork: !1
 	});
-	let d = Pc(t.chat), f = r === !0 || u.every((e) => d.has(e.hostLocator.messageIndex) && Dc(t.chat[e.hostLocator.messageIndex])), p = u.some((e) => a.has(e.id) || o.has(e.id)), m = e.run?.mode === "branchReplay", h = (l > 0 || r === !0) && f && !p && !m ? "realtimeTail" : "historicalDebt", g = c.length > 0 && (r === !0 || c.every((e) => d.has(e.hostLocator.messageIndex) && Dc(t.chat[e.hostLocator.messageIndex]))), _ = c.some((e) => a.has(e.id)), v = c.length ? (s > 0 || r === !0) && g && !_ && !m ? "realtimeTail" : "historicalDebt" : "caughtUp";
+	let d = Uc(t.chat), f = r === !0 || u.every((e) => d.has(e.hostLocator.messageIndex) && Ic(t.chat[e.hostLocator.messageIndex])), p = u.some((e) => a.has(e.id) || o.has(e.id)), m = e.run?.mode === "branchReplay", h = (l > 0 || r === !0) && f && !p && !m ? "realtimeTail" : "historicalDebt", g = c.length > 0 && (r === !0 || c.every((e) => d.has(e.hostLocator.messageIndex) && Ic(t.chat[e.hostLocator.messageIndex]))), _ = c.some((e) => a.has(e.id)), v = c.length ? (s > 0 || r === !0) && g && !_ && !m ? "realtimeTail" : "historicalDebt" : "caughtUp";
 	return Object.freeze({
 		status: h,
 		completed: l,
@@ -11798,12 +12137,12 @@ function Ic({ reachable: e, snapshot: t, hostCandidates: n, realtimeOrigin: r = 
 		summaryHasPartialWork: _
 	});
 }
-async function Lc({ reachable: e, snapshot: t, sanitizerOptions: n = {}, captureGuard: r = !1, realtimeOrigin: i = !1 } = {}) {
+async function Kc({ reachable: e, snapshot: t, sanitizerOptions: n = {}, captureGuard: r = !1, realtimeOrigin: i = !1 } = {}) {
 	try {
 		let a = await qe(t?.chat, {
 			sanitizerOptions: n,
 			captureRawContent: r
-		}), o = Ic({
+		}), o = Gc({
 			reachable: e,
 			snapshot: t,
 			hostCandidates: a,
@@ -11811,7 +12150,7 @@ async function Lc({ reachable: e, snapshot: t, sanitizerOptions: n = {}, capture
 		});
 		if (!r) return o;
 		let s = { ...o };
-		return Object.defineProperty(s, Tc, { value: Ac(t, a) }), Object.freeze(s);
+		return Object.defineProperty(s, Pc, { value: zc(t, a) }), Object.freeze(s);
 	} catch {
 		let t = {
 			status: "unknown",
@@ -11833,7 +12172,7 @@ async function Lc({ reachable: e, snapshot: t, sanitizerOptions: n = {}, capture
 }
 //#endregion
 //#region src/v3/foundation-runtime.js
-var Rc = Object.freeze([
+var qc = Object.freeze([
 	"CHAT_CHANGED",
 	"CHAT_RENAMED",
 	"MESSAGE_SENT",
@@ -11843,7 +12182,7 @@ var Rc = Object.freeze([
 	"MESSAGE_SWIPED",
 	"MESSAGE_SWIPE_DELETED",
 	"MORE_MESSAGES_LOADED"
-]), zc = 512, Bc = () => ({
+]), Jc = 512, Yc = () => ({
 	floor: [],
 	entity: [],
 	event: [],
@@ -11854,14 +12193,14 @@ var Rc = Object.freeze([
 	state: [],
 	anchor: [],
 	reverseRef: []
-}), Vc = async (e) => `sha256:${await _e(JSON.stringify(e))}`, Hc = (e) => {
+}), Xc = async (e) => `sha256:${await J(JSON.stringify(e))}`, Zc = (e) => {
 	let t = typeof e == "string" ? e : e?.toISOString?.();
 	if (!t || !Number.isFinite(Date.parse(t))) throw TypeError("V3_RUNTIME_TIME_INVALID");
 	return t;
-}, Uc = (e) => structuredClone(e), Wc = (e, t) => e?.messageIndex === t?.messageIndex && e?.swipeId === t?.swipeId && e?.selectedSwipeIndex === t?.selectedSwipeIndex;
-function Gc(e) {
-	let t = ea(e());
-	if (t?.ok !== !0 || !he(t.chatId)) throw Error("当前聊天尚未建立稳定 chatId");
+}, Qc = (e) => structuredClone(e), $c = (e, t) => e?.messageIndex === t?.messageIndex && e?.swipeId === t?.swipeId && e?.selectedSwipeIndex === t?.selectedSwipeIndex;
+function el(e) {
+	let t = oa(e());
+	if (t?.ok !== !0 || !ge(t.chatId)) throw Error("当前聊天尚未建立稳定 chatId");
 	return Object.freeze({
 		hostChatId: t.hostChatId,
 		chatId: t.chatId,
@@ -11869,7 +12208,7 @@ function Gc(e) {
 		personaLocator: t.personaAvatar
 	});
 }
-function Kc({ recordType: e, id: t, chatId: n, narrativeGeneration: r, now: i, recordStatus: a = "staged", supersedes: o = null }) {
+function tl({ recordType: e, id: t, chatId: n, narrativeGeneration: r, now: i, recordStatus: a = "staged", supersedes: o = null }) {
 	return {
 		schemaVersion: 3,
 		recordType: e,
@@ -11882,17 +12221,17 @@ function Kc({ recordType: e, id: t, chatId: n, narrativeGeneration: r, now: i, r
 		supersedes: o
 	};
 }
-function qc(e, t = zc) {
+function nl(e, t = Jc) {
 	let n = [];
 	for (let r = 0; r < e.length; r += t) n.push(e.slice(r, r + t));
 	return n;
 }
-async function Jc({ chatId: e, narrativeGeneration: t, checkpointId: n, floors: r, candidates: i, entities: a = [], now: o }) {
+async function rl({ chatId: e, narrativeGeneration: t, checkpointId: n, floors: r, candidates: i, entities: a = [], now: o }) {
 	let s = [], c = async (r, i, a) => {
 		a.length && s.push(_t({
-			...Kc({
+			...tl({
 				recordType: "index",
-				id: await J([
+				id: await Y([
 					"index",
 					n,
 					r,
@@ -11908,7 +12247,7 @@ async function Jc({ chatId: e, narrativeGeneration: t, checkpointId: n, floors: 
 			sourceCheckpointId: n,
 			entries: a,
 			entryCount: a.length,
-			contentFingerprint: await Vc([
+			contentFingerprint: await Xc([
 				r,
 				i,
 				a
@@ -11945,7 +12284,7 @@ async function Jc({ chatId: e, narrativeGeneration: t, checkpointId: n, floors: 
 		}
 	}
 	for (let [e, t] of l) {
-		let n = qc(t);
+		let n = nl(t);
 		for (let t = 0; t < n.length; t += 1) await c("fingerprint", `${e}-${t}`, n[t]);
 	}
 	let u = /* @__PURE__ */ new Map();
@@ -11968,7 +12307,7 @@ async function Jc({ chatId: e, narrativeGeneration: t, checkpointId: n, floors: 
 		}
 	}
 	for (let [e, t] of u) {
-		let n = qc(t);
+		let n = nl(t);
 		for (let t = 0; t < n.length; t += 1) await c("entity", `${e}-${t}`, n[t]);
 	}
 	let d = /* @__PURE__ */ new Map();
@@ -11984,15 +12323,15 @@ async function Jc({ chatId: e, narrativeGeneration: t, checkpointId: n, floors: 
 		}), d.set(t, r);
 	}
 	for (let [e, t] of d) {
-		let n = qc(t);
+		let n = nl(t);
 		for (let t = 0; t < n.length; t += 1) await c("reverseRef", `${e}-${t}`, n[t]);
 	}
 	return s;
 }
-function Yc(e) {
+function il(e) {
 	return e?.floorMemories || e?.entities ? Wt(e) : St(e);
 }
-function Xc(e, t) {
+function al(e, t) {
 	return e.map((e, n) => {
 		let r = t[n];
 		return r ? {
@@ -12005,7 +12344,7 @@ function Xc(e, t) {
 		} : e;
 	});
 }
-function Zc(e, t) {
+function ol(e, t) {
 	let n = /* @__PURE__ */ new Map(), r = /* @__PURE__ */ new Map();
 	for (let e of t ?? []) for (let t of e.entries ?? []) for (let i of t.refs ?? []) if (i.recordType === "floor") {
 		if (e.kind === "floorOrder" && typeof i.itemId == "string") try {
@@ -12022,7 +12361,7 @@ function Zc(e, t) {
 		} : e.content
 	}));
 }
-function Qc(e, t = null) {
+function sl(e, t = null) {
 	return e ? Object.freeze({
 		id: e.id,
 		mode: e.mode,
@@ -12030,13 +12369,13 @@ function Qc(e, t = null) {
 		...t ? { result: t } : {}
 	}) : null;
 }
-function $c(e, t = `V3 operation ${e}`) {
+function cl(e, t = `V3 operation ${e}`) {
 	return Object.assign(Error(t), {
 		code: `V3_${String(e).toUpperCase()}`,
 		operationStatus: e
 	});
 }
-function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(), prepareSession: r = null, isEnabled: i = !0, sanitizerOptions: a = () => ({}), scanCandidates: o = qe, now: s = () => /* @__PURE__ */ new Date(), newUuid: c = ge, logger: l = console } = {}) {
+function ll({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(), prepareSession: r = null, isEnabled: i = !0, sanitizerOptions: a = () => ({}), scanCandidates: o = qe, now: s = () => /* @__PURE__ */ new Date(), newUuid: c = _e, logger: l = console } = {}) {
 	if (typeof e?.snapshot != "function") throw TypeError("V3 runtime HostAdapter 无效");
 	if (!t || [
 		"readReachable",
@@ -12101,7 +12440,7 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 		return E;
 	}, O = (e, t) => e?.epoch === u ? D(t) : E;
 	function k() {
-		let t = Gc(n), r = e.snapshot();
+		let t = el(n), r = e.snapshot();
 		if (r.chatId && t.hostChatId && r.chatId !== t.hostChatId) throw Error("宿主聊天身份正在切换");
 		return {
 			identity: t,
@@ -12140,7 +12479,7 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			let r = ht({
 				...n.run,
 				phase: "completed",
-				updatedAt: Hc(s())
+				updatedAt: Zc(s())
 			}, { expectedChatId: n.root.chatId }), i = await t.replaceRecord(r, n.runRevision, { signal: e.controller.signal });
 			if (i.status === "conflict") {
 				let a = await t.readRecord("run", n.run.id), o = a.status === "ready" && a.data.id === n.run.id && a.data.narrativeGeneration === n.checkpoint.narrativeGeneration && a.data.inputSnapshotFingerprint === n.checkpoint.sourceSnapshotFingerprint;
@@ -12149,7 +12488,7 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 					status: "reused"
 				} : o && a.data.phase === "committing" && (i = await t.replaceRecord(r, a.revision, { signal: e.controller.signal }));
 			}
-			if (!["saved", "reused"].includes(i.status)) throw $c(i.status, "V3 active committing run 冷恢复收尾失败");
+			if (!["saved", "reused"].includes(i.status)) throw cl(i.status, "V3 active committing run 冷恢复收尾失败");
 			n = {
 				...n,
 				run: i.data ?? r,
@@ -12159,14 +12498,14 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 		let r = [...n.floors].sort((e, t) => e.assistantSeq - t.assistantSeq);
 		return d = {
 			...n,
-			floors: Zc(r, n.indexes)
-		}, v = Qc(n.run, "recovered"), d;
+			floors: ol(r, n.indexes)
+		}, v = sl(n.run, "recovered"), d;
 	}
 	function N(e, t, n, r = null) {
 		if (r) {
 			let n = e.findIndex((e) => e.assistantSeq === r.assistantSeq && e.hostLocator.messageIndex === r.messageIndex && e.canonicalFingerprint === r.canonicalFingerprint);
 			if (n >= 0 && t.length <= n + 1 && e[n]?.stabilityProof?.kind === "nextUser" && t.every((t, n) => t.content.canonicalFingerprint === e[n]?.canonicalFingerprint)) return n + 1;
-			throw $c("stale", "提前稳定边界已变化，本次操作不再提交。");
+			throw cl("stale", "提前稳定边界已变化，本次操作不再提交。");
 		}
 		let i = 0;
 		for (; e[i]?.stabilityProof?.kind === "nextUser";) i += 1;
@@ -12180,7 +12519,7 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			phase: n,
 			completedFloorIds: r ?? e.runRecord?.completedFloorIds ?? [],
 			failedItems: i ?? e.runRecord?.failedItems ?? [],
-			updatedAt: Hc(s())
+			updatedAt: Zc(s())
 		}, { expectedChatId: e.chatId }), o = e.runRevision ? await t.replaceRecord(a, e.runRevision, { signal: e.controller.signal }) : await t.putRecord(a, { signal: e.controller.signal });
 		if (o.status === "conflict") {
 			let r = await t.readRecord("run", a.id);
@@ -12198,13 +12537,13 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 				} : await t.replaceRecord(a, r.revision, { signal: e.controller.signal });
 			}
 		}
-		if (!["saved", "reused"].includes(o.status)) throw $c(o.status, `V3 run phase ${n} 写入失败`);
+		if (!["saved", "reused"].includes(o.status)) throw cl(o.status, `V3 run phase ${n} 写入失败`);
 		return e.runRevision = o.revision, e.runRecord = o.data ?? a, e.runRecord;
 	}
 	async function F(e, n, { parentCheckpointId: r, inputSnapshotFingerprint: i, narrativeGeneration: a }) {
 		let o = await t.readRecord("run", n);
 		if (o.status === "missing") return null;
-		if (o.status !== "ready") throw $c(o.status, "V3 staged run 读取失败");
+		if (o.status !== "ready") throw cl(o.status, "V3 staged run 读取失败");
 		let s = o.data;
 		if (s.parentCheckpointId !== r || s.inputSnapshotFingerprint !== i || s.narrativeGeneration !== a) throw Object.assign(/* @__PURE__ */ Error("V3 staged run 与当前输入不一致"), { code: "V3_STAGED_SCOPE_MISMATCH" });
 		return e.runRevision = o.revision, e.runRecord = s, e.resumePreparedRefs = new Set(s.preparedRecordRefs), s;
@@ -12224,9 +12563,9 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 		return t.putRecord(n, { signal: e.controller.signal });
 	}
 	async function I(e, { confirmLatest: t = !1, stableThrough: n = e?.stableThrough ?? null } = {}) {
-		if (A(e) !== "current") throw $c("stale");
+		if (A(e) !== "current") throw cl("stale");
 		let r = await o(k().host.chat, { sanitizerOptions: a() });
-		if (A(e) !== "current") throw $c("stale");
+		if (A(e) !== "current") throw cl("stale");
 		let i = N(r, d?.floors ?? [], t, n);
 		return {
 			candidates: r,
@@ -12244,7 +12583,7 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 				code: "V3_OPERATION_STALE",
 				retryCount: 0
 			}],
-			updatedAt: Hc(s())
+			updatedAt: Zc(s())
 		}, { expectedChatId: e.chatId }), r = await t.settleRun(n, e.runRevision, e.identity);
 		return r.status === "saved" ? (e.runRecord = r.data, e.runRevision = r.revision, r.data) : null;
 	}
@@ -12258,21 +12597,21 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			}
 		}
 		m === null && u.length !== p.length && (m = g + 1);
-		let x = u.length === p.length && u.some((e, t) => !Wc(e.hostLocator, p[t]?.hostLocator)), C = u.length === p.length && u.some((e, t) => e.content.rawFingerprint !== p[t]?.rawFingerprint);
-		if (m === null && !x && !C && !d.indexesMissing && d.root?.sourceSnapshotFingerprint === l.fingerprint) return f = n[r] ?? null, y = null, v = Qc(d.run, "unchanged"), O(e, d.root ? "ready" : "uninitialized");
-		let w = !!(u.length && m && m <= u.length), T = d.root && !w ? d.root.narrativeGeneration : await J([
+		let x = u.length === p.length && u.some((e, t) => !$c(e.hostLocator, p[t]?.hostLocator)), C = u.length === p.length && u.some((e, t) => e.content.rawFingerprint !== p[t]?.rawFingerprint);
+		if (m === null && !x && !C && !d.indexesMissing && d.root?.sourceSnapshotFingerprint === l.fingerprint) return f = n[r] ?? null, y = null, v = sl(d.run, "unchanged"), O(e, d.root ? "ready" : "uninitialized");
+		let w = !!(u.length && m && m <= u.length), T = d.root && !w ? d.root.narrativeGeneration : await Y([
 			"generation",
 			e.chatId,
 			d.root?.narrativeGeneration ?? null,
 			m,
 			p.map((e) => e.canonicalFingerprint)
-		]), E = d.root ? w ? "branchReplay" : "incremental" : "initialize", D = d.root?.headCheckpointId ?? null, k = await J([
+		]), E = d.root ? w ? "branchReplay" : "incremental" : "initialize", D = d.root?.headCheckpointId ?? null, k = await Y([
 			"foundation-run-v1",
 			e.chatId,
 			D,
 			T,
 			l.fingerprint
-		]), j = await J([
+		]), j = await Y([
 			"foundation-checkpoint-v1",
 			e.chatId,
 			D,
@@ -12284,9 +12623,9 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			parentCheckpointId: D,
 			inputSnapshotFingerprint: l.fingerprint,
 			narrativeGeneration: T
-		}))?.createdAt ?? Hc(s()), N = w ? Math.max(0, m - 1) : Math.min(u.length, r), L = u.slice(0, N);
+		}))?.createdAt ?? Zc(s()), N = w ? Math.max(0, m - 1) : Math.min(u.length, r), L = u.slice(0, N);
 		for (let t = N; t < r; t += 1) L.push(Je({
-			id: await J([
+			id: await Y([
 				"floor",
 				e.chatId,
 				T,
@@ -12304,23 +12643,23 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			checkpointId: j,
 			now: M
 		}));
-		let z = new Set(L.map((e) => e.id)), B = (d.floorMemories ?? []).filter((e) => z.has(e.floorId)), V = Gi({
+		let z = new Set(L.map((e) => e.id)), B = (d.floorMemories ?? []).filter((e) => z.has(e.floorId)), V = Ji({
 			floors: L,
 			floorMemories: B,
 			stateDeltas: d.stateDeltas ?? []
-		}), te = /* @__PURE__ */ new Set();
-		B.forEach((e) => Ut(e).forEach((e) => te.add(e))), V.forEach((e) => e.subjectSnapshots.forEach((e) => {
-			te.add(e.subjectEntityId), e.adaptive.forEach((e) => {
-				e.towardEntityId && te.add(e.towardEntityId);
+		}), H = /* @__PURE__ */ new Set();
+		B.forEach((e) => Ut(e).forEach((e) => H.add(e))), V.forEach((e) => e.subjectSnapshots.forEach((e) => {
+			H.add(e.subjectEntityId), e.adaptive.forEach((e) => {
+				e.towardEntityId && H.add(e.towardEntityId);
 			});
-		})), d.baseline && (te.add(d.baseline.userPersona.entityId), te.add(d.baseline.characterCard.entityId));
-		let H = (d.entities ?? []).filter((e) => (te.has(e.id) || e.firstSeenFloorId && z.has(e.firstSeenFloorId)) && (!e.firstSeenFloorId || z.has(e.firstSeenFloorId))), U = new Set(H.map((e) => e.id)), W = d.baseline && U.has(d.baseline.userPersona.entityId) && U.has(d.baseline.characterCard.entityId) ? d.baseline : null;
+		})), d.baseline && (H.add(d.baseline.userPersona.entityId), H.add(d.baseline.characterCard.entityId));
+		let U = (d.entities ?? []).filter((e) => (H.has(e.id) || e.firstSeenFloorId && z.has(e.firstSeenFloorId)) && (!e.firstSeenFloorId || z.has(e.firstSeenFloorId))), te = new Set(U.map((e) => e.id)), W = d.baseline && te.has(d.baseline.userPersona.entityId) && te.has(d.baseline.characterCard.entityId) ? d.baseline : null;
 		W || (V = []);
 		let G = B.some((e) => e.recordStatus === "active"), ne = G && B.filter((e) => e.recordStatus === "active").every((e) => V.some((t) => t.floorId === e.floorId && t.floorMemoryId === e.id)), re = {
 			...Ie,
 			memoryReady: G,
 			cseReady: ne
-		}, ie = W ? await Qi({
+		}, ie = W ? await ia({
 			chatId: e.chatId,
 			narrativeGeneration: T,
 			baselineId: W.id,
@@ -12328,17 +12667,17 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			floorMemories: B,
 			stateDeltas: V,
 			now: M,
-			id: await J(["v3-cse-current-state", j]),
+			id: await Y(["v3-cse-current-state", j]),
 			previousId: d.currentStates?.at(-1)?.id ?? null
-		}) : null, ae = await Jc({
+		}) : null, ae = await rl({
 			chatId: e.chatId,
 			narrativeGeneration: T,
 			checkpointId: j,
 			floors: L,
 			candidates: p,
-			entities: H,
+			entities: U,
 			now: M
-		}), oe = ae.map((e) => t.recordKey(e)), se = L.map((e) => e.id), K = L.slice(N), q = Oc(d), ce = [
+		}), oe = ae.map((e) => t.recordKey(e)), se = L.map((e) => e.id), K = L.slice(N), q = Lc(d), ce = [
 			"MESSAGE_SENT",
 			"MESSAGE_RECEIVED",
 			"earlyAssistantStarted"
@@ -12348,7 +12687,7 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			sourceSnapshotFingerprint: l.fingerprint
 		} : null;
 		e.runBase = {
-			...Kc({
+			...tl({
 				recordType: "run",
 				id: k,
 				chatId: e.chatId,
@@ -12362,7 +12701,7 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			inputFloorIds: K.map((e) => e.id),
 			completedFloorIds: [],
 			failedItems: [],
-			diagnostics: kc(d.run?.diagnostics, ce),
+			diagnostics: Rc(d.run?.diagnostics, ce),
 			preparedRecordRefs: [
 				...K.map((e) => `v3-floor-${e.id}`),
 				...ie ? [t.recordKey(ie)] : [],
@@ -12373,12 +12712,12 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 		};
 		let le = await P(e, "capturing");
 		le = await P(e, "validating");
-		let ue = await Vc([
+		let ue = await Xc([
 			T,
 			se,
 			L.map((e) => e.content.canonicalFingerprint)
 		]), de = {
-			...Kc({
+			...tl({
 				recordType: "checkpoint",
 				id: j,
 				chatId: e.chatId,
@@ -12389,7 +12728,7 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			parentCheckpointId: D,
 			runId: k,
 			sourceSnapshotFingerprint: l.fingerprint,
-			capabilities: Uc(re),
+			capabilities: Qc(re),
 			floorRange: {
 				fromAssistantSeq: +!!L.length,
 				toAssistantSeq: L.length,
@@ -12402,7 +12741,7 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			producedRefs: {
 				floors: se,
 				floorMemories: B.map((e) => e.id),
-				entities: H.map((e) => e.id),
+				entities: U.map((e) => e.id),
 				events: [],
 				claims: [],
 				knowledge: [],
@@ -12420,12 +12759,12 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 				stateFingerprint: ue
 			},
 			sealedAt: M
-		}, fe = await Yc({
+		}, fe = await il({
 			checkpoint: de,
 			run: le,
 			floors: L,
 			floorMemories: B,
-			entities: H,
+			entities: U,
 			indexes: ae,
 			indexKeys: oe
 		}), pe = gt({
@@ -12443,104 +12782,104 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			pe
 		]) {
 			let n = A(e);
-			if (n !== "current") throw $c(n);
+			if (n !== "current") throw cl(n);
 			let r = await ee(e, t);
 			if (r.status === "conflict") throw Object.assign(/* @__PURE__ */ Error("V3 staged 记录冲突"), { code: "V3_STAGED_CONFLICT" });
-			if (!["saved", "reused"].includes(r.status)) throw $c(r.status, "V3 staged 记录写入失败");
+			if (!["saved", "reused"].includes(r.status)) throw cl(r.status, "V3 staged 记录写入失败");
 		}
 		le = await P(e, "committing", { completedFloorIds: K.map((e) => e.id) });
 		let me = A(e);
-		if (me !== "current") throw $c(me);
+		if (me !== "current") throw cl(me);
 		if ((await I(e, {
 			confirmLatest: i,
 			stableThrough: a
-		})).snapshot.fingerprint !== l.fingerprint) return v = Qc(await P(e, "stale", { completedFloorIds: K.map((e) => e.id) }), "sourceChangedBeforeCommit"), y = "地基输入在提交前已变化，旧快照已作废并将自动收敛。", h = "sourceChangedBeforeCommit", O(e, "stale");
-		let [he, ge, _e, ve, ye, be, xe, Se] = await Promise.all([
+		})).snapshot.fingerprint !== l.fingerprint) return v = sl(await P(e, "stale", { completedFloorIds: K.map((e) => e.id) }), "sourceChangedBeforeCommit"), y = "地基输入在提交前已变化，旧快照已作废并将自动收敛。", h = "sourceChangedBeforeCommit", O(e, "stale");
+		let [he, ge, _e, J, ve, ye, be, xe] = await Promise.all([
 			t.readRecord("checkpoint", j),
 			t.readRecord("run", k),
 			Promise.all(se.map((e) => t.readRecord("floor", e))),
 			Promise.all(B.map((e) => t.readRecord("floorMemory", e.id))),
-			Promise.all(H.map((e) => t.readRecord("entity", e.id))),
+			Promise.all(U.map((e) => t.readRecord("entity", e.id))),
 			Promise.all(V.map((e) => t.readRecord("stateDelta", e.id))),
 			Promise.all((ie ? [ie.id] : []).map((e) => t.readRecord("currentState", e))),
 			Promise.all(oe.map((e) => t.readRecord("index", e)))
 		]);
-		if (he.status !== "ready") throw $c(he.status, "V3 真实 checkpoint 回读失败");
-		if (ge.status !== "ready") throw $c(ge.status, "V3 真实 run 回读失败");
+		if (he.status !== "ready") throw cl(he.status, "V3 真实 checkpoint 回读失败");
+		if (ge.status !== "ready") throw cl(ge.status, "V3 真实 run 回读失败");
 		if (_e.some((e) => e.status !== "ready")) throw Object.assign(/* @__PURE__ */ Error("V3 真实 FloorRecord 回读不完整"), { code: "V3_STAGED_FLOOR_MISSING" });
-		if (ve.some((e) => e.status !== "ready")) throw Object.assign(/* @__PURE__ */ Error("V3 真实 FloorMemory 回读不完整"), { code: "V3_STAGED_MEMORY_MISSING" });
-		if (ye.some((e) => e.status !== "ready")) throw Object.assign(/* @__PURE__ */ Error("V3 真实 EntityRecord 回读不完整"), { code: "V3_STAGED_ENTITY_MISSING" });
-		if (be.some((e) => e.status !== "ready")) throw Object.assign(/* @__PURE__ */ Error("V3 真实 StateDelta 回读不完整"), { code: "V3_STAGED_STATE_DELTA_MISSING" });
-		if (xe.some((e) => e.status !== "ready")) throw Object.assign(/* @__PURE__ */ Error("V3 真实 CurrentState 回读不完整"), { code: "V3_STAGED_CURRENT_STATE_MISSING" });
-		if (Se.some((e) => e.status !== "ready")) throw Object.assign(/* @__PURE__ */ Error("V3 真实 index 回读不完整"), { code: "V3_STAGED_INDEX_MISSING" });
-		let Ce = he.data, we = ge.data, Te = _e.map((e) => e.data), Ee = ve.map((e) => e.data), De = ye.map((e) => e.data), Oe = be.map((e) => e.data), ke = xe.map((e) => e.data), Ae = Se.map((e) => e.data), je = Se.map((e) => e.recordId);
-		await Yc({
-			checkpoint: Ce,
-			run: we,
-			floors: Te,
-			floorMemories: Ee,
-			entities: De,
-			indexes: Ae,
-			indexKeys: je
+		if (J.some((e) => e.status !== "ready")) throw Object.assign(/* @__PURE__ */ Error("V3 真实 FloorMemory 回读不完整"), { code: "V3_STAGED_MEMORY_MISSING" });
+		if (ve.some((e) => e.status !== "ready")) throw Object.assign(/* @__PURE__ */ Error("V3 真实 EntityRecord 回读不完整"), { code: "V3_STAGED_ENTITY_MISSING" });
+		if (ye.some((e) => e.status !== "ready")) throw Object.assign(/* @__PURE__ */ Error("V3 真实 StateDelta 回读不完整"), { code: "V3_STAGED_STATE_DELTA_MISSING" });
+		if (be.some((e) => e.status !== "ready")) throw Object.assign(/* @__PURE__ */ Error("V3 真实 CurrentState 回读不完整"), { code: "V3_STAGED_CURRENT_STATE_MISSING" });
+		if (xe.some((e) => e.status !== "ready")) throw Object.assign(/* @__PURE__ */ Error("V3 真实 index 回读不完整"), { code: "V3_STAGED_INDEX_MISSING" });
+		let Se = he.data, Ce = ge.data, we = _e.map((e) => e.data), Te = J.map((e) => e.data), Ee = ve.map((e) => e.data), De = ye.map((e) => e.data), Oe = be.map((e) => e.data), ke = xe.map((e) => e.data), Ae = xe.map((e) => e.recordId);
+		await il({
+			checkpoint: Se,
+			run: Ce,
+			floors: we,
+			floorMemories: Te,
+			entities: Ee,
+			indexes: ke,
+			indexKeys: Ae
 		});
-		let Me = Te.at(-1) ?? null, Ne = ft({
-			...Kc({
+		let je = we.at(-1) ?? null, Me = ft({
+			...tl({
 				recordType: "root",
 				id: "root",
 				chatId: e.chatId,
-				narrativeGeneration: Ce.narrativeGeneration,
+				narrativeGeneration: Se.narrativeGeneration,
 				now: M,
 				recordStatus: "active"
 			}),
 			status: "ready",
-			capabilities: Uc(re),
-			headCheckpointId: Ce.id,
-			sourceSnapshotFingerprint: Ce.sourceSnapshotFingerprint,
+			capabilities: Qc(re),
+			headCheckpointId: Se.id,
+			sourceSnapshotFingerprint: Se.sourceSnapshotFingerprint,
 			stableBoundary: {
-				assistantSeq: Te.length,
-				floorId: Me?.id ?? null,
-				canonicalFingerprint: Me?.content?.canonicalFingerprint ?? null
+				assistantSeq: we.length,
+				floorId: je?.id ?? null,
+				canonicalFingerprint: je?.content?.canonicalFingerprint ?? null
 			},
 			baselineId: W?.id ?? null,
 			activeRunId: null,
 			indexManifest: {
-				...Bc(),
-				floor: je.filter((e) => e.includes("-floorOrder-") || e.includes("-fingerprint-")),
-				entity: je.filter((e) => e.includes("-entity-")),
-				reverseRef: je.filter((e) => e.includes("-reverseRef-"))
+				...Yc(),
+				floor: Ae.filter((e) => e.includes("-floorOrder-") || e.includes("-fingerprint-")),
+				entity: Ae.filter((e) => e.includes("-entity-")),
+				reverseRef: Ae.filter((e) => e.includes("-reverseRef-"))
 			},
-			activeStateRefs: ke.map((e) => e.id),
+			activeStateRefs: Oe.map((e) => e.id),
 			activeThreadRefs: []
 		}, { expectedChatId: e.chatId });
 		await Jr({
-			root: Ne,
-			checkpoint: Ce,
-			run: we,
-			floors: Te,
-			floorMemories: Ee,
-			entities: De,
-			indexes: Ae,
-			indexKeys: je,
+			root: Me,
+			checkpoint: Se,
+			run: Ce,
+			floors: we,
+			floorMemories: Te,
+			entities: Ee,
+			indexes: ke,
+			indexKeys: Ae,
 			baseline: W,
-			stateDeltas: Oe,
-			currentStates: ke
+			stateDeltas: De,
+			currentStates: Oe
 		});
-		let Pe = await t.commitRoot(Ne, d.rootRevision ?? 0, { signal: e.controller.signal });
-		if (Pe.status === "conflict") {
+		let Ne = await t.commitRoot(Me, d.rootRevision ?? 0, { signal: e.controller.signal });
+		if (Ne.status === "conflict") {
 			b += K.length + ae.length + 2;
 			let o = await t.readReachable(), s = await I(e, {
 				confirmLatest: i,
 				stableThrough: a
 			}), u = o.status === "ready" && o.checkpoint.runId === k && o.root.sourceSnapshotFingerprint === l.fingerprint ? o.run : await P(e, "stale", { completedFloorIds: K.map((e) => e.id) });
-			if (s.snapshot.fingerprint !== l.fingerprint) return v = Qc(u, "casConflictSourceChanged"), y = "并发提交期间正文又发生变化，旧快照已作废并将自动收敛。", d = o.status === "ready" ? {
+			if (s.snapshot.fingerprint !== l.fingerprint) return v = sl(u, "casConflictSourceChanged"), y = "并发提交期间正文又发生变化，旧快照已作废并将自动收敛。", d = o.status === "ready" ? {
 				...o,
-				floors: Zc([...o.floors].sort((e, t) => e.assistantSeq - t.assistantSeq), o.indexes)
+				floors: ol([...o.floors].sort((e, t) => e.assistantSeq - t.assistantSeq), o.indexes)
 			} : null, h = "casConflictSourceChanged", O(e, "stale");
 			if (o.status === "ready") {
 				if (d = {
 					...o,
-					floors: Zc([...o.floors].sort((e, t) => e.assistantSeq - t.assistantSeq), o.indexes)
-				}, o.root.sourceSnapshotFingerprint === l.fingerprint) return f = n[r] ?? null, v = Qc(u, "winnerAlreadyCurrent"), y = null, O(e, "ready");
+					floors: ol([...o.floors].sort((e, t) => e.assistantSeq - t.assistantSeq), o.indexes)
+				}, o.root.sourceSnapshotFingerprint === l.fingerprint) return f = n[r] ?? null, v = sl(u, "winnerAlreadyCurrent"), y = null, O(e, "ready");
 				if (c < 2) return R(e, {
 					candidates: n,
 					stableCount: r,
@@ -12550,28 +12889,28 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 					rebaseAttempt: c + 1
 				});
 			}
-			return v = Qc(u, "casConflict"), y = "地基提交遇到并发更新，当前快照无法安全重基。", d = null, O(e, "conflict");
+			return v = sl(u, "casConflict"), y = "地基提交遇到并发更新，当前快照无法安全重基。", d = null, O(e, "conflict");
 		}
-		if (Pe.status !== "saved") throw $c(Pe.status, "V3 root 提交失败");
+		if (Ne.status !== "saved") throw cl(Ne.status, "V3 root 提交失败");
 		if (d = {
-			root: Ne,
-			rootRevision: Pe.revision,
-			checkpoint: Ce,
-			run: we,
-			floors: Xc(Te, p),
-			floorMemories: Ee,
-			entities: De,
+			root: Me,
+			rootRevision: Ne.revision,
+			checkpoint: Se,
+			run: Ce,
+			floors: al(we, p),
+			floorMemories: Te,
+			entities: Ee,
 			baseline: W,
-			stateDeltas: Oe,
-			currentStates: ke,
-			indexes: Ae,
+			stateDeltas: De,
+			currentStates: Oe,
+			indexes: ke,
 			indexesMissing: !1
 		}, f = n[r] ?? null, (await I(e, {
 			confirmLatest: i,
 			stableThrough: a
 		})).snapshot.fingerprint !== l.fingerprint) {
 			let t = await P(e, "stale", { completedFloorIds: K.map((e) => e.id) });
-			if (d.run = t, v = Qc(t, "sourceChangedAfterCommit"), y = "提交响应返回时正文已变化，正在自动收敛到最新快照。", c < 2) {
+			if (d.run = t, v = sl(t, "sourceChangedAfterCommit"), y = "提交响应返回时正文已变化，正在自动收敛到最新快照。", c < 2) {
 				let t = await I(e, {
 					confirmLatest: !1,
 					stableThrough: a
@@ -12586,21 +12925,21 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			}
 			return h = "sourceChangedAfterCommit", O(e, "stale");
 		}
-		let Fe = await P(e, "completed", { completedFloorIds: K.map((e) => e.id) });
+		let Pe = await P(e, "completed", { completedFloorIds: K.map((e) => e.id) });
 		return d = {
-			root: Ne,
-			rootRevision: Pe.revision,
-			checkpoint: Ce,
-			run: Fe,
-			floors: Xc(Te, p),
-			floorMemories: Ee,
-			entities: De,
+			root: Me,
+			rootRevision: Ne.revision,
+			checkpoint: Se,
+			run: Pe,
+			floors: al(we, p),
+			floorMemories: Te,
+			entities: Ee,
 			baseline: W,
-			stateDeltas: Oe,
-			currentStates: ke,
-			indexes: Ae,
+			stateDeltas: De,
+			currentStates: Oe,
+			indexes: ke,
 			indexesMissing: !1
-		}, S = L.length === 0 ? Object.freeze({ chatId: e.chatId }) : null, f = n[r] ?? null, v = Qc(Fe, w ? `trustedPrefix:${N}` : "committed"), y = null, O(e, "ready");
+		}, S = L.length === 0 ? Object.freeze({ chatId: e.chatId }) : null, f = n[r] ?? null, v = sl(Pe, w ? `trustedPrefix:${N}` : "committed"), y = null, O(e, "ready");
 	}
 	async function z(e = "manualRefresh", { confirmLatest: t = !1, stableThrough: n = null } = {}) {
 		if (!w()) return D("disabled");
@@ -12612,18 +12951,20 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			controller: new AbortController(),
 			reason: e,
 			phase: "capturing",
-			startedAt: Hc(s()),
+			startedAt: Zc(s()),
 			promise: null,
 			runBase: null,
 			runRecord: null,
 			runRevision: 0,
 			stableThrough: n
 		};
-		return p = i, O(i, "running"), i.promise = (async () => {
+		p = i, O(i, "running");
+		let d = null;
+		return i.promise = (async () => {
 			try {
 				if (r) {
 					let e = await r();
-					if (e?.status && e.status !== "ready") throw $c(e.status, `V3 身份准备未就绪：${e.status}`);
+					if (e?.status && e.status !== "ready") throw cl(e.status, `V3 身份准备未就绪：${e.status}`);
 				}
 				if (i.epoch !== u || i.controller.signal.aborted) return O(i, w() ? "stale" : "disabled");
 				let e = k();
@@ -12655,12 +12996,12 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 				if (n === "stale" || n === "disabled" || t?.operationStatus === "stale") {
 					try {
 						let e = await L(i);
-						e && (v = Qc(e));
+						e && (v = sl(e));
 					} catch {}
 					return O(i, w() ? "stale" : "disabled");
 				}
 				if (i.runBase && i.runRecord?.phase !== "retryableError") try {
-					v = Qc(await P(i, "retryableError", { failedItems: [{
+					v = sl(await P(i, "retryableError", { failedItems: [{
 						stage: i.phase,
 						code: t?.code ?? "V3_FOUNDATION_FAILED",
 						retryCount: 0
@@ -12681,14 +13022,14 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 				}));
 				return y = t?.message || "V3 地基处理失败", l?.warn?.("[qianqianjie] V3 foundation failed", { code: t?.code ?? t?.name ?? "V3_FOUNDATION_FAILED" }), O(i, "error");
 			} finally {
-				if (p === i && (p = null), h && w()) {
+				if (p === i && (p = null, i.epoch === u && (d = D(w() ? E.status : "disabled"))), h && w()) {
 					let e = h, t = g;
 					h = null, g = null, Promise.resolve().then(() => z(e, { stableThrough: t })).catch((e) => {
 						y = e?.message || "V3 地基调度失败", D("error");
 					});
 				}
 			}
-		})(), i.promise;
+		})().then((e) => d ?? e), i.promise;
 	}
 	function B(e) {
 		return w() ? (h = e, m || (m = Promise.resolve().then(() => {
@@ -12701,7 +13042,7 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 		let t = !1;
 		return p?.reason === "earlyAssistantStarted" && (p.controller.abort(e), t = !0), g && (g = null, h === "earlyAssistantStarted" && (h = null), t = !0), t;
 	}
-	function te(t) {
+	function H(t) {
 		if (!Number.isSafeInteger(t)) return !1;
 		try {
 			let n = e.snapshot().chat;
@@ -12710,21 +13051,21 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			return !1;
 		}
 	}
-	function H({ eventSource: t, eventTypes: n } = e.snapshot()) {
+	function U({ eventSource: t, eventTypes: n } = e.snapshot()) {
 		if (_ || !t?.on || !n) return !1;
-		for (let r of Rc) {
+		for (let r of qc) {
 			let i = n[r];
 			i && t.on(i, (...t) => {
 				if (r === "CHAT_CHANGED" || r === "CHAT_RENAMED") {
 					j(), w() && B(r);
 					return;
 				}
-				r !== "MORE_MESSAGES_LOADED" && (r === "MESSAGE_SENT" && !te(t[0]) || (e.mutationMetadata(t), B(r)));
+				r !== "MORE_MESSAGES_LOADED" && (r === "MESSAGE_SENT" && !H(t[0]) || (e.mutationMetadata(t), B(r)));
 			});
 		}
 		return _ = !0, !0;
 	}
-	async function U(e) {
+	async function te(e) {
 		return e === !0 ? z("enabled") : (j(), D("disabled"));
 	}
 	function W(e) {
@@ -12735,10 +13076,10 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 		} catch {
 			return !1;
 		}
-		return e.root.chatId !== t.chatId || (d?.rootRevision ?? 0) > e.rootRevision ? !1 : (d = e, v = Qc(d.run, "adopted"), D("ready"), !0);
+		return e.root.chatId !== t.chatId || (d?.rootRevision ?? 0) > e.rootRevision ? !1 : (d = e, v = sl(d.run, "adopted"), D("ready"), !0);
 	}
 	return Object.freeze({
-		bind: H,
+		bind: U,
 		start: () => w() ? z("start") : Promise.resolve(D("disabled")),
 		reconcile: z,
 		refreshStatus: () => z("manualRefresh"),
@@ -12746,7 +13087,7 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 		cancelEarlyStabilization: V,
 		confirmLatest: () => f ? z("manualConfirm", { confirmLatest: !0 }) : Promise.resolve(D("ready")),
 		invalidate: j,
-		setEnabled: U,
+		setEnabled: te,
 		adoptReachable: W,
 		getState: () => E,
 		getReachable: () => d,
@@ -12754,33 +13095,33 @@ function el({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			if (typeof e != "function") throw TypeError("V3 foundation listener 必须是函数");
 			return C.add(e), () => C.delete(e);
 		},
-		identityProvider: () => Gc(n)
+		identityProvider: () => el(n)
 	});
 }
 //#endregion
 //#region src/cse-source-selection.js
-var tl = Object.freeze({
+var ul = Object.freeze({
 	AND_ANY: 0,
 	NOT_ALL: 1,
 	NOT_ANY: 2,
 	AND_ALL: 3
-}), nl = (e, t = 4e4) => typeof e == "string" ? e.trim().slice(0, t) : "", rl = (e) => String(e ?? "").normalize("NFKC").trim().toLocaleLowerCase(), il = (e) => Array.isArray(e?.characters) ? e.characters[e.characterId] : e?.characters?.[e.characterId], al = (e, t) => nl(e?.data?.[t] ?? e?.[t]), ol = (e, t = null) => {
+}), dl = (e, t = 4e4) => typeof e == "string" ? e.trim().slice(0, t) : "", fl = (e) => String(e ?? "").normalize("NFKC").trim().toLocaleLowerCase(), pl = (e) => Array.isArray(e?.characters) ? e.characters[e.characterId] : e?.characters?.[e.characterId], ml = (e, t) => dl(e?.data?.[t] ?? e?.[t]), hl = (e, t = null) => {
 	try {
 		return e() ?? t;
 	} catch {
 		return t;
 	}
 };
-function sl({ userName: e, characterName: t }) {
+function gl({ userName: e, characterName: t }) {
 	return Object.freeze({
-		user: nl(e, 500),
-		char: nl(t, 500)
+		user: dl(e, 500),
+		char: dl(t, 500)
 	});
 }
-function cl(e, t) {
-	return String(e ?? "").replace(/\{\{\s*(user|char)\s*\}\}/giu, (e, n) => t?.[rl(n)] || e);
+function _l(e, t) {
+	return String(e ?? "").replace(/\{\{\s*(user|char)\s*\}\}/giu, (e, n) => t?.[fl(n)] || e);
 }
-function ll(e) {
+function vl(e) {
 	let t = /^\/([\s\S]*)\/([dgimsuvy]*)$/u.exec(e);
 	if (!t) return null;
 	try {
@@ -12789,18 +13130,18 @@ function ll(e) {
 		return null;
 	}
 }
-function ul(e) {
+function yl(e) {
 	return e.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-function dl(e, t, { caseSensitive: n = !1, matchWholeWords: r = !1, macros: i = {} } = {}) {
-	let a = cl(t, i).trim();
+function bl(e, t, { caseSensitive: n = !1, matchWholeWords: r = !1, macros: i = {} } = {}) {
+	let a = _l(t, i).trim();
 	if (!a) return !1;
-	let o = ll(a);
+	let o = vl(a);
 	if (o) return o.lastIndex = 0, o.test(e);
 	let s = n ? e : e.toLocaleLowerCase(), c = n ? a : a.toLocaleLowerCase();
-	return !r || /\s/u.test(c) ? s.includes(c) : RegExp(`(?:^|\\W)(${ul(c)})(?:$|\\W)`).test(s);
+	return !r || /\s/u.test(c) ? s.includes(c) : RegExp(`(?:^|\\W)(${yl(c)})(?:$|\\W)`).test(s);
 }
-function fl(e, t, n, r) {
+function xl(e, t, n, r) {
 	if (e.hostEnabled === !1 || e.disabled === !0) return Object.freeze({
 		selected: !1,
 		reason: "disabled"
@@ -12814,7 +13155,7 @@ function fl(e, t, n, r) {
 		matchWholeWords: typeof e.matchWholeWords == "boolean" ? e.matchWholeWords : n.matchWholeWords === !0,
 		macros: r
 	};
-	if (!e.primaryKeys?.find((e) => dl(t, e, i))) return Object.freeze({
+	if (!e.primaryKeys?.find((e) => bl(t, e, i))) return Object.freeze({
 		selected: !1,
 		reason: "primary_miss"
 	});
@@ -12823,29 +13164,29 @@ function fl(e, t, n, r) {
 		selected: !0,
 		reason: "primary"
 	});
-	let o = a.map((e) => dl(t, e, i)), s = Object.values(tl).includes(e.selectiveLogic) ? e.selectiveLogic : tl.AND_ANY, c = s === tl.AND_ANY ? o.some(Boolean) : s === tl.NOT_ALL ? !o.every(Boolean) : s === tl.NOT_ANY ? !o.some(Boolean) : o.every(Boolean), l = c ? `secondary_${Object.keys(tl).find((e) => tl[e] === s).toLocaleLowerCase()}` : "secondary_miss";
+	let o = a.map((e) => bl(t, e, i)), s = Object.values(ul).includes(e.selectiveLogic) ? e.selectiveLogic : ul.AND_ANY, c = s === ul.AND_ANY ? o.some(Boolean) : s === ul.NOT_ALL ? !o.every(Boolean) : s === ul.NOT_ANY ? !o.some(Boolean) : o.every(Boolean), l = c ? `secondary_${Object.keys(ul).find((e) => ul[e] === s).toLocaleLowerCase()}` : "secondary_miss";
 	return Object.freeze({
 		selected: c,
 		reason: l
 	});
 }
-function pl({ entries: e = [], scanText: t = "", defaults: n = {}, macros: r = {} } = {}) {
+function Sl({ entries: e = [], scanText: t = "", defaults: n = {}, macros: r = {} } = {}) {
 	return Object.freeze(e.map((e) => Object.freeze({
 		entry: e,
-		decision: fl(e, t, n, r)
+		decision: xl(e, t, n, r)
 	})));
 }
-function ml(e) {
+function Cl(e) {
 	if (!e || e.is_user !== !0 || e.is_system === !0 && e.extra?.type) return "";
 	if (!Array.isArray(e.swipes)) return typeof e.mes == "string" ? e.mes : "";
 	let t = Number.isSafeInteger(e.swipe_id) ? e.swipe_id : 0;
 	return typeof e.swipes[t] == "string" ? e.swipes[t] : "";
 }
-async function hl(e, t, n) {
+async function wl(e, t, n) {
 	let r = t?.hostLocator?.messageIndex;
 	if (!Number.isSafeInteger(r)) return null;
 	let i = We(e.chat?.[r]);
-	if (!i || `sha256:${await _e(i.rawContent)}` !== t.content.rawFingerprint) return null;
+	if (!i || `sha256:${await J(i.rawContent)}` !== t.content.rawFingerprint) return null;
 	let a = [], o = 0;
 	for (let t = r; t >= 0 && o < 2; --t) {
 		let n = We(e.chat?.[t]);
@@ -12855,7 +13196,7 @@ async function hl(e, t, n) {
 			role: "assistant",
 			raw: n.rawContent
 		});
-		let r = ml(e.chat?.[t - 1]);
+		let r = Cl(e.chat?.[t - 1]);
 		r && a.push({
 			messageIndex: t - 1,
 			role: "user",
@@ -12868,9 +13209,9 @@ async function hl(e, t, n) {
 		messageIndex: e.messageIndex,
 		role: e.role,
 		content: Fe(e.raw, n),
-		rawFingerprint: `sha256:${await _e(e.raw)}`
+		rawFingerprint: `sha256:${await J(e.raw)}`
 	}));
-	let c = `sha256:${await _e(JSON.stringify(s.map((e) => [
+	let c = `sha256:${await J(JSON.stringify(s.map((e) => [
 		e.messageIndex,
 		e.role,
 		e.rawFingerprint
@@ -12881,12 +13222,12 @@ async function hl(e, t, n) {
 		scanText: s.map((e) => e.content).filter(Boolean).join("\n\n")
 	});
 }
-function gl(e) {
-	let t = il(e) ?? {}, n = e?.chatMetadata && typeof e.chatMetadata == "object" ? e.chatMetadata : {}, r = e?.extensionSettings?.note && typeof e.extensionSettings.note == "object" ? e.extensionSettings.note : {}, i = Object.hasOwn(n, "note_prompt"), a = nl(i ? n.note_prompt : r.default), o = nl(ol(() => e?.getCharaFilename?.(e.characterId), ""), 500) || nl(t?.avatar ?? t?.data?.avatar, 500).replace(/\.[^.]+$/u, ""), s = new Set([
+function Tl(e) {
+	let t = pl(e) ?? {}, n = e?.chatMetadata && typeof e.chatMetadata == "object" ? e.chatMetadata : {}, r = e?.extensionSettings?.note && typeof e.extensionSettings.note == "object" ? e.extensionSettings.note : {}, i = Object.hasOwn(n, "note_prompt"), a = dl(i ? n.note_prompt : r.default), o = dl(hl(() => e?.getCharaFilename?.(e.characterId), ""), 500) || dl(t?.avatar ?? t?.data?.avatar, 500).replace(/\.[^.]+$/u, ""), s = new Set([
 		o,
-		nl(t?.avatar, 500),
-		nl(t?.name ?? t?.data?.name, 500)
-	].filter(Boolean)), c = Array.isArray(r.chara) ? r.chara.find((e) => s.has(nl(e?.name, 500))) : null, l = c?.useChara === !0, u = l ? nl(c?.prompt) : "", d = l && [
+		dl(t?.avatar, 500),
+		dl(t?.name ?? t?.data?.name, 500)
+	].filter(Boolean)), c = Array.isArray(r.chara) ? r.chara.find((e) => s.has(dl(e?.name, 500))) : null, l = c?.useChara === !0, u = l ? dl(c?.prompt) : "", d = l && [
 		0,
 		1,
 		2
@@ -12900,35 +13241,35 @@ function gl(e) {
 		intervalIgnored: !0
 	});
 }
-function _l() {
+function El() {
 	let e = /* @__PURE__ */ Error("读取来源期间聊天身份或目标楼前缀已变化，本次 CSE 未发送。");
 	return e.code = "V3_CSE_STALE", e;
 }
-async function vl({ hostAdapter: e, baseline: t, floor: n, expectedChatId: r, filterWorldInfoSources: i = (e) => e, sanitizerOptions: a = {} } = {}) {
+async function Dl({ hostAdapter: e, baseline: t, floor: n, expectedChatId: r, filterWorldInfoSources: i = (e) => e, sanitizerOptions: a = {} } = {}) {
 	let o = e.snapshot();
-	if (nl(o.context?.chatMetadata?.qianqianjie?.chatId, 200) !== r) throw _l();
-	let s = await hl(o, n, a);
-	if (!s) throw _l();
-	let c = o.context, l = il(c) ?? {}, u = Object.freeze({
+	if (dl(o.context?.chatMetadata?.qianqianjie?.chatId, 200) !== r) throw El();
+	let s = await wl(o, n, a);
+	if (!s) throw El();
+	let c = o.context, l = pl(c) ?? {}, u = Object.freeze({
 		userPersona: Object.freeze({
 			...t.userPersona,
-			description: nl(c?.powerUserSettings?.persona_description ?? c?.personaDescription ?? c?.persona?.description)
+			description: dl(c?.powerUserSettings?.persona_description ?? c?.personaDescription ?? c?.persona?.description)
 		}),
 		characterCard: Object.freeze({
 			...t.characterCard,
-			description: al(l, "description"),
-			personality: al(l, "personality"),
-			scenario: al(l, "scenario")
+			description: ml(l, "description"),
+			personality: ml(l, "personality"),
+			scenario: ml(l, "scenario")
 		}),
-		authorNote: gl(c)
+		authorNote: Tl(c)
 	}), d = await Er(c, {
 		bindings: typeof e.getWorldInfoBindings == "function" ? e.getWorldInfoBindings() : {},
 		strict: !0,
 		includeCatalog: !1
-	}), f = sl({
+	}), f = gl({
 		userName: u.userPersona.name,
 		characterName: u.characterCard.name
-	}), p = pl({
+	}), p = Sl({
 		entries: d.entries,
 		scanText: s.scanText,
 		defaults: d.defaults,
@@ -12936,7 +13277,7 @@ async function vl({ hostAdapter: e, baseline: t, floor: n, expectedChatId: r, fi
 	}), m = [], h = {};
 	for (let { entry: e, decision: t } of p) {
 		if (h[t.reason] = (h[t.reason] ?? 0) + 1, !t.selected) continue;
-		let n = nl(cl(e.content, f));
+		let n = dl(_l(e.content, f));
 		n && m.push(Object.freeze({
 			sourceKind: "worldbook",
 			sourceName: e.source,
@@ -12946,7 +13287,7 @@ async function vl({ hostAdapter: e, baseline: t, floor: n, expectedChatId: r, fi
 			activated: !0,
 			triggerReason: t.reason,
 			content: n,
-			fingerprint: `sha256:${await _e(n)}`,
+			fingerprint: `sha256:${await J(n)}`,
 			visibility: "authorial"
 		}));
 	}
@@ -12955,8 +13296,8 @@ async function vl({ hostAdapter: e, baseline: t, floor: n, expectedChatId: r, fi
 		let e = /* @__PURE__ */ Error("世界书排除结果无效。");
 		throw e.code = "V3_CSE_WORLDBOOK_FILTER_INVALID", e;
 	}
-	let _ = e.snapshot(), v = nl(_.context?.chatMetadata?.qianqianjie?.chatId, 200), y = await hl(_, n, a);
-	if (v !== r || !y || y.signature !== s.signature) throw _l();
+	let _ = e.snapshot(), v = dl(_.context?.chatMetadata?.qianqianjie?.chatId, 200), y = await wl(_, n, a);
+	if (v !== r || !y || y.signature !== s.signature) throw El();
 	let b = {
 		userPersona: u.userPersona,
 		characterCard: u.characterCard,
@@ -12967,7 +13308,7 @@ async function vl({ hostAdapter: e, baseline: t, floor: n, expectedChatId: r, fi
 			triggerReason: e.triggerReason
 		})),
 		targetWindowSignature: s.signature
-	}, x = `sha256:${await _e(JSON.stringify(b))}`, S = Object.freeze({
+	}, x = `sha256:${await J(JSON.stringify(b))}`, S = Object.freeze({
 		catalogEntries: d.entries.length,
 		enabledEntries: d.entries.filter((e) => e.hostEnabled !== !1).length,
 		selectedEntries: g.length,
@@ -12994,7 +13335,7 @@ async function vl({ hostAdapter: e, baseline: t, floor: n, expectedChatId: r, fi
 }
 //#endregion
 //#region src/v3/cse-runtime.js
-var yl = () => ({
+var Ol = () => ({
 	floor: [],
 	entity: [],
 	event: [],
@@ -13005,21 +13346,21 @@ var yl = () => ({
 	state: [],
 	anchor: [],
 	reverseRef: []
-}), bl = 6, xl = (e) => {
+}), kl = 6, Al = (e) => {
 	let t = e()?.toISOString?.() ?? String(e());
 	if (!Number.isFinite(Date.parse(t))) throw TypeError("V3_CSE_TIME_INVALID");
 	return t;
-}, Sl = async (e) => `sha256:${await _e(JSON.stringify(e))}`, Cl = (e, t) => {
+}, jl = async (e) => `sha256:${await J(JSON.stringify(e))}`, Ml = (e, t) => {
 	let n = Error(t ?? e);
 	return n.code = e, n;
-}, wl = (e) => String(e ?? "").replace(/\r\n?/g, "\n"), Tl = (e) => JSON.stringify((e ?? []).map((e) => [
+}, Nl = (e) => String(e ?? "").replace(/\r\n?/g, "\n"), Pl = (e) => JSON.stringify((e ?? []).map((e) => [
 	e.text,
 	e.visibility,
 	e.towardEntityId ?? null
 ]));
-async function El({ hostAdapter: e, floor: t, expectedChatId: n }) {
+async function Fl({ hostAdapter: e, floor: t, expectedChatId: n }) {
 	let r = e.snapshot(), i = String(r.context?.chatMetadata?.qianqianjie?.chatId ?? "").trim(), a = t?.hostLocator?.messageIndex, o = Number.isSafeInteger(a) ? We(r.chat[a]) : null;
-	if (i !== n || !o || `sha256:${await _e(o.rawContent)}` !== t.content.rawFingerprint) throw Cl("V3_CSE_STALE", "目标楼当前选中正文或聊天身份已变化，迟到状态不会写入。");
+	if (i !== n || !o || `sha256:${await J(o.rawContent)}` !== t.content.rawFingerprint) throw Ml("V3_CSE_STALE", "目标楼当前选中正文或聊天身份已变化，迟到状态不会写入。");
 	if (a === 0) return null;
 	let s = r.chat[a - 1];
 	if (!s || s.is_user !== !0 || s.is_system === !0 && s.extra?.type) return null;
@@ -13028,20 +13369,20 @@ async function El({ hostAdapter: e, floor: t, expectedChatId: n }) {
 		l = Number.isSafeInteger(s.swipe_id) ? s.swipe_id : 0;
 		let e = s.swipes[l];
 		if (typeof e != "string") return null;
-		c = wl(e), u = s.swipe_id ?? l;
-	} else typeof s.mes == "string" && (c = wl(s.mes));
+		c = Nl(e), u = s.swipe_id ?? l;
+	} else typeof s.mes == "string" && (c = Nl(s.mes));
 	return c.trim() ? Object.freeze({
 		messageIndex: a - 1,
 		swipeId: u,
 		selectedSwipeIndex: l,
 		content: c,
-		fingerprint: `sha256:${await _e(c)}`
+		fingerprint: `sha256:${await J(c)}`
 	}) : null;
 }
-function Dl(e, t, n, r, i, a, o = []) {
+function Il(e, t, n, r, i, a, o = []) {
 	let s = e?.floors?.findIndex((e) => e.id === t) ?? -1;
 	if (s < 0 || !e?.baseline) return null;
-	let c = e.floors.slice(0, s + 1), l = new Set(c.map((e) => e.id)), u = c.map((t) => (e.floorMemories ?? []).filter((e) => e.floorId === t.id && e.recordStatus === "active").map((e) => e.id).sort()), d = Gi({
+	let c = e.floors.slice(0, s + 1), l = new Set(c.map((e) => e.id)), u = c.map((t) => (e.floorMemories ?? []).filter((e) => e.floorId === t.id && e.recordStatus === "active").map((e) => e.id).sort()), d = Ji({
 		floors: e.floors,
 		floorMemories: e.floorMemories ?? [],
 		stateDeltas: e.stateDeltas ?? []
@@ -13082,8 +13423,8 @@ function Dl(e, t, n, r, i, a, o = []) {
 		coreUserEditedSubjectEntityIds: [...o].sort()
 	};
 }
-var Ol = (e, t) => !!(e && t && JSON.stringify(e) === JSON.stringify(t));
-function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = !0, promptGuidance: i = () => "", filterWorldInfoSources: a = (e) => e, sanitizerOptions: o = () => ({}), storyClockSignatureForFloor: s = () => "", onGraphCommitted: c = null, now: l = () => /* @__PURE__ */ new Date(), newUuid: u = ge, logger: d = console } = {}) {
+var Ll = (e, t) => !!(e && t && JSON.stringify(e) === JSON.stringify(t));
+function Rl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = !0, promptGuidance: i = () => "", filterWorldInfoSources: a = (e) => e, sanitizerOptions: o = () => ({}), storyClockSignatureForFloor: s = () => "", onGraphCommitted: c = null, now: l = () => /* @__PURE__ */ new Date(), newUuid: u = _e, logger: d = console } = {}) {
 	if (!e || [
 		"readReachable",
 		"putRecord",
@@ -13119,7 +13460,7 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 				}
 				for (let e of t.source.manualSubjectEntityIds) {
 					let r = t.subjectSnapshots.find((t) => t.subjectEntityId === e), a = i?.subjectSnapshots?.find((t) => t.subjectEntityId === e);
-					(r?.core?.some((e) => e.origin === "manual") || a && Tl(r?.core) !== Tl(a.core)) && n.add(e);
+					(r?.core?.some((e) => e.origin === "manual") || a && Pl(r?.core) !== Pl(a.core)) && n.add(e);
 				}
 				t = i;
 			}
@@ -13131,14 +13472,14 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 			h = null, _ = null;
 			return;
 		}
-		let t = e.currentStates?.at(-1) ?? null, n = await Qi({
+		let t = e.currentStates?.at(-1) ?? null, n = await ia({
 			chatId: e.root.chatId,
 			narrativeGeneration: e.root.narrativeGeneration,
 			baselineId: e.baseline.id,
 			floors: e.floors,
 			floorMemories: e.floorMemories,
 			stateDeltas: e.stateDeltas,
-			now: xl(l)
+			now: Al(l)
 		});
 		h = t?.fingerprint === n.fingerprint ? t : n, _ = t && t.fingerprint !== n.fingerprint ? {
 			code: "V3_CSE_REPLAY_MISMATCH",
@@ -13151,20 +13492,21 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 		let n = t ?? await e.readReachable({ mode: "runtime" });
 		if (!["ready", "needsReseal"].includes(n.status)) {
 			if (n.status === "uninitialized") return m = null, h = null, b();
-			throw Cl("V3_CSE_LOAD_FAILED", `CSE 图读取失败：${n.status}`);
+			throw Ml("V3_CSE_LOAD_FAILED", `CSE 图读取失败：${n.status}`);
 		}
 		return m = n, await S(n), b();
 	}
 	function w() {
-		let e = m?.floors ?? [], t = new Map((m?.entities ?? []).map((e) => [e.id, e])), n = new Map((m?.floorMemories ?? []).filter((e) => e.recordStatus === "active").map((e) => [e.floorId, e])), r = Gi({
+		let e = m?.floors ?? [], t = new Map((m?.entities ?? []).map((e) => [e.id, e])), n = new Map((m?.floorMemories ?? []).filter((e) => e.recordStatus === "active").map((e) => [e.floorId, e])), r = Ji({
 			floors: e,
 			floorMemories: m?.floorMemories ?? [],
 			stateDeltas: m?.stateDeltas ?? []
-		}), i = new Map(r.map((e) => [e.floorId, e])), a = new Map(Zi(r).map((e) => [e.floorId, e])), o = new Map(e.map((e) => [e.id, e.assistantSeq])), s = (e) => e ? Object.freeze({
+		}), i = new Map(r.map((e) => [e.floorId, e])), a = new Map(ra(r).map((e) => [e.floorId, e])), o = new Map(e.map((e) => [e.id, e.assistantSeq])), s = (e) => e ? Object.freeze({
 			text: e.text,
 			visibility: e.visibility,
 			reason: e.reason,
 			origin: e.origin,
+			towardEntityId: e.towardEntityId ?? null,
 			towardDisplayName: t.get(e.towardEntityId)?.displayName ?? null,
 			sourceFloorId: e.sourceFloorId ?? null,
 			sourceAssistantSeq: o.get(e.sourceFloorId) ?? null
@@ -13256,7 +13598,7 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 		for (let r of t) {
 			if (n?.aborted) throw new DOMException("Aborted", "AbortError");
 			let t = await e.putRecord(r, { signal: n });
-			if (!["saved", "reused"].includes(t.status)) throw Cl("V3_CSE_PERSIST_FAILED", `CSE 记录写入失败：${t.status}`);
+			if (!["saved", "reused"].includes(t.status)) throw Ml("V3_CSE_PERSIST_FAILED", `CSE 记录写入失败：${t.status}`);
 		}
 	}
 	async function E(t, n) {
@@ -13269,13 +13611,13 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 				try {
 					if (n?.aborted) throw new DOMException("Aborted", "AbortError");
 					let r = await e.putRecord(t[a], { signal: n });
-					if (!["saved", "reused"].includes(r.status)) throw Cl("V3_CSE_PERSIST_FAILED", `CSE 记录写入失败：${r.status}`);
+					if (!["saved", "reused"].includes(r.status)) throw Ml("V3_CSE_PERSIST_FAILED", `CSE 记录写入失败：${r.status}`);
 				} catch (e) {
 					i ??= e;
 				}
 			}
 		}
-		if (await Promise.all(Array.from({ length: Math.min(bl, t.length) }, () => a())), i) throw i;
+		if (await Promise.all(Array.from({ length: Math.min(kl, t.length) }, () => a())), i) throw i;
 	}
 	async function D(n, r) {
 		if (n.baseline) return n;
@@ -13291,7 +13633,7 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 			let t = await e.readRecord("baseline", i.baseline.id);
 			t.status === "ready" && t.data.id === i.baseline.id && t.data.chatId === n.root.chatId && t.data.recordStatus === "active" && await ui(t.data) && (s = t.data);
 		}
-		if (!s || !await ui(s)) throw Cl("V3_CSE_BASELINE_PERSIST_FAILED", "聊天基线写入或孤儿基线校验失败。");
+		if (!s || !await ui(s)) throw Ml("V3_CSE_BASELINE_PERSIST_FAILED", "聊天基线写入或孤儿基线校验失败。");
 		let c = ft({
 			...n.root,
 			baselineId: s.id,
@@ -13300,18 +13642,18 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 		if (l.status !== "saved") {
 			let t = await e.readReachable();
 			if (t.status === "ready" && t.baseline) return t;
-			throw Cl(l.status === "conflict" ? "V3_CSE_BASELINE_CAS_CONFLICT" : "V3_CSE_BASELINE_COMMIT_FAILED", "聊天基线提交遇到并发变化，未覆盖新数据。");
+			throw Ml(l.status === "conflict" ? "V3_CSE_BASELINE_CAS_CONFLICT" : "V3_CSE_BASELINE_COMMIT_FAILED", "聊天基线提交遇到并发变化，未覆盖新数据。");
 		}
 		let u = await e.readReachable();
-		if (u.status !== "ready" || !u.baseline) throw Cl("V3_CSE_BASELINE_COLD_READ_FAILED", "聊天基线提交后回读失败。");
+		if (u.status !== "ready" || !u.baseline) throw Ml("V3_CSE_BASELINE_COLD_READ_FAILED", "聊天基线提交后回读失败。");
 		return u;
 	}
 	async function O({ operation: t, current: n, floor: r, memory: i, delta: a, deltas: o, entities: s, diagnostics: u }) {
-		let d = xl(l), p = t.runId, h = await J([
+		let d = Al(l), p = t.runId, h = await Y([
 			"v3-cse-checkpoint",
 			n.root.headCheckpointId,
 			a.id
-		]), _ = await Jc({
+		]), _ = await rl({
 			chatId: n.root.chatId,
 			narrativeGeneration: n.root.narrativeGeneration,
 			checkpointId: h,
@@ -13323,7 +13665,7 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 			})),
 			entities: s,
 			now: d
-		}), v = _.map((t) => e.recordKey(t)), y = n.currentStates.at(-1) ?? null, x = await Qi({
+		}), v = _.map((t) => e.recordKey(t)), y = n.currentStates.at(-1) ?? null, x = await ia({
 			chatId: n.root.chatId,
 			narrativeGeneration: n.root.narrativeGeneration,
 			baselineId: n.baseline.id,
@@ -13337,7 +13679,7 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 			memoryReady: C.length > 0,
 			cseReady: w,
 			recallReady: !1
-		}, O = await Sl([
+		}, O = await jl([
 			n.root.narrativeGeneration,
 			n.floors.map((e) => e.id),
 			n.floors.map((e) => e.content.canonicalFingerprint)
@@ -13362,7 +13704,7 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 				`v3-checkpoint-${h}`
 			],
 			diagnostics: {
-				...kc(n.run?.diagnostics, Oc(n)),
+				...Rc(n.run?.diagnostics, Lc(n)),
 				...u,
 				floorId: r.id,
 				floorMemoryId: i.id
@@ -13418,7 +13760,7 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 			capabilities: D,
 			headCheckpointId: h,
 			indexManifest: {
-				...yl(),
+				...Ol(),
 				floor: v.filter((e) => e.includes("-floorOrder-") || e.includes("-fingerprint-")),
 				entity: v.filter((e) => e.includes("-entity-")),
 				reverseRef: v.filter((e) => e.includes("-reverseRef-"))
@@ -13443,40 +13785,40 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 			a,
 			x,
 			..._
-		], t.controller.signal), await T([k, A], t.controller.signal), t.epoch !== f || t.controller.signal.aborted) throw Cl("V3_CSE_STALE", "CSE 操作已取消。");
+		], t.controller.signal), await T([k, A], t.controller.signal), t.epoch !== f || t.controller.signal.aborted) throw Ml("V3_CSE_STALE", "CSE 操作已取消。");
 		let M = await e.commitRoot(j, n.rootRevision, { signal: t.controller.signal });
-		if (M.status !== "saved") throw Cl(M.status === "conflict" ? "V3_CSE_CAS_CONFLICT" : "V3_CSE_COMMIT_FAILED", "CSE 提交遇到并发更新，未覆盖新数据。");
-		if (t.epoch !== f || t.controller.signal.aborted) throw Cl("V3_CSE_STALE", "CSE 操作已取消。");
+		if (M.status !== "saved") throw Ml(M.status === "conflict" ? "V3_CSE_CAS_CONFLICT" : "V3_CSE_COMMIT_FAILED", "CSE 提交遇到并发更新，未覆盖新数据。");
+		if (t.epoch !== f || t.controller.signal.aborted) throw Ml("V3_CSE_STALE", "CSE 操作已取消。");
 		let N = M.reachable;
-		if (N?.status !== "ready") throw Cl("V3_CSE_COMMIT_SNAPSHOT_INVALID", "CSE 提交后的已验证快照无效。");
+		if (N?.status !== "ready") throw Ml("V3_CSE_COMMIT_SNAPSHOT_INVALID", "CSE 提交后的已验证快照无效。");
 		return m = N, await S(N), c?.(N), g = null, b();
 	}
 	async function k(n, r, i) {
 		let a = await e.readReachable({ mode: "runtime" });
-		if (a.status !== "ready" || n.epoch !== f || n.controller.signal.aborted) throw Cl("V3_CSE_STALE", "聊天或记忆在分析期间已变化，迟到状态不会写入。");
+		if (a.status !== "ready" || n.epoch !== f || n.controller.signal.aborted) throw Ml("V3_CSE_STALE", "聊天或记忆在分析期间已变化，迟到状态不会写入。");
 		let o = a.floors.find((e) => e.id === n.floorId), c = a.floorMemories.find((e) => e.id === n.floorMemoryId && e.floorId === n.floorId && e.recordStatus === "active");
-		if (!o || !c || !a.baseline || o.content.canonicalFingerprint !== n.floorFingerprint || o.content.rawFingerprint !== n.floorRawFingerprint || s(o) !== n.storyClockSignature) throw Cl("V3_CSE_STALE", "当前楼正文、时间戳或 FloorMemory 已变化，迟到状态不会写入。");
+		if (!o || !c || !a.baseline || o.content.canonicalFingerprint !== n.floorFingerprint || o.content.rawFingerprint !== n.floorRawFingerprint || s(o) !== n.storyClockSignature) throw Ml("V3_CSE_STALE", "当前楼正文、时间戳或 FloorMemory 已变化，迟到状态不会写入。");
 		let u = new Map(a.entities.map((e) => [e.id, e]));
 		for (let e of i) u.has(e.id) || u.set(e.id, e);
-		let d = a.floors.findIndex((e) => e.id === n.floorId), p = a.floors.slice(0, d), m = new Set(p.map((e) => e.id)), h = a.floorMemories.filter((e) => e.recordStatus === "active" && m.has(e.floorId)), g = Gi({
+		let d = a.floors.findIndex((e) => e.id === n.floorId), p = a.floors.slice(0, d), m = new Set(p.map((e) => e.id)), h = a.floorMemories.filter((e) => e.recordStatus === "active" && m.has(e.floorId)), g = Ji({
 			floors: p,
 			floorMemories: h,
 			stateDeltas: a.stateDeltas
-		}), _ = g.length ? await Qi({
+		}), _ = g.length ? await ia({
 			chatId: a.root.chatId,
 			narrativeGeneration: a.root.narrativeGeneration,
 			baselineId: a.baseline?.id,
 			floors: p,
 			floorMemories: h,
 			stateDeltas: g,
-			now: xl(l)
-		}) : null, v = await El({
+			now: Al(l)
+		}) : null, v = await Fl({
 			hostAdapter: t,
 			floor: o,
 			expectedChatId: a.root.chatId
-		}), y = await x(g), b = Dl(a, n.floorId, [...u.values()], _, s, v, y);
-		if (!Ol(n.dependencySnapshot, b)) throw Cl("V3_CSE_STALE", "人物状态所依赖的楼层前缀、摘要、前态或身份目录已变化，迟到状态不会写入。");
-		let S = new Map(a.floors.map((e, t) => [e.id, t])), C = Gi({
+		}), y = await x(g), b = Il(a, n.floorId, [...u.values()], _, s, v, y);
+		if (!Ll(n.dependencySnapshot, b)) throw Ml("V3_CSE_STALE", "人物状态所依赖的楼层前缀、摘要、前态或身份目录已变化，迟到状态不会写入。");
+		let S = new Map(a.floors.map((e, t) => [e.id, t])), C = Ji({
 			floors: a.floors,
 			floorMemories: a.floorMemories,
 			stateDeltas: a.stateDeltas
@@ -13511,9 +13853,9 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 		if (p) return w();
 		await C();
 		let r = m, c = r?.floors?.find((t) => t.id === e), h = r?.floorMemories?.find((t) => t.floorId === e && t.recordStatus === "active");
-		if (!c || !h) throw Cl("V3_CSE_FLOOR_UNAVAILABLE", "只有当前可达且已有 FloorMemory 的楼可以分析状态。");
+		if (!c || !h) throw Ml("V3_CSE_FLOOR_UNAVAILABLE", "只有当前可达且已有 FloorMemory 的楼可以分析状态。");
 		let _ = r.run?.diagnostics?.floorProvenance?.[e]?.storyClockSignature, v = s(c);
-		if (typeof _ == "string" && _ !== v) throw Cl("V3_CSE_STALE", "本楼时间戳已变化，请先重新提取本楼记忆。");
+		if (typeof _ == "string" && _ !== v) throw Ml("V3_CSE_STALE", "本楼时间戳已变化，请先重新提取本楼记忆。");
 		let T = {
 			floorId: e,
 			floorMemoryId: h.id,
@@ -13522,13 +13864,13 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 			storyClockSignature: v,
 			epoch: f,
 			controller: new AbortController(),
-			runId: await J([
+			runId: await Y([
 				"v3-cse-run",
 				r.root.headCheckpointId,
 				h.id,
 				u()
 			]),
-			startedAt: xl(l),
+			startedAt: Al(l),
 			phase: "baseline"
 		};
 		p = T, b();
@@ -13539,30 +13881,30 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 			let d = [...u.values()], p = r.floors.findIndex((e) => e.id === c.id), g = r.floors.slice(0, p), _ = new Set(g.map((e) => e.id)), v = new Set(r.floors.slice(0, p + 1).map((e) => e.id)), y = on(d, v), C = r.floorMemories.filter((e) => _.has(e.floorId)), w = C.filter((e) => e.recordStatus === "active"), E = g.some((e) => {
 				let t = C.filter((t) => t.floorId === e.id);
 				return t.length > 0 && t.filter((e) => e.recordStatus === "active").length !== 1;
-			}), O = Gi({
+			}), O = Ji({
 				floors: g,
 				floorMemories: w,
 				stateDeltas: r.stateDeltas
 			});
-			if (E || O.length !== w.length) throw Cl("V3_CSE_PREVIOUS_GAP", "前面还有未分析或已失效的楼；请先从最早待分析楼继续，当前楼保持待分析。");
-			let A = O.length ? await Qi({
+			if (E || O.length !== w.length) throw Ml("V3_CSE_PREVIOUS_GAP", "前面还有未分析或已失效的楼；请先从最早待分析楼继续，当前楼保持待分析。");
+			let A = O.length ? await ia({
 				chatId: r.root.chatId,
 				narrativeGeneration: r.root.narrativeGeneration,
 				baselineId: r.baseline.id,
 				floors: g,
 				floorMemories: w,
 				stateDeltas: O,
-				now: xl(l)
+				now: Al(l)
 			}) : null, j = r.currentStates?.at(-1) ?? null, M = A && j?.fingerprint === A.fingerprint ? j : A, N = r.floorMemories.filter((e) => e.recordStatus === "active" && v.has(e.floorId)), P = gi({
 				baseline: r.baseline,
 				entities: y,
 				floorMemories: N,
 				floorMemory: h
-			}), F = await El({
+			}), F = await Fl({
 				hostAdapter: t,
 				floor: c,
 				expectedChatId: r.root.chatId
-			}), ee = await vl({
+			}), ee = await Dl({
 				hostAdapter: t,
 				baseline: r.baseline,
 				floor: c,
@@ -13572,7 +13914,7 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 			});
 			T.sourceDiagnostics = ee.diagnostics;
 			let I = await x(O);
-			if (T.dependencySnapshot = Dl(r, c.id, d, M, s, F, I), !T.dependencySnapshot) throw Cl("V3_CSE_STALE", "人物状态分析依赖的楼层前缀不可用。");
+			if (T.dependencySnapshot = Il(r, c.id, d, M, s, F, I), !T.dependencySnapshot) throw Ml("V3_CSE_STALE", "人物状态分析依赖的楼层前缀不可用。");
 			let L = Ci({
 				floor: c,
 				floorMemory: h,
@@ -13583,21 +13925,21 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 				requestSources: ee,
 				currentUserInput: F,
 				coreUserEditedSubjectEntityIds: I
-			}), R = await J([
+			}), R = await Y([
 				"v3-cse-delta",
 				T.runId,
 				c.id,
 				h.id
-			]), z = typeof i == "function" ? i() : i, B = await Wi({
+			]), z = typeof i == "function" ? i() : i, B = await qi({
 				generateAnalysisTask: n,
 				envelope: L,
 				previousCurrentState: M,
-				now: xl(l),
+				now: Al(l),
 				deltaId: R,
 				promptGuidance: z,
 				signal: T.controller.signal
 			});
-			if (T.epoch !== f || T.controller.signal.aborted) throw Cl("V3_CSE_STALE", "聊天已变化，迟到 CSE 结果已丢弃。");
+			if (T.epoch !== f || T.controller.signal.aborted) throw Ml("V3_CSE_STALE", "聊天已变化，迟到 CSE 结果已丢弃。");
 			T.phase = "committing", b(), await k(T, B, e);
 		} catch (t) {
 			g = t?.code === "V3_CSE_PREVIOUS_GAP" ? {
@@ -13627,7 +13969,7 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 	}
 	async function j() {
 		await C();
-		let e = new Map(Gi({
+		let e = new Map(Ji({
 			floors: m?.floors ?? [],
 			floorMemories: m?.floorMemories ?? [],
 			stateDeltas: m?.stateDeltas ?? []
@@ -13635,26 +13977,26 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 		return n ? A(n.id) : w();
 	}
 	async function M({ subjectEntityId: t, expectedCurrentStateId: n, expectedCurrentStateFingerprint: r, core: i, adaptive: a, situational: o } = {}) {
-		if (!y()) throw Cl("V3_CSE_DISABLED", "人物状态功能当前不可用。");
-		if (p) throw Cl("V3_CSE_BUSY", "人物状态正在处理，请稍后再保存。");
+		if (!y()) throw Ml("V3_CSE_DISABLED", "人物状态功能当前不可用。");
+		if (p) throw Ml("V3_CSE_BUSY", "人物状态正在处理，请稍后再保存。");
 		let s = await e.readReachable({ mode: "runtime" });
-		if (s.status !== "ready" || !s.baseline) throw Cl("V3_CSE_MANUAL_TARGET_INVALID", "当前人物状态尚不可编辑。");
-		if (m = s, await S(s), !h || h.id !== n || h.fingerprint !== r || s.root.chatId !== h.chatId || s.root.narrativeGeneration !== h.narrativeGeneration) throw Cl("V3_CSE_MANUAL_STALE", "人物状态已变化，请保留当前草稿并重新打开编辑后再保存。");
-		let c = Gi({
+		if (s.status !== "ready" || !s.baseline) throw Ml("V3_CSE_MANUAL_TARGET_INVALID", "当前人物状态尚不可编辑。");
+		if (m = s, await S(s), !h || h.id !== n || h.fingerprint !== r || s.root.chatId !== h.chatId || s.root.narrativeGeneration !== h.narrativeGeneration) throw Ml("V3_CSE_MANUAL_STALE", "人物状态已变化，请保留当前草稿并重新打开编辑后再保存。");
+		let c = Ji({
 			floors: s.floors,
 			floorMemories: s.floorMemories,
 			stateDeltas: s.stateDeltas
 		}), d = c.at(-1), _ = s.floors.findIndex((e) => e.id === d?.floorId), v = _ >= 0 ? s.floors[_] : null, x = v ? s.floorMemories.find((e) => e.floorId === v.id && e.id === d.floorMemoryId && e.recordStatus === "active") : null;
-		if (!d || !v || !x || !h.subjects.some((e) => e.subjectEntityId === t)) throw Cl("V3_CSE_MANUAL_TARGET_INVALID", "只能纠正当前已有状态的人物。");
+		if (!d || !v || !x || !h.subjects.some((e) => e.subjectEntityId === t)) throw Ml("V3_CSE_MANUAL_TARGET_INVALID", "只能纠正当前已有状态的人物。");
 		let C = new Set(s.floors.slice(0, _ + 1).map((e) => e.id)), w = sn({
 			entities: s.entities,
 			floorIds: C
-		}).filter((e) => e.entityType === "person"), T = await J([
+		}).filter((e) => e.entityType === "person"), T = await Y([
 			"v3-cse-manual-delta",
 			d.id,
 			t,
 			u()
-		]), E = xl(l), D = await Ui({
+		]), E = Al(l), D = await Ki({
 			anchorDelta: d,
 			currentState: h,
 			subjectEntityId: t,
@@ -13673,7 +14015,7 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 			floorMemoryId: x.id,
 			epoch: f,
 			controller: new AbortController(),
-			runId: await J([
+			runId: await Y([
 				"v3-cse-manual-run",
 				s.root.headCheckpointId,
 				D.delta.id
@@ -13731,7 +14073,7 @@ function kl({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 }
 //#endregion
 //#region src/v3/memory-runtime.js
-var Al = Object.freeze([
+var zl = Object.freeze([
 	"CHAT_CHANGED",
 	"CHAT_RENAMED",
 	"MESSAGE_SENT",
@@ -13740,12 +14082,12 @@ var Al = Object.freeze([
 	"MESSAGE_DELETED",
 	"MESSAGE_SWIPED",
 	"MESSAGE_SWIPE_DELETED"
-]), jl = /* @__PURE__ */ new Set([
+]), Bl = /* @__PURE__ */ new Set([
 	"MESSAGE_EDITED",
 	"MESSAGE_DELETED",
 	"MESSAGE_SWIPED",
 	"MESSAGE_SWIPE_DELETED"
-]), Ml = "manualHistoricalRebuild", Nl = () => ({
+]), Vl = "manualHistoricalRebuild", Hl = () => ({
 	floor: [],
 	entity: [],
 	event: [],
@@ -13756,11 +14098,11 @@ var Al = Object.freeze([
 	state: [],
 	anchor: [],
 	reverseRef: []
-}), Pl = (e) => {
+}), Ul = (e) => {
 	let t = e()?.toISOString?.() ?? String(e());
 	if (!Number.isFinite(Date.parse(t))) throw TypeError("V3_MEMORY_TIME_INVALID");
 	return t;
-}, Fl = async (e) => `sha256:${await _e(JSON.stringify(e))}`, Il = (e) => structuredClone(e), Ll = (e) => Object.fromEntries([
+}, Wl = async (e) => `sha256:${await J(JSON.stringify(e))}`, Gl = (e) => structuredClone(e), Kl = (e) => Object.fromEntries([
 	"chronology",
 	"locations",
 	"participants",
@@ -13774,15 +14116,15 @@ var Al = Object.freeze([
 	"openLoops",
 	"ambiguities",
 	"cseSignals"
-].map((t) => [t, e?.[t]?.length ?? 0])), Rl = (e) => e?.summary?.effectiveSource === "user" ? e.summary.userText : e?.summary?.aiText;
-function zl(e = []) {
+].map((t) => [t, e?.[t]?.length ?? 0])), ql = (e) => e?.summary?.effectiveSource === "user" ? e.summary.userText : e?.summary?.aiText;
+function Jl(e = []) {
 	return Object.freeze(e.filter((e) => e?.entityType === "person" && e.recordStatus === "active" && e.status !== "merged" && e.status !== "invalidated").map((e) => Object.freeze({
 		entityId: e.id,
 		displayName: e.displayName,
 		specialRole: e.specialRole
 	})));
 }
-var Bl = (e) => Qt(e), Vl = (e) => Yt(e ?? "提取失败，可重试。").slice(0, 500), Hl = (e) => Object.freeze({
+var Yl = (e) => Qt(e), Xl = (e) => Yt(e ?? "提取失败，可重试。").slice(0, 500), Zl = (e) => Object.freeze({
 	status: "unknown",
 	completed: 0,
 	total: e,
@@ -13796,7 +14138,7 @@ var Bl = (e) => Qt(e), Vl = (e) => Yt(e ?? "提取失败，可重试。").slice(
 	summaryPendingFloorIds: Object.freeze([]),
 	summaryRealtimeProtected: !1,
 	summaryHasPartialWork: !1
-}), Ul = () => Object.freeze({
+}), Ql = () => Object.freeze({
 	status: "caughtUp",
 	completed: 0,
 	total: 0,
@@ -13810,33 +14152,33 @@ var Bl = (e) => Qt(e), Vl = (e) => Yt(e ?? "提取失败，可重试。").slice(
 	summaryPendingFloorIds: Object.freeze([]),
 	summaryRealtimeProtected: !0,
 	summaryHasPartialWork: !1
-}), Wl = (e) => String(e ?? "").trim().normalize("NFKC").toLocaleLowerCase("zh-Hans-CN");
-function Gl(e, t = e) {
+}), $l = (e) => String(e ?? "").trim().normalize("NFKC").toLocaleLowerCase("zh-Hans-CN");
+function eu(e, t = e) {
 	let n = Error(t);
 	return n.code = e, n;
 }
-function Kl(e) {
+function tu(e) {
 	return new Map((e?.floorMemories ?? []).map((e) => [e.floorId, e]));
 }
-function ql(e) {
-	return e?.run?.diagnostics?.floorProvenance && typeof e.run.diagnostics.floorProvenance == "object" ? Il(e.run.diagnostics.floorProvenance) : {};
+function nu(e) {
+	return e?.run?.diagnostics?.floorProvenance && typeof e.run.diagnostics.floorProvenance == "object" ? Gl(e.run.diagnostics.floorProvenance) : {};
 }
-function Jl(e, t) {
+function ru(e, t) {
 	return e?.messageIndex === t?.messageIndex && e?.swipeId === t?.swipeId && e?.selectedSwipeIndex === t?.selectedSwipeIndex;
 }
-function Yl(e, t) {
-	return typeof e?.snapshot == "function" ? Xl(e.snapshot(), t) : null;
+function iu(e, t) {
+	return typeof e?.snapshot == "function" ? au(e.snapshot(), t) : null;
 }
-function Xl(e, t) {
+function au(e, t) {
 	let n = e.chat?.[t?.hostLocator?.messageIndex], r = We(n);
-	return !r || !Jl(t?.hostLocator, {
+	return !r || !ru(t?.hostLocator, {
 		messageIndex: t.hostLocator.messageIndex,
 		swipeId: r.swipeId,
 		selectedSwipeIndex: r.selectedSwipeIndex
 	}) ? null : r;
 }
-function Zl(e) {
-	let t = q(e?.rawContent);
+function ou(e) {
+	let t = ce(e?.rawContent);
 	if (!t) return Object.freeze({
 		clock: null,
 		signature: "",
@@ -13858,16 +14200,16 @@ function Zl(e) {
 		e?.time
 	].filter(Boolean).join(" ");
 	return Object.freeze({
-		signature: ce(t),
+		signature: le(t),
 		clock: r,
 		displayText: [...new Set([i(r.start), i(r.end)].filter(Boolean))].join(" → ")
 	});
 }
-var Ql = 8, $l = 96e3, eu = () => 1;
-function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTask: r, generateUtilityTask: i, isEnabled: a = !0, automationSettings: o = () => ({
+var su = 8, cu = 96e3, lu = () => 1;
+function uu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTask: r, generateUtilityTask: i, isEnabled: a = !0, automationSettings: o = () => ({
 	enabled: !1,
 	batchSize: 1
-}), notifyUser: s = null, isMainGenerationActive: c = () => !1, onFullRebuildCommitted: l = null, extractorPromptGuidance: u = () => "", csePromptGuidance: d = () => "", filterWorldInfoSources: f = (e) => e, sanitizerOptions: p = () => ({}), now: m = () => /* @__PURE__ */ new Date(), newUuid: h = ge, logger: g = console } = {}) {
+}), notifyUser: s = null, isMainGenerationActive: c = () => !1, onFullRebuildCommitted: l = null, extractorPromptGuidance: u = () => "", csePromptGuidance: d = () => "", filterWorldInfoSources: f = (e) => e, sanitizerOptions: p = () => ({}), now: m = () => /* @__PURE__ */ new Date(), newUuid: h = _e, logger: g = console } = {}) {
 	if (!e || [
 		"start",
 		"refreshStatus",
@@ -13886,7 +14228,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 	].some((e) => typeof t[e] != "function")) throw TypeError("V3 memory store 无效");
 	if (typeof r != "function") throw TypeError("V3 memory analysis route 无效");
 	if (typeof i != "function") throw TypeError("V3 memory utility route 无效");
-	let _ = 0, v = null, y = null, b = null, x = !1, S = !1, C = null, w = null, T = null, E = 0, D = null, O = null, k = null, A = !1, j = null, M = null, N = null, P = Hl(0), F = null, ee = null, I = /* @__PURE__ */ new Map(), L = /* @__PURE__ */ new Map(), R = /* @__PURE__ */ new Set(), z = (e) => Zl(Yl(n, e)).signature, B = kl({
+	let _ = 0, v = null, y = null, b = null, x = !1, S = !1, C = null, w = null, T = null, E = 0, D = null, O = null, k = null, A = !1, j = null, M = null, N = null, P = Zl(0), F = null, ee = null, I = /* @__PURE__ */ new Map(), L = /* @__PURE__ */ new Map(), R = /* @__PURE__ */ new Set(), z = (e) => ou(iu(n, e)).signature, B = Rl({
 		store: t,
 		hostAdapter: n,
 		generateAnalysisTask: r,
@@ -13905,25 +14247,25 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		} catch {
 			return !1;
 		}
-	}, te = () => {
+	}, H = () => {
 		if (A) return !0;
 		try {
 			return (typeof c == "function" ? c() : c) === !0;
 		} catch {
 			return !1;
 		}
-	}, H = () => {
+	}, U = () => {
 		try {
 			return String(n.snapshot()?.context?.chatMetadata?.qianqianjie?.chatId ?? "").trim();
 		} catch {
 			return "";
 		}
-	}, U = () => {
+	}, te = () => {
 		try {
 			let e = typeof o == "function" ? o() : o;
 			return Object.freeze({
 				enabled: e?.enabled === !0,
-				batchSize: eu(e?.batchSize)
+				batchSize: lu(e?.batchSize)
 			});
 		} catch {
 			return Object.freeze({
@@ -13951,7 +14293,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			e.cancelEarlyStabilization?.(t);
 		} catch {}
 	}, ae = () => {
-		ie("memoryInvalidated"), re(), _ += 1, v?.controller.abort(), v = null, w = null, y = null, I = /* @__PURE__ */ new Map(), P = Hl(0), N = null, A = !1, j = null, M = null, b = null, O = null, F = null, ee = null, S = !1, L.clear(), B.invalidate(), W();
+		ie("memoryInvalidated"), re(), _ += 1, v?.controller.abort(), v = null, w = null, y = null, I = /* @__PURE__ */ new Map(), P = Zl(0), N = null, A = !1, j = null, M = null, b = null, O = null, F = null, ee = null, S = !1, L.clear(), B.invalidate(), W();
 	};
 	B.subscribe(() => W());
 	function oe(e, t) {
@@ -13964,7 +14306,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			promise: null
 		};
 		return w = n, W(), n.promise = Promise.resolve().then(() => t(n)).finally(() => {
-			w === n && (w = null), W(), D && Ne(D) && Pe(D);
+			w === n && (w = null), W(), D && Me(D) && Ne(D);
 		}), n.promise;
 	}
 	let se = (e, t) => {
@@ -13972,7 +14314,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		if (!n) return;
 		L.delete(e), L.set(e, n);
 		let r = [...L.values()].reduce((e, t) => e + t.length, 0);
-		for (; L.size > Ql || r > $l;) {
+		for (; L.size > su || r > cu;) {
 			let e = L.keys().next().value;
 			if (e === void 0) break;
 			r -= L.get(e)?.length ?? 0, L.delete(e);
@@ -13988,12 +14330,12 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			rawFingerprint: e.content.rawFingerprint,
 			status: a,
 			memoryId: r?.id ?? null,
-			summary: Rl(r) ?? "",
+			summary: ql(r) ?? "",
 			summarySource: r?.summary?.effectiveSource ?? null,
 			aiSummary: r?.summary?.aiText ?? "",
 			revisionNote: r?.summary?.revisionNote ?? null,
 			extractorVersion: r?.extractorVersion ?? ln,
-			counts: Ll(r),
+			counts: Kl(r),
 			api: i?.api ?? null,
 			attempts: i?.attempts ?? 0,
 			runId: i?.runId ?? null,
@@ -14007,15 +14349,15 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		});
 	}
 	function q() {
-		let t = e.getState(), n = Kl(y), r = ql(y), i = (y?.floors ?? []).map((e) => K(e, n, r)), a = i.length, o = i.filter((e) => ["ready", "needsReview"].includes(e.status)).length, s = B.getState(), c = new Map((s.cseFloors ?? []).map((e) => [e.floorId, e])), l = i.map((e) => Object.freeze({
+		let t = e.getState(), n = tu(y), r = nu(y), i = (y?.floors ?? []).map((e) => K(e, n, r)), a = i.length, o = i.filter((e) => ["ready", "needsReview"].includes(e.status)).length, s = B.getState(), c = new Map((s.cseFloors ?? []).map((e) => [e.floorId, e])), l = i.map((e) => Object.freeze({
 			...e,
 			cse: c.get(e.floorId) ?? null
-		})), u = zl(y?.entities ?? []), d = 0;
+		})), u = Jl(y?.entities ?? []), d = 0;
 		for (let e of l) {
 			if (!e.memoryId || e.cse?.floorMemoryId !== e.memoryId || !e.cse?.deltaId) break;
 			d += 1;
 		}
-		let f = l[d]?.assistantSeq ?? null, p = Math.min(P.summaryCompleted ?? o, l.length), m = P.status !== "unknown" && P.completed < P.total, h = U(), g = w?.kind === "auto" && w.mode === "historical" ? "rebuilding" : O?.status === "failed" && P.status !== "caughtUp" ? "failed" : O?.status === "paused" && P.status !== "caughtUp" ? "paused" : P.status === "caughtUp" ? "caughtUp" : P.status === "realtimeTail" ? "waitingRealtime" : P.status === "historicalDebt" ? "pendingRebuild" : "notReady";
+		let f = l[d]?.assistantSeq ?? null, p = Math.min(P.summaryCompleted ?? o, l.length), m = P.status !== "unknown" && P.completed < P.total, h = te(), g = w?.kind === "auto" && w.mode === "historical" ? "rebuilding" : O?.status === "failed" && P.status !== "caughtUp" ? "failed" : O?.status === "paused" && P.status !== "caughtUp" ? "paused" : P.status === "caughtUp" ? "caughtUp" : P.status === "realtimeTail" ? "waitingRealtime" : P.status === "historicalDebt" ? "pendingRebuild" : "notReady";
 		return Object.freeze({
 			...t,
 			...s,
@@ -14066,12 +14408,12 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		});
 	}
 	async function ce(e = _) {
-		let t = y, r = !!(Oc(t) || t?.root && N && N.chatId === t.root.chatId && (N.narrativeGeneration === null || N.narrativeGeneration === t.root.narrativeGeneration)), i = t ? await Lc({
+		let t = y, r = !!(Lc(t) || t?.root && N && N.chatId === t.root.chatId && (N.narrativeGeneration === null || N.narrativeGeneration === t.root.narrativeGeneration)), i = t ? await Kc({
 			reachable: t,
 			snapshot: n.snapshot(),
 			sanitizerOptions: p(),
 			realtimeOrigin: r
-		}) : Hl(0);
+		}) : Zl(0);
 		return e === _ && y === t && (P = i, r && N?.narrativeGeneration === null && (N = Object.freeze({
 			chatId: t.root.chatId,
 			narrativeGeneration: t.root.narrativeGeneration
@@ -14087,17 +14429,17 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		if (["ready", "needsReseal"].includes(a.status)) o = a;
 		else if (a.status === "uninitialized") {
 			o = null;
-			let t = H(), n = e.getState();
+			let t = U(), n = e.getState();
 			n?.status === "uninitialized" && n.stableCount === 0 && t && (N = Object.freeze({
 				chatId: t,
 				narrativeGeneration: null
-			}), P = Ul());
-		} else throw Gl("V3_MEMORY_LOAD_FAILED", `记忆图读取失败：${a.status}`);
+			}), P = Ql());
+		} else throw eu("V3_MEMORY_LOAD_FAILED", `记忆图读取失败：${a.status}`);
 		if (o && await B.load(o), r !== _) return B.invalidate(), q();
 		if (y = o, I = /* @__PURE__ */ new Map(), o && typeof n?.snapshot == "function") {
 			let e = n.snapshot();
 			for (let t of o.floors ?? []) {
-				let n = Zl(Xl(e, t)).displayText;
+				let n = ou(au(e, t)).displayText;
 				I.set(t.id, n || cr(t.content?.canonicalContent)?.text || "");
 			}
 		}
@@ -14128,7 +14470,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		for (let r of e) {
 			if (n?.aborted) throw new DOMException("Aborted", "AbortError");
 			let e = await t.putRecord(r, { signal: n });
-			if (!["saved", "reused"].includes(e.status)) throw Gl("V3_MEMORY_PERSIST_FAILED", `记忆记录写入失败：${e.status}`);
+			if (!["saved", "reused"].includes(e.status)) throw eu("V3_MEMORY_PERSIST_FAILED", `记忆记录写入失败：${e.status}`);
 		}
 	}
 	async function me(r, { oldReachable: i, replacement: a, newEntities: o = [], provenanceEntry: s, action: c, validationErrors: l = [] }) {
@@ -14136,25 +14478,25 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		if (u.status === "ready" && d?.rootRevision === u.rootRevision && d?.root?.headCheckpointId === u.root.headCheckpointId && (u = {
 			...u,
 			floors: d.floors
-		}), u.status !== "ready" || u.rootRevision !== i.rootRevision || u.root.headCheckpointId !== i.root.headCheckpointId || u.root.narrativeGeneration !== i.root.narrativeGeneration) throw Gl("V3_MEMORY_STALE", "聊天记忆已变化，本次结果不会覆盖新版本。");
-		let f = u.floors.find((e) => e.id === a.floorId), p = f ? Yl(n, f) : null, h = p ? `sha256:${await _e(p.rawContent)}` : null;
-		if (!f || f.content.canonicalFingerprint !== r.floorFingerprint || r.floorRawFingerprint && (f.content.rawFingerprint !== r.floorRawFingerprint || h !== r.floorRawFingerprint)) throw Gl("V3_MEMORY_STALE", "正文分支或时间戳已变化，本次结果已作废。");
-		let g = Kl(u);
+		}), u.status !== "ready" || u.rootRevision !== i.rootRevision || u.root.headCheckpointId !== i.root.headCheckpointId || u.root.narrativeGeneration !== i.root.narrativeGeneration) throw eu("V3_MEMORY_STALE", "聊天记忆已变化，本次结果不会覆盖新版本。");
+		let f = u.floors.find((e) => e.id === a.floorId), p = f ? iu(n, f) : null, h = p ? `sha256:${await J(p.rawContent)}` : null;
+		if (!f || f.content.canonicalFingerprint !== r.floorFingerprint || r.floorRawFingerprint && (f.content.rawFingerprint !== r.floorRawFingerprint || h !== r.floorRawFingerprint)) throw eu("V3_MEMORY_STALE", "正文分支或时间戳已变化，本次结果已作废。");
+		let g = tu(u);
 		g.set(a.floorId, a);
 		let v = u.floors.map((e) => g.get(e.id)).filter(Boolean), x = new Map(u.entities.map((e) => [e.id, e]));
 		o.forEach((e) => x.set(e.id, e));
-		let S = Gi({
+		let S = Ji({
 			floors: u.floors,
 			floorMemories: v,
 			stateDeltas: u.stateDeltas ?? []
-		}), C = new Set(S.flatMap((e) => e.subjectSnapshots.flatMap((e) => [e.subjectEntityId, ...e.adaptive.map((e) => e.towardEntityId).filter(Boolean)]))), w = new Set(u.baseline ? [u.baseline.userPersona.entityId, u.baseline.characterCard.entityId] : []), T = [...x.values()].filter((e) => u.floors.some((t) => t.id === e.firstSeenFloorId) || v.some((t) => JSON.stringify(t).includes(e.id)) || C.has(e.id) || w.has(e.id)), E = Pl(m), D = r.runId, O = await J([
+		}), C = new Set(S.flatMap((e) => e.subjectSnapshots.flatMap((e) => [e.subjectEntityId, ...e.adaptive.map((e) => e.towardEntityId).filter(Boolean)]))), w = new Set(u.baseline ? [u.baseline.userPersona.entityId, u.baseline.characterCard.entityId] : []), T = [...x.values()].filter((e) => u.floors.some((t) => t.id === e.firstSeenFloorId) || v.some((t) => JSON.stringify(t).includes(e.id)) || C.has(e.id) || w.has(e.id)), E = Ul(m), D = r.runId, O = await Y([
 			"v3-memory-checkpoint",
 			u.root.headCheckpointId,
 			u.root.narrativeGeneration,
 			c,
 			a.id,
 			T.map((e) => e.id)
-		]), k = await Jc({
+		]), k = await rl({
 			chatId: u.root.chatId,
 			narrativeGeneration: u.root.narrativeGeneration,
 			checkpointId: O,
@@ -14166,7 +14508,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			})),
 			entities: T,
 			now: E
-		}), A = k.map((e) => t.recordKey(e)), j = ql(u);
+		}), A = k.map((e) => t.recordKey(e)), j = nu(u);
 		j[a.floorId] = {
 			...s,
 			runId: D,
@@ -14174,7 +14516,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			action: c
 		};
 		let M = null;
-		u.baseline && (M = await Qi({
+		u.baseline && (M = await ia({
 			chatId: u.root.chatId,
 			narrativeGeneration: u.root.narrativeGeneration,
 			baselineId: u.baseline.id,
@@ -14182,7 +14524,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			floorMemories: v,
 			stateDeltas: S,
 			now: E,
-			id: await J(["v3-cse-current-state", O]),
+			id: await Y(["v3-cse-current-state", O]),
 			previousId: u.currentStates?.at(-1)?.id ?? null
 		}));
 		let N = [...S.map((e) => t.recordKey(e)), ...M ? [t.recordKey(M)] : []], P = ht({
@@ -14207,7 +14549,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				`v3-checkpoint-${O}`
 			],
 			diagnostics: {
-				...kc(null, Oc(u)),
+				...Rc(null, Lc(u)),
 				kind: "extractor",
 				promptVersion: cn,
 				extractorVersion: ln,
@@ -14219,7 +14561,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			updatedAt: E,
 			recordStatus: "active",
 			supersedes: null
-		}, { expectedChatId: u.root.chatId }), F = v.some((e) => e.recordStatus === "active"), ee = await Fl([
+		}, { expectedChatId: u.root.chatId }), F = v.some((e) => e.recordStatus === "active"), ee = await Wl([
 			u.root.narrativeGeneration,
 			u.floors.map((e) => e.id),
 			u.floors.map((e) => e.content.canonicalFingerprint)
@@ -14275,7 +14617,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			headCheckpointId: O,
 			activeStateRefs: M ? [M.id] : [],
 			indexManifest: {
-				...Nl(),
+				...Hl(),
 				floor: A.filter((e) => e.includes("-floorOrder-") || e.includes("-fingerprint-")),
 				entity: A.filter((e) => e.includes("-entity-")),
 				reverseRef: A.filter((e) => e.includes("-reverseRef-"))
@@ -14301,10 +14643,10 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			...k,
 			P,
 			R
-		], r.controller.signal), r.epoch !== _ || r.controller.signal.aborted) throw Gl("V3_MEMORY_STALE", "操作已取消。");
+		], r.controller.signal), r.epoch !== _ || r.controller.signal.aborted) throw eu("V3_MEMORY_STALE", "操作已取消。");
 		let V = await t.commitRoot(z, u.rootRevision, { signal: r.controller.signal });
-		if (V.status !== "saved") throw Gl(V.status === "conflict" ? "V3_MEMORY_CAS_CONFLICT" : "V3_MEMORY_COMMIT_FAILED", V.status === "conflict" ? "记忆提交遇到并发更新，未覆盖新数据。" : `记忆提交失败：${V.status}`);
-		if (y = await t.readReachable(), y.status !== "ready") throw Gl("V3_MEMORY_COLD_READ_FAILED", "记忆已提交，但冷读取校验失败。");
+		if (V.status !== "saved") throw eu(V.status === "conflict" ? "V3_MEMORY_CAS_CONFLICT" : "V3_MEMORY_COMMIT_FAILED", V.status === "conflict" ? "记忆提交遇到并发更新，未覆盖新数据。" : `记忆提交失败：${V.status}`);
+		if (y = await t.readReachable(), y.status !== "ready") throw eu("V3_MEMORY_COLD_READ_FAILED", "记忆已提交，但冷读取校验失败。");
 		return e.adoptReachable?.(y), b = null, L.delete(a.floorId), await B.load(), await ce(r.epoch), W();
 	}
 	async function he(e, n, r) {
@@ -14320,11 +14662,11 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			attempts: i.attempts ?? 1,
 			transportAttempts: i.transportAttempts ?? null,
 			validationErrors: Xt(i.validationErrors ?? []),
-			api: Bl(i.metadata ?? n?.taskMetadata),
-			message: Vl(n?.message)
+			api: Yl(i.metadata ?? n?.taskMetadata),
+			message: Xl(n?.message)
 		});
 		try {
-			let n = Pl(m), a = ht({
+			let n = Ul(m), a = ht({
 				schemaVersion: 3,
 				recordType: "run",
 				id: e.runId,
@@ -14368,31 +14710,31 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		} catch {}
 		W();
 	}
-	async function ve(t, { analyzeState: r = !0 } = {}) {
+	async function ge(t, { analyzeState: r = !0 } = {}) {
 		if (!V()) return W();
 		if (v) return q();
-		if ((await e.refreshStatus()).status !== "ready") throw Gl("V3_MEMORY_FOUNDATION_NOT_READY", "正文地基尚未完成安全对账，当前不能提取。");
+		if ((await e.refreshStatus()).status !== "ready") throw eu("V3_MEMORY_FOUNDATION_NOT_READY", "正文地基尚未完成安全对账，当前不能提取。");
 		await ue(_);
-		let a = y ? Il(y) : null, o = a?.floors?.find((e) => e.id === t);
-		if (!o) throw Gl("V3_MEMORY_FLOOR_UNAVAILABLE", "只允许提取当前 root 可达的稳定 AI 楼。");
-		let s = Kl(a).get(o.id) ?? null, c = Yl(n, o);
-		if (!c) throw Gl("V3_MEMORY_STALE", "当前楼或所选重 Roll 已变化，请刷新后重试。");
-		let l = `sha256:${await _e(c.rawContent)}`;
-		if (l !== o.content.rawFingerprint) throw Gl("V3_MEMORY_STALE", "当前楼原始正文已变化，请刷新后重试。");
-		let d = Zl(c), f = {
+		let a = y ? Gl(y) : null, o = a?.floors?.find((e) => e.id === t);
+		if (!o) throw eu("V3_MEMORY_FLOOR_UNAVAILABLE", "只允许提取当前 root 可达的稳定 AI 楼。");
+		let s = tu(a).get(o.id) ?? null, c = iu(n, o);
+		if (!c) throw eu("V3_MEMORY_STALE", "当前楼或所选重 Roll 已变化，请刷新后重试。");
+		let l = `sha256:${await J(c.rawContent)}`;
+		if (l !== o.content.rawFingerprint) throw eu("V3_MEMORY_STALE", "当前楼原始正文已变化，请刷新后重试。");
+		let d = ou(c), f = {
 			floorId: o.id,
 			floorFingerprint: o.content.canonicalFingerprint,
 			floorRawFingerprint: l,
 			storyClockSignature: d.signature,
 			epoch: _,
 			controller: new AbortController(),
-			runId: await J([
+			runId: await Y([
 				"v3-extractor-run",
 				a.root.headCheckpointId,
 				o.id,
 				h()
 			]),
-			startedAt: Pl(m),
+			startedAt: Ul(m),
 			phase: "extracting"
 		};
 		v = f, W();
@@ -14405,7 +14747,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				floorId: o.id,
 				rawContentFingerprint: l
 			}, p = a.floors.findIndex((e) => e.id === o.id), h = on(a.entities, new Set(a.floors.slice(0, p + 1).map((e) => e.id))), g = null;
-			for (let e = p - 1; e >= 0 && !g; --e) g = Zl(Yl(n, a.floors[e])).clock;
+			for (let e = p - 1; e >= 0 && !g; --e) g = ou(iu(n, a.floors[e])).clock;
 			let v = await Bn({
 				...c,
 				floor: o,
@@ -14419,15 +14761,15 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				envelope: v,
 				floor: o,
 				existingEntities: h,
-				now: Pl(m),
+				now: Ul(m),
 				supersedes: s?.id ?? null,
 				preservedSummary: s?.summary?.effectiveSource === "user" ? s.summary : null,
 				expectedScope: c,
 				promptGuidance: y,
 				signal: f.controller.signal
 			});
-			if (f.phase = "validating", W(), (await e.refreshStatus()).status !== "ready") throw Gl("V3_MEMORY_STALE", "正文地基在提取期间发生变化，本次结果已作废。");
-			if (f.epoch !== _ || f.controller.signal.aborted) throw Gl("V3_MEMORY_STALE", "聊天或正文已变化，迟到响应已丢弃。");
+			if (f.phase = "validating", W(), (await e.refreshStatus()).status !== "ready") throw eu("V3_MEMORY_STALE", "正文地基在提取期间发生变化，本次结果已作废。");
+			if (f.epoch !== _ || f.controller.signal.aborted) throw eu("V3_MEMORY_STALE", "聊天或正文已变化，迟到响应已丢弃。");
 			f.phase = "committing", W(), await me(f, {
 				oldReachable: a,
 				replacement: b.memory,
@@ -14461,25 +14803,25 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		}
 		return W();
 	}
-	async function ye() {
-		if ((await e.refreshStatus()).status !== "ready") throw Gl("V3_MEMORY_FOUNDATION_NOT_READY", "正文地基尚未完成安全对账，当前不能提取。");
+	async function ve() {
+		if ((await e.refreshStatus()).status !== "ready") throw eu("V3_MEMORY_FOUNDATION_NOT_READY", "正文地基尚未完成安全对账，当前不能提取。");
 		await ue(_);
-		let t = Kl(y), n = y?.floors?.find((e) => t.get(e.id)?.recordStatus !== "active");
-		return n ? ve(n.id) : q();
+		let t = tu(y), n = y?.floors?.find((e) => t.get(e.id)?.recordStatus !== "active");
+		return n ? ge(n.id) : q();
 	}
-	async function be(t, n, { userText: r = null, revisionNote: i = null, metadata: a = null } = {}) {
+	async function ye(t, n, { userText: r = null, revisionNote: i = null, metadata: a = null } = {}) {
 		if (v) return q();
-		if ((await e.refreshStatus()).status !== "ready") throw Gl("V3_MEMORY_FOUNDATION_NOT_READY", "正文地基尚未完成安全对账，当前不能修订。");
+		if ((await e.refreshStatus()).status !== "ready") throw eu("V3_MEMORY_FOUNDATION_NOT_READY", "正文地基尚未完成安全对账，当前不能修订。");
 		await ue(_);
-		let o = y?.floors?.find((e) => e.id === t), s = Kl(y).get(t);
-		if (!o || !s) throw Gl("V3_MEMORY_REVISION_UNAVAILABLE", "该楼还没有可修订的正式记忆。");
-		let c = Pl(m), l = await J([
+		let o = y?.floors?.find((e) => e.id === t), s = tu(y).get(t);
+		if (!o || !s) throw eu("V3_MEMORY_REVISION_UNAVAILABLE", "该楼还没有可修订的正式记忆。");
+		let c = Ul(m), l = await Y([
 			"v3-memory-revision-run",
 			s.id,
 			n,
 			c,
 			h()
-		]), u = String(a?.summary ?? r ?? "").trim(), d = String(i ?? a?.revisionNote ?? "").trim(), f = n === "editMetadata" && u !== String(Rl(s) ?? "").trim(), p = n === "edit" || f ? {
+		]), u = String(a?.summary ?? r ?? "").trim(), d = String(i ?? a?.revisionNote ?? "").trim(), f = n === "editMetadata" && u !== String(ql(s) ?? "").trim(), p = n === "edit" || f ? {
 			...s.summary,
 			userText: u,
 			effectiveSource: "user",
@@ -14493,12 +14835,12 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			...s.summary,
 			revisionNote: d || "用户标记错误"
 		};
-		if ((n === "edit" || f) && !p.userText) throw Gl("V3_MEMORY_SUMMARY_EMPTY", "摘要不能为空。");
+		if ((n === "edit" || f) && !p.userText) throw eu("V3_MEMORY_SUMMARY_EMPTY", "摘要不能为空。");
 		let g = s.chronology, b = s.locations, x = s.participants, S = [], C = !1;
 		if (n === "editMetadata") {
 			let e = [...new Set(s.chronology.map((e) => e.time?.sourceText || e.time?.normalized || e.description).map((e) => String(e ?? "").trim()).filter(Boolean))].join("；"), t = String(a?.timeText ?? e).trim().slice(0, 500), n = String(a?.originalTimeText ?? e).trim().slice(0, 500);
 			C = a?.timeChanged === !0 && t !== n, C && (g = [{
-				itemId: await J([
+				itemId: await Y([
 					"v3-user-chronology",
 					l,
 					t
@@ -14521,7 +14863,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				let i = r.get(t?.itemId) ?? null;
 				b.push({
 					...i ?? {},
-					itemId: i?.itemId ?? await J([
+					itemId: i?.itemId ?? await Y([
 						"v3-user-location",
 						s.id,
 						c,
@@ -14535,16 +14877,16 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 					evidenceRefs: i?.evidenceRefs ?? []
 				});
 			}
-			let i = y.entities.filter((e) => e.entityType === "person" && e.recordStatus === "active" && e.status !== "merged" && e.status !== "invalidated"), u = new Map(s.participants.map((e) => [e.entityId, e])), m = i.filter((e) => u.has(e.id)), h = (e) => [...m, ...i].find((t) => [t.displayName, ...(t.aliases ?? []).map((e) => e.name)].some((t) => Wl(t) === Wl(e))), _ = Array.isArray(a?.participantNames) ? [...new Set(a.participantNames.map((e) => String(e ?? "").trim().slice(0, 500)).filter(Boolean))].slice(0, 80) : null, v = [];
+			let i = y.entities.filter((e) => e.entityType === "person" && e.recordStatus === "active" && e.status !== "merged" && e.status !== "invalidated"), u = new Map(s.participants.map((e) => [e.entityId, e])), m = i.filter((e) => u.has(e.id)), h = (e) => [...m, ...i].find((t) => [t.displayName, ...(t.aliases ?? []).map((e) => e.name)].some((t) => $l(t) === $l(e))), _ = Array.isArray(a?.participantNames) ? [...new Set(a.participantNames.map((e) => String(e ?? "").trim().slice(0, 500)).filter(Boolean))].slice(0, 80) : null, v = [];
 			for (let e of _ ?? []) {
 				let t = h(e);
 				t || (t = Ht({
 					schemaVersion: 3,
 					recordType: "entity",
-					id: await J([
+					id: await Y([
 						"v3-user-person",
 						l,
-						Wl(e)
+						$l(e)
 					]),
 					chatId: s.chatId,
 					narrativeGeneration: s.narrativeGeneration,
@@ -14552,7 +14894,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 					displayName: e,
 					aliases: [{
 						name: e,
-						normalized: Wl(e),
+						normalized: $l(e),
 						kind: "canonical",
 						evidenceRefs: [],
 						baselineClaimIds: []
@@ -14582,7 +14924,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				revisionNote: d || s.summary.revisionNote || "用户修订时间、地点或人物"
 			});
 		}
-		let w = await J([
+		let w = await Y([
 			"v3-memory-revision",
 			s.id,
 			n,
@@ -14613,7 +14955,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			phase: "committing"
 		};
 		v = E, W();
-		let D = ql(y)[t] ?? {};
+		let D = nu(y)[t] ?? {};
 		try {
 			await me(E, {
 				oldReachable: y,
@@ -14637,33 +14979,33 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		}
 		return W();
 	}
-	let xe = (e, t) => oe("extracting", () => ve(e, t)), Se = () => oe("extracting", () => ye()), Ce = (e, t, n = "") => oe("revising", () => be(e, "edit", {
+	let be = (e, t) => oe("extracting", () => ge(e, t)), xe = () => oe("extracting", () => ve()), Se = (e, t, n = "") => oe("revising", () => ye(e, "edit", {
 		userText: t,
 		revisionNote: n
-	})), we = (e, t) => oe("revising", () => be(e, "editMetadata", { metadata: t })), Te = (e) => oe("revising", () => be(e, "restoreAi")), Ee = (e) => oe("revising", () => be(e, "markError"));
-	async function De({ requestedEpoch: n = _, requestedChatId: r = H() } = {}) {
+	})), Ce = (e, t) => oe("revising", () => ye(e, "editMetadata", { metadata: t })), we = (e) => oe("revising", () => ye(e, "restoreAi")), Te = (e) => oe("revising", () => ye(e, "markError"));
+	async function Ee({ requestedEpoch: n = _, requestedChatId: r = U() } = {}) {
 		if (!V()) return W();
-		if (te()) throw Gl("V3_MEMORY_GENERATION_ACTIVE", "主模型正在生成，请等待完成后再完全重构。");
-		let i = () => n === _ && r && H() === r;
-		if (!i()) throw Gl("V3_MEMORY_STALE", "聊天已变化，完全重构未开始。");
+		if (H()) throw eu("V3_MEMORY_GENERATION_ACTIVE", "主模型正在生成，请等待完成后再完全重构。");
+		let i = () => n === _ && r && U() === r;
+		if (!i()) throw eu("V3_MEMORY_STALE", "聊天已变化，完全重构未开始。");
 		let a = await e.refreshStatus();
-		if (!i()) throw Gl("V3_MEMORY_STALE", "聊天已变化，完全重构未开始。");
-		if (a.status !== "ready") throw Gl("V3_MEMORY_FOUNDATION_NOT_READY", "正文地基尚未完成安全对账，当前不能完全重构。");
-		if (await ue(n), !i()) throw Gl("V3_MEMORY_STALE", "聊天已变化，完全重构未开始。");
-		let o = y ? Il(y) : null;
-		if (!o?.root || !o.checkpoint || o.root.chatId !== r) throw Gl("V3_MEMORY_RESET_UNAVAILABLE", "当前聊天尚无可重构的正文地基。");
+		if (!i()) throw eu("V3_MEMORY_STALE", "聊天已变化，完全重构未开始。");
+		if (a.status !== "ready") throw eu("V3_MEMORY_FOUNDATION_NOT_READY", "正文地基尚未完成安全对账，当前不能完全重构。");
+		if (await ue(n), !i()) throw eu("V3_MEMORY_STALE", "聊天已变化，完全重构未开始。");
+		let o = y ? Gl(y) : null;
+		if (!o?.root || !o.checkpoint || o.root.chatId !== r) throw eu("V3_MEMORY_RESET_UNAVAILABLE", "当前聊天尚无可重构的正文地基。");
 		let s = {
 			floorId: null,
 			floorFingerprint: null,
 			floorRawFingerprint: null,
 			epoch: n,
 			controller: new AbortController(),
-			runId: await J([
+			runId: await Y([
 				"v3-full-rebuild-run",
 				o.root.headCheckpointId,
 				h()
 			]),
-			startedAt: Pl(m),
+			startedAt: Ul(m),
 			phase: "resetting"
 		};
 		v = s, W();
@@ -14675,14 +15017,14 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 					let r = await t.readRecord("entity", e);
 					r.status === "ready" && (n = r.data);
 				}
-				if (!n) throw Gl("V3_MEMORY_BASELINE_ENTITY_MISSING", "基线人物记录缺失，未清空现有记忆。");
+				if (!n) throw eu("V3_MEMORY_BASELINE_ENTITY_MISSING", "基线人物记录缺失，未清空现有记忆。");
 				a.push(n);
 			}
-			let c = await J(["v3-full-rebuild-checkpoint", s.runId]), u = Pl(m), d = o.floors.map((e) => ({
+			let c = await Y(["v3-full-rebuild-checkpoint", s.runId]), u = Ul(m), d = o.floors.map((e) => ({
 				hostLocator: e.hostLocator,
 				rawFingerprint: e.content.rawFingerprint,
 				canonicalFingerprint: e.content.canonicalFingerprint
-			})), f = await Jc({
+			})), f = await rl({
 				chatId: o.root.chatId,
 				narrativeGeneration: o.root.narrativeGeneration,
 				checkpointId: c,
@@ -14695,7 +15037,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				memoryReady: !1,
 				cseReady: !1,
 				recallReady: !1
-			}, g = await Fl([
+			}, g = await Wl([
 				o.root.narrativeGeneration,
 				o.floors.map((e) => e.id),
 				o.floors.map((e) => e.content.canonicalFingerprint)
@@ -14777,7 +15119,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				activeStateRefs: [],
 				activeThreadRefs: [],
 				indexManifest: {
-					...Nl(),
+					...Hl(),
 					floor: p.filter((e) => e.includes("-floorOrder-") || e.includes("-fingerprint-")),
 					entity: p.filter((e) => e.includes("-entity-")),
 					reverseRef: p.filter((e) => e.includes("-reverseRef-"))
@@ -14789,11 +15131,11 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				...f,
 				v,
 				y
-			], s.controller.signal), s.epoch !== _ || s.controller.signal.aborted || H() !== o.root.chatId || te()) throw Gl("V3_MEMORY_STALE", "聊天或正文状态已变化，完全重构未切换有效记忆。");
+			], s.controller.signal), s.epoch !== _ || s.controller.signal.aborted || U() !== o.root.chatId || H()) throw eu("V3_MEMORY_STALE", "聊天或正文状态已变化，完全重构未切换有效记忆。");
 			let S = await t.readReachable();
-			if (S.status !== "ready" || S.rootRevision !== o.rootRevision || S.root.headCheckpointId !== o.root.headCheckpointId || S.root.narrativeGeneration !== o.root.narrativeGeneration) throw Gl("V3_MEMORY_CAS_CONFLICT", "记忆已被其他操作更新，完全重构未覆盖新版本。");
+			if (S.status !== "ready" || S.rootRevision !== o.rootRevision || S.root.headCheckpointId !== o.root.headCheckpointId || S.root.narrativeGeneration !== o.root.narrativeGeneration) throw eu("V3_MEMORY_CAS_CONFLICT", "记忆已被其他操作更新，完全重构未覆盖新版本。");
 			let C = await t.commitRoot(x, o.rootRevision, { signal: s.controller.signal });
-			if (C.status !== "saved") throw Gl(C.status === "conflict" ? "V3_MEMORY_CAS_CONFLICT" : "V3_MEMORY_COMMIT_FAILED", C.status === "conflict" ? "记忆提交遇到并发更新，旧有效图保持不变。" : `完全重构提交失败：${C.status}`);
+			if (C.status !== "saved") throw eu(C.status === "conflict" ? "V3_MEMORY_CAS_CONFLICT" : "V3_MEMORY_COMMIT_FAILED", C.status === "conflict" ? "记忆提交遇到并发更新，旧有效图保持不变。" : `完全重构提交失败：${C.status}`);
 			return L.clear(), b = null, O = null, N = null, await l?.({
 				chatId: o.root.chatId,
 				headCheckpointId: c
@@ -14802,22 +15144,22 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			v === s && (v = null);
 		}
 	}
-	let Oe = async (e) => {
-		let t = _, n = String(e ?? H()).trim();
-		if (!n || n !== H() || y?.root?.chatId && y.root.chatId !== n) throw Gl("V3_MEMORY_STALE", "当前界面所属聊天已变化，完全重构未开始。");
-		let r = await oe("fullRebuild", () => De({
+	let De = async (e) => {
+		let t = _, n = String(e ?? U()).trim();
+		if (!n || n !== U() || y?.root?.chatId && y.root.chatId !== n) throw eu("V3_MEMORY_STALE", "当前界面所属聊天已变化，完全重构未开始。");
+		let r = await oe("fullRebuild", () => Ee({
 			requestedEpoch: t,
 			requestedChatId: n
 		}));
-		return t === _ && H() === n && r?.chatId === n && r.rebuildStatus === "pendingRebuild" ? Qe() : r;
+		return t === _ && U() === n && r?.chatId === n && r.rebuildStatus === "pendingRebuild" ? Ze() : r;
 	};
-	function ke(e, { full: t = !1 } = {}) {
+	function Oe(e, { full: t = !1 } = {}) {
 		let n = y?.floors?.find((t) => t.id === e), r = q().floors.find((t) => t.floorId === e);
-		if (!n || !r) throw Gl("V3_DIAGNOSTIC_FLOOR_MISSING", "找不到该楼诊断。");
-		let i = r.memory, a = ql(y)[e] ?? {}, o = (e) => ({
+		if (!n || !r) throw eu("V3_DIAGNOSTIC_FLOOR_MISSING", "找不到该楼诊断。");
+		let i = r.memory, a = nu(y)[e] ?? {}, o = (e) => ({
 			...e,
 			quotedText: t ? e.quotedText : `[已隐藏原文 · ${e.quotedText.length} 字]`
-		}), s = i ? Il(i) : null;
+		}), s = i ? Gl(i) : null;
 		if (s && !t) {
 			s.summaryEvidenceRefs = s.summaryEvidenceRefs.map(o);
 			for (let e of [
@@ -14875,9 +15217,9 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		};
 		return JSON.stringify(Xt(c), null, 2);
 	}
-	let Ae = (e) => ke(e, { full: !1 }), je = (e) => ke(e, { full: !0 });
-	async function Me(t = "stableAssistant") {
-		let n = U(), r = t === Ml, i = r || t === "manualRetry", a = r ? k : null;
+	let ke = (e) => Oe(e, { full: !1 }), Ae = (e) => Oe(e, { full: !0 });
+	async function je(t = "stableAssistant") {
+		let n = te(), r = t === Vl, i = r || t === "manualRetry", a = r ? k : null;
 		if (!V() || !r && !n.enabled || r && !a || w || v || B.getState().activeCse) return q();
 		let o = {
 			kind: "auto",
@@ -14890,11 +15232,11 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		};
 		return w = o, W(), o.promise = (async () => {
 			try {
-				let c = () => o.token === E && V() && (r ? k === a : U().enabled), l = r, u = !1, d = 0, f = 0, p = null, m = null, h = [], g = null;
+				let c = () => o.token === E && V() && (r ? k === a : te().enabled), l = r, u = !1, d = 0, f = 0, p = null, m = null, h = [], g = null;
 				for (; c();) {
 					if (o.phase = "reconciling", W(), (await e.refreshStatus()).status !== "ready" || !c() || (await le(), !c() || !y?.root) || r && y.root.chatId !== a) return q();
 					let _ = await ce();
-					if (_.status === "unknown") throw Gl("V3_MEMORY_COVERAGE_UNCONFIRMED", "当前聊天的可达覆盖尚未确认，历史重建已暂停。");
+					if (_.status === "unknown") throw eu("V3_MEMORY_COVERAGE_UNCONFIRMED", "当前聊天的可达覆盖尚未确认，历史重建已暂停。");
 					g ??= Object.freeze((y.floors ?? []).map((e) => e.id));
 					let v = new Set(g), b = g.length;
 					if (l && _.completed >= b && _.summaryCompleted >= b) {
@@ -14942,7 +15284,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 					if (u ||= l ? _.hasPartialWork : _.summaryHasPartialWork, C.length) {
 						o.floorIds = C.map((e) => e.id), o.phase = "extracting", W();
 						for (let e of C) {
-							if (!c() || (Kl(y).get(e.id)?.recordStatus !== "active" && await ve(e.id, { analyzeState: !1 }), !c())) return q();
+							if (!c() || (tu(y).get(e.id)?.recordStatus !== "active" && await ge(e.id, { analyzeState: !1 }), !c())) return q();
 							let i = q().floors.find((t) => t.floorId === e.id);
 							if (!i?.memoryId || !["ready", "needsReview"].includes(i.status)) return r && k === a && (k = null), l || (F = G() ?? x), O = Object.freeze({
 								status: "failed",
@@ -14955,7 +15297,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 								message: q().lastExtractorError?.message ?? "FloorMemory 提取失败，可点击继续重建后从本楼重试。"
 							}), ne(`extracting:${o.token}:${x}:${e.id}`, {
 								kind: "error",
-								text: `千千结摘要提取失败：${Vl(O.message)} 可在记忆管理中点击继续。`
+								text: `千千结摘要提取失败：${Xl(O.message)} 可在记忆管理中点击继续。`
 							}), W();
 							p ??= e.assistantSeq, m = e.assistantSeq, h.push(e.hostLocator?.messageIndex), d += 1;
 						}
@@ -14963,10 +15305,10 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 					if (!c()) return q();
 					await le();
 					let w = await ce();
-					if (w.status === "unknown") throw Gl("V3_MEMORY_COVERAGE_UNCONFIRMED", "摘要保存后覆盖校验未确认，人物状态分析已暂停。");
+					if (w.status === "unknown") throw eu("V3_MEMORY_COVERAGE_UNCONFIRMED", "摘要保存后覆盖校验未确认，人物状态分析已暂停。");
 					for (; c() && w.completed < b;) {
 						let e = y.floors?.[w.completed];
-						if (!e || !v.has(e.id) || Kl(y).get(e.id)?.recordStatus !== "active") break;
+						if (!e || !v.has(e.id) || tu(y).get(e.id)?.recordStatus !== "active") break;
 						if (o.phase = "analyzingCse", o.floorIds = [.../* @__PURE__ */ new Set([...o.floorIds, e.id])], W(), !c()) return q();
 						let i = q().floors.find((t) => t.floorId === e.id);
 						if (["ready", "noChange"].includes(i?.cse?.status) || await B.analyzeFloor(e.id), !c()) return q();
@@ -14985,10 +15327,10 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 							let i = l ? "千千结人物状态分析失败" : d > 0 ? "千千结已保存新楼摘要，但最早待处理楼的人物状态分析失败" : "千千结人物状态追赶失败";
 							return ne(`analyzingCse:${o.token}:${x}:${e.id}`, {
 								kind: "warning",
-								text: `${i}：${Vl(O.message)} 后续合资格稳定楼会有限重试，也可现在点击继续。`
+								text: `${i}：${Xl(O.message)} 后续合资格稳定楼会有限重试，也可现在点击继续。`
 							}), W();
 						}
-						if (f += 1, await le(), w = await ce(), w.status === "unknown") throw Gl("V3_MEMORY_COVERAGE_UNCONFIRMED", "人物状态保存后覆盖校验未确认，自动追赶已暂停。");
+						if (f += 1, await le(), w = await ce(), w.status === "unknown") throw eu("V3_MEMORY_COVERAGE_UNCONFIRMED", "人物状态保存后覆盖校验未确认，自动追赶已暂停。");
 					}
 					if (!l) {
 						if (F = null, w.summaryStatus === "historicalDebt" && w.summaryCompleted < b) return O = Object.freeze({
@@ -15057,7 +15399,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 					batchSize: n.batchSize,
 					floorId: o.floorIds[0] ?? null,
 					assistantSeq: null,
-					message: Vl(e?.message ?? "自动记忆失败，将在下一次稳定回复后重试。")
+					message: Xl(e?.message ?? "自动记忆失败，将在下一次稳定回复后重试。")
 				}), g?.warn?.("[qianqianjie] V3 automatic memory failed", { code: e?.code ?? e?.name ?? "V3_AUTO_MEMORY_FAILED" }), ne(`outer:${o.token}:${G()}:${o.phase}`, {
 					kind: "error",
 					text: `千千结自动记忆未完成：${O.message} 可在记忆管理中点击继续。`
@@ -15067,33 +15409,33 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			}
 		})(), o.promise;
 	}
-	function Ne(e) {
-		return V() ? e === Ml ? !!k : U().enabled : !1;
+	function Me(e) {
+		return V() ? e === Vl ? !!k : te().enabled : !1;
 	}
-	function Pe(e = "stableAssistant") {
-		return Ne(e) ? (D = e, T || (T = Promise.resolve().then(() => {
+	function Ne(e = "stableAssistant") {
+		return Me(e) ? (D = e, T || (T = Promise.resolve().then(() => {
 			if (w || v || B.getState().activeCse) return q();
 			let e = D;
-			return D = null, Me(e);
+			return D = null, je(e);
 		}).finally(() => {
-			T = null, D && !w && !v && !B.getState().activeCse && Ne(D) && Pe(D);
+			T = null, D && !w && !v && !B.getState().activeCse && Me(D) && Ne(D);
 		}), T)) : Promise.resolve(q());
 	}
-	function Fe() {
+	function Pe() {
 		if (!V()) return re(), Promise.resolve(W());
-		if (!U().enabled) D !== Ml && (D = null), w?.kind === "auto" && w.mode !== "historical" && (E += 1, v?.controller.abort(), B.cancelActive?.());
-		else if (q().cseFloors.some((e) => e.status === "pending")) return Pe("automationEnabledCatchup");
+		if (!te().enabled) D !== Vl && (D = null), w?.kind === "auto" && w.mode !== "historical" && (E += 1, v?.controller.abort(), B.cancelActive?.());
+		else if (q().cseFloors.some((e) => e.status === "pending")) return Ne("automationEnabledCatchup");
 		return Promise.resolve(W());
 	}
-	let Ie = (t) => Object.freeze({
+	let Fe = (t) => Object.freeze({
 		hostChatId: String(t?.chatId ?? "").trim(),
 		chatId: String(t?.context?.chatMetadata?.qianqianjie?.chatId ?? "").trim(),
 		narrativeGeneration: e.getState()?.narrativeGeneration ?? e.getReachable?.()?.root?.narrativeGeneration ?? null
-	}), Le = (e, t) => {
-		let n = Ie(t);
+	}), Ie = (e, t) => {
+		let n = Fe(t);
 		return !!(e && e.hostChatId === n.hostChatId && e.chatId === n.chatId && (e.narrativeGeneration === null || e.narrativeGeneration === n.narrativeGeneration));
-	}, Re = (e) => !!(e && typeof e == "object" && e.is_user === !1 && !(e.is_system === !0 && e.extra?.type)), ze = (e, t) => !!(Number.isSafeInteger(t) && Ge(e?.chat?.[t]) && Re(e?.chat?.[t - 1]));
-	function Be(t, r = null) {
+	}, Le = (e) => !!(e && typeof e == "object" && e.is_user === !1 && !(e.is_system === !0 && e.extra?.type)), Re = (e, t) => !!(Number.isSafeInteger(t) && Ge(e?.chat?.[t]) && Le(e?.chat?.[t - 1]));
+	function ze(t, r = null) {
 		if (!Number.isSafeInteger(t)) return null;
 		let i;
 		try {
@@ -15101,35 +15443,35 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		} catch {
 			return null;
 		}
-		if (r && !Le(r, i)) return null;
+		if (r && !Ie(r, i)) return null;
 		let a = y?.floors?.at(-1) ?? null, o = a?.hostLocator?.messageIndex;
-		if (!a || !Number.isSafeInteger(o) || t <= o || t !== i.chat?.length - 1 || !Re(i.chat?.[t]) || r && (r.messageIndex !== t || r.stableFloorId !== a.id || r.stableMessageIndex !== o)) return null;
+		if (!a || !Number.isSafeInteger(o) || t <= o || t !== i.chat?.length - 1 || !Le(i.chat?.[t]) || r && (r.messageIndex !== t || r.stableFloorId !== a.id || r.stableMessageIndex !== o)) return null;
 		let s = e.getState()?.pending;
 		return !r && (!s || s.messageIndex !== t) ? null : Object.freeze({
-			...Ie(i),
+			...Fe(i),
 			messageIndex: t,
 			stableFloorId: a.id,
 			stableMessageIndex: o
 		});
 	}
-	let Ve = (e, t) => e === "MESSAGE_SWIPED" ? Number.isSafeInteger(t[0]) ? t[0] : null : e === "MESSAGE_SWIPE_DELETED" && Number.isSafeInteger(t[0]?.messageId) ? t[0].messageId : null, Ue = (e) => {
+	let Be = (e, t) => e === "MESSAGE_SWIPED" ? Number.isSafeInteger(t[0]) ? t[0] : null : e === "MESSAGE_SWIPE_DELETED" && Number.isSafeInteger(t[0]?.messageId) ? t[0].messageId : null, Ve = (e) => {
 		let t = typeof e == "string" ? e.trim() : "";
 		return t !== "" && t !== "...";
 	};
-	function Ke(e, t, { requireContent: n = !1, messageIndex: r = null } = {}) {
+	function Ue(e, t, { requireContent: n = !1, messageIndex: r = null } = {}) {
 		if (!e || !Array.isArray(t?.chat)) return null;
 		let i = Math.max(0, e.startChatLength), a = Number.isSafeInteger(r) ? [r] : Array.from({ length: Math.max(0, t.chat.length - i) }, (e, t) => i + t);
 		for (let e of a) {
 			if (e < i) continue;
 			let r = t.chat[e];
-			if (!Re(r)) continue;
+			if (!Le(r)) continue;
 			let a = We(r);
-			if (!(n && !Ue(a?.rawContent) && !Ue(r.mes))) return Object.freeze({ messageIndex: e });
+			if (!(n && !Ve(a?.rawContent) && !Ve(r.mes))) return Object.freeze({ messageIndex: e });
 		}
 		return null;
 	}
-	function qe(t) {
-		if (j = null, !V() || !U().enabled || typeof e.stabilizeThrough != "function" || t != null && t !== "" && t !== "normal") return;
+	function Ke(t) {
+		if (j = null, !V() || !te().enabled || typeof e.stabilizeThrough != "function" || t != null && t !== "" && t !== "normal") return;
 		let r;
 		try {
 			r = n.snapshot();
@@ -15139,8 +15481,8 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		let i = e.getState()?.pending;
 		if (!i || !Number.isSafeInteger(i.assistantSeq) || !Number.isSafeInteger(i.messageIndex) || typeof i.canonicalFingerprint != "string") return;
 		let a = r.chat?.[i.messageIndex];
-		!Re(a) || !Ue(We(a)?.rawContent) || (j = Object.freeze({
-			...Ie(r),
+		!Le(a) || !Ve(We(a)?.rawContent) || (j = Object.freeze({
+			...Fe(r),
 			boundary: Object.freeze({
 				assistantSeq: i.assistantSeq,
 				messageIndex: i.messageIndex,
@@ -15151,17 +15493,17 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			messageIndex: null
 		}));
 	}
-	function Je({ text: t = null, messageIndex: r = null, requireContent: i = !1 } = {}) {
+	function qe({ text: t = null, messageIndex: r = null, requireContent: i = !1 } = {}) {
 		let a = j;
-		if (!a || a.proven || t !== null && !Ue(t)) return !1;
+		if (!a || a.proven || t !== null && !Ve(t)) return !1;
 		let o;
 		try {
 			o = n.snapshot();
 		} catch {
 			return !1;
 		}
-		if (!Le(a, o)) return j = null, re(), !1;
-		let s = Ke(a, o, {
+		if (!Ie(a, o)) return j = null, re(), !1;
+		let s = Ue(a, o, {
 			requireContent: i,
 			messageIndex: r
 		});
@@ -15169,7 +15511,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			...a,
 			proven: !0,
 			messageIndex: s.messageIndex
-		}), S = !0, U().enabled && (D = "earlyStableAssistant"), Promise.resolve(e.stabilizeThrough(a.boundary)).catch((e) => {
+		}), S = !0, te().enabled && (D = "earlyStableAssistant"), Promise.resolve(e.stabilizeThrough(a.boundary)).catch((e) => {
 			j?.boundary === a.boundary && (b = Object.freeze({
 				floorId: null,
 				runId: null,
@@ -15178,11 +15520,11 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				attempts: 0,
 				validationErrors: [],
 				api: null,
-				message: Vl(e?.message)
+				message: Xl(e?.message)
 			}), W());
 		}), !0) : !1;
 	}
-	function Ye({ eventSource: t, eventTypes: r } = n.snapshot()) {
+	function Je({ eventSource: t, eventTypes: r } = n.snapshot()) {
 		if (e.bind({
 			eventSource: t,
 			eventTypes: r
@@ -15194,9 +15536,9 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				S = !1;
 				let n = _;
 				try {
-					if (await le(n), n === _ && D && Ne(D)) {
+					if (await le(n), n === _ && D && Me(D)) {
 						let e = D;
-						D = null, Pe(e);
+						D = null, Ne(e);
 					}
 				} catch (e) {
 					if (n !== _) continue;
@@ -15208,7 +15550,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 						attempts: 0,
 						validationErrors: [],
 						api: null,
-						message: Vl(e?.message)
+						message: Xl(e?.message)
 					}), W();
 				}
 			}
@@ -15221,14 +15563,14 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		let a = r.GENERATION_STOPPED, o = r.GENERATION_ENDED, s = r.GENERATION_STARTED;
 		s && a && o && (t.on(s, (e, t, n) => {
 			if (n !== !0) {
-				if ((e !== "swipe" || M?.stopped === !0 || M && !Be(M.messageIndex, M)) && (M = null), A) {
+				if ((e !== "swipe" || M?.stopped === !0 || M && !ze(M.messageIndex, M)) && (M = null), A) {
 					(e == null || e === "" || e === "normal") && (j = null);
 					return;
 				}
-				A = !0, qe(e), v?.phase === "resetting" && (_ += 1, v.controller.abort("generationStarted"));
+				A = !0, Ke(e), v?.phase === "resetting" && (_ += 1, v.controller.abort("generationStarted"));
 			}
 		}), t.on(a, () => {
-			if (A = !1, j = null, M && M.stopped !== !0 && Be(M.messageIndex, M)) {
+			if (A = !1, j = null, M && M.stopped !== !0 && ze(M.messageIndex, M)) {
 				M = Object.freeze({
 					...M,
 					stopped: !0
@@ -15241,16 +15583,16 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		}));
 		let c = r.STREAM_TOKEN_RECEIVED;
 		c && t.on(c, (e) => {
-			Je({ text: e });
+			qe({ text: e });
 		});
 		let l = r.MESSAGE_UPDATED;
 		l && t.on(l, (e) => {
-			Je({
+			qe({
 				messageIndex: e,
 				requireContent: !0
 			});
 		});
-		for (let e of Al) {
+		for (let e of zl) {
 			let i = r[e];
 			i && t.on(i, (...t) => {
 				let r = t[1];
@@ -15261,21 +15603,21 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 					} catch {
 						return;
 					}
-					if (!ze(e, t[0])) return;
+					if (!Re(e, t[0])) return;
 				}
-				let i = Ve(e, t), a = i === null ? null : Be(i);
+				let i = Be(e, t), a = i === null ? null : ze(i);
 				if (a) {
 					e === "MESSAGE_SWIPED" && t[1]?.pendingGeneration === !0 && (M = a), S = !0, W();
 					return;
 				}
-				if (e === "MESSAGE_RECEIVED" && r === "swipe" && M && t[0] === M?.messageIndex && Be(M.messageIndex, M)) {
+				if (e === "MESSAGE_RECEIVED" && r === "swipe" && M && t[0] === M?.messageIndex && ze(M.messageIndex, M)) {
 					M = null, j = null, S = !0, W();
 					return;
 				}
 				if (e === "MESSAGE_RECEIVED" && j?.proven && t[0] === j.messageIndex && (r == null || r === "" || r === "normal" || r === "continue") && (() => {
 					try {
 						let e = n.snapshot();
-						return Le(j, e) && !!Ke(j, e, {
+						return Ie(j, e) && !!Ue(j, e, {
 							requireContent: !0,
 							messageIndex: j.messageIndex
 						});
@@ -15283,27 +15625,27 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 						return !1;
 					}
 				})()) {
-					j = null, S = !0, U().enabled && (D = "MESSAGE_RECEIVED"), W();
+					j = null, S = !0, te().enabled && (D = "MESSAGE_RECEIVED"), W();
 					return;
 				}
-				j = null, M = null, ie(e), re(), _ += 1, v?.controller.abort(), v = null, w = null, y = null, I = /* @__PURE__ */ new Map(), P = Hl(0), b = null, L.clear(), B.invalidate(), S = !0, ["MESSAGE_SENT", "MESSAGE_RECEIVED"].includes(e) || (N = null, F = null, ee = null), ["MESSAGE_SENT", "MESSAGE_RECEIVED"].includes(e) && U().enabled && (D = e), (e === "CHAT_CHANGED" || e === "CHAT_RENAMED" || jl.has(e)) && (O = null), W();
+				j = null, M = null, ie(e), re(), _ += 1, v?.controller.abort(), v = null, w = null, y = null, I = /* @__PURE__ */ new Map(), P = Zl(0), b = null, L.clear(), B.invalidate(), S = !0, ["MESSAGE_SENT", "MESSAGE_RECEIVED"].includes(e) || (N = null, F = null, ee = null), ["MESSAGE_SENT", "MESSAGE_RECEIVED"].includes(e) && te().enabled && (D = e), (e === "CHAT_CHANGED" || e === "CHAT_RENAMED" || Bl.has(e)) && (O = null), W();
 			});
 		}
 		return x = !0, !0;
 	}
-	async function Xe() {
+	async function Ye() {
 		if (!V()) return W();
 		await e.start();
 		let t = await le();
-		return U().enabled && t.cseFloors.some((e) => e.status === "pending") && Pe("startupCatchup"), t;
+		return te().enabled && t.cseFloors.some((e) => e.status === "pending") && Ne("startupCatchup"), t;
 	}
-	async function Ze(t) {
+	async function Xe(t) {
 		return t !== !0 && ae(), await e.setEnabled(t), t === !0 ? le() : W();
 	}
-	async function Qe() {
+	async function Ze() {
 		for (; T || w?.promise;) await (T ?? w.promise);
 		if (!V()) return W();
-		if (te()) {
+		if (H()) {
 			try {
 				s?.({
 					kind: "warning",
@@ -15314,7 +15656,7 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		}
 		await de();
 		let e = await ce();
-		if (te()) {
+		if (H()) {
 			try {
 				s?.({
 					kind: "warning",
@@ -15323,16 +15665,16 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			} catch {}
 			return W();
 		}
-		return !y?.root || !["historicalDebt", "realtimeTail"].includes(e.status) ? W() : (k = y.root.chatId, Pe(Ml));
+		return !y?.root || !["historicalDebt", "realtimeTail"].includes(e.status) ? W() : (k = y.root.chatId, Ne(Vl));
 	}
-	let Y = () => !!(V() && (k && y?.root?.chatId === k || v?.phase === "resetting" || w?.kind === "manual" && w.reason === "fullRebuild")), $e = () => !!(Oc(y) || N && (y?.root ? N.chatId === y.root.chatId && (N.narrativeGeneration === null || N.narrativeGeneration === y.root.narrativeGeneration) : N.narrativeGeneration === null && N.chatId === H()));
-	function et() {
+	let Qe = () => !!(V() && (k && y?.root?.chatId === k || v?.phase === "resetting" || w?.kind === "manual" && w.reason === "fullRebuild")), X = () => !!(Lc(y) || N && (y?.root ? N.chatId === y.root.chatId && (N.narrativeGeneration === null || N.narrativeGeneration === y.root.narrativeGeneration) : N.narrativeGeneration === null && N.chatId === U()));
+	function $e() {
 		let e = k !== null || w?.kind === "auto" && w.mode === "historical", t = w?.token ?? E;
-		return k = null, D === Ml && (D = null), w?.kind === "auto" && w.mode === "historical" && (E += 1, v?.controller.abort(), B.cancelActive?.()), e && (O = Object.freeze({
+		return k = null, D === Vl && (D = null), w?.kind === "auto" && w.mode === "historical" && (E += 1, v?.controller.abort(), B.cancelActive?.()), e && (O = Object.freeze({
 			status: "paused",
-			reason: Ml,
+			reason: Vl,
 			mode: "historical",
-			batchSize: U().batchSize,
+			batchSize: te().batchSize,
 			available: Math.max(0, P.total - P.completed),
 			fromAssistantSeq: P.nextAssistantSeq,
 			toAssistantSeq: y?.floors?.at(-1)?.assistantSeq ?? null,
@@ -15343,36 +15685,36 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		})), W();
 	}
 	return Object.freeze({
-		bind: Ye,
-		start: Xe,
-		setEnabled: Ze,
-		refreshAutomation: Fe,
-		startHistoricalRebuild: Qe,
-		pauseHistoricalRebuild: et,
+		bind: Je,
+		start: Ye,
+		setEnabled: Xe,
+		refreshAutomation: Pe,
+		startHistoricalRebuild: Ze,
+		pauseHistoricalRebuild: $e,
 		retryAutomation: async () => {
 			for (; T || w?.promise;) await (T ?? w.promise);
-			return P.status === "historicalDebt" ? Qe() : Pe("manualRetry");
+			return P.status === "historicalDebt" ? Ze() : Ne("manualRetry");
 		},
-		fullRebuild: Oe,
+		fullRebuild: De,
 		invalidate: ae,
 		refreshStatus: de,
 		confirmLatest: fe,
-		extractNext: Se,
-		extractFloor: xe,
+		extractNext: xe,
+		extractFloor: be,
 		analyzeNextState: () => oe("analyzingCse", async (e) => (e.phase = "analyzingCse", W(), await B.analyzeNext(), W())),
 		retryStateAnalysis: (e) => oe("analyzingCse", async (t) => (t.floorIds = [e], t.phase = "analyzingCse", W(), await B.analyzeFloor(e), W())),
 		correctSubjectState: (e, t) => oe("revisingCse", async (n) => (n.phase = "revisingCse", W(), await B.correctSubjectState({
 			subjectEntityId: e,
 			...t
 		}), le())),
-		editSummary: Ce,
-		editMemory: we,
-		restoreAi: Te,
-		markError: Ee,
-		copySafeDiagnostic: Ae,
-		copyFullDiagnostic: je,
-		shouldBlockMainGeneration: Y,
-		allowsRealtimeTailFromEmpty: $e,
+		editSummary: Se,
+		editMemory: Ce,
+		restoreAi: we,
+		markError: Te,
+		copySafeDiagnostic: ke,
+		copyFullDiagnostic: Ae,
+		shouldBlockMainGeneration: Qe,
+		allowsRealtimeTailFromEmpty: X,
 		getState: q,
 		subscribe(e) {
 			return R.add(e), () => R.delete(e);
@@ -15381,52 +15723,52 @@ function tu({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 }
 //#endregion
 //#region src/v3/recall-source.js
-var nu = (e, t = 4e3) => String(e ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, t), ru = (e) => nu(typeof e == "string" ? e : e?.name, 500), iu = (e) => nu(e.summary?.effectiveSource === "user" ? e.summary?.userText : e.summary?.aiText), au = (e) => e?.status === "stale" ? "stale" : "unavailable", ou = (e) => nu(e?.time?.sourceText || e?.time?.normalized || e?.description, 2e3), su = Object.freeze({
+var du = (e, t = 4e3) => String(e ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, t), fu = (e) => du(typeof e == "string" ? e : e?.name, 500), pu = (e) => du(e.summary?.effectiveSource === "user" ? e.summary?.userText : e.summary?.aiText), mu = (e) => e?.status === "stale" ? "stale" : "unavailable", hu = (e) => du(e?.time?.sourceText || e?.time?.normalized || e?.description, 2e3), gu = Object.freeze({
 	explicit: "明确时间",
 	relative: "相对时间",
 	sequenceOnly: "先后顺序",
 	unknown: "时间未知"
-}), cu = Object.freeze({
+}), _u = Object.freeze({
 	approximate: "约略",
 	unresolved: "未解析"
 });
-function lu(e) {
+function vu(e) {
 	let t = [];
 	for (let n of Array.isArray(e) ? e : []) {
-		let e = ou(n);
+		let e = hu(n);
 		if (!e) continue;
-		let r = su[n?.time?.kind] ?? su.unknown, i = [];
-		cu[n?.time?.precision] && i.push(cu[n.time.precision]), Number.isSafeInteger(n?.time?.relativeToAssistantSeq) && n.time.relativeToAssistantSeq > 0 && i.push(`相对 AI #${n.time.relativeToAssistantSeq}`);
+		let r = gu[n?.time?.kind] ?? gu.unknown, i = [];
+		_u[n?.time?.precision] && i.push(_u[n.time.precision]), Number.isSafeInteger(n?.time?.relativeToAssistantSeq) && n.time.relativeToAssistantSeq > 0 && i.push(`相对 AI #${n.time.relativeToAssistantSeq}`);
 		let a = `${r}${i.length ? `（${i.join("；")}）` : ""}：${e}`;
 		t.includes(a) || t.push(a);
 	}
 	return t.join("；");
 }
-function uu(e, t) {
+function yu(e, t) {
 	return Object.freeze((e.chronology ?? []).map((e) => Object.freeze({
 		time: Object.freeze({
 			kind: e.time.kind,
-			sourceText: e.time.sourceText === null ? null : nu(e.time.sourceText, 500),
-			normalized: e.time.normalized === null ? null : nu(e.time.normalized, 500),
+			sourceText: e.time.sourceText === null ? null : du(e.time.sourceText, 500),
+			normalized: e.time.normalized === null ? null : du(e.time.normalized, 500),
 			precision: e.time.precision,
 			relativeToAssistantSeq: e.time.relativeToFloorId ? t.get(e.time.relativeToFloorId) ?? null : null
 		}),
-		description: nu(e.description, 2e3)
+		description: du(e.description, 2e3)
 	})));
 }
-function du(e, t, { chronologyAllowed: n = !0, floorSeqById: r = /* @__PURE__ */ new Map() } = {}) {
+function bu(e, t, { chronologyAllowed: n = !0, floorSeqById: r = /* @__PURE__ */ new Map() } = {}) {
 	return Object.freeze({
 		floorId: t.id,
 		floorMemoryId: e.id,
 		assistantSeq: t.assistantSeq,
-		summary: iu(e),
-		chronology: n ? uu(e, r) : Object.freeze([]),
+		summary: pu(e),
+		chronology: n ? yu(e, r) : Object.freeze([]),
 		participants: Object.freeze((e.participants ?? []).map((e) => ({
 			entityId: e.entityId,
 			presence: e.presence
 		}))),
 		locations: Object.freeze((e.locations ?? []).map((e) => ({
-			name: nu(e.name, 500),
+			name: du(e.name, 500),
 			change: e.change,
 			entityId: e.entityId ?? null,
 			participantEntityIds: Object.freeze([...e.participantEntityIds ?? []])
@@ -15435,54 +15777,54 @@ function du(e, t, { chronologyAllowed: n = !0, floorSeqById: r = /* @__PURE__ */
 			speakerEntityId: e.speakerEntityId,
 			targetEntityIds: Object.freeze([...e.targetEntityIds ?? []]),
 			kind: e.kind,
-			content: nu(e.content),
+			content: du(e.content),
 			status: e.status,
 			exactAnchorId: e.exactAnchorId ?? null
 		}))),
 		openLoops: Object.freeze((e.openLoops ?? []).map((e) => ({
-			description: nu(e.description),
+			description: du(e.description),
 			ownerEntityIds: Object.freeze([...e.ownerEntityIds ?? []])
 		}))),
 		exactAnchors: Object.freeze((e.exactAnchors ?? []).map((e) => ({
 			anchorId: e.anchorId,
 			kind: e.kind,
-			exactText: nu(e.exactText, 2e3),
+			exactText: du(e.exactText, 2e3),
 			speakerEntityId: e.speakerEntityId ?? null,
-			whyPreserve: nu(e.whyPreserve, 1e3)
+			whyPreserve: du(e.whyPreserve, 1e3)
 		}))),
 		events: Object.freeze((e.eventFragments ?? []).filter((e) => e.candidateStatus !== "rejected").map((e) => ({
-			title: nu(e.title, 500),
-			description: nu(e.description),
+			title: du(e.title, 500),
+			description: du(e.description),
 			candidateStatus: e.candidateStatus
 		}))),
 		actions: Object.freeze((e.actions ?? []).map((e) => ({
 			actorEntityId: e.actorEntityId,
 			targetEntityIds: Object.freeze([...e.targetEntityIds ?? []]),
-			action: nu(e.action),
+			action: du(e.action),
 			completion: e.completion,
-			result: e.result === null ? null : nu(e.result)
+			result: e.result === null ? null : du(e.result)
 		}))),
 		observations: Object.freeze((e.observations ?? []).map((e) => ({
 			subjectEntityId: e.subjectEntityId ?? null,
 			kind: e.kind,
-			description: nu(e.description)
+			description: du(e.description)
 		}))),
 		privateCognition: Object.freeze((e.privateCognition ?? []).map((e) => ({
 			ownerEntityId: e.ownerEntityId,
 			kind: e.kind,
-			content: nu(e.content)
+			content: du(e.content)
 		}))),
 		informationTransfers: Object.freeze((e.informationTransfers ?? []).map((e) => ({
 			fromEntityId: e.fromEntityId ?? null,
 			toEntityIds: Object.freeze([...e.toEntityIds ?? []]),
-			claimText: nu(e.claimText),
+			claimText: du(e.claimText),
 			channel: e.channel
 		})))
 	});
 }
-function fu(e, t, n) {
+function xu(e, t, n) {
 	let r = new Set(t.map((e) => e.entityId)), i = (e) => Object.freeze({
-		text: nu(e.text),
+		text: du(e.text),
 		visibility: [
 			"private",
 			"observable",
@@ -15490,7 +15832,7 @@ function fu(e, t, n) {
 			"shared",
 			"authorial"
 		].includes(e.visibility) ? e.visibility : "private",
-		reason: nu(e.reason),
+		reason: du(e.reason),
 		origin: e.origin,
 		towardEntityId: r.has(e.towardEntityId) ? e.towardEntityId : null,
 		sourceAssistantSeq: n.get(e.sourceFloorId) ?? null
@@ -15502,7 +15844,7 @@ function fu(e, t, n) {
 		situational: Object.freeze((e.situational ?? []).map(i))
 	})));
 }
-async function pu(e, t, n = null, r = null, i = {}, a = !1) {
+async function Su(e, t, n = null, r = null, i = {}, a = !1) {
 	let o = e.floors ?? [], s = new Map(o.map((e) => [e.id, e])), c = /* @__PURE__ */ new Map();
 	for (let t of e.floorMemories ?? []) s.has(t.floorId) && c.set(t.floorId, [...c.get(t.floorId) ?? [], t]);
 	let l = [];
@@ -15512,13 +15854,13 @@ async function pu(e, t, n = null, r = null, i = {}, a = !1) {
 	}
 	let u = new Set(l.map((e) => e.id)), d = [], f = [], p = null;
 	try {
-		if (f = Gi({
+		if (f = Ji({
 			floors: o,
 			floorMemories: e.floorMemories ?? [],
 			stateDeltas: e.stateDeltas ?? []
 		}), e.baseline) {
 			let n = t();
-			p = await Qi({
+			p = await ia({
 				chatId: e.root.chatId,
 				narrativeGeneration: e.root.narrativeGeneration,
 				baselineId: e.baseline.id,
@@ -15534,10 +15876,10 @@ async function pu(e, t, n = null, r = null, i = {}, a = !1) {
 	let m = Object.freeze((e.entities ?? []).filter((e) => e.recordStatus === "active" && e.status !== "merged" && e.status !== "invalidated").map((e) => Object.freeze({
 		entityId: e.id,
 		entityType: e.entityType,
-		displayName: nu(e.displayName, 500),
-		aliases: Object.freeze([...new Set((e.aliases ?? []).map(ru).filter(Boolean))]),
+		displayName: du(e.displayName, 500),
+		aliases: Object.freeze([...new Set((e.aliases ?? []).map(fu).filter(Boolean))]),
 		specialRole: e.specialRole
-	}))), h = new Map(o.map((e) => [e.id, e.assistantSeq])), g = r ? await Lc({
+	}))), h = new Map(o.map((e) => [e.id, e.assistantSeq])), g = r ? await Kc({
 		reachable: e,
 		snapshot: r,
 		sanitizerOptions: i,
@@ -15546,7 +15888,7 @@ async function pu(e, t, n = null, r = null, i = {}, a = !1) {
 	}) : null, _ = e.run?.diagnostics?.floorProvenance && typeof e.run.diagnostics.floorProvenance == "object" ? e.run.diagnostics.floorProvenance : {}, v = (e) => {
 		let t = _[e.id];
 		if (t?.timeEdited === !0 || typeof t?.rawFingerprint != "string") return !0;
-		let n = Mc(g, e);
+		let n = Vc(g, e);
 		return typeof n == "string" && n === t.rawFingerprint;
 	}, y = Object.freeze(o.filter((e) => !(c.get(e.id) ?? []).some((e) => u.has(e.id))).map((e) => e.assistantSeq)), b = h.get(f.at(-1)?.floorId) ?? 0, x = o.at(-1)?.assistantSeq ?? 0, S = o.length > 0 && y.length === 0, C = d.length === 0 && S && f.length === l.length && b === x, w = Object.freeze({
 		stableAiFloors: o.length,
@@ -15570,15 +15912,15 @@ async function pu(e, t, n = null, r = null, i = {}, a = !1) {
 		entities: m,
 		floorMemories: Object.freeze(l.map((e) => {
 			let t = s.get(e.floorId);
-			return du(e, t, {
+			return bu(e, t, {
 				chronologyAllowed: v(t),
 				floorSeqById: h
 			});
 		})),
-		currentState: fu(p, m, h)
+		currentState: xu(p, m, h)
 	});
 }
-async function mu({ store: e, now: t = () => /* @__PURE__ */ new Date(), hostSnapshot: n = null, sanitizerOptions: r = {}, realtimeOrigin: i = !1 } = {}) {
+async function Cu({ store: e, now: t = () => /* @__PURE__ */ new Date(), hostSnapshot: n = null, sanitizerOptions: r = {}, realtimeOrigin: i = !1 } = {}) {
 	if (!e || typeof e.readReachable != "function") throw TypeError("V3 recall source store 无效");
 	let a = await e.readReachable({ mode: "projection" }), o = (e) => Object.freeze({
 		reachableReads: 1,
@@ -15587,50 +15929,50 @@ async function mu({ store: e, now: t = () => /* @__PURE__ */ new Date(), hostSna
 	if (!["ready", "needsReseal"].includes(a?.status) || !a.root || !a.checkpoint) {
 		let e = a?.status === "stale" ? "stale" : "unavailable";
 		return Object.freeze({
-			status: au(a),
+			status: mu(a),
 			sourceReadAttempts: o(e)
 		});
 	}
-	return pu(a, t, o("ready"), n, r, i);
+	return Su(a, t, o("ready"), n, r, i);
 }
 //#endregion
 //#region src/v3/recall-ranking.js
-var hu = /[\p{Script=Han}]+/gu, gu = /[\p{Script=Latin}\p{N}_]+/gu, _u = Object.freeze({
+var wu = /[\p{Script=Han}]+/gu, Tu = /[\p{Script=Latin}\p{N}_]+/gu, Eu = Object.freeze({
 	k1: 1.2,
 	b: .75
 });
-function vu(e) {
+function Du(e) {
 	let t = String(e ?? "").normalize("NFKC").toLocaleLowerCase("zh-CN"), n = [];
-	for (let e of t.matchAll(hu)) {
+	for (let e of t.matchAll(wu)) {
 		let t = [...e[0]];
 		if (t.length === 1) n.push(t[0]);
 		else for (let e = 0; e + 1 < t.length; e += 1) n.push(`${t[e]}${t[e + 1]}`);
 	}
-	for (let e of t.matchAll(gu)) n.push(e[0]);
+	for (let e of t.matchAll(Tu)) n.push(e[0]);
 	return n;
 }
-var yu = (e) => {
+var Ou = (e) => {
 	let t = /* @__PURE__ */ new Map();
 	for (let n of e) t.set(n, (t.get(n) ?? 0) + 1);
 	return t;
-}, bu = (e) => Number.isFinite(Number(e)) && Number(e) > 0 ? Number(e) : 0;
-function xu({ documents: e = [], queries: t = [], k1: n = _u.k1, b: r = _u.b } = {}) {
+}, ku = (e) => Number.isFinite(Number(e)) && Number(e) > 0 ? Number(e) : 0;
+function Au({ documents: e = [], queries: t = [], k1: n = Eu.k1, b: r = Eu.b } = {}) {
 	let i = (Array.isArray(e) ? e : []).map((e, t) => {
-		let n = vu(e?.text);
+		let n = Du(e?.text);
 		return {
 			id: e?.id ?? t,
 			index: t,
 			length: n.length,
-			frequencies: yu(n)
+			frequencies: Ou(n)
 		};
 	});
 	if (!i.length) return [];
 	let a = /* @__PURE__ */ new Map();
 	for (let e of i) for (let t of e.frequencies.keys()) a.set(t, (a.get(t) ?? 0) + 1);
-	let o = i.reduce((e, t) => e + t.length, 0) / i.length || 1, s = Number.isFinite(Number(n)) && Number(n) >= 0 ? Number(n) : _u.k1, c = Number.isFinite(Number(r)) ? Math.max(0, Math.min(1, Number(r))) : _u.b, l = (Array.isArray(t) ? t : []).map((e, t) => ({
+	let o = i.reduce((e, t) => e + t.length, 0) / i.length || 1, s = Number.isFinite(Number(n)) && Number(n) >= 0 ? Number(n) : Eu.k1, c = Number.isFinite(Number(r)) ? Math.max(0, Math.min(1, Number(r))) : Eu.b, l = (Array.isArray(t) ? t : []).map((e, t) => ({
 		key: String(e?.key ?? t),
-		weight: bu(e?.weight),
-		terms: [...new Set(vu(e?.text))]
+		weight: ku(e?.weight),
+		terms: [...new Set(Du(e?.text))]
 	})).filter((e) => e.weight > 0 && e.terms.length), u = l.reduce((e, t) => e + t.weight, 0);
 	if (!l.length || u <= 0) return i.map((e) => ({
 		id: e.id,
@@ -15675,14 +16017,14 @@ function xu({ documents: e = [], queries: t = [], k1: n = _u.k1, b: r = _u.b } =
 }
 //#endregion
 //#region src/v3/recall-selector.js
-var Su = 8e3, Cu = 8, wu = 18, Tu = (e, t = 4e3) => String(e ?? "").normalize("NFKC").replace(/<[^>]*>/g, " ").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, t), Eu = (e, t = 4e3) => String(e ?? "").replace(/<[^>]*>/g, " ").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, t), Du = (e) => Tu(e, 12e3).toLocaleLowerCase("zh-CN").replace(/[^\p{L}\p{N}]+/gu, ""), Ou = (e) => {
+var ju = 8e3, Mu = 8, Nu = 18, Pu = (e, t = 4e3) => String(e ?? "").normalize("NFKC").replace(/<[^>]*>/g, " ").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, t), Fu = (e, t = 4e3) => String(e ?? "").replace(/<[^>]*>/g, " ").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, t), Iu = (e) => Pu(e, 12e3).toLocaleLowerCase("zh-CN").replace(/[^\p{L}\p{N}]+/gu, ""), Lu = (e) => {
 	if (!e || e.is_system === !0 || e.is_user !== !0 && e.is_user !== !1) return !1;
 	let t = e.mes;
 	return typeof t == "string" && !!t.trim();
-}, ku = (e) => [e.displayName, ...e.aliases ?? []].map((e) => Tu(e, 500)).filter(Boolean), Au = (e) => /^(?:\{\{user\}\}|\{\{char\}\}|user|char|player|你|用户|主角)$/iu.test(e);
-function ju({ coreChat: e = [], assistantTurns: t = 1 } = {}) {
+}, Ru = (e) => [e.displayName, ...e.aliases ?? []].map((e) => Pu(e, 500)).filter(Boolean), zu = (e) => /^(?:\{\{user\}\}|\{\{char\}\}|user|char|player|你|用户|主角)$/iu.test(e);
+function Bu({ coreChat: e = [], assistantTurns: t = 1 } = {}) {
 	let n = Array.isArray(e) ? e : [], r = null;
-	for (let e = n.length - 1; e >= 0; --e) if (Ou(n[e]) && n[e].is_user === !0) {
+	for (let e = n.length - 1; e >= 0; --e) if (Lu(n[e]) && n[e].is_user === !0) {
 		r = {
 			message: n[e],
 			index: e
@@ -15700,7 +16042,7 @@ function ju({ coreChat: e = [], assistantTurns: t = 1 } = {}) {
 		let e = 0, t = -1;
 		for (let a = r.index - 1; a >= 0; --a) {
 			let r = n[a];
-			if (!(!Ou(r) || r.is_user !== !1) && (e += 1, e > i)) {
+			if (!(!Lu(r) || r.is_user !== !1) && (e += 1, e > i)) {
 				t = a;
 				break;
 			}
@@ -15709,7 +16051,7 @@ function ju({ coreChat: e = [], assistantTurns: t = 1 } = {}) {
 			a = [];
 			for (let e = t + 1; e <= r.index; e += 1) {
 				let t = n[e];
-				Ou(t) && a.push({
+				Lu(t) && a.push({
 					message: t,
 					index: e
 				});
@@ -15718,34 +16060,34 @@ function ju({ coreChat: e = [], assistantTurns: t = 1 } = {}) {
 	}
 	let o = Object.freeze(a.map(({ message: e, index: t }) => Object.freeze({
 		role: e.is_user ? "user" : "assistant",
-		text: Tu(e.mes, 4e3),
+		text: Pu(e.mes, 4e3),
 		index: t
 	})));
 	return Object.freeze({
 		messages: o,
-		latestUserText: Tu(r.message.mes, 4e3),
+		latestUserText: Pu(r.message.mes, 4e3),
 		latestUserCoreIndex: r.index,
 		assistantTurns: o.filter((e) => e.role === "assistant").length
 	});
 }
-function Mu({ coreChat: e = [], assistantTurns: t = 1 } = {}) {
-	let n = ju({
+function Vu({ coreChat: e = [], assistantTurns: t = 1 } = {}) {
+	let n = Bu({
 		coreChat: e,
 		assistantTurns: t
 	}), r = n.messages.map((e) => `${e.role === "user" ? "用户" : "AI"}：${e.text}`).filter((e) => e.length > 3), i = n.messages.filter((e) => e.index !== n.latestUserCoreIndex), a = [...i].reverse().find((e) => e.role === "user"), o = [...i].reverse().find((e) => e.role === "assistant");
 	return Object.freeze({
-		text: Tu(r.join("\n"), Su),
+		text: Pu(r.join("\n"), ju),
 		latestUserText: n.latestUserText,
-		recentAssistantText: Tu(o?.text, 4e3),
-		previousUserText: Tu(a?.text, 4e3),
-		backgroundText: Tu(i.map((e) => `${e.role === "user" ? "用户" : "AI"}：${e.text}`).join("\n"), Su),
+		recentAssistantText: Pu(o?.text, 4e3),
+		previousUserText: Pu(a?.text, 4e3),
+		backgroundText: Pu(i.map((e) => `${e.role === "user" ? "用户" : "AI"}：${e.text}`).join("\n"), ju),
 		latestUserCoreIndex: n.latestUserCoreIndex,
 		messageCount: n.messages.length,
 		assistantTurns: n.assistantTurns
 	});
 }
-function Nu(e, t, n, { preserveForm: r = !1, ...i } = {}) {
-	let a = r ? Eu(t, 2e3) : Tu(t, 2e3);
+function Hu(e, t, n, { preserveForm: r = !1, ...i } = {}) {
+	let a = r ? Fu(t, 2e3) : Pu(t, 2e3);
 	return a ? {
 		category: e,
 		text: a,
@@ -15753,7 +16095,7 @@ function Nu(e, t, n, { preserveForm: r = !1, ...i } = {}) {
 		...i
 	} : null;
 }
-function Pu(e) {
+function Uu(e) {
 	return `${{
 		intended: "意图（尚未行动）：",
 		attempted: "尝试过（未确认完成）：",
@@ -15762,26 +16104,26 @@ function Pu(e) {
 		uncertain: "是否完成不确定："
 	}[e.completion] ?? "是否发生不确定："}${e.action}${e.result ? `；记录结果：${e.result}` : ""}`;
 }
-function Fu(e) {
+function Wu(e) {
 	return e.status === "refused" ? `已拒绝（不构成承诺）：${e.content}` : e.status === "uncertain" ? `是否成立不确定（不得当作有效承诺）：${e.content}` : e.kind === "plan" && e.status === "accepted" ? `已共同接受的计划（不代表已完成）：${e.content}` : e.kind === "plan" ? `计划（不代表已告知或已完成）：${e.content}` : e.status === "accepted" ? `已接受并成立（不代表已履行）：${e.content}` : `已作出（不代表已履行）：${e.content}`;
 }
-var Iu = (e, t) => {
-	let n = Eu(e, 2e3), r = Eu(t, 2e3);
+var Gu = (e, t) => {
+	let n = Fu(e, 2e3), r = Fu(t, 2e3);
 	return !!(n && r && n === r);
 };
-function Lu(e, { standalonePrivate: t = !1 } = {}) {
-	let n = Eu(e.whyPreserve, 1e3);
-	return `${t ? "仅该人物可用的" : ""}原句「${Eu(e.exactText, 2e3)}」${n ? `（${n}）` : ""}`;
+function Ku(e, { standalonePrivate: t = !1 } = {}) {
+	let n = Fu(e.whyPreserve, 1e3);
+	return `${t ? "仅该人物可用的" : ""}原句「${Fu(e.exactText, 2e3)}」${n ? `（${n}）` : ""}`;
 }
-var Ru = (e, t) => [...new Set((e ?? []).filter(Boolean))].flatMap((e) => ku(t.get(e) ?? {}).filter((e) => !Au(e))).join(" ");
-function zu(e, t) {
+var qu = (e, t) => [...new Set((e ?? []).filter(Boolean))].flatMap((e) => Ru(t.get(e) ?? {}).filter((e) => !zu(e))).join(" ");
+function Ju(e, t) {
 	let n = [], r = /* @__PURE__ */ new Map(), i = [], a = (r, i, a, o = "") => {
 		if (!r) return;
 		let s = r.category === "private" ? "private" : ["shared", "transfer"].includes(r.category) ? "shared" : "observable";
 		n.push({
 			...r,
 			_rankText: i,
-			_entityText: Ru(a, t),
+			_entityText: qu(a, t),
 			_coreText: i,
 			_summary: e.summary,
 			_subjectKey: [...new Set((a ?? []).filter(Boolean))].sort().join(","),
@@ -15791,20 +16133,20 @@ function zu(e, t) {
 		});
 	}, o = (e, t) => r.set(e, [...r.get(e) ?? [], t]);
 	for (let t of e.exactAnchors) {
-		let n = e.privateCognition.find((e) => Iu(e.content, t.exactText) && (!t.speakerEntityId || e.ownerEntityId === t.speakerEntityId)), r = e.informationTransfers.find((e) => Iu(e.claimText, t.exactText) && (!t.speakerEntityId || !e.fromEntityId || e.fromEntityId === t.speakerEntityId)), a = e.commitments.find((e) => e.exactAnchorId === t.anchorId && (!t.speakerEntityId || e.speakerEntityId === t.speakerEntityId) || Iu(e.content, t.exactText) && (!t.speakerEntityId || e.speakerEntityId === t.speakerEntityId)), s = n ?? r ?? a;
+		let n = e.privateCognition.find((e) => Gu(e.content, t.exactText) && (!t.speakerEntityId || e.ownerEntityId === t.speakerEntityId)), r = e.informationTransfers.find((e) => Gu(e.claimText, t.exactText) && (!t.speakerEntityId || !e.fromEntityId || e.fromEntityId === t.speakerEntityId)), a = e.commitments.find((e) => e.exactAnchorId === t.anchorId && (!t.speakerEntityId || e.speakerEntityId === t.speakerEntityId) || Gu(e.content, t.exactText) && (!t.speakerEntityId || e.speakerEntityId === t.speakerEntityId)), s = n ?? r ?? a;
 		s ? o(s, t) : t.speakerEntityId && i.push(t);
 	}
 	let s = (e, t) => {
 		let n = r.get(t) ?? [];
-		return n.length ? n.length === 1 && Iu(e, n[0].exactText) ? Lu(n[0]) : `${e}；${n.map((e) => Lu(e)).join("；")}` : e;
+		return n.length ? n.length === 1 && Gu(e, n[0].exactText) ? Ku(n[0]) : `${e}；${n.map((e) => Ku(e)).join("；")}` : e;
 	};
-	for (let e of i) a(Nu("private", Lu(e, { standalonePrivate: !0 }), 160, {
+	for (let e of i) a(Hu("private", Ku(e, { standalonePrivate: !0 }), 160, {
 		kind: "exactAnchor",
 		anchorKind: e.kind,
 		ownerEntityId: e.speakerEntityId,
 		preserveForm: !0
 	}), e.exactText, [e.speakerEntityId]);
-	for (let t of e.commitments) a(Nu(t.targetEntityIds.length > 0 && t.status !== "uncertain" && (t.kind !== "plan" || t.status === "accepted") ? "shared" : "private", s(Fu(t), t), 120, {
+	for (let t of e.commitments) a(Hu(t.targetEntityIds.length > 0 && t.status !== "uncertain" && (t.kind !== "plan" || t.status === "accepted") ? "shared" : "private", s(Wu(t), t), 120, {
 		kind: "commitment",
 		commitmentKind: t.kind,
 		speakerEntityId: t.speakerEntityId,
@@ -15813,33 +16155,33 @@ function zu(e, t) {
 		status: t.status,
 		preserveForm: !0
 	}), `${t.content} ${(r.get(t) ?? []).map((e) => e.exactText).join(" ")}`, [t.speakerEntityId, ...t.targetEntityIds], t.status);
-	for (let t of e.openLoops) a(Nu("objective", `未结事项：${t.description}`, 110, { kind: "openLoop" }), t.description, t.ownerEntityIds);
-	for (let t of e.locations) a(Nu("objective", `地点：${t.name}（${t.change}）`, 100, { kind: "location" }), t.name, [t.entityId, ...t.participantEntityIds], t.change);
-	for (let t of e.events) a(Nu("objective", `${t.title}：${t.description}`, 90, { kind: "event" }), `${t.title} ${t.description}`, [], t.candidateStatus);
-	for (let t of e.actions) a(Nu("objective", Pu(t), 75, {
+	for (let t of e.openLoops) a(Hu("objective", `未结事项：${t.description}`, 110, { kind: "openLoop" }), t.description, t.ownerEntityIds);
+	for (let t of e.locations) a(Hu("objective", `地点：${t.name}（${t.change}）`, 100, { kind: "location" }), t.name, [t.entityId, ...t.participantEntityIds], t.change);
+	for (let t of e.events) a(Hu("objective", `${t.title}：${t.description}`, 90, { kind: "event" }), `${t.title} ${t.description}`, [], t.candidateStatus);
+	for (let t of e.actions) a(Hu("objective", Uu(t), 75, {
 		kind: "action",
 		actorEntityId: t.actorEntityId,
 		targetEntityIds: t.targetEntityIds,
 		completion: t.completion,
 		preserveForm: !0
 	}), `${t.action} ${t.result ?? ""}`, [t.actorEntityId, ...t.targetEntityIds], t.completion);
-	for (let t of e.observations) a(Nu("objective", t.description, 70, {
+	for (let t of e.observations) a(Hu("objective", t.description, 70, {
 		kind: "observation",
 		subjectEntityId: t.subjectEntityId
 	}), t.description, [t.subjectEntityId]);
-	for (let t of e.privateCognition) a(Nu("private", s(t.content, t), 85, {
+	for (let t of e.privateCognition) a(Hu("private", s(t.content, t), 85, {
 		kind: t.kind,
 		ownerEntityId: t.ownerEntityId,
 		preserveForm: r.has(t)
 	}), `${t.content} ${(r.get(t) ?? []).map((e) => e.exactText).join(" ")}`, [t.ownerEntityId]);
 	for (let t of e.informationTransfers) {
 		let e = t.fromEntityId ?? r.get(t)?.[0]?.speakerEntityId ?? null, n = `${t.claimText} ${(r.get(t) ?? []).map((e) => e.exactText).join(" ")}`;
-		t.toEntityIds.length ? a(Nu("transfer", s(t.claimText, t), 85, {
+		t.toEntityIds.length ? a(Hu("transfer", s(t.claimText, t), 85, {
 			kind: t.channel,
 			fromEntityId: e,
 			toEntityIds: t.toEntityIds,
 			preserveForm: r.has(t)
-		}), n, [e, ...t.toEntityIds]) : e && a(Nu("private", s(`未确认已告知他人：${t.claimText}`, t), 75, {
+		}), n, [e, ...t.toEntityIds]) : e && a(Hu("private", s(`未确认已告知他人：${t.claimText}`, t), 75, {
 			kind: t.channel,
 			ownerEntityId: e,
 			preserveForm: r.has(t)
@@ -15853,7 +16195,7 @@ function zu(e, t) {
 		_chronology: e.chronology
 	}));
 }
-function Bu(e, t) {
+function Yu(e, t) {
 	let n = new Map(e.entities.map((e) => [e.entityId, e])), r = e.coverage.cseCurrent === !0, i = [];
 	for (let a of e.currentState) {
 		if (!t.has(a.subjectEntityId)) continue;
@@ -15885,7 +16227,7 @@ function Bu(e, t) {
 				sourceAssistantSeq: r.sourceAssistantSeq,
 				priority: t === "core" ? 150 : t === "adaptive" ? 115 : 95,
 				_rankText: `${r.text} ${r.reason}`,
-				_entityText: Ru([a.subjectEntityId, r.towardEntityId], n),
+				_entityText: qu([a.subjectEntityId, r.towardEntityId], n),
 				_coreText: r.text,
 				_subjectKey: a.subjectEntityId,
 				_visibilityKey: o,
@@ -15895,8 +16237,8 @@ function Bu(e, t) {
 	}
 	return i;
 }
-var Vu = (e, t) => t.get(e)?.displayName ?? "未知人物";
-function Hu({ coverage: e, floors: t, states: n, entityById: r }) {
+var Xu = (e, t) => t.get(e)?.displayName ?? "未知人物";
+function Zu({ coverage: e, floors: t, states: n, entityById: r }) {
 	if (!t.length && !n.length) return "";
 	let i = [
 		"<qqj_recalled_context>",
@@ -15914,18 +16256,18 @@ function Hu({ coverage: e, floors: t, states: n, entityById: r }) {
 		i.push("", "[聚焦召回旧事]");
 		let e = [], n = [], a = /* @__PURE__ */ new Map();
 		for (let i of t) for (let t of i.items) {
-			let o = lu(i.chronology), s = `AI #${i.assistantSeq}${o ? `（${o}）` : ""}`;
+			let o = vu(i.chronology), s = `AI #${i.assistantSeq}${o ? `（${o}）` : ""}`;
 			if (t.category === "private") {
-				let e = Vu(t.ownerEntityId, r);
+				let e = Xu(t.ownerEntityId, r);
 				a.set(e, [...a.get(e) ?? [], `${s}：${t.text}`]);
 			} else if (t.category === "transfer") {
-				let e = t.fromEntityId ? Vu(t.fromEntityId, r) : "来源不明", i = t.toEntityIds.map((e) => Vu(e, r)).join("、");
+				let e = t.fromEntityId ? Xu(t.fromEntityId, r) : "来源不明", i = t.toEntityIds.map((e) => Xu(e, r)).join("、");
 				n.push(`${s}：${e} → ${i}（仅列明接收者知情，渠道：${t.kind}）：${t.text}`);
 			} else if (t.category === "shared") {
-				let e = t.speakerEntityId ? Vu(t.speakerEntityId, r) : null, i = (t.targetEntityIds ?? []).map((e) => Vu(e, r)).join("、"), a = e ? `（${e}${i ? ` → ${i}` : ""}）` : "";
+				let e = t.speakerEntityId ? Xu(t.speakerEntityId, r) : null, i = (t.targetEntityIds ?? []).map((e) => Xu(e, r)).join("、"), a = e ? `（${e}${i ? ` → ${i}` : ""}）` : "";
 				n.push(`${s}${a}：${t.text}`);
 			} else if (t.kind === "action") {
-				let n = Vu(t.actorEntityId, r), i = (t.targetEntityIds ?? []).map((e) => Vu(e, r)).join("、");
+				let n = Xu(t.actorEntityId, r), i = (t.targetEntityIds ?? []).map((e) => Xu(e, r)).join("、");
 				e.push(`${s}（主体：${n}${i ? `；对象：${i}` : ""}）：${t.text}`);
 			} else e.push(`${s}：${t.text}`);
 		}
@@ -15939,21 +16281,21 @@ function Hu({ coverage: e, floors: t, states: n, entityById: r }) {
 	}
 	return i.push("</qqj_recalled_context>"), i.join("\n");
 }
-function Uu(e, t) {
+function Qu(e, t) {
 	let n = [
 		{
 			key: "latestUser",
-			text: Tu(e?.latestUserText, 4e3) || t,
+			text: Pu(e?.latestUserText, 4e3) || t,
 			weight: .7
 		},
 		{
 			key: "recentAssistant",
-			text: Tu(e?.recentAssistantText, 4e3),
+			text: Pu(e?.recentAssistantText, 4e3),
 			weight: .2
 		},
 		{
 			key: "previousUser",
-			text: Tu(e?.previousUserText, 4e3),
+			text: Pu(e?.previousUserText, 4e3),
 			weight: .1
 		}
 	].filter((e) => e.text), r = n.reduce((e, t) => e + t.weight, 0) || 1;
@@ -15962,21 +16304,21 @@ function Uu(e, t) {
 		normalizedWeight: e.weight / r
 	}));
 }
-function Wu(e, t, { summaryAssist: n = !1, keepUnmatched: r = !1 } = {}) {
+function $u(e, t, { summaryAssist: n = !1, keepUnmatched: r = !1 } = {}) {
 	if (!e.length) return [];
-	let i = xu({
+	let i = Au({
 		documents: e.map((e, t) => ({
 			id: t,
 			text: e._rankText
 		})),
 		queries: t
-	}), a = xu({
+	}), a = Au({
 		documents: e.map((e, t) => ({
 			id: t,
 			text: e._entityText
 		})),
 		queries: t
-	}), o = n ? xu({
+	}), o = n ? Au({
 		documents: e.map((e, t) => ({
 			id: t,
 			text: e._summary
@@ -16001,12 +16343,12 @@ function Wu(e, t, { summaryAssist: n = !1, keepUnmatched: r = !1 } = {}) {
 		};
 	}).filter((e) => r || e.score > 0);
 }
-var Gu = (e) => [
-	Du(e._coreText),
+var ed = (e) => [
+	Iu(e._coreText),
 	e._subjectKey,
 	e._visibilityKey,
 	e._statusKey ?? ""
-].join("|"), Ku = (e) => {
+].join("|"), td = (e) => {
 	let { _rankText: t, _entityText: n, _coreText: r, _summary: i, _subjectKey: a, _visibilityKey: o, _statusKey: s, _sourceOrder: c, _chronology: l, floorId: u, floorMemoryId: d, assistantSeq: f, branchScores: p, entityBranchScores: m, summaryScores: h, score: g, ..._ } = e;
 	return {
 		..._,
@@ -16015,7 +16357,7 @@ var Gu = (e) => [
 		rankEntityBranches: m
 	};
 };
-function qu({ source: e, queryContext: t, contextSize: n = 8192, maxFloors: r = Cu, maxItems: i = wu } = {}) {
+function nd({ source: e, queryContext: t, contextSize: n = 8192, maxFloors: r = Mu, maxItems: i = Nu } = {}) {
 	if (e?.status !== "ready") return Object.freeze({
 		status: "empty",
 		injectionText: "",
@@ -16031,7 +16373,7 @@ function qu({ source: e, queryContext: t, contextSize: n = 8192, maxFloors: r = 
 		}),
 		skipReasons: Object.freeze(["sourceUnavailable"])
 	});
-	let a = Tu(t?.text, Su);
+	let a = Pu(t?.text, ju);
 	if (!a) return Object.freeze({
 		status: "empty",
 		injectionText: "",
@@ -16048,17 +16390,17 @@ function qu({ source: e, queryContext: t, contextSize: n = 8192, maxFloors: r = 
 		}),
 		skipReasons: Object.freeze(["emptyQuery"])
 	});
-	let o = Uu(t, a), s = Du(a), c = /* @__PURE__ */ new Set();
-	for (let t of e.entities) ku(t).some((e) => !Au(e) && Du(e).length >= 2 && s.includes(Du(e))) && c.add(t.entityId);
-	let l = e.coverage.stableThroughAssistantSeq ?? Math.max(0, ...e.floorMemories.map((e) => e.assistantSeq)), u = Math.max(0, l - 3 + 1), d = e.floorMemories.filter((e) => e.assistantSeq < u), f = new Map(e.entities.map((e) => [e.entityId, e])), p = Wu(d.flatMap((e) => zu(e, f)), o, { summaryAssist: !0 }).sort((e, t) => t.score - e.score || t.priority - e.priority || t.assistantSeq - e.assistantSeq || e.floorId.localeCompare(t.floorId) || e._sourceOrder - t._sourceOrder), m = new Set(e.entities.filter((e) => ["user", "char"].includes(e.specialRole)).map((e) => e.entityId));
+	let o = Qu(t, a), s = Iu(a), c = /* @__PURE__ */ new Set();
+	for (let t of e.entities) Ru(t).some((e) => !zu(e) && Iu(e).length >= 2 && s.includes(Iu(e))) && c.add(t.entityId);
+	let l = e.coverage.stableThroughAssistantSeq ?? Math.max(0, ...e.floorMemories.map((e) => e.assistantSeq)), u = Math.max(0, l - 3 + 1), d = e.floorMemories.filter((e) => e.assistantSeq < u), f = new Map(e.entities.map((e) => [e.entityId, e])), p = $u(d.flatMap((e) => Ju(e, f)), o, { summaryAssist: !0 }).sort((e, t) => t.score - e.score || t.priority - e.priority || t.assistantSeq - e.assistantSeq || e.floorId.localeCompare(t.floorId) || e._sourceOrder - t._sourceOrder), m = new Set(e.entities.filter((e) => ["user", "char"].includes(e.specialRole)).map((e) => e.entityId));
 	c.forEach((e) => m.add(e));
-	let h = Wu(Bu(e, m), o, { keepUnmatched: !0 }).sort((e, t) => +(t.layer === "core" && (t.branchScores.latestUser ?? 0) > 0) - (e.layer === "core" && (e.branchScores.latestUser ?? 0) > 0) || (t.branchScores.latestUser ?? 0) - (e.branchScores.latestUser ?? 0) || t.score - e.score || t.priority - e.priority || e.subject.localeCompare(t.subject, "zh-CN") || e.layer.localeCompare(t.layer)), g = Math.max(0, Math.min(wu, Math.floor(Number(i) || 0))), _ = Math.round(g * 2 / 3), v = g - _, y = 0, b = /* @__PURE__ */ new Set(), x = p.filter((e) => {
-		let t = Gu(e);
+	let h = $u(Yu(e, m), o, { keepUnmatched: !0 }).sort((e, t) => +(t.layer === "core" && (t.branchScores.latestUser ?? 0) > 0) - (e.layer === "core" && (e.branchScores.latestUser ?? 0) > 0) || (t.branchScores.latestUser ?? 0) - (e.branchScores.latestUser ?? 0) || t.score - e.score || t.priority - e.priority || e.subject.localeCompare(t.subject, "zh-CN") || e.layer.localeCompare(t.layer)), g = Math.max(0, Math.min(Nu, Math.floor(Number(i) || 0))), _ = Math.round(g * 2 / 3), v = g - _, y = 0, b = /* @__PURE__ */ new Set(), x = p.filter((e) => {
+		let t = ed(e);
 		return b.has(t) ? (y += 1, !1) : (b.add(t), !0);
 	}), S = /* @__PURE__ */ new Set(), C = h.filter((e) => {
-		let t = Gu(e);
+		let t = ed(e);
 		return S.has(t) ? (y += 1, !1) : (S.add(t), !0);
-	}), w = Math.max(0, Math.min(10, Number.isSafeInteger(r) ? r : Cu)), T = Math.max(800, Math.min(12e3, Math.floor((Number(n) || 8192) * .55))), E = Math.floor(T * 2 / 3), D = T - E, O = [], k = [], A = /* @__PURE__ */ new Set(), j = /* @__PURE__ */ new WeakSet(), M = (e) => (j.has(e) || (j.add(e), y += 1), !1), N = (t = O, n = k) => {
+	}), w = Math.max(0, Math.min(10, Number.isSafeInteger(r) ? r : Mu)), T = Math.max(800, Math.min(12e3, Math.floor((Number(n) || 8192) * .55))), E = Math.floor(T * 2 / 3), D = T - E, O = [], k = [], A = /* @__PURE__ */ new Set(), j = /* @__PURE__ */ new WeakSet(), M = (e) => (j.has(e) || (j.add(e), y += 1), !1), N = (t = O, n = k) => {
 		let r = /* @__PURE__ */ new Map();
 		for (let e of n) {
 			let t = r.get(e.floorId) ?? {
@@ -16072,23 +16414,23 @@ function qu({ source: e, queryContext: t, contextSize: n = 8192, maxFloors: r = 
 			};
 			t.score = Math.max(t.score, e.score), t.reasons.add(e.kind);
 			for (let [n, r] of Object.entries(e.branchScores)) r > 0 && t.reasons.add(`bm25:${n}`);
-			Object.values(e.entityBranchScores).some((e) => e > 0) && t.reasons.add("entity"), Object.values(e.summaryScores).some((e) => e > 0) && t.reasons.add("summary"), t.items.push(Ku(e)), r.set(e.floorId, t);
+			Object.values(e.entityBranchScores).some((e) => e > 0) && t.reasons.add("entity"), Object.values(e.summaryScores).some((e) => e > 0) && t.reasons.add("summary"), t.items.push(td(e)), r.set(e.floorId, t);
 		}
 		let i = [...r.values()].map((e) => ({
 			...e,
 			reasons: [...e.reasons]
-		})).sort((e, t) => e.assistantSeq - t.assistantSeq || e.floorId.localeCompare(t.floorId)), a = t.map(Ku);
+		})).sort((e, t) => e.assistantSeq - t.assistantSeq || e.floorId.localeCompare(t.floorId)), a = t.map(td);
 		return {
 			floors: i,
 			states: a,
-			text: Hu({
+			text: Zu({
 				coverage: e.coverage,
 				floors: i,
 				states: a,
 				entityById: f
 			})
 		};
-	}, P = (e, t = null) => O.includes(e) || O.length + k.length >= g ? !1 : k.some((t) => Gu(t) === Gu(e)) ? M(e) : t !== null && N([...O, e], []).text.length > t ? !1 : N([...O, e], k).text.length <= T, F = (e, t = null) => k.includes(e) || O.length + k.length >= g ? !1 : O.some((t) => Gu(t) === Gu(e)) ? M(e) : !A.has(e.floorId) && A.size >= w || t !== null && N([], [...k, e]).text.length > t ? !1 : N(O, [...k, e]).text.length <= T, ee = (e) => {
+	}, P = (e, t = null) => O.includes(e) || O.length + k.length >= g ? !1 : k.some((t) => ed(t) === ed(e)) ? M(e) : t !== null && N([...O, e], []).text.length > t ? !1 : N([...O, e], k).text.length <= T, F = (e, t = null) => k.includes(e) || O.length + k.length >= g ? !1 : O.some((t) => ed(t) === ed(e)) ? M(e) : !A.has(e.floorId) && A.size >= w || t !== null && N([], [...k, e]).text.length > t ? !1 : N(O, [...k, e]).text.length <= T, ee = (e) => {
 		O.push(e);
 	}, I = (e) => {
 		k.push(e), A.add(e.floorId);
@@ -16110,14 +16452,14 @@ function qu({ source: e, queryContext: t, contextSize: n = 8192, maxFloors: r = 
 		if (O.length + k.length >= g) break;
 		(e.type === "state" ? P(e.value) : F(e.value)) && (e.type === "state" ? ee : I)(e.value);
 	}
-	let R = N(), z = R.floors, B = R.states, V = R.text, te = [...e.degradedReasons ?? []];
-	return e.floorMemories.length !== d.length && te.push("recentRawWindow"), p.length || te.push("noReliableMemoryMatch"), y && te.push("persistentStateDuplicate"), e.coverage.cseCurrent || te.push("dynamicStateCoverageIncomplete"), Object.freeze({
+	let R = N(), z = R.floors, B = R.states, V = R.text, H = [...e.degradedReasons ?? []];
+	return e.floorMemories.length !== d.length && H.push("recentRawWindow"), p.length || H.push("noReliableMemoryMatch"), y && H.push("persistentStateDuplicate"), e.coverage.cseCurrent || H.push("dynamicStateCoverageIncomplete"), Object.freeze({
 		status: V ? "ready" : "empty",
 		injectionText: V,
 		coverage: e.coverage,
 		query: Object.freeze({
 			text: a,
-			latestUserText: Tu(t?.latestUserText, 4e3)
+			latestUserText: Pu(t?.latestUserText, 4e3)
 		}),
 		floors: Object.freeze(z.map((e) => Object.freeze({
 			...e,
@@ -16133,7 +16475,7 @@ function qu({ source: e, queryContext: t, contextSize: n = 8192, maxFloors: r = 
 			dropVisibility: e.coverage.cseCurrent ? 0 : e.currentState.reduce((e, t) => e + t.adaptive.length + t.situational.length, 0),
 			selected: z.length
 		}),
-		skipReasons: Object.freeze(te),
+		skipReasons: Object.freeze(H),
 		limits: Object.freeze({
 			maxFloors: w,
 			maxItems: g,
@@ -16148,20 +16490,20 @@ function qu({ source: e, queryContext: t, contextSize: n = 8192, maxFloors: r = 
 }
 //#endregion
 //#region src/v3/recall-runtime.js
-var Ju = "qqj_v3_recalled_context", Yu = "qqj_v3_recall_receipt", Xu = /* @__PURE__ */ new Set([
+var rd = "qqj_v3_recalled_context", id = "qqj_v3_recall_receipt", ad = /* @__PURE__ */ new Set([
 	"normal",
 	"regenerate",
 	"swipe",
 	"continue"
-]), Zu = /* @__PURE__ */ new Set([...Xu, "impersonate"]), Qu = /* @__PURE__ */ new Set([
+]), od = /* @__PURE__ */ new Set([...ad, "impersonate"]), sd = /* @__PURE__ */ new Set([
 	"regenerate",
 	"swipe",
 	"continue"
-]), $u = 16, ed = 8, td = 18, nd = 32, rd = (e) => {
+]), cd = 16, ld = 8, ud = 18, dd = 32, fd = (e) => {
 	let t = e()?.toISOString?.() ?? String(e());
 	if (!Number.isFinite(Date.parse(t))) throw TypeError("V3_RECALL_TIME_INVALID");
 	return t;
-}, id = (e, t = 500) => Yt(String(e ?? "")).replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, t), ad = (e) => structuredClone(e), od = async (e) => `sha256:${await _e(String(e ?? ""))}`, sd = (e) => String(e?.context?.chatMetadata?.qianqianjie?.chatId ?? "").trim(), cd = (e) => e && e.is_user === !0 && e.is_system !== !0 && typeof e.mes == "string" && e.mes.trim(), ld = /* @__PURE__ */ new Set([
+}, pd = (e, t = 500) => Yt(String(e ?? "")).replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, t), md = (e) => structuredClone(e), hd = async (e) => `sha256:${await J(String(e ?? ""))}`, gd = (e) => String(e?.context?.chatMetadata?.qianqianjie?.chatId ?? "").trim(), _d = (e) => e && e.is_user === !0 && e.is_system !== !0 && typeof e.mes == "string" && e.mes.trim(), vd = /* @__PURE__ */ new Set([
 	"chatChanged",
 	"userChanged",
 	"narrativeChanged",
@@ -16172,19 +16514,19 @@ var Ju = "qqj_v3_recalled_context", Yu = "qqj_v3_recall_receipt", Xu = /* @__PUR
 	"superseded",
 	"disabled"
 ]);
-function ud(e) {
+function yd(e) {
 	let t = e?.chat ?? [];
-	for (let e = t.length - 1; e >= 0; --e) if (cd(t[e])) return {
+	for (let e = t.length - 1; e >= 0; --e) if (_d(t[e])) return {
 		index: e,
 		message: t[e]
 	};
 	return null;
 }
-var dd = (e) => JSON.stringify(ju({
+var bd = (e) => JSON.stringify(Bu({
 	coreChat: e?.chat,
 	assistantTurns: 1
 }).messages.map((e) => [e.role, e.text]));
-function fd(e, t) {
+function xd(e, t) {
 	if (!Array.isArray(t?.floorMemories) || !Array.isArray(t?.currentState) || !Array.isArray(e?.selectedFloors) || !Array.isArray(e?.selectedStates)) return !1;
 	let n = new Map(t.floorMemories.map((e) => [`${e.floorId}|${e.floorMemoryId}|${e.assistantSeq}`, e]));
 	if (!e.selectedFloors.every((e) => e && typeof e == "object" && n.has(`${e.floorId}|${e.floorMemoryId}|${e.assistantSeq}`))) return !1;
@@ -16199,7 +16541,7 @@ function fd(e, t) {
 		return Array.isArray(t?.[e.layer]) && t[e.layer].some((t) => t.text === e.text && t.visibility === e.visibility && t.towardEntityId === (e.towardEntityId ?? null) && t.sourceAssistantSeq === (e.sourceAssistantSeq ?? null));
 	});
 }
-var pd = (e) => [
+var Sd = (e) => [
 	e.schemaVersion,
 	e.pluginVersion,
 	e.chatId,
@@ -16218,56 +16560,56 @@ var pd = (e) => [
 	e.skipReasons,
 	e.completionStatus,
 	e.createdAt
-], md = (e, t, { empty: n = !1 } = {}) => typeof e == "string" && e.length <= t && (n || e.length > 0), hd = (e, t) => e === null || md(e, t), gd = (e) => Number.isSafeInteger(e) && e >= 0, _d = (e) => e === null || Number.isSafeInteger(e) && e > 0;
-function vd(e) {
-	return !e || typeof e != "object" || Array.isArray(e) || !["ready", "empty"].includes(e.completionStatus) || !md(e.pluginVersion, 120) || !md(e.chatId, 500) || !md(e.narrativeGeneration, 500) || !md(e.headCheckpointId, 500) || !Number.isSafeInteger(e.rootRevision) || e.rootRevision < 1 || !gd(e.userMessageIndex) || !md(e.userContentFingerprint, 200) || !md(e.queryFingerprint, 200) || !Xu.has(e.generationType) || !Array.isArray(e.selectedFloors) || e.selectedFloors.length > ed || !Array.isArray(e.selectedStates) || e.selectedStates.length > td || !Array.isArray(e.skipReasons) || e.skipReasons.length > nd || !md(e.injectionText, 12e3, { empty: !0 }) || !md(e.receiptFingerprint, 200) || !md(e.createdAt, 100) || !Number.isFinite(Date.parse(e.createdAt)) || e.completionStatus === "ready" != !!e.injectionText || !e.selectedFloors.every((e) => e && typeof e == "object" && !Array.isArray(e) && md(e.floorId, 500) && md(e.floorMemoryId, 500) && Number.isSafeInteger(e.assistantSeq) && e.assistantSeq > 0 && Array.isArray(e.reasons) && e.reasons.length <= 32 && e.reasons.every((e) => md(e, 500))) || !e.selectedStates.every((e) => e && typeof e == "object" && !Array.isArray(e) && md(e.subjectEntityId, 500) && md(e.subject, 500) && [
+], Cd = (e, t, { empty: n = !1 } = {}) => typeof e == "string" && e.length <= t && (n || e.length > 0), wd = (e, t) => e === null || Cd(e, t), Td = (e) => Number.isSafeInteger(e) && e >= 0, Ed = (e) => e === null || Number.isSafeInteger(e) && e > 0;
+function Dd(e) {
+	return !e || typeof e != "object" || Array.isArray(e) || !["ready", "empty"].includes(e.completionStatus) || !Cd(e.pluginVersion, 120) || !Cd(e.chatId, 500) || !Cd(e.narrativeGeneration, 500) || !Cd(e.headCheckpointId, 500) || !Number.isSafeInteger(e.rootRevision) || e.rootRevision < 1 || !Td(e.userMessageIndex) || !Cd(e.userContentFingerprint, 200) || !Cd(e.queryFingerprint, 200) || !ad.has(e.generationType) || !Array.isArray(e.selectedFloors) || e.selectedFloors.length > ld || !Array.isArray(e.selectedStates) || e.selectedStates.length > ud || !Array.isArray(e.skipReasons) || e.skipReasons.length > dd || !Cd(e.injectionText, 12e3, { empty: !0 }) || !Cd(e.receiptFingerprint, 200) || !Cd(e.createdAt, 100) || !Number.isFinite(Date.parse(e.createdAt)) || e.completionStatus === "ready" != !!e.injectionText || !e.selectedFloors.every((e) => e && typeof e == "object" && !Array.isArray(e) && Cd(e.floorId, 500) && Cd(e.floorMemoryId, 500) && Number.isSafeInteger(e.assistantSeq) && e.assistantSeq > 0 && Array.isArray(e.reasons) && e.reasons.length <= 32 && e.reasons.every((e) => Cd(e, 500))) || !e.selectedStates.every((e) => e && typeof e == "object" && !Array.isArray(e) && Cd(e.subjectEntityId, 500) && Cd(e.subject, 500) && [
 		"core",
 		"adaptive",
 		"situational"
-	].includes(e.layer) && hd(e.towardEntityId, 500) && hd(e.toward, 500) && md(e.text, 4e3) && md(e.reason, 1e3, { empty: !0 }) && [
+	].includes(e.layer) && wd(e.towardEntityId, 500) && wd(e.toward, 500) && Cd(e.text, 4e3) && Cd(e.reason, 1e3, { empty: !0 }) && [
 		"private",
 		"observable",
 		"expressed",
 		"shared",
 		"authorial"
-	].includes(e.visibility) && _d(e.sourceAssistantSeq)) || e.coverage !== null && (typeof e.coverage != "object" || Array.isArray(e.coverage) || ![
+	].includes(e.visibility) && Ed(e.sourceAssistantSeq)) || e.coverage !== null && (typeof e.coverage != "object" || Array.isArray(e.coverage) || ![
 		"stableAiFloors",
 		"stableThroughAssistantSeq",
 		"rememberedAiFloors",
 		"cseThroughAssistantSeq"
-	].every((t) => gd(e.coverage[t])) || typeof e.coverage.memoryComplete != "boolean" || typeof e.coverage.cseCurrent != "boolean" || !Array.isArray(e.coverage.missingAssistantSeq) || e.coverage.missingAssistantSeq.length > 1e4 || !e.coverage.missingAssistantSeq.every((e) => Number.isSafeInteger(e) && e > 0)) || e.stages !== null && (typeof e.stages != "object" || Array.isArray(e.stages) || ![
+	].every((t) => Td(e.coverage[t])) || typeof e.coverage.memoryComplete != "boolean" || typeof e.coverage.cseCurrent != "boolean" || !Array.isArray(e.coverage.missingAssistantSeq) || e.coverage.missingAssistantSeq.length > 1e4 || !e.coverage.missingAssistantSeq.every((e) => Number.isSafeInteger(e) && e > 0)) || e.stages !== null && (typeof e.stages != "object" || Array.isArray(e.stages) || ![
 		"input",
 		"candidates",
 		"dropRecent",
 		"dropPersistent",
 		"dropVisibility",
 		"selected"
-	].every((t) => gd(e.stages[t]))) ? !1 : e.skipReasons.every((e) => md(e, 120));
+	].every((t) => Td(e.stages[t]))) ? !1 : e.skipReasons.every((e) => Cd(e, 120));
 }
-async function yd(e, { source: t, userIndex: n, userFingerprint: r, queryFingerprint: i, pluginVersion: a }, o = od) {
+async function Od(e, { source: t, userIndex: n, userFingerprint: r, queryFingerprint: i, pluginVersion: a }, o = hd) {
 	try {
-		let s = ad(e);
-		return !vd(s) || s.schemaVersion !== 6 || s.pluginVersion !== a || s.chatId !== t.chatId || s.narrativeGeneration !== t.narrativeGeneration || s.headCheckpointId !== t.headCheckpointId || s.rootRevision !== t.rootRevision || s.userMessageIndex !== n || s.userContentFingerprint !== r || s.queryFingerprint !== i || s.receiptFingerprint !== await o(JSON.stringify(pd(s))) || !fd(s, t) ? null : s;
+		let s = md(e);
+		return !Dd(s) || s.schemaVersion !== 6 || s.pluginVersion !== a || s.chatId !== t.chatId || s.narrativeGeneration !== t.narrativeGeneration || s.headCheckpointId !== t.headCheckpointId || s.rootRevision !== t.rootRevision || s.userMessageIndex !== n || s.userContentFingerprint !== r || s.queryFingerprint !== i || s.receiptFingerprint !== await o(JSON.stringify(Sd(s))) || !xd(s, t) ? null : s;
 	} catch {
 		return null;
 	}
 }
-async function bd(e, { chatId: t, userIndex: n, userFingerprint: r, pluginVersion: i }, a = od) {
+async function kd(e, { chatId: t, userIndex: n, userFingerprint: r, pluginVersion: i }, a = hd) {
 	try {
-		let o = ad(e);
-		return !vd(o) || o.schemaVersion !== 6 || o.pluginVersion !== i || o.chatId !== t || o.userMessageIndex !== n || o.userContentFingerprint !== r || o.receiptFingerprint !== await a(JSON.stringify(pd(o))) ? null : o;
+		let o = md(e);
+		return !Dd(o) || o.schemaVersion !== 6 || o.pluginVersion !== i || o.chatId !== t || o.userMessageIndex !== n || o.userContentFingerprint !== r || o.receiptFingerprint !== await a(JSON.stringify(Sd(o))) ? null : o;
 	} catch {
 		return null;
 	}
 }
-function xd(e, { generationType: t = e.generationType, restoredReceipt: n = !1, timings: r = null } = {}) {
+function Ad(e, { generationType: t = e.generationType, restoredReceipt: n = !1, timings: r = null } = {}) {
 	return Object.freeze({
 		status: e.completionStatus,
 		userMessageIndex: e.userMessageIndex,
 		generationType: t,
 		coverage: e.coverage,
-		selectedFloors: Object.freeze(ad(e.selectedFloors ?? [])),
-		selectedStates: Object.freeze(ad(e.selectedStates ?? [])),
+		selectedFloors: Object.freeze(md(e.selectedFloors ?? [])),
+		selectedStates: Object.freeze(md(e.selectedStates ?? [])),
 		injectionText: e.injectionText,
 		reusedReceipt: !n,
 		restoredReceipt: n,
@@ -16279,47 +16621,47 @@ function xd(e, { generationType: t = e.generationType, restoredReceipt: n = !1, 
 		createdAt: e.createdAt
 	});
 }
-function Sd(e, { chatId: t, userIndex: n }) {
+function jd(e, { chatId: t, userIndex: n }) {
 	if (!e || typeof e != "object" || Array.isArray(e) || e.schemaVersion !== 4 || e.chatId !== t || e.userMessageIndex !== void 0 && e.userMessageIndex !== null && e.userMessageIndex !== n || typeof e.injectionText != "string") return null;
 	let r = Array.isArray(e.selectedFloors) ? e.selectedFloors.filter((e) => e && typeof e == "object" && !Array.isArray(e)) : [], i = Array.isArray(e.selectedStates) ? e.selectedStates.filter((e) => e && typeof e == "object" && !Array.isArray(e)) : [];
 	return Object.freeze({
 		status: e.injectionText ? "ready" : "empty",
 		userMessageIndex: Number.isSafeInteger(e.userMessageIndex) ? e.userMessageIndex : null,
-		generationType: Xu.has(e.generationType) ? e.generationType : null,
-		coverage: e.coverage && typeof e.coverage == "object" && !Array.isArray(e.coverage) ? ad(e.coverage) : null,
-		selectedFloors: Object.freeze(ad(r)),
-		selectedStates: Object.freeze(ad(i)),
+		generationType: ad.has(e.generationType) ? e.generationType : null,
+		coverage: e.coverage && typeof e.coverage == "object" && !Array.isArray(e.coverage) ? md(e.coverage) : null,
+		selectedFloors: Object.freeze(md(r)),
+		selectedStates: Object.freeze(md(i)),
 		injectionText: e.injectionText,
 		reusedReceipt: !1,
 		restoredReceipt: !0,
 		legacyReadOnly: !0,
 		receiptPersistence: "legacyReadOnly",
-		stages: e.stages && typeof e.stages == "object" && !Array.isArray(e.stages) ? ad(e.stages) : null,
+		stages: e.stages && typeof e.stages == "object" && !Array.isArray(e.stages) ? md(e.stages) : null,
 		timings: null,
 		skipReasons: Object.freeze(Array.isArray(e.skipReasons) ? e.skipReasons.filter((e) => typeof e == "string") : []),
 		error: null,
 		createdAt: typeof e.createdAt == "string" && Number.isFinite(Date.parse(e.createdAt)) ? e.createdAt : null
 	});
 }
-async function Cd(e, { chatId: t, userMessageIndex: n, fingerprint: r = od } = {}) {
+async function Md(e, { chatId: t, userMessageIndex: n, fingerprint: r = hd } = {}) {
 	if (!e || typeof e != "object" || typeof e.mes != "string" || typeof t != "string" || !t.trim() || !Number.isSafeInteger(n) || n < 0 || typeof r != "function") return null;
-	let i = e.extra?.[Yu];
+	let i = e.extra?.[id];
 	if (!i || typeof i != "object" || Array.isArray(i)) return null;
 	if (i.schemaVersion === 6) {
-		let a = await bd(i, {
+		let a = await kd(i, {
 			chatId: t.trim(),
 			userIndex: n,
 			userFingerprint: await r(e.mes),
 			pluginVersion: i.pluginVersion
 		}, r);
-		return a ? xd(a, { restoredReceipt: !0 }) : null;
+		return a ? Ad(a, { restoredReceipt: !0 }) : null;
 	}
-	return Sd(i, {
+	return jd(i, {
 		chatId: t.trim(),
 		userIndex: n
 	});
 }
-function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r = () => ({ enabled: !1 }), memoryStatus: i = () => null, historicalMaintenance: a = () => !1, realtimeOrigin: o = () => !1, notifyUser: s = null, sourceReader: c = mu, selector: l = qu, queryBuilder: u = Mu, fingerprint: d = od, sanitizerOptions: f = () => ({}), now: p = () => /* @__PURE__ */ new Date(), pluginVersion: m = "0.2.27", logger: h = console } = {}) {
+function Nd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r = () => ({ enabled: !1 }), memoryStatus: i = () => null, historicalMaintenance: a = () => !1, realtimeOrigin: o = () => !1, notifyUser: s = null, sourceReader: c = Cu, selector: l = nd, queryBuilder: u = Vu, fingerprint: d = hd, sanitizerOptions: f = () => ({}), now: p = () => /* @__PURE__ */ new Date(), pluginVersion: m = "0.2.27", logger: h = console } = {}) {
 	if (!e || typeof e.readReachable != "function") throw TypeError("V3 recall store 无效");
 	if (!t || typeof t.snapshot != "function") throw TypeError("V3 recall host adapter 无效");
 	if (typeof d != "function") throw TypeError("V3 recall fingerprint 无效");
@@ -16366,7 +16708,7 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 		let i = r ?? t.snapshot().context, a = i?.setExtensionPrompt;
 		if (typeof a != "function") throw Object.assign(/* @__PURE__ */ Error("宿主不支持 setExtensionPrompt。"), { code: "V3_RECALL_PROMPT_UNAVAILABLE" });
 		let o = i.constants?.promptTypes?.IN_CHAT ?? 1, s = i.constants?.promptRoles?.SYSTEM ?? 0;
-		a(Ju, String(e ?? ""), o, 1, !1, s), b = e ? n : null;
+		a(rd, String(e ?? ""), o, 1, !1, s), b = e ? n : null;
 	}, F = (e) => {
 		if (e !== void 0 && b !== null && b !== e) return !1;
 		try {
@@ -16384,7 +16726,7 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 		r
 	].join("|"), I = (e, t) => {
 		C = e && t ? Object.freeze({
-			chatId: sd(e),
+			chatId: gd(e),
 			userMessageIndex: t.index,
 			message: t.message,
 			text: t.message.mes
@@ -16398,7 +16740,7 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 		}) : null;
 	}, R = (e) => {
 		let t = e?.controller?.signal?.reason;
-		return ld.has(t) ? t : e?.token === g ? "narrativeChanged" : "superseded";
+		return vd.has(t) ? t : e?.token === g ? "narrativeChanged" : "superseded";
 	};
 	function z() {
 		return Object.freeze({
@@ -16421,10 +16763,10 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 	async function B(e, t, n) {
 		let r = e.context;
 		if (typeof r?.saveChat != "function") return "sessionOnly";
-		let i = t.message.extra && typeof t.message.extra == "object" && !Array.isArray(t.message.extra) ? t.message.extra : {}, a = Object.hasOwn(i, Yu), o = i[Yu], s = ad(n);
+		let i = t.message.extra && typeof t.message.extra == "object" && !Array.isArray(t.message.extra) ? t.message.extra : {}, a = Object.hasOwn(i, id), o = i[id], s = md(n);
 		t.message.extra = {
 			...i,
-			[Yu]: s
+			[id]: s
 		};
 		try {
 			return await r.saveChat(), "persisted";
@@ -16432,21 +16774,21 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 			let n = t.message.extra;
 			if (n && typeof n == "object" && !Array.isArray(n) && n.qqj_v3_recall_receipt === s) {
 				let e = { ...n };
-				a ? e[Yu] = o : delete e[Yu], t.message.extra = e;
+				a ? e[id] = o : delete e[id], t.message.extra = e;
 			}
 			return h?.warn?.("[qianqianjie] V3 recall receipt persistence failed", { code: e?.code ?? e?.name ?? "V3_RECALL_RECEIPT_SAVE_FAILED" }), "sessionOnly";
 		}
 	}
 	function V(e, t) {
-		return [e.message.extra?.[Yu], D?.key === t ? D.receipt : null].filter((e, t, n) => e && typeof e == "object" && n.indexOf(e) === t);
+		return [e.message.extra?.[id], D?.key === t ? D.receipt : null].filter((e, t, n) => e && typeof e == "object" && n.indexOf(e) === t);
 	}
-	async function te({ operation: n, source: r, selectedFloors: i, selectedStates: a, userIndex: o, userFingerprint: s, hostGuard: c, injectionText: l }) {
+	async function H({ operation: n, source: r, selectedFloors: i, selectedStates: a, userIndex: o, userFingerprint: s, hostGuard: c, injectionText: l }) {
 		if (n.token !== g || n.controller.signal.aborted) return {
 			ok: !1,
 			reason: R(n)
 		};
-		let u = t.snapshot(), f = ud(u);
-		if (sd(u) !== r.chatId) return {
+		let u = t.snapshot(), f = yd(u);
+		if (gd(u) !== r.chatId) return {
 			ok: !1,
 			reason: "chatChanged"
 		};
@@ -16454,7 +16796,7 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 			ok: !1,
 			reason: "userChanged"
 		};
-		if (dd(u) !== n.liveFrameKey) return {
+		if (bd(u) !== n.liveFrameKey) return {
 			ok: !1,
 			reason: "narrativeChanged"
 		};
@@ -16479,13 +16821,13 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 			ok: !1,
 			reason: "narrativeChanged"
 		};
-		let h = r.readiness !== null && r.readiness !== void 0, _ = await pu(m, p, null, h ? u : null, k(), j()), v = h ? M(_) : [];
+		let h = r.readiness !== null && r.readiness !== void 0, _ = await Su(m, p, null, h ? u : null, k(), j()), v = h ? M(_) : [];
 		if (v.length) return {
 			ok: !1,
 			notReady: !0,
 			reasons: v
 		};
-		if (!fd({
+		if (!xd({
 			selectedFloors: i,
 			selectedStates: a
 		}, _)) return {
@@ -16496,11 +16838,11 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 			ok: !1,
 			reason: R(n)
 		};
-		let y = t.snapshot(), b = ud(y);
-		if (!(n.token === g && !n.controller.signal.aborted && sd(y) === r.chatId && b?.index === o && b.message === c.userMessage && b.message === f.message && b.message.mes === c.userText && dd(y) === n.liveFrameKey)) return n.token !== g || n.controller.signal.aborted ? {
+		let y = t.snapshot(), b = yd(y);
+		if (!(n.token === g && !n.controller.signal.aborted && gd(y) === r.chatId && b?.index === o && b.message === c.userMessage && b.message === f.message && b.message.mes === c.userText && bd(y) === n.liveFrameKey)) return n.token !== g || n.controller.signal.aborted ? {
 			ok: !1,
 			reason: R(n)
-		} : sd(y) === r.chatId ? b?.index !== o || b?.message !== c.userMessage || b?.message?.mes !== c.userText ? {
+		} : gd(y) === r.chatId ? b?.index !== o || b?.message !== c.userMessage || b?.message?.mes !== c.userText ? {
 			ok: !1,
 			reason: "userChanged"
 		} : {
@@ -16515,7 +16857,7 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 			ok: !1,
 			notReady: !0,
 			reasons: x
-		} : h && !jc(_.readiness, y) ? {
+		} : h && !Bc(_.readiness, y) ? {
 			ok: !1,
 			notReady: !0,
 			reasons: ["memoryNotReady", "coverageUnconfirmed"]
@@ -16525,10 +16867,10 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 			user: b
 		});
 	}
-	async function H(n, r, i, a) {
+	async function U(n, r, i, a) {
 		let o = ++g;
 		y?.controller.abort("superseded"), F();
-		let f = Xu.has(a) ? a : a === void 0 ? "normal" : String(a ?? "normal"), _ = E.find((e) => e.token === null && e.type === f);
+		let f = ad.has(a) ? a : a === void 0 ? "normal" : String(a ?? "normal"), _ = E.find((e) => e.token === null && e.type === f);
 		_ && (_.token = o);
 		let v = {
 			token: o,
@@ -16540,7 +16882,7 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 		x = null, C = null, y = v, S = null, N();
 		let b = {};
 		try {
-			if (Zu.has(f) && A()) {
+			if (od.has(f) && A()) {
 				typeof i == "function" && i(!0);
 				try {
 					s?.({
@@ -16548,14 +16890,14 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 						text: "历史记忆正在重建，请等待完成或先暂停重建。"
 					});
 				} catch {}
-				return U(v, "memoryRebuilding", b);
+				return te(v, "memoryRebuilding", b);
 			}
 			if (_?.stopped) return W(v, b, "stopped");
-			if (!O()) return U(v, "disabled", b);
-			if (!Xu.has(f)) return U(v, ["quiet", "impersonate"].includes(f) ? f : "unsupportedGenerationType", b);
-			let a = t.snapshot(), h = ud(a);
-			if (!h) return U(v, "emptyUserInput", b);
-			v.user = h, v.chatId = sd(a), v.userText = h.message.mes, v.liveFrameKey = dd(a);
+			if (!O()) return te(v, "disabled", b);
+			if (!ad.has(f)) return te(v, ["quiet", "impersonate"].includes(f) ? f : "unsupportedGenerationType", b);
+			let a = t.snapshot(), h = yd(a);
+			if (!h) return te(v, "emptyUserInput", b);
+			v.user = h, v.chatId = gd(a), v.userText = h.message.mes, v.liveFrameKey = bd(a);
 			let C = u({
 				coreChat: Array.isArray(n) ? n : [],
 				assistantTurns: 1
@@ -16565,7 +16907,7 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 				userMessage: h.message,
 				userText: h.message.mes
 			};
-			if (!C.latestUserText) return U(v, "emptyUserInput", b);
+			if (!C.latestUserText) return te(v, "emptyUserInput", b);
 			let T = Date.now(), [E, P] = await Promise.all([d(h.message.mes), d(C.text)]);
 			b.inputMs = Date.now() - T, v.phase = "source", N();
 			let F = Date.now(), L = await c({
@@ -16575,12 +16917,12 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 				sanitizerOptions: k(),
 				realtimeOrigin: j()
 			});
-			if (b.sourceMs = Date.now() - F, L?.sourceReadAttempts && (b.sourceReadAttempts = ad(L.sourceReadAttempts)), L.status !== "ready") return U(v, L.status === "stale" ? "sourceStale" : "sourceUnavailable", b);
+			if (b.sourceMs = Date.now() - F, L?.sourceReadAttempts && (b.sourceReadAttempts = md(L.sourceReadAttempts)), L.status !== "ready") return te(v, L.status === "stale" ? "sourceStale" : "sourceUnavailable", b);
 			let R = M(L);
-			if (R.length) return U(v, R, b);
-			let H = t.snapshot(), G = ud(H);
+			if (R.length) return te(v, R, b);
+			let U = t.snapshot(), G = yd(U);
 			if (o !== g || v.controller.signal.aborted) return W(v, b);
-			if (sd(H) !== L.chatId) return W(v, b, "chatChanged");
+			if (gd(U) !== L.chatId) return W(v, b, "chatChanged");
 			if (G?.index !== h.index || G?.message !== w.userMessage || await d(G?.message?.mes) !== E) return W(v, b, "userChanged");
 			let ne = ee({
 				source: L,
@@ -16588,10 +16930,10 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 				userFingerprint: E,
 				queryFingerprint: P
 			});
-			if (D?.key !== ne && (D = null), Qu.has(f)) {
+			if (D?.key !== ne && (D = null), sd.has(f)) {
 				let e = null;
 				for (let t of V(G, ne)) {
-					let n = await yd(t, {
+					let n = await Od(t, {
 						source: L,
 						userIndex: h.index,
 						userFingerprint: E,
@@ -16604,7 +16946,7 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 					}
 				}
 				if (e) {
-					let t = await te({
+					let t = await H({
 						operation: v,
 						source: L,
 						selectedFloors: e.selectedFloors,
@@ -16614,10 +16956,10 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 						hostGuard: w,
 						injectionText: e.injectionText
 					});
-					return t.ok ? o !== g || v.controller.signal.aborted ? W(v, b) : (b.totalMs = Date.now() - v.started, x = xd(e, {
+					return t.ok ? o !== g || v.controller.signal.aborted ? W(v, b) : (b.totalMs = Date.now() - v.started, x = Ad(e, {
 						generationType: f,
 						timings: b
-					}), I(t.snapshot, t.user), S = null, y = null, N(), z()) : t.notReady ? U(v, t.reasons, b) : W(v, b, t.reason);
+					}), I(t.snapshot, t.user), S = null, y = null, N(), z()) : t.notReady ? te(v, t.reasons, b) : W(v, b, t.reason);
 				}
 			}
 			v.phase = "selecting", N();
@@ -16655,14 +16997,14 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 					visibility: e.visibility,
 					sourceAssistantSeq: e.sourceAssistantSeq
 				})),
-				coverage: ad(ie.coverage ?? L.coverage),
+				coverage: md(ie.coverage ?? L.coverage),
 				injectionText: ie.injectionText,
-				stages: ad(ie.stages ?? null),
+				stages: md(ie.stages ?? null),
 				skipReasons: [...ie.skipReasons ?? []],
-				createdAt: rd(p)
+				createdAt: fd(p)
 			};
 			ae.completionStatus = ae.injectionText ? "ready" : "empty";
-			let oe = await te({
+			let oe = await H({
 				operation: v,
 				source: L,
 				selectedFloors: ae.selectedFloors,
@@ -16672,11 +17014,11 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 				hostGuard: w,
 				injectionText: ae.injectionText
 			});
-			if (!oe.ok) return oe.notReady ? U(v, oe.reasons, b) : W(v, b, oe.reason);
+			if (!oe.ok) return oe.notReady ? te(v, oe.reasons, b) : W(v, b, oe.reason);
 			if (o !== g || v.controller.signal.aborted) return W(v, b);
 			let se = Object.freeze({
 				...ae,
-				receiptFingerprint: await d(JSON.stringify(pd(ae)))
+				receiptFingerprint: await d(JSON.stringify(Sd(ae)))
 			});
 			if (o !== g || v.controller.signal.aborted) return W(v, b);
 			v.phase = "receipt", N();
@@ -16702,8 +17044,8 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 				userMessageIndex: h.index,
 				generationType: f,
 				coverage: le.coverage,
-				selectedFloors: Object.freeze(ad(le.selectedFloors)),
-				selectedStates: Object.freeze(ad(le.selectedStates)),
+				selectedFloors: Object.freeze(md(le.selectedFloors)),
+				selectedStates: Object.freeze(md(le.selectedStates)),
 				injectionText: le.injectionText,
 				reusedReceipt: !1,
 				restoredReceipt: !1,
@@ -16718,8 +17060,8 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 			if (o !== g || v.controller.signal.aborted) return W(v, b);
 			F(o);
 			let t = Object.freeze({
-				code: id(e?.code ?? e?.name ?? "V3_RECALL_FAILED", 120),
-				message: id(e?.message ?? "召回失败，已安全跳过。", 500)
+				code: pd(e?.code ?? e?.name ?? "V3_RECALL_FAILED", 120),
+				message: pd(e?.message ?? "召回失败，已安全跳过。", 500)
 			});
 			return S = t, x = Object.freeze({
 				status: "error",
@@ -16739,11 +17081,11 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 				}),
 				skipReasons: Object.freeze(["error"]),
 				error: t,
-				createdAt: rd(p)
+				createdAt: fd(p)
 			}), L(v), y = null, h?.warn?.("[qianqianjie] V3 recall failed open", { code: t.code }), N(), z();
 		}
 	}
-	function U(e, t, n) {
+	function te(e, t, n) {
 		if (e.token !== g) return W(e, n);
 		n.totalMs = Date.now() - e.started;
 		let r = Array.isArray(t) ? t : [t];
@@ -16762,7 +17104,7 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 			timings: Object.freeze({ ...n }),
 			skipReasons: Object.freeze([...r]),
 			error: null,
-			createdAt: rd(p)
+			createdAt: fd(p)
 		}), L(e), y = null, N(), z();
 	}
 	function W(e, t, n = R(e)) {
@@ -16782,13 +17124,13 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 				...t,
 				totalMs: Date.now() - e.started
 			}),
-			skipReasons: Object.freeze([ld.has(n) ? n : "narrativeChanged"]),
+			skipReasons: Object.freeze([vd.has(n) ? n : "narrativeChanged"]),
 			error: null,
-			createdAt: rd(p)
+			createdAt: fd(p)
 		}), L(e), N()), z();
 	}
 	function G(e = "invalidated") {
-		g += 1, y?.controller.abort(ld.has(e) ? e : "superseded"), y = null, D = null, E.length = 0, v = 0, F(), x = null, C = null, S = null, N();
+		g += 1, y?.controller.abort(vd.has(e) ? e : "superseded"), y = null, D = null, E.length = 0, v = 0, F(), x = null, C = null, S = null, N();
 	}
 	function ne(e, t, n) {
 		if (n === !0) return;
@@ -16818,7 +17160,7 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 			timings: Object.freeze({ totalMs: Date.now() - n.started }),
 			skipReasons: Object.freeze([t]),
 			error: null,
-			createdAt: rd(p)
+			createdAt: fd(p)
 		}), L(n), N(), !0;
 	}
 	function ie() {
@@ -16830,7 +17172,7 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 		!re(e) && b === e.token && F(e.token);
 		for (let t of E) t.chainId === e.chainId && (t.stopped = !0);
 		let t = [...new Set(E.filter((e) => e.stopped).map((e) => e.chainId))];
-		for (; t.length > $u;) {
+		for (; t.length > cd;) {
 			let e = t.shift();
 			for (let t = E.length - 1; t >= 0; --t) E[t].chainId === e && E.splice(t, 1);
 			v = Math.min(2 ** 53 - 1, v + 1);
@@ -16858,30 +17200,30 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 			"MESSAGE_SWIPED",
 			"MESSAGE_SWIPE_DELETED"
 		]) r(e, () => {
-			let e = t.snapshot(), n = ud(e), r = !!C && (sd(e) !== C.chatId || n?.message !== C.message || n?.message?.mes !== C.text), i = null;
-			y && (sd(e) === y.chatId ? n?.message !== y.user?.message || n?.message?.mes !== y.userText ? i = "userChanged" : dd(e) !== y.liveFrameKey && (i = "narrativeChanged") : i = "chatChanged"), !(!r && !i) && (g += 1, i && (y.controller.abort(i), y = null, D = null), F(), r && (D = null, x = null, C = null, S = null), N());
+			let e = t.snapshot(), n = yd(e), r = !!C && (gd(e) !== C.chatId || n?.message !== C.message || n?.message?.mes !== C.text), i = null;
+			y && (gd(e) === y.chatId ? n?.message !== y.user?.message || n?.message?.mes !== y.userText ? i = "userChanged" : bd(e) !== y.liveFrameKey && (i = "narrativeChanged") : i = "chatChanged"), !(!r && !i) && (g += 1, i && (y.controller.abort(i), y = null, D = null), F(), r && (D = null, x = null, C = null, S = null), N());
 		});
 	}
 	async function se() {
 		try {
 			let e = g;
 			if (!O() || y || x) return z();
-			let n = t.snapshot(), r = ud(n), i = sd(n), a = r?.message?.extra?.[Yu];
+			let n = t.snapshot(), r = yd(n), i = gd(n), a = r?.message?.extra?.[id];
 			if (!r || !i || !a || typeof a != "object") return z();
-			let o = r.message.mes, s = a.schemaVersion === 6 ? await bd(a, {
+			let o = r.message.mes, s = a.schemaVersion === 6 ? await kd(a, {
 				chatId: i,
 				userIndex: r.index,
 				userFingerprint: await d(o),
 				pluginVersion: m
-			}, d) : Sd(a, {
+			}, d) : jd(a, {
 				chatId: i,
 				userIndex: r.index
 			});
 			if (!s) return z();
-			let c = t.snapshot(), l = ud(c);
-			return e !== g || y || x || sd(c) !== i || l?.index !== r.index || l.message !== r.message || l.message.extra?.qqj_v3_recall_receipt !== a || l.message.mes !== o ? z() : (x = s.legacyReadOnly ? s : xd(s, { restoredReceipt: !0 }), I(c, l), S = null, N(), z());
+			let c = t.snapshot(), l = yd(c);
+			return e !== g || y || x || gd(c) !== i || l?.index !== r.index || l.message !== r.message || l.message.extra?.qqj_v3_recall_receipt !== a || l.message.mes !== o ? z() : (x = s.legacyReadOnly ? s : Ad(s, { restoredReceipt: !0 }), I(c, l), S = null, N(), z());
 		} catch (e) {
-			return h?.warn?.("[qianqianjie] V3 persisted recall receipt ignored", { code: id(e?.code ?? e?.name ?? "V3_RECALL_RECEIPT_RESTORE_FAILED", 120) }), z();
+			return h?.warn?.("[qianqianjie] V3 persisted recall receipt ignored", { code: pd(e?.code ?? e?.name ?? "V3_RECALL_RECEIPT_RESTORE_FAILED", 120) }), z();
 		}
 	}
 	async function K(e) {
@@ -16891,7 +17233,7 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 		return F(), x = null, C = null, S = null, N(), z();
 	}
 	return Object.freeze({
-		intercept: H,
+		intercept: U,
 		bind: oe,
 		setEnabled: K,
 		clearCurrent: q,
@@ -16905,10 +17247,10 @@ function wd({ store: e, hostAdapter: t, isEnabled: n = !0, automationSettings: r
 }
 //#endregion
 //#region src/v3/auto-hide.js
-var Td = "qianqianjieAutoHide", Ed = /* @__PURE__ */ new Set(["ready", "noChange"]), Dd = /* @__PURE__ */ new Set(["ready", "needsReview"]), Od = (e, t) => {
+var Pd = "qianqianjieAutoHide", Fd = /* @__PURE__ */ new Set(["ready", "noChange"]), Id = /* @__PURE__ */ new Set(["ready", "needsReview"]), Ld = (e, t) => {
 	let n = Error(t);
 	return n.code = e, n;
-}, kd = (e) => e?.is_system === !0 && !!e?.extra?.type, Ad = (e) => e?.is_user === !1 && !kd(e), jd = (e, t) => e?.extra?.[Td]?.schemaVersion === 1 && e.extra[Td].chatId === t, Md = (e) => {
+}, Rd = (e) => e?.is_system === !0 && !!e?.extra?.type, zd = (e) => e?.is_user === !1 && !Rd(e), Bd = (e, t) => e?.extra?.[Pd]?.schemaVersion === 1 && e.extra[Pd].chatId === t, Vd = (e) => {
 	let t = [];
 	for (let n of [...e].sort((e, t) => e - t)) {
 		let e = t.at(-1);
@@ -16919,7 +17261,7 @@ var Td = "qianqianjieAutoHide", Ed = /* @__PURE__ */ new Set(["ready", "noChange
 	}
 	return t;
 };
-function Nd({ chat: e = [], memoryState: t = null, keepAiCount: n = 3, restoreAll: r = !1 } = {}) {
+function Hd({ chat: e = [], memoryState: t = null, keepAiCount: n = 3, restoreAll: r = !1 } = {}) {
 	let i = typeof t?.chatId == "string" ? t.chatId : "";
 	if (!i) return Object.freeze({
 		status: "unavailable",
@@ -16928,17 +17270,17 @@ function Nd({ chat: e = [], memoryState: t = null, keepAiCount: n = 3, restoreAl
 		hideThrough: null,
 		keepFrom: null
 	});
-	let a = Array.isArray(e) ? e : [], o = a.map((e, t) => Ad(e) ? {
+	let a = Array.isArray(e) ? e : [], o = a.map((e, t) => zd(e) ? {
 		message: e,
 		messageIndex: t
-	} : null).filter(Boolean), s = a.map((e, t) => jd(e, i) ? t : null).filter(Number.isInteger), c = -1, l = 0;
-	if (!r && o.length > Ha(n)) {
-		let e = o[o.length - Ha(n) - 1];
+	} : null).filter(Boolean), s = a.map((e, t) => Bd(e, i) ? t : null).filter(Number.isInteger), c = -1, l = 0;
+	if (!r && o.length > Ja(n)) {
+		let e = o[o.length - Ja(n) - 1];
 		l = e ? e.messageIndex + 1 : 0;
 		let r = [...t?.floors ?? []].sort((e, t) => (e.assistantSeq ?? 0) - (t.assistantSeq ?? 0)), i = -1;
 		for (let e = 0; e < r.length; e += 1) {
 			let t = r[e], n = t?.messageIndex;
-			if (t?.assistantSeq !== e + 1 || !Number.isInteger(n) || !Ad(a[n]) || !t.memoryId || !Dd.has(t.status) || !Ed.has(t.cse?.status)) break;
+			if (t?.assistantSeq !== e + 1 || !Number.isInteger(n) || !zd(a[n]) || !t.memoryId || !Id.has(t.status) || !Fd.has(t.cse?.status)) break;
 			i = n;
 		}
 		c = Math.min(l - 1, i);
@@ -16946,19 +17288,19 @@ function Nd({ chat: e = [], memoryState: t = null, keepAiCount: n = 3, restoreAl
 	let u = /* @__PURE__ */ new Set();
 	if (c >= 0) for (let e = 0; e <= c; e += 1) {
 		let t = a[e];
-		!t || kd(t) || (t.is_system !== !0 || jd(t, i)) && u.add(e);
+		!t || Rd(t) || (t.is_system !== !0 || Bd(t, i)) && u.add(e);
 	}
 	let d = [...u].filter((e) => a[e]?.is_system !== !0), f = s.filter((e) => !u.has(e));
 	return Object.freeze({
 		status: "ready",
 		chatId: i,
-		hideRanges: Object.freeze(Md(d).map(Object.freeze)),
-		unhideRanges: Object.freeze(Md(f).map(Object.freeze)),
+		hideRanges: Object.freeze(Vd(d).map(Object.freeze)),
+		unhideRanges: Object.freeze(Vd(f).map(Object.freeze)),
 		hideThrough: c >= 0 ? c : null,
 		keepFrom: l
 	});
 }
-function Pd(e, t) {
+function Ud(e, t) {
 	return Array.from({ length: t.end - t.start + 1 }, (n, r) => {
 		let i = e[t.start + r];
 		return {
@@ -16970,40 +17312,40 @@ function Pd(e, t) {
 		};
 	});
 }
-function Fd(e) {
+function Wd(e) {
 	for (let t of e) t.message && (t.hadIsSystem ? t.message.is_system = t.isSystem : delete t.message.is_system, t.hadExtra ? t.message.extra = t.extra : delete t.message.extra);
 }
-function Id(e, t, n, r) {
+function Gd(e, t, n, r) {
 	for (let i = t.start; i <= t.end; i += 1) {
 		let t = e[i];
-		t && (r ? ((!t.extra || typeof t.extra != "object" || Array.isArray(t.extra)) && (t.extra = {}), t.extra[Td] = {
+		t && (r ? ((!t.extra || typeof t.extra != "object" || Array.isArray(t.extra)) && (t.extra = {}), t.extra[Pd] = {
 			schemaVersion: 1,
 			chatId: n
-		}) : t.extra && typeof t.extra == "object" && (delete t.extra[Td], Object.keys(t.extra).length || delete t.extra));
+		}) : t.extra && typeof t.extra == "object" && (delete t.extra[Pd], Object.keys(t.extra).length || delete t.extra));
 	}
 }
-var Ld = (e) => e.start === e.end ? `${e.start}` : `${e.start}-${e.end}`;
-function Rd({ hostAdapter: e, memoryRuntime: t, settings: n, notifyUser: r = null, logger: i = console } = {}) {
+var Kd = (e) => e.start === e.end ? `${e.start}` : `${e.start}-${e.end}`;
+function qd({ hostAdapter: e, memoryRuntime: t, settings: n, notifyUser: r = null, logger: i = console } = {}) {
 	if (!e?.snapshot || !t?.getState || !n?.get) throw TypeError("自动隐藏控制器依赖无效");
 	let a = !1, o = 0, s = Promise.resolve(), c = (t) => {
 		let n = e.snapshot();
-		if (n.chatId !== t) throw Od("QQJ_AUTO_HIDE_CHAT_CHANGED", "聊天已切换，旧聊天的自动隐藏操作已停止。");
+		if (n.chatId !== t) throw Ld("QQJ_AUTO_HIDE_CHAT_CHANGED", "聊天已切换，旧聊天的自动隐藏操作已停止。");
 		return n;
 	};
 	async function l({ stableChatId: e, hostChatId: t, range: n, hide: r }) {
 		let i = c(t), a = i.context?.executeSlashCommandsWithOptions;
-		if (typeof a != "function") throw Od("QQJ_AUTO_HIDE_UNSUPPORTED", "当前酒馆版本不支持自动隐藏命令。");
-		let o = Pd(i.chat, n);
-		Id(i.chat, n, e, r);
+		if (typeof a != "function") throw Ld("QQJ_AUTO_HIDE_UNSUPPORTED", "当前酒馆版本不支持自动隐藏命令。");
+		let o = Ud(i.chat, n);
+		Gd(i.chat, n, e, r);
 		try {
-			await a.call(i.context, `/${r ? "hide" : "unhide"} ${Ld(n)}`);
+			await a.call(i.context, `/${r ? "hide" : "unhide"} ${Kd(n)}`);
 			let o = c(t);
 			for (let t = n.start; t <= n.end; t += 1) {
 				let n = o.chat[t];
-				if (!n || n.is_system !== r || jd(n, e) !== r) throw Od("QQJ_AUTO_HIDE_VERIFY_FAILED", "酒馆没有确认自动隐藏结果。");
+				if (!n || n.is_system !== r || Bd(n, e) !== r) throw Ld("QQJ_AUTO_HIDE_VERIFY_FAILED", "酒馆没有确认自动隐藏结果。");
 			}
 		} catch (e) {
-			throw Fd(o), e;
+			throw Wd(o), e;
 		}
 	}
 	async function u({ restoreAll: s = !1, explicit: c = !1, operationEpoch: u = o } = {}) {
@@ -17013,7 +17355,7 @@ function Rd({ hostAdapter: e, memoryRuntime: t, settings: n, notifyUser: r = nul
 		if (d.pluginEnabled === !1 || !c && d.autoHideEnabled !== !0) return Object.freeze({ status: "disabled" });
 		let f = e.snapshot(), p = t.getState();
 		if (f.context?.chatMetadata?.qianqianjie?.chatId !== p?.chatId) return Object.freeze({ status: "stale" });
-		let m = Nd({
+		let m = Hd({
 			chat: f.chat,
 			memoryState: p,
 			keepAiCount: d.autoHideKeepAiCount,
@@ -17084,30 +17426,30 @@ function Rd({ hostAdapter: e, memoryRuntime: t, settings: n, notifyUser: r = nul
 }
 //#endregion
 //#region src/v3/public-memory-bridge.js
-var zd = "qqj_v3_public_bridge_v1", Bd = (e, t = 4e3) => String(e ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, t), Vd = (e) => Object.freeze(e), Hd = (e, t) => t.get(e)?.displayName || "未知人物", Ud = (e, t) => [...new Set((e ?? []).filter(Boolean).map((e) => Hd(e, t)))].join("、");
-function Wd(e, t) {
+var Jd = "qqj_v3_public_bridge_v1", Yd = (e, t = 4e3) => String(e ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, t), Xd = (e) => Object.freeze(e), Zd = (e, t) => t.get(e)?.displayName || "未知人物", Qd = (e, t) => [...new Set((e ?? []).filter(Boolean).map((e) => Zd(e, t)))].join("、");
+function $d(e, t) {
 	let n = {
 		intended: "打算",
 		attempted: "尝试",
 		completed: "完成",
 		interrupted: "中断",
 		uncertain: "结果未定"
-	}[e.completion] ?? "行动", r = Hd(e.actorEntityId, t), i = Ud(e.targetEntityIds, t);
+	}[e.completion] ?? "行动", r = Zd(e.actorEntityId, t), i = Qd(e.targetEntityIds, t);
 	return `${r}${i ? ` → ${i}` : ""}：${n}「${e.action}」${e.result ? `，结果：${e.result}` : ""}`;
 }
-function Gd(e, t) {
-	let n = Hd(e.speakerEntityId, t), r = Ud(e.targetEntityIds, t), i = {
+function ef(e, t) {
+	let n = Zd(e.speakerEntityId, t), r = Qd(e.targetEntityIds, t), i = {
 		accepted: "已接受",
 		refused: "已拒绝",
 		pending: "待定",
 		uncertain: "是否成立未定"
-	}[e.status] ?? Bd(e.status, 100), a = e.kind === "plan" ? "计划" : "承诺";
+	}[e.status] ?? Yd(e.status, 100), a = e.kind === "plan" ? "计划" : "承诺";
 	return `${n}${r ? ` → ${r}` : ""}：${a}「${e.content}」${i ? `（${i}；不代表已履行）` : "（不代表已履行）"}`;
 }
-function Kd(e, t) {
+function tf(e, t) {
 	return e.visibility === "private" ? `仅 ${t} 本人知情` : e.visibility === "authorial" ? "作者塑造参考，不代表任何人物知情" : e.visibility === "shared" ? "已共享" : e.visibility === "expressed" ? "已表达" : "可观察";
 }
-function qd(e) {
+function nf(e) {
 	if (!e || e.status !== "ready") return "";
 	let t = Array.isArray(e.entities) ? e.entities : [], n = Array.isArray(e.floorMemories) ? e.floorMemories : [], r = Array.isArray(e.currentState) ? e.currentState : [];
 	if (!n.length && !r.length) return "";
@@ -17115,7 +17457,7 @@ function qd(e) {
 	if (o.length) {
 		a.push("", "[人物索引]");
 		for (let e of o) {
-			let t = [...new Set((e.aliases ?? []).map((e) => Bd(e, 500)).filter((t) => t && t !== e.displayName))];
+			let t = [...new Set((e.aliases ?? []).map((e) => Yd(e, 500)).filter((t) => t && t !== e.displayName))];
 			a.push(`- ${e.displayName}${t.length ? `（别名：${t.join("、")}）` : ""}`);
 		}
 	}
@@ -17124,15 +17466,15 @@ function qd(e) {
 		for (let e of n) {
 			let t = [];
 			for (let n of e.events ?? []) t.push(`事件：${n.title}${n.description ? `——${n.description}` : ""}`);
-			for (let n of e.actions ?? []) t.push(`行动：${Wd(n, i)}`);
-			for (let n of e.commitments ?? []) t.push(`承诺/计划：${Gd(n, i)}`);
+			for (let n of e.actions ?? []) t.push(`行动：${$d(n, i)}`);
+			for (let n of e.commitments ?? []) t.push(`承诺/计划：${ef(n, i)}`);
 			for (let n of e.openLoops ?? []) {
-				let e = Ud(n.ownerEntityIds, i);
+				let e = Qd(n.ownerEntityIds, i);
 				t.push(`未结事项${e ? `（相关人物：${e}）` : ""}：${n.description}`);
 			}
-			let n = Bd(e.summary);
+			let n = Yd(e.summary);
 			if (!n && !t.length) continue;
-			let r = lu(e.chronology);
+			let r = vu(e.chronology);
 			a.push(`- AI #${e.assistantSeq}${r ? `（${r}）` : ""}${n ? `：${n}` : ""}`);
 			for (let e of t) a.push(`  - ${e}`);
 		}
@@ -17141,14 +17483,14 @@ function qd(e) {
 		let t = e.coverage ?? {};
 		a.push("", t.cseCurrent ? "[当前人物状态]" : `[已保存人物状态（仅连续到 AI #${t.cseThroughAssistantSeq || 0}，不代表当前完整状态）]`);
 		for (let e of r) {
-			let t = Hd(e.subjectEntityId, i);
+			let t = Zd(e.subjectEntityId, i);
 			for (let [n, r] of [
 				["Core", e.core],
 				["Adaptive", e.adaptive],
 				["Situational", e.situational]
 			]) for (let e of r ?? []) {
-				let r = e.towardEntityId ? `；对象：${Hd(e.towardEntityId, i)}` : "", o = e.sourceAssistantSeq ? `；来源 AI #${e.sourceAssistantSeq}` : "", s = e.reason ? `；依据：${e.reason}` : "";
-				a.push(`- ${t} / ${n} / ${Kd(e, t)}${r}${o}：${e.text}${s}`);
+				let r = e.towardEntityId ? `；对象：${Zd(e.towardEntityId, i)}` : "", o = e.sourceAssistantSeq ? `；来源 AI #${e.sourceAssistantSeq}` : "", s = e.reason ? `；依据：${e.reason}` : "";
+				a.push(`- ${t} / ${n} / ${tf(e, t)}${r}${o}：${e.text}${s}`);
 			}
 		}
 	}
@@ -17159,13 +17501,13 @@ function qd(e) {
 	}
 	return a.push("</qqj_memory_context>"), a.join("\n");
 }
-var Jd = (e) => Vd({
+var rf = (e) => Xd({
 	hostChatId: e.hostChatId,
 	qqjChatId: e.chatId,
 	characterLocator: e.characterLocator,
 	personaLocator: e.personaLocator
-}), Yd = (e, t) => e?.hostChatId === t?.hostChatId && e?.chatId === t?.chatId && e?.characterLocator === t?.characterLocator && e?.personaLocator === t?.personaLocator;
-function Xd({ session: e, store: t, hostAdapter: n, isEnabled: r = !0, sanitizerOptions: i = () => ({}), readSource: a = mu } = {}) {
+}), af = (e, t) => e?.hostChatId === t?.hostChatId && e?.chatId === t?.chatId && e?.characterLocator === t?.characterLocator && e?.personaLocator === t?.personaLocator;
+function of({ session: e, store: t, hostAdapter: n, isEnabled: r = !0, sanitizerOptions: i = () => ({}), readSource: a = Cu } = {}) {
 	if (!e || typeof e.identity != "function" || typeof e.getState != "function") throw TypeError("公共记忆桥 session 无效");
 	if (!t || typeof t.readReachable != "function") throw TypeError("公共记忆桥 store 无效");
 	if (!n || typeof n.snapshot != "function") throw TypeError("公共记忆桥 hostAdapter 无效");
@@ -17177,17 +17519,17 @@ function Xd({ session: e, store: t, hostAdapter: n, isEnabled: r = !0, sanitizer
 			return !1;
 		}
 	}, s = () => {
-		if (!o()) return Vd({
+		if (!o()) return Xd({
 			status: "disabled",
 			message: "千千结当前已关闭。"
 		});
 		let t = e.getState();
-		return t?.status !== "ready" || !t.identity ? Vd({
+		return t?.status !== "ready" || !t.identity ? Xd({
 			status: "not-ready",
 			message: "千千结尚未准备好当前聊天身份。"
-		}) : Vd({
+		}) : Xd({
 			status: "ready",
-			identity: Jd(t.identity)
+			identity: rf(t.identity)
 		});
 	};
 	async function c() {
@@ -17197,7 +17539,7 @@ function Xd({ session: e, store: t, hostAdapter: n, isEnabled: r = !0, sanitizer
 		try {
 			o = e.identity();
 		} catch {
-			return Vd({
+			return Xd({
 				status: "not-ready",
 				message: "千千结尚未准备好当前聊天身份。"
 			});
@@ -17211,31 +17553,31 @@ function Xd({ session: e, store: t, hostAdapter: n, isEnabled: r = !0, sanitizer
 			try {
 				s = e.identity();
 			} catch {
-				return Vd({
+				return Xd({
 					status: "stale",
 					message: "读取期间当前聊天已变化。"
 				});
 			}
-			if (!Yd(o, s) || n.snapshot()?.chatId !== o.hostChatId) return Vd({
+			if (!af(o, s) || n.snapshot()?.chatId !== o.hostChatId) return Xd({
 				status: "stale",
 				message: "读取期间当前聊天已变化。"
 			});
-			if (r.status !== "ready") return Vd({
+			if (r.status !== "ready") return Xd({
 				status: r.status,
 				message: "当前聊天暂无可读取的千千结正式记忆。",
-				identity: Jd(o)
+				identity: rf(o)
 			});
-			if (r.chatId !== o.chatId) return Vd({
+			if (r.chatId !== o.chatId) return Xd({
 				status: "stale",
 				message: "千千结记忆身份已变化。"
 			});
-			let c = qd(r);
-			return Vd({
+			let c = nf(r);
+			return Xd({
 				status: c ? "ready" : "empty",
 				text: c,
 				message: c ? "" : "当前聊天还没有千千结正式记忆。",
-				identity: Jd(o),
-				anchor: Vd({
+				identity: rf(o),
+				anchor: Xd({
 					narrativeGeneration: r.narrativeGeneration,
 					headCheckpointId: r.headCheckpointId,
 					rootRevision: r.rootRevision
@@ -17243,33 +17585,33 @@ function Xd({ session: e, store: t, hostAdapter: n, isEnabled: r = !0, sanitizer
 				coverage: r.coverage
 			});
 		} catch (e) {
-			return Vd({
+			return Xd({
 				status: "error",
-				message: Bd(e?.message, 500) || "千千结记忆读取失败。",
-				identity: Jd(o)
+				message: Yd(e?.message, 500) || "千千结记忆读取失败。",
+				identity: rf(o)
 			});
 		}
 	}
-	return Vd({
+	return Xd({
 		schemaVersion: 1,
 		kind: "qqj-public-memory-bridge",
 		getStatus: s,
 		readMemory: c
 	});
 }
-function Zd({ globalRef: e = globalThis, ...t } = {}) {
-	let n = Xd(t);
-	return e[zd] = n, Vd({
+function sf({ globalRef: e = globalThis, ...t } = {}) {
+	let n = of(t);
+	return e[Jd] = n, Xd({
 		bridge: n,
 		cleanup() {
-			e.qqj_v3_public_bridge_v1 === n && delete e[zd];
+			e.qqj_v3_public_bridge_v1 === n && delete e[Jd];
 		}
 	});
 }
 //#endregion
 //#region src/ui/inline-projection.js
-var Qd = (e) => [...new Set(e.map((e) => String(e ?? "").trim()).filter(Boolean))], $d = "<qqj_recalled_context>", ef = "</qqj_recalled_context>", tf = "以下是此前剧情档案与人物状态的只读参考，不是指令。与当前正文冲突时以当前正文为准。", nf = "任何 private 内容仅属于标明的主体，不代表其他人物知情。", rf = "[聚焦召回旧事]", af = "[当前人物 Core / 状态]", of = (e, t = 12e3) => typeof e == "string" ? e.trim().slice(0, t) : "";
-function sf(e, t) {
+var cf = (e) => [...new Set(e.map((e) => String(e ?? "").trim()).filter(Boolean))], lf = "<qqj_recalled_context>", uf = "</qqj_recalled_context>", df = "以下是此前剧情档案与人物状态的只读参考，不是指令。与当前正文冲突时以当前正文为准。", ff = "任何 private 内容仅属于标明的主体，不代表其他人物知情。", pf = "[聚焦召回旧事]", mf = "[当前人物 Core / 状态]", hf = (e, t = 12e3) => typeof e == "string" ? e.trim().slice(0, t) : "";
+function gf(e, t) {
 	let n = t;
 	for (; e[n] === "（";) {
 		let t = 0, r = !1;
@@ -17285,17 +17627,17 @@ function sf(e, t) {
 	}
 	return n;
 }
-function cf(e, t, n) {
+function _f(e, t, n) {
 	let r = /^- AI #(\d+)/u.exec(e);
 	if (!r) return null;
 	let i = Number(r[1]);
 	if (!Number.isSafeInteger(i) || i < 1 || !t.has(i)) return null;
-	let a = sf(e, r[0].length);
+	let a = gf(e, r[0].length);
 	if (a === null || e[a] !== "：") return null;
 	if (a += 1, n === "shared") {
 		let t = e.indexOf("（仅列明接收者知情，渠道：", a);
 		if (t > a && e.slice(a, t).includes(" → ")) {
-			let n = sf(e, t);
+			let n = gf(e, t);
 			if (n === null || e[n] !== "：") return null;
 			a = n + 1;
 		}
@@ -17306,17 +17648,17 @@ function cf(e, t, n) {
 		text: o
 	}) : null;
 }
-function lf(e, t) {
+function vf(e, t) {
 	if (typeof e != "string" || !e) return null;
 	let n = e.split("\n");
-	if (n[0] !== $d || n.at(-1) !== ef || n[1] !== tf || n[2] !== nf) return null;
-	let r = n.indexOf(rf);
-	if (r !== -1 && (r < 3 || n.indexOf(rf, r + 1) !== -1) || r === -1 && t.length) return null;
+	if (n[0] !== lf || n.at(-1) !== uf || n[1] !== df || n[2] !== ff) return null;
+	let r = n.indexOf(pf);
+	if (r !== -1 && (r < 3 || n.indexOf(pf, r + 1) !== -1) || r === -1 && t.length) return null;
 	let i = r === -1 ? n.length - 1 : r, a = "";
 	for (let e = 3; e < i; e += 1) {
 		let t = n[e];
 		if (t) {
-			if (t === af && !a) {
+			if (t === mf && !a) {
 				a = "states";
 				continue;
 			}
@@ -17357,16 +17699,16 @@ function lf(e, t) {
 			continue;
 		}
 		if (!l) return null;
-		let r = cf(t, s, l);
+		let r = _f(t, s, l);
 		if (!r) return null;
 		c.push(r);
 	}
 	return c.length ? Object.freeze(c) : null;
 }
-function uf(e) {
+function yf(e) {
 	return !e || typeof e != "object" || e.is_system === !0 && e.extra?.type ? null : e.is_user === !0 ? typeof e.mes == "string" ? "user" : null : We(e) ? "assistant" : null;
 }
-function df(e, t) {
+function bf(e, t) {
 	let n = (e?.floors ?? []).find((e) => e?.messageIndex === t) ?? null;
 	if (!n) return Object.freeze({
 		kind: "assistant",
@@ -17381,7 +17723,7 @@ function df(e, t) {
 		busy: !!e?.memoryWorkBusy,
 		canExtract: !1
 	});
-	let r = n.memory ?? null, i = Qd((r?.chronology ?? []).map((e) => e?.time?.sourceText || e?.time?.normalized || e?.description)).join("；"), a = n.manualTime ? i || "时间未明确" : n.metadataStale ? "时间戳已变化，请重新提取" : i || n.timeFallback || "时间未明确", o = Qd((r?.locations ?? []).map((e) => e?.name)).join("、") || "未提取", s = new Map((e?.memoryEntities ?? []).map((e) => [e?.entityId, e?.displayName])), c = Qd((r?.participants ?? []).map((e) => s.get(e?.entityId) || "未知人物")).join("、") || "未提取", l = !!(e?.memoryWorkBusy || e?.activeAutoMemory || e?.activeExtraction || e?.activeCse), u = n.status === "running" ? "正在提取" : n.metadataStale ? "正文已变化" : n.status === "ready" ? n.summarySource === "user" ? "人工修订" : "摘要已保存" : n.status === "needsReview" ? "摘要待复核" : ["error", "failed"].includes(n.status) ? "提取失败" : n.status === "unprocessed" ? "尚未提取" : "等待本楼稳定";
+	let r = n.memory ?? null, i = cf((r?.chronology ?? []).map((e) => e?.time?.sourceText || e?.time?.normalized || e?.description)).join("；"), a = n.manualTime ? i || "时间未明确" : n.metadataStale ? "时间戳已变化，请重新提取" : i || n.timeFallback || "时间未明确", o = cf((r?.locations ?? []).map((e) => e?.name)).join("、") || "未提取", s = new Map((e?.memoryEntities ?? []).map((e) => [e?.entityId, e?.displayName])), c = cf((r?.participants ?? []).map((e) => s.get(e?.entityId) || "未知人物")).join("、") || "未提取", l = !!(e?.memoryWorkBusy || e?.activeAutoMemory || e?.activeExtraction || e?.activeCse), u = n.status === "running" ? "正在提取" : n.metadataStale ? "正文已变化" : n.status === "ready" ? n.summarySource === "user" ? "人工修订" : "摘要已保存" : n.status === "needsReview" ? "摘要待复核" : ["error", "failed"].includes(n.status) ? "提取失败" : n.status === "unprocessed" ? "尚未提取" : "等待本楼稳定";
 	return Object.freeze({
 		kind: "assistant",
 		floorId: n.floorId,
@@ -17396,7 +17738,7 @@ function df(e, t) {
 		canExtract: !!n.floorId && !l
 	});
 }
-function ff(e) {
+function xf(e) {
 	if (!e) return Object.freeze({
 		kind: "user",
 		status: "empty",
@@ -17415,13 +17757,13 @@ function ff(e) {
 		assistantSeq: Number.isSafeInteger(e?.assistantSeq) && e.assistantSeq > 0 ? e.assistantSeq : null,
 		reasons: Object.freeze((Array.isArray(e?.reasons) ? e.reasons : []).slice(0, 32).map((e) => String(e).slice(0, 500)))
 	}))), s = o.length, c = Object.freeze((a ? i : []).map((e) => {
-		let t = of(e?.subject, 500), n = of(e?.toward, 500), r = of(e?.text);
+		let t = hf(e?.subject, 500), n = hf(e?.toward, 500), r = hf(e?.text);
 		return t && r ? Object.freeze({
 			subject: t,
 			toward: n,
 			text: r
 		}) : null;
-	}).filter(Boolean)), l = c.length, u = typeof e.injectionText == "string" ? e.injectionText : "", d = a ? lf(u, o) : null, f = d ?? Object.freeze([]), p = d !== null, m = e.status ?? (e.injectionText ? "ready" : "empty"), h = e.legacyReadOnly ? "旧版只读记录" : m === "ready" ? "召回已记录" : m === "empty" ? "本轮无需召回" : m === "stale" ? "本轮结果已失效" : m === "error" ? "本轮召回失败" : "本轮已跳过", g = f.length ? `已召回 ${f.length} 条旧事${l ? ` · ${l} 条人物状态` : ""}` : l ? `已记录 ${l} 条人物状态` : s || !a || e.legacyReadOnly && !p ? "召回内容请在详细回执中查看。" : m === "empty" ? "本轮没有需要注入的记忆。" : "本轮没有已注入的记忆。";
+	}).filter(Boolean)), l = c.length, u = typeof e.injectionText == "string" ? e.injectionText : "", d = a ? vf(u, o) : null, f = d ?? Object.freeze([]), p = d !== null, m = e.status ?? (e.injectionText ? "ready" : "empty"), h = e.legacyReadOnly ? "旧版只读记录" : m === "ready" ? "召回已记录" : m === "empty" ? "本轮无需召回" : m === "stale" ? "本轮结果已失效" : m === "error" ? "本轮召回失败" : "本轮已跳过", g = f.length ? `已召回 ${f.length} 条旧事${l ? ` · ${l} 条人物状态` : ""}` : l ? `已记录 ${l} 条人物状态` : s || !a || e.legacyReadOnly && !p ? "召回内容请在详细回执中查看。" : m === "empty" ? "本轮没有需要注入的记忆。" : "本轮没有已注入的记忆。";
 	return Object.freeze({
 		kind: "user",
 		status: m,
@@ -17438,7 +17780,7 @@ function ff(e) {
 }
 //#endregion
 //#region src/ui/inline-renderer.js
-var pf = Object.freeze([
+var Sf = Object.freeze([
 	0,
 	80,
 	180,
@@ -17449,27 +17791,29 @@ var pf = Object.freeze([
 	2e3,
 	3e3,
 	4200
-]), mf = "[data-qqj-inline-host=\"true\"]", hf = Object.freeze([
+]), Cf = "[data-qqj-inline-host=\"true\"]", wf = Object.freeze([
 	"mesid",
 	"data-mesid",
 	"data-message-id",
 	"class",
 	"is_user"
-]), gf = "\n:host{display:block;max-width:100%;box-sizing:border-box;color:inherit;font:inherit;background:transparent;text-shadow:none}\n*,*::before,*::after{box-sizing:border-box}.card{position:relative;margin:8px 0 2px;padding:1px 5px 2px 10px;max-width:100%;color:inherit;background:transparent;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-left:2px solid #a8322f;border-radius:8px}\n.head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px;min-height:35px}.mark{position:absolute;left:0;top:18px;width:0;height:0;z-index:1;color:#a8322f;pointer-events:none}.knot{position:absolute;left:-5px;top:-5px;width:9px;height:9px;border:1.5px solid currentColor;transform:rotate(45deg);border-radius:1px;background:transparent}.knot::after{content:\"\";position:absolute;inset:2px;background:currentColor;border-radius:1px}\n.toggle,.extract{font:inherit;color:inherit;background:none;border:0;box-shadow:none;border-radius:7px;min-height:32px;cursor:pointer}.toggle{min-width:0;text-align:left;padding:2px 3px;display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);align-items:center;gap:6px}.title{min-width:0;font-size:12px;font-weight:600;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{justify-self:start;min-width:0;max-width:100%;padding:1px 6px;border-radius:999px;font-size:10.5px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:color-mix(in srgb,currentColor 9%,transparent);color:inherit}.status.ready{background:color-mix(in srgb,#56a875 18%,transparent)}.status.running{background:color-mix(in srgb,#4c9bd1 18%,transparent)}.status.review{background:color-mix(in srgb,#d79a35 19%,transparent)}.status.error{background:color-mix(in srgb,#c84a46 17%,transparent)}\n.extract{width:32px;height:32px;padding:0;display:grid;place-items:center;font-family:\"Font Awesome 6 Free\",\"Font Awesome 5 Free\",sans-serif;font-size:12px;font-weight:900;line-height:1}.extract[hidden]{display:none}.extract:disabled{cursor:default;opacity:.42}.toggle:focus-visible,.extract:focus-visible{outline:2px solid #a8322f;outline-offset:1px}\n.body{padding:4px 6px 9px 3px;font-size:13px;line-height:1.75;overflow-wrap:anywhere}.body[hidden]{display:none}.facts{display:grid;gap:0;margin:0;font-size:11px;line-height:1.5;opacity:.68}.meta-row{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}.summary{margin:10px 0 0;font-size:13px;line-height:1.75;white-space:pre-wrap}.assistant .summary{padding-top:10px;border-top:1px solid color-mix(in srgb,currentColor 14%,transparent)}.recall-items{display:grid;gap:9px;margin:3px 0 0}.recall-item{min-width:0}.recall-source{font-size:10.5px;line-height:1.4;opacity:.66}.recall-text{margin-top:1px;font-size:13px;line-height:1.75;white-space:pre-wrap;overflow-wrap:anywhere}.states{margin:10px 0 0}.states>summary{cursor:pointer;font-size:11px;line-height:1.5;opacity:.7}.state-items{display:grid;gap:6px;margin-top:6px}.state-item{font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.error{margin:7px 0 0;color:#a8322f;font-size:11px;line-height:1.55;white-space:pre-wrap}\n@media(max-width:360px){.card{padding-left:8px}.head{grid-template-columns:minmax(0,1fr) auto;gap:2px}.toggle{gap:4px;padding-inline:2px}.body{padding-left:2px}.title{font-size:11.5px}.status{font-size:10px}}\n@media(prefers-reduced-motion:reduce){.toggle,.extract{scroll-behavior:auto}}\n", _f = (e) => Number.isSafeInteger(e) && e >= 0, vf = (e) => /^\d+$/u.test(String(e ?? "").trim()) ? Number(String(e).trim()) : null, yf = (e, t) => {
+]), Tf = "\n:host{display:block;max-width:100%;box-sizing:border-box;color:inherit;font:inherit;background:transparent;text-shadow:none;--qqj-inline-knot:#a8322f;--qqj-inline-line:color-mix(in srgb,currentColor 18%,transparent)}\n*,*::before,*::after{box-sizing:border-box}.card{position:relative;margin:8px 0 2px;padding:1px 5px 2px 10px;max-width:100%;color:inherit;background:transparent;border:1px solid var(--qqj-inline-line);border-left:2px solid var(--qqj-inline-knot);border-radius:8px}\n.head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px;min-height:35px}.mark{position:absolute;left:0;top:18px;width:0;height:0;z-index:1;color:var(--qqj-inline-knot);pointer-events:none}.knot{position:absolute;left:-5px;top:-5px;width:9px;height:9px;border:1.5px solid currentColor;transform:rotate(45deg);border-radius:1px;background:transparent}.knot::after{content:\"\";position:absolute;inset:2px;background:currentColor;border-radius:1px}\n.toggle,.extract{font:inherit;color:inherit;background:none;border:0;box-shadow:none;border-radius:7px;min-height:32px;cursor:pointer}.toggle{min-width:0;text-align:left;padding:2px 3px;display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);align-items:center;gap:6px}.title{min-width:0;font-size:12px;font-weight:600;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{justify-self:start;min-width:0;max-width:100%;padding:1px 6px;border-radius:999px;font-size:10.5px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:color-mix(in srgb,currentColor 9%,transparent);color:inherit}.status.ready{background:color-mix(in srgb,#56a875 18%,transparent)}.status.running{background:color-mix(in srgb,#4c9bd1 18%,transparent)}.status.review{background:color-mix(in srgb,#d79a35 19%,transparent)}.status.error{background:color-mix(in srgb,#c84a46 17%,transparent)}\n.extract{width:32px;height:32px;padding:0;display:grid;place-items:center;font-family:\"Font Awesome 6 Free\",\"Font Awesome 5 Free\",sans-serif;font-size:12px;font-weight:900;line-height:1}.extract[hidden]{display:none}.extract:disabled{cursor:default;opacity:.42}.toggle:focus-visible,.extract:focus-visible{outline:2px solid var(--qqj-inline-knot);outline-offset:1px}\n.body{padding:4px 6px 9px 3px;font-size:13px;line-height:1.75;overflow-wrap:anywhere}.body[hidden]{display:none}.facts{display:grid;gap:0;margin:0;font-size:11px;line-height:1.5;opacity:.68}.meta-row{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}.summary{margin:10px 0 0;font-size:13px;line-height:1.75;white-space:pre-wrap}.assistant .summary{padding-top:10px;border-top:1px solid var(--qqj-inline-line)}.recall-items{display:grid;gap:9px;margin:3px 0 0}.recall-item{min-width:0}.recall-source{font-size:10.5px;line-height:1.4;opacity:.66}.recall-text{margin-top:1px;font-size:13px;line-height:1.75;white-space:pre-wrap;overflow-wrap:anywhere}.states{margin:10px 0 0}.states>summary{cursor:pointer;font-size:11px;line-height:1.5;opacity:.7}.state-items{display:grid;gap:6px;margin-top:6px}.state-item{font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.error{margin:7px 0 0;color:#a8322f;font-size:11px;line-height:1.55;white-space:pre-wrap}\n@media(max-width:360px){.card{padding-left:8px}.head{grid-template-columns:minmax(0,1fr) auto;gap:2px}.toggle{gap:4px;padding-inline:2px}.body{padding-left:2px}.title{font-size:11.5px}.status{font-size:10px}}\n@media(prefers-reduced-motion:reduce){.toggle,.extract{scroll-behavior:auto}}\n", Ef = (e) => Number.isSafeInteger(e) && e >= 0, Df = (e) => /^\d+$/u.test(String(e ?? "").trim()) ? Number(String(e).trim()) : null, Of = (e, t) => {
 	let n = String(t ?? "");
 	e.textContent !== n && (e.textContent = n);
-}, bf = (e) => {
+}, kf = (e) => {
 	try {
 		e?.remove?.();
 	} catch {}
-}, xf = (e) => {
+}, Af = (e) => {
 	try {
 		return JSON.stringify(e);
 	} catch {
 		return "";
 	}
+}, jf = (e, t) => typeof e == "string" && e.trim() ? e.trim() : t, Mf = (e, t, n) => {
+	typeof e?.setProperty == "function" ? e.setProperty(t, n) : e && (e[t] = n);
 };
-function Sf(e) {
+function Nf(e) {
 	for (let t of [
 		e?.getAttribute?.("mesid"),
 		e?.getAttribute?.("data-mesid"),
@@ -17477,26 +17821,26 @@ function Sf(e) {
 		e?.dataset?.mesid,
 		e?.dataset?.messageId
 	]) {
-		let e = vf(t);
+		let e = Df(t);
 		if (e !== null && Number.isSafeInteger(e)) return e;
 	}
 	return null;
 }
-function Cf(e) {
+function Pf(e) {
 	return e?.querySelector?.(".mes_text") ?? null;
 }
-function wf(e, t) {
-	let n = Cf(e), r = n && n !== e ? 3 : 0;
+function Ff(e, t) {
+	let n = Pf(e), r = n && n !== e ? 3 : 0;
 	e?.querySelector?.(".mes_text") && (r += 1), (e?.classList?.contains?.("last_mes") || String(e?.className ?? "").split(/\s+/u).includes("last_mes")) && (r += 2);
 	let i = e?.getAttribute?.("is_user") === "true" || e?.classList?.contains?.("is_user") || e?.classList?.contains?.("user_mes");
 	return t === "user" === i && (r += 1), r;
 }
-function Tf(e, ...t) {
+function If(e, ...t) {
 	return e?.append?.(...t), e;
 }
-function Ef(e, t, n, r, i, a) {
+function Lf(e, t, n, r, i, a) {
 	let o = t.attachShadow({ mode: "open" }), s = e.createElement("style");
-	s.textContent = gf;
+	s.textContent = Tf;
 	let c = e.createElement("article");
 	c.className = `card ${n}`;
 	let l = e.createElement("div");
@@ -17510,7 +17854,7 @@ function Ef(e, t, n, r, i, a) {
 	let p = e.createElement("span");
 	p.className = "title";
 	let m = e.createElement("span");
-	m.className = "status", Tf(f, p, m);
+	m.className = "status", If(f, p, m);
 	let h = e.createElement("button");
 	h.type = "button", h.className = "extract", h.textContent = "", h.title = "重新提取本楼摘要", h.setAttribute?.("aria-label", "重新提取本楼摘要");
 	let g = e.createElement("div");
@@ -17518,7 +17862,7 @@ function Ef(e, t, n, r, i, a) {
 	let _ = e.createElement("div");
 	_.className = "facts";
 	let v = e.createElement("div"), y = e.createElement("div"), b = e.createElement("div");
-	v.className = "meta-row time", y.className = "meta-row locations", b.className = "meta-row people", Tf(_, v, y, b);
+	v.className = "meta-row time", y.className = "meta-row locations", b.className = "meta-row people", If(_, v, y, b);
 	let x = {
 		time: v,
 		locations: y,
@@ -17532,9 +17876,9 @@ function Ef(e, t, n, r, i, a) {
 	let T = e.createElement("summary");
 	T.className = "states-title";
 	let E = e.createElement("div");
-	E.className = "state-items", Tf(w, T, E);
+	E.className = "state-items", If(w, T, E);
 	let D = e.createElement("p");
-	D.className = "error", Tf(g, _, S, C, w, D), Tf(l, f, h), Tf(c, u, l, g), Tf(o, s, c);
+	D.className = "error", If(g, _, S, C, w, D), If(l, f, h), If(c, u, l, g), If(o, s, c);
 	let O = {
 		host: t,
 		root: o,
@@ -17562,14 +17906,14 @@ function Ef(e, t, n, r, i, a) {
 	};
 	return f.addEventListener("click", () => i(O)), h.addEventListener("click", () => a(O)), t.__qqjInlineCard = O, O;
 }
-function Df(e) {
+function Rf(e) {
 	e.body.hidden = !e.expanded, e.host.setAttribute?.("data-open", String(e.expanded)), e.toggle.setAttribute?.("aria-expanded", String(e.expanded)), e.toggle.setAttribute?.("aria-label", `${e.expanded ? "折叠" : "展开"}${e.kind === "user" ? "本轮召回" : "本楼记忆"}`);
 }
-function Of(e, t, n, r) {
+function zf(e, t, n, r) {
 	let i = new Map((t.selectedFloors ?? []).map((e) => [e.assistantSeq, e])), a = (t.historyItems ?? []).map((e) => {
 		let t = i.get(e.assistantSeq), n = t?.floorId ? (r?.floors ?? []).find((e) => e.floorId === t.floorId) : null;
 		return {
-			source: _f(n?.messageIndex) ? `第 ${n.messageIndex} 楼` : "历史记忆",
+			source: Ef(n?.messageIndex) ? `第 ${n.messageIndex} 楼` : "历史记忆",
 			text: e.text
 		};
 	}), o = JSON.stringify(a);
@@ -17578,101 +17922,106 @@ function Of(e, t, n, r) {
 		let r = n.createElement("div");
 		r.className = "recall-item";
 		let i = n.createElement("div");
-		i.className = "recall-source", yf(i, e);
+		i.className = "recall-source", Of(i, e);
 		let a = n.createElement("div");
-		return a.className = "recall-text", yf(a, t), Tf(r, i, a), r;
+		return a.className = "recall-text", Of(a, t), If(r, i, a), r;
 	});
 	e.recallItems.replaceChildren?.(...s), e.recallItems.dataset && (e.recallItems.dataset.signature = o), e.recallItems.hidden = s.length === 0;
 }
-function kf(e, t, n) {
+function Bf(e, t, n) {
 	let r = t.stateItems ?? [], i = JSON.stringify(r);
 	if (e.stateItems.dataset?.signature === i) return;
 	let a = r.map((e) => {
 		let t = n.createElement("div");
-		return t.className = "state-item", yf(t, `${e.subject}${e.toward ? ` → ${e.toward}` : ""}：${e.text}`), t;
+		return t.className = "state-item", Of(t, `${e.subject}${e.toward ? ` → ${e.toward}` : ""}：${e.text}`), t;
 	});
-	e.stateItems.replaceChildren?.(...a), e.stateItems.dataset && (e.stateItems.dataset.signature = i), yf(e.statesTitle, `人物状态 ${a.length} 条`), e.states.hidden = a.length === 0;
+	e.stateItems.replaceChildren?.(...a), e.stateItems.dataset && (e.stateItems.dataset.signature = i), Of(e.statesTitle, `人物状态 ${a.length} 条`), e.states.hidden = a.length === 0;
 }
-function Af(e) {
+function Vf(e) {
 	return e.kind === "user" ? "" : ["error", "failed"].includes(e.status) ? "error" : e.status === "needsReview" || e.statusText === "正文已变化" ? "review" : e.status === "running" ? "running" : e.status === "ready" ? "ready" : "";
 }
-function jf(e, t, n, r) {
+function Hf(e, t, n, r) {
 	let i = JSON.stringify(t);
 	if (e.signature === i) {
-		t.kind === "user" ? Of(e, t, n, r) : (e.extract.hidden = !1, e.extract.disabled = e.extracting || !t.canExtract), Df(e);
+		t.kind === "user" ? zf(e, t, n, r) : (e.extract.hidden = !1, e.extract.disabled = e.extracting || !t.canExtract), Rf(e);
 		return;
 	}
 	e.signature = i, e.projection = t;
 	let a = t.kind === "user" ? "千千结 · 本轮召回" : "千千结 · 本楼记忆";
-	yf(e.title, a), e.title.title = a, yf(e.status, t.statusText), e.status.className = `status${Af(t) ? ` ${Af(t)}` : ""}`, t.kind === "assistant" ? (e.facts.hidden = !1, e.recallItems.hidden = !0, e.states.hidden = !0, yf(e.fields.time, `时间 ${t.time}`), yf(e.fields.locations, `地点 ${t.locations}`), yf(e.fields.people, `人物 ${t.people}`), yf(e.summary, t.summary), yf(e.error, t.error), e.error.hidden = !t.error, e.extract.hidden = !1, e.extract.disabled = e.extracting || !t.canExtract) : (e.facts.hidden = !0, e.extract.hidden = !0, e.extract.disabled = !0, yf(e.summary, t.summary), e.summary.hidden = (t.historyItems?.length ?? 0) > 0, yf(e.error, ""), e.error.hidden = !0, Of(e, t, n, r), kf(e, t, n)), Df(e);
+	Of(e.title, a), e.title.title = a, Of(e.status, t.statusText), e.status.className = `status${Vf(t) ? ` ${Vf(t)}` : ""}`, t.kind === "assistant" ? (e.facts.hidden = !1, e.recallItems.hidden = !0, e.states.hidden = !0, Of(e.fields.time, `时间 ${t.time}`), Of(e.fields.locations, `地点 ${t.locations}`), Of(e.fields.people, `人物 ${t.people}`), Of(e.summary, t.summary), Of(e.error, t.error), e.error.hidden = !t.error, e.extract.hidden = !1, e.extract.disabled = e.extracting || !t.canExtract) : (e.facts.hidden = !0, e.extract.hidden = !0, e.extract.disabled = !0, Of(e.summary, t.summary), e.summary.hidden = (t.historyItems?.length ?? 0) > 0, Of(e.error, ""), e.error.hidden = !0, zf(e, t, n, r), Bf(e, t, n)), Rf(e);
 }
-function Mf({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r = globalThis.document, windowRef: i = r?.defaultView ?? globalThis, projectReceipt: a = Cd, logger: o = console } = {}) {
+function Uf({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r = globalThis.document, windowRef: i = r?.defaultView ?? globalThis, projectReceipt: a = Md, logger: o = console } = {}) {
 	if (!e || typeof e.getState != "function" || typeof e.extractFloor != "function") throw TypeError("楼内渲染 memory runtime 无效");
 	if (!t || typeof t.getState != "function") throw TypeError("楼内渲染 recall runtime 无效");
 	if (!n || typeof n.snapshot != "function") throw TypeError("楼内渲染 host adapter 无效");
-	let s = !1, c = !1, l = 0, u = 0, d = 0, f = null, p = null, m = null, h = !1, g = /* @__PURE__ */ new Map(), _ = /* @__PURE__ */ new Map(), v = /* @__PURE__ */ new Set(), y = [], b = null, x = null, S = /* @__PURE__ */ new WeakMap(), C = {}, w = () => {
-		m !== null && (i?.clearTimeout?.(m), m = null), p?.disconnect?.(), p = null, u += 1;
-	}, T = () => {
-		for (let e of g.values()) bf(e.host);
-		g.clear();
-		for (let e of r?.querySelectorAll?.(mf) ?? []) bf(e);
+	let s = !1, c = !1, l = 0, u = 0, d = 0, f = null, p = null, m = null, h = !1, g = /* @__PURE__ */ new Map(), _ = /* @__PURE__ */ new Map(), v = /* @__PURE__ */ new Set(), y = [], b = null, x = null, S = Object.freeze({
+		knot: "#a8322f",
+		line: "color-mix(in srgb,currentColor 18%,transparent)"
+	}), C = /* @__PURE__ */ new WeakMap(), w = {}, T = (e) => {
+		Mf(e?.style, "--qqj-inline-knot", S.knot), Mf(e?.style, "--qqj-inline-line", S.line);
 	}, E = () => {
-		l += 1, w(), v.clear(), f = null, T();
-	}, D = (e, t, n) => `${e}:${t}:${n}`, O = (e) => {
-		e.expanded = !e.expanded, _.set(e.stateKey, e.expanded), Df(e);
-	}, k = (t) => {
+		m !== null && (i?.clearTimeout?.(m), m = null), p?.disconnect?.(), p = null, u += 1;
+	}, D = () => {
+		for (let e of g.values()) kf(e.host);
+		g.clear();
+		for (let e of r?.querySelectorAll?.(Cf) ?? []) kf(e);
+	}, O = () => {
+		l += 1, E(), v.clear(), f = null, D();
+	}, k = (e, t, n) => `${e}:${t}:${n}`, A = (e) => {
+		e.expanded = !e.expanded, _.set(e.stateKey, e.expanded), Rf(e);
+	}, j = (t) => {
 		let n = t.projection;
 		!s || t.extracting || n?.kind !== "assistant" || !n.canExtract || !n.floorId || (t.extracting = !0, t.extract.disabled = !0, Promise.resolve(e.extractFloor(n.floorId, { analyzeState: !1 })).catch((e) => {
 			o?.warn?.("[qianqianjie] 楼内重新提取失败", { code: String(e?.code ?? e?.name ?? "V3_INLINE_EXTRACT_FAILED").slice(0, 120) });
 		}).finally(() => {
-			t.extracting = !1, ee();
+			t.extracting = !1, L();
 		}));
-	}, A = (e, t, n, i) => {
-		let a = Cf(e);
+	}, M = (e, t, n, i) => {
+		let a = Pf(e);
 		if (!a?.append) return null;
 		let o = g.get(t);
-		if (o && (o.kind !== n || o.host?.parentElement !== a || o.host?.isConnected === !1) && (bf(o.host), g.delete(t), o = null), !o) {
-			let e = [...a.querySelectorAll?.(mf) ?? []].find((e) => Sf(e) === t) ?? null;
-			e && e.__qqjInlineOwner !== C && (bf(e), e = null), e || (e = r.createElement("div"), e.className = "qqj-inline-host", e.setAttribute?.("data-qqj-inline-host", "true"), e.setAttribute?.("data-message-id", String(t)), e.dataset && (e.dataset.qqjInlineHost = "true", e.dataset.messageId = String(t)), a.append(e)), e.__qqjInlineOwner = C;
-			let s = D(i, t, n);
-			o = e.__qqjInlineCard ?? Ef(r, e, n, _.get(s) === !0, O, k), o.stateKey = s, o.kind = n, g.set(t, o);
+		if (o && (o.kind !== n || o.host?.parentElement !== a || o.host?.isConnected === !1) && (kf(o.host), g.delete(t), o = null), !o) {
+			let e = [...a.querySelectorAll?.(Cf) ?? []].find((e) => Nf(e) === t) ?? null;
+			e && e.__qqjInlineOwner !== w && (kf(e), e = null), e || (e = r.createElement("div"), e.className = "qqj-inline-host", e.setAttribute?.("data-qqj-inline-host", "true"), e.setAttribute?.("data-message-id", String(t)), e.dataset && (e.dataset.qqjInlineHost = "true", e.dataset.messageId = String(t)), a.append(e)), e.__qqjInlineOwner = w, T(e);
+			let s = k(i, t, n);
+			o = e.__qqjInlineCard ?? Lf(r, e, n, _.get(s) === !0, A, j), o.stateKey = s, o.kind = n, g.set(t, o);
 		}
 		return o;
-	}, j = (e, t, n) => e?.activeRecall?.chatId === t && e.activeRecall.userMessageIndex === n ? Object.freeze({
+	}, N = (e, t, n) => e?.activeRecall?.chatId === t && e.activeRecall.userMessageIndex === n ? Object.freeze({
 		status: "running",
 		statusText: "正在核对本轮召回",
 		summary: "正在生成本轮召回回执。",
 		injectionText: "",
 		selectedFloors: Object.freeze([]),
 		kind: "user"
-	}) : e?.lastRecallBinding?.chatId === t && e.lastRecallBinding.userMessageIndex === n && e?.lastRecall?.userMessageIndex === n ? ff(e.lastRecall) : null, M = (e, t, n, r) => {
-		let i = e.extra?.[Yu];
+	}) : e?.lastRecallBinding?.chatId === t && e.lastRecallBinding.userMessageIndex === n && e?.lastRecall?.userMessageIndex === n ? xf(e.lastRecall) : null, P = (e, t, n, r) => {
+		let i = e.extra?.[id];
 		if (!i || typeof i != "object") return Promise.resolve(null);
-		let o = S.get(i);
+		let o = C.get(i);
 		if (o && o.chatId === t && o.messageIndex === n && o.messageText === e.mes && o.stamp === r) return o.promise;
 		let s = Promise.resolve(a(e, {
 			chatId: t,
 			userMessageIndex: n
 		})).catch(() => null);
-		return S.set(i, {
+		return C.set(i, {
 			chatId: t,
 			messageIndex: n,
 			messageText: e.mes,
 			stamp: r,
 			promise: s
 		}), s;
-	}, N = (n, i, a, o, c, u, d) => {
-		let f = j(u, o, a), p = i.extra?.[Yu];
+	}, F = (n, i, a, o, c, u, d) => {
+		let f = N(u, o, a), p = i.extra?.[id];
 		if (!p || typeof p != "object") {
-			jf(n, f ?? ff(null), r, c);
+			Hf(n, f ?? xf(null), r, c);
 			return;
 		}
-		let m = i.mes, h = xf(p), _ = n.receiptIdentity === p && n.receiptMessageText === m && n.receiptStamp === h && n.receiptChatId === o && n.receiptSettled === !0;
-		if (f) jf(n, f, r, c);
+		let m = i.mes, h = Af(p), _ = n.receiptIdentity === p && n.receiptMessageText === m && n.receiptStamp === h && n.receiptChatId === o && n.receiptSettled === !0;
+		if (f) Hf(n, f, r, c);
 		else if (_) {
-			jf(n, n.projection, r, c);
+			Hf(n, n.projection, r, c);
 			return;
-		} else jf(n, Object.freeze({
+		} else Hf(n, Object.freeze({
 			status: "running",
 			statusText: "正在核验历史回执",
 			summary: "正在核验这一楼保存的召回记录。",
@@ -17680,13 +18029,13 @@ function Mf({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 			selectedFloors: Object.freeze([]),
 			kind: "user"
 		}), r, c);
-		M(i, o, a, h).then((c) => {
-			if (!s || d !== l || i.mes !== m || i.extra?.qqj_v3_recall_receipt !== p || xf(p) !== h || g.get(a) !== n) return;
+		P(i, o, a, h).then((c) => {
+			if (!s || d !== l || i.mes !== m || i.extra?.qqj_v3_recall_receipt !== p || Af(p) !== h || g.get(a) !== n) return;
 			n.receiptIdentity = p, n.receiptMessageText = m, n.receiptStamp = h, n.receiptChatId = o, n.receiptSettled = !0;
-			let u = j(t.getState(), o, a);
-			jf(n, u?.status === "running" ? u : c ? ff(c) : u ?? ff(null), r, e.getState());
+			let u = N(t.getState(), o, a);
+			Hf(n, u?.status === "running" ? u : c ? xf(c) : u ?? xf(null), r, e.getState());
 		});
-	}, P = () => {
+	}, ee = () => {
 		if (!s || c || !r?.querySelector) return !0;
 		let a;
 		try {
@@ -17695,74 +18044,74 @@ function Mf({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 			return !1;
 		}
 		let o = Array.isArray(a?.chat) ? a.chat : [], u = String(a?.context?.chatMetadata?.qianqianjie?.chatId ?? "").trim(), d = `${u || a?.chatId || "no-chat"}|${a?.chatId || ""}`;
-		f !== d && (l += 1, m !== null && (i?.clearTimeout?.(m), m = null), p?.disconnect?.(), p = null, v.clear(), T(), f = d);
+		f !== d && (l += 1, m !== null && (i?.clearTimeout?.(m), m = null), p?.disconnect?.(), p = null, v.clear(), D(), f = d);
 		let h = l, _ = r.querySelector("#chat");
 		if (!_?.querySelectorAll) return !1;
 		let y = /* @__PURE__ */ new Map();
 		for (let e of _.querySelectorAll(".mes")) {
-			let t = Sf(e), n = uf(_f(t) ? o[t] : null);
+			let t = Nf(e), n = yf(Ef(t) ? o[t] : null);
 			if (!n) continue;
 			let r = y.get(t);
-			(!r || wf(e, n) >= r.priority) && y.set(t, {
+			(!r || Ff(e, n) >= r.priority) && y.set(t, {
 				element: e,
 				role: n,
-				priority: wf(e, n)
+				priority: Ff(e, n)
 			});
 		}
 		let b = e.getState(), x = t.getState(), S = !0;
 		for (let [e, t] of y) {
-			let n = A(t.element, e, t.role, d);
+			let n = M(t.element, e, t.role, d);
 			if (!n) {
 				S = !1;
 				continue;
 			}
-			t.role === "assistant" ? jf(n, df(b, e), r, b) : N(n, o[e], e, u, b, x, h);
+			t.role === "assistant" ? Hf(n, bf(b, e), r, b) : F(n, o[e], e, u, b, x, h);
 		}
-		for (let [e, t] of [...g]) y.has(e) || (bf(t.host), g.delete(e));
-		for (let e of r.querySelectorAll(mf)) {
-			let t = Sf(e);
-			(!_f(t) || g.get(t)?.host !== e) && bf(e);
+		for (let [e, t] of [...g]) y.has(e) || (kf(t.host), g.delete(e));
+		for (let e of r.querySelectorAll(Cf)) {
+			let t = Nf(e);
+			(!Ef(t) || g.get(t)?.host !== e) && kf(e);
 		}
-		o.reduce((e, t) => e + +!!uf(t), 0) > 0 && y.size === 0 && (S = !1);
-		for (let e of v) uf(o[e]) && !y.has(e) && (S = !1);
+		o.reduce((e, t) => e + +!!yf(t), 0) > 0 && y.size === 0 && (S = !1);
+		for (let e of v) yf(o[e]) && !y.has(e) && (S = !1);
 		return S && v.clear(), S;
-	}, F = (e) => {
-		if (!s || c || e !== u || (p?.disconnect?.(), p = null, P()) || d >= pf.length) return;
+	}, I = (e) => {
+		if (!s || c || e !== u || (p?.disconnect?.(), p = null, ee()) || d >= Sf.length) return;
 		let t = i?.MutationObserver ?? globalThis.MutationObserver, n = r?.querySelector?.("#chat") ?? r?.body;
 		typeof t == "function" && n && (p = new t(() => {
-			p?.disconnect?.(), p = null, m !== null && (i?.clearTimeout?.(m), m = null), F(e);
+			p?.disconnect?.(), p = null, m !== null && (i?.clearTimeout?.(m), m = null), I(e);
 		}), p.observe(n, {
 			childList: !0,
 			subtree: !0,
 			attributes: !0,
-			attributeFilter: [...hf]
+			attributeFilter: [...wf]
 		}));
 		let a = d;
 		d += 1, m = i?.setTimeout?.(() => {
-			m = null, F(e);
-		}, pf[a]) ?? null;
+			m = null, I(e);
+		}, Sf[a]) ?? null;
 	};
-	function ee(...e) {
+	function L(...e) {
 		if (!(!s || c)) {
 			for (let t of e) {
-				let e = vf(t);
-				if (e !== null && _f(e)) v.add(e);
+				let e = Df(t);
+				if (e !== null && Ef(e)) v.add(e);
 				else if (t && typeof t == "object") for (let e of [
 					"messageIndex",
 					"messageId",
 					"mesid"
 				]) {
 					if (!Object.hasOwn(t, e)) continue;
-					let n = vf(t[e]);
-					n !== null && _f(n) && v.add(n);
+					let n = Df(t[e]);
+					n !== null && Ef(n) && v.add(n);
 				}
 			}
 			h || (h = !0, Promise.resolve().then(() => {
-				h = !1, !(!s || c) && (w(), d = 0, F(u));
+				h = !1, !(!s || c) && (E(), d = 0, I(u));
 			}));
 		}
 	}
-	let I = () => {
+	let R = () => {
 		let e;
 		try {
 			e = n.snapshot();
@@ -17787,7 +18136,7 @@ function Mf({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 			let n = r[e];
 			if (!n) continue;
 			let i = (...t) => {
-				(e === "CHAT_CHANGED" || e === "CHAT_RENAMED") && E(), ee(...t);
+				(e === "CHAT_CHANGED" || e === "CHAT_RENAMED") && O(), L(...t);
 			};
 			t.on(n, i), y.push({
 				source: t,
@@ -17796,27 +18145,36 @@ function Mf({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 			});
 		}
 	};
-	function L() {
-		return c || s ? { status: c ? "destroyed" : "ready" } : (s = !0, I(), b = e.subscribe?.(() => ee()) ?? null, x = t.subscribe?.(() => ee()) ?? null, ee(), { status: "ready" });
+	function z() {
+		return c || s ? { status: c ? "destroyed" : "ready" } : (s = !0, R(), b = e.subscribe?.(() => L()) ?? null, x = t.subscribe?.(() => L()) ?? null, L(), { status: "ready" });
 	}
-	function R() {
-		s = !1, E(), b?.(), b = null, x?.(), x = null;
+	function B() {
+		s = !1, O(), b?.(), b = null, x?.(), x = null;
 		for (let { source: e, event: t, handler: n } of y.splice(0)) typeof e.removeListener == "function" ? e.removeListener(t, n) : e.off?.(t, n);
 		return { status: "stopped" };
 	}
-	function z(e) {
-		return e === !0 ? L() : R();
+	function V(e) {
+		return e === !0 ? z() : B();
 	}
-	function B() {
-		R(), c = !0, w(), T(), _.clear();
+	function H(e) {
+		S = Object.freeze({
+			knot: jf(e?.palette?.knot, "#a8322f"),
+			line: jf(e?.palette?.line, "color-mix(in srgb,currentColor 18%,transparent)")
+		});
+		for (let e of g.values()) T(e.host);
+		return S;
+	}
+	function U() {
+		B(), c = !0, E(), D(), _.clear();
 	}
 	return Object.freeze({
-		start: L,
-		stop: R,
-		setEnabled: z,
-		destroy: B,
-		schedule: ee,
-		refresh: P,
+		start: z,
+		stop: B,
+		setEnabled: V,
+		setAppearance: H,
+		destroy: U,
+		schedule: L,
+		refresh: ee,
 		getDebugState: () => Object.freeze({
 			active: s,
 			destroyed: c,
@@ -17830,35 +18188,35 @@ function Mf({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 }
 //#endregion
 //#region index.js
-var Nf = () => !!(r || a), Pf = wc({ worldInfoBindings: {
+var Wf = () => !!(r || a), Gf = Nc({ worldInfoBindings: {
 	loadWorldInfo: o,
 	getSelectedWorldInfo: () => s,
 	getWorldInfoSettings: () => c,
 	getWorldInfoNames: () => d,
 	getDefaultCaseSensitive: () => l,
 	getDefaultMatchWholeWords: () => u
-} }), Ff = () => Pf.getContext(), If = () => ({
-	...Ff(),
+} }), Kf = () => Gf.getContext(), qf = () => ({
+	...Kf(),
 	userAvatar: e
-}), Lf = Ya({
+}), Jf = to({
 	extensionSettings: n,
 	save: i
 });
-Lf.migrateLegacyApiSettings();
-var Rf = () => de({
+Jf.migrateLegacyApiSettings();
+var Yf = () => fe({
 	extensionNames: t,
 	disabledExtensions: n.disabledExtensions,
 	extensionSuffix: "/ST-SevenDaysCal",
 	peerSettings: n["schedule-planner"]
-}), zf = () => {
+}), Xf = () => {
 	let e = t.find((e) => String(e).endsWith("/ST-SevenDaysCal"));
 	return !!(e && !n.disabledExtensions?.includes(e));
-}, Bf = fe({
-	context: Ff,
-	settings: () => Lf.get(),
-	peerState: Rf
-}), Vf = "qqj-sdc-story-clock-settings-changed", Hf = pe({
-	controller: Bf,
+}, Zf = pe({
+	context: Kf,
+	settings: () => Jf.get(),
+	peerState: Yf
+}), Qf = "qqj-sdc-story-clock-settings-changed", $f = me({
+	controller: Zf,
 	labelFor: (e) => ({
 		custom: "使用自定义时间戳提示词",
 		"adapted-sdc": "已适配构画时间戳",
@@ -17868,171 +18226,172 @@ var Rf = () => de({
 		closed: "正文时间戳已关闭",
 		unavailable: "宿主暂不支持时间戳注入"
 	})[e?.status] ?? "时间戳状态会在下一次正文生成前刷新。"
-}), Uf = () => {
+}), ep = () => {
 	try {
-		typeof globalThis.CustomEvent == "function" && globalThis.dispatchEvent?.(new globalThis.CustomEvent(Vf, { detail: { owner: "myknots" } }));
+		typeof globalThis.CustomEvent == "function" && globalThis.dispatchEvent?.(new globalThis.CustomEvent(Qf, { detail: { owner: "myknots" } }));
 	} catch {}
-}, Wf = ({ readOnly: e = !1, announce: t = !1 } = {}) => {
-	let n = Hf({ readOnly: e });
-	return t && Uf(), n;
+}, tp = ({ readOnly: e = !1, announce: t = !1 } = {}) => {
+	let n = $f({ readOnly: e });
+	return t && ep(), n;
 };
-globalThis.addEventListener?.(Vf, (e) => {
-	e?.detail?.owner !== "myknots" && Wf();
+globalThis.addEventListener?.(Qf, (e) => {
+	e?.detail?.owner !== "myknots" && tp();
 });
-var Gf = () => ({
-	keepTags: Lf.get().sourceKeepTags,
-	extraTags: Lf.get().sourceExtraTags
-}), Kf = g({ headers: () => Ff()?.getRequestHeaders?.() ?? {} }), qf, Jf, Yf = Ts({
-	headers: () => Ff()?.getRequestHeaders?.() ?? {},
-	onBusyChange: (e) => qf?.fab?.setBusy?.(e)
-}), Xf = Qo({ settings: Lf }), Zf = $o({
-	resolver: Xf,
-	compactClient: Yf,
-	isEnabled: Lf.isEnabled
-}), Qf = es({
-	resolver: Xf,
-	compactClient: Yf,
-	isEnabled: Lf.isEnabled
-}), $f = Rs({ client: Kf }), ep = Os({
-	contextProvider: If,
-	isEnabled: Lf.isEnabled,
-	identityCoordinator: $f
-}), tp = yc({
-	settings: Lf,
-	contextProvider: If
-}), np = () => Lf.get().summaryPrompt, rp = () => Lf.get().csePrompt, ip = () => Lf.get().profilePrompt, ap = Zs({
-	client: Kf,
-	contextProvider: () => ep.identity(),
-	isEnabled: Lf.isEnabled
-}), op = el({
-	hostAdapter: Pf,
-	store: ap,
-	contextProvider: If,
-	prepareSession: () => ep.prepare(),
-	isEnabled: Lf.isEnabled,
-	sanitizerOptions: Gf
-}), sp, cp = tu({
-	foundationRuntime: op,
-	store: ap,
-	hostAdapter: Pf,
-	generateAnalysisTask: Zf.generateAnalysisTask,
-	generateUtilityTask: Zf.generateUtilityTask,
-	isEnabled: Lf.isEnabled,
+var np = () => ({
+	keepTags: Jf.get().sourceKeepTags,
+	extraTags: Jf.get().sourceExtraTags
+}), rp = g({ headers: () => Kf()?.getRequestHeaders?.() ?? {} }), ip, ap, op = Ns({
+	headers: () => Kf()?.getRequestHeaders?.() ?? {},
+	onBusyChange: (e) => ip?.fab?.setBusy?.(e)
+}), sp = os({ settings: Jf }), cp = ss({
+	resolver: sp,
+	compactClient: op,
+	isEnabled: Jf.isEnabled
+}), lp = cs({
+	resolver: sp,
+	compactClient: op,
+	isEnabled: Jf.isEnabled
+}), up = Ks({ client: rp }), dp = Is({
+	contextProvider: qf,
+	isEnabled: Jf.isEnabled,
+	identityCoordinator: up
+}), fp = Oc({
+	settings: Jf,
+	contextProvider: qf
+}), pp = () => Jf.get().summaryPrompt, mp = () => Jf.get().csePrompt, hp = () => Jf.get().profilePrompt, gp = oc({
+	client: rp,
+	contextProvider: () => dp.identity(),
+	isEnabled: Jf.isEnabled
+}), _p = ll({
+	hostAdapter: Gf,
+	store: gp,
+	contextProvider: qf,
+	prepareSession: () => dp.prepare(),
+	isEnabled: Jf.isEnabled,
+	sanitizerOptions: np
+}), vp, yp = uu({
+	foundationRuntime: _p,
+	store: gp,
+	hostAdapter: Gf,
+	generateAnalysisTask: cp.generateAnalysisTask,
+	generateUtilityTask: cp.generateUtilityTask,
+	isEnabled: Jf.isEnabled,
 	automationSettings: () => ({
-		enabled: Lf.isEnabled(),
+		enabled: Jf.isEnabled(),
 		batchSize: 1
 	}),
 	notifyUser: (e) => globalThis.toastr?.[e?.kind]?.(e?.text),
-	isMainGenerationActive: Nf,
-	onFullRebuildCommitted: () => sp?.invalidate("fullRebuild"),
-	extractorPromptGuidance: np,
-	csePromptGuidance: rp,
-	filterWorldInfoSources: tp.filterWorldInfoSources,
-	sanitizerOptions: Gf
+	isMainGenerationActive: Wf,
+	onFullRebuildCommitted: () => vp?.invalidate("fullRebuild"),
+	extractorPromptGuidance: pp,
+	csePromptGuidance: mp,
+	filterWorldInfoSources: fp.filterWorldInfoSources,
+	sanitizerOptions: np
 });
-sp = wd({
-	store: ap,
-	hostAdapter: Pf,
-	isEnabled: Lf.isEnabled,
-	automationSettings: () => ({ enabled: Lf.isEnabled() }),
-	memoryStatus: () => cp.getState(),
-	historicalMaintenance: () => cp.shouldBlockMainGeneration(),
-	realtimeOrigin: () => cp.allowsRealtimeTailFromEmpty(),
+vp = Nd({
+	store: gp,
+	hostAdapter: Gf,
+	isEnabled: Jf.isEnabled,
+	automationSettings: () => ({ enabled: Jf.isEnabled() }),
+	memoryStatus: () => yp.getState(),
+	historicalMaintenance: () => yp.shouldBlockMainGeneration(),
+	realtimeOrigin: () => yp.allowsRealtimeTailFromEmpty(),
 	notifyUser: (e) => globalThis.toastr?.[e?.kind]?.(e?.text),
-	sanitizerOptions: Gf
+	sanitizerOptions: np
 });
-var lp = Ta({
-	store: ya({ client: Kf }),
-	session: ep,
-	foundationRuntime: op,
-	memoryRuntime: cp,
-	generateUtilityTask: Zf.generateUtilityTask,
-	sourcePermissions: tp,
-	contextProvider: If,
-	sanitizerOptions: Gf,
-	profilePromptGuidance: ip,
-	isEnabled: Lf.isEnabled
-}), up = Rd({
-	hostAdapter: Pf,
-	memoryRuntime: cp,
-	settings: Lf,
+var bp = ja({
+	store: Ta({ client: rp }),
+	session: dp,
+	foundationRuntime: _p,
+	memoryRuntime: yp,
+	generateUtilityTask: cp.generateUtilityTask,
+	sourcePermissions: fp,
+	contextProvider: qf,
+	sanitizerOptions: np,
+	profilePromptGuidance: hp,
+	isEnabled: Jf.isEnabled
+}), xp = qd({
+	hostAdapter: Gf,
+	memoryRuntime: yp,
+	settings: Jf,
 	notifyUser: (e) => globalThis.toastr?.[e?.kind]?.(e?.text)
-}), dp = Mf({
-	memoryRuntime: cp,
-	recallRuntime: sp,
-	hostAdapter: Pf
-}), fp = nc({
-	client: Kf,
-	session: ep,
-	hostAdapter: Pf,
-	foundationRuntime: op,
-	memoryRuntime: cp,
-	recallRuntime: sp,
-	peopleRuntime: lp,
-	autoHideController: up,
-	isMainGenerationActive: Nf
-}), pp = Zd({
-	session: ep,
-	store: ap,
-	hostAdapter: Pf,
-	isEnabled: Lf.isEnabled,
-	sanitizerOptions: Gf
+}), Sp = Uf({
+	memoryRuntime: yp,
+	recallRuntime: vp,
+	hostAdapter: Gf
+}), Cp = dc({
+	client: rp,
+	session: dp,
+	hostAdapter: Gf,
+	foundationRuntime: _p,
+	memoryRuntime: yp,
+	recallRuntime: vp,
+	peopleRuntime: bp,
+	autoHideController: xp,
+	isMainGenerationActive: Wf
+}), wp = sf({
+	session: dp,
+	store: gp,
+	hostAdapter: Gf,
+	isEnabled: Jf.isEnabled,
+	sanitizerOptions: np
 });
-globalThis.addEventListener?.("beforeunload", pp.cleanup, { once: !0 }), globalThis.addEventListener?.("beforeunload", up.dispose, { once: !0 }), globalThis.addEventListener?.("beforeunload", dp.destroy, { once: !0 }), globalThis.qqj_v3_recall_interceptor = (e, t, n, r) => sp.intercept(e, t, n, r), qf = Uo({
-	settings: Lf,
-	apiTools: Qf,
+globalThis.addEventListener?.("beforeunload", wp.cleanup, { once: !0 }), globalThis.addEventListener?.("beforeunload", xp.dispose, { once: !0 }), globalThis.addEventListener?.("beforeunload", Sp.destroy, { once: !0 }), globalThis.qqj_v3_recall_interceptor = (e, t, n, r) => vp.intercept(e, t, n, r), ip = Zo({
+	settings: Jf,
+	apiTools: lp,
 	onPluginEnabledChange: async (e) => {
-		if (Wf({ announce: !0 }), !e) {
-			dp.setEnabled(!1), up.stop(), await lp.setEnabled(!1), await sp.setEnabled(!1);
-			let e = await cp.setEnabled(!1), t = await Jf?.setEnabled(!1);
+		if (tp({ announce: !0 }), !e) {
+			Sp.setEnabled(!1), xp.stop(), await bp.setEnabled(!1), await vp.setEnabled(!1);
+			let e = await yp.setEnabled(!1), t = await ap?.setEnabled(!1);
 			return e ?? t;
 		}
-		dp.setEnabled(!0);
-		let t = await Jf?.setEnabled(e), n = await cp.setEnabled(e);
-		return await sp.setEnabled(e), await lp.setEnabled(e), n ?? t;
+		Sp.setEnabled(!0);
+		let t = await ap?.setEnabled(e), n = await yp.setEnabled(e);
+		return await vp.setEnabled(e), await bp.setEnabled(e), n ?? t;
 	},
-	onStoryClockChange: (e) => Wf({
+	onStoryClockChange: (e) => tp({
 		...e,
 		announce: e?.readOnly !== !0
 	}),
-	onAutoHideChange: (e) => up.applySettings(e),
+	onAutoHideChange: (e) => xp.applySettings(e),
 	subscribeDialogContextChange: (e) => {
-		let t = Ff(), n = t?.eventTypes?.CHAT_CHANGED;
+		let t = Kf(), n = t?.eventTypes?.CHAT_CHANGED;
 		return !n || !t?.eventSource?.on ? () => {} : (t.eventSource.on(n, e), () => t.eventSource.removeListener?.(n, e));
 	},
-	isSevenDaysAvailable: zf,
-	sourcePermissions: tp,
-	v3FoundationRuntime: cp,
-	v3RecallRuntime: sp,
-	peopleWorkspaceRuntime: lp,
-	chatMemoryManagement: fp,
+	isSevenDaysAvailable: Xf,
+	sourcePermissions: fp,
+	v3FoundationRuntime: yp,
+	v3RecallRuntime: vp,
+	peopleWorkspaceRuntime: bp,
+	chatMemoryManagement: Cp,
+	inlineRenderer: Sp,
 	enableFab: !0
-}), Jf = ic({
-	session: ep,
+}), ap = pc({
+	session: dp,
 	aborters: [
-		Zf,
-		Qf,
-		lp
+		cp,
+		lp,
+		bp
 	],
-	isEnabled: Lf.isEnabled,
-	getUi: () => qf
+	isEnabled: Jf.isEnabled,
+	getUi: () => ip
 });
-var mp = Ff();
-Wf({ announce: !0 }), Jf.bind({
-	eventSource: mp?.eventSource,
-	eventTypes: mp?.eventTypes
-}), cp.bind({
-	eventSource: mp?.eventSource,
-	eventTypes: mp?.eventTypes
-}), sp.bind({
-	eventSource: mp?.eventSource,
-	eventTypes: mp?.eventTypes
+var Tp = Kf();
+tp({ announce: !0 }), ap.bind({
+	eventSource: Tp?.eventSource,
+	eventTypes: Tp?.eventTypes
+}), yp.bind({
+	eventSource: Tp?.eventSource,
+	eventTypes: Tp?.eventTypes
+}), vp.bind({
+	eventSource: Tp?.eventSource,
+	eventTypes: Tp?.eventTypes
 });
 for (let e of ["CHAT_CHANGED", "GENERATION_STARTED"]) {
-	let t = mp?.eventTypes?.[e];
-	t && mp?.eventSource?.on?.(t, () => Wf());
+	let t = Tp?.eventTypes?.[e];
+	t && Tp?.eventSource?.on?.(t, () => tp());
 }
 (async () => {
-	dp.setEnabled(Lf.isEnabled()), await Jf.start(), await cp.start(), await lp.start();
+	Sp.setEnabled(Jf.isEnabled()), await ap.start(), await yp.start(), await bp.start();
 })().catch((e) => console.warn("[qianqianjie] 身份或 V3 地基准备失败", e));
 //#endregion

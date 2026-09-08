@@ -5,12 +5,12 @@ const RETRY_DELAYS = Object.freeze([0, 80, 180, 320, 500, 850, 1300, 2000, 3000,
 const HOST_SELECTOR = '[data-qqj-inline-host="true"]';
 const OBSERVED_ATTRIBUTES = Object.freeze(['mesid', 'data-mesid', 'data-message-id', 'class', 'is_user']);
 const INLINE_STYLE = `
-:host{display:block;max-width:100%;box-sizing:border-box;color:inherit;font:inherit;background:transparent;text-shadow:none}
-*,*::before,*::after{box-sizing:border-box}.card{position:relative;margin:8px 0 2px;padding:1px 5px 2px 10px;max-width:100%;color:inherit;background:transparent;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-left:2px solid #a8322f;border-radius:8px}
-.head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px;min-height:35px}.mark{position:absolute;left:0;top:18px;width:0;height:0;z-index:1;color:#a8322f;pointer-events:none}.knot{position:absolute;left:-5px;top:-5px;width:9px;height:9px;border:1.5px solid currentColor;transform:rotate(45deg);border-radius:1px;background:transparent}.knot::after{content:"";position:absolute;inset:2px;background:currentColor;border-radius:1px}
+:host{display:block;max-width:100%;box-sizing:border-box;color:inherit;font:inherit;background:transparent;text-shadow:none;--qqj-inline-knot:#a8322f;--qqj-inline-line:color-mix(in srgb,currentColor 18%,transparent)}
+*,*::before,*::after{box-sizing:border-box}.card{position:relative;margin:8px 0 2px;padding:1px 5px 2px 10px;max-width:100%;color:inherit;background:transparent;border:1px solid var(--qqj-inline-line);border-left:2px solid var(--qqj-inline-knot);border-radius:8px}
+.head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px;min-height:35px}.mark{position:absolute;left:0;top:18px;width:0;height:0;z-index:1;color:var(--qqj-inline-knot);pointer-events:none}.knot{position:absolute;left:-5px;top:-5px;width:9px;height:9px;border:1.5px solid currentColor;transform:rotate(45deg);border-radius:1px;background:transparent}.knot::after{content:"";position:absolute;inset:2px;background:currentColor;border-radius:1px}
 .toggle,.extract{font:inherit;color:inherit;background:none;border:0;box-shadow:none;border-radius:7px;min-height:32px;cursor:pointer}.toggle{min-width:0;text-align:left;padding:2px 3px;display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);align-items:center;gap:6px}.title{min-width:0;font-size:12px;font-weight:600;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{justify-self:start;min-width:0;max-width:100%;padding:1px 6px;border-radius:999px;font-size:10.5px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:color-mix(in srgb,currentColor 9%,transparent);color:inherit}.status.ready{background:color-mix(in srgb,#56a875 18%,transparent)}.status.running{background:color-mix(in srgb,#4c9bd1 18%,transparent)}.status.review{background:color-mix(in srgb,#d79a35 19%,transparent)}.status.error{background:color-mix(in srgb,#c84a46 17%,transparent)}
-.extract{width:32px;height:32px;padding:0;display:grid;place-items:center;font-family:"Font Awesome 6 Free","Font Awesome 5 Free",sans-serif;font-size:12px;font-weight:900;line-height:1}.extract[hidden]{display:none}.extract:disabled{cursor:default;opacity:.42}.toggle:focus-visible,.extract:focus-visible{outline:2px solid #a8322f;outline-offset:1px}
-.body{padding:4px 6px 9px 3px;font-size:13px;line-height:1.75;overflow-wrap:anywhere}.body[hidden]{display:none}.facts{display:grid;gap:0;margin:0;font-size:11px;line-height:1.5;opacity:.68}.meta-row{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}.summary{margin:10px 0 0;font-size:13px;line-height:1.75;white-space:pre-wrap}.assistant .summary{padding-top:10px;border-top:1px solid color-mix(in srgb,currentColor 14%,transparent)}.recall-items{display:grid;gap:9px;margin:3px 0 0}.recall-item{min-width:0}.recall-source{font-size:10.5px;line-height:1.4;opacity:.66}.recall-text{margin-top:1px;font-size:13px;line-height:1.75;white-space:pre-wrap;overflow-wrap:anywhere}.states{margin:10px 0 0}.states>summary{cursor:pointer;font-size:11px;line-height:1.5;opacity:.7}.state-items{display:grid;gap:6px;margin-top:6px}.state-item{font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.error{margin:7px 0 0;color:#a8322f;font-size:11px;line-height:1.55;white-space:pre-wrap}
+.extract{width:32px;height:32px;padding:0;display:grid;place-items:center;font-family:"Font Awesome 6 Free","Font Awesome 5 Free",sans-serif;font-size:12px;font-weight:900;line-height:1}.extract[hidden]{display:none}.extract:disabled{cursor:default;opacity:.42}.toggle:focus-visible,.extract:focus-visible{outline:2px solid var(--qqj-inline-knot);outline-offset:1px}
+.body{padding:4px 6px 9px 3px;font-size:13px;line-height:1.75;overflow-wrap:anywhere}.body[hidden]{display:none}.facts{display:grid;gap:0;margin:0;font-size:11px;line-height:1.5;opacity:.68}.meta-row{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}.summary{margin:10px 0 0;font-size:13px;line-height:1.75;white-space:pre-wrap}.assistant .summary{padding-top:10px;border-top:1px solid var(--qqj-inline-line)}.recall-items{display:grid;gap:9px;margin:3px 0 0}.recall-item{min-width:0}.recall-source{font-size:10.5px;line-height:1.4;opacity:.66}.recall-text{margin-top:1px;font-size:13px;line-height:1.75;white-space:pre-wrap;overflow-wrap:anywhere}.states{margin:10px 0 0}.states>summary{cursor:pointer;font-size:11px;line-height:1.5;opacity:.7}.state-items{display:grid;gap:6px;margin-top:6px}.state-item{font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.error{margin:7px 0 0;color:#a8322f;font-size:11px;line-height:1.55;white-space:pre-wrap}
 @media(max-width:360px){.card{padding-left:8px}.head{grid-template-columns:minmax(0,1fr) auto;gap:2px}.toggle{gap:4px;padding-inline:2px}.body{padding-left:2px}.title{font-size:11.5px}.status{font-size:10px}}
 @media(prefers-reduced-motion:reduce){.toggle,.extract{scroll-behavior:auto}}
 `;
@@ -20,6 +20,8 @@ const digits = value => /^\d+$/u.test(String(value ?? '').trim()) ? Number(Strin
 const setText = (node, value) => { const next = String(value ?? ''); if (node.textContent !== next) node.textContent = next; };
 const remove = node => { try { node?.remove?.(); } catch { /* detached host */ } };
 const receiptStamp = receipt => { try { return JSON.stringify(receipt); } catch { return ''; } };
+const paletteColor = (value, fallback) => typeof value === 'string' && value.trim() ? value.trim() : fallback;
+const setStyleProperty = (style, name, value) => { if (typeof style?.setProperty === 'function') style.setProperty(name, value); else if (style) style[name] = value; };
 
 export function resolveInlineMessageIndex(element) {
   for (const value of [
@@ -167,8 +169,14 @@ export function createInlineRenderer({
   let active = false, destroyed = false, session = 0, attempt = 0, retryIndex = 0, activeChatKey = null, observer = null, timer = null, queued = false;
   const cards = new Map(), expanded = new Map(), expectedIndices = new Set(), eventBindings = [];
   let unsubscribeMemory = null, unsubscribeRecall = null;
+  let palette = Object.freeze({ knot: '#a8322f', line: 'color-mix(in srgb,currentColor 18%,transparent)' });
   const receiptCache = new WeakMap();
   const owner = {};
+
+  const applyPalette = host => {
+    setStyleProperty(host?.style, '--qqj-inline-knot', palette.knot);
+    setStyleProperty(host?.style, '--qqj-inline-line', palette.line);
+  };
 
   const clearRetry = () => { if (timer !== null) { windowRef?.clearTimeout?.(timer); timer = null; } observer?.disconnect?.(); observer = null; attempt += 1; };
   const removeAll = () => { for (const view of cards.values()) remove(view.host); cards.clear(); for (const host of documentRef?.querySelectorAll?.(HOST_SELECTOR) ?? []) remove(host); };
@@ -206,6 +214,7 @@ export function createInlineRenderer({
         anchor.append(host);
       }
       host.__qqjInlineOwner = owner;
+      applyPalette(host);
       const stateKey = cardKey(chatKey, messageIndex, kind);
       view = host.__qqjInlineCard ?? createCard(documentRef, host, kind, expanded.get(stateKey) === true, onToggle, onExtract);
       view.stateKey = stateKey; view.kind = kind; cards.set(messageIndex, view);
@@ -355,7 +364,15 @@ export function createInlineRenderer({
     return { status: 'stopped' };
   }
   function setEnabled(value) { return value === true ? start() : stop(); }
+  function setAppearance(value) {
+    palette = Object.freeze({
+      knot: paletteColor(value?.palette?.knot, '#a8322f'),
+      line: paletteColor(value?.palette?.line, 'color-mix(in srgb,currentColor 18%,transparent)'),
+    });
+    for (const view of cards.values()) applyPalette(view.host);
+    return palette;
+  }
   function destroy() { stop(); destroyed = true; clearRetry(); removeAll(); expanded.clear(); }
 
-  return Object.freeze({ start, stop, setEnabled, destroy, schedule, refresh, getDebugState: () => Object.freeze({ active, destroyed, session, cards: cards.size, observing: Boolean(observer), retrying: timer !== null, eventBindings: eventBindings.length }) });
+  return Object.freeze({ start, stop, setEnabled, setAppearance, destroy, schedule, refresh, getDebugState: () => Object.freeze({ active, destroyed, session, cards: cards.size, observing: Boolean(observer), retrying: timer !== null, eventBindings: eventBindings.length }) });
 }

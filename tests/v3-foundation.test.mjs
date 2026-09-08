@@ -462,7 +462,9 @@ test('CAS 冲突前旧 root 可达 checkpoint、floors、indexes 逐字不变，
 
 test('run 按真实阶段持久化；写失败为 retryableError，CAS 冲突为 stale', async () => {
   const success = harness();
-  await success.runtime.start();
+  const successState = await success.runtime.start();
+  assert.equal(successState.activeRun, null, '成功返回值必须已经清除公开运行标记');
+  assert.equal(success.runtime.getState().activeRun, null, '成功后的公开状态不能残留运行标记');
   assert.deepEqual(success.backend.runPhases.slice(0, 5), ['capturing', 'validating', 'sealing', 'committing', 'completed']);
   const root = success.backend.records.get(`chat-${CHAT}/v3-root`).data;
   const checkpoint = success.backend.records.get(`chat-${CHAT}/v3-checkpoint-${root.headCheckpointId}`).data;
@@ -472,7 +474,9 @@ test('run 按真实阶段持久化；写失败为 retryableError，CAS 冲突为
 
   const failed = harness();
   failed.backend.setFailPutPrefix('v3-floor-');
-  await failed.runtime.start();
+  const failedState = await failed.runtime.start();
+  assert.equal(failedState.activeRun, null, '失败返回值必须已经清除公开运行标记');
+  assert.equal(failed.runtime.getState().activeRun, null, '失败后的公开状态不能残留运行标记');
   assert.equal(failed.backend.runPhases.at(-1), 'retryableError');
   assert.equal([...failed.backend.records.values()].find(item => item.data.recordType === 'run').data.phase, 'retryableError');
 

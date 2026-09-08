@@ -19,6 +19,14 @@ test('外观仅写千千结 host 与其 Shadow Root 字体链接', () => {
   assert.deepEqual(unrelated, {});
 });
 
+test('手动日间使用冷白表面与唯一强调红，夜间强调红保持同源', () => {
+  const day = resolveAppearance({ value: { appearanceTheme: 'day' } });
+  assert.equal(day.palette.paper, '#f7f8fa'); assert.equal(day.palette.panel, '#ffffff');
+  assert.equal(day.palette.crimson, '#b63745'); assert.equal(day.palette.knot, day.palette.crimson);
+  const night = resolveAppearance({ value: { appearanceTheme: 'night' } });
+  assert.equal(night.palette.crimson, '#d9707a'); assert.equal(night.palette.knot, night.palette.crimson);
+});
+
 test('外观从字体 CSS URL 自动解析 family 并缓存进设置', async () => {
   const properties = {};
   const host = { setAttribute() {}, style: { setProperty: (key, value) => { properties[key] = value; } } };

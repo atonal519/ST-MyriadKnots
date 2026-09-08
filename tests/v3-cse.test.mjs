@@ -888,7 +888,7 @@ test('CSE 真实请求链只在 finish_reason=stop 且唯一缺人物右花括�
   const recovered = await run('stop');
   assert.equal(recovered.delta.subjectSnapshots.length, 12);
   assert.deepEqual(recovered.delta.subjectSnapshots.map(subject => subject.situational[0].text), Array.from({ length: 12 }, (_, index) => `虚构状态-${index + 1}`));
-  assert.deepEqual(recovered.delta.subjectSnapshots[11].changeSummary, ['虚构变化-12']);
+  assert.deepEqual(recovered.delta.subjectSnapshots[11].changeSummary, ['新增情境状态：虚构状态-12（信息范围：可观察；来源：本楼）']);
   assert.equal(recovered.metadata.finishReason, 'stop');
 
   const symbolPacket = '{"subjects":[{"subject":"林岚",situational:[{"text":"保持警觉","visibility":"observable"}]}]}';
@@ -1336,6 +1336,7 @@ test('review/additions 连续校准会收窄错误 Adaptive，后续 keep 保留
   assert.equal(narrowed.core[0].id, initial.core[0].id, 'keep 必须复用旧 Core 对象');
   assert.notEqual(narrowed.adaptive[0].id, initial.adaptive[0].id, 'refine 才创建新项');
   assert.equal(narrowed.adaptive[0].text, '体力受制时可能暂时让步');
+  assert.deepEqual(narrowed.changeSummary, ['调整长期适应：遇到冲突便一味退让（信息范围：私密；来源：本楼） → 体力受制时可能暂时让步（信息范围：私密；来源：本楼）']);
 
   const replayed2 = await replayCurrentState({
     chatId: CHAT, narrativeGeneration: GEN, baselineId: baseline.id,
@@ -1348,10 +1349,12 @@ test('review/additions 连续校准会收窄错误 Adaptive，后续 keep 保留
   const third = await compileCseResponse({ response: { subjects: [{ subject: '林岚', review: { adaptive: [{ previousText: '体力受制时可能暂时让步', action: 'keep' }] } }] }, envelope: thirdEnvelope, previousCurrentState: replayed2, now: NOW, deltaId: '36363636-1111-4111-8111-363636363636' });
   assert.equal(third.delta.subjectSnapshots[0].adaptive[0].id, correctedItem.id);
   assert.equal(third.delta.subjectSnapshots[0].adaptive[0].sourceDeltaId, correctedItem.sourceDeltaId);
+  assert.deepEqual(third.delta.subjectSnapshots[0].changeSummary, []);
   const thirdState = { id: '45454545-1111-4111-8111-454545454545', subjects: third.delta.subjectSnapshots };
   const fourthEnvelope = createCseEnvelope({ floor: floor(floor4, '她已摆脱外力限制，旧模式不再适用。'), floorMemory: memory(memory4), baseline, currentState: thirdState, trackedSubjects: [entities[0]], entities });
   const fourth = await compileCseResponse({ response: { subjects: [{ subject: '林岚', review: { adaptive: [{ previousText: '体力受制时可能暂时让步', action: 'remove', reason: '限制条件已结束', evidence: [{ source: 'canonicalContent', quote: '已摆脱外力限制' }] }] } }] }, envelope: fourthEnvelope, previousCurrentState: thirdState, now: NOW, deltaId: '46464646-1111-4111-8111-464646464646' });
   assert.deepEqual(fourth.delta.subjectSnapshots[0].adaptive, []);
+  assert.deepEqual(fourth.delta.subjectSnapshots[0].changeSummary, ['移除长期适应：体力受制时可能暂时让步（信息范围：私密；来源：本楼）']);
   assert.deepEqual(fourth.delta.source.calibrationAudit[0], {
     subjectEntityId: USER, category: 'adaptive', action: 'remove', previousText: '体力受制时可能暂时让步', previousTowardEntityId: null,
     text: null, towardEntityId: null, reason: '限制条件已结束', evidence: [{ source: 'canonicalContent', quote: '已摆脱外力限制' }],
@@ -1408,6 +1411,26 @@ test('校准证据必须能定位且符合 Core 来源边界，manual Core 只�
   assert.ok(inventedQuote.isolated.some(item => item.code === 'V3_CSE_EVIDENCE_UNLOCATED'));
 });
 
+test('校准证据只统一明确引号样式，并把审计引用保存为来源原句', async () => {
+  const quotedBaseline = structuredClone(baseline);
+  quotedBaseline.worldInfoSources = [{ sourceName: '世界', content: '设定写道：“我爱你”，这句话不得改写。', activated: true }];
+  const envelope = createCseEnvelope({ floor: floor(FLOOR1, '甲保持沉默。'), floorMemory: memory(MEMORY1), baseline: quotedBaseline, currentState: null, trackedSubjects: [entities[1]], entities });
+  const compiled = await compileCseResponse({
+    response: { subjects: [{ subject: '甲', additions: { adaptive: [
+      { text: '会直接表达爱意', toward: '乙', evidence: [{ source: 'worldbook:1', quote: '"我爱你"' }] },
+      { text: '会否定爱意', toward: '乙', evidence: [{ source: 'worldbook:1', quote: '"我不爱你"' }] },
+      { text: '会向未知对象表达', toward: '不存在的人', evidence: [{ source: 'worldbook:1', quote: '"我爱你"' }] },
+    ] } }] },
+    envelope, previousCurrentState: null, now: NOW, deltaId: '65656565-1111-4111-8111-656565656565',
+  });
+  assert.deepEqual(compiled.delta.subjectSnapshots[0].adaptive.map(item => item.text), ['会直接表达爱意']);
+  assert.deepEqual(compiled.delta.source.calibrationAudit[0].evidence, [{ source: 'worldbook:1', quote: '“我爱你”' }]);
+  assert.match(compiled.delta.subjectSnapshots[0].adaptive[0].reason, /worldbook:1「“我爱你”」/);
+  assert.ok(compiled.isolated.some(item => item.code === 'V3_CSE_EVIDENCE_UNLOCATED'));
+  assert.ok(compiled.isolated.some(item => item.code === 'V3_CSE_TOWARD_UNBOUND'));
+  assert.equal(JSON.stringify(compiled.delta).includes('我不爱你'), false);
+});
+
 test('同一校准操作的证据组必须全部有效，坏证据不连坐其他独立操作', async () => {
   const oldAdaptive = {
     id: '60606060-1111-4111-8111-606060606060',
@@ -1432,6 +1455,7 @@ test('同一校准操作的证据组必须全部有效，坏证据不连坐其�
   assert.ok(mixed.isolated.some(item => item.code === 'V3_CSE_EVIDENCE_UNLOCATED'));
   assert.ok(mixed.isolated.some(item => item.code === 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT'));
   assert.deepEqual(mixed.delta.source.calibrationAudit.map(item => [item.action, item.text]), [['add', '遇到风险会先核对事实']]);
+  assert.deepEqual(mixed.delta.subjectSnapshots[0].changeSummary, ['新增长期适应：遇到风险会先核对事实（信息范围：私密；来源：本楼）']);
 
   const fullyGrounded = await compileCseResponse({
     response: { subjects: [{ subject: '甲', review: { adaptive: [{ previousText: oldAdaptive.text, action: 'refine', text: '在风险中会核对后再信任', evidence: [
@@ -1442,6 +1466,7 @@ test('同一校准操作的证据组必须全部有效，坏证据不连坐其�
   });
   assert.deepEqual(fullyGrounded.delta.subjectSnapshots[0].adaptive.map(item => item.text), ['在风险中会核对后再信任']);
   assert.equal(fullyGrounded.isolated.length, 0);
+  assert.deepEqual(fullyGrounded.delta.subjectSnapshots[0].changeSummary, ['调整长期适应：会谨慎信任他人（信息范围：私密；来源：本楼） → 在风险中会核对后再信任（信息范围：私密；来源：本楼）']);
 });
 
 test('逐楼 timeline 只报告编译后实际变化，覆盖拒绝摘要、Situational 增改删、历史截止与重建 ID', async () => {

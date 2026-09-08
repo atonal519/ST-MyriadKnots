@@ -19,6 +19,7 @@ export function bootstrap({
   v3RecallRuntime,
   peopleWorkspaceRuntime,
   chatMemoryManagement,
+  inlineRenderer,
   sourcePermissionViewFactory = createSourcePermissionView,
   v3FoundationViewFactory = createV3FoundationView,
   peopleProfilesViewFactory = createPeopleProfilesView,
@@ -40,6 +41,7 @@ export function bootstrap({
   if (dialog?.host) (documentRef.documentElement ?? documentRef.body).append(dialog.host);
   const foundationView = v3FoundationViewFactory({ runtime: v3FoundationRuntime, recallRuntime: v3RecallRuntime, peopleRuntime: peopleWorkspaceRuntime, memoryManagement: chatMemoryManagement, uiDiagnosticProvider: () => panel?.getUiDiagnostic?.() ?? '{}', documentRef, confirmImpl: options => dialog.confirm(options), infoImpl: options => dialog.info(options) });
   const peopleProfilesView = peopleProfilesViewFactory({ runtime: peopleWorkspaceRuntime, documentRef });
+  const syncAppearance = value => { fab?.setAppearance?.(value); inlineRenderer?.setAppearance?.(value); };
   let pluginEnabled = settings?.isEnabled?.() !== false;
   const enabled = () => pluginEnabled;
   const open = async event => {
@@ -66,7 +68,7 @@ export function bootstrap({
     isSevenDaysAvailable,
     dialog,
     onFabShowChange: () => syncFabVisibility(),
-    onAppearanceChange: value => fab?.setAppearance?.(value),
+    onAppearanceChange: syncAppearance,
     documentRef,
   });
   panel.host.hidden = true;
@@ -81,8 +83,8 @@ export function bootstrap({
     fab.host.style ||= {};
     syncFabVisibility();
     documentRef.body.append(fab.host);
-    fab.setAppearance?.(panel.syncAppearance?.());
   }
+  syncAppearance(panel.syncAppearance?.());
   wandInstaller(open);
   const instance = {
     ...panel,

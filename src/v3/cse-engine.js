@@ -361,6 +361,26 @@ const sameItemMeaning = (left, right) => normalized(left?.text) === normalized(r
   && (left?.towardEntityId ?? null) === (right?.towardEntityId ?? null)
   && left?.visibility === right?.visibility;
 
+const EVIDENCE_QUOTE_STYLE = Object.freeze({
+  '"': '"', '“': '"', '”': '"', '„': '"', '‟': '"', '＂': '"', '「': '"', '」': '"',
+  "'": "'", '‘': "'", '’': "'", '‚': "'", '‛': "'", '＇': "'", '『': "'", '』': "'",
+});
+
+function normalizedEvidenceQuoteStyle(value) {
+  return [...value].map(character => EVIDENCE_QUOTE_STYLE[character] ?? character).join('');
+}
+
+function locateEvidenceQuote(contents, quote) {
+  for (const content of contents) if (typeof content === 'string' && content.includes(quote)) return quote;
+  const normalizedQuote = normalizedEvidenceQuoteStyle(quote);
+  for (const content of contents) {
+    if (typeof content !== 'string') continue;
+    const index = normalizedEvidenceQuoteStyle(content).indexOf(normalizedQuote);
+    if (index >= 0) return content.slice(index, index + quote.length);
+  }
+  return null;
+}
+
 function calibratedEvidence(raw, { envelope, binding, category, index, isolated }) {
   const evidence = [];
   const allSubmitted = list(field(raw, ['evidence', '证据']));
@@ -370,7 +390,8 @@ function calibratedEvidence(raw, { envelope, binding, category, index, isolated 
     const quote = text(field(item, ['quote', '引用']), 2000);
     const source = envelope.scope.evidenceSources.find(candidate => candidate.source === sourceName);
     const path = `${category}.${index}.evidence.${evidenceIndex}`;
-    if (!source || !quote || !source.contents.some(content => typeof content === 'string' && content.includes(quote))) {
+    const locatedQuote = source && quote ? locateEvidenceQuote(source.contents, quote) : null;
+    if (!source || !quote || !locatedQuote) {
       isolated.push({ field: path, code: 'V3_CSE_EVIDENCE_UNLOCATED' });
       continue;
     }
@@ -378,7 +399,7 @@ function calibratedEvidence(raw, { envelope, binding, category, index, isolated 
       isolated.push({ field: path, code: 'V3_CSE_EVIDENCE_SUBJECT_MISMATCH' });
       continue;
     }
-    evidence.push({ source: source.source, kind: source.kind, quote });
+    evidence.push({ source: source.source, kind: source.kind, quote: locatedQuote });
   }
   return Object.freeze({ evidence: Object.freeze(evidence), complete: submitted.length > 0 && allSubmitted.length === submitted.length && evidence.length === submitted.length });
 }
@@ -532,10 +553,19 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
       core = previous.core;
       if (hasCore && JSON.stringify(proposedCore.map(item => item.text)) !== JSON.stringify(previous.core.map(item => item.text))) challenges.push(...proposedCore.map(item => `AI 建议改写 Core：${item.text}`));
     }
-    compiled.set(binding.entityId, { subjectEntityId: binding.entityId, core, adaptive, situational, changeSummary: list(field(raw, ['changeSummary', 'changes', '变化摘要', '变化'])).map(itemSemantic).filter(Boolean).slice(0, 40), coreChallenges: [...new Set(challenges)].slice(0, 40) });
+    compiled.set(binding.entityId, { subjectEntityId: binding.entityId, core, adaptive, situational, changeSummary: [], coreChallenges: [...new Set(challenges)].slice(0, 40) });
   }
   for (const binding of envelope.scope.trackedBindings) if (!compiled.has(binding.entityId) && !previousById.has(binding.entityId)) compiled.set(binding.entityId, { subjectEntityId: binding.entityId, core: [], adaptive: [], situational: [], changeSummary: [], coreChallenges: [] });
-  const subjectSnapshots = [...compiled.values()];
+  const subjectSnapshots = [...compiled.values()].map(subject => {
+    const previous = previousById.get(subject.subjectEntityId) ?? { core: [], adaptive: [], situational: [] };
+    const audits = calibrationAudit.filter(entry => entry.subjectEntityId === subject.subjectEntityId);
+    return {
+      ...subject,
+      changeSummary: actualSubjectChanges({ before: previous, after: subject, audits })
+        .map(change => summarizeActualChange(change, envelope.scope.knownBindings))
+        .slice(0, 40),
+    };
+  });
   const material = subjectSnapshots.some(subject => JSON.stringify(storedProjection(previousById.get(subject.subjectEntityId) ?? { core: [], adaptive: [], situational: [] })) !== JSON.stringify(storedProjection(subject)));
   const noMaterialChange = !material;
   const fingerprint = `sha256:${await sha256(JSON.stringify([envelope.scope.floorId, envelope.scope.floorMemoryId, subjectSnapshots, noMaterialChange]))}`;
@@ -739,6 +769,38 @@ function categoryChanges({ before, after, category, audits }) {
   for (const { item, index } of before.map((value, position) => ({ item: value, index: position }))) if (!usedBefore.has(index)) changes.push({ category, action: 'remove', before: item, after: null });
   for (const { item, index } of after.map((value, position) => ({ item: value, index: position }))) if (!usedAfter.has(index)) changes.push({ category, action: 'add', before: null, after: item });
   return changes;
+}
+
+function actualSubjectChanges({ before, after, audits }) {
+  return CSE_STATE_CATEGORIES.flatMap(category => categoryChanges({
+    before: before[category] ?? [],
+    after: after[category] ?? [],
+    category,
+    audits: audits.filter(entry => entry.category === category),
+  }));
+}
+
+function summarizeActualState(item, category, knownBindings) {
+  const details = [];
+  if (category === 'adaptive' && item?.towardEntityId) {
+    const target = knownBindings.find(binding => binding.entityId === item.towardEntityId)?.labels?.[0];
+    details.push(`对象：${target || '已绑定人物'}`);
+  }
+  const visibilityName = { private: '私密', expressed: '已表达', observable: '可观察', shared: '共享', authorial: '作者设定' }[item?.visibility];
+  if (visibilityName) details.push(`信息范围：${visibilityName}`);
+  const originName = { baseline: '初始设定', floor: '本楼', reasonableProgression: '合理进展', manual: '用户纠正' }[item?.origin];
+  if (originName) details.push(`来源：${originName}`);
+  return `${item?.text ?? ''}${details.length ? `（${details.join('；')}）` : ''}`;
+}
+
+function summarizeActualChange(change, knownBindings) {
+  const categoryName = { core: '核心人格', adaptive: '长期适应', situational: '情境状态' }[change.category] ?? '人物状态';
+  const before = change.before ? summarizeActualState(change.before, change.category, knownBindings) : '';
+  const after = change.after ? summarizeActualState(change.after, change.category, knownBindings) : '';
+  if (change.action === 'refine') return `调整${categoryName}：${before} → ${after}`.slice(0, 2000);
+  if (change.action === 'update') return `更新${categoryName}：${before} → ${after}`.slice(0, 2000);
+  if (change.action === 'remove') return `移除${categoryName}：${before}`.slice(0, 2000);
+  return `新增${categoryName}：${after}`.slice(0, 2000);
 }
 
 export function deriveCseTimeline(stateDeltas = []) {

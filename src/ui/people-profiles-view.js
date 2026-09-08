@@ -1,6 +1,10 @@
+import { KNOT_ICON_SVG } from './brand.js';
+import { createOperationMenuController } from './operation-menu-controller.js';
+
 const PROFILE_FIELDS = Object.freeze(['name', 'aliases', 'background', 'appearance', 'personality', 'notes']);
 const LABELS = Object.freeze({ name: '姓名', aliases: '别名', background: '身份背景', appearance: '外貌', personality: '基础性格', notes: '补充说明' });
 const PLACEHOLDERS = Object.freeze({ name: '人物姓名', aliases: '多个别名可用顿号或换行分隔', background: '仅填写不会随剧情变化的身份与背景', appearance: '稳定外貌特征', personality: '基础性格，不写临时情绪', notes: '其他静态基础信息' });
+const READING_FIELDS = Object.freeze(['background', 'appearance', 'personality', 'notes']);
 
 function fieldsFrom(person) {
   const profile = person?.profile;
@@ -16,9 +20,10 @@ function sameFields(left, right) { return PROFILE_FIELDS.every(field => String(l
 export function createPeopleProfilesView({ runtime, documentRef = globalThis.document } = {}) {
   if (!runtime || ['getState', 'refresh', 'setSelectedEntityIds', 'saveProfile', 'generateMissingProfiles'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('千人人物资料 runtime 无效');
   if (!documentRef?.createElement) throw new TypeError('千人人物资料 documentRef 无效');
-  let container = null, active = false, epoch = 0, unsubscribe = null, state = runtime.getState(), chatId = state.chatId ?? null, feedback = '';
+  let container = null, active = false, epoch = 0, unsubscribe = null, state = runtime.getState(), chatId = state.chatId ?? null, feedback = '人物资料状态已显示。';
   let currentEntityId = null, showMore = false;
   const drafts = new Map();
+  const operationMenus = createOperationMenuController(documentRef);
   const element = (tag, className = '', text = '') => { const node = documentRef.createElement(tag); if (className) node.className = className; if (text !== '') node.textContent = text; return node; };
   const busyExceptGeneration = value => Boolean(value.active && value.active.kind !== 'generating');
   const statusCopy = value => {
@@ -32,7 +37,7 @@ export function createPeopleProfilesView({ runtime, documentRef = globalThis.doc
   };
   function resetForChat(nextChatId) {
     if (chatId === nextChatId) return;
-    chatId = nextChatId; drafts.clear(); currentEntityId = null; showMore = false; feedback = '';
+    chatId = nextChatId; drafts.clear(); currentEntityId = null; showMore = false; feedback = '人物资料状态已显示。';
   }
   async function run(label, task, { after = null } = {}) {
     const mine = ++epoch, operationChatId = chatId; feedback = `${label}…`; render(state);
@@ -100,14 +105,36 @@ export function createPeopleProfilesView({ runtime, documentRef = globalThis.doc
       if (active) render(next);
     });
   }
+  function generationButton(className = 'secondary-action') {
+    const button = element('button', className, state.active?.kind === 'generating' ? '正在整理…' : `整理基础资料${state.unprofiledSelectedCount ? `（${state.unprofiledSelectedCount}）` : ''}`);
+    button.type = 'button'; button.disabled = Boolean(state.active) || state.unprofiledSelectedCount < 1;
+    button.addEventListener('click', () => { void run('整理基础资料', () => runtime.generateMissingProfiles()); });
+    return button;
+  }
   function profilePanel(person) {
     const panel = element('section', 'qqj-profile-card');
+    const values = fieldsFrom(person), draft = drafts.has(person.entityId) ? profileDraft(person) : null;
     const header = element('header', 'qqj-profile-summary');
-    header.append(element('strong', '', person.displayName || person.entityDisplayName));
-    if (person.recommended) header.append(element('span', 'qqj-recommend-badge', '推荐'));
-    header.append(element('span', 'v3-memory-status', person.profiled ? '已建档' : '待建档'));
+    const mark = element('span', 'qqj-profile-mark'); mark.innerHTML = KNOT_ICON_SVG; mark.setAttribute?.('aria-hidden', 'true');
+    const identity = element('div', 'qqj-profile-identity');
+    const name = element('h2', '', values.name || person.displayName || person.entityDisplayName || '未命名人物');
+    name.setAttribute?.('title', name.textContent); name.setAttribute?.('aria-label', `姓名：${name.textContent}`);
+    identity.append(name, element('p', 'qqj-profile-alias', `别名 · ${values.aliases || '未填写'}`));
+    const badges = element('div', 'qqj-profile-badges');
+    if (person.recommended) badges.append(element('span', 'qqj-recommend-badge', '推荐'));
+    badges.append(element('span', 'v3-memory-status', person.profiled ? '已建档' : '待建档'));
+    if (!draft?.editing) {
+      const menu = operationMenus.register(element('details', 'qqj-profile-menu')), toggle = element('summary', 'qqj-profile-menu-toggle', '⋮');
+      toggle.setAttribute?.('aria-label', '人物操作'); toggle.setAttribute?.('title', '人物操作');
+      const menuBody = element('div', 'qqj-profile-menu-pop');
+      const edit = element('button', 'qqj-profile-menu-action', '编辑资料'); edit.type = 'button'; edit.disabled = busyExceptGeneration(state);
+      edit.addEventListener('click', () => { profileDraft(person, true); render(state); });
+      const remove = selectionButton(person, state.selectedEntityIds); remove.className = `${remove.className} qqj-profile-menu-action danger`;
+      menuBody.append(generationButton('qqj-profile-menu-action'), edit, element('span', 'qqj-profile-menu-separator'), remove); menu.append(toggle, menuBody); badges.append(menu);
+    }
+    header.append(mark, identity, badges);
     panel.append(header);
-    const body = element('div', 'qqj-profile-body'), draft = drafts.has(person.entityId) ? profileDraft(person) : null;
+    const body = element('div', 'qqj-profile-body');
     if (draft?.editing) {
       const form = element('div', 'qqj-profile-form');
       for (const field of PROFILE_FIELDS) {
@@ -121,16 +148,18 @@ export function createPeopleProfilesView({ runtime, documentRef = globalThis.doc
       const save = element('button', 'primary-action', draft.saving ? '保存中…' : '保存资料'); save.type = 'button'; save.disabled = draft.saving || busyExceptGeneration(state);
       save.addEventListener('click', () => saveProfile(person, draft)); actions.append(save);
       const cancel = element('button', 'secondary-action', '取消'); cancel.type = 'button'; cancel.disabled = draft.saving || busyExceptGeneration(state);
-      cancel.addEventListener('click', () => { drafts.delete(person.entityId); render(state); }); actions.append(cancel, selectionButton(person, state.selectedEntityIds));
+      cancel.addEventListener('click', () => { drafts.delete(person.entityId); render(state); }); actions.append(cancel, selectionButton(person, state.selectedEntityIds), generationButton());
       if (draft.notice || draft.error) actions.append(saveResult(draft));
       form.append(actions); body.append(form);
     } else {
-      const values = fieldsFrom(person), facts = element('dl', 'qqj-profile-facts');
-      for (const field of PROFILE_FIELDS) { const row = element('div', 'qqj-profile-fact'); row.append(element('dt', '', LABELS[field]), element('dd', '', values[field] || '未填写')); facts.append(row); }
-      body.append(facts);
-      const actions = element('div', 'qqj-profile-save-row'), edit = element('button', 'primary-action', '编辑资料'); edit.type = 'button'; edit.disabled = busyExceptGeneration(state);
-      edit.addEventListener('click', () => { profileDraft(person, true); render(state); }); actions.append(edit, selectionButton(person, state.selectedEntityIds));
-      if (draft?.notice || draft?.error) actions.append(saveResult(draft)); body.append(actions);
+      const reading = element('div', 'qqj-profile-reading');
+      for (const field of READING_FIELDS) {
+        const section = element('section', `qqj-profile-section${field === 'background' ? ' lead' : ''}`);
+        section.append(element('h3', '', LABELS[field]), element('p', '', values[field] || '未填写'));
+        reading.append(section);
+      }
+      body.append(reading);
+      if (draft?.notice || draft?.error) { const result = saveResult(draft); result.className += ' qqj-profile-reading-result'; body.append(result); }
     }
     panel.append(body); return panel;
   }
@@ -146,7 +175,7 @@ export function createPeopleProfilesView({ runtime, documentRef = globalThis.doc
       const button = element('button', `qqj-profile-tab${selectedTab ? ' active' : ''}`, displayName);
       button.type = 'button'; button.tabIndex = selectedTab ? 0 : -1; button.setAttribute?.('role', 'tab'); button.setAttribute?.('aria-selected', selectedTab ? 'true' : 'false');
       button.setAttribute?.('title', displayName);
-      button.addEventListener('click', () => { currentEntityId = person.entityId; showMore = false; feedback = ''; render(state); });
+      button.addEventListener('click', () => { currentEntityId = person.entityId; showMore = false; render(state); });
       button.addEventListener('keydown', event => {
         const offsets = { ArrowLeft: -1, ArrowRight: 1 }, offset = offsets[event.key];
         const target = event.key === 'Home' ? 0 : event.key === 'End' ? selected.length - 1 : Number.isInteger(offset) ? (index + offset + selected.length) % selected.length : null;
@@ -165,7 +194,7 @@ export function createPeopleProfilesView({ runtime, documentRef = globalThis.doc
     for (const person of people) {
       const row = element('div', 'qqj-more-person-row'), copy = element('div', 'qqj-more-person-copy');
       copy.append(element('strong', '', person.displayName || person.entityDisplayName));
-      const detail = [person.selected ? '已选重要' : '', person.profiled ? '已建档' : '', person.aliases.length ? `别名：${person.aliases.join('、')}` : '', person.appearanceCount ? `出现 ${person.appearanceCount} 楼` : '', person.recommended ? '推荐' : ''].filter(Boolean).join(' · ');
+      const detail = [person.selected ? '已选重要' : '', person.profiled ? '已建档' : '', person.aliases.length ? `别名：${person.aliases.join('、')}` : '', person.appearanceCount ? `出现 ${person.appearanceCount} 楼` : '', person.recommended ? '推荐' : ''].filter(Boolean).join('，');
       copy.append(element('small', '', detail || '已发现人物')); row.append(copy, selectionButton(person, state.selectedEntityIds)); list.append(row);
     }
     if (!people.length) list.append(element('p', 'settings-hint', '当前没有已识别人物。后续摘要和状态分析仍会正常发现人物。'));
@@ -173,19 +202,17 @@ export function createPeopleProfilesView({ runtime, documentRef = globalThis.doc
   }
   function render(next = runtime.getState()) {
     state = next; resetForChat(state.chatId ?? null); if (!container) return;
-    const page = element('section', 'qqj-page qqj-profiles-page');
-    const heading = element('header', 'qqj-view-heading'); heading.append(element('h2', '', '千人'), element('p', '', '自由选择重要人物，并维护不会随剧情自动变化的基础资料。'));
-    heading.append(element('p', `qqj-page-health${state.lastError ? ' error' : ''}`, statusCopy(state))); page.append(heading);
-    if (feedback) page.append(element('p', `v3-foundation-feedback${feedback.includes('失败') ? ' error' : ''}`, feedback));
+    operationMenus.reset();
+    const page = element('section', 'qqj-page qqj-profiles-page'), status = element('div', 'qqj-page-status');
+    const health = element('p', `qqj-page-health qqj-profile-health${state.lastError ? ' error' : ''}`, statusCopy(state));
+    health.setAttribute?.('role', 'status'); status.append(health, element('p', `v3-foundation-feedback${feedback.includes('失败') ? ' error' : ''}`, feedback)); page.append(status);
     const selected = state.people.filter(person => person.selected), moreCount = state.people.length - selected.length;
     if (!selected.some(person => person.entityId === currentEntityId)) currentEntityId = selected[0]?.entityId ?? null;
     const toolbar = element('div', 'qqj-profile-toolbar'), switchRow = element('div', 'qqj-profile-switch-row'); switchRow.append(switcher(selected));
     const actions = element('div', 'qqj-profile-toolbar-actions');
-    const generate = element('button', 'secondary-action', state.active?.kind === 'generating' ? '正在整理…' : `整理基础资料${state.unprofiledSelectedCount ? `（${state.unprofiledSelectedCount}）` : ''}`);
-    generate.type = 'button'; generate.disabled = Boolean(state.active) || state.unprofiledSelectedCount < 1;
-    generate.addEventListener('click', () => { void run('整理基础资料', () => runtime.generateMissingProfiles()); }); actions.append(generate);
+    if (showMore || !currentEntityId) actions.append(generationButton());
     const more = element('button', `secondary-action qqj-profile-more${showMore ? ' active' : ''}`, showMore ? '返回资料' : `更多人物（${moreCount}）`);
-    more.type = 'button'; more.addEventListener('click', () => { showMore = !showMore; feedback = ''; render(state); }); actions.append(more); switchRow.append(actions); toolbar.append(switchRow); page.append(toolbar);
+    more.type = 'button'; more.addEventListener('click', () => { showMore = !showMore; render(state); }); actions.append(more); switchRow.append(actions); toolbar.append(switchRow); page.append(toolbar);
     if (showMore) page.append(peoplePicker(state.people));
     else {
       const current = selected.find(person => person.entityId === currentEntityId);
@@ -201,13 +228,13 @@ export function createPeopleProfilesView({ runtime, documentRef = globalThis.doc
     const release = runtime.subscribe(next => { state = next; if (active && container) render(next); });
     if (typeof release === 'function') unsubscribe = release;
   }
-  function mount(target) { unsubscribe?.(); unsubscribe = null; container = target; active = true; render(runtime.getState()); subscribe(); }
+  function mount(target) { unsubscribe?.(); unsubscribe = null; operationMenus.deactivate(); container = target; active = true; render(runtime.getState()); operationMenus.activate(); subscribe(); }
   async function activate() {
     if (!container) throw new Error('千人人物资料 view 尚未挂载');
-    active = true; subscribe(); const mine = ++epoch; feedback = '正在读取当前聊天…'; render(runtime.getState());
-    try { const result = await runtime.refresh(); if (!active || mine !== epoch) return { status: 'stale' }; state = result; feedback = ''; render(result); return result; }
+    active = true; operationMenus.activate(); subscribe(); const mine = ++epoch; feedback = '正在读取当前聊天…'; render(runtime.getState());
+    try { const result = await runtime.refresh(); if (!active || mine !== epoch) return { status: 'stale' }; state = result; feedback = '人物资料读取完成。'; render(result); return result; }
     catch (error) { if (!active || mine !== epoch) return { status: 'stale' }; state = runtime.getState(); feedback = `读取失败：${error?.message || '未知错误'}`; render(state); return { status: 'error', error }; }
   }
-  function deactivate() { active = false; epoch += 1; unsubscribe?.(); unsubscribe = null; }
+  function deactivate() { active = false; epoch += 1; operationMenus.deactivate(); unsubscribe?.(); unsubscribe = null; }
   return Object.freeze({ mount, activate, deactivate, render });
 }

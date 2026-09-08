@@ -6,8 +6,12 @@ function parseFontFamily(css) {
 }
 
 const PALETTES = Object.freeze({
-  day: Object.freeze({ paper: '#e8ecec', panel: '#f6f8f8', ink: '#22282b', soft: '#5c6a70', faint: '#93a1a5', line: '#d0d9db', thread: '#c1ccce', crimson: '#a8322f', knot: '#a8322f', blue: '#4f8781', success: '#4b7d63' }),
+  day: Object.freeze({ paper: '#f7f8fa', panel: '#ffffff', ink: '#22282b', soft: '#637077', faint: '#929da2', line: '#dce2e5', thread: '#cbd4d8', crimson: '#b63745', knot: '#b63745', blue: '#4f8781', success: '#4b7d63' }),
   night: Object.freeze({ paper: '#13181b', panel: '#1c2327', ink: '#e7ecee', soft: '#9db0b5', faint: '#6c7c81', line: '#2b363b', thread: '#33424a', crimson: '#d9707a', knot: '#d9707a', blue: '#77b0aa', success: '#77b193' }),
+});
+const AUTO_FALLBACK_PALETTES = Object.freeze({
+  day: Object.freeze({ paper: '#e8ecec', panel: '#f6f8f8', ink: '#22282b', soft: '#5c6a70', faint: '#93a1a5', line: '#d0d9db', thread: '#c1ccce', crimson: '#a8322f', knot: '#a8322f', blue: '#4f8781', success: '#4b7d63' }),
+  night: PALETTES.night,
 });
 const opaqueRgb = values => {
   const channels = values.map(value => value.endsWith('%') ? Math.round(Math.min(100, Math.max(0, Number.parseFloat(value))) * 2.55) : Math.round(Math.min(255, Math.max(0, Number.parseFloat(value)))));
@@ -48,7 +52,7 @@ export function resolveAppearance({ value = {}, documentRef = globalThis.documen
   const hostTheme = bodyColor ? ((luminance(bodyColor) ?? 0) > 127 ? 'night' : 'day') : null;
   const systemTheme = windowRef?.matchMedia?.('(prefers-color-scheme: light)')?.matches ? 'day' : 'night';
   const effectiveTheme = mode === 'auto' ? (hostTheme ?? systemTheme) : mode;
-  const palette = PALETTES[effectiveTheme];
+  const palette = (mode === 'auto' ? AUTO_FALLBACK_PALETTES : PALETTES)[effectiveTheme];
   if (mode !== 'auto') return { mode, effectiveTheme, palette, hasHostSignal: Boolean(hostTheme) };
   const opaque = (raw, fallback) => cssColor(documentRef, raw)?.value ?? fallback;
   return {

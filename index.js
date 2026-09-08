@@ -204,6 +204,7 @@ ui = bootstrap({
   v3RecallRuntime,
   peopleWorkspaceRuntime,
   chatMemoryManagement,
+  inlineRenderer,
   enableFab: true,
 });
 lifecycle = createPluginLifecycle({

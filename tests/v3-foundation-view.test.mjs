@@ -15,6 +15,17 @@ class Node {
   get classList() { return { add: value => { if (!this.className.split(' ').includes(value)) this.className += `${this.className ? ' ' : ''}${value}`; }, remove: value => { this.className = this.className.split(' ').filter(item => item && item !== value).join(' '); } }; }
 }
 const documentRef = { activeElement: null, createElement: tag => new Node(tag) };
+function eventDocument() {
+  const clicks = new Set();
+  return {
+    activeElement: null,
+    createElement: tag => new Node(tag),
+    addEventListener(name, handler) { if (name === 'click') clicks.add(handler); },
+    removeEventListener(name, handler) { if (name === 'click') clicks.delete(handler); },
+    click(event) { for (const handler of clicks) handler(event); },
+    clickListenerCount: () => clicks.size,
+  };
+}
 const flatten = node => [node, ...(node.children ?? []).flatMap(flatten)];
 function peopleRuntime(candidates, selected = candidates.map(item => item.entityId)) {
   let state = { status: 'ready', selectedEntityIds: [...selected], people: candidates.map(item => ({ aliases: [], appearanceCount: 1, recommended: false, ...item, selected: selected.includes(item.entityId) })), active: null };
@@ -90,7 +101,7 @@ test('四项破坏性记忆操作等待异步确认，取消时零业务动作',
   };
   const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef, confirmImpl: async () => false }); view.mount(container);
   view.setPage('memories'); flatten(container).find(node => node.textContent === '重新提取').click(); await new Promise(resolve => setImmediate(resolve));
-  view.setPage('people'); flatten(container).find(node => node.textContent === '重新分析').click(); await new Promise(resolve => setImmediate(resolve));
+  view.setPage('people'); flatten(container).find(node => node.textContent === '分析记录').click(); flatten(container).find(node => node.textContent === '重新分析').click(); await new Promise(resolve => setImmediate(resolve));
   view.setPage('management'); flatten(container).find(node => node.textContent === '完全重构').click(); await new Promise(resolve => setImmediate(resolve));
   flatten(container).find(node => node.textContent === '复制完整诊断').click(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(calls, []);
@@ -110,6 +121,15 @@ test('删除当前聊天记忆使用自绘异步确认，取消零写且确认�
   assert.match(confirmation.body, /摘要、人物状态、人物资料、召回记录及历史派生版本/);
   assert.match(confirmation.body, /聊天正文和全局 API、提示词设置会保留/);
   assert.match(confirmation.note, /移入回收站.*不代表永久擦除/);
+});
+
+test('删除按钮使用管理器统一忙碌投影', () => {
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, activeRun: null, memoryWorkBusy: false, activeAutoMemory: null, activeExtraction: null, activeCse: null, rebuildStatus: 'caughtUp', rebuildHasActionableWork: false, floors: [] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  const memoryManagement = { getState: () => ({ status: 'idle', workBusy: true }), deleteCurrent: async () => ({ status: 'completed' }) };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, memoryManagement, documentRef }); view.mount(container);
+  assert.equal(flatten(container).find(node => node.textContent === '删除当前聊天记忆').disabled, true);
 });
 
 test('删除部分失败后管理页保留同聊天继续入口，成功后呈空档反馈', async () => {
@@ -158,6 +178,9 @@ test('Extractor 失败且尚无 FloorMemory 时仍可复制诊断并直接提取
   const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef, navigatorRef: {}, confirmImpl: () => { confirmations += 1; return true; } }); view.mount(container);
   const copy = flatten(container).map(node => node.textContent); assert.ok(copy.includes('复制安全诊断')); assert.ok(copy.includes('复制完整诊断'));
   view.setPage('memories');
+  const card = flatten(container).find(node => String(node.className).includes('qqj-memory-card'));
+  assert.equal(card.open, false);
+  assert.match(flatten(card).map(node => node.textContent).join('|'), /第 2 楼.*时间未明确.*失败可重试.*暂无摘要.*⋮.*提取摘要.*失败/);
   const extract = flatten(container).find(node => node.textContent === '提取摘要');
   assert.ok(extract); assert.equal(extract.disabled, false);
   extract.click(); await new Promise(resolve => setImmediate(resolve));
@@ -170,10 +193,12 @@ test('面板顶部显示 CSE 分层状态、原因/来源与待分析重试入�
   const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
   const state = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, unprocessedCount: 0, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'checkpoint', activeRun: null, activeExtraction: null, activeCse: null, lastRun: null, lastError: null, unreachableCount: 0, metrics: {}, cseReady: false, csePendingCount: 1, cseFailedCount: 0, baselineId: 'baseline', mainCharacterEntityId: 'character', mainCharacterDisplayName: '林岚', cseSubjects: [{ subjectEntityId: 'character', displayName: '林岚', core: [{ text: '谨慎', reason: '角色设定', visibility: 'authorial', sourceAssistantSeq: 1 }], adaptive: [{ text: '保持戒备', reason: '发生冲突', visibility: 'observable', towardDisplayName: '裴晚生', sourceAssistantSeq: 1 }], situational: [{ text: '紧张', reason: '雨夜危险', visibility: 'private', sourceAssistantSeq: 1 }] }], floors: [{ floorId: 'floor', assistantSeq: 1, messageIndex: 2, status: 'ready', memoryId: 'memory', summary: '摘要', summarySource: 'ai', aiSummary: '摘要', extractorVersion: 'v', counts: {}, api: null, memory, cse: { status: 'pending', deltaId: null } }] };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => state, editSummary: async () => state, restoreAi: async () => state, markError: async () => state, analyzeNextState: async () => { nextCalls += 1; return state; }, retryStateAnalysis: async () => { retryCalls += 1; return state; } };
-  const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef }); view.setPage('people'); view.mount(container);
+  const sharedPeople = peopleRuntime([{ entityId: 'character', displayName: '林岚', entityDisplayName: '林岚' }]);
+  const container = new Node('main'); const view = createV3FoundationView({ runtime, peopleRuntime: sharedPeople, documentRef }); view.setPage('people'); view.mount(container);
   const copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /双丝网|核心特质|长期倾向|当前情境|发生冲突|来源：第 2 楼|对 裴晚生/);
+  assert.match(copy, /核心特质|长期倾向|当前情境|谨慎|保持戒备|紧张/);
   assert.equal(flatten(container).some(node => String(node.className).includes('qqj-v3-floor-card')), false);
+  flatten(container).find(node => node.textContent === '分析记录').click();
   flatten(container).find(node => node.textContent === '分析本楼').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(nextCalls, 0); assert.equal(retryCalls, 1);
@@ -184,7 +209,7 @@ test('CSE 失败数、本楼错误与最近错误在 V3 面板可见，并保留
   const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
   const state = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, unprocessedCount: 0, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'checkpoint', activeRun: null, activeExtraction: null, activeCse: null, lastRun: null, lastError: null, lastExtractorError: null, lastCseError: { message: '安全 CSE 错误' }, unreachableCount: 0, metrics: {}, cseReady: false, csePendingCount: 0, cseFailedCount: 1, baselineId: 'baseline', cseSubjects: [], floors: [{ floorId: 'floor', assistantSeq: 1, messageIndex: 2, status: 'ready', memoryId: 'memory', summary: '摘要', summarySource: 'ai', aiSummary: '摘要', extractorVersion: 'v', counts: {}, api: null, memory, cse: { status: 'failed', deltaId: null, error: '本楼状态失败' } }] };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => state, editSummary: async () => state, restoreAi: async () => state, markError: async () => state, analyzeNextState: async () => state, retryStateAnalysis: async () => { retries += 1; return state; } };
-  const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef }); view.setPage('people'); view.mount(container);
+  const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef }); view.setPage('people'); view.mount(container); flatten(container).find(node => node.textContent === '分析记录').click();
   const copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /0 待分析 · 1 失败/);
   assert.match(copy, /安全 CSE 错误/);
@@ -254,8 +279,7 @@ test('所有用户可见楼号统一使用零基 messageIndex，非均匀楼层�
   assert.deepEqual(flatten(container).filter(node => node.className === 'qqj-floor-number').map(node => node.textContent), ['第 5 楼', '第 2 楼', '第 0 楼']);
   view.setPage('people');
   visible = flatten(container).map(node => node.textContent).filter(Boolean);
-  assert.ok(visible.some(value => value.includes('来源：第 0 楼')), JSON.stringify(visible.filter(value => value.includes('来源') || value.includes('证据'))));
-  assert.ok(visible.some(value => value.includes('来源楼号未提供')));
+  assert.ok(visible.includes('裴晚生'), '当前人物状态继续按人物实体显示');
   view.setPage('management');
   visible = flatten(container).map(node => node.textContent).filter(Boolean);
   assert.ok(visible.includes('第 4 楼'), '触发用户楼不得 +1');
@@ -279,6 +303,7 @@ test('已完成人物状态可确认后重新分析，取消不调用且忙碌�
   const container = new Node('main');
   const view = createV3FoundationView({ runtime, documentRef, confirmImpl: message => { confirmations.push(message); return confirmed; } });
   view.setPage('people'); view.mount(container);
+  flatten(container).find(node => node.textContent === '分析记录').click();
 
   let buttons = flatten(container).filter(node => node.textContent === '重新分析');
   assert.equal(buttons.length, 2, 'ready 与 noChange 楼层都应显示入口');
@@ -313,6 +338,7 @@ test('自动批次活跃时面板提取、CSE 与修订入口统一禁用，结�
   view.setPage('memories');
   for (const label of ['编辑', '重新提取']) assert.equal(flatten(container).find(node => node.textContent === label)?.disabled, true, label);
   view.setPage('people');
+  flatten(container).find(node => node.textContent === '分析记录').click();
   assert.equal(flatten(container).find(node => node.textContent === '分析本楼')?.disabled, true);
   state = { ...base, status: 'ready', memoryWorkBusy: false, activeAutoMemory: null };
   view.render(state);
@@ -579,30 +605,39 @@ test('三页职责分离，千结只保留摘要编辑/重提，双丝网归位�
   const view = createV3FoundationView({ runtime, peopleRuntime: selectedPeople, documentRef });
   view.setPage('memories'); view.mount(container);
   let copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /千结.*第 4 楼.*剧情摘要.*编辑.*重新提取/);
+  assert.match(copy, /已记忆 1\/1 楼.*第 4 楼.*剧情摘要.*编辑.*重新提取/);
+  assert.doesNotMatch(copy, /逐楼校对故事摘要/);
+  assert.equal(flatten(container).some(node => node.tag === 'h2' && node.textContent === '千结'), false);
   assert.doesNotMatch(copy, /状态分析记录|详细诊断|刷新状态|恢复 AI|标记错误/);
   view.setPage('people'); copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /双丝网.*裴晚生.*人物状态.*核心特质.*状态分析记录.*重新分析/);
+  assert.match(copy, /关系往来.*裴晚生.*核心特质/);
   assert.doesNotMatch(copy, /剧情摘要|复制完整诊断/);
+  flatten(container).find(node => node.textContent === '分析记录').click(); copy = flatten(container).map(node => node.textContent).join('|');
+  assert.match(copy, /分析记录.*重新分析/);
   view.setPage('management'); copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /记忆管理.*继续.*完全重构.*最近召回回执.*详细诊断/);
   assert.doesNotMatch(copy, /剧情摘要|重新提取/);
   for (const button of flatten(container).filter(node => node.tag === 'button')) assert.equal(button.type, 'button');
 });
 
-test('摘要卡默认折叠并按时间/地点/人物/摘要展示，单时间与人物文本一次提交', async () => {
+test('摘要楼默认折叠，折叠条显示楼号/时间/真实状态，展开后显示正文与人物地点并从内联菜单编辑', async () => {
   const entityId = '11111111-1111-4111-8111-111111111111';
   const memory = { summaryEvidenceRefs: [], chronology: [{ itemId: 'time-1', time: { sourceText: '10月4日 周二 15:30' }, description: '开场' }], locations: [{ itemId: 'place-1', name: '钟楼' }], participants: [{ entityId, presence: 'present' }], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
   let saved = null;
   const floor = { floorId: 'floor', assistantSeq: 1, messageIndex: 2, canonicalFingerprint: 'sha256:canonical', rawFingerprint: 'sha256:raw', status: 'ready', memoryId: 'memory', summary: '钟楼相见', summarySource: 'ai', memory, cse: { status: 'ready', deltaId: 'delta' } };
   const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, cseReady: true, csePendingCount: 0, cseFailedCount: 0, memoryEntities: [{ entityId, displayName: '裴晚生' }], floors: [floor] };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => state, editMemory: async (...args) => { saved = args; return state; } };
-  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef }); view.setPage('memories'); view.mount(container);
+  const menuDocument = eventDocument();
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef: menuDocument }); view.setPage('memories'); view.mount(container);
   const card = flatten(container).find(node => String(node.className).includes('qqj-memory-card'));
   assert.equal(card.tag, 'details'); assert.equal(card.open, false);
   const copy = flatten(card).map(node => node.textContent).join('|');
-  assert.ok(copy.indexOf('时间') < copy.indexOf('地点') && copy.indexOf('地点') < copy.indexOf('人物') && copy.indexOf('人物') < copy.indexOf('摘要'));
-  assert.match(copy, /10月4日.*钟楼.*裴晚生.*钟楼相见/); assert.doesNotMatch(copy, /在场|远程参与|被提及/);
+  assert.match(copy, /第 2 楼.*10月4日 周二 15:30.*可用.*钟楼相见.*人物.*裴晚生.*地点.*钟楼.*⋮.*编辑.*重新提取/);
+  assert.ok(copy.indexOf('钟楼相见') < copy.indexOf('人物') && copy.indexOf('人物') < copy.indexOf('地点'));
+  assert.doesNotMatch(copy, /在场|远程参与|被提及/);
+  const menu = flatten(card).find(node => node.className === 'qqj-memory-menu'); assert.equal(menu.tag, 'details'); assert.equal(menu.open, false);
+  menu.open = true; menuDocument.click({ target: menu, composedPath: () => [menu] }); assert.equal(menu.open, true, '菜单内部点击不提前关闭');
+  menuDocument.click({ target: container, composedPath: () => [container] }); assert.equal(menu.open, false, '千结菜单点击外部后关闭');
   card.open = true; card.fire('toggle'); flatten(card).find(node => node.textContent === '编辑').click();
   const summary = flatten(container).find(node => node.placeholder === '输入用户修订摘要'); summary.value = '修订后摘要'; summary.fire('input');
   const time = flatten(container).find(node => node.placeholder === '日期、时间范围或相对时间'); time.value = '次日'; time.fire('input'); time.value = '10月4日 周二 15:30'; time.fire('input');
@@ -611,6 +646,26 @@ test('摘要卡默认折叠并按时间/地点/人物/摘要展示，单时间�
   assert.equal(saved[1].timeText, '10月4日 周二 15:30'); assert.equal(saved[1].originalTimeText, '10月4日 周二 15:30'); assert.equal(saved[1].timeChanged, false); assert.equal(saved[1].locations[0].itemId, 'place-1');
   assert.deepEqual(saved[1].participantNames, ['裴晚生']);
   assert.equal(flatten(container).find(node => String(node.className).includes('qqj-memory-card')).open, true);
+  view.deactivate(); assert.equal(menuDocument.clickListenerCount(), 0, '页面停用时清理外部点击监听');
+});
+
+test('未处理空楼保留恢复入口，长时间仅由样式省略且长摘要原文完整保留', () => {
+  const longTime = `冬至后的第七个雨夜 · ${'很长的时间描述'.repeat(12)}`;
+  const longSummary = `开头。${'这是一段必须完整保留的楼层摘要。'.repeat(80)}结尾。`;
+  const memory = { summaryEvidenceRefs: [], chronology: [{ time: { sourceText: longTime } }], locations: [], participants: [] };
+  const floors = [
+    { floorId: 'ready', messageIndex: 8, status: 'ready', memoryId: 'memory', summary: longSummary, memory, cse: { status: 'ready' } },
+    { floorId: 'empty', messageIndex: 6, status: 'unprocessed', memoryId: null, summary: '', timeFallback: '时间仍待提取', memory: null },
+  ];
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 2, rememberedCount: 1, unprocessedCount: 1, cseReady: false, csePendingCount: 0, cseFailedCount: 0, floors };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => state };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef }); view.setPage('memories'); view.mount(container);
+  const cards = flatten(container).filter(node => String(node.className).split(' ').includes('qqj-memory-card'));
+  const readyCard = cards.find(node => flatten(node).some(child => child.textContent === '第 8 楼'));
+  const emptyCard = cards.find(node => flatten(node).some(child => child.textContent === '第 6 楼'));
+  assert.equal(flatten(readyCard).find(node => node.className === 'qqj-floor-time').textContent, longTime);
+  assert.equal(flatten(readyCard).find(node => node.className === 'qqj-memory-main').textContent, longSummary);
+  assert.match(flatten(emptyCard).map(node => node.textContent).join('|'), /未处理.*这一楼尚未生成摘要.*提取摘要/);
 });
 
 test('未修改、改回原值与未动时间 fallback 直接退出编辑并保持展开，零保存调用', async () => {
@@ -652,17 +707,24 @@ test('CSE 历史每楼只显示实际变化，并可折叠查看该楼结束状�
   const floor = { floorId: 'floor', messageIndex: 2, memoryId: 'memory', status: 'ready', summary: '摘要', memory, cse: { status: 'ready', deltaId: 'delta', record: { noMaterialChange: false, isolationSummary: { count: 2, codes: ['V3_CSE_REVIEW_TARGET_AMBIGUOUS'] }, subjects: [{ displayName: '裴晚生', changeSummary: ['被拒的模型自报'], changes: [
     { category: 'adaptive', action: 'refine', beforeText: '会谨慎回应', afterText: '会谨慎回应', before: { text: '会谨慎回应', towardDisplayName: '甲', visibility: 'private', reason: '旧依据', origin: 'floor' }, after: { text: '会谨慎回应', towardDisplayName: '乙', visibility: 'observable', reason: '新依据', origin: 'floor' } },
     { category: 'situational', action: 'update', beforeText: '仍在门边', afterText: '已经落座', before: { text: '仍在门边', visibility: 'observable', reason: '站在门边', origin: 'floor' }, after: { text: '已经落座', visibility: 'observable', reason: '坐到桌旁', origin: 'floor' } },
+    { category: 'situational', action: 'remove', beforeText: '仍在等雨停', afterText: null, before: { text: '仍在等雨停', visibility: 'observable', reason: '雨还没停', origin: 'floor' }, after: null },
   ] }], endStateSubjects: [{ displayName: '裴晚生', core: [{ text: '重视承诺', visibility: 'authorial', reason: '角色卡设定', origin: 'baseline', sourceFloorId: null }], adaptive: [{ text: '会谨慎回应', towardDisplayName: '乙', visibility: 'observable', reason: '新依据', origin: 'floor', sourceFloorId: 'floor' }], situational: [{ text: '已经落座', visibility: 'observable', reason: '坐到桌旁', origin: 'floor', sourceFloorId: 'floor' }] }] } } };
   const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, cseReady: true, csePendingCount: 0, cseFailedCount: 0, cseSubjects: [], floors: [floor] };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, retryStateAnalysis: async () => state };
   const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef }); view.setPage('people'); view.mount(container);
+  flatten(container).find(node => node.textContent === '分析记录').click();
   const rowNode = flatten(container).find(node => node.className === 'qqj-cse-history-row');
   assert.equal(rowNode.tag, 'details'); assert.equal(rowNode.open, false);
   const copy = flatten(rowNode).map(node => node.textContent).join('|');
+  const resultCopy = flatten(rowNode).find(node => node.className === 'qqj-cse-floor-result').children[1];
+  assert.match(flatten(resultCopy).map(node => node.textContent).join('|'), /长期倾向：会谨慎回应.*当前情境：已经落座/);
+  assert.doesNotMatch(flatten(resultCopy).map(node => node.textContent).join('|'), /重视承诺|仍在门边|仍在等雨停|甲/);
   assert.match(copy, /裴晚生.*当前情境更新：仍在门边 → 已经落座/);
   assert.match(copy, /长期倾向属性更新：会谨慎回应.*对象：甲 → 乙.*信息范围：私密 → 可观察.*依据：旧依据 → 新依据/);
+  assert.match(copy, /移除当前情境：仍在等雨停/);
   assert.match(copy, /部分内容未通过校验，已保留有效结果（2 项校验记录）/);
-  assert.match(copy, /查看本楼结束状态.*核心特质.*重视承诺.*长期倾向.*对 乙.*会谨慎回应.*当前情境.*已经落座/);
+  assert.match(copy, /查看本楼完整状态.*核心特质.*重视承诺.*长期倾向.*对 乙.*会谨慎回应.*当前情境.*已经落座/);
+  assert.equal(flatten(rowNode).find(node => node.className === 'qqj-cse-floor-state').open, false);
   assert.doesNotMatch(copy, /被拒的模型自报/);
   rowNode.open = true; rowNode.fire('toggle'); view.setPage('memories'); view.setPage('people');
   assert.equal(flatten(container).find(node => node.className === 'qqj-cse-history-row').open, true);
@@ -675,6 +737,7 @@ test('CSE 完整隔离不伪造成功，旧楼缺诊断字段不冒充零隔离'
   const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 2, rememberedCount: 2, cseReady: true, csePendingCount: 0, cseFailedCount: 0, cseSubjects: [], floors: [legacyFloor, isolatedFloor] };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, retryStateAnalysis: async () => state };
   const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef }); view.setPage('people'); view.mount(container);
+  flatten(container).find(node => node.textContent === '分析记录').click();
   const copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /有内容未通过校验；本楼未产生人物状态变化（1 项校验记录）/);
   assert.equal((copy.match(/校验记录/g) ?? []).length, 1, '旧楼缺诊断字段应保持未知，不显示为零');
@@ -777,29 +840,71 @@ test('保存等待期间切换聊天会使旧响应失效，不回绘旧聊天',
   assert.doesNotMatch(copy, /旧聊天摘要/);
 });
 
-test('重要人物缺少 CSE 时显示紧凑真实折叠空态，更多人物抽屉与选择跨切页保留', async () => {
+test('重要人物缺少 CSE 时显示常显空态，更多人物同行入口与选择跨切页保留', async () => {
   let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, cseReady: false, csePendingCount: 0, cseFailedCount: 0, baselineId: 'baseline', mainCharacterEntityId: 'character', mainCharacterDisplayName: '裴晚生', cseSubjects: [], floors: [] };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
   const sharedPeople = peopleRuntime([{ entityId: 'character', displayName: '裴晚生', entityDisplayName: '裴晚生' }, { entityId: 'npc', displayName: '旁人', entityDisplayName: '旁人' }], ['character']);
   const container = new Node('main'); const view = createV3FoundationView({ runtime, peopleRuntime: sharedPeople, documentRef }); view.setPage('people'); view.mount(container);
-  assert.match(flatten(container).map(node => node.textContent).join('|'), /裴晚生.*暂无状态.*还没有已保存的状态分析/);
-  assert.equal(flatten(container).find(node => node.className === 'v3-cse-subject').tag, 'details', '空态箭头只属于真实 details');
-  assert.equal(flatten(container).find(node => node.className === 'qqj-more-people qqj-cse-more').open, false);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /裴晚生.*还没有已保存的状态分析/);
+  const own = flatten(container).find(node => node.className === 'qqj-relation-note');
+  assert.equal(own.tag, 'section'); assert.equal(flatten(own).some(node => node.tag === 'summary'), false, '选中人物自身状态常显且没有无用箭头');
+  const switchRow = flatten(container).find(node => node.className === 'qqj-relation-switch-row');
+  assert.ok(flatten(switchRow).find(node => node.textContent === '更多人物（1）'), '更多人物入口与关注人物在同一行');
+  flatten(switchRow).find(node => node.textContent === '更多人物（1）').click();
+  assert.equal(flatten(container).filter(node => node.className === 'qqj-profile-picker qqj-cse-more').length, 1);
   state = { ...state, cseSubjects: [
     { subjectEntityId: 'character', displayName: '裴晚生', core: [], adaptive: [], situational: [] },
     { subjectEntityId: 'npc', displayName: '旁人', core: [], adaptive: [], situational: [] },
   ] };
   view.render(state);
-  const main = flatten(container).find(node => node.className === 'v3-cse-subject');
-  assert.equal(main.open, true); main.open = false; main.fire('toggle');
   flatten(container).find(node => node.textContent === '设为重要').click(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(sharedPeople.getState().selectedEntityIds, ['character', 'npc']);
+  flatten(container).find(node => node.textContent === '返回关系').click();
   view.setPage('memories'); view.setPage('people');
   assert.match(flatten(container).map(node => node.textContent).join('|'), /裴晚生.*旁人/);
-  assert.equal(flatten(container).filter(node => node.className === 'v3-cse-subject')[0].open, false);
+  assert.equal(flatten(container).find(node => node.className === 'qqj-relation-note').tag, 'section');
 });
 
-test('双丝网按实体 ID 展示已有 user 状态，且不建立千人操作或错误空态', () => {
+test('双丝网精确区分双方关系、自身状态与选中 NPC 的其他关系', () => {
+  const userId = '10000000-0000-4000-8000-000000000001', aId = '20000000-0000-4000-8000-000000000002', bId = '30000000-0000-4000-8000-000000000003', cId = '40000000-0000-4000-8000-000000000004';
+  const state = {
+    status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, cseReady: true, csePendingCount: 0, cseFailedCount: 0, floors: [],
+    currentStateId: '50000000-0000-4000-8000-000000000005', currentStateFingerprint: `sha256:${'a'.repeat(64)}`,
+    memoryEntities: [{ entityId: userId, displayName: '你', specialRole: 'user' }, { entityId: aId, displayName: '左佐' }, { entityId: bId, displayName: '乙' }, { entityId: cId, displayName: '一个非常非常长的未关注人物名字' }],
+    cseSubjects: [
+      { subjectEntityId: userId, displayName: '你', core: [], adaptive: [{ text: '你对乙的态度不应重复在左佐页', towardEntityId: bId }], situational: [] },
+      { subjectEntityId: aId, displayName: '左佐', core: [{ text: '谨慎' }], adaptive: [{ text: '会保护你', towardEntityId: userId }, { text: '会偿还你的恩情', towardEntityId: userId }, { text: '对乙保持警惕', towardEntityId: bId }, { text: '习惯独自复盘', towardEntityId: null }], situational: [{ text: '正在门外等候' }] },
+      { subjectEntityId: bId, displayName: '乙', core: [], adaptive: [{ text: '乙对左佐的态度不应混入', towardEntityId: aId }], situational: [] },
+    ],
+  };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, correctSubjectState: async () => state };
+  const sharedPeople = peopleRuntime([{ entityId: aId, displayName: '左佐' }, { entityId: bId, displayName: '乙' }, { entityId: cId, displayName: '一个非常非常长的未关注人物名字' }], [aId, bId]);
+  const menuDocument = eventDocument();
+  const container = new Node('main'), view = createV3FoundationView({ runtime, peopleRuntime: sharedPeople, documentRef: menuDocument }); view.setPage('people'); view.mount(container);
+  const pair = flatten(container).find(node => node.className === 'qqj-relation-card'), pairCopy = flatten(pair).map(node => node.textContent).join('|');
+  assert.match(pairCopy, /你 → 左佐.*暂无已保存的关系状态.*左佐 → 你.*会保护你.*会偿还你的恩情/);
+  const pairHead = flatten(pair).find(node => node.className === 'qqj-relation-head'), pairMenu = pairHead.children.at(-1);
+  assert.equal(pairMenu.tag, 'details'); assert.equal(pairMenu.className, 'qqj-memory-menu qqj-relation-menu');
+  assert.equal(pairMenu.children[0].tag, 'summary'); assert.equal(pairMenu.children[0].textContent, '⋮'); assert.equal(pairMenu.children[0].attributes['aria-label'], '关系操作');
+  assert.deepEqual(flatten(pairMenu).filter(node => node.tag === 'button').map(node => node.textContent), ['编辑状态', '移出重要']);
+  pairMenu.open = true; menuDocument.click({ target: pairMenu.children[0], composedPath: () => [pairMenu.children[0], pairMenu] }); assert.equal(pairMenu.open, true, '关系菜单内部点击不提前关闭');
+  menuDocument.click({ target: container, composedPath: () => [container] }); assert.equal(pairMenu.open, false, '关系菜单点击外部后关闭');
+  const own = flatten(container).find(node => node.className === 'qqj-relation-note'), ownCopy = flatten(own).map(node => node.textContent).join('|');
+  assert.equal(own.tag, 'section'); assert.match(ownCopy, /谨慎.*习惯独自复盘.*正在门外等候/); assert.doesNotMatch(ownCopy, /会保护你|会偿还你的恩情|对乙保持警惕/);
+  const others = flatten(container).find(node => node.className === 'qqj-other-relations'), otherCopy = flatten(others).map(node => node.textContent).join('|');
+  assert.match(otherCopy, /左佐与其他人物.*左佐 → 乙.*对乙保持警惕/); assert.doesNotMatch(otherCopy, /你对乙|乙对左佐/);
+  assert.equal(pair.children.at(-1), own, '自身状态融入关系卡内部底部');
+  assert.equal(flatten(own).some(node => node.className === 'v3-memory-status'), false, '页脚不再重复状态胶囊');
+  flatten(pairMenu).find(node => node.textContent === '编辑状态').click();
+  assert.equal(flatten(container).some(node => node.className === 'qqj-memory-menu qqj-relation-menu'), false, '编辑态没有操作项时不保留空菜单');
+  assert.deepEqual(flatten(container).filter(node => node.tag === 'button' && ['保存', '取消'].includes(node.textContent)).map(node => node.textContent), ['保存', '取消']);
+  flatten(container).find(node => node.textContent === '取消').click();
+  const switchRow = flatten(container).find(node => node.className === 'qqj-relation-switch-row'); flatten(switchRow).find(node => node.textContent === '更多人物（1）').click();
+  assert.match(flatten(container).find(node => node.className === 'qqj-profile-picker qqj-cse-more').textContent + flatten(container).map(node => node.textContent).join('|'), /一个非常非常长的未关注人物名字/);
+  view.deactivate(); assert.equal(menuDocument.clickListenerCount(), 0);
+});
+
+test('双丝网按实体 ID 展示已有 user 状态，且空状态关系卡仍可从菜单移出重要', async () => {
   const userId = '11111111-1111-4111-8111-111111111111';
   const characterId = '22222222-2222-4222-8222-222222222222';
   let state = {
@@ -812,10 +917,9 @@ test('双丝网按实体 ID 展示已有 user 状态，且不建立千人操作�
   const sharedPeople = peopleRuntime([{ entityId: characterId, displayName: '裴晚生', entityDisplayName: '裴晚生' }], []);
   const container = new Node('main'); const view = createV3FoundationView({ runtime, peopleRuntime: sharedPeople, documentRef }); view.setPage('people'); view.mount(container);
   let copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /林岚.*人物状态.*冷静.*已有状态/); assert.doesNotMatch(copy, /尚未选择重要人物|暂无人物状态/);
-  const cards = flatten(container).filter(node => node.className === 'v3-cse-subject');
-  assert.equal(cards.length, 2, '主区 user 状态与更多人物原入口都保留'); assert.equal(cards[0].open, true);
-  assert.equal(flatten(cards[0]).some(node => ['设为重要', '移出重要'].includes(node.textContent)), false, 'user 状态卡不提供千人选择操作');
+  assert.match(copy, /林岚.*冷静.*尚未选择重要人物.*更多人物（1）/);
+  const anchor = flatten(container).find(node => node.className === 'qqj-user-anchor');
+  assert.equal(flatten(anchor).some(node => ['设为重要', '移出重要'].includes(node.textContent)), false, 'user 状态不提供千人选择操作');
 
   state = { ...state, cseSubjects: [] }; view.render(state); copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /尚未选择重要人物/); assert.doesNotMatch(copy, /林岚.*人物状态/);
@@ -823,6 +927,10 @@ test('双丝网按实体 ID 展示已有 user 状态，且不建立千人操作�
   state = { ...state, cseSubjects: [{ subjectEntityId: userId, displayName: '林岚', core: [], adaptive: [], situational: [] }] };
   view.render(state); copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /林岚.*裴晚生/); assert.doesNotMatch(copy, /尚未选择重要人物|暂无人物状态/);
+  const menu = flatten(container).find(node => node.className === 'qqj-memory-menu qqj-relation-menu');
+  assert.deepEqual(flatten(menu).filter(node => node.tag === 'button').map(node => node.textContent), ['移出重要']);
+  flatten(menu).find(node => node.textContent === '移出重要').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(sharedPeople.getState().selectedEntityIds, []); assert.match(flatten(container).map(node => node.textContent).join('|'), /尚未选择重要人物/);
 });
 
 test('人物状态编辑保存期间冻结全部草稿控件并复制输入，成功留在抽屉、失败保留草稿', async () => {
@@ -846,7 +954,7 @@ test('人物状态编辑保存期间冻结全部草稿控件并复制输入，�
   };
   const infoCalls = [];
   const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef, infoImpl: options => { infoCalls.push(options); return true; } }); view.setPage('people'); view.mount(container);
-  flatten(container).find(node => node.textContent === '编辑状态').click();
+  flatten(container).find(node => node.textContent === '编辑我的状态').click();
   let editor = flatten(container).find(node => node.className === 'qqj-cse-edit');
   assert.equal(flatten(editor).some(node => node.tag === 'select'), false, 'CSE 信息范围与对象不得使用手机原生选择器');
   let situational = flatten(editor).find(node => node.placeholder === '当前情境内容');
@@ -862,9 +970,9 @@ test('人物状态编辑保存期间冻结全部草稿控件并复制输入，�
   state = { ...state, currentStateId: '44444444-4444-4444-8444-444444444444', currentStateFingerprint: `sha256:${'b'.repeat(64)}`, cseSubjects: [{ ...state.cseSubjects[0], situational: [{ ...state.cseSubjects[0].situational[0], text: '已经平静', origin: 'manual', reason: '用户纠正当前状态' }] }] };
   pending.resolve(state); await new Promise(resolve => setImmediate(resolve));
   assert.equal(flatten(container).some(node => node.className === 'qqj-cse-edit'), false);
-  assert.equal(flatten(container).find(node => node.className === 'v3-cse-subject').open, true, '保存成功后人物抽屉保持展开');
+  assert.ok(flatten(container).find(node => node.className === 'qqj-user-anchor'), '保存成功后用户状态仍常显');
 
-  flatten(container).find(node => node.textContent === '编辑状态').click();
+  flatten(container).find(node => node.textContent === '编辑我的状态').click();
   editor = flatten(container).find(node => node.className === 'qqj-cse-edit');
   situational = flatten(editor).find(node => node.placeholder === '当前情境内容');
   situational.value = '失败时保留'; situational.fire('input');

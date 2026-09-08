@@ -188,7 +188,7 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
   assert.equal(userView.states.open, undefined); assert.equal(userView.statesTitle.textContent, '人物状态 1 条'); assert.equal(userView.stateItems.children[0].textContent, '裴晚生 → 江离州：仍然戒备');
   assert.equal(descendantText(userView.states).includes('core'), false); assert.equal(descendantText(userView.states).includes('内部依据'), false);
   assert.equal(aiView.summary.textContent, '<img src=x onerror=alert(1)>仍是纯文字'); assert.equal(aiView.root.querySelectorAll('img').length, 0);
-  assert.match(aiView.root.children[0].textContent, /background:transparent/); assert.match(aiView.root.children[0].textContent, /border:1px/); assert.match(aiView.root.children[0].textContent, /border-left:2px solid #a8322f/); assert.match(aiView.root.children[0].textContent, /\.knot\{/);
+  assert.match(aiView.root.children[0].textContent, /background:transparent/); assert.match(aiView.root.children[0].textContent, /border:1px solid var\(--qqj-inline-line\)/); assert.match(aiView.root.children[0].textContent, /border-left:2px solid var\(--qqj-inline-knot\)/); assert.match(aiView.root.children[0].textContent, /\.knot\{/);
   assert.match(aiView.root.children[0].textContent, /\.mark\{position:absolute;left:0;top:18px/); assert.doesNotMatch(aiView.root.children[0].textContent, /border-left:1px dashed/);
   assert.match(aiView.root.children[0].textContent, /grid-template-columns:minmax\(0,1fr\) auto/); assert.match(aiView.root.children[0].textContent, /\.title\{[^}]*font-size:12px/);
   assert.equal(aiView.root.querySelectorAll('.chevron').length, 0); assert.equal(aiView.status.className, 'status ready'); assert.equal(userView.status.className, 'status');
@@ -197,6 +197,24 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
   const rootIdentity = aiView.root, summaryIdentity = aiView.summary; aiView.toggle.emit('click'); assert.equal(aiView.body.hidden, false); assert.equal(aiView.host.getAttribute('data-open'), 'true'); userView.states.open = true;
   h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
   assert.equal(aiView.root, rootIdentity); assert.equal(aiView.summary, summaryIdentity); assert.equal(aiView.body.hidden, false); assert.equal(userView.states.open, true, '人物状态分组折叠状态需保留');
+});
+
+test('楼内主题变量同步已有卡与后生卡，更新颜色不重建或折叠已有卡', async () => {
+  const chat = [{ is_user: false, is_system: false, mes: 'AI正文' }], state = readyState(); state.floors[0].messageIndex = 0;
+  const h = createHarness({ chat, memoryState: state });
+  h.renderer.setAppearance({ palette: { knot: '#112233', line: '#445566' } });
+  h.chatRoot.append(messageElement(0)); h.renderer.start(); await h.flushMicrotasks();
+  const firstHost = h.chatRoot.querySelector('[data-qqj-inline-host="true"]'), firstView = firstHost.__qqjInlineCard;
+  assert.equal(firstHost.style['--qqj-inline-knot'], '#112233'); assert.equal(firstHost.style['--qqj-inline-line'], '#445566');
+  firstView.toggle.emit('click'); const root = firstView.root;
+  h.renderer.setAppearance({ palette: { knot: '#d9707a', line: '#2b363b' } });
+  assert.equal(firstHost.style['--qqj-inline-knot'], '#d9707a'); assert.equal(firstHost.style['--qqj-inline-line'], '#2b363b');
+  assert.equal(firstView.root, root); assert.equal(firstView.body.hidden, false); assert.equal(firstView.expanded, true);
+
+  chat.push({ is_user: true, is_system: false, mes: '后生用户楼' });
+  const later = messageElement(1, { user: true }); h.chatRoot.append(later); h.emit('USER_MESSAGE_RENDERED', 1); await h.flushMicrotasks();
+  const laterHost = resolveInlineAnchor(later).querySelector('[data-qqj-inline-host="true"]');
+  assert.equal(laterHost.style['--qqj-inline-knot'], '#d9707a'); assert.equal(laterHost.style['--qqj-inline-line'], '#2b363b');
 });
 
 test('重新提取按钮与折叠按钮互不影响，同次点击只调用一次且失败后原位恢复', async () => {

@@ -49,6 +49,7 @@ export function createChatMemoryManagement({
       error: scopedPending?.error ?? null,
       deletedCount: scopedPending?.deletedCount ?? (scopedResult ? lastResult.deletedCount : 0),
       blockedByOtherChat: Boolean((pending && !scopedPending) || (active && !scopedActive)),
+      workBusy: busy(),
     });
   };
   const notify = () => { const state = getState(); for (const listener of subscribers) { try { listener(state); } catch { /* UI listener isolation */ } } return state; };
@@ -59,14 +60,14 @@ export function createChatMemoryManagement({
     }
     return snapshot;
   };
-  const busy = () => {
+  function busy() {
     const memory = memoryRuntime?.getState?.() ?? {};
     const foundation = foundationRuntime?.getState?.() ?? {};
     const recall = recallRuntime?.getState?.() ?? {};
     const people = peopleRuntime?.getState?.() ?? {};
     return Boolean(isMainGenerationActive?.() || memory.memoryWorkBusy || memory.activeAutoMemory || memory.activeExtraction || memory.activeCse
       || foundation.activeRun || recall.activeRecall || people.active);
-  };
+  }
   const invalidateRuntimes = () => {
     try { memoryRuntime?.invalidate?.(); } catch { /* continue clearing other projections */ }
     try { foundationRuntime?.invalidate?.(); } catch { /* continue */ }

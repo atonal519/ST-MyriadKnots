@@ -628,7 +628,8 @@ export function createFoundationRuntime({
     };
     activeOperation = operation;
     publishOperation(operation, 'running');
-    operation.promise = (async () => {
+    let settledPublicState = null;
+    const runPromise = (async () => {
       try {
         if (prepareSession) {
           const prepared = await prepareSession();
@@ -677,7 +678,10 @@ export function createFoundationRuntime({
         logger?.warn?.('[qianqianjie] V3 foundation failed', { code: error?.code ?? error?.name ?? 'V3_FOUNDATION_FAILED' });
         return publishOperation(operation, 'error');
       } finally {
-        if (activeOperation === operation) activeOperation = null;
+        if (activeOperation === operation) {
+          activeOperation = null;
+          if (operation.epoch === sessionEpoch) settledPublicState = publish(enabled() ? publicState.status : 'disabled');
+        }
         if (dirtyReason && enabled()) {
           const nextReason = dirtyReason;
           const nextStableThrough = dirtyStableThrough;
@@ -687,6 +691,7 @@ export function createFoundationRuntime({
         }
       }
     })();
+    operation.promise = runPromise.then(result => settledPublicState ?? result);
     return operation.promise;
   }
 

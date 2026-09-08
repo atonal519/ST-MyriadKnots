@@ -151,6 +151,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       visibility: item.visibility,
       reason: item.reason,
       origin: item.origin,
+      towardEntityId: item.towardEntityId ?? null,
       towardDisplayName: entities.get(item.towardEntityId)?.displayName ?? null,
       sourceFloorId: item.sourceFloorId ?? null,
       sourceAssistantSeq: floorSeq.get(item.sourceFloorId) ?? null,

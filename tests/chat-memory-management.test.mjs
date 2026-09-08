@@ -110,6 +110,7 @@ test('receipt或metadata保存失败会恢复内存身份并保留重试入口',
 
 test('忙碌时拒绝且不暂停、不恢复隐藏、不访问后端', async () => {
   const f = fixture({ busy: true });
+  assert.equal(f.manager.getState().workBusy, true, 'UI 与执行层必须读取同一份忙碌投影');
   await assert.rejects(f.manager.deleteCurrent(), error => error.code === 'QQJ_DELETE_BUSY');
   assert.deepEqual(f.calls, []);
 });

@@ -20,6 +20,17 @@ class Node {
   focus() { documentRef.activeElement = this; }
 }
 const documentRef = { activeElement: null, createElement: tag => new Node(tag) };
+function eventDocument() {
+  const clicks = new Set();
+  return {
+    activeElement: null,
+    createElement: tag => new Node(tag),
+    addEventListener(name, handler) { if (name === 'click') clicks.add(handler); },
+    removeEventListener(name, handler) { if (name === 'click') clicks.delete(handler); },
+    click(event) { for (const handler of clicks) handler(event); },
+    clickListenerCount: () => clicks.size,
+  };
+}
 const flatten = node => [node, ...node.children.flatMap(flatten)];
 const visible = node => flatten(node).map(item => item.textContent).filter(Boolean).join('|');
 function person(entityId, name, selected, profile = null, recommended = false) {
@@ -104,32 +115,44 @@ test('真实 activate 完成后不回画旧 loading，禁用整理不触发且�
   const h = trueRuntimeHarness(); await h.runtime.refresh();
   const container = new Node('main'), view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container); await view.activate();
   assert.equal(h.runtime.getState().status, 'ready');
+  assert.equal(flatten(container).filter(node => node.className === 'qqj-page-status').length, 1);
+  assert.match(visible(container), /人物资料读取完成/);
   const generate = flatten(container).find(node => node.textContent === '整理基础资料'); assert.equal(generate.disabled, true); generate.click();
   assert.equal(h.calls.filter(call => call[0] === 'put').length, 0, '浏览器中的 disabled 按钮不会触发动作');
   flatten(container).find(node => node.textContent === '更多人物（2）').click();
+  assert.match(visible(container), /人物资料读取完成/, '切换人物选择视图后保留最近一次真实反馈');
   const choose = flatten(container).filter(node => node.textContent === '设为重要'); assert.equal(choose.length, 2); assert.equal(choose.every(node => node.disabled === false), true);
   choose[0].click(); await waitFor(() => h.runtime.getState().selectedEntityIds.includes(A));
   assert.equal(flatten(container).find(node => node.textContent === '设为重要')?.disabled, false, '再次绘制更多人物仍保持可选择');
 });
 
 test('千人页横向切换只显示一份常显资料，草稿跨人物保留且移出当前后选择邻位', async () => {
-  const h = runtimeHarness({ selected: [A, B] }), container = new Node('main'); const view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
+  const menuDocument = eventDocument();
+  const h = runtimeHarness({ selected: [A, B] }), container = new Node('main'); const view = createPeopleProfilesView({ runtime: h.runtime, documentRef: menuDocument }); view.mount(container);
   assert.equal(flatten(container).filter(node => node.className === 'qqj-profile-card').length, 1);
   const tabs = flatten(container).filter(node => node.attributes.role === 'tab'); assert.deepEqual(tabs.map(node => node.textContent), ['甲', '乙']);
   assert.deepEqual(tabs.map(node => node.attributes.title), ['甲', '乙'], '截断显示仍保留完整姓名提示');
-  assert.equal(tabs[0].attributes['aria-selected'], 'true'); assert.match(visible(container), /姓名.*甲.*别名.*甲别名/);
-  assert.deepEqual(flatten(container).find(node => node.className === 'qqj-profile-summary').children.map(node => node.textContent), ['甲', '推荐', '待建档']);
-  assert.deepEqual(flatten(container).find(node => node.className === 'qqj-profile-save-row').children.map(node => node.textContent), ['编辑资料', '移出关注']);
+  assert.equal(tabs[0].attributes['aria-selected'], 'true'); assert.match(visible(container), /甲.*别名 · 甲别名/);
+  const summary = flatten(container).find(node => node.className === 'qqj-profile-summary');
+  assert.deepEqual(summary.children.map(node => node.className), ['qqj-profile-mark', 'qqj-profile-identity', 'qqj-profile-badges']);
+  assert.match(summary.children[0].innerHTML, /<svg[\s\S]*?<path/, '档案标记应复用千千结自己的结形图标');
+  assert.match(visible(summary.children[1]), /甲.*别名 · 甲别名/); assert.match(visible(summary.children[2]), /推荐.*待建档/);
+  assert.deepEqual(flatten(container).filter(node => node.className?.includes?.('qqj-profile-section')).map(node => node.children[0].textContent), ['身份背景', '外貌', '基础性格', '补充说明']);
+  assert.deepEqual(flatten(container).find(node => node.className === 'qqj-profile-menu-pop').children.map(node => node.textContent), ['整理基础资料（2）', '编辑资料', '', '移出关注']);
+  const profileMenu = flatten(container).find(node => node.className === 'qqj-profile-menu');
+  profileMenu.open = true; menuDocument.click({ target: profileMenu.children[0], composedPath: () => [profileMenu.children[0], profileMenu] }); assert.equal(profileMenu.open, true, '千人菜单内部点击不提前关闭');
+  menuDocument.click({ target: container, composedPath: () => [container] }); assert.equal(profileMenu.open, false, '千人菜单点击外部后关闭');
   flatten(container).find(node => node.textContent === '编辑资料').click();
   assert.deepEqual(flatten(container).find(node => node.className === 'qqj-profile-save-row').children.slice(0, 3).map(node => node.textContent), ['保存资料', '取消', '移出关注']);
   assert.equal(flatten(container).find(node => node.tag === 'input').value, '甲');
   const notes = flatten(container).filter(node => node.tag === 'textarea').at(-1); notes.value = '甲的未保存草稿'; notes.fire('input');
-  tabs[1].click(); assert.match(visible(container), /姓名.*乙/); assert.equal(flatten(container).some(node => node.tag === 'input'), false);
+  tabs[1].click(); assert.match(visible(container), /乙.*别名 · 乙别名/); assert.equal(flatten(container).some(node => node.tag === 'input'), false);
   flatten(container).find(node => node.textContent === '编辑资料').click(); const bNotes = flatten(container).filter(node => node.tag === 'textarea').at(-1); bNotes.value = '取消的草稿'; bNotes.fire('input');
   flatten(container).find(node => node.textContent === '取消').click(); assert.doesNotMatch(visible(container), /取消的草稿/); assert.match(visible(container), /编辑资料/);
   flatten(container).find(node => node.textContent === '甲').click(); assert.equal(flatten(container).filter(node => node.tag === 'textarea').at(-1).value, '甲的未保存草稿');
   flatten(container).find(node => node.textContent === '移出关注').click(); await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(h.calls.select.at(-1), [B]); assert.match(visible(container), /姓名.*乙/);
+  assert.deepEqual(h.calls.select.at(-1), [B]); assert.match(visible(container), /乙.*别名 · 乙别名/);
+  view.deactivate(); assert.equal(menuDocument.clickListenerCount(), 0, '页面停用时清理外部点击监听');
 });
 
 test('更多人物入口固定在顶部并切换为独立选择视图，零选择仍可进入', async () => {
@@ -139,7 +162,7 @@ test('更多人物入口固定在顶部并切换为独立选择视图，零选�
   assert.equal(flatten(container).filter(node => node.className === 'qqj-profile-picker').length, 1); assert.equal(flatten(container).filter(node => node.textContent === '设为重要').length, 2);
   flatten(container).find(node => node.textContent === '设为重要').click(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(h.calls.select.at(-1), [A]); assert.match(visible(container), /已选重要.*移出关注/); assert.match(visible(container), /返回资料/);
-  flatten(container).find(node => node.textContent === '返回资料').click(); assert.match(visible(container), /姓名.*甲/);
+  flatten(container).find(node => node.textContent === '返回资料').click(); assert.match(visible(container), /甲.*别名 · 甲别名/);
 });
 
 test('投影姓名别名只填表单不算建档，首次保存与主动清空都会调用正式保存', async () => {
@@ -182,7 +205,7 @@ test('整理完成会刷新未触碰表单，用户整理期间已输入的草�
   createPeopleProfilesView({ runtime: untouched.runtime, documentRef }).mount(untouchedContainer);
   flatten(untouchedContainer).find(node => node.textContent === '整理基础资料（1）').click();
   await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
-  assert.match(visible(untouchedContainer), /姓名.*模型甲.*生成背景/);
+  assert.match(visible(untouchedContainer), /模型甲.*生成背景/);
 
   let release; const gate = new Promise(resolve => { release = resolve; });
   const editing = runtimeHarness({ generatedProfile: generated, generateGate: gate }), editingContainer = new Node('main');

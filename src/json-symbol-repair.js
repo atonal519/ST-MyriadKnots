@@ -26,33 +26,59 @@ function scanner(source, { trailingCommasOnly = false, requireOperations = true 
   };
   const valueStart = char => char === '{' || char === '[' || char === '"' || char === '-' || /[0-9]/u.test(char ?? '') || char === 't' || char === 'f' || char === 'n';
 
-  const stringToken = () => {
+  const stringToken = ({ value = false } = {}) => {
     if (source[index] !== '"') return null;
-    const start = index;
+    let raw = '"';
     index += 1;
     while (index < source.length) {
       const char = source[index];
       if (char === '"') {
+        if (value) {
+          let boundary = index + 1;
+          while (/\s/u.test(source[boundary] ?? '')) boundary += 1;
+          const separatedNextToken = boundary > index + 1 && (valueStart(source[boundary]) || BARE_KEY_START.test(source[boundary] ?? ''));
+          const closesValue = boundary === source.length || [',', '}', ']'].includes(source[boundary]) || separatedNextToken;
+          if (!closesValue) {
+            let paired = index + 1;
+            while (paired < source.length) {
+              if (source[paired] === '\\') { paired += 2; continue; }
+              if (source[paired] === '"') break;
+              paired += 1;
+            }
+            if (paired >= source.length || paired === index + 1) return null;
+            let afterPair = paired + 1;
+            while (/\s/u.test(source[afterPair] ?? '')) afterPair += 1;
+            if (source[afterPair] === ':') return null;
+            addOperation('escape-string-quote', index, '\\');
+            raw += '\\"';
+            index += 1;
+            continue;
+          }
+        }
+        raw += '"';
         index += 1;
-        const raw = source.slice(start, index);
         let decoded;
         try { decoded = JSON.parse(raw); } catch { return null; }
         output += raw;
         return { kind: 'string', decoded };
       }
       if (char === '\\') {
+        const escapeStart = index;
         index += 1;
         const escape = source[index];
         if (escape === 'u') {
           if (!/^[0-9a-fA-F]{4}$/u.test(source.slice(index + 1, index + 5))) return null;
           index += 5;
+          raw += source.slice(escapeStart, index);
           continue;
         }
         if (!/["\\/bfnrt]/u.test(escape ?? '')) return null;
         index += 1;
+        raw += source.slice(escapeStart, index);
         continue;
       }
       if (char.charCodeAt(0) <= 0x1f) return null;
+      raw += char;
       index += 1;
     }
     return null;
@@ -128,7 +154,7 @@ function scanner(source, { trailingCommasOnly = false, requireOperations = true 
     const char = source[index];
     if (char === '{') return parseObject();
     if (char === '[') return parseArray();
-    if (char === '"') return stringToken();
+    if (char === '"') return stringToken({ value: true });
     for (const literal of ['true', 'false', 'null']) {
       if (source.startsWith(literal, index)) {
         output += literal;
@@ -183,7 +209,7 @@ function scanner(source, { trailingCommasOnly = false, requireOperations = true 
       }
       const nextKey = inspectKey(index);
       const nextCanHaveColon = nextKey && (nextKey.colon || valueStart(source[nextKey.valueAt]));
-      const safeBoundary = nextKey && nextCanHaveColon && ((nextKey.kind === 'quoted' && gap > 0 && value.kind !== 'string') || value.kind === 'object' || value.kind === 'array');
+      const safeBoundary = nextKey && nextCanHaveColon && (gap > 0 || value.kind === 'object' || value.kind === 'array');
       if (!safeBoundary) return null;
       addOperation('insert-comma', index, ',');
       output += ',';
@@ -217,7 +243,8 @@ function scanner(source, { trailingCommasOnly = false, requireOperations = true 
         continue;
       }
       const next = source[index];
-      if ((value.kind !== 'object' && value.kind !== 'array') || (next !== '{' && next !== '[')) return null;
+      const separatedValues = gap > 0 && valueStart(next);
+      if (!separatedValues && ((value.kind !== 'object' && value.kind !== 'array') || (next !== '{' && next !== '['))) return null;
       addOperation('insert-comma', index, ',');
       output += ',';
     }
