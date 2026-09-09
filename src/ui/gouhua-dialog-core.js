@@ -135,5 +135,39 @@ export function createGouhuaDialogCore({ $, mount, getRootClass = () => '', subs
         });
     }
 
-    return Object.freeze({ confirm, choose, prompt, cancelActive, hasActive: () => activeCancel !== null });
+    function custom({ title = '', content, confirmText = '确定', cancelText = '取消', submit, onClose } = {}) {
+        if (!content || typeof submit !== 'function') throw new TypeError('自定义弹窗内容无效');
+        return new Promise(resolve => {
+            prepareDialog();
+            const previousFocus = captureFocus();
+            const $overlay = $(`<div id="${OVERLAY_ID}" class="sp-dialog-overlay">
+                <div class="sp-dialog-sheet sp-dialog-sheet-custom" role="dialog" aria-modal="true" aria-labelledby="sp-dialog-title">
+                    <div id="sp-dialog-title" class="sp-dialog-head">${escapeHtml(title)}</div>
+                    <div class="sp-dialog-custom"></div>
+                    <div class="sp-dialog-input-error" aria-live="polite"></div>
+                    <div class="sp-dialog-actions">
+                        <button class="sp-dialog-button sp-dialog-button-secondary sp-dialog-cancel" type="button">${escapeHtml(cancelText)}</button>
+                        <button class="sp-dialog-button sp-dialog-button-primary sp-dialog-submit" type="button">${escapeHtml(confirmText)}</button>
+                    </div>
+                </div>
+            </div>`);
+            $overlay.find('.sp-dialog-custom')[0]?.appendChild?.(content);
+            const session = mountDialog($overlay, resolve, { onClose: () => { try { onClose?.(); } finally { restoreFocus(previousFocus); } } });
+            let submitting = false;
+            const runSubmit = async () => {
+                if (submitting || session.isDone()) return;
+                submitting = true; $overlay.find('.sp-dialog-input-error').empty();
+                try { const value = await submit(); session.finish(value ?? true); }
+                catch (error) {
+                    submitting = false;
+                    $overlay.find('.sp-dialog-input-error').html(`<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> ${escapeHtml(error?.message || '操作失败，请重试。')}`);
+                }
+            };
+            $overlay.find('.sp-dialog-submit').on('click', runSubmit);
+            $overlay.find('.sp-dialog-cancel').on('click', session.close);
+            schedule(() => $overlay.find('.sp-dialog-submit').trigger('focus'), 0);
+        });
+    }
+
+    return Object.freeze({ confirm, choose, prompt, custom, cancelActive, hasActive: () => activeCancel !== null });
 }

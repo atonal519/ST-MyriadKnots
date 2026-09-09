@@ -29,6 +29,7 @@ export function createDialogManager({ documentRef = globalThis.document, $ = glo
     host,
     confirm: core.confirm,
     prompt: core.prompt,
+    custom: core.custom,
     info,
     hasActive: core.hasActive,
     cancelTop: core.cancelActive,

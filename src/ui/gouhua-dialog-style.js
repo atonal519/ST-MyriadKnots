@@ -55,5 +55,12 @@ export const gouhuaDialogCss = `
 .sp-dialog-input:focus{border-color:var(--sp-primary)}
 .sp-dialog-input-error{min-height:1em;color:var(--sp-on-surface);font-size:var(--sp-fs-72);line-height:1.4}
 .sp-dialog-input-error i{color:var(--sp-subtle);margin-right:3px}
+.sp-dialog-sheet-custom{max-height:calc(100dvh - 40px);overflow:hidden}
+.sp-dialog-custom{min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.qqj-avatar-crop-panel{display:grid;gap:12px;min-width:0}
+.qqj-avatar-crop-frame{position:relative;width:min(240px,100%);margin-inline:auto;aspect-ratio:var(--qqj-avatar-aspect,1);overflow:hidden;border:1px solid var(--sp-divider);border-radius:10px;background:var(--sp-surface-high);touch-action:none;cursor:move}
+.qqj-avatar-crop-image{position:absolute;max-width:none;max-height:none;user-select:none;pointer-events:none}
+.qqj-avatar-zoom{display:grid;grid-template-columns:auto minmax(0,240px);align-items:center;justify-content:center;gap:9px;color:var(--sp-subtle);font-size:var(--sp-fs-75)}
+.qqj-avatar-zoom input{min-width:0;accent-color:var(--sp-primary)}
 @media(prefers-reduced-motion:reduce){.sp-root,.sp-root *{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 `;

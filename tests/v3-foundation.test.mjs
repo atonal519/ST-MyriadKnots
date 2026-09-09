@@ -235,7 +235,7 @@ test('已有 reconcile 占用时排队的提前边界不会丢失，释放后精
   assert.equal(h.runtime.getReachable().floors.some(floor => floor.hostLocator.messageIndex === 3), false);
 });
 
-test('V3 真实 AI 判定保留各类隐藏 AI，只排除带宿主 type 的真系统楼', async () => {
+test('V3 真实 AI 判定排除各种 narrator，保留隐藏 AI、comment 与未知扩展 type', async () => {
   const chat = [
     assistant('普通 AI'),
     hiddenAssistant('/hide AI'),
@@ -246,6 +246,11 @@ test('V3 真实 AI 判定保留各类隐藏 AI，只排除带宿主 type 的真�
     system('generic system', 'generic'),
     system('narrator system', 'narrator'),
     system('comment system', 'comment'),
+    { ...assistant('narrator empty system', { type: 'narrator' }), is_system: '' },
+    assistant('narrator false system', { type: 'narrator' }),
+    { is_user: false, mes: 'narrator missing system', extra: { type: 'narrator' } },
+    assistant('comment AI', { type: 'comment' }),
+    assistant('unknown extension AI', { type: 'extension-output' }),
   ];
   const candidates = await scanAssistantCandidates(chat);
   assert.deepEqual(candidates.map(item => [item.assistantSeq, item.hostLocator.messageIndex, item.canonicalContent]), [
@@ -253,7 +258,42 @@ test('V3 真实 AI 判定保留各类隐藏 AI，只排除带宿主 type 的真�
     [2, 1, '/hide AI'],
     [3, 2, 'is_hidden AI'],
     [4, 3, 'extra.is_hidden AI'],
+    [5, 12, 'comment AI'],
+    [6, 13, 'unknown extension AI'],
   ]);
+  const anchors = await scanAssistantCandidates([
+    assistant('未被旁白确认的 AI'),
+    { is_user: true, is_system: '', mes: '伪装 user 的旁白', extra: { type: 'narrator' } },
+    assistant('正常 AI'),
+    user('正常 user 锚'),
+  ]);
+  assert.deepEqual(anchors.map(item => item.stabilityProof?.messageIndex ?? null), [null, 3], 'narrator 也不能伪装 user 稳定锚');
+});
+
+test('生产 scanner 与 foundation runtime 跳过空/假 system narrator，并随真实 user 增删稳定 AI', async () => {
+  for (const narrator of [
+    { is_user: false, is_system: '', mes: '空 system 旁白', extra: { type: 'narrator' } },
+    { is_user: false, is_system: false, mes: 'false system 旁白', extra: { type: 'narrator' } },
+    { is_user: false, mes: '缺 system 旁白', extra: { type: 'narrator' } },
+  ]) {
+    const candidates = await scanAssistantCandidates([narrator, assistant('真实 AI'), user('稳定锚')]);
+    assert.deepEqual(candidates.map(item => [item.assistantSeq, item.hostLocator.messageIndex, item.stabilityProof?.messageIndex]), [[1, 1, 2]]);
+  }
+
+  const narrator = { is_user: false, is_system: '', mes: '宿主旁白', extra: { type: 'narrator' } };
+  const stable = harness([narrator, assistant('真实 AI'), user('稳定锚')], { modernAnchors: true });
+  let state = await stable.runtime.start();
+  assert.equal(state.stableCount, 1);
+  assert.deepEqual(stable.runtime.getReachable().floors.map(item => item.hostLocator.messageIndex), [1]);
+  stable.context.chat.pop();
+  state = await stable.runtime.refreshStatus();
+  assert.equal(state.stableCount, 0, '删除真实 user 后 AI 必须重新等待');
+  assert.equal(state.pending?.messageIndex, 1);
+
+  const waiting = harness([narrator, assistant('仍未确认的 AI')], { modernAnchors: true });
+  state = await waiting.runtime.start();
+  assert.equal(state.stableCount, 0);
+  assert.equal(state.pending?.messageIndex, 1, 'narrator 后的 AI 无 user 时仍保持 pending');
 });
 
 test('初始化时 /hide AI 与普通 AI 共用相同 stable／pending 规则', async () => {
@@ -511,6 +551,83 @@ test('floor／index／checkpoint 任一 staged 写失败都持久化 retryableEr
     assert.equal(runs.at(-1).data.phase, 'retryableError', prefix);
     assert.equal(h.backend.records.has(`chat-${CHAT}/v3-root`), false, prefix);
   }
+});
+
+test('地基 prepared 写入最多四路并发，全部完成后才写 checkpoint', async () => {
+  const h = harness();
+  let active = 0;
+  let maximum = 0;
+  let started = 0;
+  let release;
+  let fourStarted;
+  const gate = new Promise(resolve => { release = resolve; });
+  const ready = new Promise(resolve => { fourStarted = resolve; });
+  h.backend.setBeforePut(async ({ key }) => {
+    if (key === 'v3-root' || key.startsWith('v3-run-') || key.startsWith('v3-checkpoint-')) return;
+    started += 1;
+    active += 1;
+    maximum = Math.max(maximum, active);
+    if (started === 4) fourStarted();
+    await gate;
+    active -= 1;
+  });
+  const pending = h.runtime.start();
+  await ready;
+  assert.equal(maximum, 4);
+  assert.equal(h.backend.calls.some(call => call[0] === 'put' && call[2].startsWith('v3-checkpoint-')), false);
+  release();
+  const state = await pending;
+  assert.equal(state.status, 'ready');
+  assert.equal(active, 0);
+});
+
+test('prepared 写失败会等待在途任务收拢，不续排新任务或提交 checkpoint/root', async () => {
+  const h = harness();
+  let started = 0;
+  let completed = 0;
+  let failFirst;
+  let releaseOthers;
+  let fourStarted;
+  const failGate = new Promise(resolve => { failFirst = resolve; });
+  const otherGate = new Promise(resolve => { releaseOthers = resolve; });
+  const ready = new Promise(resolve => { fourStarted = resolve; });
+  h.backend.setBeforePut(async ({ key }) => {
+    if (key === 'v3-root' || key.startsWith('v3-run-') || key.startsWith('v3-checkpoint-')) return;
+    started += 1;
+    const position = started;
+    if (started === 4) fourStarted();
+    if (position === 1) {
+      await failGate;
+      throw Object.assign(new Error('prepared failed'), { status: 503 });
+    }
+    await otherGate;
+    completed += 1;
+  });
+  let settled = false;
+  const pending = h.runtime.start().finally(() => { settled = true; });
+  await ready;
+  failFirst();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, '首个失败后仍须等待其他在途写入结束');
+  assert.equal(started, 4, '失败后不得继续领取新 prepared 记录');
+  releaseOthers();
+  const state = await pending;
+  assert.equal(state.status, 'error');
+  assert.equal(completed, 3);
+  assert.equal(started, 4);
+  assert.equal(h.backend.calls.some(call => call[0] === 'put' && call[2].startsWith('v3-checkpoint-')), false);
+  assert.equal(h.backend.calls.some(call => call[0] === 'put' && call[2] === 'v3-root'), false);
+});
+
+test('首次封口只由 store 做一次真实全图回读', async () => {
+  const h = harness();
+  await h.runtime.start();
+  const root = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
+  const checkpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${root.headCheckpointId}`).data;
+  const reads = h.backend.calls.filter(call => call[0] === 'get').length;
+  const committedIndexCount = Object.values(root.indexManifest).flat().length;
+  assert.equal(reads, 4 + checkpoint.producedRefs.floors.length + committedIndexCount,
+    '仅保留初始 root、staged run 探测，以及 commitRoot 的 checkpoint/run/floors/indexes 真回读');
 });
 
 test('后端恢复得到相同 stableBoundary，warm reconcile 不按楼读取详情', async () => {

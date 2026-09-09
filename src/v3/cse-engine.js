@@ -9,13 +9,13 @@ import { CSE_ISOLATION_CODES, CSE_VISIBILITIES, LATEST_CSE_CALIBRATION_VERSION, 
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory } from './entity-identity.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-10';
-export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-9';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-14';
+export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-10';
 export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
 export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。完整阅读本楼正文，并结合结构化楼层记忆、人物此前状态与相关初始设定，分析人物在本楼结束时的状态。
 
-优先识别正文真正造成的变化，也保留有连续性价值的稳定状态；不要为了显得有变化而改写人物。关注人物的核心倾向、可长期演化的应对方式或关系状态、当前短期情境，以及人物面对不同对象时采取的不同态度和行为模式。长期核心、逐渐形成的适应模式与一时情绪要分层表达；涉及特定对象时明确 toward。
+优先识别正文真正造成的变化，也保留有连续性价值的稳定状态；不要为了显得有变化而改写人物。关注人物的核心倾向、可长期演化的应对方式或关系状态、当前短期情境，以及人物面对不同对象时采取的不同态度和行为模式。长期核心、逐渐形成的适应模式与一时情绪要分层表达。处理短期信息时，不要仅按句中是否出现他人机械决定 toward；先判断这条主要说明人物现在怎样、处境如何，还是人物此刻怎样对待某人。关系反应可以由有明确指向的言语和行为表现，不要求正文直接说出态度。
 
 按正文信息量决定详略。用清楚、具体、便于后续连续理解的短句说明状态，避免空泛形容、同义反复、好感度分数和无证据的心理诊断。新增或更新状态时尽量给出简短 reason，指出正文中的行为、表达、想法或事件依据；正文没有依据时不要为了补 reason 编造。`;
 
@@ -26,7 +26,11 @@ subjectRelevantEvidence 按 tracked subject 汇集角色相关条目，relationT
 
 previousState 只放人物自己的前态；authorialOtherStateContext 是经过隐私过滤的作者态连续性参考，不代表相应人物知道其他人的状态。作者态推断与人物本人已知必须分开：observable 只用于正文中实际可观察的状态，private 只属于该人物的内心或明确知情，authorial 只作作者塑造参考。
 
-只可为输入中的 trackedSubjects 输出状态；trackedSubjects 是候选范围，不要求逐人补写。若本楼没有足够新依据，可省略该人物；若只支持某些分类，可省略其他分类，让编译器沿用旧状态。不要用“本楼未出现”“状态无变化”之类空话替换旧状态，也不要因为缺少证据而反推“不知道”。knownPeople 仅用于 toward 对象绑定，不代表他们本楼也要输出状态。Adaptive 涉及对象时使用 toward。Situational 只有在正文给出明确时间流逝时才可写 reasonableProgression，不能补造新事件。新增或更新的状态推荐使用带简短 reason 的对象；如果正文没有可引用依据，可省略 reason，程序仍会接收并清楚标记为“未提供依据”，不要为凑字段编造。不要输出数据库 ID。
+只可为输入中的 trackedSubjects 输出状态；trackedSubjects 是候选范围，不要求逐人补写，也不要求每个分类凑数。若本楼没有足够新依据，可省略该人物；若只支持某些分类，可省略其他分类，让编译器沿用旧状态。不要用“本楼未出现”“状态无变化”之类空话替换旧状态，也不要因为缺少证据而反推“不知道”。knownPeople 仅用于 toward 对象绑定，不代表他们本楼也要输出状态。
+
+判断每条候选信息时，在内部依次问三个问题：第一，这条主要回答人物现在怎样、处境如何，还是此刻怎样对待某人？第二，另一人只是背景、原因或事件参与者，还是这项态度或相处反应的明确对象？第三，这里有两条独立且分别有正文依据的信息，需要拆开表达，还是同一信息的重复描述？只输出判断后的状态，不要输出思考过程、问题答案或分类解释。
+
+主要说明人物自身现状时不填写 toward；正文明确支持人物针对某个已知人物的看法、态度或相处反应时，Adaptive 或 Situational 才填写 toward。关系反应可以通过明确指向对方的言语和行为表现，不需要直接说出态度；但不能只因一个行为有受事者就自动判为关系态度，也不能把行为一律排除出关系反应。对各方使用同一判断标准。混合信息只在确有独立依据时拆分，不强制双栏填满，不重复同一事实，也不编造态度。private 只表示可见性，明确的私密态度仍可填写 toward。previousState 中旧 toward 也必须按本楼证据审视，不得盲从；本楼不足以更新相应分类时应省略该分类以保留旧状态，不要把旧状态改写成“未知”。无法唯一判断对象时留空。单方 A→B 不得自动镜像成 B→A，也不能把某人的单方声称写成双方态度。Core 不使用 toward；一次关系反应也不能被拔高为 Core 或长期 Adaptive。Situational 只有在正文给出明确时间流逝时才可写 reasonableProgression，不能补造新事件。新增或更新的状态推荐使用带简短 reason 的对象；如果正文没有可引用依据，可省略 reason，程序仍会接收并清楚标记为“未提供依据”，不要为凑字段编造。不要输出数据库 ID。
 
 【持续校准合同】
 每次都审视本楼相关人物的已有 Core 与 Adaptive，并把它们同最新作者设定、明确用户纠正和本楼正文一起判断。旧结论本身及其旧 reason 不能自证；相容且没有新依据时保持原项，出现可定位反证或明确的新适用条件时才 refine/remove。剧情允许人物改变，但不强制每楼改写；单个戏剧性场景不能覆盖明确作者锚点，普通角色扮演中的用户台词、动作或心理也不自动等于作者纠正。
@@ -45,7 +49,7 @@ Core/Adaptive 每类采用 review/additions 新协议，或沿用旧的直接 af
 返回一个 JSON 对象。所有 JSON 字符串都必须使用标准 JSON 转义：字符串内容中的英文双引号写成 \\", 反斜杠写成 \\\\, 实际换行写成 \\n；evidence.quote 引用正文原句时也必须遵守同一转义规则。JSON 解码后的 quote 必须保留原文字面，不得换成其他引号、删去字符或改写内容。
 英文 schema 键必须保持示例写法；所有面向用户显示的状态 text、reason 和 changeSummary 内容使用中文。changeSummary 只概括人物的实际状态变化，不要输出字段名说明或格式解释；它只是辅助说明，不是状态事实或操作成功凭据。必须放在对应 subject 内，根级 changeSummary/summary 不会被当作人物状态，也不得用来代替 subjects。
 推荐结构：
-{"subjects":[{"subject":"人物名","review":{"core":[{"previousText":"旧核心","action":"keep"}],"adaptive":[{"previousText":"旧模式","toward":"对象名","action":"refine","text":"收窄后的模式","reason":"为何调整","evidence":[{"source":"canonicalContent","quote":"正文原句"}]}]},"additions":{"core":[],"adaptive":[]},"situational":[{"reason":"正文依据","text":"此刻状态","visibility":"private","origin":"floor"}],"changeSummary":["变化摘要"]}]}
+{"subjects":[{"subject":"人物甲","review":{"core":[{"previousText":"旧核心","action":"keep"}],"adaptive":[{"previousText":"旧模式","toward":"人物乙","action":"refine","text":"收窄后的模式","reason":"为何调整","evidence":[{"source":"canonicalContent","quote":"正文原句"}]}]},"additions":{"core":[],"adaptive":[]},"situational":[{"reason":"正文写出人物甲困倦并闭眼入睡","text":"困倦放松，正在入睡","visibility":"private","origin":"floor"},{"reason":"人物甲推开人物乙的手并明确拒绝触碰","text":"拒绝人物乙触碰","toward":"人物乙","visibility":"observable","origin":"floor"}],"changeSummary":["变化摘要"]}]}
 不确定的可选人物或分类宁可省略。只输出 JSON，不要解释。`;
 
 export function buildCseSystemPrompt(guidance = '') {
@@ -344,7 +348,7 @@ async function compileItems({ raw, category, binding, knownBindings, deltaId, fl
     const value = itemSemantic(item);
     if (!value) { isolated.push({ field: category, index, code: 'V3_CSE_OPTIONAL_ITEM_INVALID' }); continue; }
     let towardEntityId = null;
-    const towardRaw = typeof item === 'object' ? field(item, ['toward', 'target', 'object', '对谁', '对象']) : null;
+    const towardRaw = category !== 'core' && typeof item === 'object' ? field(item, ['toward', 'target', 'object', '对谁', '对象']) : null;
     if (towardRaw !== undefined && towardRaw !== null && String(towardRaw).trim()) {
       const toward = bindingFor(towardRaw, knownBindings);
       if (!toward) { isolated.push({ field: category, index, code: 'V3_CSE_TOWARD_UNBOUND' }); continue; }
@@ -574,7 +578,8 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
   return Object.freeze({ delta, isolated: Object.freeze(isolated) });
 }
 
-const manualItemMeaning = (item, category) => [item.text, item.visibility, category === 'adaptive' ? item.towardEntityId ?? null : null];
+const categoryAllowsToward = category => category === 'adaptive' || category === 'situational';
+const manualItemMeaning = (item, category) => [item.text, item.visibility, categoryAllowsToward(category) ? item.towardEntityId ?? null : null];
 
 async function manualStateItems({ edits, originals, category, subjectEntityId, floorId, oldDeltaId, deltaId, allowedTowardEntityIds }) {
   if (!Array.isArray(edits) || edits.length > 120) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', `${category} 编辑内容无效。`);
@@ -589,7 +594,7 @@ async function manualStateItems({ edits, originals, category, subjectEntityId, f
     if (itemId) usedIds.add(itemId);
     const itemText = typeof raw.text === 'string' ? raw.text.trim() : '';
     if (!itemText || itemText.length > 4000 || !CSE_VISIBILITIES.includes(raw.visibility)) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', `${category} 第 ${index + 1} 项内容或可见性无效。`);
-    const towardEntityId = category === 'adaptive' && typeof raw.towardEntityId === 'string' && raw.towardEntityId ? raw.towardEntityId : null;
+    const towardEntityId = categoryAllowsToward(category) && typeof raw.towardEntityId === 'string' && raw.towardEntityId ? raw.towardEntityId : null;
     if (towardEntityId && !allowedTowardEntityIds.has(towardEntityId)) throw errorWith('V3_CSE_MANUAL_TOWARD_INVALID', '关系对象不在当前锚点可用人物范围内。');
     const nextMeaning = [itemText, raw.visibility, towardEntityId];
     if (original && JSON.stringify(manualItemMeaning(original, category)) === JSON.stringify(nextMeaning)) {
@@ -621,7 +626,7 @@ export async function createManualCseCorrection({ anchorDelta, currentState, sub
   const categories = ['core', 'adaptive', 'situational'];
   const normalizedEdits = Object.fromEntries(categories.map(category => [category, Array.isArray(edits?.[category]) ? edits[category] : null]));
   if (categories.some(category => normalizedEdits[category] === null)) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', '人物状态编辑内容不完整。');
-  const unchanged = categories.every(category => JSON.stringify(normalizedEdits[category].map(item => [String(item?.text ?? '').trim(), item?.visibility, category === 'adaptive' ? item?.towardEntityId || null : null])) === JSON.stringify(currentSubject[category].map(item => manualItemMeaning(item, category))));
+  const unchanged = categories.every(category => JSON.stringify(normalizedEdits[category].map(item => [String(item?.text ?? '').trim(), item?.visibility, categoryAllowsToward(category) ? item?.towardEntityId || null : null])) === JSON.stringify(currentSubject[category].map(item => manualItemMeaning(item, category))));
   if (unchanged) return Object.freeze({ status: 'unchanged', delta: null });
 
   const corrected = { subjectEntityId, changeSummary: ['用户纠正当前状态'], coreChallenges: [] };
@@ -782,7 +787,7 @@ function actualSubjectChanges({ before, after, audits }) {
 
 function summarizeActualState(item, category, knownBindings) {
   const details = [];
-  if (category === 'adaptive' && item?.towardEntityId) {
+  if (categoryAllowsToward(category) && item?.towardEntityId) {
     const target = knownBindings.find(binding => binding.entityId === item.towardEntityId)?.labels?.[0];
     details.push(`对象：${target || '已绑定人物'}`);
   }

@@ -620,6 +620,43 @@ test('三页职责分离，千结只保留摘要编辑/重提，双丝网归位�
   for (const button of flatten(container).filter(node => node.tag === 'button')) assert.equal(button.type, 'button');
 });
 
+test('同聊天记忆同步保留千结与双丝网已确认文字，确认结果或切聊后再替换', () => {
+  const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
+  const floor = { floorId: 'floor', assistantSeq: 1, messageIndex: 4, canonicalFingerprint: 'sha256:same', status: 'ready', memoryId: 'memory', summary: '同步期间必须保留的摘要', summarySource: 'ai', memory, cse: { status: 'ready', deltaId: 'delta' } };
+  const ready = {
+    status: 'ready', memorySnapshotStatus: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, unprocessedCount: 0,
+    memoryWorkBusy: false, activeAutoMemory: null, activeExtraction: null, activeCse: null, cseReady: true, csePendingCount: 0, cseFailedCount: 0,
+    mainCharacterEntityId: 'character', mainCharacterDisplayName: '裴晚生',
+    cseSubjects: [{ subjectEntityId: 'character', displayName: '裴晚生', core: [{ text: '同步期间必须保留的人物状态', reason: '已确认', visibility: 'authorial', origin: 'baseline' }], adaptive: [], situational: [] }],
+    floors: [floor],
+  };
+  let state = ready;
+  const listeners = new Set();
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => state, editSummary: async () => state, retryStateAnalysis: async () => state, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
+  const emit = next => { state = next; for (const listener of listeners) listener(next); };
+  const selectedPeople = peopleRuntime([{ entityId: 'character', displayName: '裴晚生', entityDisplayName: '裴晚生' }]);
+  const container = new Node('main'), view = createV3FoundationView({ runtime, peopleRuntime: selectedPeople, documentRef });
+  view.setPage('memories'); view.mount(container);
+  const memoryTree = container.children[0];
+  emit({ ...ready, status: 'ready', memorySnapshotStatus: 'syncing', memoryWorkBusy: false, floors: [], cseSubjects: [] });
+  let copy = flatten(container).map(node => node.textContent).join('|');
+  assert.equal(container.children[0], memoryTree, '同步通知不得重建或清空当前页面 DOM');
+  assert.match(copy, /正在核对当前聊天记忆.*同步期间必须保留的摘要/);
+  assert.equal(flatten(container).find(node => node.textContent === '重新提取').disabled, true, '依赖快照的动作必须禁用');
+
+  view.setPage('people');
+  copy = flatten(container).map(node => node.textContent).join('|');
+  assert.match(copy, /同步期间必须保留的人物状态/, '同步期间切换到双丝网页仍显示同聊天上次确认结果');
+
+  const confirmedEmpty = { ...ready, memorySnapshotStatus: 'ready', stableCount: 0, rememberedCount: 0, floors: [], cseSubjects: [] };
+  emit(confirmedEmpty); copy = flatten(container).map(node => node.textContent).join('|');
+  assert.doesNotMatch(copy, /同步期间必须保留的人物状态|同步期间必须保留的摘要/, '已确认覆盖回退后必须替换旧显示');
+
+  emit({ ...ready, chatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', memorySnapshotStatus: 'syncing', floors: [], cseSubjects: [] });
+  copy = flatten(container).map(node => node.textContent).join('|');
+  assert.doesNotMatch(copy, /同步期间必须保留的人物状态|同步期间必须保留的摘要/, '切聊天时不得保留上一聊天投影');
+});
+
 test('摘要楼默认折叠，折叠条显示楼号/时间/真实状态，展开后显示正文与人物地点并从内联菜单编辑', async () => {
   const entityId = '11111111-1111-4111-8111-111111111111';
   const memory = { summaryEvidenceRefs: [], chronology: [{ itemId: 'time-1', time: { sourceText: '10月4日 周二 15:30' }, description: '开场' }], locations: [{ itemId: 'place-1', name: '钟楼' }], participants: [{ entityId, presence: 'present' }], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
@@ -872,8 +909,8 @@ test('双丝网精确区分双方关系、自身状态与选中 NPC 的其他关
     currentStateId: '50000000-0000-4000-8000-000000000005', currentStateFingerprint: `sha256:${'a'.repeat(64)}`,
     memoryEntities: [{ entityId: userId, displayName: '你', specialRole: 'user' }, { entityId: aId, displayName: '左佐' }, { entityId: bId, displayName: '乙' }, { entityId: cId, displayName: '一个非常非常长的未关注人物名字' }],
     cseSubjects: [
-      { subjectEntityId: userId, displayName: '你', core: [], adaptive: [{ text: '你对乙的态度不应重复在左佐页', towardEntityId: bId }], situational: [] },
-      { subjectEntityId: aId, displayName: '左佐', core: [{ text: '谨慎' }], adaptive: [{ text: '会保护你', towardEntityId: userId }, { text: '会偿还你的恩情', towardEntityId: userId }, { text: '对乙保持警惕', towardEntityId: bId }, { text: '习惯独自复盘', towardEntityId: null }], situational: [{ text: '正在门外等候' }] },
+      { subjectEntityId: userId, displayName: '你', core: [], adaptive: [{ text: '你对乙的态度不应重复在左佐页', towardEntityId: bId }], situational: [{ text: '此刻担心左佐', towardEntityId: aId }, { text: '用户自身疲惫', towardEntityId: null }] },
+      { subjectEntityId: aId, displayName: '左佐', core: [{ text: '谨慎' }], adaptive: [{ text: '会保护你', towardEntityId: userId }, { text: '会偿还你的恩情', towardEntityId: userId }, { text: '对乙保持警惕', towardEntityId: bId }, { text: '习惯独自复盘', towardEntityId: null }], situational: [{ text: '正在门外等候', towardEntityId: null }, { text: '此刻等你回应', towardEntityId: userId }, { text: '正在观察乙', towardEntityId: bId }] },
       { subjectEntityId: bId, displayName: '乙', core: [], adaptive: [{ text: '乙对左佐的态度不应混入', towardEntityId: aId }], situational: [] },
     ],
   };
@@ -881,8 +918,10 @@ test('双丝网精确区分双方关系、自身状态与选中 NPC 的其他关
   const sharedPeople = peopleRuntime([{ entityId: aId, displayName: '左佐' }, { entityId: bId, displayName: '乙' }, { entityId: cId, displayName: '一个非常非常长的未关注人物名字' }], [aId, bId]);
   const menuDocument = eventDocument();
   const container = new Node('main'), view = createV3FoundationView({ runtime, peopleRuntime: sharedPeople, documentRef: menuDocument }); view.setPage('people'); view.mount(container);
+  const userAnchorCopy = flatten(container).find(node => node.className === 'qqj-user-anchor').children.flatMap(flatten).map(node => node.textContent).join('|');
+  assert.match(userAnchorCopy, /用户自身疲惫/); assert.doesNotMatch(userAnchorCopy, /此刻担心左佐/, '有对象的用户情境只显示在关系方向中');
   const pair = flatten(container).find(node => node.className === 'qqj-relation-card'), pairCopy = flatten(pair).map(node => node.textContent).join('|');
-  assert.match(pairCopy, /你 → 左佐.*暂无已保存的关系状态.*左佐 → 你.*会保护你.*会偿还你的恩情/);
+  assert.match(pairCopy, /你 → 左佐.*当前态度.*此刻担心左佐.*左佐 → 你.*当前态度.*此刻等你回应.*长期相处方式.*会保护你.*会偿还你的恩情/);
   const pairHead = flatten(pair).find(node => node.className === 'qqj-relation-head'), pairMenu = pairHead.children.at(-1);
   assert.equal(pairMenu.tag, 'details'); assert.equal(pairMenu.className, 'qqj-memory-menu qqj-relation-menu');
   assert.equal(pairMenu.children[0].tag, 'summary'); assert.equal(pairMenu.children[0].textContent, '⋮'); assert.equal(pairMenu.children[0].attributes['aria-label'], '关系操作');
@@ -890,9 +929,9 @@ test('双丝网精确区分双方关系、自身状态与选中 NPC 的其他关
   pairMenu.open = true; menuDocument.click({ target: pairMenu.children[0], composedPath: () => [pairMenu.children[0], pairMenu] }); assert.equal(pairMenu.open, true, '关系菜单内部点击不提前关闭');
   menuDocument.click({ target: container, composedPath: () => [container] }); assert.equal(pairMenu.open, false, '关系菜单点击外部后关闭');
   const own = flatten(container).find(node => node.className === 'qqj-relation-note'), ownCopy = flatten(own).map(node => node.textContent).join('|');
-  assert.equal(own.tag, 'section'); assert.match(ownCopy, /谨慎.*习惯独自复盘.*正在门外等候/); assert.doesNotMatch(ownCopy, /会保护你|会偿还你的恩情|对乙保持警惕/);
+  assert.equal(own.tag, 'section'); assert.match(ownCopy, /谨慎.*习惯独自复盘.*正在门外等候/); assert.doesNotMatch(ownCopy, /会保护你|会偿还你的恩情|对乙保持警惕|此刻等你回应|正在观察乙/);
   const others = flatten(container).find(node => node.className === 'qqj-other-relations'), otherCopy = flatten(others).map(node => node.textContent).join('|');
-  assert.match(otherCopy, /左佐与其他人物.*左佐 → 乙.*对乙保持警惕/); assert.doesNotMatch(otherCopy, /你对乙|乙对左佐/);
+  assert.match(otherCopy, /左佐与其他人物.*左佐 → 乙.*当前态度.*正在观察乙.*长期相处方式.*对乙保持警惕/); assert.doesNotMatch(otherCopy, /你对乙|乙对左佐/);
   assert.equal(pair.children.at(-1), own, '自身状态融入关系卡内部底部');
   assert.equal(flatten(own).some(node => node.className === 'v3-memory-status'), false, '页脚不再重复状态胶囊');
   flatten(pairMenu).find(node => node.textContent === '编辑状态').click();
@@ -935,12 +974,13 @@ test('双丝网按实体 ID 展示已有 user 状态，且空状态关系卡仍�
 
 test('人物状态编辑保存期间冻结全部草稿控件并复制输入，成功留在抽屉、失败保留草稿', async () => {
   const userId = '11111111-1111-4111-8111-111111111111';
+  const targetId = '55555555-5555-4555-8555-555555555555';
   let state = {
     status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1,
     memoryWorkBusy: false, activeMemoryWork: null, activeCse: null, cseReady: true, csePendingCount: 0, cseFailedCount: 0, floors: [],
     currentStateId: '22222222-2222-4222-8222-222222222222', currentStateFingerprint: `sha256:${'a'.repeat(64)}`,
-    cseTowardCandidates: [{ entityId: userId, displayName: '林岚' }],
-    memoryEntities: [{ entityId: userId, displayName: '林岚', specialRole: 'user' }],
+    cseTowardCandidates: [{ entityId: userId, displayName: '林岚' }, { entityId: targetId, displayName: '左佐' }],
+    memoryEntities: [{ entityId: userId, displayName: '林岚', specialRole: 'user' }, { entityId: targetId, displayName: '左佐' }],
     cseSubjects: [{ subjectEntityId: userId, displayName: '林岚', core: [], adaptive: [], situational: [{ id: '33333333-3333-4333-8333-333333333333', text: '紧张', reason: '正文', visibility: 'private', towardEntityId: null }] }],
   };
   let pending = null;
@@ -959,15 +999,18 @@ test('人物状态编辑保存期间冻结全部草稿控件并复制输入，�
   assert.equal(flatten(editor).some(node => node.tag === 'select'), false, 'CSE 信息范围与对象不得使用手机原生选择器');
   let situational = flatten(editor).find(node => node.placeholder === '当前情境内容');
   situational.value = '已经平静'; situational.fire('input');
+  const situationalTarget = flatten(editor).find(node => node.attributes?.['aria-label'] === '当前情境对象');
+  situationalTarget.click(); flatten(editor).find(node => node.attributes?.['data-value'] === targetId).click();
   flatten(editor).find(node => node.className === 'qqj-cse-help').click();
   assert.equal(infoCalls.length, 1); assert.match(`${infoCalls[0].body}\n${infoCalls[0].note}`, /不是上传或隐私权限.*私密：.*已表达：.*可观察：.*共享：.*作者设定：/s);
   assert.equal(situational.value, '已经平静', '打开信息范围帮助不得重建或清空编辑草稿');
   flatten(editor).find(node => node.textContent === '保存').click();
   assert.equal(calls.length, 1); assert.equal(calls[0].subjectEntityId, userId);
+  assert.equal(calls[0].payload.situational[0].towardEntityId, targetId, '当前情境对象下拉须进入同一保存 payload');
   assert.ok(flatten(editor).filter(node => ['textarea', 'select', 'button'].includes(node.tag)).every(node => node.disabled === true), '异步保存期间全部输入、选择与增删按钮都应禁用');
   situational.value = '迟到改动'; situational.fire('input');
   assert.equal(calls[0].payload.situational[0].text, '已经平静', '本次保存使用点击时复制的草稿，不被迟到输入改写');
-  state = { ...state, currentStateId: '44444444-4444-4444-8444-444444444444', currentStateFingerprint: `sha256:${'b'.repeat(64)}`, cseSubjects: [{ ...state.cseSubjects[0], situational: [{ ...state.cseSubjects[0].situational[0], text: '已经平静', origin: 'manual', reason: '用户纠正当前状态' }] }] };
+  state = { ...state, currentStateId: '44444444-4444-4444-8444-444444444444', currentStateFingerprint: `sha256:${'b'.repeat(64)}`, cseSubjects: [{ ...state.cseSubjects[0], situational: [{ ...state.cseSubjects[0].situational[0], text: '已经平静', towardEntityId: targetId, origin: 'manual', reason: '用户纠正当前状态' }] }] };
   pending.resolve(state); await new Promise(resolve => setImmediate(resolve));
   assert.equal(flatten(container).some(node => node.className === 'qqj-cse-edit'), false);
   assert.ok(flatten(container).find(node => node.className === 'qqj-user-anchor'), '保存成功后用户状态仍常显');

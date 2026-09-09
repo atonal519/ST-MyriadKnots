@@ -9,13 +9,14 @@ import { createCseRuntime } from './cse-runtime.js';
 import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
 import { validateCseGraph } from './cse-schema.js';
 import { assessMemoryCoverageFromHost, diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
-import { selectAssistantMessage, selectUserStabilityAnchor } from './foundation-domain.js';
+import { isHostNarratorMessage, selectAssistantMessage, selectUserStabilityAnchor } from './foundation-domain.js';
 import { parseSharedStoryClock, storyClockSignature } from '../story-clock.js';
 import { entitiesThroughFloorIds } from './entity-identity.js';
 
 const EVENTS = Object.freeze(['CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
 const HISTORY_MUTATION_EVENTS = new Set(['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
 const MANUAL_HISTORY_REASON = 'manualHistoricalRebuild';
+const PREPARED_WRITE_CONCURRENCY = 4;
 const emptyManifest = () => ({ floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] });
 const nowIso = now => { const value = now()?.toISOString?.() ?? String(now()); if (!Number.isFinite(Date.parse(value))) throw new TypeError('V3_MEMORY_TIME_INVALID'); return value; };
 const hash = async value => `sha256:${await sha256(JSON.stringify(value))}`;
@@ -79,6 +80,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   let bound = false;
   let awaitingFoundation = false;
   let foundationReload = null;
+  let memorySnapshotStatus = 'unavailable';
   let unsubscribeFoundation = null;
   let workRun = null;
   let autoScheduled = null;
@@ -130,7 +132,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
   };
   const cancelEarlyStabilization = reason => { try { foundationRuntime.cancelEarlyStabilization?.(reason); } catch { /* foundation cancellation is best-effort */ } };
-  const invalidate = () => { cancelEarlyStabilization('memoryInvalidated'); cancelAutomation(); epoch += 1; active?.controller.abort(); active = null; workRun = null; reachable = null; timeFallbackByFloor = new Map(); coverage = unknownCoverage(0); emptyRealtimeOrigin = null; formalGenerationActive = false; generationArm = null; tailSwipeContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; sessionCandidates.clear(); cseRuntime.invalidate(); notify(); };
+  const invalidate = () => { cancelEarlyStabilization('memoryInvalidated'); cancelAutomation(); epoch += 1; active?.controller.abort(); active = null; workRun = null; reachable = null; memorySnapshotStatus = 'unavailable'; timeFallbackByFloor = new Map(); coverage = unknownCoverage(0); emptyRealtimeOrigin = null; formalGenerationActive = false; generationArm = null; tailSwipeContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; sessionCandidates.clear(); cseRuntime.invalidate(); notify(); };
   cseRuntime.subscribe(() => notify());
   function runManualWork(reason, task) {
     if (workRun) return Promise.resolve(getState());
@@ -196,7 +198,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           : coverage.status === 'caughtUp' ? 'caughtUp'
             : coverage.status === 'realtimeTail' ? 'waitingRealtime'
               : coverage.status === 'historicalDebt' ? 'pendingRebuild' : 'notReady';
-    return Object.freeze({ ...foundation, ...cse, status: workRun || active || cse.activeCse ? 'running' : foundation.status, stableCount, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: floors.filter(item => ['unprocessed', 'error', 'failed'].includes(item.status)).length, reviewCount: floors.filter(item => item.status === 'needsReview').length, failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, floors: Object.freeze(combinedFloors), memoryEntities, memoryWorkBusy: workRun !== null, activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workRun.phase, floorIds: Object.freeze([...workRun.floorIds]) }) : null, activeExtraction: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, lastExtractorError: lastFailure, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: combinedFloors.length, rebuildNextAssistantSeq, rebuildHasActionableWork, activeAutoMemory: workRun?.kind === 'auto' ? Object.freeze({ reason: workRun.reason, phase: workRun.phase, mode: workRun.mode ?? 'realtime', floorIds: Object.freeze([...workRun.floorIds]) }) : null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
+    return Object.freeze({ ...foundation, ...cse, status: workRun || active || cse.activeCse ? 'running' : foundation.status, memorySnapshotStatus, stableCount, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: floors.filter(item => ['unprocessed', 'error', 'failed'].includes(item.status)).length, reviewCount: floors.filter(item => item.status === 'needsReview').length, failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, floors: Object.freeze(combinedFloors), memoryEntities, memoryWorkBusy: workRun !== null, activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workRun.phase, floorIds: Object.freeze([...workRun.floorIds]) }) : null, activeExtraction: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, lastExtractorError: lastFailure, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: combinedFloors.length, rebuildNextAssistantSeq, rebuildHasActionableWork, activeAutoMemory: workRun?.kind === 'auto' ? Object.freeze({ reason: workRun.reason, phase: workRun.phase, mode: workRun.mode ?? 'realtime', floorIds: Object.freeze([...workRun.floorIds]) }) : null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
   }
   async function refreshCoverage(expectedEpoch = epoch) {
     const source = reachable;
@@ -238,6 +240,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       return getState();
     }
     reachable = nextReachable;
+    memorySnapshotStatus = 'ready';
     timeFallbackByFloor = new Map();
     if (nextReachable && typeof hostAdapter?.snapshot === 'function') {
       const snapshot = hostAdapter.snapshot();
@@ -261,7 +264,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
   async function refreshStatus() {
     const foundation = await foundationRuntime.refreshStatus();
-    if (!enabled() || foundation.status === 'disabled') { reachable = null; return notify(); }
+    if (!enabled() || foundation.status === 'disabled') { reachable = null; memorySnapshotStatus = 'unavailable'; return notify(); }
     if (!['ready', 'needsReview', 'uninitialized'].includes(foundation.status)) return notify();
     const foundationReachable = foundationRuntime.getReachable?.() ?? null;
     const reusable = !reachable || !foundationReachable
@@ -272,19 +275,38 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
   async function confirmLatest() { await foundationRuntime.confirmLatest(); return load(); }
 
-  async function persistRecords(records, signal) {
-    for (const record of records) {
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      const result = await store.putRecord(record, { signal });
-      if (!['saved', 'reused'].includes(result.status)) throw errorWith('V3_MEMORY_PERSIST_FAILED', `记忆记录写入失败：${result.status}`);
+  async function persistRecords(records, signal, { concurrency = PREPARED_WRITE_CONCURRENCY } = {}) {
+    let cursor = 0;
+    let firstError = null;
+    async function worker() {
+      while (firstError === null) {
+        const index = cursor;
+        if (index >= records.length) return;
+        cursor += 1;
+        try {
+          if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+          const result = await store.putRecord(records[index], { signal });
+          if (!['saved', 'reused'].includes(result.status)) throw errorWith('V3_MEMORY_PERSIST_FAILED', `记忆记录写入失败：${result.status}`);
+        } catch (error) {
+          firstError ??= error;
+        }
+      }
     }
+    await Promise.all(Array.from({ length: Math.min(concurrency, records.length) }, () => worker()));
+    if (firstError) throw firstError;
   }
 
   async function commitRevision(operation, { oldReachable, replacement, newEntities = [], provenanceEntry, action, validationErrors = [] }) {
-    let current = await store.readReachable();
-    const foundationCurrent = foundationRuntime.getReachable?.() ?? null;
-    if (current.status === 'ready' && foundationCurrent?.rootRevision === current.rootRevision && foundationCurrent?.root?.headCheckpointId === current.root.headCheckpointId) current = { ...current, floors: foundationCurrent.floors };
-    if (current.status !== 'ready' || current.rootRevision !== oldReachable.rootRevision || current.root.headCheckpointId !== oldReachable.root.headCheckpointId || current.root.narrativeGeneration !== oldReachable.root.narrativeGeneration) throw errorWith('V3_MEMORY_STALE', '聊天记忆已变化，本次结果不会覆盖新版本。');
+    const currentRoot = await store.readRoot();
+    if (currentRoot.status !== 'ready'
+      || currentRoot.revision !== oldReachable.rootRevision
+      || currentRoot.data.chatId !== oldReachable.root.chatId
+      || currentRoot.data.headCheckpointId !== oldReachable.root.headCheckpointId
+      || currentRoot.data.narrativeGeneration !== oldReachable.root.narrativeGeneration
+      || currentRoot.data.sourceSnapshotFingerprint !== oldReachable.root.sourceSnapshotFingerprint) {
+      throw errorWith('V3_MEMORY_STALE', '聊天记忆已变化，本次结果不会覆盖新版本。');
+    }
+    const current = oldReachable;
     const floor = current.floors.find(item => item.id === replacement.floorId);
     const selected = floor ? currentRawSelection(hostAdapter, floor) : null;
     const liveRawFingerprint = selected ? `sha256:${await sha256(selected.rawContent)}` : null;
@@ -293,7 +315,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const floorMemories = current.floors.map(item => memoryByFloor.get(item.id)).filter(Boolean);
     const entitiesById = new Map(current.entities.map(entity => [entity.id, entity])); newEntities.forEach(entity => entitiesById.set(entity.id, entity));
     const provisionalDeltas = filterReachableDeltas({ floors: current.floors, floorMemories, stateDeltas: current.stateDeltas ?? [] });
-    const stateEntityIds = new Set(provisionalDeltas.flatMap(delta => delta.subjectSnapshots.flatMap(subject => [subject.subjectEntityId, ...subject.adaptive.map(item => item.towardEntityId).filter(Boolean)])));
+    const stateEntityIds = new Set(provisionalDeltas.flatMap(delta => delta.subjectSnapshots.flatMap(subject => [subject.subjectEntityId, ...['adaptive', 'situational'].flatMap(category => subject[category].map(item => item.towardEntityId).filter(Boolean))])));
     const baselineEntityIds = new Set(current.baseline ? [current.baseline.userPersona.entityId, current.baseline.characterCard.entityId] : []);
     const entities = [...entitiesById.values()].filter(entity => current.floors.some(item => item.id === entity.firstSeenFloorId) || floorMemories.some(memory => JSON.stringify(memory).includes(entity.id)) || stateEntityIds.has(entity.id) || baselineEntityIds.has(entity.id));
     const nowValue = nowIso(now);
@@ -314,16 +336,24 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const checkpoint = validateFoundationCheckpoint({ schemaVersion: 3, recordType: 'checkpoint', id: checkpointId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, runId, sourceSnapshotFingerprint: current.root.sourceSnapshotFingerprint, capabilities, floorRange: { fromAssistantSeq: current.floors.length ? 1 : 0, toAssistantSeq: current.floors.length, floorIds: current.floors.map(item => item.id) }, inputFingerprints: createCheckpointInputFingerprints(current.floors, { previous: current.checkpoint?.inputFingerprints }), producedRefs: { floors: current.floors.map(item => item.id), floorMemories: floorMemories.map(item => item.id), entities: entities.map(item => item.id), events: [], claims: [], knowledge: [], stateDeltas: provisionalDeltas.map(item => item.id), currentStates: currentState ? [currentState.id] : [], stateProjections: [], episodes: [], threads: [], indexes: indexKeys }, validation: { schemaValid: true, referencesValid: true, orderedReplayValid: true, stateFingerprint }, sealedAt: nowValue, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
     const root = validateFoundationRoot({ ...current.root, capabilities, headCheckpointId: checkpointId, activeStateRefs: currentState ? [currentState.id] : [], indexManifest: { ...emptyManifest(), floor: indexKeys.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-')), entity: indexKeys.filter(key => key.includes('-entity-')), reverseRef: indexKeys.filter(key => key.includes('-reverseRef-')) }, updatedAt: nowValue }, { expectedChatId: current.root.chatId });
     await validateCseGraph({ root, checkpoint, run, floors: current.floors, floorMemories, entities, indexes, indexKeys, baseline: current.baseline, stateDeltas: provisionalDeltas, currentStates: currentState ? [currentState] : [] });
-    await persistRecords([...newEntities, replacement, ...(currentState ? [currentState] : []), ...indexes, run, checkpoint], operation.controller.signal);
+    await persistRecords([...newEntities, replacement, ...(currentState ? [currentState] : []), ...indexes], operation.controller.signal);
+    await persistRecords([run, checkpoint], operation.controller.signal, { concurrency: 1 });
     if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_MEMORY_STALE', '操作已取消。');
     const committed = await store.commitRoot(root, current.rootRevision, { signal: operation.controller.signal });
     if (committed.status !== 'saved') throw errorWith(committed.status === 'conflict' ? 'V3_MEMORY_CAS_CONFLICT' : 'V3_MEMORY_COMMIT_FAILED', committed.status === 'conflict' ? '记忆提交遇到并发更新，未覆盖新数据。' : `记忆提交失败：${committed.status}`);
-    reachable = await store.readReachable();
-    if (reachable.status !== 'ready') throw errorWith('V3_MEMORY_COLD_READ_FAILED', '记忆已提交，但冷读取校验失败。');
+    reachable = committed.reachable;
+    if (!reachable || reachable.status !== 'ready'
+      || reachable.rootRevision !== committed.revision
+      || reachable.root?.chatId !== current.root.chatId
+      || reachable.root?.headCheckpointId !== checkpointId
+      || reachable.root?.narrativeGeneration !== current.root.narrativeGeneration
+      || reachable.root?.sourceSnapshotFingerprint !== current.root.sourceSnapshotFingerprint) {
+      throw errorWith('V3_MEMORY_COLD_READ_FAILED', '记忆已提交，但提交结果缺少一致的冷读取校验。');
+    }
     foundationRuntime.adoptReachable?.(reachable);
     lastFailure = null;
     sessionCandidates.delete(replacement.floorId);
-    await cseRuntime.load();
+    await cseRuntime.load(reachable);
     await refreshCoverage(operation.epoch);
     return notify();
   }
@@ -504,7 +534,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const run = validateFoundationRun({ schemaVersion: 3, recordType: 'run', id: operation.runId, chatId: source.root.chatId, narrativeGeneration: source.root.narrativeGeneration, parentCheckpointId: source.root.headCheckpointId, inputSnapshotFingerprint: source.root.sourceSnapshotFingerprint, mode: 'rebuild', sessionEpoch: operation.epoch, inputFloorIds: source.floors.map(item => item.id), phase: 'completed', completedFloorIds: [], failedItems: [], preparedRecordRefs: [...entities.map(entity => store.recordKey(entity)), ...indexKeys, `v3-checkpoint-${checkpointId}`], diagnostics: { kind: 'fullRebuild', floorProvenance: {} }, startedAt: operation.startedAt, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: source.root.chatId });
       const checkpoint = validateFoundationCheckpoint({ schemaVersion: 3, recordType: 'checkpoint', id: checkpointId, chatId: source.root.chatId, narrativeGeneration: source.root.narrativeGeneration, parentCheckpointId: source.root.headCheckpointId, runId: operation.runId, sourceSnapshotFingerprint: source.root.sourceSnapshotFingerprint, capabilities, floorRange: { fromAssistantSeq: source.floors.length ? 1 : 0, toAssistantSeq: source.floors.length, floorIds: source.floors.map(item => item.id) }, inputFingerprints: createCheckpointInputFingerprints(source.floors, { previous: source.checkpoint?.inputFingerprints }), producedRefs: { floors: source.floors.map(item => item.id), floorMemories: [], entities: entities.map(item => item.id), events: [], claims: [], knowledge: [], stateDeltas: [], currentStates: [], stateProjections: [], episodes: [], threads: [], indexes: indexKeys }, validation: { schemaValid: true, referencesValid: true, orderedReplayValid: true, stateFingerprint }, sealedAt: nowValue, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: source.root.chatId });
       const root = validateFoundationRoot({ ...source.root, status: 'ready', capabilities, headCheckpointId: checkpointId, activeRunId: null, activeStateRefs: [], activeThreadRefs: [], indexManifest: { ...emptyManifest(), floor: indexKeys.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-')), entity: indexKeys.filter(key => key.includes('-entity-')), reverseRef: indexKeys.filter(key => key.includes('-reverseRef-')) }, updatedAt: nowValue }, { expectedChatId: source.root.chatId });
-      await persistRecords([...entities, ...indexes, run, checkpoint], operation.controller.signal);
+      await persistRecords([...entities, ...indexes], operation.controller.signal);
+      await persistRecords([run, checkpoint], operation.controller.signal, { concurrency: 1 });
       if (operation.epoch !== epoch || operation.controller.signal.aborted || currentHostChatId() !== source.root.chatId || mainGenerationActive()) throw errorWith('V3_MEMORY_STALE', '聊天或正文状态已变化，完全重构未切换有效记忆。');
       const latest = await store.readReachable();
       if (latest.status !== 'ready' || latest.rootRevision !== source.rootRevision || latest.root.headCheckpointId !== source.root.headCheckpointId || latest.root.narrativeGeneration !== source.root.narrativeGeneration) throw errorWith('V3_MEMORY_CAS_CONFLICT', '记忆已被其他操作更新，完全重构未覆盖新版本。');
@@ -576,10 +607,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           notify();
           const foundation = await foundationRuntime.refreshStatus();
           if (foundation.status !== 'ready' || !allowed()) return getState();
-          await load();
+          await load(epoch, foundationRuntime.getReachable?.() ?? null);
           if (!allowed() || !reachable?.root) return getState();
           if (manualHistorical && reachable.root.chatId !== authorizedChatId) return getState();
-          const assessment = await refreshCoverage();
+          const assessment = coverage;
           if (assessment.status === 'unknown') throw errorWith('V3_MEMORY_COVERAGE_UNCONFIRMED', '当前聊天的可达覆盖尚未确认，历史重建已暂停。');
           capturedFloorIds ??= Object.freeze((reachable.floors ?? []).map(floor => floor.id));
           const capturedFloorSet = new Set(capturedFloorIds);
@@ -631,8 +662,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             }
           }
           if (!allowed()) return getState();
-          await load();
-          let afterExtraction = await refreshCoverage();
+          let afterExtraction = coverage;
           if (afterExtraction.status === 'unknown') throw errorWith('V3_MEMORY_COVERAGE_UNCONFIRMED', '摘要保存后覆盖校验未确认，人物状态分析已暂停。');
           while (allowed() && afterExtraction.completed < capturedTotal) {
             const floor = reachable.floors?.[afterExtraction.completed];
@@ -656,8 +686,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               return notify();
             }
             cseProcessed += 1;
-            await load();
-            afterExtraction = await refreshCoverage();
+            await load(epoch, foundationRuntime.getReachable?.() ?? null);
+            afterExtraction = coverage;
             if (afterExtraction.status === 'unknown') throw errorWith('V3_MEMORY_COVERAGE_UNCONFIRMED', '人物状态保存后覆盖校验未确认，自动追赶已暂停。');
           }
           if (!historical) {
@@ -749,7 +779,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     return Boolean(arm && arm.hostChatId === currentIdentity.hostChatId && arm.chatId === currentIdentity.chatId
       && (arm.narrativeGeneration === null || arm.narrativeGeneration === currentIdentity.narrativeGeneration));
   };
-  const isAssistantSlot = message => Boolean(message && typeof message === 'object' && message.is_user === false && !(message.is_system === true && message.extra?.type));
+  const isAssistantSlot = message => Boolean(message && typeof message === 'object' && message.is_user === false
+    && !isHostNarratorMessage(message) && !(message.is_system === true && message.extra?.type));
   const isValidSentUser = (snapshot, messageIndex) => Boolean(Number.isSafeInteger(messageIndex)
     && selectUserStabilityAnchor(snapshot?.chat?.[messageIndex])
     && isAssistantSlot(snapshot?.chat?.[messageIndex - 1]));
@@ -825,6 +856,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (!slot) return false;
     generationArm = Object.freeze({ ...arm, proven: true, messageIndex: slot.messageIndex });
     awaitingFoundation = true;
+    memorySnapshotStatus = 'syncing';
     if (automation().enabled) autoTriggerReason = 'earlyStableAssistant';
     void Promise.resolve(foundationRuntime.stabilizeThrough(arm.boundary)).catch(error => {
       if (generationArm?.boundary !== arm.boundary) return;
@@ -855,6 +887,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           } catch (error) {
             if (reloadEpoch !== epoch) continue;
             lastFailure = Object.freeze({ floorId: null, runId: null, phase: 'load', code: error?.code ?? 'V3_MEMORY_LOAD_FAILED', attempts: 0, validationErrors: [], api: null, message: safeErrorMessage(error?.message) });
+            memorySnapshotStatus = 'error';
             notify();
           }
         }
@@ -887,6 +920,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         if (tailSwipeContext && tailSwipeContext.stopped !== true && tailSwipeBoundary(tailSwipeContext.messageIndex, tailSwipeContext)) {
           tailSwipeContext = Object.freeze({ ...tailSwipeContext, stopped: true });
           awaitingFoundation = true;
+          memorySnapshotStatus = 'syncing';
           notify();
           return;
         }
@@ -917,6 +951,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         if (tailBoundary) {
           if (name === 'MESSAGE_SWIPED' && args[1]?.pendingGeneration === true) tailSwipeContext = tailBoundary;
           awaitingFoundation = true;
+          memorySnapshotStatus = 'syncing';
           notify();
           return;
         }
@@ -927,6 +962,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           tailSwipeContext = null;
           generationArm = null;
           awaitingFoundation = true;
+          memorySnapshotStatus = 'syncing';
           notify();
           return;
         }
@@ -942,6 +978,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         if (sameEarlyFinal) {
           generationArm = null;
           awaitingFoundation = true;
+          memorySnapshotStatus = 'syncing';
           if (automation().enabled) autoTriggerReason = 'MESSAGE_RECEIVED';
           notify();
           return;
@@ -954,6 +991,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         active?.controller.abort();
         active = null;
         workRun = null;
+        memorySnapshotStatus = 'syncing';
         reachable = null;
         timeFallbackByFloor = new Map();
         coverage = unknownCoverage(0);

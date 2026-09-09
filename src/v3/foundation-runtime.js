@@ -30,6 +30,7 @@ const EVENTS = Object.freeze([
   'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MORE_MESSAGES_LOADED',
 ]);
 const INDEX_SHARD_LIMIT = 512;
+const PREPARED_WRITE_CONCURRENCY = 4;
 const emptyIndexManifest = () => ({ floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] });
 const hash = async value => `sha256:${await sha256(JSON.stringify(value))}`;
 const timestamp = value => {
@@ -362,6 +363,29 @@ export function createFoundationRuntime({
     return store.putRecord(record, { signal: operation.controller.signal });
   }
 
+  async function persistPreparedRecords(operation, records) {
+    let cursor = 0;
+    let firstError = null;
+    async function worker() {
+      while (firstError === null) {
+        const index = cursor;
+        if (index >= records.length) return;
+        cursor += 1;
+        try {
+          const freshness = current(operation);
+          if (freshness !== 'current') throw statusError(freshness);
+          const result = await persistPreparedRecord(operation, records[index]);
+          if (result.status === 'conflict') throw Object.assign(new Error('V3 staged 记录冲突'), { code: 'V3_STAGED_CONFLICT' });
+          if (!['saved', 'reused'].includes(result.status)) throw statusError(result.status, 'V3 staged 记录写入失败');
+        } catch (error) {
+          firstError ??= error;
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(PREPARED_WRITE_CONCURRENCY, records.length) }, () => worker()));
+    if (firstError) throw firstError;
+  }
+
   async function scanCurrentSnapshot(operation, { confirmLatest = false, stableThrough = operation?.stableThrough ?? null } = {}) {
     if (current(operation) !== 'current') throw statusError('stale');
     const captured = capture();
@@ -444,7 +468,7 @@ export function createFoundationRuntime({
     let stateDeltas = filterReachableDeltas({ floors, floorMemories, stateDeltas: cache.stateDeltas ?? [] });
     const referencedEntityIds = new Set();
     floorMemories.forEach(memory => collectFloorMemoryEntityIds(memory).forEach(id => referencedEntityIds.add(id)));
-    stateDeltas.forEach(delta => delta.subjectSnapshots.forEach(subject => { referencedEntityIds.add(subject.subjectEntityId); subject.adaptive.forEach(item => { if (item.towardEntityId) referencedEntityIds.add(item.towardEntityId); }); }));
+    stateDeltas.forEach(delta => delta.subjectSnapshots.forEach(subject => { referencedEntityIds.add(subject.subjectEntityId); for (const category of ['adaptive', 'situational']) subject[category].forEach(item => { if (item.towardEntityId) referencedEntityIds.add(item.towardEntityId); }); }));
     if (cache.baseline) { referencedEntityIds.add(cache.baseline.userPersona.entityId); referencedEntityIds.add(cache.baseline.characterCard.entityId); }
     const entities = (cache.entities ?? []).filter(entity => (referencedEntityIds.has(entity.id) || (entity.firstSeenFloorId && floorIdSet.has(entity.firstSeenFloorId))) && (!entity.firstSeenFloorId || floorIdSet.has(entity.firstSeenFloorId)));
     const entityIds = new Set(entities.map(entity => entity.id));
@@ -490,13 +514,10 @@ export function createFoundationRuntime({
       validation: { ...actualValidation, stateFingerprint },
     }, { expectedChatId: operation.chatId });
     run = await persistRunPhase(operation, 'sealing');
-    for (const record of [...newFloors, ...(currentState ? [currentState] : []), ...indexes, checkpoint]) {
-      const freshness = current(operation);
-      if (freshness !== 'current') throw statusError(freshness);
-      const result = await persistPreparedRecord(operation, record);
-      if (result.status === 'conflict') throw Object.assign(new Error('V3 staged 记录冲突'), { code: 'V3_STAGED_CONFLICT' });
-      if (!['saved', 'reused'].includes(result.status)) throw statusError(result.status, 'V3 staged 记录写入失败');
-    }
+    await persistPreparedRecords(operation, [...newFloors, ...(currentState ? [currentState] : []), ...indexes]);
+    const checkpointResult = await persistPreparedRecord(operation, checkpoint);
+    if (checkpointResult.status === 'conflict') throw Object.assign(new Error('V3 staged checkpoint 冲突'), { code: 'V3_STAGED_CONFLICT' });
+    if (!['saved', 'reused'].includes(checkpointResult.status)) throw statusError(checkpointResult.status, 'V3 staged checkpoint 写入失败');
     run = await persistRunPhase(operation, 'committing', { completedFloorIds: newFloors.map(floor => floor.id) });
     const freshness = current(operation);
     if (freshness !== 'current') throw statusError(freshness);
@@ -508,53 +529,17 @@ export function createFoundationRuntime({
       dirtyReason = 'sourceChangedBeforeCommit';
       return publishOperation(operation, 'stale');
     }
-    const [actualCheckpointResult, actualRunResult, actualFloorResults, actualMemoryResults, actualEntityResults, actualDeltaResults, actualCurrentStateResults, actualIndexResults] = await Promise.all([
-      store.readRecord('checkpoint', checkpointId),
-      store.readRecord('run', runId),
-      Promise.all(floorIds.map(id => store.readRecord('floor', id))),
-      Promise.all(floorMemories.map(memory => store.readRecord('floorMemory', memory.id))),
-      Promise.all(entities.map(entity => store.readRecord('entity', entity.id))),
-      Promise.all(stateDeltas.map(delta => store.readRecord('stateDelta', delta.id))),
-      Promise.all((currentState ? [currentState.id] : []).map(id => store.readRecord('currentState', id))),
-      Promise.all(indexKeys.map(key => store.readRecord('index', key))),
-    ]);
-    if (actualCheckpointResult.status !== 'ready') throw statusError(actualCheckpointResult.status, 'V3 真实 checkpoint 回读失败');
-    if (actualRunResult.status !== 'ready') throw statusError(actualRunResult.status, 'V3 真实 run 回读失败');
-    if (actualFloorResults.some(result => result.status !== 'ready')) throw Object.assign(new Error('V3 真实 FloorRecord 回读不完整'), { code: 'V3_STAGED_FLOOR_MISSING' });
-    if (actualMemoryResults.some(result => result.status !== 'ready')) throw Object.assign(new Error('V3 真实 FloorMemory 回读不完整'), { code: 'V3_STAGED_MEMORY_MISSING' });
-    if (actualEntityResults.some(result => result.status !== 'ready')) throw Object.assign(new Error('V3 真实 EntityRecord 回读不完整'), { code: 'V3_STAGED_ENTITY_MISSING' });
-    if (actualDeltaResults.some(result => result.status !== 'ready')) throw Object.assign(new Error('V3 真实 StateDelta 回读不完整'), { code: 'V3_STAGED_STATE_DELTA_MISSING' });
-    if (actualCurrentStateResults.some(result => result.status !== 'ready')) throw Object.assign(new Error('V3 真实 CurrentState 回读不完整'), { code: 'V3_STAGED_CURRENT_STATE_MISSING' });
-    if (actualIndexResults.some(result => result.status !== 'ready')) throw Object.assign(new Error('V3 真实 index 回读不完整'), { code: 'V3_STAGED_INDEX_MISSING' });
-    const actualCheckpoint = actualCheckpointResult.data;
-    const actualRun = actualRunResult.data;
-    const actualFloors = actualFloorResults.map(result => result.data);
-    const actualMemories = actualMemoryResults.map(result => result.data);
-    const actualEntities = actualEntityResults.map(result => result.data);
-    const actualDeltas = actualDeltaResults.map(result => result.data);
-    const actualCurrentStates = actualCurrentStateResults.map(result => result.data);
-    const actualIndexes = actualIndexResults.map(result => result.data);
-    const actualIndexKeys = actualIndexResults.map(result => result.recordId);
-    await validatePreparedFoundation({
-      checkpoint: actualCheckpoint,
-      run: actualRun,
-      floors: actualFloors,
-      floorMemories: actualMemories,
-      entities: actualEntities,
-      indexes: actualIndexes,
-      indexKeys: actualIndexKeys,
-    });
-    const boundaryFloor = actualFloors.at(-1) ?? null;
+    const boundaryFloor = floors.at(-1) ?? null;
     const root = validateFoundationRoot({
-      ...commonRecord({ recordType: 'root', id: 'root', chatId: operation.chatId, narrativeGeneration: actualCheckpoint.narrativeGeneration, now: nowValue, recordStatus: 'active' }),
-      status: 'ready', capabilities: clone(capabilities), headCheckpointId: actualCheckpoint.id,
-      sourceSnapshotFingerprint: actualCheckpoint.sourceSnapshotFingerprint,
-      stableBoundary: { assistantSeq: actualFloors.length, floorId: boundaryFloor?.id ?? null, canonicalFingerprint: boundaryFloor?.content?.canonicalFingerprint ?? null },
+      ...commonRecord({ recordType: 'root', id: 'root', chatId: operation.chatId, narrativeGeneration: checkpoint.narrativeGeneration, now: nowValue, recordStatus: 'active' }),
+      status: 'ready', capabilities: clone(capabilities), headCheckpointId: checkpoint.id,
+      sourceSnapshotFingerprint: checkpoint.sourceSnapshotFingerprint,
+      stableBoundary: { assistantSeq: floors.length, floorId: boundaryFloor?.id ?? null, canonicalFingerprint: boundaryFloor?.content?.canonicalFingerprint ?? null },
       baselineId: baseline?.id ?? null, activeRunId: null,
-      indexManifest: { ...emptyIndexManifest(), floor: actualIndexKeys.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-')), entity: actualIndexKeys.filter(key => key.includes('-entity-')), reverseRef: actualIndexKeys.filter(key => key.includes('-reverseRef-')) },
-      activeStateRefs: actualCurrentStates.map(state => state.id), activeThreadRefs: [],
+      indexManifest: { ...emptyIndexManifest(), floor: indexKeys.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-')), entity: indexKeys.filter(key => key.includes('-entity-')), reverseRef: indexKeys.filter(key => key.includes('-reverseRef-')) },
+      activeStateRefs: currentState ? [currentState.id] : [], activeThreadRefs: [],
     }, { expectedChatId: operation.chatId });
-    await validateCseGraph({ root, checkpoint: actualCheckpoint, run: actualRun, floors: actualFloors, floorMemories: actualMemories, entities: actualEntities, indexes: actualIndexes, indexKeys: actualIndexKeys, baseline, stateDeltas: actualDeltas, currentStates: actualCurrentStates });
+    await validateCseGraph({ root, checkpoint, run, floors, floorMemories, entities, indexes, indexKeys, baseline, stateDeltas, currentStates: currentState ? [currentState] : [] });
     const committed = await store.commitRoot(root, cache.rootRevision ?? 0, { signal: operation.controller.signal });
     if (committed.status === 'conflict') {
       unreachableCount += newFloors.length + indexes.length + 2;
@@ -591,7 +576,16 @@ export function createFoundationRuntime({
       return publishOperation(operation, 'conflict');
     }
     if (committed.status !== 'saved') throw statusError(committed.status, 'V3 root 提交失败');
-    cache = { root, rootRevision: committed.revision, checkpoint: actualCheckpoint, run: actualRun, floors: activeFloorViews(actualFloors, stableCandidates), floorMemories: actualMemories, entities: actualEntities, baseline, stateDeltas: actualDeltas, currentStates: actualCurrentStates, indexes: actualIndexes, indexesMissing: false };
+    const committedReachable = committed.reachable;
+    if (!committedReachable || committedReachable.status !== 'ready'
+      || committedReachable.rootRevision !== committed.revision
+      || committedReachable.root?.chatId !== operation.chatId
+      || committedReachable.root?.headCheckpointId !== checkpointId
+      || committedReachable.root?.narrativeGeneration !== narrativeGeneration
+      || committedReachable.root?.sourceSnapshotFingerprint !== snapshot.fingerprint) {
+      throw Object.assign(new Error('V3 root 已提交，但提交结果缺少一致的真实可达图'), { code: 'V3_COMMIT_REACHABLE_MISMATCH' });
+    }
+    cache = { ...committedReachable, floors: activeFloorViews(committedReachable.floors, stableCandidates) };
     pending = candidates[stableCount] ?? null;
     const afterCommit = await scanCurrentSnapshot(operation, { confirmLatest, stableThrough });
     if (afterCommit.snapshot.fingerprint !== snapshot.fingerprint) {
@@ -607,7 +601,7 @@ export function createFoundationRuntime({
       return publishOperation(operation, 'stale');
     }
     const completedRun = await persistRunPhase(operation, 'completed', { completedFloorIds: newFloors.map(floor => floor.id) });
-    cache = { root, rootRevision: committed.revision, checkpoint: actualCheckpoint, run: completedRun, floors: activeFloorViews(actualFloors, stableCandidates), floorMemories: actualMemories, entities: actualEntities, baseline, stateDeltas: actualDeltas, currentStates: actualCurrentStates, indexes: actualIndexes, indexesMissing: false };
+    cache = { ...cache, run: completedRun };
     emptyRealtimeObservation = floors.length === 0 ? Object.freeze({ chatId: operation.chatId }) : null;
     pending = candidates[stableCount] ?? null;
     lastRun = runSummary(completedRun, isBranch ? `trustedPrefix:${prefixLength}` : 'committed');

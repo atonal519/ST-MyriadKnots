@@ -1,11 +1,12 @@
 import { normalizeAutoHideKeepAiCount } from '../settings.js';
+import { isHostNarratorMessage } from './foundation-domain.js';
 
 const MARKER_KEY = 'qianqianjieAutoHide';
 const READY_CSE = new Set(['ready', 'noChange']);
 const READY_MEMORY = new Set(['ready', 'needsReview']);
 
 const autoHideError = (code, message) => { const error = new Error(message); error.code = code; return error; };
-const isSystemEvent = message => message?.is_system === true && Boolean(message?.extra?.type);
+const isSystemEvent = message => isHostNarratorMessage(message) || (message?.is_system === true && Boolean(message?.extra?.type));
 const isAssistantMessage = message => message?.is_user === false && !isSystemEvent(message);
 const ownsMessage = (message, chatId) => message?.extra?.[MARKER_KEY]?.schemaVersion === 1 && message.extra[MARKER_KEY].chatId === chatId;
 const contiguousRanges = indexes => {
@@ -21,6 +22,8 @@ const contiguousRanges = indexes => {
 export function planAutoHide({ chat = [], memoryState = null, keepAiCount = 3, restoreAll = false } = {}) {
   const stableChatId = typeof memoryState?.chatId === 'string' ? memoryState.chatId : '';
   if (!stableChatId) return Object.freeze({ status: 'unavailable', hideRanges: Object.freeze([]), unhideRanges: Object.freeze([]), hideThrough: null, keepFrom: null });
+  if (!restoreAll && memoryState?.memorySnapshotStatus !== 'ready') return Object.freeze({ status: memoryState?.memorySnapshotStatus ?? 'unavailable', chatId: stableChatId, hideRanges: Object.freeze([]), unhideRanges: Object.freeze([]), hideThrough: null, keepFrom: null });
+  if (!restoreAll && (memoryState?.memoryWorkBusy || memoryState?.activeAutoMemory || memoryState?.activeExtraction || memoryState?.activeCse)) return Object.freeze({ status: 'busy', chatId: stableChatId, hideRanges: Object.freeze([]), unhideRanges: Object.freeze([]), hideThrough: null, keepFrom: null });
   const source = Array.isArray(chat) ? chat : [];
   const assistants = source.map((message, messageIndex) => isAssistantMessage(message) ? { message, messageIndex } : null).filter(Boolean);
   const owned = source.map((message, messageIndex) => ownsMessage(message, stableChatId) ? messageIndex : null).filter(Number.isInteger);

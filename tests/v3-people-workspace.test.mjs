@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPeopleProfileSystemPrompt, createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, DEFAULT_PROFILE_GUIDANCE, PEOPLE_WORKSPACE_RECORD_ID, PROFILE_FIXED_CONTRACT } from '../src/v3/people-workspace.js';
+import { buildPeopleProfileSystemPrompt, createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, DEFAULT_PROFILE_GUIDANCE, PEOPLE_WORKSPACE_RECORD_ID, PROFILE_FIXED_CONTRACT, validatePeopleWorkspace } from '../src/v3/people-workspace.js';
 import { filterSourcesByPermission } from '../src/source-permission.js';
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
 import { createCompactApiClient } from '../src/compact-api-client.js';
@@ -57,6 +57,7 @@ test('人物资料业务指导可替换，固定合同与基础处理层始终�
   const builtIn = buildPeopleProfileSystemPrompt();
   assert.match(builtIn, new RegExp(DEFAULT_PROFILE_GUIDANCE.slice(0, 20)));
   assert.match(builtIn, /人物卡和世界书属于明确设定/);
+  assert.match(builtIn, /appearance 只填写无法归入细分外貌字段/); assert.match(builtIn, /不写来源说明、整理过程、核验过程/);
   assert.equal(builtIn.split(BASE_PROCESSING_PROMPT).length - 1, 1);
   const custom = buildPeopleProfileSystemPrompt('用户自定人物整理风格');
   assert.match(custom, /用户自定人物整理风格/);
@@ -64,6 +65,15 @@ test('人物资料业务指导可替换，固定合同与基础处理层始终�
   assert.match(custom, new RegExp(PROFILE_FIXED_CONTRACT.slice(0, 16)));
   assert.match(custom, /personKey 必须逐字使用/);
   assert.equal(custom.split(BASE_PROCESSING_PROMPT).length - 1, 1);
+});
+
+test('v1 人工与生成资料无损归一到 v2，只有旧人工六字段获得保护', () => {
+  const profile = source => ({ entityId: ids[0], name: '旧名', aliases: '旧别名', background: '旧背景', appearance: '旧外貌', personality: '旧性格', notes: '旧补充', source, createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' });
+  const workspace = source => ({ schemaVersion: 1, kind: 'qqj-v3-people-workspace', chatId: CHAT_A, selectedEntityIds: [ids[0]], profilesByEntityId: { [ids[0]]: profile(source) }, createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' });
+  const manual = validatePeopleWorkspace(workspace('manual'), CHAT_A), generated = validatePeopleWorkspace(workspace('generated'), CHAT_A);
+  assert.equal(manual.schemaVersion, 2); assert.equal(manual.profilesByEntityId[ids[0]].notes, '旧补充'); assert.equal(manual.profilesByEntityId[ids[0]].gender, '');
+  assert.deepEqual(manual.profilesByEntityId[ids[0]].manualFields, ['name', 'aliases', 'background', 'appearance', 'personality', 'notes']);
+  assert.deepEqual(generated.profilesByEntityId[ids[0]].manualFields, []); assert.deepEqual(manual.avatarsByEntityId, {});
 });
 
 test('人物资料运行时冻结本次自定义指导，设置变化只在下一次整理生效', async () => {
@@ -169,6 +179,61 @@ test('一次整理只覆盖未建档人物，严格过滤世界书并使用本�
   assert.match(systemPrompt, /personKey 必须逐字使用/); assert.doesNotMatch(systemPrompt, /sanctuary_override_directive/);
   const state = h.runtime.getState(); assert.equal(state.profilesByEntityId[first.id].source, 'manual'); assert.equal(state.profilesByEntityId[second.id].source, 'generated');
   assert.deepEqual(state.selectedEntityIds, [first.id, second.id], '生成与选择保存必须分离');
+});
+
+test('当前人物重新整理仅请求一次且不带旧生成原文，最新人工字段与人工清空不会被模型覆盖', async () => {
+  let calls = 0, request;
+  const h = harness({ generate: async options => {
+    calls += 1; request = JSON.parse(options.taskMessages[0].content);
+    return { jsonData: { profiles: [{ personKey: 'person-1', name: '模型新名', aliases: ['模型别名'], gender: '女', background: '模型新背景', notes: '模型试图覆盖', appearance: '', personality: '' }] } };
+  } });
+  await h.runtime.refresh(); const [first, second] = h.peopleEntities; await h.runtime.setSelectedEntityIds([first.id, second.id]);
+  await h.runtime.saveProfile(first.id, { name: '原名', aliases: '', background: '原背景', appearance: '', personality: '', notes: '人工旧补充' }, { manualFields: ['name', 'notes'] });
+  await h.runtime.saveProfile(first.id, { name: '原名', aliases: '', background: '原背景', appearance: '', personality: '', notes: '' }, { manualFields: ['notes'] });
+  await h.runtime.regenerateProfile(first.id);
+  const profile = h.runtime.getState().profilesByEntityId[first.id];
+  assert.equal(calls, 1); assert.deepEqual(request.people.map(item => item.personKey), ['person-1']);
+  assert.equal(Object.hasOwn(request.people[0], 'existingProfile'), false); assert.deepEqual(request.people[0].manualProfile, { name: '原名', notes: '' }); assert.deepEqual(request.people[0].manualFields, ['name', 'notes']);
+  assert.equal(Object.hasOwn(request.people[0].manualProfile, 'background'), false, '旧 generated 字段不得回灌给重整请求');
+  assert.equal(profile.name, '原名'); assert.equal(profile.notes, ''); assert.equal(profile.background, '模型新背景'); assert.equal(profile.gender, '女');
+  assert.equal(h.runtime.getState().profilesByEntityId[second.id], undefined, '未授权的另一人物保持不变');
+});
+
+test('人物资料在展示、整理输入和模型输出统一解析当前聊天 user/char 宏且不改普通单词', async () => {
+  let request;
+  const h = harness({
+    sourceCandidates: [{ id: 'worldbook:allowed', kind: 'worldbook', world: '设定书', label: '宏条目', content: '{{user}}信任{{char}}，普通 user char。' }],
+    generate: async options => {
+      request = JSON.parse(options.taskMessages[0].content);
+      return { jsonData: { profiles: [{ personKey: 'person-1', name: '人物1', aliases: [], background: '{{user}}与{{char}}，普通 user char。', appearance: '', personality: '', notes: '' }] } };
+    },
+  });
+  const [target] = h.peopleEntities;
+  h.setReachable({
+    entities: [...h.peopleEntities, entity(USER, '用户', { specialRole: 'user' }), entity(SYNTHETIC_CHAR, '主角', { specialRole: 'char', firstSeenFloorId: null, lastSeenFloorId: null })],
+    floorMemories: [{ recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '{{user}}遇见{{char}}，普通 user char。' }, participants: [{ entityId: target.id }] }],
+    baseline: { userPersona: { name: '辛夷' }, characterCard: { entityId: SYNTHETIC_CHAR, name: '主角', description: '', personality: '', scenario: '' } },
+  });
+  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]);
+  await h.runtime.saveProfile(target.id, { name: '人物1', aliases: '', background: '', appearance: '', personality: '', notes: '{{user}}认识{{char}}，普通 user char。' }, { manualFields: [] });
+  assert.equal(h.runtime.getState().people.find(item => item.entityId === target.id).profile.notes, '辛夷认识主角，普通 user char。');
+  const raw = h.db.records.get(`chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`).data.profilesByEntityId[target.id];
+  assert.equal(raw.notes, '{{user}}认识{{char}}，普通 user char。', '旧记录只做展示投影，不迁移回写');
+  await h.runtime.regenerateProfile(target.id);
+  assert.equal(request.people[0].summaries[0], '辛夷遇见主角，普通 user char。');
+  assert.equal(request.allowedWorldInfo[0].content, '辛夷信任主角，普通 user char。');
+  assert.deepEqual(request.people[0].manualProfile, {});
+  assert.equal(h.runtime.getState().profilesByEntityId[target.id].background, '辛夷与主角，普通 user char。');
+});
+
+test('头像独立保存于当前聊天，不把未建档人物误算为已整理且文字保存不会覆盖头像', async () => {
+  const h = harness(); await h.runtime.refresh(); const id = h.peopleEntities[0].id; await h.runtime.setSelectedEntityIds([id]);
+  const avatar = 'data:image/png;base64,AAAA'; await h.runtime.saveAvatar(id, avatar);
+  let state = h.runtime.getState(); assert.equal(state.people.find(item => item.entityId === id).avatar, avatar); assert.equal(state.profilesByEntityId[id], undefined); assert.equal(state.unprofiledSelectedCount, 1);
+  await h.runtime.saveProfile(id, { name: '人工名', notes: '文字', aliases: '', background: '', appearance: '', personality: '' }, { manualFields: ['name', 'notes'] });
+  assert.equal(h.runtime.getState().avatarsByEntityId[id], avatar);
+  h.runtime.invalidate(); await h.runtime.refresh(); assert.equal(h.runtime.getState().avatarsByEntityId[id], avatar);
+  await h.runtime.saveAvatar(id, null); assert.equal(h.runtime.getState().avatarsByEntityId[id], undefined);
 });
 
 test('千人整理沿用现行来源边界，忽略退役逐条设置并守住宿主禁用与整本排除', async () => {

@@ -13,6 +13,7 @@ import { buildExtractorSystemPrompt, createExtractorEnvelope, DEFAULT_EXTRACTOR_
 import { buildCseSystemPrompt, CSE_FIXED_CONTRACT, CSE_SYSTEM_PROMPT, createCseEnvelope, DEFAULT_CSE_GUIDANCE } from '../src/v3/cse-engine.js';
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
 import { buildEntityIdentityDirectory } from '../src/v3/entity-identity.js';
+import { projectInlineMemoryFloor } from '../src/ui/inline-projection.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GENERATION = '22222222-2222-4222-8222-222222222222';
@@ -30,10 +31,11 @@ const uuidFactory = () => { let value = 0; return () => `${(++value).toString(16
 function viewHarness(runtime) {
   const documentRef = { activeElement: null, createElement: tag => new ViewNode(tag) };
   class ViewNode {
-    constructor(tag) { this.tag = tag; this.children = []; this.listeners = {}; this.textContent = ''; this.className = ''; this.disabled = false; this.value = ''; this.open = false; this.selectionStart = 0; this.selectionEnd = 0; }
+    constructor(tag) { this.tag = tag; this.children = []; this.listeners = {}; this.textContent = ''; this.className = ''; this.disabled = false; this.value = ''; this.open = false; this.selectionStart = 0; this.selectionEnd = 0; this.attributes = {}; }
     append(...nodes) { this.children.push(...nodes); }
     replaceChildren(...nodes) { this.children = [...nodes]; }
     addEventListener(name, handler) { this.listeners[name] = handler; }
+    setAttribute(name, value) { this.attributes[name] = String(value); }
     click() { return this.listeners.click?.(); }
     fire(name) { return this.listeners[name]?.(); }
     focus() { documentRef.activeElement = this; }
@@ -60,9 +62,10 @@ function backendHarness() {
   let conflictRoot = false;
   let rootGate = null;
   let abortAfterPut = null;
+  let beforePut = null;
   const envelope = (data, revision) => ({ schemaVersion: 1, revision, generationId: '11111111-1111-4111-8111-111111111111', createdAt: NOW, updatedAt: NOW, data: structuredClone(data) });
   const error = status => Object.assign(new Error(`HTTP ${status}`), { status });
-  return { records, calls, setConflictRoot(value) { conflictRoot = value; }, abortAfterNextPut(predicate) { abortAfterPut = predicate; }, holdNextRootPut() {
+  return { records, calls, setConflictRoot(value) { conflictRoot = value; }, setBeforePut(value) { beforePut = value; }, abortAfterNextPut(predicate) { abortAfterPut = predicate; }, holdNextRootPut() {
     let release, markStarted;
     const started = new Promise(resolve => { markStarted = resolve; });
     const wait = new Promise(resolve => { release = resolve; });
@@ -70,7 +73,7 @@ function backendHarness() {
     return { started, release };
   }, client: {
     async get(collection, key) { calls.push(['get', collection, key]); const found = records.get(`${collection}/${key}`); if (!found) throw error(404); return envelope(found.data, found.revision); },
-    async put(collection, key, data, expectedRevision, options = {}) { calls.push(['put', collection, key, expectedRevision]); const mapKey = `${collection}/${key}`, previous = records.get(mapKey); if (key === 'v3-root' && rootGate) { const gate = rootGate; rootGate = null; gate.started(); await gate.wait; if (options.signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' }); } if (key === 'v3-root' && conflictRoot) throw error(409); if ((previous?.revision ?? 0) !== expectedRevision) throw error(409); const revision = (previous?.revision ?? 0) + 1; records.set(mapKey, { revision, data: structuredClone(data) }); if (abortAfterPut?.(key, data)) { abortAfterPut = null; throw Object.assign(new Error('aborted after durable write'), { name: 'AbortError' }); } return envelope(data, revision); },
+    async put(collection, key, data, expectedRevision, options = {}) { calls.push(['put', collection, key, expectedRevision]); if (beforePut) await beforePut({ collection, key, data, expectedRevision }); const mapKey = `${collection}/${key}`, previous = records.get(mapKey); if (key === 'v3-root' && rootGate) { const gate = rootGate; rootGate = null; gate.started(); await gate.wait; if (options.signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' }); } if (key === 'v3-root' && conflictRoot) throw error(409); if ((previous?.revision ?? 0) !== expectedRevision) throw error(409); const revision = (previous?.revision ?? 0) + 1; records.set(mapKey, { revision, data: structuredClone(data) }); if (abortAfterPut?.(key, data)) { abortAfterPut = null; throw Object.assign(new Error('aborted after durable write'), { name: 'AbortError' }); } return envelope(data, revision); },
   } };
 }
 
@@ -959,6 +962,50 @@ test('memory refresh 复用 foundation 本轮 reachable，不重复读取同一�
   assert.equal(h.backend.calls.filter(call => call[0] === 'get').length, readsBefore);
 });
 
+test('单楼摘要提交只做 root 版本复核并复用 commitRoot 真回读结果', async () => {
+  const h = harness();
+  await h.runtime.start();
+  const floorId = h.runtime.getState().floors[0].floorId;
+  h.backend.calls.splice(0);
+  const state = await h.runtime.extractFloor(floorId, { analyzeState: false });
+  assert.equal(state.rememberedCount, 1, JSON.stringify(state.lastExtractorError));
+  const gets = h.backend.calls.filter(call => call[0] === 'get');
+  assert.equal(gets.filter(call => call[2] === 'v3-root').length, 2,
+    '提取前投影确认与模型返回后的 root 版本复核各一次，不再提交后重读整图');
+  assert.equal(gets.length, 20, '固定三楼内存 fixture 的单楼摘要提交 GET 应由旧实现 51 次降为 20 次');
+});
+
+test('摘要 prepared 记录最多四路并发，run/checkpoint 等独立写完后才开始', async () => {
+  const h = harness();
+  await h.runtime.start();
+  const floorId = h.runtime.getState().floors[0].floorId;
+  let active = 0;
+  let maximum = 0;
+  let started = 0;
+  let release;
+  let fourStarted;
+  const gate = new Promise(resolve => { release = resolve; });
+  const ready = new Promise(resolve => { fourStarted = resolve; });
+  h.backend.setBeforePut(async ({ key }) => {
+    if (key === 'v3-root' || key.startsWith('v3-run-') || key.startsWith('v3-checkpoint-')) return;
+    started += 1;
+    active += 1;
+    maximum = Math.max(maximum, active);
+    if (started === 4) fourStarted();
+    await gate;
+    active -= 1;
+  });
+  h.backend.calls.splice(0);
+  const pending = h.runtime.extractFloor(floorId, { analyzeState: false });
+  await ready;
+  assert.equal(maximum, 4);
+  assert.equal(h.backend.calls.some(call => call[0] === 'put' && (call[2].startsWith('v3-run-') || call[2].startsWith('v3-checkpoint-'))), false);
+  release();
+  const state = await pending;
+  assert.equal(state.rememberedCount, 1, JSON.stringify(state.lastExtractorError));
+  assert.equal(active, 0);
+});
+
 test('历史按钮会话失败后停住且撤销授权；刷新零调用，再次点击继续才从失败楼重试', async () => {
   let failSecond = true;
   const h = harness({
@@ -1381,6 +1428,10 @@ test('4 楼摘要在途时 6 楼空 swipe 异步窗口不换稳定 head、不取
 
   h.context.chat[6] = { ...assistant(''), mes: '', swipes: ['六楼旧版本。', ''], swipe_id: 1 };
   h.emit('MESSAGE_SWIPED', 6, { pendingGeneration: true, previousSwipeId: 0, nextSwipeId: 1 });
+  const reloadState = h.runtime.getState();
+  assert.equal(reloadState.memorySnapshotStatus, 'syncing');
+  assert.equal(projectInlineMemoryFloor(reloadState, 0).statusText, '摘要已保存', '保留可验证旧 floor 的窄路径应继续显示已确认摘要');
+  assert.notEqual(projectInlineMemoryFloor(reloadState, 0).statusText, '等待本楼稳定');
   await waitFor(() => h.foundationRuntime.getState().status === 'ready' && h.foundationRuntime.getState().pending === null, '未进入真实空 swipe 地基窗口');
   const duringEmptyTail = await h.store.readReachable({ mode: 'runtime' });
 
@@ -2310,6 +2361,28 @@ test('首个流式正文提前固定上一楼，重复 token 与 ENDED→RECEIVE
   assert.equal(h.calls.length, 2, '同次 final 不得取消后重跑上一楼任务');
 });
 
+test('提前固定只接受真实新 AI 槽，空 is_system narrator 不触发自动任务', async () => {
+  const h = harness({
+    initialChat: [assistant('上一楼正文')],
+    automation: { enabled: true, batchSize: 1 },
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: '上一楼摘要' } }
+      : { jsonData: { noMaterialChange: true } },
+  });
+  await h.runtime.start();
+  h.context.chat.push(user('继续'));
+  h.emit('GENERATION_STARTED', 'normal', {}, false);
+  h.context.chat.push({ is_user: false, is_system: '', mes: '宿主旁白', extra: { type: 'narrator' } });
+  h.emit('STREAM_TOKEN_RECEIVED', '旁白首字');
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(h.calls.length, 0, 'narrator 槽不得提前固定上一楼或触发记忆任务');
+
+  h.context.chat.push(assistant(''));
+  h.emit('STREAM_TOKEN_RECEIVED', '真实 AI 首字');
+  await waitFor(() => h.runtime.getState().rememberedCount === 1 && !h.runtime.getState().activeAutoMemory);
+  assert.deepEqual(h.calls.map(call => call.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
+});
+
 test('不同槽或 first_message 的 MESSAGE_RECEIVED 不冒充已武装 normal final', async () => {
   let releaseExtractor, markStarted;
   const started = new Promise(resolve => { markStarted = resolve; });
@@ -2756,9 +2829,14 @@ test('生产 user 锚在 MESSAGE_SENT 后立即提取前一 AI，重复事件不
   assert.equal(h.foundationRuntime.getState().stableCount, 0);
   assert.equal(h.calls.length, 0);
 
+  const transientSnapshots = [];
+  const releaseSubscription = h.runtime.subscribe(state => transientSnapshots.push({ memorySnapshotStatus: state.memorySnapshotStatus, floorCount: state.floors.length }));
   h.context.chat.push({ ...user('U1 正式入列。'), send_date: 'anchor-u1' });
   h.emit('MESSAGE_SENT', 1);
+  assert.ok(transientSnapshots.length > 0, 'MESSAGE_SENT 必须同步发布重读状态');
+  assert.equal(transientSnapshots.some(state => state.memorySnapshotStatus === 'ready' && state.floorCount === 0), false, 'reachable 清空及 CSE invalidate 的每次通知都不得伪装成 ready 空快照');
   await waitFor(() => h.runtime.getState().rememberedCount === 1 && h.runtime.getState().cseReady, 'user 锚入列后未及时完成前一 AI 的摘要与 CSE');
+  releaseSubscription();
   const callsAfterFirst = h.calls.length;
   assert.equal(callsAfterFirst, 2);
   h.emit('MESSAGE_SENT', 1);

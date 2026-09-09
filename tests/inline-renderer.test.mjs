@@ -128,6 +128,20 @@ test('楼内纯投影沿用宿主角色语义，并给出紧凑记忆/准确召�
   assert.equal(unknown.historyItems.length, 0); assert.equal(unknown.summary, '召回内容请在详细回执中查看。');
 });
 
+test('楼内空投影区分同步、读取失败与真正未稳定，并始终禁用提取', () => {
+  const syncing = projectInlineMemoryFloor({ memorySnapshotStatus: 'syncing', floors: [], pending: { messageIndex: 2 } }, 0);
+  assert.deepEqual({ status: syncing.status, statusText: syncing.statusText, canExtract: syncing.canExtract }, { status: 'syncing', statusText: '正在核对本楼状态', canExtract: false });
+  assert.equal(syncing.summary, '正在读取当前聊天的记忆状态。');
+
+  const failed = projectInlineMemoryFloor({ memorySnapshotStatus: 'error', floors: [], lastExtractorError: { phase: 'load', message: '后端暂不可用' } }, 0);
+  assert.deepEqual({ status: failed.status, statusText: failed.statusText, error: failed.error, canExtract: failed.canExtract }, { status: 'error', statusText: '记忆读取失败', error: '后端暂不可用', canExtract: false });
+
+  const pending = projectInlineMemoryFloor({ memorySnapshotStatus: 'ready', floors: [], pending: { messageIndex: 0 } }, 0);
+  assert.equal(pending.statusText, '等待本楼稳定');
+  const unavailable = projectInlineMemoryFloor({ memorySnapshotStatus: 'ready', floors: [], pending: { messageIndex: 2 } }, 0);
+  assert.equal(unavailable.statusText, '尚未读取本楼状态');
+});
+
 test('召回展示只解析精确自有协议，保留同楼多事实并拒绝未知或不安全旧格式', () => {
   const coverage = { memoryComplete: true, cseCurrent: true, missingAssistantSeq: [], rememberedAiFloors: 2, stableAiFloors: 2, cseThroughAssistantSeq: 2 };
   const entityById = new Map([['p1', { displayName: '裴晚生' }], ['p2', { displayName: '江离州' }]]);

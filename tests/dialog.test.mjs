@@ -15,6 +15,7 @@ function fakeDom({ withContextChange = false } = {}) {
     focus(options) { documentRef.activeElement = this; this.focused = (this.focused ?? 0) + 1; this.focusOptions = options; }
     select() { this.selected = true; }
     setAttribute(name, value) { this.attrs[name] = String(value); }
+    appendChild(child) { return addChild(this, child); }
   }
   const addChild = (parent, child) => { child.parent = parent; parent.children.push(child); return child; };
   const descendants = root => root.children.flatMap(child => [child, ...descendants(child)]);
@@ -121,6 +122,16 @@ test('打开新窗结算旧 Promise，closeAll/cancelTop 继续可用', async ()
   const final = h.manager.prompt({ title: '最终窗' });
   assert.equal(h.manager.closeAll(), true);
   assert.equal(await final, null);
+});
+
+test('自定义内容沿用同一关闭生命周期，提交失败留窗可重试', async () => {
+  const h = fakeDom(); let closed = 0, attempts = 0;
+  const content = h.documentRef.createElement('section');
+  const pending = h.manager.custom({ title: '裁剪头像', content, onClose: () => { closed += 1; }, submit: async () => { attempts += 1; if (attempts === 1) throw new Error('保存失败'); return 'saved'; } });
+  assert.equal(h.find('.sp-dialog-custom')[0].children[0], content);
+  h.find('.sp-dialog-submit').trigger('click'); await new Promise(resolve => setImmediate(resolve));
+  assert.match(h.find('.sp-dialog-input-error').html(), /保存失败/); assert.equal(h.manager.hasActive(), true); assert.equal(closed, 0);
+  h.find('.sp-dialog-submit').trigger('click'); assert.equal(await pending, 'saved'); assert.equal(closed, 1);
 });
 
 test('宿主 CHAT_CHANGED 经同源生命周期立即关闭确认窗', async () => {

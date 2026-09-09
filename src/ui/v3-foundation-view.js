@@ -72,6 +72,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   let page = 'management';
   let peopleMode = 'current', selectedCsePersonId = null, showMoreCsePeople = false;
   let foundationState = runtime.getState(), recallState = recallRuntime?.getState?.() ?? null, peopleState = peopleRuntime?.getState?.() ?? null, managementState = memoryManagement?.getState?.() ?? null, chatId = foundationState?.chatId ?? null, healthNode = null;
+  let syncingChatId = null;
   const drafts = new Map();
   const cseDrafts = new Map();
   const openState = new Map();
@@ -118,6 +119,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       : state.lastCseError?.message || state.lastExtractorError?.message || errorMessage(state.lastError);
   const healthCopy = state => {
     if (state.pluginEnabled === false) return '千千结已关闭';
+    if (state.memorySnapshotStatus === 'syncing') return '正在核对当前聊天记忆 · 已保留上次确认结果';
     if (page === 'memories') {
       if (memoryBusy(state)) return `正在处理摘要 · ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼`;
       const error = errorCopy(state); if (error) return `摘要需要处理 · ${error}`;
@@ -335,7 +337,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       });
       const add = element('button', 'secondary-action', `添加${label}`); add.type = 'button'; add.disabled = disabled; add.addEventListener('click', () => { draft[field].push({ itemId: null, text: '', visibility: field === 'core' ? 'authorial' : 'private', towardEntityId: null }); render(foundationState); }); controls.push(add); group.append(add); return group;
     };
-    editor.append(category('core', '核心特质'), category('adaptive', '长期倾向', { toward: true }), category('situational', '当前情境'));
+    editor.append(category('core', '核心特质'), category('adaptive', '长期倾向', { toward: true }), category('situational', '当前情境', { toward: true }));
     if (draft.saveError) editor.append(element('p', 'v3-foundation-feedback error', draft.saveError));
     const actions = element('div', 'v3-foundation-actions');
     const save = element('button', 'primary-action', draft.saving ? '保存中…' : '保存'); save.type = 'button'; save.disabled = draft.saving === true || workBusy(state) || typeof runtime.correctSubjectState !== 'function';
@@ -366,7 +368,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const actions = actionsContainer ?? body;
     const draft = cseDrafts.get(key);
     if (subject && draft) renderCseEditor(body, draft, state, key);
-    else if (subject) appendSubjectGroups(body, subject, state, ownOnly ? { adaptive: (subject.adaptive ?? []).filter(item => !item.towardEntityId), showMeta: false, groupAdaptiveByTarget: false, empty: !relationNote } : {});
+    else if (subject) appendSubjectGroups(body, subject, state, ownOnly ? { adaptive: (subject.adaptive ?? []).filter(item => !item.towardEntityId), situational: (subject.situational ?? []).filter(item => !item.towardEntityId), showMeta: false, groupAdaptiveByTarget: false, empty: !relationNote } : {});
     else body.append(element('p', 'settings-hint', '这个重要人物还没有已保存的状态分析；后台摘要与 CSE 会继续正常处理。'));
     if (subject && !draft) {
       const edit = element('button', actionsContainer ? 'qqj-memory-menu-action' : 'secondary-action', '编辑状态'); edit.type = 'button'; edit.disabled = workBusy(state) || typeof runtime.correctSubjectState !== 'function' || !state.currentStateId || !state.currentStateFingerprint;
@@ -494,10 +496,18 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     item.append(element('span', 'v3-cse-item-text', value.text));
     if (showMeta) { const source = value.sourceFloorId || value.sourceAssistantSeq ? sourceFloorCopy(state, value) : value.origin === 'baseline' ? '来源：聊天基线' : '来源：本地重放'; item.append(element('small', 'v3-cse-item-meta', [...new Set([value.reason, originCopy(value.origin), source, visibilityCopy(value.visibility)])].join(' · '))); } return item;
   };
+  function appendRelationLayers(container, { situational = [], adaptive = [] }, state) {
+    let count = 0;
+    for (const [label, values] of [['当前态度', situational], ['长期相处方式', adaptive]]) {
+      if (!values.length) continue;
+      const group = element('div', 'qqj-relation-layer'); group.append(element('strong', 'qqj-relation-layer-title', label));
+      const list = element('ul', 'qqj-relation-items'); for (const value of values) list.append(relationItem(value, state)); group.append(list); container.append(group); count += values.length;
+    }
+    return count;
+  }
   function renderRelationLane(label, values, state, side) {
     const lane = element('section', `qqj-relation-lane ${side}`); lane.append(element('strong', 'qqj-relation-lane-title', label));
-    if (!values.length) lane.append(element('p', 'settings-hint', '暂无已保存的关系状态。'));
-    else { const list = element('ul', 'qqj-relation-items'); for (const value of values) list.append(relationItem(value, state)); lane.append(list); }
+    if (!appendRelationLayers(lane, values, state)) lane.append(element('p', 'settings-hint', '暂无已保存的关系状态。'));
     return lane;
   }
   function renderUserAnchor(userSubject, userEntity, state) {
@@ -507,7 +517,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const key = `${state.chatId ?? 'no-chat'}:${userSubject.subjectEntityId}`, draft = cseDrafts.get(key);
     if (draft) renderCseEditor(anchor, draft, state, key);
     else {
-      appendSubjectGroups(anchor, userSubject, state, { adaptive: (userSubject.adaptive ?? []).filter(item => !item.towardEntityId), showMeta: false, groupAdaptiveByTarget: false });
+      appendSubjectGroups(anchor, userSubject, state, { adaptive: (userSubject.adaptive ?? []).filter(item => !item.towardEntityId), situational: (userSubject.situational ?? []).filter(item => !item.towardEntityId), showMeta: false, groupAdaptiveByTarget: false });
       const edit = element('button', 'secondary-action qqj-cse-edit-action', '编辑我的状态'); edit.type = 'button'; edit.disabled = workBusy(state) || typeof runtime.correctSubjectState !== 'function' || !state.currentStateId || !state.currentStateFingerprint;
       edit.addEventListener('click', () => { const copyItems = values => (values ?? []).map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: item.towardEntityId ?? null })); cseDrafts.set(key, { chatId: state.chatId, subjectEntityId: userSubject.subjectEntityId, expectedCurrentStateId: state.currentStateId, expectedCurrentStateFingerprint: state.currentStateFingerprint, core: copyItems(userSubject.core), adaptive: copyItems(userSubject.adaptive), situational: copyItems(userSubject.situational), saving: false, saveError: '' }); render(foundationState); });
       anchor.append(edit);
@@ -544,17 +554,19 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const pairMenuToggle = element('summary', 'qqj-memory-menu-toggle', '⋮'); pairMenuToggle.setAttribute('aria-label', '关系操作'); pairMenuToggle.setAttribute('title', '关系操作');
       const pairActions = element('div', 'qqj-memory-menu-pop'); pairHead.append(element('strong', '', selectedPerson.displayName), element('span', '', '⇄ 你')); pair.append(pairHead);
       const dual = element('div', 'qqj-relation-dual');
-      const userToward = (userSubject?.adaptive ?? []).filter(item => item.towardEntityId === selectedPerson.entityId);
-      const personToward = (selectedSubject?.adaptive ?? []).filter(item => item.towardEntityId === userEntity?.entityId);
+      const userToward = { situational: (userSubject?.situational ?? []).filter(item => item.towardEntityId === selectedPerson.entityId), adaptive: (userSubject?.adaptive ?? []).filter(item => item.towardEntityId === selectedPerson.entityId) };
+      const personToward = { situational: (selectedSubject?.situational ?? []).filter(item => item.towardEntityId === userEntity?.entityId), adaptive: (selectedSubject?.adaptive ?? []).filter(item => item.towardEntityId === userEntity?.entityId) };
       const relationNote = renderSubject(selectedSubject, state, { person: selectedPerson, ownOnly: true, relationNote: true, actionsContainer: pairActions });
       if (pairActions.children.length) { pairMenu.append(pairMenuToggle, pairActions); pairHead.append(operationMenus.register(pairMenu)); }
       dual.append(renderRelationLane(`你 → ${selectedPerson.displayName}`, userToward, state, 'from-user'), element('span', 'qqj-relation-divider'), renderRelationLane(`${selectedPerson.displayName} → 你`, personToward, state, 'toward-user')); pair.append(dual, relationNote); pageNode.append(pair);
-      const otherRelations = (selectedSubject?.adaptive ?? []).filter(item => item.towardEntityId && item.towardEntityId !== userEntity?.entityId && item.towardEntityId !== selectedPerson.entityId);
+      const otherRelations = ['situational', 'adaptive'].flatMap(category => (selectedSubject?.[category] ?? []).filter(item => item.towardEntityId && item.towardEntityId !== userEntity?.entityId && item.towardEntityId !== selectedPerson.entityId).map(item => ({ category, item })));
       if (otherRelations.length) {
         const others = setDetailsState(element('details', 'qqj-other-relations'), `other-relations:${selectedPerson.entityId}`, false);
         const otherSummary = element('summary', 'qqj-section-summary'); otherSummary.append(element('strong', '', `${selectedPerson.displayName}与其他人物`), element('span', 'v3-memory-status', `${otherRelations.length} 条`)); others.append(otherSummary);
         const otherBody = element('div', 'qqj-other-relations-body'), entityNames = new Map((state.memoryEntities ?? []).map(entity => [entity.entityId, entity.displayName]));
-        for (const item of otherRelations) { const rowNode = element('section', 'qqj-other-relation'), itemList = element('ul', 'qqj-relation-items'); itemList.append(relationItem(item, state)); rowNode.append(element('strong', '', `${selectedPerson.displayName} → ${entityNames.get(item.towardEntityId) ?? item.towardDisplayName ?? '未知人物'}`), itemList); otherBody.append(rowNode); }
+        const grouped = new Map();
+        for (const { category, item } of otherRelations) { const group = grouped.get(item.towardEntityId) ?? { situational: [], adaptive: [], displayName: entityNames.get(item.towardEntityId) ?? item.towardDisplayName ?? '未知人物' }; group[category].push(item); grouped.set(item.towardEntityId, group); }
+        for (const group of grouped.values()) { const rowNode = element('section', 'qqj-other-relation'); rowNode.append(element('strong', '', `${selectedPerson.displayName} → ${group.displayName}`)); appendRelationLayers(rowNode, group, state); otherBody.append(rowNode); }
         others.append(otherBody); pageNode.append(others);
       }
     }
@@ -633,8 +645,33 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     recallState = recallRuntime?.getState?.() ?? recallState; peopleState = peopleRuntime?.getState?.() ?? peopleState; managementState = memoryManagement?.getState?.() ?? managementState; healthNode = null;
     container.replaceChildren(page === 'memories' ? renderMemories(state) : page === 'people' ? renderPeople(state) : renderManagement(state));
   }
-  function render(state = runtime.getState()) { renderAdopted(adoptFoundationState(state).state); }
+  const syncingDisplayState = state => syncingChatId && syncingChatId === state?.chatId
+    ? { ...state, memorySnapshotStatus: 'syncing', memoryWorkBusy: true }
+    : state;
+  const applySyncingPresentation = () => {
+    const safeButtons = new Set(['取消', '分析记录', '返回当前状态', '复制安全诊断', '复制完整诊断', '复制界面诊断']);
+    const visit = node => {
+      for (const child of Array.from(node?.children ?? [])) {
+        const tag = String(child?.tagName ?? child?.tag ?? '').toLowerCase();
+        if (['input', 'select', 'textarea'].includes(tag) || (tag === 'button' && !safeButtons.has(child.textContent))) child.disabled = true;
+        visit(child);
+      }
+    };
+    visit(container);
+    updateHealth(syncingDisplayState(foundationState));
+  };
+  function render(state = runtime.getState()) {
+    const adopted = adoptFoundationState(state).state;
+    renderAdopted(syncingDisplayState(adopted));
+    if (syncingChatId === adopted?.chatId) applySyncingPresentation();
+  }
   function receiveFoundation(snapshot) {
+    if (snapshot?.memorySnapshotStatus === 'syncing' && snapshot?.chatId && snapshot.chatId === foundationState?.chatId) {
+      syncingChatId = snapshot.chatId;
+      applySyncingPresentation();
+      return;
+    }
+    syncingChatId = null;
     const { state, mustReplace } = adoptFoundationState(snapshot);
     if (page === 'memories' && drafts.size && !mustReplace) {
       for (const draft of drafts.values()) for (const control of draft.controls ?? []) control.disabled = draft.saving === true || workBusy(state);

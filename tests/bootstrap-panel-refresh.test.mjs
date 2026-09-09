@@ -62,7 +62,7 @@ test('bootstrap 保留 transient stale 时的已挂载面板，disabled 仍显�
 });
 
 test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步显隐', async () => {
-  let fabOptions, foundationOptions, panelOptions, shows = 0, closes = 0; const appended = [], bodyAppended = [], fabAppearances = [], inlineAppearances = [];
+  let fabOptions, foundationOptions, peopleOptions, panelOptions, shows = 0, closes = 0; const appended = [], bodyAppended = [], fabAppearances = [], inlineAppearances = [];
   const fabHost = { style: {} };
   const dialogHost = { id: 'dialog-host' };
   const bootstrap = await loadBootstrap({ './ui/fab.js': { createFab: options => { fabOptions = options; return { host: fabHost, setBusy() {}, setAppearance(value) { fabAppearances.push(value); } }; } } });
@@ -72,12 +72,13 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   const current = { fabShow: true };
   const instance = bootstrap({
     settings: { isEnabled: () => true, get: () => current }, enableFab: true,
-    v3FoundationViewFactory: options => { foundationOptions = options; return stubView(); }, peopleProfilesViewFactory: stubView, peopleWorkspaceRuntime: { getState: () => ({}) },
+    v3FoundationViewFactory: options => { foundationOptions = options; return stubView(); }, peopleProfilesViewFactory: options => { peopleOptions = options; return stubView(); }, peopleWorkspaceRuntime: { getState: () => ({}) },
     documentRef: { activeElement: null, defaultView: {}, getElementById: () => null, createElement: () => ({}), documentElement: { append: node => appended.push(node) }, body: { append: node => bodyAppended.push(node) } },
     inlineRenderer: { setAppearance(value) { inlineAppearances.push(value); } },
     panelFactory: options => { panelOptions = options; return panel; }, dialogFactory: () => ({ host: dialogHost, confirm() {}, info() {}, setAppearance() {} }), wandInstaller() {},
   });
   assert.deepEqual(appended, [dialogHost], '弹窗 host 应挂在 documentElement，避免手机宿主 body 布局裁切');
+  assert.equal(peopleOptions.dialog.host, dialogHost, '千人头像裁剪应复用 QQJ 弹窗管理器');
   assert.deepEqual(bodyAppended, [panel.host, fabHost]); assert.equal(typeof fabOptions.onClick, 'function'); assert.equal(typeof foundationOptions.infoImpl, 'function');
   assert.equal(foundationOptions.uiDiagnosticProvider(), '{"schemaVersion":1}', '只读provider应在panel创建后导出界面诊断且不触发TDZ');
   assert.deepEqual(fabAppearances, [dayAppearance]); assert.deepEqual(inlineAppearances, [dayAppearance]);

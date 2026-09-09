@@ -103,11 +103,20 @@ export function classifyInlineMessage(message) {
 
 export function projectInlineMemoryFloor(state, messageIndex) {
   const floor = (state?.floors ?? []).find(value => value?.messageIndex === messageIndex) ?? null;
-  if (!floor) return Object.freeze({
-    kind: 'assistant', floorId: null, status: 'empty', statusText: '等待本楼稳定',
-    time: '未提取', locations: '未提取', people: '未提取', summary: '这一楼还没有已保存的摘要。',
-    error: '', busy: Boolean(state?.memoryWorkBusy), canExtract: false,
-  });
+  if (!floor) {
+    const snapshotStatus = state?.memorySnapshotStatus;
+    const failed = snapshotStatus === 'error';
+    const syncing = ['syncing', 'unavailable'].includes(snapshotStatus);
+    const pending = state?.pending?.messageIndex === messageIndex;
+    return Object.freeze({
+      kind: 'assistant', floorId: null, status: failed ? 'error' : syncing ? 'syncing' : pending ? 'pending' : 'unavailable',
+      statusText: failed ? '记忆读取失败' : syncing ? '正在核对本楼状态' : pending ? '等待本楼稳定' : '尚未读取本楼状态',
+      time: '未提取', locations: '未提取', people: '未提取',
+      summary: failed ? '暂时无法读取当前聊天的记忆状态。' : syncing ? '正在读取当前聊天的记忆状态。' : pending ? '这一楼稳定后才能提取摘要。' : '当前记忆中没有这楼的已确认状态。',
+      error: failed ? String(state?.lastExtractorError?.message ?? '记忆读取失败，请稍后重试。') : '',
+      busy: Boolean(state?.memoryWorkBusy || syncing), canExtract: false,
+    });
+  }
   const memory = floor.memory ?? null;
   const times = uniqueText((memory?.chronology ?? []).map(item => item?.time?.sourceText || item?.time?.normalized || item?.description)).join('；');
   const time = floor.manualTime ? times || '时间未明确'

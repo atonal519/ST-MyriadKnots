@@ -68,9 +68,11 @@ export async function reverseRefShardPrefix(recordId) {
   return (await sha256(String(recordId))).slice(0, 2);
 }
 
+export const isHostNarratorMessage = message => Boolean(message && typeof message === 'object' && message.extra?.type === 'narrator');
+
 export function selectAssistantMessage(message) {
   if (!message || typeof message !== 'object' || message.is_user !== false) return null;
-  if (message.is_system === true && message.extra?.type) return null;
+  if (isHostNarratorMessage(message) || (message.is_system === true && message.extra?.type)) return null;
   if (Array.isArray(message.swipes)) {
     const selectedSwipeIndex = Number.isSafeInteger(message.swipe_id) ? message.swipe_id : 0;
     const selected = message.swipes[selectedSwipeIndex];
@@ -83,7 +85,7 @@ export function selectAssistantMessage(message) {
 
 export function selectUserStabilityAnchor(message) {
   if (!message || typeof message !== 'object' || message.is_user !== true) return null;
-  if (message.is_system === true && message.extra?.type) return null;
+  if (isHostNarratorMessage(message) || (message.is_system === true && message.extra?.type)) return null;
   return Object.freeze({
     sentAt: typeof message.send_date === 'string' || typeof message.send_date === 'number' ? String(message.send_date) : null,
     name: typeof message.name === 'string' ? message.name.trim().slice(0, 200) : '',

@@ -11,6 +11,7 @@ const CHAT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 class Node {
   constructor(tag = 'div') { this.tag = tag; this.children = []; this.listeners = {}; this.attributes = {}; this.className = ''; this.textContent = ''; this.value = ''; this.open = false; this.disabled = false; this.tabIndex = 0; }
   append(...nodes) { this.children.push(...nodes); }
+  appendChild(node) { this.children.push(node); return node; }
   replaceChildren(...nodes) { this.children = [...nodes]; }
   addEventListener(name, handler) { this.listeners[name] = handler; }
   click() { if (this.disabled) return undefined; return this.listeners.click?.({ currentTarget: this }); }
@@ -18,6 +19,17 @@ class Node {
   setAttribute(name, value) { this.attributes[name] = String(value); }
   querySelector(selector) { return flatten(this).find(node => selector === '.qqj-profile-tab.active' && node.className === 'qqj-profile-tab active') ?? null; }
   focus() { documentRef.activeElement = this; }
+}
+function dialogHarness() {
+  let active = null;
+  return {
+    dialog: {
+      custom(options) { return new Promise(resolve => { active = { ...options, resolve }; }); },
+      cancelTop() { if (!active) return false; const current = active; active = null; current.onClose?.(); current.resolve(null); return true; },
+    },
+    get active() { return active; },
+    async submit() { const current = active; const value = await current.submit(); active = null; current.onClose?.(); current.resolve(value); return value; },
+  };
 }
 const documentRef = { activeElement: null, createElement: tag => new Node(tag) };
 function eventDocument() {
@@ -41,15 +53,15 @@ function runtimeHarness({ profile = null, profiles = null, selected = [A], failS
   let state = { status: 'ready', chatId: CHAT, revision: 1, selectedEntityIds: [...selected], profilesByEntityId: initialProfiles,
     people: [person(A, '甲', selected.includes(A), initialProfiles[A] ?? null, true), person(B, '乙', selected.includes(B), initialProfiles[B] ?? null)], active: null,
     unprofiledSelectedCount: selected.filter(id => !initialProfiles[id]).length, lastError: null };
-  const listeners = new Set(), calls = { select: [], save: [], generate: 0 };
+  const listeners = new Set(), calls = { select: [], save: [], avatar: [], generate: 0, regenerate: [] };
   const emit = () => { for (const listener of listeners) listener(state); return state; };
   const runtime = {
     getState: () => state, refresh: async () => state,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async setSelectedEntityIds(ids) { calls.select.push(ids); state = { ...state, selectedEntityIds: ids, people: state.people.map(item => ({ ...item, selected: ids.includes(item.entityId) })) }; return emit(); },
-    async saveProfile(entityId, fields) {
-      calls.save.push([entityId, structuredClone(fields)]); if (failSave) throw new Error('CAS失败');
-      const saved = { entityId, ...fields, source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
+    async saveProfile(entityId, fields, options = {}) {
+      calls.save.push([entityId, structuredClone(fields), structuredClone(options)]); if (failSave) throw new Error('CAS失败');
+      const saved = { entityId, ...fields, manualFields: options.manualFields ?? [], source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
       state = { ...state, profilesByEntityId: { ...state.profilesByEntityId, [entityId]: saved }, people: state.people.map(item => item.entityId === entityId ? { ...item, displayName: saved.name || item.entityDisplayName, profiled: true, profile: saved } : item), unprofiledSelectedCount: state.people.filter(item => item.selected && item.entityId !== entityId && !item.profiled).length }; return emit();
     },
     async generateMissingProfiles() {
@@ -65,6 +77,8 @@ function runtimeHarness({ profile = null, profiles = null, selected = [A], failS
       }
       return state;
     },
+    async regenerateProfile(entityId) { calls.regenerate.push(entityId); return emit(); },
+    async saveAvatar(entityId, avatar) { calls.avatar.push([entityId, avatar]); state = { ...state, people: state.people.map(item => item.entityId === entityId ? { ...item, avatar } : item) }; return emit(); },
   };
   return { runtime, calls, get state() { return state; } };
 }
@@ -74,6 +88,7 @@ async function waitFor(predicate, message = '等待条件超时') {
   while (Date.now() < end) { if (predicate()) return; await new Promise(resolve => setImmediate(resolve)); }
   assert.fail(message);
 }
+const fieldControl = (container, label) => flatten(container).find(node => node.className === 'qqj-profile-field' && node.children[0]?.textContent === label)?.children.at(-1);
 function trueRuntimeHarness() {
   const records = new Map(), calls = [], control = { gate: null, failNextPut: false };
   let identity = { chatId: CHAT, hostChatId: 'host-a', characterLocator: 'char.png', personaLocator: 'persona.png' };
@@ -117,7 +132,7 @@ test('真实 activate 完成后不回画旧 loading，禁用整理不触发且�
   assert.equal(h.runtime.getState().status, 'ready');
   assert.equal(flatten(container).filter(node => node.className === 'qqj-page-status').length, 1);
   assert.match(visible(container), /人物资料读取完成/);
-  const generate = flatten(container).find(node => node.textContent === '整理基础资料'); assert.equal(generate.disabled, true); generate.click();
+  const generate = flatten(container).find(node => node.textContent === '整理待建档人物'); assert.equal(generate.disabled, true); generate.click();
   assert.equal(h.calls.filter(call => call[0] === 'put').length, 0, '浏览器中的 disabled 按钮不会触发动作');
   flatten(container).find(node => node.textContent === '更多人物（2）').click();
   assert.match(visible(container), /人物资料读取完成/, '切换人物选择视图后保留最近一次真实反馈');
@@ -134,22 +149,22 @@ test('千人页横向切换只显示一份常显资料，草稿跨人物保留�
   assert.deepEqual(tabs.map(node => node.attributes.title), ['甲', '乙'], '截断显示仍保留完整姓名提示');
   assert.equal(tabs[0].attributes['aria-selected'], 'true'); assert.match(visible(container), /甲.*别名 · 甲别名/);
   const summary = flatten(container).find(node => node.className === 'qqj-profile-summary');
-  assert.deepEqual(summary.children.map(node => node.className), ['qqj-profile-mark', 'qqj-profile-identity', 'qqj-profile-badges']);
+  assert.deepEqual(summary.children.map(node => node.className), ['qqj-profile-mark has-alias', 'qqj-profile-identity', 'qqj-profile-badges']);
   assert.match(summary.children[0].innerHTML, /<svg[\s\S]*?<path/, '档案标记应复用千千结自己的结形图标');
   assert.match(visible(summary.children[1]), /甲.*别名 · 甲别名/); assert.match(visible(summary.children[2]), /推荐.*待建档/);
-  assert.deepEqual(flatten(container).filter(node => node.className?.includes?.('qqj-profile-section')).map(node => node.children[0].textContent), ['身份背景', '外貌', '基础性格', '补充说明']);
-  assert.deepEqual(flatten(container).find(node => node.className === 'qqj-profile-menu-pop').children.map(node => node.textContent), ['整理基础资料（2）', '编辑资料', '', '移出关注']);
+  assert.deepEqual(flatten(container).filter(node => node.className?.includes?.('qqj-profile-section')).map(node => node.children[0].textContent), [], '空资料板块不显示');
+  assert.deepEqual(flatten(container).find(node => node.className === 'qqj-profile-menu-pop').children.map(node => node.textContent), ['整理当前资料', '编辑资料', '上传头像', '', '移出关注']);
   const profileMenu = flatten(container).find(node => node.className === 'qqj-profile-menu');
   profileMenu.open = true; menuDocument.click({ target: profileMenu.children[0], composedPath: () => [profileMenu.children[0], profileMenu] }); assert.equal(profileMenu.open, true, '千人菜单内部点击不提前关闭');
   menuDocument.click({ target: container, composedPath: () => [container] }); assert.equal(profileMenu.open, false, '千人菜单点击外部后关闭');
   flatten(container).find(node => node.textContent === '编辑资料').click();
   assert.deepEqual(flatten(container).find(node => node.className === 'qqj-profile-save-row').children.slice(0, 3).map(node => node.textContent), ['保存资料', '取消', '移出关注']);
-  assert.equal(flatten(container).find(node => node.tag === 'input').value, '甲');
-  const notes = flatten(container).filter(node => node.tag === 'textarea').at(-1); notes.value = '甲的未保存草稿'; notes.fire('input');
-  tabs[1].click(); assert.match(visible(container), /乙.*别名 · 乙别名/); assert.equal(flatten(container).some(node => node.tag === 'input'), false);
-  flatten(container).find(node => node.textContent === '编辑资料').click(); const bNotes = flatten(container).filter(node => node.tag === 'textarea').at(-1); bNotes.value = '取消的草稿'; bNotes.fire('input');
+  assert.equal(fieldControl(container, '姓名').value, '甲');
+  const notes = fieldControl(container, '补充资料'); notes.value = '甲的未保存草稿'; notes.fire('input');
+  tabs[1].click(); assert.match(visible(container), /乙.*别名 · 乙别名/); assert.equal(flatten(container).some(node => node.className === 'settings-input'), false);
+  flatten(container).find(node => node.textContent === '编辑资料').click(); const bNotes = fieldControl(container, '补充资料'); bNotes.value = '取消的草稿'; bNotes.fire('input');
   flatten(container).find(node => node.textContent === '取消').click(); assert.doesNotMatch(visible(container), /取消的草稿/); assert.match(visible(container), /编辑资料/);
-  flatten(container).find(node => node.textContent === '甲').click(); assert.equal(flatten(container).filter(node => node.tag === 'textarea').at(-1).value, '甲的未保存草稿');
+  flatten(container).find(node => node.textContent === '甲').click(); assert.equal(fieldControl(container, '补充资料').value, '甲的未保存草稿');
   flatten(container).find(node => node.textContent === '移出关注').click(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(h.calls.select.at(-1), [B]); assert.match(visible(container), /乙.*别名 · 乙别名/);
   view.deactivate(); assert.equal(menuDocument.clickListenerCount(), 0, '页面停用时清理外部点击监听');
@@ -169,11 +184,11 @@ test('投影姓名别名只填表单不算建档，首次保存与主动清空�
   const h = runtimeHarness(), container = new Node('main'); const view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
   assert.equal(h.state.profilesByEntityId[A], undefined);
   flatten(container).find(node => node.textContent === '编辑资料').click();
-  let controls = flatten(container).filter(node => ['input', 'textarea'].includes(node.tag));
-  assert.equal(controls[0].value, '甲'); assert.equal(controls[1].value, '甲别名');
+  const controls = flatten(container).filter(node => node.className === 'settings-input');
+  assert.equal(fieldControl(container, '姓名').value, '甲'); assert.equal(fieldControl(container, '别名').value, '甲别名');
   controls.forEach(control => { control.value = ''; control.fire('input'); });
   flatten(container).find(node => node.textContent === '保存资料').click(); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(h.calls.save.length, 1); assert.deepEqual(h.calls.save[0][1], { name: '', aliases: '', background: '', appearance: '', personality: '', notes: '' });
+  assert.equal(h.calls.save.length, 1); assert.equal(Object.values(h.calls.save[0][1]).every(value => value === ''), true); assert.deepEqual(h.calls.save[0][2].manualFields.sort(), ['aliases', 'name']);
   assert.match(visible(container), /已建档/);
 });
 
@@ -185,25 +200,56 @@ test('已有资料无改动在 view 层零保存，失败则保留用户草稿�
   assert.equal(h.calls.save.length, 0); assert.match(visible(container), /未修改内容/); assert.match(visible(container), /编辑资料/); assert.equal(flatten(container).some(node => node.tag === 'textarea'), false);
   const failing = runtimeHarness({ profile, failSave: true }), failedContainer = new Node('main'); createPeopleProfilesView({ runtime: failing.runtime, documentRef }).mount(failedContainer);
   flatten(failedContainer).find(node => node.textContent === '编辑资料').click();
-  const notes = flatten(failedContainer).filter(node => node.tag === 'textarea').at(-1); notes.value = '失败也要保留'; notes.fire('input');
+  const notes = fieldControl(failedContainer, '补充资料'); notes.value = '失败也要保留'; notes.fire('input');
   flatten(failedContainer).find(node => node.textContent === '保存资料').click(); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(flatten(failedContainer).filter(node => node.tag === 'textarea').at(-1).value, '失败也要保留'); assert.match(visible(failedContainer), /保存失败：CAS失败/);
+  assert.equal(fieldControl(failedContainer, '补充资料').value, '失败也要保留'); assert.match(visible(failedContainer), /保存失败：CAS失败/);
+});
+
+test('基础资料四项按紧凑行分组且空字段隐藏；头像弹窗裁剪独立保存并保留文字草稿', async () => {
+  const profile = { entityId: A, name: '无别名人物', aliases: '', gender: '女', age: '28', birthday: '3月8日', species: '人类', background: '旧背景', appearance: '', personality: '', notes: '旧补充', source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
+  const h = runtimeHarness({ profile }), canvasDraws = [];
+  const avatarDocument = {
+    activeElement: null,
+    createElement(tag) {
+      if (tag !== 'canvas') return new Node(tag);
+      return { width: 0, height: 0, getContext: () => ({ clearRect() {}, drawImage(...args) { canvasDraws.push(args); } }), toDataURL: () => 'data:image/webp;base64,AAAA' };
+    },
+  };
+  let revoked = 0, sequence = 0;
+  const urlApi = { createObjectURL: () => `blob:${++sequence}`, revokeObjectURL: () => { revoked += 1; } };
+  const imageFactory = () => ({ naturalWidth: 800, naturalHeight: 600, onload: null, onerror: null, _src: '', set src(value) { this._src = value; if (value) queueMicrotask(() => this.onload?.()); }, get src() { return this._src; } });
+  const dialogs = dialogHarness();
+  const container = new Node('main'), view = createPeopleProfilesView({ runtime: h.runtime, dialog: dialogs.dialog, documentRef: avatarDocument, imageFactory, urlApi }); view.mount(container);
+  assert.equal(flatten(container).find(node => String(node.className).startsWith('qqj-profile-mark')).className, 'qqj-profile-mark', '无别名头像保持方框标记');
+  assert.equal(flatten(container).some(node => node.className === 'qqj-profile-alias'), false, '无别名不保留空行');
+  assert.deepEqual(flatten(container).filter(node => String(node.className).includes('qqj-profile-section')).map(node => node.children[0].textContent), ['基础信息', '身份']);
+  const basic = flatten(container).find(node => node.className.includes('qqj-profile-section-basic'));
+  assert.deepEqual(basic.children.slice(1).map(node => node.className), ['qqj-profile-read-row qqj-profile-read-gender', 'qqj-profile-read-row qqj-profile-read-age', 'qqj-profile-read-row qqj-profile-read-birthday', 'qqj-profile-read-row qqj-profile-read-species', 'qqj-profile-read-row qqj-profile-read-notes']);
+  assert.doesNotMatch(visible(container), /NSFW/);
+  flatten(container).find(node => node.textContent === '编辑资料').click(); const notes = fieldControl(container, '补充资料'); notes.value = '尚未保存的文字'; notes.fire('input');
+  let file = flatten(container).find(node => node.className === 'qqj-avatar-file'); file.fire('change', { target: { files: [{ type: 'image/png', size: 1024 }], value: 'chosen' } }); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(dialogs.active.title, '裁剪头像'); assert.ok(flatten(dialogs.active.content).find(node => node.className === 'qqj-avatar-crop-frame')); assert.equal(fieldControl(container, '补充资料').value, '尚未保存的文字');
+  dialogs.dialog.cancelTop(); assert.equal(revoked, 1); assert.equal(h.calls.avatar.length, 0);
+  file = flatten(container).find(node => node.className === 'qqj-avatar-file'); file.fire('change', { target: { files: [{ type: 'image/webp', size: 2048 }], value: 'chosen' } }); await new Promise(resolve => setImmediate(resolve));
+  await dialogs.submit(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(h.calls.avatar[0], [A, 'data:image/webp;base64,AAAA']); assert.equal(canvasDraws.length, 1); assert.equal(fieldControl(container, '补充资料').value, '尚未保存的文字'); assert.equal(revoked, 2);
+  view.deactivate();
 });
 
 test('整理动作只在存在未建档重要人物时可用且每次点击只调用一次 runtime', async () => {
   const h = runtimeHarness(), container = new Node('main'); createPeopleProfilesView({ runtime: h.runtime, documentRef }).mount(container);
-  const button = flatten(container).find(node => node.textContent === '整理基础资料（1）'); assert.equal(button.disabled, false);
+  const button = flatten(container).find(node => node.textContent === '整理待建档人物（1）'); assert.equal(button.disabled, false);
   button.click(); await new Promise(resolve => setImmediate(resolve)); assert.equal(h.calls.generate, 1);
   const profile = { entityId: A, name: '甲', aliases: '', background: '', appearance: '', personality: '', notes: '', source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
   const complete = runtimeHarness({ profile }), completeContainer = new Node('main'); createPeopleProfilesView({ runtime: complete.runtime, documentRef }).mount(completeContainer);
-  assert.equal(flatten(completeContainer).find(node => node.textContent === '整理基础资料')?.disabled, true);
+  assert.equal(flatten(completeContainer).find(node => node.textContent === '整理待建档人物')?.disabled, true);
 });
 
 test('整理完成会刷新未触碰表单，用户整理期间已输入的草稿则保持原样', async () => {
   const generated = { entityId: A, name: '模型甲', aliases: '新别名', background: '生成背景', appearance: '', personality: '', notes: '', source: 'generated', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
   const untouched = runtimeHarness({ generatedProfile: generated }), untouchedContainer = new Node('main');
   createPeopleProfilesView({ runtime: untouched.runtime, documentRef }).mount(untouchedContainer);
-  flatten(untouchedContainer).find(node => node.textContent === '整理基础资料（1）').click();
+  flatten(untouchedContainer).find(node => node.textContent === '整理待建档人物（1）').click();
   await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
   assert.match(visible(untouchedContainer), /模型甲.*生成背景/);
 
@@ -211,17 +257,17 @@ test('整理完成会刷新未触碰表单，用户整理期间已输入的草�
   const editing = runtimeHarness({ generatedProfile: generated, generateGate: gate }), editingContainer = new Node('main');
   createPeopleProfilesView({ runtime: editing.runtime, documentRef }).mount(editingContainer);
   flatten(editingContainer).find(node => node.textContent === '编辑资料').click();
-  flatten(editingContainer).find(node => node.textContent === '整理基础资料（1）').click();
-  const name = flatten(editingContainer).find(node => node.tag === 'input'); name.value = '我正在填写'; name.fire('input');
+  flatten(editingContainer).find(node => node.textContent === '整理待建档人物（1）').click();
+  const name = fieldControl(editingContainer, '姓名'); name.value = '我正在填写'; name.fire('input');
   release(); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(flatten(editingContainer).find(node => node.tag === 'input').value, '我正在填写');
+  assert.equal(fieldControl(editingContainer, '姓名').value, '我正在填写');
 });
 
 test('真实 runtime 与 view 完成修改保存、新建档、no-op 与失败就地反馈', async () => {
   const h = trueRuntimeHarness(); await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([A, B]);
   const container = new Node('main'), view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
   flatten(container).find(node => node.textContent === '编辑资料').click();
-  let notes = flatten(container).filter(node => node.tag === 'textarea').at(-1); notes.value = '人工说明'; notes.fire('input');
+  let notes = fieldControl(container, '补充资料'); notes.value = '人工说明'; notes.fire('input');
   flatten(container).find(node => node.textContent === '保存资料').click();
   assert.match(visible(container), /保存中…/);
   await waitFor(() => visible(container).includes('已保存'), '真实修改保存未完成');
@@ -237,31 +283,31 @@ test('真实 runtime 与 view 完成修改保存、新建档、no-op 与失败�
   flatten(container).find(node => node.textContent === '编辑资料').click();
   flatten(container).find(node => node.textContent === '保存资料').click(); await waitFor(() => visible(container).includes('已保存'), '投影资料首次保存未建档');
   stored = h.records.get(`chat-${CHAT}/${PEOPLE_WORKSPACE_RECORD_ID}`); assert.equal(stored.data.profilesByEntityId[B].name, '乙'); assert.equal(stored.data.profilesByEntityId[B].source, 'manual');
-  h.failNextPut(); flatten(container).find(node => node.textContent === '编辑资料').click(); notes = flatten(container).filter(node => node.tag === 'textarea').at(-1); notes.value = '失败草稿'; notes.fire('input');
+  h.failNextPut(); flatten(container).find(node => node.textContent === '编辑资料').click(); notes = fieldControl(container, '补充资料'); notes.value = '失败草稿'; notes.fire('input');
   flatten(container).find(node => node.textContent === '保存资料').click(); await waitFor(() => visible(container).includes('保存失败：模拟保存失败'));
-  assert.equal(flatten(container).filter(node => node.tag === 'textarea').at(-1).value, '失败草稿'); assert.ok(flatten(container).find(node => node.textContent === '保存资料'));
+  assert.equal(fieldControl(container, '补充资料').value, '失败草稿'); assert.ok(flatten(container).find(node => node.textContent === '保存资料'));
 });
 
 test('真实保存跨人物及停用重开保持归属，切聊天后的迟到结果不清新草稿', async () => {
   const h = trueRuntimeHarness(); await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([A, B]);
   const container = new Node('main'), view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
   flatten(container).find(node => node.textContent === '编辑资料').click();
-  let release = h.blockNextPut(), notes = flatten(container).filter(node => node.tag === 'textarea').at(-1); notes.value = '甲等待保存'; notes.fire('input');
+  let release = h.blockNextPut(), notes = fieldControl(container, '补充资料'); notes.value = '甲等待保存'; notes.fire('input');
   flatten(container).find(node => node.textContent === '保存资料').click(); flatten(container).find(node => node.textContent === '乙').click();
   assert.equal(flatten(container).find(node => node.textContent === '编辑资料').disabled, true, '另一人物在真实保存未完成时显示忙状态'); view.deactivate(); release();
   await waitFor(() => h.records.get(`chat-${CHAT}/${PEOPLE_WORKSPACE_RECORD_ID}`)?.data.profilesByEntityId[A]?.notes === '甲等待保存');
   view.mount(container); await view.activate(); flatten(container).find(node => node.textContent === '编辑资料').click();
-  notes = flatten(container).filter(node => node.tag === 'textarea').at(-1); notes.value = '乙未保存'; notes.fire('input');
+  notes = fieldControl(container, '补充资料'); notes.value = '乙未保存'; notes.fire('input');
   flatten(container).find(node => node.textContent === '甲').click(); assert.match(visible(container), /已保存/);
-  flatten(container).find(node => node.textContent === '乙').click(); assert.equal(flatten(container).filter(node => node.tag === 'textarea').at(-1).value, '乙未保存');
+  flatten(container).find(node => node.textContent === '乙').click(); assert.equal(fieldControl(container, '补充资料').value, '乙未保存');
   flatten(container).find(node => node.textContent === '甲').click();
 
-  release = h.blockNextPut(); flatten(container).find(node => node.textContent === '编辑资料').click(); notes = flatten(container).filter(node => node.tag === 'textarea').at(-1); notes.value = '旧聊天迟到'; notes.fire('input');
+  release = h.blockNextPut(); flatten(container).find(node => node.textContent === '编辑资料').click(); notes = fieldControl(container, '补充资料'); notes.value = '旧聊天迟到'; notes.fire('input');
   const oldPutCount = h.calls.filter(call => call[0] === 'put').length; flatten(container).find(node => node.textContent === '保存资料').click();
   await waitFor(() => h.calls.filter(call => call[0] === 'put').length > oldPutCount, '旧聊天保存未进入受控 PUT');
   h.switchChat(CHAT_B); await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([A]); view.render(h.runtime.getState()); flatten(container).find(node => node.textContent === '编辑资料').click();
-  notes = flatten(container).filter(node => node.tag === 'textarea').at(-1); notes.value = '新聊天草稿'; notes.fire('input'); release();
+  notes = fieldControl(container, '补充资料'); notes.value = '新聊天草稿'; notes.fire('input'); release();
   await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(flatten(container).filter(node => node.tag === 'textarea').at(-1).value, '新聊天草稿');
+  assert.equal(fieldControl(container, '补充资料').value, '新聊天草稿');
   assert.equal(h.records.get(`chat-${CHAT_B}/${PEOPLE_WORKSPACE_RECORD_ID}`).data.profilesByEntityId[A], undefined, '迟到旧保存不得写新聊天');
 });

@@ -1,5 +1,5 @@
 import { filterReachableDeltas } from './cse-engine.js';
-import { scanAssistantCandidates, selectAssistantMessage } from './foundation-domain.js';
+import { isHostNarratorMessage, scanAssistantCandidates, selectAssistantMessage } from './foundation-domain.js';
 
 export const RECENT_VISIBLE_AI_FLOORS = 3;
 const HOST_GUARD = Symbol('qqjCoverageHostGuard');
@@ -7,6 +7,7 @@ const HOST_GUARD = Symbol('qqjCoverageHostGuard');
 const currentChatId = snapshot => String(snapshot?.context?.chatMetadata?.qianqianjie?.chatId ?? '').trim();
 const visibleAssistant = message => message
   && message.is_user === false
+  && !isHostNarratorMessage(message)
   && message.is_system !== true
   && typeof message.mes === 'string'
   && Boolean(message.mes.trim());
