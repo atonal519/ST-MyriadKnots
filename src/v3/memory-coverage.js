@@ -136,6 +136,7 @@ export function assessMemoryCoverage({ reachable, snapshot, hostCandidates, real
   const branchRebuild = reachable.run?.mode === 'branchReplay';
   const status = (completed > 0 || realtimeOrigin === true) && realtimeProtected && !hasPartialWork && !branchRebuild ? 'realtimeTail' : 'historicalDebt';
   const summaryRealtimeProtected = summaryPending.length > 0 && (realtimeOrigin === true
+    || summaryCompleted > 0
     || summaryPending.every(floor => recent.has(floor.hostLocator.messageIndex) && visibleAssistant(snapshot.chat[floor.hostLocator.messageIndex])));
   const summaryHasPartialWork = summaryPending.some(floor => memoryByFloor.has(floor.id));
   const summaryStatus = !summaryPending.length

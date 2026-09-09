@@ -11,14 +11,18 @@ import { validateCseGraph } from './cse-schema.js';
 import { assessMemoryCoverageFromHost, diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 import { isHostNarratorMessage, selectAssistantMessage, selectUserStabilityAnchor } from './foundation-domain.js';
 import { parseSharedStoryClock, storyClockSignature } from '../story-clock.js';
-import { entitiesThroughFloorIds } from './entity-identity.js';
+import { buildEntityIdentityDirectory, entitiesThroughFloorIds } from './entity-identity.js';
 
 const EVENTS = Object.freeze(['CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
 const HISTORY_MUTATION_EVENTS = new Set(['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
 const MANUAL_HISTORY_REASON = 'manualHistoricalRebuild';
 const PREPARED_WRITE_CONCURRENCY = 4;
+const MEMORY_REBASE_ATTEMPTS = 2;
+const STALE_MEMORY_CODES = new Set(['V3_MEMORY_STALE', 'V3_MEMORY_CANCELLED', 'V3_MEMORY_PREFIX_CHANGED']);
 const emptyManifest = () => ({ floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] });
 const nowIso = now => { const value = now()?.toISOString?.() ?? String(now()); if (!Number.isFinite(Date.parse(value))) throw new TypeError('V3_MEMORY_TIME_INVALID'); return value; };
+const monotonicNow = () => Number(globalThis.performance?.now?.() ?? Date.now());
+const elapsedMs = started => Math.max(0, Math.round((monotonicNow() - started) * 1000) / 1000);
 const hash = async value => `sha256:${await sha256(JSON.stringify(value))}`;
 const clone = value => structuredClone(value);
 const counts = memory => Object.fromEntries(['chronology', 'locations', 'participants', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'exactAnchors', 'openLoops', 'ambiguities', 'cseSignals'].map(field => [field, memory?.[field]?.length ?? 0]));
@@ -66,6 +70,8 @@ function clockEvidence(selected) {
 
 const SESSION_CANDIDATE_MAX_ENTRIES = 8;
 const SESSION_CANDIDATE_MAX_CHARACTERS = 96000;
+const RECOVERY_PARENT_LIMIT = 12;
+const MEMORY_ARRAY_FIELDS = Object.freeze(['chronology', 'locations', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'openLoops', 'ambiguities', 'cseSignals']);
 const normalizeAutoBatchSize = () => 1;
 
 export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onFullRebuildCommitted = null, extractorPromptGuidance = () => '', csePromptGuidance = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
@@ -80,17 +86,29 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   let bound = false;
   let awaitingFoundation = false;
   let foundationReload = null;
+  let refreshInFlight = null;
+  let detachedDrafts = Object.freeze([]);
+  let recoveryAttemptKey = null;
+  let recoveryHoldFloorId = null;
   let memorySnapshotStatus = 'unavailable';
   let unsubscribeFoundation = null;
   let workRun = null;
   let autoScheduled = null;
   let autoEpoch = 0;
   let autoTriggerReason = null;
+  let autoTriggerAuthorization = null;
   let lastAutoRun = null;
   let historicalAuthorization = null;
   let formalGenerationActive = false;
   let generationArm = null;
+  let generationLifecycle = null;
+  let stoppedGenerationFinal = null;
+  let generationSequence = 0;
+  let observedHostChatLength = 0;
+  let establishedMemoryChatId = null;
+  const grantedEventKeys = new Set();
   let tailSwipeContext = null;
+  let suffixGenerationContext = null;
   let emptyRealtimeOrigin = null;
   let coverage = unknownCoverage(0);
   let lastAutomaticInputKey = null;
@@ -116,15 +134,46 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   };
   const notify = () => { const snapshot = getState(); for (const listener of subscribers) { try { listener(snapshot); } catch { /* UI listener isolation */ } } return snapshot; };
   const currentInputKey = () => reachable?.root ? `${reachable.root.chatId}:${reachable.root.narrativeGeneration}:${reachable.root.sourceSnapshotFingerprint}` : null;
+  const hasEstablishedMemory = () => Boolean(reachable?.floorMemories?.some(memory => memory?.recordStatus === 'active'));
+  const hasEstablishedChat = () => Boolean(currentHostChatId() && establishedMemoryChatId === currentHostChatId());
+  const hasExplicitInitializationIntent = () => hasEstablishedMemory() || hasEstablishedChat()
+    || workRun?.kind === 'manual'
+    || historicalAuthorization !== null;
   const notifyOnce = (key, value) => {
     if (!key || key === lastNoticeKey) return false;
     lastNoticeKey = key;
     try { notifyUser?.(value); } catch { /* notification must not affect memory work */ }
     return true;
   };
+  const floorMessageIndex = floor => Number.isSafeInteger(floor?.hostLocator?.messageIndex) ? floor.hostLocator.messageIndex : null;
+  const floorCopy = floor => floorMessageIndex(floor) === null ? '楼号未提供' : `第 ${floorMessageIndex(floor)} 楼`;
+  const summaryDebtCopy = ({ floor, count, retry }) => `从${floorCopy(floor)}起还有 ${Math.max(0, count)} 楼摘要未完成；${retry}`;
+  const missingSummaryCount = floorSet => {
+    const memoryMap = currentMemoryMap(reachable);
+    return (reachable?.floors ?? []).filter(floor => (!floorSet || floorSet.has(floor.id))
+      && memoryMap.get(floor.id)?.recordStatus !== 'active').length;
+  };
+  const hasAutomaticCatchupWork = (state = getState()) => {
+    const config = automation();
+    const pendingSummaries = Math.max(0, state.stableCount - state.summaryCompletedCount);
+    return config.enabled && ((state.summaryCoverageStatus === 'realtimeTail' && pendingSummaries >= config.batchSize)
+      || state.cseFloors.some(floor => floor.status === 'pending'));
+  };
+  const notifyConfirmedSummaryBlock = (state = getState()) => {
+    const config = automation();
+    const unfinished = missingSummaryCount();
+    if (!config.enabled || state.summaryCoverageStatus !== 'historicalDebt' || unfinished === 0
+      || state.cseFloors.some(floor => floor.status === 'pending')) return false;
+    const firstPending = reachable?.floors?.[state.summaryCompletedCount] ?? null;
+    return notifyOnce(`authorization:${currentInputKey()}:${firstPending?.id ?? 'unknown'}:${unfinished}`, {
+      kind: 'warning',
+      text: `千千结发现需要用户确认的历史摘要缺口：${summaryDebtCopy({ floor: firstPending, count: unfinished, retry: '这是历史缺口，不会自动补，请在记忆管理中点击继续。' })}`,
+    });
+  };
   const cancelAutomation = () => {
     autoEpoch += 1;
     autoTriggerReason = null;
+    autoTriggerAuthorization = null;
     historicalAuthorization = null;
     if (workRun?.kind === 'auto') {
       active?.controller.abort();
@@ -132,11 +181,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
   };
   const cancelEarlyStabilization = reason => { try { foundationRuntime.cancelEarlyStabilization?.(reason); } catch { /* foundation cancellation is best-effort */ } };
-  const invalidate = () => { cancelEarlyStabilization('memoryInvalidated'); cancelAutomation(); epoch += 1; active?.controller.abort(); active = null; workRun = null; reachable = null; memorySnapshotStatus = 'unavailable'; timeFallbackByFloor = new Map(); coverage = unknownCoverage(0); emptyRealtimeOrigin = null; formalGenerationActive = false; generationArm = null; tailSwipeContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; sessionCandidates.clear(); cseRuntime.invalidate(); notify(); };
+  const invalidate = () => { cancelEarlyStabilization('memoryInvalidated'); cancelAutomation(); epoch += 1; active?.controller.abort(); active = null; workRun = null; reachable = null; memorySnapshotStatus = 'unavailable'; timeFallbackByFloor = new Map(); coverage = unknownCoverage(0); emptyRealtimeOrigin = null; formalGenerationActive = false; generationArm = null; generationLifecycle = null; stoppedGenerationFinal = null; observedHostChatLength = 0; establishedMemoryChatId = null; grantedEventKeys.clear(); tailSwipeContext = null; suffixGenerationContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; detachedDrafts = Object.freeze([]); recoveryAttemptKey = null; recoveryHoldFloorId = null; sessionCandidates.clear(); cseRuntime.invalidate(); notify(); };
   cseRuntime.subscribe(() => notify());
   function runManualWork(reason, task) {
     if (workRun) return Promise.resolve(getState());
-    const operation = { kind: 'manual', reason, phase: reason, floorIds: [], promise: null };
+    const operation = { kind: 'manual', reason, phase: reason, floorIds: [], promise: null, startedAt: nowIso(now), startedMonotonic: monotonicNow() };
     workRun = operation;
     notify();
     operation.promise = Promise.resolve().then(() => task(operation)).finally(() => {
@@ -176,7 +225,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const foundation = foundationRuntime.getState();
     const memoryMap = currentMemoryMap(reachable);
     const provenance = floorProvenance(reachable);
-    const floors = (reachable?.floors ?? []).map(floor => floorState(floor, memoryMap, provenance));
+    const recoveryDraftByFloor = new Map(detachedDrafts.filter(item => item.stableFloorId).map(item => [item.stableFloorId, item]));
+    const floors = (reachable?.floors ?? []).map(floor => recoveryDraftByFloor.get(floor.id) ?? floorState(floor, memoryMap, provenance));
     const stableCount = floors.length;
     const rememberedCount = floors.filter(item => ['ready', 'needsReview'].includes(item.status)).length;
     const cse = cseRuntime.getState();
@@ -190,15 +240,291 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
     const rebuildNextAssistantSeq = combinedFloors[rebuildCompletedCount]?.assistantSeq ?? null;
     const summaryCompletedCount = Math.min(coverage.summaryCompleted ?? rememberedCount, combinedFloors.length);
-    const rebuildHasActionableWork = coverage.status !== 'unknown' && coverage.completed < coverage.total;
+    const rebuildHasActionableWork = (coverage.status !== 'unknown' && coverage.completed < coverage.total)
+      || foundation.canInitialize === true;
     const auto = automation();
     const rebuildStatus = workRun?.kind === 'auto' && workRun.mode === 'historical' ? 'rebuilding'
-        : lastAutoRun?.status === 'failed' && coverage.status !== 'caughtUp' ? 'failed'
+        : foundation.canInitialize === true ? 'pendingRebuild'
+          : lastAutoRun?.status === 'failed' && coverage.status !== 'caughtUp' ? 'failed'
           : lastAutoRun?.status === 'paused' && coverage.status !== 'caughtUp' ? 'paused'
-          : coverage.status === 'caughtUp' ? 'caughtUp'
-            : coverage.status === 'realtimeTail' ? 'waitingRealtime'
+            : coverage.status === 'caughtUp' ? 'caughtUp'
+              : coverage.status === 'realtimeTail' ? 'waitingRealtime'
               : coverage.status === 'historicalDebt' ? 'pendingRebuild' : 'notReady';
-    return Object.freeze({ ...foundation, ...cse, status: workRun || active || cse.activeCse ? 'running' : foundation.status, memorySnapshotStatus, stableCount, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: floors.filter(item => ['unprocessed', 'error', 'failed'].includes(item.status)).length, reviewCount: floors.filter(item => item.status === 'needsReview').length, failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, floors: Object.freeze(combinedFloors), memoryEntities, memoryWorkBusy: workRun !== null, activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workRun.phase, floorIds: Object.freeze([...workRun.floorIds]) }) : null, activeExtraction: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, lastExtractorError: lastFailure, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: combinedFloors.length, rebuildNextAssistantSeq, rebuildHasActionableWork, activeAutoMemory: workRun?.kind === 'auto' ? Object.freeze({ reason: workRun.reason, phase: workRun.phase, mode: workRun.mode ?? 'realtime', floorIds: Object.freeze([...workRun.floorIds]) }) : null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
+    return Object.freeze({ ...foundation, ...cse, status: workRun || active || cse.activeCse ? 'running' : foundation.status, memorySnapshotStatus, stableCount, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: floors.filter(item => ['unprocessed', 'error', 'failed'].includes(item.status)).length, reviewCount: floors.filter(item => item.status === 'needsReview').length, failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, floors: Object.freeze(combinedFloors), memoryDrafts: Object.freeze(detachedDrafts.filter(item => !item.stableFloorId)), memoryEntities, memoryWorkBusy: workRun !== null, activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workRun.phase, floorIds: Object.freeze([...workRun.floorIds]) }) : null, activeExtraction: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, lastExtractorError: lastFailure, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: combinedFloors.length, rebuildNextAssistantSeq, rebuildHasActionableWork, activeAutoMemory: workRun?.kind === 'auto' ? Object.freeze({ reason: workRun.reason, phase: workRun.phase, mode: workRun.mode ?? 'realtime', floorIds: Object.freeze([...workRun.floorIds]) }) : null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
+  }
+
+  async function readRecoveryCheckpoint(checkpointId) {
+    const checkpointResult = await store.readRecord('checkpoint', checkpointId);
+    if (checkpointResult.status !== 'ready') return null;
+    const checkpoint = checkpointResult.data;
+    const readAll = async (type, ids) => {
+      const values = await Promise.all(ids.map(id => store.readRecord(type, id)));
+      return values.every(value => value.status === 'ready') ? values.map(value => value.data) : null;
+    };
+    const [runResult, floors, floorMemories, entities, stateDeltas] = await Promise.all([
+      store.readRecord('run', checkpoint.runId),
+      readAll('floor', checkpoint.producedRefs.floors),
+      readAll('floorMemory', checkpoint.producedRefs.floorMemories),
+      readAll('entity', checkpoint.producedRefs.entities),
+      readAll('stateDelta', checkpoint.producedRefs.stateDeltas),
+    ]);
+    if (runResult.status !== 'ready' || !floors || !floorMemories || !entities || !stateDeltas) return null;
+    return Object.freeze({ checkpoint, run: runResult.data, floors, floorMemories, entities, stateDeltas });
+  }
+
+  const sameSemanticFloor = (left, right) => Boolean(left && right
+    && left.assistantSeq === right.assistantSeq
+    && left.hostLocator?.messageIndex === right.hostLocator?.messageIndex
+    && left.hostLocator?.swipeId === right.hostLocator?.swipeId
+    && left.hostLocator?.selectedSwipeIndex === right.hostLocator?.selectedSwipeIndex
+    && left.content?.rawFingerprint === right.content?.rawFingerprint
+    && left.content?.canonicalFingerprint === right.content?.canonicalFingerprint
+    && left.content?.sanitizerFingerprint === right.content?.sanitizerFingerprint);
+
+  const semanticIdentityDirectorySignature = entities => JSON.stringify(buildEntityIdentityDirectory({ entities }).map(entry => ({
+    entityType: entry.entityType,
+    specialRole: entry.specialRole,
+    displayName: normalizedName(entry.displayName),
+    labels: [...new Set(entry.labels.map(normalizedName).filter(Boolean))].sort(),
+  })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))));
+
+  async function extractorSemanticInputFingerprint(value, floor) {
+    const targetIndex = value?.floors?.findIndex(item => item.id === floor?.id) ?? -1;
+    if (targetIndex < 0) return null;
+    const floorIds = new Set(value.floors.slice(0, targetIndex + 1).map(item => item.id));
+    const entities = entitiesThroughFloorIds(value.entities ?? [], floorIds);
+    let previousStoryClock = null;
+    for (let index = targetIndex - 1; index >= 0 && !previousStoryClock; index -= 1) {
+      previousStoryClock = clockEvidence(currentRawSelection(hostAdapter, value.floors[index])).clock;
+    }
+    const envelope = await createExtractorEnvelope({
+      batchId: '00000000-0000-4000-8000-000000000000',
+      chatId: value.root?.chatId ?? value.checkpoint?.chatId,
+      narrativeGeneration: floor.narrativeGeneration,
+      checkpointId: null,
+      floor,
+      entities,
+      userIdentity: currentUserIdentity(),
+      identityHints: [],
+      storyClock: clockEvidence(currentRawSelection(hostAdapter, floor)).clock,
+      previousStoryClock,
+    });
+    return hash(envelope.request.payload);
+  }
+
+  function legacyUserIdentityMatches(entities, identity) {
+    const wanted = new Set([identity?.displayName, ...(identity?.aliases ?? [])].map(normalizedName).filter(Boolean));
+    if (!wanted.size) return false;
+    return entities.some(entity => entity?.entityType === 'person' && entity.specialRole === 'user' && entity.recordStatus === 'active'
+      && [entity.displayName, ...(entity.aliases ?? []).map(alias => alias?.name)].map(normalizedName).some(label => wanted.has(label)));
+  }
+
+  async function extractorInputCheckpoint(start, runId) {
+    let current = start;
+    for (let depth = 0; current && depth < RECOVERY_PARENT_LIMIT; depth += 1) {
+      if (current.run?.id === runId) return current.checkpoint.parentCheckpointId ? readRecoveryCheckpoint(current.checkpoint.parentCheckpointId) : null;
+      current = current.checkpoint.parentCheckpointId ? await readRecoveryCheckpoint(current.checkpoint.parentCheckpointId) : null;
+    }
+    return null;
+  }
+
+  async function recoveryCandidateFor(value, targetFloor = null, { requireRecoveryProof = true } = {}) {
+    if (!value?.checkpoint?.parentCheckpointId) return null;
+    let checkpointId = value.checkpoint.parentCheckpointId;
+    for (let depth = 0; checkpointId && depth < RECOVERY_PARENT_LIMIT; depth += 1) {
+      const prior = await readRecoveryCheckpoint(checkpointId);
+      if (!prior) return null;
+      let priorFloor = null;
+      if (targetFloor) priorFloor = prior.floors.find(floor => sameSemanticFloor(floor, targetFloor)) ?? null;
+      else {
+        const pending = foundationRuntime.getState()?.pending;
+        const selected = Number.isSafeInteger(pending?.messageIndex) ? selectAssistantMessage(hostAdapter.snapshot()?.chat?.[pending.messageIndex]) : null;
+        const rawFingerprint = selected ? `sha256:${await sha256(selected.rawContent)}` : null;
+        priorFloor = prior.floors.find(floor => floor.hostLocator?.messageIndex === pending?.messageIndex
+          && floor.content?.canonicalFingerprint === pending?.canonicalFingerprint
+          && floor.content?.rawFingerprint === rawFingerprint) ?? null;
+      }
+      const memory = priorFloor ? prior.floorMemories.find(item => item.floorId === priorFloor.id && item.recordStatus === 'active') : null;
+      if (priorFloor && memory?.extractorVersion === EXTRACTOR_VERSION) {
+        const prefix = value.floors.filter(floor => floor.assistantSeq < priorFloor.assistantSeq);
+        const priorPrefix = prior.floors.filter(floor => floor.assistantSeq < priorFloor.assistantSeq);
+        if (prefix.length === priorPrefix.length && prefix.every((floor, index) => sameSemanticFloor(floor, priorPrefix[index]))) {
+          const provenance = prior.run?.diagnostics?.floorProvenance?.[priorFloor.id] ?? null;
+          const currentClock = targetFloor ? currentClockSignature(targetFloor) : clockEvidence(selectAssistantMessage(hostAdapter.snapshot()?.chat?.[priorFloor.hostLocator.messageIndex])).signature;
+          if (!provenance || provenance.extractorVersion === EXTRACTOR_VERSION) {
+            if (typeof provenance?.storyClockSignature !== 'string' || provenance.storyClockSignature === currentClock) {
+              let recoveryMode = 'visibleDraft';
+              if (requireRecoveryProof) {
+                const promptSnapshot = String(typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : extractorPromptGuidance ?? '');
+                const promptFingerprint = `sha256:${await sha256(promptSnapshot)}`;
+                const identity = currentUserIdentity();
+                const identityFingerprint = `sha256:${await sha256(JSON.stringify(identity ?? null))}`;
+                if (!provenance?.runId) return null;
+                const oldInput = await extractorInputCheckpoint(prior, provenance.runId);
+                if (!oldInput) return null;
+                const currentEntityFloorIds = new Set(prefix.map(floor => floor.id));
+                const oldEntityFloorIds = new Set(priorPrefix.map(floor => floor.id));
+                const currentDirectory = semanticIdentityDirectorySignature(entitiesThroughFloorIds(value.entities, currentEntityFloorIds));
+                const oldDirectory = semanticIdentityDirectorySignature(entitiesThroughFloorIds(oldInput.entities, oldEntityFloorIds));
+                if (currentDirectory !== oldDirectory) return null;
+                if (provenance?.semanticInputFingerprint) {
+                  const priorSemanticFingerprint = await extractorSemanticInputFingerprint(oldInput, priorFloor);
+                  if (!priorSemanticFingerprint || provenance.semanticInputFingerprint !== priorSemanticFingerprint
+                    || provenance.promptGuidanceFingerprint !== promptFingerprint
+                    || provenance.userIdentityFingerprint !== identityFingerprint) return null;
+                  recoveryMode = 'semanticFingerprintV1';
+                } else {
+                  if (promptSnapshot !== '' || (provenance?.promptGuidanceFingerprint && provenance.promptGuidanceFingerprint !== promptFingerprint)
+                    || !provenance?.runId || !legacyUserIdentityMatches(prior.entities, identity)) return null;
+                  recoveryMode = 'legacyNoCustomPromptV1';
+                }
+              }
+              const delta = prior.stateDeltas.find(item => item.floorId === priorFloor.id && item.floorMemoryId === memory.id && item.recordStatus === 'active') ?? null;
+              return Object.freeze({ ...prior, priorFloor, memory, delta, provenance, recoveryMode });
+            }
+          }
+        }
+      }
+      checkpointId = prior.checkpoint.parentCheckpointId;
+    }
+    return null;
+  }
+
+  function referencedEntityIds(memory) {
+    const ids = new Set();
+    const visit = value => {
+      if (Array.isArray(value)) { value.forEach(visit); return; }
+      if (!value || typeof value !== 'object') return;
+      for (const [key, item] of Object.entries(value)) {
+        if ((key.endsWith('EntityId') || key === 'entityId') && typeof item === 'string') ids.add(item);
+        else if (key.endsWith('EntityIds') && Array.isArray(item)) item.forEach(id => { if (typeof id === 'string') ids.add(id); });
+        else visit(item);
+      }
+    };
+    visit(memory);
+    return ids;
+  }
+
+  async function rebindRecoveredMemory(candidate, current, floor) {
+    const oldFloorId = candidate.priorFloor.id;
+    const floorMap = new Map([[oldFloorId, floor.id]]);
+    const entityMap = new Map();
+    const currentEntities = new Map(current.entities.map(entity => [entity.id, entity]));
+    const priorEntities = new Map(candidate.entities.map(entity => [entity.id, entity]));
+    const newEntities = [];
+    for (const oldId of referencedEntityIds(candidate.memory)) {
+      if (currentEntities.has(oldId)) { entityMap.set(oldId, oldId); continue; }
+      const source = priorEntities.get(oldId);
+      if (!source || source.firstSeenFloorId !== oldFloorId) return null;
+      const newId = await deterministicUuid(['v3-recovered-entity', current.root.chatId, floor.id, oldId]);
+      entityMap.set(oldId, newId);
+      newEntities.push(source);
+    }
+    const mapEntity = id => id === null ? null : entityMap.get(id) ?? id;
+    const mapFloor = id => id === null ? null : floorMap.get(id) ?? id;
+    const nowValue = nowIso(now);
+    const anchorMap = new Map();
+    for (const [index, anchor] of candidate.memory.exactAnchors.entries()) anchorMap.set(anchor.anchorId, await deterministicUuid(['v3-recovered-anchor', floor.id, anchor.anchorId, index]));
+    const itemMap = new Map();
+    for (const field of MEMORY_ARRAY_FIELDS) for (const [index, item] of candidate.memory[field].entries()) itemMap.set(item.itemId, await deterministicUuid(['v3-recovered-item', floor.id, field, item.itemId, index]));
+    const remap = value => {
+      if (Array.isArray(value)) return value.map(remap);
+      if (!value || typeof value !== 'object') return value;
+      const output = {};
+      for (const [key, item] of Object.entries(value)) {
+        if (key === 'itemId') output[key] = itemMap.get(item) ?? item;
+        else if (key === 'anchorId' || key === 'exactAnchorId') output[key] = item === null ? null : anchorMap.get(item) ?? item;
+        else if (key === 'floorId' || key === 'relativeToFloorId') output[key] = mapFloor(item);
+        else if ((key.endsWith('EntityId') || key === 'entityId') && typeof item === 'string') output[key] = mapEntity(item);
+        else if (key.endsWith('EntityIds') && Array.isArray(item)) output[key] = item.map(mapEntity);
+        else output[key] = remap(item);
+      }
+      return output;
+    };
+    const reboundEntities = [];
+    for (const source of newEntities) {
+      const value = remap(source);
+      value.id = mapEntity(source.id);
+      value.narrativeGeneration = floor.narrativeGeneration;
+      value.firstSeenFloorId = mapFloor(source.firstSeenFloorId);
+      value.lastSeenFloorId = mapFloor(source.lastSeenFloorId);
+      value.createdAt = nowValue; value.updatedAt = nowValue; value.supersedes = source.id;
+      reboundEntities.push(validateEntityRecord(value, { expectedChatId: current.root.chatId }));
+    }
+    const memory = remap(candidate.memory);
+    memory.id = await deterministicUuid(['v3-recovered-floor-memory', current.root.chatId, floor.id, candidate.memory.id, EXTRACTOR_VERSION]);
+    memory.narrativeGeneration = floor.narrativeGeneration;
+    memory.floorId = floor.id;
+    memory.createdAt = nowValue; memory.updatedAt = nowValue; memory.supersedes = candidate.memory.id;
+    return Object.freeze({ memory: validateFloorMemory(memory, { expectedChatId: current.root.chatId }), newEntities: reboundEntities, entityMap, floorMap });
+  }
+
+  async function restoreTailIfPossible(value, expectedEpoch) {
+    const target = value?.floors?.at(-1) ?? null;
+    if (!target || value.floorMemories?.some(memory => memory.floorId === target.id && memory.recordStatus === 'active')) return value;
+    const attemptKey = `${value.root.headCheckpointId}:${target.id}`;
+    if (recoveryAttemptKey === attemptKey) return value;
+    recoveryAttemptKey = attemptKey;
+    const visibleCandidate = await recoveryCandidateFor(value, target, { requireRecoveryProof: false });
+    const candidate = visibleCandidate ? await recoveryCandidateFor(value, target) : null;
+    if (!candidate || expectedEpoch !== epoch) {
+      if (visibleCandidate && expectedEpoch === epoch) {
+        recoveryHoldFloorId = target.id;
+        detachedDrafts = buildRecoveryDraft(visibleCandidate, target);
+      }
+      return value;
+    }
+    const rebound = await rebindRecoveredMemory(candidate, value, target);
+    if (!rebound) return value;
+    const promptGuidanceSnapshot = typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : extractorPromptGuidance;
+    const operation = { floorId: target.id, floorFingerprint: target.content.canonicalFingerprint, floorRawFingerprint: target.content.rawFingerprint, epoch: expectedEpoch, controller: new AbortController(), runId: await deterministicUuid(['v3-memory-recovery-run', value.root.headCheckpointId, target.id, candidate.memory.id]), startedAt: nowIso(now), phase: 'committing' };
+    operation.dependencySnapshot = await extractorDependencySnapshot(value, target.id, { userIdentity: currentUserIdentity(), promptGuidance: promptGuidanceSnapshot });
+    if (!operation.dependencySnapshot) return value;
+    const semanticInputFingerprint = await extractorSemanticInputFingerprint(value, target);
+    await commitRevision(operation, { oldReachable: value, replacement: rebound.memory, newEntities: rebound.newEntities, provenanceEntry: { ...(candidate.provenance ?? {}), extractorVersion: EXTRACTOR_VERSION, rawFingerprint: target.content.rawFingerprint, storyClockSignature: currentClockSignature(target), semanticInputFingerprint, recoveredFromMemoryId: candidate.memory.id, recoveryMode: candidate.recoveryMode, ...(candidate.recoveryMode === 'legacyNoCustomPromptV1' ? { legacyPromptEqualityProven: false } : {}) }, action: 'recover', validationErrors: [] });
+    detachedDrafts = Object.freeze([]);
+    recoveryHoldFloorId = null;
+    if (candidate.delta && typeof cseRuntime.restoreRecoveredDelta === 'function') {
+      try {
+        const result = await cseRuntime.restoreRecoveredDelta({ oldDelta: candidate.delta, oldDiagnostics: candidate.run?.diagnostics ?? null, oldFloorId: candidate.priorFloor.id, oldMemoryId: candidate.memory.id, currentFloorId: target.id, currentMemoryId: rebound.memory.id, entityMap: rebound.entityMap, floorMap: rebound.floorMap, priorStateDeltas: candidate.stateDeltas });
+        if (result?.status === 'restored') {
+          const latest = await store.readReachable({ mode: 'projection' });
+          if (latest.status === 'ready') reachable = latest;
+        } else if (result?.reason) {
+          logger?.warn?.('[qianqianjie] recovered FloorMemory but kept CSE pending', { code: 'V3_CSE_RECOVERY_PENDING', reason: result.reason });
+        }
+      } catch (error) {
+        logger?.warn?.('[qianqianjie] recovered FloorMemory but kept CSE pending', { code: error?.code ?? error?.name ?? 'V3_CSE_RECOVERY_FAILED' });
+      }
+    }
+    return reachable;
+  }
+
+  function buildRecoveryDraft(candidate, stableFloor = null) {
+    const names = Object.fromEntries(candidate.entities.filter(entity => entity.recordStatus === 'active').map(entity => [entity.id, entity.displayName]));
+    const floor = stableFloor ?? candidate.priorFloor;
+    return Object.freeze([Object.freeze({
+      floorId: floor.id,
+      stableFloorId: stableFloor?.id ?? null,
+      assistantSeq: floor.assistantSeq,
+      messageIndex: floor.hostLocator.messageIndex,
+      canonicalFingerprint: floor.content.canonicalFingerprint,
+      rawFingerprint: floor.content.rawFingerprint,
+      status: 'draft', memoryId: null,
+      summary: effectiveSummary(candidate.memory) ?? '', summarySource: candidate.memory.summary?.effectiveSource ?? null,
+      extractorVersion: candidate.memory.extractorVersion, counts: counts(candidate.memory), memory: candidate.memory,
+      memoryEntityNames: Object.freeze(names), manualTime: false, metadataStale: false,
+      timeFallback: inferCanonicalCurrentTime(candidate.priorFloor.content?.canonicalContent)?.text ?? '', error: stableFloor ? '旧记录缺少完整依赖证明；草稿已保留，如需覆盖当前楼请手动重新提取。' : null,
+    })]);
+  }
+
+  async function detachedTailDraft(value) {
+    if (!value?.root || value.floors?.some(floor => !value.floorMemories?.some(memory => memory.floorId === floor.id && memory.recordStatus === 'active'))) return Object.freeze([]);
+    const pending = foundationRuntime.getState()?.pending;
+    if (!Number.isSafeInteger(pending?.messageIndex)) return Object.freeze([]);
+    const candidate = await recoveryCandidateFor(value, null, { requireRecoveryProof: false });
+    if (!candidate) return Object.freeze([]);
+    return buildRecoveryDraft(candidate);
   }
   async function refreshCoverage(expectedEpoch = epoch) {
     const source = reachable;
@@ -234,23 +560,36 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }
     }
     else throw errorWith('V3_MEMORY_LOAD_FAILED', `记忆图读取失败：${result.status}`);
-    if (nextReachable) await cseRuntime.load(nextReachable);
-    if (expectedEpoch !== epoch) {
-      cseRuntime.invalidate();
-      return getState();
-    }
     reachable = nextReachable;
+    detachedDrafts = Object.freeze([]);
+    recoveryHoldFloorId = null;
+    if (nextReachable) {
+      await cseRuntime.load(nextReachable);
+      if (expectedEpoch !== epoch) { cseRuntime.invalidate(); return getState(); }
+      const recovered = await restoreTailIfPossible(nextReachable, expectedEpoch);
+      if (recovered?.root) nextReachable = reachable = recovered;
+      if (!detachedDrafts.some(item => item.stableFloorId)) detachedDrafts = await detachedTailDraft(nextReachable);
+    } else {
+      cseRuntime.invalidate();
+      detachedDrafts = Object.freeze([]);
+    }
+    if (expectedEpoch !== epoch) { cseRuntime.invalidate(); return getState(); }
+    if (nextReachable?.floorMemories?.some(memory => memory?.recordStatus === 'active')) establishedMemoryChatId = nextReachable.root.chatId;
     memorySnapshotStatus = 'ready';
     timeFallbackByFloor = new Map();
     if (nextReachable && typeof hostAdapter?.snapshot === 'function') {
       const snapshot = hostAdapter.snapshot();
+      observedHostChatLength = snapshot?.chat?.length ?? observedHostChatLength;
       for (const floor of nextReachable.floors ?? []) {
         const sameFloorClock = clockEvidence(rawSelectionFromSnapshot(snapshot, floor)).displayText;
         timeFallbackByFloor.set(floor.id, sameFloorClock || inferCanonicalCurrentTime(floor.content?.canonicalContent)?.text || '');
       }
+    } else {
+      try { observedHostChatLength = hostAdapter.snapshot()?.chat?.length ?? observedHostChatLength; } catch { /* keep prior observation */ }
     }
     if (nextReachable) await refreshCoverage(expectedEpoch);
     if (expectedEpoch !== epoch) return getState();
+    if (lastFailure?.floorId === null && lastFailure.phase === 'load') lastFailure = null;
     notify();
     return getState();
   }
@@ -262,8 +601,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       : stored;
     return load(expectedEpoch, merged);
   }
-  async function refreshStatus() {
-    const foundation = await foundationRuntime.refreshStatus();
+  async function performRefreshStatus({ preferCached = false } = {}) {
+    const foundation = typeof foundationRuntime.inspect === 'function'
+      ? await foundationRuntime.inspect('memoryRefresh', { allowCached: preferCached })
+      : await foundationRuntime.refreshStatus();
     if (!enabled() || foundation.status === 'disabled') { reachable = null; memorySnapshotStatus = 'unavailable'; return notify(); }
     if (!['ready', 'needsReview', 'uninitialized'].includes(foundation.status)) return notify();
     const foundationReachable = foundationRuntime.getReachable?.() ?? null;
@@ -272,6 +613,25 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       ? foundationReachable
       : null;
     return load(epoch, reusable);
+  }
+  function refreshStatus(options = {}) {
+    const preferCached = options.preferCached === true;
+    if (refreshInFlight) {
+      if (!preferCached && refreshInFlight.preferCached) {
+        const predecessor = refreshInFlight.promise;
+        const fresh = predecessor.then(() => performRefreshStatus({ ...options, preferCached: false }));
+        const entry = { preferCached: false, promise: null };
+        entry.promise = fresh.finally(() => { if (refreshInFlight === entry) refreshInFlight = null; });
+        refreshInFlight = entry;
+        return entry.promise;
+      }
+      return refreshInFlight.promise;
+    }
+    const pendingRefresh = Promise.resolve().then(() => performRefreshStatus(options));
+    const entry = { preferCached, promise: null };
+    entry.promise = pendingRefresh.finally(() => { if (refreshInFlight === entry) refreshInFlight = null; });
+    refreshInFlight = entry;
+    return entry.promise;
   }
   async function confirmLatest() { await foundationRuntime.confirmLatest(); return load(); }
 
@@ -296,31 +656,91 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (firstError) throw firstError;
   }
 
-  async function commitRevision(operation, { oldReachable, replacement, newEntities = [], provenanceEntry, action, validationErrors = [] }) {
-    const currentRoot = await store.readRoot();
-    if (currentRoot.status !== 'ready'
-      || currentRoot.revision !== oldReachable.rootRevision
-      || currentRoot.data.chatId !== oldReachable.root.chatId
-      || currentRoot.data.headCheckpointId !== oldReachable.root.headCheckpointId
-      || currentRoot.data.narrativeGeneration !== oldReachable.root.narrativeGeneration
-      || currentRoot.data.sourceSnapshotFingerprint !== oldReachable.root.sourceSnapshotFingerprint) {
-      throw errorWith('V3_MEMORY_STALE', '聊天记忆已变化，本次结果不会覆盖新版本。');
+  const currentUserIdentity = () => typeof hostAdapter?.getUserIdentity === 'function'
+    ? hostAdapter.getUserIdentity()
+    : hostAdapter?.snapshot?.().userIdentity ?? null;
+  async function extractorDependencySnapshot(value, floorId, { userIdentity, promptGuidance } = {}) {
+    const targetIndex = value?.floors?.findIndex(floor => floor.id === floorId) ?? -1;
+    if (targetIndex < 0 || !value?.root || !value?.checkpoint) return null;
+    const prefix = value.floors.slice(0, targetIndex + 1);
+    const inputByFloor = new Map((value.checkpoint.inputFingerprints ?? []).map(item => [item.floorId, item]));
+    const floorDependencies = [];
+    for (const floor of prefix) {
+      const selected = currentRawSelection(hostAdapter, floor);
+      if (!selected) return null;
+      floorDependencies.push({
+        id: floor.id,
+        chatId: floor.chatId,
+        narrativeGeneration: floor.narrativeGeneration,
+        assistantSeq: floor.assistantSeq,
+        predecessorFloorId: floor.predecessorFloorId,
+        hostLocator: floor.hostLocator,
+        rawFingerprint: floor.content.rawFingerprint,
+        canonicalFingerprint: floor.content.canonicalFingerprint,
+        stabilityFingerprint: inputByFloor.get(floor.id)?.stabilityFingerprint ?? floor.stability?.proof?.fingerprint ?? null,
+        liveRawFingerprint: `sha256:${await sha256(selected.rawContent)}`,
+        storyClockSignature: clockEvidence(selected).signature,
+      });
     }
-    const current = oldReachable;
+    const floorIds = new Set(prefix.map(floor => floor.id));
+    const scopedEntities = entitiesThroughFloorIds(value.entities, floorIds)
+      .map(entity => clone(entity)).sort((left, right) => left.id.localeCompare(right.id));
+    return {
+      chatId: value.root.chatId,
+      targetFloorId: floorId,
+      targetFloorGeneration: value.floors[targetIndex].narrativeGeneration,
+      floorDependencies,
+      targetMemory: clone(currentMemoryMap(value).get(floorId) ?? null),
+      scopedEntities,
+      userIdentity: clone(userIdentity ?? null),
+      promptGuidance: String(promptGuidance ?? ''),
+    };
+  }
+  const sameExtractorDependency = (left, right) => Boolean(left && right && JSON.stringify(left) === JSON.stringify(right));
+
+  async function latestCompatibleReachable(operation) {
+    const current = await store.readReachable({ mode: 'runtime' });
+    if (current.status !== 'ready') throw errorWith('V3_MEMORY_PREFIX_CHANGED', '当前记忆图尚未收敛，目标楼依赖前缀无法复核。');
+    const dependency = await extractorDependencySnapshot(current, operation.floorId, {
+      userIdentity: currentUserIdentity(),
+      promptGuidance: operation.dependencySnapshot?.promptGuidance,
+    });
+    if (!sameExtractorDependency(operation.dependencySnapshot, dependency)) {
+      throw errorWith('V3_MEMORY_PREFIX_CHANGED', '目标楼或其依赖前文已经变化，迟到摘要不会写入。');
+    }
+    return current;
+  }
+
+  async function commitRevision(operation, { oldReachable, replacement, newEntities = [], provenanceEntry, action, validationErrors = [] }) {
+    let current = await latestCompatibleReachable(operation);
+    if (current.rootRevision !== oldReachable.rootRevision
+      && current.root.headCheckpointId === oldReachable.root.headCheckpointId
+      && current.root.sourceSnapshotFingerprint === oldReachable.root.sourceSnapshotFingerprint) {
+      throw errorWith('V3_MEMORY_STALE', '记忆 root 版本已变化但没有可验证的新地基，本次结果不会覆盖。');
+    }
+    for (let attempt = 0; attempt < MEMORY_REBASE_ATTEMPTS; attempt += 1) {
     const floor = current.floors.find(item => item.id === replacement.floorId);
     const selected = floor ? currentRawSelection(hostAdapter, floor) : null;
     const liveRawFingerprint = selected ? `sha256:${await sha256(selected.rawContent)}` : null;
-    if (!floor || floor.content.canonicalFingerprint !== operation.floorFingerprint || (operation.floorRawFingerprint && (floor.content.rawFingerprint !== operation.floorRawFingerprint || liveRawFingerprint !== operation.floorRawFingerprint))) throw errorWith('V3_MEMORY_STALE', '正文分支或时间戳已变化，本次结果已作废。');
+    if (!floor || floor.content.canonicalFingerprint !== operation.floorFingerprint || floor.narrativeGeneration !== replacement.narrativeGeneration
+      || (operation.floorRawFingerprint && (floor.content.rawFingerprint !== operation.floorRawFingerprint || liveRawFingerprint !== operation.floorRawFingerprint))) {
+      throw errorWith('V3_MEMORY_PREFIX_CHANGED', '正文分支、稳定锚或时间戳已变化，本次结果已作废。');
+    }
     const memoryByFloor = currentMemoryMap(current); memoryByFloor.set(replacement.floorId, replacement);
     const floorMemories = current.floors.map(item => memoryByFloor.get(item.id)).filter(Boolean);
-    const entitiesById = new Map(current.entities.map(entity => [entity.id, entity])); newEntities.forEach(entity => entitiesById.set(entity.id, entity));
+    const entitiesById = new Map(current.entities.map(entity => [entity.id, entity]));
+    for (const entity of newEntities) {
+      const existing = entitiesById.get(entity.id);
+      if (existing && JSON.stringify(existing) !== JSON.stringify(entity)) throw errorWith('V3_MEMORY_PREFIX_CHANGED', '人物身份目录已被并发修改，本次结果不会覆盖新记录。');
+      entitiesById.set(entity.id, entity);
+    }
     const provisionalDeltas = filterReachableDeltas({ floors: current.floors, floorMemories, stateDeltas: current.stateDeltas ?? [] });
     const stateEntityIds = new Set(provisionalDeltas.flatMap(delta => delta.subjectSnapshots.flatMap(subject => [subject.subjectEntityId, ...['adaptive', 'situational'].flatMap(category => subject[category].map(item => item.towardEntityId).filter(Boolean))])));
     const baselineEntityIds = new Set(current.baseline ? [current.baseline.userPersona.entityId, current.baseline.characterCard.entityId] : []);
     const entities = [...entitiesById.values()].filter(entity => current.floors.some(item => item.id === entity.firstSeenFloorId) || floorMemories.some(memory => JSON.stringify(memory).includes(entity.id)) || stateEntityIds.has(entity.id) || baselineEntityIds.has(entity.id));
     const nowValue = nowIso(now);
-    const runId = operation.runId;
-    const checkpointId = await deterministicUuid(['v3-memory-checkpoint', current.root.headCheckpointId, current.root.narrativeGeneration, action, replacement.id, entities.map(entity => entity.id)]);
+    const runId = await deterministicUuid(['v3-memory-commit-run', operation.runId, current.root.headCheckpointId, attempt]);
+    const checkpointId = await deterministicUuid(['v3-memory-checkpoint', current.root.headCheckpointId, current.root.narrativeGeneration, action, replacement.id, entities.map(entity => entity.id), runId]);
     const indexes = await buildFoundationIndexes({ chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, checkpointId, floors: current.floors, candidates: current.floors.map(floorItem => ({ hostLocator: floorItem.hostLocator, rawFingerprint: floorItem.content.rawFingerprint, canonicalFingerprint: floorItem.content.canonicalFingerprint })), entities, now: nowValue });
     const indexKeys = indexes.map(index => store.recordKey(index));
     const provenance = floorProvenance(current);
@@ -338,9 +758,13 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     await validateCseGraph({ root, checkpoint, run, floors: current.floors, floorMemories, entities, indexes, indexKeys, baseline: current.baseline, stateDeltas: provisionalDeltas, currentStates: currentState ? [currentState] : [] });
     await persistRecords([...newEntities, replacement, ...(currentState ? [currentState] : []), ...indexes], operation.controller.signal);
     await persistRecords([run, checkpoint], operation.controller.signal, { concurrency: 1 });
-    if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_MEMORY_STALE', '操作已取消。');
+    if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_MEMORY_CANCELLED', '操作已取消。');
     const committed = await store.commitRoot(root, current.rootRevision, { signal: operation.controller.signal });
-    if (committed.status !== 'saved') throw errorWith(committed.status === 'conflict' ? 'V3_MEMORY_CAS_CONFLICT' : 'V3_MEMORY_COMMIT_FAILED', committed.status === 'conflict' ? '记忆提交遇到并发更新，未覆盖新数据。' : `记忆提交失败：${committed.status}`);
+    if (committed.status === 'conflict' && attempt + 1 < MEMORY_REBASE_ATTEMPTS) {
+      current = await latestCompatibleReachable(operation);
+      continue;
+    }
+    if (committed.status !== 'saved') throw errorWith(committed.status === 'conflict' ? 'V3_MEMORY_CAS_CONFLICT' : 'V3_MEMORY_COMMIT_FAILED', committed.status === 'conflict' ? '记忆提交连续遇到并发更新，未覆盖新数据。' : `记忆提交失败：${committed.status}`);
     reachable = committed.reachable;
     if (!reachable || reachable.status !== 'ready'
       || reachable.rootRevision !== committed.revision
@@ -356,6 +780,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     await cseRuntime.load(reachable);
     await refreshCoverage(operation.epoch);
     return notify();
+    }
+    throw errorWith('V3_MEMORY_CAS_CONFLICT', '记忆提交连续遇到并发更新，未覆盖新数据。');
   }
 
   async function persistFailure(operation, error, oldReachable) {
@@ -364,63 +790,126 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     lastFailure = Object.freeze({ floorId: operation.floorId, runId: operation.runId, phase: 'retryableError', code: String(error?.code ?? 'V3_EXTRACTOR_FAILED').slice(0, 120), httpStatus: Number.isSafeInteger(details.httpStatus ?? error?.httpStatus ?? error?.status) ? (details.httpStatus ?? error.httpStatus ?? error.status) : null, providerError: sanitizeDiagnosticValue(details.providerError ?? error?.providerError ?? null), formatStage: details.formatStage ?? error?.formatStage ?? null, attempts: details.attempts ?? 1, transportAttempts: details.transportAttempts ?? null, validationErrors: sanitizeDiagnosticValue(details.validationErrors ?? []), api: safeApi(details.metadata ?? error?.taskMetadata), message: safeErrorMessage(error?.message) });
     try {
       const nowValue = nowIso(now);
-      const run = validateFoundationRun({ schemaVersion: 3, recordType: 'run', id: operation.runId, chatId: oldReachable.root.chatId, narrativeGeneration: oldReachable.root.narrativeGeneration, parentCheckpointId: oldReachable.root.headCheckpointId, inputSnapshotFingerprint: oldReachable.root.sourceSnapshotFingerprint, mode: 'localReextract', sessionEpoch: operation.epoch, inputFloorIds: [operation.floorId], phase: 'retryableError', completedFloorIds: [], failedItems: [{ floorId: operation.floorId, stage: 'extractor', code: lastFailure.code, retryCount: Math.max(0, lastFailure.attempts - 1) }], preparedRecordRefs: [], diagnostics: { kind: 'extractor', promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION, floorId: operation.floorId, responseFingerprint: details.responseFingerprint ?? null, api: lastFailure.api, attempts: lastFailure.attempts, transportAttempts: lastFailure.transportAttempts, httpStatus: lastFailure.httpStatus, providerError: lastFailure.providerError, formatStage: lastFailure.formatStage, validationErrors: lastFailure.validationErrors }, startedAt: operation.startedAt, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'staged', supersedes: null }, { expectedChatId: oldReachable.root.chatId });
+      const run = validateFoundationRun({ schemaVersion: 3, recordType: 'run', id: operation.runId, chatId: oldReachable.root.chatId, narrativeGeneration: oldReachable.root.narrativeGeneration, parentCheckpointId: oldReachable.root.headCheckpointId, inputSnapshotFingerprint: oldReachable.root.sourceSnapshotFingerprint, mode: 'localReextract', sessionEpoch: operation.epoch, inputFloorIds: [operation.floorId], phase: 'retryableError', completedFloorIds: [], failedItems: [{ floorId: operation.floorId, stage: 'extractor', code: lastFailure.code, retryCount: Math.max(0, lastFailure.attempts - 1) }], preparedRecordRefs: [], diagnostics: { kind: 'extractor', promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION, floorId: operation.floorId, responseFingerprint: details.responseFingerprint ?? null, api: lastFailure.api, attempts: lastFailure.attempts, transportAttempts: lastFailure.transportAttempts, httpStatus: lastFailure.httpStatus, providerError: lastFailure.providerError, formatStage: lastFailure.formatStage, validationErrors: lastFailure.validationErrors, preflightTiming: operation.preflightTiming ?? null }, startedAt: operation.startedAt, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'staged', supersedes: null }, { expectedChatId: oldReachable.root.chatId });
       await store.putRecord(run, { signal: operation.controller.signal });
     } catch { /* failure audit is best effort; it must never move root */ }
     notify();
   }
 
-  async function extractFloorInternal(floorId, { analyzeState = true } = {}) {
-    if (!enabled()) return notify();
-    if (active) return getState();
-    const foundationBefore = await foundationRuntime.refreshStatus();
-    if (foundationBefore.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '正文地基尚未完成安全对账，当前不能提取。');
-    await loadCurrent(epoch);
-    const source = reachable ? clone(reachable) : null;
-    const floor = source?.floors?.find(item => item.id === floorId);
-    if (!floor) throw errorWith('V3_MEMORY_FLOOR_UNAVAILABLE', '只允许提取当前 root 可达的稳定 AI 楼。');
-    const oldMemory = currentMemoryMap(source).get(floor.id) ?? null;
-    const selected = currentRawSelection(hostAdapter, floor);
-    if (!selected) throw errorWith('V3_MEMORY_STALE', '当前楼或所选重 Roll 已变化，请刷新后重试。');
-    const sourceRawFingerprint = `sha256:${await sha256(selected.rawContent)}`;
-    if (sourceRawFingerprint !== floor.content.rawFingerprint) throw errorWith('V3_MEMORY_STALE', '当前楼原始正文已变化，请刷新后重试。');
-    const sourceClock = clockEvidence(selected);
-    const operation = { floorId: floor.id, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature, epoch, controller: new AbortController(), runId: await deterministicUuid(['v3-extractor-run', source.root.headCheckpointId, floor.id, newUuid()]), startedAt: nowIso(now), phase: 'extracting' };
-    active = operation; notify();
-    try {
-      const userIdentity = typeof hostAdapter?.getUserIdentity === 'function'
-        ? hostAdapter.getUserIdentity()
-        : hostAdapter?.snapshot?.().userIdentity ?? null;
-      const expectedScope = { batchId: operation.runId, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration, checkpointId: source.root.headCheckpointId, floorId: floor.id, rawContentFingerprint: sourceRawFingerprint };
+  const extractionIntentCurrent = intent => intent.epoch === epoch && intent.chatId && currentHostChatId() === intent.chatId;
+  const samePreparedRoot = (source, rootResult) => rootResult?.status === 'ready'
+    && rootResult.revision === source?.rootRevision
+    && rootResult.data?.chatId === source?.root?.chatId
+    && rootResult.data?.headCheckpointId === source?.root?.headCheckpointId
+    && rootResult.data?.narrativeGeneration === source?.root?.narrativeGeneration
+    && rootResult.data?.sourceSnapshotFingerprint === source?.root?.sourceSnapshotFingerprint;
+
+  async function prepareExtractorInput({ floorId = null, selectNext = false, intent, manualWork }) {
+    let rootChecks = 0;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在提取准备期间已经变化，本次请求未发送。');
+      const foundation = await foundationRuntime.refreshStatus();
+      if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在地基对账期间已经变化，本次请求未发送。');
+      if (foundation.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '正文地基尚未完成安全对账，当前不能提取。');
+      const preparedReachable = foundationRuntime.getReachable?.() ?? null;
+      await load(intent.epoch, preparedReachable?.root ? preparedReachable : null);
+      if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在记忆读取期间已经变化，本次请求未发送。');
+      const source = reachable ? clone(reachable) : null;
+      const memoryMap = currentMemoryMap(source);
+      const floor = selectNext
+        ? source?.floors?.find(item => memoryMap.get(item.id)?.recordStatus !== 'active')
+        : source?.floors?.find(item => item.id === floorId);
+      if (!floor) return selectNext ? null : (() => { throw errorWith('V3_MEMORY_FLOOR_UNAVAILABLE', '只允许提取当前 root 可达的稳定 AI 楼。'); })();
+      const selected = currentRawSelection(hostAdapter, floor);
+      if (!selected) throw errorWith('V3_MEMORY_STALE', '当前楼或所选重 Roll 已变化，请刷新后重试。');
+      const sourceRawFingerprint = `sha256:${await sha256(selected.rawContent)}`;
+      if (sourceRawFingerprint !== floor.content.rawFingerprint) throw errorWith('V3_MEMORY_STALE', '当前楼原始正文已变化，请刷新后重试。');
+      const sourceClock = clockEvidence(selected);
+      const userIdentity = currentUserIdentity();
+      const runId = await deterministicUuid(['v3-extractor-run', source.root.headCheckpointId, floor.id, newUuid()]);
+      const expectedScope = { batchId: runId, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration, checkpointId: source.root.headCheckpointId, floorId: floor.id, rawContentFingerprint: sourceRawFingerprint };
       const floorIndex = source.floors.findIndex(item => item.id === floor.id);
       const scopedEntities = entitiesThroughFloorIds(source.entities, new Set(source.floors.slice(0, floorIndex + 1).map(item => item.id)));
       let previousStoryClock = null;
       for (let index = floorIndex - 1; index >= 0 && !previousStoryClock; index -= 1) previousStoryClock = clockEvidence(currentRawSelection(hostAdapter, source.floors[index])).clock;
       const envelope = await createExtractorEnvelope({ ...expectedScope, floor, entities: scopedEntities, userIdentity, identityHints: [], storyClock: sourceClock.clock, previousStoryClock });
+      const semanticInputFingerprint = await hash(envelope.request.payload);
       const promptGuidanceSnapshot = typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : extractorPromptGuidance;
+      const verifiedUserIdentity = currentUserIdentity();
+      const dependencySnapshot = await extractorDependencySnapshot(source, floor.id, { userIdentity: verifiedUserIdentity, promptGuidance: promptGuidanceSnapshot });
+      if (typeof store.readRoot === 'function') {
+        const rootResult = await store.readRoot();
+        rootChecks += 1;
+        if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在版本核对期间已经变化，本次请求未发送。');
+        if (!samePreparedRoot(source, rootResult)) {
+          if (attempt + 1 >= 2) throw errorWith('V3_MEMORY_STALE', '记忆 root 在提取准备期间连续变化，本次请求未发送。');
+          const latest = await store.readReachable({ mode: 'runtime' });
+          if (latest.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '最新记忆图尚未收敛，本次请求未发送。');
+          foundationRuntime.adoptReachable?.(latest);
+          continue;
+        }
+      }
+      const liveSelected = currentRawSelection(hostAdapter, floor);
+      if (!extractionIntentCurrent(intent) || JSON.stringify(userIdentity ?? null) !== JSON.stringify(verifiedUserIdentity ?? null)
+        || liveSelected?.rawContent !== selected.rawContent || !dependencySnapshot) {
+        throw errorWith('V3_MEMORY_PREFIX_CHANGED', '目标楼正文、身份或提示依赖在请求前已经变化，本次请求未发送。');
+      }
+      return {
+        intent: Object.freeze({ ...intent }),
+        source, floor, oldMemory: memoryMap.get(floor.id) ?? null, sourceRawFingerprint, sourceClock,
+        userIdentity, promptGuidanceSnapshot, dependencySnapshot, runId, expectedScope, scopedEntities,
+        envelope, semanticInputFingerprint, selectedRawContent: selected.rawContent,
+        preflightTiming: Object.freeze({ prepareMs: elapsedMs(manualWork.startedMonotonic), rootChecks, reprepareCount: attempt }),
+      };
+    }
+    throw errorWith('V3_MEMORY_STALE', '提取准备未能收敛，本次请求未发送。');
+  }
+
+  async function extractFloorInternal(floorId, { analyzeState = true, preparedInput = null, manualWork } = {}) {
+    if (!enabled()) return notify();
+    if (active) return getState();
+    const timingWork = manualWork ?? { startedAt: nowIso(now), startedMonotonic: monotonicNow() };
+    const intent = preparedInput?.intent ?? { epoch, chatId: currentHostChatId() };
+    const prepared = preparedInput ?? await prepareExtractorInput({ floorId, intent, manualWork: timingWork });
+    if (!prepared) return getState();
+    const { source, floor, oldMemory, sourceRawFingerprint, sourceClock, userIdentity, promptGuidanceSnapshot, dependencySnapshot, runId, expectedScope, scopedEntities, envelope, semanticInputFingerprint } = prepared;
+    const preparedStillCurrent = () => extractionIntentCurrent(intent)
+      && source.root.chatId === intent.chatId
+      && currentRawSelection(hostAdapter, floor)?.rawContent === prepared.selectedRawContent
+      && JSON.stringify(currentUserIdentity() ?? null) === JSON.stringify(userIdentity ?? null);
+    if (!preparedStillCurrent()) throw errorWith('V3_MEMORY_PREFIX_CHANGED', '聊天、目标楼或身份在请求前已经变化，本次请求未发送。');
+    const operation = { floorId: floor.id, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature, epoch: intent.epoch, controller: new AbortController(), runId, startedAt: timingWork.startedAt, phase: 'extracting', dependencySnapshot, preflightTiming: Object.freeze({ ...prepared.preflightTiming, requestDispatchMs: elapsedMs(timingWork.startedMonotonic) }) };
+    active = operation; notify();
+    try {
+      if (!preparedStillCurrent()) throw errorWith('V3_MEMORY_PREFIX_CHANGED', '聊天、目标楼或身份在请求发出前已经变化，本次请求未发送。');
+      operation.dependencyBoundaryMessageIndex = Math.max(...operation.dependencySnapshot.floorDependencies.map(item => {
+        const sourceFloor = source.floors.find(candidate => candidate.id === item.id);
+        return sourceFloor?.stability?.proof?.messageIndex ?? item.hostLocator.messageIndex;
+      }));
+      operation.hostIdentity = generationIdentity(hostAdapter.snapshot());
       const result = await runExtractorRequest({ generateUtilityTask, envelope, floor, existingEntities: scopedEntities, now: nowIso(now), supersedes: oldMemory?.id ?? null, preservedSummary: oldMemory?.summary?.effectiveSource === 'user' ? oldMemory.summary : null, expectedScope, promptGuidance: promptGuidanceSnapshot, signal: operation.controller.signal });
       operation.phase = 'validating'; notify();
       const foundationAfter = await foundationRuntime.refreshStatus();
       if (foundationAfter.status !== 'ready') throw errorWith('V3_MEMORY_STALE', '正文地基在提取期间发生变化，本次结果已作废。');
-      if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_MEMORY_STALE', '聊天或正文已变化，迟到响应已丢弃。');
+      if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_MEMORY_CANCELLED', '聊天或正文已变化，迟到响应已丢弃。');
       operation.phase = 'committing'; notify();
-      await commitRevision(operation, { oldReachable: source, replacement: result.memory, newEntities: result.newEntities, provenanceEntry: { api: result.metadata, attempts: result.attempts, transportAttempts: result.transportAttempts, responseFingerprint: result.responseFingerprint, extractorVersion: result.memory.extractorVersion, needsReview: result.needsReview, rawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature }, action: oldMemory ? 'reextract' : 'extract', validationErrors: result.validationErrors });
+      await commitRevision(operation, { oldReachable: source, replacement: result.memory, newEntities: result.newEntities, provenanceEntry: { api: result.metadata, attempts: result.attempts, transportAttempts: result.transportAttempts, responseFingerprint: result.responseFingerprint, extractorVersion: result.memory.extractorVersion, promptVersion: EXTRACTOR_PROMPT_VERSION, promptGuidanceFingerprint: `sha256:${await sha256(String(promptGuidanceSnapshot ?? ''))}`, userIdentityFingerprint: `sha256:${await sha256(JSON.stringify(userIdentity ?? null))}`, semanticInputFingerprint, preflightTiming: operation.preflightTiming, needsReview: result.needsReview, rawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature }, action: oldMemory ? 'reextract' : 'extract', validationErrors: result.validationErrors });
       if (analyzeState && !oldMemory && !operation.controller.signal.aborted && operation.epoch === epoch) await cseRuntime.analyzeFloor(floor.id);
     } catch (error) {
-      if (error?.name !== 'AbortError' && error?.code !== 'V3_MEMORY_STALE') await persistFailure(operation, error, source);
-      else lastFailure = Object.freeze({ floorId: operation.floorId, runId: operation.runId, phase: 'stale', code: 'V3_MEMORY_STALE', attempts: 0, validationErrors: [], api: null, message: '聊天、插件状态或正文分支已变化，迟到结果没有写入。' });
+      if (error?.name !== 'AbortError' && !STALE_MEMORY_CODES.has(error?.code)) await persistFailure(operation, error, source);
+      else lastFailure = Object.freeze({ floorId: operation.floorId, runId: operation.runId, phase: 'stale', code: error?.code === 'V3_MEMORY_PREFIX_CHANGED' ? 'V3_MEMORY_PREFIX_CHANGED' : 'V3_MEMORY_STALE', attempts: 0, validationErrors: [], api: null, message: safeErrorMessage(error?.message ?? '聊天、插件状态或正文分支已变化，迟到结果没有写入。') });
       logger?.warn?.('[qianqianjie] V3 extractor failed', { code: error?.code ?? error?.name ?? 'V3_EXTRACTOR_FAILED' });
-    } finally { if (active === operation) active = null; }
+    } finally {
+      if (active === operation) active = null;
+      if (suffixGenerationContext?.runId === operation.runId) suffixGenerationContext = null;
+    }
     return notify();
   }
-  async function extractNextInternal() {
-    const foundation = await foundationRuntime.refreshStatus();
-    if (foundation.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '正文地基尚未完成安全对账，当前不能提取。');
-    await loadCurrent(epoch);
-    const map = currentMemoryMap(reachable);
-    const floor = reachable?.floors?.find(item => map.get(item.id)?.recordStatus !== 'active');
-    if (!floor) return getState();
-    return extractFloorInternal(floor.id);
+  async function extractNextInternal(manualWork) {
+    const intent = { epoch, chatId: currentHostChatId() };
+    const preparedInput = await prepareExtractorInput({ selectNext: true, intent, manualWork });
+    if (!preparedInput) return getState();
+    return extractFloorInternal(preparedInput.floor.id, { preparedInput, manualWork });
   }
   async function reviseInternal(floorId, action, { userText = null, revisionNote = null, metadata = null } = {}) {
     if (active) return getState();
@@ -488,14 +977,20 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const id = await deterministicUuid(['v3-memory-revision', old.id, action, summary, chronology, locations, participants, nowValue]);
     const replacement = validateFloorMemory({ ...old, id, summary, chronology, locations, participants, createdAt: nowValue, updatedAt: nowValue, recordStatus: action === 'markError' ? 'invalidated' : 'active', supersedes: old.id }, { expectedChatId: old.chatId });
     const operation = { floorId, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: floor.content.rawFingerprint, epoch, controller: new AbortController(), runId: revisionRunId, startedAt: nowValue, phase: 'committing' };
+    operation.dependencySnapshot = await extractorDependencySnapshot(reachable, floorId, { userIdentity: currentUserIdentity(), promptGuidance: '' });
+    operation.dependencyBoundaryMessageIndex = Math.max(...(operation.dependencySnapshot?.floorDependencies ?? []).map(item => {
+      const sourceFloor = reachable.floors.find(candidate => candidate.id === item.id);
+      return sourceFloor?.stability?.proof?.messageIndex ?? item.hostLocator.messageIndex;
+    }));
+    operation.hostIdentity = generationIdentity(hostAdapter.snapshot());
     active = operation; notify();
     const priorAudit = floorProvenance(reachable)[floorId] ?? {};
     try { await commitRevision(operation, { oldReachable: reachable, replacement, newEntities, provenanceEntry: { api: priorAudit.api ?? null, attempts: priorAudit.attempts ?? 0, transportAttempts: priorAudit.transportAttempts ?? null, responseFingerprint: priorAudit.responseFingerprint ?? null, extractorVersion: priorAudit.extractorVersion ?? old.extractorVersion, needsReview: priorAudit.needsReview ?? false, rawFingerprint: priorAudit.rawFingerprint ?? floor.content.rawFingerprint, storyClockSignature: priorAudit.storyClockSignature ?? currentClockSignature(floor), timeEdited: priorAudit.timeEdited === true || (action === 'editMetadata' && effectiveTimeChanged) }, action }); }
     finally { active = null; }
     return notify();
   }
-  const extractFloor = (floorId, options) => runManualWork('extracting', () => extractFloorInternal(floorId, options));
-  const extractNext = () => runManualWork('extracting', () => extractNextInternal());
+  const extractFloor = (floorId, options) => runManualWork('extracting', manualWork => extractFloorInternal(floorId, { ...options, manualWork }));
+  const extractNext = () => runManualWork('extracting', manualWork => extractNextInternal(manualWork));
   const editSummary = (floorId, userText, revisionNote = '') => runManualWork('revising', () => reviseInternal(floorId, 'edit', { userText, revisionNote }));
   const editMemory = (floorId, metadata) => runManualWork('revising', () => reviseInternal(floorId, 'editMetadata', { metadata }));
   const restoreAi = floorId => runManualWork('revising', () => reviseInternal(floorId, 'restoreAi'));
@@ -580,28 +1075,32 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   const copySafeDiagnostic = floorId => diagnostic(floorId, { full: false });
   const copyFullDiagnostic = floorId => diagnostic(floorId, { full: true });
 
-  async function runAutomationBatch(reason = 'stableAssistant') {
+  async function runAutomationBatch(reason = 'stableAssistant', eventAuthorization = null) {
     const config = automation();
     const manualHistorical = reason === MANUAL_HISTORY_REASON;
-    const userInitiated = manualHistorical || reason === 'manualRetry';
+    const userInitiated = manualHistorical || reason === 'manualRetry' || Boolean(eventAuthorization);
     const authorizedChatId = manualHistorical ? historicalAuthorization : null;
-    if (!enabled() || (!manualHistorical && !config.enabled) || (manualHistorical && !authorizedChatId) || workRun || active || cseRuntime.getState().activeCse) return getState();
+    if (!enabled() || (!manualHistorical && !config.enabled) || (manualHistorical && !authorizedChatId)
+      || (eventAuthorization && (!hasEstablishedChat() || reachable?.root?.chatId !== eventAuthorization.chatId))
+      || workRun || active || cseRuntime.getState().activeCse) return getState();
     const operation = { kind: 'auto', token: ++autoEpoch, reason, phase: 'reconciling', mode: manualHistorical ? 'historical' : 'realtime', floorIds: [], promise: null };
     workRun = operation;
     notify();
     operation.promise = (async () => {
+      let capturedInputKey = null;
+      let capturedFloorIds = null;
       try {
         const allowed = () => operation.token === autoEpoch && enabled() && (manualHistorical
           ? historicalAuthorization === authorizedChatId
           : automation().enabled);
-        let historical = manualHistorical;
+        let historical = manualHistorical || eventAuthorization?.allowHistoricalDebt === true;
+        let startNotified = false;
         let resumed = false;
         let processed = 0;
         let cseProcessed = 0;
         let fromAssistantSeq = null;
         let toAssistantSeq = null;
         const processedMessageIndexes = [];
-        let capturedFloorIds = null;
         while (allowed()) {
           operation.phase = 'reconciling';
           notify();
@@ -613,14 +1112,17 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           const assessment = coverage;
           if (assessment.status === 'unknown') throw errorWith('V3_MEMORY_COVERAGE_UNCONFIRMED', '当前聊天的可达覆盖尚未确认，历史重建已暂停。');
           capturedFloorIds ??= Object.freeze((reachable.floors ?? []).map(floor => floor.id));
+          capturedInputKey ??= currentInputKey();
           const capturedFloorSet = new Set(capturedFloorIds);
           const capturedTotal = capturedFloorIds.length;
           if (historical && assessment.completed >= capturedTotal && assessment.summaryCompleted >= capturedTotal) {
             if (manualHistorical && historicalAuthorization === authorizedChatId) historicalAuthorization = null;
             lastAutoRun = processed || cseProcessed
-              ? Object.freeze({ status: 'completed', reason, mode: historical ? 'historical' : 'realtime', batchSize: config.batchSize, recovered: resumed, fromAssistantSeq, toAssistantSeq, processed, cseProcessed })
-              : Object.freeze({ status: 'caughtUp', reason, mode: 'historical', batchSize: config.batchSize, available: 0, fromAssistantSeq: null, toAssistantSeq: null, processed: 0 });
-            if (processed || cseProcessed) try { notifyUser?.({ kind: 'success', text: `千千结已完成历史记忆维护：新增摘要 ${processed} 楼，补齐人物状态 ${cseProcessed} 楼。` }); } catch { /* notification must not affect committed memory */ }
+              ? Object.freeze({ status: 'completed', reason, mode: manualHistorical ? 'historical' : 'realtime', batchSize: config.batchSize, recovered: resumed, fromAssistantSeq, toAssistantSeq, processed, cseProcessed })
+              : Object.freeze({ status: 'caughtUp', reason, mode: manualHistorical ? 'historical' : 'realtime', batchSize: config.batchSize, available: 0, fromAssistantSeq: null, toAssistantSeq: null, processed: 0 });
+            if (processed || cseProcessed) try { notifyUser?.({ kind: 'success', text: manualHistorical
+              ? `千千结已完成历史记忆维护：新增摘要 ${processed} 楼，补齐人物状态 ${cseProcessed} 楼。`
+              : `千千结已自动维护完成：新增摘要 ${processed} 楼，补齐人物状态 ${cseProcessed} 楼。` }); } catch { /* notification must not affect committed memory */ }
             return notify();
           }
           const inputKey = currentInputKey();
@@ -631,7 +1133,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           }
           operation.mode = historical ? 'historical' : 'realtime';
           const summaryPending = (reachable.floors ?? []).slice(assessment.summaryCompleted)
-            .filter(floor => capturedFloorSet.has(floor.id));
+            .filter(floor => capturedFloorSet.has(floor.id) && floor.id !== recoveryHoldFloorId);
           const targets = historical
             ? summaryPending.slice(0, Math.min(config.batchSize, summaryPending.length))
             : assessment.summaryStatus === 'realtimeTail' && summaryPending.length >= config.batchSize
@@ -639,6 +1141,16 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               : [];
           resumed ||= historical ? assessment.hasPartialWork : assessment.summaryHasPartialWork;
           if (targets.length) {
+            if (!startNotified) {
+              const unfinished = missingSummaryCount(capturedFloorSet);
+              if (unfinished > 0) {
+                const firstPending = targets[0];
+                notifyOnce(`starting:${eventAuthorization?.id ?? reason}:${capturedInputKey ?? inputKey}:${firstPending.id}:${unfinished}`, {
+                  kind: 'info', text: `千千结开始补齐 ${unfinished} 楼摘要（从${floorCopy(firstPending)}起）。`,
+                });
+              }
+              startNotified = true;
+            }
             operation.floorIds = targets.map(floor => floor.id);
             operation.phase = 'extracting';
             notify();
@@ -650,9 +1162,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               const currentFloor = getState().floors.find(item => item.floorId === floor.id);
               if (!currentFloor?.memoryId || !['ready', 'needsReview'].includes(currentFloor.status)) {
                 if (manualHistorical && historicalAuthorization === authorizedChatId) historicalAuthorization = null;
-                if (!historical) lastAutomaticInputKey = currentInputKey() ?? inputKey;
+                lastAutomaticInputKey = capturedInputKey ?? inputKey;
                 lastAutoRun = Object.freeze({ status: 'failed', reason, mode: operation.mode, phase: 'extracting', batchSize: config.batchSize, floorId: floor.id, assistantSeq: floor.assistantSeq, message: getState().lastExtractorError?.message ?? 'FloorMemory 提取失败，可点击继续重建后从本楼重试。' });
-                notifyOnce(`extracting:${operation.token}:${inputKey}:${floor.id}`, { kind: 'error', text: `千千结摘要提取失败：${safeErrorMessage(lastAutoRun.message)} 可在记忆管理中点击继续。` });
+                const unfinished = missingSummaryCount(capturedFloorSet);
+                notifyOnce(`extracting:${reason}:${capturedInputKey ?? inputKey}:${floor.id}:${unfinished}`, { kind: 'error', text: `千千结摘要提取失败：${summaryDebtCopy({ floor, count: unfinished, retry: '相同内容不会自动重试，请在记忆管理中点击继续。' })} ${safeErrorMessage(lastAutoRun.message)}` });
                 return notify();
               }
               fromAssistantSeq ??= floor.assistantSeq;
@@ -660,10 +1173,12 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               processedMessageIndexes.push(floor.hostLocator?.messageIndex);
               processed += 1;
             }
+            if (!historical) continue;
           }
           if (!allowed()) return getState();
           let afterExtraction = coverage;
           if (afterExtraction.status === 'unknown') throw errorWith('V3_MEMORY_COVERAGE_UNCONFIRMED', '摘要保存后覆盖校验未确认，人物状态分析已暂停。');
+          if (eventAuthorization?.allowHistoricalDebt && afterExtraction.summaryCompleted < capturedTotal) continue;
           while (allowed() && afterExtraction.completed < capturedTotal) {
             const floor = reachable.floors?.[afterExtraction.completed];
             if (!floor || !capturedFloorSet.has(floor.id) || currentMemoryMap(reachable).get(floor.id)?.recordStatus !== 'active') break;
@@ -677,12 +1192,16 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             const after = getState().floors.find(item => item.floorId === floor.id);
             if (!['ready', 'noChange'].includes(after?.cse?.status)) {
               if (manualHistorical && historicalAuthorization === authorizedChatId) historicalAuthorization = null;
-              if (!historical) lastAutomaticInputKey = currentInputKey() ?? inputKey;
+              lastAutomaticInputKey = capturedInputKey ?? inputKey;
               lastAutoRun = Object.freeze({ status: 'failed', reason, mode: operation.mode, phase: 'analyzingCse', batchSize: config.batchSize, floorId: floor.id, assistantSeq: floor.assistantSeq, message: getState().lastCseError?.message ?? 'CSE 分析失败，可点击继续重建后从本楼重试。' });
               const prefix = historical ? '千千结人物状态分析失败'
                 : processed > 0 ? '千千结已保存新楼摘要，但最早待处理楼的人物状态分析失败'
                   : '千千结人物状态追赶失败';
-              notifyOnce(`analyzingCse:${operation.token}:${inputKey}:${floor.id}`, { kind: 'warning', text: `${prefix}：${safeErrorMessage(lastAutoRun.message)} 后续合资格稳定楼会有限重试，也可现在点击继续。` });
+              const unfinished = missingSummaryCount(capturedFloorSet);
+              const retryCopy = unfinished > 0
+                ? '相同内容不会自动重试，另有历史摘要缺口不会自动补，请在记忆管理中点击继续。'
+                : '相同内容不会自动重试，后续有新稳定回复时会有限重试，也可现在点击继续。';
+              notifyOnce(`analyzingCse:${reason}:${capturedInputKey ?? inputKey}:${floor.id}:${unfinished}`, { kind: 'warning', text: `${prefix}：${floorCopy(floor)}人物状态未完成，未完成摘要 ${unfinished} 楼；${retryCopy}${safeErrorMessage(lastAutoRun.message)}` });
               return notify();
             }
             cseProcessed += 1;
@@ -694,8 +1213,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             lastAutomaticInputKey = null;
             const summaryDebt = afterExtraction.summaryStatus === 'historicalDebt' && afterExtraction.summaryCompleted < capturedTotal;
             if (summaryDebt) {
-              lastAutoRun = Object.freeze({ status: 'authorizationRequired', reason, mode: 'historical', phase: cseProcessed ? 'analyzingCse' : 'extracting', batchSize: config.batchSize, available: capturedTotal - afterExtraction.summaryCompleted, fromAssistantSeq: afterExtraction.summaryNextAssistantSeq, toAssistantSeq: reachable.floors.at(capturedTotal - 1)?.assistantSeq ?? null, processed, cseProcessed });
-              notifyOnce(`authorization:${inputKey}:${afterExtraction.summaryNextAssistantSeq}:${cseProcessed}`, { kind: 'warning', text: cseProcessed ? `千千结已补齐 ${cseProcessed} 楼人物状态；后续历史摘要缺口仍需在记忆管理中点击继续。` : '千千结发现需要用户确认的历史摘要缺口；请在记忆管理中点击继续。' });
+              lastAutoRun = Object.freeze({ status: 'authorizationRequired', reason, mode: 'historical', phase: cseProcessed ? 'analyzingCse' : 'extracting', batchSize: config.batchSize, available: missingSummaryCount(capturedFloorSet), fromAssistantSeq: afterExtraction.summaryNextAssistantSeq, toAssistantSeq: reachable.floors.at(capturedTotal - 1)?.assistantSeq ?? null, processed, cseProcessed });
+              const firstPending = reachable.floors?.[afterExtraction.summaryCompleted] ?? null;
+              const prefix = cseProcessed ? `千千结已补齐 ${cseProcessed} 楼人物状态；` : '千千结发现需要用户确认的历史摘要缺口：';
+              notifyOnce(`authorization:${capturedInputKey ?? inputKey}:${firstPending?.id ?? 'unknown'}:${lastAutoRun.available}`, { kind: 'warning', text: `${prefix}${summaryDebtCopy({ floor: firstPending, count: lastAutoRun.available, retry: '这是历史缺口，不会自动补，请在记忆管理中点击继续。' })}` });
               return notify();
             }
             const summaryWaiting = afterExtraction.summaryCompleted < capturedTotal;
@@ -714,10 +1235,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       } catch (error) {
         if (operation.token === autoEpoch) {
           if (manualHistorical && historicalAuthorization === authorizedChatId) historicalAuthorization = null;
-          if (!manualHistorical) lastAutomaticInputKey = currentInputKey();
+          lastAutomaticInputKey = capturedInputKey ?? currentInputKey();
           lastAutoRun = Object.freeze({ status: 'failed', reason, phase: operation.phase, batchSize: config.batchSize, floorId: operation.floorIds[0] ?? null, assistantSeq: null, message: safeErrorMessage(error?.message ?? '自动记忆失败，将在下一次稳定回复后重试。') });
           logger?.warn?.('[qianqianjie] V3 automatic memory failed', { code: error?.code ?? error?.name ?? 'V3_AUTO_MEMORY_FAILED' });
-          notifyOnce(`outer:${operation.token}:${currentInputKey()}:${operation.phase}`, { kind: 'error', text: `千千结自动记忆未完成：${lastAutoRun.message} 可在记忆管理中点击继续。` });
+          notifyOnce(`outer:${reason}:${capturedInputKey ?? currentInputKey()}:${operation.phase}:${error?.code ?? error?.name ?? 'failed'}`, { kind: 'error', text: `千千结自动记忆未完成：${lastAutoRun.message} 当前未完成摘要楼数无法可靠确认；相同内容不会自动重试，请在记忆管理中点击继续。` });
           notify();
         }
         return getState();
@@ -725,6 +1246,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         if (manualHistorical && historicalAuthorization === authorizedChatId) historicalAuthorization = null;
         if (workRun === operation) workRun = null;
         notify();
+        if (!manualHistorical && operation.token === autoEpoch && hasAutomaticCatchupWork()
+          && lastAutoRun?.status === 'waiting' && lastAutomaticInputKey !== currentInputKey()) {
+          autoTriggerReason ??= 'postBoundaryCatchup';
+        }
+        if (autoTriggerReason && scheduleAllowed(autoTriggerReason)) void scheduleAutomation(autoTriggerReason, autoTriggerAuthorization);
       }
     })();
     return operation.promise;
@@ -732,21 +1258,26 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
 
   function scheduleAllowed(reason) {
     if (!enabled()) return false;
-    return reason === MANUAL_HISTORY_REASON ? Boolean(historicalAuthorization) : automation().enabled;
+    if (reason === MANUAL_HISTORY_REASON) return Boolean(historicalAuthorization);
+    if (reason === 'manualRetry') return automation().enabled;
+    return automation().enabled && lastAutoRun?.status !== 'paused';
   }
 
-  function scheduleAutomation(reason = 'stableAssistant') {
+  function scheduleAutomation(reason = 'stableAssistant', authorization = null) {
     if (!scheduleAllowed(reason)) return Promise.resolve(getState());
     autoTriggerReason = reason;
+    if (authorization) autoTriggerAuthorization = authorization;
     if (autoScheduled) return autoScheduled;
     autoScheduled = Promise.resolve().then(() => {
       if (workRun || active || cseRuntime.getState().activeCse) return getState();
       const nextReason = autoTriggerReason;
+      const nextAuthorization = autoTriggerAuthorization;
       autoTriggerReason = null;
-      return runAutomationBatch(nextReason);
+      autoTriggerAuthorization = null;
+      return runAutomationBatch(nextReason, nextAuthorization);
     }).finally(() => {
       autoScheduled = null;
-      if (autoTriggerReason && !workRun && !active && !cseRuntime.getState().activeCse && scheduleAllowed(autoTriggerReason)) void scheduleAutomation(autoTriggerReason);
+      if (autoTriggerReason && !workRun && !active && !cseRuntime.getState().activeCse && scheduleAllowed(autoTriggerReason)) void scheduleAutomation(autoTriggerReason, autoTriggerAuthorization);
     });
     return autoScheduled;
   }
@@ -763,8 +1294,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         active?.controller.abort();
         cseRuntime.cancelActive?.();
       }
-    } else if (getState().cseFloors.some(floor => floor.status === 'pending')) {
-      return scheduleAutomation('automationEnabledCatchup');
+    } else {
+      notifyConfirmedSummaryBlock();
     }
     return Promise.resolve(notify());
   }
@@ -779,11 +1310,76 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     return Boolean(arm && arm.hostChatId === currentIdentity.hostChatId && arm.chatId === currentIdentity.chatId
       && (arm.narrativeGeneration === null || arm.narrativeGeneration === currentIdentity.narrativeGeneration));
   };
+  const sameHostChatIdentity = (expected, snapshot) => {
+    const currentIdentity = generationIdentity(snapshot);
+    return Boolean(expected && expected.hostChatId === currentIdentity.hostChatId && expected.chatId === currentIdentity.chatId);
+  };
   const isAssistantSlot = message => Boolean(message && typeof message === 'object' && message.is_user === false
     && !isHostNarratorMessage(message) && !(message.is_system === true && message.extra?.type));
   const isValidSentUser = (snapshot, messageIndex) => Boolean(Number.isSafeInteger(messageIndex)
     && selectUserStabilityAnchor(snapshot?.chat?.[messageIndex])
     && isAssistantSlot(snapshot?.chat?.[messageIndex - 1]));
+  const normalizedGenerationType = value => ['swipe', 'regenerate'].includes(value) ? value
+    : [undefined, null, '', 'normal', 'continue'].includes(value) ? 'normal' : null;
+  function captureGenerationLifecycle(type) {
+    let snapshot;
+    try { snapshot = hostAdapter.snapshot(); } catch { generationLifecycle = null; return; }
+    const inferred = normalizedGenerationType(type)
+      ?? (tailSwipeContext || suffixGenerationContext?.kind === 'swipe' ? 'swipe' : null);
+    if (!inferred) { generationLifecycle = null; return; }
+    let targetMessageIndex = inferred === 'normal' ? null : (tailSwipeContext?.messageIndex ?? suffixGenerationContext?.messageIndex ?? null);
+    if (!Number.isSafeInteger(targetMessageIndex)) {
+      for (let index = snapshot.chat.length - 1; index >= 0; index -= 1) {
+        if (isAssistantSlot(snapshot.chat[index])) { targetMessageIndex = index; break; }
+      }
+    }
+    const selected = Number.isSafeInteger(targetMessageIndex) ? selectAssistantMessage(snapshot.chat[targetMessageIndex]) : null;
+    generationLifecycle = Object.freeze({
+      id: `generation:${++generationSequence}`,
+      ...generationIdentity(snapshot),
+      type: inferred,
+      startChatLength: snapshot.chat.length,
+      targetMessageIndex,
+      startRawContent: selected?.rawContent ?? '',
+      startSwipeId: selected?.swipeId ?? null,
+      startSelectedSwipeIndex: selected?.selectedSwipeIndex ?? null,
+      completed: false,
+    });
+  }
+  function completedGenerationSlot(lifecycle, snapshot, messageIndex = null) {
+    if (!lifecycle || lifecycle.completed || !sameGenerationIdentity(lifecycle, snapshot)) return null;
+    if (lifecycle.type === 'normal') return newAssistantSlot(lifecycle, snapshot, { requireContent: true, messageIndex });
+    const index = Number.isSafeInteger(messageIndex) ? messageIndex : lifecycle.targetMessageIndex;
+    const selected = Number.isSafeInteger(index) ? selectAssistantMessage(snapshot.chat?.[index]) : null;
+    if (!selected || !meaningfulText(selected.rawContent)) return null;
+    const changed = selected.rawContent !== lifecycle.startRawContent
+      || selected.swipeId !== lifecycle.startSwipeId
+      || selected.selectedSwipeIndex !== lifecycle.startSelectedSwipeIndex;
+    return changed ? Object.freeze({ messageIndex: index }) : null;
+  }
+  function grantEventCatchup(reason, eventId) {
+    if (!eventId || grantedEventKeys.has(eventId) || !enabled() || !automation().enabled || !hasExplicitInitializationIntent() || lastAutoRun?.status === 'paused') return false;
+    const chatId = reachable?.root?.chatId ?? establishedMemoryChatId;
+    if (!chatId) return false;
+    grantedEventKeys.add(eventId);
+    while (grantedEventKeys.size > 24) grantedEventKeys.delete(grantedEventKeys.values().next().value);
+    const authorization = Object.freeze({ id: eventId, chatId, allowHistoricalDebt: true });
+    autoTriggerReason = reason;
+    autoTriggerAuthorization = authorization;
+    awaitingFoundation = true;
+    memorySnapshotStatus = 'syncing';
+    notify();
+    return true;
+  }
+  function completeGeneration(reason, messageIndex = null) {
+    const lifecycle = generationLifecycle;
+    let snapshot;
+    try { snapshot = hostAdapter.snapshot(); } catch { return false; }
+    const slot = completedGenerationSlot(lifecycle, snapshot, messageIndex);
+    if (!slot) return false;
+    generationLifecycle = Object.freeze({ ...lifecycle, completed: true, messageIndex: slot.messageIndex });
+    return grantEventCatchup(reason, lifecycle.id);
+  }
   function tailSwipeBoundary(messageIndex, expected = null) {
     if (!Number.isSafeInteger(messageIndex)) return null;
     let snapshot;
@@ -805,15 +1401,50 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       stableMessageIndex,
     });
   }
-  const mutationMessageIndex = (name, args) => {
+  const eventMessageIndex = (name, args) => {
+    if (['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED'].includes(name)) return Number.isSafeInteger(args[0]) ? args[0] : null;
+    if (name === 'MESSAGE_SWIPE_DELETED') return Number.isSafeInteger(args[0]?.messageId) ? args[0].messageId : null;
+    return null;
+  };
+  const tailMutationMessageIndex = (name, args) => {
     if (name === 'MESSAGE_SWIPED') return Number.isSafeInteger(args[0]) ? args[0] : null;
     if (name === 'MESSAGE_SWIPE_DELETED') return Number.isSafeInteger(args[0]?.messageId) ? args[0].messageId : null;
     return null;
   };
+  function suffixBoundary(messageIndex, expected = null) {
+    if (!enabled() || !active || !Number.isSafeInteger(messageIndex)
+      || !Number.isSafeInteger(active.dependencyBoundaryMessageIndex)
+      || messageIndex <= active.dependencyBoundaryMessageIndex) return null;
+    let snapshot;
+    try { snapshot = hostAdapter.snapshot(); } catch { return null; }
+    if (!sameHostChatIdentity(active.hostIdentity, snapshot)) return null;
+    if (expected && (expected.runId !== active.runId || expected.messageIndex !== messageIndex
+      || expected.dependencyBoundaryMessageIndex !== active.dependencyBoundaryMessageIndex
+      || !sameHostChatIdentity(expected, snapshot))) return null;
+    return Object.freeze({
+      hostChatId: active.hostIdentity.hostChatId,
+      chatId: active.hostIdentity.chatId,
+      runId: active.runId,
+      messageIndex,
+      dependencyBoundaryMessageIndex: active.dependencyBoundaryMessageIndex,
+    });
+  }
   const meaningfulText = value => {
     const text = typeof value === 'string' ? value.trim() : '';
     return text !== '' && text !== '...';
   };
+  function isStoppedGenerationFinal(name, args, messageIndex = eventMessageIndex(name, args)) {
+    const stopped = stoppedGenerationFinal;
+    if (name !== 'MESSAGE_RECEIVED' || !stopped) return false;
+    let snapshot;
+    try { snapshot = hostAdapter.snapshot(); } catch { return false; }
+    if (!sameGenerationIdentity(stopped, snapshot)) return false;
+    const index = Number.isSafeInteger(messageIndex) ? messageIndex : snapshot.chat?.length - 1;
+    const selected = Number.isSafeInteger(index) ? selectAssistantMessage(snapshot.chat?.[index]) : null;
+    if (!selected || !meaningfulText(selected.rawContent)) return false;
+    if (stopped.type === 'normal') return index === stopped.targetMessageIndex || index >= stopped.startChatLength;
+    return index === stopped.targetMessageIndex;
+  }
   function newAssistantSlot(arm, snapshot, { requireContent = false, messageIndex = null } = {}) {
     if (!arm || !Array.isArray(snapshot?.chat)) return null;
     const start = Math.max(0, arm.startChatLength);
@@ -830,7 +1461,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
   function armEarlyGeneration(type) {
     generationArm = null;
-    if (!enabled() || !automation().enabled || typeof foundationRuntime.stabilizeThrough !== 'function') return;
+    if (!enabled() || !automation().enabled || !hasExplicitInitializationIntent()
+      || typeof foundationRuntime.stabilizeThrough !== 'function') return;
     if (!(type === undefined || type === null || type === '' || type === 'normal')) return;
     let snapshot;
     try { snapshot = hostAdapter.snapshot(); } catch { return; }
@@ -867,7 +1499,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
 
   function bind({ eventSource, eventTypes } = hostAdapter.snapshot()) {
-    foundationRuntime.bind({ eventSource, eventTypes });
+    try { observedHostChatLength = hostAdapter.snapshot()?.chat?.length ?? 0; } catch { observedHostChatLength = 0; }
+    foundationRuntime.bind({ eventSource, eventTypes, allowAutomaticWrite: (name, args) => {
+      const identityAllowed = ['CHAT_CHANGED', 'CHAT_RENAMED'].includes(name) ? hasEstablishedChat() : hasExplicitInitializationIntent();
+      return identityAllowed && !isStoppedGenerationFinal(name, args);
+    } });
     if (bound || !eventSource?.on || !eventTypes) return false;
     const drainFoundationReload = () => {
       if (foundationReload) return foundationReload;
@@ -904,6 +1540,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (generationStartedEvent && generationStoppedEvent && generationEndedEvent) {
       eventSource.on(generationStartedEvent, (type, _options, dryRun) => {
         if (dryRun === true) return;
+        stoppedGenerationFinal = null;
+        if (suffixGenerationContext && ((suffixGenerationContext.kind === 'swipe' && type !== 'swipe')
+          || (suffixGenerationContext.kind === 'normal' && ![undefined, null, '', 'normal', 'continue'].includes(type))
+          || !suffixBoundary(suffixGenerationContext.messageIndex, suffixGenerationContext))) suffixGenerationContext = null;
         if (type !== 'swipe' || tailSwipeContext?.stopped === true) tailSwipeContext = null;
         else if (tailSwipeContext && !tailSwipeBoundary(tailSwipeContext.messageIndex, tailSwipeContext)) tailSwipeContext = null;
         if (formalGenerationActive) {
@@ -911,12 +1551,24 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           return;
         }
         formalGenerationActive = true;
+        captureGenerationLifecycle(type);
         armEarlyGeneration(type);
         if (active?.phase === 'resetting') { epoch += 1; active.controller.abort('generationStarted'); }
       });
       eventSource.on(generationStoppedEvent, () => {
         formalGenerationActive = false;
         generationArm = null;
+        stoppedGenerationFinal = generationLifecycle;
+        generationLifecycle = null;
+        if (suffixGenerationContext && suffixGenerationContext.stopped !== true
+          && suffixBoundary(suffixGenerationContext.messageIndex, suffixGenerationContext)) {
+          suffixGenerationContext = Object.freeze({ ...suffixGenerationContext, stopped: true });
+          awaitingFoundation = true;
+          memorySnapshotStatus = 'syncing';
+          notify();
+          return;
+        }
+        suffixGenerationContext = null;
         if (tailSwipeContext && tailSwipeContext.stopped !== true && tailSwipeBoundary(tailSwipeContext.messageIndex, tailSwipeContext)) {
           tailSwipeContext = Object.freeze({ ...tailSwipeContext, stopped: true });
           awaitingFoundation = true;
@@ -931,6 +1583,14 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       eventSource.on(generationEndedEvent, () => {
         formalGenerationActive = false;
         if (!generationArm?.proven) generationArm = null;
+        if (completeGeneration('generationCompleted')) {
+          void Promise.resolve(foundationRuntime.reconcile?.('GENERATION_ENDED'))
+            .then(() => drainFoundationReload())
+            .catch(error => {
+              lastFailure = Object.freeze({ floorId: null, runId: null, phase: 'foundation', code: error?.code ?? 'V3_FOUNDATION_FAILED', attempts: 0, validationErrors: [], api: null, message: safeErrorMessage(error?.message) });
+              notify();
+            });
+        }
       });
     }
     const streamTokenEvent = eventTypes.STREAM_TOKEN_RECEIVED;
@@ -941,12 +1601,36 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const eventName = eventTypes[name]; if (!eventName) continue;
       eventSource.on(eventName, (...args) => {
         const finalType = args[1];
+        let eventSnapshot = null;
         if (name === 'MESSAGE_SENT') {
-          let snapshot;
-          try { snapshot = hostAdapter.snapshot(); } catch { return; }
-          if (!isValidSentUser(snapshot, args[0])) return;
+          try { eventSnapshot = hostAdapter.snapshot(); } catch { return; }
+          if (!isValidSentUser(eventSnapshot, args[0])) return;
         }
-        const tailMutationIndex = mutationMessageIndex(name, args);
+        const messageIndex = eventMessageIndex(name, args);
+        if (isStoppedGenerationFinal(name, args, messageIndex)) {
+          tailSwipeContext = null;
+          suffixGenerationContext = null;
+          awaitingFoundation = true;
+          memorySnapshotStatus = 'syncing';
+          notify();
+          return;
+        }
+        const preservedSuffix = messageIndex === null ? null : suffixBoundary(messageIndex);
+        if (preservedSuffix) {
+          if (name === 'MESSAGE_SWIPED') suffixGenerationContext = Object.freeze({ ...preservedSuffix, kind: 'swipe', stopped: false });
+          else if (name === 'MESSAGE_SENT') {
+            suffixGenerationContext = Object.freeze({ ...preservedSuffix, kind: 'normal', stopped: false });
+            grantEventCatchup('newUserAnchor', `user:${preservedSuffix.chatId}:${messageIndex}:${eventSnapshot?.chat?.[messageIndex]?.send_date ?? ''}`);
+          } else if (name === 'MESSAGE_RECEIVED') {
+            suffixGenerationContext = null;
+            completeGeneration('generationCompleted', messageIndex);
+          }
+          awaitingFoundation = true;
+          memorySnapshotStatus = 'syncing';
+          notify();
+          return;
+        }
+        const tailMutationIndex = tailMutationMessageIndex(name, args);
         const tailBoundary = tailMutationIndex === null ? null : tailSwipeBoundary(tailMutationIndex);
         if (tailBoundary) {
           if (name === 'MESSAGE_SWIPED' && args[1]?.pendingGeneration === true) tailSwipeContext = tailBoundary;
@@ -961,9 +1645,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         if (sameTailFinal) {
           tailSwipeContext = null;
           generationArm = null;
-          awaitingFoundation = true;
-          memorySnapshotStatus = 'syncing';
-          notify();
+          if (!completeGeneration('generationCompleted', messageIndex)) {
+            let selected = null;
+            try { selected = selectAssistantMessage(hostAdapter.snapshot()?.chat?.[messageIndex]); } catch { /* inspected below */ }
+            grantEventCatchup('trustedSwipeFinal', `final:swipe:${messageIndex}:${selected?.swipeId ?? ''}:${selected?.selectedSwipeIndex ?? ''}:${selected?.rawContent ?? ''}`);
+          }
           return;
         }
         const sameEarlyFinal = name === 'MESSAGE_RECEIVED' && generationArm?.proven
@@ -977,14 +1663,55 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         })();
         if (sameEarlyFinal) {
           generationArm = null;
+          if (!completeGeneration('generationCompleted', messageIndex)) {
+            grantEventCatchup('newAssistant', `assistant:${generationIdentity(hostAdapter.snapshot()).chatId}:${messageIndex}:${observedHostChatLength}`);
+          }
+          return;
+        }
+        if (name === 'MESSAGE_SENT') {
+          stoppedGenerationFinal = null;
+          const key = `user:${generationIdentity(eventSnapshot).chatId}:${messageIndex}:${eventSnapshot?.chat?.[messageIndex]?.send_date ?? ''}`;
+          grantEventCatchup('newUserAnchor', key);
+          observedHostChatLength = Math.max(observedHostChatLength, eventSnapshot?.chat?.length ?? 0);
           awaitingFoundation = true;
           memorySnapshotStatus = 'syncing';
-          if (automation().enabled) autoTriggerReason = 'MESSAGE_RECEIVED';
+          notify();
+          return;
+        }
+        if (name === 'MESSAGE_RECEIVED') {
+          if (generationArm?.proven) {
+            generationArm = null;
+            generationLifecycle = null;
+            cancelEarlyStabilization('mismatchedGenerationFinal');
+            cancelAutomation();
+          }
+          try { eventSnapshot = hostAdapter.snapshot(); } catch {
+            awaitingFoundation = true;
+            memorySnapshotStatus = 'syncing';
+            notify();
+            return;
+          }
+          const lifecycleCompleted = completeGeneration('generationCompleted', messageIndex);
+          const appendedIndex = Number.isSafeInteger(messageIndex) ? messageIndex : eventSnapshot.chat?.length - 1;
+          const appended = Number.isSafeInteger(appendedIndex) && appendedIndex >= observedHostChatLength
+            && isAssistantSlot(eventSnapshot.chat?.[appendedIndex])
+            && meaningfulText(selectAssistantMessage(eventSnapshot.chat?.[appendedIndex])?.rawContent);
+          if (!lifecycleCompleted && appended) {
+            grantEventCatchup('newAssistant', `assistant:${generationIdentity(eventSnapshot).chatId}:${appendedIndex}:${observedHostChatLength}`);
+          } else if (!lifecycleCompleted && ['swipe', 'regenerate'].includes(finalType)) {
+            const selected = Number.isSafeInteger(appendedIndex) ? selectAssistantMessage(eventSnapshot.chat?.[appendedIndex]) : null;
+            if (selected && meaningfulText(selected.rawContent)) grantEventCatchup('trustedGenerationFinal', `final:${finalType}:${appendedIndex}:${selected.swipeId ?? ''}:${selected.selectedSwipeIndex ?? ''}:${selected.rawContent}`);
+          }
+          observedHostChatLength = Math.max(observedHostChatLength, eventSnapshot.chat?.length ?? 0);
+          awaitingFoundation = true;
+          memorySnapshotStatus = 'syncing';
           notify();
           return;
         }
         generationArm = null;
+        generationLifecycle = null;
         tailSwipeContext = null;
+        suffixGenerationContext = null;
         cancelEarlyStabilization(name);
         cancelAutomation();
         epoch += 1;
@@ -1009,12 +1736,18 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
   async function start() {
     if (!enabled()) return notify();
-    await foundationRuntime.start();
+    if (typeof foundationRuntime.inspect === 'function') await foundationRuntime.inspect('memoryStart');
+    else await foundationRuntime.start();
     const state = await load();
-    if (automation().enabled && state.cseFloors.some(floor => floor.status === 'pending')) void scheduleAutomation('startupCatchup');
+    notifyConfirmedSummaryBlock(state);
     return state;
   }
-  async function setEnabled(value) { if (value !== true) invalidate(); await foundationRuntime.setEnabled(value); if (value !== true) return notify(); return load(); }
+  async function setEnabled(value) {
+    if (value !== true) { invalidate(); await foundationRuntime.setEnabled(value); return notify(); }
+    if (typeof foundationRuntime.inspect === 'function') await foundationRuntime.inspect('memoryEnabled');
+    else await foundationRuntime.setEnabled(value);
+    return load();
+  }
   async function startHistoricalRebuild() {
     while (autoScheduled || workRun?.promise) await (autoScheduled ?? workRun.promise);
     if (!enabled()) return notify();
@@ -1022,7 +1755,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       try { notifyUser?.({ kind: 'warning', text: '主模型正在生成，请等待完成后再开始重建。' }); } catch { /* notification is advisory */ }
       return notify();
     }
-    await refreshStatus();
+    await foundationRuntime.refreshStatus(MANUAL_HISTORY_REASON);
+    await load(epoch, foundationRuntime.getReachable?.() ?? null);
     const assessment = await refreshCoverage();
     if (mainGenerationActive()) {
       try { notifyUser?.({ kind: 'warning', text: '主模型正在生成，请等待完成后再开始重建。' }); } catch { /* notification is advisory */ }

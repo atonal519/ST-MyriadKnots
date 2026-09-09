@@ -2,11 +2,15 @@ import { sha256 } from '../identity.js';
 import { sanitizeSensitiveText } from './safe-metadata.js';
 import { coverageHostGuardCurrent } from './memory-coverage.js';
 import { projectRecallSource, readRecallSource } from './recall-source.js';
-import { buildRecallQueryContext, buildRecallQueryFrame, selectRecall } from './recall-selector.js';
+import { buildRecallQueryContext, buildRecallQueryFrame } from './recall-selector.js';
+import { selectRecallWithLlm } from './recall-llm-selector.js';
+import { selectAssistantMessage } from './foundation-domain.js';
+import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
-export const RECALL_RECEIPT_SCHEMA_VERSION = 6;
+export const RECALL_RECEIPT_SCHEMA_VERSION = 9;
+export const RECALL_STRATEGY_VERSION = 'continuity-v1';
 
 const SUPPORTED_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 const MAIN_GENERATION_TYPES = new Set([...SUPPORTED_TYPES, 'impersonate']);
@@ -43,11 +47,14 @@ function sourceRefsValid(receipt, source) {
   });
 }
 
-const receiptMaterial = receipt => [
+const legacyReceiptMaterial = receipt => [
   receipt.schemaVersion, receipt.pluginVersion, receipt.chatId, receipt.narrativeGeneration, receipt.headCheckpointId, receipt.rootRevision,
   receipt.userMessageIndex, receipt.userContentFingerprint, receipt.queryFingerprint, receipt.generationType,
   receipt.selectedFloors, receipt.selectedStates, receipt.coverage, receipt.injectionText, receipt.stages, receipt.skipReasons, receipt.completionStatus, receipt.createdAt,
 ];
+const receiptMaterial = receipt => receipt.schemaVersion >= 9
+  ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion]
+  : receipt.schemaVersion >= 8 ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint] : legacyReceiptMaterial(receipt);
 
 const boundedString = (value, maximum, { empty = false } = {}) => typeof value === 'string' && value.length <= maximum && (empty || value.length > 0);
 const optionalBoundedString = (value, maximum) => value === null || boundedString(value, maximum);
@@ -64,6 +71,8 @@ function receiptShapeValid(receipt) {
     || !nonNegativeInteger(receipt.userMessageIndex)
     || !boundedString(receipt.userContentFingerprint, 200)
     || !boundedString(receipt.queryFingerprint, 200)
+    || (receipt.schemaVersion >= 8 && !boundedString(receipt.bodyMatchFingerprint, 200))
+    || (receipt.schemaVersion >= 9 && receipt.strategyVersion !== RECALL_STRATEGY_VERSION)
     || !SUPPORTED_TYPES.has(receipt.generationType)
     || !Array.isArray(receipt.selectedFloors) || receipt.selectedFloors.length > MAX_RECEIPT_FLOORS
     || !Array.isArray(receipt.selectedStates) || receipt.selectedStates.length > MAX_RECEIPT_STATES
@@ -90,7 +99,8 @@ function receiptShapeValid(receipt) {
     || !Array.isArray(receipt.coverage.missingAssistantSeq) || receipt.coverage.missingAssistantSeq.length > 10000
     || !receipt.coverage.missingAssistantSeq.every(value => Number.isSafeInteger(value) && value > 0))) return false;
   if (receipt.stages !== null && (typeof receipt.stages !== 'object' || Array.isArray(receipt.stages)
-    || !['input', 'candidates', 'dropRecent', 'dropPersistent', 'dropVisibility', 'selected'].every(key => nonNegativeInteger(receipt.stages[key])))) return false;
+    || !['input', 'candidates', 'dropRecent', 'dropPersistent', 'dropVisibility', 'selected'].every(key => nonNegativeInteger(receipt.stages[key]))
+    || (receipt.schemaVersion >= 9 && !['recentSummaryCount', 'distantHistoryItemCount', 'stateCount'].every(key => nonNegativeInteger(receipt.stages[key]))))) return false;
   return receipt.skipReasons.every(reason => boundedString(reason, 120));
 }
 
@@ -107,6 +117,7 @@ async function receiptValid(receipt, { source, userIndex, userFingerprint, query
       || snapshot.userMessageIndex !== userIndex
       || snapshot.userContentFingerprint !== userFingerprint
       || snapshot.queryFingerprint !== queryFingerprint
+      || snapshot.bodyMatchFingerprint !== source.bodyMatch?.fingerprint
       || snapshot.receiptFingerprint !== await fingerprint(JSON.stringify(receiptMaterial(snapshot)))
       || !sourceRefsValid(snapshot, source)) return null;
     return snapshot;
@@ -121,6 +132,21 @@ async function persistedReceiptValid(receipt, { chatId, userIndex, userFingerpri
     if (!receiptShapeValid(snapshot)
       || snapshot.schemaVersion !== RECALL_RECEIPT_SCHEMA_VERSION
       || snapshot.pluginVersion !== pluginVersion
+      || snapshot.chatId !== chatId
+      || snapshot.userMessageIndex !== userIndex
+      || snapshot.userContentFingerprint !== userFingerprint
+      || snapshot.receiptFingerprint !== await fingerprint(JSON.stringify(receiptMaterial(snapshot)))) return null;
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+async function historicalSignedReceiptValid(receipt, { chatId, userIndex, userFingerprint }, fingerprint = hashText) {
+  try {
+    const snapshot = clone(receipt);
+    if (!receiptShapeValid(snapshot)
+      || ![6, 7, 8, RECALL_RECEIPT_SCHEMA_VERSION].includes(snapshot.schemaVersion)
       || snapshot.chatId !== chatId
       || snapshot.userMessageIndex !== userIndex
       || snapshot.userContentFingerprint !== userFingerprint
@@ -186,19 +212,144 @@ export async function projectHistoricalRecallReceipt(message, { chatId, userMess
     || typeof fingerprint !== 'function') return null;
   const receipt = message.extra?.[RECALL_RECEIPT_KEY];
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return null;
-  if (receipt.schemaVersion === RECALL_RECEIPT_SCHEMA_VERSION) {
-    const snapshot = await persistedReceiptValid(receipt, {
+  if ([6, 7, 8, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
+    const snapshot = await historicalSignedReceiptValid(receipt, {
       chatId: chatId.trim(),
       userIndex: userMessageIndex,
       userFingerprint: await fingerprint(message.mes),
-      pluginVersion: receipt.pluginVersion,
     }, fingerprint);
     return snapshot ? stateFromReceipt(snapshot, { restoredReceipt: true }) : null;
   }
   return legacyStateFromReceipt(receipt, { chatId: chatId.trim(), userIndex: userMessageIndex });
 }
 
-export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, automationSettings = () => ({ enabled: false }), memoryStatus = () => null, historicalMaintenance = () => false, realtimeOrigin = () => false, notifyUser = null, sourceReader = readRecallSource, selector = selectRecall, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), now = () => new Date(), pluginVersion = '0.2.27', logger = console } = {}) {
+async function captureCoreBodyWitness(coreChat, sanitizerOptions, fingerprint) {
+  const chat = Array.isArray(coreChat) ? coreChat : [];
+  const selected = [];
+  for (let index = chat.length - 1; index >= 0 && selected.length < 3; index -= 1) {
+    const message = chat[index];
+    if (!message || message.is_system === true || message.is_hidden === true || message.hidden === true) continue;
+    if (message.is_user !== false || typeof message.mes !== 'string') continue;
+    const rawContent = message.mes.replace(/\r\n?/g, '\n');
+    if (!rawContent.trim()) continue;
+    const canonical = sanitizeMemoryContent(rawContent, sanitizerOptions);
+    if (!canonical) continue;
+    selected.push(Object.freeze({
+      coreIndex: index, message, rawContent, canonicalContent: canonical,
+      rawFingerprint: await fingerprint(rawContent),
+      canonicalFingerprint: await fingerprint(canonical),
+    }));
+  }
+  return Object.freeze(selected.reverse());
+}
+
+async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, fingerprint) {
+  const verified = [];
+  for (const ref of source.bodyMatchRefs ?? []) {
+    const liveMessage = snapshot?.chat?.[ref.hostLocator?.messageIndex];
+    const selected = selectAssistantMessage(liveMessage);
+    if (!selected || selected.swipeId !== ref.hostLocator.swipeId || selected.selectedSwipeIndex !== ref.hostLocator.selectedSwipeIndex) continue;
+    const canonical = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
+    const [rawFingerprint, canonicalFingerprint] = await Promise.all([fingerprint(selected.rawContent), fingerprint(canonical)]);
+    if (rawFingerprint !== ref.rawFingerprint || canonicalFingerprint !== ref.canonicalFingerprint) continue;
+    verified.push({ ...ref, liveMessage, liveIndex: ref.hostLocator.messageIndex, key: `${rawFingerprint}|${canonicalFingerprint}` });
+  }
+  const materialFor = covered => ({
+    version: 1,
+    witnesses: witness.map(item => [item.coreIndex, item.rawFingerprint, item.canonicalFingerprint]),
+    covered: covered.map(item => [item.floorId, item.floorMemoryId, item.assistantSeq, item.rawFingerprint, item.canonicalFingerprint]),
+  });
+  const resultFor = async covered => Object.freeze({
+    fingerprint: await fingerprint(JSON.stringify(materialFor(covered))),
+    witnessCount: witness.length,
+    matchedCount: covered.length,
+    coveredFloorIds: Object.freeze(covered.map(item => item.floorId)),
+    coveredRefs: Object.freeze(covered.map(item => Object.freeze({ floorId: item.floorId, floorMemoryId: item.floorMemoryId, assistantSeq: item.assistantSeq }))),
+  });
+  if (!verified.length || !witness.length) return resultFor([]);
+  const liveCandidates = [];
+  for (let liveIndex = 0; liveIndex < (snapshot?.chat?.length ?? 0); liveIndex += 1) {
+    const liveMessage = snapshot.chat[liveIndex];
+    if (!liveMessage || liveMessage.is_system === true || liveMessage.is_hidden === true || liveMessage.hidden === true) continue;
+    const selected = selectAssistantMessage(liveMessage);
+    if (!selected?.rawContent?.trim()) continue;
+    const canonicalContent = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
+    if (!canonicalContent) continue;
+    liveCandidates.push({ liveIndex, liveMessage, rawContent: selected.rawContent, canonicalContent });
+  }
+  const witnessCounts = new Map();
+  for (const item of witness) {
+    const key = `${item.rawFingerprint}|${item.canonicalFingerprint}`;
+    witnessCounts.set(key, (witnessCounts.get(key) ?? 0) + 1);
+  }
+  const tentative = [];
+  for (const item of witness) {
+    const key = `${item.rawFingerprint}|${item.canonicalFingerprint}`;
+    const identity = verified.find(ref => ref.liveMessage === item.message && ref.key === key);
+    const liveMatches = witnessCounts.get(key) === 1
+      ? liveCandidates.filter(candidate => candidate.rawContent === item.rawContent && candidate.canonicalContent === item.canonicalContent)
+      : [];
+    const cloneLive = liveMatches.length === 1 ? liveMatches[0] : null;
+    const match = identity ?? (cloneLive ? verified.find(ref => ref.liveIndex === cloneLive.liveIndex && ref.key === key) : null);
+    if (match) tentative.push({ coreIndex: item.coreIndex, match, identity: Boolean(identity) });
+  }
+  tentative.sort((left, right) => left.coreIndex - right.coreIndex);
+  const covered = [];
+  let previousSeq = 0;
+  for (const entry of tentative) {
+    if (entry.match.assistantSeq <= previousSeq) continue;
+    covered.push(entry.match);
+    previousSeq = entry.match.assistantSeq;
+  }
+  return resultFor(covered);
+}
+
+const sameBodyRef = (left, right) => Boolean(left && right
+  && left.floorId === right.floorId
+  && left.floorMemoryId === right.floorMemoryId
+  && left.assistantSeq === right.assistantSeq
+  && left.rawFingerprint === right.rawFingerprint
+  && left.canonicalFingerprint === right.canonicalFingerprint
+  && left.hostLocator?.messageIndex === right.hostLocator?.messageIndex
+  && left.hostLocator?.swipeId === right.hostLocator?.swipeId
+  && left.hostLocator?.selectedSwipeIndex === right.hostLocator?.selectedSwipeIndex);
+
+async function captureCoveredBodyGuards(source, currentSource, snapshot, sanitizerOptions, fingerprint) {
+  const sourceRefs = new Map((source.bodyMatchRefs ?? []).map(ref => [`${ref.floorId}|${ref.floorMemoryId}|${ref.assistantSeq}`, ref]));
+  const currentRefs = new Map((currentSource.bodyMatchRefs ?? []).map(ref => [`${ref.floorId}|${ref.floorMemoryId}|${ref.assistantSeq}`, ref]));
+  const guards = [];
+  for (const covered of source.bodyMatch?.coveredRefs ?? []) {
+    const key = `${covered.floorId}|${covered.floorMemoryId}|${covered.assistantSeq}`;
+    const original = sourceRefs.get(key);
+    const current = currentRefs.get(key);
+    if (!sameBodyRef(original, current)) return null;
+    const message = snapshot?.chat?.[current.hostLocator.messageIndex];
+    const selected = selectAssistantMessage(message);
+    if (!selected || selected.swipeId !== current.hostLocator.swipeId || selected.selectedSwipeIndex !== current.hostLocator.selectedSwipeIndex) return null;
+    const canonicalContent = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
+    const [rawFingerprint, canonicalFingerprint] = await Promise.all([fingerprint(selected.rawContent), fingerprint(canonicalContent)]);
+    if (rawFingerprint !== current.rawFingerprint || canonicalFingerprint !== current.canonicalFingerprint) return null;
+    guards.push(Object.freeze({
+      hostLocator: current.hostLocator,
+      rawContent: selected.rawContent,
+      canonicalContent,
+    }));
+  }
+  return Object.freeze(guards);
+}
+
+function coveredBodyGuardsCurrent(guards, snapshot, sanitizerOptions) {
+  return guards.every(guard => {
+    const selected = selectAssistantMessage(snapshot?.chat?.[guard.hostLocator.messageIndex]);
+    return Boolean(selected
+      && selected.swipeId === guard.hostLocator.swipeId
+      && selected.selectedSwipeIndex === guard.hostLocator.selectedSwipeIndex
+      && selected.rawContent === guard.rawContent
+      && sanitizeMemoryContent(selected.rawContent, sanitizerOptions) === guard.canonicalContent);
+  });
+}
+
+export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, isEnabled = true, automationSettings = () => ({ enabled: false }), memoryStatus = () => null, historicalMaintenance = () => false, realtimeOrigin = () => false, notifyUser = null, sourceReader = readRecallSource, selector = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), now = () => new Date(), pluginVersion = '0.2.27', logger = console } = {}) {
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 recall host adapter 无效');
   if (typeof fingerprint !== 'function') throw new TypeError('V3 recall fingerprint 无效');
@@ -209,11 +360,16 @@ export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, au
   const currentSanitizerOptions = () => { try { return typeof sanitizerOptions === 'function' ? sanitizerOptions() : sanitizerOptions; } catch { return {}; } };
   const maintenanceActive = () => { try { return (typeof historicalMaintenance === 'function' ? historicalMaintenance() : historicalMaintenance) === true; } catch { return false; } };
   const hasRealtimeOrigin = () => { try { return (typeof realtimeOrigin === 'function' ? realtimeOrigin() : realtimeOrigin) === true; } catch { return false; } };
+  const selectionRunner = typeof selector === 'function'
+    ? selector
+    : input => selectRecallWithLlm({ ...input, generateUtilityTask, signal: input.signal });
   const readinessReasons = source => {
     const memory = (() => { try { return typeof memoryStatus === 'function' ? memoryStatus() : memoryStatus; } catch { return null; } })();
-    if (memory?.activeAutoMemory) return ['memoryRebuilding'];
+    if (memory?.activeAutoMemory?.mode === 'historical') return ['memoryRebuilding'];
     if (!source?.readiness || ['caughtUp', 'realtimeTail'].includes(source.readiness.status)) return [];
     if (source.readiness.status === 'unknown') return ['memoryNotReady', 'coverageUnconfirmed'];
+    if (source.readiness.summaryStatus === 'caughtUp') return [];
+    if (memory?.activeAutoMemory?.mode === 'realtime' && ['caughtUp', 'realtimeTail'].includes(source.readiness.summaryStatus)) return [];
     if (memory?.lastAutoMemory?.status === 'failed') return ['memoryNotReady', 'memoryRebuildFailed'];
     return ['memoryNotReady', 'historicalRebuildRequired'];
   };
@@ -232,7 +388,7 @@ export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, au
     try { prompt('', null); return true; }
     catch (error) { logger?.warn?.('[qianqianjie] V3 recall prompt cleanup failed', { code: error?.code ?? error?.name ?? 'V3_RECALL_CLEAR_FAILED' }); return false; }
   };
-  const sessionKey = ({ source, userIndex, userFingerprint, queryFingerprint }) => [source.chatId, source.narrativeGeneration, source.headCheckpointId, source.rootRevision, userIndex, userFingerprint, queryFingerprint].join('|');
+  const sessionKey = ({ source, userIndex, userFingerprint, queryFingerprint }) => [source.chatId, source.narrativeGeneration, source.headCheckpointId, source.rootRevision, userIndex, userFingerprint, queryFingerprint, source.bodyMatch?.fingerprint ?? ''].join('|');
 
   const bindLastRecall = (snapshot, user) => {
     lastRecallBinding = snapshot && user ? Object.freeze({ chatId: currentChatId(snapshot), userMessageIndex: user.index, message: user.message, text: user.message.mes }) : null;
@@ -303,6 +459,9 @@ export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, au
     const notReady = enforceReadiness ? readinessReasons(currentSource) : [];
     if (notReady.length) return { ok: false, notReady: true, reasons: notReady };
     if (!sourceRefsValid({ selectedFloors, selectedStates }, currentSource)) return { ok: false, reason: 'selectedRefsChanged' };
+    const bodyGuardSanitizer = currentSanitizerOptions();
+    const coveredBodyGuards = await captureCoveredBodyGuards(source, currentSource, before, bodyGuardSanitizer, fingerprint);
+    if (coveredBodyGuards === null) return { ok: false, reason: 'narrativeChanged' };
     if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };
     // This is the final synchronous commit point. No promise/microtask boundary may be
     // inserted between the host-visible snapshot checks and setExtensionPrompt.
@@ -315,7 +474,8 @@ export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, au
       && afterUser.message === hostGuard.userMessage
       && afterUser.message === beforeUser.message
       && afterUser.message.mes === hostGuard.userText
-      && liveRecallFrameKey(after) === operation.liveFrameKey;
+      && liveRecallFrameKey(after) === operation.liveFrameKey
+      && coveredBodyGuardsCurrent(coveredBodyGuards, after, bodyGuardSanitizer);
     if (!current) {
       if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };
       if (currentChatId(after) !== source.chatId) return { ok: false, reason: 'chatChanged' };
@@ -358,7 +518,10 @@ export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, au
       operation.chatId = currentChatId(before);
       operation.userText = user.message.mes;
       operation.liveFrameKey = liveRecallFrameKey(before);
-      const queryContext = queryBuilder({ coreChat: Array.isArray(coreChat) ? coreChat : [], assistantTurns: 1 });
+      const sanitizerSnapshot = currentSanitizerOptions();
+      const coreInput = Array.isArray(coreChat) ? coreChat : [];
+      const queryContext = queryBuilder({ coreChat: coreInput, assistantTurns: 1 });
+      const coreBodyWitness = await captureCoreBodyWitness(coreInput, sanitizerSnapshot, fingerprint);
       coreChat = null;
       const hostGuard = { userMessage: user.message, userText: user.message.mes };
       if (!queryContext.latestUserText) return finishSkipped(operation, 'emptyUserInput', timings);
@@ -367,7 +530,10 @@ export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, au
       timings.inputMs = Date.now() - inputStarted;
       operation.phase = 'source'; notify();
       const sourceStarted = Date.now();
-      const source = await sourceReader({ store, now, hostSnapshot: before, sanitizerOptions: currentSanitizerOptions(), realtimeOrigin: hasRealtimeOrigin() });
+      const readSource = await sourceReader({ store, now, hostSnapshot: before, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin() });
+      const source = readSource?.status === 'ready'
+        ? Object.freeze({ ...readSource, bodyMatch: await attachCoreBodyMatch(readSource, coreBodyWitness, before, sanitizerSnapshot, fingerprint) })
+        : readSource;
       timings.sourceMs = Date.now() - sourceStarted;
       if (source?.sourceReadAttempts) timings.sourceReadAttempts = clone(source.sourceReadAttempts);
       if (source.status !== 'ready') return finishSkipped(operation, source.status === 'stale' ? 'sourceStale' : 'sourceUnavailable', timings);
@@ -396,8 +562,9 @@ export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, au
       }
       operation.phase = 'selecting'; notify();
       const selectorStarted = Date.now();
-      const selection = selector({ source, queryContext, contextSize });
+      const selection = await selectionRunner({ source, queryContext, contextSize, signal: operation.controller.signal });
       timings.selectorMs = Date.now() - selectorStarted;
+      if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       const receiptBase = {
         schemaVersion: RECALL_RECEIPT_SCHEMA_VERSION,
         pluginVersion,
@@ -408,6 +575,8 @@ export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, au
         userMessageIndex: user.index,
         userContentFingerprint: userFingerprint,
         queryFingerprint,
+        bodyMatchFingerprint: source.bodyMatch.fingerprint,
+        strategyVersion: RECALL_STRATEGY_VERSION,
         generationType: type,
         selectedFloors: selection.floors.map(value => ({ floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq, reasons: [...value.reasons] })),
         selectedStates: selection.states.map(value => ({ subjectEntityId: value.subjectEntityId, subject: value.subject, layer: value.layer, towardEntityId: value.towardEntityId, toward: value.toward, text: value.text, reason: value.reason, visibility: value.visibility, sourceAssistantSeq: value.sourceAssistantSeq })),
@@ -421,6 +590,9 @@ export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, au
       const committed = await commitPromptIfCurrent({ operation, source, selectedFloors: receiptBase.selectedFloors, selectedStates: receiptBase.selectedStates, userIndex: user.index, userFingerprint, hostGuard, injectionText: receiptBase.injectionText });
       if (!committed.ok) return committed.notReady ? finishSkipped(operation, committed.reasons, timings) : finishStale(operation, timings, committed.reason);
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
+      if (receiptBase.skipReasons.includes('historySelectionFallback')) {
+        try { notifyUser?.({ kind: 'warning', text: '历史智能选材暂时不可用，本次已使用本地关键词召回。' }); } catch { /* notification must not affect recall */ }
+      }
       const sealedReceipt = Object.freeze({ ...receiptBase, receiptFingerprint: await fingerprint(JSON.stringify(receiptMaterial(receiptBase))) });
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       operation.phase = 'receipt'; notify();
@@ -564,9 +736,15 @@ export function createV3RecallRuntime({ store, hostAdapter, isEnabled = true, au
       const receipt = user?.message?.extra?.[RECALL_RECEIPT_KEY];
       if (!user || !chatId || !receipt || typeof receipt !== 'object') return getState();
       const messageText = user.message.mes;
-      const receiptSnapshot = receipt.schemaVersion === RECALL_RECEIPT_SCHEMA_VERSION
-        ? await persistedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: await fingerprint(messageText), pluginVersion }, fingerprint)
-        : legacyStateFromReceipt(receipt, { chatId, userIndex: user.index });
+      const persistedUserFingerprint = await fingerprint(messageText);
+      let receiptSnapshot = receipt.schemaVersion === RECALL_RECEIPT_SCHEMA_VERSION
+        ? await persistedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint, pluginVersion }, fingerprint)
+        : null;
+      if (!receiptSnapshot && [6, 7, 8].includes(receipt.schemaVersion)) {
+        const historical = await historicalSignedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint }, fingerprint);
+        if (historical) receiptSnapshot = Object.freeze({ ...stateFromReceipt(historical, { restoredReceipt: true }), legacyReadOnly: true });
+      }
+      if (!receiptSnapshot) receiptSnapshot = legacyStateFromReceipt(receipt, { chatId, userIndex: user.index });
       if (!receiptSnapshot) return getState();
       const after = hostAdapter.snapshot();
       const afterUser = latestUser(after);

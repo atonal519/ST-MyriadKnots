@@ -117,6 +117,7 @@ const v3MemoryRuntime = createV3MemoryRuntime({
 v3RecallRuntime = createV3RecallRuntime({
   store: foundationStore,
   hostAdapter,
+  generateUtilityTask: taskRouter.generateUtilityTask,
   isEnabled: settings.isEnabled,
   automationSettings: () => ({ enabled: settings.isEnabled() }),
   memoryStatus: () => v3MemoryRuntime.getState(),

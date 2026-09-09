@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCompactApiClient, normalizeApiUrl, parseJsonOutput } from '../src/compact-api-client.js';
-import { parseJsonWithSafeTrailingCommas, parseJsonWithSymbolRepair } from '../src/json-symbol-repair.js';
+import { parseJsonWithSafeTrailingCommas, parseJsonWithSymbolRepair, repairJsonWithUniqueMissingObjectClose } from '../src/json-symbol-repair.js';
 import { createTaskRouter } from '../src/api-routing.js';
 import { buildExtractorSystemPrompt } from '../src/v3/extractor.js';
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
@@ -194,6 +194,10 @@ test('共享 JSON 符号修复拒绝内容猜测、截断、重复键和多 JSON
 
   const nested = parseJsonWithSymbolRepair('{outer:{a:1},other:{a:2},list:[{"甲":1}{"乙":2}]}', { finishReason: 'stop' });
   assert.deepEqual(nested?.value, { outer: { a: 1 }, other: { a: 2 }, list: [{ 甲: 1 }, { 乙: 2 }] });
+
+  const duplicateMissingClose = '{"selected_keys":["R1"],"selected_keys":["R2"]';
+  assert.equal(repairJsonWithUniqueMissingObjectClose(duplicateMissingClose, { finishReason: 'stop' }), null);
+  assert.throws(() => parseJsonOutput(duplicateMissingClose, { finishReason: 'stop' }), error => error.code === 'QQJ_OUTPUT_TRUNCATED');
 });
 
 test('HTTP JSON、SSE event 与 finish_reason 截断使用独立安全阶段', async () => {

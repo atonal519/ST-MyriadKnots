@@ -201,6 +201,12 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   body.fire('touchstart', { touches: [touch(260, 100)], target: profileStripTarget });
   body.fire('touchend', { changedTouches: [touch(100, 100)], target: profileStripTarget });
   assert.equal(panel.getState().activeTab, 'people', '人物横滑条应保留自身原生手势');
+  const relationStripTarget = { closest: selector => selector.includes('.qqj-relation-switcher') ? {} : null };
+  body.fire('touchstart', touchEvent({ touches: [touch(260, 100)], target: relationStripTarget }));
+  const relationMove = touchEvent({ touches: [touch(170, 102)], target: relationStripTarget }); body.fire('touchmove', relationMove);
+  const relationEnd = touchEvent({ changedTouches: [touch(100, 103)], target: relationStripTarget }); body.fire('touchend', relationEnd);
+  assert.equal(relationMove.defaultPrevented, false); assert.equal(relationEnd.defaultPrevented, false, '关系人物横条应保留原生横向滚动，不得被QQJ全局横滑取消');
+  assert.equal(panel.getState().activeTab, 'people', '关系人物横条横拖不得触发主 tab 切页');
 
   rejectFoundationActivation = true;
   settingsTab.fire('click'); await new Promise(resolve => setImmediate(resolve));

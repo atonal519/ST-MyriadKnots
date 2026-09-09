@@ -186,6 +186,7 @@ export function createFoundationRuntime({
   let pending = null;
   let activeOperation = null;
   let scheduled = null;
+  let inspectionScheduled = null;
   let dirtyReason = null;
   let dirtyStableThrough = null;
   let bound = false;
@@ -194,6 +195,7 @@ export function createFoundationRuntime({
   let unreachableCount = 0;
   let metrics = Object.freeze({});
   let emptyRealtimeObservation = null;
+  let inspectedStableCount = 0;
   const subscribers = new Set();
 
   const enabled = () => {
@@ -213,6 +215,8 @@ export function createFoundationRuntime({
     headCheckpointId: cache?.root?.headCheckpointId ?? null,
     activeRun: activeOperation ? { id: activeOperation.id, phase: activeOperation.phase, reason: activeOperation.reason } : null,
     lastRun, lastError, unreachableCount, sessionEpoch, metrics,
+    inspectedStableCount,
+    canInitialize: !cache?.root && inspectedStableCount > 0,
   });
   let publicState = state(enabled() ? 'idle' : 'disabled');
   const publish = status => {
@@ -242,10 +246,12 @@ export function createFoundationRuntime({
     activeOperation?.controller.abort();
     activeOperation = null;
     scheduled = null;
+    inspectionScheduled = null;
     dirtyReason = null;
     dirtyStableThrough = null;
     cache = null;
     pending = null;
+    inspectedStableCount = 0;
     emptyRealtimeObservation = null;
     store.invalidate();
     publish(enabled() ? 'idle' : 'disabled');
@@ -301,6 +307,112 @@ export function createFoundationRuntime({
     let count = 0;
     while (candidates[count]?.stabilityProof?.kind === 'nextUser') count += 1;
     return count;
+  }
+
+  function graphMatchesCandidates(value, candidates) {
+    if (!value?.root) return false;
+    const stableCount = stableCountFor(candidates, value.floors ?? [], false, null);
+    if (stableCount !== (value.floors?.length ?? 0)) return false;
+    const inputs = new Map((value.checkpoint?.inputFingerprints ?? []).map(item => [item.floorId, item]));
+    return value.floors.every((floor, index) => {
+      const candidate = candidates[index];
+      const input = inputs.get(floor.id);
+      return candidate
+        && sameLocator(floor.hostLocator, candidate.hostLocator)
+        && floor.content.rawFingerprint === candidate.rawFingerprint
+        && floor.content.canonicalFingerprint === candidate.canonicalFingerprint
+        && floor.content.sanitizerFingerprint === candidate.sanitizerFingerprint
+        && (!input?.stabilityFingerprint || input.stabilityFingerprint === candidate.stabilityProof?.fingerprint);
+    });
+  }
+
+  function cacheMatchesCandidates(candidates) {
+    if (!cache?.root || cache.root.chatId !== (() => { try { return capture().identity.chatId; } catch { return null; } })()) return false;
+    return graphMatchesCandidates(cache, candidates);
+  }
+
+  async function performInspect(reason = 'inspect', { allowCached = false } = {}) {
+    if (!enabled()) return publish('disabled');
+    const inspectEpoch = sessionEpoch;
+    let captured = null;
+    try {
+      captured = capture();
+      const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions() });
+      if (inspectEpoch !== sessionEpoch) return publicState;
+      if (allowCached && cacheMatchesCandidates(candidates)) {
+        inspectedStableCount = cache.floors.length;
+        pending = candidates[inspectedStableCount] ?? null;
+        return publish(lastError ? 'error' : 'ready');
+      }
+      const loaded = await store.readReachable({ mode: 'projection' });
+      if (inspectEpoch !== sessionEpoch) return publicState;
+      inspectedStableCount = stableCountFor(candidates, loaded?.floors ?? [], false, null);
+      pending = candidates[inspectedStableCount] ?? null;
+      if (['ready', 'needsReseal'].includes(loaded.status)) {
+        const orderedFloors = [...loaded.floors].sort((left, right) => left.assistantSeq - right.assistantSeq);
+        cache = { ...loaded, floors: restoreActiveFloorViews(orderedFloors, loaded.indexes) };
+        lastRun = runSummary(loaded.run, 'inspected');
+      } else if (loaded.status === 'uninitialized') {
+        cache = { root: null, rootRevision: 0, checkpoint: null, run: null, floors: [], floorMemories: [], entities: [], indexes: [] };
+        lastRun = null;
+      } else {
+        cache = null;
+      }
+      lastError = null;
+      if (cache?.root && (loaded.status === 'needsReseal' || !graphMatchesCandidates(cache, candidates))) return publish('needsReview');
+      return publish(cache?.root ? 'ready' : 'uninitialized');
+    } catch (error) {
+      if (inspectEpoch !== sessionEpoch) return publicState;
+      if (captured) {
+        lastError = error?.message || `V3 ${reason} 检查失败`;
+        return publish('error');
+      }
+      if (cache?.root) return publicState;
+      // A chat without a QQJ identity can still expose local candidates. The
+      // read-only path must never call prepareSession or create a memory graph.
+      try {
+        const host = hostAdapter.snapshot();
+        const candidates = await scanCandidates(host.chat, { sanitizerOptions: sanitizerOptions() });
+        if (inspectEpoch !== sessionEpoch) return publicState;
+        if (cache?.root) return publicState;
+        inspectedStableCount = stableCountFor(candidates, [], false, null);
+        pending = candidates[inspectedStableCount] ?? null;
+        cache = null;
+        lastRun = null;
+        lastError = null;
+        return publish('uninitialized');
+      } catch {
+        lastError = error?.message || `V3 ${reason} 检查失败`;
+        return publish('error');
+      }
+    }
+  }
+
+  function inspect(reason = 'inspect', options = {}) {
+    if (!enabled()) return Promise.resolve(publish('disabled'));
+    const allowCached = options.allowCached === true;
+    const pendingWriter = !allowCached ? (scheduled ?? activeOperation?.promise ?? null) : null;
+    if (pendingWriter) return pendingWriter.then(() => inspect(reason, options));
+    if (inspectionScheduled) {
+      if (!allowCached && inspectionScheduled.allowCached) {
+        const predecessor = inspectionScheduled.promise;
+        const fresh = predecessor.then(() => performInspect(reason, { ...options, allowCached: false }));
+        const entry = { allowCached: false, promise: null };
+        entry.promise = fresh.finally(() => { if (inspectionScheduled === entry) inspectionScheduled = null; });
+        inspectionScheduled = entry;
+        return entry.promise;
+      }
+      return inspectionScheduled.promise;
+    }
+    const request = Promise.resolve().then(() => performInspect(reason, options));
+    const entry = { allowCached, promise: null };
+    entry.promise = request.finally(() => { if (inspectionScheduled === entry) inspectionScheduled = null; });
+    inspectionScheduled = entry;
+    return entry.promise;
+  }
+
+  function scheduleInspect(reason = 'inspect') {
+    return inspect(reason, { allowCached: true });
   }
 
   async function persistRunPhase(operation, phase, { completedFloorIds, failedItems } = {}) {
@@ -724,7 +836,7 @@ export function createFoundationRuntime({
       return Boolean(selectUserStabilityAnchor(chat?.[value]) && selectAssistantMessage(chat?.[value - 1]));
     } catch { return false; }
   }
-  function bind({ eventSource, eventTypes } = hostAdapter.snapshot()) {
+  function bind({ eventSource, eventTypes, allowAutomaticWrite = null } = hostAdapter.snapshot()) {
     if (bound || !eventSource?.on || !eventTypes) return false;
     for (const name of EVENTS) {
       const eventName = eventTypes[name];
@@ -732,13 +844,15 @@ export function createFoundationRuntime({
       eventSource.on(eventName, (...args) => {
         if (name === 'CHAT_CHANGED' || name === 'CHAT_RENAMED') {
           invalidate();
-          if (enabled()) void schedule(name);
+          const mayWrite = typeof allowAutomaticWrite !== 'function' || allowAutomaticWrite(name, args) === true;
+          if (enabled()) void (mayWrite ? schedule(name) : scheduleInspect(name));
           return;
         }
         if (name === 'MORE_MESSAGES_LOADED') return;
         if (name === 'MESSAGE_SENT' && !validSentUserIndex(args[0])) return;
         hostAdapter.mutationMetadata(args);
-        void schedule(name);
+        const mayWrite = typeof allowAutomaticWrite !== 'function' || allowAutomaticWrite(name, args) === true;
+        void (mayWrite ? schedule(name) : scheduleInspect(name));
       });
     }
     bound = true;
@@ -755,12 +869,14 @@ export function createFoundationRuntime({
     if (value.root.chatId !== identity.chatId || (cache?.rootRevision ?? 0) > value.rootRevision) return false;
     cache = value;
     lastRun = runSummary(cache.run, 'adopted');
+    lastError = null;
     publish('ready');
     return true;
   }
   return Object.freeze({
     bind,
     start: () => enabled() ? reconcile('start') : Promise.resolve(publish('disabled')),
+    inspect,
     reconcile,
     refreshStatus: () => reconcile('manualRefresh'),
     stabilizeThrough: boundary => reconcile('earlyAssistantStarted', { stableThrough: boundary }),

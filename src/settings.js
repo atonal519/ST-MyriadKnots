@@ -11,6 +11,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   autoHideKeepAiCount: 3,
   apiMode: 'auto',
   selectedSevenDaysPresetId: '',
+  summaryPresetId: '',
   apiUrl: '',
   apiKey: '',
   apiModel: '',
@@ -148,6 +149,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'autoHideKeepAiCount')) settings.autoHideKeepAiCount = normalizeAutoHideKeepAiCount(patch.autoHideKeepAiCount);
     if (own(patch, 'apiMode')) settings.apiMode = API_MODES.has(patch.apiMode) ? patch.apiMode : 'auto';
     if (own(patch, 'selectedSevenDaysPresetId')) settings.selectedSevenDaysPresetId = text(patch.selectedSevenDaysPresetId).trim();
+    if (own(patch, 'summaryPresetId')) settings.summaryPresetId = text(patch.summaryPresetId).trim();
     if (own(patch, 'apiUrl')) settings.apiUrl = text(patch.apiUrl).trim();
     if (own(patch, 'apiKey')) settings.apiKey = text(patch.apiKey).trim();
     if (own(patch, 'apiModel')) settings.apiModel = text(patch.apiModel).trim();
@@ -183,6 +185,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
       stream: settings.apiStream,
     });
   };
+  const mainConfig = () => ({ ...localConfig(), name: '主配置' });
   const presets = () => get().apiPresets.map(normalizePreset).filter(item => item.id);
   const upsertPreset = (name, config, id = '') => {
     const settings = get();
@@ -249,40 +252,28 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     ...get(),
     sourceWorldInfoExcludedBooks: sharedWorldInfoExcludedBooks(),
   });
-  const sharedUtilityPresetId = () => text(sevenDaysSettings()?.utilityPresetId).trim();
-  const setSharedUtilityPresetId = id => {
-    const shared = ensureSevenDaysSettings();
-    shared.utilityPresetId = text(id).trim();
+  const summaryPresetId = () => text(get().summaryPresetId).trim();
+  const setSummaryPresetId = id => {
+    const current = get();
+    current.summaryPresetId = text(id).trim();
     notify();
-    return shared.utilityPresetId;
-  };
-  const sharedMainConfig = () => {
-    const shared = sevenDaysSettings() || {};
-    return normalizePreset({
-      name: '主配置',
-      url: shared.apiUrl,
-      key: shared.apiKey,
-      model: shared.apiModel,
-      excludeParams: shared.apiExcludeParams,
-      timeoutSec: shared.apiTimeoutSec,
-      stream: shared.apiStream,
-    });
+    return current.summaryPresetId;
   };
   const sharedPresets = () => {
     const list = sevenDaysSettings()?.apiPresets;
     if (!Array.isArray(list)) return [];
     return list.map(value => value && typeof value === 'object' ? { ...value, ...normalizePreset(value) } : null).filter(value => value?.id);
   };
-  const saveSharedMainConfig = config => {
-    const shared = ensureSevenDaysSettings(), normalized = normalizePreset(config);
-    shared.apiUrl = normalized.url;
-    shared.apiKey = normalized.key;
-    shared.apiModel = normalized.model;
-    shared.apiExcludeParams = normalized.excludeParams;
-    shared.apiTimeoutSec = normalized.timeoutSec;
-    shared.apiStream = normalized.stream;
+  const saveMainConfig = config => {
+    const current = get(), normalized = normalizePreset(config);
+    current.apiUrl = normalized.url;
+    current.apiKey = normalized.key;
+    current.apiModel = normalized.model;
+    current.apiExcludeParams = normalized.excludeParams;
+    current.apiTimeoutSec = normalized.timeoutSec;
+    current.apiStream = normalized.stream;
     notify();
-    return sharedMainConfig();
+    return mainConfig();
   };
   const upsertSharedPreset = (name, config, id = '') => {
     // Every mutation re-reads the shared source so a concurrently changed preset pool is never replaced from a stale UI snapshot.
@@ -304,7 +295,6 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (index >= 0) list[index] = { ...list[index], ...snapshot, id: presetId };
     else list.push({ ...snapshot, id: presetId });
     shared.apiPresets = list;
-    shared.apiPresetActiveId = presetId;
     notify();
     return presetId;
   };
@@ -328,61 +318,77 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     const next = list.filter(value => !(value && typeof value === 'object' && text(value.id).trim() === presetId));
     if (next.length === list.length) return false;
     shared.apiPresets = next;
-    if (shared.apiPresetActiveId === presetId) shared.apiPresetActiveId = '';
-    if (text(shared.utilityPresetId).trim() === presetId) shared.utilityPresetId = '';
+    const current = get();
+    if (current.apiMode === 'seven-preset' && text(current.selectedSevenDaysPresetId).trim() === presetId) {
+      current.apiMode = 'auto';
+      current.selectedSevenDaysPresetId = '';
+    }
+    if (text(current.summaryPresetId).trim() === presetId) current.summaryPresetId = '';
     notify();
     return true;
   };
   const sharedSnapshotKey = () => {
     const shared = sevenDaysSettings() || {};
     return JSON.stringify({
-      main: sharedMainConfig(),
       presets: Array.isArray(shared.apiPresets) ? shared.apiPresets : [],
-      apiPresetActiveId: shared.apiPresetActiveId || '',
-      utilityPresetId: sharedUtilityPresetId(),
     });
   };
   const migrateLegacyApiSettings = () => {
     const current = get();
-    if (Number(current.sharedApiMigrationVersion) >= 1) return false;
-    const shared = ensureSevenDaysSettings();
-    let changed = false;
-    const legacyFields = [
-      ['apiUrl', current.apiUrl], ['apiKey', current.apiKey], ['apiModel', current.apiModel],
-      ['apiExcludeParams', parseExcludeParams(current.apiExcludeParams)], ['apiTimeoutSec', normalizeTimeout(current.apiTimeoutSec)], ['apiStream', current.apiStream === true],
-    ];
-    for (const [key, value] of legacyFields) {
-      if (!own(shared, key)) { shared[key] = Array.isArray(value) ? [...value] : value; changed = true; }
-    }
-    const sharedList = Array.isArray(shared.apiPresets) ? [...shared.apiPresets] : [];
+    const migrationVersion = Number(current.sharedApiMigrationVersion) || 0;
+    if (migrationVersion >= 2) return false;
+    const existingShared = sevenDaysSettings();
+    const sharedList = Array.isArray(existingShared?.apiPresets) ? [...existingShared.apiPresets] : [];
     const ids = new Set(sharedList.map(value => value && typeof value === 'object' ? text(value.id).trim() : '').filter(Boolean));
-    for (const legacy of presets()) {
-      if (ids.has(legacy.id)) continue;
-      sharedList.push({ ...legacy }); ids.add(legacy.id); changed = true;
+    if (migrationVersion < 1) {
+      for (const legacy of presets()) {
+        if (ids.has(legacy.id)) continue;
+        sharedList.push({ ...legacy }); ids.add(legacy.id);
+      }
+      if (sharedList.length || Array.isArray(existingShared?.apiPresets)) ensureSevenDaysSettings().apiPresets = sharedList;
+      const legacySelectedId = text(current.apiPresetActiveId).trim();
+      if (!current.selectedSevenDaysPresetId && legacySelectedId && ids.has(legacySelectedId)) {
+        current.apiMode = 'seven-preset';
+        current.selectedSevenDaysPresetId = legacySelectedId;
+      }
     }
-    if (!Array.isArray(shared.apiPresets) || changed) shared.apiPresets = sharedList;
-    const legacySelectedId = text(current.apiPresetActiveId).trim();
-    if (!current.selectedSevenDaysPresetId && legacySelectedId && ids.has(legacySelectedId)) {
-      current.apiMode = 'seven-preset'; current.selectedSevenDaysPresetId = legacySelectedId; changed = true;
-    }
-    current.sharedApiMigrationVersion = 1;
+    const shared = existingShared || {};
+    const migratedMain = normalizePreset({
+      name: '主配置',
+      url: own(shared, 'apiUrl') ? shared.apiUrl : current.apiUrl,
+      key: own(shared, 'apiKey') ? shared.apiKey : current.apiKey,
+      model: own(shared, 'apiModel') ? shared.apiModel : current.apiModel,
+      excludeParams: own(shared, 'apiExcludeParams') ? shared.apiExcludeParams : current.apiExcludeParams,
+      timeoutSec: own(shared, 'apiTimeoutSec') ? shared.apiTimeoutSec : current.apiTimeoutSec,
+      stream: own(shared, 'apiStream') ? shared.apiStream : current.apiStream,
+    });
+    current.apiUrl = migratedMain.url;
+    current.apiKey = migratedMain.key;
+    current.apiModel = migratedMain.model;
+    current.apiExcludeParams = migratedMain.excludeParams;
+    current.apiTimeoutSec = migratedMain.timeoutSec;
+    current.apiStream = migratedMain.stream;
+    const legacySummaryId = text(shared.utilityPresetId).trim();
+    const legacySummary = legacySummaryId ? sharedList.map(normalizePreset).find(item => item.id === legacySummaryId) : null;
+    current.summaryPresetId = legacySummary?.url && legacySummary?.key ? legacySummaryId : '';
+    current.sharedApiMigrationVersion = 2;
     notify();
-    return changed;
+    return true;
   };
   return {
     get,
     update,
     localConfig,
+    mainConfig,
     presets,
     upsertPreset,
     renamePreset,
     deletePreset,
     sevenDaysSettings,
-    sharedUtilityPresetId,
-    setSharedUtilityPresetId,
-    sharedMainConfig,
+    summaryPresetId,
+    setSummaryPresetId,
     sharedPresets,
-    saveSharedMainConfig,
+    saveMainConfig,
     upsertSharedPreset,
     renameSharedPreset,
     deleteSharedPreset,

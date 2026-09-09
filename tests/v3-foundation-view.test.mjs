@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
 
 class Node {
-  constructor(tag) { this.tag = tag; this.children = []; this.listeners = {}; this.textContent = ''; this.className = ''; this.disabled = false; this.replaceCount = 0; this.value = ''; this.open = false; this.selectionStart = 0; this.selectionEnd = 0; this.attributes = {}; }
+  constructor(tag) { this.tag = tag; this.children = []; this.listeners = {}; this.textContent = ''; this.className = ''; this.disabled = false; this.replaceCount = 0; this.value = ''; this.open = false; this.selectionStart = 0; this.selectionEnd = 0; this.scrollLeft = 0; this.attributes = {}; }
   append(...nodes) { this.children.push(...nodes); }
   replaceChildren(...nodes) { this.replaceCount += 1; this.children = [...nodes]; }
   addEventListener(name, handler) { this.listeners[name] = handler; }
@@ -900,6 +900,36 @@ test('重要人物缺少 CSE 时显示常显空态，更多人物同行入口与
   view.setPage('memories'); view.setPage('people');
   assert.match(flatten(container).map(node => node.textContent).join('|'), /裴晚生.*旁人/);
   assert.equal(flatten(container).find(node => node.className === 'qqj-relation-note').tag, 'section');
+});
+
+test('双丝网人名横条同聊天同列表重绘保留位置，列表或聊天变化重置', async () => {
+  const userId = '10000000-0000-4000-8000-000000000001';
+  const aId = '20000000-0000-4000-8000-000000000002';
+  const bId = '30000000-0000-4000-8000-000000000003';
+  const cId = '40000000-0000-4000-8000-000000000004';
+  let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, cseReady: true, csePendingCount: 0, cseFailedCount: 0, floors: [], memoryEntities: [{ entityId: userId, displayName: '你', specialRole: 'user' }], cseSubjects: [] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  const sharedPeople = peopleRuntime([{ entityId: aId, displayName: '甲' }, { entityId: bId, displayName: '乙' }, { entityId: cId, displayName: '丙' }], [aId, bId, cId]);
+  const container = new Node('main'), view = createV3FoundationView({ runtime, peopleRuntime: sharedPeople, documentRef }); view.setPage('people'); view.mount(container);
+  let switcher = flatten(container).find(node => node.className === 'qqj-relation-switcher');
+  switcher.scrollLeft = 67;
+  flatten(switcher).find(node => node.textContent === '丙').click();
+  switcher = flatten(container).find(node => node.className === 'qqj-relation-switcher');
+  assert.equal(switcher.scrollLeft, 67); assert.match(flatten(container).find(node => node.className === 'qqj-relation-card').textContent + flatten(container).map(node => node.textContent).join('|'), /丙/);
+
+  switcher.scrollLeft = 79; state = { ...state, stableCount: 2 }; view.render(state);
+  switcher = flatten(container).find(node => node.className === 'qqj-relation-switcher');
+  assert.equal(switcher.scrollLeft, 79, '同人物列表的后台刷新应保留横向位置');
+  flatten(container).find(node => node.textContent === '更多人物（0）').click();
+  assert.equal(flatten(container).find(node => node.className === 'qqj-relation-switcher').scrollLeft, 79);
+  flatten(container).find(node => node.textContent === '返回关系').click();
+  assert.equal(flatten(container).find(node => node.className === 'qqj-relation-switcher').scrollLeft, 79);
+
+  await sharedPeople.setSelectedEntityIds([aId, cId]); view.render(state);
+  switcher = flatten(container).find(node => node.className === 'qqj-relation-switcher');
+  assert.equal(switcher.scrollLeft, 0, '人物有序列表变化后不得继承旧位置');
+  switcher.scrollLeft = 43; state = { ...state, chatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }; view.render(state);
+  assert.equal(flatten(container).find(node => node.className === 'qqj-relation-switcher').scrollLeft, 0, '切聊天必须重置横向位置');
 });
 
 test('双丝网精确区分双方关系、自身状态与选中 NPC 的其他关系', () => {

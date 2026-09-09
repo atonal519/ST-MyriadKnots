@@ -120,11 +120,11 @@ test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调�
   const analysisUpdates = [], utilityUpdates = [], saves = [], toolCalls = [];
   const settings = {
     get: () => ({ apiMode: 'auto', selectedSevenDaysPresetId: '' }),
-    sharedMainConfig: () => ({ ...main }),
+    mainConfig: () => ({ ...main }),
     sharedPresets: () => presets.map(item => ({ ...item })),
-    sharedUtilityPresetId: () => utilityPresetId,
-    setSharedUtilityPresetId: id => { utilityPresetId = id; utilityUpdates.push(id); },
-    saveSharedMainConfig: config => { main = { ...main, ...config, excludeParams: String(config.excludeParams ?? '').split(/[\n,]/).map(item => item.trim()).filter(Boolean) }; saves.push(['main', config]); },
+    summaryPresetId: () => utilityPresetId,
+    setSummaryPresetId: id => { utilityPresetId = id; utilityUpdates.push(id); },
+    saveMainConfig: config => { main = { ...main, ...config, excludeParams: String(config.excludeParams ?? '').split(/[\n,]/).map(item => item.trim()).filter(Boolean) }; saves.push(['main', config]); },
     upsertSharedPreset: (name, config, id = '') => {
       const targetId = id || 'summary-new';
       const next = { id: targetId, name, ...config, excludeParams: String(config.excludeParams ?? '').split(/[\n,]/).map(item => item.trim()).filter(Boolean) };
@@ -210,10 +210,10 @@ test('API 预设删除按当前编辑角色清理引用，取消/主配置/失�
     const updates = [], confirmations = [];
     const settings = {
       get: () => ({ ...current }),
-      sharedMainConfig: () => ({ id: '', name: '主配置', url: 'https://main.test/v1', key: 'MAIN', model: 'main' }),
+      mainConfig: () => ({ id: '', name: '主配置', url: 'https://main.test/v1', key: 'MAIN', model: 'main' }),
       sharedPresets: () => presets.map(item => ({ ...item })),
-      sharedUtilityPresetId: () => utility,
-      setSharedUtilityPresetId: id => { utility = id; },
+      summaryPresetId: () => utility,
+      setSummaryPresetId: id => { utility = id; },
       update: patch => { Object.assign(current, patch); updates.push(patch); },
       deleteSharedPreset: id => {
         const next = presets.filter(item => item.id !== id);
@@ -222,7 +222,7 @@ test('API 预设删除按当前编辑角色清理引用，取消/主配置/失�
         if (utility === id) utility = '';
         return true;
       },
-      saveSharedMainConfig() {}, upsertSharedPreset() {},
+      saveMainConfig() {}, upsertSharedPreset() {},
     };
     let rerenders = 0;
     const view = createApiSettings({
@@ -267,6 +267,29 @@ test('API 预设删除按当前编辑角色清理引用，取消/主配置/失�
   await remove(raced); assert.deepEqual(raced.current, { apiMode: 'seven-preset', selectedSevenDaysPresetId: 'keep' }); assert.deepEqual(raced.updates, []); assert.equal(raced.rerenders, 0);
 });
 
+test('API 显式失效预设保存时不谎报成功，也不写入任何配置', async () => {
+  const current = { apiMode: 'seven-preset', selectedSevenDaysPresetId: 'missing' };
+  const writes = [];
+  const settings = {
+    get: () => ({ ...current }),
+    mainConfig: () => ({ id: '', name: '主配置', url: 'https://main.test/v1', key: 'MAIN', model: 'main' }),
+    sharedPresets: () => [],
+    summaryPresetId: () => '',
+    setSummaryPresetId: id => writes.push(['summary', id]),
+    update: patch => writes.push(['analysis', patch]),
+    saveMainConfig: config => writes.push(['main', config]),
+    upsertSharedPreset: (...args) => writes.push(['preset', ...args]),
+    deleteSharedPreset: () => false,
+  };
+  const { node } = createApiSettings({ settings, apiTools: { fetchModels: async () => [], testConnection: async () => ({}) }, documentRef });
+  assert.equal(fieldControl(node, '分析API（建议高质模型）').value, 'missing');
+  await node.find(n => n.tagName === 'button' && n.textContent === '保存设置').fire('click');
+  const result = node.find(n => n.className.includes('settings-result'));
+  assert.match(result.textContent, /预设已失效.*重新选择或另存/);
+  assert.match(result.className, /error/);
+  assert.deepEqual(writes, []);
+});
+
 test('模型内联列表搜索、空匹配与点击回填生效，旧目标迟到结果不污染新目标', async () => {
   const current = { apiMode: 'seven-preset', selectedSevenDaysPresetId: 'analysis' };
   let utility = 'summary';
@@ -277,9 +300,9 @@ test('模型内联列表搜索、空匹配与点击回填生效，旧目标迟�
   let resolveModels;
   const pendingModels = new Promise(resolve => { resolveModels = resolve; });
   const settings = {
-    get: () => ({ ...current }), sharedMainConfig: () => ({}), sharedPresets: () => presets.map(item => ({ ...item })),
-    sharedUtilityPresetId: () => utility, setSharedUtilityPresetId: id => { utility = id; }, update: patch => Object.assign(current, patch),
-    saveSharedMainConfig() {}, upsertSharedPreset() {}, deleteSharedPreset() { return false; },
+    get: () => ({ ...current }), mainConfig: () => ({}), sharedPresets: () => presets.map(item => ({ ...item })),
+    summaryPresetId: () => utility, setSummaryPresetId: id => { utility = id; }, update: patch => Object.assign(current, patch),
+    saveMainConfig() {}, upsertSharedPreset() {}, deleteSharedPreset() { return false; },
   };
   const { node } = createApiSettings({ settings, apiTools: { fetchModels: () => pendingModels, testConnection: async () => ({}) }, documentRef });
   const analysis = fieldControl(node, '分析API（建议高质模型）');

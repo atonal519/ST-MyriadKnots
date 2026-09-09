@@ -209,7 +209,8 @@ function scanner(source, { trailingCommasOnly = false, requireOperations = true 
       }
       const nextKey = inspectKey(index);
       const nextCanHaveColon = nextKey && (nextKey.colon || valueStart(source[nextKey.valueAt]));
-      const safeBoundary = nextKey && nextCanHaveColon && (gap > 0 || value.kind === 'object' || value.kind === 'array');
+      const safeBoundary = nextKey && nextCanHaveColon && !(value.kind === 'string' && nextKey.kind === 'quoted')
+        && (gap > 0 || value.kind === 'object' || value.kind === 'array');
       if (!safeBoundary) return null;
       addOperation('insert-comma', index, ',');
       output += ',';
@@ -243,8 +244,8 @@ function scanner(source, { trailingCommasOnly = false, requireOperations = true 
         continue;
       }
       const next = source[index];
-      const separatedValues = gap > 0 && valueStart(next);
-      if (!separatedValues && ((value.kind !== 'object' && value.kind !== 'array') || (next !== '{' && next !== '['))) return null;
+      const safeBoundary = (value.kind === 'object' || value.kind === 'array') && (next === '{' || next === '[');
+      if (!safeBoundary) return null;
       addOperation('insert-comma', index, ',');
       output += ',';
     }

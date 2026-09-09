@@ -619,6 +619,8 @@ test('CSE 等待模型期间只追加后楼及后楼摘要时按原前缀提交�
   h.context.chat.push(assistant('追加回复使原尾楼成为稳定后缀。'));
   const suffixWriter = runtimeHarness({ sharedBackend: h.backend, chat: h.context.chat });
   await suffixWriter.runtime.start();
+  await suffixWriter.foundationRuntime.refreshStatus();
+  await suffixWriter.runtime.refreshStatus();
   const suffixFloor = suffixWriter.runtime.getState().floors.at(-1);
   assert.notEqual(suffixFloor.floorId, targetFloorId);
   await suffixWriter.runtime.extractFloor(suffixFloor.floorId, { analyzeState: false });

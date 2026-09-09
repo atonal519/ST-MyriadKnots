@@ -244,7 +244,7 @@ export function createPeopleWorkspaceRuntime({
     if (active) return getState();
     const operation = begin('loading');
     return settle(operation, async () => {
-      if (refreshMemory && typeof memoryRuntime.refreshStatus === 'function') await memoryRuntime.refreshStatus();
+      if (refreshMemory && typeof memoryRuntime.refreshStatus === 'function') await memoryRuntime.refreshStatus({ preferCached: true });
       assertCurrent(operation); adopt(operation, await store.read(operation.identity)); lastError = null; return notify();
     });
   }

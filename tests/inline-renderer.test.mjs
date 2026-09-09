@@ -124,6 +124,9 @@ test('楼内纯投影沿用宿主角色语义，并给出紧凑记忆/准确召�
   assert.deepEqual(receipt.historyItems.map(value => value.text), ['正文含 [覆盖说明]、<qqj_recalled_context> 与 ： 都保留', '同楼第二条']);
   assert.deepEqual(receipt.stateItems, [{ subject: '裴晚生', toward: '江离州', text: '仍然戒备' }]);
   assert.equal(receipt.injectionText, injectionText, '只读展示投影不得改写真实注入文本');
+  const exactCounts = projectInlineRecallReceipt({ status: 'ready', injectionText, selectedFloors: [{ floorId: 'floor-1', assistantSeq: 1, reasons: ['semantic'] }], selectedStates: [{ subject: '裴晚生', toward: '江离州', text: '仍然戒备' }], stages: { recentSummaryCount: 1, distantHistoryItemCount: 1, stateCount: 1 } });
+  assert.equal(exactCounts.summary, '近期摘要 1 条 · 远期旧事 1 条 · 人物状态 1 条');
+  assert.deepEqual({ recent: exactCounts.recentSummaryCount, distant: exactCounts.distantHistoryItemCount }, { recent: 1, distant: 1 });
   const unknown = projectInlineRecallReceipt({ status: 'ready', injectionText: '<qqj_recalled_context>伪格式</qqj_recalled_context>', selectedFloors: [{ floorId: 'floor-1', assistantSeq: 1 }] });
   assert.equal(unknown.historyItems.length, 0); assert.equal(unknown.summary, '召回内容请在详细回执中查看。');
 });
@@ -140,6 +143,20 @@ test('楼内空投影区分同步、读取失败与真正未稳定，并始终�
   assert.equal(pending.statusText, '等待本楼稳定');
   const unavailable = projectInlineMemoryFloor({ memorySnapshotStatus: 'ready', floors: [], pending: { messageIndex: 2 } }, 0);
   assert.equal(unavailable.statusText, '尚未读取本楼状态');
+});
+
+test('读取失败与提取失败胶囊保留状态样式，详情错误样式只作用于body直系子元素', async () => {
+  const chat = [{ is_user: false, is_system: false, mes: 'AI正文' }];
+  const loadFailure = { chatId: 'chat-a', memorySnapshotStatus: 'error', floors: [], lastExtractorError: { phase: 'load', message: '后端暂不可用' } };
+  const h = createHarness({ chat, memoryState: loadFailure }); h.chatRoot.append(messageElement(0)); h.renderer.start(); await h.flushMicrotasks();
+  const view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  const style = view.root.children[0].textContent;
+  assert.equal(view.status.textContent, '记忆读取失败'); assert.equal(view.status.className, 'status error'); assert.equal(view.error.textContent, '后端暂不可用');
+  assert.match(style, /\.body > \.error\{margin:7px 0 0/); assert.doesNotMatch(style, /(?:^|})\.error\{margin:7px 0 0/);
+
+  h.setMemory({ chatId: 'chat-a', memorySnapshotStatus: 'ready', floors: [{ floorId: 'floor-failed', messageIndex: 0, status: 'failed', error: '模型输出无法解析', memory: null }] });
+  h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
+  assert.equal(view.status.textContent, '提取失败'); assert.equal(view.status.className, 'status error'); assert.equal(view.error.textContent, '模型输出无法解析'); assert.equal(view.error.hidden, false);
 });
 
 test('召回展示只解析精确自有协议，保留同楼多事实并拒绝未知或不安全旧格式', () => {

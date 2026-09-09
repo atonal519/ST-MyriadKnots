@@ -9,7 +9,7 @@ const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const CHAT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 class Node {
-  constructor(tag = 'div') { this.tag = tag; this.children = []; this.listeners = {}; this.attributes = {}; this.className = ''; this.textContent = ''; this.value = ''; this.open = false; this.disabled = false; this.tabIndex = 0; }
+  constructor(tag = 'div') { this.tag = tag; this.children = []; this.listeners = {}; this.attributes = {}; this.className = ''; this.textContent = ''; this.value = ''; this.open = false; this.disabled = false; this.tabIndex = 0; this.scrollLeft = 0; }
   append(...nodes) { this.children.push(...nodes); }
   appendChild(node) { this.children.push(node); return node; }
   replaceChildren(...nodes) { this.children = [...nodes]; }
@@ -80,7 +80,7 @@ function runtimeHarness({ profile = null, profiles = null, selected = [A], failS
     async regenerateProfile(entityId) { calls.regenerate.push(entityId); return emit(); },
     async saveAvatar(entityId, avatar) { calls.avatar.push([entityId, avatar]); state = { ...state, people: state.people.map(item => item.entityId === entityId ? { ...item, avatar } : item) }; return emit(); },
   };
-  return { runtime, calls, get state() { return state; } };
+  return { runtime, calls, emitState(next) { state = next; return emit(); }, get state() { return state; } };
 }
 
 async function waitFor(predicate, message = '等待条件超时') {
@@ -168,6 +168,32 @@ test('千人页横向切换只显示一份常显资料，草稿跨人物保留�
   flatten(container).find(node => node.textContent === '移出关注').click(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(h.calls.select.at(-1), [B]); assert.match(visible(container), /乙.*别名 · 乙别名/);
   view.deactivate(); assert.equal(menuDocument.clickListenerCount(), 0, '页面停用时清理外部点击监听');
+});
+
+test('千人人名横条同聊天同列表重绘保留位置，列表或聊天变化重置', () => {
+  const h = runtimeHarness({ selected: [A, B] }), container = new Node('main');
+  const view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
+  let switcher = flatten(container).find(node => node.className === 'qqj-profile-switcher');
+  switcher.scrollLeft = 73;
+  flatten(switcher).find(node => node.textContent === '乙').click();
+  switcher = flatten(container).find(node => node.className === 'qqj-profile-switcher');
+  assert.equal(switcher.scrollLeft, 73); assert.match(visible(container), /乙.*别名 · 乙别名/);
+
+  switcher.scrollLeft = 81;
+  h.emitState({ ...h.state, revision: h.state.revision + 1 });
+  switcher = flatten(container).find(node => node.className === 'qqj-profile-switcher');
+  assert.equal(switcher.scrollLeft, 81, '同人物列表的后台通知应保留横向位置');
+  flatten(container).find(node => node.textContent === '更多人物（0）').click();
+  assert.equal(flatten(container).find(node => node.className === 'qqj-profile-switcher').scrollLeft, 81);
+  flatten(container).find(node => node.textContent === '返回资料').click();
+  assert.equal(flatten(container).find(node => node.className === 'qqj-profile-switcher').scrollLeft, 81);
+
+  h.emitState({ ...h.state, people: [...h.state.people].reverse() });
+  switcher = flatten(container).find(node => node.className === 'qqj-profile-switcher');
+  assert.equal(switcher.scrollLeft, 0, '人物有序列表变化后不得继承旧位置');
+  switcher.scrollLeft = 49;
+  h.emitState({ ...h.state, chatId: CHAT_B });
+  assert.equal(flatten(container).find(node => node.className === 'qqj-profile-switcher').scrollLeft, 0, '切聊天必须重置横向位置');
 });
 
 test('更多人物入口固定在顶部并切换为独立选择视图，零选择仍可进入', async () => {

@@ -422,6 +422,32 @@ test('旧全候选 snapshot 首次刷新只对齐一次，后续 pending-only �
   assert.equal(h.backend.calls.some(call => call[0] === 'put'), false);
 });
 
+test('成功 adopt 已验证图清除旧读取错误；失败 adopt 与单纯缓存命中仍保留错误', async () => {
+  const h = harness();
+  await h.runtime.start();
+  const verified = structuredClone(h.runtime.getReachable());
+  h.backend.setBeforeGet(({ key }) => {
+    if (key === 'v3-root') throw new Error('projection failed');
+  });
+  let state = await h.runtime.inspect('failedProjection', { allowCached: false });
+  assert.equal(state.status, 'error');
+  assert.equal(state.lastError, 'projection failed');
+
+  h.backend.setBeforeGet(null);
+  state = await h.runtime.inspect('cacheOnly', { allowCached: true });
+  assert.equal(state.status, 'error', '单纯缓存命中不能把未成功的新鲜读取洗绿');
+  assert.equal(state.lastError, 'projection failed');
+  assert.equal(h.runtime.adoptReachable({ ...verified, root: { ...verified.root, chatId: OTHER_CHAT } }), false);
+  assert.equal(h.runtime.getState().lastError, 'projection failed', '失败 adopt 不能清除读取错误');
+
+  assert.equal(h.runtime.adoptReachable(verified), true);
+  assert.equal(h.runtime.getState().status, 'ready');
+  assert.equal(h.runtime.getState().lastError, null, '成功接纳已验证的新图后旧读取错误应清除');
+  state = await h.runtime.inspect('cacheAfterAdopt', { allowCached: true });
+  assert.equal(state.status, 'ready');
+  assert.equal(state.lastError, null);
+});
+
 test('canonical 相同的稳定编辑不重建；标点级变化直接从最早楼 branchReplay', async () => {
   const h = harness([assistant(' A '), assistant('B'), assistant('C')]);
   await h.runtime.start();

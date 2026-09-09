@@ -19,6 +19,7 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
   if (!documentRef?.createElement) throw new TypeError('千人人物资料 documentRef 无效');
   let container = null, active = false, epoch = 0, unsubscribe = null, state = runtime.getState(), chatId = state.chatId ?? null, feedback = '人物资料状态已显示。';
   let currentEntityId = null, showMore = false, cropDraft = null, cropLoadId = 0, cropLoadController = null;
+  let switcherNode = null, switcherSignature = null, switcherScrollLeft = 0;
   const drafts = new Map();
   const operationMenus = createOperationMenuController(documentRef);
   const releaseCrop = draft => { draft?.source?.release?.(); if (cropDraft === draft) cropDraft = null; };
@@ -39,9 +40,14 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
     if (value.lastError?.message) return `需要处理 · ${value.lastError.message}`;
     return `已选 ${value.people.filter(person => person.selected).length} 位重要人物 · ${value.unprofiledSelectedCount} 位待建档`;
   };
+  const healthClass = value => {
+    if (value.lastError) return 'qqj-page-health qqj-profile-health error';
+    const checking = Boolean(value.active) || !['ready', 'empty'].includes(value.status);
+    return `qqj-page-health qqj-profile-health ${checking ? 'checking' : 'healthy'}`;
+  };
   function resetForChat(nextChatId) {
     if (chatId === nextChatId) return;
-    closeCrop(); chatId = nextChatId; drafts.clear(); currentEntityId = null; showMore = false; feedback = '人物资料状态已显示。';
+    closeCrop(); chatId = nextChatId; drafts.clear(); currentEntityId = null; showMore = false; switcherNode = null; switcherSignature = null; switcherScrollLeft = 0; feedback = '人物资料状态已显示。';
   }
   async function run(label, task, { after = null } = {}) {
     const mine = ++epoch, operationChatId = chatId; feedback = `${label}…`; render(state);
@@ -277,14 +283,19 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
     picker.append(list); return picker;
   }
   function render(next = runtime.getState()) {
+    if (switcherNode) switcherScrollLeft = Number(switcherNode.scrollLeft) || 0;
+    const previousChatId = chatId, previousSignature = switcherSignature;
     state = next; resetForChat(state.chatId ?? null); if (!container) return;
     operationMenus.reset();
     const page = element('section', 'qqj-page qqj-profiles-page'), status = element('div', 'qqj-page-status');
-    const health = element('p', `qqj-page-health qqj-profile-health${state.lastError ? ' error' : ''}`, statusCopy(state));
+    const health = element('p', healthClass(state), statusCopy(state));
     health.setAttribute?.('role', 'status'); status.append(health, element('p', `v3-foundation-feedback${feedback.includes('失败') ? ' error' : ''}`, feedback)); page.append(status);
     const selected = state.people.filter(person => person.selected), moreCount = state.people.length - selected.length;
     if (!selected.some(person => person.entityId === currentEntityId)) { closeCrop(); currentEntityId = selected[0]?.entityId ?? null; }
-    const toolbar = element('div', 'qqj-profile-toolbar'), switchRow = element('div', 'qqj-profile-switch-row'); switchRow.append(switcher(selected));
+    const nextSignature = JSON.stringify(selected.map(person => person.entityId));
+    const nextSwitcher = switcher(selected);
+    const preserveSwitcherScroll = previousChatId === chatId && previousSignature === nextSignature;
+    const toolbar = element('div', 'qqj-profile-toolbar'), switchRow = element('div', 'qqj-profile-switch-row'); switchRow.append(nextSwitcher);
     const actions = element('div', 'qqj-profile-toolbar-actions');
     actions.append(generationButton());
     const more = element('button', `secondary-action qqj-profile-more${showMore ? ' active' : ''}`, showMore ? '返回资料' : `更多人物（${moreCount}）`);
@@ -298,6 +309,8 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
     const unavailable = state.selectedEntityIds.length - selected.length;
     if (unavailable > 0) page.append(element('p', 'settings-hint', `有 ${unavailable} 个旧人物选择在当前记忆图中暂不可匹配；其选择与资料仍保留。`));
     container.replaceChildren(page);
+    nextSwitcher.scrollLeft = preserveSwitcherScroll ? switcherScrollLeft : 0;
+    switcherNode = nextSwitcher; switcherSignature = nextSignature; switcherScrollLeft = nextSwitcher.scrollLeft;
   }
   function subscribe() {
     if (!active || unsubscribe || typeof runtime.subscribe !== 'function') return;
@@ -308,7 +321,7 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
   async function activate() {
     if (!container) throw new Error('千人人物资料 view 尚未挂载');
     active = true; operationMenus.activate(); subscribe(); const mine = ++epoch; feedback = '正在读取当前聊天…'; render(runtime.getState());
-    try { const result = await runtime.refresh(); if (!active || mine !== epoch) return { status: 'stale' }; state = result; feedback = '人物资料读取完成。'; render(result); return result; }
+    try { const result = await runtime.refresh({ refreshMemory: false }); if (!active || mine !== epoch) return { status: 'stale' }; state = result; feedback = '人物资料读取完成。'; render(result); return result; }
     catch (error) { if (!active || mine !== epoch) return { status: 'stale' }; state = runtime.getState(); feedback = `读取失败：${error?.message || '未知错误'}`; render(state); return { status: 'error', error }; }
   }
   function deactivate() { active = false; epoch += 1; closeCrop(); operationMenus.deactivate(); unsubscribe?.(); unsubscribe = null; }

@@ -5,7 +5,7 @@ const sevenDaysPresets = value => Array.isArray(value?.apiPresets) ? value.apiPr
 const abortError = () => new DOMException('The operation was aborted.', 'AbortError');
 const disabledError = () => { const error = new Error('千千结已关闭'); error.code = 'QQJ_DISABLED'; return error; };
 const unavailableError = route => {
-  const error = new Error(route?.reason === 'preset_missing' ? '所选 API 预设已失效，请重新选择或保存' : '共享 API 主配置不完整，请先保存 URL 和 Key');
+  const error = new Error(route?.reason === 'preset_missing' ? '所选 API 预设已失效，请重新选择或保存' : '千千结主配置不完整，请先保存 URL 和 Key');
   error.code = route?.reason === 'preset_missing' ? 'QQJ_PRESET_INVALID' : 'QQJ_CONFIG';
   return error;
 };
@@ -28,13 +28,9 @@ export function createApiResolver({ settings } = {}) {
   if (!settings?.get || !settings?.sevenDaysSettings) throw new Error('API 配置解析器依赖不可用');
   const describeSevenDaysPresets = () => sevenDaysPresets(settings.sevenDaysSettings()).map(({ id, name, url, key, model, excludeParams, timeoutSec, stream }) => ({ id, name, url, key, model, excludeParams, timeoutSec, stream }));
   const resolveAuto = () => {
-    const seven = settings.sevenDaysSettings();
-    const main = normalizePreset({
-      name: '主配置', url: seven?.apiUrl, key: seven?.apiKey, model: seven?.apiModel,
-      excludeParams: seven?.apiExcludeParams, timeoutSec: seven?.apiTimeoutSec, stream: seven?.apiStream,
-    });
-    if (validConfig(main)) return { kind: 'independent', source: 'shared-main', sourceLabel: '主配置', config: main };
-    return { kind: 'unavailable', source: 'shared-main', sourceLabel: '主配置', config: null, reason: 'main_incomplete' };
+    const main = settings.mainConfig();
+    if (validConfig(main)) return { kind: 'independent', source: 'qqj-main', sourceLabel: '主配置', config: main };
+    return { kind: 'unavailable', source: 'qqj-main', sourceLabel: '主配置', config: null, reason: 'main_incomplete' };
   };
   const resolve = (override = null) => {
     const current = settings.get();
@@ -48,17 +44,14 @@ export function createApiResolver({ settings } = {}) {
     return resolveAuto();
   };
   const resolveUtility = () => {
-    const utilityPresetId = typeof settings.sharedUtilityPresetId === 'function'
-      ? settings.sharedUtilityPresetId()
-      : String(settings.sevenDaysSettings()?.utilityPresetId ?? '').trim();
-    const preset = utilityPresetId
-      ? sevenDaysPresets(settings.sevenDaysSettings()).find(item => item.id === utilityPresetId)
-      : null;
+    const selectedPresetId = settings.summaryPresetId();
+    if (!selectedPresetId) return resolve();
+    const preset = sevenDaysPresets(settings.sevenDaysSettings()).find(item => item.id === selectedPresetId);
     if (preset && validConfig(preset)) {
       const config = Object.freeze({ ...preset, excludeParams: Object.freeze([...preset.excludeParams]) });
-      return Object.freeze({ kind: 'independent', source: 'shared-utility', sourceLabel: preset.name, config });
+      return Object.freeze({ kind: 'independent', source: 'shared-summary-preset', sourceLabel: preset.name, config });
     }
-    return resolve();
+    return Object.freeze({ kind: 'unavailable', source: 'shared-summary-preset', sourceLabel: preset?.name || '失效预设', config: null, reason: 'preset_missing', selectedPresetId });
   };
   const describe = () => {
     const resolved = resolve();

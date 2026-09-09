@@ -142,6 +142,16 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     coverage,
     degradedReasons: Object.freeze(degradedReasons),
     entities,
+    bodyMatchRefs: Object.freeze(activeMemories.map(memory => {
+      const floor = floorById.get(memory.floorId);
+      if (!floor || !Number.isSafeInteger(floor.hostLocator?.messageIndex)
+        || typeof floor.content?.rawFingerprint !== 'string' || typeof floor.content?.canonicalFingerprint !== 'string') return null;
+      return Object.freeze({
+        floorId: floor.id, floorMemoryId: memory.id, assistantSeq: floor.assistantSeq,
+        hostLocator: Object.freeze({ messageIndex: floor.hostLocator.messageIndex, swipeId: floor.hostLocator.swipeId ?? null, selectedSwipeIndex: floor.hostLocator.selectedSwipeIndex ?? null }),
+        rawFingerprint: floor.content.rawFingerprint, canonicalFingerprint: floor.content.canonicalFingerprint,
+      });
+    }).filter(Boolean)),
     floorMemories: Object.freeze(activeMemories.map(memory => {
       const floor = floorById.get(memory.floorId);
       return memoryDto(memory, floor, { chronologyAllowed: chronologyAllowed(floor), floorSeqById: floorSeq });

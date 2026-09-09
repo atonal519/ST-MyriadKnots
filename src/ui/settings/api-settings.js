@@ -31,13 +31,19 @@ export function createApiSettings({
   const presets = settings.sharedPresets();
 
   let editingRole = 'analysis';
-  const presetOptions = first => [{ value: '', label: first }, ...presets.map(preset => ({ value: preset.id, label: preset.name }))];
+  const analysisPresetId = current.apiMode === 'seven-preset' ? current.selectedSevenDaysPresetId : '';
+  const summaryPresetId = settings.summaryPresetId();
+  const presetOptions = (first, selectedId) => [
+    { value: '', label: first },
+    ...presets.map(preset => ({ value: preset.id, label: preset.name })),
+    ...(selectedId && !presets.some(preset => preset.id === selectedId) ? [{ value: selectedId, label: `失效预设（${selectedId}）` }] : []),
+  ];
   const analysisPicker = createInlineSelect({
-    documentRef, options: presetOptions('主配置'), value: current.apiMode === 'seven-preset' ? current.selectedSevenDaysPresetId : '', ariaLabel: '分析 API',
+    documentRef, options: presetOptions('主配置', analysisPresetId), value: analysisPresetId, ariaLabel: '分析 API',
     onFocus: () => setEditingRole('analysis'), onChange: value => changeAnalysis(value),
   });
   const summaryPicker = createInlineSelect({
-    documentRef, options: presetOptions('跟随分析API'), value: presets.some(item => item.id === settings.sharedUtilityPresetId()) ? settings.sharedUtilityPresetId() : '', ariaLabel: '摘要 API',
+    documentRef, options: presetOptions('跟随分析API', summaryPresetId), value: summaryPresetId, ariaLabel: '摘要 API',
     onFocus: () => setEditingRole('summary'), onChange: value => changeSummary(value),
   });
   const analysisSelect = analysisPicker.node, summarySelect = summaryPicker.node;
@@ -45,7 +51,7 @@ export function createApiSettings({
   const editingTarget = () => {
     const followsAnalysis = editingRole === 'summary' && !summarySelect.value;
     const presetId = followsAnalysis || editingRole === 'analysis' ? analysisSelect.value : summarySelect.value;
-    const config = presetId ? presetById(presetId) : settings.sharedMainConfig();
+    const config = presetId ? presetById(presetId) : settings.mainConfig();
     return Object.freeze({ sourceRole: editingRole, followsAnalysis, presetId, config, label: presetId ? (config?.name || '已失效预设') : '主配置' });
   };
 
@@ -105,7 +111,7 @@ export function createApiSettings({
     timeout.value = String(config.timeoutSec ?? 180);
     stream.checked = config.stream === true;
     editingHint.textContent = target.followsAnalysis
-      ? `正在编辑：摘要 API 跟随分析 · ${target.label}。直接保存会更新共享配置；另存可建立摘要专用预设。`
+      ? `正在编辑：摘要 API 跟随分析 · ${target.label}。直接保存会更新当前分析配置；另存可建立摘要专用预设。`
       : `正在编辑：${target.sourceRole === 'summary' ? '摘要' : '分析'} API · ${target.label}`;
     if (remove) remove.disabled = !target.presetId || !target.config;
   };
@@ -118,7 +124,7 @@ export function createApiSettings({
     fill();
   }
   function changeSummary(value) {
-    settings.setSharedUtilityPresetId(value);
+    settings.setSummaryPresetId(value);
     editingRole = 'summary';
     result.textContent = ''; result.className = 'settings-result';
     fill();
@@ -166,10 +172,15 @@ export function createApiSettings({
 
   const save = button('保存设置', 'primary-action', () => {
     const target = editingTarget();
+    if (target.presetId && !target.config) {
+      result.textContent = '所选 API 预设已失效，请重新选择或另存为新预设。';
+      result.className = 'settings-result error';
+      return;
+    }
     if (target.presetId) {
-      if (target.config) settings.upsertSharedPreset(target.config.name, draft(), target.presetId);
+      settings.upsertSharedPreset(target.config.name, draft(), target.presetId);
     } else {
-      settings.saveSharedMainConfig(draft());
+      settings.saveMainConfig(draft());
     }
     if (target.sourceRole === 'analysis') settings.update({ apiMode: target.presetId ? 'seven-preset' : 'auto', selectedSevenDaysPresetId: target.presetId });
     result.textContent = 'API 设置已保存。'; result.className = 'settings-result success';
@@ -179,7 +190,7 @@ export function createApiSettings({
     const name = String(await Promise.resolve(promptImpl({ title: '另存为预设', body: '为当前 API 配置输入一个名称。', initialValue: '千千结预设', placeholder: '预设名称', confirmText: '保存', validate: value => String(value ?? '').trim() ? '' : '请输入预设名称。' })) ?? '').trim();
     if (!name) return;
     const id = settings.upsertSharedPreset(name, draft());
-    if (editingRole === 'summary') settings.setSharedUtilityPresetId(id);
+    if (editingRole === 'summary') settings.setSummaryPresetId(id);
     else settings.update({ apiMode: 'seven-preset', selectedSevenDaysPresetId: id });
     rerender?.();
   });
@@ -195,8 +206,8 @@ export function createApiSettings({
     }
     const currentSelection = settings.get();
     const analysisUsesTarget = currentSelection.apiMode === 'seven-preset' && currentSelection.selectedSevenDaysPresetId === target.presetId;
-    const summaryUsesTarget = settings.sharedUtilityPresetId() === target.presetId;
-    const summaryFollowsAnalysis = !settings.sharedUtilityPresetId();
+    const summaryUsesTarget = settings.summaryPresetId() === target.presetId;
+    const summaryFollowsAnalysis = !settings.summaryPresetId();
     const effects = [];
     if (analysisUsesTarget) effects.push('分析 API 将回退到主配置。');
     if (summaryUsesTarget) effects.push('摘要 API 将改为跟随分析。');
