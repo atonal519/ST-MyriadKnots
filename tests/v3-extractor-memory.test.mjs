@@ -154,6 +154,22 @@ async function primeEarlyGenerationTail(h) {
   h.calls.splice(0);
 }
 
+test('完整聊天删除已摘要中间楼时，前后楼唯一绑定后允许移除旧楼', async () => {
+  const h = harness({ initialChat: [assistant('A'), assistant('B'), assistant('C'), user('稳定锚')] });
+  h.context.chatMetadata.integrity = 'complete';
+  await h.runtime.start();
+  const before = h.runtime.getState().floors;
+  const removed = before[1];
+  await h.runtime.extractFloor(removed.floorId, { analyzeState: false });
+  assert.equal(h.foundationRuntime.getReachable().floorMemories.some(memory => memory.floorId === removed.floorId), true);
+
+  h.context.chat.splice(1, 1);
+  const foundationState = await h.foundationRuntime.refreshStatus();
+  assert.equal(foundationState.status, 'ready');
+  assert.deepEqual(h.foundationRuntime.getReachable().floors.map(floor => floor.id), [before[0].floorId, before[2].floorId]);
+  assert.equal(h.foundationRuntime.getReachable().floorMemories.some(memory => memory.floorId === removed.floorId), false);
+});
+
 function completeTailSwipe(h, text) {
   const messageIndex = h.context.chat.length - 1;
   const previous = h.context.chat[messageIndex]?.mes ?? '';
@@ -2057,7 +2073,9 @@ test('真实 runtime 保存中关闭并重开，提交完成后立即退出编�
   const h = harness();
   await h.runtime.start(); await h.runtime.extractNext();
   const ui = viewHarness(h.runtime);
-  let card = ui.flatten(ui.container).find(node => String(node.className).includes('qqj-memory-card')); card.open = true; card.fire('toggle');
+  const registeredCard = () => ui.flatten(ui.container).find(node => String(node.className).includes('qqj-memory-card')
+    && ui.flatten(node).some(child => child.textContent === '编辑' || child.placeholder === '输入用户修订摘要'));
+  let card = registeredCard(); card.open = true; card.fire('toggle');
   ui.flatten(ui.container).find(node => node.textContent === '编辑').click();
   const summary = ui.flatten(ui.container).find(node => node.placeholder === '输入用户修订摘要'); summary.value = '真实保存后的摘要'; summary.fire('input');
   const gate = h.backend.holdNextRootPut();
@@ -2069,14 +2087,14 @@ test('真实 runtime 保存中关闭并重开，提交完成后立即退出编�
   assert.ok(ui.flatten(ui.container).some(node => node.placeholder === '输入用户修订摘要'), '提交未完成时重开应继续显示本次草稿');
   gate.release();
   await waitFor(() => !h.runtime.getState().memoryWorkBusy && !ui.flatten(ui.container).some(node => node.placeholder === '输入用户修订摘要'), '真实保存完成后界面未退出编辑');
-  card = ui.flatten(ui.container).find(node => String(node.className).includes('qqj-memory-card'));
+  card = registeredCard();
   assert.equal(card.open, true); assert.match(ui.flatten(card).map(node => node.textContent).join('|'), /真实保存后的摘要/);
   assert.equal(ui.flatten(ui.container).some(node => node.textContent === '保存中…'), false);
   ui.view.deactivate(); await ui.view.activate();
-  assert.equal(ui.flatten(ui.container).find(node => String(node.className).includes('qqj-memory-card')).open, true, '保存完成后再关闭重开仍应保持展开');
+  assert.equal(registeredCard().open, true, '保存完成后再关闭重开仍应保持展开');
   assert.equal(ui.flatten(ui.container).some(node => node.placeholder === '输入用户修订摘要'), false);
 
-  card = ui.flatten(ui.container).find(node => String(node.className).includes('qqj-memory-card')); card.open = true; card.fire('toggle');
+  card = registeredCard(); card.open = true; card.fire('toggle');
   ui.flatten(ui.container).find(node => node.textContent === '编辑').click();
   const secondSummary = ui.flatten(ui.container).find(node => node.placeholder === '输入用户修订摘要'); secondSummary.value = '面板关闭期间完成的摘要'; secondSummary.fire('input');
   const inactiveGate = h.backend.holdNextRootPut();
@@ -2085,7 +2103,7 @@ test('真实 runtime 保存中关闭并重开，提交完成后立即退出编�
   ui.view.deactivate(); inactiveGate.release();
   await waitFor(() => !h.runtime.getState().memoryWorkBusy, '面板关闭期间后台保存未完成');
   await ui.view.activate();
-  card = ui.flatten(ui.container).find(node => String(node.className).includes('qqj-memory-card'));
+  card = registeredCard();
   assert.equal(card.open, true, '面板关闭期间保存完成后首次重开就应保持展开');
   assert.equal(ui.flatten(ui.container).some(node => node.placeholder === '输入用户修订摘要'), false);
   assert.match(ui.flatten(card).map(node => node.textContent).join('|'), /面板关闭期间完成的摘要/);
@@ -3778,6 +3796,7 @@ test('marker 保存失败后删后置 user 仍保留已提交记忆并只重试�
   const beforeCse = h.runtime.getState().cseFloors[0];
   assert.equal(h.runtime.getState().lastExtractorError?.phase, 'anchor');
   h.calls.splice(0);
+  h.context.chat[0] = { ...h.context.chat[0], mes: '唯一旧正文<!--宿主新包装-->', swipes: ['唯一旧正文<!--宿主新包装-->'] };
   h.context.chat.splice(1, 1);
   await h.foundationRuntime.refreshStatus();
   await h.runtime.refreshStatus();
@@ -3785,6 +3804,34 @@ test('marker 保存失败后删后置 user 仍保留已提交记忆并只重试�
   assert.deepEqual([after.floorId, after.memoryId, h.runtime.getState().cseFloors[0].deltaId], [before.floorId, before.memoryId, beforeCse.deltaId]);
   assert.equal(h.calls.length, 0);
   assert.equal(h.runtime.getState().lastExtractorError?.phase, 'anchor');
+  assert.notEqual(h.runtime.getState().summaryCoverageStatus, 'unknown');
+  assert.equal(h.runtime.getState().summaryCompletedCount, h.runtime.getState().stableCount);
+});
+
+test('后置 foreign marker 不得让未挂标的已摘要前缀归零或被完整聊天删除', async () => {
+  const h = harness({
+    initialChat: [assistant('永久前缀 A'), user('继续'), assistant('待确认尾楼')], modernAnchors: true,
+    persistAnchors: async () => { const error = new Error('marker write failed'); error.code = 'V3_MESSAGE_ANCHOR_SAVE_FAILED'; throw error; },
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? { jsonData: { summary: '永久前缀摘要' } } : { jsonData: { noMaterialChange: true } },
+  });
+  h.context.chatMetadata.integrity = 'complete';
+  await h.runtime.start();
+  await h.runtime.startHistoricalRebuild();
+  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()));
+  const before = h.foundationRuntime.getReachable();
+  assert.equal(before.floorMemories.length, 1);
+  assert.equal(h.context.chat[0].extra?.qianqianjie_floor, undefined, '夹具必须保持前缀 marker 落盘失败');
+
+  h.context.chat[2].extra = { qianqianjie_floor: { schemaVersion: 1, chatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', floorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' } };
+  h.context.chat.splice(1, 1);
+  const state = await h.foundationRuntime.refreshStatus();
+  const after = h.foundationRuntime.getReachable();
+
+  assert.equal(state.status, 'needsReview');
+  assert.equal(state.reviewReason?.markerStatus, 'foreign');
+  assert.deepEqual(after.floors.map(floor => floor.id), before.floors.map(floor => floor.id));
+  assert.deepEqual(after.floorMemories.map(memory => memory.id), before.floorMemories.map(memory => memory.id));
+  assert.deepEqual(after.stateDeltas.map(delta => delta.id), before.stateDeltas.map(delta => delta.id));
 });
 
 test('正文编辑只在明确重提时替换摘要与 CSE 快照，后续再编辑不撤销新结果', async () => {

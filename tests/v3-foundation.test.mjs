@@ -1643,12 +1643,36 @@ test('只读检查给出首个安全图匹配原因，恢复匹配后清除原�
   });
   const review = await runtime.inspect('coldMismatch');
   assert.equal(review.status, 'needsReview');
-  assert.deepEqual(review.reviewReason, { code: 'fingerprintMismatch', assistantSeq: 1, messageIndex: 0, expectedCount: 2, actualCount: 3 });
+  assert.deepEqual(review.reviewReason, { code: 'fingerprintMismatch', assistantSeq: 1, messageIndex: 0, expectedCount: 2, actualCount: 3,
+    markerStatus: 'none', rawFingerprintMatches: false, canonicalFingerprintMatches: false, sanitizerFingerprintMatches: true });
   assert.equal(review.lastError, null, '图匹配原因不是 API 读取错误');
   h.context.chat[0] = assistant('A');
   const recovered = await runtime.inspect('matchedAgain');
   assert.equal(recovered.status, 'ready');
   assert.equal(recovered.reviewReason, null);
+});
+
+test('无 marker 的包装变化与唯一位置移动在检查和封口中沿用原 floor', async () => {
+  const h = harness([assistant('正文 A'), user('继续'), assistant('尾楼')]);
+  await h.runtime.start();
+  const before = h.runtime.getReachable().floors[0];
+  h.context.chat[0] = assistant('正文 A<!--宿主新包装-->');
+  const wrappedReview = await h.runtime.inspect('wrappedCanonical');
+  assert.equal(wrappedReview.status, 'ready');
+  assert.equal(wrappedReview.reviewReason, null);
+  await h.runtime.reconcile('wrappedCanonical');
+  assert.equal(h.runtime.getReachable().floors[0].id, before.id);
+
+  const movedHarness = harness([assistant('正文 B'), user('继续'), assistant('尾楼')]);
+  await movedHarness.runtime.start();
+  const beforeMove = movedHarness.runtime.getReachable().floors[0];
+  movedHarness.context.chat.splice(0, 0, user('前置消息'));
+  const movedReview = await movedHarness.runtime.inspect('movedUnique');
+  assert.equal(movedReview.status, 'ready');
+  await movedHarness.runtime.reconcile('movedUnique');
+  const moved = movedHarness.runtime.getReachable().floors[0];
+  assert.equal(moved.id, beforeMove.id);
+  assert.equal(moved.hostLocator.messageIndex, 1);
 });
 
 test('真实聊天 session + lifecycle + V3 runtime 在 CHAT_CHANGED UUID 时序下只建立一份身份', async () => {
@@ -1700,6 +1724,37 @@ test('生产 scanner 只用紧邻普通 user 稳定 AI，真 system 不算而 au
   ]);
   assert.deepEqual(candidates.map(item => item.stabilityProof?.kind ?? null), ['nextUser', null, 'nextUser', null]);
   assert.deepEqual(candidates.map(item => item.stabilityProof?.messageIndex ?? null), [1, null, 5, null]);
+});
+
+test('生产 scanner 的连续 AI 尾部全部进入只读待摘要投影，正式楼与晋升语义保持不变', async () => {
+  const chat = Array.from({ length: 84 }, (_, messageIndex) => messageIndex % 2 === 0
+    ? assistant(`已登记 AI ${messageIndex}`)
+    : user(`稳定用户楼 ${messageIndex}`));
+  chat.push(assistant('A84'), assistant('A85'), user('U86'), assistant('A87'));
+  const h = harness(chat, { modernAnchors: true });
+  let state = await h.runtime.start();
+  assert.equal(state.stableCount, 42);
+  assert.equal(h.runtime.getReachable().floors.length, 42);
+  assert.deepEqual(state.unregisteredCandidates, [
+    { assistantSeq: 43, messageIndex: 84, reason: 'consecutiveAssistant' },
+    { assistantSeq: 44, messageIndex: 85, reason: 'waitingEarlierFloor' },
+    { assistantSeq: 45, messageIndex: 87, reason: 'waitingNextUser' },
+  ]);
+  assert.equal(state.pending?.messageIndex, 84, '原有首个 pending 语义保持不变');
+
+  const promotion = harness([assistant('正常单尾 AI')], { modernAnchors: true });
+  state = await promotion.runtime.start();
+  assert.deepEqual(state.unregisteredCandidates, [{ assistantSeq: 1, messageIndex: 0, reason: 'waitingNextUser' }]);
+  promotion.context.chat.push(user('确认上一楼'));
+  state = await promotion.runtime.refreshStatus();
+  assert.equal(state.stableCount, 1);
+  assert.deepEqual(state.unregisteredCandidates, [], '候选成为正式 floor 后不得重复显示');
+  assert.equal(promotion.runtime.getReachable().floors[0].hostLocator.messageIndex, 0);
+
+  const caughtUp = harness([assistant('已稳定 AI'), user('确认')], { modernAnchors: true });
+  state = await caughtUp.runtime.start();
+  assert.equal(state.stableCount, 1);
+  assert.deepEqual(state.unregisteredCandidates, []);
 });
 
 test('MESSAGE_SENT 在 user 入列时稳定前一 AI；重复事件、同锚正文编辑与尾楼 reroll 均不破坏前缀', async () => {
@@ -1754,6 +1809,21 @@ test('替换 user 正文不改变未摘要楼身份，删除唯一稳定证明�
   state = h.runtime.getState();
   assert.equal(state.stableCount, 0, '中间 user 删除后只能保留其前方连续稳定前缀');
   assert.equal(h.runtime.getReachable().floors.length, 0);
+});
+
+test('已挂有效 marker 且属于当前图的末楼即使尚无摘要，失去 user 锚后仍永久稳定', async () => {
+  const h = harness([assistant('已挂标末楼'), user('稳定锚')], { modernAnchors: true });
+  let state = await h.runtime.start();
+  assert.equal(state.stableCount, 1);
+  const floor = h.runtime.getReachable().floors[0];
+  assert.equal(h.runtime.getReachable().floorMemories.length, 0, '夹具必须覆盖尚无 active FloorMemory 的楼');
+  h.context.chat[0].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: floor.id };
+  h.context.chat.splice(1, 1);
+
+  state = await h.runtime.refreshStatus();
+  assert.equal(state.status, 'ready');
+  assert.equal(state.stableCount, 1);
+  assert.equal(h.runtime.getReachable().floors[0].id, floor.id);
 });
 
 const EVENT_NAMES = ['CHAT_CHANGED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'CHARACTER_MESSAGE_RENDERED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MORE_MESSAGES_LOADED'];

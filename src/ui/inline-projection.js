@@ -116,6 +116,7 @@ export function classifyInlineMessage(message) {
 
 export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantSeq = null) {
   const floor = (state?.floors ?? []).find(value => value?.messageIndex === messageIndex) ?? null;
+  const waitingCandidate = (state?.unregisteredCandidates ?? []).find(value => value?.messageIndex === messageIndex) ?? null;
   const assistantSeq = Number.isSafeInteger(floor?.assistantSeq) && floor.assistantSeq > 0
     ? floor.assistantSeq
     : Number.isSafeInteger(fallbackAssistantSeq) && fallbackAssistantSeq > 0 ? fallbackAssistantSeq : null;
@@ -123,12 +124,18 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
     const snapshotStatus = state?.memorySnapshotStatus;
     const failed = snapshotStatus === 'error';
     const syncing = ['syncing', 'unavailable'].includes(snapshotStatus);
-    const pending = state?.pending?.messageIndex === messageIndex;
+    const pending = waitingCandidate ?? (state?.pending?.messageIndex === messageIndex ? { reason: 'waitingNextUser' } : null);
+    const waitingCopy = ({
+      waitingNextUser: ['等待下一条用户消息', '这一楼尚未摘要。发送下一条用户消息后会重新检查。'],
+      waitingEarlierFloor: ['等待前面楼层处理', '这一楼尚未摘要。前面的 AI 楼尚未确认，当前不会进入摘要处理。'],
+      consecutiveAssistant: ['连续 AI，尚待确认', '这一楼尚未摘要。检测到连续 AI 消息，现有规则尚不能确认这楼。'],
+      registrationNeedsReview: ['消息对应关系待核对', '这一楼尚未摘要。消息与已有记忆的对应关系需要先核对。'],
+    })[pending?.reason] ?? ['尚待确认', '这一楼尚未摘要，正在等待确认。'];
     return Object.freeze({
       kind: 'assistant', floorId: null, assistantSeq, messageIndex, status: failed ? 'error' : syncing ? 'syncing' : pending ? 'pending' : 'unavailable',
-      statusText: failed ? '记忆读取失败' : syncing ? '正在读取本楼状态' : pending ? '等待下一条用户消息' : '尚未读取本楼状态',
+      statusText: failed ? '记忆读取失败' : syncing ? '正在读取本楼状态' : pending ? waitingCopy[0] : '尚未读取本楼状态',
       time: '未提取', locations: '未提取', people: '未提取',
-      summary: failed ? '暂时无法读取当前聊天的记忆状态。' : syncing ? '正在读取当前聊天的记忆状态。' : pending ? '发送下一条用户消息后将开始摘要。' : '当前记忆中没有这楼的已保存状态。',
+      summary: failed ? '暂时无法读取当前聊天的记忆状态。' : syncing ? '正在读取当前聊天的记忆状态。' : pending ? waitingCopy[1] : '当前记忆中没有这楼的已保存状态。',
       error: failed ? String(state?.lastExtractorError?.message ?? '记忆读取失败，请稍后重试。') : '',
       busy: Boolean(state?.memoryWorkBusy || syncing), canExtract: false,
     });
@@ -179,17 +186,28 @@ export function projectInlineRecallReceipt(receipt) {
   const floorCount = new Set(selectedFloors.map(value => value.floorId).filter(Boolean)).size;
   const stateItems = Object.freeze((safeShape ? rawStates : []).map(value => {
     const subject = frozenText(value?.subject, 500), toward = frozenText(value?.toward, 500), text = frozenText(value?.text);
-    return subject && text ? Object.freeze({ subject, toward, text }) : null;
+    const stateId = frozenText(value?.stateId, 500), sourceFloorId = frozenText(value?.sourceFloorId, 500), sourceDeltaId = frozenText(value?.sourceDeltaId, 500);
+    const subjectEntityId = frozenText(value?.subjectEntityId, 500), layer = frozenText(value?.layer, 80);
+    return subject && text ? Object.freeze({ subject, toward, text,
+      ...(stateId ? { stateId } : {}), ...(sourceFloorId ? { sourceFloorId } : {}), ...(sourceDeltaId ? { sourceDeltaId } : {}),
+      ...(subjectEntityId ? { subjectEntityId } : {}), ...(layer ? { layer } : {}),
+    }) : null;
   }).filter(Boolean));
   const stateCount = stateItems.length;
   const cseChangeItems = Object.freeze((safeShape ? rawChanges : []).map(value => Object.freeze({
-    subject: frozenText(value.subject, 500), layer: frozenText(value.layer, 80), action: frozenText(value.action, 80),
+    subjectEntityId: frozenText(value.subjectEntityId, 500), subject: frozenText(value.subject, 500), layer: frozenText(value.layer, 80), action: frozenText(value.action, 80),
     floorId: frozenText(value.floorId, 500), assistantSeq: value.assistantSeq,
     before: value.before && typeof value.before === 'object' && !Array.isArray(value.before) ? Object.freeze({
       text: frozenText(value.before.text), visibility: frozenText(value.before.visibility, 80),
+      ...(frozenText(value.before.stateId, 500) ? { stateId: frozenText(value.before.stateId, 500) } : {}),
+      ...(frozenText(value.before.sourceFloorId, 500) ? { sourceFloorId: frozenText(value.before.sourceFloorId, 500) } : {}),
+      ...(frozenText(value.before.sourceDeltaId, 500) ? { sourceDeltaId: frozenText(value.before.sourceDeltaId, 500) } : {}),
     }) : null,
     after: value.after && typeof value.after === 'object' && !Array.isArray(value.after) ? Object.freeze({
       text: frozenText(value.after.text), visibility: frozenText(value.after.visibility, 80),
+      ...(frozenText(value.after.stateId, 500) ? { stateId: frozenText(value.after.stateId, 500) } : {}),
+      ...(frozenText(value.after.sourceFloorId, 500) ? { sourceFloorId: frozenText(value.after.sourceFloorId, 500) } : {}),
+      ...(frozenText(value.after.sourceDeltaId, 500) ? { sourceDeltaId: frozenText(value.after.sourceDeltaId, 500) } : {}),
     }) : null,
   })).filter(value => value.subject && (value.before?.text || value.after?.text)));
   const cseChangeCount = cseChangeItems.length;

@@ -1,6 +1,6 @@
 import { newIdentityUuid, sha256 } from '../identity.js';
 import { buildFoundationIndexes } from './foundation-runtime.js';
-import { createCheckpointInputFingerprints, deterministicUuid } from './foundation-domain.js';
+import { createCheckpointInputFingerprints, deterministicUuid, scanAssistantCandidates } from './foundation-domain.js';
 import { validateFoundationCheckpoint, validateFoundationRoot, validateFoundationRun } from './foundation-schema.js';
 import { buildExtractorSystemPrompt, runExtractorRequest, createExtractorEnvelope, inferCanonicalCurrentTime, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_VERSION } from './extractor.js';
 import { validateEntityRecord, validateFloorMemory } from './memory-schema.js';
@@ -13,7 +13,7 @@ import { isHostNarratorMessage, selectAssistantMessage, selectUserStabilityAncho
 import { parseSharedStoryClock, storyClockSignature } from '../story-clock.js';
 import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 import { buildEntityIdentityDirectory, entitiesThroughFloorIds } from './entity-identity.js';
-import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
+import { matchFloorCandidates } from './floor-binding.js';
 
 const EVENTS = Object.freeze(['CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
 const HISTORY_MUTATION_EVENTS = new Set(['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
@@ -133,19 +133,32 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     try {
       const activeFloorIds = new Set((value.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => memory.floorId));
       const snapshot = hostAdapter.snapshot();
-      const bindings = [];
-      for (const floor of value.floors ?? []) {
-      if (!activeFloorIds.has(floor.id)) continue;
-      const message = snapshot.chat?.[floor.hostLocator.messageIndex];
-      const marker = inspectMessageFloorAnchor(message, value.root.chatId);
-      if (marker.status === 'valid' && marker.anchor.floorId === floor.id) { bindings.push({ messageIndex: floor.hostLocator.messageIndex, floorId: floor.id }); continue; }
-      const selected = selectAssistantMessage(message);
-      const fingerprint = selected ? `sha256:${await sha256(selected.rawContent)}` : null;
-      const duplicateCount = selected ? snapshot.chat.reduce((count, item) => count + (selectAssistantMessage(item)?.rawContent === selected.rawContent ? 1 : 0), 0) : 0;
-      if (marker.status !== 'none' || fingerprint !== floor.content.rawFingerprint || duplicateCount !== 1) {
-        throw errorWith('V3_MESSAGE_ANCHOR_MIGRATION_UNPROVEN', '旧摘要无法唯一绑定到当前消息，已保留原记录并等待人工处理。');
+      const candidates = await scanAssistantCandidates(snapshot.chat, { sanitizerOptions: sanitizerOptions(), chatId: value.root.chatId });
+      const matched = matchFloorCandidates(value.floors ?? [], candidates);
+      if (matched.issue) {
+        throw Object.assign(errorWith('V3_MESSAGE_ANCHOR_MIGRATION_UNPROVEN', '旧摘要无法唯一绑定到当前消息，已保留原记录并等待人工处理。'), {
+          assistantSeq: matched.issue.assistantSeq,
+          messageIndex: matched.issue.messageIndex,
+          markerStatus: matched.issue.markerStatus,
+          bindingIssue: matched.issue.code,
+        });
       }
-        bindings.push({ messageIndex: floor.hostLocator.messageIndex, floorId: floor.id });
+      const bindings = [];
+      for (const [floorIndex, floor] of (value.floors ?? []).entries()) {
+        if (!activeFloorIds.has(floor.id)) continue;
+        const binding = matched.floorMatches.get(floorIndex);
+        if (!binding) {
+          const candidate = candidates[floorIndex] ?? null;
+          throw Object.assign(errorWith('V3_MESSAGE_ANCHOR_MIGRATION_UNPROVEN', '旧摘要无法唯一绑定到当前消息，已保留原记录并等待人工处理。'), {
+            floorId: floor.id,
+            assistantSeq: floor.assistantSeq ?? null,
+            messageIndex: candidate?.hostLocator?.messageIndex ?? floor.hostLocator?.messageIndex ?? null,
+            markerStatus: candidate?.messageAnchor?.status ?? null,
+            rawFingerprintMatches: candidate ? floor.content?.rawFingerprint === candidate.rawFingerprint : null,
+            canonicalFingerprintMatches: candidate ? floor.content?.canonicalFingerprint === candidate.canonicalFingerprint : null,
+          });
+        }
+        bindings.push({ messageIndex: binding.candidate.hostLocator.messageIndex, floorId: floor.id });
       }
       if (!bindings.length) return true;
       await persistAnchors({ hostAdapter, chatId: value.root.chatId, bindings });
@@ -154,7 +167,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       return true;
     } catch (error) {
       if (expectedEpoch === epoch && currentHostChatId() === value.root.chatId) {
-        lastFailure = Object.freeze({ floorId: null, runId: null, phase: 'anchor', code: error?.code ?? 'V3_MESSAGE_ANCHOR_SAVE_FAILED', message: safeErrorMessage(error?.message ?? '摘要已保存，但消息标识尚未持久化；刷新可重试，无需重新摘要。') });
+        lastFailure = Object.freeze({ floorId: error?.floorId ?? null, runId: null, phase: 'anchor', code: error?.code ?? 'V3_MESSAGE_ANCHOR_SAVE_FAILED', message: safeErrorMessage(error?.message ?? '摘要已保存，但消息标识尚未持久化；刷新可重试，无需重新摘要。'),
+          ...(['assistantSeq', 'messageIndex', 'markerStatus', 'bindingIssue', 'rawFingerprintMatches', 'canonicalFingerprintMatches']
+            .filter(key => error?.[key] !== undefined).reduce((details, key) => ({ ...details, [key]: error[key] }), {})) });
       }
       return false;
     }

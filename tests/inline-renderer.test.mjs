@@ -165,8 +165,42 @@ test('楼内空投影区分同步、读取失败与真正未稳定，并始终�
 
   const pending = projectInlineMemoryFloor({ memorySnapshotStatus: 'ready', floors: [], pending: { messageIndex: 0 } }, 0);
   assert.equal(pending.statusText, '等待下一条用户消息');
+  const waitingState = { memorySnapshotStatus: 'ready', floors: [], unregisteredCandidates: [
+    { assistantSeq: 43, messageIndex: 84, reason: 'consecutiveAssistant' },
+    { assistantSeq: 44, messageIndex: 85, reason: 'waitingEarlierFloor' },
+    { assistantSeq: 45, messageIndex: 87, reason: 'waitingNextUser' },
+  ] };
+  const consecutive = projectInlineMemoryFloor(waitingState, 84, 43);
+  assert.deepEqual({ status: consecutive.status, statusText: consecutive.statusText, canExtract: consecutive.canExtract }, { status: 'pending', statusText: '连续 AI，尚待确认', canExtract: false });
+  assert.match(consecutive.summary, /尚未摘要.*连续 AI 消息/);
+  const earlier = projectInlineMemoryFloor(waitingState, 85, 44);
+  assert.equal(earlier.statusText, '等待前面楼层处理'); assert.match(earlier.summary, /前面的 AI 楼尚未确认/);
+  const latest = projectInlineMemoryFloor(waitingState, 87, 45);
+  assert.equal(latest.statusText, '等待下一条用户消息'); assert.match(latest.summary, /尚未摘要.*下一条用户消息/);
   const unavailable = projectInlineMemoryFloor({ memorySnapshotStatus: 'ready', floors: [], pending: { messageIndex: 2 } }, 0);
   assert.equal(unavailable.statusText, '尚未读取本楼状态');
+});
+
+test('楼内待摘要候选按实际宿主楼号显示，缺少 floorId 时点击也不能发起提取', async () => {
+  const chat = Array.from({ length: 88 }, (_, index) => ({ is_user: true, is_system: true, mes: `占位 ${index}`, extra: { type: 'system' } }));
+  chat[84] = { is_user: false, is_system: false, mes: 'A84' };
+  chat[85] = { is_user: false, is_system: false, mes: 'A85' };
+  chat[87] = { is_user: false, is_system: false, mes: 'A87' };
+  const memoryState = { chatId: 'chat-a', memorySnapshotStatus: 'ready', floors: [], unregisteredCandidates: [
+    { assistantSeq: 43, messageIndex: 84, reason: 'consecutiveAssistant' },
+    { assistantSeq: 44, messageIndex: 85, reason: 'waitingEarlierFloor' },
+    { assistantSeq: 45, messageIndex: 87, reason: 'waitingNextUser' },
+  ] };
+  const h = createHarness({ chat, memoryState });
+  const elements = [84, 85, 87].map(index => messageElement(index)); elements.forEach(node => h.chatRoot.append(node));
+  h.renderer.start(); await h.flushMicrotasks();
+  const views = elements.map(element => resolveInlineAnchor(element).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard);
+  assert.deepEqual(views.map(view => view.title.textContent), ['第 84 个结', '第 85 个结', '第 87 个结']);
+  assert.deepEqual(views.map(view => view.status.textContent), ['连续 AI，尚待确认', '等待前面楼层处理', '等待下一条用户消息']);
+  assert.ok(views.every(view => view.extract.disabled));
+  views.forEach(view => view.extract.emit('click'));
+  await h.flushMicrotasks();
+  assert.deepEqual(h.extractionCalls, []);
 });
 
 test('读取失败与提取失败胶囊保留状态样式，详情错误样式只作用于body直系子元素', async () => {
@@ -282,6 +316,25 @@ test('真实schema10私密移除回执经inline投影与renderer显示变化正�
   assert.match(removed.children[0].textContent, /裴晚生 \/ 情境 \/ 移除：仍在钟楼等候（仅主体知晓）/);
   assert.equal(removed.children[1].textContent, '第 42 楼');
   assert.equal(descendantText(view.states).includes('仍在钟楼等候'), false);
+});
+
+test('楼内回执用可靠来源标识压缩 refine 的同源 after，仍保留 before 与真实宿主楼号', async () => {
+  const chat = [{ is_user: true, is_system: false, mes: '当前用户楼', extra: { [RECALL_RECEIPT_KEY]: { schemaVersion: 10 } } }];
+  const receipt = {
+    status: 'ready', injectionText: '<qqj_recalled_context>人物状态</qqj_recalled_context>', selectedFloors: [],
+    selectedStates: [{ stateId: 'state-new', sourceFloorId: 'floor-2', sourceDeltaId: 'delta-2', subjectEntityId: 'p1', subject: '左佐', layer: 'situational', toward: '辛夷', text: '后来发短信要求辛夷回屋' }],
+    selectedCseChanges: [{ deltaId: 'delta-2', floorId: 'floor-2', assistantSeq: 2, subjectEntityId: 'p1', subject: '左佐', layer: 'situational', action: 'refine',
+      before: { stateId: 'state-old', sourceFloorId: 'floor-1', sourceDeltaId: 'delta-1', text: '放弃反锁，允许辛夷去院子', visibility: 'private' },
+      after: { stateId: 'state-new', sourceFloorId: 'floor-2', sourceDeltaId: 'delta-2', text: '后来发短信要求辛夷回屋', visibility: 'private' } }],
+  };
+  const memoryState = { floors: [{ floorId: 'floor-2', assistantSeq: 2, messageIndex: 88 }], memoryEntities: [] };
+  const h = createHarness({ chat, memoryState, projectReceipt: async () => receipt });
+  const userElement = messageElement(0, { user: true }); h.chatRoot.append(userElement); h.renderer.start(); await h.flushMicrotasks();
+  const view = resolveInlineAnchor(userElement).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  assert.equal(view.stateItems.children[0].textContent, '左佐 → 辛夷：后来发短信要求辛夷回屋');
+  assert.match(view.cseChangeItems.children[0].children[0].textContent, /调整：放弃反锁，允许辛夷去院子（仅主体知晓） → 见上方当前快照（同一来源）/);
+  assert.equal(view.cseChangeItems.children[0].children[1].textContent, '第 88 楼');
+  assert.equal(descendantText(view.cseChanges).includes('后来发短信要求辛夷回屋'), false, '同源 after 不应在变化区重复全文');
 });
 
 test('召回来源组近到远、逐组折叠并在重绘中保持，切聊不串展开状态', async () => {

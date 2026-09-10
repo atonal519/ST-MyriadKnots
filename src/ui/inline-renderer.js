@@ -139,8 +139,13 @@ function replaceCseChangeItems(view, projection, documentRef, state) {
     const floor = (state?.floors ?? []).find(value => value.floorId === item.floorId && value.assistantSeq === item.assistantSeq)
       ?? (state?.floors ?? []).find(value => value.floorId === item.floorId)
       ?? (state?.floors ?? []).find(value => value.assistantSeq === item.assistantSeq);
-    const side = value => value?.text ? `${value.text}${visibilityText[value.visibility] ? `（${visibilityText[value.visibility]}）` : ''}` : '';
-    const before = side(item.before), after = side(item.after);
+    const sourceKey = value => value?.stateId ? `id:${value.stateId}`
+      : value?.sourceFloorId || value?.sourceDeltaId ? `source:${value.sourceFloorId ?? ''}|${value.sourceDeltaId ?? ''}|${value.text ?? ''}` : '';
+    const currentEquivalent = item.after && (projection.stateItems ?? []).some(current => current.subjectEntityId === item.subjectEntityId
+      && current.layer === item.layer && sourceKey(current) && sourceKey(current) === sourceKey(item.after));
+    const side = (value, sameAsCurrent = false) => sameAsCurrent ? '见上方当前快照（同一来源）'
+      : value?.text ? `${value.text}${visibilityText[value.visibility] ? `（${visibilityText[value.visibility]}）` : ''}` : '';
+    const before = side(item.before), after = side(item.after, currentEquivalent);
     const change = item.action === 'add' ? `新增：${after}`
       : item.action === 'remove' ? `移除：${before}（这是该楼当时移除的旧状态）`
         : item.action === 'update' ? `更新：${before} → ${after}`

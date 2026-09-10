@@ -10,7 +10,7 @@ import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
 export const RECALL_RECEIPT_SCHEMA_VERSION = 10;
-export const RECALL_STRATEGY_VERSION = 'continuity-v4';
+export const RECALL_STRATEGY_VERSION = 'continuity-v6';
 
 const SUPPORTED_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 const MAIN_GENERATION_TYPES = new Set([...SUPPORTED_TYPES, 'impersonate']);
@@ -45,12 +45,17 @@ function sourceRefsValid(receipt, source) {
   if (!receipt.selectedStates.every(value => {
     if (!value || typeof value !== 'object' || !['core', 'adaptive', 'situational'].includes(value.layer)) return false;
     const subject = subjects.get(value.subjectEntityId);
-    return Array.isArray(subject?.[value.layer]) && subject[value.layer].some(item => item.text === value.text && item.visibility === value.visibility && item.towardEntityId === (value.towardEntityId ?? null) && item.sourceAssistantSeq === (value.sourceAssistantSeq ?? null));
+    return Array.isArray(subject?.[value.layer]) && subject[value.layer].some(item => (
+      item.text === value.text && item.visibility === value.visibility && item.reason === value.reason
+      && item.towardEntityId === (value.towardEntityId ?? null) && item.sourceAssistantSeq === (value.sourceAssistantSeq ?? null)
+      && (!value.stateId || (item.stateId === value.stateId && (item.sourceFloorId ?? null) === (value.sourceFloorId ?? null) && (item.sourceDeltaId ?? null) === (value.sourceDeltaId ?? null)))
+    ));
   })) return false;
   const stateEqual = (left, right) => left === null ? right === null : Boolean(right
     && left.text === right.text && left.visibility === right.visibility && left.reason === right.reason
     && left.origin === right.origin && (left.towardEntityId ?? null) === (right.towardEntityId ?? null)
-    && (left.sourceAssistantSeq ?? null) === (right.sourceAssistantSeq ?? null));
+    && (left.sourceAssistantSeq ?? null) === (right.sourceAssistantSeq ?? null)
+    && (!left.stateId || (left.stateId === right.stateId && (left.sourceFloorId ?? null) === (right.sourceFloorId ?? null) && (left.sourceDeltaId ?? null) === (right.sourceDeltaId ?? null))));
   const entityNames = new Map((source.entities ?? []).map(entity => [entity.entityId, entity.displayName]));
   return receipt.selectedCseChanges.every(value => value.subject === entityNames.get(value.subjectEntityId) && sourceChanges.some(change => change.deltaId === value.deltaId
     && change.floorId === value.floorId && change.assistantSeq === value.assistantSeq
@@ -86,6 +91,10 @@ const selectorDiagnosticSnapshot = value => {
     model: api.model,
     transportAttempts: Number.isSafeInteger(value?.transportAttempts) && value.transportAttempts >= 0 ? value.transportAttempts : api.transportAttempts,
     durationMs: Math.max(0, Math.floor(Number(value?.durationMs) || 0)),
+    historyCandidateCount: nonNegativeInteger(value?.historyCandidateCount) ? value.historyCandidateCount : null,
+    stateCandidateCount: nonNegativeInteger(value?.stateCandidateCount) ? value.stateCandidateCount : null,
+    historyModelSelectedCount: nonNegativeInteger(value?.historyModelSelectedCount) ? value.historyModelSelectedCount : null,
+    stateModelSelectedCount: nonNegativeInteger(value?.stateModelSelectedCount) ? value.stateModelSelectedCount : null,
   });
 };
 const receiptTimingSnapshot = timings => Object.freeze({
@@ -94,7 +103,11 @@ const receiptTimingSnapshot = timings => Object.freeze({
   selectorMs: Math.max(0, Number(timings.selectorMs) || 0),
   ...(timings.sourceReadAttempts ? { sourceReadAttempts: clone(timings.sourceReadAttempts) } : {}),
 });
-const stateChangeSideValid = value => value === null || (value && typeof value === 'object' && !Array.isArray(value)
+const stateChangeSideValid = (value, { identifiersRequired = false } = {}) => value === null || (value && typeof value === 'object' && !Array.isArray(value)
+  && (!identifiersRequired || boundedString(value.stateId, 500))
+  && (value.stateId === undefined || optionalBoundedString(value.stateId, 500))
+  && (value.sourceFloorId === undefined || optionalBoundedString(value.sourceFloorId, 500))
+  && (value.sourceDeltaId === undefined || optionalBoundedString(value.sourceDeltaId, 500))
   && boundedString(value.text, 4000) && ['private', 'observable', 'expressed', 'shared', 'authorial'].includes(value.visibility)
   && boundedString(value.reason, 4000, { empty: true }) && ['baseline', 'floor', 'reasonableProgression', 'manual'].includes(value.origin)
   && optionalBoundedString(value.towardEntityId, 500) && optionalPositiveInteger(value.sourceAssistantSeq));
@@ -111,7 +124,7 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     || !boundedString(receipt.queryFingerprint, 200)
     || (receipt.schemaVersion >= 8 && !boundedString(receipt.bodyMatchFingerprint, 200))
     || (receipt.schemaVersion >= 9 && (historical
-      ? ![RECALL_STRATEGY_VERSION, 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
+      ? ![RECALL_STRATEGY_VERSION, 'continuity-v5', 'continuity-v4', 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
       : receipt.strategyVersion !== RECALL_STRATEGY_VERSION))
     || !SUPPORTED_TYPES.has(receipt.generationType)
     || !Array.isArray(receipt.selectedFloors) || receipt.selectedFloors.length > MAX_RECEIPT_FLOORS
@@ -127,6 +140,10 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     && Array.isArray(value.reasons) && value.reasons.length <= 32
     && value.reasons.every(reason => boundedString(reason, 500)))) return false;
   if (!receipt.selectedStates.every(value => value && typeof value === 'object' && !Array.isArray(value)
+    && (receipt.strategyVersion !== RECALL_STRATEGY_VERSION || boundedString(value.stateId, 500))
+    && (value.stateId === undefined || optionalBoundedString(value.stateId, 500))
+    && (value.sourceFloorId === undefined || optionalBoundedString(value.sourceFloorId, 500))
+    && (value.sourceDeltaId === undefined || optionalBoundedString(value.sourceDeltaId, 500))
     && boundedString(value.subjectEntityId, 500) && boundedString(value.subject, 500)
     && ['core', 'adaptive', 'situational'].includes(value.layer)
     && optionalBoundedString(value.towardEntityId, 500) && optionalBoundedString(value.toward, 500)
@@ -140,14 +157,16 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
         && boundedString(value.deltaId, 500) && boundedString(value.floorId, 500) && Number.isSafeInteger(value.assistantSeq) && value.assistantSeq > 0
         && boundedString(value.subjectEntityId, 500) && boundedString(value.subject, 500)
         && ['core', 'adaptive', 'situational'].includes(value.layer) && ['add', 'remove', 'update', 'refine'].includes(value.action)
-        && stateChangeSideValid(value.before) && stateChangeSideValid(value.after))) return false;
+        && stateChangeSideValid(value.before, { identifiersRequired: receipt.strategyVersion === RECALL_STRATEGY_VERSION })
+        && stateChangeSideValid(value.after, { identifiersRequired: receipt.strategyVersion === RECALL_STRATEGY_VERSION }))) return false;
     const diagnostic = receipt.selectorDiagnostic;
     if (!diagnostic || typeof diagnostic !== 'object' || Array.isArray(diagnostic)
       || !['llm', 'fallback', 'local'].includes(diagnostic.mode)
       || !optionalBoundedString(diagnostic.code, 120) || !(diagnostic.httpStatus === null || nonNegativeInteger(diagnostic.httpStatus))
       || !optionalBoundedString(diagnostic.formatStage, 80) || !boundedString(diagnostic.finishReason, 32, { empty: true })
       || !boundedString(diagnostic.source, 80) || !boundedString(diagnostic.sourceLabel, 160) || !boundedString(diagnostic.model, 160)
-      || !(diagnostic.transportAttempts === null || nonNegativeInteger(diagnostic.transportAttempts)) || !finiteDuration(diagnostic.durationMs)) return false;
+      || !(diagnostic.transportAttempts === null || nonNegativeInteger(diagnostic.transportAttempts)) || !finiteDuration(diagnostic.durationMs)
+      || (receipt.strategyVersion === RECALL_STRATEGY_VERSION && !['historyCandidateCount', 'stateCandidateCount', 'historyModelSelectedCount', 'stateModelSelectedCount'].every(key => diagnostic[key] === null || nonNegativeInteger(diagnostic[key])))) return false;
     const timings = receipt.timings;
     if (!timings || typeof timings !== 'object' || Array.isArray(timings)
       || !['inputMs', 'sourceMs', 'selectorMs'].every(key => finiteDuration(timings[key]))
@@ -709,12 +728,17 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         strategyVersion: RECALL_STRATEGY_VERSION,
         generationType: type,
         selectedFloors: selection.floors.map(value => ({ floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq, reasons: [...value.reasons] })),
-        selectedStates: selection.states.map(value => ({ subjectEntityId: value.subjectEntityId, subject: value.subject, layer: value.layer, towardEntityId: value.towardEntityId, toward: value.toward, text: value.text, reason: value.reason, visibility: value.visibility, sourceAssistantSeq: value.sourceAssistantSeq })),
+        selectedStates: selection.states.map(value => ({
+          stateId: value.stateId, sourceFloorId: value.sourceFloorId, sourceDeltaId: value.sourceDeltaId,
+          subjectEntityId: value.subjectEntityId, subject: value.subject, layer: value.layer,
+          towardEntityId: value.towardEntityId, toward: value.toward, text: value.text, reason: value.reason,
+          visibility: value.visibility, sourceAssistantSeq: value.sourceAssistantSeq,
+        })),
         selectedCseChanges: (selection.cseChanges ?? []).map(value => ({
           deltaId: value.deltaId, floorId: value.floorId, assistantSeq: value.assistantSeq,
           subjectEntityId: value.subjectEntityId, subject: value.subject, layer: value.layer, action: value.action,
-          before: value.before ? { text: value.before.text, visibility: value.before.visibility, reason: value.before.reason, origin: value.before.origin, towardEntityId: value.before.towardEntityId, sourceAssistantSeq: value.before.sourceAssistantSeq } : null,
-          after: value.after ? { text: value.after.text, visibility: value.after.visibility, reason: value.after.reason, origin: value.after.origin, towardEntityId: value.after.towardEntityId, sourceAssistantSeq: value.after.sourceAssistantSeq } : null,
+          before: value.before ? { stateId: value.before.stateId, sourceFloorId: value.before.sourceFloorId, sourceDeltaId: value.before.sourceDeltaId, text: value.before.text, visibility: value.before.visibility, reason: value.before.reason, origin: value.before.origin, towardEntityId: value.before.towardEntityId, sourceAssistantSeq: value.before.sourceAssistantSeq } : null,
+          after: value.after ? { stateId: value.after.stateId, sourceFloorId: value.after.sourceFloorId, sourceDeltaId: value.after.sourceDeltaId, text: value.after.text, visibility: value.after.visibility, reason: value.after.reason, origin: value.after.origin, towardEntityId: value.after.towardEntityId, sourceAssistantSeq: value.after.sourceAssistantSeq } : null,
         })),
         selectorDiagnostic: selectorDiagnosticSnapshot(selection.selectorDiagnostic),
         coverage: clone(selection.coverage ?? source.coverage),

@@ -45,15 +45,37 @@ const localTimeCopy = value => {
 const generationTypeCopy = value => ({ normal: '正常生成', regenerate: '重 Roll（regenerate）', swipe: '重 Roll（swipe）', continue: '继续生成（continue）' })[value] ?? text(value, '旧记录未提供');
 const selectorModeCopy = value => ({ llm: 'LLM 智能选材', fallback: '本地关键词兜底', local: '本地直接选材' })[value] ?? '未记录';
 const cseActionCopy = value => ({ add: '新增', remove: '移除', update: '更新', refine: '调整' })[value] ?? text(value);
+const waitingFloorCopy = value => ({
+  waitingNextUser: '等待下一条用户消息',
+  waitingEarlierFloor: '等待前面楼层处理',
+  consecutiveAssistant: '连续 AI，尚待确认',
+  registrationNeedsReview: '消息对应关系待核对',
+})[value] ?? '尚待确认';
+const waitingFloorExplanation = value => ({
+  waitingNextUser: '这一楼尚未摘要。发送下一条用户消息后会重新检查。',
+  waitingEarlierFloor: '这一楼尚未摘要。前面的 AI 楼尚未确认，当前不会进入摘要处理。',
+  consecutiveAssistant: '这一楼尚未摘要。检测到连续 AI 消息，现有规则尚不能确认这楼。',
+  registrationNeedsReview: '这一楼尚未摘要。消息与已有记忆的对应关系需要先核对。',
+})[value] ?? '这一楼尚未摘要，正在等待确认。';
 const reviewReasonCopy = value => {
   if (!value?.code) return '无';
   const label = ({
     indexNeedsReseal: '索引需要整理', stableCountMismatch: '稳定楼数量不符', candidateCountMismatch: '当前聊天楼数量不符',
     locatorMismatch: '楼位置已变化', markerMismatch: '消息记忆标识不一致', fingerprintMismatch: '楼正文指纹不一致', missingRoot: '记忆根记录缺失',
   })[value.code] ?? '记忆图与当前聊天不一致';
-  const floor = validMessageIndex(value.messageIndex) ? ` · 第 ${value.messageIndex} 楼` : '';
+  const floor = validMessageIndex(value.messageIndex) ? ` · 实际第 ${value.messageIndex} 楼` : '';
   const counts = Number.isSafeInteger(value.expectedCount) && Number.isSafeInteger(value.actualCount) ? ` · 记录 ${value.expectedCount} / 当前 ${value.actualCount}` : '';
-  return `${label}${floor}${counts}`;
+  const marker = Object.hasOwn(value, 'markerStatus')
+    ? ` · 消息标识：${({ none: '无', valid: '有效', foreign: '来自其他聊天', invalid: '无效' })[value.markerStatus] ?? '未知'}`
+    : '';
+  const fingerprintLabels = [
+    ['rawFingerprintMatches', 'raw'],
+    ['canonicalFingerprintMatches', 'canonical'],
+    ['sanitizerFingerprintMatches', 'sanitizer'],
+  ];
+  const mismatches = fingerprintLabels.filter(([key]) => value[key] === false).map(([, copy]) => copy);
+  const fingerprints = mismatches.length ? ` · 不一致：${mismatches.join('、')}` : '';
+  return `${label}${floor}${counts}${marker}${fingerprints}`;
 };
 const selectorFailureCopy = value => ({
   QQJ_TIMEOUT: 'API 请求超时', QQJ_RATE_LIMIT: 'API 请求过于频繁', QQJ_SERVER: 'API 服务暂时异常', QQJ_NETWORK: '无法连接 API',
@@ -141,7 +163,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const error = errorCopy(state); if (error) return state.lastExtractorError?.phase === 'anchor'
         ? `消息标识保存待重试 · ${error}`
         : state.lastExtractorError?.floorId === null ? `记忆读取失败 · ${error}` : `摘要提取失败 · ${error}`;
-      return `已记忆 ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼 · 待摘要 ${state.unprocessedCount ?? 0} 楼${state.memorySyncStatus === 'syncing' ? ' · 后台同步中' : ''}`;
+      const waiting = state.unregisteredCandidates?.length ?? 0;
+      return `已记忆 ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼 · 待摘要 ${state.unprocessedCount ?? 0} 楼${waiting ? ` · 另有 ${waiting} 楼尚未摘要，正在等待确认` : ''}${state.memorySyncStatus === 'syncing' ? ' · 后台同步中' : ''}`;
     }
     if (page === 'people') {
       if (cseBusy(state)) return `正在分析人物状态 · 待分析 ${state.csePendingCount ?? 0} 楼`;
@@ -157,6 +180,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     if (errorCopy(state)) return 'qqj-page-health error';
     const checking = state.pluginEnabled === false || state.memorySnapshotStatus === 'syncing'
       || workBusy(state) || state.status === 'running'
+      || (page === 'memories' && (state.unregisteredCandidates?.length ?? 0) > 0)
       || !['ready', 'uninitialized'].includes(effectiveStatus(state));
     return `qqj-page-health ${checking ? 'checking' : 'healthy'}`;
   };
@@ -310,13 +334,31 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     card.append(body);
     return card;
   }
+  function renderWaitingMemoryFloor(candidate, state) {
+    const key = `${state.chatId ?? 'no-chat'}:waiting:${candidate.messageIndex}`;
+    const card = setDetailsState(element('details', 'qqj-memory-card status-pending'), `memory:${key}`, false);
+    const head = element('summary', 'qqj-memory-card-head');
+    const statusNode = element('span', 'v3-memory-status', waitingFloorCopy(candidate.reason));
+    const chevron = element('span', 'qqj-memory-chevron', '›'); chevron.setAttribute('aria-hidden', 'true');
+    head.append(element('strong', 'qqj-floor-number', floorCopy(state, candidate)), element('span', 'qqj-floor-time', '未提取'), statusNode, chevron);
+    const body = element('div', 'qqj-memory-card-body');
+    body.append(element('p', 'qqj-memory-main is-empty', waitingFloorExplanation(candidate.reason)));
+    card.append(head, body);
+    return card;
+  }
   function renderMemories(state) {
     const pageNode = element('section', 'qqj-page qqj-memories-page');
     pageNode.append(pageStatus(state));
     const list = element('div', 'v3-memory-list');
-    const floors = [...(state.floors ?? [])].sort((left, right) => (right.messageIndex ?? right.assistantSeq ?? 0) - (left.messageIndex ?? left.assistantSeq ?? 0));
-    for (const floor of floors) list.append(renderMemoryFloor(floor, state));
-    if (!floors.length) list.append(element('div', 'qqj-inline-empty', '这里还没有已保存摘要。最新 AI 楼将在下一条用户消息发出后开始摘要。'));
+    const floors = [...(state.floors ?? [])];
+    const registeredMessageIndexes = new Set(floors.map(floor => floor.messageIndex).filter(validMessageIndex));
+    const waiting = (state.unregisteredCandidates ?? []).filter(candidate => validMessageIndex(candidate?.messageIndex) && !registeredMessageIndexes.has(candidate.messageIndex));
+    const rows = [
+      ...floors.map(value => ({ kind: 'registered', value })),
+      ...waiting.map(value => ({ kind: 'waiting', value })),
+    ].sort((left, right) => (right.value.messageIndex ?? right.value.assistantSeq ?? 0) - (left.value.messageIndex ?? left.value.assistantSeq ?? 0));
+    for (const row of rows) list.append(row.kind === 'registered' ? renderMemoryFloor(row.value, state) : renderWaitingMemoryFloor(row.value, state));
+    if (!rows.length) list.append(element('div', 'qqj-inline-empty', '这里还没有已保存摘要。最新 AI 楼将在下一条用户消息发出后开始摘要。'));
     pageNode.append(list); return pageNode;
   }
 
@@ -610,11 +652,13 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       ? `输入 ${stages.input} → 记忆楼 ${stages.candidates} → 近期摘要 ${stages.recentSummaryCount} → 远期旧事 ${stages.distantHistoryItemCount} → 当前态 ${stages.currentStateCount ?? stages.stateCount} → 历史变化 ${stages.cseChangeCount ?? 0}`
       : stages ? `输入 ${stages.input} → 记忆楼 ${stages.candidates} → 去近期 ${stages.dropRecent} → 去常驻重复 ${stages.dropPersistent ?? 0} → 去越界 ${stages.dropVisibility} → 选中楼 ${stages.selected}` : '收据复用或未执行';
     const selector = record.selectorDiagnostic;
+    const selectorCount = value => Number.isSafeInteger(value) ? String(value) : '未知';
+    const selectorCountCopy = `历史候选 ${selectorCount(selector?.historyCandidateCount)} → 模型选择 ${selectorCount(selector?.historyModelSelectedCount)} → 最终远期 ${selectorCount(stages?.distantHistoryItemCount)} · 人物候选 ${selectorCount(selector?.stateCandidateCount)} → 模型选择 ${selectorCount(selector?.stateModelSelectedCount)} → 最终注入 ${Number.isSafeInteger(stages?.currentStateCount) && Number.isSafeInteger(stages?.cseChangeCount) ? stages.currentStateCount + stages.cseChangeCount : '未知'}`;
     const timingCopy = timings ? (Number.isFinite(timings.totalMs)
       ? `本轮实时总耗时 ${Number(timings.totalMs).toFixed(1)} ms · 选材 ${Number(timings.selectorMs || 0).toFixed(1)} ms · 读取 ${Number(timings.sourceMs || 0).toFixed(1)} ms`
       : `落盘阶段：选材 ${Number(timings.selectorMs || 0).toFixed(1)} ms · 读取 ${Number(timings.sourceMs || 0).toFixed(1)} ms`) : record.reusedReceipt ? '复用收据' : '未记录';
     const filterReasons = (record.skipReasons ?? []).filter(value => value !== 'historySelectionFallback').map(skipReasonCopy);
-    const details = element('dl', 'v3-foundation-grid'); details.append(row('触发用户楼', userFloorCopy(record.userMessageIndex)), row('生成时间', localTimeCopy(record.createdAt)), row('生成类型', generationTypeCopy(record.generationType)), row('收据', record.legacyReadOnly ? '旧版只读记录' : record.restoredReceipt ? '已落盘回执 · 仅恢复历史展示，不会再次注入' : `${record.reusedReceipt ? '复用' : '新算'} · ${record.receiptPersistence ?? 'none'}`), row('召回旧楼', floors), row('当前人物状态', states), row('人物状态历史变化', changes), row('覆盖范围', coverage ? `记忆 ${coverage.rememberedAiFloors}/${coverage.stableAiFloors} · ${coverage.cseThroughAssistantSeq ? `CSE 到${floorCopy(foundationState, { assistantSeq: coverage.cseThroughAssistantSeq }, '终点楼号未提供')}` : 'CSE 尚未覆盖'}` : '本轮未读取'), row('筛选阶段', stageCopy), row('选材方式', selectorModeCopy(selector?.mode)), ...(selector?.mode === 'fallback' ? [row('选材失败原因', `${selectorFailureCopy(selector.code)}${selector.httpStatus ? `（HTTP ${selector.httpStatus}）` : ''}`)] : []), row('耗时', timingCopy), row('来源读取', sourceReadCopy), row('普通过滤说明', filterReasons.join('、') || '无'));
+    const details = element('dl', 'v3-foundation-grid'); details.append(row('触发用户楼', userFloorCopy(record.userMessageIndex)), row('生成时间', localTimeCopy(record.createdAt)), row('生成类型', generationTypeCopy(record.generationType)), row('收据', record.legacyReadOnly ? '旧版只读记录' : record.restoredReceipt ? '已落盘回执 · 仅恢复历史展示，不会再次注入' : `${record.reusedReceipt ? '复用' : '新算'} · ${record.receiptPersistence ?? 'none'}`), row('召回旧楼', floors), row('当前人物状态', states), row('人物状态历史变化', changes), row('覆盖范围', coverage ? `记忆 ${coverage.rememberedAiFloors}/${coverage.stableAiFloors} · ${coverage.cseThroughAssistantSeq ? `CSE 到${floorCopy(foundationState, { assistantSeq: coverage.cseThroughAssistantSeq }, '终点楼号未提供')}` : 'CSE 尚未覆盖'}` : '本轮未读取'), row('筛选阶段', stageCopy), row('选材方式', selectorModeCopy(selector?.mode)), row('智能选材计数', selectorCountCopy), ...(selector?.mode === 'fallback' ? [row('选材失败原因', `${selectorFailureCopy(selector.code)}${selector.httpStatus ? `（HTTP ${selector.httpStatus}）` : ''}`)] : []), row('耗时', timingCopy), row('来源读取', sourceReadCopy), row('普通过滤说明', filterReasons.join('、') || '无'));
     body.append(details); const safeError = state?.lastRecallError?.message || record.error?.message; if (safeError) body.append(element('p', 'v3-foundation-feedback error', safeError));
     if (record.legacyReadOnly) body.append(element('p', 'settings-hint', '这是旧版只读记录，不会复用、注入或升级为当前 Schema 10 回执。'));
     if (record.injectionText) body.append(element('pre', 'v3-recall-injection', record.injectionText));

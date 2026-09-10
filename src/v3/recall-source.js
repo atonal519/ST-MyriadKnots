@@ -61,11 +61,14 @@ function memoryDto(memory, floor, { chronologyAllowed = true, floorSeqById = new
 function stateDto(replayed, entities, floorSeq) {
   const activeEntityIds = new Set(entities.map(entity => entity.entityId));
   const item = value => Object.freeze({
+    stateId: value.id,
     text: safeText(value.text),
     visibility: ['private', 'observable', 'expressed', 'shared', 'authorial'].includes(value.visibility) ? value.visibility : 'private',
     reason: safeText(value.reason),
     origin: value.origin,
     towardEntityId: activeEntityIds.has(value.towardEntityId) ? value.towardEntityId : null,
+    sourceFloorId: value.sourceFloorId ?? null,
+    sourceDeltaId: value.sourceDeltaId ?? null,
     sourceAssistantSeq: floorSeq.get(value.sourceFloorId) ?? null,
   });
   return Object.freeze((replayed?.subjects ?? []).filter(subject => activeEntityIds.has(subject.subjectEntityId)).map(subject => Object.freeze({
@@ -79,11 +82,14 @@ function stateDto(replayed, entities, floorSeq) {
 function cseChangesDto(timeline, entities, floorSeq) {
   const activeEntityIds = new Set(entities.map(entity => entity.entityId));
   const state = value => value ? Object.freeze({
+    stateId: value.id,
     text: safeText(value.text),
     visibility: ['private', 'observable', 'expressed', 'shared', 'authorial'].includes(value.visibility) ? value.visibility : 'private',
     reason: safeText(value.reason),
     origin: ['baseline', 'floor', 'reasonableProgression', 'manual'].includes(value.origin) ? value.origin : 'floor',
     towardEntityId: activeEntityIds.has(value.towardEntityId) ? value.towardEntityId : null,
+    sourceFloorId: value.sourceFloorId ?? null,
+    sourceDeltaId: value.sourceDeltaId ?? null,
     sourceAssistantSeq: floorSeq.get(value.sourceFloorId) ?? null,
   }) : null;
   return Object.freeze(timeline.flatMap(entry => {

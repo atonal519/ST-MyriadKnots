@@ -25,6 +25,7 @@ import { collectFloorMemoryEntityIds, entityIndexKey, projectEntityFloorBounds, 
 import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
 import { validateCseGraph, validateStateDeltaRecord } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
+import { matchFloorCandidates } from './floor-binding.js';
 
 const EVENTS = Object.freeze([
   'CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED',
@@ -186,6 +187,7 @@ export function createFoundationRuntime({
   let sessionEpoch = 0;
   let cache = null;
   let pending = null;
+  let unregisteredCandidates = Object.freeze([]);
   let activeOperation = null;
   let scheduled = null;
   let inspectionScheduled = null;
@@ -216,6 +218,7 @@ export function createFoundationRuntime({
     stableCount: cache?.floors?.length ?? 0,
     stableBoundary: cache?.root?.stableBoundary ?? { assistantSeq: 0, floorId: null, canonicalFingerprint: null },
     pending: candidateSummary(pending),
+    unregisteredCandidates,
     headCheckpointId: cache?.root?.headCheckpointId ?? null,
     activeRun: activeOperation ? { id: activeOperation.id, phase: activeOperation.phase, reason: activeOperation.reason } : null,
     lastRun, lastError, reviewReason: status === 'needsReview' ? reviewReason : null, unreachableCount, sessionEpoch, metrics,
@@ -255,6 +258,7 @@ export function createFoundationRuntime({
     dirtyStableThrough = null;
     cache = null;
     pending = null;
+    unregisteredCandidates = Object.freeze([]);
     inspectedStableCount = 0;
     emptyRealtimeObservation = null;
     reviewReason = null;
@@ -310,48 +314,74 @@ export function createFoundationRuntime({
       if (trustedPrefix) return boundaryIndex + 1;
       throw statusError('stale', '提前稳定边界已变化，本次操作不再提交。');
     }
-    const knownFloorIds = new Set((floors ?? []).map(floor => floor.id));
+    const bindings = matchFloorCandidates(floors, candidates);
     const savedFloorIds = new Set((cache?.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => memory.floorId));
-    const anchored = new Set();
     let count = 0;
     while (candidates[count]) {
       const marker = candidates[count].messageAnchor;
-      const permanentlySaved = marker?.status === 'valid' && knownFloorIds.has(marker.anchor.floorId) && !anchored.has(marker.anchor.floorId);
-      const uniquelyRecoverable = marker?.status === 'none' && (floors ?? []).filter(floor => savedFloorIds.has(floor.id)
-        && floor.content.rawFingerprint === candidates[count].rawFingerprint
-        && floor.content.canonicalFingerprint === candidates[count].canonicalFingerprint).length === 1;
-      const requestConfirmed = marker?.status === 'none' && requestConfirmations.has(floors?.[count]?.id)
-        && sameLocator(floors[count].hostLocator, candidates[count].hostLocator)
-        && floors[count].content.rawFingerprint === candidates[count].rawFingerprint
-        && floors[count].content.canonicalFingerprint === candidates[count].canonicalFingerprint;
-      if (candidates[count].stabilityProof?.kind !== 'nextUser' && !permanentlySaved && !uniquelyRecoverable && !requestConfirmed) break;
-      if (permanentlySaved) anchored.add(marker.anchor.floorId);
+      const matchedFloor = bindings.candidateMatches.get(count)?.floor ?? null;
+      const permanentlySaved = Boolean(matchedFloor && (marker?.status === 'valid' || savedFloorIds.has(matchedFloor.id)));
+      const requestConfirmed = marker?.status === 'none' && matchedFloor
+        && requestConfirmations.has(matchedFloor.id);
+      if (candidates[count].stabilityProof?.kind !== 'nextUser' && !permanentlySaved && !requestConfirmed) break;
       count += 1;
     }
     return count;
   }
 
   function graphReviewReason(value, candidates) {
-    const reason = (code, assistantSeq = null, messageIndex = null, expectedCount = null, actualCount = null) => Object.freeze({ code, assistantSeq, messageIndex, expectedCount, actualCount });
+    const reason = (code, assistantSeq = null, messageIndex = null, expectedCount = null, actualCount = null, details = {}) => Object.freeze({ code, assistantSeq, messageIndex, expectedCount, actualCount, ...details });
     if (!value?.root) return reason('missingRoot');
+    const bindings = matchFloorCandidates(value.floors ?? [], candidates);
+    if (bindings.issue) return reason('markerMismatch', bindings.issue.assistantSeq, bindings.issue.messageIndex, value.floors.length, candidates.length, { markerStatus: bindings.issue.markerStatus, bindingIssue: bindings.issue.code });
     const stableCount = stableCountFor(candidates, value.floors ?? [], false, null);
     if (stableCount !== (value.floors?.length ?? 0)) return reason('stableCountMismatch', candidates[stableCount]?.assistantSeq ?? value.floors?.[stableCount]?.assistantSeq ?? null, candidates[stableCount]?.hostLocator?.messageIndex ?? value.floors?.[stableCount]?.hostLocator?.messageIndex ?? null, value.floors?.length ?? 0, stableCount);
-    for (const [index, floor] of (value.floors ?? []).entries()) {
-      const candidate = candidates[index];
+    if (bindings.unmatchedFloorIndexes.length) {
+      const floorIndex = bindings.unmatchedFloorIndexes[0];
+      const floor = value.floors[floorIndex];
+      const candidate = candidates[floorIndex];
       if (!candidate) return reason('candidateCountMismatch', floor.assistantSeq ?? null, floor.hostLocator?.messageIndex ?? null, value.floors.length, candidates.length);
-      if (!sameLocator(floor.hostLocator, candidate.hostLocator)) return reason('locatorMismatch', floor.assistantSeq ?? candidate.assistantSeq ?? null, candidate.hostLocator?.messageIndex ?? floor.hostLocator?.messageIndex ?? null, value.floors.length, candidates.length);
-      if (candidate.messageAnchor?.status === 'valid') {
-        if (candidate.messageAnchor.anchor.floorId !== floor.id) return reason('markerMismatch', floor.assistantSeq ?? candidate.assistantSeq ?? null, candidate.hostLocator?.messageIndex ?? floor.hostLocator?.messageIndex ?? null, value.floors.length, candidates.length);
-      } else if (candidate.messageAnchor?.status === 'none') {
-        if (floor.content.rawFingerprint !== candidate.rawFingerprint
-          || floor.content.canonicalFingerprint !== candidate.canonicalFingerprint
-          || floor.content.sanitizerFingerprint !== candidate.sanitizerFingerprint) return reason('fingerprintMismatch', floor.assistantSeq ?? candidate.assistantSeq ?? null, candidate.hostLocator?.messageIndex ?? floor.hostLocator?.messageIndex ?? null, value.floors.length, candidates.length);
-      } else return reason('markerMismatch', floor.assistantSeq ?? candidate.assistantSeq ?? null, candidate.hostLocator?.messageIndex ?? floor.hostLocator?.messageIndex ?? null, value.floors.length, candidates.length);
+      const locatorMatches = sameLocator(floor.hostLocator, candidate.hostLocator);
+      return reason(locatorMatches ? 'fingerprintMismatch' : 'locatorMismatch', floor.assistantSeq ?? candidate.assistantSeq ?? null, candidate.hostLocator?.messageIndex ?? floor.hostLocator?.messageIndex ?? null, value.floors.length, candidates.length, {
+        markerStatus: candidate.messageAnchor?.status ?? 'invalid',
+        rawFingerprintMatches: floor.content.rawFingerprint === candidate.rawFingerprint,
+        canonicalFingerprintMatches: floor.content.canonicalFingerprint === candidate.canonicalFingerprint,
+        sanitizerFingerprintMatches: floor.content.sanitizerFingerprint === candidate.sanitizerFingerprint,
+      });
     }
     return null;
   }
 
+  const bindingReviewReason = (issue, floors, candidates) => Object.freeze({
+    code: 'markerMismatch',
+    assistantSeq: issue?.assistantSeq ?? null,
+    messageIndex: issue?.messageIndex ?? null,
+    expectedCount: floors?.length ?? 0,
+    actualCount: candidates?.length ?? 0,
+    markerStatus: issue?.markerStatus ?? 'invalid',
+    bindingIssue: issue?.code ?? 'markerRejected',
+  });
+
   const graphMatchesCandidates = (value, candidates) => graphReviewReason(value, candidates) === null;
+
+  function updateCandidateProjection(candidates, floors, pendingIndex) {
+    pending = candidates[pendingIndex] ?? null;
+    const bindings = matchFloorCandidates(floors ?? [], candidates);
+    unregisteredCandidates = Object.freeze(bindings.unmatchedCandidateIndexes.map(index => {
+      const candidate = candidates[index];
+      const markerStatus = candidate?.messageAnchor?.status ?? 'none';
+      const reason = markerStatus !== 'none'
+        ? 'registrationNeedsReview'
+        : candidate.stabilityProof?.kind === 'nextUser'
+          ? 'waitingEarlierFloor'
+          : index === candidates.length - 1 ? 'waitingNextUser' : 'consecutiveAssistant';
+      return Object.freeze({
+        assistantSeq: candidate.assistantSeq,
+        messageIndex: candidate.hostLocator.messageIndex,
+        reason,
+      });
+    }));
+  }
 
   function cacheMatchesCandidates(candidates) {
     if (!cache?.root || cache.root.chatId !== (() => { try { return capture().identity.chatId; } catch { return null; } })()) return false;
@@ -368,13 +398,12 @@ export function createFoundationRuntime({
       if (inspectEpoch !== sessionEpoch) return publicState;
       if (allowCached && !lastError && cacheMatchesCandidates(candidates)) {
         inspectedStableCount = cache.floors.length;
-        pending = candidates[inspectedStableCount] ?? null;
+        updateCandidateProjection(candidates, cache.floors, inspectedStableCount);
         return publish(lastError ? 'error' : 'ready');
       }
       const loaded = await store.readReachable({ mode: 'projection' });
       if (inspectEpoch !== sessionEpoch) return publicState;
       inspectedStableCount = stableCountFor(candidates, loaded?.floors ?? [], false, null);
-      pending = candidates[inspectedStableCount] ?? null;
       if (['ready', 'needsReseal'].includes(loaded.status)) {
         const orderedFloors = [...loaded.floors].sort((left, right) => left.assistantSeq - right.assistantSeq);
         cache = { ...loaded, floors: restoreActiveFloorViews(orderedFloors, loaded.indexes) };
@@ -385,6 +414,7 @@ export function createFoundationRuntime({
       } else {
         cache = null;
       }
+      updateCandidateProjection(candidates, cache?.floors ?? [], inspectedStableCount);
       lastError = null;
       reviewReason = null;
       if (cache?.root && loaded.status === 'needsReseal') { reviewReason = Object.freeze({ code: 'indexNeedsReseal', assistantSeq: null, messageIndex: null, expectedCount: null, actualCount: null }); return publish('needsReview'); }
@@ -408,7 +438,7 @@ export function createFoundationRuntime({
         if (inspectEpoch !== sessionEpoch) return publicState;
         if (cache?.root) return publicState;
         inspectedStableCount = stableCountFor(candidates, [], false, null);
-        pending = candidates[inspectedStableCount] ?? null;
+        updateCandidateProjection(candidates, [], inspectedStableCount);
         cache = null;
         lastRun = null;
         lastError = null;
@@ -535,6 +565,8 @@ export function createFoundationRuntime({
     const captured = capture();
     const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions(), chatId: captured.identity.chatId });
     if (current(operation) !== 'current') throw statusError('stale');
+    const bindings = matchFloorCandidates(cache?.floors ?? [], candidates);
+    if (bindings.issue) throw statusError('needsReview', '当前消息记忆标识存在冲突，本次操作不再提交。');
     const stableCount = stableCountFor(candidates, cache?.floors ?? [], confirmLatest, stableThrough);
     const snapshot = await foundationInputSnapshot(candidates, stableCount);
     return { candidates, stableCount, snapshot };
@@ -561,33 +593,21 @@ export function createFoundationRuntime({
     const snapshot = sourceSnapshot ?? await foundationInputSnapshot(candidates, stableCount);
     const existing = cache.floors;
     const stableCandidates = candidates.slice(0, stableCount);
-    const existingById = new Map(existing.map(floor => [floor.id, floor]));
     const memoryFloorIds = new Set((cache.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => memory.floorId));
-    const usedFloorIds = new Set();
-    const aligned = [];
-    for (let index = 0; index < stableCandidates.length; index += 1) {
-      const candidate = stableCandidates[index];
-      const marker = candidate.messageAnchor;
-      if (marker?.status === 'foreign' || marker?.status === 'invalid') throw statusError('needsReview', '消息记忆标识无效或来自其他聊天，未静默接管。');
-      let floor = marker?.status === 'valid' ? existingById.get(marker.anchor.floorId) ?? null : null;
-      if (marker?.status === 'valid' && !floor) throw statusError('needsReview', '消息记忆标识指向当前图中不存在的楼，未静默猜测。');
-      if (!floor && marker?.status === 'none') {
-        const indexed = existing[index];
-        if (indexed && !usedFloorIds.has(indexed.id)
-          && sameLocator(indexed.hostLocator, candidate.hostLocator)
-          && indexed.content.canonicalFingerprint === candidate.canonicalFingerprint) floor = indexed;
+    const bindings = matchFloorCandidates(existing, stableCandidates);
+    if (bindings.issue?.code === 'markerRejected') throw statusError('needsReview', '消息记忆标识无效或来自其他聊天，未静默接管。');
+    if (bindings.issue?.code === 'markerConflict') throw statusError('needsReview', '消息记忆标识指向当前图中不存在的楼，未静默猜测。');
+    if (bindings.issue?.code === 'duplicateMarker' || bindings.issue?.code === 'duplicateBinding') throw statusError('needsReview', '多条消息使用了同一个记忆楼标识，未静默合并。');
+    if (bindings.issue) throw statusError('needsReview', '旧聊天存在重复正文，无法唯一迁移消息记忆标识。');
+    const aligned = stableCandidates.map((_, index) => bindings.candidateMatches.get(index)?.floor ?? null);
+    const usedFloorIds = new Set(bindings.matches.map(match => match.floor.id));
+    const unmatchedCandidates = bindings.unmatchedCandidateIndexes.map(index => stableCandidates[index]);
+    for (const floor of existing) {
+      const unresolvedReplacement = unmatchedCandidates.some(candidate => candidate?.messageAnchor?.status === 'none'
+        && sameLocator(floor.hostLocator, candidate.hostLocator));
+      if (!usedFloorIds.has(floor.id) && memoryFloorIds.has(floor.id) && unresolvedReplacement) {
+        throw statusError('needsReview', '已保存摘要的旧消息缺少可证明的唯一绑定，未自动覆盖。');
       }
-      if (!floor && marker?.status === 'none') {
-        const exact = existing.filter(value => !usedFloorIds.has(value.id)
-          && value.content.rawFingerprint === candidate.rawFingerprint
-          && value.content.canonicalFingerprint === candidate.canonicalFingerprint);
-        if (exact.length === 1) floor = exact[0];
-        else if (exact.length > 1) throw statusError('needsReview', '旧聊天存在重复正文，无法唯一迁移消息记忆标识。');
-        else if (memoryFloorIds.has(existing[index]?.id)) throw statusError('needsReview', '已保存摘要的旧消息缺少可证明的唯一绑定，未自动覆盖。');
-      }
-      if (floor && usedFloorIds.has(floor.id)) throw statusError('needsReview', '多条消息使用了同一个记忆楼标识，未静默合并。');
-      if (floor) usedFloorIds.add(floor.id);
-      aligned.push(floor);
     }
     const removedFloorIds = existing.filter(floor => !usedFloorIds.has(floor.id)).map(floor => floor.id);
     const destructiveRemoval = stableCandidates.length < existing.length || removedFloorIds.some(floorId => memoryFloorIds.has(floorId));
@@ -596,7 +616,7 @@ export function createFoundationRuntime({
     const identityChanged = existing.length !== aligned.length || existing.some((floor, index) => aligned[index]?.id !== floor.id);
     if (!identityChanged && !locatorChanged && !cache.indexesMissing
       && cache.root?.sourceSnapshotFingerprint === snapshot.fingerprint) {
-      pending = candidates[stableCount] ?? null;
+      updateCandidateProjection(candidates, cache.floors, stableCount);
       lastError = null;
       lastRun = runSummary(cache.run, 'unchanged');
       return publishOperation(operation, cache.root ? 'ready' : 'uninitialized');
@@ -738,13 +758,14 @@ export function createFoundationRuntime({
         lastRun = runSummary(staleRun, 'casConflictSourceChanged');
         lastError = '并发提交期间正文又发生变化，旧快照已作废并将自动收敛。';
         cache = winner.status === 'ready' ? { ...winner, floors: restoreActiveFloorViews([...winner.floors].sort((left, right) => left.assistantSeq - right.assistantSeq), winner.indexes) } : null;
+        updateCandidateProjection(currentInput.candidates, cache?.floors ?? [], currentInput.stableCount);
         dirtyReason = 'casConflictSourceChanged';
         return publishOperation(operation, 'stale');
       }
       if (winner.status === 'ready') {
         cache = { ...winner, floors: restoreActiveFloorViews([...winner.floors].sort((left, right) => left.assistantSeq - right.assistantSeq), winner.indexes) };
         if (winner.root.sourceSnapshotFingerprint === snapshot.fingerprint) {
-          pending = candidates[stableCount] ?? null;
+          updateCandidateProjection(candidates, cache.floors, stableCount);
           lastRun = runSummary(staleRun, 'winnerAlreadyCurrent');
           lastError = null;
           return publishOperation(operation, 'ready');
@@ -769,7 +790,6 @@ export function createFoundationRuntime({
       throw Object.assign(new Error('V3 root 已提交，但提交结果缺少一致的真实可达图'), { code: 'V3_COMMIT_REACHABLE_MISMATCH' });
     }
     cache = { ...committedReachable, floors: activeFloorViews(committedReachable.floors, stableCandidates) };
-    pending = candidates[stableCount] ?? null;
     const afterCommit = await scanCurrentSnapshot(operation, { confirmLatest, stableThrough });
     if (afterCommit.snapshot.fingerprint !== snapshot.fingerprint) {
       const staleRun = await persistRunPhase(operation, 'stale', { completedFloorIds: newFloors.map(floor => floor.id) });
@@ -786,7 +806,7 @@ export function createFoundationRuntime({
     const completedRun = await persistRunPhase(operation, 'completed', { completedFloorIds: newFloors.map(floor => floor.id) });
     cache = { ...cache, run: completedRun };
     emptyRealtimeObservation = floors.length === 0 ? Object.freeze({ chatId: operation.chatId }) : null;
-    pending = candidates[stableCount] ?? null;
+    updateCandidateProjection(afterCommit.candidates, cache.floors, afterCommit.stableCount);
     lastRun = runSummary(completedRun, 'committed');
     lastError = null;
     return publishOperation(operation, 'ready');
@@ -825,11 +845,19 @@ export function createFoundationRuntime({
         const elapsed = (globalThis.performance?.now?.() ?? Date.now()) - started;
         if (current(operation) !== 'current') return publishOperation(operation, 'stale');
         metrics = Object.freeze({ assistantFloors: candidates.length, canonicalCharacters: candidates.reduce((sum, item) => sum + item.canonicalContent.length, 0), scanMs: elapsed, maximumChunkMs: scanMetrics.maximumChunkMs ?? elapsed, algorithm: 'ordered-O(n)' });
+        const candidateBindings = matchFloorCandidates(loaded.floors, candidates);
+        if (candidateBindings.issue) {
+          inspectedStableCount = stableCountFor(candidates, loaded.floors, confirmLatest, stableThrough);
+          updateCandidateProjection(candidates, loaded.floors, inspectedStableCount);
+          reviewReason = bindingReviewReason(candidateBindings.issue, loaded.floors, candidates);
+          lastError = null;
+          return publishOperation(operation, 'needsReview');
+        }
         const stableCount = stableCountFor(candidates, loaded.floors, confirmLatest, stableThrough);
         const sourceSnapshot = await foundationInputSnapshot(candidates, stableCount);
         if (!loaded.root && stableCount === 0) {
           emptyRealtimeObservation = Object.freeze({ chatId: operation.chatId });
-          pending = candidates[0] ?? null;
+          updateCandidateProjection(candidates, [], 0);
           lastRun = null;
           lastError = null;
           return publishOperation(operation, 'uninitialized');
@@ -940,6 +968,9 @@ export function createFoundationRuntime({
     try { identity = capture().identity; } catch { return false; }
     if (value.root.chatId !== identity.chatId || (cache?.rootRevision ?? 0) > value.rootRevision) return false;
     cache = value;
+    const registeredMessageIndexes = new Set((cache.floors ?? []).map(floor => floor.hostLocator?.messageIndex));
+    unregisteredCandidates = Object.freeze(unregisteredCandidates.filter(candidate => !registeredMessageIndexes.has(candidate.messageIndex)));
+    if (registeredMessageIndexes.has(pending?.hostLocator?.messageIndex)) pending = null;
     lastRun = runSummary(cache.run, 'adopted');
     lastError = null;
     reviewReason = null;

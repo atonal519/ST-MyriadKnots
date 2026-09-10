@@ -1,6 +1,7 @@
 import { filterReachableDeltas } from './cse-engine.js';
 import { isHostNarratorMessage, scanAssistantCandidates, selectAssistantMessage } from './foundation-domain.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
+import { matchFloorCandidates } from './floor-binding.js';
 
 export const RECENT_VISIBLE_AI_FLOORS = 3;
 const HOST_GUARD = Symbol('qqjCoverageHostGuard');
@@ -66,13 +67,13 @@ export function coverageHostGuardCurrent(readiness, snapshot) {
     const selected = selectAssistantMessage(current);
     const anchor = inspectMessageFloorAnchor(current, guard.chatId);
     if (!selected || selected.swipeId !== expected.swipeId || selected.selectedSwipeIndex !== expected.selectedSwipeIndex
-      || selected.rawContent !== expected.rawContent
       || visibleAssistant(current) !== expected.visible || !['none', 'valid'].includes(anchor.status)) return false;
     if (anchor.status === 'valid') {
       if (currentFloorIds.has(anchor.anchor.floorId)) return false;
       currentFloorIds.add(anchor.anchor.floorId);
     }
     if (expected.anchorStatus === 'valid') return anchor.status === 'valid' && anchor.anchor.floorId === expected.floorId;
+    if (selected.rawContent !== expected.rawContent) return false;
     if (expected.expectedFloorId) return anchor.status === 'none' || anchor.anchor.floorId === expected.expectedFloorId;
     if (expected.visible) return true;
     return anchor.status === 'none';
@@ -97,29 +98,12 @@ function recentVisibleIndexes(chat) {
 }
 
 function hostCoverageProof(reachable, snapshot, hostCandidates) {
-  const chat = Array.isArray(snapshot?.chat) ? snapshot.chat : [];
   if (!reachable?.root?.chatId || currentChatId(snapshot) !== reachable.root.chatId || !Array.isArray(hostCandidates)) return null;
-  const candidatesByFloorId = new Map();
-  const candidatesByMessageIndex = new Map(hostCandidates.map(candidate => [candidate.hostLocator.messageIndex, candidate]));
-  for (const candidate of hostCandidates) {
-    if (candidate.messageAnchor?.status === 'none') continue;
-    if (candidate.messageAnchor?.status !== 'valid' || candidatesByFloorId.has(candidate.messageAnchor.anchor.floorId)) return null;
-    candidatesByFloorId.set(candidate.messageAnchor.anchor.floorId, candidate);
-  }
-  const matchedCandidates = new Set();
+  const bindings = matchFloorCandidates(reachable.floors ?? [], hostCandidates);
+  if (bindings.issue || bindings.unmatchedFloorIndexes.length) return null;
+  const matchedCandidates = new Set(bindings.matches.map(match => match.candidate));
   const candidateByFloorId = new Map();
-  for (const floor of reachable.floors ?? []) {
-    const anchored = candidatesByFloorId.get(floor.id);
-    if (anchored) { matchedCandidates.add(anchored); candidateByFloorId.set(floor.id, anchored); continue; }
-    const candidate = candidatesByMessageIndex.get(floor.hostLocator?.messageIndex);
-    if (!candidate || candidate.messageAnchor?.status !== 'none'
-      || candidate.hostLocator.swipeId !== floor.hostLocator?.swipeId
-      || candidate.hostLocator.selectedSwipeIndex !== floor.hostLocator?.selectedSwipeIndex
-      || candidate.rawFingerprint !== floor.content?.rawFingerprint
-      || candidate.canonicalFingerprint !== floor.content?.canonicalFingerprint) return null;
-    matchedCandidates.add(candidate);
-    candidateByFloorId.set(floor.id, candidate);
-  }
+  for (const match of bindings.matches) candidateByFloorId.set(match.floor.id, match.candidate);
   const unregistered = hostCandidates.filter(candidate => !matchedCandidates.has(candidate));
   if (unregistered.some(candidate => candidate.messageAnchor?.status !== 'none')) return null;
   const lastMatchedIndex = Math.max(-1, ...[...matchedCandidates].map(candidate => candidate.hostLocator.messageIndex));

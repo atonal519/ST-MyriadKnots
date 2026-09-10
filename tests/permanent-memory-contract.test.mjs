@@ -37,6 +37,46 @@ test('未摘要楼可用严格正文启动coverage，外来marker与正文漂移
   assert.equal((await assessMemoryCoverageFromHost({ reachable, snapshot })).status, 'unknown');
 });
 
+test('无 marker 时同位置 canonical 相同可跨包装确认，移动位置则要求唯一原始指纹', async () => {
+  const crypto = await import('../src/identity.js');
+  const raw = '永久正文<!--旧包装-->';
+  const live = '永久正文<!--新包装-->';
+  const rawFingerprint = `sha256:${await crypto.sha256(raw)}`;
+  const canonicalFingerprint = `sha256:${await crypto.sha256('永久正文')}`;
+  const storedFloor = { ...floor(FLOOR, 1), content: { rawFingerprint, canonicalFingerprint } };
+  const reachable = { root: { chatId: CHAT }, floors: [storedFloor], floorMemories: [{ id: MEMORY, floorId: FLOOR, recordStatus: 'active' }], stateDeltas: [{ id: DELTA, floorId: FLOOR, floorMemoryId: MEMORY, recordStatus: 'active', subjectSnapshots: [] }] };
+  const samePosition = { context: { chatMetadata: { qianqianjie: { chatId: CHAT } } }, chat: [{ is_user: false, is_system: false, mes: live, extra: {} }] };
+  const wrapped = await assessMemoryCoverageFromHost({ reachable, snapshot: samePosition, captureGuard: true });
+  assert.equal(wrapped.status, 'caughtUp');
+  assert.equal(coverageHostGuardCurrent(wrapped, samePosition), true);
+
+  const movedReachable = { ...reachable, floors: [{ ...storedFloor, hostLocator: { messageIndex: 0, swipeId: null, selectedSwipeIndex: null } }] };
+  const moved = { context: samePosition.context, chat: [{ is_user: true, is_system: false, mes: '前置' }, { is_user: false, is_system: false, mes: raw, extra: {} }] };
+  const movedCoverage = await assessMemoryCoverageFromHost({ reachable: movedReachable, snapshot: moved, captureGuard: true });
+  assert.equal(movedCoverage.status, 'caughtUp');
+  assert.deepEqual(movedCoverage.visibleSummaryFloorIds, [FLOOR]);
+  assert.equal(coverageHostGuardCurrent(movedCoverage, moved), true);
+});
+
+test('重复或冲突 marker 不得取得 coverage 证明', async () => {
+  const crypto = await import('../src/identity.js');
+  const firstId = '11111111-1111-4111-8111-111111111111';
+  const secondId = '22222222-2222-4222-8222-222222222222';
+  const fingerprint = `sha256:${await crypto.sha256('正文')}`;
+  const floors = [
+    { ...floor(firstId, 1), content: { rawFingerprint: fingerprint, canonicalFingerprint: fingerprint } },
+    { ...floor(secondId, 2), content: { rawFingerprint: fingerprint, canonicalFingerprint: fingerprint } },
+  ];
+  const reachable = { root: { chatId: CHAT }, floors, floorMemories: [], stateDeltas: [] };
+  const duplicate = { context: { chatMetadata: { qianqianjie: { chatId: CHAT } } }, chat: [
+    { is_user: false, is_system: false, mes: '正文', extra: anchor(firstId) },
+    { is_user: false, is_system: false, mes: '正文', extra: anchor(firstId) },
+  ] };
+  assert.equal((await assessMemoryCoverageFromHost({ reachable, snapshot: duplicate })).status, 'unknown');
+  duplicate.chat[1].extra = anchor('33333333-3333-4333-8333-333333333333');
+  assert.equal((await assessMemoryCoverageFromHost({ reachable, snapshot: duplicate })).status, 'unknown');
+});
+
 test('实体首末楼按全部存活memory/CSE结构化引用投影', () => {
   const f1 = floor('11111111-1111-4111-8111-111111111111', 1);
   const f2 = floor('22222222-2222-4222-8222-222222222222', 2);
