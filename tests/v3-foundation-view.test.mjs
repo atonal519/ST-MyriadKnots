@@ -61,13 +61,16 @@ test('管理视图先显示壳并在激活时自动刷新，只在管理页提�
   assert.match(copy, /继续.*完全重构/);
 });
 
-test('needsReview 终态显示准确中文，不向页面泄露内部状态值', async () => {
-  const state = { status: 'needsReview', pluginEnabled: true, chatId: CHAT, foundationStatus: 'needsReview', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, headCheckpointId: null, lastError: null, lastExtractorError: null, lastCseError: null, floors: [], memoryWorkBusy: false };
+test('needsReview 终态显示准确中文和安全原因，不向页面泄露内部状态值', async () => {
+  const memory = { chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
+  const state = { status: 'needsReview', pluginEnabled: true, chatId: CHAT, foundationStatus: 'needsReview', reviewReason: { code: 'fingerprintMismatch', assistantSeq: 12, messageIndex: 23, expectedCount: 12, actualCount: 12 }, stableCount: 1, rememberedCount: 1, unprocessedCount: 0, pending: null, headCheckpointId: null, lastError: null, lastExtractorError: null, lastCseError: null, floors: [{ floorId: 'floor', assistantSeq: 1, messageIndex: 2, status: 'ready', memoryId: 'memory', summary: 'needsReview 下仍可见的摘要', summarySource: 'ai', aiSummary: 'needsReview 下仍可见的摘要', counts: {}, memory }], memoryEntities: [{ entityId: 'p1', displayName: '裴晚生' }], cseSubjects: [{ subjectEntityId: 'p1', displayName: '裴晚生', core: [], adaptive: [], situational: [{ text: 'needsReview 下仍可见的人物状态', visibility: 'private', reason: '当时证据', sourceAssistantSeq: 1 }] }], memoryWorkBusy: false, cseReady: true, csePendingCount: 0, cseFailedCount: 0 };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
   const container = new Node('main');
-  const view = createV3FoundationView({ runtime, documentRef }); view.mount(container); await view.activate();
+  const view = createV3FoundationView({ runtime, peopleRuntime: peopleRuntime([{ entityId: 'p1', displayName: '裴晚生' }]), documentRef }); view.mount(container); await view.activate();
   const copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /需要核对当前聊天记忆/); assert.doesNotMatch(copy, /needsReview/);
+  assert.match(copy, /需要核对当前聊天记忆/); assert.match(copy, /待核对原因.*楼正文指纹不一致.*第 23 楼.*记录 12 \/ 当前 12/); assert.match(copy, /最近记忆错误.*无/); assert.doesNotMatch(copy, /needsReview|fingerprintMismatch|AI序号/);
+  view.setPage('memories'); assert.match(flatten(container).map(node => node.textContent).join('|'), /needsReview 下仍可见的摘要/);
+  view.setPage('people'); assert.match(flatten(container).map(node => node.textContent).join('|'), /needsReview 下仍可见的人物状态/);
 });
 
 test('完整诊断必须显式确认，clipboard 不可用时显示可选择文本框', async () => {
@@ -538,7 +541,7 @@ test('轻量召回运行结果自动显示实际注入、收据、阶段与覆�
     recallStatus: 'ready', activeRecall: null, lastRecallError: null,
     lastRecall: {
       status: 'ready', userMessageIndex: 67, createdAt: '2026-09-03T00:00:00.000Z', generationType: 'continue', reusedReceipt: true, receiptPersistence: 'persisted',
-      selectedFloors: [{ assistantSeq: 2 }], selectedStates: [{ subject: '裴晚生', layer: 'core' }],
+      selectedFloors: [{ assistantSeq: 2 }], selectedStates: [{ subject: '裴晚生', layer: 'core' }], selectedCseChanges: [{ subject: '裴晚生', layer: 'situational', action: 'remove', assistantSeq: 2 }],
       coverage: { rememberedAiFloors: 8, stableAiFloors: 8, cseThroughAssistantSeq: 8 },
       stages: { input: 3, candidates: 8, dropRecent: 3, dropVisibility: 0, selected: 1 }, timings: { totalMs: 12, sourceReadAttempts: { reachableReads: 1, exitPoint: 'ready' } }, skipReasons: ['recentRawWindow'],
       injectionText: '<qqj_recalled_context>\n旧约仍然有效\n</qqj_recalled_context>', error: null,
@@ -546,8 +549,8 @@ test('轻量召回运行结果自动显示实际注入、收据、阶段与覆�
   };
   for (const listener of listeners) listener(recall);
   const copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /触发用户楼|第 67 楼|生成时间|生成类型|继续生成（continue）|复用 · persisted|来源楼号未提供|终点楼号未提供|裴晚生 \/ core/);
-  assert.match(copy, /输入 3 → 候选 8 → 去近期 3 → 去常驻重复 0 → 去越界 0 → 选中 1/);
+  assert.match(copy, /触发用户楼|第 67 楼|生成时间|生成类型|继续生成（continue）|复用 · persisted|来源楼号未提供|终点楼号未提供|裴晚生 \/ core|裴晚生 \/ situational \/ 移除/);
+  assert.match(copy, /输入 3 → 记忆楼 8 → 去近期 3 → 去常驻重复 0 → 去越界 0 → 选中楼 1/);
   assert.match(copy, /完整快照 1 次 · 退出 读取成功/);
   assert.match(copy, /旧约仍然有效/);
   view.deactivate();
@@ -594,7 +597,7 @@ test('Schema 4 只读历史缺少归属显示字段仍展示正文，并明确�
   const copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /旧版只读记录 · 不代表本轮已注入/);
   assert.match(copy, /触发用户楼\|旧记录未提供.*生成时间\|旧记录未提供.*生成类型\|旧记录未提供/);
-  assert.match(copy, /不会复用、注入或升级为当前 Schema 6 回执.*Schema 4 旧正文/);
+  assert.match(copy, /不会复用、注入或升级为当前 Schema 10 回执.*Schema 4 旧正文/);
 });
 
 test('activate 请求恢复已落盘回执，并明确标注历史展示、不重新注入与来源读取', async () => {

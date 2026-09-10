@@ -43,6 +43,28 @@ const localTimeCopy = value => {
   return new Date(value).toLocaleString('zh-CN', { hour12: false });
 };
 const generationTypeCopy = value => ({ normal: '正常生成', regenerate: '重 Roll（regenerate）', swipe: '重 Roll（swipe）', continue: '继续生成（continue）' })[value] ?? text(value, '旧记录未提供');
+const selectorModeCopy = value => ({ llm: 'LLM 智能选材', fallback: '本地关键词兜底', local: '本地直接选材' })[value] ?? '未记录';
+const cseActionCopy = value => ({ add: '新增', remove: '移除', update: '更新', refine: '调整' })[value] ?? text(value);
+const reviewReasonCopy = value => {
+  if (!value?.code) return '无';
+  const label = ({
+    indexNeedsReseal: '索引需要整理', stableCountMismatch: '稳定楼数量不符', candidateCountMismatch: '当前聊天楼数量不符',
+    locatorMismatch: '楼位置已变化', markerMismatch: '消息记忆标识不一致', fingerprintMismatch: '楼正文指纹不一致', missingRoot: '记忆根记录缺失',
+  })[value.code] ?? '记忆图与当前聊天不一致';
+  const floor = validMessageIndex(value.messageIndex) ? ` · 第 ${value.messageIndex} 楼` : '';
+  const counts = Number.isSafeInteger(value.expectedCount) && Number.isSafeInteger(value.actualCount) ? ` · 记录 ${value.expectedCount} / 当前 ${value.actualCount}` : '';
+  return `${label}${floor}${counts}`;
+};
+const selectorFailureCopy = value => ({
+  QQJ_TIMEOUT: 'API 请求超时', QQJ_RATE_LIMIT: 'API 请求过于频繁', QQJ_SERVER: 'API 服务暂时异常', QQJ_NETWORK: '无法连接 API',
+  QQJ_AUTH: 'API 认证失败', QQJ_CONFIG: 'API 配置不完整', QQJ_PRESET_INVALID: '所选 API 预设已失效',
+  QQJ_COMPLETION_JSON: '模型输出格式无效', QQJ_OUTPUT_TRUNCATED: '模型输出疑似截断',
+  V3_RECALL_LLM_SCHEMA_INVALID: '选材结果结构无效', V3_RECALL_LLM_KEYS_INVALID: '选材结果没有合法候选项', V3_RECALL_LLM_UNAVAILABLE: '智能选材路由不可用',
+})[value] ?? text(value, '无');
+const skipReasonCopy = value => ({
+  coreBodyDuplicate: '已排除当前正文覆盖的摘要', noReliableMemoryMatch: '未找到可靠的远期匹配', persistentStateDuplicate: '已去除重复材料',
+  dynamicStateCoverageIncomplete: '当前人物状态覆盖不完整，本轮只参考可信历史变化', cseReplayUnavailable: '人物状态重放不可用',
+})[value] ?? text(value);
 const workBusy = state => Boolean(state.memoryWorkBusy || state.activeAutoMemory || state.activeExtraction || state.activeCse);
 const memoryBusy = state => Boolean(state.activeExtraction || ['revising', 'extracting', 'reconciling', 'committing'].includes(state.activeMemoryWork?.phase) || state.activeAutoMemory?.phase === 'extracting');
 const cseBusy = state => Boolean(state.activeCse || state.activeMemoryWork?.phase === 'analyzingCse' || state.activeAutoMemory?.phase === 'analyzingCse');
@@ -580,15 +602,21 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const body = element('div', 'qqj-management-drawer-body'); if (receiptFeedback) body.append(element('p', 'v3-foundation-feedback error', receiptFeedback));
     if (!record) { body.append(element('p', 'settings-hint', state?.activeRecall ? `正在处理 ${state.activeRecall.generationType} · ${state.activeRecall.phase}` : '下一次正文生成后，这里会保留最近一次召回结果。')); drawer.append(body); return drawer; }
     const coverage = record.coverage, stages = record.stages, timings = record.timings, sourceReads = timings?.sourceReadAttempts;
-    const sourceExitCopy = { ready: '读取成功', stale: '读取时已失效', unavailable: '来源不可用' };
+    const sourceExitCopy = { ready: '读取成功', validatedSnapshot: '已使用完成校验的快照', memoryPreparation: '记忆准备未完成', memoryPreparationTimeout: '记忆准备超时', memoryPreparationFailed: '记忆准备失败', stale: '读取时已失效', unavailable: '来源不可用' };
     const sourceReadCopy = sourceReads ? `完整快照 ${sourceReads.reachableReads} 次 · 退出 ${sourceExitCopy[sourceReads.exitPoint] ?? '未知'}` : record.restoredReceipt ? '历史回执不重新读取来源' : '未记录';
     const floors = (record.selectedFloors ?? []).map(value => floorCopy(foundationState, value, '来源楼号未提供')).join('、') || '无', states = (record.selectedStates ?? []).map(value => `${value.subject} / ${value.layer}`).join('、') || '无';
+    const changes = (record.selectedCseChanges ?? []).map(value => `${value.subject} / ${value.layer} / ${cseActionCopy(value.action)} / ${floorCopy(foundationState, value, '来源楼号未提供')}`).join('、') || '无';
     const stageCopy = stages && [stages.recentSummaryCount, stages.distantHistoryItemCount, stages.stateCount].every(Number.isSafeInteger)
-      ? `输入 ${stages.input} → 候选 ${stages.candidates} → 近期摘要 ${stages.recentSummaryCount} → 远期旧事 ${stages.distantHistoryItemCount} → 状态 ${stages.stateCount}`
-      : stages ? `输入 ${stages.input} → 候选 ${stages.candidates} → 去近期 ${stages.dropRecent} → 去常驻重复 ${stages.dropPersistent ?? 0} → 去越界 ${stages.dropVisibility} → 选中 ${stages.selected}` : '收据复用或未执行';
-    const details = element('dl', 'v3-foundation-grid'); details.append(row('触发用户楼', userFloorCopy(record.userMessageIndex)), row('生成时间', localTimeCopy(record.createdAt)), row('生成类型', generationTypeCopy(record.generationType)), row('收据', record.legacyReadOnly ? '旧版只读记录' : record.restoredReceipt ? '已落盘回执 · 仅恢复历史展示，不会再次注入' : `${record.reusedReceipt ? '复用' : '新算'} · ${record.receiptPersistence ?? 'none'}`), row('召回旧楼', floors), row('人物状态', states), row('覆盖范围', coverage ? `记忆 ${coverage.rememberedAiFloors}/${coverage.stableAiFloors} · ${coverage.cseThroughAssistantSeq ? `CSE 到${floorCopy(foundationState, { assistantSeq: coverage.cseThroughAssistantSeq }, '终点楼号未提供')}` : 'CSE 尚未覆盖'}` : '本轮未读取'), row('筛选阶段', stageCopy), row('耗时', timings ? `${Number(timings.totalMs || 0).toFixed(1)} ms` : record.reusedReceipt ? '复用收据' : '未记录'), row('来源读取', sourceReadCopy), row('跳过原因', (record.skipReasons ?? []).join('、') || '无'));
+      ? `输入 ${stages.input} → 记忆楼 ${stages.candidates} → 近期摘要 ${stages.recentSummaryCount} → 远期旧事 ${stages.distantHistoryItemCount} → 当前态 ${stages.currentStateCount ?? stages.stateCount} → 历史变化 ${stages.cseChangeCount ?? 0}`
+      : stages ? `输入 ${stages.input} → 记忆楼 ${stages.candidates} → 去近期 ${stages.dropRecent} → 去常驻重复 ${stages.dropPersistent ?? 0} → 去越界 ${stages.dropVisibility} → 选中楼 ${stages.selected}` : '收据复用或未执行';
+    const selector = record.selectorDiagnostic;
+    const timingCopy = timings ? (Number.isFinite(timings.totalMs)
+      ? `本轮实时总耗时 ${Number(timings.totalMs).toFixed(1)} ms · 选材 ${Number(timings.selectorMs || 0).toFixed(1)} ms · 读取 ${Number(timings.sourceMs || 0).toFixed(1)} ms`
+      : `落盘阶段：选材 ${Number(timings.selectorMs || 0).toFixed(1)} ms · 读取 ${Number(timings.sourceMs || 0).toFixed(1)} ms`) : record.reusedReceipt ? '复用收据' : '未记录';
+    const filterReasons = (record.skipReasons ?? []).filter(value => value !== 'historySelectionFallback').map(skipReasonCopy);
+    const details = element('dl', 'v3-foundation-grid'); details.append(row('触发用户楼', userFloorCopy(record.userMessageIndex)), row('生成时间', localTimeCopy(record.createdAt)), row('生成类型', generationTypeCopy(record.generationType)), row('收据', record.legacyReadOnly ? '旧版只读记录' : record.restoredReceipt ? '已落盘回执 · 仅恢复历史展示，不会再次注入' : `${record.reusedReceipt ? '复用' : '新算'} · ${record.receiptPersistence ?? 'none'}`), row('召回旧楼', floors), row('当前人物状态', states), row('人物状态历史变化', changes), row('覆盖范围', coverage ? `记忆 ${coverage.rememberedAiFloors}/${coverage.stableAiFloors} · ${coverage.cseThroughAssistantSeq ? `CSE 到${floorCopy(foundationState, { assistantSeq: coverage.cseThroughAssistantSeq }, '终点楼号未提供')}` : 'CSE 尚未覆盖'}` : '本轮未读取'), row('筛选阶段', stageCopy), row('选材方式', selectorModeCopy(selector?.mode)), ...(selector?.mode === 'fallback' ? [row('选材失败原因', `${selectorFailureCopy(selector.code)}${selector.httpStatus ? `（HTTP ${selector.httpStatus}）` : ''}`)] : []), row('耗时', timingCopy), row('来源读取', sourceReadCopy), row('普通过滤说明', filterReasons.join('、') || '无'));
     body.append(details); const safeError = state?.lastRecallError?.message || record.error?.message; if (safeError) body.append(element('p', 'v3-foundation-feedback error', safeError));
-    if (record.legacyReadOnly) body.append(element('p', 'settings-hint', '这是旧版只读记录，不会复用、注入或升级为当前 Schema 6 回执。'));
+    if (record.legacyReadOnly) body.append(element('p', 'settings-hint', '这是旧版只读记录，不会复用、注入或升级为当前 Schema 10 回执。'));
     if (record.injectionText) body.append(element('pre', 'v3-recall-injection', record.injectionText));
     else if (record.status === 'empty' || record.status === 'completed-empty') body.append(element('p', 'settings-hint', '本轮没有需要注入的记忆。'));
     else if ((record.skipReasons ?? []).includes('sourceStale')) body.append(element('p', 'settings-hint', '记忆来源正在更新，本轮已安全跳过召回注入。'));
@@ -601,7 +629,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const drawer = setDetailsState(element('details', 'qqj-management-drawer'), 'diagnostics', false), summary = element('summary', 'qqj-section-summary'); summary.append(element('strong', '', '详细诊断'), element('span', 'v3-memory-status', '按需展开')); drawer.append(summary);
     const body = element('div', 'qqj-management-drawer-body'), details = element('dl', 'v3-foundation-grid');
     const rebuildCopy = ({ rebuilding: '正在重建', paused: '已暂停', waitingRealtime: '等待新楼', failed: '失败', caughtUp: '已追平', pendingRebuild: '等待开始', notReady: '覆盖待确认' })[state.rebuildStatus] ?? '尚未判断';
-    details.append(row('当前 chat', state.chatId), row('地基状态', statusCopy(effectiveStatus(state))), row('自动维护新楼', state.autoMemoryEnabled ? '已开启 · 每楼更新' : '已关闭'), row('历史重建', `${rebuildCopy} · ${state.rebuildCompletedCount ?? 0}/${state.rebuildTotalCount ?? state.stableCount ?? 0}`), row('CSE 待分析 / 失败', `${state.csePendingCount ?? 0} / ${state.cseFailedCount ?? 0}`), row('Head checkpoint', state.headCheckpointId), row('最近记忆错误', state.lastExtractorError?.message || state.lastError || '无'), row('最近 CSE 错误', state.lastCseError?.message || '无')); body.append(details);
+    details.append(row('当前 chat', state.chatId), row('地基状态', statusCopy(effectiveStatus(state))), row('待核对原因', reviewReasonCopy(state.reviewReason)), row('自动维护新楼', state.autoMemoryEnabled ? '已开启 · 每楼更新' : '已关闭'), row('历史重建', `${rebuildCopy} · ${state.rebuildCompletedCount ?? 0}/${state.rebuildTotalCount ?? state.stableCount ?? 0}`), row('CSE 待分析 / 失败', `${state.csePendingCount ?? 0} / ${state.cseFailedCount ?? 0}`), row('Head checkpoint', state.headCheckpointId), row('最近记忆错误', state.lastExtractorError?.message || state.lastError || '无'), row('最近 CSE 错误', state.lastCseError?.message || '无')); body.append(details);
     if (uiDiagnosticProvider) {
       const uiDiagnostic = element('div', 'qqj-ui-diagnostic-action');
       const copyUi = element('button', 'secondary-action', '复制界面诊断'); copyUi.type = 'button';

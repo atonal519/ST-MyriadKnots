@@ -335,7 +335,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
     return next;
   }
-  async function load(expectedEpoch = epoch, providedReachable = null) {
+  async function load(expectedEpoch = epoch, providedReachable = null, { readOnlyReview = false } = {}) {
     const supplied = providedReachable && !providedReachable.status
       ? { ...providedReachable, status: providedReachable.root ? 'ready' : 'uninitialized' }
       : providedReachable;
@@ -382,22 +382,24 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       backgroundSyncKey = null;
       return getState();
     }
-    const syncKey = `${nextReachable.root.chatId}:${nextReachable.rootRevision}:${nextReachable.root.headCheckpointId}`;
+    const syncKey = `${nextReachable.root.chatId}:${nextReachable.rootRevision}:${nextReachable.root.headCheckpointId}:${readOnlyReview ? 'review' : 'ready'}`;
     if (backgroundSync && backgroundSyncKey === syncKey) return getState();
     backgroundSyncKey = syncKey;
     const source = nextReachable;
     const settlement = Promise.resolve().then(async () => {
       await cseRuntime.load(source);
       if (expectedEpoch !== epoch || reachable !== source) return;
-      await ensureSavedAnchors(source, expectedEpoch);
-      if (expectedEpoch !== epoch || reachable !== source) return;
+      if (!readOnlyReview) {
+        await ensureSavedAnchors(source, expectedEpoch);
+        if (expectedEpoch !== epoch || reachable !== source) return;
+      }
       await refreshCoverage(expectedEpoch);
       if (expectedEpoch !== epoch || reachable !== source) return;
       const foundationState = foundationRuntime.getState();
       if (lastFailure?.floorId === null && ['load', 'foundation'].includes(lastFailure.phase)
         && [foundationState?.status, foundationState?.foundationStatus].includes('ready')) lastFailure = null;
-      memorySyncStatus = lastFailure?.phase === 'anchor' ? 'error' : 'idle';
-      memorySyncError = lastFailure?.phase === 'anchor' ? lastFailure : null;
+      memorySyncStatus = readOnlyReview ? 'needsReview' : lastFailure?.phase === 'anchor' ? 'error' : 'idle';
+      memorySyncError = readOnlyReview ? null : lastFailure?.phase === 'anchor' ? lastFailure : null;
       notify();
     }).catch(error => {
       if (expectedEpoch !== epoch || reachable !== source) return;
@@ -432,13 +434,17 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       : await foundationRuntime.refreshStatus();
     if (expectedEpoch !== epoch || expectedChatId !== currentHostChatId()) return getState();
     if (!enabled() || foundation.status === 'disabled') { reachable = null; memorySnapshotStatus = 'unavailable'; memorySyncStatus = 'idle'; return notify(); }
+    const foundationReachable = foundationRuntime.getReachable?.() ?? null;
+    const reviewReadable = foundation.status === 'needsReview'
+      && foundation.chatId === expectedChatId
+      && foundationReachable?.root?.chatId === expectedChatId;
+    if (reviewReadable) return load(expectedEpoch, foundationReachable, { readOnlyReview: true });
     if (!['ready', 'uninitialized'].includes(foundation.status)) {
       memorySyncStatus = foundation.status === 'error' ? 'error' : 'needsReview';
       memorySyncError = foundation.lastError ? Object.freeze({ code: 'V3_FOUNDATION_NOT_READY', message: safeErrorMessage(foundation.lastError) }) : null;
       if (!reachable) memorySnapshotStatus = foundation.status === 'error' ? 'error' : 'unavailable';
       return notify();
     }
-    const foundationReachable = foundationRuntime.getReachable?.() ?? null;
     const reusable = !reachable || !foundationReachable
       || Number(foundationReachable.rootRevision ?? 0) >= Number(reachable.rootRevision ?? 0)
       ? foundationReachable
@@ -1366,12 +1372,24 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if (foundationReload) return foundationReload;
       foundationReload = Promise.resolve().then(async () => {
         while (awaitingFoundation && enabled()) {
-          const foundationStatus = foundationRuntime.getState()?.status;
-          if (!['ready', 'uninitialized'].includes(foundationStatus)) break;
+          const foundationState = foundationRuntime.getState();
+          const foundationStatus = foundationState?.status;
+          if (!['ready', 'uninitialized', 'needsReview'].includes(foundationStatus)) break;
           awaitingFoundation = false;
           const reloadEpoch = epoch;
           try {
-            await load(reloadEpoch);
+            const reviewReachable = foundationRuntime.getReachable?.() ?? null;
+            const readOnlyReview = foundationStatus === 'needsReview'
+              && foundationState.chatId === currentHostChatId()
+              && reviewReachable?.root?.chatId === currentHostChatId();
+            if (foundationStatus === 'needsReview' && !readOnlyReview) {
+              memorySyncStatus = 'needsReview';
+              memorySyncError = null;
+              if (!reachable) memorySnapshotStatus = 'unavailable';
+              notify();
+              continue;
+            }
+            await load(reloadEpoch, readOnlyReview ? reviewReachable : null, { readOnlyReview });
             if (reloadEpoch === epoch && autoTriggerReason && scheduleAllowed(autoTriggerReason)) {
               const reason = autoTriggerReason;
               autoTriggerReason = null;
@@ -1391,7 +1409,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     };
     if (typeof foundationRuntime.subscribe === 'function') unsubscribeFoundation = foundationRuntime.subscribe(state => {
       if (!awaitingFoundation) return;
-      if (['ready', 'uninitialized'].includes(state?.status)) { void drainFoundationReload(); return; }
+      if (['ready', 'uninitialized', 'needsReview'].includes(state?.status)) { void drainFoundationReload(); return; }
       if (!['running', 'idle'].includes(state?.status)) {
         awaitingFoundation = false;
         memorySyncStatus = state?.status === 'error' ? 'error' : 'needsReview';

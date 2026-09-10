@@ -1618,11 +1618,37 @@ test('legacy root manifest 缺项只进入 needsReseal，重封口后恢复精�
     store, contextProvider: () => h.context, scanCandidates: legacyScanner, newUuid: uuidFactory(14900),
     now: () => new Date('2026-09-02T03:30:00.000Z'), logger: { warn() {} },
   });
+  const review = await runtime.inspect('coldLegacyIndex');
+  assert.equal(review.status, 'needsReview');
+  assert.deepEqual(review.reviewReason, { code: 'indexNeedsReseal', assistantSeq: null, messageIndex: null, expectedCount: null, actualCount: null });
   assert.equal((await runtime.start()).status, 'ready');
   const upgraded = await store.readReachable();
   assert.equal(upgraded.status, 'ready');
   const expectedFloorKeys = upgraded.checkpoint.producedRefs.indexes.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-'));
   assert.deepEqual(new Set(upgraded.root.indexManifest.floor), new Set(expectedFloorKeys));
+});
+
+test('只读检查给出首个安全图匹配原因，恢复匹配后清除原因', async () => {
+  const h = harness();
+  await h.runtime.start();
+  h.context.chat[0] = assistant('A 已编辑');
+  const store = createFoundationStore({
+    client: h.backend.client,
+    contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }),
+  });
+  const runtime = createFoundationRuntime({
+    hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }),
+    store, contextProvider: () => h.context, scanCandidates: legacyScanner, newUuid: uuidFactory(15000),
+    now: () => new Date('2026-09-02T03:35:00.000Z'), logger: { warn() {} },
+  });
+  const review = await runtime.inspect('coldMismatch');
+  assert.equal(review.status, 'needsReview');
+  assert.deepEqual(review.reviewReason, { code: 'fingerprintMismatch', assistantSeq: 1, messageIndex: 0, expectedCount: 2, actualCount: 3 });
+  assert.equal(review.lastError, null, '图匹配原因不是 API 读取错误');
+  h.context.chat[0] = assistant('A');
+  const recovered = await runtime.inspect('matchedAgain');
+  assert.equal(recovered.status, 'ready');
+  assert.equal(recovered.reviewReason, null);
 });
 
 test('真实聊天 session + lifecycle + V3 runtime 在 CHAT_CHANGED UUID 时序下只建立一份身份', async () => {

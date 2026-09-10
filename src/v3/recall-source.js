@@ -1,4 +1,4 @@
-import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
+import { deriveCseTimeline, filterReachableDeltas, replayCurrentState } from './cse-engine.js';
 import { assessMemoryCoverageFromHost } from './memory-coverage.js';
 
 const safeText = (value, maximum = 4000) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
@@ -76,6 +76,35 @@ function stateDto(replayed, entities, floorSeq) {
   })));
 }
 
+function cseChangesDto(timeline, entities, floorSeq) {
+  const activeEntityIds = new Set(entities.map(entity => entity.entityId));
+  const state = value => value ? Object.freeze({
+    text: safeText(value.text),
+    visibility: ['private', 'observable', 'expressed', 'shared', 'authorial'].includes(value.visibility) ? value.visibility : 'private',
+    reason: safeText(value.reason),
+    origin: ['baseline', 'floor', 'reasonableProgression', 'manual'].includes(value.origin) ? value.origin : 'floor',
+    towardEntityId: activeEntityIds.has(value.towardEntityId) ? value.towardEntityId : null,
+    sourceAssistantSeq: floorSeq.get(value.sourceFloorId) ?? null,
+  }) : null;
+  return Object.freeze(timeline.flatMap(entry => {
+    const assistantSeq = floorSeq.get(entry.floorId) ?? null;
+    if (!assistantSeq) return [];
+    return entry.changes.flatMap(subject => {
+      if (!activeEntityIds.has(subject.subjectEntityId)) return [];
+      return subject.items.map(change => Object.freeze({
+        deltaId: entry.deltaId,
+        floorId: entry.floorId,
+        assistantSeq,
+        subjectEntityId: subject.subjectEntityId,
+        layer: change.category,
+        action: change.action,
+        before: state(change.before),
+        after: state(change.after),
+      }));
+    });
+  }));
+}
+
 export async function projectRecallSource(first, now, sourceReadAttempts = null, hostSnapshot = null, sanitizerOptions = {}, realtimeOrigin = false) {
   const floors = first.floors ?? [];
   const floorById = new Map(floors.map(floor => [floor.id, floor]));
@@ -88,9 +117,10 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
   }
   const activeMemoryIds = new Set(activeMemories.map(memory => memory.id));
   const degradedReasons = [];
-  let trustedDeltas = [], replayed = null;
+  let trustedDeltas = [], replayed = null, cseTimeline = [];
   try {
     trustedDeltas = filterReachableDeltas({ floors, floorMemories: first.floorMemories ?? [], stateDeltas: first.stateDeltas ?? [] });
+    cseTimeline = deriveCseTimeline(trustedDeltas);
     if (first.baseline) {
       const timestamp = now();
       replayed = await replayCurrentState({ chatId: first.root.chatId, narrativeGeneration: first.root.narrativeGeneration, baselineId: first.baseline.id, floors, floorMemories: first.floorMemories ?? [], stateDeltas: trustedDeltas, now: timestamp?.toISOString?.() ?? String(timestamp) });
@@ -98,6 +128,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
   } catch {
     trustedDeltas = [];
     replayed = null;
+    cseTimeline = [];
     degradedReasons.push('cseReplayUnavailable');
   }
   const entities = Object.freeze((first.entities ?? []).filter(entity => entity.recordStatus === 'active' && entity.status !== 'merged' && entity.status !== 'invalidated').map(entity => Object.freeze({
@@ -149,6 +180,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
       return memoryDto(memory, floor, { floorSeqById: floorSeq });
     })),
     currentState: stateDto(replayed, entities, floorSeq),
+    cseChanges: cseChangesDto(cseTimeline, entities, floorSeq),
   });
 }
 

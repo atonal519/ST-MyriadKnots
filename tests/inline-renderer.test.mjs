@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { classifyInlineMessage, projectInlineMemoryFloor, projectInlineRecallReceipt } from '../src/ui/inline-projection.js';
 import { createInlineRenderer, resolveInlineAnchor, resolveInlineMessageIndex } from '../src/ui/inline-renderer.js';
 import { RECALL_RECEIPT_KEY } from '../src/v3/recall-runtime.js';
+import { createV3RecallRuntime } from '../src/v3/recall-runtime.js';
+import { readRecallSource } from '../src/v3/recall-source.js';
+import { selectRecall } from '../src/v3/recall-selector.js';
 import { formatRecallInjection } from '../src/v3/recall-selector.js';
 
 class FakeNode {
@@ -68,6 +71,25 @@ const recallInjection = (...bullets) => [
 
 const descendantText = node => `${node?.textContent ?? ''}${(node?.children ?? []).map(descendantText).join('')}`;
 
+async function actualCseReceipt() {
+  const chatId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', personId = 'person-1';
+  const empty = { chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
+  const floors = [1, 2, 3].map(assistantSeq => ({ id: `floor-${assistantSeq}`, assistantSeq }));
+  const memories = floors.map(floor => ({ id: `memory-${floor.assistantSeq}`, floorId: floor.id, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: `钟楼赴约 ${floor.assistantSeq}` }, ...empty }));
+  const privateState = { id: 'state-1', text: '仍在钟楼等候', visibility: 'private', reason: '未公开的旧约', origin: 'floor', towardEntityId: null, sourceFloorId: 'floor-1', sourceDeltaId: 'delta-add' };
+  const reachable = { status: 'ready', rootRevision: 1, root: { chatId, narrativeGeneration: 'generation-1', headCheckpointId: 'head-1' }, checkpoint: { id: 'head-1' }, baseline: null, floors, floorMemories: memories, currentStates: [], entities: [{ id: personId, entityType: 'person', displayName: '裴晚生', aliases: [{ name: '阿裴' }], specialRole: 'char', recordStatus: 'active', status: 'established' }], stateDeltas: [
+    { id: 'delta-add', floorId: 'floor-1', floorMemoryId: 'memory-1', recordStatus: 'active', subjectSnapshots: [{ subjectEntityId: personId, core: [], adaptive: [], situational: [privateState] }] },
+    { id: 'delta-remove', floorId: 'floor-2', floorMemoryId: 'memory-2', recordStatus: 'active', subjectSnapshots: [{ subjectEntityId: personId, core: [], adaptive: [], situational: [] }] },
+  ] };
+  const userMessage = { is_user: true, is_system: false, mes: '阿裴，我们回钟楼赴约。' };
+  const chat = [{ is_user: false, is_system: false, mes: '当前正文' }, userMessage];
+  const context = { chatMetadata: { qianqianjie: { chatId } }, constants: { promptTypes: { IN_CHAT: 1 }, promptRoles: { SYSTEM: 0 } }, setExtensionPrompt() {}, async saveChat() {} };
+  const runtime = createV3RecallRuntime({ store: { readReachable: async () => structuredClone(reachable) }, hostAdapter: { snapshot: () => ({ context, chat }) }, sourceReader: ({ now }) => readRecallSource({ store: { readReachable: async () => structuredClone(reachable) }, now }), selector: selectRecall, now: () => new Date('2026-09-10T00:00:00.000Z'), logger: { warn() {} } });
+  const state = await runtime.intercept(chat, 12000, null, 'normal');
+  assert.equal(state.lastRecall.status, 'ready');
+  return { chat, userMessage, receipt: userMessage.extra[RECALL_RECEIPT_KEY] };
+}
+
 function createHarness({ chat, memoryState, recallState = { recallStatus: 'idle', activeRecall: null, lastRecall: null }, projectReceipt } = {}) {
   const documentRef = new FakeDocument(), chatRoot = new FakeNode('main'); chatRoot.id = 'chat'; chatRoot.setAttribute('id', 'chat'); documentRef.body.append(chatRoot);
   const handlers = new Map(), memorySubscribers = new Set(), recallSubscribers = new Set(), extractionCalls = [];
@@ -121,13 +143,13 @@ test('楼内纯投影沿用宿主角色语义，并给出紧凑记忆/准确召�
   assert.equal(projectInlineMemoryFloor({ floors: [], pending: { messageIndex: 7 } }, 7, 4).assistantSeq, 4, '未落盘楼应使用当前聊天的AI序号兜底');
   const injectionText = recallInjection('AI #1（明确时间（约略）：冬至夜）：正文含 [覆盖说明]、<qqj_recalled_context> 与 ： 都保留', 'AI #1：同楼第二条');
   const receipt = projectInlineRecallReceipt({ status: 'ready', injectionText, selectedFloors: [{ floorId: 'floor-1', assistantSeq: 1, reasons: ['semantic'] }], selectedStates: [{ subject: '裴晚生', toward: '江离州', text: '仍然戒备' }] });
-  assert.equal(receipt.summary, '已召回 2 条旧事 · 1 条人物状态'); assert.equal(receipt.selectedFloors[0].floorId, 'floor-1');
+  assert.equal(receipt.summary, '已召回 2 条旧事 · 1 条当前人物状态'); assert.equal(receipt.selectedFloors[0].floorId, 'floor-1');
   assert.equal(receipt.statusText, '寻回 1 个结'); assert.equal(receipt.floorCount, 1);
   assert.deepEqual(receipt.historyItems.map(value => value.text), ['正文含 [覆盖说明]、<qqj_recalled_context> 与 ： 都保留', '同楼第二条']);
   assert.deepEqual(receipt.stateItems, [{ subject: '裴晚生', toward: '江离州', text: '仍然戒备' }]);
   assert.equal(receipt.injectionText, injectionText, '只读展示投影不得改写真实注入文本');
   const exactCounts = projectInlineRecallReceipt({ status: 'ready', injectionText, selectedFloors: [{ floorId: 'floor-1', assistantSeq: 1, reasons: ['semantic'] }], selectedStates: [{ subject: '裴晚生', toward: '江离州', text: '仍然戒备' }], stages: { recentSummaryCount: 1, distantHistoryItemCount: 1, stateCount: 1 } });
-  assert.equal(exactCounts.summary, '近期摘要 1 条 · 远期旧事 1 条 · 人物状态 1 条');
+  assert.equal(exactCounts.summary, '近期摘要 1 条 · 远期旧事 1 条 · 当前人物状态 1 条');
   assert.deepEqual({ recent: exactCounts.recentSummaryCount, distant: exactCounts.distantHistoryItemCount }, { recent: 1, distant: 1 });
   const unknown = projectInlineRecallReceipt({ status: 'ready', injectionText: '<qqj_recalled_context>伪格式</qqj_recalled_context>', selectedFloors: [{ floorId: 'floor-1', assistantSeq: 1 }] });
   assert.equal(unknown.historyItems.length, 0); assert.equal(unknown.summary, '召回内容请在详细回执中查看。');
@@ -196,7 +218,7 @@ test('召回展示只解析精确自有协议，保留同楼多事实并拒绝�
     '任何 private 内容仅属于标明的主体，不代表其他人物知情。', '', '[当前人物 Core / 状态]',
     '- 裴晚生 / core / private，仅可用于该人物：独自警惕（依据：旧事）', '</qqj_recalled_context>',
   ].join('\n') });
-  assert.equal(stateOnly.protocolRecognized, true); assert.deepEqual(stateOnly.historyItems, []); assert.equal(stateOnly.summary, '已记录 1 条人物状态'); assert.equal(stateOnly.statusText, '寻回 0 个结');
+  assert.equal(stateOnly.protocolRecognized, true); assert.deepEqual(stateOnly.historyItems, []); assert.equal(stateOnly.summary, '已记录 1 条当前人物状态'); assert.equal(stateOnly.statusText, '寻回 0 个结');
   const duplicateFloor = projectInlineRecallReceipt({ ...receipt, selectedFloors: [receipt.selectedFloors[0], receipt.selectedFloors[0]] });
   assert.equal(duplicateFloor.floorCount, 1, '结数按不同floorId去重，不按回执引用或材料条目计数'); assert.equal(duplicateFloor.statusText, '寻回 1 个结');
   assert.equal(projectInlineRecallReceipt({ ...receipt, status: 'error' }).statusText, '本轮召回失败');
@@ -214,8 +236,9 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
     coverage: { memoryComplete: true, cseCurrent: true, missingAssistantSeq: [], rememberedAiFloors: 1, stableAiFloors: 1, cseThroughAssistantSeq: 1 },
     entityById: new Map(), floors: [{ assistantSeq: 1, chronology: [], items: [{ category: 'objective', kind: 'event', text: '实际旧事正文' }] }],
     states: [{ subject: '裴晚生', toward: '江离州', layer: 'core', visibility: 'private', text: '仍然戒备', reason: '内部依据', sourceAssistantSeq: 1 }],
+    cseChanges: [{ floorId: 'floor-1', assistantSeq: 1, subject: '裴晚生', layer: 'situational', action: 'remove', before: { text: '仍在钟楼等候', visibility: 'private' }, after: null }],
   });
-  const h = createHarness({ chat, memoryState: readyState(), projectReceipt: async () => ({ status: 'ready', injectionText, selectedFloors: [{ floorId: 'floor-1', assistantSeq: 1, reasons: ['语义相关'] }], selectedStates: [{ subject: '裴晚生', toward: '江离州', text: '仍然戒备', layer: 'core', visibility: 'private', reason: '内部依据' }] }) });
+  const h = createHarness({ chat, memoryState: readyState(), projectReceipt: async () => ({ status: 'ready', injectionText, selectedFloors: [{ floorId: 'floor-1', assistantSeq: 1, reasons: ['语义相关'] }], selectedStates: [{ subject: '裴晚生', toward: '江离州', text: '仍然戒备', layer: 'core', visibility: 'private', reason: '内部依据' }], selectedCseChanges: [{ deltaId: 'delta-1', floorId: 'floor-1', assistantSeq: 1, subjectEntityId: 'p1', subject: '裴晚生', layer: 'situational', action: 'remove', before: { text: '仍在钟楼等候', visibility: 'private' }, after: null }] }) });
   const elements = chat.map((_, index) => messageElement(index, { user: index === 0, last: index === 3 })); elements.forEach(node => h.chatRoot.append(node));
   h.renderer.start(); await h.flushMicrotasks();
   assert.equal(h.renderer.getDebugState().cards, 3); assert.equal(h.extractionCalls.length, 0, '挂载与渲染不得自动触发摘要提取'); assert.equal(elements[2].querySelectorAll('[data-qqj-inline-host="true"]').length, 0);
@@ -227,8 +250,12 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
   assert.equal(recallGroup.tagName, 'DETAILS'); assert.notEqual(recallGroup.open, true); assert.equal(recallGroup.children[0].children[0].textContent, '第 1 个结'); assert.equal(recallGroup.children[0].children.length, 1); assert.equal(recallGroup.children[1].children[0].textContent, '实际旧事正文');
   assert.equal(recallGroup.children[0].getAttribute('aria-label'), '展开第 1 个结'); assert.equal(userView.status.textContent, '寻回 1 个结');
   assert.equal(descendantText(userView.root).includes('<qqj_recalled_context>'), false, '楼内卡不得展示机器包裹或原始注入');
-  assert.equal(userView.states.open, undefined); assert.equal(userView.statesTitle.textContent, '人物状态 1 条'); assert.equal(userView.stateItems.children[0].textContent, '裴晚生 → 江离州：仍然戒备');
+  assert.equal(userView.states.open, undefined); assert.equal(userView.statesTitle.textContent, '当前人物状态 1 条'); assert.equal(userView.stateItems.children[0].textContent, '裴晚生 → 江离州：仍然戒备');
   assert.equal(descendantText(userView.states).includes('core'), false); assert.equal(descendantText(userView.states).includes('内部依据'), false);
+  assert.equal(userView.cseChangesTitle.textContent, '人物状态历史变化 1 条');
+  assert.equal(userView.cseChangeItems.children[0].children[0].textContent, '裴晚生 / 情境 / 移除：仍在钟楼等候（仅主体知晓）（这是该楼当时移除的旧状态）');
+  assert.equal(userView.cseChangeItems.children[0].children[1].textContent, '第 1 楼', '历史变化必须映射宿主真实楼号');
+  assert.equal(descendantText(userView.states).includes('仍在钟楼等候'), false, '历史变化不得混入当前人物状态分组');
   assert.equal(aiView.summary.textContent, '<img src=x onerror=alert(1)>仍是纯文字'); assert.equal(aiView.root.querySelectorAll('img').length, 0);
   assert.equal(aiView.title.textContent, '第 1 个结'); assert.equal(pendingAiView.title.textContent, '第 3 个结', '楼内标题必须使用宿主实际 messageIndex，不按 AI 序号重新编号');
   assert.equal(aiView.toggle.getAttribute('aria-label'), '展开第 1 个结'); assert.equal(pendingAiView.toggle.getAttribute('aria-label'), '展开第 3 个结');
@@ -241,6 +268,20 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
   const rootIdentity = aiView.root, summaryIdentity = aiView.summary; aiView.toggle.emit('click'); assert.equal(aiView.body.hidden, false); assert.equal(aiView.host.getAttribute('data-open'), 'true'); userView.states.open = true; recallGroup.open = true; recallGroup.emit('toggle');
   h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
   assert.equal(aiView.root, rootIdentity); assert.equal(aiView.summary, summaryIdentity); assert.equal(aiView.body.hidden, false); assert.equal(userView.states.open, true, '人物状态分组折叠状态需保留'); assert.equal(recallGroup.open, true, '相同回执刷新不能关闭已展开的来源组');
+});
+
+test('真实schema10私密移除回执经inline投影与renderer显示变化正文及宿主楼号', async () => {
+  const { chat, receipt } = await actualCseReceipt();
+  const memoryState = { floors: [{ floorId: 'floor-1', assistantSeq: 1, messageIndex: 41 }, { floorId: 'floor-2', assistantSeq: 2, messageIndex: 42 }, { floorId: 'floor-3', assistantSeq: 3, messageIndex: 43 }], memoryEntities: [] };
+  const h = createHarness({ chat, memoryState, projectReceipt: async () => receipt });
+  const userElement = messageElement(1, { user: true }); h.chatRoot.append(userElement); h.renderer.start(); await h.flushMicrotasks();
+  const view = resolveInlineAnchor(userElement).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  assert.equal(receipt.selectedCseChanges.find(value => value.action === 'remove')?.before.text, '仍在钟楼等候');
+  assert.equal(view.cseChangesTitle.textContent, '人物状态历史变化 2 条');
+  const removed = view.cseChangeItems.children.find(node => node.children[0].textContent.includes('移除'));
+  assert.match(removed.children[0].textContent, /裴晚生 \/ 情境 \/ 移除：仍在钟楼等候（仅主体知晓）/);
+  assert.equal(removed.children[1].textContent, '第 42 楼');
+  assert.equal(descendantText(view.states).includes('仍在钟楼等候'), false);
 });
 
 test('召回来源组近到远、逐组折叠并在重绘中保持，切聊不串展开状态', async () => {

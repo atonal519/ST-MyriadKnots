@@ -227,6 +227,13 @@ test('timeout、主动 abort、401/404/429/5xx 均映射为有限脱敏错误', 
     await assert.rejects(client.generateTask({ config: config(), taskMessages: [] }), error => error.code === code && !error.message.includes('TEST_KEY'));
     assert.equal(calls, status === 429 || status >= 500 ? 3 : 1);
   }
+  for (const [kind, expectedCode] of [['rate', 'QQJ_RATE_LIMIT'], ['network', 'QQJ_NETWORK']]) {
+    let calls = 0, waits = 0;
+    const budget = { remaining: 1, used: 0 };
+    const client = createCompactApiClient({ retryWait: async () => { waits += 1; }, fetchImpl: async () => { calls += 1; if (kind === 'network') throw new TypeError('network failed'); return jsonResponse({}, 429); } });
+    await assert.rejects(client.generateTask({ config: config(), taskMessages: [], transportBudget: budget }), error => error.code === expectedCode && error.transportAttempts === 1);
+    assert.deepEqual({ calls, waits, budget }, { calls: 1, waits: 0, budget: { remaining: 0, used: 1 } }, `${kind} 最后一次运输失败不得再等无效重试`);
+  }
 });
 
 test('同一任务的运输重试复用启动时提示词快照', async () => {

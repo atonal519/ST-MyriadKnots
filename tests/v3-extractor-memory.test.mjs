@@ -1200,6 +1200,51 @@ test('后台 load 失败后成功刷新清旧读取错误并保留摘要，具�
   assert.equal(afterOrdinaryLoad.lastExtractorError?.phase, 'retryableError', '普通成功 load 不得清除具体楼层提取失败');
 });
 
+test('冷页 foundation needsReview 只读呈现同聊天已存摘要且零挂标写，恢复 ready 后正常收敛，异聊天不采纳', async () => {
+  const seed = harness();
+  let seeded = await seed.runtime.start();
+  seeded = await seed.runtime.extractFloor(seeded.floors[0].floorId, { analyzeState: false });
+  const expectedSummary = seeded.floors[0].summary;
+  const graph = await seed.store.readReachable({ mode: 'projection' });
+  const listeners = new Set();
+  let foundationState = { ...seed.foundationRuntime.getState(), status: 'needsReview', foundationStatus: 'ready', chatId: CHAT, reviewReason: { code: 'fingerprintMismatch', assistantSeq: 1, expectedCount: 1, actualCount: 1 }, lastError: null };
+  const foundationRuntime = {
+    start: async () => foundationState,
+    inspect: async () => foundationState,
+    refreshStatus: async () => foundationState,
+    confirmLatest: async () => foundationState,
+    setEnabled: async () => foundationState,
+    bind: () => true,
+    getState: () => foundationState,
+    getReachable: () => graph,
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+  };
+  let anchorWrites = 0;
+  const task = async () => { throw new Error('只读加载不得调用模型'); };
+  const runtime = createV3MemoryRuntime({ foundationRuntime, store: seed.store, hostAdapter: seed.hostAdapter, generateAnalysisTask: task, generateUtilityTask: task, persistAnchors: async () => { anchorWrites += 1; }, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  runtime.bind({ eventSource: seed.context.eventSource, eventTypes: seed.context.eventTypes });
+  const reviewed = await runtime.start();
+  assert.equal(reviewed.status, 'needsReview');
+  assert.equal(reviewed.memorySnapshotStatus, 'ready');
+  assert.equal(reviewed.memorySyncStatus, 'needsReview');
+  assert.equal(reviewed.floors[0].summary, expectedSummary);
+  assert.equal(reviewed.reviewReason.code, 'fingerprintMismatch');
+  assert.equal(anchorWrites, 0, 'needsReview 只读采纳不得写消息挂标');
+
+  foundationState = { ...foundationState, status: 'ready', reviewReason: null };
+  const recovered = await runtime.refreshStatus();
+  await waitFor(() => runtime.getState().memorySyncStatus !== 'syncing');
+  assert.equal(recovered.memorySnapshotStatus, 'ready');
+  assert.equal(runtime.getState().memorySyncStatus, 'idle');
+  assert.equal(runtime.getState().floors[0].summary, expectedSummary);
+
+  const otherFoundation = { ...foundationRuntime, getState: () => ({ ...foundationState, status: 'needsReview', chatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }), inspect: async () => ({ ...foundationState, status: 'needsReview', chatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }) };
+  const other = createV3MemoryRuntime({ foundationRuntime: otherFoundation, store: seed.store, hostAdapter: seed.hostAdapter, generateAnalysisTask: task, generateUtilityTask: task, persistAnchors: async () => { anchorWrites += 1; }, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  const rejected = await other.start();
+  assert.equal(rejected.memorySnapshotStatus, 'unavailable');
+  assert.equal(rejected.floors.length, 0, '不同聊天的 foundation cache 不得呈现');
+});
+
 test('已有聊天启动、绑定、面板刷新与开启自动维护都只检测；按钮授权后连续重建并 flush 尾批', async () => {
   const h = harness({
     initialChat: [user('开始'), ...Array.from({ length: 6 }, (_, index) => assistant(`历史 AI ${index + 1}`))],

@@ -10,7 +10,7 @@ const INLINE_STYLE = `
 .head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px;min-height:35px}.mark{position:absolute;left:0;top:18px;width:0;height:0;z-index:1;color:var(--qqj-inline-knot);pointer-events:none}.knot{position:absolute;left:-5px;top:-5px;width:9px;height:9px;border:1.5px solid currentColor;transform:rotate(45deg);border-radius:1px;background:transparent}.knot::after{content:"";position:absolute;inset:2px;background:currentColor;border-radius:1px}
 .toggle,.extract{font:inherit;color:inherit;background:none;border:0;box-shadow:none;border-radius:7px;min-height:32px;cursor:pointer}.toggle{min-width:0;text-align:left;padding:2px 3px;display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);align-items:center;gap:6px}.title{min-width:0;font-size:12px;font-weight:600;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{justify-self:start;min-width:0;max-width:100%;padding:1px 6px;border-radius:999px;font-size:10.5px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:color-mix(in srgb,currentColor 9%,transparent);color:inherit}.status.ready{background:color-mix(in srgb,#56a875 18%,transparent)}.status.running{background:color-mix(in srgb,#4c9bd1 18%,transparent)}.status.review{background:color-mix(in srgb,#d79a35 19%,transparent)}.status.error{background:color-mix(in srgb,#c84a46 17%,transparent)}
 .extract{width:32px;height:32px;padding:0;display:grid;place-items:center;font-family:"Font Awesome 6 Free","Font Awesome 5 Free",sans-serif;font-size:12px;font-weight:900;line-height:1}.extract[hidden]{display:none}.extract:disabled{cursor:default;opacity:.42}.toggle:focus-visible,.extract:focus-visible{outline:2px solid var(--qqj-inline-knot);outline-offset:1px}
-.body{padding:4px 6px 9px 3px;font-size:13px;line-height:1.75;overflow-wrap:anywhere}.body[hidden]{display:none}.facts{display:grid;gap:0;margin:0;font-size:11px;line-height:1.5;opacity:.68}.meta-row{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}.summary{margin:10px 0 0;font-size:13px;line-height:1.75;white-space:pre-wrap}.assistant .summary{padding-top:10px;border-top:1px solid var(--qqj-inline-line)}.recall-items{display:grid;gap:7px;margin:3px 0 0}.recall-group{min-width:0;padding:1px 0 5px;border-bottom:1px solid var(--qqj-inline-line)}.recall-group:last-child{border-bottom:0}.recall-group>summary{cursor:pointer;display:flex;align-items:baseline;gap:7px;min-width:0;padding:3px 0;font-size:13px;font-weight:650;line-height:1.5}.recall-floor{font-size:10.5px;font-weight:400;opacity:.62}.recall-texts{display:grid;gap:4px;padding:3px 0 2px 16px}.recall-text{font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}.states{margin:10px 0 0}.states>summary{cursor:pointer;font-size:11px;line-height:1.5;opacity:.7}.state-items{display:grid;gap:6px;margin-top:6px}.state-item{font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.body > .error{margin:7px 0 0;color:#a8322f;font-size:11px;line-height:1.55;white-space:pre-wrap}
+.body{padding:4px 6px 9px 3px;font-size:13px;line-height:1.75;overflow-wrap:anywhere}.body[hidden]{display:none}.facts{display:grid;gap:0;margin:0;font-size:11px;line-height:1.5;opacity:.68}.meta-row{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}.summary{margin:10px 0 0;font-size:13px;line-height:1.75;white-space:pre-wrap}.assistant .summary{padding-top:10px;border-top:1px solid var(--qqj-inline-line)}.recall-items{display:grid;gap:7px;margin:3px 0 0}.recall-group{min-width:0;padding:1px 0 5px;border-bottom:1px solid var(--qqj-inline-line)}.recall-group:last-child{border-bottom:0}.recall-group>summary{cursor:pointer;display:flex;align-items:baseline;gap:7px;min-width:0;padding:3px 0;font-size:13px;font-weight:650;line-height:1.5}.recall-floor{font-size:10.5px;font-weight:400;opacity:.62}.recall-texts{display:grid;gap:4px;padding:3px 0 2px 16px}.recall-text{font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}.states,.cse-changes{margin:10px 0 0}.states>summary,.cse-changes>summary{cursor:pointer;font-size:11px;line-height:1.5;opacity:.7}.state-items,.cse-change-items{display:grid;gap:6px;margin-top:6px}.state-item,.cse-change-item{font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.cse-change-floor{margin-left:5px;font-size:10.5px;opacity:.62}.body > .error{margin:7px 0 0;color:#a8322f;font-size:11px;line-height:1.55;white-space:pre-wrap}
 @media(max-width:360px){.card{padding-left:8px}.head{grid-template-columns:minmax(0,1fr) auto;gap:2px}.toggle{gap:4px;padding-inline:2px}.body{padding-left:2px}.title{font-size:11.5px}.status{font-size:10px}}
 @media(prefers-reduced-motion:reduce){.toggle,.extract{scroll-behavior:auto}}
 `;
@@ -73,9 +73,12 @@ function createCard(documentRef, host, kind, expanded, onToggle, onExtract) {
   const states = documentRef.createElement('details'); states.className = 'states';
   const statesTitle = documentRef.createElement('summary'); statesTitle.className = 'states-title';
   const stateItems = documentRef.createElement('div'); stateItems.className = 'state-items'; append(states, statesTitle, stateItems);
+  const cseChanges = documentRef.createElement('details'); cseChanges.className = 'cse-changes';
+  const cseChangesTitle = documentRef.createElement('summary'); cseChangesTitle.className = 'cse-changes-title';
+  const cseChangeItems = documentRef.createElement('div'); cseChangeItems.className = 'cse-change-items'; append(cseChanges, cseChangesTitle, cseChangeItems);
   const error = documentRef.createElement('p'); error.className = 'error';
-  append(body, facts, summary, recallItems, states, error); append(head, toggle, extract); append(card, mark, head, body); append(root, style, card);
-  const view = { host, root, card, mark, knot, toggle, title, status, extract, body, facts, fields, summary, recallItems, states, statesTitle, stateItems, error, kind, expanded, signature: '', projection: null, extracting: false };
+  append(body, facts, summary, recallItems, states, cseChanges, error); append(head, toggle, extract); append(card, mark, head, body); append(root, style, card);
+  const view = { host, root, card, mark, knot, toggle, title, status, extract, body, facts, fields, summary, recallItems, states, statesTitle, stateItems, cseChanges, cseChangesTitle, cseChangeItems, error, kind, expanded, signature: '', projection: null, extracting: false };
   toggle.addEventListener('click', () => onToggle(view));
   extract.addEventListener('click', () => onExtract(view));
   host.__qqjInlineCard = view;
@@ -125,8 +128,37 @@ function replaceStateItems(view, projection, documentRef) {
   });
   view.stateItems.replaceChildren?.(...items);
   if (view.stateItems.dataset) view.stateItems.dataset.signature = signature;
-  setText(view.statesTitle, `人物状态 ${items.length} 条`);
+  setText(view.statesTitle, `当前人物状态 ${items.length} 条`);
   view.states.hidden = items.length === 0;
+}
+
+function replaceCseChangeItems(view, projection, documentRef, state) {
+  const layerText = { core: '核心', adaptive: '适应', situational: '情境' };
+  const visibilityText = { private: '仅主体知晓', observable: '可观察', expressed: '已表达', shared: '已共享', authorial: '作者视角' };
+  const rendered = (projection.cseChangeItems ?? []).map(item => {
+    const floor = (state?.floors ?? []).find(value => value.floorId === item.floorId && value.assistantSeq === item.assistantSeq)
+      ?? (state?.floors ?? []).find(value => value.floorId === item.floorId)
+      ?? (state?.floors ?? []).find(value => value.assistantSeq === item.assistantSeq);
+    const side = value => value?.text ? `${value.text}${visibilityText[value.visibility] ? `（${visibilityText[value.visibility]}）` : ''}` : '';
+    const before = side(item.before), after = side(item.after);
+    const change = item.action === 'add' ? `新增：${after}`
+      : item.action === 'remove' ? `移除：${before}（这是该楼当时移除的旧状态）`
+        : item.action === 'update' ? `更新：${before} → ${after}`
+          : `调整：${before} → ${after}`;
+    return { subject: item.subject, layer: layerText[item.layer] ?? item.layer, change, messageIndex: validIndex(floor?.messageIndex) ? floor.messageIndex : null };
+  });
+  const signature = JSON.stringify(rendered);
+  if (view.cseChangeItems.dataset?.signature === signature) return;
+  const items = rendered.map(item => {
+    const node = documentRef.createElement('div'); node.className = 'cse-change-item';
+    const text = documentRef.createElement('span'); text.className = 'cse-change-text'; setText(text, `${item.subject} / ${item.layer} / ${item.change}`);
+    const floor = documentRef.createElement('span'); floor.className = 'cse-change-floor'; setText(floor, validIndex(item.messageIndex) ? `第 ${item.messageIndex} 楼` : '来源楼号未提供');
+    append(node, text, floor); return node;
+  });
+  view.cseChangeItems.replaceChildren?.(...items);
+  if (view.cseChangeItems.dataset) view.cseChangeItems.dataset.signature = signature;
+  setText(view.cseChangesTitle, `人物状态历史变化 ${items.length} 条`);
+  view.cseChanges.hidden = items.length === 0;
 }
 
 function statusTone(projection) {
@@ -140,7 +172,7 @@ function statusTone(projection) {
 function patchView(view, projection, documentRef, memoryState, groupExpanded) {
   const signature = JSON.stringify(projection);
   if (view.signature === signature) {
-    if (projection.kind === 'user') replaceRecallItems(view, projection, documentRef, memoryState, groupExpanded);
+    if (projection.kind === 'user') { replaceRecallItems(view, projection, documentRef, memoryState, groupExpanded); replaceCseChangeItems(view, projection, documentRef, memoryState); }
     else { view.extract.hidden = false; view.extract.disabled = view.extracting || !projection.canExtract; }
     patchExpanded(view); return;
   }
@@ -149,7 +181,7 @@ function patchView(view, projection, documentRef, memoryState, groupExpanded) {
   view.labelTitle = title; setText(view.title, title); view.title.title = title;
   setText(view.status, projection.statusText); view.status.className = `status${statusTone(projection) ? ` ${statusTone(projection)}` : ''}`;
   if (projection.kind === 'assistant') {
-    view.facts.hidden = false; view.recallItems.hidden = true; view.states.hidden = true;
+    view.facts.hidden = false; view.recallItems.hidden = true; view.states.hidden = true; view.cseChanges.hidden = true;
     setText(view.fields.time, `时间 ${projection.time}`); setText(view.fields.locations, `地点 ${projection.locations}`); setText(view.fields.people, `人物 ${projection.people}`);
     setText(view.summary, projection.summary); setText(view.error, projection.error); view.error.hidden = !projection.error;
     const extractLabel = `重新提取${title}摘要`; view.extract.title = extractLabel; view.extract.setAttribute?.('aria-label', extractLabel);
@@ -157,7 +189,7 @@ function patchView(view, projection, documentRef, memoryState, groupExpanded) {
   } else {
     view.facts.hidden = true; view.extract.hidden = true; view.extract.disabled = true;
     setText(view.summary, projection.summary); view.summary.hidden = (projection.historyItems?.length ?? 0) > 0;
-    setText(view.error, ''); view.error.hidden = true; replaceRecallItems(view, projection, documentRef, memoryState, groupExpanded); replaceStateItems(view, projection, documentRef);
+    setText(view.error, ''); view.error.hidden = true; replaceRecallItems(view, projection, documentRef, memoryState, groupExpanded); replaceStateItems(view, projection, documentRef); replaceCseChangeItems(view, projection, documentRef, memoryState);
   }
   patchExpanded(view);
 }

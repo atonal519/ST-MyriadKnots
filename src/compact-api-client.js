@@ -311,6 +311,7 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
     changeBusy(1);
     try {
       let attempt = 0;
+      const retryAvailable = () => !transportBudget || transportBudget.remaining > 0;
       for (;;) {
         if (signal?.aborted) throw abortError();
         if (transportBudget) {
@@ -324,7 +325,7 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
         try {
           const response = await resolveFetch()(path, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: linked.controller.signal });
           if (!response.ok) {
-            if ((response.status === 429 || response.status >= 500) && attempt < retries) {
+            if ((response.status === 429 || response.status >= 500) && attempt < retries && retryAvailable()) {
               attempt += 1; linked.cleanup(); await retryWait(Math.min(400 * 2 ** attempt, 2000), signal); continue;
             }
             throw mapHttpError(response.status, await readProviderError(response, [config.key, config.url, normalizeApiUrl(config.url)]));
@@ -334,7 +335,7 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
         } catch (error) {
           if (linked.timedOut()) throw safeError('timeout');
           if (signal?.aborted || error?.name === 'AbortError') throw abortError();
-          if (error instanceof TypeError && attempt < retries) {
+          if (error instanceof TypeError && attempt < retries && retryAvailable()) {
             attempt += 1; linked.cleanup(); await retryWait(Math.min(400 * 2 ** attempt, 2000), signal); continue;
           }
           if (error instanceof TypeError) throw safeError('network');

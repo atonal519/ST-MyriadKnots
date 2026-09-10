@@ -195,6 +195,7 @@ export function createFoundationRuntime({
   let bound = false;
   let lastRun = null;
   let lastError = null;
+  let reviewReason = null;
   let unreachableCount = 0;
   let metrics = Object.freeze({});
   let emptyRealtimeObservation = null;
@@ -217,7 +218,7 @@ export function createFoundationRuntime({
     pending: candidateSummary(pending),
     headCheckpointId: cache?.root?.headCheckpointId ?? null,
     activeRun: activeOperation ? { id: activeOperation.id, phase: activeOperation.phase, reason: activeOperation.reason } : null,
-    lastRun, lastError, unreachableCount, sessionEpoch, metrics,
+    lastRun, lastError, reviewReason: status === 'needsReview' ? reviewReason : null, unreachableCount, sessionEpoch, metrics,
     inspectedStableCount,
     canInitialize: !cache?.root && inspectedStableCount > 0,
   });
@@ -256,6 +257,7 @@ export function createFoundationRuntime({
     pending = null;
     inspectedStableCount = 0;
     emptyRealtimeObservation = null;
+    reviewReason = null;
     requestConfirmations.clear();
     store.invalidate();
     publish(enabled() ? 'idle' : 'disabled');
@@ -329,22 +331,27 @@ export function createFoundationRuntime({
     return count;
   }
 
-  function graphMatchesCandidates(value, candidates) {
-    if (!value?.root) return false;
+  function graphReviewReason(value, candidates) {
+    const reason = (code, assistantSeq = null, messageIndex = null, expectedCount = null, actualCount = null) => Object.freeze({ code, assistantSeq, messageIndex, expectedCount, actualCount });
+    if (!value?.root) return reason('missingRoot');
     const stableCount = stableCountFor(candidates, value.floors ?? [], false, null);
-    if (stableCount !== (value.floors?.length ?? 0)) return false;
-    return value.floors.every((floor, index) => {
+    if (stableCount !== (value.floors?.length ?? 0)) return reason('stableCountMismatch', candidates[stableCount]?.assistantSeq ?? value.floors?.[stableCount]?.assistantSeq ?? null, candidates[stableCount]?.hostLocator?.messageIndex ?? value.floors?.[stableCount]?.hostLocator?.messageIndex ?? null, value.floors?.length ?? 0, stableCount);
+    for (const [index, floor] of (value.floors ?? []).entries()) {
       const candidate = candidates[index];
-      return candidate
-        && sameLocator(floor.hostLocator, candidate.hostLocator)
-        && (candidate.messageAnchor?.status === 'valid'
-          ? candidate.messageAnchor.anchor.floorId === floor.id
-          : candidate.messageAnchor?.status === 'none'
-            && floor.content.rawFingerprint === candidate.rawFingerprint
-            && floor.content.canonicalFingerprint === candidate.canonicalFingerprint
-            && floor.content.sanitizerFingerprint === candidate.sanitizerFingerprint);
-    });
+      if (!candidate) return reason('candidateCountMismatch', floor.assistantSeq ?? null, floor.hostLocator?.messageIndex ?? null, value.floors.length, candidates.length);
+      if (!sameLocator(floor.hostLocator, candidate.hostLocator)) return reason('locatorMismatch', floor.assistantSeq ?? candidate.assistantSeq ?? null, candidate.hostLocator?.messageIndex ?? floor.hostLocator?.messageIndex ?? null, value.floors.length, candidates.length);
+      if (candidate.messageAnchor?.status === 'valid') {
+        if (candidate.messageAnchor.anchor.floorId !== floor.id) return reason('markerMismatch', floor.assistantSeq ?? candidate.assistantSeq ?? null, candidate.hostLocator?.messageIndex ?? floor.hostLocator?.messageIndex ?? null, value.floors.length, candidates.length);
+      } else if (candidate.messageAnchor?.status === 'none') {
+        if (floor.content.rawFingerprint !== candidate.rawFingerprint
+          || floor.content.canonicalFingerprint !== candidate.canonicalFingerprint
+          || floor.content.sanitizerFingerprint !== candidate.sanitizerFingerprint) return reason('fingerprintMismatch', floor.assistantSeq ?? candidate.assistantSeq ?? null, candidate.hostLocator?.messageIndex ?? floor.hostLocator?.messageIndex ?? null, value.floors.length, candidates.length);
+      } else return reason('markerMismatch', floor.assistantSeq ?? candidate.assistantSeq ?? null, candidate.hostLocator?.messageIndex ?? floor.hostLocator?.messageIndex ?? null, value.floors.length, candidates.length);
+    }
+    return null;
   }
+
+  const graphMatchesCandidates = (value, candidates) => graphReviewReason(value, candidates) === null;
 
   function cacheMatchesCandidates(candidates) {
     if (!cache?.root || cache.root.chatId !== (() => { try { return capture().identity.chatId; } catch { return null; } })()) return false;
@@ -379,7 +386,12 @@ export function createFoundationRuntime({
         cache = null;
       }
       lastError = null;
-      if (cache?.root && (loaded.status === 'needsReseal' || !graphMatchesCandidates(cache, candidates))) return publish('needsReview');
+      reviewReason = null;
+      if (cache?.root && loaded.status === 'needsReseal') { reviewReason = Object.freeze({ code: 'indexNeedsReseal', assistantSeq: null, messageIndex: null, expectedCount: null, actualCount: null }); return publish('needsReview'); }
+      if (cache?.root) {
+        reviewReason = graphReviewReason(cache, candidates);
+        if (reviewReason) return publish('needsReview');
+      }
       return publish(cache?.root ? 'ready' : 'uninitialized');
     } catch (error) {
       if (inspectEpoch !== sessionEpoch) return publicState;
@@ -930,6 +942,7 @@ export function createFoundationRuntime({
     cache = value;
     lastRun = runSummary(cache.run, 'adopted');
     lastError = null;
+    reviewReason = null;
     publish('ready');
     return true;
   }

@@ -1,5 +1,5 @@
 import { sha256 } from '../identity.js';
-import { sanitizeSensitiveText } from './safe-metadata.js';
+import { sanitizeSensitiveText, sanitizeTaskMetadata } from './safe-metadata.js';
 import { coverageHostGuardCurrent } from './memory-coverage.js';
 import { projectRecallSource, readRecallSource } from './recall-source.js';
 import { buildRecallQueryContext, buildRecallQueryFrame } from './recall-selector.js';
@@ -9,8 +9,8 @@ import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
-export const RECALL_RECEIPT_SCHEMA_VERSION = 9;
-export const RECALL_STRATEGY_VERSION = 'continuity-v3';
+export const RECALL_RECEIPT_SCHEMA_VERSION = 10;
+export const RECALL_STRATEGY_VERSION = 'continuity-v4';
 
 const SUPPORTED_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 const MAIN_GENERATION_TYPES = new Set([...SUPPORTED_TYPES, 'impersonate']);
@@ -18,6 +18,7 @@ const REUSE_TYPES = new Set(['regenerate', 'swipe', 'continue']);
 const MAX_STOPPED_GENERATION_CHAINS = 16;
 const MAX_RECEIPT_FLOORS = 12;
 const MAX_RECEIPT_STATES = 18;
+const MAX_RECEIPT_CSE_CHANGES = 6;
 const MAX_RECEIPT_SKIP_REASONS = 32;
 const nowIso = now => { const value = now()?.toISOString?.() ?? String(now()); if (!Number.isFinite(Date.parse(value))) throw new TypeError('V3_RECALL_TIME_INVALID'); return value; };
 const clean = (value, maximum = 500) => sanitizeSensitiveText(String(value ?? '')).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
@@ -36,15 +37,25 @@ function latestUser(snapshot) {
 const liveRecallFrameKey = snapshot => JSON.stringify(buildRecallQueryFrame({ coreChat: snapshot?.chat, assistantTurns: 1 }).messages.map(message => [message.role, message.text]));
 
 function sourceRefsValid(receipt, source) {
-  if (!Array.isArray(source?.floorMemories) || !Array.isArray(source?.currentState) || !Array.isArray(receipt?.selectedFloors) || !Array.isArray(receipt?.selectedStates)) return false;
+  if (!Array.isArray(source?.floorMemories) || !Array.isArray(source?.currentState) || !Array.isArray(receipt?.selectedFloors) || !Array.isArray(receipt?.selectedStates) || !Array.isArray(receipt?.selectedCseChanges)) return false;
+  const sourceChanges = Array.isArray(source.cseChanges) ? source.cseChanges : [];
   const memories = new Map(source.floorMemories.map(memory => [`${memory.floorId}|${memory.floorMemoryId}|${memory.assistantSeq}`, memory]));
   if (!receipt.selectedFloors.every(value => value && typeof value === 'object' && memories.has(`${value.floorId}|${value.floorMemoryId}|${value.assistantSeq}`))) return false;
   const subjects = new Map(source.currentState.map(subject => [subject.subjectEntityId, subject]));
-  return receipt.selectedStates.every(value => {
+  if (!receipt.selectedStates.every(value => {
     if (!value || typeof value !== 'object' || !['core', 'adaptive', 'situational'].includes(value.layer)) return false;
     const subject = subjects.get(value.subjectEntityId);
     return Array.isArray(subject?.[value.layer]) && subject[value.layer].some(item => item.text === value.text && item.visibility === value.visibility && item.towardEntityId === (value.towardEntityId ?? null) && item.sourceAssistantSeq === (value.sourceAssistantSeq ?? null));
-  });
+  })) return false;
+  const stateEqual = (left, right) => left === null ? right === null : Boolean(right
+    && left.text === right.text && left.visibility === right.visibility && left.reason === right.reason
+    && left.origin === right.origin && (left.towardEntityId ?? null) === (right.towardEntityId ?? null)
+    && (left.sourceAssistantSeq ?? null) === (right.sourceAssistantSeq ?? null));
+  const entityNames = new Map((source.entities ?? []).map(entity => [entity.entityId, entity.displayName]));
+  return receipt.selectedCseChanges.every(value => value.subject === entityNames.get(value.subjectEntityId) && sourceChanges.some(change => change.deltaId === value.deltaId
+    && change.floorId === value.floorId && change.assistantSeq === value.assistantSeq
+    && change.subjectEntityId === value.subjectEntityId && change.layer === value.layer && change.action === value.action
+    && stateEqual(value.before, change.before) && stateEqual(value.after, change.after)));
 }
 
 const legacyReceiptMaterial = receipt => [
@@ -52,14 +63,41 @@ const legacyReceiptMaterial = receipt => [
   receipt.userMessageIndex, receipt.userContentFingerprint, receipt.queryFingerprint, receipt.generationType,
   receipt.selectedFloors, receipt.selectedStates, receipt.coverage, receipt.injectionText, receipt.stages, receipt.skipReasons, receipt.completionStatus, receipt.createdAt,
 ];
-const receiptMaterial = receipt => receipt.schemaVersion >= 9
-  ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion]
+const receiptMaterial = receipt => receipt.schemaVersion >= 10
+  ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings]
+  : receipt.schemaVersion >= 9 ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion]
   : receipt.schemaVersion >= 8 ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint] : legacyReceiptMaterial(receipt);
 
 const boundedString = (value, maximum, { empty = false } = {}) => typeof value === 'string' && value.length <= maximum && (empty || value.length > 0);
 const optionalBoundedString = (value, maximum) => value === null || boundedString(value, maximum);
 const nonNegativeInteger = value => Number.isSafeInteger(value) && value >= 0;
 const optionalPositiveInteger = value => value === null || (Number.isSafeInteger(value) && value > 0);
+const finiteDuration = value => Number.isFinite(value) && value >= 0;
+const selectorDiagnosticSnapshot = value => {
+  const api = sanitizeTaskMetadata(value);
+  return Object.freeze({
+    mode: ['llm', 'fallback', 'local'].includes(value?.mode) ? value.mode : 'local',
+    code: value?.code ? clean(value.code, 120) : null,
+    httpStatus: Number.isSafeInteger(value?.httpStatus) && value.httpStatus >= 0 ? value.httpStatus : null,
+    formatStage: value?.formatStage ? clean(value.formatStage, 80) : null,
+    finishReason: clean(value?.finishReason ?? api.finishReason, 32),
+    source: api.source,
+    sourceLabel: api.sourceLabel,
+    model: api.model,
+    transportAttempts: Number.isSafeInteger(value?.transportAttempts) && value.transportAttempts >= 0 ? value.transportAttempts : api.transportAttempts,
+    durationMs: Math.max(0, Math.floor(Number(value?.durationMs) || 0)),
+  });
+};
+const receiptTimingSnapshot = timings => Object.freeze({
+  inputMs: Math.max(0, Number(timings.inputMs) || 0),
+  sourceMs: Math.max(0, Number(timings.sourceMs) || 0),
+  selectorMs: Math.max(0, Number(timings.selectorMs) || 0),
+  ...(timings.sourceReadAttempts ? { sourceReadAttempts: clone(timings.sourceReadAttempts) } : {}),
+});
+const stateChangeSideValid = value => value === null || (value && typeof value === 'object' && !Array.isArray(value)
+  && boundedString(value.text, 4000) && ['private', 'observable', 'expressed', 'shared', 'authorial'].includes(value.visibility)
+  && boundedString(value.reason, 4000, { empty: true }) && ['baseline', 'floor', 'reasonableProgression', 'manual'].includes(value.origin)
+  && optionalBoundedString(value.towardEntityId, 500) && optionalPositiveInteger(value.sourceAssistantSeq));
 function receiptShapeValid(receipt, { historical = false } = {}) {
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)
     || !['ready', 'empty'].includes(receipt.completionStatus)
@@ -73,7 +111,7 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     || !boundedString(receipt.queryFingerprint, 200)
     || (receipt.schemaVersion >= 8 && !boundedString(receipt.bodyMatchFingerprint, 200))
     || (receipt.schemaVersion >= 9 && (historical
-      ? ![RECALL_STRATEGY_VERSION, 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
+      ? ![RECALL_STRATEGY_VERSION, 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
       : receipt.strategyVersion !== RECALL_STRATEGY_VERSION))
     || !SUPPORTED_TYPES.has(receipt.generationType)
     || !Array.isArray(receipt.selectedFloors) || receipt.selectedFloors.length > MAX_RECEIPT_FLOORS
@@ -95,6 +133,28 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     && boundedString(value.text, 4000) && boundedString(value.reason, 1000, { empty: true })
     && ['private', 'observable', 'expressed', 'shared', 'authorial'].includes(value.visibility)
     && optionalPositiveInteger(value.sourceAssistantSeq))) return false;
+  if (receipt.schemaVersion >= 10) {
+    if (!Array.isArray(receipt.selectedCseChanges) || receipt.selectedCseChanges.length > MAX_RECEIPT_CSE_CHANGES
+      || receipt.selectedStates.length + receipt.selectedCseChanges.length > MAX_RECEIPT_CSE_CHANGES
+      || !receipt.selectedCseChanges.every(value => value && typeof value === 'object' && !Array.isArray(value)
+        && boundedString(value.deltaId, 500) && boundedString(value.floorId, 500) && Number.isSafeInteger(value.assistantSeq) && value.assistantSeq > 0
+        && boundedString(value.subjectEntityId, 500) && boundedString(value.subject, 500)
+        && ['core', 'adaptive', 'situational'].includes(value.layer) && ['add', 'remove', 'update', 'refine'].includes(value.action)
+        && stateChangeSideValid(value.before) && stateChangeSideValid(value.after))) return false;
+    const diagnostic = receipt.selectorDiagnostic;
+    if (!diagnostic || typeof diagnostic !== 'object' || Array.isArray(diagnostic)
+      || !['llm', 'fallback', 'local'].includes(diagnostic.mode)
+      || !optionalBoundedString(diagnostic.code, 120) || !(diagnostic.httpStatus === null || nonNegativeInteger(diagnostic.httpStatus))
+      || !optionalBoundedString(diagnostic.formatStage, 80) || !boundedString(diagnostic.finishReason, 32, { empty: true })
+      || !boundedString(diagnostic.source, 80) || !boundedString(diagnostic.sourceLabel, 160) || !boundedString(diagnostic.model, 160)
+      || !(diagnostic.transportAttempts === null || nonNegativeInteger(diagnostic.transportAttempts)) || !finiteDuration(diagnostic.durationMs)) return false;
+    const timings = receipt.timings;
+    if (!timings || typeof timings !== 'object' || Array.isArray(timings)
+      || !['inputMs', 'sourceMs', 'selectorMs'].every(key => finiteDuration(timings[key]))
+      || (timings.sourceReadAttempts !== null && timings.sourceReadAttempts !== undefined
+        && (typeof timings.sourceReadAttempts !== 'object' || Array.isArray(timings.sourceReadAttempts)
+          || !nonNegativeInteger(timings.sourceReadAttempts.reachableReads) || !boundedString(timings.sourceReadAttempts.exitPoint, 120)))) return false;
+  }
   if (receipt.coverage !== null && (typeof receipt.coverage !== 'object' || Array.isArray(receipt.coverage)
     || !['stableAiFloors', 'stableThroughAssistantSeq', 'rememberedAiFloors', 'cseThroughAssistantSeq'].every(key => nonNegativeInteger(receipt.coverage[key]))
     || typeof receipt.coverage.memoryComplete !== 'boolean' || typeof receipt.coverage.cseCurrent !== 'boolean'
@@ -102,7 +162,8 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     || !receipt.coverage.missingAssistantSeq.every(value => Number.isSafeInteger(value) && value > 0))) return false;
   if (receipt.stages !== null && (typeof receipt.stages !== 'object' || Array.isArray(receipt.stages)
     || !['input', 'candidates', 'dropRecent', 'dropPersistent', 'dropVisibility', 'selected'].every(key => nonNegativeInteger(receipt.stages[key]))
-    || (receipt.schemaVersion >= 9 && !['recentSummaryCount', 'distantHistoryItemCount', 'stateCount'].every(key => nonNegativeInteger(receipt.stages[key]))))) return false;
+    || (receipt.schemaVersion >= 9 && !['recentSummaryCount', 'distantHistoryItemCount', 'stateCount'].every(key => nonNegativeInteger(receipt.stages[key])))
+    || (receipt.schemaVersion >= 10 && !['currentStateCount', 'cseChangeCount'].every(key => nonNegativeInteger(receipt.stages[key]))))) return false;
   return receipt.skipReasons.every(reason => boundedString(reason, 120));
 }
 
@@ -148,7 +209,7 @@ async function historicalSignedReceiptValid(receipt, { chatId, userIndex, userFi
   try {
     const snapshot = clone(receipt);
     if (!receiptShapeValid(snapshot, { historical: true })
-      || ![6, 7, 8, RECALL_RECEIPT_SCHEMA_VERSION].includes(snapshot.schemaVersion)
+      || ![6, 7, 8, 9, RECALL_RECEIPT_SCHEMA_VERSION].includes(snapshot.schemaVersion)
       || snapshot.chatId !== chatId
       || snapshot.userMessageIndex !== userIndex
       || snapshot.userContentFingerprint !== userFingerprint
@@ -167,12 +228,14 @@ function stateFromReceipt(receipt, { generationType = receipt.generationType, re
     coverage: receipt.coverage,
     selectedFloors: Object.freeze(clone(receipt.selectedFloors ?? [])),
     selectedStates: Object.freeze(clone(receipt.selectedStates ?? [])),
+    selectedCseChanges: Object.freeze(clone(receipt.selectedCseChanges ?? [])),
+    selectorDiagnostic: receipt.selectorDiagnostic ? Object.freeze(clone(receipt.selectorDiagnostic)) : null,
     injectionText: receipt.injectionText,
     reusedReceipt: !restoredReceipt,
     restoredReceipt,
     receiptPersistence: restoredReceipt ? 'persisted' : receipt.receiptPersistence ?? 'persisted',
     stages: receipt.stages ?? null,
-    timings: timings ? Object.freeze({ ...timings }) : null,
+    timings: timings ? Object.freeze({ ...timings }) : receipt.timings ? Object.freeze(clone(receipt.timings)) : null,
     skipReasons: Object.freeze([...(receipt.skipReasons ?? [])]),
     error: null,
     createdAt: receipt.createdAt,
@@ -194,6 +257,8 @@ function legacyStateFromReceipt(receipt, { chatId, userIndex }) {
     coverage: receipt.coverage && typeof receipt.coverage === 'object' && !Array.isArray(receipt.coverage) ? clone(receipt.coverage) : null,
     selectedFloors: Object.freeze(clone(selectedFloors)),
     selectedStates: Object.freeze(clone(selectedStates)),
+    selectedCseChanges: Object.freeze([]),
+    selectorDiagnostic: null,
     injectionText: receipt.injectionText,
     reusedReceipt: false,
     restoredReceipt: true,
@@ -214,7 +279,7 @@ export async function projectHistoricalRecallReceipt(message, { chatId, userMess
     || typeof fingerprint !== 'function') return null;
   const receipt = message.extra?.[RECALL_RECEIPT_KEY];
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return null;
-  if ([6, 7, 8, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
+  if ([6, 7, 8, 9, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
     const snapshot = await historicalSignedReceiptValid(receipt, {
       chatId: chatId.trim(),
       userIndex: userMessageIndex,
@@ -471,7 +536,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     return [stored, session].filter((value, index, values) => value && typeof value === 'object' && values.indexOf(value) === index);
   }
 
-  async function commitPromptIfCurrent({ operation, source, selectedFloors, selectedStates, userIndex, userFingerprint, hostGuard, injectionText }) {
+  async function commitPromptIfCurrent({ operation, source, selectedFloors, selectedStates, selectedCseChanges = [], userIndex, userFingerprint, hostGuard, injectionText }) {
     if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };
     const before = hostAdapter.snapshot();
     const beforeUser = latestUser(before);
@@ -504,7 +569,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         if (currentSource.narrativeGeneration !== source.narrativeGeneration) return { ok: false, reason: 'narrativeChanged' };
         currentSource = Object.freeze({ ...currentSource, bodyMatch: await attachCoreBodyMatch(currentSource, operation.coreBodyWitness, before, operation.sanitizerOptions, fingerprint) });
       }
-    if (!sourceRefsValid({ selectedFloors, selectedStates }, currentSource)) return { ok: false, reason: 'selectedRefsChanged' };
+    if (!sourceRefsValid({ selectedFloors, selectedStates, selectedCseChanges }, currentSource)) return { ok: false, reason: 'selectedRefsChanged' };
     const notReady = enforceReadiness ? readinessReasons(currentSource) : [];
     if (notReady.length) return { ok: false, notReady: true, reasons: notReady };
     const bodyGuardSanitizer = currentSanitizerOptions();
@@ -618,7 +683,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           if (snapshot) { candidate = snapshot; break; }
         }
         if (candidate) {
-          const committed = await commitPromptIfCurrent({ operation, source, selectedFloors: candidate.selectedFloors, selectedStates: candidate.selectedStates, userIndex: user.index, userFingerprint, hostGuard, injectionText: candidate.injectionText });
+          const committed = await commitPromptIfCurrent({ operation, source, selectedFloors: candidate.selectedFloors, selectedStates: candidate.selectedStates, selectedCseChanges: candidate.selectedCseChanges, userIndex: user.index, userFingerprint, hostGuard, injectionText: candidate.injectionText });
           if (!committed.ok) return committed.notReady ? stopForMemoryReadiness(committed.reasons) : stopForFinalSafety(committed.reason);
           if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
           timings.totalMs = Date.now() - operation.started;
@@ -645,14 +710,27 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         generationType: type,
         selectedFloors: selection.floors.map(value => ({ floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq, reasons: [...value.reasons] })),
         selectedStates: selection.states.map(value => ({ subjectEntityId: value.subjectEntityId, subject: value.subject, layer: value.layer, towardEntityId: value.towardEntityId, toward: value.toward, text: value.text, reason: value.reason, visibility: value.visibility, sourceAssistantSeq: value.sourceAssistantSeq })),
+        selectedCseChanges: (selection.cseChanges ?? []).map(value => ({
+          deltaId: value.deltaId, floorId: value.floorId, assistantSeq: value.assistantSeq,
+          subjectEntityId: value.subjectEntityId, subject: value.subject, layer: value.layer, action: value.action,
+          before: value.before ? { text: value.before.text, visibility: value.before.visibility, reason: value.before.reason, origin: value.before.origin, towardEntityId: value.before.towardEntityId, sourceAssistantSeq: value.before.sourceAssistantSeq } : null,
+          after: value.after ? { text: value.after.text, visibility: value.after.visibility, reason: value.after.reason, origin: value.after.origin, towardEntityId: value.after.towardEntityId, sourceAssistantSeq: value.after.sourceAssistantSeq } : null,
+        })),
+        selectorDiagnostic: selectorDiagnosticSnapshot(selection.selectorDiagnostic),
         coverage: clone(selection.coverage ?? source.coverage),
         injectionText: selection.injectionText,
-        stages: clone(selection.stages ?? null),
+        stages: selection.stages ? {
+          ...clone(selection.stages),
+          stateCount: Number.isSafeInteger(selection.stages.stateCount) ? selection.stages.stateCount : selection.states.length,
+          currentStateCount: Number.isSafeInteger(selection.stages.currentStateCount) ? selection.stages.currentStateCount : selection.states.length,
+          cseChangeCount: Number.isSafeInteger(selection.stages.cseChangeCount) ? selection.stages.cseChangeCount : (selection.cseChanges ?? []).length,
+        } : null,
+        timings: receiptTimingSnapshot(timings),
         skipReasons: [...(selection.skipReasons ?? [])],
         createdAt: nowIso(now),
       };
       receiptBase.completionStatus = receiptBase.injectionText ? 'ready' : 'empty';
-      const committed = await commitPromptIfCurrent({ operation, source, selectedFloors: receiptBase.selectedFloors, selectedStates: receiptBase.selectedStates, userIndex: user.index, userFingerprint, hostGuard, injectionText: receiptBase.injectionText });
+      const committed = await commitPromptIfCurrent({ operation, source, selectedFloors: receiptBase.selectedFloors, selectedStates: receiptBase.selectedStates, selectedCseChanges: receiptBase.selectedCseChanges, userIndex: user.index, userFingerprint, hostGuard, injectionText: receiptBase.injectionText });
       if (!committed.ok) return committed.notReady ? stopForMemoryReadiness(committed.reasons) : stopForFinalSafety(committed.reason);
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       if (receiptBase.skipReasons.includes('historySelectionFallback')) {
@@ -672,7 +750,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       }
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       timings.totalMs = Date.now() - operation.started;
-      lastRecall = Object.freeze({ status: receipt.completionStatus, userMessageIndex: user.index, generationType: type, coverage: receipt.coverage, selectedFloors: Object.freeze(clone(receipt.selectedFloors)), selectedStates: Object.freeze(clone(receipt.selectedStates)), injectionText: receipt.injectionText, reusedReceipt: false, restoredReceipt: false, receiptPersistence, stages: receipt.stages, timings: Object.freeze({ ...timings }), skipReasons: Object.freeze([...receipt.skipReasons]), error: null, createdAt: receipt.createdAt });
+      lastRecall = Object.freeze({ status: receipt.completionStatus, userMessageIndex: user.index, generationType: type, coverage: receipt.coverage, selectedFloors: Object.freeze(clone(receipt.selectedFloors)), selectedStates: Object.freeze(clone(receipt.selectedStates)), selectedCseChanges: Object.freeze(clone(receipt.selectedCseChanges)), selectorDiagnostic: receipt.selectorDiagnostic, injectionText: receipt.injectionText, reusedReceipt: false, restoredReceipt: false, receiptPersistence, stages: receipt.stages, timings: Object.freeze({ ...timings }), skipReasons: Object.freeze([...receipt.skipReasons]), error: null, createdAt: receipt.createdAt });
       bindLastRecall(committed.snapshot, committed.user);
       lastError = null; active = null; notify(); return getState();
     } catch (error) {
@@ -680,7 +758,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       clearSlot(token);
       const safe = Object.freeze({ code: clean(error?.code ?? error?.name ?? 'V3_RECALL_FAILED', 120), message: clean(error?.message ?? '召回失败，已安全跳过。', 500) });
       lastError = safe;
-      lastRecall = Object.freeze({ status: 'error', userMessageIndex: null, generationType: type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings, totalMs: Date.now() - operation.started }), skipReasons: Object.freeze(['error']), error: safe, createdAt: nowIso(now) });
+      lastRecall = Object.freeze({ status: 'error', userMessageIndex: null, generationType: type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings, totalMs: Date.now() - operation.started }), skipReasons: Object.freeze(['error']), error: safe, createdAt: nowIso(now) });
       bindOperationRecall(operation);
       active = null; logger?.warn?.('[qianqianjie] V3 recall failed open', { code: safe.code }); notify(); return getState();
     }
@@ -690,7 +768,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (operation.token !== epoch) return finishStale(operation, timings);
     timings.totalMs = Date.now() - operation.started;
     const reasons = Array.isArray(reason) ? reason : [reason];
-    lastRecall = Object.freeze({ status: 'skipped', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings }), skipReasons: Object.freeze([...reasons]), error: null, createdAt: nowIso(now) });
+    lastRecall = Object.freeze({ status: 'skipped', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings }), skipReasons: Object.freeze([...reasons]), error: null, createdAt: nowIso(now) });
     bindOperationRecall(operation);
     active = null; notify(); return getState();
   }
@@ -699,7 +777,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (active === operation) active = null;
     if (operation.token === epoch) {
       clearSlot(operation.token);
-      lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings, totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([FINAL_REASONS.has(reason) ? reason : 'narrativeChanged']), error: null, createdAt: nowIso(now) });
+      lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings, totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([FINAL_REASONS.has(reason) ? reason : 'narrativeChanged']), error: null, createdAt: nowIso(now) });
       bindOperationRecall(operation);
       notify();
     }
@@ -725,7 +803,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     active.controller.abort(reason);
     active = null;
     if (slotOwner === generation.token) clearSlot(generation.token);
-    lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([reason]), error: null, createdAt: nowIso(now) });
+    lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([reason]), error: null, createdAt: nowIso(now) });
     bindOperationRecall(operation);
     notify();
     return true;
@@ -805,7 +883,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       let receiptSnapshot = receipt.schemaVersion === RECALL_RECEIPT_SCHEMA_VERSION
         ? await persistedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint, pluginVersion }, fingerprint)
         : null;
-      if (!receiptSnapshot && [6, 7, 8, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
+      if (!receiptSnapshot && [6, 7, 8, 9, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
         const historical = await historicalSignedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint }, fingerprint);
         if (historical) receiptSnapshot = Object.freeze({ ...stateFromReceipt(historical, { restoredReceipt: true }), legacyReadOnly: true });
       }
