@@ -2558,6 +2558,211 @@ test('完全重构 CAS 冲突保留旧有效图，预备图只保留 baseline �
   for (const kind of ['floorOrder', 'fingerprint', 'reverseRef', 'entity']) assert.ok(indexKinds.includes(kind), `reset 应重建 ${kind} index`);
 });
 
+test('CSE 重构锁定已有摘要前缀并逐楼替换状态链，不调用摘要模型', async () => {
+  let rebuilding = false;
+  const h = harness({
+    initialChat: [user('开始'), assistant('第一楼'), assistant('第二楼'), assistant('未摘要尾楼')],
+    automation: { enabled: true, batchSize: 20 },
+    utility: options => {
+      const request = JSON.parse(options.taskMessages[0].content);
+      if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) {
+        assert.equal(rebuilding, false, 'CSE 重构期间不得调用摘要模型');
+        return { jsonData: { summary: `保留摘要-${request.payload.canonicalContent}`, people: [{ name: '裴晚生' }] } };
+      }
+      return { jsonData: { noMaterialChange: true } };
+    },
+  });
+  await h.runtime.start();
+  await h.runtime.startHistoricalRebuild();
+  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()));
+  const currentState = h.runtime.getState();
+  const editedSubject = currentState.cseSubjects[0];
+  assert.ok(editedSubject && currentState.currentStateId && currentState.currentStateFingerprint);
+  await h.runtime.correctSubjectState(editedSubject.subjectEntityId, {
+    expectedCurrentStateId: currentState.currentStateId,
+    expectedCurrentStateFingerprint: currentState.currentStateFingerprint,
+    core: editedSubject.core,
+    adaptive: editedSubject.adaptive,
+    situational: [...editedSubject.situational, { text: '人工纠正的临时状态', reason: '用户输入', visibility: 'private', towardEntityId: null }],
+  });
+  const before = await h.store.readReachable({ mode: 'runtime' });
+  const beforeMemory = before.floorMemories.map(item => [item.id, item.summary]);
+  const beforeDeltaIds = before.stateDeltas.map(item => item.id);
+  assert.equal(beforeMemory.length, 2);
+  assert.equal(beforeDeltaIds.length, 2);
+  assert.ok(before.stateDeltas.at(-1).source.manualSubjectEntityIds?.length, '重构前先形成一条 CSE 人工纠正');
+
+  h.calls.splice(0);
+  rebuilding = true;
+  await h.runtime.rebuildCse(CHAT);
+  const after = await h.store.readReachable({ mode: 'runtime' });
+  const cseRequests = h.calls.filter(options => options.systemPrompt === CSE_SYSTEM_PROMPT)
+    .map(options => JSON.parse(options.taskMessages[0].content).payload.canonicalContent);
+  assert.deepEqual(cseRequests, ['第一楼', '第二楼'], '只处理点击时已有摘要的连续前缀，并按楼序执行');
+  assert.equal(h.calls.filter(options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 0);
+  assert.deepEqual(after.floorMemories.map(item => [item.id, item.summary]), beforeMemory, '摘要记录及内容保持不变');
+  assert.equal(after.stateDeltas.length, 2);
+  assert.ok(after.stateDeltas.every((item, index) => item.id !== beforeDeltaIds[index]), '每楼旧 CSE 均被新链替换');
+  assert.ok(after.stateDeltas.every(item => !item.source.manualSubjectEntityIds?.length), 'CSE 人工纠正随旧链被覆盖');
+  assert.equal(after.run.diagnostics.cseRebuild?.status, 'completed');
+  assert.deepEqual(after.run.diagnostics.cseRebuild?.completedFloorIds, after.floors.slice(0, 2).map(item => item.id));
+  assert.equal(h.runtime.getState().cseRebuildStatus, 'completed');
+  assert.equal(h.runtime.getState().cseRebuildCompletedCount, 2);
+});
+
+test('CSE 重构首楼失败保留旧链，专用继续仍只重算 CSE', async () => {
+  let mode = 'seed';
+  const h = harness({
+    initialChat: [user('开始'), assistant('第一楼'), assistant('第二楼'), assistant('未摘要尾楼')],
+    automation: { enabled: true, batchSize: 20 },
+    utility: options => {
+      const request = JSON.parse(options.taskMessages[0].content);
+      if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) {
+        if (mode !== 'seed') assert.fail('CSE 重构继续不得调用摘要模型');
+        return { jsonData: { summary: `保留摘要-${request.payload.canonicalContent}` } };
+      }
+      if (mode === 'failFirst') throw new Error('模拟首楼 CSE 失败');
+      return { jsonData: { noMaterialChange: true } };
+    },
+  });
+  await h.runtime.start();
+  await h.runtime.startHistoricalRebuild();
+  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()));
+  const before = await h.store.readReachable({ mode: 'runtime' });
+  const beforeDeltaIds = before.stateDeltas.map(item => item.id);
+  const beforeHead = before.root.headCheckpointId;
+
+  h.calls.splice(0); mode = 'failFirst';
+  await h.runtime.rebuildCse(CHAT);
+  const failed = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(h.runtime.getState().cseRebuildStatus, 'failed');
+  assert.equal(h.runtime.getState().cseRebuildCompletedCount, 0);
+  assert.equal(failed.root.headCheckpointId, beforeHead, '首楼失败前不得切换有效 root');
+  assert.deepEqual(failed.stateDeltas.map(item => item.id), beforeDeltaIds, '首楼失败保留完整旧 CSE 链');
+
+  h.calls.splice(0); mode = 'resume';
+  await h.runtime.resumeCseRebuild(CHAT);
+  assert.equal(h.runtime.getState().cseRebuildStatus, 'completed');
+  assert.equal(h.calls.filter(options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 0);
+  assert.equal(h.calls.filter(options => options.systemPrompt === CSE_SYSTEM_PROMPT).length, 2);
+});
+
+test('CSE 重构成功一楼后可暂停，并从持久进度恢复剩余 CSE', async () => {
+  let mode = 'seed', rebuildCseCalls = 0, releaseSecond, markSecondStarted;
+  const secondStarted = new Promise(resolve => { markSecondStarted = resolve; });
+  const h = harness({
+    initialChat: [user('开始'), assistant('第一楼'), assistant('第二楼'), assistant('第三楼'), assistant('未摘要尾楼')],
+    automation: { enabled: true, batchSize: 20 },
+    utility: async options => {
+      const request = JSON.parse(options.taskMessages[0].content);
+      if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) {
+        if (mode !== 'seed') assert.fail('CSE 重构暂停期间不得调用摘要模型');
+        return { jsonData: { summary: `保留摘要-${request.payload.canonicalContent}` } };
+      }
+      if (mode === 'pause') {
+        rebuildCseCalls += 1;
+        if (rebuildCseCalls === 2) {
+          markSecondStarted();
+          await new Promise(resolve => { releaseSecond = resolve; });
+        }
+      }
+      return { jsonData: { noMaterialChange: true } };
+    },
+  });
+  await h.runtime.start();
+  await h.runtime.startHistoricalRebuild();
+  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()));
+  const originalMemories = (await h.store.readReachable({ mode: 'runtime' })).floorMemories.map(item => [item.id, item.summary]);
+
+  h.calls.splice(0); mode = 'pause';
+  const rebuilding = h.runtime.rebuildCse(CHAT);
+  await secondStarted;
+  h.runtime.pauseCseRebuild();
+  releaseSecond();
+  await rebuilding;
+  assert.equal(h.runtime.getState().cseRebuildStatus, 'paused');
+  assert.equal(h.runtime.getState().cseRebuildCompletedCount, 1, '只记录已经提交成功的第一楼');
+  const paused = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(paused.run.diagnostics.cseRebuild?.status, 'active');
+  assert.deepEqual(paused.run.diagnostics.cseRebuild?.completedFloorIds, [paused.floors[0].id]);
+
+  let resumedExtractorCalls = 0, resumedCseCalls = 0;
+  const resumed = harness({
+    sharedBackend: h.backend,
+    sharedContext: h.context,
+    automation: { enabled: true, batchSize: 20 },
+    utility: options => {
+      if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) resumedExtractorCalls += 1;
+      else resumedCseCalls += 1;
+      return { jsonData: { noMaterialChange: true } };
+    },
+  });
+  await resumed.runtime.start();
+  assert.equal(resumed.runtime.getState().cseRebuildStatus, 'paused', '刷新后从 run diagnostics 恢复专用 CSE 作业');
+  assert.equal(resumed.runtime.getState().cseRebuildCompletedCount, 1);
+  await resumed.runtime.resumeCseRebuild(CHAT);
+  assert.equal(resumed.runtime.getState().cseRebuildStatus, 'completed');
+  assert.equal(resumedExtractorCalls, 0);
+  assert.equal(resumedCseCalls, 2, '恢复时只处理未提交的后两楼');
+  const after = await resumed.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual(after.floorMemories.map(item => [item.id, item.summary]), originalMemories);
+});
+
+test('CSE 重构遇到中间摘要缺口即截断，不补摘要也不越过处理后楼', async () => {
+  const h = await seedMiddleSummaryGap();
+  const before = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(before.floorMemories.filter(item => item.recordStatus === 'active').length, 2, '夹具必须有前后摘要与中间缺口');
+  h.calls.splice(0);
+  await h.runtime.rebuildCse(CHAT);
+  const cseCalls = h.calls.filter(options => options.systemPrompt === CSE_SYSTEM_PROMPT);
+  assert.equal(cseCalls.length, 1, '只处理缺口前的连续摘要前缀');
+  assert.equal(h.calls.filter(options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 0, '不得为缺口补摘要');
+  assert.equal(JSON.parse(cseCalls[0].taskMessages[0].content).payload.canonicalContent, '已完成前缀');
+  assert.equal(h.runtime.getState().cseRebuildTotalCount, 1);
+  assert.equal(h.runtime.getState().cseRebuildStatus, 'completed');
+  const after = await h.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual(after.floorMemories.map(item => item.id), before.floorMemories.map(item => item.id));
+});
+
+test('冷读把跨代实体视图投影到当前首见楼，不改后端实体记录', async () => {
+  const h = harness({
+    initialChat: [user('开始'), assistant('裴晚生在门口等待。'), assistant('未摘要尾楼')],
+    automation: { enabled: true, batchSize: 20 },
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: '裴晚生在门口等待。', people: [{ name: '裴晚生' }] } }
+      : { jsonData: { noMaterialChange: true } },
+  });
+  await h.runtime.start();
+  await h.runtime.startHistoricalRebuild();
+  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()));
+  const root = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
+  const checkpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${root.headCheckpointId}`).data;
+  assert.equal(checkpoint.producedRefs.floors.length, 1);
+  const nextGeneration = '77777777-7777-4777-8777-777777777777';
+  const floorRecord = h.backend.records.get(`chat-${CHAT}/v3-floor-${checkpoint.producedRefs.floors[0]}`).data;
+  const memoryRecord = h.backend.records.get(`chat-${CHAT}/v3-floor-memory-${checkpoint.producedRefs.floorMemories[0]}`).data;
+  const deltaRecord = h.backend.records.get(`chat-${CHAT}/v3-state-delta-${checkpoint.producedRefs.stateDeltas[0]}`).data;
+  floorRecord.narrativeGeneration = nextGeneration;
+  memoryRecord.narrativeGeneration = nextGeneration;
+  deltaRecord.narrativeGeneration = nextGeneration;
+  const storedEntities = checkpoint.producedRefs.entities.map(id => h.backend.records.get(`chat-${CHAT}/v3-entity-${id}`).data);
+  const referencedStored = storedEntities.find(entity => entity.id === deltaRecord.subjectSnapshots[0]?.subjectEntityId);
+  assert.ok(referencedStored);
+  const storedGeneration = referencedStored.narrativeGeneration;
+  const deletedFirstFloorId = '66666666-6666-4666-8666-666666666666';
+  referencedStored.firstSeenFloorId = deletedFirstFloorId;
+  referencedStored.lastSeenFloorId = deletedFirstFloorId;
+
+  const cold = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(cold.status, 'ready');
+  const projected = cold.entities.find(entity => entity.id === referencedStored.id);
+  assert.equal(projected.firstSeenFloorId, floorRecord.id);
+  assert.equal(projected.narrativeGeneration, nextGeneration, '视图代次跟随当前首见楼');
+  const persisted = h.backend.records.get(`chat-${CHAT}/v3-entity-${referencedStored.id}`).data;
+  assert.equal(persisted.narrativeGeneration, storedGeneration, '读取投影不得写回旧实体记录');
+  assert.equal(persisted.firstSeenFloorId, deletedFirstFloorId);
+});
+
 test('完全重构前置 refresh 等待时切聊天不会重置任一聊天或在新聊天启动提取', async () => {
   let armed = false, releaseRefresh, markStarted;
   const started = new Promise(resolve => { markStarted = resolve; });

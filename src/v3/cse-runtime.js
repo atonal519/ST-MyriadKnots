@@ -319,10 +319,10 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const entitiesById = new Map(current.entities.map(entity => [entity.id, entity]));
     for (const entity of roleEntities) if (!entitiesById.has(entity.id) && [current.baseline.userPersona.entityId, current.baseline.characterCard.entityId].includes(entity.id)) entitiesById.set(entity.id, entity);
     const entities = [...entitiesById.values()];
-    return commitDeltaGraph({ operation, current, floor, memory, delta: result.delta, deltas, entities, diagnostics: { kind: 'cse', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, promptGuidanceFingerprint: operation.promptGuidanceFingerprint ?? null, systemPromptFingerprint: operation.systemPromptFingerprint ?? null, api: result.metadata, attempts: result.attempts, transportAttempts: result.transportAttempts, responseFingerprint: result.responseFingerprint, isolated: result.isolated.slice(-40), sourceSelection: operation.sourceDiagnostics ?? null } });
+    return commitDeltaGraph({ operation, current, floor, memory, delta: result.delta, deltas, entities, diagnostics: { kind: 'cse', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, promptGuidanceFingerprint: operation.promptGuidanceFingerprint ?? null, systemPromptFingerprint: operation.systemPromptFingerprint ?? null, api: result.metadata, attempts: result.attempts, transportAttempts: result.transportAttempts, responseFingerprint: result.responseFingerprint, isolated: result.isolated.slice(-40), sourceSelection: operation.sourceDiagnostics ?? null, cseRebuild: operation.cseRebuild } });
   }
 
-  async function analyzeFloor(floorId) {
+  async function analyzeFloor(floorId, { cseRebuild = null } = {}) {
     if (!enabled()) return notify();
     if (active) return getState();
     await load();
@@ -332,7 +332,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     if (!floor || !memory) throw errorWith('V3_CSE_FLOOR_UNAVAILABLE', '只有当前可达且已有 FloorMemory 的楼可以分析状态。');
     const analysisFloor = memory.sourceCanonicalContent ? { ...floor, content: { ...floor.content, canonicalContent: memory.sourceCanonicalContent } } : floor;
     const sourceClockSignature = memory.sourceStoryClockSignature ?? value.run?.diagnostics?.floorProvenance?.[floorId]?.storyClockSignature ?? storyClockSignatureForFloor(floor);
-    const operation = { floorId, floorMemoryId: memory.id, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: floor.content.rawFingerprint, storyClockSignature: sourceClockSignature, epoch, controller: new AbortController(), runId: await deterministicUuid(['v3-cse-run', value.root.headCheckpointId, memory.id, newUuid()]), startedAt: nowIso(now), phase: 'baseline' };
+    const operation = { floorId, floorMemoryId: memory.id, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: floor.content.rawFingerprint, storyClockSignature: sourceClockSignature, cseRebuild: cseRebuild ? structuredClone(cseRebuild) : null, epoch, controller: new AbortController(), runId: await deterministicUuid(['v3-cse-run', value.root.headCheckpointId, memory.id, newUuid()]), startedAt: nowIso(now), phase: 'baseline' };
     active = operation; notify();
     try {
       value = await ensureBaseline(value, operation); reachable = value; await calculateReplay(value);
@@ -429,7 +429,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     active = operation;
     notify();
     try {
-      return await commitDeltaGraph({ operation, current, floor, memory, delta: correction.delta, deltas: [...deltas.slice(0, -1), correction.delta], entities: current.entities, diagnostics: { kind: 'cseManualCorrection', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, manualSubjectEntityIds: correction.delta.source.manualSubjectEntityIds } });
+      return await commitDeltaGraph({ operation, current, floor, memory, delta: correction.delta, deltas: [...deltas.slice(0, -1), correction.delta], entities: current.entities, diagnostics: { kind: 'cseManualCorrection', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, manualSubjectEntityIds: correction.delta.source.manualSubjectEntityIds, cseRebuild: null } });
     } catch (error) {
       lastFailure = { floorId: floor.id, runId: operation.runId, code: String(error?.code ?? 'V3_CSE_MANUAL_SAVE_FAILED').slice(0, 120), message: sanitizeSensitiveText(error?.message ?? '人物状态纠正保存失败。').slice(0, 500), phase: error?.code === 'V3_CSE_MANUAL_STALE' || error?.code === 'V3_CSE_CAS_CONFLICT' || error?.name === 'AbortError' ? 'stale' : 'retryableError' };
       throw error;
@@ -558,7 +558,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const roleEntities = await createBaselineRoleEntities(current.baseline);
     const entitiesById = new Map(current.entities.map(entity => [entity.id, entity]));
     for (const entity of roleEntities) if (!entitiesById.has(entity.id)) entitiesById.set(entity.id, entity);
-    await commitDeltaGraph({ operation, current, floor, memory, delta, deltas: [...currentPrefix, delta], entities: [...entitiesById.values()], diagnostics: { kind: 'cseRecovery', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, promptGuidanceFingerprint: promptFingerprint, sourceSelection: requestSources.diagnostics, recoveredFromDeltaId: oldDelta.id } });
+    await commitDeltaGraph({ operation, current, floor, memory, delta, deltas: [...currentPrefix, delta], entities: [...entitiesById.values()], diagnostics: { kind: 'cseRecovery', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, promptGuidanceFingerprint: promptFingerprint, sourceSelection: requestSources.diagnostics, recoveredFromDeltaId: oldDelta.id, cseRebuild: null } });
     return Object.freeze({ status: 'restored', deltaId });
   }
 

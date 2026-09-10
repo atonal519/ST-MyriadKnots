@@ -207,6 +207,7 @@ export function collectFloorMemoryEntityIds(memory) {
 }
 
 export function projectEntityFloorBounds(entities = [], floors = [], floorMemories = [], stateDeltas = []) {
+  const floorsById = new Map(floors.map(floor => [floor.id, floor]));
   const refsByFloor = new Map(floors.map(floor => [floor.id, new Set()]));
   for (const memory of floorMemories) {
     const refs = refsByFloor.get(memory.floorId);
@@ -228,7 +229,7 @@ export function projectEntityFloorBounds(entities = [], floors = [], floorMemori
   const liveFloorIds = new Set(floors.map(floor => floor.id));
   return entities.map(entity => {
     const bound = bounds.get(entity.id);
-    if (bound) return Object.freeze({ ...entity, firstSeenFloorId: bound.first, lastSeenFloorId: bound.last });
+    if (bound) return Object.freeze({ ...entity, narrativeGeneration: floorsById.get(bound.first).narrativeGeneration, firstSeenFloorId: bound.first, lastSeenFloorId: bound.last });
     if ((entity.firstSeenFloorId === null || liveFloorIds.has(entity.firstSeenFloorId))
       && (entity.lastSeenFloorId === null || liveFloorIds.has(entity.lastSeenFloorId))) return entity;
     return Object.freeze({ ...entity, firstSeenFloorId: null, lastSeenFloorId: null });

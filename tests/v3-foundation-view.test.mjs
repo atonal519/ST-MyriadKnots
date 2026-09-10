@@ -359,18 +359,22 @@ test('自动批次活跃时面板提取、CSE 与修订入口统一禁用，结�
   assert.equal(flatten(container).find(node => node.textContent === '完全重构')?.disabled, false);
 });
 
-test('历史欠账按钮显式开始/继续，运行中可暂停且不依赖自动维护开关', async () => {
-  const base = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 5, rememberedCount: 2, unprocessedCount: 3, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'checkpoint', activeRun: null, activeExtraction: null, activeCse: null, memoryWorkBusy: false, activeAutoMemory: null, lastRun: null, lastError: null, lastExtractorError: null, lastCseError: null, unreachableCount: 0, metrics: {}, autoMemoryEnabled: false, autoMemoryBatchSize: 2, rebuildStatus: 'pendingRebuild', rebuildCompletedCount: 2, rebuildTotalCount: 5, rebuildNextAssistantSeq: 3, cseReady: false, csePendingCount: 0, cseFailedCount: 0, baselineId: null, cseSubjects: [], floors: [] };
-  let state = base, starts = 0, pauses = 0, resetChatId = null;
+test('历史欠账与 CSE 重构按钮各自开始暂停继续，CSE 同一位置显示进度', async () => {
+  const base = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 5, rememberedCount: 2, unprocessedCount: 3, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'checkpoint', activeRun: null, activeExtraction: null, activeCse: null, memoryWorkBusy: false, activeAutoMemory: null, lastRun: null, lastError: null, lastExtractorError: null, lastCseError: null, unreachableCount: 0, metrics: {}, autoMemoryEnabled: false, autoMemoryBatchSize: 2, rebuildStatus: 'pendingRebuild', rebuildCompletedCount: 2, rebuildTotalCount: 5, rebuildNextAssistantSeq: 3, cseRebuildStatus: 'idle', cseRebuildCompletedCount: 0, cseRebuildTotalCount: 2, cseReady: false, csePendingCount: 0, cseFailedCount: 0, baselineId: null, cseSubjects: [], floors: [] };
+  let state = base, starts = 0, pauses = 0, resetChatId = null, cseChatId = null, csePauses = 0, cseResumes = 0;
+  const confirmations = [];
   const runtime = {
     getState: () => state,
     refreshStatus: async () => state,
     confirmLatest: async () => state,
     startHistoricalRebuild: async () => { starts += 1; return state; },
     pauseHistoricalRebuild: () => { pauses += 1; return state; }, fullRebuild: async chatId => { resetChatId = chatId; return state; },
+    rebuildCse: async chatId => { cseChatId = chatId; return state; },
+    pauseCseRebuild: () => { csePauses += 1; return state; },
+    resumeCseRebuild: async chatId => { cseResumes += 1; cseChatId = chatId; return state; },
   };
   const container = new Node('main');
-  const view = createV3FoundationView({ runtime, documentRef, confirmImpl: () => true });
+  const view = createV3FoundationView({ runtime, documentRef, confirmImpl: options => { confirmations.push(options); return true; } });
   view.mount(container);
   state = { ...base, rememberedCount: 0, rebuildCompletedCount: 0, rebuildNextAssistantSeq: 1 };
   view.render(state);
@@ -389,6 +393,25 @@ test('历史欠账按钮显式开始/继续，运行中可暂停且不依赖自�
   flatten(container).find(node => node.textContent === '完全重构').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(resetChatId, CHAT, '完全重构必须携带用户当前看到的聊天 ID');
+  const actionLabels = flatten(container).filter(node => node.tag === 'button').map(node => node.textContent);
+  assert.ok(actionLabels.indexOf('CSE 重构') === actionLabels.indexOf('完全重构') + 1, 'CSE 重构固定放在完全重构旁边');
+  flatten(container).find(node => node.textContent === 'CSE 重构').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cseChatId, CHAT);
+  assert.match(`${confirmations.at(-1)?.body}`, /摘要及摘要人工修订都会保留.*CSE 人工纠正也会被覆盖.*未摘要楼不会处理/);
+
+  state = { ...base, status: 'running', memoryWorkBusy: true, activeAutoMemory: { phase: 'analyzingCse', mode: 'cseRebuild', floorIds: ['floor-2'] }, cseRebuildStatus: 'running', cseRebuildCompletedCount: 1, cseRebuildTotalCount: 2 };
+  view.render(state);
+  const pauseCse = flatten(container).find(node => node.textContent === '暂停 CSE 重构');
+  assert.equal(pauseCse.disabled, false); pauseCse.click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(csePauses, 1); assert.match(flatten(container).map(node => node.textContent).join('|'), /CSE 重构中 · 1\/2/);
+  state = { ...base, cseRebuildStatus: 'paused', cseRebuildCompletedCount: 1, cseRebuildTotalCount: 2 };
+  view.render(state);
+  assert.equal(flatten(container).filter(node => node.textContent === '继续 CSE 重构').length, 1, '暂停态只保留同一枚 CSE 按钮');
+  assert.equal(flatten(container).some(node => node.textContent === '继续'), false, '通用历史继续不得接管 CSE 作业');
+  flatten(container).find(node => node.textContent === '继续 CSE 重构').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cseResumes, 1); assert.equal(cseChatId, CHAT);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /CSE 已暂停 · 1\/2/);
 
   state = { ...base, rebuildStatus: 'waitingRealtime', rebuildHasActionableWork: true };
   view.render(state);
