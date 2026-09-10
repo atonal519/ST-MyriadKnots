@@ -67,32 +67,37 @@ test('提示词模块提供时间戳开关、原样自定义、恢复默认与�
   assert.equal(refreshes[0].readOnly, true); assert.ok(refreshes.length >= 3);
 });
 
-test('摘要、CSE 与人物资料指导各自 change 即存，可载入内置文本并恢复默认', async () => {
-  const current = { sourceKeepTags: 'content', sourceExtraTags: '', storyClockEnabled: true, storyClockPrompt: '', summaryPrompt: '', csePrompt: '', profilePrompt: '' };
+test('破限、摘要、CSE 与人物资料提示词各自 change 即存，可载入内置文本并恢复默认', async () => {
+  const current = { sourceKeepTags: 'content', sourceExtraTags: '', storyClockEnabled: true, storyClockPrompt: '', processingPrompt: '', summaryPrompt: '', csePrompt: '', profilePrompt: '' };
   const patches = [];
   const settings = { get: () => ({ ...current }), update: patch => { Object.assign(current, patch); patches.push(patch); return { ...current }; } };
   const { node } = createPromptsSettings({ settings, documentRef });
+  const processingDrawer = node.find(n => n.id === 'qqj-settings-processing-prompt');
   const summaryDrawer = node.find(n => n.id === 'qqj-settings-summary-prompt');
   const cseDrawer = node.find(n => n.id === 'qqj-settings-cse-prompt');
   const profileDrawer = node.find(n => n.id === 'qqj-settings-profile-prompt');
+  const processing = fieldControl(processingDrawer, '破限提示词');
   const summary = fieldControl(summaryDrawer, '摘要内容要求');
   const cse = fieldControl(cseDrawer, 'CSE 推演要求');
   const profile = fieldControl(profileDrawer, '人物资料整理要求');
 
+  processing.value = '  用户破限文本\n'; await processing.fire('change');
   summary.value = '  用户摘要要求\n'; await summary.fire('change');
   cse.value = '  用户 CSE 要求\n'; await cse.fire('change');
   profile.value = '  用户人物资料要求\n'; await profile.fire('change');
-  assert.deepEqual(patches.slice(-3), [{ summaryPrompt: '  用户摘要要求\n' }, { csePrompt: '  用户 CSE 要求\n' }, { profilePrompt: '  用户人物资料要求\n' }]);
+  assert.deepEqual(patches.slice(-4), [{ processingPrompt: '  用户破限文本\n' }, { summaryPrompt: '  用户摘要要求\n' }, { csePrompt: '  用户 CSE 要求\n' }, { profilePrompt: '  用户人物资料要求\n' }]);
 
+  await processingDrawer.find(n => n.tagName === 'button' && n.textContent === '载入默认再改').fire('click');
   await summaryDrawer.find(n => n.tagName === 'button' && n.textContent === '载入默认再改').fire('click');
   await cseDrawer.find(n => n.tagName === 'button' && n.textContent === '载入默认再改').fire('click');
   await profileDrawer.find(n => n.tagName === 'button' && n.textContent === '载入默认再改').fire('click');
-  assert.equal(summary.value, DEFAULT_EXTRACTOR_GUIDANCE); assert.equal(cse.value, DEFAULT_CSE_GUIDANCE); assert.equal(profile.value, DEFAULT_PROFILE_GUIDANCE);
+  assert.match(processing.value, /fictional_content_processing_protocol/); assert.equal(summary.value, DEFAULT_EXTRACTOR_GUIDANCE); assert.equal(cse.value, DEFAULT_CSE_GUIDANCE); assert.equal(profile.value, DEFAULT_PROFILE_GUIDANCE);
+  await processingDrawer.find(n => n.tagName === 'button' && n.textContent === '恢复默认').fire('click');
   await summaryDrawer.find(n => n.tagName === 'button' && n.textContent === '恢复默认').fire('click');
   await cseDrawer.find(n => n.tagName === 'button' && n.textContent === '恢复默认').fire('click');
   await profileDrawer.find(n => n.tagName === 'button' && n.textContent === '恢复默认').fire('click');
-  assert.deepEqual(patches.slice(-3), [{ summaryPrompt: '' }, { csePrompt: '' }, { profilePrompt: '' }]);
-  assert.equal(summary.value, ''); assert.equal(cse.value, ''); assert.equal(profile.value, '');
+  assert.deepEqual(patches.slice(-4), [{ processingPrompt: '' }, { summaryPrompt: '' }, { csePrompt: '' }, { profilePrompt: '' }]);
+  assert.equal(processing.value, ''); assert.equal(summary.value, ''); assert.equal(cse.value, ''); assert.equal(profile.value, '');
 });
 
 test('外观模块内联选择即存并即时应用；程序设置同步标签，改 URL 清空缓存 family', async () => {

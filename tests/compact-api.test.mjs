@@ -4,7 +4,7 @@ import { createCompactApiClient, normalizeApiUrl, parseJsonOutput } from '../src
 import { parseJsonWithSafeTrailingCommas, parseJsonWithSymbolRepair, repairJsonWithUniqueMissingObjectClose } from '../src/json-symbol-repair.js';
 import { createTaskRouter } from '../src/api-routing.js';
 import { buildExtractorSystemPrompt } from '../src/v3/extractor.js';
-import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
+import { BASE_PROCESSING_PROMPT, resolveProcessingPrompt, withBaseProcessingPrompt } from '../src/internal-processing-prompt.js';
 
 const config = overrides => ({ url: 'https://api.example.test', key: 'TEST_KEY', model: 'compact-model', excludeParams: [], timeoutSec: 5, stream: false, ...overrides });
 const jsonResponse = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
@@ -12,6 +12,15 @@ const sseResponse = chunks => {
   const encoder = new TextEncoder(); let index = 0;
   return { ok: true, status: 200, body: { getReader: () => ({ read: async () => index < chunks.length ? { done: false, value: encoder.encode(chunks[index++]) } : { done: true } }) } };
 };
+
+test('破限提示词仅用 trim 判断空白，自定义值逐字替换默认并保持拼接边界', () => {
+  const custom = '  用户自定义破限\n';
+  assert.equal(resolveProcessingPrompt(''), BASE_PROCESSING_PROMPT);
+  assert.equal(resolveProcessingPrompt(' \n\t '), BASE_PROCESSING_PROMPT);
+  assert.equal(resolveProcessingPrompt(custom), custom);
+  assert.equal(withBaseProcessingPrompt('业务与机器合同', custom), `${custom}\n\n业务与机器合同`);
+  assert.equal(withBaseProcessingPrompt('业务与机器合同', ' \n '), `${BASE_PROCESSING_PROMPT}\n\n业务与机器合同`);
+});
 
 test('未注入 fetch 时在请求发生时读取宿主最新实现，显式注入不受全局替换影响', async () => {
   const previousFetch = globalThis.fetch;

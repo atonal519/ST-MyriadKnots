@@ -88,6 +88,22 @@ function parseRecallHistory(injectionText, selectedFloors) {
   return Object.freeze(items);
 }
 
+function groupRecallHistory(historyItems, selectedFloors) {
+  const selectedBySequence = new Map(selectedFloors.map(value => [value.assistantSeq, value]));
+  const grouped = new Map();
+  for (const item of historyItems) {
+    let group = grouped.get(item.assistantSeq);
+    if (!group) {
+      group = { assistantSeq: item.assistantSeq, floorId: selectedBySequence.get(item.assistantSeq)?.floorId ?? '', items: [] };
+      grouped.set(item.assistantSeq, group);
+    }
+    group.items.push(item);
+  }
+  return Object.freeze([...grouped.values()]
+    .sort((left, right) => right.assistantSeq - left.assistantSeq)
+    .map(group => Object.freeze({ ...group, items: Object.freeze(group.items) })));
+}
+
 export function classifyInlineMessage(message) {
   if (!message || typeof message !== 'object') return null;
   if (message.is_system === true && message.extra?.type) return null;
@@ -95,39 +111,38 @@ export function classifyInlineMessage(message) {
   return selectAssistantMessage(message) ? 'assistant' : null;
 }
 
-export function projectInlineMemoryFloor(state, messageIndex) {
+export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantSeq = null) {
   const floor = (state?.floors ?? []).find(value => value?.messageIndex === messageIndex) ?? null;
+  const assistantSeq = Number.isSafeInteger(floor?.assistantSeq) && floor.assistantSeq > 0
+    ? floor.assistantSeq
+    : Number.isSafeInteger(fallbackAssistantSeq) && fallbackAssistantSeq > 0 ? fallbackAssistantSeq : null;
   if (!floor) {
     const snapshotStatus = state?.memorySnapshotStatus;
     const failed = snapshotStatus === 'error';
     const syncing = ['syncing', 'unavailable'].includes(snapshotStatus);
     const pending = state?.pending?.messageIndex === messageIndex;
     return Object.freeze({
-      kind: 'assistant', floorId: null, status: failed ? 'error' : syncing ? 'syncing' : pending ? 'pending' : 'unavailable',
-      statusText: failed ? '记忆读取失败' : syncing ? '正在核对本楼状态' : pending ? '等待本楼稳定' : '尚未读取本楼状态',
+      kind: 'assistant', floorId: null, assistantSeq, messageIndex, status: failed ? 'error' : syncing ? 'syncing' : pending ? 'pending' : 'unavailable',
+      statusText: failed ? '记忆读取失败' : syncing ? '正在读取本楼状态' : pending ? '等待下一条用户消息' : '尚未读取本楼状态',
       time: '未提取', locations: '未提取', people: '未提取',
-      summary: failed ? '暂时无法读取当前聊天的记忆状态。' : syncing ? '正在读取当前聊天的记忆状态。' : pending ? '这一楼稳定后才能提取摘要。' : '当前记忆中没有这楼的已确认状态。',
+      summary: failed ? '暂时无法读取当前聊天的记忆状态。' : syncing ? '正在读取当前聊天的记忆状态。' : pending ? '发送下一条用户消息后将开始摘要。' : '当前记忆中没有这楼的已保存状态。',
       error: failed ? String(state?.lastExtractorError?.message ?? '记忆读取失败，请稍后重试。') : '',
       busy: Boolean(state?.memoryWorkBusy || syncing), canExtract: false,
     });
   }
   const memory = floor.memory ?? null;
   const times = uniqueText((memory?.chronology ?? []).map(item => item?.time?.sourceText || item?.time?.normalized || item?.description)).join('；');
-  const time = floor.manualTime ? times || '时间未明确'
-    : floor.metadataStale ? '时间戳已变化，请重新提取'
-      : times || floor.timeFallback || '时间未明确';
+  const time = times || floor.timeFallback || '时间未明确';
   const locations = uniqueText((memory?.locations ?? []).map(item => item?.name)).join('、') || '未提取';
   const names = new Map((state?.memoryEntities ?? []).map(entity => [entity?.entityId, entity?.displayName]));
   const people = uniqueText((memory?.participants ?? []).map(item => names.get(item?.entityId) || '未知人物')).join('、') || '未提取';
   const busy = Boolean(state?.memoryWorkBusy || state?.activeAutoMemory || state?.activeExtraction || state?.activeCse);
   const statusText = floor.status === 'running' ? '正在提取'
-    : floor.metadataStale ? '正文已变化'
-      : floor.status === 'ready' ? (floor.summarySource === 'user' ? '人工修订' : '摘要已保存')
-        : floor.status === 'needsReview' ? '摘要待复核'
-          : ['error', 'failed'].includes(floor.status) ? '提取失败'
-            : floor.status === 'unprocessed' ? '尚未提取' : '等待本楼稳定';
+    : floor.status === 'ready' ? (floor.summarySource === 'user' ? '人工修订' : '摘要已保存')
+      : ['error', 'failed'].includes(floor.status) ? '提取失败'
+        : floor.status === 'unprocessed' ? '尚未提取' : '等待下一条用户消息';
   return Object.freeze({
-    kind: 'assistant', floorId: floor.floorId, status: floor.status, statusText, time, locations, people,
+    kind: 'assistant', floorId: floor.floorId, assistantSeq, messageIndex, status: floor.status, statusText, time, locations, people,
     summary: floor.summary || (floor.status === 'unprocessed' ? '这一楼尚未生成摘要。' : '暂无摘要。'),
     error: typeof floor.error === 'string' ? floor.error : floor.error?.message || '',
     busy,
@@ -138,7 +153,7 @@ export function projectInlineMemoryFloor(state, messageIndex) {
 export function projectInlineRecallReceipt(receipt) {
   if (!receipt) return Object.freeze({
     kind: 'user', status: 'empty', statusText: '未记录本轮召回', summary: '本轮没有可核验的召回回执。',
-    injectionText: '', floorCount: 0, stateCount: 0, selectedFloors: Object.freeze([]), historyItems: Object.freeze([]), stateItems: Object.freeze([]), protocolRecognized: false,
+    injectionText: '', floorCount: 0, stateCount: 0, selectedFloors: Object.freeze([]), historyItems: Object.freeze([]), historyGroups: Object.freeze([]), stateItems: Object.freeze([]), protocolRecognized: false,
   });
   const hasFloorArray = Array.isArray(receipt.selectedFloors), hasStateArray = Array.isArray(receipt.selectedStates);
   const rawFloors = hasFloorArray ? receipt.selectedFloors : [];
@@ -154,7 +169,7 @@ export function projectInlineRecallReceipt(receipt) {
     assistantSeq: Number.isSafeInteger(value?.assistantSeq) && value.assistantSeq > 0 ? value.assistantSeq : null,
     reasons: Object.freeze((Array.isArray(value?.reasons) ? value.reasons : []).slice(0, 32).map(reason => String(reason).slice(0, 500))),
   })));
-  const floorCount = selectedFloors.length;
+  const floorCount = new Set(selectedFloors.map(value => value.floorId).filter(Boolean)).size;
   const stateItems = Object.freeze((safeShape ? rawStates : []).map(value => {
     const subject = frozenText(value?.subject, 500), toward = frozenText(value?.toward, 500), text = frozenText(value?.text);
     return subject && text ? Object.freeze({ subject, toward, text }) : null;
@@ -167,11 +182,11 @@ export function projectInlineRecallReceipt(receipt) {
   const injectionText = typeof receipt.injectionText === 'string' ? receipt.injectionText : '';
   const parsedHistory = safeShape ? parseRecallHistory(injectionText, selectedFloors) : null;
   const historyItems = parsedHistory ?? Object.freeze([]);
+  const historyGroups = groupRecallHistory(historyItems, selectedFloors);
   const protocolRecognized = parsedHistory !== null;
   const status = receipt.status ?? (receipt.injectionText ? 'ready' : 'empty');
   const statusText = receipt.legacyReadOnly ? '旧版只读记录'
-    : status === 'ready' ? '召回已记录'
-      : status === 'empty' ? '本轮无需召回'
+    : status === 'ready' || status === 'empty' ? `寻回 ${floorCount} 个结`
         : status === 'stale' ? '本轮结果已失效'
           : status === 'error' ? '本轮召回失败' : '本轮已跳过';
   const summary = hasExactStageCounts
@@ -183,6 +198,6 @@ export function projectInlineRecallReceipt(receipt) {
     : status === 'empty' ? '本轮没有需要注入的记忆。' : '本轮没有已注入的记忆。';
   return Object.freeze({
     kind: 'user', status, statusText, summary,
-    injectionText, floorCount, stateCount, recentSummaryCount, distantHistoryItemCount, selectedFloors, historyItems, stateItems, protocolRecognized,
+    injectionText, floorCount, stateCount, recentSummaryCount, distantHistoryItemCount, selectedFloors, historyItems, historyGroups, stateItems, protocolRecognized,
   });
 }

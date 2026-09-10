@@ -14,15 +14,16 @@ import {
 } from './foundation-domain.js';
 import {
   validateFoundationCheckpoint,
+  validateFoundationFloor,
   validateFoundationGraph,
   validateFoundationIndex,
   validateFoundationRoot,
   validateFoundationRun,
   sameFoundationRecordContent,
 } from './foundation-schema.js';
-import { collectFloorMemoryEntityIds, entityIndexKey, validateMemoryGraph } from './memory-schema.js';
+import { collectFloorMemoryEntityIds, entityIndexKey, projectEntityFloorBounds, validateMemoryGraph } from './memory-schema.js';
 import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
-import { validateCseGraph } from './cse-schema.js';
+import { validateCseGraph, validateStateDeltaRecord } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 
 const EVENTS = Object.freeze([
@@ -78,15 +79,15 @@ export async function buildFoundationIndexes({ chatId, narrativeGeneration, chec
     const floorChunk = floors.slice(offset, offset + 128);
     await add('floorOrder', String(Math.floor(offset / 128)), floorChunk.map((floor, index) => {
       const locator = candidates[offset + index]?.hostLocator ?? floor.hostLocator;
-      return { key: String(floor.assistantSeq), refs: [{ recordType: 'floor', recordId: floor.id, itemId: JSON.stringify(locator) }] };
+      return { key: String(offset + index + 1), refs: [{ recordType: 'floor', recordId: floor.id, itemId: JSON.stringify(locator) }] };
     }));
   }
   const fingerprints = new Map();
   for (let index = 0; index < floors.length; index += 1) {
-    const floor = floors[index], candidate = candidates[index];
+    const floor = floors[index];
     for (const [value, itemId] of [
-      [candidate?.rawFingerprint ?? floor.content.rawFingerprint, 'raw'],
-      [candidate?.canonicalFingerprint ?? floor.content.canonicalFingerprint, 'canonical'],
+      [floor.content.rawFingerprint, 'raw'],
+      [floor.content.canonicalFingerprint, 'canonical'],
     ]) {
       const prefix = value.slice('sha256:'.length, 'sha256:'.length + 2);
       const entries = fingerprints.get(prefix) ?? [];
@@ -134,27 +135,28 @@ function activeFloorViews(floors, candidates) {
   return floors.map((floor, index) => {
     const candidate = candidates[index];
     if (!candidate) return floor;
-    return { ...floor, hostLocator: { ...candidate.hostLocator }, content: { ...floor.content, rawFingerprint: candidate.rawFingerprint } };
+    return { ...floor, assistantSeq: index + 1, predecessorFloorId: floors[index - 1]?.id ?? null, hostLocator: { ...candidate.hostLocator } };
   });
 }
 function restoreActiveFloorViews(floors, indexes) {
   const locators = new Map();
-  const rawFingerprints = new Map();
+  const sequences = new Map();
   for (const index of indexes ?? []) {
     for (const entry of index.entries ?? []) {
       for (const ref of entry.refs ?? []) {
         if (ref.recordType !== 'floor') continue;
         if (index.kind === 'floorOrder' && typeof ref.itemId === 'string') {
-          try { locators.set(ref.recordId, JSON.parse(ref.itemId)); } catch { /* validated graph will reject malformed routing */ }
+          try { locators.set(ref.recordId, JSON.parse(ref.itemId)); sequences.set(ref.recordId, Number(entry.key)); } catch { /* validated graph will reject malformed routing */ }
         }
-        if (index.kind === 'fingerprint' && ref.itemId === 'raw') rawFingerprints.set(ref.recordId, entry.key);
       }
     }
   }
-  return floors.map(floor => ({
+  const ordered = [...floors].sort((left, right) => (sequences.get(left.id) ?? left.assistantSeq) - (sequences.get(right.id) ?? right.assistantSeq));
+  return ordered.map((floor, index) => ({
     ...floor,
+    assistantSeq: sequences.get(floor.id) ?? index + 1,
+    predecessorFloorId: ordered[index - 1]?.id ?? null,
     hostLocator: locators.has(floor.id) ? { ...locators.get(floor.id) } : floor.hostLocator,
-    content: rawFingerprints.has(floor.id) ? { ...floor.content, rawFingerprint: rawFingerprints.get(floor.id) } : floor.content,
   }));
 }
 function runSummary(run, result = null) {
@@ -189,6 +191,7 @@ export function createFoundationRuntime({
   let inspectionScheduled = null;
   let dirtyReason = null;
   let dirtyStableThrough = null;
+  const requestConfirmations = new Map();
   let bound = false;
   let lastRun = null;
   let lastError = null;
@@ -253,6 +256,7 @@ export function createFoundationRuntime({
     pending = null;
     inspectedStableCount = 0;
     emptyRealtimeObservation = null;
+    requestConfirmations.clear();
     store.invalidate();
     publish(enabled() ? 'idle' : 'disabled');
   }
@@ -304,8 +308,24 @@ export function createFoundationRuntime({
       if (trustedPrefix) return boundaryIndex + 1;
       throw statusError('stale', '提前稳定边界已变化，本次操作不再提交。');
     }
+    const knownFloorIds = new Set((floors ?? []).map(floor => floor.id));
+    const savedFloorIds = new Set((cache?.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => memory.floorId));
+    const anchored = new Set();
     let count = 0;
-    while (candidates[count]?.stabilityProof?.kind === 'nextUser') count += 1;
+    while (candidates[count]) {
+      const marker = candidates[count].messageAnchor;
+      const permanentlySaved = marker?.status === 'valid' && knownFloorIds.has(marker.anchor.floorId) && !anchored.has(marker.anchor.floorId);
+      const uniquelyRecoverable = marker?.status === 'none' && (floors ?? []).filter(floor => savedFloorIds.has(floor.id)
+        && floor.content.rawFingerprint === candidates[count].rawFingerprint
+        && floor.content.canonicalFingerprint === candidates[count].canonicalFingerprint).length === 1;
+      const requestConfirmed = marker?.status === 'none' && requestConfirmations.has(floors?.[count]?.id)
+        && sameLocator(floors[count].hostLocator, candidates[count].hostLocator)
+        && floors[count].content.rawFingerprint === candidates[count].rawFingerprint
+        && floors[count].content.canonicalFingerprint === candidates[count].canonicalFingerprint;
+      if (candidates[count].stabilityProof?.kind !== 'nextUser' && !permanentlySaved && !uniquelyRecoverable && !requestConfirmed) break;
+      if (permanentlySaved) anchored.add(marker.anchor.floorId);
+      count += 1;
+    }
     return count;
   }
 
@@ -313,16 +333,16 @@ export function createFoundationRuntime({
     if (!value?.root) return false;
     const stableCount = stableCountFor(candidates, value.floors ?? [], false, null);
     if (stableCount !== (value.floors?.length ?? 0)) return false;
-    const inputs = new Map((value.checkpoint?.inputFingerprints ?? []).map(item => [item.floorId, item]));
     return value.floors.every((floor, index) => {
       const candidate = candidates[index];
-      const input = inputs.get(floor.id);
       return candidate
         && sameLocator(floor.hostLocator, candidate.hostLocator)
-        && floor.content.rawFingerprint === candidate.rawFingerprint
-        && floor.content.canonicalFingerprint === candidate.canonicalFingerprint
-        && floor.content.sanitizerFingerprint === candidate.sanitizerFingerprint
-        && (!input?.stabilityFingerprint || input.stabilityFingerprint === candidate.stabilityProof?.fingerprint);
+        && (candidate.messageAnchor?.status === 'valid'
+          ? candidate.messageAnchor.anchor.floorId === floor.id
+          : candidate.messageAnchor?.status === 'none'
+            && floor.content.rawFingerprint === candidate.rawFingerprint
+            && floor.content.canonicalFingerprint === candidate.canonicalFingerprint
+            && floor.content.sanitizerFingerprint === candidate.sanitizerFingerprint);
     });
   }
 
@@ -337,9 +357,9 @@ export function createFoundationRuntime({
     let captured = null;
     try {
       captured = capture();
-      const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions() });
+      const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions(), chatId: captured.identity.chatId });
       if (inspectEpoch !== sessionEpoch) return publicState;
-      if (allowCached && cacheMatchesCandidates(candidates)) {
+      if (allowCached && !lastError && cacheMatchesCandidates(candidates)) {
         inspectedStableCount = cache.floors.length;
         pending = candidates[inspectedStableCount] ?? null;
         return publish(lastError ? 'error' : 'ready');
@@ -501,7 +521,7 @@ export function createFoundationRuntime({
   async function scanCurrentSnapshot(operation, { confirmLatest = false, stableThrough = operation?.stableThrough ?? null } = {}) {
     if (current(operation) !== 'current') throw statusError('stale');
     const captured = capture();
-    const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions() });
+    const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions(), chatId: captured.identity.chatId });
     if (current(operation) !== 'current') throw statusError('stale');
     const stableCount = stableCountFor(candidates, cache?.floors ?? [], confirmLatest, stableThrough);
     const snapshot = await foundationInputSnapshot(candidates, stableCount);
@@ -529,20 +549,40 @@ export function createFoundationRuntime({
     const snapshot = sourceSnapshot ?? await foundationInputSnapshot(candidates, stableCount);
     const existing = cache.floors;
     const stableCandidates = candidates.slice(0, stableCount);
-    let divergence = null;
-    const common = Math.min(existing.length, stableCandidates.length);
-    const priorInputs = cache.checkpoint?.inputFingerprints ?? [];
-    for (let index = 0; index < common; index += 1) {
-      const priorStabilityFingerprint = priorInputs[index]?.floorId === existing[index].id ? priorInputs[index].stabilityFingerprint : null;
-      if (existing[index].content.canonicalFingerprint !== stableCandidates[index].canonicalFingerprint
-        || (priorStabilityFingerprint && priorStabilityFingerprint !== stableCandidates[index].stabilityProof?.fingerprint)) {
-        divergence = index + 1; break;
+    const existingById = new Map(existing.map(floor => [floor.id, floor]));
+    const memoryFloorIds = new Set((cache.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => memory.floorId));
+    const usedFloorIds = new Set();
+    const aligned = [];
+    for (let index = 0; index < stableCandidates.length; index += 1) {
+      const candidate = stableCandidates[index];
+      const marker = candidate.messageAnchor;
+      if (marker?.status === 'foreign' || marker?.status === 'invalid') throw statusError('needsReview', '消息记忆标识无效或来自其他聊天，未静默接管。');
+      let floor = marker?.status === 'valid' ? existingById.get(marker.anchor.floorId) ?? null : null;
+      if (marker?.status === 'valid' && !floor) throw statusError('needsReview', '消息记忆标识指向当前图中不存在的楼，未静默猜测。');
+      if (!floor && marker?.status === 'none') {
+        const indexed = existing[index];
+        if (indexed && !usedFloorIds.has(indexed.id)
+          && sameLocator(indexed.hostLocator, candidate.hostLocator)
+          && indexed.content.canonicalFingerprint === candidate.canonicalFingerprint) floor = indexed;
       }
+      if (!floor && marker?.status === 'none') {
+        const exact = existing.filter(value => !usedFloorIds.has(value.id)
+          && value.content.rawFingerprint === candidate.rawFingerprint
+          && value.content.canonicalFingerprint === candidate.canonicalFingerprint);
+        if (exact.length === 1) floor = exact[0];
+        else if (exact.length > 1) throw statusError('needsReview', '旧聊天存在重复正文，无法唯一迁移消息记忆标识。');
+        else if (memoryFloorIds.has(existing[index]?.id)) throw statusError('needsReview', '已保存摘要的旧消息缺少可证明的唯一绑定，未自动覆盖。');
+      }
+      if (floor && usedFloorIds.has(floor.id)) throw statusError('needsReview', '多条消息使用了同一个记忆楼标识，未静默合并。');
+      if (floor) usedFloorIds.add(floor.id);
+      aligned.push(floor);
     }
-    if (divergence === null && existing.length !== stableCandidates.length) divergence = common + 1;
+    const removedFloorIds = existing.filter(floor => !usedFloorIds.has(floor.id)).map(floor => floor.id);
+    const destructiveRemoval = stableCandidates.length < existing.length || removedFloorIds.some(floorId => memoryFloorIds.has(floorId));
+    if (destructiveRemoval && operation.chatComplete !== true) throw statusError('needsReview', '当前聊天没有完整加载证明，未把暂时不可见的消息当作已删除。');
     const locatorChanged = existing.length === stableCandidates.length && existing.some((floor, index) => !sameLocator(floor.hostLocator, stableCandidates[index]?.hostLocator));
-    const rawChanged = existing.length === stableCandidates.length && existing.some((floor, index) => floor.content.rawFingerprint !== stableCandidates[index]?.rawFingerprint);
-    if (divergence === null && !locatorChanged && !rawChanged && !cache.indexesMissing
+    const identityChanged = existing.length !== aligned.length || existing.some((floor, index) => aligned[index]?.id !== floor.id);
+    if (!identityChanged && !locatorChanged && !cache.indexesMissing
       && cache.root?.sourceSnapshotFingerprint === snapshot.fingerprint) {
       pending = candidates[stableCount] ?? null;
       lastError = null;
@@ -550,11 +590,9 @@ export function createFoundationRuntime({
       return publishOperation(operation, cache.root ? 'ready' : 'uninitialized');
     }
 
-    const isBranch = Boolean(existing.length && divergence && divergence <= existing.length);
-    const narrativeGeneration = cache.root && !isBranch
-      ? cache.root.narrativeGeneration
-      : await deterministicUuid(['generation', operation.chatId, cache.root?.narrativeGeneration ?? null, divergence, stableCandidates.map(candidate => candidate.canonicalFingerprint)]);
-    const mode = !cache.root ? 'initialize' : isBranch ? 'branchReplay' : 'incremental';
+    const narrativeGeneration = cache.root?.narrativeGeneration
+      ?? await deterministicUuid(['generation', operation.chatId, stableCandidates.map(candidate => candidate.canonicalFingerprint)]);
+    const mode = !cache.root ? 'initialize' : 'incremental';
     const parentCheckpointId = cache.root?.headCheckpointId ?? null;
     const runId = await deterministicUuid(['foundation-run-v1', operation.chatId, parentCheckpointId, narrativeGeneration, snapshot.fingerprint]);
     const checkpointId = await deterministicUuid(['foundation-checkpoint-v1', operation.chatId, parentCheckpointId, narrativeGeneration, snapshot.fingerprint]);
@@ -565,24 +603,45 @@ export function createFoundationRuntime({
     operation.resumePreparedRefs = null;
     const recoveredRun = await recoverPreparedRun(operation, runId, { parentCheckpointId, inputSnapshotFingerprint: snapshot.fingerprint, narrativeGeneration });
     const nowValue = recoveredRun?.createdAt ?? timestamp(now());
-    const prefixLength = isBranch ? Math.max(0, divergence - 1)
-      : Math.min(existing.length, stableCount);
-    const floors = existing.slice(0, prefixLength);
-    for (let index = prefixLength; index < stableCount; index += 1) {
-      floors.push(createFloorRecord({
+    const floors = [], newFloors = [];
+    for (let index = 0; index < stableCount; index += 1) {
+      const prior = aligned[index];
+      if (!prior) {
+        const created = createFloorRecord({
         id: await deterministicUuid(['floor', operation.chatId, narrativeGeneration, runId, index + 1, stableCandidates[index].rawFingerprint, stableCandidates[index].canonicalFingerprint]),
         chatId: operation.chatId, narrativeGeneration, candidate: stableCandidates[index], predecessorFloorId: floors.at(-1)?.id ?? null,
         stabilizedBy: stableCandidates[index].stabilityProof ? 'nextUser' : 'manual', runId, checkpointId, now: nowValue,
-      }));
+        });
+        floors.push(created); newFloors.push(created); continue;
+      }
+      const rebound = validateFoundationFloor({ ...prior, assistantSeq: index + 1,
+        predecessorFloorId: floors.at(-1)?.id ?? null, hostLocator: { ...stableCandidates[index].hostLocator }, updatedAt: nowValue }, { expectedChatId: operation.chatId });
+      floors.push(rebound);
     }
     const floorIdSet = new Set(floors.map(floor => floor.id));
     const floorMemories = (cache.floorMemories ?? []).filter(memory => floorIdSet.has(memory.floorId));
-    let stateDeltas = filterReachableDeltas({ floors, floorMemories, stateDeltas: cache.stateDeltas ?? [] });
+    const survivingDeltas = (cache.stateDeltas ?? []).filter(delta => floorIdSet.has(delta.floorId));
+    const deltaIdMap = new Map();
+    for (const delta of survivingDeltas) deltaIdMap.set(delta.id, identityChanged ? await deterministicUuid(['v3-cse-rebase', checkpointId, delta.id]) : delta.id);
+    const survivingDeltaIds = new Set(survivingDeltas.map(delta => delta.id));
+    const rewrittenDeltas = [];
+    for (const delta of survivingDeltas) {
+      const clean = item => ({ ...item,
+        sourceFloorId: item.sourceFloorId && floorIdSet.has(item.sourceFloorId) ? item.sourceFloorId : null,
+        sourceDeltaId: item.sourceDeltaId && survivingDeltaIds.has(item.sourceDeltaId) ? deltaIdMap.get(item.sourceDeltaId) : null });
+      const subjectSnapshots = delta.subjectSnapshots.map(subject => ({ ...subject,
+        core: subject.core.map(clean), adaptive: subject.adaptive.map(clean), situational: subject.situational.map(clean) }));
+      rewrittenDeltas.push(validateStateDeltaRecord({ ...delta, id: deltaIdMap.get(delta.id), subjectSnapshots,
+        supersedes: identityChanged ? delta.id : delta.supersedes,
+        fingerprint: await hash([delta.floorId, delta.floorMemoryId, subjectSnapshots, delta.noMaterialChange]), updatedAt: nowValue }, { expectedChatId: operation.chatId }));
+    }
+    let stateDeltas = filterReachableDeltas({ floors, floorMemories, stateDeltas: rewrittenDeltas });
     const referencedEntityIds = new Set();
     floorMemories.forEach(memory => collectFloorMemoryEntityIds(memory).forEach(id => referencedEntityIds.add(id)));
     stateDeltas.forEach(delta => delta.subjectSnapshots.forEach(subject => { referencedEntityIds.add(subject.subjectEntityId); for (const category of ['adaptive', 'situational']) subject[category].forEach(item => { if (item.towardEntityId) referencedEntityIds.add(item.towardEntityId); }); }));
     if (cache.baseline) { referencedEntityIds.add(cache.baseline.userPersona.entityId); referencedEntityIds.add(cache.baseline.characterCard.entityId); }
-    const entities = (cache.entities ?? []).filter(entity => (referencedEntityIds.has(entity.id) || (entity.firstSeenFloorId && floorIdSet.has(entity.firstSeenFloorId))) && (!entity.firstSeenFloorId || floorIdSet.has(entity.firstSeenFloorId)));
+    const entities = projectEntityFloorBounds((cache.entities ?? []).filter(entity => referencedEntityIds.has(entity.id)
+      || (entity.firstSeenFloorId && floorIdSet.has(entity.firstSeenFloorId))), floors, floorMemories, stateDeltas);
     const entityIds = new Set(entities.map(entity => entity.id));
     const baseline = cache.baseline && entityIds.has(cache.baseline.userPersona.entityId) && entityIds.has(cache.baseline.characterCard.entityId) ? cache.baseline : null;
     if (!baseline) stateDeltas = [];
@@ -593,9 +652,8 @@ export function createFoundationRuntime({
     const indexes = await buildFoundationIndexes({ chatId: operation.chatId, narrativeGeneration, checkpointId, floors, candidates: stableCandidates, entities, now: nowValue });
     const indexKeys = indexes.map(index => store.recordKey(index));
     const floorIds = floors.map(floor => floor.id);
-    const newFloors = floors.slice(prefixLength);
     const priorRealtimeOrigin = realtimeOriginFromReachable(cache);
-    const carriesRealtimeOrigin = ['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'earlyAssistantStarted'].includes(operation.reason) && !isBranch
+    const carriesRealtimeOrigin = ['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'earlyAssistantStarted'].includes(operation.reason) && !identityChanged
       && (emptyRealtimeObservation?.chatId === operation.chatId || priorRealtimeOrigin !== null);
     const realtimeOrigin = carriesRealtimeOrigin ? {
       chatId: operation.chatId,
@@ -606,7 +664,7 @@ export function createFoundationRuntime({
       ...commonRecord({ recordType: 'run', id: runId, chatId: operation.chatId, narrativeGeneration, now: nowValue }),
       parentCheckpointId, inputSnapshotFingerprint: snapshot.fingerprint,
       mode, sessionEpoch: operation.epoch, inputFloorIds: newFloors.map(floor => floor.id), completedFloorIds: [], failedItems: [], diagnostics: diagnosticsWithRealtimeOrigin(cache.run?.diagnostics, realtimeOrigin),
-      preparedRecordRefs: [...newFloors.map(floor => `v3-floor-${floor.id}`), ...(currentState ? [store.recordKey(currentState)] : []), ...indexKeys, `v3-checkpoint-${checkpointId}`], startedAt: operation.startedAt,
+      preparedRecordRefs: [...newFloors.map(floor => `v3-floor-${floor.id}`), ...stateDeltas.filter(delta => !(cache.stateDeltas ?? []).some(prior => prior.id === delta.id)).map(delta => store.recordKey(delta)), ...(currentState ? [store.recordKey(currentState)] : []), ...indexKeys, `v3-checkpoint-${checkpointId}`], startedAt: operation.startedAt,
     };
     let run = await persistRunPhase(operation, 'capturing');
     run = await persistRunPhase(operation, 'validating');
@@ -626,7 +684,8 @@ export function createFoundationRuntime({
       validation: { ...actualValidation, stateFingerprint },
     }, { expectedChatId: operation.chatId });
     run = await persistRunPhase(operation, 'sealing');
-    await persistPreparedRecords(operation, [...newFloors, ...(currentState ? [currentState] : []), ...indexes]);
+    const newStateDeltas = stateDeltas.filter(delta => !(cache.stateDeltas ?? []).some(prior => prior.id === delta.id));
+    await persistPreparedRecords(operation, [...newFloors, ...newStateDeltas, ...(currentState ? [currentState] : []), ...indexes]);
     const checkpointResult = await persistPreparedRecord(operation, checkpoint);
     if (checkpointResult.status === 'conflict') throw Object.assign(new Error('V3 staged checkpoint 冲突'), { code: 'V3_STAGED_CONFLICT' });
     if (!['saved', 'reused'].includes(checkpointResult.status)) throw statusError(checkpointResult.status, 'V3 staged checkpoint 写入失败');
@@ -716,7 +775,7 @@ export function createFoundationRuntime({
     cache = { ...cache, run: completedRun };
     emptyRealtimeObservation = floors.length === 0 ? Object.freeze({ chatId: operation.chatId }) : null;
     pending = candidates[stableCount] ?? null;
-    lastRun = runSummary(completedRun, isBranch ? `trustedPrefix:${prefixLength}` : 'committed');
+    lastRun = runSummary(completedRun, 'committed');
     lastError = null;
     return publishOperation(operation, 'ready');
   }
@@ -745,11 +804,12 @@ export function createFoundationRuntime({
         const captured = capture();
         operation.chatId = captured.identity.chatId;
         operation.identity = captured.identity;
+        operation.chatComplete = captured.host.capabilities?.chatComplete;
         const loaded = await load(operation);
         if (!loaded || current(operation) !== 'current') return publishOperation(operation, 'stale');
         const scanMetrics = {};
         const started = globalThis.performance?.now?.() ?? Date.now();
-        const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions(), metrics: scanMetrics });
+        const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions(), chatId: captured.identity.chatId, metrics: scanMetrics });
         const elapsed = (globalThis.performance?.now?.() ?? Date.now()) - started;
         if (current(operation) !== 'current') return publishOperation(operation, 'stale');
         metrics = Object.freeze({ assistantFloors: candidates.length, canonicalCharacters: candidates.reduce((sum, item) => sum + item.canonicalContent.length, 0), scanMs: elapsed, maximumChunkMs: scanMetrics.maximumChunkMs ?? elapsed, algorithm: 'ordered-O(n)' });
@@ -873,6 +933,23 @@ export function createFoundationRuntime({
     publish('ready');
     return true;
   }
+  function holdExtractionConfirmation(floorId, token) {
+    if (typeof floorId !== 'string' || typeof token !== 'string' || !token
+      || !cache?.floors?.some(floor => floor.id === floorId)) return null;
+    const current = requestConfirmations.get(floorId) ?? new Set();
+    current.add(token);
+    requestConfirmations.set(floorId, current);
+    let released = false;
+    return () => {
+      if (released) return false;
+      released = true;
+      const values = requestConfirmations.get(floorId);
+      if (!values) return false;
+      values.delete(token);
+      if (!values.size) requestConfirmations.delete(floorId);
+      return true;
+    };
+  }
   return Object.freeze({
     bind,
     start: () => enabled() ? reconcile('start') : Promise.resolve(publish('disabled')),
@@ -882,7 +959,7 @@ export function createFoundationRuntime({
     stabilizeThrough: boundary => reconcile('earlyAssistantStarted', { stableThrough: boundary }),
     cancelEarlyStabilization,
     confirmLatest: () => pending ? reconcile('manualConfirm', { confirmLatest: true }) : Promise.resolve(publish('ready')),
-    invalidate, setEnabled, adoptReachable, getState: () => publicState,
+    invalidate, setEnabled, adoptReachable, holdExtractionConfirmation, getState: () => publicState,
     getReachable: () => cache,
     subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('V3 foundation listener 必须是函数'); subscribers.add(listener); return () => subscribers.delete(listener); },
     identityProvider: () => normalizedIdentity(contextProvider),

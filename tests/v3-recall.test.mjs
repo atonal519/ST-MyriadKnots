@@ -110,7 +110,7 @@ test('recall source 不暴露 staged、superseded、孤儿或旧分支 FloorMemo
   assert.doesNotMatch(JSON.stringify(result), /旧 swipe|未提交 staged|孤儿旧分支/);
 });
 
-test('recall source 只投影有效保存时间：自动时间核对当前原文，人工与 legacy 时间保留', async () => {
+test('recall source 永久投影已保存时间，正文变化、无宿主快照、人工与 legacy 均保留', async () => {
   const chat = [
     { is_user: false, is_system: false, mes: '第一楼原始正文' },
     { is_user: false, is_system: false, mes: '第二楼原始正文' },
@@ -130,9 +130,9 @@ test('recall source 只投影有效保存时间：自动时间核对当前原文
 
   const changed = structuredClone(snapshot); changed.chat[0].mes = '第一楼时间戳已变化';
   result = await read(changed);
-  assert.deepEqual(result.floorMemories[0].chronology, [], '自动时间与当前宿主原文不一致时不得继续投影');
+  assert.equal(result.floorMemories[0].chronology.length, 1, '正文变化不得撤销已保存时间');
   result = await read(null);
-  assert.deepEqual(result.floorMemories[0].chronology, [], '有 provenance 的自动时间无法核对当前原文时保守省略');
+  assert.equal(result.floorMemories[0].chronology.length, 1, '没有宿主快照也应保留已保存时间');
 
   value.run.diagnostics.floorProvenance[FLOOR1].timeEdited = true;
   result = await read(changed);
@@ -915,7 +915,25 @@ function rawReachableFromSource(source) {
   };
 }
 
-function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaultSelector = false, generateUtilityTask, queryBuilder = buildRecallQueryContext, saveChat = true, reachableReader, snapshotHook, fingerprint, automationSettings, memoryStatus, historicalMaintenance, realtimeOrigin, notifyUser } = {}) {
+async function singleFloorReachable({ text = '街上已经安静。', summary = '裴晚生曾在钟楼留下约定。', revision = 1, head = 'head-one', withMemory = true } = {}) {
+  const rawFingerprint = await fingerprintText(text);
+  const floor = {
+    id: 'floor-one', assistantSeq: 1,
+    hostLocator: { messageIndex: 0, swipeId: null, selectedSwipeIndex: null },
+    content: { rawFingerprint, canonicalFingerprint: rawFingerprint },
+  };
+  return {
+    status: 'ready', rootRevision: revision,
+    root: { chatId: CHAT, narrativeGeneration: GEN, headCheckpointId: head },
+    checkpoint: { id: head }, baseline: null, floors: [floor], entities: [], stateDeltas: [], currentStates: [],
+    floorMemories: withMemory ? [{
+      id: 'memory-one', floorId: floor.id, recordStatus: 'active',
+      summary: { effectiveSource: 'ai', aiText: summary }, ...emptyMemory,
+    }] : [],
+  };
+}
+
+function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaultSelector = false, generateUtilityTask, queryBuilder = buildRecallQueryContext, saveChat = true, reachableReader, rootReader, prepareMemory, preparationTimeoutMs, snapshotHook, fingerprint, automationSettings, memoryStatus, historicalMaintenance, realtimeOrigin, notifyUser } = {}) {
   const prompts = [];
   const handlers = new Map();
   const userMessage = { is_user: true, is_system: false, mes: '阿裴，我们回钟楼赴约。' };
@@ -935,7 +953,10 @@ function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaul
     snapshot: () => { const wrapper = { ...context, chat }; contextWrappers.push(wrapper); const value = { context: wrapper, chat }; snapshots += 1; currentSnapshotHook?.({ count: snapshots, value, chat, userMessage, handlers }); return value; },
   };
   const runtime = createV3RecallRuntime({
-    store: { readReachable: reachableReader ?? (async () => rawReachableFromSource(source)) },
+    store: {
+      readReachable: reachableReader ?? (async () => rawReachableFromSource(source)),
+      ...(rootReader ? { readRoot: rootReader } : {}),
+    },
     hostAdapter,
     sourceReader: sourceReader ?? (async () => structuredClone(source)),
     ...(useDefaultSelector ? {} : { selector }),
@@ -946,6 +967,8 @@ function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaul
     ...(historicalMaintenance ? { historicalMaintenance } : {}),
     ...(realtimeOrigin ? { realtimeOrigin } : {}),
     ...(notifyUser ? { notifyUser } : {}),
+    ...(prepareMemory ? { prepareMemory } : {}),
+    ...(preparationTimeoutMs ? { preparationTimeoutMs } : {}),
     ...(fingerprint ? { fingerprint } : {}),
     now: () => new Date(NOW),
     logger: { warn() {} },
@@ -1077,7 +1100,7 @@ test('覆盖推导区分历史欠账与最近 3 个可见 AI 楼保护下的连�
   assert.equal((await assessMemoryCoverageFromHost({ reachable: { ...longTail, run: { mode: 'branchReplay' } }, snapshot: longSnapshot })).summaryStatus, 'historicalDebt', 'branchReplay 不自动补历史摘要');
 });
 
-test('历史维护门禁在正式 interceptor 前门禁同步 abort 主生成，quiet 不受影响', async () => {
+test('后台历史维护不覆盖已验证召回来源，quiet 仍不读取来源', async () => {
   const notifications = [];
   let maintenance = true;
   let sourceReads = 0;
@@ -1090,11 +1113,11 @@ test('历史维护门禁在正式 interceptor 前门禁同步 abort 主生成，
   let mainApiCalls = 0;
   await harness.runtime.intercept(harness.chat, 12000, value => { aborted = value === true; }, 'normal');
   if (!aborted) mainApiCalls += 1;
-  assert.equal(aborted, true);
-  assert.equal(mainApiCalls, 0);
-  assert.equal(sourceReads, 0, '门禁必须先于召回读取和主 API 请求');
-  assert.deepEqual(harness.runtime.getState().lastRecall.skipReasons, ['memoryRebuilding']);
-  assert.deepEqual(notifications, [{ kind: 'warning', text: '历史记忆正在重建，请等待完成或先暂停重建。' }]);
+  assert.equal(aborted, false);
+  assert.equal(mainApiCalls, 1);
+  assert.equal(sourceReads, 1, '有效来源可用时后台同步不应阻断召回');
+  assert.equal(harness.runtime.getState().lastRecall.status, 'ready');
+  assert.deepEqual(notifications, []);
 
   let quietAborted = false;
   await harness.runtime.intercept(harness.chat, 12000, value => { quietAborted = value === true; }, 'quiet');
@@ -1105,12 +1128,12 @@ test('历史维护门禁在正式 interceptor 前门禁同步 abort 主生成，
   let retryAborted = false;
   await harness.runtime.intercept(harness.chat, 12000, value => { retryAborted = value === true; }, 'normal');
   assert.equal(retryAborted, false);
-  assert.equal(sourceReads, 1);
+  assert.equal(sourceReads, 2);
 });
 
-test('历史记忆未就绪时召回只记录明确门禁状态，零 prompt 注入且不阻断 interceptor 完成', async () => {
+test('历史记忆未就绪时召回同步停止主生成并显示明确错误，零 prompt 注入', async () => {
   for (const [memory, automation, expected] of [
-    [{ activeAutoMemory: { phase: 'extracting', mode: 'historical' } }, true, ['memoryRebuilding']],
+    [{ activeAutoMemory: { phase: 'extracting', mode: 'historical' } }, true, ['memoryNotReady', 'historicalRebuildRequired']],
     [{ lastAutoMemory: { status: 'failed' } }, true, ['memoryNotReady', 'memoryRebuildFailed']],
     [null, false, ['memoryNotReady', 'historicalRebuildRequired']],
   ]) {
@@ -1122,17 +1145,19 @@ test('历史记忆未就绪时召回只记录明确门禁状态，零 prompt 注
       automationSettings: () => ({ enabled: automation }),
       memoryStatus: () => memory,
     });
-    const result = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+    let aborted = false;
+    const result = await harness.runtime.intercept(harness.chat, 12000, value => { aborted = value === true; }, 'normal');
     assert.equal(result.lastRecall.status, 'skipped');
     assert.deepEqual(result.lastRecall.skipReasons, expected);
     assert.equal(result.lastRecall.userMessageIndex, 1);
     assert.equal(selectorCalls, 0);
+    assert.equal(aborted, true);
     assert.equal(harness.saves, 0);
     assert.ok(harness.prompts.every(call => call[1] === ''));
   }
 });
 
-test('受最近正文保护的连续实时尾部不会被历史门禁提前拦截', async () => {
+test('只有状态名而没有 actual core 正文证明的实时尾部会停止主生成', async () => {
   let selectorCalls = 0;
   const harness = createRuntimeHarness({
     sourceReader: async () => ({ ...runtimeFixture(), readiness: { status: 'realtimeTail' } }),
@@ -1140,10 +1165,12 @@ test('受最近正文保护的连续实时尾部不会被历史门禁提前拦�
     memoryStatus: () => null,
     selector: () => { selectorCalls += 1; throw new Error('selector-reached'); },
   });
-  const result = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
-  assert.equal(selectorCalls, 1);
-  assert.equal(result.lastRecall.status, 'error');
-  assert.deepEqual(result.lastRecall.skipReasons, ['error']);
+  let aborted = false;
+  const result = await harness.runtime.intercept(harness.chat, 12000, value => { aborted = value === true; }, 'normal');
+  assert.equal(selectorCalls, 0);
+  assert.equal(aborted, true);
+  assert.equal(result.lastRecall.status, 'skipped');
+  assert.deepEqual(result.lastRecall.skipReasons, ['memoryNotReady', 'historicalRebuildRequired']);
 });
 
 test('runtime normal 先完成一次 prompt commit，再最多保存一次 schema9 completed user 收据且不产生 pending', async () => {
@@ -1211,7 +1238,7 @@ test('runtime LLM局部失败在有效commit后只提示一次关键词降级', 
   assert.deepEqual(notifications, [{ kind: 'warning', text: '历史智能选材暂时不可用，本次已使用本地关键词召回。' }]);
 });
 
-test('runtime 摘要 caughtUp 不等待 CSE，实时尾只在既有维护条件放行，真实缺口与 unknown 保持门禁', async () => {
+test('runtime 摘要 caughtUp 不等待 CSE，实时尾只凭 actual core 覆盖放行，真实缺口与 unknown 保持门禁', async () => {
   const projectedBase = runtimeFixture();
   projectedBase.floorMemories = [projectedBase.floorMemories[1]];
   projectedBase.coverage = { stableAiFloors: 1, stableThroughAssistantSeq: 2, rememberedAiFloors: 1, missingAssistantSeq: [], cseThroughAssistantSeq: 0, memoryComplete: true, cseCurrent: false };
@@ -1221,15 +1248,16 @@ test('runtime 摘要 caughtUp 不等待 CSE，实时尾只在既有维护条件�
     hostLocator: { messageIndex: 0, swipeId: null, selectedSwipeIndex: null },
     rawFingerprint: await fingerprintText('街上已经安静。'), canonicalFingerprint: await fingerprintText('街上已经安静。'),
   }];
+  projectedBase.bodyMatchRefs = structuredClone(reachableBase.bodyMatchRefs);
   for (const [summaryStatus, realtimeActive, readinessStatus, expectedReached] of [
     ['caughtUp', false, 'historicalDebt', true],
     ['realtimeTail', true, 'historicalDebt', true],
-    ['realtimeTail', false, 'historicalDebt', false],
+    ['realtimeTail', false, 'historicalDebt', true],
     ['historicalDebt', true, 'historicalDebt', false],
     ['caughtUp', false, 'unknown', false],
   ]) {
     let reached = 0;
-    const source = { ...structuredClone(projectedBase), readiness: { status: readinessStatus, summaryStatus } };
+    const source = { ...structuredClone(projectedBase), readiness: { status: readinessStatus, hostConfirmed: readinessStatus !== 'unknown', summaryStatus, summaryPendingFloorIds: summaryStatus === 'realtimeTail' ? ['floor-2'] : [] } };
     const harness = createRuntimeHarness({
       sourceReader: async () => source,
       reachableReader: async () => rawReachableFromSource(reachableBase),
@@ -1239,8 +1267,135 @@ test('runtime 摘要 caughtUp 不等待 CSE，实时尾只在既有维护条件�
     const result = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
     const label = `${readinessStatus}/${summaryStatus}/${realtimeActive}`;
     assert.equal(reached, expectedReached ? 1 : 0, label);
-    assert.equal(result.lastRecall.status, expectedReached ? 'ready' : 'skipped', label);
+    assert.equal(expectedReached ? ['ready', 'empty'].includes(result.lastRecall.status) : result.lastRecall.status === 'skipped', true, label);
   }
+});
+
+test('唯一未登记尾 AI 必须由 actual core 唯一正文证明，缺失或重复正文都停止生成', async () => {
+  const raw = await singleFloorReachable({ text: '已经保存的前楼。', summary: '钟楼旧约已保存。' });
+  for (const scenario of ['covered', 'missing', 'duplicate']) {
+    let selectorCalls = 0;
+    const notifications = [];
+    const harness = createRuntimeHarness({
+      sourceReader: options => readRecallSource(options),
+      reachableReader: async () => structuredClone(raw),
+      notifyUser: value => notifications.push(value),
+      selector: input => { selectorCalls += 1; return selectRecall(input); },
+    });
+    harness.chat.splice(0, harness.chat.length,
+      { is_user: false, is_system: false, mes: '已经保存的前楼。' },
+      { is_user: false, is_system: false, mes: '尚未登记的尾楼正文。' },
+      harness.userMessage,
+    );
+    const core = scenario === 'covered'
+      ? structuredClone(harness.chat)
+      : scenario === 'missing'
+        ? [structuredClone(harness.userMessage)]
+        : [{ is_user: false, is_system: false, mes: '尚未登记的尾楼正文。' }, { is_user: false, is_system: false, mes: '尚未登记的尾楼正文。' }, structuredClone(harness.userMessage)];
+    let aborted = false;
+    const result = await harness.runtime.intercept(core, 12000, value => { aborted = value === true; }, 'normal');
+    assert.equal(selectorCalls, scenario === 'covered' ? 1 : 0, scenario);
+    assert.equal(aborted, scenario !== 'covered', scenario);
+    assert.equal(result.lastRecall.status === 'skipped', scenario !== 'covered', scenario);
+    assert.equal(notifications.length, scenario === 'covered' ? 0 : 1, scenario);
+  }
+});
+
+test('真实 CSE 投影损坏只降级人物状态，已完整摘要仍可召回', async () => {
+  const raw = await singleFloorReachable();
+  raw.stateDeltas = [{
+    id: 'broken-delta', floorId: 'floor-one', floorMemoryId: 'memory-one', recordStatus: 'active',
+    subjectSnapshots: [{ subjectEntityId: PERSON, core: null, adaptive: [], situational: [] }],
+  }];
+  let selectorCalls = 0, aborted = false;
+  const harness = createRuntimeHarness({
+    sourceReader: options => readRecallSource(options),
+    reachableReader: async () => structuredClone(raw),
+    selector: input => { selectorCalls += 1; assert.deepEqual(input.source.currentState, []); return selectRecall(input); },
+  });
+  const result = await harness.runtime.intercept(structuredClone(harness.chat), 12000, value => { aborted = value === true; }, 'normal');
+  assert.equal(selectorCalls, 1);
+  assert.equal(aborted, false);
+  assert.equal(result.lastRecall.status, 'empty');
+});
+
+test('首次准备超时或确定失败会停止生成；未初始化新聊天正常放行且不取消共享准备', async () => {
+  for (const [kind, prepareMemory, expectedReason, expectedAbort] of [
+    ['timeout', () => new Promise(() => {}), 'memoryPreparationTimeout', true],
+    ['failed', async () => ({ status: 'error' }), 'memoryPreparationFailed', true],
+    ['new', async () => ({ status: 'uninitialized' }), 'sourceUnavailable', false],
+  ]) {
+    const notifications = [];
+    const harness = createRuntimeHarness({ prepareMemory, preparationTimeoutMs: 5, notifyUser: value => notifications.push(value) });
+    let aborted = false;
+    const result = await harness.runtime.intercept(harness.chat, 12000, value => { aborted = value === true; }, 'normal');
+    assert.equal(aborted, expectedAbort, kind);
+    assert.deepEqual(result.lastRecall.skipReasons, [expectedReason], kind);
+    assert.equal(notifications.length, expectedAbort ? 1 : 0, kind);
+  }
+});
+
+test('root 正常推进会 fresh 重投影并复核同一 actual core，不重跑 selector；新增摘要不使正文证明失效', async () => {
+  const initial = await singleFloorReachable({ withMemory: false, revision: 1, head: 'head-before' });
+  const current = await singleFloorReachable({ withMemory: true, revision: 2, head: 'head-after' });
+  let prepareCalls = 0, selectorCalls = 0;
+  const harness = createRuntimeHarness({
+    prepareMemory: async ({ preferCached }) => {
+      prepareCalls += 1;
+      assert.equal(preferCached, prepareCalls === 1);
+      return { status: 'ready', reachable: structuredClone(prepareCalls === 1 ? initial : current) };
+    },
+    rootReader: async () => ({ status: 'ready', revision: 2, data: structuredClone(current.root) }),
+    selector: input => { selectorCalls += 1; return selectRecall(input); },
+  });
+  const result = await harness.runtime.intercept(structuredClone(harness.chat), 12000, null, 'normal');
+  assert.equal(selectorCalls, 1);
+  assert.equal(prepareCalls, 2, 'root 变化后必须 fresh 准备一次');
+  assert.equal(result.lastRecall.status, 'empty');
+});
+
+test('root 变化后 fresh winner 已删除选中楼时拒绝旧选择，正常无关推进仍允许注入', async () => {
+  for (const removed of [false, true]) {
+    const initial = await singleFloorReachable({ revision: 1, head: 'head-before' });
+    const current = await singleFloorReachable({ revision: 2, head: 'head-after' });
+    if (removed) { current.floors = []; current.floorMemories = []; }
+    let prepareCalls = 0, selectorCalls = 0;
+    const notifications = [];
+    const harness = createRuntimeHarness({
+      prepareMemory: async () => ({ status: 'ready', reachable: structuredClone(++prepareCalls === 1 ? initial : current) }),
+      rootReader: async () => ({ status: 'ready', revision: 2, data: structuredClone(current.root) }),
+      notifyUser: value => notifications.push(value),
+      selector: input => { selectorCalls += 1; return selectRecall(input); },
+    });
+    let abortCalls = 0;
+    const result = await harness.runtime.intercept([structuredClone(harness.userMessage)], 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
+    assert.equal(selectorCalls, 1, String(removed));
+    assert.equal(prepareCalls, 2, String(removed));
+    assert.equal(result.lastRecall.status, removed ? 'stale' : 'ready', String(removed));
+    assert.equal(abortCalls, removed ? 1 : 0, String(removed));
+    assert.equal(notifications.length, removed ? 1 : 0, String(removed));
+    if (removed) {
+      assert.deepEqual(result.lastRecall.skipReasons, ['selectedRefsChanged']);
+      assert.ok(harness.prompts.every(call => call[1] === ''));
+    }
+  }
+});
+
+test('root 变化后的 fresh 准备失败会停止生成并保持零 prompt', async () => {
+  const initial = await singleFloorReachable();
+  let prepareCalls = 0, abortCalls = 0;
+  const notifications = [];
+  const harness = createRuntimeHarness({
+    prepareMemory: async () => ++prepareCalls === 1 ? { status: 'ready', reachable: structuredClone(initial) } : { status: 'error' },
+    rootReader: async () => ({ status: 'ready', revision: 2, data: { ...structuredClone(initial.root), headCheckpointId: 'new-head' } }),
+    notifyUser: value => notifications.push(value),
+  });
+  const result = await harness.runtime.intercept([structuredClone(harness.userMessage)], 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
+  assert.equal(result.lastRecall.status, 'stale');
+  assert.deepEqual(result.lastRecall.skipReasons, ['sourceUnavailable']);
+  assert.equal(abortCalls, 1);
+  assert.equal(notifications.length, 1);
+  assert.ok(harness.prompts.every(call => call[1] === ''));
 });
 
 test('runtime 在LLM选材等待中停止 generation 会丢弃结果，不以fallback复活旧BM25', async () => {

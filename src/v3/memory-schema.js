@@ -81,10 +81,16 @@ function itemCommon(item, keys, path) {
 
 export function validateFloorMemory(input, { expectedChatId } = {}) {
   const value = clone(input);
-  exact(value, ['schemaVersion', 'recordType', 'id', 'chatId', 'narrativeGeneration', 'floorId', 'extractorVersion', 'summary', 'summaryEvidenceRefs', ...ARRAY_FIELDS, 'createdAt', 'updatedAt', 'recordStatus', 'supersedes'], 'V3_FLOORMEMORY_INVALID');
+  const hasSourceSnapshot = Object.hasOwn(value, 'sourceCanonicalContent');
+  const hasSourceRawFingerprint = Object.hasOwn(value, 'sourceRawFingerprint');
+  const hasSourceStoryClockSignature = Object.hasOwn(value, 'sourceStoryClockSignature');
+  exact(value, ['schemaVersion', 'recordType', 'id', 'chatId', 'narrativeGeneration', 'floorId', 'extractorVersion', ...(hasSourceSnapshot ? ['sourceCanonicalContent'] : []), ...(hasSourceRawFingerprint ? ['sourceRawFingerprint'] : []), ...(hasSourceStoryClockSignature ? ['sourceStoryClockSignature'] : []), 'summary', 'summaryEvidenceRefs', ...ARRAY_FIELDS, 'createdAt', 'updatedAt', 'recordStatus', 'supersedes'], 'V3_FLOORMEMORY_INVALID');
   common(value, 'floorMemory', expectedChatId);
   uuid(value.floorId, 'V3_FLOORMEMORY_INVALID', 'floorId');
   text(value.extractorVersion, 'V3_FLOORMEMORY_INVALID', 'extractorVersion', { max: 160 });
+  if (hasSourceSnapshot) text(value.sourceCanonicalContent, 'V3_FLOORMEMORY_INVALID', 'sourceCanonicalContent', { max: 200000 });
+  if (hasSourceRawFingerprint && (typeof value.sourceRawFingerprint !== 'string' || !HASH.test(value.sourceRawFingerprint))) fail('V3_FLOORMEMORY_INVALID', 'sourceRawFingerprint');
+  if (hasSourceStoryClockSignature && (typeof value.sourceStoryClockSignature !== 'string' || value.sourceStoryClockSignature.length > 500)) fail('V3_FLOORMEMORY_INVALID', 'sourceStoryClockSignature');
   exact(value.summary, ['aiText', 'userText', 'effectiveSource', 'revisionNote'], 'V3_FLOORMEMORY_INVALID', 'summary');
   text(value.summary.aiText, 'V3_FLOORMEMORY_INVALID', 'summary.aiText', { max: 4000 });
   if (value.summary.userText !== null) text(value.summary.userText, 'V3_FLOORMEMORY_INVALID', 'summary.userText', { max: 4000 });
@@ -200,6 +206,35 @@ export function collectFloorMemoryEntityIds(memory) {
   return result;
 }
 
+export function projectEntityFloorBounds(entities = [], floors = [], floorMemories = [], stateDeltas = []) {
+  const refsByFloor = new Map(floors.map(floor => [floor.id, new Set()]));
+  for (const memory of floorMemories) {
+    const refs = refsByFloor.get(memory.floorId);
+    if (refs) for (const id of collectFloorMemoryEntityIds(memory)) refs.add(id);
+  }
+  for (const delta of stateDeltas) {
+    const refs = refsByFloor.get(delta.floorId);
+    if (!refs) continue;
+    for (const subject of delta.subjectSnapshots ?? []) {
+      refs.add(subject.subjectEntityId);
+      for (const item of [...(subject.core ?? []), ...(subject.adaptive ?? []), ...(subject.situational ?? [])]) if (item.towardEntityId) refs.add(item.towardEntityId);
+    }
+  }
+  const bounds = new Map();
+  for (const floor of floors) for (const entityId of refsByFloor.get(floor.id) ?? []) {
+    const prior = bounds.get(entityId);
+    bounds.set(entityId, { first: prior?.first ?? floor.id, last: floor.id });
+  }
+  const liveFloorIds = new Set(floors.map(floor => floor.id));
+  return entities.map(entity => {
+    const bound = bounds.get(entity.id);
+    if (bound) return Object.freeze({ ...entity, firstSeenFloorId: bound.first, lastSeenFloorId: bound.last });
+    if ((entity.firstSeenFloorId === null || liveFloorIds.has(entity.firstSeenFloorId))
+      && (entity.lastSeenFloorId === null || liveFloorIds.has(entity.lastSeenFloorId))) return entity;
+    return Object.freeze({ ...entity, firstSeenFloorId: null, lastSeenFloorId: null });
+  });
+}
+
 export async function validateMemoryGraph({ root = null, checkpoint, run = null, floors = [], floorMemories = [], entities = [], indexes = [], indexKeys = [], allowMissingIndexes = false, allowLegacySnapshot = false } = {}) {
   const chatId = root?.chatId ?? checkpoint?.chatId;
   const safeMemories = floorMemories.map(memory => validateFloorMemory(memory, { expectedChatId: chatId }));
@@ -216,10 +251,10 @@ export async function validateMemoryGraph({ root = null, checkpoint, run = null,
     if (!memoryFloor || memory.narrativeGeneration !== memoryFloor.narrativeGeneration || seenFloors.has(memory.floorId)) fail('V3_MEMORY_GRAPH_FLOOR_REF_INVALID');
     seenFloors.add(memory.floorId);
     for (const entityId of collectFloorMemoryEntityIds(memory)) if (!entityIdSet.has(entityId)) fail('V3_MEMORY_GRAPH_ENTITY_REF_INVALID');
-    const floor = memoryFloor;
+    const sourceContent = memory.sourceCanonicalContent ?? memoryFloor.content.canonicalContent;
     const checkQuote = evidence => {
       let occurrence = 0, offset = -1;
-      while ((offset = floor.content.canonicalContent.indexOf(evidence.quotedText, offset + 1)) !== -1) { occurrence += 1; if (occurrence === evidence.occurrence) return true; }
+      while ((offset = sourceContent.indexOf(evidence.quotedText, offset + 1)) !== -1) { occurrence += 1; if (occurrence === evidence.occurrence) return true; }
       return false;
     };
     const evidence = [...memory.summaryEvidenceRefs];
@@ -227,7 +262,7 @@ export async function validateMemoryGraph({ root = null, checkpoint, run = null,
     if (evidence.some(item => !checkQuote(item))) fail('V3_MEMORY_GRAPH_EVIDENCE_INVALID');
     for (const anchor of memory.exactAnchors) {
       let occurrence = 0, offset = -1, found = false;
-      while ((offset = floor.content.canonicalContent.indexOf(anchor.exactText, offset + 1)) !== -1) { occurrence += 1; if (occurrence === anchor.occurrence) { found = true; break; } }
+      while ((offset = sourceContent.indexOf(anchor.exactText, offset + 1)) !== -1) { occurrence += 1; if (occurrence === anchor.occurrence) { found = true; break; } }
       if (!found) fail('V3_MEMORY_GRAPH_ANCHOR_INVALID');
     }
   }

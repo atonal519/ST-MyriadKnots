@@ -29,7 +29,7 @@ function backend() {
 function entity(id, name, extra = {}) {
   return { id, entityType: 'person', displayName: name, aliases: [{ name: `${name}别名` }], specialRole: 'none', firstSeenFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', lastSeenFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', status: 'established', recordStatus: 'active', ...extra };
 }
-function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many = false, permissionSettings = null, sourceCandidates = null, profilePromptGuidance = () => '' } = {}) {
+function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many = false, permissionSettings = null, sourceCandidates = null, profilePromptGuidance = () => '', processingPrompt = () => '' } = {}) {
   const db = backend(); let identity = { chatId: CHAT_A, hostChatId: 'host-a', characterLocator: 'char.png', personaLocator: 'persona.png' };
   const peopleEntities = ids.slice(0, many ? 12 : 4).map((id, index) => entity(id, `人物${index + 1}`));
   let reachable = {
@@ -43,7 +43,7 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
   const sourceTrace = [];
   const runtime = createPeopleWorkspaceRuntime({
     store: createPeopleWorkspaceStore({ client: db.client }), session: { identity: () => structuredClone(identity) },
-    foundationRuntime: { getReachable: () => reachable }, memoryRuntime, generateUtilityTask: generate, profilePromptGuidance,
+    foundationRuntime: { getReachable: () => reachable }, memoryRuntime, generateUtilityTask: generate, profilePromptGuidance, processingPrompt,
     sourcePermissions: { filterCandidates({ chatId, candidates }) { sourceTrace.push(['filter', chatId, candidates.map(item => item.id)]); return permissionSettings ? filterSourcesByPermission({ chatId, candidates, settings: permissionSettings }) : candidates.filter(item => item.id !== 'worldbook:excluded'); } },
     contextProvider: () => ({ chat: [], marker: identity.chatId }),
     scanner: async context => { sourceTrace.push(['scan', context.marker]); return { entries: [{ content: '<secret>DROP</secret><content>ALLOWED</content>' }, { content: 'EXCLUDED' }] }; },
@@ -76,14 +76,17 @@ test('v1 人工与生成资料无损归一到 v2，只有旧人工六字段获�
   assert.deepEqual(generated.profilesByEntityId[ids[0]].manualFields, []); assert.deepEqual(manual.avatarsByEntityId, {});
 });
 
-test('人物资料运行时冻结本次自定义指导，设置变化只在下一次整理生效', async () => {
+test('人物资料运行时冻结本次业务与破限提示词，设置变化只在下一次整理生效', async () => {
   let guidance = '第一版人物资料要求';
+  let processing = '  第一版破限\n';
+  let processingReads = 0;
   const prompts = [];
   const h = harness({
     profilePromptGuidance: () => guidance,
+    processingPrompt: () => { processingReads += 1; return processing; },
     generate: async options => {
       prompts.push(options.systemPrompt);
-      if (prompts.length === 1) guidance = '第二版人物资料要求';
+      if (prompts.length === 1) { guidance = '第二版人物资料要求'; processing = '第二版破限'; }
       const request = JSON.parse(options.taskMessages[0].content);
       return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, name: person.currentName, aliases: [], background: '', appearance: '', personality: '', notes: '' })) } };
     },
@@ -93,9 +96,17 @@ test('人物资料运行时冻结本次自定义指导，设置变化只在下�
   await h.runtime.generateMissingProfiles();
   await h.runtime.setSelectedEntityIds([h.peopleEntities[0].id, h.peopleEntities[1].id]);
   await h.runtime.generateMissingProfiles();
+  processing = ' \n\t ';
+  await h.runtime.setSelectedEntityIds([h.peopleEntities[0].id, h.peopleEntities[1].id, h.peopleEntities[2].id]);
+  await h.runtime.generateMissingProfiles();
   assert.match(prompts[0], /第一版人物资料要求/); assert.doesNotMatch(prompts[0], /第二版人物资料要求/);
   assert.match(prompts[1], /第二版人物资料要求/); assert.doesNotMatch(prompts[1], /第一版人物资料要求/);
-  assert.ok(prompts.every(prompt => prompt.split(BASE_PROCESSING_PROMPT).length - 1 === 1));
+  assert.ok(prompts[0].startsWith('  第一版破限\n\n\n')); assert.equal(prompts[0].includes(BASE_PROCESSING_PROMPT), false);
+  assert.ok(prompts[1].startsWith('第二版破限\n\n')); assert.equal(prompts[1].includes(BASE_PROCESSING_PROMPT), false);
+  assert.equal(prompts[2].split(BASE_PROCESSING_PROMPT).length - 1, 1);
+  assert.ok(prompts.every(prompt => prompt.includes(PROFILE_FIXED_CONTRACT)));
+  assert.equal(processingReads, 3);
+  assert.equal(Object.keys(h.runtime.getState().profilesByEntityId).length, 3, '设置变化不得使已保存人物资料撤销或自动重算');
 });
 
 test('人物资料真实 strict 生成链使用共享符号修复后仍校验 personKey 绑定', async () => {

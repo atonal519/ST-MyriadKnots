@@ -1,5 +1,5 @@
 import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
-import { assessMemoryCoverageFromHost, coverageHostFloorRawFingerprint } from './memory-coverage.js';
+import { assessMemoryCoverageFromHost } from './memory-coverage.js';
 
 const safeText = (value, maximum = 4000) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
 const aliasText = alias => safeText(typeof alias === 'string' ? alias : alias?.name, 500);
@@ -109,14 +109,6 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
   })));
   const floorSeq = new Map(floors.map(floor => [floor.id, floor.assistantSeq]));
   const readiness = hostSnapshot ? await assessMemoryCoverageFromHost({ reachable: first, snapshot: hostSnapshot, sanitizerOptions, captureGuard: true, realtimeOrigin }) : null;
-  const provenance = first.run?.diagnostics?.floorProvenance && typeof first.run.diagnostics.floorProvenance === 'object' ? first.run.diagnostics.floorProvenance : {};
-  const chronologyAllowed = floor => {
-    const metadata = provenance[floor.id];
-    if (metadata?.timeEdited === true) return true;
-    if (typeof metadata?.rawFingerprint !== 'string') return true;
-    const currentRawFingerprint = coverageHostFloorRawFingerprint(readiness, floor);
-    return typeof currentRawFingerprint === 'string' && currentRawFingerprint === metadata.rawFingerprint;
-  };
   const missingAssistantSeq = Object.freeze(floors.filter(floor => !(memoryGroups.get(floor.id) ?? []).some(memory => activeMemoryIds.has(memory.id))).map(floor => floor.assistantSeq));
   const throughAssistantSeq = floorSeq.get(trustedDeltas.at(-1)?.floorId) ?? 0;
   const stableThroughAssistantSeq = floors.at(-1)?.assistantSeq ?? 0;
@@ -142,19 +134,19 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     coverage,
     degradedReasons: Object.freeze(degradedReasons),
     entities,
-    bodyMatchRefs: Object.freeze(activeMemories.map(memory => {
-      const floor = floorById.get(memory.floorId);
+    bodyMatchRefs: Object.freeze([...floors.map(floor => {
+      const memory = activeMemories.find(value => value.floorId === floor.id) ?? null;
       if (!floor || !Number.isSafeInteger(floor.hostLocator?.messageIndex)
         || typeof floor.content?.rawFingerprint !== 'string' || typeof floor.content?.canonicalFingerprint !== 'string') return null;
       return Object.freeze({
-        floorId: floor.id, floorMemoryId: memory.id, assistantSeq: floor.assistantSeq,
+        floorId: floor.id, floorMemoryId: memory?.id ?? null, assistantSeq: floor.assistantSeq,
         hostLocator: Object.freeze({ messageIndex: floor.hostLocator.messageIndex, swipeId: floor.hostLocator.swipeId ?? null, selectedSwipeIndex: floor.hostLocator.selectedSwipeIndex ?? null }),
         rawFingerprint: floor.content.rawFingerprint, canonicalFingerprint: floor.content.canonicalFingerprint,
       });
-    }).filter(Boolean)),
+    }).filter(Boolean), ...(readiness?.unregisteredSummaryRefs ?? [])]),
     floorMemories: Object.freeze(activeMemories.map(memory => {
       const floor = floorById.get(memory.floorId);
-      return memoryDto(memory, floor, { chronologyAllowed: chronologyAllowed(floor), floorSeqById: floorSeq });
+      return memoryDto(memory, floor, { floorSeqById: floorSeq });
     })),
     currentState: stateDto(replayed, entities, floorSeq),
   });

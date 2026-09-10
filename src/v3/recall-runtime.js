@@ -305,8 +305,6 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
 }
 
 const sameBodyRef = (left, right) => Boolean(left && right
-  && left.floorId === right.floorId
-  && left.floorMemoryId === right.floorMemoryId
   && left.assistantSeq === right.assistantSeq
   && left.rawFingerprint === right.rawFingerprint
   && left.canonicalFingerprint === right.canonicalFingerprint
@@ -315,13 +313,13 @@ const sameBodyRef = (left, right) => Boolean(left && right
   && left.hostLocator?.selectedSwipeIndex === right.hostLocator?.selectedSwipeIndex);
 
 async function captureCoveredBodyGuards(source, currentSource, snapshot, sanitizerOptions, fingerprint) {
-  const sourceRefs = new Map((source.bodyMatchRefs ?? []).map(ref => [`${ref.floorId}|${ref.floorMemoryId}|${ref.assistantSeq}`, ref]));
-  const currentRefs = new Map((currentSource.bodyMatchRefs ?? []).map(ref => [`${ref.floorId}|${ref.floorMemoryId}|${ref.assistantSeq}`, ref]));
+  const sourceRefs = new Map((source.bodyMatchRefs ?? []).map(ref => [`${ref.floorId}|${ref.assistantSeq}`, ref]));
+  const currentRefs = currentSource.bodyMatchRefs ?? [];
   const guards = [];
   for (const covered of source.bodyMatch?.coveredRefs ?? []) {
-    const key = `${covered.floorId}|${covered.floorMemoryId}|${covered.assistantSeq}`;
+    const key = `${covered.floorId}|${covered.assistantSeq}`;
     const original = sourceRefs.get(key);
-    const current = currentRefs.get(key);
+    const current = currentRefs.find(ref => sameBodyRef(original, ref));
     if (!sameBodyRef(original, current)) return null;
     const message = snapshot?.chat?.[current.hostLocator.messageIndex];
     const selected = selectAssistantMessage(message);
@@ -349,7 +347,7 @@ function coveredBodyGuardsCurrent(guards, snapshot, sanitizerOptions) {
   });
 }
 
-export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, isEnabled = true, automationSettings = () => ({ enabled: false }), memoryStatus = () => null, historicalMaintenance = () => false, realtimeOrigin = () => false, notifyUser = null, sourceReader = readRecallSource, selector = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), now = () => new Date(), pluginVersion = '0.2.27', logger = console } = {}) {
+export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, isEnabled = true, automationSettings = () => ({ enabled: false }), memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = 5000, historicalMaintenance = () => false, realtimeOrigin = () => false, notifyUser = null, sourceReader = readRecallSource, selector = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), now = () => new Date(), pluginVersion = '0.2.27', logger = console } = {}) {
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 recall host adapter 无效');
   if (typeof fingerprint !== 'function') throw new TypeError('V3 recall fingerprint 无效');
@@ -364,15 +362,41 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     ? selector
     : input => selectRecallWithLlm({ ...input, generateUtilityTask, signal: input.signal });
   const readinessReasons = source => {
-    const memory = (() => { try { return typeof memoryStatus === 'function' ? memoryStatus() : memoryStatus; } catch { return null; } })();
-    if (memory?.activeAutoMemory?.mode === 'historical') return ['memoryRebuilding'];
-    if (!source?.readiness || ['caughtUp', 'realtimeTail'].includes(source.readiness.status)) return [];
-    if (source.readiness.status === 'unknown') return ['memoryNotReady', 'coverageUnconfirmed'];
+    if (!source?.readiness || source.readiness.status === 'caughtUp') return [];
+    if (source.readiness.status === 'unknown' && source.readiness.hostConfirmed !== true) return ['memoryNotReady', 'coverageUnconfirmed'];
+    const coveredFloorIds = new Set(source.bodyMatch?.coveredFloorIds ?? []);
+    const pendingSummaryFloorIds = source.readiness.summaryPendingFloorIds ?? [];
     if (source.readiness.summaryStatus === 'caughtUp') return [];
-    if (memory?.activeAutoMemory?.mode === 'realtime' && ['caughtUp', 'realtimeTail'].includes(source.readiness.summaryStatus)) return [];
+    if (source.readiness.hostConfirmed === true && pendingSummaryFloorIds.length
+      && pendingSummaryFloorIds.every(floorId => coveredFloorIds.has(floorId))) return [];
+    const memory = (() => { try { return typeof memoryStatus === 'function' ? memoryStatus() : memoryStatus; } catch { return null; } })();
     if (memory?.lastAutoMemory?.status === 'failed') return ['memoryNotReady', 'memoryRebuildFailed'];
     return ['memoryNotReady', 'historicalRebuildRequired'];
   };
+  async function preparedSource(snapshot, sanitizerSnapshot, { fresh = false } = {}) {
+    if (typeof prepareMemory === 'function') {
+      let timer = null;
+      const timeout = Symbol('memoryPreparationTimeout');
+      let prepared;
+      try {
+        prepared = await Promise.race([
+          Promise.resolve().then(() => prepareMemory({ preferCached: !fresh })),
+          new Promise(resolve => { timer = setTimeout(() => resolve(timeout), Math.max(1, Number(preparationTimeoutMs) || 5000)); }),
+        ]);
+      } catch (error) {
+        return Object.freeze({ status: 'unavailable', blockGeneration: !fresh, error: clean(error?.message ?? '记忆准备失败。'), sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: 'memoryPreparationFailed' }) });
+      } finally {
+        if (timer !== null) clearTimeout(timer);
+      }
+      if (prepared === timeout) return Object.freeze({ status: 'timeout', blockGeneration: !fresh, sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: 'memoryPreparationTimeout' }) });
+      if (prepared?.status === 'ready' && prepared.reachable?.root) {
+        return projectRecallSource(prepared.reachable, now, Object.freeze({ reachableReads: 0, exitPoint: 'validatedSnapshot' }), snapshot, sanitizerSnapshot, hasRealtimeOrigin());
+      }
+      const status = prepared?.status === 'error' ? 'unavailable' : prepared?.status ?? 'unavailable';
+      return Object.freeze({ status, blockGeneration: !fresh && status !== 'uninitialized', sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: 'memoryPreparation' }) });
+    }
+    return sourceReader({ store, now, hostSnapshot: snapshot, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin() });
+  }
   const notify = () => { const state = getState(); for (const listener of subscribers) { try { listener(state); } catch { /* listener isolation */ } } return state; };
   const prompt = (value, owner = null, checkedContext = null) => {
     const context = checkedContext ?? hostAdapter.snapshot().context;
@@ -450,15 +474,31 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const currentUserFingerprint = await fingerprint(beforeUser.message.mes);
     if (currentUserFingerprint !== userFingerprint) return { ok: false, reason: 'userChanged' };
     if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };
-    const reachable = await store.readReachable({ mode: 'projection' });
-    if (!['ready', 'needsReseal'].includes(reachable?.status) || !reachable?.root) return { ok: false, reason: reachable?.status === 'stale' ? 'sourceStale' : 'sourceUnavailable' };
-    if (reachable.root.chatId !== source.chatId) return { ok: false, reason: 'chatChanged' };
-    if (reachable.root.narrativeGeneration !== source.narrativeGeneration) return { ok: false, reason: 'narrativeChanged' };
-    const enforceReadiness = source.readiness !== null && source.readiness !== undefined;
-    const currentSource = await projectRecallSource(reachable, now, null, enforceReadiness ? before : null, currentSanitizerOptions(), hasRealtimeOrigin());
+      const enforceReadiness = source.readiness !== null && source.readiness !== undefined;
+      const canReadRoot = typeof store.readRoot === 'function';
+      const rootResult = canReadRoot ? await store.readRoot() : null;
+      let currentSource = source;
+      const sameRoot = rootResult?.status === 'ready'
+        && rootResult.revision === source.rootRevision
+        && rootResult.data?.chatId === source.chatId
+        && rootResult.data?.narrativeGeneration === source.narrativeGeneration
+        && rootResult.data?.headCheckpointId === source.headCheckpointId;
+      if (!sameRoot) {
+        if (canReadRoot) currentSource = await preparedSource(enforceReadiness ? before : null, currentSanitizerOptions(), { fresh: true });
+        else {
+          const reachable = await store.readReachable({ mode: 'projection' });
+          currentSource = ['ready', 'needsReseal'].includes(reachable?.status) && reachable?.root
+            ? await projectRecallSource(reachable, now, null, enforceReadiness ? before : null, currentSanitizerOptions(), hasRealtimeOrigin())
+            : Object.freeze({ status: reachable?.status === 'stale' ? 'stale' : 'unavailable' });
+        }
+        if (currentSource?.status !== 'ready') return { ok: false, reason: currentSource?.status === 'stale' ? 'sourceStale' : 'sourceUnavailable' };
+        if (currentSource.chatId !== source.chatId) return { ok: false, reason: 'chatChanged' };
+        if (currentSource.narrativeGeneration !== source.narrativeGeneration) return { ok: false, reason: 'narrativeChanged' };
+        currentSource = Object.freeze({ ...currentSource, bodyMatch: await attachCoreBodyMatch(currentSource, operation.coreBodyWitness, before, operation.sanitizerOptions, fingerprint) });
+      }
+    if (!sourceRefsValid({ selectedFloors, selectedStates }, currentSource)) return { ok: false, reason: 'selectedRefsChanged' };
     const notReady = enforceReadiness ? readinessReasons(currentSource) : [];
     if (notReady.length) return { ok: false, notReady: true, reasons: notReady };
-    if (!sourceRefsValid({ selectedFloors, selectedStates }, currentSource)) return { ok: false, reason: 'selectedRefsChanged' };
     const bodyGuardSanitizer = currentSanitizerOptions();
     const coveredBodyGuards = await captureCoveredBodyGuards(source, currentSource, before, bodyGuardSanitizer, fingerprint);
     if (coveredBodyGuards === null) return { ok: false, reason: 'narrativeChanged' };
@@ -502,12 +542,19 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     lastRecall = null; lastRecallBinding = null;
     active = operation; lastError = null; notify();
     const timings = {};
-    try {
-      if (MAIN_GENERATION_TYPES.has(type) && maintenanceActive()) {
+    const stopForMemoryReadiness = reasons => {
+      if (typeof abort === 'function') abort(true);
+      try { notifyUser?.({ kind: 'error', text: '当前聊天记忆尚未准备完成，本次生成已停止；用户输入仍保留，请在记忆管理中查看状态后重试。' }); } catch { /* notification must not affect the gate */ }
+      return finishSkipped(operation, reasons, timings);
+    };
+    const stopForFinalSafety = reason => {
+      if (!['chatChanged', 'userChanged', 'stopped', 'superseded', 'disabled'].includes(reason)) {
         if (typeof abort === 'function') abort(true);
-        try { notifyUser?.({ kind: 'warning', text: '历史记忆正在重建，请等待完成或先暂停重建。' }); } catch { /* notification must not affect the gate */ }
-        return finishSkipped(operation, 'memoryRebuilding', timings);
+        try { notifyUser?.({ kind: 'error', text: '生成前的记忆最终核验未通过，本次生成已停止；用户输入仍保留，请稍后重试。' }); } catch { /* notification must not affect the gate */ }
       }
+      return finishStale(operation, timings, reason);
+    };
+    try {
       if (lifecycle?.stopped) return finishStale(operation, timings, 'stopped');
       if (!enabled()) return finishSkipped(operation, 'disabled', timings);
       if (!SUPPORTED_TYPES.has(type)) return finishSkipped(operation, ['quiet', 'impersonate'].includes(type) ? type : 'unsupportedGenerationType', timings);
@@ -522,6 +569,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       const coreInput = Array.isArray(coreChat) ? coreChat : [];
       const queryContext = queryBuilder({ coreChat: coreInput, assistantTurns: 1 });
       const coreBodyWitness = await captureCoreBodyWitness(coreInput, sanitizerSnapshot, fingerprint);
+      operation.coreBodyWitness = coreBodyWitness;
+      operation.sanitizerOptions = sanitizerSnapshot;
       coreChat = null;
       const hostGuard = { userMessage: user.message, userText: user.message.mes };
       if (!queryContext.latestUserText) return finishSkipped(operation, 'emptyUserInput', timings);
@@ -530,15 +579,23 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       timings.inputMs = Date.now() - inputStarted;
       operation.phase = 'source'; notify();
       const sourceStarted = Date.now();
-      const readSource = await sourceReader({ store, now, hostSnapshot: before, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin() });
+      const readSource = await preparedSource(before, sanitizerSnapshot);
       const source = readSource?.status === 'ready'
         ? Object.freeze({ ...readSource, bodyMatch: await attachCoreBodyMatch(readSource, coreBodyWitness, before, sanitizerSnapshot, fingerprint) })
         : readSource;
       timings.sourceMs = Date.now() - sourceStarted;
       if (source?.sourceReadAttempts) timings.sourceReadAttempts = clone(source.sourceReadAttempts);
-      if (source.status !== 'ready') return finishSkipped(operation, source.status === 'stale' ? 'sourceStale' : 'sourceUnavailable', timings);
+      if (source.status !== 'ready') {
+        if (source.blockGeneration && SUPPORTED_TYPES.has(type)) {
+          if (typeof abort === 'function') abort(true);
+          const timeout = source.status === 'timeout';
+          try { notifyUser?.({ kind: 'error', text: timeout ? '当前聊天记忆在 5 秒内未准备完成，本次生成已停止；用户输入仍保留，请稍后重试。' : `当前聊天记忆读取失败，本次生成已停止；用户输入仍保留。${source.error ? ` ${source.error}` : ''}` }); } catch { /* notification must not affect the gate */ }
+          return finishSkipped(operation, timeout ? 'memoryPreparationTimeout' : 'memoryPreparationFailed', timings);
+        }
+        return finishSkipped(operation, source.status === 'stale' ? 'sourceStale' : 'sourceUnavailable', timings);
+      }
       const notReady = readinessReasons(source);
-      if (notReady.length) return finishSkipped(operation, notReady, timings);
+      if (notReady.length) return stopForMemoryReadiness(notReady);
       const afterSource = hostAdapter.snapshot();
       const afterUser = latestUser(afterSource);
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
@@ -554,7 +611,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         }
         if (candidate) {
           const committed = await commitPromptIfCurrent({ operation, source, selectedFloors: candidate.selectedFloors, selectedStates: candidate.selectedStates, userIndex: user.index, userFingerprint, hostGuard, injectionText: candidate.injectionText });
-          if (!committed.ok) return committed.notReady ? finishSkipped(operation, committed.reasons, timings) : finishStale(operation, timings, committed.reason);
+          if (!committed.ok) return committed.notReady ? stopForMemoryReadiness(committed.reasons) : stopForFinalSafety(committed.reason);
           if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
           timings.totalMs = Date.now() - operation.started;
           lastRecall = stateFromReceipt(candidate, { generationType: type, timings }); bindLastRecall(committed.snapshot, committed.user); lastError = null; active = null; notify(); return getState();
@@ -588,7 +645,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       };
       receiptBase.completionStatus = receiptBase.injectionText ? 'ready' : 'empty';
       const committed = await commitPromptIfCurrent({ operation, source, selectedFloors: receiptBase.selectedFloors, selectedStates: receiptBase.selectedStates, userIndex: user.index, userFingerprint, hostGuard, injectionText: receiptBase.injectionText });
-      if (!committed.ok) return committed.notReady ? finishSkipped(operation, committed.reasons, timings) : finishStale(operation, timings, committed.reason);
+      if (!committed.ok) return committed.notReady ? stopForMemoryReadiness(committed.reasons) : stopForFinalSafety(committed.reason);
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       if (receiptBase.skipReasons.includes('historySelectionFallback')) {
         try { notifyUser?.({ kind: 'warning', text: '历史智能选材暂时不可用，本次已使用本地关键词召回。' }); } catch { /* notification must not affect recall */ }

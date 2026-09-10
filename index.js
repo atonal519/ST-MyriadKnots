@@ -17,6 +17,7 @@ import { createHostAdapter } from './src/v3/host-adapter.js';
 import { createFoundationStore } from './src/v3/foundation-store.js';
 import { createFoundationRuntime } from './src/v3/foundation-runtime.js';
 import { createV3MemoryRuntime } from './src/v3/memory-runtime.js';
+import { persistMessageFloorAnchors } from './src/v3/message-floor-anchor.js';
 import { createV3RecallRuntime } from './src/v3/recall-runtime.js';
 import { createAutoHideController } from './src/v3/auto-hide.js';
 import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime } from './src/v3/people-workspace.js';
@@ -85,6 +86,7 @@ const sourcePermissions = createSourcePermissionController({ settings, contextPr
 const summaryPrompt = () => settings.get().summaryPrompt;
 const csePrompt = () => settings.get().csePrompt;
 const profilePrompt = () => settings.get().profilePrompt;
+const processingPrompt = () => settings.get().processingPrompt;
 const foundationStore = createFoundationStore({ client: backendClient, contextProvider: () => session.identity(), isEnabled: settings.isEnabled });
 const foundationRuntime = createFoundationRuntime({
   hostAdapter,
@@ -111,8 +113,10 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   onFullRebuildCommitted: () => v3RecallRuntime?.invalidate('fullRebuild'),
   extractorPromptGuidance: summaryPrompt,
   csePromptGuidance: csePrompt,
+  processingPrompt,
   filterWorldInfoSources: sourcePermissions.filterWorldInfoSources,
   sanitizerOptions,
+  persistAnchors: persistMessageFloorAnchors,
 });
 v3RecallRuntime = createV3RecallRuntime({
   store: foundationStore,
@@ -121,6 +125,7 @@ v3RecallRuntime = createV3RecallRuntime({
   isEnabled: settings.isEnabled,
   automationSettings: () => ({ enabled: settings.isEnabled() }),
   memoryStatus: () => v3MemoryRuntime.getState(),
+  prepareMemory: options => v3MemoryRuntime.prepareCurrent(options),
   historicalMaintenance: () => v3MemoryRuntime.shouldBlockMainGeneration(),
   realtimeOrigin: () => v3MemoryRuntime.allowsRealtimeTailFromEmpty(),
   notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
@@ -137,6 +142,7 @@ const peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
   contextProvider,
   sanitizerOptions,
   profilePromptGuidance: profilePrompt,
+  processingPrompt,
   isEnabled: settings.isEnabled,
 });
 const autoHideController = createAutoHideController({

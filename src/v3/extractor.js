@@ -93,10 +93,10 @@ ${EXTRACTOR_OUTPUT_CONTRACT}
 示例（此例的 payload.userIdentity.displayName 为“林岚”）：{"summary":"裴晚生打电话告诉林岚旧桥已封闭，要求林岚改走北门；两人约定晚上八点在钟楼会合，林岚答应带上仓库钥匙。失联向导是否安全仍待确认。","people":[{"name":"裴晚生","aliases":[],"role":"other","presence":"remote"},{"name":"林岚","aliases":["你","{{user}}"],"role":"user","presence":"remote"}],"events":[{"title":"通话告知与会合约定","description":"裴晚生在通话中告知旧桥封闭，并与林岚约定晚上八点在钟楼会合；改道、会合和携带钥匙尚未执行。"}],"informationTransfers":[{"from":"裴晚生","to":["林岚"],"claimText":"旧桥已经封闭","channel":"told"}],"commitments":[{"issuer":"裴晚生","recipient":"林岚","content":"晚上八点在钟楼会合","kind":"agreement","status":"accepted"},{"issuer":"林岚","recipient":"裴晚生","content":"会合时带上仓库钥匙","kind":"promise","status":"made"}],"openLoops":[{"description":"失联向导是否安全仍待确认","owners":["裴晚生","林岚"]}]}
 输出一个 JSON 对象，不要解释。`;
 
-export function buildExtractorSystemPrompt(guidance = '') {
+export function buildExtractorSystemPrompt(guidance = '', processingPrompt = '') {
   const custom = typeof guidance === 'string' ? guidance : '';
   const businessGuidance = custom.trim() ? custom : DEFAULT_EXTRACTOR_GUIDANCE;
-  return withBaseProcessingPrompt(`${businessGuidance}\n\n${EXTRACTOR_FIXED_CONTRACT}`);
+  return withBaseProcessingPrompt(`${businessGuidance}\n\n${EXTRACTOR_FIXED_CONTRACT}`, processingPrompt);
 }
 
 export const EXTRACTOR_SYSTEM_PROMPT = buildExtractorSystemPrompt();
@@ -457,7 +457,11 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
   const ambiguities = await convert('ambiguities', async item => ({ itemId: await itemId('ambiguities', item), question: generatedText(item.question, 'ambiguities.question', 2000), possibleReadings: array(item.possibleReadings, 'ambiguities.possibleReadings', 12).map((reading, i) => generatedText(reading, `ambiguities.possibleReadings[${i}]`, 1000)), evidenceRefs: evidence(item.evidence, 'ambiguities.evidence', { required: false }) }));
   const cseSignals = await convert('cseSignals', async item => ({ itemId: await itemId('cseSignals', item), subjectEntityId: pointer(item.subjectMentionKey, 'cseSignals.subjectMentionKey'), objectEntityId: pointer(item.objectMentionKey, 'cseSignals.objectMentionKey', { nullable: true }), signalType: item.signalType, description: generatedText(item.description, 'cseSignals.description', 2000), evidenceRefs: optionalEvidence(item, 'cseSignals.evidence') }));
   const memoryId = await deterministicUuid(['v3-floor-memory', floor.chatId, floor.narrativeGeneration, floor.id, expectedScope.batchId, EXTRACTOR_VERSION, response, supersedes]);
-  const memory = validateFloorMemory({ schemaVersion: 3, recordType: 'floorMemory', id: memoryId, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration, floorId: floor.id, extractorVersion: EXTRACTOR_VERSION,
+  const sourceRawFingerprint = /^sha256:[0-9a-f]{64}$/u.test(floor.content.rawFingerprint ?? '')
+    ? floor.content.rawFingerprint
+    : null;
+  const memory = validateFloorMemory({ schemaVersion: 3, recordType: 'floorMemory', id: memoryId, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration, floorId: floor.id, extractorVersion: EXTRACTOR_VERSION, sourceCanonicalContent: floor.content.canonicalContent,
+    ...(sourceRawFingerprint ? { sourceRawFingerprint } : {}),
     summary: { aiText: summary, userText: preservedSummary?.userText ?? null, effectiveSource: preservedSummary?.effectiveSource === 'user' && preservedSummary.userText ? 'user' : 'ai', revisionNote: preservedSummary?.effectiveSource === 'user' ? '重新提取后保留用户摘要' : null }, summaryEvidenceRefs,
     chronology, locations, participants, actions, observations, informationTransfers, privateCognition, commitments, eventFragments, exactAnchors, openLoops, ambiguities, cseSignals,
     createdAt: now, updatedAt: now, recordStatus: 'active', supersedes,
@@ -907,7 +911,7 @@ export function inferCanonicalCurrentTime(canonicalContent) {
   return relative ? Object.freeze({ text: relative, kind: 'relative' }) : null;
 }
 
-export async function runExtractorRequest({ generateUtilityTask, envelope, floor, existingEntities = [], now, supersedes = null, preservedSummary = null, expectedScope, promptGuidance = '', signal }) {
+export async function runExtractorRequest({ generateUtilityTask, envelope, floor, existingEntities = [], now, supersedes = null, preservedSummary = null, expectedScope, promptGuidance = '', processingPrompt = '', signal }) {
   if (typeof generateUtilityTask !== 'function') throw new TypeError('V3 Extractor utility route unavailable');
   if (!expectedScope) throw extractorError('V3_EXTRACTOR_LOCAL_SCOPE_INVALID', 'expectedScope');
   const validationErrors = [];
@@ -916,7 +920,7 @@ export async function runExtractorRequest({ generateUtilityTask, envelope, floor
   {
     let result;
     try {
-      const systemPrompt = buildExtractorSystemPrompt(promptGuidance);
+      const systemPrompt = buildExtractorSystemPrompt(promptGuidance, processingPrompt);
       result = await generateUtilityTask({ systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(envelope.request) }], maxTokens: 30000, temperature: 0, signal, includeCharacterCard: false, worldInfoSource: 'none', transportBudget, parseMode: 'semantic' });
       candidate = result?.jsonData ?? result?.textData ?? result;
       metadata = sanitizeTaskMetadata(result?.taskMetadata);

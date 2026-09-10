@@ -65,7 +65,7 @@ test('计划按最近 N 个真实 AI 的上一 AI 边界保留整段用户上下
   assert.deepEqual(plan.hideRanges, [{ start: 0, end: 1 }, { start: 3, end: 3 }], '旁白不得被自动隐藏接管');
 });
 
-test('宿主命令只处理可见目标并写稳定聊天标记；调大 N 与关闭只恢复千千结自有范围', async () => {
+test('宿主命令只处理可见目标并写稳定聊天标记；调大 N 保持隐藏，关闭只恢复千千结自有范围', async () => {
   const chat = [user('旧输入'), assistant('旧回复'), event('narrator_note'), user('中间输入'), assistant('中间回复'), user('最新输入'), assistant('最新回复')];
   chat[2].extra.keep = true;
   const commands = [];
@@ -81,17 +81,23 @@ test('宿主命令只处理可见目标并写稳定聊天标记；调大 N 与�
 
   h.values.autoHideKeepAiCount = 3;
   const expanded = await h.controller.applySettings({ enabled: true, keepAiCount: 3 });
-  assert.equal(expanded.status, 'applied'); assert.deepEqual(commands.slice(-2), ['/unhide 0-1', '/unhide 3-4']);
+  assert.equal(expanded.status, 'unchanged'); assert.deepEqual(commands, ['/hide 0-1', '/hide 3-4']);
+  for (const index of [0, 1, 3, 4]) { assert.equal(chat[index].is_system, true); assert.equal(chat[index].extra?.[AUTO_HIDE_MARKER_KEY]?.chatId, CHAT); }
+
+  await h.controller.restoreOwned();
+  assert.deepEqual(commands, ['/hide 0-1', '/hide 3-4', '/unhide 0-1', '/unhide 3-4']);
   for (const index of [0, 1, 3, 4]) { assert.equal(chat[index].is_system, false); assert.equal(chat[index].extra?.[AUTO_HIDE_MARKER_KEY], undefined); }
 
   chat[0].is_system = true; chat[0].extra = { manuallyHidden: true };
+  chat[1].is_system = true; chat[1].extra = { [AUTO_HIDE_MARKER_KEY]: { schemaVersion: 1, chatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' } };
   h.values.autoHideKeepAiCount = 1; await h.controller.applySettings({ enabled: true, keepAiCount: 1 });
   assert.equal(chat[0].extra[AUTO_HIDE_MARKER_KEY], undefined, '人工预隐藏消息不得补写所有权标记');
   h.values.autoHideEnabled = false; await h.controller.applySettings({ enabled: false });
   assert.equal(chat[0].is_system, true); assert.deepEqual(chat[0].extra, { manuallyHidden: true });
+  assert.equal(chat[1].is_system, true); assert.equal(chat[1].extra[AUTO_HIDE_MARKER_KEY].chatId, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', '其他聊天标记不得接管');
 });
 
-test('记忆重读空快照与在途分析不得恢复既有隐藏，确认覆盖回退与显式恢复仍生效', async () => {
+test('摘要与 CSE 状态、连续覆盖回退及删尾缩窗都不得恢复既有隐藏，覆盖恢复后只追加隐藏', async () => {
   const chat = [user('旧输入'), assistant('旧回复'), user('中间输入'), assistant('中间回复'), user('最新输入'), assistant('最新回复')];
   const commands = [];
   const h = harness({ chat, enabled: true, keepAiCount: 1, execute: commandExecutor(chat, commands) });
@@ -119,20 +125,53 @@ test('记忆重读空快照与在途分析不得恢复既有隐藏，确认覆�
   h.emit(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(commands, ['/hide 0-3'], '缺少 readiness 合同的状态不得当成已确认空覆盖');
 
-  await h.controller.restoreOwned();
-  assert.deepEqual(commands, ['/hide 0-3', '/unhide 0-3'], '显式恢复必须绕过 readiness 保护');
+  const unreliableStates = [
+    { name: 'ready 空 floors', value: { chatId: CHAT, memorySnapshotStatus: 'ready', floors: [] } },
+    { name: '首楼 CSE pending', patch: floors => [{ ...floors[0], cse: { status: 'pending' } }, ...floors.slice(1)] },
+    { name: '首楼 CSE failed', patch: floors => [{ ...floors[0], cse: { status: 'failed' } }, ...floors.slice(1)] },
+    { name: '首楼摘要缺失', patch: floors => [{ ...floors[0], memoryId: null }, ...floors.slice(1)] },
+    { name: '序号错位', patch: floors => [{ ...floors[0], assistantSeq: 2 }, ...floors.slice(1)] },
+    { name: '部分连续覆盖回退', patch: floors => floors.slice(0, 1) },
+  ];
+  for (const scenario of unreliableStates) {
+    const base = stateFor(chat);
+    h.setMemoryState(scenario.value ?? { ...base, floors: scenario.patch(base.floors) });
+    const result = await h.controller.reconcile();
+    assert.deepEqual(result.unhideRanges, [], `${scenario.name} 的普通规划不得生成恢复范围`);
+    assert.deepEqual(commands, ['/hide 0-3'], `${scenario.name} 不得发送 unhide`);
+    assert.deepEqual(chat.flatMap((message, index) => message.is_system !== true ? [index] : []), [4, 5], `${scenario.name} 后宿主仍看不到原隐藏历史`);
+  }
+
+  chat.push(user('新输入'), assistant('新回复'));
   h.setMemoryState(stateFor(chat));
-  await h.controller.reconcile();
-  assert.deepEqual(commands, ['/hide 0-3', '/unhide 0-3', '/hide 0-3']);
+  const appended = await h.controller.reconcile();
+  assert.equal(appended.status, 'applied');
+  assert.deepEqual(commands, ['/hide 0-3', '/hide 4-5'], '覆盖可靠后只追加隐藏新越界范围');
+  assert.deepEqual(appended.unhideRanges, []);
 
-  const confirmedFallback = stateFor(chat);
-  confirmedFallback.floors = confirmedFallback.floors.slice(0, 1);
-  h.setMemoryState(confirmedFallback);
-  h.emit(); await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(commands, ['/hide 0-3', '/unhide 0-3', '/hide 0-3', '/unhide 2-3'], '已确认覆盖回退仍须恢复不再可靠的范围');
+  chat.splice(-2, 2);
+  h.setMemoryState(stateFor(chat));
+  const shortened = await h.controller.reconcile();
+  assert.equal(shortened.status, 'unchanged'); assert.deepEqual(shortened.unhideRanges, []);
+  assert.deepEqual(commands, ['/hide 0-3', '/hide 4-5'], '删除尾楼缩短窗口不得恢复旧范围');
+  assert.deepEqual(chat.flatMap((message, index) => message.is_system !== true ? [index] : []), [], '删尾后剩余既有隐藏仍不进入宿主上下文');
 
   await h.controller.restoreOwned();
-  assert.deepEqual(commands, ['/hide 0-3', '/unhide 0-3', '/hide 0-3', '/unhide 2-3', '/unhide 0-1'], '显式恢复仍可恢复剩余自有范围');
+  assert.deepEqual(commands, ['/hide 0-3', '/hide 4-5', '/unhide 0-5'], '显式恢复仍可恢复当前聊天剩余自有范围');
+});
+
+test('后续范围验证失败只回滚该范围，不恢复此前已成功隐藏的独立范围', async () => {
+  const chat = [user('旧输入'), assistant('旧回复'), event('note'), user('中间输入'), assistant('中间回复'), user('最新输入'), assistant('最新回复')];
+  const commands = [];
+  const apply = commandExecutor(chat, commands);
+  const h = harness({ chat, execute: async command => {
+    if (command === '/hide 3-4') { commands.push(command); return; }
+    return apply(command);
+  } });
+  await assert.rejects(h.controller.reconcile(), error => error.code === 'QQJ_AUTO_HIDE_VERIFY_FAILED');
+  assert.deepEqual(commands, ['/hide 0-1', '/hide 3-4']);
+  for (const index of [0, 1]) { assert.equal(chat[index].is_system, true); assert.equal(chat[index].extra[AUTO_HIDE_MARKER_KEY].chatId, CHAT); }
+  for (const index of [3, 4]) { assert.equal(chat[index].is_system, false); assert.equal(chat[index].extra?.[AUTO_HIDE_MARKER_KEY], undefined); }
 });
 
 test('slash 在改动内存后失败会回滚可重试事实，下一次成功才留下隐藏与标记', async () => {
@@ -178,4 +217,17 @@ test('宿主聊天切换或 metadata 尚未绑定当前稳定 UUID 时不把旧�
   const h = harness({ chat, enabled: true, keepAiCount: 1, execute: commandExecutor(chat, commands) });
   h.context.chatMetadata.qianqianjie.chatId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
   assert.equal((await h.controller.reconcile()).status, 'stale'); assert.deepEqual(commands, []);
+
+  h.context.chatMetadata.qianqianjie.chatId = CHAT;
+  const apply = commandExecutor(chat, commands);
+  h.context.executeSlashCommandsWithOptions = async command => { await apply(command); h.context.chatId = 'new-host-chat'; };
+  await assert.rejects(h.controller.reconcile(), error => error.code === 'QQJ_AUTO_HIDE_CHAT_CHANGED');
+  assert.deepEqual(commands, ['/hide 0-1'], '聊天切换后不得继续旧计划的后续范围');
+  assert.equal(chat[0].is_system, false); assert.equal(chat[0].extra, undefined, '切换检测失败应回滚本范围的内存标记');
+
+  const disposedChat = [user('旧'), assistant('旧'), user('新'), assistant('新')];
+  const disposedCommands = [];
+  const disposed = harness({ chat: disposedChat, execute: commandExecutor(disposedChat, disposedCommands) });
+  disposed.controller.dispose();
+  assert.equal((await disposed.controller.reconcile()).status, 'disposed'); assert.deepEqual(disposedCommands, []);
 });

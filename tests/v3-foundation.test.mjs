@@ -26,6 +26,23 @@ const uuidFactory = (start = 0) => {
   return () => `${(++value).toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`;
 };
 
+function waitForRuntimeStatus(runtime, expected, message) {
+  return new Promise((resolve, reject) => {
+    let unsubscribe = () => {};
+    const timer = setTimeout(() => {
+      unsubscribe();
+      reject(new Error(`${message}: ${runtime.getState().status}`));
+    }, 5000);
+    const finish = () => {
+      clearTimeout(timer);
+      unsubscribe();
+      resolve();
+    };
+    unsubscribe = runtime.subscribe(state => { if (state.status === expected) finish(); });
+    if (runtime.getState().status === expected) finish();
+  });
+}
+
 function hostContext(chat = [assistant('A'), assistant('B'), assistant('C')], chatUuid = CHAT) {
   return {
     characterId: 0,
@@ -33,7 +50,7 @@ function hostContext(chat = [assistant('A'), assistant('B'), assistant('C')], ch
     chatId: `host-${chatUuid}`,
     characters: [{ avatar: 'character.png' }],
     userAvatar: 'persona.png',
-    chatMetadata: { qianqianjie: { schemaVersion: 1, chatId: chatUuid } },
+    chatMetadata: { integrity: 'complete', qianqianjie: { schemaVersion: 1, chatId: chatUuid } },
     chat,
     eventTypes: {},
     eventSource: { on() {} },
@@ -340,7 +357,7 @@ test('user 楼漂移只更新 locator 索引，不改变 floorId 或 assistantSe
   assert.equal(state.stableCount, 3);
 });
 
-test('pending swipe 只换候选；stable swipe 新建世代并保留可信前缀', async () => {
+test('pending swipe 只换候选；未摘要 stable swipe 在原世代替换本楼', async () => {
   const h = harness([assistant('A'), assistant('B'), assistant('C')], { enhanced: true });
   let state = await h.runtime.start();
   const rootKey = `chat-${CHAT}/v3-root`;
@@ -357,8 +374,8 @@ test('pending swipe 只换候选；stable swipe 新建世代并保留可信前�
   h.context.chat[1] = assistant('B2');
   state = await h.runtime.refreshStatus();
   const nextRoot = h.backend.records.get(rootKey).data;
-  assert.notEqual(nextRoot.narrativeGeneration, generation);
-  assert.equal(state.lastRun.result, 'trustedPrefix:1');
+  assert.equal(nextRoot.narrativeGeneration, generation);
+  assert.equal(state.lastRun.result, 'committed');
   assert.equal(state.stableCount, 2);
 });
 
@@ -422,7 +439,7 @@ test('旧全候选 snapshot 首次刷新只对齐一次，后续 pending-only �
   assert.equal(h.backend.calls.some(call => call[0] === 'put'), false);
 });
 
-test('成功 adopt 已验证图清除旧读取错误；失败 adopt 与单纯缓存命中仍保留错误', async () => {
+test('成功 fresh read 与 adopt 清除旧读取错误，失败 adopt 不洗绿', async () => {
   const h = harness();
   await h.runtime.start();
   const verified = structuredClone(h.runtime.getReachable());
@@ -435,10 +452,13 @@ test('成功 adopt 已验证图清除旧读取错误；失败 adopt 与单纯缓
 
   h.backend.setBeforeGet(null);
   state = await h.runtime.inspect('cacheOnly', { allowCached: true });
-  assert.equal(state.status, 'error', '单纯缓存命中不能把未成功的新鲜读取洗绿');
-  assert.equal(state.lastError, 'projection failed');
+  assert.equal(state.status, 'ready', '存在旧读取错误时必须跳过缓存快路并执行新鲜读取');
+  assert.equal(state.lastError, null);
+  h.backend.setBeforeGet(({ key }) => { if (key === 'v3-root') throw new Error('projection failed again'); });
+  state = await h.runtime.inspect('failedAgain', { allowCached: false });
+  assert.equal(state.status, 'error');
   assert.equal(h.runtime.adoptReachable({ ...verified, root: { ...verified.root, chatId: OTHER_CHAT } }), false);
-  assert.equal(h.runtime.getState().lastError, 'projection failed', '失败 adopt 不能清除读取错误');
+  assert.equal(h.runtime.getState().lastError, 'projection failed again', '失败 adopt 不能清除读取错误');
 
   assert.equal(h.runtime.adoptReachable(verified), true);
   assert.equal(h.runtime.getState().status, 'ready');
@@ -448,7 +468,7 @@ test('成功 adopt 已验证图清除旧读取错误；失败 adopt 与单纯缓
   assert.equal(state.lastError, null);
 });
 
-test('canonical 相同的稳定编辑不重建；标点级变化直接从最早楼 branchReplay', async () => {
+test('canonical 相同的未摘要稳定编辑保留楼；标点级变化只替换本楼', async () => {
   const h = harness([assistant(' A '), assistant('B'), assistant('C')]);
   await h.runtime.start();
   const firstRoot = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
@@ -464,12 +484,12 @@ test('canonical 相同的稳定编辑不重建；标点级变化直接从最早�
   h.context.chat[0] = assistant('A！');
   state = await h.runtime.refreshStatus();
   assert.equal(state.status, 'ready');
-  assert.equal(state.lastRun.mode, 'branchReplay');
-  assert.equal(state.lastRun.result, 'trustedPrefix:0');
-  assert.notEqual(h.backend.records.get(`chat-${CHAT}/v3-root`).data.narrativeGeneration, generation);
+  assert.equal(state.lastRun.mode, 'incremental');
+  assert.equal(state.lastRun.result, 'committed');
+  assert.equal(h.backend.records.get(`chat-${CHAT}/v3-root`).data.narrativeGeneration, generation);
 });
 
-test('删除早期 AI 后可信前缀严格为 f-1；official 最小参数与 Luker metadata 结果一致', async () => {
+test('删除未摘要早期 AI 后两种宿主均按现存楼提交', async () => {
   const outcomes = [];
   for (const enhanced of [false, true]) {
     const h = harness([assistant('A'), assistant('B'), assistant('C'), assistant('D')], { enhanced });
@@ -480,7 +500,7 @@ test('删除早期 AI 后可信前缀严格为 f-1；official 最小参数与 Lu
     const state = await h.runtime.refreshStatus();
     outcomes.push([state.stableCount, state.lastRun.result]);
   }
-  assert.deepEqual(outcomes, [[2, 'trustedPrefix:1'], [2, 'trustedPrefix:1']]);
+  assert.deepEqual(outcomes, [[2, 'committed'], [2, 'committed']]);
 });
 
 test('CAS 冲突时 root 不前移，staged 不成为 active', async () => {
@@ -697,7 +717,7 @@ test('明确 legacy 快照缺失可重建索引时从 root 可达 FloorRecord �
   assert.notEqual(state.headCheckpointId, root.headCheckpointId);
 });
 
-test('reachable 读模式按用途裁剪索引，projection 零索引读取且 full 保留完整校验', async () => {
+test('reachable 读模式按用途裁剪索引，projection 只读楼序索引且 full 保留完整校验', async () => {
   const h = harness();
   await h.runtime.start();
   const store = createFoundationStore({
@@ -708,7 +728,9 @@ test('reachable 读模式按用途裁剪索引，projection 零索引读取且 f
   const projected = await store.readReachable({ mode: 'projection' });
   assert.equal(projected.status, 'ready');
   assert.equal(projected.indexesComplete, false);
-  assert.equal(h.backend.calls.some(call => call[0] === 'get' && call[2].startsWith('v3-index-')), false);
+  const projectionIndexGets = h.backend.calls.filter(call => call[0] === 'get' && call[2].startsWith('v3-index-')).map(call => call[2]);
+  assert.ok(projectionIndexGets.length > 0);
+  assert.ok(projectionIndexGets.every(key => key.startsWith('v3-index-floorOrder-')));
 
   h.backend.calls.splice(0);
   const runtime = await store.readReachable({ mode: 'runtime' });
@@ -901,8 +923,9 @@ test('CHAT_CHANGED 先于 UUID 落盘时复用 session.prepare，最终 ready �
   const onUnhandled = reason => unhandled.push(reason);
   process.on('unhandledRejection', onUnhandled);
   try {
+    const ready = waitForRuntimeStatus(runtime, 'ready', 'CHAT_CHANGED 后地基未收敛');
     handlers.get('CHAT_CHANGED')();
-    await new Promise(resolve => setTimeout(resolve, 40));
+    await ready;
   } finally { process.off('unhandledRejection', onUnhandled); }
   assert.equal(prepareCalls, 1);
   assert.equal(runtime.getState().status, 'ready');
@@ -944,22 +967,24 @@ test('同 chat 两个并发 run 只有一个 root CAS 合法提交', async () =>
   assert.equal(checkpoint.floorRange.toAssistantSeq, 2);
 });
 
-test('swipe 删除：未选项不回退，当前选中项删除从该楼分歧', async () => {
+test('swipe 删除：未选项不回退，未摘要当前选中项按本楼替换', async () => {
   const swiped = (values, selected) => ({ is_user: false, is_system: false, mes: values[selected], swipes: values, swipe_id: selected });
   const h = harness([swiped(['A0', 'A1'], 0), assistant('B'), assistant('C')]);
   await h.runtime.start();
   await anchorLatest(h);
   const rootBefore = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`).data);
+  const floorIdsBefore = h.runtime.getReachable().floors.map(floor => floor.id);
   h.context.chat[0] = swiped(['A0'], 0);
   let state = await h.runtime.refreshStatus();
   assert.equal(state.headCheckpointId, rootBefore.headCheckpointId);
   h.context.chat[0] = swiped(['A2'], 0);
   state = await h.runtime.refreshStatus();
-  assert.equal(state.lastRun.result, 'trustedPrefix:0');
-  assert.notEqual(state.stableBoundary.floorId, rootBefore.stableBoundary.floorId);
+  assert.equal(state.lastRun.result, 'committed');
+  assert.notEqual(h.runtime.getReachable().floors[0].id, floorIdsBefore[0]);
+  assert.equal(state.stableBoundary.floorId, rootBefore.stableBoundary.floorId);
 });
 
-test('user 楼编辑不改正式链；稳定 AI 大面积重写仍为 f-1', async () => {
+test('user 楼编辑不改正式链；未摘要稳定 AI 大面积重写只提交对应楼', async () => {
   const h = harness([assistant('A'), user('x'), assistant('B'), user('y'), assistant('C'), assistant('D')]);
   await h.runtime.start();
   await anchorLatest(h);
@@ -969,7 +994,7 @@ test('user 楼编辑不改正式链；稳定 AI 大面积重写仍为 f-1', asyn
   assert.equal(state.headCheckpointId, before.headCheckpointId);
   h.context.chat.splice(2, 2, assistant('B-rewritten'), user('replacement-anchor'));
   state = await h.runtime.refreshStatus();
-  assert.equal(state.lastRun.result, 'trustedPrefix:1');
+  assert.equal(state.lastRun.result, 'committed');
 });
 
 test('malformed Schema、断裂 predecessor、错误 index ref 都阻止 foundation 提交验证', async () => {
@@ -1631,8 +1656,9 @@ test('真实聊天 session + lifecycle + V3 runtime 在 CHAT_CHANGED UUID 时序
   const onUnhandled = reason => unhandled.push(reason);
   process.on('unhandledRejection', onUnhandled);
   try {
+    const ready = waitForRuntimeStatus(runtime, 'ready', '身份落盘后地基未收敛');
     for (const handler of handlers.get('CHAT_CHANGED')) handler();
-    await new Promise(resolve => setTimeout(resolve, 60));
+    await ready;
   } finally { process.off('unhandledRejection', onUnhandled); }
   assert.equal(ensureCalls, 1);
   assert.equal(session.identity().chatId, CHAT);
@@ -1683,7 +1709,7 @@ test('MESSAGE_SENT 在 user 入列时稳定前一 AI；重复事件、同锚正�
   assert.equal(h.runtime.getReachable().floors[0].content.canonicalContent, 'AI0');
 });
 
-test('替换或删除 user 锚会分支并按连续前缀撤回', async () => {
+test('替换 user 正文不改变未摘要楼身份，删除唯一稳定证明仍撤回未保存楼', async () => {
   const h = harness([assistant('AI0'), user('U1'), assistant('AI2'), user('U3'), assistant('AI4')], { modernAnchors: true });
   let state = await h.runtime.start();
   assert.equal(state.stableCount, 2);
@@ -1693,8 +1719,8 @@ test('替换或删除 user 锚会分支并按连续前缀撤回', async () => {
   h.context.chat[1] = { ...user('U1 replacement'), send_date: 'replacement-anchor-1' };
   state = await h.runtime.refreshStatus();
   assert.equal(state.stableCount, 2);
-  assert.notEqual(h.runtime.getReachable().root.narrativeGeneration, oldGeneration, '同位置新 user 身份必须使第一楼分支');
-  assert.notDeepEqual(h.runtime.getReachable().floors.map(floor => floor.id), oldFloorIds);
+  assert.equal(h.runtime.getReachable().root.narrativeGeneration, oldGeneration);
+  assert.deepEqual(h.runtime.getReachable().floors.map(floor => floor.id), oldFloorIds);
 
   h.context.chat.splice(1, 1);
   h.handlers.get('MESSAGE_DELETED')(1);

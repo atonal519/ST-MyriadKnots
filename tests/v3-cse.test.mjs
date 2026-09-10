@@ -32,6 +32,14 @@ const legacyScanner = async (chat, options) => {
 };
 const uuidFactory = () => { let value = 100; return () => `${(++value).toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`; };
 
+async function waitFor(predicate, message) {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    if (predicate()) return;
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.fail(message);
+}
+
 function backendHarness({ conflictRootPut = null, beforeGet = null, beforePut = null } = {}) {
   const records = new Map();
   const getCalls = [];
@@ -107,8 +115,7 @@ test('baseline 一次冻结，只有已链接且宿主启用的世界书进入�
   h.context.characters[0].data.description = '事后更新的角色描述';
   h.context.chatMetadata.note_prompt = '事后更新的作者注释';
   state = await h.runtime.extractFloor(state.floors[0].floorId);
-  assert.equal(state.cseFloors[0].status, 'pending', 're-extract 后旧 delta 失效且不自动重跑 AI');
-  await h.runtime.retryStateAnalysis(state.floors[0].floorId);
+  assert.equal(state.cseFloors[0].status, 'ready', '明确重提必须在同一操作完成新摘要与 CSE');
   const latestRequest = JSON.parse(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).at(-1).taskMessages[0].content);
   assert.equal(latestRequest.payload.relevantBaseline.userPersona.description, '事后变化不得漂移');
   assert.equal(latestRequest.payload.relevantBaseline.characterCard.description, '事后更新的角色描述');
@@ -666,8 +673,7 @@ test('CSE 模型在途时固定本次来源，后续重算才读取更新的人�
 
   const floorId = state.floors[0].floorId;
   state = await h.runtime.extractFloor(floorId);
-  assert.equal(state.cseFloors[0].status, 'pending');
-  state = await h.runtime.retryStateAnalysis(floorId);
+  assert.equal(state.cseFloors[0].status, 'noChange');
   assert.equal(state.cseReady, true);
   assert.equal(requests[1].payload.relevantBaseline.userPersona.description, '模型在途时更新的人设');
   assert.equal(requests[1].payload.relevantBaseline.characterCard.description, '模型在途时更新的角色描述');
@@ -1067,6 +1073,8 @@ test('迟到 CSE 在聊天事件后不能污染 root，已成功 FloorMemory 仍
   await h.runtime.start();
   const pending = h.runtime.extractNext();
   await waiting;
+  h.context.chatId = 'host-other-chat';
+  h.context.chatMetadata.qianqianjie = { schemaVersion: 1, chatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' };
   h.emit('CHAT_CHANGED');
   release();
   await pending;
@@ -1077,25 +1085,7 @@ test('迟到 CSE 在聊天事件后不能污染 root，已成功 FloorMemory 仍
   assert.equal(checkpoint.producedRefs.stateDeltas.length, 0);
 });
 
-test('正文分支回退只过滤不可达 delta 并本地重放，不调用 CSE API', async () => {
-  const h = runtimeHarness();
-  h.context.chat.push(assistant('第三楼用于确认第二楼稳定。'));
-  let state = await h.runtime.start().then(() => h.runtime.extractNext());
-  state = await h.runtime.extractNext();
-  assert.equal(state.rememberedCount, 2);
-  assert.equal(state.replayedCurrentState.appliedDeltaIds.length, 2);
-  const callsBefore = h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length;
-  h.context.chat[2].mes = '第二楼改成另一条分支。'; h.context.chat[2].swipes = ['第二楼改成另一条分支。'];
-  h.emit('MESSAGE_EDITED', 2);
-  state = await h.runtime.refreshStatus();
-  const callsAfter = h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length;
-  assert.equal(callsAfter, callsBefore);
-  assert.equal(state.rememberedCount, 1);
-  assert.equal(state.replayedCurrentState.appliedDeltaIds.length, 1);
-  assert.equal(state.cseReady, true, '可信前缀的唯一 FloorMemory 仍有匹配 delta');
-});
-
-test('最早 FloorMemory 失效会截断全部后续投影；后楼不能越过缺口分析，也不会吃到未来状态', async () => {
+test('明确重提最早 FloorMemory 会同操作重算本楼 CSE，并让后楼按连续前态补齐', async () => {
   const h = runtimeHarness();
   h.context.chat.push(assistant('第三楼用于确认第二楼稳定。'));
   let state = await h.runtime.start().then(() => h.runtime.extractNext());
@@ -1104,19 +1094,14 @@ test('最早 FloorMemory 失效会截断全部后续投影；后楼不能越过�
   const firstFloorId = state.floors[0].floorId, secondFloorId = state.floors[1].floorId;
   const cseCallsBefore = h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length;
   state = await h.runtime.extractFloor(firstFloorId);
-  assert.deepEqual(state.cseFloors.map(item => item.status), ['pending', 'pending']);
-  assert.equal(state.replayedCurrentState.appliedDeltaIds.length, 0);
+  assert.deepEqual(state.cseFloors.map(item => item.status), ['ready', 'pending']);
+  assert.equal(state.replayedCurrentState.appliedDeltaIds.length, 1);
   let root = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
   let checkpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${root.headCheckpointId}`).data;
-  assert.deepEqual(checkpoint.producedRefs.stateDeltas, [], '从最早失效楼起截断，后续完整投影不得残留');
+  assert.equal(checkpoint.producedRefs.stateDeltas.length, 1, '明确重提同一操作已提交本楼新 CSE，下游保持待分析');
   state = await h.runtime.retryStateAnalysis(secondFloorId);
-  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, cseCallsBefore);
-  assert.equal(state.cseFloors[1].status, 'pending');
-  assert.match(state.cseFloors[1].error, /前面还有未分析或已失效的楼/);
-  state = await h.runtime.retryStateAnalysis(firstFloorId);
-  const firstRetryCall = h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).at(-1);
-  assert.deepEqual(JSON.parse(firstRetryCall.taskMessages[0].content).payload.previousState, [], '较早楼只能看到目标楼之前的状态，不能未来倒灌');
-  state = await h.runtime.retryStateAnalysis(secondFloorId);
+  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, cseCallsBefore + 2);
+  assert.equal(state.cseFloors[1].status, 'noChange');
   const secondRetryRequest = JSON.parse(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).at(-1).taskMessages[0].content);
   assert.ok(secondRetryRequest.payload.previousState.length > 0, '补齐连续前缀后才允许分析后楼');
   assert.equal(state.cseReady, true);
@@ -1170,7 +1155,9 @@ test('冷启动发现 CurrentState 与 delta 重放不一致时，以重放为�
   stored.data.fingerprint = await stateFingerprint([], stored.data.appliedDeltaIds, stored.data.headFloorId);
   h.foundationRuntime.invalidate();
   h.runtime.invalidate();
-  state = await h.runtime.refreshStatus();
+  await h.runtime.refreshStatus();
+  await waitFor(() => h.runtime.getState().memorySyncStatus !== 'syncing', '冷启动 CSE 重放未完成');
+  state = h.runtime.getState();
   assert.ok(state.cseSubjects.length > 0, '界面采用可信 delta 的重放结果');
   assert.equal(state.mainCharacterDisplayName, '裴晚生');
   assert.equal(state.mainCharacterEntityId, h.backend.records.get(`chat-${CHAT}/v3-baseline-${root.baselineId}`).data.characterCard.entityId, '主角色只读投影必须来自既有 baseline');

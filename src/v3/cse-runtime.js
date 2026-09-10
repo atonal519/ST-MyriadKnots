@@ -5,7 +5,7 @@ import { validateFoundationCheckpoint, validateFoundationRoot, validateFoundatio
 import { validateCseGraph, validateStateDeltaRecord } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 import {
-  CSE_COMPILER_VERSION, CSE_PROMPT_VERSION, captureCseBaseline, createBaselineRoleEntities,
+  CSE_COMPILER_VERSION, CSE_PROMPT_VERSION, buildCseSystemPrompt, captureCseBaseline, createBaselineRoleEntities,
   createCseEnvelope, createManualCseCorrection, deriveCseTimeline, filterReachableDeltas, replayCurrentState, runCseRequest, selectTrackedSubjects, verifyCseBaselineFingerprint,
 } from './cse-engine.js';
 import { sanitizeDiagnosticValue, sanitizeSensitiveText } from './safe-metadata.js';
@@ -31,7 +31,7 @@ async function captureCurrentUserInput({ hostAdapter, floor, expectedChatId }) {
   const qqjChatId = String(snapshot.context?.chatMetadata?.qianqianjie?.chatId ?? '').trim();
   const messageIndex = floor?.hostLocator?.messageIndex;
   const selected = Number.isSafeInteger(messageIndex) ? selectAssistantMessage(snapshot.chat[messageIndex]) : null;
-  if (qqjChatId !== expectedChatId || !selected || `sha256:${await sha256(selected.rawContent)}` !== floor.content.rawFingerprint) {
+  if (qqjChatId !== expectedChatId || !selected) {
     throw errorWith('V3_CSE_STALE', '目标楼当前选中正文或聊天身份已变化，迟到状态不会写入。');
   }
   if (messageIndex === 0) return null;
@@ -51,7 +51,7 @@ async function captureCurrentUserInput({ hostAdapter, floor, expectedChatId }) {
   return Object.freeze({ messageIndex: messageIndex - 1, swipeId, selectedSwipeIndex, content, fingerprint: `sha256:${await sha256(content)}` });
 }
 
-function dependencySnapshot(value, floorId, entities, previousState, storyClockSignatureForFloor, currentUserInput, coreUserEditedSubjectEntityIds = []) {
+async function dependencySnapshot(value, floorId, entities, previousState, storyClockSignatureForFloor, currentUserInput, coreUserEditedSubjectEntityIds = [], hostAdapter) {
   const targetIndex = value?.floors?.findIndex(floor => floor.id === floorId) ?? -1;
   if (targetIndex < 0 || !value?.baseline) return null;
   const floors = value.floors.slice(0, targetIndex + 1);
@@ -72,7 +72,8 @@ function dependencySnapshot(value, floorId, entities, previousState, storyClockS
     chatId: value.root.chatId,
     narrativeGeneration: value.root.narrativeGeneration,
     baseline: { id: value.baseline.id, fingerprint: value.baseline.fingerprint },
-    floors: floors.map(floor => ({ id: floor.id, rawFingerprint: floor.content.rawFingerprint, canonicalFingerprint: floor.content.canonicalFingerprint, storyClockSignature: storyClockSignatureForFloor(floor) })),
+    floors: floors.map(floor => ({ id: floor.id, rawFingerprint: floor.content.rawFingerprint, canonicalFingerprint: floor.content.canonicalFingerprint,
+      storyClockSignature: storyClockSignatureForFloor(floor) })),
     activeMemoryIds,
     precedingDeltaIds: floors.slice(0, -1).map(floor => deltaByFloor.get(floor.id) ?? null),
     targetDeltaId: deltaByFloor.get(floorId) ?? null,
@@ -85,7 +86,7 @@ function dependencySnapshot(value, floorId, entities, previousState, storyClockS
 
 const sameDependencySnapshot = (left, right) => Boolean(left && right && JSON.stringify(left) === JSON.stringify(right));
 
-export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isEnabled = true, promptGuidance = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), storyClockSignatureForFloor = () => '', onGraphCommitted = null, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
+export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isEnabled = true, promptGuidance = () => '', processingPrompt = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), storyClockSignatureForFloor = () => '', onGraphCommitted = null, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
   if (!store || ['readReachable', 'putRecord', 'commitRoot', 'recordKey'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 CSE store 无效');
   if (typeof generateAnalysisTask !== 'function') throw new TypeError('V3 CSE analysis route 无效');
   if (typeof filterWorldInfoSources !== 'function') throw new TypeError('V3 CSE 世界书过滤器无效');
@@ -295,7 +296,8 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     if (current.status !== 'ready' || operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_CSE_STALE', '聊天或记忆在分析期间已变化，迟到状态不会写入。');
     const floor = current.floors.find(item => item.id === operation.floorId);
     const memory = current.floorMemories.find(item => item.id === operation.floorMemoryId && item.floorId === operation.floorId && item.recordStatus === 'active');
-    if (!floor || !memory || !current.baseline || floor.content.canonicalFingerprint !== operation.floorFingerprint || floor.content.rawFingerprint !== operation.floorRawFingerprint || storyClockSignatureForFloor(floor) !== operation.storyClockSignature) throw errorWith('V3_CSE_STALE', '当前楼正文、时间戳或 FloorMemory 已变化，迟到状态不会写入。');
+    const memoryClockSignature = memory?.sourceStoryClockSignature ?? current.run?.diagnostics?.floorProvenance?.[floor?.id]?.storyClockSignature ?? storyClockSignatureForFloor(floor);
+    if (!floor || !memory || !current.baseline || floor.content.canonicalFingerprint !== operation.floorFingerprint || floor.content.rawFingerprint !== operation.floorRawFingerprint || memoryClockSignature !== operation.storyClockSignature) throw errorWith('V3_CSE_STALE', '当前楼正文快照、时间戳快照或 FloorMemory 已变化，迟到状态不会写入。');
     const dependencyEntitiesById = new Map(current.entities.map(entity => [entity.id, entity]));
     for (const entity of roleEntities) if (!dependencyEntitiesById.has(entity.id)) dependencyEntitiesById.set(entity.id, entity);
     const dependencyTargetIndex = current.floors.findIndex(item => item.id === operation.floorId);
@@ -308,7 +310,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       : null;
     const currentUserInput = await captureCurrentUserInput({ hostAdapter, floor, expectedChatId: current.root.chatId });
     const coreUserEditedSubjectEntityIds = await coreUserEditedSubjects(dependencyPrecedingDeltas);
-    const currentDependency = dependencySnapshot(current, operation.floorId, [...dependencyEntitiesById.values()], dependencyPreviousState, storyClockSignatureForFloor, currentUserInput, coreUserEditedSubjectEntityIds);
+    const currentDependency = await dependencySnapshot(current, operation.floorId, [...dependencyEntitiesById.values()], dependencyPreviousState, currentFloor => current.floorMemories.find(item => item.floorId === currentFloor.id && item.recordStatus === 'active')?.sourceStoryClockSignature ?? current.run?.diagnostics?.floorProvenance?.[currentFloor.id]?.storyClockSignature ?? storyClockSignatureForFloor(currentFloor), currentUserInput, coreUserEditedSubjectEntityIds, hostAdapter);
     if (!sameDependencySnapshot(operation.dependencySnapshot, currentDependency)) throw errorWith('V3_CSE_STALE', '人物状态所依赖的楼层前缀、摘要、前态或身份目录已变化，迟到状态不会写入。');
     const floorOrder = new Map(current.floors.map((item, index) => [item.id, index]));
     const deltas = filterReachableDeltas({ floors: current.floors, floorMemories: current.floorMemories, stateDeltas: current.stateDeltas })
@@ -317,7 +319,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const entitiesById = new Map(current.entities.map(entity => [entity.id, entity]));
     for (const entity of roleEntities) if (!entitiesById.has(entity.id) && [current.baseline.userPersona.entityId, current.baseline.characterCard.entityId].includes(entity.id)) entitiesById.set(entity.id, entity);
     const entities = [...entitiesById.values()];
-    return commitDeltaGraph({ operation, current, floor, memory, delta: result.delta, deltas, entities, diagnostics: { kind: 'cse', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, promptGuidanceFingerprint: operation.promptGuidanceFingerprint ?? null, api: result.metadata, attempts: result.attempts, transportAttempts: result.transportAttempts, responseFingerprint: result.responseFingerprint, isolated: result.isolated.slice(-40), sourceSelection: operation.sourceDiagnostics ?? null } });
+    return commitDeltaGraph({ operation, current, floor, memory, delta: result.delta, deltas, entities, diagnostics: { kind: 'cse', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, promptGuidanceFingerprint: operation.promptGuidanceFingerprint ?? null, systemPromptFingerprint: operation.systemPromptFingerprint ?? null, api: result.metadata, attempts: result.attempts, transportAttempts: result.transportAttempts, responseFingerprint: result.responseFingerprint, isolated: result.isolated.slice(-40), sourceSelection: operation.sourceDiagnostics ?? null } });
   }
 
   async function analyzeFloor(floorId) {
@@ -328,10 +330,9 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const floor = value?.floors?.find(item => item.id === floorId);
     const memory = value?.floorMemories?.find(item => item.floorId === floorId && item.recordStatus === 'active');
     if (!floor || !memory) throw errorWith('V3_CSE_FLOOR_UNAVAILABLE', '只有当前可达且已有 FloorMemory 的楼可以分析状态。');
-    const expectedClockSignature = value.run?.diagnostics?.floorProvenance?.[floorId]?.storyClockSignature;
-    const liveClockSignature = storyClockSignatureForFloor(floor);
-    if (typeof expectedClockSignature === 'string' && expectedClockSignature !== liveClockSignature) throw errorWith('V3_CSE_STALE', '本楼时间戳已变化，请先重新提取本楼记忆。');
-    const operation = { floorId, floorMemoryId: memory.id, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: floor.content.rawFingerprint, storyClockSignature: liveClockSignature, epoch, controller: new AbortController(), runId: await deterministicUuid(['v3-cse-run', value.root.headCheckpointId, memory.id, newUuid()]), startedAt: nowIso(now), phase: 'baseline' };
+    const analysisFloor = memory.sourceCanonicalContent ? { ...floor, content: { ...floor.content, canonicalContent: memory.sourceCanonicalContent } } : floor;
+    const sourceClockSignature = memory.sourceStoryClockSignature ?? value.run?.diagnostics?.floorProvenance?.[floorId]?.storyClockSignature ?? storyClockSignatureForFloor(floor);
+    const operation = { floorId, floorMemoryId: memory.id, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: floor.content.rawFingerprint, storyClockSignature: sourceClockSignature, epoch, controller: new AbortController(), runId: await deterministicUuid(['v3-cse-run', value.root.headCheckpointId, memory.id, newUuid()]), startedAt: nowIso(now), phase: 'baseline' };
     active = operation; notify();
     try {
       value = await ensureBaseline(value, operation); reachable = value; await calculateReplay(value);
@@ -368,16 +369,19 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
         expectedChatId: value.root.chatId,
         filterWorldInfoSources,
         sanitizerOptions: typeof sanitizerOptions === 'function' ? sanitizerOptions() : sanitizerOptions,
+        sourceSnapshot: { canonicalContent: memory.sourceCanonicalContent ?? floor.content.canonicalContent, rawFingerprint: memory.sourceRawFingerprint ?? floor.content.rawFingerprint },
       });
       operation.sourceDiagnostics = requestSources.diagnostics;
       const coreUserEditedSubjectEntityIds = await coreUserEditedSubjects(precedingDeltas);
-      operation.dependencySnapshot = dependencySnapshot(value, floor.id, entities, previousCurrentState, storyClockSignatureForFloor, currentUserInput, coreUserEditedSubjectEntityIds);
+      operation.dependencySnapshot = await dependencySnapshot(value, floor.id, entities, previousCurrentState, currentFloor => value.floorMemories.find(item => item.floorId === currentFloor.id && item.recordStatus === 'active')?.sourceStoryClockSignature ?? value.run?.diagnostics?.floorProvenance?.[currentFloor.id]?.storyClockSignature ?? storyClockSignatureForFloor(currentFloor), currentUserInput, coreUserEditedSubjectEntityIds, hostAdapter);
       if (!operation.dependencySnapshot) throw errorWith('V3_CSE_STALE', '人物状态分析依赖的楼层前缀不可用。');
-      const envelope = createCseEnvelope({ floor, floorMemory: memory, baseline: value.baseline, currentState: previousCurrentState, trackedSubjects: tracked, entities: scopedEntities, requestSources, currentUserInput, coreUserEditedSubjectEntityIds });
+      const envelope = createCseEnvelope({ floor: analysisFloor, floorMemory: memory, baseline: value.baseline, currentState: previousCurrentState, trackedSubjects: tracked, entities: scopedEntities, requestSources, currentUserInput, coreUserEditedSubjectEntityIds });
       const deltaId = await deterministicUuid(['v3-cse-delta', operation.runId, floor.id, memory.id]);
       const promptGuidanceSnapshot = typeof promptGuidance === 'function' ? promptGuidance() : promptGuidance;
+      const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
       operation.promptGuidanceFingerprint = `sha256:${await sha256(String(promptGuidanceSnapshot ?? ''))}`;
-      const result = await runCseRequest({ generateAnalysisTask, envelope, previousCurrentState, now: nowIso(now), deltaId, promptGuidance: promptGuidanceSnapshot, signal: operation.controller.signal });
+      operation.systemPromptFingerprint = `sha256:${await sha256(buildCseSystemPrompt(promptGuidanceSnapshot, processingPromptSnapshot))}`;
+      const result = await runCseRequest({ generateAnalysisTask, envelope, previousCurrentState, now: nowIso(now), deltaId, promptGuidance: promptGuidanceSnapshot, processingPrompt: processingPromptSnapshot, signal: operation.controller.signal });
       if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_CSE_STALE', '聊天已变化，迟到 CSE 结果已丢弃。');
       operation.phase = 'committing'; notify();
       await commitDelta(operation, result, roleEntities);

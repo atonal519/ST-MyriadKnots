@@ -32,7 +32,7 @@ function peopleRuntime(candidates, selected = candidates.map(item => item.entity
   return { getState: () => state, refresh: async () => state, setSelectedEntityIds: async ids => { state = { ...state, selectedEntityIds: [...ids], people: state.people.map(item => ({ ...item, selected: ids.includes(item.entityId) })) }; return state; } };
 }
 
-test('管理视图先显示壳并在激活时自动刷新，不提供手工刷新或确认按钮', async () => {
+test('管理视图先显示壳并在激活时自动刷新，只在管理页提供手工刷新', async () => {
   let release;
   let refreshes = 0;
   const base = {
@@ -56,8 +56,18 @@ test('管理视图先显示壳并在激活时自动刷新，不提供手工刷�
   release();
   await activation;
   const copy = flatten(container).map(node => node.textContent).join('|');
-  assert.doesNotMatch(copy, /刷新状态|确认最新 AI 楼|提取下一个未处理楼|分析下一楼人物状态/);
+  assert.match(copy, /刷新状态/);
+  assert.doesNotMatch(copy, /确认最新 AI 楼|提取下一个未处理楼|分析下一楼人物状态/);
   assert.match(copy, /继续.*完全重构/);
+});
+
+test('needsReview 终态显示准确中文，不向页面泄露内部状态值', async () => {
+  const state = { status: 'needsReview', pluginEnabled: true, chatId: CHAT, foundationStatus: 'needsReview', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, headCheckpointId: null, lastError: null, lastExtractorError: null, lastCseError: null, floors: [], memoryWorkBusy: false };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, documentRef }); view.mount(container); await view.activate();
+  const copy = flatten(container).map(node => node.textContent).join('|');
+  assert.match(copy, /需要核对当前聊天记忆/); assert.doesNotMatch(copy, /needsReview/);
 });
 
 test('完整诊断必须显式确认，clipboard 不可用时显示可选择文本框', async () => {
@@ -228,7 +238,7 @@ test('千结与双丝网健康提示只显示各自进度和错误', () => {
   const container = new Node('main'), view = createV3FoundationView({ runtime, peopleRuntime: peopleRuntime([], []), documentRef });
   view.setPage('memories'); view.mount(container);
   let copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /摘要需要处理 · 摘要错误/); assert.doesNotMatch(copy, /状态错误|正在分析人物状态/);
+  assert.match(copy, /摘要提取失败 · 摘要错误/); assert.doesNotMatch(copy, /状态错误|正在分析人物状态/);
   view.setPage('people'); copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /正在分析人物状态 · 待分析 2 楼/); assert.doesNotMatch(copy, /摘要错误/);
   view.setPage('memories'); view.render({ ...state, activeMemoryWork: { phase: 'revising' }, activeCse: null, lastExtractorError: null, lastCseError: null });
@@ -608,16 +618,33 @@ test('三页职责分离，千结只保留摘要编辑/重提，双丝网归位�
   assert.match(copy, /已记忆 1\/1 楼.*第 4 楼.*剧情摘要.*编辑.*重新提取/);
   assert.doesNotMatch(copy, /逐楼校对故事摘要/);
   assert.equal(flatten(container).some(node => node.tag === 'h2' && node.textContent === '千结'), false);
-  assert.doesNotMatch(copy, /状态分析记录|详细诊断|刷新状态|恢复 AI|标记错误/);
+  assert.doesNotMatch(copy, /状态分析记录|详细诊断|恢复 AI|标记错误/);
+  assert.doesNotMatch(copy, /刷新状态/);
   view.setPage('people'); copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /关系往来.*裴晚生.*核心特质/);
   assert.doesNotMatch(copy, /剧情摘要|复制完整诊断/);
+  assert.doesNotMatch(copy, /刷新状态/);
   flatten(container).find(node => node.textContent === '分析记录').click(); copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /分析记录.*重新分析/);
   view.setPage('management'); copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /记忆管理.*继续.*完全重构.*最近召回回执.*详细诊断/);
+  assert.match(copy, /刷新状态/);
   assert.doesNotMatch(copy, /剧情摘要|重新提取/);
   for (const button of flatten(container).filter(node => node.tag === 'button')) assert.equal(button.type, 'button');
+});
+
+test('管理页刷新状态按钮只发起 fresh 读取', async () => {
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, headCheckpointId: 'head', lastError: null, lastExtractorError: null, lastCseError: null, floors: [], memoryWorkBusy: false };
+  const calls = [];
+  const runtime = { getState: () => state, refreshStatus: async options => { calls.push(options); return state; }, confirmLatest: async () => state };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, documentRef });
+  view.setPage('management'); view.mount(container);
+  const button = flatten(container).find(node => node.textContent === '刷新状态');
+  assert.ok(button);
+  button.click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [{ preferCached: false }]);
 });
 
 test('同聊天记忆同步保留千结与双丝网已确认文字，确认结果或切聊后再替换', () => {
@@ -641,7 +668,7 @@ test('同聊天记忆同步保留千结与双丝网已确认文字，确认结�
   emit({ ...ready, status: 'ready', memorySnapshotStatus: 'syncing', memoryWorkBusy: false, floors: [], cseSubjects: [] });
   let copy = flatten(container).map(node => node.textContent).join('|');
   assert.equal(container.children[0], memoryTree, '同步通知不得重建或清空当前页面 DOM');
-  assert.match(copy, /正在核对当前聊天记忆.*同步期间必须保留的摘要/);
+  assert.match(copy, /已记忆 1\/1 楼.*后台同步中.*同步期间必须保留的摘要/);
   assert.equal(flatten(container).find(node => node.textContent === '重新提取').disabled, true, '依赖快照的动作必须禁用');
 
   view.setPage('people');
@@ -811,7 +838,7 @@ test('摘要编辑时后台通知只更新健康栏并保留原节点、焦点�
   assert.match(flatten(container).map(node => node.textContent).join('|'), /新聊天摘要/);
 });
 
-test('视图停用期间同聊天正文改变后，重新激活会清除旧指纹草稿且不会错存', async () => {
+test('视图停用期间同聊天正文改变后，重新激活仍按永久楼身份保留编辑草稿', async () => {
   const floor = { floorId: 'floor', assistantSeq: 1, messageIndex: 2, canonicalFingerprint: 'sha256:old', status: 'ready', memoryId: 'memory', summary: '旧正文摘要', summarySource: 'ai', memory: { summaryEvidenceRefs: [] }, cse: { status: 'ready', deltaId: 'delta' } };
   let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, unprocessedCount: 0, cseReady: true, csePendingCount: 0, cseFailedCount: 0, floors: [floor] };
   const saves = [];
@@ -830,21 +857,20 @@ test('视图停用期间同聊天正文改变后，重新激活会清除旧指�
   view.deactivate();
   state = { ...state, floors: [{ ...floor, canonicalFingerprint: 'sha256:new', summary: '重 Roll 后的新摘要' }] };
   await view.activate();
-  assert.equal(flatten(container).some(node => node.tag === 'textarea'), false, '刷新只返回、不 emit 时也应清掉旧指纹草稿');
-  assert.match(flatten(container).map(node => node.textContent).join('|'), /重 Roll 后的新摘要/);
-  assert.equal(saves.length, 0, '旧草稿不能写入已变化的楼层');
+  assert.equal(flatten(container).some(node => node.tag === 'textarea'), true);
+  assert.equal(flatten(container).find(node => node.tag === 'textarea').value, '不可错存的旧草稿');
+  assert.equal(saves.length, 0);
 });
 
-test('隐藏时间戳改变但 canonical 相同时也会清除旧编辑草稿', async () => {
+test('隐藏时间戳改变但永久楼身份相同时保留编辑草稿', async () => {
   const floor = { floorId: 'floor', assistantSeq: 1, messageIndex: 2, canonicalFingerprint: 'sha256:same', rawFingerprint: 'sha256:old', status: 'ready', memoryId: 'memory', summary: '旧时间摘要', summarySource: 'ai', memory: { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [] }, cse: { status: 'ready', deltaId: 'delta' } };
   let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, cseReady: true, csePendingCount: 0, cseFailedCount: 0, floors: [floor] };
   const listeners = new Set(), runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => state, editMemory: async () => state, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
   const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef }); view.setPage('memories'); view.mount(container);
   flatten(container).find(node => node.textContent === '编辑').click(); assert.ok(flatten(container).some(node => node.tag === 'textarea'));
-  state = { ...state, floors: [{ ...floor, rawFingerprint: 'sha256:new', metadataStale: true, error: '时间戳已变化' }] };
+  state = { ...state, floors: [{ ...floor, rawFingerprint: 'sha256:new' }] };
   for (const listener of listeners) listener(state);
-  assert.equal(flatten(container).some(node => node.tag === 'textarea'), false);
-  assert.match(flatten(container).map(node => node.textContent).join('|'), /时间戳已变化/);
+  assert.equal(flatten(container).some(node => node.tag === 'textarea'), true);
 });
 
 test('保存等待期间切换聊天会使旧响应失效，不回绘旧聊天', async () => {

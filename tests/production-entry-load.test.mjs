@@ -84,7 +84,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.1.1');
+  assert.equal(manifest.version, '0.1.2');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
@@ -201,6 +201,12 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const inlineEnabled = [];
   let bootstrapOptions;
   let compactOptions;
+  let foundationOptions;
+  let v3MemoryBindOptions;
+  const anchorCalls = [];
+  const persistAnchors = async options => { anchorCalls.push(options); return { status: 'persisted' }; };
+  const productionEventSource = { on() {}, removeListener() {} };
+  const productionEventTypes = { CHAT_CHANGED: 'chat', GENERATION_STARTED: 'generation-started', MESSAGE_SENT: 'sent' };
   const modules = new Map();
   const define = (specifier, exports) => {
     const module = new SyntheticModule(Object.keys(exports), function initialize() {
@@ -219,7 +225,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const backendClient = {};
   define('./src/backend-client.js', { createBackendClient: () => backendClient });
   define('./src/bootstrap.js', { bootstrap: options => { bootstrapOptions = options; return { refresh() {}, setEnabled() {} }; } });
-  define('./src/settings.js', { createSettingsStore: () => ({ migrateLegacyApiSettings() {}, isEnabled: () => false, get: () => ({ generalPrompt: '旧通用附加残留', summaryPrompt: '摘要指导', csePrompt: 'CSE 指导', profilePrompt: '人物资料指导' }) }) });
+  define('./src/settings.js', { createSettingsStore: () => ({ migrateLegacyApiSettings() {}, isEnabled: () => false, get: () => ({ generalPrompt: '旧通用附加残留', processingPrompt: '  破限接线\n', summaryPrompt: '摘要指导', csePrompt: 'CSE 指导', profilePrompt: '人物资料指导' }) }) });
   define('./src/api-routing.js', {
     createApiResolver: () => ({}),
     createApiTools: () => ({ abortAll() {} }),
@@ -239,10 +245,11 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
     },
   });
   define('./src/source-permission.js', { createSourcePermissionController: () => ({}) });
-  define('./src/v3/host-adapter.js', { createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => ({}), snapshot: () => ({}) }; } });
+  define('./src/v3/host-adapter.js', { createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => ({ eventSource: productionEventSource, eventTypes: productionEventTypes }), snapshot: () => ({}) }; } });
   define('./src/v3/foundation-store.js', { createFoundationStore: () => ({}) });
-  define('./src/v3/foundation-runtime.js', { createFoundationRuntime: () => ({}) });
-  define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind() {}, async start() {}, async setEnabled() {}, getState: () => ({}), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
+  define('./src/v3/foundation-runtime.js', { createFoundationRuntime: options => { foundationOptions = options; return {}; } });
+  define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() {}, async setEnabled() {}, getState: () => ({}), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
+  define('./src/v3/message-floor-anchor.js', { persistMessageFloorAnchors: persistAnchors });
   define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; return { bind() {}, async setEnabled() {}, async intercept() {}, getState: () => ({}) }; } });
   define('./src/v3/auto-hide.js', { createAutoHideController: options => { autoHideOptions = options; return { applySettings() {}, stop() {}, dispose() {} }; } });
   define('./src/ui/inline-renderer.js', { createInlineRenderer: options => { inlineRendererOptions = options; return { setEnabled(value) { inlineEnabled.push(value); }, destroy() {} }; } });
@@ -279,7 +286,14 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(Object.hasOwn(v3MemoryOptions, 'customGuidance'), false, '退役通用附加不得继续接入运行时');
   assert.equal(v3MemoryOptions.extractorPromptGuidance(), '摘要指导');
   assert.equal(v3MemoryOptions.csePromptGuidance(), 'CSE 指导');
+  assert.equal(v3MemoryOptions.processingPrompt(), '  破限接线\n');
   assert.equal(typeof v3MemoryOptions.sanitizerOptions, 'function');
+  assert.equal(v3MemoryOptions.persistAnchors, persistAnchors, '生产入口必须把真实消息挂标能力注入 memory runtime');
+  assert.equal(Object.hasOwn(foundationOptions, 'persistAnchors'), false, 'foundation runtime 不得吞掉挂标能力');
+  assert.deepEqual(await v3MemoryOptions.persistAnchors({ probe: true }), { status: 'persisted' });
+  assert.deepEqual(anchorCalls, [{ probe: true }], '注入的挂标函数必须可由 memory runtime 实际调用');
+  assert.equal(v3MemoryBindOptions.eventSource, productionEventSource);
+  assert.equal(v3MemoryBindOptions.eventTypes.MESSAGE_SENT, 'sent', '生产 memory runtime 必须接到真实 user 消息事件');
   assert.equal(Object.hasOwn(identityOptions, 'sanitizerOptions'), false);
   assert.equal(Object.hasOwn(identityOptions, 'migrateFork'), false);
   assert.equal(Object.hasOwn(v3MemoryOptions, 'generatePrimaryTask'), false);
@@ -291,6 +305,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(peopleStoreOptions.client, backendClient);
   assert.equal(peopleWorkspaceOptions.generateUtilityTask, utilityTask);
   assert.equal(peopleWorkspaceOptions.profilePromptGuidance(), '人物资料指导');
+  assert.equal(peopleWorkspaceOptions.processingPrompt(), '  破限接线\n');
   assert.ok(peopleWorkspaceOptions.session); assert.ok(peopleWorkspaceOptions.foundationRuntime); assert.ok(peopleWorkspaceOptions.memoryRuntime);
   assert.equal(bootstrapOptions.peopleWorkspaceRuntime, peopleWorkspaceRuntime);
   assert.equal(bootstrapOptions.chatMemoryManagement, chatMemoryManagement);
@@ -306,6 +321,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.ok(v3RecallOptions.store);
   assert.ok(v3RecallOptions.hostAdapter);
   assert.equal(v3RecallOptions.generateUtilityTask, utilityTask);
+  assert.equal(Object.hasOwn(v3RecallOptions, 'processingPrompt'), false, '召回链不得接入破限提示词');
   assert.ok(autoHideOptions.hostAdapter); assert.equal(autoHideOptions.memoryRuntime, v3MemoryRuntime);
   assert.equal(inlineRendererOptions.memoryRuntime, v3MemoryRuntime); assert.equal(inlineRendererOptions.recallRuntime.getState() !== undefined, true); assert.ok(inlineRendererOptions.hostAdapter);
   assert.deepEqual(inlineEnabled, [false], '入口应在其他异步runtime启动前按总开关启动或停用楼内渲染');

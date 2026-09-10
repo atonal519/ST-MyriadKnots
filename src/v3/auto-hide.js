@@ -51,7 +51,7 @@ export function planAutoHide({ chat = [], memoryState = null, keepAiCount = 3, r
     if (message.is_system !== true || ownsMessage(message, stableChatId)) desired.add(index);
   }
   const hideIndexes = [...desired].filter(index => source[index]?.is_system !== true);
-  const unhideIndexes = owned.filter(index => !desired.has(index));
+  const unhideIndexes = restoreAll ? owned : [];
   return Object.freeze({
     status: 'ready',
     chatId: stableChatId,

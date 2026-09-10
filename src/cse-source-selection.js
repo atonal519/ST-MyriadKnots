@@ -72,17 +72,20 @@ function selectedUserText(message) {
   return typeof message.swipes[index] === 'string' ? message.swipes[index] : '';
 }
 
-async function targetWindow(snapshot, floor, sanitizerOptions) {
+async function targetWindow(snapshot, floor, sanitizerOptions, sourceSnapshot = null) {
   const targetIndex = floor?.hostLocator?.messageIndex;
   if (!Number.isSafeInteger(targetIndex)) return null;
   const target = selectAssistantMessage(snapshot.chat?.[targetIndex]);
-  if (!target || `sha256:${await sha256(target.rawContent)}` !== floor.content.rawFingerprint) return null;
+  if (!target) return null;
+  const liveTargetFingerprint = `sha256:${await sha256(target.rawContent)}`;
+  if (!sourceSnapshot && liveTargetFingerprint !== floor.content.rawFingerprint) return null;
   const rows = [];
   let assistantCount = 0;
   for (let index = targetIndex; index >= 0 && assistantCount < 2; index -= 1) {
     const selected = selectAssistantMessage(snapshot.chat?.[index]);
     if (!selected) continue;
-    rows.push({ messageIndex: index, role: 'assistant', raw: selected.rawContent });
+    rows.push({ messageIndex: index, role: 'assistant', raw: index === targetIndex && sourceSnapshot ? sourceSnapshot.canonicalContent : selected.rawContent,
+      rawFingerprint: index === targetIndex && sourceSnapshot ? sourceSnapshot.rawFingerprint : null });
     const userRaw = selectedUserText(snapshot.chat?.[index - 1]);
     if (userRaw) rows.push({ messageIndex: index - 1, role: 'user', raw: userRaw });
     assistantCount += 1;
@@ -93,9 +96,9 @@ async function targetWindow(snapshot, floor, sanitizerOptions) {
     messageIndex: row.messageIndex,
     role: row.role,
     content: sanitizeMemoryContent(row.raw, sanitizerOptions),
-    rawFingerprint: `sha256:${await sha256(row.raw)}`,
+    rawFingerprint: row.rawFingerprint ?? `sha256:${await sha256(row.raw)}`,
   }));
-  const signature = `sha256:${await sha256(JSON.stringify(frozenRows.map(row => [row.messageIndex, row.role, row.rawFingerprint])))}`;
+  const signature = `sha256:${await sha256(JSON.stringify([liveTargetFingerprint, frozenRows.map(row => [row.messageIndex, row.role, row.rawFingerprint])]))}`;
   return Object.freeze({ rows: Object.freeze(frozenRows), signature, scanText: frozenRows.map(row => row.content).filter(Boolean).join('\n\n') });
 }
 
@@ -123,11 +126,11 @@ function staleError() {
   return error;
 }
 
-export async function captureCseRequestSources({ hostAdapter, baseline, floor, expectedChatId, filterWorldInfoSources = sources => sources, sanitizerOptions = {} } = {}) {
+export async function captureCseRequestSources({ hostAdapter, baseline, floor, expectedChatId, filterWorldInfoSources = sources => sources, sanitizerOptions = {}, sourceSnapshot = null } = {}) {
   const before = hostAdapter.snapshot();
   const beforeChatId = clean(before.context?.chatMetadata?.qianqianjie?.chatId, 200);
   if (beforeChatId !== expectedChatId) throw staleError();
-  const window = await targetWindow(before, floor, sanitizerOptions);
+  const window = await targetWindow(before, floor, sanitizerOptions, sourceSnapshot);
   if (!window) throw staleError();
   const ctx = before.context;
   const character = currentCharacter(ctx) ?? {};
@@ -162,7 +165,7 @@ export async function captureCseRequestSources({ hostAdapter, baseline, floor, e
   }
   const after = hostAdapter.snapshot();
   const afterChatId = clean(after.context?.chatMetadata?.qianqianjie?.chatId, 200);
-  const afterWindow = await targetWindow(after, floor, sanitizerOptions);
+  const afterWindow = await targetWindow(after, floor, sanitizerOptions, sourceSnapshot);
   if (afterChatId !== expectedChatId || !afterWindow || afterWindow.signature !== window.signature) throw staleError();
   const fingerprintPayload = {
     userPersona: latest.userPersona, characterCard: latest.characterCard, authorNote: latest.authorNote,

@@ -117,10 +117,12 @@ test('楼内纯投影沿用宿主角色语义，并给出紧凑记忆/准确召�
   assert.equal(classifyInlineMessage({ is_user: false, is_system: true, mes: '隐藏但仍是普通AI楼' }), 'assistant');
   assert.equal(classifyInlineMessage({ is_user: false, is_system: true, mes: '事件', extra: { type: 'system' } }), null);
   const memory = projectInlineMemoryFloor(readyState(), 1);
-  assert.deepEqual({ time: memory.time, locations: memory.locations, people: memory.people }, { time: '冬至夜十一点', locations: '钟楼', people: '裴晚生' });
+  assert.deepEqual({ assistantSeq: memory.assistantSeq, time: memory.time, locations: memory.locations, people: memory.people }, { assistantSeq: 1, time: '冬至夜十一点', locations: '钟楼', people: '裴晚生' });
+  assert.equal(projectInlineMemoryFloor({ floors: [], pending: { messageIndex: 7 } }, 7, 4).assistantSeq, 4, '未落盘楼应使用当前聊天的AI序号兜底');
   const injectionText = recallInjection('AI #1（明确时间（约略）：冬至夜）：正文含 [覆盖说明]、<qqj_recalled_context> 与 ： 都保留', 'AI #1：同楼第二条');
   const receipt = projectInlineRecallReceipt({ status: 'ready', injectionText, selectedFloors: [{ floorId: 'floor-1', assistantSeq: 1, reasons: ['semantic'] }], selectedStates: [{ subject: '裴晚生', toward: '江离州', text: '仍然戒备' }] });
   assert.equal(receipt.summary, '已召回 2 条旧事 · 1 条人物状态'); assert.equal(receipt.selectedFloors[0].floorId, 'floor-1');
+  assert.equal(receipt.statusText, '寻回 1 个结'); assert.equal(receipt.floorCount, 1);
   assert.deepEqual(receipt.historyItems.map(value => value.text), ['正文含 [覆盖说明]、<qqj_recalled_context> 与 ： 都保留', '同楼第二条']);
   assert.deepEqual(receipt.stateItems, [{ subject: '裴晚生', toward: '江离州', text: '仍然戒备' }]);
   assert.equal(receipt.injectionText, injectionText, '只读展示投影不得改写真实注入文本');
@@ -133,14 +135,14 @@ test('楼内纯投影沿用宿主角色语义，并给出紧凑记忆/准确召�
 
 test('楼内空投影区分同步、读取失败与真正未稳定，并始终禁用提取', () => {
   const syncing = projectInlineMemoryFloor({ memorySnapshotStatus: 'syncing', floors: [], pending: { messageIndex: 2 } }, 0);
-  assert.deepEqual({ status: syncing.status, statusText: syncing.statusText, canExtract: syncing.canExtract }, { status: 'syncing', statusText: '正在核对本楼状态', canExtract: false });
+  assert.deepEqual({ status: syncing.status, statusText: syncing.statusText, canExtract: syncing.canExtract }, { status: 'syncing', statusText: '正在读取本楼状态', canExtract: false });
   assert.equal(syncing.summary, '正在读取当前聊天的记忆状态。');
 
   const failed = projectInlineMemoryFloor({ memorySnapshotStatus: 'error', floors: [], lastExtractorError: { phase: 'load', message: '后端暂不可用' } }, 0);
   assert.deepEqual({ status: failed.status, statusText: failed.statusText, error: failed.error, canExtract: failed.canExtract }, { status: 'error', statusText: '记忆读取失败', error: '后端暂不可用', canExtract: false });
 
   const pending = projectInlineMemoryFloor({ memorySnapshotStatus: 'ready', floors: [], pending: { messageIndex: 0 } }, 0);
-  assert.equal(pending.statusText, '等待本楼稳定');
+  assert.equal(pending.statusText, '等待下一条用户消息');
   const unavailable = projectInlineMemoryFloor({ memorySnapshotStatus: 'ready', floors: [], pending: { messageIndex: 2 } }, 0);
   assert.equal(unavailable.statusText, '尚未读取本楼状态');
 });
@@ -177,6 +179,7 @@ test('召回展示只解析精确自有协议，保留同楼多事实并拒绝�
   const projected = projectInlineRecallReceipt(receipt);
   assert.equal(projected.protocolRecognized, true); assert.equal(projected.historyItems.length, 5);
   assert.deepEqual(projected.historyItems.map(value => value.assistantSeq), [1, 1, 2, 2, 2]);
+  assert.deepEqual(projected.historyGroups.map(value => [value.assistantSeq, value.floorId, value.items.length]), [[2, 'floor-2', 3], [1, 'floor-1', 2]], '来源组应按结由近到远，同组保留原材料次序');
   assert.equal(projected.historyItems[0].text, '递出钥匙，正文内的 [覆盖说明] 与 <qqj_recalled_context> 保持原样');
   assert.equal(projected.historyItems[1].text, '同楼另一件旧事：仍保留正文冒号'); assert.equal(projected.historyItems[2].text, '她没有说出口');
   assert.equal(projected.historyItems[3].text, '当面承诺会留下'); assert.equal(projected.historyItems[4].text, '明早会离开');
@@ -193,7 +196,11 @@ test('召回展示只解析精确自有协议，保留同楼多事实并拒绝�
     '任何 private 内容仅属于标明的主体，不代表其他人物知情。', '', '[当前人物 Core / 状态]',
     '- 裴晚生 / core / private，仅可用于该人物：独自警惕（依据：旧事）', '</qqj_recalled_context>',
   ].join('\n') });
-  assert.equal(stateOnly.protocolRecognized, true); assert.deepEqual(stateOnly.historyItems, []); assert.equal(stateOnly.summary, '已记录 1 条人物状态');
+  assert.equal(stateOnly.protocolRecognized, true); assert.deepEqual(stateOnly.historyItems, []); assert.equal(stateOnly.summary, '已记录 1 条人物状态'); assert.equal(stateOnly.statusText, '寻回 0 个结');
+  const duplicateFloor = projectInlineRecallReceipt({ ...receipt, selectedFloors: [receipt.selectedFloors[0], receipt.selectedFloors[0]] });
+  assert.equal(duplicateFloor.floorCount, 1, '结数按不同floorId去重，不按回执引用或材料条目计数'); assert.equal(duplicateFloor.statusText, '寻回 1 个结');
+  assert.equal(projectInlineRecallReceipt({ ...receipt, status: 'error' }).statusText, '本轮召回失败');
+  assert.equal(projectInlineRecallReceipt({ ...receipt, legacyReadOnly: true }).statusText, '旧版只读记录');
 });
 
 test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默认折叠并原位patch保留展开', async () => {
@@ -201,6 +208,7 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
     { is_user: true, is_system: false, mes: '用户正文', extra: { [RECALL_RECEIPT_KEY]: { schemaVersion: 6 } } },
     { is_user: false, is_system: true, mes: 'AI正文' },
     { is_user: false, is_system: true, mes: '系统事件', extra: { type: 'system' } },
+    { is_user: false, is_system: false, mes: '尚未落盘的AI正文' },
   ];
   const injectionText = formatRecallInjection({
     coverage: { memoryComplete: true, cseCurrent: true, missingAssistantSeq: [], rememberedAiFloors: 1, stableAiFloors: 1, cseThroughAssistantSeq: 1 },
@@ -208,26 +216,52 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
     states: [{ subject: '裴晚生', toward: '江离州', layer: 'core', visibility: 'private', text: '仍然戒备', reason: '内部依据', sourceAssistantSeq: 1 }],
   });
   const h = createHarness({ chat, memoryState: readyState(), projectReceipt: async () => ({ status: 'ready', injectionText, selectedFloors: [{ floorId: 'floor-1', assistantSeq: 1, reasons: ['语义相关'] }], selectedStates: [{ subject: '裴晚生', toward: '江离州', text: '仍然戒备', layer: 'core', visibility: 'private', reason: '内部依据' }] }) });
-  const elements = chat.map((_, index) => messageElement(index, { user: index === 0, last: index === 2 })); elements.forEach(node => h.chatRoot.append(node));
+  const elements = chat.map((_, index) => messageElement(index, { user: index === 0, last: index === 3 })); elements.forEach(node => h.chatRoot.append(node));
   h.renderer.start(); await h.flushMicrotasks();
-  assert.equal(h.renderer.getDebugState().cards, 2); assert.equal(h.extractionCalls.length, 0, '挂载与渲染不得自动触发摘要提取'); assert.equal(elements[2].querySelectorAll('[data-qqj-inline-host="true"]').length, 0);
+  assert.equal(h.renderer.getDebugState().cards, 3); assert.equal(h.extractionCalls.length, 0, '挂载与渲染不得自动触发摘要提取'); assert.equal(elements[2].querySelectorAll('[data-qqj-inline-host="true"]').length, 0);
   const userView = resolveInlineAnchor(elements[0]).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
   const aiView = resolveInlineAnchor(elements[1]).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  const pendingAiView = resolveInlineAnchor(elements[3]).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
   assert.equal(userView.body.hidden, true); assert.equal(aiView.body.hidden, true);
-  assert.equal(userView.recallItems.children[0].children[0].textContent, '第 1 楼'); assert.equal(userView.recallItems.children[0].children[1].textContent, '实际旧事正文');
+  const recallGroup = userView.recallItems.children[0];
+  assert.equal(recallGroup.tagName, 'DETAILS'); assert.notEqual(recallGroup.open, true); assert.equal(recallGroup.children[0].children[0].textContent, '第 1 个结'); assert.equal(recallGroup.children[0].children.length, 1); assert.equal(recallGroup.children[1].children[0].textContent, '实际旧事正文');
+  assert.equal(recallGroup.children[0].getAttribute('aria-label'), '展开第 1 个结'); assert.equal(userView.status.textContent, '寻回 1 个结');
   assert.equal(descendantText(userView.root).includes('<qqj_recalled_context>'), false, '楼内卡不得展示机器包裹或原始注入');
   assert.equal(userView.states.open, undefined); assert.equal(userView.statesTitle.textContent, '人物状态 1 条'); assert.equal(userView.stateItems.children[0].textContent, '裴晚生 → 江离州：仍然戒备');
   assert.equal(descendantText(userView.states).includes('core'), false); assert.equal(descendantText(userView.states).includes('内部依据'), false);
   assert.equal(aiView.summary.textContent, '<img src=x onerror=alert(1)>仍是纯文字'); assert.equal(aiView.root.querySelectorAll('img').length, 0);
+  assert.equal(aiView.title.textContent, '第 1 个结'); assert.equal(pendingAiView.title.textContent, '第 3 个结', '楼内标题必须使用宿主实际 messageIndex，不按 AI 序号重新编号');
+  assert.equal(aiView.toggle.getAttribute('aria-label'), '展开第 1 个结'); assert.equal(pendingAiView.toggle.getAttribute('aria-label'), '展开第 3 个结');
   assert.match(aiView.root.children[0].textContent, /background:transparent/); assert.match(aiView.root.children[0].textContent, /border:1px solid var\(--qqj-inline-line\)/); assert.match(aiView.root.children[0].textContent, /border-left:2px solid var\(--qqj-inline-knot\)/); assert.match(aiView.root.children[0].textContent, /\.knot\{/);
   assert.match(aiView.root.children[0].textContent, /\.mark\{position:absolute;left:0;top:18px/); assert.doesNotMatch(aiView.root.children[0].textContent, /border-left:1px dashed/);
   assert.match(aiView.root.children[0].textContent, /grid-template-columns:minmax\(0,1fr\) auto/); assert.match(aiView.root.children[0].textContent, /\.title\{[^}]*font-size:12px/);
   assert.equal(aiView.root.querySelectorAll('.chevron').length, 0); assert.equal(aiView.status.className, 'status ready'); assert.equal(userView.status.className, 'status');
   assert.match(aiView.root.children[0].textContent, /\.status\.running\{/); assert.match(aiView.root.children[0].textContent, /\.status\.review\{/); assert.match(aiView.root.children[0].textContent, /\.status\.error\{/);
-  assert.equal(aiView.extract.title, '重新提取本楼摘要'); assert.equal(aiView.extract.getAttribute('aria-label'), '重新提取本楼摘要'); assert.equal(aiView.extract.textContent, '\uf2f1');
-  const rootIdentity = aiView.root, summaryIdentity = aiView.summary; aiView.toggle.emit('click'); assert.equal(aiView.body.hidden, false); assert.equal(aiView.host.getAttribute('data-open'), 'true'); userView.states.open = true;
+  assert.equal(aiView.extract.title, '重新提取第 1 个结摘要'); assert.equal(aiView.extract.getAttribute('aria-label'), '重新提取第 1 个结摘要'); assert.equal(aiView.extract.textContent, '\uf2f1');
+  const rootIdentity = aiView.root, summaryIdentity = aiView.summary; aiView.toggle.emit('click'); assert.equal(aiView.body.hidden, false); assert.equal(aiView.host.getAttribute('data-open'), 'true'); userView.states.open = true; recallGroup.open = true; recallGroup.emit('toggle');
   h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
-  assert.equal(aiView.root, rootIdentity); assert.equal(aiView.summary, summaryIdentity); assert.equal(aiView.body.hidden, false); assert.equal(userView.states.open, true, '人物状态分组折叠状态需保留');
+  assert.equal(aiView.root, rootIdentity); assert.equal(aiView.summary, summaryIdentity); assert.equal(aiView.body.hidden, false); assert.equal(userView.states.open, true, '人物状态分组折叠状态需保留'); assert.equal(recallGroup.open, true, '相同回执刷新不能关闭已展开的来源组');
+});
+
+test('召回来源组近到远、逐组折叠并在重绘中保持，切聊不串展开状态', async () => {
+  const receipt = { schemaVersion: 6 };
+  const chat = [{ is_user: true, is_system: false, mes: '当前用户楼', extra: { [RECALL_RECEIPT_KEY]: receipt } }];
+  const injectionText = recallInjection('AI #1：远处第一条', 'AI #1：远处第二条', 'AI #3：近处材料');
+  const projectedReceipt = { status: 'ready', injectionText, selectedFloors: [{ floorId: 'floor-far', assistantSeq: 1, reasons: [] }, { floorId: 'floor-near', assistantSeq: 3, reasons: [] }], selectedStates: [] };
+  const memoryState = { floors: [{ floorId: 'floor-far', assistantSeq: 1, messageIndex: 76 }, { floorId: 'another-floor', assistantSeq: 2, messageIndex: 4 }], memoryEntities: [] };
+  const h = createHarness({ chat, memoryState, projectReceipt: async () => projectedReceipt });
+  h.chatRoot.append(messageElement(0, { user: true })); h.renderer.start(); await h.flushMicrotasks();
+  let view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  assert.deepEqual(view.recallItems.children.map(group => group.children[0].children[0].textContent), ['来源结号未提供', '第 76 个结']);
+  assert.equal(view.recallItems.children[0].children[0].children.length, 1, '当前floor映射缺失时明确显示未知，不拿 assistantSeq 猜宿主楼号');
+  assert.deepEqual(view.recallItems.children[1].children[1].children.map(node => node.textContent), ['远处第一条', '远处第二条']);
+  assert.notEqual(view.recallItems.children[0].open, true); assert.notEqual(view.recallItems.children[1].open, true);
+  const near = view.recallItems.children[0]; near.open = true; near.emit('toggle'); assert.equal(near.children[0].getAttribute('aria-label'), '折叠来源结号未提供');
+  memoryState.floors.push({ floorId: 'floor-near', assistantSeq: 3, messageIndex: 6 }); h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
+  view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard; assert.equal(view.recallItems.children[0].children[0].children[0].textContent, '第 6 个结'); assert.equal(view.recallItems.children[0].children[0].getAttribute('aria-label'), '折叠第 6 个结'); assert.equal(view.recallItems.children[0].open, true, '来源楼号补全触发重绘后仍保持该组展开'); assert.equal(view.recallItems.children[1].open, false);
+  h.snapshot.chat = [{ is_user: true, is_system: false, mes: '另一聊天用户楼', extra: { [RECALL_RECEIPT_KEY]: receipt } }]; h.context.chatMetadata.qianqianjie.chatId = 'chat-b'; h.snapshot.chatId = 'host-chat-b'; h.chatRoot.replaceChildren(messageElement(0, { user: true }));
+  h.emit('CHAT_CHANGED'); await h.flushMicrotasks(); view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  assert.notEqual(view.recallItems.children[0].open, true, '同序号来源组在新聊天必须默认关闭');
 });
 
 test('楼内主题变量同步已有卡与后生卡，更新颜色不重建或折叠已有卡', async () => {
@@ -303,7 +337,7 @@ test('同楼仍在运行的召回不会被已存历史回执异步覆盖', async
   const h = createHarness({ chat, memoryState: { floors: [], memoryEntities: [] }, recallState: running, projectReceipt: async () => ({ status: 'ready', injectionText: '已存历史回执', selectedFloors: [], selectedStates: [] }) });
   h.chatRoot.append(messageElement(0, { user: true })); h.renderer.start(); await h.flushMicrotasks();
   const view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  assert.equal(view.status.textContent, '正在核对本轮召回'); assert.equal(descendantText(view.root).includes('已存历史回执'), false);
+  assert.equal(view.status.textContent, '寻回中'); assert.equal(descendantText(view.root).includes('已存历史回执'), false);
 });
 
 test('即时lastRecall必须同时匹配当前chat与用户楼索引', async () => {

@@ -20,9 +20,9 @@ export const PROFILE_FIXED_CONTRACT = `【固定人物资料合同】
 3. personKey 必须逐字使用输入中的键；每个输入人物恰好返回一次，不得新增、遗漏或合并人物。没有依据的字段返回空字符串或空数组。
 4. 不输出解释、剧情续写、数据库 ID 或 JSON 之外的内容。`;
 
-export function buildPeopleProfileSystemPrompt(guidance = '') {
+export function buildPeopleProfileSystemPrompt(guidance = '', processingPrompt = '') {
   const custom = typeof guidance === 'string' ? guidance : '';
-  return withBaseProcessingPrompt(`${custom.trim() ? custom : DEFAULT_PROFILE_GUIDANCE}\n\n${PROFILE_FIXED_CONTRACT}`);
+  return withBaseProcessingPrompt(`${custom.trim() ? custom : DEFAULT_PROFILE_GUIDANCE}\n\n${PROFILE_FIXED_CONTRACT}`, processingPrompt);
 }
 
 function errorWith(code, message) { return Object.assign(new Error(message), { code }); }
@@ -175,7 +175,7 @@ function effectiveSummary(memory) { return memory?.summary?.effectiveSource === 
 export function createPeopleWorkspaceRuntime({
   store, session, foundationRuntime, memoryRuntime, generateUtilityTask, sourcePermissions,
   contextProvider, sanitizerOptions = () => ({}), scanner = scanWorldInfo,
-  sourceCandidateFactory = createWorldInfoSourceCandidates, profilePromptGuidance = () => '', isEnabled = true, now = () => new Date(), logger = console,
+  sourceCandidateFactory = createWorldInfoSourceCandidates, profilePromptGuidance = () => '', processingPrompt = () => '', isEnabled = true, now = () => new Date(), logger = console,
 } = {}) {
   if (!store || typeof store.read !== 'function' || typeof store.put !== 'function') throw new TypeError('人物工作区 store 无效');
   if (!session || typeof session.identity !== 'function') throw new TypeError('人物工作区 session 无效');
@@ -352,7 +352,8 @@ export function createPeopleWorkspaceRuntime({
     const operation = begin('generating');
     operation.macros = macrosFor(foundationRuntime.getReachable?.());
     const guidanceSnapshot = typeof profilePromptGuidance === 'function' ? profilePromptGuidance() : profilePromptGuidance;
-    const systemPrompt = buildPeopleProfileSystemPrompt(guidanceSnapshot);
+    const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
+    const systemPrompt = buildPeopleProfileSystemPrompt(guidanceSnapshot, processingPromptSnapshot);
     return settle(operation, async () => {
       const targets = targetResolver(candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace));
       if (!targets.length) throw errorWith('QQJ_PEOPLE_NOTHING_TO_GENERATE', replaceExisting ? '当前人物不可重新整理。' : '选中的人物都已有基础资料。');

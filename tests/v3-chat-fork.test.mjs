@@ -98,7 +98,7 @@ test('复制分支只领独立身份，源记忆零读零搬运，按钮授权�
   });
   await sourceMemory.start();
   await sourceMemory.startHistoricalRebuild();
-  await waitFor(() => sourceMemory.getState().rebuildStatus === 'caughtUp' && !sourceMemory.getState().activeAutoMemory, '源聊天记忆未追平');
+  await waitFor(() => ['caughtUp', 'waitingRealtime'].includes(sourceMemory.getState().rebuildStatus) && !sourceMemory.getState().activeAutoMemory, '源聊天记忆未追平');
 
   const sourceBefore = chatRecords(backend.records, SOURCE);
   const callsBeforeClone = apiCalls;
@@ -142,7 +142,7 @@ test('复制分支只领独立身份，源记忆零读零搬运，按钮授权�
   assert.equal(targetMemory.getState().rebuildStatus, 'pendingRebuild');
   assert.equal(apiCalls, callsBeforeClone, '仅检测到 historical debt 不得自动调模型');
   await targetMemory.startHistoricalRebuild();
-  await waitFor(() => targetMemory.getState().rebuildStatus === 'caughtUp' && !targetMemory.getState().activeAutoMemory, '复制分支手动重建未追平');
+  await waitFor(() => ['caughtUp', 'waitingRealtime'].includes(targetMemory.getState().rebuildStatus) && !targetMemory.getState().activeAutoMemory, '复制分支手动重建未追平');
   const target = await targetStore.readReachable();
   assert.deepEqual(target.floorMemories.map(item => item.summary.aiText), ['摘要-公共 A', '摘要-公共 B', '摘要-新线 X']);
   assert.equal(chatRecords(backend.records, SOURCE), sourceBefore, '分支自行重建也不得改源数据');

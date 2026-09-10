@@ -51,6 +51,8 @@ export function createHostAdapter({ globalRef = globalThis, mutationMetadataCapa
       context.getMutationMetadata,
       context.messageMutationMetadata,
     ].some(value => typeof value === 'function' || (value && typeof value === 'object'));
+    const integrity = context.chatMetadata?.integrity;
+    const chatComplete = integrity === undefined ? null : Boolean(integrity);
     return Object.freeze({
       context,
       chat: Array.isArray(context.chat) ? context.chat : [],
@@ -60,7 +62,7 @@ export function createHostAdapter({ globalRef = globalThis, mutationMetadataCapa
       mode: metadataCapability ? 'enhanced' : 'standard',
       source: standard ? 'SillyTavern' : 'Luker',
       userIdentity: userIdentityFrom(context, standard ? 'SillyTavern' : 'Luker'),
-      capabilities: Object.freeze({ mutationMetadata: metadataCapability }),
+      capabilities: Object.freeze({ mutationMetadata: metadataCapability, chatComplete }),
     });
   }
 

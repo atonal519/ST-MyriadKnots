@@ -52,10 +52,10 @@ Core/Adaptive 每类采用 review/additions 新协议，或沿用旧的直接 af
 {"subjects":[{"subject":"人物甲","review":{"core":[{"previousText":"旧核心","action":"keep"}],"adaptive":[{"previousText":"旧模式","toward":"人物乙","action":"refine","text":"收窄后的模式","reason":"为何调整","evidence":[{"source":"canonicalContent","quote":"正文原句"}]}]},"additions":{"core":[],"adaptive":[]},"situational":[{"reason":"正文写出人物甲困倦并闭眼入睡","text":"困倦放松，正在入睡","visibility":"private","origin":"floor"},{"reason":"人物甲推开人物乙的手并明确拒绝触碰","text":"拒绝人物乙触碰","toward":"人物乙","visibility":"observable","origin":"floor"}],"changeSummary":["变化摘要"]}]}
 不确定的可选人物或分类宁可省略。只输出 JSON，不要解释。`;
 
-export function buildCseSystemPrompt(guidance = '') {
+export function buildCseSystemPrompt(guidance = '', processingPrompt = '') {
   const custom = typeof guidance === 'string' ? guidance : '';
   const businessGuidance = custom.trim() ? custom : DEFAULT_CSE_GUIDANCE;
-  return withBaseProcessingPrompt(`${businessGuidance}\n\n${CSE_FIXED_CONTRACT}`);
+  return withBaseProcessingPrompt(`${businessGuidance}\n\n${CSE_FIXED_CONTRACT}`, processingPrompt);
 }
 
 export const CSE_SYSTEM_PROMPT = buildCseSystemPrompt();
@@ -673,11 +673,11 @@ export async function createManualCseCorrection({ anchorDelta, currentState, sub
   return Object.freeze({ status: 'ready', delta });
 }
 
-export async function runCseRequest({ generateAnalysisTask, envelope, previousCurrentState, now, deltaId, promptGuidance = '', signal }) {
+export async function runCseRequest({ generateAnalysisTask, envelope, previousCurrentState, now, deltaId, promptGuidance = '', processingPrompt = '', signal }) {
   let candidate = null;
   const transportBudget = { remaining: 3, used: 0 };
   try {
-    const systemPrompt = buildCseSystemPrompt(promptGuidance);
+    const systemPrompt = buildCseSystemPrompt(promptGuidance, processingPrompt);
     const result = await generateAnalysisTask({ systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(envelope.request) }], maxTokens: 30000, temperature: 0, signal, includeCharacterCard: false, worldInfoSource: 'none', transportBudget, parseMode: 'semantic' });
     candidate = result?.jsonData ?? result?.textData ?? result;
     const compiled = await compileCseResponse({ response: candidate, finishReason: result?.taskMetadata?.finishReason, envelope, previousCurrentState, now, deltaId });

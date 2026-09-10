@@ -27,6 +27,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   sourceWorldInfoConfirmedChats: {},
   sourceKeepTags: 'content',
   sourceExtraTags: '',
+  processingPrompt: '',
   summaryPrompt: '',
   csePrompt: '',
   profilePrompt: '',
@@ -163,6 +164,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'sourceWorldInfoConfirmedChats') && patch.sourceWorldInfoConfirmedChats && typeof patch.sourceWorldInfoConfirmedChats === 'object' && !Array.isArray(patch.sourceWorldInfoConfirmedChats)) settings.sourceWorldInfoConfirmedChats = patch.sourceWorldInfoConfirmedChats;
     if (own(patch, 'sourceKeepTags')) settings.sourceKeepTags = normalizeMemoryTagList(patch.sourceKeepTags).join(',');
     if (own(patch, 'sourceExtraTags')) settings.sourceExtraTags = normalizeMemoryTagList(patch.sourceExtraTags).join(',');
+    if (own(patch, 'processingPrompt')) settings.processingPrompt = text(patch.processingPrompt);
     if (own(patch, 'summaryPrompt')) settings.summaryPrompt = text(patch.summaryPrompt);
     if (own(patch, 'csePrompt')) settings.csePrompt = text(patch.csePrompt);
     if (own(patch, 'profilePrompt')) settings.profilePrompt = text(patch.profilePrompt);

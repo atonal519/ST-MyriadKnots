@@ -266,7 +266,7 @@ export function createPanel({
           autoHideResult.className = 'settings-result success';
           return;
         }
-        autoHideResult.textContent = current.autoHideEnabled ? `已开启；保留最近 ${current.autoHideKeepAiCount} 个 AI 楼。` : '已关闭；千千结拥有的隐藏楼已恢复。';
+        autoHideResult.textContent = current.autoHideEnabled ? `已开启；后续按最近 ${current.autoHideKeepAiCount} 个 AI 楼保留，已隐藏楼保持隐藏。` : '已关闭；千千结拥有的隐藏楼已恢复。';
         autoHideResult.className = 'settings-result success';
       } catch (error) {
         autoHideResult.textContent = `设置已保存，但当前聊天整理未完成：${error?.message || '未知错误'} 请再次调整设置重试。`;
@@ -275,7 +275,7 @@ export function createPanel({
     };
     autoHideInput.addEventListener('change', () => { void applyAutoHide({ autoHideEnabled: autoHideInput.checked }); });
     keepInput.addEventListener('change', () => { void applyAutoHide({ autoHideKeepAiCount: Number(keepInput.value) }); });
-    memoryBody.append(autoHideToggle, keepRow, element('p', 'settings-hint', '保留最近 N 个 AI 楼及其用户上下文，隐藏更早且已完成记忆的楼。'), autoHideResult);
+    memoryBody.append(autoHideToggle, keepRow, element('p', 'settings-hint', '自动隐藏更早且已完成记忆的楼；调整保留数量不会恢复已隐藏楼。关闭自动隐藏可恢复千千结隐藏的楼。'), autoHideResult);
     page.append(memoryGroup);
 
     // 当前聊天的记忆操作紧跟通用设置，避免与总开关混成同一层级。

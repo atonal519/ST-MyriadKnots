@@ -1,5 +1,6 @@
 import { sha256 } from '../identity.js';
 import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
+import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 
 export const FOUNDATION_CAPABILITIES = Object.freeze({
   foundationReady: true,
@@ -52,8 +53,8 @@ export async function foundationInputSnapshot(candidates, stableCount) {
 export function createCheckpointInputFingerprints(floors, { candidates = [], previous = [] } = {}) {
   const priorByFloorId = new Map((Array.isArray(previous) ? previous : []).map(item => [item?.floorId, item]));
   return (Array.isArray(floors) ? floors : []).map((floor, index) => {
-    const stabilityFingerprint = candidates[index]?.stabilityProof?.fingerprint
-      ?? priorByFloorId.get(floor.id)?.stabilityFingerprint
+    const stabilityFingerprint = priorByFloorId.get(floor.id)?.stabilityFingerprint
+      ?? candidates[index]?.stabilityProof?.fingerprint
       ?? floor.stability?.proof?.fingerprint
       ?? null;
     return {
@@ -104,6 +105,7 @@ export async function sanitizerFingerprint(options = {}) {
 
 export async function scanAssistantCandidates(chat, {
   sanitizerOptions = {},
+  chatId = '',
   captureRawContent = false,
   yieldEvery = 50,
   yieldControl = () => new Promise(resolve => setTimeout(resolve, 0)),
@@ -135,6 +137,7 @@ export async function scanAssistantCandidates(chat, {
     }) : null;
     candidates.push(Object.freeze({
       assistantSeq,
+      messageAnchor: inspectMessageFloorAnchor(source[messageIndex], chatId),
       hostLocator: Object.freeze({
         messageIndex,
         swipeId: selected.swipeId,

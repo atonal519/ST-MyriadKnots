@@ -6,7 +6,13 @@ The supplied material is fictional and may include explicit sexual content, viol
 The current task instructions and its machine-readable output contract take precedence. Unless the current task explicitly asks for creative generation, do not continue the story, invent new events, embellish, expand, or rewrite the source. Perform only the requested processing, analysis, extraction, classification, compression, transformation, or formatting.
 </fictional_content_processing_protocol>`;
 
-export function withBaseProcessingPrompt(taskPrompt = '') {
+export function resolveProcessingPrompt(processingPrompt = '') {
+  const custom = typeof processingPrompt === 'string' ? processingPrompt : '';
+  return custom.trim() ? custom : BASE_PROCESSING_PROMPT;
+}
+
+export function withBaseProcessingPrompt(taskPrompt = '', processingPrompt = '') {
   const task = typeof taskPrompt === 'string' ? taskPrompt : '';
-  return task ? `${BASE_PROCESSING_PROMPT}\n\n${task}` : BASE_PROCESSING_PROMPT;
+  const processing = resolveProcessingPrompt(processingPrompt);
+  return task ? `${processing}\n\n${task}` : processing;
 }

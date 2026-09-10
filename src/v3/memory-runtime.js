@@ -2,7 +2,7 @@ import { newIdentityUuid, sha256 } from '../identity.js';
 import { buildFoundationIndexes } from './foundation-runtime.js';
 import { createCheckpointInputFingerprints, deterministicUuid } from './foundation-domain.js';
 import { validateFoundationCheckpoint, validateFoundationRoot, validateFoundationRun } from './foundation-schema.js';
-import { runExtractorRequest, createExtractorEnvelope, inferCanonicalCurrentTime, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_VERSION } from './extractor.js';
+import { buildExtractorSystemPrompt, runExtractorRequest, createExtractorEnvelope, inferCanonicalCurrentTime, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_VERSION } from './extractor.js';
 import { validateEntityRecord, validateFloorMemory } from './memory-schema.js';
 import { sanitizeDiagnosticValue, sanitizeSensitiveText, sanitizeTaskMetadata } from './safe-metadata.js';
 import { createCseRuntime } from './cse-runtime.js';
@@ -11,7 +11,9 @@ import { validateCseGraph } from './cse-schema.js';
 import { assessMemoryCoverageFromHost, diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 import { isHostNarratorMessage, selectAssistantMessage, selectUserStabilityAnchor } from './foundation-domain.js';
 import { parseSharedStoryClock, storyClockSignature } from '../story-clock.js';
+import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 import { buildEntityIdentityDirectory, entitiesThroughFloorIds } from './entity-identity.js';
+import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 
 const EVENTS = Object.freeze(['CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
 const HISTORY_MUTATION_EVENTS = new Set(['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
@@ -70,11 +72,10 @@ function clockEvidence(selected) {
 
 const SESSION_CANDIDATE_MAX_ENTRIES = 8;
 const SESSION_CANDIDATE_MAX_CHARACTERS = 96000;
-const RECOVERY_PARENT_LIMIT = 12;
 const MEMORY_ARRAY_FIELDS = Object.freeze(['chronology', 'locations', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'openLoops', 'ambiguities', 'cseSignals']);
 const normalizeAutoBatchSize = () => 1;
 
-export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onFullRebuildCommitted = null, extractorPromptGuidance = () => '', csePromptGuidance = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
+export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onFullRebuildCommitted = null, extractorPromptGuidance = () => '', csePromptGuidance = () => '', processingPrompt = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), persistAnchors = null, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
   if (!foundationRuntime || ['start', 'refreshStatus', 'confirmLatest', 'setEnabled', 'bind', 'getState'].some(name => typeof foundationRuntime[name] !== 'function')) throw new TypeError('V3 memory foundation runtime 无效');
   if (!store || ['readReachable', 'readRecord', 'putRecord', 'commitRoot', 'recordKey', 'invalidate'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 memory store 无效');
   if (typeof generateAnalysisTask !== 'function') throw new TypeError('V3 memory analysis route 无效');
@@ -87,10 +88,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   let awaitingFoundation = false;
   let foundationReload = null;
   let refreshInFlight = null;
-  let detachedDrafts = Object.freeze([]);
-  let recoveryAttemptKey = null;
-  let recoveryHoldFloorId = null;
   let memorySnapshotStatus = 'unavailable';
+  let memorySyncStatus = 'idle';
+  let memorySyncError = null;
+  let backgroundSync = null;
+  let backgroundSyncKey = null;
   let unsubscribeFoundation = null;
   let workRun = null;
   let autoScheduled = null;
@@ -117,13 +119,44 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   const sessionCandidates = new Map();
   const subscribers = new Set();
   const currentClockSignature = floor => clockEvidence(currentRawSelection(hostAdapter, floor)).signature;
-  const cseRuntime = createCseRuntime({ store, hostAdapter, generateAnalysisTask, isEnabled, promptGuidance: csePromptGuidance, filterWorldInfoSources, sanitizerOptions, storyClockSignatureForFloor: currentClockSignature, onGraphCommitted: value => foundationRuntime.adoptReachable?.(value), now, newUuid, logger });
+  const cseRuntime = createCseRuntime({ store, hostAdapter, generateAnalysisTask, isEnabled, promptGuidance: csePromptGuidance, processingPrompt, filterWorldInfoSources, sanitizerOptions, storyClockSignatureForFloor: currentClockSignature, onGraphCommitted: value => foundationRuntime.adoptReachable?.(value), now, newUuid, logger });
   const enabled = () => { try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; } catch { return false; } };
   const mainGenerationActive = () => {
     if (formalGenerationActive) return true;
     try { return (typeof isMainGenerationActive === 'function' ? isMainGenerationActive() : isMainGenerationActive) === true; } catch { return false; }
   };
   const currentHostChatId = () => { try { return String(hostAdapter.snapshot()?.context?.chatMetadata?.qianqianjie?.chatId ?? '').trim(); } catch { return ''; } };
+  async function ensureSavedAnchors(value, expectedEpoch = epoch) {
+    if (!value?.root || typeof persistAnchors !== 'function' || expectedEpoch !== epoch) return true;
+    try {
+      const activeFloorIds = new Set((value.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => memory.floorId));
+      const snapshot = hostAdapter.snapshot();
+      const bindings = [];
+      for (const floor of value.floors ?? []) {
+      if (!activeFloorIds.has(floor.id)) continue;
+      const message = snapshot.chat?.[floor.hostLocator.messageIndex];
+      const marker = inspectMessageFloorAnchor(message, value.root.chatId);
+      if (marker.status === 'valid' && marker.anchor.floorId === floor.id) { bindings.push({ messageIndex: floor.hostLocator.messageIndex, floorId: floor.id }); continue; }
+      const selected = selectAssistantMessage(message);
+      const fingerprint = selected ? `sha256:${await sha256(selected.rawContent)}` : null;
+      const duplicateCount = selected ? snapshot.chat.reduce((count, item) => count + (selectAssistantMessage(item)?.rawContent === selected.rawContent ? 1 : 0), 0) : 0;
+      if (marker.status !== 'none' || fingerprint !== floor.content.rawFingerprint || duplicateCount !== 1) {
+        throw errorWith('V3_MESSAGE_ANCHOR_MIGRATION_UNPROVEN', '旧摘要无法唯一绑定到当前消息，已保留原记录并等待人工处理。');
+      }
+        bindings.push({ messageIndex: floor.hostLocator.messageIndex, floorId: floor.id });
+      }
+      if (!bindings.length) return true;
+      await persistAnchors({ hostAdapter, chatId: value.root.chatId, bindings });
+      if (expectedEpoch !== epoch || currentHostChatId() !== value.root.chatId) return false;
+      if (lastFailure?.phase === 'anchor') lastFailure = null;
+      return true;
+    } catch (error) {
+      if (expectedEpoch === epoch && currentHostChatId() === value.root.chatId) {
+        lastFailure = Object.freeze({ floorId: null, runId: null, phase: 'anchor', code: error?.code ?? 'V3_MESSAGE_ANCHOR_SAVE_FAILED', message: safeErrorMessage(error?.message ?? '摘要已保存，但消息标识尚未持久化；刷新可重试，无需重新摘要。') });
+      }
+      return false;
+    }
+  }
   const automation = () => {
     try {
       const value = typeof automationSettings === 'function' ? automationSettings() : automationSettings;
@@ -133,6 +166,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
   };
   const notify = () => { const snapshot = getState(); for (const listener of subscribers) { try { listener(snapshot); } catch { /* UI listener isolation */ } } return snapshot; };
+  const markMemorySyncing = () => {
+    memorySyncStatus = 'syncing';
+    memorySyncError = null;
+    if (!reachable) memorySnapshotStatus = 'syncing';
+  };
   const currentInputKey = () => reachable?.root ? `${reachable.root.chatId}:${reachable.root.narrativeGeneration}:${reachable.root.sourceSnapshotFingerprint}` : null;
   const hasEstablishedMemory = () => Boolean(reachable?.floorMemories?.some(memory => memory?.recordStatus === 'active'));
   const hasEstablishedChat = () => Boolean(currentHostChatId() && establishedMemoryChatId === currentHostChatId());
@@ -170,18 +208,18 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       text: `千千结发现需要用户确认的历史摘要缺口：${summaryDebtCopy({ floor: firstPending, count: unfinished, retry: '这是历史缺口，不会自动补，请在记忆管理中点击继续。' })}`,
     });
   };
-  const cancelAutomation = () => {
+  const cancelAutomation = (reason = 'automationCancelled') => {
     autoEpoch += 1;
     autoTriggerReason = null;
     autoTriggerAuthorization = null;
     historicalAuthorization = null;
     if (workRun?.kind === 'auto') {
-      active?.controller.abort();
+      active?.controller.abort(reason);
       cseRuntime.cancelActive?.();
     }
   };
   const cancelEarlyStabilization = reason => { try { foundationRuntime.cancelEarlyStabilization?.(reason); } catch { /* foundation cancellation is best-effort */ } };
-  const invalidate = () => { cancelEarlyStabilization('memoryInvalidated'); cancelAutomation(); epoch += 1; active?.controller.abort(); active = null; workRun = null; reachable = null; memorySnapshotStatus = 'unavailable'; timeFallbackByFloor = new Map(); coverage = unknownCoverage(0); emptyRealtimeOrigin = null; formalGenerationActive = false; generationArm = null; generationLifecycle = null; stoppedGenerationFinal = null; observedHostChatLength = 0; establishedMemoryChatId = null; grantedEventKeys.clear(); tailSwipeContext = null; suffixGenerationContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; detachedDrafts = Object.freeze([]); recoveryAttemptKey = null; recoveryHoldFloorId = null; sessionCandidates.clear(); cseRuntime.invalidate(); notify(); };
+  const invalidate = () => { cancelEarlyStabilization('memoryInvalidated'); cancelAutomation('memoryInvalidated'); epoch += 1; active?.controller.abort('memoryInvalidated'); active = null; workRun = null; reachable = null; memorySnapshotStatus = 'unavailable'; memorySyncStatus = 'idle'; memorySyncError = null; backgroundSync = null; backgroundSyncKey = null; timeFallbackByFloor = new Map(); coverage = unknownCoverage(0); emptyRealtimeOrigin = null; formalGenerationActive = false; generationArm = null; generationLifecycle = null; stoppedGenerationFinal = null; observedHostChatLength = 0; establishedMemoryChatId = null; grantedEventKeys.clear(); tailSwipeContext = null; suffixGenerationContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; sessionCandidates.clear(); cseRuntime.invalidate(); notify(); };
   cseRuntime.subscribe(() => notify());
   function runManualWork(reason, task) {
     if (workRun) return Promise.resolve(getState());
@@ -217,18 +255,16 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       ? 'ready'
       : memory?.recordStatus === 'invalidated' ? 'error'
         : lastFailure?.floorId === floor.id ? 'failed' : 'unprocessed';
-    const metadataStale = Boolean(memory && typeof meta?.rawFingerprint === 'string' && meta.rawFingerprint !== floor.content.rawFingerprint);
     const manualTime = meta?.timeEdited === true;
-    return Object.freeze({ floorId: floor.id, assistantSeq: floor.assistantSeq, messageIndex: floor.hostLocator.messageIndex, canonicalFingerprint: floor.content.canonicalFingerprint, rawFingerprint: floor.content.rawFingerprint, status, memoryId: memory?.id ?? null, summary: effectiveSummary(memory) ?? '', summarySource: memory?.summary?.effectiveSource ?? null, aiSummary: memory?.summary?.aiText ?? '', revisionNote: memory?.summary?.revisionNote ?? null, extractorVersion: memory?.extractorVersion ?? EXTRACTOR_VERSION, counts: counts(memory), api: meta?.api ?? null, attempts: meta?.attempts ?? 0, runId: meta?.runId ?? null, checkpointId: reachable?.checkpoint?.id ?? null, needsReview: status === 'needsReview', metadataStale, manualTime, timeFallback: timeFallbackByFloor.get(floor.id) ?? '', error: lastFailure?.floorId === floor.id ? lastFailure.message : (metadataStale ? manualTime ? '本楼正文时间戳已变化；人工时间仍保留，重新提取才会替换。' : '本楼正文时间戳已变化，请重新提取以更新本楼时间与后续人物状态。' : memory?.recordStatus === 'invalidated' ? '该楼记忆已标记错误，可重新提取。' : null), memory });
+    return Object.freeze({ floorId: floor.id, assistantSeq: floor.assistantSeq, messageIndex: floor.hostLocator.messageIndex, canonicalFingerprint: floor.content.canonicalFingerprint, rawFingerprint: floor.content.rawFingerprint, status, memoryId: memory?.id ?? null, summary: effectiveSummary(memory) ?? '', summarySource: memory?.summary?.effectiveSource ?? null, aiSummary: memory?.summary?.aiText ?? '', revisionNote: memory?.summary?.revisionNote ?? null, extractorVersion: memory?.extractorVersion ?? EXTRACTOR_VERSION, counts: counts(memory), api: meta?.api ?? null, attempts: meta?.attempts ?? 0, runId: meta?.runId ?? null, checkpointId: reachable?.checkpoint?.id ?? null, manualTime, timeFallback: timeFallbackByFloor.get(floor.id) ?? '', error: lastFailure?.floorId === floor.id ? lastFailure.message : (memory?.recordStatus === 'invalidated' ? '该楼记忆已标记错误，可重新提取。' : null), memory });
   }
   function getState() {
     const foundation = foundationRuntime.getState();
     const memoryMap = currentMemoryMap(reachable);
     const provenance = floorProvenance(reachable);
-    const recoveryDraftByFloor = new Map(detachedDrafts.filter(item => item.stableFloorId).map(item => [item.stableFloorId, item]));
-    const floors = (reachable?.floors ?? []).map(floor => recoveryDraftByFloor.get(floor.id) ?? floorState(floor, memoryMap, provenance));
+    const floors = (reachable?.floors ?? []).map(floor => floorState(floor, memoryMap, provenance));
     const stableCount = floors.length;
-    const rememberedCount = floors.filter(item => ['ready', 'needsReview'].includes(item.status)).length;
+    const rememberedCount = floors.filter(item => item.status === 'ready').length;
     const cse = cseRuntime.getState();
     const cseByFloor = new Map((cse.cseFloors ?? []).map(item => [item.floorId, item]));
     const combinedFloors = floors.map(item => Object.freeze({ ...item, cse: cseByFloor.get(item.floorId) ?? null }));
@@ -250,282 +286,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             : coverage.status === 'caughtUp' ? 'caughtUp'
               : coverage.status === 'realtimeTail' ? 'waitingRealtime'
               : coverage.status === 'historicalDebt' ? 'pendingRebuild' : 'notReady';
-    return Object.freeze({ ...foundation, ...cse, status: workRun || active || cse.activeCse ? 'running' : foundation.status, memorySnapshotStatus, stableCount, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: floors.filter(item => ['unprocessed', 'error', 'failed'].includes(item.status)).length, reviewCount: floors.filter(item => item.status === 'needsReview').length, failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, floors: Object.freeze(combinedFloors), memoryDrafts: Object.freeze(detachedDrafts.filter(item => !item.stableFloorId)), memoryEntities, memoryWorkBusy: workRun !== null, activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workRun.phase, floorIds: Object.freeze([...workRun.floorIds]) }) : null, activeExtraction: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, lastExtractorError: lastFailure, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: combinedFloors.length, rebuildNextAssistantSeq, rebuildHasActionableWork, activeAutoMemory: workRun?.kind === 'auto' ? Object.freeze({ reason: workRun.reason, phase: workRun.phase, mode: workRun.mode ?? 'realtime', floorIds: Object.freeze([...workRun.floorIds]) }) : null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
+    return Object.freeze({ ...foundation, ...cse, status: workRun || active || cse.activeCse ? 'running' : foundation.status, memorySnapshotStatus, memorySyncStatus, memorySyncError, stableCount, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: floors.filter(item => ['unprocessed', 'error', 'failed'].includes(item.status)).length, reviewCount: 0, failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, floors: Object.freeze(combinedFloors), memoryEntities, memoryWorkBusy: workRun !== null, activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workRun.phase, floorIds: Object.freeze([...workRun.floorIds]) }) : null, activeExtraction: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, lastExtractorError: lastFailure, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: combinedFloors.length, rebuildNextAssistantSeq, rebuildHasActionableWork, activeAutoMemory: workRun?.kind === 'auto' ? Object.freeze({ reason: workRun.reason, phase: workRun.phase, mode: workRun.mode ?? 'realtime', floorIds: Object.freeze([...workRun.floorIds]) }) : null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
   }
 
-  async function readRecoveryCheckpoint(checkpointId) {
-    const checkpointResult = await store.readRecord('checkpoint', checkpointId);
-    if (checkpointResult.status !== 'ready') return null;
-    const checkpoint = checkpointResult.data;
-    const readAll = async (type, ids) => {
-      const values = await Promise.all(ids.map(id => store.readRecord(type, id)));
-      return values.every(value => value.status === 'ready') ? values.map(value => value.data) : null;
-    };
-    const [runResult, floors, floorMemories, entities, stateDeltas] = await Promise.all([
-      store.readRecord('run', checkpoint.runId),
-      readAll('floor', checkpoint.producedRefs.floors),
-      readAll('floorMemory', checkpoint.producedRefs.floorMemories),
-      readAll('entity', checkpoint.producedRefs.entities),
-      readAll('stateDelta', checkpoint.producedRefs.stateDeltas),
-    ]);
-    if (runResult.status !== 'ready' || !floors || !floorMemories || !entities || !stateDeltas) return null;
-    return Object.freeze({ checkpoint, run: runResult.data, floors, floorMemories, entities, stateDeltas });
-  }
-
-  const sameSemanticFloor = (left, right) => Boolean(left && right
-    && left.assistantSeq === right.assistantSeq
-    && left.hostLocator?.messageIndex === right.hostLocator?.messageIndex
-    && left.hostLocator?.swipeId === right.hostLocator?.swipeId
-    && left.hostLocator?.selectedSwipeIndex === right.hostLocator?.selectedSwipeIndex
-    && left.content?.rawFingerprint === right.content?.rawFingerprint
-    && left.content?.canonicalFingerprint === right.content?.canonicalFingerprint
-    && left.content?.sanitizerFingerprint === right.content?.sanitizerFingerprint);
-
-  const semanticIdentityDirectorySignature = entities => JSON.stringify(buildEntityIdentityDirectory({ entities }).map(entry => ({
-    entityType: entry.entityType,
-    specialRole: entry.specialRole,
-    displayName: normalizedName(entry.displayName),
-    labels: [...new Set(entry.labels.map(normalizedName).filter(Boolean))].sort(),
-  })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))));
-
-  async function extractorSemanticInputFingerprint(value, floor) {
-    const targetIndex = value?.floors?.findIndex(item => item.id === floor?.id) ?? -1;
-    if (targetIndex < 0) return null;
-    const floorIds = new Set(value.floors.slice(0, targetIndex + 1).map(item => item.id));
-    const entities = entitiesThroughFloorIds(value.entities ?? [], floorIds);
-    let previousStoryClock = null;
-    for (let index = targetIndex - 1; index >= 0 && !previousStoryClock; index -= 1) {
-      previousStoryClock = clockEvidence(currentRawSelection(hostAdapter, value.floors[index])).clock;
-    }
-    const envelope = await createExtractorEnvelope({
-      batchId: '00000000-0000-4000-8000-000000000000',
-      chatId: value.root?.chatId ?? value.checkpoint?.chatId,
-      narrativeGeneration: floor.narrativeGeneration,
-      checkpointId: null,
-      floor,
-      entities,
-      userIdentity: currentUserIdentity(),
-      identityHints: [],
-      storyClock: clockEvidence(currentRawSelection(hostAdapter, floor)).clock,
-      previousStoryClock,
-    });
-    return hash(envelope.request.payload);
-  }
-
-  function legacyUserIdentityMatches(entities, identity) {
-    const wanted = new Set([identity?.displayName, ...(identity?.aliases ?? [])].map(normalizedName).filter(Boolean));
-    if (!wanted.size) return false;
-    return entities.some(entity => entity?.entityType === 'person' && entity.specialRole === 'user' && entity.recordStatus === 'active'
-      && [entity.displayName, ...(entity.aliases ?? []).map(alias => alias?.name)].map(normalizedName).some(label => wanted.has(label)));
-  }
-
-  async function extractorInputCheckpoint(start, runId) {
-    let current = start;
-    for (let depth = 0; current && depth < RECOVERY_PARENT_LIMIT; depth += 1) {
-      if (current.run?.id === runId) return current.checkpoint.parentCheckpointId ? readRecoveryCheckpoint(current.checkpoint.parentCheckpointId) : null;
-      current = current.checkpoint.parentCheckpointId ? await readRecoveryCheckpoint(current.checkpoint.parentCheckpointId) : null;
-    }
-    return null;
-  }
-
-  async function recoveryCandidateFor(value, targetFloor = null, { requireRecoveryProof = true } = {}) {
-    if (!value?.checkpoint?.parentCheckpointId) return null;
-    let checkpointId = value.checkpoint.parentCheckpointId;
-    for (let depth = 0; checkpointId && depth < RECOVERY_PARENT_LIMIT; depth += 1) {
-      const prior = await readRecoveryCheckpoint(checkpointId);
-      if (!prior) return null;
-      let priorFloor = null;
-      if (targetFloor) priorFloor = prior.floors.find(floor => sameSemanticFloor(floor, targetFloor)) ?? null;
-      else {
-        const pending = foundationRuntime.getState()?.pending;
-        const selected = Number.isSafeInteger(pending?.messageIndex) ? selectAssistantMessage(hostAdapter.snapshot()?.chat?.[pending.messageIndex]) : null;
-        const rawFingerprint = selected ? `sha256:${await sha256(selected.rawContent)}` : null;
-        priorFloor = prior.floors.find(floor => floor.hostLocator?.messageIndex === pending?.messageIndex
-          && floor.content?.canonicalFingerprint === pending?.canonicalFingerprint
-          && floor.content?.rawFingerprint === rawFingerprint) ?? null;
-      }
-      const memory = priorFloor ? prior.floorMemories.find(item => item.floorId === priorFloor.id && item.recordStatus === 'active') : null;
-      if (priorFloor && memory?.extractorVersion === EXTRACTOR_VERSION) {
-        const prefix = value.floors.filter(floor => floor.assistantSeq < priorFloor.assistantSeq);
-        const priorPrefix = prior.floors.filter(floor => floor.assistantSeq < priorFloor.assistantSeq);
-        if (prefix.length === priorPrefix.length && prefix.every((floor, index) => sameSemanticFloor(floor, priorPrefix[index]))) {
-          const provenance = prior.run?.diagnostics?.floorProvenance?.[priorFloor.id] ?? null;
-          const currentClock = targetFloor ? currentClockSignature(targetFloor) : clockEvidence(selectAssistantMessage(hostAdapter.snapshot()?.chat?.[priorFloor.hostLocator.messageIndex])).signature;
-          if (!provenance || provenance.extractorVersion === EXTRACTOR_VERSION) {
-            if (typeof provenance?.storyClockSignature !== 'string' || provenance.storyClockSignature === currentClock) {
-              let recoveryMode = 'visibleDraft';
-              if (requireRecoveryProof) {
-                const promptSnapshot = String(typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : extractorPromptGuidance ?? '');
-                const promptFingerprint = `sha256:${await sha256(promptSnapshot)}`;
-                const identity = currentUserIdentity();
-                const identityFingerprint = `sha256:${await sha256(JSON.stringify(identity ?? null))}`;
-                if (!provenance?.runId) return null;
-                const oldInput = await extractorInputCheckpoint(prior, provenance.runId);
-                if (!oldInput) return null;
-                const currentEntityFloorIds = new Set(prefix.map(floor => floor.id));
-                const oldEntityFloorIds = new Set(priorPrefix.map(floor => floor.id));
-                const currentDirectory = semanticIdentityDirectorySignature(entitiesThroughFloorIds(value.entities, currentEntityFloorIds));
-                const oldDirectory = semanticIdentityDirectorySignature(entitiesThroughFloorIds(oldInput.entities, oldEntityFloorIds));
-                if (currentDirectory !== oldDirectory) return null;
-                if (provenance?.semanticInputFingerprint) {
-                  const priorSemanticFingerprint = await extractorSemanticInputFingerprint(oldInput, priorFloor);
-                  if (!priorSemanticFingerprint || provenance.semanticInputFingerprint !== priorSemanticFingerprint
-                    || provenance.promptGuidanceFingerprint !== promptFingerprint
-                    || provenance.userIdentityFingerprint !== identityFingerprint) return null;
-                  recoveryMode = 'semanticFingerprintV1';
-                } else {
-                  if (promptSnapshot !== '' || (provenance?.promptGuidanceFingerprint && provenance.promptGuidanceFingerprint !== promptFingerprint)
-                    || !provenance?.runId || !legacyUserIdentityMatches(prior.entities, identity)) return null;
-                  recoveryMode = 'legacyNoCustomPromptV1';
-                }
-              }
-              const delta = prior.stateDeltas.find(item => item.floorId === priorFloor.id && item.floorMemoryId === memory.id && item.recordStatus === 'active') ?? null;
-              return Object.freeze({ ...prior, priorFloor, memory, delta, provenance, recoveryMode });
-            }
-          }
-        }
-      }
-      checkpointId = prior.checkpoint.parentCheckpointId;
-    }
-    return null;
-  }
-
-  function referencedEntityIds(memory) {
-    const ids = new Set();
-    const visit = value => {
-      if (Array.isArray(value)) { value.forEach(visit); return; }
-      if (!value || typeof value !== 'object') return;
-      for (const [key, item] of Object.entries(value)) {
-        if ((key.endsWith('EntityId') || key === 'entityId') && typeof item === 'string') ids.add(item);
-        else if (key.endsWith('EntityIds') && Array.isArray(item)) item.forEach(id => { if (typeof id === 'string') ids.add(id); });
-        else visit(item);
-      }
-    };
-    visit(memory);
-    return ids;
-  }
-
-  async function rebindRecoveredMemory(candidate, current, floor) {
-    const oldFloorId = candidate.priorFloor.id;
-    const floorMap = new Map([[oldFloorId, floor.id]]);
-    const entityMap = new Map();
-    const currentEntities = new Map(current.entities.map(entity => [entity.id, entity]));
-    const priorEntities = new Map(candidate.entities.map(entity => [entity.id, entity]));
-    const newEntities = [];
-    for (const oldId of referencedEntityIds(candidate.memory)) {
-      if (currentEntities.has(oldId)) { entityMap.set(oldId, oldId); continue; }
-      const source = priorEntities.get(oldId);
-      if (!source || source.firstSeenFloorId !== oldFloorId) return null;
-      const newId = await deterministicUuid(['v3-recovered-entity', current.root.chatId, floor.id, oldId]);
-      entityMap.set(oldId, newId);
-      newEntities.push(source);
-    }
-    const mapEntity = id => id === null ? null : entityMap.get(id) ?? id;
-    const mapFloor = id => id === null ? null : floorMap.get(id) ?? id;
-    const nowValue = nowIso(now);
-    const anchorMap = new Map();
-    for (const [index, anchor] of candidate.memory.exactAnchors.entries()) anchorMap.set(anchor.anchorId, await deterministicUuid(['v3-recovered-anchor', floor.id, anchor.anchorId, index]));
-    const itemMap = new Map();
-    for (const field of MEMORY_ARRAY_FIELDS) for (const [index, item] of candidate.memory[field].entries()) itemMap.set(item.itemId, await deterministicUuid(['v3-recovered-item', floor.id, field, item.itemId, index]));
-    const remap = value => {
-      if (Array.isArray(value)) return value.map(remap);
-      if (!value || typeof value !== 'object') return value;
-      const output = {};
-      for (const [key, item] of Object.entries(value)) {
-        if (key === 'itemId') output[key] = itemMap.get(item) ?? item;
-        else if (key === 'anchorId' || key === 'exactAnchorId') output[key] = item === null ? null : anchorMap.get(item) ?? item;
-        else if (key === 'floorId' || key === 'relativeToFloorId') output[key] = mapFloor(item);
-        else if ((key.endsWith('EntityId') || key === 'entityId') && typeof item === 'string') output[key] = mapEntity(item);
-        else if (key.endsWith('EntityIds') && Array.isArray(item)) output[key] = item.map(mapEntity);
-        else output[key] = remap(item);
-      }
-      return output;
-    };
-    const reboundEntities = [];
-    for (const source of newEntities) {
-      const value = remap(source);
-      value.id = mapEntity(source.id);
-      value.narrativeGeneration = floor.narrativeGeneration;
-      value.firstSeenFloorId = mapFloor(source.firstSeenFloorId);
-      value.lastSeenFloorId = mapFloor(source.lastSeenFloorId);
-      value.createdAt = nowValue; value.updatedAt = nowValue; value.supersedes = source.id;
-      reboundEntities.push(validateEntityRecord(value, { expectedChatId: current.root.chatId }));
-    }
-    const memory = remap(candidate.memory);
-    memory.id = await deterministicUuid(['v3-recovered-floor-memory', current.root.chatId, floor.id, candidate.memory.id, EXTRACTOR_VERSION]);
-    memory.narrativeGeneration = floor.narrativeGeneration;
-    memory.floorId = floor.id;
-    memory.createdAt = nowValue; memory.updatedAt = nowValue; memory.supersedes = candidate.memory.id;
-    return Object.freeze({ memory: validateFloorMemory(memory, { expectedChatId: current.root.chatId }), newEntities: reboundEntities, entityMap, floorMap });
-  }
-
-  async function restoreTailIfPossible(value, expectedEpoch) {
-    const target = value?.floors?.at(-1) ?? null;
-    if (!target || value.floorMemories?.some(memory => memory.floorId === target.id && memory.recordStatus === 'active')) return value;
-    const attemptKey = `${value.root.headCheckpointId}:${target.id}`;
-    if (recoveryAttemptKey === attemptKey) return value;
-    recoveryAttemptKey = attemptKey;
-    const visibleCandidate = await recoveryCandidateFor(value, target, { requireRecoveryProof: false });
-    const candidate = visibleCandidate ? await recoveryCandidateFor(value, target) : null;
-    if (!candidate || expectedEpoch !== epoch) {
-      if (visibleCandidate && expectedEpoch === epoch) {
-        recoveryHoldFloorId = target.id;
-        detachedDrafts = buildRecoveryDraft(visibleCandidate, target);
-      }
-      return value;
-    }
-    const rebound = await rebindRecoveredMemory(candidate, value, target);
-    if (!rebound) return value;
-    const promptGuidanceSnapshot = typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : extractorPromptGuidance;
-    const operation = { floorId: target.id, floorFingerprint: target.content.canonicalFingerprint, floorRawFingerprint: target.content.rawFingerprint, epoch: expectedEpoch, controller: new AbortController(), runId: await deterministicUuid(['v3-memory-recovery-run', value.root.headCheckpointId, target.id, candidate.memory.id]), startedAt: nowIso(now), phase: 'committing' };
-    operation.dependencySnapshot = await extractorDependencySnapshot(value, target.id, { userIdentity: currentUserIdentity(), promptGuidance: promptGuidanceSnapshot });
-    if (!operation.dependencySnapshot) return value;
-    const semanticInputFingerprint = await extractorSemanticInputFingerprint(value, target);
-    await commitRevision(operation, { oldReachable: value, replacement: rebound.memory, newEntities: rebound.newEntities, provenanceEntry: { ...(candidate.provenance ?? {}), extractorVersion: EXTRACTOR_VERSION, rawFingerprint: target.content.rawFingerprint, storyClockSignature: currentClockSignature(target), semanticInputFingerprint, recoveredFromMemoryId: candidate.memory.id, recoveryMode: candidate.recoveryMode, ...(candidate.recoveryMode === 'legacyNoCustomPromptV1' ? { legacyPromptEqualityProven: false } : {}) }, action: 'recover', validationErrors: [] });
-    detachedDrafts = Object.freeze([]);
-    recoveryHoldFloorId = null;
-    if (candidate.delta && typeof cseRuntime.restoreRecoveredDelta === 'function') {
-      try {
-        const result = await cseRuntime.restoreRecoveredDelta({ oldDelta: candidate.delta, oldDiagnostics: candidate.run?.diagnostics ?? null, oldFloorId: candidate.priorFloor.id, oldMemoryId: candidate.memory.id, currentFloorId: target.id, currentMemoryId: rebound.memory.id, entityMap: rebound.entityMap, floorMap: rebound.floorMap, priorStateDeltas: candidate.stateDeltas });
-        if (result?.status === 'restored') {
-          const latest = await store.readReachable({ mode: 'projection' });
-          if (latest.status === 'ready') reachable = latest;
-        } else if (result?.reason) {
-          logger?.warn?.('[qianqianjie] recovered FloorMemory but kept CSE pending', { code: 'V3_CSE_RECOVERY_PENDING', reason: result.reason });
-        }
-      } catch (error) {
-        logger?.warn?.('[qianqianjie] recovered FloorMemory but kept CSE pending', { code: error?.code ?? error?.name ?? 'V3_CSE_RECOVERY_FAILED' });
-      }
-    }
-    return reachable;
-  }
-
-  function buildRecoveryDraft(candidate, stableFloor = null) {
-    const names = Object.fromEntries(candidate.entities.filter(entity => entity.recordStatus === 'active').map(entity => [entity.id, entity.displayName]));
-    const floor = stableFloor ?? candidate.priorFloor;
-    return Object.freeze([Object.freeze({
-      floorId: floor.id,
-      stableFloorId: stableFloor?.id ?? null,
-      assistantSeq: floor.assistantSeq,
-      messageIndex: floor.hostLocator.messageIndex,
-      canonicalFingerprint: floor.content.canonicalFingerprint,
-      rawFingerprint: floor.content.rawFingerprint,
-      status: 'draft', memoryId: null,
-      summary: effectiveSummary(candidate.memory) ?? '', summarySource: candidate.memory.summary?.effectiveSource ?? null,
-      extractorVersion: candidate.memory.extractorVersion, counts: counts(candidate.memory), memory: candidate.memory,
-      memoryEntityNames: Object.freeze(names), manualTime: false, metadataStale: false,
-      timeFallback: inferCanonicalCurrentTime(candidate.priorFloor.content?.canonicalContent)?.text ?? '', error: stableFloor ? '旧记录缺少完整依赖证明；草稿已保留，如需覆盖当前楼请手动重新提取。' : null,
-    })]);
-  }
-
-  async function detachedTailDraft(value) {
-    if (!value?.root || value.floors?.some(floor => !value.floorMemories?.some(memory => memory.floorId === floor.id && memory.recordStatus === 'active'))) return Object.freeze([]);
-    const pending = foundationRuntime.getState()?.pending;
-    if (!Number.isSafeInteger(pending?.messageIndex)) return Object.freeze([]);
-    const candidate = await recoveryCandidateFor(value, null, { requireRecoveryProof: false });
-    if (!candidate) return Object.freeze([]);
-    return buildRecoveryDraft(candidate);
-  }
   async function refreshCoverage(expectedEpoch = epoch) {
     const source = reachable;
     const realtimeOrigin = Boolean(realtimeOriginFromReachable(source) || (source?.root && emptyRealtimeOrigin
@@ -560,22 +323,15 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }
     }
     else throw errorWith('V3_MEMORY_LOAD_FAILED', `记忆图读取失败：${result.status}`);
-    reachable = nextReachable;
-    detachedDrafts = Object.freeze([]);
-    recoveryHoldFloorId = null;
-    if (nextReachable) {
-      await cseRuntime.load(nextReachable);
-      if (expectedEpoch !== epoch) { cseRuntime.invalidate(); return getState(); }
-      const recovered = await restoreTailIfPossible(nextReachable, expectedEpoch);
-      if (recovered?.root) nextReachable = reachable = recovered;
-      if (!detachedDrafts.some(item => item.stableFloorId)) detachedDrafts = await detachedTailDraft(nextReachable);
-    } else {
-      cseRuntime.invalidate();
-      detachedDrafts = Object.freeze([]);
+    if (nextReachable?.root?.chatId && reachable?.root?.chatId === nextReachable.root.chatId
+      && Number(reachable.rootRevision ?? 0) > Number(nextReachable.rootRevision ?? 0)) {
+      nextReachable = reachable;
     }
-    if (expectedEpoch !== epoch) { cseRuntime.invalidate(); return getState(); }
+    reachable = nextReachable;
     if (nextReachable?.floorMemories?.some(memory => memory?.recordStatus === 'active')) establishedMemoryChatId = nextReachable.root.chatId;
     memorySnapshotStatus = 'ready';
+    memorySyncStatus = nextReachable ? 'syncing' : 'idle';
+    memorySyncError = null;
     timeFallbackByFloor = new Map();
     if (nextReachable && typeof hostAdapter?.snapshot === 'function') {
       const snapshot = hostAdapter.snapshot();
@@ -587,10 +343,42 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     } else {
       try { observedHostChatLength = hostAdapter.snapshot()?.chat?.length ?? observedHostChatLength; } catch { /* keep prior observation */ }
     }
-    if (nextReachable) await refreshCoverage(expectedEpoch);
-    if (expectedEpoch !== epoch) return getState();
-    if (lastFailure?.floorId === null && lastFailure.phase === 'load') lastFailure = null;
     notify();
+    if (!nextReachable) {
+      cseRuntime.invalidate();
+      backgroundSync = null;
+      backgroundSyncKey = null;
+      return getState();
+    }
+    const syncKey = `${nextReachable.root.chatId}:${nextReachable.rootRevision}:${nextReachable.root.headCheckpointId}`;
+    if (backgroundSync && backgroundSyncKey === syncKey) return getState();
+    backgroundSyncKey = syncKey;
+    const source = nextReachable;
+    const settlement = Promise.resolve().then(async () => {
+      await cseRuntime.load(source);
+      if (expectedEpoch !== epoch || reachable !== source) return;
+      await ensureSavedAnchors(source, expectedEpoch);
+      if (expectedEpoch !== epoch || reachable !== source) return;
+      await refreshCoverage(expectedEpoch);
+      if (expectedEpoch !== epoch || reachable !== source) return;
+      const foundationState = foundationRuntime.getState();
+      if (lastFailure?.floorId === null && ['load', 'foundation'].includes(lastFailure.phase)
+        && [foundationState?.status, foundationState?.foundationStatus].includes('ready')) lastFailure = null;
+      memorySyncStatus = lastFailure?.phase === 'anchor' ? 'error' : 'idle';
+      memorySyncError = lastFailure?.phase === 'anchor' ? lastFailure : null;
+      notify();
+    }).catch(error => {
+      if (expectedEpoch !== epoch || reachable !== source) return;
+      memorySyncStatus = 'error';
+      memorySyncError = Object.freeze({ code: error?.code ?? 'V3_MEMORY_SYNC_FAILED', message: safeErrorMessage(error?.message) });
+      if (!lastFailure || ['load', 'foundation'].includes(lastFailure.phase)) {
+        lastFailure = Object.freeze({ floorId: null, runId: null, phase: 'load', code: memorySyncError.code, attempts: 0, validationErrors: [], api: null, message: memorySyncError.message });
+      }
+      notify();
+    }).finally(() => {
+      if (backgroundSync === settlement) { backgroundSync = null; backgroundSyncKey = null; }
+    });
+    backgroundSync = settlement;
     return getState();
   }
   async function loadCurrent(expectedEpoch = epoch) {
@@ -601,37 +389,70 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       : stored;
     return load(expectedEpoch, merged);
   }
-  async function performRefreshStatus({ preferCached = false } = {}) {
+  async function performRefreshStatus({ preferCached = false } = {}, expectedEpoch = epoch, expectedChatId = currentHostChatId()) {
+    if (expectedEpoch !== epoch || expectedChatId !== currentHostChatId()) return getState();
+    memorySyncStatus = 'syncing';
+    memorySyncError = null;
+    if (!reachable) memorySnapshotStatus = 'syncing';
+    notify();
     const foundation = typeof foundationRuntime.inspect === 'function'
       ? await foundationRuntime.inspect('memoryRefresh', { allowCached: preferCached })
       : await foundationRuntime.refreshStatus();
-    if (!enabled() || foundation.status === 'disabled') { reachable = null; memorySnapshotStatus = 'unavailable'; return notify(); }
-    if (!['ready', 'needsReview', 'uninitialized'].includes(foundation.status)) return notify();
+    if (expectedEpoch !== epoch || expectedChatId !== currentHostChatId()) return getState();
+    if (!enabled() || foundation.status === 'disabled') { reachable = null; memorySnapshotStatus = 'unavailable'; memorySyncStatus = 'idle'; return notify(); }
+    if (!['ready', 'uninitialized'].includes(foundation.status)) {
+      memorySyncStatus = foundation.status === 'error' ? 'error' : 'needsReview';
+      memorySyncError = foundation.lastError ? Object.freeze({ code: 'V3_FOUNDATION_NOT_READY', message: safeErrorMessage(foundation.lastError) }) : null;
+      if (!reachable) memorySnapshotStatus = foundation.status === 'error' ? 'error' : 'unavailable';
+      return notify();
+    }
     const foundationReachable = foundationRuntime.getReachable?.() ?? null;
     const reusable = !reachable || !foundationReachable
       || Number(foundationReachable.rootRevision ?? 0) >= Number(reachable.rootRevision ?? 0)
       ? foundationReachable
       : null;
-    return load(epoch, reusable);
+    return load(expectedEpoch, reusable);
   }
   function refreshStatus(options = {}) {
     const preferCached = options.preferCached === true;
-    if (refreshInFlight) {
+    const expectedEpoch = epoch;
+    const expectedChatId = currentHostChatId();
+    const sameScope = refreshInFlight?.epoch === expectedEpoch && refreshInFlight?.chatId === expectedChatId;
+    if (refreshInFlight && sameScope) {
       if (!preferCached && refreshInFlight.preferCached) {
         const predecessor = refreshInFlight.promise;
-        const fresh = predecessor.then(() => performRefreshStatus({ ...options, preferCached: false }));
-        const entry = { preferCached: false, promise: null };
+        const fresh = predecessor.then(() => performRefreshStatus({ ...options, preferCached: false }, expectedEpoch, expectedChatId));
+        const entry = { preferCached: false, epoch: expectedEpoch, chatId: expectedChatId, promise: null };
         entry.promise = fresh.finally(() => { if (refreshInFlight === entry) refreshInFlight = null; });
         refreshInFlight = entry;
         return entry.promise;
       }
       return refreshInFlight.promise;
     }
-    const pendingRefresh = Promise.resolve().then(() => performRefreshStatus(options));
-    const entry = { preferCached, promise: null };
+    const pendingRefresh = Promise.resolve().then(() => performRefreshStatus(options, expectedEpoch, expectedChatId));
+    const entry = { preferCached, epoch: expectedEpoch, chatId: expectedChatId, promise: null };
     entry.promise = pendingRefresh.finally(() => { if (refreshInFlight === entry) refreshInFlight = null; });
     refreshInFlight = entry;
     return entry.promise;
+  }
+  async function prepareCurrent({ preferCached = true } = {}) {
+    const hostChatId = currentHostChatId();
+    if (preferCached && hostChatId && reachable?.root?.chatId === hostChatId && memorySnapshotStatus === 'ready') {
+      return Object.freeze({ status: 'ready', reachable, memorySyncStatus });
+    }
+    const state = await refreshStatus({ preferCached });
+    const currentChatId = currentHostChatId();
+    const foundationState = foundationRuntime.getState();
+    const foundationReachable = foundationRuntime.getReachable?.() ?? null;
+    const freshReady = preferCached || (foundationState?.status === 'ready'
+      && foundationReachable?.root?.chatId === currentChatId
+      && foundationReachable?.rootRevision === reachable?.rootRevision
+      && foundationReachable?.root?.headCheckpointId === reachable?.root?.headCheckpointId);
+    if (freshReady && currentChatId && reachable?.root?.chatId === currentChatId && memorySnapshotStatus === 'ready') {
+      return Object.freeze({ status: 'ready', reachable, memorySyncStatus });
+    }
+    const status = state.memorySnapshotStatus === 'ready' ? 'uninitialized' : state.memorySnapshotStatus;
+    return Object.freeze({ status, reachable: null, memorySyncStatus });
   }
   async function confirmLatest() { await foundationRuntime.confirmLatest(); return load(); }
 
@@ -663,7 +484,6 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const targetIndex = value?.floors?.findIndex(floor => floor.id === floorId) ?? -1;
     if (targetIndex < 0 || !value?.root || !value?.checkpoint) return null;
     const prefix = value.floors.slice(0, targetIndex + 1);
-    const inputByFloor = new Map((value.checkpoint.inputFingerprints ?? []).map(item => [item.floorId, item]));
     const floorDependencies = [];
     for (const floor of prefix) {
       const selected = currentRawSelection(hostAdapter, floor);
@@ -677,7 +497,6 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         hostLocator: floor.hostLocator,
         rawFingerprint: floor.content.rawFingerprint,
         canonicalFingerprint: floor.content.canonicalFingerprint,
-        stabilityFingerprint: inputByFloor.get(floor.id)?.stabilityFingerprint ?? floor.stability?.proof?.fingerprint ?? null,
         liveRawFingerprint: `sha256:${await sha256(selected.rawContent)}`,
         storyClockSignature: clockEvidence(selected).signature,
       });
@@ -722,8 +541,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const floor = current.floors.find(item => item.id === replacement.floorId);
     const selected = floor ? currentRawSelection(hostAdapter, floor) : null;
     const liveRawFingerprint = selected ? `sha256:${await sha256(selected.rawContent)}` : null;
-    if (!floor || floor.content.canonicalFingerprint !== operation.floorFingerprint || floor.narrativeGeneration !== replacement.narrativeGeneration
-      || (operation.floorRawFingerprint && (floor.content.rawFingerprint !== operation.floorRawFingerprint || liveRawFingerprint !== operation.floorRawFingerprint))) {
+    if (!floor || floor.narrativeGeneration !== replacement.narrativeGeneration
+      || (operation.floorRawFingerprint && liveRawFingerprint !== operation.floorRawFingerprint)) {
       throw errorWith('V3_MEMORY_PREFIX_CHANGED', '正文分支、稳定锚或时间戳已变化，本次结果已作废。');
     }
     const memoryByFloor = currentMemoryMap(current); memoryByFloor.set(replacement.floorId, replacement);
@@ -778,6 +597,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     lastFailure = null;
     sessionCandidates.delete(replacement.floorId);
     await cseRuntime.load(reachable);
+    await ensureSavedAnchors(reachable, operation.epoch);
     await refreshCoverage(operation.epoch);
     return notify();
     }
@@ -823,7 +643,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const selected = currentRawSelection(hostAdapter, floor);
       if (!selected) throw errorWith('V3_MEMORY_STALE', '当前楼或所选重 Roll 已变化，请刷新后重试。');
       const sourceRawFingerprint = `sha256:${await sha256(selected.rawContent)}`;
-      if (sourceRawFingerprint !== floor.content.rawFingerprint) throw errorWith('V3_MEMORY_STALE', '当前楼原始正文已变化，请刷新后重试。');
+      const canonicalContent = sanitizeMemoryContent(selected.rawContent, sanitizerOptions());
+      const liveFloor = sourceRawFingerprint === floor.content.rawFingerprint ? floor : { ...floor, content: { ...floor.content,
+        canonicalContent, rawFingerprint: sourceRawFingerprint, canonicalFingerprint: `sha256:${await sha256(canonicalContent)}` } };
       const sourceClock = clockEvidence(selected);
       const userIdentity = currentUserIdentity();
       const runId = await deterministicUuid(['v3-extractor-run', source.root.headCheckpointId, floor.id, newUuid()]);
@@ -832,9 +654,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const scopedEntities = entitiesThroughFloorIds(source.entities, new Set(source.floors.slice(0, floorIndex + 1).map(item => item.id)));
       let previousStoryClock = null;
       for (let index = floorIndex - 1; index >= 0 && !previousStoryClock; index -= 1) previousStoryClock = clockEvidence(currentRawSelection(hostAdapter, source.floors[index])).clock;
-      const envelope = await createExtractorEnvelope({ ...expectedScope, floor, entities: scopedEntities, userIdentity, identityHints: [], storyClock: sourceClock.clock, previousStoryClock });
+      const envelope = await createExtractorEnvelope({ ...expectedScope, floor: liveFloor, entities: scopedEntities, userIdentity, identityHints: [], storyClock: sourceClock.clock, previousStoryClock });
       const semanticInputFingerprint = await hash(envelope.request.payload);
       const promptGuidanceSnapshot = typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : extractorPromptGuidance;
+      const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
       const verifiedUserIdentity = currentUserIdentity();
       const dependencySnapshot = await extractorDependencySnapshot(source, floor.id, { userIdentity: verifiedUserIdentity, promptGuidance: promptGuidanceSnapshot });
       if (typeof store.readRoot === 'function') {
@@ -856,8 +679,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }
       return {
         intent: Object.freeze({ ...intent }),
-        source, floor, oldMemory: memoryMap.get(floor.id) ?? null, sourceRawFingerprint, sourceClock,
-        userIdentity, promptGuidanceSnapshot, dependencySnapshot, runId, expectedScope, scopedEntities,
+        source, floor: liveFloor, oldMemory: memoryMap.get(floor.id) ?? null, sourceRawFingerprint, sourceClock,
+        userIdentity, promptGuidanceSnapshot, processingPromptSnapshot, dependencySnapshot, runId, expectedScope, scopedEntities,
         envelope, semanticInputFingerprint, selectedRawContent: selected.rawContent,
         preflightTiming: Object.freeze({ prepareMs: elapsedMs(manualWork.startedMonotonic), rootChecks, reprepareCount: attempt }),
       };
@@ -872,34 +695,35 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const intent = preparedInput?.intent ?? { epoch, chatId: currentHostChatId() };
     const prepared = preparedInput ?? await prepareExtractorInput({ floorId, intent, manualWork: timingWork });
     if (!prepared) return getState();
-    const { source, floor, oldMemory, sourceRawFingerprint, sourceClock, userIdentity, promptGuidanceSnapshot, dependencySnapshot, runId, expectedScope, scopedEntities, envelope, semanticInputFingerprint } = prepared;
+    const { source, floor, oldMemory, sourceRawFingerprint, sourceClock, userIdentity, promptGuidanceSnapshot, processingPromptSnapshot, dependencySnapshot, runId, expectedScope, scopedEntities, envelope, semanticInputFingerprint } = prepared;
     const preparedStillCurrent = () => extractionIntentCurrent(intent)
       && source.root.chatId === intent.chatId
       && currentRawSelection(hostAdapter, floor)?.rawContent === prepared.selectedRawContent
       && JSON.stringify(currentUserIdentity() ?? null) === JSON.stringify(userIdentity ?? null);
     if (!preparedStillCurrent()) throw errorWith('V3_MEMORY_PREFIX_CHANGED', '聊天、目标楼或身份在请求前已经变化，本次请求未发送。');
     const operation = { floorId: floor.id, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature, epoch: intent.epoch, controller: new AbortController(), runId, startedAt: timingWork.startedAt, phase: 'extracting', dependencySnapshot, preflightTiming: Object.freeze({ ...prepared.preflightTiming, requestDispatchMs: elapsedMs(timingWork.startedMonotonic) }) };
+    const releaseConfirmation = foundationRuntime.holdExtractionConfirmation?.(floor.id, runId) ?? null;
     active = operation; notify();
     try {
       if (!preparedStillCurrent()) throw errorWith('V3_MEMORY_PREFIX_CHANGED', '聊天、目标楼或身份在请求发出前已经变化，本次请求未发送。');
-      operation.dependencyBoundaryMessageIndex = Math.max(...operation.dependencySnapshot.floorDependencies.map(item => {
-        const sourceFloor = source.floors.find(candidate => candidate.id === item.id);
-        return sourceFloor?.stability?.proof?.messageIndex ?? item.hostLocator.messageIndex;
-      }));
+      operation.dependencyBoundaryMessageIndex = Math.max(...operation.dependencySnapshot.floorDependencies
+        .map(item => item.hostLocator.messageIndex));
       operation.hostIdentity = generationIdentity(hostAdapter.snapshot());
-      const result = await runExtractorRequest({ generateUtilityTask, envelope, floor, existingEntities: scopedEntities, now: nowIso(now), supersedes: oldMemory?.id ?? null, preservedSummary: oldMemory?.summary?.effectiveSource === 'user' ? oldMemory.summary : null, expectedScope, promptGuidance: promptGuidanceSnapshot, signal: operation.controller.signal });
+      const result = await runExtractorRequest({ generateUtilityTask, envelope, floor, existingEntities: scopedEntities, now: nowIso(now), supersedes: oldMemory?.id ?? null, preservedSummary: oldMemory?.summary?.effectiveSource === 'user' ? oldMemory.summary : null, expectedScope, promptGuidance: promptGuidanceSnapshot, processingPrompt: processingPromptSnapshot, signal: operation.controller.signal });
+      const replacement = validateFloorMemory({ ...result.memory, sourceStoryClockSignature: sourceClock.signature }, { expectedChatId: source.root.chatId });
       operation.phase = 'validating'; notify();
       const foundationAfter = await foundationRuntime.refreshStatus();
       if (foundationAfter.status !== 'ready') throw errorWith('V3_MEMORY_STALE', '正文地基在提取期间发生变化，本次结果已作废。');
       if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_MEMORY_CANCELLED', '聊天或正文已变化，迟到响应已丢弃。');
       operation.phase = 'committing'; notify();
-      await commitRevision(operation, { oldReachable: source, replacement: result.memory, newEntities: result.newEntities, provenanceEntry: { api: result.metadata, attempts: result.attempts, transportAttempts: result.transportAttempts, responseFingerprint: result.responseFingerprint, extractorVersion: result.memory.extractorVersion, promptVersion: EXTRACTOR_PROMPT_VERSION, promptGuidanceFingerprint: `sha256:${await sha256(String(promptGuidanceSnapshot ?? ''))}`, userIdentityFingerprint: `sha256:${await sha256(JSON.stringify(userIdentity ?? null))}`, semanticInputFingerprint, preflightTiming: operation.preflightTiming, needsReview: result.needsReview, rawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature }, action: oldMemory ? 'reextract' : 'extract', validationErrors: result.validationErrors });
-      if (analyzeState && !oldMemory && !operation.controller.signal.aborted && operation.epoch === epoch) await cseRuntime.analyzeFloor(floor.id);
+      await commitRevision(operation, { oldReachable: source, replacement, newEntities: result.newEntities, provenanceEntry: { api: result.metadata, attempts: result.attempts, transportAttempts: result.transportAttempts, responseFingerprint: result.responseFingerprint, extractorVersion: replacement.extractorVersion, promptVersion: EXTRACTOR_PROMPT_VERSION, promptGuidanceFingerprint: `sha256:${await sha256(String(promptGuidanceSnapshot ?? ''))}`, systemPromptFingerprint: `sha256:${await sha256(buildExtractorSystemPrompt(promptGuidanceSnapshot, processingPromptSnapshot))}`, userIdentityFingerprint: `sha256:${await sha256(JSON.stringify(userIdentity ?? null))}`, semanticInputFingerprint, preflightTiming: operation.preflightTiming, needsReview: result.needsReview, rawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature }, action: oldMemory ? 'reextract' : 'extract', validationErrors: result.validationErrors });
+      if (analyzeState && !operation.controller.signal.aborted && operation.epoch === epoch) await cseRuntime.analyzeFloor(floor.id);
     } catch (error) {
       if (error?.name !== 'AbortError' && !STALE_MEMORY_CODES.has(error?.code)) await persistFailure(operation, error, source);
       else lastFailure = Object.freeze({ floorId: operation.floorId, runId: operation.runId, phase: 'stale', code: error?.code === 'V3_MEMORY_PREFIX_CHANGED' ? 'V3_MEMORY_PREFIX_CHANGED' : 'V3_MEMORY_STALE', attempts: 0, validationErrors: [], api: null, message: safeErrorMessage(error?.message ?? '聊天、插件状态或正文分支已变化，迟到结果没有写入。') });
       logger?.warn?.('[qianqianjie] V3 extractor failed', { code: error?.code ?? error?.name ?? 'V3_EXTRACTOR_FAILED' });
     } finally {
+      releaseConfirmation?.();
       if (active === operation) active = null;
       if (suffixGenerationContext?.runId === operation.runId) suffixGenerationContext = null;
     }
@@ -1029,7 +853,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const run = validateFoundationRun({ schemaVersion: 3, recordType: 'run', id: operation.runId, chatId: source.root.chatId, narrativeGeneration: source.root.narrativeGeneration, parentCheckpointId: source.root.headCheckpointId, inputSnapshotFingerprint: source.root.sourceSnapshotFingerprint, mode: 'rebuild', sessionEpoch: operation.epoch, inputFloorIds: source.floors.map(item => item.id), phase: 'completed', completedFloorIds: [], failedItems: [], preparedRecordRefs: [...entities.map(entity => store.recordKey(entity)), ...indexKeys, `v3-checkpoint-${checkpointId}`], diagnostics: { kind: 'fullRebuild', floorProvenance: {} }, startedAt: operation.startedAt, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: source.root.chatId });
       const checkpoint = validateFoundationCheckpoint({ schemaVersion: 3, recordType: 'checkpoint', id: checkpointId, chatId: source.root.chatId, narrativeGeneration: source.root.narrativeGeneration, parentCheckpointId: source.root.headCheckpointId, runId: operation.runId, sourceSnapshotFingerprint: source.root.sourceSnapshotFingerprint, capabilities, floorRange: { fromAssistantSeq: source.floors.length ? 1 : 0, toAssistantSeq: source.floors.length, floorIds: source.floors.map(item => item.id) }, inputFingerprints: createCheckpointInputFingerprints(source.floors, { previous: source.checkpoint?.inputFingerprints }), producedRefs: { floors: source.floors.map(item => item.id), floorMemories: [], entities: entities.map(item => item.id), events: [], claims: [], knowledge: [], stateDeltas: [], currentStates: [], stateProjections: [], episodes: [], threads: [], indexes: indexKeys }, validation: { schemaValid: true, referencesValid: true, orderedReplayValid: true, stateFingerprint }, sealedAt: nowValue, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: source.root.chatId });
       const root = validateFoundationRoot({ ...source.root, status: 'ready', capabilities, headCheckpointId: checkpointId, activeRunId: null, activeStateRefs: [], activeThreadRefs: [], indexManifest: { ...emptyManifest(), floor: indexKeys.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-')), entity: indexKeys.filter(key => key.includes('-entity-')), reverseRef: indexKeys.filter(key => key.includes('-reverseRef-')) }, updatedAt: nowValue }, { expectedChatId: source.root.chatId });
-      await persistRecords([...entities, ...indexes], operation.controller.signal);
+      await persistRecords(indexes, operation.controller.signal);
       await persistRecords([run, checkpoint], operation.controller.signal, { concurrency: 1 });
       if (operation.epoch !== epoch || operation.controller.signal.aborted || currentHostChatId() !== source.root.chatId || mainGenerationActive()) throw errorWith('V3_MEMORY_STALE', '聊天或正文状态已变化，完全重构未切换有效记忆。');
       const latest = await store.readReachable();
@@ -1065,6 +889,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const evidenceSafe = evidence => ({ ...evidence, quotedText: full ? evidence.quotedText : `[已隐藏原文 · ${evidence.quotedText.length} 字]` });
     const memoryCopy = memory ? clone(memory) : null;
     if (memoryCopy && !full) {
+      delete memoryCopy.sourceCanonicalContent;
       memoryCopy.summaryEvidenceRefs = memoryCopy.summaryEvidenceRefs.map(evidenceSafe);
       for (const field of ['chronology', 'locations', 'participants', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'openLoops', 'ambiguities', 'cseSignals']) memoryCopy[field].forEach(item => { item.evidenceRefs = (item.evidenceRefs ?? []).map(evidenceSafe); });
       memoryCopy.exactAnchors = memoryCopy.exactAnchors.map(anchor => ({ ...anchor, exactText: `[已隐藏原文 · ${anchor.exactText.length} 字]` }));
@@ -1133,7 +958,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           }
           operation.mode = historical ? 'historical' : 'realtime';
           const summaryPending = (reachable.floors ?? []).slice(assessment.summaryCompleted)
-            .filter(floor => capturedFloorSet.has(floor.id) && floor.id !== recoveryHoldFloorId);
+            .filter(floor => capturedFloorSet.has(floor.id));
           const targets = historical
             ? summaryPending.slice(0, Math.min(config.batchSize, summaryPending.length))
             : assessment.summaryStatus === 'realtimeTail' && summaryPending.length >= config.batchSize
@@ -1160,7 +985,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               if (memory?.recordStatus !== 'active') await extractFloorInternal(floor.id, { analyzeState: false });
               if (!allowed()) return getState();
               const currentFloor = getState().floors.find(item => item.floorId === floor.id);
-              if (!currentFloor?.memoryId || !['ready', 'needsReview'].includes(currentFloor.status)) {
+              if (!currentFloor?.memoryId || currentFloor.status !== 'ready') {
                 if (manualHistorical && historicalAuthorization === authorizedChatId) historicalAuthorization = null;
                 lastAutomaticInputKey = capturedInputKey ?? inputKey;
                 lastAutoRun = Object.freeze({ status: 'failed', reason, mode: operation.mode, phase: 'extracting', batchSize: config.batchSize, floorId: floor.id, assistantSeq: floor.assistantSeq, message: getState().lastExtractorError?.message ?? 'FloorMemory 提取失败，可点击继续重建后从本楼重试。' });
@@ -1205,8 +1030,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               return notify();
             }
             cseProcessed += 1;
-            await load(epoch, foundationRuntime.getReachable?.() ?? null);
-            afterExtraction = coverage;
+            await loadCurrent(epoch);
+            afterExtraction = await refreshCoverage(epoch);
             if (afterExtraction.status === 'unknown') throw errorWith('V3_MEMORY_COVERAGE_UNCONFIRMED', '人物状态保存后覆盖校验未确认，自动追赶已暂停。');
           }
           if (!historical) {
@@ -1367,7 +1192,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     autoTriggerReason = reason;
     autoTriggerAuthorization = authorization;
     awaitingFoundation = true;
-    memorySnapshotStatus = 'syncing';
+    markMemorySyncing();
     notify();
     return true;
   }
@@ -1488,7 +1313,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (!slot) return false;
     generationArm = Object.freeze({ ...arm, proven: true, messageIndex: slot.messageIndex });
     awaitingFoundation = true;
-    memorySnapshotStatus = 'syncing';
+    markMemorySyncing();
     if (automation().enabled) autoTriggerReason = 'earlyStableAssistant';
     void Promise.resolve(foundationRuntime.stabilizeThrough(arm.boundary)).catch(error => {
       if (generationArm?.boundary !== arm.boundary) return;
@@ -1523,7 +1348,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           } catch (error) {
             if (reloadEpoch !== epoch) continue;
             lastFailure = Object.freeze({ floorId: null, runId: null, phase: 'load', code: error?.code ?? 'V3_MEMORY_LOAD_FAILED', attempts: 0, validationErrors: [], api: null, message: safeErrorMessage(error?.message) });
-            memorySnapshotStatus = 'error';
+            memorySyncStatus = 'error';
+            memorySyncError = lastFailure;
+            if (!reachable) memorySnapshotStatus = 'error';
             notify();
           }
         }
@@ -1531,8 +1358,15 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       return foundationReload;
     };
     if (typeof foundationRuntime.subscribe === 'function') unsubscribeFoundation = foundationRuntime.subscribe(state => {
-      if (!awaitingFoundation || !['ready', 'uninitialized'].includes(state?.status)) return;
-      void drainFoundationReload();
+      if (!awaitingFoundation) return;
+      if (['ready', 'uninitialized'].includes(state?.status)) { void drainFoundationReload(); return; }
+      if (!['running', 'idle'].includes(state?.status)) {
+        awaitingFoundation = false;
+        memorySyncStatus = state?.status === 'error' ? 'error' : 'needsReview';
+        memorySyncError = state?.lastError ? Object.freeze({ code: 'V3_FOUNDATION_NOT_READY', message: safeErrorMessage(state.lastError) }) : null;
+        if (!reachable) memorySnapshotStatus = state?.status === 'error' ? 'error' : 'unavailable';
+        notify();
+      }
     });
     const generationStoppedEvent = eventTypes.GENERATION_STOPPED;
     const generationEndedEvent = eventTypes.GENERATION_ENDED;
@@ -1564,7 +1398,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           && suffixBoundary(suffixGenerationContext.messageIndex, suffixGenerationContext)) {
           suffixGenerationContext = Object.freeze({ ...suffixGenerationContext, stopped: true });
           awaitingFoundation = true;
-          memorySnapshotStatus = 'syncing';
+          markMemorySyncing();
           notify();
           return;
         }
@@ -1572,7 +1406,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         if (tailSwipeContext && tailSwipeContext.stopped !== true && tailSwipeBoundary(tailSwipeContext.messageIndex, tailSwipeContext)) {
           tailSwipeContext = Object.freeze({ ...tailSwipeContext, stopped: true });
           awaitingFoundation = true;
-          memorySnapshotStatus = 'syncing';
+          markMemorySyncing();
           notify();
           return;
         }
@@ -1611,7 +1445,30 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           tailSwipeContext = null;
           suffixGenerationContext = null;
           awaitingFoundation = true;
-          memorySnapshotStatus = 'syncing';
+          markMemorySyncing();
+          notify();
+          return;
+        }
+        if (HISTORY_MUTATION_EVENTS.has(name)) {
+          const operation = active;
+          if (operation && reachable?.root?.chatId === currentHostChatId()) {
+            void extractorDependencySnapshot(reachable, operation.floorId, {
+              userIdentity: currentUserIdentity(),
+              promptGuidance: operation.dependencySnapshot?.promptGuidance,
+            }).then(currentDependency => {
+              if (active !== operation || sameExtractorDependency(operation.dependencySnapshot, currentDependency)) return;
+              cancelEarlyStabilization('dependencyChanged');
+              cancelAutomation('dependencyChanged');
+              operation.controller.abort('dependencyChanged');
+            }).catch(() => {
+              if (active !== operation) return;
+              cancelEarlyStabilization('dependencyCheckFailed');
+              cancelAutomation('dependencyCheckFailed');
+              operation.controller.abort('dependencyCheckFailed');
+            });
+          }
+          awaitingFoundation = true;
+          markMemorySyncing();
           notify();
           return;
         }
@@ -1626,7 +1483,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             completeGeneration('generationCompleted', messageIndex);
           }
           awaitingFoundation = true;
-          memorySnapshotStatus = 'syncing';
+          markMemorySyncing();
           notify();
           return;
         }
@@ -1635,7 +1492,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         if (tailBoundary) {
           if (name === 'MESSAGE_SWIPED' && args[1]?.pendingGeneration === true) tailSwipeContext = tailBoundary;
           awaitingFoundation = true;
-          memorySnapshotStatus = 'syncing';
+          markMemorySyncing();
           notify();
           return;
         }
@@ -1674,7 +1531,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           grantEventCatchup('newUserAnchor', key);
           observedHostChatLength = Math.max(observedHostChatLength, eventSnapshot?.chat?.length ?? 0);
           awaitingFoundation = true;
-          memorySnapshotStatus = 'syncing';
+          markMemorySyncing();
           notify();
           return;
         }
@@ -1687,7 +1544,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           }
           try { eventSnapshot = hostAdapter.snapshot(); } catch {
             awaitingFoundation = true;
-            memorySnapshotStatus = 'syncing';
+            markMemorySyncing();
             notify();
             return;
           }
@@ -1704,7 +1561,15 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           }
           observedHostChatLength = Math.max(observedHostChatLength, eventSnapshot.chat?.length ?? 0);
           awaitingFoundation = true;
-          memorySnapshotStatus = 'syncing';
+          markMemorySyncing();
+          notify();
+          return;
+        }
+        if (['CHAT_CHANGED', 'CHAT_RENAMED'].includes(name)
+          && reachable?.root?.chatId
+          && reachable.root.chatId === currentHostChatId()) {
+          awaitingFoundation = true;
+          markMemorySyncing();
           notify();
           return;
         }
@@ -1713,13 +1578,15 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         tailSwipeContext = null;
         suffixGenerationContext = null;
         cancelEarlyStabilization(name);
-        cancelAutomation();
+        cancelAutomation(name);
         epoch += 1;
-        active?.controller.abort();
+        active?.controller.abort(name);
         active = null;
         workRun = null;
         memorySnapshotStatus = 'syncing';
         reachable = null;
+        memorySyncStatus = 'syncing';
+        memorySyncError = null;
         timeFallbackByFloor = new Map();
         coverage = unknownCoverage(0);
         lastFailure = null;
@@ -1736,9 +1603,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
   async function start() {
     if (!enabled()) return notify();
-    if (typeof foundationRuntime.inspect === 'function') await foundationRuntime.inspect('memoryStart');
-    else await foundationRuntime.start();
-    const state = await load();
+    await refreshStatus({ preferCached: false });
+    const initialSettlement = backgroundSync;
+    if (initialSettlement) await initialSettlement;
+    const state = getState();
     notifyConfirmedSummaryBlock(state);
     return state;
   }
@@ -1798,5 +1666,5 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   const analyzeNextState = () => runManualWork('analyzingCse', async operation => { operation.phase = 'analyzingCse'; notify(); await cseRuntime.analyzeNext(); return notify(); });
   const retryStateAnalysis = floorId => runManualWork('analyzingCse', async operation => { operation.floorIds = [floorId]; operation.phase = 'analyzingCse'; notify(); await cseRuntime.analyzeFloor(floorId); return notify(); });
   const correctSubjectState = (subjectEntityId, edits) => runManualWork('revisingCse', async operation => { operation.phase = 'revisingCse'; notify(); await cseRuntime.correctSubjectState({ subjectEntityId, ...edits }); return load(); });
-  return Object.freeze({ bind, start, setEnabled, refreshAutomation, startHistoricalRebuild, pauseHistoricalRebuild, retryAutomation, fullRebuild, invalidate, refreshStatus, confirmLatest, extractNext, extractFloor, analyzeNextState, retryStateAnalysis, correctSubjectState, editSummary, editMemory, restoreAi, markError, copySafeDiagnostic, copyFullDiagnostic, shouldBlockMainGeneration, allowsRealtimeTailFromEmpty, getState, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
+  return Object.freeze({ bind, start, setEnabled, refreshAutomation, startHistoricalRebuild, pauseHistoricalRebuild, retryAutomation, fullRebuild, invalidate, refreshStatus, prepareCurrent, confirmLatest, extractNext, extractFloor, analyzeNextState, retryStateAnalysis, correctSubjectState, editSummary, editMemory, restoreAi, markError, copySafeDiagnostic, copyFullDiagnostic, shouldBlockMainGeneration, allowsRealtimeTailFromEmpty, getState, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

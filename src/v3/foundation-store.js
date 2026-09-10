@@ -10,7 +10,7 @@ import {
   sameFoundationRecordContent,
 } from './foundation-schema.js';
 import { reverseRefShardPrefix } from './foundation-domain.js';
-import { validateEntityRecord, validateFloorMemory } from './memory-schema.js';
+import { projectEntityFloorBounds, validateEntityRecord, validateFloorMemory } from './memory-schema.js';
 import { validateBaselineRecord, validateCurrentStateRecord, validateCseGraph, validateStateDeltaRecord } from './cse-schema.js';
 
 export const V3_ROOT_RECORD_ID = 'v3-root';
@@ -80,24 +80,25 @@ function manifestMatchesIndexes(root, indexes, indexKeys) {
 
 function activeFloorViews(floors, indexes) {
   const locators = new Map();
-  const rawFingerprints = new Map();
+  const sequences = new Map();
   for (const index of indexes) {
     for (const entry of index.entries) {
       for (const ref of entry.refs) {
         if (index.kind === 'floorOrder' && ref.itemId) {
           try {
             const locator = JSON.parse(ref.itemId);
-            if (locator && typeof locator === 'object') locators.set(ref.recordId, locator);
+            if (locator && typeof locator === 'object') { locators.set(ref.recordId, locator); sequences.set(ref.recordId, Number(entry.key)); }
           } catch { /* malformed locator hints are rejected by graph refs, then ignored as an optional overlay */ }
         }
-        if (index.kind === 'fingerprint' && ref.itemId === 'raw') rawFingerprints.set(ref.recordId, entry.key);
       }
     }
   }
-  return floors.map(floor => ({
+  const ordered = [...floors].sort((left, right) => (sequences.get(left.id) ?? left.assistantSeq) - (sequences.get(right.id) ?? right.assistantSeq));
+  return ordered.map((floor, index) => ({
     ...floor,
+    assistantSeq: sequences.get(floor.id) ?? index + 1,
+    predecessorFloorId: ordered[index - 1]?.id ?? null,
     hostLocator: locators.has(floor.id) ? { ...locators.get(floor.id) } : floor.hostLocator,
-    content: rawFingerprints.has(floor.id) ? { ...floor.content, rawFingerprint: rawFingerprints.get(floor.id) } : floor.content,
   }));
 }
 
@@ -119,6 +120,9 @@ function buildReachableResult({
   readMode,
 }) {
   const indexes = indexResults.filter(result => result.status === 'ready').map(result => result.data);
+  const floors = activeFloorViews(floorResults.map(result => result.data), indexes);
+  const floorMemories = memoryResults.map(result => result.data);
+  const stateDeltas = deltaResults.map(result => result.data);
   return {
     status: indexesMissing || manifestNeedsReseal ? 'needsReseal' : 'ready',
     root,
@@ -126,15 +130,15 @@ function buildReachableResult({
     checkpoint,
     run: runResult.data,
     runRevision: runResult.revision,
-    floors: activeFloorViews(floorResults.map(result => result.data), indexes),
+    floors,
     floorRevisions: Object.fromEntries(floorResults.map(result => [result.data.id, result.revision])),
-    floorMemories: memoryResults.map(result => result.data),
+    floorMemories,
     memoryRevisions: Object.fromEntries(memoryResults.map(result => [result.data.id, result.revision])),
-    entities: entityResults.map(result => result.data),
+    entities: projectEntityFloorBounds(entityResults.map(result => result.data), floors, floorMemories, stateDeltas),
     entityRevisions: Object.fromEntries(entityResults.map(result => [result.data.id, result.revision])),
     baseline: baselineResult?.data ?? null,
     baselineRevision: baselineResult?.revision ?? null,
-    stateDeltas: deltaResults.map(result => result.data),
+    stateDeltas,
     deltaRevisions: Object.fromEntries(deltaResults.map(result => [result.data.id, result.revision])),
     currentStates: currentStateResults.map(result => result.data),
     currentStateRevisions: Object.fromEntries(currentStateResults.map(result => [result.data.id, result.revision])),
@@ -295,9 +299,9 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       root,
       checkpoint,
       run: runResult.data,
-      floors: floorResults.map(result => result.data),
+      floors: activeFloorViews(floorResults.map(result => result.data), indexResults.map(result => result.data)),
       floorMemories: memoryResults.map(result => result.data),
-      entities: entityResults.map(result => result.data),
+      entities: projectEntityFloorBounds(entityResults.map(result => result.data), activeFloorViews(floorResults.map(result => result.data), indexResults.map(result => result.data)), memoryResults.map(result => result.data), deltaResults.map(result => result.data)),
       indexes: indexResults.map(result => result.data),
       indexKeys,
       baseline: baselineResult?.data ?? null,
@@ -381,7 +385,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       ? checkpoint.producedRefs.indexes
       : effectiveMode === V3_READ_MODES.runtime
         ? checkpoint.producedRefs.indexes.filter(key => String(key).startsWith('v3-index-floorOrder-') || String(key).startsWith('v3-index-fingerprint-'))
-        : [];
+        : checkpoint.producedRefs.indexes.filter(key => String(key).startsWith('v3-index-floorOrder-'));
     const floorResults = await Promise.all(checkpoint.producedRefs.floors.map(id => readRecord('floor', id)));
     if (floorResults.some(result => result.status !== 'ready')) fail('V3_STORE_FLOOR_MISSING');
     const indexResults = await Promise.all(selectedIndexKeys.map(key => readRecord('index', key)));
@@ -402,17 +406,21 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     const indexKeys = indexResults.filter(result => result.status === 'ready').map(result => result.recordId);
     const indexesComplete = effectiveMode === V3_READ_MODES.full;
     const manifestNeedsReseal = indexesComplete && legacySnapshot && !manifestMatchesIndexes(root, indexes, indexKeys);
+    const activeFloors = activeFloorViews(floorResults.map(result => result.data), indexes);
+    const activeMemories = memoryResults.map(result => result.data);
+    const activeDeltas = deltaResults.map(result => result.data);
+    const activeEntities = projectEntityFloorBounds(entityResults.map(result => result.data), activeFloors, activeMemories, activeDeltas);
     await validateCseGraph({
       root,
       checkpoint,
       run: runResult.data,
-      floors: floorResults.map(result => result.data),
-      floorMemories: memoryResults.map(result => result.data),
-      entities: entityResults.map(result => result.data),
+      floors: activeFloors,
+      floorMemories: activeMemories,
+      entities: activeEntities,
       indexes,
       indexKeys,
       baseline: baselineResult?.data ?? null,
-      stateDeltas: deltaResults.map(result => result.data),
+      stateDeltas: activeDeltas,
       currentStates: currentStateResults.map(result => result.data),
       allowMissingIndexes: !indexesComplete || (indexesMissing && legacySnapshot), allowLegacySnapshot: true,
     });
