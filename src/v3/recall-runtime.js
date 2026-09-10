@@ -5,19 +5,18 @@ import { projectRecallSource, readRecallSource } from './recall-source.js';
 import { buildRecallQueryContext, buildRecallQueryFrame } from './recall-selector.js';
 import { selectRecallWithLlm } from './recall-llm-selector.js';
 import { selectAssistantMessage } from './foundation-domain.js';
-import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
 export const RECALL_RECEIPT_SCHEMA_VERSION = 9;
-export const RECALL_STRATEGY_VERSION = 'continuity-v1';
+export const RECALL_STRATEGY_VERSION = 'continuity-v3';
 
 const SUPPORTED_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 const MAIN_GENERATION_TYPES = new Set([...SUPPORTED_TYPES, 'impersonate']);
 const REUSE_TYPES = new Set(['regenerate', 'swipe', 'continue']);
 const MAX_STOPPED_GENERATION_CHAINS = 16;
-const MAX_RECEIPT_FLOORS = 8;
+const MAX_RECEIPT_FLOORS = 12;
 const MAX_RECEIPT_STATES = 18;
 const MAX_RECEIPT_SKIP_REASONS = 32;
 const nowIso = now => { const value = now()?.toISOString?.() ?? String(now()); if (!Number.isFinite(Date.parse(value))) throw new TypeError('V3_RECALL_TIME_INVALID'); return value; };
@@ -61,7 +60,7 @@ const boundedString = (value, maximum, { empty = false } = {}) => typeof value =
 const optionalBoundedString = (value, maximum) => value === null || boundedString(value, maximum);
 const nonNegativeInteger = value => Number.isSafeInteger(value) && value >= 0;
 const optionalPositiveInteger = value => value === null || (Number.isSafeInteger(value) && value > 0);
-function receiptShapeValid(receipt) {
+function receiptShapeValid(receipt, { historical = false } = {}) {
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)
     || !['ready', 'empty'].includes(receipt.completionStatus)
     || !boundedString(receipt.pluginVersion, 120)
@@ -73,12 +72,14 @@ function receiptShapeValid(receipt) {
     || !boundedString(receipt.userContentFingerprint, 200)
     || !boundedString(receipt.queryFingerprint, 200)
     || (receipt.schemaVersion >= 8 && !boundedString(receipt.bodyMatchFingerprint, 200))
-    || (receipt.schemaVersion >= 9 && receipt.strategyVersion !== RECALL_STRATEGY_VERSION)
+    || (receipt.schemaVersion >= 9 && (historical
+      ? ![RECALL_STRATEGY_VERSION, 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
+      : receipt.strategyVersion !== RECALL_STRATEGY_VERSION))
     || !SUPPORTED_TYPES.has(receipt.generationType)
     || !Array.isArray(receipt.selectedFloors) || receipt.selectedFloors.length > MAX_RECEIPT_FLOORS
     || !Array.isArray(receipt.selectedStates) || receipt.selectedStates.length > MAX_RECEIPT_STATES
     || !Array.isArray(receipt.skipReasons) || receipt.skipReasons.length > MAX_RECEIPT_SKIP_REASONS
-    || !boundedString(receipt.injectionText, 12000, { empty: true })
+    || !boundedString(receipt.injectionText, 16000, { empty: true })
     || !boundedString(receipt.receiptFingerprint, 200)
     || !boundedString(receipt.createdAt, 100) || !Number.isFinite(Date.parse(receipt.createdAt))
     || (receipt.completionStatus === 'ready') !== Boolean(receipt.injectionText)) return false;
@@ -146,7 +147,7 @@ async function persistedReceiptValid(receipt, { chatId, userIndex, userFingerpri
 async function historicalSignedReceiptValid(receipt, { chatId, userIndex, userFingerprint }, fingerprint = hashText) {
   try {
     const snapshot = clone(receipt);
-    if (!receiptShapeValid(snapshot)
+    if (!receiptShapeValid(snapshot, { historical: true })
       || ![6, 7, 8, RECALL_RECEIPT_SCHEMA_VERSION].includes(snapshot.schemaVersion)
       || snapshot.chatId !== chatId
       || snapshot.userMessageIndex !== userIndex
@@ -245,8 +246,11 @@ async function captureCoreBodyWitness(coreChat, sanitizerOptions, fingerprint) {
 }
 
 async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, fingerprint) {
+  const visibleFloorIds = [...new Set(source.readiness?.visibleSummaryFloorIds ?? [])].sort();
+  const visibleFloorIdSet = new Set(visibleFloorIds);
   const verified = [];
   for (const ref of source.bodyMatchRefs ?? []) {
+    if (visibleFloorIdSet.has(ref.floorId)) continue;
     const liveMessage = snapshot?.chat?.[ref.hostLocator?.messageIndex];
     const selected = selectAssistantMessage(liveMessage);
     if (!selected || selected.swipeId !== ref.hostLocator.swipeId || selected.selectedSwipeIndex !== ref.hostLocator.selectedSwipeIndex) continue;
@@ -255,21 +259,18 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
     if (rawFingerprint !== ref.rawFingerprint || canonicalFingerprint !== ref.canonicalFingerprint) continue;
     verified.push({ ...ref, liveMessage, liveIndex: ref.hostLocator.messageIndex, rawContent: selected.rawContent, canonicalContent: canonical, key: `${rawFingerprint}|${canonicalFingerprint}` });
   }
-  const materialFor = (covered, readinessCovered) => ({
-    version: 2,
-    witnesses: witness.map(item => [item.coreIndex, item.rawFingerprint, item.canonicalFingerprint]),
+  const materialFor = covered => ({
+    version: 3,
     covered: covered.map(item => [item.floorId, item.floorMemoryId, item.assistantSeq, item.rawFingerprint, item.canonicalFingerprint]),
-    readinessCovered: readinessCovered.map(item => [item.floorId, item.floorMemoryId, item.assistantSeq, item.rawFingerprint, item.canonicalFingerprint]),
+    visibleFloorIds,
   });
-  const resultFor = async (covered, readinessCovered = covered) => Object.freeze({
-    fingerprint: await fingerprint(JSON.stringify(materialFor(covered, readinessCovered))),
+  const resultFor = async covered => Object.freeze({
+    fingerprint: await fingerprint(JSON.stringify(materialFor(covered))),
     witnessCount: witness.length,
     matchedCount: covered.length,
     coveredFloorIds: Object.freeze(covered.map(item => item.floorId)),
     coveredRefs: Object.freeze(covered.map(item => Object.freeze({ floorId: item.floorId, floorMemoryId: item.floorMemoryId, assistantSeq: item.assistantSeq }))),
-    readinessMatchedCount: readinessCovered.length,
-    readinessCoveredFloorIds: Object.freeze(readinessCovered.map(item => item.floorId)),
-    readinessCoveredRefs: Object.freeze(readinessCovered.map(item => Object.freeze({ floorId: item.floorId, floorMemoryId: item.floorMemoryId, assistantSeq: item.assistantSeq }))),
+    visibleFloorIds: Object.freeze(visibleFloorIds),
   });
   if (!verified.length || !witness.length) return resultFor([]);
   const liveCandidates = [];
@@ -288,11 +289,6 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
     witnessCounts.set(key, (witnessCounts.get(key) ?? 0) + 1);
   }
   const tentative = [];
-  const readinessTentative = [];
-  const canonicalWitnessCounts = new Map();
-  const canonicalRefCounts = new Map();
-  for (const item of witness) canonicalWitnessCounts.set(item.canonicalFingerprint, (canonicalWitnessCounts.get(item.canonicalFingerprint) ?? 0) + 1);
-  for (const ref of verified) canonicalRefCounts.set(ref.canonicalFingerprint, (canonicalRefCounts.get(ref.canonicalFingerprint) ?? 0) + 1);
   for (const item of witness) {
     const key = `${item.rawFingerprint}|${item.canonicalFingerprint}`;
     const identity = verified.find(ref => ref.liveMessage === item.message && ref.key === key);
@@ -303,28 +299,6 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
     const match = identity ?? (cloneLive ? verified.find(ref => ref.liveIndex === cloneLive.liveIndex && ref.key === key) : null);
     if (match) tentative.push({ coreIndex: item.coreIndex, match, identity: Boolean(identity) });
 
-    const marker = inspectMessageFloorAnchor(item.message, source.chatId);
-    const readinessEligible = marker.status !== 'invalid' && marker.status !== 'foreign';
-    let readinessMatch = readinessEligible ? match : null;
-    if (!readinessMatch && readinessEligible && canonicalWitnessCounts.get(item.canonicalFingerprint) === 1 && canonicalRefCounts.get(item.canonicalFingerprint) === 1) {
-      readinessMatch = verified.find(ref => ref.canonicalFingerprint === item.canonicalFingerprint
-        && (marker.status === 'none' || marker.anchor.floorId === ref.floorId)) ?? null;
-    }
-    if (!readinessMatch && readinessEligible) {
-      const linked = verified.filter(ref => {
-        const markerMatch = marker.status === 'valid' && marker.anchor.floorId === ref.floorId;
-        const sharedExtra = marker.status === 'none' && item.message?.extra && typeof item.message.extra === 'object' && item.message.extra === ref.liveMessage?.extra;
-        const sharedSwipes = marker.status === 'none' && Array.isArray(item.message?.swipes) && item.message.swipes === ref.liveMessage?.swipes;
-        return markerMatch || sharedExtra || sharedSwipes;
-      });
-      if (linked.length === 1) {
-        const ref = linked[0];
-        const bodySurvives = item.rawContent.includes(ref.rawContent)
-          || item.canonicalContent.includes(ref.canonicalContent);
-        if (bodySurvives) readinessMatch = ref;
-      }
-    }
-    if (readinessMatch) readinessTentative.push({ coreIndex: item.coreIndex, match: readinessMatch });
   }
   tentative.sort((left, right) => left.coreIndex - right.coreIndex);
   const covered = [];
@@ -334,15 +308,7 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
     covered.push(entry.match);
     previousSeq = entry.match.assistantSeq;
   }
-  readinessTentative.sort((left, right) => left.coreIndex - right.coreIndex);
-  const readinessCovered = [];
-  previousSeq = 0;
-  for (const entry of readinessTentative) {
-    if (entry.match.assistantSeq <= previousSeq) continue;
-    readinessCovered.push(entry.match);
-    previousSeq = entry.match.assistantSeq;
-  }
-  return resultFor(covered, readinessCovered);
+  return resultFor(covered);
 }
 
 const sameBodyRef = (left, right) => Boolean(left && right
@@ -373,20 +339,6 @@ async function captureCoveredBodyGuards(source, currentSource, snapshot, sanitiz
       rawContent: selected.rawContent,
       canonicalContent,
     }));
-  }
-  const guardedLocators = new Set(guards.map(guard => JSON.stringify(guard.hostLocator)));
-  for (const covered of currentSource.bodyMatch?.readinessCoveredRefs ?? []) {
-    const current = currentRefs.find(ref => ref.floorId === covered.floorId && ref.assistantSeq === covered.assistantSeq);
-    if (!current) return null;
-    const locatorKey = JSON.stringify(current.hostLocator);
-    if (guardedLocators.has(locatorKey)) continue;
-    const selected = selectAssistantMessage(snapshot?.chat?.[current.hostLocator.messageIndex]);
-    if (!selected || selected.swipeId !== current.hostLocator.swipeId || selected.selectedSwipeIndex !== current.hostLocator.selectedSwipeIndex) return null;
-    const canonicalContent = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
-    const [rawFingerprint, canonicalFingerprint] = await Promise.all([fingerprint(selected.rawContent), fingerprint(canonicalContent)]);
-    if (rawFingerprint !== current.rawFingerprint || canonicalFingerprint !== current.canonicalFingerprint) return null;
-    guards.push(Object.freeze({ hostLocator: current.hostLocator, rawContent: selected.rawContent, canonicalContent }));
-    guardedLocators.add(locatorKey);
   }
   return Object.freeze(guards);
 }
@@ -419,11 +371,12 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
   const readinessReasons = source => {
     if (!source?.readiness || source.readiness.status === 'caughtUp') return [];
     if (source.readiness.status === 'unknown' && source.readiness.hostConfirmed !== true) return ['memoryNotReady', 'coverageUnconfirmed'];
-    const coveredFloorIds = new Set(source.bodyMatch?.readinessCoveredFloorIds ?? source.bodyMatch?.coveredFloorIds ?? []);
-    const pendingSummaryFloorIds = source.readiness.summaryPendingFloorIds ?? [];
+    const pendingSummaryFloorIds = source.readiness.summaryMissingFloorIds
+      ?? (source.readiness.summaryPendingFloorIds ?? []).filter(floorId => !source.floorMemories?.some(memory => memory.floorId === floorId));
+    const visibleFloorIds = new Set(source.readiness.visibleSummaryFloorIds ?? source.bodyMatch?.visibleFloorIds ?? []);
     if (source.readiness.summaryStatus === 'caughtUp') return [];
     if (source.readiness.hostConfirmed === true && pendingSummaryFloorIds.length
-      && pendingSummaryFloorIds.every(floorId => coveredFloorIds.has(floorId))) return [];
+      && pendingSummaryFloorIds.every(floorId => visibleFloorIds.has(floorId))) return [];
     const memory = (() => { try { return typeof memoryStatus === 'function' ? memoryStatus() : memoryStatus; } catch { return null; } })();
     if (memory?.lastAutoMemory?.status === 'failed') return ['memoryNotReady', 'memoryRebuildFailed'];
     return ['memoryNotReady', 'historicalRebuildRequired'];
@@ -852,7 +805,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       let receiptSnapshot = receipt.schemaVersion === RECALL_RECEIPT_SCHEMA_VERSION
         ? await persistedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint, pluginVersion }, fingerprint)
         : null;
-      if (!receiptSnapshot && [6, 7, 8].includes(receipt.schemaVersion)) {
+      if (!receiptSnapshot && [6, 7, 8, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
         const historical = await historicalSignedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint }, fingerprint);
         if (historical) receiptSnapshot = Object.freeze({ ...stateFromReceipt(historical, { restoredReceipt: true }), legacyReadOnly: true });
       }

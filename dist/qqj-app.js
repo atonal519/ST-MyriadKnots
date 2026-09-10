@@ -12998,7 +12998,7 @@ function Sl({ globalRef: e = globalThis, mutationMetadataCapability: t = !1, wor
 		mutationMetadata: l
 	});
 }
-var Cl = Symbol("qqjCoverageHostGuard"), wl = (e) => String(e?.context?.chatMetadata?.qianqianjie?.chatId ?? "").trim(), Tl = (e) => e && e.is_user === !1 && !Ye(e) && e.is_system !== !0 && typeof e.mes == "string" && !!e.mes.trim();
+var Cl = Symbol("qqjCoverageHostGuard"), wl = (e) => String(e?.context?.chatMetadata?.qianqianjie?.chatId ?? "").trim(), Tl = (e) => e && e.is_user === !1 && !Ye(e) && e.is_system !== !0 && e.is_hidden !== !0 && e.hidden !== !0 && typeof e.mes == "string" && !!e.mes.trim();
 function El(e) {
 	let t = e?.root, n = e?.run?.diagnostics?.realtimeOriginV1;
 	return !t || e?.run?.mode === "branchReplay" || !n || typeof n != "object" || Array.isArray(n) || n.chatId !== t.chatId || n.narrativeGeneration !== t.narrativeGeneration || n.sourceSnapshotFingerprint !== t.sourceSnapshotFingerprint ? null : Object.freeze({
@@ -13011,24 +13011,36 @@ function Dl(e, t = null) {
 	let n = e && typeof e == "object" && !Array.isArray(e) ? structuredClone(e) : {};
 	return delete n.realtimeOriginV1, t && (n.realtimeOriginV1 = { ...t }), n;
 }
-function Ol(e, t) {
+function Ol(e, t, n = null) {
+	let r = /* @__PURE__ */ new Map();
+	for (let [e, t] of n?.candidateByFloorId ?? []) r.set(t, e);
 	return Object.freeze({
 		chatId: wl(e),
-		candidates: Object.freeze(t.map((e) => Object.freeze({
-			messageIndex: e.hostLocator.messageIndex,
-			swipeId: e.hostLocator.swipeId,
-			selectedSwipeIndex: e.hostLocator.selectedSwipeIndex,
-			rawContent: e.rawContent,
-			rawFingerprint: e.rawFingerprint,
-			floorId: e.messageAnchor?.status === "valid" ? e.messageAnchor.anchor.floorId : null
+		candidates: Object.freeze(t.map((t) => Object.freeze({
+			messageIndex: t.hostLocator.messageIndex,
+			swipeId: t.hostLocator.swipeId,
+			selectedSwipeIndex: t.hostLocator.selectedSwipeIndex,
+			rawContent: t.rawContent,
+			rawFingerprint: t.rawFingerprint,
+			floorId: t.messageAnchor?.status === "valid" ? t.messageAnchor.anchor.floorId : null,
+			expectedFloorId: r.get(t) ?? null,
+			anchorStatus: t.messageAnchor?.status ?? "invalid",
+			visible: Tl(e.chat?.[t.hostLocator.messageIndex])
 		})))
 	});
 }
 function kl(e, t) {
 	let n = e?.[Cl];
-	return !n || n.chatId !== wl(t) || !Array.isArray(n.candidates) || !Array.isArray(t?.chat) ? !1 : n.candidates.every((e) => {
-		let r = t.chat[e.messageIndex], i = Xe(r), a = ze(r, n.chatId);
-		return i && (e.floorId ? a.status === "valid" && a.anchor.floorId === e.floorId : a.status === "none" && i.rawContent === e.rawContent);
+	if (!n || n.chatId !== wl(t) || !Array.isArray(n.candidates) || !Array.isArray(t?.chat)) return !1;
+	let r = /* @__PURE__ */ new Set();
+	return n.candidates.every((e) => {
+		let i = t.chat[e.messageIndex], a = Xe(i), o = ze(i, n.chatId);
+		if (!a || a.swipeId !== e.swipeId || a.selectedSwipeIndex !== e.selectedSwipeIndex || a.rawContent !== e.rawContent || Tl(i) !== e.visible || !["none", "valid"].includes(o.status)) return !1;
+		if (o.status === "valid") {
+			if (r.has(o.anchor.floorId)) return !1;
+			r.add(o.anchor.floorId);
+		}
+		return e.anchorStatus === "valid" ? o.status === "valid" && o.anchor.floorId === e.floorId : e.expectedFloorId ? o.status === "none" || o.anchor.floorId === e.expectedFloorId : e.visible ? !0 : o.status === "none";
 	});
 }
 function Al(e) {
@@ -13048,21 +13060,24 @@ function Ml(e, t, n) {
 		if (e.messageAnchor?.status !== "valid" || r.has(e.messageAnchor.anchor.floorId)) return null;
 		r.set(e.messageAnchor.anchor.floorId, e);
 	}
-	let a = /* @__PURE__ */ new Set();
+	let a = /* @__PURE__ */ new Set(), o = /* @__PURE__ */ new Map();
 	for (let t of e.floors ?? []) {
 		let e = r.get(t.id);
 		if (e) {
-			a.add(e);
+			a.add(e), o.set(t.id, e);
 			continue;
 		}
 		let n = i.get(t.hostLocator?.messageIndex);
 		if (!n || n.messageAnchor?.status !== "none" || n.hostLocator.swipeId !== t.hostLocator?.swipeId || n.hostLocator.selectedSwipeIndex !== t.hostLocator?.selectedSwipeIndex || n.rawFingerprint !== t.content?.rawFingerprint || n.canonicalFingerprint !== t.content?.canonicalFingerprint) return null;
-		a.add(n);
+		a.add(n), o.set(t.id, n);
 	}
-	let o = n.filter((e) => !a.has(e));
-	if (o.length > 1 || o.some((e) => e.messageAnchor?.status !== "none")) return null;
-	let s = Math.max(-1, ...[...a].map((e) => e.hostLocator.messageIndex));
-	return o.some((e) => e.hostLocator.messageIndex <= s) ? null : Object.freeze({ unregistered: Object.freeze(o) });
+	let s = n.filter((e) => !a.has(e));
+	if (s.some((e) => e.messageAnchor?.status !== "none")) return null;
+	let c = Math.max(-1, ...[...a].map((e) => e.hostLocator.messageIndex));
+	return s.some((e) => e.hostLocator.messageIndex <= c) ? null : Object.freeze({
+		unregistered: Object.freeze(s),
+		candidateByFloorId: o
+	});
 }
 function Nl({ reachable: e, snapshot: t, hostCandidates: n, realtimeOrigin: r = !1 } = {}) {
 	let i = e?.root && Array.isArray(e.floors) ? Ml(e, t, n) : null;
@@ -13078,21 +13093,23 @@ function Nl({ reachable: e, snapshot: t, hostCandidates: n, realtimeOrigin: r = 
 		summaryCompleted: 0,
 		summaryNextAssistantSeq: null,
 		summaryPendingFloorIds: Object.freeze([]),
+		summaryMissingFloorIds: Object.freeze([]),
+		visibleSummaryFloorIds: Object.freeze([]),
 		summaryRealtimeProtected: !1,
 		summaryHasPartialWork: !1
 	});
-	let a = e.floors, o = (a.at(-1)?.assistantSeq ?? 0) + 1, s = Object.freeze(i.unregistered.map((e) => Object.freeze({
+	let a = e.floors, o = (a.at(-1)?.assistantSeq ?? 0) + 1, s = Object.freeze(i.unregistered.map((e, t) => Object.freeze({
 		floorId: `host-tail:${e.hostLocator.messageIndex}:${e.rawFingerprint}`,
 		floorMemoryId: null,
-		assistantSeq: o,
+		assistantSeq: o + t,
 		hostLocator: Object.freeze({ ...e.hostLocator }),
 		rawFingerprint: e.rawFingerprint,
 		canonicalFingerprint: e.canonicalFingerprint
 	}))), c = Al(e), l = 0;
 	for (; l < a.length && c.has(a[l].id);) l += 1;
-	let u = a.slice(l), d = Object.freeze([...u.map((e) => e.id), ...s.map((e) => e.floorId)]), f = jl(t.chat), p = u.length > 0 && (r === !0 || l > 0 || u.every((e) => f.has(e.hostLocator.messageIndex) && Tl(t.chat[e.hostLocator.messageIndex]))), m = u.some((e) => c.has(e.id)), h = e.run?.mode === "branchReplay", g = !u.length && !s.length ? "caughtUp" : (l > 0 || r === !0) && (p || s.length > 0) && !m && !h ? "realtimeTail" : "historicalDebt", _;
+	let u = a.slice(l), d = Object.freeze([...u.map((e) => e.id), ...s.map((e) => e.floorId)]), f = Object.freeze([...a.filter((e) => !c.has(e.id)).map((e) => e.id), ...s.map((e) => e.floorId)]), p = Object.freeze([...a.filter((e) => Tl(t.chat[i.candidateByFloorId.get(e.id)?.hostLocator.messageIndex])).map((e) => e.id), ...s.filter((e) => Tl(t.chat[e.hostLocator.messageIndex])).map((e) => e.floorId)]), m = jl(t.chat), h = u.length > 0 && (r === !0 || l > 0 || u.every((e) => m.has(e.hostLocator.messageIndex) && Tl(t.chat[e.hostLocator.messageIndex]))), g = u.some((e) => c.has(e.id)), _ = e.run?.mode === "branchReplay", v = !u.length && !s.length ? "caughtUp" : (l > 0 || r === !0) && (h || s.length > 0) && !g && !_ ? "realtimeTail" : "historicalDebt", y;
 	try {
-		_ = new Map(oa({
+		y = new Map(oa({
 			floors: a,
 			floorMemories: e.floorMemories ?? [],
 			stateDeltas: e.stateDeltas ?? []
@@ -13107,26 +13124,28 @@ function Nl({ reachable: e, snapshot: t, hostCandidates: n, realtimeOrigin: r = 
 			pendingFloorIds: Object.freeze(a.map((e) => e.id)),
 			realtimeProtected: !1,
 			hasPartialWork: !1,
-			summaryStatus: g,
+			summaryStatus: v,
 			summaryCompleted: l,
 			summaryNextAssistantSeq: u[0]?.assistantSeq ?? s[0]?.assistantSeq ?? null,
 			summaryPendingFloorIds: d,
-			summaryRealtimeProtected: p,
-			summaryHasPartialWork: m,
+			summaryMissingFloorIds: f,
+			visibleSummaryFloorIds: p,
+			summaryRealtimeProtected: h,
+			summaryHasPartialWork: g,
 			unregisteredSummaryRefs: s
 		});
 	}
-	let v = 0;
-	for (; v < a.length;) {
-		let e = a[v], t = c.get(e.id), n = _.get(e.id);
+	let b = 0;
+	for (; b < a.length;) {
+		let e = a[b], t = c.get(e.id), n = y.get(e.id);
 		if (!t || !n || n.floorMemoryId !== t.id) break;
-		v += 1;
+		b += 1;
 	}
-	let y = a.slice(v);
-	if (!y.length && !s.length) return Object.freeze({
+	let x = a.slice(b);
+	if (!x.length && !s.length) return Object.freeze({
 		status: "caughtUp",
 		hostConfirmed: !0,
-		completed: v,
+		completed: b,
 		total: a.length,
 		nextAssistantSeq: null,
 		pendingFloorIds: Object.freeze([]),
@@ -13136,26 +13155,30 @@ function Nl({ reachable: e, snapshot: t, hostCandidates: n, realtimeOrigin: r = 
 		summaryCompleted: l,
 		summaryNextAssistantSeq: null,
 		summaryPendingFloorIds: Object.freeze([]),
+		summaryMissingFloorIds: f,
+		visibleSummaryFloorIds: p,
 		summaryRealtimeProtected: !1,
 		summaryHasPartialWork: !1,
 		unregisteredSummaryRefs: s
 	});
-	let b = r === !0 || y.every((e) => f.has(e.hostLocator.messageIndex) && Tl(t.chat[e.hostLocator.messageIndex])), x = y.some((e) => c.has(e.id) || _.has(e.id));
+	let S = r === !0 || x.every((e) => m.has(e.hostLocator.messageIndex) && Tl(t.chat[e.hostLocator.messageIndex])), C = x.some((e) => c.has(e.id) || y.has(e.id));
 	return Object.freeze({
-		status: (v > 0 || r === !0) && b && !x && !h ? "realtimeTail" : "historicalDebt",
+		status: (b > 0 || r === !0) && S && !C && !_ ? "realtimeTail" : "historicalDebt",
 		hostConfirmed: !0,
-		completed: v,
+		completed: b,
 		total: a.length,
-		nextAssistantSeq: y[0]?.assistantSeq ?? s[0]?.assistantSeq ?? null,
-		pendingFloorIds: Object.freeze([...y.map((e) => e.id), ...s.map((e) => e.floorId)]),
-		realtimeProtected: b,
-		hasPartialWork: x,
-		summaryStatus: g,
+		nextAssistantSeq: x[0]?.assistantSeq ?? s[0]?.assistantSeq ?? null,
+		pendingFloorIds: Object.freeze([...x.map((e) => e.id), ...s.map((e) => e.floorId)]),
+		realtimeProtected: S,
+		hasPartialWork: C,
+		summaryStatus: v,
 		summaryCompleted: l,
 		summaryNextAssistantSeq: u[0]?.assistantSeq ?? s[0]?.assistantSeq ?? null,
 		summaryPendingFloorIds: d,
-		summaryRealtimeProtected: p,
-		summaryHasPartialWork: m,
+		summaryMissingFloorIds: f,
+		visibleSummaryFloorIds: p,
+		summaryRealtimeProtected: h,
+		summaryHasPartialWork: g,
 		unregisteredSummaryRefs: s
 	});
 }
@@ -13173,7 +13196,7 @@ async function Pl({ reachable: e, snapshot: t, sanitizerOptions: n = {}, capture
 		});
 		if (!r) return s;
 		let c = { ...s };
-		return Object.defineProperty(c, Cl, { value: Ol(t, o) }), Object.freeze(c);
+		return Object.defineProperty(c, Cl, { value: Ol(t, o, Ml(e, t, o)) }), Object.freeze(c);
 	} catch {
 		let t = {
 			status: "unknown",
@@ -13187,6 +13210,8 @@ async function Pl({ reachable: e, snapshot: t, sanitizerOptions: n = {}, capture
 			summaryCompleted: 0,
 			summaryNextAssistantSeq: null,
 			summaryPendingFloorIds: Object.freeze([]),
+			summaryMissingFloorIds: Object.freeze([]),
+			visibleSummaryFloorIds: Object.freeze([]),
 			summaryRealtimeProtected: !1,
 			summaryHasPartialWork: !1
 		};
@@ -17947,7 +17972,7 @@ function sd({ documents: e = [], queries: t = [], k1: n = rd.k1, b: r = rd.b } =
 }
 //#endregion
 //#region src/v3/recall-selector.js
-var cd = 8e3, ld = 8, ud = 18, dd = 16e3, fd = Object.freeze({
+var cd = 8e3, ld = 12, ud = 24, dd = 24e3, fd = Object.freeze({
 	summary: 1,
 	continuity: 1,
 	fact: 2
@@ -18328,7 +18353,7 @@ var Pd = (e) => [
 function Ld(e, t) {
 	let n = pd(t?.text, cd);
 	if (e?.status !== "ready" || !n) return null;
-	let r = Md(t, n), i = new Set(e.bodyMatch?.coveredFloorIds ?? []), a = new Map(e.entities.map((e) => [e.entityId, e])), o = Math.max(1, Number(e.coverage?.stableThroughAssistantSeq ?? 0) - 4 + 1), s = [...e.floorMemories].filter((t) => t.assistantSeq >= o && t.assistantSeq <= e.coverage.stableThroughAssistantSeq).sort((e, t) => e.assistantSeq - t.assistantSeq || e.floorId.localeCompare(t.floorId)), c = new Set(s.map((e) => e.floorId)), l = s.filter((e) => !i.has(e.floorId)).map((e) => Od(e, a)).filter(Boolean).map((e) => ({
+	let r = Md(t, n), i = /* @__PURE__ */ new Set([...e.bodyMatch?.coveredFloorIds ?? [], ...e.bodyMatch?.visibleFloorIds ?? []]), a = new Map(e.entities.map((e) => [e.entityId, e])), o = Math.max(1, Number(e.coverage?.stableThroughAssistantSeq ?? 0) - 4 + 1), s = [...e.floorMemories].filter((t) => t.assistantSeq >= o && t.assistantSeq <= e.coverage.stableThroughAssistantSeq).sort((e, t) => e.assistantSeq - t.assistantSeq || e.floorId.localeCompare(t.floorId)), c = new Set(s.map((e) => e.floorId)), l = s.filter((e) => !i.has(e.floorId)).map((e) => Od(e, a)).filter(Boolean).map((e) => ({
 		...e,
 		score: 1,
 		branchScores: Object.freeze({}),
@@ -18364,8 +18389,8 @@ function Rd(e, t) {
 	let n = Yu(e._chronology ?? []), r = `AI #${e.assistantSeq}${n ? `（${n}）` : ""}`, i = (e) => [...new Set((e ?? []).filter(Boolean))].map((e) => Ad(e, t)).join("、"), a = "客观剧情事实";
 	return e.category === "narrative" ? a = "叙事回顾；可能含内心、计划或未完成事项，不代表所有人物知情；若与后文冲突以后文为准" : e.category === "private" ? a = `私有内容；仅 ${Ad(e.ownerEntityId, t)} 可用` : e.category === "transfer" ? a = `信息传递；${e.fromEntityId ? Ad(e.fromEntityId, t) : "来源不明"} → ${i(e.toEntityIds)}；仅列明接收者知情` : e.category === "shared" ? a = `已表达/已共享；${Ad(e.speakerEntityId, t)} → ${i(e.targetEntityIds) || "未列明对象"}` : e.kind === "action" ? a = `行动；主体 ${Ad(e.actorEntityId, t)}${i(e.targetEntityIds) ? `；对象 ${i(e.targetEntityIds)}` : ""}` : e._entityText && (a += `；相关人物 ${e._entityText}`), `${r}｜${a}｜类型 ${e.kind}｜${e.text}`;
 }
-function zd({ source: e, queryContext: t, maxCandidates: n = 32, maxCharacters: r = dd } = {}) {
-	let i = Ld(e, t), a = Math.max(0, Math.min(32, Math.floor(Number(n) || 0))), o = Math.max(0, Math.min(dd, Math.floor(Number(r) || 0)));
+function zd({ source: e, queryContext: t, maxCandidates: n = 48, maxCharacters: r = dd } = {}) {
+	let i = Ld(e, t), a = Math.max(0, Math.min(48, Math.floor(Number(n) || 0))), o = Math.max(0, Math.min(dd, Math.floor(Number(r) || 0)));
 	if (!i || a === 0 || o === 0) return Object.freeze({
 		candidates: Object.freeze([]),
 		text: "",
@@ -18497,7 +18522,7 @@ function Bd({ source: e, queryContext: t, contextSize: n = 8192, maxFloors: r = 
 		recallSection: "distant"
 	})), _ = new Set(e.entities.filter((e) => ["user", "char"].includes(e.specialRole)).map((e) => e.entityId));
 	d.forEach((e) => _.add(e));
-	let v = new Map(e.entities.map((e) => [e.entityId, e.specialRole ?? null])), y = Nd(kd(e, _), l, { keepUnmatched: !0 }).sort((e, t) => +(t.layer === "core" && (t.branchScores.latestUser ?? 0) > 0) - (e.layer === "core" && (e.branchScores.latestUser ?? 0) > 0) || (t.branchScores.latestUser ?? 0) - (e.branchScores.latestUser ?? 0) || t.score - e.score || t.priority - e.priority || e.subject.localeCompare(t.subject, "zh-CN") || e.layer.localeCompare(t.layer)), b = Math.max(0, Math.min(ud, Math.floor(Number(i) || 0))), x = Math.round(b * 2 / 3), S = b - x, C = 0, w = /* @__PURE__ */ new Set(), T = [...c.recentSummaries].reverse().filter((e) => {
+	let v = new Map(e.entities.map((e) => [e.entityId, e.specialRole ?? null])), y = Nd(kd(e, _), l, { keepUnmatched: !0 }).sort((e, t) => +(t.layer === "core" && (t.branchScores.latestUser ?? 0) > 0) - (e.layer === "core" && (e.branchScores.latestUser ?? 0) > 0) || (t.branchScores.latestUser ?? 0) - (e.branchScores.latestUser ?? 0) || t.score - e.score || t.priority - e.priority || e.subject.localeCompare(t.subject, "zh-CN") || e.layer.localeCompare(t.layer)), b = Math.max(0, Math.min(ud, Math.floor(Number(i) || 0))), x = Math.min(6, b - Math.round(b * 2 / 3)), S = b - x, C = 0, w = /* @__PURE__ */ new Set(), T = [...c.recentSummaries].reverse().filter((e) => {
 		let t = Pd(e);
 		return w.has(t) ? (C += 1, !1) : (w.add(t), !0);
 	}), E = g.filter((e) => {
@@ -18511,7 +18536,7 @@ function Bd({ source: e, queryContext: t, contextSize: n = 8192, maxFloors: r = 
 	}).filter((e) => {
 		let t = Pd(e);
 		return D.has(t) ? (C += 1, !1) : (D.add(t), !0);
-	}), A = E, j = Math.max(0, Math.min(10, Number.isSafeInteger(r) ? r : ld)), M = Math.max(800, Math.min(12e3, Math.floor((Number(n) || 8192) * .55))), N = Math.floor(M * 2 / 3), P = M - N, F = [], I = [], L = [], R = [], z = /* @__PURE__ */ new Set(), ee = /* @__PURE__ */ new WeakSet(), B = (e) => (ee.has(e) || (ee.add(e), C += 1), !1), V = (t = F, n = R) => {
+	}), A = E, j = Math.max(0, Math.min(12, Number.isSafeInteger(r) ? r : ld)), M = Math.max(800, Math.min(16e3, Math.floor((Number(n) || 8192) * .55))), N = Math.floor(M * 2 / 3), P = M - N, F = [], I = [], L = [], R = [], z = /* @__PURE__ */ new Set(), ee = /* @__PURE__ */ new WeakSet(), B = (e) => (ee.has(e) || (ee.add(e), C += 1), !1), V = (t = F, n = R) => {
 		let r = /* @__PURE__ */ new Map();
 		for (let e of n) {
 			let t = r.get(e.floorId) ?? {
@@ -18549,7 +18574,7 @@ function Bd({ source: e, queryContext: t, contextSize: n = 8192, maxFloors: r = 
 	for (let e of T) te(e) && re(e);
 	for (let e of A) te(e, N) && re(e);
 	for (let e of A) te(e) && re(e);
-	for (let e of k) F.length < S && H(e, P) && ne(e);
+	for (let e of k) F.length < x && H(e, P) && ne(e);
 	let ie = V(), U = ie.floors, W = ie.states, G = ie.text, K = [...e.degradedReasons ?? []];
 	return c.bodyCoveredFloorIds.size && K.push("coreBodyDuplicate"), g.length || K.push("noReliableMemoryMatch"), C && K.push("persistentStateDuplicate"), e.coverage.cseCurrent || K.push("dynamicStateCoverageIncomplete"), Object.freeze({
 		status: G ? "ready" : "empty",
@@ -18584,8 +18609,8 @@ function Bd({ source: e, queryContext: t, contextSize: n = 8192, maxFloors: r = 
 			maxItems: b,
 			maxCharacters: M,
 			actualCharacters: G.length,
-			stateItemTarget: S,
-			historyItemTarget: x,
+			stateItemTarget: x,
+			historyItemTarget: S,
 			stateCharacterTarget: P,
 			historyCharacterTarget: N
 		})
@@ -18702,7 +18727,7 @@ async function qd({ source: e, queryContext: t, contextSize: n = 8192, maxFloors
 }
 //#endregion
 //#region src/v3/recall-runtime.js
-var Jd = "qqj_v3_recalled_context", Yd = "qqj_v3_recall_receipt", Xd = "continuity-v1", Zd = /* @__PURE__ */ new Set([
+var Jd = "qqj_v3_recalled_context", Yd = "qqj_v3_recall_receipt", Xd = "continuity-v3", Zd = /* @__PURE__ */ new Set([
 	"normal",
 	"regenerate",
 	"swipe",
@@ -18713,7 +18738,7 @@ var Qd = /* @__PURE__ */ new Set([
 	"regenerate",
 	"swipe",
 	"continue"
-]), $d = 16, ef = 8, tf = 18, nf = 32, rf = (e) => {
+]), $d = 16, ef = 12, tf = 18, nf = 32, rf = (e) => {
 	let t = e()?.toISOString?.() ?? String(e());
 	if (!Number.isFinite(Date.parse(t))) throw TypeError("V3_RECALL_TIME_INVALID");
 	return t;
@@ -18779,8 +18804,12 @@ var mf = (e) => [
 	e.bodyMatchFingerprint,
 	e.strategyVersion
 ] : e.schemaVersion >= 8 ? [...mf(e), e.bodyMatchFingerprint] : mf(e), gf = (e, t, { empty: n = !1 } = {}) => typeof e == "string" && e.length <= t && (n || e.length > 0), _f = (e, t) => e === null || gf(e, t), vf = (e) => Number.isSafeInteger(e) && e >= 0, yf = (e) => e === null || Number.isSafeInteger(e) && e > 0;
-function bf(e) {
-	return !e || typeof e != "object" || Array.isArray(e) || !["ready", "empty"].includes(e.completionStatus) || !gf(e.pluginVersion, 120) || !gf(e.chatId, 500) || !gf(e.narrativeGeneration, 500) || !gf(e.headCheckpointId, 500) || !Number.isSafeInteger(e.rootRevision) || e.rootRevision < 1 || !vf(e.userMessageIndex) || !gf(e.userContentFingerprint, 200) || !gf(e.queryFingerprint, 200) || e.schemaVersion >= 8 && !gf(e.bodyMatchFingerprint, 200) || e.schemaVersion >= 9 && e.strategyVersion !== "continuity-v1" || !Zd.has(e.generationType) || !Array.isArray(e.selectedFloors) || e.selectedFloors.length > ef || !Array.isArray(e.selectedStates) || e.selectedStates.length > tf || !Array.isArray(e.skipReasons) || e.skipReasons.length > nf || !gf(e.injectionText, 12e3, { empty: !0 }) || !gf(e.receiptFingerprint, 200) || !gf(e.createdAt, 100) || !Number.isFinite(Date.parse(e.createdAt)) || e.completionStatus === "ready" != !!e.injectionText || !e.selectedFloors.every((e) => e && typeof e == "object" && !Array.isArray(e) && gf(e.floorId, 500) && gf(e.floorMemoryId, 500) && Number.isSafeInteger(e.assistantSeq) && e.assistantSeq > 0 && Array.isArray(e.reasons) && e.reasons.length <= 32 && e.reasons.every((e) => gf(e, 500))) || !e.selectedStates.every((e) => e && typeof e == "object" && !Array.isArray(e) && gf(e.subjectEntityId, 500) && gf(e.subject, 500) && [
+function bf(e, { historical: t = !1 } = {}) {
+	return !e || typeof e != "object" || Array.isArray(e) || !["ready", "empty"].includes(e.completionStatus) || !gf(e.pluginVersion, 120) || !gf(e.chatId, 500) || !gf(e.narrativeGeneration, 500) || !gf(e.headCheckpointId, 500) || !Number.isSafeInteger(e.rootRevision) || e.rootRevision < 1 || !vf(e.userMessageIndex) || !gf(e.userContentFingerprint, 200) || !gf(e.queryFingerprint, 200) || e.schemaVersion >= 8 && !gf(e.bodyMatchFingerprint, 200) || e.schemaVersion >= 9 && (t ? ![
+		"continuity-v3",
+		"continuity-v2",
+		"continuity-v1"
+	].includes(e.strategyVersion) : e.strategyVersion !== "continuity-v3") || !Zd.has(e.generationType) || !Array.isArray(e.selectedFloors) || e.selectedFloors.length > ef || !Array.isArray(e.selectedStates) || e.selectedStates.length > tf || !Array.isArray(e.skipReasons) || e.skipReasons.length > nf || !gf(e.injectionText, 16e3, { empty: !0 }) || !gf(e.receiptFingerprint, 200) || !gf(e.createdAt, 100) || !Number.isFinite(Date.parse(e.createdAt)) || e.completionStatus === "ready" != !!e.injectionText || !e.selectedFloors.every((e) => e && typeof e == "object" && !Array.isArray(e) && gf(e.floorId, 500) && gf(e.floorMemoryId, 500) && Number.isSafeInteger(e.assistantSeq) && e.assistantSeq > 0 && Array.isArray(e.reasons) && e.reasons.length <= 32 && e.reasons.every((e) => gf(e, 500))) || !e.selectedStates.every((e) => e && typeof e == "object" && !Array.isArray(e) && gf(e.subjectEntityId, 500) && gf(e.subject, 500) && [
 		"core",
 		"adaptive",
 		"situational"
@@ -18827,7 +18856,7 @@ async function Sf(e, { chatId: t, userIndex: n, userFingerprint: r, pluginVersio
 async function Cf(e, { chatId: t, userIndex: n, userFingerprint: r }, i = sf) {
 	try {
 		let a = of(e);
-		return !bf(a) || ![
+		return !bf(a, { historical: !0 }) || ![
 			6,
 			7,
 			8,
@@ -18920,27 +18949,23 @@ async function Df(e, t, n) {
 	return Object.freeze(i.reverse());
 }
 async function Of(e, t, n, r, i) {
-	let a = [];
+	let a = [...new Set(e.readiness?.visibleSummaryFloorIds ?? [])].sort(), o = new Set(a), s = [];
 	for (let t of e.bodyMatchRefs ?? []) {
-		let e = n?.chat?.[t.hostLocator?.messageIndex], o = Xe(e);
-		if (!o || o.swipeId !== t.hostLocator.swipeId || o.selectedSwipeIndex !== t.hostLocator.selectedSwipeIndex) continue;
-		let s = Pe(o.rawContent, r), [c, l] = await Promise.all([i(o.rawContent), i(s)]);
-		c === t.rawFingerprint && l === t.canonicalFingerprint && a.push({
+		if (o.has(t.floorId)) continue;
+		let e = n?.chat?.[t.hostLocator?.messageIndex], a = Xe(e);
+		if (!a || a.swipeId !== t.hostLocator.swipeId || a.selectedSwipeIndex !== t.hostLocator.selectedSwipeIndex) continue;
+		let c = Pe(a.rawContent, r), [l, u] = await Promise.all([i(a.rawContent), i(c)]);
+		l === t.rawFingerprint && u === t.canonicalFingerprint && s.push({
 			...t,
 			liveMessage: e,
 			liveIndex: t.hostLocator.messageIndex,
-			rawContent: o.rawContent,
-			canonicalContent: s,
-			key: `${c}|${l}`
+			rawContent: a.rawContent,
+			canonicalContent: c,
+			key: `${l}|${u}`
 		});
 	}
-	let o = (e, n) => ({
-		version: 2,
-		witnesses: t.map((e) => [
-			e.coreIndex,
-			e.rawFingerprint,
-			e.canonicalFingerprint
-		]),
+	let c = (e) => ({
+		version: 3,
 		covered: e.map((e) => [
 			e.floorId,
 			e.floorMemoryId,
@@ -18948,15 +18973,9 @@ async function Of(e, t, n, r, i) {
 			e.rawFingerprint,
 			e.canonicalFingerprint
 		]),
-		readinessCovered: n.map((e) => [
-			e.floorId,
-			e.floorMemoryId,
-			e.assistantSeq,
-			e.rawFingerprint,
-			e.canonicalFingerprint
-		])
-	}), s = async (e, n = e) => Object.freeze({
-		fingerprint: await i(JSON.stringify(o(e, n))),
+		visibleFloorIds: a
+	}), l = async (e) => Object.freeze({
+		fingerprint: await i(JSON.stringify(c(e))),
 		witnessCount: t.length,
 		matchedCount: e.length,
 		coveredFloorIds: Object.freeze(e.map((e) => e.floorId)),
@@ -18965,68 +18984,41 @@ async function Of(e, t, n, r, i) {
 			floorMemoryId: e.floorMemoryId,
 			assistantSeq: e.assistantSeq
 		}))),
-		readinessMatchedCount: n.length,
-		readinessCoveredFloorIds: Object.freeze(n.map((e) => e.floorId)),
-		readinessCoveredRefs: Object.freeze(n.map((e) => Object.freeze({
-			floorId: e.floorId,
-			floorMemoryId: e.floorMemoryId,
-			assistantSeq: e.assistantSeq
-		})))
+		visibleFloorIds: Object.freeze(a)
 	});
-	if (!a.length || !t.length) return s([]);
-	let c = [];
+	if (!s.length || !t.length) return l([]);
+	let u = [];
 	for (let e = 0; e < (n?.chat?.length ?? 0); e += 1) {
 		let t = n.chat[e];
 		if (!t || t.is_system === !0 || t.is_hidden === !0 || t.hidden === !0) continue;
 		let i = Xe(t);
 		if (!i?.rawContent?.trim()) continue;
 		let a = Pe(i.rawContent, r);
-		a && c.push({
+		a && u.push({
 			liveIndex: e,
 			liveMessage: t,
 			rawContent: i.rawContent,
 			canonicalContent: a
 		});
 	}
-	let l = /* @__PURE__ */ new Map();
+	let d = /* @__PURE__ */ new Map();
 	for (let e of t) {
 		let t = `${e.rawFingerprint}|${e.canonicalFingerprint}`;
-		l.set(t, (l.get(t) ?? 0) + 1);
+		d.set(t, (d.get(t) ?? 0) + 1);
 	}
-	let u = [], d = [], f = /* @__PURE__ */ new Map(), p = /* @__PURE__ */ new Map();
-	for (let e of t) f.set(e.canonicalFingerprint, (f.get(e.canonicalFingerprint) ?? 0) + 1);
-	for (let e of a) p.set(e.canonicalFingerprint, (p.get(e.canonicalFingerprint) ?? 0) + 1);
-	for (let n of t) {
-		let t = `${n.rawFingerprint}|${n.canonicalFingerprint}`, r = a.find((e) => e.liveMessage === n.message && e.key === t), i = l.get(t) === 1 ? c.filter((e) => e.rawContent === n.rawContent && e.canonicalContent === n.canonicalContent) : [], o = i.length === 1 ? i[0] : null, s = r ?? (o ? a.find((e) => e.liveIndex === o.liveIndex && e.key === t) : null);
-		s && u.push({
-			coreIndex: n.coreIndex,
-			match: s,
-			identity: !!r
-		});
-		let m = ze(n.message, e.chatId), h = m.status !== "invalid" && m.status !== "foreign", g = h ? s : null;
-		if (!g && h && f.get(n.canonicalFingerprint) === 1 && p.get(n.canonicalFingerprint) === 1 && (g = a.find((e) => e.canonicalFingerprint === n.canonicalFingerprint && (m.status === "none" || m.anchor.floorId === e.floorId)) ?? null), !g && h) {
-			let e = a.filter((e) => {
-				let t = m.status === "valid" && m.anchor.floorId === e.floorId, r = m.status === "none" && n.message?.extra && typeof n.message.extra == "object" && n.message.extra === e.liveMessage?.extra, i = m.status === "none" && Array.isArray(n.message?.swipes) && n.message.swipes === e.liveMessage?.swipes;
-				return t || r || i;
-			});
-			if (e.length === 1) {
-				let t = e[0];
-				(n.rawContent.includes(t.rawContent) || n.canonicalContent.includes(t.canonicalContent)) && (g = t);
-			}
-		}
-		g && d.push({
-			coreIndex: n.coreIndex,
-			match: g
+	let f = [];
+	for (let e of t) {
+		let t = `${e.rawFingerprint}|${e.canonicalFingerprint}`, n = s.find((n) => n.liveMessage === e.message && n.key === t), r = d.get(t) === 1 ? u.filter((t) => t.rawContent === e.rawContent && t.canonicalContent === e.canonicalContent) : [], i = r.length === 1 ? r[0] : null, a = n ?? (i ? s.find((e) => e.liveIndex === i.liveIndex && e.key === t) : null);
+		a && f.push({
+			coreIndex: e.coreIndex,
+			match: a,
+			identity: !!n
 		});
 	}
-	u.sort((e, t) => e.coreIndex - t.coreIndex);
-	let m = [], h = 0;
-	for (let e of u) e.match.assistantSeq <= h || (m.push(e.match), h = e.match.assistantSeq);
-	d.sort((e, t) => e.coreIndex - t.coreIndex);
-	let g = [];
-	h = 0;
-	for (let e of d) e.match.assistantSeq <= h || (g.push(e.match), h = e.match.assistantSeq);
-	return s(m, g);
+	f.sort((e, t) => e.coreIndex - t.coreIndex);
+	let p = [], m = 0;
+	for (let e of f) e.match.assistantSeq <= m || (p.push(e.match), m = e.match.assistantSeq);
+	return l(p);
 }
 var kf = (e, t) => !!(e && t && e.assistantSeq === t.assistantSeq && e.rawFingerprint === t.rawFingerprint && e.canonicalFingerprint === t.canonicalFingerprint && e.hostLocator?.messageIndex === t.hostLocator?.messageIndex && e.hostLocator?.swipeId === t.hostLocator?.swipeId && e.hostLocator?.selectedSwipeIndex === t.hostLocator?.selectedSwipeIndex);
 async function Af(e, t, n, r, i) {
@@ -19043,22 +19035,6 @@ async function Af(e, t, n, r, i) {
 			rawContent: d.rawContent,
 			canonicalContent: f
 		}));
-	}
-	let c = new Set(s.map((e) => JSON.stringify(e.hostLocator)));
-	for (let e of t.bodyMatch?.readinessCoveredRefs ?? []) {
-		let t = o.find((t) => t.floorId === e.floorId && t.assistantSeq === e.assistantSeq);
-		if (!t) return null;
-		let a = JSON.stringify(t.hostLocator);
-		if (c.has(a)) continue;
-		let l = Xe(n?.chat?.[t.hostLocator.messageIndex]);
-		if (!l || l.swipeId !== t.hostLocator.swipeId || l.selectedSwipeIndex !== t.hostLocator.selectedSwipeIndex) return null;
-		let u = Pe(l.rawContent, r), [d, f] = await Promise.all([i(l.rawContent), i(u)]);
-		if (d !== t.rawFingerprint || f !== t.canonicalFingerprint) return null;
-		s.push(Object.freeze({
-			hostLocator: t.hostLocator,
-			rawContent: l.rawContent,
-			canonicalContent: u
-		})), c.add(a);
 	}
 	return Object.freeze(s);
 }
@@ -19097,8 +19073,8 @@ function Mf({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 	}), F = (e) => {
 		if (!e?.readiness || e.readiness.status === "caughtUp") return [];
 		if (e.readiness.status === "unknown" && e.readiness.hostConfirmed !== !0) return ["memoryNotReady", "coverageUnconfirmed"];
-		let t = new Set(e.bodyMatch?.readinessCoveredFloorIds ?? e.bodyMatch?.coveredFloorIds ?? []), n = e.readiness.summaryPendingFloorIds ?? [];
-		return e.readiness.summaryStatus === "caughtUp" || e.readiness.hostConfirmed === !0 && n.length && n.every((e) => t.has(e)) ? [] : (() => {
+		let t = e.readiness.summaryMissingFloorIds ?? (e.readiness.summaryPendingFloorIds ?? []).filter((t) => !e.floorMemories?.some((e) => e.floorId === t)), n = new Set(e.readiness.visibleSummaryFloorIds ?? e.bodyMatch?.visibleFloorIds ?? []);
+		return e.readiness.summaryStatus === "caughtUp" || e.readiness.hostConfirmed === !0 && t.length && t.every((e) => n.has(e)) ? [] : (() => {
 			try {
 				return typeof a == "function" ? a() : a;
 			} catch {
@@ -19729,7 +19705,8 @@ function Mf({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 			if (!c && [
 				6,
 				7,
-				8
+				8,
+				9
 			].includes(a.schemaVersion)) {
 				let e = await Cf(a, {
 					chatId: i,
@@ -20315,7 +20292,7 @@ function Sp(e) {
 		stateItems: Object.freeze([]),
 		protocolRecognized: !1
 	});
-	let t = Array.isArray(e.selectedFloors), n = Array.isArray(e.selectedStates), r = t ? e.selectedFloors : [], i = n ? e.selectedStates : [], a = t && n && r.length <= 8 && i.length <= 18 && r.every((e) => e && typeof e == "object" && !Array.isArray(e) && typeof e.floorId == "string" && Number.isSafeInteger(e.assistantSeq) && e.assistantSeq > 0) && i.every((e) => e && typeof e == "object" && !Array.isArray(e) && typeof e.subject == "string" && typeof e.text == "string" && (e.toward === null || e.toward === void 0 || typeof e.toward == "string")), o = Object.freeze((a ? r : []).map((e) => Object.freeze({
+	let t = Array.isArray(e.selectedFloors), n = Array.isArray(e.selectedStates), r = t ? e.selectedFloors : [], i = n ? e.selectedStates : [], a = t && n && r.length <= 12 && i.length <= 18 && r.every((e) => e && typeof e == "object" && !Array.isArray(e) && typeof e.floorId == "string" && Number.isSafeInteger(e.assistantSeq) && e.assistantSeq > 0) && i.every((e) => e && typeof e == "object" && !Array.isArray(e) && typeof e.subject == "string" && typeof e.text == "string" && (e.toward === null || e.toward === void 0 || typeof e.toward == "string")), o = Object.freeze((a ? r : []).map((e) => Object.freeze({
 		floorId: typeof e?.floorId == "string" ? e.floorId.slice(0, 500) : "",
 		assistantSeq: Number.isSafeInteger(e?.assistantSeq) && e.assistantSeq > 0 ? e.assistantSeq : null,
 		reasons: Object.freeze((Array.isArray(e?.reasons) ? e.reasons : []).slice(0, 32).map((e) => String(e).slice(0, 500)))

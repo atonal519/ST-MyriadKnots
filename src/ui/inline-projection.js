@@ -158,7 +158,7 @@ export function projectInlineRecallReceipt(receipt) {
   const hasFloorArray = Array.isArray(receipt.selectedFloors), hasStateArray = Array.isArray(receipt.selectedStates);
   const rawFloors = hasFloorArray ? receipt.selectedFloors : [];
   const rawStates = hasStateArray ? receipt.selectedStates : [];
-  const safeShape = hasFloorArray && hasStateArray && rawFloors.length <= 8 && rawStates.length <= 18
+  const safeShape = hasFloorArray && hasStateArray && rawFloors.length <= 12 && rawStates.length <= 18
     && rawFloors.every(value => value && typeof value === 'object' && !Array.isArray(value) && typeof value.floorId === 'string'
       && Number.isSafeInteger(value.assistantSeq) && value.assistantSeq > 0)
     && rawStates.every(value => value && typeof value === 'object' && !Array.isArray(value)

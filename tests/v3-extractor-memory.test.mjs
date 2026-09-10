@@ -1056,7 +1056,7 @@ test('同 chat 的 CHAT_RENAMED/重复 CHAT_CHANGED 只触发同步，已验证�
   }
 });
 
-test('冷启动未读完即首次 MESSAGE_SENT 时召回等待同一准备并使用旧摘要，后续发送不承担恢复', async () => {
+test('冷启动未读完即首次 MESSAGE_SENT 时召回等待同一准备，可见楼由宿主正文负责且后续发送不承担恢复', async () => {
   const initialChat = [
     user('开始'),
     assistant('钟楼密钥旧约。'),
@@ -1118,15 +1118,15 @@ test('冷启动未读完即首次 MESSAGE_SENT 时召回等待同一准备并使
   await starting;
   assert.equal(abortCalls, 0);
   assert.equal(selectorCalls, 1);
-  assert.equal(first.lastRecall.status, 'ready', JSON.stringify(first.lastRecall));
-  assert.match(first.lastRecall.injectionText, /钟楼密钥旧约/);
+  assert.equal(first.lastRecall.status, 'empty', JSON.stringify(first.lastRecall));
+  assert.doesNotMatch(first.lastRecall.injectionText, /钟楼密钥旧约/, '未隐藏楼由宿主正文负责，不重复注入其已存摘要');
   assert.equal(cold.calls.length, 0, '冷启动与召回不得触发摘要/CSE模型');
 
   cold.context.chat.push(user('第二次仍问钟楼密钥。'));
   const secondUserIndex = cold.context.chat.length - 1;
   cold.emit('MESSAGE_SENT', secondUserIndex);
   const second = await recall.intercept(structuredClone(cold.context.chat), 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
-  assert.equal(second.lastRecall.status, 'ready');
+  assert.equal(second.lastRecall.status, 'empty');
   assert.equal(selectorCalls, 2);
   assert.equal(abortCalls, 0);
   assert.equal(cold.calls.length, 0);

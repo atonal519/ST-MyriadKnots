@@ -1,9 +1,9 @@
 const MAX_QUERY_CHARACTERS = 8000;
-const MAX_RECALLED_FLOORS = 8;
-const MAX_TOTAL_ITEMS = 18;
+const MAX_RECALLED_FLOORS = 12;
+const MAX_TOTAL_ITEMS = 24;
 export const RECENT_CONTINUITY_FLOORS = 4;
-export const MAX_LLM_HISTORY_CANDIDATES = 32;
-export const MAX_LLM_HISTORY_CHARACTERS = 16000;
+export const MAX_LLM_HISTORY_CANDIDATES = 48;
+export const MAX_LLM_HISTORY_CHARACTERS = 24000;
 const HISTORY_GROUP_WEIGHTS = Object.freeze({ summary: 1, continuity: 1, fact: 2 });
 import { rankRecallDocuments } from './recall-ranking.js';
 import { formatChronologyAnchor } from './recall-source.js';
@@ -318,7 +318,7 @@ function historySelectionContext(source, queryContext) {
   const query = clean(queryContext?.text, MAX_QUERY_CHARACTERS);
   if (source?.status !== 'ready' || !query) return null;
   const queries = recallQueries(queryContext, query);
-  const bodyCoveredFloorIds = new Set(source.bodyMatch?.coveredFloorIds ?? []);
+  const bodyCoveredFloorIds = new Set([...(source.bodyMatch?.coveredFloorIds ?? []), ...(source.bodyMatch?.visibleFloorIds ?? [])]);
   const entityById = new Map(source.entities.map(entity => [entity.entityId, entity]));
   const recentFloorStart = Math.max(1, Number(source.coverage?.stableThroughAssistantSeq ?? 0) - RECENT_CONTINUITY_FLOORS + 1);
   const recentWindow = [...source.floorMemories]
@@ -459,7 +459,7 @@ export function selectRecall({ source, queryContext, contextSize = 8192, maxFloo
     .sort((a, b) => ((b.layer === 'core' && (b.branchScores.latestUser ?? 0) > 0) ? 1 : 0) - ((a.layer === 'core' && (a.branchScores.latestUser ?? 0) > 0) ? 1 : 0)
       || (b.branchScores.latestUser ?? 0) - (a.branchScores.latestUser ?? 0) || b.score - a.score || b.priority - a.priority || a.subject.localeCompare(b.subject, 'zh-CN') || a.layer.localeCompare(b.layer));
   const allowedItems = Math.max(0, Math.min(MAX_TOTAL_ITEMS, Math.floor(Number(maxItems) || 0)));
-  const historyTarget = Math.round(allowedItems * 2 / 3), stateTarget = allowedItems - historyTarget;
+  const stateTarget = Math.min(6, allowedItems - Math.round(allowedItems * 2 / 3)), historyTarget = allowedItems - stateTarget;
   let dropPersistent = 0;
   const historyKeys = new Set();
   const recentHistory = [...historyContext.recentSummaries].reverse().filter(value => {
@@ -491,8 +491,8 @@ export function selectRecall({ source, queryContext, contextSize = 8192, maxFloo
     return true;
   });
   const uniqueHistory = candidateHistory;
-  const floorLimit = Math.max(0, Math.min(10, Number.isSafeInteger(maxFloors) ? maxFloors : MAX_RECALLED_FLOORS));
-  const charLimit = Math.max(800, Math.min(12000, Math.floor((Number(contextSize) || 8192) * 0.55)));
+  const floorLimit = Math.max(0, Math.min(12, Number.isSafeInteger(maxFloors) ? maxFloors : MAX_RECALLED_FLOORS));
+  const charLimit = Math.max(800, Math.min(16000, Math.floor((Number(contextSize) || 8192) * 0.55)));
   const historyCharTarget = Math.floor(charLimit * 2 / 3), stateCharTarget = charLimit - historyCharTarget;
   const chosenStates = [], chosenRecent = [], chosenDistant = [], chosenHistory = [], chosenFloorIds = new Set();
   const rejectedDuplicates = new WeakSet();
