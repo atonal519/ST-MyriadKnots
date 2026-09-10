@@ -1015,6 +1015,22 @@ test('coreChat clone 唯一对应 live 正文时才去重；hidden、同文新�
   const swipeResult = await swipe.runtime.intercept(regexCore, 12000, null, 'normal');
   assert.deepEqual(swipeMatch.coveredFloorIds, [], 'core mes 已被改写时不得被残留 swipes 冒充完整正文');
   assert.match(swipeResult.lastRecall.injectionText, /钟楼/);
+
+  const wrappedText = '街上已经安静。<!--宿主包装-->';
+  const wrappedSource = await runtimeSourceWithBodyRef(wrappedText);
+  wrappedSource.bodyMatchRefs[0].canonicalFingerprint = await fingerprintText('街上已经安静。');
+  let wrappedMatch = null, wrappedSelectorCalls = 0;
+  const wrapped = createRuntimeHarness({ sourceReader: async () => structuredClone(wrappedSource), reachableReader: async () => rawReachableFromSource(wrappedSource), selector: input => { wrappedSelectorCalls += 1; wrappedMatch = input.source.bodyMatch; return selectRecall(input); } });
+  wrapped.chat[0].mes = wrappedText;
+  const cleanedCore = structuredClone(wrapped.chat); cleanedCore[0].mes = '街上已经安静。';
+  const wrappedResult = await wrapped.runtime.intercept(cleanedCore, 12000, null, 'normal');
+  const wrappedReceipt = structuredClone(wrapped.userMessage.extra[RECALL_RECEIPT_KEY]);
+  assert.deepEqual(wrappedMatch.coveredFloorIds, [], 'canonical 相同但 raw 已处理时仍不得省掉已保存摘要');
+  assert.deepEqual(wrappedMatch.readinessCoveredFloorIds, ['floor-2'], '同一正文的宿主清洗可单独作为就绪证明');
+  assert.match(wrappedResult.lastRecall.injectionText, /钟楼/);
+  await wrapped.runtime.intercept([structuredClone(wrapped.userMessage)], 12000, null, 'regenerate');
+  assert.equal(wrappedSelectorCalls, 2, '宽松就绪关联变化后不得复用旧回执');
+  assert.notEqual(wrapped.userMessage.extra[RECALL_RECEIPT_KEY].bodyMatchFingerprint, wrappedReceipt.bodyMatchFingerprint);
 });
 
 test('core 正文见证变化使 schema9 空回执失效，regenerate 必须重新选择', async () => {
@@ -1299,6 +1315,71 @@ test('唯一未登记尾 AI 必须由 actual core 唯一正文证明，缺失或
     assert.equal(result.lastRecall.status === 'skipped', scenario !== 'covered', scenario);
     assert.equal(notifications.length, scenario === 'covered' ? 0 : 1, scenario);
   }
+});
+
+test('待摘要尾楼允许宿主清洗与可靠来源追加标题推理，正文缺失、空白或隐藏仍停止生成', async () => {
+  for (const scenario of ['canonical', 'decorated', 'replaced', 'empty', 'hidden']) {
+    const tailText = scenario === 'canonical' ? '尚未登记的尾楼正文。<!--宿主包装-->' : '尚未登记的尾楼正文。';
+    const raw = await singleFloorReachable({ text: '已经保存的前楼。', summary: '钟楼旧约已保存。' });
+    let selectorCalls = 0, bodyMatch = null, aborted = false;
+    const harness = createRuntimeHarness({
+      sourceReader: options => readRecallSource(options),
+      reachableReader: async () => structuredClone(raw),
+      selector: input => { selectorCalls += 1; bodyMatch = input.source.bodyMatch; return selectRecall(input); },
+    });
+    const sharedExtra = { hostSource: 'chat' };
+    const tail = { is_user: false, is_system: false, mes: tailText, extra: sharedExtra };
+    harness.chat.splice(0, harness.chat.length,
+      { is_user: false, is_system: false, mes: '已经保存的前楼。' },
+      tail,
+      harness.userMessage,
+    );
+    const transformed = scenario === 'canonical' ? '尚未登记的尾楼正文。'
+      : scenario === 'decorated' ? '【楼层标题】\n尚未登记的尾楼正文。\n【推理注记】已完成。'
+        : scenario === 'replaced' ? '【楼层标题】\n【推理注记】只有附加信息。' : scenario === 'empty' ? '   ' : tailText;
+    const coreTail = { ...tail, mes: transformed, ...(scenario === 'hidden' ? { is_hidden: true } : {}) };
+    const result = await harness.runtime.intercept([coreTail, { ...harness.userMessage }], 12000, value => { aborted = value === true; }, 'normal');
+    const expected = ['canonical', 'decorated'].includes(scenario);
+    assert.equal(selectorCalls, expected ? 1 : 0, scenario);
+    assert.equal(aborted, !expected, scenario);
+    assert.equal(result.lastRecall.status === 'skipped', !expected, scenario);
+    if (expected) {
+      assert.deepEqual(bodyMatch.coveredFloorIds, [], `${scenario}: 宽松来源关联不得污染严格去重`);
+      assert.equal(bodyMatch.readinessCoveredFloorIds.some(floorId => floorId.startsWith('host-tail:1:')), true, scenario);
+    }
+  }
+});
+
+test('宽松就绪覆盖后 live 尾楼在选材期间变化会停止提交且不留下召回正文', async () => {
+  const raw = await singleFloorReachable({ text: '已经保存的前楼。', summary: '钟楼旧约已保存。' });
+  let selectorCalls = 0, aborted = false;
+  const harness = createRuntimeHarness({
+    sourceReader: options => readRecallSource(options),
+    reachableReader: async () => structuredClone(raw),
+    selector: input => {
+      selectorCalls += 1;
+      const selection = selectRecall(input);
+      harness.chat[1].mes = '选材期间尾楼正文已被替换。';
+      return selection;
+    },
+  });
+  const sharedExtra = { hostSource: 'chat' };
+  const tail = { is_user: false, is_system: false, mes: '尚未登记的尾楼正文。', extra: sharedExtra };
+  harness.chat.splice(0, harness.chat.length,
+    { is_user: false, is_system: false, mes: '已经保存的前楼。' },
+    tail,
+    harness.userMessage,
+  );
+  const result = await harness.runtime.intercept([
+    { ...tail, mes: '【楼层标题】\n尚未登记的尾楼正文。\n【推理注记】已完成。' },
+    { ...harness.userMessage },
+  ], 12000, value => { aborted = value === true; }, 'normal');
+  assert.equal(selectorCalls, 1);
+  assert.equal(aborted, true);
+  assert.equal(result.lastRecall.status, 'stale');
+  assert.deepEqual(result.lastRecall.skipReasons, ['narrativeChanged']);
+  assert.ok(harness.prompts.every(call => call[1] === ''));
+  assert.equal(harness.userMessage.extra?.[RECALL_RECEIPT_KEY], undefined);
 });
 
 test('真实 CSE 投影损坏只降级人物状态，已完整摘要仍可召回', async () => {

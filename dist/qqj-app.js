@@ -18707,11 +18707,13 @@ async function Df(e, t, n, r, i) {
 			...t,
 			liveMessage: e,
 			liveIndex: t.hostLocator.messageIndex,
+			rawContent: o.rawContent,
+			canonicalContent: s,
 			key: `${c}|${l}`
 		});
 	}
-	let o = (e) => ({
-		version: 1,
+	let o = (e, n) => ({
+		version: 2,
 		witnesses: t.map((e) => [
 			e.coreIndex,
 			e.rawFingerprint,
@@ -18723,13 +18725,27 @@ async function Df(e, t, n, r, i) {
 			e.assistantSeq,
 			e.rawFingerprint,
 			e.canonicalFingerprint
+		]),
+		readinessCovered: n.map((e) => [
+			e.floorId,
+			e.floorMemoryId,
+			e.assistantSeq,
+			e.rawFingerprint,
+			e.canonicalFingerprint
 		])
-	}), s = async (e) => Object.freeze({
-		fingerprint: await i(JSON.stringify(o(e))),
+	}), s = async (e, n = e) => Object.freeze({
+		fingerprint: await i(JSON.stringify(o(e, n))),
 		witnessCount: t.length,
 		matchedCount: e.length,
 		coveredFloorIds: Object.freeze(e.map((e) => e.floorId)),
 		coveredRefs: Object.freeze(e.map((e) => Object.freeze({
+			floorId: e.floorId,
+			floorMemoryId: e.floorMemoryId,
+			assistantSeq: e.assistantSeq
+		}))),
+		readinessMatchedCount: n.length,
+		readinessCoveredFloorIds: Object.freeze(n.map((e) => e.floorId)),
+		readinessCoveredRefs: Object.freeze(n.map((e) => Object.freeze({
 			floorId: e.floorId,
 			floorMemoryId: e.floorMemoryId,
 			assistantSeq: e.assistantSeq
@@ -18755,19 +18771,40 @@ async function Df(e, t, n, r, i) {
 		let t = `${e.rawFingerprint}|${e.canonicalFingerprint}`;
 		l.set(t, (l.get(t) ?? 0) + 1);
 	}
-	let u = [];
-	for (let e of t) {
-		let t = `${e.rawFingerprint}|${e.canonicalFingerprint}`, n = a.find((n) => n.liveMessage === e.message && n.key === t), r = l.get(t) === 1 ? c.filter((t) => t.rawContent === e.rawContent && t.canonicalContent === e.canonicalContent) : [], i = r.length === 1 ? r[0] : null, o = n ?? (i ? a.find((e) => e.liveIndex === i.liveIndex && e.key === t) : null);
-		o && u.push({
-			coreIndex: e.coreIndex,
-			match: o,
-			identity: !!n
+	let u = [], d = [], f = /* @__PURE__ */ new Map(), p = /* @__PURE__ */ new Map();
+	for (let e of t) f.set(e.canonicalFingerprint, (f.get(e.canonicalFingerprint) ?? 0) + 1);
+	for (let e of a) p.set(e.canonicalFingerprint, (p.get(e.canonicalFingerprint) ?? 0) + 1);
+	for (let n of t) {
+		let t = `${n.rawFingerprint}|${n.canonicalFingerprint}`, r = a.find((e) => e.liveMessage === n.message && e.key === t), i = l.get(t) === 1 ? c.filter((e) => e.rawContent === n.rawContent && e.canonicalContent === n.canonicalContent) : [], o = i.length === 1 ? i[0] : null, s = r ?? (o ? a.find((e) => e.liveIndex === o.liveIndex && e.key === t) : null);
+		s && u.push({
+			coreIndex: n.coreIndex,
+			match: s,
+			identity: !!r
+		});
+		let m = Le(n.message, e.chatId), h = m.status !== "invalid" && m.status !== "foreign", g = h ? s : null;
+		if (!g && h && f.get(n.canonicalFingerprint) === 1 && p.get(n.canonicalFingerprint) === 1 && (g = a.find((e) => e.canonicalFingerprint === n.canonicalFingerprint && (m.status === "none" || m.anchor.floorId === e.floorId)) ?? null), !g && h) {
+			let e = a.filter((e) => {
+				let t = m.status === "valid" && m.anchor.floorId === e.floorId, r = m.status === "none" && n.message?.extra && typeof n.message.extra == "object" && n.message.extra === e.liveMessage?.extra, i = m.status === "none" && Array.isArray(n.message?.swipes) && n.message.swipes === e.liveMessage?.swipes;
+				return t || r || i;
+			});
+			if (e.length === 1) {
+				let t = e[0];
+				(n.rawContent.includes(t.rawContent) || n.canonicalContent.includes(t.canonicalContent)) && (g = t);
+			}
+		}
+		g && d.push({
+			coreIndex: n.coreIndex,
+			match: g
 		});
 	}
 	u.sort((e, t) => e.coreIndex - t.coreIndex);
-	let d = [], f = 0;
-	for (let e of u) e.match.assistantSeq <= f || (d.push(e.match), f = e.match.assistantSeq);
-	return s(d);
+	let m = [], h = 0;
+	for (let e of u) e.match.assistantSeq <= h || (m.push(e.match), h = e.match.assistantSeq);
+	d.sort((e, t) => e.coreIndex - t.coreIndex);
+	let g = [];
+	h = 0;
+	for (let e of d) e.match.assistantSeq <= h || (g.push(e.match), h = e.match.assistantSeq);
+	return s(m, g);
 }
 var Of = (e, t) => !!(e && t && e.assistantSeq === t.assistantSeq && e.rawFingerprint === t.rawFingerprint && e.canonicalFingerprint === t.canonicalFingerprint && e.hostLocator?.messageIndex === t.hostLocator?.messageIndex && e.hostLocator?.swipeId === t.hostLocator?.swipeId && e.hostLocator?.selectedSwipeIndex === t.hostLocator?.selectedSwipeIndex);
 async function kf(e, t, n, r, i) {
@@ -18784,6 +18821,22 @@ async function kf(e, t, n, r, i) {
 			rawContent: d.rawContent,
 			canonicalContent: f
 		}));
+	}
+	let c = new Set(s.map((e) => JSON.stringify(e.hostLocator)));
+	for (let e of t.bodyMatch?.readinessCoveredRefs ?? []) {
+		let t = o.find((t) => t.floorId === e.floorId && t.assistantSeq === e.assistantSeq);
+		if (!t) return null;
+		let a = JSON.stringify(t.hostLocator);
+		if (c.has(a)) continue;
+		let l = Ye(n?.chat?.[t.hostLocator.messageIndex]);
+		if (!l || l.swipeId !== t.hostLocator.swipeId || l.selectedSwipeIndex !== t.hostLocator.selectedSwipeIndex) return null;
+		let u = Me(l.rawContent, r), [d, f] = await Promise.all([i(l.rawContent), i(u)]);
+		if (d !== t.rawFingerprint || f !== t.canonicalFingerprint) return null;
+		s.push(Object.freeze({
+			hostLocator: t.hostLocator,
+			rawContent: l.rawContent,
+			canonicalContent: u
+		})), c.add(a);
 	}
 	return Object.freeze(s);
 }
@@ -18822,7 +18875,7 @@ function jf({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 	}), F = (e) => {
 		if (!e?.readiness || e.readiness.status === "caughtUp") return [];
 		if (e.readiness.status === "unknown" && e.readiness.hostConfirmed !== !0) return ["memoryNotReady", "coverageUnconfirmed"];
-		let t = new Set(e.bodyMatch?.coveredFloorIds ?? []), n = e.readiness.summaryPendingFloorIds ?? [];
+		let t = new Set(e.bodyMatch?.readinessCoveredFloorIds ?? e.bodyMatch?.coveredFloorIds ?? []), n = e.readiness.summaryPendingFloorIds ?? [];
 		return e.readiness.summaryStatus === "caughtUp" || e.readiness.hostConfirmed === !0 && n.length && n.every((e) => t.has(e)) ? [] : (() => {
 			try {
 				return typeof a == "function" ? a() : a;

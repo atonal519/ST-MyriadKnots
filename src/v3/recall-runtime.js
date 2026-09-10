@@ -5,6 +5,7 @@ import { projectRecallSource, readRecallSource } from './recall-source.js';
 import { buildRecallQueryContext, buildRecallQueryFrame } from './recall-selector.js';
 import { selectRecallWithLlm } from './recall-llm-selector.js';
 import { selectAssistantMessage } from './foundation-domain.js';
+import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
@@ -252,19 +253,23 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
     const canonical = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
     const [rawFingerprint, canonicalFingerprint] = await Promise.all([fingerprint(selected.rawContent), fingerprint(canonical)]);
     if (rawFingerprint !== ref.rawFingerprint || canonicalFingerprint !== ref.canonicalFingerprint) continue;
-    verified.push({ ...ref, liveMessage, liveIndex: ref.hostLocator.messageIndex, key: `${rawFingerprint}|${canonicalFingerprint}` });
+    verified.push({ ...ref, liveMessage, liveIndex: ref.hostLocator.messageIndex, rawContent: selected.rawContent, canonicalContent: canonical, key: `${rawFingerprint}|${canonicalFingerprint}` });
   }
-  const materialFor = covered => ({
-    version: 1,
+  const materialFor = (covered, readinessCovered) => ({
+    version: 2,
     witnesses: witness.map(item => [item.coreIndex, item.rawFingerprint, item.canonicalFingerprint]),
     covered: covered.map(item => [item.floorId, item.floorMemoryId, item.assistantSeq, item.rawFingerprint, item.canonicalFingerprint]),
+    readinessCovered: readinessCovered.map(item => [item.floorId, item.floorMemoryId, item.assistantSeq, item.rawFingerprint, item.canonicalFingerprint]),
   });
-  const resultFor = async covered => Object.freeze({
-    fingerprint: await fingerprint(JSON.stringify(materialFor(covered))),
+  const resultFor = async (covered, readinessCovered = covered) => Object.freeze({
+    fingerprint: await fingerprint(JSON.stringify(materialFor(covered, readinessCovered))),
     witnessCount: witness.length,
     matchedCount: covered.length,
     coveredFloorIds: Object.freeze(covered.map(item => item.floorId)),
     coveredRefs: Object.freeze(covered.map(item => Object.freeze({ floorId: item.floorId, floorMemoryId: item.floorMemoryId, assistantSeq: item.assistantSeq }))),
+    readinessMatchedCount: readinessCovered.length,
+    readinessCoveredFloorIds: Object.freeze(readinessCovered.map(item => item.floorId)),
+    readinessCoveredRefs: Object.freeze(readinessCovered.map(item => Object.freeze({ floorId: item.floorId, floorMemoryId: item.floorMemoryId, assistantSeq: item.assistantSeq }))),
   });
   if (!verified.length || !witness.length) return resultFor([]);
   const liveCandidates = [];
@@ -283,6 +288,11 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
     witnessCounts.set(key, (witnessCounts.get(key) ?? 0) + 1);
   }
   const tentative = [];
+  const readinessTentative = [];
+  const canonicalWitnessCounts = new Map();
+  const canonicalRefCounts = new Map();
+  for (const item of witness) canonicalWitnessCounts.set(item.canonicalFingerprint, (canonicalWitnessCounts.get(item.canonicalFingerprint) ?? 0) + 1);
+  for (const ref of verified) canonicalRefCounts.set(ref.canonicalFingerprint, (canonicalRefCounts.get(ref.canonicalFingerprint) ?? 0) + 1);
   for (const item of witness) {
     const key = `${item.rawFingerprint}|${item.canonicalFingerprint}`;
     const identity = verified.find(ref => ref.liveMessage === item.message && ref.key === key);
@@ -292,6 +302,29 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
     const cloneLive = liveMatches.length === 1 ? liveMatches[0] : null;
     const match = identity ?? (cloneLive ? verified.find(ref => ref.liveIndex === cloneLive.liveIndex && ref.key === key) : null);
     if (match) tentative.push({ coreIndex: item.coreIndex, match, identity: Boolean(identity) });
+
+    const marker = inspectMessageFloorAnchor(item.message, source.chatId);
+    const readinessEligible = marker.status !== 'invalid' && marker.status !== 'foreign';
+    let readinessMatch = readinessEligible ? match : null;
+    if (!readinessMatch && readinessEligible && canonicalWitnessCounts.get(item.canonicalFingerprint) === 1 && canonicalRefCounts.get(item.canonicalFingerprint) === 1) {
+      readinessMatch = verified.find(ref => ref.canonicalFingerprint === item.canonicalFingerprint
+        && (marker.status === 'none' || marker.anchor.floorId === ref.floorId)) ?? null;
+    }
+    if (!readinessMatch && readinessEligible) {
+      const linked = verified.filter(ref => {
+        const markerMatch = marker.status === 'valid' && marker.anchor.floorId === ref.floorId;
+        const sharedExtra = marker.status === 'none' && item.message?.extra && typeof item.message.extra === 'object' && item.message.extra === ref.liveMessage?.extra;
+        const sharedSwipes = marker.status === 'none' && Array.isArray(item.message?.swipes) && item.message.swipes === ref.liveMessage?.swipes;
+        return markerMatch || sharedExtra || sharedSwipes;
+      });
+      if (linked.length === 1) {
+        const ref = linked[0];
+        const bodySurvives = item.rawContent.includes(ref.rawContent)
+          || item.canonicalContent.includes(ref.canonicalContent);
+        if (bodySurvives) readinessMatch = ref;
+      }
+    }
+    if (readinessMatch) readinessTentative.push({ coreIndex: item.coreIndex, match: readinessMatch });
   }
   tentative.sort((left, right) => left.coreIndex - right.coreIndex);
   const covered = [];
@@ -301,7 +334,15 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
     covered.push(entry.match);
     previousSeq = entry.match.assistantSeq;
   }
-  return resultFor(covered);
+  readinessTentative.sort((left, right) => left.coreIndex - right.coreIndex);
+  const readinessCovered = [];
+  previousSeq = 0;
+  for (const entry of readinessTentative) {
+    if (entry.match.assistantSeq <= previousSeq) continue;
+    readinessCovered.push(entry.match);
+    previousSeq = entry.match.assistantSeq;
+  }
+  return resultFor(covered, readinessCovered);
 }
 
 const sameBodyRef = (left, right) => Boolean(left && right
@@ -332,6 +373,20 @@ async function captureCoveredBodyGuards(source, currentSource, snapshot, sanitiz
       rawContent: selected.rawContent,
       canonicalContent,
     }));
+  }
+  const guardedLocators = new Set(guards.map(guard => JSON.stringify(guard.hostLocator)));
+  for (const covered of currentSource.bodyMatch?.readinessCoveredRefs ?? []) {
+    const current = currentRefs.find(ref => ref.floorId === covered.floorId && ref.assistantSeq === covered.assistantSeq);
+    if (!current) return null;
+    const locatorKey = JSON.stringify(current.hostLocator);
+    if (guardedLocators.has(locatorKey)) continue;
+    const selected = selectAssistantMessage(snapshot?.chat?.[current.hostLocator.messageIndex]);
+    if (!selected || selected.swipeId !== current.hostLocator.swipeId || selected.selectedSwipeIndex !== current.hostLocator.selectedSwipeIndex) return null;
+    const canonicalContent = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
+    const [rawFingerprint, canonicalFingerprint] = await Promise.all([fingerprint(selected.rawContent), fingerprint(canonicalContent)]);
+    if (rawFingerprint !== current.rawFingerprint || canonicalFingerprint !== current.canonicalFingerprint) return null;
+    guards.push(Object.freeze({ hostLocator: current.hostLocator, rawContent: selected.rawContent, canonicalContent }));
+    guardedLocators.add(locatorKey);
   }
   return Object.freeze(guards);
 }
@@ -364,7 +419,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
   const readinessReasons = source => {
     if (!source?.readiness || source.readiness.status === 'caughtUp') return [];
     if (source.readiness.status === 'unknown' && source.readiness.hostConfirmed !== true) return ['memoryNotReady', 'coverageUnconfirmed'];
-    const coveredFloorIds = new Set(source.bodyMatch?.coveredFloorIds ?? []);
+    const coveredFloorIds = new Set(source.bodyMatch?.readinessCoveredFloorIds ?? source.bodyMatch?.coveredFloorIds ?? []);
     const pendingSummaryFloorIds = source.readiness.summaryPendingFloorIds ?? [];
     if (source.readiness.summaryStatus === 'caughtUp') return [];
     if (source.readiness.hostConfirmed === true && pendingSummaryFloorIds.length
