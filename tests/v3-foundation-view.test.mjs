@@ -103,6 +103,108 @@ test('没有摘要楼时仍可复制界面滚动诊断，并复用只读文本�
   assert.equal(fallback?.readOnly, true); assert.match(fallback?.value ?? '', /"records":\[\]/);
 });
 
+test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时白名单，fallback 保持可选中', async () => {
+  const privateText = 'PRIVATE_BODY_SENTINEL_20260911';
+  const rawChatId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const rawHeadId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  let memoryState = {
+    status: 'running', foundationStatus: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: rawChatId, headCheckpointId: rawHeadId,
+    memorySnapshotStatus: 'ready', memorySyncStatus: 'syncing', rebuildStatus: 'pendingRebuild', rememberedCount: 2, stableCount: 5, unprocessedCount: 3,
+    memoryWorkBusy: true, activeRun: { id: 'foundation-run-private', phase: 'capturing', reason: privateText },
+    activeMemoryWork: { kind: 'auto', phase: 'reconciling', reason: privateText, floorIds: ['private-floor'] },
+    activeExtraction: { phase: 'extracting', floorId: 'private-floor', runId: 'private-run' },
+    activeAutoMemory: { kind: 'private-kind', phase: 'analyzingCse', mode: 'historical', floorIds: ['private-floor'] },
+    activeCse: { phase: 'committing', floorId: 'private-floor', runId: 'private-cse-run' },
+    memorySyncError: { name: 'TimeoutError', code: 'BACKEND_TIMEOUT', message: privateText },
+    lastError: { name: 'PrivateErrorName', code: `FREE_${privateText}`, message: privateText, stack: privateText },
+    lastExtractorError: { name: 'TypeError', code: 'V3_EXTRACTOR_FAILED', httpStatus: 429, message: privateText, providerError: privateText },
+    lastCseError: { name: 'Error', code: 'V3_CSE_FORMAT_INVALID', message: privateText, validationErrors: [privateText] },
+    cseRebuildStatus: 'running', floors: [{ floorId: 'private-floor', memoryId: 'private-memory', summary: privateText, canonicalFingerprint: privateText }],
+  };
+  let identityState = { status: 'preparing', identity: { chatId: rawChatId, hostChatId: privateText }, error: Object.assign(new Error(privateText), { code: 'QQJ_CHAT_BINDING_CONFLICT', httpStatus: 409 }) };
+  let recallState = { recallStatus: 'running', activeRecall: { phase: 'selecting', token: privateText, chatId: rawChatId }, lastRecallError: Object.assign(new Error(privateText), { code: 'QQJ_TIMEOUT', httpStatus: 504 }) };
+  let managementState = { status: 'deleting', phase: 'deletingRecords', workBusy: true, blockedByOtherChat: true, error: privateText, targetChatId: rawChatId };
+  const listeners = new Set(); let refreshes = 0, sessionReads = 0, recallReads = 0, managementReads = 0;
+  const runtime = {
+    getState: () => memoryState,
+    refreshStatus: async () => { refreshes += 1; return memoryState; },
+    confirmLatest: async () => memoryState,
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+  };
+  const recallRuntime = { getState: () => { recallReads += 1; return recallState; } };
+  const memoryManagement = { getState: () => { managementReads += 1; return managementState; }, deleteCurrent: async () => managementState };
+  const container = new Node('main');
+  const view = createV3FoundationView({
+    runtime, recallRuntime, memoryManagement, pluginVersion: '0.1.9-test',
+    sessionStateProvider: () => { sessionReads += 1; return identityState; },
+    documentRef, navigatorRef: { clipboard: { writeText: async () => { throw new Error('clipboard denied'); } } },
+  });
+  view.mount(container);
+  const ordinaryInput = new Node('textarea'); container.children[0].append(ordinaryInput);
+  memoryState = { ...memoryState, memorySnapshotStatus: 'syncing' };
+  for (const listener of listeners) listener(memoryState);
+  const refresh = flatten(container).find(node => node.textContent === '刷新状态');
+  let copyState = flatten(container).find(node => node.textContent === '复制状态诊断');
+  assert.equal(refresh.disabled, true, '业务刷新在 busy/delete 灰态保持禁用');
+  assert.ok(copyState); assert.equal(copyState.disabled, false, '状态诊断在同步灰态仍可点击');
+  assert.equal(ordinaryInput.disabled, true, '同步遮罩仍禁用普通业务输入');
+
+  copyState.click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(refreshes, 0, '复制状态不得触发业务刷新');
+  assert.ok(sessionReads >= 1 && recallReads >= 1 && managementReads >= 1, '复制时必须即时读取现有 getter');
+  let fallback = flatten(container).find(node => node.className === 'v3-diagnostic-fallback');
+  assert.equal(fallback?.readOnly, true); assert.equal(fallback?.disabled, false, '同步遮罩不得禁用只读复制 fallback');
+  let diagnostic = JSON.parse(fallback.value);
+  assert.equal(diagnostic.formatVersion, 1); assert.equal(diagnostic.pluginVersion, '0.1.9-test'); assert.match(diagnostic.capturedAt, /^\d{4}-/);
+  assert.deepEqual(diagnostic.identity, { status: 'preparing', identityPresent: true, error: { present: true, name: 'Error', code: 'QQJ_CHAT_BINDING_CONFLICT', httpStatus: 409 } });
+  assert.equal(diagnostic.foundation.chatIdPresent, true); assert.equal(diagnostic.foundation.headCheckpointPresent, true); assert.equal(diagnostic.foundation.activeRun.phase, 'capturing');
+  assert.deepEqual(diagnostic.foundation.lastError, { present: true });
+  assert.equal(diagnostic.memory.activeMemoryWork.kind, 'auto'); assert.equal(diagnostic.memory.activeMemoryWork.phase, 'reconciling');
+  assert.equal(diagnostic.memory.activeExtraction.phase, 'extracting'); assert.equal(Object.hasOwn(diagnostic.memory.activeAutoMemory, 'kind'), false); assert.equal(diagnostic.memory.activeAutoMemory.phase, 'analyzingCse');
+  assert.deepEqual(diagnostic.memory.syncError, { present: true, name: 'TimeoutError', code: 'BACKEND_TIMEOUT' });
+  assert.deepEqual(diagnostic.memory.lastExtractorError, { present: true, name: 'TypeError', code: 'V3_EXTRACTOR_FAILED', httpStatus: 429 });
+  assert.equal(diagnostic.cse.active.phase, 'committing'); assert.equal(diagnostic.recall.active.phase, 'selecting');
+  assert.deepEqual(diagnostic.management, { status: 'deleting', phase: 'deletingRecords', workBusy: true, blockedByOtherChat: true, error: { present: true } });
+  assert.deepEqual(diagnostic.ui, { syncingOverlayActive: true, workBusy: true, deleting: true, deletePending: false });
+  const serialized = JSON.stringify(diagnostic);
+  assert.doesNotMatch(serialized, new RegExp(`${privateText}|${rawChatId}|${rawHeadId}|private-floor|private-run|private-memory`));
+  assert.equal(Object.hasOwn(diagnostic.identity, 'identity'), false); assert.equal(Object.hasOwn(diagnostic.foundation, 'chatId'), false); assert.equal(Object.hasOwn(diagnostic.foundation, 'headCheckpointId'), false);
+
+  memoryState = { ...memoryState, activeMemoryWork: { ...memoryState.activeMemoryWork, phase: 'committing' }, activeAutoMemory: { ...memoryState.activeAutoMemory, phase: privateText } };
+  identityState = { status: 'error', error: { name: 'RangeError', code: 'CHAT_SESSION_PERSIST_FAILED', message: privateText } };
+  recallState = { ...recallState, activeRecall: { ...recallState.activeRecall, phase: 'receipt' } };
+  managementState = { ...managementState, status: 'failed', phase: null };
+  copyState = flatten(container).find(node => node.textContent === '复制状态诊断'); copyState.click(); await new Promise(resolve => setImmediate(resolve));
+  fallback = flatten(container).find(node => node.className === 'v3-diagnostic-fallback'); diagnostic = JSON.parse(fallback.value);
+  assert.equal(diagnostic.identity.status, 'error'); assert.equal(diagnostic.identity.identityPresent, false); assert.equal(diagnostic.identity.error.code, 'CHAT_SESSION_PERSIST_FAILED');
+  assert.equal(diagnostic.memory.activeMemoryWork.phase, 'committing'); assert.equal(diagnostic.memory.activeAutoMemory.phase, 'unknown'); assert.equal(diagnostic.recall.active.phase, 'receipt');
+  assert.equal(diagnostic.management.status, 'failed'); assert.equal(diagnostic.management.phase, null); assert.equal(diagnostic.ui.deletePending, true);
+});
+
+test('无 chat 与无状态 provider 仍提供状态诊断，复制不会抢占正在激活的业务回显', async () => {
+  let release;
+  let state = { status: 'idle', pluginEnabled: true, chatId: null, headCheckpointId: null, foundationStatus: 'uninitialized', stableCount: 0, rememberedCount: 0, memoryWorkBusy: false, floors: [], rebuildStatus: 'caughtUp' };
+  const runtime = {
+    getState: () => state,
+    refreshStatus: () => new Promise(resolve => { release = resolve; }),
+    confirmLatest: async () => state,
+  };
+  const copied = [];
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, documentRef, navigatorRef: { clipboard: { writeText: async value => { copied.push(value); } } } });
+  view.mount(container);
+  const activation = view.activate();
+  const copyState = flatten(container).find(node => node.textContent === '复制状态诊断');
+  assert.ok(copyState, '状态诊断入口不依赖 chatId 或摘要楼'); assert.equal(copyState.disabled, false);
+  copyState.click(); await new Promise(resolve => setImmediate(resolve));
+  const diagnostic = JSON.parse(copied[0]);
+  assert.equal(diagnostic.identity.status, 'unknown'); assert.equal(diagnostic.identity.identityPresent, 'unknown'); assert.equal(diagnostic.recall.status, 'unknown'); assert.equal(diagnostic.management.status, 'unknown');
+  state = { ...state, status: 'ready', foundationStatus: 'ready' }; release(state);
+  const result = await activation;
+  assert.equal(result.status, 'ready', '只读复制不得递增业务 epoch 使激活结果变 stale');
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /记忆状态已刷新/);
+});
+
 test('四项破坏性记忆操作等待异步确认，取消时零业务动作', async () => {
   const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
   const floor = { floorId: 'floor', assistantSeq: 1, messageIndex: 2, status: 'ready', memoryId: 'memory', summary: '摘要', summarySource: 'ai', aiSummary: '摘要', extractorVersion: 'v', counts: {}, api: null, memory, cse: { status: 'ready', deltaId: 'delta' } };

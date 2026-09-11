@@ -84,14 +84,21 @@ const recallInjection = (...bullets) => [
 const descendantText = node => `${node?.textContent ?? ''}${(node?.children ?? []).map(descendantText).join('')}`;
 
 async function actualCseReceipt() {
-  const chatId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', personId = 'person-1';
+  const chatId = MARKER_CHAT, personId = '66666666-6666-4666-8666-666666666666';
   const empty = { chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
-  const floors = [1, 2, 3].map(assistantSeq => ({ id: `floor-${assistantSeq}`, assistantSeq }));
-  const memories = floors.map(floor => ({ id: `memory-${floor.assistantSeq}`, floorId: floor.id, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: `钟楼赴约 ${floor.assistantSeq}` }, ...empty }));
-  const privateState = { id: 'state-1', text: '仍在钟楼等候', visibility: 'private', reason: '未公开的旧约', origin: 'floor', towardEntityId: null, sourceFloorId: 'floor-1', sourceDeltaId: 'delta-add' };
-  const reachable = { status: 'ready', rootRevision: 1, root: { chatId, narrativeGeneration: 'generation-1', headCheckpointId: 'head-1' }, checkpoint: { id: 'head-1' }, baseline: null, floors, floorMemories: memories, currentStates: [], entities: [{ id: personId, entityType: 'person', displayName: '裴晚生', aliases: [{ name: '阿裴' }], specialRole: 'char', recordStatus: 'active', status: 'established' }], stateDeltas: [
-    { id: 'delta-add', floorId: 'floor-1', floorMemoryId: 'memory-1', recordStatus: 'active', subjectSnapshots: [{ subjectEntityId: personId, core: [], adaptive: [], situational: [privateState] }] },
-    { id: 'delta-remove', floorId: 'floor-2', floorMemoryId: 'memory-2', recordStatus: 'active', subjectSnapshots: [{ subjectEntityId: personId, core: [], adaptive: [], situational: [] }] },
+  const floorIds = [HISTORY_FLOOR, CHANGE_FLOOR, EXTRA_FLOOR];
+  const memoryIds = ['44444444-4444-4444-8444-444444444441', '44444444-4444-4444-8444-444444444442', '44444444-4444-4444-8444-444444444443'];
+  const deltaIds = ['55555555-5555-4555-8555-555555555551', '55555555-5555-4555-8555-555555555552', '55555555-5555-4555-8555-555555555553'];
+  const floors = floorIds.map((id, index) => ({ id, assistantSeq: index + 1 }));
+  const memories = floors.map((floor, index) => ({ id: memoryIds[index], floorId: floor.id, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: `暮色旧闻 ${floor.assistantSeq}` }, ...empty }));
+  const privateState = { id: '77777777-7777-4777-8777-777777777771', text: '仍在钟楼等候', visibility: 'private', reason: '未公开的旧约', origin: 'floor', towardEntityId: null, sourceFloorId: floorIds[0], sourceDeltaId: deltaIds[0] };
+  const keyState = { id: '77777777-7777-4777-8777-777777777772', text: '仍在钟楼保管赴约钥匙', visibility: 'private', reason: '为赴约留门', origin: 'floor', towardEntityId: null, sourceFloorId: floorIds[0], sourceDeltaId: deltaIds[0] };
+  const returnedState = { id: '77777777-7777-4777-8777-777777777773', text: '已经回到钟楼准备赴约', visibility: 'private', reason: '重新履行旧约', origin: 'floor', towardEntityId: null, sourceFloorId: floorIds[2], sourceDeltaId: deltaIds[2] };
+  const headId = '88888888-8888-4888-8888-888888888888';
+  const reachable = { status: 'ready', rootRevision: 1, root: { chatId, narrativeGeneration: OTHER_CHAT, headCheckpointId: headId }, checkpoint: { id: headId }, baseline: { id: '99999999-9999-4999-8999-999999999999' }, floors, floorMemories: memories, currentStates: [], entities: [{ id: personId, entityType: 'person', displayName: '裴晚生', aliases: [{ name: '阿裴' }], specialRole: 'char', recordStatus: 'active', status: 'established' }], stateDeltas: [
+    { id: deltaIds[0], floorId: floorIds[0], floorMemoryId: memoryIds[0], recordStatus: 'active', subjectSnapshots: [{ subjectEntityId: personId, core: [], adaptive: [], situational: [privateState, keyState] }] },
+    { id: deltaIds[1], floorId: floorIds[1], floorMemoryId: memoryIds[1], recordStatus: 'active', subjectSnapshots: [{ subjectEntityId: personId, core: [], adaptive: [], situational: [] }] },
+    { id: deltaIds[2], floorId: floorIds[2], floorMemoryId: memoryIds[2], recordStatus: 'active', subjectSnapshots: [{ subjectEntityId: personId, core: [], adaptive: [], situational: [returnedState] }] },
   ] };
   const userMessage = { is_user: true, is_system: false, mes: '阿裴，我们回钟楼赴约。' };
   const chat = [{ is_user: false, is_system: false, mes: '当前正文' }, userMessage];
@@ -99,7 +106,7 @@ async function actualCseReceipt() {
   const runtime = createV3RecallRuntime({ store: { readReachable: async () => structuredClone(reachable) }, hostAdapter: { snapshot: () => ({ context, chat }) }, sourceReader: ({ now }) => readRecallSource({ store: { readReachable: async () => structuredClone(reachable) }, now }), selector: selectRecall, pluginVersion: '0.1.8-test', now: () => new Date('2026-09-10T00:00:00.000Z'), logger: { warn() {} } });
   const state = await runtime.intercept(chat, 12000, null, 'normal');
   assert.equal(state.lastRecall.status, 'ready');
-  return { chat, userMessage, receipt: userMessage.extra[RECALL_RECEIPT_KEY] };
+  return { chat, userMessage, receipt: userMessage.extra[RECALL_RECEIPT_KEY], floorIds };
 }
 
 function createHarness({ chat, memoryState, recallState = { recallStatus: 'idle', activeRecall: null, lastRecall: null }, projectReceipt, chatId = 'chat-a' } = {}) {
@@ -325,20 +332,66 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
 });
 
 test('真实schema12剧情线回执经inline投影与renderer按时序显示完整私密变化及宿主楼号', async () => {
-  const { chat, receipt } = await actualCseReceipt();
-  const memoryState = { floors: [{ floorId: 'floor-1', assistantSeq: 1, messageIndex: 41 }, { floorId: 'floor-2', assistantSeq: 2, messageIndex: 42 }, { floorId: 'floor-3', assistantSeq: 3, messageIndex: 43 }], memoryEntities: [] };
+  const { chat, receipt, floorIds } = await actualCseReceipt();
+  const memoryState = { floors: floorIds.map((floorId, index) => ({ floorId, assistantSeq: index + 1, messageIndex: 41 + index })), memoryEntities: [] };
   const h = createHarness({ chat, memoryState, projectReceipt: async () => receipt });
   const userElement = messageElement(1, { user: true }); h.chatRoot.append(userElement); h.renderer.start(); await h.flushMicrotasks();
   const view = resolveInlineAnchor(userElement).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
   assert.equal(receipt.schemaVersion, 12);
-  assert.equal(receipt.selectedCseChanges.find(value => value.action === 'remove')?.before.text, '仍在钟楼等候');
-  assert.equal(projectInlineRecallReceipt(receipt).protocolRecognized, true);
+  assert.equal(receipt.selectedCseChanges.find(value => value.action === 'remove' && value.before?.text === '仍在钟楼等候')?.before.text, '仍在钟楼等候');
+  const projection = projectInlineRecallReceipt(receipt);
+  assert.equal(projection.protocolRecognized, true);
+  assert.equal(projection.stateItems[0]?.text, '已经回到钟楼准备赴约');
   assert.equal(view.cseChanges.hidden, true, '剧情线协议在分线内展示变化，不重复渲染旧独立变化区');
   const rendered = descendantText(view.recallItems);
   assert.match(rendered, /裴晚生 \/ 情境 \/ 移除：仍在钟楼等候（仅主体知晓）（这是该楼当时移除的旧状态）/);
   assert.match(rendered, /第 42 楼/);
   assert.ok(rendered.indexOf('新增：仍在钟楼等候') < rendered.indexOf('移除：仍在钟楼等候'), '历史变化按真实来源楼顺序展示');
   assert.equal(descendantText(view.states).includes('仍在钟楼等候'), false);
+
+  let currentDetails = view.recallItems.querySelector('.recall-line-states');
+  let changeDetails = view.recallItems.querySelectorAll('.recall-line-changes');
+  assert.equal(currentDetails?.tagName, 'DETAILS'); assert.notEqual(currentDetails.open, true);
+  assert.equal(currentDetails.children[0].textContent, '人物当前状态 1 条');
+  assert.equal(currentDetails.children[1].className, 'state-items');
+  assert.equal(currentDetails.children[1].children[0].textContent, '裴晚生：已经回到钟楼准备赴约');
+  assert.equal(changeDetails.length, 2, '同一来源楼的多条变化只生成一个折叠组');
+  assert.ok(changeDetails.every(node => node.tagName === 'DETAILS' && node.open !== true));
+  assert.equal(changeDetails[0].children[0].children[0].textContent, '人物状态变化 2 条');
+  assert.equal(changeDetails[0].children[0].children[1].textContent, '第 41 楼');
+  assert.equal(changeDetails[0].children[1].children.length, 2);
+  assert.equal(changeDetails[1].children[0].children[1].textContent, '第 42 楼');
+  const stateLine = currentDetails.parentElement;
+  assert.ok(stateLine.children.indexOf(changeDetails[0]) < stateLine.children.indexOf(changeDetails[1]));
+  assert.ok(stateLine.children.indexOf(changeDetails[1]) < stateLine.children.indexOf(currentDetails), '历史变化保持来源时序，当前快照留在本线末尾');
+  assert.match(view.root.children[0].textContent, /\.state-items,\.cse-change-items\{display:none;/);
+  assert.match(view.root.children[0].textContent, /\.states\[open\]>\.state-items,\.cse-changes\[open\]>\.cse-change-items\{display:grid\}/);
+
+  currentDetails.open = true; currentDetails.emit('toggle');
+  changeDetails[0].open = true; changeDetails[0].emit('toggle');
+  memoryState.floors[0].messageIndex = 51;
+  h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
+  currentDetails = view.recallItems.querySelector('.recall-line-states'); changeDetails = view.recallItems.querySelectorAll('.recall-line-changes');
+  assert.equal(currentDetails.open, true, '同回执重绘需恢复当前状态展开');
+  assert.equal(changeDetails[0].open, true, '来源楼号更新重绘需恢复对应历史变化展开');
+  assert.equal(changeDetails[0].children[0].children[1].textContent, '第 51 楼');
+  assert.equal(changeDetails[1].open, false, '不同来源历史变化互不串展开状态');
+
+  currentDetails.open = false; currentDetails.emit('toggle');
+  memoryState.floors[1].messageIndex = 52;
+  h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
+  currentDetails = view.recallItems.querySelector('.recall-line-states'); changeDetails = view.recallItems.querySelectorAll('.recall-line-changes');
+  assert.equal(currentDetails.open, false, '当前状态关闭状态独立保留');
+  assert.equal(changeDetails[0].open, true, '当前状态关闭不能连带关闭历史变化');
+  assert.equal(changeDetails[1].children[0].children[1].textContent, '第 52 楼');
+  assert.equal(changeDetails[0].children[1].children.length, 2, '重绘不得重复同源变化正文');
+
+  const otherUser = { ...chat[1], mes: '另一个聊天的用户楼' };
+  h.snapshot.chat = [otherUser]; h.context.chatMetadata.qianqianjie.chatId = OTHER_CHAT; h.snapshot.chatId = 'host-chat-b';
+  h.chatRoot.replaceChildren(messageElement(0, { user: true })); h.emit('CHAT_CHANGED'); await h.flushMicrotasks();
+  const otherView = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  assert.ok(otherView.recallItems.querySelectorAll('.recall-line-changes').every(node => node.open !== true));
+  assert.notEqual(otherView.recallItems.querySelector('.recall-line-states')?.open, true, '新聊天不能继承旧聊天的分线展开状态');
 });
 
 test('楼内回执用可靠来源标识压缩 refine 的同源 after，仍保留 before 与真实宿主楼号', async () => {

@@ -70,8 +70,10 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   const panel = { host: { hidden: true }, show() { shows += 1; this.host.hidden = false; return { status: 'ready' }; }, close() { closes += 1; this.host.hidden = true; }, setEnabled() {}, refresh: async () => ({ status: 'ready' }), getUiDiagnostic: () => '{"schemaVersion":1}', syncAppearance: () => dayAppearance };
   const stubView = () => ({ mount() {}, activate: async () => ({ status: 'ready' }), deactivate() {} });
   const current = { fabShow: true };
+  let sessionReads = 0; const sessionStateProvider = () => { sessionReads += 1; return { status: 'preparing' }; };
   const instance = bootstrap({
     settings: { isEnabled: () => true, get: () => current }, enableFab: true,
+    sessionStateProvider, pluginVersion: '0.1.9-test',
     v3FoundationViewFactory: options => { foundationOptions = options; return stubView(); }, peopleProfilesViewFactory: options => { peopleOptions = options; return stubView(); }, peopleWorkspaceRuntime: { getState: () => ({}) },
     documentRef: { activeElement: null, defaultView: {}, getElementById: () => null, createElement: () => ({}), documentElement: { append: node => appended.push(node) }, body: { append: node => bodyAppended.push(node) } },
     inlineRenderer: { setAppearance(value) { inlineAppearances.push(value); } },
@@ -80,6 +82,8 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   assert.deepEqual(appended, [dialogHost], '弹窗 host 应挂在 documentElement，避免手机宿主 body 布局裁切');
   assert.equal(peopleOptions.dialog.host, dialogHost, '千人头像裁剪应复用 QQJ 弹窗管理器');
   assert.deepEqual(bodyAppended, [panel.host, fabHost]); assert.equal(typeof fabOptions.onClick, 'function'); assert.equal(typeof foundationOptions.infoImpl, 'function');
+  assert.equal(foundationOptions.sessionStateProvider, sessionStateProvider); assert.deepEqual(foundationOptions.sessionStateProvider(), { status: 'preparing' }); assert.equal(sessionReads, 1);
+  assert.equal(foundationOptions.pluginVersion, '0.1.9-test');
   assert.equal(foundationOptions.uiDiagnosticProvider(), '{"schemaVersion":1}', '只读provider应在panel创建后导出界面诊断且不触发TDZ');
   assert.deepEqual(fabAppearances, [dayAppearance]); assert.deepEqual(inlineAppearances, [dayAppearance]);
   const nightAppearance = { mode: 'auto', effectiveTheme: 'night', palette: { knot: '#d9707a', line: '#2b363b' } };

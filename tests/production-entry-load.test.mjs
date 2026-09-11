@@ -84,7 +84,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.1.9');
+  assert.equal(manifest.version, '0.1.10');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
@@ -203,6 +203,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let compactOptions;
   let foundationOptions;
   let v3MemoryBindOptions;
+  const sessionState = { status: 'preparing' };
   const anchorCalls = [];
   const persistAnchors = async options => { anchorCalls.push(options); return { status: 'persisted' }; };
   const productionEventSource = { on() {}, removeListener() {} };
@@ -235,7 +236,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/compact-api-client.js', { createCompactApiClient: options => { compactOptions = options; return {}; } });
   define('./src/chat-session.js', { createChatSession: options => {
     sessionOptions = options;
-    return { prepare() {}, identity: () => ({ chatId: 'test' }), invalidate() {} };
+    return { prepare() {}, identity: () => ({ chatId: 'test' }), invalidate() {}, getState: () => sessionState };
   } });
   define('./src/chat-identity.js', { createChatIdentityCoordinator: options => { identityOptions = options; return { prepare() {} }; } });
   define('./src/chat-memory-management.js', { createChatMemoryManagement: options => { memoryManagementOptions = options; chatMemoryManagement = { getState: () => ({ status: 'idle' }), deleteCurrent() {} }; return chatMemoryManagement; } });
@@ -310,6 +311,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.ok(peopleWorkspaceOptions.session); assert.ok(peopleWorkspaceOptions.foundationRuntime); assert.ok(peopleWorkspaceOptions.memoryRuntime);
   assert.equal(bootstrapOptions.peopleWorkspaceRuntime, peopleWorkspaceRuntime);
   assert.equal(bootstrapOptions.chatMemoryManagement, chatMemoryManagement);
+  assert.deepEqual(bootstrapOptions.sessionStateProvider(), sessionState);
+  assert.equal(bootstrapOptions.pluginVersion, '0.1.9-test');
   assert.equal(bootstrapOptions.enableFab, true);
   assert.equal(typeof bootstrapOptions.subscribeDialogContextChange, 'function');
   assert.equal(bootstrapOptions.isSevenDaysAvailable(), true);

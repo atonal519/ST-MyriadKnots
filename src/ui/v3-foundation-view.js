@@ -93,6 +93,30 @@ const workBusy = state => Boolean(state.memoryWorkBusy || state.activeAutoMemory
 const memoryBusy = state => Boolean(state.activeExtraction || ['revising', 'extracting', 'reconciling', 'committing'].includes(state.activeMemoryWork?.phase) || state.activeAutoMemory?.phase === 'extracting');
 const cseBusy = state => Boolean(state.activeCse || state.activeMemoryWork?.phase === 'analyzingCse' || state.activeAutoMemory?.phase === 'analyzingCse');
 const workPhaseCopy = state => ({ reconciling: '正在同步楼层', extracting: '正在提取摘要', analyzingCse: '正在分析人物状态', revisingCse: '正在保存人物状态', committing: '正在保存结果', resetting: '正在重建地基', revising: '正在保存修订' })[state.activeMemoryWork?.phase ?? state.activeAutoMemory?.phase ?? state.activeExtraction?.phase ?? state.activeCse?.phase] ?? '正在处理';
+const DIAGNOSTIC_STATUS = new Set(['idle', 'preparing', 'ready', 'error', 'disabled', 'suspended', 'running', 'uninitialized', 'stale', 'needsReview', 'conflict', 'empty', 'skipped', 'failed', 'partial', 'pending', 'noChange', 'notApplicable', 'unavailable', 'syncing', 'caughtUp', 'waitingRealtime', 'pendingRebuild', 'rebuilding', 'paused', 'completed', 'deleting', 'historicalDebt', 'realtimeTail', 'notReady', 'unknown']);
+const DIAGNOSTIC_PHASE = new Set(['capturing', 'completed', 'stale', 'retryableError', 'anchor', 'load', 'foundation', 'extracting', 'validating', 'committing', 'resetting', 'reconciling', 'analyzingCse', 'revisingCse', 'revising', 'baseline', 'analyzing', 'correcting', 'pending', 'input', 'source', 'selecting', 'receipt', 'starting', 'restoringVisibility', 'deletingRecords', 'deletingBinding', 'clearingHost', 'unknown']);
+const DIAGNOSTIC_KIND = new Set(['manual', 'auto', 'unknown']);
+const STANDARD_ERROR_NAMES = new Set(['Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError', 'AggregateError', 'AbortError', 'DOMException', 'TimeoutError']);
+const enumDiagnostic = (value, allowed) => allowed.has(value) ? value : 'unknown';
+const booleanDiagnostic = value => typeof value === 'boolean' ? value : 'unknown';
+const countDiagnostic = value => Number.isSafeInteger(value) && value >= 0 ? value : 'unknown';
+const presenceDiagnostic = (source, key) => source && Object.hasOwn(source, key) ? Boolean(source[key]) : 'unknown';
+const operationDiagnostic = (value, { kind = false } = {}) => value
+  ? { present: true, ...(kind ? { kind: enumDiagnostic(value.kind, DIAGNOSTIC_KIND) } : {}), phase: enumDiagnostic(value.phase, DIAGNOSTIC_PHASE) }
+  : { present: false, ...(kind ? { kind: null } : {}), phase: null };
+function errorDiagnostic(value, sourceKnown = true) {
+  if (!sourceKnown) return { present: 'unknown' };
+  if (!value) return { present: false };
+  const result = { present: true };
+  if (value && typeof value === 'object') {
+    if (STANDARD_ERROR_NAMES.has(value.name)) result.name = value.name;
+    if (typeof value.code === 'string' && (/^(?:QQJ|V3|CHAT_SESSION)_[A-Z0-9_]{1,80}$/.test(value.code) || value.code === 'BACKEND_TIMEOUT')) result.code = value.code;
+    const httpStatus = value.httpStatus ?? value.status;
+    if (Number.isSafeInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599) result.httpStatus = httpStatus;
+  }
+  return result;
+}
+const diagnosticVersion = value => typeof value === 'string' && /^[0-9A-Za-z][0-9A-Za-z.-]{0,39}$/.test(value) ? value : 'unknown';
 const splitPeople = value => [...new Set(String(value ?? '').split(/[、,，\n]/u).map(item => item.trim()).filter(Boolean))];
 const timeDisplay = chronology => [...new Set((chronology ?? []).map(item => item?.time?.sourceText || item?.time?.normalized || item?.description).map(item => String(item ?? '').trim()).filter(Boolean))].join('；');
 const comparableLocations = locations => (locations ?? []).map(item => ({ itemId: item?.itemId ?? null, name: String(item?.name ?? '').trim() })).filter(item => item.name);
@@ -106,11 +130,12 @@ const CSE_VISIBILITY_OPTIONS = Object.freeze([['private', '私密'], ['expressed
 const visibilityCopy = value => Object.fromEntries(CSE_VISIBILITY_OPTIONS)[value] ?? text(value);
 const originCopy = value => ({ baseline: '聊天基线', floor: '本楼分析', reasonableProgression: '合理进展', manual: '用户纠正' })[value] ?? '本地重放';
 
-export function createV3FoundationView({ runtime, recallRuntime = null, peopleRuntime = null, memoryManagement = null, uiDiagnosticProvider = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, infoImpl = () => Promise.resolve(true) } = {}) {
+export function createV3FoundationView({ runtime, recallRuntime = null, peopleRuntime = null, memoryManagement = null, sessionStateProvider = null, pluginVersion = 'unknown', uiDiagnosticProvider = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, infoImpl = () => Promise.resolve(true) } = {}) {
   if (!runtime || ['getState', 'refreshStatus', 'confirmLatest'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('V3 foundation view runtime 无效');
   if (recallRuntime && typeof recallRuntime.getState !== 'function') throw new TypeError('V3 recall view runtime 无效');
   if (peopleRuntime && typeof peopleRuntime.getState !== 'function') throw new TypeError('V3 people workspace runtime 无效');
   if (memoryManagement && (typeof memoryManagement.getState !== 'function' || typeof memoryManagement.deleteCurrent !== 'function')) throw new TypeError('当前聊天记忆管理器无效');
+  if (sessionStateProvider !== null && typeof sessionStateProvider !== 'function') throw new TypeError('聊天身份状态 provider 无效');
   if (uiDiagnosticProvider !== null && typeof uiDiagnosticProvider !== 'function') throw new TypeError('界面诊断 provider 无效');
   if (!documentRef?.createElement) throw new TypeError('V3 foundation view documentRef 无效');
 
@@ -212,6 +237,75 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     }
     fallbackText = value; return '浏览器不允许直接复制，请在下方文本框长按全选复制。';
   }
+  const readDiagnosticState = provider => { try { return provider?.() ?? null; } catch { return null; } };
+  const stateDiagnostic = () => {
+    const memory = readDiagnosticState(() => runtime.getState());
+    const identity = readDiagnosticState(sessionStateProvider);
+    const recall = readDiagnosticState(() => recallRuntime?.getState?.());
+    const management = readDiagnosticState(() => memoryManagement?.getState?.());
+    const memoryKnown = memory !== null, identityKnown = identity !== null, recallKnown = recall !== null, managementKnown = management !== null;
+    const deleting = management?.status === 'deleting', deletePending = management?.status === 'failed';
+    return {
+      formatVersion: 1,
+      pluginVersion: diagnosticVersion(pluginVersion),
+      capturedAt: new Date().toISOString(),
+      identity: {
+        status: identityKnown ? enumDiagnostic(identity.status, DIAGNOSTIC_STATUS) : 'unknown',
+        identityPresent: identityKnown ? Boolean(identity.identity) : 'unknown',
+        error: errorDiagnostic(identity?.error, identityKnown),
+      },
+      foundation: {
+        status: enumDiagnostic(memory?.status, DIAGNOSTIC_STATUS),
+        foundationStatus: enumDiagnostic(memory?.foundationStatus, DIAGNOSTIC_STATUS),
+        pluginEnabled: booleanDiagnostic(memory?.pluginEnabled),
+        chatIdPresent: presenceDiagnostic(memory, 'chatId'),
+        headCheckpointPresent: presenceDiagnostic(memory, 'headCheckpointId'),
+        activeRun: memoryKnown ? operationDiagnostic(memory.activeRun) : { present: 'unknown', phase: 'unknown' },
+        lastError: errorDiagnostic(memory?.lastError, memoryKnown),
+      },
+      memory: {
+        snapshotStatus: enumDiagnostic(memory?.memorySnapshotStatus, DIAGNOSTIC_STATUS),
+        syncStatus: enumDiagnostic(memory?.memorySyncStatus, DIAGNOSTIC_STATUS),
+        rebuildStatus: enumDiagnostic(memory?.rebuildStatus, DIAGNOSTIC_STATUS),
+        rememberedCount: countDiagnostic(memory?.rememberedCount),
+        stableCount: countDiagnostic(memory?.stableCount),
+        memoryWorkBusy: booleanDiagnostic(memory?.memoryWorkBusy),
+        activeMemoryWork: memoryKnown ? operationDiagnostic(memory.activeMemoryWork, { kind: true }) : { present: 'unknown', kind: 'unknown', phase: 'unknown' },
+        activeExtraction: memoryKnown ? operationDiagnostic(memory.activeExtraction) : { present: 'unknown', phase: 'unknown' },
+        activeAutoMemory: memoryKnown ? operationDiagnostic(memory.activeAutoMemory) : { present: 'unknown', phase: 'unknown' },
+        syncError: errorDiagnostic(memory?.memorySyncError, memoryKnown),
+        lastExtractorError: errorDiagnostic(memory?.lastExtractorError, memoryKnown),
+      },
+      cse: {
+        active: memoryKnown ? operationDiagnostic(memory.activeCse) : { present: 'unknown', phase: 'unknown' },
+        rebuildStatus: enumDiagnostic(memory?.cseRebuildStatus, DIAGNOSTIC_STATUS),
+        lastError: errorDiagnostic(memory?.lastCseError, memoryKnown),
+      },
+      recall: {
+        status: recallKnown ? enumDiagnostic(recall.recallStatus, DIAGNOSTIC_STATUS) : 'unknown',
+        active: recallKnown ? operationDiagnostic(recall.activeRecall) : { present: 'unknown', phase: 'unknown' },
+        lastError: errorDiagnostic(recall?.lastRecallError, recallKnown),
+      },
+      management: {
+        status: managementKnown ? enumDiagnostic(management.status, DIAGNOSTIC_STATUS) : 'unknown',
+        phase: managementKnown && management.phase !== null ? enumDiagnostic(management.phase, DIAGNOSTIC_PHASE) : managementKnown ? null : 'unknown',
+        workBusy: managementKnown ? booleanDiagnostic(management.workBusy) : 'unknown',
+        blockedByOtherChat: managementKnown ? booleanDiagnostic(management.blockedByOtherChat) : 'unknown',
+        error: errorDiagnostic(management?.error, managementKnown),
+      },
+      ui: {
+        syncingOverlayActive: Boolean(syncingChatId && syncingChatId === foundationState?.chatId),
+        workBusy: memoryKnown ? workBusy(memory) : 'unknown',
+        deleting,
+        deletePending,
+      },
+    };
+  };
+  const copyStateDiagnostic = async () => {
+    const value = JSON.stringify(stateDiagnostic(), null, 2);
+    feedback = await copy(value);
+    if (active && container) render(runtime.getState());
+  };
   async function run(label, task, { after, failed, resultCopy } = {}) {
     const mine = ++epoch; feedback = `${label}…`; updateHealth(foundationState);
     const beforeState = runtime.getState?.() ?? foundationState;
@@ -720,6 +814,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const body = element('div', 'qqj-management-drawer-body'), details = element('dl', 'v3-foundation-grid');
     const rebuildCopy = ({ rebuilding: '正在重建', paused: '已暂停', waitingRealtime: '等待新楼', failed: '失败', caughtUp: '已追平', pendingRebuild: '等待开始', notReady: '覆盖待确认' })[state.rebuildStatus] ?? '尚未判断';
     details.append(row('当前 chat', state.chatId), row('地基状态', statusCopy(effectiveStatus(state))), row('待核对原因', reviewReasonCopy(state.reviewReason)), row('自动维护新楼', state.autoMemoryEnabled ? '已开启 · 每楼更新' : '已关闭'), row('历史重建', `${rebuildCopy} · ${state.rebuildCompletedCount ?? 0}/${state.rebuildTotalCount ?? state.stableCount ?? 0}`), row('CSE 待分析 / 失败', `${state.csePendingCount ?? 0} / ${state.cseFailedCount ?? 0}`), row('Head checkpoint', state.headCheckpointId), row('最近记忆错误', state.lastExtractorError?.message || state.lastError || '无'), row('最近 CSE 错误', state.lastCseError?.message || '无')); body.append(details);
+    const stateDiagnosticAction = element('div', 'qqj-ui-diagnostic-action');
+    const copyState = element('button', 'secondary-action', '复制状态诊断'); copyState.type = 'button';
+    copyState.addEventListener('click', () => { void copyStateDiagnostic(); });
+    stateDiagnosticAction.append(copyState, element('span', 'settings-hint', '只含运行状态与错误代码，不含聊天正文、身份编号或 API 配置。'));
+    body.append(stateDiagnosticAction);
     if (uiDiagnosticProvider) {
       const uiDiagnostic = element('div', 'qqj-ui-diagnostic-action');
       const copyUi = element('button', 'secondary-action', '复制界面诊断'); copyUi.type = 'button';
@@ -804,11 +903,12 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     ? { ...state, memorySnapshotStatus: 'syncing', memorySyncStatus: 'syncing', memoryWorkBusy: true }
     : state;
   const applySyncingPresentation = () => {
-    const safeButtons = new Set(['取消', '分析记录', '返回当前状态', '复制安全诊断', '复制完整诊断', '复制界面诊断']);
+    const safeButtons = new Set(['取消', '分析记录', '返回当前状态', '复制安全诊断', '复制完整诊断', '复制界面诊断', '复制状态诊断']);
     const visit = node => {
       for (const child of Array.from(node?.children ?? [])) {
         const tag = String(child?.tagName ?? child?.tag ?? '').toLowerCase();
-        if (['input', 'select', 'textarea'].includes(tag) || (tag === 'button' && !safeButtons.has(child.textContent))) child.disabled = true;
+        const diagnosticFallback = tag === 'textarea' && child.readOnly === true && String(child.className ?? '').split(/\s+/).includes('v3-diagnostic-fallback');
+        if ((['input', 'select', 'textarea'].includes(tag) && !diagnosticFallback) || (tag === 'button' && !safeButtons.has(child.textContent))) child.disabled = true;
         visit(child);
       }
     };

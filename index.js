@@ -211,6 +211,8 @@ ui = bootstrap({
   v3RecallRuntime,
   peopleWorkspaceRuntime,
   chatMemoryManagement,
+  sessionStateProvider: () => session.getState(),
+  pluginVersion,
   inlineRenderer,
   enableFab: true,
 });

@@ -141,7 +141,7 @@ function renderCseChange(item, projection, sourceIndex, currentReference = '见�
     : item.action === 'remove' ? `移除：${before}（这是该楼当时移除的旧状态）`
       : item.action === 'update' ? `更新：${before} → ${after}`
         : `调整：${before} → ${after}`;
-  return { assistantSeq: item.assistantSeq, text: `${item.subject} / ${CSE_LAYER_TEXT[item.layer] ?? item.layer} / ${change}`, messageIndex: validIndex(messageIndex) ? messageIndex : null };
+  return { assistantSeq: item.assistantSeq, floorId: item.floorId || null, text: `${item.subject} / ${CSE_LAYER_TEXT[item.layer] ?? item.layer} / ${change}`, messageIndex: validIndex(messageIndex) ? messageIndex : null };
 }
 
 function replaceRecallItems(view, projection, documentRef, sourceIndex, groupExpanded) {
@@ -161,15 +161,28 @@ function replaceRecallItems(view, projection, documentRef, sourceIndex, groupExp
       const section = documentRef.createElement('section'); section.className = 'recall-line';
       const title = documentRef.createElement('strong'); title.className = 'recall-line-title'; setText(title, line.title);
       append(section, title);
+      const changeGroups = [...line.changes.reduce((groups, value) => {
+        const sourceKey = value.floorId || `assistant-${value.assistantSeq}`;
+        const group = groups.get(sourceKey) ?? { assistantSeq: value.assistantSeq, floorId: value.floorId, messageIndex: value.messageIndex, items: [] };
+        group.items.push(value.text); groups.set(sourceKey, group); return groups;
+      }, new Map()).values()];
       const timeline = [
         ...line.floors.map(value => ({ kind: 'floor', assistantSeq: value.assistantSeq, value })),
-        ...line.changes.map(value => ({ kind: 'change', assistantSeq: value.assistantSeq, value })),
+        ...changeGroups.map(value => ({ kind: 'change', assistantSeq: value.assistantSeq, value })),
       ].sort((a, b) => a.assistantSeq - b.assistantSeq || (a.kind === 'floor' ? -1 : 1));
       for (const entry of timeline) {
         if (entry.kind === 'change') {
-          const node = documentRef.createElement('div'); node.className = 'recall-line-state';
-          setText(node, `历史变化 · ${entry.value.text}${validIndex(entry.value.messageIndex) ? ` · 第 ${entry.value.messageIndex} 楼` : ''}`);
-          append(section, node); continue;
+          const changes = entry.value;
+          const stateKey = `${view.stateKey}:storyline:${line.storylineId}:history-changes:${changes.floorId || `assistant-${changes.assistantSeq}`}`;
+          const node = documentRef.createElement('details'); node.className = 'recall-group cse-changes recall-line-changes'; node.open = groupExpanded.get(stateKey) === true;
+          const summary = documentRef.createElement('summary'); summary.className = 'recall-source';
+          const titleText = `人物状态变化 ${changes.items.length} 条`;
+          const title = documentRef.createElement('span'); title.className = 'recall-knot'; setText(title, titleText); append(summary, title);
+          if (validIndex(changes.messageIndex)) { const floor = documentRef.createElement('span'); floor.className = 'recall-floor'; setText(floor, `第 ${changes.messageIndex} 楼`); append(summary, floor); }
+          const body = documentRef.createElement('div'); body.className = 'cse-change-items';
+          for (const value of changes.items) { const item = documentRef.createElement('div'); item.className = 'cse-change-item'; setText(item, value); append(body, item); }
+          const patchLabel = () => summary.setAttribute?.('aria-label', `${node.open === true ? '折叠' : '展开'}${titleText}${validIndex(changes.messageIndex) ? `，第 ${changes.messageIndex} 楼` : ''}`);
+          node.addEventListener('toggle', () => { groupExpanded.set(stateKey, node.open === true); patchLabel(); }); patchLabel(); append(node, summary, body); append(section, node); continue;
         }
         const floor = entry.value;
         const stateKey = `${view.stateKey}:storyline:${line.storylineId}:${floor.floorId ?? floor.assistantSeq}`;
@@ -182,7 +195,16 @@ function replaceRecallItems(view, projection, documentRef, sourceIndex, groupExp
         const patchLabel = () => sourceNode.setAttribute?.('aria-label', `${node.open === true ? '折叠' : '展开'}${floorTitle}`);
         node.addEventListener('toggle', () => { groupExpanded.set(stateKey, node.open === true); patchLabel(); }); patchLabel(); append(node, sourceNode, textWrap); append(section, node);
       }
-      for (const value of line.states) { const node = documentRef.createElement('div'); node.className = 'recall-line-state'; setText(node, `当前状态 · ${value}`); append(section, node); }
+      if (line.states.length) {
+        const stateKey = `${view.stateKey}:storyline:${line.storylineId}:current-states`;
+        const node = documentRef.createElement('details'); node.className = 'states recall-line-states'; node.open = groupExpanded.get(stateKey) === true;
+        const summary = documentRef.createElement('summary'); summary.className = 'states-title';
+        const titleText = `人物当前状态 ${line.states.length} 条`; setText(summary, titleText);
+        const body = documentRef.createElement('div'); body.className = 'state-items';
+        for (const value of line.states) { const item = documentRef.createElement('div'); item.className = 'state-item'; setText(item, value); append(body, item); }
+        const patchLabel = () => summary.setAttribute?.('aria-label', `${node.open === true ? '折叠' : '展开'}${titleText}`);
+        node.addEventListener('toggle', () => { groupExpanded.set(stateKey, node.open === true); patchLabel(); }); patchLabel(); append(node, summary, body); append(section, node);
+      }
       return section;
     });
     view.recallItems.replaceChildren?.(...lineNodes);
