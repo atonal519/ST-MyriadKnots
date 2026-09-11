@@ -31,6 +31,7 @@ const receiptFingerprint = async receipt => fingerprintText(JSON.stringify([
   ...(receipt.schemaVersion >= 8 ? [receipt.bodyMatchFingerprint] : []),
   ...(receipt.schemaVersion >= 9 ? [receipt.strategyVersion] : []),
   ...(receipt.schemaVersion >= 10 ? [receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings] : []),
+  ...(receipt.schemaVersion >= 12 ? [receipt.storylines] : []),
 ]));
 
 const emptyMemory = {
@@ -218,7 +219,7 @@ function selectorSource({ complete = true, memories = null, currentState = null 
   };
 }
 
-test('32 楼睡觉续写在远期 LLM 空选时仍保留最近四份连续摘要，状态不借历史空额', async () => {
+test('32 楼睡觉续写在 LLM 无明确排除时保留近期摘要与相关远期材料', async () => {
   const recent = ['准备周末出门旅行', '确认次日复诊预约', '工作冲突需要协调', '临睡前决定清晨出发'];
   const memories = Array.from({ length: 32 }, (_, index) => recallMemory(index + 1, {
     summary: index >= 28 ? recent[index - 28] : `第 ${index + 1} 楼远期摘要`,
@@ -231,16 +232,16 @@ test('32 楼睡觉续写在远期 LLM 空选时仍保留最近四份连续摘要
   const result = await selectRecallWithLlm({
     source,
     queryContext: { text: '我先睡了，明早继续', latestUserText: '我先睡了，明早继续', recentAssistantText: '', previousUserText: '', messageCount: 1 },
-    generateUtilityTask: async () => { calls += 1; return { jsonData: { history_keys: [], state_keys: [] } }; },
+    generateUtilityTask: async () => { calls += 1; return { jsonData: { history_exclude_keys: [], state_exclude_keys: [] } }; },
   });
   assert.equal(calls, 1);
-  assert.deepEqual(result.floors.map(value => value.assistantSeq), [29, 30, 31, 32]);
+  assert.deepEqual(result.floors.map(value => value.assistantSeq), [4, 29, 30, 31, 32]);
   recent.forEach(summary => assert.match(result.injectionText, new RegExp(summary)));
   assert.equal(result.stages.recentSummaryCount, 4);
-  assert.equal(result.stages.distantHistoryItemCount, 0);
+  assert.equal(result.stages.distantHistoryItemCount, 2);
   assert.ok(result.states.length <= result.limits.stateItemTarget);
-  assert.match(result.injectionText, /\[近期剧情接续摘要\]/);
-  assert.doesNotMatch(result.injectionText, /旧日失眠/);
+  assert.match(result.injectionText, /\[剧情线 recent｜近期剧情接续\]/);
+  assert.match(result.injectionText, /雷声失眠/);
 });
 
 test('近期摘要先排除空摘要与正文覆盖，再向更老的已存摘要补足4条', () => {
@@ -271,7 +272,7 @@ test('真实摘要长度与小上下文下优先保最近楼，LLM 所见近期�
   let payload;
   const result = await selectRecallWithLlm({ source, contextSize: 1000, queryContext: { text: '雨夜', latestUserText: '雨夜', messageCount: 1 }, generateUtilityTask: async options => {
     payload = JSON.parse(options.taskMessages[0].content);
-    return { jsonData: { history_keys: [], state_keys: [] } };
+    return { jsonData: { history_exclude_keys: [], state_exclude_keys: [] } };
   } });
   const finalRecent = result.floors.flatMap(floor => floor.items.filter(item => item.recallSection === 'recent').map(item => ({ assistantSeq: floor.assistantSeq, summary: item.text, truncated: item.truncated })));
   assert.deepEqual(payload.alreadyProvided.recentContinuation, finalRecent);
@@ -291,7 +292,7 @@ test('近期摘要混合长度时直接按总预算从最新楼向前选择，�
   assert.deepEqual(result.floors.map(floor => floor.assistantSeq), [...result.floors.map(floor => floor.assistantSeq)].sort((a, b) => a - b), '选定后仍按剧情时间呈现');
 });
 
-test('历史独立使用24项预算，人物状态使用独立6项容量', () => {
+test('统一预算按少量剧情线裁剪节点，并继续遵守历史与人物材料安全上限', () => {
   const memories = Array.from({ length: 12 }, (_, index) => recallMemory(index + 1, { summary: index >= 8 ? `近期接续 ${index + 1}` : '' }));
   memories[1] = recallMemory(2, { events: Array.from({ length: 30 }, (_, index) => ({ title: `钥匙背景 ${index + 1}`, description: `钥匙因果链 ${index + 1}`, candidateStatus: 'accepted' })) });
   const states = Array.from({ length: 12 }, (_, index) => ({ text: `钥匙状态 ${index + 1}`, visibility: 'authorial', reason: '人物档案', origin: 'baseline', towardEntityId: null, sourceAssistantSeq: 12 }));
@@ -301,14 +302,15 @@ test('历史独立使用24项预算，人物状态使用独立6项容量', () =>
   const pool = buildRecallHistoryCandidatePool({ source, queryContext });
   const result = selectRecall({ source, queryContext, contextSize: 12000, selectedHistoryCandidates: pool.candidates });
   assert.equal(result.stages.recentSummaryCount, 4);
-  assert.equal(result.stages.distantHistoryItemCount, 20);
-  assert.equal(result.states.length, 6);
-  assert.equal(result.floors.reduce((sum, floor) => sum + floor.items.length, 0), 24);
-  assert.ok(result.stages.distantHistoryDroppedByBudget > 0);
-  assert.equal(result.limits.stateItemTarget, 6);
+  assert.equal(result.stages.distantHistoryItemCount, 8, '同一剧情线最多保留八个代表节点');
+  assert.equal(result.states.length, 12);
+  assert.equal(result.floors.reduce((sum, floor) => sum + floor.items.length, 0), 12);
+  assert.ok(result.storylines.length <= 4);
+  assert.ok(result.limits.estimatedTokenCount <= result.limits.estimatedTokenBudget);
+  assert.equal(result.limits.stateItemTarget, 24);
 });
 
-test('最终召回可跨越旧8楼/18项上限，同时保持近期4楼与人物状态最多6项', () => {
+test('最终召回可跨越旧8楼/18项上限，同时保持48楼/48历史/24人物安全上限', () => {
   const memories = Array.from({ length: 16 }, (_, index) => recallMemory(index + 1, {
     summary: index >= 12 ? `容量钥匙近期接续 ${index + 1}` : '',
     events: index < 8 ? Array.from({ length: 3 }, (_, item) => ({
@@ -335,16 +337,18 @@ test('最终召回可跨越旧8楼/18项上限，同时保持近期4楼与人物
   assert.equal(selectedHistoryCandidates.length, 14, 'fixture必须提供14条跨8个远期楼的真实候选');
   const result = selectRecall({ source, queryContext, contextSize: 50000, selectedHistoryCandidates });
   const historyCount = result.floors.reduce((sum, floor) => sum + floor.items.length, 0);
-  assert.equal(result.floors.length, 12);
-  assert.equal(historyCount, 18);
-  assert.equal(result.states.length, 6);
-  assert.equal(historyCount + result.states.length, 24);
+  assert.ok(result.floors.length <= 12);
+  assert.ok(historyCount <= 18);
+  assert.ok(result.states.length <= 10);
+  assert.ok(historyCount + result.states.length <= 28);
+  assert.ok(result.floors.some(value => value.assistantSeq === 1), '长线必须保留最早端点');
+  assert.ok(result.floors.some(value => value.assistantSeq === 8), '长线必须保留最新远期端点');
   assert.equal(result.stages.recentSummaryCount, 4);
-  assert.equal(result.limits.maxFloors, 12);
-  assert.equal(result.limits.maxItems, 24);
+  assert.equal(result.limits.maxFloors, 48);
+  assert.equal(result.limits.maxItems, 48);
   assert.equal(result.limits.maxCharacters, 16000);
-  assert.equal(result.limits.stateItemTarget, 6);
-  assert.equal(result.limits.historyItemTarget, 24);
+  assert.equal(result.limits.stateItemTarget, 24);
+  assert.equal(result.limits.historyItemTarget, 48);
 });
 
 test('生产 normalize → recall source/selector 保留行动主体对象、完成结果与私有/共享人物边界', async () => {
@@ -507,7 +511,7 @@ test('近期摘要作为连续叙事单元，不再重复注入同楼碎片', ()
   assert.match(result.injectionText, /窗外同时下起大雨/u);
 });
 
-test('历史与状态分别使用独立项数容量，状态始终受六项上限', () => {
+test('历史与状态共享字符预算，人物材料受二十四项安全上限', () => {
   const memories = Array.from({ length: 10 }, (_, index) => recallMemory(index + 1, {
     events: [{ title: `钥匙事件 ${index + 1}`, description: `第 ${index + 1} 把钥匙开启石门`, candidateStatus: 'accepted' }],
   }));
@@ -519,16 +523,20 @@ test('历史与状态分别使用独立项数容量，状态始终受六项上�
   const source = selectorSource({ memories, currentState });
   source.coverage = { ...source.coverage, stableAiFloors: 10, stableThroughAssistantSeq: 10, rememberedAiFloors: 10, cseThroughAssistantSeq: 10 };
   const both = selectRecall({ source, queryContext: { text: '钥匙石门', latestUserText: '钥匙石门', messageCount: 1 }, contextSize: 12000 });
-  assert.equal(both.floors.flatMap(floor => floor.items).length, 10);
-  assert.equal(both.states.length, 6);
+  const historyItems = both.floors.flatMap(floor => floor.items);
+  assert.ok(historyItems.length > 0 && historyItems.length <= 24, '相关历史先于人物状态使用统一预算');
+  for (const line of both.storylines.filter(value => value.storylineId !== 'recent')) {
+    assert.ok(historyItems.filter(value => value.storylineId === line.storylineId).length <= 8, '每条线只留八个代表节点');
+  }
+  assert.equal(both.states.length, 16);
 
   const stateOnly = selectRecall({ source: selectorSource({ memories: Array.from({ length: 8 }, (_, index) => recallMemory(index + 1)), currentState }), queryContext: { text: '钥匙状态', latestUserText: '钥匙状态', messageCount: 1 }, contextSize: 12000 });
   assert.equal(stateOnly.floors.length, 0);
-  assert.equal(stateOnly.states.length, 6, '没有历史匹配时状态也不得借用历史空额');
+  assert.equal(stateOnly.states.length, 16, '没有历史匹配时人物材料可使用统一预算空额');
 });
 
-test('字符预算只允许历史使用总余量，状态不得借历史字符且总上限仍生效', () => {
-  const longState = `长状态${'仍需保留'.repeat(90)}`;
+test('统一字符预算允许人物与历史互用空余且总上限仍生效', () => {
+  const longState = `长状态${'仍需保留'.repeat(56)}`;
   const stateOnly = selectRecall({
     source: selectorSource({
       memories: Array.from({ length: 8 }, (_, index) => recallMemory(index + 1)),
@@ -536,10 +544,10 @@ test('字符预算只允许历史使用总余量，状态不得借历史字符�
     }),
     queryContext: { text: '长状态', latestUserText: '长状态', messageCount: 1 }, contextSize: 1000,
   });
-  assert.equal(stateOnly.states.length, 0, '单条过长状态不得借用历史字符份额');
+  assert.equal(stateOnly.states.length, 1, '人物材料可使用历史侧空余字符');
   assert.ok(stateOnly.injectionText.length <= stateOnly.limits.maxCharacters);
 
-  const longHistory = `长旧事${'仍需召回'.repeat(180)}`;
+  const longHistory = `长旧事${'仍需召回'.repeat(130)}`;
   const memories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
   memories[0] = recallMemory(1, { events: [{ title: '长旧事', description: longHistory, candidateStatus: 'accepted' }] });
   const historyOnly = selectRecall({ source: selectorSource({ memories }), queryContext: { text: '长旧事', latestUserText: '长旧事', messageCount: 1 }, contextSize: 1800 });
@@ -619,24 +627,25 @@ test('selector exactAnchor 继承最严格 typed fact 边界；孤立原句不�
   memories[4] = recallMemory(5, {
     exactAnchors: [{ anchorId: 'boundaryless-anchor', kind: 'wording', exactText: '无边界秘密', speakerEntityId: null, whyPreserve: '不能猜公开性' }],
   });
-  const result = selectRecall({
-    source: selectorSource({ memories }),
-    queryContext: { text: '暗门后有人，月落前离开；暗号是雨落三声。不要相信镜子。无边界秘密是什么？', latestUserText: '暗门后有人，月落前离开；暗号是雨落三声。不要相信镜子。无边界秘密是什么？', messageCount: 1 },
-  });
-  const bySeq = new Map(result.floors.map(floor => [floor.assistantSeq, floor]));
-  assert.deepEqual(bySeq.get(1).items.map(value => value.category), ['private'], '内心同文原句只属于 owner-private');
-  assert.deepEqual(bySeq.get(2).items.map(value => value.category), ['transfer'], '定向传话原句只继承 from→to 边界');
-  assert.equal(bySeq.get(2).items[0].fromEntityId, PERSON);
-  assert.deepEqual(bySeq.get(2).items[0].toEntityIds, [userId]);
-  assert.equal(bySeq.get(3).items[0].category, 'shared', '承诺原句继承合法接收者边界');
-  assert.equal(bySeq.get(3).items[0].status, 'made');
-  assert.deepEqual(bySeq.get(4).items.map(value => value.category), ['private'], '只有 speaker 的孤立原句保守归 speaker-private');
-  assert.equal(bySeq.has(5), false, '没有 speaker 或 typed 边界的原句只用于匹配，不得注入');
-  assert.equal(result.floors.flatMap(floor => floor.items).some(value => value.kind === 'exactAnchor' && value.category === 'objective'), false);
-  assert.match(result.injectionText, /裴晚生 → 林岚（仅列明接收者知情，渠道：told）：原句「月落前离开」/);
-  assert.match(result.injectionText, /来源楼当时已作出（不代表如今尚未履行；以后文为准）：约定以三声雨响作为暗号；原句「雨落三声」/);
-  assert.match(result.injectionText, /仅该人物可用的原句「不要相信镜子」/);
-  assert.doesNotMatch(result.injectionText, /无边界秘密/);
+  const run = text => selectRecall({ source: selectorSource({ memories }), queryContext: { text, latestUserText: text, messageCount: 1 } });
+  const privateResult = run('暗门后有人');
+  assert.deepEqual(privateResult.floors.flatMap(floor => floor.items).map(value => value.category), ['private'], '内心同文原句只属于 owner-private');
+  const transferResult = run('月落前离开');
+  const transfer = transferResult.floors.flatMap(floor => floor.items)[0];
+  assert.equal(transfer.category, 'transfer', '定向传话原句只继承 from→to 边界');
+  assert.equal(transfer.fromEntityId, PERSON);
+  assert.deepEqual(transfer.toEntityIds, [userId]);
+  assert.match(transferResult.injectionText, /裴晚生 → 林岚（仅列明接收者知情，渠道：told）：原句「月落前离开」/);
+  const commitmentResult = run('雨落三声暗号');
+  const commitment = commitmentResult.floors.flatMap(floor => floor.items)[0];
+  assert.equal(commitment.category, 'shared', '承诺原句继承合法接收者边界');
+  assert.equal(commitment.status, 'made');
+  assert.match(commitmentResult.injectionText, /来源楼当时已作出（不代表如今尚未履行；以后文为准）：约定以三声雨响作为暗号；原句「雨落三声」/);
+  const isolatedResult = run('不要相信镜子，无边界秘密是什么？');
+  assert.deepEqual(isolatedResult.floors.flatMap(floor => floor.items).map(value => value.category), ['private'], '只有 speaker 的孤立原句保守归 speaker-private');
+  assert.equal(isolatedResult.floors.flatMap(floor => floor.items).some(value => value.kind === 'exactAnchor' && value.category === 'objective'), false);
+  assert.match(isolatedResult.injectionText, /仅该人物可用的原句「不要相信镜子」/);
+  assert.doesNotMatch(isolatedResult.injectionText, /无边界秘密/);
 });
 
 test('selector 无可靠命中不凑数；楼数、总项和字符上限均生效', () => {
@@ -646,8 +655,9 @@ test('selector 无可靠命中不凑数；楼数、总项和字符上限均生�
   const memories = Array.from({ length: 15 }, (_, index) => recallMemory(index + 1, { summary: `钥匙线索 ${index + 1}`, openLoops: [{ description: `用钥匙打开第 ${index + 1} 道门`, ownerEntityIds: [] }] }));
   const source = selectorSource({ memories }); source.coverage = { ...source.coverage, stableAiFloors: 15, stableThroughAssistantSeq: 15, rememberedAiFloors: 15, cseThroughAssistantSeq: 15 };
   const result = selectRecall({ source, queryContext: { text: '用钥匙开门', latestUserText: '用钥匙开门', messageCount: 1 }, contextSize: 1800 });
-  assert.ok(result.floors.length <= 12);
-  assert.ok(result.floors.flatMap(value => value.items).length + result.states.length <= 24);
+  assert.ok(result.floors.length <= 48);
+  assert.ok(result.floors.flatMap(value => value.items).length <= 48);
+  assert.ok(result.states.length + result.cseChanges.length <= 24);
   assert.ok(result.injectionText.length <= result.limits.maxCharacters);
   assert.deepEqual(result.floors.map(value => value.assistantSeq), [...result.floors.map(value => value.assistantSeq)].sort((a, b) => a - b));
 });
@@ -717,18 +727,17 @@ test('selector 保留 commitment status；拒绝/不确定不冒充有效承诺�
   ];
   values.forEach((value, index) => { memories[index] = recallMemory(index + 1, { commitments: [{ speakerEntityId: PERSON, exactAnchorId: null, ...value }] }); });
   for (let index = 9; index <= 12; index += 1) memories.push(recallMemory(index));
-  const result = selectRecall({ source: selectorSource({ memories }), queryContext: { text: '阿裴的暗号和密门计划', latestUserText: '阿裴的暗号和密门计划', messageCount: 1 } });
-  const items = result.floors.flatMap(floor => floor.items);
-  assert.equal(items.find(value => value.status === 'made' && value.commitmentKind === 'promise').category, 'shared');
-  assert.equal(items.find(value => value.status === 'accepted').category, 'shared');
-  assert.equal(items.find(value => value.status === 'refused').category, 'shared');
-  assert.equal(items.find(value => value.status === 'uncertain').category, 'private');
-  assert.equal(items.find(value => value.commitmentKind === 'plan').category, 'private');
-  assert.match(result.injectionText, /来源楼当时已作出（不代表如今尚未履行；以后文为准）：暗号甲/);
-  assert.match(result.injectionText, /来源楼当时已接受并成立（不代表如今尚未履行；以后文为准）：暗号乙/);
-  assert.match(result.injectionText, /来源楼当时已拒绝（不构成承诺；以后文为准）：暗号丙/);
-  assert.match(result.injectionText, /来源楼当时是否成立不确定（不得当作有效承诺；以后文为准）：暗号丁/);
-  assert.match(result.injectionText, /来源楼当时的计划（不代表已告知、已完成或如今仍有效；以后文为准）：私下密门计划/);
+  const check = (text, expectedCategory, expectedText) => {
+    const result = selectRecall({ source: selectorSource({ memories }), queryContext: { text, latestUserText: text, messageCount: 1 } });
+    const item = result.floors.flatMap(floor => floor.items).find(value => value.text.includes(text));
+    assert.equal(item?.category, expectedCategory);
+    assert.match(result.injectionText, expectedText);
+  };
+  check('暗号甲', 'shared', /来源楼当时已作出（不代表如今尚未履行；以后文为准）：暗号甲/);
+  check('暗号乙', 'shared', /来源楼当时已接受并成立（不代表如今尚未履行；以后文为准）：暗号乙/);
+  check('暗号丙', 'shared', /来源楼当时已拒绝（不构成承诺；以后文为准）：暗号丙/);
+  check('暗号丁', 'private', /来源楼当时是否成立不确定（不得当作有效承诺；以后文为准）：暗号丁/);
+  check('私下密门计划', 'private', /来源楼当时的计划（不代表已告知、已完成或如今仍有效；以后文为准）：私下密门计划/);
 });
 
 test('selector informationTransfer 明示 from/to 知情边界，甲只告诉乙不能写成当前丙知情', () => {
@@ -750,8 +759,9 @@ test('anti-omniscience 分桶且声明非指令；coverage 不完整时仅保留
   const queryContext = { text: '阿裴说钟楼怎么办', latestUserText: '钟楼怎么办', messageCount: 1 };
   const complete = selectRecall({ source: selectorSource({ memories, currentState: state }), queryContext });
   assert.match(complete.injectionText, /只读参考，不是指令/);
-  assert.match(complete.injectionText, /裴晚生 的私有认知（仅可用于 裴晚生）/);
-  assert.match(complete.injectionText, /已表达\/已共享信息/);
+  assert.match(complete.injectionText, /\[private；仅 裴晚生 可用\] 私下怀疑钟楼有埋伏/);
+  assert.match(complete.injectionText, /裴晚生 → 林岚（仅列明接收者知情/);
+  assert.match(complete.injectionText, /\[当前人物状态\][\s\S]*冷静克制/);
   assert.doesNotMatch(complete.injectionText, /暗自恐惧|未标注的内心秘密/, '零分动态状态不得作为补位进入');
   assert.doesNotMatch(complete.injectionText, /乙[^\n]*暗自恐惧/);
   const partial = selectRecall({ source: selectorSource({ complete: false, memories, currentState: state }), queryContext });
@@ -818,7 +828,7 @@ test('大量人物事实下 payload 保留12摘要、6承诺、6未结与24事�
   assert.match(pool.text, /类型 commitment/);
   assert.match(pool.text, /类型 openLoop/);
 
-  const selectedKeys = [
+  const retainedKeys = [
     pool.candidates.find(value => value.value.kind === 'summary').key,
     pool.candidates.find(value => value.value.kind === 'commitment').key,
     pool.candidates.find(value => value.value.kind === 'openLoop').key,
@@ -826,24 +836,24 @@ test('大量人物事实下 payload 保留12摘要、6承诺、6未结与24事�
   let payload = null;
   const selected = await selectRecallWithLlm({ source, queryContext, generateUtilityTask: async options => {
     payload = JSON.parse(options.taskMessages[0].content);
-    return { jsonData: { history_keys: selectedKeys, state_keys: [] }, taskMetadata: { finishReason: 'stop' } };
+    return { jsonData: { history_exclude_keys: pool.candidates.map(value => value.key).filter(key => !retainedKeys.includes(key)), state_exclude_keys: [] }, taskMetadata: { finishReason: 'stop' } };
   } });
   assert.equal(payload.candidates.length, 48);
   assert.ok(payload.candidates.some(value => value.fact.includes('类型 summary')));
   assert.ok(payload.candidates.some(value => value.fact.includes('类型 commitment')));
   assert.ok(payload.candidates.some(value => value.fact.includes('类型 openLoop')));
-  assert.match(selected.injectionText, /\[叙事回顾/);
+  assert.match(selected.injectionText, /叙事回顾（/);
   assert.match(selected.injectionText, /港口夜航承诺/);
   assert.match(selected.injectionText, /来源楼当时未结\(后文可能已推进,以后文为准\)/);
 });
 
-test('summary 候选只有经 LLM 选中才注入；成功空选不回填，稳定键只映射本轮摘要', async () => {
+test('summary 候选默认保留，明确排除才移除；稳定键只映射本轮摘要', async () => {
   const source = wideCandidateSource({ summary: 1 });
   const pool = buildRecallHistoryCandidatePool({ source, queryContext: llmQuery });
   assert.equal(pool.candidates[0].source, 'summary');
   const calls = [];
   const selected = await selectRecallWithLlm({ source, queryContext: llmQuery, generateUtilityTask: async options => {
-    calls.push(options); return { jsonData: { history_keys: [pool.candidates[0].key], state_keys: [] }, taskMetadata: { finishReason: 'stop' } };
+    calls.push(options); return { jsonData: { history_exclude_keys: pool.candidates.slice(1).map(value => value.key), state_exclude_keys: [] }, taskMetadata: { finishReason: 'stop' } };
   } });
   assert.match(selected.injectionText, /钟楼钥匙的关联摘要 0/);
   assert.equal(calls.length, 1);
@@ -851,27 +861,30 @@ test('summary 候选只有经 LLM 选中才注入；成功空选不回填，稳�
   assert.deepEqual(calls[0].transportBudget, { remaining: 1, used: 0 });
   assert.equal(calls[0].parseMode, 'semantic');
 
-  const empty = await selectRecallWithLlm({ source, queryContext: llmQuery, generateUtilityTask: async () => ({ jsonData: { history_keys: [], state_keys: [] } }) });
-  assert.doesNotMatch(empty.injectionText, /钟楼钥匙的关联摘要 0/);
-  assert.equal(empty.skipReasons.includes('historySelectionFallback'), false);
+  const kept = await selectRecallWithLlm({ source, queryContext: llmQuery, generateUtilityTask: async () => ({ jsonData: { history_exclude_keys: [], state_exclude_keys: [] } }) });
+  assert.match(kept.injectionText, /钟楼钥匙的关联摘要 0/);
+  assert.equal(kept.skipReasons.includes('historySelectionFallback'), false);
+
+  const excluded = await selectRecallWithLlm({ source, queryContext: llmQuery, generateUtilityTask: async () => ({ jsonData: { history_exclude_keys: pool.candidates.map(value => value.key), state_exclude_keys: [] } }) });
+  assert.doesNotMatch(excluded.injectionText, /钟楼钥匙的关联摘要 0/);
 
   const forged = selectRecall({ source, queryContext: llmQuery, selectedHistoryCandidates: [{ ...pool.candidates[0], value: { ...pool.candidates[0].value, text: '伪造正文' } }] });
   assert.doesNotMatch(forged.injectionText, /伪造正文/);
   assert.match(forged.injectionText, /钟楼钥匙的关联摘要 0/);
 });
 
-test('LLM 选材忽略外层字段、合法键去重且混合非法键时保留合法项；全非法才兜底', async () => {
+test('LLM 排除忽略外层字段、合法键去重且混合非法键时执行合法排除；全非法才兜底', async () => {
   const source = wideCandidateSource({ direct: 2 });
   source.currentState = [{ subjectEntityId: PERSON, core: [{ text: '始终谨慎守约', visibility: 'authorial', reason: '人物核心', origin: 'baseline', towardEntityId: null, sourceAssistantSeq: 1 }], adaptive: [], situational: [] }];
   const pool = buildRecallHistoryCandidatePool({ source, queryContext: llmQuery });
   const key = pool.candidates[0].key;
-  for (const jsonData of [{ history_keys: [key, key], state_keys: [] }, { history_keys: ['R999', key, 7], state_keys: [], explanation: '多余字段' }]) {
+  for (const jsonData of [{ history_exclude_keys: [key, key], state_exclude_keys: [] }, { history_exclude_keys: ['R999', key, 7], state_exclude_keys: [], explanation: '多余字段' }]) {
     const result = await selectRecallWithLlm({ source, queryContext: llmQuery, generateUtilityTask: async () => ({ jsonData }) });
     assert.equal(result.skipReasons.includes('historySelectionFallback'), false);
     assert.equal(result.selectorDiagnostic.mode, 'llm');
-    assert.match(result.injectionText, /直接命中的相关事实/);
+    assert.equal(result.selectorDiagnostic.historyExcludedCount, 1);
   }
-  const invalid = await selectRecallWithLlm({ source, queryContext: llmQuery, generateUtilityTask: async () => ({ jsonData: { history_keys: ['R999', 7], state_keys: [] } }) });
+  const invalid = await selectRecallWithLlm({ source, queryContext: llmQuery, generateUtilityTask: async () => ({ jsonData: { history_exclude_keys: ['R999', 7], state_exclude_keys: [] } }) });
   assert.equal(invalid.skipReasons.includes('historySelectionFallback'), true);
   assert.equal(invalid.selectorDiagnostic.code, 'V3_RECALL_LLM_KEYS_INVALID');
   assert.match(invalid.injectionText, /始终谨慎守约/);
@@ -907,7 +920,7 @@ test('LLM 选材不再创建15秒局部截止，等待现有API超时且外层op
     },
   });
   await Promise.resolve();
-  release({ jsonData: { history_keys: ['R1'], state_keys: [] }, taskMetadata: { source: 'test', sourceLabel: '测试API', model: 'slow-model', finishReason: 'stop', transportAttempts: 1 } });
+  release({ jsonData: { history_exclude_keys: [], state_exclude_keys: [] }, taskMetadata: { source: 'test', sourceLabel: '测试API', model: 'slow-model', finishReason: 'stop', transportAttempts: 1 } });
   const selected = await pending;
   assert.equal(calls, 1);
   assert.equal(localTimerCalls, 0);
@@ -981,9 +994,9 @@ test('CSE-only 仍复用一次 LLM，反序选择变化后按楼序呈现且同�
   let calls = 0, payload;
   const result = await selectRecallWithLlm({ source, queryContext, generateUtilityTask: async options => {
     calls += 1; payload = JSON.parse(options.taskMessages[0].content);
-    assert.match(options.systemPrompt, /history_keys[\s\S]*state_keys/);
+    assert.match(options.systemPrompt, /history_exclude_keys[\s\S]*state_exclude_keys/);
     assert.doesNotMatch(options.systemPrompt, /selected_keys/);
-    return { jsonData: { history_keys: [], state_keys: [current.key, ...changes.map(value => value.key).reverse()] } };
+    return { jsonData: { history_exclude_keys: [], state_exclude_keys: [] } };
   } });
   assert.equal(calls, 1);
   assert.deepEqual(payload.candidates, []);
@@ -991,76 +1004,305 @@ test('CSE-only 仍复用一次 LLM，反序选择变化后按楼序呈现且同�
   assert.deepEqual({
     historyCandidates: result.selectorDiagnostic.historyCandidateCount,
     stateCandidates: result.selectorDiagnostic.stateCandidateCount,
-    historySelected: result.selectorDiagnostic.historyModelSelectedCount,
-    stateSelected: result.selectorDiagnostic.stateModelSelectedCount,
-  }, { historyCandidates: 0, stateCandidates: pool.candidates.length, historySelected: 0, stateSelected: 3 });
+    historyExcluded: result.selectorDiagnostic.historyExcludedCount,
+    stateExcluded: result.selectorDiagnostic.stateExcludedCount,
+    stateRetained: result.selectorDiagnostic.stateRetainedCount,
+  }, { historyCandidates: 0, stateCandidates: pool.candidates.length, historyExcluded: 0, stateExcluded: 0, stateRetained: pool.candidates.length });
   assert.deepEqual(result.cseChanges.map(value => value.assistantSeq), [42, 43]);
+  assert.deepEqual(result.storylines.map(value => value.title), ['相关人物状态补充']);
+  assert.match(result.storylines[0].basis, /当前输入直接匹配以下已有人物状态材料/);
+  assert.doesNotMatch(`${result.storylines[0].title}${result.storylines[0].basis}`, /来源关联旧事|引用这些来源/);
   assert.equal(result.injectionText.match(/后来发短信要求辛夷回屋/g)?.length, 1);
-  assert.match(result.injectionText, /之后 见该人物上方当前快照（同一来源）/);
+  assert.match(result.injectionText, /之后 见本线末尾当前快照（同一来源）/);
+  assert.ok(result.injectionText.indexOf('[来源 AI #42]') < result.injectionText.indexOf('[来源 AI #43]'));
+  assert.ok(result.injectionText.indexOf('[来源 AI #43]') < result.injectionText.indexOf('[当前人物状态]'), '历史变化按楼序排列，当前快照最后');
   assert.doesNotMatch(result.injectionText, /左佐已经改变|应当变得|用户期待/);
 });
 
-test('LLM 返回超过6个低本地分 CSE key 时按模型顺序取前6，再单独按人物时序展示', async () => {
+test('LLM 无明确排除时保留全部低本地分 CSE，受二十四项上限并按人物时序展示', async () => {
   const states = Array.from({ length: 7 }, (_, index) => recallState(`state-priority-${index + 1}`, `与查询无词面关系的状态 ${index + 1}`, index + 1));
   const source = selectorSource({ currentState: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: states }] });
   const queryContext = { ...llmQuery, text: '宇宙飞船', latestUserText: '宇宙飞船' };
   const pool = buildRecallCseCandidatePool({ source, queryContext });
   assert.equal(pool.candidates.length, 7);
-  const modelOrder = [...pool.candidates].reverse();
-  const result = await selectRecallWithLlm({ source, queryContext, contextSize: 12000, generateUtilityTask: async () => ({ jsonData: { history_keys: [], state_keys: modelOrder.map(value => value.key) } }) });
+  const result = await selectRecallWithLlm({ source, queryContext, contextSize: 12000, generateUtilityTask: async () => ({ jsonData: { history_exclude_keys: [], state_exclude_keys: [] } }) });
   assert.equal(result.selectorDiagnostic.stateCandidateCount, 7);
-  assert.equal(result.selectorDiagnostic.stateModelSelectedCount, 7);
-  assert.equal(result.states.length, 6);
-  assert.deepEqual(new Set(result.states.map(value => value.stateId)), new Set(modelOrder.slice(0, 6).map(value => value.value.stateId)));
-  assert.equal(result.states.some(value => value.stateId === pool.candidates[0].value.stateId), false, '不得用本地排序换回模型排在第7的状态');
+  assert.equal(result.selectorDiagnostic.stateExcludedCount, 0);
+  assert.equal(result.selectorDiagnostic.stateRetainedCount, 7);
+  assert.equal(result.states.length, 7);
+  assert.deepEqual(new Set(result.states.map(value => value.stateId)), new Set(pool.candidates.map(value => value.value.stateId)));
 });
 
-test('同一次 LLM 分开选择 history/current/change，显式空键、非法键与重复键仍沿原合同处理', async () => {
+test('同一次 LLM 分开排除 history/current/change，空排除、全排除与非法键沿新合同处理', async () => {
   const source = changingCseSource({ withHistory: true });
   const queryContext = { ...llmQuery, text: '左佐辛夷旧门锁', latestUserText: '左佐辛夷旧门锁' };
   const history = buildRecallHistoryCandidatePool({ source, queryContext });
   const cse = buildRecallCseCandidatePool({ source, queryContext });
-  const current = cse.candidates.find(value => value.source === 'current');
-  const change = cse.candidates.find(value => value.source === 'change');
-  const result = await selectRecallWithLlm({ source, queryContext, generateUtilityTask: async () => ({ jsonData: { history_keys: [history.candidates[0].key], state_keys: [current.key, change.key, change.key, 'C999'] } }) });
+  const result = await selectRecallWithLlm({ source, queryContext, generateUtilityTask: async () => ({ jsonData: { history_exclude_keys: [], state_exclude_keys: [] } }) });
   assert.equal(result.selectorDiagnostic.mode, 'llm');
   assert.match(result.injectionText, /左佐早年买过一把旧门锁/);
-  assert.equal(result.states.length, 1);
-  assert.equal(result.cseChanges.length, 1);
+  assert.ok(result.states.length >= 1);
+  assert.ok(result.cseChanges.length >= 1);
   assert.deepEqual({
     historyCandidates: result.selectorDiagnostic.historyCandidateCount,
     stateCandidates: result.selectorDiagnostic.stateCandidateCount,
-    historySelected: result.selectorDiagnostic.historyModelSelectedCount,
-    stateSelected: result.selectorDiagnostic.stateModelSelectedCount,
-  }, { historyCandidates: history.candidates.length, stateCandidates: cse.candidates.length, historySelected: 1, stateSelected: 2 });
-  const empty = await selectRecallWithLlm({ source, queryContext, generateUtilityTask: async () => ({ jsonData: { history_keys: [], state_keys: [] } }) });
+    historyExcluded: result.selectorDiagnostic.historyExcludedCount,
+    stateExcluded: result.selectorDiagnostic.stateExcludedCount,
+    historyRetained: result.selectorDiagnostic.historyRetainedCount,
+    stateRetained: result.selectorDiagnostic.stateRetainedCount,
+  }, { historyCandidates: history.candidates.length, stateCandidates: cse.candidates.length, historyExcluded: 0, stateExcluded: 0, historyRetained: history.candidates.length, stateRetained: cse.candidates.length });
+  const empty = await selectRecallWithLlm({ source, queryContext, generateUtilityTask: async () => ({ jsonData: { history_exclude_keys: history.candidates.map(value => value.key), state_exclude_keys: cse.candidates.map(value => value.key) } }) });
   assert.equal(empty.states.length, 0);
   assert.equal(empty.cseChanges.length, 0);
   assert.equal(empty.selectorDiagnostic.mode, 'llm');
-  assert.equal(empty.selectorDiagnostic.historyModelSelectedCount, 0);
-  assert.equal(empty.selectorDiagnostic.stateModelSelectedCount, 0);
-  const invalid = await selectRecallWithLlm({ source, queryContext, generateUtilityTask: async () => ({ jsonData: { history_keys: ['R999'], state_keys: ['C999'] } }) });
+  assert.equal(empty.selectorDiagnostic.historyRetainedCount, 0);
+  assert.equal(empty.selectorDiagnostic.stateRetainedCount, 0);
+  const invalid = await selectRecallWithLlm({ source, queryContext, generateUtilityTask: async () => ({ jsonData: { history_exclude_keys: ['R999'], state_exclude_keys: ['C999'] } }) });
   assert.equal(invalid.skipReasons.includes('historySelectionFallback'), true);
 });
 
-test('拆分协议缺字段、旧 selected_keys 与跨池键均不冒充显式空选，统一 fail-open 本地兜底', async () => {
+test('排除协议缺字段、旧 selected_keys 与跨池键均不冒充显式空排除，统一默认保留兜底', async () => {
   const source = changingCseSource({ withHistory: true });
   const queryContext = { ...llmQuery, text: '左佐辛夷旧门锁', latestUserText: '左佐辛夷旧门锁' };
   const history = buildRecallHistoryCandidatePool({ source, queryContext });
   const cse = buildRecallCseCandidatePool({ source, queryContext });
   const cases = [
-    { history_keys: [history.candidates[0].key] },
-    { state_keys: [cse.candidates[0].key] },
+    { history_exclude_keys: [history.candidates[0].key] },
+    { state_exclude_keys: [cse.candidates[0].key] },
     { selected_keys: [history.candidates[0].key, cse.candidates[0].key] },
-    { history_keys: [cse.candidates[0].key], state_keys: [history.candidates[0].key] },
+    { history_exclude_keys: [cse.candidates[0].key], state_exclude_keys: [history.candidates[0].key] },
   ];
   for (const jsonData of cases) {
     const result = await selectRecallWithLlm({ source, queryContext, generateUtilityTask: async () => ({ jsonData }) });
     assert.equal(result.selectorDiagnostic.mode, 'fallback', JSON.stringify(jsonData));
     assert.equal(result.skipReasons.includes('historySelectionFallback'), true, JSON.stringify(jsonData));
-    assert.equal(result.selectorDiagnostic.historyModelSelectedCount, null);
-    assert.equal(result.selectorDiagnostic.stateModelSelectedCount, null);
+    assert.equal(result.selectorDiagnostic.historyExcludedCount, null);
+    assert.equal(result.selectorDiagnostic.stateExcludedCount, null);
   }
+});
+
+test('关联补结要求人物交集与稀有主题词同时成立，明确排除的材料不会复活', () => {
+  const memories = Array.from({ length: 10 }, (_, index) => recallMemory(index + 1, { summary: index >= 6 ? `近期接续 ${index + 1}` : '' }));
+  memories[0] = recallMemory(1, {
+    summary: '蓝铜账本带着红色火漆封条。', participants: [{ entityId: PERSON, presence: 'present' }],
+    events: [{ title: '火漆封条', description: '蓝铜账本带着红色火漆封条', candidateStatus: 'accepted' }],
+  });
+  memories[1] = recallMemory(2, {
+    summary: '蓝铜账本里夹着律师签字收据。', participants: [{ entityId: PERSON, presence: 'present' }],
+    events: [{ title: '签字收据', description: '蓝铜账本里夹着律师签字收据', candidateStatus: 'accepted' }],
+  });
+  memories[2] = recallMemory(3, {
+    summary: '裴晚生与朋友吃过早餐。', participants: [{ entityId: PERSON, presence: 'present' }],
+    events: [{ title: '早餐', description: '裴晚生与朋友吃过早餐', candidateStatus: 'accepted' }],
+  });
+  memories[5] = recallMemory(6, {
+    summary: '蓝铜账本连同律师签字收据和红色火漆封条被转交。', participants: [{ entityId: PERSON, presence: 'present' }],
+    events: [{ title: '蓝铜账本后续', description: '蓝铜账本连同律师签字收据和红色火漆封条被转交', candidateStatus: 'accepted' }],
+  });
+  const source = selectorSource({ memories });
+  const queryContext = { text: '律师手里的蓝铜账本', latestUserText: '律师手里的蓝铜账本', messageCount: 1 };
+  const pool = buildRecallHistoryCandidatePool({ source, queryContext });
+  const anchor = pool.candidates.find(value => value.value.floorId === 'floor-6' && value.value.kind === 'event');
+  const excluded = pool.candidates.find(value => value.value.floorId === 'floor-1' && value.value.kind === 'event');
+  assert.ok(anchor && excluded);
+  const linked = selectRecall({ source, queryContext, selectedHistoryCandidates: [anchor] });
+  assert.equal(linked.floors.some(value => value.assistantSeq === 1), true, '同人物且共享稀有主题词的前因应补入');
+  assert.equal(linked.floors.some(value => value.assistantSeq === 3), false, '仅人物相同的早餐不得串入账本事务');
+  assert.match(linked.injectionText, /同人物与具体主题词关联，不表示因果/);
+  const excludedResult = selectRecall({ source, queryContext, selectedHistoryCandidates: [anchor], excludedHistoryCandidates: [excluded] });
+  assert.equal(excludedResult.floors.some(value => value.assistantSeq === 1), false, '明确排除的 fact 不得经同楼 summary 或其他条目复活');
+  assert.equal(excludedResult.floors.some(value => value.assistantSeq === 2), true, '排除靠前关联项后，后续合法关联仍应补入');
+});
+
+test('主题关联只补实际承载证据的条目，不被整楼摘要或单个套话 bigram 误导', () => {
+  const memories = Array.from({ length: 10 }, (_, index) => recallMemory(index + 1, { summary: index >= 6 ? `近期接续 ${index + 1}` : '' }));
+  memories[0] = recallMemory(1, {
+    summary: '窗外的风吹了一整夜。', participants: [{ entityId: PERSON, presence: 'present' }],
+    observations: [{ subjectEntityId: PERSON, description: '雷达失灵' }],
+  });
+  memories[2] = recallMemory(3, {
+    summary: '他们后来处理了很多事情并继续上路。', participants: [{ entityId: PERSON, presence: 'present' }],
+    observations: [{ subjectEntityId: PERSON, description: '后来处理了很多事情并继续讨论早餐菜单采购清单餐具摆放座位安排天气路线车辆油量衣服颜色' }],
+  });
+  memories[5] = recallMemory(6, {
+    summary: '屋里仍然没有开灯。', participants: [{ entityId: PERSON, presence: 'present' }],
+    observations: [{ subjectEntityId: PERSON, description: '后来处理了很多事情并继续追查雷达停摆原因核对频率波形天线电源接口线路日志时间坐标异常' }],
+  });
+  const source = selectorSource({ memories });
+  const queryContext = { text: '雷达停摆', latestUserText: '雷达停摆', messageCount: 1 };
+  const pool = buildRecallHistoryCandidatePool({ source, queryContext });
+  const anchor = pool.candidates.find(value => value.value.floorId === 'floor-6' && value.value.kind === 'observation');
+  assert.ok(anchor);
+  const result = selectRecall({ source, queryContext, selectedHistoryCandidates: [anchor] });
+  const linkedFloor = result.floors.find(value => value.assistantSeq === 1);
+  assert.ok(linkedFloor, '短事实间共享的具体词应能建立关联');
+  assert.equal(linkedFloor.items.some(value => value.kind === 'observation' && value.relationEvidence === 'topic'), true);
+  assert.equal(linkedFloor.items.some(value => value.kind === 'summary' && value.relationEvidence === 'topic'), false, '无关摘要不得代替真正承载主题的事实');
+  assert.equal(result.floors.some(value => value.assistantSeq === 3), false, '仅共享后来等套话不得关联');
+});
+
+test('剧情线后续附加始终只核原锚，同楼成员不能把无关二跳材料带进来', () => {
+  const distraction = index => Array.from({ length: 10 }, (_, token) => `DISTRACTOR_${index}_${token}`).join(' ');
+  const memories = Array.from({ length: 18 }, (_, index) => recallMemory(index + 1, {
+    summary: index >= 14 ? `近期接续 ${index + 1}` : '', participants: [{ entityId: PERSON, presence: 'present' }],
+  }));
+  memories[0] = recallMemory(1, {
+    participants: [{ entityId: PERSON, presence: 'present' }],
+    commitments: [{ speakerEntityId: PERSON, targetEntityIds: [], kind: 'promise', content: '蓝铜账本', status: 'made', exactAnchorId: null }],
+  });
+  memories[1] = recallMemory(2, {
+    participants: [{ entityId: PERSON, presence: 'present' }],
+    observations: [
+      { subjectEntityId: PERSON, description: '蓝铜账本红蜡封条' },
+      { subjectEntityId: PERSON, description: '红蜡封条暗门' },
+    ],
+  });
+  for (let index = 3; index <= 13; index += 1) memories[index - 1] = recallMemory(index, {
+    participants: [{ entityId: PERSON, presence: 'present' }], observations: [{ subjectEntityId: PERSON, description: distraction(index) }],
+  });
+  const query = `蓝铜账本 红蜡封条 暗门 ${Array.from({ length: 11 }, (_, index) => distraction(index + 3)).join(' ')}`;
+  const source = selectorSource({ memories });
+  const queryContext = { text: query, latestUserText: query, messageCount: 1 };
+  const pool = buildRecallHistoryCandidatePool({ source, queryContext });
+  const result = selectRecall({ source, queryContext, contextSize: 12000, selectedHistoryCandidates: pool.candidates });
+  const items = result.floors.flatMap(floor => floor.items);
+  const anchorLine = items.find(value => value.text.includes('蓝铜账本') && value.kind === 'commitment')?.storylineId;
+  assert.ok(anchorLine);
+  assert.equal(items.some(value => value.storylineId === anchorLine && value.text === '蓝铜账本红蜡封条'), true, 'B 与原锚 A 有证据，应进入 A 线');
+  assert.equal(items.some(value => value.storylineId === anchorLine && value.text === '红蜡封条暗门'), false, 'C 只与同楼 B 相关，不能借 B 二跳进入 A 线');
+});
+
+test('CSE 与历史同楼仍须有真实主题证据，看向不同对象不误并，查询点名的短强词可关联', () => {
+  const memories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
+  memories[0] = recallMemory(1, {
+    participants: [{ entityId: PERSON, presence: 'present' }],
+    observations: [{ subjectEntityId: PERSON, description: '看向窗外' }],
+  });
+  const lookChange = {
+    deltaId: 'delta-look', floorId: 'floor-1', assistantSeq: 1, subjectEntityId: PERSON, layer: 'situational', action: 'add', before: null,
+    after: recallState('state-look', '看向门口', 1, { sourceFloorId: 'floor-1', sourceDeltaId: 'delta-look' }),
+  };
+  const lookSource = selectorSource({ memories }); lookSource.cseChanges = [lookChange];
+  const lookQuery = { text: '裴晚生看向哪里', latestUserText: '裴晚生看向哪里', messageCount: 1 };
+  const lookHistory = buildRecallHistoryCandidatePool({ source: lookSource, queryContext: lookQuery }).candidates.find(value => value.value.kind === 'observation');
+  const lookCse = buildRecallCseCandidatePool({ source: lookSource, queryContext: lookQuery }).candidates.find(value => value.source === 'change');
+  const lookResult = selectRecall({ source: lookSource, queryContext: lookQuery, selectedHistoryCandidates: [lookHistory], selectedCseCandidates: [lookCse] });
+  const historyLine = lookResult.floors.flatMap(value => value.items).find(value => value.kind === 'observation')?.storylineId;
+  const changeLine = lookResult.cseChanges.find(value => value.deltaId === 'delta-look')?.storylineId;
+  assert.ok(historyLine && changeLine && historyLine !== changeLine, '同楼和同人物不能把不同注视对象拼成一条线');
+
+  const outageMemories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
+  outageMemories[0] = recallMemory(1, { participants: [{ entityId: PERSON, presence: 'present' }], observations: [{ subjectEntityId: PERSON, description: '走廊断电' }] });
+  const outageChange = {
+    deltaId: 'delta-outage', floorId: 'floor-2', assistantSeq: 2, subjectEntityId: PERSON, layer: 'situational', action: 'add', before: null,
+    after: recallState('state-outage', '查明断电', 2, { sourceFloorId: 'floor-2', sourceDeltaId: 'delta-outage' }),
+  };
+  const outageSource = selectorSource({ memories: outageMemories }); outageSource.cseChanges = [outageChange];
+  const outageQuery = { text: '断电', latestUserText: '断电', messageCount: 1 };
+  const outageHistory = buildRecallHistoryCandidatePool({ source: outageSource, queryContext: outageQuery }).candidates.find(value => value.value.kind === 'observation');
+  const outageCse = buildRecallCseCandidatePool({ source: outageSource, queryContext: outageQuery }).candidates.find(value => value.source === 'change');
+  const outageResult = selectRecall({ source: outageSource, queryContext: outageQuery, selectedHistoryCandidates: [outageHistory], selectedCseCandidates: [outageCse] });
+  assert.equal(outageResult.floors[0].items[0].storylineId, outageResult.cseChanges[0].storylineId, '查询点名的具体短词仍可连接历史与变化');
+});
+
+test('超过八个同主题节点时每线保留最早与最新端点，并把协议标题限制在签名上限内', () => {
+  const longToken = `ALPHA_${'9'.repeat(700)}`;
+  const memories = Array.from({ length: 14 }, (_, index) => recallMemory(index + 1, {
+    summary: index >= 10 ? `近期接续 ${index + 1}` : '',
+    participants: [{ entityId: PERSON, presence: 'present' }],
+    events: index < 10 ? [{ title: `蓝铜账本节点 ${index + 1}`, description: `蓝铜账本推进 ${index + 1}`, candidateStatus: 'accepted' }] : [],
+  }));
+  memories[4].events.push({ title: longToken, description: `蓝铜账本 ${longToken}`, candidateStatus: 'accepted' });
+  const source = selectorSource({ memories });
+  const queryContext = { text: `蓝铜账本 ${longToken}`, latestUserText: `蓝铜账本 ${longToken}`, messageCount: 1 };
+  const pool = buildRecallHistoryCandidatePool({ source, queryContext });
+  const selectedHistoryCandidates = pool.candidates.filter(value => value.value.kind === 'event');
+  const result = selectRecall({ source, queryContext, contextSize: 12000, selectedHistoryCandidates });
+  const distantByLine = new Map();
+  for (const floor of result.floors) for (const value of floor.items.filter(itemValue => itemValue.recallSection === 'distant')) {
+    distantByLine.set(value.storylineId, [...(distantByLine.get(value.storylineId) ?? []), floor.assistantSeq]);
+  }
+  const endpointLine = [...distantByLine.values()].find(values => values.includes(1) && values.includes(10));
+  assert.ok(endpointLine, '同一长线必须同时保留最早与最新节点');
+  assert.ok(endpointLine.length <= 8, '单线仍受八节点上限约束');
+  assert.ok(result.storylines.every(value => value.title.length <= 160 && value.basis.length <= 500));
+});
+
+test('关联锚点按相关度与材料类别有界轮取，直接保留材料不被补结摘要挤出', () => {
+  const memories = Array.from({ length: 18 }, (_, index) => recallMemory(index + 1, { summary: index >= 14 ? `近期接续 ${index + 1}` : `概括材料 ${index + 1}` }));
+  memories[1] = recallMemory(2, {
+    summary: '钟楼的墙面刚粉刷过。', participants: [{ entityId: PERSON, presence: 'present' }],
+    commitments: [{ speakerEntityId: PERSON, targetEntityIds: [], kind: 'promise', content: '带蓝色印章去钟楼会合', status: 'made', exactAnchorId: null }],
+  });
+  memories[12] = recallMemory(13, {
+    summary: '钟楼附近没有其他人。', participants: [{ entityId: PERSON, presence: 'present' }],
+    events: [{ title: '印章到达', description: '蓝色印章被带到钟楼', candidateStatus: 'accepted' }],
+  });
+  const source = selectorSource({ memories });
+  const queryContext = { text: '钟楼蓝色印章', latestUserText: '钟楼蓝色印章', messageCount: 1 };
+  const pool = buildRecallHistoryCandidatePool({ source, queryContext });
+  const anchor = pool.candidates.find(value => value.value.floorId === 'floor-2' && value.value.kind === 'commitment');
+  const direct = pool.candidates.find(value => value.value.floorId === 'floor-13' && value.value.kind === 'event');
+  assert.ok(anchor && direct);
+  const result = selectRecall({ source, queryContext, contextSize: 1000, maxFloors: 6, selectedHistoryCandidates: [direct, anchor] });
+  assert.equal(result.floors.some(value => value.assistantSeq === 13), true, '直接保留的材料应优先进入预算');
+  assert.equal(result.floors.some(value => value.assistantSeq === 2), true, '未结/承诺类也应能成为锚点');
+});
+
+test('近期与少量高相关直接锚点之后优先补关联，48条直接保留不会使池外补结形同未用', () => {
+  const memories = Array.from({ length: 55 }, (_, index) => recallMemory(index + 1, {
+    summary: index >= 51 ? `近期接续 ${index + 1}` : '',
+    participants: [{ entityId: PERSON, presence: 'present' }],
+    events: index > 0 && index < 51 ? [{ title: `港口背景 ${index + 1}`, description: `港口环境记录 ${index + 1}`, candidateStatus: 'accepted' }] : [],
+  }));
+  memories[0] = recallMemory(1, { participants: [{ entityId: PERSON, presence: 'present' }], observations: [{ subjectEntityId: PERSON, description: '蓝铜账本封存' }] });
+  memories[49] = recallMemory(50, { participants: [{ entityId: PERSON, presence: 'present' }], events: [{ title: '港口交接', description: '港口交接时携带蓝铜账本', candidateStatus: 'accepted' }] });
+  const source = selectorSource({ memories });
+  const queryContext = { text: '港口交接', latestUserText: '港口交接', messageCount: 1 };
+  const pool = buildRecallHistoryCandidatePool({ source, queryContext });
+  assert.equal(pool.candidates.length, 48);
+  assert.equal(pool.candidates.some(value => value.value.floorId === 'floor-1'), false, '只有关联主题、不直接命中当前查询的旧事不在48候选内');
+  const result = selectRecall({ source, queryContext, contextSize: 50000, selectedHistoryCandidates: pool.candidates });
+  assert.equal(result.floors.some(value => value.assistantSeq === 1), true);
+  assert.ok(result.stages.linkedHistoryItemCount >= 1);
+  assert.ok(result.floors.flatMap(value => value.items).length <= 48);
+});
+
+test('state/source 明确链补来源摘要，并能带入未被查询点名配角的历史 delta', () => {
+  const other = '99999999-7777-4777-8777-777777777777';
+  const memories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1, { summary: index >= 4 ? `近期接续 ${index + 1}` : '' }));
+  memories[1] = recallMemory(2, { summary: '配角在旧仓交出蓝铜账本。', participants: [{ entityId: other, presence: 'present' }] });
+  const linkedState = recallState('linked-current', '仍记得旧仓交接', 2, { sourceFloorId: 'floor-2', sourceDeltaId: 'delta-2' });
+  const linkedChange = {
+    deltaId: 'delta-2', floorId: 'floor-2', assistantSeq: 2, subjectEntityId: other, layer: 'adaptive', action: 'add', before: null,
+    after: recallState('linked-other', '因交出账本而保持警惕', 2, { sourceFloorId: 'floor-2', sourceDeltaId: 'delta-2' }),
+  };
+  const source = selectorSource({ memories, currentState: [{ subjectEntityId: PERSON, core: [linkedState], adaptive: [], situational: [] }] });
+  source.cseChanges = [linkedChange];
+  const queryContext = { text: '仍记得旧仓交接', latestUserText: '仍记得旧仓交接', messageCount: 1 };
+  const csePool = buildRecallCseCandidatePool({ source, queryContext });
+  const current = csePool.candidates.find(value => value.source === 'current');
+  const stateLinked = selectRecall({ source, queryContext, selectedHistoryCandidates: [], selectedCseCandidates: [current] });
+  assert.match(stateLinked.injectionText, /来源关联：配角在旧仓交出蓝铜账本/);
+
+  const historyPool = buildRecallHistoryCandidatePool({ source, queryContext: { text: '蓝铜账本', latestUserText: '蓝铜账本', messageCount: 1 } });
+  const history = historyPool.candidates.find(value => value.value.floorId === 'floor-2');
+  const deltaLinked = selectRecall({ source, queryContext: { text: '蓝铜账本', latestUserText: '蓝铜账本', messageCount: 1 }, selectedHistoryCandidates: [history], selectedCseCandidates: [] });
+  assert.equal(deltaLinked.cseChanges.some(value => value.subjectEntityId === other && value.assistantSeq === 2), true);
+  assert.equal(deltaLinked.stages.linkedCseChangeCount, 1);
+});
+
+test('近期摘要与同源 CSE 完全重复时合并，CSE 独有事实仍保留', () => {
+  const memories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1, { summary: index === 7 ? '已经归还蓝铜账本。' : '' }));
+  const repeated = { deltaId: 'delta-repeat', floorId: 'floor-8', assistantSeq: 8, subjectEntityId: PERSON, layer: 'situational', action: 'add', before: null, after: recallState('repeat', '已经归还蓝铜账本', 8, { sourceFloorId: 'floor-8', sourceDeltaId: 'delta-repeat' }) };
+  const unique = { deltaId: 'delta-unique', floorId: 'floor-8', assistantSeq: 8, subjectEntityId: PERSON, layer: 'adaptive', action: 'add', before: null, after: recallState('unique', '仍担心律师追问账本来源', 8, { sourceFloorId: 'floor-8', sourceDeltaId: 'delta-unique' }) };
+  const source = selectorSource({ memories }); source.cseChanges = [repeated, unique];
+  const queryContext = { text: '蓝铜账本律师', latestUserText: '蓝铜账本律师', messageCount: 1 };
+  const pool = buildRecallCseCandidatePool({ source, queryContext });
+  const result = selectRecall({ source, queryContext, selectedHistoryCandidates: [], selectedCseCandidates: pool.candidates });
+  assert.equal(result.cseChanges.some(value => value.deltaId === 'delta-repeat'), false);
+  assert.equal(result.cseChanges.some(value => value.deltaId === 'delta-unique'), true);
+  assert.equal(result.stages.semanticDuplicateCount, 1);
 });
 
 function runtimeFixture() {
@@ -1247,13 +1489,13 @@ test('coreChat clone 只控制严格正文去重；无宿主可见性投影时�
   assert.equal(wrappedSelectorCalls, 2, '查询上下文变化仍应重选，不能借 synthetic source 猜宿主可见性');
 });
 
-test('严格 core 去重集合变化会使 schema10 回执失效', async () => {
+test('严格 core 去重集合变化会使 schema12 回执失效', async () => {
   const source = await runtimeSourceWithBodyRef();
   let selectorCalls = 0;
   const harness = createRuntimeHarness({ sourceReader: async () => structuredClone(source), reachableReader: async () => rawReachableFromSource(source), selector: input => { selectorCalls += 1; return selectRecall(input); } });
   await harness.runtime.intercept(structuredClone(harness.chat), 12000, null, 'normal');
   const first = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
-  assert.equal(first.schemaVersion, 10);
+  assert.equal(first.schemaVersion, 12);
   assert.equal(first.completionStatus, 'ready');
   await harness.runtime.intercept([structuredClone(harness.userMessage)], 12000, null, 'regenerate');
   const second = harness.userMessage.extra[RECALL_RECEIPT_KEY];
@@ -1613,7 +1855,7 @@ test('只有状态名而没有 actual core 正文证明的实时尾部会停止�
   assert.deepEqual(result.lastRecall.skipReasons, ['memoryNotReady', 'historicalRebuildRequired']);
 });
 
-test('runtime normal 先完成一次 prompt commit，再最多保存一次 schema10 completed user 收据且不产生 pending', async () => {
+test('runtime normal 先完成一次 prompt commit，再最多保存一次 schema12 completed user 收据且不产生 pending', async () => {
   let selectorCalls = 0;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); } });
   let abortCalls = 0;
@@ -1628,9 +1870,9 @@ test('runtime normal 先完成一次 prompt commit，再最多保存一次 schem
   assert.match(injection[1], /<qqj_recalled_context>/);
   assert.equal(harness.saves, 1, '正常路径只在 prompt commit 后保存一次完成态回执');
   const receipt = harness.userMessage.extra?.[RECALL_RECEIPT_KEY];
-  assert.equal(RECALL_RECEIPT_SCHEMA_VERSION, 10);
-  assert.equal(receipt.schemaVersion, 10);
-  assert.equal(receipt.strategyVersion, 'continuity-v6');
+  assert.equal(RECALL_RECEIPT_SCHEMA_VERSION, 12);
+  assert.equal(receipt.schemaVersion, 12);
+  assert.equal(receipt.strategyVersion, 'continuity-v8');
   assert.equal(receipt.chatId, CHAT);
   assert.equal(receipt.headCheckpointId, harness.source.headCheckpointId);
   assert.equal(receipt.rootRevision, harness.source.rootRevision);
@@ -1645,13 +1887,14 @@ test('runtime normal 先完成一次 prompt commit，再最多保存一次 schem
   assert.equal(Number.isFinite(receipt.timings.selectorMs), true);
   assert.equal(Object.hasOwn(receipt, 'promptCommitted'), false);
   assert.deepEqual(receipt.selectedFloors.map(value => value.assistantSeq), [2, 5, 6, 7, 8]);
+  assert.equal(result.lastRecall.schemaVersion, 12);
   assert.equal(result.lastRecall.reusedReceipt, false);
   assert.equal(result.lastRecall.receiptPersistence, 'persisted');
   assert.equal(result.lastRecall.stages.selected, 5);
   assert.equal(typeof result.lastRecall.timings.totalMs, 'number');
 });
 
-test('摘要已齐但CSE欠尾时真实delta的私密移除跨 source/selector/schema10 保存恢复复用，delta变化后重选', async () => {
+test('摘要已齐但CSE欠尾时真实delta的私密移除跨 source/selector/schema12 保存恢复复用，delta变化后重选', async () => {
   let reachable = cseLaggingReachable();
   let selectorCalls = 0, selectedSnapshot = null, sourceSnapshot = null;
   const sourceReader = async ({ now }) => { sourceSnapshot = await readRecallSource({ store: { readReachable: async () => structuredClone(reachable) }, now }); return sourceSnapshot; };
@@ -1664,7 +1907,7 @@ test('摘要已齐但CSE欠尾时真实delta的私密移除跨 source/selector/s
   assert.equal(first.lastRecall.status, 'ready', JSON.stringify({ recall: first.lastRecall, selected: selectedSnapshot?.cseChanges, source: sourceSnapshot?.cseChanges }));
   const receipt = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
   assert.deepEqual(receipt.coverage, { stableAiFloors: 3, stableThroughAssistantSeq: 3, rememberedAiFloors: 3, missingAssistantSeq: [], cseThroughAssistantSeq: 2, memoryComplete: true, cseCurrent: false });
-  assert.equal(receipt.schemaVersion, 10);
+  assert.equal(receipt.schemaVersion, 12);
   assert.equal(receipt.selectedStates.length, 0, 'CSE欠尾时不得把重放终态称为当前状态');
   const removed = receipt.selectedCseChanges.find(value => value.action === 'remove');
   assert.ok(removed);
@@ -1676,11 +1919,13 @@ test('摘要已齐但CSE欠尾时真实delta的私密移除跨 source/selector/s
   });
   assert.ok(removed.before.reason.length > 1000, '合法长 reason 必须能进入自生成回执');
   assert.equal(removed.after, null);
-  assert.match(receipt.injectionText, /人物状态历史变化（记录当时前后，后文可能继续覆盖）/);
+  assert.match(receipt.injectionText, /\[变化；来源 AI #2\]/);
   assert.match(receipt.injectionText, /当时移除；之前 private，仅可用于该人物/);
   assert.match(receipt.injectionText, /“之前”只是被移除的旧状态，不是当前状态/);
   assert.doesNotMatch(receipt.injectionText, /\[当前人物状态\]/);
   const inline = projectInlineRecallReceipt(receipt);
+  assert.equal(inline.protocolRecognized, true);
+  assert.ok(inline.historyItems.length > 0, '含CSE变化的剧情线协议仍须保留历史材料投影');
   assert.equal(inline.cseChangeItems.find(value => value.action === 'remove')?.before?.text, '仍在钟楼等待赴约');
 
   harness.runtime.invalidate('simulateReload');
@@ -1689,7 +1934,7 @@ test('摘要已齐但CSE欠尾时真实delta的私密移除跨 source/selector/s
   assert.equal(restored.lastRecall.selectedCseChanges.find(value => value.action === 'remove')?.before.reason, removed.before.reason);
   const reused = await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(reused.lastRecall.reusedReceipt, true);
-  assert.equal(selectorCalls, 1, '来源未变时 schema10 回执应直接复用');
+  assert.equal(selectorCalls, 1, '来源未变时 schema12 回执应直接复用');
 
   reachable = cseLaggingReachable('delta-remove-new');
   const refreshed = await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
@@ -1698,72 +1943,88 @@ test('摘要已齐但CSE欠尾时真实delta的私密移除跨 source/selector/s
   assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].selectedCseChanges.find(value => value.action === 'remove')?.deltaId, 'delta-remove-new');
 });
 
-test('runtime 默认异步入口调用摘要路由，成功选材写入 schema10 回执并可复用', async () => {
+test('runtime 默认异步入口调用摘要路由，成功排除写入 schema12 回执并可复用', async () => {
   let calls = 0;
   const harness = createRuntimeHarness({
     useDefaultSelector: true,
-    generateUtilityTask: async options => { calls += 1; assert.equal(options.transportBudget.remaining, 1); return { jsonData: { history_keys: ['R1'], state_keys: [] } }; },
+    generateUtilityTask: async options => { calls += 1; assert.equal(options.transportBudget.remaining, 1); return { jsonData: { history_exclude_keys: [], state_exclude_keys: [] } }; },
   });
   const first = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   assert.equal(calls, 1);
   assert.equal(first.lastRecall.status, 'ready');
   const receipt = harness.userMessage.extra[RECALL_RECEIPT_KEY];
-  assert.equal(receipt.schemaVersion, 10);
-  assert.equal(receipt.strategyVersion, 'continuity-v6');
+  assert.equal(receipt.schemaVersion, 12);
+  assert.equal(receipt.strategyVersion, 'continuity-v8');
   assert.equal(receipt.selectorDiagnostic.historyCandidateCount > 0, true);
   assert.equal(receipt.selectorDiagnostic.stateCandidateCount, 0);
-  assert.equal(receipt.selectorDiagnostic.historyModelSelectedCount, 1);
-  assert.equal(receipt.selectorDiagnostic.stateModelSelectedCount, 0);
+  assert.equal(receipt.selectorDiagnostic.historyExcludedCount, 0);
+  assert.equal(receipt.selectorDiagnostic.stateExcludedCount, 0);
+  assert.equal(receipt.selectorDiagnostic.historyRetainedCount, receipt.selectorDiagnostic.historyCandidateCount);
+  assert.equal(receipt.selectorDiagnostic.stateRetainedCount, 0);
   const reused = await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(calls, 1, '未变化的 regenerate 应复用新回执，不重复扣选材请求');
   assert.equal(reused.lastRecall.reusedReceipt, true);
 });
 
-test('runtime 保存并复用超过旧8楼/12k上限的新策略回执，inline完整解析', async () => {
-  const memories = Array.from({ length: 12 }, (_, index) => recallMemory(index + 1, { summary: `长回执摘要 ${index + 1}` }));
-  const source = selectorSource({ memories });
-  const floors = memories.slice(0, 9).map(memory => ({
-    floorId: memory.floorId, floorMemoryId: memory.floorMemoryId, assistantSeq: memory.assistantSeq,
-    chronology: [], score: 1, reasons: ['event'],
-    items: [{ category: 'objective', kind: 'event', text: `第${memory.assistantSeq}楼容量材料：${'长正文'.repeat(470)}-${memory.assistantSeq}` }],
-  }));
-  const injectionText = formatRecallInjection({ coverage: source.coverage, entityById: new Map(), floors, states: [] });
-  assert.ok(injectionText.length > 12000 && injectionText.length <= 16000, `fixture长度=${injectionText.length}`);
+test('schema12 剧情线回执经 runtime 新算/复用/恢复及历史 projector 后仍完整渲染', async () => {
+  const source = changingCseSource({ withHistory: true });
+  const queryContext = { ...llmQuery, text: '左佐辛夷旧门锁', latestUserText: '左佐辛夷旧门锁' };
+  const selection = selectRecall({ source, queryContext, contextSize: 12000 });
+  assert.ok(selection.storylines.length > 0 && selection.storylines.length <= 4);
+  assert.ok(selection.floors.length > 0);
+  assert.ok(selection.states.length + selection.cseChanges.length > 0);
   let selectorCalls = 0;
   const harness = createRuntimeHarness({
     sourceReader: async () => structuredClone(source),
-    reachableReader: async () => rawReachableFromSource(source),
-    selector: () => {
-      selectorCalls += 1;
-      return { status: 'ready', floors, states: [], coverage: source.coverage, injectionText, stages: { input: 1, candidates: 12, dropRecent: 0, dropPersistent: 0, dropVisibility: 0, selected: 9, recentSummaryCount: 0, distantHistoryItemCount: 9, stateCount: 0 }, skipReasons: [] };
-    },
+    rootReader: async () => ({ status: 'ready', revision: source.rootRevision, data: { chatId: source.chatId, narrativeGeneration: source.narrativeGeneration, headCheckpointId: source.headCheckpointId } }),
+    selector: () => { selectorCalls += 1; return selection; },
   });
-  const first = await harness.runtime.intercept(harness.chat, 50000, null, 'normal');
+  const first = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   const receipt = harness.userMessage.extra[RECALL_RECEIPT_KEY];
   assert.equal(first.lastRecall.status, 'ready');
-  assert.equal(receipt.strategyVersion, 'continuity-v6');
-  assert.equal(receipt.selectedFloors.length, 9);
-  assert.equal(receipt.injectionText, injectionText);
-  assert.equal(projectInlineRecallReceipt(first.lastRecall).historyGroups.length, 9);
-  const reused = await harness.runtime.intercept(harness.chat, 50000, null, 'regenerate');
+  assert.equal(first.lastRecall.schemaVersion, 12);
+  assert.equal(receipt.strategyVersion, 'continuity-v8');
+  assert.deepEqual(receipt.storylines, selection.storylines);
+  assert.equal(receipt.injectionText, selection.injectionText);
+  const freshInline = projectInlineRecallReceipt(first.lastRecall);
+  assert.equal(freshInline.protocolRecognized, true);
+  assert.equal(freshInline.storylineGroups.length, selection.storylines.length);
+  assert.equal(freshInline.historyItems.length, selection.floors.flatMap(value => value.items).length);
+  assert.equal(freshInline.cseChangeItems.length, selection.cseChanges.length);
+
+  const historical = await projectHistoricalRecallReceipt({ ...harness.userMessage, extra: { [RECALL_RECEIPT_KEY]: structuredClone(receipt) } }, { chatId: CHAT, userMessageIndex: 1 });
+  assert.equal(historical.schemaVersion, 12);
+  assert.equal(projectInlineRecallReceipt(historical).protocolRecognized, true);
+  assert.deepEqual(projectInlineRecallReceipt(historical).storylines, freshInline.storylines);
+
+  harness.runtime.invalidate('simulateReload');
+  const restored = await harness.runtime.restorePersistedReceipt();
+  assert.equal(restored.lastRecall.schemaVersion, 12);
+  assert.equal(projectInlineRecallReceipt(restored.lastRecall).protocolRecognized, true);
+  assert.deepEqual(projectInlineRecallReceipt(restored.lastRecall).storylines, freshInline.storylines);
+
+  const reused = await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(selectorCalls, 1);
+  assert.equal(reused.lastRecall.schemaVersion, 12);
   assert.equal(reused.lastRecall.reusedReceipt, true);
-  assert.equal(reused.lastRecall.injectionText, injectionText);
+  assert.equal(reused.lastRecall.injectionText, selection.injectionText);
+  assert.equal(projectInlineRecallReceipt(reused.lastRecall).protocolRecognized, true);
+  assert.deepEqual(projectInlineRecallReceipt(reused.lastRecall).storylines, freshInline.storylines);
 });
 
-test('runtime LLM局部失败在有效commit后只提示一次关键词降级', async () => {
+test('runtime LLM局部失败在有效commit后只提示一次默认保留降级', async () => {
   const notifications = [];
   let calls = 0;
   const harness = createRuntimeHarness({
     useDefaultSelector: true,
-    generateUtilityTask: async () => { calls += 1; return { jsonData: { history_keys: ['R999'], state_keys: [] } }; },
+    generateUtilityTask: async () => { calls += 1; return { jsonData: { history_exclude_keys: ['R999'], state_exclude_keys: [] } }; },
     notifyUser: value => notifications.push(value),
   });
   const result = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   assert.equal(calls, 1);
   assert.equal(result.lastRecall.status, 'ready');
   assert.equal(result.lastRecall.skipReasons.includes('historySelectionFallback'), true);
-  assert.deepEqual(notifications, [{ kind: 'warning', text: '历史智能选材暂时不可用，本次已使用本地关键词召回。' }]);
+  assert.deepEqual(notifications, [{ kind: 'warning', text: '历史智能排除暂时不可用，本次已保留本地候选并继续召回。' }]);
 });
 
 test('runtime 摘要 caughtUp 不等待 CSE，可见实际缺口不受auto状态影响，隐藏缺口与unknown保持门禁', async () => {
@@ -2083,7 +2344,7 @@ test('runtime 将单次 reachable 来源读取带入可观察耗时诊断', asyn
   assert.deepEqual(result.lastRecall.timings.sourceReadAttempts, source.sourceReadAttempts);
 });
 
-test('runtime 刷新后从最新 user 楼恢复合法 schema10 completed 回执，仅作历史展示且不碰 prompt/save/source', async () => {
+test('runtime 刷新后从最新 user 楼恢复合法 schema12 completed 回执，仅作历史展示且不碰 prompt/save/source', async () => {
   let sourceCalls = 0, rootCalls = 0, currentHead = 'head', currentRevision = 1;
   const harness = createRuntimeHarness({
     sourceReader: async () => { sourceCalls += 1; return runtimeFixture(); },
@@ -2164,7 +2425,7 @@ test('历史楼 projector 对旧 schema6/7/8/9 保持原签名展示和真实落
   }
 });
 
-test('旧 continuity-v1/v2 schema9 回执只读展示和恢复，但新生成必须运行 continuity-v6 选材', async () => {
+test('旧 continuity-v1/v2 schema9 回执只读展示和恢复，但新生成必须运行 continuity-v8 排除', async () => {
   for (const oldStrategy of ['continuity-v1', 'continuity-v2']) {
   let selectorCalls = 0;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); } });
@@ -2185,27 +2446,68 @@ test('旧 continuity-v1/v2 schema9 回执只读展示和恢复，但新生成必
   assert.equal(restored.lastRecall?.legacyReadOnly, true);
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(selectorCalls, 2, '旧策略回执不得作为新生成复用结果');
-  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v6');
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v8');
   }
 });
 
-test('旧 schema10 continuity-v5 回执保留只读展示，当前生成不复用并升级到 v6', async () => {
+test('旧 schema10 continuity-v5 回执保留只读展示，当前生成不复用并升级到 v7', async () => {
   let selectorCalls = 0;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); } });
   await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   const old = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
+  old.schemaVersion = 10;
   old.strategyVersion = 'continuity-v5';
   for (const key of ['historyCandidateCount', 'stateCandidateCount', 'historyModelSelectedCount', 'stateModelSelectedCount']) delete old.selectorDiagnostic[key];
   old.receiptFingerprint = await receiptFingerprint(old);
   const projected = await projectHistoricalRecallReceipt({ ...harness.userMessage, extra: { [RECALL_RECEIPT_KEY]: old } }, { chatId: CHAT, userMessageIndex: 1 });
   assert.equal(projected?.restoredReceipt, true);
+  assert.equal(projected?.schemaVersion, 10);
+  assert.equal(projectInlineRecallReceipt(projected).floorCount, old.selectedFloors.length);
   harness.userMessage.extra[RECALL_RECEIPT_KEY] = old;
   harness.runtime.invalidate('simulateReload');
   const restored = await harness.runtime.restorePersistedReceipt();
   assert.equal(restored.lastRecall?.legacyReadOnly, true);
+  assert.equal(restored.lastRecall?.schemaVersion, 10);
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(selectorCalls, 2);
-  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v6');
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v8');
+});
+
+test('真实签名 schema11 continuity-v7 可历史投影与冷恢复，但 regenerate 必须重算 schema12 v8', async () => {
+  let selectorCalls = 0, selectedSnapshot = null;
+  const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; selectedSnapshot = selectRecall(input); return selectedSnapshot; } });
+  await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  const old = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
+  old.schemaVersion = 11;
+  old.strategyVersion = 'continuity-v7';
+  old.injectionText = formatRecallInjection({
+    coverage: selectedSnapshot.coverage,
+    floors: selectedSnapshot.floors,
+    states: selectedSnapshot.states,
+    cseChanges: selectedSnapshot.cseChanges,
+    entityById: new Map(harness.source.entities.map(value => [value.entityId, value])),
+  });
+  delete old.storylines;
+  old.selectedStates = old.selectedStates.map(({ storylineId: _storylineId, ...value }) => value);
+  old.selectedCseChanges = old.selectedCseChanges.map(({ storylineId: _storylineId, ...value }) => value);
+  for (const key of ['storylineCount', 'estimatedTokenCount', 'estimatedTokenBudget']) delete old.stages[key];
+  old.receiptFingerprint = await receiptFingerprint(old);
+
+  const projected = await projectHistoricalRecallReceipt({ ...harness.userMessage, extra: { [RECALL_RECEIPT_KEY]: structuredClone(old) } }, { chatId: CHAT, userMessageIndex: 1 });
+  assert.equal(projected?.schemaVersion, 11);
+  assert.equal(projected?.restoredReceipt, true);
+  assert.equal(projectInlineRecallReceipt(projected).protocolRecognized, true);
+  harness.userMessage.extra[RECALL_RECEIPT_KEY] = old;
+  harness.runtime.invalidate('simulateReload');
+  const restored = await harness.runtime.restorePersistedReceipt();
+  assert.equal(restored.lastRecall?.schemaVersion, 11);
+  assert.equal(restored.lastRecall?.legacyReadOnly, true);
+  assert.equal(projectInlineRecallReceipt(restored.lastRecall).protocolRecognized, true);
+
+  await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
+  assert.equal(selectorCalls, 2, 'schema11/v7只读回执不得被当前生成复用');
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].schemaVersion, 12);
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v8');
 });
 
 test('历史楼 projector 对 schema4 仅沿用既有 chat/index 只读边界，不迁移或伪造签名', async () => {
@@ -2216,6 +2518,7 @@ test('历史楼 projector 对 schema4 仅沿用既有 chat/index 只读边界，
   } } };
   const projected = await projectHistoricalRecallReceipt(message, { chatId: CHAT, userMessageIndex: 7 });
   assert.equal(projected.legacyReadOnly, true);
+  assert.equal(projected.schemaVersion, 4);
   assert.equal(projected.injectionText.includes('旧回执正文'), true);
   assert.equal(await projectHistoricalRecallReceipt(message, { chatId: CHAT, userMessageIndex: 8 }), null);
   assert.equal(await projectHistoricalRecallReceipt(message, { chatId: 'wrong', userMessageIndex: 7 }), null);
@@ -2308,7 +2611,7 @@ test('runtime restore 在指纹 await 期间原始回执变形时只使用同步
   let armed = false, releaseDigest, enteredDigest;
   const entered = new Promise(resolve => { enteredDigest = resolve; });
   const fingerprint = async value => {
-    if (armed && String(value).startsWith('[10,"0.2.27"')) {
+    if (armed && String(value).startsWith('[12,"0.2.27"')) {
       enteredDigest();
       await new Promise(resolve => { releaseDigest = resolve; });
     }
@@ -2334,7 +2637,7 @@ test('runtime restore 验签期间回执 key 换代时旧恢复安静退出，�
   let armed = false, releaseDigest, enteredDigest;
   const entered = new Promise(resolve => { enteredDigest = resolve; });
   const fingerprint = async value => {
-    if (armed && String(value).startsWith('[10,"0.2.27"')) {
+    if (armed && String(value).startsWith('[12,"0.2.27"')) {
       enteredDigest();
       await new Promise(resolve => { releaseDigest = resolve; });
     }
@@ -2366,7 +2669,7 @@ test('runtime reuse 在指纹 await 期间原地篡改回执时绝不注入未�
   let armed = false, releaseDigest, enteredDigest;
   const entered = new Promise(resolve => { enteredDigest = resolve; });
   const fingerprint = async value => {
-    if (armed && String(value).startsWith('[10,"0.2.27"')) {
+    if (armed && String(value).startsWith('[12,"0.2.27"')) {
       enteredDigest();
       await new Promise(resolve => { releaseDigest = resolve; });
     }

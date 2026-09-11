@@ -7,6 +7,18 @@ import { createV3RecallRuntime } from '../src/v3/recall-runtime.js';
 import { readRecallSource } from '../src/v3/recall-source.js';
 import { selectRecall } from '../src/v3/recall-selector.js';
 import { formatRecallInjection } from '../src/v3/recall-selector.js';
+import { MESSAGE_FLOOR_ANCHOR_KEY } from '../src/v3/message-floor-anchor.js';
+
+const MARKER_CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const OTHER_CHAT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const HISTORY_FLOOR = '11111111-1111-4111-8111-111111111111';
+const CHANGE_FLOOR = '22222222-2222-4222-8222-222222222222';
+const EXTRA_FLOOR = '33333333-3333-4333-8333-333333333333';
+
+const withFloorMarker = (message, floorId, chatId = MARKER_CHAT, schemaVersion = 1) => ({
+  ...message,
+  extra: { ...(message.extra ?? {}), [MESSAGE_FLOOR_ANCHOR_KEY]: { schemaVersion, chatId, floorId } },
+});
 
 class FakeNode {
   constructor(tag = 'div') {
@@ -90,7 +102,7 @@ async function actualCseReceipt() {
   return { chat, userMessage, receipt: userMessage.extra[RECALL_RECEIPT_KEY] };
 }
 
-function createHarness({ chat, memoryState, recallState = { recallStatus: 'idle', activeRecall: null, lastRecall: null }, projectReceipt } = {}) {
+function createHarness({ chat, memoryState, recallState = { recallStatus: 'idle', activeRecall: null, lastRecall: null }, projectReceipt, chatId = 'chat-a' } = {}) {
   const documentRef = new FakeDocument(), chatRoot = new FakeNode('main'); chatRoot.id = 'chat'; chatRoot.setAttribute('id', 'chat'); documentRef.body.append(chatRoot);
   const handlers = new Map(), memorySubscribers = new Set(), recallSubscribers = new Set(), extractionCalls = [];
   const eventTypes = Object.fromEntries(['CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_RECEIVED', 'MESSAGE_UPDATED', 'USER_MESSAGE_RENDERED', 'CHARACTER_MESSAGE_RENDERED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MORE_MESSAGES_LOADED', 'GENERATION_ENDED'].map(name => [name, name]));
@@ -111,7 +123,7 @@ function createHarness({ chat, memoryState, recallState = { recallStatus: 'idle'
     setTimeout(handler, delay) { const id = ++timerId; timers.set(id, { handler, delay }); return id; },
     clearTimeout(id) { timers.delete(id); },
   };
-  const context = { chatMetadata: { qianqianjie: { chatId: 'chat-a' } } };
+  const context = { chatMetadata: { qianqianjie: { chatId } } };
   const snapshot = { chat, chatId: 'host-chat-a', context, eventSource, eventTypes };
   const memoryRuntime = {
     getState: () => memoryState,
@@ -304,17 +316,20 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
   assert.equal(aiView.root, rootIdentity); assert.equal(aiView.summary, summaryIdentity); assert.equal(aiView.body.hidden, false); assert.equal(userView.states.open, true, '人物状态分组折叠状态需保留'); assert.equal(recallGroup.open, true, '相同回执刷新不能关闭已展开的来源组');
 });
 
-test('真实schema10私密移除回执经inline投影与renderer显示变化正文及宿主楼号', async () => {
+test('真实schema12剧情线回执经inline投影与renderer按时序显示完整私密变化及宿主楼号', async () => {
   const { chat, receipt } = await actualCseReceipt();
   const memoryState = { floors: [{ floorId: 'floor-1', assistantSeq: 1, messageIndex: 41 }, { floorId: 'floor-2', assistantSeq: 2, messageIndex: 42 }, { floorId: 'floor-3', assistantSeq: 3, messageIndex: 43 }], memoryEntities: [] };
   const h = createHarness({ chat, memoryState, projectReceipt: async () => receipt });
   const userElement = messageElement(1, { user: true }); h.chatRoot.append(userElement); h.renderer.start(); await h.flushMicrotasks();
   const view = resolveInlineAnchor(userElement).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  assert.equal(receipt.schemaVersion, 12);
   assert.equal(receipt.selectedCseChanges.find(value => value.action === 'remove')?.before.text, '仍在钟楼等候');
-  assert.equal(view.cseChangesTitle.textContent, '人物状态历史变化 2 条');
-  const removed = view.cseChangeItems.children.find(node => node.children[0].textContent.includes('移除'));
-  assert.match(removed.children[0].textContent, /裴晚生 \/ 情境 \/ 移除：仍在钟楼等候（仅主体知晓）/);
-  assert.equal(removed.children[1].textContent, '第 42 楼');
+  assert.equal(projectInlineRecallReceipt(receipt).protocolRecognized, true);
+  assert.equal(view.cseChanges.hidden, true, '剧情线协议在分线内展示变化，不重复渲染旧独立变化区');
+  const rendered = descendantText(view.recallItems);
+  assert.match(rendered, /裴晚生 \/ 情境 \/ 移除：仍在钟楼等候（仅主体知晓）（这是该楼当时移除的旧状态）/);
+  assert.match(rendered, /第 42 楼/);
+  assert.ok(rendered.indexOf('新增：仍在钟楼等候') < rendered.indexOf('移除：仍在钟楼等候'), '历史变化按真实来源楼顺序展示');
   assert.equal(descendantText(view.states).includes('仍在钟楼等候'), false);
 });
 
@@ -356,6 +371,102 @@ test('召回来源组近到远、逐组折叠并在重绘中保持，切聊不�
   h.snapshot.chat = [{ is_user: true, is_system: false, mes: '另一聊天用户楼', extra: { [RECALL_RECEIPT_KEY]: receipt } }]; h.context.chatMetadata.qianqianjie.chatId = 'chat-b'; h.snapshot.chatId = 'host-chat-b'; h.chatRoot.replaceChildren(messageElement(0, { user: true }));
   h.emit('CHAT_CHANGED'); await h.flushMicrotasks(); view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
   assert.notEqual(view.recallItems.children[0].open, true, '同序号来源组在新聊天必须默认关闭');
+});
+
+test('memory冷加载时历史与CSE来源共用当前聊天的唯一marker宿主楼号', async () => {
+  const receiptMarker = { schemaVersion: 11 };
+  const chat = [
+    { is_user: true, is_system: true, mes: '占位', extra: { type: 'system' } },
+    withFloorMarker({ is_user: false, is_system: false, mes: '历史来源正文' }, HISTORY_FLOOR),
+    { is_user: true, is_system: true, mes: '占位', extra: { type: 'system' } },
+    withFloorMarker({ is_user: false, is_system: false, mes: '变化来源正文' }, CHANGE_FLOOR),
+    { is_user: true, is_system: false, mes: '当前用户楼', extra: { [RECALL_RECEIPT_KEY]: receiptMarker } },
+  ];
+  const projectedReceipt = {
+    schemaVersion: 11, status: 'ready', injectionText: recallInjection('AI #1：marker历史正文'),
+    selectedFloors: [{ floorId: HISTORY_FLOOR, assistantSeq: 1, reasons: [] }], selectedStates: [],
+    selectedCseChanges: [{ deltaId: 'delta-marker', floorId: CHANGE_FLOOR, assistantSeq: 2, subjectEntityId: 'p1', subject: '裴晚生', layer: 'situational', action: 'remove', before: { text: '当时仍在等候', visibility: 'private' }, after: null }],
+  };
+  const h = createHarness({ chat, chatId: MARKER_CHAT, memoryState: { chatId: MARKER_CHAT, floors: [], memoryEntities: [] }, projectReceipt: async () => projectedReceipt });
+  h.chatRoot.append(messageElement(4, { user: true })); h.renderer.start(); await h.flushMicrotasks();
+  const view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  assert.equal(view.recallItems.children[0].children[0].children[0].textContent, '第 1 个结');
+  assert.equal(view.cseChangeItems.children[0].children[1].textContent, '第 3 楼');
+});
+
+test('marker位置随宿主移动并优先于旧memory，异步回执完成和同投影刷新都读取最新快照', async () => {
+  let resolveReceipt, receiptResolved = false;
+  const receiptMarker = { schemaVersion: 11 };
+  const sourceMessage = withFloorMarker({ is_user: false, is_system: false, mes: '会移动的来源正文' }, HISTORY_FLOOR);
+  const userMessage = { is_user: true, is_system: false, mes: '当前用户楼', extra: { [RECALL_RECEIPT_KEY]: receiptMarker } };
+  const chat = [{ is_user: true, is_system: true, mes: '占位', extra: { type: 'system' } }, sourceMessage, userMessage];
+  const projectedReceipt = { schemaVersion: 11, status: 'ready', injectionText: recallInjection('AI #1：移动来源'), selectedFloors: [{ floorId: HISTORY_FLOOR, assistantSeq: 1, reasons: [] }], selectedStates: [] };
+  const h = createHarness({
+    chat, chatId: MARKER_CHAT,
+    memoryState: { chatId: MARKER_CHAT, floors: [{ floorId: HISTORY_FLOOR, assistantSeq: 1, messageIndex: 77 }], memoryEntities: [] },
+    projectReceipt: () => receiptResolved ? Promise.resolve(projectedReceipt) : new Promise(resolve => { resolveReceipt = resolve; }),
+  });
+  h.chatRoot.append(messageElement(2, { user: true })); h.renderer.start(); await h.flushMicrotasks();
+  chat[1] = { is_user: false, is_system: false, mes: '原位置的新正文' }; chat[3] = sourceMessage;
+  receiptResolved = true; resolveReceipt(projectedReceipt); await h.flushMicrotasks();
+  let view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  assert.equal(view.recallItems.children[0].children[0].children[0].textContent, '第 3 个结', '异步完成不能捕获移动前marker或旧memory位置');
+  h.setMemory({ chatId: MARKER_CHAT, floors: [{ floorId: HISTORY_FLOOR, assistantSeq: 1, messageIndex: 88 }], memoryEntities: [] });
+  h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
+  assert.equal(view.recallItems.children[0].children[0].children[0].textContent, '第 3 个结', 'memory后到也不能覆盖当前宿主marker');
+  chat[3] = { is_user: false, is_system: false, mes: '再次替换' }; chat[4] = sourceMessage; h.emit('MESSAGE_UPDATED', 4); await h.flushMicrotasks();
+  view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  assert.equal(view.recallItems.children[0].children[0].children[0].textContent, '第 4 个结', '投影不变时marker位置变化仍须进入来源signature并重绘');
+
+  const foreignUser = { is_user: true, is_system: false, mes: '新聊天用户楼', extra: { [RECALL_RECEIPT_KEY]: receiptMarker } };
+  h.snapshot.chat = [foreignUser, sourceMessage]; h.context.chatMetadata.qianqianjie.chatId = OTHER_CHAT; h.snapshot.chatId = 'host-chat-b';
+  h.setMemory({ chatId: OTHER_CHAT, floors: [], memoryEntities: [] }); h.chatRoot.replaceChildren(messageElement(0, { user: true }));
+  h.emit('CHAT_CHANGED'); await h.flushMicrotasks(); view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  assert.equal(view.recallItems.children[0].children[0].children[0].textContent, '来源结号未提供', '切聊后旧聊天marker必须视为foreign');
+});
+
+test('无marker只按同chat唯一floorId回退，CSE不再用assistantSeq猜宿主楼号', async () => {
+  const receiptMarker = { schemaVersion: 11 };
+  const chat = [{ is_user: true, is_system: false, mes: '当前用户楼', extra: { [RECALL_RECEIPT_KEY]: receiptMarker } }];
+  const projectedReceipt = {
+    schemaVersion: 11, status: 'ready', injectionText: recallInjection('AI #1：memory精确来源'),
+    selectedFloors: [{ floorId: HISTORY_FLOOR, assistantSeq: 1, reasons: [] }], selectedStates: [],
+    selectedCseChanges: [{ deltaId: 'delta-seq', floorId: CHANGE_FLOOR, assistantSeq: 2, subjectEntityId: 'p1', subject: '裴晚生', layer: 'situational', action: 'remove', before: { text: '旧状态', visibility: 'private' }, after: null }],
+  };
+  const h = createHarness({ chat, chatId: MARKER_CHAT, memoryState: { chatId: MARKER_CHAT, floors: [
+    { floorId: HISTORY_FLOOR, assistantSeq: 1, messageIndex: 7 },
+    { floorId: EXTRA_FLOOR, assistantSeq: 2, messageIndex: 8 },
+  ], memoryEntities: [] }, projectReceipt: async () => projectedReceipt });
+  h.chatRoot.append(messageElement(0, { user: true })); h.renderer.start(); await h.flushMicrotasks();
+  const view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  assert.equal(view.recallItems.children[0].children[0].children[0].textContent, '第 7 个结');
+  assert.equal(view.cseChangeItems.children[0].children[1].textContent, '来源楼号未提供');
+  h.setMemory({ chatId: OTHER_CHAT, floors: [{ floorId: HISTORY_FLOOR, assistantSeq: 1, messageIndex: 9 }], memoryEntities: [] });
+  h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
+  assert.equal(view.recallItems.children[0].children[0].children[0].textContent, '来源结号未提供', '带chatId的memory列表必须与当前聊天一致');
+});
+
+test('重复、foreign和invalid marker均不猜绑，重复floorId不会退回旧memory任选位置', async () => {
+  const receiptMarker = { schemaVersion: 11 };
+  const chat = [
+    withFloorMarker({ is_user: false, is_system: false, mes: '重复一' }, HISTORY_FLOOR),
+    withFloorMarker({ is_user: false, is_system: false, mes: '重复二' }, HISTORY_FLOOR),
+    withFloorMarker({ is_user: false, is_system: false, mes: '外来marker' }, CHANGE_FLOOR, OTHER_CHAT),
+    withFloorMarker({ is_user: false, is_system: false, mes: '坏marker' }, EXTRA_FLOOR, MARKER_CHAT, 99),
+    { is_user: true, is_system: false, mes: '当前用户楼', extra: { [RECALL_RECEIPT_KEY]: receiptMarker } },
+  ];
+  const projectedReceipt = {
+    schemaVersion: 11, status: 'ready', injectionText: recallInjection('AI #1：重复来源', 'AI #2：外来来源', 'AI #3：无效来源'),
+    selectedFloors: [
+      { floorId: HISTORY_FLOOR, assistantSeq: 1, reasons: [] },
+      { floorId: CHANGE_FLOOR, assistantSeq: 2, reasons: [] },
+      { floorId: EXTRA_FLOOR, assistantSeq: 3, reasons: [] },
+    ], selectedStates: [],
+  };
+  const h = createHarness({ chat, chatId: MARKER_CHAT, memoryState: { chatId: MARKER_CHAT, floors: [{ floorId: HISTORY_FLOOR, assistantSeq: 1, messageIndex: 90 }], memoryEntities: [] }, projectReceipt: async () => projectedReceipt });
+  h.chatRoot.append(messageElement(4, { user: true })); h.renderer.start(); await h.flushMicrotasks();
+  const view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  assert.deepEqual(view.recallItems.children.map(group => group.children[0].children[0].textContent), ['来源结号未提供', '来源结号未提供', '来源结号未提供']);
 });
 
 test('楼内主题变量同步已有卡与后生卡，更新颜色不重建或折叠已有卡', async () => {

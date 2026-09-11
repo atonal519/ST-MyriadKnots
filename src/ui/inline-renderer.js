@@ -1,4 +1,5 @@
 import { projectHistoricalRecallReceipt, RECALL_RECEIPT_KEY } from '../v3/recall-runtime.js';
+import { inspectMessageFloorAnchor } from '../v3/message-floor-anchor.js';
 import { classifyInlineMessage, projectInlineMemoryFloor, projectInlineRecallReceipt } from './inline-projection.js';
 
 const RETRY_DELAYS = Object.freeze([0, 80, 180, 320, 500, 850, 1300, 2000, 3000, 4200]);
@@ -10,7 +11,7 @@ const INLINE_STYLE = `
 .head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px;min-height:35px}.mark{position:absolute;left:0;top:18px;width:0;height:0;z-index:1;color:var(--qqj-inline-knot);pointer-events:none}.knot{position:absolute;left:-5px;top:-5px;width:9px;height:9px;border:1.5px solid currentColor;transform:rotate(45deg);border-radius:1px;background:transparent}.knot::after{content:"";position:absolute;inset:2px;background:currentColor;border-radius:1px}
 .toggle,.extract{font:inherit;color:inherit;background:none;border:0;box-shadow:none;border-radius:7px;min-height:32px;cursor:pointer}.toggle{min-width:0;text-align:left;padding:2px 3px;display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);align-items:center;gap:6px}.title{min-width:0;font-size:12px;font-weight:600;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{justify-self:start;min-width:0;max-width:100%;padding:1px 6px;border-radius:999px;font-size:10.5px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:color-mix(in srgb,currentColor 9%,transparent);color:inherit}.status.ready{background:color-mix(in srgb,#56a875 18%,transparent)}.status.running{background:color-mix(in srgb,#4c9bd1 18%,transparent)}.status.review{background:color-mix(in srgb,#d79a35 19%,transparent)}.status.error{background:color-mix(in srgb,#c84a46 17%,transparent)}
 .extract{width:32px;height:32px;padding:0;display:grid;place-items:center;font-family:"Font Awesome 6 Free","Font Awesome 5 Free",sans-serif;font-size:12px;font-weight:900;line-height:1}.extract[hidden]{display:none}.extract:disabled{cursor:default;opacity:.42}.toggle:focus-visible,.extract:focus-visible{outline:2px solid var(--qqj-inline-knot);outline-offset:1px}
-.body{padding:4px 6px 9px 3px;font-size:13px;line-height:1.75;overflow-wrap:anywhere}.body[hidden]{display:none}.facts{display:grid;gap:0;margin:0;font-size:11px;line-height:1.5;opacity:.68}.meta-row{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}.summary{margin:10px 0 0;font-size:13px;line-height:1.75;white-space:pre-wrap}.assistant .summary{padding-top:10px;border-top:1px solid var(--qqj-inline-line)}.recall-items{display:grid;gap:7px;margin:3px 0 0}.recall-group{min-width:0;padding:1px 0 5px;border-bottom:1px solid var(--qqj-inline-line)}.recall-group:last-child{border-bottom:0}.recall-group>summary{cursor:pointer;display:flex;align-items:baseline;gap:7px;min-width:0;padding:3px 0;font-size:13px;font-weight:650;line-height:1.5}.recall-floor{font-size:10.5px;font-weight:400;opacity:.62}.recall-texts{display:grid;gap:4px;padding:3px 0 2px 16px}.recall-text{font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}.states,.cse-changes{margin:10px 0 0}.states>summary,.cse-changes>summary{cursor:pointer;font-size:11px;line-height:1.5;opacity:.7}.state-items,.cse-change-items{display:grid;gap:6px;margin-top:6px}.state-item,.cse-change-item{font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.cse-change-floor{margin-left:5px;font-size:10.5px;opacity:.62}.body > .error{margin:7px 0 0;color:#a8322f;font-size:11px;line-height:1.55;white-space:pre-wrap}
+.body{padding:4px 6px 9px 3px;font-size:13px;line-height:1.75;overflow-wrap:anywhere}.body[hidden]{display:none}.facts{display:grid;gap:0;margin:0;font-size:11px;line-height:1.5;opacity:.68}.meta-row{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}.summary{margin:10px 0 0;font-size:13px;line-height:1.75;white-space:pre-wrap}.assistant .summary{padding-top:10px;border-top:1px solid var(--qqj-inline-line)}.recall-items{display:grid;gap:9px;margin:3px 0 0}.recall-line{display:grid;gap:3px;min-width:0;padding:4px 0 7px;border-bottom:1px solid var(--qqj-inline-line)}.recall-line:last-child{border-bottom:0}.recall-line-title{font-size:13px;line-height:1.45}.recall-group{min-width:0;padding:1px 0 5px}.recall-group>summary{cursor:pointer;display:flex;align-items:baseline;gap:7px;min-width:0;padding:3px 0;font-size:12px;font-weight:650;line-height:1.5}.recall-floor{font-size:10.5px;font-weight:400;opacity:.62}.recall-texts{display:grid;gap:4px;padding:3px 0 2px 16px}.recall-text{font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}.recall-line-state{font-size:11.5px;line-height:1.65;white-space:pre-wrap}.states,.cse-changes{margin:10px 0 0}.states>summary,.cse-changes>summary{cursor:pointer;font-size:11px;line-height:1.5;opacity:.7}.state-items,.cse-change-items{display:grid;gap:6px;margin-top:6px}.state-item,.cse-change-item{font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.cse-change-floor{margin-left:5px;font-size:10.5px;opacity:.62}.body > .error{margin:7px 0 0;color:#a8322f;font-size:11px;line-height:1.55;white-space:pre-wrap}
 @media(max-width:360px){.card{padding-left:8px}.head{grid-template-columns:minmax(0,1fr) auto;gap:2px}.toggle{gap:4px;padding-inline:2px}.body{padding-left:2px}.title{font-size:11.5px}.status{font-size:10px}}
 @media(prefers-reduced-motion:reduce){.toggle,.extract{scroll-behavior:auto}}
 `;
@@ -92,10 +93,106 @@ function patchExpanded(view) {
   view.toggle.setAttribute?.('aria-label', `${view.expanded ? '折叠' : '展开'}${view.labelTitle ?? (view.kind === 'user' ? '本轮召回' : '本楼记忆')}`);
 }
 
-function replaceRecallItems(view, projection, documentRef, state, groupExpanded) {
+function createSourceIndex(chat, chatId, state) {
+  const markerIndices = new Map(), duplicateMarkerFloorIds = new Set();
+  for (let messageIndex = 0; messageIndex < chat.length; messageIndex += 1) {
+    if (classifyInlineMessage(chat[messageIndex]) !== 'assistant') continue;
+    const inspected = inspectMessageFloorAnchor(chat[messageIndex], chatId);
+    if (inspected.status !== 'valid') continue;
+    const floorId = inspected.anchor.floorId;
+    if (markerIndices.has(floorId)) {
+      markerIndices.delete(floorId);
+      duplicateMarkerFloorIds.add(floorId);
+    } else if (!duplicateMarkerFloorIds.has(floorId)) markerIndices.set(floorId, messageIndex);
+  }
+  const stateChatId = String(state?.chatId ?? '').trim();
+  const memoryMatchesChat = !stateChatId || Boolean(chatId && stateChatId === chatId);
+  const memoryIndices = new Map(), duplicateMemoryFloorIds = new Set();
+  if (memoryMatchesChat) for (const floor of state?.floors ?? []) {
+    const floorId = typeof floor?.floorId === 'string' ? floor.floorId.trim() : '';
+    if (!floorId || !validIndex(floor.messageIndex)) continue;
+    if (memoryIndices.has(floorId)) {
+      memoryIndices.delete(floorId);
+      duplicateMemoryFloorIds.add(floorId);
+    } else if (!duplicateMemoryFloorIds.has(floorId)) memoryIndices.set(floorId, floor.messageIndex);
+  }
+  return Object.freeze({
+    messageIndexFor(floorId) {
+      if (!floorId || duplicateMarkerFloorIds.has(floorId)) return null;
+      if (markerIndices.has(floorId)) return markerIndices.get(floorId);
+      return duplicateMemoryFloorIds.has(floorId) ? null : (memoryIndices.get(floorId) ?? null);
+    },
+  });
+}
+
+const CSE_LAYER_TEXT = Object.freeze({ core: '核心', adaptive: '适应', situational: '情境' });
+const CSE_VISIBILITY_TEXT = Object.freeze({ private: '仅主体知晓', observable: '可观察', expressed: '已表达', shared: '已共享', authorial: '作者视角' });
+
+function renderCseChange(item, projection, sourceIndex, currentReference = '见上方当前快照（同一来源）') {
+  const messageIndex = sourceIndex?.messageIndexFor?.(item.floorId) ?? null;
+  const sourceKey = value => value?.stateId ? `id:${value.stateId}`
+    : value?.sourceFloorId || value?.sourceDeltaId ? `source:${value.sourceFloorId ?? ''}|${value.sourceDeltaId ?? ''}|${value.text ?? ''}` : '';
+  const currentEquivalent = item.after && (projection.stateItems ?? []).some(current => current.subjectEntityId === item.subjectEntityId
+    && current.layer === item.layer && sourceKey(current) && sourceKey(current) === sourceKey(item.after));
+  const side = (value, sameAsCurrent = false) => sameAsCurrent ? currentReference
+    : value?.text ? `${value.text}${CSE_VISIBILITY_TEXT[value.visibility] ? `（${CSE_VISIBILITY_TEXT[value.visibility]}）` : ''}` : '';
+  const before = side(item.before), after = side(item.after, currentEquivalent);
+  const change = item.action === 'add' ? `新增：${after}`
+    : item.action === 'remove' ? `移除：${before}（这是该楼当时移除的旧状态）`
+      : item.action === 'update' ? `更新：${before} → ${after}`
+        : `调整：${before} → ${after}`;
+  return { assistantSeq: item.assistantSeq, text: `${item.subject} / ${CSE_LAYER_TEXT[item.layer] ?? item.layer} / ${change}`, messageIndex: validIndex(messageIndex) ? messageIndex : null };
+}
+
+function replaceRecallItems(view, projection, documentRef, sourceIndex, groupExpanded) {
+  if ((projection.storylineGroups ?? []).length) {
+    const rendered = projection.storylineGroups.map(line => ({
+      storylineId: line.storylineId, title: line.title,
+      floors: line.floors.map(group => {
+        const messageIndex = sourceIndex?.messageIndexFor?.(group.floorId) ?? null;
+        return { assistantSeq: group.assistantSeq, floorId: group.floorId, messageIndex: validIndex(messageIndex) ? messageIndex : null, texts: group.items.map(item => item.text) };
+      }),
+      states: line.stateItems.map(value => `${value.subject}${value.toward ? ` → ${value.toward}` : ''}：${value.text}`),
+      changes: line.cseChangeItems.map(value => renderCseChange(value, projection, sourceIndex, '见本线末尾当前快照（同一来源）')),
+    }));
+    const signature = JSON.stringify(rendered);
+    if (view.recallItems.dataset?.signature === signature) return;
+    const lineNodes = rendered.map(line => {
+      const section = documentRef.createElement('section'); section.className = 'recall-line';
+      const title = documentRef.createElement('strong'); title.className = 'recall-line-title'; setText(title, line.title);
+      append(section, title);
+      const timeline = [
+        ...line.floors.map(value => ({ kind: 'floor', assistantSeq: value.assistantSeq, value })),
+        ...line.changes.map(value => ({ kind: 'change', assistantSeq: value.assistantSeq, value })),
+      ].sort((a, b) => a.assistantSeq - b.assistantSeq || (a.kind === 'floor' ? -1 : 1));
+      for (const entry of timeline) {
+        if (entry.kind === 'change') {
+          const node = documentRef.createElement('div'); node.className = 'recall-line-state';
+          setText(node, `历史变化 · ${entry.value.text}${validIndex(entry.value.messageIndex) ? ` · 第 ${entry.value.messageIndex} 楼` : ''}`);
+          append(section, node); continue;
+        }
+        const floor = entry.value;
+        const stateKey = `${view.stateKey}:storyline:${line.storylineId}:${floor.floorId ?? floor.assistantSeq}`;
+        const node = documentRef.createElement('details'); node.className = 'recall-group'; node.open = groupExpanded.get(stateKey) === true;
+        const sourceNode = documentRef.createElement('summary'); sourceNode.className = 'recall-source';
+        const floorTitle = validIndex(floor.messageIndex) ? `第 ${floor.messageIndex} 个结` : '来源结号未提供';
+        const knotTitle = documentRef.createElement('span'); knotTitle.className = 'recall-knot'; setText(knotTitle, floorTitle); append(sourceNode, knotTitle);
+        const textWrap = documentRef.createElement('div'); textWrap.className = 'recall-texts';
+        for (const value of floor.texts) { const textNode = documentRef.createElement('div'); textNode.className = 'recall-text'; setText(textNode, value); append(textWrap, textNode); }
+        const patchLabel = () => sourceNode.setAttribute?.('aria-label', `${node.open === true ? '折叠' : '展开'}${floorTitle}`);
+        node.addEventListener('toggle', () => { groupExpanded.set(stateKey, node.open === true); patchLabel(); }); patchLabel(); append(node, sourceNode, textWrap); append(section, node);
+      }
+      for (const value of line.states) { const node = documentRef.createElement('div'); node.className = 'recall-line-state'; setText(node, `当前状态 · ${value}`); append(section, node); }
+      return section;
+    });
+    view.recallItems.replaceChildren?.(...lineNodes);
+    if (view.recallItems.dataset) view.recallItems.dataset.signature = signature;
+    view.recallItems.hidden = lineNodes.length === 0;
+    return;
+  }
   const rendered = (projection.historyGroups ?? []).map(group => {
-    const floor = group.floorId ? (state?.floors ?? []).find(value => value.floorId === group.floorId) : null;
-    return { assistantSeq: group.assistantSeq, floorId: group.floorId ?? null, messageIndex: validIndex(floor?.messageIndex) ? floor.messageIndex : null, texts: group.items.map(item => item.text) };
+    const messageIndex = sourceIndex?.messageIndexFor?.(group.floorId) ?? null;
+    return { assistantSeq: group.assistantSeq, floorId: group.floorId ?? null, messageIndex: validIndex(messageIndex) ? messageIndex : null, texts: group.items.map(item => item.text) };
   });
   const signature = JSON.stringify(rendered);
   if (view.recallItems.dataset?.signature === signature) return;
@@ -132,31 +229,13 @@ function replaceStateItems(view, projection, documentRef) {
   view.states.hidden = items.length === 0;
 }
 
-function replaceCseChangeItems(view, projection, documentRef, state) {
-  const layerText = { core: '核心', adaptive: '适应', situational: '情境' };
-  const visibilityText = { private: '仅主体知晓', observable: '可观察', expressed: '已表达', shared: '已共享', authorial: '作者视角' };
-  const rendered = (projection.cseChangeItems ?? []).map(item => {
-    const floor = (state?.floors ?? []).find(value => value.floorId === item.floorId && value.assistantSeq === item.assistantSeq)
-      ?? (state?.floors ?? []).find(value => value.floorId === item.floorId)
-      ?? (state?.floors ?? []).find(value => value.assistantSeq === item.assistantSeq);
-    const sourceKey = value => value?.stateId ? `id:${value.stateId}`
-      : value?.sourceFloorId || value?.sourceDeltaId ? `source:${value.sourceFloorId ?? ''}|${value.sourceDeltaId ?? ''}|${value.text ?? ''}` : '';
-    const currentEquivalent = item.after && (projection.stateItems ?? []).some(current => current.subjectEntityId === item.subjectEntityId
-      && current.layer === item.layer && sourceKey(current) && sourceKey(current) === sourceKey(item.after));
-    const side = (value, sameAsCurrent = false) => sameAsCurrent ? '见上方当前快照（同一来源）'
-      : value?.text ? `${value.text}${visibilityText[value.visibility] ? `（${visibilityText[value.visibility]}）` : ''}` : '';
-    const before = side(item.before), after = side(item.after, currentEquivalent);
-    const change = item.action === 'add' ? `新增：${after}`
-      : item.action === 'remove' ? `移除：${before}（这是该楼当时移除的旧状态）`
-        : item.action === 'update' ? `更新：${before} → ${after}`
-          : `调整：${before} → ${after}`;
-    return { subject: item.subject, layer: layerText[item.layer] ?? item.layer, change, messageIndex: validIndex(floor?.messageIndex) ? floor.messageIndex : null };
-  });
+function replaceCseChangeItems(view, projection, documentRef, sourceIndex) {
+  const rendered = (projection.cseChangeItems ?? []).map(item => renderCseChange(item, projection, sourceIndex));
   const signature = JSON.stringify(rendered);
   if (view.cseChangeItems.dataset?.signature === signature) return;
   const items = rendered.map(item => {
     const node = documentRef.createElement('div'); node.className = 'cse-change-item';
-    const text = documentRef.createElement('span'); text.className = 'cse-change-text'; setText(text, `${item.subject} / ${item.layer} / ${item.change}`);
+    const text = documentRef.createElement('span'); text.className = 'cse-change-text'; setText(text, item.text);
     const floor = documentRef.createElement('span'); floor.className = 'cse-change-floor'; setText(floor, validIndex(item.messageIndex) ? `第 ${item.messageIndex} 楼` : '来源楼号未提供');
     append(node, text, floor); return node;
   });
@@ -174,10 +253,10 @@ function statusTone(projection) {
   return '';
 }
 
-function patchView(view, projection, documentRef, memoryState, groupExpanded) {
+function patchView(view, projection, documentRef, sourceIndex, groupExpanded) {
   const signature = JSON.stringify(projection);
   if (view.signature === signature) {
-    if (projection.kind === 'user') { replaceRecallItems(view, projection, documentRef, memoryState, groupExpanded); replaceCseChangeItems(view, projection, documentRef, memoryState); }
+    if (projection.kind === 'user') { replaceRecallItems(view, projection, documentRef, sourceIndex, groupExpanded); if (!(projection.storylineGroups ?? []).length) replaceCseChangeItems(view, projection, documentRef, sourceIndex); }
     else { view.extract.hidden = false; view.extract.disabled = view.extracting || !projection.canExtract; }
     patchExpanded(view); return;
   }
@@ -193,8 +272,10 @@ function patchView(view, projection, documentRef, memoryState, groupExpanded) {
     view.extract.hidden = false; view.extract.disabled = view.extracting || !projection.canExtract;
   } else {
     view.facts.hidden = true; view.extract.hidden = true; view.extract.disabled = true;
-    setText(view.summary, projection.summary); view.summary.hidden = (projection.historyItems?.length ?? 0) > 0;
-    setText(view.error, ''); view.error.hidden = true; replaceRecallItems(view, projection, documentRef, memoryState, groupExpanded); replaceStateItems(view, projection, documentRef); replaceCseChangeItems(view, projection, documentRef, memoryState);
+    setText(view.summary, projection.summary); view.summary.hidden = (projection.historyItems?.length ?? 0) > 0 || (projection.storylineGroups?.length ?? 0) > 0;
+    setText(view.error, ''); view.error.hidden = true; replaceRecallItems(view, projection, documentRef, sourceIndex, groupExpanded);
+    if ((projection.storylineGroups ?? []).length) { view.states.hidden = true; view.cseChanges.hidden = true; }
+    else { replaceStateItems(view, projection, documentRef); replaceCseChangeItems(view, projection, documentRef, sourceIndex); }
   }
   patchExpanded(view);
 }
@@ -280,21 +361,27 @@ export function createInlineRenderer({
     return promise;
   };
 
-  const updateUser = (view, message, messageIndex, chatId, memoryState, recallState, currentSession) => {
+  const updateUser = (view, message, messageIndex, chatId, sourceIndex, recallState, currentSession) => {
     const live = liveRecallFor(recallState, chatId, messageIndex);
     const receipt = message.extra?.[RECALL_RECEIPT_KEY];
-    if (!receipt || typeof receipt !== 'object') { patchView(view, live ?? projectInlineRecallReceipt(null), documentRef, memoryState, groupExpanded); return; }
+    if (!receipt || typeof receipt !== 'object') { patchView(view, live ?? projectInlineRecallReceipt(null), documentRef, sourceIndex, groupExpanded); return; }
     const messageText = message.mes, stamp = receiptStamp(receipt);
     const sameSettledReceipt = view.receiptIdentity === receipt && view.receiptMessageText === messageText && view.receiptStamp === stamp && view.receiptChatId === chatId && view.receiptSettled === true;
-    if (live) patchView(view, live, documentRef, memoryState, groupExpanded);
-    else if (sameSettledReceipt) { patchView(view, view.projection, documentRef, memoryState, groupExpanded); return; }
-    else patchView(view, Object.freeze({ status: 'running', statusText: '正在核验历史回执', summary: '正在核验这一楼保存的召回记录。', injectionText: '', selectedFloors: Object.freeze([]), historyGroups: Object.freeze([]), kind: 'user' }), documentRef, memoryState, groupExpanded);
+    if (live) patchView(view, live, documentRef, sourceIndex, groupExpanded);
+    else if (sameSettledReceipt) { patchView(view, view.projection, documentRef, sourceIndex, groupExpanded); return; }
+    else patchView(view, Object.freeze({ status: 'running', statusText: '正在核验历史回执', summary: '正在核验这一楼保存的召回记录。', injectionText: '', selectedFloors: Object.freeze([]), historyGroups: Object.freeze([]), kind: 'user' }), documentRef, sourceIndex, groupExpanded);
     void historicalProjection(message, chatId, messageIndex, stamp).then(result => {
       if (!active || currentSession !== session || message.mes !== messageText || message.extra?.[RECALL_RECEIPT_KEY] !== receipt || receiptStamp(receipt) !== stamp || cards.get(messageIndex) !== view) return;
+      let latestSnapshot;
+      try { latestSnapshot = hostAdapter.snapshot(); } catch { return; }
+      const latestChat = Array.isArray(latestSnapshot?.chat) ? latestSnapshot.chat : [];
+      const latestChatId = String(latestSnapshot?.context?.chatMetadata?.qianqianjie?.chatId ?? '').trim();
+      const latestChatKey = `${latestChatId || latestSnapshot?.chatId || 'no-chat'}|${latestSnapshot?.chatId || ''}`;
+      if (latestChatKey !== activeChatKey || latestChatId !== chatId || latestChat[messageIndex] !== message) return;
       view.receiptIdentity = receipt; view.receiptMessageText = messageText; view.receiptStamp = stamp; view.receiptChatId = chatId; view.receiptSettled = true;
       const latestLive = liveRecallFor(recallRuntime.getState(), chatId, messageIndex);
       const projection = latestLive?.status === 'running' ? latestLive : result ? projectInlineRecallReceipt(result) : (latestLive ?? projectInlineRecallReceipt(null));
-      patchView(view, projection, documentRef, memoryRuntime.getState(), groupExpanded);
+      patchView(view, projection, documentRef, createSourceIndex(latestChat, latestChatId, memoryRuntime.getState()), groupExpanded);
     });
   };
 
@@ -324,14 +411,15 @@ export function createInlineRenderer({
       if (!previous || elementPriority(element, role) >= previous.priority) chosen.set(messageIndex, { element, role, priority: elementPriority(element, role) });
     }
     const memoryState = memoryRuntime.getState(), recallState = recallRuntime.getState();
+    const sourceIndex = createSourceIndex(chat, chatId, memoryState);
     const assistantSequence = new Map(); let assistantSeq = 0;
     for (let index = 0; index < chat.length; index += 1) if (classifyInlineMessage(chat[index]) === 'assistant') assistantSequence.set(index, ++assistantSeq);
     let complete = true;
     for (const [messageIndex, candidate] of chosen) {
       const view = ensureView(candidate.element, messageIndex, candidate.role, chatKey);
       if (!view) { complete = false; continue; }
-      if (candidate.role === 'assistant') patchView(view, projectInlineMemoryFloor(memoryState, messageIndex, assistantSequence.get(messageIndex)), documentRef, memoryState, groupExpanded);
-      else updateUser(view, chat[messageIndex], messageIndex, chatId, memoryState, recallState, currentSession);
+      if (candidate.role === 'assistant') patchView(view, projectInlineMemoryFloor(memoryState, messageIndex, assistantSequence.get(messageIndex)), documentRef, sourceIndex, groupExpanded);
+      else updateUser(view, chat[messageIndex], messageIndex, chatId, sourceIndex, recallState, currentSession);
     }
     for (const [messageIndex, view] of [...cards]) if (!chosen.has(messageIndex)) { remove(view.host); cards.delete(messageIndex); }
     for (const host of documentRef.querySelectorAll(HOST_SELECTOR)) {
