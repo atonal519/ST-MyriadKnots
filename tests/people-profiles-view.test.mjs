@@ -48,7 +48,7 @@ const visible = node => flatten(node).map(item => item.textContent).filter(Boole
 function person(entityId, name, selected, profile = null, recommended = false) {
   return { entityId, displayName: profile?.name || name, entityDisplayName: name, aliases: [`${name}别名`], selected, profiled: Boolean(profile), profile, recommended, appearanceCount: recommended ? 3 : 1 };
 }
-function runtimeHarness({ profile = null, profiles = null, selected = [A], failSave = false, generatedProfile = null, generateGate = null } = {}) {
+function runtimeHarness({ profile = null, profiles = null, selected = [A], failSave = false, generatedProfile = null, generateGate = null, generationReport = null } = {}) {
   const initialProfiles = profiles ?? (profile ? { [A]: profile } : {});
   let state = { status: 'ready', chatId: CHAT, revision: 1, selectedEntityIds: [...selected], profilesByEntityId: initialProfiles,
     people: [person(A, '甲', selected.includes(A), initialProfiles[A] ?? null, true), person(B, '乙', selected.includes(B), initialProfiles[B] ?? null)], active: null,
@@ -72,6 +72,7 @@ function runtimeHarness({ profile = null, profiles = null, selected = [A], failS
           profilesByEntityId: { ...state.profilesByEntityId, [A]: generatedProfile },
           people: state.people.map(item => item.entityId === A ? { ...item, displayName: generatedProfile.name || item.entityDisplayName, profiled: true, profile: generatedProfile } : item),
           unprofiledSelectedCount: 0,
+          ...(generationReport ? { lastGenerationReport: generationReport } : {}),
         };
         emit();
       }
@@ -269,6 +270,16 @@ test('整理动作只在存在未建档重要人物时可用且每次点击只�
   const profile = { entityId: A, name: '甲', aliases: '', background: '', appearance: '', personality: '', notes: '', source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
   const complete = runtimeHarness({ profile }), completeContainer = new Node('main'); createPeopleProfilesView({ runtime: complete.runtime, documentRef }).mount(completeContainer);
   assert.equal(flatten(completeContainer).find(node => node.textContent === '整理待建档人物')?.disabled, true);
+
+  const partial = runtimeHarness({ generatedProfile: { entityId: A, name: '甲', aliases: '', background: '', appearance: '', personality: '', notes: '', source: 'generated', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' }, generationReport: { requested: 3, saved: 1, missing: 1, conflicts: 1, invalid: 0, unknown: 1, skipped: 0 } });
+  const partialContainer = new Node('main'); createPeopleProfilesView({ runtime: partial.runtime, documentRef }).mount(partialContainer);
+  flatten(partialContainer).find(node => node.textContent === '整理待建档人物（1）').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(visible(partialContainer), /保存 1\/3 位；遗漏 1 位；冲突 1 位；未知目标 1 项/);
+  flatten(partialContainer).find(node => node.textContent === '移出关注').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(visible(partialContainer), /移出关注人物完成/);
+  assert.doesNotMatch(visible(partialContainer), /保存 1\/3 位/, '后续非整理操作不得复用旧批次报告');
 });
 
 test('整理完成会刷新未触碰表单，用户整理期间已输入的草稿则保持原样', async () => {

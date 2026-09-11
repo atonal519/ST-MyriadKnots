@@ -183,7 +183,7 @@ export function createPeopleWorkspaceRuntime({
   if (!memoryRuntime || typeof memoryRuntime.getState !== 'function') throw new TypeError('人物工作区 memoryRuntime 无效');
   if (typeof generateUtilityTask !== 'function' || typeof contextProvider !== 'function') throw new TypeError('人物资料生成依赖无效');
   if (!sourcePermissions || typeof sourcePermissions.filterCandidates !== 'function') throw new TypeError('人物资料来源许可依赖无效');
-  let epoch = 0, active = null, workspace = null, revision = 0, chatId = null, people = Object.freeze([]), lastError = null;
+  let epoch = 0, active = null, workspace = null, revision = 0, chatId = null, people = Object.freeze([]), lastError = null, lastGenerationReport = null;
   const concurrentWrites = new Set();
   const subscribers = new Set();
   const enabled = () => { try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; } catch { return false; } };
@@ -201,7 +201,7 @@ export function createPeopleWorkspaceRuntime({
     const avatars = Object.freeze({ ...(workspace?.avatarsByEntityId ?? {}) });
     return Object.freeze({ status: !enabled() ? 'disabled' : active?.kind ?? (workspace ? 'ready' : 'idle'), chatId,
       revision, selectedEntityIds: selected, profilesByEntityId: profiles, avatarsByEntityId: avatars, people, active: active ? Object.freeze({ kind: active.kind }) : null,
-      unprofiledSelectedCount: people.filter(person => person.selected && !person.profiled).length, lastError });
+      unprofiledSelectedCount: people.filter(person => person.selected && !person.profiled).length, lastError, lastGenerationReport });
   }
   function begin(kind) {
     if (!enabled()) throw errorWith('QQJ_PEOPLE_DISABLED', '千千结已关闭。');
@@ -209,6 +209,7 @@ export function createPeopleWorkspaceRuntime({
     if (active && !alongsideGeneration) throw errorWith('QQJ_PEOPLE_BUSY', '人物资料正在处理，请稍候。');
     const operation = { kind, epoch, identity: capture(), controller: new AbortController() };
     if (alongsideGeneration) concurrentWrites.add(operation); else active = operation;
+    lastGenerationReport = null;
     lastError = null; notify(); return operation;
   }
   function adopt(operation, result) {
@@ -339,14 +340,22 @@ export function createPeopleWorkspaceRuntime({
   function parseGenerated(result, keys, macros) {
     const raw = result?.jsonData ?? result?.textData ?? result;
     if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !Array.isArray(raw.profiles)) throw errorWith('QQJ_PEOPLE_GENERATION_INVALID', '人物资料回复格式无效，可重新整理。');
-    const found = new Map();
+    const grouped = new Map([...keys.keys()].map(key => [key, []]));
+    let unknown = 0;
     for (const item of raw.profiles) {
-      const key = clean(item?.personKey, 80);
-      if (!keys.has(key) || found.has(key)) throw errorWith('QQJ_PEOPLE_GENERATION_BINDING_INVALID', '人物资料回复含未知或重复人物，未写入任何资料。');
-      found.set(key, profileWithMacros(item, macros));
+      const key = typeof item?.personKey === 'string' ? item.personKey.trim() : '';
+      if (!keys.has(key)) { unknown += 1; continue; }
+      grouped.get(key).push(item);
     }
-    if (found.size !== keys.size) throw errorWith('QQJ_PEOPLE_GENERATION_BINDING_INVALID', '人物资料回复遗漏人物，未写入任何资料。');
-    return new Map([...found].map(([key, value]) => [keys.get(key), value]));
+    const generated = new Map();
+    let missing = 0, conflicts = 0, invalid = 0;
+    for (const [key, items] of grouped) {
+      if (items.length === 0) { missing += 1; continue; }
+      if (items.length > 1) { conflicts += 1; continue; }
+      try { generated.set(keys.get(key), profileWithMacros(items[0], macros)); }
+      catch { invalid += 1; }
+    }
+    return Object.freeze({ generated, requested: keys.size, missing, conflicts, invalid, unknown });
   }
   async function generateProfiles(targetResolver, { replaceExisting = false } = {}) {
     const operation = begin('generating');
@@ -362,18 +371,31 @@ export function createPeopleWorkspaceRuntime({
       const result = await generateUtilityTask({ systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(envelope.request) }],
         maxTokens: 30000, temperature: 0, signal: operation.controller.signal, includeCharacterCard: false, worldInfoSource: 'none' });
       assertCurrent(operation);
-      const generated = parseGenerated(result, envelope.keys, operation.macros);
+      const parsed = parseGenerated(result, envelope.keys, operation.macros);
+      if (!parsed.generated.size) throw errorWith('QQJ_PEOPLE_GENERATION_BINDING_INVALID', '人物资料回复没有可安全绑定的目标，未写入任何资料。');
+      let savedEntityIds = [], skipped = 0;
       const persisted = await mutate(operation, current => {
         const profiles = { ...clone(current.profilesByEntityId) }; let changed = false; const timestamp = nowIso(now);
-        for (const [entityId, fields] of generated) {
+        savedEntityIds = []; skipped = 0;
+        for (const [entityId, fields] of parsed.generated) {
           const existing = profiles[entityId];
-          if (existing && !replaceExisting) continue;
+          if (existing && !replaceExisting) { skipped += 1; continue; }
           const manual = existing?.manualFields ?? [];
           const merged = { ...fields };
           for (const field of manual) merged[field] = existing[field];
-          profiles[entityId] = { entityId, ...merged, manualFields: [...manual], source: manual.length ? 'manual' : 'generated', createdAt: existing?.createdAt ?? timestamp, updatedAt: timestamp }; changed = true;
+          profiles[entityId] = { entityId, ...merged, manualFields: [...manual], source: manual.length ? 'manual' : 'generated', createdAt: existing?.createdAt ?? timestamp, updatedAt: timestamp };
+          savedEntityIds.push(entityId); changed = true;
         }
         return changed ? { ...clone(current), profilesByEntityId: profiles, updatedAt: timestamp } : null;
+      });
+      lastGenerationReport = Object.freeze({
+        requested: parsed.requested,
+        saved: savedEntityIds.length,
+        missing: parsed.missing,
+        conflicts: parsed.conflicts,
+        invalid: parsed.invalid,
+        unknown: parsed.unknown,
+        skipped,
       });
       lastError = null; return persisted.state;
     });
@@ -386,7 +408,7 @@ export function createPeopleWorkspaceRuntime({
   }
   function invalidate() {
     epoch += 1; active?.controller.abort(); for (const operation of concurrentWrites) operation.controller.abort();
-    active = null; concurrentWrites.clear(); workspace = null; revision = 0; chatId = null; people = Object.freeze([]); lastError = null; notify();
+    active = null; concurrentWrites.clear(); workspace = null; revision = 0; chatId = null; people = Object.freeze([]); lastError = null; lastGenerationReport = null; notify();
   }
   async function setEnabled(value) { if (value !== true) { invalidate(); return getState(); } return refresh(); }
   const unsubscribeMemory = typeof memoryRuntime.subscribe === 'function' ? memoryRuntime.subscribe(() => {

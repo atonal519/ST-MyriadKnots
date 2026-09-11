@@ -143,7 +143,15 @@ export async function captureCseRequestSources({ hostAdapter, baseline, floor, e
     authorNote: captureCseAuthorNote(ctx),
   });
   const bindings = typeof hostAdapter.getWorldInfoBindings === 'function' ? hostAdapter.getWorldInfoBindings() : {};
-  const catalog = await scanWorldInfo(ctx, { bindings, strict: true, includeCatalog: false });
+  const filterBookNames = names => {
+    const filtered = filterWorldInfoSources(names.map(sourceName => Object.freeze({ sourceName })));
+    if (!Array.isArray(filtered)) {
+      const error = new Error('世界书排除结果无效。'); error.code = 'V3_CSE_WORLDBOOK_FILTER_INVALID'; throw error;
+    }
+    const allowed = new Set(filtered.map(source => typeof source?.sourceName === 'string' ? source.sourceName.trim() : '').filter(Boolean));
+    return names.filter(name => allowed.has(name));
+  };
+  const catalog = await scanWorldInfo(ctx, { bindings, strict: true, includeCatalog: false, filterBookNames });
   const macros = macroValues({ userName: latest.userPersona.name, characterName: latest.characterCard.name });
   const decisions = selectCseWorldInfoEntries({ entries: catalog.entries, scanText: window.scanText, defaults: catalog.defaults, macros });
   const prepared = [];

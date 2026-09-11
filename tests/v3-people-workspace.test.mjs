@@ -192,6 +192,42 @@ test('一次整理只覆盖未建档人物，严格过滤世界书并使用本�
   assert.deepEqual(state.selectedEntityIds, [first.id, second.id], '生成与选择保存必须分离');
 });
 
+test('批量整理按 personKey 独立接受合法项并准确报告遗漏、未知与冲突', async () => {
+  for (const scenario of ['missing', 'mixed']) {
+    const h = harness({ generate: async () => {
+      const profiles = scenario === 'missing'
+        ? [{ personKey: 'person-1', name: '唯一返回', aliases: [], background: '', appearance: '', personality: '', notes: '' }]
+        : [
+        { personKey: 'person-1', name: '合法甲', aliases: [], background: '', appearance: '', personality: '', notes: '' },
+        { personKey: `unknown-${'x'.repeat(500)}`, name: '未知目标' },
+        { personKey: 'person-2', name: '冲突乙一' },
+        { personKey: 'person-2', name: '冲突乙二' },
+        ];
+      return { jsonData: { profiles } };
+    } });
+    await h.runtime.refresh();
+    const targets = h.peopleEntities.slice(0, scenario === 'missing' ? 2 : 3);
+    await h.runtime.setSelectedEntityIds(targets.map(person => person.id));
+    const putsBefore = h.db.calls.filter(call => call[0] === 'put').length;
+    const state = await h.runtime.generateMissingProfiles();
+    assert.equal(h.db.calls.filter(call => call[0] === 'put').length, putsBefore + 1, scenario);
+    assert.equal(state.profilesByEntityId[targets[0].id].name, scenario === 'missing' ? '唯一返回' : '合法甲');
+    assert.equal(state.profilesByEntityId[targets[1].id], undefined);
+    if (targets[2]) assert.equal(state.profilesByEntityId[targets[2].id], undefined);
+    assert.deepEqual(state.lastGenerationReport, scenario === 'missing'
+      ? { requested: 2, saved: 1, missing: 1, conflicts: 0, invalid: 0, unknown: 0, skipped: 0 }
+      : { requested: 3, saved: 1, missing: 1, conflicts: 1, invalid: 0, unknown: 1, skipped: 0 });
+  }
+
+  const invalid = harness({ generate: async () => ({ jsonData: { profiles: [{ personKey: 'unknown', name: '未知' }, { personKey: 'person-1', aliases: ['x'.repeat(501)] }] } }) });
+  await invalid.runtime.refresh();
+  await invalid.runtime.setSelectedEntityIds(invalid.peopleEntities.slice(0, 2).map(person => person.id));
+  const putsBefore = invalid.db.calls.filter(call => call[0] === 'put').length;
+  await assert.rejects(invalid.runtime.generateMissingProfiles(), error => error.code === 'QQJ_PEOPLE_GENERATION_BINDING_INVALID');
+  assert.equal(invalid.db.calls.filter(call => call[0] === 'put').length, putsBefore, '零合法条目不得写入');
+  assert.deepEqual(invalid.runtime.getState().profilesByEntityId, {});
+});
+
 test('当前人物重新整理仅请求一次且不带旧生成原文，最新人工字段与人工清空不会被模型覆盖', async () => {
   let calls = 0, request;
   const h = harness({ generate: async options => {
@@ -307,6 +343,7 @@ test('生成在途时人工保存优先，结束重读 CAS 不覆盖人工资料
   await h.runtime.saveProfile(id, { name: '人工名', aliases: '', background: '', appearance: '', personality: '', notes: '人工保存' });
   release(); await pending;
   const profile = h.runtime.getState().profilesByEntityId[id]; assert.equal(profile.name, '人工名'); assert.equal(profile.source, 'manual'); assert.equal(profile.notes, '人工保存');
+  assert.deepEqual(h.runtime.getState().lastGenerationReport, { requested: 1, saved: 0, missing: 0, conflicts: 0, invalid: 0, unknown: 0, skipped: 1 }, 'CAS 重读后跳过的人工资料不能算作本次保存');
 });
 
 test('切聊天会取消在途整理，迟到结果不写旧聊天也不串入新聊天', async () => {

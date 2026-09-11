@@ -8,7 +8,7 @@ function statusCopy(value) {
     uninitialized: '等待下一条用户消息', ready: '可用', running: '正在处理', empty: '完成 · 无需注入',
     skipped: '本轮已跳过', idle: '尚无生成记录', conflict: '并发冲突，未覆盖新数据', error: '处理失败，可重试',
     disabled: '插件已关闭', stale: '正在等待最新结果', needsReview: '需要核对当前聊天记忆', unprocessed: '未处理',
-    failed: '失败可重试', pending: '待分析', noChange: '无实质变化', notApplicable: '尚无摘要',
+    failed: '失败可重试', partial: '部分完成，可继续补齐', pending: '待分析', noChange: '无实质变化', notApplicable: '尚无摘要',
   })[value] ?? text(value, '尚未初始化');
 }
 
@@ -86,6 +86,8 @@ const selectorFailureCopy = value => ({
 const skipReasonCopy = value => ({
   coreBodyDuplicate: '已排除当前正文覆盖的摘要', noReliableMemoryMatch: '未找到可靠的远期匹配', persistentStateDuplicate: '已去除重复材料',
   dynamicStateCoverageIncomplete: '当前人物状态覆盖不完整，本轮只参考可信历史变化', cseReplayUnavailable: '人物状态重放不可用',
+  memoryNotReady: '当前记忆仍有缺口', coverageUnconfirmed: '记忆与正文对应关系尚未确认', memoryRebuildFailed: '上次记忆补齐未完成',
+  historicalRebuildRequired: '仍有历史摘要缺口', memoryPreparationTimeout: '记忆准备超时，本轮正文已继续', memoryPreparationFailed: '记忆准备失败，本轮正文已继续',
 })[value] ?? text(value);
 const workBusy = state => Boolean(state.memoryWorkBusy || state.activeAutoMemory || state.activeExtraction || state.activeCse);
 const memoryBusy = state => Boolean(state.activeExtraction || ['revising', 'extracting', 'reconciling', 'committing'].includes(state.activeMemoryWork?.phase) || state.activeAutoMemory?.phase === 'extracting');
@@ -210,15 +212,16 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     }
     fallbackText = value; return '浏览器不允许直接复制，请在下方文本框长按全选复制。';
   }
-  async function run(label, task, { after, failed } = {}) {
+  async function run(label, task, { after, failed, resultCopy } = {}) {
     const mine = ++epoch; feedback = `${label}…`; updateHealth(foundationState);
+    const beforeState = runtime.getState?.() ?? foundationState;
     try {
       const next = await task();
       const nextState = runtime.getState?.() ?? next;
       const settledRender = after?.(nextState) === true;
       if (!active) return next;
       if (mine !== epoch) { if (settledRender) { feedback = `${label}完成。`; render(nextState); } return next; }
-      if (!feedback || feedback.endsWith('…')) feedback = nextState?.status === 'ready' ? `${label}完成。` : `${label}结束：${statusCopy(nextState?.status)}`;
+      if (!feedback || feedback.endsWith('…')) feedback = resultCopy?.(nextState, beforeState) || (nextState?.status === 'ready' ? `${label}完成。` : `${label}结束：${statusCopy(nextState?.status)}`);
       render(nextState); return next;
     } catch (error) {
       const settledRender = failed?.(error) === true;
@@ -228,6 +231,41 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       return { status: 'error', error };
     }
   }
+  const floorActionResult = (label, floorId, kind = 'extract') => (state, beforeState) => {
+    const floor = state?.floors?.find(item => item.floorId === floorId);
+    const beforeFloor = beforeState?.floors?.find(item => item.floorId === floorId);
+    const targetFloor = floorCopy(state, floor ?? { floorId }, '目标楼');
+    if (kind === 'cse') {
+      const changed = Boolean(floor?.cse?.deltaId && floor.cse.deltaId !== beforeFloor?.cse?.deltaId);
+      if (!changed || !['ready', 'noChange'].includes(floor?.cse?.status)) return `${label}未完成：${targetFloor} · ${state?.lastCseError?.message || floor?.cse?.error || '人物状态尚未保存。'}`;
+      return `${label}完成：${targetFloor}人物状态已保存。`;
+    }
+    const changed = Boolean(floor?.memoryId && floor.memoryId !== beforeFloor?.memoryId);
+    if (!changed || floor.status !== 'ready') return `${label}未完成：${targetFloor} · ${state?.lastExtractorError?.message || floor?.error || '没有保存新的摘要。'}`;
+    if (['ready', 'noChange'].includes(floor.cse?.status)) return `${label}完成：${targetFloor}摘要和人物状态均已保存。`;
+    return `${label}部分完成：${targetFloor}摘要已保存；人物状态${floor.cse?.status === 'failed' ? '分析失败，可单独重试' : '仍待分析'}。`;
+  };
+  const automaticResult = label => state => {
+    const result = state?.lastAutoMemory;
+    const targetFloor = floorCopy(state, { messageIndex: result?.messageIndex, floorId: result?.floorId, assistantSeq: result?.assistantSeq }, '目标楼');
+    if (result?.status === 'partial') return result.phase === 'analyzingCse'
+      ? `${label}部分完成：新增摘要 ${result.processed ?? 0} 楼，补齐人物状态 ${result.cseProcessed ?? 0} 楼；${targetFloor}人物状态未完成。`
+      : `${label}部分完成：新增摘要 ${result.processed ?? 0} 楼，补齐人物状态 ${result.cseProcessed ?? 0} 楼；${result.failedItems?.map(item => item.floorLabel).filter(Boolean).join('、') || `${result.available ?? 0} 楼`}摘要仍需重试。`;
+    if (result?.status === 'failed') {
+      const failedFloors = result.failedItems?.map(item => item.floorLabel).filter(Boolean).join('、');
+      return `${label}未完成：${failedFloors || (result.floorId ? targetFloor : '')}${failedFloors || result.floorId ? ' · ' : ''}${result.message || '本次没有保存新结果，请重试。'}`;
+    }
+    if (result?.status === 'paused') return `${label}已暂停：已保存的结果不会丢失。`;
+    if (['completed', 'caughtUp'].includes(result?.status)) return `${label}完成：新增摘要 ${result.processed ?? 0} 楼，补齐人物状态 ${result.cseProcessed ?? 0} 楼。`;
+    return `${label}结束：${statusCopy(state?.rebuildStatus ?? state?.status)}`;
+  };
+  const cseRebuildResult = label => state => {
+    const status = state?.cseRebuildStatus;
+    if (status === 'completed') return `${label}完成：人物状态 ${state.cseRebuildCompletedCount ?? 0}/${state.cseRebuildTotalCount ?? 0} 楼。`;
+    if (status === 'paused') return `${label}已暂停：已完成 ${state.cseRebuildCompletedCount ?? 0}/${state.cseRebuildTotalCount ?? 0} 楼，可继续。`;
+    if (status === 'failed') return `${label}未完成：${floorCopy(state, { assistantSeq: state.cseRebuildNextAssistantSeq }, '目标楼')} · ${state.cseRebuildError || state.lastCseError?.message || '可继续重试。'}`;
+    return `${label}结束：CSE ${statusCopy(status)}`;
+  };
   function validateDrafts(state) {
     let valid = true;
     const floors = new Map((state.floors ?? []).map(floor => [floor.floorId, floor]));
@@ -321,11 +359,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         const edit = element('button', 'qqj-memory-menu-action', '编辑'); edit.type = 'button'; edit.disabled = workBusy(state);
         edit.addEventListener('click', () => { const memory = floor.memory; const names = new Map((state.memoryEntities ?? []).map(entity => [entity.entityId, entity.displayName])); const originalTimeText = timeDisplay(memory?.chronology) || floor.timeFallback || ''; const locations = (memory?.locations ?? []).map(item => ({ itemId: item.itemId, name: item.name ?? '' })); const participantNames = (memory?.participants ?? []).map(item => names.get(item.entityId)).filter(Boolean); drafts.set(key, { floorId: floor.floorId, canonicalFingerprint: floor.canonicalFingerprint, rawFingerprint: floor.rawFingerprint, summary: floor.summary, originalSummary: floor.summary, timeText: originalTimeText, originalTimeText, locations, originalLocations: locations.map(item => ({ ...item })), peopleText: participantNames.join('、'), originalParticipantNames: participantNames, note: '', saving: false, saveError: '' }); render(foundationState); });
         const extract = element('button', 'qqj-memory-menu-action', '重新提取'); extract.type = 'button'; extract.disabled = workBusy(state) || typeof runtime.extractFloor !== 'function';
-        extract.addEventListener('click', async () => { if (!await Promise.resolve(confirmImpl({ title: '重新提取本楼摘要', body: '重新提取会替换本楼摘要，并重新衔接本楼及后续人物状态，也可能覆盖之后的人工纠正。', confirmText: '重新提取', cancelText: '取消' }))) { feedback = '已取消重新提取。'; render(foundationState); return; } void run('重新提取', () => runtime.extractFloor(floor.floorId)); });
+        extract.addEventListener('click', async () => { if (!await Promise.resolve(confirmImpl({ title: '重新提取本楼摘要', body: '重新提取会替换本楼摘要，并重新衔接本楼及后续人物状态，也可能覆盖之后的人工纠正。', confirmText: '重新提取', cancelText: '取消' }))) { feedback = '已取消重新提取。'; render(foundationState); return; } void run('重新提取', () => runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('重新提取', floor.floorId) }); });
         menuBody.append(edit, extract);
       } else {
         const extract = element('button', 'qqj-memory-menu-action', '提取摘要'); extract.type = 'button'; extract.disabled = workBusy(state) || typeof runtime.extractFloor !== 'function';
-        extract.addEventListener('click', () => { void run('提取摘要', () => runtime.extractFloor(floor.floorId)); });
+        extract.addEventListener('click', () => { void run('提取摘要', () => runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('提取摘要', floor.floorId) }); });
         menuBody.append(extract);
       }
       actions.append(menuToggle, menuBody); body.append(actions);
@@ -460,7 +498,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const status = floor.cse?.status; if (!['pending', 'failed', 'ready', 'noChange'].includes(status)) return null;
     const completed = ['ready', 'noChange'].includes(status); const label = completed ? '重新分析' : status === 'failed' ? '重试分析' : '分析本楼';
     const button = element('button', completed ? 'secondary-action' : 'primary-action', label); button.type = 'button'; button.disabled = workBusy(state);
-    button.addEventListener('click', async () => { if (completed && !await Promise.resolve(confirmImpl({ title: '重新分析人物状态', body: '成功后，后续楼层人物状态需依次重算，也可能覆盖之后的人工纠正；本楼摘要保持不变。', confirmText: '重新分析', cancelText: '取消' }))) { feedback = '已取消重新分析人物状态。'; render(foundationState); return; } void run(label, () => runtime.retryStateAnalysis(floor.floorId)); });
+    button.addEventListener('click', async () => { if (completed && !await Promise.resolve(confirmImpl({ title: '重新分析人物状态', body: '成功后，后续楼层人物状态需依次重算，也可能覆盖之后的人工纠正；本楼摘要保持不变。', confirmText: '重新分析', cancelText: '取消' }))) { feedback = '已取消重新分析人物状态。'; render(foundationState); return; } void run(label, () => runtime.retryStateAnalysis(floor.floorId), { resultCopy: floorActionResult(label, floor.floorId, 'cse') }); });
     return button;
   }
   function renderCseHistory(state) {
@@ -664,12 +702,17 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const details = element('dl', 'v3-foundation-grid'); details.append(row('触发用户楼', userFloorCopy(record.userMessageIndex)), row('生成时间', localTimeCopy(record.createdAt)), row('生成类型', generationTypeCopy(record.generationType)), row('收据', record.legacyReadOnly ? '旧版只读记录' : record.restoredReceipt ? '已落盘回执 · 仅恢复历史展示，不会再次注入' : `${record.reusedReceipt ? '复用' : '新算'} · ${record.receiptPersistence ?? 'none'}`), row('召回旧楼', floors), row('当前人物状态', states), row('人物状态历史变化', changes), row('覆盖范围', coverage ? `记忆 ${coverage.rememberedAiFloors}/${coverage.stableAiFloors} · ${coverage.cseThroughAssistantSeq ? `CSE 到${floorCopy(foundationState, { assistantSeq: coverage.cseThroughAssistantSeq }, '终点楼号未提供')}` : 'CSE 尚未覆盖'}` : '本轮未读取'), row('筛选阶段', stageCopy), row('选材方式', selectorModeCopy(selector?.mode)), row('智能选材计数', selectorCountCopy), ...(selector?.mode === 'fallback' ? [row('选材失败原因', `${selectorFailureCopy(selector.code)}${selector.httpStatus ? `（HTTP ${selector.httpStatus}）` : ''}`)] : []), row('耗时', timingCopy), row('来源读取', sourceReadCopy), row('普通过滤说明', filterReasons.join('、') || '无'));
     body.append(details); const safeError = state?.lastRecallError?.message || record.error?.message; if (safeError) body.append(element('p', 'v3-foundation-feedback error', safeError));
     if (record.legacyReadOnly) body.append(element('p', 'settings-hint', '这是旧版只读记录，不会复用、注入或升级为当前回执。'));
-    if (record.injectionText) body.append(element('pre', 'v3-recall-injection', record.injectionText));
+    if (record.injectionText) {
+      body.append(element('pre', 'v3-recall-injection', record.injectionText));
+      if ((record.skipReasons ?? []).includes('memoryNotReady')) body.append(element('p', 'settings-hint', '当前仍有摘要或人物状态缺口；本轮已注入能确认归属的已保存部分，正文继续生成。'));
+    }
     else if (record.status === 'empty' || record.status === 'completed-empty') body.append(element('p', 'settings-hint', '本轮没有需要注入的记忆。'));
     else if ((record.skipReasons ?? []).includes('sourceStale')) body.append(element('p', 'settings-hint', '记忆来源正在更新，本轮已安全跳过召回注入。'));
     else if ((record.skipReasons ?? []).includes('sourceUnavailable')) body.append(element('p', 'settings-hint', '记忆来源暂不可用，本轮已安全跳过召回注入。'));
+    else if ((record.skipReasons ?? []).includes('memoryPreparationTimeout')) body.append(element('p', 'settings-hint', '记忆在 5 秒内未准备完成；本轮未注入记忆，正文已继续生成。'));
+    else if ((record.skipReasons ?? []).includes('memoryPreparationFailed')) body.append(element('p', 'settings-hint', '记忆准备失败；本轮未注入记忆，正文已继续生成。'));
     else if ((record.skipReasons ?? []).includes('memoryRebuilding')) body.append(element('p', 'settings-hint', '历史记忆正在后台重建；本轮没有注入不完整的记忆。'));
-    else if ((record.skipReasons ?? []).includes('memoryNotReady')) body.append(element('p', 'settings-hint', (record.skipReasons ?? []).includes('historicalRebuildRequired') ? '当前存在历史记忆缺口；请在记忆管理中开始或继续重建。' : '当前记忆覆盖尚未确认；本轮没有注入不完整的记忆。'));
+    else if ((record.skipReasons ?? []).includes('memoryNotReady')) body.append(element('p', 'settings-hint', (record.skipReasons ?? []).includes('coverageUnconfirmed') ? '当前记忆与正文对应关系尚未确认；本轮未注入记忆，正文已继续生成。' : '当前存在历史记忆缺口；本轮没有找到可注入的已保存记忆，正文已继续生成。'));
     drawer.append(body); return drawer;
   }
   function renderDiagnostics(state) {
@@ -697,27 +740,36 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   }
   function renderManagement(state) {
     const pageNode = element('section', 'qqj-page qqj-management-page'); pageNode.append(heading('记忆管理', '管理当前聊天的现有记忆任务。', state));
-    if (['pendingRebuild', 'paused', 'failed'].includes(state.rebuildStatus) || (state.rebuildStatus === 'waitingRealtime' && state.rebuildHasActionableWork)) pageNode.append(element('p', 'qqj-management-notice', '记忆尚未完整。点击继续会从最早的摘要或人物状态缺口按顺序恢复；刷新页面不会自动续跑旧档。'));
+    if (['pendingRebuild', 'paused', 'failed', 'partial'].includes(state.rebuildStatus) || (state.rebuildStatus === 'waitingRealtime' && state.rebuildHasActionableWork)) pageNode.append(element('p', 'qqj-management-notice', '记忆尚未完整。“补齐缺失”会保留已有结果，只处理摘要或人物状态缺口；刷新页面不会自动续跑旧档。'));
     const deleting = managementState?.status === 'deleting', deletePending = managementState?.status === 'failed';
     const actions = element('div', 'v3-foundation-actions qqj-management-actions'), busy = workBusy(state) || deleting || deletePending;
     const refresh = element('button', 'secondary-action', '刷新状态'); refresh.type = 'button'; refresh.disabled = busy;
     refresh.addEventListener('click', () => { void run('刷新记忆状态', () => runtime.refreshStatus({ preferCached: false })); });
     actions.append(refresh);
-    if (state.rebuildStatus === 'rebuilding' && typeof runtime.pauseHistoricalRebuild === 'function') { const pause = element('button', 'primary-action', '暂停'); pause.type = 'button'; pause.disabled = !state.activeAutoMemory; pause.addEventListener('click', () => { void run('暂停', () => runtime.pauseHistoricalRebuild()); }); actions.append(pause); }
-    else if (!['paused', 'failed'].includes(state.cseRebuildStatus)) { const begin = runtime.startHistoricalRebuild ?? runtime.retryAutomation; const actionable = state.rebuildHasActionableWork ?? !['caughtUp', 'waitingRealtime'].includes(state.rebuildStatus); const proceed = element('button', 'primary-action', busy ? workPhaseCopy(state) : '继续'); proceed.type = 'button'; proceed.disabled = busy || typeof begin !== 'function' || !actionable; proceed.addEventListener('click', () => { void run('继续', () => begin.call(runtime, state.chatId)); }); actions.append(proceed); }
-    const reset = element('button', 'secondary-action', '完全重构'); reset.type = 'button'; reset.disabled = busy || typeof runtime.fullRebuild !== 'function'; reset.addEventListener('click', async () => { if (!await Promise.resolve(confirmImpl({ title: '完全重构当前聊天记忆', body: '当前聊天的摘要及人物状态将从头重新生成，人工修订也会被替换；聊天正文和插件设置保留。', confirmText: '完全重构', cancelText: '取消' }))) { feedback = '已取消完全重构。'; render(foundationState); return; } void run('完全重构', () => runtime.fullRebuild(state.chatId)); }); actions.append(reset);
+    const rebuildActionable = state.rebuildHasActionableWork ?? !['caughtUp', 'waitingRealtime'].includes(state.rebuildStatus);
+    if (state.rebuildStatus === 'rebuilding' && typeof runtime.pauseHistoricalRebuild === 'function') { const pause = element('button', 'primary-action', '暂停补齐'); pause.type = 'button'; pause.disabled = !state.activeAutoMemory; pause.addEventListener('click', () => { void run('暂停补齐', () => runtime.pauseHistoricalRebuild(), { resultCopy: automaticResult('补齐缺失') }); }); actions.append(pause); }
+    else if (!['paused', 'failed'].includes(state.cseRebuildStatus)) { const begin = runtime.startHistoricalRebuild ?? runtime.retryAutomation; const proceedLabel = ['paused', 'failed', 'partial'].includes(state.rebuildStatus) ? '继续补齐' : '补齐缺失'; const proceed = element('button', 'primary-action', busy ? workPhaseCopy(state) : proceedLabel); proceed.type = 'button'; proceed.disabled = busy || typeof begin !== 'function' || !rebuildActionable; proceed.addEventListener('click', () => { void run(proceedLabel, () => begin.call(runtime, state.chatId), { resultCopy: automaticResult(proceedLabel) }); }); actions.append(proceed); }
+    const reset = element('button', 'secondary-action', '完全重构'); reset.type = 'button'; reset.disabled = busy || typeof runtime.fullRebuild !== 'function'; reset.addEventListener('click', async () => { if (!await Promise.resolve(confirmImpl({ title: '完全重构当前聊天记忆', body: '当前聊天的摘要及人物状态将从头重新生成，人工修订也会被替换；聊天正文和插件设置保留。', confirmText: '完全重构', cancelText: '取消' }))) { feedback = '已取消完全重构。'; render(foundationState); return; } void run('完全重构', () => runtime.fullRebuild(state.chatId), { resultCopy: automaticResult('完全重构') }); }); actions.append(reset);
     const cseRunning = state.cseRebuildStatus === 'running' && state.activeAutoMemory?.mode === 'cseRebuild';
     const cseResume = ['paused', 'failed'].includes(state.cseRebuildStatus);
     const cseAction = element('button', 'secondary-action', cseRunning ? '暂停 CSE 重构' : cseResume ? '继续 CSE 重构' : 'CSE 重构'); cseAction.type = 'button';
     cseAction.disabled = cseRunning ? typeof runtime.pauseCseRebuild !== 'function' || deleting : busy || typeof runtime.rebuildCse !== 'function' || (state.rememberedCount ?? 0) < 1;
     cseAction.addEventListener('click', async () => {
-      if (cseRunning) { void run('暂停 CSE 重构', () => runtime.pauseCseRebuild()); return; }
-      if (cseResume) { void run('继续 CSE 重构', () => runtime.resumeCseRebuild(state.chatId)); return; }
+      if (cseRunning) { void run('暂停 CSE 重构', () => runtime.pauseCseRebuild(), { resultCopy: cseRebuildResult('CSE 重构') }); return; }
+      if (cseResume) { void run('继续 CSE 重构', () => runtime.resumeCseRebuild(state.chatId), { resultCopy: cseRebuildResult('CSE 重构') }); return; }
       if (!await Promise.resolve(confirmImpl({ title: '重构当前聊天 CSE', body: '所有摘要及摘要人工修订都会保留；已有摘要对应的人物状态将从头重新生成，CSE 人工纠正也会被覆盖。未摘要楼不会处理。', confirmText: 'CSE 重构', cancelText: '取消' }))) { feedback = '已取消 CSE 重构。'; render(foundationState); return; }
-      void run('CSE 重构', () => runtime.rebuildCse(state.chatId));
+      void run('CSE 重构', () => runtime.rebuildCse(state.chatId), { resultCopy: cseRebuildResult('CSE 重构') });
     });
     actions.append(cseAction);
     if (state.cseRebuildStatus !== 'idle') actions.append(element('span', 'settings-hint', `CSE ${state.cseRebuildStatus === 'completed' ? '已完成' : state.cseRebuildStatus === 'failed' ? '失败' : state.cseRebuildStatus === 'paused' ? '已暂停' : '重构中'} · ${state.cseRebuildCompletedCount ?? 0}/${state.cseRebuildTotalCount ?? 0}`));
+    const pendingCopy = `摘要待补 ${state.unprocessedCount ?? 0} 楼 · CSE 待分析 ${state.csePendingCount ?? 0} 楼`;
+    const nextStepCopy = deletePending ? '上次删除尚未完成，请先继续删除当前聊天记忆。'
+      : busy ? `${workPhaseCopy(state)}，完成后可继续操作。`
+        : !state.chatId ? '当前聊天尚未建立记忆身份。'
+          : ['needsReview', 'error'].includes(effectiveStatus(state)) ? `当前${statusCopy(effectiveStatus(state))}；请先点击“刷新状态”。若仍无法确认真实归属，现有记忆会保留、正文可继续，可复制诊断反馈。`
+            : !rebuildActionable ? '当前没有需要补齐的稳定楼。'
+              : '可用“补齐缺失”保留已有结果；“完全重构”会替换全部摘要与人物状态。';
+    actions.append(element('span', 'settings-hint', `${pendingCopy}。${nextStepCopy}`));
     if (memoryManagement) {
       const remove = element('button', 'secondary-action', deleting ? '删除中…' : deletePending ? '继续删除当前聊天记忆' : '删除当前聊天记忆');
       remove.type = 'button'; remove.disabled = deleting || managementState?.blockedByOtherChat === true || (!deletePending && (managementState?.workBusy === true || !state.chatId));

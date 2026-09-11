@@ -49,12 +49,17 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
     if (chatId === nextChatId) return;
     closeCrop(); chatId = nextChatId; drafts.clear(); currentEntityId = null; showMore = false; switcherNode = null; switcherSignature = null; switcherScrollLeft = 0; feedback = '人物资料状态已显示。';
   }
-  async function run(label, task, { after = null } = {}) {
+  async function run(label, task, { after = null, generationReport = false } = {}) {
     const mine = ++epoch, operationChatId = chatId; feedback = `${label}…`; render(state);
     try {
       const result = await task(); state = runtime.getState();
       if ((state.chatId ?? null) === operationChatId) after?.(state);
-      if (active && mine === epoch) { feedback = `${label}完成。`; render(state); }
+      if (active && mine === epoch) {
+        const report = generationReport ? result?.lastGenerationReport : null;
+        const details = report ? [report.missing ? `遗漏 ${report.missing} 位` : '', report.conflicts ? `冲突 ${report.conflicts} 位` : '', report.invalid ? `格式无效 ${report.invalid} 位` : '', report.unknown ? `未知目标 ${report.unknown} 项` : '', report.skipped ? `并发跳过 ${report.skipped} 位` : ''].filter(Boolean) : [];
+        feedback = report ? `保存 ${report.saved}/${report.requested} 位${details.length ? `；${details.join('；')}` : ''}。` : `${label}完成。`;
+        render(state);
+      }
       return result;
     } catch (error) {
       state = runtime.getState();
@@ -118,14 +123,14 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
   function generationButton(className = 'secondary-action') {
     const button = element('button', className, state.active?.kind === 'generating' ? '正在整理…' : `整理待建档人物${state.unprofiledSelectedCount ? `（${state.unprofiledSelectedCount}）` : ''}`);
     button.type = 'button'; button.disabled = Boolean(state.active) || state.unprofiledSelectedCount < 1;
-    button.addEventListener('click', () => { void run('整理基础资料', () => runtime.generateMissingProfiles()); });
+    button.addEventListener('click', () => { void run('整理基础资料', () => runtime.generateMissingProfiles(), { generationReport: true }); });
     return button;
   }
   function personGenerationButton(person, className = 'secondary-action') {
     const label = person.profiled ? '重新整理资料' : '整理当前资料';
     const button = element('button', className, state.active?.kind === 'generating' ? '正在整理…' : label);
     button.type = 'button'; button.disabled = Boolean(state.active);
-    button.addEventListener('click', () => { void run(label, () => runtime.regenerateProfile(person.entityId)); });
+    button.addEventListener('click', () => { void run(label, () => runtime.regenerateProfile(person.entityId), { generationReport: true }); });
     return button;
   }
   async function chooseAvatar(person, mark, file) {

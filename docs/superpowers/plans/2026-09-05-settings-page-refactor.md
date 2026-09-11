@@ -1,5 +1,7 @@
 # 千千结设置页重构 Implementation Plan
 
+> 历史状态（2026-09-11）：本文对应的设置页重构已经完成。下方未勾选框保留当时的实施步骤记录，不代表当前待办，也不得据此恢复旧实现。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把设置页重做为「总开关 / 通用设置 / 记忆设置」三层结构，修复视觉与行为问题，并把 `renderSettings` 拆成聚焦模块。

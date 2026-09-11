@@ -3,6 +3,7 @@ import { extension_settings, extensionNames } from '/scripts/extensions.js';
 import { is_send_press, saveSettingsDebounced } from '/script.js';
 import { is_group_generating } from '/scripts/group-chats.js';
 import { loadWorldInfo, selected_world_info, world_info, world_info_case_sensitive, world_info_match_whole_words, world_names } from '/scripts/world-info.js';
+import { version as pluginVersion } from './manifest.json';
 import { createBackendClient } from './src/backend-client.js';
 import { bootstrap } from './src/bootstrap.js';
 import { createSettingsStore } from './src/settings.js';
@@ -123,13 +124,12 @@ v3RecallRuntime = createV3RecallRuntime({
   hostAdapter,
   generateUtilityTask: taskRouter.generateUtilityTask,
   isEnabled: settings.isEnabled,
-  automationSettings: () => ({ enabled: settings.isEnabled() }),
   memoryStatus: () => v3MemoryRuntime.getState(),
   prepareMemory: options => v3MemoryRuntime.prepareCurrent(options),
-  historicalMaintenance: () => v3MemoryRuntime.shouldBlockMainGeneration(),
   realtimeOrigin: () => v3MemoryRuntime.allowsRealtimeTailFromEmpty(),
   notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
   sanitizerOptions,
+  pluginVersion,
 });
 const peopleWorkspaceStore = createPeopleWorkspaceStore({ client: backendClient });
 const peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({

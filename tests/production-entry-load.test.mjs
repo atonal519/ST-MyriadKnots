@@ -84,7 +84,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.1.8');
+  assert.equal(manifest.version, '0.1.9');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
@@ -222,6 +222,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const nativeWorld = { entries: {} };
   const nativeWorldSettings = { charLore: [] };
   define('/scripts/world-info.js', { loadWorldInfo: async () => nativeWorld, selected_world_info: ['全局书'], world_info: nativeWorldSettings, world_info_case_sensitive: true, world_info_match_whole_words: true, world_names: ['全局书'] });
+  define('./manifest.json', { version: '0.1.9-test' });
   const backendClient = {};
   define('./src/backend-client.js', { createBackendClient: () => backendClient });
   define('./src/bootstrap.js', { bootstrap: options => { bootstrapOptions = options; return { refresh() {}, setEnabled() {} }; } });
@@ -322,12 +323,13 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.ok(v3RecallOptions.hostAdapter);
   assert.equal(v3RecallOptions.generateUtilityTask, utilityTask);
   assert.equal(Object.hasOwn(v3RecallOptions, 'processingPrompt'), false, '召回链不得接入破限提示词');
+  assert.equal(v3RecallOptions.pluginVersion, '0.1.9-test', '生产回执版本必须由 manifest.version 单一注入');
   assert.ok(autoHideOptions.hostAdapter); assert.equal(autoHideOptions.memoryRuntime, v3MemoryRuntime);
   assert.equal(inlineRendererOptions.memoryRuntime, v3MemoryRuntime); assert.equal(inlineRendererOptions.recallRuntime.getState() !== undefined, true); assert.ok(inlineRendererOptions.hostAdapter);
   assert.deepEqual(inlineEnabled, [false], '入口应在其他异步runtime启动前按总开关启动或停用楼内渲染');
   assert.equal(memoryManagementOptions.client, backendClient); assert.equal(memoryManagementOptions.session, lifecycleOptions.session); assert.equal(memoryManagementOptions.memoryRuntime, v3MemoryRuntime); assert.equal(typeof memoryManagementOptions.isMainGenerationActive, 'function');
   assert.equal(typeof v3RecallOptions.isEnabled, 'function');
-  assert.equal(typeof v3RecallOptions.historicalMaintenance, 'function');
+  assert.equal(Object.hasOwn(v3RecallOptions, 'historicalMaintenance'), false);
   assert.equal(typeof v3RecallOptions.realtimeOrigin, 'function');
   assert.equal(typeof context.qqj_v3_recall_interceptor, 'function');
 });

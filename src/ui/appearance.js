@@ -99,11 +99,14 @@ export function applyAppearance({ host, root, settings, documentRef = globalThis
         const response = await fetchImpl(url);
         const cssText = typeof response?.text === 'function' ? await response.text() : String(response ?? '');
         const family = sanitizeFamily(parseFontFamily(cssText));
+        if (text((settings?.get?.() ?? settings ?? {}).appearanceFontCssUrl) !== url) return;
         if (family) {
           setFont(family);
           if (typeof settings?.update === 'function') settings.update({ appearanceFontFamily: family });
         }
-      } catch { setFont(''); }
+      } catch {
+        if (text((settings?.get?.() ?? settings ?? {}).appearanceFontCssUrl) === url) setFont('');
+      }
     })();
   }
 

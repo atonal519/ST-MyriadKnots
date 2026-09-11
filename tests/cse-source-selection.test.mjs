@@ -95,6 +95,32 @@ test('严格关联书读取失败明确报错，且不会调用 simulate 或加�
   await assert.rejects(scanWorldInfo(ctx, { strict: true, includeCatalog: false }), error => error.code === 'V3_CSE_SOURCE_READ_FAILED');
   assert.deepEqual(loaded, ['缺失书']);
   assert.equal(simulated, 0);
+  loaded = [];
+  const excluded = await scanWorldInfo(ctx, { strict: true, includeCatalog: false, filterBookNames: names => names.filter(name => name !== '缺失书') });
+  assert.deepEqual(excluded.entries, []);
+  assert.deepEqual(loaded, [], '整本排除必须在读取前生效');
+});
+
+test('读取前整本排除坏书，保留好书、人格书与角色内置书；全部排除和零书正常', async () => {
+  const loaded = [];
+  const ctx = {
+    characterId: 0,
+    characters: [{ data: { extensions: { world: '坏书' }, character_book: { name: '角色内置书', entries: [{ id: 3, constant: true, content: '内置卡资料' }] } } }],
+    powerUserSettings: { persona_description_lorebook: '人格书' },
+    chatMetadata: { world_info: '好书' },
+    async loadWorldInfo(name) {
+      loaded.push(name);
+      if (name === '坏书') return null;
+      return { entries: { 1: { uid: 1, constant: true, content: `${name}资料` } } };
+    },
+  };
+  const result = await scanWorldInfo(ctx, { strict: true, includeCatalog: false, filterBookNames: names => names.filter(name => name !== '坏书') });
+  assert.deepEqual(loaded, ['好书', '人格书']);
+  assert.deepEqual(result.entries.map(item => item.source), ['好书', '人格书', '角色内置书']);
+  const allExcluded = await scanWorldInfo(ctx, { strict: true, includeCatalog: false, filterBookNames: () => [] });
+  assert.deepEqual(allExcluded.entries, []);
+  const empty = await scanWorldInfo({ characters: [], chatMetadata: {} }, { strict: true, includeCatalog: false, filterBookNames: names => names });
+  assert.deepEqual(empty.entries, []);
 });
 
 test('作者注释区分缺失与明确空值，角色禁用及 replace/before/after 合并均忽略 interval', () => {
@@ -117,11 +143,13 @@ test('作者注释区分缺失与明确空值，角色禁用及 replace/before/a
 async function sourceHarness({ onLoad } = {}) {
   const chat = [user('旧用户谈到旧钥匙'), assistant('旧 AI 回应'), user('目标用户让左佐开门'), assistant('目标 AI 提到钥匙'), user('未来用户提到禁词'), assistant('未来 AI 提到未来词')];
   const floor = { hostLocator: { messageIndex: 3 }, content: { rawFingerprint: `sha256:${await sha256(chat[3].mes)}` } };
+  const loaded = [];
   const context = {
     characterId: 0, characters: [{ avatar: 'char.png', name: '左佐', data: { description: '最新描述', personality: '最新性格', scenario: '最新场景', extensions: { world: '当前书' } } }],
     name1: '辛夷', name2: '左佐', powerUserSettings: { persona_description: '最新用户人设' },
     chatMetadata: { qianqianjie: { chatId: CHAT }, note_prompt: '持续作者参考' }, extensionSettings: { note: { default: '默认不该覆盖' } }, chat,
     async loadWorldInfo(name) {
+      loaded.push(name);
       await onLoad?.({ context, chat, floor, name });
       return { entries: {
         1: { uid: 1, constant: true, content: '<背景>蓝灯 {{char}}</背景>' },
@@ -136,7 +164,7 @@ async function sourceHarness({ onLoad } = {}) {
     userPersona: { entityId: 'user-id', name: '辛夷', description: '旧用户人设', aliases: ['辛夷'] },
     characterCard: { entityId: 'char-id', name: '左佐', description: '旧描述', personality: '旧性格', scenario: '旧场景' },
   };
-  return { context, chat, floor, hostAdapter, baseline };
+  return { context, chat, floor, hostAdapter, baseline, loaded };
 }
 
 test('请求来源使用最新人设/角色/note和目标最近两轮，排除未来、禁用、旧 CSE 与共享整本排除', async () => {
@@ -166,7 +194,7 @@ test('请求来源使用最新人设/角色/note和目标最近两轮，排除�
     filterWorldInfoSources: sources => sources.filter(source => source.sourceName !== '当前书'), sanitizerOptions: {},
   });
   assert.deepEqual(excluded.worldInfoSources, [], '共享整本排除必须在发送前作用于最终选择条目');
-  assert.equal(excluded.diagnostics.excludedSelectedEntries, 2);
+  assert.deepEqual(h.loaded, ['当前书'], '第二次调用已排除整本，不得再次读取该书');
 });
 
 test('来源异步读取期间切聊天或改目标窗口会 stale，修改目标后的无关尾楼不会作废冻结请求', async () => {

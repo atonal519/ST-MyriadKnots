@@ -70,6 +70,45 @@ test('字体 CSS 解析失败时回退系统字体且不抛错', async () => {
   assert.equal(properties['--qqj-custom-font'], 'system-ui');
 });
 
+test('字体异步结果仅在 URL 仍为当前选择时应用', async () => {
+  const properties = {};
+  const host = { setAttribute() {}, style: { setProperty: (key, value) => { properties[key] = value; } } };
+  const root = { querySelector: () => null, append() {} };
+  const documentRef = { createElement: tag => ({ tag, setAttribute() {} }) };
+  const deferred = new Map();
+  const fetchImpl = url => new Promise((resolve, reject) => deferred.set(url, { resolve, reject }));
+  let value = { appearanceTheme: 'auto', appearanceScale: 1, appearanceFontCssUrl: 'https://font.test/a.css', appearanceFontFamily: '' };
+  const settings = { get: () => value, update: patch => { value = { ...value, ...patch }; } };
+
+  const slowA = applyAppearance({ host, root, documentRef, settings, fetchImpl });
+  value = { ...value, appearanceFontCssUrl: 'https://font.test/b.css', appearanceFontFamily: '' };
+  const fastB = applyAppearance({ host, root, documentRef, settings, fetchImpl });
+  deferred.get('https://font.test/b.css').resolve({ text: async () => "@font-face{font-family:'Font B'}" });
+  await fastB.fontReady;
+  deferred.get('https://font.test/a.css').resolve({ text: async () => "@font-face{font-family:'Font A'}" });
+  await slowA.fontReady;
+  assert.equal(properties['--qqj-custom-font'], '"Font B"', 'A 慢 B 快时旧成功结果不得覆盖 B');
+  assert.equal(value.appearanceFontFamily, 'Font B');
+
+  value = { ...value, appearanceFontCssUrl: 'https://font.test/c.css', appearanceFontFamily: '' };
+  const pendingClear = applyAppearance({ host, root, documentRef, settings, fetchImpl });
+  value = { ...value, appearanceFontCssUrl: '', appearanceFontFamily: '' };
+  applyAppearance({ host, root, documentRef, settings, fetchImpl });
+  deferred.get('https://font.test/c.css').resolve({ text: async () => "@font-face{font-family:'Font C'}" });
+  await pendingClear.fontReady;
+  assert.equal(properties['--qqj-custom-font'], 'system-ui', '清空 URL 后旧成功结果不得复活字体');
+
+  value = { ...value, appearanceFontCssUrl: 'https://font.test/d.css', appearanceFontFamily: '' };
+  const oldFailure = applyAppearance({ host, root, documentRef, settings, fetchImpl });
+  value = { ...value, appearanceFontCssUrl: 'https://font.test/e.css', appearanceFontFamily: '' };
+  const newSuccess = applyAppearance({ host, root, documentRef, settings, fetchImpl });
+  deferred.get('https://font.test/e.css').resolve({ text: async () => "@font-face{font-family:'Font E'}" });
+  await newSuccess.fontReady;
+  deferred.get('https://font.test/d.css').reject(new Error('旧请求失败'));
+  await oldFailure.fontReady;
+  assert.equal(properties['--qqj-custom-font'], '"Font E"', '旧失败晚到不得把新字体改回系统字体');
+});
+
 test('跟随酒馆使用有效宿主色，透明宿主色回退，并随根节点主题变化', () => {
   const values = {
     '--SmartThemeBodyColor': 'rgba(232, 236, 238, .08)',

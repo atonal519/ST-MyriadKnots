@@ -133,7 +133,7 @@ function preparedEntry({ book, uid, entry, scope, embedded = false }) {
   });
 }
 
-export async function scanWorldInfo(ctx, { bindings = {}, strict = false, includeCatalog = true } = {}) {
+export async function scanWorldInfo(ctx, { bindings = {}, strict = false, includeCatalog = true, filterBookNames = names => names } = {}) {
   if (!ctx || typeof ctx !== 'object') throw new TypeError('世界书扫描上下文无效');
   const warnings = [];
   const scopedNames = new Map([
@@ -143,7 +143,15 @@ export async function scanWorldInfo(ctx, { bindings = {}, strict = false, includ
     ['global', globalWorldNames(ctx, bindings)],
   ]);
   const relevantNames = uniqueNames([...scopedNames.values()].flat());
-  const books = await loadBooks(ctx, bindings, relevantNames, warnings, strict);
+  const embedded = currentCharacter(ctx)?.data?.character_book;
+  const embeddedBook = text(embedded?.name) || '角色内置世界书';
+  const embeddedRows = Array.isArray(embedded?.entries) ? embedded.entries.map((entry, index) => [String(entry?.id ?? index), entry]) : [];
+  const filteredNames = filterBookNames(uniqueNames([...relevantNames, ...(embeddedRows.length ? [embeddedBook] : [])]));
+  if (!Array.isArray(filteredNames)) throw new TypeError('世界书整本过滤结果无效');
+  const allowedBooks = new Set(uniqueNames(filteredNames));
+  for (const [scope, names] of scopedNames) scopedNames.set(scope, names.filter(name => allowedBooks.has(name)));
+  const loadNames = relevantNames.filter(name => allowedBooks.has(name));
+  const books = await loadBooks(ctx, bindings, loadNames, warnings, strict);
   const entries = [];
   const seen = new Set();
   for (const scope of SCOPE_ORDER) {
@@ -159,17 +167,14 @@ export async function scanWorldInfo(ctx, { bindings = {}, strict = false, includ
     }
     if (entries.length >= LIMITS.entries) break;
   }
-  const embedded = currentCharacter(ctx)?.data?.character_book;
-  const embeddedBook = text(embedded?.name) || '角色内置世界书';
-  const embeddedRows = Array.isArray(embedded?.entries) ? embedded.entries.map((entry, index) => [String(entry?.id ?? index), entry]) : [];
-  for (const [uid, entry] of embeddedRows) {
+  for (const [uid, entry] of allowedBooks.has(embeddedBook) ? embeddedRows : []) {
     const prepared = preparedEntry({ book: embeddedBook, uid, entry, scope: 'char', embedded: true });
     if (!prepared || seen.has(prepared.key)) continue;
     seen.add(prepared.key);
     entries.push(Object.freeze({ ...prepared, activated: false, availability: prepared.hostEnabled ? 'enabled' : 'disabled' }));
     if (entries.length >= LIMITS.entries) break;
   }
-  const bookNames = includeCatalog ? await allWorldNames(ctx, bindings, [...relevantNames, ...entries.map(entry => entry.source)]) : uniqueNames([...relevantNames, ...entries.map(entry => entry.source)]);
+  const bookNames = includeCatalog ? await allWorldNames(ctx, bindings, [...loadNames, ...entries.map(entry => entry.source)]) : uniqueNames([...loadNames, ...entries.map(entry => entry.source)]);
   return Object.freeze({
     entries: Object.freeze(entries), bookNames: Object.freeze(bookNames),
     warnings: Object.freeze(warnings.slice(0, 40).map(warning => Object.freeze(warning))),

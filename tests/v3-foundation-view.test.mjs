@@ -58,7 +58,7 @@ test('管理视图先显示壳并在激活时自动刷新，只在管理页提�
   const copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /刷新状态/);
   assert.doesNotMatch(copy, /确认最新 AI 楼|提取下一个未处理楼|分析下一楼人物状态/);
-  assert.match(copy, /继续.*完全重构/);
+  assert.match(copy, /补齐缺失.*完全重构/);
 });
 
 test('needsReview 终态显示准确中文和安全原因，不向页面泄露内部状态值', async () => {
@@ -69,6 +69,7 @@ test('needsReview 终态显示准确中文和安全原因，不向页面泄露�
   const view = createV3FoundationView({ runtime, peopleRuntime: peopleRuntime([{ entityId: 'p1', displayName: '裴晚生' }]), documentRef }); view.mount(container); await view.activate();
   const copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /需要核对当前聊天记忆/); assert.match(copy, /待核对原因.*楼正文指纹不一致.*实际第 23 楼.*记录 12 \/ 当前 12.*消息标识：无.*不一致：raw、canonical/); assert.doesNotMatch(copy, /不一致：[^|]*sanitizer/); assert.match(copy, /最近记忆错误.*无/); assert.doesNotMatch(copy, /needsReview|fingerprintMismatch|AI序号/);
+  assert.match(copy, /请先点击“刷新状态”.*现有记忆会保留、正文可继续.*复制诊断反馈/);
   view.setPage('memories'); assert.match(flatten(container).map(node => node.textContent).join('|'), /needsReview 下仍可见的摘要/);
   view.setPage('people'); assert.match(flatten(container).map(node => node.textContent).join('|'), /needsReview 下仍可见的人物状态/);
 });
@@ -118,6 +119,42 @@ test('四项破坏性记忆操作等待异步确认，取消时零业务动作',
   view.setPage('management'); flatten(container).find(node => node.textContent === '完全重构').click(); await new Promise(resolve => setImmediate(resolve));
   flatten(container).find(node => node.textContent === '复制完整诊断').click(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(calls, []);
+});
+
+test('已有旧摘要或旧 CSE 时，本次重新提取/分析失败不会被旧记录误报为完成', async () => {
+  const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
+  const floor = { floorId: 'floor', assistantSeq: 1, messageIndex: 6, status: 'ready', memoryId: 'old-memory', summary: '旧摘要', summarySource: 'ai', aiSummary: '旧摘要', counts: {}, memory, cse: { status: 'ready', deltaId: 'old-delta' } };
+  let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, unprocessedCount: 0, memoryWorkBusy: false, cseReady: true, csePendingCount: 0, cseFailedCount: 0, floors: [floor], lastExtractorError: null, lastCseError: null };
+  const runtime = {
+    getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    extractFloor: async () => { state = { ...state, lastExtractorError: { floorId: 'floor', message: '模拟重提失败' } }; return state; },
+    retryStateAnalysis: async () => { state = { ...state, lastCseError: { floorId: 'floor', message: '模拟分析失败' } }; return state; },
+  };
+  const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef, confirmImpl: async () => true }); view.mount(container);
+  view.setPage('memories'); flatten(container).find(node => node.textContent === '重新提取').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /重新提取未完成：第 6 楼 · 模拟重提失败/);
+  view.setPage('people'); flatten(container).find(node => node.textContent === '分析记录').click(); flatten(container).find(node => node.textContent === '重新分析').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /重新分析未完成：第 6 楼 · 模拟分析失败/);
+});
+
+test('补齐结果按真实楼号区分摘要全失败与摘要已存但 CSE 部分失败', async () => {
+  let mode = 'summary';
+  let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 2, rememberedCount: 1, unprocessedCount: 1, memoryWorkBusy: false, csePendingCount: 1, rebuildStatus: 'pendingRebuild', rebuildHasActionableWork: true, floors: [{ floorId: 'failed-floor', assistantSeq: 2, messageIndex: 8, status: 'failed', memoryId: null }] };
+  const runtime = {
+    getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    startHistoricalRebuild: async () => {
+      state = mode === 'summary'
+        ? { ...state, rebuildStatus: 'failed', lastAutoMemory: { status: 'failed', phase: 'extracting', processed: 0, cseProcessed: 0, failedItems: [{ floorLabel: '第 8 楼' }], message: '摘要提取失败' } }
+        : { ...state, rebuildStatus: 'partial', lastAutoMemory: { status: 'partial', phase: 'analyzingCse', processed: 1, cseProcessed: 0, floorId: 'failed-floor', messageIndex: 8, message: '人物状态分析失败' } };
+      return state;
+    },
+  };
+  const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef }); view.mount(container);
+  flatten(container).find(node => node.textContent === '补齐缺失').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /补齐缺失未完成：第 8 楼 · 摘要提取失败/);
+  mode = 'cse'; state = { ...state, rebuildStatus: 'partial', rebuildHasActionableWork: true };
+  view.render(state); flatten(container).find(node => node.textContent === '继续补齐').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /继续补齐部分完成：新增摘要 1 楼，补齐人物状态 0 楼；第 8 楼人物状态未完成/);
 });
 
 test('删除当前聊天记忆使用自绘异步确认，取消零写且确认说明保留边界', async () => {
@@ -179,7 +216,7 @@ test('A删除失败后切到B重绘不会沿用A失败文案或禁用B的普通�
   current = stateB; currentManagement = { status: 'idle', blockedByOtherChat: true }; view.render(current);
   const copy = flatten(container).map(node => node.textContent).join('|');
   assert.doesNotMatch(copy, /继续删除当前聊天记忆|A版本冲突|已保留原聊天身份/);
-  assert.equal(flatten(container).find(node => node.textContent === '继续').disabled, false, 'B普通记忆管理不应被A删除失败阻塞');
+  assert.equal(flatten(container).find(node => node.textContent === '补齐缺失').disabled, false, 'B普通记忆管理不应被A删除失败阻塞');
   assert.equal(flatten(container).find(node => node.textContent === '删除当前聊天记忆').disabled, true, '单一删除流程未收口前B不能另起删除');
 });
 
@@ -414,14 +451,14 @@ test('历史欠账与 CSE 重构按钮各自开始暂停继续，CSE 同一位�
   view.mount(container);
   state = { ...base, rememberedCount: 0, rebuildCompletedCount: 0, rebuildNextAssistantSeq: 1 };
   view.render(state);
-  assert.equal(flatten(container).find(node => node.textContent === '继续')?.disabled, false);
+  assert.equal(flatten(container).find(node => node.textContent === '补齐缺失')?.disabled, false);
   state = base;
   view.render(state);
   let copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /自动维护新楼\|已关闭/);
   assert.match(copy, /历史重建\|等待开始 · 2\/5/);
   assert.match(copy, /记忆尚未完整.*刷新页面不会自动续跑/);
-  const resume = flatten(container).find(node => node.textContent === '继续');
+  const resume = flatten(container).find(node => node.textContent === '补齐缺失');
   assert.equal(resume.disabled, false);
   resume.click();
   await new Promise(resolve => setImmediate(resolve));
@@ -451,18 +488,18 @@ test('历史欠账与 CSE 重构按钮各自开始暂停继续，CSE 同一位�
 
   state = { ...base, rebuildStatus: 'waitingRealtime', rebuildHasActionableWork: true };
   view.render(state);
-  assert.equal(flatten(container).find(node => node.textContent === '继续')?.disabled, false, '等待新楼状态下仍有稳定欠账时继续必须可用');
+  assert.equal(flatten(container).find(node => node.textContent === '补齐缺失')?.disabled, false, '等待新楼状态下仍有稳定欠账时补齐必须可用');
   state = { ...state, status: 'running', memoryWorkBusy: true, activeMemoryWork: { phase: 'analyzingCse' } };
   view.render(state);
   const busyAction = flatten(container).find(node => node.textContent === '正在分析人物状态');
   assert.ok(busyAction); assert.equal(busyAction.disabled, true, '真实任务忙碌时仍保留并发锁并显示阶段');
   state = { ...base, rebuildStatus: 'waitingRealtime', rebuildHasActionableWork: false };
   view.render(state);
-  assert.equal(flatten(container).find(node => node.textContent === '继续')?.disabled, true, '确实没有稳定待办时继续才置灰');
+  assert.equal(flatten(container).find(node => node.textContent === '补齐缺失')?.disabled, true, '确实没有稳定待办时补齐才置灰');
 
   state = { ...base, status: 'running', memoryWorkBusy: true, rebuildStatus: 'rebuilding', activeAutoMemory: { phase: 'extracting', mode: 'historical', floorIds: ['floor-3'] } };
   view.render(state);
-  const pause = flatten(container).find(node => node.textContent === '暂停');
+  const pause = flatten(container).find(node => node.textContent === '暂停补齐');
   assert.equal(pause.disabled, false);
   pause.click();
   await new Promise(resolve => setImmediate(resolve));
@@ -691,7 +728,7 @@ test('三页职责分离，千结只保留摘要编辑/重提，双丝网归位�
   flatten(container).find(node => node.textContent === '分析记录').click(); copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /分析记录.*重新分析/);
   view.setPage('management'); copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /记忆管理.*继续.*完全重构.*最近召回回执.*详细诊断/);
+  assert.match(copy, /记忆管理.*补齐缺失.*完全重构.*最近召回回执.*详细诊断/);
   assert.match(copy, /刷新状态/);
   assert.doesNotMatch(copy, /剧情摘要|重新提取/);
   for (const button of flatten(container).filter(node => node.tag === 'button')) assert.equal(button.type, 'button');

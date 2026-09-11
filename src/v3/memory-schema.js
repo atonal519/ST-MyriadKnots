@@ -56,7 +56,9 @@ function common(value, type, expectedChatId) {
 
 export function validateEvidenceRef(input, { floorId = null, path = 'evidence' } = {}) {
   const value = clone(input);
-  exact(value, ['floorId', 'anchorId', 'quotedText', 'occurrence', 'evidenceMode', 'supports', 'sourceEntityId'], 'V3_EVIDENCE_INVALID', path);
+  const hasSourceType = Object.hasOwn(value, 'sourceType');
+  const hasSourceSnapshotIndex = Object.hasOwn(value, 'sourceSnapshotIndex');
+  exact(value, ['floorId', 'anchorId', 'quotedText', 'occurrence', 'evidenceMode', 'supports', 'sourceEntityId', ...(hasSourceType ? ['sourceType'] : []), ...(hasSourceSnapshotIndex ? ['sourceSnapshotIndex'] : [])], 'V3_EVIDENCE_INVALID', path);
   uuid(value.floorId, 'V3_EVIDENCE_INVALID', `${path}.floorId`);
   if (floorId && value.floorId !== floorId) fail('V3_EVIDENCE_INVALID', `${path}.floorId`);
   uuid(value.anchorId, 'V3_EVIDENCE_INVALID', `${path}.anchorId`, { nullable: true });
@@ -65,6 +67,23 @@ export function validateEvidenceRef(input, { floorId = null, path = 'evidence' }
   enumValue(value.evidenceMode, ['explicit', 'witnessed', 'reported', 'privateCognition', 'interpretation'], 'V3_EVIDENCE_INVALID', `${path}.evidenceMode`);
   text(value.supports, 'V3_EVIDENCE_INVALID', `${path}.supports`, { max: 2000 });
   uuid(value.sourceEntityId, 'V3_EVIDENCE_INVALID', `${path}.sourceEntityId`, { nullable: true });
+  if (hasSourceType) enumValue(value.sourceType, ['assistant', 'precedingUser'], 'V3_EVIDENCE_INVALID', `${path}.sourceType`);
+  if (hasSourceSnapshotIndex && (!Number.isSafeInteger(value.sourceSnapshotIndex) || value.sourceSnapshotIndex < 0)) fail('V3_EVIDENCE_INVALID', `${path}.sourceSnapshotIndex`);
+  if ((value.sourceType === 'precedingUser') !== hasSourceSnapshotIndex) fail('V3_EVIDENCE_INVALID', `${path}.sourceSnapshotIndex`);
+  return value;
+}
+
+function validateUserInputSnapshot(value) {
+  if (value === null) return null;
+  exact(value, ['messages'], 'V3_FLOORMEMORY_INVALID', 'sourceUserInputSnapshot');
+  boundedArray(value.messages, 'V3_FLOORMEMORY_INVALID', 'sourceUserInputSnapshot.messages', 40).forEach((message, index) => {
+    const path = `sourceUserInputSnapshot.messages[${index}]`;
+    exact(message, ['content', 'messageIndex', 'swipeId', 'selectedSwipeIndex'], 'V3_FLOORMEMORY_INVALID', path);
+    text(message.content, 'V3_FLOORMEMORY_INVALID', `${path}.content`, { max: 200000 });
+    if (!Number.isSafeInteger(message.messageIndex) || message.messageIndex < 0) fail('V3_FLOORMEMORY_INVALID', `${path}.messageIndex`);
+    if (message.swipeId !== null && !['string', 'number'].includes(typeof message.swipeId)) fail('V3_FLOORMEMORY_INVALID', `${path}.swipeId`);
+    if (message.selectedSwipeIndex !== null && (!Number.isSafeInteger(message.selectedSwipeIndex) || message.selectedSwipeIndex < 0)) fail('V3_FLOORMEMORY_INVALID', `${path}.selectedSwipeIndex`);
+  });
   return value;
 }
 
@@ -82,13 +101,15 @@ function itemCommon(item, keys, path) {
 export function validateFloorMemory(input, { expectedChatId } = {}) {
   const value = clone(input);
   const hasSourceSnapshot = Object.hasOwn(value, 'sourceCanonicalContent');
+  const hasSourceUserInputSnapshot = Object.hasOwn(value, 'sourceUserInputSnapshot');
   const hasSourceRawFingerprint = Object.hasOwn(value, 'sourceRawFingerprint');
   const hasSourceStoryClockSignature = Object.hasOwn(value, 'sourceStoryClockSignature');
-  exact(value, ['schemaVersion', 'recordType', 'id', 'chatId', 'narrativeGeneration', 'floorId', 'extractorVersion', ...(hasSourceSnapshot ? ['sourceCanonicalContent'] : []), ...(hasSourceRawFingerprint ? ['sourceRawFingerprint'] : []), ...(hasSourceStoryClockSignature ? ['sourceStoryClockSignature'] : []), 'summary', 'summaryEvidenceRefs', ...ARRAY_FIELDS, 'createdAt', 'updatedAt', 'recordStatus', 'supersedes'], 'V3_FLOORMEMORY_INVALID');
+  exact(value, ['schemaVersion', 'recordType', 'id', 'chatId', 'narrativeGeneration', 'floorId', 'extractorVersion', ...(hasSourceSnapshot ? ['sourceCanonicalContent'] : []), ...(hasSourceUserInputSnapshot ? ['sourceUserInputSnapshot'] : []), ...(hasSourceRawFingerprint ? ['sourceRawFingerprint'] : []), ...(hasSourceStoryClockSignature ? ['sourceStoryClockSignature'] : []), 'summary', 'summaryEvidenceRefs', ...ARRAY_FIELDS, 'createdAt', 'updatedAt', 'recordStatus', 'supersedes'], 'V3_FLOORMEMORY_INVALID');
   common(value, 'floorMemory', expectedChatId);
   uuid(value.floorId, 'V3_FLOORMEMORY_INVALID', 'floorId');
   text(value.extractorVersion, 'V3_FLOORMEMORY_INVALID', 'extractorVersion', { max: 160 });
   if (hasSourceSnapshot) text(value.sourceCanonicalContent, 'V3_FLOORMEMORY_INVALID', 'sourceCanonicalContent', { max: 200000 });
+  if (hasSourceUserInputSnapshot) validateUserInputSnapshot(value.sourceUserInputSnapshot);
   if (hasSourceRawFingerprint && (typeof value.sourceRawFingerprint !== 'string' || !HASH.test(value.sourceRawFingerprint))) fail('V3_FLOORMEMORY_INVALID', 'sourceRawFingerprint');
   if (hasSourceStoryClockSignature && (typeof value.sourceStoryClockSignature !== 'string' || value.sourceStoryClockSignature.length > 500)) fail('V3_FLOORMEMORY_INVALID', 'sourceStoryClockSignature');
   exact(value.summary, ['aiText', 'userText', 'effectiveSource', 'revisionNote'], 'V3_FLOORMEMORY_INVALID', 'summary');
@@ -144,7 +165,13 @@ export function validateFloorMemory(input, { expectedChatId } = {}) {
     const path = `eventFragments[${index}]`; itemCommon(item, ['itemId', 'title', 'description', 'candidateStatus', 'eventId', 'evidenceRefs'], path); text(item.title, 'V3_FLOORMEMORY_INVALID', `${path}.title`, { max: 500 }); text(item.description, 'V3_FLOORMEMORY_INVALID', `${path}.description`, { max: 2000 }); enumValue(item.candidateStatus, ['candidate', 'promoted', 'rejected'], 'V3_FLOORMEMORY_INVALID', `${path}.candidateStatus`); uuid(item.eventId, 'V3_FLOORMEMORY_INVALID', `${path}.eventId`, { nullable: true }); evidenceList(item.evidenceRefs, value.floorId, `${path}.evidenceRefs`);
   });
   value.exactAnchors.forEach((item, index) => {
-    const path = `exactAnchors[${index}]`; exact(item, ['anchorId', 'kind', 'exactText', 'occurrence', 'speakerEntityId', 'whyPreserve'], 'V3_FLOORMEMORY_INVALID', path); uuid(item.anchorId, 'V3_FLOORMEMORY_INVALID', `${path}.anchorId`); enumValue(item.kind, ['promise', 'codePhrase', 'wording', 'number', 'date', 'riddle', 'title', 'other'], 'V3_FLOORMEMORY_INVALID', `${path}.kind`); text(item.exactText, 'V3_FLOORMEMORY_INVALID', `${path}.exactText`, { max: 2000 }); if (!Number.isSafeInteger(item.occurrence) || item.occurrence < 1) fail('V3_FLOORMEMORY_INVALID', `${path}.occurrence`); uuid(item.speakerEntityId, 'V3_FLOORMEMORY_INVALID', `${path}.speakerEntityId`, { nullable: true }); text(item.whyPreserve, 'V3_FLOORMEMORY_INVALID', `${path}.whyPreserve`, { max: 1000 });
+    const path = `exactAnchors[${index}]`;
+    const hasSourceType = Object.hasOwn(item, 'sourceType');
+    const hasSourceSnapshotIndex = Object.hasOwn(item, 'sourceSnapshotIndex');
+    exact(item, ['anchorId', 'kind', 'exactText', 'occurrence', 'speakerEntityId', 'whyPreserve', ...(hasSourceType ? ['sourceType'] : []), ...(hasSourceSnapshotIndex ? ['sourceSnapshotIndex'] : [])], 'V3_FLOORMEMORY_INVALID', path); uuid(item.anchorId, 'V3_FLOORMEMORY_INVALID', `${path}.anchorId`); enumValue(item.kind, ['promise', 'codePhrase', 'wording', 'number', 'date', 'riddle', 'title', 'other'], 'V3_FLOORMEMORY_INVALID', `${path}.kind`); text(item.exactText, 'V3_FLOORMEMORY_INVALID', `${path}.exactText`, { max: 2000 }); if (!Number.isSafeInteger(item.occurrence) || item.occurrence < 1) fail('V3_FLOORMEMORY_INVALID', `${path}.occurrence`); uuid(item.speakerEntityId, 'V3_FLOORMEMORY_INVALID', `${path}.speakerEntityId`, { nullable: true }); text(item.whyPreserve, 'V3_FLOORMEMORY_INVALID', `${path}.whyPreserve`, { max: 1000 });
+    if (hasSourceType) enumValue(item.sourceType, ['assistant', 'precedingUser'], 'V3_FLOORMEMORY_INVALID', `${path}.sourceType`);
+    if (hasSourceSnapshotIndex && (!Number.isSafeInteger(item.sourceSnapshotIndex) || item.sourceSnapshotIndex < 0)) fail('V3_FLOORMEMORY_INVALID', `${path}.sourceSnapshotIndex`);
+    if ((item.sourceType === 'precedingUser') !== hasSourceSnapshotIndex) fail('V3_FLOORMEMORY_INVALID', `${path}.sourceSnapshotIndex`);
   });
   value.openLoops.forEach((item, index) => {
     const path = `openLoops[${index}]`; itemCommon(item, ['itemId', 'description', 'ownerEntityIds', 'candidateThreadId', 'evidenceRefs'], path); text(item.description, 'V3_FLOORMEMORY_INVALID', `${path}.description`, { max: 2000 }); uuidList(item.ownerEntityIds, `${path}.ownerEntityIds`); uuid(item.candidateThreadId, 'V3_FLOORMEMORY_INVALID', `${path}.candidateThreadId`, { nullable: true }); evidenceList(item.evidenceRefs, value.floorId, `${path}.evidenceRefs`);
@@ -155,6 +182,15 @@ export function validateFloorMemory(input, { expectedChatId } = {}) {
   value.cseSignals.forEach((item, index) => {
     const path = `cseSignals[${index}]`; itemCommon(item, ['itemId', 'subjectEntityId', 'objectEntityId', 'signalType', 'description', 'evidenceRefs'], path); uuid(item.subjectEntityId, 'V3_FLOORMEMORY_INVALID', `${path}.subjectEntityId`); uuid(item.objectEntityId, 'V3_FLOORMEMORY_INVALID', `${path}.objectEntityId`, { nullable: true }); enumValue(item.signalType, ['emotion', 'boundary', 'conflict', 'reconciliation', 'vulnerability', 'trust', 'betrayal', 'repeatedPattern', 'relationDefinition', 'persistentCondition', 'other'], 'V3_FLOORMEMORY_INVALID', `${path}.signalType`); text(item.description, 'V3_FLOORMEMORY_INVALID', `${path}.description`, { max: 2000 }); evidenceList(item.evidenceRefs, value.floorId, `${path}.evidenceRefs`);
   });
+  const sourceMessageCount = value.sourceUserInputSnapshot?.messages?.length ?? 0;
+  const validateSourceIndex = (source, path) => {
+    if (source?.sourceType === 'precedingUser' && source.sourceSnapshotIndex >= sourceMessageCount) fail('V3_FLOORMEMORY_INVALID', `${path}.sourceSnapshotIndex`);
+  };
+  value.summaryEvidenceRefs.forEach((item, index) => validateSourceIndex(item, `summaryEvidenceRefs[${index}]`));
+  for (const field of ['chronology', 'locations', 'participants', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'openLoops', 'ambiguities', 'cseSignals']) {
+    value[field].forEach((item, itemIndex) => (item.evidenceRefs ?? []).forEach((evidence, evidenceIndex) => validateSourceIndex(evidence, `${field}[${itemIndex}].evidenceRefs[${evidenceIndex}]`)));
+  }
+  value.exactAnchors.forEach((item, index) => validateSourceIndex(item, `exactAnchors[${index}]`));
   const itemIds = new Set();
   for (const field of ARRAY_FIELDS.filter(name => !['participants', 'exactAnchors'].includes(name))) {
     for (const [index, item] of value[field].entries()) {
@@ -166,7 +202,7 @@ export function validateFloorMemory(input, { expectedChatId } = {}) {
   const anchorOccurrences = new Set();
   for (const [index, anchor] of value.exactAnchors.entries()) {
     if (anchorIds.has(anchor.anchorId)) fail('V3_FLOORMEMORY_DUPLICATE_ANCHOR_ID', `exactAnchors[${index}].anchorId`);
-    const occurrenceKey = JSON.stringify([anchor.exactText, anchor.occurrence]);
+    const occurrenceKey = JSON.stringify([anchor.sourceType ?? 'assistant', anchor.sourceSnapshotIndex ?? null, anchor.exactText, anchor.occurrence]);
     if (anchorOccurrences.has(occurrenceKey)) fail('V3_FLOORMEMORY_DUPLICATE_ANCHOR_OCCURRENCE', `exactAnchors[${index}].occurrence`);
     anchorIds.add(anchor.anchorId); anchorOccurrences.add(occurrenceKey);
   }
@@ -252,8 +288,12 @@ export async function validateMemoryGraph({ root = null, checkpoint, run = null,
     if (!memoryFloor || memory.narrativeGeneration !== memoryFloor.narrativeGeneration || seenFloors.has(memory.floorId)) fail('V3_MEMORY_GRAPH_FLOOR_REF_INVALID');
     seenFloors.add(memory.floorId);
     for (const entityId of collectFloorMemoryEntityIds(memory)) if (!entityIdSet.has(entityId)) fail('V3_MEMORY_GRAPH_ENTITY_REF_INVALID');
-    const sourceContent = memory.sourceCanonicalContent ?? memoryFloor.content.canonicalContent;
+    const sourceContentFor = source => source?.sourceType === 'precedingUser'
+      ? memory.sourceUserInputSnapshot?.messages?.[source.sourceSnapshotIndex]?.content ?? null
+      : memory.sourceCanonicalContent ?? memoryFloor.content.canonicalContent;
     const checkQuote = evidence => {
+      const sourceContent = sourceContentFor(evidence);
+      if (typeof sourceContent !== 'string') return false;
       let occurrence = 0, offset = -1;
       while ((offset = sourceContent.indexOf(evidence.quotedText, offset + 1)) !== -1) { occurrence += 1; if (occurrence === evidence.occurrence) return true; }
       return false;
@@ -262,6 +302,8 @@ export async function validateMemoryGraph({ root = null, checkpoint, run = null,
     for (const field of ['chronology', 'locations', 'participants', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'openLoops', 'ambiguities', 'cseSignals']) memory[field].forEach(item => evidence.push(...(item.evidenceRefs ?? [])));
     if (evidence.some(item => !checkQuote(item))) fail('V3_MEMORY_GRAPH_EVIDENCE_INVALID');
     for (const anchor of memory.exactAnchors) {
+      const sourceContent = sourceContentFor(anchor);
+      if (typeof sourceContent !== 'string') fail('V3_MEMORY_GRAPH_ANCHOR_INVALID');
       let occurrence = 0, offset = -1, found = false;
       while ((offset = sourceContent.indexOf(anchor.exactText, offset + 1)) !== -1) { occurrence += 1; if (occurrence === anchor.occurrence) { found = true; break; } }
       if (!found) fail('V3_MEMORY_GRAPH_ANCHOR_INVALID');

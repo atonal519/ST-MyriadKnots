@@ -10,7 +10,7 @@ import {
   sameFoundationRecordContent,
 } from './foundation-schema.js';
 import { reverseRefShardPrefix } from './foundation-domain.js';
-import { projectEntityFloorBounds, validateEntityRecord, validateFloorMemory } from './memory-schema.js';
+import { projectEntityFloorBounds, validateEntityRecord, validateFloorMemory, validateMemoryGraph } from './memory-schema.js';
 import { validateBaselineRecord, validateCurrentStateRecord, validateCseGraph, validateStateDeltaRecord } from './cse-schema.js';
 
 export const V3_ROOT_RECORD_ID = 'v3-root';
@@ -118,6 +118,7 @@ function buildReachableResult({
   manifestNeedsReseal = false,
   indexesComplete,
   readMode,
+  cseUnavailable = false,
 }) {
   const indexes = indexResults.filter(result => result.status === 'ready').map(result => result.data);
   const floors = activeFloorViews(floorResults.map(result => result.data), indexes);
@@ -146,6 +147,7 @@ function buildReachableResult({
     indexesMissing: indexesMissing || manifestNeedsReseal,
     indexesComplete,
     readMode,
+    ...(cseUnavailable ? { cseUnavailable: true } : {}),
   };
 }
 
@@ -365,7 +367,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       throw error;
     }
   }
-  async function readReachable({ mode = V3_READ_MODES.full } = {}) {
+  async function readReachable({ mode = V3_READ_MODES.full, allowRecallCseFallback = false } = {}) {
     if (!Object.values(V3_READ_MODES).includes(mode)) fail('V3_STORE_READ_MODE_INVALID');
     const rootResult = await readRoot();
     if (rootResult.status !== 'ready') return rootResult;
@@ -396,21 +398,49 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     if (memoryResults.some(result => result.status !== 'ready')) fail('V3_STORE_FLOOR_MEMORY_MISSING');
     const entityResults = await Promise.all(checkpoint.producedRefs.entities.map(id => readRecord('entity', id)));
     if (entityResults.some(result => result.status !== 'ready')) fail('V3_STORE_ENTITY_MISSING');
-    const baselineResult = root.baselineId ? await readRecord('baseline', root.baselineId) : null;
-    if (baselineResult && baselineResult.status !== 'ready') fail('V3_STORE_BASELINE_MISSING');
-    const deltaResults = await Promise.all(checkpoint.producedRefs.stateDeltas.map(id => readRecord('stateDelta', id)));
-    if (deltaResults.some(result => result.status !== 'ready')) fail('V3_STORE_STATE_DELTA_MISSING');
-    const currentStateResults = await Promise.all(checkpoint.producedRefs.currentStates.map(id => readRecord('currentState', id)));
-    if (currentStateResults.some(result => result.status !== 'ready')) fail('V3_STORE_CURRENT_STATE_MISSING');
+    let baselineResult;
+    let deltaResults;
+    let currentStateResults;
+    let baselineFailed = false;
+    let deltaFailed = false;
+    let currentStateFailed = false;
+    if (!allowRecallCseFallback) {
+      baselineResult = root.baselineId ? await readRecord('baseline', root.baselineId) : null;
+      if (baselineResult && baselineResult.status !== 'ready') fail('V3_STORE_BASELINE_MISSING');
+      deltaResults = await Promise.all(checkpoint.producedRefs.stateDeltas.map(id => readRecord('stateDelta', id)));
+      if (deltaResults.some(result => result.status !== 'ready')) fail('V3_STORE_STATE_DELTA_MISSING');
+      currentStateResults = await Promise.all(checkpoint.producedRefs.currentStates.map(id => readRecord('currentState', id)));
+      if (currentStateResults.some(result => result.status !== 'ready')) fail('V3_STORE_CURRENT_STATE_MISSING');
+    } else {
+      const [baselineSettled, deltaSettled, currentSettled] = await Promise.all([
+        root.baselineId ? Promise.allSettled([readRecord('baseline', root.baselineId)]) : Promise.resolve([]),
+        Promise.allSettled(checkpoint.producedRefs.stateDeltas.map(id => readRecord('stateDelta', id))),
+        Promise.allSettled(checkpoint.producedRefs.currentStates.map(id => readRecord('currentState', id))),
+      ]);
+      const interrupted = [...baselineSettled, ...deltaSettled, ...currentSettled]
+        .find(result => result.status === 'fulfilled' && ['stale', 'disabled'].includes(result.value?.status));
+      if (interrupted) return { status: interrupted.value.status };
+      const identityFailure = [...baselineSettled, ...deltaSettled, ...currentSettled]
+        .find(result => result.status === 'rejected' && result.reason?.validationPath === 'chatId');
+      if (identityFailure) throw identityFailure.reason;
+      const ready = settled => settled.filter(result => result.status === 'fulfilled' && result.value?.status === 'ready').map(result => result.value);
+      const failed = settled => settled.some(result => result.status === 'rejected' || result.value?.status !== 'ready');
+      baselineFailed = failed(baselineSettled);
+      deltaFailed = failed(deltaSettled);
+      currentStateFailed = failed(currentSettled);
+      [baselineResult] = ready(baselineSettled);
+      deltaResults = ready(deltaSettled);
+      currentStateResults = ready(currentSettled);
+    }
     const indexes = indexResults.filter(result => result.status === 'ready').map(result => result.data);
     const indexKeys = indexResults.filter(result => result.status === 'ready').map(result => result.recordId);
     const indexesComplete = effectiveMode === V3_READ_MODES.full;
     const manifestNeedsReseal = indexesComplete && legacySnapshot && !manifestMatchesIndexes(root, indexes, indexKeys);
     const activeFloors = activeFloorViews(floorResults.map(result => result.data), indexes);
     const activeMemories = memoryResults.map(result => result.data);
-    const activeDeltas = deltaResults.map(result => result.data);
+    const activeDeltas = baselineFailed || deltaFailed ? [] : deltaResults.map(result => result.data);
     const activeEntities = projectEntityFloorBounds(entityResults.map(result => result.data), activeFloors, activeMemories, activeDeltas);
-    await validateCseGraph({
+    const graphInput = {
       root,
       checkpoint,
       run: runResult.data,
@@ -419,11 +449,30 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       entities: activeEntities,
       indexes,
       indexKeys,
-      baseline: baselineResult?.data ?? null,
-      stateDeltas: activeDeltas,
-      currentStates: currentStateResults.map(result => result.data),
       allowMissingIndexes: !indexesComplete || (indexesMissing && legacySnapshot), allowLegacySnapshot: true,
-    });
+    };
+    let cseUnavailable = false;
+    if (!allowRecallCseFallback) {
+      await validateCseGraph({ ...graphInput, baseline: baselineResult?.data ?? null, stateDeltas: activeDeltas, currentStates: currentStateResults.map(result => result.data) });
+    } else {
+      try {
+        if (baselineFailed || deltaFailed) throw new TypeError('V3_RECALL_CSE_RECORD_UNAVAILABLE');
+        try {
+          if (currentStateFailed) throw new TypeError('V3_RECALL_CURRENT_STATE_UNAVAILABLE');
+          await validateCseGraph({ ...graphInput, baseline: baselineResult?.data ?? null, stateDeltas: activeDeltas, currentStates: currentStateResults.map(result => result.data) });
+        } catch {
+          const checkpointWithoutCurrent = { ...checkpoint, producedRefs: { ...checkpoint.producedRefs, currentStates: [] } };
+          await validateCseGraph({ ...graphInput, checkpoint: checkpointWithoutCurrent, baseline: baselineResult?.data ?? null, stateDeltas: activeDeltas, currentStates: [] });
+          currentStateResults = [];
+        }
+      } catch {
+        await validateMemoryGraph(graphInput);
+        baselineResult = null;
+        deltaResults = [];
+        currentStateResults = [];
+        cseUnavailable = true;
+      }
+    }
     return buildReachableResult({
       root,
       rootRevision: rootResult.revision,
@@ -440,6 +489,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       manifestNeedsReseal,
       indexesComplete,
       readMode: effectiveMode,
+      cseUnavailable,
     });
   }
   return Object.freeze({

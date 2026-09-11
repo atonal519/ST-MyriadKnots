@@ -15,6 +15,7 @@ import { buildCseSystemPrompt, CSE_FIXED_CONTRACT, CSE_SYSTEM_PROMPT, createCseE
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
 import { buildEntityIdentityDirectory } from '../src/v3/entity-identity.js';
 import { projectInlineMemoryFloor } from '../src/ui/inline-projection.js';
+import { validateFloorMemory } from '../src/v3/memory-schema.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GENERATION = '22222222-2222-4222-8222-222222222222';
@@ -216,9 +217,9 @@ async function seedMiddleSummaryGap() {
   return seed;
 }
 
-async function direct(response, { content = '裴晚生提醒你带伞。', entities = [], userIdentity = { displayName: '林岚', aliases: ['林岚', '你', '{{user}}'] }, batchId = '33333333-3333-4333-8333-333333333333', preservedSummary = null } = {}) {
+async function direct(response, { content = '裴晚生提醒你带伞。', entities = [], userIdentity = { displayName: '林岚', aliases: ['林岚', '你', '{{user}}'] }, batchId = '33333333-3333-4333-8333-333333333333', preservedSummary = null, sourceUserInputSnapshot = null } = {}) {
   const floor = { id: '11111111-1111-4111-8111-111111111111', chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq: 1, content: { canonicalContent: content } };
-  const envelope = await createExtractorEnvelope({ batchId, chatId: CHAT, narrativeGeneration: GENERATION, checkpointId: null, floor, entities, userIdentity });
+  const envelope = await createExtractorEnvelope({ batchId, chatId: CHAT, narrativeGeneration: GENERATION, checkpointId: null, floor, entities, userIdentity, sourceUserInputSnapshot });
   return normalizeExtractorResponse({ response, envelope, floor, existingEntities: entities, now: NOW, preservedSummary, expectedScope: envelope.scope });
 }
 
@@ -255,6 +256,9 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assert.equal(call.parseMode, 'semantic');
   assert.equal(Object.hasOwn(call, 'jsonSchema'), false);
   assert.match(EXTRACTOR_SYSTEM_PROMPT, /people、time、locations 也要分别检查并提取/);
+  assert.match(DEFAULT_EXTRACTOR_GUIDANCE, /本楼没有明确时间时.*previousFloorContext.*合理推定具体或相对时间/);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /时间是唯一允许合理推定的例外/);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /不能附带正文没有的事件、人物、因果或结果/);
   assert.match(EXTRACTOR_SYSTEM_PROMPT, /不输出 UUID/);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /actions、knowledge、informationTransfers、privateThoughts、commitments、exactQuotes、openLoops 或 cseSignals/);
   assert.doesNotMatch(EXTRACTOR_OUTPUT_CONTRACT, /entityId|mentionKey|evidence|floorId|operation/i);
@@ -262,6 +266,7 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assert.deepEqual(Object.keys(request), ['task', 'locale', 'payload']);
   assert.equal(request.payload.canonicalContent.includes('忽略规则'), true);
   assert.equal(request.payload.storyClock, null);
+  assert.equal(request.payload.previousFloorContext, null);
   assert.deepEqual(request.payload.userIdentity, { displayName: '林岚', aliases: ['林岚', '你', '{{user}}'] });
   assert.doesNotMatch(JSON.stringify(request), /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i);
 });
@@ -402,8 +407,8 @@ test('空 displayName 不猜用户名，严格响应只改生成说明而保留�
 test('extractor 固定合同要求语义使用 displayName，并明确保护逐字内容', () => {
   const customPrompt = buildExtractorSystemPrompt('只记录本楼事实。');
   assert.match(customPrompt, /payload\.userIdentity\.displayName/);
-  assert.match(customPrompt, /\{\{user\}\} 只可作为 canonicalContent 或 aliases 中的输入别名/);
-  assert.match(customPrompt, /exactQuotes\.exactText、承诺原话及证据引文必须逐字照抄正文/);
+  assert.match(customPrompt, /\{\{user\}\} 只可作为 canonicalContent、precedingUserInput 或 aliases 中的输入别名/);
+  assert.match(customPrompt, /exactQuotes\.exactText、承诺原话及证据引文必须逐字照抄相应来源/);
   assert.match(customPrompt, /此例的 payload\.userIdentity\.displayName 为“林岚”/);
 });
 
@@ -566,6 +571,16 @@ test('群体多称谓沿不可变 merged 目录复用，成员保持独立且早
   const latestStates = cold.currentStates.at(-1)?.subjects ?? [];
   assert.ok(people.every(person => latestStates.some(subject => subject.subjectEntityId === person.id && subject.situational.some(item => item.text === `${person.displayName}的独立状态`))), '两个成员必须保持各自 CSE 状态');
 
+  const reloaded = harness({ sharedBackend: h.backend, sharedContext: h.context, utility: () => { throw new Error('别名召回冷读不得调用模型'); } });
+  const recallSource = await readRecallSource({ store: reloaded.store, now: () => new Date(NOW) });
+  const recalledByAlias = selectRecall({ source: recallSource, queryContext: { text: '保安组最初如何守夜', latestUserText: '保安组最初如何守夜', messageCount: 1 }, contextSize: 12000 });
+  const recalledByCanonical = selectRecall({ source: recallSource, queryContext: { text: '守夜人最初如何守夜', latestUserText: '守夜人最初如何守夜', messageCount: 1 }, contextSize: 12000 });
+  assert.match(recalledByAlias.injectionText, /守夜人与两名成员出现/, '冷启动后新学 merged 别名必须能命中旧楼事实');
+  assert.match(recalledByCanonical.injectionText, /守夜人与两名成员出现/, 'canonical 主名召回不得退化');
+  const recallGroup = recallSource.entities.find(entity => entity.entityId === canonicalGroup.id);
+  assert.deepEqual([...new Set([recallGroup.displayName, ...recallGroup.aliases])].sort(), ['保安组', '夜班保安', '守夜人', '门卫们'].sort());
+  assert.equal(recallSource.entities.some(entity => entity.entityType === 'person' && entity.aliases.includes('保安组')), false, '统一目录仍须保持实体类型边界');
+
   const firstFloorId = h.runtime.getState().floors[0].floorId;
   await h.runtime.extractFloor(firstFloorId, { analyzeState: false });
   const firstRequests = extractorPayloads.filter(payload => payload.canonicalContent.includes('第0段'));
@@ -632,6 +647,44 @@ test('中英/粤语原句与括号译文不会让整楼失败或待复核', asyn
   assert.equal(result.memory.exactAnchors[1].speakerEntityId, result.newEntities[0].id);
   assert.equal(result.memory.exactAnchors[1].whyPreserve, '叮嘱原句');
   assert.equal(result.needsReview, false);
+});
+
+test('前置 USER 原句由本地定位写入来源，跨来源重复原句不猜测', async () => {
+  const sourceUserInputSnapshot = { messages: [
+    { content: '林岚握住他的手。', messageIndex: 0, swipeId: null, selectedSwipeIndex: null },
+    { content: '林岚说：“暗号是归航。”', messageIndex: 1, swipeId: 1, selectedSwipeIndex: 1 },
+  ] };
+  const response = {
+    summary: '林岚握住裴晚生的手并说出归航暗号；裴晚生随后回应。',
+    people: [{ name: '林岚', role: 'user' }, { name: '裴晚生' }],
+    actions: [{ actor: '林岚', targets: ['裴晚生'], action: '握住裴晚生的手', completion: 'completed', exactQuote: '握住他的手', source: 'precedingUserInput' }],
+    commitments: [{ issuer: '林岚', recipient: '裴晚生', content: '使用归航作为暗号', kind: 'codePhrase', status: 'made', exactQuote: '暗号是归航', source: 'precedingUserInput' }],
+    exactQuotes: [{ exactText: '暗号是归航', kind: 'codePhrase', speaker: '林岚', source: 'precedingUserInput' }],
+  };
+  const result = await direct(response, { content: '裴晚生回应：“暗号是归航。”', sourceUserInputSnapshot });
+  assert.deepEqual(result.memory.sourceUserInputSnapshot, sourceUserInputSnapshot);
+  assert.equal(result.memory.actions[0].evidenceRefs[0].sourceType, 'precedingUser');
+  assert.equal(result.memory.actions[0].evidenceRefs[0].sourceSnapshotIndex, 0);
+  assert.equal(result.memory.commitments[0].evidenceRefs[0].sourceSnapshotIndex, 1);
+  assert.equal(result.memory.exactAnchors[0].sourceType, 'precedingUser');
+  assert.equal(result.memory.exactAnchors[0].sourceSnapshotIndex, 1);
+  assert.equal(result.memory.commitments[0].exactAnchorId, result.memory.exactAnchors[0].anchorId);
+
+  const ambiguous = await direct({ summary: '双方说出同一句。', exactQuotes: ['暗号是归航'] }, { content: '裴晚生说：“暗号是归航。”', sourceUserInputSnapshot });
+  assert.equal(ambiguous.memory.exactAnchors.length, 0, '跨 AI/USER 重复原句且无来源提示时不得猜来源');
+  assert.ok(ambiguous.isolated.some(item => item.code === 'V3_EXTRACTOR_ANCHOR_NOT_FOUND'));
+  const assistantOnly = await direct({ summary: '裴晚生说出暗号。', exactQuotes: [{ exactText: '暗号是归航', source: 'canonicalContent' }] }, { content: '裴晚生说：“暗号是归航。”', sourceUserInputSnapshot });
+  assert.equal(assistantOnly.memory.exactAnchors[0].sourceType, 'assistant');
+  assert.equal(Object.hasOwn(assistantOnly.memory.exactAnchors[0], 'sourceSnapshotIndex'), false);
+
+  const legacy = structuredClone(assistantOnly.memory);
+  delete legacy.sourceUserInputSnapshot;
+  const validatedLegacy = validateFloorMemory(legacy, { expectedChatId: CHAT });
+  assert.equal(Object.hasOwn(validatedLegacy, 'sourceUserInputSnapshot'), false, '旧记录缺字段应保持原结构，不得补默认值');
+
+  const outOfRange = structuredClone(result.memory);
+  outOfRange.actions[0].evidenceRefs[0].sourceSnapshotIndex = sourceUserInputSnapshot.messages.length;
+  assert.throws(() => validateFloorMemory(outOfRange, { expectedChatId: CHAT }), error => error?.code === 'V3_FLOORMEMORY_INVALID');
 });
 
 test('坏可选条目、未知枚举、无法绑定人物与引文定位失败只降级当项', async () => {
@@ -926,8 +979,11 @@ test('安全诊断隐藏正文，完整诊断仅在明确调用时暴露', async
   const floorId = state.floors[0].floorId;
   const safe = h.runtime.copySafeDiagnostic(floorId);
   assert.doesNotMatch(safe, /canonicalContent|裴晚生提醒你带伞/);
+  assert.doesNotMatch(safe, /"content": "继续"/);
+  assert.match(safe, /已隐藏用户原文/);
   const full = h.runtime.copyFullDiagnostic(floorId);
   assert.match(full, /canonicalContent/);
+  assert.match(full, /"content": "继续"/);
 });
 
 test('foundation reload 单飞会消费运行中到达的尾部 ready，旧 epoch 读取不回写', async () => {
@@ -1122,6 +1178,7 @@ test('冷启动未读完即首次 MESSAGE_SENT 时召回等待同一准备，可
     hostAdapter: cold.hostAdapter,
     prepareMemory: options => cold.runtime.prepareCurrent(options),
     selector: input => { selectorCalls += 1; return selectRecall(input); },
+    pluginVersion: '0.1.8-test',
     notifyUser: () => {},
     now: () => new Date(NOW),
     logger: { warn() {} },
@@ -1146,6 +1203,100 @@ test('冷启动未读完即首次 MESSAGE_SENT 时召回等待同一准备，可
   assert.equal(selectorCalls, 2);
   assert.equal(abortCalls, 0);
   assert.equal(cold.calls.length, 0);
+});
+
+test('真实 store 冷读只为召回隔离坏 CSE，摘要仍可用且 strict 读取与坏记录保持不变', async () => {
+  async function seededGraph() {
+    const seeded = harness({
+      modernAnchors: true,
+      initialChat: [assistant('裴晚生在钟楼交付一把旧雨伞。'), user('请回忆钟楼旧雨伞。'), assistant('尚未稳定的尾楼。')],
+      utility: options => {
+        const request = JSON.parse(options.taskMessages[0].content);
+        if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) return {
+          jsonData: {
+            summary: '裴晚生在钟楼交付一把旧雨伞。',
+            people: [{ name: '裴晚生' }],
+            actions: [{ actor: '裴晚生', action: '交付钟楼旧雨伞', completion: 'completed' }],
+          },
+        };
+        const subject = request.payload.trackedSubjects[0]?.name;
+        return { jsonData: subject ? { subjects: [{ subject, situational: [{ text: '记得钟楼旧雨伞', reason: '本楼明确交付', visibility: 'observable' }] }] } : { noMaterialChange: true } };
+      },
+    });
+    await seeded.runtime.start();
+    await seeded.runtime.extractNext();
+    const reachable = await seeded.store.readReachable({ mode: 'runtime' });
+    assert.equal(reachable.stateDeltas.length, 1);
+    assert.equal(reachable.currentStates.length, 1);
+    return { seeded, reachable };
+  }
+
+  const currentCase = await seededGraph();
+  const currentKey = `chat-${CHAT}/v3-current-state-${currentCase.reachable.currentStates[0].id}`;
+  const currentEnvelope = currentCase.seeded.backend.records.get(currentKey);
+  currentEnvelope.data.fingerprint = `sha256:${'0'.repeat(64)}`;
+  const putsBeforeCurrentRecall = currentCase.seeded.backend.calls.filter(call => call[0] === 'put').length;
+  await assert.rejects(currentCase.seeded.store.readReachable({ mode: 'projection' }), /V3_CSE_GRAPH_CURRENT_FINGERPRINT_INVALID/);
+
+  currentCase.seeded.context.chat[0].is_hidden = true;
+  currentCase.seeded.context.constants = { promptTypes: { IN_CHAT: 1 }, promptRoles: { SYSTEM: 0 } };
+  const prompts = [];
+  currentCase.seeded.context.setExtensionPrompt = (...args) => prompts.push(args);
+  const cold = harness({
+    modernAnchors: true,
+    sharedBackend: currentCase.seeded.backend,
+    sharedContext: currentCase.seeded.context,
+    utility: () => { throw new Error('坏 CSE 的只读召回不得调用模型'); },
+  });
+  let selectedSource = null;
+  const recall = createV3RecallRuntime({
+    store: cold.store,
+    hostAdapter: cold.hostAdapter,
+    prepareMemory: options => cold.runtime.prepareCurrent(options),
+    selector: input => { selectedSource = input.source; return selectRecall(input); },
+    pluginVersion: '0.1.8-test',
+    now: () => new Date(NOW),
+    logger: { warn() {} },
+  });
+  const recalled = await recall.intercept([structuredClone(cold.context.chat[1])], 12000, null, 'normal');
+  assert.equal(recalled.lastRecall.status, 'ready', JSON.stringify(recalled.lastRecall));
+  assert.match(recalled.lastRecall.injectionText, /裴晚生在钟楼交付一把旧雨伞/);
+  assert.ok(selectedSource.currentState.some(subject => subject.situational.some(item => item.text === '记得钟楼旧雨伞')), `CurrentState 损坏时必须从合法 delta 重放状态：${JSON.stringify(selectedSource.currentState)}`);
+  assert.deepEqual(selectedSource.degradedReasons, [], '成功重放合法 delta 不应误报 CSE 整体不可用');
+  assert.ok(prompts.some(call => call[1].includes('裴晚生在钟楼交付一把旧雨伞')));
+  assert.equal(cold.calls.length, 0);
+  assert.equal(currentCase.seeded.backend.calls.filter(call => call[0] === 'put').length, putsBeforeCurrentRecall, '只读降级不得写回或提交');
+  assert.equal(currentCase.seeded.backend.records.get(currentKey).data.fingerprint, `sha256:${'0'.repeat(64)}`);
+  await assert.rejects(cold.store.readReachable({ mode: 'runtime' }), /V3_CSE_GRAPH_CURRENT_FINGERPRINT_INVALID/);
+
+  const deltaCase = await seededGraph();
+  const deltaKey = `chat-${CHAT}/v3-state-delta-${deltaCase.reachable.stateDeltas[0].id}`;
+  deltaCase.seeded.backend.records.get(deltaKey).data.subjectSnapshots[0].subjectEntityId = '99999999-9999-4999-8999-999999999999';
+  const putsBeforeDeltaRecall = deltaCase.seeded.backend.calls.filter(call => call[0] === 'put').length;
+  await assert.rejects(deltaCase.seeded.store.readReachable({ mode: 'projection' }), /V3_CSE_GRAPH_ENTITY_REF_INVALID/);
+  const deltaSource = await readRecallSource({ store: deltaCase.seeded.store, now: () => new Date(NOW) });
+  assert.equal(deltaSource.status, 'ready');
+  assert.deepEqual(deltaSource.degradedReasons, ['cseReplayUnavailable']);
+  assert.deepEqual(deltaSource.currentState, []);
+  assert.deepEqual(deltaSource.cseChanges, []);
+  const deltaSelection = selectRecall({ source: deltaSource, queryContext: { text: '钟楼旧雨伞', latestUserText: '钟楼旧雨伞', messageCount: 1 }, contextSize: 12000 });
+  assert.match(deltaSelection.injectionText, /裴晚生在钟楼交付一把旧雨伞/);
+  assert.equal(deltaCase.seeded.backend.calls.filter(call => call[0] === 'put').length, putsBeforeDeltaRecall);
+  assert.equal(deltaCase.seeded.backend.records.get(deltaKey).data.subjectSnapshots[0].subjectEntityId, '99999999-9999-4999-8999-999999999999');
+
+  const coreCase = await seededGraph();
+  const floorKey = `chat-${CHAT}/v3-floor-${coreCase.reachable.floors[0].id}`;
+  coreCase.seeded.backend.records.get(floorKey).data.chatId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const putsBeforeCoreRead = coreCase.seeded.backend.calls.filter(call => call[0] === 'put').length;
+  await assert.rejects(readRecallSource({ store: coreCase.seeded.store, now: () => new Date(NOW) }), /V3_FLOOR_INVALID/);
+  assert.equal(coreCase.seeded.backend.calls.filter(call => call[0] === 'put').length, putsBeforeCoreRead, '核心归属错误不得被召回容错吞掉或修写');
+
+  const cseIdentityCase = await seededGraph();
+  const identityDeltaKey = `chat-${CHAT}/v3-state-delta-${cseIdentityCase.reachable.stateDeltas[0].id}`;
+  cseIdentityCase.seeded.backend.records.get(identityDeltaKey).data.chatId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const putsBeforeIdentityRead = cseIdentityCase.seeded.backend.calls.filter(call => call[0] === 'put').length;
+  await assert.rejects(readRecallSource({ store: cseIdentityCase.seeded.store, now: () => new Date(NOW) }), /V3_STATEDELTA_INVALID:chatId/);
+  assert.equal(cseIdentityCase.seeded.backend.calls.filter(call => call[0] === 'put').length, putsBeforeIdentityRead, 'CSE 记录跨聊天也不得被当成普通 CSE 损坏降级');
 });
 
 test('后台 load 失败后成功刷新清旧读取错误并保留摘要，具体楼层失败不被清除', async () => {
@@ -1489,7 +1640,7 @@ test('摘要 prepared 记录最多四路并发，run/checkpoint 等独立写完�
   assert.equal(active, 0);
 });
 
-test('历史按钮会话失败后停住且撤销授权；刷新零调用，再次点击继续才从失败楼重试', async () => {
+test('历史按钮单楼失败后继续保存独立后楼并撤销授权；刷新零调用，再次点击只补失败楼', async () => {
   let failSecond = true;
   const h = harness({
     initialChat: [user('开始'), assistant('历史一'), assistant('历史二'), assistant('历史三'), assistant('待确认尾楼')],
@@ -1505,9 +1656,9 @@ test('历史按钮会话失败后停住且撤销授权；刷新零调用，再�
   });
   await h.runtime.start();
   await h.runtime.startHistoricalRebuild();
-  assert.equal(h.runtime.getState().rebuildStatus, 'failed');
+  assert.equal(h.runtime.getState().rebuildStatus, 'partial');
   assert.equal(h.runtime.shouldBlockMainGeneration(), false, '历史重建失败后必须立即释放主生成门禁');
-  assert.equal(h.runtime.getState().rememberedCount, 1);
+  assert.equal(h.runtime.getState().rememberedCount, 2, '失败楼后的独立摘要仍应在同批保存');
   assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 1, '固定逐楼处理时第一楼的 CSE 已提交');
   const callsAtFailure = h.calls.length;
   await h.runtime.refreshAutomation();
@@ -1518,6 +1669,36 @@ test('历史按钮会话失败后停住且撤销授权；刷新零调用，再�
   await waitFor(() => ['caughtUp', 'waitingRealtime'].includes(h.runtime.getState().rebuildStatus));
   assert.equal(h.runtime.getState().rememberedCount, 3);
   assert.equal(h.runtime.getState().cseReady, true);
+});
+
+test('历史按钮收到 foundation 返回错误时明确失败且零模型调用，再次点击可有界恢复', async () => {
+  let failNextRefresh = false;
+  const notifications = [];
+  const h = harness({
+    initialChat: [user('开始'), assistant('待补历史楼'), assistant('未稳定尾楼')],
+    automation: { enabled: true, batchSize: 1 },
+    notifyUser: value => notifications.push(value),
+    foundationRefresh: async base => {
+      if (failNextRefresh) {
+        failNextRefresh = false;
+        return { ...base.getState(), status: 'error', lastError: '模拟地基对账失败' };
+      }
+      return base.refreshStatus();
+    },
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: '恢复后摘要' } }
+      : { jsonData: { noMaterialChange: true } },
+  });
+  await h.runtime.start();
+  failNextRefresh = true;
+  await h.runtime.startHistoricalRebuild();
+  assert.equal(h.runtime.getState().lastAutoMemory?.status, 'failed');
+  assert.equal(h.runtime.getState().lastAutoMemory?.phase, 'reconciling');
+  assert.equal(h.calls.length, 0);
+  assert.match(notifications.at(-1)?.text ?? '', /历史记忆维护未开始.*模拟地基对账失败.*已保存的记忆保持不变/);
+  await h.runtime.startHistoricalRebuild();
+  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()));
+  assert.deepEqual(h.calls.map(call => call.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
 });
 
 test('编辑器保存后 canonical 正文相同不产生 divergence，也不调用重建 API', async () => {
@@ -1961,6 +2142,50 @@ test('在途 CSE 使用已保存快照，宿主正文或无实质变化事件不
   }
 });
 
+test('历史楼顺序提取只把最近已保存前楼的末段时间与摘要带给下一楼，并保存合理相对时间', async () => {
+  const firstSummary = `前楼宴席记录：${'宾客依次离席，侍者收拾长桌。'.repeat(24)}裴晚生最后确认钟楼仍有人值守。`;
+  const extractorRequests = [];
+  const h = harness({
+    initialChat: [
+      user('开始'),
+      assistant('十月四日晚九点，宴席结束。'),
+      assistant('众人稍作休息后继续交谈。'),
+      assistant('未来楼写着十二月二十日。'),
+      assistant('用于确认未来楼稳定。'),
+    ],
+    utility: options => {
+      if (options.systemPrompt !== EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { noMaterialChange: true } };
+      const request = JSON.parse(options.taskMessages[0].content);
+      extractorRequests.push(request);
+      return request.payload.canonicalContent.includes('宴席结束')
+        ? { jsonData: { summary: firstSummary, time: [{ sourceText: '十月四日晚九点', description: '宴席在十月四日晚九点结束', kind: 'explicit', normalized: '10月4日 21:00', precision: 'exact', evidence: '十月四日晚九点' }] } }
+        : { jsonData: { summary: '众人在宴席结束后继续交谈。', time: [{ sourceText: '同日稍后', description: '众人在同日稍后继续交谈', kind: 'relative', normalized: null, precision: 'approximate', evidence: '稍作休息后' }] } };
+    },
+  });
+  await h.runtime.start();
+  const [firstFloor, secondFloor] = h.runtime.getState().floors;
+  await h.runtime.extractFloor(firstFloor.floorId, { analyzeState: false });
+  await h.runtime.extractFloor(secondFloor.floorId, { analyzeState: false });
+
+  assert.equal(extractorRequests.length, 2, '两楼顺序提取仍只各发一次原有模型请求');
+  assert.equal(extractorRequests[0].payload.previousFloorContext, null, '第一楼没有已保存前楼上下文');
+  assert.deepEqual(extractorRequests[1].payload.previousFloorContext, {
+    time: '十月四日晚九点',
+    summaryTail: firstSummary.trim().slice(-300),
+  });
+  assert.equal(extractorRequests[1].payload.previousFloorContext.summaryTail.length, 300);
+  assert.equal(extractorRequests[1].payload.precedingUserInput.length, 0, '前楼辅助上下文不得扩大 USER 来源');
+  assert.equal(JSON.stringify(extractorRequests[1].payload.previousFloorContext).includes('十二月二十日'), false, '不得读取目标楼之后的未来楼');
+
+  const state = h.runtime.getState();
+  assert.equal(state.floors[0].memory.chronology[0].time.sourceText, '十月四日晚九点', '本楼明确时间保持最高锚');
+  assert.equal(state.floors[1].memory.chronology[0].time.sourceText, '同日稍后');
+  assert.equal(state.floors[1].memory.chronology[0].time.kind, 'relative', '模型合理相对时间沿原归一化保存');
+  const graph = await h.store.readReachable({ mode: 'runtime' });
+  const expectedFingerprint = `sha256:${createHash('sha256').update(JSON.stringify(extractorRequests[1].payload)).digest('hex')}`;
+  assert.equal(graph.run.diagnostics.floorProvenance[secondFloor.floorId].semanticInputFingerprint, expectedFingerprint, '辅助上下文必须进入本次语义输入指纹');
+});
+
 test('残缺同楼时间戳进入同次提取并作非 exact 兜底，前序参照只取目标楼之前且不读取未来楼', async () => {
   const full = (date, start, end) => `<!-- myknots-start | date=${date} | weekday=周二 | time=${start} -->正文<!-- myknots-end | date=${date} | weekday=周二 | time=${end} -->`;
   const partial = '<!-- myknots-start | date=10月5日 | time=10:15 -->目标楼正文。';
@@ -2032,6 +2257,36 @@ test('时间、地点、人物与摘要一次保存，保留原有 ID/证据并�
   assert.equal(restored.id, memory.id); assert.equal(restored.summary.userText, '修订后摘要');
   assert.deepEqual(restored.chronology.map(item => item.itemId), memory.chronology.map(item => item.itemId));
   assert.deepEqual(restored.locations.map(item => item.name), ['旧钟楼', '河港']);
+});
+
+test('摘要保存后正文普通编辑仍可人工修订摘要、时间、地点与人物', async () => {
+  const h = harness({ modernAnchors: true, initialChat: [assistant('裴晚生提醒你带伞。'), user('确认这一楼'), assistant('待确认尾楼。')] });
+  await h.runtime.start();
+  await h.runtime.extractNext();
+  const before = h.runtime.getState().floors[0];
+  h.context.chat[before.messageIndex].extra = { qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: before.floorId } };
+  const editedRaw = '裴晚生改为提醒你带外套。';
+  h.context.chat[before.messageIndex] = { ...h.context.chat[before.messageIndex], mes: editedRaw, swipes: [editedRaw], swipe_id: 0 };
+  h.emit('MESSAGE_EDITED', before.messageIndex);
+  await waitFor(() => h.foundationRuntime.getState().status === 'ready' && h.runtime.getState().floors.some(floor => floor.floorId === before.floorId), '正文普通编辑后地基未恢复可修订状态');
+  const callsBeforeRevision = h.calls.length;
+
+  await h.runtime.editMemory(before.floorId, {
+    summary: '人工修订后的摘要',
+    timeText: '次日清晨',
+    originalTimeText: '时间未明确',
+    timeChanged: true,
+    locations: [{ name: '河港' }],
+    participantNames: ['裴晚生', '新路人'],
+  });
+
+  const revised = h.runtime.getState().floors[0].memory;
+  assert.equal(revised.summary.userText, '人工修订后的摘要');
+  assert.equal(revised.chronology[0].time.sourceText, '次日清晨');
+  assert.deepEqual(revised.locations.map(item => item.name), ['河港']);
+  const names = new Map(h.runtime.getState().memoryEntities.map(entity => [entity.entityId, entity.displayName]));
+  assert.deepEqual(revised.participants.map(item => names.get(item.entityId)), ['裴晚生', '新路人']);
+  assert.equal(h.calls.length, callsBeforeRevision, '人工修订不得重新提取或调用模型');
 });
 
 test('时间输入改后又恢复原值只保存其他字段，不改 chronology 或误标人工时间', async () => {
@@ -2335,7 +2590,7 @@ test('CSE 失败不再拖停后续摘要，同一稳定快照只有限尝试且�
 
   h.context.chat.push(assistant('第二条实时回复。'));
   h.emit('MESSAGE_RECEIVED');
-  await waitFor(() => h.runtime.getState().lastAutoMemory?.status === 'failed' && !h.runtime.getState().memoryWorkBusy);
+  await waitFor(() => h.runtime.getState().lastAutoMemory?.status === 'partial' && !h.runtime.getState().memoryWorkBusy);
   let state = h.runtime.getState();
   assert.equal(state.rememberedCount, 2, 'CSE 失败前摘要必须已经保存');
   assert.equal(state.rebuildCompletedCount, 1);
@@ -2347,7 +2602,7 @@ test('CSE 失败不再拖停后续摘要，同一稳定快照只有限尝试且�
 
   h.context.chat.push(assistant('第三条实时回复。'));
   h.emit('MESSAGE_RECEIVED');
-  await waitFor(() => h.runtime.getState().lastAutoMemory?.status === 'failed' && h.runtime.getState().rememberedCount === 3 && !h.runtime.getState().memoryWorkBusy);
+  await waitFor(() => h.runtime.getState().lastAutoMemory?.status === 'partial' && h.runtime.getState().rememberedCount === 3 && !h.runtime.getState().memoryWorkBusy);
   state = h.runtime.getState();
   assert.equal(state.summaryCompletedCount, 3, '没有 realtimeOrigin 的正常已建前缀仍应继续补新摘要');
   assert.equal(state.rebuildCompletedCount, 1, '旧 CSE 缺口失败时不得越过它写后楼 delta');
@@ -2461,7 +2716,7 @@ test('启动与设置刷新只检查连续摘要尾账，手动继续才按楼�
   }
 });
 
-test('首个 CSE 失败前已捕获摘要全部保存；提取失败停在本楼且同输入不循环调用或重复提示', async () => {
+test('首个 CSE 失败前已捕获摘要全部保存；提取失败跳过本楼继续独立后楼且同输入不循环调用', async () => {
   const cseSeed = await seedContinuousSummaryTail(4);
   const cseNotifications = [];
   const cseFailed = harness({
@@ -2474,7 +2729,7 @@ test('首个 CSE 失败前已捕获摘要全部保存；提取失败停在本楼
   });
   await cseFailed.runtime.start();
   completeTailSwipe(cseFailed, '触发自动追赶的真实 roll');
-  await waitFor(() => cseFailed.runtime.getState().lastAutoMemory?.status === 'failed' && !cseFailed.runtime.getState().memoryWorkBusy);
+  await waitFor(() => cseFailed.runtime.getState().lastAutoMemory?.status === 'partial' && !cseFailed.runtime.getState().memoryWorkBusy);
   assert.equal(cseFailed.runtime.getState().summaryCompletedCount, 5);
   assert.deepEqual(cseFailed.calls.map(call => call.systemPrompt), [...Array(4).fill(EXTRACTOR_SYSTEM_PROMPT), CSE_SYSTEM_PROMPT]);
   assert.match(cseNotifications.at(-1).text, /第 2 楼人物状态未完成，未完成摘要 0 楼.*后续有新稳定回复时会有限重试/);
@@ -2497,10 +2752,11 @@ test('首个 CSE 失败前已捕获摘要全部保存；提取失败停在本楼
   });
   await extractorFailed.runtime.start();
   completeTailSwipe(extractorFailed, '触发摘要失败的真实 roll');
-  await waitFor(() => extractorFailed.runtime.getState().lastAutoMemory?.status === 'failed' && !extractorFailed.runtime.getState().memoryWorkBusy);
+  await waitFor(() => extractorFailed.runtime.getState().lastAutoMemory?.status === 'partial' && !extractorFailed.runtime.getState().memoryWorkBusy);
   assert.equal(extractorFailed.runtime.getState().summaryCompletedCount, 2, '失败前成功的一楼摘要必须保留');
-  assert.equal(extractorFailed.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 0, '摘要尚未排空时不得提前追 CSE');
-  assert.match(extractorNotifications.at(-1).text, /从第 3 楼起还有 2 楼摘要未完成.*相同内容不会自动重试/);
+  assert.equal(extractorFailed.runtime.getState().rememberedCount, 3, '失败楼后的独立摘要仍应保存');
+  assert.equal(extractorFailed.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 1, '只补失败缺口前的连续 CSE，不得越过缺口');
+  assert.match(extractorNotifications.at(-1).text, /部分完成.*摘要仍需重试/);
   const callsAtFailure = extractorFailed.calls.length;
   const noticesAtFailure = extractorNotifications.length;
   await extractorFailed.runtime.refreshStatus();
@@ -2769,6 +3025,45 @@ test('CSE 重构成功一楼后可暂停，并从持久进度恢复剩余 CSE', 
   assert.equal(resumedCseCalls, 2, '恢复时只处理未提交的后两楼');
   const after = await resumed.store.readReachable({ mode: 'runtime' });
   assert.deepEqual(after.floorMemories.map(item => [item.id, item.summary]), originalMemories);
+});
+
+test('CSE 重构 root 已耐久但暂停发生在 adopt 前，继续时按持久进度跳过已提交楼', async () => {
+  let mode = 'seed';
+  const h = harness({
+    initialChat: [user('开始'), assistant('第一楼'), assistant('第二楼'), assistant('第三楼'), assistant('未摘要尾楼')],
+    automation: { enabled: true, batchSize: 20 },
+    utility: options => {
+      const request = JSON.parse(options.taskMessages[0].content);
+      if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) {
+        assert.equal(mode, 'seed');
+        return { jsonData: { summary: `保留摘要-${request.payload.canonicalContent}` } };
+      }
+      return { jsonData: { noMaterialChange: true } };
+    },
+  });
+  await h.runtime.start();
+  await h.runtime.startHistoricalRebuild();
+  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()));
+
+  h.calls.splice(0);
+  mode = 'rebuild';
+  h.backend.abortAfterNextPut(key => {
+    if (key !== 'v3-root') return false;
+    h.runtime.pauseCseRebuild();
+    return true;
+  });
+  await h.runtime.rebuildCse(CHAT);
+  assert.equal(h.runtime.getState().cseRebuildStatus, 'paused');
+  assert.equal(h.runtime.getState().cseRebuildCompletedCount, 0, 'adopt 前内存尚不知道已耐久的第一楼');
+  const durable = await h.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual(durable.run.diagnostics.cseRebuild?.completedFloorIds, [durable.floors[0].id]);
+
+  await h.runtime.resumeCseRebuild(CHAT);
+  assert.equal(h.runtime.getState().cseRebuildStatus, 'completed');
+  const cseContents = h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT)
+    .map(call => JSON.parse(call.taskMessages[0].content).payload.canonicalContent);
+  assert.deepEqual(cseContents, ['第一楼', '第二楼', '第三楼'], '继续不得重复调用已耐久提交的第一楼');
+  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 0);
 });
 
 test('CSE 重构遇到中间摘要缺口即截断，不补摘要也不越过处理后楼', async () => {
@@ -4090,4 +4385,97 @@ test('删除正在摘要的第76楼目标本身会中止请求且迟到结果零
   await pending;
   const graph = await h.store.readReachable({ mode: 'runtime' });
   assert.equal(graph.floorMemories.some(memory => memory.floorId === target.floorId), false);
+});
+
+test('摘要捕获目标 AI 前连续有效 USER，保留当前 swipe，并在 AI 或真实 system 处停止', async () => {
+  const selectedUser = { ...user('未选版本'), swipes: ['未选版本', '已选版本'], swipe_id: 1 };
+  const continuous = harness({ initialChat: [user('第一段'), selectedUser, assistant('目标 AI'), user('稳定确认')] });
+  await continuous.runtime.start();
+  const target = continuous.runtime.getState().floors[0];
+  await continuous.runtime.extractFloor(target.floorId, { analyzeState: false });
+  assert.deepEqual(target && continuous.runtime.getState().floors[0].memory.sourceUserInputSnapshot, { messages: [
+    { content: '第一段', messageIndex: 0, swipeId: null, selectedSwipeIndex: null },
+    { content: '已选版本', messageIndex: 1, swipeId: 1, selectedSwipeIndex: 1 },
+  ] });
+  const extractorRequest = JSON.parse(continuous.calls[0].taskMessages[0].content);
+  assert.deepEqual(extractorRequest.payload.precedingUserInput.map(item => item.content), ['第一段', '已选版本']);
+  assert.equal(continuous.foundationRuntime.getReachable().floors[0].content.canonicalContent, '目标 AI', 'AI canonicalContent 必须保持纯 AI 正文');
+
+  const afterAi = harness({ initialChat: [user('更早 USER'), assistant('前一 AI'), assistant('目标 AI'), user('稳定确认')] });
+  await afterAi.runtime.start();
+  const second = afterAi.runtime.getState().floors.at(-1);
+  await afterAi.runtime.extractFloor(second.floorId, { analyzeState: false });
+  assert.equal(afterAi.runtime.getState().floors.at(-1).memory.sourceUserInputSnapshot, null, '连续 AI 不得复用更早 USER');
+
+  const systemBarrier = harness({ initialChat: [user('更早 USER'), { is_user: false, is_system: true, mes: '宿主事件', extra: { type: 'system' } }, assistant('目标 AI'), user('稳定确认')] });
+  await systemBarrier.runtime.start();
+  await systemBarrier.runtime.extractFloor(systemBarrier.runtime.getState().floors[0].floorId, { analyzeState: false });
+  assert.equal(systemBarrier.runtime.getState().floors[0].memory.sourceUserInputSnapshot, null);
+
+  const hidden = harness({ initialChat: [{ ...user('自动隐藏 USER'), is_system: true, extra: { qianqianjieAutoHide: { schemaVersion: 1, chatId: CHAT } } }, assistant('目标 AI'), user('稳定确认')] });
+  await hidden.runtime.start();
+  await hidden.runtime.extractFloor(hidden.runtime.getState().floors[0].floorId, { analyzeState: false });
+  assert.equal(hidden.runtime.getState().floors[0].memory.sourceUserInputSnapshot.messages[0].content, '自动隐藏 USER');
+
+  const conflictingSystem = harness({ initialChat: [
+    { ...user('带冲突标记的真实 system'), is_system: true, extra: { type: 'system', qianqianjieAutoHide: { schemaVersion: 1, chatId: CHAT } } },
+    assistant('目标 AI'), user('稳定确认'),
+  ] });
+  await conflictingSystem.runtime.start();
+  await conflictingSystem.runtime.extractFloor(conflictingSystem.runtime.getState().floors[0].floorId, { analyzeState: false });
+  assert.equal(conflictingSystem.runtime.getState().floors[0].memory.sourceUserInputSnapshot, null, '真实 system 即使残留 auto-hide 标记也必须形成边界');
+
+  const manual = harness({ initialChat: [user('首次快照'), assistant('目标 AI'), user('稳定确认')] });
+  await manual.runtime.start();
+  const manualFloorId = manual.runtime.getState().floors[0].floorId;
+  await manual.runtime.extractFloor(manualFloorId, { analyzeState: false });
+  assert.equal(manual.runtime.getState().floors[0].memory.sourceUserInputSnapshot.messages[0].content, '首次快照');
+  manual.context.chat[0].mes = '手动重提的新快照';
+  await manual.runtime.refreshStatus();
+  assert.equal(manual.runtime.getState().floors[0].memory.sourceUserInputSnapshot.messages[0].content, '首次快照', '普通刷新不得因 USER 改写而自动重摘');
+  await manual.runtime.extractFloor(manualFloorId, { analyzeState: false });
+  assert.equal(manual.runtime.getState().floors[0].memory.sourceUserInputSnapshot.messages[0].content, '手动重提的新快照');
+});
+
+test('摘要在途 USER 编辑、删除和后置确认删除都提交捕获快照，目标 AI marker 重绑后守卫仍有效', async () => {
+  async function runScenario(mutate) {
+    let release;
+    let startedResolve;
+    const started = new Promise(resolve => { startedResolve = resolve; });
+    const h = harness({
+      modernAnchors: true,
+      initialChat: [user('前置一'), user('前置二'), assistant('目标 AI 正文'), user('后置稳定确认')],
+      utility: () => new Promise(resolve => { release = () => resolve({ jsonData: { summary: '冻结快照摘要。' } }); startedResolve(); }),
+    });
+    await h.runtime.start();
+    const target = h.runtime.getState().floors[0];
+    h.context.chat[target.messageIndex].extra = { qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: target.floorId } };
+    const pending = h.runtime.extractFloor(target.floorId, { analyzeState: false });
+    await started;
+    const request = JSON.parse(h.calls[0].taskMessages[0].content);
+    assert.deepEqual(request.payload.precedingUserInput.map(item => item.content), ['前置一', '前置二']);
+    mutate(h, target);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    release();
+    const state = await pending;
+    const memory = state.floors.find(item => item.floorId === target.floorId)?.memory;
+    assert.ok(memory, JSON.stringify(state.lastExtractorError));
+    assert.deepEqual(memory.sourceUserInputSnapshot.messages.map(item => item.content), ['前置一', '前置二']);
+    assert.equal(memory.summary.aiText, '冻结快照摘要。');
+  }
+
+  await runScenario(h => {
+    h.context.chat[0].mes = '编辑后的前置一';
+    h.emit('MESSAGE_EDITED', 0);
+  });
+  await runScenario(h => {
+    h.context.chat.splice(1, 1);
+    h.emit('MESSAGE_DELETED', 1);
+    h.context.chat.splice(0, 1);
+    h.emit('MESSAGE_DELETED', 0);
+  });
+  await runScenario((h, target) => {
+    h.context.chat.splice(target.messageIndex + 1, 1);
+    h.emit('MESSAGE_DELETED', target.messageIndex + 1);
+  });
 });

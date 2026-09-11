@@ -100,7 +100,7 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   const autoHideInput = memoryControls.find(node => node.tag === 'label')?.children.find(node => node.tag === 'input');
   const keepInput = memoryControls.find(node => node.className === 'qqj-auto-hide-row')?.children.find(node => node.tag === 'input');
   assert.equal(autoHideInput?.checked, false); assert.equal(keepInput?.value, '3'); assert.equal(keepInput?.className, 'settings-input settings-num');
-  assert.equal(memoryControls.find(node => node.className === 'qqj-auto-hide-row')?.children[0]?.textContent, '隐藏 AI 楼层数');
+  assert.equal(memoryControls.find(node => node.className === 'qqj-auto-hide-row')?.children[0]?.textContent, '保留最近 AI 楼数');
   assert.equal(memoryControls.find(node => node.className === 'settings-hint')?.textContent, '自动隐藏更早且已完成记忆的楼；调整保留数量不会恢复已隐藏楼。关闭自动隐藏可恢复千千结隐藏的楼。');
   autoHideInput.checked = true; autoHideInput.fire('change'); await new Promise(resolve => setImmediate(resolve));
   assert.equal(autoHideApplies.at(-1).enabled, true); assert.equal(autoHideApplies.at(-1).keepAiCount, 3);

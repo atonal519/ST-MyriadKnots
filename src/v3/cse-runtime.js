@@ -1,8 +1,8 @@
 import { newIdentityUuid, sha256 } from '../identity.js';
 import { buildFoundationIndexes } from './foundation-runtime.js';
-import { createCheckpointInputFingerprints, deterministicUuid, selectAssistantMessage } from './foundation-domain.js';
+import { createCheckpointInputFingerprints, deterministicUuid } from './foundation-domain.js';
 import { validateFoundationCheckpoint, validateFoundationRoot, validateFoundationRun } from './foundation-schema.js';
-import { validateCseGraph, validateStateDeltaRecord } from './cse-schema.js';
+import { validateCseGraph } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 import {
   CSE_COMPILER_VERSION, CSE_PROMPT_VERSION, buildCseSystemPrompt, captureCseBaseline, createBaselineRoleEntities,
@@ -18,40 +18,14 @@ const nowIso = now => { const value = now()?.toISOString?.() ?? String(now()); i
 const hash = async value => `sha256:${await sha256(JSON.stringify(value))}`;
 const errorWith = (code, message) => { const error = new Error(message ?? code); error.code = code; return error; };
 
-const normalizedMessageText = value => String(value ?? '').replace(/\r\n?/g, '\n');
 const coreMeaning = items => JSON.stringify((items ?? []).map(item => [item.text, item.visibility, item.towardEntityId ?? null]));
-const baselineSemanticPayload = baseline => baseline ? {
-  userPersona: { ...baseline.userPersona, entityId: null },
-  characterCard: { ...baseline.characterCard, entityId: null },
-  worldInfoSources: baseline.worldInfoSources,
-} : null;
-
-async function captureCurrentUserInput({ hostAdapter, floor, expectedChatId }) {
-  const snapshot = hostAdapter.snapshot();
-  const qqjChatId = String(snapshot.context?.chatMetadata?.qianqianjie?.chatId ?? '').trim();
-  const messageIndex = floor?.hostLocator?.messageIndex;
-  const selected = Number.isSafeInteger(messageIndex) ? selectAssistantMessage(snapshot.chat[messageIndex]) : null;
-  if (qqjChatId !== expectedChatId || !selected) {
-    throw errorWith('V3_CSE_STALE', '目标楼当前选中正文或聊天身份已变化，迟到状态不会写入。');
-  }
-  if (messageIndex === 0) return null;
-  const previous = snapshot.chat[messageIndex - 1];
-  if (!previous || previous.is_user !== true || (previous.is_system === true && previous.extra?.type)) return null;
-  let content = '';
-  let selectedSwipeIndex = null;
-  let swipeId = null;
-  if (Array.isArray(previous.swipes)) {
-    selectedSwipeIndex = Number.isSafeInteger(previous.swipe_id) ? previous.swipe_id : 0;
-    const selectedUser = previous.swipes[selectedSwipeIndex];
-    if (typeof selectedUser !== 'string') return null;
-    content = normalizedMessageText(selectedUser);
-    swipeId = previous.swipe_id ?? selectedSwipeIndex;
-  } else if (typeof previous.mes === 'string') content = normalizedMessageText(previous.mes);
-  if (!content.trim()) return null;
-  return Object.freeze({ messageIndex: messageIndex - 1, swipeId, selectedSwipeIndex, content, fingerprint: `sha256:${await sha256(content)}` });
+function currentUserInputFromMemory(memory) {
+  const messages = memory?.sourceUserInputSnapshot?.messages;
+  if (!Array.isArray(messages) || !messages.length) return null;
+  return Object.freeze({ messages: Object.freeze(messages.map((message, sourceSnapshotIndex) => Object.freeze({ sourceSnapshotIndex, messageIndex: message.messageIndex, content: message.content }))) });
 }
 
-async function dependencySnapshot(value, floorId, entities, previousState, storyClockSignatureForFloor, currentUserInput, coreUserEditedSubjectEntityIds = [], hostAdapter) {
+async function dependencySnapshot(value, floorId, entities, previousState, storyClockSignatureForFloor, coreUserEditedSubjectEntityIds = [], hostAdapter) {
   const targetIndex = value?.floors?.findIndex(floor => floor.id === floorId) ?? -1;
   if (targetIndex < 0 || !value?.baseline) return null;
   const floors = value.floors.slice(0, targetIndex + 1);
@@ -79,7 +53,6 @@ async function dependencySnapshot(value, floorId, entities, previousState, story
     targetDeltaId: deltaByFloor.get(floorId) ?? null,
     previousStateFingerprint: previousState?.fingerprint ?? null,
     identityDirectory,
-    currentUserInput: currentUserInput ? { messageIndex: currentUserInput.messageIndex, swipeId: currentUserInput.swipeId, selectedSwipeIndex: currentUserInput.selectedSwipeIndex, fingerprint: currentUserInput.fingerprint } : null,
     coreUserEditedSubjectEntityIds: [...coreUserEditedSubjectEntityIds].sort(),
   };
 }
@@ -308,9 +281,8 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const dependencyPreviousState = dependencyPrecedingDeltas.length
       ? await replayCurrentState({ chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, baselineId: current.baseline?.id, floors: dependencyPrecedingFloors, floorMemories: dependencyPrecedingMemories, stateDeltas: dependencyPrecedingDeltas, now: nowIso(now) })
       : null;
-    const currentUserInput = await captureCurrentUserInput({ hostAdapter, floor, expectedChatId: current.root.chatId });
     const coreUserEditedSubjectEntityIds = await coreUserEditedSubjects(dependencyPrecedingDeltas);
-    const currentDependency = await dependencySnapshot(current, operation.floorId, [...dependencyEntitiesById.values()], dependencyPreviousState, currentFloor => current.floorMemories.find(item => item.floorId === currentFloor.id && item.recordStatus === 'active')?.sourceStoryClockSignature ?? current.run?.diagnostics?.floorProvenance?.[currentFloor.id]?.storyClockSignature ?? storyClockSignatureForFloor(currentFloor), currentUserInput, coreUserEditedSubjectEntityIds, hostAdapter);
+    const currentDependency = await dependencySnapshot(current, operation.floorId, [...dependencyEntitiesById.values()], dependencyPreviousState, currentFloor => current.floorMemories.find(item => item.floorId === currentFloor.id && item.recordStatus === 'active')?.sourceStoryClockSignature ?? current.run?.diagnostics?.floorProvenance?.[currentFloor.id]?.storyClockSignature ?? storyClockSignatureForFloor(currentFloor), coreUserEditedSubjectEntityIds, hostAdapter);
     if (!sameDependencySnapshot(operation.dependencySnapshot, currentDependency)) throw errorWith('V3_CSE_STALE', '人物状态所依赖的楼层前缀、摘要、前态或身份目录已变化，迟到状态不会写入。');
     const floorOrder = new Map(current.floors.map((item, index) => [item.id, index]));
     const deltas = filterReachableDeltas({ floors: current.floors, floorMemories: current.floorMemories, stateDeltas: current.stateDeltas })
@@ -361,7 +333,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       const previousCurrentState = rebuiltPrevious && storedPrevious?.fingerprint === rebuiltPrevious.fingerprint ? storedPrevious : rebuiltPrevious;
       const trackedMemories = value.floorMemories.filter(item => item.recordStatus === 'active' && trackedFloorIds.has(item.floorId));
       const tracked = selectTrackedSubjects({ baseline: value.baseline, entities: scopedEntities, floorMemories: trackedMemories, floorMemory: memory });
-      const currentUserInput = await captureCurrentUserInput({ hostAdapter, floor, expectedChatId: value.root.chatId });
+      const currentUserInput = currentUserInputFromMemory(memory);
       const requestSources = await captureCseRequestSources({
         hostAdapter,
         baseline: value.baseline,
@@ -373,7 +345,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       });
       operation.sourceDiagnostics = requestSources.diagnostics;
       const coreUserEditedSubjectEntityIds = await coreUserEditedSubjects(precedingDeltas);
-      operation.dependencySnapshot = await dependencySnapshot(value, floor.id, entities, previousCurrentState, currentFloor => value.floorMemories.find(item => item.floorId === currentFloor.id && item.recordStatus === 'active')?.sourceStoryClockSignature ?? value.run?.diagnostics?.floorProvenance?.[currentFloor.id]?.storyClockSignature ?? storyClockSignatureForFloor(currentFloor), currentUserInput, coreUserEditedSubjectEntityIds, hostAdapter);
+      operation.dependencySnapshot = await dependencySnapshot(value, floor.id, entities, previousCurrentState, currentFloor => value.floorMemories.find(item => item.floorId === currentFloor.id && item.recordStatus === 'active')?.sourceStoryClockSignature ?? value.run?.diagnostics?.floorProvenance?.[currentFloor.id]?.storyClockSignature ?? storyClockSignatureForFloor(currentFloor), coreUserEditedSubjectEntityIds, hostAdapter);
       if (!operation.dependencySnapshot) throw errorWith('V3_CSE_STALE', '人物状态分析依赖的楼层前缀不可用。');
       const envelope = createCseEnvelope({ floor: analysisFloor, floorMemory: memory, baseline: value.baseline, currentState: previousCurrentState, trackedSubjects: tracked, entities: scopedEntities, requestSources, currentUserInput, coreUserEditedSubjectEntityIds });
       const deltaId = await deterministicUuid(['v3-cse-delta', operation.runId, floor.id, memory.id]);
@@ -439,129 +411,6 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     }
   }
 
-  async function restoreRecoveredDelta({ oldDelta, oldDiagnostics, oldFloorId, oldMemoryId, currentFloorId, currentMemoryId, entityMap = new Map(), priorStateDeltas = [] } = {}) {
-    if (!enabled() || active || !oldDelta || oldDiagnostics?.kind !== 'cse') return Object.freeze({ status: 'pending', reason: 'unsupportedSource' });
-    await load();
-    let current = reachable;
-    let floor = current?.floors?.find(item => item.id === currentFloorId);
-    let memory = current?.floorMemories?.find(item => item.id === currentMemoryId && item.floorId === currentFloorId && item.recordStatus === 'active');
-    if (!floor) return Object.freeze({ status: 'pending', reason: 'currentFloorMissing' });
-    if (!memory) return Object.freeze({ status: 'pending', reason: 'currentMemoryMissing' });
-    if (oldDelta.floorId !== oldFloorId || oldDelta.floorMemoryId !== oldMemoryId) return Object.freeze({ status: 'pending', reason: 'oldDeltaLinkMismatch' });
-    if (oldDelta.source?.promptVersion !== CSE_PROMPT_VERSION) return Object.freeze({ status: 'pending', reason: 'csePromptVersionChanged' });
-    if (oldDelta.source?.compilerVersion !== CSE_COMPILER_VERSION) return Object.freeze({ status: 'pending', reason: 'cseCompilerVersionChanged' });
-    const promptSnapshot = typeof promptGuidance === 'function' ? promptGuidance() : promptGuidance;
-    const promptFingerprint = `sha256:${await sha256(String(promptSnapshot ?? ''))}`;
-    if (typeof oldDiagnostics.promptGuidanceFingerprint !== 'string') return Object.freeze({ status: 'pending', reason: 'csePromptUnproven' });
-    if (oldDiagnostics.promptGuidanceFingerprint !== promptFingerprint) return Object.freeze({ status: 'pending', reason: 'promptChanged' });
-    const oldBaselineResult = typeof store.readRecord === 'function' ? await store.readRecord('baseline', oldDelta.baselineId) : null;
-    const oldBaseline = oldBaselineResult?.status === 'ready' && await verifyCseBaselineFingerprint(oldBaselineResult.data) ? oldBaselineResult.data : null;
-    if (!oldBaseline) return Object.freeze({ status: 'pending', reason: 'oldBaselineUnproven' });
-    if (!current?.baseline) {
-      const captured = await captureCseBaseline({
-        hostAdapter, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, entities: current.entities,
-        sanitizerOptions: typeof sanitizerOptions === 'function' ? sanitizerOptions() : sanitizerOptions, now: nowIso(now),
-      });
-      if (JSON.stringify(baselineSemanticPayload(captured.baseline)) !== JSON.stringify(baselineSemanticPayload(oldBaseline))) {
-        return Object.freeze({ status: 'pending', reason: 'baselineChanged' });
-      }
-      const baselineOperation = { epoch, controller: new AbortController(), startedAt: nowIso(now) };
-      current = await ensureBaseline(current, baselineOperation);
-      reachable = current;
-      floor = current?.floors?.find(item => item.id === currentFloorId);
-      memory = current?.floorMemories?.find(item => item.id === currentMemoryId && item.floorId === currentFloorId && item.recordStatus === 'active');
-      if (!floor || !memory || !current?.baseline
-        || JSON.stringify(baselineSemanticPayload(current.baseline)) !== JSON.stringify(baselineSemanticPayload(oldBaseline))) {
-        return Object.freeze({ status: 'pending', reason: 'baselineChangedDuringAttach' });
-      }
-    } else if (current.baseline.id !== oldDelta.baselineId
-      && JSON.stringify(baselineSemanticPayload(current.baseline)) !== JSON.stringify(baselineSemanticPayload(oldBaseline))) {
-      return Object.freeze({ status: 'pending', reason: 'baselineChanged' });
-    }
-    const bindBaselineEntity = (oldId, currentId) => {
-      const mapped = entityMap.get(oldId);
-      if (mapped && mapped !== currentId) return false;
-      entityMap.set(oldId, currentId);
-      return true;
-    };
-    if (!bindBaselineEntity(oldBaseline.userPersona.entityId, current.baseline.userPersona.entityId)
-      || !bindBaselineEntity(oldBaseline.characterCard.entityId, current.baseline.characterCard.entityId)) {
-      return Object.freeze({ status: 'pending', reason: 'baselineEntityChanged' });
-    }
-    const proofSources = await captureCseRequestSources({
-      hostAdapter, baseline: oldBaseline, floor, expectedChatId: current.root.chatId, filterWorldInfoSources,
-      sanitizerOptions: typeof sanitizerOptions === 'function' ? sanitizerOptions() : sanitizerOptions,
-    });
-    if (!oldDiagnostics.sourceSelection?.sourceFingerprint
-      || oldDiagnostics.sourceSelection.sourceFingerprint !== proofSources.diagnostics.sourceFingerprint) {
-      return Object.freeze({ status: 'pending', reason: 'sourcesChanged' });
-    }
-    const requestSources = current.baseline.id === oldBaseline.id ? proofSources : await captureCseRequestSources({
-      hostAdapter, baseline: current.baseline, floor, expectedChatId: current.root.chatId, filterWorldInfoSources,
-      sanitizerOptions: typeof sanitizerOptions === 'function' ? sanitizerOptions() : sanitizerOptions,
-    });
-    const targetIndex = current.floors.findIndex(item => item.id === currentFloorId);
-    if (targetIndex < 0) return Object.freeze({ status: 'pending', reason: 'targetMissing' });
-    const precedingFloors = current.floors.slice(0, targetIndex);
-    const precedingIds = new Set(precedingFloors.map(item => item.id));
-    const currentPrefix = filterReachableDeltas({ floors: precedingFloors, floorMemories: current.floorMemories, stateDeltas: current.stateDeltas });
-    const oldFloorOrder = new Map(priorStateDeltas.map((delta, index) => [delta.floorId, index]));
-    const priorPrefix = priorStateDeltas.filter(delta => delta.floorId !== oldFloorId && oldFloorOrder.has(delta.floorId));
-    if (currentPrefix.length !== priorPrefix.length || currentPrefix.some((delta, index) => delta.id !== priorPrefix[index]?.id)) {
-      return Object.freeze({ status: 'pending', reason: 'previousStateChanged' });
-    }
-    const mapEntity = id => typeof id === 'string' ? entityMap.get(id) ?? id : id;
-    const timestamp = nowIso(now);
-    const deltaId = await deterministicUuid(['v3-cse-recovered-delta', current.root.headCheckpointId, currentFloorId, currentMemoryId, oldDelta.id]);
-    const subjects = [];
-    for (const subject of oldDelta.subjectSnapshots) {
-      const rebound = { ...subject, subjectEntityId: mapEntity(subject.subjectEntityId) };
-      for (const category of ['core', 'adaptive', 'situational']) {
-        rebound[category] = [];
-        for (const [index, item] of subject[category].entries()) {
-          const belongsToTarget = item.sourceDeltaId === oldDelta.id || item.sourceFloorId === oldFloorId;
-          rebound[category].push({
-            ...item,
-            id: belongsToTarget ? await deterministicUuid(['v3-cse-recovered-item', deltaId, rebound.subjectEntityId, category, index, item.id]) : item.id,
-            towardEntityId: mapEntity(item.towardEntityId),
-            sourceFloorId: belongsToTarget ? currentFloorId : item.sourceFloorId,
-            sourceDeltaId: belongsToTarget ? deltaId : item.sourceDeltaId,
-          });
-        }
-      }
-      subjects.push(rebound);
-    }
-    const source = structuredClone(oldDelta.source);
-    if (Array.isArray(source.calibrationAudit)) source.calibrationAudit = source.calibrationAudit.map(entry => ({
-      ...entry,
-      subjectEntityId: mapEntity(entry.subjectEntityId),
-      previousTowardEntityId: mapEntity(entry.previousTowardEntityId),
-      towardEntityId: mapEntity(entry.towardEntityId),
-    }));
-    if (Array.isArray(source.manualSubjectEntityIds)) source.manualSubjectEntityIds = source.manualSubjectEntityIds.map(mapEntity);
-    const delta = validateStateDeltaRecord({
-      ...oldDelta,
-      id: deltaId,
-      narrativeGeneration: current.root.narrativeGeneration,
-      floorId: currentFloorId,
-      floorMemoryId: currentMemoryId,
-      baselineId: current.baseline.id,
-      previousCurrentStateId: current.currentStates.at(-1)?.id ?? null,
-      subjectSnapshots: subjects,
-      fingerprint: `sha256:${await sha256(JSON.stringify([currentFloorId, currentMemoryId, subjects, oldDelta.noMaterialChange]))}`,
-      source,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      supersedes: oldDelta.id,
-    }, { expectedChatId: current.root.chatId });
-    const operation = { floorId: currentFloorId, floorMemoryId: currentMemoryId, epoch, controller: new AbortController(), runId: await deterministicUuid(['v3-cse-recovery-run', current.root.headCheckpointId, deltaId]), startedAt: timestamp, phase: 'committing' };
-    const roleEntities = await createBaselineRoleEntities(current.baseline);
-    const entitiesById = new Map(current.entities.map(entity => [entity.id, entity]));
-    for (const entity of roleEntities) if (!entitiesById.has(entity.id)) entitiesById.set(entity.id, entity);
-    await commitDeltaGraph({ operation, current, floor, memory, delta, deltas: [...currentPrefix, delta], entities: [...entitiesById.values()], diagnostics: { kind: 'cseRecovery', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, promptGuidanceFingerprint: promptFingerprint, sourceSelection: requestSources.diagnostics, recoveredFromDeltaId: oldDelta.id, cseRebuild: null } });
-    return Object.freeze({ status: 'restored', deltaId });
-  }
-
   function cancelActive() {
     if (!active) return false;
     epoch += 1;
@@ -571,5 +420,5 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     return true;
   }
   function invalidate() { epoch += 1; active?.controller.abort(); active = null; reachable = null; replayed = null; lastFailure = null; replayDiagnostic = null; notify(); }
-  return Object.freeze({ load, analyzeFloor, analyzeNext, correctSubjectState, restoreRecoveredDelta, cancelActive, invalidate, getState, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
+  return Object.freeze({ load, analyzeFloor, analyzeNext, correctSubjectState, cancelActive, invalidate, getState, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

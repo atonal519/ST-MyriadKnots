@@ -1621,6 +1621,11 @@ test('legacy root manifest 缺项只进入 needsReseal，重封口后恢复精�
   const review = await runtime.inspect('coldLegacyIndex');
   assert.equal(review.status, 'needsReview');
   assert.deepEqual(review.reviewReason, { code: 'indexNeedsReseal', assistantSeq: null, messageIndex: null, expectedCount: null, actualCount: null });
+  const putsBeforeCachedInspect = h.backend.calls.filter(call => call[0] === 'put').length;
+  const cachedReview = await runtime.inspect('cachedLegacyIndex', { allowCached: true });
+  assert.equal(cachedReview.status, 'needsReview');
+  assert.deepEqual(cachedReview.reviewReason, review.reviewReason);
+  assert.equal(h.backend.calls.filter(call => call[0] === 'put').length, putsBeforeCachedInspect, '缓存检查不得自动重封口');
   assert.equal((await runtime.start()).status, 'ready');
   const upgraded = await store.readReachable();
   assert.equal(upgraded.status, 'ready');

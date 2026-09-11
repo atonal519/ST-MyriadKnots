@@ -1,5 +1,6 @@
 import { deriveCseTimeline, filterReachableDeltas, replayCurrentState } from './cse-engine.js';
 import { assessMemoryCoverageFromHost } from './memory-coverage.js';
+import { buildEntityIdentityDirectory } from './entity-identity.js';
 
 const safeText = (value, maximum = 4000) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
 const aliasText = alias => safeText(typeof alias === 'string' ? alias : alias?.name, 500);
@@ -122,9 +123,10 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     if (active.length === 1) activeMemories.push(active[0]);
   }
   const activeMemoryIds = new Set(activeMemories.map(memory => memory.id));
-  const degradedReasons = [];
+  const degradedReasons = first.cseUnavailable === true ? ['cseReplayUnavailable'] : [];
   let trustedDeltas = [], replayed = null, cseTimeline = [];
   try {
+    if (first.cseUnavailable === true) throw new TypeError('V3_RECALL_CSE_UNAVAILABLE');
     trustedDeltas = filterReachableDeltas({ floors, floorMemories: first.floorMemories ?? [], stateDeltas: first.stateDeltas ?? [] });
     cseTimeline = deriveCseTimeline(trustedDeltas);
     if (first.baseline) {
@@ -135,14 +137,15 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     trustedDeltas = [];
     replayed = null;
     cseTimeline = [];
-    degradedReasons.push('cseReplayUnavailable');
+    if (!degradedReasons.includes('cseReplayUnavailable')) degradedReasons.push('cseReplayUnavailable');
   }
-  const entities = Object.freeze((first.entities ?? []).filter(entity => entity.recordStatus === 'active' && entity.status !== 'merged' && entity.status !== 'invalidated').map(entity => Object.freeze({
-    entityId: entity.id,
-    entityType: entity.entityType,
-    displayName: safeText(entity.displayName, 500),
-    aliases: Object.freeze([...new Set((entity.aliases ?? []).map(aliasText).filter(Boolean))]),
-    specialRole: entity.specialRole,
+  const identityDirectory = buildEntityIdentityDirectory({ entities: first.entities ?? [] });
+  const entities = Object.freeze(identityDirectory.map(entry => Object.freeze({
+    entityId: entry.entityId,
+    entityType: entry.entityType,
+    displayName: safeText(entry.displayName, 500),
+    aliases: Object.freeze([...new Set(entry.aliases.map(aliasText).filter(Boolean))]),
+    specialRole: entry.specialRole,
   })));
   const floorSeq = new Map(floors.map(floor => [floor.id, floor.assistantSeq]));
   const readiness = hostSnapshot ? await assessMemoryCoverageFromHost({ reachable: first, snapshot: hostSnapshot, sanitizerOptions, captureGuard: true, realtimeOrigin }) : null;
@@ -192,7 +195,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
 
 export async function readRecallSource({ store, now = () => new Date(), hostSnapshot = null, sanitizerOptions = {}, realtimeOrigin = false } = {}) {
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall source store 无效');
-  const source = await store.readReachable({ mode: 'projection' });
+  const source = await store.readReachable({ mode: 'projection', allowRecallCseFallback: true });
   const attempts = exitPoint => Object.freeze({ reachableReads: 1, exitPoint });
   if (!['ready', 'needsReseal'].includes(source?.status) || !source.root || !source.checkpoint) {
     const exitPoint = source?.status === 'stale' ? 'stale' : 'unavailable';

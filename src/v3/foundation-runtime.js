@@ -399,7 +399,11 @@ export function createFoundationRuntime({
       if (allowCached && !lastError && cacheMatchesCandidates(candidates)) {
         inspectedStableCount = cache.floors.length;
         updateCandidateProjection(candidates, cache.floors, inspectedStableCount);
-        return publish(lastError ? 'error' : 'ready');
+        if (cache.status === 'needsReseal') {
+          reviewReason = Object.freeze({ code: 'indexNeedsReseal', assistantSeq: null, messageIndex: null, expectedCount: null, actualCount: null });
+          return publish('needsReview');
+        }
+        return publish('ready');
       }
       const loaded = await store.readReachable({ mode: 'projection' });
       if (inspectEpoch !== sessionEpoch) return publicState;

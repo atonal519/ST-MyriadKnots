@@ -96,7 +96,7 @@ async function actualCseReceipt() {
   const userMessage = { is_user: true, is_system: false, mes: '阿裴，我们回钟楼赴约。' };
   const chat = [{ is_user: false, is_system: false, mes: '当前正文' }, userMessage];
   const context = { chatMetadata: { qianqianjie: { chatId } }, constants: { promptTypes: { IN_CHAT: 1 }, promptRoles: { SYSTEM: 0 } }, setExtensionPrompt() {}, async saveChat() {} };
-  const runtime = createV3RecallRuntime({ store: { readReachable: async () => structuredClone(reachable) }, hostAdapter: { snapshot: () => ({ context, chat }) }, sourceReader: ({ now }) => readRecallSource({ store: { readReachable: async () => structuredClone(reachable) }, now }), selector: selectRecall, now: () => new Date('2026-09-10T00:00:00.000Z'), logger: { warn() {} } });
+  const runtime = createV3RecallRuntime({ store: { readReachable: async () => structuredClone(reachable) }, hostAdapter: { snapshot: () => ({ context, chat }) }, sourceReader: ({ now }) => readRecallSource({ store: { readReachable: async () => structuredClone(reachable) }, now }), selector: selectRecall, pluginVersion: '0.1.8-test', now: () => new Date('2026-09-10T00:00:00.000Z'), logger: { warn() {} } });
   const state = await runtime.intercept(chat, 12000, null, 'normal');
   assert.equal(state.lastRecall.status, 'ready');
   return { chat, userMessage, receipt: userMessage.extra[RECALL_RECEIPT_KEY] };
@@ -308,12 +308,20 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
   assert.match(aiView.root.children[0].textContent, /background:transparent/); assert.match(aiView.root.children[0].textContent, /border:1px solid var\(--qqj-inline-line\)/); assert.match(aiView.root.children[0].textContent, /border-left:2px solid var\(--qqj-inline-knot\)/); assert.match(aiView.root.children[0].textContent, /\.knot\{/);
   assert.match(aiView.root.children[0].textContent, /\.mark\{position:absolute;left:0;top:18px/); assert.doesNotMatch(aiView.root.children[0].textContent, /border-left:1px dashed/);
   assert.match(aiView.root.children[0].textContent, /grid-template-columns:minmax\(0,1fr\) auto/); assert.match(aiView.root.children[0].textContent, /\.title\{[^}]*font-size:12px/);
+  assert.match(aiView.root.children[0].textContent, /\.state-items,\.cse-change-items\{display:none;/);
+  assert.match(aiView.root.children[0].textContent, /\.states\[open\]>\.state-items,\.cse-changes\[open\]>\.cse-change-items\{display:grid\}/);
   assert.equal(aiView.root.querySelectorAll('.chevron').length, 0); assert.equal(aiView.status.className, 'status ready'); assert.equal(userView.status.className, 'status');
   assert.match(aiView.root.children[0].textContent, /\.status\.running\{/); assert.match(aiView.root.children[0].textContent, /\.status\.review\{/); assert.match(aiView.root.children[0].textContent, /\.status\.error\{/);
   assert.equal(aiView.extract.title, '重新提取第 1 个结摘要'); assert.equal(aiView.extract.getAttribute('aria-label'), '重新提取第 1 个结摘要'); assert.equal(aiView.extract.textContent, '\uf2f1');
-  const rootIdentity = aiView.root, summaryIdentity = aiView.summary; aiView.toggle.emit('click'); assert.equal(aiView.body.hidden, false); assert.equal(aiView.host.getAttribute('data-open'), 'true'); userView.states.open = true; recallGroup.open = true; recallGroup.emit('toggle');
+  const rootIdentity = aiView.root, summaryIdentity = aiView.summary;
+  const stateItemCount = userView.stateItems.children.length, cseChangeItemCount = userView.cseChangeItems.children.length;
+  aiView.toggle.emit('click'); assert.equal(aiView.body.hidden, false); assert.equal(aiView.host.getAttribute('data-open'), 'true'); userView.states.open = true; recallGroup.open = true; recallGroup.emit('toggle');
   h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
-  assert.equal(aiView.root, rootIdentity); assert.equal(aiView.summary, summaryIdentity); assert.equal(aiView.body.hidden, false); assert.equal(userView.states.open, true, '人物状态分组折叠状态需保留'); assert.equal(recallGroup.open, true, '相同回执刷新不能关闭已展开的来源组');
+  assert.equal(aiView.root, rootIdentity); assert.equal(aiView.summary, summaryIdentity); assert.equal(aiView.body.hidden, false); assert.equal(userView.states.open, true, '人物状态分组展开状态需保留'); assert.notEqual(userView.cseChanges.open, true, '人物状态历史变化的关闭状态需保留'); assert.equal(recallGroup.open, true, '相同回执刷新不能关闭已展开的来源组');
+  userView.states.open = false; userView.cseChanges.open = true;
+  h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
+  assert.equal(userView.states.open, false, '人物状态分组关闭状态需保留'); assert.equal(userView.cseChanges.open, true, '人物状态历史变化的展开状态需保留');
+  assert.equal(userView.stateItems.children.length, stateItemCount); assert.equal(userView.cseChangeItems.children.length, cseChangeItemCount, '折叠切换与刷新不得重复内容');
 });
 
 test('真实schema12剧情线回执经inline投影与renderer按时序显示完整私密变化及宿主楼号', async () => {
@@ -495,7 +503,7 @@ test('重新提取按钮与折叠按钮互不影响，同次点击只调用一�
   h.renderer.start(); await h.flushMicrotasks();
   const host = h.chatRoot.querySelector('[data-qqj-inline-host="true"]'), view = host.__qqjInlineCard;
   view.toggle.emit('click'); const open = view.expanded; view.extract.emit('click'); view.extract.emit('click');
-  assert.deepEqual(h.extractionCalls, [['floor-1', { analyzeState: false }]]); assert.equal(view.expanded, open); assert.equal(view.extract.disabled, true);
+  assert.deepEqual(h.extractionCalls, [['floor-1']]); assert.equal(view.expanded, open); assert.equal(view.extract.disabled, true);
   rejectExtraction(Object.assign(new Error('失败'), { code: 'TEST_REJECT' })); await h.flushMicrotasks();
   assert.equal(view.extract.disabled, false); assert.equal(view.root, host.shadowRoot); assert.equal(view.expanded, open);
 });

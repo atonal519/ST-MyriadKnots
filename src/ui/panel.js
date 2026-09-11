@@ -250,7 +250,7 @@ export function createPanel({
     const autoHideInput = element('input'); autoHideInput.type = 'checkbox'; autoHideInput.checked = settings.get().autoHideEnabled === true;
     autoHideToggle.append(autoHideInput, element('span', '', '自动隐藏已记忆旧楼'));
     const keepRow = element('label', 'qqj-auto-hide-row');
-    keepRow.append(element('span', '', '隐藏 AI 楼层数'));
+    keepRow.append(element('span', '', '保留最近 AI 楼数'));
     const keepInput = element('input', 'settings-input settings-num'); keepInput.type = 'number'; keepInput.min = '1'; keepInput.max = '50'; keepInput.step = '1'; keepInput.value = String(settings.get().autoHideKeepAiCount ?? 3);
     keepRow.append(keepInput);
     const autoHideResult = element('p', 'settings-result');
