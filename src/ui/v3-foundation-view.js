@@ -918,7 +918,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   function render(state = runtime.getState()) {
     const adopted = adoptFoundationState(state).state;
     renderAdopted(syncingDisplayState(adopted));
-    if (syncingChatId === adopted?.chatId) applySyncingPresentation();
+    if (syncingChatId && syncingChatId === adopted?.chatId) applySyncingPresentation();
   }
   function receiveFoundation(snapshot) {
     if (snapshot?.memorySnapshotStatus === 'syncing' && snapshot?.chatId && snapshot.chatId === foundationState?.chatId) {

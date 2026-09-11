@@ -4,7 +4,7 @@ import { is_send_press as r, saveSettingsDebounced as i } from "/script.js";
 import { is_group_generating as a } from "/scripts/group-chats.js";
 import { loadWorldInfo as o, selected_world_info as s, world_info as c, world_info_case_sensitive as l, world_info_match_whole_words as u, world_names as d } from "/scripts/world-info.js";
 //#region manifest.json
-var f = "0.1.10", p = "qianqianjie", m = "/api/plugins/st-bainiaodata";
+var f = "0.1.11", p = "qianqianjie", m = "/api/plugins/st-bainiaodata";
 //#endregion
 //#region src/backend-client.js
 function h(e) {
@@ -10566,7 +10566,7 @@ function Ys({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 	};
 	function Ne(t = e.getState()) {
 		let n = fe(t).state;
-		Ae(je(n)), O === n?.chatId && Me();
+		Ae(je(n)), O && O === n?.chatId && Me();
 	}
 	function Pe(e) {
 		if (e?.memorySnapshotStatus === "syncing" && e?.chatId && e.chatId === S?.chatId) {

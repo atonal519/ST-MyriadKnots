@@ -61,6 +61,41 @@ test('管理视图先显示壳并在激活时自动刷新，只在管理页提�
   assert.match(copy, /补齐缺失.*完全重构/);
 });
 
+test('未建档聊天的空同步 ID 不误锁刷新与显式补齐', async () => {
+  const state = {
+    status: 'uninitialized', pluginEnabled: true, chatId: null, headCheckpointId: null,
+    foundationStatus: 'uninitialized', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle',
+    stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, activeRun: null,
+    memoryWorkBusy: false, activeAutoMemory: null, activeExtraction: null, activeCse: null,
+    lastError: null, lastExtractorError: null, lastCseError: null,
+    rebuildStatus: 'pendingRebuild', rebuildHasActionableWork: true, floors: [],
+  };
+  let refreshes = 0, rebuilds = 0;
+  const runtime = {
+    getState: () => state,
+    refreshStatus: async () => { refreshes += 1; return state; },
+    confirmLatest: async () => state,
+    startHistoricalRebuild: async () => { rebuilds += 1; return state; },
+  };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, documentRef });
+  view.mount(container);
+
+  let refresh = flatten(container).find(node => node.textContent === '刷新状态');
+  let rebuild = flatten(container).find(node => node.textContent === '补齐缺失');
+  assert.equal(refresh?.disabled, false, '空同步 ID 不代表当前聊天正在同步');
+  assert.equal(rebuild?.disabled, false, '未建档聊天必须保留显式建档入口');
+
+  refresh.click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(refreshes, 1, '刷新仍只调用既有 refreshStatus');
+
+  rebuild = flatten(container).find(node => node.textContent === '补齐缺失');
+  rebuild.click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(rebuilds, 1, '补齐仍调用既有 startHistoricalRebuild');
+});
+
 test('needsReview 终态显示准确中文和安全原因，不向页面泄露内部状态值', async () => {
   const memory = { chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
   const state = { status: 'needsReview', pluginEnabled: true, chatId: CHAT, foundationStatus: 'needsReview', reviewReason: { code: 'fingerprintMismatch', assistantSeq: 12, messageIndex: 23, expectedCount: 12, actualCount: 12, markerStatus: 'none', rawFingerprintMatches: false, canonicalFingerprintMatches: false, sanitizerFingerprintMatches: true }, stableCount: 1, rememberedCount: 1, unprocessedCount: 0, pending: null, headCheckpointId: null, lastError: null, lastExtractorError: null, lastCseError: null, floors: [{ floorId: 'floor', assistantSeq: 1, messageIndex: 2, status: 'ready', memoryId: 'memory', summary: 'needsReview 下仍可见的摘要', summarySource: 'ai', aiSummary: 'needsReview 下仍可见的摘要', counts: {}, memory }], memoryEntities: [{ entityId: 'p1', displayName: '裴晚生' }], cseSubjects: [{ subjectEntityId: 'p1', displayName: '裴晚生', core: [], adaptive: [], situational: [{ text: 'needsReview 下仍可见的人物状态', visibility: 'private', reason: '当时证据', sourceAssistantSeq: 1 }] }], memoryWorkBusy: false, cseReady: true, csePendingCount: 0, cseFailedCount: 0 };
