@@ -127,9 +127,8 @@ export function assessMemoryCoverage({ reachable, snapshot, hostCandidates, real
     canonicalFingerprint: candidate.canonicalFingerprint,
   })));
   const memoryByFloor = activeMemoriesByFloor(reachable);
-  let summaryCompleted = 0;
-  while (summaryCompleted < floors.length && memoryByFloor.has(floors[summaryCompleted].id)) summaryCompleted += 1;
-  const summaryPending = floors.slice(summaryCompleted);
+  const summaryCompleted = floors.filter(floor => memoryByFloor.has(floor.id)).length;
+  const summaryPending = floors.filter(floor => !memoryByFloor.has(floor.id));
   const summaryPendingFloorIds = Object.freeze([
     ...summaryPending.map(floor => floor.id),
     ...unregisteredSummaryRefs.map(ref => ref.floorId),
@@ -146,7 +145,8 @@ export function assessMemoryCoverage({ reachable, snapshot, hostCandidates, real
   const summaryRealtimeProtected = summaryPending.length > 0 && (realtimeOrigin === true
     || summaryCompleted > 0
     || summaryPending.every(floor => recent.has(floor.hostLocator.messageIndex) && visibleAssistant(snapshot.chat[floor.hostLocator.messageIndex])));
-  const summaryHasPartialWork = summaryPending.some(floor => memoryByFloor.has(floor.id));
+  const firstSummaryGap = floors.findIndex(floor => !memoryByFloor.has(floor.id));
+  const summaryHasPartialWork = firstSummaryGap >= 0 && floors.slice(firstSummaryGap + 1).some(floor => memoryByFloor.has(floor.id));
   const branchRebuild = reachable.run?.mode === 'branchReplay';
   const summaryStatus = !summaryPending.length && !unregisteredSummaryRefs.length
     ? 'caughtUp'
@@ -157,15 +157,8 @@ export function assessMemoryCoverage({ reachable, snapshot, hostCandidates, real
   } catch {
     return Object.freeze({ status: 'unknown', hostConfirmed: true, completed: 0, total: floors.length, nextAssistantSeq: floors[0]?.assistantSeq ?? null, pendingFloorIds: Object.freeze(floors.map(floor => floor.id)), realtimeProtected: false, hasPartialWork: false, summaryStatus, summaryCompleted, summaryNextAssistantSeq: summaryPending[0]?.assistantSeq ?? unregisteredSummaryRefs[0]?.assistantSeq ?? null, summaryPendingFloorIds, summaryMissingFloorIds, visibleSummaryFloorIds, summaryRealtimeProtected, summaryHasPartialWork, unregisteredSummaryRefs });
   }
-  let completed = 0;
-  while (completed < floors.length) {
-    const floor = floors[completed];
-    const memory = memoryByFloor.get(floor.id);
-    const delta = deltaByFloor.get(floor.id);
-    if (!memory || !delta || delta.floorMemoryId !== memory.id) break;
-    completed += 1;
-  }
-  const pending = floors.slice(completed);
+  const completed = floors.filter(floor => memoryByFloor.has(floor.id) && deltaByFloor.has(floor.id)).length;
+  const pending = floors.filter(floor => !memoryByFloor.has(floor.id) || !deltaByFloor.has(floor.id));
   if (!pending.length && !unregisteredSummaryRefs.length) return Object.freeze({ status: 'caughtUp', hostConfirmed: true, completed, total: floors.length, nextAssistantSeq: null, pendingFloorIds: Object.freeze([]), realtimeProtected: false, hasPartialWork: false, summaryStatus: 'caughtUp', summaryCompleted, summaryNextAssistantSeq: null, summaryPendingFloorIds: Object.freeze([]), summaryMissingFloorIds, visibleSummaryFloorIds, summaryRealtimeProtected: false, summaryHasPartialWork: false, unregisteredSummaryRefs });
   const realtimeProtected = realtimeOrigin === true
     || pending.every(floor => recent.has(floor.hostLocator.messageIndex) && visibleAssistant(snapshot.chat[floor.hostLocator.messageIndex]));

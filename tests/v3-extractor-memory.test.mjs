@@ -211,7 +211,7 @@ async function seedMiddleSummaryGap() {
   const lastFloorId = seed.runtime.getState().floors.at(-1).floorId;
   await seed.runtime.extractFloor(lastFloorId, { analyzeState: false });
   await seed.runtime.editSummary(firstFloorId, '修订前缀摘要以形成最早 CSE 待办');
-  assert.equal(seed.runtime.getState().summaryCompletedCount, 1);
+  assert.equal(seed.runtime.getState().summaryCompletedCount, 2);
   assert.equal(seed.runtime.getState().rememberedCount, 2);
   seed.calls.splice(0);
   return seed;
@@ -1442,7 +1442,7 @@ test('已有聊天启动、绑定、面板刷新与开启自动维护都只检�
   assert.deepEqual(h.calls.map(call => call.systemPrompt), Array.from({ length: 5 }, () => [EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]).flat());
 });
 
-test('重建展示进度按正式 memory/delta 连续前缀逐楼推进，无变化 delta 计数且记忆重算从缺口截断', async () => {
+test('重建展示进度按各楼 memory/delta 独立完成计数，摘要重提不使后楼失效', async () => {
   const h = harness({
     initialChat: [user('开始'), assistant('历史一'), assistant('历史二'), assistant('历史三'), assistant('待确认尾楼')],
     automation: { enabled: true, batchSize: 3 },
@@ -1472,10 +1472,10 @@ test('重建展示进度按正式 memory/delta 连续前缀逐楼推进，无变
   const oldMemoryId = state.floors[1].memoryId;
   state = await h.runtime.extractFloor(secondFloorId);
   assert.notEqual(state.floors[1].memoryId, oldMemoryId);
-  assert.deepEqual(state.cseFloors.map(item => item.status), ['noChange', 'noChange', 'pending']);
-  assert.equal(state.rebuildCompletedCount, 2);
+  assert.deepEqual(state.cseFloors.map(item => item.status), ['noChange', 'noChange', 'noChange']);
+  assert.equal(state.rebuildCompletedCount, 3);
   assert.equal(state.rebuildTotalCount, 3);
-  assert.equal(state.rebuildNextAssistantSeq, 3);
+  assert.equal(state.rebuildNextAssistantSeq, null);
 
   h.runtime.invalidate();
   state = h.runtime.getState();
@@ -1659,7 +1659,7 @@ test('历史按钮单楼失败后继续保存独立后楼并撤销授权；刷�
   assert.equal(h.runtime.getState().rebuildStatus, 'partial');
   assert.equal(h.runtime.shouldBlockMainGeneration(), false, '历史重建失败后必须立即释放主生成门禁');
   assert.equal(h.runtime.getState().rememberedCount, 2, '失败楼后的独立摘要仍应在同批保存');
-  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 1, '固定逐楼处理时第一楼的 CSE 已提交');
+  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 2, '摘要失败不阻断另外两楼独立提交 CSE');
   const callsAtFailure = h.calls.length;
   await h.runtime.refreshAutomation();
   await h.runtime.refreshStatus();
@@ -1726,7 +1726,7 @@ test('编辑器保存后 canonical 正文相同不产生 divergence，也不调�
   assert.equal(h.calls.length, 0);
 });
 
-test('同楼隐藏时间戳变化不撤销已存时间，明确重提后才更新 chronology 与 CSE', async () => {
+test('同楼隐藏时间戳变化不撤销已存时间，摘要与 CSE 分别显式重提', async () => {
   const stamped = (start, end) => `<!-- QQJ-start | date=10月4日 | weekday=周二 | time=${start} -->裴晚生在钟楼等你。<!-- QQJ-end | date=10月4日 | weekday=周二 | time=${end} -->`;
   const cseInputs = [];
   const h = harness({
@@ -1753,7 +1753,10 @@ test('同楼隐藏时间戳变化不撤销已存时间，明确重提后才更�
   state = h.runtime.getState(); floor = state.floors[0];
   assert.match(floor.memory.chronology[0].time.sourceText, /18:10.*18:40/);
   assert.doesNotMatch(floor.memory.chronology[0].time.sourceText, /15:30/);
-  assert.equal(cseInputs.length, cseCallsBeforeRetry + 1, '新时间戳重提后必须真正再调用一次 CSE');
+  assert.equal(cseInputs.length, cseCallsBeforeRetry, '摘要重提不得自动重算已存 CSE');
+  await h.runtime.retryStateAnalysis(floor.floorId);
+  state = h.runtime.getState(); floor = state.floors[0];
+  assert.equal(cseInputs.length, cseCallsBeforeRetry + 1, '显式人物状态重分析才调用一次 CSE');
   assert.match(JSON.stringify(cseInputs.at(-1)), /18:10.*18:40/);
   assert.doesNotMatch(JSON.stringify(cseInputs.at(-1)), /15:30.*16:00/);
   assert.equal(floor.cse.status, 'noChange');
@@ -2222,7 +2225,7 @@ test('残缺同楼时间戳进入同次提取并作非 exact 兜底，前序参�
   assert.notEqual(memory.chronology[0].time.precision, 'exact');
 });
 
-test('时间、地点、人物与摘要一次保存，保留原有 ID/证据并让旧 CSE 失效，新 runtime 回读一致', async () => {
+test('时间、地点、人物与摘要一次保存，保留原有 ID/证据及已落盘 CSE，新 runtime 回读一致', async () => {
   const backend = backendHarness();
   const h = harness({ sharedBackend: backend, utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
     ? { jsonData: { summary: '原摘要', time: [{ sourceText: '当晚', description: '事情发生于当晚', evidence: '裴晚生提醒你带伞。' }], locations: [{ name: '钟楼', change: 'entered', people: ['裴晚生', '你'], evidence: '裴晚生提醒你带伞。' }], people: [{ name: '裴晚生', presence: 'present', evidence: '裴晚生提醒你带伞。' }, { name: '你', role: 'user', presence: 'present', evidence: '裴晚生提醒你带伞。' }] } }
@@ -2233,6 +2236,7 @@ test('时间、地点、人物与摘要一次保存，保留原有 ID/证据并�
   const chronologyId = memory.chronology[0].itemId, locationId = memory.locations[0].itemId;
   const oldChronologyEvidence = structuredClone(memory.chronology[0].evidenceRefs), oldLocation = structuredClone(memory.locations[0]);
   const oldParticipantEvidence = new Map(memory.participants.map(item => [item.entityId, structuredClone(item.evidenceRefs)]));
+  const oldDeltaId = floor.cse.deltaId;
   await h.runtime.editMemory(floor.floorId, {
     summary: '修订后摘要',
     timeText: '次日清晨', timeChanged: true,
@@ -2249,7 +2253,8 @@ test('时间、地点、人物与摘要一次保存，保留原有 ID/证据并�
   for (const participant of memory.participants.slice(0, 2)) assert.deepEqual(participant.evidenceRefs, oldParticipantEvidence.get(participant.entityId));
   assert.equal(memory.participants[2].presence, 'mentioned'); assert.deepEqual(memory.participants[2].evidenceRefs, []);
   assert.ok(state.memoryEntities.some(item => item.displayName === '新路人'));
-  assert.equal(floor.cse.status, 'pending');
+  assert.equal(floor.cse.deltaId, oldDeltaId);
+  assert.equal(floor.cse.status, 'noChange');
 
   const reloaded = harness({ sharedBackend: backend, sharedContext: h.context, utility: () => { throw new Error('回读不应调用 AI'); } });
   await reloaded.runtime.start();
@@ -2460,7 +2465,7 @@ test('中间摘要断档只读检查按实际缺失楼计数，后方已有摘�
     });
     await resumed.runtime.start();
     const state = resumed.runtime.getState();
-    assert.equal(state.summaryCompletedCount, 1);
+    assert.equal(state.summaryCompletedCount, 2);
     assert.equal(state.rememberedCount, 2);
     assert.equal(state.unprocessedCount, 1, '后方已有摘要不得重复计入摘要缺口');
     assert.equal(state.rebuildStatus, 'pendingRebuild');
@@ -2630,7 +2635,7 @@ test('CSE 失败不再拖停后续摘要，同一稳定快照只有限尝试且�
   assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 5, '手动继续只按顺序补两处人物状态');
 });
 
-test('启动只检查已有 CSE 欠账，手动继续按固定边界追完且普通刷新不重复失败输入', async () => {
+test('摘要人工修订不制造 CSE 欠账，重开与刷新均零模型调用', async () => {
   const initial = harness({
     initialChat: [user('开始'), assistant('第0楼'), assistant('第2楼'), assistant('第4楼'), assistant('稳定尾楼')],
     automation: { enabled: false, batchSize: 1 },
@@ -2644,48 +2649,22 @@ test('启动只检查已有 CSE 欠账，手动继续按固定边界追完且普
   const secondFloor = initial.runtime.getState().floors[1];
   await initial.runtime.editSummary(secondFloor.floorId, '用户修订但仍是有效摘要');
   assert.equal(initial.runtime.getState().summaryCompletedCount, 3);
-  assert.equal(initial.runtime.getState().rebuildCompletedCount, 1);
+  assert.equal(initial.runtime.getState().rebuildCompletedCount, 3);
 
-  const notifications = [];
   const resumed = harness({
     automation: { enabled: true, batchSize: 1 }, sharedBackend: initial.backend, sharedContext: initial.context,
-    notifyUser: value => notifications.push(value),
-    utility: options => {
-      assert.equal(options.systemPrompt, CSE_SYSTEM_PROMPT, '已有摘要的追赶不得重新调用 extractor');
-      return { jsonData: { noMaterialChange: true } };
-    },
+    utility: () => { throw new Error('已完成记录不应调用模型'); },
   });
   await resumed.runtime.start();
-  assert.equal(resumed.calls.length, 0, '启动只检查，不应自动追赶已有 CSE 欠账');
+  assert.equal(resumed.calls.length, 0);
   await resumed.runtime.startHistoricalRebuild();
   await waitFor(() => registeredGraphCaughtUp(resumed.runtime.getState()) && !resumed.runtime.getState().memoryWorkBusy);
-  assert.deepEqual(resumed.calls.map(call => call.systemPrompt), [CSE_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
-  assert.equal(resumed.runtime.getState().lastAutoMemory.cseProcessed, 2);
+  assert.deepEqual(resumed.calls, []);
+  assert.equal(resumed.runtime.getState().lastAutoMemory.cseProcessed ?? 0, 0);
   assert.equal(resumed.runtime.getState().lastAutoMemory.processed, 0);
-  assert.match(notifications.at(-1).text, /新增摘要 0 楼，补齐人物状态 2 楼/);
-
-  await resumed.runtime.editSummary(secondFloor.floorId, '再次修订以制造人物状态缺口');
-  let failedCalls = 0;
-  let failCatchup = true;
-  const failed = harness({
-    automation: { enabled: true, batchSize: 1 }, sharedBackend: initial.backend, sharedContext: initial.context,
-    notifyUser: value => notifications.push(value),
-    utility: options => { failedCalls += 1; assert.equal(options.systemPrompt, CSE_SYSTEM_PROMPT); if (failCatchup) throw new Error('模拟追赶失败'); return { jsonData: { noMaterialChange: true } }; },
-  });
-  await failed.runtime.start();
-  assert.equal(failedCalls, 0, '重新打开聊天只检查，不应自动重试失败欠账');
-  await failed.runtime.startHistoricalRebuild();
-  await waitFor(() => failed.runtime.getState().lastAutoMemory?.status === 'failed' && !failed.runtime.getState().memoryWorkBusy);
-  assert.equal(failedCalls, 1);
-  assert.match(notifications.at(-1).text, /人物状态分析失败/);
-  await failed.runtime.refreshStatus();
-  await failed.runtime.refreshAutomation();
-  assert.equal(failedCalls, 1, '相同失败输入的刷新与自动设置同步不得重复调用 CSE');
-  assert.equal(failed.runtime.getState().lastAutoMemory.status, 'failed', '失败状态与继续入口不得被重复调度覆盖成 waiting');
-  failCatchup = false;
-  await failed.runtime.retryAutomation();
-  await waitFor(() => registeredGraphCaughtUp(failed.runtime.getState()) && !failed.runtime.getState().memoryWorkBusy);
-  assert.equal(failedCalls, 3, '手动继续应从最早缺口恢复并顺序补完两楼');
+  await resumed.runtime.refreshStatus();
+  await resumed.runtime.refreshAutomation();
+  assert.deepEqual(resumed.calls, []);
 });
 
 test('启动与设置刷新只检查连续摘要尾账，手动继续才按楼补完摘要与 CSE', async () => {
@@ -2753,9 +2732,9 @@ test('首个 CSE 失败前已捕获摘要全部保存；提取失败跳过本楼
   await extractorFailed.runtime.start();
   completeTailSwipe(extractorFailed, '触发摘要失败的真实 roll');
   await waitFor(() => extractorFailed.runtime.getState().lastAutoMemory?.status === 'partial' && !extractorFailed.runtime.getState().memoryWorkBusy);
-  assert.equal(extractorFailed.runtime.getState().summaryCompletedCount, 2, '失败前成功的一楼摘要必须保留');
+  assert.equal(extractorFailed.runtime.getState().summaryCompletedCount, 3, '摘要完成数按实际已保存楼统计，包含失败楼之后的独立成功楼');
   assert.equal(extractorFailed.runtime.getState().rememberedCount, 3, '失败楼后的独立摘要仍应保存');
-  assert.equal(extractorFailed.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 1, '只补失败缺口前的连续 CSE，不得越过缺口');
+  assert.equal(extractorFailed.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 2, '摘要失败不阻断其它已有摘要楼的独立 CSE');
   assert.match(extractorNotifications.at(-1).text, /部分完成.*摘要仍需重试/);
   const callsAtFailure = extractorFailed.calls.length;
   const noticesAtFailure = extractorNotifications.length;
@@ -2769,6 +2748,51 @@ test('首个 CSE 失败前已捕获摘要全部保存；提取失败跳过本楼
   await extractorFailed.runtime.retryAutomation();
   await waitFor(() => registeredGraphCaughtUp(extractorFailed.runtime.getState()) && !extractorFailed.runtime.getState().memoryWorkBusy);
   assert.equal(extractorFailed.runtime.getState().summaryCompletedCount, 4, '用户手动继续后应从失败楼补齐');
+  assert.equal(extractorFailed.runtime.getState().lastAutoMemory?.reason, 'manualHistoricalRebuild', '摘要历史缺口必须走已有的当前聊天补齐授权，不能给普通自动重试泛化权限');
+});
+
+test('捕获 A/B/C 补 B 期间另一实例完成新 D，仍按捕获楼 ID 补完 B 的 CSE', async () => {
+  const seed = await seedMiddleSummaryGap();
+  const initialFloors = seed.runtime.getState().floors;
+  await seed.runtime.retryStateAnalysis(initialFloors[2].floorId);
+  let releaseB, markBStarted;
+  const bStarted = new Promise(resolve => { markBStarted = resolve; });
+  const primary = harness({
+    automation: { enabled: true, batchSize: 1 }, sharedBackend: seed.backend, sharedContext: seed.context,
+    utility: options => {
+      if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) {
+        markBStarted();
+        return new Promise(resolve => { releaseB = () => resolve({ jsonData: { summary: 'B 补齐摘要' } }); });
+      }
+      return { jsonData: { noMaterialChange: true } };
+    },
+  });
+  await primary.runtime.start();
+  const rebuilding = primary.runtime.startHistoricalRebuild();
+  await bStarted;
+
+  seed.context.chat.push(user('让新 D 稳定'));
+  const writer = harness({
+    automation: { enabled: false, batchSize: 1 }, sharedBackend: seed.backend, sharedContext: seed.context,
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: '另一实例保存的新 D' } }
+      : { jsonData: { noMaterialChange: true } },
+  });
+  await writer.runtime.start();
+  const dFloor = writer.runtime.getState().floors.at(-1);
+  assert.equal(dFloor.status, 'unprocessed');
+  await writer.runtime.extractFloor(dFloor.floorId);
+  assert.equal(writer.runtime.getState().rebuildCompletedCount, 3, 'A/C/D 已完成时总完成数恰好等于捕获 A/B/C 的长度');
+
+  releaseB();
+  await rebuilding;
+  await waitFor(() => !primary.runtime.getState().memoryWorkBusy);
+  const final = primary.runtime.getState();
+  const bFloorId = initialFloors[1].floorId;
+  assert.equal(final.floors.find(floor => floor.floorId === bFloorId)?.status, 'ready');
+  assert.ok(final.cseFloors.find(floor => floor.floorId === bFloorId)?.deltaId, '后来完成的 D 不得抵掉捕获范围内 B 的 CSE 待办');
+  assert.equal(primary.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 1);
+  assert.equal(primary.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 1);
 });
 
 test('CSE 等待期间到达的新稳定楼不混入当前边界，当前失败后由新输入只触发一次后续追赶', async () => {
@@ -3066,20 +3090,42 @@ test('CSE 重构 root 已耐久但暂停发生在 adopt 前，继续时按持久
   assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 0);
 });
 
-test('CSE 重构遇到中间摘要缺口即截断，不补摘要也不越过处理后楼', async () => {
+test('CSE 重构跳过中间摘要缺口，独立重析前后已有摘要楼且不补摘要', async () => {
   const h = await seedMiddleSummaryGap();
   const before = await h.store.readReachable({ mode: 'runtime' });
   assert.equal(before.floorMemories.filter(item => item.recordStatus === 'active').length, 2, '夹具必须有前后摘要与中间缺口');
   h.calls.splice(0);
   await h.runtime.rebuildCse(CHAT);
   const cseCalls = h.calls.filter(options => options.systemPrompt === CSE_SYSTEM_PROMPT);
-  assert.equal(cseCalls.length, 1, '只处理缺口前的连续摘要前缀');
+  assert.equal(cseCalls.length, 2, '中间摘要缺口不得阻断后楼独立重析');
   assert.equal(h.calls.filter(options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 0, '不得为缺口补摘要');
-  assert.equal(JSON.parse(cseCalls[0].taskMessages[0].content).payload.canonicalContent, '已完成前缀');
-  assert.equal(h.runtime.getState().cseRebuildTotalCount, 1);
+  assert.deepEqual(cseCalls.map(call => JSON.parse(call.taskMessages[0].content).payload.canonicalContent), ['已完成前缀', '尾部欠账 2']);
+  assert.equal(h.runtime.getState().cseRebuildTotalCount, 2);
   assert.equal(h.runtime.getState().cseRebuildStatus, 'completed');
   const after = await h.store.readReachable({ mode: 'runtime' });
   assert.deepEqual(after.floorMemories.map(item => item.id), before.floorMemories.map(item => item.id));
+});
+
+test('跨摘要缺口的 CSE 重构暂停后补上缺口，仍按原楼 ID 计划只恢复剩余目标', async () => {
+  const h = await seedMiddleSummaryGap();
+  const floors = h.runtime.getState().floors;
+  const missingFloor = floors.find(item => item.status !== 'ready');
+  h.calls.splice(0);
+  h.backend.abortAfterNextPut(key => {
+    if (key !== 'v3-root') return false;
+    h.runtime.pauseCseRebuild();
+    return true;
+  });
+  await h.runtime.rebuildCse(CHAT);
+  assert.equal(h.runtime.getState().cseRebuildStatus, 'paused');
+  await h.runtime.extractFloor(missingFloor.floorId, { analyzeState: false });
+  assert.equal(h.runtime.getState().cseRebuildTotalCount, 2, '补上的中间摘要不加入已捕获的 CSE 重构范围');
+  await h.runtime.resumeCseRebuild(CHAT);
+  const cseContents = h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT)
+    .map(call => JSON.parse(call.taskMessages[0].content).payload.canonicalContent);
+  assert.deepEqual(cseContents, ['已完成前缀', '尾部欠账 2']);
+  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 1);
+  assert.equal(h.runtime.getState().cseRebuildStatus, 'completed');
 });
 
 test('冷读把跨代实体视图投影到当前首见楼，不改后端实体记录', async () => {
@@ -3706,7 +3752,7 @@ test('自动 reconciling、extracting、CSE 全程共用一个门闩，手动入
 
   const callsAfterBatch = h.calls.length;
   await h.runtime.extractFloor(firstFloorId);
-  assert.equal(h.calls.length, callsAfterBatch + 2, '批次完成后手动入口应恢复可用并完成摘要与 CSE');
+  assert.equal(h.calls.length, callsAfterBatch + 1, '批次完成后摘要入口恢复，但不自动重算已存 CSE');
 });
 
 test('历史欠账期间开启自动维护只改设置，不在手动作业结束后偷跑历史', async () => {
@@ -4129,7 +4175,7 @@ test('后置 foreign marker 不得让未挂标的已摘要前缀归零或被完�
   assert.deepEqual(after.stateDeltas.map(delta => delta.id), before.stateDeltas.map(delta => delta.id));
 });
 
-test('正文编辑只在明确重提时替换摘要与 CSE 快照，后续再编辑不撤销新结果', async () => {
+test('正文编辑后的明确摘要重提不碰 CSE，显式 CSE 重分析只换本楼', async () => {
   let context;
   const persistAnchors = async ({ chatId, bindings }) => {
     for (const binding of bindings) context.chat[binding.messageIndex].extra = { ...(context.chat[binding.messageIndex].extra ?? {}), qianqianjie_floor: { schemaVersion: 1, chatId, floorId: binding.floorId } };
@@ -4153,13 +4199,16 @@ test('正文编辑只在明确重提时替换摘要与 CSE 快照，后续再编
   h.calls.splice(0);
   await h.runtime.extractFloor(old.floorId);
   const requests = h.calls.map(call => ({ systemPrompt: call.systemPrompt, payload: JSON.parse(call.taskMessages[0].content).payload }));
-  assert.deepEqual(requests.map(request => request.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
+  assert.deepEqual(requests.map(request => request.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT]);
   assert.equal(requests[0].payload.canonicalContent, '编辑后正文');
-  assert.equal(requests[1].payload.canonicalContent, '编辑后正文');
   const replaced = h.runtime.getState().floors[0];
-  const replacedDeltaId = h.runtime.getState().cseFloors[0].deltaId;
+  let replacedDeltaId = h.runtime.getState().cseFloors[0].deltaId;
   assert.notEqual(replaced.memoryId, old.memoryId);
+  assert.equal(replacedDeltaId, oldDeltaId);
+  await h.runtime.retryStateAnalysis(old.floorId);
+  replacedDeltaId = h.runtime.getState().cseFloors[0].deltaId;
   assert.notEqual(replacedDeltaId, oldDeltaId);
+  assert.equal(JSON.parse(h.calls.at(-1).taskMessages[0].content).payload.canonicalContent, '编辑后正文');
   h.calls.splice(0);
   context.chat[0] = { ...context.chat[0], mes: '再次编辑但不重提', swipes: ['再次编辑但不重提'] };
   await h.foundationRuntime.refreshStatus();
@@ -4174,7 +4223,7 @@ test('正文编辑只在明确重提时替换摘要与 CSE 快照，后续再编
   assert.equal(rebuildRequests[1].payload.canonicalContent, '再次编辑但不重提');
 });
 
-test('删除中间 AI 后保留后楼 memoryId，重写 CSE 引用并支持三种模式冷读', async () => {
+test('删除中间 AI 后保留后楼 memory/delta 与历史来源，并支持摘要再改及三种模式冷读', async () => {
   let context;
   const persistAnchors = async ({ chatId, bindings }) => {
     for (const binding of bindings) context.chat[binding.messageIndex].extra = { ...(context.chat[binding.messageIndex].extra ?? {}), qianqianjie_floor: { schemaVersion: 1, chatId, floorId: binding.floorId } };
@@ -4184,9 +4233,9 @@ test('删除中间 AI 后保留后楼 memoryId，重写 CSE 引用并支持三�
     modernAnchors: true, persistAnchors,
     utility: options => {
       const request = JSON.parse(options.taskMessages[0].content);
-      if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { summary: `摘要-${request.payload.canonicalContent}`, people: [{ name: '裴晚生' }] } };
-      if (request.payload.canonicalContent === '第二楼') return { jsonData: { subjects: request.payload.trackedSubjects.map(subject => ({ subject: subject.name, situational: [{ text: '第二楼留下的状态', reason: '第二楼事件', visibility: 'observable' }] })) } };
-      if (request.payload.canonicalContent === '第三楼') return { jsonData: { subjects: request.payload.trackedSubjects.map(subject => ({ subject: subject.name })) } };
+      if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { summary: `摘要-${request.payload.canonicalContent}`, people: request.payload.canonicalContent === '第二楼' ? [{ name: '裴晚生' }, { name: '路人乙' }] : [{ name: '裴晚生' }] } };
+      if (request.payload.canonicalContent === '第二楼') return { jsonData: { subjects: [{ subject: request.payload.trackedSubjects[0].name, adaptive: [{ text: '仍信任路人乙', toward: '路人乙', visibility: 'observable', reason: '第二楼建立关系' }], situational: [{ text: '第二楼留下的状态', reason: '第二楼事件', visibility: 'observable' }] }] } };
+      if (request.payload.canonicalContent === '第三楼') return { jsonData: { subjects: [{ subject: request.payload.trackedSubjects[0].name, adaptive: [], situational: [{ text: '第三楼独立状态', reason: '第三楼事件', visibility: 'observable' }] }] } };
       return { jsonData: { noMaterialChange: true } };
     },
   });
@@ -4198,7 +4247,10 @@ test('删除中间 AI 后保留后楼 memoryId，重写 CSE 引用并支持三�
   const before = h.runtime.getState();
   const survivorFloor = before.floors[2];
   const removedFloor = before.floors[1];
-  const oldDeltaIds = new Set(before.cseFloors.map(item => item.deltaId));
+  const oldDeltaByFloor = new Map(h.foundationRuntime.getReachable().stateDeltas.map(delta => [delta.floorId, structuredClone(delta)]));
+  const historicalRelation = oldDeltaByFloor.get(survivorFloor.floorId).fixedChanges
+    .flatMap(subject => subject.items).find(item => item.action === 'remove' && item.before?.text === '仍信任路人乙');
+  assert.ok(historicalRelation?.before?.towardEntityId, `后楼固定变化必须以关系对象保存已删除来源楼的人物引用：${JSON.stringify(oldDeltaByFloor.get(survivorFloor.floorId).fixedChanges)}`);
   const beforeItems = h.foundationRuntime.getReachable().stateDeltas.flatMap(delta => delta.subjectSnapshots.flatMap(subject => [...subject.core, ...subject.adaptive, ...subject.situational]));
   assert.ok(beforeItems.some(item => item.sourceFloorId === removedFloor.floorId), '删除前必须真实存在来自中间楼的继承状态引用');
   context.chat.splice(2, 1);
@@ -4206,18 +4258,28 @@ test('删除中间 AI 后保留后楼 memoryId，重写 CSE 引用并支持三�
   await h.runtime.refreshStatus();
   const after = h.runtime.getState();
   assert.deepEqual(after.floors.map(item => item.floorId), [before.floors[0].floorId, survivorFloor.floorId]);
+  assert.deepEqual(after.floors.map(item => item.assistantSeq), [1, 2], '删除中间楼后幸存楼按当前顺序顶号');
+  assert.deepEqual(after.floors.map(item => item.messageIndex), [0, 3], '顶号只更新当前宿主位置映射');
   assert.equal(after.floors[1].memoryId, survivorFloor.memoryId);
-  assert.ok(after.cseFloors.every(item => item.deltaId && !oldDeltaIds.has(item.deltaId)));
+  const survivorSummaryProjection = projectInlineMemoryFloor(after, 3);
+  assert.deepEqual([survivorSummaryProjection.floorId, survivorSummaryProjection.assistantSeq, survivorSummaryProjection.summary], [survivorFloor.floorId, 2, '摘要-第三楼'], '摘要显示使用幸存楼的新顺序与当前宿主位置');
+  assert.deepEqual(after.cseFloors.map(item => item.deltaId), [oldDeltaByFloor.get(before.floors[0].floorId).id, oldDeltaByFloor.get(survivorFloor.floorId).id]);
+  assert.ok(after.cseSubjects.flatMap(subject => [...subject.core, ...subject.adaptive, ...subject.situational])
+    .some(item => item.sourceFloorId === survivorFloor.floorId && item.sourceAssistantSeq === 2), 'CSE 显示楼号与同一幸存 floorId 的当前顺序一致');
   const reachable = h.foundationRuntime.getReachable();
-  const liveFloorIds = new Set(reachable.floors.map(item => item.id));
-  const liveDeltaIds = new Set(reachable.stateDeltas.map(item => item.id));
-  for (const delta of reachable.stateDeltas) for (const subject of delta.subjectSnapshots) for (const item of [...subject.core, ...subject.adaptive, ...subject.situational]) {
-    assert.ok(item.sourceFloorId === null || liveFloorIds.has(item.sourceFloorId));
-    assert.ok(item.sourceDeltaId === null || liveDeltaIds.has(item.sourceDeltaId));
+  assert.deepEqual(reachable.stateDeltas, [oldDeltaByFloor.get(before.floors[0].floorId), oldDeltaByFloor.get(survivorFloor.floorId)], '幸存 delta 必须逐字保留');
+  const preservedRelation = reachable.stateDeltas.flatMap(delta => delta.fixedChanges ?? [])
+    .flatMap(subject => subject.items).find(item => item.before?.text === '仍信任路人乙');
+  assert.equal(preservedRelation?.before?.sourceFloorId, removedFloor.floorId, '幸存固定变化保留已删除来源楼的历史出处');
+  await h.runtime.editSummary(survivorFloor.floorId, '删除来源楼后的幸存摘要修订');
+  assert.equal(h.runtime.getState().cseFloors[1].deltaId, oldDeltaByFloor.get(survivorFloor.floorId).id);
+  for (const mode of ['projection', 'runtime', 'full']) {
+    const cold = await h.store.readReachable({ mode });
+    assert.equal(cold.status, 'ready');
+    assert.deepEqual(cold.floors.map(floor => [floor.id, floor.assistantSeq, floor.hostLocator.messageIndex]), [[before.floors[0].floorId, 1, 0], [survivorFloor.floorId, 2, 3]], `${mode} 冷读保持顶号后的当前楼序与宿主位置`);
+    assert.deepEqual(cold.stateDeltas, [oldDeltaByFloor.get(before.floors[0].floorId), oldDeltaByFloor.get(survivorFloor.floorId)], `${mode} 顶号不得改写幸存 delta`);
+    assert.ok(cold.entities.some(entity => entity.id === historicalRelation.before.towardEntityId), `${mode} 冷读必须保留固定关系引用的人物`);
   }
-  const cleanedItems = reachable.stateDeltas.flatMap(delta => delta.subjectSnapshots.flatMap(subject => [...subject.core, ...subject.adaptive, ...subject.situational]));
-  assert.ok(cleanedItems.some(item => item.text === '第二楼留下的状态' && item.sourceFloorId === null && item.sourceDeltaId === null), JSON.stringify(cleanedItems));
-  for (const mode of ['projection', 'runtime', 'full']) assert.equal((await h.store.readReachable({ mode })).status, 'ready');
 });
 
 test('不完整分页快照不会删除活动图，恢复完整证明后才允许真实删除', async () => {

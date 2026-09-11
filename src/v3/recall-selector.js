@@ -336,7 +336,8 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, entity
   }
   if (!coverage.memoryComplete || !coverage.cseCurrent) {
     const missing = coverage.missingAssistantSeq.length ? coverage.missingAssistantSeq.join('、') : '无';
-    lines.push('', `[覆盖说明] FloorMemory ${coverage.rememberedAiFloors}/${coverage.stableAiFloors}，缺失 AI #${missing}；CSE 连续到 AI #${coverage.cseThroughAssistantSeq || 0}。动态状态未被当作当前事实。`);
+    const stateNote = coverage.cseCurrent ? '已保存的人物状态按现存楼独立汇总。' : '当前没有可用的人物状态。';
+    lines.push('', `[覆盖说明] FloorMemory ${coverage.rememberedAiFloors}/${coverage.stableAiFloors}，缺失 AI #${missing}；CSE 已保存到 AI #${coverage.cseThroughAssistantSeq || 0}。${stateNote}`);
   }
   lines.push('</qqj_recalled_context>');
   return lines.join('\n');
@@ -419,7 +420,8 @@ export function formatRecallInjection({ coverage, floors, states, cseChanges = [
   }
   if (!coverage.memoryComplete || !coverage.cseCurrent) {
     const missing = coverage.missingAssistantSeq.length ? coverage.missingAssistantSeq.join('、') : '无';
-    lines.push('', `[覆盖说明] FloorMemory ${coverage.rememberedAiFloors}/${coverage.stableAiFloors}，缺失 AI #${missing}；CSE 连续到 AI #${coverage.cseThroughAssistantSeq || 0}。动态状态未被当作当前事实。`);
+    const stateNote = coverage.cseCurrent ? '已保存的人物状态按现存楼独立汇总。' : '当前没有可用的人物状态。';
+    lines.push('', `[覆盖说明] FloorMemory ${coverage.rememberedAiFloors}/${coverage.stableAiFloors}，缺失 AI #${missing}；CSE 已保存到 AI #${coverage.cseThroughAssistantSeq || 0}。${stateNote}`);
   }
   lines.push('</qqj_recalled_context>');
   return lines.join('\n');

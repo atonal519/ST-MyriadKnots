@@ -69,6 +69,17 @@ function validateStateItem(value, path) {
   return value;
 }
 
+function validateFixedChange(value, path) {
+  object(value, 'V3_STATEDELTA_INVALID', path);
+  if (!['core', 'adaptive', 'situational'].includes(value.category)
+    || !['add', 'remove', 'refine', 'update'].includes(value.action)) fail('V3_STATEDELTA_INVALID', path);
+  if (value.before !== null) validateStateItem(value.before, `${path}.before`);
+  if (value.after !== null) validateStateItem(value.after, `${path}.after`);
+  if ((value.action === 'add' && (value.before !== null || value.after === null))
+    || (value.action === 'remove' && (value.before === null || value.after !== null))
+    || (['refine', 'update'].includes(value.action) && (value.before === null || value.after === null))) fail('V3_STATEDELTA_INVALID', path);
+}
+
 function validateSubject(value, path, { current = false } = {}) {
   object(value, 'V3_CSE_SUBJECT_INVALID', path);
   uuid(value.subjectEntityId, 'V3_CSE_SUBJECT_INVALID', `${path}.subjectEntityId`);
@@ -115,6 +126,19 @@ export function validateStateDeltaRecord(input, { expectedChatId } = {}) {
   for (const field of ['floorId', 'floorMemoryId', 'baselineId']) uuid(value[field], 'V3_STATEDELTA_INVALID', field);
   uuid(value.previousCurrentStateId, 'V3_STATEDELTA_INVALID', 'previousCurrentStateId', { nullable: true });
   array(value.subjectSnapshots, 'V3_STATEDELTA_INVALID', 'subjectSnapshots', 80).forEach((subject, index) => validateSubject(subject, `subjectSnapshots[${index}]`));
+  if (Object.hasOwn(value, 'fixedChanges')) {
+    const seen = new Set();
+    array(value.fixedChanges, 'V3_STATEDELTA_INVALID', 'fixedChanges', 80).forEach((subject, subjectIndex) => {
+      const path = `fixedChanges[${subjectIndex}]`;
+      object(subject, 'V3_STATEDELTA_INVALID', path);
+      uuid(subject.subjectEntityId, 'V3_STATEDELTA_INVALID', `${path}.subjectEntityId`);
+      if (seen.has(subject.subjectEntityId)) fail('V3_STATEDELTA_INVALID', `${path}.subjectEntityId`);
+      seen.add(subject.subjectEntityId);
+      array(subject.items, 'V3_STATEDELTA_INVALID', `${path}.items`, 720)
+        .forEach((item, itemIndex) => validateFixedChange(item, `${path}.items[${itemIndex}]`));
+      if (!subject.items.length) fail('V3_STATEDELTA_INVALID', `${path}.items`);
+    });
+  }
   if (typeof value.noMaterialChange !== 'boolean') fail('V3_STATEDELTA_INVALID', 'noMaterialChange');
   fingerprint(value.fingerprint, 'V3_STATEDELTA_INVALID', 'fingerprint');
   object(value.source, 'V3_STATEDELTA_INVALID', 'source');
@@ -193,36 +217,23 @@ export async function validateCseGraph({ root = null, checkpoint, run = null, fl
   if (checkpoint.producedRefs.currentStates.length !== states.length || checkpoint.producedRefs.currentStates.some((id, index) => id !== states[index]?.id)) fail('V3_CSE_GRAPH_CURRENT_LIST_INVALID');
   const floorsById = new Map(floors.map(value => [value.id, value]));
   const floorOrder = new Map(floors.map((value, index) => [value.id, index]));
-  const memoryRecordsByFloor = new Map();
-  for (const memory of floorMemories) memoryRecordsByFloor.set(memory.floorId, [...(memoryRecordsByFloor.get(memory.floorId) ?? []), memory]);
-  const memoriesByFloor = new Map();
-  for (const [floorId, records] of memoryRecordsByFloor) {
-    const active = records.filter(value => value.recordStatus === 'active');
-    if (active.length === 1) memoriesByFloor.set(floorId, active[0]);
-  }
   const entityIds = new Set(entities.map(value => value.id));
-  const deltaIds = new Set(deltas.map(value => value.id));
-  const activeMemoryFloors = [];
-  for (const floor of floors) {
-    const records = memoryRecordsByFloor.get(floor.id) ?? [];
-    if (!records.length) continue;
-    const active = records.filter(value => value.recordStatus === 'active');
-    if (active.length !== 1) break;
-    activeMemoryFloors.push(floor);
-  }
-  if (deltas.length > activeMemoryFloors.length || deltas.some((delta, index) => delta.floorId !== activeMemoryFloors[index]?.id)) fail('V3_CSE_GRAPH_DELTA_PREFIX_INVALID');
+  if (deltas.some((delta, index) => !floorsById.has(delta.floorId)
+    || (index > 0 && floorOrder.get(deltas[index - 1].floorId) >= floorOrder.get(delta.floorId)))) fail('V3_CSE_GRAPH_DELTA_ORDER_INVALID');
   const seenFloors = new Set();
-  const acceptedDeltaIds = new Set();
   for (const delta of deltas) {
-    if (!safeBaseline || delta.baselineId !== safeBaseline.id || !floorsById.has(delta.floorId) || memoriesByFloor.get(delta.floorId)?.id !== delta.floorMemoryId || seenFloors.has(delta.floorId)) fail('V3_CSE_GRAPH_DELTA_REF_INVALID');
+    if (!safeBaseline || delta.baselineId !== safeBaseline.id || !floorsById.has(delta.floorId) || seenFloors.has(delta.floorId)) fail('V3_CSE_GRAPH_DELTA_REF_INVALID');
     seenFloors.add(delta.floorId);
-    acceptedDeltaIds.add(delta.id);
     for (const subject of delta.subjectSnapshots) {
       if (!entityIds.has(subject.subjectEntityId)) fail('V3_CSE_GRAPH_ENTITY_REF_INVALID');
       for (const item of [...subject.core, ...subject.adaptive, ...subject.situational]) {
         if (item.towardEntityId && !entityIds.has(item.towardEntityId)) fail('V3_CSE_GRAPH_ENTITY_REF_INVALID');
-        if (item.sourceFloorId && (!floorsById.has(item.sourceFloorId) || floorOrder.get(item.sourceFloorId) > floorOrder.get(delta.floorId))) fail('V3_CSE_GRAPH_SOURCE_REF_INVALID');
-        if (item.sourceDeltaId && (!deltaIds.has(item.sourceDeltaId) || !acceptedDeltaIds.has(item.sourceDeltaId))) fail('V3_CSE_GRAPH_SOURCE_REF_INVALID');
+      }
+    }
+    for (const subject of delta.fixedChanges ?? []) {
+      if (!entityIds.has(subject.subjectEntityId)) fail('V3_CSE_GRAPH_ENTITY_REF_INVALID');
+      for (const change of subject.items) for (const item of [change.before, change.after]) {
+        if (item?.towardEntityId && !entityIds.has(item.towardEntityId)) fail('V3_CSE_GRAPH_ENTITY_REF_INVALID');
       }
     }
     for (const audit of delta.source?.calibrationAudit ?? []) {
@@ -233,7 +244,7 @@ export async function validateCseGraph({ root = null, checkpoint, run = null, fl
   if (states.length > 1 || (current && (!safeBaseline || current.baselineId !== safeBaseline.id || current.appliedDeltaIds.some(id => !deltas.some(delta => delta.id === id))))) fail('V3_CSE_GRAPH_CURRENT_REF_INVALID');
   if (current && current.fingerprint !== await stateFingerprint(current.subjects, current.appliedDeltaIds, current.headFloorId)) fail('V3_CSE_GRAPH_CURRENT_FINGERPRINT_INVALID');
   const activeMemories = floorMemories.filter(value => value.recordStatus === 'active');
-  const ready = activeMemories.length > 0 && activeMemories.every(memory => deltas.some(delta => delta.floorId === memory.floorId && delta.floorMemoryId === memory.id));
+  const ready = activeMemories.length > 0 && activeMemories.every(memory => deltas.some(delta => delta.floorId === memory.floorId));
   if (checkpoint.capabilities.cseReady !== ready || (root && root.capabilities.cseReady !== ready)) fail('V3_CSE_GRAPH_CAPABILITY_INVALID');
   return Object.freeze({ schemaValid: true, referencesValid: true, orderedReplayValid: true });
 }

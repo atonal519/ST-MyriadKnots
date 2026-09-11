@@ -534,7 +534,7 @@ test('已完成人物状态可确认后重新分析，取消不调用且忙碌�
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(retries, ['floor-no-change', 'floor-ready'], '逐楼记录按最新楼在前操作同一 floorId');
   assert.equal(confirmations.length, 2);
-  assert.match(`${confirmations[0].title} ${confirmations[0].body}`, /重新分析人物状态.*后续楼层人物状态需依次重算.*摘要保持不变/);
+  assert.match(`${confirmations[0].title} ${confirmations[0].body}`, /重新分析人物状态.*只会替换本楼人物状态.*摘要与其他楼记录保持不变/);
 
   confirmed = Promise.resolve(false);
   flatten(container).find(node => node.textContent === '重新分析').click();
@@ -1006,7 +1006,7 @@ test('保存等待中用户主动收起时，完成后退出编辑但不重新�
 
 test('CSE 历史每楼只显示实际变化，并可折叠查看该楼结束状态与部分隔离提示', () => {
   const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
-  const floor = { floorId: 'floor', messageIndex: 2, memoryId: 'memory', status: 'ready', summary: '摘要', memory, cse: { status: 'ready', deltaId: 'delta', record: { noMaterialChange: false, isolationSummary: { count: 2, codes: ['V3_CSE_REVIEW_TARGET_AMBIGUOUS'] }, subjects: [{ displayName: '裴晚生', changeSummary: ['被拒的模型自报'], changes: [
+  const floor = { floorId: 'floor', messageIndex: 2, memoryId: 'memory', status: 'ready', summary: '摘要', memory, cse: { status: 'ready', deltaId: 'delta', record: { fixedChangesAvailable: true, noMaterialChange: false, isolationSummary: { count: 2, codes: ['V3_CSE_REVIEW_TARGET_AMBIGUOUS'] }, subjects: [{ displayName: '裴晚生', changeSummary: ['被拒的模型自报'], changes: [
     { category: 'adaptive', action: 'refine', beforeText: '会谨慎回应', afterText: '会谨慎回应', before: { text: '会谨慎回应', towardDisplayName: '甲', visibility: 'private', reason: '旧依据', origin: 'floor' }, after: { text: '会谨慎回应', towardDisplayName: '乙', visibility: 'observable', reason: '新依据', origin: 'floor' } },
     { category: 'situational', action: 'update', beforeText: '仍在门边', afterText: '已经落座', before: { text: '仍在门边', visibility: 'observable', reason: '站在门边', origin: 'floor' }, after: { text: '已经落座', visibility: 'observable', reason: '坐到桌旁', origin: 'floor' } },
     { category: 'situational', action: 'remove', beforeText: '仍在等雨停', afterText: null, before: { text: '仍在等雨停', visibility: 'observable', reason: '雨还没停', origin: 'floor' }, after: null },
@@ -1025,17 +1025,63 @@ test('CSE 历史每楼只显示实际变化，并可折叠查看该楼结束状�
   assert.match(copy, /长期倾向属性更新：会谨慎回应.*对象：甲 → 乙.*信息范围：私密 → 可观察.*依据：旧依据 → 新依据/);
   assert.match(copy, /移除当前情境：仍在等雨停/);
   assert.match(copy, /部分内容未通过校验，已保留有效结果（2 项校验记录）/);
-  assert.match(copy, /查看本楼完整状态.*核心特质.*重视承诺.*长期倾向.*对 乙.*会谨慎回应.*当前情境.*已经落座/);
+  assert.match(copy, /查看本楼已保存状态.*核心特质.*重视承诺.*长期倾向.*对 乙.*会谨慎回应.*当前情境.*已经落座/);
   assert.equal(flatten(rowNode).find(node => node.className === 'qqj-cse-floor-state').open, false);
   assert.doesNotMatch(copy, /被拒的模型自报/);
   rowNode.open = true; rowNode.fire('toggle'); view.setPage('memories'); view.setPage('people');
   assert.equal(flatten(container).find(node => node.className === 'qqj-cse-history-row').open, true);
 });
 
+test('CSE 旧记录直接展示本楼快照且不伪造成新增或重复变更抽屉', () => {
+  const memory = { summaryEvidenceRefs: [] };
+  const floor = { floorId: 'legacy', messageIndex: 6, memoryId: 'memory', status: 'ready', summary: '摘要', memory, cse: { status: 'ready', deltaId: 'delta', record: {
+    fixedChangesAvailable: false,
+    noMaterialChange: false,
+    isolationSummary: { count: 2, codes: ['V3_CSE_REVIEW_TARGET_AMBIGUOUS'] },
+    subjects: [],
+    endStateSubjects: [{ displayName: '裴晚生', core: [{ text: '重视承诺', visibility: 'authorial', reason: '旧档快照', origin: 'baseline', sourceFloorId: null }], adaptive: [{ text: '会保护同伴', visibility: 'observable', reason: '旧档快照', origin: 'floor', sourceFloorId: 'legacy' }], situational: [{ text: '正在门外等候', visibility: 'observable', reason: '旧档快照', origin: 'floor', sourceFloorId: 'legacy' }] }],
+  } } };
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, cseReady: true, csePendingCount: 0, cseFailedCount: 0, cseSubjects: [], floors: [floor] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, retryStateAnalysis: async () => state };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef }); view.setPage('people'); view.mount(container);
+  flatten(container).find(node => node.textContent === '分析记录').click();
+  const rowNode = flatten(container).find(node => node.className === 'qqj-cse-history-row');
+  const resultNode = flatten(rowNode).find(node => node.className === 'qqj-cse-floor-result');
+  const resultCopy = flatten(resultNode).map(node => node.textContent).join('|');
+  assert.equal(flatten(resultNode).find(node => node.className === 'qqj-cse-floor-result-title').textContent, '本楼已保存状态');
+  assert.match(resultCopy, /裴晚生.*核心特质.*重视承诺.*长期倾向.*会保护同伴.*当前情境.*正在门外等候/);
+  assert.match(resultCopy, /旧记录未保存可核对的逐项变化；以上为本楼已保存状态快照/);
+  assert.match(resultCopy, /部分内容未通过校验，已保留有效结果（2 项校验记录）/);
+  assert.equal(flatten(rowNode).some(node => node.className === 'qqj-cse-floor-changes'), false, '旧记录不生成空变更抽屉');
+  assert.equal(flatten(rowNode).some(node => node.className === 'qqj-cse-floor-state'), false, '同一旧快照不在下方重复折叠展示');
+  assert.doesNotMatch(resultCopy, /本楼新增与调整|新增核心特质|新增长期倾向|新增当前情境/);
+});
+
+test('CSE 新固定空变化仍显示无变化与可折叠本楼快照', () => {
+  const memory = { summaryEvidenceRefs: [] };
+  const floor = { floorId: 'fixed-empty', messageIndex: 8, memoryId: 'memory', status: 'ready', summary: '摘要', memory, cse: { status: 'noChange', deltaId: 'delta', record: {
+    fixedChangesAvailable: true,
+    noMaterialChange: true,
+    isolationSummary: null,
+    subjects: [],
+    endStateSubjects: [{ displayName: '裴晚生', core: [{ text: '保持警惕', visibility: 'authorial', reason: '已保存状态', origin: 'baseline', sourceFloorId: null }], adaptive: [], situational: [] }],
+  } } };
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, cseReady: true, csePendingCount: 0, cseFailedCount: 0, cseSubjects: [], floors: [floor] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, retryStateAnalysis: async () => state };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef }); view.setPage('people'); view.mount(container);
+  flatten(container).find(node => node.textContent === '分析记录').click();
+  const rowNode = flatten(container).find(node => node.className === 'qqj-cse-history-row'), copy = flatten(rowNode).map(node => node.textContent).join('|');
+  assert.match(copy, /本楼新增与调整.*本楼没有新增或调整的人物状态.*变更详情 · 0 项.*本楼无实质人物状态变化/);
+  assert.match(copy, /查看本楼已保存状态.*裴晚生.*核心特质.*保持警惕/);
+  assert.ok(flatten(rowNode).find(node => node.className === 'qqj-cse-floor-changes'));
+  assert.ok(flatten(rowNode).find(node => node.className === 'qqj-cse-floor-state'));
+  assert.doesNotMatch(copy, /旧记录未保存|旧记录没有固定/);
+});
+
 test('CSE 完整隔离不伪造成功，旧楼缺诊断字段不冒充零隔离', () => {
   const memory = { summaryEvidenceRefs: [] };
-  const isolatedFloor = { floorId: 'isolated', messageIndex: 4, memoryId: 'memory-1', status: 'ready', summary: '摘要', memory, cse: { status: 'noChange', deltaId: 'delta-1', record: { noMaterialChange: true, isolationSummary: { count: 1, codes: ['V3_CSE_SUBJECT_UNBOUND'] }, subjects: [], endStateSubjects: [] } } };
-  const legacyFloor = { floorId: 'legacy', messageIndex: 2, memoryId: 'memory-2', status: 'ready', summary: '摘要', memory, cse: { status: 'noChange', deltaId: 'delta-2', record: { noMaterialChange: true, isolationSummary: null, subjects: [], endStateSubjects: [] } } };
+  const isolatedFloor = { floorId: 'isolated', messageIndex: 4, memoryId: 'memory-1', status: 'ready', summary: '摘要', memory, cse: { status: 'noChange', deltaId: 'delta-1', record: { fixedChangesAvailable: true, noMaterialChange: true, isolationSummary: { count: 1, codes: ['V3_CSE_SUBJECT_UNBOUND'] }, subjects: [], endStateSubjects: [] } } };
+  const legacyFloor = { floorId: 'legacy', messageIndex: 2, memoryId: 'memory-2', status: 'ready', summary: '摘要', memory, cse: { status: 'noChange', deltaId: 'delta-2', record: { fixedChangesAvailable: true, noMaterialChange: true, isolationSummary: null, subjects: [], endStateSubjects: [] } } };
   const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 2, rememberedCount: 2, cseReady: true, csePendingCount: 0, cseFailedCount: 0, cseSubjects: [], floors: [legacyFloor, isolatedFloor] };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, retryStateAnalysis: async () => state };
   const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef }); view.setPage('people'); view.mount(container);

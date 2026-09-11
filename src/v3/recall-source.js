@@ -153,7 +153,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
   const throughAssistantSeq = floorSeq.get(trustedDeltas.at(-1)?.floorId) ?? 0;
   const stableThroughAssistantSeq = floors.at(-1)?.assistantSeq ?? 0;
   const memoryComplete = floors.length > 0 && missingAssistantSeq.length === 0;
-  const cseCurrent = degradedReasons.length === 0 && memoryComplete && trustedDeltas.length === activeMemories.length && throughAssistantSeq === stableThroughAssistantSeq;
+  const cseCurrent = degradedReasons.length === 0 && trustedDeltas.length > 0;
   const coverage = Object.freeze({
     stableAiFloors: floors.length,
     stableThroughAssistantSeq,

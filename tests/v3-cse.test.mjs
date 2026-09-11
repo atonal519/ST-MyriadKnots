@@ -101,10 +101,11 @@ const baseline = { id: '88888888-1111-4111-8111-111111111111', userPersona: { en
 const memory = id => ({ id, summary: { effectiveSource: 'ai', aiText: '摘要' }, chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], cseSignals: [] });
 const floor = (id, content) => ({ id, chatId: CHAT, narrativeGeneration: GEN, content: { canonicalContent: content } });
 
-test('baseline 一次冻结，只有已链接且宿主启用的世界书进入；Luker 降级可用', async () => {
+test('baseline 一次冻结；摘要重提不自动改 CSE，显式重分析才读取新来源', async () => {
   const h = runtimeHarness({ host: 'luker' });
   let state = await h.runtime.start().then(() => h.runtime.extractNext());
   const firstMemoryId = state.floors[0].memoryId;
+  const firstDeltaId = state.cseFloors[0].deltaId;
   assert.equal(state.rememberedCount, 1);
   assert.ok(state.baselineId);
   const root = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
@@ -118,7 +119,10 @@ test('baseline 一次冻结，只有已链接且宿主启用的世界书进入�
   h.context.chat[0].mes = '手动重提后的作者输入';
   state = await h.runtime.extractFloor(state.floors[0].floorId);
   assert.notEqual(state.floors[0].memoryId, firstMemoryId, '明确重提应产生绑定新 USER 快照的新 memory id');
-  assert.equal(state.cseFloors[0].status, 'ready', '明确重提必须在同一操作完成新摘要与 CSE');
+  assert.equal(state.cseFloors[0].deltaId, firstDeltaId, '明确重提摘要不得自动替换已落盘 CSE');
+  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 1);
+  state = await h.runtime.retryStateAnalysis(state.floors[0].floorId);
+  assert.notEqual(state.cseFloors[0].deltaId, firstDeltaId, '只有显式 CSE 重分析才替换目标楼');
   const latestRequest = JSON.parse(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).at(-1).taskMessages[0].content);
   assert.deepEqual(latestRequest.payload.currentUserInput, { source: 'currentUserInput', messages: [{ sourceSnapshotIndex: 0, messageIndex: 0, content: '手动重提后的作者输入' }] });
   assert.equal(latestRequest.payload.relevantBaseline.userPersona.description, '事后变化不得漂移');
@@ -234,8 +238,8 @@ test('人工纠正以末 delta 为锚不可变替换，支持增删清空 core�
   assert.deepEqual(replacement.source.manualSubjectEntityIds, [userEntityId]);
   const oldCharItem = initialDelta.subjectSnapshots.find(subject => subject.subjectEntityId === initialChar.subjectEntityId).situational[0];
   const rebasedCharItem = replacement.subjectSnapshots.find(subject => subject.subjectEntityId === initialChar.subjectEntityId).situational[0];
-  assert.notEqual(rebasedCharItem.id, oldCharItem.id, '指向旧锚 delta 的保留条目必须换 ID');
-  assert.equal(rebasedCharItem.sourceDeltaId, replacement.id);
+  assert.equal(rebasedCharItem.id, oldCharItem.id, '纠正一人不得改写同楼其他人物的已存状态项');
+  assert.equal(rebasedCharItem.sourceDeltaId, oldCharItem.sourceDeltaId, '旧 sourceDeltaId 作为历史出处保留');
   assert.deepEqual(h.backend.records.get(initialDeltaKey).data, initialDelta, '旧 delta 不得被原地修改');
 
   const currentChar = state.cseSubjects.find(subject => subject.subjectEntityId === initialChar.subjectEntityId);
@@ -250,8 +254,7 @@ test('人工纠正以末 delta 为锚不可变替换，支持增删清空 core�
   replacement = h.backend.records.get(`chat-${CHAT}/v3-state-delta-${checkpoint.producedRefs.stateDeltas.at(-1)}`).data;
   assert.deepEqual(new Set(replacement.source.manualSubjectEntityIds), new Set([userEntityId, initialChar.subjectEntityId]));
   const twiceRebasedUserItem = replacement.subjectSnapshots.find(subject => subject.subjectEntityId === userEntityId).adaptive[0];
-  assert.notEqual(twiceRebasedUserItem.id, firstManualUserItemId, '连续修正时，指向上一替代 delta 的人工条目也必须再次换 ID');
-  assert.equal(twiceRebasedUserItem.sourceDeltaId, replacement.id);
+  assert.equal(twiceRebasedUserItem.id, firstManualUserItemId, '连续修正另一人物不得改写已固定的人工条目');
 
   const withCore = state.cseSubjects.find(subject => subject.subjectEntityId === initialChar.subjectEntityId);
   state = await h.runtime.correctSubjectState(initialChar.subjectEntityId, editPayload(withCore, { core: [] }));
@@ -677,6 +680,8 @@ test('CSE 模型在途时固定本次来源，后续重算才读取更新的人�
 
   const floorId = state.floors[0].floorId;
   state = await h.runtime.extractFloor(floorId);
+  assert.equal(requests.length, 1, '摘要重提不得自动再次分析已有 CSE');
+  state = await h.runtime.retryStateAnalysis(floorId);
   assert.equal(state.cseFloors[0].status, 'noChange');
   assert.equal(state.cseReady, true);
   assert.equal(requests[1].payload.relevantBaseline.userPersona.description, '模型在途时更新的人设');
@@ -1089,39 +1094,47 @@ test('迟到 CSE 在聊天事件后不能污染 root，已成功 FloorMemory 仍
   assert.equal(checkpoint.producedRefs.stateDeltas.length, 0);
 });
 
-test('明确重提最早 FloorMemory 会同操作重算本楼 CSE，并让后楼按连续前态补齐', async () => {
+test('摘要与人物状态逐楼独立，显式重分析只替换目标楼', async () => {
   const h = runtimeHarness();
   h.context.chat.push(assistant('第三楼用于确认第二楼稳定。'));
   let state = await h.runtime.start().then(() => h.runtime.extractNext());
   state = await h.runtime.extractNext();
   assert.equal(state.replayedCurrentState.appliedDeltaIds.length, 2);
   const firstFloorId = state.floors[0].floorId, secondFloorId = state.floors[1].floorId;
+  const originalDeltaIds = state.cseFloors.map(item => item.deltaId);
   const cseCallsBefore = h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length;
   state = await h.runtime.extractFloor(firstFloorId);
-  assert.deepEqual(state.cseFloors.map(item => item.status), ['ready', 'pending']);
-  assert.equal(state.replayedCurrentState.appliedDeltaIds.length, 1);
+  assert.deepEqual(state.cseFloors.map(item => item.deltaId), originalDeltaIds);
+  assert.equal(state.replayedCurrentState.appliedDeltaIds.length, 2);
   let root = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
   let checkpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${root.headCheckpointId}`).data;
-  assert.equal(checkpoint.producedRefs.stateDeltas.length, 1, '明确重提同一操作已提交本楼新 CSE，下游保持待分析');
+  assert.deepEqual(checkpoint.producedRefs.stateDeltas, originalDeltaIds, '摘要重提不改任何楼的 CSE');
   state = await h.runtime.retryStateAnalysis(secondFloorId);
-  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, cseCallsBefore + 2);
+  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, cseCallsBefore + 1);
+  assert.equal(state.cseFloors[0].deltaId, originalDeltaIds[0]);
+  assert.notEqual(state.cseFloors[1].deltaId, originalDeltaIds[1]);
   assert.equal(state.cseFloors[1].status, 'noChange');
   const secondRetryRequest = JSON.parse(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).at(-1).taskMessages[0].content);
-  assert.ok(secondRetryRequest.payload.previousState.length > 0, '补齐连续前缀后才允许分析后楼');
+  assert.ok(secondRetryRequest.payload.previousState.length > 0, '显式重分析仍可读取当时可用的前态上下文');
   assert.equal(state.cseReady, true);
   root = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
   checkpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${root.headCheckpointId}`).data;
   assert.equal(checkpoint.producedRefs.stateDeltas.length, 2);
+  const laterDeltaId = state.cseFloors[1].deltaId;
+  const laterDeltaBeforeEarlyRetry = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-state-delta-${laterDeltaId}`).data);
+  state = await h.runtime.retryStateAnalysis(firstFloorId);
+  assert.equal(state.cseFloors[1].deltaId, laterDeltaId, '重分析早期楼不得替换后楼 delta');
+  assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-state-delta-${laterDeltaId}`).data, laterDeltaBeforeEarlyRetry, '重分析早期楼后，后楼固定记录必须逐字不变');
   const firstMemory = state.floors[0].memory;
+  const beforeMemoryEditDeltaIds = state.cseFloors.map(item => item.deltaId);
   state = await h.runtime.editMemory(firstFloorId, { summary: '用户手工修订第一楼摘要', chronology: firstMemory.chronology.map(item => ({ itemId: item.itemId, sourceText: item.time.sourceText ?? '', description: item.description })), locations: firstMemory.locations.map(item => ({ itemId: item.itemId, name: item.name })), participantEntityIds: firstMemory.participants.map(item => item.entityId), participantPresence: Object.fromEntries(firstMemory.participants.map(item => [item.entityId, item.presence])), revisionNote: '校正事实' });
-  assert.deepEqual(state.cseFloors.map(item => item.status), ['pending', 'pending'], '前置楼整包元数据修订同样使下游全部待分析');
-  assert.equal(state.replayedCurrentState.appliedDeltaIds.length, 0);
+  assert.equal(state.replayedCurrentState.appliedDeltaIds.length, 2);
   root = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
   checkpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${root.headCheckpointId}`).data;
-  assert.deepEqual(checkpoint.producedRefs.stateDeltas, []);
+  assert.deepEqual(checkpoint.producedRefs.stateDeltas, beforeMemoryEditDeltaIds, '整包摘要修订也不改已落盘 CSE');
 });
 
-test('前置楼 markError 后必须断开连续前缀，清空下游 delta 且不自动调用 CSE', async () => {
+test('前置楼摘要失效不连坐已落盘 CSE，后楼可独立显式重分析', async () => {
   const h = runtimeHarness();
   h.context.chat.push(assistant('第三楼用于确认第二楼稳定。'));
   let state = await h.runtime.start().then(() => h.runtime.extractNext());
@@ -1131,21 +1144,30 @@ test('前置楼 markError 后必须断开连续前缀，清空下游 delta 且�
   const firstFloorId = state.floors[0].floorId;
   const secondFloorId = state.floors[1].floorId;
   const cseCallsBefore = h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length;
+  const oldDeltaIds = state.cseFloors.map(item => item.deltaId);
   state = await h.runtime.markError(firstFloorId);
   assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, cseCallsBefore, 'markError 只做本地断链');
-  assert.equal(state.cseFloors[0].status, 'notApplicable');
-  assert.equal(state.cseFloors[1].status, 'pending');
-  assert.equal(state.replayedCurrentState.appliedDeltaIds.length, 0);
+  assert.equal(state.cseFloors[0].status, 'ready');
+  assert.equal(state.cseFloors[1].status, 'noChange');
+  assert.equal(state.replayedCurrentState.appliedDeltaIds.length, 2);
   let root = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
   let checkpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${root.headCheckpointId}`).data;
-  assert.deepEqual(checkpoint.producedRefs.stateDeltas, []);
+  assert.deepEqual(checkpoint.producedRefs.stateDeltas, oldDeltaIds);
+  h.calls.splice(0);
+  await h.runtime.startHistoricalRebuild();
+  await waitFor(() => ['caughtUp', 'waitingRealtime'].includes(h.runtime.getState().rebuildStatus) && !h.runtime.getState().memoryWorkBusy);
+  state = h.runtime.getState();
+  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 1, '补齐摘要缺口只调用摘要模型');
+  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 0, '已有 delta 的楼不因摘要补齐而重跑 CSE');
+  assert.deepEqual(state.cseFloors.map(item => item.deltaId), oldDeltaIds);
+  assert.equal(state.rebuildCompletedCount, 2);
   state = await h.runtime.retryStateAnalysis(secondFloorId);
-  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, cseCallsBefore, '后楼不能越过 invalidated 前楼调用 CSE');
-  assert.equal(state.cseFloors[1].status, 'pending');
-  assert.match(state.cseFloors[1].error, /前面还有未分析或已失效的楼/);
+  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 1, '后楼可独立显式重分析');
+  assert.notEqual(state.cseFloors[1].deltaId, oldDeltaIds[1]);
+  assert.equal(state.cseFloors[0].deltaId, oldDeltaIds[0]);
   root = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
   checkpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${root.headCheckpointId}`).data;
-  assert.deepEqual(checkpoint.producedRefs.stateDeltas, []);
+  assert.deepEqual(checkpoint.producedRefs.stateDeltas.map(id => id === oldDeltaIds[0]), [true, false]);
 });
 
 test('冷启动发现 CurrentState 与 delta 重放不一致时，以重放为准并报告诊断', async () => {
@@ -1595,6 +1617,38 @@ test('同一校准操作跳过坏证据并使用合法证据，独立操作与�
   assert.equal(overLimit.delta.source.calibrationAudit[0].evidence.length, 1);
 });
 
+test('动态编译可固定超过 360 条合法逐项变化且不截断', async () => {
+  const nextId = uuidFactory();
+  const sourceDeltaId = nextId();
+  const makePrevious = (category, index) => ({
+    id: nextId(), text: `旧${category}-${index}`, visibility: 'private', reason: '旧楼已保存', origin: 'floor',
+    towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId,
+  });
+  const previous = {
+    id: nextId(),
+    subjects: [{
+      subjectEntityId: A,
+      core: [],
+      adaptive: Array.from({ length: 120 }, (_, index) => makePrevious('长期', index)),
+      situational: Array.from({ length: 120 }, (_, index) => makePrevious('情境', index)),
+    }],
+  };
+  const envelope = createCseEnvelope({
+    floor: floor(FLOOR2, '甲的长期与情境状态在本楼整体更新。'), floorMemory: memory(MEMORY2), baseline,
+    currentState: previous, trackedSubjects: [entities[1]], entities,
+  });
+  const compiled = await compileCseResponse({
+    response: { subjects: [{
+      subject: '甲',
+      adaptive: Array.from({ length: 120 }, (_, index) => `新长期-${index}`),
+      situational: Array.from({ length: 120 }, (_, index) => `新情境-${index}`),
+    }] },
+    envelope, previousCurrentState: previous, now: NOW, deltaId: nextId(),
+  });
+  assert.equal(compiled.delta.fixedChanges[0].items.length, 480);
+  assert.equal(validateStateDeltaRecord(compiled.delta, { expectedChatId: CHAT }).fixedChanges[0].items.length, 480);
+});
+
 test('逐楼 timeline 只报告编译后实际变化，覆盖拒绝摘要、Situational 增改删、历史截止与重建 ID', async () => {
   const firstEnvelope = createCseEnvelope({ floor: floor(FLOOR1, '甲连续两次核对后仍保持警惕。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [entities[1]], entities });
   const first = await compileCseResponse({
@@ -1628,33 +1682,46 @@ test('逐楼 timeline 只报告编译后实际变化，覆盖拒绝摘要、Situ
   assert.deepEqual(deriveCseTimeline([first.delta, changedSummary])[1].changes, timeline[1].changes, '人物或根级摘要差异不改变实际 timeline');
 
   const rebuiltIds = structuredClone(second.delta);
+  const frozenRebuiltChanges = structuredClone(rebuiltIds.fixedChanges);
   rebuiltIds.id = '53535353-1111-4111-8111-535353535353'; rebuiltIds.floorId = '54545454-1111-4111-8111-545454545454';
   for (const category of ['core', 'adaptive', 'situational']) for (const item of rebuiltIds.subjectSnapshots[0][category]) {
     item.id = item.id === second.delta.subjectSnapshots[0][category][0]?.id ? '55535353-1111-4111-8111-555353535353' : item.id;
     item.sourceDeltaId = rebuiltIds.id; item.sourceFloorId = rebuiltIds.floorId;
   }
+  rebuiltIds.fixedChanges = frozenRebuiltChanges;
   const idTimeline = deriveCseTimeline([first.delta, second.delta, rebuiltIds]);
-  assert.equal(idTimeline[2].noMaterialChange, true, '仅重建 id/sourceDeltaId/sourceFloorId 不算状态变化');
+  assert.deepEqual(idTimeline[2].changes, timeline[1].changes, '固定变化不因前序或快照 ID 改写而重新推导');
 
   const removed = structuredClone(rebuiltIds);
   removed.id = '56565656-1111-4111-8111-565656565656'; removed.floorId = '57575757-1111-4111-8111-575757575757'; removed.subjectSnapshots[0].situational = [];
   const removedTimeline = deriveCseTimeline([first.delta, second.delta, rebuiltIds, removed]);
-  assert.deepEqual(removedTimeline[3].changes[0].items.map(item => [item.category, item.action, item.before?.text]), [['situational', 'remove', '暂时平静']]);
+  assert.deepEqual(removedTimeline[3].changes, timeline[1].changes, '快照被外部改动也不得反向改写已固定历史变化');
 });
 
 test('timeline 与 replay 共用 legacy Core 保护，manual override 可生效且旧 isolation 字段保持未知兼容', async () => {
   const envelope = createCseEnvelope({ floor: floor(FLOOR1, '甲作出选择。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [entities[1]], entities });
   const compiled = await compileCseResponse({ response: { subjects: [{ subject: '甲', core: [{ text: '坚持己见', visibility: 'private', reason: '首次状态' }] }] }, envelope, previousCurrentState: null, now: NOW, deltaId: '58585858-1111-4111-8111-585858585858' });
-  const legacyFirst = structuredClone(compiled.delta); delete legacyFirst.source.calibrationVersion;
+  const legacyFirst = structuredClone(compiled.delta); delete legacyFirst.source.calibrationVersion; delete legacyFirst.fixedChanges;
   const legacyOverwrite = structuredClone(legacyFirst);
   legacyOverwrite.id = '59595959-1111-4111-8111-595959595959'; legacyOverwrite.floorId = FLOOR2; legacyOverwrite.floorMemoryId = MEMORY2;
   legacyOverwrite.subjectSnapshots[0].core[0] = { ...legacyOverwrite.subjectSnapshots[0].core[0], id: '60606060-1111-4111-8111-606060606060', text: '轻易动摇', sourceFloorId: FLOOR2, sourceDeltaId: legacyOverwrite.id };
   const protectedTimeline = deriveCseTimeline([legacyFirst, legacyOverwrite]);
-  assert.equal(protectedTimeline[1].noMaterialChange, true);
-  assert.deepEqual(protectedTimeline[1].endStateSubjects[0].core.map(item => item.text), ['坚持己见']);
+  assert.equal(protectedTimeline[1].noMaterialChange, false, 'legacy 保留原记录的 noMaterialChange 语义');
+  assert.deepEqual(protectedTimeline[1].endStateSubjects[0].core.map(item => item.text), ['轻易动摇'], '本楼结束态只展示该楼已保存快照');
+  const protectedReplay = await replayCurrentState({
+    chatId: CHAT,
+    narrativeGeneration: GEN,
+    baselineId: baseline.id,
+    floors: [{ id: FLOOR1 }, { id: FLOOR2 }],
+    floorMemories: [],
+    stateDeltas: [legacyFirst, legacyOverwrite],
+    now: NOW,
+  });
+  assert.deepEqual(protectedReplay.subjects[0].core.map(item => item.text), ['坚持己见'], '全局聚合仍保留 legacy Core 保护');
   const manualOverwrite = structuredClone(legacyOverwrite); manualOverwrite.id = '61616161-1111-4111-8111-616161616161'; manualOverwrite.source.manualSubjectEntityIds = [A];
   const manualTimeline = deriveCseTimeline([legacyFirst, manualOverwrite]);
-  assert.deepEqual(manualTimeline[1].changes[0].items.map(item => [item.action, item.before?.text, item.after?.text]), [['remove', '坚持己见', undefined], ['add', undefined, '轻易动摇']]);
+  assert.deepEqual(manualTimeline[1].changes, [], 'legacy 缺固定字段时不借前楼伪造 before/remove');
+  assert.deepEqual(manualTimeline[1].endStateSubjects[0].core.map(item => item.text), ['轻易动摇'], 'legacy 快照仍参与当前态汇总');
 
   const withIsolation = structuredClone(compiled.delta);
   withIsolation.source.isolationSummary = { count: 2, codes: ['V3_CSE_OPTIONAL_ITEM_INVALID'] };

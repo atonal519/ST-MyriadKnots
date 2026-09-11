@@ -47,7 +47,7 @@ function reachable({ head = '88888888-8888-4888-8888-888888888888', revision = 4
     floors: [{ id: FLOOR1, assistantSeq: 1 }, { id: FLOOR2, assistantSeq: 2 }],
     floorMemories: [{ id: MEMORY1, floorId: FLOOR1, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '雨夜里约定下次在钟楼见。' }, ...emptyMemory }],
     entities: [{ id: PERSON, entityType: 'person', displayName: '裴晚生', aliases: [{ name: '阿裴' }], specialRole: 'char', recordStatus: 'active', status: 'established' }],
-    stateDeltas: [{ id: DELTA1, floorId: FLOOR1, floorMemoryId: MEMORY1, recordStatus: 'active', subjectSnapshots: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [stateItem] }] }],
+    stateDeltas: [{ id: DELTA1, floorId: FLOOR1, floorMemoryId: MEMORY1, recordStatus: 'active', subjectSnapshots: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [stateItem] }], fixedChanges: [{ subjectEntityId: PERSON, items: [{ category: 'situational', action: 'add', before: null, after: stateItem }] }] }],
     currentStates: [{ subjects: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [{ ...stateItem, text: '不可信的存储幽灵状态' }] }] }],
   };
 }
@@ -59,7 +59,7 @@ test('recall source 只输出 reachable 窄 DTO，局部重放而不信任 store
   const store = { readReachable: async () => structuredClone(value) };
   const result = await readRecallSource({ store, now: () => new Date(NOW) });
   assert.equal(result.status, 'ready');
-  assert.deepEqual(result.coverage, { stableAiFloors: 2, stableThroughAssistantSeq: 2, rememberedAiFloors: 1, missingAssistantSeq: [2], cseThroughAssistantSeq: 1, memoryComplete: false, cseCurrent: false });
+  assert.deepEqual(result.coverage, { stableAiFloors: 2, stableThroughAssistantSeq: 2, rememberedAiFloors: 1, missingAssistantSeq: [2], cseThroughAssistantSeq: 1, memoryComplete: false, cseCurrent: true });
   assert.equal(result.currentState[0].situational[0].text, '始终记得雨夜承诺');
   assert.deepEqual({
     stateId: result.currentState[0].situational[0].stateId,
@@ -768,7 +768,7 @@ test('anti-omniscience 分桶且声明非指令；coverage 不完整时仅保留
   const partial = selectRecall({ source: selectorSource({ complete: false, memories, currentState: state }), queryContext });
   assert.doesNotMatch(partial.injectionText, /冷静克制/);
   assert.doesNotMatch(partial.injectionText, /对林岚保持戒备|暗自恐惧/);
-  assert.match(partial.injectionText, /覆盖说明.*动态状态未被当作当前事实/);
+  assert.match(partial.injectionText, /覆盖说明.*当前没有可用的人物状态/);
   assert.ok(partial.stages.dropVisibility >= 2);
 });
 
@@ -1381,8 +1381,8 @@ function cseLaggingReachable(removeDeltaId = 'delta-remove') {
   const longReason = '当时的私密证据'.repeat(180);
   const privateState = { id: 'cse-state-private', text: '仍在钟楼等待赴约', visibility: 'private', reason: longReason, origin: 'floor', towardEntityId: null, sourceFloorId: floors[0].id, sourceDeltaId: 'delta-add' };
   const stateDeltas = [
-    { id: 'delta-add', floorId: floors[0].id, floorMemoryId: floorMemories[0].id, recordStatus: 'active', subjectSnapshots: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [privateState] }] },
-    { id: removeDeltaId, floorId: floors[1].id, floorMemoryId: floorMemories[1].id, recordStatus: 'active', subjectSnapshots: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [] }] },
+    { id: 'delta-add', floorId: floors[0].id, floorMemoryId: floorMemories[0].id, recordStatus: 'active', subjectSnapshots: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [privateState] }], fixedChanges: [{ subjectEntityId: PERSON, items: [{ category: 'situational', action: 'add', before: null, after: privateState }] }] },
+    { id: removeDeltaId, floorId: floors[1].id, floorMemoryId: floorMemories[1].id, recordStatus: 'active', subjectSnapshots: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [] }], fixedChanges: [{ subjectEntityId: PERSON, items: [{ category: 'situational', action: 'remove', before: privateState, after: null }] }] },
   ];
   return {
     status: 'ready', rootRevision: 7,
@@ -1601,7 +1601,7 @@ test('已注册多可见缺口不依赖三条 core 见证，pending 后已有摘
   const result = await harness.runtime.intercept([{ ...harness.userMessage, mes: '钟楼历史如何衔接？' }], 12000, value => { aborted = value === true; }, 'normal');
   assert.equal(selectorCalls, 1);
   assert.equal(aborted, false);
-  assert.deepEqual(projected.readiness.summaryPendingFloorIds, floors.slice(1).map(floor => floor.id), '连续前缀仍供摘要维护使用');
+  assert.deepEqual(projected.readiness.summaryPendingFloorIds, floors.slice(1, 5).map(floor => floor.id), '摘要待办只包含真实缺失楼，不让中间缺口连坐后楼');
   assert.deepEqual(projected.readiness.summaryMissingFloorIds, floors.slice(1, 5).map(floor => floor.id), '已有摘要的第6楼不得被前缀pending误算为实际缺失');
   assert.deepEqual(projected.bodyMatch.visibleFloorIds, floors.slice(1, 5).map(floor => floor.id), '四个可见缺口不受core三条见证限制');
   assert.match(result.lastRecall.injectionText, /钟楼隐藏历史摘要 1|钟楼隐藏历史摘要 6/);
@@ -1916,9 +1916,9 @@ test('摘要已齐但CSE欠尾时真实delta的私密移除跨 source/selector/s
   const first = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   assert.equal(first.lastRecall.status, 'ready', JSON.stringify({ recall: first.lastRecall, selected: selectedSnapshot?.cseChanges, source: sourceSnapshot?.cseChanges }));
   const receipt = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
-  assert.deepEqual(receipt.coverage, { stableAiFloors: 3, stableThroughAssistantSeq: 3, rememberedAiFloors: 3, missingAssistantSeq: [], cseThroughAssistantSeq: 2, memoryComplete: true, cseCurrent: false });
+  assert.deepEqual(receipt.coverage, { stableAiFloors: 3, stableThroughAssistantSeq: 3, rememberedAiFloors: 3, missingAssistantSeq: [], cseThroughAssistantSeq: 2, memoryComplete: true, cseCurrent: true });
   assert.equal(receipt.schemaVersion, 12);
-  assert.equal(receipt.selectedStates.length, 0, 'CSE欠尾时不得把重放终态称为当前状态');
+  assert.equal(receipt.selectedStates.length, 0, '第二楼固定移除后，现存楼汇总确实为空');
   const removed = receipt.selectedCseChanges.find(value => value.action === 'remove');
   assert.ok(removed);
   assert.equal(removed.deltaId, 'delta-remove');
@@ -1932,7 +1932,6 @@ test('摘要已齐但CSE欠尾时真实delta的私密移除跨 source/selector/s
   assert.match(receipt.injectionText, /\[变化；来源 AI #2\]/);
   assert.match(receipt.injectionText, /当时移除；之前 private，仅可用于该人物/);
   assert.match(receipt.injectionText, /“之前”只是被移除的旧状态，不是当前状态/);
-  assert.doesNotMatch(receipt.injectionText, /\[当前人物状态\]/);
   const inline = projectInlineRecallReceipt(receipt);
   assert.equal(inline.protocolRecognized, true);
   assert.ok(inline.historyItems.length > 0, '含CSE变化的剧情线协议仍须保留历史材料投影');

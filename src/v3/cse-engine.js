@@ -584,11 +584,16 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
         .slice(0, 40),
     };
   });
+  const fixedChanges = subjectSnapshots.map(subject => {
+    const previous = previousById.get(subject.subjectEntityId) ?? EMPTY_CSE_SUBJECT;
+    const audits = calibrationAudit.filter(entry => entry.subjectEntityId === subject.subjectEntityId);
+    return { subjectEntityId: subject.subjectEntityId, items: actualSubjectChanges({ before: previous, after: subject, audits }) };
+  }).filter(subject => subject.items.length);
   const material = subjectSnapshots.some(subject => JSON.stringify(storedProjection(previousById.get(subject.subjectEntityId) ?? { core: [], adaptive: [], situational: [] })) !== JSON.stringify(storedProjection(subject)));
   const noMaterialChange = !material;
-  const fingerprint = `sha256:${await sha256(JSON.stringify([envelope.scope.floorId, envelope.scope.floorMemoryId, subjectSnapshots, noMaterialChange]))}`;
+  const fingerprint = `sha256:${await sha256(JSON.stringify([envelope.scope.floorId, envelope.scope.floorMemoryId, subjectSnapshots, noMaterialChange, { fixedChanges }]))}`;
   const isolationCodes = [...new Set(isolated.map(item => item.code).filter(code => CSE_ISOLATION_CODES.includes(code)))];
-  const delta = validateStateDeltaRecord({ schemaVersion: 3, recordType: 'stateDelta', id: deltaId, chatId: envelope.scope.chatId, narrativeGeneration: envelope.scope.narrativeGeneration, floorId: envelope.scope.floorId, floorMemoryId: envelope.scope.floorMemoryId, baselineId: envelope.scope.baselineId, previousCurrentStateId: previousCurrentState?.id ?? null, subjectSnapshots, noMaterialChange, fingerprint, source: { promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, calibrationVersion: CSE_CALIBRATION_VERSION, ...(calibrationAudit.length ? { calibrationAudit } : {}), ...(isolated.length ? { isolationSummary: { count: isolated.length, codes: isolationCodes } } : {}) }, createdAt: now, updatedAt: now, recordStatus: 'active', supersedes: null }, { expectedChatId: envelope.scope.chatId });
+  const delta = validateStateDeltaRecord({ schemaVersion: 3, recordType: 'stateDelta', id: deltaId, chatId: envelope.scope.chatId, narrativeGeneration: envelope.scope.narrativeGeneration, floorId: envelope.scope.floorId, floorMemoryId: envelope.scope.floorMemoryId, baselineId: envelope.scope.baselineId, previousCurrentStateId: previousCurrentState?.id ?? null, subjectSnapshots, fixedChanges, noMaterialChange, fingerprint, source: { promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, calibrationVersion: CSE_CALIBRATION_VERSION, ...(calibrationAudit.length ? { calibrationAudit } : {}), ...(isolated.length ? { isolationSummary: { count: isolated.length, codes: isolationCodes } } : {}) }, createdAt: now, updatedAt: now, recordStatus: 'active', supersedes: null }, { expectedChatId: envelope.scope.chatId });
   return Object.freeze({ delta, isolated: Object.freeze(isolated) });
 }
 
@@ -649,26 +654,23 @@ export async function createManualCseCorrection({ anchorDelta, currentState, sub
   let replaced = false;
   for (const snapshot of anchorDelta.subjectSnapshots) {
     if (snapshot.subjectEntityId === subjectEntityId) { snapshots.push(corrected); replaced = true; continue; }
-    const copy = structuredClone(snapshot);
-    for (const category of categories) {
-      copy[category] = await Promise.all(copy[category].map(async (item, index) => {
-        if (item.sourceDeltaId !== anchorDelta.id) return item;
-        const rebased = { ...item, sourceDeltaId: deltaId };
-        rebased.id = await deterministicUuid(['v3-cse-manual-rebase-item', deltaId, item.id, copy.subjectEntityId, category, index]);
-        return rebased;
-      }));
-    }
-    snapshots.push(copy);
+    snapshots.push(structuredClone(snapshot));
   }
   if (!replaced) snapshots.push(corrected);
   const manualSubjectEntityIds = [...new Set([...(anchorDelta.source?.manualSubjectEntityIds ?? []), subjectEntityId])];
   const noMaterialChange = false;
-  const fingerprint = `sha256:${await sha256(JSON.stringify([anchorDelta.floorId, anchorDelta.floorMemoryId, snapshots, noMaterialChange]))}`;
+  const targetItems = actualSubjectChanges({ before: currentSubject, after: corrected, audits: [] });
+  const fixedChanges = [
+    ...(anchorDelta.fixedChanges ?? []).filter(subject => subject.subjectEntityId !== subjectEntityId),
+    ...(targetItems.length ? [{ subjectEntityId, items: targetItems }] : []),
+  ];
+  const fingerprint = `sha256:${await sha256(JSON.stringify([anchorDelta.floorId, anchorDelta.floorMemoryId, snapshots, noMaterialChange, { fixedChanges }]))}`;
   const delta = validateStateDeltaRecord({
     ...anchorDelta,
     id: deltaId,
     previousCurrentStateId: anchorDelta.previousCurrentStateId,
     subjectSnapshots: snapshots,
+    fixedChanges,
     noMaterialChange,
     fingerprint,
     source: {
@@ -705,33 +707,15 @@ export async function runCseRequest({ generateAnalysisTask, envelope, previousCu
 
 export function filterReachableDeltas({ floors = [], floorMemories = [], stateDeltas = [] }) {
   const order = new Map(floors.map((floor, index) => [floor.id, index]));
-  const memoriesByFloor = new Map();
-  for (const memory of floorMemories) memoriesByFloor.set(memory.floorId, [...(memoriesByFloor.get(memory.floorId) ?? []), memory]);
-  const activeMemoryByFloor = new Map();
-  for (const [floorId, memories] of memoriesByFloor) {
-    const active = memories.filter(memory => memory.recordStatus === 'active');
-    if (active.length === 1) activeMemoryByFloor.set(floorId, active[0].id);
-  }
   const candidates = new Map();
   for (const delta of stateDeltas) {
-    if (delta.recordStatus !== 'active' || !order.has(delta.floorId) || activeMemoryByFloor.get(delta.floorId) !== delta.floorMemoryId) continue;
+    if (delta.recordStatus !== 'active' || !order.has(delta.floorId)) continue;
     candidates.set(delta.floorId, [...(candidates.get(delta.floorId) ?? []), delta]);
   }
-  const result = [], acceptedIds = new Set();
+  const result = [];
   for (const floor of floors) {
-    const memories = memoriesByFloor.get(floor.id) ?? [];
-    if (!memories.length) continue;
-    if (memories.filter(memory => memory.recordStatus === 'active').length !== 1) break;
     const matches = candidates.get(floor.id) ?? [];
-    if (matches.length !== 1) break;
-    const delta = matches[0];
-    const allowedIds = new Set([...acceptedIds, delta.id]);
-    const sourceValid = delta.subjectSnapshots.every(subject => [...subject.core, ...subject.adaptive, ...subject.situational].every(item => (
-      (!item.sourceDeltaId || allowedIds.has(item.sourceDeltaId))
-      && (!item.sourceFloorId || (order.has(item.sourceFloorId) && order.get(item.sourceFloorId) <= order.get(delta.floorId)))
-    )));
-    if (!sourceValid) break;
-    result.push(delta); acceptedIds.add(delta.id);
+    if (matches.length === 1) result.push(matches[0]);
   }
   return result;
 }
@@ -825,16 +809,14 @@ function summarizeActualChange(change, knownBindings) {
 export function deriveCseTimeline(stateDeltas = []) {
   const subjects = new Map(), timeline = [];
   for (const delta of stateDeltas) {
-    const changes = [];
+    const changes = Object.hasOwn(delta, 'fixedChanges')
+      ? delta.fixedChanges.map(subject => Object.freeze({ subjectEntityId: subject.subjectEntityId, items: Object.freeze(subject.items.map(item => Object.freeze(item))) }))
+      : [];
     for (const snapshot of delta.subjectSnapshots) {
-      const before = subjects.get(snapshot.subjectEntityId) ?? EMPTY_CSE_SUBJECT;
-      const after = applyDeltaSnapshot(subjects, delta, snapshot);
-      const audits = (delta.source?.calibrationAudit ?? []).filter(entry => entry.subjectEntityId === snapshot.subjectEntityId);
-      const items = CSE_STATE_CATEGORIES.flatMap(category => categoryChanges({ before: before[category] ?? [], after: after[category] ?? [], category, audits: audits.filter(entry => entry.category === category) }));
-      if (items.length) changes.push(Object.freeze({ subjectEntityId: snapshot.subjectEntityId, items: Object.freeze(items.map(item => Object.freeze(item))) }));
+      applyDeltaSnapshot(subjects, delta, snapshot);
     }
-    const endStateSubjects = [...subjects.values()].map(subject => Object.freeze({ subjectEntityId: subject.subjectEntityId, core: Object.freeze([...(subject.core ?? [])]), adaptive: Object.freeze([...(subject.adaptive ?? [])]), situational: Object.freeze([...(subject.situational ?? [])]) }));
-    timeline.push(Object.freeze({ deltaId: delta.id, floorId: delta.floorId, noMaterialChange: changes.length === 0, changes: Object.freeze(changes), endStateSubjects: Object.freeze(endStateSubjects), isolationSummary: delta.source?.isolationSummary ? Object.freeze({ count: delta.source.isolationSummary.count, codes: Object.freeze([...delta.source.isolationSummary.codes]) }) : null }));
+    const endStateSubjects = delta.subjectSnapshots.map(subject => Object.freeze({ subjectEntityId: subject.subjectEntityId, core: Object.freeze([...(subject.core ?? [])]), adaptive: Object.freeze([...(subject.adaptive ?? [])]), situational: Object.freeze([...(subject.situational ?? [])]) }));
+    timeline.push(Object.freeze({ deltaId: delta.id, floorId: delta.floorId, noMaterialChange: delta.noMaterialChange, changes: Object.freeze(changes), endStateSubjects: Object.freeze(endStateSubjects), isolationSummary: delta.source?.isolationSummary ? Object.freeze({ count: delta.source.isolationSummary.count, codes: Object.freeze([...delta.source.isolationSummary.codes]) }) : null }));
   }
   return Object.freeze(timeline);
 }

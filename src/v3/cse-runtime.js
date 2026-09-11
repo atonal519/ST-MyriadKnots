@@ -139,8 +139,9 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       const memory = memoryByFloor.get(floor.id), delta = deltaByFloor.get(floor.id), timeline = timelineByFloor.get(floor.id);
       const running = active?.floorId === floor.id;
       const failure = lastFailure?.floorId === floor.id ? lastFailure : null;
-      const status = !memory ? 'notApplicable' : running ? 'running' : delta ? (timeline?.noMaterialChange ? 'noChange' : 'ready') : failure && failure.code !== 'V3_CSE_PREVIOUS_GAP' ? 'failed' : 'pending';
+      const status = running ? 'running' : delta ? (timeline?.noMaterialChange ? 'noChange' : 'ready') : !memory ? 'notApplicable' : failure ? 'failed' : 'pending';
       const record = delta ? Object.freeze({
+        fixedChangesAvailable: Object.hasOwn(delta, 'fixedChanges'),
         noMaterialChange: timeline?.noMaterialChange ?? true,
         isolationSummary: timeline?.isolationSummary ?? null,
         subjects: Object.freeze((timeline?.changes ?? []).map(subject => Object.freeze({
@@ -163,7 +164,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
           situational: Object.freeze((subject.situational ?? []).map(historyItem)),
         }))),
       }) : null;
-      return Object.freeze({ floorId: floor.id, floorMemoryId: memory?.id ?? null, status, deltaId: delta?.id ?? null, noMaterialChange: timeline?.noMaterialChange ?? false, record, error: failure?.message ?? null });
+      return Object.freeze({ floorId: floor.id, floorMemoryId: delta?.floorMemoryId ?? memory?.id ?? null, status, deltaId: delta?.id ?? null, noMaterialChange: timeline?.noMaterialChange ?? false, record, error: failure?.message ?? null });
     });
     const subjects = (replayed?.subjects ?? []).map(subject => ({
       subjectEntityId: subject.subjectEntityId,
@@ -245,7 +246,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const previousState = current.currentStates.at(-1) ?? null;
     const currentState = await replayCurrentState({ chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, baselineId: current.baseline.id, floors: current.floors, floorMemories: current.floorMemories, stateDeltas: deltas, now: nowValue, previousId: previousState?.id ?? null });
     const activeMemories = current.floorMemories.filter(item => item.recordStatus === 'active');
-    const cseReady = activeMemories.length > 0 && activeMemories.every(item => deltas.some(itemDelta => itemDelta.floorId === item.floorId && itemDelta.floorMemoryId === item.id));
+    const cseReady = activeMemories.length > 0 && activeMemories.every(item => deltas.some(itemDelta => itemDelta.floorId === item.floorId));
     const capabilities = { foundationReady: true, memoryReady: activeMemories.length > 0, cseReady, recallReady: false };
     const stateGraphFingerprint = await hash([current.root.narrativeGeneration, current.floors.map(item => item.id), current.floors.map(item => item.content.canonicalFingerprint)]);
     const run = validateFoundationRun({ schemaVersion: 3, recordType: 'run', id: runId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, inputSnapshotFingerprint: current.root.sourceSnapshotFingerprint, mode: 'cse', sessionEpoch: operation.epoch, inputFloorIds: [floor.id], phase: 'completed', completedFloorIds: [floor.id], failedItems: [], preparedRecordRefs: [store.recordKey(delta), store.recordKey(currentState), ...indexKeys, `v3-checkpoint-${checkpointId}`], diagnostics: { ...diagnosticsWithRealtimeOrigin(current.run?.diagnostics, realtimeOriginFromReachable(current)), ...diagnostics, floorId: floor.id, floorMemoryId: memory.id }, startedAt: operation.startedAt, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
@@ -286,19 +287,23 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     if (!sameDependencySnapshot(operation.dependencySnapshot, currentDependency)) throw errorWith('V3_CSE_STALE', '人物状态所依赖的楼层前缀、摘要、前态或身份目录已变化，迟到状态不会写入。');
     const floorOrder = new Map(current.floors.map((item, index) => [item.id, index]));
     const deltas = filterReachableDeltas({ floors: current.floors, floorMemories: current.floorMemories, stateDeltas: current.stateDeltas })
-      .filter(delta => floorOrder.get(delta.floorId) < floorOrder.get(floor.id));
+      .filter(delta => delta.floorId !== floor.id);
     deltas.push(result.delta);
+    deltas.sort((left, right) => floorOrder.get(left.floorId) - floorOrder.get(right.floorId));
     const entitiesById = new Map(current.entities.map(entity => [entity.id, entity]));
     for (const entity of roleEntities) if (!entitiesById.has(entity.id) && [current.baseline.userPersona.entityId, current.baseline.characterCard.entityId].includes(entity.id)) entitiesById.set(entity.id, entity);
     const entities = [...entitiesById.values()];
     return commitDeltaGraph({ operation, current, floor, memory, delta: result.delta, deltas, entities, diagnostics: { kind: 'cse', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, promptGuidanceFingerprint: operation.promptGuidanceFingerprint ?? null, systemPromptFingerprint: operation.systemPromptFingerprint ?? null, api: result.metadata, attempts: result.attempts, transportAttempts: result.transportAttempts, responseFingerprint: result.responseFingerprint, isolated: result.isolated.slice(-40), sourceSelection: operation.sourceDiagnostics ?? null, cseRebuild: operation.cseRebuild } });
   }
 
-  async function analyzeFloor(floorId, { cseRebuild = null } = {}) {
+  async function analyzeFloor(floorId, { cseRebuild = null, replaceExisting = false } = {}) {
     if (!enabled()) return notify();
     if (active) return getState();
     await load();
     let value = reachable;
+    const existing = filterReachableDeltas({ floors: value?.floors ?? [], floorMemories: value?.floorMemories ?? [], stateDeltas: value?.stateDeltas ?? [] })
+      .find(delta => delta.floorId === floorId);
+    if (existing && !replaceExisting && !cseRebuild) return notify();
     const floor = value?.floors?.find(item => item.id === floorId);
     const memory = value?.floorMemories?.find(item => item.floorId === floorId && item.recordStatus === 'active');
     if (!floor || !memory) throw errorWith('V3_CSE_FLOOR_UNAVAILABLE', '只有当前可达且已有 FloorMemory 的楼可以分析状态。');
@@ -318,14 +323,8 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       const precedingFloorIds = new Set(precedingFloors.map(item => item.id));
       const trackedFloorIds = new Set(value.floors.slice(0, targetIndex + 1).map(item => item.id));
       const scopedEntities = entitiesThroughFloorIds(entities, trackedFloorIds);
-      const precedingMemoryRecords = value.floorMemories.filter(item => precedingFloorIds.has(item.floorId));
-      const precedingMemories = precedingMemoryRecords.filter(item => item.recordStatus === 'active');
-      const brokenMemoryFloor = precedingFloors.some(precedingFloor => {
-        const records = precedingMemoryRecords.filter(item => item.floorId === precedingFloor.id);
-        return records.length > 0 && records.filter(item => item.recordStatus === 'active').length !== 1;
-      });
+      const precedingMemories = value.floorMemories.filter(item => precedingFloorIds.has(item.floorId) && item.recordStatus === 'active');
       const precedingDeltas = filterReachableDeltas({ floors: precedingFloors, floorMemories: precedingMemories, stateDeltas: value.stateDeltas });
-      if (brokenMemoryFloor || precedingDeltas.length !== precedingMemories.length) throw errorWith('V3_CSE_PREVIOUS_GAP', '前面还有未分析或已失效的楼；请先从最早待分析楼继续，当前楼保持待分析。');
       const rebuiltPrevious = precedingDeltas.length
         ? await replayCurrentState({ chatId: value.root.chatId, narrativeGeneration: value.root.narrativeGeneration, baselineId: value.baseline.id, floors: precedingFloors, floorMemories: precedingMemories, stateDeltas: precedingDeltas, now: nowIso(now) })
         : null;
@@ -358,8 +357,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       operation.phase = 'committing'; notify();
       await commitDelta(operation, result, roleEntities);
     } catch (error) {
-      if (error?.code === 'V3_CSE_PREVIOUS_GAP') lastFailure = { floorId, runId: operation.runId, code: error.code, message: error.message, phase: 'pending' };
-      else if (error?.name === 'AbortError' || error?.code === 'V3_CSE_STALE') lastFailure = { floorId, runId: operation.runId, code: 'V3_CSE_STALE', message: '聊天、分支或 FloorMemory 已变化，迟到状态没有写入。', phase: 'stale' };
+      if (error?.name === 'AbortError' || error?.code === 'V3_CSE_STALE') lastFailure = { floorId, runId: operation.runId, code: 'V3_CSE_STALE', message: '聊天、分支或 FloorMemory 已变化，迟到状态没有写入。', phase: 'stale' };
       else lastFailure = { floorId, runId: operation.runId, code: String(error?.code ?? 'V3_CSE_FAILED').slice(0, 120), message: sanitizeSensitiveText(error?.message ?? '状态分析失败，可单独重试。').slice(0, 500), phase: 'retryableError', diagnostics: sanitizeDiagnosticValue(error?.cseDiagnostics ?? error?.sourceDiagnostics ?? null) };
       logger?.warn?.('[qianqianjie] V3 CSE failed', { code: error?.code ?? error?.name ?? 'V3_CSE_FAILED' });
     } finally { if (active === operation) active = null; }
@@ -389,7 +387,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const anchor = deltas.at(-1);
     const anchorIndex = current.floors.findIndex(floor => floor.id === anchor?.floorId);
     const floor = anchorIndex >= 0 ? current.floors[anchorIndex] : null;
-    const memory = floor ? current.floorMemories.find(item => item.floorId === floor.id && item.id === anchor.floorMemoryId && item.recordStatus === 'active') : null;
+    const memory = floor ? current.floorMemories.find(item => item.floorId === floor.id && item.recordStatus === 'active') ?? { id: anchor.floorMemoryId } : null;
     if (!anchor || !floor || !memory || !replayed.subjects.some(subject => subject.subjectEntityId === subjectEntityId)) throw errorWith('V3_CSE_MANUAL_TARGET_INVALID', '只能纠正当前已有状态的人物。');
     const prefixFloorIds = new Set(current.floors.slice(0, anchorIndex + 1).map(item => item.id));
     const towardCandidates = buildEntityIdentityDirectory({ entities: current.entities, floorIds: prefixFloorIds }).filter(entry => entry.entityType === 'person');
@@ -401,7 +399,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     active = operation;
     notify();
     try {
-      return await commitDeltaGraph({ operation, current, floor, memory, delta: correction.delta, deltas: [...deltas.slice(0, -1), correction.delta], entities: current.entities, diagnostics: { kind: 'cseManualCorrection', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, manualSubjectEntityIds: correction.delta.source.manualSubjectEntityIds, cseRebuild: null } });
+      return await commitDeltaGraph({ operation, current, floor, memory, delta: correction.delta, deltas: deltas.map(item => item.floorId === floor.id ? correction.delta : item), entities: current.entities, diagnostics: { kind: 'cseManualCorrection', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, manualSubjectEntityIds: correction.delta.source.manualSubjectEntityIds, cseRebuild: null } });
     } catch (error) {
       lastFailure = { floorId: floor.id, runId: operation.runId, code: String(error?.code ?? 'V3_CSE_MANUAL_SAVE_FAILED').slice(0, 120), message: sanitizeSensitiveText(error?.message ?? '人物状态纠正保存失败。').slice(0, 500), phase: error?.code === 'V3_CSE_MANUAL_STALE' || error?.code === 'V3_CSE_CAS_CONFLICT' || error?.name === 'AbortError' ? 'stale' : 'retryableError' };
       throw error;

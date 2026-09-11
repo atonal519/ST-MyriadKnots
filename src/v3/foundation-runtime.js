@@ -23,7 +23,7 @@ import {
 } from './foundation-schema.js';
 import { collectFloorMemoryEntityIds, entityIndexKey, projectEntityFloorBounds, validateMemoryGraph } from './memory-schema.js';
 import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
-import { validateCseGraph, validateStateDeltaRecord } from './cse-schema.js';
+import { validateCseGraph } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 import { matchFloorCandidates } from './floor-binding.js';
 
@@ -657,24 +657,13 @@ export function createFoundationRuntime({
     const floorIdSet = new Set(floors.map(floor => floor.id));
     const floorMemories = (cache.floorMemories ?? []).filter(memory => floorIdSet.has(memory.floorId));
     const survivingDeltas = (cache.stateDeltas ?? []).filter(delta => floorIdSet.has(delta.floorId));
-    const deltaIdMap = new Map();
-    for (const delta of survivingDeltas) deltaIdMap.set(delta.id, identityChanged ? await deterministicUuid(['v3-cse-rebase', checkpointId, delta.id]) : delta.id);
-    const survivingDeltaIds = new Set(survivingDeltas.map(delta => delta.id));
-    const rewrittenDeltas = [];
-    for (const delta of survivingDeltas) {
-      const clean = item => ({ ...item,
-        sourceFloorId: item.sourceFloorId && floorIdSet.has(item.sourceFloorId) ? item.sourceFloorId : null,
-        sourceDeltaId: item.sourceDeltaId && survivingDeltaIds.has(item.sourceDeltaId) ? deltaIdMap.get(item.sourceDeltaId) : null });
-      const subjectSnapshots = delta.subjectSnapshots.map(subject => ({ ...subject,
-        core: subject.core.map(clean), adaptive: subject.adaptive.map(clean), situational: subject.situational.map(clean) }));
-      rewrittenDeltas.push(validateStateDeltaRecord({ ...delta, id: deltaIdMap.get(delta.id), subjectSnapshots,
-        supersedes: identityChanged ? delta.id : delta.supersedes,
-        fingerprint: await hash([delta.floorId, delta.floorMemoryId, subjectSnapshots, delta.noMaterialChange]), updatedAt: nowValue }, { expectedChatId: operation.chatId }));
-    }
-    let stateDeltas = filterReachableDeltas({ floors, floorMemories, stateDeltas: rewrittenDeltas });
+    let stateDeltas = filterReachableDeltas({ floors, floorMemories, stateDeltas: survivingDeltas });
     const referencedEntityIds = new Set();
     floorMemories.forEach(memory => collectFloorMemoryEntityIds(memory).forEach(id => referencedEntityIds.add(id)));
-    stateDeltas.forEach(delta => delta.subjectSnapshots.forEach(subject => { referencedEntityIds.add(subject.subjectEntityId); for (const category of ['adaptive', 'situational']) subject[category].forEach(item => { if (item.towardEntityId) referencedEntityIds.add(item.towardEntityId); }); }));
+    stateDeltas.forEach(delta => {
+      delta.subjectSnapshots.forEach(subject => { referencedEntityIds.add(subject.subjectEntityId); for (const category of ['adaptive', 'situational']) subject[category].forEach(item => { if (item.towardEntityId) referencedEntityIds.add(item.towardEntityId); }); });
+      (delta.fixedChanges ?? []).forEach(subject => { referencedEntityIds.add(subject.subjectEntityId); subject.items.forEach(change => { for (const item of [change.before, change.after]) if (item?.towardEntityId) referencedEntityIds.add(item.towardEntityId); }); });
+    });
     if (cache.baseline) { referencedEntityIds.add(cache.baseline.userPersona.entityId); referencedEntityIds.add(cache.baseline.characterCard.entityId); }
     const entities = projectEntityFloorBounds((cache.entities ?? []).filter(entity => referencedEntityIds.has(entity.id)
       || (entity.firstSeenFloorId && floorIdSet.has(entity.firstSeenFloorId))), floors, floorMemories, stateDeltas);
@@ -682,7 +671,7 @@ export function createFoundationRuntime({
     const baseline = cache.baseline && entityIds.has(cache.baseline.userPersona.entityId) && entityIds.has(cache.baseline.characterCard.entityId) ? cache.baseline : null;
     if (!baseline) stateDeltas = [];
     const memoryReady = floorMemories.some(memory => memory.recordStatus === 'active');
-    const cseReady = memoryReady && floorMemories.filter(memory => memory.recordStatus === 'active').every(memory => stateDeltas.some(delta => delta.floorId === memory.floorId && delta.floorMemoryId === memory.id));
+    const cseReady = memoryReady && floorMemories.filter(memory => memory.recordStatus === 'active').every(memory => stateDeltas.some(delta => delta.floorId === memory.floorId));
     const capabilities = { ...FOUNDATION_CAPABILITIES, memoryReady, cseReady };
     const currentState = baseline ? await replayCurrentState({ chatId: operation.chatId, narrativeGeneration, baselineId: baseline.id, floors, floorMemories, stateDeltas, now: nowValue, id: await deterministicUuid(['v3-cse-current-state', checkpointId]), previousId: cache.currentStates?.at(-1)?.id ?? null }) : null;
     const indexes = await buildFoundationIndexes({ chatId: operation.chatId, narrativeGeneration, checkpointId, floors, candidates: stableCandidates, entities, now: nowValue });

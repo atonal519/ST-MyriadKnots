@@ -241,7 +241,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     memorySyncError = null;
     if (!reachable) memorySnapshotStatus = 'syncing';
   };
-  const currentInputKey = () => reachable?.root ? `${reachable.root.chatId}:${reachable.root.narrativeGeneration}:${reachable.root.sourceSnapshotFingerprint}` : null;
+  const currentInputKey = () => reachable?.root
+    ? `${reachable.root.chatId}:${reachable.root.narrativeGeneration}:${reachable.root.sourceSnapshotFingerprint}:${reachable.root.stableBoundary?.floorId ?? ''}:${reachable.root.stableBoundary?.canonicalFingerprint ?? ''}`
+    : null;
   const hasEstablishedMemory = () => Boolean(reachable?.floorMemories?.some(memory => memory?.recordStatus === 'active'));
   const hasEstablishedChat = () => Boolean(currentHostChatId() && establishedMemoryChatId === currentHostChatId());
   const hasExplicitInitializationIntent = () => hasEstablishedMemory() || hasEstablishedChat()
@@ -272,8 +274,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const config = automation();
     const unfinished = missingSummaryCount();
     if (!config.enabled || state.summaryCoverageStatus !== 'historicalDebt' || unfinished === 0
+      || (['partial', 'failed'].includes(lastAutoRun?.status) && lastAutomaticInputKey === currentInputKey())
       || state.cseFloors.some(floor => floor.status === 'pending')) return false;
-    const firstPending = reachable?.floors?.[state.summaryCompletedCount] ?? null;
+    const memoryMap = currentMemoryMap(reachable);
+    const firstPending = reachable?.floors?.find(floor => memoryMap.get(floor.id)?.recordStatus !== 'active') ?? null;
     return notifyOnce(`authorization:${currentInputKey()}:${firstPending?.id ?? 'unknown'}:${unfinished}`, {
       kind: 'warning',
       text: `千千结发现需要用户确认的历史摘要缺口：${summaryDebtCopy({ floor: firstPending, count: unfinished, retry: '这是历史缺口，不会自动补，请在记忆管理中点击继续。' })}`,
@@ -339,8 +343,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const memoryMap = currentMemoryMap(value);
     const targets = [];
     for (let index = 0; index < saved.targets.length; index += 1) {
-      const target = saved.targets[index], floor = value.floors?.[index], memory = floor ? memoryMap.get(floor.id) : null;
-      if (!target || target.floorId !== floor?.id || target.memoryId !== memory?.id || memory?.recordStatus !== 'active') return null;
+      const target = saved.targets[index], floor = value.floors?.find(item => item.id === target?.floorId), memory = floor ? memoryMap.get(floor.id) : null;
+      if (!target || !floor || target.memoryId !== memory?.id || memory?.recordStatus !== 'active') return null;
       targets.push(Object.freeze({ floorId: target.floorId, memoryId: target.memoryId, assistantSeq: floor.assistantSeq }));
     }
     if (saved.completedFloorIds.some((floorId, index) => floorId !== targets[index]?.floorId)) return null;
@@ -377,12 +381,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const cseByFloor = new Map((cse.cseFloors ?? []).map(item => [item.floorId, item]));
     const combinedFloors = floors.map(item => Object.freeze({ ...item, cse: cseByFloor.get(item.floorId) ?? null }));
     const memoryEntities = projectMemoryPersonEntities(reachable?.entities ?? []);
-    let rebuildCompletedCount = 0;
-    for (const floor of combinedFloors) {
-      if (!floor.memoryId || floor.cse?.floorMemoryId !== floor.memoryId || !floor.cse?.deltaId) break;
-      rebuildCompletedCount += 1;
-    }
-    const rebuildNextAssistantSeq = combinedFloors[rebuildCompletedCount]?.assistantSeq ?? null;
+    const rebuildCompletedCount = combinedFloors.filter(floor => floor.memory?.recordStatus === 'active' && floor.cse?.deltaId).length;
+    const rebuildNextAssistantSeq = combinedFloors.find(floor => floor.memory?.recordStatus !== 'active' || !floor.cse?.deltaId)?.assistantSeq ?? null;
     const summaryCompletedCount = Math.min(coverage.summaryCompleted ?? rememberedCount, combinedFloors.length);
     const cseRebuildResumable = ['paused', 'failed'].includes(cseRebuildPlan?.status);
     const rebuildHasActionableWork = (coverage.status !== 'unknown' && coverage.completed < coverage.total)
@@ -488,6 +488,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       memorySyncStatus = readOnlyReview ? 'needsReview' : lastFailure?.phase === 'anchor' ? 'error' : 'idle';
       memorySyncError = readOnlyReview ? null : lastFailure?.phase === 'anchor' ? lastFailure : null;
       notify();
+      if (!readOnlyReview && hasAutomaticCatchupWork() && lastAutoRun?.status === 'caughtUp'
+        && lastAutomaticInputKey !== currentInputKey()) void scheduleAutomation('postBoundaryCatchup');
     }).catch(error => {
       if (expectedEpoch !== epoch || reachable !== source) return;
       memorySyncStatus = 'error';
@@ -683,7 +685,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       entitiesById.set(entity.id, entity);
     }
     const provisionalDeltas = filterReachableDeltas({ floors: current.floors, floorMemories, stateDeltas: current.stateDeltas ?? [] });
-    const stateEntityIds = new Set(provisionalDeltas.flatMap(delta => delta.subjectSnapshots.flatMap(subject => [subject.subjectEntityId, ...['adaptive', 'situational'].flatMap(category => subject[category].map(item => item.towardEntityId).filter(Boolean))])));
+    const stateEntityIds = new Set(provisionalDeltas.flatMap(delta => [
+      ...delta.subjectSnapshots.flatMap(subject => [subject.subjectEntityId, ...['adaptive', 'situational'].flatMap(category => subject[category].map(item => item.towardEntityId).filter(Boolean))]),
+      ...(delta.fixedChanges ?? []).flatMap(subject => [subject.subjectEntityId, ...subject.items.flatMap(change => [change.before?.towardEntityId, change.after?.towardEntityId].filter(Boolean))]),
+    ]));
     const baselineEntityIds = new Set(current.baseline ? [current.baseline.userPersona.entityId, current.baseline.characterCard.entityId] : []);
     const entities = [...entitiesById.values()].filter(entity => current.floors.some(item => item.id === entity.firstSeenFloorId) || floorMemories.some(memory => JSON.stringify(memory).includes(entity.id)) || stateEntityIds.has(entity.id) || baselineEntityIds.has(entity.id));
     const nowValue = nowIso(now);
@@ -699,7 +704,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const run = validateFoundationRun({ schemaVersion: 3, recordType: 'run', id: runId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, inputSnapshotFingerprint: current.root.sourceSnapshotFingerprint, mode: 'localReextract', sessionEpoch: operation.epoch, inputFloorIds: [replacement.floorId], phase: 'completed', completedFloorIds: [replacement.floorId], failedItems: [], preparedRecordRefs: [store.recordKey(replacement), ...newEntities.map(entity => store.recordKey(entity)), ...preparedStateRefs, ...indexKeys, `v3-checkpoint-${checkpointId}`], diagnostics: { ...diagnosticsWithRealtimeOrigin(null, realtimeOriginFromReachable(current)), kind: 'extractor', promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION, floorProvenance: provenance, validationErrors: validationErrors.slice(-20) }, startedAt: operation.startedAt, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
     const memoryReady = floorMemories.some(memory => memory.recordStatus === 'active');
     const stateFingerprint = await hash([current.root.narrativeGeneration, current.floors.map(item => item.id), current.floors.map(item => item.content.canonicalFingerprint)]);
-    const cseReady = memoryReady && floorMemories.filter(memory => memory.recordStatus === 'active').every(memory => provisionalDeltas.some(delta => delta.floorId === memory.floorId && delta.floorMemoryId === memory.id));
+    const cseReady = memoryReady && floorMemories.filter(memory => memory.recordStatus === 'active').every(memory => provisionalDeltas.some(delta => delta.floorId === memory.floorId));
     const capabilities = { foundationReady: true, memoryReady, cseReady, recallReady: false };
     const checkpoint = validateFoundationCheckpoint({ schemaVersion: 3, recordType: 'checkpoint', id: checkpointId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, runId, sourceSnapshotFingerprint: current.root.sourceSnapshotFingerprint, capabilities, floorRange: { fromAssistantSeq: current.floors.length ? 1 : 0, toAssistantSeq: current.floors.length, floorIds: current.floors.map(item => item.id) }, inputFingerprints: createCheckpointInputFingerprints(current.floors, { previous: current.checkpoint?.inputFingerprints }), producedRefs: { floors: current.floors.map(item => item.id), floorMemories: floorMemories.map(item => item.id), entities: entities.map(item => item.id), events: [], claims: [], knowledge: [], stateDeltas: provisionalDeltas.map(item => item.id), currentStates: currentState ? [currentState.id] : [], stateProjections: [], episodes: [], threads: [], indexes: indexKeys }, validation: { schemaValid: true, referencesValid: true, orderedReplayValid: true, stateFingerprint }, sealedAt: nowValue, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
     const root = validateFoundationRoot({ ...current.root, capabilities, headCheckpointId: checkpointId, activeStateRefs: currentState ? [currentState.id] : [], indexManifest: { ...emptyManifest(), floor: indexKeys.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-')), entity: indexKeys.filter(key => key.includes('-entity-')), reverseRef: indexKeys.filter(key => key.includes('-reverseRef-')) }, updatedAt: nowValue }, { expectedChatId: current.root.chatId });
@@ -1077,6 +1082,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', safeErrorMessage(foundation.lastError ?? `基础数据状态为 ${foundation.status}`));
           }
           await load(epoch, foundationRuntime.getReachable?.() ?? null);
+          const settlement = backgroundSync;
+          if (settlement) await settlement;
           if (!allowed() || !reachable?.root) return getState();
           if (manualHistorical && reachable.root.chatId !== authorizedChatId) return getState();
           const assessment = coverage;
@@ -1085,8 +1092,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           capturedInputKey ??= currentInputKey();
           const capturedFloorSet = new Set(capturedFloorIds);
           const capturedTotal = capturedFloorIds.length;
-          if (historical && assessment.completed >= capturedTotal && assessment.summaryCompleted >= capturedTotal) {
+          const hasCapturedPending = (value, key) => (value?.[key] ?? []).some(floorId => capturedFloorSet.has(floorId));
+          if (historical && !hasCapturedPending(assessment, 'pendingFloorIds') && !hasCapturedPending(assessment, 'summaryPendingFloorIds')) {
             if (manualHistorical && historicalAuthorization === authorizedChatId) historicalAuthorization = null;
+            lastAutomaticInputKey = capturedInputKey;
             lastAutoRun = processed || cseProcessed
               ? Object.freeze({ status: 'completed', reason, mode: manualHistorical ? 'historical' : 'realtime', batchSize: config.batchSize, recovered: resumed, fromAssistantSeq, toAssistantSeq, processed, cseProcessed })
               : Object.freeze({ status: 'caughtUp', reason, mode: manualHistorical ? 'historical' : 'realtime', batchSize: config.batchSize, available: 0, fromAssistantSeq: null, toAssistantSeq: null, processed: 0 });
@@ -1103,8 +1112,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           }
           operation.mode = historical ? 'historical' : 'realtime';
           const memoryMap = currentMemoryMap(reachable);
-          const summaryPending = (reachable.floors ?? []).slice(assessment.summaryCompleted)
-            .filter(floor => capturedFloorSet.has(floor.id)
+          const summaryPendingIds = new Set(assessment.summaryPendingFloorIds ?? []);
+          const summaryPending = (reachable.floors ?? [])
+            .filter(floor => summaryPendingIds.has(floor.id) && capturedFloorSet.has(floor.id)
               && !failedSummaryFloorIds.has(floor.id)
               && memoryMap.get(floor.id)?.recordStatus !== 'active');
           const targets = historical
@@ -1149,8 +1159,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             if (!historical) continue;
           }
           if (historical && summaryFailures.length) {
-            const remainingIndependentSummary = (reachable.floors ?? []).slice(coverage.summaryCompleted)
-              .some(floor => capturedFloorSet.has(floor.id)
+            const pendingSummaryIds = new Set(coverage.summaryPendingFloorIds ?? []);
+            const remainingIndependentSummary = (reachable.floors ?? [])
+              .some(floor => pendingSummaryIds.has(floor.id) && capturedFloorSet.has(floor.id)
                 && !failedSummaryFloorIds.has(floor.id)
                 && currentMemoryMap(reachable).get(floor.id)?.recordStatus !== 'active');
             if (remainingIndependentSummary) continue;
@@ -1158,10 +1169,12 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           if (!allowed()) return getState();
           let afterExtraction = coverage;
           if (afterExtraction.status === 'unknown') throw errorWith('V3_MEMORY_COVERAGE_UNCONFIRMED', '摘要保存后覆盖校验未确认，人物状态分析已暂停。');
-          if (eventAuthorization?.allowHistoricalDebt && afterExtraction.summaryCompleted < capturedTotal && summaryFailures.length === 0) continue;
-          while (allowed() && afterExtraction.completed < capturedTotal) {
-            const floor = reachable.floors?.[afterExtraction.completed];
-            if (!floor || !capturedFloorSet.has(floor.id) || currentMemoryMap(reachable).get(floor.id)?.recordStatus !== 'active') break;
+          if (eventAuthorization?.allowHistoricalDebt && hasCapturedPending(afterExtraction, 'summaryPendingFloorIds') && summaryFailures.length === 0) continue;
+          while (allowed() && hasCapturedPending(afterExtraction, 'pendingFloorIds')) {
+            const activeMemories = currentMemoryMap(reachable);
+            const pendingId = afterExtraction.pendingFloorIds.find(floorId => capturedFloorSet.has(floorId) && activeMemories.get(floorId)?.recordStatus === 'active');
+            const floor = reachable.floors?.find(item => item.id === pendingId);
+            if (!floor) break;
             operation.phase = 'analyzingCse';
             operation.floorIds = [...new Set([...operation.floorIds, floor.id])];
             notify();
@@ -1202,17 +1215,17 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           }
           if (!historical) {
             lastAutomaticInputKey = null;
-            const summaryDebt = afterExtraction.summaryStatus === 'historicalDebt' && afterExtraction.summaryCompleted < capturedTotal;
+            const summaryDebt = afterExtraction.summaryStatus === 'historicalDebt' && hasCapturedPending(afterExtraction, 'summaryPendingFloorIds');
             if (summaryDebt) {
               lastAutoRun = Object.freeze({ status: 'authorizationRequired', reason, mode: 'historical', phase: cseProcessed ? 'analyzingCse' : 'extracting', batchSize: config.batchSize, available: missingSummaryCount(capturedFloorSet), fromAssistantSeq: afterExtraction.summaryNextAssistantSeq, toAssistantSeq: reachable.floors.at(capturedTotal - 1)?.assistantSeq ?? null, processed, cseProcessed });
-              const firstPending = reachable.floors?.[afterExtraction.summaryCompleted] ?? null;
+              const firstPending = reachable.floors?.find(floor => afterExtraction.summaryPendingFloorIds.includes(floor.id)) ?? null;
               const prefix = cseProcessed ? `千千结已补齐 ${cseProcessed} 楼人物状态；` : '千千结发现需要用户确认的历史摘要缺口：';
               notifyOnce(`authorization:${capturedInputKey ?? inputKey}:${firstPending?.id ?? 'unknown'}:${lastAutoRun.available}`, { kind: 'warning', text: `${prefix}${summaryDebtCopy({ floor: firstPending, count: lastAutoRun.available, retry: '这是历史缺口，不会自动补，请在记忆管理中点击继续。' })}` });
               return notify();
             }
-            const summaryWaiting = afterExtraction.summaryCompleted < capturedTotal;
+            const summaryWaiting = hasCapturedPending(afterExtraction, 'summaryPendingFloorIds');
             if (summaryWaiting) {
-              lastAutoRun = Object.freeze({ status: 'waiting', reason, mode: 'realtime', phase: cseProcessed ? 'analyzingCse' : 'extracting', batchSize: config.batchSize, available: capturedTotal - afterExtraction.summaryCompleted, fromAssistantSeq: afterExtraction.summaryNextAssistantSeq, toAssistantSeq: reachable.floors.at(capturedTotal - 1)?.assistantSeq ?? null, processed, cseProcessed });
+              lastAutoRun = Object.freeze({ status: 'waiting', reason, mode: 'realtime', phase: cseProcessed ? 'analyzingCse' : 'extracting', batchSize: config.batchSize, available: missingSummaryCount(capturedFloorSet), fromAssistantSeq: afterExtraction.summaryNextAssistantSeq, toAssistantSeq: reachable.floors.at(capturedTotal - 1)?.assistantSeq ?? null, processed, cseProcessed });
               if (cseProcessed) try { notifyUser?.({ kind: 'success', text: `千千结已补齐 ${cseProcessed} 楼人物状态；新摘要继续等待稳定批次。` }); } catch { /* notification must not affect committed memory */ }
               return notify();
             }
@@ -1238,8 +1251,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         if (manualHistorical && historicalAuthorization === authorizedChatId) historicalAuthorization = null;
         if (workRun === operation) workRun = null;
         notify();
+        const boundaryAdvanced = capturedInputKey !== null && capturedInputKey !== currentInputKey();
         if (!manualHistorical && operation.token === autoEpoch && hasAutomaticCatchupWork()
-          && lastAutoRun?.status === 'waiting' && lastAutomaticInputKey !== currentInputKey()) {
+          && ((lastAutoRun?.status === 'waiting' && lastAutomaticInputKey !== currentInputKey()) || boundaryAdvanced)) {
           autoTriggerReason ??= 'postBoundaryCatchup';
         }
         if (autoTriggerReason && scheduleAllowed(autoTriggerReason)) void scheduleAutomation(autoTriggerReason, autoTriggerAuthorization);
@@ -1493,6 +1507,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               continue;
             }
             await load(reloadEpoch, readOnlyReview ? reviewReachable : null, { readOnlyReview });
+            const settlement = backgroundSync;
+            if (settlement) await settlement;
             if (reloadEpoch === epoch && autoTriggerReason && scheduleAllowed(autoTriggerReason)) {
               const reason = autoTriggerReason;
               autoTriggerReason = null;
@@ -1793,15 +1809,14 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const targets = [];
     for (const floor of value?.floors ?? []) {
       const memory = memoryMap.get(floor.id);
-      if (!memory || memory.recordStatus !== 'active') break;
-      targets.push(Object.freeze({ floorId: floor.id, memoryId: memory.id, assistantSeq: floor.assistantSeq }));
+      if (memory?.recordStatus === 'active') targets.push(Object.freeze({ floorId: floor.id, memoryId: memory.id, assistantSeq: floor.assistantSeq }));
     }
     return Object.freeze(targets);
   }
   function cseRebuildPlanCurrent(plan, value = reachable) {
     if (!plan || plan.chatId !== value?.root?.chatId || plan.narrativeGeneration !== value?.root?.narrativeGeneration) return false;
-    const current = cseRebuildTargets(value);
-    return plan.targets.length <= current.length && plan.targets.every((target, index) => target.floorId === current[index].floorId && target.memoryId === current[index].memoryId);
+    const currentByFloor = new Map(cseRebuildTargets(value).map(target => [target.floorId, target]));
+    return plan.targets.every(target => currentByFloor.get(target.floorId)?.memoryId === target.memoryId);
   }
   function startCseRebuild(expectedChatId, { resume = false } = {}) {
     if (workRun) return Promise.resolve(getState());
@@ -1858,7 +1873,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         operation.floorIds = [target.floorId];
         notify();
         const beforeDeltaId = cseRuntime.getState().cseFloors.find(item => item.floorId === target.floorId)?.deltaId ?? null;
-        await cseRuntime.analyzeFloor(target.floorId, { cseRebuild: cseRebuildDiagnostic(plan, plan.nextIndex + 1) });
+        await cseRuntime.analyzeFloor(target.floorId, { cseRebuild: cseRebuildDiagnostic(plan, plan.nextIndex + 1), replaceExisting: true });
         if (!allowed()) {
           const committedReachable = requestedEpoch === epoch ? foundationRuntime.getReachable?.() ?? null : null;
           const committedCount = persistedCseRebuildCompletedCount(committedReachable, plan);
@@ -1912,14 +1927,19 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
   const retryAutomation = async () => {
     while (autoScheduled || workRun?.promise) await (autoScheduled ?? workRun.promise);
+    const settlement = backgroundSync;
+    if (settlement) await settlement;
+    await refreshCoverage(epoch);
     if (['paused', 'failed'].includes(cseRebuildPlan?.status)) {
       if (cseRebuildPlanCurrent(cseRebuildPlan)) return resumeCseRebuild(currentHostChatId());
       cseRebuildPlan = null;
     }
-    return coverage.status === 'historicalDebt' ? startHistoricalRebuild() : scheduleAutomation('manualRetry');
+    return coverage.status === 'historicalDebt' || coverage.summaryStatus === 'historicalDebt'
+      ? startHistoricalRebuild()
+      : scheduleAutomation('manualRetry');
   };
   const analyzeNextState = () => runManualWork('analyzingCse', async operation => { operation.phase = 'analyzingCse'; notify(); await cseRuntime.analyzeNext(); return notify(); });
-  const retryStateAnalysis = floorId => runManualWork('analyzingCse', async operation => { operation.floorIds = [floorId]; operation.phase = 'analyzingCse'; notify(); await cseRuntime.analyzeFloor(floorId); return notify(); });
+  const retryStateAnalysis = floorId => runManualWork('analyzingCse', async operation => { operation.floorIds = [floorId]; operation.phase = 'analyzingCse'; notify(); await cseRuntime.analyzeFloor(floorId, { replaceExisting: true }); return notify(); });
   const correctSubjectState = (subjectEntityId, edits) => runManualWork('revisingCse', async operation => { operation.phase = 'revisingCse'; notify(); await cseRuntime.correctSubjectState({ subjectEntityId, ...edits }); return load(); });
   return Object.freeze({ bind, start, setEnabled, refreshAutomation, startHistoricalRebuild, pauseHistoricalRebuild, retryAutomation, rebuildCse, resumeCseRebuild, pauseCseRebuild, fullRebuild, invalidate, refreshStatus, prepareCurrent, confirmLatest, extractNext, extractFloor, analyzeNextState, retryStateAnalysis, correctSubjectState, editSummary, editMemory, restoreAi, markError, copySafeDiagnostic, copyFullDiagnostic, shouldBlockMainGeneration, allowsRealtimeTailFromEmpty, getState, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

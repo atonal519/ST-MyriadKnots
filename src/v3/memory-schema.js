@@ -256,6 +256,10 @@ export function projectEntityFloorBounds(entities = [], floors = [], floorMemori
       refs.add(subject.subjectEntityId);
       for (const item of [...(subject.core ?? []), ...(subject.adaptive ?? []), ...(subject.situational ?? [])]) if (item.towardEntityId) refs.add(item.towardEntityId);
     }
+    for (const subject of delta.fixedChanges ?? []) {
+      refs.add(subject.subjectEntityId);
+      for (const change of subject.items) for (const item of [change.before, change.after]) if (item?.towardEntityId) refs.add(item.towardEntityId);
+    }
   }
   const bounds = new Map();
   for (const floor of floors) for (const entityId of refsByFloor.get(floor.id) ?? []) {

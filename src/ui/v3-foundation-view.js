@@ -453,7 +453,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         const edit = element('button', 'qqj-memory-menu-action', '编辑'); edit.type = 'button'; edit.disabled = workBusy(state);
         edit.addEventListener('click', () => { const memory = floor.memory; const names = new Map((state.memoryEntities ?? []).map(entity => [entity.entityId, entity.displayName])); const originalTimeText = timeDisplay(memory?.chronology) || floor.timeFallback || ''; const locations = (memory?.locations ?? []).map(item => ({ itemId: item.itemId, name: item.name ?? '' })); const participantNames = (memory?.participants ?? []).map(item => names.get(item.entityId)).filter(Boolean); drafts.set(key, { floorId: floor.floorId, canonicalFingerprint: floor.canonicalFingerprint, rawFingerprint: floor.rawFingerprint, summary: floor.summary, originalSummary: floor.summary, timeText: originalTimeText, originalTimeText, locations, originalLocations: locations.map(item => ({ ...item })), peopleText: participantNames.join('、'), originalParticipantNames: participantNames, note: '', saving: false, saveError: '' }); render(foundationState); });
         const extract = element('button', 'qqj-memory-menu-action', '重新提取'); extract.type = 'button'; extract.disabled = workBusy(state) || typeof runtime.extractFloor !== 'function';
-        extract.addEventListener('click', async () => { if (!await Promise.resolve(confirmImpl({ title: '重新提取本楼摘要', body: '重新提取会替换本楼摘要，并重新衔接本楼及后续人物状态，也可能覆盖之后的人工纠正。', confirmText: '重新提取', cancelText: '取消' }))) { feedback = '已取消重新提取。'; render(foundationState); return; } void run('重新提取', () => runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('重新提取', floor.floorId) }); });
+        extract.addEventListener('click', async () => { if (!await Promise.resolve(confirmImpl({ title: '重新提取本楼摘要', body: '重新提取只会替换本楼摘要；已保存的人物状态与其他楼记录保持不变。', confirmText: '重新提取', cancelText: '取消' }))) { feedback = '已取消重新提取。'; render(foundationState); return; } void run('重新提取', () => runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('重新提取', floor.floorId) }); });
         menuBody.append(edit, extract);
       } else {
         const extract = element('button', 'qqj-memory-menu-action', '提取摘要'); extract.type = 'button'; extract.disabled = workBusy(state) || typeof runtime.extractFloor !== 'function';
@@ -592,7 +592,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const status = floor.cse?.status; if (!['pending', 'failed', 'ready', 'noChange'].includes(status)) return null;
     const completed = ['ready', 'noChange'].includes(status); const label = completed ? '重新分析' : status === 'failed' ? '重试分析' : '分析本楼';
     const button = element('button', completed ? 'secondary-action' : 'primary-action', label); button.type = 'button'; button.disabled = workBusy(state);
-    button.addEventListener('click', async () => { if (completed && !await Promise.resolve(confirmImpl({ title: '重新分析人物状态', body: '成功后，后续楼层人物状态需依次重算，也可能覆盖之后的人工纠正；本楼摘要保持不变。', confirmText: '重新分析', cancelText: '取消' }))) { feedback = '已取消重新分析人物状态。'; render(foundationState); return; } void run(label, () => runtime.retryStateAnalysis(floor.floorId), { resultCopy: floorActionResult(label, floor.floorId, 'cse') }); });
+    button.addEventListener('click', async () => { if (completed && !await Promise.resolve(confirmImpl({ title: '重新分析人物状态', body: '成功后只会替换本楼人物状态；本楼摘要与其他楼记录保持不变。', confirmText: '重新分析', cancelText: '取消' }))) { feedback = '已取消重新分析人物状态。'; render(foundationState); return; } void run(label, () => runtime.retryStateAnalysis(floor.floorId), { resultCopy: floorActionResult(label, floor.floorId, 'cse') }); });
     return button;
   }
   function renderCseHistory(state) {
@@ -629,51 +629,66 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const rowSummary = element('summary', 'qqj-cse-floor-summary'); rowSummary.append(element('span', '', floorCopy(state, floor)), element('span', 'v3-memory-status', statusCopy(floor.cse?.status))); rowNode.append(rowSummary);
       const body = element('div', 'qqj-cse-floor-body'), record = floor.cse?.record;
       if (record) {
-        const changes = (record.subjects ?? []).flatMap(subject => (subject.changes ?? []).map(change => ({ ...change, displayName: subject.displayName })));
-        const visibleChanges = changes.filter(change => change.action !== 'remove');
-        const resultNode = element('section', 'qqj-cse-floor-result'); resultNode.append(element('strong', 'qqj-cse-floor-result-title', '本楼新增与调整'));
-        const resultBody = element('div', 'qqj-cse-floor-state-body');
-        for (const subject of record.subjects ?? []) {
-          const subjectChanges = (subject.changes ?? []).filter(change => change.action !== 'remove');
-          if (!subjectChanges.length) continue;
-          const subjectNode = element('section', 'qqj-cse-record-subject'), listNode = element('ul', 'v3-cse-items'); subjectNode.append(element('strong', '', subject.displayName));
-          for (const change of subjectChanges) {
-            const after = change.after ?? { text: change.afterText }, item = element('li', `v3-cse-item qqj-cse-change is-${change.action ?? 'add'}`);
-            item.append(element('span', 'v3-cse-item-text', `${categoryCopy[change.category] ?? '人物状态'}：${after?.text ?? '状态内容未提供'}`));
-            listNode.append(item);
-          }
-          subjectNode.append(listNode); resultBody.append(subjectNode);
-        }
-        if (!visibleChanges.length) resultBody.append(element('p', 'settings-hint', changes.some(change => change.action === 'remove') ? '本楼有状态移除，展开变更详情查看。' : '本楼没有新增或调整的人物状态。'));
-        resultNode.append(resultBody); body.append(resultNode);
-
-        const changesNode = setDetailsState(element('details', 'qqj-cse-floor-changes'), `cse-floor-changes:${floor.floorId}`, false);
-        const changesSummary = element('summary', 'qqj-cse-floor-state-summary', `变更详情 · ${changes.length} 项`); changesNode.append(changesSummary);
-        const changesBody = element('div', 'qqj-cse-floor-changes-body');
-        for (const subject of record.subjects ?? []) {
-          const subjectNode = element('section', 'qqj-cse-record-subject'); subjectNode.append(element('strong', '', subject.displayName));
-          if (subject.changes?.length) {
-            const listNode = element('ul', 'v3-cse-items');
-            for (const value of subject.changes) { const copy = changeCopy(value), item = element('li', `v3-cse-item qqj-cse-change is-${value.action ?? 'add'}`); item.append(element('span', 'v3-cse-item-text', copy.main)); if (copy.details.length) item.append(element('small', 'v3-cse-item-meta', copy.details.join(' · '))); listNode.append(item); }
-            subjectNode.append(listNode);
-          } else subjectNode.append(element('p', 'settings-hint', '这个人物本楼没有记录到变化。'));
-          changesBody.append(subjectNode);
-        }
-        if (!changes.length) changesBody.append(element('p', 'settings-hint', '本楼无实质人物状态变化。'));
-        if (record.isolationSummary) changesBody.append(element('p', 'qqj-cse-isolation-hint', record.noMaterialChange
-          ? `有内容未通过校验；本楼未产生人物状态变化（${record.isolationSummary.count} 项校验记录）。`
-          : `部分内容未通过校验，已保留有效结果（${record.isolationSummary.count} 项校验记录）。`));
-        changesNode.append(changesBody); body.append(changesNode);
-        if (record.endStateSubjects) {
-          const stateNode = setDetailsState(element('details', 'qqj-cse-floor-state'), `cse-floor-state:${floor.floorId}`, false);
-          stateNode.append(element('summary', 'qqj-cse-floor-state-summary', '查看本楼完整状态'));
-          const stateBody = element('div', 'qqj-cse-floor-state-body');
-          for (const subject of record.endStateSubjects) {
+        if (record.fixedChangesAvailable === false) {
+          const resultNode = element('section', 'qqj-cse-floor-result'); resultNode.append(element('strong', 'qqj-cse-floor-result-title', '本楼已保存状态'));
+          const resultBody = element('div', 'qqj-cse-floor-state-body'), subjects = record.endStateSubjects ?? [];
+          for (const subject of subjects) {
             const subjectNode = element('section', 'qqj-cse-record-subject'); subjectNode.append(element('strong', '', subject.displayName));
-            appendSubjectGroups(subjectNode, subject, state); stateBody.append(subjectNode);
+            appendSubjectGroups(subjectNode, subject, state); resultBody.append(subjectNode);
           }
-          if (!record.endStateSubjects.length) stateBody.append(element('p', 'settings-hint', '本楼结束时没有已保存状态。'));
-          stateNode.append(stateBody); body.append(stateNode);
+          if (!subjects.length) resultBody.append(element('p', 'settings-hint', '本楼没有已保存的人物状态快照。'));
+          resultBody.append(element('p', 'settings-hint', '旧记录未保存可核对的逐项变化；以上为本楼已保存状态快照。'));
+          if (record.isolationSummary) resultBody.append(element('p', 'qqj-cse-isolation-hint', record.noMaterialChange
+            ? `有内容未通过校验；本楼未产生人物状态变化（${record.isolationSummary.count} 项校验记录）。`
+            : `部分内容未通过校验，已保留有效结果（${record.isolationSummary.count} 项校验记录）。`));
+          resultNode.append(resultBody); body.append(resultNode);
+        } else {
+          const changes = (record.subjects ?? []).flatMap(subject => (subject.changes ?? []).map(change => ({ ...change, displayName: subject.displayName })));
+          const visibleChanges = changes.filter(change => change.action !== 'remove');
+          const resultNode = element('section', 'qqj-cse-floor-result'); resultNode.append(element('strong', 'qqj-cse-floor-result-title', '本楼新增与调整'));
+          const resultBody = element('div', 'qqj-cse-floor-state-body');
+          for (const subject of record.subjects ?? []) {
+            const subjectChanges = (subject.changes ?? []).filter(change => change.action !== 'remove');
+            if (!subjectChanges.length) continue;
+            const subjectNode = element('section', 'qqj-cse-record-subject'), listNode = element('ul', 'v3-cse-items'); subjectNode.append(element('strong', '', subject.displayName));
+            for (const change of subjectChanges) {
+              const after = change.after ?? { text: change.afterText }, item = element('li', `v3-cse-item qqj-cse-change is-${change.action ?? 'add'}`);
+              item.append(element('span', 'v3-cse-item-text', `${categoryCopy[change.category] ?? '人物状态'}：${after?.text ?? '状态内容未提供'}`));
+              listNode.append(item);
+            }
+            subjectNode.append(listNode); resultBody.append(subjectNode);
+          }
+          if (!visibleChanges.length) resultBody.append(element('p', 'settings-hint', changes.some(change => change.action === 'remove') ? '本楼有状态移除，展开变更详情查看。' : '本楼没有新增或调整的人物状态。'));
+          resultNode.append(resultBody); body.append(resultNode);
+
+          const changesNode = setDetailsState(element('details', 'qqj-cse-floor-changes'), `cse-floor-changes:${floor.floorId}`, false);
+          const changesSummary = element('summary', 'qqj-cse-floor-state-summary', `变更详情 · ${changes.length} 项`); changesNode.append(changesSummary);
+          const changesBody = element('div', 'qqj-cse-floor-changes-body');
+          for (const subject of record.subjects ?? []) {
+            const subjectNode = element('section', 'qqj-cse-record-subject'); subjectNode.append(element('strong', '', subject.displayName));
+            if (subject.changes?.length) {
+              const listNode = element('ul', 'v3-cse-items');
+              for (const value of subject.changes) { const copy = changeCopy(value), item = element('li', `v3-cse-item qqj-cse-change is-${value.action ?? 'add'}`); item.append(element('span', 'v3-cse-item-text', copy.main)); if (copy.details.length) item.append(element('small', 'v3-cse-item-meta', copy.details.join(' · '))); listNode.append(item); }
+              subjectNode.append(listNode);
+            } else subjectNode.append(element('p', 'settings-hint', '这个人物本楼没有记录到变化。'));
+            changesBody.append(subjectNode);
+          }
+          if (!changes.length) changesBody.append(element('p', 'settings-hint', '本楼无实质人物状态变化。'));
+          if (record.isolationSummary) changesBody.append(element('p', 'qqj-cse-isolation-hint', record.noMaterialChange
+            ? `有内容未通过校验；本楼未产生人物状态变化（${record.isolationSummary.count} 项校验记录）。`
+            : `部分内容未通过校验，已保留有效结果（${record.isolationSummary.count} 项校验记录）。`));
+          changesNode.append(changesBody); body.append(changesNode);
+          if (record.endStateSubjects) {
+            const stateNode = setDetailsState(element('details', 'qqj-cse-floor-state'), `cse-floor-state:${floor.floorId}`, false);
+            stateNode.append(element('summary', 'qqj-cse-floor-state-summary', '查看本楼已保存状态'));
+            const stateBody = element('div', 'qqj-cse-floor-state-body');
+            for (const subject of record.endStateSubjects) {
+              const subjectNode = element('section', 'qqj-cse-record-subject'); subjectNode.append(element('strong', '', subject.displayName));
+              appendSubjectGroups(subjectNode, subject, state); stateBody.append(subjectNode);
+            }
+            if (!record.endStateSubjects.length) stateBody.append(element('p', 'settings-hint', '本楼结束时没有已保存状态。'));
+            stateNode.append(stateBody); body.append(stateNode);
+          }
         }
       }
       if (!record && !floor.cse?.error) body.append(element('p', 'settings-hint', '本楼还没有已保存的状态分析记录。'));
