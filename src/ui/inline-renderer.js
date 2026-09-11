@@ -2,6 +2,8 @@ import { projectHistoricalRecallReceipt, RECALL_RECEIPT_KEY } from '../v3/recall
 import { inspectMessageFloorAnchor } from '../v3/message-floor-anchor.js';
 import { classifyInlineMessage, projectInlineMemoryFloor, projectInlineRecallReceipt } from './inline-projection.js';
 
+import { patchRecallTabs } from './recall-tabs.js';
+
 const RETRY_DELAYS = Object.freeze([0, 80, 180, 320, 500, 850, 1300, 2000, 3000, 4200]);
 const HOST_SELECTOR = '[data-qqj-inline-host="true"]';
 const OBSERVED_ATTRIBUTES = Object.freeze(['mesid', 'data-mesid', 'data-message-id', 'class', 'is_user']);
@@ -11,7 +13,7 @@ const INLINE_STYLE = `
 .head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px;min-height:35px}.mark{position:absolute;left:0;top:18px;width:0;height:0;z-index:1;color:var(--qqj-inline-knot);pointer-events:none}.knot{position:absolute;left:-5px;top:-5px;width:9px;height:9px;border:1.5px solid currentColor;transform:rotate(45deg);border-radius:1px;background:transparent}.knot::after{content:"";position:absolute;inset:2px;background:currentColor;border-radius:1px}
 .toggle,.extract{font:inherit;color:inherit;background:none;border:0;box-shadow:none;border-radius:7px;min-height:32px;cursor:pointer}.toggle{min-width:0;text-align:left;padding:2px 3px;display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);align-items:center;gap:6px}.title{min-width:0;font-size:12px;font-weight:600;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{justify-self:start;min-width:0;max-width:100%;padding:1px 6px;border-radius:999px;font-size:10.5px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:color-mix(in srgb,currentColor 9%,transparent);color:inherit}.status.ready{background:color-mix(in srgb,#56a875 18%,transparent)}.status.running{background:color-mix(in srgb,#4c9bd1 18%,transparent)}.status.review{background:color-mix(in srgb,#d79a35 19%,transparent)}.status.error{background:color-mix(in srgb,#c84a46 17%,transparent)}
 .extract{width:32px;height:32px;padding:0;display:grid;place-items:center;font-family:"Font Awesome 6 Free","Font Awesome 5 Free",sans-serif;font-size:12px;font-weight:900;line-height:1}.extract[hidden]{display:none}.extract:disabled{cursor:default;opacity:.42}.toggle:focus-visible,.extract:focus-visible{outline:2px solid var(--qqj-inline-knot);outline-offset:1px}
-.body{padding:4px 6px 9px 3px;font-size:13px;line-height:1.75;overflow-wrap:anywhere}.body[hidden]{display:none}.facts{display:grid;gap:0;margin:0;font-size:11px;line-height:1.5;opacity:.68}.meta-row{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}.summary{margin:10px 0 0;font-size:13px;line-height:1.75;white-space:pre-wrap}.assistant .summary{padding-top:10px;border-top:1px solid var(--qqj-inline-line)}.recall-items{display:grid;gap:9px;margin:3px 0 0}.recall-line{display:grid;gap:3px;min-width:0;padding:4px 0 7px;border-bottom:1px solid var(--qqj-inline-line)}.recall-line:last-child{border-bottom:0}.recall-line-title{font-size:13px;line-height:1.45}.recall-group{min-width:0;padding:1px 0 5px}.recall-group>summary{cursor:pointer;display:flex;align-items:baseline;gap:7px;min-width:0;padding:3px 0;font-size:12px;font-weight:650;line-height:1.5}.recall-floor{font-size:10.5px;font-weight:400;opacity:.62}.recall-texts{display:grid;gap:4px;padding:3px 0 2px 16px}.recall-text{font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}.recall-line-state{font-size:11.5px;line-height:1.65;white-space:pre-wrap}.states,.cse-changes{margin:10px 0 0}.states>summary,.cse-changes>summary{cursor:pointer;font-size:11px;line-height:1.5;opacity:.7}.state-items,.cse-change-items{display:none;gap:6px;margin-top:6px}.states[open]>.state-items,.cse-changes[open]>.cse-change-items{display:grid}.state-item,.cse-change-item{font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.cse-change-floor{margin-left:5px;font-size:10.5px;opacity:.62}.body > .error{margin:7px 0 0;color:#a8322f;font-size:11px;line-height:1.55;white-space:pre-wrap}
+.body{padding:4px 6px 9px 3px;font-size:13px;line-height:1.75;overflow-wrap:anywhere}.body[hidden]{display:none}.facts{display:grid;gap:0;margin:0;font-size:11px;line-height:1.5;opacity:.68}.meta-row{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}.summary{margin:10px 0 0;font-size:13px;line-height:1.75;white-space:pre-wrap}.assistant .summary{padding-top:10px;border-top:1px solid var(--qqj-inline-line)}.body > .error{margin:7px 0 0;color:#a8322f;font-size:11px;line-height:1.55;white-space:pre-wrap}
 @media(max-width:360px){.card{padding-left:8px}.head{grid-template-columns:minmax(0,1fr) auto;gap:2px}.toggle{gap:4px;padding-inline:2px}.body{padding-left:2px}.title{font-size:11.5px}.status{font-size:10px}}
 @media(prefers-reduced-motion:reduce){.toggle,.extract{scroll-behavior:auto}}
 `;
@@ -70,16 +72,9 @@ function createCard(documentRef, host, kind, expanded, onToggle, onExtract) {
   time.className = 'meta-row time'; locations.className = 'meta-row locations'; people.className = 'meta-row people'; append(facts, time, locations, people);
   const fields = { time, locations, people };
   const summary = documentRef.createElement('p'); summary.className = 'summary';
-  const recallItems = documentRef.createElement('div'); recallItems.className = 'recall-items';
-  const states = documentRef.createElement('details'); states.className = 'states';
-  const statesTitle = documentRef.createElement('summary'); statesTitle.className = 'states-title';
-  const stateItems = documentRef.createElement('div'); stateItems.className = 'state-items'; append(states, statesTitle, stateItems);
-  const cseChanges = documentRef.createElement('details'); cseChanges.className = 'cse-changes';
-  const cseChangesTitle = documentRef.createElement('summary'); cseChangesTitle.className = 'cse-changes-title';
-  const cseChangeItems = documentRef.createElement('div'); cseChangeItems.className = 'cse-change-items'; append(cseChanges, cseChangesTitle, cseChangeItems);
   const error = documentRef.createElement('p'); error.className = 'error';
-  append(body, facts, summary, recallItems, states, cseChanges, error); append(head, toggle, extract); append(card, mark, head, body); append(root, style, card);
-  const view = { host, root, card, mark, knot, toggle, title, status, extract, body, facts, fields, summary, recallItems, states, statesTitle, stateItems, cseChanges, cseChangesTitle, cseChangeItems, error, kind, expanded, signature: '', projection: null, extracting: false };
+  append(body, facts, summary, error); append(head, toggle, extract); append(card, mark, head, body); append(root, style, card);
+  const view = { host, root, card, mark, knot, toggle, title, status, extract, body, facts, fields, summary, error, kind, expanded, signature: '', projection: null, extracting: false };
   toggle.addEventListener('click', () => onToggle(view));
   extract.addEventListener('click', () => onExtract(view));
   host.__qqjInlineCard = view;
@@ -125,148 +120,6 @@ function createSourceIndex(chat, chatId, state) {
   });
 }
 
-const CSE_LAYER_TEXT = Object.freeze({ core: '核心', adaptive: '适应', situational: '情境' });
-const CSE_VISIBILITY_TEXT = Object.freeze({ private: '仅主体知晓', observable: '可观察', expressed: '已表达', shared: '已共享', authorial: '作者视角' });
-
-function renderCseChange(item, projection, sourceIndex, currentReference = '见上方当前快照（同一来源）') {
-  const messageIndex = sourceIndex?.messageIndexFor?.(item.floorId) ?? null;
-  const sourceKey = value => value?.stateId ? `id:${value.stateId}`
-    : value?.sourceFloorId || value?.sourceDeltaId ? `source:${value.sourceFloorId ?? ''}|${value.sourceDeltaId ?? ''}|${value.text ?? ''}` : '';
-  const currentEquivalent = item.after && (projection.stateItems ?? []).some(current => current.subjectEntityId === item.subjectEntityId
-    && current.layer === item.layer && sourceKey(current) && sourceKey(current) === sourceKey(item.after));
-  const side = (value, sameAsCurrent = false) => sameAsCurrent ? currentReference
-    : value?.text ? `${value.text}${CSE_VISIBILITY_TEXT[value.visibility] ? `（${CSE_VISIBILITY_TEXT[value.visibility]}）` : ''}` : '';
-  const before = side(item.before), after = side(item.after, currentEquivalent);
-  const change = item.action === 'add' ? `新增：${after}`
-    : item.action === 'remove' ? `移除：${before}（这是该楼当时移除的旧状态）`
-      : item.action === 'update' ? `更新：${before} → ${after}`
-        : `调整：${before} → ${after}`;
-  return { assistantSeq: item.assistantSeq, floorId: item.floorId || null, text: `${item.subject} / ${CSE_LAYER_TEXT[item.layer] ?? item.layer} / ${change}`, messageIndex: validIndex(messageIndex) ? messageIndex : null };
-}
-
-function replaceRecallItems(view, projection, documentRef, sourceIndex, groupExpanded) {
-  if ((projection.storylineGroups ?? []).length) {
-    const rendered = projection.storylineGroups.map(line => ({
-      storylineId: line.storylineId, title: line.title,
-      floors: line.floors.map(group => {
-        const messageIndex = sourceIndex?.messageIndexFor?.(group.floorId) ?? null;
-        return { assistantSeq: group.assistantSeq, floorId: group.floorId, messageIndex: validIndex(messageIndex) ? messageIndex : null, texts: group.items.map(item => item.text) };
-      }),
-      states: line.stateItems.map(value => `${value.subject}${value.toward ? ` → ${value.toward}` : ''}：${value.text}`),
-      changes: line.cseChangeItems.map(value => renderCseChange(value, projection, sourceIndex, '见本线末尾当前快照（同一来源）')),
-    }));
-    const signature = JSON.stringify(rendered);
-    if (view.recallItems.dataset?.signature === signature) return;
-    const lineNodes = rendered.map(line => {
-      const section = documentRef.createElement('section'); section.className = 'recall-line';
-      const title = documentRef.createElement('strong'); title.className = 'recall-line-title'; setText(title, line.title);
-      append(section, title);
-      const changeGroups = [...line.changes.reduce((groups, value) => {
-        const sourceKey = value.floorId || `assistant-${value.assistantSeq}`;
-        const group = groups.get(sourceKey) ?? { assistantSeq: value.assistantSeq, floorId: value.floorId, messageIndex: value.messageIndex, items: [] };
-        group.items.push(value.text); groups.set(sourceKey, group); return groups;
-      }, new Map()).values()];
-      const timeline = [
-        ...line.floors.map(value => ({ kind: 'floor', assistantSeq: value.assistantSeq, value })),
-        ...changeGroups.map(value => ({ kind: 'change', assistantSeq: value.assistantSeq, value })),
-      ].sort((a, b) => a.assistantSeq - b.assistantSeq || (a.kind === 'floor' ? -1 : 1));
-      for (const entry of timeline) {
-        if (entry.kind === 'change') {
-          const changes = entry.value;
-          const stateKey = `${view.stateKey}:storyline:${line.storylineId}:history-changes:${changes.floorId || `assistant-${changes.assistantSeq}`}`;
-          const node = documentRef.createElement('details'); node.className = 'recall-group cse-changes recall-line-changes'; node.open = groupExpanded.get(stateKey) === true;
-          const summary = documentRef.createElement('summary'); summary.className = 'recall-source';
-          const titleText = `人物状态变化 ${changes.items.length} 条`;
-          const title = documentRef.createElement('span'); title.className = 'recall-knot'; setText(title, titleText); append(summary, title);
-          if (validIndex(changes.messageIndex)) { const floor = documentRef.createElement('span'); floor.className = 'recall-floor'; setText(floor, `第 ${changes.messageIndex} 楼`); append(summary, floor); }
-          const body = documentRef.createElement('div'); body.className = 'cse-change-items';
-          for (const value of changes.items) { const item = documentRef.createElement('div'); item.className = 'cse-change-item'; setText(item, value); append(body, item); }
-          const patchLabel = () => summary.setAttribute?.('aria-label', `${node.open === true ? '折叠' : '展开'}${titleText}${validIndex(changes.messageIndex) ? `，第 ${changes.messageIndex} 楼` : ''}`);
-          node.addEventListener('toggle', () => { groupExpanded.set(stateKey, node.open === true); patchLabel(); }); patchLabel(); append(node, summary, body); append(section, node); continue;
-        }
-        const floor = entry.value;
-        const stateKey = `${view.stateKey}:storyline:${line.storylineId}:${floor.floorId ?? floor.assistantSeq}`;
-        const node = documentRef.createElement('details'); node.className = 'recall-group'; node.open = groupExpanded.get(stateKey) === true;
-        const sourceNode = documentRef.createElement('summary'); sourceNode.className = 'recall-source';
-        const floorTitle = validIndex(floor.messageIndex) ? `第 ${floor.messageIndex} 个结` : '来源结号未提供';
-        const knotTitle = documentRef.createElement('span'); knotTitle.className = 'recall-knot'; setText(knotTitle, floorTitle); append(sourceNode, knotTitle);
-        const textWrap = documentRef.createElement('div'); textWrap.className = 'recall-texts';
-        for (const value of floor.texts) { const textNode = documentRef.createElement('div'); textNode.className = 'recall-text'; setText(textNode, value); append(textWrap, textNode); }
-        const patchLabel = () => sourceNode.setAttribute?.('aria-label', `${node.open === true ? '折叠' : '展开'}${floorTitle}`);
-        node.addEventListener('toggle', () => { groupExpanded.set(stateKey, node.open === true); patchLabel(); }); patchLabel(); append(node, sourceNode, textWrap); append(section, node);
-      }
-      if (line.states.length) {
-        const stateKey = `${view.stateKey}:storyline:${line.storylineId}:current-states`;
-        const node = documentRef.createElement('details'); node.className = 'states recall-line-states'; node.open = groupExpanded.get(stateKey) === true;
-        const summary = documentRef.createElement('summary'); summary.className = 'states-title';
-        const titleText = `人物当前状态 ${line.states.length} 条`; setText(summary, titleText);
-        const body = documentRef.createElement('div'); body.className = 'state-items';
-        for (const value of line.states) { const item = documentRef.createElement('div'); item.className = 'state-item'; setText(item, value); append(body, item); }
-        const patchLabel = () => summary.setAttribute?.('aria-label', `${node.open === true ? '折叠' : '展开'}${titleText}`);
-        node.addEventListener('toggle', () => { groupExpanded.set(stateKey, node.open === true); patchLabel(); }); patchLabel(); append(node, summary, body); append(section, node);
-      }
-      return section;
-    });
-    view.recallItems.replaceChildren?.(...lineNodes);
-    if (view.recallItems.dataset) view.recallItems.dataset.signature = signature;
-    view.recallItems.hidden = lineNodes.length === 0;
-    return;
-  }
-  const rendered = (projection.historyGroups ?? []).map(group => {
-    const messageIndex = sourceIndex?.messageIndexFor?.(group.floorId) ?? null;
-    return { assistantSeq: group.assistantSeq, floorId: group.floorId ?? null, messageIndex: validIndex(messageIndex) ? messageIndex : null, texts: group.items.map(item => item.text) };
-  });
-  const signature = JSON.stringify(rendered);
-  if (view.recallItems.dataset?.signature === signature) return;
-  const items = rendered.map(({ assistantSeq, floorId, messageIndex, texts }) => {
-    const stateKey = `${view.stateKey}:recall:${floorId ?? assistantSeq}`;
-    const node = documentRef.createElement('details'); node.className = 'recall-group'; node.open = groupExpanded.get(stateKey) === true;
-    const sourceNode = documentRef.createElement('summary'); sourceNode.className = 'recall-source';
-    const title = validIndex(messageIndex) ? `第 ${messageIndex} 个结` : '来源结号未提供';
-    const knotTitle = documentRef.createElement('span'); knotTitle.className = 'recall-knot'; setText(knotTitle, title);
-    append(sourceNode, knotTitle);
-    const textWrap = documentRef.createElement('div'); textWrap.className = 'recall-texts';
-    for (const text of texts) { const textNode = documentRef.createElement('div'); textNode.className = 'recall-text'; setText(textNode, text); append(textWrap, textNode); }
-    const patchLabel = () => sourceNode.setAttribute?.('aria-label', `${node.open === true ? '折叠' : '展开'}${title}`);
-    node.addEventListener('toggle', () => { groupExpanded.set(stateKey, node.open === true); patchLabel(); });
-    patchLabel(); append(node, sourceNode, textWrap); return node;
-  });
-  view.recallItems.replaceChildren?.(...items);
-  if (view.recallItems.dataset) view.recallItems.dataset.signature = signature;
-  view.recallItems.hidden = items.length === 0;
-}
-
-function replaceStateItems(view, projection, documentRef) {
-  const wanted = projection.stateItems ?? [];
-  const signature = JSON.stringify(wanted);
-  if (view.stateItems.dataset?.signature === signature) return;
-  const items = wanted.map(item => {
-    const node = documentRef.createElement('div'); node.className = 'state-item';
-    setText(node, `${item.subject}${item.toward ? ` → ${item.toward}` : ''}：${item.text}`);
-    return node;
-  });
-  view.stateItems.replaceChildren?.(...items);
-  if (view.stateItems.dataset) view.stateItems.dataset.signature = signature;
-  setText(view.statesTitle, `当前人物状态 ${items.length} 条`);
-  view.states.hidden = items.length === 0;
-}
-
-function replaceCseChangeItems(view, projection, documentRef, sourceIndex) {
-  const rendered = (projection.cseChangeItems ?? []).map(item => renderCseChange(item, projection, sourceIndex));
-  const signature = JSON.stringify(rendered);
-  if (view.cseChangeItems.dataset?.signature === signature) return;
-  const items = rendered.map(item => {
-    const node = documentRef.createElement('div'); node.className = 'cse-change-item';
-    const text = documentRef.createElement('span'); text.className = 'cse-change-text'; setText(text, item.text);
-    const floor = documentRef.createElement('span'); floor.className = 'cse-change-floor'; setText(floor, validIndex(item.messageIndex) ? `第 ${item.messageIndex} 楼` : '来源楼号未提供');
-    append(node, text, floor); return node;
-  });
-  view.cseChangeItems.replaceChildren?.(...items);
-  if (view.cseChangeItems.dataset) view.cseChangeItems.dataset.signature = signature;
-  setText(view.cseChangesTitle, `人物状态历史变化 ${items.length} 条`);
-  view.cseChanges.hidden = items.length === 0;
-}
-
 function statusTone(projection) {
   if (projection.kind === 'user') return '';
   if (['error', 'failed'].includes(projection.status)) return 'error';
@@ -276,10 +129,17 @@ function statusTone(projection) {
 }
 
 function patchView(view, projection, documentRef, sourceIndex, groupExpanded) {
+  if (projection.kind === 'user') {
+    view.projection = projection;
+    view.labelTitle = '千千结 · 本轮召回'; setText(view.title, view.labelTitle); view.title.title = view.labelTitle;
+    setText(view.status, projection.statusText); view.status.className = 'status';
+    view.extract.hidden = true; view.extract.disabled = true;
+    patchRecallTabs(view, projection, documentRef, sourceIndex, groupExpanded);
+    patchExpanded(view); return;
+  }
   const signature = JSON.stringify(projection);
   if (view.signature === signature) {
-    if (projection.kind === 'user') { replaceRecallItems(view, projection, documentRef, sourceIndex, groupExpanded); if (!(projection.storylineGroups ?? []).length) replaceCseChangeItems(view, projection, documentRef, sourceIndex); }
-    else { view.extract.hidden = false; view.extract.disabled = view.extracting || !projection.canExtract; }
+    view.extract.hidden = false; view.extract.disabled = view.extracting || !projection.canExtract;
     patchExpanded(view); return;
   }
   view.signature = signature; view.projection = projection;
@@ -287,17 +147,11 @@ function patchView(view, projection, documentRef, sourceIndex, groupExpanded) {
   view.labelTitle = title; setText(view.title, title); view.title.title = title;
   setText(view.status, projection.statusText); view.status.className = `status${statusTone(projection) ? ` ${statusTone(projection)}` : ''}`;
   if (projection.kind === 'assistant') {
-    view.facts.hidden = false; view.recallItems.hidden = true; view.states.hidden = true; view.cseChanges.hidden = true;
+    view.facts.hidden = false;
     setText(view.fields.time, `时间 ${projection.time}`); setText(view.fields.locations, `地点 ${projection.locations}`); setText(view.fields.people, `人物 ${projection.people}`);
     setText(view.summary, projection.summary); setText(view.error, projection.error); view.error.hidden = !projection.error;
     const extractLabel = `重新提取${title}摘要`; view.extract.title = extractLabel; view.extract.setAttribute?.('aria-label', extractLabel);
     view.extract.hidden = false; view.extract.disabled = view.extracting || !projection.canExtract;
-  } else {
-    view.facts.hidden = true; view.extract.hidden = true; view.extract.disabled = true;
-    setText(view.summary, projection.summary); view.summary.hidden = (projection.historyItems?.length ?? 0) > 0 || (projection.storylineGroups?.length ?? 0) > 0;
-    setText(view.error, ''); view.error.hidden = true; replaceRecallItems(view, projection, documentRef, sourceIndex, groupExpanded);
-    if ((projection.storylineGroups ?? []).length) { view.states.hidden = true; view.cseChanges.hidden = true; }
-    else { replaceStateItems(view, projection, documentRef); replaceCseChangeItems(view, projection, documentRef, sourceIndex); }
   }
   patchExpanded(view);
 }

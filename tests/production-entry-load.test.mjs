@@ -56,12 +56,14 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
   async function load(identifier) {
     if (cache.has(identifier)) return cache.get(identifier);
     const path = fileURLToPath(identifier);
+    // Host imports use URL-root paths on Windows as well as POSIX.
+    const hostPath = new URL(identifier).pathname.replace(new RegExp('^/[A-Za-z]:'), '');
     let module;
-    if (path === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'me.png' });
-    else if (path === '/scripts/extensions.js') module = synthetic(identifier, { extension_settings: { qianqianjie: { pluginEnabled: enabled }, 'schedule-planner': {} }, extensionNames: [] });
-    else if (path === '/script.js') module = synthetic(identifier, { is_send_press: false, saveSettingsDebounced() {} });
-    else if (path === '/scripts/group-chats.js') module = synthetic(identifier, { is_group_generating: false });
-    else if (path === '/scripts/world-info.js') module = synthetic(identifier, { loadWorldInfo: async () => null, selected_world_info: [], world_info: {}, world_info_case_sensitive: false, world_info_match_whole_words: false, world_names: [] });
+    if (hostPath === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'me.png' });
+    else if (hostPath === '/scripts/extensions.js') module = synthetic(identifier, { extension_settings: { qianqianjie: { pluginEnabled: enabled }, 'schedule-planner': {} }, extensionNames: [] });
+    else if (hostPath === '/script.js') module = synthetic(identifier, { is_send_press: false, saveSettingsDebounced() {} });
+    else if (hostPath === '/scripts/group-chats.js') module = synthetic(identifier, { is_group_generating: false });
+    else if (hostPath === '/scripts/world-info.js') module = synthetic(identifier, { loadWorldInfo: async () => null, selected_world_info: [], world_info: {}, world_info_case_sensitive: false, world_info_match_whole_words: false, world_names: [] });
     else module = new SourceTextModule(await readFile(path, 'utf8'), { context, identifier });
     cache.set(identifier, module);
     return module;
@@ -143,12 +145,13 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   async function load(identifier) {
     if (cache.has(identifier)) return cache.get(identifier);
     const path = fileURLToPath(identifier);
+    const hostPath = new URL(identifier).pathname.replace(new RegExp('^/[A-Za-z]:'), '');
     let module;
-    if (path === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'me.png' });
-    else if (path === '/scripts/extensions.js') module = synthetic(identifier, { extension_settings: { qianqianjie: { pluginEnabled: false }, 'schedule-planner': {} }, extensionNames: [] });
-    else if (path === '/script.js') module = synthetic(identifier, { is_send_press: false, saveSettingsDebounced() {} });
-    else if (path === '/scripts/group-chats.js') module = synthetic(identifier, { is_group_generating: false });
-    else if (path === '/scripts/world-info.js') module = synthetic(identifier, { loadWorldInfo: async () => null, selected_world_info: [], world_info: {}, world_info_case_sensitive: false, world_info_match_whole_words: false, world_names: [] });
+    if (hostPath === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'me.png' });
+    else if (hostPath === '/scripts/extensions.js') module = synthetic(identifier, { extension_settings: { qianqianjie: { pluginEnabled: false }, 'schedule-planner': {} }, extensionNames: [] });
+    else if (hostPath === '/script.js') module = synthetic(identifier, { is_send_press: false, saveSettingsDebounced() {} });
+    else if (hostPath === '/scripts/group-chats.js') module = synthetic(identifier, { is_group_generating: false });
+    else if (hostPath === '/scripts/world-info.js') module = synthetic(identifier, { loadWorldInfo: async () => null, selected_world_info: [], world_info: {}, world_info_case_sensitive: false, world_info_match_whole_words: false, world_names: [] });
     else module = new SourceTextModule(await readFile(path, 'utf8'), { context, identifier });
     cache.set(identifier, module);
     return module;

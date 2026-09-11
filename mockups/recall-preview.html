@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>千千结 · 召回框预览</title>
+  <style>
+    :root { color-scheme: dark; --bg:#17191e; --surface:#24272f; --text:#e3e1de; --muted:#a6a6af; --line:#ffffff20; }
+    :root.light { color-scheme:light; --bg:#eeeae4; --surface:#faf8f4; --text:#38332f; --muted:#7f7973; --line:#00000020; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:15px/1.7 system-ui,"Microsoft YaHei",sans-serif; }
+    header { padding:22px 28px; border-bottom:1px solid var(--line); }
+    h1 { margin:0; font-size:18px; font-weight:600; }
+    header p { margin:3px 0 16px; color:var(--muted); font-size:12px; }
+    .controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px; font-size:12px; }
+    select,button { font:inherit; color:var(--text); background:var(--surface); border:1px solid var(--line); padding:6px 10px; border-radius:6px; cursor:pointer; }
+    label { display:flex; align-items:center; gap:6px; }
+    main { width:min(820px,100%); padding:30px 20px; margin:auto; transition:width .15s; }
+    main.mobile { width:min(390px,100%); padding:24px 10px; }
+    .mes { background:var(--surface); border:1px solid var(--line); padding:20px 22px; border-radius:12px; }
+    .byline { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+    .avatar { display:grid; place-items:center; width:30px; height:30px; border-radius:50%; background:#a8322f25; color:#c77670; font:14px serif; }
+    .name { font-size:13px; font-weight:600; }
+    .floor { margin-left:auto; color:var(--muted); font-size:11px; }
+    .mes_text>p { margin:0 0 18px; }
+    footer { padding-top:16px; color:var(--muted); font-size:11px; }
+    #error { color:#e98e86; white-space:pre-wrap; }
+    @media(max-width:480px) { header { padding:18px; } .mes { padding:16px 12px; } }
+    @media(prefers-reduced-motion:reduce) { main { transition:none; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>千千结 · 召回框预览</h1>
+    <p>召回改版预览 · 示例剧情</p>
+    <div class="controls">
+      <label>场景 <select id="scenario"><option value="storylines">剧情线召回</option><option value="legacy">旧版分楼召回</option><option value="empty">空召回</option><option value="running">寻回中</option><option value="error">召回失败</option><option value="missing">无召回记录</option></select></label>
+      <label>外观 <select id="theme"><option value="dark">深色</option><option value="light">浅色</option></select></label>
+      <label>宽度 <select id="width"><option value="desktop">桌面</option><option value="mobile">手机</option></select></label>
+      <button id="expand" type="button">展开记录</button>
+      <button id="collapse" type="button">收起召回</button>
+    </div>
+  </header>
+  <main id="stage">
+    <div id="chat">
+      <article class="mes user_mes last_mes" mesid="48" is_user="true">
+        <div class="byline"><span class="avatar">你</span><span class="name">你</span><span class="floor">#48</span></div>
+        <div class="mes_text"><p>雨停了。我们回钟楼看看吧，你还记得那把钥匙吗？</p></div>
+      </article>
+    </div>
+    <footer>事：点击结号切换旧事　·　人：查看当前状态与楼层变化</footer>
+    <p id="error" role="alert"></p>
+  </main>
+  <script type="module" src="./recall-preview.js"></script>
+</body>
+</html>

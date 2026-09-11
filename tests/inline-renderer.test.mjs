@@ -37,6 +37,8 @@ class FakeNode {
   getAttribute(name) { return Object.hasOwn(this.attributes, name) ? this.attributes[name] : null; }
   addEventListener(name, handler) { const values = this.listeners.get(name) ?? []; values.push(handler); this.listeners.set(name, values); }
   emit(name, event = {}) { for (const handler of this.listeners.get(name) ?? []) handler({ currentTarget: this, target: this, ...event }); }
+  click() { this.emit('click'); }
+  focus() { this.focused = true; }
   attachShadow() { const root = new FakeNode('shadow-root'); root.host = this; this.shadowRoot = root; return root; }
   matches(selector) {
     if (selector.startsWith('.')) return this.classList.contains(selector.slice(1));
@@ -299,39 +301,45 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
   const aiView = resolveInlineAnchor(elements[1]).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
   const pendingAiView = resolveInlineAnchor(elements[3]).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
   assert.equal(userView.body.hidden, true); assert.equal(aiView.body.hidden, true);
-  const recallGroup = userView.recallItems.children[0];
-  assert.equal(recallGroup.tagName, 'DETAILS'); assert.notEqual(recallGroup.open, true); assert.equal(recallGroup.children[0].children[0].textContent, '第 1 个结'); assert.equal(recallGroup.children[0].children.length, 1); assert.equal(recallGroup.children[1].children[0].textContent, '实际旧事正文');
-  assert.equal(recallGroup.children[0].getAttribute('aria-label'), '展开第 1 个结'); assert.equal(userView.status.textContent, '寻回 1 个结');
-  assert.equal(descendantText(userView.root).includes('<qqj_recalled_context>'), false, '楼内卡不得展示机器包裹或原始注入');
-  assert.equal(userView.states.open, undefined); assert.equal(userView.statesTitle.textContent, '当前人物状态 1 条'); assert.equal(userView.stateItems.children[0].textContent, '裴晚生 → 江离州：仍然戒备');
-  assert.equal(descendantText(userView.states).includes('core'), false); assert.equal(descendantText(userView.states).includes('内部依据'), false);
-  assert.equal(userView.cseChangesTitle.textContent, '人物状态历史变化 1 条');
-  assert.equal(userView.cseChangeItems.children[0].children[0].textContent, '裴晚生 / 情境 / 移除：仍在钟楼等候（仅主体知晓）（这是该楼当时移除的旧状态）');
-  assert.equal(userView.cseChangeItems.children[0].children[1].textContent, '第 1 楼', '历史变化必须映射宿主真实楼号');
-  assert.equal(descendantText(userView.states).includes('仍在钟楼等候'), false, '历史变化不得混入当前人物状态分组');
+  const ui = userView.recallUi;
+  const recallPill = ui.pills.children[0];
+  assert.equal(recallPill.tagName, 'BUTTON'); assert.equal(recallPill.getAttribute('aria-expanded'), 'false');
+  assert.equal(recallPill.textContent, '第 1 个结');
+  assert.equal(descendantText(ui.display).includes('实际旧事正文'), false, '默认所有胶囊关闭');
+  recallPill.click(); assert.match(descendantText(ui.display), /实际旧事正文/);
+  assert.equal(userView.status.textContent, '寻回 1 个结');
+  assert.equal(descendantText(userView.root).includes('<qqj_recalled_context>'), false);
+  assert.match(descendantText(ui.current), /裴晚生.*→ 江离州：仍然戒备/);
+  assert.equal(ui.current.tagName, 'SECTION', '当前状态常驻，不折叠');
+  assert.doesNotMatch(descendantText(ui.current), /core|内部依据|仍在钟楼等候/);
+  assert.match(descendantText(ui.history), /仍在钟楼等候/);
+  assert.equal(ui.history.querySelector('.change-copy').tagName, 'DEL');
+  assert.equal(ui.history.querySelector('.change-floor').children[0].textContent, '第 1 个结');
+  assert.doesNotMatch(descendantText(ui.history), /情境|移除：/);
   assert.equal(aiView.summary.textContent, '<img src=x onerror=alert(1)>仍是纯文字'); assert.equal(aiView.root.querySelectorAll('img').length, 0);
   assert.equal(aiView.title.textContent, '第 1 个结'); assert.equal(pendingAiView.title.textContent, '第 3 个结', '楼内标题必须使用宿主实际 messageIndex，不按 AI 序号重新编号');
   assert.equal(aiView.toggle.getAttribute('aria-label'), '展开第 1 个结'); assert.equal(pendingAiView.toggle.getAttribute('aria-label'), '展开第 3 个结');
   assert.match(aiView.root.children[0].textContent, /background:transparent/); assert.match(aiView.root.children[0].textContent, /border:1px solid var\(--qqj-inline-line\)/); assert.match(aiView.root.children[0].textContent, /border-left:2px solid var\(--qqj-inline-knot\)/); assert.match(aiView.root.children[0].textContent, /\.knot\{/);
   assert.match(aiView.root.children[0].textContent, /\.mark\{position:absolute;left:0;top:18px/); assert.doesNotMatch(aiView.root.children[0].textContent, /border-left:1px dashed/);
   assert.match(aiView.root.children[0].textContent, /grid-template-columns:minmax\(0,1fr\) auto/); assert.match(aiView.root.children[0].textContent, /\.title\{[^}]*font-size:12px/);
-  assert.match(aiView.root.children[0].textContent, /\.state-items,\.cse-change-items\{display:none;/);
-  assert.match(aiView.root.children[0].textContent, /\.states\[open\]>\.state-items,\.cse-changes\[open\]>\.cse-change-items\{display:grid\}/);
   assert.equal(aiView.root.querySelectorAll('.chevron').length, 0); assert.equal(aiView.status.className, 'status ready'); assert.equal(userView.status.className, 'status');
   assert.match(aiView.root.children[0].textContent, /\.status\.running\{/); assert.match(aiView.root.children[0].textContent, /\.status\.review\{/); assert.match(aiView.root.children[0].textContent, /\.status\.error\{/);
   assert.equal(aiView.extract.title, '重新提取第 1 个结摘要'); assert.equal(aiView.extract.getAttribute('aria-label'), '重新提取第 1 个结摘要'); assert.equal(aiView.extract.textContent, '\uf2f1');
   const rootIdentity = aiView.root, summaryIdentity = aiView.summary;
-  const stateItemCount = userView.stateItems.children.length, cseChangeItemCount = userView.cseChangeItems.children.length;
-  aiView.toggle.emit('click'); assert.equal(aiView.body.hidden, false); assert.equal(aiView.host.getAttribute('data-open'), 'true'); userView.states.open = true; recallGroup.open = true; recallGroup.emit('toggle');
+  const currentCount = ui.current.children.length, changeCount = ui.history.querySelectorAll('.change-entry').length;
+  aiView.toggle.emit('click'); assert.equal(aiView.body.hidden, false);
+  ui.peopleTab.click();
+  const historyFloor = ui.history.querySelector('.change-floor'); historyFloor.open = false; historyFloor.emit('toggle');
   h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
-  assert.equal(aiView.root, rootIdentity); assert.equal(aiView.summary, summaryIdentity); assert.equal(aiView.body.hidden, false); assert.equal(userView.states.open, true, '人物状态分组展开状态需保留'); assert.notEqual(userView.cseChanges.open, true, '人物状态历史变化的关闭状态需保留'); assert.equal(recallGroup.open, true, '相同回执刷新不能关闭已展开的来源组');
-  userView.states.open = false; userView.cseChanges.open = true;
-  h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
-  assert.equal(userView.states.open, false, '人物状态分组关闭状态需保留'); assert.equal(userView.cseChanges.open, true, '人物状态历史变化的展开状态需保留');
-  assert.equal(userView.stateItems.children.length, stateItemCount); assert.equal(userView.cseChangeItems.children.length, cseChangeItemCount, '折叠切换与刷新不得重复内容');
+  assert.equal(aiView.root, rootIdentity); assert.equal(aiView.summary, summaryIdentity); assert.equal(aiView.body.hidden, false);
+  assert.equal(userView.recallUi, ui, '相同回执刷新不重建DOM');
+  assert.equal(ui.people.hidden, false); assert.equal(ui.events.hidden, true);
+  assert.equal(historyFloor.open, false); assert.equal(recallPill.getAttribute('aria-expanded'), 'true');
+  assert.equal(ui.current.children.length, currentCount); assert.equal(ui.history.querySelectorAll('.change-entry').length, changeCount);
+
 });
 
-test('真实schema12剧情线回执经inline投影与renderer按时序显示完整私密变化及宿主楼号', async () => {
+test('真实schema12回执分为事与人，完整保留私密变化并按楼层倒序展示', async () => {
   const { chat, receipt, floorIds } = await actualCseReceipt();
   const memoryState = { floors: floorIds.map((floorId, index) => ({ floorId, assistantSeq: index + 1, messageIndex: 41 + index })), memoryEntities: [] };
   const h = createHarness({ chat, memoryState, projectReceipt: async () => receipt });
@@ -342,59 +350,39 @@ test('真实schema12剧情线回执经inline投影与renderer按时序显示完�
   const projection = projectInlineRecallReceipt(receipt);
   assert.equal(projection.protocolRecognized, true);
   assert.equal(projection.stateItems[0]?.text, '已经回到钟楼准备赴约');
-  assert.equal(view.cseChanges.hidden, true, '剧情线协议在分线内展示变化，不重复渲染旧独立变化区');
-  const rendered = descendantText(view.recallItems);
-  assert.match(rendered, /裴晚生 \/ 情境 \/ 移除：仍在钟楼等候（仅主体知晓）（这是该楼当时移除的旧状态）/);
-  assert.match(rendered, /第 42 楼/);
-  assert.ok(rendered.indexOf('新增：仍在钟楼等候') < rendered.indexOf('移除：仍在钟楼等候'), '历史变化按真实来源楼顺序展示');
-  assert.equal(descendantText(view.states).includes('仍在钟楼等候'), false);
-
-  let currentDetails = view.recallItems.querySelector('.recall-line-states');
-  let changeDetails = view.recallItems.querySelectorAll('.recall-line-changes');
-  assert.equal(currentDetails?.tagName, 'DETAILS'); assert.notEqual(currentDetails.open, true);
-  assert.equal(currentDetails.children[0].textContent, '人物当前状态 1 条');
-  assert.equal(currentDetails.children[1].className, 'state-items');
-  assert.equal(currentDetails.children[1].children[0].textContent, '裴晚生：已经回到钟楼准备赴约');
-  assert.equal(changeDetails.length, 2, '同一来源楼的多条变化只生成一个折叠组');
-  assert.ok(changeDetails.every(node => node.tagName === 'DETAILS' && node.open !== true));
-  assert.equal(changeDetails[0].children[0].children[0].textContent, '人物状态变化 2 条');
-  assert.equal(changeDetails[0].children[0].children[1].textContent, '第 41 楼');
-  assert.equal(changeDetails[0].children[1].children.length, 2);
-  assert.equal(changeDetails[1].children[0].children[1].textContent, '第 42 楼');
-  const stateLine = currentDetails.parentElement;
-  assert.ok(stateLine.children.indexOf(changeDetails[0]) < stateLine.children.indexOf(changeDetails[1]));
-  assert.ok(stateLine.children.indexOf(changeDetails[1]) < stateLine.children.indexOf(currentDetails), '历史变化保持来源时序，当前快照留在本线末尾');
-  assert.match(view.root.children[0].textContent, /\.state-items,\.cse-change-items\{display:none;/);
-  assert.match(view.root.children[0].textContent, /\.states\[open\]>\.state-items,\.cse-changes\[open\]>\.cse-change-items\{display:grid\}/);
-
-  currentDetails.open = true; currentDetails.emit('toggle');
-  changeDetails[0].open = true; changeDetails[0].emit('toggle');
+  let ui = view.recallUi;
+  assert.equal(ui.events.hidden, false); assert.equal(ui.people.hidden, true);
+  assert.match(descendantText(ui.current), /已经回到钟楼准备赴约/);
+  assert.doesNotMatch(descendantText(ui.current), /仍在钟楼等候/);
+  assert.match(descendantText(ui.history), /仍在钟楼等候/);
+  assert.match(descendantText(ui.history), /仅本人知晓/);
+  let details = ui.history.querySelectorAll('.change-floor');
+  assert.equal(details.length, 2, '同楼多条变化仅生成一个楼层分组');
+  assert.equal(details[0].children[0].textContent, '第 42 个结');
+  assert.equal(details[1].children[0].textContent, '第 41 个结');
+  assert.equal(details[1].querySelectorAll('.change-entry').length, 2);
+  assert.equal(ui.current.tagName, 'SECTION');
+  assert.equal(ui.history.querySelectorAll('.change-removed').length, 2);
+  assert.ok(details.every(node => node.open === false));
+  ui.peopleTab.click(); details[1].open = true; details[1].emit('toggle');
   memoryState.floors[0].messageIndex = 51;
   h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
-  currentDetails = view.recallItems.querySelector('.recall-line-states'); changeDetails = view.recallItems.querySelectorAll('.recall-line-changes');
-  assert.equal(currentDetails.open, true, '同回执重绘需恢复当前状态展开');
-  assert.equal(changeDetails[0].open, true, '来源楼号更新重绘需恢复对应历史变化展开');
-  assert.equal(changeDetails[0].children[0].children[1].textContent, '第 51 楼');
-  assert.equal(changeDetails[1].open, false, '不同来源历史变化互不串展开状态');
-
-  currentDetails.open = false; currentDetails.emit('toggle');
-  memoryState.floors[1].messageIndex = 52;
-  h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
-  currentDetails = view.recallItems.querySelector('.recall-line-states'); changeDetails = view.recallItems.querySelectorAll('.recall-line-changes');
-  assert.equal(currentDetails.open, false, '当前状态关闭状态独立保留');
-  assert.equal(changeDetails[0].open, true, '当前状态关闭不能连带关闭历史变化');
-  assert.equal(changeDetails[1].children[0].children[1].textContent, '第 52 楼');
-  assert.equal(changeDetails[0].children[1].children.length, 2, '重绘不得重复同源变化正文');
-
-  const otherUser = { ...chat[1], mes: '另一个聊天的用户楼' };
+  ui = view.recallUi; details = ui.history.querySelectorAll('.change-floor');
+  assert.equal(ui.people.hidden, false, '来源楼号更新后保留人页签');
+  assert.equal(details[1].open, true, '重绘保留具体楼层的折叠状态');
+  assert.equal(details[1].children[0].textContent, '第 51 个结');
+  assert.equal(details[0].open, false, '其它楼层独立');
+  assert.equal(details[1].querySelectorAll('.change-entry').length, 2, '重绘无重复');
+  const otherUser = { ...chat[1], mes:'另一个聊天的用户楼' };
   h.snapshot.chat = [otherUser]; h.context.chatMetadata.qianqianjie.chatId = OTHER_CHAT; h.snapshot.chatId = 'host-chat-b';
-  h.chatRoot.replaceChildren(messageElement(0, { user: true })); h.emit('CHAT_CHANGED'); await h.flushMicrotasks();
+  h.chatRoot.replaceChildren(messageElement(0, { user:true })); h.emit('CHAT_CHANGED'); await h.flushMicrotasks();
   const otherView = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  assert.ok(otherView.recallItems.querySelectorAll('.recall-line-changes').every(node => node.open !== true));
-  assert.notEqual(otherView.recallItems.querySelector('.recall-line-states')?.open, true, '新聊天不能继承旧聊天的分线展开状态');
+  assert.equal(otherView.recallUi.events.hidden, false, '新聊天默认事页签');
+  assert.ok(otherView.recallUi.history.querySelectorAll('.change-floor').every(node => node.open === false));
+
 });
 
-test('楼内回执用可靠来源标识压缩 refine 的同源 after，仍保留 before 与真实宿主楼号', async () => {
+test('refine 显示删除与新增两侧，当前状态独立常驻并使用真实宿主楼号', async () => {
   const chat = [{ is_user: true, is_system: false, mes: '当前用户楼', extra: { [RECALL_RECEIPT_KEY]: { schemaVersion: 10 } } }];
   const receipt = {
     status: 'ready', injectionText: '<qqj_recalled_context>人物状态</qqj_recalled_context>', selectedFloors: [],
@@ -407,13 +395,15 @@ test('楼内回执用可靠来源标识压缩 refine 的同源 after，仍保留
   const h = createHarness({ chat, memoryState, projectReceipt: async () => receipt });
   const userElement = messageElement(0, { user: true }); h.chatRoot.append(userElement); h.renderer.start(); await h.flushMicrotasks();
   const view = resolveInlineAnchor(userElement).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  assert.equal(view.stateItems.children[0].textContent, '左佐 → 辛夷：后来发短信要求辛夷回屋');
-  assert.match(view.cseChangeItems.children[0].children[0].textContent, /调整：放弃反锁，允许辛夷去院子（仅主体知晓） → 见上方当前快照（同一来源）/);
-  assert.equal(view.cseChangeItems.children[0].children[1].textContent, '第 88 楼');
-  assert.equal(descendantText(view.cseChanges).includes('后来发短信要求辛夷回屋'), false, '同源 after 不应在变化区重复全文');
+  const ui = view.recallUi;
+  assert.match(descendantText(ui.current), /左佐.*→ 辛夷：后来发短信要求辛夷回屋/);
+  assert.match(descendantText(ui.history.querySelector('.change-removed')), /放弃反锁，允许辛夷去院子/);
+  assert.match(descendantText(ui.history.querySelector('.change-added')), /后来发短信要求辛夷回屋/);
+  assert.equal(ui.history.querySelector('.change-floor').children[0].textContent, '第 88 个结');
+
 });
 
-test('召回来源组近到远、逐组折叠并在重绘中保持，切聊不串展开状态', async () => {
+test('旧版召回胶囊近到远共用展示区，重绘保留选择且切聊不串状态', async () => {
   const receipt = { schemaVersion: 6 };
   const chat = [{ is_user: true, is_system: false, mes: '当前用户楼', extra: { [RECALL_RECEIPT_KEY]: receipt } }];
   const injectionText = recallInjection('AI #1：远处第一条', 'AI #1：远处第二条', 'AI #3：近处材料');
@@ -422,16 +412,29 @@ test('召回来源组近到远、逐组折叠并在重绘中保持，切聊不�
   const h = createHarness({ chat, memoryState, projectReceipt: async () => projectedReceipt });
   h.chatRoot.append(messageElement(0, { user: true })); h.renderer.start(); await h.flushMicrotasks();
   let view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  assert.deepEqual(view.recallItems.children.map(group => group.children[0].children[0].textContent), ['来源结号未提供', '第 76 个结']);
-  assert.equal(view.recallItems.children[0].children[0].children.length, 1, '当前floor映射缺失时明确显示未知，不拿 assistantSeq 猜宿主楼号');
-  assert.deepEqual(view.recallItems.children[1].children[1].children.map(node => node.textContent), ['远处第一条', '远处第二条']);
-  assert.notEqual(view.recallItems.children[0].open, true); assert.notEqual(view.recallItems.children[1].open, true);
-  const near = view.recallItems.children[0]; near.open = true; near.emit('toggle'); assert.equal(near.children[0].getAttribute('aria-label'), '折叠来源结号未提供');
-  memoryState.floors.push({ floorId: 'floor-near', assistantSeq: 3, messageIndex: 6 }); h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
-  view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard; assert.equal(view.recallItems.children[0].children[0].children[0].textContent, '第 6 个结'); assert.equal(view.recallItems.children[0].children[0].getAttribute('aria-label'), '折叠第 6 个结'); assert.equal(view.recallItems.children[0].open, true, '来源楼号补全触发重绘后仍保持该组展开'); assert.equal(view.recallItems.children[1].open, false);
-  h.snapshot.chat = [{ is_user: true, is_system: false, mes: '另一聊天用户楼', extra: { [RECALL_RECEIPT_KEY]: receipt } }]; h.context.chatMetadata.qianqianjie.chatId = 'chat-b'; h.snapshot.chatId = 'host-chat-b'; h.chatRoot.replaceChildren(messageElement(0, { user: true }));
+  let ui = view.recallUi;
+  assert.deepEqual(ui.pills.children.map(pill => pill.textContent), ['来源结号未提供', '第 76 个结']);
+  assert.ok(ui.pills.children.every(pill => pill.getAttribute('aria-expanded') === 'false'));
+  ui.pills.children[1].click();
+  assert.deepEqual(ui.display.querySelectorAll('.event-copy').map(node => node.textContent), ['远处第一条', '远处第二条']);
+  ui.pills.children[0].click();
+  assert.equal(ui.pills.children[1].getAttribute('aria-expanded'), 'false');
+  assert.match(descendantText(ui.display), /近处材料/); assert.doesNotMatch(descendantText(ui.display), /远处第一条/);
+  memoryState.floors.push({ floorId:'floor-near', assistantSeq:3, messageIndex:6 });
+  h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
+  ui = view.recallUi;
+  assert.equal(ui.pills.children[0].textContent, '第 6 个结');
+  assert.equal(ui.pills.children[0].getAttribute('aria-expanded'), 'true');
+  assert.match(descendantText(ui.display), /第 6 个结/);
+  ui.peopleTab.click(); ui.eventTab.click(); assert.match(descendantText(ui.display), /近处材料/);
+  ui.pills.children[0].click(); assert.equal(ui.pills.children[0].getAttribute('aria-expanded'), 'false');
+  assert.doesNotMatch(descendantText(ui.display), /近处材料/);
+  ui.pills.children[0].click();
+  h.snapshot.chat = [{ is_user:true, is_system:false, mes:'另一聊天用户楼', extra:{ [RECALL_RECEIPT_KEY]:receipt } }];
+  h.context.chatMetadata.qianqianjie.chatId = 'chat-b'; h.snapshot.chatId = 'host-chat-b'; h.chatRoot.replaceChildren(messageElement(0,{user:true}));
   h.emit('CHAT_CHANGED'); await h.flushMicrotasks(); view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  assert.notEqual(view.recallItems.children[0].open, true, '同序号来源组在新聊天必须默认关闭');
+  assert.ok(view.recallUi.pills.children.every(pill => pill.getAttribute('aria-expanded') === 'false'));
+
 });
 
 test('memory冷加载时历史与CSE来源共用当前聊天的唯一marker宿主楼号', async () => {
@@ -451,8 +454,8 @@ test('memory冷加载时历史与CSE来源共用当前聊天的唯一marker宿�
   const h = createHarness({ chat, chatId: MARKER_CHAT, memoryState: { chatId: MARKER_CHAT, floors: [], memoryEntities: [] }, projectReceipt: async () => projectedReceipt });
   h.chatRoot.append(messageElement(4, { user: true })); h.renderer.start(); await h.flushMicrotasks();
   const view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  assert.equal(view.recallItems.children[0].children[0].children[0].textContent, '第 1 个结');
-  assert.equal(view.cseChangeItems.children[0].children[1].textContent, '第 3 楼');
+  assert.equal(view.recallUi.pills.children[0].textContent, '第 1 个结');
+  assert.equal(view.recallUi.history.querySelector('.change-floor').children[0].textContent, '第 3 个结');
 });
 
 test('marker位置随宿主移动并优先于旧memory，异步回执完成和同投影刷新都读取最新快照', async () => {
@@ -471,19 +474,19 @@ test('marker位置随宿主移动并优先于旧memory，异步回执完成和�
   chat[1] = { is_user: false, is_system: false, mes: '原位置的新正文' }; chat[3] = sourceMessage;
   receiptResolved = true; resolveReceipt(projectedReceipt); await h.flushMicrotasks();
   let view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  assert.equal(view.recallItems.children[0].children[0].children[0].textContent, '第 3 个结', '异步完成不能捕获移动前marker或旧memory位置');
+  assert.equal(view.recallUi.pills.children[0].textContent, '第 3 个结', '异步完成不能捕获移动前marker或旧memory位置');
   h.setMemory({ chatId: MARKER_CHAT, floors: [{ floorId: HISTORY_FLOOR, assistantSeq: 1, messageIndex: 88 }], memoryEntities: [] });
   h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
-  assert.equal(view.recallItems.children[0].children[0].children[0].textContent, '第 3 个结', 'memory后到也不能覆盖当前宿主marker');
+  assert.equal(view.recallUi.pills.children[0].textContent, '第 3 个结', 'memory后到也不能覆盖当前宿主marker');
   chat[3] = { is_user: false, is_system: false, mes: '再次替换' }; chat[4] = sourceMessage; h.emit('MESSAGE_UPDATED', 4); await h.flushMicrotasks();
   view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  assert.equal(view.recallItems.children[0].children[0].children[0].textContent, '第 4 个结', '投影不变时marker位置变化仍须进入来源signature并重绘');
+  assert.equal(view.recallUi.pills.children[0].textContent, '第 4 个结', '投影不变时marker位置变化仍须进入来源signature并重绘');
 
   const foreignUser = { is_user: true, is_system: false, mes: '新聊天用户楼', extra: { [RECALL_RECEIPT_KEY]: receiptMarker } };
   h.snapshot.chat = [foreignUser, sourceMessage]; h.context.chatMetadata.qianqianjie.chatId = OTHER_CHAT; h.snapshot.chatId = 'host-chat-b';
   h.setMemory({ chatId: OTHER_CHAT, floors: [], memoryEntities: [] }); h.chatRoot.replaceChildren(messageElement(0, { user: true }));
   h.emit('CHAT_CHANGED'); await h.flushMicrotasks(); view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  assert.equal(view.recallItems.children[0].children[0].children[0].textContent, '来源结号未提供', '切聊后旧聊天marker必须视为foreign');
+  assert.equal(view.recallUi.pills.children[0].textContent, '来源结号未提供', '切聊后旧聊天marker必须视为foreign');
 });
 
 test('无marker只按同chat唯一floorId回退，CSE不再用assistantSeq猜宿主楼号', async () => {
@@ -500,11 +503,11 @@ test('无marker只按同chat唯一floorId回退，CSE不再用assistantSeq猜宿
   ], memoryEntities: [] }, projectReceipt: async () => projectedReceipt });
   h.chatRoot.append(messageElement(0, { user: true })); h.renderer.start(); await h.flushMicrotasks();
   const view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  assert.equal(view.recallItems.children[0].children[0].children[0].textContent, '第 7 个结');
-  assert.equal(view.cseChangeItems.children[0].children[1].textContent, '来源楼号未提供');
+  assert.equal(view.recallUi.pills.children[0].textContent, '第 7 个结');
+  assert.equal(view.recallUi.history.querySelector('.change-floor').children[0].textContent, '来源结号未提供');
   h.setMemory({ chatId: OTHER_CHAT, floors: [{ floorId: HISTORY_FLOOR, assistantSeq: 1, messageIndex: 9 }], memoryEntities: [] });
   h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
-  assert.equal(view.recallItems.children[0].children[0].children[0].textContent, '来源结号未提供', '带chatId的memory列表必须与当前聊天一致');
+  assert.equal(view.recallUi.pills.children[0].textContent, '来源结号未提供', '带chatId的memory列表必须与当前聊天一致');
 });
 
 test('重复、foreign和invalid marker均不猜绑，重复floorId不会退回旧memory任选位置', async () => {
@@ -527,7 +530,7 @@ test('重复、foreign和invalid marker均不猜绑，重复floorId不会退回�
   const h = createHarness({ chat, chatId: MARKER_CHAT, memoryState: { chatId: MARKER_CHAT, floors: [{ floorId: HISTORY_FLOOR, assistantSeq: 1, messageIndex: 90 }], memoryEntities: [] }, projectReceipt: async () => projectedReceipt });
   h.chatRoot.append(messageElement(4, { user: true })); h.renderer.start(); await h.flushMicrotasks();
   const view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  assert.deepEqual(view.recallItems.children.map(group => group.children[0].children[0].textContent), ['来源结号未提供', '来源结号未提供', '来源结号未提供']);
+  assert.deepEqual(view.recallUi.pills.children.map(pill => pill.textContent), ['来源结号未提供', '来源结号未提供', '来源结号未提供']);
 });
 
 test('楼内主题变量同步已有卡与后生卡，更新颜色不重建或折叠已有卡', async () => {
@@ -642,4 +645,46 @@ test('缺少mes_text时不回退到mes_block或mes，等待正文出现再挂载
   assert.equal(message.querySelectorAll('[data-qqj-inline-host="true"]').length, 0); assert.equal(h.renderer.getDebugState().observing, true);
   const text = new FakeNode('div'); text.className = 'mes_text'; block.append(text); h.observers.find(value => value.active)?.trigger(); await h.flushMicrotasks();
   assert.equal(text.querySelectorAll('[data-qqj-inline-host="true"]').length, 1); assert.equal(h.renderer.getDebugState().observing, false);
+});
+
+
+test('多人物变化切换不影响常驻状态，重绘保留人物与楼层，HTML按纯文字显示', async () => {
+  const text = '<img src=x onerror=alert(1)>旧状态';
+  const receipt = {
+    status:'ready', selectedFloors:[], selectedStates:[
+      {subjectEntityId:'p1', subject:'甲', text:'甲的当前状态'},
+      {subjectEntityId:'p2', subject:'乙', text:'乙的当前状态'},
+    ], selectedCseChanges:[
+      {subjectEntityId:'p1', subject:'甲', floorId:'f1', assistantSeq:1, layer:'situational', action:'add', before:null, after:{text:'甲的变化', visibility:'shared'}},
+      {subjectEntityId:'p2', subject:'乙', floorId:'f1', assistantSeq:1, layer:'situational', action:'update', before:{text, visibility:'private'}, after:{text:'乙的新状态', visibility:'expressed'}},
+      {subjectEntityId:'p2', subject:'乙', floorId:'f2', assistantSeq:2, layer:'situational', action:'remove', before:{text:'乙的第二楼旧状态', visibility:'private'}, after:null},
+    ],
+  };
+  const memoryState = {floors:[{floorId:'f1', messageIndex:10}, {floorId:'f2', messageIndex:12}]};
+  const chat = [{is_user:true, mes:'用户', extra:{[RECALL_RECEIPT_KEY]:{schemaVersion:11}}}];
+  const h = createHarness({chat, memoryState, projectReceipt:async () => receipt});
+  h.chatRoot.append(messageElement(0,{user:true})); h.renderer.start(); await h.flushMicrotasks();
+  const view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  let ui = view.recallUi;
+  ui.peopleTab.click(); ui.picker.children[1].click();
+  assert.match(descendantText(ui.current), /甲的当前状态.*乙的当前状态/);
+  assert.equal(ui.timelines.children[0].hidden, true); assert.equal(ui.timelines.children[1].hidden, false);
+  assert.deepEqual(ui.timelines.children[1].children.map(node => node.children[0].textContent), ['第 12 个结','第 10 个结']);
+  assert.equal(ui.timelines.children[1].querySelector('.change-copy').tagName, 'DEL');
+  assert.equal(ui.history.querySelectorAll('img').length, 0);
+  assert.ok(ui.history.querySelectorAll('.change-copy').some(node => node.textContent === text));
+  assert.equal(ui.history.querySelectorAll('.change-layer').length, 0, '情境标签移除');
+  const detail = ui.timelines.children[1].children[0]; detail.open = false; detail.emit('toggle');
+  memoryState.floors[1].messageIndex = 14; h.emit('MESSAGE_UPDATED'); await h.flushMicrotasks();
+  ui = view.recallUi;
+  assert.equal(ui.people.hidden, false); assert.equal(ui.picker.children[1].getAttribute('aria-pressed'), 'true');
+  assert.equal(ui.timelines.children[1].children[0].open, false);
+  assert.equal(ui.timelines.children[1].children[0].children[0].textContent, '第 14 个结');
+  let prevented = false;
+  ui.peopleTab.emit('keydown', {key:'ArrowLeft', preventDefault(){prevented=true;}});
+  assert.equal(prevented,true); assert.equal(ui.events.hidden,false); assert.equal(ui.people.hidden,true);
+  assert.equal(ui.eventTab.tabIndex,0); assert.equal(ui.peopleTab.tabIndex,-1); assert.equal(ui.eventTab.focused,true);
+  ui.eventTab.emit('keydown', {key:'End', preventDefault(){}});
+  assert.equal(ui.people.hidden,false); assert.equal(ui.peopleTab.getAttribute('aria-controls'),ui.people.id);
+  assert.equal(view.root.children.filter(node => node.tagName === 'STYLE').length,2,'刷新不会累积样式');
 });
