@@ -77,18 +77,18 @@ function validateExcludedKeys(value, field, allowed) {
   return selected;
 }
 
-const diagnostic = ({ mode, error = null, metadata = null, durationMs = 0, historyCandidateCount = null, stateCandidateCount = null, historyExcludedCount = null, stateExcludedCount = null, historyRetainedCount = null, stateRetainedCount = null } = {}) => {
-  const api = sanitizeTaskMetadata(metadata ?? error?.taskMetadata);
+const diagnostic = ({ mode, metadata = null, durationMs = 0, historyCandidateCount = null, stateCandidateCount = null, historyExcludedCount = null, stateExcludedCount = null, historyRetainedCount = null, stateRetainedCount = null } = {}) => {
+  const api = sanitizeTaskMetadata(metadata);
   return Object.freeze({
     mode,
-    code: error ? String(error?.code ?? error?.name ?? 'V3_RECALL_LLM_FAILED').slice(0, 120) : null,
-    httpStatus: Number.isSafeInteger(error?.httpStatus ?? error?.status) ? (error.httpStatus ?? error.status) : null,
-    formatStage: error?.formatStage ? String(error.formatStage).slice(0, 80) : null,
-    finishReason: String(error?.finishReason ?? api.finishReason ?? '').slice(0, 32),
+    code: null,
+    httpStatus: null,
+    formatStage: null,
+    finishReason: String(api.finishReason ?? '').slice(0, 32),
     source: api.source,
     sourceLabel: api.sourceLabel,
     model: api.model,
-    transportAttempts: Number.isSafeInteger(error?.transportAttempts ?? api.transportAttempts) ? (error?.transportAttempts ?? api.transportAttempts) : null,
+    transportAttempts: Number.isSafeInteger(api.transportAttempts) ? api.transportAttempts : null,
     durationMs: Math.max(0, Math.floor(Number(durationMs) || 0)),
     historyCandidateCount: Number.isSafeInteger(historyCandidateCount) && historyCandidateCount >= 0 ? historyCandidateCount : null,
     stateCandidateCount: Number.isSafeInteger(stateCandidateCount) && stateCandidateCount >= 0 ? stateCandidateCount : null,
@@ -100,11 +100,6 @@ const diagnostic = ({ mode, error = null, metadata = null, durationMs = 0, histo
     stateRetainedCount: Number.isSafeInteger(stateRetainedCount) && stateRetainedCount >= 0 ? stateRetainedCount : null,
   });
 };
-
-function fallbackSelection(input, historyPool, csePool, selectorDiagnostic) {
-  const selected = selectRecall({ ...input, selectedHistoryCandidates: historyPool.candidates, selectedCseCandidates: csePool.candidates });
-  return Object.freeze({ ...selected, selectorDiagnostic, skipReasons: Object.freeze([...new Set([...(selected.skipReasons ?? []), 'historySelectionFallback'])]) });
-}
 
 export async function selectRecallWithLlm({
   source,
@@ -123,7 +118,7 @@ export async function selectRecallWithLlm({
   const allCandidates = [...historyPool.candidates, ...csePool.candidates];
   const candidateCounts = { historyCandidateCount: historyPool.candidates.length, stateCandidateCount: csePool.candidates.length };
   if (!allCandidates.length) return Object.freeze({ ...selectRecall({ ...baseInput, selectedHistoryCandidates: [], selectedCseCandidates: [] }), selectorDiagnostic: diagnostic({ mode: 'local', ...candidateCounts, historyRetainedCount: 0, stateRetainedCount: 0 }) });
-  if (typeof generateUtilityTask !== 'function') return fallbackSelection(baseInput, historyPool, csePool, diagnostic({ mode: 'fallback', error: Object.assign(new Error('utility route unavailable'), { code: 'V3_RECALL_LLM_UNAVAILABLE' }), ...candidateCounts, historyRetainedCount: historyPool.candidates.length, stateRetainedCount: csePool.candidates.length }));
+  if (typeof generateUtilityTask !== 'function') throw Object.assign(new Error('历史智能选材服务不可用。'), { code: 'V3_RECALL_LLM_UNAVAILABLE' });
   const planned = selectRecall({ ...baseInput, selectedHistoryCandidates: [], selectedCseCandidates: [] });
   const chronologyByFloor = new Map((source?.floorMemories ?? []).map(memory => [memory.floorId, formatChronologyAnchor(memory.chronology ?? [])]));
   const cseByKeyForPayload = new Map(csePool.candidates.map(candidate => [candidate.key, candidate]));
@@ -194,6 +189,6 @@ export async function selectRecallWithLlm({
     });
   } catch (error) {
     if (signal?.aborted) throw abortError(signal.reason);
-    return fallbackSelection(baseInput, historyPool, csePool, diagnostic({ mode: 'fallback', error, durationMs: Date.now() - started, ...candidateCounts, historyRetainedCount: historyPool.candidates.length, stateRetainedCount: csePool.candidates.length }));
+    throw error;
   }
 }

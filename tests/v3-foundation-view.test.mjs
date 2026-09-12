@@ -61,6 +61,52 @@ test('管理视图先显示壳并在激活时自动刷新，只在管理页提�
   assert.match(copy, /补齐缺失.*完全重构/);
 });
 
+test('API 接口抽屉默认折叠并静态复制示例，失败 fallback 留在本抽屉且同聊天重渲染保留', async t => {
+  const state = {
+    status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle',
+    stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, headCheckpointId: null, activeRun: null,
+    memoryWorkBusy: true, activeAutoMemory: null, activeExtraction: null, activeCse: null, cseReady: false, csePendingCount: 0, cseFailedCount: 0,
+    rebuildStatus: 'caughtUp', rebuildHasActionableWork: false, floors: [], cseSubjects: [],
+  };
+  let runtimeReads = 0, clipboardCalls = 0, publicCalls = 0;
+  const runtime = { getState: () => { runtimeReads += 1; return state; }, refreshStatus: async () => state, confirmLatest: async () => state };
+  const bridgeDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'qqj_v3_public_bridge_v1');
+  Object.defineProperty(globalThis, 'qqj_v3_public_bridge_v1', { configurable: true, get() { publicCalls += 1; return {}; } });
+  t.after(() => {
+    if (bridgeDescriptor) Object.defineProperty(globalThis, 'qqj_v3_public_bridge_v1', bridgeDescriptor);
+    else delete globalThis.qqj_v3_public_bridge_v1;
+  });
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, documentRef, navigatorRef: { clipboard: { writeText: async value => { clipboardCalls += 1; assert.match(value, /globalThis\.qqj_v3_public_bridge_v1/); throw new Error('clipboard denied'); } } } });
+  view.mount(container);
+  const detailsByTitle = title => flatten(container).find(node => node.tag === 'details' && flatten(node).some(child => child.textContent === title));
+  let apiDrawer = detailsByTitle('API 接口');
+  assert.ok(apiDrawer); assert.equal(apiDrawer.open, false);
+  const pageCopy = flatten(container).map(node => node.textContent).join('|');
+  assert.ok(pageCopy.indexOf('最近召回') < pageCopy.indexOf('API 接口') && pageCopy.indexOf('API 接口') < pageCopy.indexOf('详细诊断'));
+  assert.match(pageCopy, /getStatus\(\).*readMemory\(\).*getSnapshot\(\)/);
+  assert.match(pageCopy, /memory\.floors.*cse\.currentSubjects.*cse\.floors.*people\.items/);
+
+  const readsBeforeOpen = runtimeReads;
+  apiDrawer.open = true; apiDrawer.fire('toggle');
+  assert.equal(runtimeReads, readsBeforeOpen); assert.equal(publicCalls, 0, '展开静态抽屉不得调用公开接口');
+  const copyButton = flatten(apiDrawer).find(node => node.textContent === '复制调用示例');
+  assert.equal(copyButton.disabled, false, '后台忙碌时静态复制仍可用');
+  copyButton.click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(clipboardCalls, 1); assert.equal(runtimeReads, readsBeforeOpen); assert.equal(publicCalls, 0, '静态复制不得调用 runtime 或公开接口');
+  let apiFallback = flatten(apiDrawer).find(node => node.className === 'v3-diagnostic-fallback');
+  assert.equal(apiFallback?.readOnly, true); assert.match(apiFallback?.value ?? '', /getSnapshot\(\)/);
+  const diagnosticDrawer = detailsByTitle('详细诊断');
+  assert.equal(flatten(diagnosticDrawer).some(node => node.className === 'v3-diagnostic-fallback'), false, 'API fallback 不得串入诊断抽屉');
+
+  view.render(state);
+  apiDrawer = detailsByTitle('API 接口');
+  assert.equal(apiDrawer.open, true, '同聊天重渲染保留抽屉开合');
+  apiFallback = flatten(apiDrawer).find(node => node.className === 'v3-diagnostic-fallback');
+  assert.match(apiFallback?.value ?? '', /globalThis\.qqj_v3_public_bridge_v1/, '重渲染后仍保留手动复制文本');
+  assert.equal(publicCalls, 0);
+});
+
 test('未建档聊天的空同步 ID 不误锁刷新与显式补齐', async () => {
   const state = {
     status: 'uninitialized', pluginEnabled: true, chatId: null, headCheckpointId: null,
@@ -875,7 +921,8 @@ test('三页职责分离，千结只保留摘要编辑/重提，双丝网归位�
   flatten(container).find(node => node.textContent === '分析记录').click(); copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /分析记录.*重新分析/);
   view.setPage('management'); copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /记忆管理.*补齐缺失.*完全重构.*最近召回回执.*详细诊断/);
+  for (const value of ['记忆管理', '补齐缺失', '完全重构', '最近召回回执', 'API 接口', '详细诊断']) assert.ok(copy.includes(value));
+  assert.ok(copy.indexOf('最近召回回执') < copy.indexOf('API 接口') && copy.indexOf('API 接口') < copy.indexOf('详细诊断'));
   assert.match(copy, /刷新状态/);
   assert.doesNotMatch(copy, /剧情摘要|重新提取/);
   for (const button of flatten(container).filter(node => node.tag === 'button')) assert.equal(button.type, 'button');
@@ -1291,6 +1338,69 @@ test('双丝网精确区分双方关系、自身状态与选中 NPC 的其他关
   const switchRow = flatten(container).find(node => node.className === 'qqj-relation-switch-row'); flatten(switchRow).find(node => node.textContent === '更多人物（1）').click();
   assert.match(flatten(container).find(node => node.className === 'qqj-profile-picker qqj-cse-more').textContent + flatten(container).map(node => node.textContent).join('|'), /一个非常非常长的未关注人物名字/);
   view.deactivate(); assert.equal(menuDocument.clickListenerCount(), 0);
+});
+
+test('双丝网空关系方向只读显示各自最后历史记录与宿主楼号，不进入当前编辑保存', async () => {
+  const userId = '10000000-0000-4000-8000-000000000001', personId = '20000000-0000-4000-8000-000000000002';
+  const historicalItem = (text, towardEntityId) => ({ text, towardEntityId, visibility: 'observable', reason: '历史已存', origin: 'floor' });
+  const floor = (floorId, messageIndex, endStateSubjects) => ({
+    floorId, assistantSeq: messageIndex, messageIndex, memoryId: `memory-${floorId}`, cse: { status: 'ready', record: { endStateSubjects } },
+  });
+  const historyFloors = [
+    floor('old', 5, [
+      { subjectEntityId: userId, displayName: '你', core: [], adaptive: [], situational: [historicalItem('较早的你方关系', personId)] },
+      { subjectEntityId: personId, displayName: '甲', core: [], adaptive: [], situational: [historicalItem('甲方最后关系', userId)] },
+    ]),
+    floor('newer', 8, [
+      { subjectEntityId: userId, displayName: '你', core: [], adaptive: [], situational: [historicalItem('你方最后关系', personId)] },
+      { subjectEntityId: personId, displayName: '甲', core: [], adaptive: [], situational: [{ text: '甲当时很疲惫', towardEntityId: null }] },
+    ]),
+    floor('latest', 11, [
+      { subjectEntityId: userId, displayName: '你', core: [], adaptive: [], situational: [{ text: '你正在休息', towardEntityId: null }] },
+      { subjectEntityId: personId, displayName: '甲', core: [], adaptive: [], situational: [{ text: '甲正在休息', towardEntityId: null }] },
+    ]),
+  ];
+  let savedPayload = null;
+  let state = {
+    status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 3, rememberedCount: 3,
+    cseReady: true, csePendingCount: 0, cseFailedCount: 0, currentStateId: 'state-current', currentStateFingerprint: `sha256:${'a'.repeat(64)}`,
+    memoryEntities: [{ entityId: userId, displayName: '你', specialRole: 'user' }, { entityId: personId, displayName: '甲' }],
+    cseSubjects: [
+      { subjectEntityId: userId, displayName: '你', core: [], adaptive: [], situational: [{ id: 'user-own', text: '你正在休息', towardEntityId: null }] },
+      { subjectEntityId: personId, displayName: '甲', core: [], adaptive: [], situational: [{ id: 'person-own', text: '甲正在休息', towardEntityId: null }] },
+    ],
+    floors: historyFloors,
+  };
+  const runtime = {
+    getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    correctSubjectState: async (_subjectEntityId, payload) => { savedPayload = payload; return state; },
+  };
+  const selectedPeople = peopleRuntime([{ entityId: personId, displayName: '甲' }], [personId]);
+  const container = new Node('main'), view = createV3FoundationView({ runtime, peopleRuntime: selectedPeople, documentRef }); view.setPage('people'); view.mount(container);
+  let lanes = flatten(container).filter(node => /^qqj-relation-lane(?: |$)/.test(node.className));
+  const fromUser = flatten(lanes[0]).map(node => node.textContent).join('|'), towardUser = flatten(lanes[1]).map(node => node.textContent).join('|');
+  assert.match(fromUser, /最后关系记录 · 第 8 楼.*当时态度.*你方最后关系/);
+  assert.doesNotMatch(fromUser, /较早的你方关系|当前态度/);
+  assert.match(towardUser, /最后关系记录 · 第 5 楼.*当时态度.*甲方最后关系/);
+
+  flatten(container).find(node => node.textContent === '编辑状态').click();
+  const editor = flatten(container).find(node => node.className === 'qqj-cse-edit');
+  assert.doesNotMatch(flatten(editor).map(node => node.value || node.textContent).join('|'), /你方最后关系|甲方最后关系/);
+  flatten(editor).find(node => node.textContent === '保存').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.doesNotMatch(JSON.stringify(savedPayload), /你方最后关系|甲方最后关系/);
+
+  state = { ...state, cseSubjects: [
+    { ...state.cseSubjects[0], situational: [historicalItem('当前你方关系', personId)] },
+    { ...state.cseSubjects[1], adaptive: [historicalItem('当前甲方关系', userId)] },
+  ] };
+  view.render(state); lanes = flatten(container).filter(node => /^qqj-relation-lane(?: |$)/.test(node.className));
+  const currentCopy = lanes.map(lane => flatten(lane).map(node => node.textContent).join('|')).join('||');
+  assert.match(currentCopy, /当前态度.*当前你方关系.*长期相处方式.*当前甲方关系/);
+  assert.doesNotMatch(currentCopy, /最后关系记录|你方最后关系|甲方最后关系|当时态度/);
+
+  state = { ...state, cseSubjects: state.cseSubjects.map(subject => ({ ...subject, adaptive: [], situational: [] })), floors: [] };
+  view.render(state); lanes = flatten(container).filter(node => /^qqj-relation-lane(?: |$)/.test(node.className));
+  assert.equal(lanes.filter(lane => /暂无已保存的关系状态/.test(lane.textContent + flatten(lane).map(node => node.textContent).join('|'))).length, 2);
 });
 
 test('双丝网按实体 ID 展示已有 user 状态，且空状态关系卡仍可从菜单移出重要', async () => {

@@ -11,6 +11,8 @@ import { scanAssistantCandidates } from '../src/v3/foundation-domain.js';
 import { createExtractorEnvelope, normalizeExtractorResponse } from '../src/v3/extractor.js';
 import { rankRecallDocuments, tokenizeRecallText } from '../src/v3/recall-ranking.js';
 import { projectInlineRecallReceipt } from '../src/ui/inline-projection.js';
+import { createCompactApiClient } from '../src/compact-api-client.js';
+import { createTaskRouter } from '../src/api-routing.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GEN = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -912,7 +914,7 @@ test('summary 候选默认保留，明确排除才移除；稳定键只映射本
   assert.match(forged.injectionText, /钟楼钥匙的关联摘要 0/);
 });
 
-test('LLM 排除忽略外层字段、合法键去重且混合非法键时执行合法排除；全非法才兜底', async () => {
+test('LLM 排除忽略外层字段、合法键去重且混合非法键时执行合法排除；全非法作为技术失败上抛', async () => {
   const source = wideCandidateSource({ direct: 2 });
   source.currentState = [{ subjectEntityId: PERSON, core: [{ text: '始终谨慎守约', visibility: 'authorial', reason: '人物核心', origin: 'baseline', towardEntityId: null, sourceAssistantSeq: 1 }], adaptive: [], situational: [] }];
   const pool = buildRecallHistoryCandidatePool({ source, queryContext: llmQuery });
@@ -923,10 +925,10 @@ test('LLM 排除忽略外层字段、合法键去重且混合非法键时执行�
     assert.equal(result.selectorDiagnostic.mode, 'llm');
     assert.equal(result.selectorDiagnostic.historyExcludedCount, 1);
   }
-  const invalid = await selectRecallWithLlm({ source, queryContext: llmQuery, generateUtilityTask: async () => ({ jsonData: { history_exclude_keys: ['R999', 7], state_exclude_keys: [] } }) });
-  assert.equal(invalid.skipReasons.includes('historySelectionFallback'), true);
-  assert.equal(invalid.selectorDiagnostic.code, 'V3_RECALL_LLM_KEYS_INVALID');
-  assert.match(invalid.injectionText, /始终谨慎守约/);
+  await assert.rejects(
+    () => selectRecallWithLlm({ source, queryContext: llmQuery, generateUtilityTask: async () => ({ jsonData: { history_exclude_keys: ['R999', 7], state_exclude_keys: [] } }) }),
+    error => error?.code === 'V3_RECALL_LLM_KEYS_INVALID',
+  );
   let calls = 0;
   const none = await selectRecallWithLlm({ source: selectorSource(), queryContext: { ...llmQuery, text: '宇宙飞船', latestUserText: '宇宙飞船' }, generateUtilityTask: async () => { calls += 1; } });
   assert.equal(calls, 0);
@@ -1201,11 +1203,13 @@ test('同一次 LLM 分开排除 history/current/change，空排除、全排除�
   assert.equal(empty.selectorDiagnostic.mode, 'llm');
   assert.equal(empty.selectorDiagnostic.historyRetainedCount, 0);
   assert.equal(empty.selectorDiagnostic.stateRetainedCount, 0);
-  const invalid = await selectRecallWithLlm({ source, queryContext, generateUtilityTask: async () => ({ jsonData: { history_exclude_keys: ['R999'], state_exclude_keys: ['C999'] } }) });
-  assert.equal(invalid.skipReasons.includes('historySelectionFallback'), true);
+  await assert.rejects(
+    () => selectRecallWithLlm({ source, queryContext, generateUtilityTask: async () => ({ jsonData: { history_exclude_keys: ['R999'], state_exclude_keys: ['C999'] } }) }),
+    error => error?.code === 'V3_RECALL_LLM_KEYS_INVALID',
+  );
 });
 
-test('排除协议缺字段、旧 selected_keys 与跨池键均不冒充显式空排除，统一默认保留兜底', async () => {
+test('排除协议缺字段、旧 selected_keys 与跨池键均不冒充显式空排除，结构错误原样上抛', async () => {
   const source = changingCseSource({ withHistory: true });
   const queryContext = { ...llmQuery, text: '左佐辛夷旧门锁', latestUserText: '左佐辛夷旧门锁' };
   const history = buildRecallHistoryCandidatePool({ source, queryContext });
@@ -1217,11 +1221,11 @@ test('排除协议缺字段、旧 selected_keys 与跨池键均不冒充显式�
     { history_exclude_keys: [cse.candidates[0].key], state_exclude_keys: [history.candidates[0].key] },
   ];
   for (const jsonData of cases) {
-    const result = await selectRecallWithLlm({ source, queryContext, generateUtilityTask: async () => ({ jsonData }) });
-    assert.equal(result.selectorDiagnostic.mode, 'fallback', JSON.stringify(jsonData));
-    assert.equal(result.skipReasons.includes('historySelectionFallback'), true, JSON.stringify(jsonData));
-    assert.equal(result.selectorDiagnostic.historyExcludedCount, null);
-    assert.equal(result.selectorDiagnostic.stateExcludedCount, null);
+    await assert.rejects(
+      () => selectRecallWithLlm({ source, queryContext, generateUtilityTask: async () => ({ jsonData }) }),
+      error => ['V3_RECALL_LLM_SCHEMA_INVALID', 'V3_RECALL_LLM_KEYS_INVALID'].includes(error?.code),
+      JSON.stringify(jsonData),
+    );
   }
 });
 
@@ -1627,22 +1631,61 @@ test('ready runtime 将实际前情预算传给 LLM selector，双槽合计不�
   assert.equal(latestPromptValue(harness.prompts, PREQUEL_PROMPT_SLOT), '');
 });
 
-test('普通槽已写入后的封签异常会先清两槽，再仅恢复前情并把普通展示归零', async () => {
+test('普通槽已写入后的持续封签异常重试一次后清空双槽并停止正文', async () => {
   let harness;
+  let abortCalls = 0;
   const fingerprint = async value => {
     if (harness?.prompts.some(call => call[0] === RECALL_PROMPT_SLOT && call[1])) throw Object.assign(new Error('模拟封签失败'), { code: 'TEST_RECEIPT_SEAL_FAILED' });
     return fingerprintText(value);
   };
   harness = createRuntimeHarness({ prequel: '裴晚生曾把蓝铜钥匙藏在钟楼。', fingerprint });
-  const state = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  const state = await harness.runtime.intercept(harness.chat, 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
   assert.ok(harness.prompts.some(call => call[0] === RECALL_PROMPT_SLOT && call[1]), '异常必须发生在普通槽实际写入以后');
   assert.equal(state.lastRecall.status, 'error');
   assert.equal(state.lastRecall.injectionText, '');
   assert.equal(state.lastRecall.stages, null);
-  assert.equal(state.lastPrequel.status, 'ready');
-  assert.match(state.lastPrequel.injectionText, /蓝铜钥匙/);
+  assert.equal(state.lastPrequel, null);
+  assert.equal(abortCalls, 1);
   assert.equal(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT), '');
-  assert.match(latestPromptValue(harness.prompts, PREQUEL_PROMPT_SLOT), /蓝铜钥匙/);
+  assert.equal(latestPromptValue(harness.prompts, PREQUEL_PROMPT_SLOT), '');
+});
+
+test('普通 prompt 首次写入抛错会清槽并重试成功，不停止正文', async () => {
+  const notifications = [];
+  const harness = createRuntimeHarness({ notifyUser: value => notifications.push(value) });
+  let failed = false, abortCalls = 0;
+  harness.context.setExtensionPrompt = (...args) => {
+    harness.prompts.push(args);
+    if (args[0] === RECALL_PROMPT_SLOT && args[1] && !failed) {
+      failed = true;
+      throw Object.assign(new Error('模拟普通召回注入失败'), { code: 'TEST_RECALL_PROMPT_FAILED' });
+    }
+  };
+  const state = await harness.runtime.intercept(harness.chat, 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
+  assert.equal(failed, true);
+  assert.equal(state.lastRecall.status, 'ready');
+  assert.equal(abortCalls, 0);
+  assert.equal(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT), state.lastRecall.injectionText);
+  assert.deepEqual(notifications, [{ kind: 'warning', text: '记忆召回未完成，正在重试一次。' }]);
+});
+
+test('前情 prompt 持续写入失败时两轮都清空普通与前情槽并停止正文', async () => {
+  let selectorCalls = 0, abortCalls = 0;
+  const harness = createRuntimeHarness({
+    prequel: '裴晚生曾把蓝铜钥匙藏在钟楼。',
+    selector: input => { selectorCalls += 1; return selectRecall(input); },
+  });
+  harness.context.setExtensionPrompt = (...args) => {
+    harness.prompts.push(args);
+    if (args[0] === PREQUEL_PROMPT_SLOT && args[1]) throw Object.assign(new Error('模拟前情注入失败'), { code: 'TEST_PREQUEL_PROMPT_FAILED' });
+  };
+  const result = await harness.runtime.intercept(harness.chat, 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
+  assert.equal(selectorCalls, 2);
+  assert.equal(abortCalls, 1);
+  assert.equal(result.lastRecall.status, 'error');
+  assert.equal(result.lastPrequel, null);
+  assert.equal(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT), '');
+  assert.equal(latestPromptValue(harness.prompts, PREQUEL_PROMPT_SLOT), '');
 });
 
 test('coreChat clone 只控制严格正文去重；无宿主可见性投影时不得猜测排除摘要', async () => {
@@ -2273,19 +2316,101 @@ test('schema13 剧情线回执经 runtime 新算/复用/恢复及历史 projecto
   assert.deepEqual(projectInlineRecallReceipt(reused.lastRecall).storylines, freshInline.storylines);
 });
 
-test('runtime LLM局部失败在有效commit后只提示一次默认保留降级', async () => {
+test('旧fallback回执仍可历史查看，但regenerate不再把它当本轮选材成功', async () => {
+  let selectorCalls = 0;
+  const harness = createRuntimeHarness({ selector: input => {
+    selectorCalls += 1;
+    const selected = selectRecall(input);
+    if (selectorCalls !== 1) return selected;
+    return {
+      ...selected,
+      selectorDiagnostic: { mode: 'fallback', code: 'OLD_SELECTOR_FAILED' },
+      skipReasons: [...new Set([...(selected.skipReasons ?? []), 'historySelectionFallback'])],
+    };
+  } });
+  const first = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  assert.equal(first.lastRecall.selectorDiagnostic.mode, 'fallback');
+  const historical = await projectHistoricalRecallReceipt(harness.userMessage, { chatId: CHAT, userMessageIndex: 1 });
+  assert.equal(historical.selectorDiagnostic.mode, 'fallback', '旧回执展示能力必须保留');
+  const regenerated = await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
+  assert.equal(selectorCalls, 2, '旧fallback回执必须重新选材');
+  assert.equal(regenerated.lastRecall.reusedReceipt, false);
+  assert.equal(regenerated.lastRecall.selectorDiagnostic.mode, 'local');
+});
+
+test('runtime LLM首次网络失败后整体重试成功，每次utility仍只有一次transport budget', async () => {
   const notifications = [];
-  let calls = 0;
+  const budgets = [];
+  let calls = 0, abortCalls = 0;
   const harness = createRuntimeHarness({
     useDefaultSelector: true,
-    generateUtilityTask: async () => { calls += 1; return { jsonData: { history_exclude_keys: ['R999'], state_exclude_keys: [] } }; },
+    generateUtilityTask: async options => {
+      calls += 1;
+      budgets.push(structuredClone(options.transportBudget));
+      if (calls === 1) throw Object.assign(new Error('utility network unavailable'), { code: 'UTILITY_NETWORK_FAILED' });
+      return { jsonData: { history_exclude_keys: [], state_exclude_keys: [] } };
+    },
     notifyUser: value => notifications.push(value),
   });
-  const result = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
-  assert.equal(calls, 1);
+  const result = await harness.runtime.intercept(harness.chat, 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
+  assert.equal(calls, 2);
+  assert.deepEqual(budgets, [{ remaining: 1, used: 0 }, { remaining: 1, used: 0 }]);
   assert.equal(result.lastRecall.status, 'ready');
-  assert.equal(result.lastRecall.skipReasons.includes('historySelectionFallback'), true);
-  assert.deepEqual(notifications, [{ kind: 'warning', text: '历史智能排除暂时不可用，本次已保留本地候选并继续召回。' }]);
+  assert.equal(result.lastRecall.selectorDiagnostic.mode, 'llm');
+  assert.equal(abortCalls, 0);
+  assert.deepEqual(notifications, [{ kind: 'warning', text: '记忆召回未完成，正在重试一次。' }]);
+});
+
+test('runtime LLM持续返回坏JSON时只调用utility两次，清槽并阻止正文API', async () => {
+  const notifications = [];
+  let calls = 0, abortCalls = 0, mainApiCalls = 0;
+  const harness = createRuntimeHarness({
+    useDefaultSelector: true,
+    generateUtilityTask: async options => {
+      calls += 1;
+      assert.deepEqual(options.transportBudget, { remaining: 1, used: 0 });
+      return { textData: '不是 JSON' };
+    },
+    notifyUser: value => notifications.push(value),
+  });
+  const result = await harness.runtime.intercept(harness.chat, 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
+  if (!abortCalls) mainApiCalls += 1;
+  assert.equal(calls, 2);
+  assert.equal(abortCalls, 1);
+  assert.equal(mainApiCalls, 0, '宿主 abort 标记后正文 API 不得调用');
+  assert.equal(result.lastRecall.status, 'error');
+  assert.equal(result.lastRecall.injectionText, '');
+  assert.equal(harness.saves, 0);
+  assert.ok(harness.prompts.every(call => call[1] === ''));
+  assert.equal(notifications.length, 2);
+  assert.equal(notifications[0].text, '记忆召回未完成，正在重试一次。');
+  assert.match(notifications[1].text, /重试后仍失败，已停止正文生成/);
+});
+
+test('runtime 经真实utility路由与compact client遇到HTTP 500时总共只发两次请求', async () => {
+  let fetchCalls = 0, retryWaits = 0, abortCalls = 0;
+  const compactClient = createCompactApiClient({
+    retryWait: async () => { retryWaits += 1; },
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return { ok: false, status: 500, text: async () => '' };
+    },
+  });
+  const route = {
+    kind: 'independent', source: 'test-utility', sourceLabel: '测试副 API',
+    config: { url: 'https://api.example.test/v1', key: 'TEST_KEY', model: 'test-model', excludeParams: [], timeoutSec: 5, stream: false },
+  };
+  const router = createTaskRouter({
+    resolver: { resolve: () => route, resolveUtility: () => route },
+    compactClient,
+  });
+  const harness = createRuntimeHarness({ useDefaultSelector: true, generateUtilityTask: router.generateUtilityTask });
+  const result = await harness.runtime.intercept(harness.chat, 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
+  assert.equal(fetchCalls, 2, '两轮各自的 transportBudget=1 必须压住 compact client 默认内部重试');
+  assert.equal(retryWaits, 0);
+  assert.equal(abortCalls, 1);
+  assert.equal(result.lastRecall.status, 'error');
+  assert.equal(result.lastRecall.error.code, 'QQJ_SERVER');
 });
 
 test('runtime 摘要和 CSE 局部缺口均使用可用部分，只有未确认归属的 unknown 跳过记忆', async () => {
@@ -2436,28 +2561,42 @@ test('真实 CSE 投影损坏只降级人物状态，已完整摘要仍可召回
   assert.equal(result.lastRecall.status, 'empty');
 });
 
-test('首次准备超时或失败均跳过记忆并放行正文，未初始化新聊天静默放行', async () => {
-  for (const [kind, prepareMemory, expectedReason, expectedNotification] of [
-    ['timeout', () => new Promise(() => {}), 'memoryPreparationTimeout', true],
-    ['failed', async () => ({ status: 'error' }), 'sourceUnavailable', true],
-    ['new', async () => ({ status: 'uninitialized' }), 'sourceUnavailable', false],
-  ]) {
+test('首次准备超时或失败会 fresh 重试后成功，未初始化新聊天仍静默放行', async () => {
+  const raw = await singleFloorReachable();
+  for (const kind of ['timeout', 'failed']) {
+    let prepareCalls = 0;
     const notifications = [];
     const harness = createRuntimeHarness({
-      prepareMemory,
+      prepareMemory: async ({ preferCached }) => {
+        prepareCalls += 1;
+        assert.equal(preferCached, prepareCalls === 1, kind);
+        if (prepareCalls === 1) return kind === 'timeout' ? new Promise(() => {}) : { status: 'error' };
+        return { status: 'ready', reachable: structuredClone(raw) };
+      },
       preparationTimeoutMs: 5,
       sourceReader: async () => ({ status: 'unavailable' }),
+      rootReader: async () => ({ status: 'ready', revision: raw.rootRevision, data: structuredClone(raw.root) }),
       notifyUser: value => notifications.push(value),
     });
-    let aborted = false;
-    const result = await harness.runtime.intercept(harness.chat, 12000, value => { aborted = value === true; }, 'normal');
-    assert.equal(aborted, false, kind);
-    assert.deepEqual(result.lastRecall.skipReasons, [expectedReason], kind);
-    assert.equal(notifications.length, expectedNotification ? 1 : 0, kind);
+    let abortCalls = 0;
+    const result = await harness.runtime.intercept(harness.chat, 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
+    assert.equal(prepareCalls, 2, kind);
+    assert.equal(abortCalls, 0, kind);
+    assert.equal(['ready', 'empty'].includes(result.lastRecall.status), true, `${kind}: ${JSON.stringify(result.lastRecall)}`);
+    assert.deepEqual(notifications, [{ kind: 'warning', text: '记忆召回未完成，正在重试一次。' }], kind);
   }
+
+  const freshChat = createRuntimeHarness({
+    prepareMemory: async () => ({ status: 'uninitialized' }),
+    sourceReader: async () => ({ status: 'unavailable' }),
+  });
+  let abortCalls = 0;
+  const result = await freshChat.runtime.intercept(freshChat.chat, 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
+  assert.equal(abortCalls, 0);
+  assert.deepEqual(result.lastRecall.skipReasons, ['sourceUnavailable']);
 });
 
-test('准备已超时后迟到失败不得再启动召回降级读取', async () => {
+test('准备连续超时后停止正文，迟到失败不得再启动召回降级读取', async () => {
   let releasePreparation;
   const preparation = new Promise(resolve => { releasePreparation = () => resolve({ status: 'error' }); });
   let sourceReads = 0;
@@ -2466,11 +2605,28 @@ test('准备已超时后迟到失败不得再启动召回降级读取', async ()
     preparationTimeoutMs: 5,
     sourceReader: async () => { sourceReads += 1; return { status: 'unavailable' }; },
   });
-  const result = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
-  assert.deepEqual(result.lastRecall.skipReasons, ['memoryPreparationTimeout']);
+  let abortCalls = 0;
+  const result = await harness.runtime.intercept(harness.chat, 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
+  assert.deepEqual(result.lastRecall.skipReasons, ['error']);
+  assert.equal(result.lastRecall.error.code, 'V3_RECALL_MEMORY_PREPARATION_TIMEOUT');
+  assert.equal(abortCalls, 1);
   releasePreparation();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(sourceReads, 0);
+});
+
+test('第一次后端准备失败、第二次utility失败时用尽同一两轮预算，不启动第三次', async () => {
+  let sourceCalls = 0, utilityCalls = 0, abortCalls = 0;
+  const harness = createRuntimeHarness({
+    useDefaultSelector: true,
+    sourceReader: async () => { sourceCalls += 1; return sourceCalls === 1 ? { status: 'unavailable' } : runtimeFixture(); },
+    generateUtilityTask: async () => { utilityCalls += 1; throw Object.assign(new Error('第二轮 API 失败'), { code: 'UTILITY_FAILED' }); },
+  });
+  const result = await harness.runtime.intercept(harness.chat, 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
+  assert.equal(sourceCalls, 2);
+  assert.equal(utilityCalls, 1);
+  assert.equal(abortCalls, 1);
+  assert.equal(result.lastRecall.error.code, 'UTILITY_FAILED');
 });
 
 test('准备挂起后取消或切聊天，迟到失败均不得启动召回降级读取', async () => {
@@ -2510,6 +2666,27 @@ test('root 正常推进会 fresh 重投影并复核同一 actual core，不重�
   assert.equal(selectorCalls, 1);
   assert.equal(prepareCalls, 2, 'root 变化后必须 fresh 准备一次');
   assert.equal(result.lastRecall.status, 'empty');
+});
+
+test('最终提交前readRoot第一次技术失败会走同一整体重试，第二次成功后才注入', async () => {
+  let sourceCalls = 0, rootCalls = 0, selectorCalls = 0, abortCalls = 0;
+  const source = runtimeFixture();
+  const harness = createRuntimeHarness({
+    sourceReader: async () => { sourceCalls += 1; return structuredClone(source); },
+    rootReader: async () => {
+      rootCalls += 1;
+      return rootCalls === 1
+        ? { status: 'unavailable' }
+        : { status: 'ready', revision: source.rootRevision, data: { chatId: source.chatId, narrativeGeneration: source.narrativeGeneration, headCheckpointId: source.headCheckpointId } };
+    },
+    selector: input => { selectorCalls += 1; return selectRecall(input); },
+  });
+  const result = await harness.runtime.intercept(harness.chat, 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
+  assert.equal(sourceCalls, 2);
+  assert.equal(rootCalls, 2);
+  assert.equal(selectorCalls, 2);
+  assert.equal(abortCalls, 0);
+  assert.equal(result.lastRecall.status, 'ready');
 });
 
 test('root 变化后 fresh winner 已删除选中楼时拒绝旧选择，正常无关推进仍允许注入', async () => {
@@ -3124,27 +3301,32 @@ test('runtime disabled/quiet/impersonate/无 user 均安全清槽跳过，且从
   assert.ok(harness.prompts.every(call => call[1] === ''));
 });
 
-test('runtime 对真实 sourceUnavailable/sourceStale 继续 fail-open，并保留读取次数诊断', async () => {
-  for (const [status, reason] of [['unavailable', 'sourceUnavailable'], ['stale', 'sourceStale']]) {
-    let selectorCalls = 0;
+test('runtime 对真实 sourceUnavailable 重试后停止，sourceStale 仍按来源变化放行', async () => {
+  for (const [status, reason, expectedCalls, expectedAborts] of [
+    ['unavailable', 'error', 2, 1],
+    ['stale', 'sourceStale', 1, 0],
+  ]) {
+    let selectorCalls = 0, sourceCalls = 0, abortCalls = 0;
     const attempts = sourceAttempts(status === 'stale' ? 'stale' : 'unavailable');
     const harness = createRuntimeHarness({
-      sourceReader: async () => ({ status, sourceReadAttempts: attempts }),
+      sourceReader: async () => { sourceCalls += 1; return { status, sourceReadAttempts: attempts }; },
       selector: () => { selectorCalls += 1; throw new Error('不可执行 selector'); },
     });
-    const result = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+    const result = await harness.runtime.intercept(harness.chat, 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
     assert.deepEqual(result.lastRecall.skipReasons, [reason]);
     assert.deepEqual(result.lastRecall.timings.sourceReadAttempts, attempts);
+    assert.equal(sourceCalls, expectedCalls);
+    assert.equal(abortCalls, expectedAborts);
     assert.equal(selectorCalls, 0);
     assert.equal(harness.saves, 0);
     assert.ok(harness.prompts.every(call => call[1] === ''));
   }
 });
 
-test('runtime source/selector 异常整体 fail-open，清旧注入并只暴露安全错误', async () => {
-  let fail = false, abortCalls = 0;
+test('runtime source异常整体只重试一次，清旧注入、停止正文并只暴露安全错误', async () => {
+  let fail = false, failedReads = 0, abortCalls = 0;
   const harness = createRuntimeHarness({ sourceReader: async () => {
-    if (fail) throw Object.assign(new Error('token=sk-secret-1234567890'), { code: 'SOURCE_FAILED' });
+    if (fail) { failedReads += 1; throw Object.assign(new Error('token=sk-secret-1234567890'), { code: 'SOURCE_FAILED' }); }
     return runtimeFixture();
   } });
   await harness.runtime.intercept(harness.chat, 12000, () => { abortCalls += 1; }, 'normal');
@@ -3156,7 +3338,8 @@ test('runtime source/selector 异常整体 fail-open，清旧注入并只暴露�
   assert.equal(harness.prompts.at(-1)[1], '');
   assert.equal(result.lastRecallError.code, 'SOURCE_FAILED');
   assert.doesNotMatch(result.lastRecallError.message, /sk-secret/);
-  assert.equal(abortCalls, 0);
+  assert.equal(failedReads, 2);
+  assert.equal(abortCalls, 1);
 });
 
 test('runtime 旧异步请求迟到不得覆盖或清除新 generation 的 prompt', async () => {

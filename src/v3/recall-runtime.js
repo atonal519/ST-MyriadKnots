@@ -586,6 +586,13 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (memory?.lastAutoMemory?.status === 'failed') return ['memoryNotReady', 'memoryRebuildFailed'];
     return ['memoryNotReady', 'historicalRebuildRequired'];
   };
+  const technicalSourceError = source => {
+    const status = String(source?.status ?? '');
+    if (!['timeout', 'unavailable', 'error', 'loading'].includes(status)) return null;
+    const detail = typeof source?.error === 'string' ? source.error : source?.error?.message;
+    const code = source?.error?.code ?? (status === 'timeout' ? 'V3_RECALL_MEMORY_PREPARATION_TIMEOUT' : 'V3_RECALL_SOURCE_UNAVAILABLE');
+    return Object.assign(new Error(detail || (status === 'timeout' ? '当前聊天记忆在 5 秒内未准备完成。' : '当前聊天记忆暂时无法读取。')), { code });
+  };
   async function preparedSource(snapshot, sanitizerSnapshot, { fresh = false, operation = null } = {}) {
     const identityProjection = typeof identityProjectionProvider === 'function' ? await identityProjectionProvider() : null;
     if (typeof prepareMemory === 'function') {
@@ -628,8 +635,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (typeof setter !== 'function') throw Object.assign(new Error('宿主不支持 setExtensionPrompt。'), { code: 'V3_RECALL_PROMPT_UNAVAILABLE' });
     const position = context.constants?.promptTypes?.IN_CHAT ?? 1;
     const role = context.constants?.promptRoles?.SYSTEM ?? 0;
-    setter(slot, String(value ?? ''), position, 1, false, role);
     if (slot === PREQUEL_PROMPT_SLOT) prequelSlotActive = Boolean(value);
+    setter(slot, String(value ?? ''), position, 1, false, role);
     if (value) slotOwner = owner;
   };
   const prompt = (value, owner = null, checkedContext = null) => promptSlot(RECALL_PROMPT_SLOT, value, owner, checkedContext);
@@ -730,13 +737,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (currentHostChatId(snapshot) !== operation.hostChatId) return { ok: false, reason: 'chatChanged' };
     if (user?.index !== operation.user.index || user.message !== operation.user.message || user.message.mes !== operation.userText) return { ok: false, reason: 'userChanged' };
     if (liveRecallFrameKey(snapshot) !== operation.liveFrameKey) return { ok: false, reason: 'narrativeChanged' };
-    try { promptPrequel(operation.prequelSelection.injectionText, operation.token, snapshot.context); return { ok: true, committed: true, snapshot, user }; }
-    catch (error) {
-      const safe = Object.freeze({ code: clean(error?.code ?? error?.name ?? 'V3_PREQUEL_PROMPT_FAILED', 120), message: clean(error?.message ?? '前情注入失败，正文继续生成。', 500) });
-      lastPrequel = prequelState(operation, { error: safe });
-      logger?.warn?.('[qianqianjie] V3 prequel prompt failed open', { code: safe.code });
-      return { ok: true, committed: false, snapshot, user };
-    }
+    promptPrequel(operation.prequelSelection.injectionText, operation.token, snapshot.context);
+    return { ok: true, committed: true, snapshot, user };
   }
 
   async function persistReceipt(snapshot, user, receipt) {
@@ -781,6 +783,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const verifyHostCoverage = source.readiness !== null && source.readiness !== undefined;
     const canReadRoot = typeof store.readRoot === 'function';
     const rootResult = canReadRoot ? await store.readRoot() : null;
+    const rootError = canReadRoot ? technicalSourceError(rootResult) : null;
+    if (rootError) throw rootError;
     let currentSource = source;
     const sameRoot = rootResult?.status === 'ready'
       && rootResult.revision === source.rootRevision
@@ -798,7 +802,11 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           realtimeOrigin: hasRealtimeOrigin(),
         });
       }
-      if (currentSource?.status !== 'ready') return { ok: false, reason: currentSource?.status === 'stale' ? 'sourceStale' : 'sourceUnavailable' };
+      if (currentSource?.status !== 'ready') {
+        const sourceError = technicalSourceError(currentSource);
+        if (sourceError) throw sourceError;
+        return { ok: false, reason: currentSource?.status === 'stale' ? 'sourceStale' : 'sourceUnavailable' };
+      }
       if (canReadRoot && (currentSource.rootRevision !== rootResult.revision
         || currentSource.chatId !== rootResult.data?.chatId
         || currentSource.narrativeGeneration !== rootResult.data?.narrativeGeneration
@@ -839,12 +847,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     }
     if (injectionText) prompt(injectionText, operation.token, after.context);
     if (operation.prequelSelection?.injectionText) {
-      try { promptPrequel(operation.prequelSelection.injectionText, operation.token, after.context); operation.prequelCommitted = true; }
-      catch (error) {
-        const safe = Object.freeze({ code: clean(error?.code ?? error?.name ?? 'V3_PREQUEL_PROMPT_FAILED', 120), message: clean(error?.message ?? '前情注入失败，正文继续生成。', 500) });
-        lastPrequel = prequelState(operation, { error: safe });
-        logger?.warn?.('[qianqianjie] V3 prequel prompt failed open', { code: safe.code });
-      }
+      promptPrequel(operation.prequelSelection.injectionText, operation.token, after.context);
+      operation.prequelCommitted = true;
     }
     return { ok: true, snapshot: after, user: afterUser };
   }
@@ -866,7 +870,10 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       }
       return finishStale(operation, timings, reason);
     };
-    try {
+    const coreInput = Array.isArray(coreChat) ? coreChat : [];
+    coreChat = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
       if (lifecycle?.stopped) return finishStale(operation, timings, 'stopped');
       if (!enabled()) return finishSkipped(operation, 'disabled', timings);
       if (!SUPPORTED_TYPES.has(type)) return finishSkipped(operation, ['quiet', 'impersonate'].includes(type) ? type : 'unsupportedGenerationType', timings);
@@ -879,14 +886,12 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       operation.userText = user.message.mes;
       operation.liveFrameKey = liveRecallFrameKey(before);
       const sanitizerSnapshot = currentSanitizerOptions();
-      const coreInput = Array.isArray(coreChat) ? coreChat : [];
       const queryContext = queryBuilder({ coreChat: coreInput, assistantTurns: 1 });
       operation.prequelSourceText = currentPrequelText(before);
       operation.prequelSelection = selectPrequel({ text: operation.prequelSourceText, queryContext, contextSize });
       const coreBodyWitness = await captureCoreBodyWitness(coreInput, sanitizerSnapshot, fingerprint);
       operation.coreBodyWitness = coreBodyWitness;
       operation.sanitizerOptions = sanitizerSnapshot;
-      coreChat = null;
       const hostGuard = { userMessage: user.message, userText: user.message.mes };
       if (!queryContext.latestUserText) return finishSkipped(operation, 'emptyUserInput', timings);
       const inputStarted = Date.now();
@@ -894,7 +899,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       timings.inputMs = Date.now() - inputStarted;
       operation.phase = 'source'; notify();
       const sourceStarted = Date.now();
-      const readSource = await preparedSource(before, sanitizerSnapshot, { operation });
+      const readSource = await preparedSource(before, sanitizerSnapshot, { fresh: attempt > 0, operation });
       let source = readSource?.status === 'ready'
         ? Object.freeze({ ...readSource, bodyMatch: await attachCoreBodyMatch(readSource, coreBodyWitness, before, sanitizerSnapshot, fingerprint) })
         : readSource;
@@ -904,6 +909,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         const reason = source.status === 'timeout' ? 'memoryPreparationTimeout'
           : source.sourceReadAttempts?.exitPoint === 'memoryPreparationFailed' ? 'memoryPreparationFailed'
             : source.status === 'stale' ? 'sourceStale' : 'sourceUnavailable';
+        const sourceError = technicalSourceError(source);
+        if (sourceError) throw sourceError;
         const prequelCommit = commitPrequelIfCurrent(operation);
         if (!prequelCommit.ok) return finishStale(operation, timings, prequelCommit.reason);
         operation.prequelCommitted = prequelCommit.committed;
@@ -943,6 +950,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         let candidate = null;
         for (const value of receiptCandidates(afterUser, key)) {
           const snapshot = await receiptValid(value, { source, userIndex: user.index, userFingerprint, queryFingerprint, pluginVersion }, fingerprint);
+          if (snapshot?.selectorDiagnostic?.mode === 'fallback') continue;
           if (snapshot) { candidate = snapshot; break; }
         }
         if (candidate) {
@@ -1033,9 +1041,6 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           : '当前聊天仍有摘要或人物状态缺口；本轮没有找到可注入的已保存记忆，正文继续生成。' }); } catch { /* notification must not affect recall */ }
       }
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
-      if (receiptBase.skipReasons.includes('historySelectionFallback')) {
-        try { notifyUser?.({ kind: 'warning', text: '历史智能排除暂时不可用，本次已保留本地候选并继续召回。' }); } catch { /* notification must not affect recall */ }
-      }
       const sealedReceipt = Object.freeze({ ...receiptBase, receiptFingerprint: await fingerprint(JSON.stringify(receiptMaterial(receiptBase))) });
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       operation.phase = 'receipt'; notify();
@@ -1054,19 +1059,24 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (operation.prequelCommitted) lastPrequel = prequelState(operation);
       bindLastRecall(committed.snapshot, committed.user);
       lastError = null; active = null; notify(); return getState();
-    } catch (error) {
+      } catch (error) {
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       clearSlot(token);
-      const prequelCommit = commitPrequelIfCurrent(operation);
-      if (!prequelCommit.ok) return finishStale(operation, timings, prequelCommit.reason);
-      operation.prequelCommitted = prequelCommit.committed;
-      const safe = Object.freeze({ code: clean(error?.code ?? error?.name ?? 'V3_RECALL_FAILED', 120), message: clean(error?.message ?? '召回失败，已安全跳过。', 500) });
+      operation.prequelCommitted = false;
+      lastPrequel = null;
+      const safe = Object.freeze({ code: clean(error?.code ?? error?.name ?? 'V3_RECALL_FAILED', 120), message: clean(error?.message ?? '召回失败，已安全停止。', 500) });
+      if (attempt === 0) {
+        try { notifyUser?.({ kind: 'warning', text: '记忆召回未完成，正在重试一次。' }); } catch { /* notification must not affect recall */ }
+        continue;
+      }
       lastError = safe;
-      lastRecall = Object.freeze({ status: 'error', userMessageIndex: null, generationType: type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings, totalMs: Date.now() - operation.started }), skipReasons: Object.freeze(['error']), error: safe, createdAt: nowIso(now) });
-      if (operation.prequelCommitted) lastPrequel = prequelState(operation);
+      lastRecall = Object.freeze({ status: 'error', userMessageIndex: operation.user?.index ?? null, generationType: type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings, totalMs: Date.now() - operation.started }), skipReasons: Object.freeze(['error']), error: safe, createdAt: nowIso(now) });
       bindOperationRecall(operation);
-      try { notifyUser?.({ kind: 'warning', text: `记忆召回暂时失败，本轮不注入记忆，正文继续生成。${safe.message ? ` ${safe.message}` : ''}` }); } catch { /* notification must not affect recall */ }
-      active = null; logger?.warn?.('[qianqianjie] V3 recall failed open', { code: safe.code }); notify(); return getState();
+      try { notifyUser?.({ kind: 'warning', text: `记忆召回重试后仍失败，已停止正文生成：${safe.message || '未知错误'}` }); } catch { /* notification must not affect recall */ }
+      active = null;
+      if (typeof abort === 'function') abort(true);
+      logger?.warn?.('[qianqianjie] V3 recall failed after retry', { code: safe.code }); notify(); return getState();
+      }
     }
   }
 

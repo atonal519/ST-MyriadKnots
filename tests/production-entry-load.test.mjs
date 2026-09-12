@@ -75,7 +75,9 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
   await new Promise(resolvePromise => setImmediate(resolvePromise));
   for (const type of invokeTypes) await context.qqj_v3_recall_interceptor([], 8192, () => { abortCalls += 1; }, type);
   const publicBridgeReadStatus = enabled ? null : (await context.qqj_v3_public_bridge_v1?.readMemory?.())?.status;
-  return { status: entry.status, backendCalls, eventRegistrations, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, publicBridgeReadStatus, promptCalls, abortCalls };
+  const publicBridgeSnapshotType = typeof context.qqj_v3_public_bridge_v1?.getSnapshot;
+  const publicBridgeSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getSnapshot?.()?.status;
+  return { status: entry.status, backendCalls, eventRegistrations, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, promptCalls, abortCalls };
 }
 
 test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 import 且可隔离加载', async () => {
@@ -86,7 +88,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.1.14');
+  assert.equal(manifest.version, '0.1.15');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
@@ -343,6 +345,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.ok(publicMemoryBridgeOptions.store);
   assert.ok(publicMemoryBridgeOptions.hostAdapter);
   assert.equal(publicMemoryBridgeOptions.foundationRuntime, v3MemoryOptions.foundationRuntime, '公共记忆桥必须复用生产地基 runtime');
+  assert.equal(publicMemoryBridgeOptions.memoryRuntime, v3MemoryRuntime, '结构化快照必须复用生产 memory runtime');
+  assert.equal(publicMemoryBridgeOptions.peopleRuntime, peopleWorkspaceRuntime, '结构化快照必须复用生产 people runtime');
   assert.equal(typeof publicMemoryBridgeOptions.isEnabled, 'function');
   assert.equal(typeof publicMemoryBridgeOptions.sanitizerOptions, 'function');
   assert.ok(v3RecallOptions.store);
@@ -365,6 +369,8 @@ test('生产 bundle 在 Luker-only 兼容全局下也可隔离加载，关闭时
   assert.equal(result.status, 'evaluated');
   assert.equal(result.publicBridgeType, 'object');
   assert.equal(result.publicBridgeReadStatus, 'disabled');
+  assert.equal(result.publicBridgeSnapshotType, 'function');
+  assert.equal(result.publicBridgeSnapshotStatus, 'disabled');
   assert.equal(result.backendCalls, 0);
 });
 

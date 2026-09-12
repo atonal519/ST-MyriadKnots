@@ -1,4 +1,5 @@
 import { formatChronologyAnchor, projectRecallSource, readRecallSource } from './recall-source.js';
+import { PEOPLE_PROFILE_FIELDS } from './people-profile-fields.js';
 
 export const QQJ_PUBLIC_MEMORY_BRIDGE_KEY = 'qqj_v3_public_bridge_v1';
 
@@ -141,7 +142,111 @@ const sameReachableRoot = (value, rootResult) => rootResult?.status === 'ready'
   && rootResult.data?.narrativeGeneration === value?.root?.narrativeGeneration
   && rootResult.data?.sourceSnapshotFingerprint === value?.root?.sourceSnapshotFingerprint;
 
-export function createPublicMemoryBridge({ session, store, hostAdapter, foundationRuntime = null, isEnabled = true, sanitizerOptions = () => ({}), identityProjectionProvider = null, readSource = readRecallSource } = {}) {
+const publicStateItem = value => ({
+  id: value?.id ?? null,
+  text: value?.text ?? '',
+  visibility: value?.visibility ?? null,
+  reason: value?.reason ?? '',
+  origin: value?.origin ?? null,
+  towardEntityId: value?.towardEntityId ?? null,
+  towardDisplayName: value?.towardDisplayName ?? null,
+  sourceFloorId: value?.sourceFloorId ?? null,
+  sourceAssistantSeq: value?.sourceAssistantSeq ?? null,
+});
+
+const publicSubject = value => ({
+  subjectEntityId: value?.subjectEntityId ?? null,
+  displayName: value?.displayName ?? '未知人物',
+  core: (value?.core ?? []).map(publicStateItem),
+  adaptive: (value?.adaptive ?? []).map(publicStateItem),
+  situational: (value?.situational ?? []).map(publicStateItem),
+});
+
+const emptyMemorySnapshot = (status = 'not-ready', syncStatus = 'idle') => ({
+  status,
+  syncStatus,
+  headCheckpointId: null,
+  floors: [],
+});
+
+const emptyCseSnapshot = () => ({ ready: false, currentSubjects: [], floors: [] });
+const emptyPeopleSnapshot = (status = 'not-ready') => ({ status, revision: null, items: [] });
+
+function publicMemorySnapshot(value, chatId) {
+  if (!value || value.chatId !== chatId) return emptyMemorySnapshot();
+  const status = value.memorySnapshotStatus ?? 'not-ready';
+  const syncStatus = value.memorySyncStatus ?? 'idle';
+  if (status !== 'ready') return emptyMemorySnapshot(status, syncStatus);
+  return {
+    status,
+    syncStatus,
+    headCheckpointId: value.headCheckpointId ?? null,
+    floors: (value.floors ?? []).filter(floor => floor?.memory?.recordStatus === 'active').map(floor => ({
+      floorId: floor.floorId,
+      messageIndex: floor.messageIndex,
+      assistantSeq: floor.assistantSeq,
+      summary: floor.summary,
+      summarySource: floor.summarySource,
+    })),
+  };
+}
+
+function publicCseSnapshot(value, chatId) {
+  if (!value || value.chatId !== chatId || value.memorySnapshotStatus !== 'ready') return emptyCseSnapshot();
+  return {
+    ready: value.cseReady === true,
+    currentSubjects: (value.cseSubjects ?? []).map(publicSubject),
+    floors: (value.floors ?? []).filter(floor => floor?.cse).map(floor => {
+      const cse = floor.cse;
+      const changesKnown = cse.record?.fixedChangesAvailable === true;
+      return {
+        floorId: floor.floorId,
+        messageIndex: floor.messageIndex,
+        assistantSeq: floor.assistantSeq,
+        status: cse.status,
+        deltaId: cse.deltaId ?? null,
+        changesKnown,
+        changes: changesKnown ? (cse.record?.subjects ?? []).map(subject => ({
+          subjectEntityId: subject.subjectEntityId,
+          displayName: subject.displayName,
+          changes: (subject.changes ?? []).map(change => ({
+            category: change.category,
+            action: change.action,
+            before: change.before ? publicStateItem(change.before) : null,
+            after: change.after ? publicStateItem(change.after) : null,
+          })),
+        })) : null,
+        savedSubjects: (cse.record?.endStateSubjects ?? []).map(publicSubject),
+      };
+    }),
+  };
+}
+
+function publicPeopleSnapshot(value, chatId) {
+  if (!value || value.chatId !== chatId) return emptyPeopleSnapshot();
+  return {
+    status: value.status ?? 'not-ready',
+    revision: value.revision ?? null,
+    items: (value.people ?? []).map(person => ({
+      entityId: person.entityId,
+      displayName: person.displayName,
+      entityDisplayName: person.entityDisplayName,
+      aliases: person.aliases ?? [],
+      specialRole: person.specialRole ?? null,
+      selected: person.selected === true,
+      profiled: person.profiled === true,
+      profile: person.profile ? {
+        ...Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, person.profile[field] ?? ''])),
+        manualFields: person.profile.manualFields ?? [],
+        source: person.profile.source ?? null,
+        createdAt: person.profile.createdAt ?? null,
+        updatedAt: person.profile.updatedAt ?? null,
+      } : null,
+    })),
+  };
+}
+
+export function createPublicMemoryBridge({ session, store, hostAdapter, foundationRuntime = null, memoryRuntime = null, peopleRuntime = null, isEnabled = true, sanitizerOptions = () => ({}), identityProjectionProvider = null, readSource = readRecallSource } = {}) {
   if (!session || typeof session.identity !== 'function' || typeof session.getState !== 'function') throw new TypeError('公共记忆桥 session 无效');
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('公共记忆桥 store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('公共记忆桥 hostAdapter 无效');
@@ -205,7 +310,24 @@ export function createPublicMemoryBridge({ session, store, hostAdapter, foundati
       return frozen({ status: 'error', message: clean(error?.message, 500) || '千千结记忆读取失败。', identity: publicIdentity(before) });
     }
   }
-  return frozen({ schemaVersion: 1, kind: 'qqj-public-memory-bridge', getStatus: localStatus, readMemory });
+  function getSnapshot() {
+    const status = localStatus();
+    if (status.status !== 'ready') return status;
+    try {
+      const memoryState = typeof memoryRuntime?.getState === 'function' ? memoryRuntime.getState() : null;
+      const peopleState = typeof peopleRuntime?.getState === 'function' ? peopleRuntime.getState() : null;
+      return structuredClone({
+        status: 'ready',
+        identity: status.identity,
+        memory: publicMemorySnapshot(memoryState, status.identity.qqjChatId),
+        cse: publicCseSnapshot(memoryState, status.identity.qqjChatId),
+        people: publicPeopleSnapshot(peopleState, status.identity.qqjChatId),
+      });
+    } catch (error) {
+      return frozen({ status: 'error', message: clean(error?.message, 500) || '千千结快照读取失败。', identity: status.identity });
+    }
+  }
+  return frozen({ schemaVersion: 1, kind: 'qqj-public-memory-bridge', getStatus: localStatus, readMemory, getSnapshot });
 }
 
 export function installPublicMemoryBridge({ globalRef = globalThis, ...options } = {}) {

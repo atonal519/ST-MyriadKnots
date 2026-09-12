@@ -1,6 +1,17 @@
 import { createInlineSelect } from './inline-select.js';
 import { createOperationMenuController } from './operation-menu-controller.js';
 
+const PUBLIC_API_EXAMPLE = `const bridge = globalThis.qqj_v3_public_bridge_v1;
+const status = bridge.getStatus();
+const snapshot = bridge.getSnapshot();
+
+if (snapshot.status === 'ready') {
+  const summaries = snapshot.memory.floors;
+  const currentStates = snapshot.cse.currentSubjects;
+  const cseHistory = snapshot.cse.floors;
+  const people = snapshot.people.items;
+}`;
+
 function text(value, fallback = '—') { return value === null || value === undefined || value === '' ? fallback : String(value); }
 
 function statusCopy(value) {
@@ -139,7 +150,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   if (uiDiagnosticProvider !== null && typeof uiDiagnosticProvider !== 'function') throw new TypeError('界面诊断 provider 无效');
   if (!documentRef?.createElement) throw new TypeError('V3 foundation view documentRef 无效');
 
-  let container = null, active = false, epoch = 0, feedback = '', receiptFeedback = '', prequelFeedback = '', fallbackText = '', unsubscribe = null;
+  let container = null, active = false, epoch = 0, feedback = '', receiptFeedback = '', prequelFeedback = '', fallbackText = '', apiFallbackText = '', apiCopyFeedback = '', unsubscribe = null;
   let page = 'management';
   let peopleMode = 'current', selectedCsePersonId = null, showMoreCsePeople = false;
   let foundationState = runtime.getState(), recallState = recallRuntime?.getState?.() ?? null, peopleState = peopleRuntime?.getState?.() ?? null, managementState = memoryManagement?.getState?.() ?? null, chatId = foundationState?.chatId ?? null, healthNode = null;
@@ -172,7 +183,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   };
   const resetForChat = nextChatId => {
     if (nextChatId === chatId) return false;
-    chatId = nextChatId; drafts.clear(); cseDrafts.clear(); openState.clear(); peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; feedback = '';
+    chatId = nextChatId; drafts.clear(); cseDrafts.clear(); openState.clear(); peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; apiFallbackText = ''; apiCopyFeedback = ''; feedback = '';
     return true;
   };
   const sourceChanged = (previous, next) => (previous?.chatId ?? null) !== (next?.chatId ?? null);
@@ -237,12 +248,12 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     block.append(healthNode); return block;
   };
 
-  async function copy(value) {
+  async function copy(value, setFallback = next => { fallbackText = next; }) {
     if (navigatorRef?.clipboard?.writeText) {
-      try { await navigatorRef.clipboard.writeText(value); fallbackText = ''; return '已复制。'; }
+      try { await navigatorRef.clipboard.writeText(value); setFallback(''); return '已复制。'; }
       catch { /* 浏览器或壳层拒绝剪贴板权限时改用只读文本框。 */ }
     }
-    fallbackText = value; return '浏览器不允许直接复制，请在下方文本框长按全选复制。';
+    setFallback(value); return '浏览器不允许直接复制，请在下方文本框长按全选复制。';
   }
   const readDiagnosticState = provider => { try { return provider?.() ?? null; } catch { return null; } };
   const stateDiagnostic = () => {
@@ -715,18 +726,39 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     item.append(element('span', 'v3-cse-item-text', value.text));
     if (showMeta) { const source = value.sourceFloorId || value.sourceAssistantSeq ? sourceFloorCopy(state, value) : value.origin === 'baseline' ? '来源：聊天基线' : '来源：本地重放'; item.append(element('small', 'v3-cse-item-meta', [...new Set([value.reason, originCopy(value.origin), source, visibilityCopy(value.visibility)])].join(' · '))); } return item;
   };
-  function appendRelationLayers(container, { situational = [], adaptive = [] }, state) {
+  function appendRelationLayers(container, { situational = [], adaptive = [] }, state, { situationalLabel = '当前态度' } = {}) {
     let count = 0;
-    for (const [label, values] of [['当前态度', situational], ['长期相处方式', adaptive]]) {
+    for (const [label, values] of [[situationalLabel, situational], ['长期相处方式', adaptive]]) {
       if (!values.length) continue;
       const group = element('div', 'qqj-relation-layer'); group.append(element('strong', 'qqj-relation-layer-title', label));
       const list = element('ul', 'qqj-relation-items'); for (const value of values) list.append(relationItem(value, state)); group.append(list); container.append(group); count += values.length;
     }
     return count;
   }
-  function renderRelationLane(label, values, state, side) {
+  function lastHistoricalRelation(state, subjectEntityId, towardEntityId) {
+    if (!subjectEntityId || !towardEntityId) return null;
+    const floors = [...(state.floors ?? [])]
+      .filter(floor => Array.isArray(floor.cse?.record?.endStateSubjects))
+      .sort((left, right) => (messageIndexFor(state, right) ?? -1) - (messageIndexFor(state, left) ?? -1)
+        || (right.assistantSeq ?? 0) - (left.assistantSeq ?? 0));
+    for (const floor of floors) {
+      const subject = floor.cse.record.endStateSubjects.find(value => value.subjectEntityId === subjectEntityId);
+      const values = {
+        situational: (subject?.situational ?? []).filter(item => item.towardEntityId === towardEntityId),
+        adaptive: (subject?.adaptive ?? []).filter(item => item.towardEntityId === towardEntityId),
+      };
+      if (values.situational.length || values.adaptive.length) return { floor, values };
+    }
+    return null;
+  }
+  function renderRelationLane(label, values, state, side, historical = null) {
     const lane = element('section', `qqj-relation-lane ${side}`); lane.append(element('strong', 'qqj-relation-lane-title', label));
-    if (!appendRelationLayers(lane, values, state)) lane.append(element('p', 'settings-hint', '暂无已保存的关系状态。'));
+    if (!appendRelationLayers(lane, values, state)) {
+      if (historical) {
+        lane.append(element('span', 'v3-memory-status', `最后关系记录 · ${floorCopy(state, historical.floor)}`));
+        appendRelationLayers(lane, historical.values, state, { situationalLabel: '当时态度' });
+      } else lane.append(element('p', 'settings-hint', '暂无已保存的关系状态。'));
+    }
     return lane;
   }
   function renderUserAnchor(userSubject, userEntity, state) {
@@ -775,9 +807,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const dual = element('div', 'qqj-relation-dual');
       const userToward = { situational: (userSubject?.situational ?? []).filter(item => item.towardEntityId === selectedPerson.entityId), adaptive: (userSubject?.adaptive ?? []).filter(item => item.towardEntityId === selectedPerson.entityId) };
       const personToward = { situational: (selectedSubject?.situational ?? []).filter(item => item.towardEntityId === userEntity?.entityId), adaptive: (selectedSubject?.adaptive ?? []).filter(item => item.towardEntityId === userEntity?.entityId) };
+      const userTowardHistory = userToward.situational.length || userToward.adaptive.length ? null : lastHistoricalRelation(state, userEntity?.entityId, selectedPerson.entityId);
+      const personTowardHistory = personToward.situational.length || personToward.adaptive.length ? null : lastHistoricalRelation(state, selectedPerson.entityId, userEntity?.entityId);
       const relationNote = renderSubject(selectedSubject, state, { person: selectedPerson, ownOnly: true, relationNote: true, actionsContainer: pairActions });
       if (pairActions.children.length) { pairMenu.append(pairMenuToggle, pairActions); pairHead.append(operationMenus.register(pairMenu)); }
-      dual.append(renderRelationLane(`你 → ${selectedPerson.displayName}`, userToward, state, 'from-user'), element('span', 'qqj-relation-divider'), renderRelationLane(`${selectedPerson.displayName} → 你`, personToward, state, 'toward-user')); pair.append(dual, relationNote); pageNode.append(pair);
+      dual.append(renderRelationLane(`你 → ${selectedPerson.displayName}`, userToward, state, 'from-user', userTowardHistory), element('span', 'qqj-relation-divider'), renderRelationLane(`${selectedPerson.displayName} → 你`, personToward, state, 'toward-user', personTowardHistory)); pair.append(dual, relationNote); pageNode.append(pair);
       const otherRelations = ['situational', 'adaptive'].flatMap(category => (selectedSubject?.[category] ?? []).filter(item => item.towardEntityId && item.towardEntityId !== userEntity?.entityId && item.towardEntityId !== selectedPerson.entityId).map(item => ({ category, item })));
       if (otherRelations.length) {
         const others = setDetailsState(element('details', 'qqj-other-relations'), `other-relations:${selectedPerson.entityId}`, false);
@@ -904,6 +938,35 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     if (fallbackText) { const fallback = element('textarea', 'v3-diagnostic-fallback'); fallback.value = fallbackText; fallback.textContent = fallbackText; fallback.readOnly = true; body.append(element('p', 'settings-hint', '诊断文本（长按全选复制）'), fallback); }
     drawer.append(body); return drawer;
   }
+  function renderApiInterfaceDetails() {
+    const drawer = setDetailsState(element('details', 'qqj-management-drawer'), 'api-interface', false);
+    const summary = element('summary', 'qqj-section-summary');
+    summary.append(element('strong', '', 'API 接口'), element('span', 'v3-memory-status', '同一页面只读调用'));
+    const body = element('div', 'qqj-management-drawer-body');
+    body.append(
+      element('p', 'settings-hint', '供同一 SillyTavern 主页面中的其他扩展读取。getStatus() 同步查看桥与当前身份是否可用；readMemory() 异步读取用于提示词的文本；getSnapshot() 同步读取当前已加载的结构化副本。'),
+      element('p', 'settings-hint', 'getSnapshot() 分为 memory.floors、cse.currentSubjects / cse.floors 与 people.items。messageIndex 是酒馆实际楼号，assistantSeq 是 AI 楼序；各分区状态应分别判断，未加载时数组为空。'),
+      element('pre', 'v3-recall-injection', PUBLIC_API_EXAMPLE),
+    );
+    const action = element('div', 'qqj-ui-diagnostic-action');
+    const copyExample = element('button', 'secondary-action', '复制调用示例'); copyExample.type = 'button';
+    const copyFeedback = element('span', 'settings-hint', apiCopyFeedback);
+    const fallbackHost = element('div');
+    const updateCopyResult = () => {
+      copyFeedback.textContent = apiCopyFeedback;
+      fallbackHost.replaceChildren();
+      if (apiFallbackText) {
+        const fallback = element('textarea', 'v3-diagnostic-fallback');
+        fallback.value = apiFallbackText; fallback.textContent = apiFallbackText; fallback.readOnly = true;
+        fallbackHost.append(element('p', 'settings-hint', '调用示例（长按全选复制）'), fallback);
+      }
+    };
+    copyExample.addEventListener('click', async () => {
+      apiCopyFeedback = await copy(PUBLIC_API_EXAMPLE, value => { apiFallbackText = value; });
+      updateCopyResult();
+    });
+    action.append(copyExample, copyFeedback); body.append(action, fallbackHost); updateCopyResult(); drawer.append(summary, body); return drawer;
+  }
   function renderManagement(state) {
     const pageNode = element('section', 'qqj-page qqj-management-page'); pageNode.append(heading('记忆管理', '管理当前聊天的现有记忆任务。', state));
     if (['pendingRebuild', 'paused', 'failed', 'partial'].includes(state.rebuildStatus) || (state.rebuildStatus === 'waitingRealtime' && state.rebuildHasActionableWork)) pageNode.append(element('p', 'qqj-management-notice', '记忆尚未完整。“补齐缺失”会保留已有结果，只处理摘要或人物状态缺口；刷新页面不会自动续跑旧档。'));
@@ -949,7 +1012,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     else if (managementState?.status === 'completed') pageNode.append(element('p', 'v3-foundation-feedback', '当前聊天记忆已清空；聊天正文、手动前情和全局设置仍保留。手动前情可在“前情”中清空。'));
     pageNode.append(actions, element('p', `v3-foundation-feedback${errorCopy(state) ? ' error' : ''}`, feedback || errorCopy(state) || '状态已显示。'));
     const prequel = renderPrequelDetails(); if (prequel) pageNode.append(prequel);
-    pageNode.append(renderRecallDetails(), renderDiagnostics(state)); return pageNode;
+    pageNode.append(renderRecallDetails(), renderApiInterfaceDetails(), renderDiagnostics(state)); return pageNode;
   }
 
   function renderAdopted(state) {
@@ -972,7 +1035,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     ? { ...state, memorySnapshotStatus: 'syncing', memorySyncStatus: 'syncing', memoryWorkBusy: true }
     : state;
   const applySyncingPresentation = () => {
-    const safeButtons = new Set(['取消', '分析记录', '返回当前状态', '复制安全诊断', '复制完整诊断', '复制界面诊断', '复制状态诊断']);
+    const safeButtons = new Set(['取消', '分析记录', '返回当前状态', '复制安全诊断', '复制完整诊断', '复制界面诊断', '复制状态诊断', '复制调用示例']);
     const visit = node => {
       for (const child of Array.from(node?.children ?? [])) {
         const tag = String(child?.tagName ?? child?.tag ?? '').toLowerCase();
