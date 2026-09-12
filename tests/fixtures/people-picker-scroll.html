@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>人物菜单底部滚动回归</title>
+<link rel="stylesheet" href="../../src/ui/panel.css">
+<style>
+  :root { --line: #d8dfe4; --paper: #f6f7f9; --panel: #fff; --ink: #23262d; --soft: #6a7079; --knot: #b2384b; --crimson: #b2384b; }
+  body { margin: 16px; font: 13px sans-serif; }
+  .panel { width: 360px; max-width: 100%; height: 340px; display: grid; grid-template-rows: 40px minmax(0, 1fr); }
+  .body { min-height: 0; overflow-y: auto; scrollbar-gutter: stable; touch-action: pan-y; }
+  header { padding: 10px; }
+  #results { white-space: pre-wrap; }
+</style>
+<p>仅模拟人物，无真实数据；操作按钮只显示测试反馈。</p>
+<section class="panel">
+  <header>人物选择 · 底部菜单测试</header>
+  <main class="body">
+    <section class="qqj-profile-picker">
+      <div class="qqj-profile-picker-heading"><strong>更多人物</strong></div>
+      <div class="qqj-more-people-list"></div>
+    </section>
+  </main>
+</section>
+<pre id="results"></pre>
+<script type="module">
+  const list = document.querySelector('.qqj-more-people-list');
+  for (let i = 1; i <= 12; i++) {
+    const row = document.createElement('div');
+    row.className = 'qqj-more-person-row';
+    row.innerHTML = `<div class="qqj-more-person-copy"><strong>模拟人物 ${i}</strong><small>仅用于滚动测试</small></div><div class="qqj-more-person-actions"><button>设为重要</button><details class="qqj-profile-menu"><summary class="qqj-profile-menu-toggle">⋮</summary><div class="qqj-profile-menu-pop"><button class="qqj-profile-menu-action">合并到其他人物</button><button class="qqj-profile-menu-action danger">删除人物</button></div></details></div>`;
+    list.append(row);
+  }
+  const body = document.querySelector('.body');
+  const menu = list.lastElementChild.querySelector('details');
+  const buttons = [...menu.querySelectorAll('button')];
+  const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+  const output = document.querySelector('#results');
+  for (const button of buttons) button.addEventListener('click', () => { output.textContent += `已点击：${button.textContent}\n`; });
+  // Compare the old clipping with the fix at the bottom of the same long list.
+  for (const overflow of ['hidden', '']) {
+    document.querySelector('.qqj-profile-picker').style.overflow = overflow;
+    menu.open = false;
+    await frame();
+    const closedHeight = body.scrollHeight;
+    menu.open = true;
+    body.scrollTop = body.scrollHeight;
+    await frame();
+    const reachable = buttons.every(button => {
+      const rect = button.getBoundingClientRect();
+      return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === button;
+    });
+    output.textContent += `${overflow || '实际样式'}: 菜单可点击=${reachable}，滚动高度 ${closedHeight} → ${body.scrollHeight}\n`;
+  }
+</script>
+</html>

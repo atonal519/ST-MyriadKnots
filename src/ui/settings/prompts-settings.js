@@ -9,6 +9,8 @@ import { BASE_PROCESSING_PROMPT } from '../../internal-processing-prompt.js';
 export function createPromptsSettings({ settings, documentRef = globalThis.document, open = false, onToggle, onStoryClockChange } = {}) {
   const { element, button, field, subDrawer } = createSettingsKit(documentRef);
   const { drawer, body } = subDrawer({ title: '提示词与包裹符', id: 'qqj-settings-prompts', open, onToggle });
+  body.className += ' settings-drawer-list';
+  const { drawer: wrapperDrawer, body: wrapperBody } = subDrawer({ title: '提示词', id: 'qqj-settings-wrappers' });
   const current = settings.get();
 
   const keepTags = element('input', 'settings-input'); keepTags.value = current.sourceKeepTags ?? 'content'; keepTags.placeholder = 'content';
@@ -57,9 +59,9 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
   promptEditor({ body: cseBody, control: csePrompt, key: 'csePrompt', defaultText: DEFAULT_CSE_GUIDANCE, label: 'CSE 推演要求' });
   promptEditor({ body: profileBody, control: profilePrompt, key: 'profilePrompt', defaultText: DEFAULT_PROFILE_GUIDANCE, label: '人物资料整理要求' });
 
+  wrapperBody.append(field('保留包裹符', keepTags), field('清洗包裹符', extraTags));
   body.append(
-    field('保留正文的包裹符', keepTags),
-    field('连同内容剔除的包裹符', extraTags),
+    wrapperDrawer,
     storyClockDrawer,
     processingDrawer,
     summaryDrawer,

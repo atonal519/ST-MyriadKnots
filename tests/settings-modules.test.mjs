@@ -43,9 +43,16 @@ test('提示词模块字段 change 即持久化', () => {
   const patches = [];
   const settings = { get: () => ({ sourceKeepTags: 'content', sourceExtraTags: '' }), update: patch => { patches.push(patch); return patch; } };
   const { node } = createPromptsSettings({ settings, documentRef });
-  const keep = fieldControl(node, '保留正文的包裹符');
+  const wrappers = node.find(n => n.id === 'qqj-settings-wrappers');
+  assert.ok(wrappers); assert.equal(wrappers.open, false);
+  assert.equal(wrappers.children[0].textContent, '提示词');
+  assert.match(node.children[1].className, /settings-drawer-list/);
+  const keep = fieldControl(wrappers, '保留包裹符');
   keep.value = 'content,summary'; keep.fire('change');
   assert.deepEqual(patches.at(-1), { sourceKeepTags: 'content,summary' });
+  const clean = fieldControl(wrappers, '清洗包裹符');
+  clean.value = 'think,reasoning'; clean.fire('change');
+  assert.deepEqual(patches.at(-1), { sourceExtraTags: 'think,reasoning' });
   assert.equal(fieldControl(node, '通用附加提示词'), undefined, '退役入口不得继续显示');
 });
 

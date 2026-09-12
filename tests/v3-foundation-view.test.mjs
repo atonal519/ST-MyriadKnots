@@ -116,6 +116,12 @@ test('完整诊断必须显式确认，clipboard 不可用时显示可选择文�
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => state, editSummary: async () => state, restoreAi: async () => state, markError: async () => state, copySafeDiagnostic: () => '{"safe":true}', copyFullDiagnostic: () => '{"canonicalContent":"原文"}' };
   const container = new Node('main');
   const view = createV3FoundationView({ runtime, documentRef, navigatorRef: {}, confirmImpl: () => confirmed }); view.mount(container);
+  const floorDrawer = flatten(container).find(node => node.className.includes('qqj-floor-diagnostics'));
+  assert.ok(floorDrawer); assert.equal(floorDrawer.open, false, '楼层诊断默认折叠');
+  assert.ok(flatten(floorDrawer).some(node => node.textContent === '楼层诊断'));
+  assert.equal(flatten(floorDrawer).filter(node => node.className === 'qqj-diagnostic-row').length, 1);
+  floorDrawer.open = true; floorDrawer.fire('toggle'); view.render(state);
+  assert.equal(flatten(container).find(node => node.className.includes('qqj-floor-diagnostics')).open, true, '刷新状态保留展开选择');
   let full = flatten(container).find(node => node.textContent === '复制完整诊断'); full.click(); await new Promise(resolve => setImmediate(resolve));
   assert.equal(flatten(container).some(node => node.className === 'v3-diagnostic-fallback'), false);
   confirmed = true; full = flatten(container).find(node => node.textContent === '复制完整诊断'); full.click(); await new Promise(resolve => setImmediate(resolve));
@@ -310,6 +316,11 @@ test('删除当前聊天记忆使用自绘异步确认，取消零写且确认�
   const container = new Node('main');
   const view = createV3FoundationView({ runtime, memoryManagement, documentRef, confirmImpl: async options => { confirmation = options; return false; } });
   view.mount(container);
+  const deleteButton = flatten(container).find(node => node.textContent === '删除当前聊天记忆');
+  assert.equal(deleteButton.className, 'primary-action');
+  const pageNode = flatten(container).find(node => node.className === 'qqj-page qqj-management-page');
+  assert.equal(pageNode.children.at(-1).className, 'qqj-management-delete');
+  assert.ok(flatten(pageNode.children.at(-2)).some(node => node.textContent === '详细诊断'), '删除区位于详细诊断之后');
   flatten(container).find(node => node.textContent === '删除当前聊天记忆').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls, 0);
@@ -581,7 +592,7 @@ test('自动批次活跃时面板提取、CSE 与修订入口统一禁用，结�
   assert.equal(flatten(container).find(node => node.textContent === '完全重构')?.disabled, false);
 });
 
-test('历史欠账与 CSE 重构按钮各自开始暂停继续，CSE 同一位置显示进度', async () => {
+test('历史欠账与 人物状态重构按钮各自开始暂停继续，CSE 同一位置显示进度', async () => {
   const base = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 5, rememberedCount: 2, unprocessedCount: 3, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'checkpoint', activeRun: null, activeExtraction: null, activeCse: null, memoryWorkBusy: false, activeAutoMemory: null, lastRun: null, lastError: null, lastExtractorError: null, lastCseError: null, unreachableCount: 0, metrics: {}, autoMemoryEnabled: false, autoMemoryBatchSize: 2, rebuildStatus: 'pendingRebuild', rebuildCompletedCount: 2, rebuildTotalCount: 5, rebuildNextAssistantSeq: 3, cseRebuildStatus: 'idle', cseRebuildCompletedCount: 0, cseRebuildTotalCount: 2, cseReady: false, csePendingCount: 0, cseFailedCount: 0, baselineId: null, cseSubjects: [], floors: [] };
   let state = base, starts = 0, pauses = 0, resetChatId = null, cseChatId = null, csePauses = 0, cseResumes = 0;
   const confirmations = [];
@@ -616,24 +627,24 @@ test('历史欠账与 CSE 重构按钮各自开始暂停继续，CSE 同一位�
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(resetChatId, CHAT, '完全重构必须携带用户当前看到的聊天 ID');
   const actionLabels = flatten(container).filter(node => node.tag === 'button').map(node => node.textContent);
-  assert.ok(actionLabels.indexOf('CSE 重构') === actionLabels.indexOf('完全重构') + 1, 'CSE 重构固定放在完全重构旁边');
-  flatten(container).find(node => node.textContent === 'CSE 重构').click();
+  assert.ok(actionLabels.indexOf('人物状态重构') === actionLabels.indexOf('完全重构') + 1, '人物状态重构固定放在完全重构旁边');
+  flatten(container).find(node => node.textContent === '人物状态重构').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(cseChatId, CHAT);
   assert.match(`${confirmations.at(-1)?.body}`, /摘要及摘要人工修订都会保留.*CSE 人工纠正也会被覆盖.*未摘要楼不会处理/);
 
   state = { ...base, status: 'running', memoryWorkBusy: true, activeAutoMemory: { phase: 'analyzingCse', mode: 'cseRebuild', floorIds: ['floor-2'] }, cseRebuildStatus: 'running', cseRebuildCompletedCount: 1, cseRebuildTotalCount: 2 };
   view.render(state);
-  const pauseCse = flatten(container).find(node => node.textContent === '暂停 CSE 重构');
+  const pauseCse = flatten(container).find(node => node.textContent === '暂停人物状态重构');
   assert.equal(pauseCse.disabled, false); pauseCse.click(); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(csePauses, 1); assert.match(flatten(container).map(node => node.textContent).join('|'), /CSE 重构中 · 1\/2/);
+  assert.equal(csePauses, 1); assert.match(flatten(container).map(node => node.textContent).join('|'), /人物状态重构中 · 1\/2/);
   state = { ...base, cseRebuildStatus: 'paused', cseRebuildCompletedCount: 1, cseRebuildTotalCount: 2 };
   view.render(state);
-  assert.equal(flatten(container).filter(node => node.textContent === '继续 CSE 重构').length, 1, '暂停态只保留同一枚 CSE 按钮');
+  assert.equal(flatten(container).filter(node => node.textContent === '继续人物状态重构').length, 1, '暂停态只保留同一枚 CSE 按钮');
   assert.equal(flatten(container).some(node => node.textContent === '继续'), false, '通用历史继续不得接管 CSE 作业');
-  flatten(container).find(node => node.textContent === '继续 CSE 重构').click(); await new Promise(resolve => setImmediate(resolve));
+  flatten(container).find(node => node.textContent === '继续人物状态重构').click(); await new Promise(resolve => setImmediate(resolve));
   assert.equal(cseResumes, 1); assert.equal(cseChatId, CHAT);
-  assert.match(flatten(container).map(node => node.textContent).join('|'), /CSE 已暂停 · 1\/2/);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /人物状态已暂停 · 1\/2/);
 
   state = { ...base, rebuildStatus: 'waitingRealtime', rebuildHasActionableWork: true };
   view.render(state);
@@ -1459,6 +1470,11 @@ test('地基刷新失败不吞掉已恢复回执，错误文案明确两条链�
   await view.activate();
   const copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /记忆读取失败：模拟地基失败；历史召回回执已独立处理/);
+  const visibleFeedback = flatten(container).find(node => node.className?.includes('qqj-management-feedback'));
+  assert.equal(visibleFeedback.textContent, '记忆读取失败：模拟地基失败');
+  assert.match(visibleFeedback.className, /error/);
+  const diagnostics = flatten(container).find(node => node.className === 'qqj-management-drawer' && flatten(node).some(child => child.textContent === '详细诊断'));
+  assert.match(flatten(diagnostics).map(node => node.textContent).join('|'), /历史召回回执已独立处理/);
   assert.match(copy, /最近一次召回结果/);
 });
 
