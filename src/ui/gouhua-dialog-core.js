@@ -140,13 +140,14 @@ export function createGouhuaDialogCore({ $, mount, getRootClass = () => '', subs
         return new Promise(resolve => {
             prepareDialog();
             const previousFocus = captureFocus();
+            const cancelButton = cancelText === '' || cancelText === null ? '' : `<button class="sp-dialog-button sp-dialog-button-secondary sp-dialog-cancel" type="button">${escapeHtml(cancelText)}</button>`;
             const $overlay = $(`<div id="${OVERLAY_ID}" class="sp-dialog-overlay">
                 <div class="sp-dialog-sheet sp-dialog-sheet-custom" role="dialog" aria-modal="true" aria-labelledby="sp-dialog-title">
                     <div id="sp-dialog-title" class="sp-dialog-head">${escapeHtml(title)}</div>
                     <div class="sp-dialog-custom"></div>
                     <div class="sp-dialog-input-error" aria-live="polite"></div>
                     <div class="sp-dialog-actions">
-                        <button class="sp-dialog-button sp-dialog-button-secondary sp-dialog-cancel" type="button">${escapeHtml(cancelText)}</button>
+                        ${cancelButton}
                         <button class="sp-dialog-button sp-dialog-button-primary sp-dialog-submit" type="button">${escapeHtml(confirmText)}</button>
                     </div>
                 </div>

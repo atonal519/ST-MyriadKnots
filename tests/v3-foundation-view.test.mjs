@@ -61,52 +61,6 @@ test('管理视图先显示壳并在激活时自动刷新，只在管理页提�
   assert.match(copy, /补齐缺失.*完全重构/);
 });
 
-test('API 接口抽屉默认折叠并静态复制示例，失败 fallback 留在本抽屉且同聊天重渲染保留', async t => {
-  const state = {
-    status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle',
-    stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, headCheckpointId: null, activeRun: null,
-    memoryWorkBusy: true, activeAutoMemory: null, activeExtraction: null, activeCse: null, cseReady: false, csePendingCount: 0, cseFailedCount: 0,
-    rebuildStatus: 'caughtUp', rebuildHasActionableWork: false, floors: [], cseSubjects: [],
-  };
-  let runtimeReads = 0, clipboardCalls = 0, publicCalls = 0;
-  const runtime = { getState: () => { runtimeReads += 1; return state; }, refreshStatus: async () => state, confirmLatest: async () => state };
-  const bridgeDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'qqj_v3_public_bridge_v1');
-  Object.defineProperty(globalThis, 'qqj_v3_public_bridge_v1', { configurable: true, get() { publicCalls += 1; return {}; } });
-  t.after(() => {
-    if (bridgeDescriptor) Object.defineProperty(globalThis, 'qqj_v3_public_bridge_v1', bridgeDescriptor);
-    else delete globalThis.qqj_v3_public_bridge_v1;
-  });
-  const container = new Node('main');
-  const view = createV3FoundationView({ runtime, documentRef, navigatorRef: { clipboard: { writeText: async value => { clipboardCalls += 1; assert.match(value, /globalThis\.qqj_v3_public_bridge_v1/); throw new Error('clipboard denied'); } } } });
-  view.mount(container);
-  const detailsByTitle = title => flatten(container).find(node => node.tag === 'details' && flatten(node).some(child => child.textContent === title));
-  let apiDrawer = detailsByTitle('API 接口');
-  assert.ok(apiDrawer); assert.equal(apiDrawer.open, false);
-  const pageCopy = flatten(container).map(node => node.textContent).join('|');
-  assert.ok(pageCopy.indexOf('最近召回') < pageCopy.indexOf('API 接口') && pageCopy.indexOf('API 接口') < pageCopy.indexOf('详细诊断'));
-  assert.match(pageCopy, /getStatus\(\).*readMemory\(\).*getSnapshot\(\)/);
-  assert.match(pageCopy, /memory\.floors.*cse\.currentSubjects.*cse\.floors.*people\.items/);
-
-  const readsBeforeOpen = runtimeReads;
-  apiDrawer.open = true; apiDrawer.fire('toggle');
-  assert.equal(runtimeReads, readsBeforeOpen); assert.equal(publicCalls, 0, '展开静态抽屉不得调用公开接口');
-  const copyButton = flatten(apiDrawer).find(node => node.textContent === '复制调用示例');
-  assert.equal(copyButton.disabled, false, '后台忙碌时静态复制仍可用');
-  copyButton.click(); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(clipboardCalls, 1); assert.equal(runtimeReads, readsBeforeOpen); assert.equal(publicCalls, 0, '静态复制不得调用 runtime 或公开接口');
-  let apiFallback = flatten(apiDrawer).find(node => node.className === 'v3-diagnostic-fallback');
-  assert.equal(apiFallback?.readOnly, true); assert.match(apiFallback?.value ?? '', /getSnapshot\(\)/);
-  const diagnosticDrawer = detailsByTitle('详细诊断');
-  assert.equal(flatten(diagnosticDrawer).some(node => node.className === 'v3-diagnostic-fallback'), false, 'API fallback 不得串入诊断抽屉');
-
-  view.render(state);
-  apiDrawer = detailsByTitle('API 接口');
-  assert.equal(apiDrawer.open, true, '同聊天重渲染保留抽屉开合');
-  apiFallback = flatten(apiDrawer).find(node => node.className === 'v3-diagnostic-fallback');
-  assert.match(apiFallback?.value ?? '', /globalThis\.qqj_v3_public_bridge_v1/, '重渲染后仍保留手动复制文本');
-  assert.equal(publicCalls, 0);
-});
-
 test('未建档聊天的空同步 ID 不误锁刷新与显式补齐', async () => {
   const state = {
     status: 'uninitialized', pluginEnabled: true, chatId: null, headCheckpointId: null,
@@ -199,6 +153,7 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
     memorySyncError: { name: 'TimeoutError', code: 'BACKEND_TIMEOUT', message: privateText },
     lastError: { name: 'PrivateErrorName', code: `FREE_${privateText}`, message: privateText, stack: privateText },
     lastExtractorError: { name: 'TypeError', code: 'V3_EXTRACTOR_FAILED', httpStatus: 429, message: privateText, providerError: privateText },
+    lastAutomationError: { name: 'Error', code: 'V3_AUTO_MEMORY_FAILED', message: privateText },
     lastCseError: { name: 'Error', code: 'V3_CSE_FORMAT_INVALID', message: privateText, validationErrors: [privateText] },
     cseRebuildStatus: 'running', floors: [{ floorId: 'private-floor', memoryId: 'private-memory', summary: privateText, canonicalFingerprint: privateText }],
   };
@@ -247,6 +202,7 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
   assert.equal(diagnostic.memory.activeExtraction.phase, 'extracting'); assert.equal(Object.hasOwn(diagnostic.memory.activeAutoMemory, 'kind'), false); assert.equal(diagnostic.memory.activeAutoMemory.phase, 'analyzingCse');
   assert.deepEqual(diagnostic.memory.syncError, { present: true, name: 'TimeoutError', code: 'BACKEND_TIMEOUT' });
   assert.deepEqual(diagnostic.memory.lastExtractorError, { present: true, name: 'TypeError', code: 'V3_EXTRACTOR_FAILED', httpStatus: 429 });
+  assert.deepEqual(diagnostic.memory.lastAutomationError, { present: true, name: 'Error', code: 'V3_AUTO_MEMORY_FAILED' });
   assert.equal(diagnostic.cse.active.phase, 'committing'); assert.equal(diagnostic.recall.active.phase, 'selecting');
   assert.deepEqual(diagnostic.management, { status: 'deleting', phase: 'deletingRecords', workBusy: true, blockedByOtherChat: true, error: { present: true } });
   assert.deepEqual(diagnostic.ui, { syncingOverlayActive: true, workBusy: true, deleting: true, deletePending: false });
@@ -479,7 +435,7 @@ test('面板顶部显示 CSE 分层状态、原因/来源与待分析重试入�
 test('CSE 失败数、本楼错误与最近错误在 V3 面板可见，并保留独立重试', async () => {
   let retries = 0;
   const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
-  const state = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, unprocessedCount: 0, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'checkpoint', activeRun: null, activeExtraction: null, activeCse: null, lastRun: null, lastError: null, lastExtractorError: null, lastCseError: { message: '安全 CSE 错误' }, unreachableCount: 0, metrics: {}, cseReady: false, csePendingCount: 0, cseFailedCount: 1, baselineId: 'baseline', cseSubjects: [], floors: [{ floorId: 'floor', assistantSeq: 1, messageIndex: 2, status: 'ready', memoryId: 'memory', summary: '摘要', summarySource: 'ai', aiSummary: '摘要', extractorVersion: 'v', counts: {}, api: null, memory, cse: { status: 'failed', deltaId: null, error: '本楼状态失败' } }] };
+  const state = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, unprocessedCount: 0, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'checkpoint', activeRun: null, activeExtraction: null, activeCse: null, lastRun: null, lastError: null, lastExtractorError: null, lastAutomationError: { message: '跨刷新自动任务错误' }, lastCseError: { message: '安全 CSE 错误' }, unreachableCount: 0, metrics: {}, cseReady: false, csePendingCount: 0, cseFailedCount: 1, baselineId: 'baseline', cseSubjects: [], floors: [{ floorId: 'floor', assistantSeq: 1, messageIndex: 2, status: 'ready', memoryId: 'memory', summary: '摘要', summarySource: 'ai', aiSummary: '摘要', extractorVersion: 'v', counts: {}, api: null, memory, cse: { status: 'failed', deltaId: null, error: '本楼状态失败' } }] };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => state, editSummary: async () => state, restoreAi: async () => state, markError: async () => state, analyzeNextState: async () => state, retryStateAnalysis: async () => { retries += 1; return state; } };
   const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef }); view.setPage('people'); view.mount(container); flatten(container).find(node => node.textContent === '分析记录').click();
   const copy = flatten(container).map(node => node.textContent).join('|');
@@ -489,6 +445,10 @@ test('CSE 失败数、本楼错误与最近错误在 V3 面板可见，并保留
   flatten(container).find(node => node.textContent === '重试分析').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(retries, 1);
+  view.setPage('management');
+  const managementCopy = flatten(container).map(node => node.textContent).join('|');
+  assert.match(managementCopy, /最近自动任务错误/);
+  assert.match(managementCopy, /跨刷新自动任务错误/);
 });
 
 test('千结与双丝网健康提示只显示各自进度和错误', () => {
@@ -921,8 +881,9 @@ test('三页职责分离，千结只保留摘要编辑/重提，双丝网归位�
   flatten(container).find(node => node.textContent === '分析记录').click(); copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /分析记录.*重新分析/);
   view.setPage('management'); copy = flatten(container).map(node => node.textContent).join('|');
-  for (const value of ['记忆管理', '补齐缺失', '完全重构', '最近召回回执', 'API 接口', '详细诊断']) assert.ok(copy.includes(value));
-  assert.ok(copy.indexOf('最近召回回执') < copy.indexOf('API 接口') && copy.indexOf('API 接口') < copy.indexOf('详细诊断'));
+  for (const value of ['记忆管理', '补齐缺失', '完全重构', '最近召回回执', '详细诊断']) assert.ok(copy.includes(value));
+  assert.ok(copy.indexOf('最近召回回执') < copy.indexOf('详细诊断'));
+  assert.doesNotMatch(copy, /API 接口/);
   assert.match(copy, /刷新状态/);
   assert.doesNotMatch(copy, /剧情摘要|重新提取/);
   for (const button of flatten(container).filter(node => node.tag === 'button')) assert.equal(button.type, 'button');

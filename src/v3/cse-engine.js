@@ -696,18 +696,28 @@ export async function createManualCseCorrection({ anchorDelta, currentState, sub
 }
 
 export async function runCseRequest({ generateAnalysisTask, envelope, previousCurrentState, now, deltaId, promptGuidance = '', processingPrompt = '', signal }) {
-  let candidate = null;
   const transportBudget = { remaining: 3, used: 0 };
-  try {
-    const systemPrompt = buildCseSystemPrompt(promptGuidance, processingPrompt);
-    const result = await generateAnalysisTask({ systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(envelope.request) }], maxTokens: 30000, temperature: 0, signal, includeCharacterCard: false, worldInfoSource: 'none', transportBudget, parseMode: 'semantic' });
-    candidate = result?.jsonData ?? result?.textData ?? result;
-    const compiled = await compileCseResponse({ response: candidate, finishReason: result?.taskMetadata?.finishReason, envelope, previousCurrentState, now, deltaId });
-    return Object.freeze({ ...compiled, metadata: sanitizeTaskMetadata(result?.taskMetadata), attempts: 1, transportAttempts: transportBudget.used || result?.taskMetadata?.transportAttempts || null, responseFingerprint: `sha256:${await sha256(JSON.stringify(candidate))}` });
-  } catch (error) {
-    if (signal?.aborted || error?.name === 'AbortError') throw error;
-    error.cseDiagnostics = { attempts: 1, transportAttempts: transportBudget.used || error?.transportAttempts || null, metadata: sanitizeTaskMetadata(error?.taskMetadata), candidate: (() => { try { return JSON.stringify(candidate).slice(0, 24000); } catch { return null; } })(), providerError: sanitizeDiagnosticValue(error?.providerError ?? null) };
-    throw error;
+  const systemPrompt = buildCseSystemPrompt(promptGuidance, processingPrompt);
+  const taskMessages = [{ role: 'user', content: JSON.stringify(envelope.request) }];
+  for (let attempts = 1; attempts <= 3; attempts += 1) {
+    let candidate = null, metadata = sanitizeTaskMetadata(null), receivedResult = false;
+    try {
+      const result = await generateAnalysisTask({ systemPrompt, taskMessages, maxTokens: 30000, temperature: 0, signal, includeCharacterCard: false, worldInfoSource: 'none', transportBudget, parseMode: 'semantic' });
+      receivedResult = true;
+      candidate = result?.jsonData ?? result?.textData ?? result;
+      metadata = sanitizeTaskMetadata(result?.taskMetadata);
+      const compiled = await compileCseResponse({ response: candidate, finishReason: result?.taskMetadata?.finishReason, envelope, previousCurrentState, now, deltaId });
+      return Object.freeze({ ...compiled, metadata, attempts, transportAttempts: transportBudget.used || result?.taskMetadata?.transportAttempts || null, responseFingerprint: `sha256:${await sha256(JSON.stringify(candidate))}` });
+    } catch (error) {
+      if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+      if (error?.name === 'AbortError') throw error;
+      const retryable = receivedResult || error?.retryableRecognitionFormat === true || ['QQJ_TIMEOUT', 'QQJ_EMPTY'].includes(error?.code);
+      if (retryable && attempts < 3 && transportBudget.remaining > 0) continue;
+      const failedAttempts = transportBudget.used || attempts;
+      if (failedAttempts > 1) error.message = `已尝试 ${failedAttempts} 次仍失败：${error.message}`;
+      error.cseDiagnostics = { attempts, transportAttempts: transportBudget.used || error?.transportAttempts || null, metadata: sanitizeTaskMetadata(error?.taskMetadata ?? metadata), candidate: (() => { try { return JSON.stringify(candidate).slice(0, 24000); } catch { return null; } })(), providerError: sanitizeDiagnosticValue(error?.providerError ?? null) };
+      throw error;
+    }
   }
 }
 

@@ -65,7 +65,7 @@ async function dependencySnapshot(value, floorId, entities, previousState, story
 
 const sameDependencySnapshot = (left, right) => Boolean(left && right && JSON.stringify(left) === JSON.stringify(right));
 
-export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isEnabled = true, promptGuidance = () => '', processingPrompt = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), storyClockSignatureForFloor = () => '', onGraphCommitted = null, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
+export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isEnabled = true, promptGuidance = () => '', processingPrompt = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), storyClockSignatureForFloor = () => '', onGraphCommitted = null, onFailureHint = null, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
   if (!store || ['readReachable', 'putRecord', 'commitRoot', 'recordKey'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 CSE store 无效');
   if (typeof generateAnalysisTask !== 'function') throw new TypeError('V3 CSE analysis route 无效');
   if (typeof filterWorldInfoSources !== 'function') throw new TypeError('V3 CSE 世界书过滤器无效');
@@ -75,6 +75,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
   const enabled = () => { try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; } catch { return false; } };
   const notify = () => { const state = getState(); for (const listener of subscribers) { try { listener(state); } catch { /* listener isolation */ } } return state; };
   const setIdentityProjection = value => { identityProjection = normalizeIdentityProjection(value); return notify(); };
+  const publishFailureHint = (value, floorId, failure) => { try { onFailureHint?.(value, floorId, failure); } catch { /* optional failure hints must not affect CSE */ } };
 
   async function coreUserEditedSubjects(deltas) {
     const protectedIds = new Set();
@@ -293,7 +294,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_CSE_STALE', 'CSE 操作已取消。');
     const next = committed.reachable;
     if (next?.status !== 'ready') throw errorWith('V3_CSE_COMMIT_SNAPSHOT_INVALID', 'CSE 提交后的已验证快照无效。');
-    reachable = next; await calculateReplay(next); onGraphCommitted?.(next); lastFailure = null; return notify();
+    reachable = next; await calculateReplay(next); onGraphCommitted?.(next); publishFailureHint(next, floor.id, null); lastFailure = null; return notify();
   }
 
   async function commitDelta(operation, result, roleEntities) {
@@ -422,6 +423,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     } catch (error) {
       if (error?.name === 'AbortError' || error?.code === 'V3_CSE_STALE') lastFailure = { floorId, runId: operation.runId, code: 'V3_CSE_STALE', message: '聊天、分支或 FloorMemory 已变化，迟到状态没有写入。', phase: 'stale' };
       else lastFailure = { floorId, runId: operation.runId, code: String(error?.code ?? 'V3_CSE_FAILED').slice(0, 120), message: sanitizeSensitiveText(error?.message ?? '状态分析失败，可单独重试。').slice(0, 500), phase: 'retryableError', diagnostics: sanitizeDiagnosticValue(error?.cseDiagnostics ?? error?.sourceDiagnostics ?? null) };
+      if (lastFailure.phase === 'retryableError') publishFailureHint(reachable, floorId, lastFailure);
       logger?.warn?.('[qianqianjie] V3 CSE failed', { code: error?.code ?? error?.name ?? 'V3_CSE_FAILED' });
     } finally { if (active === operation) active = null; }
     return notify();
@@ -457,7 +459,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const deltaId = await deterministicUuid(['v3-cse-manual-delta', anchor.id, subjectEntityId, newUuid()]);
     const timestamp = nowIso(now);
     const correction = await createManualCseCorrection({ anchorDelta: anchor, currentState: replayed, subjectEntityId, edits: { core, adaptive, situational }, allowedTowardEntityIds: towardCandidates.map(entry => entry.entityId), deltaId, now: timestamp });
-    if (correction.status === 'unchanged') { lastFailure = null; return notify(); }
+    if (correction.status === 'unchanged') { publishFailureHint(current, floor.id, null); lastFailure = null; return notify(); }
     const operation = { floorId: floor.id, floorMemoryId: memory.id, epoch, controller: new AbortController(), runId: await deterministicUuid(['v3-cse-manual-run', current.root.headCheckpointId, correction.delta.id]), startedAt: timestamp, phase: 'correcting' };
     active = operation;
     notify();
@@ -465,6 +467,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       return await commitDeltaGraph({ operation, current, floor, memory, delta: correction.delta, deltas: deltas.map(item => item.floorId === floor.id ? correction.delta : item), entities: current.entities, diagnostics: { kind: 'cseManualCorrection', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, manualSubjectEntityIds: correction.delta.source.manualSubjectEntityIds, cseRebuild: null } });
     } catch (error) {
       lastFailure = { floorId: floor.id, runId: operation.runId, code: String(error?.code ?? 'V3_CSE_MANUAL_SAVE_FAILED').slice(0, 120), message: sanitizeSensitiveText(error?.message ?? '人物状态纠正保存失败。').slice(0, 500), phase: error?.code === 'V3_CSE_MANUAL_STALE' || error?.code === 'V3_CSE_CAS_CONFLICT' || error?.name === 'AbortError' ? 'stale' : 'retryableError' };
+      if (lastFailure.phase === 'retryableError') publishFailureHint(current, floor.id, lastFailure);
       throw error;
     } finally {
       if (active === operation) active = null;

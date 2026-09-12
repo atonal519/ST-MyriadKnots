@@ -129,9 +129,15 @@ test('自定义内容沿用同一关闭生命周期，提交失败留窗可重�
   const content = h.documentRef.createElement('section');
   const pending = h.manager.custom({ title: '裁剪头像', content, onClose: () => { closed += 1; }, submit: async () => { attempts += 1; if (attempts === 1) throw new Error('保存失败'); return 'saved'; } });
   assert.equal(h.find('.sp-dialog-custom')[0].children[0], content);
+  assert.equal(h.find('.sp-dialog-cancel').length, 1, '原 custom 默认仍显示取消与确定两个按钮');
   h.find('.sp-dialog-submit').trigger('click'); await new Promise(resolve => setImmediate(resolve));
   assert.match(h.find('.sp-dialog-input-error').html(), /保存失败/); assert.equal(h.manager.hasActive(), true); assert.equal(closed, 0);
   h.find('.sp-dialog-submit').trigger('click'); assert.equal(await pending, 'saved'); assert.equal(closed, 1);
+
+  const guide = h.manager.custom({ title: '千千结使用说明', content: h.documentRef.createElement('section'), confirmText: '关闭', cancelText: '', submit: () => true });
+  assert.equal(h.find('.sp-dialog-cancel').length, 0, '显式空 cancelText 的纯说明窗只显示关闭按钮');
+  assert.equal(h.find('.sp-dialog-submit').length, 1);
+  h.find('.sp-dialog-submit').trigger('click'); assert.equal(await guide, true);
 });
 
 test('宿主 CHAT_CHANGED 经同源生命周期立即关闭确认窗', async () => {

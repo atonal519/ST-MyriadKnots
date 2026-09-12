@@ -80,6 +80,16 @@ export const gouhuaDialogCss = `
 .qqj-avatar-crop-image{position:absolute;max-width:none;max-height:none;user-select:none;pointer-events:none}
 .qqj-avatar-zoom{display:grid;grid-template-columns:auto minmax(0,240px);align-items:center;justify-content:center;gap:9px;color:var(--sp-subtle);font-size:var(--sp-fs-75)}
 .qqj-avatar-zoom input{min-width:0;accent-color:var(--sp-primary)}
+.qqj-help-guide{display:grid;min-width:0;gap:8px;color:var(--sp-on-surface)}
+.qqj-help-guide-intro{margin:0;padding:8px 10px;border-left:2px solid var(--sp-primary);border-radius:6px;background:var(--sp-hover-bg);color:var(--sp-subtle);font-size:var(--sp-fs-75);line-height:1.6;overflow-wrap:anywhere}
+.qqj-help-section{min-width:0;overflow:hidden;border:1px solid var(--sp-divider);border-radius:8px;background:var(--sp-sheet-bg)}
+.qqj-help-section-summary{display:flex;align-items:center;gap:7px;padding:9px 10px;color:var(--sp-on-surface);font-size:var(--sp-fs-83);font-weight:600;line-height:1.45;list-style:none;cursor:pointer}
+.qqj-help-section-summary::-webkit-details-marker{display:none}
+.qqj-help-section-summary::before{content:"›";flex:0 0 auto;color:var(--sp-subtle);font-size:var(--sp-fs-95);line-height:1;transition:transform .15s ease}
+.qqj-help-section[open]>.qqj-help-section-summary::before{transform:rotate(90deg)}
+.qqj-help-section-body{display:grid;gap:8px;padding:0 10px 10px;border-top:1px solid var(--sp-divider)}
+.qqj-help-section-body p{margin:8px 0 0;color:var(--sp-on-surface);font-size:var(--sp-fs-75);line-height:1.7;white-space:normal;overflow-wrap:anywhere}
+.qqj-help-list{display:grid;gap:6px;margin:8px 0 0;padding-left:18px;color:var(--sp-on-surface);font-size:var(--sp-fs-75);line-height:1.65}.qqj-help-list li{padding-left:1px;overflow-wrap:anywhere}
 @media(max-width:390px){.qqj-merge-dialog{gap:12px}.qqj-merge-dialog .qqj-inline-select-options{max-height:min(190px,32dvh)}}
 @media(prefers-reduced-motion:reduce){.sp-root,.sp-root *{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 `;

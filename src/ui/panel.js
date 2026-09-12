@@ -7,7 +7,19 @@ import { createApiSettings } from './settings/api-settings.js';
 import { createPromptsSettings } from './settings/prompts-settings.js';
 import { createAppearanceSettings } from './settings/appearance-settings.js';
 import { createScrollDiagnostics } from './scroll-diagnostics.js';
+import { openHelpGuide } from './help-guide.js';
 import { applyPluginEnabledImmediately } from '../settings.js';
+
+const PUBLIC_API_EXAMPLE = `const bridge = globalThis.qqj_v3_public_bridge_v1;
+const status = bridge.getStatus();
+const snapshot = bridge.getSnapshot();
+
+if (snapshot.status === 'ready') {
+  const summaries = snapshot.memory.floors;
+  const currentStates = snapshot.cse.currentSubjects;
+  const cseHistory = snapshot.cse.floors;
+  const people = snapshot.people.items;
+}`;
 
 const shellCss = ':host{position:fixed;inset:0;z-index:4000;width:100dvw;height:100dvh;pointer-events:none;background:transparent;text-shadow:none!important;isolation:isolate}:host([hidden]){display:none!important}.panel{position:fixed;top:80px;right:20px;width:360px;height:min(600px,85dvh);max-width:calc(100dvw - 40px);max-height:85dvh;display:grid;grid-template-rows:auto auto minmax(0,1fr) 24px;pointer-events:auto}.body{min-height:0;overflow-y:auto;scrollbar-gutter:stable;touch-action:pan-y}.tabs{overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(max-width:640px){.panel{top:calc(20px + env(safe-area-inset-top,0px));left:50%;right:auto;transform:translateX(-50%);width:calc(100dvw - 20px);max-width:calc(100dvw - 20px);height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));max-height:none;grid-template-rows:auto auto minmax(0,1fr)}.panel-resize-handle{display:none}.tabs{scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}}';
 
@@ -25,6 +37,7 @@ export function createPanel({
   onFabShowChange,
   onAppearanceChange,
   documentRef = globalThis.document,
+  navigatorRef = documentRef.defaultView?.navigator ?? globalThis.navigator,
 } = {}) {
   if (!documentRef?.createElement) throw new TypeError('panel documentRef 无效');
   if (!v3FoundationView || ['mount', 'activate', 'deactivate'].some(name => typeof v3FoundationView[name] !== 'function')) {
@@ -61,6 +74,7 @@ export function createPanel({
   const fabToggleButton = root.querySelector('.fab-toggle-btn');
   let swipeGesture = null;
   let settingsManagementError = null;
+  let documentationFallbackText = '', documentationCopyFeedback = '';
   const scrollDiagnostics = createScrollDiagnostics({
     target: body,
     getPage: () => screen === 'settings' ? 'settings' : activeTab,
@@ -99,6 +113,18 @@ export function createPanel({
     if (className) node.className = className;
     if (text !== '') node.textContent = text;
     return node;
+  };
+  const copyPublicApiExample = async () => {
+    if (navigatorRef?.clipboard?.writeText) {
+      try {
+        await navigatorRef.clipboard.writeText(PUBLIC_API_EXAMPLE);
+        documentationFallbackText = '';
+        documentationCopyFeedback = '已复制。';
+        return;
+      } catch { /* 浏览器或壳层拒绝剪贴板权限时改用只读文本框。 */ }
+    }
+    documentationFallbackText = PUBLIC_API_EXAMPLE;
+    documentationCopyFeedback = '浏览器不允许直接复制，请在下方文本框长按全选复制。';
   };
   const activateManagement = async () => {
     const mine = activationEpoch, errorNode = settingsManagementError;
@@ -280,6 +306,32 @@ export function createPanel({
 
     // 当前聊天的记忆操作紧跟通用设置，避免与总开关混成同一层级。
     page.append(managementMount, settingsManagementError);
+
+    const { drawer: documentationGroup, body: documentationBody } = groupOf('documentation', '教程与配置文件');
+    const tutorialActions = element('div', 'settings-actions');
+    const tutorial = element('button', 'secondary-action', '教程文档'); tutorial.type = 'button';
+    tutorial.addEventListener('click', () => { void openHelpGuide({ documentRef, customImpl: options => dialog?.custom?.(options) }); });
+    tutorialActions.append(tutorial);
+    const apiHeading = element('div', 'settings-subhead', 'API 接口');
+    const apiIntro = element('p', 'settings-hint', '供同一 SillyTavern 主页面中的其他扩展读取。getStatus() 同步查看桥与当前身份是否可用；readMemory() 异步读取用于提示词的文本；getSnapshot() 同步读取当前已加载的结构化副本。');
+    const apiMethods = element('p', 'settings-hint', 'getSnapshot() 分为 memory.floors、cse.currentSubjects / cse.floors 与 people.items。messageIndex 是酒馆实际楼号，assistantSeq 是 AI 楼序；各分区状态应分别判断，未加载时数组为空。');
+    const apiExample = element('pre', 'v3-recall-injection', PUBLIC_API_EXAMPLE);
+    const apiActions = element('div', 'qqj-ui-diagnostic-action');
+    const copyExample = element('button', 'secondary-action', '复制调用示例'); copyExample.type = 'button';
+    const copyFeedback = element('span', 'settings-hint', documentationCopyFeedback), fallbackHost = element('div');
+    const updateCopyResult = () => {
+      copyFeedback.textContent = documentationCopyFeedback;
+      fallbackHost.replaceChildren();
+      if (!documentationFallbackText) return;
+      const fallback = element('textarea', 'v3-diagnostic-fallback');
+      fallback.value = documentationFallbackText; fallback.textContent = documentationFallbackText; fallback.readOnly = true;
+      fallbackHost.append(element('p', 'settings-hint', '调用示例（长按全选复制）'), fallback);
+    };
+    copyExample.addEventListener('click', async () => { await copyPublicApiExample(); updateCopyResult(); });
+    apiActions.append(copyExample, copyFeedback);
+    documentationBody.append(tutorialActions, apiHeading, apiIntro, apiMethods, apiExample, apiActions, fallbackHost);
+    updateCopyResult();
+    page.append(documentationGroup);
 
     v3FoundationView.mount(managementMount);
     mountedContentView = 'foundation-settings';

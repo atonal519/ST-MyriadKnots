@@ -1064,27 +1064,33 @@ export async function runExtractorRequest({ generateUtilityTask, envelope, floor
   if (!expectedScope) throw extractorError('V3_EXTRACTOR_LOCAL_SCOPE_INVALID', 'expectedScope');
   const validationErrors = [];
   const transportBudget = { remaining: 3, used: 0 };
-  let candidate = null, metadata = sanitizeTaskMetadata(null), responseFingerprint = null;
-  {
-    let result;
+  const systemPrompt = buildExtractorSystemPrompt(promptGuidance, processingPrompt);
+  const taskMessages = [{ role: 'user', content: JSON.stringify(envelope.request) }];
+  for (let attempts = 1; attempts <= 3; attempts += 1) {
+    let candidate = null, metadata = sanitizeTaskMetadata(null), responseFingerprint = null, receivedResult = false;
     try {
-      const systemPrompt = buildExtractorSystemPrompt(promptGuidance, processingPrompt);
-      result = await generateUtilityTask({ systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(envelope.request) }], maxTokens: 30000, temperature: 0, signal, includeCharacterCard: false, worldInfoSource: 'none', transportBudget, parseMode: 'semantic' });
+      const result = await generateUtilityTask({ systemPrompt, taskMessages, maxTokens: 30000, temperature: 0, signal, includeCharacterCard: false, worldInfoSource: 'none', transportBudget, parseMode: 'semantic' });
+      receivedResult = true;
       candidate = result?.jsonData ?? result?.textData ?? result;
       metadata = sanitizeTaskMetadata(result?.taskMetadata);
       responseFingerprint = `sha256:${await sha256(JSON.stringify(candidate))}`;
       const normalized = await normalizeExtractorResponse({ response: candidate, finishReason: result?.taskMetadata?.finishReason, envelope, floor, existingEntities, now, supersedes, preservedSummary, expectedScope });
       const successfulIssues = normalized.isolated.map(item => ({ code: item.code, path: item.path, field: item.field, index: item.index }));
-      return Object.freeze({ ...normalized, attempts: 1, transportAttempts: transportBudget.used || metadata.transportAttempts, metadata, responseFingerprint, validationErrors: Object.freeze([...validationErrors, ...successfulIssues].slice(-20)) });
+      return Object.freeze({ ...normalized, attempts, transportAttempts: transportBudget.used || metadata.transportAttempts, metadata, responseFingerprint, validationErrors: Object.freeze([...validationErrors, ...successfulIssues].slice(-20)) });
     } catch (error) {
-      if (signal?.aborted || error?.name === 'AbortError') throw error;
+      if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+      if (error?.name === 'AbortError') throw error;
       const formatStage = error?.formatStage ?? null;
       validationErrors.push({ code: String(error?.code ?? 'V3_EXTRACTOR_REQUEST_FAILED').slice(0, 120), path: String(error?.validationPath ?? '').slice(0, 500), formatStage: formatStage ? String(formatStage).slice(0, 120) : null });
+      const retryable = receivedResult || error?.retryableRecognitionFormat === true || ['QQJ_TIMEOUT', 'QQJ_EMPTY'].includes(error?.code);
+      if (retryable && attempts < 3 && transportBudget.remaining > 0) continue;
       let sessionCandidate = null;
       if (candidate !== null) {
         try { sessionCandidate = JSON.stringify(candidate).slice(0, 24000); } catch { sessionCandidate = '[候选无法序列化]'; }
       }
-      error.extractorDiagnostics = { attempts: 1, transportAttempts: transportBudget.used || error?.transportAttempts || error?.taskMetadata?.transportAttempts || null, metadata: sanitizeTaskMetadata(error?.taskMetadata ?? metadata), httpStatus: Number.isSafeInteger(error?.httpStatus ?? error?.status) ? (error.httpStatus ?? error.status) : null, providerError: sanitizeDiagnosticValue(error?.providerError ?? null), responseFingerprint, validationErrors: validationErrors.slice(-20), formatStage, sessionCandidate };
+      const failedAttempts = transportBudget.used || attempts;
+      if (failedAttempts > 1) error.message = `已尝试 ${failedAttempts} 次仍失败：${error.message}`;
+      error.extractorDiagnostics = { attempts, transportAttempts: transportBudget.used || error?.transportAttempts || error?.taskMetadata?.transportAttempts || null, metadata: sanitizeTaskMetadata(error?.taskMetadata ?? metadata), httpStatus: Number.isSafeInteger(error?.httpStatus ?? error?.status) ? (error.httpStatus ?? error.status) : null, providerError: sanitizeDiagnosticValue(error?.providerError ?? null), responseFingerprint, validationErrors: validationErrors.slice(-20), formatStage, sessionCandidate };
       throw error;
     }
   }

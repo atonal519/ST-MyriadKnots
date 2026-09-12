@@ -1,17 +1,6 @@
 import { createInlineSelect } from './inline-select.js';
 import { createOperationMenuController } from './operation-menu-controller.js';
 
-const PUBLIC_API_EXAMPLE = `const bridge = globalThis.qqj_v3_public_bridge_v1;
-const status = bridge.getStatus();
-const snapshot = bridge.getSnapshot();
-
-if (snapshot.status === 'ready') {
-  const summaries = snapshot.memory.floors;
-  const currentStates = snapshot.cse.currentSubjects;
-  const cseHistory = snapshot.cse.floors;
-  const people = snapshot.people.items;
-}`;
-
 function text(value, fallback = '—') { return value === null || value === undefined || value === '' ? fallback : String(value); }
 
 function statusCopy(value) {
@@ -150,7 +139,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   if (uiDiagnosticProvider !== null && typeof uiDiagnosticProvider !== 'function') throw new TypeError('界面诊断 provider 无效');
   if (!documentRef?.createElement) throw new TypeError('V3 foundation view documentRef 无效');
 
-  let container = null, active = false, epoch = 0, feedback = '', receiptFeedback = '', prequelFeedback = '', fallbackText = '', apiFallbackText = '', apiCopyFeedback = '', unsubscribe = null;
+  let container = null, active = false, epoch = 0, feedback = '', receiptFeedback = '', prequelFeedback = '', fallbackText = '', unsubscribe = null;
   let page = 'management';
   let peopleMode = 'current', selectedCsePersonId = null, showMoreCsePeople = false;
   let foundationState = runtime.getState(), recallState = recallRuntime?.getState?.() ?? null, peopleState = peopleRuntime?.getState?.() ?? null, managementState = memoryManagement?.getState?.() ?? null, chatId = foundationState?.chatId ?? null, healthNode = null;
@@ -183,7 +172,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   };
   const resetForChat = nextChatId => {
     if (nextChatId === chatId) return false;
-    chatId = nextChatId; drafts.clear(); cseDrafts.clear(); openState.clear(); peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; apiFallbackText = ''; apiCopyFeedback = ''; feedback = '';
+    chatId = nextChatId; drafts.clear(); cseDrafts.clear(); openState.clear(); peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; feedback = '';
     return true;
   };
   const sourceChanged = (previous, next) => (previous?.chatId ?? null) !== (next?.chatId ?? null);
@@ -248,12 +237,12 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     block.append(healthNode); return block;
   };
 
-  async function copy(value, setFallback = next => { fallbackText = next; }) {
+  async function copy(value) {
     if (navigatorRef?.clipboard?.writeText) {
-      try { await navigatorRef.clipboard.writeText(value); setFallback(''); return '已复制。'; }
+      try { await navigatorRef.clipboard.writeText(value); fallbackText = ''; return '已复制。'; }
       catch { /* 浏览器或壳层拒绝剪贴板权限时改用只读文本框。 */ }
     }
-    setFallback(value); return '浏览器不允许直接复制，请在下方文本框长按全选复制。';
+    fallbackText = value; return '浏览器不允许直接复制，请在下方文本框长按全选复制。';
   }
   const readDiagnosticState = provider => { try { return provider?.() ?? null; } catch { return null; } };
   const stateDiagnostic = () => {
@@ -294,6 +283,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         activeAutoMemory: memoryKnown ? operationDiagnostic(memory.activeAutoMemory) : { present: 'unknown', phase: 'unknown' },
         syncError: errorDiagnostic(memory?.memorySyncError, memoryKnown),
         lastExtractorError: errorDiagnostic(memory?.lastExtractorError, memoryKnown),
+        lastAutomationError: errorDiagnostic(memory?.lastAutomationError, memoryKnown),
       },
       cse: {
         active: memoryKnown ? operationDiagnostic(memory.activeCse) : { present: 'unknown', phase: 'unknown' },
@@ -529,7 +519,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   function renderCseEditor(body, draft, state, key) {
     const editor = element('div', 'qqj-cse-edit');
     const controls = [], disabled = draft.saving === true || workBusy(state);
-    editor.append(element('p', 'settings-hint', '修改会直接成为当前人物状态。重新提取或重算较早楼层时，之后的人工纠正可能被覆盖。'));
+    editor.append(element('p', 'settings-hint', '修改会保存到对应楼层的人物状态。其他楼层的重算不会改写本楼记录。'));
     const scopeHeading = element('div', 'qqj-cse-scope-heading');
     const scopeHelp = element('button', 'qqj-cse-help', '?'); scopeHelp.type = 'button'; scopeHelp.disabled = disabled; scopeHelp.setAttribute('aria-label', '查看信息范围说明');
     scopeHelp.addEventListener('click', () => { void Promise.resolve(infoImpl({ title: '信息范围', body: '信息范围用于描述人物状态在故事里的可知程度，不是上传或隐私权限，也不表示所有人物都知道。', note: '私密：本人内心或私有认知\n已表达：已经说出或表现，不代表人人收到\n可观察：剧情中外表、动作等可观察状态，不等于读心\n共享：已向相关人传达或共同知晓，不代表全员知情\n作者设定：塑造人物的参考，不代表角色知道', confirmText: '知道了' })); });
@@ -914,7 +904,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const drawer = setDetailsState(element('details', 'qqj-management-drawer'), 'diagnostics', false), summary = element('summary', 'qqj-section-summary'); summary.append(element('strong', '', '详细诊断'), element('span', 'v3-memory-status', '按需展开')); drawer.append(summary);
     const body = element('div', 'qqj-management-drawer-body'), details = element('dl', 'v3-foundation-grid');
     const rebuildCopy = ({ rebuilding: '正在重建', paused: '已暂停', waitingRealtime: '等待新楼', failed: '失败', caughtUp: '已追平', pendingRebuild: '等待开始', notReady: '覆盖待确认' })[state.rebuildStatus] ?? '尚未判断';
-    details.append(row('当前 chat', state.chatId), row('地基状态', statusCopy(effectiveStatus(state))), row('待核对原因', reviewReasonCopy(state.reviewReason)), row('自动维护新楼', state.autoMemoryEnabled ? '已开启 · 每楼更新' : '已关闭'), row('历史重建', `${rebuildCopy} · ${state.rebuildCompletedCount ?? 0}/${state.rebuildTotalCount ?? state.stableCount ?? 0}`), row('CSE 待分析 / 失败', `${state.csePendingCount ?? 0} / ${state.cseFailedCount ?? 0}`), row('Head checkpoint', state.headCheckpointId), row('最近记忆错误', state.lastExtractorError?.message || state.lastError || '无'), row('最近 CSE 错误', state.lastCseError?.message || '无')); body.append(details);
+    details.append(row('当前 chat', state.chatId), row('地基状态', statusCopy(effectiveStatus(state))), row('待核对原因', reviewReasonCopy(state.reviewReason)), row('自动维护新楼', state.autoMemoryEnabled ? '已开启 · 每楼更新' : '已关闭'), row('历史重建', `${rebuildCopy} · ${state.rebuildCompletedCount ?? 0}/${state.rebuildTotalCount ?? state.stableCount ?? 0}`), row('CSE 待分析 / 失败', `${state.csePendingCount ?? 0} / ${state.cseFailedCount ?? 0}`), row('Head checkpoint', state.headCheckpointId), row('最近记忆错误', state.lastExtractorError?.message || state.lastError || '无'), row('最近自动任务错误', state.lastAutomationError?.message || '无'), row('最近 CSE 错误', state.lastCseError?.message || '无')); body.append(details);
     const stateDiagnosticAction = element('div', 'qqj-ui-diagnostic-action');
     const copyState = element('button', 'secondary-action', '复制状态诊断'); copyState.type = 'button';
     copyState.addEventListener('click', () => { void copyStateDiagnostic(); });
@@ -937,35 +927,6 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     }
     if (fallbackText) { const fallback = element('textarea', 'v3-diagnostic-fallback'); fallback.value = fallbackText; fallback.textContent = fallbackText; fallback.readOnly = true; body.append(element('p', 'settings-hint', '诊断文本（长按全选复制）'), fallback); }
     drawer.append(body); return drawer;
-  }
-  function renderApiInterfaceDetails() {
-    const drawer = setDetailsState(element('details', 'qqj-management-drawer'), 'api-interface', false);
-    const summary = element('summary', 'qqj-section-summary');
-    summary.append(element('strong', '', 'API 接口'), element('span', 'v3-memory-status', '同一页面只读调用'));
-    const body = element('div', 'qqj-management-drawer-body');
-    body.append(
-      element('p', 'settings-hint', '供同一 SillyTavern 主页面中的其他扩展读取。getStatus() 同步查看桥与当前身份是否可用；readMemory() 异步读取用于提示词的文本；getSnapshot() 同步读取当前已加载的结构化副本。'),
-      element('p', 'settings-hint', 'getSnapshot() 分为 memory.floors、cse.currentSubjects / cse.floors 与 people.items。messageIndex 是酒馆实际楼号，assistantSeq 是 AI 楼序；各分区状态应分别判断，未加载时数组为空。'),
-      element('pre', 'v3-recall-injection', PUBLIC_API_EXAMPLE),
-    );
-    const action = element('div', 'qqj-ui-diagnostic-action');
-    const copyExample = element('button', 'secondary-action', '复制调用示例'); copyExample.type = 'button';
-    const copyFeedback = element('span', 'settings-hint', apiCopyFeedback);
-    const fallbackHost = element('div');
-    const updateCopyResult = () => {
-      copyFeedback.textContent = apiCopyFeedback;
-      fallbackHost.replaceChildren();
-      if (apiFallbackText) {
-        const fallback = element('textarea', 'v3-diagnostic-fallback');
-        fallback.value = apiFallbackText; fallback.textContent = apiFallbackText; fallback.readOnly = true;
-        fallbackHost.append(element('p', 'settings-hint', '调用示例（长按全选复制）'), fallback);
-      }
-    };
-    copyExample.addEventListener('click', async () => {
-      apiCopyFeedback = await copy(PUBLIC_API_EXAMPLE, value => { apiFallbackText = value; });
-      updateCopyResult();
-    });
-    action.append(copyExample, copyFeedback); body.append(action, fallbackHost); updateCopyResult(); drawer.append(summary, body); return drawer;
   }
   function renderManagement(state) {
     const pageNode = element('section', 'qqj-page qqj-management-page'); pageNode.append(heading('记忆管理', '管理当前聊天的现有记忆任务。', state));
@@ -1012,7 +973,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     else if (managementState?.status === 'completed') pageNode.append(element('p', 'v3-foundation-feedback', '当前聊天记忆已清空；聊天正文、手动前情和全局设置仍保留。手动前情可在“前情”中清空。'));
     pageNode.append(actions, element('p', `v3-foundation-feedback${errorCopy(state) ? ' error' : ''}`, feedback || errorCopy(state) || '状态已显示。'));
     const prequel = renderPrequelDetails(); if (prequel) pageNode.append(prequel);
-    pageNode.append(renderRecallDetails(), renderApiInterfaceDetails(), renderDiagnostics(state)); return pageNode;
+    pageNode.append(renderRecallDetails(), renderDiagnostics(state)); return pageNode;
   }
 
   function renderAdopted(state) {

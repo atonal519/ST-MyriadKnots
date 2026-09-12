@@ -17,6 +17,8 @@ import { buildEntityIdentityDirectory } from '../src/v3/entity-identity.js';
 import { projectInlineMemoryFloor } from '../src/ui/inline-projection.js';
 import { validateFloorMemory } from '../src/v3/memory-schema.js';
 import { captureFloorVariableReference } from '../src/v3/floor-variable-reference.js';
+import { createCompactApiClient } from '../src/compact-api-client.js';
+import { createTaskRouter } from '../src/api-routing.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GENERATION = '22222222-2222-4222-8222-222222222222';
@@ -30,6 +32,13 @@ const legacyScanner = async (chat, options) => {
     : candidate));
 };
 const uuidFactory = () => { let value = 0; return () => `${(++value).toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`; };
+const compactResponse = (content, status = 200) => status >= 400
+  ? { ok: false, status, text: async () => '' }
+  : { ok: true, status, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content } }] }) };
+const taskRouter = fetchImpl => {
+  const route = { kind: 'independent', source: 'test', sourceLabel: '测试 API', config: { url: 'https://api.example.test/v1', key: 'TEST_KEY', model: 'test-model', excludeParams: [], timeoutSec: 5, stream: false } };
+  return createTaskRouter({ resolver: { resolve: () => route, resolveUtility: () => route }, compactClient: createCompactApiClient({ fetchImpl, retryWait: async () => {}, timeoutMs: () => 2 }) });
+};
 
 function viewHarness(runtime) {
   const documentRef = { activeElement: null, createElement: tag => new ViewNode(tag) };
@@ -827,6 +836,62 @@ test('可选项错误不会发起第二次格式修复 API', async () => {
   assert.equal(calls.length, 1);
   assert.equal(result.attempts, 1);
   assert.equal(result.memory.eventFragments.length, 0);
+});
+
+test('extractor 通过真实 compact 路由共享三次 HTTP 预算，格式失败可恢复且耗尽后保留最终诊断', async () => {
+  const floor = { id: '11111111-1111-4111-8111-111111111111', chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq: 1, content: { canonicalContent: '三次请求使用同一楼正文。' } };
+  const envelope = await createExtractorEnvelope({ batchId: '32323232-3232-4232-8232-323232323232', chatId: CHAT, narrativeGeneration: GENERATION, floor, userIdentity: { displayName: '林岚' } });
+  const bodies = [];
+  const replies = ['{}', '{}', '{"summary":"第三次得到有效摘要。"}'];
+  const router = taskRouter(async (_path, options) => { bodies.push(JSON.parse(options.body)); return compactResponse(replies.shift()); });
+  const result = await runExtractorRequest({ generateUtilityTask: router.generateUtilityTask, envelope, floor, expectedScope: envelope.scope, now: NOW });
+  assert.equal(bodies.length, 3);
+  assert.equal(result.attempts, 3);
+  assert.equal(result.transportAttempts, 3);
+  assert.equal(result.memory.summary.aiText, '第三次得到有效摘要。');
+  assert.deepEqual(bodies.map(body => body.messages), [bodies[0].messages, bodies[0].messages, bodies[0].messages], '每轮请求必须逐字复用同一输入');
+
+  let failedFetches = 0;
+  const failingRouter = taskRouter(async () => { failedFetches += 1; return compactResponse('{}'); });
+  let failure;
+  try { await runExtractorRequest({ generateUtilityTask: failingRouter.generateUtilityTask, envelope, floor, expectedScope: envelope.scope, now: NOW }); }
+  catch (error) { failure = error; }
+  assert.equal(failedFetches, 3);
+  assert.equal(failure.code, 'V3_EXTRACTOR_SUMMARY_INVALID');
+  assert.match(failure.message, /^已尝试 3 次仍失败：/);
+  assert.equal(failure.extractorDiagnostics.attempts, 3);
+  assert.equal(failure.extractorDiagnostics.transportAttempts, 3);
+  assert.equal(failure.extractorDiagnostics.validationErrors.length, 3);
+});
+
+test('extractor 超时与空回复可在剩余预算内恢复，Abort 和认证错误立即停止', async () => {
+  const floor = { id: '11111111-1111-4111-8111-111111111111', chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq: 1, content: { canonicalContent: '请求边界验证。' } };
+  const envelope = await createExtractorEnvelope({ batchId: '33323232-3232-4232-8232-323232323232', chatId: CHAT, narrativeGeneration: GENERATION, floor, userIdentity: { displayName: '林岚' } });
+
+  let timeoutFetches = 0;
+  const timeoutRouter = taskRouter(async (_path, options) => {
+    timeoutFetches += 1;
+    if (timeoutFetches === 1) return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+    return compactResponse('{"summary":"超时后成功。"}');
+  });
+  const timed = await runExtractorRequest({ generateUtilityTask: timeoutRouter.generateUtilityTask, envelope, floor, expectedScope: envelope.scope, now: NOW });
+  assert.equal(timeoutFetches, 2); assert.equal(timed.attempts, 2); assert.equal(timed.transportAttempts, 2);
+
+  let emptyFetches = 0;
+  const emptyRouter = taskRouter(async () => compactResponse(++emptyFetches === 1 ? '' : '{"summary":"空回复后成功。"}'));
+  const emptied = await runExtractorRequest({ generateUtilityTask: emptyRouter.generateUtilityTask, envelope, floor, expectedScope: envelope.scope, now: NOW });
+  assert.equal(emptyFetches, 2); assert.equal(emptied.attempts, 2); assert.equal(emptied.transportAttempts, 2);
+
+  const controller = new AbortController();
+  let abortFetches = 0;
+  const abortRouter = taskRouter(async () => { abortFetches += 1; controller.abort(); return compactResponse('{}'); });
+  await assert.rejects(runExtractorRequest({ generateUtilityTask: abortRouter.generateUtilityTask, envelope, floor, expectedScope: envelope.scope, now: NOW, signal: controller.signal }), error => error.name === 'AbortError');
+  assert.equal(abortFetches, 1);
+
+  let authFetches = 0;
+  const authRouter = taskRouter(async () => { authFetches += 1; return compactResponse('', 401); });
+  await assert.rejects(runExtractorRequest({ generateUtilityTask: authRouter.generateUtilityTask, envelope, floor, expectedScope: envelope.scope, now: NOW }), error => error.code === 'QQJ_AUTH');
+  assert.equal(authFetches, 1);
 });
 
 test('extractor 真实 semantic 请求只在 stop 后共享修复缺失键引号', async () => {
@@ -1683,7 +1748,7 @@ test('已有聊天启动、绑定、面板刷新与开启自动维护都只检�
   assert.equal(state.rebuildCompletedCount, 5);
   assert.equal(state.rebuildTotalCount, 5);
   assert.equal(h.runtime.shouldBlockMainGeneration(), false, '历史重建完成后必须释放主生成门禁');
-  assert.deepEqual(h.calls.map(call => call.systemPrompt), Array.from({ length: 5 }, () => [EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]).flat());
+  assert.deepEqual(h.calls.map(call => call.systemPrompt), [...Array(5).fill(EXTRACTOR_SYSTEM_PROMPT), ...Array(5).fill(CSE_SYSTEM_PROMPT)]);
 });
 
 test('重建展示进度按各楼 memory/delta 独立完成计数，摘要重提不使后楼失效', async () => {
@@ -2979,6 +3044,45 @@ test('CSE 失败不再拖停后续摘要，同一稳定快照只有限尝试且�
   assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 5, '手动继续只按顺序补两处人物状态');
 });
 
+test('手动历史补齐先保存捕获范围全部摘要，首个 CSE 失败后继续只补人物状态', async () => {
+  let failCse = true;
+  const h = harness({
+    initialChat: [user('开始'), assistant('历史一'), assistant('历史二'), assistant('历史三'), assistant('待确认尾楼')],
+    automation: { enabled: false, batchSize: 1 },
+    utility: options => {
+      if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) {
+        const content = JSON.parse(options.taskMessages[0].content).payload.canonicalContent;
+        return { jsonData: { summary: `摘要-${content}` } };
+      }
+      if (failCse) throw new Error('模拟首个历史 CSE 失败');
+      return { jsonData: { noMaterialChange: true } };
+    },
+  });
+  await h.runtime.start();
+  await h.runtime.startHistoricalRebuild();
+  await waitFor(() => h.runtime.getState().lastAutoMemory?.status === 'partial' && !h.runtime.getState().memoryWorkBusy);
+  let state = h.runtime.getState();
+  assert.deepEqual(h.calls.map(call => call.systemPrompt), [
+    EXTRACTOR_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT,
+  ]);
+  assert.equal(state.rememberedCount, 3);
+  assert.equal(state.summaryCompletedCount, 3);
+  assert.deepEqual(state.floors.map(floor => floor.cse.status), ['failed', 'pending', 'pending']);
+  assert.equal(state.lastAutoMemory.summarySaved, 3);
+  assert.equal(state.lastAutoMemory.cseProcessed, 0);
+  const memoryIds = state.floors.map(floor => floor.memoryId);
+
+  failCse = false;
+  const extractorCalls = h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length;
+  await h.runtime.startHistoricalRebuild();
+  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().memoryWorkBusy);
+  state = h.runtime.getState();
+  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, extractorCalls, '继续补齐不得重提已保存摘要');
+  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 4, '继续补齐应从首个失败 CSE 开始按序完成三楼');
+  assert.deepEqual(state.floors.map(floor => floor.memoryId), memoryIds, '继续补齐不得替换原三楼摘要记录');
+  assert.deepEqual(state.floors.map(floor => floor.cse.status), ['noChange', 'noChange', 'noChange']);
+});
+
 test('摘要人工修订不制造 CSE 欠账，重开与刷新均零模型调用', async () => {
   const initial = harness({
     initialChat: [user('开始'), assistant('第0楼'), assistant('第2楼'), assistant('第4楼'), assistant('稳定尾楼')],
@@ -3032,8 +3136,8 @@ test('启动与设置刷新只检查连续摘要尾账，手动继续才按楼�
     await resumed.runtime.startHistoricalRebuild();
     await waitFor(() => registeredGraphCaughtUp(resumed.runtime.getState()) && !resumed.runtime.getState().memoryWorkBusy, `${mode} 未追平连续摘要尾账`);
     const promptKinds = resumed.calls.map(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? 'extractor' : 'cse');
-    assert.deepEqual(promptKinds, Array.from({ length: debtCount }, () => ['extractor', 'cse']).flat(),
-      `${mode} 必须按楼补摘要，再补同楼人物状态`);
+    assert.deepEqual(promptKinds, [...Array(debtCount).fill('extractor'), ...Array(debtCount).fill('cse')],
+      `${mode} 必须先补完摘要，再按楼补人物状态`);
     assert.equal(resumed.runtime.getState().lastAutoMemory.processed, debtCount);
     assert.equal(resumed.runtime.getState().lastAutoMemory.cseProcessed, debtCount);
   }
@@ -3202,6 +3306,139 @@ test('失败提示存储损坏或不可写不阻断摘要流程，内存提示�
   assert.equal(h.runtime.getState().floors[0].status, 'ready');
   assert.equal(h.runtime.getState().floors[0].error, null);
   assert.deepEqual(calls, ['get', 'set', 'remove']);
+});
+
+test('CSE 楼级失败跨刷新累计并按楼清除，旧有效 delta 重析失败仍保持可用', async () => {
+  const storage = browserStorage();
+  let failA = true;
+  let failSummaryC = false;
+  const utility = options => {
+    const content = JSON.parse(options.taskMessages[0].content).payload.canonicalContent;
+    if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) {
+      if (failSummaryC && content === '历史三') throw Object.assign(new Error('受控摘要 C 失败'), { code: 'TEST_SUMMARY_C_FAILED' });
+      return { jsonData: { summary: `摘要-${content}` } };
+    }
+    if (failA && content === '历史一') throw Object.assign(new Error('受控 CSE A 失败'), { code: 'TEST_CSE_A_FAILED' });
+    return { jsonData: { noMaterialChange: true } };
+  };
+  const first = harness({
+    initialChat: [user('开始'), assistant('历史一'), assistant('历史二'), assistant('历史三'), assistant('待确认尾楼')],
+    automation: { enabled: false, batchSize: 1 }, utility, failureStorage: storage,
+  });
+  await first.runtime.start();
+  await first.runtime.startHistoricalRebuild();
+  let state = first.runtime.getState();
+  const [floorA, floorB, floorC] = state.floors;
+  await first.runtime.retryStateAnalysis(floorA.floorId);
+  await first.runtime.retryStateAnalysis(floorB.floorId);
+  state = first.runtime.getState();
+  assert.equal(state.floors[0].cse.status, 'failed');
+  assert.equal(state.floors[1].cse.status, 'noChange');
+  assert.match(state.floors[0].cse.error, /连续失败 2 次/);
+  failSummaryC = true;
+  await first.runtime.extractFloor(floorC.floorId, { analyzeState: false });
+  const key = [...storage.values.keys()][0];
+  let saved = JSON.parse(storage.values.get(key));
+  assert.equal(saved.cseFailures[floorA.floorId].count, 2);
+  assert.equal(saved.failures[floorC.floorId].count, 1);
+  assert.doesNotMatch(storage.values.get(key), /历史一|历史二|历史三|taskMessages|jsonData|api/u);
+
+  first.runtime.invalidate();
+  const resumed = harness({ sharedBackend: first.backend, sharedContext: first.context, automation: { enabled: false, batchSize: 1 }, utility, failureStorage: storage });
+  await resumed.runtime.start();
+  state = resumed.runtime.getState();
+  assert.equal(state.floors[0].cse.status, 'failed');
+  assert.match(state.floors[0].cse.error, /连续失败 2 次.*受控 CSE A 失败/);
+  assert.equal(state.floors[1].cse.status, 'noChange');
+  assert.match(state.floors[2].error, /连续失败 1 次.*受控摘要 C 失败/);
+  assert.equal(state.lastCseError.floorId, floorA.floorId);
+
+  failA = false;
+  await resumed.runtime.retryStateAnalysis(floorA.floorId);
+  state = resumed.runtime.getState();
+  assert.equal(state.floors[0].cse.status, 'noChange');
+  assert.equal(state.floors[0].cse.error, null);
+  assert.match(state.floors[2].error, /连续失败 1 次/, 'CSE 本楼成功不得清摘要失败提示');
+  saved = JSON.parse(storage.values.get(key));
+  assert.equal(saved.cseFailures, undefined);
+  assert.equal(saved.failures[floorC.floorId].count, 1);
+
+  failA = true;
+  await resumed.runtime.retryStateAnalysis(floorA.floorId);
+  state = resumed.runtime.getState();
+  assert.equal(state.floors[0].cse.status, 'noChange', '已有有效 delta 重析失败仍保持可用');
+  assert.match(state.floors[0].cse.error, /受控 CSE A 失败/);
+});
+
+test('自动任务外层错误跨刷新保留，暂停不清且仅在后续批次正常完成后清除', async () => {
+  const storage = browserStorage();
+  let failCse = false;
+  let armedOuter = false;
+  let armedRefreshCalls = 0;
+  let holdNewSummary = false;
+  let releaseSummary;
+  let markSummaryStarted;
+  const summaryStarted = new Promise(resolve => { markSummaryStarted = resolve; });
+  const utility = options => {
+    const content = JSON.parse(options.taskMessages[0].content).payload.canonicalContent;
+    if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) {
+      if (holdNewSummary && content === '新增历史楼') return new Promise(resolve => { releaseSummary = () => resolve({ jsonData: { summary: '新增历史摘要' } }); markSummaryStarted(); });
+      return { jsonData: { summary: `摘要-${content}` } };
+    }
+    if (failCse && content === '历史一') throw Object.assign(new Error('保留到刷新后的 CSE 错误'), { code: 'TEST_CSE_REANALYZE_FAILED' });
+    return { jsonData: { noMaterialChange: true } };
+  };
+  const h = harness({
+    initialChat: [user('开始'), assistant('历史一'), assistant('待确认尾楼')],
+    automation: { enabled: false, batchSize: 1 }, utility, failureStorage: storage,
+    foundationRefresh: async base => {
+      if (armedOuter && ++armedRefreshCalls === 2) throw Object.assign(new Error('自动任务外层受控失败'), { code: 'TEST_AUTO_OUTER_FAILED' });
+      return base.refreshStatus();
+    },
+  });
+  await h.runtime.start();
+  await h.runtime.startHistoricalRebuild();
+  const firstFloorId = h.runtime.getState().floors[0].floorId;
+  failCse = true;
+  await h.runtime.retryStateAnalysis(firstFloorId);
+  assert.equal(h.runtime.getState().floors[0].cse.status, 'noChange');
+
+  h.context.chat.push(user('继续'), assistant('新增历史楼'), assistant('新尾楼'));
+  await h.foundationRuntime.refreshStatus();
+  await h.runtime.refreshStatus();
+  armedOuter = true;
+  await h.runtime.startHistoricalRebuild();
+  let state = h.runtime.getState();
+  assert.match(state.lastAutomationError?.message ?? '', /连续失败 1 次.*自动任务外层受控失败/);
+  const key = [...storage.values.keys()][0];
+  let saved = JSON.parse(storage.values.get(key));
+  assert.equal(saved.automationFailure.phase, 'reconciling');
+  assert.equal(saved.cseFailures[firstFloorId].count, 1);
+
+  armedOuter = false;
+  h.runtime.invalidate();
+  await h.runtime.start();
+  await h.runtime.refreshStatus();
+  state = h.runtime.pauseHistoricalRebuild();
+  assert.match(state.lastAutomationError?.message ?? '', /自动任务外层受控失败/, 'load、refresh 与暂停不得清外层错误');
+
+  holdNewSummary = true;
+  const paused = h.runtime.startHistoricalRebuild();
+  await summaryStarted;
+  h.runtime.pauseHistoricalRebuild();
+  releaseSummary();
+  await paused;
+  assert.match(h.runtime.getState().lastAutomationError?.message ?? '', /自动任务外层受控失败/, '取消中的单楼结果不得清外层错误');
+
+  holdNewSummary = false;
+  await h.runtime.startHistoricalRebuild();
+  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().memoryWorkBusy);
+  state = h.runtime.getState();
+  assert.equal(state.lastAutomationError, null);
+  assert.match(state.floors[0].cse.error, /保留到刷新后的 CSE 错误/, '正常批次只清外层错误，不得误清既有 CSE 楼级提示');
+  saved = JSON.parse(storage.values.get(key));
+  assert.equal(saved.automationFailure, undefined);
+  assert.equal(saved.cseFailures[firstFloorId].count, 1);
 });
 
 test('捕获 A/B/C 补 B 期间另一实例完成新 D，仍按捕获楼 ID 补完 B 的 CSE', async () => {
@@ -3719,7 +3956,7 @@ test('dry-run GENERATION_STARTED 不会占用主生成事实，历史按钮仍�
   await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().activeAutoMemory);
 
   assert.equal(h.runtime.getState().rememberedCount, 2);
-  assert.deepEqual(h.calls.map(call => call.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
+  assert.deepEqual(h.calls.map(call => call.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
   assert.match(notifications[0].text, /从第 1 楼起还有 2 楼摘要未完成.*不会自动补/);
   assert.deepEqual(notifications[1], { kind: 'info', text: '千千结开始补齐 2 楼摘要（从第 1 楼起）。' });
   assert.deepEqual(notifications[2], { kind: 'success', text: '千千结已完成历史记忆维护：新增摘要 2 楼，补齐人物状态 2 楼。' });
@@ -3969,7 +4206,7 @@ test('生成生命周期常量不齐时整体回退 isGenerating，不会产生�
     await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().activeAutoMemory);
 
     assert.equal(h.runtime.getState().rememberedCount, 2);
-    assert.deepEqual(h.calls.map(call => call.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
+    assert.deepEqual(h.calls.map(call => call.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
     assert.match(notifications[0].text, /从第 1 楼起还有 2 楼摘要未完成.*不会自动补/);
     assert.deepEqual(notifications[1], { kind: 'info', text: '千千结开始补齐 2 楼摘要（从第 1 楼起）。' });
     assert.deepEqual(notifications[2], { kind: 'success', text: '千千结已完成历史记忆维护：新增摘要 2 楼，补齐人物状态 2 楼。' });
@@ -4125,7 +4362,7 @@ test('按钮启动的历史会话暂停后，当前会话的设置刷新与新�
   await waitFor(() => !first.runtime.getState().activeAutoMemory);
   assert.equal(first.runtime.getState().rebuildStatus, 'paused');
   assert.equal(first.runtime.getState().rememberedCount, 1);
-  assert.equal(first.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 1, '已提交第一楼在固定逐楼模式下也已提交 CSE');
+  assert.equal(first.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 0, '摘要阶段暂停时不应提前开始 CSE');
   const callsAtPause = first.calls.length;
   await first.runtime.refreshAutomation();
   first.emit('GENERATION_STARTED', 'normal');

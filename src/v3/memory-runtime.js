@@ -184,7 +184,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   const pendingResults = new Map();
   const subscribers = new Set();
   const currentClockSignature = floor => clockEvidence(currentRawSelection(hostAdapter, floor)).signature;
-  const cseRuntime = createCseRuntime({ store, hostAdapter, generateAnalysisTask, isEnabled, promptGuidance: csePromptGuidance, processingPrompt, filterWorldInfoSources, sanitizerOptions, storyClockSignatureForFloor: currentClockSignature, onGraphCommitted: value => foundationRuntime.adoptReachable?.(value), now, newUuid, logger });
+  const cseRuntime = createCseRuntime({ store, hostAdapter, generateAnalysisTask, isEnabled, promptGuidance: csePromptGuidance, processingPrompt, filterWorldInfoSources, sanitizerOptions, storyClockSignatureForFloor: currentClockSignature, onGraphCommitted: value => foundationRuntime.adoptReachable?.(value), onFailureHint: (value, floorId, failure) => failure ? rememberCseFloorFailure(value, failure) : clearCseFloorFailure(floorId, value), now, newUuid, logger });
   const setIdentityProjection = value => {
     identityProjection = normalizeIdentityProjection(value);
     cseRuntime.setIdentityProjection?.(identityProjection);
@@ -202,37 +202,58 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   };
   const currentHostChatId = () => { try { return String(hostAdapter.snapshot()?.context?.chatMetadata?.qianqianjie?.chatId ?? '').trim(); } catch { return ''; } };
   const failureScopeMatches = root => Boolean(root && failureScope?.chatId === root.chatId && failureScope.narrativeGeneration === root.narrativeGeneration);
+  const readFailureHint = (entry, fallbackCode) => {
+    if (!entry || typeof entry !== 'object' || !Number.isSafeInteger(entry.count) || entry.count < 1 || typeof entry.lastReason !== 'string') return null;
+    return {
+      count: entry.count,
+      lastReason: safeErrorMessage(entry.lastReason),
+      code: String(entry.code ?? fallbackCode).slice(0, 120),
+      lastFailedAt: typeof entry.lastFailedAt === 'string' ? entry.lastFailedAt.slice(0, 80) : '',
+    };
+  };
+  const nextFailureHint = (previous, failure, fallbackCode) => ({
+    count: Number.isSafeInteger(previous?.count) && previous.count > 0 ? previous.count + 1 : 1,
+    lastReason: safeErrorMessage(failure.message),
+    code: String(failure.code ?? fallbackCode).slice(0, 120),
+    lastFailedAt: nowIso(now),
+  });
+  const savedFailureMessage = failure => failure ? `连续失败 ${failure.count} 次；最近：${failure.lastReason}${failure.lastFailedAt ? `（${failure.lastFailedAt}）` : ''}` : null;
   const readFailureScope = value => {
     const root = value?.root;
     if (!root?.chatId || !root.narrativeGeneration || failureScopeMatches(root)) return;
-    const failures = {};
+    const failures = {}, cseFailures = {};
+    let automationFailure = null;
     try {
       const parsed = JSON.parse(browserFailureStorage?.getItem?.(floorFailureStorageKey(root.chatId)) || 'null');
-      if (parsed?.narrativeGeneration === root.narrativeGeneration && parsed.failures && typeof parsed.failures === 'object') {
+      if (parsed?.narrativeGeneration === root.narrativeGeneration) {
         for (const floor of value.floors ?? []) {
-          if (!Object.hasOwn(parsed.failures, floor.id)) continue;
-          const entry = parsed.failures[floor.id];
-          if (!entry || typeof entry !== 'object' || !Number.isSafeInteger(entry.count) || entry.count < 1 || typeof entry.lastReason !== 'string') continue;
-          failures[floor.id] = {
-            count: entry.count,
-            lastReason: safeErrorMessage(entry.lastReason),
-            code: String(entry.code ?? 'V3_EXTRACTOR_FAILED').slice(0, 120),
-            lastFailedAt: typeof entry.lastFailedAt === 'string' ? entry.lastFailedAt.slice(0, 80) : '',
-          };
+          const summary = readFailureHint(parsed.failures?.[floor.id], 'V3_EXTRACTOR_FAILED');
+          const cse = readFailureHint(parsed.cseFailures?.[floor.id], 'V3_CSE_FAILED');
+          if (summary) failures[floor.id] = summary;
+          if (cse) cseFailures[floor.id] = cse;
         }
+        const savedAutomation = readFailureHint(parsed.automationFailure, 'V3_AUTO_MEMORY_FAILED');
+        if (savedAutomation) automationFailure = { ...savedAutomation, phase: String(parsed.automationFailure.phase ?? 'unknown').slice(0, 80) };
       }
     } catch { /* optional browser failure hints must not block memory */ }
-    failureScope = { chatId: root.chatId, narrativeGeneration: root.narrativeGeneration, failures };
+    failureScope = { chatId: root.chatId, narrativeGeneration: root.narrativeGeneration, failures, cseFailures, automationFailure };
   };
   const writeFailureScope = (value = reachable) => {
     const root = value?.root;
     if (!root || !failureScopeMatches(root)) return;
     const activeFloorIds = new Set((value.floors ?? []).map(floor => floor.id));
     const failures = Object.fromEntries(Object.entries(failureScope.failures).filter(([floorId]) => activeFloorIds.has(floorId)));
-    failureScope = { ...failureScope, failures };
+    const cseFailures = Object.fromEntries(Object.entries(failureScope.cseFailures).filter(([floorId]) => activeFloorIds.has(floorId)));
+    failureScope = { ...failureScope, failures, cseFailures };
     try {
       const key = floorFailureStorageKey(root.chatId);
-      if (Object.keys(failures).length) browserFailureStorage?.setItem?.(key, JSON.stringify({ narrativeGeneration: root.narrativeGeneration, failures }));
+      if (Object.keys(failures).length || Object.keys(cseFailures).length || failureScope.automationFailure) {
+        const payload = { narrativeGeneration: root.narrativeGeneration };
+        if (Object.keys(failures).length) payload.failures = failures;
+        if (Object.keys(cseFailures).length) payload.cseFailures = cseFailures;
+        if (failureScope.automationFailure) payload.automationFailure = failureScope.automationFailure;
+        browserFailureStorage?.setItem?.(key, JSON.stringify(payload));
+      }
       else browserFailureStorage?.removeItem?.(key);
     } catch { /* optional browser failure hints must not block memory */ }
   };
@@ -241,12 +262,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       readFailureScope(value);
       if (!failureScopeMatches(value?.root)) return;
       const previous = failureScope.failures[failure.floorId];
-      failureScope = { ...failureScope, failures: { ...failureScope.failures, [failure.floorId]: {
-        count: Number.isSafeInteger(previous?.count) && previous.count > 0 ? previous.count + 1 : 1,
-        lastReason: safeErrorMessage(failure.message),
-        code: String(failure.code ?? 'V3_EXTRACTOR_FAILED').slice(0, 120),
-        lastFailedAt: nowIso(now),
-      } } };
+      failureScope = { ...failureScope, failures: { ...failureScope.failures, [failure.floorId]: nextFailureHint(previous, failure, 'V3_EXTRACTOR_FAILED') } };
       writeFailureScope(value);
     } catch { /* optional browser failure hints must not replace the real extraction error */ }
   };
@@ -257,10 +273,39 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     failureScope = { ...failureScope, failures };
     writeFailureScope(value);
   };
+  const rememberCseFloorFailure = (value, failure) => {
+    try {
+      readFailureScope(value);
+      if (!failureScopeMatches(value?.root)) return;
+      const previous = failureScope.cseFailures[failure.floorId];
+      failureScope = { ...failureScope, cseFailures: { ...failureScope.cseFailures, [failure.floorId]: nextFailureHint(previous, failure, 'V3_CSE_FAILED') } };
+      writeFailureScope(value);
+    } catch { /* optional browser failure hints must not replace the real CSE error */ }
+  };
+  const clearCseFloorFailure = (floorId, value = reachable) => {
+    if (!failureScopeMatches(value?.root) || !Object.hasOwn(failureScope.cseFailures, floorId)) return;
+    const cseFailures = { ...failureScope.cseFailures };
+    delete cseFailures[floorId];
+    failureScope = { ...failureScope, cseFailures };
+    writeFailureScope(value);
+  };
+  const rememberAutomationFailure = (value, failure) => {
+    try {
+      readFailureScope(value);
+      if (!failureScopeMatches(value?.root)) return;
+      failureScope = { ...failureScope, automationFailure: { ...nextFailureHint(failureScope.automationFailure, failure, 'V3_AUTO_MEMORY_FAILED'), phase: String(failure.phase ?? 'unknown').slice(0, 80) } };
+      writeFailureScope(value);
+    } catch { /* optional browser failure hints must not replace the real automation error */ }
+  };
+  const clearAutomationFailure = (value = reachable) => {
+    if (!failureScopeMatches(value?.root) || !failureScope.automationFailure) return;
+    failureScope = { ...failureScope, automationFailure: null };
+    writeFailureScope(value);
+  };
   const clearChatFailures = chatId => {
     const targetChatId = String(chatId ?? '').trim();
     if (!targetChatId) return;
-    if (failureScope?.chatId === targetChatId) failureScope = { ...failureScope, failures: {} };
+    if (failureScope?.chatId === targetChatId) failureScope = { ...failureScope, failures: {}, cseFailures: {}, automationFailure: null };
     try { browserFailureStorage?.removeItem?.(floorFailureStorageKey(targetChatId)); } catch { /* optional browser failure hints */ }
   };
   async function ensureSavedAnchors(value, expectedEpoch = epoch) {
@@ -419,7 +464,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       : memory?.recordStatus === 'invalidated' ? 'error'
         : transientFailure || savedFailure ? 'failed' : 'unprocessed';
     const manualTime = meta?.timeEdited === true;
-    const savedError = savedFailure ? `连续失败 ${savedFailure.count} 次；最近：${savedFailure.lastReason}${savedFailure.lastFailedAt ? `（${savedFailure.lastFailedAt}）` : ''}` : null;
+    const savedError = savedFailureMessage(savedFailure);
     const failureError = transientFailure && transientFailure.phase !== 'retryableError' ? transientFailure.message : savedError ?? transientFailure?.message;
     return Object.freeze({ floorId: floor.id, assistantSeq: floor.assistantSeq, messageIndex: floor.hostLocator.messageIndex, canonicalFingerprint: floor.content.canonicalFingerprint, rawFingerprint: floor.content.rawFingerprint, status, memoryId: memory?.id ?? null, summary: effectiveSummary(memory) ?? '', summarySource: memory?.summary?.effectiveSource ?? null, aiSummary: memory?.summary?.aiText ?? '', revisionNote: memory?.summary?.revisionNote ?? null, extractorVersion: memory?.extractorVersion ?? EXTRACTOR_VERSION, counts: counts(memory), api: meta?.api ?? null, attempts: meta?.attempts ?? 0, runId: meta?.runId ?? null, checkpointId: reachable?.checkpoint?.id ?? null, manualTime, timeFallback: timeFallbackByFloor.get(floor.id) ?? '', error: failureError ?? (memory?.recordStatus === 'invalidated' ? '该楼记忆已标记错误，可重新提取。' : null), memory });
   }
@@ -466,8 +511,16 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const floors = (reachable?.floors ?? []).map(floor => floorState(floor, memoryMap, provenance));
     const stableCount = floors.length;
     const rememberedCount = floors.filter(item => item.status === 'ready').length;
-    const cse = cseRuntime.getState();
-    const cseByFloor = new Map((cse.cseFloors ?? []).map(item => [item.floorId, item]));
+    const rawCse = cseRuntime.getState();
+    const savedCseFailures = failureScopeMatches(reachable?.root) ? failureScope.cseFailures : {};
+    const cseFloors = (rawCse.cseFloors ?? []).map(item => {
+      const savedFailure = savedCseFailures[item.floorId] ?? null;
+      return Object.freeze({ ...item, status: item.status === 'pending' && savedFailure ? 'failed' : item.status, error: item.error ?? savedFailureMessage(savedFailure) });
+    });
+    const latestSavedCse = Object.entries(savedCseFailures).reduce((latest, current) => !latest || String(current[1].lastFailedAt).localeCompare(String(latest[1].lastFailedAt)) >= 0 ? current : latest, null);
+    const savedCseError = latestSavedCse ? Object.freeze({ floorId: latestSavedCse[0], code: latestSavedCse[1].code, message: savedFailureMessage(latestSavedCse[1]), phase: 'retryableError', count: latestSavedCse[1].count, lastFailedAt: latestSavedCse[1].lastFailedAt }) : null;
+    const cse = Object.freeze({ ...rawCse, cseFloors: Object.freeze(cseFloors), csePendingCount: cseFloors.filter(item => item.status === 'pending').length, cseFailedCount: cseFloors.filter(item => item.status === 'failed').length, lastCseError: rawCse.lastCseError ?? savedCseError });
+    const cseByFloor = new Map(cseFloors.map(item => [item.floorId, item]));
     const combinedFloors = floors.map(item => Object.freeze({ ...item, cse: cseByFloor.get(item.floorId) ?? null }));
     const memoryEntities = projectMemoryPersonEntities(reachable?.entities ?? []);
     const rebuildCompletedCount = combinedFloors.filter(floor => floor.memory?.recordStatus === 'active' && floor.cse?.deltaId).length;
@@ -484,7 +537,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             : coverage.status === 'caughtUp' ? 'caughtUp'
               : coverage.status === 'realtimeTail' ? 'waitingRealtime'
               : coverage.status === 'historicalDebt' ? 'pendingRebuild' : 'notReady';
-    return Object.freeze({ ...foundation, ...cse, status: workRun || active || cse.activeCse ? 'running' : foundation.status, memorySnapshotStatus, memorySyncStatus, memorySyncError, stableCount, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: floors.filter(item => ['unprocessed', 'error', 'failed'].includes(item.status)).length, reviewCount: 0, failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, floors: Object.freeze(combinedFloors), memoryEntities, memoryWorkBusy: workRun !== null, activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workRun.phase, floorIds: Object.freeze([...workRun.floorIds]) }) : null, activeExtraction: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, lastExtractorError: lastFailure, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: combinedFloors.length, rebuildNextAssistantSeq, rebuildHasActionableWork, cseRebuildStatus: cseRebuildPlan?.status ?? 'idle', cseRebuildCompletedCount: cseRebuildPlan?.nextIndex ?? 0, cseRebuildTotalCount: cseRebuildPlan?.targets.length ?? rememberedCount, cseRebuildNextAssistantSeq: cseRebuildPlan?.targets[cseRebuildPlan.nextIndex]?.assistantSeq ?? null, cseRebuildError: cseRebuildPlan?.error ?? null, activeAutoMemory: workRun?.kind === 'auto' ? Object.freeze({ reason: workRun.reason, phase: workRun.phase, mode: workRun.mode ?? 'realtime', floorIds: Object.freeze([...workRun.floorIds]) }) : null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
+    const savedAutomation = failureScopeMatches(reachable?.root) ? failureScope.automationFailure : null;
+    const lastAutomationError = savedAutomation ? Object.freeze({ code: savedAutomation.code, message: savedFailureMessage(savedAutomation), phase: savedAutomation.phase, count: savedAutomation.count, lastFailedAt: savedAutomation.lastFailedAt }) : null;
+    return Object.freeze({ ...foundation, ...cse, status: workRun || active || cse.activeCse ? 'running' : foundation.status, memorySnapshotStatus, memorySyncStatus, memorySyncError, stableCount, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: floors.filter(item => ['unprocessed', 'error', 'failed'].includes(item.status)).length, reviewCount: 0, failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, floors: Object.freeze(combinedFloors), memoryEntities, memoryWorkBusy: workRun !== null, activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workRun.phase, floorIds: Object.freeze([...workRun.floorIds]) }) : null, activeExtraction: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, lastExtractorError: lastFailure, lastAutomationError, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: combinedFloors.length, rebuildNextAssistantSeq, rebuildHasActionableWork, cseRebuildStatus: cseRebuildPlan?.status ?? 'idle', cseRebuildCompletedCount: cseRebuildPlan?.nextIndex ?? 0, cseRebuildTotalCount: cseRebuildPlan?.targets.length ?? rememberedCount, cseRebuildNextAssistantSeq: cseRebuildPlan?.targets[cseRebuildPlan.nextIndex]?.assistantSeq ?? null, cseRebuildError: cseRebuildPlan?.error ?? null, activeAutoMemory: workRun?.kind === 'auto' ? Object.freeze({ reason: workRun.reason, phase: workRun.phase, mode: workRun.mode ?? 'realtime', floorIds: Object.freeze([...workRun.floorIds]) }) : null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
   }
 
   async function refreshCoverage(expectedEpoch = epoch) {
@@ -1223,6 +1278,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             lastAutoRun = processed || cseProcessed
               ? Object.freeze({ status: 'completed', reason, mode: manualHistorical ? 'historical' : 'realtime', batchSize: config.batchSize, recovered: resumed, fromAssistantSeq, toAssistantSeq, processed, cseProcessed })
               : Object.freeze({ status: 'caughtUp', reason, mode: manualHistorical ? 'historical' : 'realtime', batchSize: config.batchSize, available: 0, fromAssistantSeq: null, toAssistantSeq: null, processed: 0 });
+            clearAutomationFailure(reachable);
             if (processed || cseProcessed) try { notifyUser?.({ kind: 'success', text: manualHistorical
               ? `千千结已完成历史记忆维护：新增摘要 ${processed} 楼，补齐人物状态 ${cseProcessed} 楼。`
               : `千千结已自动维护完成：新增摘要 ${processed} 楼，补齐人物状态 ${cseProcessed} 楼。` }); } catch { /* notification must not affect committed memory */ }
@@ -1293,7 +1349,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           if (!allowed()) return getState();
           let afterExtraction = coverage;
           if (afterExtraction.status === 'unknown') throw errorWith('V3_MEMORY_COVERAGE_UNCONFIRMED', '摘要保存后覆盖校验未确认，人物状态分析已暂停。');
-          if (eventAuthorization?.allowHistoricalDebt && hasCapturedPending(afterExtraction, 'summaryPendingFloorIds') && summaryFailures.length === 0) continue;
+          if (historical && hasCapturedPending(afterExtraction, 'summaryPendingFloorIds') && summaryFailures.length === 0) continue;
           while (allowed() && hasCapturedPending(afterExtraction, 'pendingFloorIds')) {
             const activeMemories = currentMemoryMap(reachable);
             const pendingId = afterExtraction.pendingFloorIds.find(floorId => capturedFloorSet.has(floorId) && activeMemories.get(floorId)?.recordStatus === 'active');
@@ -1355,6 +1411,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             }
             const didWork = processed > 0 || cseProcessed > 0;
             lastAutoRun = Object.freeze({ status: didWork ? 'completed' : 'caughtUp', reason, mode: 'realtime', phase: cseProcessed ? 'analyzingCse' : 'extracting', batchSize: config.batchSize, recovered: resumed, fromAssistantSeq, toAssistantSeq, processed, cseProcessed, cseCompleted: cseProcessed > 0 });
+            clearAutomationFailure(reachable);
             if (didWork) try { notifyUser?.({ kind: 'success', text: `千千结已自动维护完成：新增摘要 ${processed} 楼，补齐人物状态 ${cseProcessed} 楼。` }); } catch { /* notification must not affect committed memory */ }
             return notify();
           }
@@ -1366,6 +1423,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           lastAutomaticInputKey = capturedInputKey ?? currentInputKey();
           const didCommit = processed > 0 || cseProcessed > 0;
           lastAutoRun = Object.freeze({ status: didCommit ? 'partial' : 'failed', reason, phase: operation.phase, batchSize: config.batchSize, floorId: operation.floorIds[0] ?? null, assistantSeq: null, processed, cseProcessed, failedItems: Object.freeze([...summaryFailures]), message: safeErrorMessage(error?.message ?? '自动记忆失败，将在下一次稳定回复后重试。') });
+          rememberAutomationFailure(reachable, { message: lastAutoRun.message, code: error?.code ?? error?.name ?? 'V3_AUTO_MEMORY_FAILED', phase: operation.phase });
           logger?.warn?.('[qianqianjie] V3 automatic memory failed', { code: error?.code ?? error?.name ?? 'V3_AUTO_MEMORY_FAILED' });
           notifyOnce(`outer:${reason}:${capturedInputKey ?? currentInputKey()}:${operation.phase}:${error?.code ?? error?.name ?? 'failed'}`, { kind: didCommit ? 'warning' : 'error', text: `千千结自动记忆${didCommit ? '部分完成' : '未完成'}：已新增摘要 ${processed} 楼、补齐人物状态 ${cseProcessed} 楼；${lastAutoRun.message} 当前未完成摘要楼数无法可靠确认；相同内容不会自动重试，请在记忆管理中点击继续。` });
           notify();

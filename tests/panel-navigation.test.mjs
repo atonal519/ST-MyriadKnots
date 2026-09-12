@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createContext, SourceTextModule, SyntheticModule } from 'node:vm';
 import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
+import { openHelpGuide } from '../src/ui/help-guide.js';
 
 class Node {
   constructor(tag = 'div') {
@@ -18,6 +19,7 @@ class Node {
   querySelector() { return null; }
   focus() {}
 }
+const flatten = node => [node, ...(node.children ?? []).flatMap(flatten)];
 
 test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢复各页滚动位置', async () => {
   const [source, panelHtml, panelCss] = await Promise.all([
@@ -36,17 +38,23 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   let firstElement = true;
   const documentEvents = {};
   const documentRef = { defaultView: { innerWidth: 390, matchMedia: () => ({ matches: true }) }, body: new Node('body'), createElement(tag) { if (firstElement) { firstElement = false; return host; } return new Node(tag); }, addEventListener(name, listener) { documentEvents[name] = listener; } };
-  const drawer = () => { const node = new Node('details'), drawerBody = new Node('div'); node.append(drawerBody); return { drawer: node, body: drawerBody }; };
+  const drawerState = new Map();
+  const drawer = ({ title, open = false, onToggle, id } = {}) => {
+    const node = new Node('details'), drawerBody = new Node('div');
+    node.drawerTitle = title; node.id = id; node.open = open; node.addEventListener('toggle', () => onToggle?.(node.open)); node.append(drawerBody);
+    return { drawer: node, body: drawerBody };
+  };
   const diagnostics = { starts: 0, stops: 0, marks: 0, records: [{ page: 'settings', defaultPrevented: false }] };
   const modules = {
     './panel.html?raw': { default: '' }, './panel.css?inline': { default: '' },
     './layout.js': { createPanelGeometryController: () => ({ restore() {}, cancelGesture() {} }) },
     './appearance.js': { createAppearanceController: ({ onChange }) => { const state = { mode: 'auto', effectiveTheme: 'day', palette: {} }; onChange?.(state); return { apply() { onChange?.(state); return state; }, getState: () => state, destroy() {} }; } },
-    './settings-drawer.js': { createSettingsDrawer: drawer, createSettingsDrawerState: () => ({ open() {}, set() {}, isOpen: (_key, fallback) => fallback }) },
+    './settings-drawer.js': { createSettingsDrawer: drawer, createSettingsDrawerState: () => ({ open(key) { drawerState.set(key, true); }, set(key, value) { drawerState.set(key, value); }, isOpen: (key, fallback) => drawerState.has(key) ? drawerState.get(key) : fallback }) },
     './settings/api-settings.js': { createApiSettings: () => ({ node: new Node() }) },
     './settings/prompts-settings.js': { createPromptsSettings: () => ({ node: new Node() }) },
     './settings/appearance-settings.js': { createAppearanceSettings: () => ({ node: new Node() }) },
     './scroll-diagnostics.js': { createScrollDiagnostics: () => ({ start() { diagnostics.starts += 1; }, stop() { diagnostics.stops += 1; }, markQqjSwipeIntercepted() { diagnostics.marks += 1; }, snapshot: () => ({ schemaVersion: 1, records: diagnostics.records }) }) },
+    './help-guide.js': { openHelpGuide },
     '../settings.js': { applyPluginEnabledImmediately: async ({ enabled }) => ({ enabled, stale: false }) },
   };
   const context = createContext({ console });
@@ -77,10 +85,11 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   const values = { pluginEnabled: true, appearanceTheme: 'auto', fabShow: true, autoHideEnabled: false, autoHideKeepAiCount: 3 };
   const updates = [];
   const settings = { isEnabled: () => true, get: () => values, update(value) { Object.assign(values, value); updates.push(value); return value; } };
-  let fabVisible = true, dialogActive = false, dialogCancels = 0;
+  let fabVisible = true, dialogActive = false, dialogCancels = 0, helpDialog = null, clipboardFail = false;
+  const clipboardWrites = [];
   const autoHideApplies = [];
   let autoHideApplyStatus = null;
-  const panel = entry.namespace.createPanel({ settings, v3FoundationView, peopleProfilesView, documentRef, dialog: { setAppearance() {}, closeAll() { dialogActive = false; }, hasActive: () => dialogActive, cancelTop() { dialogCancels += 1; dialogActive = false; } }, onFabShowChange: value => { fabVisible = value; }, onAutoHideChange: async value => { autoHideApplies.push(value); return autoHideApplyStatus ? { status: autoHideApplyStatus } : undefined; } });
+  const panel = entry.namespace.createPanel({ settings, v3FoundationView, peopleProfilesView, documentRef, navigatorRef: { clipboard: { async writeText(value) { clipboardWrites.push(value); if (clipboardFail) throw new Error('clipboard denied'); } } }, dialog: { setAppearance() {}, custom(options) { helpDialog = options; dialogActive = true; return Promise.resolve(true); }, closeAll() { dialogActive = false; }, hasActive: () => dialogActive, cancelTop() { dialogCancels += 1; dialogActive = false; } }, onFabShowChange: value => { fabVisible = value; }, onAutoHideChange: async value => { autoHideApplies.push(value); return autoHideApplyStatus ? { status: autoHideApplyStatus } : undefined; } });
 
   await panel.show();
   assert.equal(diagnostics.starts, 1); assert.match(root.innerHTML, /\.body\{[^}]*touch-action:pan-y/);
@@ -95,7 +104,36 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   assert.equal(view.children[0]?.className, 'settings-page', '设置页应真实占据面板内容容器');
   assert.equal(view.children[0]?.children.some(node => node.className === 'master-switch'), true, '设置首开不得被真实 setPage 重绘清掉总开关');
   const settingsGroups = view.children[0]?.children.filter(node => node.tag === 'details');
-  assert.equal(settingsGroups.length, 2, '设置页保留通用设置，并恢复同级记忆设置抽屉');
+  assert.deepEqual(settingsGroups.map(node => node.drawerTitle), ['通用设置', '记忆设置', '教程与配置文件'], '设置页应有三个同级大抽屉');
+  const documentation = settingsGroups[2];
+  assert.equal(documentation.open, false); assert.equal(view.children[0].children.at(-1), documentation, '教程与配置文件必须是设置页最后一项');
+  const documentationCopy = flatten(documentation).map(node => node.textContent).join('|');
+  for (const value of ['教程文档', 'API 接口', 'getStatus()', 'readMemory()', 'getSnapshot()', '复制调用示例']) assert.ok(documentationCopy.includes(value));
+  assert.ok(documentationCopy.indexOf('教程文档') < documentationCopy.indexOf('API 接口'));
+  const managementMount = view.children[0]?.children.find(node => node.className === 'qqj-settings-management');
+  assert.doesNotMatch(flatten(managementMount).map(node => node.textContent).join('|'), /API 接口/, '记忆管理不再嵌套API说明');
+  assert.equal(flatten(view.children[0]).filter(node => node.textContent === '教程文档').length, 1, '设置标题旁不得另放教程入口');
+  const tutorial = flatten(documentation).find(node => node.textContent === '教程文档');
+  assert.notEqual(tutorial.disabled, true, '教程是静态内容，不受后台忙碌状态影响');
+  const callsBeforeHelp = calls.length; tutorial.fire('click'); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, callsBeforeHelp, '打开静态教程不得读取或激活记忆runtime');
+  assert.equal(helpDialog.title, '千千结使用说明'); assert.equal(helpDialog.confirmText, '关闭'); assert.equal(helpDialog.cancelText, '');
+  const helpSections = flatten(helpDialog.content).filter(node => node.tag === 'details');
+  assert.equal(helpSections.length, 8); assert.equal(helpSections[0].open, true); assert.ok(helpSections.slice(1).every(node => node.open === false));
+  dialogActive = false;
+  const copyExample = flatten(documentation).find(node => node.textContent === '复制调用示例');
+  copyExample.fire('click'); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(clipboardWrites.length, 1); assert.match(clipboardWrites[0], /globalThis\.qqj_v3_public_bridge_v1/);
+  assert.match(flatten(documentation).map(node => node.textContent).join('|'), /已复制/);
+  clipboardFail = true; copyExample.fire('click'); await new Promise(resolve => setImmediate(resolve));
+  let fallback = flatten(documentation).find(node => node.className === 'v3-diagnostic-fallback');
+  assert.equal(fallback?.readOnly, true); assert.match(fallback?.value ?? '', /getSnapshot\(\)/);
+  documentation.open = true; documentation.fire('toggle');
+  await panel.show();
+  const rerenderedPage = view.children[0], rerenderedDocumentation = rerenderedPage.children.filter(node => node.tag === 'details').at(-1);
+  assert.equal(rerenderedDocumentation.drawerTitle, '教程与配置文件'); assert.equal(rerenderedDocumentation.open, true);
+  fallback = flatten(rerenderedDocumentation).find(node => node.className === 'v3-diagnostic-fallback');
+  assert.match(fallback?.value ?? '', /globalThis\.qqj_v3_public_bridge_v1/, '设置页重绘后保留手动复制文本');
   const memoryControls = settingsGroups[1].children[0].children;
   const autoHideInput = memoryControls.find(node => node.tag === 'label')?.children.find(node => node.tag === 'input');
   const keepInput = memoryControls.find(node => node.className === 'qqj-auto-hide-row')?.children.find(node => node.tag === 'input');
@@ -110,7 +148,6 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   autoHideApplyStatus = 'disabled'; values.pluginEnabled = false; keepInput.value = '7'; keepInput.fire('change'); await new Promise(resolve => setImmediate(resolve));
   assert.match(memoryControls.find(node => node.className?.split?.(' ').includes('settings-result'))?.textContent ?? '', /重新启用千千结后生效/);
   autoHideApplyStatus = null; values.pluginEnabled = true;
-  const managementMount = view.children[0]?.children.find(node => node.className === 'qqj-settings-management');
   assert.equal(managementMount?.children[0]?.className, 'qqj-page qqj-management-page', '真实管理视图应挂载在设置页内部');
   body.scrollTop = 18; peopleTab.fire('click');
   assert.equal(body.scrollTop, 39, '从设置返回双丝网时恢复其滚动位置');
@@ -225,7 +262,7 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   await panel.show();
   body.fire('touchend', touchEvent({ changedTouches: [touch(80, 100)], target: swipeTarget }));
   assert.equal(panel.getState().screen, 'settings', '重新打开后不得沿用关闭前的横滑状态');
-  panel.close(); assert.equal(diagnostics.starts, 2); assert.equal(diagnostics.stops, 2);
+  panel.close(); assert.equal(diagnostics.starts, 3, '含一次设置页重绘核对与关闭后的重新打开'); assert.equal(diagnostics.stops, 2);
   panel.showStatus('保留模块错误空态');
   assert.equal(view.children[0]?.className, 'empty-state'); assert.equal(view.children[0]?.children[1]?.textContent, '保留模块错误空态', '删除小行后 showStatus 错误空态仍须保留');
 });

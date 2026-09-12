@@ -12,6 +12,8 @@ import {
 import { stateFingerprint, validateStateDeltaRecord } from '../src/v3/cse-schema.js';
 import { scanAssistantCandidates } from '../src/v3/foundation-domain.js';
 import { estimateRecallTokens } from '../src/v3/recall-selector.js';
+import { createCompactApiClient } from '../src/compact-api-client.js';
+import { createTaskRouter } from '../src/api-routing.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GEN = '22222222-2222-4222-8222-222222222222';
@@ -32,6 +34,13 @@ const legacyScanner = async (chat, options) => {
     : candidate));
 };
 const uuidFactory = () => { let value = 100; return () => `${(++value).toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`; };
+const compactResponse = (content, status = 200) => status >= 400
+  ? { ok: false, status, text: async () => '' }
+  : { ok: true, status, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content } }] }) };
+const analysisRouter = fetchImpl => {
+  const route = { kind: 'independent', source: 'test', sourceLabel: '测试 API', config: { url: 'https://api.example.test/v1', key: 'TEST_KEY', model: 'test-model', excludeParams: [], timeoutSec: 5, stream: false } };
+  return createTaskRouter({ resolver: { resolve: () => route, resolveUtility: () => route }, compactClient: createCompactApiClient({ fetchImpl, retryWait: async () => {} }) });
+};
 
 async function waitFor(predicate, message) {
   for (let attempt = 0; attempt < 500; attempt += 1) {
@@ -53,7 +62,7 @@ function backendHarness({ conflictRootPut = null, beforeGet = null, beforePut = 
   } };
 }
 
-function runtimeHarness({ cse, extractor, host = 'official', backendOptions, sharedBackend = null, clock = () => new Date(NOW), chat = null, chatWorldInfo = null, filterWorldInfoSources = sources => sources } = {}) {
+function runtimeHarness({ cse, extractor, host = 'official', backendOptions, sharedBackend = null, clock = () => new Date(NOW), chat = null, chatWorldInfo = null, filterWorldInfoSources = sources => sources, failureStorage = undefined } = {}) {
   const handlers = new Map(), calls = [], backend = sharedBackend ?? backendHarness(backendOptions);
   let enabled = true;
   const books = new Map([['当前书', { entries: { 1: { uid: 1, constant: true, content: '<content>启用作者设定</content>' }, 2: { uid: 2, constant: true, content: '禁用支线', disable: true } } }], ['聊天书', { entries: { 4: { uid: 4, constant: true, content: '聊天书作者设定' } } }], ['未链接书', { entries: { 3: { uid: 3, constant: true, content: '不得进入基线' } } }]]);
@@ -88,7 +97,7 @@ function runtimeHarness({ cse, extractor, host = 'official', backendOptions, sha
     assert.equal(options.systemPrompt, CSE_SYSTEM_PROMPT, 'CSE 必须只走分析路由');
     return cse ? cse(options, calls) : { jsonData: { subjects: [{ subject: '主角', situational: [{ text: '记得带伞', visibility: 'private', reason: '收到提醒' }] }] }, taskMetadata: { source: 'test-analysis', sourceLabel: '测试分析 API', model: 'analysis-mock' } };
   };
-  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled: () => enabled, filterWorldInfoSources, sanitizerOptions: () => ({ keepTags: 'content' }), now: clock, newUuid: uuidFactory(), logger: { warn() {} } });
+  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled: () => enabled, filterWorldInfoSources, sanitizerOptions: () => ({ keepTags: 'content' }), failureStorage, now: clock, newUuid: uuidFactory(), logger: { warn() {} } });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
   return { runtime, foundationRuntime, store, baseStore, backend, context, calls, commitResults, readModes, emit(name, ...args) { for (const listener of handlers.get(name) ?? []) listener(...args); }, setEnabled(value) { enabled = value; } };
 }
@@ -653,6 +662,39 @@ test('生产 CSE 请求 seam 固定样例可并存自身无对象与行为关系
   ]);
 });
 
+test('CSE 真实 compact 路由在503与坏格式间共享总预算，第三次 HTTP 成功且输入不变', async () => {
+  const envelope = createCseEnvelope({ floor: floor(FLOOR1, '甲今天状态平稳。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [entities[1]], entities });
+  const bodies = [];
+  let fetches = 0;
+  const router = analysisRouter(async (_path, options) => {
+    bodies.push(JSON.parse(options.body));
+    fetches += 1;
+    if (fetches === 1) return compactResponse('', 503);
+    if (fetches === 2) return compactResponse('不是 JSON');
+    return compactResponse('{"subjects":[]}');
+  });
+  const result = await runCseRequest({ generateAnalysisTask: router.generateAnalysisTask, envelope, previousCurrentState: null, now: NOW, deltaId: '26252525-2525-4252-8252-252525252525' });
+  assert.equal(fetches, 3);
+  assert.equal(result.attempts, 2);
+  assert.equal(result.transportAttempts, 3);
+  assert.equal(result.delta.noMaterialChange, true);
+  assert.deepEqual(bodies.map(body => body.messages), [bodies[0].messages, bodies[0].messages, bodies[0].messages]);
+});
+
+test('CSE 三次坏格式只发三个 HTTP，并保留最后格式错误与3/3诊断', async () => {
+  const envelope = createCseEnvelope({ floor: floor(FLOOR1, '甲今天状态平稳。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [entities[1]], entities });
+  let fetches = 0;
+  const router = analysisRouter(async () => { fetches += 1; return compactResponse('不是 JSON'); });
+  let failure;
+  try { await runCseRequest({ generateAnalysisTask: router.generateAnalysisTask, envelope, previousCurrentState: null, now: NOW, deltaId: '27252525-2525-4252-8252-252525252525' }); }
+  catch (error) { failure = error; }
+  assert.equal(fetches, 3);
+  assert.equal(failure.code, 'V3_CSE_FORMAT_INVALID');
+  assert.match(failure.message, /^已尝试 3 次仍失败：/);
+  assert.equal(failure.cseDiagnostics.attempts, 3);
+  assert.equal(failure.cseDiagnostics.transportAttempts, 3);
+});
+
 test('CSE Phase A 并发写入保留记录，完成后仍按 run → checkpoint → root 屏障提交且同 root 不整图回读', async () => {
   const phaseTypes = new Set(['entity', 'stateDelta', 'currentState', 'index']);
   const expectedPhaseTypes = new Set(['stateDelta', 'currentState', 'index']);
@@ -802,11 +844,43 @@ test('CSE 关联世界书读取失败时不调用分析 API，并保留不含正
   assert.equal(JSON.stringify(state.lastCseError.diagnostics).includes('启用作者设定'), false);
 });
 
+test('CSE retryable 失败提示按真实失败累计，成功提交只清本楼', async () => {
+  const values = new Map();
+  const failureStorage = {
+    getItem: key => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: key => values.delete(key),
+  };
+  let fail = true;
+  const h = runtimeHarness({
+    failureStorage,
+    cse: () => {
+      if (fail) throw Object.assign(new Error('受控 CSE 失败'), { code: 'TEST_CSE_FAILED' });
+      return { jsonData: { noMaterialChange: true } };
+    },
+  });
+  let state = await h.runtime.start().then(() => h.runtime.extractNext());
+  const floorId = state.floors[0].floorId;
+  const key = [...values.keys()][0];
+  assert.equal(JSON.parse(values.get(key)).cseFailures[floorId].count, 1);
+  state = await h.runtime.retryStateAnalysis(floorId);
+  assert.equal(JSON.parse(values.get(key)).cseFailures[floorId].count, 2);
+  assert.equal(state.cseFloors[0].status, 'failed');
+
+  fail = false;
+  state = await h.runtime.retryStateAnalysis(floorId);
+  assert.equal(state.cseFloors[0].status, 'noChange');
+  assert.equal(state.cseFloors[0].error, null);
+  assert.equal(values.has(key), false, '真实提交成功后应清对应楼提示');
+});
+
 test('CSE 等待模型期间目标活动摘要被替换时保持 stale，旧结果不写入新 root', async () => {
   let releaseCse;
   let markStarted;
   const cseStarted = new Promise(resolve => { markStarted = resolve; });
+  const failureValues = new Map();
   const h = runtimeHarness({
+    failureStorage: { getItem: key => failureValues.get(key) ?? null, setItem: (key, value) => failureValues.set(key, value), removeItem: key => failureValues.delete(key) },
     cse: () => new Promise(resolve => {
       releaseCse = () => resolve({ jsonData: { noMaterialChange: true } });
       markStarted();
@@ -827,6 +901,7 @@ test('CSE 等待模型期间目标活动摘要被替换时保持 stale，旧结�
   assert.equal(after.floorMemories.find(item => item.floorId === targetFloorId && item.recordStatus === 'active')?.id, changedMemoryId);
   assert.equal(after.stateDeltas.length, 0, '目标摘要改变后迟到 CSE 不得写入 delta');
   assert.equal(h.runtime.getState().lastCseError?.code, 'V3_CSE_STALE');
+  assert.equal(failureValues.size, 0, 'stale/Abort 不能写持久失败提示');
 });
 
 test('CSE root 校验复用已确认内容，checkpoint 后只真读 run/index 且全部读完才 CAS', async () => {
