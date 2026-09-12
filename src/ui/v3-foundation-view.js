@@ -818,7 +818,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
 
   function renderRecallDetails(state = recallState) {
     const drawer = setDetailsState(element('details', 'qqj-management-drawer'), 'recall-details', false), record = state?.lastRecall ?? null, status = state?.recallStatus ?? 'idle';
-    const recallStatus = record?.legacyReadOnly ? '旧版只读记录 · 不代表本轮已注入' : record?.restoredReceipt ? '已落盘回执 · 恢复显示' : statusCopy(status);
+    const recallStatus = record?.legacyReadOnly ? '旧版只读记录 · 不代表本轮已注入' : record?.restoredReceipt ? '聊天记录中的回执 · 恢复显示' : statusCopy(status);
     const summary = element('summary', 'qqj-section-summary'); summary.append(element('strong', '', record?.restoredReceipt ? '最近一次召回结果' : '最近召回回执'), element('span', 'v3-memory-status', recallStatus)); drawer.append(summary);
     const body = element('div', 'qqj-management-drawer-body'); if (receiptFeedback) body.append(element('p', 'v3-foundation-feedback error', receiptFeedback));
     if (!record) { body.append(element('p', 'settings-hint', state?.activeRecall ? `正在处理 ${state.activeRecall.generationType} · ${state.activeRecall.phase}` : '下一次正文生成后，这里会保留最近一次召回结果。')); drawer.append(body); return drawer; }
@@ -828,7 +828,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const floors = (record.selectedFloors ?? []).map(value => floorCopy(foundationState, value, '来源楼号未提供')).join('、') || '无', states = (record.selectedStates ?? []).map(value => `${value.subject} / ${value.layer}`).join('、') || '无';
     const changes = (record.selectedCseChanges ?? []).map(value => `${value.subject} / ${value.layer} / ${cseActionCopy(value.action)} / ${floorCopy(foundationState, value, '来源楼号未提供')}`).join('、') || '无';
     const stageCopy = stages && [stages.recentSummaryCount, stages.distantHistoryItemCount, stages.stateCount].every(Number.isSafeInteger)
-      ? { main:`输入 ${stages.input} → 记忆楼 ${stages.candidates} → 近期摘要 ${stages.recentSummaryCount} → 远期旧事 ${stages.distantHistoryItemCount}${Number.isSafeInteger(stages.linkedHistoryItemCount) ? `（关联补入 ${stages.linkedHistoryItemCount}）` : ''} → 当前态 ${stages.currentStateCount ?? stages.stateCount} → 历史变化 ${stages.cseChangeCount ?? 0}${Number.isSafeInteger(stages.linkedCseChangeCount) ? `（关联补入 ${stages.linkedCseChangeCount}）` : ''}${Number.isSafeInteger(stages.storylineCount) ? ` → 剧情线 ${stages.storylineCount}` : ''}${Number.isSafeInteger(stages.budgetDroppedCount) ? ` → 预算舍弃 ${stages.budgetDroppedCount} → 最终材料 ${stages.finalInjectionItemCount}` : ''}`, token:Number.isSafeInteger(stages.estimatedTokenCount) && Number.isSafeInteger(stages.estimatedTokenBudget) ? `Token 保守估算 ${stages.estimatedTokenCount}/${stages.estimatedTokenBudget}` : '' }
+      ? { main:`输入 ${stages.input} → 记忆楼 ${stages.candidates} → 近期摘要 ${stages.recentSummaryCount} → 远期旧事 ${stages.distantHistoryItemCount}${Number.isSafeInteger(stages.linkedHistoryItemCount) ? `（关联补入 ${stages.linkedHistoryItemCount}）` : ''} → 当前态 ${stages.currentStateCount ?? stages.stateCount} → 历史变化 ${stages.cseChangeCount ?? 0}${Number.isSafeInteger(stages.linkedCseChangeCount) ? `（关联补入 ${stages.linkedCseChangeCount}）` : ''}${Number.isSafeInteger(stages.stateProgressionCount) ? ` → 时间推演 ${stages.stateProgressionCount}` : ''}${Number.isSafeInteger(stages.storylineCount) ? ` → 剧情线 ${stages.storylineCount}` : ''}${Number.isSafeInteger(stages.budgetDroppedCount) ? ` → 未选入 ${stages.budgetDroppedCount}（含预算、条数或剧情线限制） → 最终材料 ${stages.finalInjectionItemCount}` : ''}`, token:Number.isSafeInteger(stages.estimatedTokenCount) && Number.isSafeInteger(stages.estimatedTokenBudget) ? `Token 保守估算 ${stages.estimatedTokenCount}/${stages.estimatedTokenBudget}${Number.isSafeInteger(stages.ordinaryEstimatedTokenBudget) ? ` · 普通材料额度 ${stages.ordinaryEstimatedTokenBudget}` : ''}` : '' }
       : { main:stages ? `输入 ${stages.input} → 记忆楼 ${stages.candidates} → 去近期 ${stages.dropRecent} → 去常驻重复 ${stages.dropPersistent ?? 0} → 去越界 ${stages.dropVisibility} → 选中楼 ${stages.selected}` : '收据复用或未执行', token:'' };
     const selector = record.selectorDiagnostic;
     const selectorCount = value => Number.isSafeInteger(value) ? String(value) : '未知';
@@ -836,11 +836,19 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const selectorCountCopy = hasExclusionCounts
       ? `历史候选 ${selectorCount(selector?.historyCandidateCount)} → 模型排除 ${selectorCount(selector?.historyExcludedCount)} → 保留 ${selectorCount(selector?.historyRetainedCount)} → 关联补入 ${selectorCount(stages?.linkedHistoryItemCount)} → 最终远期 ${selectorCount(stages?.distantHistoryItemCount)} · 人物候选 ${selectorCount(selector?.stateCandidateCount)} → 模型排除 ${selectorCount(selector?.stateExcludedCount)} → 保留 ${selectorCount(selector?.stateRetainedCount)} → 关联补入 ${selectorCount(stages?.linkedCseChangeCount)} → 最终注入 ${Number.isSafeInteger(stages?.currentStateCount) && Number.isSafeInteger(stages?.cseChangeCount) ? stages.currentStateCount + stages.cseChangeCount : '未知'}`
       : `历史候选 ${selectorCount(selector?.historyCandidateCount)} → 模型选择 ${selectorCount(selector?.historyModelSelectedCount)} → 最终远期 ${selectorCount(stages?.distantHistoryItemCount)} · 人物候选 ${selectorCount(selector?.stateCandidateCount)} → 模型选择 ${selectorCount(selector?.stateModelSelectedCount)} → 最终注入 ${Number.isSafeInteger(stages?.currentStateCount) && Number.isSafeInteger(stages?.cseChangeCount) ? stages.currentStateCount + stages.cseChangeCount : '未知'}`;
-    const timingCopy = timings ? (Number.isFinite(timings.totalMs)
-      ? `本轮实时总耗时 ${Number(timings.totalMs).toFixed(1)} ms · 选材 ${Number(timings.selectorMs || 0).toFixed(1)} ms · 读取 ${Number(timings.sourceMs || 0).toFixed(1)} ms`
-      : `落盘阶段：选材 ${Number(timings.selectorMs || 0).toFixed(1)} ms · 读取 ${Number(timings.sourceMs || 0).toFixed(1)} ms`) : record.reusedReceipt ? '复用收据' : '未记录';
+    const persistenceCopy = { sessionOnly: '仅当前页面可复用', saveUnconfirmed: '已请求宿主保存，结果未确认', chatRecord: '从聊天记录读取', none: '未保存' };
+    const selectorBreakdown = selector?.mode === 'local' && Number.isFinite(selector?.localSelectionMs)
+      ? `未发起选材接口 · 本地选材 ${Number(selector.localSelectionMs).toFixed(1)} ms`
+      : Number.isFinite(selector?.utilityRoundTripMs) && Number.isFinite(selector?.localSelectionMs)
+      ? `接口往返（含传输） ${Number(selector.utilityRoundTripMs).toFixed(1)} ms · 本地选材 ${Number(selector.localSelectionMs).toFixed(1)} ms`
+      : '接口往返与本地选材未记录';
+    const timingCopy = record.reusedReceipt
+      ? `${Number.isFinite(timings?.totalMs) ? `本轮复用耗时 ${Number(timings.totalMs).toFixed(1)} ms` : '本轮复用耗时未记录'} · 未发起新选材请求 · 原回执${selectorBreakdown}`
+      : record.restoredReceipt
+        ? `历史原始耗时：${Number.isFinite(timings?.totalMs) ? `总等待 ${Number(timings.totalMs).toFixed(1)} ms · ` : ''}${Number.isFinite(timings?.selectorMs) ? `选材总等待 ${Number(timings.selectorMs).toFixed(1)} ms · ` : ''}${selectorBreakdown}${Number.isFinite(timings?.sourceMs) ? ` · 读取 ${Number(timings.sourceMs).toFixed(1)} ms` : ''}`
+        : timings ? `${Number.isFinite(timings.totalMs) ? `本轮召回等待 ${Number(timings.totalMs).toFixed(1)} ms · ` : ''}${Number.isFinite(timings.selectorMs) ? `选材总等待 ${Number(timings.selectorMs).toFixed(1)} ms · ` : ''}${selectorBreakdown}${Number.isFinite(timings.sourceMs) ? ` · 读取 ${Number(timings.sourceMs).toFixed(1)} ms` : ''}` : '未记录';
     const filterReasons = (record.skipReasons ?? []).filter(value => value !== 'historySelectionFallback').map(skipReasonCopy);
-    const details = element('dl', 'v3-foundation-grid'); details.append(row('触发用户楼', userFloorCopy(record.userMessageIndex)), row('生成时间', localTimeCopy(record.createdAt)), row('生成类型', generationTypeCopy(record.generationType)), row('收据', record.legacyReadOnly ? '旧版只读记录' : record.restoredReceipt ? '已落盘回执 · 仅恢复历史展示，不会再次注入' : `${record.reusedReceipt ? '复用' : '新算'} · ${record.receiptPersistence ?? 'none'}`), row('召回旧楼', floors), row('当前人物状态', states), row('人物状态历史变化', changes), row('覆盖范围', coverage ? `记忆 ${coverage.rememberedAiFloors}/${coverage.stableAiFloors} · ${coverage.cseThroughAssistantSeq ? `CSE 到${floorCopy(foundationState, { assistantSeq: coverage.cseThroughAssistantSeq }, '终点楼号未提供')}` : 'CSE 尚未覆盖'}` : '本轮未读取'), stageRow('筛选阶段', stageCopy), row('选材方式', selectorModeCopy(selector?.mode)), row('智能选材计数', selectorCountCopy), ...(selector?.mode === 'fallback' ? [row('选材失败原因', `${selectorFailureCopy(selector.code)}${selector.httpStatus ? `（HTTP ${selector.httpStatus}）` : ''}`)] : []), row('耗时', timingCopy), row('来源读取', sourceReadCopy), row('普通过滤说明', filterReasons.join('、') || '无'));
+    const details = element('dl', 'v3-foundation-grid'); details.append(row('触发用户楼', userFloorCopy(record.userMessageIndex)), row('生成时间', localTimeCopy(record.createdAt)), row('生成类型', generationTypeCopy(record.generationType)), row('收据', record.legacyReadOnly ? '旧版只读记录' : record.restoredReceipt ? '从聊天记录读取 · 仅恢复历史展示，不会再次注入' : `${record.reusedReceipt ? '复用' : '新算'} · ${persistenceCopy[record.receiptPersistence] ?? record.receiptPersistence ?? '未知'}`), row('召回旧楼', floors), row('当前人物状态', states), row('人物状态历史变化', changes), row('覆盖范围', coverage ? `记忆 ${coverage.rememberedAiFloors}/${coverage.stableAiFloors} · ${coverage.cseThroughAssistantSeq ? `CSE 到${floorCopy(foundationState, { assistantSeq: coverage.cseThroughAssistantSeq }, '终点楼号未提供')}` : 'CSE 尚未覆盖'}` : '本轮未读取'), stageRow('筛选阶段', stageCopy), row('选材方式', selectorModeCopy(selector?.mode)), row('智能选材计数', selectorCountCopy), ...(selector?.mode === 'fallback' ? [row('选材失败原因', `${selectorFailureCopy(selector.code)}${selector.httpStatus ? `（HTTP ${selector.httpStatus}）` : ''}`)] : []), row('耗时', timingCopy), row('来源读取', sourceReadCopy), row('普通过滤说明', filterReasons.join('、') || '无'));
     body.append(details); const safeError = state?.lastRecallError?.message || record.error?.message; if (safeError) body.append(element('p', 'v3-foundation-feedback error', safeError));
     if (record.legacyReadOnly) body.append(element('p', 'settings-hint', '这是旧版只读记录，不会复用、注入或升级为当前回执。'));
     if (record.injectionText) {
@@ -864,7 +872,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     if (!prequelDraft || prequelDraft.hostChatId !== saved.hostChatId) prequelDraft = { hostChatId: saved.hostChatId, text: saved.text, dirty: false, saving: false };
     else if (!prequelDraft.dirty && !prequelDraft.saving && prequelDraft.text !== saved.text) prequelDraft.text = saved.text;
     const drawer = setDetailsState(element('details', 'qqj-management-drawer'), 'prequel', false);
-    const summary = element('summary', 'qqj-section-summary'); summary.append(element('strong', '', '前情'), element('span', 'v3-memory-status', saved.text ? `已保存 ${[...saved.text].length} 字符` : '尚未保存')); drawer.append(summary);
+    const summary = element('summary', 'qqj-section-summary'); summary.append(element('strong', '', '前情'), element('span', 'v3-memory-status', saved.text ? `当前 ${[...saved.text].length} 字符` : '尚未设置')); drawer.append(summary);
     const body = element('div', 'qqj-management-drawer-body');
     body.append(element('p', 'settings-hint', '粘贴旧聊天的大摘要。原文随当前聊天保存，生成时按需选段；清空文本后保存即可移除。'));
     const editor = element('textarea', 'v3-diagnostic-fallback qqj-prequel-editor'); editor.value = prequelDraft.text; editor.textContent = prequelDraft.text; editor.readOnly = false;
@@ -879,7 +887,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         const result = await recallRuntime.savePrequel(submittedText);
         if (prequelDraft.text === submittedText) prequelDraft = { hostChatId: result.hostChatId, text: result.text, dirty: false, saving: false };
         else { prequelDraft.hostChatId = result.hostChatId; prequelDraft.saving = false; prequelDraft.dirty = true; }
-        prequelFeedback = result.text ? '前情已保存。' : '前情已清空。';
+        prequelFeedback = result.text ? '前情已更新，并已交给酒馆保存。' : '前情已移除，并已交给酒馆保存。';
       } catch (error) {
         prequelDraft.saving = false;
         prequelFeedback = errorMessage(error) || '前情保存失败。';
@@ -895,7 +903,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const detailSummary = element('summary', 'qqj-section-summary'); detailSummary.append(element('strong', '', '本次选用'), element('span', 'v3-memory-status', selected.fragmentIndexes.map(value => `片段 ${value}`).join('、'))); details.append(detailSummary);
       const ordinaryTokens = recallState?.lastRecall?.restoredReceipt ? 0 : Number(recallState?.lastRecall?.stages?.estimatedTokenCount) || 0;
       const selectedBody = element('div', 'qqj-management-drawer-body');
-      selectedBody.append(element('p', 'settings-hint', `普通记忆估算 ${ordinaryTokens} + 前情估算 ${selected.estimatedTokens} = 合计 ${ordinaryTokens + selected.estimatedTokens} Token`), element('pre', 'v3-recall-injection', selected.injectionText));
+      selectedBody.append(element('p', 'settings-hint', `召回材料估算 ${ordinaryTokens} + 前情估算 ${selected.estimatedTokens} = 合计 ${ordinaryTokens + selected.estimatedTokens} Token`), element('pre', 'v3-recall-injection', selected.injectionText));
       details.append(selectedBody); body.append(details);
     }
     drawer.append(body); return drawer;
@@ -903,8 +911,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   function renderDiagnostics(state) {
     const drawer = setDetailsState(element('details', 'qqj-management-drawer'), 'diagnostics', false), summary = element('summary', 'qqj-section-summary'); summary.append(element('strong', '', '详细诊断'), element('span', 'v3-memory-status', '按需展开')); drawer.append(summary);
     const body = element('div', 'qqj-management-drawer-body'), details = element('dl', 'v3-foundation-grid');
+    if (feedback.includes('历史召回回执已独立处理')) details.append(row('最近读取结果', feedback));
     const rebuildCopy = ({ rebuilding: '正在重建', paused: '已暂停', waitingRealtime: '等待新楼', failed: '失败', caughtUp: '已追平', pendingRebuild: '等待开始', notReady: '覆盖待确认' })[state.rebuildStatus] ?? '尚未判断';
-    details.append(row('当前 chat', state.chatId), row('地基状态', statusCopy(effectiveStatus(state))), row('待核对原因', reviewReasonCopy(state.reviewReason)), row('自动维护新楼', state.autoMemoryEnabled ? '已开启 · 每楼更新' : '已关闭'), row('历史重建', `${rebuildCopy} · ${state.rebuildCompletedCount ?? 0}/${state.rebuildTotalCount ?? state.stableCount ?? 0}`), row('CSE 待分析 / 失败', `${state.csePendingCount ?? 0} / ${state.cseFailedCount ?? 0}`), row('Head checkpoint', state.headCheckpointId), row('最近记忆错误', state.lastExtractorError?.message || state.lastError || '无'), row('最近自动任务错误', state.lastAutomationError?.message || '无'), row('最近 CSE 错误', state.lastCseError?.message || '无')); body.append(details);
+    details.append(row('当前 chat', state.chatId), row('记忆状态', statusCopy(effectiveStatus(state))), row('待核对原因', reviewReasonCopy(state.reviewReason)), row('自动维护新楼', state.autoMemoryEnabled ? '已开启 · 每楼更新' : '已关闭'), row('历史重建', `${rebuildCopy} · ${state.rebuildCompletedCount ?? 0}/${state.rebuildTotalCount ?? state.stableCount ?? 0}`), row('CSE 待分析 / 失败', `${state.csePendingCount ?? 0} / ${state.cseFailedCount ?? 0}`), row('Head checkpoint', state.headCheckpointId), row('最近记忆错误', state.lastExtractorError?.message || state.lastError || '无'), row('最近自动任务错误', state.lastAutomationError?.message || '无'), row('最近 CSE 错误', state.lastCseError?.message || '无')); body.append(details);
     const stateDiagnosticAction = element('div', 'qqj-ui-diagnostic-action');
     const copyState = element('button', 'secondary-action', '复制状态诊断'); copyState.type = 'button';
     copyState.addEventListener('click', () => { void copyStateDiagnostic(); });
@@ -917,13 +926,18 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       uiDiagnostic.append(copyUi, element('span', 'settings-hint', '只含界面滚动状态，不含聊天正文或输入内容。'));
       body.append(uiDiagnostic);
     }
-    if (typeof runtime.copySafeDiagnostic === 'function' && typeof runtime.copyFullDiagnostic === 'function') {
+    if (typeof runtime.copySafeDiagnostic === 'function' && typeof runtime.copyFullDiagnostic === 'function' && state.floors?.length) {
+      const floorDrawer = setDetailsState(element('details', 'qqj-management-drawer qqj-floor-diagnostics'), 'floor-diagnostics', false);
+      const floorSummary = element('summary', 'qqj-section-summary');
+      floorSummary.append(element('strong', '', '楼层诊断'), element('span', 'v3-memory-status', `${state.floors.length} 楼`));
+      const floorList = element('div', 'qqj-floor-diagnostics-list');
       for (const floor of [...(state.floors ?? [])].reverse()) {
         const diagnostic = element('div', 'qqj-diagnostic-row'); diagnostic.append(element('span', '', floorCopy(state, floor)));
         const safe = element('button', 'secondary-action', '复制安全诊断'); safe.type = 'button'; safe.addEventListener('click', () => { void run('复制安全诊断', async () => { feedback = await copy(runtime.copySafeDiagnostic(floor.floorId)); return runtime.getState(); }); });
         const full = element('button', 'secondary-action', '复制完整诊断'); full.type = 'button'; full.addEventListener('click', () => { void run('复制完整诊断', async () => { if (!await Promise.resolve(confirmImpl({ title: '复制完整诊断', body: '完整诊断包含本楼正文与证据原文。确认复制吗？', confirmText: '复制', cancelText: '取消' }))) { feedback = '已取消完整诊断复制。'; return runtime.getState(); } feedback = await copy(runtime.copyFullDiagnostic(floor.floorId)); return runtime.getState(); }); });
-        diagnostic.append(safe, full); body.append(diagnostic);
+        diagnostic.append(safe, full); floorList.append(diagnostic);
       }
+      floorDrawer.append(floorSummary, floorList); body.append(floorDrawer);
     }
     if (fallbackText) { const fallback = element('textarea', 'v3-diagnostic-fallback'); fallback.value = fallbackText; fallback.textContent = fallbackText; fallback.readOnly = true; body.append(element('p', 'settings-hint', '诊断文本（长按全选复制）'), fallback); }
     drawer.append(body); return drawer;
@@ -942,16 +956,16 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const reset = element('button', 'secondary-action', '完全重构'); reset.type = 'button'; reset.disabled = busy || typeof runtime.fullRebuild !== 'function'; reset.addEventListener('click', async () => { if (!await Promise.resolve(confirmImpl({ title: '完全重构当前聊天记忆', body: '当前聊天的摘要及人物状态将从头重新生成，人工修订也会被替换；聊天正文和插件设置保留。', confirmText: '完全重构', cancelText: '取消' }))) { feedback = '已取消完全重构。'; render(foundationState); return; } void run('完全重构', () => runtime.fullRebuild(state.chatId), { resultCopy: automaticResult('完全重构') }); }); actions.append(reset);
     const cseRunning = state.cseRebuildStatus === 'running' && state.activeAutoMemory?.mode === 'cseRebuild';
     const cseResume = ['paused', 'failed'].includes(state.cseRebuildStatus);
-    const cseAction = element('button', 'secondary-action', cseRunning ? '暂停 CSE 重构' : cseResume ? '继续 CSE 重构' : 'CSE 重构'); cseAction.type = 'button';
+    const cseAction = element('button', 'secondary-action', cseRunning ? '暂停人物状态重构' : cseResume ? '继续人物状态重构' : '人物状态重构'); cseAction.type = 'button';
     cseAction.disabled = cseRunning ? typeof runtime.pauseCseRebuild !== 'function' || deleting : busy || typeof runtime.rebuildCse !== 'function' || (state.rememberedCount ?? 0) < 1;
     cseAction.addEventListener('click', async () => {
-      if (cseRunning) { void run('暂停 CSE 重构', () => runtime.pauseCseRebuild(), { resultCopy: cseRebuildResult('CSE 重构') }); return; }
-      if (cseResume) { void run('继续 CSE 重构', () => runtime.resumeCseRebuild(state.chatId), { resultCopy: cseRebuildResult('CSE 重构') }); return; }
-      if (!await Promise.resolve(confirmImpl({ title: '重构当前聊天 CSE', body: '所有摘要及摘要人工修订都会保留；已有摘要对应的人物状态将从头重新生成，CSE 人工纠正也会被覆盖。未摘要楼不会处理。', confirmText: 'CSE 重构', cancelText: '取消' }))) { feedback = '已取消 CSE 重构。'; render(foundationState); return; }
-      void run('CSE 重构', () => runtime.rebuildCse(state.chatId), { resultCopy: cseRebuildResult('CSE 重构') });
+      if (cseRunning) { void run('暂停人物状态重构', () => runtime.pauseCseRebuild(), { resultCopy: cseRebuildResult('人物状态重构') }); return; }
+      if (cseResume) { void run('继续人物状态重构', () => runtime.resumeCseRebuild(state.chatId), { resultCopy: cseRebuildResult('人物状态重构') }); return; }
+      if (!await Promise.resolve(confirmImpl({ title: '重构当前聊天人物状态', body: '所有摘要及摘要人工修订都会保留；已有摘要对应的人物状态将从头重新生成，CSE 人工纠正也会被覆盖。未摘要楼不会处理。', confirmText: '人物状态重构', cancelText: '取消' }))) { feedback = '已取消人物状态重构。'; render(foundationState); return; }
+      void run('人物状态重构', () => runtime.rebuildCse(state.chatId), { resultCopy: cseRebuildResult('人物状态重构') });
     });
     actions.append(cseAction);
-    if (state.cseRebuildStatus !== 'idle') actions.append(element('span', 'settings-hint', `CSE ${state.cseRebuildStatus === 'completed' ? '已完成' : state.cseRebuildStatus === 'failed' ? '失败' : state.cseRebuildStatus === 'paused' ? '已暂停' : '重构中'} · ${state.cseRebuildCompletedCount ?? 0}/${state.cseRebuildTotalCount ?? 0}`));
+    if (state.cseRebuildStatus !== 'idle') actions.append(element('span', 'settings-hint', `人物状态${state.cseRebuildStatus === 'completed' ? '已完成' : state.cseRebuildStatus === 'failed' ? '失败' : state.cseRebuildStatus === 'paused' ? '已暂停' : '重构中'} · ${state.cseRebuildCompletedCount ?? 0}/${state.cseRebuildTotalCount ?? 0}`));
     const pendingCopy = `摘要待补 ${state.unprocessedCount ?? 0} 楼 · CSE 待分析 ${state.csePendingCount ?? 0} 楼`;
     const nextStepCopy = deletePending ? '上次删除尚未完成，请先继续删除当前聊天记忆。'
       : busy ? `${workPhaseCopy(state)}，完成后可继续操作。`
@@ -959,21 +973,25 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
           : ['needsReview', 'error'].includes(effectiveStatus(state)) ? `当前${statusCopy(effectiveStatus(state))}；请先点击“刷新状态”。若仍无法确认真实归属，现有记忆会保留、正文可继续，可复制诊断反馈。`
             : !rebuildActionable ? '当前没有需要补齐的稳定楼。'
               : '可用“补齐缺失”保留已有结果；“完全重构”会替换全部摘要与人物状态。';
-    actions.append(element('span', 'settings-hint', `${pendingCopy}。${nextStepCopy}`));
+    actions.append(element('span', 'settings-hint qqj-management-progress', `${pendingCopy}。${nextStepCopy}`));
+    const deleteActions = element('div', 'qqj-management-delete');
     if (memoryManagement) {
-      const remove = element('button', 'secondary-action', deleting ? '删除中…' : deletePending ? '继续删除当前聊天记忆' : '删除当前聊天记忆');
+      const remove = element('button', 'primary-action', deleting ? '删除中…' : deletePending ? '继续删除当前聊天记忆' : '删除当前聊天记忆');
       remove.type = 'button'; remove.disabled = deleting || managementState?.blockedByOtherChat === true || (!deletePending && (managementState?.workBusy === true || !state.chatId));
       remove.addEventListener('click', async () => {
         if (!await Promise.resolve(confirmImpl({ title: '删除当前聊天记忆', body: '将删除本聊天的摘要、人物状态、人物资料、召回记录及历史派生版本。聊天正文、手动前情和全局 API、提示词设置会保留；手动前情可在“前情”中另行清空。下次建档需要从头开始。', note: '后端数据会移入回收站；这不代表永久擦除。', confirmText: deletePending ? '继续删除' : '删除记忆', cancelText: '取消' }))) { feedback = '已取消删除当前聊天记忆。'; render(foundationState); return; }
         void run(deletePending ? '继续删除当前聊天记忆' : '删除当前聊天记忆', () => memoryManagement.deleteCurrent(), { after: () => { managementState = memoryManagement.getState(); feedback = '当前聊天记忆已删除；聊天正文、手动前情与全局设置均已保留。手动前情可在“前情”中清空。'; return true; }, failed: () => { managementState = memoryManagement.getState(); return true; } });
       });
-      actions.append(remove);
+      deleteActions.append(remove);
     }
     if (deletePending && managementState.error) pageNode.append(element('p', 'v3-foundation-feedback error', `上次删除未完成：${managementState.error} 已保留原聊天身份，可继续删除剩余记录。`));
     else if (managementState?.status === 'completed') pageNode.append(element('p', 'v3-foundation-feedback', '当前聊天记忆已清空；聊天正文、手动前情和全局设置仍保留。手动前情可在“前情”中清空。'));
-    pageNode.append(actions, element('p', `v3-foundation-feedback${errorCopy(state) ? ' error' : ''}`, feedback || errorCopy(state) || '状态已显示。'));
+    const managementFeedback = (feedback || errorCopy(state) || '状态已显示。').replace('；历史召回回执已独立处理。', '');
+    pageNode.append(actions, element('p', `v3-foundation-feedback qqj-management-feedback${errorCopy(state) || managementFeedback.startsWith('记忆读取失败') ? ' error' : ''}`, managementFeedback));
     const prequel = renderPrequelDetails(); if (prequel) pageNode.append(prequel);
-    pageNode.append(renderRecallDetails(), renderDiagnostics(state)); return pageNode;
+    pageNode.append(renderRecallDetails(), renderDiagnostics(state));
+    if (memoryManagement) pageNode.append(deleteActions);
+    return pageNode;
   }
 
   function renderAdopted(state) {

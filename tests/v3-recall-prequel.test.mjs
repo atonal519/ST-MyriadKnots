@@ -30,13 +30,23 @@ test('前情本地选段命中远端事实、无匹配接尾，并让格式开�
   assert.equal(unrelated.injectionText, '');
 });
 
-function runtimeHarness({ prequel = '裴晚生曾把蓝铜钥匙藏在钟楼。', saveResult = true, sourceStatus = 'uninitialized' } = {}) {
+function runtimeHarness({ prequel = '裴晚生曾把蓝铜钥匙藏在钟楼。', saveResult = true, saveError = null, saveMethod = 'saveChatMetadata', sourceStatus = 'uninitialized' } = {}) {
   const prompts = [], user = { is_user: true, is_system: false, mes: '阿裴，我们继续找蓝铜钥匙。' };
+  let hostMetadata = { otherPlugin: { keep: true }, ...(prequel === null ? {} : { qianqianjiePrequel: prequel }) };
+  let persistedMetadata = null;
   const context = {
-    chatId: 'host-chat-a', chat: [user], chatMetadata: { otherPlugin: { keep: true }, ...(prequel === null ? {} : { qianqianjiePrequel: prequel }) },
+    chatId: 'host-chat-a', chat: [user],
     constants: { promptTypes: { IN_CHAT: 23 }, promptRoles: { SYSTEM: 47 } },
     setExtensionPrompt(...args) { prompts.push(args); },
-    async saveChatMetadata() { return saveResult; },
+  };
+  Object.defineProperty(context, 'chatMetadata', {
+    get() { return hostMetadata; },
+    set(value) { hostMetadata = { ...value }; },
+  });
+  context[saveMethod] = async () => {
+    if (saveError) throw saveError;
+    if (saveMethod === 'saveMetadata' || saveResult === true) persistedMetadata = structuredClone(hostMetadata);
+    return saveMethod === 'saveMetadata' ? undefined : saveResult;
   };
   let sourceReads = 0, modelCalls = 0;
   const hostAdapter = { snapshot: () => ({ context, chat: context.chat, chatId: context.chatId }) };
@@ -46,7 +56,12 @@ function runtimeHarness({ prequel = '裴晚生曾把蓝铜钥匙藏在钟楼。'
     generateUtilityTask: async () => { modelCalls += 1; throw new Error('不应调用'); },
     pluginVersion: 'test', logger: { warn() {} }, now: () => new Date('2026-09-12T00:00:00.000Z'),
   });
-  return { runtime, context, prompts, user, get sourceReads() { return sourceReads; }, get modelCalls() { return modelCalls; } };
+  return {
+    runtime, context, prompts, user,
+    get persistedMetadata() { return persistedMetadata; },
+    get sourceReads() { return sourceReads; },
+    get modelCalls() { return modelCalls; },
+  };
 }
 
 test('无 QQJ 身份或普通记忆来源时仍注入前情，且不新增模型调用', async () => {
@@ -64,15 +79,43 @@ test('前情 metadata 逐字保存、独立清空并在失败时回滚', async (
   assert.deepEqual(h.runtime.getPrequel(), { hostChatId: 'host-chat-a', text: '' });
   const raw = '  第一行\n第二行 👩🏽‍🚀  ';
   assert.deepEqual(await h.runtime.savePrequel(raw), { hostChatId: 'host-chat-a', text: raw });
+  assert.deepEqual(h.runtime.getPrequel(), { hostChatId: 'host-chat-a', text: raw });
   assert.equal(h.context.chatMetadata.qianqianjiePrequel, raw);
+  assert.equal(h.persistedMetadata.qianqianjiePrequel, raw);
   assert.deepEqual(h.context.chatMetadata.otherPlugin, { keep: true });
+  assert.deepEqual(h.persistedMetadata.otherPlugin, { keep: true });
   assert.equal(h.sourceReads, 0); assert.equal(h.modelCalls, 0);
   await h.runtime.savePrequel(' \n\t ');
   assert.equal(Object.hasOwn(h.context.chatMetadata, 'qianqianjiePrequel'), false);
+  assert.equal(Object.hasOwn(h.persistedMetadata, 'qianqianjiePrequel'), false);
+  assert.deepEqual(h.runtime.getPrequel(), { hostChatId: 'host-chat-a', text: '' });
   assert.deepEqual(h.context.chatMetadata.otherPlugin, { keep: true });
+  assert.deepEqual(h.persistedMetadata.otherPlugin, { keep: true });
 
   const failed = runtimeHarness({ prequel: '旧前情', saveResult: false });
   await assert.rejects(failed.runtime.savePrequel('新草稿'), /未能持久化/);
   assert.equal(failed.context.chatMetadata.qianqianjiePrequel, '旧前情');
+  assert.deepEqual(failed.runtime.getPrequel(), { hostChatId: 'host-chat-a', text: '旧前情' });
   assert.deepEqual(failed.context.chatMetadata.otherPlugin, { keep: true });
+  assert.equal(failed.persistedMetadata, null);
+
+  const thrown = runtimeHarness({ prequel: '旧前情', saveError: new Error('宿主保存失败') });
+  await assert.rejects(thrown.runtime.savePrequel('新草稿'), /宿主保存失败/);
+  assert.equal(thrown.context.chatMetadata.qianqianjiePrequel, '旧前情');
+  assert.deepEqual(thrown.context.chatMetadata.otherPlugin, { keep: true });
+  assert.equal(thrown.persistedMetadata, null);
+
+  const absent = runtimeHarness({ prequel: null, saveResult: false });
+  await assert.rejects(absent.runtime.savePrequel('新草稿'), /未能持久化/);
+  assert.equal(Object.hasOwn(absent.context.chatMetadata, 'qianqianjiePrequel'), false);
+  assert.deepEqual(absent.context.chatMetadata.otherPlugin, { keep: true });
+  assert.equal(absent.sourceReads, 0); assert.equal(absent.modelCalls, 0);
+
+  const native = runtimeHarness({ prequel: null, saveMethod: 'saveMetadata' });
+  await native.runtime.savePrequel('原生前情');
+  assert.deepEqual(native.runtime.getPrequel(), { hostChatId: 'host-chat-a', text: '原生前情' });
+  assert.equal(native.context.chatMetadata.qianqianjiePrequel, '原生前情');
+  assert.equal(native.persistedMetadata.qianqianjiePrequel, '原生前情');
+  assert.deepEqual(native.persistedMetadata.otherPlugin, { keep: true });
+  assert.equal(native.sourceReads, 0); assert.equal(native.modelCalls, 0);
 });

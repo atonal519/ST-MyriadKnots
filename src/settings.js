@@ -21,10 +21,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   apiPresets: [],
   apiPresetActiveId: '',
   sharedApiMigrationVersion: 0,
-  sourceWorldInfoDisabledByChat: {},
-  sourceWorldInfoOverridesByChat: {},
   sourceWorldInfoExcludedBooks: [],
-  sourceWorldInfoConfirmedChats: {},
   sourceKeepTags: 'content',
   sourceExtraTags: '',
   processingPrompt: '',
@@ -123,10 +120,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (!API_MODES.has(settings.apiMode)) settings.apiMode = 'auto';
     if (!Array.isArray(settings.apiExcludeParams)) settings.apiExcludeParams = [];
     if (!Array.isArray(settings.apiPresets)) settings.apiPresets = [];
-    if (!settings.sourceWorldInfoDisabledByChat || typeof settings.sourceWorldInfoDisabledByChat !== 'object' || Array.isArray(settings.sourceWorldInfoDisabledByChat)) settings.sourceWorldInfoDisabledByChat = {};
-    if (!settings.sourceWorldInfoOverridesByChat || typeof settings.sourceWorldInfoOverridesByChat !== 'object' || Array.isArray(settings.sourceWorldInfoOverridesByChat)) settings.sourceWorldInfoOverridesByChat = {};
     if (!Array.isArray(settings.sourceWorldInfoExcludedBooks)) settings.sourceWorldInfoExcludedBooks = [];
-    if (!settings.sourceWorldInfoConfirmedChats || typeof settings.sourceWorldInfoConfirmedChats !== 'object' || Array.isArray(settings.sourceWorldInfoConfirmedChats)) settings.sourceWorldInfoConfirmedChats = {};
     if (!APPEARANCE_THEMES.has(settings.appearanceTheme)) settings.appearanceTheme = 'auto';
     settings.fabShow = settings.fabShow !== false;
     settings.appearanceScale = normalizeScale(settings.appearanceScale);
@@ -158,10 +152,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'apiTimeoutSec')) settings.apiTimeoutSec = normalizeTimeout(patch.apiTimeoutSec);
     if (own(patch, 'apiStream')) settings.apiStream = patch.apiStream === true;
     if (own(patch, 'apiPresetActiveId')) settings.apiPresetActiveId = text(patch.apiPresetActiveId).trim();
-    if (own(patch, 'sourceWorldInfoDisabledByChat') && patch.sourceWorldInfoDisabledByChat && typeof patch.sourceWorldInfoDisabledByChat === 'object' && !Array.isArray(patch.sourceWorldInfoDisabledByChat)) settings.sourceWorldInfoDisabledByChat = patch.sourceWorldInfoDisabledByChat;
-    if (own(patch, 'sourceWorldInfoOverridesByChat') && patch.sourceWorldInfoOverridesByChat && typeof patch.sourceWorldInfoOverridesByChat === 'object' && !Array.isArray(patch.sourceWorldInfoOverridesByChat)) settings.sourceWorldInfoOverridesByChat = patch.sourceWorldInfoOverridesByChat;
     if (own(patch, 'sourceWorldInfoExcludedBooks')) settings.sourceWorldInfoExcludedBooks = Array.isArray(patch.sourceWorldInfoExcludedBooks) ? patch.sourceWorldInfoExcludedBooks : [];
-    if (own(patch, 'sourceWorldInfoConfirmedChats') && patch.sourceWorldInfoConfirmedChats && typeof patch.sourceWorldInfoConfirmedChats === 'object' && !Array.isArray(patch.sourceWorldInfoConfirmedChats)) settings.sourceWorldInfoConfirmedChats = patch.sourceWorldInfoConfirmedChats;
     if (own(patch, 'sourceKeepTags')) settings.sourceKeepTags = normalizeMemoryTagList(patch.sourceKeepTags).join(',');
     if (own(patch, 'sourceExtraTags')) settings.sourceExtraTags = normalizeMemoryTagList(patch.sourceExtraTags).join(',');
     if (own(patch, 'processingPrompt')) settings.processingPrompt = text(patch.processingPrompt);

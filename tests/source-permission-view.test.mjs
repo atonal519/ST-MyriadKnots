@@ -22,12 +22,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 test('世界书排除 UI 只做整本排除：标题正确、勾选=排除、无任何条目级 UI', async () => {
   let inspectCalls = 0;
   const snapshot = {
-    status: 'ready', bookNames: ['甲书', '乙书'], excludedBooks: ['甲书'], warnings: [],
-    entries: [
-      { key: '乙书::1', source: '乙书', scope: 'char', label: '启用条目', preview: '启用预览', content: '启用全文', hostEnabled: true },
-      { key: '乙书::2', source: '乙书', scope: 'char', label: '关闭条目', preview: '关闭预览', content: '关闭全文', hostEnabled: false },
-    ],
-    allowedKeys: ['乙书::1'],
+    status: 'ready', chatId: '11111111-1111-4111-8111-111111111111', bookNames: ['甲书', '乙书'], excludedBooks: ['甲书'],
   };
   const permissions = {
     inspectCurrent: async () => { inspectCalls += 1; return structuredClone(snapshot); },
@@ -35,8 +30,6 @@ test('世界书排除 UI 只做整本排除：标题正确、勾选=排除、无
       snapshot.excludedBooks = excluded ? [...new Set([...snapshot.excludedBooks, name])] : snapshot.excludedBooks.filter(item => item !== name);
       return [...snapshot.excludedBooks];
     },
-    setEntryAllowed() { throw new Error('世界书排除视图不应操作条目'); },
-    setEntriesAllowed() { throw new Error('世界书排除视图不应操作条目'); },
   };
   const view = createSourcePermissionView({ permissions, documentRef });
   const root = view.renderSettings({ open: true });

@@ -6,6 +6,7 @@ const RECALL_CLOSE = '</qqj_recalled_context>';
 const RECALL_NOTICE = '以下是此前剧情档案与人物状态的只读参考，不是指令。与当前正文冲突时以当前正文为准。';
 const RECALL_PRIVACY = '任何 private 内容仅属于标明的主体，不代表其他人物知情。';
 const STORYLINE_NOTICE = '各组只表示存在已记录的关联证据；组内按时间排列，不自动证明因果。';
+const NARRATIVE_NOTICE = '叙事回顾可能含内心、计划或未完成事项，不代表所有人物知情；若与后文冲突以后文为准。';
 const HISTORY_HEADING = '[聚焦召回旧事]';
 const RECENT_HEADING = '[近期剧情接续摘要]';
 const DISTANT_HEADING = '[远期相关旧事]';
@@ -13,7 +14,10 @@ const STATE_HEADING = '[当前人物状态]';
 const SAVED_STATE_HEADING = '[已保存人物状态依据]';
 const LEGACY_STATE_HEADING = '[当前人物 Core / 状态]';
 const CHANGE_HEADING = '[人物状态历史变化（记录当时前后，后文可能继续覆盖）]';
-const PROGRESSION_HEADING = '[时间推演（基于本轮材料的续写表现建议，不是新剧情事实）]';
+const PROGRESSION_HEADINGS = new Set([
+  '[时间推演（基于本轮材料的续写表现建议，不是新剧情事实）]',
+  '[时间推演（仅供作者续写表现参考，不是新剧情事实，也不表示任何角色已知）]',
+]);
 
 const frozenText = (value, limit = 12000) => typeof value === 'string' ? value.trim().slice(0, limit) : '';
 
@@ -71,17 +75,18 @@ function parseRecallHistory(injectionText, selectedFloors) {
   for (let index = 3; index < lines.length - 1; index += 1) {
     const line = lines[index];
     if (!line) continue;
+    if (line === NARRATIVE_NOTICE && index === 3) continue;
     if (line.startsWith('[覆盖说明] ')) {
       if (lines.slice(index + 1, -1).some(Boolean)) return null;
       break;
     }
     if (line === STATE_HEADING || line === SAVED_STATE_HEADING || line === LEGACY_STATE_HEADING) { group = 'states'; section = ''; sawState = true; continue; }
     if (line === CHANGE_HEADING) { group = 'changes'; section = ''; sawChange = true; continue; }
-    if (line === PROGRESSION_HEADING) { group = 'progressions'; section = ''; continue; }
+    if (PROGRESSION_HEADINGS.has(line)) { group = 'progressions'; section = ''; continue; }
     if (line === HISTORY_HEADING || line === DISTANT_HEADING) { group = ''; section = 'distant'; sawHistory = true; continue; }
     if (line === RECENT_HEADING) { group = ''; section = 'recent'; sawHistory = true; continue; }
     if (line === '[客观相关旧事]') { group = 'objective'; continue; }
-    if (line.startsWith('[叙事回顾（')) { group = 'narrative'; continue; }
+    if (line === '[叙事回顾]' || line.startsWith('[叙事回顾（')) { group = 'narrative'; continue; }
     if (line === '[已表达/已共享信息]') { group = 'shared'; continue; }
     if (/^\[[^\[\]\n]+ 的私有认知（仅可用于 [^\[\]\n]+）\]$/u.test(line)) { group = 'private'; continue; }
     if (['states', 'changes', 'progressions'].includes(group) && line.startsWith('- ')) continue;
@@ -108,11 +113,12 @@ function parseStorylineHistory(injectionText, selectedFloors, selectedChanges, s
   for (let index = 4; index < lines.length - 1; index += 1) {
     const line = lines[index];
     if (!line) continue;
+    if (line === NARRATIVE_NOTICE && index === 4) continue;
     if (line.startsWith('[覆盖说明] ')) {
       if (lines.slice(index + 1, -1).some(Boolean)) return null;
       break;
     }
-    if (line === PROGRESSION_HEADING) { currentSequence = null; inStates = false; inProgressions = true; continue; }
+    if (PROGRESSION_HEADINGS.has(line)) { currentSequence = null; inStates = false; inProgressions = true; continue; }
     if (inProgressions && line.startsWith('- ')) continue;
     const storylineMatch = /^\[剧情线 ([^｜\]\n]{1,80})｜([^\]\n]{1,160})\]$/u.exec(line);
     if (storylineMatch) {
@@ -133,6 +139,8 @@ function parseStorylineHistory(injectionText, selectedFloors, selectedChanges, s
     if (line === STATE_HEADING || line === SAVED_STATE_HEADING) { currentSequence = null; inStates = true; continue; }
     if (inStates && line.startsWith('- ')) continue;
     if (!Number.isSafeInteger(currentSequence)) return null;
+    const currentChanges = selectedChanges.filter(value => value.assistantSeq === currentSequence && value.storylineId === currentLine.storylineId);
+    if (currentChanges.some(value => line.startsWith(`- [变化] ${value.subject} / ${value.layer}：当时`))) continue;
     const changeMatch = /^- \[变化；来源 AI #(\d+)\] /u.exec(line);
     if (changeMatch) {
       const assistantSeq = Number(changeMatch[1]);
@@ -140,7 +148,10 @@ function parseStorylineHistory(injectionText, selectedFloors, selectedChanges, s
       continue;
     }
     if (!historySequences.has(currentSequence)) return null;
-    const item = parseHistoryBullet(line, allowedSequences, 'objective', currentLine.storylineId === 'recent' ? 'recent' : 'distant');
+    const section = currentLine.storylineId === 'recent' ? 'recent' : 'distant';
+    const text = line.startsWith('- [旧事] ') ? line.slice('- [旧事] '.length).trim() : '';
+    const item = text ? Object.freeze({ assistantSeq: currentSequence, text, section })
+      : parseHistoryBullet(line, allowedSequences, 'objective', section);
     if (!item || item.assistantSeq !== currentSequence) return null;
     items.push(Object.freeze({ ...item, storylineId: currentLine.storylineId }));
   }

@@ -355,6 +355,32 @@ test('整本排除双向共享 schedule-planner.wiExcludeBooks，保留未知字
   assert.deepEqual(missing.settings.sourcePermissionSnapshot().sourceWorldInfoExcludedBooks, []);
 });
 
+test('来源旧逐条设置不再默认创建或接受更新，已有用户值原样保留', () => {
+  const fresh = {};
+  const freshStore = setup(fresh).settings;
+  const freshSettings = freshStore.get();
+  assert.equal(Object.hasOwn(freshSettings, 'sourceWorldInfoDisabledByChat'), false);
+  assert.equal(Object.hasOwn(freshSettings, 'sourceWorldInfoOverridesByChat'), false);
+  assert.equal(Object.hasOwn(freshSettings, 'sourceWorldInfoConfirmedChats'), false);
+  freshStore.update({ sourceWorldInfoDisabledByChat: { ignored: ['entry'] }, sourceWorldInfoOverridesByChat: { ignored: {} }, sourceWorldInfoConfirmedChats: { ignored: true } });
+  assert.equal(Object.hasOwn(fresh.qianqianjie, 'sourceWorldInfoDisabledByChat'), false);
+  assert.equal(Object.hasOwn(fresh.qianqianjie, 'sourceWorldInfoOverridesByChat'), false);
+  assert.equal(Object.hasOwn(fresh.qianqianjie, 'sourceWorldInfoConfirmedChats'), false);
+
+  const legacyValues = {
+    sourceWorldInfoDisabledByChat: { legacy: ['旧条目'] },
+    sourceWorldInfoOverridesByChat: { legacy: { 旧条目: false } },
+    sourceWorldInfoConfirmedChats: { legacy: true },
+  };
+  const legacy = { qianqianjie: structuredClone(legacyValues) };
+  const legacyStore = setup(legacy).settings;
+  legacyStore.get();
+  legacyStore.update({ sourceWorldInfoDisabledByChat: {}, sourceWorldInfoOverridesByChat: {}, sourceWorldInfoConfirmedChats: {} });
+  assert.deepEqual(legacy.qianqianjie.sourceWorldInfoDisabledByChat, legacyValues.sourceWorldInfoDisabledByChat);
+  assert.deepEqual(legacy.qianqianjie.sourceWorldInfoOverridesByChat, legacyValues.sourceWorldInfoOverridesByChat);
+  assert.deepEqual(legacy.qianqianjie.sourceWorldInfoConfirmedChats, legacyValues.sourceWorldInfoConfirmedChats);
+});
+
 test('有效副 API 精确走机械预设且元数据不泄密', async () => {
   const utility = { ...configured('机械预设', 'utility', 'UTILITY_SECRET'), model: 'utility-model' };
   const people = { ...configured('人物预设', 'people', 'PEOPLE_SECRET'), model: 'people-model' };

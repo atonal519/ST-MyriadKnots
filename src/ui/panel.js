@@ -301,23 +301,19 @@ export function createPanel({
     };
     autoHideInput.addEventListener('change', () => { void applyAutoHide({ autoHideEnabled: autoHideInput.checked }); });
     keepInput.addEventListener('change', () => { void applyAutoHide({ autoHideKeepAiCount: Number(keepInput.value) }); });
-    memoryBody.append(autoHideToggle, keepRow, element('p', 'settings-hint', '自动隐藏更早且已完成记忆的楼；调整保留数量不会恢复已隐藏楼。关闭自动隐藏可恢复千千结隐藏的楼。'), autoHideResult);
+    memoryBody.append(autoHideToggle, keepRow, autoHideResult);
     page.append(memoryGroup);
 
     // 当前聊天的记忆操作紧跟通用设置，避免与总开关混成同一层级。
     page.append(managementMount, settingsManagementError);
 
     const { drawer: documentationGroup, body: documentationBody } = groupOf('documentation', '教程与配置文件');
-    const tutorialActions = element('div', 'settings-actions');
+    const tutorialActions = element('div', 'settings-document-row');
     const tutorial = element('button', 'secondary-action', '教程文档'); tutorial.type = 'button';
     tutorial.addEventListener('click', () => { void openHelpGuide({ documentRef, customImpl: options => dialog?.custom?.(options) }); });
-    tutorialActions.append(tutorial);
-    const apiHeading = element('div', 'settings-subhead', 'API 接口');
-    const apiIntro = element('p', 'settings-hint', '供同一 SillyTavern 主页面中的其他扩展读取。getStatus() 同步查看桥与当前身份是否可用；readMemory() 异步读取用于提示词的文本；getSnapshot() 同步读取当前已加载的结构化副本。');
-    const apiMethods = element('p', 'settings-hint', 'getSnapshot() 分为 memory.floors、cse.currentSubjects / cse.floors 与 people.items。messageIndex 是酒馆实际楼号，assistantSeq 是 AI 楼序；各分区状态应分别判断，未加载时数组为空。');
-    const apiExample = element('pre', 'v3-recall-injection', PUBLIC_API_EXAMPLE);
-    const apiActions = element('div', 'qqj-ui-diagnostic-action');
-    const copyExample = element('button', 'secondary-action', '复制调用示例'); copyExample.type = 'button';
+    tutorialActions.append(element('span', '', '教程文档'), tutorial);
+    const apiActions = element('div', 'settings-document-row');
+    const copyExample = element('button', 'secondary-action', '复制接口示例'); copyExample.type = 'button';
     const copyFeedback = element('span', 'settings-hint', documentationCopyFeedback), fallbackHost = element('div');
     const updateCopyResult = () => {
       copyFeedback.textContent = documentationCopyFeedback;
@@ -328,8 +324,9 @@ export function createPanel({
       fallbackHost.append(element('p', 'settings-hint', '调用示例（长按全选复制）'), fallback);
     };
     copyExample.addEventListener('click', async () => { await copyPublicApiExample(); updateCopyResult(); });
-    apiActions.append(copyExample, copyFeedback);
-    documentationBody.append(tutorialActions, apiHeading, apiIntro, apiMethods, apiExample, apiActions, fallbackHost);
+    apiActions.append(element('span', '', 'API 接口'), copyExample);
+    copyFeedback.setAttribute('role', 'status');
+    documentationBody.append(tutorialActions, apiActions, copyFeedback, fallbackHost);
     updateCopyResult();
     page.append(documentationGroup);
 
@@ -359,6 +356,7 @@ export function createPanel({
     rememberScroll();
     activationEpoch += 1;
     v3FoundationView.deactivate();
+    peopleProfilesView.deactivate();
     geometry.cancelGesture();
     swipeGesture = null;
     scrollDiagnostics.stop();

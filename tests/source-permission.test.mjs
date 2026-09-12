@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { scanWorldInfo } from '../src/world-info-scanner.js';
+import { listWorldInfoBookNames, scanWorldInfo } from '../src/world-info-scanner.js';
 import { createSourcePermissionController, filterSourcesByPermission, filterWorldInfoSourcesByPermission } from '../src/source-permission.js';
 
 const CHAT_A = '11111111-1111-4111-8111-111111111111';
@@ -33,7 +33,7 @@ test('生成来源只服从宿主启用与整本排除，残留逐条设置不�
   const controller = createSourcePermissionController({
     settings: { get: () => settings, update() {} },
     contextProvider: () => raw(),
-    scanner: async () => ({ entries: [], bookNames: [], warnings: [] }),
+    bookNamesProvider: async () => [],
   });
   assert.deepEqual(controller.filterCandidates({ chatId: CHAT_A, candidates }), [candidates[0], candidates[1]], '千人调用的 controller 入口必须使用同一现行边界');
 });
@@ -60,7 +60,7 @@ test('controller 每次过滤都重新读取共享整本排除快照，解除后
     update: patch => Object.assign(local, structuredClone(patch)),
     sourcePermissionSnapshot: () => ({ ...local, sourceWorldInfoExcludedBooks: [...excludedBooks] }),
   };
-  const controller = createSourcePermissionController({ settings: store, contextProvider: () => raw(), scanner: async () => ({ entries: [], bookNames: [], warnings: [] }) });
+  const controller = createSourcePermissionController({ settings: store, contextProvider: () => raw(), bookNamesProvider: async () => [] });
   const sources = [{ sourceName: '甲书' }, { sourceName: '乙书' }];
   assert.deepEqual(controller.filterWorldInfoSources(sources), [sources[1]]);
   excludedBooks = [];
@@ -78,69 +78,61 @@ test('controller 整本排除同步返回共享或本地 fallback 的最新完�
       return [...sharedExcluded];
     },
   };
-  const sharedController = createSourcePermissionController({ settings: sharedStore, contextProvider: () => raw(), scanner: async () => ({ entries: [], bookNames: [], warnings: [] }) });
+  const sharedController = createSourcePermissionController({ settings: sharedStore, contextProvider: () => raw(), bookNamesProvider: async () => [] });
   assert.deepEqual(sharedController.setBookExcluded('乙书', true), ['甲书', '乙书']);
   sharedExcluded = ['构画侧新排除', '乙书'];
   assert.deepEqual(sharedController.setBookExcluded('乙书', false), ['构画侧新排除']);
 
   const local = { sourceWorldInfoExcludedBooks: ['甲书'] };
   const fallbackStore = { get: () => local, update: patch => Object.assign(local, structuredClone(patch)) };
-  const fallbackController = createSourcePermissionController({ settings: fallbackStore, contextProvider: () => raw(), scanner: async () => ({ entries: [], bookNames: [], warnings: [] }) });
+  const fallbackController = createSourcePermissionController({ settings: fallbackStore, contextProvider: () => raw(), bookNamesProvider: async () => [] });
   assert.deepEqual(fallbackController.setBookExcluded('乙书', true), ['甲书', '乙书']);
   assert.deepEqual(local.sourceWorldInfoExcludedBooks, ['甲书', '乙书']);
   assert.deepEqual(fallbackController.setBookExcluded('甲书', false), ['乙书']);
   assert.deepEqual(local.sourceWorldInfoExcludedBooks, ['乙书']);
 });
 
-test('声明确认和三态覆盖按稳定聊天隔离，扫描变化不会重置确认', async () => {
-  const extension = {};
-  const store = { get: () => extension, update: patch => Object.assign(extension, structuredClone(patch)) };
-  let context = raw();
-  let scan = { entries: [
-    { key: '甲书::开', source: '甲书', scope: 'char', label: '开', preview: '', content: '开', hostEnabled: true },
-    { key: '甲书::关', source: '甲书', scope: 'char', label: '关', preview: '', content: '关', hostEnabled: false },
-  ], bookNames: ['甲书'], warnings: [] };
-  const controller = createSourcePermissionController({ settings: store, contextProvider: () => context, scanner: async () => scan });
-  assert.deepEqual((await controller.inspectCurrent()).allowedKeys, ['甲书::开']);
-  controller.confirmCurrent();
-  controller.setEntryAllowed('甲书::开', false);
-  controller.setEntryAllowed('甲书::关', true);
-  assert.equal(controller.isCurrentConfirmed(), true);
-  assert.deepEqual((await controller.inspectCurrent()).allowedKeys, ['甲书::关']);
-  scan = { ...scan, entries: [...scan.entries, { key: '甲书::新', source: '甲书', scope: 'char', label: '新', preview: '', content: '新', hostEnabled: true }] };
-  assert.deepEqual((await controller.inspectCurrent()).allowedKeys, ['甲书::关', '甲书::新']);
-  context = raw(CHAT_B);
-  assert.equal(controller.isCurrentConfirmed(), false);
-  assert.deepEqual((await controller.inspectCurrent()).allowedKeys, ['甲书::开', '甲书::新']);
-});
-
-test('世界书列表只显示当前扫描目录，保留已删除书的共享排除偏好', async () => {
+test('世界书列表只显示当前书名目录，规范化去重并保留已删除书的共享排除偏好', async () => {
   const extension = { sourceWorldInfoExcludedBooks: ['现存乙', '已删除丙'] };
   const store = { get: () => extension, update: patch => Object.assign(extension, structuredClone(patch)) };
-  let scan = {
-    entries: [
-      { key: '现存甲::1', source: '现存甲', content: '甲正文', hostEnabled: true },
-      { key: '现存乙::1', source: '现存乙', content: '乙正文', hostEnabled: true },
-    ],
-    bookNames: ['现存甲', ' 现存甲 ', '现存乙'],
-    warnings: [],
-  };
-  const controller = createSourcePermissionController({ settings: store, contextProvider: () => raw(), scanner: async () => scan });
+  let bookNames = ['现存甲', ' 现存甲 ', 'RÉSUMÉ', 'resume', '现存乙'];
+  const controller = createSourcePermissionController({ settings: store, contextProvider: () => raw(), bookNamesProvider: async () => bookNames });
 
   const beforeRestore = await controller.inspectCurrent();
-  assert.deepEqual(beforeRestore.bookNames, ['现存甲', '现存乙']);
+  assert.deepEqual(beforeRestore.bookNames, ['现存甲', 'RÉSUMÉ', '现存乙']);
   assert.deepEqual(beforeRestore.excludedBooks, ['现存乙', '已删除丙']);
-  assert.deepEqual(beforeRestore.stats, { books: 1, entries: 1, characters: 3 });
+  assert.deepEqual(Object.keys(beforeRestore).sort(), ['bookNames', 'chatId', 'excludedBooks', 'status']);
 
-  scan = {
-    ...scan,
-    entries: [...scan.entries, { key: '已删除丙::1', source: '已删除丙', content: '丙正文', hostEnabled: true }],
-    bookNames: ['现存甲', '现存乙', '已删除丙'],
-  };
+  bookNames = ['现存甲', '现存乙', '已删除丙'];
   const afterRestore = await controller.inspectCurrent();
   assert.deepEqual(afterRestore.bookNames, ['现存甲', '现存乙', '已删除丙']);
   assert.deepEqual(afterRestore.excludedBooks, ['现存乙', '已删除丙']);
-  assert.deepEqual(afterRestore.stats, { books: 1, entries: 1, characters: 3 });
+});
+
+test('生产书名枚举合并各作用域、内置书与冷目录，绝不读取世界书正文', async () => {
+  let warm = false, updates = 0, batchReads = 0, singleReads = 0;
+  const context = {
+    characterId: 0,
+    characters: [{ avatar: '角色.png', data: { extensions: { world: '角色书' }, character_book: { name: '内置书', entries: [{ id: 1, content: '内置正文' }] } } }],
+    chatWorldInfo: { getNames: () => ['聊天书'], globalSelection: ['全局书'] },
+    powerUserSettings: { persona_description_lorebook: '人格书' },
+    getCharaFilename: () => '角色',
+    getCharaAuxWorlds: () => ['附加书'],
+    getWorldInfoNames: () => warm ? ['目录书', '角色书'] : [],
+    updateWorldInfoList: async () => { updates += 1; warm = true; },
+    loadWorldInfoBatch: async () => { batchReads += 1; return new Map(); },
+    loadWorldInfo: async () => { singleReads += 1; return null; },
+  };
+  assert.deepEqual(await listWorldInfoBookNames(context), ['角色书', '附加书', '聊天书', '人格书', '全局书', '内置书', '目录书']);
+  assert.equal(updates, 1);
+  assert.equal(batchReads, 0);
+  assert.equal(singleReads, 0);
+
+  const store = { get: () => ({ sourceWorldInfoExcludedBooks: [] }), update() {} };
+  const controller = createSourcePermissionController({ settings: store, contextProvider: () => ({ ...raw(), ...context }) });
+  assert.equal((await controller.inspectCurrent()).bookNames.includes('目录书'), true);
+  assert.equal(batchReads, 0);
+  assert.equal(singleReads, 0);
 });
 
 test('世界书扫描保留数字 uid、宿主开关和冷缓存中的完整书名目录', async () => {

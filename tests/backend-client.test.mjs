@@ -13,6 +13,76 @@ test('backend GET 超时会退出且不自动重试', async () => {
   assert.equal(calls, 1);
 });
 
+test('backend 成功响应头之后读取 body 超时仍记为 timeout，不会误报 success 或自动重试', async () => {
+  let calls = 0;
+  const client = createBackendClient({
+    timeoutMs: 5,
+    fetchImpl: async (_url, { signal }) => {
+      calls += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: () => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(Object.assign(new Error('body aborted'), { name: 'AbortError' })), { once: true })),
+      };
+    },
+  });
+  await assert.rejects(client.get('chat-x', 'v3-root'), error => error.name === 'TimeoutError' && error.code === 'BACKEND_TIMEOUT');
+  const snapshot = client.getDiagnosticSnapshot();
+  assert.equal(calls, 1);
+  assert.deepEqual(snapshot.sinceClientCreatedRequestCounts, { get: 1, put: 0, delete: 0 });
+  assert.equal(snapshot.latestRead.outcome, 'timeout');
+  assert.equal(snapshot.latestRead.code, 'BACKEND_TIMEOUT');
+  assert.equal(snapshot.lastFailure.sequence, snapshot.latestRead.sequence);
+});
+
+test('backend 成功响应的 body 外部中止和坏 JSON 都保留真实失败结果', async () => {
+  const controller = new AbortController();
+  const abortedClient = createBackendClient({
+    timeoutMs: 1000,
+    fetchImpl: async (_url, { signal }) => ({
+      ok: true,
+      status: 200,
+      json: () => signal.aborted
+        ? Promise.reject(Object.assign(new Error('body aborted'), { name: 'AbortError' }))
+        : new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(Object.assign(new Error('body aborted'), { name: 'AbortError' })), { once: true })),
+    }),
+  });
+  const pending = abortedClient.put('chat-x', 'v3-root', {}, 0, { signal: controller.signal });
+  controller.abort();
+  await assert.rejects(pending, error => error.name === 'AbortError');
+  const aborted = abortedClient.getDiagnosticSnapshot();
+  assert.deepEqual(aborted.sinceClientCreatedRequestCounts, { get: 0, put: 1, delete: 0 });
+  assert.equal(aborted.latestWrite.outcome, 'aborted');
+
+  const parseError = new SyntaxError('unexpected private body');
+  const invalidClient = createBackendClient({ fetchImpl: async () => ({ ok: true, status: 200, json: async () => { throw parseError; } }) });
+  await assert.rejects(invalidClient.get('chat-x', 'v3-root'), error => error === parseError);
+  const invalid = invalidClient.getDiagnosticSnapshot();
+  assert.equal(invalid.latestRead.outcome, 'failure');
+  assert.equal(invalid.lastFailure.sequence, invalid.latestRead.sequence);
+  assert.deepEqual(invalid.sinceClientCreatedRequestCounts, { get: 1, put: 0, delete: 0 });
+});
+
+test('backend 非成功 HTTP 不读取 JSON body，仍保留原状态诊断', async () => {
+  let bodyReads = 0;
+  const statuses = [500, 409, 404];
+  const client = createBackendClient({ fetchImpl: async () => ({
+    ok: false,
+    status: statuses.shift(),
+    json: async () => { bodyReads += 1; throw new SyntaxError('HTML、空体或坏 JSON'); },
+  }) });
+  await assert.rejects(client.get('chat-x', 'v3-root'), error => error.status === 500);
+  assert.equal(client.getDiagnosticSnapshot().latestRead.httpStatus, 500);
+  await assert.rejects(client.put('chat-x', 'v3-root', {}, 0), error => error.status === 409);
+  assert.equal(client.getDiagnosticSnapshot().latestWrite.httpStatus, 409);
+  await assert.rejects(client.remove('chat-x', 'v3-root', 1), error => error.status === 404);
+  const snapshot = client.getDiagnosticSnapshot();
+  assert.equal(snapshot.latestWrite.httpStatus, 404);
+  assert.equal(snapshot.latestWrite.outcome, 'httpError');
+  assert.equal(bodyReads, 0);
+  assert.deepEqual(snapshot.sinceClientCreatedRequestCounts, { get: 1, put: 1, delete: 1 });
+});
+
 test('backend 正常响应仍保持原 GET/PUT 合同', async () => {
   const calls = [];
   const fetchImpl = async (url, options) => { calls.push({ url, options }); return { ok: true, status: 200, json: async () => ({ ok: true }) }; };

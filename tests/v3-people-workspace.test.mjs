@@ -78,7 +78,9 @@ test('人物资料业务指导可替换，固定合同与基础处理层始终�
   assert.doesNotMatch(custom, /人物卡和世界书属于明确设定/);
   assert.match(custom, new RegExp(PROFILE_FIXED_CONTRACT.slice(0, 16)));
   assert.match(custom, /personKey 必须逐字使用/);
-  assert.match(custom, /省略字段表示保留 existingProfile 旧值/);
+  assert.match(custom, /没有新信息时省略字段/);
+  assert.match(custom, /本批可能只包含该来源的一部分/);
+  assert.match(custom, /明确要求删除旧资料且没有替代值/);
   assert.match(custom, /build（体型）：身体骨架、体态、比例/);
   assert.match(custom, /occupation（职业）：人物从事的职业/);
   assert.match(custom, /personality（核心性格）：跨情境较稳定/);
@@ -308,6 +310,36 @@ test('第 50 楼才建档仍读取第 1 楼目标事实与近期变化，逐楼�
   assert.equal(JSON.stringify(request.people[0].history).includes('无关人物第25楼'), false);
 });
 
+test('人物输入优先使用与有效摘要同存正文，构造空串不回退且旧记录仍兼容楼正文', async () => {
+  let request;
+  const h = harness({ generate: async options => {
+    request = JSON.parse(options.taskMessages[0].content);
+    return { jsonData: { profiles: [{ personKey: 'person-1', name: '人物1' }] } };
+  } });
+  const target = h.peopleEntities[0];
+  const freshFloor = ids[8], emptyFloor = ids[9], legacyFloor = ids[10];
+  h.setReachable({
+    ...h.reachable,
+    floors: [
+      { id: freshFloor, assistantSeq: 1, content: { canonicalContent: '人物1仍是蓝发。' } },
+      { id: emptyFloor, assistantSeq: 2, content: { canonicalContent: '这段旧正文不得回退。' } },
+      { id: legacyFloor, assistantSeq: 3, content: { canonicalContent: '人物1穿着绿色旧外套。' } },
+    ],
+    floorMemories: [
+      { floorId: freshFloor, recordStatus: 'active', sourceCanonicalContent: '人物1已经改为红发。', summary: { effectiveSource: 'ai', aiText: '人物1现在是红发。' }, participants: [{ entityId: target.id }] },
+      { floorId: emptyFloor, recordStatus: 'active', sourceCanonicalContent: '', summary: { effectiveSource: 'ai', aiText: '本楼清洗后正文为空。' }, participants: [{ entityId: target.id }] },
+      { floorId: legacyFloor, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '旧记录仍保留绿色外套。' }, participants: [{ entityId: target.id }] },
+    ],
+  });
+  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]); await h.runtime.generateMissingProfiles();
+  assert.equal(request.people[0].history[0].storyContent, '人物1已经改为红发。');
+  assert.equal(request.people[0].history[0].summary, '人物1现在是红发。');
+  assert.equal(request.people[0].history[1].storyContent, '');
+  assert.equal(request.people[0].history[2].storyContent, '人物1穿着绿色旧外套。');
+  assert.equal(JSON.stringify(request).includes('人物1仍是蓝发'), false);
+  assert.equal(JSON.stringify(request).includes('这段旧正文不得回退'), false);
+});
+
 test('长历史按楼序连续分批，前批档案进入后批且覆盖首尾', async () => {
   let calls = 0; const requests = [];
   const h = harness({ generate: async options => {
@@ -317,12 +349,13 @@ test('长历史按楼序连续分批，前批档案进入后批且覆盖首尾',
   const target = h.peopleEntities[0];
   const floorMemories = Array.from({ length: 80 }, (_, index) => ({
     floorId: `e${String(index + 1).padStart(7, '0')}-1111-4111-8111-${String(index + 1).padStart(12, '0')}`,
-    recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: `人物1${'甲'.repeat(3997)}` }, participants: [{ entityId: target.id }],
+    recordStatus: 'active', sourceCanonicalContent: `第${index + 1}楼最新正文${'乙'.repeat(3990)}`,
+    summary: { effectiveSource: 'ai', aiText: `人物1${'甲'.repeat(3997)}` }, participants: [{ entityId: target.id }],
   }));
   h.setReachable({
     entities: [...h.peopleEntities, entity(USER, '用户', { specialRole: 'user' })],
     floors: floorMemories.map((memory, index) => ({ id: memory.floorId, assistantSeq: index + 1,
-      content: { canonicalContent: `第${index + 1}楼完整正文${'乙'.repeat(3990)}` } })),
+      content: { canonicalContent: `第${index + 1}楼旧正文${'丙'.repeat(3990)}` } })),
     floorMemories,
     baseline: { characterCard: { entityId: SYNTHETIC_CHAR, name: '剧情标题', description: '', personality: '', scenario: '' } },
   });
@@ -332,7 +365,8 @@ test('长历史按楼序连续分批，前批档案进入后批且覆盖首尾',
   assert.deepEqual(requests.flatMap(request => request.people[0].sourceFragments).filter(item => item.kind === 'history' && item.part === 1).map(item => item.sourceFloor), Array.from({ length: 80 }, (_, index) => index + 1));
   const firstHistory = requests.flatMap(request => request.people[0].sourceFragments).filter(item => item.kind === 'history' && item.sourceFloor === 1)
     .sort((left, right) => left.part - right.part).map(item => item.content).join('');
-  assert.equal(JSON.parse(firstHistory).storyContent, `第1楼完整正文${'乙'.repeat(3990)}`, '完整正文跨片后可按原顺序无损还原');
+  assert.equal(JSON.parse(firstHistory).storyContent, `第1楼最新正文${'乙'.repeat(3990)}`, '与有效摘要同存的正文跨片后可按原顺序无损还原');
+  assert.equal(firstHistory.includes('第1楼旧正文'), false);
   assert.equal(requests[1].people[0].existingProfile.name, '人物1', '前批已保存档案必须成为后批起点');
   assert.equal(h.runtime.getState().profilesByEntityId[target.id].notes, '末批完成');
   assert.equal(h.runtime.getState().lastGenerationReport.completedBatches, calls);

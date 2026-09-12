@@ -43,8 +43,8 @@ export function createBackendClient({ fetchImpl = globalThis.fetch, headers = ()
     const timer = setTimeout(() => { timedOut = true; controller.abort(); }, Math.max(1, Number(timeoutMs) || 15000));
     try {
       const response = await fetchImpl(`${baseUrl}${path}`, { ...options, signal: controller.signal, headers: { Accept: 'application/json', ...headers(), ...(options.body ? { 'Content-Type': 'application/json' } : {}) } });
-      let body = null; try { body = await response.json(); } catch { /* empty */ }
       if (!response.ok) { const error = safeError(response.status); error.status = response.status; throw error; }
+      const body = await response.json();
       finishDiagnostic(requestDiagnostic, startedAt, 'success');
       return body;
     } catch (error) {

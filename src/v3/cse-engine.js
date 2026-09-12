@@ -9,15 +9,15 @@ import { CSE_ISOLATION_CODES, CSE_VISIBILITIES, LATEST_CSE_CALIBRATION_VERSION, 
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey } from './entity-identity.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-16';
-export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-10';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-17';
+export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-11';
 export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
 export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。完整阅读本楼正文，并结合结构化楼层记忆、人物此前状态与相关初始设定，分析人物在本楼结束时的状态。
 
 优先识别正文真正造成的变化，也保留有连续性价值的稳定状态；不要为了显得有变化而改写人物。关注人物的核心倾向、可长期演化的应对方式或关系状态、当前短期情境，以及人物面对不同对象时采取的不同态度和行为模式。长期核心、逐渐形成的适应模式与一时情绪要分层表达。处理短期信息时，不要仅按句中是否出现他人机械决定 toward；先判断这条主要说明人物现在怎样、处境如何，还是人物此刻怎样对待某人。关系反应可以由有明确指向的言语和行为表现，不要求正文直接说出态度。
 
-按正文信息量决定详略。用清楚、具体、便于后续连续理解的短句说明状态，避免空泛形容、同义反复、好感度分数和无证据的心理诊断。新增或更新状态时尽量给出简短 reason，指出正文中的行为、表达、想法或事件依据；正文没有依据时不要为了补 reason 编造。`;
+按正文信息量决定详略。用清楚、具体、便于后续连续理解的短句说明状态，避免空泛形容、同义反复、好感度分数和无证据的心理诊断。新增或更新状态时，推荐用简短 reason 说明本次材料中支持判断的事实，不要为了补 reason 编造依据。`;
 
 export const CSE_FIXED_CONTRACT = `【固定事实与隐私边界】
 正文 canonicalContent 是本楼事实的最高来源；结构化楼层记忆和 subjectRelevantEvidence 只是证据索引，可能稀疏或缺项，冲突时以正文为准。某个结构数组为空或没有某人物，不等于正文没有发生相关事件，也不等于该人物不知道。初始设定属于作者设定，不等于任何角色已经知道它。私密想法只属于其本人，不能自动变成其他人物的认知。
@@ -28,13 +28,13 @@ relevantPriorContext 若存在，是用户导入的过去经历资料，仅用�
 
 subjectRelevantEvidence 按 tracked subject 汇集角色相关条目，relationToSubject 只说明该人物在既有 FloorMemory 条目里的结构角色，不是“此人已知证据”。participant 的 mentioned/privateCognitionOnly 不表示本人在场；行动 target 不表示本人知情，completion 为 intended/attempted/interrupted/uncertain 时尤其不能写成已完成；信息发送者只证明其说出或发出了相应内容，不证明消息内容客观为真，只有正文或实际送达证据才能支持接收者知情；承诺或指令的 target 不自动表示收到、同意或执行，plan 也不能写成已执行；cseSignal 的 object 只表示相关对象。远程行为与通信要按正文中的行为主体、对象、消息来源、接收者、渠道和完成状态分别理解，待转告不等于已经转告。不得把正文明确写出的人物认知反写为不知；人物被提及、被计划涉及或从叙述中推断出相关性，也不等于本人在场、参与或知情。
 
-previousState 只放人物自己的前态；authorialOtherStateContext 是经过隐私过滤的作者态连续性参考，不代表相应人物知道其他人的状态。作者态推断与人物本人已知必须分开：observable 只用于正文中实际可观察的状态，private 只属于该人物的内心或明确知情，authorial 只作作者塑造参考。
+previousState 按 subject 分列各人的 ownState，只说明对应人物自身的前态；这里展示的是合并身份后同一个人的有效状态，不要把合并前的旧名称或旧身份另算作另一人。authorialOtherStateContext 已按 visibility 排除 private 和 authorial 状态项，是作者侧连续性参考。某条状态出现在这些材料中，不代表其他人物已经知道它。作者态推断与人物本人已知必须分开：observable 只用于正文中实际可观察的状态，private 只属于该人物的内心或明确知情，authorial 只作作者塑造参考。
 
 只可为输入中的 trackedSubjects 输出状态；trackedSubjects 是候选范围，不要求逐人补写，也不要求每个分类凑数。若本楼没有足够新依据，可省略该人物；若只支持某些分类，可省略其他分类，让编译器沿用旧状态。不要用“本楼未出现”“状态无变化”之类空话替换旧状态，也不要因为缺少证据而反推“不知道”。knownPeople 仅用于 toward 对象绑定，不代表他们本楼也要输出状态。
 
 判断每条候选信息时，在内部依次问三个问题：第一，这条主要回答人物现在怎样、处境如何，还是此刻怎样对待某人？第二，另一人只是背景、原因或事件参与者，还是这项态度或相处反应的明确对象？第三，这里有两条独立且分别有正文依据的信息，需要拆开表达，还是同一信息的重复描述？只输出判断后的状态，不要输出思考过程、问题答案或分类解释。
 
-主要说明人物自身现状时不填写 toward；正文明确支持人物针对某个已知人物的看法、态度或相处反应时，Adaptive 或 Situational 才填写 toward。关系反应可以通过明确指向对方的言语和行为表现，不需要直接说出态度；但不能只因一个行为有受事者就自动判为关系态度，也不能把行为一律排除出关系反应。对各方使用同一判断标准。混合信息只在确有独立依据时拆分，不强制双栏填满，不重复同一事实，也不编造态度。private 只表示可见性，明确的私密态度仍可填写 toward。previousState 中旧 toward 也必须按本楼证据审视，不得盲从；本楼不足以更新相应分类时应省略该分类以保留旧状态，不要把旧状态改写成“未知”。无法唯一判断对象时留空。单方 A→B 不得自动镜像成 B→A，也不能把某人的单方声称写成双方态度。Core 不使用 toward；一次关系反应也不能被拔高为 Core 或长期 Adaptive。Situational 只有在正文给出明确时间流逝时才可写 reasonableProgression，不能补造新事件。新增或更新的状态推荐使用带简短 reason 的对象；如果正文没有可引用依据，可省略 reason，程序仍会接收并清楚标记为“未提供依据”，不要为凑字段编造。不要输出数据库 ID。
+主要说明人物自身现状时不填写 toward；正文明确支持人物针对某个已知人物的看法、态度或相处反应时，Adaptive 或 Situational 才填写 toward。关系反应可以通过明确指向对方的言语和行为表现，不需要直接说出态度；但不能只因一个行为有受事者就自动判为关系态度，也不能把行为一律排除出关系反应。对各方使用同一判断标准。混合信息只在确有独立依据时拆分，不强制双栏填满，不重复同一事实，也不编造态度。private 只表示可见性，明确的私密态度仍可填写 toward。previousState 中旧 toward 也必须按本楼证据审视，不得盲从；本楼不足以更新相应分类时应省略该分类以保留旧状态，不要把旧状态改写成“未知”。无法唯一判断对象时留空。单方 A→B 不得自动镜像成 B→A，也不能把某人的单方声称写成双方态度。Core 不使用 toward；一次关系反应也不能被拔高为 Core 或长期 Adaptive。Situational 只有在正文给出明确时间流逝时才可写 reasonableProgression，不能补造新事件。reason 是可选的简短解释；直接状态数组中的条目省略 reason 时，会标记为“未提供依据”。这不免除持续校准合同对 evidence 的要求，reason 也不能代替 evidence。不要输出数据库 ID。
 
 【持续校准合同】
 每次都审视本楼相关人物的已有 Core 与 Adaptive，并把它们同最新作者设定、明确用户纠正和本楼正文一起判断。旧结论本身及其旧 reason 不能自证；相容且没有新依据时保持原项，出现可定位反证或明确的新适用条件时才 refine/remove。剧情允许人物改变，但不强制每楼改写；单个戏剧性场景不能覆盖明确作者锚点，普通角色扮演中的用户台词、动作或心理也不自动等于作者纠正。
@@ -45,15 +45,17 @@ previousState 只放人物自己的前态；authorialOtherStateContext 是经过
 
 Core 以明确作者设定为锚，普通单楼情绪、动作或台词不足以新增或改写 Core；Adaptive 可随新事实、反例和旧依据不足而保持、收窄或撤回。coreUserEdited 为 true 时，只有 currentUserInput 中明确的作者纠正才可改变 Core；它不锁定 Adaptive。
 
-currentUserInput 只在生成该 FloorMemory 时捕获到目标 AI 楼前方连续 user 输入时提供，可能包含一条或多条按时间正序冻结的原文。它可能是普通角色台词、动作、插件参考，也可能是作者明确校正；必须按语义区分，不能把整组输入一律当可信设定。引用只能使用 evidenceSourceCatalog 中的 source，quote 必须逐字存在于对应实际材料。userPersona 只支持用户本人，characterCard 只支持对应角色；worldbook 需判断人物归属。引用可定位不等于语义必然成立，仍须判断其是否真的支持操作。
+currentUserInput 只在生成该 FloorMemory 时捕获到目标 AI 楼前方连续 user 输入时提供，可能包含一条或多条按时间正序冻结的原文。它可能是普通角色台词、动作、插件参考，也可能是作者明确校正；必须按语义区分，不能把整组输入一律当可信设定。evidence.source 必须逐字使用 evidenceSourceCatalog 中的 source；世界书使用其中的具体键，例如 worldbook:1，不填写书名或泛称 worldbook。quote 必须逐字存在于对应实际材料。userPersona 只支持用户本人，characterCard 只支持对应角色；worldbook 需判断人物归属。引用可定位不等于语义必然成立，仍须判断其是否真的支持操作。
 authorNote 是作者侧持续参考，其中的未来要求、写作风格或塑造方向不等于已经发生的事实、所有人物已经知情或人物的永久性格。它不能单独作为新增或改写 Core 的证据。
 
-Core/Adaptive 每类采用 review/additions 新协议，或沿用旧的直接 after-state 数组，不能同时使用两套。review 以 previousText（Adaptive 同名时再用 toward）精确指向旧项，action 只能是 keep、refine、remove；refine 还需 text。未提到项保留。新增项放 additions。refine、remove、addition 都必须给 evidence:[{source,quote}]；keep 可不带证据。不要把 previousState、旧 reason 或 authorialOtherStateContext 写成 evidence source。
+Core/Adaptive 每类采用 review/additions 新协议，或沿用旧的直接 after-state 数组，不能同时使用两套。review 以 previousText（Adaptive 同名时再用 toward）精确指向旧项，action 只能是 keep、refine、remove；refine 还需 text。未提到项保留。新增项放 additions。review 中的 refine、remove，以及 additions 中的每个新增项，都必须给 evidence:[{source,quote}]；reason 可省略，keep 可不带 evidence。不要把 previousState、旧 reason 或 authorialOtherStateContext 写成 evidence source。
 
-返回一个 JSON 对象。所有 JSON 字符串都必须使用标准 JSON 转义：字符串内容中的英文双引号写成 \\", 反斜杠写成 \\\\, 实际换行写成 \\n；evidence.quote 引用正文原句时也必须遵守同一转义规则。JSON 解码后的 quote 必须保留原文字面，不得换成其他引号、删去字符或改写内容。
-英文 schema 键必须保持示例写法；所有面向用户显示的状态 text、reason 和 changeSummary 内容使用中文。changeSummary 只概括人物的实际状态变化，不要输出字段名说明或格式解释；它只是辅助说明，不是状态事实或操作成功凭据。必须放在对应 subject 内，根级 changeSummary/summary 不会被当作人物状态，也不得用来代替 subjects。
+省略人物或分类表示保留已有状态。直接输出的 adaptive、situational 数组表示该类在本楼结束时的完整结果；situational 中仍有效者保留，已结束者移除。空数组表示明确清空该类，不要用它表示“没有新变化”；无足够依据更新整个类别时省略该类别。review 或 additions 中某类的空数组只表示没有相应操作。adaptive review 的 previousText 与 toward 必须按上文规则精确指向旧项。
+
+返回一个实际分析结果的 JSON 对象。确无需要输出的状态变化时，返回 {"subjects":[]}；不要返回 JSON Schema、空对象、null 或格式说明。所有 JSON 字符串都必须使用标准 JSON 转义：字符串内容中的英文双引号写成 \\", 反斜杠写成 \\\\, 实际换行写成 \\n；evidence.quote 引用正文原句时也必须遵守同一转义规则。JSON 解码后的 quote 必须保留原文字面，不得换成其他引号、删去字符或改写内容。
+英文 JSON 字段名保持示例写法；状态 text、reason 使用中文。变化说明由程序按实际前后状态生成，无需填写 changeSummary。根级 changeSummary/summary 不会被当作人物状态，也不得用来代替 subjects。
 推荐结构：
-{"subjects":[{"subject":"人物甲","review":{"core":[{"previousText":"旧核心","action":"keep"}],"adaptive":[{"previousText":"旧模式","toward":"人物乙","action":"refine","text":"收窄后的模式","reason":"为何调整","evidence":[{"source":"canonicalContent","quote":"正文原句"}]}]},"additions":{"core":[],"adaptive":[]},"situational":[{"reason":"正文写出人物甲困倦并闭眼入睡","text":"困倦放松，正在入睡","visibility":"private","origin":"floor"},{"reason":"人物甲推开人物乙的手并明确拒绝触碰","text":"拒绝人物乙触碰","toward":"人物乙","visibility":"observable","origin":"floor"}],"changeSummary":["变化摘要"]}]}
+{"subjects":[{"subject":"人物甲","review":{"core":[{"previousText":"旧核心","action":"keep"}],"adaptive":[{"previousText":"旧模式","toward":"人物乙","action":"refine","text":"收窄后的模式","reason":"为何调整","evidence":[{"source":"canonicalContent","quote":"正文原句"}]}]},"additions":{"core":[],"adaptive":[]},"situational":[{"reason":"正文写出人物甲困倦并闭眼入睡","text":"困倦放松，正在入睡","visibility":"private","origin":"floor"},{"reason":"人物甲推开人物乙的手并明确拒绝触碰","text":"拒绝人物乙触碰","toward":"人物乙","visibility":"observable","origin":"floor"}]}]}
 不确定的可选人物或分类宁可省略。只输出 JSON，不要解释。`;
 
 export function buildCseSystemPrompt(guidance = '', processingPrompt = '') {
@@ -275,7 +277,7 @@ function authorialOtherStateContext(currentState, entities) {
   }));
 }
 
-export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, requestSources = null, worldInfoSources = null, currentUserInput = null, coreUserEditedSubjectEntityIds = [], relevantPriorContext = '' }) {
+export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, requestSources = null, worldInfoSources = null, currentUserInput = null, coreUserEditedSubjectEntityIds = [], identityMemberEntityIdsBySubject = {}, relevantPriorContext = '' }) {
   const directory = buildEntityIdentityDirectory({ entities });
   const directoryById = new Map(directory.map(entry => [entry.entityId, entry]));
   const labelsFor = entity => directoryById.get(entity.id)?.labels ?? entityLabels(entity);
@@ -322,11 +324,13 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       evidenceSources,
       sourceSnapshotFingerprint: typeof effectiveSources.fingerprint === 'string' ? effectiveSources.fingerprint : null,
       coreUserEditedSubjectEntityIds: [...coreUserEdited],
+      identityMemberEntityIdsBySubject: Object.freeze(Object.fromEntries(trackedSubjects.map(entity => [entity.id, Object.freeze([...new Set([entity.id, ...(identityMemberEntityIdsBySubject?.[entity.id] ?? [])].filter(id => typeof id === 'string' && id))])]))),
     }),
   });
 }
 
 function parsePacket(value, { finishReason } = {}) {
+  if (Array.isArray(value)) return { subjects: value };
   if (value && typeof value === 'object' && !Array.isArray(value)) return value;
   let raw = String(value ?? '').trim();
   const fences = [...raw.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/giu)];
@@ -342,6 +346,15 @@ function parsePacket(value, { finishReason } = {}) {
   const repaired = repairJsonWithUniqueMissingObjectClose(raw, { finishReason, allowArray: true });
   if (repaired) return Array.isArray(repaired) ? { subjects: repaired } : repaired;
   const error = new TypeError('CSE 返回不是可识别的 JSON。'); error.code = 'V3_CSE_FORMAT_INVALID'; throw error;
+}
+
+const CSE_SUBJECT_RESULT_FIELDS = Object.freeze(['subjects', 'people', 'characters', 'states', '人物', '角色', '状态']);
+
+function hasRecognizableCseResult(packet) {
+  if (!packet || typeof packet !== 'object' || Array.isArray(packet)) return false;
+  if (field(packet, ['noMaterialChange']) === true) return true;
+  const subjects = field(packet, CSE_SUBJECT_RESULT_FIELDS);
+  return Array.isArray(subjects) || Boolean(subjects && typeof subjects === 'object');
 }
 
 function bindingFor(value, bindings) {
@@ -544,11 +557,12 @@ async function compileCalibratedCategory({ rawSubject, category, binding, previo
 
 export async function compileCseResponse({ response, finishReason, envelope, previousCurrentState, now, deltaId }) {
   const packet = parsePacket(response, { finishReason });
+  if (!hasRecognizableCseResult(packet)) throw errorWith('V3_CSE_FORMAT_INVALID', 'CSE 返回不含可识别的人物状态结果。');
   const isolated = [];
   const previousById = new Map((previousCurrentState?.subjects ?? []).map(subject => [subject.subjectEntityId, subject]));
   const compiled = new Map();
   const calibrationAudit = [];
-  const rawSubjects = list(field(packet, ['subjects', 'people', 'characters', 'states', '人物', '角色', '状态']));
+  const rawSubjects = list(field(packet, CSE_SUBJECT_RESULT_FIELDS));
   for (const [subjectIndex, raw] of rawSubjects.slice(0, 80).entries()) {
     const binding = bindingFor(raw, envelope.scope.trackedBindings);
     if (!binding) { isolated.push({ field: 'subjects', index: subjectIndex, code: 'V3_CSE_SUBJECT_UNBOUND' }); continue; }
@@ -580,7 +594,7 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
     compiled.set(binding.entityId, { subjectEntityId: binding.entityId, core, adaptive, situational, changeSummary: [], coreChallenges: [...new Set(challenges)].slice(0, 40) });
   }
   for (const binding of envelope.scope.trackedBindings) if (!compiled.has(binding.entityId) && !previousById.has(binding.entityId)) compiled.set(binding.entityId, { subjectEntityId: binding.entityId, core: [], adaptive: [], situational: [], changeSummary: [], coreChallenges: [] });
-  const subjectSnapshots = [...compiled.values()].map(subject => {
+  const logicalSubjectSnapshots = [...compiled.values()].map(subject => {
     const previous = previousById.get(subject.subjectEntityId) ?? { core: [], adaptive: [], situational: [] };
     const audits = calibrationAudit.filter(entry => entry.subjectEntityId === subject.subjectEntityId);
     return {
@@ -590,13 +604,18 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
         .slice(0, 40),
     };
   });
-  const fixedChanges = subjectSnapshots.map(subject => {
+  const fixedChanges = logicalSubjectSnapshots.map(subject => {
     const previous = previousById.get(subject.subjectEntityId) ?? EMPTY_CSE_SUBJECT;
     const audits = calibrationAudit.filter(entry => entry.subjectEntityId === subject.subjectEntityId);
     return { subjectEntityId: subject.subjectEntityId, items: actualSubjectChanges({ before: previous, after: subject, audits }) };
   }).filter(subject => subject.items.length);
-  const material = subjectSnapshots.some(subject => JSON.stringify(storedProjection(previousById.get(subject.subjectEntityId) ?? { core: [], adaptive: [], situational: [] })) !== JSON.stringify(storedProjection(subject)));
+  const material = logicalSubjectSnapshots.some(subject => JSON.stringify(storedProjection(previousById.get(subject.subjectEntityId) ?? { core: [], adaptive: [], situational: [] })) !== JSON.stringify(storedProjection(subject)));
   const noMaterialChange = !material;
+  const subjectSnapshots = logicalSubjectSnapshots.flatMap(subject => {
+    const members = envelope.scope.identityMemberEntityIdsBySubject?.[subject.subjectEntityId] ?? [subject.subjectEntityId];
+    const clearedMembers = members.filter(entityId => entityId !== subject.subjectEntityId).map(subjectEntityId => ({ subjectEntityId, core: [], adaptive: [], situational: [], changeSummary: [], coreChallenges: [] }));
+    return [...clearedMembers, subject];
+  });
   const fingerprint = `sha256:${await sha256(JSON.stringify([envelope.scope.floorId, envelope.scope.floorMemoryId, subjectSnapshots, noMaterialChange, { fixedChanges }]))}`;
   const isolationCodes = [...new Set(isolated.map(item => item.code).filter(code => CSE_ISOLATION_CODES.includes(code)))];
   const delta = validateStateDeltaRecord({ schemaVersion: 3, recordType: 'stateDelta', id: deltaId, chatId: envelope.scope.chatId, narrativeGeneration: envelope.scope.narrativeGeneration, floorId: envelope.scope.floorId, floorMemoryId: envelope.scope.floorMemoryId, baselineId: envelope.scope.baselineId, previousCurrentStateId: previousCurrentState?.id ?? null, subjectSnapshots, fixedChanges, noMaterialChange, fingerprint, source: { promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, calibrationVersion: CSE_CALIBRATION_VERSION, ...(calibrationAudit.length ? { calibrationAudit } : {}), ...(isolated.length ? { isolationSummary: { count: isolated.length, codes: isolationCodes } } : {}) }, createdAt: now, updatedAt: now, recordStatus: 'active', supersedes: null }, { expectedChatId: envelope.scope.chatId });
@@ -644,7 +663,7 @@ async function manualStateItems({ edits, originals, category, subjectEntityId, f
   return output;
 }
 
-export async function createManualCseCorrection({ anchorDelta, currentState, subjectEntityId, edits, allowedTowardEntityIds = [], deltaId, now }) {
+export async function createManualCseCorrection({ anchorDelta, currentState, subjectEntityId, subjectMemberEntityIds = [subjectEntityId], edits, allowedTowardEntityIds = [], deltaId, now }) {
   const currentSubject = currentState?.subjects?.find(subject => subject.subjectEntityId === subjectEntityId);
   if (!currentSubject || !anchorDelta?.subjectSnapshots || typeof deltaId !== 'string') throw errorWith('V3_CSE_MANUAL_TARGET_INVALID', '当前人物状态或纠正锚点不可用。');
   const allowed = new Set(allowedTowardEntityIds);
@@ -656,18 +675,20 @@ export async function createManualCseCorrection({ anchorDelta, currentState, sub
 
   const corrected = { subjectEntityId, changeSummary: ['用户纠正当前状态'], coreChallenges: [] };
   for (const category of categories) corrected[category] = await manualStateItems({ edits: normalizedEdits[category], originals: currentSubject[category], category, subjectEntityId, floorId: anchorDelta.floorId, oldDeltaId: anchorDelta.id, deltaId, allowedTowardEntityIds: allowed });
-  const snapshots = [];
-  let replaced = false;
-  for (const snapshot of anchorDelta.subjectSnapshots) {
-    if (snapshot.subjectEntityId === subjectEntityId) { snapshots.push(corrected); replaced = true; continue; }
-    snapshots.push(structuredClone(snapshot));
+  const memberIds = [...new Set([subjectEntityId, ...subjectMemberEntityIds].filter(id => typeof id === 'string' && id))];
+  const memberIdSet = new Set(memberIds);
+  const snapshots = anchorDelta.subjectSnapshots.filter(snapshot => !memberIdSet.has(snapshot.subjectEntityId)).map(snapshot => structuredClone(snapshot));
+  for (const memberEntityId of memberIds) {
+    if (memberEntityId === subjectEntityId) continue;
+    snapshots.push({ subjectEntityId: memberEntityId, core: [], adaptive: [], situational: [], changeSummary: [], coreChallenges: [] });
   }
-  if (!replaced) snapshots.push(corrected);
-  const manualSubjectEntityIds = [...new Set([...(anchorDelta.source?.manualSubjectEntityIds ?? []), subjectEntityId])];
+  snapshots.push(corrected);
+  const snapshotIds = new Set(snapshots.map(snapshot => snapshot.subjectEntityId));
+  const manualSubjectEntityIds = [...new Set([...(anchorDelta.source?.manualSubjectEntityIds ?? []), ...memberIds])].filter(id => snapshotIds.has(id));
   const noMaterialChange = false;
   const targetItems = actualSubjectChanges({ before: currentSubject, after: corrected, audits: [] });
   const fixedChanges = [
-    ...(anchorDelta.fixedChanges ?? []).filter(subject => subject.subjectEntityId !== subjectEntityId),
+    ...(anchorDelta.fixedChanges ?? []).filter(subject => !memberIdSet.has(subject.subjectEntityId)),
     ...(targetItems.length ? [{ subjectEntityId, items: targetItems }] : []),
   ];
   const fingerprint = `sha256:${await sha256(JSON.stringify([anchorDelta.floorId, anchorDelta.floorMemoryId, snapshots, noMaterialChange, { fixedChanges }]))}`;
@@ -823,14 +844,11 @@ function summarizeActualChange(change, knownBindings) {
 }
 
 export function deriveCseTimeline(stateDeltas = []) {
-  const subjects = new Map(), timeline = [];
+  const timeline = [];
   for (const delta of stateDeltas) {
     const changes = Object.hasOwn(delta, 'fixedChanges')
       ? delta.fixedChanges.map(subject => Object.freeze({ subjectEntityId: subject.subjectEntityId, items: Object.freeze(subject.items.map(item => Object.freeze(item))) }))
       : [];
-    for (const snapshot of delta.subjectSnapshots) {
-      applyDeltaSnapshot(subjects, delta, snapshot);
-    }
     const endStateSubjects = delta.subjectSnapshots.map(subject => Object.freeze({ subjectEntityId: subject.subjectEntityId, core: Object.freeze([...(subject.core ?? [])]), adaptive: Object.freeze([...(subject.adaptive ?? [])]), situational: Object.freeze([...(subject.situational ?? [])]) }));
     timeline.push(Object.freeze({ deltaId: delta.id, floorId: delta.floorId, noMaterialChange: delta.noMaterialChange, changes: Object.freeze(changes), endStateSubjects: Object.freeze(endStateSubjects), isolationSummary: delta.source?.isolationSummary ? Object.freeze({ count: delta.source.isolationSummary.count, codes: Object.freeze([...delta.source.isolationSummary.codes]) }) : null }));
   }

@@ -739,6 +739,40 @@ test('sameAs 只接受局部同类型精确绑定，错误键、用户冒绑与�
   assert.equal(result.newEntities.some(entity => ['守卫组', '冒名者', '共同称呼', '错误键'].includes(entity.displayName)), false, '显式错误或歧义不能回退新建');
 });
 
+test('同名个人与群体、带标点的不同新名称均保持独立，同类重复和旧目录仍精确去重', async () => {
+  const response = {
+    summary: '猎隼特工与猎隼小队分头行动，A-B 与 AB 也各自出场。',
+    people: [
+      { name: '猎隼', aliases: ['猎隼特工'], entityKind: 'individual' },
+      { name: '猎隼', aliases: ['猎隼小队'], entityKind: 'group' },
+      { name: 'A-B', aliases: ['A-B备用'], entityKind: 'individual' },
+      { name: 'A-B', entityKind: 'individual' },
+      { name: 'AB', entityKind: 'individual' },
+    ],
+    actions: [
+      { actor: '猎隼特工', action: '单独潜入' },
+      { actor: '猎隼小队', action: '集体封锁' },
+      { actor: 'A-B', action: '记录甲' },
+      { actor: 'AB', action: '记录乙' },
+    ],
+  };
+  const result = await direct(response, { content: '猎隼特工单独潜入，猎隼小队集体封锁；A-B 记录甲，AB 记录乙。' });
+  const individual = result.newEntities.find(entity => entity.entityType === 'person' && entity.displayName === '猎隼');
+  const group = result.newEntities.find(entity => entity.entityType === 'group' && entity.displayName === '猎隼');
+  const punctuated = result.newEntities.find(entity => entity.displayName === 'A-B' && entity.status !== 'merged');
+  const compact = result.newEntities.find(entity => entity.displayName === 'AB' && entity.status !== 'merged');
+  assert.ok(individual && group && punctuated && compact);
+  assert.notEqual(individual.id, group.id);
+  assert.notEqual(punctuated.id, compact.id);
+  assert.equal(result.newEntities.filter(entity => entity.displayName === 'A-B' && entity.status !== 'merged').length, 1, '同类型完整同名仍去重');
+  assert.deepEqual(result.memory.actions.map(item => item.actorEntityId), [individual.id, group.id, punctuated.id, compact.id]);
+
+  const known = { id: '10000000-0000-4000-8000-000000000099', chatId: CHAT, narrativeGeneration: GENERATION, entityType: 'person', displayName: '赤狐', aliases: [], specialRole: 'none', firstSeenFloorId: null, lastSeenFloorId: null, status: 'established', recordStatus: 'active' };
+  const matched = await direct({ summary: '赤狐出场。', people: [{ name: '赤狐', entityKind: 'individual' }] }, { entities: [known], content: '赤狐出场。' });
+  assert.equal(matched.newEntities.length, 0);
+  assert.equal(matched.memory.participants[0].entityId, known.id);
+});
+
 test('code fence、前后说明、数组包裹、尾逗号、常见键别名与单值数组均可有限容错', async () => {
   const wrapped = '处理结果如下：\n```json\n[{"总结":"裴晚生提醒用户带伞。","角色":{"name":"裴晚生"},"事件":{"title":"提醒", "description":"裴晚生提醒用户带伞。",},}]\n```\n完毕。';
   const result = await direct(wrapped);
@@ -806,6 +840,67 @@ test('前置 USER 原句由本地定位写入来源，跨来源重复原句不�
   const outOfRange = structuredClone(result.memory);
   outOfRange.actions[0].evidenceRefs[0].sourceSnapshotIndex = sourceUserInputSnapshot.messages.length;
   assert.throws(() => validateFloorMemory(outOfRange, { expectedChatId: CHAT }), error => error?.code === 'V3_FLOORMEMORY_INVALID');
+});
+
+test('多行与连续空格原句经 normalize 和真实 runtime 保存后仍可逐字还原', async () => {
+  const aiQuote = ' 保持\n  原样 ';
+  const userQuote = ' 归航  暗号\n第二行 ';
+  const content = `裴晚生说：“${aiQuote}。”`;
+  const userText = `林岚说：“${userQuote}。”`;
+  const sourceUserInputSnapshot = { messages: [{ content: userText, messageIndex: 0, swipeId: null, selectedSwipeIndex: null }] };
+  const response = {
+    summary: '裴晚生要求保持原样，林岚约定使用归航暗号。',
+    people: [{ name: '裴晚生' }, { name: '林岚', role: 'user' }],
+    actions: [{ actor: '裴晚生', action: '要求保持原样', exactQuote: aiQuote, source: 'canonicalContent' }],
+    commitments: [{ issuer: '林岚', recipient: '裴晚生', content: '使用归航暗号', kind: 'codePhrase', exactQuote: userQuote, source: 'precedingUserInput' }],
+    exactQuotes: [aiQuote, { exactText: userQuote, kind: 'codePhrase', speaker: '林岚', source: 'precedingUserInput' }],
+  };
+  const assertLiteralMemory = memory => {
+    assert.equal(memory.actions[0].evidenceRefs[0].quotedText, aiQuote);
+    assert.equal(memory.actions[0].evidenceRefs[0].occurrence, 1);
+    assert.equal(memory.commitments[0].evidenceRefs[0].quotedText, userQuote);
+    assert.equal(memory.commitments[0].evidenceRefs[0].sourceType, 'precedingUser');
+    assert.equal(memory.exactAnchors[0].exactText, aiQuote);
+    assert.equal(memory.exactAnchors[1].exactText, userQuote);
+    assert.equal(memory.commitments[0].exactAnchorId, memory.exactAnchors[1].anchorId);
+  };
+
+  const normalized = await direct(response, { content, sourceUserInputSnapshot });
+  assertLiteralMemory(normalized.memory);
+
+  const h = harness({ initialChat: [user(userText), assistant(content), user('稳定确认')], utility: () => ({ jsonData: response }) });
+  await h.runtime.start();
+  const floorId = h.runtime.getState().floors[0].floorId;
+  const state = await h.runtime.extractFloor(floorId, { analyzeState: false });
+  const saved = state.floors.find(floor => floor.floorId === floorId)?.memory;
+  assert.ok(saved, JSON.stringify(state.lastExtractorError));
+  assertLiteralMemory(saved);
+  const cold = await h.store.readReachable({ mode: 'runtime' });
+  assertLiteralMemory(cold.floorMemories.find(memory => memory.floorId === floorId));
+});
+
+test('informationTransfers 的 source 只决定引文来源，不因键顺序冒充发送人', async () => {
+  const sourceUserInputSnapshot = { messages: [{ content: '沈砚说：“暗门在钟楼。”顾舟发现：“门  开着。”', messageIndex: 0, swipeId: null, selectedSwipeIndex: null }] };
+  const result = await direct({
+    summary: '沈砚告知顾舟暗门位置，顾舟发现门开着。',
+    people: [{ name: '沈砚' }, { name: '顾舟' }],
+    informationTransfers: [
+      { source: 'precedingUserInput', from: '沈砚', to: ['顾舟'], claimText: '暗门在钟楼', channel: 'told', exactQuote: '暗门在钟楼' },
+      { from: '沈砚', source: 'precedingUserInput', to: ['顾舟'], claimText: '暗门在钟楼', channel: 'told', exactQuote: '暗门在钟楼' },
+      { source: 'precedingUserInput', from: null, to: ['顾舟'], claimText: '门开着', channel: 'discovered', exactQuote: '门  开着' },
+    ],
+  }, { content: '裴晚生在远处等待。', sourceUserInputSnapshot });
+  assert.equal(result.memory.informationTransfers.length, 3);
+  const [sourceFirst, fromFirst, discovered] = result.memory.informationTransfers;
+  assert.deepEqual(
+    { from: sourceFirst.fromEntityId, to: sourceFirst.toEntityIds, claim: sourceFirst.claimText, channel: sourceFirst.channel, evidence: sourceFirst.evidenceRefs },
+    { from: fromFirst.fromEntityId, to: fromFirst.toEntityIds, claim: fromFirst.claimText, channel: fromFirst.channel, evidence: fromFirst.evidenceRefs },
+  );
+  assert.equal(sourceFirst.evidenceRefs[0].sourceType, 'precedingUser');
+  assert.equal(sourceFirst.evidenceRefs[0].sourceSnapshotIndex, 0);
+  assert.equal(discovered.fromEntityId, null);
+  assert.equal(discovered.evidenceRefs[0].quotedText, '门  开着');
+  assert.equal(result.newEntities.some(entity => entity.displayName === 'precedingUserInput'), false);
 });
 
 test('坏可选条目、未知枚举、无法绑定人物与引文定位失败只降级当项', async () => {

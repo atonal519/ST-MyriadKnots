@@ -3,13 +3,12 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
   const floorIds = [...new Set([
     ...(projection.selectedFloors ?? []).map(item => item.floorId),
     ...(projection.cseChangeItems ?? []).map(item => item.floorId),
-    ...(projection.stateProgressionItems ?? []).flatMap(item => [item.sourceFloorId, ...(item.evidence ?? []).map(value => value.floorId)]),
   ].filter(Boolean))];
   const sources = new Map(floorIds.map(id => [id, sourceIndex?.messageIndexFor?.(id) ?? null]));
   const signature = JSON.stringify([projection, [...sources]]);
   if (card.recallSignature === signature) return;
   card.recallSignature = signature;
-  const state = uiStates.get(card.stateKey) ?? { tab:'events', event:null, person:null, floors:new Map() };
+  const state = uiStates.get(card.stateKey) ?? { tab:'events', event:null, person:null, floors:new Map(), currentOpen:false, historyOpen:false };
   uiStates.set(card.stateKey, state);
   const node = (tag, className, text) => {
     const value = doc.createElement(tag);
@@ -25,14 +24,13 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     .recall-design button{font:inherit;color:inherit;cursor:pointer;box-shadow:none;text-shadow:none}
     .recall-design button:focus-visible,.recall-design summary:focus-visible{outline:2px solid var(--qqj-inline-knot);outline-offset:3px}
     .recall-tabs{display:grid;grid-template-columns:1fr 1fr;gap:20px;border-bottom:1px solid var(--qqj-inline-line);margin-bottom:15px}
-    .recall-tab{position:relative;border:0;background:none;padding:9px 10px 11px;font-size:14px!important;letter-spacing:.24em;opacity:.5}
+    .recall-tab{position:relative;border:0;background:none;padding:5px 10px 11px;font-size:14px!important;letter-spacing:.24em;opacity:.5}
     .recall-tab[aria-selected=true]{opacity:1;font-weight:650}
     .recall-tab[aria-selected=true]::after{content:'';position:absolute;bottom:-1px;left:22%;right:22%;height:2px;background:var(--qqj-inline-knot);border-radius:2px}
-    .event-pills{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+    .event-pills{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
     .event-pill{min-width:0;border:1px solid var(--qqj-inline-line);border-radius:999px;background:none;padding:5px 6px;font-size:11px!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .event-pill[aria-expanded=true]{border-color:var(--qqj-inline-knot);background:color-mix(in srgb,var(--qqj-inline-knot) 10%,transparent)}
-    .event-display{margin-top:13px;padding:12px 13px;border-radius:7px;background:var(--soft);min-height:86px}
-    .event-display.is-empty{display:grid;place-items:center;background:none;min-height:75px}
+    .event-display{margin-top:13px;padding:12px 13px;border-radius:7px;background:var(--soft)}
     .recall-empty{color:var(--muted);font-size:11px;margin:0}
     .event-caption{font-size:10px;color:var(--muted);margin:0 0 8px}
     .event-copy{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.9}
@@ -43,10 +41,10 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     .time-progression-list{display:grid;gap:10px;margin-top:9px}
     .time-progression-item{padding:9px 10px;border-radius:6px;background:var(--soft)}
     .time-progression-subject{display:block;font-size:11px;margin-bottom:3px}
-    .time-progression-copy,.time-progression-meta{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
-    .time-progression-copy{font-size:11px;line-height:1.85}
-    .time-progression-meta{font-size:9.5px;color:var(--muted);margin-top:4px}
-    .people-current{border:1px solid var(--qqj-inline-line);border-radius:7px;padding:11px 12px;background:var(--soft)}
+    .time-progression-copy{margin:0;font-size:11px;line-height:1.85;white-space:pre-wrap;overflow-wrap:anywhere}
+    .people-current>summary,.people-history>summary{cursor:pointer;list-style:none}
+    .people-current>summary::-webkit-details-marker,.people-history>summary::-webkit-details-marker{display:none}
+    .people-current:not([open])>.section-heading,.people-history:not([open])>.section-heading{margin-bottom:0}
     .section-heading{display:flex;align-items:center;gap:7px;font-size:11px;font-weight:600;margin:0 0 9px}
     .section-heading::before{content:'';height:10px;width:2px;background:var(--qqj-inline-knot);border-radius:1px}
     .current-person{padding:8px 0;border-top:1px solid var(--qqj-inline-line)}
@@ -118,16 +116,15 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     for (const item of floor.items) if (!group.items.some(other => other.text === item.text)) group.items.push(item);
     if (line.title && !group.titles.includes(line.title)) group.titles.push(line.title);
   }
-  const pills = node('div', 'event-pills'), display = node('div', 'event-display is-empty');
+  const pills = node('div', 'event-pills'), display = node('div', 'event-display');
   display.id = `${prefix}-event-content`; display.setAttribute('role', 'region'); display.setAttribute('aria-label', '所选旧事'); display.setAttribute('aria-live', 'polite');
-  const emptyEvents = () => display.replaceChildren(node('p', 'recall-empty', eventGroups.size ? '点一个结，看看那时的事。' : projection.summary || '本轮没有召回旧事。'));
   let selectedEvent = eventGroups.has(state.event) ? state.event : null;
   state.event = selectedEvent;
   const eventButtons = [];
   const showEvent = () => {
     for (const pill of eventButtons) pill.setAttribute('aria-expanded', String(pill.dataset.eventKey === selectedEvent));
-    display.className = 'event-display' + (selectedEvent === null ? ' is-empty' : '');
-    if (selectedEvent === null) { emptyEvents(); return; }
+    display.hidden = selectedEvent === null;
+    if (selectedEvent === null) { display.replaceChildren(); return; }
     const floor = eventGroups.get(selectedEvent);
     display.replaceChildren(node('p', 'event-caption', [floorLabel(floor.floorId), ...floor.titles].join(' · ')), ...floor.items.map(item => node('p', 'event-copy', item.text)));
   };
@@ -152,9 +149,7 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     for (const item of projection.stateProgressionItems) {
       const entry = node('article', 'time-progression-item');
       entry.append(node('strong', 'time-progression-subject', `${item.subject}${item.toward ? ` → ${item.toward}` : ''} · 原记录：${progressionVisibility[item.visibility] ?? item.visibility}`));
-      entry.append(node('p', 'time-progression-copy', `保存时：${item.savedText}\n此刻表现建议：${item.suggestion}`));
-      const evidenceLabels = [...new Set((item.evidence ?? []).map(value => value.floorId ? floorLabel(value.floorId) : null).filter(Boolean))];
-      entry.append(node('p', 'time-progression-meta', `${item.timeBasis} · 状态${floorLabel(item.sourceFloorId)}${evidenceLabels.length ? ` · 依据 ${evidenceLabels.join('、')}` : ''} · 作者侧续写表现建议，不表示任何角色已知，也并非新剧情事实`));
+      entry.append(node('p', 'time-progression-copy', `${item.savedText}\n推测应为：${item.suggestion}`));
       list.append(entry);
     }
     progression.append(list); events.append(progression);
@@ -168,14 +163,20 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     const items = statesByPerson.get(id).items;
     if (!items.some(item => item.text === state.text && item.toward === state.toward && item.layer === state.layer)) items.push(state);
   }
-  const current = node('section', 'people-current'); current.append(node('h3', 'section-heading', '人物当前状态'));
+  const current = node('details', 'people-current');
+  current.open = state.currentOpen === true;
+  current.addEventListener('toggle', () => { state.currentOpen = current.open === true; });
+  current.append(node('summary', 'section-heading', '人物当前状态'));
   for (const person of statesByPerson.values()) {
     const group = node('div', 'current-person'); group.append(node('strong', 'current-name', person.name));
     for (const item of person.items) group.append(node('p', 'current-copy', `${item.toward ? `→ ${item.toward}：` : ''}${item.text}`));
     current.append(group);
   }
   if (!statesByPerson.size) current.append(node('p', 'recall-empty', '本轮未召回人物当前状态。'));
-  const history = node('section', 'people-history'); history.append(node('h3', 'section-heading', '人物变化'));
+  const history = node('details', 'people-history');
+  history.open = state.historyOpen === true;
+  history.addEventListener('toggle', () => { state.historyOpen = history.open === true; });
+  history.append(node('summary', 'section-heading', '人物变化'));
   const changesByPerson = new Map();
   for (const change of projection.cseChangeItems ?? []) {
     const id = identity(change);

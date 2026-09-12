@@ -68,6 +68,27 @@ async function allWorldNames(ctx, bindings, known) {
   return uniqueNames(fallback);
 }
 
+function scopedWorldNames(ctx, bindings = {}) {
+  return new Map([
+    ['char', linkedWorldNames(ctx, bindings)],
+    ['chat', chatWorldNames(ctx)],
+    ['persona', uniqueNames([ctx?.powerUserSettings?.persona_description_lorebook])],
+    ['global', globalWorldNames(ctx, bindings)],
+  ]);
+}
+
+export async function listWorldInfoBookNames(ctx, { bindings = {} } = {}) {
+  if (!ctx || typeof ctx !== 'object') throw new TypeError('世界书扫描上下文无效');
+  const scopedNames = scopedWorldNames(ctx, bindings);
+  const embedded = currentCharacter(ctx)?.data?.character_book;
+  const embeddedBook = text(embedded?.name) || '角色内置世界书';
+  const embeddedRows = Array.isArray(embedded?.entries) ? embedded.entries : [];
+  return Object.freeze(await allWorldNames(ctx, bindings, [
+    ...[...scopedNames.values()].flat(),
+    ...(embeddedRows.length ? [embeddedBook] : []),
+  ]));
+}
+
 function sourceReadError(missing, warnings) {
   const error = new Error('关联世界书读取失败，本次 CSE 未发送。');
   error.code = 'V3_CSE_SOURCE_READ_FAILED';
@@ -136,12 +157,7 @@ function preparedEntry({ book, uid, entry, scope, embedded = false }) {
 export async function scanWorldInfo(ctx, { bindings = {}, strict = false, includeCatalog = true, filterBookNames = names => names } = {}) {
   if (!ctx || typeof ctx !== 'object') throw new TypeError('世界书扫描上下文无效');
   const warnings = [];
-  const scopedNames = new Map([
-    ['char', linkedWorldNames(ctx, bindings)],
-    ['chat', chatWorldNames(ctx)],
-    ['persona', uniqueNames([ctx?.powerUserSettings?.persona_description_lorebook])],
-    ['global', globalWorldNames(ctx, bindings)],
-  ]);
+  const scopedNames = scopedWorldNames(ctx, bindings);
   const relevantNames = uniqueNames([...scopedNames.values()].flat());
   const embedded = currentCharacter(ctx)?.data?.character_book;
   const embeddedBook = text(embedded?.name) || '角色内置世界书';

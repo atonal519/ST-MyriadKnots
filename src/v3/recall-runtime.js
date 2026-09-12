@@ -11,7 +11,7 @@ import { PREQUEL_METADATA_KEY, PREQUEL_PROMPT_SLOT, selectPrequel } from './reca
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
 export const RECALL_RECEIPT_SCHEMA_VERSION = 13;
-export const RECALL_STRATEGY_VERSION = 'continuity-v8';
+export const RECALL_STRATEGY_VERSION = 'continuity-v10';
 
 const SUPPORTED_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 const REUSE_TYPES = new Set(['regenerate', 'swipe', 'continue']);
@@ -172,6 +172,8 @@ const selectorDiagnosticSnapshot = value => {
     model: api.model,
     transportAttempts: Number.isSafeInteger(value?.transportAttempts) && value.transportAttempts >= 0 ? value.transportAttempts : api.transportAttempts,
     durationMs: Math.max(0, Math.floor(Number(value?.durationMs) || 0)),
+    utilityRoundTripMs: finiteDuration(value?.utilityRoundTripMs) ? Math.floor(value.utilityRoundTripMs) : null,
+    localSelectionMs: finiteDuration(value?.localSelectionMs) ? Math.floor(value.localSelectionMs) : null,
     historyCandidateCount: nonNegativeInteger(value?.historyCandidateCount) ? value.historyCandidateCount : null,
     stateCandidateCount: nonNegativeInteger(value?.stateCandidateCount) ? value.stateCandidateCount : null,
     historyModelSelectedCount: nonNegativeInteger(value?.historyModelSelectedCount) ? value.historyModelSelectedCount : null,
@@ -209,13 +211,13 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     || !boundedString(receipt.queryFingerprint, 200)
     || (receipt.schemaVersion >= 8 && !boundedString(receipt.bodyMatchFingerprint, 200))
     || (receipt.schemaVersion >= 9 && (historical
-      ? ![RECALL_STRATEGY_VERSION, 'continuity-v7', 'continuity-v6', 'continuity-v5', 'continuity-v4', 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
+      ? ![RECALL_STRATEGY_VERSION, 'continuity-v9', 'continuity-v8', 'continuity-v7', 'continuity-v6', 'continuity-v5', 'continuity-v4', 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
       : receipt.strategyVersion !== RECALL_STRATEGY_VERSION))
     || !SUPPORTED_TYPES.has(receipt.generationType)
     || !Array.isArray(receipt.selectedFloors) || receipt.selectedFloors.length > MAX_RECEIPT_FLOORS
     || !Array.isArray(receipt.selectedStates) || receipt.selectedStates.length > MAX_RECEIPT_STATES
     || !Array.isArray(receipt.skipReasons) || receipt.skipReasons.length > MAX_RECEIPT_SKIP_REASONS
-    || !boundedString(receipt.injectionText, 16000, { empty: true })
+    || !boundedString(receipt.injectionText, receipt.strategyVersion === RECALL_STRATEGY_VERSION ? 20000 : 16000, { empty: true })
     || !boundedString(receipt.receiptFingerprint, 200)
     || !boundedString(receipt.createdAt, 100) || !Number.isFinite(Date.parse(receipt.createdAt))
     || (receipt.completionStatus === 'ready') !== Boolean(receipt.injectionText)) return false;
@@ -252,6 +254,8 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
       || !optionalBoundedString(diagnostic.formatStage, 80) || !boundedString(diagnostic.finishReason, 32, { empty: true })
       || !boundedString(diagnostic.source, 80) || !boundedString(diagnostic.sourceLabel, 160) || !boundedString(diagnostic.model, 160)
       || !(diagnostic.transportAttempts === null || nonNegativeInteger(diagnostic.transportAttempts)) || !finiteDuration(diagnostic.durationMs)
+      || !(diagnostic.utilityRoundTripMs === null || diagnostic.utilityRoundTripMs === undefined || finiteDuration(diagnostic.utilityRoundTripMs))
+      || !(diagnostic.localSelectionMs === null || diagnostic.localSelectionMs === undefined || finiteDuration(diagnostic.localSelectionMs))
       || (receipt.strategyVersion === RECALL_STRATEGY_VERSION && !['historyCandidateCount', 'stateCandidateCount', 'historyExcludedCount', 'stateExcludedCount', 'historyRetainedCount', 'stateRetainedCount'].every(key => diagnostic[key] === null || nonNegativeInteger(diagnostic[key])))) return false;
     const timings = receipt.timings;
     if (!timings || typeof timings !== 'object' || Array.isArray(timings)
@@ -371,7 +375,7 @@ function stateFromReceipt(receipt, { generationType = receipt.generationType, re
     injectionText: receipt.injectionText,
     reusedReceipt,
     restoredReceipt,
-    receiptPersistence: restoredReceipt ? 'persisted' : receipt.receiptPersistence ?? 'persisted',
+    receiptPersistence: restoredReceipt ? 'chatRecord' : receipt.receiptPersistence ?? 'chatRecord',
     stages: receipt.stages ?? null,
     timings: timings ? Object.freeze({ ...timings }) : receipt.timings ? Object.freeze(clone(receipt.timings)) : null,
     skipReasons: Object.freeze([...(receipt.skipReasons ?? [])]),
@@ -686,11 +690,9 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const context = snapshot.context;
     if (!hostChatId) throw Object.assign(new Error('请先打开一个可保存的聊天。'), { code: 'V3_PREQUEL_CHAT_UNAVAILABLE' });
     if (typeof context?.saveChatMetadata !== 'function' && typeof context?.saveMetadata !== 'function') throw Object.assign(new Error('宿主不支持聊天元数据保存。'), { code: 'V3_PREQUEL_SAVE_UNAVAILABLE' });
-    const previousMetadata = context.chatMetadata;
-    const metadata = previousMetadata && typeof previousMetadata === 'object' && !Array.isArray(previousMetadata) ? previousMetadata : {};
+    const metadata = context.chatMetadata;
     const hadPrevious = Object.hasOwn(metadata, PREQUEL_METADATA_KEY);
     const previous = metadata[PREQUEL_METADATA_KEY];
-    context.chatMetadata = metadata;
     if (text.trim()) metadata[PREQUEL_METADATA_KEY] = text;
     else delete metadata[PREQUEL_METADATA_KEY];
     try {
@@ -702,7 +704,6 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (context.chatMetadata === metadata) {
         if (hadPrevious) metadata[PREQUEL_METADATA_KEY] = previous;
         else delete metadata[PREQUEL_METADATA_KEY];
-        if (previousMetadata !== metadata) context.chatMetadata = previousMetadata;
       }
       throw error;
     }
@@ -749,7 +750,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const previousReceipt = currentExtra[RECALL_RECEIPT_KEY];
     const candidate = clone(receipt);
     user.message.extra = { ...currentExtra, [RECALL_RECEIPT_KEY]: candidate };
-    try { await context.saveChat(); return 'persisted'; }
+    try { await context.saveChat(); return 'saveUnconfirmed'; }
     catch (error) {
       const latestExtra = user.message.extra;
       if (latestExtra && typeof latestExtra === 'object' && !Array.isArray(latestExtra) && latestExtra[RECALL_RECEIPT_KEY] === candidate) {
@@ -766,7 +767,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
   function receiptCandidates(user, key) {
     const stored = user.message.extra?.[RECALL_RECEIPT_KEY];
     const session = sessionReceipt?.key === key ? sessionReceipt.receipt : null;
-    return [stored, session].filter((value, index, values) => value && typeof value === 'object' && values.indexOf(value) === index);
+    return [session, stored].filter((value, index, values) => value && typeof value === 'object' && values.indexOf(value) === index);
   }
 
   async function commitPromptIfCurrent({ operation, source, selectedFloors, selectedStates, selectedCseChanges = [], userIndex, userFingerprint, hostGuard, injectionText }) {
@@ -1051,7 +1052,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       timings.receiptMs = Date.now() - receiptStarted;
       const receipt = Object.freeze({ ...sealedReceipt, receiptPersistence });
       if (sessionReceipt === sessionCandidate) {
-        sessionReceipt = receiptPersistence === 'persisted' ? null : Object.freeze({ key, receipt });
+        sessionReceipt = Object.freeze({ key, receipt });
       }
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       timings.totalMs = Date.now() - operation.started;
