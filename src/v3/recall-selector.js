@@ -43,6 +43,18 @@ export function estimateRecallTokens(value) {
   return Math.ceil(total);
 }
 
+export function recallBudget(contextSize = 8192, { reservedTokens = 0, reservedCharacters = 0 } = {}) {
+  const size = Number(contextSize) || 8192;
+  const totalCharacters = Math.max(800, Math.min(16000, Math.floor(size * 0.55)));
+  const totalTokens = Math.max(800, Math.min(MAX_RECALL_TOKENS, Math.floor(size * 0.48)));
+  return Object.freeze({
+    totalCharacters,
+    totalTokens,
+    characterLimit: Math.max(0, totalCharacters - Math.max(0, Math.floor(Number(reservedCharacters) || 0))),
+    tokenLimit: Math.max(0, totalTokens - Math.max(0, Math.floor(Number(reservedTokens) || 0))),
+  });
+}
+
 export function buildRecallQueryFrame({ coreChat = [], assistantTurns = 1 } = {}) {
   const chat = Array.isArray(coreChat) ? coreChat : [];
   let latestUser = null;
@@ -549,8 +561,14 @@ function historySelectionContext(source, queryContext) {
     .map(value => ({ ...value, score: 1, branchScores: Object.freeze({}), entityBranchScores: Object.freeze({}), summaryScores: Object.freeze({}), recallSection: 'recent' }));
   const oldMemories = source.floorMemories.filter(memory => !bodyCoveredFloorIds.has(memory.floorId) && !recentWindowFloorIds.has(memory.floorId));
   const facts = scoreCandidates(oldMemories.flatMap(memory => historyFacts(memory, entityById)), queries, { keepUnmatched: true });
+  const compactFactTextsByFloor = new Map();
+  for (const fact of facts) {
+    const texts = compactFactTextsByFloor.get(fact.floorId) ?? new Set();
+    texts.add(compact(fact._coreText));
+    compactFactTextsByFloor.set(fact.floorId, texts);
+  }
   const summaries = scoreCandidates(oldMemories.map(memory => historySummary(memory, entityById)).filter(Boolean)
-    .filter(summary => !facts.some(fact => fact.floorId === summary.floorId && compact(fact._coreText) === compact(summary._coreText))), queries, { keepUnmatched: true });
+    .filter(summary => !compactFactTextsByFloor.get(summary.floorId)?.has(compact(summary._coreText))), queries, { keepUnmatched: true });
   const direct = [...facts, ...summaries].filter(value => value.score > 0)
     .sort((a, b) => b.score - a.score || b.priority - a.priority || b.assistantSeq - a.assistantSeq || a.floorId.localeCompare(b.floorId) || a._sourceOrder - b._sourceOrder);
   const summaryByFloor = new Map(summaries.map(value => [value.floorId, value]));
@@ -613,9 +631,19 @@ function materiallySame(left, right) {
 function expandLinkedHistory({ context, selectedHistory, selectedCse, excludedHistory = [] }) {
   if (!context || (!selectedHistory.length && !selectedCse.length)) return [];
   const allHistory = [...context.facts, ...context.summaries];
-  const excludedStableKeys = new Set(excludedHistory.map(value => value?.stableKey ?? historyStableKey(value?.value ?? value)));
+  const duplicateKeysByValue = new Map();
+  const stableKeysByValue = new Map();
+  const duplicateKeyFor = value => {
+    if (!duplicateKeysByValue.has(value)) duplicateKeysByValue.set(value, duplicateKey(value));
+    return duplicateKeysByValue.get(value);
+  };
+  const stableKeyFor = value => {
+    if (!stableKeysByValue.has(value)) stableKeysByValue.set(value, historyStableKey(value));
+    return stableKeysByValue.get(value);
+  };
+  const excludedStableKeys = new Set(excludedHistory.map(value => value?.stableKey ?? stableKeyFor(value?.value ?? value)));
   const excludedValues = excludedHistory.map(value => value?.value ?? value).filter(Boolean);
-  const selectedStableKeys = new Set(selectedHistory.map(historyStableKey));
+  const selectedStableKeys = new Set(selectedHistory.map(stableKeyFor));
   const selectedFloorIds = new Set(selectedHistory.map(value => value.floorId));
   const sourceAnchorFloorIds = [];
   const rememberAnchor = floorId => { if (floorId && !sourceAnchorFloorIds.includes(floorId)) sourceAnchorFloorIds.push(floorId); };
@@ -627,22 +655,22 @@ function expandLinkedHistory({ context, selectedHistory, selectedCse, excludedHi
   }
   const selectedAnchors = balancedRelationAnchors(selectedHistory);
   selectedAnchors.forEach(value => rememberAnchor(value.floorId));
-  const allowed = value => !selectedStableKeys.has(historyStableKey(value))
-    && !excludedStableKeys.has(historyStableKey(value))
+  const allowed = value => !selectedStableKeys.has(stableKeyFor(value))
+    && !excludedStableKeys.has(stableKeyFor(value))
     && !excludedValues.some(excluded => materiallySame(value, excluded));
   const result = [];
   const add = (value, kind, anchor = null, relationTerms = []) => {
-    if (!value || !allowed(value) || result.some(existing => duplicateKey(existing) === duplicateKey(value))) return false;
+    if (!value || !allowed(value) || result.some(existing => duplicateKeyFor(existing) === duplicateKeyFor(value))) return false;
     const anchorFloorId = typeof anchor === 'string' ? anchor : anchor?.floorId ?? null;
     result.push({
       ...value,
       score: Math.max(value.score, kind === 'source' ? 0.65 : kind === 'topic' ? 0.45 : 0.15),
       _relationEvidence: kind,
       _relationAnchorFloorId: anchorFloorId,
-      _relationAnchorStableKey: anchor && typeof anchor === 'object' ? historyStableKey(anchor) : null,
+      _relationAnchorStableKey: anchor && typeof anchor === 'object' ? stableKeyFor(anchor) : null,
       _relationTerms: relationTerms,
     });
-    selectedStableKeys.add(historyStableKey(value));
+    selectedStableKeys.add(stableKeyFor(value));
     return true;
   };
 
@@ -661,11 +689,15 @@ function expandLinkedHistory({ context, selectedHistory, selectedCse, excludedHi
   });
   const documentFrequency = new Map();
   const tokenFloors = new Map();
-  for (const record of itemRecords) for (const token of record.tokens) tokenFloors.set(token, new Set([...(tokenFloors.get(token) ?? []), record.value.floorId]));
+  for (const record of itemRecords) for (const token of record.tokens) {
+    const floors = tokenFloors.get(token) ?? new Set();
+    floors.add(record.value.floorId);
+    tokenFloors.set(token, floors);
+  }
   for (const [token, floors] of tokenFloors) documentFrequency.set(token, floors.size);
   const rareLimit = Math.max(2, Math.ceil(context.oldMemories.length * 0.12));
   const sourceLinkedAnchors = result.filter(value => value._relationEvidence === 'source');
-  const anchors = [...selectedAnchors, ...sourceLinkedAnchors].map(value => itemRecords.find(record => historyStableKey(record.value) === historyStableKey(value))).filter(Boolean);
+  const anchors = [...selectedAnchors, ...sourceLinkedAnchors].map(value => itemRecords.find(record => stableKeyFor(record.value) === stableKeyFor(value))).filter(Boolean);
   const linkedItems = [];
   for (const anchor of anchors) {
     const candidates = itemRecords.flatMap(record => {
@@ -682,14 +714,14 @@ function expandLinkedHistory({ context, selectedHistory, selectedCse, excludedHi
     const before = candidates.find(value => value.record.value.assistantSeq < anchor.value.assistantSeq);
     const after = candidates.find(value => value.record.value.assistantSeq > anchor.value.assistantSeq);
     for (const candidate of [before, after].filter(Boolean)) {
-      if (!linkedItems.some(value => historyStableKey(value.record.value) === historyStableKey(candidate.record.value))) linkedItems.push({ ...candidate, anchor: anchor.value });
+      if (!linkedItems.some(value => stableKeyFor(value.record.value) === stableKeyFor(candidate.record.value))) linkedItems.push({ ...candidate, anchor: anchor.value });
     }
   }
   const linkedFloorIds = new Set();
   for (const { record, anchor, sharedTopics } of linkedItems.sort((a, b) => b.sharedTopics - a.sharedTopics || b.sharedRatio - a.sharedRatio || a.distance - b.distance
     || b.record.value.score - a.record.value.score || a.record.value.assistantSeq - b.record.value.assistantSeq)) {
     if (!linkedFloorIds.has(record.value.floorId) && linkedFloorIds.size >= MAX_LINKED_FLOORS) continue;
-    const anchorRecord = itemRecords.find(value => historyStableKey(value.value) === historyStableKey(anchor));
+    const anchorRecord = itemRecords.find(value => stableKeyFor(value.value) === stableKeyFor(anchor));
     const terms = anchorRecord ? setIntersection(anchorRecord.tokens, record.tokens).filter(token => (documentFrequency.get(token) ?? Number.MAX_SAFE_INTEGER) <= rareLimit) : [];
     if (add(record.value, 'topic', anchor, terms.slice(0, 4))) linkedFloorIds.add(record.value.floorId);
   }
@@ -1183,7 +1215,7 @@ export function buildRecallCseCandidatePool({ source, queryContext, maxCandidate
   });
 }
 
-export function selectRecall({ source, queryContext, contextSize = 8192, maxFloors = MAX_RECALLED_FLOORS, maxItems = MAX_TOTAL_ITEMS, selectedHistoryCandidates, selectedCseCandidates, excludedHistoryCandidates = [], excludedCseCandidates = [], stateProgressionCandidates = [] } = {}) {
+export function selectRecall({ source, queryContext, contextSize = 8192, maxFloors = MAX_RECALLED_FLOORS, maxItems = MAX_TOTAL_ITEMS, selectedHistoryCandidates, selectedCseCandidates, excludedHistoryCandidates = [], excludedCseCandidates = [], stateProgressionCandidates = [], reservedTokens = 0, reservedCharacters = 0 } = {}) {
   const emptyStages = input => Object.freeze({ input, candidates: 0, dropRecent: 0, dropPersistent: 0, dropVisibility: 0, selected: 0, recentSummaryCount: 0, distantHistoryItemCount: 0, linkedHistoryItemCount: 0, stateCount: 0, currentStateCount: 0, cseChangeCount: 0, linkedCseChangeCount: 0, stateProgressionCount: 0, budgetDroppedCount: 0, finalInjectionItemCount: 0 });
   if (source?.status !== 'ready') return Object.freeze({ status: 'empty', injectionText: '', floors: Object.freeze([]), states: Object.freeze([]), cseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), stages: emptyStages(0), skipReasons: Object.freeze(['sourceUnavailable']) });
   const query = clean(queryContext?.text, MAX_QUERY_CHARACTERS);
@@ -1266,8 +1298,7 @@ export function selectRecall({ source, queryContext, contextSize = 8192, maxFloo
   const plannedChanges = storylinePlan.changes;
   const storylineDefinitions = [...(recentStoryline ? [recentStoryline] : []), ...storylinePlan.storylines];
   const floorLimit = Math.max(0, Math.min(MAX_RECALLED_FLOORS, Number.isSafeInteger(maxFloors) ? maxFloors : MAX_RECALLED_FLOORS));
-  const charLimit = Math.max(800, Math.min(16000, Math.floor((Number(contextSize) || 8192) * 0.55)));
-  const tokenLimit = Math.max(800, Math.min(MAX_RECALL_TOKENS, Math.floor((Number(contextSize) || 8192) * 0.48)));
+  const { characterLimit: charLimit, tokenLimit } = recallBudget(contextSize, { reservedTokens, reservedCharacters });
   const historyTokenTarget = Math.floor(tokenLimit * 0.72);
   const historyCharTarget = Math.floor(charLimit * 2 / 3), cseCharTarget = charLimit - historyCharTarget;
   const chosenStates = [], chosenChanges = [], chosenProgressions = [], chosenRecent = [], chosenDistant = [], chosenHistory = [], chosenFloorIds = new Set();

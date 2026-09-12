@@ -1,4 +1,5 @@
 import { isUuid, sha256 } from '../identity.js';
+import { balancedObjects } from '../compact-api-client.js';
 import { parseJsonWithSafeTrailingCommas, parseJsonWithSymbolRepair } from '../json-symbol-repair.js';
 import { deterministicUuid } from './foundation-domain.js';
 import { EXACT_ANCHOR_LIMIT, FLOOR_MEMORY_ITEM_LIMIT, validateEntityRecord, validateFloorMemory } from './memory-schema.js';
@@ -707,7 +708,7 @@ function parseSemanticCandidate(value, { finishReason } = {}) {
   return { summary: summary.slice(0, 4000) };
 }
 
-function semanticPacket(value, { finishReason } = {}) {
+function semanticPacketSingle(value, { finishReason } = {}) {
   let packet = parseSemanticCandidate(value, { finishReason });
   const packets = [];
   for (let depth = 0; depth < 6; depth += 1) {
@@ -734,6 +735,41 @@ function semanticPacket(value, { finishReason } = {}) {
     packet = merged;
   }
   return { packet, summary };
+}
+
+function semanticPacket(value, { finishReason } = {}) {
+  try {
+    return semanticPacketSingle(value, { finishReason });
+  } catch (error) {
+    if (error?.code !== 'V3_EXTRACTOR_SUMMARY_INVALID' || typeof value !== 'string') throw error;
+
+    const text = value.trim();
+    const fences = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/giu)];
+    if (fences.length > 1 || hasUnbalancedStructure(text)) throw error;
+    const fenced = fences[0]?.[1] ?? text;
+    const jsonLike = /^[\[{]/u.test(fenced.trim()) || /```\s*json\b/iu.test(text);
+    if (!jsonLike) throw error;
+
+    const balanced = balancedObjects(fenced);
+    if (balanced.unclosed || balanced.candidates.length < 2) throw error;
+
+    const semanticCandidates = [];
+    for (const candidate of balanced.candidates) {
+      const safeTrailing = parseJsonWithSafeTrailingCommas(candidate)?.value;
+      const repaired = safeTrailing !== undefined
+        ? safeTrailing
+        : parseJsonWithSymbolRepair(candidate, { finishReason })?.value;
+      if (repaired === undefined) continue;
+      try {
+        semanticCandidates.push(semanticPacketSingle(repaired, { finishReason }));
+      } catch (candidateError) {
+        if (candidateError?.code !== 'V3_EXTRACTOR_SUMMARY_INVALID') throw candidateError;
+      }
+    }
+
+    if (semanticCandidates.length === 1) return semanticCandidates[0];
+    throw error;
+  }
 }
 
 function semanticSource(item, quote, floor, envelope) {

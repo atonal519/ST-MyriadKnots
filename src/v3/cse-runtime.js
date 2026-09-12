@@ -14,6 +14,7 @@ import {
   projectCseStateIdentityReferences, projectFloorMemoryIdentityReferences, resolveIdentityEntityId,
 } from './entity-identity.js';
 import { captureCseRequestSources } from '../cse-source-selection.js';
+import { PREQUEL_METADATA_KEY, selectPrequel } from './recall-prequel.js';
 
 const emptyManifest = () => ({ floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] });
 const PHASE_A_PERSIST_CONCURRENCY = 6;
@@ -22,6 +23,7 @@ const hash = async value => `sha256:${await sha256(JSON.stringify(value))}`;
 const errorWith = (code, message) => { const error = new Error(message ?? code); error.code = code; return error; };
 
 const coreMeaning = items => JSON.stringify((items ?? []).map(item => [item.text, item.visibility, item.towardEntityId ?? null]));
+const effectiveMemorySummary = memory => memory?.summary?.effectiveSource === 'user' ? memory.summary.userText : memory?.summary?.aiText;
 function currentUserInputFromMemory(memory) {
   const messages = memory?.sourceUserInputSnapshot?.messages;
   if (!Array.isArray(messages) || !messages.length) return null;
@@ -356,7 +358,8 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       const precedingFloors = value.floors.slice(0, targetIndex);
       const precedingFloorIds = new Set(precedingFloors.map(item => item.id));
       const trackedFloorIds = new Set(value.floors.slice(0, targetIndex + 1).map(item => item.id));
-      const scopedEntities = buildEntityIdentityDirectory({ entities: entitiesThroughFloorIds(entities, trackedFloorIds), identityProjection }).map(entry => entry.entity);
+      const scopedDirectory = buildEntityIdentityDirectory({ entities: entitiesThroughFloorIds(entities, trackedFloorIds), identityProjection });
+      const scopedEntities = scopedDirectory.map(entry => entry.entity);
       const precedingMemories = value.floorMemories.filter(item => precedingFloorIds.has(item.floorId) && item.recordStatus === 'active');
       const precedingDeltas = filterReachableDeltas({ floors: precedingFloors, floorMemories: precedingMemories, stateDeltas: value.stateDeltas });
       const rebuiltPrevious = precedingDeltas.length
@@ -370,6 +373,28 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
         userPersona: { ...value.baseline.userPersona, entityId: resolveIdentityEntityId(value.baseline.userPersona.entityId, identityProjection) },
         characterCard: { ...value.baseline.characterCard, entityId: resolveIdentityEntityId(value.baseline.characterCard.entityId, identityProjection) } };
       const tracked = selectTrackedSubjects({ baseline: projectedBaseline, entities: scopedEntities, floorMemories: trackedMemories, floorMemory: projectedMemory });
+      const trackedIds = new Set(tracked.map(entity => entity.id));
+      const previousIds = new Set((previousCurrentState?.subjects ?? []).map(subject => resolveIdentityEntityId(subject.subjectEntityId, identityProjection)));
+      const firstTrackedIds = new Set(tracked.filter(entity => !previousIds.has(entity.id)).map(entity => entity.id));
+      const firstForAnyTracked = firstTrackedIds.size > 0;
+      const prequelQueryIds = firstForAnyTracked ? firstTrackedIds : trackedIds;
+      const prequelQueryLabels = scopedDirectory.filter(entry => prequelQueryIds.has(entry.entityId)).flatMap(entry => entry.labels);
+      const prequelText = (() => {
+        try { const context = hostAdapter.snapshot()?.context; return typeof context?.chatMetadata?.[PREQUEL_METADATA_KEY] === 'string' ? context.chatMetadata[PREQUEL_METADATA_KEY] : ''; }
+        catch { return ''; }
+      })();
+      const relevantPriorContext = selectPrequel({
+        text: prequelText,
+        queryContext: {
+          latestUserText: prequelQueryLabels.join(' '),
+          recentAssistantText: `${analysisFloor.content.canonicalContent ?? ''}\n${effectiveMemorySummary(projectedMemory) ?? ''}`,
+          previousUserText: '',
+        },
+        maxCharacters: firstForAnyTracked ? 6000 : 2400,
+        maxTokens: firstForAnyTracked ? 2500 : 1000,
+        requireMatch: true,
+        fallbackToTail: false,
+      }).injectionText;
       const currentUserInput = currentUserInputFromMemory(memory);
       const requestSources = await captureCseRequestSources({
         hostAdapter,
@@ -384,7 +409,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       const coreUserEditedSubjectEntityIds = await coreUserEditedSubjects(precedingDeltas);
       operation.dependencySnapshot = await dependencySnapshot(value, floor.id, entities, previousCurrentState, currentFloor => value.floorMemories.find(item => item.floorId === currentFloor.id && item.recordStatus === 'active')?.sourceStoryClockSignature ?? value.run?.diagnostics?.floorProvenance?.[currentFloor.id]?.storyClockSignature ?? storyClockSignatureForFloor(currentFloor), coreUserEditedSubjectEntityIds, hostAdapter, identityProjection);
       if (!operation.dependencySnapshot) throw errorWith('V3_CSE_STALE', '人物状态分析依赖的楼层前缀不可用。');
-      const envelope = createCseEnvelope({ floor: analysisFloor, floorMemory: projectedMemory, baseline: projectedBaseline, currentState: projectCseStateIdentityReferences(previousCurrentState, identityProjection), trackedSubjects: tracked, entities: scopedEntities, requestSources, currentUserInput, coreUserEditedSubjectEntityIds: coreUserEditedSubjectEntityIds.map(id => resolveIdentityEntityId(id, identityProjection)) });
+      const envelope = createCseEnvelope({ floor: analysisFloor, floorMemory: projectedMemory, baseline: projectedBaseline, currentState: projectCseStateIdentityReferences(previousCurrentState, identityProjection), trackedSubjects: tracked, entities: scopedEntities, requestSources, currentUserInput, coreUserEditedSubjectEntityIds: coreUserEditedSubjectEntityIds.map(id => resolveIdentityEntityId(id, identityProjection)), relevantPriorContext });
       const deltaId = await deterministicUuid(['v3-cse-delta', operation.runId, floor.id, memory.id]);
       const promptGuidanceSnapshot = typeof promptGuidance === 'function' ? promptGuidance() : promptGuidance;
       const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;

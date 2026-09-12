@@ -130,7 +130,7 @@ const CSE_VISIBILITY_OPTIONS = Object.freeze([['private', '私密'], ['expressed
 const visibilityCopy = value => Object.fromEntries(CSE_VISIBILITY_OPTIONS)[value] ?? text(value);
 const originCopy = value => ({ baseline: '聊天基线', floor: '本楼分析', reasonableProgression: '合理进展', manual: '用户纠正' })[value] ?? '本地重放';
 
-export function createV3FoundationView({ runtime, recallRuntime = null, peopleRuntime = null, memoryManagement = null, sessionStateProvider = null, pluginVersion = 'unknown', uiDiagnosticProvider = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, infoImpl = () => Promise.resolve(true) } = {}) {
+export function createV3FoundationView({ runtime, recallRuntime = null, peopleRuntime = null, memoryManagement = null, sessionStateProvider = null, backendDiagnosticProvider = null, pluginVersion = 'unknown', uiDiagnosticProvider = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, infoImpl = () => Promise.resolve(true) } = {}) {
   if (!runtime || ['getState', 'refreshStatus', 'confirmLatest'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('V3 foundation view runtime 无效');
   if (recallRuntime && typeof recallRuntime.getState !== 'function') throw new TypeError('V3 recall view runtime 无效');
   if (peopleRuntime && typeof peopleRuntime.getState !== 'function') throw new TypeError('V3 people workspace runtime 无效');
@@ -139,7 +139,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   if (uiDiagnosticProvider !== null && typeof uiDiagnosticProvider !== 'function') throw new TypeError('界面诊断 provider 无效');
   if (!documentRef?.createElement) throw new TypeError('V3 foundation view documentRef 无效');
 
-  let container = null, active = false, epoch = 0, feedback = '', receiptFeedback = '', fallbackText = '', unsubscribe = null;
+  let container = null, active = false, epoch = 0, feedback = '', receiptFeedback = '', prequelFeedback = '', fallbackText = '', unsubscribe = null;
   let page = 'management';
   let peopleMode = 'current', selectedCsePersonId = null, showMoreCsePeople = false;
   let foundationState = runtime.getState(), recallState = recallRuntime?.getState?.() ?? null, peopleState = peopleRuntime?.getState?.() ?? null, managementState = memoryManagement?.getState?.() ?? null, chatId = foundationState?.chatId ?? null, healthNode = null;
@@ -147,6 +147,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   let relationSwitcherNode = null, relationSwitcherSignature = null, relationSwitcherChatId = chatId, relationSwitcherScrollLeft = 0;
   const drafts = new Map();
   const cseDrafts = new Map();
+  let prequelDraft = null;
   const openState = new Map();
   const peopleScroll = new Map([['current', 0], ['history', 0]]);
   const operationMenus = createOperationMenuController(documentRef);
@@ -255,6 +256,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       formatVersion: 1,
       pluginVersion: diagnosticVersion(pluginVersion),
       capturedAt: new Date().toISOString(),
+      backend: readDiagnosticState(backendDiagnosticProvider),
       identity: {
         status: identityKnown ? enumDiagnostic(identity.status, DIAGNOSTIC_STATUS) : 'unknown',
         identityPresent: identityKnown ? Boolean(identity.identity) : 'unknown',
@@ -830,6 +832,50 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     else if ((record.skipReasons ?? []).includes('memoryNotReady')) body.append(element('p', 'settings-hint', (record.skipReasons ?? []).includes('coverageUnconfirmed') ? '当前记忆与正文对应关系尚未确认；本轮未注入记忆，正文已继续生成。' : '当前存在历史记忆缺口；本轮没有找到可注入的已保存记忆，正文已继续生成。'));
     drawer.append(body); return drawer;
   }
+  function renderPrequelDetails() {
+    if (typeof recallRuntime?.getPrequel !== 'function' || typeof recallRuntime?.savePrequel !== 'function') return null;
+    let saved;
+    try { saved = recallRuntime.getPrequel(); }
+    catch (error) { saved = { hostChatId: null, text: '' }; if (!prequelFeedback) prequelFeedback = errorMessage(error) || '前情读取失败。'; }
+    if (!prequelDraft || prequelDraft.hostChatId !== saved.hostChatId) prequelDraft = { hostChatId: saved.hostChatId, text: saved.text, dirty: false, saving: false };
+    else if (!prequelDraft.dirty && !prequelDraft.saving && prequelDraft.text !== saved.text) prequelDraft.text = saved.text;
+    const drawer = setDetailsState(element('details', 'qqj-management-drawer'), 'prequel', false);
+    const summary = element('summary', 'qqj-section-summary'); summary.append(element('strong', '', '前情'), element('span', 'v3-memory-status', saved.text ? `已保存 ${[...saved.text].length} 字符` : '尚未保存')); drawer.append(summary);
+    const body = element('div', 'qqj-management-drawer-body');
+    body.append(element('p', 'settings-hint', '粘贴旧聊天的大摘要。原文随当前聊天保存，生成时按需选段；清空文本后保存即可移除。'));
+    const editor = element('textarea', 'v3-diagnostic-fallback qqj-prequel-editor'); editor.value = prequelDraft.text; editor.textContent = prequelDraft.text; editor.readOnly = false;
+    editor.addEventListener('input', () => { prequelDraft.text = editor.value; prequelDraft.dirty = true; });
+    const actions = element('div', 'v3-foundation-actions');
+    const save = element('button', 'primary-action', prequelDraft.saving ? '保存中…' : '保存前情'); save.type = 'button'; save.disabled = prequelDraft.saving;
+    save.addEventListener('click', async () => {
+      if (prequelDraft.saving) return;
+      const submittedText = editor.value;
+      prequelDraft.text = submittedText; prequelDraft.dirty = true; prequelDraft.saving = true; save.disabled = true; prequelFeedback = '';
+      try {
+        const result = await recallRuntime.savePrequel(submittedText);
+        if (prequelDraft.text === submittedText) prequelDraft = { hostChatId: result.hostChatId, text: result.text, dirty: false, saving: false };
+        else { prequelDraft.hostChatId = result.hostChatId; prequelDraft.saving = false; prequelDraft.dirty = true; }
+        prequelFeedback = result.text ? '前情已保存。' : '前情已清空。';
+      } catch (error) {
+        prequelDraft.saving = false;
+        prequelFeedback = errorMessage(error) || '前情保存失败。';
+      }
+      if (active && container && page === 'management') render(foundationState);
+    });
+    actions.append(save); body.append(editor, actions);
+    if (prequelFeedback) body.append(element('p', `v3-foundation-feedback${/失败|不支持|请先/u.test(prequelFeedback) ? ' error' : ''}`, prequelFeedback));
+    const selected = recallState?.lastPrequel ?? null;
+    if (selected?.status === 'error') body.append(element('p', 'v3-foundation-feedback error', selected.error?.message || '本次前情注入失败；正文已继续生成。'));
+    else if (selected?.injectionText) {
+      const details = setDetailsState(element('details', 'qqj-management-drawer'), 'prequel-selection', false);
+      const detailSummary = element('summary', 'qqj-section-summary'); detailSummary.append(element('strong', '', '本次选用'), element('span', 'v3-memory-status', selected.fragmentIndexes.map(value => `片段 ${value}`).join('、'))); details.append(detailSummary);
+      const ordinaryTokens = recallState?.lastRecall?.restoredReceipt ? 0 : Number(recallState?.lastRecall?.stages?.estimatedTokenCount) || 0;
+      const selectedBody = element('div', 'qqj-management-drawer-body');
+      selectedBody.append(element('p', 'settings-hint', `普通记忆估算 ${ordinaryTokens} + 前情估算 ${selected.estimatedTokens} = 合计 ${ordinaryTokens + selected.estimatedTokens} Token`), element('pre', 'v3-recall-injection', selected.injectionText));
+      details.append(selectedBody); body.append(details);
+    }
+    drawer.append(body); return drawer;
+  }
   function renderDiagnostics(state) {
     const drawer = setDetailsState(element('details', 'qqj-management-drawer'), 'diagnostics', false), summary = element('summary', 'qqj-section-summary'); summary.append(element('strong', '', '详细诊断'), element('span', 'v3-memory-status', '按需展开')); drawer.append(summary);
     const body = element('div', 'qqj-management-drawer-body'), details = element('dl', 'v3-foundation-grid');
@@ -894,14 +940,16 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const remove = element('button', 'secondary-action', deleting ? '删除中…' : deletePending ? '继续删除当前聊天记忆' : '删除当前聊天记忆');
       remove.type = 'button'; remove.disabled = deleting || managementState?.blockedByOtherChat === true || (!deletePending && (managementState?.workBusy === true || !state.chatId));
       remove.addEventListener('click', async () => {
-        if (!await Promise.resolve(confirmImpl({ title: '删除当前聊天记忆', body: '将删除本聊天的摘要、人物状态、人物资料、召回记录及历史派生版本。聊天正文和全局 API、提示词设置会保留；下次建档需要从头开始。', note: '后端数据会移入回收站；这不代表永久擦除。', confirmText: deletePending ? '继续删除' : '删除记忆', cancelText: '取消' }))) { feedback = '已取消删除当前聊天记忆。'; render(foundationState); return; }
-        void run(deletePending ? '继续删除当前聊天记忆' : '删除当前聊天记忆', () => memoryManagement.deleteCurrent(), { after: () => { managementState = memoryManagement.getState(); feedback = '当前聊天记忆已删除；聊天正文与全局设置均已保留。'; return true; }, failed: () => { managementState = memoryManagement.getState(); return true; } });
+        if (!await Promise.resolve(confirmImpl({ title: '删除当前聊天记忆', body: '将删除本聊天的摘要、人物状态、人物资料、召回记录及历史派生版本。聊天正文、手动前情和全局 API、提示词设置会保留；手动前情可在“前情”中另行清空。下次建档需要从头开始。', note: '后端数据会移入回收站；这不代表永久擦除。', confirmText: deletePending ? '继续删除' : '删除记忆', cancelText: '取消' }))) { feedback = '已取消删除当前聊天记忆。'; render(foundationState); return; }
+        void run(deletePending ? '继续删除当前聊天记忆' : '删除当前聊天记忆', () => memoryManagement.deleteCurrent(), { after: () => { managementState = memoryManagement.getState(); feedback = '当前聊天记忆已删除；聊天正文、手动前情与全局设置均已保留。手动前情可在“前情”中清空。'; return true; }, failed: () => { managementState = memoryManagement.getState(); return true; } });
       });
       actions.append(remove);
     }
     if (deletePending && managementState.error) pageNode.append(element('p', 'v3-foundation-feedback error', `上次删除未完成：${managementState.error} 已保留原聊天身份，可继续删除剩余记录。`));
-    else if (managementState?.status === 'completed') pageNode.append(element('p', 'v3-foundation-feedback', '当前聊天记忆已清空；聊天正文和全局设置仍保留。'));
-    pageNode.append(actions, element('p', `v3-foundation-feedback${errorCopy(state) ? ' error' : ''}`, feedback || errorCopy(state) || '状态已显示。'), renderRecallDetails(), renderDiagnostics(state)); return pageNode;
+    else if (managementState?.status === 'completed') pageNode.append(element('p', 'v3-foundation-feedback', '当前聊天记忆已清空；聊天正文、手动前情和全局设置仍保留。手动前情可在“前情”中清空。'));
+    pageNode.append(actions, element('p', `v3-foundation-feedback${errorCopy(state) ? ' error' : ''}`, feedback || errorCopy(state) || '状态已显示。'));
+    const prequel = renderPrequelDetails(); if (prequel) pageNode.append(prequel);
+    pageNode.append(renderRecallDetails(), renderDiagnostics(state)); return pageNode;
   }
 
   function renderAdopted(state) {
@@ -928,8 +976,10 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const visit = node => {
       for (const child of Array.from(node?.children ?? [])) {
         const tag = String(child?.tagName ?? child?.tag ?? '').toLowerCase();
-        const diagnosticFallback = tag === 'textarea' && child.readOnly === true && String(child.className ?? '').split(/\s+/).includes('v3-diagnostic-fallback');
-        if ((['input', 'select', 'textarea'].includes(tag) && !diagnosticFallback) || (tag === 'button' && !safeButtons.has(child.textContent))) child.disabled = true;
+        const classes = String(child.className ?? '').split(/\s+/);
+        const diagnosticFallback = tag === 'textarea' && child.readOnly === true && classes.includes('v3-diagnostic-fallback');
+        const prequelControl = tag === 'textarea' && classes.includes('qqj-prequel-editor');
+        if ((['input', 'select', 'textarea'].includes(tag) && !diagnosticFallback && !prequelControl) || (tag === 'button' && !safeButtons.has(child.textContent) && child.textContent !== '保存前情')) child.disabled = true;
         visit(child);
       }
     };

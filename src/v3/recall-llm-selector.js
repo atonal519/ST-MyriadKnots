@@ -112,10 +112,12 @@ export async function selectRecallWithLlm({
   contextSize = 8192,
   maxFloors,
   maxItems,
+  reservedTokens = 0,
+  reservedCharacters = 0,
   generateUtilityTask,
   signal,
 } = {}) {
-  const baseInput = { source, queryContext, contextSize, maxFloors, maxItems };
+  const baseInput = { source, queryContext, contextSize, maxFloors, maxItems, reservedTokens, reservedCharacters };
   const historyPool = buildRecallHistoryCandidatePool({ source, queryContext });
   const csePool = buildRecallCseCandidatePool({ source, queryContext });
   const allCandidates = [...historyPool.candidates, ...csePool.candidates];

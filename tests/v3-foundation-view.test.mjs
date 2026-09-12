@@ -159,7 +159,8 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
   let identityState = { status: 'preparing', identity: { chatId: rawChatId, hostChatId: privateText }, error: Object.assign(new Error(privateText), { code: 'QQJ_CHAT_BINDING_CONFLICT', httpStatus: 409 }) };
   let recallState = { recallStatus: 'running', activeRecall: { phase: 'selecting', token: privateText, chatId: rawChatId }, lastRecallError: Object.assign(new Error(privateText), { code: 'QQJ_TIMEOUT', httpStatus: 504 }) };
   let managementState = { status: 'deleting', phase: 'deletingRecords', workBusy: true, blockedByOtherChat: true, error: privateText, targetChatId: rawChatId };
-  const listeners = new Set(); let refreshes = 0, sessionReads = 0, recallReads = 0, managementReads = 0;
+  let backendState = { sinceClientCreatedRequestCounts: { get: 2, put: 1, delete: 0 }, latestRead: null, latestWrite: null, lastFailure: null };
+  const listeners = new Set(); let refreshes = 0, sessionReads = 0, backendReads = 0, recallReads = 0, managementReads = 0;
   const runtime = {
     getState: () => memoryState,
     refreshStatus: async () => { refreshes += 1; return memoryState; },
@@ -172,6 +173,7 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
   const view = createV3FoundationView({
     runtime, recallRuntime, memoryManagement, pluginVersion: '0.1.9-test',
     sessionStateProvider: () => { sessionReads += 1; return identityState; },
+    backendDiagnosticProvider: () => { backendReads += 1; return backendState; },
     documentRef, navigatorRef: { clipboard: { writeText: async () => { throw new Error('clipboard denied'); } } },
   });
   view.mount(container);
@@ -186,11 +188,12 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
 
   copyState.click(); await new Promise(resolve => setImmediate(resolve));
   assert.equal(refreshes, 0, '复制状态不得触发业务刷新');
-  assert.ok(sessionReads >= 1 && recallReads >= 1 && managementReads >= 1, '复制时必须即时读取现有 getter');
+  assert.ok(sessionReads >= 1 && backendReads >= 1 && recallReads >= 1 && managementReads >= 1, '复制时必须即时读取现有 getter');
   let fallback = flatten(container).find(node => node.className === 'v3-diagnostic-fallback');
   assert.equal(fallback?.readOnly, true); assert.equal(fallback?.disabled, false, '同步遮罩不得禁用只读复制 fallback');
   let diagnostic = JSON.parse(fallback.value);
   assert.equal(diagnostic.formatVersion, 1); assert.equal(diagnostic.pluginVersion, '0.1.9-test'); assert.match(diagnostic.capturedAt, /^\d{4}-/);
+  assert.deepEqual(diagnostic.backend, backendState);
   assert.deepEqual(diagnostic.identity, { status: 'preparing', identityPresent: true, error: { present: true, name: 'Error', code: 'QQJ_CHAT_BINDING_CONFLICT', httpStatus: 409 } });
   assert.equal(diagnostic.foundation.chatIdPresent, true); assert.equal(diagnostic.foundation.headCheckpointPresent, true); assert.equal(diagnostic.foundation.activeRun.phase, 'capturing');
   assert.deepEqual(diagnostic.foundation.lastError, { present: true });
@@ -209,11 +212,13 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
   identityState = { status: 'error', error: { name: 'RangeError', code: 'CHAT_SESSION_PERSIST_FAILED', message: privateText } };
   recallState = { ...recallState, activeRecall: { ...recallState.activeRecall, phase: 'receipt' } };
   managementState = { ...managementState, status: 'failed', phase: null };
+  backendState = { ...backendState, latestRead: { sequence: 4, method: 'GET', recordType: 'root', elapsedMs: 7, completedAt: '2026-09-12T00:00:00.000Z', outcome: 'success' } };
   copyState = flatten(container).find(node => node.textContent === '复制状态诊断'); copyState.click(); await new Promise(resolve => setImmediate(resolve));
   fallback = flatten(container).find(node => node.className === 'v3-diagnostic-fallback'); diagnostic = JSON.parse(fallback.value);
   assert.equal(diagnostic.identity.status, 'error'); assert.equal(diagnostic.identity.identityPresent, false); assert.equal(diagnostic.identity.error.code, 'CHAT_SESSION_PERSIST_FAILED');
   assert.equal(diagnostic.memory.activeMemoryWork.phase, 'committing'); assert.equal(diagnostic.memory.activeAutoMemory.phase, 'unknown'); assert.equal(diagnostic.recall.active.phase, 'receipt');
   assert.equal(diagnostic.management.status, 'failed'); assert.equal(diagnostic.management.phase, null); assert.equal(diagnostic.ui.deletePending, true);
+  assert.deepEqual(diagnostic.backend, backendState, '每次复制都应读取最新后端安全快照');
 });
 
 test('无 chat 与无状态 provider 仍提供状态诊断，复制不会抢占正在激活的业务回显', async () => {
@@ -233,6 +238,7 @@ test('无 chat 与无状态 provider 仍提供状态诊断，复制不会抢占�
   assert.ok(copyState, '状态诊断入口不依赖 chatId 或摘要楼'); assert.equal(copyState.disabled, false);
   copyState.click(); await new Promise(resolve => setImmediate(resolve));
   const diagnostic = JSON.parse(copied[0]);
+  assert.equal(diagnostic.backend, null);
   assert.equal(diagnostic.identity.status, 'unknown'); assert.equal(diagnostic.identity.identityPresent, 'unknown'); assert.equal(diagnostic.recall.status, 'unknown'); assert.equal(diagnostic.management.status, 'unknown');
   state = { ...state, status: 'ready', foundationStatus: 'ready' }; release(state);
   const result = await activation;
@@ -306,7 +312,7 @@ test('删除当前聊天记忆使用自绘异步确认，取消零写且确认�
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls, 0);
   assert.match(confirmation.body, /摘要、人物状态、人物资料、召回记录及历史派生版本/);
-  assert.match(confirmation.body, /聊天正文和全局 API、提示词设置会保留/);
+  assert.match(confirmation.body, /聊天正文、手动前情和全局 API、提示词设置会保留.*手动前情可在“前情”中另行清空/);
   assert.match(confirmation.note, /移入回收站.*不代表永久擦除/);
 });
 
@@ -1397,4 +1403,34 @@ test('回执恢复失败只显示在召回区，不妨碍地基 ready', async ()
   assert.match(copy, /记忆状态已刷新/);
   assert.match(copy, /历史召回回执恢复失败：模拟回执失败；不影响记忆读取/);
   assert.match(copy, /已记忆 0\/2 楼/);
+});
+
+test('未建档聊天可编辑前情，状态刷新与保存期间继续输入都不覆盖草稿', async () => {
+  const state = { status: 'uninitialized', pluginEnabled: true, chatId: null, foundationStatus: 'uninitialized', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, memoryWorkBusy: false, floors: [], rebuildStatus: 'pendingRebuild' };
+  const listeners = new Set();
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
+  let saved = { hostChatId: 'host-a', text: '旧前情' }, releaseSave, fail = false;
+  const recallRuntime = {
+    getState: () => ({ recallStatus: 'ready', lastRecall: { restoredReceipt: false, stages: { estimatedTokenCount: 40 } }, lastPrequel: { status: 'ready', injectionText: '【前情片段 2】\n旧经历', fragmentIndexes: [2], estimatedTokens: 20 } }),
+    getPrequel: () => saved,
+    savePrequel: text => new Promise((resolve, reject) => { releaseSave = () => fail ? reject(new Error('模拟保存失败')) : resolve(saved = { hostChatId: 'host-a', text }); }),
+  };
+  const container = new Node('main'); const view = createV3FoundationView({ runtime, recallRuntime, documentRef }); view.mount(container);
+  let editor = flatten(container).find(node => String(node.className).includes('qqj-prequel-editor'));
+  assert.equal(editor.value, '旧前情');
+  editor.value = '正在输入的草稿'; editor.fire('input');
+  for (const listener of listeners) listener({ ...state, chatId: CHAT, status: 'ready', foundationStatus: 'ready' });
+  editor = flatten(container).find(node => String(node.className).includes('qqj-prequel-editor'));
+  assert.equal(editor.value, '正在输入的草稿', 'QQJ 身份从 null 建立时仍按宿主聊天保留草稿');
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /普通记忆估算 40 \+ 前情估算 20 = 合计 60 Token/);
+
+  flatten(container).find(node => node.textContent === '保存前情').click();
+  editor.value = '保存等待期间继续写'; editor.fire('input'); releaseSave(); await new Promise(resolve => setImmediate(resolve));
+  editor = flatten(container).find(node => String(node.className).includes('qqj-prequel-editor'));
+  assert.equal(editor.value, '保存等待期间继续写', '迟到保存成功不得覆盖用户继续输入的内容');
+
+  fail = true; flatten(container).find(node => node.textContent === '保存前情').click(); releaseSave(); await new Promise(resolve => setImmediate(resolve));
+  editor = flatten(container).find(node => String(node.className).includes('qqj-prequel-editor'));
+  assert.equal(editor.value, '保存等待期间继续写');
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /模拟保存失败/);
 });

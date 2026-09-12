@@ -11,6 +11,7 @@ import {
   buildEntityIdentityDirectory, identityProjectionMembers, isIdentityDeleted,
   normalizeIdentityProjection, resolveIdentityEntityId,
 } from './entity-identity.js';
+import { PREQUEL_METADATA_KEY, selectPrequel } from './recall-prequel.js';
 
 export const PEOPLE_WORKSPACE_RECORD_ID = 'v3-people-workspace';
 export const PEOPLE_WORKSPACE_SCHEMA_VERSION = 3;
@@ -20,6 +21,8 @@ export const DEFAULT_PROFILE_GUIDANCE = `你是“千千结”的人物基础资
 
 人物卡和世界书属于明确设定；逐楼 history 的 storyContent 是该楼已经保存并按用户包裹符设置清洗后的完整正文，summary 是对该楼的归纳，facts 是按目标人物归属筛出的结构事实；CSE Core 是已有的人物分析，不自动等同作者明确设定。旧 AI 档案只能作为待更新的参考。按目标人物和来源归属整理信息，不要把正文里其他人物的描写、不同人物、不同来源或彼此冲突的说法擅自拼成目标人物事实。遇到来源差异时不要输出核验说明或替作者裁决，只整理能够明确归属的稳定资料。
 
+priorContext 若存在，是用户导入的过去经历资料。只把其中明确属于目标人物、适合长期建档的信息作为参考；过去的短期状态不等于现在仍持续，existingProfile、当前 history 与 CSE 中明确出现的新变化优先。
+
 按基础信息、外貌、身份、性格与 NSFW 五类整理稳定资料。性别、年龄、生日没有明确依据时不要输出对应字段，外观年龄不能当作实际年龄。短期情绪、当前关系变化和一时应对不应写成固定人格。appearance 只填写无法归入细分外貌字段的必要补充，不重复五官、发型、体态、着装等已有内容；notes 只填写无法归入其他字段、仍值得长期保存的人物信息，不写来源说明、整理过程、核验过程、解释或模型想法。主动重新整理时，把原始人物卡、允许的世界书、全历史摘要与结构事实、旧 AI 档案和 CSE 作为资料来源；没有新信息的字段省略并保留旧值，只有资料明确纠正旧值时才返回空字符串或空 aliases。人工字段由保存层保护，不需要逐字抄回。`;
 
 const PROFILE_FIELD_GUIDE = PEOPLE_PROFILE_FIELDS
@@ -27,7 +30,7 @@ const PROFILE_FIELD_GUIDE = PEOPLE_PROFILE_FIELDS
   .join('\n');
 
 export const PROFILE_FIXED_CONTRACT = `【固定人物资料合同】
-1. 只处理输入 people 中的目标人物。characterCard、allowedWorldInfo、history、cseCoreTraits、existingProfile 与 manualProfile 是分开的来源；history.storyContent 是对应楼的完整已保存正文，summary 只是归纳，必须结合该楼目标相关事实判断归属，不得把正文中其他人物的描写写给目标人物，也不得把他人的私密认知当成目标人物资料。
+1. 只处理输入 people 中的目标人物。characterCard、allowedWorldInfo、history、cseCoreTraits、priorContext、existingProfile 与 manualProfile 是分开的来源；history.storyContent 是对应楼的完整已保存正文，summary 只是归纳，必须结合该楼目标相关事实判断归属，不得把正文中其他人物的描写写给目标人物，也不得把他人的私密认知当成目标人物资料。priorContext 标记为导入前情，只能作为过去经历背景，不是当前楼或当前状态。
 2. history.auxiliaryStateSnapshot 若存在，是对应楼当前分支当时已保存的只读变量快照，只作人物整理辅助。它可能同时包含多个人物、不完整或过时信息，不能整份归给目标人物，也不能当作人工字段或权威证据；与正文或用户明确事实冲突时以正文和用户明确事实为准。
 3. 只返回一个 JSON 对象；profiles 每个输入人物恰好一项，personKey 必须逐字使用输入中的键，不得新增、遗漏或合并人物。
 4. 每项除 personKey 外只返回需要新增或纠正的字段。省略字段表示保留 existingProfile 旧值；明确纠正为无资料时才返回空字符串，aliases 可返回字符串或字符串数组，明确清除 aliases 时返回空字符串或空数组。不要返回 null、对象或其他错误类型。
@@ -389,9 +392,10 @@ function targetContext(reachable, memoryState, target, workspace, macros) {
 
 function splitContinuous(text, maximum) {
   const value = String(text ?? '');
-  if (value.length <= maximum) return [value];
+  const characters = [...value];
+  if (characters.length <= maximum) return [value];
   const parts = [];
-  for (let offset = 0; offset < value.length; offset += maximum) parts.push(value.slice(offset, offset + maximum));
+  for (let offset = 0; offset < characters.length; offset += maximum) parts.push(characters.slice(offset, offset + maximum).join(''));
   return parts;
 }
 
@@ -401,6 +405,7 @@ function sourceFragments(person, worldInfo, maximumPartCharacters) {
   for (const source of worldInfo ?? []) sources.push({ kind: 'allowedWorldInfo', label: `${source.source || ''}${source.label ? ` · ${source.label}` : ''}`.trim(), content: source.content });
   for (const item of person.history ?? []) sources.push({ kind: 'history', sourceFloor: item.sourceFloor, content: JSON.stringify(item) });
   for (const item of person.cseCoreTraits ?? []) sources.push({ kind: 'cseCoreTrait', ...(item.sourceFloor ? { sourceFloor: item.sourceFloor } : {}), content: JSON.stringify(item) });
+  if (person.priorContext) sources.push({ kind: 'priorContext', label: '导入前情', content: person.priorContext });
   return Object.freeze(sources.flatMap((source, sourceIndex) => {
     const parts = splitContinuous(source.content, maximumPartCharacters);
     return parts.map((content, partIndex) => Object.freeze({ sourceIndex: sourceIndex + 1, kind: source.kind,
@@ -412,7 +417,7 @@ function sourceFragments(person, worldInfo, maximumPartCharacters) {
 function longProfileBatches(request, maximumCharacters = PEOPLE_PROFILE_INPUT_CHAR_BUDGET) {
   const batches = [];
   for (const person of request.people) {
-    const base = Object.fromEntries(Object.entries(person).filter(([key]) => !['history', 'cseCoreTraits', 'characterCard'].includes(key)));
+    const base = Object.fromEntries(Object.entries(person).filter(([key]) => !['history', 'cseCoreTraits', 'characterCard', 'priorContext'].includes(key)));
     const overhead = JSON.stringify({ task: request.task, people: [{ ...base, sourceFragments: [] }], allowedWorldInfo: [], batch: {} }).length;
     const partLimit = Math.max(2000, Math.min(12000, maximumCharacters - overhead - 1200));
     const fragments = sourceFragments(person, request.allowedWorldInfo, partLimit);
@@ -730,22 +735,36 @@ export function createPeopleWorkspaceRuntime({
     const reachable = foundationRuntime.getReachable?.();
     const memoryState = memoryRuntime.getState();
     const macros = operation.macros;
+    const hostContext = contextProvider();
+    const prequelText = typeof hostContext?.chatMetadata?.[PREQUEL_METADATA_KEY] === 'string' ? hostContext.chatMetadata[PREQUEL_METADATA_KEY] : '';
     const peopleRequest = targets.map((target, index) => {
       const history = target.materialPlan?.history ?? targetHistory(reachable, target.entityId, macros, identityProjection(workspace));
       const context = target.materialPlan?.context ?? targetContext(reachable, memoryState, target, workspace, macros);
       const historyStart = target.materialPlan?.historyStart ?? 0;
       const includeContext = target.materialPlan?.includeContext !== false;
+      const priorContext = selectPrequel({
+        text: prequelText,
+        queryContext: {
+          latestUserText: [context.currentName, ...context.aliases].join(' '),
+          recentAssistantText: JSON.stringify({ history: history.slice(historyStart), cseCoreTraits: includeContext ? context.cseCoreTraits : [] }),
+          previousUserText: '',
+        },
+        maxCharacters: target.profiled ? 2400 : 24000,
+        maxTokens: target.profiled ? 1000 : 10000,
+        requireMatch: true,
+        fallbackToTail: false,
+      }).injectionText;
       return { personKey: `person-${index + 1}`, currentName: context.currentName,
         aliases: context.aliases,
         history: history.slice(historyStart),
         cseCoreTraits: includeContext ? context.cseCoreTraits : [],
         characterCard: includeContext ? context.characterCard : null,
+        ...(priorContext ? { priorContext } : {}),
         existingProfile: existingAiProfile(target.profile, macros), manualProfile: manualProfile(target.profile, macros), manualFields: target.profile?.manualFields ?? [] };
     });
     let worldInfo = [];
     if (includeWorldInfo) {
-      const context = contextProvider();
-      const catalog = await scanner(context);
+      const catalog = await scanner(hostContext);
       assertCurrent(operation);
       const candidates = await sourceCandidateFactory(catalog);
       const allowed = sourcePermissions.filterCandidates({ chatId: operation.identity.chatId, candidates });

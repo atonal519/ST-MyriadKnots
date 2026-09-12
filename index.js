@@ -221,6 +221,7 @@ ui = bootstrap({
   peopleWorkspaceRuntime,
   chatMemoryManagement,
   sessionStateProvider: () => session.getState(),
+  backendDiagnosticProvider: () => backendClient.getDiagnosticSnapshot(),
   pluginVersion,
   inlineRenderer,
   enableFab: true,

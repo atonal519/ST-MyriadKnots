@@ -15,7 +15,7 @@ function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, s
     [`chat-${OTHER_ID}/v3-root`, { recordId: 'v3-root', revision: 4, data: { kind: 'other' } }],
     [`chat-identity-bindings/binding-${CHAT_ID}`, { recordId: `binding-${CHAT_ID}`, revision: 6, data: { kind: 'binding' } }],
   ]);
-  const calls = [], invalidated = [];
+  const calls = [], invalidated = [], memoryInvalidations = [];
   let releaseHeld;
   const held = new Promise(resolve => { releaseHeld = resolve; });
   let removeFailure = failRemove, saveChatFailure = failSaveChat, saveMetadataFailure = failSaveMetadata;
@@ -36,9 +36,9 @@ function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, s
   const user = { is_user: true, mes: '正文保留', extra: { [CHAT_RECALL_RECEIPT_KEY]: receipt, otherPlugin: { keep: true } } };
   const hidden = { is_user: false, mes: '隐藏正文保留', is_system: true, extra: { qianqianjieAutoHide: { schemaVersion: 1, chatId: CHAT_ID }, other: 1 } };
   let persistedMessages = cloneMessages([user, hidden]);
-  let persistedMetadata = { qianqianjie: { schemaVersion: 2, chatId: CHAT_ID }, otherPlugin: { keep: true } };
+  let persistedMetadata = { qianqianjie: { schemaVersion: 2, chatId: CHAT_ID }, qianqianjiePrequel: '用户手工前情', otherPlugin: { keep: true } };
   const context = {
-    chatId: 'host-chat', characterId: 0, characters: [{ name: '角色', avatar: 'char' }], getRequestHeaders: () => ({ 'x-test': 'yes' }), chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: CHAT_ID }, otherPlugin: { keep: true } }, chat: [user, hidden],
+    chatId: 'host-chat', characterId: 0, characters: [{ name: '角色', avatar: 'char' }], getRequestHeaders: () => ({ 'x-test': 'yes' }), chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: CHAT_ID }, qianqianjiePrequel: '用户手工前情', otherPlugin: { keep: true } }, chat: [user, hidden],
     async saveChat() { calls.push(['saveChat']); if (saveChatFailure) { saveChatFailure = false; throw new Error('save chat failed'); } if (silentSaveChatFailure) { silentSaveChatFailure = false; return; } persistedMessages = cloneMessages(context.chat); },
     async saveChatMetadata() { calls.push(['saveMetadata']); if (saveMetadataFailure) { saveMetadataFailure = false; return false; } persistedMetadata = structuredClone(context.chatMetadata); return true; },
   };
@@ -52,13 +52,13 @@ function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, s
   const state = { memoryWorkBusy: busy };
   const runtime = name => ({ getState: () => state, invalidate() { invalidated.push(name); } });
   let memoryChatId = CHAT_ID;
-  const memoryRuntime = { getState: () => ({ ...state, chatId: memoryChatId }), invalidate() { memoryChatId = null; invalidated.push('memory'); } };
+  const memoryRuntime = { getState: () => ({ ...state, chatId: memoryChatId }), invalidate(options) { memoryInvalidations.push(options); memoryChatId = null; invalidated.push('memory'); } };
   const recallRuntime = { getState: () => ({}), invalidate() { invalidated.push('recall'); }, clearCurrent() { invalidated.push('recall-clear'); } };
   const peopleRuntime = { getState: () => ({}), invalidate() { invalidated.push('people'); } };
   const autoHideController = { async restoreOwned() { calls.push(['restoreOwned']); if (memoryChatId !== CHAT_ID) return { status: 'stale' }; if (autoHideStatus === 'applied') { hidden.is_system = false; delete hidden.extra.qianqianjieAutoHide; } return { status: autoHideStatus }; } };
   const fetchImpl = async (url, options) => { calls.push(['hostRead', url, JSON.parse(options.body)]); return { ok: true, json: async () => [{ chat_metadata: structuredClone(persistedMetadata) }, ...cloneMessages(persistedMessages)] }; };
   const manager = createChatMemoryManagement({ client, session, hostAdapter: { snapshot: () => ({ chatId: context.chatId, chat: context.chat, context }) }, foundationRuntime: runtime('foundation'), memoryRuntime, recallRuntime, peopleRuntime, autoHideController, isMainGenerationActive: () => false, fetchImpl, logger: { warn() {} } });
-  return { manager, records, calls, invalidated, context, user, hidden, receipt, identity, releaseHeld };
+  return { manager, records, calls, invalidated, memoryInvalidations, context, user, hidden, receipt, identity, releaseHeld };
 }
 
 function cloneMessages(messages) { return structuredClone(messages); }
@@ -76,8 +76,9 @@ test('按实际revision删除全collection后root和binding，并保留正文、
   assert.equal(f.user.mes, '正文保留');
   assert.deepEqual(f.user.extra, { otherPlugin: { keep: true } });
   assert.equal(f.hidden.mes, '隐藏正文保留'); assert.equal(f.hidden.is_system, false); assert.deepEqual(f.hidden.extra, { other: 1 });
-  assert.deepEqual(f.context.chatMetadata, { otherPlugin: { keep: true } });
+  assert.deepEqual(f.context.chatMetadata, { qianqianjiePrequel: '用户手工前情', otherPlugin: { keep: true } });
   assert.ok(f.invalidated.includes('memory') && f.invalidated.includes('foundation') && f.invalidated.includes('recall') && f.invalidated.includes('people'));
+  assert.deepEqual(f.memoryInvalidations, [undefined, { deletedChatId: CHAT_ID }], '仅完整删除成功后的最终 invalidate 携带已删除聊天 ID');
   assert.equal(f.calls.at(-1)[0], 'resume');
 });
 
@@ -86,12 +87,14 @@ test('revision冲突不覆盖并保留捕获UUID，重试重新list后删完剩�
   await assert.rejects(f.manager.deleteCurrent(), error => error.status === 409);
   assert.equal(f.manager.getState().status, 'failed');
   assert.equal(f.manager.getState().targetChatId, CHAT_ID);
+  assert.deepEqual(f.memoryInvalidations, [undefined], '删除失败时普通失效不能冒充整聊天删除成功');
   assert.deepEqual(f.context.chatMetadata.qianqianjie, { schemaVersion: 2, chatId: CHAT_ID });
   assert.equal(f.calls.some(call => call[0] === 'resume'), false);
   const result = await f.manager.deleteCurrent();
   assert.equal(result.status, 'completed');
   assert.equal(f.calls.filter(call => call[0] === 'list').length, 2);
   assert.equal(f.calls.filter(call => call[0] === 'restoreOwned').length, 1, '已恢复可见性后，部分删除重试不得依赖已失效的memory投影再次恢复');
+  assert.deepEqual(f.memoryInvalidations, [undefined, undefined, { deletedChatId: CHAT_ID }]);
   assert.deepEqual([...f.records.keys()], [`chat-${OTHER_ID}/v3-root`]);
 });
 

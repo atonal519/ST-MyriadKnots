@@ -68,8 +68,8 @@ export function createChatMemoryManagement({
     return Boolean(isMainGenerationActive?.() || memory.memoryWorkBusy || memory.activeAutoMemory || memory.activeExtraction || memory.activeCse
       || foundation.activeRun || recall.activeRecall || people.active);
   }
-  const invalidateRuntimes = () => {
-    try { memoryRuntime?.invalidate?.(); } catch { /* continue clearing other projections */ }
+  const invalidateRuntimes = deletedChatId => {
+    try { memoryRuntime?.invalidate?.(deletedChatId ? { deletedChatId } : undefined); } catch { /* continue clearing other projections */ }
     try { foundationRuntime?.invalidate?.(); } catch { /* continue */ }
     try { recallRuntime?.invalidate?.('memoryDeleted'); } catch { /* continue */ }
     try { recallRuntime?.clearCurrent?.(); } catch { /* continue */ }
@@ -186,7 +186,7 @@ export function createChatMemoryManagement({
     operation.phase = 'clearingHost'; notify();
     await clearReceipts(identity);
     await clearMetadata(identity);
-    invalidateRuntimes();
+    invalidateRuntimes(identity.chatId);
     session.resume(identity.chatId);
     return Object.freeze({ status: 'completed', hostChatId: identity.hostChatId, chatId: identity.chatId, deletedCount: operation.deletedCount });
   }

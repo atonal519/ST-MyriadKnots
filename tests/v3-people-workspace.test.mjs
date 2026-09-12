@@ -30,8 +30,8 @@ function backend() {
 function entity(id, name, extra = {}) {
   return { id, entityType: 'person', displayName: name, aliases: [{ name: `${name}别名` }], specialRole: 'none', firstSeenFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', lastSeenFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', status: 'established', recordStatus: 'active', ...extra };
 }
-function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many = false, permissionSettings = null, sourceCandidates = null, profilePromptGuidance = () => '', processingPrompt = () => '' } = {}) {
-  const db = backend(); let identity = { chatId: CHAT_A, hostChatId: 'host-a', characterLocator: 'char.png', personaLocator: 'persona.png' };
+function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many = false, permissionSettings = null, sourceCandidates = null, profilePromptGuidance = () => '', processingPrompt = () => '', prequel = '' } = {}) {
+  const db = backend(); let identity = { chatId: CHAT_A, hostChatId: 'host-a', characterLocator: 'char.png', personaLocator: 'persona.png' }, currentPrequel = prequel;
   const peopleEntities = ids.slice(0, many ? 12 : 4).map((id, index) => entity(id, `人物${index + 1}`));
   let reachable = {
     entities: [...peopleEntities, entity(USER, '用户', { specialRole: 'user' }), entity(SYNTHETIC_CHAR, '剧情标题', { specialRole: 'char', firstSeenFloorId: null, lastSeenFloorId: null })],
@@ -47,7 +47,7 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
     store: createPeopleWorkspaceStore({ client: db.client }), session: { identity: () => structuredClone(identity) },
     foundationRuntime: { getReachable: () => reachable }, memoryRuntime, generateUtilityTask: generate, profilePromptGuidance, processingPrompt,
     sourcePermissions: { filterCandidates({ chatId, candidates }) { sourceTrace.push(['filter', chatId, candidates.map(item => item.id)]); return permissionSettings ? filterSourcesByPermission({ chatId, candidates, settings: permissionSettings }) : candidates.filter(item => item.id !== 'worldbook:excluded'); } },
-    contextProvider: () => ({ chat: [], marker: identity.chatId }),
+    contextProvider: () => ({ chat: [], marker: identity.chatId, chatMetadata: currentPrequel ? { qianqianjiePrequel: currentPrequel } : {} }),
     scanner: async context => { sourceTrace.push(['scan', context.marker]); return { entries: [{ content: '<secret>DROP</secret><content>ALLOWED</content>' }, { content: 'EXCLUDED' }] }; },
     sourceCandidateFactory: async catalog => { sourceTrace.push(['candidates', catalog.entries.length]); return sourceCandidates ?? [{ id: 'worldbook:allowed', kind: 'worldbook', world: '允许书', label: '允许条目', content: catalog.entries[0].content }, { id: 'worldbook:excluded', kind: 'worldbook', world: '排除书', label: '排除条目', content: catalog.entries[1].content }]; },
     sanitizerOptions: () => ({ keepTags: 'content' }), now: () => new Date('2026-09-06T00:00:00.000Z'),
@@ -55,7 +55,7 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
   });
   return { db, runtime, peopleEntities, sourceTrace, get identity() { return identity; }, setIdentity(value) { identity = value; }, get reachable() { return reachable; }, setReachable(value) { reachable = value; },
     get memoryState() { return memoryState; }, setMemoryState(value, notify = true) { memoryState = value; if (notify) for (const listener of listeners) listener(memoryState); },
-    notifyMemory() { for (const listener of listeners) listener(memoryState); }, get memoryRefreshes() { return memoryRefreshes; } };
+    notifyMemory() { for (const listener of listeners) listener(memoryState); }, setPrequel(value) { currentPrequel = value; }, get memoryRefreshes() { return memoryRefreshes; } };
 }
 
 async function waitFor(check, message = '等待后台人物整理超时') {
@@ -356,6 +356,35 @@ test('长资料后批失败时保留前批已保存档案，且大世界书片�
   assert.equal(requests[1].people[0].existingProfile.name, '前批已存');
   const fragments = requests.flatMap(request => request.people[0].sourceFragments).filter(item => item.kind === 'allowedWorldInfo');
   assert.ok(fragments.length > 1); assert.equal(fragments[0].part, 1); assert.equal(fragments[0].total, fragments.at(-1).total);
+});
+
+test('人物前情按目标匹配，首次长资料复用分批且已有档案只取小量', async () => {
+  const imported = Array.from({ length: 100 }, (_, index) => `人物1旧名 archive-${index} ${'A'.repeat(360)}。`).join('\n');
+  const requests = [];
+  const h = harness({ prequel: imported, generate: async options => {
+    const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
+    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, name: person.currentName || '人物1' })) } };
+  } });
+  const target = h.peopleEntities[0];
+  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]); await h.runtime.generateMissingProfiles();
+  assert.ok(requests.length > 1, '首次相关长前情应复用既有人物长资料分批');
+  assert.ok(requests.every(request => !Object.hasOwn(request.people[0], 'priorContext')), '分批公共 base 不得重复整份前情');
+  const priorFragments = requests.flatMap(request => request.people[0].sourceFragments).filter(item => item.kind === 'priorContext');
+  assert.ok(priorFragments.length > 1);
+  assert.deepEqual(priorFragments.map(item => item.part), Array.from({ length: priorFragments[0].total }, (_, index) => index + 1));
+  const firstImported = priorFragments.map(item => item.content).join('');
+  assert.match(firstImported, /用户导入的过去经历资料/); assert.match(firstImported, /人物1旧名/);
+  assert.equal(requests[1].people[0].existingProfile.name, '人物1', '后批继续读取前批已保存档案');
+
+  requests.length = 0;
+  await h.runtime.regenerateProfile(target.id);
+  const laterPrior = requests.flatMap(request => request.people.flatMap(person => person.priorContext ? [person.priorContext] : (person.sourceFragments ?? []).filter(item => item.kind === 'priorContext').map(item => item.content))).join('');
+  assert.ok(laterPrior.length > 0 && laterPrior.length <= 2400, '已有档案只附小量相关前情');
+
+  const before = requests.length;
+  h.setPrequel(`${imported}\n人物1新增但未触发的手工前情`); h.notifyMemory();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(requests.length, before, '只编辑前情不进入人物 freshness/signature，不自动发请求');
 });
 
 test('批量整理按 personKey 独立接受合法项并准确报告遗漏、未知与冲突', async () => {

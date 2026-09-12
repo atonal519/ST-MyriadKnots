@@ -748,15 +748,37 @@ test('prepared 写失败会等待在途任务收拢，不续排新任务或提�
   assert.equal(h.backend.calls.some(call => call[0] === 'put' && call[2] === 'v3-root'), false);
 });
 
-test('首次封口只由 store 做一次真实全图回读', async () => {
+test('首次封口复用本会话已确认内容，只真实读取 checkpoint、run 与 index', async () => {
   const h = harness();
   await h.runtime.start();
   const root = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
   const checkpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${root.headCheckpointId}`).data;
   const reads = h.backend.calls.filter(call => call[0] === 'get').length;
   const committedIndexCount = Object.values(root.indexManifest).flat().length;
-  assert.equal(reads, 4 + checkpoint.producedRefs.floors.length + committedIndexCount,
-    '仅保留初始 root、staged run 探测，以及 commitRoot 的 checkpoint/run/floors/indexes 真回读');
+  assert.equal(reads, 4 + committedIndexCount,
+    '已由成功 PUT 确认的 FloorRecord 不应在同次 commitRoot 中重复 GET');
+});
+
+test('确认内容返回值不可污染缓存，invalidate 后缺失记录仍由真实读取发现', async () => {
+  const h = harness();
+  await h.runtime.start();
+  const identityProvider = () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' });
+  const store = createFoundationStore({ client: h.backend.client, contextProvider: identityProvider });
+  let root = await store.readRoot();
+  const checkpoint = await store.readRecord('checkpoint', root.data.headCheckpointId);
+  const floorId = checkpoint.data.producedRefs.floors[0];
+  const floor = await store.readRecord('floor', floorId);
+  const originalContent = floor.data.content.canonicalContent;
+  floor.data.content.canonicalContent = '调用者局部篡改';
+  const committed = await store.commitRoot(root.data, root.revision);
+  assert.equal(committed.status, 'saved', '调用者修改读取副本不得污染已确认缓存');
+  const coldStore = createFoundationStore({ client: h.backend.client, contextProvider: identityProvider });
+  assert.equal((await coldStore.readRecord('floor', floorId)).data.content.canonicalContent, originalContent);
+
+  store.invalidate();
+  h.backend.records.delete(`chat-${CHAT}/v3-floor-${floorId}`);
+  root = await store.readRoot();
+  await assert.rejects(store.commitRoot(root.data, root.revision), error => error?.code === 'V3_STORE_FLOOR_MISSING');
 });
 
 test('后端恢复得到相同 stableBoundary，warm reconcile 不按楼读取详情', async () => {

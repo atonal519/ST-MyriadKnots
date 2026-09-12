@@ -26,6 +26,7 @@ const RECORD_PREFIX = Object.freeze({
   currentState: 'v3-current-state-',
   index: 'v3-index-',
 });
+const CONFIRMED_CONTENT_TYPES = new Set(['floor', 'floorMemory', 'entity', 'baseline', 'stateDelta', 'currentState']);
 
 function fail(code) { throw Object.assign(new TypeError(code), { code }); }
 function identity(raw) {
@@ -166,12 +167,36 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
   if (typeof client?.get !== 'function' || typeof client?.put !== 'function') throw new TypeError('V3 store client 必须提供 get/put');
   if (typeof contextProvider !== 'function') throw new TypeError('V3 store contextProvider 必须是函数');
   let epoch = 0;
+  const confirmedContent = new Map();
   const enabled = () => {
     try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; }
     catch { return false; }
   };
   const capture = () => identity(contextProvider());
   const collection = current => `chat-${current.chatId}`;
+  const confirmedKey = (current, key) => `${collection(current)}\u0000${key}`;
+  const confirmedCopy = value => ({ status: 'ready', data: structuredClone(value.data), revision: value.revision, recordId: value.recordId });
+  const rememberConfirmed = (current, value) => {
+    if (value?.status !== 'ready' || !CONFIRMED_CONTENT_TYPES.has(value.data?.recordType)) return value;
+    confirmedContent.set(confirmedKey(current, value.recordId), confirmedCopy(value));
+    return value;
+  };
+  const readConfirmed = (current, key, validator) => {
+    const value = confirmedContent.get(confirmedKey(current, key));
+    return value ? Promise.resolve(confirmedCopy(value)) : read(current, key, validator);
+  };
+  const pruneConfirmed = (current, root, checkpoint) => {
+    const keep = new Set([
+      ...checkpoint.producedRefs.floors.map(id => `${RECORD_PREFIX.floor}${id}`),
+      ...checkpoint.producedRefs.floorMemories.map(id => `${RECORD_PREFIX.floorMemory}${id}`),
+      ...checkpoint.producedRefs.entities.map(id => `${RECORD_PREFIX.entity}${id}`),
+      ...(root.baselineId ? [`${RECORD_PREFIX.baseline}${root.baselineId}`] : []),
+      ...checkpoint.producedRefs.stateDeltas.map(id => `${RECORD_PREFIX.stateDelta}${id}`),
+      ...checkpoint.producedRefs.currentStates.map(id => `${RECORD_PREFIX.currentState}${id}`),
+    ].map(key => confirmedKey(current, key)));
+    const prefix = `${collection(current)}\u0000`;
+    for (const key of confirmedContent.keys()) if (key.startsWith(prefix) && !keep.has(key)) confirmedContent.delete(key);
+  };
   const operationState = operation => {
     if (operation.epoch !== epoch) return 'stale';
     if (!enabled()) return 'disabled';
@@ -200,7 +225,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       const envelope = await client.get(collection(identityValue), key);
       const safe = validateEnvelope(envelope, validator, identityValue.chatId);
       if (validator === validateFoundationFloor) await validateFoundationFloorContent(safe.data, { expectedChatId: identityValue.chatId });
-      return { status: 'ready', ...safe, recordId: key };
+      return rememberConfirmed(identityValue, { status: 'ready', ...safe, recordId: key });
     } catch (error) {
       if (error?.status === 404) return { status: missingStatus };
       throw error;
@@ -225,7 +250,9 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
         const envelope = await client.put(collection(current), key, safe, 0, { signal });
         const saved = validateEnvelope(envelope, validator, current.chatId);
         if (!sameJson(saved.data, safe)) fail('V3_STORE_RESPONSE_MISMATCH');
-        return { status: 'saved', ...saved, recordId: key };
+        const result = { status: 'saved', ...saved, recordId: key };
+        rememberConfirmed(current, { ...result, status: 'ready' });
+        return result;
       } catch (error) {
         if (error?.status !== 409) throw error;
         const winner = await read(current, key, validator);
@@ -277,14 +304,14 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     }
     const indexKeys = Object.values(root.indexManifest).flat();
     const settledGroups = await Promise.allSettled([
-      readGroup(checkpoint.producedRefs.floors, id => read(current, `${RECORD_PREFIX.floor}${id}`, validateFoundationFloor)),
+      readGroup(checkpoint.producedRefs.floors, id => readConfirmed(current, `${RECORD_PREFIX.floor}${id}`, validateFoundationFloor)),
       readGroup(indexKeys, key => read(current, key, validateFoundationIndex)),
       read(current, `${RECORD_PREFIX.run}${checkpoint.runId}`, validateFoundationRun),
-      readGroup(checkpoint.producedRefs.floorMemories, id => read(current, `${RECORD_PREFIX.floorMemory}${id}`, validateFloorMemory)),
-      readGroup(checkpoint.producedRefs.entities, id => read(current, `${RECORD_PREFIX.entity}${id}`, validateEntityRecord)),
-      root.baselineId ? read(current, `${RECORD_PREFIX.baseline}${root.baselineId}`, validateBaselineRecord) : Promise.resolve(null),
-      readGroup(checkpoint.producedRefs.stateDeltas, id => read(current, `${RECORD_PREFIX.stateDelta}${id}`, validateStateDeltaRecord)),
-      readGroup(checkpoint.producedRefs.currentStates, id => read(current, `${RECORD_PREFIX.currentState}${id}`, validateCurrentStateRecord)),
+      readGroup(checkpoint.producedRefs.floorMemories, id => readConfirmed(current, `${RECORD_PREFIX.floorMemory}${id}`, validateFloorMemory)),
+      readGroup(checkpoint.producedRefs.entities, id => readConfirmed(current, `${RECORD_PREFIX.entity}${id}`, validateEntityRecord)),
+      root.baselineId ? readConfirmed(current, `${RECORD_PREFIX.baseline}${root.baselineId}`, validateBaselineRecord) : Promise.resolve(null),
+      readGroup(checkpoint.producedRefs.stateDeltas, id => readConfirmed(current, `${RECORD_PREFIX.stateDelta}${id}`, validateStateDeltaRecord)),
+      readGroup(checkpoint.producedRefs.currentStates, id => readConfirmed(current, `${RECORD_PREFIX.currentState}${id}`, validateCurrentStateRecord)),
     ]);
     const rejected = settledGroups.find(result => result.status === 'rejected');
     if (rejected) throw rejected.reason;
@@ -333,6 +360,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
         const envelope = await client.put(collection(current), V3_ROOT_RECORD_ID, safe, expectedRevision, { signal });
         const saved = validateEnvelope(envelope, validateFoundationRoot, current.chatId);
         if (!sameJson(saved.data, safe)) fail('V3_STORE_RESPONSE_MISMATCH');
+        pruneConfirmed(current, saved.data, validatedGraph.checkpoint);
         return {
           status: 'saved',
           ...saved,
@@ -500,7 +528,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     replaceRecord,
     settleRun,
     commitRoot,
-    invalidate() { epoch += 1; },
+    invalidate() { epoch += 1; confirmedContent.clear(); },
     recordKey,
   });
 }

@@ -81,7 +81,19 @@ function backendHarness() {
   } };
 }
 
-function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, extractorPromptGuidance, csePromptGuidance, processingPrompt, foundationRefresh, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null } = {}) {
+function browserStorage(initial = {}) {
+  const values = new Map(Object.entries(initial));
+  const calls = [];
+  return {
+    values,
+    calls,
+    getItem(key) { calls.push(['getItem', key]); return values.get(key) ?? null; },
+    setItem(key, value) { calls.push(['setItem', key, value]); values.set(key, value); },
+    removeItem(key) { calls.push(['removeItem', key]); values.delete(key); },
+  };
+}
+
+function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, extractorPromptGuidance, csePromptGuidance, processingPrompt, foundationRefresh, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null, failureStorage = undefined, now = () => new Date(NOW) } = {}) {
   let enabled = true;
   const handlers = new Map();
   const warnings = [];
@@ -118,7 +130,7 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
     if (utility) return utility(options, calls.length);
     return { jsonData: { summary: '裴晚生提醒用户带伞。', people: [{ name: '裴晚生' }, { name: '你', role: 'user' }], events: [{ title: '带伞提醒', description: '裴晚生提醒用户带伞。' }] }, taskMetadata: { source: 'shared-utility', sourceLabel: '机械副 API', model: 'mock-model', finishReason: 'stop' } };
   };
-  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), persistAnchors, identityProjectionProvider, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
+  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), persistAnchors, identityProjectionProvider, failureStorage, now, newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
   const emit = (name, ...args) => (handlers.get(name) ?? []).forEach(listener => listener(...args));
   return { runtime, foundationRuntime, store, backend, context, hostAdapter, calls, warnings, emit, readReachableModes, snapshotCount: () => snapshotCalls, setEnabled(value) { enabled = value; }, setAutomation(value) { automation = value; } };
@@ -846,6 +858,36 @@ test('extractor 真实 semantic 请求只在 stop 后共享修复缺失键引号
   );
   await assert.rejects(
     runExtractorRequest({ generateUtilityTask: async () => ({ textData: `${malformed} 完毕。`, taskMetadata: { finishReason: 'stop' } }), envelope, floor, expectedScope: envelope.scope, now: NOW }),
+    error => error.code === 'V3_EXTRACTOR_SUMMARY_INVALID',
+  );
+});
+
+test('extractor 在坏 schema 回显后只接受唯一合法业务 JSON，歧义或仅 schema 仍拒绝', async () => {
+  const floor = { id: '11111111-1111-4111-8111-111111111111', chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq: 1, content: { canonicalContent: '裴晚生提醒你继续前进。' } };
+  const envelope = await createExtractorEnvelope({ batchId: '35353535-3535-4535-8535-353535353535', chatId: CHAT, narrativeGeneration: GENERATION, floor, userIdentity: { displayName: '林岚' } });
+  const malformedSchema = '{"type":"object","required":["summary"],"properties":{"summary":{"type":"string"} "events":{"type":"array"}}}';
+  const business = '{"summary":"裴晚生提醒用户继续前进。","events":[]}';
+  let calls = 0;
+  const recovered = await runExtractorRequest({
+    generateUtilityTask: async () => {
+      calls += 1;
+      return { textData: `${malformedSchema}\n${business}`, taskMetadata: { finishReason: 'stop' } };
+    },
+    envelope,
+    floor,
+    expectedScope: envelope.scope,
+    now: NOW,
+  });
+  assert.equal(calls, 1);
+  assert.equal(recovered.attempts, 1);
+  assert.equal(recovered.memory.summary.aiText, '裴晚生提醒用户继续前进。');
+
+  await assert.rejects(
+    normalizeExtractorResponse({ response: '{"summary":"候选甲。"}\n{"summary":"候选乙。"}', finishReason: 'stop', envelope, floor, expectedScope: envelope.scope, now: NOW }),
+    error => error.code === 'V3_EXTRACTOR_SUMMARY_INVALID',
+  );
+  await assert.rejects(
+    normalizeExtractorResponse({ response: malformedSchema, finishReason: 'stop', envelope, floor, expectedScope: envelope.scope, now: NOW }),
     error => error.code === 'V3_EXTRACTOR_SUMMARY_INVALID',
   );
 });
@@ -1704,12 +1746,107 @@ test('单楼摘要提交只做 root 版本复核并复用 commitRoot 真回读�
   const gets = h.backend.calls.filter(call => call[0] === 'get');
   assert.equal(gets.filter(call => call[2] === 'v3-root').length, 2,
     '提取前投影确认与模型返回后的 root 版本复核各一次，不再提交后重读整图');
-  assert.equal(gets.length, 9, '固定 fixture 同 root 复用后仅保留两次轻 root 核对与 commitRoot 真图校验');
+  assert.equal(gets.length, 5, '固定 fixture 同 root 复用后仅保留两次轻 root 核对及 commitRoot 对 checkpoint/run/index 的真读校验');
   assert.equal(h.backend.calls.filter(call => call[0] === 'put').length, 7,
     '固定 fixture 新提交只写两个人物、摘要、floorOrder、run、checkpoint 与 root');
   const indexPuts = h.backend.calls.filter(call => call[0] === 'put' && call[2].startsWith('v3-index-'));
   assert.equal(indexPuts.length, 1);
   assert.ok(indexPuts.every(call => call[2].startsWith('v3-index-floorOrder-')));
+});
+
+test('有效摘要在 index 保存失败后由手动重试复用，成功后立即清掉待保存结果', async () => {
+  let clockTick = 0;
+  const h = harness({ now: () => new Date(Date.parse(NOW) + clockTick++ * 1000) });
+  await h.runtime.start();
+  const floorId = h.runtime.getState().floors[0].floorId;
+  let failIndexOnce = true;
+  h.backend.setBeforePut(({ key }) => {
+    if (!failIndexOnce || !key.startsWith('v3-index-')) return;
+    failIndexOnce = false;
+    throw Object.assign(new Error('index timeout'), { status: 504, code: 'BACKEND_TIMEOUT' });
+  });
+
+  let state = await h.runtime.extractFloor(floorId, { analyzeState: false });
+  assert.equal(state.rememberedCount, 0);
+  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 1);
+
+  h.backend.setBeforePut(null);
+  state = await h.runtime.extractFloor(floorId, { analyzeState: false });
+  assert.equal(state.rememberedCount, 1, JSON.stringify(state.lastExtractorError));
+  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 1,
+    '同楼同依赖的手动重试必须直接保存已有有效结果');
+
+  await h.runtime.extractFloor(floorId, { analyzeState: false });
+  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 2,
+    '正式提交成功后不得继续复用已经消费的待保存结果');
+});
+
+test('root 保存失败的待保存结果可跨过另一楼成功提交后继续复用', async () => {
+  const h = harness({ initialChat: [assistant('第一楼'), assistant('第二楼'), assistant('用于确认第二楼稳定。')] });
+  await h.runtime.start();
+  const [firstFloor, secondFloor] = h.runtime.getState().floors;
+  let failRootOnce = true;
+  h.backend.setBeforePut(({ key }) => {
+    if (!failRootOnce || key !== 'v3-root') return;
+    failRootOnce = false;
+    throw Object.assign(new Error('root timeout'), { status: 504, code: 'BACKEND_TIMEOUT' });
+  });
+
+  let state = await h.runtime.extractFloor(firstFloor.floorId, { analyzeState: false });
+  assert.equal(state.rememberedCount, 0);
+  h.backend.setBeforePut(null);
+  state = await h.runtime.extractFloor(secondFloor.floorId, { analyzeState: false });
+  assert.equal(state.rememberedCount, 1, JSON.stringify(state.lastExtractorError));
+  state = await h.runtime.extractFloor(firstFloor.floorId, { analyzeState: false });
+  assert.equal(state.rememberedCount, 2, JSON.stringify(state.lastExtractorError));
+  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 2,
+    '两楼各生成一次；第一楼保存重试不得产生第三次模型请求');
+});
+
+test('待保存期间处理提示变化会重新生成，并按新提示记录来源指纹', async () => {
+  let currentProcessingPrompt = '处理提示第一版';
+  const h = harness({ processingPrompt: () => currentProcessingPrompt });
+  await h.runtime.start();
+  const floorId = h.runtime.getState().floors[0].floorId;
+  let failIndexOnce = true;
+  h.backend.setBeforePut(({ key }) => {
+    if (!failIndexOnce || !key.startsWith('v3-index-')) return;
+    failIndexOnce = false;
+    throw Object.assign(new Error('index timeout'), { status: 504, code: 'BACKEND_TIMEOUT' });
+  });
+  await h.runtime.extractFloor(floorId, { analyzeState: false });
+
+  h.backend.setBeforePut(null);
+  currentProcessingPrompt = '处理提示第二版';
+  const state = await h.runtime.extractFloor(floorId, { analyzeState: false });
+  assert.equal(state.rememberedCount, 1, JSON.stringify(state.lastExtractorError));
+  assert.equal(h.calls.length, 2,
+    '处理提示变化后旧结果不再适用，必须重新调用模型');
+  const provenance = h.foundationRuntime.getReachable().run.diagnostics.floorProvenance[floorId];
+  const expectedFingerprint = `sha256:${createHash('sha256').update(buildExtractorSystemPrompt('', currentProcessingPrompt)).digest('hex')}`;
+  assert.equal(provenance.systemPromptFingerprint, expectedFingerprint);
+});
+
+test('invalidate 会清掉未保存结果，随后处理同楼重新调用模型', async () => {
+  const h = harness();
+  await h.runtime.start();
+  const floorId = h.runtime.getState().floors[0].floorId;
+  let failRootOnce = true;
+  h.backend.setBeforePut(({ key }) => {
+    if (!failRootOnce || key !== 'v3-root') return;
+    failRootOnce = false;
+    throw Object.assign(new Error('root timeout'), { status: 504, code: 'BACKEND_TIMEOUT' });
+  });
+  await h.runtime.extractFloor(floorId, { analyzeState: false });
+  h.backend.setBeforePut(null);
+
+  h.runtime.invalidate();
+  await h.runtime.start();
+  const currentFloorId = h.runtime.getState().floors[0].floorId;
+  const state = await h.runtime.extractFloor(currentFloorId, { analyzeState: false });
+  assert.equal(state.rememberedCount, 1, JSON.stringify(state.lastExtractorError));
+  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 2,
+    '运行时失效后不得复用上一生命周期的待保存结果');
 });
 
 test('单楼与下一楼从冷地基点击到 fake 请求都只准备一轮整图，轻 root 核对单独计数', async () => {
@@ -2956,6 +3093,115 @@ test('首个 CSE 失败前已捕获摘要全部保存；提取失败跳过本楼
   await waitFor(() => registeredGraphCaughtUp(extractorFailed.runtime.getState()) && !extractorFailed.runtime.getState().memoryWorkBusy);
   assert.equal(extractorFailed.runtime.getState().summaryCompletedCount, 4, '用户手动继续后应从失败楼补齐');
   assert.equal(extractorFailed.runtime.getState().lastAutoMemory?.reason, 'manualHistoricalRebuild', '摘要历史缺口必须走已有的当前聊天补齐授权，不能给普通自动重试泛化权限');
+});
+
+test('同楼提取失败按聊天持久累计，后楼成功不清且本楼成功、完全重构成功才清', async () => {
+  const otherKey = 'qqj_v3_floor_failures:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const storage = browserStorage({ [otherKey]: '{"keep":true}' });
+  const failureByContent = new Map([['失败楼 B', true]]);
+  let bFailures = 0;
+  const utility = options => {
+    if (options.systemPrompt !== EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { noMaterialChange: true } };
+    const content = JSON.parse(options.taskMessages[0].content).payload.canonicalContent;
+    if (failureByContent.get(content)) {
+      if (content === '失败楼 B') bFailures += 1;
+      throw Object.assign(new Error(content === '失败楼 B' ? `B 最近失败原因 ${bFailures}` : `${content} 最近失败原因`), { code: `TEST_${content.at(-1)}_FAILED` });
+    }
+    return { jsonData: { summary: `摘要-${content}` } };
+  };
+  const initialChat = [user('开始'), assistant('待处理楼 A'), assistant('失败楼 B'), assistant('成功楼 C'), assistant('待确认尾楼')];
+  const first = harness({ initialChat, utility, failureStorage: storage });
+  await first.runtime.start();
+  const [floorA, floorB, floorC] = first.runtime.getState().floors;
+  const key = storage.calls.find(call => call[0] === 'getItem')?.[1];
+  assert.ok(key && key !== otherKey);
+  assert.equal(storage.calls.filter(call => call[0] === 'getItem').length, 1);
+
+  await first.runtime.extractFloor(floorB.floorId, { analyzeState: false });
+  let state = first.runtime.getState();
+  assert.equal(state.floors[1].status, 'failed');
+  assert.match(state.floors[1].error, /连续失败 1 次；最近：B 最近失败原因 1/);
+  await first.runtime.extractFloor(floorC.floorId, { analyzeState: false });
+  state = first.runtime.getState();
+  assert.equal(state.floors[2].status, 'ready');
+  assert.match(state.floors[1].error, /连续失败 1 次/, '后楼成功不能清掉中间失败楼');
+  await first.runtime.extractFloor(floorB.floorId, { analyzeState: false });
+  assert.match(first.runtime.getState().floors[1].error, /连续失败 2 次；最近：B 最近失败原因 2/);
+
+  const serialized = storage.values.get(key);
+  const saved = JSON.parse(serialized);
+  assert.deepEqual(Object.keys(saved).sort(), ['failures', 'narrativeGeneration']);
+  assert.deepEqual(Object.keys(saved.failures), [floorB.floorId]);
+  assert.equal(saved.failures[floorB.floorId].count, 2);
+  assert.equal(saved.failures[floorB.floorId].code, 'TEST_B_FAILED');
+  assert.doesNotMatch(serialized, /待处理楼 A|失败楼 B|成功楼 C|待确认尾楼|taskMessages|jsonData/u);
+  const backendCallsBeforeProjection = first.backend.calls.length;
+  first.runtime.getState(); first.runtime.getState();
+  assert.equal(first.backend.calls.length, backendCallsBeforeProjection, '读取失败提示投影不能增加后端请求');
+  await first.runtime.refreshStatus();
+  assert.equal(storage.calls.filter(call => call[0] === 'getItem').length, 1, '同一聊天与代次重复 load 不得反复读取浏览器存储');
+  first.runtime.invalidate();
+  assert.equal(storage.values.has(key), true, '普通 invalidate 只清运行时投影，不能删除持久失败');
+
+  const resumed = harness({ sharedBackend: first.backend, sharedContext: first.context, utility, failureStorage: storage });
+  await resumed.runtime.start();
+  state = resumed.runtime.getState();
+  assert.equal(storage.calls.filter(call => call[0] === 'getItem').length, 2);
+  assert.match(state.floors.find(floor => floor.floorId === floorB.floorId).error, /连续失败 2 次；最近：B 最近失败原因 2/, '刷新后必须恢复同楼次数与最近原因');
+  assert.equal(state.floors.find(floor => floor.floorId === floorC.floorId).status, 'ready');
+
+  failureByContent.set('待处理楼 A', true);
+  await resumed.runtime.extractFloor(floorA.floorId, { analyzeState: false });
+  failureByContent.set('失败楼 B', false);
+  await resumed.runtime.extractFloor(floorB.floorId, { analyzeState: false });
+  state = resumed.runtime.getState();
+  assert.equal(state.floors.find(floor => floor.floorId === floorB.floorId).error, null);
+  assert.match(state.floors.find(floor => floor.floorId === floorA.floorId).error, /连续失败 1 次/, '本楼成功只能清本楼，其他失败楼保留');
+
+  const oldCSummary = state.floors.find(floor => floor.floorId === floorC.floorId).summary;
+  failureByContent.set('成功楼 C', true);
+  await resumed.runtime.extractFloor(floorC.floorId, { analyzeState: false });
+  state = resumed.runtime.getState();
+  const failedReextract = state.floors.find(floor => floor.floorId === floorC.floorId);
+  assert.equal(failedReextract.status, 'ready');
+  assert.equal(failedReextract.summary, oldCSummary, '已有摘要重提失败不能清空旧摘要');
+  assert.match(failedReextract.error, /连续失败 1 次/);
+  await resumed.runtime.editSummary(floorC.floorId, '人工修订后的 C 摘要');
+  assert.equal(resumed.runtime.getState().floors.find(floor => floor.floorId === floorC.floorId).error, null, '人工修订成功应清本楼失败提示');
+
+  resumed.backend.setConflictRoot(true);
+  await assert.rejects(resumed.runtime.fullRebuild(), error => error?.code === 'V3_MEMORY_CAS_CONFLICT');
+  resumed.backend.setConflictRoot(false);
+  assert.equal(storage.values.has(key), true, '完全重构提交失败不能提前清除失败表');
+  failureByContent.clear();
+  await resumed.runtime.fullRebuild();
+  assert.equal(storage.values.has(key), false, '完全重构真实提交成功后应清当前聊天失败表');
+  assert.equal(storage.values.get(otherKey), '{"keep":true}', '其他聊天的浏览器记录不能受影响');
+});
+
+test('失败提示存储损坏或不可写不阻断摘要流程，内存提示仍可使用', async () => {
+  const calls = [];
+  let fail = true;
+  const failureStorage = {
+    getItem() { calls.push('get'); return '{bad-json'; },
+    setItem() { calls.push('set'); throw new Error('storage denied'); },
+    removeItem() { calls.push('remove'); throw new Error('storage denied'); },
+  };
+  const h = harness({ failureStorage, utility: options => {
+    if (options.systemPrompt !== EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { noMaterialChange: true } };
+    if (fail) throw new Error('可选存储不可写时的提取失败');
+    return { jsonData: { summary: '随后成功保存。' } };
+  } });
+  await h.runtime.start();
+  const floorId = h.runtime.getState().floors[0].floorId;
+  await h.runtime.extractFloor(floorId, { analyzeState: false });
+  assert.match(h.runtime.getState().floors[0].error, /连续失败 1 次.*可选存储不可写时的提取失败/);
+  assert.deepEqual(calls, ['get', 'set']);
+  fail = false;
+  await h.runtime.extractFloor(floorId, { analyzeState: false });
+  assert.equal(h.runtime.getState().floors[0].status, 'ready');
+  assert.equal(h.runtime.getState().floors[0].error, null);
+  assert.deepEqual(calls, ['get', 'set', 'remove']);
 });
 
 test('捕获 A/B/C 补 B 期间另一实例完成新 D，仍按捕获楼 ID 补完 B 的 CSE', async () => {

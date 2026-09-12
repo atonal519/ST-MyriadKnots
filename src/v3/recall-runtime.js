@@ -6,6 +6,7 @@ import { selectRecallWithLlm } from './recall-llm-selector.js';
 import { selectAssistantMessage } from './foundation-domain.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
+import { PREQUEL_METADATA_KEY, PREQUEL_PROMPT_SLOT, selectPrequel } from './recall-prequel.js';
 
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
@@ -26,6 +27,8 @@ const clean = (value, maximum = 500) => sanitizeSensitiveText(String(value ?? ''
 const clone = value => structuredClone(value);
 const hashText = async value => `sha256:${await sha256(String(value ?? ''))}`;
 const currentChatId = snapshot => String(snapshot?.context?.chatMetadata?.qianqianjie?.chatId ?? '').trim();
+const currentHostChatId = snapshot => String(snapshot?.chatId ?? snapshot?.context?.chatId ?? snapshot?.context?.getCurrentChatId?.() ?? '').trim();
+const currentPrequelText = snapshot => typeof snapshot?.context?.chatMetadata?.[PREQUEL_METADATA_KEY] === 'string' ? snapshot.context.chatMetadata[PREQUEL_METADATA_KEY] : '';
 const isPlayableUser = message => message && message.is_user === true && message.is_system !== true && typeof message.mes === 'string' && message.mes.trim();
 const FINAL_REASONS = new Set(['chatChanged', 'userChanged', 'narrativeChanged', 'selectedRefsChanged', 'sourceStale', 'sourceUnavailable', 'stopped', 'superseded', 'disabled']);
 
@@ -561,7 +564,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 recall host adapter 无效');
   if (typeof fingerprint !== 'function') throw new TypeError('V3 recall fingerprint 无效');
-  let epoch = 0, generationSerial = 0, stoppedEndDebt = 0, active = null, slotOwner = null, lastRecall = null, lastError = null, lastRecallBinding = null, enabledOverride = null;
+  let epoch = 0, generationSerial = 0, stoppedEndDebt = 0, active = null, slotOwner = null, prequelSlotActive = false, lastRecall = null, lastPrequel = null, lastError = null, lastRecallBinding = null, enabledOverride = null;
   const subscribers = new Set(), generationQueue = [];
   let sessionReceipt = null;
   const enabled = () => { try { return enabledOverride ?? ((typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true); } catch { return false; } };
@@ -619,18 +622,24 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     return sourceReader({ store, now, hostSnapshot: snapshot, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin(), identityProjection: identityProjection?.data ?? identityProjection });
   }
   const notify = () => { const state = getState(); for (const listener of subscribers) { try { listener(state); } catch { /* listener isolation */ } } return state; };
-  const prompt = (value, owner = null, checkedContext = null) => {
+  const promptSlot = (slot, value, owner = null, checkedContext = null) => {
     const context = checkedContext ?? hostAdapter.snapshot().context;
     const setter = context?.setExtensionPrompt;
     if (typeof setter !== 'function') throw Object.assign(new Error('宿主不支持 setExtensionPrompt。'), { code: 'V3_RECALL_PROMPT_UNAVAILABLE' });
     const position = context.constants?.promptTypes?.IN_CHAT ?? 1;
     const role = context.constants?.promptRoles?.SYSTEM ?? 0;
-    setter(RECALL_PROMPT_SLOT, String(value ?? ''), position, 1, false, role);
-    slotOwner = value ? owner : null;
+    setter(slot, String(value ?? ''), position, 1, false, role);
+    if (slot === PREQUEL_PROMPT_SLOT) prequelSlotActive = Boolean(value);
+    if (value) slotOwner = owner;
   };
+  const prompt = (value, owner = null, checkedContext = null) => promptSlot(RECALL_PROMPT_SLOT, value, owner, checkedContext);
+  const promptPrequel = (value, owner = null, checkedContext = null) => promptSlot(PREQUEL_PROMPT_SLOT, value, owner, checkedContext);
   const clearSlot = owner => {
     if (owner !== undefined && slotOwner !== null && slotOwner !== owner) return false;
-    try { prompt('', null); return true; }
+    try {
+      const context = hostAdapter.snapshot().context;
+      prompt('', null, context); if (prequelSlotActive) promptPrequel('', null, context); slotOwner = null; return true;
+    }
     catch (error) { logger?.warn?.('[qianqianjie] V3 recall prompt cleanup failed', { code: error?.code ?? error?.name ?? 'V3_RECALL_CLEAR_FAILED' }); return false; }
   };
   const sessionKey = ({ source, userIndex, userFingerprint, queryFingerprint }) => [source.chatId, source.narrativeGeneration, source.headCheckpointId, source.rootRevision,
@@ -652,9 +661,82 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       recallStatus: active ? 'running' : lastRecall?.status ?? (lastError ? 'error' : 'idle'),
       activeRecall: active ? Object.freeze({ token: active.token, generationType: active.type, phase: active.phase, chatId: active.chatId ?? null, userMessageIndex: active.user?.index ?? null }) : null,
       lastRecall,
+      lastPrequel,
       lastRecallBinding: lastRecallBinding ? Object.freeze({ chatId: lastRecallBinding.chatId, userMessageIndex: lastRecallBinding.userMessageIndex }) : null,
       lastRecallError: lastError,
     });
+  }
+
+  function getPrequel() {
+    const snapshot = hostAdapter.snapshot();
+    return Object.freeze({ hostChatId: currentHostChatId(snapshot) || null, text: currentPrequelText(snapshot) });
+  }
+
+  async function savePrequel(value) {
+    const text = String(value ?? '');
+    const snapshot = hostAdapter.snapshot();
+    const hostChatId = currentHostChatId(snapshot);
+    const context = snapshot.context;
+    if (!hostChatId) throw Object.assign(new Error('请先打开一个可保存的聊天。'), { code: 'V3_PREQUEL_CHAT_UNAVAILABLE' });
+    if (typeof context?.saveChatMetadata !== 'function' && typeof context?.saveMetadata !== 'function') throw Object.assign(new Error('宿主不支持聊天元数据保存。'), { code: 'V3_PREQUEL_SAVE_UNAVAILABLE' });
+    const previousMetadata = context.chatMetadata;
+    const metadata = previousMetadata && typeof previousMetadata === 'object' && !Array.isArray(previousMetadata) ? previousMetadata : {};
+    const hadPrevious = Object.hasOwn(metadata, PREQUEL_METADATA_KEY);
+    const previous = metadata[PREQUEL_METADATA_KEY];
+    context.chatMetadata = metadata;
+    if (text.trim()) metadata[PREQUEL_METADATA_KEY] = text;
+    else delete metadata[PREQUEL_METADATA_KEY];
+    try {
+      if (typeof context.saveChatMetadata === 'function') {
+        const saved = await context.saveChatMetadata();
+        if (saved !== true) throw Object.assign(new Error('聊天元数据未能持久化。'), { code: 'V3_PREQUEL_SAVE_FAILED' });
+      } else await context.saveMetadata();
+    } catch (error) {
+      if (context.chatMetadata === metadata) {
+        if (hadPrevious) metadata[PREQUEL_METADATA_KEY] = previous;
+        else delete metadata[PREQUEL_METADATA_KEY];
+        if (previousMetadata !== metadata) context.chatMetadata = previousMetadata;
+      }
+      throw error;
+    }
+    invalidate('prequelSaved');
+    return Object.freeze({ hostChatId, text: text.trim() ? text : '' });
+  }
+
+  const prequelState = (operation, { error = null } = {}) => {
+    const selection = operation?.prequelSelection;
+    if (!selection?.injectionText && !error) return null;
+    return Object.freeze({
+      status: error ? 'error' : 'ready',
+      hostChatId: operation.hostChatId || null,
+      userMessageIndex: operation.user?.index ?? null,
+      generationType: operation.type,
+      injectionText: error ? '' : selection.injectionText,
+      fragmentIndexes: Object.freeze(error ? [] : [...selection.fragmentIndexes]),
+      estimatedCharacters: error ? 0 : selection.estimatedCharacters,
+      estimatedTokens: error ? 0 : selection.estimatedTokens,
+      characterBudget: selection?.characterBudget ?? 0,
+      tokenBudget: selection?.tokenBudget ?? 0,
+      error,
+      createdAt: nowIso(now),
+    });
+  };
+
+  function commitPrequelIfCurrent(operation) {
+    if (!operation?.prequelSelection?.injectionText) return { ok: true, committed: false, snapshot: null };
+    if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };
+    const snapshot = hostAdapter.snapshot();
+    const user = latestUser(snapshot);
+    if (currentHostChatId(snapshot) !== operation.hostChatId) return { ok: false, reason: 'chatChanged' };
+    if (user?.index !== operation.user.index || user.message !== operation.user.message || user.message.mes !== operation.userText) return { ok: false, reason: 'userChanged' };
+    if (liveRecallFrameKey(snapshot) !== operation.liveFrameKey) return { ok: false, reason: 'narrativeChanged' };
+    try { promptPrequel(operation.prequelSelection.injectionText, operation.token, snapshot.context); return { ok: true, committed: true, snapshot, user }; }
+    catch (error) {
+      const safe = Object.freeze({ code: clean(error?.code ?? error?.name ?? 'V3_PREQUEL_PROMPT_FAILED', 120), message: clean(error?.message ?? '前情注入失败，正文继续生成。', 500) });
+      lastPrequel = prequelState(operation, { error: safe });
+      logger?.warn?.('[qianqianjie] V3 prequel prompt failed open', { code: safe.code });
+      return { ok: true, committed: false, snapshot, user };
+    }
   }
 
   async function persistReceipt(snapshot, user, receipt) {
@@ -739,6 +821,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const selectedSourcesCurrent = selectedSourceGuardsCurrent(selectedSourceGuards, source.chatId, after);
     const current = operation.token === epoch
       && !operation.controller.signal.aborted
+      && currentHostChatId(after) === operation.hostChatId
       && currentChatId(after) === source.chatId
       && afterUser?.index === userIndex
       && afterUser.message === hostGuard.userMessage
@@ -755,6 +838,14 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       return { ok: false, reason: 'narrativeChanged' };
     }
     if (injectionText) prompt(injectionText, operation.token, after.context);
+    if (operation.prequelSelection?.injectionText) {
+      try { promptPrequel(operation.prequelSelection.injectionText, operation.token, after.context); operation.prequelCommitted = true; }
+      catch (error) {
+        const safe = Object.freeze({ code: clean(error?.code ?? error?.name ?? 'V3_PREQUEL_PROMPT_FAILED', 120), message: clean(error?.message ?? '前情注入失败，正文继续生成。', 500) });
+        lastPrequel = prequelState(operation, { error: safe });
+        logger?.warn?.('[qianqianjie] V3 prequel prompt failed open', { code: safe.code });
+      }
+    }
     return { ok: true, snapshot: after, user: afterUser };
   }
 
@@ -766,7 +857,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const lifecycle = generationQueue.find(value => value.token === null && value.type === type);
     if (lifecycle) lifecycle.token = token;
     const operation = { token, type, phase: 'input', controller: new AbortController(), started: Date.now() };
-    lastRecall = null; lastRecallBinding = null;
+    lastRecall = null; lastPrequel = null; lastRecallBinding = null;
     active = operation; lastError = null; notify();
     const timings = {};
     const stopForFinalSafety = reason => {
@@ -784,11 +875,14 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (!user) return finishSkipped(operation, 'emptyUserInput', timings);
       operation.user = user;
       operation.chatId = currentChatId(before);
+      operation.hostChatId = currentHostChatId(before);
       operation.userText = user.message.mes;
       operation.liveFrameKey = liveRecallFrameKey(before);
       const sanitizerSnapshot = currentSanitizerOptions();
       const coreInput = Array.isArray(coreChat) ? coreChat : [];
       const queryContext = queryBuilder({ coreChat: coreInput, assistantTurns: 1 });
+      operation.prequelSourceText = currentPrequelText(before);
+      operation.prequelSelection = selectPrequel({ text: operation.prequelSourceText, queryContext, contextSize });
       const coreBodyWitness = await captureCoreBodyWitness(coreInput, sanitizerSnapshot, fingerprint);
       operation.coreBodyWitness = coreBodyWitness;
       operation.sanitizerOptions = sanitizerSnapshot;
@@ -810,14 +904,20 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         const reason = source.status === 'timeout' ? 'memoryPreparationTimeout'
           : source.sourceReadAttempts?.exitPoint === 'memoryPreparationFailed' ? 'memoryPreparationFailed'
             : source.status === 'stale' ? 'sourceStale' : 'sourceUnavailable';
+        const prequelCommit = commitPrequelIfCurrent(operation);
+        if (!prequelCommit.ok) return finishStale(operation, timings, prequelCommit.reason);
+        operation.prequelCommitted = prequelCommit.committed;
         if (source.status !== 'uninitialized') {
-          try { notifyUser?.({ kind: 'warning', text: `${source.status === 'timeout' ? '当前聊天记忆在 5 秒内未准备完成' : '当前聊天记忆暂时无法读取'}，本轮不注入记忆，正文继续生成。${source.error ? ` ${source.error}` : ''}` }); } catch { /* notification must not affect recall */ }
+          try { notifyUser?.({ kind: 'warning', text: `${source.status === 'timeout' ? '当前聊天记忆在 5 秒内未准备完成' : '当前聊天记忆暂时无法读取'}，本轮不注入普通记忆，正文继续生成。${source.error ? ` ${source.error}` : ''}` }); } catch { /* notification must not affect recall */ }
         }
         return finishSkipped(operation, reason, timings);
       }
       const partialReasons = readinessReasons(source);
       if (source.readiness?.status === 'unknown' && source.readiness.hostConfirmed !== true) {
         try { notifyUser?.({ kind: 'warning', text: '当前聊天记忆与正文的对应关系尚未确认，本轮不注入无法核实归属的记忆，正文继续生成。' }); } catch { /* notification must not affect recall */ }
+        const prequelCommit = commitPrequelIfCurrent(operation);
+        if (!prequelCommit.ok) return finishStale(operation, timings, prequelCommit.reason);
+        operation.prequelCommitted = prequelCommit.committed;
         return finishSkipped(operation, partialReasons.length ? partialReasons : ['memoryNotReady', 'coverageUnconfirmed'], timings);
       }
       if (partialReasons.length) {
@@ -826,9 +926,12 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       const projection = source.identityProjection ?? {};
       const hasIdentityProjection = Object.keys(projection.identityRedirectsByEntityId ?? {}).length > 0
         || (projection.deletedEntityIds ?? []).length > 0;
-      const queryFingerprint = hasIdentityProjection
-        ? await fingerprint(JSON.stringify([baseQueryFingerprint, projection]))
+      const prequelQueryFingerprint = operation.prequelSelection.injectionText
+        ? await fingerprint(JSON.stringify([baseQueryFingerprint, operation.prequelSelection.injectionText, operation.prequelSelection.estimatedTokens, operation.prequelSelection.estimatedCharacters]))
         : baseQueryFingerprint;
+      const queryFingerprint = hasIdentityProjection
+        ? await fingerprint(JSON.stringify([prequelQueryFingerprint, projection]))
+        : prequelQueryFingerprint;
       const afterSource = hostAdapter.snapshot();
       const afterUser = latestUser(afterSource);
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
@@ -853,12 +956,14 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
           timings.totalMs = Date.now() - operation.started;
           const displayedCandidate = partialReasons.length ? { ...candidate, skipReasons: [...new Set([...(candidate.skipReasons ?? []), ...partialReasons])] } : candidate;
-          lastRecall = stateFromReceipt(displayedCandidate, { generationType: type, timings }); bindLastRecall(committed.snapshot, committed.user); lastError = null; active = null; notify(); return getState();
+          lastRecall = stateFromReceipt(displayedCandidate, { generationType: type, timings });
+          if (operation.prequelCommitted) lastPrequel = prequelState(operation);
+          bindLastRecall(committed.snapshot, committed.user); lastError = null; active = null; notify(); return getState();
         }
       }
       operation.phase = 'selecting'; notify();
       const selectorStarted = Date.now();
-      const selection = await selectionRunner({ source, queryContext, contextSize, signal: operation.controller.signal });
+      const selection = await selectionRunner({ source, queryContext, contextSize, signal: operation.controller.signal, reservedTokens: operation.prequelSelection.estimatedTokens, reservedCharacters: operation.prequelSelection.estimatedCharacters });
       timings.selectorMs = Date.now() - selectorStarted;
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       const receiptBase = {
@@ -946,14 +1051,19 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       timings.totalMs = Date.now() - operation.started;
       lastRecall = stateFromReceipt(receipt, { generationType: type, reusedReceipt: false, timings });
+      if (operation.prequelCommitted) lastPrequel = prequelState(operation);
       bindLastRecall(committed.snapshot, committed.user);
       lastError = null; active = null; notify(); return getState();
     } catch (error) {
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       clearSlot(token);
+      const prequelCommit = commitPrequelIfCurrent(operation);
+      if (!prequelCommit.ok) return finishStale(operation, timings, prequelCommit.reason);
+      operation.prequelCommitted = prequelCommit.committed;
       const safe = Object.freeze({ code: clean(error?.code ?? error?.name ?? 'V3_RECALL_FAILED', 120), message: clean(error?.message ?? '召回失败，已安全跳过。', 500) });
       lastError = safe;
       lastRecall = Object.freeze({ status: 'error', userMessageIndex: null, generationType: type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings, totalMs: Date.now() - operation.started }), skipReasons: Object.freeze(['error']), error: safe, createdAt: nowIso(now) });
+      if (operation.prequelCommitted) lastPrequel = prequelState(operation);
       bindOperationRecall(operation);
       try { notifyUser?.({ kind: 'warning', text: `记忆召回暂时失败，本轮不注入记忆，正文继续生成。${safe.message ? ` ${safe.message}` : ''}` }); } catch { /* notification must not affect recall */ }
       active = null; logger?.warn?.('[qianqianjie] V3 recall failed open', { code: safe.code }); notify(); return getState();
@@ -965,6 +1075,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     timings.totalMs = Date.now() - operation.started;
     const reasons = Array.isArray(reason) ? reason : [reason];
     lastRecall = Object.freeze({ status: 'skipped', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings }), skipReasons: Object.freeze([...reasons]), error: null, createdAt: nowIso(now) });
+    if (operation.prequelCommitted) lastPrequel = prequelState(operation);
     bindOperationRecall(operation);
     active = null; notify(); return getState();
   }
@@ -973,7 +1084,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (active === operation) active = null;
     if (operation.token === epoch) {
       clearSlot(operation.token);
-      lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings, totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([FINAL_REASONS.has(reason) ? reason : 'narrativeChanged']), error: null, createdAt: nowIso(now) });
+      lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings, totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([FINAL_REASONS.has(reason) ? reason : 'narrativeChanged']), error: null, createdAt: nowIso(now) }); lastPrequel = null;
       bindOperationRecall(operation);
       notify();
     }
@@ -982,7 +1093,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
 
   function invalidate(reason = 'invalidated') {
     epoch += 1; active?.controller.abort(FINAL_REASONS.has(reason) ? reason : 'superseded'); active = null; sessionReceipt = null; generationQueue.length = 0; stoppedEndDebt = 0; clearSlot();
-    lastRecall = null; lastRecallBinding = null; lastError = null; notify();
+    lastRecall = null; lastPrequel = null; lastRecallBinding = null; lastError = null; notify();
   }
 
   function onGenerationStarted(type, _params, dryRun) {
@@ -999,7 +1110,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     active.controller.abort(reason);
     active = null;
     if (slotOwner === generation.token) clearSlot(generation.token);
-    lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([reason]), error: null, createdAt: nowIso(now) });
+    lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([reason]), error: null, createdAt: nowIso(now) }); lastPrequel = null;
     bindOperationRecall(operation);
     notify();
     return true;
@@ -1105,6 +1216,6 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
   }
 
   async function setEnabled(value) { enabledOverride = value === true; if (!enabledOverride) invalidate('disabled'); return getState(); }
-  function clearCurrent() { clearSlot(); lastRecall = null; lastRecallBinding = null; lastError = null; notify(); return getState(); }
-  return Object.freeze({ intercept, bind, setEnabled, clearCurrent, restorePersistedReceipt, getState, invalidate, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
+  function clearCurrent() { clearSlot(); lastRecall = null; lastPrequel = null; lastRecallBinding = null; lastError = null; notify(); return getState(); }
+  return Object.freeze({ intercept, bind, setEnabled, clearCurrent, restorePersistedReceipt, getPrequel, savePrequel, getState, invalidate, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

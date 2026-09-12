@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { formatChronologyAnchor, projectRecallSource, readRecallSource } from '../src/v3/recall-source.js';
-import { buildRecallCseCandidatePool, buildRecallHistoryCandidatePool, buildRecallQueryContext, formatRecallInjection, selectRecall } from '../src/v3/recall-selector.js';
+import { buildRecallCseCandidatePool, buildRecallHistoryCandidatePool, buildRecallQueryContext, estimateRecallTokens, formatRecallInjection, recallBudget, selectRecall } from '../src/v3/recall-selector.js';
 import { selectRecallWithLlm } from '../src/v3/recall-llm-selector.js';
 import { createV3RecallRuntime, projectHistoricalRecallReceipt, RECALL_PROMPT_SLOT, RECALL_RECEIPT_KEY, RECALL_RECEIPT_SCHEMA_VERSION } from '../src/v3/recall-runtime.js';
+import { PREQUEL_PROMPT_SLOT } from '../src/v3/recall-prequel.js';
 import { sha256 } from '../src/identity.js';
 import { assessMemoryCoverageFromHost } from '../src/v3/memory-coverage.js';
 import { scanAssistantCandidates } from '../src/v3/foundation-domain.js';
@@ -530,6 +531,23 @@ test('近期摘要作为连续叙事单元，不再重复注入同楼碎片', ()
   assert.deepEqual(items.map(value => value.kind), ['summary']);
   assert.match(result.injectionText, /叙事回顾/);
   assert.match(result.injectionText, /窗外同时下起大雨/u);
+});
+
+test('远期摘要只与同楼同文事实去重，同文不同楼与空摘要边界保持独立', () => {
+  const memories = Array.from({ length: 10 }, (_, index) => recallMemory(index + 1, { summary: index >= 6 ? `近期接续 ${index + 1}` : '' }));
+  memories[0] = recallMemory(1, {
+    summary: '蓝铜账本',
+    events: [{ title: '蓝铜', description: '账本', candidateStatus: 'accepted' }],
+  });
+  memories[1] = recallMemory(2, { summary: '蓝铜账本' });
+  memories[2] = recallMemory(3, { summary: '', events: [{ title: '蓝铜', description: '账本', candidateStatus: 'accepted' }] });
+  const pool = buildRecallHistoryCandidatePool({
+    source: selectorSource({ memories }),
+    queryContext: { text: '蓝铜账本', latestUserText: '蓝铜账本', messageCount: 1 },
+  });
+  assert.equal(pool.candidates.some(candidate => candidate.value.floorId === 'floor-1' && candidate.value.kind === 'summary'), false, '同楼同文事实应覆盖摘要');
+  assert.equal(pool.candidates.some(candidate => candidate.value.floorId === 'floor-2' && candidate.value.kind === 'summary'), true, '不同楼的同文事实不能误删摘要');
+  assert.equal(pool.candidates.some(candidate => candidate.value.floorId === 'floor-3' && candidate.value.kind === 'summary'), false, '空摘要仍不产生候选');
 });
 
 test('历史与状态共享字符预算，人物材料受二十四项安全上限', () => {
@@ -1517,13 +1535,14 @@ function cseLaggingReachable(removeDeltaId = 'delta-remove') {
   };
 }
 
-function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaultSelector = false, generateUtilityTask, queryBuilder = buildRecallQueryContext, saveChat = true, reachableReader, rootReader, prepareMemory, preparationTimeoutMs, snapshotHook, fingerprint, memoryStatus, realtimeOrigin, notifyUser, identityProjectionProvider, pluginVersion = TEST_PLUGIN_VERSION } = {}) {
+function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaultSelector = false, generateUtilityTask, queryBuilder = buildRecallQueryContext, saveChat = true, reachableReader, rootReader, prepareMemory, preparationTimeoutMs, snapshotHook, fingerprint, memoryStatus, realtimeOrigin, notifyUser, identityProjectionProvider, pluginVersion = TEST_PLUGIN_VERSION, prequel = null } = {}) {
   const prompts = [];
   const handlers = new Map();
   const userMessage = { is_user: true, is_system: false, mes: '阿裴，我们回钟楼赴约。' };
   const chat = [{ is_user: false, is_system: false, mes: '街上已经安静。' }, userMessage];
   const context = {
-    chatMetadata: { qianqianjie: { chatId: CHAT } },
+    ...(prequel !== null ? { chatId: 'host-chat-a' } : {}),
+    chatMetadata: { qianqianjie: { chatId: CHAT }, ...(prequel !== null ? { qianqianjiePrequel: prequel } : {}) },
     constants: { promptTypes: { IN_CHAT: 23 }, promptRoles: { SYSTEM: 47 } },
     setExtensionPrompt(...args) { prompts.push(args); },
   };
@@ -1566,6 +1585,65 @@ function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaul
   });
   return { runtime, prompts, handlers, userMessage, chat, context, source, contextWrappers, setSnapshotHook(value) { currentSnapshotHook = value; }, get saves() { return saves; }, get snapshots() { return snapshots; } };
 }
+
+const latestPromptValue = (prompts, slot) => prompts.filter(call => call[0] === slot).at(-1)?.[1];
+
+test('ready runtime 将实际前情预算传给 LLM selector，双槽合计不超过原总预算且 stop/disable 同步清理', async () => {
+  let selectorInput = null;
+  const prequel = `${'钟楼蓝铜钥匙的旧事。'.repeat(300)}最后仍约定在钟楼见面。`;
+  const harness = createRuntimeHarness({
+    prequel,
+    selector: async input => {
+      selectorInput = input;
+      return selectRecallWithLlm({
+        ...input,
+        generateUtilityTask: async () => ({ jsonData: { history_exclude_keys: [], state_exclude_keys: [] }, taskMetadata: { finishReason: 'stop' } }),
+      });
+    },
+  });
+  let state = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  assert.equal(state.lastRecall.status, 'ready');
+  assert.equal(state.lastPrequel.status, 'ready');
+  assert.ok(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT));
+  assert.ok(latestPromptValue(harness.prompts, PREQUEL_PROMPT_SLOT));
+  assert.equal(selectorInput.reservedCharacters, state.lastPrequel.estimatedCharacters);
+  assert.equal(selectorInput.reservedTokens, state.lastPrequel.estimatedTokens);
+  const budget = recallBudget(12000);
+  assert.ok(state.lastRecall.injectionText.length + state.lastPrequel.estimatedCharacters <= budget.totalCharacters);
+  assert.ok(estimateRecallTokens(state.lastRecall.injectionText) + state.lastPrequel.estimatedTokens <= budget.totalTokens);
+  assert.equal(state.lastRecall.stages.estimatedTokenBudget, budget.totalTokens - state.lastPrequel.estimatedTokens);
+
+  harness.handlers.get('generation-stopped')();
+  assert.equal(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT), '');
+  assert.equal(latestPromptValue(harness.prompts, PREQUEL_PROMPT_SLOT), '');
+
+  await harness.runtime.setEnabled(true);
+  state = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  assert.equal(state.lastRecall.status, 'ready');
+  assert.ok(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT));
+  assert.ok(latestPromptValue(harness.prompts, PREQUEL_PROMPT_SLOT));
+  await harness.runtime.setEnabled(false);
+  assert.equal(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT), '');
+  assert.equal(latestPromptValue(harness.prompts, PREQUEL_PROMPT_SLOT), '');
+});
+
+test('普通槽已写入后的封签异常会先清两槽，再仅恢复前情并把普通展示归零', async () => {
+  let harness;
+  const fingerprint = async value => {
+    if (harness?.prompts.some(call => call[0] === RECALL_PROMPT_SLOT && call[1])) throw Object.assign(new Error('模拟封签失败'), { code: 'TEST_RECEIPT_SEAL_FAILED' });
+    return fingerprintText(value);
+  };
+  harness = createRuntimeHarness({ prequel: '裴晚生曾把蓝铜钥匙藏在钟楼。', fingerprint });
+  const state = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  assert.ok(harness.prompts.some(call => call[0] === RECALL_PROMPT_SLOT && call[1]), '异常必须发生在普通槽实际写入以后');
+  assert.equal(state.lastRecall.status, 'error');
+  assert.equal(state.lastRecall.injectionText, '');
+  assert.equal(state.lastRecall.stages, null);
+  assert.equal(state.lastPrequel.status, 'ready');
+  assert.match(state.lastPrequel.injectionText, /蓝铜钥匙/);
+  assert.equal(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT), '');
+  assert.match(latestPromptValue(harness.prompts, PREQUEL_PROMPT_SLOT), /蓝铜钥匙/);
+});
 
 test('coreChat clone 只控制严格正文去重；无宿主可见性投影时不得猜测排除摘要', async () => {
   const uniqueSource = await runtimeSourceWithBodyRef();

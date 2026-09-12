@@ -157,7 +157,7 @@ function completionDetails(data) {
 
 export function extractCompletion(data) { return completionDetails(data).text; }
 
-function balancedObjects(text) {
+export function balancedObjects(text) {
   const candidates = []; let objectDepth = 0, arrayDepth = 0, start = -1, quoted = false, escaped = false, unclosed = false;
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index];
