@@ -57,10 +57,29 @@ export const gouhuaDialogCss = `
 .sp-dialog-input-error i{color:var(--sp-subtle);margin-right:3px}
 .sp-dialog-sheet-custom{max-height:calc(100dvh - 40px);overflow:hidden}
 .sp-dialog-custom{min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.qqj-merge-dialog{display:grid;min-width:0;gap:14px;padding:2px 0 1px;color:var(--sp-on-surface)}
+.qqj-merge-dialog-intro{min-width:0;margin:0;padding:9px 10px;border-left:2px solid var(--sp-divider);border-radius:6px;background:var(--sp-hover-bg);color:var(--sp-subtle);font-size:var(--sp-fs-75);line-height:1.6;overflow-wrap:anywhere}
+.qqj-merge-field{display:grid;min-width:0;gap:6px}
+.qqj-merge-field-title{color:var(--sp-subtle);font-size:var(--sp-fs-75);font-weight:600;line-height:1.4}
+.qqj-merge-select-host,.qqj-merge-dialog .qqj-inline-select{display:grid;min-width:0}
+.qqj-merge-dialog .qqj-inline-select-trigger{appearance:none;-webkit-appearance:none;display:flex;align-items:center;justify-content:space-between;gap:9px;width:100%;min-width:0;min-height:40px;margin:0;padding:8px 10px;border:1px solid var(--sp-divider);border-radius:8px;background:var(--sp-sheet-bg);color:var(--sp-on-surface);font:inherit;font-size:var(--sp-fs-85);line-height:1.45;text-align:left;text-transform:none;cursor:pointer}
+.qqj-merge-dialog .qqj-inline-select-trigger:hover{border-color:var(--sp-surface-high);background:var(--sp-hover-bg)}
+.qqj-merge-dialog .qqj-inline-select-trigger:focus-visible{outline:2px solid var(--sp-primary);outline-offset:1px}
+.qqj-merge-dialog .qqj-inline-select-value{min-width:0;white-space:normal;overflow-wrap:anywhere}
+.qqj-merge-dialog .qqj-inline-select-chevron{flex:0 0 auto;color:var(--sp-subtle);font-size:var(--sp-fs-95);line-height:1;transform:rotate(90deg);transition:transform .15s}
+.qqj-merge-dialog .qqj-inline-select.open>.qqj-inline-select-trigger .qqj-inline-select-chevron{transform:rotate(-90deg)}
+.qqj-merge-dialog .qqj-inline-select-options{display:grid;min-width:0;max-height:min(220px,36dvh);margin-top:4px;padding:3px;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;border:1px solid var(--sp-divider);border-radius:8px;background:var(--sp-sheet-bg)}
+.qqj-merge-dialog .qqj-inline-select-options[hidden]{display:none}
+.qqj-merge-dialog .qqj-inline-select-option{appearance:none;-webkit-appearance:none;display:block;width:100%;min-width:0;margin:0;padding:8px 9px;border:1px solid transparent;border-radius:6px;background:var(--sp-sheet-bg);color:var(--sp-on-surface);font:inherit;font-size:var(--sp-fs-83);line-height:1.45;text-align:left;text-transform:none;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
+.qqj-merge-dialog .qqj-inline-select-option:hover{background:var(--sp-hover-bg)}
+.qqj-merge-dialog .qqj-inline-select-option.active{border-color:var(--sp-primary);background:var(--sp-hover-bg);color:var(--sp-primary)}
+.qqj-merge-dialog .qqj-inline-select-option:focus-visible{outline:2px solid var(--sp-primary);outline-offset:-2px}
+.qqj-merge-dialog .qqj-inline-select-trigger:disabled,.qqj-merge-dialog .qqj-inline-select-option:disabled{opacity:.55;cursor:not-allowed}
 .qqj-avatar-crop-panel{display:grid;gap:12px;min-width:0}
 .qqj-avatar-crop-frame{position:relative;width:min(240px,100%);margin-inline:auto;aspect-ratio:var(--qqj-avatar-aspect,1);overflow:hidden;border:1px solid var(--sp-divider);border-radius:10px;background:var(--sp-surface-high);touch-action:none;cursor:move}
 .qqj-avatar-crop-image{position:absolute;max-width:none;max-height:none;user-select:none;pointer-events:none}
 .qqj-avatar-zoom{display:grid;grid-template-columns:auto minmax(0,240px);align-items:center;justify-content:center;gap:9px;color:var(--sp-subtle);font-size:var(--sp-fs-75)}
 .qqj-avatar-zoom input{min-width:0;accent-color:var(--sp-primary)}
+@media(max-width:390px){.qqj-merge-dialog{gap:12px}.qqj-merge-dialog .qqj-inline-select-options{max-height:min(190px,32dvh)}}
 @media(prefers-reduced-motion:reduce){.sp-root,.sp-root *{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 `;

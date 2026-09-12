@@ -9,7 +9,7 @@ import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
-export const RECALL_RECEIPT_SCHEMA_VERSION = 12;
+export const RECALL_RECEIPT_SCHEMA_VERSION = 13;
 export const RECALL_STRATEGY_VERSION = 'continuity-v8';
 
 const SUPPORTED_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -19,6 +19,7 @@ const MAX_RECEIPT_FLOORS = 48;
 const MAX_RECEIPT_STATES = 24;
 const MAX_RECEIPT_CSE_CHANGES = 24;
 const MAX_RECEIPT_STORYLINES = 4;
+const MAX_RECEIPT_STATE_PROGRESSIONS = 8;
 const MAX_RECEIPT_SKIP_REASONS = 32;
 const nowIso = now => { const value = now()?.toISOString?.() ?? String(now()); if (!Number.isFinite(Date.parse(value))) throw new TypeError('V3_RECALL_TIME_INVALID'); return value; };
 const clean = (value, maximum = 500) => sanitizeSensitiveText(String(value ?? '')).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
@@ -141,7 +142,9 @@ const legacyReceiptMaterial = receipt => [
   receipt.userMessageIndex, receipt.userContentFingerprint, receipt.queryFingerprint, receipt.generationType,
   receipt.selectedFloors, receipt.selectedStates, receipt.coverage, receipt.injectionText, receipt.stages, receipt.skipReasons, receipt.completionStatus, receipt.createdAt,
 ];
-const receiptMaterial = receipt => receipt.schemaVersion >= 12
+const receiptMaterial = receipt => receipt.schemaVersion >= 13
+  ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings, receipt.storylines, receipt.stateProgressions]
+  : receipt.schemaVersion >= 12
   ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings, receipt.storylines]
   : receipt.schemaVersion >= 10
   ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings]
@@ -260,6 +263,27 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     || new Set(receipt.storylines.map(value => value.storylineId)).size !== receipt.storylines.length
     || !receipt.selectedStates.every(value => receipt.storylines.some(line => line.storylineId === value.storylineId))
     || !receipt.selectedCseChanges.every(value => receipt.storylines.some(line => line.storylineId === value.storylineId)))) return false;
+  if (receipt.schemaVersion >= 13) {
+    const selectedStateKeys = new Set(receipt.selectedStates.map(value => `${value.stateId}|${value.subjectEntityId}|${value.sourceFloorId ?? ''}`));
+    const selectedEvidence = new Set([
+      ...receipt.selectedFloors.map(value => `history|${value.floorId}|${value.assistantSeq}`),
+      ...receipt.selectedStates.map(value => `state|${value.sourceFloorId ?? ''}|${value.sourceAssistantSeq ?? ''}`),
+      ...receipt.selectedCseChanges.map(value => `change|${value.floorId}|${value.assistantSeq}`),
+    ]);
+    if (!Array.isArray(receipt.stateProgressions) || receipt.stateProgressions.length > MAX_RECEIPT_STATE_PROGRESSIONS
+      || !receipt.stateProgressions.every(value => value && typeof value === 'object' && !Array.isArray(value)
+        && boundedString(value.subjectEntityId, 500) && boundedString(value.subject, 500)
+        && optionalBoundedString(value.towardEntityId, 500) && optionalBoundedString(value.toward, 500)
+        && boundedString(value.savedText, 4000) && ['private', 'observable', 'expressed', 'shared', 'authorial'].includes(value.visibility)
+        && boundedString(value.sourceStateId, 500) && optionalBoundedString(value.sourceFloorId, 500) && optionalPositiveInteger(value.sourceAssistantSeq)
+        && boundedString(value.timeBasis, 300) && boundedString(value.suggestion, 600)
+        && selectedStateKeys.has(`${value.sourceStateId}|${value.subjectEntityId}|${value.sourceFloorId ?? ''}`)
+        && Array.isArray(value.evidence) && value.evidence.length <= 6
+        && value.evidence.every(item => item && typeof item === 'object' && !Array.isArray(item)
+          && ['history', 'state', 'change'].includes(item.kind) && optionalBoundedString(item.floorId, 500)
+          && optionalPositiveInteger(item.assistantSeq)
+          && selectedEvidence.has(`${item.kind}|${item.floorId ?? ''}|${item.assistantSeq ?? ''}`)))) return false;
+  }
   if (receipt.coverage !== null && (typeof receipt.coverage !== 'object' || Array.isArray(receipt.coverage)
     || !['stableAiFloors', 'stableThroughAssistantSeq', 'rememberedAiFloors', 'cseThroughAssistantSeq'].every(key => nonNegativeInteger(receipt.coverage[key]))
     || typeof receipt.coverage.memoryComplete !== 'boolean' || typeof receipt.coverage.cseCurrent !== 'boolean'
@@ -270,7 +294,8 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     || (receipt.schemaVersion >= 9 && !['recentSummaryCount', 'distantHistoryItemCount', 'stateCount'].every(key => nonNegativeInteger(receipt.stages[key])))
     || (receipt.schemaVersion >= 10 && !['currentStateCount', 'cseChangeCount'].every(key => nonNegativeInteger(receipt.stages[key])))
     || (receipt.schemaVersion >= 11 && !['linkedHistoryItemCount', 'linkedCseChangeCount', 'budgetDroppedCount', 'finalInjectionItemCount'].every(key => nonNegativeInteger(receipt.stages[key])))
-    || (receipt.schemaVersion >= 12 && !['storylineCount', 'estimatedTokenCount', 'estimatedTokenBudget'].every(key => nonNegativeInteger(receipt.stages[key]))))) return false;
+    || (receipt.schemaVersion >= 12 && !['storylineCount', 'estimatedTokenCount', 'estimatedTokenBudget'].every(key => nonNegativeInteger(receipt.stages[key])))
+    || (receipt.schemaVersion >= 13 && !nonNegativeInteger(receipt.stages.stateProgressionCount)))) return false;
   return receipt.skipReasons.every(reason => boundedString(reason, 120));
 }
 
@@ -316,7 +341,7 @@ async function historicalSignedReceiptValid(receipt, { chatId, userIndex, userFi
   try {
     const snapshot = clone(receipt);
     if (!receiptShapeValid(snapshot, { historical: true })
-      || ![6, 7, 8, 9, 10, 11, RECALL_RECEIPT_SCHEMA_VERSION].includes(snapshot.schemaVersion)
+      || ![6, 7, 8, 9, 10, 11, 12, RECALL_RECEIPT_SCHEMA_VERSION].includes(snapshot.schemaVersion)
       || snapshot.chatId !== chatId
       || snapshot.userMessageIndex !== userIndex
       || snapshot.userContentFingerprint !== userFingerprint
@@ -337,6 +362,7 @@ function stateFromReceipt(receipt, { generationType = receipt.generationType, re
     selectedFloors: Object.freeze(clone(receipt.selectedFloors ?? [])),
     selectedStates: Object.freeze(clone(receipt.selectedStates ?? [])),
     selectedCseChanges: Object.freeze(clone(receipt.selectedCseChanges ?? [])),
+    stateProgressions: Object.freeze(clone(receipt.stateProgressions ?? [])),
     storylines: Object.freeze(clone(receipt.storylines ?? [])),
     selectorDiagnostic: receipt.selectorDiagnostic ? Object.freeze(clone(receipt.selectorDiagnostic)) : null,
     injectionText: receipt.injectionText,
@@ -368,6 +394,7 @@ function legacyStateFromReceipt(receipt, { chatId, userIndex }) {
     selectedFloors: Object.freeze(clone(selectedFloors)),
     selectedStates: Object.freeze(clone(selectedStates)),
     selectedCseChanges: Object.freeze([]),
+    stateProgressions: Object.freeze([]),
     storylines: Object.freeze([]),
     selectorDiagnostic: null,
     injectionText: receipt.injectionText,
@@ -390,7 +417,7 @@ export async function projectHistoricalRecallReceipt(message, { chatId, userMess
     || typeof fingerprint !== 'function') return null;
   const receipt = message.extra?.[RECALL_RECEIPT_KEY];
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return null;
-  if ([6, 7, 8, 9, 10, 11, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
+  if ([6, 7, 8, 9, 10, 11, 12, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
     const snapshot = await historicalSignedReceiptValid(receipt, {
       chatId: chatId.trim(),
       userIndex: userMessageIndex,
@@ -530,7 +557,7 @@ function coveredBodyGuardsCurrent(guards, snapshot, sanitizerOptions) {
   });
 }
 
-export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = 5000, realtimeOrigin = () => false, notifyUser = null, sourceReader = readRecallSource, selector = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), now = () => new Date(), pluginVersion, logger = console } = {}) {
+export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = 5000, realtimeOrigin = () => false, notifyUser = null, sourceReader = readRecallSource, selector = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 recall host adapter 无效');
   if (typeof fingerprint !== 'function') throw new TypeError('V3 recall fingerprint 无效');
@@ -557,6 +584,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     return ['memoryNotReady', 'historicalRebuildRequired'];
   };
   async function preparedSource(snapshot, sanitizerSnapshot, { fresh = false, operation = null } = {}) {
+    const identityProjection = typeof identityProjectionProvider === 'function' ? await identityProjectionProvider() : null;
     if (typeof prepareMemory === 'function') {
       let timer = null;
       let expired = false;
@@ -569,7 +597,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
             if (prepared?.status === 'ready' && prepared.reachable?.root) return { prepared, fallback: null };
             if (['disabled', 'stale'].includes(prepared?.status)) return { prepared, fallback: null };
             if (expired || (operation && (operation.token !== epoch || operation.controller.signal.aborted))) return { prepared, fallback: null };
-            const fallback = await sourceReader({ store, now, hostSnapshot: snapshot, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin() });
+            const fallback = await sourceReader({ store, now, hostSnapshot: snapshot, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin(), identityProjection: identityProjection?.data ?? identityProjection });
             return { prepared, fallback };
           }),
           new Promise(resolve => { timer = setTimeout(() => { expired = true; resolve(timeout); }, Math.max(1, Number(preparationTimeoutMs) || 5000)); }),
@@ -582,13 +610,13 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (outcome === timeout) return Object.freeze({ status: 'timeout', sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: 'memoryPreparationTimeout' }) });
       const { prepared, fallback } = outcome;
       if (prepared?.status === 'ready' && prepared.reachable?.root) {
-        return projectRecallSource(prepared.reachable, now, Object.freeze({ reachableReads: 0, exitPoint: 'validatedSnapshot' }), snapshot, sanitizerSnapshot, hasRealtimeOrigin());
+        return projectRecallSource(prepared.reachable, now, Object.freeze({ reachableReads: 0, exitPoint: 'validatedSnapshot' }), snapshot, sanitizerSnapshot, hasRealtimeOrigin(), identityProjection?.data ?? identityProjection);
       }
       if (fallback?.status === 'ready' || fallback?.status === 'stale') return fallback;
       const status = prepared?.status === 'error' ? 'unavailable' : prepared?.status ?? 'unavailable';
       return Object.freeze({ status, sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: 'memoryPreparation' }) });
     }
-    return sourceReader({ store, now, hostSnapshot: snapshot, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin() });
+    return sourceReader({ store, now, hostSnapshot: snapshot, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin(), identityProjection: identityProjection?.data ?? identityProjection });
   }
   const notify = () => { const state = getState(); for (const listener of subscribers) { try { listener(state); } catch { /* listener isolation */ } } return state; };
   const prompt = (value, owner = null, checkedContext = null) => {
@@ -605,7 +633,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     try { prompt('', null); return true; }
     catch (error) { logger?.warn?.('[qianqianjie] V3 recall prompt cleanup failed', { code: error?.code ?? error?.name ?? 'V3_RECALL_CLEAR_FAILED' }); return false; }
   };
-  const sessionKey = ({ source, userIndex, userFingerprint, queryFingerprint }) => [source.chatId, source.narrativeGeneration, source.headCheckpointId, source.rootRevision, userIndex, userFingerprint, queryFingerprint, source.bodyMatch?.fingerprint ?? ''].join('|');
+  const sessionKey = ({ source, userIndex, userFingerprint, queryFingerprint }) => [source.chatId, source.narrativeGeneration, source.headCheckpointId, source.rootRevision,
+    JSON.stringify(source.identityProjection ?? {}), userIndex, userFingerprint, queryFingerprint, source.bodyMatch?.fingerprint ?? ''].join('|');
 
   const bindLastRecall = (snapshot, user) => {
     lastRecallBinding = snapshot && user ? Object.freeze({ chatId: currentChatId(snapshot), userMessageIndex: user.index, message: user.message, text: user.message.mes }) : null;
@@ -767,7 +796,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       const hostGuard = { userMessage: user.message, userText: user.message.mes };
       if (!queryContext.latestUserText) return finishSkipped(operation, 'emptyUserInput', timings);
       const inputStarted = Date.now();
-      const [userFingerprint, queryFingerprint] = await Promise.all([fingerprint(user.message.mes), fingerprint(queryContext.text)]);
+      const [userFingerprint, baseQueryFingerprint] = await Promise.all([fingerprint(user.message.mes), fingerprint(queryContext.text)]);
       timings.inputMs = Date.now() - inputStarted;
       operation.phase = 'source'; notify();
       const sourceStarted = Date.now();
@@ -794,6 +823,12 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (partialReasons.length) {
         source = Object.freeze({ ...source, degradedReasons: Object.freeze([...new Set([...(source.degradedReasons ?? []), ...partialReasons])]) });
       }
+      const projection = source.identityProjection ?? {};
+      const hasIdentityProjection = Object.keys(projection.identityRedirectsByEntityId ?? {}).length > 0
+        || (projection.deletedEntityIds ?? []).length > 0;
+      const queryFingerprint = hasIdentityProjection
+        ? await fingerprint(JSON.stringify([baseQueryFingerprint, projection]))
+        : baseQueryFingerprint;
       const afterSource = hostAdapter.snapshot();
       const afterUser = latestUser(afterSource);
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
@@ -853,6 +888,13 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           before: value.before ? { stateId: value.before.stateId, sourceFloorId: value.before.sourceFloorId, sourceDeltaId: value.before.sourceDeltaId, text: value.before.text, visibility: value.before.visibility, reason: value.before.reason, origin: value.before.origin, towardEntityId: value.before.towardEntityId, sourceAssistantSeq: value.before.sourceAssistantSeq } : null,
           after: value.after ? { stateId: value.after.stateId, sourceFloorId: value.after.sourceFloorId, sourceDeltaId: value.after.sourceDeltaId, text: value.after.text, visibility: value.after.visibility, reason: value.after.reason, origin: value.after.origin, towardEntityId: value.after.towardEntityId, sourceAssistantSeq: value.after.sourceAssistantSeq } : null,
         })),
+        stateProgressions: (selection.stateProgressions ?? []).map(value => ({
+          subjectEntityId: value.subjectEntityId, subject: value.subject, towardEntityId: value.towardEntityId ?? null, toward: value.toward ?? null,
+          savedText: value.savedText, visibility: value.visibility, sourceStateId: value.sourceStateId,
+          sourceFloorId: value.sourceFloorId ?? null, sourceAssistantSeq: value.sourceAssistantSeq ?? null,
+          timeBasis: value.timeBasis, suggestion: value.suggestion,
+          evidence: (value.evidence ?? []).map(item => ({ kind: item.kind, floorId: item.floorId ?? null, assistantSeq: item.assistantSeq ?? null })),
+        })),
         storylines: (selection.storylines ?? []).map(value => ({ storylineId: value.storylineId, title: value.title, basis: value.basis })),
         selectorDiagnostic: selectorDiagnosticSnapshot(selection.selectorDiagnostic),
         coverage: clone(selection.coverage ?? source.coverage),
@@ -862,12 +904,13 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           stateCount: Number.isSafeInteger(selection.stages.stateCount) ? selection.stages.stateCount : selection.states.length,
           currentStateCount: Number.isSafeInteger(selection.stages.currentStateCount) ? selection.stages.currentStateCount : selection.states.length,
           cseChangeCount: Number.isSafeInteger(selection.stages.cseChangeCount) ? selection.stages.cseChangeCount : (selection.cseChanges ?? []).length,
+          stateProgressionCount: Number.isSafeInteger(selection.stages.stateProgressionCount) ? selection.stages.stateProgressionCount : (selection.stateProgressions ?? []).length,
           linkedHistoryItemCount: Number.isSafeInteger(selection.stages.linkedHistoryItemCount) ? selection.stages.linkedHistoryItemCount : 0,
           linkedCseChangeCount: Number.isSafeInteger(selection.stages.linkedCseChangeCount) ? selection.stages.linkedCseChangeCount : 0,
           budgetDroppedCount: Number.isSafeInteger(selection.stages.budgetDroppedCount) ? selection.stages.budgetDroppedCount : 0,
           finalInjectionItemCount: Number.isSafeInteger(selection.stages.finalInjectionItemCount)
             ? selection.stages.finalInjectionItemCount
-            : selection.floors.reduce((sum, floor) => sum + (floor.items?.length ?? 1), 0) + selection.states.length + (selection.cseChanges ?? []).length,
+            : selection.floors.reduce((sum, floor) => sum + (floor.items?.length ?? 1), 0) + selection.states.length + (selection.cseChanges ?? []).length + (selection.stateProgressions ?? []).length,
           storylineCount: Number.isSafeInteger(selection.stages.storylineCount) ? selection.stages.storylineCount : (selection.storylines ?? []).length,
           estimatedTokenCount: Number.isSafeInteger(selection.stages.estimatedTokenCount) ? selection.stages.estimatedTokenCount : 0,
           estimatedTokenBudget: Number.isSafeInteger(selection.stages.estimatedTokenBudget) ? selection.stages.estimatedTokenBudget : 0,
@@ -910,7 +953,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       clearSlot(token);
       const safe = Object.freeze({ code: clean(error?.code ?? error?.name ?? 'V3_RECALL_FAILED', 120), message: clean(error?.message ?? '召回失败，已安全跳过。', 500) });
       lastError = safe;
-      lastRecall = Object.freeze({ status: 'error', userMessageIndex: null, generationType: type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings, totalMs: Date.now() - operation.started }), skipReasons: Object.freeze(['error']), error: safe, createdAt: nowIso(now) });
+      lastRecall = Object.freeze({ status: 'error', userMessageIndex: null, generationType: type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings, totalMs: Date.now() - operation.started }), skipReasons: Object.freeze(['error']), error: safe, createdAt: nowIso(now) });
       bindOperationRecall(operation);
       try { notifyUser?.({ kind: 'warning', text: `记忆召回暂时失败，本轮不注入记忆，正文继续生成。${safe.message ? ` ${safe.message}` : ''}` }); } catch { /* notification must not affect recall */ }
       active = null; logger?.warn?.('[qianqianjie] V3 recall failed open', { code: safe.code }); notify(); return getState();
@@ -921,7 +964,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (operation.token !== epoch) return finishStale(operation, timings);
     timings.totalMs = Date.now() - operation.started;
     const reasons = Array.isArray(reason) ? reason : [reason];
-    lastRecall = Object.freeze({ status: 'skipped', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings }), skipReasons: Object.freeze([...reasons]), error: null, createdAt: nowIso(now) });
+    lastRecall = Object.freeze({ status: 'skipped', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings }), skipReasons: Object.freeze([...reasons]), error: null, createdAt: nowIso(now) });
     bindOperationRecall(operation);
     active = null; notify(); return getState();
   }
@@ -930,7 +973,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (active === operation) active = null;
     if (operation.token === epoch) {
       clearSlot(operation.token);
-      lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings, totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([FINAL_REASONS.has(reason) ? reason : 'narrativeChanged']), error: null, createdAt: nowIso(now) });
+      lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings, totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([FINAL_REASONS.has(reason) ? reason : 'narrativeChanged']), error: null, createdAt: nowIso(now) });
       bindOperationRecall(operation);
       notify();
     }
@@ -956,7 +999,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     active.controller.abort(reason);
     active = null;
     if (slotOwner === generation.token) clearSlot(generation.token);
-    lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([reason]), error: null, createdAt: nowIso(now) });
+    lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([reason]), error: null, createdAt: nowIso(now) });
     bindOperationRecall(operation);
     notify();
     return true;
@@ -1036,7 +1079,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       let receiptSnapshot = receipt.schemaVersion === RECALL_RECEIPT_SCHEMA_VERSION
         ? await persistedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint, pluginVersion }, fingerprint)
         : null;
-      if (!receiptSnapshot && [6, 7, 8, 9, 10, 11, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
+      if (!receiptSnapshot && [6, 7, 8, 9, 10, 11, 12, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
         const historical = await historicalSignedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint }, fingerprint);
         if (historical) receiptSnapshot = Object.freeze({ ...stateFromReceipt(historical, { restoredReceipt: true }), legacyReadOnly: true });
       }

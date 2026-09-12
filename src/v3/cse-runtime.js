@@ -1,7 +1,7 @@
 import { newIdentityUuid, sha256 } from '../identity.js';
 import { buildFoundationIndexes } from './foundation-runtime.js';
 import { createCheckpointInputFingerprints, deterministicUuid } from './foundation-domain.js';
-import { validateFoundationCheckpoint, validateFoundationRoot, validateFoundationRun } from './foundation-schema.js';
+import { validateFoundationCheckpoint, validateFoundationRoot, validateFoundationRun, V3_INDEX_LAYOUT_FLOOR_ORDER } from './foundation-schema.js';
 import { validateCseGraph } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 import {
@@ -9,7 +9,10 @@ import {
   createCseEnvelope, createManualCseCorrection, deriveCseTimeline, filterReachableDeltas, replayCurrentState, runCseRequest, selectTrackedSubjects, verifyCseBaselineFingerprint,
 } from './cse-engine.js';
 import { sanitizeDiagnosticValue, sanitizeSensitiveText } from './safe-metadata.js';
-import { buildEntityIdentityDirectory, entitiesThroughFloorIds, identityLabelKey } from './entity-identity.js';
+import {
+  buildEntityIdentityDirectory, entitiesThroughFloorIds, identityLabelKey, normalizeIdentityProjection,
+  projectCseStateIdentityReferences, projectFloorMemoryIdentityReferences, resolveIdentityEntityId,
+} from './entity-identity.js';
 import { captureCseRequestSources } from '../cse-source-selection.js';
 
 const emptyManifest = () => ({ floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] });
@@ -25,7 +28,7 @@ function currentUserInputFromMemory(memory) {
   return Object.freeze({ messages: Object.freeze(messages.map((message, sourceSnapshotIndex) => Object.freeze({ sourceSnapshotIndex, messageIndex: message.messageIndex, content: message.content }))) });
 }
 
-async function dependencySnapshot(value, floorId, entities, previousState, storyClockSignatureForFloor, coreUserEditedSubjectEntityIds = [], hostAdapter) {
+async function dependencySnapshot(value, floorId, entities, previousState, storyClockSignatureForFloor, coreUserEditedSubjectEntityIds = [], hostAdapter, identityProjection = {}) {
   const targetIndex = value?.floors?.findIndex(floor => floor.id === floorId) ?? -1;
   if (targetIndex < 0 || !value?.baseline) return null;
   const floors = value.floors.slice(0, targetIndex + 1);
@@ -35,7 +38,7 @@ async function dependencySnapshot(value, floorId, entities, previousState, story
     .map(memory => memory.id).sort());
   const deltas = filterReachableDeltas({ floors: value.floors, floorMemories: value.floorMemories ?? [], stateDeltas: value.stateDeltas ?? [] });
   const deltaByFloor = new Map(deltas.map(delta => [delta.floorId, delta.id]));
-  const identityDirectory = buildEntityIdentityDirectory({ entities, floorIds }).map(entry => ({
+  const identityDirectory = buildEntityIdentityDirectory({ entities, floorIds, identityProjection }).map(entry => ({
     entityId: entry.entityId,
     entityType: entry.entityType,
     specialRole: entry.specialRole,
@@ -53,6 +56,7 @@ async function dependencySnapshot(value, floorId, entities, previousState, story
     targetDeltaId: deltaByFloor.get(floorId) ?? null,
     previousStateFingerprint: previousState?.fingerprint ?? null,
     identityDirectory,
+    identityProjection,
     coreUserEditedSubjectEntityIds: [...coreUserEditedSubjectEntityIds].sort(),
   };
 }
@@ -64,9 +68,11 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
   if (typeof generateAnalysisTask !== 'function') throw new TypeError('V3 CSE analysis route 无效');
   if (typeof filterWorldInfoSources !== 'function') throw new TypeError('V3 CSE 世界书过滤器无效');
   let epoch = 0, active = null, reachable = null, replayed = null, lastFailure = null, replayDiagnostic = null;
+  let identityProjection = normalizeIdentityProjection();
   const subscribers = new Set();
   const enabled = () => { try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; } catch { return false; } };
   const notify = () => { const state = getState(); for (const listener of subscribers) { try { listener(state); } catch { /* listener isolation */ } } return state; };
+  const setIdentityProjection = value => { identityProjection = normalizeIdentityProjection(value); return notify(); };
 
   async function coreUserEditedSubjects(deltas) {
     const protectedIds = new Set();
@@ -106,8 +112,20 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       : null;
   }
 
+  const sameReachableRoot = (value, rootResult) => rootResult?.status === 'ready'
+    && rootResult.revision === value?.rootRevision
+    && rootResult.data?.chatId === value?.root?.chatId
+    && rootResult.data?.headCheckpointId === value?.root?.headCheckpointId
+    && rootResult.data?.narrativeGeneration === value?.root?.narrativeGeneration
+    && rootResult.data?.sourceSnapshotFingerprint === value?.root?.sourceSnapshotFingerprint;
+
   async function load(providedReachable = null) {
-    const value = providedReachable ?? await store.readReachable({ mode: 'runtime' });
+    let value = providedReachable;
+    if (!value && reachable && typeof store.readRoot === 'function') {
+      const rootResult = await store.readRoot();
+      if (sameReachableRoot(reachable, rootResult)) value = reachable;
+    }
+    value ??= await store.readReachable({ mode: 'runtime' });
     if (!['ready', 'needsReseal'].includes(value.status)) {
       if (value.status === 'uninitialized') { reachable = null; replayed = null; return notify(); }
       throw errorWith('V3_CSE_LOAD_FAILED', `CSE 图读取失败：${value.status}`);
@@ -119,7 +137,9 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
 
   function getState() {
     const floors = reachable?.floors ?? [];
-    const entities = new Map((reachable?.entities ?? []).map(entity => [entity.id, entity]));
+    const projectedState = projectCseStateIdentityReferences(replayed, identityProjection);
+    const entities = new Map(buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], identityProjection })
+      .map(entry => [entry.entityId, entry.entity]));
     const memoryByFloor = new Map((reachable?.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => [memory.floorId, memory]));
     const reachableDeltas = filterReachableDeltas({ floors, floorMemories: reachable?.floorMemories ?? [], stateDeltas: reachable?.stateDeltas ?? [] });
     const deltaByFloor = new Map(reachableDeltas.map(delta => [delta.floorId, delta]));
@@ -130,11 +150,20 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       visibility: item.visibility,
       reason: item.reason,
       origin: item.origin,
-      towardEntityId: item.towardEntityId ?? null,
-      towardDisplayName: entities.get(item.towardEntityId)?.displayName ?? null,
+      towardEntityId: item.towardEntityId ? resolveIdentityEntityId(item.towardEntityId, identityProjection) : null,
+      towardDisplayName: entities.get(resolveIdentityEntityId(item.towardEntityId, identityProjection))?.displayName ?? null,
       sourceFloorId: item.sourceFloorId ?? null,
       sourceAssistantSeq: floorSeq.get(item.sourceFloorId) ?? null,
     }) : null;
+    const groupedTimelineSubjects = subjects => {
+      const grouped = new Map();
+      for (const subject of subjects ?? []) {
+        const subjectEntityId = resolveIdentityEntityId(subject.subjectEntityId, identityProjection);
+        const current = grouped.get(subjectEntityId) ?? { subjectEntityId, items: [] };
+        current.items.push(...(subject.items ?? [])); grouped.set(subjectEntityId, current);
+      }
+      return [...grouped.values()];
+    };
     const cseFloors = floors.map(floor => {
       const memory = memoryByFloor.get(floor.id), delta = deltaByFloor.get(floor.id), timeline = timelineByFloor.get(floor.id);
       const running = active?.floorId === floor.id;
@@ -144,7 +173,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
         fixedChangesAvailable: Object.hasOwn(delta, 'fixedChanges'),
         noMaterialChange: timeline?.noMaterialChange ?? true,
         isolationSummary: timeline?.isolationSummary ?? null,
-        subjects: Object.freeze((timeline?.changes ?? []).map(subject => Object.freeze({
+        subjects: Object.freeze(groupedTimelineSubjects(timeline?.changes).map(subject => Object.freeze({
           subjectEntityId: subject.subjectEntityId,
           displayName: entities.get(subject.subjectEntityId)?.displayName ?? '未知人物',
           changes: Object.freeze(subject.items.map(item => Object.freeze({
@@ -156,7 +185,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
             after: historyItem(item.after),
           }))),
         }))),
-        endStateSubjects: Object.freeze((timeline?.endStateSubjects ?? []).filter(subject => ['core', 'adaptive', 'situational'].some(category => subject[category]?.length)).map(subject => Object.freeze({
+        endStateSubjects: Object.freeze((projectCseStateIdentityReferences({ subjects: timeline?.endStateSubjects ?? [] }, identityProjection)?.subjects ?? []).filter(subject => ['core', 'adaptive', 'situational'].some(category => subject[category]?.length)).map(subject => Object.freeze({
           subjectEntityId: subject.subjectEntityId,
           displayName: entities.get(subject.subjectEntityId)?.displayName ?? '未知人物',
           core: Object.freeze((subject.core ?? []).map(historyItem)),
@@ -166,7 +195,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       }) : null;
       return Object.freeze({ floorId: floor.id, floorMemoryId: delta?.floorMemoryId ?? memory?.id ?? null, status, deltaId: delta?.id ?? null, noMaterialChange: timeline?.noMaterialChange ?? false, record, error: failure?.message ?? null });
     });
-    const subjects = (replayed?.subjects ?? []).map(subject => ({
+    const subjects = (projectedState?.subjects ?? []).map(subject => ({
       subjectEntityId: subject.subjectEntityId,
       displayName: entities.get(subject.subjectEntityId)?.displayName ?? (subject.subjectEntityId === reachable?.baseline?.userPersona?.entityId ? reachable.baseline.userPersona.name : reachable?.baseline?.characterCard?.name) ?? '未知人物',
       core: subject.core.map(item => ({ ...item, sourceAssistantSeq: floorSeq.get(item.sourceFloorId) ?? null })),
@@ -174,16 +203,16 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       situational: subject.situational.map(item => ({ ...item, towardDisplayName: entities.get(item.towardEntityId)?.displayName ?? null, sourceAssistantSeq: floorSeq.get(item.sourceFloorId) ?? null })),
     }));
     const pendingCount = cseFloors.filter(item => item.status === 'pending').length;
-    const mainCharacterEntityId = reachable?.baseline?.characterCard?.entityId ?? null;
+    const mainCharacterEntityId = resolveIdentityEntityId(reachable?.baseline?.characterCard?.entityId, identityProjection) ?? null;
     const mainCharacterDisplayName = mainCharacterEntityId
       ? entities.get(mainCharacterEntityId)?.displayName ?? reachable?.baseline?.characterCard?.name ?? null
       : null;
     const anchorFloorIndex = floors.findIndex(floor => floor.id === reachableDeltas.at(-1)?.floorId);
     const anchorFloorIds = new Set(floors.slice(0, anchorFloorIndex + 1).map(floor => floor.id));
-    const cseTowardCandidates = buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], floorIds: anchorFloorIds })
+    const cseTowardCandidates = buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], floorIds: anchorFloorIds, identityProjection })
       .filter(entry => entry.entityType === 'person')
       .map(entry => Object.freeze({ entityId: entry.entityId, displayName: entry.displayName }));
-    return Object.freeze({ cseReady: reachable?.root?.capabilities?.cseReady === true, baselineId: reachable?.baseline?.id ?? null, mainCharacterEntityId, mainCharacterDisplayName, currentStateId: replayed?.id ?? null, currentStateFingerprint: replayed?.fingerprint ?? null, replayedCurrentState: replayed, cseTowardCandidates: Object.freeze(cseTowardCandidates), cseSubjects: Object.freeze(subjects), cseFloors: Object.freeze(cseFloors), csePendingCount: pendingCount, cseFailedCount: cseFloors.filter(item => item.status === 'failed').length, activeCse: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, lastCseError: lastFailure, cseReplayDiagnostic: replayDiagnostic, csePromptVersion: CSE_PROMPT_VERSION, cseCompilerVersion: CSE_COMPILER_VERSION });
+    return Object.freeze({ cseReady: reachable?.root?.capabilities?.cseReady === true, baselineId: reachable?.baseline?.id ?? null, mainCharacterEntityId, mainCharacterDisplayName, currentStateId: replayed?.id ?? null, currentStateFingerprint: replayed?.fingerprint ?? null, replayedCurrentState: projectedState, cseTowardCandidates: Object.freeze(cseTowardCandidates), cseSubjects: Object.freeze(subjects), cseFloors: Object.freeze(cseFloors), csePendingCount: pendingCount, cseFailedCount: cseFloors.filter(item => item.status === 'failed').length, activeCse: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, lastCseError: lastFailure, cseReplayDiagnostic: replayDiagnostic, csePromptVersion: CSE_PROMPT_VERSION, cseCompilerVersion: CSE_COMPILER_VERSION });
   }
 
   async function persist(records, signal) {
@@ -232,8 +261,8 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       if (winner.status === 'ready' && winner.baseline) return winner;
       throw errorWith(committed.status === 'conflict' ? 'V3_CSE_BASELINE_CAS_CONFLICT' : 'V3_CSE_BASELINE_COMMIT_FAILED', '聊天基线提交遇到并发变化，未覆盖新数据。');
     }
-    const next = await store.readReachable();
-    if (next.status !== 'ready' || !next.baseline) throw errorWith('V3_CSE_BASELINE_COLD_READ_FAILED', '聊天基线提交后回读失败。');
+    const next = committed.reachable;
+    if (next?.status !== 'ready' || next.rootRevision !== committed.revision || next.baseline?.id !== adopted.id) throw errorWith('V3_CSE_BASELINE_COLD_READ_FAILED', '聊天基线提交后回读失败。');
     return next;
   }
 
@@ -250,7 +279,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const capabilities = { foundationReady: true, memoryReady: activeMemories.length > 0, cseReady, recallReady: false };
     const stateGraphFingerprint = await hash([current.root.narrativeGeneration, current.floors.map(item => item.id), current.floors.map(item => item.content.canonicalFingerprint)]);
     const run = validateFoundationRun({ schemaVersion: 3, recordType: 'run', id: runId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, inputSnapshotFingerprint: current.root.sourceSnapshotFingerprint, mode: 'cse', sessionEpoch: operation.epoch, inputFloorIds: [floor.id], phase: 'completed', completedFloorIds: [floor.id], failedItems: [], preparedRecordRefs: [store.recordKey(delta), store.recordKey(currentState), ...indexKeys, `v3-checkpoint-${checkpointId}`], diagnostics: { ...diagnosticsWithRealtimeOrigin(current.run?.diagnostics, realtimeOriginFromReachable(current)), ...diagnostics, floorId: floor.id, floorMemoryId: memory.id }, startedAt: operation.startedAt, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
-    const checkpoint = validateFoundationCheckpoint({ schemaVersion: 3, recordType: 'checkpoint', id: checkpointId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, runId, sourceSnapshotFingerprint: current.root.sourceSnapshotFingerprint, capabilities, floorRange: { fromAssistantSeq: current.floors.length ? 1 : 0, toAssistantSeq: current.floors.length, floorIds: current.floors.map(item => item.id) }, inputFingerprints: createCheckpointInputFingerprints(current.floors, { previous: current.checkpoint?.inputFingerprints }), producedRefs: { floors: current.floors.map(item => item.id), floorMemories: current.floorMemories.map(item => item.id), entities: entities.map(item => item.id), events: [], claims: [], knowledge: [], stateDeltas: deltas.map(item => item.id), currentStates: [currentState.id], stateProjections: [], episodes: [], threads: [], indexes: indexKeys }, validation: { schemaValid: true, referencesValid: true, orderedReplayValid: true, stateFingerprint: stateGraphFingerprint }, sealedAt: nowValue, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
+    const checkpoint = validateFoundationCheckpoint({ schemaVersion: 3, recordType: 'checkpoint', id: checkpointId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, runId, sourceSnapshotFingerprint: current.root.sourceSnapshotFingerprint, indexLayout: V3_INDEX_LAYOUT_FLOOR_ORDER, capabilities, floorRange: { fromAssistantSeq: current.floors.length ? 1 : 0, toAssistantSeq: current.floors.length, floorIds: current.floors.map(item => item.id) }, inputFingerprints: createCheckpointInputFingerprints(current.floors, { previous: current.checkpoint?.inputFingerprints }), producedRefs: { floors: current.floors.map(item => item.id), floorMemories: current.floorMemories.map(item => item.id), entities: entities.map(item => item.id), events: [], claims: [], knowledge: [], stateDeltas: deltas.map(item => item.id), currentStates: [currentState.id], stateProjections: [], episodes: [], threads: [], indexes: indexKeys }, validation: { schemaValid: true, referencesValid: true, orderedReplayValid: true, stateFingerprint: stateGraphFingerprint }, sealedAt: nowValue, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
     const root = validateFoundationRoot({ ...current.root, capabilities, headCheckpointId: checkpointId, indexManifest: { ...emptyManifest(), floor: indexKeys.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-')), entity: indexKeys.filter(key => key.includes('-entity-')), reverseRef: indexKeys.filter(key => key.includes('-reverseRef-')) }, activeStateRefs: [currentState.id], updatedAt: nowValue }, { expectedChatId: current.root.chatId });
     await validateCseGraph({ root, checkpoint, run, floors: current.floors, floorMemories: current.floorMemories, entities, indexes, indexKeys, baseline: current.baseline, stateDeltas: deltas, currentStates: [currentState] });
     const newEntities = entities.filter(entity => !current.entities.some(old => old.id === entity.id));
@@ -266,7 +295,12 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
   }
 
   async function commitDelta(operation, result, roleEntities) {
-    const current = await store.readReachable({ mode: 'runtime' });
+    let current = null;
+    if (reachable?.root && typeof store.readRoot === 'function') {
+      const rootResult = await store.readRoot();
+      if (sameReachableRoot(reachable, rootResult)) current = reachable;
+    }
+    current ??= await store.readReachable({ mode: 'runtime' });
     if (current.status !== 'ready' || operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_CSE_STALE', '聊天或记忆在分析期间已变化，迟到状态不会写入。');
     const floor = current.floors.find(item => item.id === operation.floorId);
     const memory = current.floorMemories.find(item => item.id === operation.floorMemoryId && item.floorId === operation.floorId && item.recordStatus === 'active');
@@ -283,7 +317,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       ? await replayCurrentState({ chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, baselineId: current.baseline?.id, floors: dependencyPrecedingFloors, floorMemories: dependencyPrecedingMemories, stateDeltas: dependencyPrecedingDeltas, now: nowIso(now) })
       : null;
     const coreUserEditedSubjectEntityIds = await coreUserEditedSubjects(dependencyPrecedingDeltas);
-    const currentDependency = await dependencySnapshot(current, operation.floorId, [...dependencyEntitiesById.values()], dependencyPreviousState, currentFloor => current.floorMemories.find(item => item.floorId === currentFloor.id && item.recordStatus === 'active')?.sourceStoryClockSignature ?? current.run?.diagnostics?.floorProvenance?.[currentFloor.id]?.storyClockSignature ?? storyClockSignatureForFloor(currentFloor), coreUserEditedSubjectEntityIds, hostAdapter);
+    const currentDependency = await dependencySnapshot(current, operation.floorId, [...dependencyEntitiesById.values()], dependencyPreviousState, currentFloor => current.floorMemories.find(item => item.floorId === currentFloor.id && item.recordStatus === 'active')?.sourceStoryClockSignature ?? current.run?.diagnostics?.floorProvenance?.[currentFloor.id]?.storyClockSignature ?? storyClockSignatureForFloor(currentFloor), coreUserEditedSubjectEntityIds, hostAdapter, identityProjection);
     if (!sameDependencySnapshot(operation.dependencySnapshot, currentDependency)) throw errorWith('V3_CSE_STALE', '人物状态所依赖的楼层前缀、摘要、前态或身份目录已变化，迟到状态不会写入。');
     const floorOrder = new Map(current.floors.map((item, index) => [item.id, index]));
     const deltas = filterReachableDeltas({ floors: current.floors, floorMemories: current.floorMemories, stateDeltas: current.stateDeltas })
@@ -322,7 +356,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       const precedingFloors = value.floors.slice(0, targetIndex);
       const precedingFloorIds = new Set(precedingFloors.map(item => item.id));
       const trackedFloorIds = new Set(value.floors.slice(0, targetIndex + 1).map(item => item.id));
-      const scopedEntities = entitiesThroughFloorIds(entities, trackedFloorIds);
+      const scopedEntities = buildEntityIdentityDirectory({ entities: entitiesThroughFloorIds(entities, trackedFloorIds), identityProjection }).map(entry => entry.entity);
       const precedingMemories = value.floorMemories.filter(item => precedingFloorIds.has(item.floorId) && item.recordStatus === 'active');
       const precedingDeltas = filterReachableDeltas({ floors: precedingFloors, floorMemories: precedingMemories, stateDeltas: value.stateDeltas });
       const rebuiltPrevious = precedingDeltas.length
@@ -330,8 +364,12 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
         : null;
       const storedPrevious = value.currentStates?.at(-1) ?? null;
       const previousCurrentState = rebuiltPrevious && storedPrevious?.fingerprint === rebuiltPrevious.fingerprint ? storedPrevious : rebuiltPrevious;
-      const trackedMemories = value.floorMemories.filter(item => item.recordStatus === 'active' && trackedFloorIds.has(item.floorId));
-      const tracked = selectTrackedSubjects({ baseline: value.baseline, entities: scopedEntities, floorMemories: trackedMemories, floorMemory: memory });
+      const trackedMemories = value.floorMemories.filter(item => item.recordStatus === 'active' && trackedFloorIds.has(item.floorId)).map(item => projectFloorMemoryIdentityReferences(item, identityProjection));
+      const projectedMemory = projectFloorMemoryIdentityReferences(memory, identityProjection);
+      const projectedBaseline = { ...value.baseline,
+        userPersona: { ...value.baseline.userPersona, entityId: resolveIdentityEntityId(value.baseline.userPersona.entityId, identityProjection) },
+        characterCard: { ...value.baseline.characterCard, entityId: resolveIdentityEntityId(value.baseline.characterCard.entityId, identityProjection) } };
+      const tracked = selectTrackedSubjects({ baseline: projectedBaseline, entities: scopedEntities, floorMemories: trackedMemories, floorMemory: projectedMemory });
       const currentUserInput = currentUserInputFromMemory(memory);
       const requestSources = await captureCseRequestSources({
         hostAdapter,
@@ -344,9 +382,9 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       });
       operation.sourceDiagnostics = requestSources.diagnostics;
       const coreUserEditedSubjectEntityIds = await coreUserEditedSubjects(precedingDeltas);
-      operation.dependencySnapshot = await dependencySnapshot(value, floor.id, entities, previousCurrentState, currentFloor => value.floorMemories.find(item => item.floorId === currentFloor.id && item.recordStatus === 'active')?.sourceStoryClockSignature ?? value.run?.diagnostics?.floorProvenance?.[currentFloor.id]?.storyClockSignature ?? storyClockSignatureForFloor(currentFloor), coreUserEditedSubjectEntityIds, hostAdapter);
+      operation.dependencySnapshot = await dependencySnapshot(value, floor.id, entities, previousCurrentState, currentFloor => value.floorMemories.find(item => item.floorId === currentFloor.id && item.recordStatus === 'active')?.sourceStoryClockSignature ?? value.run?.diagnostics?.floorProvenance?.[currentFloor.id]?.storyClockSignature ?? storyClockSignatureForFloor(currentFloor), coreUserEditedSubjectEntityIds, hostAdapter, identityProjection);
       if (!operation.dependencySnapshot) throw errorWith('V3_CSE_STALE', '人物状态分析依赖的楼层前缀不可用。');
-      const envelope = createCseEnvelope({ floor: analysisFloor, floorMemory: memory, baseline: value.baseline, currentState: previousCurrentState, trackedSubjects: tracked, entities: scopedEntities, requestSources, currentUserInput, coreUserEditedSubjectEntityIds });
+      const envelope = createCseEnvelope({ floor: analysisFloor, floorMemory: projectedMemory, baseline: projectedBaseline, currentState: projectCseStateIdentityReferences(previousCurrentState, identityProjection), trackedSubjects: tracked, entities: scopedEntities, requestSources, currentUserInput, coreUserEditedSubjectEntityIds: coreUserEditedSubjectEntityIds.map(id => resolveIdentityEntityId(id, identityProjection)) });
       const deltaId = await deterministicUuid(['v3-cse-delta', operation.runId, floor.id, memory.id]);
       const promptGuidanceSnapshot = typeof promptGuidance === 'function' ? promptGuidance() : promptGuidance;
       const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
@@ -418,5 +456,5 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     return true;
   }
   function invalidate() { epoch += 1; active?.controller.abort(); active = null; reachable = null; replayed = null; lastFailure = null; replayDiagnostic = null; notify(); }
-  return Object.freeze({ load, analyzeFloor, analyzeNext, correctSubjectState, cancelActive, invalidate, getState, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
+  return Object.freeze({ load, analyzeFloor, analyzeNext, correctSubjectState, cancelActive, invalidate, setIdentityProjection, getState, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

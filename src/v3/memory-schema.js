@@ -1,5 +1,6 @@
 import { isUuid, sha256 } from '../identity.js';
 import { validateFoundationGraph } from './foundation-schema.js';
+import { copyFloorVariableReference } from './floor-variable-reference.js';
 
 export const FLOOR_MEMORY_ITEM_LIMIT = 80;
 export const EXACT_ANCHOR_LIMIT = 60;
@@ -99,12 +100,20 @@ function itemCommon(item, keys, path) {
 }
 
 export function validateFloorMemory(input, { expectedChatId } = {}) {
-  const value = clone(input);
+  let normalizedInput = input;
+  if (input && typeof input === 'object' && !Array.isArray(input) && Object.hasOwn(input, 'sourceVariableReference')) {
+    normalizedInput = { ...input };
+    const reference = copyFloorVariableReference(input.sourceVariableReference);
+    if (reference) normalizedInput.sourceVariableReference = reference;
+    else delete normalizedInput.sourceVariableReference;
+  }
+  const value = clone(normalizedInput);
   const hasSourceSnapshot = Object.hasOwn(value, 'sourceCanonicalContent');
   const hasSourceUserInputSnapshot = Object.hasOwn(value, 'sourceUserInputSnapshot');
+  const hasSourceVariableReference = Object.hasOwn(value, 'sourceVariableReference');
   const hasSourceRawFingerprint = Object.hasOwn(value, 'sourceRawFingerprint');
   const hasSourceStoryClockSignature = Object.hasOwn(value, 'sourceStoryClockSignature');
-  exact(value, ['schemaVersion', 'recordType', 'id', 'chatId', 'narrativeGeneration', 'floorId', 'extractorVersion', ...(hasSourceSnapshot ? ['sourceCanonicalContent'] : []), ...(hasSourceUserInputSnapshot ? ['sourceUserInputSnapshot'] : []), ...(hasSourceRawFingerprint ? ['sourceRawFingerprint'] : []), ...(hasSourceStoryClockSignature ? ['sourceStoryClockSignature'] : []), 'summary', 'summaryEvidenceRefs', ...ARRAY_FIELDS, 'createdAt', 'updatedAt', 'recordStatus', 'supersedes'], 'V3_FLOORMEMORY_INVALID');
+  exact(value, ['schemaVersion', 'recordType', 'id', 'chatId', 'narrativeGeneration', 'floorId', 'extractorVersion', ...(hasSourceSnapshot ? ['sourceCanonicalContent'] : []), ...(hasSourceUserInputSnapshot ? ['sourceUserInputSnapshot'] : []), ...(hasSourceVariableReference ? ['sourceVariableReference'] : []), ...(hasSourceRawFingerprint ? ['sourceRawFingerprint'] : []), ...(hasSourceStoryClockSignature ? ['sourceStoryClockSignature'] : []), 'summary', 'summaryEvidenceRefs', ...ARRAY_FIELDS, 'createdAt', 'updatedAt', 'recordStatus', 'supersedes'], 'V3_FLOORMEMORY_INVALID');
   common(value, 'floorMemory', expectedChatId);
   uuid(value.floorId, 'V3_FLOORMEMORY_INVALID', 'floorId');
   text(value.extractorVersion, 'V3_FLOORMEMORY_INVALID', 'extractorVersion', { max: 160 });

@@ -4,6 +4,7 @@ import { deterministicUuid, reverseRefShardPrefix } from './foundation-domain.js
 const HASH = /^sha256:[0-9a-f]{64}$/;
 const CAPABILITY_KEYS = ['foundationReady', 'memoryReady', 'cseReady', 'recallReady'];
 const PUBLIC_RECORD_TYPES = new Set(['root', 'run', 'checkpoint', 'floor', 'floorMemory', 'entity', 'index']);
+export const V3_INDEX_LAYOUT_FLOOR_ORDER = 'floorOrder-v1';
 
 function fail(code) { throw Object.assign(new TypeError(code), { code }); }
 function object(value, code) {
@@ -189,13 +190,15 @@ export function validateFoundationRun(input, { expectedChatId } = {}) {
 export function validateFoundationCheckpoint(input, { expectedChatId } = {}) {
   const value = jsonClone(input);
   if (!Object.hasOwn(value, 'sourceSnapshotFingerprint')) value.sourceSnapshotFingerprint = null;
-  exact(value, ['schemaVersion', 'recordType', 'id', 'chatId', 'narrativeGeneration', 'parentCheckpointId', 'runId', 'sourceSnapshotFingerprint', 'capabilities', 'floorRange', 'inputFingerprints', 'producedRefs', 'validation', 'sealedAt', 'createdAt', 'updatedAt', 'recordStatus', 'supersedes'], 'V3_CHECKPOINT_INVALID');
+  if (!Object.hasOwn(value, 'indexLayout')) value.indexLayout = null;
+  exact(value, ['schemaVersion', 'recordType', 'id', 'chatId', 'narrativeGeneration', 'parentCheckpointId', 'runId', 'sourceSnapshotFingerprint', 'indexLayout', 'capabilities', 'floorRange', 'inputFingerprints', 'producedRefs', 'validation', 'sealedAt', 'createdAt', 'updatedAt', 'recordStatus', 'supersedes'], 'V3_CHECKPOINT_INVALID');
   validateCommon(value, 'checkpoint');
   uuid(value.id, 'V3_CHECKPOINT_INVALID');
   if (expectedChatId && value.chatId !== expectedChatId) fail('V3_CHECKPOINT_INVALID');
   uuid(value.parentCheckpointId, 'V3_CHECKPOINT_INVALID', { nullable: true });
   uuid(value.runId, 'V3_CHECKPOINT_INVALID');
   fingerprint(value.sourceSnapshotFingerprint, 'V3_CHECKPOINT_INVALID', { nullable: true });
+  if (value.indexLayout !== null && value.indexLayout !== V3_INDEX_LAYOUT_FLOOR_ORDER) fail('V3_CHECKPOINT_INVALID');
   validateCapabilities(value.capabilities, 'V3_CHECKPOINT_INVALID');
   exact(value.floorRange, ['fromAssistantSeq', 'toAssistantSeq', 'floorIds'], 'V3_CHECKPOINT_INVALID');
   integer(value.floorRange.fromAssistantSeq, 'V3_CHECKPOINT_INVALID');
@@ -265,6 +268,7 @@ export async function validateFoundationGraph({ root = null, checkpoint, run = n
   const safeRun = run ? validateFoundationRun(run, { expectedChatId: chatId }) : null;
   const safeFloors = await Promise.all(floors.map(floor => validateFoundationFloorContent(floor, { expectedChatId: chatId })));
   const safeIndexes = indexes.map(index => validateFoundationIndex(index, { expectedChatId: chatId }));
+  const floorOrderOnly = safeCheckpoint.indexLayout === V3_INDEX_LAYOUT_FLOOR_ORDER;
   const floorIds = safeFloors.map(floor => floor.id);
   const floorIdSet = new Set(floorIds);
   const entityIdSet = new Set(entityIds);
@@ -309,6 +313,7 @@ export async function validateFoundationGraph({ root = null, checkpoint, run = n
   const expectedIndexKeys = safeCheckpoint.producedRefs.indexes;
   if (!allowMissingIndexes && !equalList(indexKeys, expectedIndexKeys)) fail('V3_GRAPH_INDEX_LIST_INVALID');
   if (indexKeys.some(key => !expectedIndexKeys.includes(key))) fail('V3_GRAPH_INDEX_LIST_INVALID');
+  if (floorOrderOnly && safeIndexes.some(index => index.kind !== 'floorOrder')) fail('V3_GRAPH_INDEX_LAYOUT_INVALID');
   const floorOrderRefs = new Map();
   const floorOrderSequence = [];
   const reverseRefs = new Map();
@@ -399,13 +404,11 @@ export async function validateFoundationGraph({ root = null, checkpoint, run = n
       }
     }
   }
-  if (!allowMissingIndexes && safeFloors.length && (
-    floorOrderRefs.size !== safeFloors.length
-    || reverseRefs.size !== safeFloors.length
-    || canonicalRefs.size !== safeFloors.length
-    || rawRefs.size !== safeFloors.length
-  )) fail('V3_GRAPH_INDEX_COVERAGE_INVALID');
-  if (!allowMissingIndexes && entityIdSet.size && entityRefs.size !== entityIdSet.size) fail('V3_GRAPH_ENTITY_INDEX_INVALID');
+  if (!allowMissingIndexes && safeFloors.length && (floorOrderRefs.size !== safeFloors.length
+    || (!floorOrderOnly && (reverseRefs.size !== safeFloors.length
+      || canonicalRefs.size !== safeFloors.length
+      || rawRefs.size !== safeFloors.length)))) fail('V3_GRAPH_INDEX_COVERAGE_INVALID');
+  if (!allowMissingIndexes && !floorOrderOnly && entityIdSet.size && entityRefs.size !== entityIdSet.size) fail('V3_GRAPH_ENTITY_INDEX_INVALID');
   if (!allowMissingIndexes && floorOrderSequence.some((value, index) => value !== index + 1)) fail('V3_GRAPH_FLOOR_ORDER_INDEX_INVALID');
   if (safeRoot) {
     const manifestKinds = Object.keys(safeRoot.indexManifest);

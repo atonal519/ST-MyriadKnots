@@ -1,6 +1,9 @@
 import { deriveCseTimeline, filterReachableDeltas, replayCurrentState } from './cse-engine.js';
 import { assessMemoryCoverageFromHost } from './memory-coverage.js';
-import { buildEntityIdentityDirectory } from './entity-identity.js';
+import {
+  buildEntityIdentityDirectory, normalizeIdentityProjection, projectCseStateIdentityReferences,
+  projectFloorMemoryIdentityReferences, resolveIdentityEntityId,
+} from './entity-identity.js';
 
 const safeText = (value, maximum = 4000) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
 const aliasText = alias => safeText(typeof alias === 'string' ? alias : alias?.name, 500);
@@ -80,7 +83,7 @@ function stateDto(replayed, entities, floorSeq) {
   })));
 }
 
-function cseChangesDto(timeline, entities, floorSeq) {
+function cseChangesDto(timeline, entities, floorSeq, identityProjection) {
   const activeEntityIds = new Set(entities.map(entity => entity.entityId));
   const state = value => value ? Object.freeze({
     stateId: value.id,
@@ -88,7 +91,7 @@ function cseChangesDto(timeline, entities, floorSeq) {
     visibility: ['private', 'observable', 'expressed', 'shared', 'authorial'].includes(value.visibility) ? value.visibility : 'private',
     reason: safeText(value.reason),
     origin: ['baseline', 'floor', 'reasonableProgression', 'manual'].includes(value.origin) ? value.origin : 'floor',
-    towardEntityId: activeEntityIds.has(value.towardEntityId) ? value.towardEntityId : null,
+    towardEntityId: activeEntityIds.has(resolveIdentityEntityId(value.towardEntityId, identityProjection)) ? resolveIdentityEntityId(value.towardEntityId, identityProjection) : null,
     sourceFloorId: value.sourceFloorId ?? null,
     sourceDeltaId: value.sourceDeltaId ?? null,
     sourceAssistantSeq: floorSeq.get(value.sourceFloorId) ?? null,
@@ -97,12 +100,13 @@ function cseChangesDto(timeline, entities, floorSeq) {
     const assistantSeq = floorSeq.get(entry.floorId) ?? null;
     if (!assistantSeq) return [];
     return entry.changes.flatMap(subject => {
-      if (!activeEntityIds.has(subject.subjectEntityId)) return [];
+      const subjectEntityId = resolveIdentityEntityId(subject.subjectEntityId, identityProjection);
+      if (!activeEntityIds.has(subjectEntityId)) return [];
       return subject.items.map(change => Object.freeze({
         deltaId: entry.deltaId,
         floorId: entry.floorId,
         assistantSeq,
-        subjectEntityId: subject.subjectEntityId,
+        subjectEntityId,
         layer: change.category,
         action: change.action,
         before: state(change.before),
@@ -112,7 +116,8 @@ function cseChangesDto(timeline, entities, floorSeq) {
   }));
 }
 
-export async function projectRecallSource(first, now, sourceReadAttempts = null, hostSnapshot = null, sanitizerOptions = {}, realtimeOrigin = false) {
+export async function projectRecallSource(first, now, sourceReadAttempts = null, hostSnapshot = null, sanitizerOptions = {}, realtimeOrigin = false, identityProjectionValue = null) {
+  const identityProjection = normalizeIdentityProjection(identityProjectionValue ?? {});
   const floors = first.floors ?? [];
   const floorById = new Map(floors.map(floor => [floor.id, floor]));
   const memoryGroups = new Map();
@@ -139,7 +144,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     cseTimeline = [];
     if (!degradedReasons.includes('cseReplayUnavailable')) degradedReasons.push('cseReplayUnavailable');
   }
-  const identityDirectory = buildEntityIdentityDirectory({ entities: first.entities ?? [] });
+  const identityDirectory = buildEntityIdentityDirectory({ entities: first.entities ?? [], identityProjection });
   const entities = Object.freeze(identityDirectory.map(entry => Object.freeze({
     entityId: entry.entityId,
     entityType: entry.entityType,
@@ -186,14 +191,15 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     }).filter(Boolean), ...(readiness?.unregisteredSummaryRefs ?? [])]),
     floorMemories: Object.freeze(activeMemories.map(memory => {
       const floor = floorById.get(memory.floorId);
-      return memoryDto(memory, floor, { floorSeqById: floorSeq });
+      return memoryDto(projectFloorMemoryIdentityReferences(memory, identityProjection), floor, { floorSeqById: floorSeq });
     })),
-    currentState: stateDto(replayed, entities, floorSeq),
-    cseChanges: cseChangesDto(cseTimeline, entities, floorSeq),
+    currentState: stateDto(projectCseStateIdentityReferences(replayed, identityProjection), entities, floorSeq),
+    cseChanges: cseChangesDto(cseTimeline, entities, floorSeq, identityProjection),
+    identityProjection,
   });
 }
 
-export async function readRecallSource({ store, now = () => new Date(), hostSnapshot = null, sanitizerOptions = {}, realtimeOrigin = false } = {}) {
+export async function readRecallSource({ store, now = () => new Date(), hostSnapshot = null, sanitizerOptions = {}, realtimeOrigin = false, identityProjection = null, identityProjectionProvider = null } = {}) {
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall source store 无效');
   const source = await store.readReachable({ mode: 'projection', allowRecallCseFallback: true });
   const attempts = exitPoint => Object.freeze({ reachableReads: 1, exitPoint });
@@ -201,5 +207,6 @@ export async function readRecallSource({ store, now = () => new Date(), hostSnap
     const exitPoint = source?.status === 'stale' ? 'stale' : 'unavailable';
     return Object.freeze({ status: sourceStatus(source), sourceReadAttempts: attempts(exitPoint) });
   }
-  return projectRecallSource(source, now, attempts('ready'), hostSnapshot, sanitizerOptions, realtimeOrigin);
+  const projection = identityProjection ?? (typeof identityProjectionProvider === 'function' ? await identityProjectionProvider() : null);
+  return projectRecallSource(source, now, attempts('ready'), hostSnapshot, sanitizerOptions, realtimeOrigin, projection?.data ?? projection);
 }

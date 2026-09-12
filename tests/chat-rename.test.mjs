@@ -75,8 +75,8 @@ function eventHarness() {
   };
 }
 
-async function renameHarness(options = {}) {
-  const backend = backendHarness(options);
+async function renameHarness({ onPrepared = null, ...backendOptions } = {}) {
+  const backend = backendHarness(backendOptions);
   backend.records.set(bindingKey(OLD), readyBinding(OLD, '旧聊天'));
   backend.records.set(`chat-${OLD}/v3-root`, { revision: 14, data: { marker: '原有完整 root' } });
   const context = hostContext();
@@ -85,7 +85,7 @@ async function renameHarness(options = {}) {
   assert.equal((await session.prepare()).identity.chatId, OLD);
   const events = eventHarness();
   const warnings = [];
-  const lifecycle = createPluginLifecycle({ session, getUi: () => null, logger: { warn: (...args) => warnings.push(args) } });
+  const lifecycle = createPluginLifecycle({ session, getUi: () => null, onPrepared, logger: { warn: (...args) => warnings.push(args) } });
   lifecycle.bind({ eventSource: events.eventSource, eventTypes: { CHAT_CHANGED: 'changed', CHAT_RENAMED: 'renamed', PERSONA_CHANGED: 'persona' } });
   return { backend, context, coordinator, session, events, lifecycle, warnings };
 }
@@ -148,6 +148,37 @@ test('临时 metadata save 已开始时 rename 等其完成，迟到写不能覆
   assert.equal((await renamed).status, 'ready');
   assert.equal(h.context.chatMetadata.qianqianjie.chatId, OLD);
   assert.equal(h.context.saves, 2, '临时身份与恢复身份各完成一次权威 metadata save');
+});
+
+test('临时身份的后台记忆读取不阻塞 rename，恢复原身份后只继续当前人物读取', async () => {
+  const temporaryMemory = deferred();
+  const calls = [];
+  const h = await renameHarness({
+    onPrepared: async ({ result, isCurrent }) => {
+      const id = result.identity.chatId;
+      calls.push(`memory:${id}`);
+      if (id !== OLD) await temporaryMemory.promise;
+      if (isCurrent()) calls.push(`people:${id}`);
+    },
+  });
+  h.context.chatId = '新聊天';
+  h.events.handlers.get('changed')[0]();
+  await waitFor(() => calls.some(call => call.startsWith('memory:') && call !== `memory:${OLD}`), '临时身份未启动后台记忆读取');
+  const temporaryId = h.context.chatMetadata.qianqianjie.chatId;
+
+  const renamed = h.events.handlers.get('renamed')[0](renameEvent());
+  let timer;
+  const result = await Promise.race([
+    renamed,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('rename 被后台记忆读取阻塞')), 1000); }),
+  ]).finally(() => clearTimeout(timer));
+  assert.equal(result.status, 'ready');
+  assert.equal(result.identity.chatId, OLD, '后台回调返回值不得覆盖 rename 的 ready 身份');
+  await waitFor(() => calls.includes(`people:${OLD}`), '原身份恢复后未完成当前后台续接');
+
+  temporaryMemory.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.includes(`people:${temporaryId}`), false, '改名后不得继续临时身份的人物读取');
 });
 
 test('无 CHAT_RENAMED 的普通复制始终保留独立身份，sourceChatId 不授予旧 root 读取权', async () => {

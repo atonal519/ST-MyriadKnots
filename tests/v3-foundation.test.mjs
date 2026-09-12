@@ -6,6 +6,7 @@ import { createFoundationStore, reverseRefCandidateKeys } from '../src/v3/founda
 import { buildFoundationIndexes, createFoundationRuntime, validatePreparedFoundation } from '../src/v3/foundation-runtime.js';
 import { deterministicUuid, foundationInputSnapshot, reverseRefShardPrefix, scanAssistantCandidates } from '../src/v3/foundation-domain.js';
 import { sha256 } from '../src/identity.js';
+import { entityIndexKey } from '../src/v3/memory-schema.js';
 import { createChatSession } from '../src/chat-session.js';
 import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
 
@@ -106,6 +107,88 @@ function backendHarness() {
       },
     },
   };
+}
+
+async function buildLegacyIndexFixture({ chatId, narrativeGeneration, checkpointId, floors, candidates = [], entities = [], now = '2026-09-02T00:00:00.000Z' }) {
+  const records = [];
+  const add = async (kind, shard, entries) => {
+    if (!entries.length) return;
+    const id = await deterministicUuid(['index', checkpointId, kind, shard, entries]);
+    records.push({
+      schemaVersion: 3, recordType: 'index', id, chatId, narrativeGeneration, kind, shard,
+      sourceCheckpointId: checkpointId, entries, entryCount: entries.length,
+      contentFingerprint: `sha256:${await sha256(JSON.stringify([kind, shard, entries]))}`,
+      createdAt: now, updatedAt: now, recordStatus: 'staged', supersedes: null,
+    });
+  };
+  const chunks = (values, size = 512) => Array.from({ length: Math.ceil(values.length / size) }, (_, index) => values.slice(index * size, (index + 1) * size));
+  for (let offset = 0; offset < floors.length; offset += 128) {
+    await add('floorOrder', String(Math.floor(offset / 128)), floors.slice(offset, offset + 128).map((floor, index) => ({
+      key: String(offset + index + 1),
+      refs: [{ recordType: 'floor', recordId: floor.id, itemId: JSON.stringify(candidates[offset + index]?.hostLocator ?? floor.hostLocator) }],
+    })));
+  }
+  const fingerprints = new Map();
+  for (const floor of floors) {
+    for (const [value, itemId] of [[floor.content.rawFingerprint, 'raw'], [floor.content.canonicalFingerprint, 'canonical']]) {
+      const prefix = value.slice('sha256:'.length, 'sha256:'.length + 2);
+      const entries = fingerprints.get(prefix) ?? [];
+      entries.push({ key: value, refs: [{ recordType: 'floor', recordId: floor.id, itemId }] });
+      fingerprints.set(prefix, entries);
+    }
+  }
+  for (const [prefix, entries] of fingerprints) {
+    for (const [index, shard] of chunks(entries).entries()) await add('fingerprint', `${prefix}-${index}`, shard);
+  }
+  const entityEntries = new Map();
+  for (const entity of entities) {
+    const keys = new Set([await entityIndexKey(entity.id), await entityIndexKey(entity.displayName), ...await Promise.all(entity.aliases.map(alias => entityIndexKey(alias.normalized || alias.name)))]);
+    for (const key of keys) {
+      const prefix = key.slice('sha256:'.length, 'sha256:'.length + 2);
+      const entries = entityEntries.get(prefix) ?? [];
+      entries.push({ key, refs: [{ recordType: 'entity', recordId: entity.id, itemId: null }] });
+      entityEntries.set(prefix, entries);
+    }
+  }
+  for (const [prefix, entries] of entityEntries) {
+    for (const [index, shard] of chunks(entries).entries()) await add('entity', `${prefix}-${index}`, shard);
+  }
+  const reverseRefs = new Map();
+  for (const floor of floors) {
+    const prefix = await reverseRefShardPrefix(floor.id);
+    const entries = reverseRefs.get(prefix) ?? [];
+    entries.push({ key: floor.id, refs: [{ recordType: 'checkpoint', recordId: checkpointId, itemId: null }] });
+    reverseRefs.set(prefix, entries);
+  }
+  for (const [prefix, entries] of reverseRefs) {
+    for (const [index, shard] of chunks(entries).entries()) await add('reverseRef', `${prefix}-${index}`, shard);
+  }
+  return records;
+}
+
+async function installLegacyIndexFixture(h) {
+  const collection = `chat-${CHAT}/`;
+  const rootEnvelope = h.backend.records.get(`${collection}v3-root`);
+  const checkpointEnvelope = h.backend.records.get(`${collection}v3-checkpoint-${rootEnvelope.data.headCheckpointId}`);
+  const floors = checkpointEnvelope.data.producedRefs.floors.map(id => h.backend.records.get(`${collection}v3-floor-${id}`).data);
+  const indexes = await buildLegacyIndexFixture({
+    chatId: rootEnvelope.data.chatId,
+    narrativeGeneration: rootEnvelope.data.narrativeGeneration,
+    checkpointId: checkpointEnvelope.data.id,
+    floors,
+  });
+  const keys = indexes.map(index => `v3-index-${index.kind}-${index.shard}-${index.id}`);
+  for (let index = 0; index < indexes.length; index += 1) {
+    h.backend.records.set(`${collection}${keys[index]}`, { revision: 1, createdAt: indexes[index].createdAt, data: indexes[index] });
+  }
+  delete checkpointEnvelope.data.indexLayout;
+  checkpointEnvelope.data.producedRefs.indexes = keys;
+  rootEnvelope.data.indexManifest = {
+    floor: keys.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-')),
+    entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [],
+    reverseRef: keys.filter(key => key.includes('-reverseRef-')),
+  };
+  return { rootEnvelope, checkpointEnvelope, indexes, keys };
 }
 
 function harness(chat = [assistant('A'), assistant('B'), assistant('C')], { enhanced = false, prepareSession = null, modernAnchors = false } = {}) {
@@ -600,7 +683,7 @@ test('floor／index／checkpoint 任一 staged 写失败都持久化 retryableEr
 });
 
 test('地基 prepared 写入最多四路并发，全部完成后才写 checkpoint', async () => {
-  const h = harness();
+  const h = harness(Array.from({ length: 6 }, (_, index) => assistant(`并发-${index}`)));
   let active = 0;
   let maximum = 0;
   let started = 0;
@@ -628,7 +711,7 @@ test('地基 prepared 写入最多四路并发，全部完成后才写 checkpoin
 });
 
 test('prepared 写失败会等待在途任务收拢，不续排新任务或提交 checkpoint/root', async () => {
-  const h = harness();
+  const h = harness(Array.from({ length: 6 }, (_, index) => assistant(`失败收拢-${index}`)));
   let started = 0;
   let completed = 0;
   let failFirst;
@@ -696,7 +779,8 @@ test('后端恢复得到相同 stableBoundary，warm reconcile 不按楼读取�
   const runtimeIndexCount = activeCheckpoint.producedRefs.indexes.filter(key => key.startsWith('v3-index-floorOrder-') || key.startsWith('v3-index-fingerprint-')).length;
   assert.equal(coldReads, 3 + activeCheckpoint.producedRefs.floors.length + runtimeIndexCount,
     'get-only 后端冷恢复只读取 root + checkpoint + run + N floors + 运行时所需索引');
-  assert.ok(runtimeIndexCount < activeCheckpoint.producedRefs.indexes.length, '冷恢复不会读取 entity/reverseRef 等运行时无关索引');
+  assert.equal(activeCheckpoint.indexLayout, 'floorOrder-v1');
+  assert.equal(runtimeIndexCount, activeCheckpoint.producedRefs.indexes.length, '新布局只有运行时真正使用的楼序索引');
 });
 
 test('明确 legacy 快照缺失可重建索引时从 root 可达 FloorRecord 重封口，不读取旧世代', async () => {
@@ -717,7 +801,7 @@ test('明确 legacy 快照缺失可重建索引时从 root 可达 FloorRecord �
   assert.notEqual(state.headCheckpointId, root.headCheckpointId);
 });
 
-test('reachable 读模式按用途裁剪索引，projection 只读楼序索引且 full 保留完整校验', async () => {
+test('新布局各读模式只读楼序索引，并将其视为完整索引集', async () => {
   const h = harness();
   await h.runtime.start();
   const store = createFoundationStore({
@@ -727,7 +811,7 @@ test('reachable 读模式按用途裁剪索引，projection 只读楼序索引�
   h.backend.calls.splice(0);
   const projected = await store.readReachable({ mode: 'projection' });
   assert.equal(projected.status, 'ready');
-  assert.equal(projected.indexesComplete, false);
+  assert.equal(projected.indexesComplete, true);
   const projectionIndexGets = h.backend.calls.filter(call => call[0] === 'get' && call[2].startsWith('v3-index-')).map(call => call[2]);
   assert.ok(projectionIndexGets.length > 0);
   assert.ok(projectionIndexGets.every(key => key.startsWith('v3-index-floorOrder-')));
@@ -737,12 +821,87 @@ test('reachable 读模式按用途裁剪索引，projection 只读楼序索引�
   const runtimeIndexGets = h.backend.calls.filter(call => call[0] === 'get' && call[2].startsWith('v3-index-')).map(call => call[2]);
   assert.ok(runtimeIndexGets.length > 0);
   assert.ok(runtimeIndexGets.every(key => key.startsWith('v3-index-floorOrder-') || key.startsWith('v3-index-fingerprint-')));
-  assert.equal(runtime.indexesComplete, false);
+  assert.equal(runtime.indexesComplete, true);
 
   h.backend.calls.splice(0);
   const full = await store.readReachable();
   assert.equal(full.indexesComplete, true);
   assert.equal(h.backend.calls.filter(call => call[0] === 'get' && call[2].startsWith('v3-index-')).length, full.checkpoint.producedRefs.indexes.length);
+});
+
+test('53 楼/15 实体同形输入在内存 backend 实测新旧索引 PUT，并对照 53 楼完整冷读 GET', async () => {
+  const h = harness(Array.from({ length: 53 }, (_, index) => assistant(`统计楼-${index + 1}`)));
+  await h.runtime.start();
+  await anchorLatest(h, '确认第 53 楼');
+  const store = createFoundationStore({
+    client: h.backend.client,
+    contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }),
+  });
+
+  h.backend.calls.splice(0);
+  const current = await store.readReachable();
+  const newReadGets = h.backend.calls.filter(call => call[0] === 'get').length;
+  assert.equal(current.status, 'ready');
+  assert.equal(current.floors.length, 53);
+  assert.equal(newReadGets, 57, '新布局完整冷读为 root + checkpoint + run + 53 floors + 1 floorOrder');
+
+  const entities = Array.from({ length: 15 }, (_, index) => ({
+    id: `${String(index + 1).padStart(8, '0')}-dddd-4ddd-8ddd-${String(index + 1).padStart(12, '0')}`,
+    displayName: `统计人物-${index + 1}`,
+    aliases: [{ name: `别名-${index + 1}`, normalized: `别名-${index + 1}` }],
+  }));
+  const newIndexes = await buildFoundationIndexes({
+    chatId: CHAT, narrativeGeneration: current.root.narrativeGeneration, checkpointId: OTHER_CHAT,
+    floors: current.floors, candidates: [], entities, now: '2026-09-02T00:00:00.000Z',
+  });
+  const legacyIndexes = await buildLegacyIndexFixture({
+    chatId: CHAT, narrativeGeneration: current.root.narrativeGeneration,
+    checkpointId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', floors: current.floors, entities,
+  });
+  h.backend.calls.splice(0);
+  await Promise.all(newIndexes.map(index => store.putRecord(index)));
+  const newIndexPuts = h.backend.calls.filter(call => call[0] === 'put').length;
+  h.backend.calls.splice(0);
+  await Promise.all(legacyIndexes.map(index => store.putRecord(index)));
+  const legacyIndexPuts = h.backend.calls.filter(call => call[0] === 'put').length;
+  assert.equal(newIndexPuts, 1);
+  assert.equal(legacyIndexPuts, 137);
+  assert.equal(legacyIndexPuts, legacyIndexes.length);
+
+  const legacy = await installLegacyIndexFixture(h);
+  h.backend.calls.splice(0);
+  const legacyCold = await store.readReachable();
+  const legacyReadGets = h.backend.calls.filter(call => call[0] === 'get').length;
+  assert.equal(legacyCold.status, 'ready');
+  assert.equal(legacyCold.floors.length, current.floors.length);
+  assert.equal(legacyReadGets, 151);
+  assert.equal(legacyReadGets, 3 + current.floors.length + legacy.indexes.length);
+});
+
+test('无布局标识的旧 checkpoint 冷读按四类索引校验，首次新提交自然切换到 floorOrder-v1', async () => {
+  const h = harness();
+  await h.runtime.start();
+  const legacy = await installLegacyIndexFixture(h);
+  const store = createFoundationStore({
+    client: h.backend.client,
+    contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }),
+  });
+  const cold = await store.readReachable();
+  assert.equal(cold.checkpoint.indexLayout, null);
+  assert.ok(cold.indexes.some(index => index.kind === 'fingerprint'));
+  assert.ok(cold.indexes.some(index => index.kind === 'reverseRef'));
+
+  h.context.chat.push(user('锚定 C'));
+  const runtime = createFoundationRuntime({
+    hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } }),
+    store, contextProvider: () => h.context, scanCandidates: legacyScanner, newUuid: uuidFactory(9000),
+    now: () => new Date('2026-09-02T00:10:00.000Z'), logger: { warn() {} },
+  });
+  assert.equal((await runtime.start()).status, 'ready');
+  const upgraded = await store.readReachable();
+  assert.equal(upgraded.checkpoint.indexLayout, 'floorOrder-v1');
+  assert.ok(upgraded.indexes.every(index => index.kind === 'floorOrder'));
+  assert.ok(legacy.keys.every(key => h.backend.records.has(`chat-${CHAT}/${key}`)), '旧辅助索引保留为不可达历史记录');
 });
 
 test('现代 active manifest 指向缺失索引时拒绝 ready，不冒充 legacy 重封口', async () => {
@@ -1110,7 +1269,7 @@ test('active checkpoint 的 committing run 冷启动幂等收敛 completed，非
   assert.equal(h.backend.records.get(firstRunKey).data.phase, 'committing');
 });
 
-test('root indexManifest 对 checkpoint 三类 foundation index 必须精确覆盖且分栏正确', async () => {
+test('新布局 root indexManifest 必须精确覆盖 floorOrder，且拒绝辅助索引', async () => {
   const h = harness();
   await h.runtime.start();
   const root = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`).data);
@@ -1119,16 +1278,13 @@ test('root indexManifest 对 checkpoint 三类 foundation index 必须精确覆�
   const floors = checkpoint.producedRefs.floors.map(id => structuredClone(h.backend.records.get(`chat-${CHAT}/v3-floor-${id}`).data));
   const indexes = checkpoint.producedRefs.indexes.map(key => structuredClone(h.backend.records.get(`chat-${CHAT}/${key}`).data));
   const base = { root, checkpoint, run, floors, indexes, indexKeys: [...checkpoint.producedRefs.indexes] };
-  const bucketFor = kind => kind === 'reverseRef' ? 'reverseRef' : 'floor';
+  assert.equal(checkpoint.indexLayout, 'floorOrder-v1');
+  assert.ok(indexes.length > 0);
+  assert.ok(indexes.every(index => index.kind === 'floorOrder'));
 
-  for (const kind of ['floorOrder', 'fingerprint', 'reverseRef']) {
-    const missing = structuredClone(base);
-    const indexPosition = missing.indexes.findIndex(index => index.kind === kind);
-    const key = missing.indexKeys[indexPosition];
-    const bucket = bucketFor(kind);
-    missing.root.indexManifest[bucket] = missing.root.indexManifest[bucket].filter(item => item !== key);
-    await assert.rejects(validatePreparedFoundation(missing), /V3_GRAPH_ROOT_INDEX_MANIFEST_INVALID/, `${kind} 缺项必须拒绝`);
-  }
+  const missing = structuredClone(base);
+  missing.root.indexManifest.floor = [];
+  await assert.rejects(validatePreparedFoundation(missing), /V3_GRAPH_ROOT_INDEX_MANIFEST_INVALID/);
 
   const extra = structuredClone(base);
   extra.root.indexManifest.floor.push('v3-index-floorOrder-0-extra');
@@ -1139,13 +1295,23 @@ test('root indexManifest 对 checkpoint 三类 foundation index 必须精确覆�
   await assert.rejects(validatePreparedFoundation(duplicate), /V3_GRAPH_ROOT_INDEX_MANIFEST_INVALID/);
 
   const wrongBucket = structuredClone(base);
-  const fingerprintKey = wrongBucket.indexKeys[wrongBucket.indexes.findIndex(index => index.kind === 'fingerprint')];
-  wrongBucket.root.indexManifest.floor = wrongBucket.root.indexManifest.floor.filter(key => key !== fingerprintKey);
-  wrongBucket.root.indexManifest.reverseRef.push(fingerprintKey);
+  const floorKey = wrongBucket.indexKeys[0];
+  wrongBucket.root.indexManifest.floor = [];
+  wrongBucket.root.indexManifest.reverseRef.push(floorKey);
   await assert.rejects(validatePreparedFoundation(wrongBucket), /V3_GRAPH_ROOT_INDEX_MANIFEST_INVALID/);
+
+  const auxiliary = structuredClone(base);
+  const legacyIndexes = await buildLegacyIndexFixture({ chatId: checkpoint.chatId, narrativeGeneration: checkpoint.narrativeGeneration, checkpointId: checkpoint.id, floors });
+  const fingerprint = legacyIndexes.find(index => index.kind === 'fingerprint');
+  const fingerprintKey = `v3-index-${fingerprint.kind}-${fingerprint.shard}-${fingerprint.id}`;
+  auxiliary.indexes.push(fingerprint);
+  auxiliary.indexKeys.push(fingerprintKey);
+  auxiliary.checkpoint.producedRefs.indexes.push(fingerprintKey);
+  auxiliary.root.indexManifest.floor.push(fingerprintKey);
+  await assert.rejects(validatePreparedFoundation(auxiliary), /V3_GRAPH_INDEX_LAYOUT_INVALID/);
 });
 
-test('513+ fingerprint/reverseRef entries 自动追加分片且冷恢复可读', async () => {
+test('513 楼新布局只写 floorOrder 分页，冷恢复可读', async () => {
   const h = harness(Array.from({ length: 513 }, () => assistant('same-content')));
   await h.runtime.start();
   const state = await anchorLatest(h);
@@ -1153,19 +1319,12 @@ test('513+ fingerprint/reverseRef entries 自动追加分片且冷恢复可读',
   const root = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
   const checkpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${root.headCheckpointId}`).data;
   const indexes = checkpoint.producedRefs.indexes.map(key => h.backend.records.get(`chat-${CHAT}/${key}`).data);
-  assert.ok(indexes.every(index => index.entryCount <= 512));
-  assert.ok(indexes.filter(index => index.kind === 'fingerprint').length >= 3);
-  const reverse = indexes.filter(index => index.kind === 'reverseRef');
-  assert.ok(reverse.length > 1);
-  for (const record of reverse) {
-    for (const entry of record.entries) assert.equal(record.shard.split('-')[0], await reverseRefShardPrefix(entry.key));
-  }
-  for (const floorId of checkpoint.producedRefs.floors) {
-    const prefix = await reverseRefShardPrefix(floorId);
-    const candidates = await reverseRefCandidateKeys(root.indexManifest, floorId);
-    assert.ok(candidates.length >= 1);
-    assert.ok(candidates.every(key => key.includes(`-reverseRef-${prefix}-`)));
-  }
+  assert.equal(checkpoint.indexLayout, 'floorOrder-v1');
+  assert.deepEqual(indexes.map(index => [index.kind, index.shard, index.entryCount]), [
+    ['floorOrder', '0', 128], ['floorOrder', '1', 128], ['floorOrder', '2', 128], ['floorOrder', '3', 128], ['floorOrder', '4', 1],
+  ]);
+  assert.deepEqual(root.indexManifest.entity, []);
+  assert.deepEqual(root.indexManifest.reverseRef, []);
   const store = createFoundationStore({ client: h.backend.client, contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }) });
   const recovered = await store.readReachable();
   assert.equal(recovered.floors.length, 513);
@@ -1242,7 +1401,7 @@ test('mutation 恰好发生在 CAS 请求在途时自动二次收敛且无未处
   assert.deepEqual(unhandled, []);
 });
 
-test('索引会重算 contentFingerprint，并拒绝错误 key、ref、id 与 shard 路由', async () => {
+test('floorOrder 索引会重算 contentFingerprint，并拒绝错误 key、ref 与 id', async () => {
   const h = harness();
   await h.runtime.start();
   const root = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`).data);
@@ -1270,20 +1429,6 @@ test('索引会重算 contentFingerprint，并拒绝错误 key、ref、id 与 sh
   await resign(wrongOrderKey, orderAt);
   await assert.rejects(validatePreparedFoundation(wrongOrderKey), /V3_GRAPH_FLOOR_ORDER_INDEX_INVALID/);
 
-  const wrongFingerprintKey = structuredClone(base);
-  const fingerprintAt = wrongFingerprintKey.indexes.findIndex(index => index.kind === 'fingerprint' && index.entries.some(entry => entry.refs.some(ref => ref.itemId === 'canonical')));
-  const canonicalEntry = wrongFingerprintKey.indexes[fingerprintAt].entries.find(entry => entry.refs.some(ref => ref.itemId === 'canonical'));
-  const canonicalShardPrefix = wrongFingerprintKey.indexes[fingerprintAt].shard.slice(0, 2);
-  canonicalEntry.key = `sha256:${canonicalShardPrefix}${'1'.repeat(62)}`;
-  await resign(wrongFingerprintKey, fingerprintAt);
-  await assert.rejects(validatePreparedFoundation(wrongFingerprintKey), /V3_GRAPH_FINGERPRINT_INDEX_INVALID/);
-
-  const wrongShard = structuredClone(base);
-  const reverseAt = wrongShard.indexes.findIndex(index => index.kind === 'reverseRef');
-  wrongShard.indexes[reverseAt].shard = 'ff-0';
-  await resign(wrongShard, reverseAt);
-  await assert.rejects(validatePreparedFoundation(wrongShard), /V3_GRAPH_INDEX_SHARD_INVALID/);
-
   const wrongId = structuredClone(base);
   wrongId.indexes[0].id = OTHER_CHAT;
   wrongId.indexKeys[0] = `v3-index-${wrongId.indexes[0].kind}-${wrongId.indexes[0].shard}-${OTHER_CHAT}`;
@@ -1291,13 +1436,13 @@ test('索引会重算 contentFingerprint，并拒绝错误 key、ref、id 与 sh
   await assert.rejects(validatePreparedFoundation(wrongId), /V3_GRAPH_INDEX_ROUTE_INVALID/);
 
   const emptyRefs = structuredClone(base);
-  const emptyRefsAt = emptyRefs.indexes.findIndex(index => index.kind === 'fingerprint');
+  const emptyRefsAt = emptyRefs.indexes.findIndex(index => index.kind === 'floorOrder');
   emptyRefs.indexes[emptyRefsAt].entries[0].refs = [];
   await resign(emptyRefs, emptyRefsAt);
   await assert.rejects(validatePreparedFoundation(emptyRefs), /V3_INDEX_INVALID/);
 });
 
-test('reverseRef 同一哈希前缀超过 512 entries 时追加序号且可由目标 ID 确定定位', async () => {
+test('旧布局 reverseRef 同一哈希前缀超过 512 entries 时仍可按原规则读取定位', async () => {
   const ids = [];
   for (let value = 1; ids.length < 513; value += 1) {
     const raw = value.toString(16).padStart(32, '0').split('');
@@ -1310,7 +1455,7 @@ test('reverseRef 同一哈希前缀超过 512 entries 时追加序号且可由�
     id, assistantSeq: index + 1, hostLocator: { messageIndex: index, swipeId: 0, selectedSwipeIndex: 0 },
     content: { rawFingerprint: fingerprint, canonicalFingerprint: fingerprint },
   }));
-  const indexes = await buildFoundationIndexes({
+  const indexes = await buildLegacyIndexFixture({
     chatId: CHAT, narrativeGeneration: OTHER_CHAT, checkpointId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     floors, candidates: [], now: '2026-09-02T00:00:00.000Z',
   });
@@ -1344,15 +1489,15 @@ test('部分 FloorRecord 写完后冷启动复用 staged，不重复写相同 Fl
   assert.deepEqual(reachable.floors.map(floor => floor.content.canonicalContent), ['A', 'B', 'C']);
 });
 
-test('staged fingerprint index entries 被篡改但保留旧摘要时，冷启动拒绝发布损坏 root', async () => {
+test('staged floorOrder index entries 被篡改但保留旧摘要时，冷启动拒绝发布损坏 root', async () => {
   const h = harness([assistant('A'), assistant('B'), assistant('C'), assistant('D')]);
   h.backend.setConflictRoot(true);
   assert.equal((await h.runtime.start()).status, 'conflict');
   const stagedIndex = [...h.backend.records.values()]
-    .find(item => item.data.recordType === 'index' && item.data.kind === 'fingerprint');
+    .find(item => item.data.recordType === 'index' && item.data.kind === 'floorOrder');
   assert.ok(stagedIndex);
   const oldFingerprint = stagedIndex.data.contentFingerprint;
-  stagedIndex.data.entries[0].key = `sha256:${'f'.repeat(64)}`;
+  stagedIndex.data.entries[0].key = '99';
   assert.equal(stagedIndex.data.contentFingerprint, oldFingerprint);
   h.backend.setConflictRoot(false);
 
@@ -1417,18 +1562,18 @@ test('staged checkpoint inputFingerprints 被篡改但保留旧状态摘要时�
   assert.match(proofRecovered.lastError, /V3 staged 记录内容冲突/);
 });
 
-test('putRecord 409 只复用完整内容等价记录，相同摘要下的不等价 index 返回 conflict', async () => {
+test('putRecord 409 只复用完整内容等价记录，相同摘要下的不等价 floorOrder index 返回 conflict', async () => {
   const h = harness();
   await h.runtime.start();
   const existing = structuredClone([...h.backend.records.values()]
-    .find(item => item.data.recordType === 'index' && item.data.kind === 'fingerprint').data);
+    .find(item => item.data.recordType === 'index' && item.data.kind === 'floorOrder').data);
   const store = createFoundationStore({
     client: h.backend.client,
     contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }),
   });
   assert.equal((await store.putRecord(structuredClone(existing))).status, 'reused');
   const tampered = structuredClone(existing);
-  tampered.entries[0].key = `sha256:${'d'.repeat(64)}`;
+  tampered.entries[0].key = '99';
   assert.equal(tampered.contentFingerprint, existing.contentFingerprint);
   assert.equal((await store.putRecord(tampered)).status, 'conflict');
 });
@@ -1439,9 +1584,9 @@ test('root CAS 前重读并校验真实落盘图，写完后被篡改的 index �
   h.backend.setBeforePut(async ({ data }) => {
     if (corrupted || data?.recordType !== 'run' || data.phase !== 'committing') return;
     const persistedIndex = [...h.backend.records.values()]
-      .find(item => item.data.recordType === 'index' && item.data.kind === 'fingerprint');
+      .find(item => item.data.recordType === 'index' && item.data.kind === 'floorOrder');
     assert.ok(persistedIndex);
-    persistedIndex.data.entries[0].key = `sha256:${'c'.repeat(64)}`;
+    persistedIndex.data.contentFingerprint = `sha256:${'c'.repeat(64)}`;
     corrupted = true;
   });
   const state = await h.runtime.start();
@@ -1510,9 +1655,9 @@ test('runtime 前置校验后、真实 store commitRoot 前篡改 backing index�
     ...baseStore,
     async commitRoot(...args) {
       const persistedIndex = [...h.backend.records.values()]
-        .find(item => item.data.recordType === 'index' && item.data.kind === 'fingerprint');
+        .find(item => item.data.recordType === 'index' && item.data.kind === 'floorOrder');
       assert.ok(persistedIndex);
-      persistedIndex.data.entries[0].key = `sha256:${'b'.repeat(64)}`;
+      persistedIndex.data.contentFingerprint = `sha256:${'b'.repeat(64)}`;
       corrupted = true;
       return baseStore.commitRoot(...args);
     },
@@ -1558,6 +1703,7 @@ test('staged 与当前输入 snapshot 不同则绝不复用', async () => {
 test('读取第一轮未发布 V3 记录后原地重封口，不删除旧记录', async () => {
   const h = harness();
   await h.runtime.start();
+  await installLegacyIndexFixture(h);
   const collection = `chat-${CHAT}/`;
   const rootEnvelope = h.backend.records.get(`${collection}v3-root`);
   const checkpointEnvelope = h.backend.records.get(`${collection}v3-checkpoint-${rootEnvelope.data.headCheckpointId}`);
@@ -1593,6 +1739,8 @@ test('读取第一轮未发布 V3 记录后原地重封口，不删除旧记录'
   assert.equal((await runtime.start()).status, 'ready');
   const upgraded = await store.readReachable();
   assert.match(upgraded.root.sourceSnapshotFingerprint, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(upgraded.checkpoint.indexLayout, 'floorOrder-v1');
+  assert.ok(upgraded.indexes.every(index => index.kind === 'floorOrder'));
   assert.ok(h.backend.records.has(`${collection}${legacyKey}`), '旧索引只变为不可达，不应被删除');
 });
 

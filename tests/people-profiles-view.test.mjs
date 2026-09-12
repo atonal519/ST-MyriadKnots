@@ -5,6 +5,7 @@ import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, PEOPLE_WORKSP
 
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
+const C = '33333333-3333-4333-8333-333333333333';
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const CHAT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
@@ -21,13 +22,15 @@ class Node {
   focus() { documentRef.activeElement = this; }
 }
 function dialogHarness() {
-  let active = null;
+  let active = null; const confirms = [];
   return {
     dialog: {
+      async confirm(options) { confirms.push(options); return true; },
       custom(options) { return new Promise(resolve => { active = { ...options, resolve }; }); },
       cancelTop() { if (!active) return false; const current = active; active = null; current.onClose?.(); current.resolve(null); return true; },
     },
     get active() { return active; },
+    confirms,
     async submit() { const current = active; const value = await current.submit(); active = null; current.onClose?.(); current.resolve(value); return value; },
   };
 }
@@ -45,15 +48,15 @@ function eventDocument() {
 }
 const flatten = node => [node, ...node.children.flatMap(flatten)];
 const visible = node => flatten(node).map(item => item.textContent).filter(Boolean).join('|');
-function person(entityId, name, selected, profile = null, recommended = false) {
-  return { entityId, displayName: profile?.name || name, entityDisplayName: name, aliases: [`${name}别名`], selected, profiled: Boolean(profile), profile, recommended, appearanceCount: recommended ? 3 : 1 };
+function person(entityId, name, selected, profile = null, appearanceCount = 1) {
+  return { entityId, displayName: profile?.name || name, entityDisplayName: name, aliases: [`${name}别名`], selected, profiled: Boolean(profile), profile, appearanceCount };
 }
 function runtimeHarness({ profile = null, profiles = null, selected = [A], failSave = false, generatedProfile = null, generateGate = null, generationReport = null } = {}) {
   const initialProfiles = profiles ?? (profile ? { [A]: profile } : {});
   let state = { status: 'ready', chatId: CHAT, revision: 1, selectedEntityIds: [...selected], profilesByEntityId: initialProfiles,
-    people: [person(A, '甲', selected.includes(A), initialProfiles[A] ?? null, true), person(B, '乙', selected.includes(B), initialProfiles[B] ?? null)], active: null,
+    people: [person(A, '甲', selected.includes(A), initialProfiles[A] ?? null, 3), person(B, '乙', selected.includes(B), initialProfiles[B] ?? null)], active: null,
     unprofiledSelectedCount: selected.filter(id => !initialProfiles[id]).length, lastError: null };
-  const listeners = new Set(), calls = { select: [], save: [], avatar: [], generate: 0, regenerate: [] };
+  const listeners = new Set(), calls = { select: [], save: [], avatar: [], merge: [], delete: [], generate: 0, regenerate: [] };
   const emit = () => { for (const listener of listeners) listener(state); return state; };
   const runtime = {
     getState: () => state, refresh: async () => state,
@@ -80,6 +83,15 @@ function runtimeHarness({ profile = null, profiles = null, selected = [A], failS
     },
     async regenerateProfile(entityId) { calls.regenerate.push(entityId); return emit(); },
     async saveAvatar(entityId, avatar) { calls.avatar.push([entityId, avatar]); state = { ...state, people: state.people.map(item => item.entityId === entityId ? { ...item, avatar } : item) }; return emit(); },
+    async mergePeople(sourceEntityId, targetEntityId, profileSource) {
+      calls.merge.push([sourceEntityId, targetEntityId, profileSource]);
+      const source = state.people.find(item => item.entityId === sourceEntityId), target = state.people.find(item => item.entityId === targetEntityId);
+      const adopted = profileSource === 'source' ? source : target;
+      state = { ...state, selectedEntityIds: [...new Set(state.selectedEntityIds.map(id => id === sourceEntityId ? targetEntityId : id))],
+        people: state.people.filter(item => item.entityId !== sourceEntityId).map(item => item.entityId === targetEntityId ? { ...item, selected: source.selected || target.selected, profile: adopted.profile, profiled: adopted.profiled, avatar: adopted.avatar } : item) };
+      return emit();
+    },
+    async deletePerson(entityId) { calls.delete.push(entityId); state = { ...state, selectedEntityIds: state.selectedEntityIds.filter(id => id !== entityId), people: state.people.filter(item => item.entityId !== entityId) }; return emit(); },
   };
   return { runtime, calls, emitState(next) { state = next; return emit(); }, get state() { return state; } };
 }
@@ -152,9 +164,9 @@ test('千人页横向切换只显示一份常显资料，草稿跨人物保留�
   const summary = flatten(container).find(node => node.className === 'qqj-profile-summary');
   assert.deepEqual(summary.children.map(node => node.className), ['qqj-profile-mark has-alias', 'qqj-profile-identity', 'qqj-profile-badges']);
   assert.match(summary.children[0].innerHTML, /<svg[\s\S]*?<path/, '档案标记应复用千千结自己的结形图标');
-  assert.match(visible(summary.children[1]), /甲.*别名 · 甲别名/); assert.match(visible(summary.children[2]), /推荐.*待建档/);
+  assert.match(visible(summary.children[1]), /甲.*别名 · 甲别名/); assert.match(visible(summary.children[2]), /待建档/); assert.doesNotMatch(visible(container), /推荐/);
   assert.deepEqual(flatten(container).filter(node => node.className?.includes?.('qqj-profile-section')).map(node => node.children[0].textContent), [], '空资料板块不显示');
-  assert.deepEqual(flatten(container).find(node => node.className === 'qqj-profile-menu-pop').children.map(node => node.textContent), ['整理当前资料', '编辑资料', '上传头像', '', '移出关注']);
+  assert.deepEqual(flatten(container).find(node => node.className === 'qqj-profile-menu-pop').children.map(node => node.textContent), ['整理当前资料', '编辑资料', '上传头像', '', '移出关注', '', '合并到其他人物', '删除人物']);
   const profileMenu = flatten(container).find(node => node.className === 'qqj-profile-menu');
   profileMenu.open = true; menuDocument.click({ target: profileMenu.children[0], composedPath: () => [profileMenu.children[0], profileMenu] }); assert.equal(profileMenu.open, true, '千人菜单内部点击不提前关闭');
   menuDocument.click({ target: container, composedPath: () => [container] }); assert.equal(profileMenu.open, false, '千人菜单点击外部后关闭');
@@ -205,6 +217,34 @@ test('更多人物入口固定在顶部并切换为独立选择视图，零选�
   flatten(container).find(node => node.textContent === '设为重要').click(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(h.calls.select.at(-1), [A]); assert.match(visible(container), /已选重要.*移出关注/); assert.match(visible(container), /返回资料/);
   flatten(container).find(node => node.textContent === '返回资料').click(); assert.match(visible(container), /甲.*别名 · 甲别名/);
+});
+
+test('人物菜单以两个内联选择完成整档合并，目标变化时资料人名同步且不生成原生选择器', async () => {
+  const profileA = { entityId: A, name: '甲档', aliases: '', notes: '甲资料', manualFields: ['notes'], source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
+  const h = runtimeHarness({ profiles: { [A]: profileA }, selected: [A, B] }), dialogs = dialogHarness(), container = new Node('main');
+  createPeopleProfilesView({ runtime: h.runtime, dialog: dialogs.dialog, documentRef }).mount(container);
+  h.emitState({ ...h.state, people: [...h.state.people, person(C, '一位名字很长也必须完整可读的丙', false)] });
+  flatten(container).find(node => node.textContent === '合并到其他人物').click();
+  assert.equal(dialogs.active.title, '合并人物 · 甲档'); assert.match(visible(dialogs.active.content), /聊天楼.*历史摘要和 CSE.*统一归到合并目标/);
+  assert.equal(flatten(dialogs.active.content).filter(node => node.tag === 'select').length, 0, '合并窗不得唤起系统原生选择器');
+  let selects = flatten(dialogs.active.content).filter(node => node.className === 'qqj-inline-select');
+  assert.equal(selects.length, 2); assert.equal(selects[0].value, B); assert.match(visible(selects[1]), /保留「乙」的资料与头像（尚未建档）/);
+  selects[1].children[0].click(); selects[1].children[1].children[1].click(); assert.equal(selects[1].value, 'source');
+  selects[0].children[0].click(); selects[0].children[1].children[1].click();
+  selects = flatten(dialogs.active.content).filter(node => node.className === 'qqj-inline-select');
+  assert.equal(selects[0].value, C); assert.equal(selects[1].value, 'source', '切换合并目标不得重置用户已选的资料来源');
+  assert.match(visible(selects[1]), /保留「一位名字很长也必须完整可读的丙」的资料与头像（尚未建档）/);
+  await dialogs.submit(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(h.calls.merge, [[A, C, 'source']]); assert.match(visible(container), /人物已合并.*历史摘要与 CSE 归属已汇集/);
+});
+
+test('人物菜单删除继续复用现有确认弹窗并说明历史不会删除', async () => {
+  const h = runtimeHarness({ selected: [A, B] }), dialogs = dialogHarness(), container = new Node('main');
+  createPeopleProfilesView({ runtime: h.runtime, dialog: dialogs.dialog, documentRef }).mount(container);
+  flatten(container).find(node => node.textContent === '删除人物').click(); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(dialogs.confirms.length, 1); assert.equal(dialogs.confirms[0].title, '删除人物 · 甲'); assert.equal(dialogs.confirms[0].confirmText, '删除人物');
+  assert.match(dialogs.confirms[0].body, /删除该人物的千人档案、头像和重要人物选择/); assert.match(dialogs.confirms[0].note, /聊天楼、历史摘要和 CSE 记录不会删除/);
+  assert.deepEqual(h.calls.delete, [A]);
 });
 
 test('投影姓名别名只填表单不算建档，首次保存与主动清空都会调用正式保存', async () => {

@@ -434,7 +434,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     }
     const indexes = indexResults.filter(result => result.status === 'ready').map(result => result.data);
     const indexKeys = indexResults.filter(result => result.status === 'ready').map(result => result.recordId);
-    const indexesComplete = effectiveMode === V3_READ_MODES.full;
+    const indexesComplete = selectedIndexKeys.length === checkpoint.producedRefs.indexes.length;
     const manifestNeedsReseal = indexesComplete && legacySnapshot && !manifestMatchesIndexes(root, indexes, indexKeys);
     const activeFloors = activeFloorViews(floorResults.map(result => result.data), indexes);
     const activeMemories = memoryResults.map(result => result.data);

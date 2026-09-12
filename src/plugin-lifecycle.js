@@ -5,6 +5,7 @@ export function createPluginLifecycle({
   aborters = [],
   isEnabled = true,
   getUi = () => null,
+  onPrepared = null,
   logger = console,
 } = {}) {
   if (typeof session?.prepare !== 'function' || typeof session?.invalidate !== 'function') {
@@ -17,6 +18,22 @@ export function createPluginLifecycle({
   let prepareEpoch = 0;
   let bound = false;
   let renameTransition = null;
+
+  const prepareCurrent = mine => mine === prepareEpoch && enabled();
+
+  function continuePrepared(result, mine) {
+    if (result?.status !== 'ready' || !result.identity || !prepareCurrent(mine) || typeof onPrepared !== 'function') return;
+    const isCurrent = () => prepareCurrent(mine);
+    let continuation;
+    try { continuation = onPrepared({ result, isCurrent }); }
+    catch (error) {
+      if (isCurrent()) logger?.warn?.('[qianqianjie] 身份成功后的后台加载失败', error);
+      return;
+    }
+    void Promise.resolve(continuation).catch(error => {
+      if (isCurrent()) logger?.warn?.('[qianqianjie] 身份成功后的后台加载失败', error);
+    });
+  }
 
   function invalidate() {
     prepareEpoch += 1;
@@ -33,7 +50,8 @@ export function createPluginLifecycle({
     const mine = ++prepareEpoch;
     if (!enabled()) return { status: 'disabled' };
     const result = await session.prepare();
-    if (mine !== prepareEpoch || !enabled()) return { status: enabled() ? 'stale' : 'disabled' };
+    if (!prepareCurrent(mine)) return { status: enabled() ? 'stale' : 'disabled' };
+    continuePrepared(result, mine);
     if (refresh) await getUi()?.refresh?.();
     return result;
   }
@@ -87,7 +105,8 @@ export function createPluginLifecycle({
     const mine = ++prepareEpoch;
     try {
       const result = await session.rename(event, transition.previousIdentity, prepared.identity);
-      if (mine !== prepareEpoch || !enabled()) return { status: enabled() ? 'stale' : 'disabled' };
+      if (!prepareCurrent(mine)) return { status: enabled() ? 'stale' : 'disabled' };
+      continuePrepared(result, mine);
       await getUi()?.refresh?.();
       return result;
     } catch (error) {

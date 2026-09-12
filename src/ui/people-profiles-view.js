@@ -1,5 +1,6 @@
 import { KNOT_ICON_SVG } from './brand.js';
 import { createOperationMenuController } from './operation-menu-controller.js';
+import { createInlineSelect } from './inline-select.js';
 import { PEOPLE_PROFILE_FIELDS, PEOPLE_PROFILE_GROUPS, PEOPLE_PROFILE_LABELS, emptyPeopleProfileFields } from '../v3/people-profile-fields.js';
 import { avatarCropLayout, cropAvatarDataUrl, loadAvatarSource } from './avatar-cropper.js';
 
@@ -15,7 +16,7 @@ function fieldsFrom(person) {
 function sameFields(left, right) { return PEOPLE_PROFILE_FIELDS.every(field => String(left?.[field] ?? '') === String(right?.[field] ?? '')); }
 
 export function createPeopleProfilesView({ runtime, dialog = null, documentRef = globalThis.document, imageFactory = () => new Image(), urlApi = globalThis.URL } = {}) {
-  if (!runtime || ['getState', 'refresh', 'setSelectedEntityIds', 'saveProfile', 'saveAvatar', 'generateMissingProfiles', 'regenerateProfile'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('千人人物资料 runtime 无效');
+  if (!runtime || ['getState', 'refresh', 'setSelectedEntityIds', 'saveProfile', 'saveAvatar', 'mergePeople', 'deletePerson', 'generateMissingProfiles', 'regenerateProfile'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('千人人物资料 runtime 无效');
   if (!documentRef?.createElement) throw new TypeError('千人人物资料 documentRef 无效');
   let container = null, active = false, epoch = 0, unsubscribe = null, state = runtime.getState(), chatId = state.chatId ?? null, feedback = '人物资料状态已显示。';
   let currentEntityId = null, showMore = false, cropDraft = null, cropLoadId = 0, cropLoadController = null;
@@ -37,6 +38,8 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
     if (value.active?.kind === 'generating') return '正在整理人物资料';
     if (value.active?.kind === 'savingSelection') return '正在保存重要人物选择';
     if (value.active?.kind === 'savingProfile') return '正在保存人物资料';
+    if (value.active?.kind === 'merging') return '正在合并人物归属';
+    if (value.active?.kind === 'deleting') return '正在删除人物';
     if (value.lastError?.message) return `需要处理 · ${value.lastError.message}`;
     return `已选 ${value.people.filter(person => person.selected).length} 位重要人物 · ${value.unprofiledSelectedCount} 位待建档`;
   };
@@ -133,6 +136,71 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
     button.addEventListener('click', () => { void run(label, () => runtime.regenerateProfile(person.entityId), { generationReport: true }); });
     return button;
   }
+  async function deletePerson(person) {
+    if (!dialog?.confirm) { feedback = '当前环境无法打开删除确认窗口。'; render(state); return; }
+    const name = person.displayName || person.entityDisplayName || '该人物';
+    const confirmed = await dialog.confirm({ title: `删除人物 · ${name}`, body: '这会删除该人物的千人档案、头像和重要人物选择，并从当前人物管理候选中隐藏。',
+      note: '聊天楼、历史摘要和 CSE 记录不会删除。今后若剧情识别出新的同名身份，仍可重新出现。', confirmText: '删除人物', cancelText: '取消' });
+    if (!confirmed) return;
+    await run('删除人物', () => runtime.deletePerson(person.entityId), { after: () => {
+      drafts.delete(person.entityId); if (currentEntityId === person.entityId) currentEntityId = null;
+    } });
+  }
+  function mergeDialogContent(person) {
+    const targets = state.people.filter(item => item.entityId !== person.entityId);
+    const nameOf = value => value?.displayName || value?.entityDisplayName || '未命名人物';
+    const profileChoice = value => `保留「${nameOf(value)}」的资料与头像${value?.profiled ? '' : '（尚未建档）'}`;
+    const panel = element('section', 'qqj-merge-dialog');
+    panel.append(element('p', 'qqj-merge-dialog-intro', '双方的聊天楼、历史摘要和 CSE 都会保留，并统一归到合并目标。请选择保留哪一方的整份人物资料和头像。'));
+
+    const targetField = element('div', 'qqj-merge-field');
+    targetField.append(element('span', 'qqj-merge-field-title', '合并目标'));
+    const profileHost = element('div', 'qqj-merge-select-host');
+    let profileSelect = null;
+    const renderProfileSelect = () => {
+      const selected = profileSelect?.value ?? 'target';
+      const target = targets.find(item => item.entityId === targetSelect.value) ?? targets[0];
+      profileSelect = createInlineSelect({
+        documentRef,
+        options: [{ value: 'target', label: profileChoice(target) }, { value: 'source', label: profileChoice(person) }],
+        value: selected,
+        ariaLabel: '选择保留哪位人物的资料与头像',
+      });
+      profileHost.replaceChildren(profileSelect.node);
+    };
+    const targetSelect = createInlineSelect({
+      documentRef,
+      options: targets.map(target => ({ value: target.entityId, label: nameOf(target) })),
+      value: targets[0]?.entityId ?? '',
+      ariaLabel: '选择人物合并目标',
+      onChange: renderProfileSelect,
+    });
+    targetField.append(targetSelect.node); panel.append(targetField);
+
+    const profileField = element('div', 'qqj-merge-field');
+    profileField.append(element('span', 'qqj-merge-field-title', '保留资料与头像'), profileHost); panel.append(profileField);
+    renderProfileSelect();
+    return { panel, targetSelect, get profileSelect() { return profileSelect; } };
+  }
+  function mergePerson(person) {
+    if (!dialog?.custom) { feedback = '当前环境无法打开合并窗口。'; render(state); return; }
+    const targets = state.people.filter(item => item.entityId !== person.entityId);
+    if (!targets.length) { feedback = '当前没有其他可作为合并目标的人物。'; render(state); return; }
+    const operationChatId = chatId, content = mergeDialogContent(person);
+    void dialog.custom({ title: `合并人物 · ${person.displayName || person.entityDisplayName}`, content: content.panel, confirmText: '确认合并', cancelText: '取消', submit: async () => {
+      const targetEntityId = content.targetSelect.value;
+      if (!targetEntityId) throw new Error('请选择合并目标。');
+      await runtime.mergePeople(person.entityId, targetEntityId, content.profileSelect.value);
+      const next = runtime.getState();
+      if ((next.chatId ?? null) !== operationChatId) throw new Error('聊天已变化，本次合并未应用到当前页面。');
+      state = next; drafts.delete(person.entityId); currentEntityId = targetEntityId; feedback = '人物已合并；历史摘要与 CSE 归属已汇集到目标人物。'; if (active) render(next); return true;
+    } });
+  }
+  function managementButtons(person, menuBody) {
+    const merge = element('button', 'qqj-profile-menu-action', '合并到其他人物'); merge.type = 'button'; merge.disabled = Boolean(state.active) || state.people.length < 2; merge.addEventListener('click', () => mergePerson(person));
+    const remove = element('button', 'qqj-profile-menu-action danger', '删除人物'); remove.type = 'button'; remove.disabled = Boolean(state.active); remove.addEventListener('click', () => { void deletePerson(person); });
+    menuBody.append(merge, remove);
+  }
   async function chooseAvatar(person, mark, file) {
     cropLoadController?.abort();
     const controller = new AbortController(); cropLoadController = controller;
@@ -199,7 +267,6 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
     name.setAttribute?.('title', name.textContent); name.setAttribute?.('aria-label', `姓名：${name.textContent}`);
     identity.append(name); if (hasAlias) identity.append(element('p', 'qqj-profile-alias', `别名 · ${values.aliases}`));
     const badges = element('div', 'qqj-profile-badges');
-    if (person.recommended) badges.append(element('span', 'qqj-recommend-badge', '推荐'));
     badges.append(element('span', 'v3-memory-status', person.profiled ? '已建档' : '待建档'));
     if (!draft?.editing) {
       const menu = operationMenus.register(element('details', 'qqj-profile-menu')), toggle = element('summary', 'qqj-profile-menu-toggle', '⋮');
@@ -211,7 +278,7 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
       const avatarRemove = person.avatar ? element('button', 'qqj-profile-menu-action danger', '移除头像') : null;
       avatarRemove?.addEventListener('click', () => { void run('移除头像', () => runtime.saveAvatar(person.entityId, null)); });
       const remove = selectionButton(person, state.selectedEntityIds); remove.className = `${remove.className} qqj-profile-menu-action danger`;
-      menuBody.append(personGenerationButton(person, 'qqj-profile-menu-action'), edit, avatarAction); if (avatarRemove) menuBody.append(avatarRemove); menuBody.append(element('span', 'qqj-profile-menu-separator'), remove); menu.append(toggle, menuBody); badges.append(menu);
+      menuBody.append(personGenerationButton(person, 'qqj-profile-menu-action'), edit, avatarAction); if (avatarRemove) menuBody.append(avatarRemove); menuBody.append(element('span', 'qqj-profile-menu-separator'), remove, element('span', 'qqj-profile-menu-separator')); managementButtons(person, menuBody); menu.append(toggle, menuBody); badges.append(menu);
     }
     header.append(mark, identity, badges);
     panel.append(header, file);
@@ -281,8 +348,13 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
     for (const person of people) {
       const row = element('div', 'qqj-more-person-row'), copy = element('div', 'qqj-more-person-copy');
       copy.append(element('strong', '', person.displayName || person.entityDisplayName));
-      const detail = [person.selected ? '已选重要' : '', person.profiled ? '已建档' : '', person.aliases.length ? `别名：${person.aliases.join('、')}` : '', person.appearanceCount ? `出现 ${person.appearanceCount} 楼` : '', person.recommended ? '推荐' : ''].filter(Boolean).join('，');
-      copy.append(element('small', '', detail || '已发现人物')); row.append(copy, selectionButton(person, state.selectedEntityIds)); list.append(row);
+      const detail = [person.selected ? '已选重要' : '', person.profiled ? '已建档' : '', person.aliases.length ? `别名：${person.aliases.join('、')}` : '', person.appearanceCount ? `出现 ${person.appearanceCount} 楼` : ''].filter(Boolean).join('，');
+      copy.append(element('small', '', detail || '已发现人物'));
+      const actions = element('div', 'qqj-more-person-actions'); actions.append(selectionButton(person, state.selectedEntityIds));
+      const menu = operationMenus.register(element('details', 'qqj-profile-menu')), toggle = element('summary', 'qqj-profile-menu-toggle', '⋮');
+      toggle.setAttribute?.('aria-label', `${person.displayName || person.entityDisplayName}人物操作`);
+      const menuBody = element('div', 'qqj-profile-menu-pop'); managementButtons(person, menuBody); menu.append(toggle, menuBody); actions.append(menu);
+      row.append(copy, actions); list.append(row);
     }
     if (!people.length) list.append(element('p', 'settings-hint', '当前没有已识别人物。后续摘要和状态分析仍会正常发现人物。'));
     picker.append(list); return picker;

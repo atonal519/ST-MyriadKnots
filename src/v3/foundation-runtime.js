@@ -7,7 +7,6 @@ import {
   createFloorRecord,
   deterministicUuid,
   foundationInputSnapshot,
-  reverseRefShardPrefix,
   scanAssistantCandidates,
   selectAssistantMessage,
   selectUserStabilityAnchor,
@@ -20,8 +19,9 @@ import {
   validateFoundationRoot,
   validateFoundationRun,
   sameFoundationRecordContent,
+  V3_INDEX_LAYOUT_FLOOR_ORDER,
 } from './foundation-schema.js';
-import { collectFloorMemoryEntityIds, entityIndexKey, projectEntityFloorBounds, validateMemoryGraph } from './memory-schema.js';
+import { collectFloorMemoryEntityIds, projectEntityFloorBounds, validateMemoryGraph } from './memory-schema.js';
 import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
 import { validateCseGraph } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
@@ -31,7 +31,6 @@ const EVENTS = Object.freeze([
   'CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED',
   'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MORE_MESSAGES_LOADED',
 ]);
-const INDEX_SHARD_LIMIT = 512;
 const PREPARED_WRITE_CONCURRENCY = 4;
 const emptyIndexManifest = () => ({ floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] });
 const hash = async value => `sha256:${await sha256(JSON.stringify(value))}`;
@@ -60,13 +59,7 @@ function normalizedIdentity(contextProvider) {
 function commonRecord({ recordType, id, chatId, narrativeGeneration, now, recordStatus = 'staged', supersedes = null }) {
   return { schemaVersion: 3, recordType, id, chatId, narrativeGeneration, createdAt: now, updatedAt: now, recordStatus, supersedes };
 }
-function chunks(values, size = INDEX_SHARD_LIMIT) {
-  const result = [];
-  for (let offset = 0; offset < values.length; offset += size) result.push(values.slice(offset, offset + size));
-  return result;
-}
-
-export async function buildFoundationIndexes({ chatId, narrativeGeneration, checkpointId, floors, candidates, entities = [], now }) {
+export async function buildFoundationIndexes({ chatId, narrativeGeneration, checkpointId, floors, candidates, now }) {
   const records = [];
   const add = async (kind, shard, entries) => {
     if (!entries.length) return;
@@ -82,48 +75,6 @@ export async function buildFoundationIndexes({ chatId, narrativeGeneration, chec
       const locator = candidates[offset + index]?.hostLocator ?? floor.hostLocator;
       return { key: String(offset + index + 1), refs: [{ recordType: 'floor', recordId: floor.id, itemId: JSON.stringify(locator) }] };
     }));
-  }
-  const fingerprints = new Map();
-  for (let index = 0; index < floors.length; index += 1) {
-    const floor = floors[index];
-    for (const [value, itemId] of [
-      [floor.content.rawFingerprint, 'raw'],
-      [floor.content.canonicalFingerprint, 'canonical'],
-    ]) {
-      const prefix = value.slice('sha256:'.length, 'sha256:'.length + 2);
-      const entries = fingerprints.get(prefix) ?? [];
-      entries.push({ key: value, refs: [{ recordType: 'floor', recordId: floor.id, itemId }] });
-      fingerprints.set(prefix, entries);
-    }
-  }
-  for (const [prefix, entries] of fingerprints) {
-    const shards = chunks(entries);
-    for (let index = 0; index < shards.length; index += 1) await add('fingerprint', `${prefix}-${index}`, shards[index]);
-  }
-  const entityEntries = new Map();
-  for (const entity of entities) {
-    const keys = new Set([await entityIndexKey(entity.id), await entityIndexKey(entity.displayName), ...await Promise.all(entity.aliases.map(alias => entityIndexKey(alias.normalized || alias.name)))]);
-    for (const key of keys) {
-      const prefix = key.slice('sha256:'.length, 'sha256:'.length + 2);
-      const entries = entityEntries.get(prefix) ?? [];
-      entries.push({ key, refs: [{ recordType: 'entity', recordId: entity.id, itemId: null }] });
-      entityEntries.set(prefix, entries);
-    }
-  }
-  for (const [prefix, entries] of entityEntries) {
-    const shards = chunks(entries);
-    for (let index = 0; index < shards.length; index += 1) await add('entity', `${prefix}-${index}`, shards[index]);
-  }
-  const reverseEntries = new Map();
-  for (const floor of floors) {
-    const prefix = await reverseRefShardPrefix(floor.id);
-    const entries = reverseEntries.get(prefix) ?? [];
-    entries.push({ key: floor.id, refs: [{ recordType: 'checkpoint', recordId: checkpointId, itemId: null }] });
-    reverseEntries.set(prefix, entries);
-  }
-  for (const [prefix, entries] of reverseEntries) {
-    const routedShards = chunks(entries);
-    for (let index = 0; index < routedShards.length; index += 1) await add('reverseRef', `${prefix}-${index}`, routedShards[index]);
   }
   return records;
 }
@@ -696,7 +647,7 @@ export function createFoundationRuntime({
     const stateFingerprint = await hash([narrativeGeneration, floorIds, floors.map(floor => floor.content.canonicalFingerprint)]);
     const checkpointCandidate = {
       ...commonRecord({ recordType: 'checkpoint', id: checkpointId, chatId: operation.chatId, narrativeGeneration, now: nowValue, recordStatus: 'active' }),
-      parentCheckpointId, runId, sourceSnapshotFingerprint: snapshot.fingerprint, capabilities: clone(capabilities),
+      parentCheckpointId, runId, sourceSnapshotFingerprint: snapshot.fingerprint, indexLayout: V3_INDEX_LAYOUT_FLOOR_ORDER, capabilities: clone(capabilities),
       floorRange: { fromAssistantSeq: floors.length ? 1 : 0, toAssistantSeq: floors.length, floorIds },
       inputFingerprints: createCheckpointInputFingerprints(floors, { candidates: stableCandidates, previous: cache.checkpoint?.inputFingerprints }),
       producedRefs: { floors: floorIds, floorMemories: floorMemories.map(memory => memory.id), entities: entities.map(entity => entity.id), events: [], claims: [], knowledge: [], stateDeltas: stateDeltas.map(delta => delta.id), currentStates: currentState ? [currentState.id] : [], stateProjections: [], episodes: [], threads: [], indexes: indexKeys },

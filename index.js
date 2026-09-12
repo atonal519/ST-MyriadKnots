@@ -97,6 +97,14 @@ const foundationRuntime = createFoundationRuntime({
   isEnabled: settings.isEnabled,
   sanitizerOptions,
 });
+const peopleWorkspaceStore = createPeopleWorkspaceStore({ client: backendClient });
+let peopleWorkspaceRuntime;
+const identityProjectionProvider = async () => {
+  const identity = session.identity();
+  const state = peopleWorkspaceRuntime?.getState?.();
+  if (state?.chatId === identity.chatId) return peopleWorkspaceRuntime.getIdentityProjection();
+  return (await peopleWorkspaceStore.read(identity)).data ?? {};
+};
 let v3RecallRuntime;
 const v3MemoryRuntime = createV3MemoryRuntime({
   foundationRuntime,
@@ -118,6 +126,7 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   filterWorldInfoSources: sourcePermissions.filterWorldInfoSources,
   sanitizerOptions,
   persistAnchors: persistMessageFloorAnchors,
+  identityProjectionProvider,
 });
 v3RecallRuntime = createV3RecallRuntime({
   store: foundationStore,
@@ -129,10 +138,10 @@ v3RecallRuntime = createV3RecallRuntime({
   realtimeOrigin: () => v3MemoryRuntime.allowsRealtimeTailFromEmpty(),
   notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
   sanitizerOptions,
+  identityProjectionProvider,
   pluginVersion,
 });
-const peopleWorkspaceStore = createPeopleWorkspaceStore({ client: backendClient });
-const peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
+peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
   store: peopleWorkspaceStore,
   session,
   foundationRuntime,
@@ -167,8 +176,10 @@ const publicMemoryBridgeMount = installPublicMemoryBridge({
   session,
   store: foundationStore,
   hostAdapter,
+  foundationRuntime,
   isEnabled: settings.isEnabled,
   sanitizerOptions,
+  identityProjectionProvider,
 });
 globalThis.addEventListener?.('beforeunload', publicMemoryBridgeMount.cleanup, { once: true });
 globalThis.addEventListener?.('beforeunload', autoHideController.dispose, { once: true });
@@ -187,10 +198,8 @@ const setAllEnabled = async enabled => {
   }
   inlineRenderer.setEnabled(true);
   const lifecycleResult = await lifecycle?.setEnabled(enabled);
-  const v3Result = await v3MemoryRuntime.setEnabled(enabled);
   await v3RecallRuntime.setEnabled(enabled);
-  await peopleWorkspaceRuntime.setEnabled(enabled);
-  return v3Result ?? lifecycleResult;
+  return lifecycleResult;
 };
 ui = bootstrap({
   settings,
@@ -221,6 +230,12 @@ lifecycle = createPluginLifecycle({
   aborters: [taskRouter, apiTools, peopleWorkspaceRuntime],
   isEnabled: settings.isEnabled,
   getUi: () => ui,
+  onPrepared: async ({ isCurrent }) => {
+    if (!isCurrent()) return;
+    await v3MemoryRuntime.start();
+    if (!isCurrent()) return;
+    await peopleWorkspaceRuntime.refresh({ refreshMemory: false });
+  },
 });
 const host = hostContext();
 refreshStoryClock({ announce: true });
@@ -234,6 +249,4 @@ for (const name of ['CHAT_CHANGED', 'GENERATION_STARTED']) {
 void (async () => {
   inlineRenderer.setEnabled(settings.isEnabled());
   await lifecycle.start();
-  await v3MemoryRuntime.start();
-  await peopleWorkspaceRuntime.start();
 })().catch(error => console.warn('[qianqianjie] 身份或 V3 地基准备失败', error));

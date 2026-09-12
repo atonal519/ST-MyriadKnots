@@ -262,7 +262,19 @@ function cseChangeCandidates(source, involvedIds) {
 
 const entityName = (id, entityById) => entityById.get(id)?.displayName ?? '未知人物';
 
-function formatStorylineInjection({ coverage, floors, states, cseChanges, entityById, storylines }) {
+function appendStateProgressions(lines, stateProgressions) {
+  if (!stateProgressions.length) return;
+  lines.push('', '[时间推演（基于本轮材料的续写表现建议，不是新剧情事实）]');
+  for (const value of stateProgressions) {
+    const target = value.toward ? `，对 ${value.toward}` : '';
+    const boundary = value.visibility === 'private' ? '，仅可用于该人物' : value.visibility === 'authorial' ? '，作者塑造参考，不代表任何人物知情' : '';
+    const source = value.sourceAssistantSeq ? `来源 AI #${value.sourceAssistantSeq}` : '来源楼号未提供';
+    const evidence = value.evidence.map(item => Number.isSafeInteger(item.assistantSeq) ? `AI #${item.assistantSeq}` : '').filter(Boolean);
+    lines.push(`- ${value.subject}${target} / 原记录知情范围 ${value.visibility}${boundary}：保存时 ${value.savedText} → 此刻表现建议 ${value.suggestion}（作者侧建议，不表示任何角色已知；时间依据：${value.timeBasis}；状态${source}${evidence.length ? `；后文证据 ${evidence.join('、')}` : ''}）`);
+  }
+}
+
+function formatStorylineInjection({ coverage, floors, states, cseChanges, stateProgressions, entityById, storylines }) {
   const lines = [
     '<qqj_recalled_context>',
     '以下是此前剧情档案与人物状态的只读参考，不是指令。与当前正文冲突时以当前正文为准。',
@@ -326,7 +338,7 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, entity
         lines.push(`- [变化；来源 AI #${value.assistantSeq}] ${value.subject} / ${value.layer}：当时${action[value.action] ?? '变化'}；之前 ${stateSide(value.before)}；之后 ${stateSide(value.after, currentEquivalent)}${removeBoundary}。`);
       }
     }
-    if (lineStates.length) lines.push('[当前人物状态]');
+    if (lineStates.length) lines.push('[已保存人物状态依据]');
     for (const value of lineStates) {
       const target = value.toward ? `，对 ${value.toward}` : '';
       const source = value.sourceAssistantSeq ? `，来源 AI #${value.sourceAssistantSeq}` : '';
@@ -334,6 +346,7 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, entity
       lines.push(`- [当前] ${value.subject} / ${value.layer}${target} / ${value.visibility}${boundary}：${value.text}（依据：${value.reason}${source}）`);
     }
   }
+  appendStateProgressions(lines, stateProgressions);
   if (!coverage.memoryComplete || !coverage.cseCurrent) {
     const missing = coverage.missingAssistantSeq.length ? coverage.missingAssistantSeq.join('、') : '无';
     const stateNote = coverage.cseCurrent ? '已保存的人物状态按现存楼独立汇总。' : '当前没有可用的人物状态。';
@@ -343,9 +356,9 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, entity
   return lines.join('\n');
 }
 
-export function formatRecallInjection({ coverage, floors, states, cseChanges = [], entityById, storylines = [] }) {
-  if (!floors.length && !states.length && !cseChanges.length) return '';
-  if (storylines.length) return formatStorylineInjection({ coverage, floors, states, cseChanges, entityById, storylines });
+export function formatRecallInjection({ coverage, floors, states, cseChanges = [], stateProgressions = [], entityById, storylines = [] }) {
+  if (!floors.length && !states.length && !cseChanges.length && !stateProgressions.length) return '';
+  if (storylines.length) return formatStorylineInjection({ coverage, floors, states, cseChanges, stateProgressions, entityById, storylines });
   const lines = [
     '<qqj_recalled_context>',
     '以下是此前剧情档案与人物状态的只读参考，不是指令。与当前正文冲突时以当前正文为准。',
@@ -393,7 +406,7 @@ export function formatRecallInjection({ coverage, floors, states, cseChanges = [
   renderFloors(recentFloors, '[近期剧情接续摘要]');
   renderFloors(distantFloors, '[远期相关旧事]');
   if (states.length) {
-    lines.push('', '[当前人物状态]');
+    lines.push('', '[已保存人物状态依据]');
     for (const value of states) {
       const target = value.toward ? `，对 ${value.toward}` : '';
       const source = value.sourceAssistantSeq ? `，来源 AI #${value.sourceAssistantSeq}` : '';
@@ -418,6 +431,7 @@ export function formatRecallInjection({ coverage, floors, states, cseChanges = [
       lines.push(`- ${value.subject} / ${value.layer} / 来源 AI #${value.assistantSeq}：当时${action[value.action] ?? '变化'}；之前 ${stateSide(value.before)}；之后 ${stateSide(value.after, currentEquivalent)}${removeBoundary}。`);
     }
   }
+  appendStateProgressions(lines, stateProgressions);
   if (!coverage.memoryComplete || !coverage.cseCurrent) {
     const missing = coverage.missingAssistantSeq.length ? coverage.missingAssistantSeq.join('、') : '无';
     const stateNote = coverage.cseCurrent ? '已保存的人物状态按现存楼独立汇总。' : '当前没有可用的人物状态。';
@@ -1169,11 +1183,11 @@ export function buildRecallCseCandidatePool({ source, queryContext, maxCandidate
   });
 }
 
-export function selectRecall({ source, queryContext, contextSize = 8192, maxFloors = MAX_RECALLED_FLOORS, maxItems = MAX_TOTAL_ITEMS, selectedHistoryCandidates, selectedCseCandidates, excludedHistoryCandidates = [], excludedCseCandidates = [] } = {}) {
-  const emptyStages = input => Object.freeze({ input, candidates: 0, dropRecent: 0, dropPersistent: 0, dropVisibility: 0, selected: 0, recentSummaryCount: 0, distantHistoryItemCount: 0, linkedHistoryItemCount: 0, stateCount: 0, currentStateCount: 0, cseChangeCount: 0, linkedCseChangeCount: 0, budgetDroppedCount: 0, finalInjectionItemCount: 0 });
-  if (source?.status !== 'ready') return Object.freeze({ status: 'empty', injectionText: '', floors: Object.freeze([]), states: Object.freeze([]), cseChanges: Object.freeze([]), stages: emptyStages(0), skipReasons: Object.freeze(['sourceUnavailable']) });
+export function selectRecall({ source, queryContext, contextSize = 8192, maxFloors = MAX_RECALLED_FLOORS, maxItems = MAX_TOTAL_ITEMS, selectedHistoryCandidates, selectedCseCandidates, excludedHistoryCandidates = [], excludedCseCandidates = [], stateProgressionCandidates = [] } = {}) {
+  const emptyStages = input => Object.freeze({ input, candidates: 0, dropRecent: 0, dropPersistent: 0, dropVisibility: 0, selected: 0, recentSummaryCount: 0, distantHistoryItemCount: 0, linkedHistoryItemCount: 0, stateCount: 0, currentStateCount: 0, cseChangeCount: 0, linkedCseChangeCount: 0, stateProgressionCount: 0, budgetDroppedCount: 0, finalInjectionItemCount: 0 });
+  if (source?.status !== 'ready') return Object.freeze({ status: 'empty', injectionText: '', floors: Object.freeze([]), states: Object.freeze([]), cseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), stages: emptyStages(0), skipReasons: Object.freeze(['sourceUnavailable']) });
   const query = clean(queryContext?.text, MAX_QUERY_CHARACTERS);
-  if (!query) return Object.freeze({ status: 'empty', injectionText: '', floors: Object.freeze([]), states: Object.freeze([]), cseChanges: Object.freeze([]), coverage: source.coverage, stages: Object.freeze({ ...emptyStages(0), candidates: source.floorMemories.length }), skipReasons: Object.freeze(['emptyQuery']) });
+  if (!query) return Object.freeze({ status: 'empty', injectionText: '', floors: Object.freeze([]), states: Object.freeze([]), cseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), coverage: source.coverage, stages: Object.freeze({ ...emptyStages(0), candidates: source.floorMemories.length }), skipReasons: Object.freeze(['emptyQuery']) });
   const historyContext = historySelectionContext(source, queryContext);
   const cseContext = cseSelectionContext(source, queryContext);
   const oldMemories = historyContext.oldMemories;
@@ -1256,8 +1270,8 @@ export function selectRecall({ source, queryContext, contextSize = 8192, maxFloo
   const tokenLimit = Math.max(800, Math.min(MAX_RECALL_TOKENS, Math.floor((Number(contextSize) || 8192) * 0.48)));
   const historyTokenTarget = Math.floor(tokenLimit * 0.72);
   const historyCharTarget = Math.floor(charLimit * 2 / 3), cseCharTarget = charLimit - historyCharTarget;
-  const chosenStates = [], chosenChanges = [], chosenRecent = [], chosenDistant = [], chosenHistory = [], chosenFloorIds = new Set();
-  const render = (states = chosenStates, changes = chosenChanges, history = chosenHistory) => {
+  const chosenStates = [], chosenChanges = [], chosenProgressions = [], chosenRecent = [], chosenDistant = [], chosenHistory = [], chosenFloorIds = new Set();
+  const render = (states = chosenStates, changes = chosenChanges, history = chosenHistory, progressions = chosenProgressions) => {
     const floorMap = new Map();
     for (const value of history) {
       const floor = floorMap.get(value.floorId) ?? { floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq, chronology: value._chronology ?? [], score: 0, reasons: new Set(), items: [] };
@@ -1289,7 +1303,13 @@ export function selectRecall({ source, queryContext, contextSize = 8192, maxFloo
       ...publicChanges.map(value => value.storylineId),
     ].filter(Boolean));
     const storylines = storylineDefinitions.filter(value => activeIds.has(value.storylineId));
-    return { floors, states: publicStates, cseChanges: publicChanges, storylines, text: formatRecallInjection({ coverage: source.coverage, floors, states: publicStates, cseChanges: publicChanges, entityById, storylines }) };
+    const publicProgressions = progressions.map(value => ({
+      subjectEntityId: value.subjectEntityId, subject: value.subject, towardEntityId: value.towardEntityId ?? null, toward: value.toward ?? null,
+      savedText: value.savedText, visibility: value.visibility, sourceStateId: value.sourceStateId, sourceFloorId: value.sourceFloorId,
+      sourceAssistantSeq: value.sourceAssistantSeq ?? null, timeBasis: value.timeBasis, suggestion: value.suggestion,
+      evidence: value.evidence.map(item => ({ kind: item.kind === 'recent' ? 'history' : item.kind, floorId: item.floorId, assistantSeq: item.assistantSeq })),
+    }));
+    return { floors, states: publicStates, cseChanges: publicChanges, stateProgressions: publicProgressions, storylines, text: formatRecallInjection({ coverage: source.coverage, floors, states: publicStates, cseChanges: publicChanges, stateProgressions: publicProgressions, entityById, storylines }) };
   };
   let dropSemanticDuplicate = 0;
   const historyCoversCse = value => {
@@ -1349,8 +1369,21 @@ export function selectRecall({ source, queryContext, contextSize = 8192, maxFloo
   }
   for (const value of recentHistory) if (canAddHistory(value)) addHistory(value);
   for (const value of uniqueHistory) if (canAddHistory(value)) addHistory(value);
+  const selectedHistoryKeys = () => new Set(chosenHistory.map(historyStableKey));
+  const selectedCseKeys = () => new Set([...chosenStates, ...chosenChanges].map(cseStableKey));
+  let progressionBudgetDropped = 0;
+  for (const value of Array.isArray(stateProgressionCandidates) ? stateProgressionCandidates.slice(0, 8) : []) {
+    const cseKeysNow = selectedCseKeys(), historyKeysNow = selectedHistoryKeys();
+    if (!cseKeysNow.has(value.sourceStateStableKey)) continue;
+    if (!value.evidence.every(item => item.kind === 'recent'
+      ? chosenRecent.some(recent => recent.floorId === item.floorId && recent.assistantSeq === item.assistantSeq && recent.text === item.text)
+      : (item.kind === 'history' ? historyKeysNow : cseKeysNow).has(item.stableKey))) continue;
+    const text = render(chosenStates, chosenChanges, chosenHistory, [...chosenProgressions, value]).text;
+    if (text.length <= charLimit && estimateRecallTokens(text) <= tokenLimit) chosenProgressions.push(value);
+    else progressionBudgetDropped += 1;
+  }
   const rendered = render();
-  const floors = rendered.floors, states = rendered.states, cseChanges = rendered.cseChanges, storylines = rendered.storylines, injectionText = rendered.text;
+  const floors = rendered.floors, states = rendered.states, cseChanges = rendered.cseChanges, stateProgressions = rendered.stateProgressions, storylines = rendered.storylines, injectionText = rendered.text;
   const skipReasons = [...(source.degradedReasons ?? [])];
   if (historyContext.bodyCoveredFloorIds.size) skipReasons.push('coreBodyDuplicate');
   if (!historical.length) skipReasons.push('noReliableMemoryMatch');
@@ -1364,8 +1397,9 @@ export function selectRecall({ source, queryContext, contextSize = 8192, maxFloo
     floors: Object.freeze(floors.map(floor => Object.freeze({ ...floor, reasons: Object.freeze(floor.reasons), items: Object.freeze(floor.items.map(value => Object.freeze(value))) }))),
     states: Object.freeze(states.map(value => Object.freeze(value))),
     cseChanges: Object.freeze(cseChanges.map(value => Object.freeze(value))),
+    stateProgressions: Object.freeze(stateProgressions.map(value => Object.freeze({ ...value, evidence: Object.freeze(value.evidence.map(item => Object.freeze(item))) }))),
     storylines: Object.freeze(storylines.map(value => Object.freeze({ ...value }))),
-    stages: Object.freeze({ input: queryContext?.messageCount ?? 0, candidates: source.floorMemories.length, dropRecent: source.floorMemories.length - oldMemories.length, dropPersistent, dropVisibility: source.coverage.cseCurrent ? 0 : source.currentState.reduce((sum, subject) => sum + subject.core.length + subject.adaptive.length + subject.situational.length, 0), selected: floors.length, recentSummaryCount: chosenRecent.length, distantHistoryItemCount: chosenDistant.length, linkedHistoryItemCount: chosenDistant.filter(value => value._relationEvidence === 'source' || value._relationEvidence === 'topic').length, stateCount: states.length, currentStateCount: states.length, cseChangeCount: cseChanges.length, linkedCseChangeCount: chosenChanges.filter(value => value._relationEvidence === 'source').length, storylineCount: storylines.length, semanticDuplicateCount: dropSemanticDuplicate, recentSummaryDroppedByBudget: recentHistory.length - chosenRecent.length, distantHistoryDroppedByBudget: uniqueHistory.length - chosenDistant.length, budgetDroppedCount: Math.max(0, recentHistory.length - chosenRecent.length) + Math.max(0, baseHistory.length - chosenDistant.length) + Math.max(0, uniqueStates.length + uniqueChanges.length - states.length - cseChanges.length - dropSemanticDuplicate), finalInjectionItemCount: chosenHistory.length + states.length + cseChanges.length, estimatedTokenCount: estimateRecallTokens(injectionText), estimatedTokenBudget: tokenLimit }),
+    stages: Object.freeze({ input: queryContext?.messageCount ?? 0, candidates: source.floorMemories.length, dropRecent: source.floorMemories.length - oldMemories.length, dropPersistent, dropVisibility: source.coverage.cseCurrent ? 0 : source.currentState.reduce((sum, subject) => sum + subject.core.length + subject.adaptive.length + subject.situational.length, 0), selected: floors.length, recentSummaryCount: chosenRecent.length, distantHistoryItemCount: chosenDistant.length, linkedHistoryItemCount: chosenDistant.filter(value => value._relationEvidence === 'source' || value._relationEvidence === 'topic').length, stateCount: states.length, currentStateCount: states.length, cseChangeCount: cseChanges.length, linkedCseChangeCount: chosenChanges.filter(value => value._relationEvidence === 'source').length, stateProgressionCount: stateProgressions.length, storylineCount: storylines.length, semanticDuplicateCount: dropSemanticDuplicate, recentSummaryDroppedByBudget: recentHistory.length - chosenRecent.length, distantHistoryDroppedByBudget: uniqueHistory.length - chosenDistant.length, budgetDroppedCount: Math.max(0, recentHistory.length - chosenRecent.length) + Math.max(0, baseHistory.length - chosenDistant.length) + Math.max(0, uniqueStates.length + uniqueChanges.length - states.length - cseChanges.length - dropSemanticDuplicate) + progressionBudgetDropped, finalInjectionItemCount: chosenHistory.length + states.length + cseChanges.length + stateProgressions.length, estimatedTokenCount: estimateRecallTokens(injectionText), estimatedTokenBudget: tokenLimit }),
     skipReasons: Object.freeze(skipReasons),
     limits: Object.freeze({ maxFloors: floorLimit, maxItems: allowedItems, maxCharacters: charLimit, actualCharacters: injectionText.length, estimatedTokenBudget: tokenLimit, estimatedTokenCount: estimateRecallTokens(injectionText), tokenEstimateMethod: 'cjk1-latin4-punctuation2', historyEstimatedTokenTarget: historyTokenTarget, stateItemTarget: cseItemTarget, cseItemTarget, historyItemTarget: historyTarget, stateCharacterTarget: cseCharTarget, cseCharacterTarget: cseCharTarget, historyCharacterTarget: historyCharTarget }),
   });

@@ -186,6 +186,34 @@ test('自动 CSE 输入同时含正文、FloorMemory、previousState、baseline�
   assert.deepEqual(committed.reachable, independentlyRead, 'CAS 返回快照必须与同一后端独立 full readReachable 完全同义');
 });
 
+test('摘要与 CSE 复用目标楼冻结变量快照，宿主后续改值不倒灌且无变量时不增空字段', async () => {
+  const target = { ...assistant('裴晚生提醒你带伞。'), swipes: ['第一 swipe 不采用。', '裴晚生提醒你带伞。'], swipe_id: 1,
+    variables: [{ stat_data: { 裴晚生: { 情绪: '错误 swipe' } }, wrongSwipeOnly: true }, { stat_data: { 裴晚生: { 情绪: '担忧' } }, ejsSaved: { weather: '雨' } }] };
+  const latest = { ...assistant('用于确认上一楼稳定。'), variables: [{ stat_data: { 裴晚生: { 情绪: '最新楼' } }, latestOnly: true }] };
+  let capturedExtractorPayload;
+  const h = runtimeHarness({
+    chat: [user('继续'), target, latest],
+    extractor: options => {
+      capturedExtractorPayload = JSON.parse(options.taskMessages[0].content).payload;
+      target.variables[0].stat_data.裴晚生.情绪 = '事后平静';
+      return { jsonData: { summary: '裴晚生担忧用户淋雨并提醒带伞。', people: [{ name: '你', role: 'user' }, { name: '裴晚生' }], commitments: [{ speaker: '裴晚生', targets: ['你'], content: '提醒带伞' }] } };
+    },
+  });
+  const state = await h.runtime.start().then(() => h.runtime.extractNext());
+  assert.deepEqual(capturedExtractorPayload.auxiliaryStateSnapshot, { stat_data: { 裴晚生: { 情绪: '担忧' } }, ejsSaved: { weather: '雨' } });
+  const stored = h.runtime.getState().floors.find(item => item.floorId === state.floors[0].floorId).memory;
+  assert.deepEqual(stored.sourceVariableReference, capturedExtractorPayload.auxiliaryStateSnapshot);
+  const cseRequest = JSON.parse(h.calls.find(call => call.systemPrompt === CSE_SYSTEM_PROMPT).taskMessages[0].content);
+  assert.deepEqual(cseRequest.payload.auxiliaryStateSnapshot, capturedExtractorPayload.auxiliaryStateSnapshot);
+  assert.equal(cseRequest.payload.evidenceSourceCatalog.some(item => item.source === 'auxiliaryStateSnapshot'), false, '辅助变量不得升级为可引用证据源');
+  assert.equal(JSON.stringify(cseRequest.payload).includes('事后平静'), false);
+
+  const without = runtimeHarness();
+  await without.runtime.start().then(() => without.runtime.extractNext());
+  const requests = without.calls.map(call => JSON.parse(call.taskMessages[0].content));
+  assert.ok(requests.every(request => !Object.hasOwn(request.payload, 'auxiliaryStateSnapshot')), '无变量时保持原有 payload 形状');
+});
+
 test('人工纠正以末 delta 为锚不可变替换，支持增删清空 core、连续多人、冷读与后续 CSE 前态', async () => {
   const h = runtimeHarness({
     cse: options => {
@@ -564,8 +592,10 @@ test('生产 CSE 请求 seam 固定样例可并存自身无对象与行为关系
   ]);
 });
 
-test('CSE Phase A 最多 6 路并发，完成后仍按 run → checkpoint → root 屏障提交且只保留提交前 runtime 回读', async () => {
+test('CSE Phase A 并发写入保留记录，完成后仍按 run → checkpoint → root 屏障提交且同 root 不整图回读', async () => {
   const phaseTypes = new Set(['entity', 'stateDelta', 'currentState', 'index']);
+  const expectedPhaseTypes = new Set(['stateDelta', 'currentState', 'index']);
+  const observedPhaseTypes = new Set();
   let measuring = false;
   let activePuts = 0;
   let maximumPuts = 0;
@@ -574,6 +604,7 @@ test('CSE Phase A 最多 6 路并发，完成后仍按 run → checkpoint → ro
   let releasePhase;
   let firstWaveResolve;
   let readMarker = 0;
+  let backendReadMarker = 0;
   const phaseGate = new Promise(resolve => { releasePhase = resolve; });
   const firstWave = new Promise(resolve => { firstWaveResolve = resolve; });
   const barriers = [];
@@ -582,6 +613,7 @@ test('CSE Phase A 最多 6 路并发，完成后仍按 run → checkpoint → ro
     cse: () => {
       measuring = true;
       readMarker = h.readModes.length;
+      backendReadMarker = h.backend.getCalls.length;
       return { jsonData: { noMaterialChange: true } };
     },
     backendOptions: {
@@ -589,9 +621,10 @@ test('CSE Phase A 最多 6 路并发，完成后仍按 run → checkpoint → ro
         if (!measuring) return;
         if (phaseTypes.has(data.recordType)) {
           phaseStarts += 1;
+          observedPhaseTypes.add(data.recordType);
           activePuts += 1;
           maximumPuts = Math.max(maximumPuts, activePuts);
-          if (phaseStarts === 6) firstWaveResolve();
+          if ([...expectedPhaseTypes].every(type => observedPhaseTypes.has(type))) firstWaveResolve();
           await phaseGate;
           activePuts -= 1;
           phaseCompletions += 1;
@@ -604,16 +637,17 @@ test('CSE Phase A 最多 6 路并发，完成后仍按 run → checkpoint → ro
 
   const pending = h.runtime.start().then(() => h.runtime.extractNext());
   await firstWave;
-  assert.equal(maximumPuts, 6);
+  assert.equal(maximumPuts, expectedPhaseTypes.size);
   assert.equal(barriers.length, 0, '首批 Phase A 未完成前不得写 run/checkpoint/root');
   releasePhase();
   const state = await pending;
 
   assert.equal(state.cseReady, true);
-  assert.ok(maximumPuts > 1 && maximumPuts <= 6);
+  assert.deepEqual([...observedPhaseTypes].sort(), [...expectedPhaseTypes].sort());
   assert.deepEqual(barriers.map(item => item.type), ['run', 'checkpoint', 'root']);
   assert.ok(barriers.every(item => item.activePuts === 0 && item.phaseCompletions === item.phaseStarts));
-  assert.deepEqual(h.readModes.slice(readMarker), ['runtime']);
+  assert.deepEqual(h.readModes.slice(readMarker), []);
+  assert.equal(h.backend.getCalls.slice(backendReadMarker).filter(key => key === 'v3-root').length >= 1, true);
 });
 
 test('CSE 等待模型期间只追加后楼及后楼摘要时按原前缀提交，并保留最新后缀图', async () => {
@@ -828,8 +862,33 @@ test('CSE root 校验在 checkpoint 后跨记录类别并行，单类最多 16 �
   assert.deepEqual(measuredKeys.slice().sort(), expectedKeys.slice().sort(), '实际落盘回读集合必须完整且无多余读取');
 });
 
+test('精简辅助索引后缺任一业务记录仍不能提交 root', async () => {
+  const cases = [
+    ['floorMemories', 'v3-floor-memory-', 'V3_STORE_FLOOR_MEMORY_MISSING'],
+    ['entities', 'v3-entity-', 'V3_STORE_ENTITY_MISSING'],
+    ['stateDeltas', 'v3-state-delta-', 'V3_STORE_STATE_DELTA_MISSING'],
+    ['currentStates', 'v3-current-state-', 'V3_STORE_CURRENT_STATE_MISSING'],
+  ];
+  for (const [field, prefix, code] of cases) {
+    const h = runtimeHarness();
+    await h.runtime.start().then(() => h.runtime.extractNext());
+    const rootKey = `chat-${CHAT}/v3-root`;
+    const rootEnvelope = structuredClone(h.backend.records.get(rootKey));
+    const checkpoint = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${rootEnvelope.data.headCheckpointId}`).data;
+    const recordId = checkpoint.producedRefs[field][0];
+    assert.ok(recordId, `${field} fixture 应包含业务记录`);
+    h.backend.records.delete(`chat-${CHAT}/${prefix}${recordId}`);
+    const rootPutsBefore = h.backend.getRootPuts();
+    await assert.rejects(h.store.commitRoot(rootEnvelope.data, rootEnvelope.revision), error => error?.code === code);
+    assert.equal(h.backend.getRootPuts(), rootPutsBefore, `${field} 缺失时不得发 root PUT`);
+    assert.deepEqual(h.backend.records.get(rootKey), rootEnvelope);
+  }
+});
+
 test('CSE Phase A 首个 conflict 后停止领取新记录并等待在途写入，且不发布 run/checkpoint/root', async () => {
   const phaseTypes = new Set(['entity', 'stateDelta', 'currentState', 'index']);
+  const expectedPhaseTypes = new Set(['stateDelta', 'currentState', 'index']);
+  const observedPhaseTypes = new Set();
   let measuring = false;
   let phaseStarts = 0;
   let activePuts = 0;
@@ -847,9 +906,10 @@ test('CSE Phase A 首个 conflict 后停止领取新记录并等待在途写入�
         if (!measuring) return;
         if (!phaseTypes.has(data.recordType)) { barriers.push(data.recordType); return; }
         phaseStarts += 1;
+        observedPhaseTypes.add(data.recordType);
         activePuts += 1;
         const ordinal = phaseStarts;
-        if (phaseStarts === 6) firstWaveResolve();
+        if ([...expectedPhaseTypes].every(type => observedPhaseTypes.has(type))) firstWaveResolve();
         if (ordinal === 1) {
           await conflictGate;
           activePuts -= 1;
@@ -864,11 +924,13 @@ test('CSE Phase A 首个 conflict 后停止领取新记录并等待在途写入�
   let settled = false;
   const pending = h.runtime.start().then(() => h.runtime.extractNext()).finally(() => { settled = true; });
   await firstWave;
+  const startedBeforeConflict = phaseStarts;
+  assert.equal(startedBeforeConflict, expectedPhaseTypes.size);
   releaseConflict();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(phaseStarts, 6, '发现首错后不得继续领取第 7 个 Phase A 记录');
+  assert.equal(phaseStarts, startedBeforeConflict, '发现首错后不得继续领取新的 Phase A 记录');
   assert.equal(settled, false, '仍有在途写入时不得提前结束操作');
-  assert.equal(activePuts, 5);
+  assert.equal(activePuts, startedBeforeConflict - 1);
   assert.deepEqual(barriers, []);
 
   releaseInflight();
@@ -879,8 +941,10 @@ test('CSE Phase A 首个 conflict 后停止领取新记录并等待在途写入�
   assert.deepEqual(barriers, [], 'Phase A 失败后不得写 run/checkpoint/root');
 });
 
-test('CSE Phase A 六条写入在途时失效会停止领取、等待收拢且不发布新 root', async () => {
+test('CSE Phase A 全批保留记录在途时失效会等待收拢且不发布新 root', async () => {
   const phaseTypes = new Set(['entity', 'stateDelta', 'currentState', 'index']);
+  const expectedPhaseTypes = new Set(['stateDelta', 'currentState', 'index']);
+  const observedPhaseTypes = new Set();
   let measuring = false;
   let phaseStarts = 0;
   let activePuts = 0;
@@ -896,8 +960,9 @@ test('CSE Phase A 六条写入在途时失效会停止领取、等待收拢且�
         if (!measuring) return;
         if (!phaseTypes.has(data.recordType)) { barriers.push(data.recordType); return; }
         phaseStarts += 1;
+        observedPhaseTypes.add(data.recordType);
         activePuts += 1;
-        if (phaseStarts === 6) firstWaveResolve();
+        if ([...expectedPhaseTypes].every(type => observedPhaseTypes.has(type))) firstWaveResolve();
         await inflightGate;
         activePuts -= 1;
       },
@@ -908,18 +973,20 @@ test('CSE Phase A 六条写入在途时失效会停止领取、等待收拢且�
   let settled = false;
   const pending = h.runtime.extractNext().finally(() => { settled = true; });
   await firstWave;
+  const startedBeforeInvalidation = phaseStarts;
+  assert.equal(startedBeforeInvalidation, expectedPhaseTypes.size);
   const rootBeforeInvalidation = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`).data);
   h.runtime.invalidate();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(phaseStarts, 6);
-  assert.equal(activePuts, 6);
-  assert.equal(settled, false, '失效后仍须等待已在途的六条写入收拢');
+  assert.equal(phaseStarts, startedBeforeInvalidation);
+  assert.equal(activePuts, startedBeforeInvalidation);
+  assert.equal(settled, false, '失效后仍须等待已在途的整批写入收拢');
   assert.deepEqual(barriers, []);
 
   releaseInflight();
   await pending;
   assert.equal(activePuts, 0);
-  assert.equal(phaseStarts, 6, '失效后不得领取第 7 个 Phase A 记录');
+  assert.equal(phaseStarts, startedBeforeInvalidation, '失效后不得领取新的 Phase A 记录');
   assert.deepEqual(barriers, [], '失效后不得写 run/checkpoint/root');
   assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`).data, rootBeforeInvalidation);
 });

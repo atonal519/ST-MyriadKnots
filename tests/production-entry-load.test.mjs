@@ -86,7 +86,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.1.12');
+  assert.equal(manifest.version, '0.1.13');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
@@ -202,6 +202,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let inlineRendererOptions;
   let hostAdapterOptions;
   const inlineEnabled = [];
+  const backgroundStarts = [];
+  const runtimeEnables = [];
   let bootstrapOptions;
   let compactOptions;
   let foundationOptions;
@@ -246,19 +248,26 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/plugin-lifecycle.js', {
     createPluginLifecycle: options => {
       lifecycleOptions = options;
-      return { bind() {}, async start() {}, async setEnabled() {} };
+      return {
+        bind() {},
+        async start() {},
+        async setEnabled(value) {
+          runtimeEnables.push(`lifecycle:${value}`);
+          if (value === true) await options.onPrepared?.({ result: { status: 'ready', identity: { chatId: 'test' } }, isCurrent: () => true });
+        },
+      };
     },
   });
   define('./src/source-permission.js', { createSourcePermissionController: () => ({}) });
   define('./src/v3/host-adapter.js', { createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => ({ eventSource: productionEventSource, eventTypes: productionEventTypes }), snapshot: () => ({}) }; } });
   define('./src/v3/foundation-store.js', { createFoundationStore: () => ({}) });
   define('./src/v3/foundation-runtime.js', { createFoundationRuntime: options => { foundationOptions = options; return {}; } });
-  define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() {}, async setEnabled() {}, getState: () => ({}), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
+  define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() { backgroundStarts.push('memory'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, getState: () => ({}), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
   define('./src/v3/message-floor-anchor.js', { persistMessageFloorAnchors: persistAnchors });
-  define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; return { bind() {}, async setEnabled() {}, async intercept() {}, getState: () => ({}) }; } });
+  define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; return { bind() {}, async setEnabled(value) { runtimeEnables.push(`recall:${value}`); }, async intercept() {}, getState: () => ({}) }; } });
   define('./src/v3/auto-hide.js', { createAutoHideController: options => { autoHideOptions = options; return { applySettings() {}, stop() {}, dispose() {} }; } });
   define('./src/ui/inline-renderer.js', { createInlineRenderer: options => { inlineRendererOptions = options; return { setEnabled(value) { inlineEnabled.push(value); }, destroy() {} }; } });
-  const peopleWorkspaceRuntime = { async start() {}, async setEnabled() {}, invalidate() {}, getState: () => ({ status: 'ready' }) };
+  const peopleWorkspaceRuntime = { async refresh(options) { backgroundStarts.push(['people', options]); }, async setEnabled(value) { runtimeEnables.push(`people:${value}`); }, invalidate() {}, getState: () => ({ status: 'ready' }) };
   define('./src/v3/people-workspace.js', {
     createPeopleWorkspaceStore: options => { peopleStoreOptions = options; return { read() {}, put() {} }; },
     createPeopleWorkspaceRuntime: options => { peopleWorkspaceOptions = options; return peopleWorkspaceRuntime; },
@@ -307,6 +316,14 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.ok(lifecycleOptions.session);
   assert.equal(lifecycleOptions.aborters.length, 3);
   assert.ok(lifecycleOptions.aborters.includes(peopleWorkspaceRuntime));
+  assert.equal(typeof lifecycleOptions.onPrepared, 'function', '生产入口必须把身份成功后的后台续接注入 lifecycle');
+  assert.deepEqual(backgroundStarts, [], '插件初始关闭时不得绕过 lifecycle 单独启动 memory/people');
+  await bootstrapOptions.onPluginEnabledChange(true);
+  assert.equal(backgroundStarts[0], 'memory');
+  assert.equal(backgroundStarts[1]?.[0], 'people');
+  assert.equal(backgroundStarts[1]?.[1]?.refreshMemory, false, '人物 workspace 应复用刚完成的记忆快照');
+  assert.equal(backgroundStarts.length, 2, '同一身份成功链只准备一次记忆和一次人物 workspace');
+  assert.deepEqual(runtimeEnables, ['lifecycle:true', 'recall:true'], '启用链不得在 lifecycle 回调后重复 setEnabled 读取 memory/people');
   assert.equal(peopleStoreOptions.client, backendClient);
   assert.equal(peopleWorkspaceOptions.generateUtilityTask, utilityTask);
   assert.equal(peopleWorkspaceOptions.profilePromptGuidance(), '人物资料指导');
@@ -323,6 +340,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.ok(publicMemoryBridgeOptions.session);
   assert.ok(publicMemoryBridgeOptions.store);
   assert.ok(publicMemoryBridgeOptions.hostAdapter);
+  assert.equal(publicMemoryBridgeOptions.foundationRuntime, v3MemoryOptions.foundationRuntime, '公共记忆桥必须复用生产地基 runtime');
   assert.equal(typeof publicMemoryBridgeOptions.isEnabled, 'function');
   assert.equal(typeof publicMemoryBridgeOptions.sanitizerOptions, 'function');
   assert.ok(v3RecallOptions.store);
@@ -332,7 +350,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(v3RecallOptions.pluginVersion, '0.1.9-test', '生产回执版本必须由 manifest.version 单一注入');
   assert.ok(autoHideOptions.hostAdapter); assert.equal(autoHideOptions.memoryRuntime, v3MemoryRuntime);
   assert.equal(inlineRendererOptions.memoryRuntime, v3MemoryRuntime); assert.equal(inlineRendererOptions.recallRuntime.getState() !== undefined, true); assert.ok(inlineRendererOptions.hostAdapter);
-  assert.deepEqual(inlineEnabled, [false], '入口应在其他异步runtime启动前按总开关启动或停用楼内渲染');
+  assert.deepEqual(inlineEnabled, [false, true], '入口初始按关闭状态停用楼内渲染，启用链再同步开启');
   assert.equal(memoryManagementOptions.client, backendClient); assert.equal(memoryManagementOptions.session, lifecycleOptions.session); assert.equal(memoryManagementOptions.memoryRuntime, v3MemoryRuntime); assert.equal(typeof memoryManagementOptions.isMainGenerationActive, 'function');
   assert.equal(typeof v3RecallOptions.isEnabled, 'function');
   assert.equal(Object.hasOwn(v3RecallOptions, 'historicalMaintenance'), false);

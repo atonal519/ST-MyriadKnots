@@ -1,6 +1,10 @@
 // Recall-only presentation; source indices and UI state are scoped to the owning chat.
 export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
-  const floorIds = [...new Set([...(projection.selectedFloors ?? []), ...(projection.cseChangeItems ?? [])].map(item => item.floorId))];
+  const floorIds = [...new Set([
+    ...(projection.selectedFloors ?? []).map(item => item.floorId),
+    ...(projection.cseChangeItems ?? []).map(item => item.floorId),
+    ...(projection.stateProgressionItems ?? []).flatMap(item => [item.sourceFloorId, ...(item.evidence ?? []).map(value => value.floorId)]),
+  ].filter(Boolean))];
   const sources = new Map(floorIds.map(id => [id, sourceIndex?.messageIndexFor?.(id) ?? null]));
   const signature = JSON.stringify([projection, [...sources]]);
   if (card.recallSignature === signature) return;
@@ -33,6 +37,15 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     .event-caption{font-size:10px;color:var(--muted);margin:0 0 8px}
     .event-copy{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.9}
     .event-copy+.event-copy{margin-top:10px}
+    .time-progression{margin-top:14px;border-top:1px solid var(--qqj-inline-line);padding-top:10px}
+    .time-progression>summary{cursor:pointer;font-size:11px;font-weight:600;list-style-position:inside}
+    .time-progression:not([open])>.time-progression-list{display:none}
+    .time-progression-list{display:grid;gap:10px;margin-top:9px}
+    .time-progression-item{padding:9px 10px;border-radius:6px;background:var(--soft)}
+    .time-progression-subject{display:block;font-size:11px;margin-bottom:3px}
+    .time-progression-copy,.time-progression-meta{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+    .time-progression-copy{font-size:11px;line-height:1.85}
+    .time-progression-meta{font-size:9.5px;color:var(--muted);margin-top:4px}
     .people-current{border:1px solid var(--qqj-inline-line);border-radius:7px;padding:11px 12px;background:var(--soft)}
     .section-heading{display:flex;align-items:center;gap:7px;font-size:11px;font-weight:600;margin:0 0 9px}
     .section-heading::before{content:'';height:10px;width:2px;background:var(--qqj-inline-knot);border-radius:1px}
@@ -131,6 +144,21 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     pills.append(pill);
   }
   showEvent(); events.append(pills, display);
+  if (projection.stateProgressionItems?.length) {
+    const progression = node('details', 'time-progression');
+    progression.append(node('summary', '', '时间推演'));
+    const list = node('div', 'time-progression-list');
+    const progressionVisibility = { private:'仅本人知晓', observable:'可观察', expressed:'已表达', shared:'已共享', authorial:'作者视角' };
+    for (const item of projection.stateProgressionItems) {
+      const entry = node('article', 'time-progression-item');
+      entry.append(node('strong', 'time-progression-subject', `${item.subject}${item.toward ? ` → ${item.toward}` : ''} · 原记录：${progressionVisibility[item.visibility] ?? item.visibility}`));
+      entry.append(node('p', 'time-progression-copy', `保存时：${item.savedText}\n此刻表现建议：${item.suggestion}`));
+      const evidenceLabels = [...new Set((item.evidence ?? []).map(value => value.floorId ? floorLabel(value.floorId) : null).filter(Boolean))];
+      entry.append(node('p', 'time-progression-meta', `${item.timeBasis} · 状态${floorLabel(item.sourceFloorId)}${evidenceLabels.length ? ` · 依据 ${evidenceLabels.join('、')}` : ''} · 作者侧续写表现建议，不表示任何角色已知，也并非新剧情事实`));
+      list.append(entry);
+    }
+    progression.append(list); events.append(progression);
+  }
 
   const identity = value => value.subjectEntityId || `name:${value.subject}`;
   const statesByPerson = new Map();

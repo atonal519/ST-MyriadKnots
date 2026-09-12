@@ -750,7 +750,7 @@ test('轻量召回运行结果自动显示实际注入、收据、阶段与覆�
       status: 'ready', userMessageIndex: 67, createdAt: '2026-09-03T00:00:00.000Z', generationType: 'continue', reusedReceipt: true, receiptPersistence: 'persisted',
       selectedFloors: [{ assistantSeq: 2 }], selectedStates: [{ subject: '裴晚生', layer: 'core' }], selectedCseChanges: [{ subject: '裴晚生', layer: 'situational', action: 'remove', assistantSeq: 2 }],
       coverage: { rememberedAiFloors: 8, stableAiFloors: 8, cseThroughAssistantSeq: 8 },
-      stages: { input: 3, candidates: 8, dropRecent: 3, dropPersistent: 0, dropVisibility: 0, selected: 1, recentSummaryCount: 1, distantHistoryItemCount: 3, linkedHistoryItemCount: 2, stateCount: 1, currentStateCount: 1, cseChangeCount: 2, linkedCseChangeCount: 1, budgetDroppedCount: 4, finalInjectionItemCount: 7 },
+      stages: { input: 3, candidates: 8, dropRecent: 3, dropPersistent: 0, dropVisibility: 0, selected: 1, recentSummaryCount: 1, distantHistoryItemCount: 3, linkedHistoryItemCount: 2, stateCount: 1, currentStateCount: 1, cseChangeCount: 2, linkedCseChangeCount: 1, budgetDroppedCount: 4, finalInjectionItemCount: 7, estimatedTokenCount:1234, estimatedTokenBudget:4000 },
       selectorDiagnostic: { mode: 'llm', historyCandidateCount: 12, stateCandidateCount: 7, historyExcludedCount: 2, stateExcludedCount: 1, historyRetainedCount: 10, stateRetainedCount: 6 },
       timings: { totalMs: 12, sourceReadAttempts: { reachableReads: 1, exitPoint: 'ready' } }, skipReasons: ['recentRawWindow'],
       injectionText: '<qqj_recalled_context>\n旧约仍然有效\n</qqj_recalled_context>', error: null,
@@ -760,6 +760,10 @@ test('轻量召回运行结果自动显示实际注入、收据、阶段与覆�
   const copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /触发用户楼|第 67 楼|生成时间|生成类型|继续生成（continue）|复用 · persisted|来源楼号未提供|终点楼号未提供|裴晚生 \/ core|裴晚生 \/ situational \/ 移除/);
   assert.match(copy, /输入 3 → 记忆楼 8 → 近期摘要 1 → 远期旧事 3（关联补入 2） → 当前态 1 → 历史变化 2（关联补入 1） → 预算舍弃 4 → 最终材料 7/);
+  const stage = flatten(container).find(node => node.className === 'v3-foundation-row' && node.children[0]?.textContent === '筛选阶段');
+  assert.equal(stage.children[1].children.length, 2, 'Token估算须在筛选阶段原位置使用独立DOM行');
+  assert.match(stage.children[1].children[0].textContent, /最终材料 7$/);
+  assert.equal(stage.children[1].children[1].textContent, 'Token 保守估算 1234/4000');
   assert.match(copy, /智能选材计数.*历史候选 12 → 模型排除 2 → 保留 10 → 关联补入 2 → 最终远期 3 · 人物候选 7 → 模型排除 1 → 保留 6 → 关联补入 1 → 最终注入 3/);
   assert.match(copy, /完整快照 1 次 · 退出 读取成功/);
   assert.match(copy, /旧约仍然有效/);

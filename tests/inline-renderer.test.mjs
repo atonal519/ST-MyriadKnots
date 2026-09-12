@@ -354,13 +354,13 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
 
 });
 
-test('真实schema12回执分为事与人，完整保留私密变化并按楼层倒序展示', async () => {
+test('真实schema13回执分为事与人，完整保留私密变化并按楼层倒序展示', async () => {
   const { chat, receipt, floorIds } = await actualCseReceipt();
   const memoryState = { floors: floorIds.map((floorId, index) => ({ floorId, assistantSeq: index + 1, messageIndex: 41 + index })), memoryEntities: [] };
   const h = createHarness({ chat, memoryState, projectReceipt: async () => receipt });
   const userElement = messageElement(1, { user: true }); h.chatRoot.append(userElement); h.renderer.start(); await h.flushMicrotasks();
   const view = resolveInlineAnchor(userElement).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  assert.equal(receipt.schemaVersion, 12);
+  assert.equal(receipt.schemaVersion, 13);
   assert.equal(receipt.selectedCseChanges.find(value => value.action === 'remove' && value.before?.text === '仍在钟楼等候')?.before.text, '仍在钟楼等候');
   const projection = projectInlineRecallReceipt(receipt);
   assert.equal(projection.protocolRecognized, true);
@@ -395,6 +395,33 @@ test('真实schema12回执分为事与人，完整保留私密变化并按楼层
   assert.equal(otherView.recallUi.events.hidden, false, '新聊天默认事页签');
   assert.ok(otherView.recallUi.history.querySelectorAll('.change-floor').every(node => node.open === false));
 
+});
+
+test('schema13 时间推演只在事页生成一个默认折叠区，并与注入共用同一份安全文本和真实来源楼', async () => {
+  const state = { stateId:'state-time', sourceFloorId:'progress-floor', sourceDeltaId:'progress-delta', subjectEntityId:'person-time', subject:'左佐', layer:'situational', towardEntityId:null, toward:null, text:'保存时仍明显疲惫', reason:'当时连续奔波', visibility:'private', sourceAssistantSeq:7, storylineId:'line-time' };
+  const progression = { subjectEntityId:'person-time', subject:'左佐', towardEntityId:null, toward:null, savedText:state.text, visibility:'private', sourceStateId:state.stateId, sourceFloorId:state.sourceFloorId, sourceAssistantSeq:7, timeBasis:'入夜后过了一阵；具体时长未知', suggestion:'保存时仍明显疲惫 → 此刻可表现为有所恢复，但精力尚未完全回稳', evidence:[] };
+  const storylines = [{ storylineId:'line-time', title:'相关人物状态补充', basis:'当前输入直接匹配以下已有人物状态材料。' }];
+  const coverage = { stableAiFloors:7, stableThroughAssistantSeq:7, rememberedAiFloors:7, cseThroughAssistantSeq:7, memoryComplete:true, cseCurrent:true, missingAssistantSeq:[] };
+  const injectionText = formatRecallInjection({ coverage, floors:[], states:[state], cseChanges:[], stateProgressions:[progression], entityById:new Map(), storylines });
+  const receipt = { schemaVersion:13, status:'ready', injectionText, selectedFloors:[], selectedStates:[state], selectedCseChanges:[], stateProgressions:[progression], storylines, stages:{ recentSummaryCount:0, distantHistoryItemCount:0, stateCount:1, cseChangeCount:0, stateProgressionCount:1 } };
+  const projection = projectInlineRecallReceipt(receipt);
+  assert.equal(projection.protocolRecognized, true);
+  assert.deepEqual(projection.stateProgressionItems, [progression]);
+  assert.match(injectionText, new RegExp(progression.suggestion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  const chat = [{ is_user:true, is_system:false, mes:'继续', extra:{ [RECALL_RECEIPT_KEY]:receipt } }];
+  const memoryState = { floors:[{ floorId:'progress-floor', assistantSeq:7, messageIndex:77 }], memoryEntities:[] };
+  const h = createHarness({ chat, memoryState, projectReceipt:async () => receipt });
+  const userElement = messageElement(0, { user:true }); h.chatRoot.append(userElement); h.renderer.start(); await h.flushMicrotasks();
+  const view = resolveInlineAnchor(userElement).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  const details = view.recallUi.events.querySelector('.time-progression');
+  assert.ok(details);
+  assert.notEqual(details.open, true);
+  assert.match(view.recallStyle.textContent, /\.time-progression:not\(\[open\]\)>\.time-progression-list\{display:none\}/);
+  assert.match(descendantText(details), /左佐 · 原记录：仅本人知晓/);
+  assert.match(descendantText(details), /第 77 个结/);
+  assert.match(descendantText(details), /入夜后过了一阵；具体时长未知/);
+  assert.match(descendantText(details), /有所恢复，但精力尚未完全回稳/);
+  assert.equal(view.recallUi.people.querySelector('.time-progression'), null);
 });
 
 test('refine 显示删除与新增两侧，当前状态独立常驻并使用真实宿主楼号', async () => {

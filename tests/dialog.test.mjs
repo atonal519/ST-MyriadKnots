@@ -147,7 +147,7 @@ test('宿主 CHAT_CHANGED 经同源生命周期立即关闭确认窗', async () 
 test('复制构画实际结构/CSS闭包并映射 QQJ 实色主题', async () => {
   const h = fakeDom();
   const css = h.shadow.innerHTML;
-  for (const marker of ['.sp-dialog-overlay', 'background:rgba(0,0,0,.55)', 'align-items:center', '.sp-dialog-sheet', 'box-shadow:var(--sp-shadow)', '.sp-dialog-note', '.sp-dialog-actions', '.sp-dialog-button-secondary', '.sp-dialog-input-error', 'width:100dvw', 'height:100dvh', '@keyframes sp-wi-fullview-in', 'prefers-reduced-motion:reduce']) assert.match(css, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  for (const marker of ['.sp-dialog-overlay', 'background:rgba(0,0,0,.55)', 'align-items:center', '.sp-dialog-sheet', 'box-shadow:var(--sp-shadow)', '.sp-dialog-note', '.sp-dialog-actions', '.sp-dialog-button-secondary', '.sp-dialog-input-error', '.qqj-merge-dialog{display:grid', '.qqj-merge-dialog .qqj-inline-select-trigger', '.qqj-merge-dialog .qqj-inline-select-options[hidden]', 'max-height:min(220px,36dvh)', 'overflow-wrap:anywhere', 'var(--sp-sheet-bg)', 'var(--sp-on-surface)', 'width:100dvw', 'height:100dvh', '@keyframes sp-wi-fullview-in', 'prefers-reduced-motion:reduce']) assert.match(css, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.doesNotMatch(css, /align-items:flex-end|position:sticky/);
   const mobileRoot = css.indexOf('@media(max-width:640px){.sp-root{');
   const clickableOverlay = css.indexOf('.sp-dialog-overlay{');

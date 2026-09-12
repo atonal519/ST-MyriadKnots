@@ -16,6 +16,7 @@ import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
 import { buildEntityIdentityDirectory } from '../src/v3/entity-identity.js';
 import { projectInlineMemoryFloor } from '../src/ui/inline-projection.js';
 import { validateFloorMemory } from '../src/v3/memory-schema.js';
+import { captureFloorVariableReference } from '../src/v3/floor-variable-reference.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GENERATION = '22222222-2222-4222-8222-222222222222';
@@ -80,7 +81,7 @@ function backendHarness() {
   } };
 }
 
-function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, extractorPromptGuidance, csePromptGuidance, processingPrompt, foundationRefresh, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false } = {}) {
+function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, extractorPromptGuidance, csePromptGuidance, processingPrompt, foundationRefresh, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null } = {}) {
   let enabled = true;
   const handlers = new Map();
   const warnings = [];
@@ -117,7 +118,7 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
     if (utility) return utility(options, calls.length);
     return { jsonData: { summary: '裴晚生提醒用户带伞。', people: [{ name: '裴晚生' }, { name: '你', role: 'user' }], events: [{ title: '带伞提醒', description: '裴晚生提醒用户带伞。' }] }, taskMetadata: { source: 'shared-utility', sourceLabel: '机械副 API', model: 'mock-model', finishReason: 'stop' } };
   };
-  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), persistAnchors, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
+  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), persistAnchors, identityProjectionProvider, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
   const emit = (name, ...args) => (handlers.get(name) ?? []).forEach(listener => listener(...args));
   return { runtime, foundationRuntime, store, backend, context, hostAdapter, calls, warnings, emit, readReachableModes, snapshotCount: () => snapshotCalls, setEnabled(value) { enabled = value; }, setAutomation(value) { automation = value; } };
@@ -245,6 +246,31 @@ test('HostAdapter 优先 official 并为 official/Luker 提供同一宿主 user 
   const luker = createHostAdapter({ globalRef: { Luker: { getContext: () => ({ name1: '阿满', userAvatar: 'avatar.png', chat: [] }) } } });
   assert.equal(luker.snapshot().userIdentity.displayName, '阿满');
   assert.equal(luker.snapshot().userIdentity.source, 'Luker');
+});
+
+test('楼变量只读复制严格绑定目标消息当前 swipe，不读取最新楼或其他 swipe', () => {
+  let forbiddenCalls = 0, slotWrites = 0;
+  const selectedVariables = { stat_data: { hp: 7 }, ejsSaved: { mood: '戒备' } };
+  for (const name of ['prepareContext', 'evalTemplate', 'allVariables', 'saveVariables']) {
+    Object.defineProperty(selectedVariables, name, { enumerable: false, value() { forbiddenCalls += 1; } });
+  }
+  const target = { ...assistant('目标楼第二 swipe'), swipes: ['目标楼第一 swipe', '目标楼第二 swipe'], swipe_id: 1,
+    variables: new Proxy([{ stat_data: { hp: 10 }, firstSwipeOnly: true }, selectedVariables], {
+      set(targetSlots, key, value) { slotWrites += 1; return Reflect.set(targetSlots, key, value); },
+    }) };
+  const latest = { ...assistant('最新楼'), variables: [{ stat_data: { hp: 999 }, latestOnly: true }] };
+  const snapshot = { chat: [target, latest], prepareContext() { forbiddenCalls += 1; }, evalTemplate() { forbiddenCalls += 1; }, saveVariables() { forbiddenCalls += 1; } };
+  const floor = { hostLocator: { messageIndex: 0, swipeId: 1, selectedSwipeIndex: 1 } };
+  const reference = captureFloorVariableReference(snapshot, floor);
+  assert.deepEqual(reference, { stat_data: { hp: 7 }, ejsSaved: { mood: '戒备' } });
+  target.variables[1].stat_data.hp = 1;
+  assert.equal(reference.stat_data.hp, 7, '捕获后必须与宿主变量后续变化断开引用');
+  assert.equal(Object.hasOwn(reference, 'firstSwipeOnly'), false);
+  assert.equal(Object.hasOwn(reference, 'latestOnly'), false);
+  assert.equal(forbiddenCalls, 0, '读取变量不得执行模板或调用宿主保存接口');
+  assert.equal(slotWrites, 0, '读取变量不得回写宿主变量槽');
+  assert.equal(captureFloorVariableReference(snapshot, { hostLocator: { messageIndex: 0, selectedSwipeIndex: 0 } }), null, '楼定位与宿主当前 swipe 不一致时不得猜读');
+  assert.equal(captureFloorVariableReference({ chat: [assistant('无变量')] }, { hostLocator: { messageIndex: 0, selectedSwipeIndex: 0 } }), null);
 });
 
 test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或内部操作', async () => {
@@ -530,6 +556,78 @@ test('运行时首次需要时建立唯一 user Entity，重提取不重复创�
   assert.equal(entities.filter(entity => entity.specialRole === 'user').length, 1);
 });
 
+test('人工身份映射贯穿真实 memory→extractor→保存链，模型误称 new 仍落到目标且旧称进入目录', async () => {
+  let projection = {};
+  const extractorPayloads = [];
+  const h = harness({
+    initialChat: [user('开始'), assistant('旧称甲首次出现。'), assistant('目标乙随后出现。'), assistant('旧称甲再次行动。'), assistant('用于确认上一楼稳定。')],
+    identityProjectionProvider: async () => projection,
+    utility: options => {
+      const request = JSON.parse(options.taskMessages[0].content); extractorPayloads.push(structuredClone(request.payload));
+      if (request.payload.canonicalContent.includes('首次')) return { jsonData: { summary: '旧称甲首次出现。', people: [{ name: '旧称甲', presence: 'present' }] } };
+      if (request.payload.canonicalContent.includes('目标乙')) return { jsonData: { summary: '目标乙随后出现。', people: [{ name: '目标乙', presence: 'present' }] } };
+      return { jsonData: { summary: '旧称甲再次行动。', people: [{ name: '旧称甲', presence: 'present' }], actions: [{ actor: '旧称甲', action: '再次行动' }] } };
+    },
+  });
+  await h.runtime.start(); let state = h.runtime.getState();
+  await h.runtime.extractFloor(state.floors[0].floorId, { analyzeState: false });
+  await h.runtime.extractFloor(state.floors[1].floorId, { analyzeState: false });
+  let reachable = await h.store.readReachable({ mode: 'runtime' });
+  const source = reachable.entities.find(entity => entity.displayName === '旧称甲' && entity.status !== 'merged');
+  const target = reachable.entities.find(entity => entity.displayName === '目标乙' && entity.status !== 'merged');
+  projection = { identityRedirectsByEntityId: { [source.id]: target.id }, deletedEntityIds: [] };
+  state = h.runtime.getState(); await h.runtime.extractFloor(state.floors[2].floorId, { analyzeState: false });
+  reachable = await h.store.readReachable({ mode: 'runtime' });
+  const third = reachable.floorMemories.find(memory => memory.floorId === state.floors[2].floorId && memory.recordStatus === 'active');
+  assert.equal(third.participants[0].entityId, target.id); assert.equal(third.actions[0].actorEntityId, target.id);
+  assert.equal(reachable.entities.filter(entity => entity.displayName === '旧称甲' && entity.status !== 'merged').length, 1, '人工映射不写回旧实体，也不新建第二个旧称实体');
+  const lastCatalog = extractorPayloads.at(-1).knownPeople;
+  assert.equal(lastCatalog.length, 1); assert.equal(lastCatalog[0].displayName, '目标乙'); assert.ok(lastCatalog[0].aliases.includes('旧称甲'));
+});
+
+test('人工身份映射纠正 legacy 的 new/uncertain 旧称并经真实 memory 保存，普通 uncertain 不建实体', async () => {
+  let projection = {};
+  const h = harness({
+    initialChat: [user('开始'), assistant('旧称甲首次出现。'), assistant('目标乙随后出现。'), assistant('旧称甲与旧称甲别名再次行动，路人丙身份不明。'), assistant('用于确认上一楼稳定。')],
+    identityProjectionProvider: async () => projection,
+    utility: options => {
+      const request = JSON.parse(options.taskMessages[0].content);
+      if (request.payload.canonicalContent.includes('首次')) return { jsonData: { summary: '旧称甲首次出现。', people: [{ name: '旧称甲', aliases: ['旧称甲别名'], presence: 'present' }] } };
+      if (request.payload.canonicalContent.includes('目标乙')) return { jsonData: { summary: '目标乙随后出现。', people: [{ name: '目标乙', presence: 'present' }] } };
+      const emptyArrays = Object.fromEntries(['chronology', 'locations', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'exactAnchors', 'openLoops', 'ambiguities', 'cseSignals'].map(key => [key, []]));
+      return { jsonData: {
+        schemaVersion: 3,
+        task: 'extractFloorMemory',
+        promptVersion: EXTRACTOR_PROMPT_VERSION,
+        floors: [{
+          status: 'ok', summary: '旧称甲再次行动。', summaryEvidence: [], ...emptyArrays,
+          entityMentions: [
+            { mentionKey: 'mapped-new', surface: '旧称甲', aliases: [], entityType: 'person', identity: 'new', entityKey: null, evidence: [] },
+            { mentionKey: 'mapped-uncertain', surface: '旧称甲别名', aliases: [], entityType: 'person', identity: 'uncertain', entityKey: null, evidence: [] },
+            { mentionKey: 'ordinary-uncertain', surface: '路人丙', aliases: [], entityType: 'person', identity: 'uncertain', entityKey: null, evidence: [] },
+          ],
+          participants: [{ mentionKey: 'mapped-new', presence: 'present', evidence: [] }],
+          actions: [{ actorMentionKey: 'mapped-uncertain', targetMentionKeys: [], action: '再次行动', completion: 'completed', result: null, evidence: [] }],
+        }],
+      } };
+    },
+  });
+  await h.runtime.start(); let state = h.runtime.getState();
+  await h.runtime.extractFloor(state.floors[0].floorId, { analyzeState: false });
+  await h.runtime.extractFloor(state.floors[1].floorId, { analyzeState: false });
+  let reachable = await h.store.readReachable({ mode: 'runtime' });
+  const source = reachable.entities.find(entity => entity.displayName === '旧称甲' && entity.status !== 'merged');
+  const target = reachable.entities.find(entity => entity.displayName === '目标乙' && entity.status !== 'merged');
+  projection = { identityRedirectsByEntityId: { [source.id]: target.id }, deletedEntityIds: [] };
+  state = h.runtime.getState(); await h.runtime.extractFloor(state.floors[2].floorId, { analyzeState: false });
+  reachable = await h.store.readReachable({ mode: 'runtime' });
+  const third = reachable.floorMemories.find(memory => memory.floorId === state.floors[2].floorId && memory.recordStatus === 'active');
+  assert.equal(third.participants[0].entityId, target.id, 'legacy identity:new 的人工旧称应直接保存为目标人物');
+  assert.equal(third.actions[0].actorEntityId, target.id, 'legacy identity:uncertain 的人工旧别名同样应保存为目标人物');
+  assert.equal(reachable.entities.filter(entity => entity.displayName === '旧称甲' && entity.status !== 'merged').length, 1, '不得为 legacy new 再建旧称实体');
+  assert.equal(reachable.entities.some(entity => entity.displayName === '路人丙'), false, '没有人工映射的 uncertain 仍保持未解析，不得建实体');
+});
+
 test('群体多称谓沿不可变 merged 目录复用，成员保持独立且早楼看不到未来别名', async () => {
   const csePayloads = [];
   const extractorPayloads = [];
@@ -681,6 +779,8 @@ test('前置 USER 原句由本地定位写入来源，跨来源重复原句不�
   delete legacy.sourceUserInputSnapshot;
   const validatedLegacy = validateFloorMemory(legacy, { expectedChatId: CHAT });
   assert.equal(Object.hasOwn(validatedLegacy, 'sourceUserInputSnapshot'), false, '旧记录缺字段应保持原结构，不得补默认值');
+  const malformedOptionalReference = validateFloorMemory({ ...legacy, sourceVariableReference: ['不是楼变量对象'] }, { expectedChatId: CHAT });
+  assert.equal(Object.hasOwn(malformedOptionalReference, 'sourceVariableReference'), false, '异常可选变量参考只跳过，不得令旧 FloorMemory 整条不可读');
 
   const outOfRange = structuredClone(result.memory);
   outOfRange.actions[0].evidenceRefs[0].sourceSnapshotIndex = sourceUserInputSnapshot.messages.length;
@@ -974,16 +1074,19 @@ test('special user 部分持久化后中断不会阻塞同楼重试，后续楼�
 });
 
 test('安全诊断隐藏正文，完整诊断仅在明确调用时暴露', async () => {
-  const h = harness();
+  const target = { ...assistant('裴晚生提醒你带伞。'), variables: [{ stat_data: { 剧情秘密: '钟楼钥匙在书柜后' } }] };
+  const h = harness({ initialChat: [user('继续'), target, assistant('用于确认上一楼稳定。')] });
   const state = await h.runtime.start().then(() => h.runtime.extractNext());
   const floorId = state.floors[0].floorId;
   const safe = h.runtime.copySafeDiagnostic(floorId);
   assert.doesNotMatch(safe, /canonicalContent|裴晚生提醒你带伞/);
   assert.doesNotMatch(safe, /"content": "继续"/);
+  assert.doesNotMatch(safe, /钟楼钥匙在书柜后|剧情秘密|sourceVariableReference/);
   assert.match(safe, /已隐藏用户原文/);
   const full = h.runtime.copyFullDiagnostic(floorId);
   assert.match(full, /canonicalContent/);
   assert.match(full, /"content": "继续"/);
+  assert.match(full, /钟楼钥匙在书柜后/);
 });
 
 test('foundation reload 单飞会消费运行中到达的尾部 ready，旧 epoch 读取不回写', async () => {
@@ -1052,6 +1155,103 @@ test('foundation reload 单飞会消费运行中到达的尾部 ready，旧 epoc
   assert.equal(state.floors.at(-1).assistantSeq, 3);
 });
 
+test('CHAT_CHANGED 与 start 并发发布同版本 foundation 快照时共用后台同步并收敛 coverage', async () => {
+  const graph = {
+    status: 'ready', rootRevision: 1,
+    root: { chatId: CHAT, narrativeGeneration: GENERATION, headCheckpointId: '33333333-3333-4333-8333-333333333333', stableBoundary: { assistantSeq: 0 } },
+    floors: [], floorMemories: [], entities: [], indexes: [], stateDeltas: [],
+  };
+  let foundationState = { status: 'idle' };
+  let foundationListener = null;
+  const foundationRuntime = {
+    bind() {}, start() {}, refreshStatus() {}, confirmLatest() {}, setEnabled() {},
+    getState: () => foundationState,
+    getReachable: () => graph,
+    subscribe(listener) { foundationListener = listener; },
+    async inspect() {
+      foundationState = { status: 'ready', chatId: CHAT, stableCount: 0 };
+      foundationListener(foundationState);
+      return foundationState;
+    },
+  };
+  let reads = 0;
+  const store = {
+    async readReachable() { reads += 1; return structuredClone(graph); },
+    readRecord() {}, putRecord() {}, commitRoot() {}, recordKey() {}, invalidate() {},
+  };
+  const handlers = new Map();
+  const hostAdapter = { snapshot: () => ({ context: { chatMetadata: { qianqianjie: { chatId: CHAT } } }, chat: [], chatId: 'host-chat' }) };
+  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: async () => {}, generateUtilityTask: async () => {} });
+  runtime.bind({ eventSource: { on(name, listener) { handlers.set(name, listener); } }, eventTypes: { CHAT_CHANGED: 'chat' } });
+
+  handlers.get('chat')();
+  await runtime.start();
+  await new Promise(resolve => setImmediate(resolve));
+  const state = runtime.getState();
+  const prepared = await runtime.prepareCurrent();
+  assert.equal(reads, 0, 'ready foundation 已发布的完整快照应直接复用，不再并发重复读图');
+  assert.equal(state.memorySnapshotStatus, 'ready');
+  assert.equal(state.memorySyncStatus, 'idle');
+  assert.equal(state.summaryCoverageStatus, 'caughtUp');
+  assert.equal(state.memorySyncError, null);
+  assert.equal(prepared.reachable, graph, '同版本后台任务必须保持绑定同一份共享快照');
+});
+
+test('后台同步进行中只复用同版本同模式任务，不同 root 版本仍独立接管并收敛', async () => {
+  const seed = harness();
+  let seeded = await seed.runtime.start();
+  seeded = await seed.runtime.extractFloor(seeded.floors[0].floorId, { analyzeState: false });
+  const firstGraph = await seed.store.readReachable({ mode: 'projection' });
+  let foundationGraph = firstGraph;
+  let foundationState = { ...seed.foundationRuntime.getState(), status: 'ready', foundationStatus: 'ready' };
+  let releaseFirst;
+  let markFirstStarted;
+  let anchorCalls = 0;
+  const firstStarted = new Promise(resolve => { markFirstStarted = resolve; });
+  const foundationRuntime = {
+    bind() {}, start() {}, refreshStatus() {}, confirmLatest() {}, setEnabled() {},
+    getState: () => foundationState,
+    getReachable: () => foundationGraph,
+    inspect: async () => foundationState,
+  };
+  const runtime = createV3MemoryRuntime({
+    foundationRuntime,
+    store: seed.store,
+    hostAdapter: seed.hostAdapter,
+    generateAnalysisTask: async () => {},
+    generateUtilityTask: async () => {},
+    persistAnchors: async () => {
+      anchorCalls += 1;
+      if (anchorCalls === 1) {
+        markFirstStarted();
+        await new Promise(resolve => { releaseFirst = resolve; });
+      }
+    },
+    logger: { warn() {} },
+  });
+
+  const starting = runtime.start();
+  await firstStarted;
+  foundationGraph = structuredClone(firstGraph);
+  await runtime.refreshStatus();
+  assert.equal(anchorCalls, 1, '同版本不同对象不得重复启动挂标与 coverage 同步');
+
+  const secondGraph = structuredClone(firstGraph);
+  secondGraph.rootRevision += 1;
+  secondGraph.root.headCheckpointId = '44444444-4444-4444-8444-444444444444';
+  foundationGraph = secondGraph;
+  foundationState = { ...foundationState, headCheckpointId: secondGraph.root.headCheckpointId };
+  await runtime.refreshStatus();
+  await waitFor(() => anchorCalls === 2 && runtime.getState().memorySyncStatus === 'idle', '新 root 版本未接管后台同步');
+  releaseFirst();
+  await starting;
+  const prepared = await runtime.prepareCurrent();
+  assert.equal(prepared.reachable, secondGraph);
+  assert.equal(prepared.reachable.rootRevision, firstGraph.rootRevision + 1);
+  assert.equal(runtime.getState().memorySyncStatus, 'idle');
+  assert.equal(runtime.getState().memorySyncError, null);
+});
+
 test('记忆准备只在同 chat/epoch 合并，A 聊迟到不会覆盖已独立完成的 B 聊', async () => {
   const otherChat = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
   const graph = (chatId, head) => ({
@@ -1112,6 +1312,8 @@ test('记忆准备只在同 chat/epoch 合并，A 聊迟到不会覆盖已独立
   const finalB = await runtime.prepareCurrent({ preferCached: true });
   assert.equal(finalB.reachable.root.chatId, otherChat);
   assert.equal(finalB.reachable.root.headCheckpointId, 'head-b');
+  await waitFor(() => runtime.getState().memorySyncStatus !== 'syncing', 'B 聊后台同步未收敛');
+  assert.equal(runtime.getState().memorySyncStatus, 'idle');
 });
 
 test('同 chat 的 CHAT_RENAMED/重复 CHAT_CHANGED 只触发同步，已验证摘要快照不清空', async () => {
@@ -1502,7 +1704,12 @@ test('单楼摘要提交只做 root 版本复核并复用 commitRoot 真回读�
   const gets = h.backend.calls.filter(call => call[0] === 'get');
   assert.equal(gets.filter(call => call[2] === 'v3-root').length, 2,
     '提取前投影确认与模型返回后的 root 版本复核各一次，不再提交后重读整图');
-  assert.equal(gets.length, 22, '固定 fixture 复用地基准备图后为 22 次 GET；模型后的完整依赖复核与提交校验仍保留');
+  assert.equal(gets.length, 9, '固定 fixture 同 root 复用后仅保留两次轻 root 核对与 commitRoot 真图校验');
+  assert.equal(h.backend.calls.filter(call => call[0] === 'put').length, 7,
+    '固定 fixture 新提交只写两个人物、摘要、floorOrder、run、checkpoint 与 root');
+  const indexPuts = h.backend.calls.filter(call => call[0] === 'put' && call[2].startsWith('v3-index-'));
+  assert.equal(indexPuts.length, 1);
+  assert.ok(indexPuts.every(call => call[2].startsWith('v3-index-floorOrder-')));
 });
 
 test('单楼与下一楼从冷地基点击到 fake 请求都只准备一轮整图，轻 root 核对单独计数', async () => {
@@ -2879,7 +3086,7 @@ test('完全重构占用现有主生成门禁，GENERATION_STARTED 抢入会取�
   h.emit('GENERATION_ENDED');
 });
 
-test('完全重构 CAS 冲突保留旧有效图，预备图只保留 baseline 人物并重建必要索引', async () => {
+test('完全重构 CAS 冲突保留旧有效图，预备图只保留 baseline 人物与 floorOrder 索引', async () => {
   const h = harness({ initialChat: [user('开始'), assistant('第一楼'), assistant('待确认尾楼')], automation: { enabled: true, batchSize: 1 } });
   await h.runtime.start(); await h.runtime.startHistoricalRebuild();
   await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().activeAutoMemory);
@@ -2898,7 +3105,8 @@ test('完全重构 CAS 冲突保留旧有效图，预备图只保留 baseline �
   assert.deepEqual(stagedCheckpoint.producedRefs.stateDeltas, []);
   assert.deepEqual(stagedCheckpoint.producedRefs.currentStates, []);
   const indexKinds = stagedCheckpoint.producedRefs.indexes.map(key => h.backend.records.get(`chat-${CHAT}/${key}`)?.data?.kind);
-  for (const kind of ['floorOrder', 'fingerprint', 'reverseRef', 'entity']) assert.ok(indexKinds.includes(kind), `reset 应重建 ${kind} index`);
+  assert.equal(stagedCheckpoint.indexLayout, 'floorOrder-v1');
+  assert.deepEqual(new Set(indexKinds), new Set(['floorOrder']));
 });
 
 test('CSE 重构锁定已有摘要前缀并逐楼替换状态链，不调用摘要模型', async () => {
@@ -3188,7 +3396,7 @@ test('完全重构前置 refresh 等待时切聊天不会重置任一聊天或�
   assert.equal(h.calls.length, 0);
 });
 
-test('完全重构提交旧聊天 root 后尾部切聊天不会在新聊天自动续建', async () => {
+test('完全重构提交旧聊天 root 后切换聊天不会把旧重构记录写入新聊天', async () => {
   let armed = false, refreshCount = 0, releaseRefresh, markStarted;
   const started = new Promise(resolve => { markStarted = resolve; });
   const h = harness({
@@ -3206,7 +3414,6 @@ test('完全重构提交旧聊天 root 后尾部切聊天不会在新聊天自�
   releaseRefresh(); await rebuilding;
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal([...h.backend.records.entries()].some(([key, value]) => key.startsWith(`chat-${otherChat}/`) && value.data?.diagnostics?.kind === 'fullRebuild'), false);
-  assert.equal(h.calls.length, 0, '旧聊天 reset 提交后不得对新聊天调用 Extractor/CSE');
 });
 
 test('GENERATION_STARTED 抢在 isGenerating 变真前仍拒绝历史授权，STOPPED/ENDED 后可幂等恢复', async () => {

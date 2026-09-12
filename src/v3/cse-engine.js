@@ -22,6 +22,8 @@ export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解�
 export const CSE_FIXED_CONTRACT = `【固定事实与隐私边界】
 正文 canonicalContent 是本楼事实的最高来源；结构化楼层记忆和 subjectRelevantEvidence 只是证据索引，可能稀疏或缺项，冲突时以正文为准。某个结构数组为空或没有某人物，不等于正文没有发生相关事件，也不等于该人物不知道。初始设定属于作者设定，不等于任何角色已经知道它。私密想法只属于其本人，不能自动变成其他人物的认知。
 
+auxiliaryStateSnapshot 若存在，是目标楼当前分支当时已保存的只读变量快照，只用于辅助理解状态。它可能同时包含多个人物、不完整或过时信息，不能整体归给某一人物，也不能当作用户手动 Core 纠正或可引用的权威证据；与正文或用户明确事实冲突时以正文和用户明确事实为准。
+
 subjectRelevantEvidence 按 tracked subject 汇集角色相关条目，relationToSubject 只说明该人物在既有 FloorMemory 条目里的结构角色，不是“此人已知证据”。participant 的 mentioned/privateCognitionOnly 不表示本人在场；行动 target 不表示本人知情，completion 为 intended/attempted/interrupted/uncertain 时尤其不能写成已完成；信息发送者只证明其说出或发出了相应内容，不证明消息内容客观为真，只有正文或实际送达证据才能支持接收者知情；承诺或指令的 target 不自动表示收到、同意或执行，plan 也不能写成已执行；cseSignal 的 object 只表示相关对象。远程行为与通信要按正文中的行为主体、对象、消息来源、接收者、渠道和完成状态分别理解，待转告不等于已经转告。不得把正文明确写出的人物认知反写为不知；人物被提及、被计划涉及或从叙述中推断出相关性，也不等于本人在场、参与或知情。
 
 previousState 只放人物自己的前态；authorialOtherStateContext 是经过隐私过滤的作者态连续性参考，不代表相应人物知道其他人的状态。作者态推断与人物本人已知必须分开：observable 只用于正文中实际可观察的状态，private 只属于该人物的内心或明确知情，authorial 只作作者塑造参考。
@@ -295,6 +297,7 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
     request: Object.freeze({ task: 'understandCharacterStateAfterFloor', locale: 'zh-CN', payload: {
       canonicalContent: floor.content.canonicalContent,
       floorMemory: semanticMemory(floorMemory, entities),
+      ...(floorMemory.sourceVariableReference ? { auxiliaryStateSnapshot: floorMemory.sourceVariableReference } : {}),
       previousState: previousForPrompt(currentState, trackedSubjects, entities, coreUserEdited),
       relevantBaseline: {
         userPersona: { name: effectiveUserPersona.name, description: effectiveUserPersona.description, visibility: 'authorial' },

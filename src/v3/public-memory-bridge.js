@@ -1,4 +1,4 @@
-import { formatChronologyAnchor, readRecallSource } from './recall-source.js';
+import { formatChronologyAnchor, projectRecallSource, readRecallSource } from './recall-source.js';
 
 export const QQJ_PUBLIC_MEMORY_BRIDGE_KEY = 'qqj_v3_public_bridge_v1';
 
@@ -115,7 +115,33 @@ const sameIdentity = (left, right) => left?.hostChatId === right?.hostChatId
   && left?.characterLocator === right?.characterLocator
   && left?.personaLocator === right?.personaLocator;
 
-export function createPublicMemoryBridge({ session, store, hostAdapter, isEnabled = true, sanitizerOptions = () => ({}), readSource = readRecallSource } = {}) {
+const completeFoundationSnapshot = foundationRuntime => {
+  if (!foundationRuntime || typeof foundationRuntime.getState !== 'function' || typeof foundationRuntime.getReachable !== 'function') return null;
+  try {
+    if (foundationRuntime.getState()?.status !== 'ready') return null;
+    const value = foundationRuntime.getReachable();
+    if (!['ready', 'needsReseal'].includes(value?.status)
+      || !value.root || !value.checkpoint
+      || value.root.status !== 'ready'
+      || value.checkpoint.id !== value.root.headCheckpointId
+      || value.checkpoint.narrativeGeneration !== value.root.narrativeGeneration
+      || value.checkpoint.sourceSnapshotFingerprint !== value.root.sourceSnapshotFingerprint
+      || !Number.isSafeInteger(value.rootRevision)
+      || !Array.isArray(value.floors) || !Array.isArray(value.floorMemories)
+      || !Array.isArray(value.entities) || !Array.isArray(value.stateDeltas)
+      || !Array.isArray(value.currentStates) || !value.run) return null;
+    return value;
+  } catch { return null; }
+};
+
+const sameReachableRoot = (value, rootResult) => rootResult?.status === 'ready'
+  && rootResult.revision === value?.rootRevision
+  && rootResult.data?.chatId === value?.root?.chatId
+  && rootResult.data?.headCheckpointId === value?.root?.headCheckpointId
+  && rootResult.data?.narrativeGeneration === value?.root?.narrativeGeneration
+  && rootResult.data?.sourceSnapshotFingerprint === value?.root?.sourceSnapshotFingerprint;
+
+export function createPublicMemoryBridge({ session, store, hostAdapter, foundationRuntime = null, isEnabled = true, sanitizerOptions = () => ({}), identityProjectionProvider = null, readSource = readRecallSource } = {}) {
   if (!session || typeof session.identity !== 'function' || typeof session.getState !== 'function') throw new TypeError('公共记忆桥 session 无效');
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('公共记忆桥 store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('公共记忆桥 hostAdapter 无效');
@@ -138,11 +164,26 @@ export function createPublicMemoryBridge({ session, store, hostAdapter, isEnable
     catch { return frozen({ status: 'not-ready', message: '千千结尚未准备好当前聊天身份。' }); }
     try {
       const hostSnapshot = hostAdapter.snapshot();
-      const source = await readSource({
-        store,
-        hostSnapshot,
-        sanitizerOptions: typeof sanitizerOptions === 'function' ? sanitizerOptions() : sanitizerOptions,
-      });
+      const currentSanitizerOptions = typeof sanitizerOptions === 'function' ? sanitizerOptions() : sanitizerOptions;
+      const identityProjectionValue = typeof identityProjectionProvider === 'function' ? await identityProjectionProvider() : null;
+      const identityProjection = identityProjectionValue?.data ?? identityProjectionValue;
+      const foundationSnapshot = completeFoundationSnapshot(foundationRuntime);
+      let source = null;
+      if (foundationSnapshot && typeof store.readRoot === 'function') {
+        const rootResult = await store.readRoot();
+        if (sameReachableRoot(foundationSnapshot, rootResult)) {
+          source = await projectRecallSource(
+            foundationSnapshot,
+            () => new Date(),
+            frozen({ reachableReads: 0, exitPoint: 'foundationCache' }),
+            hostSnapshot,
+            currentSanitizerOptions,
+            false,
+            identityProjection,
+          );
+        }
+      }
+      source ??= await readSource({ store, hostSnapshot, sanitizerOptions: currentSanitizerOptions, identityProjection });
       let after;
       try { after = session.identity(); }
       catch { return frozen({ status: 'stale', message: '读取期间当前聊天已变化。' }); }
