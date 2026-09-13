@@ -10,15 +10,20 @@ const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const CHAT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 class Node {
-  constructor(tag = 'div') { this.tag = tag; this.children = []; this.listeners = {}; this.attributes = {}; this.className = ''; this.textContent = ''; this.value = ''; this.open = false; this.disabled = false; this.tabIndex = 0; this.scrollLeft = 0; }
-  append(...nodes) { this.children.push(...nodes); }
-  appendChild(node) { this.children.push(node); return node; }
-  replaceChildren(...nodes) { this.children = [...nodes]; }
+  constructor(tag = 'div') { this.tag = tag; this.children = []; this.listeners = {}; this.attributes = {}; this.className = ''; this.textContent = ''; this.value = ''; this.open = false; this.disabled = false; this.tabIndex = 0; this.scrollLeft = 0; this.scrollTop = 0; }
+  append(...nodes) { for (const node of nodes) { this.children.push(node); if (node instanceof Node) node.parentNode = this; } }
+  appendChild(node) { this.append(node); return node; }
+  replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
   addEventListener(name, handler) { this.listeners[name] = handler; }
   click() { if (this.disabled) return undefined; return this.listeners.click?.({ currentTarget: this }); }
   fire(name, extra = {}) { return this.listeners[name]?.({ currentTarget: this, preventDefault() {}, ...extra }); }
   setAttribute(name, value) { this.attributes[name] = String(value); }
-  querySelector(selector) { return flatten(this).find(node => selector === '.qqj-profile-tab.active' && node.className === 'qqj-profile-tab active') ?? null; }
+  setPointerCapture(value) { this.capturedPointer = value; }
+  releasePointerCapture(value) { if (this.capturedPointer === value) this.capturedPointer = null; }
+  get classList() { return { add: value => { if (!this.className.split(' ').includes(value)) this.className += `${this.className ? ' ' : ''}${value}`; }, remove: value => { this.className = this.className.split(' ').filter(item => item && item !== value).join(' '); } }; }
+  querySelector(selector) { return flatten(this).find(node => selector === '.qqj-profile-tab.active' ? node.className === 'qqj-profile-tab active' : selector.startsWith('.') ? node.className.split(' ').includes(selector.slice(1)) : selector.startsWith('[data-qqj-person-id=') && node.attributes['data-qqj-person-id'] === selector.match(/"([^"]+)"/)?.[1]) ?? null; }
+  closest(selector) { for (let node = this; node; node = node.parentNode) if (selector.startsWith('.') && node.className.split(' ').includes(selector.slice(1))) return node; return null; }
+  getBoundingClientRect() { return this.rect ?? { top: this.className.includes('qqj-profile-card') ? 120 : 20, bottom: 220, height: 100 }; }
   focus() { documentRef.activeElement = this; }
 }
 function dialogHarness() {
@@ -56,12 +61,13 @@ function runtimeHarness({ profile = null, profiles = null, selected = [A], failS
   let state = { status: 'ready', chatId: CHAT, revision: 1, selectedEntityIds: [...selected], profilesByEntityId: initialProfiles,
     people: [person(A, '甲', selected.includes(A), initialProfiles[A] ?? null, 3), person(B, '乙', selected.includes(B), initialProfiles[B] ?? null)], active: null,
     unprofiledSelectedCount: selected.filter(id => !initialProfiles[id]).length, lastError: null };
-  const listeners = new Set(), calls = { select: [], save: [], avatar: [], merge: [], delete: [], generate: 0, regenerate: [] };
+  const listeners = new Set(), calls = { select: [], order: [], save: [], avatar: [], merge: [], delete: [], generate: 0, regenerate: [] };
   const emit = () => { for (const listener of listeners) listener(state); return state; };
   const runtime = {
     getState: () => state, refresh: async () => state,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async setSelectedEntityIds(ids) { calls.select.push(ids); state = { ...state, selectedEntityIds: ids, people: state.people.map(item => ({ ...item, selected: ids.includes(item.entityId) })) }; return emit(); },
+    async setPersonOrderEntityIds(ids) { calls.order.push([...ids]); const rank = new Map(ids.map((id, index) => [id, index])); state = { ...state, personOrderEntityIds: [...ids], people: [...state.people].sort((left, right) => (rank.get(left.entityId) ?? ids.length) - (rank.get(right.entityId) ?? ids.length)) }; return emit(); },
     async saveProfile(entityId, fields, options = {}) {
       calls.save.push([entityId, structuredClone(fields), structuredClone(options)]); if (failSave) throw new Error('CAS失败');
       const saved = { entityId, ...fields, manualFields: options.manualFields ?? [], source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
@@ -145,7 +151,7 @@ test('真实 activate 完成后不回画旧 loading，禁用整理不触发且�
   assert.equal(h.runtime.getState().status, 'ready');
   assert.equal(flatten(container).filter(node => node.className === 'qqj-page-status').length, 1);
   assert.match(visible(container), /人物资料读取完成/);
-  const generate = flatten(container).find(node => node.textContent === '整理待建档人物'); assert.equal(generate.disabled, true); generate.click();
+  const generate = flatten(container).find(node => node.textContent === '整理'); assert.equal(generate.disabled, true); generate.click();
   assert.equal(h.calls.filter(call => call[0] === 'put').length, 0, '浏览器中的 disabled 按钮不会触发动作');
   flatten(container).find(node => node.textContent === '更多人物（2）').click();
   assert.match(visible(container), /人物资料读取完成/, '切换人物选择视图后保留最近一次真实反馈');
@@ -171,19 +177,20 @@ test('千人页横向切换只显示一份常显资料，草稿跨人物保留�
   profileMenu.open = true; menuDocument.click({ target: profileMenu.children[0], composedPath: () => [profileMenu.children[0], profileMenu] }); assert.equal(profileMenu.open, true, '千人菜单内部点击不提前关闭');
   menuDocument.click({ target: container, composedPath: () => [container] }); assert.equal(profileMenu.open, false, '千人菜单点击外部后关闭');
   flatten(container).find(node => node.textContent === '编辑资料').click();
-  assert.deepEqual(flatten(container).find(node => node.className === 'qqj-profile-save-row').children.slice(0, 3).map(node => node.textContent), ['保存资料', '取消', '移出关注']);
+  assert.deepEqual(flatten(container).find(node => node.className.includes('qqj-profile-save-row')).children.map(node => node.textContent), ['保存资料', '取消']);
   assert.equal(fieldControl(container, '姓名').value, '甲');
   const notes = fieldControl(container, '补充资料'); notes.value = '甲的未保存草稿'; notes.fire('input');
   tabs[1].click(); assert.match(visible(container), /乙.*别名 · 乙别名/); assert.equal(flatten(container).some(node => node.className === 'settings-input'), false);
   flatten(container).find(node => node.textContent === '编辑资料').click(); const bNotes = fieldControl(container, '补充资料'); bNotes.value = '取消的草稿'; bNotes.fire('input');
   flatten(container).find(node => node.textContent === '取消').click(); assert.doesNotMatch(visible(container), /取消的草稿/); assert.match(visible(container), /编辑资料/);
   flatten(container).find(node => node.textContent === '甲').click(); assert.equal(fieldControl(container, '补充资料').value, '甲的未保存草稿');
-  flatten(container).find(node => node.textContent === '移出关注').click(); await new Promise(resolve => setImmediate(resolve));
+  flatten(container).find(node => node.textContent === '取消').click();
+  flatten(flatten(container).find(node => node.className === 'qqj-profile-menu-pop')).find(node => node.textContent === '移出关注').click(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(h.calls.select.at(-1), [B]); assert.match(visible(container), /乙.*别名 · 乙别名/);
   view.deactivate(); assert.equal(menuDocument.clickListenerCount(), 0, '页面停用时清理外部点击监听');
 });
 
-test('千人人名横条同聊天同列表重绘保留位置，列表或聊天变化重置', () => {
+test('千人人名横条同聊天同成员重绘与排序保留位置，切聊天重置', () => {
   const h = runtimeHarness({ selected: [A, B] }), container = new Node('main');
   const view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
   let switcher = flatten(container).find(node => node.className === 'qqj-profile-switcher');
@@ -203,7 +210,7 @@ test('千人人名横条同聊天同列表重绘保留位置，列表或聊天�
 
   h.emitState({ ...h.state, people: [...h.state.people].reverse() });
   switcher = flatten(container).find(node => node.className === 'qqj-profile-switcher');
-  assert.equal(switcher.scrollLeft, 0, '人物有序列表变化后不得继承旧位置');
+  assert.equal(switcher.scrollLeft, 81, '同一批人物仅排序变化时应保留横向位置');
   switcher.scrollLeft = 49;
   h.emitState({ ...h.state, chatId: CHAT_B });
   assert.equal(flatten(container).find(node => node.className === 'qqj-profile-switcher').scrollLeft, 0, '切聊天必须重置横向位置');
@@ -217,6 +224,22 @@ test('更多人物入口固定在顶部并切换为独立选择视图，零选�
   flatten(container).find(node => node.textContent === '设为重要').click(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(h.calls.select.at(-1), [A]); assert.match(visible(container), /已选重要.*移出关注/); assert.match(visible(container), /返回资料/);
   flatten(container).find(node => node.textContent === '返回资料').click(); assert.match(visible(container), /甲.*别名 · 甲别名/);
+});
+
+test('更多人物排序复用标准弹窗，拖动保存一次且取消不写', async () => {
+  const h = runtimeHarness({ selected: [A, B] }), dialogs = dialogHarness(), container = new Node('main');
+  createPeopleProfilesView({ runtime: h.runtime, dialog: dialogs.dialog, documentRef }).mount(container);
+  flatten(container).find(node => node.textContent === '更多人物（0）').click();
+  flatten(container).find(node => node.textContent === '排序').click();
+  const list = flatten(dialogs.active.content).find(node => node.className === 'qqj-people-order-list');
+  list.children.forEach((row, index) => { row.getBoundingClientRect = () => ({ top: index * 40, height: 40 }); });
+  const firstHandle = flatten(list.children[0]).find(node => node.className === 'qqj-people-order-handle');
+  firstHandle.fire('pointerdown', { pointerId: 7, button: 0 });
+  list.fire('pointermove', { pointerId: 7, clientY: 100 }); list.fire('pointerup', { pointerId: 7 });
+  await dialogs.submit();
+  assert.deepEqual(h.calls.order, [[B, A]]); assert.deepEqual(h.state.people.map(item => item.entityId), [B, A]);
+  flatten(container).find(node => node.textContent === '排序').click(); dialogs.dialog.cancelTop();
+  assert.equal(h.calls.order.length, 1, '取消排序不得保存');
 });
 
 test('人物菜单以两个内联选择完成整档合并，目标变化时资料人名同步且不生成原生选择器', async () => {
@@ -272,6 +295,22 @@ test('已有资料无改动在 view 层零保存，失败则保留用户草稿�
   assert.equal(fieldControl(failedContainer, '补充资料').value, '失败也要保留'); assert.match(visible(failedContainer), /保存失败：CAS失败/);
 });
 
+test('人物资料保存栏属于完整编辑器，成功回到当前人物卡而失败保持位置', async () => {
+  const profile = { entityId: A, name: '甲', aliases: '', gender: '', age: '', birthday: '', species: '', notes: '', appearance: '', background: '', personality: '', nsfw: '', manualFields: [], source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
+  const runCase = async failSave => {
+    const h = runtimeHarness({ profile, failSave }), scroller = new Node('div'), container = new Node('main'); scroller.className = 'body'; scroller.scrollTop = 40; scroller.rect = { top: 10, bottom: 410, height: 400 }; scroller.append(container);
+    createPeopleProfilesView({ runtime: h.runtime, documentRef }).mount(container);
+    flatten(container).find(node => node.textContent === '编辑资料').click();
+    assert.ok(flatten(container).find(node => node.className.includes('qqj-profile-form') && node.className.includes('qqj-manual-editor')));
+    assert.ok(flatten(container).find(node => node.className.includes('qqj-profile-save-row') && node.className.includes('qqj-manual-save-bar')));
+    const name = fieldControl(container, '姓名'); name.value = '新甲'; name.fire('input'); flatten(container).find(node => node.textContent === '保存资料').click();
+    await waitFor(() => failSave ? visible(container).includes('保存失败') : h.calls.save.length === 1 && !flatten(container).some(node => node.textContent === '保存中…'));
+    return { scroller, container };
+  };
+  const success = await runCase(false); assert.equal(success.scroller.scrollTop, 150);
+  const failure = await runCase(true); assert.equal(failure.scroller.scrollTop, 40); assert.match(visible(failure.container), /保存失败/);
+});
+
 test('基础资料四项按紧凑行分组且空字段隐藏；头像弹窗裁剪独立保存并保留文字草稿', async () => {
   const profile = { entityId: A, name: '无别名人物', aliases: '', gender: '女', age: '28', birthday: '3月8日', species: '人类', background: '旧背景', appearance: '', personality: '', notes: '旧补充', source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
   const h = runtimeHarness({ profile }), canvasDraws = [];
@@ -305,15 +344,15 @@ test('基础资料四项按紧凑行分组且空字段隐藏；头像弹窗裁�
 
 test('整理动作只在存在未建档重要人物时可用且每次点击只调用一次 runtime', async () => {
   const h = runtimeHarness(), container = new Node('main'); createPeopleProfilesView({ runtime: h.runtime, documentRef }).mount(container);
-  const button = flatten(container).find(node => node.textContent === '整理待建档人物（1）'); assert.equal(button.disabled, false);
+  const button = flatten(container).find(node => node.textContent === '整理'); assert.equal(button.disabled, false); assert.equal(button.attributes['aria-label'], '整理待建档人物（1）');
   button.click(); await new Promise(resolve => setImmediate(resolve)); assert.equal(h.calls.generate, 1);
   const profile = { entityId: A, name: '甲', aliases: '', background: '', appearance: '', personality: '', notes: '', source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
   const complete = runtimeHarness({ profile }), completeContainer = new Node('main'); createPeopleProfilesView({ runtime: complete.runtime, documentRef }).mount(completeContainer);
-  assert.equal(flatten(completeContainer).find(node => node.textContent === '整理待建档人物')?.disabled, true);
+  assert.equal(flatten(completeContainer).find(node => node.textContent === '整理')?.disabled, true);
 
   const partial = runtimeHarness({ generatedProfile: { entityId: A, name: '甲', aliases: '', background: '', appearance: '', personality: '', notes: '', source: 'generated', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' }, generationReport: { requested: 3, saved: 1, missing: 1, conflicts: 1, invalid: 0, unknown: 1, skipped: 0 } });
   const partialContainer = new Node('main'); createPeopleProfilesView({ runtime: partial.runtime, documentRef }).mount(partialContainer);
-  flatten(partialContainer).find(node => node.textContent === '整理待建档人物（1）').click();
+  flatten(partialContainer).find(node => node.textContent === '整理').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.match(visible(partialContainer), /保存 1\/3 位；遗漏 1 位；冲突 1 位；未知目标 1 项/);
   flatten(partialContainer).find(node => node.textContent === '移出关注').click();
@@ -326,7 +365,7 @@ test('整理完成会刷新未触碰表单，用户整理期间已输入的草�
   const generated = { entityId: A, name: '模型甲', aliases: '新别名', background: '生成背景', appearance: '', personality: '', notes: '', source: 'generated', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
   const untouched = runtimeHarness({ generatedProfile: generated }), untouchedContainer = new Node('main');
   createPeopleProfilesView({ runtime: untouched.runtime, documentRef }).mount(untouchedContainer);
-  flatten(untouchedContainer).find(node => node.textContent === '整理待建档人物（1）').click();
+  flatten(untouchedContainer).find(node => node.textContent === '整理').click();
   await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
   assert.match(visible(untouchedContainer), /模型甲.*生成背景/);
 
@@ -334,7 +373,7 @@ test('整理完成会刷新未触碰表单，用户整理期间已输入的草�
   const editing = runtimeHarness({ generatedProfile: generated, generateGate: gate }), editingContainer = new Node('main');
   createPeopleProfilesView({ runtime: editing.runtime, documentRef }).mount(editingContainer);
   flatten(editingContainer).find(node => node.textContent === '编辑资料').click();
-  flatten(editingContainer).find(node => node.textContent === '整理待建档人物（1）').click();
+  flatten(editingContainer).find(node => node.textContent === '整理').click();
   const name = fieldControl(editingContainer, '姓名'); name.value = '我正在填写'; name.fire('input');
   release(); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
   assert.equal(fieldControl(editingContainer, '姓名').value, '我正在填写');

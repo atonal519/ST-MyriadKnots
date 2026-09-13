@@ -68,7 +68,11 @@ export function createInlineSelect({ documentRef = globalThis.document, options 
     if (event.key === 'Enter' || event.key === ' ') { suppressNextClick = true; globalThis.setTimeout?.(() => { suppressNextClick = false; }, 0); }
     open();
   });
-  root.addEventListener('focusout', event => { if (!root.contains?.(event.relatedTarget)) close(); });
+  root.addEventListener('focusout', event => {
+    if (event.relatedTarget && root.contains(event.relatedTarget)) return;
+    const focusRoot = root.getRootNode();
+    setTimeout(() => { if (!root.contains(focusRoot.activeElement)) close(); }, 0);
+  });
   root.append(trigger, list); trigger.append(label, chevron);
   Object.defineProperty(root, 'value', { configurable: true, get: () => selected, set: next => { select(next, false); } });
   Object.defineProperty(root, 'disabled', { configurable: true, get: () => disabled, set: next => { disabled = next === true; if (disabled) close(); sync(); } });

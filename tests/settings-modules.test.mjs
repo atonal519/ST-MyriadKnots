@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { createPromptsSettings } from '../src/ui/settings/prompts-settings.js';
 import { createAppearanceSettings } from '../src/ui/settings/appearance-settings.js';
 import { createApiSettings } from '../src/ui/settings/api-settings.js';
+import { createSettingsStore } from '../src/settings.js';
+import { createApiResolver, createTaskRouter } from '../src/api-routing.js';
 import { DEFAULT_EXTRACTOR_GUIDANCE } from '../src/v3/extractor.js';
 import { DEFAULT_CSE_GUIDANCE } from '../src/v3/cse-engine.js';
 import { DEFAULT_PROFILE_GUIDANCE } from '../src/v3/people-workspace.js';
@@ -13,13 +15,16 @@ class Node {
     this.open = false; this.checked = false; this.disabled = false; this.value = ''; this.type = '';
     this.placeholder = ''; this.min = ''; this.max = ''; this.step = ''; this.attributes = {}; this._text = '';
   }
-  append(...nodes) { this.children.push(...nodes); }
-  replaceChildren(...nodes) { this.children = [...nodes]; }
+  append(...nodes) { for (const node of nodes) { this.children.push(node); if (node instanceof Node) node.parentNode = this; } }
+  replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
   setAttribute(name, value) { this.attributes[name] = value; }
   addEventListener(name, handler) { (this.events[name] ||= []).push(handler); }
   async fire(name, overrides = {}) { for (const handler of this.events[name] || []) await handler({ currentTarget: this, target: this, stopPropagation() {}, preventDefault() {}, ...overrides }); }
-  focus(options) { this.focusOptions = options; }
+  focus(options) { this.focusOptions = options; documentRef.activeElement = this; }
+  getRootNode() { return documentRef; }
   contains(target) { return target === this || this.descendants().includes(target); }
+  closest(selector) { for (let node = this; node; node = node.parentNode) if (selector.startsWith('.') && node.className.split(' ').includes(selector.slice(1))) return node; return null; }
+  getBoundingClientRect() { return this.rect ?? { top: 0, bottom: 100, height: 100 }; }
   get classList() { return { add: c => { if (!this.className.split(' ').includes(c)) this.className = `${this.className ? `${this.className} ` : ''}${c}`; }, remove: c => { this.className = this.className.split(' ').filter(value => value && value !== c).join(' '); }, contains: c => this.className.split(' ').includes(c) }; }
   get textContent() { return this._text || this.children.map(child => child?.textContent ?? '').join(''); }
   set textContent(value) { this._text = String(value); }
@@ -27,7 +32,7 @@ class Node {
   find(predicate) { return this.descendants().find(predicate); }
   findAll(predicate) { return this.descendants().filter(predicate); }
 }
-const documentRef = { createElement: tag => new Node(tag) };
+const documentRef = { activeElement: null, createElement: tag => new Node(tag) };
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const fieldControl = (node, label) => node.find(n => n.tagName === 'label' && n.children[0]?.textContent === label)?.children[1];
 const inlineTrigger = control => control.find(n => n.className.split(' ').includes('qqj-inline-select-trigger'));
@@ -153,6 +158,9 @@ test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调�
   let rerenders = 0;
   const promptCalls = []; let promptResponse = null;
   const { node } = createApiSettings({ settings, apiTools, documentRef, promptImpl: options => { promptCalls.push(options); return promptResponse; }, rerender: () => { rerenders += 1; } });
+  const scroller = new Node('div'); scroller.className = 'body'; scroller.scrollTop = 30; scroller.rect = { top: 10, bottom: 410, height: 400 }; node.rect = { top: 100, bottom: 500, height: 400 }; scroller.append(node);
+  const editorBody = node.find(n => n.className.includes('settings-sub-body') && n.className.includes('qqj-manual-editor'));
+  assert.ok(editorBody); assert.ok(editorBody.children.at(-1).className.includes('qqj-manual-save-bar'), 'API 操作栏应位于完整编辑器末尾');
   assert.equal(node.find(n => n.tagName === 'button' && n.textContent === '清除 Key'), undefined);
   const analysis = fieldControl(node, '分析API（建议高质模型）');
   const summary = fieldControl(node, '摘要API（建议快速模型）');
@@ -184,6 +192,7 @@ test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调�
   model.value = 'fast-draft-model'; await model.fire('input');
   const save = node.find(n => n.tagName === 'button' && n.textContent === '保存设置');
   await save.fire('click');
+  assert.equal(scroller.scrollTop, 120, 'API 保存并刷新字段后回到配置抽屉顶部');
   assert.equal(presets.find(item => item.id === 'fast').url, 'https://fast-draft.test/v1');
   assert.equal(presets.find(item => item.id === 'fast').key, 'FAST_KEY', 'Key 留空必须保留摘要预设原值');
   assert.deepEqual(analysisUpdates, [], '保存摘要配置不得切换分析 API');
@@ -209,6 +218,44 @@ test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调�
   assert.deepEqual(analysisUpdates, [], '摘要另存只能切摘要角色');
   assert.equal(analysis.value, '');
   assert.equal(rerenders, 1);
+});
+
+test('无构画设置可从 UI 点击已存预设，并让后续分析与摘要路由使用该配置', async () => {
+  const extensionSettings = {};
+  const settings = createSettingsStore({ extensionSettings, save() {}, now: () => 1, random: () => 0.5 });
+  const presetId = settings.upsertSharedPreset('预设 A', { url: 'https://preset-a.test/v1', key: 'KEY_A', model: 'model-a', excludeParams: ['seed'], timeoutSec: 45, stream: true }, 'preset-a');
+  assert.equal(presetId, 'preset-a');
+  assert.equal(settings.sharedPresets().length, 1, '没有构画初始记录时仍能建立共享预设池');
+
+  const routed = [];
+  const resolver = createApiResolver({ settings });
+  const router = createTaskRouter({ resolver, compactClient: { generateTask: async ({ config }) => { routed.push(config); return { jsonData: { ok: true } }; } } });
+  const { node } = createApiSettings({ settings, apiTools: { fetchModels: async () => [], testConnection: async () => ({ ok: true }) }, documentRef });
+  const analysis = fieldControl(node, '分析API（建议高质模型）');
+  const trigger = inlineTrigger(analysis);
+  await trigger.fire('click');
+  const optionA = analysis.find(n => n.attributes['data-value'] === 'preset-a');
+  documentRef.activeElement = null;
+  const focusout = analysis.fire('focusout', { relatedTarget: null });
+  await focusout; await Promise.resolve();
+  assert.equal(analysis.find(n => n.className === 'qqj-inline-select-options').hidden, false, '焦点清理微任务结束时仍不能提前隐藏菜单');
+  optionA.focus();
+  await optionA.fire('click');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  await trigger.fire('focus');
+
+  assert.equal(analysis.find(n => n.className === 'qqj-inline-select-options').hidden, true);
+  assert.equal(analysis.find(n => n.className === 'qqj-inline-select-value').textContent, '预设 A');
+  assert.equal(settings.get().apiMode, 'seven-preset');
+  assert.equal(settings.get().selectedSevenDaysPresetId, 'preset-a');
+  assert.equal(fieldControl(node, 'URL').value, 'https://preset-a.test/v1');
+
+  await router.generateAnalysisTask({});
+  await router.generateUtilityTask({});
+  assert.deepEqual(routed.map(config => [config.url, config.key, config.model]), [
+    ['https://preset-a.test/v1', 'KEY_A', 'model-a'],
+    ['https://preset-a.test/v1', 'KEY_A', 'model-a'],
+  ]);
 });
 
 test('API 预设删除按当前编辑角色清理引用，取消/主配置/失效竞态均不误改', async () => {

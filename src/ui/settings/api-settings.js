@@ -1,6 +1,7 @@
 import { createSettingsKit } from './kit.js';
 import { createInlineSelect } from '../inline-select.js';
 import { publicErrorMessage } from '../../public-error.js';
+import { scrollManualEditorToTop } from '../manual-editor-scroll.js';
 
 // API 配置：分析/摘要角色选择（change 即存）＋预设编辑区（手动 保存/另存/测试/拉取模型）＋高级设置子抽屉。
 export function createApiSettings({
@@ -18,6 +19,7 @@ export function createApiSettings({
 } = {}) {
   const { element, button, field, subDrawer } = createSettingsKit(documentRef);
   const { drawer, body } = subDrawer({ title: 'API 配置', id: 'qqj-settings-api', open, onToggle });
+  drawer.classList.add('qqj-api-editor'); body.classList.add('qqj-manual-editor');
 
   const current = settings.get();
   const presets = settings.sharedPresets();
@@ -177,6 +179,7 @@ export function createApiSettings({
     if (target.sourceRole === 'analysis') settings.update({ apiMode: target.presetId ? 'seven-preset' : 'auto', selectedSevenDaysPresetId: target.presetId });
     result.textContent = 'API 设置已保存。'; result.className = 'settings-result success';
     fill();
+    scrollManualEditorToTop(drawer);
   });
   const create = button('另存为预设', 'secondary-action', async () => {
     const name = String(await Promise.resolve(promptImpl({ title: '另存为预设', body: '为当前 API 配置输入一个名称。', initialValue: '千千结预设', placeholder: '预设名称', confirmText: '保存', validate: value => String(value ?? '').trim() ? '' : '请输入预设名称。' })) ?? '').trim();
@@ -235,7 +238,7 @@ export function createApiSettings({
 
   const modelRow = element('div', 'settings-inline');
   modelRow.append(model, fetchBtn);
-  const actions = element('div', 'settings-actions');
+  const actions = element('div', 'settings-actions qqj-manual-save-bar');
   actions.append(save, create, remove, test);
   fill();
 
@@ -253,9 +256,9 @@ export function createApiSettings({
     field('Key', key),
     field('模型', modelRow),
     modelSection,
-    actions,
     result,
     advanced,
+    actions,
   );
   return { node: drawer };
 }

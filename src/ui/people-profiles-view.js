@@ -4,6 +4,8 @@ import { createInlineSelect } from './inline-select.js';
 import { PEOPLE_PROFILE_FIELDS, PEOPLE_PROFILE_GROUPS, PEOPLE_PROFILE_LABELS, emptyPeopleProfileFields } from '../v3/people-profile-fields.js';
 import { avatarCropLayout, cropAvatarDataUrl, loadAvatarSource } from './avatar-cropper.js';
 import { publicErrorMessage } from '../public-error.js';
+import { bindHorizontalStrip, openPeopleOrderDialog } from './people-interactions.js';
+import { scrollManualEditorToTop } from './manual-editor-scroll.js';
 
 const PLACEHOLDERS = Object.freeze({ name: '人物姓名', aliases: '多个别名可用顿号或换行分隔', gender: '有明确依据时填写', age: '不把外观年龄当作实际年龄', birthday: '有明确依据时填写', species: '种族或物种', notes: '其他稳定基础资料', appearance: '旧资料或难归类的外貌补充', background: '稳定的背景经历', personality: '长期核心性格', nsfw: '有明确依据的成人向资料' });
 
@@ -17,13 +19,14 @@ function fieldsFrom(person) {
 function sameFields(left, right) { return PEOPLE_PROFILE_FIELDS.every(field => String(left?.[field] ?? '') === String(right?.[field] ?? '')); }
 
 export function createPeopleProfilesView({ runtime, dialog = null, documentRef = globalThis.document, imageFactory = () => new Image(), urlApi = globalThis.URL } = {}) {
-  if (!runtime || ['getState', 'refresh', 'setSelectedEntityIds', 'saveProfile', 'saveAvatar', 'mergePeople', 'deletePerson', 'generateMissingProfiles', 'regenerateProfile'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('千人人物资料 runtime 无效');
+  if (!runtime || ['getState', 'refresh', 'setSelectedEntityIds', 'setPersonOrderEntityIds', 'saveProfile', 'saveAvatar', 'mergePeople', 'deletePerson', 'generateMissingProfiles', 'regenerateProfile'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('千人人物资料 runtime 无效');
   if (!documentRef?.createElement) throw new TypeError('千人人物资料 documentRef 无效');
   let container = null, active = false, epoch = 0, unsubscribe = null, state = runtime.getState(), chatId = state.chatId ?? null, feedback = '人物资料状态已显示。';
   let currentEntityId = null, showMore = false, cropDraft = null, cropLoadId = 0, cropLoadController = null;
   let switcherNode = null, switcherSignature = null, switcherScrollLeft = 0;
   const drafts = new Map();
   const operationMenus = createOperationMenuController(documentRef);
+  const scrollProfileToTop = entityId => scrollManualEditorToTop(container.querySelector(`[data-qqj-person-id="${entityId}"]`));
   const releaseCrop = draft => { draft?.source?.release?.(); if (cropDraft === draft) cropDraft = null; };
   const closeCrop = () => {
     cropLoadId += 1; cropLoadController?.abort(); cropLoadController = null;
@@ -38,6 +41,7 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
     if (value.active?.kind === 'loading') return '正在读取当前聊天的人物资料';
     if (value.active?.kind === 'generating') return '正在整理人物资料';
     if (value.active?.kind === 'savingSelection') return '正在保存重要人物选择';
+    if (value.active?.kind === 'savingOrder') return '正在保存人物顺序';
     if (value.active?.kind === 'savingProfile') return '正在保存人物资料';
     if (value.active?.kind === 'merging') return '正在合并人物归属';
     if (value.active?.kind === 'deleting') return '正在删除人物';
@@ -102,7 +106,7 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
   }
   function saveProfile(person, draft) {
     const current = fieldsFrom(person);
-    if (person.profiled && sameFields(draft, current)) { draft.editing = false; draft.notice = '未修改内容'; draft.error = ''; render(state); return; }
+    if (person.profiled && sameFields(draft, current)) { draft.editing = false; draft.notice = '未修改内容'; draft.error = ''; render(state); scrollProfileToTop(person.entityId); return; }
     const token = Object.freeze({ chatId, entityId: person.entityId, draft });
     const payload = Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, draft[field]]));
     draft.saving = true; draft.notice = '保存中…'; draft.error = ''; render(state);
@@ -116,7 +120,7 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
         const saved = fieldsFrom(updated);
         drafts.set(token.entityId, { ...saved, original: { ...saved }, dirtyFields: new Set(), wasProfiled: true, dirty: false, saving: false, editing: false, error: '', notice: '已保存' });
       }
-      if (active) render(next);
+      if (active) { render(next); if (updated?.profiled) scrollProfileToTop(token.entityId); }
     }, error => {
       const next = runtime.getState(); state = next;
       if ((next.chatId ?? null) !== token.chatId || drafts.get(token.entityId) !== token.draft) return;
@@ -125,7 +129,9 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
     });
   }
   function generationButton(className = 'secondary-action') {
-    const button = element('button', className, state.active?.kind === 'generating' ? '正在整理…' : `整理待建档人物${state.unprofiledSelectedCount ? `（${state.unprofiledSelectedCount}）` : ''}`);
+    const button = element('button', className, '整理');
+    const description = state.active?.kind === 'generating' ? '正在整理人物资料' : `整理待建档人物${state.unprofiledSelectedCount ? `（${state.unprofiledSelectedCount}）` : ''}`;
+    button.setAttribute?.('title', description); button.setAttribute?.('aria-label', description);
     button.type = 'button'; button.disabled = Boolean(state.active) || state.unprofiledSelectedCount < 1;
     button.addEventListener('click', () => { void run('整理基础资料', () => runtime.generateMissingProfiles(), { generationReport: true }); });
     return button;
@@ -256,6 +262,7 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
   }
   function profilePanel(person) {
     const panel = element('section', 'qqj-profile-card');
+    panel.setAttribute('data-qqj-person-id', person.entityId);
     const values = fieldsFrom(person), draft = drafts.has(person.entityId) ? profileDraft(person) : null;
     const header = element('header', 'qqj-profile-summary');
     const hasAlias = Boolean(values.aliases);
@@ -285,7 +292,7 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
     panel.append(header, file);
     const body = element('div', 'qqj-profile-body');
     if (draft?.editing) {
-      const form = element('div', 'qqj-profile-form');
+      const form = element('div', 'qqj-profile-form qqj-manual-editor');
       const groups = [{ key: 'basic', label: '基础信息', fields: [['name', '姓名', 'input'], ['aliases', '别名', 'textarea'], ...PEOPLE_PROFILE_GROUPS[0].fields] }, ...PEOPLE_PROFILE_GROUPS.slice(1)];
       for (const group of groups) {
         const section = element('section', 'qqj-profile-form-group'); section.append(element('h3', '', group.label));
@@ -297,11 +304,11 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
         }
         form.append(section);
       }
-      const actions = element('div', 'qqj-profile-save-row');
+      const actions = element('div', 'qqj-profile-save-row qqj-manual-save-bar');
       const save = element('button', 'primary-action', draft.saving ? '保存中…' : '保存资料'); save.type = 'button'; save.disabled = draft.saving || busyExceptGeneration(state);
       save.addEventListener('click', () => saveProfile(person, draft)); actions.append(save);
       const cancel = element('button', 'secondary-action', '取消'); cancel.type = 'button'; cancel.disabled = draft.saving || busyExceptGeneration(state);
-      cancel.addEventListener('click', () => { drafts.delete(person.entityId); render(state); }); actions.append(cancel, selectionButton(person, state.selectedEntityIds));
+      cancel.addEventListener('click', () => { drafts.delete(person.entityId); render(state); }); actions.append(cancel);
       if (draft.notice || draft.error) actions.append(saveResult(draft));
       form.append(actions); body.append(form);
     } else {
@@ -340,11 +347,18 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
       bar.append(button);
     });
     if (!selected.length) bar.append(element('span', 'qqj-profile-switch-empty', '尚未选择重要人物'));
-    return bar;
+    return bindHorizontalStrip(bar);
+  }
+  function openOrderDialog() {
+    if (!dialog?.custom) { feedback = '当前环境无法打开人物排序窗口。'; render(state); return; }
+    const operationChatId = chatId;
+    void openPeopleOrderDialog({ customImpl: options => dialog.custom(options), runtime, people: state.people, documentRef, chatId: operationChatId,
+      onSaved: next => { if ((next.chatId ?? null) !== operationChatId) return; state = next; feedback = '人物顺序已保存。'; if (active) render(next); } });
   }
   function peoplePicker(people) {
     const picker = element('section', 'qqj-profile-picker'), heading = element('header', 'qqj-profile-picker-heading');
-    heading.append(element('strong', '', '更多人物'), element('span', 'v3-memory-status', `${people.length} 位已识别人物`)); picker.append(heading);
+    const order = element('button', 'secondary-action qqj-people-order-open', '排序'); order.type = 'button'; order.disabled = Boolean(state.active) || people.length < 2; order.addEventListener('click', openOrderDialog);
+    heading.append(element('strong', '', '更多人物'), element('span', 'v3-memory-status', `${people.length} 位已识别人物`), order); picker.append(heading);
     const list = element('div', 'qqj-more-people-list');
     for (const person of people) {
       const row = element('div', 'qqj-more-person-row'), copy = element('div', 'qqj-more-person-copy');
@@ -370,7 +384,7 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
     health.setAttribute?.('role', 'status'); status.append(health, element('p', `v3-foundation-feedback${feedback.includes('失败') ? ' error' : ''}`, feedback)); page.append(status);
     const selected = state.people.filter(person => person.selected), moreCount = state.people.length - selected.length;
     if (!selected.some(person => person.entityId === currentEntityId)) { closeCrop(); currentEntityId = selected[0]?.entityId ?? null; }
-    const nextSignature = JSON.stringify(selected.map(person => person.entityId));
+    const nextSignature = JSON.stringify(selected.map(person => person.entityId).sort());
     const nextSwitcher = switcher(selected);
     const preserveSwitcherScroll = previousChatId === chatId && previousSignature === nextSignature;
     const toolbar = element('div', 'qqj-profile-toolbar'), switchRow = element('div', 'qqj-profile-switch-row'); switchRow.append(nextSwitcher);

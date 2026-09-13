@@ -75,6 +75,16 @@ export const gouhuaDialogCss = `
 .qqj-merge-dialog .qqj-inline-select-option.active{border-color:var(--sp-primary);background:var(--sp-hover-bg);color:var(--sp-primary)}
 .qqj-merge-dialog .qqj-inline-select-option:focus-visible{outline:2px solid var(--sp-primary);outline-offset:-2px}
 .qqj-merge-dialog .qqj-inline-select-trigger:disabled,.qqj-merge-dialog .qqj-inline-select-option:disabled{opacity:.55;cursor:not-allowed}
+.qqj-people-order-dialog{display:grid;min-width:0;gap:10px;color:var(--sp-on-surface)}
+.qqj-people-order-intro{margin:0;color:var(--sp-subtle);font-size:var(--sp-fs-75);line-height:1.55;overflow-wrap:anywhere}
+.qqj-people-order-list{display:grid;min-width:0;max-height:min(52dvh,480px);gap:6px;padding:2px;overflow-y:auto;overscroll-behavior:contain}
+.qqj-people-order-row{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:9px;min-height:40px;padding:5px 9px;border:1px solid var(--sp-divider);border-radius:8px;background:var(--sp-sheet-bg)}
+.qqj-people-order-row.dragging{border-color:var(--sp-primary);background:var(--sp-hover-bg)}
+.qqj-people-order-handle{appearance:none;display:grid;place-items:center;width:30px;height:30px;margin:0;padding:0;border:0;border-radius:6px;background:transparent;color:var(--sp-subtle);font:700 var(--sp-fs-83)/1 var(--sp-font);letter-spacing:-3px;cursor:grab;touch-action:none}
+.qqj-people-order-handle:hover{background:var(--sp-hover-bg);color:var(--sp-primary)}
+.qqj-people-order-handle:focus-visible{outline:2px solid var(--sp-primary);outline-offset:1px}
+.qqj-people-order-row.dragging .qqj-people-order-handle{cursor:grabbing}
+.qqj-people-order-name{min-width:0;font-size:var(--sp-fs-85);line-height:1.45;overflow-wrap:anywhere}
 .qqj-avatar-crop-panel{display:grid;gap:12px;min-width:0}
 .qqj-avatar-crop-frame{position:relative;width:min(240px,100%);margin-inline:auto;aspect-ratio:var(--qqj-avatar-aspect,1);overflow:hidden;border:1px solid var(--sp-divider);border-radius:10px;background:var(--sp-surface-high);touch-action:none;cursor:move}
 .qqj-avatar-crop-image{position:absolute;max-width:none;max-height:none;user-select:none;pointer-events:none}

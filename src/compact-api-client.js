@@ -377,7 +377,7 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
     return { ...payload, taskMetadata: { ...(completion.finishReason ? { finishReason: completion.finishReason } : {}), ...(transportBudget ? { transportAttempts: transportBudget.used } : {}) } };
   };
   const testConnection = async ({ config, signal } = {}) => {
-    const result = await generateTask({ config: { ...config, stream: false }, systemPrompt: 'This is a JSON text connection check. Return exactly one JSON object and no Markdown or extra text.', taskMessages: [{ role: 'user', content: 'Reply with exactly {"ok":true}.' }], signal, maxTokens: 48, temperature: 0 });
+    const result = await generateTask({ config, systemPrompt: 'This is a JSON text connection check. Return exactly one JSON object and no Markdown or extra text.', taskMessages: [{ role: 'user', content: 'Reply with exactly {"ok":true}.' }], signal, maxTokens: 2048, temperature: 0 });
     if (result?.jsonData?.ok !== true) throw safeError('format');
     return { ok: true, model: config?.model || DEFAULT_MODEL };
   };

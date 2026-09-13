@@ -19,6 +19,9 @@ import { validateFloorMemory } from '../src/v3/memory-schema.js';
 import { captureFloorVariableReference } from '../src/v3/floor-variable-reference.js';
 import { createCompactApiClient } from '../src/compact-api-client.js';
 import { createTaskRouter } from '../src/api-routing.js';
+import { createChatIdentityCoordinator, CHAT_IDENTITY_COLLECTION } from '../src/chat-identity.js';
+import { createChatSession } from '../src/chat-session.js';
+import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GENERATION = '22222222-2222-4222-8222-222222222222';
@@ -44,13 +47,22 @@ function viewHarness(runtime) {
   const documentRef = { activeElement: null, createElement: tag => new ViewNode(tag) };
   class ViewNode {
     constructor(tag) { this.tag = tag; this.children = []; this.listeners = {}; this.textContent = ''; this.className = ''; this.disabled = false; this.value = ''; this.open = false; this.selectionStart = 0; this.selectionEnd = 0; this.attributes = {}; }
-    append(...nodes) { this.children.push(...nodes); }
-    replaceChildren(...nodes) { this.children = [...nodes]; }
+    append(...nodes) { for (const node of nodes) { this.children.push(node); if (node instanceof ViewNode) node.parentNode = this; } }
+    replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
     addEventListener(name, handler) { this.listeners[name] = handler; }
     setAttribute(name, value) { this.attributes[name] = String(value); }
     click() { return this.listeners.click?.(); }
     fire(name) { return this.listeners[name]?.(); }
     focus() { documentRef.activeElement = this; }
+    closest(selector) { for (let node = this; node; node = node.parentNode) if (selector.startsWith('.') && node.className.split(' ').includes(selector.slice(1))) return node; return null; }
+    getBoundingClientRect() { return { top: 0, bottom: 100, height: 100 }; }
+    descendants() { return this.children.flatMap(child => child instanceof ViewNode ? [child, ...child.descendants()] : []); }
+    querySelector(selector) {
+      const nodes = this.descendants();
+      if (selector.startsWith('.')) return nodes.find(node => node.className.split(' ').includes(selector.slice(1))) ?? null;
+      const attribute = selector.match(/^\[([^=]+)="([^"]*)"\]$/);
+      return attribute ? nodes.find(node => node.attributes[attribute[1]] === attribute[2]) ?? null : null;
+    }
   }
   const flatten = node => [node, ...(node.children ?? []).flatMap(flatten)];
   const container = new ViewNode('main');
@@ -102,7 +114,7 @@ function browserStorage(initial = {}) {
   };
 }
 
-function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, extractorPromptGuidance, csePromptGuidance, processingPrompt, foundationRefresh, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null, failureStorage = undefined, now = () => new Date(NOW) } = {}) {
+function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted = () => {}, extractorPromptGuidance, csePromptGuidance, processingPrompt, foundationRefresh, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null, failureStorage = undefined, now = () => new Date(NOW) } = {}) {
   let enabled = true;
   const handlers = new Map();
   const warnings = [];
@@ -139,7 +151,7 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
     if (utility) return utility(options, calls.length);
     return { jsonData: { summary: '裴晚生提醒用户带伞。', people: [{ name: '裴晚生' }, { name: '你', role: 'user' }], events: [{ title: '带伞提醒', description: '裴晚生提醒用户带伞。' }] }, taskMetadata: { source: 'shared-utility', sourceLabel: '机械副 API', model: 'mock-model', finishReason: 'stop' } };
   };
-  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), persistAnchors, identityProjectionProvider, failureStorage, now, newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
+  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), persistAnchors, identityProjectionProvider, failureStorage, now, newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
   const emit = (name, ...args) => (handlers.get(name) ?? []).forEach(listener => listener(...args));
   return { runtime, foundationRuntime, store, backend, context, hostAdapter, calls, warnings, emit, readReachableModes, snapshotCount: () => snapshotCalls, setEnabled(value) { enabled = value; }, setAutomation(value) { automation = value; } };
@@ -1399,6 +1411,84 @@ test('CHAT_CHANGED 与 start 并发发布同版本 foundation 快照时共用后
   assert.equal(prepared.reachable, graph, '同版本后台任务必须保持绑定同一份共享快照');
 });
 
+test('生产式冷启动等待真实身份认领后只读一次完整图并恢复已保存摘要', async () => {
+  const seeded = harness({ automation: { enabled: false, batchSize: 1 } });
+  let seededState = await seeded.runtime.start();
+  seededState = await seeded.runtime.extractFloor(seededState.floors[0].floorId, { analyzeState: false });
+  const expectedSummary = seededState.floors[0].summary;
+  seeded.backend.records.set(`${CHAT_IDENTITY_COLLECTION}/binding-${CHAT}`, {
+    revision: 1,
+    data: {
+      schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId: CHAT,
+      owner: { hostChatId: seeded.context.chatId, characterLocator: 'character.png', personaLocator: 'persona.png' },
+      state: 'ready', sourceChatId: null, createdAt: NOW, updatedAt: NOW,
+    },
+  });
+  seeded.backend.calls.splice(0);
+
+  let releaseBinding, markBindingStarted, held = true;
+  const bindingStarted = new Promise(resolve => { markBindingStarted = resolve; });
+  seeded.backend.setBeforeGet(async ({ collection, key }) => {
+    if (!held || collection !== CHAT_IDENTITY_COLLECTION || key !== `binding-${CHAT}`) return;
+    held = false; markBindingStarted();
+    await new Promise(resolve => { releaseBinding = resolve; });
+  });
+  const context = {
+    ...seeded.context,
+    chat: structuredClone(seeded.context.chat),
+    chatMetadata: structuredClone(seeded.context.chatMetadata),
+  };
+  const handlers = new Map();
+  context.eventSource = { on(name, listener) { const values = handlers.get(name) ?? []; values.push(listener); handlers.set(name, values); } };
+  const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => context } } });
+  const identityCoordinator = createChatIdentityCoordinator({
+    client: seeded.backend.client,
+    persist: async (raw, chatId) => { raw.chatMetadata.qianqianjie = { schemaVersion: 1, chatId }; return true; },
+    freshUuid: uuidFactory(),
+    now: () => new Date(NOW),
+  });
+  const session = createChatSession({ contextProvider: () => context, identityCoordinator });
+  const store = createFoundationStore({ client: seeded.backend.client, contextProvider: () => session.identity() });
+  let scanCalls = 0;
+  const foundationRuntime = createFoundationRuntime({
+    hostAdapter, store, contextProvider: () => context, prepareSession: () => session.prepare(),
+    deferChatChangeRefreshUntilPrepared: true, scanCandidates: (...args) => { scanCalls += 1; return legacyScanner(...args); },
+    newUuid: uuidFactory(), now: () => new Date(NOW), logger: { warn() {} },
+  });
+  let modelCalls = 0;
+  const rejectModel = async () => { modelCalls += 1; throw new Error('冷启动只读不得调用模型'); };
+  const memoryRuntime = createV3MemoryRuntime({
+    foundationRuntime, store, hostAdapter, generateAnalysisTask: rejectModel, generateUtilityTask: rejectModel,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }), now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} },
+  });
+  const lifecycle = createPluginLifecycle({
+    session,
+    onPrepared: async ({ isCurrent }) => { if (isCurrent()) await memoryRuntime.start(); },
+    getUi: () => null,
+    logger: { warn() {} },
+  });
+  lifecycle.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
+  memoryRuntime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
+
+  for (const listener of handlers.get('CHAT_CHANGED') ?? []) listener();
+  await bindingStarted;
+  assert.equal(memoryRuntime.getState().memorySnapshotStatus, 'syncing');
+  assert.equal(memoryRuntime.getState().memorySyncStatus, 'syncing');
+  assert.equal(foundationRuntime.getState().status, 'idle');
+  assert.equal(scanCalls, 0, '身份完成前不得抢跑聊天扫描');
+  assert.equal(seeded.backend.calls.some(call => call[1] === `chat-${CHAT}`), false, '身份完成前不得读取聊天记忆图');
+  assert.equal(modelCalls, 0);
+
+  releaseBinding();
+  await waitFor(() => memoryRuntime.getState().memorySnapshotStatus === 'ready' && memoryRuntime.getState().memorySyncStatus === 'idle', '身份完成后冷启动记忆未收敛');
+  const state = memoryRuntime.getState();
+  assert.equal(state.floors[0].summary, expectedSummary);
+  assert.equal(modelCalls, 0);
+  assert.equal(scanCalls, 1, '身份完成后只扫描一次当前聊天');
+  assert.equal(seeded.backend.calls.filter(call => call[0] === 'get' && call[1] === `chat-${CHAT}` && call[2] === 'v3-root').length, 1, '完整图 root 只应读取一次');
+  assert.equal(seeded.backend.calls.filter(call => call[0] === 'get' && call[1] === `chat-${CHAT}` && call[2].startsWith('v3-checkpoint-')).length, 1, '完整图 checkpoint 只应读取一次');
+});
+
 test('后台同步进行中只复用同版本同模式任务，不同 root 版本仍独立接管并收敛', async () => {
   const seed = harness();
   let seeded = await seed.runtime.start();
@@ -2146,9 +2236,11 @@ test('摘要 prepared 记录最多四路并发，run/checkpoint 等独立写完�
 
 test('历史按钮单楼失败后继续保存独立后楼并撤销授权；刷新零调用，再次点击只补失败楼', async () => {
   let failSecond = true;
+  let automaticSummaryCommits = 0;
   const h = harness({
     initialChat: [user('开始'), assistant('历史一'), assistant('历史二'), assistant('历史三'), assistant('待确认尾楼')],
     automation: { enabled: true, batchSize: 2 },
+    onAutomaticSummaryCommitted: () => { automaticSummaryCommits += 1; },
     utility: options => {
       if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) {
         const content = JSON.parse(options.taskMessages[0].content).payload.canonicalContent;
@@ -2163,6 +2255,7 @@ test('历史按钮单楼失败后继续保存独立后楼并撤销授权；刷�
   assert.equal(h.runtime.getState().rebuildStatus, 'partial');
   assert.equal(h.runtime.shouldBlockMainGeneration(), false, '历史重建失败后必须立即释放主生成门禁');
   assert.equal(h.runtime.getState().rememberedCount, 2, '失败楼后的独立摘要仍应在同批保存');
+  assert.equal(automaticSummaryCommits, 2, '仅两楼正式成功提交发出通知，失败楼不通知');
   assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 2, '摘要失败不阻断另外两楼独立提交 CSE');
   const callsAtFailure = h.calls.length;
   await h.runtime.refreshAutomation();
@@ -2172,6 +2265,7 @@ test('历史按钮单楼失败后继续保存独立后楼并撤销授权；刷�
   await h.runtime.startHistoricalRebuild();
   await waitFor(() => ['caughtUp', 'waitingRealtime'].includes(h.runtime.getState().rebuildStatus));
   assert.equal(h.runtime.getState().rememberedCount, 3);
+  assert.equal(automaticSummaryCommits, 3, '失败楼后续成功时才补发一次通知');
   assert.equal(h.runtime.getState().cseReady, true);
 });
 
@@ -4483,10 +4577,12 @@ test('自动 reconciling、extracting、CSE 全程共用一个门闩，手动入
   const foundationStarted = new Promise(resolve => { foundationStartedResolve = resolve; });
   const extractorStarted = new Promise(resolve => { extractorStartedResolve = resolve; });
   const cseStarted = new Promise(resolve => { cseStartedResolve = resolve; });
+  let automaticSummaryCommits = 0;
   const h = harness({
     modernAnchors: true,
     initialChat: [user('开始'), assistant('已建楼'), user('确认已建楼'), assistant('待确认尾楼')],
     automation: { enabled: false, batchSize: 2 },
+    onAutomaticSummaryCommitted: () => { automaticSummaryCommits += 1; },
     foundationRefresh: async base => {
       if (holdFoundation) {
         holdFoundation = false;
@@ -4527,6 +4623,7 @@ test('自动 reconciling、extracting、CSE 全程共用一个门闩，手动入
   releaseExtractor();
 
   await cseStarted;
+  assert.equal(automaticSummaryCommits, 2, '自动摘要正式提交后按两楼各通知一次人物资料维护');
   assert.equal(h.runtime.getState().activeAutoMemory.phase, 'analyzingCse');
   assert.equal(h.runtime.shouldBlockMainGeneration(), false, '日常自动 CSE 不得阻断主生成');
   const callsDuringCse = h.calls.length;
@@ -4538,6 +4635,9 @@ test('自动 reconciling、extracting、CSE 全程共用一个门闩，手动入
   const callsAfterBatch = h.calls.length;
   await h.runtime.extractFloor(firstFloorId);
   assert.equal(h.calls.length, callsAfterBatch + 1, '批次完成后摘要入口恢复，但不自动重算已存 CSE');
+  assert.equal(automaticSummaryCommits, 2, '手动单楼提取不得冒充自动摘要通知');
+  await h.runtime.editSummary(firstFloorId, '人工修订后的摘要');
+  assert.equal(automaticSummaryCommits, 2, '人工摘要修订不得触发人物资料维护');
 });
 
 test('历史欠账期间开启自动维护只改设置，不在手动作业结束后偷跑历史', async () => {

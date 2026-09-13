@@ -1,5 +1,7 @@
 import { createInlineSelect } from './inline-select.js';
 import { createOperationMenuController } from './operation-menu-controller.js';
+import { bindHorizontalStrip, openPeopleOrderDialog } from './people-interactions.js';
+import { scrollManualEditorToTop } from './manual-editor-scroll.js';
 import { publicErrorMessage } from '../public-error.js';
 
 function text(value, fallback = '—') { return value === null || value === undefined || value === '' ? fallback : String(value); }
@@ -131,7 +133,7 @@ const CSE_VISIBILITY_OPTIONS = Object.freeze([['private', '私密'], ['expressed
 const visibilityCopy = value => Object.fromEntries(CSE_VISIBILITY_OPTIONS)[value] ?? text(value);
 const originCopy = value => ({ baseline: '聊天基线', floor: '本楼分析', reasonableProgression: '合理进展', manual: '用户纠正' })[value] ?? '本地重放';
 
-export function createV3FoundationView({ runtime, recallRuntime = null, peopleRuntime = null, memoryManagement = null, sessionStateProvider = null, backendDiagnosticProvider = null, pluginVersion = 'unknown', uiDiagnosticProvider = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, infoImpl = () => Promise.resolve(true) } = {}) {
+export function createV3FoundationView({ runtime, recallRuntime = null, peopleRuntime = null, memoryManagement = null, sessionStateProvider = null, backendDiagnosticProvider = null, pluginVersion = 'unknown', uiDiagnosticProvider = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, infoImpl = () => Promise.resolve(true), customImpl = null } = {}) {
   if (!runtime || ['getState', 'refreshStatus', 'confirmLatest'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('V3 foundation view runtime 无效');
   if (recallRuntime && typeof recallRuntime.getState !== 'function') throw new TypeError('V3 recall view runtime 无效');
   if (peopleRuntime && typeof peopleRuntime.getState !== 'function') throw new TypeError('V3 people workspace runtime 无效');
@@ -159,6 +161,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     if (value !== '') node.textContent = value;
     return node;
   };
+  const scrollEditorToTop = selector => scrollManualEditorToTop(container.querySelector(selector));
   const row = (label, value) => { const node = element('div', 'v3-foundation-row'); node.append(element('dt', '', label), element('dd', '', text(value))); return node; };
   const stageRow = (label, value) => {
     const node = element('div', 'v3-foundation-row'), copy = element('dd');
@@ -393,6 +396,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   function renderMemoryFloor(floor, state) {
     const key = `${state.chatId ?? 'no-chat'}:${floor.floorId}`;
     const card = setDetailsState(element('details', `qqj-memory-card status-${floor.status}`), `memory:${key}`, false);
+    card.setAttribute('data-qqj-floor-id', floor.floorId);
     const head = element('summary', 'qqj-memory-card-head');
     const memory = floor.memory;
     const times = timeDisplay(memory?.chronology) || floor.timeFallback || '时间未明确';
@@ -405,7 +409,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const body = element('div', 'qqj-memory-card-body');
     const draft = drafts.get(key);
     if (draft) {
-      const editBox = element('div', 'v3-memory-edit');
+      const editBox = element('div', 'v3-memory-edit qqj-manual-editor');
       const label = (copy, control) => { const node = element('label', 'qqj-memory-edit-field'); node.append(element('span', '', copy), control); return node; };
       const timeInput = element('input', 'settings-input'); timeInput.value = draft.timeText; timeInput.placeholder = '日期、时间范围或相对时间'; timeInput.addEventListener('input', () => { draft.timeText = timeInput.value; });
       editBox.append(label('时间', timeInput));
@@ -424,14 +428,14 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const input = element('textarea', 'settings-input'); input.value = draft.summary; input.placeholder = '输入用户修订摘要'; input.addEventListener('input', () => { draft.summary = input.value; });
       editBox.append(label('摘要', input));
       const note = element('input', 'settings-input'); note.value = draft.note; note.placeholder = '修订说明（可选）'; note.addEventListener('input', () => { draft.note = note.value; });
-      const actions = element('div', 'v3-foundation-actions');
+      const actions = element('div', 'v3-foundation-actions qqj-manual-save-bar');
       if (draft.saveError) editBox.append(element('p', 'v3-foundation-feedback error', draft.saveError));
       const save = element('button', 'primary-action', draft.saving ? '保存中…' : '保存'); save.type = 'button'; save.disabled = draft.saving === true || workBusy(state);
       const cancel = element('button', 'secondary-action', '取消'); cancel.type = 'button'; cancel.disabled = draft.saving === true || workBusy(state);
       draft.controls = [save, cancel];
       save.addEventListener('click', () => {
         const payload = { summary: draft.summary, timeText: draft.timeText, originalTimeText: draft.originalTimeText, timeChanged: String(draft.timeText ?? '').trim() !== String(draft.originalTimeText ?? '').trim(), locations: draft.locations, participantNames: splitPeople(draft.peopleText), revisionNote: draft.note };
-        if (unchangedDraft(draft, payload)) { drafts.delete(key); feedback = '未修改内容。'; render(foundationState); return; }
+        if (unchangedDraft(draft, payload)) { drafts.delete(key); feedback = '未修改内容。'; render(foundationState); scrollEditorToTop(`[data-qqj-floor-id="${floor.floorId}"]`); return; }
         const saveIdentity = {}; draft.saveIdentity = saveIdentity; draft.saving = true; draft.saveError = '';
         save.textContent = '保存中…'; save.disabled = true; cancel.disabled = true;
         const currentDraft = () => {
@@ -440,10 +444,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
           return drafts.get(key) === draft && draft.saveIdentity === saveIdentity && latest?.chatId === state.chatId && latestFloor?.floorId === draft.floorId;
         };
         const task = typeof runtime.editMemory === 'function' ? () => runtime.editMemory(floor.floorId, payload) : () => runtime.editSummary(floor.floorId, payload.summary, payload.revisionNote);
+        let saved = false;
         void run('保存本楼记忆', task, {
-          after: () => { if (!currentDraft()) return false; drafts.delete(key); return true; },
+          after: () => { if (!currentDraft()) return false; drafts.delete(key); saved = true; return true; },
           failed: error => { if (!currentDraft()) return false; draft.saving = false; draft.saveError = `保存失败：${publicErrorMessage(error, { fallback: '本楼记忆没有保存，请重试。' })}`; return true; },
-        });
+        }).then(() => { if (saved && active && container) scrollEditorToTop(`[data-qqj-floor-id="${floor.floorId}"]`); });
       });
       cancel.addEventListener('click', () => { drafts.delete(key); feedback = '已取消编辑。'; render(foundationState); });
       actions.append(save, cancel); editBox.append(label('修订说明（可选）', note), actions); body.append(editBox); input.focus?.();
@@ -521,7 +526,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     addGroup('核心特质', core); addGroup('长期倾向', adaptive, groupAdaptiveByTarget); addGroup('当前情境', situational);
   };
   function renderCseEditor(body, draft, state, key) {
-    const editor = element('div', 'qqj-cse-edit');
+    const editor = element('div', 'qqj-cse-edit qqj-manual-editor');
     const controls = [], disabled = draft.saving === true || workBusy(state);
     editor.append(element('p', 'settings-hint', '修改会保存到对应楼层的人物状态。其他楼层的重算不会改写本楼记录。'));
     const scopeHeading = element('div', 'qqj-cse-scope-heading');
@@ -548,7 +553,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     };
     editor.append(category('core', '核心特质'), category('adaptive', '长期倾向', { toward: true }), category('situational', '当前情境', { toward: true }));
     if (draft.saveError) editor.append(element('p', 'v3-foundation-feedback error', draft.saveError));
-    const actions = element('div', 'v3-foundation-actions');
+    const actions = element('div', 'v3-foundation-actions qqj-manual-save-bar');
     const save = element('button', 'primary-action', draft.saving ? '保存中…' : '保存'); save.type = 'button'; save.disabled = draft.saving === true || workBusy(state) || typeof runtime.correctSubjectState !== 'function';
     const cancel = element('button', 'secondary-action', '取消'); cancel.type = 'button'; cancel.disabled = draft.saving === true || workBusy(state);
     draft.controls = [...controls, save, cancel];
@@ -558,10 +563,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const currentDraft = () => cseDrafts.get(key) === draft && draft.saveIdentity === saveIdentity && (runtime.getState?.() ?? foundationState)?.chatId === draft.chatId;
       const cloneItems = items => items.map(item => ({ ...item }));
       const payload = { expectedCurrentStateId: draft.expectedCurrentStateId, expectedCurrentStateFingerprint: draft.expectedCurrentStateFingerprint, core: cloneItems(draft.core), adaptive: cloneItems(draft.adaptive), situational: cloneItems(draft.situational) };
+      let saved = false;
       void run('保存人物状态', () => runtime.correctSubjectState(draft.subjectEntityId, payload), {
-        after: () => { if (!currentDraft()) return false; cseDrafts.delete(key); openState.set(`subject:${draft.subjectEntityId}`, true); return true; },
+        after: () => { if (!currentDraft()) return false; cseDrafts.delete(key); openState.set(`subject:${draft.subjectEntityId}`, true); saved = true; return true; },
         failed: error => { if (!currentDraft()) return false; draft.saving = false; draft.saveError = `保存失败：${publicErrorMessage(error, { fallback: '人物状态没有保存，请重试。' })}`; return true; },
-      });
+      }).then(() => { if (saved && active && container) scrollEditorToTop(`[data-qqj-cse-entity-id="${draft.subjectEntityId}"]`); });
     });
     cancel.addEventListener('click', () => { cseDrafts.delete(key); feedback = '已取消编辑人物状态。'; render(foundationState); });
     actions.append(save, cancel); editor.append(actions); body.append(editor);
@@ -571,11 +577,13 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const displayName = person?.displayName || subject?.displayName || '未知人物';
     const key = `${state.chatId ?? 'no-chat'}:${entityId}`;
     const card = relationNote ? element('section', 'qqj-relation-note') : setDetailsState(element('details', 'v3-cse-subject'), `subject:${entityId}`, defaultOpen);
+    card.setAttribute('data-qqj-cse-entity-id', entityId);
     if (relationNote) card.setAttribute('aria-label', `${displayName}自身状态`);
     else { const summary = element('summary', 'qqj-person-summary'); summary.append(element('strong', '', title ?? displayName), element('span', 'v3-memory-status', subject ? '人物状态' : '暂无状态')); card.append(summary); }
     const body = element('div', relationNote ? 'qqj-relation-note-body' : 'qqj-person-body');
     const actions = actionsContainer ?? body;
     const draft = cseDrafts.get(key);
+    if (draft) card.className += ' qqj-manual-editor-host';
     if (subject && draft) renderCseEditor(body, draft, state, key);
     else if (subject) appendSubjectGroups(body, subject, state, ownOnly ? { adaptive: (subject.adaptive ?? []).filter(item => !item.towardEntityId), situational: (subject.situational ?? []).filter(item => !item.towardEntityId), showMeta: false, groupAdaptiveByTarget: false, empty: !relationNote } : {});
     else body.append(element('p', 'settings-hint', '这个重要人物还没有已保存的状态分析；后台摘要与 CSE 会继续正常处理。'));
@@ -760,6 +768,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const title = element('div', 'qqj-user-anchor-title'); title.append(element('strong', '', userEntity?.displayName || userSubject?.displayName || '你')); anchor.append(title);
     if (!userSubject) { anchor.append(element('p', 'settings-hint', '还没有已保存的用户状态。')); return anchor; }
     const key = `${state.chatId ?? 'no-chat'}:${userSubject.subjectEntityId}`, draft = cseDrafts.get(key);
+    anchor.setAttribute('data-qqj-cse-entity-id', userSubject.subjectEntityId); if (draft) anchor.className += ' qqj-manual-editor-host';
     if (draft) renderCseEditor(anchor, draft, state, key);
     else {
       appendSubjectGroups(anchor, userSubject, state, { adaptive: (userSubject.adaptive ?? []).filter(item => !item.towardEntityId), situational: (userSubject.situational ?? []).filter(item => !item.towardEntityId), showMeta: false, groupAdaptiveByTarget: false });
@@ -780,7 +789,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     pageNode.append(renderUserAnchor(userSubject, userEntity, state));
     const sectionHeading = element('header', 'qqj-cse-page-heading'); sectionHeading.append(element('strong', '', '关系往来'));
     const history = element('button', 'secondary-action qqj-cse-view-toggle', '分析记录'); history.type = 'button'; history.addEventListener('click', () => switchPeopleMode('history')); sectionHeading.append(history); pageNode.append(sectionHeading);
-    const switchRow = element('div', 'qqj-relation-switch-row'), switcher = element('div', 'qqj-relation-switcher'); relationSwitcherNode = switcher;
+    const switchRow = element('div', 'qqj-relation-switch-row'), switcher = bindHorizontalStrip(element('div', 'qqj-relation-switcher')); relationSwitcherNode = switcher;
     for (const person of important) { const button = element('button', `qqj-relation-person${person.entityId === selectedCsePersonId ? ' active' : ''}`, person.displayName); button.type = 'button'; button.setAttribute('aria-pressed', String(person.entityId === selectedCsePersonId)); button.addEventListener('click', () => { selectedCsePersonId = person.entityId; showMoreCsePeople = false; render(foundationState); }); switcher.append(button); }
     if (!important.length) switcher.append(element('span', 'qqj-profile-switch-empty', peopleRuntime ? '尚未选择重要人物' : '暂无人物状态'));
     const moreToggle = element('button', `secondary-action qqj-relation-more-toggle${showMoreCsePeople ? ' active' : ''}`, showMoreCsePeople ? '返回关系' : `更多人物（${more.length}）`); moreToggle.type = 'button'; moreToggle.setAttribute('aria-pressed', String(showMoreCsePeople)); moreToggle.addEventListener('click', () => { showMoreCsePeople = !showMoreCsePeople; render(foundationState); });
@@ -788,7 +797,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const selectedPerson = important.find(person => person.entityId === selectedCsePersonId), selectedSubject = selectedPerson ? subjectById.get(selectedPerson.entityId) : null;
     if (showMoreCsePeople) {
       const picker = element('section', 'qqj-profile-picker qqj-cse-more'), pickerHeading = element('header', 'qqj-profile-picker-heading');
-      pickerHeading.append(element('strong', '', '更多人物'), element('span', 'v3-memory-status', `${more.length} 位`)); picker.append(pickerHeading);
+      const order = element('button', 'secondary-action qqj-people-order-open', '排序'); order.type = 'button'; order.disabled = Boolean(peopleState?.active) || candidates.length < 2; order.addEventListener('click', () => {
+        if (!customImpl || !peopleRuntime?.setPersonOrderEntityIds) return;
+        void openPeopleOrderDialog({ customImpl, runtime: peopleRuntime, people: candidates, documentRef, chatId: peopleState?.chatId });
+      });
+      pickerHeading.append(element('strong', '', '更多人物'), element('span', 'v3-memory-status', `${more.length} 位`), order); picker.append(pickerHeading);
       const moreList = element('div', 'qqj-more-people-list');
       for (const person of more) moreList.append(renderSubject(subjectById.get(person.entityId), state, { person, ownOnly: true }));
       if (!more.length) moreList.append(element('p', 'settings-hint', '当前没有其他已识别人物。'));
@@ -875,28 +888,33 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     catch (error) { saved = { hostChatId: null, text: '' }; if (!prequelFeedback) prequelFeedback = errorMessage(error) || '前情读取失败。'; }
     if (!prequelDraft || prequelDraft.hostChatId !== saved.hostChatId) prequelDraft = { hostChatId: saved.hostChatId, text: saved.text, dirty: false, saving: false };
     else if (!prequelDraft.dirty && !prequelDraft.saving && prequelDraft.text !== saved.text) prequelDraft.text = saved.text;
-    const drawer = setDetailsState(element('details', 'qqj-management-drawer'), 'prequel', false);
+    const drawer = setDetailsState(element('details', 'qqj-management-drawer qqj-prequel-drawer qqj-manual-editor-host'), 'prequel', false);
     const summary = element('summary', 'qqj-section-summary'); summary.append(element('strong', '', '前情'), element('span', 'v3-memory-status', saved.text ? `当前 ${[...saved.text].length} 字符` : '尚未设置')); drawer.append(summary);
-    const body = element('div', 'qqj-management-drawer-body');
+    const body = element('div', 'qqj-management-drawer-body qqj-manual-editor');
     body.append(element('p', 'settings-hint', '粘贴旧聊天的大摘要。原文随当前聊天保存，生成时按需选段；清空文本后保存即可移除。'));
     const editor = element('textarea', 'v3-diagnostic-fallback qqj-prequel-editor'); editor.value = prequelDraft.text; editor.textContent = prequelDraft.text; editor.readOnly = false;
     editor.addEventListener('input', () => { prequelDraft.text = editor.value; prequelDraft.dirty = true; });
-    const actions = element('div', 'v3-foundation-actions');
+    const actions = element('div', 'v3-foundation-actions qqj-manual-save-bar');
     const save = element('button', 'primary-action', prequelDraft.saving ? '保存中…' : '保存前情'); save.type = 'button'; save.disabled = prequelDraft.saving;
     save.addEventListener('click', async () => {
       if (prequelDraft.saving) return;
       const submittedText = editor.value;
+      const submittedDraft = prequelDraft;
       prequelDraft.text = submittedText; prequelDraft.dirty = true; prequelDraft.saving = true; save.disabled = true; prequelFeedback = '';
+      let savedCurrentDraft = false;
       try {
         const result = await recallRuntime.savePrequel(submittedText);
-        if (prequelDraft.text === submittedText) prequelDraft = { hostChatId: result.hostChatId, text: result.text, dirty: false, saving: false };
+        if (prequelDraft !== submittedDraft) return;
+        if (prequelDraft.text === submittedText) { prequelDraft = { hostChatId: result.hostChatId, text: result.text, dirty: false, saving: false }; savedCurrentDraft = true; }
         else { prequelDraft.hostChatId = result.hostChatId; prequelDraft.saving = false; prequelDraft.dirty = true; }
         prequelFeedback = result.text ? '前情已更新，并已交给酒馆保存。' : '前情已移除，并已交给酒馆保存。';
       } catch (error) {
+        if (prequelDraft !== submittedDraft) return;
         prequelDraft.saving = false;
         prequelFeedback = errorMessage(error) || '前情保存失败。';
       }
       if (active && container && page === 'management') render(foundationState);
+      if (savedCurrentDraft && active && container && page === 'management') scrollEditorToTop('.qqj-prequel-drawer');
     });
     actions.append(save); body.append(editor, actions);
     if (prequelFeedback) body.append(element('p', `v3-foundation-feedback${/失败|不支持|请先/u.test(prequelFeedback) ? ' error' : ''}`, prequelFeedback));
@@ -1008,7 +1026,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     container.replaceChildren(page === 'memories' ? renderMemories(state) : page === 'people' ? renderPeople(state) : renderManagement(state));
     if (relationSwitcherNode) {
       const userEntityId = (state.memoryEntities ?? []).find(entity => entity.specialRole === 'user')?.entityId ?? null;
-      const nextSignature = JSON.stringify((peopleState?.people ?? []).filter(person => person.entityId !== userEntityId && person.selected).map(person => person.entityId));
+      const nextSignature = JSON.stringify((peopleState?.people ?? []).filter(person => person.entityId !== userEntityId && person.selected).map(person => person.entityId).sort());
       const preserveScroll = previousChatId === (state.chatId ?? null) && previousSignature === nextSignature;
       relationSwitcherNode.scrollLeft = preserveScroll ? relationSwitcherScrollLeft : 0;
       relationSwitcherSignature = nextSignature; relationSwitcherChatId = state.chatId ?? null; relationSwitcherScrollLeft = relationSwitcherNode.scrollLeft;
@@ -1058,7 +1076,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   function subscribe() {
     if (!active || !container || unsubscribe) return;
     const releases = [];
-    if (typeof runtime.subscribe === 'function') { const release = runtime.subscribe(snapshot => { if (snapshot?.status === 'ready' && feedback === statusCopy('stale')) feedback = '记忆状态已刷新。'; if (active && container) receiveFoundation(snapshot); }); if (typeof release === 'function') releases.push(release); }
+    if (typeof runtime.subscribe === 'function') { const release = runtime.subscribe(snapshot => { if (snapshot?.status === 'ready' && feedback === statusCopy('stale')) feedback = '记忆状态已刷新。'; if (feedback === '正在读取当前聊天…' && snapshot?.memorySnapshotStatus !== 'syncing' && snapshot?.memorySyncStatus !== 'syncing') feedback = snapshot?.status === 'ready' ? '记忆状态已刷新。' : ''; if (active && container) receiveFoundation(snapshot); }); if (typeof release === 'function') releases.push(release); }
     if (typeof recallRuntime?.subscribe === 'function') { const release = recallRuntime.subscribe(snapshot => { recallState = snapshot; if (active && container && page === 'management') render(foundationState); }); if (typeof release === 'function') releases.push(release); }
     if (typeof peopleRuntime?.subscribe === 'function') { const release = peopleRuntime.subscribe(snapshot => { peopleState = snapshot; if (active && container && page === 'people') render(foundationState); }); if (typeof release === 'function') releases.push(release); }
     if (typeof memoryManagement?.subscribe === 'function') { const release = memoryManagement.subscribe(snapshot => { managementState = snapshot; if (active && container && page === 'management') render(foundationState); }); if (typeof release === 'function') releases.push(release); }
@@ -1069,6 +1087,15 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   async function activate() {
     if (!container) throw new Error('V3 foundation view 尚未挂载');
     active = true; operationMenus.activate(); subscribe(); const mine = ++epoch; feedback = '正在读取最新状态…'; receiptFeedback = ''; updateHealth(runtime.getState());
+    if (readDiagnosticState(sessionStateProvider)?.status === 'preparing') {
+      feedback = '正在读取当前聊天…';
+      render(runtime.getState());
+      const [receiptOutcome] = await Promise.allSettled([recallRuntime?.restorePersistedReceipt?.()]);
+      if (!active || mine !== epoch) return { status: 'stale' };
+      if (receiptOutcome.status === 'rejected') receiptFeedback = `历史召回回执恢复失败：${publicErrorMessage(receiptOutcome.reason, { fallback: '回执读取失败。' })}；不影响记忆读取。`;
+      render(runtime.getState());
+      return { status: 'preparing' };
+    }
     const prepare = page === 'management' || typeof runtime.prepareCurrent !== 'function'
       ? runtime.refreshStatus({ preferCached: page !== 'management' })
       : runtime.prepareCurrent({ preferCached: true }).then(() => runtime.getState());

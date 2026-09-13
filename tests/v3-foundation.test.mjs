@@ -9,6 +9,7 @@ import { sha256 } from '../src/identity.js';
 import { entityIndexKey } from '../src/v3/memory-schema.js';
 import { createChatSession } from '../src/chat-session.js';
 import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
+import { createV3MemoryRuntime } from '../src/v3/memory-runtime.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OTHER_CHAT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -1850,7 +1851,7 @@ test('无 marker 的包装变化与唯一位置移动在检查和封口中沿用
   assert.equal(moved.hostLocator.messageIndex, 1);
 });
 
-test('真实聊天 session + lifecycle + V3 runtime 在 CHAT_CHANGED UUID 时序下只建立一份身份', async () => {
+test('lifecycle 接管 CHAT_CHANGED 准备后才启动 V3 runtime，身份在途不抢读且只准备一次', async () => {
   const context = hostContext([assistant('A'), assistant('B')]);
   delete context.chatMetadata.qianqianjie;
   const handlers = new Map();
@@ -1858,23 +1859,25 @@ test('真实聊天 session + lifecycle + V3 runtime 在 CHAT_CHANGED UUID 时序
   context.eventTypes.PERSONA_CHANGED = 'PERSONA_CHANGED';
   context.eventSource = { on(name, handler) { const list = handlers.get(name) ?? []; list.push(handler); handlers.set(name, list); } };
   const backend = backendHarness();
-  let ensureCalls = 0;
+  let ensureCalls = 0, releaseEnsure, markEnsureStarted;
+  const ensureStarted = new Promise(resolve => { markEnsureStarted = resolve; });
   const session = createChatSession({
     contextProvider: () => context,
     ensureChatId: async raw => {
       ensureCalls += 1;
-      await new Promise(resolve => setImmediate(resolve));
+      markEnsureStarted();
+      await new Promise(resolve => { releaseEnsure = resolve; });
       raw.chatMetadata.qianqianjie = { schemaVersion: 1, chatId: CHAT };
       return CHAT;
     },
   });
-  const lifecycle = createPluginLifecycle({ session, getUi: () => null, logger: { warn() {} } });
   const store = createFoundationStore({ client: backend.client, contextProvider: () => session.identity() });
   const runtime = createFoundationRuntime({
     hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => context } } }),
-    store, contextProvider: () => context, prepareSession: () => session.prepare(),
+    store, contextProvider: () => context, prepareSession: () => session.prepare(), deferChatChangeRefreshUntilPrepared: true,
     scanCandidates: legacyScanner, newUuid: uuidFactory(15000), now: () => new Date('2026-09-02T00:00:00.000Z'), logger: { warn() {} },
   });
+  const lifecycle = createPluginLifecycle({ session, getUi: () => null, onPrepared: () => runtime.start(), logger: { warn() {} } });
   lifecycle.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
   const unhandled = [];
@@ -1883,12 +1886,62 @@ test('真实聊天 session + lifecycle + V3 runtime 在 CHAT_CHANGED UUID 时序
   try {
     const ready = waitForRuntimeStatus(runtime, 'ready', '身份落盘后地基未收敛');
     for (const handler of handlers.get('CHAT_CHANGED')) handler();
+    await ensureStarted;
+    assert.equal(runtime.getState().status, 'idle');
+    assert.deepEqual(backend.calls, [], '身份准备完成前不得读取或写入聊天记忆');
+    releaseEnsure();
     await ready;
   } finally { process.off('unhandledRejection', onUnhandled); }
   assert.equal(ensureCalls, 1);
   assert.equal(session.identity().chatId, CHAT);
   assert.equal(runtime.getState().status, 'ready');
   assert.deepEqual(unhandled, []);
+});
+
+test('lifecycle 接管刷新时身份准备失败仍发布真实 foundation error', async () => {
+  const context = hostContext([assistant('A'), assistant('B')]);
+  delete context.chatMetadata.qianqianjie;
+  const handlers = new Map();
+  context.eventTypes = Object.fromEntries(EVENT_NAMES.map(name => [name, name]));
+  context.eventTypes.PERSONA_CHANGED = 'PERSONA_CHANGED';
+  context.eventSource = { on(name, handler) { const list = handlers.get(name) ?? []; list.push(handler); handlers.set(name, list); } };
+  const backend = backendHarness();
+  let releaseEnsure, markEnsureStarted;
+  const ensureStarted = new Promise(resolve => { markEnsureStarted = resolve; });
+  const session = createChatSession({
+    contextProvider: () => context,
+    ensureChatId: async () => {
+      markEnsureStarted();
+      await new Promise(resolve => { releaseEnsure = resolve; });
+      throw Object.assign(new Error('身份后端暂时不可用'), { code: 'QQJ_CHAT_BINDING_UNAVAILABLE' });
+    },
+  });
+  const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => context } } });
+  const store = createFoundationStore({ client: backend.client, contextProvider: () => session.identity() });
+  const runtime = createFoundationRuntime({
+    hostAdapter,
+    store, contextProvider: () => context, prepareSession: () => session.prepare(), deferChatChangeRefreshUntilPrepared: true,
+    scanCandidates: legacyScanner, newUuid: uuidFactory(15100), now: () => new Date('2026-09-02T00:00:00.000Z'), logger: { warn() {} },
+  });
+  let modelCalls = 0, preparedCalls = 0;
+  const rejectModel = async () => { modelCalls += 1; throw new Error('身份失败不得调用模型'); };
+  const memory = createV3MemoryRuntime({ foundationRuntime: runtime, store, hostAdapter, generateAnalysisTask: rejectModel, generateUtilityTask: rejectModel, logger: { warn() {} } });
+  const lifecycle = createPluginLifecycle({ session, getUi: () => null, onPrepared: () => { preparedCalls += 1; return memory.start(); }, logger: { warn() {} } });
+  lifecycle.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
+  memory.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
+
+  for (const handler of handlers.get('CHAT_CHANGED')) handler();
+  await ensureStarted;
+  assert.equal(runtime.getState().status, 'idle');
+  releaseEnsure();
+  await waitForRuntimeStatus(runtime, 'error', '身份失败后 foundation 未退出等待态');
+  assert.match(runtime.getState().lastError, /身份后端暂时不可用/);
+  assert.equal(memory.getState().memorySnapshotStatus, 'error');
+  assert.equal(memory.getState().memorySyncStatus, 'error');
+  assert.match(memory.getState().memorySyncError.message, /身份后端暂时不可用/);
+  assert.equal(preparedCalls, 0, '身份失败不得触发 onPrepared 读取');
+  assert.equal(modelCalls, 0);
+  assert.deepEqual(backend.calls, [], '身份失败不得尝试读取聊天记忆');
 });
 
 test('生产 scanner 只用紧邻普通 user 稳定 AI，真 system 不算而 auto-hide user 算', async () => {

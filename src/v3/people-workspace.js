@@ -158,6 +158,12 @@ export function validatePeopleWorkspace(value, expectedChatId) {
     if (!isUuid(id)) throw errorWith('QQJ_PEOPLE_WORKSPACE_INVALID', '重要人物标识无效。');
     if (!selectedEntityIds.includes(id)) selectedEntityIds.push(id);
   }
+  if (value.personOrderEntityIds !== undefined && !Array.isArray(value.personOrderEntityIds)) throw errorWith('QQJ_PEOPLE_WORKSPACE_INVALID', '人物显示顺序无效。');
+  const personOrderEntityIds = [];
+  for (const id of value.personOrderEntityIds ?? []) {
+    if (!isUuid(id)) throw errorWith('QQJ_PEOPLE_WORKSPACE_INVALID', '人物显示顺序包含无效标识。');
+    if (!personOrderEntityIds.includes(id)) personOrderEntityIds.push(id);
+  }
   const profilesByEntityId = {};
   for (const [entityId, profile] of Object.entries(value.profilesByEntityId)) profilesByEntityId[entityId] = validateProfile(profile, entityId, value.schemaVersion);
   const avatarsByEntityId = {};
@@ -197,7 +203,7 @@ export function validatePeopleWorkspace(value, expectedChatId) {
   }
   return Object.freeze({
     schemaVersion: PEOPLE_WORKSPACE_SCHEMA_VERSION, kind: 'qqj-v3-people-workspace', chatId: value.chatId,
-    selectedEntityIds: Object.freeze(selectedEntityIds), profilesByEntityId: Object.freeze(profilesByEntityId), avatarsByEntityId: Object.freeze(avatarsByEntityId),
+    selectedEntityIds: Object.freeze(selectedEntityIds), personOrderEntityIds: Object.freeze(personOrderEntityIds), profilesByEntityId: Object.freeze(profilesByEntityId), avatarsByEntityId: Object.freeze(avatarsByEntityId),
     identityRedirectsByEntityId: Object.freeze(identityRedirectsByEntityId), deletedEntityIds: Object.freeze(deletedEntityIds),
     profileMaterialProgressByEntityId: Object.freeze(profileMaterialProgressByEntityId),
     createdAt: value.createdAt, updatedAt: value.updatedAt,
@@ -282,9 +288,20 @@ function candidateProjection(reachable, memoryState, workspace) {
     || right.appearanceCount - left.appearanceCount || left.displayName.localeCompare(right.displayName, 'zh-Hans-CN')));
 }
 
+function displayPeopleProjection(candidates, workspace) {
+  const remaining = new Map(candidates.map(person => [person.entityId, person]));
+  const ordered = [];
+  for (const entityId of workspace?.personOrderEntityIds ?? []) {
+    const person = remaining.get(entityId);
+    if (!person) continue;
+    ordered.push(person); remaining.delete(entityId);
+  }
+  return Object.freeze([...ordered, ...remaining.values()]);
+}
+
 function emptyWorkspace(chatId, timestamp) {
   return Object.freeze({ schemaVersion: PEOPLE_WORKSPACE_SCHEMA_VERSION, kind: 'qqj-v3-people-workspace', chatId,
-    selectedEntityIds: Object.freeze([]), profilesByEntityId: Object.freeze({}), avatarsByEntityId: Object.freeze({}),
+    selectedEntityIds: Object.freeze([]), personOrderEntityIds: Object.freeze([]), profilesByEntityId: Object.freeze({}), avatarsByEntityId: Object.freeze({}),
     identityRedirectsByEntityId: Object.freeze({}), deletedEntityIds: Object.freeze([]), profileMaterialProgressByEntityId: Object.freeze({}),
     createdAt: timestamp, updatedAt: timestamp });
 }
@@ -461,7 +478,7 @@ export function createPeopleWorkspaceRuntime({
     try { return sameIdentity(operation.identity, capture()); } catch { return false; }
   };
   const assertCurrent = operation => { if (!isCurrent(operation)) throw errorWith('QQJ_PEOPLE_STALE', '聊天已变化，迟到的人物资料结果没有写入。'); };
-  const project = () => { people = candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace); };
+  const project = () => { people = displayPeopleProjection(candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace), workspace); };
   const syncIdentityProjection = () => { try { memoryRuntime.setIdentityProjection?.(identityProjection(workspace)); } catch { /* memory projection remains readable */ } };
   function fullMaterialPlanFor(candidate) {
     const reachable = foundationRuntime.getReachable?.();
@@ -508,9 +525,9 @@ export function createPeopleWorkspaceRuntime({
     return Boolean(state?.memoryWorkBusy || state?.activeExtraction || state?.activeCse);
   }
   function requestAutomaticMaintenance() {
-    if (destroyed || !enabled() || !workspace) return;
+    if (destroyed || !enabled()) return;
     autoPending = true;
-    if (autoDrainQueued) return;
+    if (!workspace || autoDrainQueued) return;
     autoDrainQueued = true;
     setTimeout(() => { autoDrainQueued = false; void drainAutomaticMaintenance(); }, 0);
   }
@@ -536,13 +553,14 @@ export function createPeopleWorkspaceRuntime({
   }
   function getState() {
     const selected = Object.freeze([...(workspace?.selectedEntityIds ?? [])]);
+    const personOrder = Object.freeze([...(workspace?.personOrderEntityIds ?? [])]);
     const profiles = Object.freeze({ ...(workspace?.profilesByEntityId ?? {}) });
     const avatars = Object.freeze({ ...(workspace?.avatarsByEntityId ?? {}) });
     const redirects = Object.freeze({ ...(workspace?.identityRedirectsByEntityId ?? {}) });
     const deleted = Object.freeze([...(workspace?.deletedEntityIds ?? [])]);
     const materialProgress = Object.freeze({ ...(workspace?.profileMaterialProgressByEntityId ?? {}) });
     return Object.freeze({ status: !enabled() ? 'disabled' : active?.kind ?? (workspace ? 'ready' : 'idle'), chatId,
-      revision, selectedEntityIds: selected, profilesByEntityId: profiles, avatarsByEntityId: avatars, people,
+      revision, selectedEntityIds: selected, personOrderEntityIds: personOrder, profilesByEntityId: profiles, avatarsByEntityId: avatars, people,
       active: active ? Object.freeze({ kind: active.kind, ...(active.batchTotal ? { batchIndex: active.batchIndex, batchTotal: active.batchTotal } : {}) }) : null,
       identityRedirectsByEntityId: redirects, deletedEntityIds: deleted,
       profileMaterialProgressByEntityId: materialProgress,
@@ -582,7 +600,7 @@ export function createPeopleWorkspaceRuntime({
       throw error;
     } finally {
       if (active === operation) active = null;
-      concurrentWrites.delete(operation); notify(); requestAutomaticMaintenance();
+      concurrentWrites.delete(operation); notify(); if (autoPending) requestAutomaticMaintenance();
     }
     return getState();
   }
@@ -607,6 +625,21 @@ export function createPeopleWorkspaceRuntime({
         return { ...clone(current), selectedEntityIds: requested, updatedAt: nowIso(now) };
       });
       failedAutomaticMaterials.clear(); lastError = null; return result.state;
+    });
+  }
+  async function setPersonOrderEntityIds(entityIds) {
+    const operation = begin('savingOrder');
+    return settle(operation, async () => {
+      const startingOrder = JSON.stringify(workspace?.personOrderEntityIds ?? []);
+      const allowed = new Set(candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace).map(person => person.entityId));
+      const requested = [...new Set((Array.isArray(entityIds) ? entityIds : []).map(String))];
+      if (requested.some(id => !isUuid(id) || !allowed.has(id))) throw errorWith('QQJ_PEOPLE_ORDER_INVALID', '人物顺序包含当前聊天不可用的人物。');
+      const result = await mutate(operation, current => {
+        if (JSON.stringify(current.personOrderEntityIds) === JSON.stringify(requested)) return null;
+        if (JSON.stringify(current.personOrderEntityIds) !== startingOrder) throw errorWith('QQJ_PEOPLE_ORDER_CONFLICT', '人物顺序已在其他页面更新，本次没有覆盖新顺序，请重试。');
+        return { ...clone(current), personOrderEntityIds: requested, updatedAt: nowIso(now) };
+      });
+      lastError = null; return result.state;
     });
   }
   async function saveProfile(entityId, fields, { manualFields: requestedManualFields = null } = {}) {
@@ -698,8 +731,9 @@ export function createPeopleWorkspaceRuntime({
         if (chosenAvatar) avatars[targetEntityId] = chosenAvatar; else delete avatars[targetEntityId];
         const selected = [...new Set(current.selectedEntityIds.map(id => resolveIdentityEntityId(id, provisional)).filter(id => id !== sourceEntityId))];
         if ((current.selectedEntityIds.includes(sourceEntityId) || current.selectedEntityIds.includes(targetEntityId)) && !selected.includes(targetEntityId)) selected.push(targetEntityId);
+        const personOrder = [...new Set((current.personOrderEntityIds ?? []).map(id => resolveIdentityEntityId(id, provisional)).filter(id => id !== sourceEntityId))];
         const deleted = current.deletedEntityIds.filter(id => id !== sourceEntityId && id !== targetEntityId);
-        return { ...clone(current), selectedEntityIds: selected, profilesByEntityId: profiles, avatarsByEntityId: avatars,
+        return { ...clone(current), selectedEntityIds: selected, personOrderEntityIds: personOrder, profilesByEntityId: profiles, avatarsByEntityId: avatars,
           profileMaterialProgressByEntityId: progress,
           identityRedirectsByEntityId: redirects, deletedEntityIds: deleted, updatedAt: timestamp };
       });
@@ -722,6 +756,7 @@ export function createPeopleWorkspaceRuntime({
         for (const id of members) { delete profiles[id]; delete avatars[id]; delete progress[id]; }
         const timestamp = nowIso(now);
         return { ...clone(current), selectedEntityIds: current.selectedEntityIds.filter(id => !members.has(resolveIdentityEntityId(id, projection))),
+          personOrderEntityIds: (current.personOrderEntityIds ?? []).filter(id => !members.has(resolveIdentityEntityId(id, projection))),
           profilesByEntityId: profiles, avatarsByEntityId: avatars,
           profileMaterialProgressByEntityId: progress,
           deletedEntityIds: [...new Set([...current.deletedEntityIds, canonical])], updatedAt: timestamp };
@@ -910,9 +945,9 @@ export function createPeopleWorkspaceRuntime({
   async function setEnabled(value) { if (value !== true) { invalidate(); return getState(); } return refresh(); }
   const unsubscribeMemory = typeof memoryRuntime.subscribe === 'function' ? memoryRuntime.subscribe(() => {
     if (!workspace) return;
-    try { if (capture().chatId !== chatId) return; project(); notify(); requestAutomaticMaintenance(); } catch { /* lifecycle owns identity transition */ }
+    try { if (capture().chatId !== chatId) return; project(); notify(); if (autoPending) requestAutomaticMaintenance(); } catch { /* lifecycle owns identity transition */ }
   }) : null;
-  return Object.freeze({ refresh, start: () => enabled() ? refresh() : Promise.resolve(getState()), setSelectedEntityIds, saveProfile, saveAvatar, mergePeople, deletePerson, generateMissingProfiles, regenerateProfile, invalidate, abortAll: invalidate, setEnabled,
+  return Object.freeze({ refresh, start: () => enabled() ? refresh() : Promise.resolve(getState()), setSelectedEntityIds, setPersonOrderEntityIds, saveProfile, saveAvatar, mergePeople, deletePerson, generateMissingProfiles, regenerateProfile, requestAutomaticMaintenance, invalidate, abortAll: invalidate, setEnabled,
     getIdentityProjection: () => identityProjection(workspace),
     getState, subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('人物工作区 listener 无效'); subscribers.add(listener); return () => subscribers.delete(listener); },
     destroy() { destroyed = true; unsubscribeMemory?.(); invalidate(); },

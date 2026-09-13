@@ -354,6 +354,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(typeof v3MemoryOptions.sanitizerOptions, 'function');
   assert.equal(v3MemoryOptions.persistAnchors, persistAnchors, '生产入口必须把真实消息挂标能力注入 memory runtime');
   assert.equal(Object.hasOwn(foundationOptions, 'persistAnchors'), false, 'foundation runtime 不得吞掉挂标能力');
+  assert.equal(foundationOptions.deferChatChangeRefreshUntilPrepared, true, '生产切聊刷新必须等待 lifecycle 完成身份准备后再由 memory.start 读取');
   assert.deepEqual(await v3MemoryOptions.persistAnchors({ probe: true }), { status: 'persisted' });
   assert.deepEqual(anchorCalls, [{ probe: true }], '注入的挂标函数必须可由 memory runtime 实际调用');
   assert.equal(v3MemoryBindOptions.eventSource, productionEventSource);

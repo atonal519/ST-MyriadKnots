@@ -338,8 +338,20 @@ test('HTTP 400/422 只保留标识符与模板化摘要，不泄露正文、Key�
 test('模型列表与测试连接走安全代理；短测试不含聊天、人物或档案数据', async () => {
   const requests = []; const client = createCompactApiClient({ fetchImpl: async (path, options) => { const body = JSON.parse(options.body); requests.push({ path, body }); return path.endsWith('/status') ? jsonResponse({ data: [{ id: 'z-model' }, { id: 'a-model' }] }) : jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] }); } });
   assert.deepEqual(await client.fetchModels({ config: config() }), ['a-model', 'z-model']); assert.deepEqual(await client.testConnection({ config: config() }), { ok: true, model: 'compact-model' });
-  assert.equal(requests[0].path, '/api/backends/chat-completions/status'); const testBody = requests[1].body; assert.equal(testBody.max_tokens, 48); assert.equal(testBody.temperature, 0); assert.equal(testBody.stream, false);
+  assert.equal(requests[0].path, '/api/backends/chat-completions/status'); const testBody = requests[1].body; assert.equal(testBody.max_tokens, 2048); assert.equal(testBody.temperature, 0); assert.equal(testBody.stream, false);
   assert.doesNotMatch(JSON.stringify(testBody.messages), /人物甲|档案|worldbook|greeting|聊天正文/i); assert.equal(testBody.messages.length, 2); assert.equal(Object.hasOwn(testBody, 'json_schema'), false);
   assert.match(testBody.messages[0].content, /JSON text connection check/);
   assert.equal(testBody.messages[0].content.includes(BASE_PROCESSING_PROMPT), false, '连接测试不得携带内容处理层');
+});
+
+test('测试连接沿用流式配置并拼接分段 JSON，空回和错误确认值仍失败', async () => {
+  const streaming = createCompactApiClient({ fetchImpl: async () => sseResponse([
+    'data: {"choices":[{"delta":{"content":"{\\"ok\\":"}}]}\n\n',
+    'data: {"choices":[{"delta":{"content":"true}"}}]}\n\ndata: [DONE]\n\n',
+  ]) });
+  assert.deepEqual(await streaming.testConnection({ config: config({ stream: true }) }), { ok: true, model: 'compact-model' });
+  const empty = createCompactApiClient({ fetchImpl: async () => jsonResponse({ choices: [{ message: { content: '' } }] }) });
+  await assert.rejects(empty.testConnection({ config: config() }), error => error.code === 'QQJ_EMPTY');
+  const falseValue = createCompactApiClient({ fetchImpl: async () => jsonResponse({ choices: [{ message: { content: '{"ok":false}' } }] }) });
+  await assert.rejects(falseValue.testConnection({ config: config() }), error => error.code === 'QQJ_FORMAT');
 });

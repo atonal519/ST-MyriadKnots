@@ -125,6 +125,7 @@ export function createFoundationRuntime({
   store,
   contextProvider = () => hostAdapter.getContext(),
   prepareSession = null,
+  deferChatChangeRefreshUntilPrepared = false,
   isEnabled = true,
   sanitizerOptions = () => ({}),
   scanCandidates = scanAssistantCandidates,
@@ -431,6 +432,14 @@ export function createFoundationRuntime({
 
   function scheduleInspect(reason = 'inspect') {
     return inspect(reason, { allowCached: true });
+  }
+
+  function observeDeferredPreparation(expectedEpoch) {
+    void Promise.resolve().then(() => prepareSession()).catch(error => {
+      if (expectedEpoch !== sessionEpoch || !enabled()) return;
+      lastError = publicErrorMessage(error, { fallback: '聊天身份准备失败，请稍后重试。' });
+      publish('error');
+    });
   }
 
   async function persistRunPhase(operation, phase, { completedFloorIds, failedItems } = {}) {
@@ -889,6 +898,10 @@ export function createFoundationRuntime({
       eventSource.on(eventName, (...args) => {
         if (name === 'CHAT_CHANGED' || name === 'CHAT_RENAMED') {
           invalidate();
+          if (name === 'CHAT_CHANGED' && deferChatChangeRefreshUntilPrepared === true) {
+            if (enabled()) observeDeferredPreparation(sessionEpoch);
+            return;
+          }
           const mayWrite = typeof allowAutomaticWrite !== 'function' || allowAutomaticWrite(name, args) === true;
           if (enabled()) void (mayWrite ? schedule(name) : scheduleInspect(name));
           return;
