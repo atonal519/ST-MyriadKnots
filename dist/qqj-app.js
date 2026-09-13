@@ -4,7 +4,7 @@ import { is_send_press as r, saveSettingsDebounced as i } from "/script.js";
 import { is_group_generating as a } from "/scripts/group-chats.js";
 import { loadWorldInfo as o, selected_world_info as s, world_info as c, world_info_case_sensitive as l, world_info_match_whole_words as u, world_names as d } from "/scripts/world-info.js";
 //#region manifest.json
-var f = "0.1.17", p = "qianqianjie", m = "/api/plugins/st-bainiaodata", h = Object.freeze([
+var f = "0.1.18", p = "qianqianjie", m = "/api/plugins/st-bainiaodata", h = Object.freeze([
 	["v3-floor-", "floor"],
 	["v3-run-", "run"],
 	["v3-checkpoint-", "checkpoint"],
@@ -9539,26 +9539,33 @@ function mc({ coverage: e, floors: t, states: n, cseChanges: r, stateProgression
 			return `（主体：${n}${r ? `；对象：${r}` : ""}）：${t}${e.text}`;
 		}
 		return `${t}${e.text}`;
-	}, u = (e, t = !1, n = null) => {
+	}, u = (e, t = !1, n = null, r = null) => {
 		if (!e) return "无";
 		if (t) return "见本线末尾当前快照（同一来源）";
-		let r = e.toward ? `，对 ${e.toward}` : "", i = e.sourceAssistantSeq && e.sourceAssistantSeq !== n ? `，状态来源 AI #${e.sourceAssistantSeq}` : "", a = e.visibility === "private" ? "，仅可用于该人物" : e.visibility === "authorial" ? "，作者塑造参考，不代表人物知情" : "";
-		return `${e.visibility}${a}${r}：${e.text}（依据：${e.reason || "未提供"}${i}）`;
+		let i = e.toward ? `，对 ${e.toward}` : "", a = e.visibility === "private" ? "，仅可用于该人物" : e.visibility === "authorial" ? "，作者塑造参考，不代表人物知情" : "";
+		if (Number.isSafeInteger(r)) return `${e.visibility}${a}${i}：${e.text}（完整依据见 AI #${r} 上述“之后”状态，同一来源）`;
+		let o = e.sourceAssistantSeq && e.sourceAssistantSeq !== n ? `，状态来源 AI #${e.sourceAssistantSeq}` : "";
+		return `${e.visibility}${a}${i}：${e.text}（依据：${e.reason || "未提供"}${o}）`;
 	};
 	for (let e of o) {
 		s.push("", `[剧情线 ${e.storylineId}｜${e.title}]`, `[关联依据] ${e.basis}`);
-		let t = [...c.get(e.storylineId)?.values() ?? []].sort((e, t) => e.assistantSeq - t.assistantSeq || e.floorId.localeCompare(t.floorId)), i = n.filter((t) => t.storylineId === e.storylineId), a = r.filter((t) => t.storylineId === e.storylineId).sort((e, t) => e.assistantSeq - t.assistantSeq || String(e.deltaId ?? "").localeCompare(String(t.deltaId ?? ""))), o = {
+		let t = [...c.get(e.storylineId)?.values() ?? []].sort((e, t) => e.assistantSeq - t.assistantSeq || e.floorId.localeCompare(t.floorId)), i = n.filter((t) => t.storylineId === e.storylineId), a = r.filter((t) => t.storylineId === e.storylineId).sort((e, t) => e.assistantSeq - t.assistantSeq || String(e.deltaId ?? "").localeCompare(String(t.deltaId ?? ""))), o = [], d = {
 			add: "新增",
 			remove: "移除",
 			update: "更新",
 			refine: "调整"
-		}, d = [.../* @__PURE__ */ new Set([...t.map((e) => e.assistantSeq), ...a.map((e) => e.assistantSeq)])].sort((e, t) => e - t);
-		for (let e of d) {
+		}, f = [.../* @__PURE__ */ new Set([...t.map((e) => e.assistantSeq), ...a.map((e) => e.assistantSeq)])].sort((e, t) => e - t);
+		for (let e of f) {
 			let n = t.find((t) => t.assistantSeq === e), r = Cs(n?.chronology ?? []);
 			s.push(`[来源 AI #${e}${r ? `（${r}）` : ""}]`), n?.items.forEach((e) => s.push(`- [旧事] ${l(e)}`));
 			for (let t of a.filter((t) => t.assistantSeq === e)) {
-				let n = t.action === "remove" ? "；“之前”只是被移除的旧状态，不是当前状态" : "", r = t.after && i.some((e) => e.subjectEntityId === t.subjectEntityId && e.layer === t.layer && yc(e, t.after));
-				s.push(`- [变化] ${t.subject} / ${t.layer}：当时${o[t.action] ?? "变化"}；之前 ${u(t.before, !1, e)}；之后 ${u(t.after, r, e)}${n}。`);
+				let n = t.action === "remove" ? "；“之前”只是被移除的旧状态，不是当前状态" : "", r = t.before && o.find((e) => e.subjectEntityId === t.subjectEntityId && e.layer === t.layer && yc(e.state, t.before)), a = t.after && i.some((e) => e.subjectEntityId === t.subjectEntityId && e.layer === t.layer && yc(e, t.after));
+				s.push(`- [变化] ${t.subject} / ${t.layer}：当时${d[t.action] ?? "变化"}；之前 ${u(t.before, !1, e, r?.assistantSeq)}；之后 ${u(t.after, a, e)}${n}。`), t.after && !a && o.push({
+					subjectEntityId: t.subjectEntityId,
+					layer: t.layer,
+					state: t.after,
+					assistantSeq: e
+				});
 			}
 		}
 		i.length && s.push("[已保存人物状态依据]");
@@ -9622,21 +9629,29 @@ function hc({ coverage: e, floors: t, states: n, cseChanges: r = [], stateProgre
 		}
 	}
 	if (r.length) {
-		let e = (e, t = !1) => {
+		let e = (e, t = !1, n = null) => {
 			if (!e) return "无";
 			if (t) return "见该人物上方当前快照（同一来源）";
-			let n = e.toward ? `，对 ${e.toward}` : "", r = e.sourceAssistantSeq ? `，状态来源 AI #${e.sourceAssistantSeq}` : "", i = e.visibility === "private" ? "，仅可用于该人物" : e.visibility === "authorial" ? "，作者塑造参考，不代表任何人物知情" : "";
-			return `${e.visibility}${i}${n}：${e.text}（依据：${e.reason || "未提供"}${r}）`;
+			let r = e.toward ? `，对 ${e.toward}` : "", i = e.visibility === "private" ? "，仅可用于该人物" : e.visibility === "authorial" ? "，作者塑造参考，不代表任何人物知情" : "";
+			if (Number.isSafeInteger(n)) return `${e.visibility}${i}${r}：${e.text}（完整依据见 AI #${n} 上述“之后”状态，同一来源）`;
+			let a = e.sourceAssistantSeq ? `，状态来源 AI #${e.sourceAssistantSeq}` : "";
+			return `${e.visibility}${i}${r}：${e.text}（依据：${e.reason || "未提供"}${a}）`;
 		}, t = {
 			add: "新增",
 			remove: "移除",
 			update: "更新",
 			refine: "调整"
-		};
+		}, i = [];
 		s.push("", "[人物状态历史变化（记录当时前后，后文可能继续覆盖）]");
-		for (let i of r) {
-			let r = i.action === "remove" ? "；“之前”只是被移除的旧状态，不是当前状态" : "", a = i.after && n.some((e) => e.subjectEntityId === i.subjectEntityId && e.layer === i.layer && yc(e, i.after));
-			s.push(`- ${i.subject} / ${i.layer} / 来源 AI #${i.assistantSeq}：当时${t[i.action] ?? "变化"}；之前 ${e(i.before)}；之后 ${e(i.after, a)}${r}。`);
+		for (let a of r) {
+			let r = a.action === "remove" ? "；“之前”只是被移除的旧状态，不是当前状态" : "", o = a.before && i.find((e) => e.storylineId === a.storylineId && e.subjectEntityId === a.subjectEntityId && e.layer === a.layer && yc(e.state, a.before)), c = a.after && n.some((e) => e.subjectEntityId === a.subjectEntityId && e.layer === a.layer && yc(e, a.after));
+			s.push(`- ${a.subject} / ${a.layer} / 来源 AI #${a.assistantSeq}：当时${t[a.action] ?? "变化"}；之前 ${e(a.before, !1, o?.assistantSeq)}；之后 ${e(a.after, c)}${r}。`), a.after && !c && i.push({
+				storylineId: a.storylineId,
+				subjectEntityId: a.subjectEntityId,
+				layer: a.layer,
+				state: a.after,
+				assistantSeq: a.assistantSeq
+			});
 		}
 	}
 	if (pc(s, i, n), !e.memoryComplete || !e.cseCurrent) {
@@ -24775,28 +24790,28 @@ var Og = () => !!(r || a), kg = Bf({ worldInfoBindings: {
 	getWorldInfoNames: () => d,
 	getDefaultCaseSensitive: () => l,
 	getDefaultMatchWholeWords: () => u
-} }), Ag = () => kg.getContext(), jg = () => ({
+} }), Ag = () => kg.getContext(), jg = () => Ag().uuidv4(), Mg = () => ({
 	...Ag(),
 	userAvatar: e
-}), Mg = hu({
+}), Ng = hu({
 	extensionSettings: n,
 	save: i
 });
-Mg.migrateLegacyApiSettings();
-var Ng = () => Y({
+Ng.migrateLegacyApiSettings();
+var Pg = () => Y({
 	extensionNames: t,
 	disabledExtensions: n.disabledExtensions,
 	extensionSuffix: "/ST-SevenDaysCal",
 	peerSettings: n["schedule-planner"]
-}), Pg = () => {
+}), Fg = () => {
 	let e = t.find((e) => String(e).endsWith("/ST-SevenDaysCal"));
 	return !!(e && !n.disabledExtensions?.includes(e));
-}, Fg = me({
+}, Ig = me({
 	context: Ag,
-	settings: () => Mg.get(),
-	peerState: Ng
-}), Ig = "qqj-sdc-story-clock-settings-changed", Lg = he({
-	controller: Fg,
+	settings: () => Ng.get(),
+	peerState: Pg
+}), Lg = "qqj-sdc-story-clock-settings-changed", Rg = he({
+	controller: Ig,
 	labelFor: (e) => ({
 		custom: "使用自定义时间戳提示词",
 		"adapted-sdc": "已适配构画时间戳",
@@ -24806,191 +24821,196 @@ var Ng = () => Y({
 		closed: "正文时间戳已关闭",
 		unavailable: "宿主暂不支持时间戳注入"
 	})[e?.status] ?? "时间戳状态会在下一次正文生成前刷新。"
-}), Rg = () => {
+}), zg = () => {
 	try {
-		typeof globalThis.CustomEvent == "function" && globalThis.dispatchEvent?.(new globalThis.CustomEvent(Ig, { detail: { owner: "myknots" } }));
+		typeof globalThis.CustomEvent == "function" && globalThis.dispatchEvent?.(new globalThis.CustomEvent(Lg, { detail: { owner: "myknots" } }));
 	} catch {}
-}, zg = ({ readOnly: e = !1, announce: t = !1 } = {}) => {
-	let n = Lg({ readOnly: e });
-	return t && Rg(), n;
+}, Bg = ({ readOnly: e = !1, announce: t = !1 } = {}) => {
+	let n = Rg({ readOnly: e });
+	return t && zg(), n;
 };
-globalThis.addEventListener?.(Ig, (e) => {
-	e?.detail?.owner !== "myknots" && zg();
+globalThis.addEventListener?.(Lg, (e) => {
+	e?.detail?.owner !== "myknots" && Bg();
 });
-var Bg = () => ({
-	keepTags: Mg.get().sourceKeepTags,
-	extraTags: Mg.get().sourceExtraTags
-}), Vg = y({ headers: () => Ag()?.getRequestHeaders?.() ?? {} }), Hg, Ug, Wg = Qe({
+var Vg = () => ({
+	keepTags: Ng.get().sourceKeepTags,
+	extraTags: Ng.get().sourceExtraTags
+}), Hg = y({ headers: () => Ag()?.getRequestHeaders?.() ?? {} }), Ug, Wg, Gg = Qe({
 	headers: () => Ag()?.getRequestHeaders?.() ?? {},
-	onBusyChange: (e) => Hg?.fab?.setBusy?.(e)
-}), Gg = Bd({ settings: Mg }), Kg = Vd({
-	resolver: Gg,
-	compactClient: Wg,
-	isEnabled: Mg.isEnabled
-}), qg = Hd({
-	resolver: Gg,
-	compactClient: Wg,
-	isEnabled: Mg.isEnabled
-}), Jg = tf({ client: Vg }), Yg = Gd({
-	contextProvider: jg,
-	isEnabled: Mg.isEnabled,
-	identityCoordinator: Jg
-}), Xg = Ff({
-	settings: Mg,
-	contextProvider: jg
-}), Zg = () => Mg.get().summaryPrompt, Qg = () => Mg.get().csePrompt, $g = () => Mg.get().profilePrompt, e_ = () => Mg.get().processingPrompt, t_ = _f({
-	client: Vg,
-	contextProvider: () => Yg.identity(),
-	isEnabled: Mg.isEnabled
-}), n_ = np({
+	onBusyChange: (e) => Ug?.fab?.setBusy?.(e)
+}), Kg = Bd({ settings: Ng }), qg = Vd({
+	resolver: Kg,
+	compactClient: Gg,
+	isEnabled: Ng.isEnabled
+}), Jg = Hd({
+	resolver: Kg,
+	compactClient: Gg,
+	isEnabled: Ng.isEnabled
+}), Yg = tf({
+	client: Hg,
+	freshUuid: jg
+}), Xg = Gd({
+	contextProvider: Mg,
+	isEnabled: Ng.isEnabled,
+	identityCoordinator: Yg
+}), Zg = Ff({
+	settings: Ng,
+	contextProvider: Mg
+}), Qg = () => Ng.get().summaryPrompt, $g = () => Ng.get().csePrompt, e_ = () => Ng.get().profilePrompt, t_ = () => Ng.get().processingPrompt, n_ = _f({
+	client: Hg,
+	contextProvider: () => Xg.identity(),
+	isEnabled: Ng.isEnabled
+}), r_ = np({
 	hostAdapter: kg,
-	store: t_,
-	contextProvider: jg,
-	prepareSession: () => Yg.prepare(),
-	isEnabled: Mg.isEnabled,
-	sanitizerOptions: Bg
-}), r_ = El({ client: Vg }), i_, a_ = async () => {
-	let e = Yg.identity();
-	return i_?.getState?.()?.chatId === e.chatId ? i_.getIdentityProjection() : (await r_.read(e)).data ?? {};
-}, o_, s_ = Yp({
-	foundationRuntime: n_,
-	store: t_,
+	store: n_,
+	contextProvider: Mg,
+	prepareSession: () => Xg.prepare(),
+	isEnabled: Ng.isEnabled,
+	sanitizerOptions: Vg,
+	newUuid: jg
+}), i_ = El({ client: Hg }), a_, o_ = async () => {
+	let e = Xg.identity();
+	return a_?.getState?.()?.chatId === e.chatId ? a_.getIdentityProjection() : (await i_.read(e)).data ?? {};
+}, s_, c_ = Yp({
+	foundationRuntime: r_,
+	store: n_,
 	hostAdapter: kg,
-	generateAnalysisTask: Kg.generateAnalysisTask,
-	generateUtilityTask: Kg.generateUtilityTask,
-	isEnabled: Mg.isEnabled,
+	generateAnalysisTask: qg.generateAnalysisTask,
+	generateUtilityTask: qg.generateUtilityTask,
+	isEnabled: Ng.isEnabled,
 	automationSettings: () => ({
-		enabled: Mg.isEnabled(),
+		enabled: Ng.isEnabled(),
 		batchSize: 1
 	}),
 	notifyUser: (e) => globalThis.toastr?.[e?.kind]?.(e?.text),
 	isMainGenerationActive: Og,
-	onFullRebuildCommitted: () => o_?.invalidate("fullRebuild"),
-	extractorPromptGuidance: Zg,
-	csePromptGuidance: Qg,
-	processingPrompt: e_,
-	filterWorldInfoSources: Xg.filterWorldInfoSources,
-	sanitizerOptions: Bg,
+	onFullRebuildCommitted: () => s_?.invalidate("fullRebuild"),
+	extractorPromptGuidance: Qg,
+	csePromptGuidance: $g,
+	processingPrompt: t_,
+	filterWorldInfoSources: Zg.filterWorldInfoSources,
+	sanitizerOptions: Vg,
 	persistAnchors: pt,
-	identityProjectionProvider: a_
+	identityProjectionProvider: o_,
+	newUuid: jg
 });
-o_ = Qm({
-	store: t_,
+s_ = Qm({
+	store: n_,
 	hostAdapter: kg,
-	generateUtilityTask: Kg.generateUtilityTask,
-	isEnabled: Mg.isEnabled,
-	memoryStatus: () => s_.getState(),
-	prepareMemory: (e) => s_.prepareCurrent(e),
-	realtimeOrigin: () => s_.allowsRealtimeTailFromEmpty(),
+	generateUtilityTask: qg.generateUtilityTask,
+	isEnabled: Ng.isEnabled,
+	memoryStatus: () => c_.getState(),
+	prepareMemory: (e) => c_.prepareCurrent(e),
+	realtimeOrigin: () => c_.allowsRealtimeTailFromEmpty(),
 	notifyUser: (e) => globalThis.toastr?.[e?.kind]?.(e?.text),
-	sanitizerOptions: Bg,
-	identityProjectionProvider: a_,
+	sanitizerOptions: Vg,
+	identityProjectionProvider: o_,
 	pluginVersion: f
-}), i_ = Bl({
-	store: r_,
-	session: Yg,
-	foundationRuntime: n_,
-	memoryRuntime: s_,
-	generateUtilityTask: Kg.generateUtilityTask,
-	sourcePermissions: Xg,
-	contextProvider: jg,
-	sanitizerOptions: Bg,
-	profilePromptGuidance: $g,
-	processingPrompt: e_,
-	isEnabled: Mg.isEnabled
+}), a_ = Bl({
+	store: i_,
+	session: Xg,
+	foundationRuntime: r_,
+	memoryRuntime: c_,
+	generateUtilityTask: qg.generateUtilityTask,
+	sourcePermissions: Zg,
+	contextProvider: Mg,
+	sanitizerOptions: Vg,
+	profilePromptGuidance: e_,
+	processingPrompt: t_,
+	isEnabled: Ng.isEnabled
 });
-var c_ = fh({
+var l_ = fh({
 	hostAdapter: kg,
-	memoryRuntime: s_,
-	settings: Mg,
+	memoryRuntime: c_,
+	settings: Ng,
 	notifyUser: (e) => globalThis.toastr?.[e?.kind]?.(e?.text)
-}), l_ = Dg({
-	memoryRuntime: s_,
-	recallRuntime: o_,
+}), u_ = Dg({
+	memoryRuntime: c_,
+	recallRuntime: s_,
 	hostAdapter: kg
-}), u_ = Sf({
-	client: Vg,
-	session: Yg,
+}), d_ = Sf({
+	client: Hg,
+	session: Xg,
 	hostAdapter: kg,
-	foundationRuntime: n_,
-	memoryRuntime: s_,
-	recallRuntime: o_,
-	peopleRuntime: i_,
-	autoHideController: c_,
+	foundationRuntime: r_,
+	memoryRuntime: c_,
+	recallRuntime: s_,
+	peopleRuntime: a_,
+	autoHideController: l_,
 	isMainGenerationActive: Og
-}), d_ = Fh({
-	session: Yg,
-	store: t_,
+}), f_ = Fh({
+	session: Xg,
+	store: n_,
 	hostAdapter: kg,
-	foundationRuntime: n_,
-	memoryRuntime: s_,
-	peopleRuntime: i_,
-	isEnabled: Mg.isEnabled,
-	sanitizerOptions: Bg,
-	identityProjectionProvider: a_
+	foundationRuntime: r_,
+	memoryRuntime: c_,
+	peopleRuntime: a_,
+	isEnabled: Ng.isEnabled,
+	sanitizerOptions: Vg,
+	identityProjectionProvider: o_
 });
-globalThis.addEventListener?.("beforeunload", d_.cleanup, { once: !0 }), globalThis.addEventListener?.("beforeunload", c_.dispose, { once: !0 }), globalThis.addEventListener?.("beforeunload", l_.destroy, { once: !0 }), globalThis.qqj_v3_recall_interceptor = (e, t, n, r) => o_.intercept(e, t, n, r), Hg = jd({
-	settings: Mg,
-	apiTools: qg,
+globalThis.addEventListener?.("beforeunload", f_.cleanup, { once: !0 }), globalThis.addEventListener?.("beforeunload", l_.dispose, { once: !0 }), globalThis.addEventListener?.("beforeunload", u_.destroy, { once: !0 }), globalThis.qqj_v3_recall_interceptor = (e, t, n, r) => s_.intercept(e, t, n, r), Ug = jd({
+	settings: Ng,
+	apiTools: Jg,
 	onPluginEnabledChange: async (e) => {
-		if (zg({ announce: !0 }), !e) {
-			l_.setEnabled(!1), c_.stop(), await i_.setEnabled(!1), await o_.setEnabled(!1);
-			let e = await s_.setEnabled(!1), t = await Ug?.setEnabled(!1);
+		if (Bg({ announce: !0 }), !e) {
+			u_.setEnabled(!1), l_.stop(), await a_.setEnabled(!1), await s_.setEnabled(!1);
+			let e = await c_.setEnabled(!1), t = await Wg?.setEnabled(!1);
 			return e ?? t;
 		}
-		l_.setEnabled(!0);
-		let t = await Ug?.setEnabled(e);
-		return await o_.setEnabled(e), t;
+		u_.setEnabled(!0);
+		let t = await Wg?.setEnabled(e);
+		return await s_.setEnabled(e), t;
 	},
-	onStoryClockChange: (e) => zg({
+	onStoryClockChange: (e) => Bg({
 		...e,
 		announce: e?.readOnly !== !0
 	}),
-	onAutoHideChange: (e) => c_.applySettings(e),
+	onAutoHideChange: (e) => l_.applySettings(e),
 	subscribeDialogContextChange: (e) => {
 		let t = Ag(), n = t?.eventTypes?.CHAT_CHANGED;
 		return !n || !t?.eventSource?.on ? () => {} : (t.eventSource.on(n, e), () => t.eventSource.removeListener?.(n, e));
 	},
-	isSevenDaysAvailable: Pg,
-	sourcePermissions: Xg,
-	v3FoundationRuntime: s_,
-	v3RecallRuntime: o_,
-	peopleWorkspaceRuntime: i_,
-	chatMemoryManagement: u_,
-	sessionStateProvider: () => Yg.getState(),
-	backendDiagnosticProvider: () => Vg.getDiagnosticSnapshot(),
+	isSevenDaysAvailable: Fg,
+	sourcePermissions: Zg,
+	v3FoundationRuntime: c_,
+	v3RecallRuntime: s_,
+	peopleWorkspaceRuntime: a_,
+	chatMemoryManagement: d_,
+	sessionStateProvider: () => Xg.getState(),
+	backendDiagnosticProvider: () => Hg.getDiagnosticSnapshot(),
 	pluginVersion: f,
-	inlineRenderer: l_,
+	inlineRenderer: u_,
 	enableFab: !0
-}), Ug = wf({
-	session: Yg,
+}), Wg = wf({
+	session: Xg,
 	aborters: [
-		Kg,
 		qg,
-		i_
+		Jg,
+		a_
 	],
-	isEnabled: Mg.isEnabled,
-	getUi: () => Hg,
+	isEnabled: Ng.isEnabled,
+	getUi: () => Ug,
 	onPrepared: async ({ isCurrent: e }) => {
-		e() && (await s_.start(), e() && await i_.refresh({ refreshMemory: !1 }));
+		e() && (await c_.start(), e() && await a_.refresh({ refreshMemory: !1 }));
 	}
 });
-var f_ = Ag();
-zg({ announce: !0 }), Ug.bind({
-	eventSource: f_?.eventSource,
-	eventTypes: f_?.eventTypes
+var p_ = Ag();
+Bg({ announce: !0 }), Wg.bind({
+	eventSource: p_?.eventSource,
+	eventTypes: p_?.eventTypes
+}), c_.bind({
+	eventSource: p_?.eventSource,
+	eventTypes: p_?.eventTypes
 }), s_.bind({
-	eventSource: f_?.eventSource,
-	eventTypes: f_?.eventTypes
-}), o_.bind({
-	eventSource: f_?.eventSource,
-	eventTypes: f_?.eventTypes
+	eventSource: p_?.eventSource,
+	eventTypes: p_?.eventTypes
 });
 for (let e of ["CHAT_CHANGED", "GENERATION_STARTED"]) {
-	let t = f_?.eventTypes?.[e];
-	t && f_?.eventSource?.on?.(t, () => zg());
+	let t = p_?.eventTypes?.[e];
+	t && p_?.eventSource?.on?.(t, () => Bg());
 }
 (async () => {
-	l_.setEnabled(Mg.isEnabled()), await Ug.start();
+	u_.setEnabled(Ng.isEnabled()), await Wg.start();
 })().catch((e) => console.warn("[qianqianjie] 身份或 V3 地基准备失败", e));
 //#endregion

@@ -1104,6 +1104,65 @@ test('CSE 候选按人物单份组织当前与时序变化，可靠同源 add/cu
   assert.ok(longPool.groups.flatMap(value => value.items).every(value => value.reason.length > 1200));
 });
 
+test('剧情线变化只复用前文已完整打印的同源 after，非紧邻 before 保留识别信息并省去重复长依据', () => {
+  const towardEntityId = '88888888-7777-4777-8777-777777777777';
+  const stateA = { ...recallState('dedup-state-a', '仍把钥匙握在掌心', 4, { reason:'亲手接过钥匙后的完整依据甲', towardEntityId }), toward:'林岚' };
+  const stateB = { ...recallState('dedup-state-b', '仍在门边等候', 4, { reason:'留在门边的完整依据乙', towardEntityId, visibility:'authorial' }), toward:'林岚' };
+  const differentSource = { ...recallState('dedup-state-c', stateA.text, 6, { reason:'相同文字但不同来源与对象的独立依据', towardEntityId:'99999999-7777-4777-8777-777777777777' }), toward:'乙' };
+  const change = (deltaId, assistantSeq, storylineId, action, before, after) => ({
+    deltaId, assistantSeq, storylineId, subjectEntityId:PERSON, subject:'裴晚生', layer:'situational', action, before, after,
+  });
+  const injection = formatRecallInjection({
+    coverage:selectorSource().coverage,
+    floors:[], states:[], stateProgressions:[],
+    entityById:new Map(selectorSource().entities.map(value => [value.entityId, value])),
+    storylines:[
+      { storylineId:'line-a', title:'门边旧事', basis:'同一人物与门边状态' },
+      { storylineId:'line-b', title:'另一条线', basis:'独立剧情线' },
+    ],
+    cseChanges:[
+      change('delta-4-a', 4, 'line-a', 'add', null, stateA),
+      change('delta-4-b', 4, 'line-a', 'add', null, stateB),
+      change('delta-5-a', 5, 'line-a', 'remove', stateA, null),
+      change('delta-5-b', 5, 'line-a', 'remove', stateB, null),
+      change('delta-6-c', 6, 'line-a', 'remove', differentSource, null),
+      change('delta-7-a', 7, 'line-b', 'remove', stateA, null),
+    ],
+  });
+  const count = text => injection.split(text).length - 1;
+  assert.equal(count('完整依据见 AI #4 上述“之后”状态，同一来源'), 2, '两项非紧邻同源 before 都应引用楼4已完整打印的 after');
+  assert.equal(count(stateA.reason), 2, '同线重复依据应省去，另一剧情线仍须完整打印');
+  assert.equal(count(stateB.reason), 1);
+  assert.equal(count('相同文字但不同来源与对象的独立依据'), 1);
+  assert.equal(count('- [变化]'), 6, '不得删除任何变化');
+  assert.match(injection, /private，仅可用于该人物，对 林岚：仍把钥匙握在掌心（完整依据见 AI #4/);
+  assert.match(injection, /authorial，作者塑造参考，不代表人物知情，对 林岚：仍在门边等候（完整依据见 AI #4/);
+  assert.match(injection, /private，仅可用于该人物，对 乙：仍把钥匙握在掌心（依据：相同文字但不同来源与对象的独立依据/);
+});
+
+test('无剧情线变化按实际列表顺序复用同源 after，且不跨 storylineId 省略依据', () => {
+  const stateA = { ...recallState('flat-state-a', '仍记得那枚书签', 8, { reason:'书签状态的完整依据' }), toward:null };
+  const stateB = { ...recallState('flat-state-b', '仍保留旧信封', 8, { reason:'信封状态的完整依据', visibility:'authorial' }), toward:null };
+  const change = (deltaId, assistantSeq, storylineId, action, before, after) => ({
+    deltaId, assistantSeq, storylineId, subjectEntityId:PERSON, subject:'裴晚生', layer:'adaptive', action, before, after,
+  });
+  const injection = formatRecallInjection({
+    coverage:selectorSource().coverage, floors:[], states:[], stateProgressions:[], storylines:[], entityById:new Map(),
+    cseChanges:[
+      change('flat-8-a', 8, 'line-a', 'add', null, stateA),
+      change('flat-8-b', 8, 'line-a', 'add', null, stateB),
+      change('flat-9-a', 9, 'line-a', 'remove', stateA, null),
+      change('flat-9-b', 9, 'line-a', 'remove', stateB, null),
+      change('flat-10-a', 10, 'line-b', 'remove', stateA, null),
+    ],
+  });
+  const count = text => injection.split(text).length - 1;
+  assert.equal(count('完整依据见 AI #8 上述“之后”状态，同一来源'), 2);
+  assert.equal(count(stateA.reason), 2, '另一 storylineId 的 before 不能引用 line-a 的 after');
+  assert.equal(count(stateB.reason), 1);
+  assert.equal(injection.match(/^- 裴晚生 \/ adaptive \/ 来源 AI #/gmu)?.length, 5, '五条变化及其来源楼都应保留');
+});
+
 test('CSE-only 仍复用一次 LLM，反序选择变化后按楼序呈现且同源 after 指向当前快照', async () => {
   const source = changingCseSource();
   const queryContext = { ...llmQuery, text: '左佐和辛夷的门锁', latestUserText: '左佐和辛夷的门锁' };

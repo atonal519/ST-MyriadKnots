@@ -338,12 +338,13 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, stateP
     }
     return `${relation}${value.text}`;
   };
-  const stateSide = (value, currentEquivalent = false, timelineAssistantSeq = null) => {
+  const stateSide = (value, currentEquivalent = false, timelineAssistantSeq = null, priorAssistantSeq = null) => {
     if (!value) return '无';
     if (currentEquivalent) return '见本线末尾当前快照（同一来源）';
     const target = value.toward ? `，对 ${value.toward}` : '';
-    const source = value.sourceAssistantSeq && value.sourceAssistantSeq !== timelineAssistantSeq ? `，状态来源 AI #${value.sourceAssistantSeq}` : '';
     const boundary = value.visibility === 'private' ? '，仅可用于该人物' : value.visibility === 'authorial' ? '，作者塑造参考，不代表人物知情' : '';
+    if (Number.isSafeInteger(priorAssistantSeq)) return `${value.visibility}${boundary}${target}：${value.text}（完整依据见 AI #${priorAssistantSeq} 上述“之后”状态，同一来源）`;
+    const source = value.sourceAssistantSeq && value.sourceAssistantSeq !== timelineAssistantSeq ? `，状态来源 AI #${value.sourceAssistantSeq}` : '';
     return `${value.visibility}${boundary}${target}：${value.text}（依据：${value.reason || '未提供'}${source}）`;
   };
   for (const storyline of storylines) {
@@ -353,6 +354,7 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, stateP
     const lineStates = states.filter(value => value.storylineId === storyline.storylineId);
     const lineChanges = cseChanges.filter(value => value.storylineId === storyline.storylineId)
       .sort((a, b) => a.assistantSeq - b.assistantSeq || String(a.deltaId ?? '').localeCompare(String(b.deltaId ?? '')));
+    const renderedAfters = [];
     const action = { add: '新增', remove: '移除', update: '更新', refine: '调整' };
     const timelineSeqs = [...new Set([...lineFloors.map(value => value.assistantSeq), ...lineChanges.map(value => value.assistantSeq)])].sort((a, b) => a - b);
     for (const assistantSeq of timelineSeqs) {
@@ -362,8 +364,11 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, stateP
       floor?.items.forEach(value => lines.push(`- [旧事] ${historyText(value)}`));
       for (const value of lineChanges.filter(item => item.assistantSeq === assistantSeq)) {
         const removeBoundary = value.action === 'remove' ? '；“之前”只是被移除的旧状态，不是当前状态' : '';
+        const priorAfter = value.before && renderedAfters.find(item => item.subjectEntityId === value.subjectEntityId
+          && item.layer === value.layer && sameStateSource(item.state, value.before));
         const currentEquivalent = value.after && lineStates.some(state => state.subjectEntityId === value.subjectEntityId && state.layer === value.layer && sameStateSource(state, value.after));
-        lines.push(`- [变化] ${value.subject} / ${value.layer}：当时${action[value.action] ?? '变化'}；之前 ${stateSide(value.before, false, assistantSeq)}；之后 ${stateSide(value.after, currentEquivalent, assistantSeq)}${removeBoundary}。`);
+        lines.push(`- [变化] ${value.subject} / ${value.layer}：当时${action[value.action] ?? '变化'}；之前 ${stateSide(value.before, false, assistantSeq, priorAfter?.assistantSeq)}；之后 ${stateSide(value.after, currentEquivalent, assistantSeq)}${removeBoundary}。`);
+        if (value.after && !currentEquivalent) renderedAfters.push({ subjectEntityId: value.subjectEntityId, layer: value.layer, state: value.after, assistantSeq });
       }
     }
     if (lineStates.length) lines.push('[已保存人物状态依据]');
@@ -445,20 +450,25 @@ export function formatRecallInjection({ coverage, floors, states, cseChanges = [
     }
   }
   if (cseChanges.length) {
-    const stateSide = (value, currentEquivalent = false) => {
+    const stateSide = (value, currentEquivalent = false, priorAssistantSeq = null) => {
       if (!value) return '无';
       if (currentEquivalent) return '见该人物上方当前快照（同一来源）';
       const target = value.toward ? `，对 ${value.toward}` : '';
-      const source = value.sourceAssistantSeq ? `，状态来源 AI #${value.sourceAssistantSeq}` : '';
       const boundary = value.visibility === 'private' ? '，仅可用于该人物' : value.visibility === 'authorial' ? '，作者塑造参考，不代表任何人物知情' : '';
+      if (Number.isSafeInteger(priorAssistantSeq)) return `${value.visibility}${boundary}${target}：${value.text}（完整依据见 AI #${priorAssistantSeq} 上述“之后”状态，同一来源）`;
+      const source = value.sourceAssistantSeq ? `，状态来源 AI #${value.sourceAssistantSeq}` : '';
       return `${value.visibility}${boundary}${target}：${value.text}（依据：${value.reason || '未提供'}${source}）`;
     };
     const action = { add: '新增', remove: '移除', update: '更新', refine: '调整' };
+    const renderedAfters = [];
     lines.push('', '[人物状态历史变化（记录当时前后，后文可能继续覆盖）]');
     for (const value of cseChanges) {
       const removeBoundary = value.action === 'remove' ? '；“之前”只是被移除的旧状态，不是当前状态' : '';
+      const priorAfter = value.before && renderedAfters.find(item => item.storylineId === value.storylineId
+        && item.subjectEntityId === value.subjectEntityId && item.layer === value.layer && sameStateSource(item.state, value.before));
       const currentEquivalent = value.after && states.some(state => state.subjectEntityId === value.subjectEntityId && state.layer === value.layer && sameStateSource(state, value.after));
-      lines.push(`- ${value.subject} / ${value.layer} / 来源 AI #${value.assistantSeq}：当时${action[value.action] ?? '变化'}；之前 ${stateSide(value.before)}；之后 ${stateSide(value.after, currentEquivalent)}${removeBoundary}。`);
+      lines.push(`- ${value.subject} / ${value.layer} / 来源 AI #${value.assistantSeq}：当时${action[value.action] ?? '变化'}；之前 ${stateSide(value.before, false, priorAfter?.assistantSeq)}；之后 ${stateSide(value.after, currentEquivalent)}${removeBoundary}。`);
+      if (value.after && !currentEquivalent) renderedAfters.push({ storylineId: value.storylineId, subjectEntityId: value.subjectEntityId, layer: value.layer, state: value.after, assistantSeq: value.assistantSeq });
     }
   }
   appendStateProgressions(lines, stateProgressions, states);

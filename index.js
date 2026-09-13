@@ -36,6 +36,7 @@ const hostAdapter = createHostAdapter({ worldInfoBindings: {
   getDefaultMatchWholeWords: () => world_info_match_whole_words,
 } });
 const hostContext = () => hostAdapter.getContext();
+const newUuid = () => hostContext().uuidv4();
 const contextProvider = () => ({ ...hostContext(), userAvatar: user_avatar });
 const settings = createSettingsStore({ extensionSettings: extension_settings, save: saveSettingsDebounced });
 settings.migrateLegacyApiSettings();
@@ -81,7 +82,7 @@ const taskRouter = createTaskRouter({
   isEnabled: settings.isEnabled,
 });
 const apiTools = createApiTools({ resolver: apiResolver, compactClient, isEnabled: settings.isEnabled });
-const identityCoordinator = createChatIdentityCoordinator({ client: backendClient });
+const identityCoordinator = createChatIdentityCoordinator({ client: backendClient, freshUuid: newUuid });
 const session = createChatSession({ contextProvider, isEnabled: settings.isEnabled, identityCoordinator });
 const sourcePermissions = createSourcePermissionController({ settings, contextProvider });
 const summaryPrompt = () => settings.get().summaryPrompt;
@@ -96,6 +97,7 @@ const foundationRuntime = createFoundationRuntime({
   prepareSession: () => session.prepare(),
   isEnabled: settings.isEnabled,
   sanitizerOptions,
+  newUuid,
 });
 const peopleWorkspaceStore = createPeopleWorkspaceStore({ client: backendClient });
 let peopleWorkspaceRuntime;
@@ -127,6 +129,7 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   sanitizerOptions,
   persistAnchors: persistMessageFloorAnchors,
   identityProjectionProvider,
+  newUuid,
 });
 v3RecallRuntime = createV3RecallRuntime({
   store: foundationStore,
