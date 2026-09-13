@@ -56,9 +56,11 @@ test('focusout 未提供目标时按实际焦点归属关闭，选项点击只�
   select.node.fire('focusout', { relatedTarget: null });
   await Promise.resolve();
   assert.equal(select.list.hidden, false, '焦点清理时机早于新焦点时不能在微任务内关掉菜单');
+  assert.equal(select.list.children[1].attributes.tabindex, '-1', '显式 tabindex 让 WebKit 鼠标按下选项时也建立组件内焦点');
   select.list.children[1].focus();
-  select.list.children[1].fire('click');
   await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(select.list.hidden, false, '按下后选项已取得内部焦点时，早于松手 click 的定时检查不得关闭菜单');
+  select.list.children[1].fire('click');
   assert.equal(select.value, 'b'); assert.deepEqual(changes, ['b']); assert.equal(select.list.hidden, true);
 
   select.trigger.fire('click');

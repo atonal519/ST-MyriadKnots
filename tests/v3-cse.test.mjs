@@ -15,6 +15,7 @@ import { estimateRecallTokens } from '../src/v3/recall-selector.js';
 import { createCompactApiClient } from '../src/compact-api-client.js';
 import { createTaskRouter } from '../src/api-routing.js';
 import { projectCseStateIdentityReferences } from '../src/v3/entity-identity.js';
+import { createCseRuntime } from '../src/v3/cse-runtime.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GEN = '22222222-2222-4222-8222-222222222222';
@@ -458,6 +459,60 @@ test('人工纠正以末 delta 为锚不可变替换，支持增删清空 core�
   assert.ok(nextRequest.payload.previousState.some(subject => subject.subject === '林岚' && subject.ownState.adaptive.some(item => item.text === '逐渐信任裴晚生')), '后续模型分析必须读取人工纠正后的前态');
   assert.ok(nextRequest.payload.previousState.some(subject => subject.subject === '林岚' && subject.coreUserEdited === true && subject.ownState.core.length === 0), '人工清空 Core 后也必须继续标记为用户已编辑，不能被旧 baseline 自动补回');
   assert.equal(h.backend.records.get(`chat-${CHAT}/v3-root`).revision > initialRoot.revision, true);
+});
+
+test('旧 CSE load 的重放迟到时不得覆盖已经成功提交的人工长期倾向', async () => {
+  const h = runtimeHarness({
+    cse: () => ({ jsonData: { subjects: [{ subject: '林岚', adaptive: [{ text: '旧长期倾向', visibility: 'private', reason: '既有表现' }] }] } }),
+  });
+  await h.runtime.start().then(() => h.runtime.extractNext());
+  const oldGraph = await h.store.readReachable({ mode: 'runtime' });
+  const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } });
+  const cseRuntime = createCseRuntime({
+    store: h.store,
+    hostAdapter,
+    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
+    now: () => new Date(NOW),
+    newUuid: uuidFactory(),
+    logger: { warn() {} },
+  });
+  await cseRuntime.load(oldGraph);
+  const initial = cseRuntime.getState();
+  const subject = initial.cseSubjects.find(item => item.subjectEntityId === oldGraph.baseline.userPersona.entityId);
+  assert.deepEqual(subject.adaptive.map(item => item.text), ['旧长期倾向']);
+
+  const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  const realCrypto = globalThis.crypto;
+  const realDigest = realCrypto.subtle.digest.bind(realCrypto.subtle);
+  let releaseReplay;
+  let markReplayStarted;
+  const replayStarted = new Promise(resolve => { markReplayStarted = resolve; });
+  const replayGate = new Promise(resolve => { releaseReplay = resolve; });
+  let gateNextDigest = true;
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, enumerable: true, value: {
+    subtle: { digest: async (...args) => { if (gateNextDigest) { gateNextDigest = false; markReplayStarted(); await replayGate; } return realDigest(...args); } },
+  } });
+  let afterLateLoad;
+  try {
+    const staleLoad = cseRuntime.load(oldGraph);
+    await replayStarted;
+    const saved = await cseRuntime.correctSubjectState({
+      subjectEntityId: subject.subjectEntityId,
+      expectedCurrentStateId: initial.currentStateId,
+      expectedCurrentStateFingerprint: initial.currentStateFingerprint,
+      core: subject.core.map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: null })),
+      adaptive: subject.adaptive.map(item => ({ itemId: item.id, text: '新长期倾向', visibility: item.visibility, towardEntityId: item.towardEntityId ?? null })),
+      situational: subject.situational.map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: item.towardEntityId ?? null })),
+    });
+    assert.deepEqual(saved.cseSubjects.find(item => item.subjectEntityId === subject.subjectEntityId).adaptive.map(item => item.text), ['新长期倾向']);
+    releaseReplay();
+    await staleLoad;
+    afterLateLoad = cseRuntime.getState();
+  } finally {
+    releaseReplay();
+    Object.defineProperty(globalThis, 'crypto', cryptoDescriptor);
+  }
+  assert.deepEqual(afterLateLoad.cseSubjects.find(item => item.subjectEntityId === subject.subjectEntityId).adaptive.map(item => item.text), ['新长期倾向']);
 });
 
 test('人工纠正可追加末 delta 未携带主体，并识别情境对象的无变、改向与清空', async () => {

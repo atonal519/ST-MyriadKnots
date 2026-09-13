@@ -109,13 +109,18 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
   }
 
   async function calculateReplay(value) {
-    if (!value?.baseline) { replayed = null; replayDiagnostic = null; return; }
+    const expectedEpoch = epoch;
+    if (!value?.baseline) {
+      replayed = null; replayDiagnostic = null; return true;
+    }
     const stored = value.currentStates?.at(-1) ?? null;
     const rebuilt = await replayCurrentState({ chatId: value.root.chatId, narrativeGeneration: value.root.narrativeGeneration, baselineId: value.baseline.id, floors: value.floors, floorMemories: value.floorMemories, stateDeltas: value.stateDeltas, now: nowIso(now) });
+    if (expectedEpoch !== epoch || reachable !== value) return false;
     replayed = stored?.fingerprint === rebuilt.fingerprint ? stored : rebuilt;
     replayDiagnostic = stored && stored.fingerprint !== rebuilt.fingerprint
       ? { code: 'V3_CSE_REPLAY_MISMATCH', message: '已存当前状态与可信增量重放不一致；界面已采用本地重放结果。', storedId: stored.id, replayFingerprint: rebuilt.fingerprint }
       : null;
+    return true;
   }
 
   const sameReachableRoot = (value, rootResult) => rootResult?.status === 'ready'
@@ -126,18 +131,22 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     && rootResult.data?.sourceSnapshotFingerprint === value?.root?.sourceSnapshotFingerprint;
 
   async function load(providedReachable = null) {
+    const expectedEpoch = epoch;
     let value = providedReachable;
     if (!value && reachable && typeof store.readRoot === 'function') {
       const rootResult = await store.readRoot();
+      if (expectedEpoch !== epoch) return getState();
       if (sameReachableRoot(reachable, rootResult)) value = reachable;
     }
     value ??= await store.readReachable({ mode: 'runtime' });
+    if (expectedEpoch !== epoch) return getState();
     if (!['ready', 'needsReseal'].includes(value.status)) {
       if (value.status === 'uninitialized') { reachable = null; replayed = null; return notify(); }
       throw errorWith('V3_CSE_LOAD_FAILED', `CSE 图读取失败：${value.status}`);
     }
+    if (reachable?.root?.chatId === value.root.chatId && reachable.rootRevision > value.rootRevision) return getState();
     reachable = value;
-    await calculateReplay(value);
+    if (!await calculateReplay(value)) return getState();
     return notify();
   }
 

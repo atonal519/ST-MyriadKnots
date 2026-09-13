@@ -14,7 +14,7 @@ export function createInlineSelect({ documentRef = globalThis.document, options 
   let selected = String(value ?? ''), disabled = false, opened = false, suppressNextClick = false;
 
   const optionButtons = items.map(option => {
-    const button = documentRef.createElement('button'); button.type = 'button'; button.className = 'qqj-inline-select-option'; button.textContent = option.label; button.setAttribute('role', 'option'); button.setAttribute('data-value', option.value);
+    const button = documentRef.createElement('button'); button.type = 'button'; button.className = 'qqj-inline-select-option'; button.textContent = option.label; button.setAttribute('role', 'option'); button.setAttribute('tabindex', '-1'); button.setAttribute('data-value', option.value);
     let suppressClick = false;
     button.addEventListener('click', event => { event?.stopPropagation?.(); if (suppressClick) { suppressClick = false; return; } if (disabled) return; select(option.value, true); });
     button.addEventListener('keydown', event => {
