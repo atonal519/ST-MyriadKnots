@@ -1,5 +1,6 @@
 import { normalizeAutoHideKeepAiCount } from '../settings.js';
 import { isHostNarratorMessage } from './foundation-domain.js';
+import { publicErrorMessage } from '../public-error.js';
 
 const MARKER_KEY = 'qianqianjieAutoHide';
 const READY_CSE = new Set(['ready', 'noChange']);
@@ -152,7 +153,7 @@ export function createAutoHideController({ hostAdapter, memoryRuntime, settings,
       return Object.freeze({ ...plan, status: plan.hideRanges.length || plan.unhideRanges.length ? 'applied' : 'unchanged' });
     } catch (error) {
       logger?.warn?.('[qianqianjie] auto hide failed', { code: error?.code ?? error?.name ?? 'QQJ_AUTO_HIDE_FAILED' });
-      try { notifyUser?.({ kind: 'error', text: `千千结自动隐藏未完成：${error?.message || '未知错误'} 可在记忆设置中重试。` }); } catch { /* feedback must not affect chat */ }
+      try { notifyUser?.({ kind: 'error', text: `千千结自动隐藏未完成：${publicErrorMessage(error, { fallback: '自动隐藏操作失败。' })} 可在记忆设置中重试。` }); } catch { /* feedback must not affect chat */ }
       throw error;
     }
   }

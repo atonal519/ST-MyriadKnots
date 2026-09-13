@@ -6,6 +6,7 @@ import { createSettingsDrawer, createSettingsDrawerState } from './settings-draw
 import { createApiSettings } from './settings/api-settings.js';
 import { createPromptsSettings } from './settings/prompts-settings.js';
 import { createAppearanceSettings } from './settings/appearance-settings.js';
+import { publicErrorMessage } from '../public-error.js';
 import { createScrollDiagnostics } from './scroll-diagnostics.js';
 import { openHelpGuide } from './help-guide.js';
 import { applyPluginEnabledImmediately } from '../settings.js';
@@ -132,7 +133,7 @@ export function createPanel({
     try { return await v3FoundationView.activate(); }
     catch (error) {
       if (mine !== activationEpoch || screen !== 'settings' || !errorNode || settingsManagementError !== errorNode) return { status: 'stale' };
-      errorNode.textContent = `记忆管理暂时无法读取：${error?.message || '未知错误'}`;
+      errorNode.textContent = `记忆管理暂时无法读取：${publicErrorMessage(error, { fallback: '请稍后重试。' })}`;
       errorNode.hidden = false;
       return { status: 'error', error };
     }
@@ -226,7 +227,7 @@ export function createPanel({
         enabled = previous;
         enabledInput.checked = previous;
         setEnabled(previous);
-        enabledResult.textContent = `切换失败，已恢复原状态：${error?.message || '未知错误'}`;
+        enabledResult.textContent = `切换失败，已恢复原状态：${publicErrorMessage(error, { fallback: '设置没有保存，请重试。' })}`;
         enabledResult.className = 'settings-result error';
       } finally {
         enabledInput.disabled = false;
@@ -295,7 +296,7 @@ export function createPanel({
         autoHideResult.textContent = current.autoHideEnabled ? `已开启；后续按最近 ${current.autoHideKeepAiCount} 个 AI 楼保留，已隐藏楼保持隐藏。` : '已关闭；千千结拥有的隐藏楼已恢复。';
         autoHideResult.className = 'settings-result success';
       } catch (error) {
-        autoHideResult.textContent = `设置已保存，但当前聊天整理未完成：${error?.message || '未知错误'} 请再次调整设置重试。`;
+        autoHideResult.textContent = `设置已保存，但当前聊天整理未完成：${publicErrorMessage(error, { fallback: '自动隐藏操作失败。' })} 请再次调整设置重试。`;
         autoHideResult.className = 'settings-result error';
       } finally { autoHideInput.disabled = false; keepInput.disabled = false; }
     };

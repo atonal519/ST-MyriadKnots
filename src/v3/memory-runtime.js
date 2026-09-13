@@ -16,6 +16,7 @@ import { buildEntityIdentityDirectory, entitiesThroughFloorIds, normalizeIdentit
 import { matchFloorCandidates } from './floor-binding.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 import { captureFloorVariableReference } from './floor-variable-reference.js';
+import { publicErrorMessage } from '../public-error.js';
 
 const EVENTS = Object.freeze(['CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
 const HISTORY_MUTATION_EVENTS = new Set(['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
@@ -50,10 +51,12 @@ export function projectMemoryPersonEntities(entities = []) {
     .map(entity => Object.freeze({ entityId: entity.id, displayName: entity.displayName, specialRole: entity.specialRole })));
 }
 const safeApi = value => sanitizeTaskMetadata(value);
-const safeErrorMessage = value => sanitizeSensitiveText(value ?? '提取失败，可重试。').slice(0, 500);
+const safeErrorMessage = value => {
+  const sanitized = sanitizeSensitiveText(value ?? '提取失败，可重试。').slice(0, 500);
+  return publicErrorMessage(sanitized, { fallback: '处理失败，请稍后重试。' });
+};
 const unknownCoverage = total => Object.freeze({ status: 'unknown', completed: 0, total, nextAssistantSeq: null, pendingFloorIds: Object.freeze([]), realtimeProtected: false, hasPartialWork: false, summaryStatus: 'unknown', summaryCompleted: 0, summaryNextAssistantSeq: null, summaryPendingFloorIds: Object.freeze([]), summaryRealtimeProtected: false, summaryHasPartialWork: false });
 const emptyCaughtUpCoverage = () => Object.freeze({ status: 'caughtUp', completed: 0, total: 0, nextAssistantSeq: null, pendingFloorIds: Object.freeze([]), realtimeProtected: true, hasPartialWork: false, summaryStatus: 'caughtUp', summaryCompleted: 0, summaryNextAssistantSeq: null, summaryPendingFloorIds: Object.freeze([]), summaryRealtimeProtected: true, summaryHasPartialWork: false });
-const completedFloorCopy = indexes => indexes.length ? `第 ${indexes.join('、')} 楼` : '楼号未提供';
 const normalizedName = value => String(value ?? '').trim().normalize('NFKC').toLocaleLowerCase('zh-Hans-CN');
 
 function errorWith(code, message = code) { const error = new Error(message); error.code = code; return error; }
@@ -128,7 +131,6 @@ function clockEvidence(selected) {
 
 const SESSION_CANDIDATE_MAX_ENTRIES = 8;
 const SESSION_CANDIDATE_MAX_CHARACTERS = 96000;
-const MEMORY_ARRAY_FIELDS = Object.freeze(['chronology', 'locations', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'openLoops', 'ambiguities', 'cseSignals']);
 const FLOOR_FAILURE_STORAGE_PREFIX = 'qqj_v3_floor_failures:';
 const normalizeAutoBatchSize = () => 1;
 const floorFailureStorageKey = chatId => `${FLOOR_FAILURE_STORAGE_PREFIX}${chatId}`;
@@ -820,7 +822,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (current.rootRevision !== oldReachable.rootRevision
       && current.root.headCheckpointId === oldReachable.root.headCheckpointId
       && current.root.sourceSnapshotFingerprint === oldReachable.root.sourceSnapshotFingerprint) {
-      throw errorWith('V3_MEMORY_STALE', '记忆 root 版本已变化但没有可验证的新地基，本次结果不会覆盖。');
+      throw errorWith('V3_MEMORY_STALE', '后端入口记录版本已变化，但没有可验证的新后端数据，本次结果不会覆盖。');
     }
     for (let attempt = 0; attempt < MEMORY_REBASE_ATTEMPTS; attempt += 1) {
     const floor = current.floors.find(item => item.id === replacement.floorId);
@@ -920,8 +922,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在提取准备期间已经变化，本次请求未发送。');
       const foundation = await foundationRuntime.refreshStatus();
-      if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在地基对账期间已经变化，本次请求未发送。');
-      if (foundation.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '正文地基尚未完成安全对账，当前不能提取。');
+      if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在后端数据同步期间已经变化，本次请求未发送。');
+      if (foundation.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '后端数据尚未与当前正文完成同步，当前不能提取。');
       const preparedReachable = foundationRuntime.getReachable?.() ?? null;
       await load(intent.epoch, preparedReachable?.root ? preparedReachable : null);
       if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在记忆读取期间已经变化，本次请求未发送。');
@@ -930,9 +932,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const floor = selectNext
         ? source?.floors?.find(item => memoryMap.get(item.id)?.recordStatus !== 'active')
         : source?.floors?.find(item => item.id === floorId);
-      if (!floor) return selectNext ? null : (() => { throw errorWith('V3_MEMORY_FLOOR_UNAVAILABLE', '只允许提取当前 root 可达的稳定 AI 楼。'); })();
+      if (!floor) return selectNext ? null : (() => { throw errorWith('V3_MEMORY_FLOOR_UNAVAILABLE', '只允许提取当前后端快照中可用的稳定 AI 楼。'); })();
       const selected = currentRawSelection(hostAdapter, floor);
-      if (!selected) throw errorWith('V3_MEMORY_STALE', '当前楼或所选重 Roll 已变化，请刷新后重试。');
+      if (!selected) throw errorWith('V3_MEMORY_STALE', '当前楼或所选候选回复已变化，请刷新后重试。');
       const sourceRawFingerprint = `sha256:${await sha256(selected.rawContent)}`;
       const canonicalContent = sanitizeMemoryContent(selected.rawContent, sanitizerOptions());
       const liveFloor = sourceRawFingerprint === floor.content.rawFingerprint ? floor : { ...floor, content: { ...floor.content,
@@ -960,7 +962,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         rootChecks += 1;
         if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在版本核对期间已经变化，本次请求未发送。');
         if (!samePreparedRoot(source, rootResult)) {
-          if (attempt + 1 >= 2) throw errorWith('V3_MEMORY_STALE', '记忆 root 在提取准备期间连续变化，本次请求未发送。');
+          if (attempt + 1 >= 2) throw errorWith('V3_MEMORY_STALE', '后端入口记录在提取准备期间连续变化，本次请求未发送。');
           const latest = await store.readReachable({ mode: 'runtime' });
           if (latest.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '最新记忆图尚未收敛，本次请求未发送。');
           foundationRuntime.adoptReachable?.(latest);
@@ -1019,7 +1021,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const replacement = validateFloorMemory({ ...result.memory, sourceStoryClockSignature: sourceClock.signature }, { expectedChatId: source.root.chatId });
       operation.phase = 'validating'; notify();
       const foundationAfter = await foundationRuntime.refreshStatus();
-      if (foundationAfter.status !== 'ready') throw errorWith('V3_MEMORY_STALE', '正文地基在提取期间发生变化，本次结果已作废。');
+      if (foundationAfter.status !== 'ready') throw errorWith('V3_MEMORY_STALE', '后端数据在提取期间发生变化，本次结果已作废。');
       if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_MEMORY_CANCELLED', '聊天或正文已变化，迟到响应已丢弃。');
       operation.phase = 'committing'; notify();
       await commitRevision(operation, { oldReachable: source, replacement, newEntities: result.newEntities, provenanceEntry: { api: result.metadata, attempts: result.attempts, transportAttempts: result.transportAttempts, responseFingerprint: result.responseFingerprint, extractorVersion: replacement.extractorVersion, promptVersion: EXTRACTOR_PROMPT_VERSION, promptGuidanceFingerprint: `sha256:${await sha256(String(promptGuidanceSnapshot ?? ''))}`, systemPromptFingerprint: `sha256:${await sha256(buildExtractorSystemPrompt(promptGuidanceSnapshot, processingPromptSnapshot))}`, userIdentityFingerprint: `sha256:${await sha256(JSON.stringify(userIdentity ?? null))}`, semanticInputFingerprint, preflightTiming: operation.preflightTiming, needsReview: result.needsReview, rawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature }, action: oldMemory ? 'reextract' : 'extract', validationErrors: result.validationErrors });
@@ -1048,7 +1050,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   async function reviseInternal(floorId, action, { userText = null, revisionNote = null, metadata = null } = {}) {
     if (active) return getState();
     const foundation = await foundationRuntime.refreshStatus();
-    if (foundation.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '正文地基尚未完成安全对账，当前不能修订。');
+    if (foundation.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '后端数据尚未与当前正文完成同步，当前不能修订。');
     await loadCurrent(epoch);
     const floor = reachable?.floors?.find(item => item.id === floorId), old = currentMemoryMap(reachable).get(floorId);
     if (!floor || !old) throw errorWith('V3_MEMORY_REVISION_UNAVAILABLE', '该楼还没有可修订的正式记忆。');
@@ -1140,11 +1142,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (!resetContextCurrent()) throw errorWith('V3_MEMORY_STALE', '聊天已变化，完全重构未开始。');
     const foundation = await foundationRuntime.refreshStatus();
     if (!resetContextCurrent()) throw errorWith('V3_MEMORY_STALE', '聊天已变化，完全重构未开始。');
-    if (foundation.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '正文地基尚未完成安全对账，当前不能完全重构。');
+    if (foundation.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '后端数据尚未与当前正文完成同步，当前不能完全重构。');
     await loadCurrent(requestedEpoch);
     if (!resetContextCurrent()) throw errorWith('V3_MEMORY_STALE', '聊天已变化，完全重构未开始。');
     const source = reachable ? clone(reachable) : null;
-    if (!source?.root || !source.checkpoint || source.root.chatId !== requestedChatId) throw errorWith('V3_MEMORY_RESET_UNAVAILABLE', '当前聊天尚无可重构的正文地基。');
+    if (!source?.root || !source.checkpoint || source.root.chatId !== requestedChatId) throw errorWith('V3_MEMORY_RESET_UNAVAILABLE', '当前聊天尚无可重构的后端数据。');
     const operation = { floorId: null, floorFingerprint: null, floorRawFingerprint: null, epoch: requestedEpoch, controller: new AbortController(), runId: await deterministicUuid(['v3-full-rebuild-run', source.root.headCheckpointId, newUuid()]), startedAt: nowIso(now), phase: 'resetting' };
     active = operation; notify();
     try {
@@ -1258,7 +1260,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               foundationRecoveryUsed = true;
               continue;
             }
-            throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', safeErrorMessage(foundation.lastError ?? `基础数据状态为 ${foundation.status}`));
+            throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', safeErrorMessage(foundation.lastError ?? '后端数据尚未就绪。'));
           }
           await load(epoch, foundationRuntime.getReachable?.() ?? null);
           const settlement = backgroundSync;
@@ -1947,7 +1949,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
     const foundation = await foundationRuntime.refreshStatus(MANUAL_HISTORY_REASON);
     if (foundation.status !== 'ready') {
-      lastAutoRun = Object.freeze({ status: 'failed', reason: MANUAL_HISTORY_REASON, mode: 'historical', phase: 'reconciling', batchSize: automation().batchSize, floorId: null, assistantSeq: null, message: safeErrorMessage(foundation.lastError ?? `基础数据状态为 ${foundation.status}`) });
+      lastAutoRun = Object.freeze({ status: 'failed', reason: MANUAL_HISTORY_REASON, mode: 'historical', phase: 'reconciling', batchSize: automation().batchSize, floorId: null, assistantSeq: null, message: safeErrorMessage(foundation.lastError ?? '后端数据尚未就绪。') });
       try { notifyUser?.({ kind: 'error', text: `历史记忆维护未开始：${lastAutoRun.message} 已保存的记忆保持不变，请稍后点击继续补齐。` }); } catch { /* notification is advisory */ }
       return notify();
     }
@@ -2027,7 +2029,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }
       const foundation = await foundationRuntime.refreshStatus(MANUAL_CSE_REBUILD_REASON);
       if (!allowed()) return getState();
-      if (foundation.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '正文地基尚未完成安全对账，CSE 重构未开始。');
+      if (foundation.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '后端数据尚未与当前正文完成同步，人物状态重构未开始。');
       await load(requestedEpoch, foundationRuntime.getReachable?.() ?? null);
       if (!allowed() || !reachable?.root) return getState();
       if (resume) {

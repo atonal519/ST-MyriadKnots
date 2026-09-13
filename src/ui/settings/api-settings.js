@@ -1,14 +1,6 @@
 import { createSettingsKit } from './kit.js';
 import { createInlineSelect } from '../inline-select.js';
-
-function apiErrorCopy(error) {
-  return {
-    QQJ_DISABLED: '千千结当前已关闭。',
-    QQJ_CONFIG: '主 API 配置不完整。',
-    QQJ_PRESET_INVALID: '所选 API 预设已失效。',
-    QQJ_TIMEOUT: 'API 请求超时。',
-  }[error?.code] ?? 'API 操作没有完成。';
-}
+import { publicErrorMessage } from '../../public-error.js';
 
 // API 配置：分析/摘要角色选择（change 即存）＋预设编辑区（手动 保存/另存/测试/拉取模型）＋高级设置子抽屉。
 export function createApiSettings({
@@ -162,7 +154,7 @@ export function createApiSettings({
       result.textContent = `已拉取 ${models.length} 个模型`; result.className = 'settings-result success';
     } catch (error) {
       if (requestEpoch !== modelListEpoch) return;
-      result.textContent = apiErrorCopy(error); result.className = 'settings-result error';
+      result.textContent = publicErrorMessage(error, { fallback: '模型列表拉取失败，请检查 API 配置后重试。' }); result.className = 'settings-result error';
     } finally {
       fetchBtn.disabled = false;
     }
@@ -237,7 +229,7 @@ export function createApiSettings({
       const response = await apiTools.testConnection(selection());
       result.textContent = `连接成功 · ${response?.model || '当前模型'}`; result.className = 'settings-result success';
     } catch (error) {
-      result.textContent = apiErrorCopy(error); result.className = 'settings-result error';
+      result.textContent = publicErrorMessage(error, { fallback: 'API 连接测试失败，请检查配置后重试。' }); result.className = 'settings-result error';
     }
   });
 

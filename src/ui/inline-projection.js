@@ -1,4 +1,5 @@
 import { selectAssistantMessage } from '../v3/foundation-domain.js';
+import { publicErrorMessage } from '../public-error.js';
 
 const uniqueText = values => [...new Set(values.map(value => String(value ?? '').trim()).filter(Boolean))];
 const RECALL_OPEN = '<qqj_recalled_context>';
@@ -204,7 +205,7 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
       statusText: failed ? '记忆读取失败' : syncing ? '正在读取本楼状态' : pending ? waitingCopy[0] : '尚未读取本楼状态',
       time: '未提取', locations: '未提取', people: '未提取',
       summary: failed ? '暂时无法读取当前聊天的记忆状态。' : syncing ? '正在读取当前聊天的记忆状态。' : pending ? waitingCopy[1] : '当前记忆中没有这楼的已保存状态。',
-      error: failed ? String(state?.lastExtractorError?.message ?? '记忆读取失败，请稍后重试。') : '',
+      error: failed ? publicErrorMessage(state?.lastExtractorError, { fallback: '记忆读取失败，请稍后重试。' }) : '',
       busy: Boolean(state?.memoryWorkBusy || syncing), canExtract: false,
     });
   }
@@ -222,7 +223,9 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
   return Object.freeze({
     kind: 'assistant', floorId: floor.floorId, assistantSeq, messageIndex, status: floor.status, statusText, time, locations, people,
     summary: floor.summary || (floor.status === 'unprocessed' ? '这一楼尚未生成摘要。' : '暂无摘要。'),
-    error: typeof floor.error === 'string' ? floor.error : floor.error?.message || '',
+    error: ['error', 'failed'].includes(floor.status)
+      ? publicErrorMessage(floor.error, { fallback: '摘要提取失败，请重试。' })
+      : publicErrorMessage(floor.error),
     busy,
     canExtract: Boolean(floor.floorId) && !busy,
   });

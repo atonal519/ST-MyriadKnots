@@ -531,7 +531,7 @@ test('成功 fresh read 与 adopt 清除旧读取错误，失败 adopt 不洗绿
   });
   let state = await h.runtime.inspect('failedProjection', { allowCached: false });
   assert.equal(state.status, 'error');
-  assert.equal(state.lastError, 'projection failed');
+  assert.equal(state.lastError, '后端数据检查失败，请稍后重试。');
 
   h.backend.setBeforeGet(null);
   state = await h.runtime.inspect('cacheOnly', { allowCached: true });
@@ -541,7 +541,7 @@ test('成功 fresh read 与 adopt 清除旧读取错误，失败 adopt 不洗绿
   state = await h.runtime.inspect('failedAgain', { allowCached: false });
   assert.equal(state.status, 'error');
   assert.equal(h.runtime.adoptReachable({ ...verified, root: { ...verified.root, chatId: OTHER_CHAT } }), false);
-  assert.equal(h.runtime.getState().lastError, 'projection failed again', '失败 adopt 不能清除读取错误');
+  assert.equal(h.runtime.getState().lastError, '后端数据检查失败，请稍后重试。', '失败 adopt 不能清除读取错误');
 
   assert.equal(h.runtime.adoptReachable(verified), true);
   assert.equal(h.runtime.getState().status, 'ready');
@@ -1247,7 +1247,7 @@ test('FloorRecord 正文与 canonicalFingerprint 必须本地互证，冷读取�
   });
   const stagedState = await stagedRuntime.start();
   assert.equal(stagedState.status, 'error');
-  assert.match(stagedState.lastError, /V3_GRAPH_FLOOR_CANONICAL_FINGERPRINT_INVALID/);
+  assert.equal(stagedState.lastError, '后端数据处理失败，请稍后重试。');
 });
 
 test('active checkpoint 的 committing run 冷启动幂等收敛 completed，非 active run 保持不变', async () => {
@@ -1534,7 +1534,7 @@ test('staged floorOrder index entries 被篡改但保留旧摘要时，冷启动
   });
   const recovered = await runtime.start();
   assert.equal(recovered.status, 'error');
-  assert.match(recovered.lastError, /V3 staged 记录内容冲突/);
+  assert.equal(recovered.lastError, '待提交记录内容发生冲突。');
   assert.equal(h.backend.records.has(`chat-${CHAT}/v3-root`), false);
   assert.equal((await store.readReachable()).status, 'uninitialized');
 });
@@ -1563,7 +1563,7 @@ test('staged checkpoint inputFingerprints 被篡改但保留旧状态摘要时�
   });
   const recovered = await runtime.start();
   assert.equal(recovered.status, 'error');
-  assert.match(recovered.lastError, /V3 staged 记录内容冲突/);
+  assert.equal(recovered.lastError, '待提交记录内容发生冲突。');
   assert.equal(h.backend.records.has(`chat-${CHAT}/v3-root`), false);
   assert.equal((await store.readReachable()).status, 'uninitialized');
 
@@ -1581,7 +1581,7 @@ test('staged checkpoint inputFingerprints 被篡改但保留旧状态摘要时�
   });
   const proofRecovered = await proofRuntime.start();
   assert.equal(proofRecovered.status, 'error');
-  assert.match(proofRecovered.lastError, /V3 staged 记录内容冲突/);
+  assert.equal(proofRecovered.lastError, '待提交记录内容发生冲突。');
 });
 
 test('putRecord 409 只复用完整内容等价记录，相同摘要下的不等价 floorOrder index 返回 conflict', async () => {
@@ -1614,7 +1614,7 @@ test('root CAS 前重读并校验真实落盘图，写完后被篡改的 index �
   const state = await h.runtime.start();
   assert.equal(corrupted, true);
   assert.equal(state.status, 'error');
-  assert.match(state.lastError, /V3_GRAPH_INDEX_(ROUTE|FINGERPRINT)_INVALID/);
+  assert.equal(state.lastError, '后端数据处理失败，请稍后重试。');
   assert.equal(h.backend.records.has(`chat-${CHAT}/v3-root`), false);
 });
 
@@ -1696,7 +1696,7 @@ test('runtime 前置校验后、真实 store commitRoot 前篡改 backing index�
   const state = await runtime.start();
   assert.equal(corrupted, true);
   assert.equal(state.status, 'error');
-  assert.match(state.lastError, /V3_GRAPH_INDEX_(ROUTE|FINGERPRINT)_INVALID/);
+  assert.equal(state.lastError, '后端数据处理失败，请稍后重试。');
   assert.equal(h.backend.records.has(`chat-${CHAT}/v3-root`), false);
   assert.equal((await baseStore.readReachable()).status, 'uninitialized');
 });

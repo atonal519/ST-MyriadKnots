@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { createContext, SourceTextModule, SyntheticModule } from 'node:vm';
 import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
 import { openHelpGuide } from '../src/ui/help-guide.js';
+import { publicErrorMessage } from '../src/public-error.js';
 
 class Node {
   constructor(tag = 'div') {
@@ -56,6 +57,7 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
     './scroll-diagnostics.js': { createScrollDiagnostics: () => ({ start() { diagnostics.starts += 1; }, stop() { diagnostics.stops += 1; }, markQqjSwipeIntercepted() { diagnostics.marks += 1; }, snapshot: () => ({ schemaVersion: 1, records: diagnostics.records }) }) },
     './help-guide.js': { openHelpGuide },
     '../settings.js': { applyPluginEnabledImmediately: async ({ enabled }) => ({ enabled, stale: false }) },
+    '../public-error.js': { publicErrorMessage },
   };
   const context = createContext({ console });
   const entry = new SourceTextModule(source, { context, identifier: new URL('../src/ui/panel.js', import.meta.url).href });

@@ -1,5 +1,6 @@
 import { formatChronologyAnchor, projectRecallSource, readRecallSource } from './recall-source.js';
 import { PEOPLE_PROFILE_FIELDS } from './people-profile-fields.js';
+import { publicErrorMessage } from '../public-error.js';
 
 export const QQJ_PUBLIC_MEMORY_BRIDGE_KEY = 'qqj_v3_public_bridge_v1';
 
@@ -307,7 +308,7 @@ export function createPublicMemoryBridge({ session, store, hostAdapter, foundati
         coverage: source.coverage,
       });
     } catch (error) {
-      return frozen({ status: 'error', message: clean(error?.message, 500) || '千千结记忆读取失败。', identity: publicIdentity(before) });
+      return frozen({ status: 'error', message: publicErrorMessage(error, { fallback: '千千结记忆读取失败。' }), identity: publicIdentity(before) });
     }
   }
   function getSnapshot() {
@@ -324,7 +325,7 @@ export function createPublicMemoryBridge({ session, store, hostAdapter, foundati
         people: publicPeopleSnapshot(peopleState, status.identity.qqjChatId),
       });
     } catch (error) {
-      return frozen({ status: 'error', message: clean(error?.message, 500) || '千千结快照读取失败。', identity: status.identity });
+      return frozen({ status: 'error', message: publicErrorMessage(error, { fallback: '千千结快照读取失败。' }), identity: status.identity });
     }
   }
   return frozen({ schemaVersion: 1, kind: 'qqj-public-memory-bridge', getStatus: localStatus, readMemory, getSnapshot });

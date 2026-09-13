@@ -1,5 +1,6 @@
 import { createInlineSelect } from './inline-select.js';
 import { createOperationMenuController } from './operation-menu-controller.js';
+import { publicErrorMessage } from '../public-error.js';
 
 function text(value, fallback = '—') { return value === null || value === undefined || value === '' ? fallback : String(value); }
 
@@ -42,7 +43,7 @@ const localTimeCopy = value => {
   if (!value || !Number.isFinite(Date.parse(value))) return '旧记录未提供';
   return new Date(value).toLocaleString('zh-CN', { hour12: false });
 };
-const generationTypeCopy = value => ({ normal: '正常生成', regenerate: '重 Roll（regenerate）', swipe: '重 Roll（swipe）', continue: '继续生成（continue）' })[value] ?? text(value, '旧记录未提供');
+const generationTypeCopy = value => ({ normal: '正常生成', regenerate: '重新生成', swipe: '切换候选回复', continue: '继续生成' })[value] ?? text(value, '旧记录未提供');
 const selectorModeCopy = value => ({ llm: 'LLM 明确排除', fallback: '默认保留兜底', local: '本地直接处理' })[value] ?? '未记录';
 const cseActionCopy = value => ({ add: '新增', remove: '移除', update: '更新', refine: '调整' })[value] ?? text(value);
 const waitingFloorCopy = value => ({
@@ -69,9 +70,9 @@ const reviewReasonCopy = value => {
     ? ` · 消息标识：${({ none: '无', valid: '有效', foreign: '来自其他聊天', invalid: '无效' })[value.markerStatus] ?? '未知'}`
     : '';
   const fingerprintLabels = [
-    ['rawFingerprintMatches', 'raw'],
-    ['canonicalFingerprintMatches', 'canonical'],
-    ['sanitizerFingerprintMatches', 'sanitizer'],
+    ['rawFingerprintMatches', '原始正文'],
+    ['canonicalFingerprintMatches', '清洗后正文'],
+    ['sanitizerFingerprintMatches', '清洗规则'],
   ];
   const mismatches = fingerprintLabels.filter(([key]) => value[key] === false).map(([, copy]) => copy);
   const fingerprints = mismatches.length ? ` · 不一致：${mismatches.join('、')}` : '';
@@ -92,7 +93,7 @@ const skipReasonCopy = value => ({
 const workBusy = state => Boolean(state.memoryWorkBusy || state.activeAutoMemory || state.activeExtraction || state.activeCse);
 const memoryBusy = state => Boolean(state.activeExtraction || ['revising', 'extracting', 'reconciling', 'committing'].includes(state.activeMemoryWork?.phase) || state.activeAutoMemory?.phase === 'extracting');
 const cseBusy = state => Boolean(state.activeCse || state.activeMemoryWork?.phase === 'analyzingCse' || state.activeAutoMemory?.phase === 'analyzingCse');
-const workPhaseCopy = state => ({ reconciling: '正在同步楼层', extracting: '正在提取摘要', analyzingCse: '正在分析人物状态', revisingCse: '正在保存人物状态', committing: '正在保存结果', resetting: '正在重建地基', revising: '正在保存修订' })[state.activeMemoryWork?.phase ?? state.activeAutoMemory?.phase ?? state.activeExtraction?.phase ?? state.activeCse?.phase] ?? '正在处理';
+const workPhaseCopy = state => ({ reconciling: '正在同步楼层', extracting: '正在提取摘要', analyzingCse: '正在分析人物状态', revisingCse: '正在保存人物状态', committing: '正在保存结果', resetting: '正在重建后端数据', revising: '正在保存修订' })[state.activeMemoryWork?.phase ?? state.activeAutoMemory?.phase ?? state.activeExtraction?.phase ?? state.activeCse?.phase] ?? '正在处理';
 const DIAGNOSTIC_STATUS = new Set(['idle', 'preparing', 'ready', 'error', 'disabled', 'suspended', 'running', 'uninitialized', 'stale', 'needsReview', 'conflict', 'empty', 'skipped', 'failed', 'partial', 'pending', 'noChange', 'notApplicable', 'unavailable', 'syncing', 'caughtUp', 'waitingRealtime', 'pendingRebuild', 'rebuilding', 'paused', 'completed', 'deleting', 'historicalDebt', 'realtimeTail', 'notReady', 'unknown']);
 const DIAGNOSTIC_PHASE = new Set(['capturing', 'completed', 'stale', 'retryableError', 'anchor', 'load', 'foundation', 'extracting', 'validating', 'committing', 'resetting', 'reconciling', 'analyzingCse', 'revisingCse', 'revising', 'baseline', 'analyzing', 'correcting', 'pending', 'input', 'source', 'selecting', 'receipt', 'starting', 'restoringVisibility', 'deletingRecords', 'deletingBinding', 'clearingHost', 'unknown']);
 const DIAGNOSTIC_KIND = new Set(['manual', 'auto', 'unknown']);
@@ -176,7 +177,10 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     return true;
   };
   const sourceChanged = (previous, next) => (previous?.chatId ?? null) !== (next?.chatId ?? null);
-  const errorMessage = value => typeof value === 'string' ? value : value?.message || '';
+  const errorMessage = value => {
+    if (value === null || value === undefined || value === '') return '';
+    return publicErrorMessage(value, { fallback: '记忆处理失败，请稍后重试。' });
+  };
   const peopleSharedError = state => {
     if (state.pluginEnabled === false) return '';
     const foundationError = errorMessage(state.lastError); if (foundationError) return `共享记忆：${foundationError}`;
@@ -186,9 +190,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     if (peopleState && ['idle', 'stale', 'error', 'disabled'].includes(peopleState.status)) return `重要人物选择${statusCopy(peopleState.status)}`;
     return '';
   };
-  const errorCopy = state => page === 'memories' ? state.lastExtractorError?.message || errorMessage(state.lastError)
-    : page === 'people' ? peopleSharedError(state) || state.lastCseError?.message || ''
-      : state.lastCseError?.message || state.lastExtractorError?.message || errorMessage(state.lastError);
+  const errorCopy = state => page === 'memories' ? errorMessage(state.lastExtractorError) || errorMessage(state.lastError)
+    : page === 'people' ? peopleSharedError(state) || errorMessage(state.lastCseError)
+      : errorMessage(state.lastCseError) || errorMessage(state.lastExtractorError) || errorMessage(state.lastError);
   const healthCopy = state => {
     if (state.pluginEnabled === false) return '千千结已关闭';
     if (state.memorySnapshotStatus === 'syncing' && !(state.floors ?? []).length) return '正在读取当前聊天记忆';
@@ -330,7 +334,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const settledRender = failed?.(error) === true;
       if (!active) return { status: 'stale' };
       if (mine !== epoch && !settledRender) return { status: 'stale' };
-      feedback = `${label}失败：${error?.message || '未知错误'}`; render(runtime.getState());
+      feedback = `${label}失败：${publicErrorMessage(error, { fallback: '操作没有完成，请重试。' })}`; render(runtime.getState());
       return { status: 'error', error };
     }
   }
@@ -340,11 +344,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const targetFloor = floorCopy(state, floor ?? { floorId }, '目标楼');
     if (kind === 'cse') {
       const changed = Boolean(floor?.cse?.deltaId && floor.cse.deltaId !== beforeFloor?.cse?.deltaId);
-      if (!changed || !['ready', 'noChange'].includes(floor?.cse?.status)) return `${label}未完成：${targetFloor} · ${state?.lastCseError?.message || floor?.cse?.error || '人物状态尚未保存。'}`;
+      if (!changed || !['ready', 'noChange'].includes(floor?.cse?.status)) return `${label}未完成：${targetFloor} · ${errorMessage(state?.lastCseError) || errorMessage(floor?.cse?.error) || '人物状态尚未保存。'}`;
       return `${label}完成：${targetFloor}人物状态已保存。`;
     }
     const changed = Boolean(floor?.memoryId && floor.memoryId !== beforeFloor?.memoryId);
-    if (!changed || floor.status !== 'ready') return `${label}未完成：${targetFloor} · ${state?.lastExtractorError?.message || floor?.error || '没有保存新的摘要。'}`;
+    if (!changed || floor.status !== 'ready') return `${label}未完成：${targetFloor} · ${errorMessage(state?.lastExtractorError) || errorMessage(floor?.error) || '没有保存新的摘要。'}`;
     if (['ready', 'noChange'].includes(floor.cse?.status)) return `${label}完成：${targetFloor}摘要和人物状态均已保存。`;
     return `${label}部分完成：${targetFloor}摘要已保存；人物状态${floor.cse?.status === 'failed' ? '分析失败，可单独重试' : '仍待分析'}。`;
   };
@@ -356,7 +360,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       : `${label}部分完成：新增摘要 ${result.processed ?? 0} 楼，补齐人物状态 ${result.cseProcessed ?? 0} 楼；${result.failedItems?.map(item => item.floorLabel).filter(Boolean).join('、') || `${result.available ?? 0} 楼`}摘要仍需重试。`;
     if (result?.status === 'failed') {
       const failedFloors = result.failedItems?.map(item => item.floorLabel).filter(Boolean).join('、');
-      return `${label}未完成：${failedFloors || (result.floorId ? targetFloor : '')}${failedFloors || result.floorId ? ' · ' : ''}${result.message || '本次没有保存新结果，请重试。'}`;
+      return `${label}未完成：${failedFloors || (result.floorId ? targetFloor : '')}${failedFloors || result.floorId ? ' · ' : ''}${errorMessage(result.message) || '本次没有保存新结果，请重试。'}`;
     }
     if (result?.status === 'paused') return `${label}已暂停：已保存的结果不会丢失。`;
     if (['completed', 'caughtUp'].includes(result?.status)) return `${label}完成：新增摘要 ${result.processed ?? 0} 楼，补齐人物状态 ${result.cseProcessed ?? 0} 楼。`;
@@ -366,7 +370,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const status = state?.cseRebuildStatus;
     if (status === 'completed') return `${label}完成：人物状态 ${state.cseRebuildCompletedCount ?? 0}/${state.cseRebuildTotalCount ?? 0} 楼。`;
     if (status === 'paused') return `${label}已暂停：已完成 ${state.cseRebuildCompletedCount ?? 0}/${state.cseRebuildTotalCount ?? 0} 楼，可继续。`;
-    if (status === 'failed') return `${label}未完成：${floorCopy(state, { assistantSeq: state.cseRebuildNextAssistantSeq }, '目标楼')} · ${state.cseRebuildError || state.lastCseError?.message || '可继续重试。'}`;
+    if (status === 'failed') return `${label}未完成：${floorCopy(state, { assistantSeq: state.cseRebuildNextAssistantSeq }, '目标楼')} · ${errorMessage(state.cseRebuildError) || errorMessage(state.lastCseError) || '可继续重试。'}`;
     return `${label}结束：CSE ${statusCopy(status)}`;
   };
   function validateDrafts(state) {
@@ -438,7 +442,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         const task = typeof runtime.editMemory === 'function' ? () => runtime.editMemory(floor.floorId, payload) : () => runtime.editSummary(floor.floorId, payload.summary, payload.revisionNote);
         void run('保存本楼记忆', task, {
           after: () => { if (!currentDraft()) return false; drafts.delete(key); return true; },
-          failed: error => { if (!currentDraft()) return false; draft.saving = false; draft.saveError = `保存失败：${error?.message || '未知错误'}`; return true; },
+          failed: error => { if (!currentDraft()) return false; draft.saving = false; draft.saveError = `保存失败：${publicErrorMessage(error, { fallback: '本楼记忆没有保存，请重试。' })}`; return true; },
         });
       });
       cancel.addEventListener('click', () => { drafts.delete(key); feedback = '已取消编辑。'; render(foundationState); });
@@ -556,7 +560,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const payload = { expectedCurrentStateId: draft.expectedCurrentStateId, expectedCurrentStateFingerprint: draft.expectedCurrentStateFingerprint, core: cloneItems(draft.core), adaptive: cloneItems(draft.adaptive), situational: cloneItems(draft.situational) };
       void run('保存人物状态', () => runtime.correctSubjectState(draft.subjectEntityId, payload), {
         after: () => { if (!currentDraft()) return false; cseDrafts.delete(key); openState.set(`subject:${draft.subjectEntityId}`, true); return true; },
-        failed: error => { if (!currentDraft()) return false; draft.saving = false; draft.saveError = `保存失败：${error?.message || '未知错误'}`; return true; },
+        failed: error => { if (!currentDraft()) return false; draft.saving = false; draft.saveError = `保存失败：${publicErrorMessage(error, { fallback: '人物状态没有保存，请重试。' })}`; return true; },
       });
     });
     cancel.addEventListener('click', () => { cseDrafts.delete(key); feedback = '已取消编辑人物状态。'; render(foundationState); });
@@ -701,10 +705,10 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         }
       }
       if (!record && !floor.cse?.error) body.append(element('p', 'settings-hint', '本楼还没有已保存的状态分析记录。'));
-      if (floor.cse?.error) body.append(element('p', 'v3-foundation-feedback error', floor.cse.error)); const action = cseActionFor(floor, state); if (action) body.append(action); rowNode.append(body); list.append(rowNode);
+      if (floor.cse?.error) body.append(element('p', 'v3-foundation-feedback error', errorMessage(floor.cse.error))); const action = cseActionFor(floor, state); if (action) body.append(action); rowNode.append(body); list.append(rowNode);
     }
     if (!floors.length) list.append(element('p', 'settings-hint', '生成摘要后，这里会显示逐楼人物状态分析记录。'));
-    section.append(list); if (state.cseReplayDiagnostic?.message) section.append(element('p', 'v3-foundation-feedback error', state.cseReplayDiagnostic.message)); return section;
+    section.append(list); if (state.cseReplayDiagnostic?.message) section.append(element('p', 'v3-foundation-feedback error', errorMessage(state.cseReplayDiagnostic))); return section;
   }
   function peopleScrollHost() { return container?.parentElement ?? container; }
   function switchPeopleMode(next) {
@@ -813,7 +817,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         others.append(otherBody); pageNode.append(others);
       }
     }
-    if (state.cseReplayDiagnostic?.message) pageNode.append(element('p', 'v3-foundation-feedback error', state.cseReplayDiagnostic.message)); return pageNode;
+    if (state.cseReplayDiagnostic?.message) pageNode.append(element('p', 'v3-foundation-feedback error', errorMessage(state.cseReplayDiagnostic))); return pageNode;
   }
 
   function renderRecallDetails(state = recallState) {
@@ -849,7 +853,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         : timings ? `${Number.isFinite(timings.totalMs) ? `本轮召回等待 ${Number(timings.totalMs).toFixed(1)} ms · ` : ''}${Number.isFinite(timings.selectorMs) ? `选材总等待 ${Number(timings.selectorMs).toFixed(1)} ms · ` : ''}${selectorBreakdown}${Number.isFinite(timings.sourceMs) ? ` · 读取 ${Number(timings.sourceMs).toFixed(1)} ms` : ''}` : '未记录';
     const filterReasons = (record.skipReasons ?? []).filter(value => value !== 'historySelectionFallback').map(skipReasonCopy);
     const details = element('dl', 'v3-foundation-grid'); details.append(row('触发用户楼', userFloorCopy(record.userMessageIndex)), row('生成时间', localTimeCopy(record.createdAt)), row('生成类型', generationTypeCopy(record.generationType)), row('收据', record.legacyReadOnly ? '旧版只读记录' : record.restoredReceipt ? '从聊天记录读取 · 仅恢复历史展示，不会再次注入' : `${record.reusedReceipt ? '复用' : '新算'} · ${persistenceCopy[record.receiptPersistence] ?? record.receiptPersistence ?? '未知'}`), row('召回旧楼', floors), row('当前人物状态', states), row('人物状态历史变化', changes), row('覆盖范围', coverage ? `记忆 ${coverage.rememberedAiFloors}/${coverage.stableAiFloors} · ${coverage.cseThroughAssistantSeq ? `CSE 到${floorCopy(foundationState, { assistantSeq: coverage.cseThroughAssistantSeq }, '终点楼号未提供')}` : 'CSE 尚未覆盖'}` : '本轮未读取'), stageRow('筛选阶段', stageCopy), row('选材方式', selectorModeCopy(selector?.mode)), row('智能选材计数', selectorCountCopy), ...(selector?.mode === 'fallback' ? [row('选材失败原因', `${selectorFailureCopy(selector.code)}${selector.httpStatus ? `（HTTP ${selector.httpStatus}）` : ''}`)] : []), row('耗时', timingCopy), row('来源读取', sourceReadCopy), row('普通过滤说明', filterReasons.join('、') || '无'));
-    body.append(details); const safeError = state?.lastRecallError?.message || record.error?.message; if (safeError) body.append(element('p', 'v3-foundation-feedback error', safeError));
+    body.append(details); const safeError = errorMessage(state?.lastRecallError) || errorMessage(record.error); if (safeError) body.append(element('p', 'v3-foundation-feedback error', safeError));
     if (record.legacyReadOnly) body.append(element('p', 'settings-hint', '这是旧版只读记录，不会复用、注入或升级为当前回执。'));
     if (record.injectionText) {
       body.append(element('pre', 'v3-recall-injection', record.injectionText));
@@ -897,7 +901,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     actions.append(save); body.append(editor, actions);
     if (prequelFeedback) body.append(element('p', `v3-foundation-feedback${/失败|不支持|请先/u.test(prequelFeedback) ? ' error' : ''}`, prequelFeedback));
     const selected = recallState?.lastPrequel ?? null;
-    if (selected?.status === 'error') body.append(element('p', 'v3-foundation-feedback error', selected.error?.message || '本次前情注入失败；正文已继续生成。'));
+    if (selected?.status === 'error') body.append(element('p', 'v3-foundation-feedback error', publicErrorMessage(selected.error, { fallback: '本次前情注入失败；正文已继续生成。' })));
     else if (selected?.injectionText) {
       const details = setDetailsState(element('details', 'qqj-management-drawer'), 'prequel-selection', false);
       const detailSummary = element('summary', 'qqj-section-summary'); detailSummary.append(element('strong', '', '本次选用'), element('span', 'v3-memory-status', selected.fragmentIndexes.map(value => `片段 ${value}`).join('、'))); details.append(detailSummary);
@@ -913,7 +917,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const body = element('div', 'qqj-management-drawer-body'), details = element('dl', 'v3-foundation-grid');
     if (feedback.includes('历史召回回执已独立处理')) details.append(row('最近读取结果', feedback));
     const rebuildCopy = ({ rebuilding: '正在重建', paused: '已暂停', waitingRealtime: '等待新楼', failed: '失败', caughtUp: '已追平', pendingRebuild: '等待开始', notReady: '覆盖待确认' })[state.rebuildStatus] ?? '尚未判断';
-    details.append(row('当前 chat', state.chatId), row('记忆状态', statusCopy(effectiveStatus(state))), row('待核对原因', reviewReasonCopy(state.reviewReason)), row('自动维护新楼', state.autoMemoryEnabled ? '已开启 · 每楼更新' : '已关闭'), row('历史重建', `${rebuildCopy} · ${state.rebuildCompletedCount ?? 0}/${state.rebuildTotalCount ?? state.stableCount ?? 0}`), row('CSE 待分析 / 失败', `${state.csePendingCount ?? 0} / ${state.cseFailedCount ?? 0}`), row('Head checkpoint', state.headCheckpointId), row('最近记忆错误', state.lastExtractorError?.message || state.lastError || '无'), row('最近自动任务错误', state.lastAutomationError?.message || '无'), row('最近 CSE 错误', state.lastCseError?.message || '无')); body.append(details);
+    details.append(row('当前聊天编号', state.chatId), row('记忆状态', statusCopy(effectiveStatus(state))), row('待核对原因', reviewReasonCopy(state.reviewReason)), row('自动维护新楼', state.autoMemoryEnabled ? '已开启 · 每楼更新' : '已关闭'), row('历史重建', `${rebuildCopy} · ${state.rebuildCompletedCount ?? 0}/${state.rebuildTotalCount ?? state.stableCount ?? 0}`), row('CSE 待分析 / 失败', `${state.csePendingCount ?? 0} / ${state.cseFailedCount ?? 0}`), row('当前记忆快照', state.headCheckpointId), row('最近记忆错误', errorMessage(state.lastExtractorError) || errorMessage(state.lastError) || '无'), row('最近自动任务错误', errorMessage(state.lastAutomationError) || '无'), row('最近 CSE 错误', errorMessage(state.lastCseError) || '无')); body.append(details);
     const stateDiagnosticAction = element('div', 'qqj-ui-diagnostic-action');
     const copyState = element('button', 'secondary-action', '复制状态诊断'); copyState.type = 'button';
     copyState.addEventListener('click', () => { void copyStateDiagnostic(); });
@@ -1074,9 +1078,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       ? await Promise.resolve(peopleRuntime.refresh({ refreshMemory: false })).then(value => ({ status: 'fulfilled', value }), reason => ({ status: 'rejected', reason }))
       : { status: 'fulfilled', value: null };
     if (!active || mine !== epoch) return { status: 'stale' };
-    if (receiptOutcome.status === 'rejected') receiptFeedback = `历史召回回执恢复失败：${receiptOutcome.reason?.message || '未知错误'}；不影响记忆读取。`;
-    const peopleFeedback = peopleOutcome.status === 'rejected' ? `重要人物选择读取失败：${peopleOutcome.reason?.message || '未知错误'}；人物状态仍可查看。` : '';
-    if (foundationOutcome.status === 'rejected') { feedback = `记忆读取失败：${foundationOutcome.reason?.message || '未知错误'}；历史召回回执已独立处理。`; const result = runtime.getState(); render(result); return { status: 'error', error: foundationOutcome.reason }; }
+    if (receiptOutcome.status === 'rejected') receiptFeedback = `历史召回回执恢复失败：${publicErrorMessage(receiptOutcome.reason, { fallback: '回执读取失败。' })}；不影响记忆读取。`;
+    const peopleFeedback = peopleOutcome.status === 'rejected' ? `重要人物选择读取失败：${publicErrorMessage(peopleOutcome.reason, { fallback: '人物选择暂时无法读取。' })}；人物状态仍可查看。` : '';
+    if (foundationOutcome.status === 'rejected') { feedback = `记忆读取失败：${publicErrorMessage(foundationOutcome.reason, { fallback: '后端数据暂时无法读取。' })}；历史召回回执已独立处理。`; const result = runtime.getState(); render(result); return { status: 'error', error: foundationOutcome.reason }; }
     const result = foundationOutcome.value; feedback = peopleFeedback || (result?.status === 'ready' ? '记忆状态已刷新。' : statusCopy(result?.status)); render(result); return result;
   }
   function deactivate() { active = false; epoch += 1; operationMenus.deactivate(); stopSubscription(); }

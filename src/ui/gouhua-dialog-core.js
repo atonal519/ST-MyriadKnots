@@ -1,5 +1,7 @@
 // Copied from ST-SevenDaysCal/modal.js @ fb93e5466c14fa28158004454790100a0f284f53.
 // Source: prepareDialog/mountDialog/choose/confirm/prompt. QQJ-only seams: focus hooks, scheduler, hasActive.
+import { publicErrorMessage } from '../public-error.js';
+
 const OVERLAY_ID = 'sp-addon-dialog';
 
 function escapeHtml(value) {
@@ -161,7 +163,7 @@ export function createGouhuaDialogCore({ $, mount, getRootClass = () => '', subs
                 try { const value = await submit(); session.finish(value ?? true); }
                 catch (error) {
                     submitting = false;
-                    $overlay.find('.sp-dialog-input-error').html(`<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> ${escapeHtml(error?.message || '操作失败，请重试。')}`);
+                    $overlay.find('.sp-dialog-input-error').html(`<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> ${escapeHtml(publicErrorMessage(error, { fallback: '操作失败，请重试。' }))}`);
                 }
             };
             $overlay.find('.sp-dialog-submit').on('click', runSubmit);

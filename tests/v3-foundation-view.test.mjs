@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
+import { publicErrorMessage } from '../src/public-error.js';
 
 class Node {
   constructor(tag) { this.tag = tag; this.children = []; this.listeners = {}; this.textContent = ''; this.className = ''; this.disabled = false; this.replaceCount = 0; this.value = ''; this.open = false; this.selectionStart = 0; this.selectionEnd = 0; this.scrollLeft = 0; this.attributes = {}; }
@@ -103,7 +104,7 @@ test('needsReview 终态显示准确中文和安全原因，不向页面泄露�
   const container = new Node('main');
   const view = createV3FoundationView({ runtime, peopleRuntime: peopleRuntime([{ entityId: 'p1', displayName: '裴晚生' }]), documentRef }); view.mount(container); await view.activate();
   const copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /需要核对当前聊天记忆/); assert.match(copy, /待核对原因.*楼正文指纹不一致.*实际第 23 楼.*记录 12 \/ 当前 12.*消息标识：无.*不一致：raw、canonical/); assert.doesNotMatch(copy, /不一致：[^|]*sanitizer/); assert.match(copy, /最近记忆错误.*无/); assert.doesNotMatch(copy, /needsReview|fingerprintMismatch|AI序号/);
+  assert.match(copy, /需要核对当前聊天记忆/); assert.match(copy, /待核对原因.*楼正文指纹不一致.*实际第 23 楼.*记录 12 \/ 当前 12.*消息标识：无.*不一致：原始正文、清洗后正文/); assert.doesNotMatch(copy, /不一致：[^|]*清洗规则/); assert.match(copy, /最近记忆错误.*无/); assert.doesNotMatch(copy, /needsReview|fingerprintMismatch|AI序号/);
   assert.match(copy, /请先点击“刷新状态”.*现有记忆会保留、正文可继续.*复制诊断反馈/);
   view.setPage('memories'); assert.match(flatten(container).map(node => node.textContent).join('|'), /needsReview 下仍可见的摘要/);
   view.setPage('people'); assert.match(flatten(container).map(node => node.textContent).join('|'), /needsReview 下仍可见的人物状态/);
@@ -446,13 +447,14 @@ test('面板顶部显示 CSE 分层状态、原因/来源与待分析重试入�
 test('CSE 失败数、本楼错误与最近错误在 V3 面板可见，并保留独立重试', async () => {
   let retries = 0;
   const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
-  const state = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, unprocessedCount: 0, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'checkpoint', activeRun: null, activeExtraction: null, activeCse: null, lastRun: null, lastError: null, lastExtractorError: null, lastAutomationError: { message: '跨刷新自动任务错误' }, lastCseError: { message: '安全 CSE 错误' }, unreachableCount: 0, metrics: {}, cseReady: false, csePendingCount: 0, cseFailedCount: 1, baselineId: 'baseline', cseSubjects: [], floors: [{ floorId: 'floor', assistantSeq: 1, messageIndex: 2, status: 'ready', memoryId: 'memory', summary: '摘要', summarySource: 'ai', aiSummary: '摘要', extractorVersion: 'v', counts: {}, api: null, memory, cse: { status: 'failed', deltaId: null, error: '本楼状态失败' } }] };
+  const state = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, unprocessedCount: 0, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'checkpoint', activeRun: null, activeExtraction: null, activeCse: null, lastRun: null, lastError: null, lastExtractorError: null, lastAutomationError: { message: '跨刷新自动任务错误' }, lastCseError: { message: '安全 CSE 错误' }, unreachableCount: 0, metrics: {}, cseReady: false, csePendingCount: 0, cseFailedCount: 1, baselineId: 'baseline', cseSubjects: [], floors: [{ floorId: 'floor', assistantSeq: 1, messageIndex: 2, status: 'ready', memoryId: 'memory', summary: '摘要', summarySource: 'ai', aiSummary: '摘要', extractorVersion: 'v', counts: {}, api: null, memory, cse: { status: 'failed', deltaId: null, error: 'Failed to fetch' } }] };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => state, editSummary: async () => state, restoreAi: async () => state, markError: async () => state, analyzeNextState: async () => state, retryStateAnalysis: async () => { retries += 1; return state; } };
   const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef }); view.setPage('people'); view.mount(container); flatten(container).find(node => node.textContent === '分析记录').click();
   const copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /0 待分析 · 1 失败/);
   assert.match(copy, /安全 CSE 错误/);
-  assert.match(copy, /本楼状态失败/);
+  assert.match(copy, /网络连接失败，请检查网络或 API 地址/);
+  assert.doesNotMatch(copy, /Failed to fetch/);
   flatten(container).find(node => node.textContent === '重试分析').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(retries, 1);
@@ -814,7 +816,7 @@ test('召回区分无可靠命中与来源更新/不可用的安全跳过', () =
   }
 });
 
-test('召回归属旧字段缺失自然降级，重 Roll 使用中文标签且不拒绝正文', () => {
+test('召回归属旧字段缺失自然降级，候选回复使用中文标签且不拒绝正文', () => {
   const foundation = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 2, rememberedCount: 2, unprocessedCount: 0, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'head', activeRun: null, activeExtraction: null, activeCse: null, lastRun: null, lastError: null, lastExtractorError: null, lastCseError: null, unreachableCount: 0, metrics: {}, floors: [] };
   const runtime = { getState: () => foundation, refreshStatus: async () => foundation, confirmLatest: async () => foundation };
   const recallState = { recallStatus: 'ready', activeRecall: null, lastRecallError: null, lastRecall: { status: 'ready', generationType: 'swipe', reusedReceipt: false, receiptPersistence: 'sessionOnly', selectedFloors: [], selectedStates: [], coverage: null, stages: null, timings: null, skipReasons: [], injectionText: '<qqj_recalled_context>旧格式仍展示</qqj_recalled_context>', error: null } };
@@ -822,7 +824,7 @@ test('召回归属旧字段缺失自然降级，重 Roll 使用中文标签且�
   const view = createV3FoundationView({ runtime, recallRuntime: { getState: () => recallState }, documentRef });
   view.mount(container);
   const copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /触发用户楼\|旧记录未提供.*生成时间\|旧记录未提供.*重 Roll（swipe）.*旧格式仍展示/);
+  assert.match(copy, /触发用户楼\|旧记录未提供.*生成时间\|旧记录未提供.*切换候选回复.*旧格式仍展示/);
   assert.match(copy, /智能选材计数.*历史候选 未知 → 模型选择 未知 → 最终远期 未知 · 人物候选 未知 → 模型选择 未知 → 最终注入 未知/);
   assert.doesNotMatch(copy, /历史候选 0|人物候选 0/);
 });
@@ -1534,4 +1536,53 @@ test('未建档聊天可编辑前情，状态刷新与保存期间继续输入�
   editor = flatten(container).find(node => String(node.className).includes('qqj-prequel-editor'));
   assert.equal(editor.value, '保存等待期间继续写');
   assert.match(flatten(container).map(node => node.textContent).join('|'), /模拟保存失败/);
+});
+
+test('公共错误展示只翻译明确错误，并保留诊断字段与健康空态', () => {
+  const apiError = Object.assign(new TypeError('Failed to fetch'), { code: 'CUSTOM_NETWORK', status: 0 });
+  assert.equal(publicErrorMessage(apiError, { fallback: '操作失败。' }), '网络连接失败，请检查网络或 API 地址。');
+  assert.equal(apiError.code, 'CUSTOM_NETWORK');
+  assert.equal(apiError.status, 0);
+  assert.equal(publicErrorMessage('SyntaxError: Unexpected token \'<\', "<html>" is not valid JSON', { fallback: '操作失败。' }), '返回数据不是合法 JSON，请稍后重试。');
+  assert.equal(publicErrorMessage('JSON Parse error: Unexpected identifier "oops"', { fallback: '操作失败。' }), '返回数据不是合法 JSON，请稍后重试。');
+  assert.equal(publicErrorMessage('Memory load failed', { fallback: '记忆读取失败。' }), '记忆读取失败。');
+  assert.equal(publicErrorMessage('已经是具体中文错误', { fallback: '操作失败。' }), '已经是具体中文错误');
+  assert.equal(publicErrorMessage(null, { fallback: '操作失败。' }), '操作失败。');
+  assert.equal(publicErrorMessage(null), '');
+
+  const state = {
+    status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT,
+    foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle',
+    stableCount: 0, rememberedCount: 0, unprocessedCount: 0, failedCount: 0, reviewCount: 0,
+    pending: null, headCheckpointId: null, activeRun: null, lastRun: null, lastError: null,
+    lastExtractorError: null, lastAutomationError: null, lastCseError: null, unreachableCount: 0,
+    memoryWorkBusy: false, activeAutoMemory: null, activeExtraction: null, activeCse: null,
+    rebuildStatus: 'caughtUp', cseReady: true, csePendingCount: 0, cseFailedCount: 0, floors: [], metrics: {},
+  };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, documentRef });
+  view.mount(container);
+  const copy = flatten(container).map(node => node.textContent).join('|');
+  assert.doesNotMatch(copy, /处理失败|需要处理/);
+  assert.equal(flatten(container).some(node => String(node.className).includes('qqj-page-health error')), false);
+});
+
+test('管理界面把英文内部读取失败显示为对应中文', () => {
+  const state = {
+    status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT,
+    foundationStatus: 'ready', memorySnapshotStatus: 'error', memorySyncStatus: 'error',
+    stableCount: 1, rememberedCount: 0, unprocessedCount: 1, failedCount: 1, reviewCount: 0,
+    pending: null, headCheckpointId: 'checkpoint', activeRun: null, lastRun: null, lastError: null,
+    lastExtractorError: { code: 'V3_MEMORY_LOAD_FAILED', message: 'Memory load failed' },
+    lastAutomationError: null, lastCseError: null, unreachableCount: 0, memoryWorkBusy: false,
+    activeAutoMemory: null, activeExtraction: null, activeCse: null, rebuildStatus: 'failed',
+    cseReady: false, csePendingCount: 0, cseFailedCount: 0, floors: [], metrics: {},
+  };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  const container = new Node('main');
+  createV3FoundationView({ runtime, documentRef }).mount(container);
+  const copy = flatten(container).map(node => node.textContent).join('|');
+  assert.match(copy, /记忆数据读取失败，请稍后重试/);
+  assert.doesNotMatch(copy, /Memory load failed|网络连接失败/);
 });

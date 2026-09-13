@@ -7,6 +7,7 @@ import { selectAssistantMessage } from './foundation-domain.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 import { PREQUEL_METADATA_KEY, PREQUEL_PROMPT_SLOT, selectPrequel } from './recall-prequel.js';
+import { publicErrorMessage } from '../public-error.js';
 
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
@@ -916,7 +917,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         if (!prequelCommit.ok) return finishStale(operation, timings, prequelCommit.reason);
         operation.prequelCommitted = prequelCommit.committed;
         if (source.status !== 'uninitialized') {
-          try { notifyUser?.({ kind: 'warning', text: `${source.status === 'timeout' ? '当前聊天记忆在 5 秒内未准备完成' : '当前聊天记忆暂时无法读取'}，本轮不注入普通记忆，正文继续生成。${source.error ? ` ${source.error}` : ''}` }); } catch { /* notification must not affect recall */ }
+          const detail = publicErrorMessage(source.error, { fallback: source.error ? '记忆来源读取失败。' : '' });
+          try { notifyUser?.({ kind: 'warning', text: `${source.status === 'timeout' ? '当前聊天记忆在 5 秒内未准备完成' : '当前聊天记忆暂时无法读取'}，本轮不注入普通记忆，正文继续生成。${detail ? ` ${detail}` : ''}` }); } catch { /* notification must not affect recall */ }
         }
         return finishSkipped(operation, reason, timings);
       }
@@ -1073,7 +1075,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       lastError = safe;
       lastRecall = Object.freeze({ status: 'error', userMessageIndex: operation.user?.index ?? null, generationType: type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings, totalMs: Date.now() - operation.started }), skipReasons: Object.freeze(['error']), error: safe, createdAt: nowIso(now) });
       bindOperationRecall(operation);
-      try { notifyUser?.({ kind: 'warning', text: `记忆召回重试后仍失败，已停止正文生成：${safe.message || '未知错误'}` }); } catch { /* notification must not affect recall */ }
+      try { notifyUser?.({ kind: 'warning', text: `记忆召回重试后仍失败，已停止正文生成：${publicErrorMessage({ code: safe.code, message: safe.message }, { fallback: '记忆召回失败，请稍后重试。' })}` }); } catch { /* notification must not affect recall */ }
       active = null;
       if (typeof abort === 'function') abort(true);
       logger?.warn?.('[qianqianjie] V3 recall failed after retry', { code: safe.code }); notify(); return getState();

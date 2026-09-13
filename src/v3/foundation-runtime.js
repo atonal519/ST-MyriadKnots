@@ -21,6 +21,7 @@ import {
   sameFoundationRecordContent,
   V3_INDEX_LAYOUT_FLOOR_ORDER,
 } from './foundation-schema.js';
+import { publicErrorMessage } from '../public-error.js';
 import { collectFloorMemoryEntityIds, projectEntityFloorBounds, validateMemoryGraph } from './memory-schema.js';
 import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
 import { validateCseGraph } from './cse-schema.js';
@@ -115,7 +116,7 @@ function runSummary(run, result = null) {
   if (!run) return null;
   return Object.freeze({ id: run.id, mode: run.mode, phase: run.phase, ...(result ? { result } : {}) });
 }
-function statusError(status, message = `V3 operation ${status}`) {
+function statusError(status, message = '后端操作未完成，请稍后重试。') {
   return Object.assign(new Error(message), { code: `V3_${String(status).toUpperCase()}`, operationStatus: status });
 }
 
@@ -246,7 +247,7 @@ export function createFoundationRuntime({
           settled = await store.replaceRecord(completed, winner.revision, { signal: operation.controller.signal });
         }
       }
-      if (!['saved', 'reused'].includes(settled.status)) throw statusError(settled.status, 'V3 active committing run 冷恢复收尾失败');
+      if (!['saved', 'reused'].includes(settled.status)) throw statusError(settled.status, '待完成的后端写入恢复失败。');
       loaded = { ...loaded, run: settled.data ?? completed, runRevision: settled.revision };
     }
     const orderedFloors = [...loaded.floors].sort((left, right) => left.assistantSeq - right.assistantSeq);
@@ -381,7 +382,7 @@ export function createFoundationRuntime({
     } catch (error) {
       if (inspectEpoch !== sessionEpoch) return publicState;
       if (captured) {
-        lastError = error?.message || `V3 ${reason} 检查失败`;
+        lastError = publicErrorMessage(error, { fallback: '后端数据检查失败，请稍后重试。' });
         return publish('error');
       }
       if (cache?.root) return publicState;
@@ -399,7 +400,7 @@ export function createFoundationRuntime({
         lastError = null;
         return publish('uninitialized');
       } catch {
-        lastError = error?.message || `V3 ${reason} 检查失败`;
+        lastError = publicErrorMessage(error, { fallback: '后端数据检查失败，请稍后重试。' });
         return publish('error');
       }
     }
@@ -460,7 +461,7 @@ export function createFoundationRuntime({
         else result = await store.replaceRecord(record, winner.revision, { signal: operation.controller.signal });
       }
     }
-    if (!['saved', 'reused'].includes(result.status)) throw statusError(result.status, `V3 run phase ${phase} 写入失败`);
+    if (!['saved', 'reused'].includes(result.status)) throw statusError(result.status, '后端任务状态写入失败。');
     operation.runRevision = result.revision;
     operation.runRecord = result.data ?? record;
     return operation.runRecord;
@@ -469,12 +470,12 @@ export function createFoundationRuntime({
   async function recoverPreparedRun(operation, runId, { parentCheckpointId, inputSnapshotFingerprint, narrativeGeneration }) {
     const result = await store.readRecord('run', runId);
     if (result.status === 'missing') return null;
-    if (result.status !== 'ready') throw statusError(result.status, 'V3 staged run 读取失败');
+    if (result.status !== 'ready') throw statusError(result.status, '待提交任务读取失败。');
     const record = result.data;
     if (record.parentCheckpointId !== parentCheckpointId
       || record.inputSnapshotFingerprint !== inputSnapshotFingerprint
       || record.narrativeGeneration !== narrativeGeneration) {
-      throw Object.assign(new Error('V3 staged run 与当前输入不一致'), { code: 'V3_STAGED_SCOPE_MISMATCH' });
+      throw Object.assign(new Error('待提交任务与当前输入不一致。'), { code: 'V3_STAGED_SCOPE_MISMATCH' });
     }
     operation.runRevision = result.revision;
     operation.runRecord = record;
@@ -487,7 +488,7 @@ export function createFoundationRuntime({
     if (operation.resumePreparedRefs?.has(key)) {
       const existing = await store.readRecord(record.recordType, key);
       if (existing.status === 'ready' && sameFoundationRecordContent(existing.data, record)) return { status: 'reused', data: existing.data, revision: existing.revision, recordId: key };
-      if (existing.status !== 'missing') throw Object.assign(new Error('V3 staged 记录内容冲突'), { code: 'V3_STAGED_CONFLICT' });
+      if (existing.status !== 'missing') throw Object.assign(new Error('待提交记录内容发生冲突。'), { code: 'V3_STAGED_CONFLICT' });
     }
     return store.putRecord(record, { signal: operation.controller.signal });
   }
@@ -504,8 +505,8 @@ export function createFoundationRuntime({
           const freshness = current(operation);
           if (freshness !== 'current') throw statusError(freshness);
           const result = await persistPreparedRecord(operation, records[index]);
-          if (result.status === 'conflict') throw Object.assign(new Error('V3 staged 记录冲突'), { code: 'V3_STAGED_CONFLICT' });
-          if (!['saved', 'reused'].includes(result.status)) throw statusError(result.status, 'V3 staged 记录写入失败');
+          if (result.status === 'conflict') throw Object.assign(new Error('待提交记录发生冲突。'), { code: 'V3_STAGED_CONFLICT' });
+          if (!['saved', 'reused'].includes(result.status)) throw statusError(result.status, '待提交记录写入失败。');
         } catch (error) {
           firstError ??= error;
         }
@@ -663,8 +664,8 @@ export function createFoundationRuntime({
     const newStateDeltas = stateDeltas.filter(delta => !(cache.stateDeltas ?? []).some(prior => prior.id === delta.id));
     await persistPreparedRecords(operation, [...newFloors, ...newStateDeltas, ...(currentState ? [currentState] : []), ...indexes]);
     const checkpointResult = await persistPreparedRecord(operation, checkpoint);
-    if (checkpointResult.status === 'conflict') throw Object.assign(new Error('V3 staged checkpoint 冲突'), { code: 'V3_STAGED_CONFLICT' });
-    if (!['saved', 'reused'].includes(checkpointResult.status)) throw statusError(checkpointResult.status, 'V3 staged checkpoint 写入失败');
+    if (checkpointResult.status === 'conflict') throw Object.assign(new Error('待提交的记忆快照发生冲突。'), { code: 'V3_STAGED_CONFLICT' });
+    if (!['saved', 'reused'].includes(checkpointResult.status)) throw statusError(checkpointResult.status, '待提交的记忆快照写入失败。');
     run = await persistRunPhase(operation, 'committing', { completedFloorIds: newFloors.map(floor => floor.id) });
     const freshness = current(operation);
     if (freshness !== 'current') throw statusError(freshness);
@@ -672,7 +673,7 @@ export function createFoundationRuntime({
     if (beforeCommit.snapshot.fingerprint !== snapshot.fingerprint) {
       const staleRun = await persistRunPhase(operation, 'stale', { completedFloorIds: newFloors.map(floor => floor.id) });
       lastRun = runSummary(staleRun, 'sourceChangedBeforeCommit');
-      lastError = '地基输入在提交前已变化，旧快照已作废并将自动收敛。';
+      lastError = '后端数据的输入在提交前已变化，旧快照已作废并将自动同步。';
       dirtyReason = 'sourceChangedBeforeCommit';
       return publishOperation(operation, 'stale');
     }
@@ -719,11 +720,11 @@ export function createFoundationRuntime({
         }
       }
       lastRun = runSummary(staleRun, 'casConflict');
-      lastError = '地基提交遇到并发更新，当前快照无法安全重基。';
+      lastError = '后端数据提交遇到并发更新，当前快照无法安全同步。';
       cache = null;
       return publishOperation(operation, 'conflict');
     }
-    if (committed.status !== 'saved') throw statusError(committed.status, 'V3 root 提交失败');
+    if (committed.status !== 'saved') throw statusError(committed.status, '后端入口记录提交失败。');
     const committedReachable = committed.reachable;
     if (!committedReachable || committedReachable.status !== 'ready'
       || committedReachable.rootRevision !== committed.revision
@@ -731,7 +732,7 @@ export function createFoundationRuntime({
       || committedReachable.root?.headCheckpointId !== checkpointId
       || committedReachable.root?.narrativeGeneration !== narrativeGeneration
       || committedReachable.root?.sourceSnapshotFingerprint !== snapshot.fingerprint) {
-      throw Object.assign(new Error('V3 root 已提交，但提交结果缺少一致的真实可达图'), { code: 'V3_COMMIT_REACHABLE_MISMATCH' });
+      throw Object.assign(new Error('后端入口记录已提交，但无法读到一致的完整记忆数据。'), { code: 'V3_COMMIT_REACHABLE_MISMATCH' });
     }
     cache = { ...committedReachable, floors: activeFloorViews(committedReachable.floors, stableCandidates) };
     const afterCommit = await scanCurrentSnapshot(operation, { confirmLatest, stableThrough });
@@ -774,7 +775,7 @@ export function createFoundationRuntime({
       try {
         if (prepareSession) {
           const prepared = await prepareSession();
-          if (prepared?.status && prepared.status !== 'ready') throw statusError(prepared.status, `V3 身份准备未就绪：${prepared.status}`);
+          if (prepared?.status && prepared.status !== 'ready') throw statusError(prepared.status, '当前聊天身份尚未准备完成。');
         }
         if (operation.epoch !== sessionEpoch || operation.controller.signal.aborted) return publishOperation(operation, enabled() ? 'stale' : 'disabled');
         const captured = capture();
@@ -824,7 +825,7 @@ export function createFoundationRuntime({
         } else if (!lastRun || lastRun.id !== operation.id) {
           lastRun = Object.freeze({ id: operation.id, mode: reason, phase: 'retryableError', code: error?.code ?? null });
         }
-        lastError = error?.message || 'V3 地基处理失败';
+        lastError = publicErrorMessage(error, { fallback: '后端数据处理失败，请稍后重试。' });
         logger?.warn?.('[qianqianjie] V3 foundation failed', { code: error?.code ?? error?.name ?? 'V3_FOUNDATION_FAILED' });
         return publishOperation(operation, 'error');
       } finally {
@@ -837,7 +838,7 @@ export function createFoundationRuntime({
           const nextStableThrough = dirtyStableThrough;
           dirtyReason = null;
           dirtyStableThrough = null;
-          Promise.resolve().then(() => reconcile(nextReason, { stableThrough: nextStableThrough })).catch(error => { lastError = error?.message || 'V3 地基调度失败'; publish('error'); });
+          Promise.resolve().then(() => reconcile(nextReason, { stableThrough: nextStableThrough })).catch(error => { lastError = publicErrorMessage(error, { fallback: '后端数据同步任务启动失败，请稍后重试。' }); publish('error'); });
         }
       }
     })();
@@ -854,7 +855,7 @@ export function createFoundationRuntime({
       const next = dirtyReason; dirtyReason = null;
       return reconcile(next);
     }).catch(error => {
-      lastError = error?.message || 'V3 地基调度失败';
+      lastError = publicErrorMessage(error, { fallback: '后端数据同步任务启动失败，请稍后重试。' });
       logger?.warn?.('[qianqianjie] V3 foundation schedule failed', { code: error?.code ?? error?.name ?? 'V3_SCHEDULE_FAILED' });
       return publish('error');
     });

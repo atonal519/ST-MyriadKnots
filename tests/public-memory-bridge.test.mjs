@@ -176,7 +176,7 @@ test('同版本候选的 readRoot 报错不把旧快照当成功，旧格式 CSE
   });
   const error = await failed.readMemory();
   assert.equal(error.status, 'error');
-  assert.match(error.message, /root GET failed/);
+  assert.equal(error.message, '千千结记忆读取失败。');
   assert.equal(reachableReads, 0);
 
   const legacyCse = reachable({ cseUnavailable: true, summary: '旧格式仍可用的长期摘要。' });
@@ -321,7 +321,7 @@ test('getSnapshot getter 异常只返回现有桥边界错误，不读取后续�
     memoryRuntime: { getState: () => { throw new Error('snapshot provider failed'); } },
     peopleRuntime: { getState: () => { peopleReads += 1; return {}; } },
   });
-  assert.deepEqual(bridge.getSnapshot(), { status: 'error', message: 'snapshot provider failed', identity: { hostChatId: 'host-chat', qqjChatId: QQJ_CHAT, characterLocator: 'char.png', personaLocator: 'me.png' } });
+  assert.deepEqual(bridge.getSnapshot(), { status: 'error', message: '千千结快照读取失败。', identity: { hostChatId: 'host-chat', qqjChatId: QQJ_CHAT, characterLocator: 'char.png', personaLocator: 'me.png' } });
   assert.equal(peopleReads, 0);
 });
 

@@ -1,14 +1,14 @@
 import { CHAT_IDENTITY_COLLECTION } from './chat-identity.js';
 import { isUuid } from './host-context.js';
 import { V3_ROOT_RECORD_ID } from './v3/foundation-store.js';
+import { publicErrorMessage } from './public-error.js';
 
 const RECEIPT_KEY = 'qqj_v3_recall_receipt';
 const errorWith = (code, message) => Object.assign(new Error(message), { code });
 const clone = value => structuredClone(value);
 
 function publicError(error) {
-  if (error?.status === 409) return '后端记录已被其他操作更新，本次没有覆盖新数据；请重试。';
-  return String(error?.message || '删除未完成，请重试。');
+  return publicErrorMessage(error, { fallback: '删除未完成，请重试。' });
 }
 
 export function createChatMemoryManagement({

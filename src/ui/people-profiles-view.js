@@ -3,6 +3,7 @@ import { createOperationMenuController } from './operation-menu-controller.js';
 import { createInlineSelect } from './inline-select.js';
 import { PEOPLE_PROFILE_FIELDS, PEOPLE_PROFILE_GROUPS, PEOPLE_PROFILE_LABELS, emptyPeopleProfileFields } from '../v3/people-profile-fields.js';
 import { avatarCropLayout, cropAvatarDataUrl, loadAvatarSource } from './avatar-cropper.js';
+import { publicErrorMessage } from '../public-error.js';
 
 const PLACEHOLDERS = Object.freeze({ name: '人物姓名', aliases: '多个别名可用顿号或换行分隔', gender: '有明确依据时填写', age: '不把外观年龄当作实际年龄', birthday: '有明确依据时填写', species: '种族或物种', notes: '其他稳定基础资料', appearance: '旧资料或难归类的外貌补充', background: '稳定的背景经历', personality: '长期核心性格', nsfw: '有明确依据的成人向资料' });
 
@@ -40,7 +41,7 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
     if (value.active?.kind === 'savingProfile') return '正在保存人物资料';
     if (value.active?.kind === 'merging') return '正在合并人物归属';
     if (value.active?.kind === 'deleting') return '正在删除人物';
-    if (value.lastError?.message) return `需要处理 · ${value.lastError.message}`;
+    if (value.lastError?.message) return `需要处理 · ${publicErrorMessage(value.lastError, { fallback: '人物资料处理失败，请重试。' })}`;
     return `已选 ${value.people.filter(person => person.selected).length} 位重要人物 · ${value.unprofiledSelectedCount} 位待建档`;
   };
   const healthClass = value => {
@@ -66,7 +67,7 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
       return result;
     } catch (error) {
       state = runtime.getState();
-      if (active && mine === epoch) { feedback = `${label}失败：${error?.message || '未知错误'}`; render(state); }
+      if (active && mine === epoch) { feedback = `${label}失败：${publicErrorMessage(error, { fallback: '操作没有完成，请重试。' })}`; render(state); }
       return { status: 'error', error };
     }
   }
@@ -119,7 +120,7 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
     }, error => {
       const next = runtime.getState(); state = next;
       if ((next.chatId ?? null) !== token.chatId || drafts.get(token.entityId) !== token.draft) return;
-      token.draft.saving = false; token.draft.editing = true; token.draft.notice = ''; token.draft.error = `保存失败：${error?.message || '未知错误'}`;
+      token.draft.saving = false; token.draft.editing = true; token.draft.notice = ''; token.draft.error = `保存失败：${publicErrorMessage(error, { fallback: '人物资料没有保存，请重试。' })}`;
       if (active) render(next);
     });
   }
@@ -221,7 +222,7 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
         });
     } catch (error) {
       if (cropLoadController === controller) cropLoadController = null;
-      if (error?.name !== 'AbortError' && loadId === cropLoadId && chatId === operationChatId && currentEntityId === entityId) { feedback = `头像读取失败：${error?.message || '未知错误'}`; render(state); }
+      if (error?.name !== 'AbortError' && loadId === cropLoadId && chatId === operationChatId && currentEntityId === entityId) { feedback = `头像读取失败：${publicErrorMessage(error, { fallback: '无法读取所选图片。' })}`; render(state); }
     }
   }
   function avatarCropContent(person, draft) {
@@ -399,7 +400,7 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
     if (!container) throw new Error('千人人物资料 view 尚未挂载');
     active = true; operationMenus.activate(); subscribe(); const mine = ++epoch; feedback = '正在读取当前聊天…'; render(runtime.getState());
     try { const result = await runtime.refresh({ refreshMemory: false }); if (!active || mine !== epoch) return { status: 'stale' }; state = result; feedback = '人物资料读取完成。'; render(result); return result; }
-    catch (error) { if (!active || mine !== epoch) return { status: 'stale' }; state = runtime.getState(); feedback = `读取失败：${error?.message || '未知错误'}`; render(state); return { status: 'error', error }; }
+    catch (error) { if (!active || mine !== epoch) return { status: 'stale' }; state = runtime.getState(); feedback = `读取失败：${publicErrorMessage(error, { fallback: '人物资料暂时无法读取，请重试。' })}`; render(state); return { status: 'error', error }; }
   }
   function deactivate() { active = false; epoch += 1; closeCrop(); operationMenus.deactivate(); unsubscribe?.(); unsubscribe = null; }
   return Object.freeze({ mount, activate, deactivate, render });

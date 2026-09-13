@@ -255,4 +255,4 @@ for (const name of ['CHAT_CHANGED', 'GENERATION_STARTED']) {
 void (async () => {
   inlineRenderer.setEnabled(settings.isEnabled());
   await lifecycle.start();
-})().catch(error => console.warn('[qianqianjie] 身份或 V3 地基准备失败', error));
+})().catch(error => console.warn('[qianqianjie] 身份或后端数据准备失败', error));
