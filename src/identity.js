@@ -7,5 +7,5 @@ export async function sha256(value) {
     const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
     return [...new Uint8Array(digest)].map(x => x.toString(16).padStart(2, '0')).join('');
   }
-  throw new Error('宿主缺少 SHA-256');
+  return globalThis.SillyTavern.libs.sha256(bytes);
 }

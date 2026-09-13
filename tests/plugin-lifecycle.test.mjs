@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
+import { createChatSession } from '../src/chat-session.js';
 
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 async function waitFor(predicate, message) {
@@ -48,6 +49,43 @@ test('禁用立即 invalidate 全链；重新启用只准备身份与刷新 UI',
   enabled = true;
   assert.equal((await lifecycle.setEnabled(true)).status, 'ready');
   assert.deepEqual(calls, ['api:abort', 'session:invalidate', 'ui:true', 'prepare', 'refresh']);
+});
+
+test('主页关闭后重新启用保持 idle，随后 CHAT_CHANGED 用真实 session 正常准备', async () => {
+  const handlers = new Map();
+  let enabled = true;
+  let identityPrepares = 0;
+  let backgroundStarts = 0;
+  const context = { characterId: undefined, groupId: null, chatId: '', characters: [], userAvatar: '', chatMetadata: {} };
+  const session = createChatSession({
+    contextProvider: () => context,
+    isEnabled: () => enabled,
+    identityCoordinator: { async prepare(raw, host) { identityPrepares += 1; return host.chatId; } },
+  });
+  const lifecycle = createPluginLifecycle({
+    session,
+    isEnabled: () => enabled,
+    onPrepared: () => { backgroundStarts += 1; },
+  });
+  lifecycle.bind({ eventSource: { on: (name, handler) => handlers.set(name, handler) }, eventTypes: { CHAT_CHANGED: 'chat' } });
+
+  assert.equal((await lifecycle.start()).status, 'idle');
+  enabled = false;
+  assert.equal((await lifecycle.setEnabled(false)).status, 'disabled');
+  enabled = true;
+  assert.equal((await lifecycle.setEnabled(true)).status, 'idle');
+  assert.equal(identityPrepares, 0);
+  assert.equal(backgroundStarts, 0);
+
+  context.characterId = 0;
+  context.chatId = 'host-chat';
+  context.characters = [{ avatar: 'char.png' }];
+  context.userAvatar = 'me.png';
+  context.chatMetadata = { qianqianjie: { schemaVersion: 2, chatId: '123e4567-e89b-42d3-a456-426614174000' } };
+  handlers.get('chat')();
+  await waitFor(() => backgroundStarts === 1, '打开聊天后既有 CHAT_CHANGED 未继续准备');
+  assert.equal(session.getState().status, 'ready');
+  assert.equal(identityPrepares, 1);
 });
 
 test('身份 ready 后立即启动后台续接，隐藏面板刷新返回 closed 也不阻塞身份结果', async () => {

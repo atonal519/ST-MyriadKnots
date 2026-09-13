@@ -4,7 +4,7 @@ import { is_send_press as r, saveSettingsDebounced as i } from "/script.js";
 import { is_group_generating as a } from "/scripts/group-chats.js";
 import { loadWorldInfo as o, selected_world_info as s, world_info as c, world_info_case_sensitive as l, world_info_match_whole_words as u, world_names as d } from "/scripts/world-info.js";
 //#region manifest.json
-var f = "0.1.18", p = "qianqianjie", m = "/api/plugins/st-bainiaodata", h = Object.freeze([
+var f = "0.1.19", p = "qianqianjie", m = "/api/plugins/st-bainiaodata", h = Object.freeze([
 	["v3-floor-", "floor"],
 	["v3-run-", "run"],
 	["v3-checkpoint-", "checkpoint"],
@@ -1142,7 +1142,7 @@ async function ye(e) {
 		let e = await globalThis.crypto.subtle.digest("SHA-256", t);
 		return [...new Uint8Array(e)].map((e) => e.toString(16).padStart(2, "0")).join("");
 	}
-	throw Error("宿主缺少 SHA-256");
+	return globalThis.SillyTavern.libs.sha256(t);
 }
 //#endregion
 //#region src/json-symbol-repair.js
@@ -8040,30 +8040,36 @@ function vo() {
 }
 function yo(e = vo()) {
 	let t = e.characterId;
-	if (e.groupId || t == null || t === "") return {
+	if (e.groupId) return {
 		ok: !1,
 		reason: "仅支持单人聊天"
 	};
-	let n = Array.isArray(e.characters) ? e.characters[t] : e.characters?.[t], r = String(n?.avatar ?? e.characterAvatar ?? "").trim(), i = String(e.userAvatar ?? e.personaAvatar ?? globalThis.user_avatar ?? "").trim(), a = String(e.chatId ?? e.getCurrentChatId?.() ?? "").trim();
-	if (!a) return {
+	let n = String(e.chatId ?? e.getCurrentChatId?.() ?? "").trim();
+	if (!n) return {
 		ok: !1,
+		noChat: !0,
 		reason: "当前没有聊天"
 	};
-	if (!r) return {
+	if (t == null || t === "") return {
+		ok: !1,
+		reason: "仅支持单人聊天"
+	};
+	let r = Array.isArray(e.characters) ? e.characters[t] : e.characters?.[t], i = String(r?.avatar ?? e.characterAvatar ?? "").trim(), a = String(e.userAvatar ?? e.personaAvatar ?? globalThis.user_avatar ?? "").trim();
+	if (!i) return {
 		ok: !1,
 		reason: "缺少角色身份"
 	};
-	if (!i) return {
+	if (!a) return {
 		ok: !1,
 		reason: "缺少 Persona 身份"
 	};
 	let o = e.chatMetadata?.qianqianjie;
 	return {
 		ok: !0,
-		hostChatId: a,
+		hostChatId: n,
 		chatId: bo(o?.chatId) && [1, 2].includes(o.schemaVersion) ? o.chatId : null,
-		characterAvatar: r,
-		personaAvatar: i,
+		characterAvatar: i,
+		personaAvatar: a,
 		characterId: String(t)
 	};
 }
@@ -15629,17 +15635,17 @@ function Gd({ contextProvider: e, isEnabled: t = !0, ensureChatId: n = Co, ident
 		} catch {
 			return !1;
 		}
-	}, l = () => {
-		let t, n;
+	}, l = ({ allowNoChat: t = !1 } = {}) => {
+		let n, r;
 		try {
-			t = e(), n = yo(t);
+			n = e(), r = yo(n);
 		} catch {
 			throw new Ud("当前聊天身份不可用", "CHAT_SESSION_CONTEXT_INVALID");
 		}
-		if (n?.ok !== !0) throw new Ud(n?.reason || "当前聊天身份不可用", "CHAT_SESSION_CONTEXT_INVALID");
+		if (r?.ok !== !0 && !(t && r?.noChat === !0)) throw new Ud(r?.reason || "当前聊天身份不可用", "CHAT_SESSION_CONTEXT_INVALID");
 		return {
-			raw: t,
-			host: n
+			raw: n,
+			host: r
 		};
 	}, u = (e) => Object.freeze({
 		hostChatId: e.hostChatId,
@@ -15659,10 +15665,11 @@ function Gd({ contextProvider: e, isEnabled: t = !0, ensureChatId: n = Co, ident
 		if (!c()) return s = Object.freeze({ status: "disabled" }), Promise.resolve(s);
 		let e;
 		try {
-			e = l();
+			e = l({ allowNoChat: !0 });
 		} catch (e) {
 			return Promise.reject(e);
 		}
+		if (e.host.noChat === !0) return s = Object.freeze({ status: "idle" }), Promise.resolve(s);
 		if (o && Wd(o.host, e.host) && e.host.chatId === o.identity.chatId) return s = Object.freeze({
 			status: "suspended",
 			identity: o.identity

@@ -8,16 +8,34 @@ import { createHash } from 'node:crypto';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-async function isolateBundle(hostGlobalName, { enabled = false, withExistingPanel = false, mainApi = 'openai', invokeTypes = [] } = {}) {
+async function isolateBundle(hostGlobalName, { enabled = false, withExistingPanel = false, mainApi = 'openai', invokeTypes = [], initializeWithoutSubtle = false } = {}) {
   const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
   const bundlePath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : resolve(root, manifest.js.split('?')[0]);
   const eventRegistrations = new Map();
+  const backendRecords = new Map();
+  let hostShaCalls = 0;
+  const hostShaInputs = [];
   const host = {
     characterId: 0, groupId: null, chatId: 'host-chat', characters: [{ avatar: 'char.png' }], userAvatar: 'me.png',
-    chatMetadata: enabled ? { qianqianjie: { schemaVersion: 1, chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' } } : {}, chat: [], mainApi,
+    chatMetadata: enabled ? { qianqianjie: { schemaVersion: 1, chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' } } : {},
+    chat: initializeWithoutSubtle ? [
+      { is_user: false, is_system: false, mes: '产物指纹🙂', swipes: ['产物指纹🙂'], swipe_id: 0 },
+      { is_user: true, is_system: false, mes: '确认', send_date: '2026-09-13T00:00:00.000Z' },
+    ] : [],
+    mainApi,
+    uuidv4: () => '11111111-1111-4111-8111-111111111111',
+    async saveMetadata() {},
     getRequestHeaders: () => ({}), eventTypes: { CHAT_CHANGED: 'chat', PERSONA_CHANGED: 'persona' },
     eventSource: { on(name) { eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); } },
   };
+  if (initializeWithoutSubtle) backendRecords.set('/api/plugins/st-bainiaodata/v1/records/qianqianjie/chat-identity-bindings/binding-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', {
+    revision: 1,
+    data: {
+      schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      owner: { hostChatId: 'host-chat', characterLocator: 'char.png', personaLocator: 'me.png' },
+      state: 'ready', sourceChatId: null, createdAt: '2026-09-13T00:00:00.000Z', updatedAt: '2026-09-13T00:00:00.000Z',
+    },
+  });
   let backendCalls = 0;
   let mesAppendCalls = 0;
   let styleAppendCalls = 0;
@@ -40,14 +58,23 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
     createElement: tag => ({ tag, dataset: {}, style: {}, children: [], append(...nodes) { this.children.push(...nodes); }, replaceChildren(...nodes) { this.children = [...nodes]; }, addEventListener() {}, querySelector: () => null }),
   } : undefined;
   const context = createContext({
-    console, crypto: globalThis.crypto, TextEncoder, TextDecoder, URL, URLSearchParams, AbortController, DOMException, structuredClone, setTimeout, clearTimeout,
-    fetch: async () => {
+    console, crypto: initializeWithoutSubtle ? {} : globalThis.crypto, TextEncoder, TextDecoder, URL, URLSearchParams, AbortController, DOMException, structuredClone, setTimeout, clearTimeout,
+    fetch: async (url, options = {}) => {
       backendCalls += 1;
+      if (initializeWithoutSubtle) {
+        const record = backendRecords.get(String(url));
+        return record
+          ? { ok: true, status: 200, async json() { return structuredClone(record); } }
+          : { ok: false, status: 404, async json() { return {}; } };
+      }
       if (enabled) return { ok: false, status: 404, async json() { return {}; } };
       throw new Error('disabled isolation must not fetch');
     },
     ...(documentRef ? { document: documentRef, MutationObserver: class { constructor() { observerInstances += 1; } observe() {} disconnect() {} } } : {}),
-    [hostGlobalName]: { getContext: () => host },
+    [hostGlobalName]: {
+      getContext: () => host,
+      ...(initializeWithoutSubtle ? { libs: { sha256(bytes) { hostShaCalls += 1; hostShaInputs.push(new Uint8Array(bytes)); return createHash('sha256').update(bytes).digest('hex'); } } } : {}),
+    },
   });
   const cache = new Map();
   const synthetic = (identifier, exports) => new SyntheticModule(Object.keys(exports), function initialize() {
@@ -73,12 +100,26 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
   await entry.link((specifier, referencing) => load(new URL(specifier, referencing.identifier).href));
   await entry.evaluate();
   await new Promise(resolvePromise => setImmediate(resolvePromise));
+  if (initializeWithoutSubtle) {
+    for (let attempt = 0; attempt < 200 && hostShaCalls === 0; attempt += 1) {
+      await new Promise(resolvePromise => setImmediate(resolvePromise));
+    }
+  }
   for (const type of invokeTypes) await context.qqj_v3_recall_interceptor([], 8192, () => { abortCalls += 1; }, type);
   const publicBridgeReadStatus = enabled ? null : (await context.qqj_v3_public_bridge_v1?.readMemory?.())?.status;
   const publicBridgeSnapshotType = typeof context.qqj_v3_public_bridge_v1?.getSnapshot;
   const publicBridgeSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getSnapshot?.()?.status;
-  return { status: entry.status, backendCalls, eventRegistrations, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, promptCalls, abortCalls };
+  return { status: entry.status, backendCalls, backendRecords, hostShaCalls, hostShaInputs, eventRegistrations, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, promptCalls, abortCalls };
 }
+
+test('实际生产 bundle 缺少 crypto.subtle 时经宿主 SHA 完成身份认领与地基指纹扫描', async () => {
+  const result = await isolateBundle('SillyTavern', { enabled: true, initializeWithoutSubtle: true });
+  const bindings = [...result.backendRecords.values()].filter(record => record.data?.kind === 'qqj-chat-identity-binding');
+  assert.equal(result.status, 'evaluated');
+  assert.equal(result.hostShaCalls > 0, true, '实际 bundle 内部没有调用宿主 SHA 接口');
+  assert.equal(bindings.length, 1, '实际 bundle 没有完成聊天身份认领');
+  assert.equal(result.hostShaInputs.some(bytes => new TextDecoder().decode(bytes) === '产物指纹🙂'), true, '实际地基扫描没有计算正文指纹');
+});
 
 test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 import 且可隔离加载', async () => {
   const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
@@ -88,7 +129,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.1.18');
+  assert.equal(manifest.version, '0.1.19');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');

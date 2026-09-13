@@ -6,12 +6,13 @@ export function getHostContext() {
 
 export function readHostState(ctx = getHostContext()) {
   const characterId = ctx.characterId;
-  if (ctx.groupId || characterId === undefined || characterId === null || characterId === '') return { ok: false, reason: '仅支持单人聊天' };
+  if (ctx.groupId) return { ok: false, reason: '仅支持单人聊天' };
+  const chatId = String(ctx.chatId ?? ctx.getCurrentChatId?.() ?? '').trim();
+  if (!chatId) return { ok: false, noChat: true, reason: '当前没有聊天' };
+  if (characterId === undefined || characterId === null || characterId === '') return { ok: false, reason: '仅支持单人聊天' };
   const character = Array.isArray(ctx.characters) ? ctx.characters[characterId] : ctx.characters?.[characterId];
   const characterAvatar = String(character?.avatar ?? ctx.characterAvatar ?? '').trim();
   const personaAvatar = String(ctx.userAvatar ?? ctx.personaAvatar ?? globalThis.user_avatar ?? '').trim();
-  const chatId = String(ctx.chatId ?? ctx.getCurrentChatId?.() ?? '').trim();
-  if (!chatId) return { ok: false, reason: '当前没有聊天' };
   if (!characterAvatar) return { ok: false, reason: '缺少角色身份' };
   if (!personaAvatar) return { ok: false, reason: '缺少 Persona 身份' };
   const metadata = ctx.chatMetadata?.qianqianjie;

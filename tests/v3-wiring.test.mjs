@@ -17,7 +17,7 @@ test('生产入口只装配 V3 记忆与独立人物工作区，面板提供四�
   assert.match(entry, /filterWorldInfoSources:\s*sourcePermissions\.filterWorldInfoSources/, '生产入口必须把共享整本排除过滤器注入 V3 memory runtime');
   assert.match(entry, /import\s*\{\s*version\s+as\s+pluginVersion\s*\}\s*from\s*['"]\.\/manifest\.json['"]/, '生产回执版本必须只从 manifest.version 导入');
   assert.match(entry, /createV3RecallRuntime\([\s\S]*?pluginVersion,\s*\n\}\)/);
-  assert.equal(manifest.version, '0.1.18');
+  assert.equal(manifest.version, '0.1.19');
   for (const marker of ['createArchiveV2', 'archiveV2', 'archive-v2', 'myriad-knots-bond-draft', '首次建立双丝网']) {
     assert.doesNotMatch(entry + panel + bootstrap + bundle, new RegExp(marker, 'i'));
   }

@@ -26,7 +26,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; }
     catch { return false; }
   };
-  const capture = () => {
+  const capture = ({ allowNoChat = false } = {}) => {
     let raw;
     let host;
     try {
@@ -35,7 +35,9 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     } catch {
       throw new ChatSessionError('当前聊天身份不可用', 'CHAT_SESSION_CONTEXT_INVALID');
     }
-    if (host?.ok !== true) throw new ChatSessionError(host?.reason || '当前聊天身份不可用', 'CHAT_SESSION_CONTEXT_INVALID');
+    if (host?.ok !== true && !(allowNoChat && host?.noChat === true)) {
+      throw new ChatSessionError(host?.reason || '当前聊天身份不可用', 'CHAT_SESSION_CONTEXT_INVALID');
+    }
     return { raw, host };
   };
   const publicIdentity = host => Object.freeze({
@@ -57,8 +59,12 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
       return Promise.resolve(state);
     }
     let context;
-    try { context = capture(); }
+    try { context = capture({ allowNoChat: true }); }
     catch (error) { return Promise.reject(error); }
+    if (context.host.noChat === true) {
+      state = Object.freeze({ status: 'idle' });
+      return Promise.resolve(state);
+    }
     if (suspension) {
       if (sameHost(suspension.host, context.host) && context.host.chatId === suspension.identity.chatId) {
         state = Object.freeze({ status: 'suspended', identity: suspension.identity });

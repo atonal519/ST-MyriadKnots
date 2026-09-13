@@ -143,6 +143,27 @@ test('禁用时零元数据操作；切聊天后旧 prepare 返回 stale', async
     assert.equal((await pending).status, 'stale');
 });
 
+test('真正没有当前聊天时保持 idle；群聊与有聊天的身份错误仍然报错', async () => {
+  const home = { characterId: undefined, groupId: null, chatId: '', characters: [], userAvatar: '' };
+  const session = createChatSession({ contextProvider: () => home });
+  assert.deepEqual(await session.prepare(), { status: 'idle' });
+
+  home.characterId = 0;
+  home.characters = [{ avatar: 'char.png' }];
+  home.userAvatar = 'me.png';
+  assert.deepEqual(await session.prepare(), { status: 'idle' }, '已选角色但没有 chatId 也应正常待机');
+
+  home.groupId = 'group-a';
+  await assert.rejects(session.prepare(), error => error.code === 'CHAT_SESSION_CONTEXT_INVALID' && /仅支持单人聊天/u.test(error.message));
+  home.groupId = null;
+  home.chatId = 'host-chat';
+  home.characterId = undefined;
+  await assert.rejects(session.prepare(), error => error.code === 'CHAT_SESSION_CONTEXT_INVALID' && /仅支持单人聊天/u.test(error.message));
+  home.characterId = 0;
+  home.userAvatar = '';
+  await assert.rejects(session.prepare(), error => error.code === 'CHAT_SESSION_CONTEXT_INVALID' && /Persona/u.test(error.message));
+});
+
 test('删除暂停只拦目标 UUID，切到其他聊天可用且回原聊天仍保持暂停', async () => {
   const original = chatContext('原聊天', UUID);
   const otherId = '223e4567-e89b-42d3-a456-426614174000';
