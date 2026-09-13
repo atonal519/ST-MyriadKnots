@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>编辑保存栏底部回归</title>
+<link rel="stylesheet" href="../../src/ui/panel.css">
+<style>
+:root { --line:#d8dfe4; --paper:#f6f7f9; --panel:#fff; --ink:#23262d; --soft:#6a7079; --knot:#b2384b; --crimson:#b2384b; }
+body { margin:16px; font:13px sans-serif; }
+.panel { width:360px; max-width:100%; height:360px; display:grid; grid-template-rows:40px minmax(0,1fr) 24px; }
+@media(max-width:640px) { .panel { grid-template-rows:40px minmax(0,1fr); } }
+.body { min-height:0; overflow-y:auto; scrollbar-gutter:stable; touch-action:pan-y; }
+header { padding:10px; }
+#results { white-space:pre-wrap; }
+</style>
+<section class="panel">
+  <header>模拟编辑 · 保存栏底部测试</header>
+  <main class="body"><div class="view"><div class="qqj-profile-form qqj-manual-editor"></div></div></main>
+  <button class="panel-resize-handle" type="button" aria-label="调整模拟面板大小"><span class="resize-grip"></span></button>
+</section>
+<pre id="results"></pre>
+<script type="module">
+import { createPanelGeometryController } from '../../src/ui/layout.js';
+const panel = document.querySelector('.panel');
+const handle = document.querySelector('.panel-resize-handle');
+// Use the real resizing controller without reading or changing saved user geometry.
+createPanelGeometryController({panel, resizeHandle:handle, storage:{getItem:()=>null,setItem:()=>{}}});
+const editor = document.querySelector('.qqj-manual-editor');
+for (let i=0; i<12; i++) {
+  const label = document.createElement('label');
+  label.className = 'qqj-profile-field';
+  label.innerHTML = `<span>模拟字段 ${i+1}</span><textarea class="settings-input">仅用于布局测试</textarea>`;
+  editor.append(label);
+}
+const bar = document.createElement('div');
+bar.className = 'qqj-profile-save-row qqj-manual-save-bar';
+bar.innerHTML = '<button type="button" class="primary-action">保存资料</button><button type="button" class="secondary-action">取消</button>';
+editor.append(bar);
+const scroller = document.querySelector('.body');
+const output = document.querySelector('#results');
+const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+for (const variant of ['旧定位', '实际样式']) {
+bar.style.bottom = variant === '旧定位' ? '0px' : '';
+for (const scroll of [300, 99999]) {
+  scroller.scrollTop = scroll;
+  await frame();
+  const gap = scroller.getBoundingClientRect().bottom - bar.getBoundingClientRect().bottom;
+  output.textContent += `${variant} ${scroll===300?'滚动中':'滚到底'}: 保存栏下面露出 ${Math.round(gap)}px\n`;
+}
+}
+scroller.scrollTop = 300;
+const heights = [...bar.querySelectorAll('button')].map(button => Math.round(button.getBoundingClientRect().height));
+output.textContent += `保存／取消按钮高度：${heights.join(' / ')}px（${heights[0] === heights[1] ? '一致' : '不一致'}）\n`;
+output.textContent += `视口 ${innerWidth}px，把手：${getComputedStyle(handle).display}，占高 ${handle.getBoundingClientRect().height}px\n`;
+output.textContent += `底部背景图：${getComputedStyle(panel).backgroundImage}\n`;
+</script>
+</html>

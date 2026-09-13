@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>API 按钮栏间距回归</title>
+<link rel="stylesheet" href="../../src/ui/panel.css">
+<style>
+:root{--line:#d8dfe4;--paper:#f6f7f9;--panel:#fff;--ink:#23262d;--soft:#6a7079;--faint:#929ba4;--crimson:#b2384b}
+body{margin:20px;font:13px sans-serif;max-width:560px}
+</style>
+<section class="qqj-api-editor">
+  <div class="settings-sub-body">
+    <small>已拉取 180 个模型（模拟）</small>
+    <details class="settings-sub sub-advanced">
+      <summary class="settings-sub-summary"><h4>高级设置</h4></summary>
+      <div class="settings-sub-body"><label>超时秒数 <input value="60"></label></div>
+    </details>
+    <div class="settings-actions qqj-manual-save-bar">
+      <button class="primary-action">保存设置</button><button class="secondary-action">另存为预设</button><button class="secondary-action">删除当前预设</button><button class="secondary-action">测试连接</button>
+    </div>
+  </div>
+</section>
+<pre id="results"></pre>
+<script>
+const drawer=document.querySelector('details'),bar=document.querySelector('.qqj-manual-save-bar');
+function check(){
+  const gap=bar.getBoundingClientRect().top-drawer.getBoundingClientRect().bottom;
+  const style=getComputedStyle(bar);
+  document.querySelector('#results').textContent=`抽屉与按钮栏额外间距：${Math.round(gap)}px\n按钮栏上下内边距：${style.paddingTop} / ${style.paddingBottom}`;
+}
+drawer.addEventListener('toggle',check);
+window.addEventListener('load',check);
+</script>
+</html>
