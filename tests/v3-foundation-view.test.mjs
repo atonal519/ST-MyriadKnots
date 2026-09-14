@@ -648,7 +648,7 @@ test('自动批次活跃时面板提取、CSE 与修订入口统一禁用，结�
 
 test('历史欠账与人物状态重构按钮各自开始暂停继续，CSE 同一位置显示进度', async () => {
   const base = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 5, rememberedCount: 2, unprocessedCount: 3, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'checkpoint', activeRun: null, activeExtraction: null, activeCse: null, memoryWorkBusy: false, activeAutoMemory: null, lastRun: null, lastError: null, lastExtractorError: null, lastCseError: null, unreachableCount: 0, metrics: {}, autoMemoryEnabled: false, autoMemoryBatchSize: 2, rebuildStatus: 'pendingRebuild', rebuildCompletedCount: 2, rebuildTotalCount: 5, rebuildNextAssistantSeq: 3, cseRebuildStatus: 'idle', cseRebuildCompletedCount: 0, cseRebuildTotalCount: 2, cseReady: false, csePendingCount: 0, cseFailedCount: 0, baselineId: null, cseSubjects: [], floors: [] };
-  let state = base, starts = 0, pauses = 0, resetChatId = null, cseChatId = null, csePauses = 0, cseResumes = 0;
+  let state = base, starts = 0, pauses = 0, resetChatId = 'unset', cseChatId = null, csePauses = 0, cseResumes = 0;
   const confirmations = [];
   const runtime = {
     getState: () => state,
@@ -663,6 +663,12 @@ test('历史欠账与人物状态重构按钮各自开始暂停继续，CSE 同�
   const container = new Node('main');
   const view = createV3FoundationView({ runtime, documentRef, confirmImpl: options => { confirmations.push(options); return true; } });
   view.mount(container);
+  state = { ...base, status: 'idle', chatId: null, foundationStatus: 'uninitialized', rememberedCount: 0, headCheckpointId: null };
+  view.render(state);
+  flatten(container).find(node => node.textContent === '完全重构').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(resetChatId, null, '空档完全重构仍按 UI 当前状态传入 null');
+  resetChatId = 'unset';
   state = { ...base, rememberedCount: 0, rebuildCompletedCount: 0, rebuildNextAssistantSeq: 1 };
   view.render(state);
   assert.equal(flatten(container).find(node => node.textContent === '补齐缺失')?.disabled, false);

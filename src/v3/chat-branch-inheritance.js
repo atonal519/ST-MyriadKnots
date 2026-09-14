@@ -24,6 +24,7 @@ import { createPeopleWorkspaceStore } from './people-workspace.js';
 import { persistBranchedMessageMetadata } from './message-floor-anchor.js';
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
+const BRANCH_WRITE_CONCURRENCY = 4;
 const emptyIndexManifest = () => ({ floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] });
 const nowIso = now => {
   const value = now()?.toISOString?.() ?? String(now());
@@ -97,10 +98,23 @@ async function copyLatestPeople({ peopleStore, sourceIdentity, targetIdentity, e
 }
 
 async function saveRecords(store, records, signal) {
-  for (const record of records) {
-    const result = await store.putRecord(record, { signal });
-    if (!['saved', 'reused'].includes(result.status)) throw fail('V3_BRANCH_RECORD_CONFLICT', '分支记忆记录发生冲突，未提交目标根。');
+  let cursor = 0;
+  let firstError = null;
+  async function worker() {
+    while (firstError === null) {
+      const index = cursor;
+      if (index >= records.length) return;
+      cursor += 1;
+      try {
+        const result = await store.putRecord(records[index], { signal });
+        if (!['saved', 'reused'].includes(result.status)) throw fail('V3_BRANCH_RECORD_CONFLICT', '分支记忆记录发生冲突，未提交目标根。');
+      } catch (error) {
+        firstError ??= error;
+      }
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(BRANCH_WRITE_CONCURRENCY, records.length) }, () => worker()));
+  if (firstError) throw firstError;
 }
 
 export function createChatBranchInitializer({
@@ -193,7 +207,9 @@ export function createChatBranchInitializer({
           }, { expectedChatId: targetChatId });
           await validatePreparedFoundation({ checkpoint, run, floors, floorMemories: projected.floorMemories, entities: projected.entities, indexes, indexKeys });
           await validateCseGraph({ root, checkpoint, run, floors, floorMemories: projected.floorMemories, entities: projected.entities, indexes, indexKeys, baseline: projected.baseline, stateDeltas: projected.stateDeltas, currentStates: projected.currentState ? [projected.currentState] : [] });
-          await saveRecords(targetStore, [run, ...floors, ...projected.floorMemories, ...projected.entities, ...(projected.baseline ? [projected.baseline] : []), ...projected.stateDeltas, ...(projected.currentState ? [projected.currentState] : []), ...indexes, checkpoint], signal);
+          await saveRecords(targetStore, [run, ...floors, ...projected.floorMemories, ...projected.entities, ...(projected.baseline ? [projected.baseline] : []), ...projected.stateDeltas, ...(projected.currentState ? [projected.currentState] : []), ...indexes], signal);
+          const checkpointResult = await targetStore.putRecord(checkpoint, { signal });
+          if (!['saved', 'reused'].includes(checkpointResult.status)) throw fail('V3_BRANCH_RECORD_CONFLICT', '分支记忆记录发生冲突，未提交目标根。');
           const committed = await targetStore.commitRoot(root, 0, { signal });
           if (!['saved'].includes(committed.status)) {
             target = await targetStore.readReachable();

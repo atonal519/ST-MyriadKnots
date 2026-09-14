@@ -5,7 +5,8 @@ import { MESSAGE_FLOOR_ANCHOR_KEY } from './v3/message-floor-anchor.js';
 import { publicErrorMessage } from './public-error.js';
 
 const RECEIPT_KEY = 'qqj_v3_recall_receipt';
-const MEMORY_MESSAGE_KEYS = Object.freeze([RECEIPT_KEY, MESSAGE_FLOOR_ANCHOR_KEY]);
+const AUTO_HIDE_KEY = 'qianqianjieAutoHide';
+const MEMORY_MESSAGE_KEYS = Object.freeze([RECEIPT_KEY, MESSAGE_FLOOR_ANCHOR_KEY, AUTO_HIDE_KEY]);
 const errorWith = (code, message) => Object.assign(new Error(message), { code });
 const clone = value => structuredClone(value);
 
@@ -26,7 +27,7 @@ export function createChatMemoryManagement({
   fetchImpl = globalThis.fetch,
   logger = console,
 } = {}) {
-  if (!client?.list || !client?.get || !client?.remove || !session?.identity || !session?.suspend || !session?.resume || !hostAdapter?.snapshot || !autoHideController?.restoreOwned || typeof fetchImpl !== 'function') {
+  if (!client?.list || !client?.get || !client?.remove || !session?.identity || !session?.suspend || !session?.resume || !hostAdapter?.snapshot || !autoHideController?.stop || typeof fetchImpl !== 'function') {
     throw new TypeError('当前聊天记忆删除依赖无效');
   }
   let active = null;
@@ -103,12 +104,14 @@ export function createChatMemoryManagement({
   };
   const hasMemoryKeys = message => MEMORY_MESSAGE_KEYS.some(key => Object.hasOwn(message?.extra ?? {}, key))
     || (Array.isArray(message?.swipe_info) && message.swipe_info.some(swipe => MEMORY_MESSAGE_KEYS.some(key => Object.hasOwn(swipe?.extra ?? {}, key))));
+  const hasValidAutoHideMarker = extra => extra?.[AUTO_HIDE_KEY]?.schemaVersion === 1 && isUuid(extra[AUTO_HIDE_KEY].chatId);
 
   async function clearMessageMemoryKeys(identity) {
     const snapshot = currentHost(identity);
     const changed = [];
-    for (const message of snapshot.chat) {
+    for (const [messageIndex, message] of snapshot.chat.entries()) {
       const nextExtra = clearMemoryKeys(message?.extra);
+      const restoreVisibility = hasValidAutoHideMarker(message?.extra);
       let swipeChanged = false;
       const nextSwipeInfo = Array.isArray(message?.swipe_info) ? message.swipe_info.map(swipe => {
         const next = clearMemoryKeys(swipe?.extra);
@@ -117,9 +120,10 @@ export function createChatMemoryManagement({
         return { ...swipe, extra: next };
       }) : message?.swipe_info;
       if (!nextExtra && !swipeChanged) continue;
-      changed.push({ message, extra: message.extra, swipeInfo: message.swipe_info });
+      changed.push({ message, messageIndex, extra: message.extra, swipeInfo: message.swipe_info, hadIsSystem: Object.hasOwn(message, 'is_system'), isSystem: message.is_system, restoreVisibility });
       if (nextExtra) message.extra = nextExtra;
       if (swipeChanged) message.swipe_info = nextSwipeInfo;
+      if (restoreVisibility) message.is_system = false;
     }
     if (!changed.length) return 0;
     try {
@@ -127,13 +131,29 @@ export function createChatMemoryManagement({
       await snapshot.context.saveChat();
       currentHost(identity);
       const persisted = await readPersistedChat(identity);
-      if (persisted.messages.length !== snapshot.chat.length || persisted.messages.some(hasMemoryKeys)) {
+      const restoredIndexes = new Set(changed.filter(item => item.restoreVisibility).map(item => item.messageIndex));
+      if (persisted.messages.length !== snapshot.chat.length || persisted.messages.some(hasMemoryKeys)
+        || persisted.messages.some((message, index) => restoredIndexes.has(index) && message?.is_system !== false)) {
         throw errorWith('QQJ_DELETE_RECEIPT_VERIFY_FAILED', '聊天记忆标识没有完成持久化；原身份已保留，可重试。');
       }
       currentHost(identity);
+      if (restoredIndexes.size) {
+        try {
+          const documentRef = globalThis.document;
+          if (documentRef) for (const node of documentRef.querySelectorAll('#chat .mes[mesid]')) {
+            if (restoredIndexes.has(Number(node.getAttribute('mesid')))) node.setAttribute('is_system', 'false');
+          }
+          snapshot.context.swipe?.refresh?.();
+        } catch { /* 外观刷新失败不回滚已核验的聊天数据 */ }
+      }
       return changed.length;
     } catch (error) {
-      for (const item of changed) { item.message.extra = item.extra; item.message.swipe_info = item.swipeInfo; }
+      for (const item of changed) {
+        item.message.extra = item.extra;
+        item.message.swipe_info = item.swipeInfo;
+        if (item.hadIsSystem) item.message.is_system = item.isSystem;
+        else delete item.message.is_system;
+      }
       throw error;
     }
   }
@@ -169,17 +189,10 @@ export function createChatMemoryManagement({
   async function perform(operation) {
     const { identity, controller } = operation;
     const collection = `chat-${identity.chatId}`;
-    if (!operation.visibilityRestored) {
-      operation.phase = 'restoringVisibility'; notify();
-      currentHost(identity);
-      const visibility = await autoHideController.restoreOwned(identity.chatId);
-      if (!['applied', 'unchanged'].includes(visibility?.status)) {
-        throw errorWith('QQJ_DELETE_VISIBILITY_RESTORE_FAILED', '本插件隐藏的聊天楼层尚未恢复，已停止删除记忆。');
-      }
-      operation.visibilityRestored = true;
-    }
     currentHost(identity);
     invalidateRuntimes();
+    await autoHideController.stop();
+    currentHost(identity);
 
     operation.phase = 'deletingRecords'; notify();
     const listed = await client.list(collection, { signal: controller.signal });
@@ -218,13 +231,13 @@ export function createChatMemoryManagement({
       if (!pending && busy()) throw errorWith('QQJ_DELETE_BUSY', '当前正在生成或处理记忆，请等待完成后再删除。');
       if (!pending) session.suspend(identity.chatId);
     } catch (error) { return Promise.reject(error); }
-    const operation = { identity, controller: new AbortController(), phase: 'starting', deletedCount: pending?.deletedCount ?? 0, visibilityRestored: pending?.visibilityRestored === true, promise: null };
+    const operation = { identity, controller: new AbortController(), phase: 'starting', deletedCount: pending?.deletedCount ?? 0, promise: null };
     active = operation; pending = null; lastResult = null; notify();
     operation.promise = perform(operation).then(result => {
       lastResult = result;
       return result;
     }).catch(error => {
-      pending = Object.freeze({ identity, error: publicError(error), deletedCount: operation.deletedCount, visibilityRestored: operation.visibilityRestored });
+      pending = Object.freeze({ identity, error: publicError(error), deletedCount: operation.deletedCount });
       logger?.warn?.('[qianqianjie] current chat memory deletion incomplete', { code: error?.code ?? error?.name ?? 'QQJ_DELETE_FAILED' });
       throw error;
     }).finally(() => { if (active === operation) active = null; notify(); });

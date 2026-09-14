@@ -136,12 +136,69 @@ test('CHAT_CHANGED 初始化同角色副本时只继承实际前缀，保留摘�
     assistant('公共 A'), user('继续 A'),
     assistant('公共 B'),
   ]);
+  activeContext.chat[1].is_system = true;
+  activeContext.chat[1].extra = { kept: true, qianqianjieAutoHide: { schemaVersion: 1, chatId: SOURCE } };
+  activeContext.chat[1].swipe_info = [{ extra: { swipeKept: true, qianqianjieAutoHide: { schemaVersion: 1, chatId: SOURCE } } }];
+  let normalWriteAttempts = 0;
+  let normalWritesInFlight = 0;
+  let maxNormalWritesInFlight = 0;
+  let failFirstNormalWrite = true;
+  let releaseFirstBatch;
+  const firstBatchReleased = new Promise(resolve => { releaseFirstBatch = resolve; });
+  let fourNormalWritesStarted;
+  const firstFourStarted = new Promise(resolve => { fourNormalWritesStarted = resolve; });
+  let firstFailureReached;
+  const firstFailure = new Promise(resolve => { firstFailureReached = resolve; });
+  let releaseCheckpoint;
+  const checkpointReleased = new Promise(resolve => { releaseCheckpoint = resolve; });
+  let checkpointWritesStarted = 0;
+  let rootWritesStarted = 0;
+  let peopleWritesStarted = 0;
+  let saveChatCalls = 0;
+  let readbackCalls = 0;
+  activeContext.saveChat = async () => { saveChatCalls += 1; return true; };
+  const branchClient = {
+    async get(collection, key) { return backend.client.get(collection, key); },
+    async put(collection, key, data, expectedRevision) {
+      const targetCollection = collection.startsWith('chat-') && collection !== `chat-${SOURCE}`;
+      const normalRecord = targetCollection && key.startsWith('v3-')
+        && key !== 'v3-root' && key !== 'v3-people-workspace' && !key.startsWith('v3-checkpoint-');
+      if (normalRecord) {
+        const attempt = ++normalWriteAttempts;
+        normalWritesInFlight += 1;
+        maxNormalWritesInFlight = Math.max(maxNormalWritesInFlight, normalWritesInFlight);
+        if (attempt === 4) fourNormalWritesStarted();
+        try {
+          if (failFirstNormalWrite && attempt === 1) {
+            await firstFourStarted;
+            firstFailureReached();
+            throw Object.assign(new Error('测试：分支普通记录写入失败'), { status: 503, code: 'TEST_BRANCH_RECORD_FAILURE' });
+          }
+          if (failFirstNormalWrite && attempt <= 4) await firstBatchReleased;
+          await new Promise(resolve => setTimeout(resolve, 5));
+          return await backend.client.put(collection, key, data, expectedRevision);
+        } finally {
+          normalWritesInFlight -= 1;
+        }
+      }
+      if (targetCollection && key.startsWith('v3-checkpoint-')) {
+        checkpointWritesStarted += 1;
+        await checkpointReleased;
+      } else if (targetCollection && key === 'v3-root') {
+        rootWritesStarted += 1;
+      } else if (targetCollection && key === 'v3-people-workspace') {
+        peopleWritesStarted += 1;
+      }
+      return backend.client.put(collection, key, data, expectedRevision);
+    },
+  };
   let branchReadbackAvailable = false;
   const initializeBranch = createChatBranchInitializer({
-    client: backend.client,
+    client: branchClient,
     hostAdapter,
     now: () => new Date(NOW),
     fetchImpl: async () => ({ ok: true, async json() {
+      readbackCalls += 1;
       return branchReadbackAvailable
         ? [{ chat_metadata: structuredClone(activeContext.chatMetadata) }, ...structuredClone(activeContext.chat)]
         : [{ chat_metadata: structuredClone(activeContext.chatMetadata) }, ...activeContext.chat.map(message => ({ ...structuredClone(message), extra: {} }))];
@@ -150,7 +207,7 @@ test('CHAT_CHANGED 初始化同角色副本时只继承实际前缀，保留摘�
   const cloneSession = createChatSession({
     contextProvider: () => activeContext,
     identityCoordinator: createChatIdentityCoordinator({
-      client: backend.client,
+      client: branchClient,
       listHostChats: async () => ['原聊天', '复制聊天'],
       initializeBranch,
       now: () => new Date(NOW),
@@ -158,13 +215,44 @@ test('CHAT_CHANGED 初始化同角色副本时只继承实际前缀，保留摘�
   });
   const lifecycle = createPluginLifecycle({ session: cloneSession, getUi: () => null, logger: { warn() {} } });
   lifecycle.onChatChanged();
+  await firstFailure;
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(normalWriteAttempts, 4, '首个错误出现后不得继续分配普通记录');
+  assert.equal(normalWritesInFlight, 3, '首个错误出现时其余三个在途写入仍受控等待');
+  assert.notEqual(cloneSession.getState().status, 'error', '普通记录池必须等待已在途写入结束后才返回错误');
+  assert.equal(checkpointWritesStarted, 0, '普通记录失败时不得写 checkpoint');
+  assert.equal(rootWritesStarted, 0, '普通记录失败时不得提交 root');
+  assert.equal(peopleWritesStarted, 0, '普通记录失败时不得复制人物工作区');
+  assert.equal(saveChatCalls, 0, '普通记录失败时不得保存聊天消息');
+  assert.equal(readbackCalls, 0, '普通记录失败时不得读回聊天消息');
+  failFirstNormalWrite = false;
+  releaseFirstBatch();
   await waitFor(() => cloneSession.getState().status === 'error', 'CHAT_CHANGED 的首次分支初始化失败未被 session 接住');
-  assert.equal(cloneSession.getState().error?.code, 'V3_BRANCH_MESSAGE_VERIFY_FAILED');
+  assert.equal(cloneSession.getState().error?.code, 'TEST_BRANCH_RECORD_FAILURE');
+  assert.equal(normalWritesInFlight, 0, '分支普通记录失败返回前必须等全部在途写入结束');
   const preparingBindings = [...backend.records.values()].filter(row => row.data?.state === 'preparing' && row.data?.sourceChatId === SOURCE);
   assert.equal(preparingBindings.length, 1);
   const preparedTargetId = preparingBindings[0].data.chatId;
-  assert.equal((await createFoundationStore({ client: backend.client, contextProvider: () => identity('复制聊天', preparedTargetId) }).readReachable()).status, 'ready', '消息保存失败前目标图已经按相同确定性 ID 就绪');
+  assert.equal(backend.records.has(`chat-${preparedTargetId}/v3-root`), false, '普通记录失败不得暴露未完成的目标图');
   assert.equal(activeContext.chatMetadata.qianqianjie.chatId, SOURCE);
+  lifecycle.onChatChanged();
+  await waitFor(() => checkpointWritesStarted === 1, '重入没有在普通记录完成后进入 checkpoint 写入');
+  assert.equal(normalWritesInFlight, 0, 'checkpoint 开始前普通记录必须全部完成');
+  assert.equal(rootWritesStarted, 0, 'checkpoint 完成前不得提交 root');
+  assert.equal(peopleWritesStarted, 0, 'checkpoint 完成前不得复制人物工作区');
+  assert.equal(saveChatCalls, 0, 'checkpoint 完成前不得保存聊天消息');
+  assert.equal(readbackCalls, 0, 'checkpoint 完成前不得读回聊天消息');
+  assert.notEqual(cloneSession.getState().status, 'ready', 'checkpoint 完成前 binding 不得进入 ready');
+  releaseCheckpoint();
+  await waitFor(() => cloneSession.getState().status === 'error', '消息读回失败未被 session 接住');
+  assert.equal(cloneSession.getState().error?.code, 'V3_BRANCH_MESSAGE_VERIFY_FAILED');
+  assert.equal(activeContext.chat[1].extra.qianqianjieAutoHide.chatId, SOURCE, '消息读回失败必须回滚外层自动隐藏标记');
+  assert.equal(activeContext.chat[1].swipe_info[0].extra.qianqianjieAutoHide.chatId, SOURCE, '消息读回失败必须回滚 swipe 自动隐藏标记');
+  assert.equal(rootWritesStarted, 1);
+  assert.equal(peopleWritesStarted, 1);
+  assert.equal(saveChatCalls, 1);
+  assert.equal(readbackCalls, 1);
+  assert.equal((await createFoundationStore({ client: backend.client, contextProvider: () => identity('复制聊天', preparedTargetId) }).readReachable()).status, 'ready', '消息保存失败前目标图已经按相同确定性 ID 就绪');
   branchReadbackAvailable = true;
   lifecycle.onChatChanged();
   await waitFor(() => cloneSession.getState().status === 'ready', 'CHAT_CHANGED 重入未完成分支初始化');
@@ -173,6 +261,8 @@ test('CHAT_CHANGED 初始化同角色副本时只继承实际前缀，保留摘�
   assert.equal(prepared.status, 'ready');
   assert.notEqual(targetChatId, SOURCE);
   assert.equal(targetChatId, preparedTargetId, '初始化失败重入不得产生第二个目标 ID');
+  assert.ok(maxNormalWritesInFlight > 1, '普通 backing records 必须实际重叠写入');
+  assert.ok(maxNormalWritesInFlight <= 4, '普通 backing records 同时最多写入 4 条');
   assert.equal(apiCalls, callsBeforeClone, '分支复制阶段不得调用 Extractor/CSE');
   assert.equal(chatRecords(backend.records, SOURCE), sourceBefore, '源聊天全部记录必须不变');
   const targetBinding = backend.records.get(`${CHAT_IDENTITY_COLLECTION}/binding-${targetChatId}`).data;
@@ -196,6 +286,8 @@ test('CHAT_CHANGED 初始化同角色副本时只继承实际前缀，保留摘�
   assert.deepEqual(inheritedPeople.data.profileMaterialProgressByEntityId, {});
   assert.equal(activeContext.chat.filter(message => message.is_user === false).every(message => !message.extra?.qqj_v3_recall_receipt), true);
   assert.equal(activeContext.chat[1].extra.qianqianjie_floor.chatId, targetChatId);
+  assert.equal(activeContext.chat[1].extra.qianqianjieAutoHide.chatId, targetChatId);
+  assert.equal(activeContext.chat[1].swipe_info[0].extra.qianqianjieAutoHide.chatId, targetChatId);
   assert.equal(activeContext.chat[3].extra.qianqianjie_floor.chatId, targetChatId);
   activeContext.chat.push(user('继续 B'), assistant('新线 X'), user('继续 X'), assistant('新线 pending'));
   const targetFoundation = createFoundationRuntime({ hostAdapter, store: targetStore, contextProvider: () => activeContext, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });

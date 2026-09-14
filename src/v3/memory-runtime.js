@@ -1194,7 +1194,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
   const fullRebuild = async expectedChatId => {
     const requestedEpoch = epoch, requestedChatId = String(expectedChatId ?? currentHostChatId()).trim();
-    if (!requestedChatId || requestedChatId !== currentHostChatId() || (reachable?.root?.chatId && reachable.root.chatId !== requestedChatId)) throw errorWith('V3_MEMORY_STALE', '当前界面所属聊天已变化，完全重构未开始。');
+    if (!requestedChatId) return startHistoricalRebuild();
+    if (requestedChatId !== currentHostChatId() || (reachable?.root?.chatId && reachable.root.chatId !== requestedChatId)) throw errorWith('V3_MEMORY_STALE', '当前界面所属聊天已变化，完全重构未开始。');
     const result = await runManualWork('fullRebuild', () => resetDerivedGraph({ requestedEpoch, requestedChatId }));
     if (requestedEpoch === epoch && currentHostChatId() === requestedChatId && result?.chatId === requestedChatId && result.rebuildStatus === 'pendingRebuild') return startHistoricalRebuild();
     return result;

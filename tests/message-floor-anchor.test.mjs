@@ -39,11 +39,11 @@ test('失败回滚只撤销本插件marker，保留保存途中写入的其他ex
   assert.deepEqual(h.message.extra, { kept: 1, concurrent: 2 });
 });
 
-test('已确认副本会换绑外层和可达 swipe marker，清除旧 receipt 与悬空 swipe 标识', async () => {
-  const message = assistant({ kept: 1, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: FLOOR }, qqj_v3_recall_receipt: { old: true } });
+test('已确认副本会换绑外层和可达 swipe marker/自动隐藏标记，清除旧 receipt 与悬空 swipe 标识', async () => {
+  const message = assistant({ kept: 1, qianqianjieAutoHide: { schemaVersion: 1, chatId: CHAT }, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: FLOOR }, qqj_v3_recall_receipt: { old: true } });
   message.swipe_info = [
-    { extra: { swipeKept: 1, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: FLOOR }, qqj_v3_recall_receipt: { old: true } } },
-    { extra: { swipeKept: 2, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: DANGLING }, qqj_v3_recall_receipt: { old: true } } },
+    { extra: { swipeKept: 1, qianqianjieAutoHide: { schemaVersion: 1, chatId: CHAT }, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: FLOOR }, qqj_v3_recall_receipt: { old: true } } },
+    { extra: { swipeKept: 2, qianqianjieAutoHide: { schemaVersion: 1, chatId: CHAT }, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: DANGLING }, qqj_v3_recall_receipt: { old: true } } },
   ];
   const context = { chatMetadata: { qianqianjie: { chatId: CHAT } }, characters: [{ name: '角色', avatar: 'a.png' }], characterId: 0, saveChat: async () => true, getRequestHeaders: () => ({}) };
   const snapshot = { chatId: '复制聊天', characterAvatar: 'a.png', context, chat: [message] };
@@ -53,7 +53,7 @@ test('已确认副本会换绑外层和可达 swipe marker，清除旧 receipt �
     fetchImpl: async () => ({ ok: true, async json() { return [{ chat_metadata: context.chatMetadata }, structuredClone(message)]; } }),
   });
   assert.equal(result.status, 'persisted');
-  assert.deepEqual(message.extra, { kept: 1, qianqianjie_floor: { schemaVersion: 1, chatId: TARGET, floorId: FLOOR } });
-  assert.deepEqual(message.swipe_info[0].extra, { swipeKept: 1, qianqianjie_floor: { schemaVersion: 1, chatId: TARGET, floorId: FLOOR } });
-  assert.deepEqual(message.swipe_info[1].extra, { swipeKept: 2 });
+  assert.deepEqual(message.extra, { kept: 1, qianqianjieAutoHide: { schemaVersion: 1, chatId: TARGET }, qianqianjie_floor: { schemaVersion: 1, chatId: TARGET, floorId: FLOOR } });
+  assert.deepEqual(message.swipe_info[0].extra, { swipeKept: 1, qianqianjieAutoHide: { schemaVersion: 1, chatId: TARGET }, qianqianjie_floor: { schemaVersion: 1, chatId: TARGET, floorId: FLOOR } });
+  assert.deepEqual(message.swipe_info[1].extra, { swipeKept: 2, qianqianjieAutoHide: { schemaVersion: 1, chatId: TARGET } });
 });

@@ -3,6 +3,7 @@ import { isUuid } from '../identity.js';
 export const MESSAGE_FLOOR_ANCHOR_KEY = 'qianqianjie_floor';
 export const MESSAGE_FLOOR_ANCHOR_SCHEMA_VERSION = 1;
 const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
+const AUTO_HIDE_MARKER_KEY = 'qianqianjieAutoHide';
 
 const chatIdFrom = snapshot => String(snapshot?.context?.chatMetadata?.qianqianjie?.chatId ?? '').trim();
 const fail = (code, message) => Object.assign(new Error(message), { code });
@@ -123,9 +124,11 @@ export async function persistBranchedMessageMetadata({
     const object = extra && typeof extra === 'object' && !Array.isArray(extra);
     const hasReceipt = object && Object.hasOwn(extra, RECALL_RECEIPT_KEY);
     const hasAnchor = object && Object.hasOwn(extra, MESSAGE_FLOOR_ANCHOR_KEY);
-    if (!forcedFloorId && !hasReceipt && !hasAnchor) return null;
+    const rebindAutoHide = object && extra[AUTO_HIDE_MARKER_KEY]?.schemaVersion === 1 && extra[AUTO_HIDE_MARKER_KEY].chatId === sourceChatId;
+    if (!forcedFloorId && !hasReceipt && !hasAnchor && !rebindAutoHide) return null;
     const next = object ? { ...extra } : {};
     delete next[RECALL_RECEIPT_KEY];
+    if (rebindAutoHide) next[AUTO_HIDE_MARKER_KEY] = { schemaVersion: 1, chatId: targetChatId };
     if (forcedFloorId) {
       next[MESSAGE_FLOOR_ANCHOR_KEY] = { schemaVersion: MESSAGE_FLOOR_ANCHOR_SCHEMA_VERSION, chatId: targetChatId, floorId: forcedFloorId };
     } else if (hasAnchor) {
@@ -162,7 +165,7 @@ export async function persistBranchedMessageMetadata({
   const context = before.context;
   const restorePluginKeys = (current, previous) => {
     const next = current && typeof current === 'object' && !Array.isArray(current) ? { ...current } : {};
-    for (const key of [MESSAGE_FLOOR_ANCHOR_KEY, RECALL_RECEIPT_KEY]) {
+    for (const key of [MESSAGE_FLOOR_ANCHOR_KEY, RECALL_RECEIPT_KEY, AUTO_HIDE_MARKER_KEY]) {
       if (Object.hasOwn(previous ?? {}, key)) next[key] = previous[key];
       else delete next[key];
     }
@@ -182,10 +185,12 @@ export async function persistBranchedMessageMetadata({
     outer: {
       anchor: message?.extra?.[MESSAGE_FLOOR_ANCHOR_KEY] ?? null,
       receipt: Object.hasOwn(message?.extra ?? {}, RECALL_RECEIPT_KEY),
+      autoHide: message?.extra?.[AUTO_HIDE_MARKER_KEY] ?? null,
     },
     swipes: Array.isArray(message?.swipe_info) ? message.swipe_info.map(swipe => ({
       anchor: swipe?.extra?.[MESSAGE_FLOOR_ANCHOR_KEY] ?? null,
       receipt: Object.hasOwn(swipe?.extra ?? {}, RECALL_RECEIPT_KEY),
+      autoHide: swipe?.extra?.[AUTO_HIDE_MARKER_KEY] ?? null,
     })) : [],
   });
   const expected = before.chat.map(projection);

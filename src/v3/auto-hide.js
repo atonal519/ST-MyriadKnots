@@ -127,7 +127,7 @@ export function createAutoHideController({ hostAdapter, memoryRuntime, settings,
     }
   }
 
-  async function apply({ restoreAll = false, explicit = false, stableChatId = null, operationEpoch = epoch } = {}) {
+  async function apply({ restoreAll = false, explicit = false, operationEpoch = epoch } = {}) {
     if (disposed) return Object.freeze({ status: 'disposed' });
     if (operationEpoch !== epoch) return Object.freeze({ status: 'stopped' });
     const config = settings.get();
@@ -135,11 +135,9 @@ export function createAutoHideController({ hostAdapter, memoryRuntime, settings,
     if (!explicit && config.autoHideEnabled !== true) return Object.freeze({ status: 'disabled' });
     const host = hostAdapter.snapshot();
     const state = memoryRuntime.getState();
-    const effectiveChatId = restoreAll && typeof stableChatId === 'string' && stableChatId ? stableChatId : state?.chatId;
     const metadataChatId = host.context?.chatMetadata?.qianqianjie?.chatId;
-    if (metadataChatId !== effectiveChatId) return Object.freeze({ status: 'stale' });
-    const memoryState = effectiveChatId === state?.chatId ? state : { ...state, chatId: effectiveChatId };
-    const plan = planAutoHide({ chat: host.chat, memoryState, keepAiCount: config.autoHideKeepAiCount, restoreAll });
+    if (metadataChatId !== state?.chatId) return Object.freeze({ status: 'stale' });
+    const plan = planAutoHide({ chat: host.chat, memoryState: state, keepAiCount: config.autoHideKeepAiCount, restoreAll });
     if (plan.status !== 'ready') return plan;
     try {
       for (const range of plan.unhideRanges) {
@@ -174,8 +172,7 @@ export function createAutoHideController({ hostAdapter, memoryRuntime, settings,
   return Object.freeze({
     reconcile: () => enqueue(),
     applySettings: ({ enabled } = {}) => { epoch += 1; return enqueue({ restoreAll: enabled !== true, explicit: true }); },
-    restoreOwned: stableChatId => { epoch += 1; return enqueue({ restoreAll: true, explicit: true, stableChatId }); },
-    stop() { epoch += 1; },
+    stop() { epoch += 1; return tail; },
     dispose() { disposed = true; epoch += 1; unsubscribe?.(); },
   });
 }
