@@ -375,6 +375,22 @@ test('删除按钮使用管理器统一忙碌投影', () => {
   assert.equal(flatten(container).find(node => node.textContent === '删除当前聊天记忆').disabled, true);
 });
 
+test('地基尚无 root 时以 ready 会话身份开放删除，缺少有效身份仍保持禁用', async () => {
+  const state = { status: 'uninitialized', pluginEnabled: true, chatId: null, foundationStatus: 'uninitialized', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, activeRun: null, memoryWorkBusy: false, activeAutoMemory: null, activeExtraction: null, activeCse: null, rebuildStatus: 'pendingRebuild', rebuildHasActionableWork: false, floors: [] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  let sessionState = { status: 'idle', identity: null }, calls = 0;
+  const memoryManagement = { getState: () => ({ status: 'idle', workBusy: false }), deleteCurrent: async () => { calls += 1; return { status: 'completed' }; } };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, memoryManagement, sessionStateProvider: () => sessionState, documentRef, confirmImpl: async () => true });
+  view.mount(container);
+  assert.equal(flatten(container).find(node => node.textContent === '删除当前聊天记忆').disabled, true);
+  sessionState = { status: 'ready', identity: { chatId: CHAT, hostChatId: 'host-a' } }; view.render(state);
+  const remove = flatten(container).find(node => node.textContent === '删除当前聊天记忆');
+  assert.equal(remove.disabled, false, '已卡档但当前会话身份有效时仍应允许走既有删除恢复链');
+  remove.click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 1);
+});
+
 test('删除部分失败后管理页保留同聊天继续入口，成功后呈空档反馈', async () => {
   let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, unprocessedCount: 0, pending: null, activeRun: null, memoryWorkBusy: false, activeAutoMemory: null, activeExtraction: null, activeCse: null, rebuildStatus: 'caughtUp', rebuildHasActionableWork: false, floors: [] };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };

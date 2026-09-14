@@ -1014,8 +1014,10 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     actions.append(element('span', 'settings-hint qqj-management-progress', `${pendingCopy}。${nextStepCopy}`));
     const deleteActions = element('div', 'qqj-management-delete');
     if (memoryManagement) {
+      const sessionState = readDiagnosticState(sessionStateProvider);
+      const hasCurrentIdentity = Boolean(state.chatId || (sessionState?.status === 'ready' && sessionState.identity?.chatId));
       const remove = element('button', 'primary-action', deleting ? '删除中…' : deletePending ? '继续删除当前聊天记忆' : '删除当前聊天记忆');
-      remove.type = 'button'; remove.disabled = deleting || managementState?.blockedByOtherChat === true || (!deletePending && (managementState?.workBusy === true || !state.chatId));
+      remove.type = 'button'; remove.disabled = deleting || managementState?.blockedByOtherChat === true || (!deletePending && (managementState?.workBusy === true || !hasCurrentIdentity));
       remove.addEventListener('click', async () => {
         if (!await Promise.resolve(confirmImpl({ title: '删除当前聊天记忆', body: '将删除本聊天的摘要、人物状态、人物资料、召回记录及历史派生版本。聊天正文、手动前情和全局 API、提示词设置会保留；手动前情可在“前情”中另行清空。下次建档需要从头开始。', note: '后端数据会移入回收站；这不代表永久擦除。', confirmText: deletePending ? '继续删除' : '删除记忆', cancelText: '取消' }))) { feedback = '已取消删除当前聊天记忆。'; render(foundationState); return; }
         void run(deletePending ? '继续删除当前聊天记忆' : '删除当前聊天记忆', () => memoryManagement.deleteCurrent(), { after: () => { managementState = memoryManagement.getState(); feedback = '当前聊天记忆已删除；聊天正文、手动前情与全局设置均已保留。手动前情可在“前情”中清空。'; return true; }, failed: () => { managementState = memoryManagement.getState(); return true; } });

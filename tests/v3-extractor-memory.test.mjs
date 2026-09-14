@@ -2236,11 +2236,11 @@ test('摘要 prepared 记录最多四路并发，run/checkpoint 等独立写完�
 
 test('历史按钮单楼失败后继续保存独立后楼并撤销授权；刷新零调用，再次点击只补失败楼', async () => {
   let failSecond = true;
-  let automaticSummaryCommits = 0;
+  const automaticSummaryReceipts = [];
   const h = harness({
     initialChat: [user('开始'), assistant('历史一'), assistant('历史二'), assistant('历史三'), assistant('待确认尾楼')],
     automation: { enabled: true, batchSize: 2 },
-    onAutomaticSummaryCommitted: () => { automaticSummaryCommits += 1; },
+    onAutomaticSummaryCommitted: receipt => { automaticSummaryReceipts.push(receipt); },
     utility: options => {
       if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) {
         const content = JSON.parse(options.taskMessages[0].content).payload.canonicalContent;
@@ -2255,7 +2255,10 @@ test('历史按钮单楼失败后继续保存独立后楼并撤销授权；刷�
   assert.equal(h.runtime.getState().rebuildStatus, 'partial');
   assert.equal(h.runtime.shouldBlockMainGeneration(), false, '历史重建失败后必须立即释放主生成门禁');
   assert.equal(h.runtime.getState().rememberedCount, 2, '失败楼后的独立摘要仍应在同批保存');
-  assert.equal(automaticSummaryCommits, 2, '仅两楼正式成功提交发出通知，失败楼不通知');
+  assert.equal(automaticSummaryReceipts.length, 2, '仅两楼正式成功提交发出通知，失败楼不通知');
+  assert.ok(automaticSummaryReceipts.every(receipt => receipt.chatId === CHAT
+    && h.runtime.getState().floors.some(floor => floor.floorId === receipt.floorId && floor.memoryId === receipt.memoryId && floor.status === 'ready')),
+  '自动通知必须携带当前 ready 摘要的 chatId/floorId/memoryId');
   assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 2, '摘要失败不阻断另外两楼独立提交 CSE');
   const callsAtFailure = h.calls.length;
   await h.runtime.refreshAutomation();
@@ -2265,7 +2268,7 @@ test('历史按钮单楼失败后继续保存独立后楼并撤销授权；刷�
   await h.runtime.startHistoricalRebuild();
   await waitFor(() => ['caughtUp', 'waitingRealtime'].includes(h.runtime.getState().rebuildStatus));
   assert.equal(h.runtime.getState().rememberedCount, 3);
-  assert.equal(automaticSummaryCommits, 3, '失败楼后续成功时才补发一次通知');
+  assert.equal(automaticSummaryReceipts.length, 3, '失败楼后续成功时才补发一次通知');
   assert.equal(h.runtime.getState().cseReady, true);
 });
 
@@ -4577,12 +4580,12 @@ test('自动 reconciling、extracting、CSE 全程共用一个门闩，手动入
   const foundationStarted = new Promise(resolve => { foundationStartedResolve = resolve; });
   const extractorStarted = new Promise(resolve => { extractorStartedResolve = resolve; });
   const cseStarted = new Promise(resolve => { cseStartedResolve = resolve; });
-  let automaticSummaryCommits = 0;
+  const automaticSummaryReceipts = [];
   const h = harness({
     modernAnchors: true,
     initialChat: [user('开始'), assistant('已建楼'), user('确认已建楼'), assistant('待确认尾楼')],
     automation: { enabled: false, batchSize: 2 },
-    onAutomaticSummaryCommitted: () => { automaticSummaryCommits += 1; },
+    onAutomaticSummaryCommitted: receipt => { automaticSummaryReceipts.push(receipt); },
     foundationRefresh: async base => {
       if (holdFoundation) {
         holdFoundation = false;
@@ -4623,7 +4626,9 @@ test('自动 reconciling、extracting、CSE 全程共用一个门闩，手动入
   releaseExtractor();
 
   await cseStarted;
-  assert.equal(automaticSummaryCommits, 2, '自动摘要正式提交后按两楼各通知一次人物资料维护');
+  assert.equal(automaticSummaryReceipts.length, 2, '自动摘要正式提交后按两楼各通知一次人物资料维护');
+  assert.ok(automaticSummaryReceipts.every(receipt => receipt.chatId === CHAT
+    && h.runtime.getState().floors.some(floor => floor.floorId === receipt.floorId && floor.memoryId === receipt.memoryId && floor.status === 'ready')));
   assert.equal(h.runtime.getState().activeAutoMemory.phase, 'analyzingCse');
   assert.equal(h.runtime.shouldBlockMainGeneration(), false, '日常自动 CSE 不得阻断主生成');
   const callsDuringCse = h.calls.length;
@@ -4635,9 +4640,9 @@ test('自动 reconciling、extracting、CSE 全程共用一个门闩，手动入
   const callsAfterBatch = h.calls.length;
   await h.runtime.extractFloor(firstFloorId);
   assert.equal(h.calls.length, callsAfterBatch + 1, '批次完成后摘要入口恢复，但不自动重算已存 CSE');
-  assert.equal(automaticSummaryCommits, 2, '手动单楼提取不得冒充自动摘要通知');
+  assert.equal(automaticSummaryReceipts.length, 2, '手动单楼提取不得冒充自动摘要通知');
   await h.runtime.editSummary(firstFloorId, '人工修订后的摘要');
-  assert.equal(automaticSummaryCommits, 2, '人工摘要修订不得触发人物资料维护');
+  assert.equal(automaticSummaryReceipts.length, 2, '人工摘要修订不得触发人物资料维护');
 });
 
 test('历史欠账期间开启自动维护只改设置，不在手动作业结束后偷跑历史', async () => {

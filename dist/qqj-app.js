@@ -4,7 +4,7 @@ import { is_send_press as r, saveSettingsDebounced as i } from "/script.js";
 import { is_group_generating as a } from "/scripts/group-chats.js";
 import { loadWorldInfo as o, selected_world_info as s, world_info as c, world_info_case_sensitive as l, world_info_match_whole_words as u, world_names as d } from "/scripts/world-info.js";
 //#region manifest.json
-var f = "0.1.21", p = "qianqianjie", m = "/api/plugins/st-bainiaodata", h = Object.freeze([
+var f = "0.1.22", p = "qianqianjie", m = "/api/plugins/st-bainiaodata", h = Object.freeze([
 	["v3-floor-", "floor"],
 	["v3-run-", "run"],
 	["v3-checkpoint-", "checkpoint"],
@@ -10908,10 +10908,11 @@ function ol({ text: e = "", queryContext: t = {}, contextSize: n = 8192, maxChar
 var sl = "v3-people-workspace", cl = 24e3, ll = "你是“千千结”的人物基础资料整理员。只整理输入材料中有明确依据、适合长期建档的目标人物资料，不推测或续写剧情。\n\n人物卡和世界书属于明确设定；逐楼 history 的 storyContent 是与该楼有效 summary 同次保存、按用户包裹符设置清洗后的正文，facts 是按目标人物归属筛出的结构事实；CSE Core 是已有的人物分析，不自动等同作者明确设定。旧 AI 档案只能作为待更新的参考。长材料可能通过 sourceFragments 分批提供，本批没出现的来源或字段不代表它们不存在。按目标人物和来源归属整理信息，不要把正文里其他人物的描写、不同人物、不同来源或彼此冲突的说法擅自拼成目标人物事实。遇到来源差异时不要输出核验说明或替作者裁决，只整理能够明确归属的稳定资料。\n\npriorContext 若存在，是用户导入的过去经历资料。只把其中明确属于目标人物、适合长期建档的信息作为参考；过去的短期状态不等于现在仍持续，existingProfile、当前 history 与 CSE 中明确出现的新变化优先。\n\n按基础信息、外貌、身份、性格与 NSFW 五类整理稳定资料。性别、年龄、生日没有明确依据时不要输出对应字段，外观年龄不能当作实际年龄。短期情绪、当前关系变化和一时应对不应写成固定人格。appearance 只填写无法归入细分外貌字段的必要补充，不重复五官、发型、体态、着装等已有内容；notes 只填写无法归入其他字段、仍值得长期保存的人物信息，不写来源说明、整理过程、核验过程、解释或模型想法。主动重新整理时，把原始人物卡、允许的世界书、全历史摘要与结构事实、旧 AI 档案和 CSE 作为资料来源；有明确新值时返回纠正后的新值，没有新信息时省略字段并保留旧值。只有材料明确要求删除旧资料且没有替代值时，才返回空字符串或空 aliases。人工字段由保存层保护，不需要逐字抄回。", ul = `【固定人物资料合同】
 1. 只处理输入 people 中的目标人物。characterCard、allowedWorldInfo、history、cseCoreTraits、priorContext、existingProfile 与 manualProfile 是分开的来源；history.storyContent 是与对应楼有效 summary 同次保存的清洗正文，summary 只是归纳，必须结合该楼目标相关事实判断归属，不得把正文中其他人物的描写写给目标人物，也不得把他人的私密认知当成目标人物资料。priorContext 标记为导入前情，只能作为过去经历背景，不是当前楼或当前状态。
 2. history.auxiliaryStateSnapshot 若存在，是对应楼当前分支当时已保存的只读变量快照，只作人物整理辅助。它可能同时包含多个人物、不完整或过时信息，不能整份归给目标人物，也不能当作人工字段或权威证据；与正文或用户明确事实冲突时以正文和用户明确事实为准。
-3. 只返回一个 JSON 对象；profiles 每个输入人物恰好一项，personKey 必须逐字使用输入中的键，不得新增、遗漏或合并人物。
+3. 只返回一个 JSON 对象，根对象必须包含 profiles 数组；profiles 每个输入人物恰好一项，且每项内部的 personKey 必须逐字使用输入中的键，不得新增、遗漏或合并人物。合法形状示例：{"profiles":[{"personKey":"person-1","name":"示例姓名"}]}。
 4. 每项除 personKey 外只返回需要新增或纠正的字段。有明确新值时返回正确的新值；没有新信息时省略字段，表示保留 existingProfile 旧值。只有材料明确要求删除旧资料且没有替代值时才返回空字符串；aliases 可返回字符串或字符串数组，明确清除 aliases 时返回空字符串或空数组。不要返回 null、对象或其他错误类型。
 5. sourceFragments 是长资料按顺序切出的连续来源片段；part/total 表示同一来源的连续位置，本批可能只包含该来源的一部分。吸收当前批次信息，以 existingProfile 作为前批累计结果继续整理；不要把本批未出现的来源或字段当成不存在，也不要把局部片段当成完整人物档。
 6. manualProfile 和 manualFields 由保存层保护，不需要模型复制；不输出解释、剧情续写、数据库 ID 或 JSON 之外的内容。
+7. 自动增量输入的 summaryUpdates 是本次新摘要，people[].summaryReferences 标明该人物对应的摘要及归属事实；结合 existingProfile 判断是否有新增或纠正，没有变化时该人物只返回 personKey。
 
 【字段中文定义】
 ${qo.map((e) => `${e}（${Xo[e]}）：${Zo[e]}`).join("\n")}`;
@@ -11437,35 +11438,35 @@ function Kl({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 	if (!r || typeof r.getState != "function") throw TypeError("人物工作区 memoryRuntime 无效");
 	if (typeof i != "function" || typeof o != "function") throw TypeError("人物资料生成依赖无效");
 	if (!a || typeof a.filterCandidates != "function") throw TypeError("人物资料来源许可依赖无效");
-	let h = 0, g = null, _ = null, v = 0, y = null, b = Object.freeze([]), x = null, S = null, C = !1, w = !1, T = !1, E = /* @__PURE__ */ new Set(), D = /* @__PURE__ */ new Set(), O = /* @__PURE__ */ new Set(), k = () => {
+	let h = 0, g = null, _ = null, v = 0, y = null, b = Object.freeze([]), x = null, S = null, C = !1, w = !1, T = /* @__PURE__ */ new Set(), E = /* @__PURE__ */ new Set(), D = /* @__PURE__ */ new Map(), O = /* @__PURE__ */ new Set(), k = /* @__PURE__ */ new Map(), A = () => {
 		try {
 			return (typeof f == "function" ? f() : f) === !0;
 		} catch {
 			return !1;
 		}
-	}, A = () => {
+	}, j = () => {
 		let e = H();
-		for (let t of D) try {
+		for (let t of E) try {
 			t(e);
 		} catch {}
 		return e;
-	}, j = () => Object.freeze({ ...t.identity() }), M = (e) => {
-		if (!k() || e.epoch !== h || e.controller.signal.aborted) return !1;
+	}, M = () => Object.freeze({ ...t.identity() }), N = (e) => {
+		if (!A() || e.epoch !== h || e.controller.signal.aborted) return !1;
 		try {
-			return _l(e.identity, j());
+			return _l(e.identity, M());
 		} catch {
 			return !1;
 		}
-	}, N = (e) => {
-		if (!M(e)) throw fl("QQJ_PEOPLE_STALE", "聊天已变化，迟到的人物资料结果没有写入。");
-	}, P = () => {
-		b = Fl(Pl(n.getReachable?.(), r.getState(), _), _);
+	}, P = (e) => {
+		if (!N(e)) throw fl("QQJ_PEOPLE_STALE", "聊天已变化，迟到的人物资料结果没有写入。");
 	}, F = () => {
+		b = Fl(Pl(n.getReachable?.(), r.getState(), _), _);
+	}, I = () => {
 		try {
 			r.setIdentityProjection?.(Ml(_));
 		} catch {}
 	};
-	function I(e) {
+	function L(e) {
 		let t = n.getReachable?.(), i = r.getState(), a = yl(t), o = Vl(t, e.entityId, a, Ml(_)), s = Hl(t, i, e, _, a), c = zl(s), l = Object.freeze({
 			entityId: e.entityId,
 			history: o,
@@ -11482,76 +11483,65 @@ function Kl({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 			key: `${e.entityId}:0:${l.materialSignature}:${c}:1`
 		});
 	}
-	function L(e) {
-		let t = I(e), n = _?.profileMaterialProgressByEntityId?.[e.entityId] ?? null, r = n?.processedHistoryCount ?? 0, i = !!n && r <= t.history.length && zl(t.history.slice(0, r)) === n.materialSignature, a = !n || n.contextSignature !== t.contextSignature;
-		if (!(!i || r < t.history.length) && !a) return null;
-		let o = i ? r : 0, s = !i, c = Object.freeze({
-			entityId: e.entityId,
-			history: t.history,
-			context: t.context,
-			historyStart: o,
-			includeContext: s || a,
-			includeWorldInfo: s,
-			processedHistoryCount: t.processedHistoryCount,
-			materialSignature: t.materialSignature,
-			contextSignature: t.contextSignature
-		});
-		return Object.freeze({
-			...c,
-			key: `${e.entityId}:${o}:${c.materialSignature}:${c.contextSignature}:${Number(s)}`
-		});
-	}
 	function R() {
-		if (!_) return null;
-		let e = Pl(n.getReachable?.(), r.getState(), _).filter((e) => e.selected).map(L).filter(Boolean).filter((e) => !O.has(e.key));
-		if (!e.length) return null;
-		let t = e.some((e) => e.includeWorldInfo), i = e.filter((e) => e.includeWorldInfo === t);
-		return Object.freeze({
-			includeWorldInfo: t,
-			plans: Object.freeze(i),
-			key: i.map((e) => e.key).sort().join("|")
-		});
-	}
-	function z() {
 		let e = r.getState();
 		return !!(e?.memoryWorkBusy || e?.activeExtraction || e?.activeCse);
 	}
-	function B() {
-		T || !k() || (C = !0, !(!_ || w) && (w = !0, setTimeout(() => {
-			w = !1, V();
-		}, 0)));
+	function z() {
+		if (w || !A() || !_ || !D.size || C) return;
+		let e = h;
+		C = !0, setTimeout(() => {
+			C = !1, e === h && V();
+		}, 0);
+	}
+	function B(e) {
+		if (w || !A() || !e || typeof e != "object") return;
+		let t = {
+			chatId: String(e.chatId ?? ""),
+			floorId: String(e.floorId ?? ""),
+			memoryId: String(e.memoryId ?? "")
+		};
+		if (!Co(t.chatId) || !Co(t.floorId) || !Co(t.memoryId)) return;
+		let n;
+		try {
+			n = M();
+		} catch {
+			return;
+		}
+		if (n.chatId !== t.chatId) return;
+		let r = `${t.chatId}:${t.floorId}:${t.memoryId}`;
+		O.has(r) || (O.add(r), D.set(t.floorId, Object.freeze(t)), z());
 	}
 	async function V() {
-		if (T || !C || !_ || g || z()) return;
-		C = !1;
-		let e = R();
-		if (!e) return;
-		let t = new Map(e.plans.map((e) => [e.entityId, e]));
-		try {
-			await J((e) => e.filter((e) => t.has(e.entityId)).map((e) => ({
-				...e,
-				materialPlan: t.get(e.entityId)
-			})), {
+		if (w || !D.size || !_ || g || R()) return;
+		let e = n.getReachable?.(), t = new Map((e?.floorMemories ?? []).filter((e) => e?.recordStatus === "active").map((e) => [e.floorId, e])), r = [];
+		for (let [e, n] of D) {
+			if (n.chatId !== y) {
+				D.delete(e);
+				continue;
+			}
+			let i = t.get(e);
+			i && (D.delete(e), i.id === n.memoryId && r.push(n));
+		}
+		if (r.length) try {
+			await le((e) => e.filter((e) => e.selected), {
 				replaceExisting: !0,
 				automatic: !0,
-				materialPlans: t,
-				includeWorldInfo: e.includeWorldInfo
+				automaticReceipts: r,
+				includeWorldInfo: !1
 			});
-		} catch (t) {
-			if (t?.name !== "AbortError" && t?.code !== "QQJ_PEOPLE_STALE") {
-				for (let t of e.plans) O.add(t.key);
-				try {
-					m?.warn?.("[QQJ people] automatic profile maintenance failed", t);
-				} catch {}
-			}
+		} catch (e) {
+			if (e?.name !== "AbortError" && e?.code !== "QQJ_PEOPLE_STALE") try {
+				m?.warn?.("[QQJ people] automatic profile maintenance failed", e);
+			} catch {}
 		} finally {
-			B();
+			z();
 		}
 	}
 	function H() {
 		let e = Object.freeze([..._?.selectedEntityIds ?? []]), t = Object.freeze([..._?.personOrderEntityIds ?? []]), n = Object.freeze({ ..._?.profilesByEntityId ?? {} }), r = Object.freeze({ ..._?.avatarsByEntityId ?? {} }), i = Object.freeze({ ..._?.identityRedirectsByEntityId ?? {} }), a = Object.freeze([..._?.deletedEntityIds ?? []]), o = Object.freeze({ ..._?.profileMaterialProgressByEntityId ?? {} });
 		return Object.freeze({
-			status: k() ? g?.kind ?? (_ ? "ready" : "idle") : "disabled",
+			status: A() ? g?.kind ?? (_ ? "ready" : "idle") : "disabled",
 			chatId: y,
 			revision: v,
 			selectedEntityIds: e,
@@ -11575,7 +11565,7 @@ function Kl({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 		});
 	}
 	function U(e) {
-		if (!k()) throw fl("QQJ_PEOPLE_DISABLED", "千千结已关闭。");
+		if (!A()) throw fl("QQJ_PEOPLE_DISABLED", "千千结已关闭。");
 		let t = g?.kind === "generating" && [
 			"savingProfile",
 			"savingSelection",
@@ -11585,17 +11575,17 @@ function Kl({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 		let n = {
 			kind: e,
 			epoch: h,
-			identity: j(),
+			identity: M(),
 			controller: new AbortController()
 		};
-		return t ? E.add(n) : g = n, S = null, x = null, A(), n;
+		return t ? T.add(n) : g = n, S = null, x = null, j(), n;
 	}
 	function ee(e, t) {
-		N(e), _ = t.data ?? Il(e.identity.chatId, gl(p)), v = t.revision, y = e.identity.chatId, F(), P();
+		P(e), _ = t.data ?? Il(e.identity.chatId, gl(p)), v = t.revision, y = e.identity.chatId, I(), F();
 	}
 	async function te(t) {
 		let n = await e.read(t.identity);
-		return N(t), n;
+		return P(t), n;
 	}
 	async function W(t, n) {
 		for (let r = 0; r < 4; r += 1) {
@@ -11620,19 +11610,19 @@ function Kl({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 		try {
 			await t();
 		} catch (t) {
-			throw M(e) && t?.name !== "AbortError" && t?.code !== "QQJ_PEOPLE_STALE" && (x = Object.freeze({
+			throw N(e) && t?.name !== "AbortError" && t?.code !== "QQJ_PEOPLE_STALE" && (x = Object.freeze({
 				code: String(t?.code ?? "QQJ_PEOPLE_FAILED"),
 				message: ml(t?.message || "人物资料处理失败。", 500)
 			})), t;
 		} finally {
-			g === e && (g = null), E.delete(e), A(), C && B();
+			g === e && (g = null), T.delete(e), j(), z();
 		}
 		return H();
 	}
 	async function re({ refreshMemory: t = !0 } = {}) {
 		if (g) return H();
 		let n = U("loading");
-		return ne(n, async () => (t && typeof r.refreshStatus == "function" && await r.refreshStatus({ preferCached: !0 }), N(n), ee(n, await e.read(n.identity)), x = null, A()));
+		return ne(n, async () => (t && typeof r.refreshStatus == "function" && await r.refreshStatus({ preferCached: !0 }), P(n), ee(n, await e.read(n.identity)), x = null, j()));
 	}
 	async function G(e) {
 		let t = U("savingSelection");
@@ -11648,7 +11638,7 @@ function Kl({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 					updatedAt: gl(p)
 				};
 			});
-			return O.clear(), x = null, s.state;
+			return x = null, s.state;
 		});
 	}
 	async function ie(e) {
@@ -11825,7 +11815,7 @@ function Kl({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 		}), g = [];
 		if (i) {
 			let t = await c(p);
-			N(e);
+			P(e);
 			let n = await l(t), r = a.filterCandidates({
 				chatId: e.identity.chatId,
 				candidates: n
@@ -11847,7 +11837,79 @@ function Kl({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 			keys: new Map(h.map((e, n) => [e.personKey, t[n].entityId]))
 		};
 	}
-	function ce(e, t, n) {
+	function ce(e, t, i) {
+		let a = n.getReachable?.(), o = r.getState(), s = e.macros, c = Ml(_), l = new Map((a?.floors ?? []).map((e) => [e.id, e])), u = new Map((a?.floorMemories ?? []).filter((e) => e?.recordStatus === "active").map((e) => [e.floorId, e])), d = i.flatMap((e, t) => {
+			let n = u.get(e.floorId);
+			return !n || n.id !== e.memoryId ? [] : [{
+				summaryKey: `summary-${t + 1}`,
+				floor: l.get(e.floorId),
+				memory: n,
+				summary: bl(ml(Rl(n), 4e3), s)
+			}];
+		}), f = new Set(d.map((e) => e.memory.floorId)), p = [];
+		for (let e of t) {
+			let t = /* @__PURE__ */ new Map();
+			for (let n of d) {
+				let r = Vl({
+					...a,
+					floors: n.floor ? [n.floor] : [],
+					floorMemories: [n.memory]
+				}, e.entityId, s, c);
+				if (!r.length) continue;
+				let i = r[0].facts;
+				if (!n.summary && !i) continue;
+				let o = zl({
+					summary: n.summary,
+					...i ? { facts: i } : {}
+				});
+				t.has(o) || t.set(o, { reference: {
+					summaryKey: n.summaryKey,
+					...i ? { facts: i } : {}
+				} });
+			}
+			let n = [...t.values()].map((e) => e.reference);
+			if (!n.length) continue;
+			let r = Hl(a, o, e, _, s), i = (o?.cseSubjects ?? []).find((t) => Qn(t.subjectEntityId, c) === e.entityId), l = [...new Set((i?.core ?? []).filter((e) => f.has(e.sourceFloorId)).map((e) => bl(e.text, s)).filter(Boolean))].sort().map((e) => ({ text: e })), u = zl({
+				summaries: [...t.keys()].sort(),
+				currentName: r.currentName,
+				aliases: r.aliases,
+				cseCoreTraits: l
+			});
+			k.get(e.entityId) !== u && p.push({
+				target: e,
+				context: r,
+				summaryReferences: n,
+				cseCoreTraits: l,
+				signature: u
+			});
+		}
+		if (!p.length) return null;
+		let m = new Set(p.flatMap((e) => e.summaryReferences.map((e) => e.summaryKey))), h = d.filter((e) => m.has(e.summaryKey)).map((e) => ({
+			summaryKey: e.summaryKey,
+			summary: e.summary
+		})), g = p.map(({ target: e, context: t, summaryReferences: n, cseCoreTraits: r }, i) => ({
+			personKey: `person-${i + 1}`,
+			currentName: t.currentName,
+			aliases: t.aliases,
+			summaryReferences: n,
+			cseCoreTraits: r,
+			existingProfile: Cl(e.profile, s),
+			manualProfile: Sl(e.profile, s),
+			manualFields: e.profile?.manualFields ?? []
+		}));
+		return {
+			targets: p.map((e) => e.target),
+			signatures: new Map(p.map((e) => [e.target.entityId, e.signature])),
+			request: {
+				task: "根据本次自动摘要增量更新相关人物的静态基础资料",
+				summaryUpdates: h,
+				people: g,
+				allowedWorldInfo: []
+			},
+			keys: new Map(g.map((e, t) => [e.personKey, p[t].target.entityId]))
+		};
+	}
+	function J(e, t, n) {
 		let r = e?.jsonData ?? e?.textData ?? e;
 		if (!r || typeof r != "object" || Array.isArray(r) || !Array.isArray(r.profiles)) throw fl("QQJ_PEOPLE_GENERATION_INVALID", "人物资料回复格式无效，可重新整理。");
 		let i = new Map([...t.keys()].map((e) => [e, []])), a = 0;
@@ -11885,80 +11947,89 @@ function Kl({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 			unknown: a
 		});
 	}
-	async function J(e, { replaceExisting: t = !1, automatic: a = !1, materialPlans: o = null, includeWorldInfo: s = !0 } = {}) {
-		let c = U("generating");
-		c.automatic = a, c.macros = yl(n.getReachable?.());
-		let l = dl(typeof u == "function" ? u() : u, typeof d == "function" ? d() : d);
-		return ne(c, async () => {
+	async function le(e, { replaceExisting: t = !1, automatic: a = !1, materialPlans: o = null, includeWorldInfo: s = !0, automaticReceipts: c = null } = {}) {
+		let l = U("generating");
+		l.automatic = a, l.macros = yl(n.getReachable?.());
+		let f = dl(typeof u == "function" ? u() : u, typeof d == "function" ? d() : d);
+		return ne(l, async () => {
 			let u = e(Pl(n.getReachable?.(), r.getState(), _));
-			if (!u.length) throw fl("QQJ_PEOPLE_NOTHING_TO_GENERATE", t ? "当前人物不可重新整理。" : "选中的人物都已有基础资料。");
-			let d = o ?? new Map(u.map((e) => [e.entityId, I(e)])), f = u.map((e) => ({
+			if (!u.length) {
+				if (c) return H();
+				throw fl("QQJ_PEOPLE_NOTHING_TO_GENERATE", t ? "当前人物不可重新整理。" : "选中的人物都已有基础资料。");
+			}
+			let d = c ? /* @__PURE__ */ new Map() : o ?? new Map(u.map((e) => [e.entityId, L(e)])), m = u.map((e) => ({
 				...e,
 				materialPlan: e.materialPlan ?? d.get(e.entityId)
-			})), m = await se(c, f, { includeWorldInfo: s }), h = JSON.stringify(m.request).length <= 24e3 ? Object.freeze([{
-				request: m.request,
-				keys: m.keys,
+			})), h = c ? ce(l, u, c) : await se(l, m, { includeWorldInfo: s });
+			if (!h) return H();
+			if (c) {
+				u = h.targets;
+				for (let [e, t] of h.signatures) k.set(e, t);
+			}
+			let g = JSON.stringify(h.request), v = c || g.length <= 24e3 ? Object.freeze([{
+				request: h.request,
+				keys: h.keys,
 				overallIndex: 1,
 				overallTotal: 1
-			}]) : Gl(m.request).map((e) => Object.freeze({
+			}]) : Gl(h.request).map((e) => Object.freeze({
 				...e,
-				keys: /* @__PURE__ */ new Map([[e.personKey, m.keys.get(e.personKey)]])
-			})), g = /* @__PURE__ */ new Set(), v = /* @__PURE__ */ new Map(), y = /* @__PURE__ */ new Map();
-			for (let e of h) for (let t of new Set(e.keys.values())) v.set(t, (v.get(t) ?? 0) + 1);
-			let b = {
+				keys: /* @__PURE__ */ new Map([[e.personKey, h.keys.get(e.personKey)]])
+			})), y = /* @__PURE__ */ new Set(), b = /* @__PURE__ */ new Map(), C = /* @__PURE__ */ new Map();
+			for (let e of v) for (let t of new Set(e.keys.values())) b.set(t, (b.get(t) ?? 0) + 1);
+			let w = {
 				missing: 0,
 				conflicts: 0,
 				invalid: 0,
 				unknown: 0,
 				skipped: 0
-			}, C = H();
-			for (let e of h) {
-				c.batchIndex = e.overallIndex, c.batchTotal = e.overallTotal;
+			}, T = H();
+			for (let e of v) {
+				l.batchIndex = e.overallIndex, l.batchTotal = e.overallTotal;
 				let o = pl(e.request);
 				for (let t of o.people) {
 					let i = e.keys.get(t.personKey), a = Pl(n.getReachable?.(), r.getState(), _).find((e) => e.entityId === i);
-					t.existingProfile = Cl(a?.profile, c.macros), t.manualProfile = Sl(a?.profile, c.macros), t.manualFields = a?.profile?.manualFields ?? [];
+					t.existingProfile = Cl(a?.profile, l.macros), t.manualProfile = Sl(a?.profile, l.macros), t.manualFields = a?.profile?.manualFields ?? [];
 				}
-				A(), N(c);
+				j(), P(l);
 				let s = await i({
-					systemPrompt: l,
+					systemPrompt: f,
 					taskMessages: [{
 						role: "user",
 						content: JSON.stringify(o)
 					}],
 					maxTokens: 3e4,
 					temperature: 0,
-					signal: c.controller.signal,
+					signal: l.controller.signal,
 					includeCharacterCard: !1,
 					worldInfoSource: "none"
 				});
-				N(c);
-				let f = ce(s, e.keys, c.macros);
-				for (let e of f.generated.keys()) y.set(e, (y.get(e) ?? 0) + 1);
-				let m = new Set([...v].filter(([e, t]) => y.get(e) === t).map(([e]) => e));
-				if (b.missing += f.missing, b.conflicts += f.conflicts, b.invalid += f.invalid, b.unknown += f.unknown, !f.generated.size) throw S = Object.freeze({
+				P(l);
+				let m = J(s, e.keys, l.macros);
+				for (let e of m.generated.keys()) C.set(e, (C.get(e) ?? 0) + 1);
+				let h = new Set([...b].filter(([e, t]) => C.get(e) === t).map(([e]) => e));
+				if (w.missing += m.missing, w.conflicts += m.conflicts, w.invalid += m.invalid, w.unknown += m.unknown, !m.generated.size) throw S = Object.freeze({
 					requested: u.length,
-					saved: g.size,
-					batches: h.length,
+					saved: y.size,
+					batches: v.length,
 					completedBatches: e.overallIndex - 1,
-					...b
+					...w
 				}), fl("QQJ_PEOPLE_GENERATION_BINDING_INVALID", "人物资料回复没有可安全绑定的目标；此前批次已保存，可重新整理继续吸收资料。");
-				let x = [], w = 0, T = await W(c, (e) => {
-					let i = { ...pl(e.profilesByEntityId) }, o = { ...pl(e.profileMaterialProgressByEntityId ?? {}) }, s = !1, l = gl(p), u = Ml(e), h = new Set(e.selectedEntityIds.map((e) => Qn(e, u)));
-					x = [], w = 0;
-					for (let [e, n] of f.generated) {
-						if (a && !h.has(e)) {
-							w += 1;
+				let g = [], x = 0, E = await W(l, (e) => {
+					let i = { ...pl(e.profilesByEntityId) }, o = { ...pl(e.profileMaterialProgressByEntityId ?? {}) }, s = !1, u = gl(p), f = Ml(e), _ = new Set(e.selectedEntityIds.map((e) => Qn(e, f)));
+					g = [], x = 0;
+					for (let [e, n] of m.generated) {
+						if (a && !_.has(e)) {
+							x += 1;
 							continue;
 						}
 						let r = i[e];
-						if (r && !t && !g.has(e)) {
-							w += 1;
+						if (r && !t && !y.has(e)) {
+							x += 1;
 							continue;
 						}
 						let o = r?.manualFields ?? [];
 						if (!r && !Object.keys(n).length) {
-							w += 1;
+							x += 1;
 							continue;
 						}
 						let c = {
@@ -11967,7 +12038,7 @@ function Kl({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 						};
 						for (let e of o) c[e] = r[e];
 						if (r && Ll(r, c)) {
-							w += 1;
+							x += 1;
 							continue;
 						}
 						i[e] = {
@@ -11975,92 +12046,92 @@ function Kl({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 							...c,
 							manualFields: [...o],
 							source: o.length ? "manual" : "generated",
-							createdAt: r?.createdAt ?? l,
-							updatedAt: l
-						}, x.push(e), s = !0;
+							createdAt: r?.createdAt ?? u,
+							updatedAt: u
+						}, g.push(e), s = !0;
 					}
-					let _ = n.getReachable?.(), v = r.getState(), y = Pl(_, v, e);
-					for (let t of m) {
-						let n = d.get(t);
-						if (!n || !h.has(t)) continue;
-						let r = y.find((e) => e.entityId === t);
-						if (!r) continue;
-						let i = Vl(_, t, c.macros, u), a = Hl(_, v, r, e, c.macros), f = zl(i), p = zl(a);
-						if (i.length !== n.processedHistoryCount || f !== n.materialSignature || p !== n.contextSignature) continue;
-						let m = {
-							processedHistoryCount: i.length,
-							materialSignature: f,
-							contextSignature: p,
-							updatedAt: l
-						};
-						JSON.stringify(o[t] ?? null) !== JSON.stringify(m) && (o[t] = m, s = !0);
+					if (!c) {
+						let t = n.getReachable?.(), i = r.getState(), a = Pl(t, i, e);
+						for (let n of h) {
+							let r = d.get(n);
+							if (!r || !_.has(n)) continue;
+							let c = a.find((e) => e.entityId === n);
+							if (!c) continue;
+							let p = Vl(t, n, l.macros, f), m = Hl(t, i, c, e, l.macros), h = zl(p), g = zl(m);
+							if (p.length !== r.processedHistoryCount || h !== r.materialSignature || g !== r.contextSignature) continue;
+							let v = {
+								processedHistoryCount: p.length,
+								materialSignature: h,
+								contextSignature: g,
+								updatedAt: u
+							};
+							JSON.stringify(o[n] ?? null) !== JSON.stringify(v) && (o[n] = v, s = !0);
+						}
 					}
 					return s ? {
 						...pl(e),
 						profilesByEntityId: i,
 						profileMaterialProgressByEntityId: o,
-						updatedAt: l
+						updatedAt: u
 					} : null;
 				});
-				for (let e of x) g.add(e);
-				b.skipped += w, C = T.state, S = Object.freeze({
+				for (let e of g) y.add(e);
+				w.skipped += x, T = E.state, S = Object.freeze({
 					requested: u.length,
-					saved: g.size,
-					...h.length > 1 ? {
-						batches: h.length,
+					saved: y.size,
+					...v.length > 1 ? {
+						batches: v.length,
 						completedBatches: e.overallIndex
 					} : {},
-					...b
-				}), A();
+					...w
+				}), j();
 			}
-			let w = new Set([...v].filter(([e, t]) => y.get(e) === t).map(([e]) => e));
-			if (a) for (let [e, t] of d) w.has(e) || O.add(t.key);
-			return x = null, C;
+			return x = null, T;
 		});
 	}
-	async function le() {
-		return O.clear(), J((e) => e.filter((e) => e.selected && !e.profiled));
+	async function Y() {
+		return le((e) => e.filter((e) => e.selected && !e.profiled));
 	}
-	async function Y(e) {
-		return O.clear(), J((t) => t.filter((t) => t.entityId === e && t.selected), { replaceExisting: !0 });
+	async function X(e) {
+		return le((t) => t.filter((t) => t.entityId === e && t.selected), { replaceExisting: !0 });
 	}
-	function X() {
+	function ue() {
 		h += 1, g?.controller.abort();
-		for (let e of E) e.controller.abort();
-		g = null, E.clear(), _ = null, v = 0, y = null, b = Object.freeze([]), x = null, S = null, C = !1, O.clear(), F(), A();
+		for (let e of T) e.controller.abort();
+		g = null, T.clear(), _ = null, v = 0, y = null, b = Object.freeze([]), x = null, S = null, D.clear(), O.clear(), k.clear(), I(), j();
 	}
-	async function ue(e) {
-		return e === !0 ? re() : (X(), H());
+	async function de(e) {
+		return e === !0 ? re() : (ue(), H());
 	}
-	let de = typeof r.subscribe == "function" ? r.subscribe(() => {
+	let fe = typeof r.subscribe == "function" ? r.subscribe(() => {
 		if (_) try {
-			if (j().chatId !== y) return;
-			P(), A(), C && B();
+			if (M().chatId !== y) return;
+			F(), j(), z();
 		} catch {}
 	}) : null;
 	return Object.freeze({
 		refresh: re,
-		start: () => k() ? re() : Promise.resolve(H()),
+		start: () => A() ? re() : Promise.resolve(H()),
 		setSelectedEntityIds: G,
 		setPersonOrderEntityIds: ie,
 		saveProfile: K,
 		saveAvatar: ae,
 		mergePeople: oe,
 		deletePerson: q,
-		generateMissingProfiles: le,
-		regenerateProfile: Y,
+		generateMissingProfiles: Y,
+		regenerateProfile: X,
 		requestAutomaticMaintenance: B,
-		invalidate: X,
-		abortAll: X,
-		setEnabled: ue,
+		invalidate: ue,
+		abortAll: ue,
+		setEnabled: de,
 		getIdentityProjection: () => Ml(_),
 		getState: H,
 		subscribe(e) {
 			if (typeof e != "function") throw TypeError("人物工作区 listener 无效");
-			return D.add(e), () => D.delete(e);
+			return E.add(e), () => E.delete(e);
 		},
 		destroy() {
-			T = !0, de?.(), X();
+			w = !0, fe?.(), ue();
 		}
 	});
 }
@@ -14513,28 +14584,28 @@ function Sd({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 			"failed",
 			"partial"
 		].includes(t.rebuildStatus) || t.rebuildStatus === "waitingRealtime" && t.rebuildHasActionableWork) && n.append(H("p", "qqj-management-notice", "记忆尚未完整。“补齐缺失”会保留已有结果，只处理摘要或人物状态缺口；刷新页面不会自动续跑旧档。"));
-		let i = O?.status === "deleting", a = O?.status === "failed", o = H("div", "v3-foundation-actions qqj-management-actions"), s = $u(t) || i || a, c = H("button", "secondary-action", "刷新状态");
-		c.type = "button", c.disabled = s, c.addEventListener("click", () => {
+		let a = O?.status === "deleting", o = O?.status === "failed", s = H("div", "v3-foundation-actions qqj-management-actions"), c = $u(t) || a || o, l = H("button", "secondary-action", "刷新状态");
+		l.type = "button", l.disabled = c, l.addEventListener("click", () => {
 			he("刷新记忆状态", () => e.refreshStatus({ preferCached: !1 }));
-		}), o.append(c);
-		let l = t.rebuildHasActionableWork ?? !["caughtUp", "waitingRealtime"].includes(t.rebuildStatus);
+		}), s.append(l);
+		let d = t.rebuildHasActionableWork ?? !["caughtUp", "waitingRealtime"].includes(t.rebuildStatus);
 		if (t.rebuildStatus === "rebuilding" && typeof e.pauseHistoricalRebuild == "function") {
 			let n = H("button", "primary-action", "暂停补齐");
 			n.type = "button", n.disabled = !t.activeAutoMemory, n.addEventListener("click", () => {
 				he("暂停补齐", () => e.pauseHistoricalRebuild(), { resultCopy: _e("补齐缺失") });
-			}), o.append(n);
+			}), s.append(n);
 		} else if (!["paused", "failed"].includes(t.cseRebuildStatus)) {
 			let n = e.startHistoricalRebuild ?? e.retryAutomation, r = [
 				"paused",
 				"failed",
 				"partial"
-			].includes(t.rebuildStatus) ? "继续补齐" : "补齐缺失", i = H("button", "primary-action", s ? nd(t) : r);
-			i.type = "button", i.disabled = s || typeof n != "function" || !l, i.addEventListener("click", () => {
+			].includes(t.rebuildStatus) ? "继续补齐" : "补齐缺失", i = H("button", "primary-action", c ? nd(t) : r);
+			i.type = "button", i.disabled = c || typeof n != "function" || !d, i.addEventListener("click", () => {
 				he(r, () => n.call(e, t.chatId), { resultCopy: _e(r) });
-			}), o.append(i);
+			}), s.append(i);
 		}
-		let d = H("button", "secondary-action", "完全重构");
-		d.type = "button", d.disabled = s || typeof e.fullRebuild != "function", d.addEventListener("click", async () => {
+		let f = H("button", "secondary-action", "完全重构");
+		f.type = "button", f.disabled = c || typeof e.fullRebuild != "function", f.addEventListener("click", async () => {
 			if (!await Promise.resolve(u({
 				title: "完全重构当前聊天记忆",
 				body: "当前聊天的摘要及人物状态将从头重新生成，人工修订也会被替换；聊天正文和插件设置保留。",
@@ -14545,14 +14616,14 @@ function Sd({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 				return;
 			}
 			he("完全重构", () => e.fullRebuild(t.chatId), { resultCopy: _e("完全重构") });
-		}), o.append(d);
-		let f = t.cseRebuildStatus === "running" && t.activeAutoMemory?.mode === "cseRebuild", p = ["paused", "failed"].includes(t.cseRebuildStatus), m = H("button", "secondary-action", f ? "暂停人物状态重构" : p ? "继续人物状态重构" : "人物状态重构");
-		m.type = "button", m.disabled = f ? typeof e.pauseCseRebuild != "function" || i : s || typeof e.rebuildCse != "function" || (t.rememberedCount ?? 0) < 1, m.addEventListener("click", async () => {
-			if (f) {
+		}), s.append(f);
+		let p = t.cseRebuildStatus === "running" && t.activeAutoMemory?.mode === "cseRebuild", m = ["paused", "failed"].includes(t.cseRebuildStatus), h = H("button", "secondary-action", p ? "暂停人物状态重构" : m ? "继续人物状态重构" : "人物状态重构");
+		h.type = "button", h.disabled = p ? typeof e.pauseCseRebuild != "function" || a : c || typeof e.rebuildCse != "function" || (t.rememberedCount ?? 0) < 1, h.addEventListener("click", async () => {
+			if (p) {
 				he("暂停人物状态重构", () => e.pauseCseRebuild(), { resultCopy: ve("人物状态重构") });
 				return;
 			}
-			if (p) {
+			if (m) {
 				he("继续人物状态重构", () => e.resumeCseRebuild(t.chatId), { resultCopy: ve("人物状态重构") });
 				return;
 			}
@@ -14566,34 +14637,34 @@ function Sd({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 				return;
 			}
 			he("人物状态重构", () => e.rebuildCse(t.chatId), { resultCopy: ve("人物状态重构") });
-		}), o.append(m), t.cseRebuildStatus !== "idle" && o.append(H("span", "settings-hint", `人物状态${t.cseRebuildStatus === "completed" ? "已完成" : t.cseRebuildStatus === "failed" ? "失败" : t.cseRebuildStatus === "paused" ? "已暂停" : "重构中"} · ${t.cseRebuildCompletedCount ?? 0}/${t.cseRebuildTotalCount ?? 0}`));
-		let h = `摘要待补 ${t.unprocessedCount ?? 0} 楼 · CSE 待分析 ${t.csePendingCount ?? 0} 楼`, _ = a ? "上次删除尚未完成，请先继续删除当前聊天记忆。" : s ? `${nd(t)}，完成后可继续操作。` : ["needsReview", "error"].includes(Ru(t)) || K() ? `当前${K() ? "记忆读取失败" : Lu(Ru(t))}；请先点击“刷新状态”。若仍无法确认真实归属，现有记忆会保留、正文可继续，可复制诊断反馈。` : ae(t) || (t.chatId ? l ? "可用“补齐缺失”保留已有结果；“完全重构”会替换全部摘要与人物状态。" : "当前没有需要补齐的稳定楼。" : "当前记忆状态尚未载入，请点击“刷新状态”。");
-		o.append(H("span", "settings-hint qqj-management-progress", `${h}。${_}`));
-		let v = H("div", "qqj-management-delete");
+		}), s.append(h), t.cseRebuildStatus !== "idle" && s.append(H("span", "settings-hint", `人物状态${t.cseRebuildStatus === "completed" ? "已完成" : t.cseRebuildStatus === "failed" ? "失败" : t.cseRebuildStatus === "paused" ? "已暂停" : "重构中"} · ${t.cseRebuildCompletedCount ?? 0}/${t.cseRebuildTotalCount ?? 0}`));
+		let _ = `摘要待补 ${t.unprocessedCount ?? 0} 楼 · CSE 待分析 ${t.csePendingCount ?? 0} 楼`, v = o ? "上次删除尚未完成，请先继续删除当前聊天记忆。" : c ? `${nd(t)}，完成后可继续操作。` : ["needsReview", "error"].includes(Ru(t)) || K() ? `当前${K() ? "记忆读取失败" : Lu(Ru(t))}；请先点击“刷新状态”。若仍无法确认真实归属，现有记忆会保留、正文可继续，可复制诊断反馈。` : ae(t) || (t.chatId ? d ? "可用“补齐缺失”保留已有结果；“完全重构”会替换全部摘要与人物状态。" : "当前没有需要补齐的稳定楼。" : "当前记忆状态尚未载入，请点击“刷新状态”。");
+		s.append(H("span", "settings-hint qqj-management-progress", `${_}。${v}`));
+		let y = H("div", "qqj-management-delete");
 		if (r) {
-			let e = H("button", "primary-action", i ? "删除中…" : a ? "继续删除当前聊天记忆" : "删除当前聊天记忆");
-			e.type = "button", e.disabled = i || O?.blockedByOtherChat === !0 || !a && (O?.workBusy === !0 || !t.chatId), e.addEventListener("click", async () => {
+			let e = fe(i), n = !!(t.chatId || e?.status === "ready" && e.identity?.chatId), s = H("button", "primary-action", a ? "删除中…" : o ? "继续删除当前聊天记忆" : "删除当前聊天记忆");
+			s.type = "button", s.disabled = a || O?.blockedByOtherChat === !0 || !o && (O?.workBusy === !0 || !n), s.addEventListener("click", async () => {
 				if (!await Promise.resolve(u({
 					title: "删除当前聊天记忆",
 					body: "将删除本聊天的摘要、人物状态、人物资料、召回记录及历史派生版本。聊天正文、手动前情和全局 API、提示词设置会保留；手动前情可在“前情”中另行清空。下次建档需要从头开始。",
 					note: "后端数据会移入回收站；这不代表永久擦除。",
-					confirmText: a ? "继续删除" : "删除记忆",
+					confirmText: o ? "继续删除" : "删除记忆",
 					cancelText: "取消"
 				}))) {
 					g = "已取消删除当前聊天记忆。", Ue(T);
 					return;
 				}
-				he(a ? "继续删除当前聊天记忆" : "删除当前聊天记忆", () => r.deleteCurrent(), {
+				he(o ? "继续删除当前聊天记忆" : "删除当前聊天记忆", () => r.deleteCurrent(), {
 					after: () => (O = r.getState(), g = "当前聊天记忆已删除；聊天正文、手动前情与全局设置均已保留。手动前情可在“前情”中清空。", !0),
 					failed: () => (O = r.getState(), !0)
 				});
-			}), v.append(e);
+			}), y.append(s);
 		}
-		a && O.error ? n.append(H("p", "v3-foundation-feedback error", `上次删除未完成：${O.error} 已保留原聊天身份，可继续删除剩余记录。`)) : O?.status === "completed" && n.append(H("p", "v3-foundation-feedback", "当前聊天记忆已清空；聊天正文、手动前情和全局设置仍保留。手动前情可在“前情”中清空。"));
-		let y = (g || ce(t) || "状态已显示。").replace("；历史召回回执已独立处理。", "");
-		n.append(o, H("p", `v3-foundation-feedback qqj-management-feedback${ce(t) || y.startsWith("记忆读取失败") ? " error" : ""}`, y));
-		let b = Le();
-		return b && n.append(b), n.append(Ie(), Re(t)), r && n.append(v), n;
+		o && O.error ? n.append(H("p", "v3-foundation-feedback error", `上次删除未完成：${O.error} 已保留原聊天身份，可继续删除剩余记录。`)) : O?.status === "completed" && n.append(H("p", "v3-foundation-feedback", "当前聊天记忆已清空；聊天正文、手动前情和全局设置仍保留。手动前情可在“前情”中清空。"));
+		let b = (g || ce(t) || "状态已显示。").replace("；历史召回回执已独立处理。", "");
+		n.append(s, H("p", `v3-foundation-feedback qqj-management-feedback${ce(t) || b.startsWith("记忆读取失败") ? " error" : ""}`, b));
+		let x = Le();
+		return x && n.append(x), n.append(Ie(), Re(t)), r && n.append(y), n;
 	}
 	function Be(e) {
 		if (!p) return;
@@ -16763,9 +16834,7 @@ function Tf({ client: e, contextProvider: t, isEnabled: n = !0 } = {}) {
 		recordKey: bf
 	});
 }
-//#endregion
-//#region src/chat-memory-management.js
-var Ef = "qqj_v3_recall_receipt", Df = (e, t) => Object.assign(Error(t), { code: e }), Of = (e) => structuredClone(e);
+var Ef = Object.freeze(["qqj_v3_recall_receipt", dt]), Df = (e, t) => Object.assign(Error(t), { code: e }), Of = (e) => structuredClone(e);
 function kf(e) {
 	return q(e, { fallback: "删除未完成，请重试。" });
 }
@@ -16847,31 +16916,41 @@ function Af({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 			messages: s.slice(1)
 		};
 	}
-	async function S(e) {
+	let S = (e) => {
+		if (!e || typeof e != "object" || Array.isArray(e) || !Ef.some((t) => Object.hasOwn(e, t))) return null;
+		let t = { ...e };
+		for (let e of Ef) delete t[e];
+		return t;
+	}, C = (e) => Ef.some((t) => Object.hasOwn(e?.extra ?? {}, t)) || Array.isArray(e?.swipe_info) && e.swipe_info.some((e) => Ef.some((t) => Object.hasOwn(e?.extra ?? {}, t)));
+	async function w(e) {
 		let t = v(e), n = [];
 		for (let e of t.chat) {
-			let t = e?.extra;
-			if (!t || typeof t != "object" || Array.isArray(t) || !Object.hasOwn(t, Ef)) continue;
-			n.push({
+			let t = S(e?.extra), r = !1, i = Array.isArray(e?.swipe_info) ? e.swipe_info.map((e) => {
+				let t = S(e?.extra);
+				return t ? (r = !0, {
+					...e,
+					extra: t
+				}) : e;
+			}) : e?.swipe_info;
+			!t && !r || (n.push({
 				message: e,
-				extra: t
-			});
-			let r = { ...t };
-			delete r[Ef], e.extra = r;
+				extra: e.extra,
+				swipeInfo: e.swipe_info
+			}), t && (e.extra = t), r && (e.swipe_info = i));
 		}
 		if (!n.length) return 0;
 		try {
-			if (typeof t.context?.saveChat != "function") throw Df("QQJ_DELETE_CHAT_SAVE_UNAVAILABLE", "宿主不支持保存聊天回执清理结果。");
+			if (typeof t.context?.saveChat != "function") throw Df("QQJ_DELETE_CHAT_SAVE_UNAVAILABLE", "宿主不支持保存聊天记忆标识清理结果。");
 			await t.context.saveChat(), v(e);
 			let r = await x(e);
-			if (r.messages.length !== t.chat.length || r.messages.some((e) => e?.extra && Object.hasOwn(e.extra, Ef))) throw Df("QQJ_DELETE_RECEIPT_VERIFY_FAILED", "聊天回执没有完成持久化；原身份已保留，可重试。");
+			if (r.messages.length !== t.chat.length || r.messages.some(C)) throw Df("QQJ_DELETE_RECEIPT_VERIFY_FAILED", "聊天记忆标识没有完成持久化；原身份已保留，可重试。");
 			return v(e), n.length;
 		} catch (e) {
-			for (let e of n) e.message.extra = e.extra;
+			for (let e of n) e.message.extra = e.extra, e.message.swipe_info = e.swipeInfo;
 			throw e;
 		}
 	}
-	async function C(e) {
+	async function T(e) {
 		let t = v(e).context, n = t.chatMetadata, r = Of(n.qianqianjie);
 		delete n.qianqianjie;
 		try {
@@ -16885,7 +16964,7 @@ function Af({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 			throw n.qianqianjie = r, e;
 		}
 	}
-	async function w(t, n, r) {
+	async function E(t, n, r) {
 		if (!n || typeof n.recordId != "string" || !Number.isSafeInteger(n.revision) || n.revision < 1) throw Df("QQJ_DELETE_RECORD_INVALID", "后端返回了无法安全删除的记录版本。");
 		try {
 			await e.remove(t, n.recordId, n.revision, { signal: r });
@@ -16893,7 +16972,7 @@ function Af({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 			if (e?.status !== 404) throw e;
 		}
 	}
-	async function T(n) {
+	async function D(n) {
 		let { identity: r, controller: i } = n, a = `chat-${r.chatId}`;
 		if (!n.visibilityRestored) {
 			n.phase = "restoringVisibility", _(), v(r);
@@ -16905,24 +16984,24 @@ function Af({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 		let o = await e.list(a, { signal: i.signal });
 		if (!Array.isArray(o)) throw Df("QQJ_DELETE_LIST_INVALID", "后端没有返回可核对的记录清单。");
 		let c = [...o], l = c.filter((e) => e?.recordId !== df), u = c.filter((e) => e?.recordId === df);
-		for (let e of [...l, ...u]) v(r), await w(a, e, i.signal), n.deletedCount += 1;
+		for (let e of [...l, ...u]) v(r), await E(a, e, i.signal), n.deletedCount += 1;
 		n.phase = "deletingBinding", _();
 		try {
-			await w(ef, {
+			await E(ef, {
 				...await e.get(ef, `binding-${r.chatId}`),
 				recordId: `binding-${r.chatId}`
 			}, i.signal), n.deletedCount += 1;
 		} catch (e) {
 			if (e?.status !== 404) throw e;
 		}
-		return n.phase = "clearingHost", _(), await S(r), await C(r), b(r.chatId), t.resume(r.chatId), Object.freeze({
+		return n.phase = "clearingHost", _(), await w(r), await T(r), b(r.chatId), t.resume(r.chatId), Object.freeze({
 			status: "completed",
 			hostChatId: r.hostChatId,
 			chatId: r.chatId,
 			deletedCount: n.deletedCount
 		});
 	}
-	function E() {
+	function O() {
 		if (d) return h(d.identity) ? d.promise : Promise.reject(Df("QQJ_DELETE_OTHER_CHAT_ACTIVE", "另一聊天正在删除记忆；当前聊天没有执行删除。"));
 		let e;
 		try {
@@ -16940,7 +17019,7 @@ function Af({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 			visibilityRestored: f?.visibilityRestored === !0,
 			promise: null
 		};
-		return d = n, f = null, p = null, _(), n.promise = T(n).then((e) => (p = e, e)).catch((t) => {
+		return d = n, f = null, p = null, _(), n.promise = D(n).then((e) => (p = e, e)).catch((t) => {
 			throw f = Object.freeze({
 				identity: e,
 				error: kf(t),
@@ -16952,7 +17031,7 @@ function Af({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 		}), n.promise;
 	}
 	return Object.freeze({
-		deleteCurrent: E,
+		deleteCurrent: O,
 		getState: g,
 		subscribe(e) {
 			if (typeof e != "function") throw TypeError("删除状态 listener 无效");
@@ -21030,7 +21109,11 @@ function im({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 								});
 								continue;
 							}
-							u(), m ??= e.assistantSeq, h = e.assistantSeq, g.push(e.hostLocator?.messageIndex), f += 1;
+							u({
+								chatId: T.root.chatId,
+								floorId: e.id,
+								memoryId: n.memoryId
+							}), m ??= e.assistantSeq, h = e.assistantSeq, g.push(e.hostLocator?.messageIndex), f += 1;
 						}
 						if (!x) continue;
 					}
@@ -25184,7 +25267,7 @@ var Xg = () => ({
 	notifyUser: (e) => globalThis.toastr?.[e?.kind]?.(e?.text),
 	isMainGenerationActive: Lg,
 	onFullRebuildCommitted: () => g_?.invalidate("fullRebuild"),
-	onAutomaticSummaryCommitted: () => m_?.requestAutomaticMaintenance(),
+	onAutomaticSummaryCommitted: (e) => m_?.requestAutomaticMaintenance(e),
 	extractorPromptGuidance: s_,
 	csePromptGuidance: c_,
 	processingPrompt: u_,

@@ -78,6 +78,9 @@ test('人物资料业务指导可替换，固定合同与基础处理层始终�
   assert.doesNotMatch(custom, /人物卡和世界书属于明确设定/);
   assert.match(custom, new RegExp(PROFILE_FIXED_CONTRACT.slice(0, 16)));
   assert.match(custom, /personKey 必须逐字使用/);
+  assert.match(custom, /根对象必须包含 profiles 数组/);
+  assert.match(custom, /\{"profiles":\[\{"personKey":"person-1","name":"示例姓名"\}\]\}/);
+  assert.match(custom, /summaryUpdates 是本次新摘要/);
   assert.match(custom, /没有新信息时省略字段/);
   assert.match(custom, /本批可能只包含该来源的一部分/);
   assert.match(custom, /明确要求删除旧资料且没有替代值/);
@@ -698,147 +701,145 @@ test('外部页面改过同一选择或同一人物资料时拒绝静默覆盖',
   assert.equal(h.db.records.get(key).data.profilesByEntityId[second.id].name, '其他页面资料');
 });
 
-test('已选重要人物后台首建不阻塞选择，完整相关楼正文落入输入且成功进度防刷新重复请求', async () => {
+test('单次自动摘要只合并一次相关人物增量，不读取旧正文、世界书或写全历史进度', async () => {
   const requests = [];
-  let releaseFirst;
+  const h = harness({ many: true, generate: async options => {
+    const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
+    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey })) } };
+  } });
+  const targets = h.peopleEntities.slice(0, 10);
+  const oldFloors = ids.slice(0, 8).map((id, index) => ({ id, assistantSeq: index + 1, content: { canonicalContent: `旧正文${index}${'甲'.repeat(8000)}` } }));
+  const oldMemories = oldFloors.map((floor, index) => ({ id: `${String(index + 20).padStart(8, '0')}-2222-4222-8222-${String(index + 20).padStart(12, '0')}`, floorId: floor.id, recordStatus: 'active',
+    summary: { effectiveSource: 'ai', aiText: `旧摘要${index}` }, participants: targets.map(person => ({ entityId: person.id })) }));
+  const floorId = ids[14], memoryId = ids[15];
+  h.setReachable({ ...h.reachable,
+    floors: [...oldFloors, { id: floorId, assistantSeq: 9, content: { canonicalContent: `本次正文${'乙'.repeat(30000)}` } }],
+    floorMemories: [...oldMemories, { id: memoryId, floorId, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '本次十人共同收到一封信。' }, participants: targets.map(person => ({ entityId: person.id })) }],
+  });
+  await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds(targets.map(person => person.id));
+  for (const target of targets) await h.runtime.saveProfile(target.id, { name: target.displayName, aliases: '', background: '', appearance: '', personality: '', notes: '已有档案' });
+  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId, memoryId });
+  await waitFor(() => requests.length === 1 && h.runtime.getState().active === null);
+  assert.equal(requests.length, 1); assert.equal(requests[0].people.length, 10); assert.equal(requests[0].summaryUpdates.length, 1);
+  assert.equal(requests[0].summaryUpdates[0].summary, '本次十人共同收到一封信。');
+  assert.ok(requests[0].people.every(person => person.summaryReferences.length === 1 && person.manualProfile.notes === '已有档案'));
+  assert.equal(Object.hasOwn(requests[0], 'batch'), false); assert.deepEqual(requests[0].allowedWorldInfo, []);
+  assert.equal(JSON.stringify(requests[0]).includes('旧正文'), false); assert.equal(JSON.stringify(requests[0]).includes('本次正文'), false);
+  assert.deepEqual(h.runtime.getState().profileMaterialProgressByEntityId, {}, '自动增量不得伪写全历史覆盖进度');
+});
+
+test('自动摘要按归属和稳定内容本地去重，参与人物的自由摘要不会因 facts 为空丢失', async () => {
+  const requests = [];
+  const h = harness({ generate: async options => {
+    const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
+    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, notes: '已吸收生日' })) } };
+  } });
+  const [target, other] = h.peopleEntities;
+  await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
+  const unrelatedFloor = ids[8], unrelatedMemory = ids[9];
+  h.setReachable({ ...h.reachable, floors: [{ id: unrelatedFloor, assistantSeq: 1, content: { canonicalContent: '无关正文' } }],
+    floorMemories: [{ id: unrelatedMemory, floorId: unrelatedFloor, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '另一人物出现。' }, participants: [{ entityId: other.id }] }] });
+  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: unrelatedFloor, memoryId: unrelatedMemory });
+  await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(requests.length, 0);
+
+  const firstFloor = ids[10], firstMemory = ids[11];
+  const birthdayMemory = { id: firstMemory, floorId: firstFloor, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '人物1说自己的生日是三月九日。' }, participants: [{ entityId: target.id }] };
+  h.setReachable({ ...h.reachable, floors: [{ id: firstFloor, assistantSeq: 2, content: { canonicalContent: '生日正文' } }], floorMemories: [birthdayMemory] });
+  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: firstFloor, memoryId: firstMemory });
+  await waitFor(() => requests.length === 1 && h.runtime.getState().active === null);
+  assert.equal(requests[0].summaryUpdates[0].summary, '人物1说自己的生日是三月九日。');
+  assert.deepEqual(requests[0].people[0].summaryReferences, [{ summaryKey: 'summary-1' }], '只有 participants 也必须保留自由摘要归属');
+  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: firstFloor, memoryId: firstMemory });
+  await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(requests.length, 1, '同一通知不重发');
+
+  const secondFloor = ids[12], secondMemory = ids[13];
+  h.setReachable({ ...h.reachable, floors: [{ id: secondFloor, assistantSeq: 99, content: { canonicalContent: '不同定位的相同事实' } }],
+    floorMemories: [{ ...birthdayMemory, id: secondMemory, floorId: secondFloor }] });
+  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: secondFloor, memoryId: secondMemory });
+  await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(requests.length, 1, '定位和版本变化但稳定来源相同不请求');
+});
+
+test('自动摘要同批稳定内容去重且签名不受回执到达顺序影响', async () => {
+  const requests = [];
+  const h = harness({ generate: async options => {
+    const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
+    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, notes: `轮次${requests.length}` })) } };
+  } });
+  const target = h.peopleEntities[0];
+  await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
+  const uuids = Array.from({ length: 14 }, (_, index) => `${String(index + 40).padStart(8, '0')}-3333-4333-8333-${String(index + 40).padStart(12, '0')}`);
+  const memory = (index, summary) => ({ id: uuids[index * 2 + 1], floorId: uuids[index * 2], recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: summary }, participants: [{ entityId: target.id }] });
+  const all = [memory(0, '稳定摘要A')];
+  const publish = entries => h.setReachable({ ...h.reachable,
+    floors: entries.map((item, index) => ({ id: item.floorId, assistantSeq: index + 1 })), floorMemories: entries });
+  const notify = item => h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: item.floorId, memoryId: item.id });
+  publish(all); notify(all[0]); await waitFor(() => requests.length === 1 && h.runtime.getState().active === null);
+
+  const duplicateA = [memory(1, '稳定摘要A'), memory(2, '稳定摘要A')]; all.push(...duplicateA); publish(all);
+  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: true }); duplicateA.forEach(notify);
+  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: false }); await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(requests.length, 1, '已处理 A 后合并到达 A/A 仍是相同稳定来源');
+
+  const pairAB = [memory(3, '稳定摘要A'), memory(4, '稳定摘要B')]; all.push(...pairAB); publish(all);
+  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: true }); pairAB.forEach(notify);
+  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: false }); await waitFor(() => requests.length === 2 && h.runtime.getState().active === null);
+  assert.equal(requests[1].summaryUpdates.length, 2);
+
+  const pairBA = [memory(5, '稳定摘要B'), memory(6, '稳定摘要A')]; all.push(...pairBA); publish(all);
+  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: true }); pairBA.forEach(notify);
+  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: false }); await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(requests.length, 2, '相同 A/B 内容仅回执到达顺序改变不请求');
+});
+
+test('自动摘要在记忆忙态和人物生成中保留新通知，并将后续通知合成一次调用', async () => {
+  const requests = []; let releaseFirst;
   const firstGate = new Promise(resolve => { releaseFirst = resolve; });
   const h = harness({ generate: async options => {
     const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
     if (requests.length === 1) await firstGate;
-    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, name: person.currentName, notes: `完成${requests.length}` })) } };
+    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, notes: `轮次${requests.length}` })) } };
   } });
-  const [target, other] = h.peopleEntities;
-  const firstFloor = ids[10], unrelatedFloor = ids[11];
-  const fullBody = `第1楼完整正文：人物1左眉旧疤，喜欢无糖热茶。${'正文'.repeat(3000)}结尾仍是人物1。`;
-  h.setReachable({
-    ...h.reachable,
-    floors: [
-      { id: firstFloor, assistantSeq: 1, content: { canonicalContent: fullBody } },
-      { id: unrelatedFloor, assistantSeq: 2, content: { canonicalContent: '第2楼只有人物2的私密往事。' } },
-    ],
-    floorMemories: [
-      { floorId: firstFloor, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '人物1在第1楼出现。' }, participants: [{ entityId: target.id }], observations: [{ subjectEntityId: target.id, kind: 'physical', description: '左眉旧疤' }] },
-      { floorId: unrelatedFloor, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '人物2在第2楼出现。' }, participants: [{ entityId: other.id }], privateCognition: [{ ownerEntityId: other.id, kind: 'thought', content: '只属于人物2' }] },
-    ],
-  });
-  await h.runtime.refresh({ refreshMemory: false });
-  const selected = await h.runtime.setSelectedEntityIds([target.id]);
-  assert.equal(selected.status, 'ready'); assert.equal(requests.length, 0, '选择保存本身不启动人物模型');
-  h.runtime.requestAutomaticMaintenance();
+  const target = h.peopleEntities[0];
+  await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
+  const memories = [0, 1, 2].map(index => ({ id: ids[index + 9], floorId: ids[index + 5], recordStatus: 'active',
+    summary: { effectiveSource: 'ai', aiText: `新增摘要${index + 1}` }, participants: [{ entityId: target.id }] }));
+  h.setReachable({ ...h.reachable, floors: memories.map((memory, index) => ({ id: memory.floorId, assistantSeq: index + 1, content: { canonicalContent: `正文${index + 1}` } })), floorMemories: memories });
+  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: true });
+  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: memories[0].floorId, memoryId: memories[0].id });
+  await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(requests.length, 0);
+  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: false });
   await waitFor(() => requests.length === 1 && h.runtime.getState().active?.kind === 'generating');
-  const initialChars = JSON.stringify(requests[0]).length;
-  assert.equal(requests[0].people[0].history.length, 1);
-  assert.equal(requests[0].people[0].history[0].storyContent, fullBody);
-  assert.match(requests[0].people[0].history[0].facts.observations[0].description, /左眉旧疤/);
-  assert.equal(JSON.stringify(requests[0]).includes('只属于人物2'), false);
+  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: memories[1].floorId, memoryId: memories[1].id });
+  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: memories[2].floorId, memoryId: memories[2].id });
   releaseFirst();
-  await waitFor(() => h.runtime.getState().active === null && h.runtime.getState().profileMaterialProgressByEntityId[target.id]);
-  assert.equal(h.runtime.getState().profileMaterialProgressByEntityId[target.id].processedHistoryCount, 1);
-  assert.ok(initialChars > fullBody.length, '报告实际请求包含完整正文及结构字段');
-
-  h.notifyMemory(); h.notifyMemory();
-  await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(requests.length, 1, '只有状态通知时材料签名相同，不重复请求');
-  h.runtime.invalidate(); await h.runtime.refresh({ refreshMemory: false });
-  await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(requests.length, 1, '冷重载读取已保存进度后不重复请求');
-});
-
-test('自动摘要通知只送新增相关楼，无关楼与人工正文变化不触发人物请求', async () => {
-  const requests = [];
-  const h = harness({ generate: async options => {
-    const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
-    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, name: person.currentName, notes: `轮次${requests.length}` })) } };
-  } });
-  const [target, other] = h.peopleEntities;
-  const firstFloor = ids[8], secondFloor = ids[9], unrelatedFloor = ids[10];
-  const firstMemory = { floorId: firstFloor, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '人物1初见。' }, participants: [{ entityId: target.id }] };
-  h.setReachable({ ...h.reachable,
-    floors: [{ id: firstFloor, assistantSeq: 1, content: { canonicalContent: '人物1第一楼完整正文。' } }],
-    floorMemories: [firstMemory],
-  });
-  await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]); h.runtime.requestAutomaticMaintenance();
-  await waitFor(() => requests.length === 1 && h.runtime.getState().active === null);
-
-  h.setReachable({ ...h.reachable,
-    floors: [...h.reachable.floors, { id: unrelatedFloor, assistantSeq: 2, content: { canonicalContent: '人物2新增楼正文。' } }],
-    floorMemories: [...h.reachable.floorMemories, { floorId: unrelatedFloor, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '人物2新增。' }, participants: [{ entityId: other.id }] }],
-  });
-  h.notifyMemory(); h.runtime.requestAutomaticMaintenance(); await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(requests.length, 1, '未识别为目标相关的楼不得猜测全读');
-
-  h.setReachable({ ...h.reachable,
-    floors: [...h.reachable.floors, { id: secondFloor, assistantSeq: 3, content: { canonicalContent: '人物1第三楼新增完整正文。' } }],
-    floorMemories: [...h.reachable.floorMemories, { floorId: secondFloor, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '人物1新增。' }, participants: [{ entityId: target.id }] }],
-  });
-  h.notifyMemory(); h.runtime.requestAutomaticMaintenance(); await waitFor(() => requests.length === 2 && h.runtime.getState().active === null);
-  assert.deepEqual(requests[1].people[0].history.map(item => item.sourceFloor), [3]);
-  assert.equal(requests[1].people[0].history[0].storyContent, '人物1第三楼新增完整正文。');
-  assert.equal(requests[1].people[0].characterCard, null); assert.deepEqual(requests[1].people[0].cseCoreTraits, []);
-  assert.deepEqual(requests[1].allowedWorldInfo, [], '正常新增不重复扫描并投入静态世界书');
-  assert.equal(requests[1].people[0].existingProfile.notes, '轮次1');
-
-  const changedFloors = h.reachable.floors.map(floor => floor.id === firstFloor
-    ? { ...floor, content: { canonicalContent: '人物1第一楼正文被较早修订。' } } : floor);
-  h.setReachable({ ...h.reachable, floors: changedFloors }); h.notifyMemory();
-  await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(requests.length, 2, '人工正文变化与普通记忆通知不自动整理人物资料');
-});
-
-test('自动摘要待办等待记忆忙态，人工 Core 通知不单独触发且失败材料不循环重试', async () => {
-  const requests = [];
-  let fail = false;
-  const h = harness({ generate: async options => {
-    const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
-    if (fail) throw new Error('后台模拟失败');
-    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, name: person.currentName, notes: `更新${requests.length}` })) } };
-  } });
-  const target = h.peopleEntities[0], floorId = ids[12];
-  h.setReachable({ ...h.reachable,
-    floors: [{ id: floorId, assistantSeq: 1, content: { canonicalContent: '人物1首楼正文。' } }],
-    floorMemories: [{ floorId, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '人物1首楼。' }, participants: [{ entityId: target.id }] }],
-  });
-  await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]); h.runtime.requestAutomaticMaintenance();
-  await waitFor(() => requests.length === 1 && h.runtime.getState().active === null);
-
-  const changedCore = h.memoryState.cseSubjects.map(subject => subject.subjectEntityId === target.id
-    ? { ...subject, core: [...subject.core, { text: '长期偏爱无糖热茶', origin: 'delta', sourceFloorId: floorId }] } : subject);
-  h.setMemoryState({ ...h.memoryState, cseSubjects: changedCore });
-  await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(requests.length, 1, '人工 Core 修订与普通状态通知不单独触发人物请求');
-
-  const automaticFloor = ids[15];
-  h.setReachable({ ...h.reachable,
-    floors: [...h.reachable.floors, { id: automaticFloor, assistantSeq: 2, content: { canonicalContent: '人物1自动摘要的新材料。' } }],
-    floorMemories: [...h.reachable.floorMemories, { floorId: automaticFloor, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '人物1自动新增。' }, participants: [{ entityId: target.id }] }],
-  });
-  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: true, activeExtraction: { floorId: automaticFloor }, activeCse: { floorId: automaticFloor } });
-  h.runtime.requestAutomaticMaintenance(); await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(requests.length, 1, '自动摘要通知在记忆忙态只保留待办');
-  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: false, activeExtraction: null, activeCse: null });
   await waitFor(() => requests.length === 2 && h.runtime.getState().active === null);
-  assert.deepEqual(requests[1].people[0].history.map(item => item.sourceFloor), [2]);
-  assert.match(requests[1].people[0].cseCoreTraits.map(item => item.text).join('|'), /无糖热茶/);
-  assert.deepEqual(requests[1].allowedWorldInfo, []);
-  h.notifyMemory(); h.notifyMemory(); await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(requests.length, 2, 'Core 已覆盖后纯状态通知零请求');
+  assert.equal(requests[1].summaryUpdates.length, 2); assert.equal(requests.length, 2, '生成中到达的两条通知只形成后一轮一次调用');
+});
 
-  const failedFloor = ids[13]; fail = true;
-  h.setReachable({ ...h.reachable,
-    floors: [...h.reachable.floors, { id: failedFloor, assistantSeq: 3, content: { canonicalContent: '人物1失败轮新增正文。' } }],
-    floorMemories: [...h.reachable.floorMemories, { floorId: failedFloor, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '人物1失败轮。' }, participants: [{ entityId: target.id }] }],
-  });
-  h.notifyMemory(); h.runtime.requestAutomaticMaintenance(); await waitFor(() => requests.length === 3 && h.runtime.getState().active === null);
-  const progressAfterFailure = structuredClone(h.runtime.getState().profileMaterialProgressByEntityId[target.id]);
-  h.notifyMemory(); h.notifyMemory(); await new Promise(resolve => setTimeout(resolve, 30));
-  assert.equal(requests.length, 3, '相同失败材料不因状态通知循环重试');
-  assert.deepEqual(h.runtime.getState().profileMaterialProgressByEntityId[target.id], progressAfterFailure, '失败不推进材料进度');
+test('自动增量失败不自我重排，invalidate 后旧 finally 不复活待办', async () => {
+  let calls = 0, fail = true, release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const h = harness({ generate: async options => {
+    calls += 1;
+    if (fail) throw new Error('模拟自动失败');
+    await gate;
+    const request = JSON.parse(options.taskMessages[0].content);
+    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey })) } };
+  } });
+  const target = h.peopleEntities[0], firstFloor = ids[7], firstMemory = ids[8], secondFloor = ids[9], secondMemory = ids[10];
+  const makeMemory = (id, floorId, text) => ({ id, floorId, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: text }, participants: [{ entityId: target.id }] });
+  h.setReachable({ ...h.reachable, floors: [{ id: firstFloor, assistantSeq: 1 }, { id: secondFloor, assistantSeq: 2 }],
+    floorMemories: [makeMemory(firstMemory, firstFloor, '失败摘要'), makeMemory(secondMemory, secondFloor, '迟到摘要')] });
+  await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
+  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: firstFloor, memoryId: firstMemory });
+  await waitFor(() => calls === 1 && h.runtime.getState().active === null);
+  h.notifyMemory(); h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: firstFloor, memoryId: firstMemory });
+  await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(calls, 1, '失败材料不因状态通知或重复回执重试');
 
-  const nextFloor = ids[14]; fail = false;
-  h.setReachable({ ...h.reachable,
-    floors: [...h.reachable.floors, { id: nextFloor, assistantSeq: 4, content: { canonicalContent: '人物1后续新材料。' } }],
-    floorMemories: [...h.reachable.floorMemories, { floorId: nextFloor, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '人物1后续。' }, participants: [{ entityId: target.id }] }],
-  });
-  h.notifyMemory(); h.runtime.requestAutomaticMaintenance(); await waitFor(() => requests.length === 4 && h.runtime.getState().active === null);
-  assert.deepEqual(requests[3].people[0].history.map(item => item.sourceFloor), [3, 4], '新自动摘要到达后从旧成功位置重新吸收未覆盖尾部');
+  fail = false;
+  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: secondFloor, memoryId: secondMemory });
+  await waitFor(() => calls === 2 && h.runtime.getState().active?.kind === 'generating');
+  h.runtime.invalidate(); release();
+  await new Promise(resolve => setTimeout(resolve, 30)); assert.equal(calls, 2, '失效后的旧收尾不得创建新任务');
 });

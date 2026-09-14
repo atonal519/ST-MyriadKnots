@@ -1,9 +1,11 @@
 import { CHAT_IDENTITY_COLLECTION } from './chat-identity.js';
 import { isUuid } from './host-context.js';
 import { V3_ROOT_RECORD_ID } from './v3/foundation-store.js';
+import { MESSAGE_FLOOR_ANCHOR_KEY } from './v3/message-floor-anchor.js';
 import { publicErrorMessage } from './public-error.js';
 
 const RECEIPT_KEY = 'qqj_v3_recall_receipt';
+const MEMORY_MESSAGE_KEYS = Object.freeze([RECEIPT_KEY, MESSAGE_FLOOR_ANCHOR_KEY]);
 const errorWith = (code, message) => Object.assign(new Error(message), { code });
 const clone = value => structuredClone(value);
 
@@ -93,30 +95,45 @@ export function createChatMemoryManagement({
     return { metadata: header.chat_metadata, messages: payload.slice(1) };
   }
 
-  async function clearReceipts(identity) {
+  const clearMemoryKeys = extra => {
+    if (!extra || typeof extra !== 'object' || Array.isArray(extra) || !MEMORY_MESSAGE_KEYS.some(key => Object.hasOwn(extra, key))) return null;
+    const next = { ...extra };
+    for (const key of MEMORY_MESSAGE_KEYS) delete next[key];
+    return next;
+  };
+  const hasMemoryKeys = message => MEMORY_MESSAGE_KEYS.some(key => Object.hasOwn(message?.extra ?? {}, key))
+    || (Array.isArray(message?.swipe_info) && message.swipe_info.some(swipe => MEMORY_MESSAGE_KEYS.some(key => Object.hasOwn(swipe?.extra ?? {}, key))));
+
+  async function clearMessageMemoryKeys(identity) {
     const snapshot = currentHost(identity);
     const changed = [];
     for (const message of snapshot.chat) {
-      const extra = message?.extra;
-      if (!extra || typeof extra !== 'object' || Array.isArray(extra) || !Object.hasOwn(extra, RECEIPT_KEY)) continue;
-      changed.push({ message, extra });
-      const next = { ...extra };
-      delete next[RECEIPT_KEY];
-      message.extra = next;
+      const nextExtra = clearMemoryKeys(message?.extra);
+      let swipeChanged = false;
+      const nextSwipeInfo = Array.isArray(message?.swipe_info) ? message.swipe_info.map(swipe => {
+        const next = clearMemoryKeys(swipe?.extra);
+        if (!next) return swipe;
+        swipeChanged = true;
+        return { ...swipe, extra: next };
+      }) : message?.swipe_info;
+      if (!nextExtra && !swipeChanged) continue;
+      changed.push({ message, extra: message.extra, swipeInfo: message.swipe_info });
+      if (nextExtra) message.extra = nextExtra;
+      if (swipeChanged) message.swipe_info = nextSwipeInfo;
     }
     if (!changed.length) return 0;
     try {
-      if (typeof snapshot.context?.saveChat !== 'function') throw errorWith('QQJ_DELETE_CHAT_SAVE_UNAVAILABLE', '宿主不支持保存聊天回执清理结果。');
+      if (typeof snapshot.context?.saveChat !== 'function') throw errorWith('QQJ_DELETE_CHAT_SAVE_UNAVAILABLE', '宿主不支持保存聊天记忆标识清理结果。');
       await snapshot.context.saveChat();
       currentHost(identity);
       const persisted = await readPersistedChat(identity);
-      if (persisted.messages.length !== snapshot.chat.length || persisted.messages.some(message => message?.extra && Object.hasOwn(message.extra, RECEIPT_KEY))) {
-        throw errorWith('QQJ_DELETE_RECEIPT_VERIFY_FAILED', '聊天回执没有完成持久化；原身份已保留，可重试。');
+      if (persisted.messages.length !== snapshot.chat.length || persisted.messages.some(hasMemoryKeys)) {
+        throw errorWith('QQJ_DELETE_RECEIPT_VERIFY_FAILED', '聊天记忆标识没有完成持久化；原身份已保留，可重试。');
       }
       currentHost(identity);
       return changed.length;
     } catch (error) {
-      for (const item of changed) item.message.extra = item.extra;
+      for (const item of changed) { item.message.extra = item.extra; item.message.swipe_info = item.swipeInfo; }
       throw error;
     }
   }
@@ -184,7 +201,7 @@ export function createChatMemoryManagement({
     } catch (error) { if (error?.status !== 404) throw error; }
 
     operation.phase = 'clearingHost'; notify();
-    await clearReceipts(identity);
+    await clearMessageMemoryKeys(identity);
     await clearMetadata(identity);
     invalidateRuntimes(identity.chatId);
     session.resume(identity.chatId);

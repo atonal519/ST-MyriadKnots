@@ -1335,7 +1335,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
                 notifyOnce(`extracting:${reason}:${capturedInputKey ?? inputKey}:${floor.id}:${unfinished}`, { kind: 'warning', text: `千千结摘要提取失败：${summaryDebtCopy({ floor, count: unfinished, retry: '本批不会重复本楼，将继续尝试其他可独立处理的楼。' })} ${safeErrorMessage(failure.message)}` });
                 continue;
               }
-              onAutomaticSummaryCommitted();
+              onAutomaticSummaryCommitted({ chatId: reachable.root.chatId, floorId: floor.id, memoryId: currentFloor.memoryId });
               fromAssistantSeq ??= floor.assistantSeq;
               toAssistantSeq = floor.assistantSeq;
               processedMessageIndexes.push(floor.hostLocator?.messageIndex);

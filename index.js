@@ -125,7 +125,7 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
   isMainGenerationActive: isGenerating,
   onFullRebuildCommitted: () => v3RecallRuntime?.invalidate('fullRebuild'),
-  onAutomaticSummaryCommitted: () => peopleWorkspaceRuntime?.requestAutomaticMaintenance(),
+  onAutomaticSummaryCommitted: receipt => peopleWorkspaceRuntime?.requestAutomaticMaintenance(receipt),
   extractorPromptGuidance: summaryPrompt,
   csePromptGuidance: csePrompt,
   processingPrompt,
