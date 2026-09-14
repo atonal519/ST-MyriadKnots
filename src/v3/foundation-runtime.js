@@ -60,6 +60,31 @@ function normalizedIdentity(contextProvider) {
 function commonRecord({ recordType, id, chatId, narrativeGeneration, now, recordStatus = 'staged', supersedes = null }) {
   return { schemaVersion: 3, recordType, id, chatId, narrativeGeneration, createdAt: now, updatedAt: now, recordStatus, supersedes };
 }
+
+export async function projectFoundationPrefix({ source, floors, chatId, narrativeGeneration, now, currentStateId, previousCurrentStateId = null }) {
+  const floorIdSet = new Set(floors.map(floor => floor.id));
+  const floorMemories = (source.floorMemories ?? []).filter(memory => floorIdSet.has(memory.floorId));
+  const survivingDeltas = (source.stateDeltas ?? []).filter(delta => floorIdSet.has(delta.floorId));
+  let stateDeltas = filterReachableDeltas({ floors, floorMemories, stateDeltas: survivingDeltas });
+  const referencedEntityIds = new Set();
+  floorMemories.forEach(memory => collectFloorMemoryEntityIds(memory).forEach(id => referencedEntityIds.add(id)));
+  stateDeltas.forEach(delta => {
+    delta.subjectSnapshots.forEach(subject => { referencedEntityIds.add(subject.subjectEntityId); for (const category of ['adaptive', 'situational']) subject[category].forEach(item => { if (item.towardEntityId) referencedEntityIds.add(item.towardEntityId); }); });
+    (delta.fixedChanges ?? []).forEach(subject => { referencedEntityIds.add(subject.subjectEntityId); subject.items.forEach(change => { for (const item of [change.before, change.after]) if (item?.towardEntityId) referencedEntityIds.add(item.towardEntityId); }); });
+  });
+  if (source.baseline) { referencedEntityIds.add(source.baseline.userPersona.entityId); referencedEntityIds.add(source.baseline.characterCard.entityId); }
+  const entities = projectEntityFloorBounds((source.entities ?? []).filter(entity => referencedEntityIds.has(entity.id)
+    || (entity.firstSeenFloorId && floorIdSet.has(entity.firstSeenFloorId))), floors, floorMemories, stateDeltas);
+  const entityIds = new Set(entities.map(entity => entity.id));
+  const baseline = source.baseline && entityIds.has(source.baseline.userPersona.entityId) && entityIds.has(source.baseline.characterCard.entityId) ? source.baseline : null;
+  if (!baseline) stateDeltas = [];
+  const memoryReady = floorMemories.some(memory => memory.recordStatus === 'active');
+  const cseReady = memoryReady && floorMemories.filter(memory => memory.recordStatus === 'active').every(memory => stateDeltas.some(delta => delta.floorId === memory.floorId));
+  const capabilities = { ...FOUNDATION_CAPABILITIES, memoryReady, cseReady };
+  const currentState = baseline ? await replayCurrentState({ chatId, narrativeGeneration, baselineId: baseline.id, floors, floorMemories, stateDeltas, now, id: currentStateId, previousId: previousCurrentStateId }) : null;
+  return Object.freeze({ floorMemories, stateDeltas, entities, baseline, currentState, capabilities });
+}
+
 export async function buildFoundationIndexes({ chatId, narrativeGeneration, checkpointId, floors, candidates, now }) {
   const records = [];
   const add = async (kind, shard, entries) => {
@@ -615,26 +640,15 @@ export function createFoundationRuntime({
         predecessorFloorId: floors.at(-1)?.id ?? null, hostLocator: { ...stableCandidates[index].hostLocator }, updatedAt: nowValue }, { expectedChatId: operation.chatId });
       floors.push(rebound);
     }
-    const floorIdSet = new Set(floors.map(floor => floor.id));
-    const floorMemories = (cache.floorMemories ?? []).filter(memory => floorIdSet.has(memory.floorId));
-    const survivingDeltas = (cache.stateDeltas ?? []).filter(delta => floorIdSet.has(delta.floorId));
-    let stateDeltas = filterReachableDeltas({ floors, floorMemories, stateDeltas: survivingDeltas });
-    const referencedEntityIds = new Set();
-    floorMemories.forEach(memory => collectFloorMemoryEntityIds(memory).forEach(id => referencedEntityIds.add(id)));
-    stateDeltas.forEach(delta => {
-      delta.subjectSnapshots.forEach(subject => { referencedEntityIds.add(subject.subjectEntityId); for (const category of ['adaptive', 'situational']) subject[category].forEach(item => { if (item.towardEntityId) referencedEntityIds.add(item.towardEntityId); }); });
-      (delta.fixedChanges ?? []).forEach(subject => { referencedEntityIds.add(subject.subjectEntityId); subject.items.forEach(change => { for (const item of [change.before, change.after]) if (item?.towardEntityId) referencedEntityIds.add(item.towardEntityId); }); });
+    const { floorMemories, stateDeltas, entities, baseline, currentState, capabilities } = await projectFoundationPrefix({
+      source: cache,
+      floors,
+      chatId: operation.chatId,
+      narrativeGeneration,
+      now: nowValue,
+      currentStateId: await deterministicUuid(['v3-cse-current-state', checkpointId]),
+      previousCurrentStateId: cache.currentStates?.at(-1)?.id ?? null,
     });
-    if (cache.baseline) { referencedEntityIds.add(cache.baseline.userPersona.entityId); referencedEntityIds.add(cache.baseline.characterCard.entityId); }
-    const entities = projectEntityFloorBounds((cache.entities ?? []).filter(entity => referencedEntityIds.has(entity.id)
-      || (entity.firstSeenFloorId && floorIdSet.has(entity.firstSeenFloorId))), floors, floorMemories, stateDeltas);
-    const entityIds = new Set(entities.map(entity => entity.id));
-    const baseline = cache.baseline && entityIds.has(cache.baseline.userPersona.entityId) && entityIds.has(cache.baseline.characterCard.entityId) ? cache.baseline : null;
-    if (!baseline) stateDeltas = [];
-    const memoryReady = floorMemories.some(memory => memory.recordStatus === 'active');
-    const cseReady = memoryReady && floorMemories.filter(memory => memory.recordStatus === 'active').every(memory => stateDeltas.some(delta => delta.floorId === memory.floorId));
-    const capabilities = { ...FOUNDATION_CAPABILITIES, memoryReady, cseReady };
-    const currentState = baseline ? await replayCurrentState({ chatId: operation.chatId, narrativeGeneration, baselineId: baseline.id, floors, floorMemories, stateDeltas, now: nowValue, id: await deterministicUuid(['v3-cse-current-state', checkpointId]), previousId: cache.currentStates?.at(-1)?.id ?? null }) : null;
     const indexes = await buildFoundationIndexes({ chatId: operation.chatId, narrativeGeneration, checkpointId, floors, candidates: stableCandidates, entities, now: nowValue });
     const indexKeys = indexes.map(index => store.recordKey(index));
     const floorIds = floors.map(floor => floor.id);

@@ -76,12 +76,12 @@ function eventHarness() {
   };
 }
 
-async function renameHarness({ onPrepared = null, listHostChats = null, isEnabled = true, ...backendOptions } = {}) {
+async function renameHarness({ onPrepared = null, listHostChats = null, initializeBranch = async () => {}, isEnabled = true, ...backendOptions } = {}) {
   const backend = backendHarness(backendOptions);
   backend.records.set(bindingKey(OLD), readyBinding(OLD, '旧聊天'));
   backend.records.set(`chat-${OLD}/v3-root`, { revision: 14, data: { marker: '原有完整 root' } });
   const context = hostContext();
-  const coordinator = createChatIdentityCoordinator({ client: backend.client, listHostChats, now: () => new Date(NOW) });
+  const coordinator = createChatIdentityCoordinator({ client: backend.client, listHostChats, initializeBranch, now: () => new Date(NOW) });
   const session = createChatSession({ contextProvider: () => context, isEnabled, identityCoordinator: coordinator });
   assert.equal((await session.prepare()).identity.chatId, OLD);
   const events = eventHarness();
@@ -296,14 +296,23 @@ test('临时身份的后台记忆读取不阻塞 rename，恢复原身份后只�
   assert.equal(calls.includes(`people:${temporaryId}`), false, '改名后不得继续临时身份的人物读取');
 });
 
-test('无 CHAT_RENAMED 的普通复制始终保留独立身份，sourceChatId 不授予旧 root 读取权', async () => {
+test('列表确认普通复制后先调用分支初始化器，再把独立 binding 标为 ready', async () => {
   let listCalls = 0;
-  const h = await renameHarness({ listHostChats: async () => { listCalls += 1; return ['旧聊天', '普通复制']; } });
+  const initialized = [];
+  const h = await renameHarness({
+    listHostChats: async () => { listCalls += 1; return ['旧聊天', '普通复制']; },
+    initializeBranch: async options => { initialized.push(options); },
+  });
   h.context.chatId = '普通复制';
   h.events.handlers.get('changed')[0]();
   await waitFor(() => h.context.chatMetadata.qianqianjie.chatId !== OLD, '复制身份未建立');
   const cloneId = h.context.chatMetadata.qianqianjie.chatId;
   assert.equal(h.backend.records.get(bindingKey(cloneId)).data.sourceChatId, OLD);
+  assert.equal(h.backend.records.get(bindingKey(cloneId)).data.state, 'ready');
+  assert.equal(initialized.length, 1);
+  assert.equal(initialized[0].sourceChatId, OLD);
+  assert.equal(initialized[0].targetChatId, cloneId);
+  assert.equal(initialized[0].createdAt, NOW);
   assert.equal(h.backend.records.has(`chat-${cloneId}/v3-root`), false);
   assert.equal(h.backend.records.get(bindingKey(OLD)).data.owner.hostChatId, '旧聊天');
   assert.equal(listCalls, 1, '旧文件仍存在时只查询一次并保留独立副本路径');

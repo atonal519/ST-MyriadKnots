@@ -44,6 +44,7 @@ function chatContext(hostChatId, chatId = UUID) {
 test('同一 QQJ chatId 被复制到不同宿主聊天后直接获得独立 ready 身份', async () => {
   const backend = recordBackend();
   let listCalls = 0;
+  let initializeCalls = 0;
   const listHostChats = async () => { listCalls += 1; return ['原聊天', '复制聊天']; };
   const source = chatContext('原聊天');
   const sourceCoordinator = createChatIdentityCoordinator({ client: backend.client, now: () => new Date('2026-09-04T00:00:00.000Z') });
@@ -56,7 +57,12 @@ test('同一 QQJ chatId 被复制到不同宿主聊天后直接获得独立 read
   assert.equal((await reopenedSource.prepare()).identity.chatId, UUID, '已正式绑定的同 owner ready 聊天必须沿用原 ID');
 
   const clone = chatContext('复制聊天', UUID);
-  const cloneCoordinator = createChatIdentityCoordinator({ client: backend.client, listHostChats, now: () => new Date('2026-09-04T00:00:00.000Z') });
+  const cloneCoordinator = createChatIdentityCoordinator({
+    client: backend.client,
+    listHostChats,
+    initializeBranch: async () => { initializeCalls += 1; },
+    now: () => new Date('2026-09-04T00:00:00.000Z'),
+  });
   const cloneSession = createChatSession({ contextProvider: () => clone, identityCoordinator: cloneCoordinator });
   const prepared = await cloneSession.prepare();
   assert.equal(prepared.status, 'ready');
@@ -77,6 +83,7 @@ test('同一 QQJ chatId 被复制到不同宿主聊天后直接获得独立 read
   assert.equal((await cloneSession.prepare()).identity.chatId, prepared.identity.chatId);
   assert.deepEqual(backend.calls, callsAfterReady, '同宿主 ready session 应内存返回，不再 PUT 0 / 409 / GET');
   assert.equal(listCalls, 1, '只有首次判定宿主复制时读取列表');
+  assert.equal(initializeCalls, 1, '确认是同角色副本后只初始化一次继承数据');
 
   const reopenedClone = createChatSession({
     contextProvider: () => clone,

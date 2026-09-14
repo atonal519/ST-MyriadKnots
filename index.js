@@ -23,6 +23,7 @@ import { persistMessageFloorAnchors } from './src/v3/message-floor-anchor.js';
 import { createV3RecallRuntime } from './src/v3/recall-runtime.js';
 import { createAutoHideController } from './src/v3/auto-hide.js';
 import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime } from './src/v3/people-workspace.js';
+import { createChatBranchInitializer } from './src/v3/chat-branch-inheritance.js';
 import { installPublicMemoryBridge } from './src/v3/public-memory-bridge.js';
 import { createMyKnotsStoryClockController, createStoryClockStatusProjection, extensionStoryClockState } from './src/story-clock.js';
 import { createInlineRenderer } from './src/ui/inline-renderer.js';
@@ -84,7 +85,8 @@ const taskRouter = createTaskRouter({
 });
 const apiTools = createApiTools({ resolver: apiResolver, compactClient, isEnabled: settings.isEnabled });
 const listHostChats = createHostChatList({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
-const identityCoordinator = createChatIdentityCoordinator({ client: backendClient, freshUuid: newUuid, listHostChats });
+const initializeChatBranch = createChatBranchInitializer({ client: backendClient, hostAdapter, sanitizerOptions });
+const identityCoordinator = createChatIdentityCoordinator({ client: backendClient, freshUuid: newUuid, listHostChats, initializeBranch: initializeChatBranch });
 const session = createChatSession({ contextProvider, isEnabled: settings.isEnabled, identityCoordinator });
 const sourcePermissions = createSourcePermissionController({ settings, contextProvider });
 const summaryPrompt = () => settings.get().summaryPrompt;
