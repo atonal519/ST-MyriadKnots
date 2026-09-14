@@ -787,7 +787,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     anchor.setAttribute('data-qqj-cse-entity-id', userSubject.subjectEntityId); if (draft) anchor.className += ' qqj-manual-editor-host';
     if (draft) renderCseEditor(anchor, draft, state, key);
     else {
-      appendSubjectGroups(anchor, userSubject, state, { adaptive: (userSubject.adaptive ?? []).filter(item => !item.towardEntityId), situational: (userSubject.situational ?? []).filter(item => !item.towardEntityId), showMeta: false, groupAdaptiveByTarget: false });
+      appendSubjectGroups(anchor, userSubject, state, { situational: (userSubject.situational ?? []).filter(item => !item.towardEntityId), showMeta: false, groupAdaptiveByTarget: true });
       const edit = element('button', 'secondary-action qqj-cse-edit-action', '编辑我的状态'); edit.type = 'button'; edit.disabled = workBusy(state) || typeof runtime.correctSubjectState !== 'function' || !state.currentStateId || !state.currentStateFingerprint;
       edit.addEventListener('click', () => { const copyItems = values => (values ?? []).map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: item.towardEntityId ?? null })); cseDrafts.set(key, { chatId: state.chatId, subjectEntityId: userSubject.subjectEntityId, expectedCurrentStateId: state.currentStateId, expectedCurrentStateFingerprint: state.currentStateFingerprint, core: copyItems(userSubject.core), adaptive: copyItems(userSubject.adaptive), situational: copyItems(userSubject.situational), saving: false, saveError: '' }); render(foundationState); });
       anchor.append(edit);

@@ -4,7 +4,7 @@ import { is_send_press as r, saveSettingsDebounced as i } from "/script.js";
 import { is_group_generating as a } from "/scripts/group-chats.js";
 import { loadWorldInfo as o, selected_world_info as s, world_info as c, world_info_case_sensitive as l, world_info_match_whole_words as u, world_names as d } from "/scripts/world-info.js";
 //#region manifest.json
-var f = "0.1.23", p = "qianqianjie", m = "/api/plugins/st-bainiaodata", h = Object.freeze([
+var f = "0.1.24", p = "qianqianjie", m = "/api/plugins/st-bainiaodata", h = Object.freeze([
 	["v3-floor-", "floor"],
 	["v3-run-", "run"],
 	["v3-checkpoint-", "checkpoint"],
@@ -14418,10 +14418,9 @@ function wd({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, memo
 		if (i.setAttribute("data-qqj-cse-entity-id", t.subjectEntityId), s && (i.className += " qqj-manual-editor-host"), s) Te(i, s, r, o);
 		else {
 			we(i, t, r, {
-				adaptive: (t.adaptive ?? []).filter((e) => !e.towardEntityId),
 				situational: (t.situational ?? []).filter((e) => !e.towardEntityId),
 				showMeta: !1,
-				groupAdaptiveByTarget: !1
+				groupAdaptiveByTarget: !0
 			});
 			let n = H("button", "secondary-action qqj-cse-edit-action", "编辑我的状态");
 			n.type = "button", n.disabled = td(r) || typeof e.correctSubjectState != "function" || !r.currentStateId || !r.currentStateFingerprint, n.addEventListener("click", () => {
@@ -17128,7 +17127,7 @@ function Mf({ client: e, session: t, hostAdapter: n, foundationRuntime: r, memor
 		let { identity: r, controller: i } = n, a = `chat-${r.chatId}`;
 		if (!n.visibilityRestored) {
 			n.phase = "restoringVisibility", _(), v(r);
-			let e = await s.restoreOwned();
+			let e = await s.restoreOwned(r.chatId);
 			if (!["applied", "unchanged"].includes(e?.status)) throw kf("QQJ_DELETE_VISIBILITY_RESTORE_FAILED", "本插件隐藏的聊天楼层尚未恢复，已停止删除记忆。");
 			n.visibilityRestored = !0;
 		}
@@ -23973,42 +23972,45 @@ function wh({ hostAdapter: e, memoryRuntime: t, settings: n, notifyUser: r = nul
 			throw xh(o), e;
 		}
 	}
-	async function u({ restoreAll: s = !1, explicit: c = !1, operationEpoch: u = o } = {}) {
+	async function u({ restoreAll: s = !1, explicit: c = !1, stableChatId: u = null, operationEpoch: d = o } = {}) {
 		if (a) return Object.freeze({ status: "disposed" });
-		if (u !== o) return Object.freeze({ status: "stopped" });
-		let d = n.get();
-		if (d.pluginEnabled === !1 || !c && d.autoHideEnabled !== !0) return Object.freeze({ status: "disabled" });
-		let f = e.snapshot(), p = t.getState();
-		if (f.context?.chatMetadata?.qianqianjie?.chatId !== p?.chatId) return Object.freeze({ status: "stale" });
-		let m = yh({
-			chat: f.chat,
-			memoryState: p,
-			keepAiCount: d.autoHideKeepAiCount,
+		if (d !== o) return Object.freeze({ status: "stopped" });
+		let f = n.get();
+		if (f.pluginEnabled === !1 || !c && f.autoHideEnabled !== !0) return Object.freeze({ status: "disabled" });
+		let p = e.snapshot(), m = t.getState(), h = s && typeof u == "string" && u ? u : m?.chatId;
+		if (p.context?.chatMetadata?.qianqianjie?.chatId !== h) return Object.freeze({ status: "stale" });
+		let g = h === m?.chatId ? m : {
+			...m,
+			chatId: h
+		}, _ = yh({
+			chat: p.chat,
+			memoryState: g,
+			keepAiCount: f.autoHideKeepAiCount,
 			restoreAll: s
 		});
-		if (m.status !== "ready") return m;
+		if (_.status !== "ready") return _;
 		try {
-			for (let e of m.unhideRanges) if (a || u !== o || (await l({
-				stableChatId: m.chatId,
-				hostChatId: f.chatId,
+			for (let e of _.unhideRanges) if (a || d !== o || (await l({
+				stableChatId: _.chatId,
+				hostChatId: p.chatId,
 				range: e,
 				hide: !1
-			}), a || u !== o)) return Object.freeze({
-				...m,
+			}), a || d !== o)) return Object.freeze({
+				..._,
 				status: "stopped"
 			});
-			for (let e of m.hideRanges) if (a || u !== o || (await l({
-				stableChatId: m.chatId,
-				hostChatId: f.chatId,
+			for (let e of _.hideRanges) if (a || d !== o || (await l({
+				stableChatId: _.chatId,
+				hostChatId: p.chatId,
 				range: e,
 				hide: !0
-			}), a || u !== o)) return Object.freeze({
-				...m,
+			}), a || d !== o)) return Object.freeze({
+				..._,
 				status: "stopped"
 			});
 			return Object.freeze({
-				...m,
-				status: m.hideRanges.length || m.unhideRanges.length ? "applied" : "unchanged"
+				..._,
+				status: _.hideRanges.length || _.unhideRanges.length ? "applied" : "unchanged"
 			});
 		} catch (e) {
 			i?.warn?.("[qianqianjie] auto hide failed", { code: e?.code ?? e?.name ?? "QQJ_AUTO_HIDE_FAILED" });
@@ -24037,9 +24039,10 @@ function wh({ hostAdapter: e, memoryRuntime: t, settings: n, notifyUser: r = nul
 			restoreAll: e !== !0,
 			explicit: !0
 		})),
-		restoreOwned: () => (o += 1, d({
+		restoreOwned: (e) => (o += 1, d({
 			restoreAll: !0,
-			explicit: !0
+			explicit: !0,
+			stableChatId: e
 		})),
 		stop() {
 			o += 1;

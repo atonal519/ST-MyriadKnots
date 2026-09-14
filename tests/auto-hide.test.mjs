@@ -97,6 +97,41 @@ test('宿主命令只处理可见目标并写稳定聊天标记；调大 N 保�
   assert.equal(chat[1].is_system, true); assert.equal(chat[1].extra[AUTO_HIDE_MARKER_KEY].chatId, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', '其他聊天标记不得接管');
 });
 
+test('显式恢复可使用已核对身份，memory投影为空时也只恢复当前UUID自有隐藏楼', async () => {
+  const other = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const chat = [
+    { ...assistant('当前自有隐藏'), is_system: true, extra: { [AUTO_HIDE_MARKER_KEY]: { schemaVersion: 1, chatId: CHAT }, keep: 1 } },
+    { ...assistant('人工隐藏'), is_system: true, extra: { manual: true } },
+    { ...assistant('其他身份隐藏'), is_system: true, extra: { [AUTO_HIDE_MARKER_KEY]: { schemaVersion: 1, chatId: other }, foreign: true } },
+  ];
+  const commands = [];
+  const h = harness({ chat, enabled: false, execute: commandExecutor(chat, commands) });
+  h.setMemoryState({ chatId: null, memorySnapshotStatus: 'unavailable', floors: [] });
+  assert.equal((await h.controller.restoreOwned()).status, 'stale', '未提供已核身份的非删除调用继续沿用memory投影');
+  const restored = await h.controller.restoreOwned(CHAT);
+  assert.equal(restored.status, 'applied');
+  assert.deepEqual(commands, ['/unhide 0']);
+  assert.equal(chat[0].is_system, false); assert.deepEqual(chat[0].extra, { keep: 1 });
+  assert.equal(chat[1].is_system, true); assert.deepEqual(chat[1].extra, { manual: true });
+  assert.equal(chat[2].is_system, true); assert.equal(chat[2].extra[AUTO_HIDE_MARKER_KEY].chatId, other);
+});
+
+test('显式恢复身份仍受metadata、切聊与slash失败守卫，失败范围完整回滚', async () => {
+  const chat = [{ ...assistant('当前自有隐藏'), is_system: true, extra: { [AUTO_HIDE_MARKER_KEY]: { schemaVersion: 1, chatId: CHAT }, keep: true } }];
+  const commands = [];
+  const apply = commandExecutor(chat, commands);
+  const h = harness({ chat, enabled: false, execute: async command => { await apply(command); h.context.chatId = 'other-host'; throw new Error('模拟切聊后的slash失败'); } });
+  h.setMemoryState({ chatId: null, memorySnapshotStatus: 'unavailable', floors: [] });
+  h.context.chatMetadata.qianqianjie.chatId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  assert.equal((await h.controller.restoreOwned(CHAT)).status, 'stale');
+  assert.deepEqual(commands, []);
+  h.context.chatMetadata.qianqianjie.chatId = CHAT;
+  await assert.rejects(h.controller.restoreOwned(CHAT), /模拟切聊后的slash失败/);
+  assert.deepEqual(commands, ['/unhide 0']);
+  assert.equal(chat[0].is_system, true);
+  assert.deepEqual(chat[0].extra, { [AUTO_HIDE_MARKER_KEY]: { schemaVersion: 1, chatId: CHAT }, keep: true });
+});
+
 test('摘要与 CSE 状态、连续覆盖回退及删尾缩窗都不得恢复既有隐藏，覆盖恢复后只追加隐藏', async () => {
   const chat = [user('旧输入'), assistant('旧回复'), user('中间输入'), assistant('中间回复'), user('最新输入'), assistant('最新回复')];
   const commands = [];

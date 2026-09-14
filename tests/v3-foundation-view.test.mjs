@@ -1366,7 +1366,7 @@ test('双丝网精确区分双方关系、自身状态与选中 NPC 的其他关
     currentStateId: '50000000-0000-4000-8000-000000000005', currentStateFingerprint: `sha256:${'a'.repeat(64)}`,
     memoryEntities: [{ entityId: userId, displayName: '你', specialRole: 'user' }, { entityId: aId, displayName: '左佐' }, { entityId: bId, displayName: '乙' }, { entityId: cId, displayName: '一个非常非常长的未关注人物名字' }],
     cseSubjects: [
-      { subjectEntityId: userId, displayName: '你', core: [], adaptive: [{ text: '你对乙的态度不应重复在左佐页', towardEntityId: bId }], situational: [{ text: '此刻担心左佐', towardEntityId: aId }, { text: '用户自身疲惫', towardEntityId: null }] },
+      { subjectEntityId: userId, displayName: '你', core: [], adaptive: [{ text: '会长期信任左佐', towardEntityId: aId, towardDisplayName: '左佐' }, { text: '你对乙保持警惕', towardEntityId: bId, towardDisplayName: '乙' }, { text: '习惯独自复盘', towardEntityId: null }], situational: [{ text: '此刻担心左佐', towardEntityId: aId }, { text: '用户自身疲惫', towardEntityId: null }] },
       { subjectEntityId: aId, displayName: '左佐', core: [{ text: '谨慎' }], adaptive: [{ text: '会保护你', towardEntityId: userId }, { text: '会偿还你的恩情', towardEntityId: userId }, { text: '对乙保持警惕', towardEntityId: bId }, { text: '习惯独自复盘', towardEntityId: null }], situational: [{ text: '正在门外等候', towardEntityId: null }, { text: '此刻等你回应', towardEntityId: userId }, { text: '正在观察乙', towardEntityId: bId }] },
       { subjectEntityId: bId, displayName: '乙', core: [], adaptive: [{ text: '乙对左佐的态度不应混入', towardEntityId: aId }], situational: [] },
     ],
@@ -1376,9 +1376,10 @@ test('双丝网精确区分双方关系、自身状态与选中 NPC 的其他关
   const menuDocument = eventDocument();
   const container = new Node('main'), view = createV3FoundationView({ runtime, peopleRuntime: sharedPeople, documentRef: menuDocument }); view.setPage('people'); view.mount(container);
   const userAnchorCopy = flatten(container).find(node => node.className === 'qqj-user-anchor').children.flatMap(flatten).map(node => node.textContent).join('|');
-  assert.match(userAnchorCopy, /用户自身疲惫/); assert.doesNotMatch(userAnchorCopy, /此刻担心左佐/, '有对象的用户情境只显示在关系方向中');
+  assert.match(userAnchorCopy, /长期倾向.*对 左佐.*会长期信任左佐.*对 乙.*你对乙保持警惕.*对 未指定对象.*习惯独自复盘.*用户自身疲惫/, '用户总览必须显示全部长期倾向并标明对象');
+  assert.doesNotMatch(userAnchorCopy, /此刻担心左佐/, '有对象的用户当前情境仍只显示在关系方向中');
   const pair = flatten(container).find(node => node.className === 'qqj-relation-card'), pairCopy = flatten(pair).map(node => node.textContent).join('|');
-  assert.match(pairCopy, /你 → 左佐.*当前态度.*此刻担心左佐.*左佐 → 你.*当前态度.*此刻等你回应.*长期相处方式.*会保护你.*会偿还你的恩情/);
+  assert.match(pairCopy, /你 → 左佐.*当前态度.*此刻担心左佐.*长期相处方式.*会长期信任左佐.*左佐 → 你.*当前态度.*此刻等你回应.*长期相处方式.*会保护你.*会偿还你的恩情/, '下方关系栏仍保留同一条有对象长期倾向');
   const pairHead = flatten(pair).find(node => node.className === 'qqj-relation-head'), pairMenu = pairHead.children.at(-1);
   assert.equal(pairMenu.tag, 'details'); assert.equal(pairMenu.className, 'qqj-memory-menu qqj-relation-menu');
   assert.equal(pairMenu.children[0].tag, 'summary'); assert.equal(pairMenu.children[0].textContent, '⋮'); assert.equal(pairMenu.children[0].attributes['aria-label'], '关系操作');

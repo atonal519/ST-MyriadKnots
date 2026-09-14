@@ -172,7 +172,7 @@ export function createChatMemoryManagement({
     if (!operation.visibilityRestored) {
       operation.phase = 'restoringVisibility'; notify();
       currentHost(identity);
-      const visibility = await autoHideController.restoreOwned();
+      const visibility = await autoHideController.restoreOwned(identity.chatId);
       if (!['applied', 'unchanged'].includes(visibility?.status)) {
         throw errorWith('QQJ_DELETE_VISIBILITY_RESTORE_FAILED', '本插件隐藏的聊天楼层尚未恢复，已停止删除记忆。');
       }

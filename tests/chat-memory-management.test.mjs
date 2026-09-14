@@ -6,11 +6,12 @@ import { MESSAGE_FLOOR_ANCHOR_KEY } from '../src/v3/message-floor-anchor.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
 import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
 import { createHostAdapter } from '../src/v3/host-adapter.js';
+import { createAutoHideController } from '../src/v3/auto-hide.js';
 
 const CHAT_ID = '123e4567-e89b-42d3-a456-426614174000';
 const OTHER_ID = '223e4567-e89b-42d3-a456-426614174000';
 
-function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, silentSaveChatFailure = false, failSaveMetadata = false, busy = false, autoHideStatus = 'applied' } = {}) {
+function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, silentSaveChatFailure = false, failSaveMetadata = false, busy = false, autoHideStatus = 'applied', realAutoHide = false, initialMemoryChatId = CHAT_ID, ownedHidden = true } = {}) {
   const records = new Map([
     [`chat-${CHAT_ID}/floor-a`, { recordId: 'floor-a', revision: 2, data: { kind: 'floor' } }],
     [`chat-${CHAT_ID}/orphan-old`, { recordId: 'orphan-old', revision: 5, data: { kind: 'old-version' } }],
@@ -42,13 +43,20 @@ function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, s
     { extra: { [CHAT_RECALL_RECEIPT_KEY]: receipt, [MESSAGE_FLOOR_ANCHOR_KEY]: floorMarker, swipeKeep: 1 } },
     { extra: { [MESSAGE_FLOOR_ANCHOR_KEY]: floorMarker, otherSwipeKeep: 2 } },
   ] };
-  const hidden = { is_user: false, mes: '隐藏正文保留', is_system: true, extra: { qianqianjieAutoHide: { schemaVersion: 1, chatId: CHAT_ID }, [MESSAGE_FLOOR_ANCHOR_KEY]: floorMarker, other: 1 } };
+  const hidden = { is_user: false, mes: '隐藏正文保留', is_system: true, extra: { ...(ownedHidden ? { qianqianjieAutoHide: { schemaVersion: 1, chatId: CHAT_ID } } : { manuallyHidden: true }), [MESSAGE_FLOOR_ANCHOR_KEY]: floorMarker, other: 1 } };
   let persistedMessages = cloneMessages([user, hidden]);
   let persistedMetadata = { qianqianjie: { schemaVersion: 2, chatId: CHAT_ID }, qianqianjiePrequel: '用户手工前情', otherPlugin: { keep: true } };
   const context = {
     chatId: 'host-chat', characterId: 0, characters: [{ name: '角色', avatar: 'char' }], getRequestHeaders: () => ({ 'x-test': 'yes' }), chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: CHAT_ID }, qianqianjiePrequel: '用户手工前情', otherPlugin: { keep: true } }, chat: [user, hidden],
     async saveChat() { calls.push(['saveChat']); if (saveChatFailure) { saveChatFailure = false; throw new Error('save chat failed'); } if (silentSaveChatFailure) { silentSaveChatFailure = false; return; } persistedMessages = cloneMessages(context.chat); },
     async saveChatMetadata() { calls.push(['saveMetadata']); if (saveMetadataFailure) { saveMetadataFailure = false; return false; } persistedMetadata = structuredClone(context.chatMetadata); return true; },
+    async executeSlashCommandsWithOptions(command) {
+      calls.push(['slash', command]);
+      const match = /^\/(?:hide|unhide) (\d+)(?:-(\d+))?$/.exec(command);
+      assert.ok(match, command);
+      const hide = command.startsWith('/hide '), start = Number(match[1]), end = Number(match[2] ?? match[1]);
+      for (let index = start; index <= end; index += 1) context.chat[index].is_system = hide;
+    },
   };
   let suspended = false;
   const identity = Object.freeze({ hostChatId: 'host-chat', chatId: CHAT_ID, characterLocator: 'char', personaLocator: 'persona' });
@@ -59,13 +67,16 @@ function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, s
   };
   const state = { memoryWorkBusy: busy };
   const runtime = name => ({ getState: () => state, invalidate() { invalidated.push(name); } });
-  let memoryChatId = CHAT_ID;
+  let memoryChatId = initialMemoryChatId;
   const memoryRuntime = { getState: () => ({ ...state, chatId: memoryChatId }), invalidate(options) { memoryInvalidations.push(options); memoryChatId = null; invalidated.push('memory'); } };
   const recallRuntime = { getState: () => ({}), invalidate() { invalidated.push('recall'); }, clearCurrent() { invalidated.push('recall-clear'); } };
   const peopleRuntime = { getState: () => ({}), invalidate() { invalidated.push('people'); } };
-  const autoHideController = { async restoreOwned() { calls.push(['restoreOwned']); if (memoryChatId !== CHAT_ID) return { status: 'stale' }; if (autoHideStatus === 'applied') { hidden.is_system = false; delete hidden.extra.qianqianjieAutoHide; } return { status: autoHideStatus }; } };
+  const hostAdapter = { snapshot: () => ({ chatId: context.chatId, chat: context.chat, context }) };
+  const autoHideController = realAutoHide
+    ? createAutoHideController({ hostAdapter, memoryRuntime, settings: { get: () => ({ pluginEnabled: true, autoHideEnabled: false, autoHideKeepAiCount: 3 }) }, logger: { warn() {} } })
+    : { async restoreOwned(stableChatId) { calls.push(['restoreOwned', stableChatId]); if (stableChatId !== CHAT_ID || memoryChatId !== CHAT_ID) return { status: 'stale' }; if (autoHideStatus === 'applied') { hidden.is_system = false; delete hidden.extra.qianqianjieAutoHide; } return { status: autoHideStatus }; } };
   const fetchImpl = async (url, options) => { calls.push(['hostRead', url, JSON.parse(options.body)]); return { ok: true, json: async () => [{ chat_metadata: structuredClone(persistedMetadata) }, ...cloneMessages(persistedMessages)] }; };
-  const manager = createChatMemoryManagement({ client, session, hostAdapter: { snapshot: () => ({ chatId: context.chatId, chat: context.chat, context }) }, foundationRuntime: runtime('foundation'), memoryRuntime, recallRuntime, peopleRuntime, autoHideController, isMainGenerationActive: () => false, fetchImpl, logger: { warn() {} } });
+  const manager = createChatMemoryManagement({ client, session, hostAdapter, foundationRuntime: runtime('foundation'), memoryRuntime, recallRuntime, peopleRuntime, autoHideController, isMainGenerationActive: () => false, fetchImpl, logger: { warn() {} } });
   return { manager, records, calls, invalidated, memoryInvalidations, context, user, hidden, receipt, floorMarker, identity, releaseHeld };
 }
 
@@ -81,6 +92,7 @@ test('按实际revision删除全collection后root和binding，并保留正文、
   assert.deepEqual(removes.map(call => call[2]), ['floor-a', 'orphan-old', 'v3-people-workspace', 'v3-root', `binding-${CHAT_ID}`]);
   assert.deepEqual(removes.map(call => call[3]), [2, 5, 3, 9, 6]);
   assert.ok(f.calls.findIndex(call => call[0] === 'restoreOwned') < f.calls.findIndex(call => call[0] === 'remove'));
+  assert.deepEqual(f.calls.find(call => call[0] === 'restoreOwned'), ['restoreOwned', CHAT_ID]);
   assert.equal(f.user.mes, '正文保留');
   assert.deepEqual(f.user.extra, { otherPlugin: { keep: true } });
   assert.deepEqual(f.user.swipe_info, [{ extra: { swipeKeep: 1 } }, { extra: { otherSwipeKeep: 2 } }], '当前与非当前 swipe 的旧标识都必须清除，其他字段保留');
@@ -141,6 +153,16 @@ test('自动隐藏恢复未确认完成时停止在后端删除之前并保留�
   assert.deepEqual(f.context.chatMetadata.qianqianjie, { schemaVersion: 2, chatId: CHAT_ID });
 });
 
+test('无root且memory投影没有chatId时，真实自动隐藏控制器仍允许删除没有自有隐藏楼的当前身份', async () => {
+  const f = fixture({ realAutoHide: true, initialMemoryChatId: null, ownedHidden: false });
+  const result = await f.manager.deleteCurrent();
+  assert.equal(result.status, 'completed');
+  assert.equal(f.hidden.is_system, true, '人工隐藏不得被删除入口恢复');
+  assert.deepEqual(f.hidden.extra, { manuallyHidden: true, other: 1 }, '只清千千结记忆键，人工隐藏事实与其他字段保留');
+  assert.equal(f.calls.some(call => call[0] === 'slash'), false, '没有当前身份自有隐藏楼时无需执行slash');
+  assert.equal(f.calls.some(call => call[0] === 'remove'), true, '可见性检查通过后才进入后端删除');
+});
+
 test('A聊天删除在途切到B时不复用A promise，也不把A成功显示成B删除成功', async () => {
   const f = fixture({ holdRemove: 'floor-a' });
   const deletingA = f.manager.deleteCurrent();
@@ -159,11 +181,15 @@ test('A聊天删除在途切到B时不复用A promise，也不把A成功显示�
 test('删除成功只释放旧身份，下一次正常prepare才建立新空身份且不触发提取', async () => {
   let persistedMetadata = { qianqianjie: { schemaVersion: 2, chatId: CHAT_ID } }, nextId = OTHER_ID, extractCalls = 0;
   const oldMarker = { schemaVersion: 1, chatId: CHAT_ID, floorId: '323e4567-e89b-42d3-a456-426614174000' };
-  let persistedMessages = [{ is_user: true, mes: '开始' }, { is_user: false, is_system: false, mes: '旧回复仍保留', extra: { [MESSAGE_FLOOR_ANCHOR_KEY]: oldMarker } }, { is_user: true, mes: '确认' }];
+  let persistedMessages = [{ is_user: true, mes: '开始' }, { is_user: false, is_system: true, mes: '旧回复仍保留', extra: { qianqianjieAutoHide: { schemaVersion: 1, chatId: CHAT_ID }, [MESSAGE_FLOOR_ANCHOR_KEY]: oldMarker } }, { is_user: true, mes: '确认' }];
   const context = {
     characterId: 0, chatId: 'host-chat', characters: [{ name: '角色', avatar: 'char.png' }], userAvatar: 'persona.png', chatMetadata: structuredClone(persistedMetadata), chat: structuredClone(persistedMessages), getRequestHeaders: () => ({}),
     async saveChat() { persistedMessages = structuredClone(context.chat); },
     async saveChatMetadata() { persistedMetadata = structuredClone(context.chatMetadata); return true; },
+    async executeSlashCommandsWithOptions(command) {
+      assert.equal(command, '/unhide 1');
+      context.chat[1].is_system = false;
+    },
   };
   const session = createChatSession({ contextProvider: () => context, ensureChatId: async raw => { raw.chatMetadata.qianqianjie = { schemaVersion: 2, chatId: nextId }; await raw.saveChatMetadata(); return nextId; } });
   assert.equal((await session.prepare()).identity.chatId, CHAT_ID);
@@ -179,8 +205,10 @@ test('删除成功只释放旧身份，下一次正常prepare才建立新空身�
     },
     remove: async () => missing(),
   };
-  const runtime = { getState: () => ({}), invalidate() {}, extractFloor() { extractCalls += 1; } };
-  const manager = createChatMemoryManagement({ client, session, hostAdapter: { snapshot: () => ({ chatId: context.chatId, chat: context.chat, context }) }, foundationRuntime: runtime, memoryRuntime: runtime, recallRuntime: { getState: () => ({}), invalidate() {}, clearCurrent() {} }, peopleRuntime: { getState: () => ({}), invalidate() {} }, autoHideController: { restoreOwned: async () => ({ status: 'unchanged' }) }, fetchImpl: async () => ({ ok: true, json: async () => [{ chat_metadata: structuredClone(persistedMetadata) }, ...structuredClone(persistedMessages)] }) });
+  const runtime = { getState: () => ({ chatId: null }), invalidate() {}, extractFloor() { extractCalls += 1; } };
+  const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => context } } });
+  const autoHideController = createAutoHideController({ hostAdapter, memoryRuntime: runtime, settings: { get: () => ({ pluginEnabled: true, autoHideEnabled: false, autoHideKeepAiCount: 3 }) }, logger: { warn() {} } });
+  const manager = createChatMemoryManagement({ client, session, hostAdapter, foundationRuntime: runtime, memoryRuntime: runtime, recallRuntime: { getState: () => ({}), invalidate() {}, clearCurrent() {} }, peopleRuntime: { getState: () => ({}), invalidate() {} }, autoHideController, fetchImpl: async () => ({ ok: true, json: async () => [{ chat_metadata: structuredClone(persistedMetadata) }, ...structuredClone(persistedMessages)] }) });
   assert.equal((await manager.deleteCurrent()).status, 'completed');
   assert.equal(context.chatMetadata.qianqianjie, undefined);
   assert.equal(session.getState().status, 'idle');
@@ -188,8 +216,9 @@ test('删除成功只释放旧身份，下一次正常prepare才建立新空身�
   assert.equal((await session.prepare()).identity.chatId, nextId);
   assert.equal(extractCalls, 0);
   assert.equal(context.chat[1].mes, '旧回复仍保留');
+  assert.equal(context.chat[1].is_system, false);
+  assert.equal(context.chat[1].extra.qianqianjieAutoHide, undefined);
   assert.equal(context.chat[1].extra[MESSAGE_FLOOR_ANCHOR_KEY], undefined);
-  const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => context } } });
   const store = createFoundationStore({ client, contextProvider: () => session.identity() });
   const foundation = createFoundationRuntime({ hostAdapter, store, contextProvider: () => context, now: () => new Date('2026-09-14T00:00:00.000Z'), logger: { warn() {} } });
   const initialized = await foundation.start();
