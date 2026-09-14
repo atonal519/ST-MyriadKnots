@@ -26,6 +26,46 @@ export function newUuid() {
   throw new Error('宿主缺少 UUID 生成能力');
 }
 
+export function createHostChatList({ fetchImpl = globalThis.fetch, headers = () => ({}) } = {}) {
+  return async function listHostChats(characterAvatar, { signal } = {}) {
+    const avatar = String(characterAvatar ?? '').trim();
+    let response;
+    try {
+      response = await fetchImpl('/api/characters/chats', {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ avatar_url: avatar, simple: true }),
+        signal,
+      });
+    } catch (cause) {
+      throw Object.assign(new Error('读取宿主聊天列表失败，未变更千千结身份。', { cause }), { code: 'QQJ_HOST_CHAT_LIST_FAILED' });
+    }
+    if (!response.ok) {
+      throw Object.assign(new Error(`读取宿主聊天列表失败（HTTP ${response.status}），未变更千千结身份。`), {
+        code: 'QQJ_HOST_CHAT_LIST_FAILED', status: response.status,
+      });
+    }
+    let data;
+    try { data = await response.json(); }
+    catch (cause) {
+      throw Object.assign(new Error('宿主聊天列表响应无效，未变更千千结身份。', { cause }), { code: 'QQJ_HOST_CHAT_LIST_INVALID' });
+    }
+    if (!Array.isArray(data)) {
+      throw Object.assign(new Error('宿主聊天列表响应无效，未变更千千结身份。'), { code: 'QQJ_HOST_CHAT_LIST_INVALID' });
+    }
+    const names = [];
+    for (const item of data) {
+      const fileId = typeof item?.file_id === 'string' ? item.file_id.trim() : '';
+      const fileName = typeof item?.file_name === 'string' ? item.file_name.trim() : '';
+      if (!fileId && !fileName) {
+        throw Object.assign(new Error('宿主聊天列表响应无效，未变更千千结身份。'), { code: 'QQJ_HOST_CHAT_LIST_INVALID' });
+      }
+      names.push(fileId || fileName.replace(/\.jsonl$/i, ''));
+    }
+    return names;
+  };
+}
+
 export async function persistChatId(ctx, chatId) {
   const metadata = ctx.chatMetadata ?? {};
   if (metadata.qianqianjie?.chatId === chatId && metadata.qianqianjie.schemaVersion === 2) return false;

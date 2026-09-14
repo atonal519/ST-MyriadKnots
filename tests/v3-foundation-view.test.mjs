@@ -100,6 +100,39 @@ test('未建档聊天的空同步 ID 不误锁刷新与显式补齐', async () =
   assert.equal(rebuilds, 1, '补齐仍调用既有 startHistoricalRebuild');
 });
 
+test('未建立记忆按现有历史与自动摘要开关提示，三页均不把正常空态报错', () => {
+  for (const [extra, expected] of [
+    [{ inspectedStableCount: 0, autoMemoryEnabled: true }, /尚未开始记录，继续对话后可开始记录/],
+    [{ inspectedStableCount: 3, canInitialize: true }, /尚未建立记忆.*补齐缺失.*已有楼层/],
+    [{ inspectedStableCount: 0, autoMemoryEnabled: false }, /自动摘要已关闭.*手动“补齐缺失”/],
+  ]) {
+    const state = { status: 'uninitialized', foundationStatus: 'uninitialized', pluginEnabled: true, chatId: null, floors: [], memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', ...extra };
+    const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+    const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef }); view.mount(container);
+    for (const page of ['management', 'memories', 'people']) {
+      view.setPage(page);
+      const health = flatten(container).find(node => node.className.split(' ').includes('qqj-page-health'));
+      assert.match(health.textContent, expected); assert.doesNotMatch(health.className, /error/);
+      assert.doesNotMatch(flatten(container).map(node => node.textContent).join('|'), /尚未建立记忆身份|尚未建立.*chatId/);
+    }
+  }
+});
+
+test('未建记忆的真实身份或后端错误不包装成新档提示或摘要提取失败', () => {
+  for (const identityError of [true, false]) {
+    const error = new Error('后端身份绑定读取失败');
+    const state = { status: identityError ? 'uninitialized' : 'error', foundationStatus: 'uninitialized', pluginEnabled: true, chatId: null, floors: [], lastError: identityError ? null : error };
+    const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+    const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef, sessionStateProvider: () => identityError ? { status: 'error', error } : { status: 'ready' } }); view.mount(container);
+    for (const page of ['management', 'memories', 'people']) {
+      view.setPage(page);
+      const health = flatten(container).find(node => node.className.split(' ').includes('qqj-page-health'));
+      assert.match(health.textContent, /后端身份绑定读取失败/); assert.match(health.className, /error/);
+      assert.doesNotMatch(health.textContent, /尚未开始记录|摘要提取失败/);
+    }
+  }
+});
+
 test('needsReview 终态显示准确中文和安全原因，不向页面泄露内部状态值', async () => {
   const memory = { chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
   const state = { status: 'needsReview', pluginEnabled: true, chatId: CHAT, foundationStatus: 'needsReview', reviewReason: { code: 'fingerprintMismatch', assistantSeq: 12, messageIndex: 23, expectedCount: 12, actualCount: 12, markerStatus: 'none', rawFingerprintMatches: false, canonicalFingerprintMatches: false, sanitizerFingerprintMatches: true }, stableCount: 1, rememberedCount: 1, unprocessedCount: 0, pending: null, headCheckpointId: null, lastError: null, lastExtractorError: null, lastCseError: null, floors: [{ floorId: 'floor', assistantSeq: 1, messageIndex: 2, status: 'ready', memoryId: 'memory', summary: 'needsReview 下仍可见的摘要', summarySource: 'ai', aiSummary: 'needsReview 下仍可见的摘要', counts: {}, memory }], memoryEntities: [{ entityId: 'p1', displayName: '裴晚生' }], cseSubjects: [{ subjectEntityId: 'p1', displayName: '裴晚生', core: [], adaptive: [], situational: [{ text: 'needsReview 下仍可见的人物状态', visibility: 'private', reason: '当时证据', sourceAssistantSeq: 1 }] }], memoryWorkBusy: false, cseReady: true, csePendingCount: 0, cseFailedCount: 0 };

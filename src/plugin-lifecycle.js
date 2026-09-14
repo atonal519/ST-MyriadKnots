@@ -90,7 +90,10 @@ export function createPluginLifecycle({
   async function onChatRenamed(event) {
     const transition = renameTransition;
     if (!enabled()) return { status: 'disabled' };
-    if (!transition?.previousIdentity || typeof session.rename !== 'function') {
+    if (!transition?.previousIdentity) return { status: 'ignored' };
+    const eventOld = String(event?.oldFileName ?? '').trim().replace(/\.jsonl$/i, '');
+    if (!eventOld || eventOld !== transition.previousIdentity.hostChatId) return { status: 'ignored' };
+    if (typeof session.rename !== 'function') {
       logger?.warn?.('[qianqianjie] 聊天改名缺少连续身份凭据，已保持当前独立档案');
       return { status: 'unverified' };
     }
@@ -99,6 +102,12 @@ export function createPluginLifecycle({
       logger?.warn?.('[qianqianjie] 聊天改名期间身份已经变化，已保持当前独立档案');
       return { status: 'stale' };
     }
+    if (prepared.identity.chatId === transition.previousIdentity.chatId) {
+      renameTransition = null;
+      return prepared;
+    }
+    const eventNew = String(event?.newFileName ?? '').trim().replace(/\.jsonl$/i, '');
+    if (!eventNew || eventNew !== prepared.identity.hostChatId) return { status: 'ignored' };
     renameTransition = null;
     try { invalidate(); }
     catch (error) { logger?.warn?.('[qianqianjie] 插件生命周期失效失败', error); }

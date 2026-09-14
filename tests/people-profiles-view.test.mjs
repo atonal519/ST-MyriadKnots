@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createChatSession } from '../src/chat-session.js';
 import { createPeopleProfilesView } from '../src/ui/people-profiles-view.js';
 import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, PEOPLE_WORKSPACE_RECORD_ID } from '../src/v3/people-workspace.js';
 
@@ -107,6 +108,66 @@ async function waitFor(predicate, message = '等待条件超时') {
   while (Date.now() < end) { if (predicate()) return; await new Promise(resolve => setImmediate(resolve)); }
   assert.fail(message);
 }
+test('千人首次打开等待既有身份认领，成功后清除读取中且不重复认领', async () => {
+  let release, claims = 0, refreshes = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  const context = { characterId: 0, chatId: '新聊天', characters: [{ avatar: 'char.png' }], userAvatar: 'me.png', chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: CHAT } }, async saveMetadata() {} };
+  const session = createChatSession({ contextProvider: () => context, identityCoordinator: { async prepare() { claims += 1; await gate; return CHAT; } } });
+  const pending = session.prepare();
+  const h = runtimeHarness();
+  h.emitState({ ...h.state, chatId: null });
+  h.runtime.refresh = async () => { refreshes += 1; assert.equal(session.identity().chatId, CHAT); return h.emitState({ ...h.state, chatId: CHAT }); };
+  const container = new Node('main');
+  const view = createPeopleProfilesView({ runtime: h.runtime, documentRef, sessionStateProvider: () => session.getState(), prepareSession: () => {
+    const waiting = session.prepare(); assert.equal(waiting, pending); return waiting;
+  } });
+  view.mount(container); const activation = view.activate();
+  assert.equal(refreshes, 0); assert.equal(claims, 1);
+  assert.match(visible(container), /正在读取当前聊天/); assert.doesNotMatch(visible(container), /读取失败/);
+  release(); await activation;
+  assert.equal(refreshes, 1); assert.equal(claims, 1);
+  assert.match(visible(container), /人物资料读取完成/); assert.doesNotMatch(visible(container), /正在读取|读取失败/);
+});
+
+test('千人身份准备失败保留真实错误，已有错误不自动重试', async () => {
+  for (const status of ['preparing', 'error']) {
+    const h = runtimeHarness(); let refreshes = 0, prepares = 0;
+    const error = new Error('后端身份绑定写入失败');
+    h.runtime.refresh = async () => { refreshes += 1; return h.state; };
+    const container = new Node('main');
+    const view = createPeopleProfilesView({ runtime: h.runtime, documentRef, sessionStateProvider: () => ({ status, error }), prepareSession: async () => { prepares += 1; throw error; } });
+    view.mount(container); assert.equal((await view.activate()).status, 'error');
+    assert.equal(refreshes, 0); assert.equal(prepares, status === 'preparing' ? 1 : 0);
+    assert.match(visible(container), /读取失败：后端身份绑定写入失败/);
+    assert.doesNotMatch(visible(container), /人物资料读取完成/);
+  }
+});
+
+test('千人等待身份时离开页面或身份已过期，不迟到读取人物', async () => {
+  for (const leavePage of [true, false]) {
+    let release, refreshes = 0;
+    const pending = new Promise(resolve => { release = resolve; });
+    const h = runtimeHarness(); h.runtime.refresh = async () => { refreshes += 1; return h.state; };
+    const view = createPeopleProfilesView({ runtime: h.runtime, documentRef, sessionStateProvider: () => ({ status: 'preparing' }), prepareSession: () => pending });
+    view.mount(new Node('main')); const activation = view.activate();
+    if (leavePage) view.deactivate();
+    release({ status: leavePage ? 'ready' : 'stale' });
+    assert.equal((await activation).status, 'stale'); assert.equal(refreshes, 0);
+  }
+});
+
+test('千人复用后台读取时不提前报成功，完成或失败后更新反馈', async () => {
+  for (const failed of [false, true]) {
+    const h = runtimeHarness(); h.emitState({ ...h.state, active: { kind: 'loading' }, status: 'loading' });
+    const container = new Node('main'); const view = createPeopleProfilesView({ runtime: h.runtime, documentRef });
+    view.mount(container); await view.activate();
+    assert.match(visible(container), /正在读取当前聊天/); assert.doesNotMatch(visible(container), /人物资料读取完成/);
+    h.emitState({ ...h.state, active: null, status: failed ? 'error' : 'ready', lastError: failed ? new Error('后端读取失败') : null });
+    assert.match(visible(container), failed ? /读取失败：后端读取失败/ : /人物资料读取完成/);
+    assert.doesNotMatch(visible(container), /正在读取当前聊天/);
+  }
+});
+
 const fieldControl = (container, label) => flatten(container).find(node => node.className === 'qqj-profile-field' && node.children[0]?.textContent === label)?.children.at(-1);
 function trueRuntimeHarness() {
   const records = new Map(), calls = [], control = { gate: null, failNextPut: false };

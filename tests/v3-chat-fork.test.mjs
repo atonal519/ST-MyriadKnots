@@ -200,7 +200,11 @@ test('复制到不同角色卡也只建独立身份，不读旧卡记忆', async
   };
   const result = await createChatSession({
     contextProvider: () => clone,
-    identityCoordinator: createChatIdentityCoordinator({ client: guardedClient, now: () => new Date(NOW) }),
+    identityCoordinator: createChatIdentityCoordinator({
+      client: guardedClient,
+      listHostChats: async () => { assert.fail('跨角色复制不得读取原角色聊天列表'); },
+      now: () => new Date(NOW),
+    }),
   }).prepare();
   assert.notEqual(result.identity.chatId, SOURCE);
   assert.equal(backend.records.get(`${CHAT_IDENTITY_COLLECTION}/binding-${result.identity.chatId}`).data.owner.characterLocator, 'new-character.png');

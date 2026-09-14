@@ -98,6 +98,58 @@ test('recall source 只输出 reachable 窄 DTO，局部重放而不信任 store
   for (const forbidden of ['baseline', 'canonicalContent', 'diagnostics', 'stateDeltas', 'currentStates']) assert.equal(Object.hasOwn(result, forbidden), false, forbidden);
 });
 
+test('主角人设基础资料不进入召回候选，剧情与人工状态保留且不修改原记录', async () => {
+  const cases = [
+    { name: '主角人设', evidence: ['userPersona'], origin: 'baseline', omitted: true },
+    { name: '世界书', evidence: ['worldbook:1'], origin: 'baseline' },
+    { name: '混合设定来源', evidence: ['userPersona', 'worldbook:1'], origin: 'baseline' },
+    { name: '角色卡', evidence: ['characterCard'], origin: 'baseline' },
+    { name: '混合证据', evidence: ['userPersona', 'canonicalContent'], origin: 'floor' },
+    { name: '人工修改', evidence: ['userPersona'], origin: 'manual' },
+    { name: '剧情变化', evidence: ['userPersona'], origin: 'floor' },
+    { name: '旧资料无来源记录', evidence: null, origin: 'baseline' },
+  ];
+  const queryContext = { text: '阿裴，继续钟楼的约定', latestUserText: '阿裴，继续钟楼的约定', messageCount: 1 };
+  for (const scenario of cases) {
+    const value = reachable();
+    value.entities[0].specialRole = 'user';
+    const delta = value.stateDeltas[0], subject = delta.subjectSnapshots[0];
+    const item = { ...subject.situational[0], id: '99999999-9999-4999-8999-999999999999', text: '开朗热情，重视社交边界', origin: scenario.origin };
+    subject.core = [item];
+    delta.fixedChanges[0].items.push({ category: 'core', action: 'add', before: null, after: item });
+    if (scenario.evidence) delta.source = { calibrationAudit: [{ subjectEntityId: PERSON, category: 'core', action: 'add', text: item.text, evidence: scenario.evidence.map(source => ({ source, quote: item.text })) }] };
+    const original = structuredClone(value);
+    const source = await projectRecallSource(value, () => new Date(NOW));
+    assert.equal(source.currentState[0].core.length, scenario.omitted ? 0 : 1, scenario.name);
+    assert.equal(source.currentState[0].situational.length, 1, `${scenario.name}：剧情承诺保留`);
+    assert.equal(source.cseChanges.some(change => change.after?.stateId === item.id), !scenario.omitted, `${scenario.name}：历史新增同步处理`);
+    assert.deepEqual(value, original, `${scenario.name}：原始记忆不变`);
+    if (scenario.omitted) {
+      const pool = buildRecallCseCandidatePool({ source, queryContext });
+      assert.doesNotMatch(pool.text, /开朗热情|社交边界/);
+      const selected = selectRecall({ source, queryContext, contextSize: 12000 });
+      assert.doesNotMatch(selected.injectionText, /开朗热情|社交边界/);
+      assert.match(selected.injectionText, /雨夜承诺/);
+    }
+  }
+});
+
+test('过滤人设基础资料仍保留人物调整和移除的历史变化', async () => {
+  const value = reachable(), delta = value.stateDeltas[0], subject = delta.subjectSnapshots[0];
+  const item = { ...subject.situational[0], origin: 'baseline', text: '谨慎守约' };
+  subject.core = [item]; subject.situational = [];
+  delta.source = { calibrationAudit: [{ subjectEntityId: PERSON, category: 'core', action: 'refine', text: item.text, evidence: [{ source: 'userPersona', quote: item.text }] }] };
+  delta.fixedChanges[0].items = [
+    { category: 'core', action: 'refine', before: { ...item, text: '只信自己' }, after: item },
+    { category: 'core', action: 'remove', before: { ...item, text: '隐瞒自己的身世' }, after: null },
+  ];
+  const source = await projectRecallSource(value, () => new Date(NOW));
+  assert.equal(source.currentState[0].core.length, 0);
+  assert.deepEqual(source.cseChanges.map(change => change.action), ['refine', 'remove']);
+  assert.equal(source.cseChanges[0].before.text, '只信自己');
+  assert.equal(source.cseChanges[1].before.text, '隐瞒自己的身世');
+});
+
 test('recall source stale/unavailable/disabled 与缺 root/checkpoint 单次读取后 fail-open', async () => {
   for (const [status, malformed, expectedStatus, exitPoint] of [['stale', false, 'stale', 'stale'], ['unavailable', false, 'unavailable', 'unavailable'], ['disabled', false, 'unavailable', 'unavailable'], ['ready', true, 'unavailable', 'unavailable']]) {
     let reads = 0, rootReads = 0;
@@ -2337,7 +2389,7 @@ test('runtime normal 先完成一次 prompt commit，再最多保存一次 schem
   const receipt = harness.userMessage.extra?.[RECALL_RECEIPT_KEY];
   assert.equal(RECALL_RECEIPT_SCHEMA_VERSION, 13);
   assert.equal(receipt.schemaVersion, 13);
-  assert.equal(receipt.strategyVersion, 'continuity-v10');
+  assert.equal(receipt.strategyVersion, 'continuity-v11');
   assert.equal(receipt.chatId, CHAT);
   assert.equal(receipt.headCheckpointId, harness.source.headCheckpointId);
   assert.equal(receipt.rootRevision, harness.source.rootRevision);
@@ -2418,7 +2470,7 @@ test('runtime 默认异步入口调用摘要路由，成功排除写入 schema13
   assert.equal(first.lastRecall.status, 'ready');
   const receipt = harness.userMessage.extra[RECALL_RECEIPT_KEY];
   assert.equal(receipt.schemaVersion, 13);
-  assert.equal(receipt.strategyVersion, 'continuity-v10');
+  assert.equal(receipt.strategyVersion, 'continuity-v11');
   assert.equal(receipt.selectorDiagnostic.historyCandidateCount > 0, true);
   assert.equal(receipt.selectorDiagnostic.stateCandidateCount, 0);
   assert.equal(receipt.selectorDiagnostic.historyExcludedCount, 0);
@@ -2498,7 +2550,7 @@ test('schema13 剧情线回执经 runtime 新算/复用/恢复及历史 projecto
   const receipt = harness.userMessage.extra[RECALL_RECEIPT_KEY];
   assert.equal(first.lastRecall.status, 'ready');
   assert.equal(first.lastRecall.schemaVersion, 13);
-  assert.equal(receipt.strategyVersion, 'continuity-v10');
+  assert.equal(receipt.strategyVersion, 'continuity-v11');
   assert.deepEqual(receipt.storylines, selection.storylines);
   assert.equal(receipt.injectionText, selection.injectionText);
   const freshInline = projectInlineRecallReceipt(first.lastRecall);
@@ -3144,7 +3196,7 @@ test('历史楼 projector 对旧 schema6/7/8/9 保持原签名展示和真实落
   }
 });
 
-test('旧 continuity-v1/v2 schema9 回执只读展示和恢复，但新生成必须运行 continuity-v10 排除', async () => {
+test('旧 continuity-v1/v2 schema9 回执只读展示和恢复，但新生成必须运行 continuity-v11 排除', async () => {
   for (const oldStrategy of ['continuity-v1', 'continuity-v2']) {
   let selectorCalls = 0;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); } });
@@ -3165,19 +3217,17 @@ test('旧 continuity-v1/v2 schema9 回执只读展示和恢复，但新生成必
   assert.equal(restored.lastRecall?.legacyReadOnly, true);
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(selectorCalls, 2, '旧策略回执不得作为新生成复用结果');
-  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v10');
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v11');
   }
 });
 
-test('旧 continuity-v9 schema13 回执保留只读投影与冷恢复，regenerate 改用 continuity-v10', async () => {
+test('旧 continuity-v10 schema13 回执保留只读投影与冷恢复，regenerate 改用 continuity-v11', async () => {
   let selectorCalls = 0;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); } });
   await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   const old = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
-  old.strategyVersion = 'continuity-v9';
-  delete old.selectorDiagnostic.utilityRoundTripMs;
-  delete old.selectorDiagnostic.localSelectionMs;
-  delete old.stages.ordinaryEstimatedTokenBudget;
+  old.strategyVersion = 'continuity-v10';
+  old.injectionText = old.injectionText.padEnd(17000, ' ');
   old.receiptFingerprint = await receiptFingerprint(old);
   const projected = await projectHistoricalRecallReceipt({ ...harness.userMessage, extra: { [RECALL_RECEIPT_KEY]: structuredClone(old) } }, { chatId: CHAT, userMessageIndex: 1 });
   assert.equal(projected?.restoredReceipt, true);
@@ -3188,13 +3238,13 @@ test('旧 continuity-v9 schema13 回执保留只读投影与冷恢复，regenera
   const restored = await harness.runtime.restorePersistedReceipt();
   assert.equal(restored.lastRecall?.legacyReadOnly, true);
   assert.equal(restored.lastRecall?.injectionText, old.injectionText);
-  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v9', '只读恢复不得改写旧回执');
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v10', '只读恢复不得改写旧回执');
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
-  assert.equal(selectorCalls, 2, '旧 v9 回执不得被当前生成直接复用');
-  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v10');
+  assert.equal(selectorCalls, 2, '旧 v10 回执不得被当前生成直接复用');
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v11');
 });
 
-test('旧 schema10 continuity-v5 回执保留只读展示，当前生成不复用并升级到 v10', async () => {
+test('旧 schema10 continuity-v5 回执保留只读展示，当前生成不复用并升级到 v11', async () => {
   let selectorCalls = 0;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); } });
   await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
@@ -3214,7 +3264,7 @@ test('旧 schema10 continuity-v5 回执保留只读展示，当前生成不复�
   assert.equal(restored.lastRecall?.schemaVersion, 10);
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(selectorCalls, 2);
-  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v10');
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v11');
 });
 
 test('真实签名 schema11 continuity-v7 可历史投影与冷恢复，但 regenerate 必须重算 schema13 v10', async () => {
@@ -3251,7 +3301,7 @@ test('真实签名 schema11 continuity-v7 可历史投影与冷恢复，但 rege
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(selectorCalls, 2, 'schema11/v7只读回执不得被当前生成复用');
   assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].schemaVersion, 13);
-  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v10');
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v11');
 });
 
 test('历史楼 projector 对 schema4 仅沿用既有 chat/index 只读边界，不迁移或伪造签名', async () => {

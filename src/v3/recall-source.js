@@ -62,7 +62,21 @@ function memoryDto(memory, floor, { chronologyAllowed = true, floorSeqById = new
   });
 }
 
-function stateDto(replayed, entities, floorSeq) {
+function personaCoreStateIds(deltas) {
+  const ids = new Set();
+  for (const delta of deltas) {
+    const audits = delta.source?.calibrationAudit ?? [];
+    for (const subject of delta.subjectSnapshots) for (const item of subject.core ?? []) {
+      if (item.origin !== 'baseline' || item.sourceDeltaId !== delta.id) continue;
+      if (audits.some(audit => audit.subjectEntityId === subject.subjectEntityId && audit.category === 'core'
+        && audit.text === item.text
+        && audit.evidence.every(evidence => evidence.source === 'userPersona'))) ids.add(item.id);
+    }
+  }
+  return ids;
+}
+
+function stateDto(replayed, entities, floorSeq, personaCoreIds) {
   const activeEntityIds = new Set(entities.map(entity => entity.entityId));
   const item = value => Object.freeze({
     stateId: value.id,
@@ -77,13 +91,13 @@ function stateDto(replayed, entities, floorSeq) {
   });
   return Object.freeze((replayed?.subjects ?? []).filter(subject => activeEntityIds.has(subject.subjectEntityId)).map(subject => Object.freeze({
     subjectEntityId: subject.subjectEntityId,
-    core: Object.freeze((subject.core ?? []).map(item)),
+    core: Object.freeze((subject.core ?? []).filter(value => value.origin !== 'baseline' || !personaCoreIds.has(value.id)).map(item)),
     adaptive: Object.freeze((subject.adaptive ?? []).map(item)),
     situational: Object.freeze((subject.situational ?? []).map(item)),
   })));
 }
 
-function cseChangesDto(timeline, entities, floorSeq, identityProjection) {
+function cseChangesDto(timeline, entities, floorSeq, identityProjection, personaCoreIds) {
   const activeEntityIds = new Set(entities.map(entity => entity.entityId));
   const state = value => value ? Object.freeze({
     stateId: value.id,
@@ -102,7 +116,8 @@ function cseChangesDto(timeline, entities, floorSeq, identityProjection) {
     return entry.changes.flatMap(subject => {
       const subjectEntityId = resolveIdentityEntityId(subject.subjectEntityId, identityProjection);
       if (!activeEntityIds.has(subjectEntityId)) return [];
-      return subject.items.map(change => Object.freeze({
+      return subject.items.filter(change => !(change.category === 'core' && change.action === 'add'
+        && change.after?.origin === 'baseline' && personaCoreIds.has(change.after.id))).map(change => Object.freeze({
         deltaId: entry.deltaId,
         floorId: entry.floorId,
         assistantSeq,
@@ -153,6 +168,8 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     specialRole: entry.specialRole,
   })));
   const floorSeq = new Map(floors.map(floor => [floor.id, floor.assistantSeq]));
+  // 主角人设由酒馆注入；记忆只省去它的基础资料副本，保留剧情变化与原始记录。
+  const personaCoreIds = personaCoreStateIds(trustedDeltas);
   const readiness = hostSnapshot ? await assessMemoryCoverageFromHost({ reachable: first, snapshot: hostSnapshot, sanitizerOptions, captureGuard: true, realtimeOrigin }) : null;
   const missingAssistantSeq = Object.freeze(floors.filter(floor => !(memoryGroups.get(floor.id) ?? []).some(memory => activeMemoryIds.has(memory.id))).map(floor => floor.assistantSeq));
   const throughAssistantSeq = floorSeq.get(trustedDeltas.at(-1)?.floorId) ?? 0;
@@ -193,8 +210,8 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
       const floor = floorById.get(memory.floorId);
       return memoryDto(projectFloorMemoryIdentityReferences(memory, identityProjection), floor, { floorSeqById: floorSeq });
     })),
-    currentState: stateDto(projectCseStateIdentityReferences(replayed, identityProjection), entities, floorSeq),
-    cseChanges: cseChangesDto(cseTimeline, entities, floorSeq, identityProjection),
+    currentState: stateDto(projectCseStateIdentityReferences(replayed, identityProjection), entities, floorSeq, personaCoreIds),
+    cseChanges: cseChangesDto(cseTimeline, entities, floorSeq, identityProjection, personaCoreIds),
     identityProjection,
   });
 }

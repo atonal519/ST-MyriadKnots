@@ -12,7 +12,7 @@ import { publicErrorMessage } from '../public-error.js';
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
 export const RECALL_RECEIPT_SCHEMA_VERSION = 13;
-export const RECALL_STRATEGY_VERSION = 'continuity-v10';
+export const RECALL_STRATEGY_VERSION = 'continuity-v11';
 
 const SUPPORTED_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 const REUSE_TYPES = new Set(['regenerate', 'swipe', 'continue']);
@@ -212,13 +212,13 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     || !boundedString(receipt.queryFingerprint, 200)
     || (receipt.schemaVersion >= 8 && !boundedString(receipt.bodyMatchFingerprint, 200))
     || (receipt.schemaVersion >= 9 && (historical
-      ? ![RECALL_STRATEGY_VERSION, 'continuity-v9', 'continuity-v8', 'continuity-v7', 'continuity-v6', 'continuity-v5', 'continuity-v4', 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
+      ? ![RECALL_STRATEGY_VERSION, 'continuity-v10', 'continuity-v9', 'continuity-v8', 'continuity-v7', 'continuity-v6', 'continuity-v5', 'continuity-v4', 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
       : receipt.strategyVersion !== RECALL_STRATEGY_VERSION))
     || !SUPPORTED_TYPES.has(receipt.generationType)
     || !Array.isArray(receipt.selectedFloors) || receipt.selectedFloors.length > MAX_RECEIPT_FLOORS
     || !Array.isArray(receipt.selectedStates) || receipt.selectedStates.length > MAX_RECEIPT_STATES
     || !Array.isArray(receipt.skipReasons) || receipt.skipReasons.length > MAX_RECEIPT_SKIP_REASONS
-    || !boundedString(receipt.injectionText, receipt.strategyVersion === RECALL_STRATEGY_VERSION ? 20000 : 16000, { empty: true })
+    || !boundedString(receipt.injectionText, [RECALL_STRATEGY_VERSION, 'continuity-v10'].includes(receipt.strategyVersion) ? 20000 : 16000, { empty: true })
     || !boundedString(receipt.receiptFingerprint, 200)
     || !boundedString(receipt.createdAt, 100) || !Number.isFinite(Date.parse(receipt.createdAt))
     || (receipt.completionStatus === 'ready') !== Boolean(receipt.injectionText)) return false;

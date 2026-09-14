@@ -129,7 +129,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.1.20');
+  assert.equal(manifest.version, '0.1.21');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
@@ -234,6 +234,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let v3MemoryRuntime;
   let v3RecallOptions;
   let identityOptions;
+  let hostChatListOptions;
   let sessionOptions;
   let lifecycleOptions;
   let peopleWorkspaceOptions;
@@ -259,6 +260,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const hostUuid = '123e4567-e89b-42d3-a456-426614174000';
   let hostUuidCalls = 0;
   const uuidv4 = () => { hostUuidCalls += 1; return hostUuid; };
+  const productionListHostChats = async () => ['host-chat'];
   const modules = new Map();
   const define = (specifier, exports) => {
     const module = new SyntheticModule(Object.keys(exports), function initialize() {
@@ -291,6 +293,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
     return { prepare: () => options.identityCoordinator.prepare(), identity: () => ({ chatId: 'test' }), invalidate() {}, getState: () => sessionState };
   } });
   define('./src/chat-identity.js', { createChatIdentityCoordinator: options => { identityOptions = options; return { prepare: () => options.freshUuid() }; } });
+  define('./src/host-context.js', { createHostChatList: options => { hostChatListOptions = options; return productionListHostChats; } });
   define('./src/chat-memory-management.js', { createChatMemoryManagement: options => { memoryManagementOptions = options; chatMemoryManagement = { getState: () => ({ status: 'idle' }), deleteCurrent() {} }; return chatMemoryManagement; } });
   define('./src/plugin-lifecycle.js', {
     createPluginLifecycle: options => {
@@ -309,7 +312,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
     },
   });
   define('./src/source-permission.js', { createSourcePermissionController: () => ({}) });
-  define('./src/v3/host-adapter.js', { createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => ({ eventSource: productionEventSource, eventTypes: productionEventTypes, uuidv4 }), snapshot: () => ({}) }; } });
+  define('./src/v3/host-adapter.js', { createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => ({ eventSource: productionEventSource, eventTypes: productionEventTypes, uuidv4, getRequestHeaders: () => ({ 'X-CSRF-Token': 'token' }) }), snapshot: () => ({}) }; } });
   define('./src/v3/foundation-store.js', { createFoundationStore: () => ({}) });
   define('./src/v3/foundation-runtime.js', { createFoundationRuntime: options => { foundationOptions = options; return {}; } });
   define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() { backgroundStarts.push('memory'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, getState: () => ({}), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
@@ -361,6 +364,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(v3MemoryBindOptions.eventTypes.MESSAGE_SENT, 'sent', '生产 memory runtime 必须接到真实 user 消息事件');
   assert.equal(Object.hasOwn(identityOptions, 'sanitizerOptions'), false);
   assert.equal(Object.hasOwn(identityOptions, 'migrateFork'), false);
+  assert.equal(identityOptions.listHostChats, productionListHostChats, '生产入口必须注入真实宿主聊天列表读取器');
+  assert.deepEqual(hostChatListOptions.headers(), { 'X-CSRF-Token': 'token' });
   assert.equal(context.crypto, undefined, '入口接线回归必须在浏览器 crypto.randomUUID 不可用时验证');
   assert.equal(identityOptions.freshUuid, foundationOptions.newUuid);
   assert.equal(identityOptions.freshUuid, v3MemoryOptions.newUuid, '身份、地基、记忆及其 CSE 必须共用宿主 UUID provider');
@@ -390,6 +395,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(bootstrapOptions.peopleWorkspaceRuntime, peopleWorkspaceRuntime);
   assert.equal(bootstrapOptions.chatMemoryManagement, chatMemoryManagement);
   assert.deepEqual(bootstrapOptions.sessionStateProvider(), sessionState);
+  const claimsBeforeUiWait = hostUuidCalls;
+  assert.equal(await bootstrapOptions.prepareSession(), hostUuid);
+  assert.equal(hostUuidCalls, claimsBeforeUiWait + 1, '人物页等待入口必须调用现有 session.prepare');
   assert.deepEqual(bootstrapOptions.backendDiagnosticProvider(), backendSnapshot);
   assert.equal(bootstrapOptions.pluginVersion, '0.1.9-test');
   assert.equal(bootstrapOptions.enableFab, true);

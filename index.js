@@ -11,6 +11,7 @@ import { createApiResolver, createApiTools, createTaskRouter } from './src/api-r
 import { createCompactApiClient } from './src/compact-api-client.js';
 import { createChatSession } from './src/chat-session.js';
 import { createChatIdentityCoordinator } from './src/chat-identity.js';
+import { createHostChatList } from './src/host-context.js';
 import { createChatMemoryManagement } from './src/chat-memory-management.js';
 import { createPluginLifecycle } from './src/plugin-lifecycle.js';
 import { createSourcePermissionController } from './src/source-permission.js';
@@ -82,7 +83,8 @@ const taskRouter = createTaskRouter({
   isEnabled: settings.isEnabled,
 });
 const apiTools = createApiTools({ resolver: apiResolver, compactClient, isEnabled: settings.isEnabled });
-const identityCoordinator = createChatIdentityCoordinator({ client: backendClient, freshUuid: newUuid });
+const listHostChats = createHostChatList({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
+const identityCoordinator = createChatIdentityCoordinator({ client: backendClient, freshUuid: newUuid, listHostChats });
 const session = createChatSession({ contextProvider, isEnabled: settings.isEnabled, identityCoordinator });
 const sourcePermissions = createSourcePermissionController({ settings, contextProvider });
 const summaryPrompt = () => settings.get().summaryPrompt;
@@ -228,6 +230,7 @@ ui = bootstrap({
   peopleWorkspaceRuntime,
   chatMemoryManagement,
   sessionStateProvider: () => session.getState(),
+  prepareSession: () => session.prepare(),
   backendDiagnosticProvider: () => backendClient.getDiagnosticSnapshot(),
   pluginVersion,
   inlineRenderer,

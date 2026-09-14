@@ -4177,8 +4177,8 @@ test('不配对的嵌套 STARTED 不泄漏真实生成生命周期，唯一 ENDE
   }
 });
 
-test('未初始化聊天的流式首 token 只检查，不提前写地基或调用记忆模型', async () => {
-  const h = harness({ initialChat: [assistant('未初始化上一楼')], automation: { enabled: true, batchSize: 1 }, readOnlyLifecycle: true });
+test('有稳定历史的未初始化聊天在流式首 token 时只检查，不提前写地基或调用记忆模型', async () => {
+  const h = harness({ initialChat: [assistant('未初始化历史楼'), user('已确认历史楼')], automation: { enabled: true, batchSize: 1 }, readOnlyLifecycle: true });
   await h.runtime.start();
   h.context.chat.push(user('继续'));
   h.emit('GENERATION_STARTED', 'normal');
@@ -4705,34 +4705,70 @@ test('手动 workRun 忙碌期间关闭自动记忆会清掉旧待触发，不�
   assert.equal(h.runtime.getState().lastAutoMemory, null);
 });
 
-test('未初始化 user 锚只暴露继续入口；显式建档后新 user 锚自动补齐且重复事件去重', async () => {
+test('新档 0 楼在首条 user 锚后初始化，并在 2 楼到达时只摘要 0 楼', async () => {
   const h = harness({
-    initialChat: [assistant('AI0 等待用户锚。')],
+    initialChat: [assistant('AI0 新档开场。')],
+    modernAnchors: true,
+    automation: { enabled: true, batchSize: 1 },
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: '0 楼开场摘要。' } }
+      : { jsonData: { noMaterialChange: true } },
+  });
+  await h.runtime.start();
+  assert.equal(h.runtime.allowsRealtimeTailFromEmpty(), true, '新空档启动后应留下实时来源证明');
+  assert.deepEqual(h.runtime.getState().unregisteredCandidates, [
+    { assistantSeq: 1, messageIndex: 0, reason: 'waitingNextUser' },
+  ]);
+
+  h.context.chat.push({ ...user('U1 确认开场。'), send_date: 'new-chat-anchor-u1' });
+  h.emit('MESSAGE_SENT', 1);
+  await waitFor(() => h.foundationRuntime.getState().stableCount === 1
+    && h.runtime.getState().floors.length === 1, '首条 user 锚后新档 root 未被内存层接收');
+  assert.equal(h.foundationRuntime.getState().stableCount, 1);
+  assert.equal(h.backend.records.has(`chat-${CHAT}/v3-root`), true, '首条 user 锚应允许新空档登记 0 楼');
+
+  h.context.chat.push(assistant('AI2 尚待下一条 user 确认。'));
+  h.emit('MESSAGE_RECEIVED', 2);
+  await waitFor(() => h.runtime.getState().rememberedCount === 1 && h.runtime.getState().cseReady, '新档 0 楼未自动完成摘要');
+  const extractorCalls = h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT);
+  assert.equal(extractorCalls.length, 1, '0 楼只能自动摘要一次');
+  const state = h.runtime.getState();
+  assert.equal(state.floors[0].messageIndex, 0);
+  assert.equal(state.floors[0].memory.recordStatus, 'active');
+  assert.deepEqual(state.unregisteredCandidates, [
+    { assistantSeq: 2, messageIndex: 2, reason: 'waitingNextUser' },
+  ], '2 楼仍须等待下一条 user 消息，不得抢跑摘要');
+});
+
+test('有稳定历史的未初始化聊天只暴露继续入口；显式建档后新 user 锚自动补齐且重复事件去重', async () => {
+  const h = harness({
+    initialChat: [assistant('历史 AI0。'), user('历史 U1。')],
     modernAnchors: true,
     automation: { enabled: true, batchSize: 1 },
     readOnlyLifecycle: true,
   });
   await h.runtime.start();
-  assert.equal(h.foundationRuntime.getState().stableCount, 0);
+  assert.equal(h.runtime.getState().canInitialize, true);
   assert.equal(h.calls.length, 0);
-  h.context.chat.push({ ...user('U1 正式入列。'), send_date: 'anchor-u1' });
-  h.emit('MESSAGE_SENT', 1);
-  await waitFor(() => h.runtime.getState().canInitialize === true, '未初始化聊天未暴露显式继续入口');
-  assert.equal(h.calls.length, 0, '未初始化的新 user 锚不得自动调用模型');
-  assert.equal([...h.backend.records.keys()].some(key => key.endsWith('/v3-root')), false, '未初始化的新 user 锚不得写记忆图');
+  h.context.chat.push(assistant('历史 AI2。'), { ...user('U3 只触发检查。'), send_date: 'history-anchor-u3' });
+  h.emit('MESSAGE_SENT', 3);
+  await waitFor(() => h.foundationRuntime.getState().status === 'uninitialized'
+    && h.foundationRuntime.getState().inspectedStableCount === 2, '未初始化聊天的新 user 锚未完成只读检查');
+  assert.equal(h.calls.length, 0, '未初始化的历史聊天不得自动调用模型');
+  assert.equal([...h.backend.records.keys()].some(key => key.endsWith('/v3-root')), false, '未初始化的历史聊天不得写记忆图');
 
   await h.runtime.startHistoricalRebuild();
-  await waitFor(() => h.runtime.getState().rememberedCount === 1 && h.runtime.getState().cseReady, '显式继续未完成首次建档');
+  await waitFor(() => h.runtime.getState().rememberedCount === 2 && h.runtime.getState().cseReady, '显式继续未完成历史建档');
   const callsAfterFirst = h.calls.length;
-  assert.equal(callsAfterFirst, 2);
+  assert.equal(callsAfterFirst, 4);
 
-  h.context.chat.push(assistant('AI1 等待新锚。'), { ...user('U2 正式入列。'), send_date: 'anchor-u2' });
-  h.emit('MESSAGE_SENT', 3);
-  await waitFor(() => h.runtime.getState().rememberedCount === 2 && h.runtime.getState().cseReady, '已初始化聊天的新 user 锚未自动补齐');
+  h.context.chat.push(assistant('AI4 等待新锚。'), { ...user('U5 正式入列。'), send_date: 'anchor-u5' });
+  h.emit('MESSAGE_SENT', 5);
+  await waitFor(() => h.runtime.getState().rememberedCount === 3 && h.runtime.getState().cseReady, '已初始化聊天的新 user 锚未自动补齐');
   const callsAfterSecond = h.calls.length;
   assert.equal(callsAfterSecond, callsAfterFirst + 2);
-  h.emit('MESSAGE_SENT', 3);
-  h.emit('USER_MESSAGE_RENDERED', 3);
+  h.emit('MESSAGE_SENT', 5);
+  h.emit('USER_MESSAGE_RENDERED', 5);
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(h.calls.length, callsAfterSecond, '重复 sent/rendered 事件不得重复摘要或 CSE');
 

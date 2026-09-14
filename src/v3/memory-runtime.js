@@ -376,6 +376,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   const hasEstablishedMemory = () => Boolean(reachable?.floorMemories?.some(memory => memory?.recordStatus === 'active'));
   const hasEstablishedChat = () => Boolean(currentHostChatId() && establishedMemoryChatId === currentHostChatId());
   const hasExplicitInitializationIntent = () => hasEstablishedMemory() || hasEstablishedChat()
+    || (automation().enabled && allowsRealtimeTailFromEmpty())
     || workRun?.kind === 'manual'
     || historicalAuthorization !== null
     || cseRebuildPlan !== null;
@@ -572,7 +573,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       nextReachable = null;
       const chatId = currentHostChatId();
       const foundation = foundationRuntime.getState();
-      if (foundation?.status === 'uninitialized' && foundation.stableCount === 0 && chatId) {
+      if (foundation?.status === 'uninitialized' && foundation.inspectedStableCount === 0 && chatId) {
         emptyRealtimeOrigin = Object.freeze({ chatId, narrativeGeneration: null });
         coverage = emptyCaughtUpCoverage();
       }
@@ -1227,7 +1228,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const userInitiated = manualHistorical || reason === 'manualRetry' || Boolean(eventAuthorization);
     const authorizedChatId = manualHistorical ? historicalAuthorization : null;
     if (!enabled() || (!manualHistorical && !config.enabled) || (manualHistorical && !authorizedChatId)
-      || (eventAuthorization && (!hasEstablishedChat() || reachable?.root?.chatId !== eventAuthorization.chatId))
+      || (eventAuthorization && (!(hasEstablishedChat() || allowsRealtimeTailFromEmpty())
+        || reachable?.root?.chatId !== eventAuthorization.chatId))
       || workRun || active || cseRuntime.getState().activeCse) return getState();
     const operation = { kind: 'auto', token: ++autoEpoch, reason, phase: 'reconciling', mode: manualHistorical ? 'historical' : 'realtime', floorIds: [], promise: null };
     workRun = operation;

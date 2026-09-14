@@ -43,6 +43,8 @@ function chatContext(hostChatId, chatId = UUID) {
 
 test('同一 QQJ chatId 被复制到不同宿主聊天后直接获得独立 ready 身份', async () => {
   const backend = recordBackend();
+  let listCalls = 0;
+  const listHostChats = async () => { listCalls += 1; return ['原聊天', '复制聊天']; };
   const source = chatContext('原聊天');
   const sourceCoordinator = createChatIdentityCoordinator({ client: backend.client, now: () => new Date('2026-09-04T00:00:00.000Z') });
   const sourceSession = createChatSession({ contextProvider: () => source, identityCoordinator: sourceCoordinator });
@@ -54,7 +56,7 @@ test('同一 QQJ chatId 被复制到不同宿主聊天后直接获得独立 read
   assert.equal((await reopenedSource.prepare()).identity.chatId, UUID, '已正式绑定的同 owner ready 聊天必须沿用原 ID');
 
   const clone = chatContext('复制聊天', UUID);
-  const cloneCoordinator = createChatIdentityCoordinator({ client: backend.client, now: () => new Date('2026-09-04T00:00:00.000Z') });
+  const cloneCoordinator = createChatIdentityCoordinator({ client: backend.client, listHostChats, now: () => new Date('2026-09-04T00:00:00.000Z') });
   const cloneSession = createChatSession({ contextProvider: () => clone, identityCoordinator: cloneCoordinator });
   const prepared = await cloneSession.prepare();
   assert.equal(prepared.status, 'ready');
@@ -74,10 +76,22 @@ test('同一 QQJ chatId 被复制到不同宿主聊天后直接获得独立 read
   const callsAfterReady = { ...backend.calls };
   assert.equal((await cloneSession.prepare()).identity.chatId, prepared.identity.chatId);
   assert.deepEqual(backend.calls, callsAfterReady, '同宿主 ready session 应内存返回，不再 PUT 0 / 409 / GET');
+  assert.equal(listCalls, 1, '只有首次判定宿主复制时读取列表');
+
+  const reopenedClone = createChatSession({
+    contextProvider: () => clone,
+    identityCoordinator: createChatIdentityCoordinator({
+      client: backend.client,
+      listHostChats: async () => { throw new Error('已独立分支不得再关联原档状态'); },
+      now: () => new Date('2026-09-05T00:00:00.000Z'),
+    }),
+  });
+  assert.equal((await reopenedClone.prepare()).identity.chatId, prepared.identity.chatId, '独立 binding 建立后即使原档删除也保持当前身份');
 });
 
 test('旧 preparing 认领不复用已搬入的 root，当前宿主改领无继承的新身份', async () => {
   const backend = recordBackend();
+  let listCalls = 0;
   const oldBinding = {
     schemaVersion: 1,
     kind: 'qqj-chat-identity-binding',
@@ -91,7 +105,7 @@ test('旧 preparing 认领不复用已搬入的 root，当前宿主改领无继�
   backend.records.set(`${CHAT_IDENTITY_COLLECTION}/binding-${UUID}`, { revision: 1, data: structuredClone(oldBinding) });
   backend.records.set(`chat-${UUID}/v3-root`, { revision: 1, data: { copied: true } });
   const clone = chatContext('复制聊天', UUID);
-  const coordinator = createChatIdentityCoordinator({ client: backend.client, now: () => new Date('2026-09-05T00:00:00.000Z') });
+  const coordinator = createChatIdentityCoordinator({ client: backend.client, listHostChats: async () => { listCalls += 1; return []; }, now: () => new Date('2026-09-05T00:00:00.000Z') });
   const session = createChatSession({ contextProvider: () => clone, identityCoordinator: coordinator });
   const prepared = await session.prepare();
   assert.equal(prepared.status, 'ready');
@@ -101,17 +115,20 @@ test('旧 preparing 认领不复用已搬入的 root，当前宿主改领无继�
   assert.equal(backend.records.get(`${CHAT_IDENTITY_COLLECTION}/binding-${prepared.identity.chatId}`).data.state, 'ready');
   assert.equal(backend.records.get(`${CHAT_IDENTITY_COLLECTION}/binding-${prepared.identity.chatId}`).data.sourceChatId, UUID);
   assert.equal(backend.records.has(`chat-${prepared.identity.chatId}/v3-root`), false);
+  assert.equal(listCalls, 0, 'preparing binding 不得用宿主列表升级成改名');
 });
 
 test('同一宿主聊天只切换 persona 不会误判成聊天分支', async () => {
   const backend = recordBackend();
+  let listCalls = 0;
   const context = chatContext('同一聊天');
-  const coordinator = createChatIdentityCoordinator({ client: backend.client });
+  const coordinator = createChatIdentityCoordinator({ client: backend.client, listHostChats: async () => { listCalls += 1; return []; } });
   const session = createChatSession({ contextProvider: () => context, identityCoordinator: coordinator });
   assert.equal((await session.prepare()).identity.chatId, UUID);
   context.userAvatar = 'another-persona.png';
   session.invalidate();
   assert.equal((await session.prepare()).identity.chatId, UUID);
+  assert.equal(listCalls, 0, '只切 Persona 时宿主文件名和角色未变，不读取列表');
 });
 
 test('禁用时零元数据操作；切聊天后旧 prepare 返回 stale', async () => {

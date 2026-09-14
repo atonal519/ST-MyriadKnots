@@ -8,7 +8,7 @@ function text(value, fallback = '—') { return value === null || value === unde
 
 function statusCopy(value) {
   return ({
-    uninitialized: '等待下一条用户消息', ready: '可用', running: '正在处理', empty: '完成 · 无需注入',
+    uninitialized: '尚未开始记录', ready: '可用', running: '正在处理', empty: '完成 · 无需注入',
     skipped: '本轮已跳过', idle: '尚无生成记录', conflict: '并发冲突，未覆盖新数据', error: '处理失败，可重试',
     disabled: '插件已关闭', stale: '正在等待最新结果', needsReview: '需要核对当前聊天记忆', unprocessed: '未处理',
     failed: '失败可重试', partial: '部分完成，可继续补齐', pending: '待分析', noChange: '无实质变化', notApplicable: '尚无摘要',
@@ -184,37 +184,53 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     if (value === null || value === undefined || value === '') return '';
     return publicErrorMessage(value, { fallback: '记忆处理失败，请稍后重试。' });
   };
+  const sessionErrorCopy = () => {
+    const sessionState = readDiagnosticState(sessionStateProvider);
+    return sessionState?.status === 'error' ? errorMessage(sessionState.error) || '当前聊天身份准备失败，请稍后重试。' : '';
+  };
+  const uninitializedCopy = state => {
+    if (effectiveStatus(state) !== 'uninitialized') return '';
+    return state.canInitialize === true || (state.inspectedStableCount ?? 0) > 0
+      ? '当前聊天尚未建立记忆，可在记忆管理中点击“补齐缺失”处理已有楼层'
+      : state.autoMemoryEnabled === false
+        ? '当前聊天尚未开始记录，自动摘要已关闭；后续可在记忆管理中手动“补齐缺失”'
+        : '当前聊天尚未开始记录，继续对话后可开始记录';
+  };
   const peopleSharedError = state => {
     if (state.pluginEnabled === false) return '';
     const foundationError = errorMessage(state.lastError); if (foundationError) return `共享记忆：${foundationError}`;
     const foundationStatus = effectiveStatus(state);
-    if (!['ready', 'running'].includes(foundationStatus)) return `共享记忆${statusCopy(foundationStatus)}`;
+    if (!['ready', 'running', 'uninitialized'].includes(foundationStatus)) return `共享记忆${statusCopy(foundationStatus)}`;
     const workspaceError = errorMessage(peopleState?.lastError); if (workspaceError) return `重要人物选择：${workspaceError}`;
-    if (peopleState && ['idle', 'stale', 'error', 'disabled'].includes(peopleState.status)) return `重要人物选择${statusCopy(peopleState.status)}`;
+    if (foundationStatus !== 'uninitialized' && peopleState && ['idle', 'stale', 'error', 'disabled'].includes(peopleState.status)) return `重要人物选择${statusCopy(peopleState.status)}`;
     return '';
   };
-  const errorCopy = state => page === 'memories' ? errorMessage(state.lastExtractorError) || errorMessage(state.lastError)
+  const errorCopy = state => sessionErrorCopy() || (page === 'memories' ? errorMessage(state.lastExtractorError) || errorMessage(state.lastError)
     : page === 'people' ? peopleSharedError(state) || errorMessage(state.lastCseError)
-      : errorMessage(state.lastCseError) || errorMessage(state.lastExtractorError) || errorMessage(state.lastError);
+      : errorMessage(state.lastCseError) || errorMessage(state.lastExtractorError) || errorMessage(state.lastError));
   const healthCopy = state => {
     if (state.pluginEnabled === false) return '千千结已关闭';
+    const sessionError = sessionErrorCopy(); if (sessionError) return `记忆读取失败 · ${sessionError}`;
     if (state.memorySnapshotStatus === 'syncing' && !(state.floors ?? []).length) return '正在读取当前聊天记忆';
     if (page === 'memories') {
       if (memoryBusy(state)) return `正在处理摘要 · ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼`;
       const error = errorCopy(state); if (error) return state.lastExtractorError?.phase === 'anchor'
         ? `消息标识保存待重试 · ${error}`
-        : state.lastExtractorError?.floorId === null ? `记忆读取失败 · ${error}` : `摘要提取失败 · ${error}`;
+        : !state.lastExtractorError || state.lastExtractorError.floorId === null ? `记忆读取失败 · ${error}` : `摘要提取失败 · ${error}`;
+      const uninitialized = uninitializedCopy(state); if (uninitialized) return uninitialized;
       const waiting = state.unregisteredCandidates?.length ?? 0;
       return `已记忆 ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼 · 待摘要 ${state.unprocessedCount ?? 0} 楼${waiting ? ` · 另有 ${waiting} 楼尚未摘要，正在等待确认` : ''}${state.memorySyncStatus === 'syncing' ? ' · 后台同步中' : ''}`;
     }
     if (page === 'people') {
       if (cseBusy(state)) return `正在分析人物状态 · 待分析 ${state.csePendingCount ?? 0} 楼`;
       const error = errorCopy(state); if (error) return `人物状态需要处理 · ${error}`;
+      const uninitialized = uninitializedCopy(state); if (uninitialized) return uninitialized;
       const complete = Math.max(0, (state.rememberedCount ?? 0) - (state.csePendingCount ?? 0) - (state.cseFailedCount ?? 0));
       return `人物状态 ${complete}/${state.rememberedCount ?? 0} 楼 · 待分析 ${state.csePendingCount ?? 0} 楼${state.memorySyncStatus === 'syncing' ? ' · 后台同步中' : ''}`;
     }
     if (workBusy(state) || state.status === 'running') return `${workPhaseCopy(state)} · ${state.rebuildCompletedCount ?? state.rememberedCount ?? 0}/${state.rebuildTotalCount ?? state.stableCount ?? 0} 楼`;
     const error = errorCopy(state); if (error) return `需要处理 · ${error}`;
+    const uninitialized = uninitializedCopy(state); if (uninitialized) return uninitialized;
     return `已记忆 ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼 · 人物状态 ${state.cseReady ? '已跟上' : `待分析 ${state.csePendingCount ?? 0} 楼`}`;
   };
   const healthClass = state => {
@@ -991,10 +1007,10 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const pendingCopy = `摘要待补 ${state.unprocessedCount ?? 0} 楼 · CSE 待分析 ${state.csePendingCount ?? 0} 楼`;
     const nextStepCopy = deletePending ? '上次删除尚未完成，请先继续删除当前聊天记忆。'
       : busy ? `${workPhaseCopy(state)}，完成后可继续操作。`
-        : !state.chatId ? '当前聊天尚未建立记忆身份。'
-          : ['needsReview', 'error'].includes(effectiveStatus(state)) ? `当前${statusCopy(effectiveStatus(state))}；请先点击“刷新状态”。若仍无法确认真实归属，现有记忆会保留、正文可继续，可复制诊断反馈。`
+        : ['needsReview', 'error'].includes(effectiveStatus(state)) || sessionErrorCopy() ? `当前${sessionErrorCopy() ? '记忆读取失败' : statusCopy(effectiveStatus(state))}；请先点击“刷新状态”。若仍无法确认真实归属，现有记忆会保留、正文可继续，可复制诊断反馈。`
+          : uninitializedCopy(state) || (!state.chatId ? '当前记忆状态尚未载入，请点击“刷新状态”。'
             : !rebuildActionable ? '当前没有需要补齐的稳定楼。'
-              : '可用“补齐缺失”保留已有结果；“完全重构”会替换全部摘要与人物状态。';
+              : '可用“补齐缺失”保留已有结果；“完全重构”会替换全部摘要与人物状态。');
     actions.append(element('span', 'settings-hint qqj-management-progress', `${pendingCopy}。${nextStepCopy}`));
     const deleteActions = element('div', 'qqj-management-delete');
     if (memoryManagement) {

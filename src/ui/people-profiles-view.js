@@ -18,7 +18,7 @@ function fieldsFrom(person) {
 }
 function sameFields(left, right) { return PEOPLE_PROFILE_FIELDS.every(field => String(left?.[field] ?? '') === String(right?.[field] ?? '')); }
 
-export function createPeopleProfilesView({ runtime, dialog = null, documentRef = globalThis.document, imageFactory = () => new Image(), urlApi = globalThis.URL } = {}) {
+export function createPeopleProfilesView({ runtime, sessionStateProvider = null, prepareSession = null, dialog = null, documentRef = globalThis.document, imageFactory = () => new Image(), urlApi = globalThis.URL } = {}) {
   if (!runtime || ['getState', 'refresh', 'setSelectedEntityIds', 'setPersonOrderEntityIds', 'saveProfile', 'saveAvatar', 'mergePeople', 'deletePerson', 'generateMissingProfiles', 'regenerateProfile'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('千人人物资料 runtime 无效');
   if (!documentRef?.createElement) throw new TypeError('千人人物资料 documentRef 无效');
   let container = null, active = false, epoch = 0, unsubscribe = null, state = runtime.getState(), chatId = state.chatId ?? null, feedback = '人物资料状态已显示。';
@@ -36,6 +36,8 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
   };
   const element = (tag, className = '', text = '') => { const node = documentRef.createElement(tag); if (className) node.className = className; if (text !== '') node.textContent = text; return node; };
   const busyExceptGeneration = value => Boolean(value.active && value.active.kind !== 'generating');
+  const readFeedback = value => value.active?.kind === 'loading' ? '正在读取当前聊天…'
+    : value.lastError ? `读取失败：${publicErrorMessage(value.lastError, { fallback: '人物资料暂时无法读取，请重试。' })}` : '人物资料读取完成。';
   const statusCopy = value => {
     if (value.status === 'disabled') return '千千结已关闭';
     if (value.active?.kind === 'loading') return '正在读取当前聊天的人物资料';
@@ -396,7 +398,9 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
     else {
       const current = selected.find(person => person.entityId === currentEntityId);
       if (current) page.append(profilePanel(current));
-      else page.append(element('div', 'qqj-inline-empty', '尚未选择重要人物。点击上方“更多人物”即可自由选择，选择 0 位也完全可以。'));
+      else page.append(element('div', 'qqj-inline-empty', state.people.length
+        ? '尚未选择重要人物。点击上方“更多人物”即可自由选择，选择 0 位也完全可以。'
+        : '尚无已识别人物。摘要和人物状态分析后会在此显示；已有聊天历史可在“记忆管理”中点击“补齐缺失”。'));
     }
     const unavailable = state.selectedEntityIds.length - selected.length;
     if (unavailable > 0) page.append(element('p', 'settings-hint', `有 ${unavailable} 个旧人物选择在当前记忆图中暂不可匹配；其选择与资料仍保留。`));
@@ -406,15 +410,29 @@ export function createPeopleProfilesView({ runtime, dialog = null, documentRef =
   }
   function subscribe() {
     if (!active || unsubscribe || typeof runtime.subscribe !== 'function') return;
-    const release = runtime.subscribe(next => { state = next; if (active && container) render(next); });
+    const release = runtime.subscribe(next => {
+      const reading = state.active?.kind === 'loading' || next.active?.kind === 'loading';
+      state = next; resetForChat(next.chatId ?? null);
+      if (reading) feedback = readFeedback(next);
+      if (active && container) render(next);
+    });
     if (typeof release === 'function') unsubscribe = release;
   }
   function mount(target) { unsubscribe?.(); unsubscribe = null; operationMenus.deactivate(); container = target; active = true; render(runtime.getState()); operationMenus.activate(); subscribe(); }
   async function activate() {
     if (!container) throw new Error('千人人物资料 view 尚未挂载');
     active = true; operationMenus.activate(); subscribe(); const mine = ++epoch; feedback = '正在读取当前聊天…'; render(runtime.getState());
-    try { const result = await runtime.refresh({ refreshMemory: false }); if (!active || mine !== epoch) return { status: 'stale' }; state = result; feedback = '人物资料读取完成。'; render(result); return result; }
-    catch (error) { if (!active || mine !== epoch) return { status: 'stale' }; state = runtime.getState(); feedback = `读取失败：${publicErrorMessage(error, { fallback: '人物资料暂时无法读取，请重试。' })}`; render(state); return { status: 'error', error }; }
+    try {
+      const sessionState = sessionStateProvider?.() ?? null;
+      if (sessionState?.status === 'error') throw sessionState.error ?? new Error('当前聊天身份准备失败，请稍后重试。');
+      if (sessionState?.status === 'preparing') {
+        const prepared = await prepareSession();
+        if (!active || mine !== epoch) return { status: 'stale' };
+        if (prepared?.status !== 'ready') return prepared;
+      }
+      const result = await runtime.refresh({ refreshMemory: false }); if (!active || mine !== epoch) return { status: 'stale' }; state = result; resetForChat(result.chatId ?? null); feedback = readFeedback(result); render(result); return result;
+    }
+    catch (error) { if (!active || mine !== epoch) return { status: 'stale' }; state = runtime.getState(); resetForChat(state.chatId ?? null); feedback = `读取失败：${publicErrorMessage(error, { fallback: '人物资料暂时无法读取，请重试。' })}`; render(state); return { status: 'error', error }; }
   }
   function deactivate() { active = false; epoch += 1; closeCrop(); operationMenus.deactivate(); unsubscribe?.(); unsubscribe = null; }
   return Object.freeze({ mount, activate, deactivate, render });

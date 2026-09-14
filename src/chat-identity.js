@@ -50,6 +50,7 @@ export function createChatIdentityCoordinator({
   client,
   persist = persistChatId,
   freshUuid = newUuid,
+  listHostChats = null,
   now = () => new Date(),
 } = {}) {
   if (!client || typeof client.get !== 'function' || typeof client.put !== 'function') throw new TypeError('聊天身份协调器需要 record/CAS client');
@@ -78,9 +79,12 @@ export function createChatIdentityCoordinator({
     catch (error) { if (error?.status === 404) return false; throw error; }
   }
   let sequence = Promise.resolve();
+  const assertCurrent = signal => {
+    if (signal?.aborted) throw errorWith('QQJ_CHAT_PREPARE_STALE', '聊天身份准备已过期。');
+  };
   function serialized(task, signal) {
     const run = sequence.then(async () => {
-      if (signal?.aborted) throw errorWith('QQJ_CHAT_PREPARE_STALE', '聊天身份准备已过期。');
+      assertCurrent(signal);
       return task();
     });
     sequence = run.then(() => undefined, () => undefined);
@@ -91,6 +95,30 @@ export function createChatIdentityCoordinator({
     if (!sameOwner(claimed.data.owner, owner) || claimed.data.state !== 'ready') return null;
     await persist(raw, chatId);
     return chatId;
+  }
+  async function updateOwnerHost(binding, owner, { signal, matches = sameExactOwner } = {}) {
+    if (matches(binding.data.owner, owner)) return binding;
+    assertCurrent(signal);
+    const next = Object.freeze({
+      ...binding.data,
+      owner: { ...binding.data.owner, hostChatId: owner.hostChatId },
+      updatedAt: nowIso(),
+    });
+    let updated;
+    try {
+      updated = validateBindingEnvelope(await client.put(CHAT_IDENTITY_COLLECTION, key(binding.data.chatId), next, binding.revision, { signal }), binding.data.chatId);
+    } catch (error) {
+      if (error?.status !== 409) throw error;
+      const winner = await read(binding.data.chatId);
+      assertCurrent(signal);
+      if (!winner || winner.data.state !== 'ready' || !matches(winner.data.owner, owner)) {
+        throw errorWith('QQJ_CHAT_RENAME_CONFLICT', '聊天身份改名时发生冲突，未覆盖胜出记录。');
+      }
+      updated = winner;
+    }
+    assertCurrent(signal);
+    if (!matches(updated.data.owner, owner)) throw errorWith('QQJ_CHAT_RENAME_CONFLICT', '聊天身份未能安全更新，已停止恢复。');
+    return updated;
   }
   async function independent(raw, host, carriedChatId) {
     const owner = ownerFrom(host);
@@ -106,7 +134,7 @@ export function createChatIdentityCoordinator({
     }
     throw errorWith('QQJ_CHAT_BINDING_CONFLICT', '无法为当前聊天建立独立身份，请刷新后重试。');
   }
-  async function prepareNow(raw, host) {
+  async function prepareNow(raw, host, signal) {
     const owner = ownerFrom(host);
     if (!isUuid(host.chatId)) {
       const claimed = await claimReady(raw, owner, freshUuid());
@@ -120,12 +148,25 @@ export function createChatIdentityCoordinator({
       claimed = await create(wanted);
     }
     if (sameOwner(claimed.data.owner, owner) && claimed.data.state === 'ready') {
+      assertCurrent(signal);
       await persist(raw, claimed.data.chatId);
       return claimed.data.chatId;
     }
+    if (listHostChats && claimed.data.state === 'ready'
+      && claimed.data.owner.characterLocator === owner.characterLocator
+      && claimed.data.owner.hostChatId !== owner.hostChatId) {
+      const names = await listHostChats(owner.characterLocator, { signal });
+      assertCurrent(signal);
+      if (names.includes(owner.hostChatId) && !names.includes(claimed.data.owner.hostChatId)) {
+        claimed = await updateOwnerHost(claimed, owner, { signal, matches: sameOwner });
+        assertCurrent(signal);
+        await persist(raw, claimed.data.chatId);
+        return claimed.data.chatId;
+      }
+    }
     return independent(raw, host, host.chatId);
   }
-  function prepare(raw, host, { signal } = {}) { return serialized(() => prepareNow(raw, host), signal); }
+  function prepare(raw, host, { signal } = {}) { return serialized(() => prepareNow(raw, host, signal), signal); }
 
   const nonEmpty = value => Array.isArray(value) ? value.length > 0
     : value && typeof value === 'object' ? Object.keys(value).length > 0 : Boolean(value);
@@ -157,7 +198,7 @@ export function createChatIdentityCoordinator({
       throw errorWith('QQJ_CHAT_RENAME_TEMP_HAS_MEMORY', '改名期间的新档已经产生业务记忆，请先人工确认后再恢复旧档。');
     }
   }
-  async function renameNow(raw, host, event, previousIdentity, preparedIdentity) {
+  async function renameNow(raw, host, event, previousIdentity, preparedIdentity, signal) {
     const owner = ownerFrom(host);
     const oldChatId = previousIdentity?.chatId;
     const oldHostChatId = String(previousIdentity?.hostChatId ?? '');
@@ -197,34 +238,13 @@ export function createChatIdentityCoordinator({
       }
       await assertTemporaryHasNoBusinessData(currentChatId);
     }
-    let updatedBinding = oldBinding;
-    if (!sameExactOwner(oldBinding.data.owner, owner)) {
-      const next = Object.freeze({
-        ...oldBinding.data,
-        owner: { ...oldBinding.data.owner, hostChatId: owner.hostChatId },
-        updatedAt: nowIso(),
-      });
-      try {
-        const envelope = await client.put(CHAT_IDENTITY_COLLECTION, key(oldChatId), next, oldBinding.revision);
-        updatedBinding = validateBindingEnvelope(envelope, oldChatId);
-      }
-      catch (error) {
-        if (error?.status !== 409) throw error;
-        const winner = await read(oldChatId);
-        if (!winner || winner.data.state !== 'ready' || !sameExactOwner(winner.data.owner, owner)) {
-          throw errorWith('QQJ_CHAT_RENAME_CONFLICT', '原聊天身份改名时发生冲突，未覆盖胜出记录。');
-        }
-        updatedBinding = winner;
-      }
-    }
-    if (!sameExactOwner(updatedBinding.data.owner, owner)) {
-      throw errorWith('QQJ_CHAT_RENAME_CONFLICT', '原聊天身份未能安全更新，已停止恢复。');
-    }
+    await updateOwnerHost(oldBinding, owner, { signal, matches: sameExactOwner });
+    assertCurrent(signal);
     await persist(raw, oldChatId);
     return oldChatId;
   }
   function rename(raw, host, { event, previousIdentity, preparedIdentity, signal } = {}) {
-    return serialized(() => renameNow(raw, host, event, previousIdentity, preparedIdentity), signal);
+    return serialized(() => renameNow(raw, host, event, previousIdentity, preparedIdentity, signal), signal);
   }
   return Object.freeze({ prepare, rename, read });
 }
