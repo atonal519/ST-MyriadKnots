@@ -51,6 +51,29 @@ test('禁用立即 invalidate 全链；重新启用只准备身份与刷新 UI',
   assert.deepEqual(calls, ['api:abort', 'session:invalidate', 'ui:true', 'prepare', 'refresh']);
 });
 
+test('关闭功能时角色改名仍只迁移身份绑定，不启动准备或后台续接', async () => {
+  const handlers = new Map();
+  const calls = [];
+  const lifecycle = createPluginLifecycle({
+    session: {
+      prepare: async () => { calls.push('prepare'); return { status: 'ready' }; },
+      invalidate: () => calls.push('session:invalidate'),
+      renameCharacter: async (oldLocator, newLocator) => {
+        calls.push(`rename:${oldLocator}->${newLocator}`);
+        return { status: 'migrated', migratedCount: 2, skippedCount: 0 };
+      },
+    },
+    aborters: [{ abortAll: () => calls.push('api:abort') }],
+    isEnabled: () => false,
+    onPrepared: () => calls.push('background'),
+  });
+  lifecycle.bind({ eventSource: { on: (name, handler) => handlers.set(name, handler) }, eventTypes: { CHAT_CHANGED: 'chat', CHARACTER_RENAMED: 'character-renamed' } });
+
+  const result = await handlers.get('character-renamed')('old.png', 'new.png');
+  assert.deepEqual(result, { status: 'migrated', migratedCount: 2, skippedCount: 0 });
+  assert.deepEqual(calls, ['api:abort', 'session:invalidate', 'rename:old.png->new.png']);
+});
+
 test('主页关闭后重新启用保持 idle，随后 CHAT_CHANGED 用真实 session 正常准备', async () => {
   const handlers = new Map();
   let enabled = true;

@@ -569,7 +569,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 recall host adapter 无效');
   if (typeof fingerprint !== 'function') throw new TypeError('V3 recall fingerprint 无效');
-  let epoch = 0, generationSerial = 0, stoppedEndDebt = 0, active = null, slotOwner = null, prequelSlotActive = false, lastRecall = null, lastPrequel = null, lastError = null, lastRecallBinding = null, enabledOverride = null;
+  let epoch = 0, generationSerial = 0, stoppedEndDebt = 0, active = null, slotOwner = null, prequelSlotActive = false, promptSnapshot = null, lastRecall = null, lastPrequel = null, lastError = null, lastRecallBinding = null, enabledOverride = null;
   const subscribers = new Set(), generationQueue = [];
   let sessionReceipt = null;
   const enabled = () => { try { return enabledOverride ?? ((typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true); } catch { return false; } };
@@ -634,25 +634,47 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     return sourceReader({ store, now, hostSnapshot: snapshot, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin(), identityProjection: identityProjection?.data ?? identityProjection });
   }
   const notify = () => { const state = getState(); for (const listener of subscribers) { try { listener(state); } catch { /* listener isolation */ } } return state; };
-  const promptSlot = (slot, value, owner = null, checkedContext = null) => {
+  const promptSlot = (slot, value, owner = null, checkedContext = null, binding = null) => {
     const context = checkedContext ?? hostAdapter.snapshot().context;
     const setter = context?.setExtensionPrompt;
     if (typeof setter !== 'function') throw Object.assign(new Error('宿主不支持 setExtensionPrompt。'), { code: 'V3_RECALL_PROMPT_UNAVAILABLE' });
     const position = context.constants?.promptTypes?.IN_CHAT ?? 1;
     const role = context.constants?.promptRoles?.SYSTEM ?? 0;
     if (slot === PREQUEL_PROMPT_SLOT) prequelSlotActive = Boolean(value);
-    setter(slot, String(value ?? ''), position, 1, false, role);
-    if (value) slotOwner = owner;
+    const text = String(value ?? '');
+    setter(slot, text, position, 1, false, role);
+    if (text) {
+      const current = promptSnapshot?.owner === owner ? promptSnapshot : null;
+      promptSnapshot = Object.freeze({
+        owner,
+        chatId: binding?.chatId ?? current?.chatId ?? null,
+        hostChatId: binding?.hostChatId ?? current?.hostChatId ?? null,
+        recallText: slot === RECALL_PROMPT_SLOT ? text : current?.recallText ?? '',
+        prequelText: slot === PREQUEL_PROMPT_SLOT ? text : current?.prequelText ?? '',
+      });
+      slotOwner = owner;
+    } else if (promptSnapshot) {
+      const next = Object.freeze({
+        ...promptSnapshot,
+        recallText: slot === RECALL_PROMPT_SLOT ? '' : promptSnapshot.recallText,
+        prequelText: slot === PREQUEL_PROMPT_SLOT ? '' : promptSnapshot.prequelText,
+      });
+      promptSnapshot = next.recallText || next.prequelText ? next : null;
+    }
   };
-  const prompt = (value, owner = null, checkedContext = null) => promptSlot(RECALL_PROMPT_SLOT, value, owner, checkedContext);
-  const promptPrequel = (value, owner = null, checkedContext = null) => promptSlot(PREQUEL_PROMPT_SLOT, value, owner, checkedContext);
-  const clearSlot = owner => {
+  const prompt = (value, owner = null, checkedContext = null, binding = null) => promptSlot(RECALL_PROMPT_SLOT, value, owner, checkedContext, binding);
+  const promptPrequel = (value, owner = null, checkedContext = null, binding = null) => promptSlot(PREQUEL_PROMPT_SLOT, value, owner, checkedContext, binding);
+  const clearSlot = (owner, { preserveSnapshot = false } = {}) => {
     if (owner !== undefined && slotOwner !== null && slotOwner !== owner) return false;
+    const preparedSnapshot = preserveSnapshot ? promptSnapshot : null;
+    if (!preserveSnapshot) promptSnapshot = null;
     try {
       const context = hostAdapter.snapshot().context;
-      prompt('', null, context); if (prequelSlotActive) promptPrequel('', null, context); slotOwner = null; return true;
+      prompt('', null, context); if (prequelSlotActive) promptPrequel('', null, context);
+      slotOwner = null; return true;
     }
     catch (error) { logger?.warn?.('[qianqianjie] V3 recall prompt cleanup failed', { code: error?.code ?? error?.name ?? 'V3_RECALL_CLEAR_FAILED' }); return false; }
+    finally { if (preserveSnapshot) promptSnapshot = preparedSnapshot; }
   };
   const sessionKey = ({ source, userIndex, userFingerprint, queryFingerprint }) => [source.chatId, source.narrativeGeneration, source.headCheckpointId, source.rootRevision,
     JSON.stringify(source.identityProjection ?? {}), userIndex, userFingerprint, queryFingerprint, source.bodyMatch?.fingerprint ?? ''].join('|');
@@ -676,6 +698,16 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       lastPrequel,
       lastRecallBinding: lastRecallBinding ? Object.freeze({ chatId: lastRecallBinding.chatId, userMessageIndex: lastRecallBinding.userMessageIndex }) : null,
       lastRecallError: lastError,
+    });
+  }
+
+  function getPromptSnapshot() {
+    if (!promptSnapshot) return null;
+    return Object.freeze({
+      chatId: promptSnapshot.chatId,
+      hostChatId: promptSnapshot.hostChatId,
+      recall: Object.freeze({ text: promptSnapshot.recallText }),
+      prequel: Object.freeze({ text: promptSnapshot.prequelText }),
     });
   }
 
@@ -739,7 +771,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (currentHostChatId(snapshot) !== operation.hostChatId) return { ok: false, reason: 'chatChanged' };
     if (user?.index !== operation.user.index || user.message !== operation.user.message || user.message.mes !== operation.userText) return { ok: false, reason: 'userChanged' };
     if (liveRecallFrameKey(snapshot) !== operation.liveFrameKey) return { ok: false, reason: 'narrativeChanged' };
-    promptPrequel(operation.prequelSelection.injectionText, operation.token, snapshot.context);
+    promptPrequel(operation.prequelSelection.injectionText, operation.token, snapshot.context, { chatId: operation.chatId, hostChatId: operation.hostChatId });
     return { ok: true, committed: true, snapshot, user };
   }
 
@@ -847,9 +879,10 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (!selectedSourcesCurrent) return { ok: false, reason: 'selectedRefsChanged' };
       return { ok: false, reason: 'narrativeChanged' };
     }
-    if (injectionText) prompt(injectionText, operation.token, after.context);
+    const binding = { chatId: source.chatId, hostChatId: operation.hostChatId };
+    if (injectionText) prompt(injectionText, operation.token, after.context, binding);
     if (operation.prequelSelection?.injectionText) {
-      promptPrequel(operation.prequelSelection.injectionText, operation.token, after.context);
+      promptPrequel(operation.prequelSelection.injectionText, operation.token, after.context, binding);
       operation.prequelCommitted = true;
     }
     return { ok: true, snapshot: after, user: afterUser };
@@ -1150,8 +1183,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (first) for (let index = generationQueue.length - 1; index >= 0; index -= 1) if (generationQueue[index].chainId === first.chainId) generationQueue.splice(index, 1);
     if (generation?.stopped) return;
     if (cancelGenerationOperation(generation)) return;
-    if (generation && slotOwner === generation.token) clearSlot(generation.token);
-    else if (!generation && slotOwner !== null && !active) clearSlot(slotOwner);
+    if (generation && slotOwner === generation.token) clearSlot(generation.token, { preserveSnapshot: true });
+    else if (!generation && slotOwner !== null && !active) clearSlot(slotOwner, { preserveSnapshot: true });
   }
 
   function bind({ eventSource, eventTypes = {} } = {}) {
@@ -1230,5 +1263,5 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
 
   async function setEnabled(value) { enabledOverride = value === true; if (!enabledOverride) invalidate('disabled'); return getState(); }
   function clearCurrent() { clearSlot(); lastRecall = null; lastPrequel = null; lastRecallBinding = null; lastError = null; notify(); return getState(); }
-  return Object.freeze({ intercept, bind, setEnabled, clearCurrent, restorePersistedReceipt, getPrequel, savePrequel, getState, invalidate, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
+  return Object.freeze({ intercept, bind, setEnabled, clearCurrent, restorePersistedReceipt, getPrequel, savePrequel, getState, getPromptSnapshot, invalidate, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

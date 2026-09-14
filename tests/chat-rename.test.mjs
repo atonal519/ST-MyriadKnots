@@ -22,6 +22,13 @@ function backendHarness({ beforePut = null } = {}) {
   const records = new Map();
   const calls = [];
   const client = {
+    async list(collection, { signal } = {}) {
+      calls.push(['list', collection]);
+      if (signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      return [...records.entries()]
+        .filter(([mapKey]) => mapKey.startsWith(`${collection}/`))
+        .map(([mapKey, value]) => ({ recordId: mapKey.slice(collection.length + 1), revision: value.revision, data: structuredClone(value.data) }));
+    },
     async get(collection, key) {
       calls.push(['get', collection, key]);
       const value = records.get(`${collection}/${key}`);
@@ -41,13 +48,13 @@ function backendHarness({ beforePut = null } = {}) {
   return { records, calls, client };
 }
 
-function readyBinding(chatId, hostChatId, { sourceChatId = null, revision = 1 } = {}) {
+function readyBinding(chatId, hostChatId, { sourceChatId = null, revision = 1, characterLocator = 'char.png', personaLocator = 'me.png', state = 'ready' } = {}) {
   return {
     revision,
     data: {
       schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId,
-      owner: { hostChatId, characterLocator: 'char.png', personaLocator: 'me.png' },
-      state: 'ready', sourceChatId, createdAt: NOW, updatedAt: NOW,
+      owner: { hostChatId, characterLocator, personaLocator },
+      state, sourceChatId, createdAt: NOW, updatedAt: NOW,
     },
   };
 }
@@ -87,9 +94,60 @@ async function renameHarness({ onPrepared = null, listHostChats = null, initiali
   const events = eventHarness();
   const warnings = [];
   const lifecycle = createPluginLifecycle({ session, isEnabled, getUi: () => null, onPrepared, logger: { warn: (...args) => warnings.push(args) } });
-  lifecycle.bind({ eventSource: events.eventSource, eventTypes: { CHAT_CHANGED: 'changed', CHAT_RENAMED: 'renamed', PERSONA_CHANGED: 'persona' } });
+  lifecycle.bind({ eventSource: events.eventSource, eventTypes: { CHAT_CHANGED: 'changed', CHAT_RENAMED: 'renamed', CHARACTER_RENAMED: 'character-renamed', PERSONA_CHANGED: 'persona' } });
   return { backend, context, coordinator, session, events, lifecycle, warnings };
 }
+
+test('角色卡改名迁移该角色全部 binding，当前与未打开聊天保持原 UUID', async () => {
+  const SECOND = '22222222-2222-4222-8222-222222222222';
+  const PREPARING = '33333333-3333-4333-8333-333333333333';
+  const OTHER = '44444444-4444-4444-8444-444444444444';
+  const h = await renameHarness();
+  h.backend.records.set(bindingKey(SECOND), readyBinding(SECOND, '未打开聊天', { personaLocator: 'other-persona.png' }));
+  h.backend.records.set(bindingKey(PREPARING), readyBinding(PREPARING, '准备中的副本', { state: 'preparing', sourceChatId: OLD }));
+  h.backend.records.set(bindingKey(OTHER), readyBinding(OTHER, '其它角色聊天', { characterLocator: 'other-character.png' }));
+  const otherBefore = structuredClone(h.backend.records.get(bindingKey(OTHER)));
+  const secondBefore = structuredClone(h.backend.records.get(bindingKey(SECOND)).data);
+  const preparingBefore = structuredClone(h.backend.records.get(bindingKey(PREPARING)).data);
+
+  const migrated = await h.events.handlers.get('character-renamed')[0]('char.png', 'renamed-character.png');
+  assert.deepEqual(migrated, { status: 'migrated', migratedCount: 3, skippedCount: 0 });
+  for (const id of [OLD, SECOND, PREPARING]) {
+    assert.equal(h.backend.records.get(bindingKey(id)).data.chatId, id);
+    assert.equal(h.backend.records.get(bindingKey(id)).data.owner.characterLocator, 'renamed-character.png');
+  }
+  assert.deepEqual(h.backend.records.get(bindingKey(SECOND)).data.owner, { ...secondBefore.owner, characterLocator: 'renamed-character.png' });
+  assert.equal(h.backend.records.get(bindingKey(PREPARING)).data.state, preparingBefore.state);
+  assert.equal(h.backend.records.get(bindingKey(PREPARING)).data.sourceChatId, preparingBefore.sourceChatId);
+  assert.deepEqual(h.backend.records.get(bindingKey(OTHER)), otherBefore, '其它角色 binding 不得改动');
+  assert.equal(h.context.chatMetadata.qianqianjie.chatId, OLD, '角色改名事件期间不得派生临时身份');
+  assert.equal(h.session.getState().status, 'idle', '角色改名须先使旧身份工作失效');
+
+  h.context.characters[0].avatar = 'renamed-character.png';
+  h.events.handlers.get('changed')[0]();
+  await waitFor(() => h.session.getState().status === 'ready', '宿主切到新 avatar 后未正常准备');
+  assert.equal(h.session.getState().identity.chatId, OLD);
+  assert.equal(h.context.chatMetadata.qianqianjie.chatId, OLD);
+  assert.deepEqual(h.backend.records.get(`chat-${OLD}/v3-root`).data, { marker: '原有完整 root' });
+  assert.deepEqual(await h.coordinator.renameCharacter('char.png', 'renamed-character.png'), { status: 'migrated', migratedCount: 0, skippedCount: 0 }, '重复事件须幂等');
+});
+
+test('角色改名 CAS 冲突不覆盖已被其它操作改走的 binding', async () => {
+  let backend;
+  let injected = false;
+  const h = await renameHarness({ beforePut: async ({ data, expectedRevision }) => {
+    if (!injected && data?.chatId === OLD && data?.owner?.characterLocator === 'renamed-character.png' && expectedRevision === 1) {
+      injected = true;
+      backend.records.set(bindingKey(OLD), readyBinding(OLD, '其它赢家', { revision: 2, characterLocator: 'third-character.png' }));
+    }
+  } });
+  backend = h.backend;
+  const result = await h.coordinator.renameCharacter('char.png', 'renamed-character.png');
+  assert.deepEqual(result, { status: 'migrated', migratedCount: 0, skippedCount: 1 });
+  assert.equal(h.backend.records.get(bindingKey(OLD)).revision, 2);
+  assert.equal(h.backend.records.get(bindingKey(OLD)).data.owner.characterLocator, 'third-character.png');
+  assert.equal(h.backend.records.get(bindingKey(OLD)).data.owner.hostChatId, '其它赢家');
+});
 
 test('没有 CHAT_RENAMED 时，宿主列表确认旧文件消失后直接沿用原 UUID', async () => {
   const listCalls = [];

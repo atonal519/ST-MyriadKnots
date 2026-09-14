@@ -109,7 +109,9 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
   const publicBridgeReadStatus = enabled ? null : (await context.qqj_v3_public_bridge_v1?.readMemory?.())?.status;
   const publicBridgeSnapshotType = typeof context.qqj_v3_public_bridge_v1?.getSnapshot;
   const publicBridgeSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getSnapshot?.()?.status;
-  return { status: entry.status, backendCalls, backendRecords, hostShaCalls, hostShaInputs, eventRegistrations, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, promptCalls, abortCalls };
+  const publicBridgePromptSnapshotType = typeof context.qqj_v3_public_bridge_v1?.getPromptSnapshot;
+  const publicBridgePromptSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getPromptSnapshot?.()?.status;
+  return { status: entry.status, backendCalls, backendRecords, hostShaCalls, hostShaInputs, eventRegistrations, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, abortCalls };
 }
 
 test('实际生产 bundle 缺少 crypto.subtle 时经宿主 SHA 完成身份认领与地基指纹扫描', async () => {
@@ -129,7 +131,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.1.26');
+  assert.equal(manifest.version, '0.1.27');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
@@ -233,6 +235,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let v3MemoryOptions;
   let v3MemoryRuntime;
   let v3RecallOptions;
+  let v3RecallRuntime;
   let identityOptions;
   let hostChatListOptions;
   let sessionOptions;
@@ -320,7 +323,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/v3/chat-branch-inheritance.js', { createChatBranchInitializer: options => { branchInitializerOptions = options; return branchInitializer; } });
   define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() { backgroundStarts.push('memory'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, getState: () => ({}), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
   define('./src/v3/message-floor-anchor.js', { persistMessageFloorAnchors: persistAnchors });
-  define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; return { bind() {}, async setEnabled(value) { runtimeEnables.push(`recall:${value}`); }, async intercept() {}, getState: () => ({}) }; } });
+  define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; v3RecallRuntime = { bind() {}, async setEnabled(value) { runtimeEnables.push(`recall:${value}`); }, async intercept() {}, getState: () => ({}), getPromptSnapshot: () => null }; return v3RecallRuntime; } });
   define('./src/v3/auto-hide.js', { createAutoHideController: options => { autoHideOptions = options; return { applySettings() {}, stop() {}, dispose() {} }; } });
   define('./src/ui/inline-renderer.js', { createInlineRenderer: options => { inlineRendererOptions = options; return { setEnabled(value) { inlineEnabled.push(value); }, destroy() {} }; } });
   const peopleWorkspaceRuntime = { async refresh(options) { backgroundStarts.push(['people', options]); }, async setEnabled(value) { runtimeEnables.push(`people:${value}`); }, invalidate() {}, getState: () => ({ status: 'ready' }) };
@@ -417,6 +420,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(publicMemoryBridgeOptions.foundationRuntime, v3MemoryOptions.foundationRuntime, '公共记忆桥必须复用生产地基 runtime');
   assert.equal(publicMemoryBridgeOptions.memoryRuntime, v3MemoryRuntime, '结构化快照必须复用生产 memory runtime');
   assert.equal(publicMemoryBridgeOptions.peopleRuntime, peopleWorkspaceRuntime, '结构化快照必须复用生产 people runtime');
+  assert.equal(publicMemoryBridgeOptions.recallRuntime, v3RecallRuntime, '轻量 prompt 快照必须接入生产 recall runtime');
   assert.equal(typeof publicMemoryBridgeOptions.isEnabled, 'function');
   assert.equal(typeof publicMemoryBridgeOptions.sanitizerOptions, 'function');
   assert.ok(v3RecallOptions.store);
@@ -441,6 +445,8 @@ test('生产 bundle 在 Luker-only 兼容全局下也可隔离加载，关闭时
   assert.equal(result.publicBridgeReadStatus, 'disabled');
   assert.equal(result.publicBridgeSnapshotType, 'function');
   assert.equal(result.publicBridgeSnapshotStatus, 'disabled');
+  assert.equal(result.publicBridgePromptSnapshotType, 'function');
+  assert.equal(result.publicBridgePromptSnapshotStatus, 'disabled');
   assert.equal(result.backendCalls, 0);
 });
 

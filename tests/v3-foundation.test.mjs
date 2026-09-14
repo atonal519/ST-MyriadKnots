@@ -250,6 +250,10 @@ test('纯扫描只枚举有效 AI 楼；无 user 锚时确认入口也不能越�
   const candidates = await scanAssistantCandidates(chat);
   assert.deepEqual(candidates.map(item => [item.assistantSeq, item.hostLocator.messageIndex, item.canonicalContent]), [[1, 1, 'A'], [2, 3, 'B'], [3, 5, 'C']]);
   assert.ok(candidates.every(item => /^sha256:[0-9a-f]{64}$/.test(item.rawFingerprint)));
+  const renamedMessages = structuredClone(chat);
+  for (const message of renamedMessages) if (message?.is_user === false) message.name = '角色改名后的显示名';
+  const renamedCandidates = await scanAssistantCandidates(renamedMessages);
+  assert.deepEqual(renamedCandidates.map(item => [item.rawFingerprint, item.canonicalFingerprint]), candidates.map(item => [item.rawFingerprint, item.canonicalFingerprint]), '角色改名同步旧消息 name 不得改变正文指纹');
   const h = harness(chat);
   let state = await h.runtime.start();
   assert.equal(state.stableCount, 2);

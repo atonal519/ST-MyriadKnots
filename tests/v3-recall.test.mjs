@@ -1864,11 +1864,18 @@ test('ready runtime 将实际前情预算传给 LLM selector，双槽合计不�
       });
     },
   });
+  assert.equal(harness.runtime.getPromptSnapshot(), null);
   let state = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   assert.equal(state.lastRecall.status, 'ready');
   assert.equal(state.lastPrequel.status, 'ready');
   assert.ok(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT));
   assert.ok(latestPromptValue(harness.prompts, PREQUEL_PROMPT_SLOT));
+  assert.deepEqual(harness.runtime.getPromptSnapshot(), {
+    chatId: CHAT,
+    hostChatId: 'host-chat-a',
+    recall: { text: latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT) },
+    prequel: { text: latestPromptValue(harness.prompts, PREQUEL_PROMPT_SLOT) },
+  });
   assert.equal(selectorInput.reservedCharacters, state.lastPrequel.estimatedCharacters);
   assert.equal(selectorInput.reservedTokens, state.lastPrequel.estimatedTokens);
   const budget = recallBudget(12000);
@@ -1880,6 +1887,7 @@ test('ready runtime 将实际前情预算传给 LLM selector，双槽合计不�
   harness.handlers.get('generation-stopped')();
   assert.equal(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT), '');
   assert.equal(latestPromptValue(harness.prompts, PREQUEL_PROMPT_SLOT), '');
+  assert.equal(harness.runtime.getPromptSnapshot(), null);
 
   await harness.runtime.setEnabled(true);
   state = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
@@ -1889,6 +1897,30 @@ test('ready runtime 将实际前情预算传给 LLM selector，双槽合计不�
   await harness.runtime.setEnabled(false);
   assert.equal(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT), '');
   assert.equal(latestPromptValue(harness.prompts, PREQUEL_PROMPT_SLOT), '');
+  assert.equal(harness.runtime.getPromptSnapshot(), null);
+});
+
+test('prompt 快照在选材完成前为空，生成结束后保留最近轮且下一轮与失效会清除', async () => {
+  let release;
+  const selection = new Promise(resolve => { release = resolve; });
+  const harness = createRuntimeHarness({ prequel: '当前前情材料。', selector: () => selection });
+  harness.handlers.get('generation-started')('normal');
+  const pending = harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(harness.runtime.getPromptSnapshot(), null, '选材未完成时没有已注册材料');
+  release(selectRecall({ source: harness.source, queryContext: buildRecallQueryContext({ coreChat: harness.chat, assistantTurns: 1 }), contextSize: 12000 }));
+  await pending;
+  assert.equal(harness.runtime.getPromptSnapshot()?.recall.text, latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT));
+  const prepared = harness.runtime.getPromptSnapshot();
+  harness.handlers.get('generation-ended')();
+  assert.deepEqual(harness.runtime.getPromptSnapshot(), prepared, '正常结束只清宿主槽，保留最近一次准备材料');
+
+  const next = harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  assert.equal(harness.runtime.getPromptSnapshot(), null, '下一轮开始立刻清除上一轮材料');
+  await next;
+  assert.ok(harness.runtime.getPromptSnapshot());
+  harness.runtime.invalidate('chatChanged');
+  assert.equal(harness.runtime.getPromptSnapshot(), null);
 });
 
 test('普通槽已写入后的持续封签异常重试一次后清空双槽并停止正文', async () => {
@@ -1908,6 +1940,15 @@ test('普通槽已写入后的持续封签异常重试一次后清空双槽并�
   assert.equal(abortCalls, 1);
   assert.equal(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT), '');
   assert.equal(latestPromptValue(harness.prompts, PREQUEL_PROMPT_SLOT), '');
+});
+
+test('宿主清槽抛错时仍先清除旧 prompt 快照', async () => {
+  const harness = createRuntimeHarness({ prequel: '旧轮前情。' });
+  await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  assert.ok(harness.runtime.getPromptSnapshot());
+  harness.context.setExtensionPrompt = () => { throw Object.assign(new Error('模拟宿主清槽失败'), { code: 'TEST_CLEAR_FAILED' }); };
+  harness.runtime.invalidate('chatChanged');
+  assert.equal(harness.runtime.getPromptSnapshot(), null);
 });
 
 test('普通 prompt 首次写入抛错会清槽并重试成功，不停止正文', async () => {
@@ -3143,6 +3184,7 @@ test('runtime 刷新后从最新 user 楼恢复合法 schema12 completed 回执�
   assert.equal(harness.saves, saveCount, '恢复展示不得保存聊天');
   assert.equal(sourceCalls, sourceCount, '恢复展示不得重新读取当前 source/head');
   assert.equal(rootCalls, rootCount, '当前 head 已推进也不得拿实时 root 否定历史回执');
+  assert.equal(harness.runtime.getPromptSnapshot(), null, '仅恢复历史回执不得重新暴露已清除的 prompt 材料');
   assert.notEqual(harness.contextWrappers.at(-1), harness.contextWrappers.at(-2), 'ready 恢复的前后 snapshot 必须使用不同 context wrapper');
 });
 

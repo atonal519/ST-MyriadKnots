@@ -13,7 +13,13 @@ import { applyPluginEnabledImmediately } from '../settings.js';
 
 const PUBLIC_API_EXAMPLE = `const bridge = globalThis.qqj_v3_public_bridge_v1;
 const status = bridge.getStatus();
+const promptSnapshot = bridge.getPromptSnapshot();
 const snapshot = bridge.getSnapshot();
+
+if (promptSnapshot.status === 'ready') {
+  const recallText = promptSnapshot.recall.text;
+  const prequelText = promptSnapshot.prequel.text;
+}
 
 if (snapshot.status === 'ready') {
   const summaries = snapshot.memory.floors;

@@ -10,7 +10,7 @@ const bridge = globalThis.qqj_v3_public_bridge_v1;
 
 界面中的调用说明和复制示例位于“设置 → 教程与配置文件 → API 接口”。
 
-## 三个方法
+## 四个方法
 
 ### `getStatus()`
 
@@ -36,6 +36,25 @@ if (result.status === 'ready') {
   console.log(result.text);
 }
 ```
+
+### `getPromptSnapshot()`
+
+同步读取当前聊天最近一次由千千结准备并成功注册过的记忆材料，不发网络请求、不调用模型，也不重新选材。
+
+```js
+const promptSnapshot = bridge.getPromptSnapshot();
+
+if (promptSnapshot.status === 'ready') {
+  const recallText = promptSnapshot.recall.text;
+  const prequelText = promptSnapshot.prequel.text;
+}
+```
+
+成功或空结果的 `scope` 固定为 `latest-prepared`，并只含当前聊天身份、普通召回 `recall.text` 和前情 `prequel.text`。接口不附全量摘要、CSE、人物档案等底层结构；已选中的人物状态信息仍会包含在 `recall.text` 中。它不含时间戳格式指令、世界书、角色卡、其他插件材料或宿主的完整模型请求。这里的文本表示千千结最近一次准备并注册过的记忆材料；宿主后续的宏替换、裁剪和最终组装不在此接口保证范围内，也不表示模型已经实际消费。
+
+同一轮生成尚未发出正文请求时读取，调用方仍须等千千结的生成拦截器完成；千千结当前 `loading_order` 为 `999`。正文生成结束后可以直接读取刚才那轮最近一次准备好的材料，此时宿主提示词槽已经清空，但轻量快照会继续保留。下一轮拦截一开始、生成停止、插件关闭、切换聊天、材料失效或手动清理时会清空这份快照，不会把更早一轮材料带入新任务。插件关闭时返回 `disabled`，当前聊天身份尚未准备好时返回 `not-ready`；身份可用但没有最近一次已准备材料时返回 `empty`。仍在选材、以及仅从历史回执恢复界面状态时同样没有材料。
+
+不要把 `getSnapshot()` 的四项结构化内容整体序列化来代替这个接口；`getSnapshot()` 适合查询当前已加载的档案结构。
 
 ### `getSnapshot()`
 

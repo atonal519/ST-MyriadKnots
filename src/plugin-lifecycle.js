@@ -124,11 +124,28 @@ export function createPluginLifecycle({
     }
   }
 
+  async function onCharacterRenamed(oldLocator, newLocator) {
+    renameTransition = null;
+    try { invalidate(); }
+    catch (error) { logger?.warn?.('[qianqianjie] 插件生命周期失效失败', error); }
+    if (typeof session.renameCharacter !== 'function') {
+      logger?.warn?.('[qianqianjie] 角色改名缺少身份迁移能力');
+      return { status: 'unavailable' };
+    }
+    try {
+      return await session.renameCharacter(oldLocator, newLocator);
+    } catch (error) {
+      logger?.warn?.('[qianqianjie] 角色改名身份迁移失败', { code: error?.code ?? error?.name ?? 'QQJ_CHARACTER_RENAME_FAILED' });
+      return { status: 'error', error };
+    }
+  }
+
   function bind({ eventSource, eventTypes } = {}) {
     if (bound || !eventSource?.on || !eventTypes) return false;
     if (eventTypes.CHAT_CHANGED) eventSource.on(eventTypes.CHAT_CHANGED, onChatChanged);
     if (eventTypes.PERSONA_CHANGED) eventSource.on(eventTypes.PERSONA_CHANGED, onIdentityChange);
     if (eventTypes.CHAT_RENAMED) eventSource.on(eventTypes.CHAT_RENAMED, onChatRenamed);
+    if (eventTypes.CHARACTER_RENAMED) eventSource.on(eventTypes.CHARACTER_RENAMED, onCharacterRenamed);
     bound = true;
     return true;
   }
@@ -150,5 +167,5 @@ export function createPluginLifecycle({
     return prepare({ refresh: false });
   }
 
-  return Object.freeze({ bind, invalidate, prepare, setEnabled, start, onIdentityChange, onChatChanged, onChatRenamed });
+  return Object.freeze({ bind, invalidate, prepare, setEnabled, start, onIdentityChange, onChatChanged, onChatRenamed, onCharacterRenamed });
 }

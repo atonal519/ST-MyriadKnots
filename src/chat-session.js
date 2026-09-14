@@ -146,6 +146,13 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     return operation.promise;
   }
 
+  function renameCharacter(oldLocator, newLocator) {
+    if (typeof identityCoordinator?.renameCharacter !== 'function') {
+      return Promise.reject(new ChatSessionError('当前身份协调器不支持角色改名', 'CHAT_SESSION_CHARACTER_RENAME_UNAVAILABLE'));
+    }
+    return identityCoordinator.renameCharacter(oldLocator, newLocator);
+  }
+
   function identity() {
     if (!enabled()) throw new ChatSessionError('千千结已关闭', 'CHAT_SESSION_DISABLED');
     const host = capture().host;
@@ -197,5 +204,5 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     return true;
   }
 
-  return Object.freeze({ prepare, rename, identity, invalidate, suspend, resume, getState: () => state });
+  return Object.freeze({ prepare, rename, renameCharacter, identity, invalidate, suspend, resume, getState: () => state });
 }

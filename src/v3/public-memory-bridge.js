@@ -247,7 +247,7 @@ function publicPeopleSnapshot(value, chatId) {
   };
 }
 
-export function createPublicMemoryBridge({ session, store, hostAdapter, foundationRuntime = null, memoryRuntime = null, peopleRuntime = null, isEnabled = true, sanitizerOptions = () => ({}), identityProjectionProvider = null, readSource = readRecallSource } = {}) {
+export function createPublicMemoryBridge({ session, store, hostAdapter, foundationRuntime = null, memoryRuntime = null, peopleRuntime = null, recallRuntime = null, isEnabled = true, sanitizerOptions = () => ({}), identityProjectionProvider = null, readSource = readRecallSource } = {}) {
   if (!session || typeof session.identity !== 'function' || typeof session.getState !== 'function') throw new TypeError('公共记忆桥 session 无效');
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('公共记忆桥 store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('公共记忆桥 hostAdapter 无效');
@@ -328,7 +328,25 @@ export function createPublicMemoryBridge({ session, store, hostAdapter, foundati
       return frozen({ status: 'error', message: publicErrorMessage(error, { fallback: '千千结快照读取失败。' }), identity: status.identity });
     }
   }
-  return frozen({ schemaVersion: 1, kind: 'qqj-public-memory-bridge', getStatus: localStatus, readMemory, getSnapshot });
+  function getPromptSnapshot() {
+    const status = localStatus();
+    if (status.status !== 'ready') return status;
+    const empty = message => frozen({ status: 'empty', scope: 'latest-prepared', message, identity: status.identity, recall: frozen({ text: '' }), prequel: frozen({ text: '' }) });
+    try {
+      const value = typeof recallRuntime?.getPromptSnapshot === 'function' ? recallRuntime.getPromptSnapshot() : null;
+      if (!value) return empty('当前没有千千结已注册的记忆材料。');
+      if (value.chatId !== status.identity.qqjChatId || value.hostChatId !== status.identity.hostChatId) {
+        return empty('当前聊天没有千千结已注册的记忆材料。');
+      }
+      const recallText = typeof value.recall?.text === 'string' ? value.recall.text : '';
+      const prequelText = typeof value.prequel?.text === 'string' ? value.prequel.text : '';
+      if (!recallText && !prequelText) return empty('当前没有千千结已注册的记忆材料。');
+      return structuredClone({ status: 'ready', scope: 'latest-prepared', identity: status.identity, recall: { text: recallText }, prequel: { text: prequelText } });
+    } catch (error) {
+      return frozen({ status: 'error', scope: 'latest-prepared', message: publicErrorMessage(error, { fallback: '千千结当前记忆材料读取失败。' }), identity: status.identity, recall: frozen({ text: '' }), prequel: frozen({ text: '' }) });
+    }
+  }
+  return frozen({ schemaVersion: 1, kind: 'qqj-public-memory-bridge', getStatus: localStatus, readMemory, getPromptSnapshot, getSnapshot });
 }
 
 export function installPublicMemoryBridge({ globalRef = globalThis, ...options } = {}) {

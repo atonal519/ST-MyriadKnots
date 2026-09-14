@@ -283,6 +283,49 @@ test('getSnapshot 同步返回三分区副本，保留重分析中的人工摘�
   assert.deepEqual(peopleState.people[0].aliases, ['阿裴']); assert.equal(profile.notes, '保留全文资料');
 });
 
+test('getPromptSnapshot 同步返回当前已注册双槽文本副本，且不读取后端、正文或其他 runtime', () => {
+  let promptReads = 0, forbiddenCalls = 0;
+  const forbiddenCall = () => { forbiddenCalls += 1; throw new Error('轻量 prompt 快照不得调用其他入口'); };
+  const live = { chatId: QQJ_CHAT, hostChatId: 'host-chat', recall: { text: '<qqj_recalled_context>召回正文</qqj_recalled_context>' }, prequel: { text: '<qqj_prequel>前情正文</qqj_prequel>' } };
+  const bridge = createPublicMemoryBridge({
+    session: { getState: () => ({ status: 'ready', identity: identity() }), identity, prepare: forbiddenCall },
+    store: { readReachable: forbiddenCall, readRoot: forbiddenCall, putRecord: forbiddenCall },
+    hostAdapter: { snapshot: forbiddenCall },
+    memoryRuntime: { getState: forbiddenCall }, peopleRuntime: { getState: forbiddenCall },
+    recallRuntime: { getPromptSnapshot: () => { promptReads += 1; return live; }, getState: forbiddenCall, intercept: forbiddenCall },
+  });
+
+  const result = bridge.getPromptSnapshot();
+  assert.equal(result instanceof Promise, false);
+  assert.deepEqual(result, { status: 'ready', scope: 'latest-prepared', identity: { hostChatId: 'host-chat', qqjChatId: QQJ_CHAT, characterLocator: 'char.png', personaLocator: 'me.png' }, recall: { text: live.recall.text }, prequel: { text: live.prequel.text } });
+  assert.equal(promptReads, 1); assert.equal(forbiddenCalls, 0);
+  result.recall.text = '第三方篡改'; result.prequel.text = '第三方篡改';
+  const again = bridge.getPromptSnapshot();
+  assert.equal(again.recall.text, live.recall.text); assert.equal(again.prequel.text, live.prequel.text);
+  assert.equal(promptReads, 2); assert.equal(forbiddenCalls, 0);
+});
+
+test('getPromptSnapshot 对未注册、关闭、未 ready、错聊天和 getter 异常诚实降级', () => {
+  let reads = 0;
+  const base = {
+    session: { getState: () => ({ status: 'ready', identity: identity() }), identity },
+    store: { readReachable: async () => source() },
+    hostAdapter: { snapshot: () => ({ chatId: 'host-chat', chat: [] }) },
+  };
+  const empty = createPublicMemoryBridge({ ...base, recallRuntime: { getPromptSnapshot: () => { reads += 1; return null; } } }).getPromptSnapshot();
+  assert.deepEqual(empty, { status: 'empty', scope: 'latest-prepared', message: '当前没有千千结已注册的记忆材料。', identity: { hostChatId: 'host-chat', qqjChatId: QQJ_CHAT, characterLocator: 'char.png', personaLocator: 'me.png' }, recall: { text: '' }, prequel: { text: '' } });
+  const disabled = createPublicMemoryBridge({ ...base, isEnabled: false, recallRuntime: { getPromptSnapshot: () => { reads += 1; return null; } } }).getPromptSnapshot();
+  assert.equal(disabled.status, 'disabled');
+  const notReady = createPublicMemoryBridge({ ...base, session: { ...base.session, getState: () => ({ status: 'idle' }) }, recallRuntime: { getPromptSnapshot: () => { reads += 1; return null; } } }).getPromptSnapshot();
+  assert.equal(notReady.status, 'not-ready');
+  assert.equal(reads, 1, '关闭和身份未 ready 时不得读取 recall runtime');
+
+  const mismatch = createPublicMemoryBridge({ ...base, recallRuntime: { getPromptSnapshot: () => ({ chatId: 'other-chat', hostChatId: 'other-host', recall: { text: '串档' }, prequel: { text: '串档' } }) } }).getPromptSnapshot();
+  assert.equal(mismatch.status, 'empty'); assert.equal(mismatch.recall.text, ''); assert.equal(mismatch.prequel.text, '');
+  const failed = createPublicMemoryBridge({ ...base, recallRuntime: { getPromptSnapshot: () => { throw new Error('private detail'); } } }).getPromptSnapshot();
+  assert.deepEqual(failed, { status: 'error', scope: 'latest-prepared', message: '千千结当前记忆材料读取失败。', identity: { hostChatId: 'host-chat', qqjChatId: QQJ_CHAT, characterLocator: 'char.png', personaLocator: 'me.png' }, recall: { text: '' }, prequel: { text: '' } });
+});
+
 test('getSnapshot 在关闭、未加载及聊天不匹配时不触发准备并让三个分区独立降级', () => {
   let memoryReads = 0, peopleReads = 0, prepares = 0;
   const base = {
@@ -330,6 +373,7 @@ test('安装器只清理自己挂载的版本化桥', () => {
   const mount = installPublicMemoryBridge({ globalRef, session: { getState: () => ({ status: 'ready', identity: identity() }), identity }, store: { readReachable: async () => source() }, hostAdapter: { snapshot: () => ({ chatId: 'host-chat', chat: [] }) } });
   assert.equal(globalRef[QQJ_PUBLIC_MEMORY_BRIDGE_KEY], mount.bridge);
   assert.equal(typeof mount.bridge.getSnapshot, 'function');
+  assert.equal(typeof mount.bridge.getPromptSnapshot, 'function');
   mount.cleanup();
   assert.equal(Object.hasOwn(globalRef, QQJ_PUBLIC_MEMORY_BRIDGE_KEY), false);
 });

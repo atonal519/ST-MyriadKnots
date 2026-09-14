@@ -208,6 +208,70 @@ export function createChatIdentityCoordinator({
   }
   function prepare(raw, host, { signal } = {}) { return serialized(() => prepareNow(raw, host, signal), signal); }
 
+  async function renameCharacterNow(oldValue, newValue, signal) {
+    const oldLocator = String(oldValue ?? '');
+    const newLocator = String(newValue ?? '');
+    if (!oldLocator || !newLocator || oldLocator === newLocator) {
+      throw errorWith('QQJ_CHARACTER_RENAME_EVIDENCE_INVALID', '角色改名证据无效，未修改聊天身份。');
+    }
+    if (typeof client.list !== 'function') throw errorWith('QQJ_CHARACTER_RENAME_UNAVAILABLE', '聊天身份后端不支持角色改名迁移。');
+    const listed = await client.list(CHAT_IDENTITY_COLLECTION, { signal });
+    assertCurrent(signal);
+    if (!Array.isArray(listed)) throw errorWith('QQJ_CHARACTER_RENAME_LIST_INVALID', '角色改名时无法读取聊天身份列表。');
+    let migratedCount = 0;
+    let skippedCount = 0;
+    for (const envelope of listed) {
+      if (envelope?.data?.owner?.characterLocator !== oldLocator) continue;
+      const chatId = envelope?.data?.chatId;
+      const binding = validateBindingEnvelope(envelope, chatId);
+      if (envelope.recordId !== undefined && envelope.recordId !== key(chatId)) {
+        throw errorWith('QQJ_CHAT_BINDING_INVALID', '聊天身份认领记录损坏，已停止读写以避免串档。');
+      }
+      const write = current => {
+        const next = Object.freeze({
+          ...current.data,
+          owner: { ...current.data.owner, characterLocator: newLocator },
+          updatedAt: nowIso(),
+        });
+        return client.put(CHAT_IDENTITY_COLLECTION, key(chatId), next, current.revision, { signal });
+      };
+      try {
+        validateBindingEnvelope(await write(binding), chatId);
+        migratedCount += 1;
+        continue;
+      } catch (error) {
+        if (error?.status !== 409) throw error;
+      }
+      let winner = await read(chatId);
+      assertCurrent(signal);
+      if (!winner) throw errorWith('QQJ_CHARACTER_RENAME_CONFLICT', '角色改名迁移冲突且无法读取胜出记录。');
+      if (winner.data.owner.characterLocator === newLocator) continue;
+      if (winner.data.owner.characterLocator !== oldLocator) {
+        skippedCount += 1;
+        continue;
+      }
+      try {
+        validateBindingEnvelope(await write(winner), chatId);
+        migratedCount += 1;
+        continue;
+      } catch (error) {
+        if (error?.status !== 409) throw error;
+      }
+      winner = await read(chatId);
+      assertCurrent(signal);
+      if (winner?.data.owner.characterLocator === newLocator) continue;
+      if (winner && winner.data.owner.characterLocator !== oldLocator) {
+        skippedCount += 1;
+        continue;
+      }
+      throw errorWith('QQJ_CHARACTER_RENAME_CONFLICT', '角色改名迁移持续冲突，未覆盖胜出记录。');
+    }
+    return Object.freeze({ status: 'migrated', migratedCount, skippedCount });
+  }
+  function renameCharacter(oldLocator, newLocator, { signal } = {}) {
+    return serialized(() => renameCharacterNow(oldLocator, newLocator, signal), signal);
+  }
+
   const nonEmpty = value => Array.isArray(value) ? value.length > 0
     : value && typeof value === 'object' ? Object.keys(value).length > 0 : Boolean(value);
   async function assertTemporaryHasNoBusinessData(chatId) {
@@ -286,5 +350,5 @@ export function createChatIdentityCoordinator({
   function rename(raw, host, { event, previousIdentity, preparedIdentity, signal } = {}) {
     return serialized(() => renameNow(raw, host, event, previousIdentity, preparedIdentity, signal), signal);
   }
-  return Object.freeze({ prepare, rename, read });
+  return Object.freeze({ prepare, rename, renameCharacter, read });
 }

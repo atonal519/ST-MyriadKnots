@@ -129,11 +129,11 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   dialogActive = false;
   const copyExample = flatten(documentation).find(node => node.tag === 'button' && node.textContent === '复制接口示例');
   copyExample.fire('click'); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(clipboardWrites.length, 1); assert.match(clipboardWrites[0], /globalThis\.qqj_v3_public_bridge_v1/);
+  assert.equal(clipboardWrites.length, 1); assert.match(clipboardWrites[0], /globalThis\.qqj_v3_public_bridge_v1/); assert.match(clipboardWrites[0], /getPromptSnapshot\(\)/);
   assert.match(flatten(documentation).map(node => node.textContent).join('|'), /已复制/);
   clipboardFail = true; copyExample.fire('click'); await new Promise(resolve => setImmediate(resolve));
   let fallback = flatten(documentation).find(node => node.className === 'v3-diagnostic-fallback');
-  assert.equal(fallback?.readOnly, true); assert.match(fallback?.value ?? '', /getSnapshot\(\)/);
+  assert.equal(fallback?.readOnly, true); assert.match(fallback?.value ?? '', /getPromptSnapshot\(\)/); assert.match(fallback?.value ?? '', /getSnapshot\(\)/);
   documentation.open = true; documentation.fire('toggle');
   await panel.show();
   const rerenderedPage = view.children[0], rerenderedDocumentation = rerenderedPage.children.filter(node => node.tag === 'details').at(-1);

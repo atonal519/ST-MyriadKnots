@@ -188,6 +188,7 @@ const publicMemoryBridgeMount = installPublicMemoryBridge({
   foundationRuntime,
   memoryRuntime: v3MemoryRuntime,
   peopleRuntime: peopleWorkspaceRuntime,
+  recallRuntime: v3RecallRuntime,
   isEnabled: settings.isEnabled,
   sanitizerOptions,
   identityProjectionProvider,
