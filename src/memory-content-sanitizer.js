@@ -27,29 +27,51 @@ function tagTokens(content) {
   }));
 }
 
-function pairedDropIntervals(tokens, keep) {
-  const openByName = new Map();
-  const intervals = [];
+function parseSanitizerTree(content, tokens) {
+  const root = { children: [] };
+  const stack = [root];
+  let cursor = 0;
   for (const token of tokens) {
-    if (token.selfClosing) continue;
-    const stack = openByName.get(token.name) ?? [];
-    if (!token.closing) {
-      stack.push(token);
-      openByName.set(token.name, stack);
+    const parent = stack.at(-1);
+    if (token.start > cursor) parent.children.push(content.slice(cursor, token.start));
+    if (token.selfClosing) {
+      cursor = token.end;
       continue;
     }
-    const opener = stack.pop();
-    if (!opener || keep.has(token.name)) continue;
-    intervals.push([opener.end, token.start]);
+    if (!token.closing) {
+      const node = { name: token.name, closed: false, children: [] };
+      parent.children.push(node);
+      stack.push(node);
+    } else if (stack.length > 1) {
+      for (let index = stack.length - 1; index > 0; index -= 1) {
+        if (stack[index].name !== token.name) continue;
+        stack[index].closed = true;
+        stack.length = index;
+        break;
+      }
+    }
+    cursor = token.end;
   }
-  intervals.sort((left, right) => left[0] - right[0] || left[1] - right[1]);
-  const merged = [];
-  for (const interval of intervals) {
-    const previous = merged.at(-1);
-    if (previous && interval[0] <= previous[1]) previous[1] = Math.max(previous[1], interval[1]);
-    else merged.push([...interval]);
+  stack.at(-1).children.push(content.slice(cursor));
+  return root;
+}
+
+function renderSanitizerChildren(children, keep, rescueOnly = false) {
+  let output = '';
+  for (const child of children) {
+    if (typeof child === 'string') {
+      if (!rescueOnly) output += child;
+      continue;
+    }
+    if (child.closed && keep.has(child.name)) {
+      output += renderSanitizerChildren(child.children, keep);
+    } else if (!child.closed) {
+      output += renderSanitizerChildren(child.children, keep, rescueOnly);
+    } else {
+      output += renderSanitizerChildren(child.children, keep, true);
+    }
   }
-  return merged;
+  return output;
 }
 
 function dropLiteralWrappedContent(content, rules) {
@@ -79,26 +101,6 @@ export function sanitizeMemoryContent(raw, options = {}) {
   content = dropLiteralWrappedContent(content, literalDropRules);
   content = content.replace(/<!--[\s\S]*?-->/g, '');
   const tokens = tagTokens(content);
-  const intervals = pairedDropIntervals(tokens, new Set(keep));
-  let intervalIndex = 0;
-  const visibleText = (start, end) => {
-    let cursor = start;
-    let result = '';
-    while (cursor < end) {
-      while (intervalIndex < intervals.length && intervals[intervalIndex][1] <= cursor) intervalIndex += 1;
-      const interval = intervals[intervalIndex];
-      if (!interval || interval[0] >= end) return result + content.slice(cursor, end);
-      if (interval[0] > cursor) result += content.slice(cursor, Math.min(interval[0], end));
-      cursor = Math.max(cursor, interval[1]);
-    }
-    return result;
-  };
-  let cursor = 0;
-  let output = '';
-  for (const token of tokens) {
-    output += visibleText(cursor, token.start);
-    cursor = token.end;
-  }
-  output += visibleText(cursor, content.length);
+  const output = renderSanitizerChildren(parseSanitizerTree(content, tokens).children, new Set(keep));
   return output.replace(/\n{3,}/g, '\n\n').trim();
 }
