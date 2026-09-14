@@ -114,7 +114,7 @@ function browserStorage(initial = {}) {
   };
 }
 
-function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted = () => {}, extractorPromptGuidance, csePromptGuidance, processingPrompt, foundationRefresh, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null, failureStorage = undefined, now = () => new Date(NOW) } = {}) {
+function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted = () => {}, extractorPromptGuidance, csePromptGuidance, processingPrompt, storyClockReferenceTags = 'Ti', foundationRefresh, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null, failureStorage = undefined, now = () => new Date(NOW) } = {}) {
   let enabled = true;
   const handlers = new Map();
   const warnings = [];
@@ -151,7 +151,7 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
     if (utility) return utility(options, calls.length);
     return { jsonData: { summary: '裴晚生提醒用户带伞。', people: [{ name: '裴晚生' }, { name: '你', role: 'user' }], events: [{ title: '带伞提醒', description: '裴晚生提醒用户带伞。' }] }, taskMetadata: { source: 'shared-utility', sourceLabel: '机械副 API', model: 'mock-model', finishReason: 'stop' } };
   };
-  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), persistAnchors, identityProjectionProvider, failureStorage, now, newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
+  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), storyClockReferenceTags: () => typeof storyClockReferenceTags === 'function' ? storyClockReferenceTags() : storyClockReferenceTags, persistAnchors, identityProjectionProvider, failureStorage, now, newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
   const emit = (name, ...args) => (handlers.get(name) ?? []).forEach(listener => listener(...args));
   return { runtime, foundationRuntime, store, backend, context, hostAdapter, calls, warnings, emit, readReachableModes, snapshotCount: () => snapshotCalls, setEnabled(value) { enabled = value; }, setAutomation(value) { automation = value; } };
@@ -2824,6 +2824,83 @@ test('残缺同楼时间戳进入同次提取并作非 exact 兜底，前序参�
   const memory = h.runtime.getState().floors[1].memory;
   assert.match(memory.chronology[0].time.sourceText, /10月5日.*10:15/);
   assert.notEqual(memory.chronology[0].time.precision, 'exact');
+});
+
+test('原文时间参考标签进入本楼与前楼语义输入，漏写时间时整段 unresolved 兜底且不读取未来楼', async () => {
+  const h = harness({
+    initialChat: [
+      user('开始'),
+      assistant('<Slate><Ti>第三次忍界大战后某年·7月15日·18:00</Ti><content>前楼正文。</content></Slate>'),
+      assistant('<Slate><Ti>0081年10月20日·清晨·06:12</Ti><content>目标正文。</content><Ti>0081年10月20日·午前·10:40</Ti></Slate>'),
+      assistant('<Slate><Ti>0081年12月20日·晚上·20:30</Ti><content>未来楼正文。</content></Slate>'),
+      assistant('用于确认上一楼稳定。'),
+    ],
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: '目标楼摘要，模型未返回时间。' } }
+      : { jsonData: { noMaterialChange: true } },
+  });
+  await h.runtime.start();
+  const target = h.runtime.getState().floors[1];
+  await h.runtime.extractFloor(target.floorId, { analyzeState: false });
+
+  const extractorCalls = h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT);
+  assert.equal(extractorCalls.length, 1, '标签时间参考不得增加模型请求');
+  const payload = JSON.parse(extractorCalls[0].taskMessages[0].content).payload;
+  assert.equal(payload.canonicalContent, '目标正文。');
+  assert.equal(payload.storyClock.referenceText, '0081年10月20日·清晨·06:12\n0081年10月20日·午前·10:40');
+  assert.equal(payload.storyClock.complete, false);
+  assert.equal(payload.storyClock.start, null);
+  assert.equal(payload.previousStoryClock.referenceText, '第三次忍界大战后某年·7月15日·18:00');
+  assert.equal(JSON.stringify(payload.previousStoryClock).includes('12月20日'), false, '不得把目标楼之后的标签时间作为前序参照');
+
+  const memory = h.runtime.getState().floors[1].memory;
+  assert.equal(memory.chronology[0].time.sourceText, '0081年10月20日·清晨·06:12\n0081年10月20日·午前·10:40');
+  assert.equal(memory.chronology[0].time.kind, 'unknown');
+  assert.equal(memory.chronology[0].time.precision, 'unresolved');
+});
+
+test('模型已返回的正常 chronology 不被原文时间参考标签覆盖', async () => {
+  const h = harness({
+    initialChat: [user('开始'), assistant('<Ti>时间不明</Ti><content>目标正文。</content>'), assistant('用于确认上一楼稳定。')],
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: '目标楼摘要。', time: [{ sourceText: '同日稍后', kind: 'relative', description: '同日稍后。' }] } }
+      : { jsonData: { noMaterialChange: true } },
+  });
+  await h.runtime.start();
+  const target = h.runtime.getState().floors[0];
+  await h.runtime.extractFloor(target.floorId, { analyzeState: false });
+  const memory = h.runtime.getState().floors[0].memory;
+  assert.equal(memory.chronology[0].time.sourceText, '同日稍后');
+  assert.equal(memory.chronology[0].time.kind, 'relative');
+});
+
+test('时间参考标签配置在单次提取内冻结，设置中途变化从下一次请求生效', async () => {
+  let referenceTags = 'Ti';
+  let extractorCount = 0;
+  const h = harness({
+    storyClockReferenceTags: () => referenceTags,
+    initialChat: [
+      user('开始'),
+      assistant('<Ti>旧配置时间</Ti><content>第一楼正文。</content>'),
+      assistant('<时标>新配置时间</时标><content>第二楼正文。</content>'),
+      assistant('用于确认上一楼稳定。'),
+    ],
+    utility: options => {
+      if (options.systemPrompt !== EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { noMaterialChange: true } };
+      extractorCount += 1;
+      if (extractorCount === 1) referenceTags = '时标';
+      return { jsonData: { summary: `第 ${extractorCount} 楼摘要，模型未返回时间。` } };
+    },
+  });
+  await h.runtime.start();
+  let state = h.runtime.getState();
+  await h.runtime.extractFloor(state.floors[0].floorId, { analyzeState: false });
+  assert.equal(h.runtime.getState().floors[0].memory.chronology[0].time.sourceText, '旧配置时间', '在途设置变化不得作废或改写已冻结的本轮输入');
+  await h.runtime.extractFloor(state.floors[1].floorId, { analyzeState: false });
+  const payloads = h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).map(call => JSON.parse(call.taskMessages[0].content).payload);
+  assert.equal(payloads[0].storyClock.referenceText, '旧配置时间');
+  assert.equal(payloads[1].storyClock.referenceText, '新配置时间');
+  assert.equal(h.runtime.getState().floors[1].memory.chronology[0].time.sourceText, '新配置时间');
 });
 
 test('时间、地点、人物与摘要一次保存，保留原有 ID/证据及已落盘 CSE，新 runtime 回读一致', async () => {

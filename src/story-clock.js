@@ -13,6 +13,18 @@ export const DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT = [
 
 const text = value => typeof value === 'string' ? value : '';
 const field = (raw, name) => new RegExp(`(?:^|[|｜,，;；\\n])\\s*(?:${name})\\s*[=＝:]\\s*([^|｜,，;；\\n]+)`, 'iu').exec(raw)?.[1]?.trim() || null;
+const REFERENCE_TAG_NAME = /^\p{L}[\p{L}\p{N}_-]*~?$/u;
+
+export function normalizeStoryClockReferenceTags(value) {
+  const values = Array.isArray(value) ? value : String(value ?? '').split(/[\n,，]/u);
+  const seen = new Set();
+  return values.map(item => String(item).trim()).filter(item => {
+    const key = item.toLocaleLowerCase('en-US');
+    if (!REFERENCE_TAG_NAME.test(item) || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 export function parseClockFields(raw) {
   const value = text(raw).trim();
@@ -52,9 +64,59 @@ export function parseSharedStoryClock(value) {
   return candidates.sort((left, right) => Number(right.complete) - Number(left.complete) || left.sourceIndex - right.sourceIndex)[0];
 }
 
+export function parseStoryClockReference(value, referenceTags = 'Ti') {
+  const source = text(value);
+  const configured = normalizeStoryClockReferenceTags(referenceTags);
+  if (!source || !configured.length) return null;
+  const configuredByKey = new Map(configured.map(name => [name.toLocaleLowerCase('en-US'), name]));
+  const openByKey = new Map();
+  const matches = [];
+  const tagPattern = /<\s*(\/?)\s*(\p{L}[\p{L}\p{N}_-]*~?)(?=[\s/>])[^>]*>/giu;
+  for (const token of source.matchAll(tagPattern)) {
+    const key = token[2].toLocaleLowerCase('en-US');
+    if (!configuredByKey.has(key)) continue;
+    const closing = token[1] === '/';
+    if (!closing && !/\/\s*>$/u.test(token[0])) {
+      const stack = openByKey.get(key) ?? [];
+      stack.push({ contentStart: token.index + token[0].length, sourceIndex: token.index });
+      openByKey.set(key, stack);
+      continue;
+    }
+    if (!closing) continue;
+    const stack = openByKey.get(key);
+    const opening = stack?.pop();
+    if (!opening) continue;
+    const referenceText = source.slice(opening.contentStart, token.index)
+      .replace(/<!--[\s\S]*?-->/gu, '')
+      .replace(/<\s*br\s*\/?>/giu, '\n')
+      .replace(/<\s*\/?\s*\p{L}[\p{L}\p{N}_-]*~?(?=[\s/>])[^>]*>/giu, '')
+      .trim();
+    if (referenceText) matches.push({ sourceIndex: opening.sourceIndex, name: configuredByKey.get(key), referenceText });
+  }
+  if (!matches.length) return null;
+  matches.sort((left, right) => left.sourceIndex - right.sourceIndex);
+  const names = [...new Set(matches.map(match => match.name))];
+  return Object.freeze({
+    namespace: `tag:${names.join(',')}`,
+    start: null,
+    end: null,
+    startMeta: null,
+    endMeta: null,
+    duplicate: matches.length > 1,
+    complete: false,
+    referenceText: matches.map(match => match.referenceText).join('\n'),
+    sourceIndex: matches[0].sourceIndex,
+  });
+}
+
+export function parseStoryClockEvidence(value, referenceTags = 'Ti') {
+  return parseSharedStoryClock(value) ?? parseStoryClockReference(value, referenceTags);
+}
+
 export function storyClockSignature(clock) {
   if (!clock) return '';
-  return JSON.stringify([clock.namespace.toLocaleLowerCase(), clock.start ?? null, clock.end ?? null]);
+  if (clock.referenceText == null) return JSON.stringify([clock.namespace.toLocaleLowerCase(), clock.start ?? null, clock.end ?? null]);
+  return JSON.stringify([clock.namespace.toLocaleLowerCase('en-US'), null, null, clock.referenceText]);
 }
 
 export function buildMyKnotsClockPrompt(settings = {}) {

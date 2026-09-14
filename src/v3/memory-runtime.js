@@ -10,7 +10,7 @@ import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
 import { validateCseGraph } from './cse-schema.js';
 import { assessMemoryCoverageFromHost, diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 import { isHostNarratorMessage, selectAssistantMessage, selectUserStabilityAnchor } from './foundation-domain.js';
-import { parseSharedStoryClock, storyClockSignature } from '../story-clock.js';
+import { normalizeStoryClockReferenceTags, parseStoryClockEvidence, storyClockSignature } from '../story-clock.js';
 import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 import { buildEntityIdentityDirectory, entitiesThroughFloorIds, normalizeIdentityProjection } from './entity-identity.js';
 import { matchFloorCandidates } from './floor-binding.js';
@@ -116,9 +116,13 @@ function capturePrecedingUserInputSnapshot(hostAdapter, floor, options) {
   messages.reverse();
   return messages.length ? Object.freeze({ messages: Object.freeze(messages) }) : null;
 }
-function clockEvidence(selected) {
-  const clock = parseSharedStoryClock(selected?.rawContent);
+function clockEvidence(selected, referenceTags) {
+  const clock = parseStoryClockEvidence(selected?.rawContent, referenceTags);
   if (!clock) return Object.freeze({ clock: null, signature: '', displayText: '' });
+  if (typeof clock.referenceText === 'string') {
+    const clockValue = Object.freeze({ complete: false, namespace: clock.namespace, start: null, end: null, referenceText: clock.referenceText });
+    return Object.freeze({ signature: storyClockSignature(clock), clock: clockValue, displayText: clock.referenceText });
+  }
   const compact = value => value ? Object.freeze({ raw: value.raw, date: value.date, weekday: value.weekday, time: value.time }) : null;
   const clockValue = Object.freeze({ complete: clock.complete === true, namespace: clock.namespace, start: compact(clock.startMeta), end: compact(clock.endMeta) });
   const part = value => [value?.date, value?.weekday, value?.time].filter(Boolean).join(' ');
@@ -135,7 +139,7 @@ const FLOOR_FAILURE_STORAGE_PREFIX = 'qqj_v3_floor_failures:';
 const normalizeAutoBatchSize = () => 1;
 const floorFailureStorageKey = chatId => `${FLOOR_FAILURE_STORAGE_PREFIX}${chatId}`;
 
-export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onFullRebuildCommitted = null, onAutomaticSummaryCommitted = () => {}, extractorPromptGuidance = () => '', csePromptGuidance = () => '', processingPrompt = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), persistAnchors = null, identityProjectionProvider = null, failureStorage = undefined, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
+export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onFullRebuildCommitted = null, onAutomaticSummaryCommitted = () => {}, extractorPromptGuidance = () => '', csePromptGuidance = () => '', processingPrompt = () => '', storyClockReferenceTags = () => 'Ti', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), persistAnchors = null, identityProjectionProvider = null, failureStorage = undefined, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
   if (!foundationRuntime || ['start', 'refreshStatus', 'confirmLatest', 'setEnabled', 'bind', 'getState'].some(name => typeof foundationRuntime[name] !== 'function')) throw new TypeError('V3 memory foundation runtime 无效');
   if (!store || ['readReachable', 'readRecord', 'putRecord', 'commitRoot', 'recordKey', 'invalidate'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 memory store 无效');
   if (typeof generateAnalysisTask !== 'function') throw new TypeError('V3 memory analysis route 无效');
@@ -185,7 +189,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   const sessionCandidates = new Map();
   const pendingResults = new Map();
   const subscribers = new Set();
-  const currentClockSignature = floor => clockEvidence(currentRawSelection(hostAdapter, floor)).signature;
+  const currentReferenceTags = () => normalizeStoryClockReferenceTags(typeof storyClockReferenceTags === 'function' ? storyClockReferenceTags() : storyClockReferenceTags);
+  const currentClockSignature = floor => clockEvidence(currentRawSelection(hostAdapter, floor), currentReferenceTags()).signature;
   const cseRuntime = createCseRuntime({ store, hostAdapter, generateAnalysisTask, isEnabled, promptGuidance: csePromptGuidance, processingPrompt, filterWorldInfoSources, sanitizerOptions, storyClockSignatureForFloor: currentClockSignature, onGraphCommitted: value => foundationRuntime.adoptReachable?.(value), onFailureHint: (value, floorId, failure) => failure ? rememberCseFloorFailure(value, failure) : clearCseFloorFailure(floorId, value), now, newUuid, logger });
   const setIdentityProjection = value => {
     identityProjection = normalizeIdentityProjection(value);
@@ -608,7 +613,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const snapshot = hostAdapter.snapshot();
       observedHostChatLength = snapshot?.chat?.length ?? observedHostChatLength;
       for (const floor of nextReachable.floors ?? []) {
-        const sameFloorClock = clockEvidence(rawSelectionFromSnapshot(snapshot, floor)).displayText;
+        const sameFloorClock = clockEvidence(rawSelectionFromSnapshot(snapshot, floor), currentReferenceTags()).displayText;
         timeFallbackByFloor.set(floor.id, sameFloorClock || inferCanonicalCurrentTime(floor.content?.canonicalContent)?.text || '');
       }
     } else {
@@ -757,7 +762,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   const currentUserIdentity = () => typeof hostAdapter?.getUserIdentity === 'function'
     ? hostAdapter.getUserIdentity()
     : hostAdapter?.snapshot?.().userIdentity ?? null;
-  async function extractorDependencySnapshot(value, floorId, { userIdentity, promptGuidance, identityProjectionSnapshot = null } = {}) {
+  async function extractorDependencySnapshot(value, floorId, { userIdentity, promptGuidance, identityProjectionSnapshot = null, referenceTags = currentReferenceTags() } = {}) {
+    const frozenReferenceTags = normalizeStoryClockReferenceTags(referenceTags);
     const targetIndex = value?.floors?.findIndex(floor => floor.id === floorId) ?? -1;
     if (targetIndex < 0 || !value?.root || !value?.checkpoint) return null;
     const prefix = value.floors.slice(0, targetIndex + 1);
@@ -775,7 +781,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         rawFingerprint: floor.content.rawFingerprint,
         canonicalFingerprint: floor.content.canonicalFingerprint,
         liveRawFingerprint: `sha256:${await sha256(selected.rawContent)}`,
-        storyClockSignature: clockEvidence(selected).signature,
+        storyClockSignature: clockEvidence(selected, frozenReferenceTags).signature,
       });
     }
     const floorIds = new Set(prefix.map(floor => floor.id));
@@ -790,6 +796,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       scopedEntities,
       userIdentity: clone(userIdentity ?? null),
       promptGuidance: String(promptGuidance ?? ''),
+      storyClockReferenceTags: frozenReferenceTags,
       identityProjection: clone(identityProjectionSnapshot ?? await readIdentityProjection()),
     };
   }
@@ -811,6 +818,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       userIdentity: currentUserIdentity(),
       promptGuidance: operation.dependencySnapshot?.promptGuidance,
       identityProjectionSnapshot: await readIdentityProjection(),
+      referenceTags: operation.dependencySnapshot?.storyClockReferenceTags,
     });
     if (!sameExtractorDependency(operation.dependencySnapshot, dependency)) {
       throw errorWith('V3_MEMORY_PREFIX_CHANGED', '目标楼或其依赖前文已经变化，迟到摘要不会写入。');
@@ -940,7 +948,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const canonicalContent = sanitizeMemoryContent(selected.rawContent, sanitizerOptions());
       const liveFloor = sourceRawFingerprint === floor.content.rawFingerprint ? floor : { ...floor, content: { ...floor.content,
         canonicalContent, rawFingerprint: sourceRawFingerprint, canonicalFingerprint: `sha256:${await sha256(canonicalContent)}` } };
-      const sourceClock = clockEvidence(selected);
+      const referenceTagsSnapshot = currentReferenceTags();
+      const sourceClock = clockEvidence(selected, referenceTagsSnapshot);
       const sourceUserInputSnapshot = capturePrecedingUserInputSnapshot(hostAdapter, floor, sanitizerOptions());
       const sourceVariableReference = captureFloorVariableReference(hostAdapter.snapshot(), floor);
       const userIdentity = currentUserIdentity();
@@ -950,14 +959,14 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const scopedEntities = entitiesThroughFloorIds(source.entities, new Set(source.floors.slice(0, floorIndex + 1).map(item => item.id)));
       const identityProjectionSnapshot = await readIdentityProjection();
       let previousStoryClock = null;
-      for (let index = floorIndex - 1; index >= 0 && !previousStoryClock; index -= 1) previousStoryClock = clockEvidence(currentRawSelection(hostAdapter, source.floors[index])).clock;
+      for (let index = floorIndex - 1; index >= 0 && !previousStoryClock; index -= 1) previousStoryClock = clockEvidence(currentRawSelection(hostAdapter, source.floors[index]), referenceTagsSnapshot).clock;
       const previousMemoryContext = previousFloorContext(source, floorIndex, memoryMap);
       const envelope = await createExtractorEnvelope({ ...expectedScope, floor: liveFloor, entities: scopedEntities, identityProjection: identityProjectionSnapshot, userIdentity, identityHints: [], storyClock: sourceClock.clock, previousStoryClock, previousFloorContext: previousMemoryContext, sourceUserInputSnapshot, sourceVariableReference });
       const semanticInputFingerprint = await hash(envelope.request.payload);
       const promptGuidanceSnapshot = typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : extractorPromptGuidance;
       const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
       const verifiedUserIdentity = currentUserIdentity();
-      const dependencySnapshot = await extractorDependencySnapshot(source, floor.id, { userIdentity: verifiedUserIdentity, promptGuidance: promptGuidanceSnapshot, identityProjectionSnapshot });
+      const dependencySnapshot = await extractorDependencySnapshot(source, floor.id, { userIdentity: verifiedUserIdentity, promptGuidance: promptGuidanceSnapshot, identityProjectionSnapshot, referenceTags: referenceTagsSnapshot });
       if (typeof store.readRoot === 'function') {
         const rootResult = await store.readRoot();
         rootChecks += 1;
@@ -1801,6 +1810,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             void extractorDependencySnapshot(reachable, operation.floorId, {
               userIdentity: currentUserIdentity(),
               promptGuidance: operation.dependencySnapshot?.promptGuidance,
+              referenceTags: operation.dependencySnapshot?.storyClockReferenceTags,
             }).then(currentDependency => {
               if (active !== operation || sameExtractorDependency(operation.dependencySnapshot, currentDependency)) return;
               cancelEarlyStabilization('dependencyChanged');

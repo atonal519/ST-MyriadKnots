@@ -41,13 +41,15 @@ test('自动隐藏默认关闭并保留最近 3 个 AI 楼，数量只接受合�
   assert.equal(settings.get().autoHideKeepAiCount, 3);
 });
 
-test('时间戳功能默认开启，五类自定义提示词保留用户原文', () => {
+test('时间戳功能默认开启，参考标签独立规范化，五类自定义提示词保留用户原文', () => {
   const extensionSettings = {};
   const { settings } = setup(extensionSettings);
   assert.equal(settings.get().storyClockEnabled, true); assert.equal(settings.get().storyClockPrompt, '');
+  assert.equal(settings.get().storyClockReferenceTags, 'Ti');
   assert.equal(settings.get().processingPrompt, ''); assert.equal(settings.get().summaryPrompt, ''); assert.equal(settings.get().csePrompt, ''); assert.equal(settings.get().profilePrompt, '');
-  settings.update({ storyClockEnabled: false, storyClockPrompt: '  原样换行\n', processingPrompt: '  破限原样\n', summaryPrompt: '  摘要要求\n', csePrompt: '  CSE 要求\n', profilePrompt: '  人物资料要求\n' });
+  settings.update({ storyClockEnabled: false, storyClockPrompt: '  原样换行\n', storyClockReferenceTags: ' TI，时标\nti\n[[...]] ', processingPrompt: '  破限原样\n', summaryPrompt: '  摘要要求\n', csePrompt: '  CSE 要求\n', profilePrompt: '  人物资料要求\n' });
   assert.equal(settings.get().storyClockEnabled, false); assert.equal(settings.get().storyClockPrompt, '  原样换行\n');
+  assert.equal(settings.get().storyClockReferenceTags, 'TI,时标');
   assert.equal(settings.get().processingPrompt, '  破限原样\n'); assert.equal(settings.get().summaryPrompt, '  摘要要求\n'); assert.equal(settings.get().csePrompt, '  CSE 要求\n'); assert.equal(settings.get().profilePrompt, '  人物资料要求\n');
 });
 

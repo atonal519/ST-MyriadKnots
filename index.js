@@ -131,6 +131,7 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   extractorPromptGuidance: summaryPrompt,
   csePromptGuidance: csePrompt,
   processingPrompt,
+  storyClockReferenceTags: () => settings.get().storyClockReferenceTags,
   filterWorldInfoSources: sourcePermissions.filterWorldInfoSources,
   sanitizerOptions,
   persistAnchors: persistMessageFloorAnchors,

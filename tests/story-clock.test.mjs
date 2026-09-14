@@ -8,8 +8,11 @@ import {
   createStoryClockStatusProjection,
   decideStoryClockInjection,
   extensionStoryClockState,
+  normalizeStoryClockReferenceTags,
   parseClockFields,
   parseSharedStoryClock,
+  parseStoryClockEvidence,
+  parseStoryClockReference,
   storyClockSignature,
 } from '../src/story-clock.js';
 
@@ -56,7 +59,26 @@ test('三前缀各自配对，合法并存不算重复，残缺格式按完整�
   assert.equal(legacyFallback.namespace, 'myknots'); assert.equal(legacyFallback.complete, true);
   const duplicate = parseSharedStoryClock(`${pair('QQJ')}<!-- QQJ-start | date=10月4日 | weekday=周二 | time=16:10 -->`);
   assert.equal(duplicate.complete, false); assert.equal(duplicate.duplicate, true);
+  assert.equal(storyClockSignature(parseSharedStoryClock(pair('QQJ'))), '["qqj","| date=10月4日 | weekday=周二 | time=15:30","| date=10月4日 | weekday=周二 | time=16:00"]');
   assert.notEqual(storyClockSignature(duplicate), '', '残缺同楼时间戳也必须参与 raw 元数据变化检测');
+});
+
+test('可配置时间参考标签保留完整语义与原文顺序，标准时间戳仍优先', () => {
+  assert.deepEqual(normalizeStoryClockReferenceTags(' Ti，时标\nti '), ['Ti', '时标']);
+  const raw = '<Slate><Ti>0081年10月20日·<b>清晨</b>·06:12</Ti><content>正文</content><ti>0081年10月20日·午前·10:40</ti></Slate>';
+  const reference = parseStoryClockReference(raw, 'TI,时标');
+  assert.equal(reference.namespace, 'tag:TI');
+  assert.equal(reference.referenceText, '0081年10月20日·清晨·06:12\n0081年10月20日·午前·10:40');
+  assert.equal(reference.complete, false);
+  assert.equal(reference.start, null);
+  assert.equal(reference.end, null);
+  assert.match(storyClockSignature(reference), /0081年10月20日/);
+  assert.equal(parseStoryClockReference('<时标>第三次忍界大战后某年·7月15日·18:00</时标>', '时标').referenceText, '第三次忍界大战后某年·7月15日·18:00');
+  assert.equal(parseStoryClockReference('<Ti>时间不明</Ti>', ''), null);
+  assert.equal(parseStoryClockReference('<Ti>没有闭合', 'Ti'), null);
+  const standard = parseStoryClockEvidence(`${raw}${pair('QQJ')}`, 'Ti');
+  assert.equal(standard.namespace, 'QQJ');
+  assert.equal(standard.complete, true);
 });
 
 test('协调矩阵与 controller 只操作自己的 prompt key', () => {

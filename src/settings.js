@@ -1,4 +1,5 @@
 import { normalizeMemoryTagList } from './memory-content-sanitizer.js';
+import { normalizeStoryClockReferenceTags } from './story-clock.js';
 
 export const SETTINGS_ID = 'qianqianjie';
 
@@ -6,6 +7,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   pluginEnabled: true,
   storyClockEnabled: true,
   storyClockPrompt: '',
+  storyClockReferenceTags: 'Ti',
   autoMemoryBatchSize: 1,
   autoHideEnabled: false,
   autoHideKeepAiCount: 3,
@@ -128,6 +130,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     settings.autoMemoryBatchSize = normalizeAutoMemoryBatchSize(settings.autoMemoryBatchSize);
     settings.autoHideEnabled = settings.autoHideEnabled === true;
     settings.autoHideKeepAiCount = normalizeAutoHideKeepAiCount(settings.autoHideKeepAiCount);
+    settings.storyClockReferenceTags = normalizeStoryClockReferenceTags(settings.storyClockReferenceTags).join(',');
     return settings;
   };
   const notify = (observeSaveFailure = false) => {
@@ -139,6 +142,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'pluginEnabled')) settings.pluginEnabled = patch.pluginEnabled !== false;
     if (own(patch, 'storyClockEnabled')) settings.storyClockEnabled = patch.storyClockEnabled !== false;
     if (own(patch, 'storyClockPrompt')) settings.storyClockPrompt = text(patch.storyClockPrompt);
+    if (own(patch, 'storyClockReferenceTags')) settings.storyClockReferenceTags = normalizeStoryClockReferenceTags(patch.storyClockReferenceTags).join(',');
     if (own(patch, 'autoMemoryBatchSize')) settings.autoMemoryBatchSize = normalizeAutoMemoryBatchSize(patch.autoMemoryBatchSize);
     if (own(patch, 'autoHideEnabled')) settings.autoHideEnabled = patch.autoHideEnabled === true;
     if (own(patch, 'autoHideKeepAiCount')) settings.autoHideKeepAiCount = normalizeAutoHideKeepAiCount(patch.autoHideKeepAiCount);

@@ -17,6 +17,7 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
   const extraTags = element('input', 'settings-input'); extraTags.value = current.sourceExtraTags ?? ''; extraTags.placeholder = '示例（不会自动生效）：think, reasoning, [[...]]';
   const storyClockEnabled = element('input'); storyClockEnabled.type = 'checkbox'; storyClockEnabled.checked = current.storyClockEnabled !== false;
   const storyClockPrompt = element('textarea', 'settings-input'); storyClockPrompt.value = current.storyClockPrompt ?? ''; storyClockPrompt.placeholder = '留空＝使用千千结内置默认时间戳提示词';
+  const storyClockReferenceTags = element('input', 'settings-input'); storyClockReferenceTags.value = current.storyClockReferenceTags ?? 'Ti'; storyClockReferenceTags.placeholder = 'Ti';
   const storyClockStatus = element('p', 'settings-result', onStoryClockChange?.({ readOnly: true })?.label ?? '时间戳状态会在下一次正文生成前刷新。');
   storyClockStatus.id = 'qqj-story-clock-status';
   const { drawer: storyClockDrawer, body: storyClockBody } = subDrawer({ title: '时间戳提示词', id: 'qqj-settings-story-clock' });
@@ -37,11 +38,20 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
   };
   storyClockEnabled.addEventListener('change', () => { settings.update({ storyClockEnabled: storyClockEnabled.checked }); refreshClock(); });
   storyClockPrompt.addEventListener('change', () => { settings.update({ storyClockPrompt: storyClockPrompt.value }); refreshClock(); });
+  storyClockReferenceTags.addEventListener('change', () => settings.update({ storyClockReferenceTags: storyClockReferenceTags.value }));
   const loadDefault = button('载入默认再改', 'secondary-action', () => { storyClockPrompt.value = DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT; settings.update({ storyClockPrompt: storyClockPrompt.value }); refreshClock(); });
   const restoreDefault = button('恢复默认', 'secondary-action', () => { storyClockPrompt.value = ''; settings.update({ storyClockPrompt: '' }); refreshClock(); });
   const clockActions = element('div', 'v3-foundation-actions'); clockActions.append(loadDefault, restoreDefault);
   const clockToggle = element('label', 'setting-switch'); clockToggle.append(storyClockEnabled, element('span', '', '启用正文时间戳'));
-  storyClockBody.append(clockToggle, storyClockStatus, element('p', 'settings-hint', '默认使用 QQJ-start/end。自定义内容会原样发送；QQJ、SDC 与旧 myknots 格式均可读取，但必须保留成对的 start/end 及 date、weekday、time 字段。'), field('完整自定义提示词', storyClockPrompt), clockActions);
+  storyClockBody.append(
+    clockToggle,
+    storyClockStatus,
+    element('p', 'settings-hint', '默认使用 QQJ-start/end。自定义内容会原样发送；QQJ、SDC 与旧 myknots 格式均可读取，但必须保留成对的 start/end 及 date、weekday、time 字段。'),
+    field('正文时间参考标签', storyClockReferenceTags),
+    element('p', 'settings-hint', '默认读取成对的 Ti 标签；可用逗号或换行填写多个标签名，留空则关闭补充读取。无需把它加入正文保留列表，标准时间戳优先。这里只读取摘要时间参考，不改变正文清洗，也不受上方生成开关影响。'),
+    field('完整自定义提示词', storyClockPrompt),
+    clockActions,
+  );
 
   const promptEditor = ({ body: editorBody, control, key, defaultText, label, hint = '这里只编辑内容要求；字段结构、人物绑定、事实来源和隐私边界由程序固定维护。恢复默认后会使用千千结内置文本。' }) => {
     control.addEventListener('change', () => settings.update({ [key]: control.value }));

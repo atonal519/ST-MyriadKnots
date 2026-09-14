@@ -131,7 +131,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.1.27');
+  assert.equal(manifest.version, '0.1.28');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
@@ -285,7 +285,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const backendClient = { getDiagnosticSnapshot: () => backendSnapshot };
   define('./src/backend-client.js', { createBackendClient: () => backendClient });
   define('./src/bootstrap.js', { bootstrap: options => { bootstrapOptions = options; return { refresh() {}, setEnabled() {} }; } });
-  define('./src/settings.js', { createSettingsStore: () => ({ migrateLegacyApiSettings() {}, isEnabled: () => false, get: () => ({ generalPrompt: '旧通用附加残留', processingPrompt: '  破限接线\n', summaryPrompt: '摘要指导', csePrompt: 'CSE 指导', profilePrompt: '人物资料指导' }) }) });
+  define('./src/settings.js', { createSettingsStore: () => ({ migrateLegacyApiSettings() {}, isEnabled: () => false, get: () => ({ generalPrompt: '旧通用附加残留', processingPrompt: '  破限接线\n', summaryPrompt: '摘要指导', csePrompt: 'CSE 指导', profilePrompt: '人物资料指导', storyClockReferenceTags: 'Ti,时标' }) }) });
   define('./src/api-routing.js', {
     createApiResolver: () => ({}),
     createApiTools: () => ({ abortAll() {} }),
@@ -360,7 +360,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(v3MemoryOptions.extractorPromptGuidance(), '摘要指导');
   assert.equal(v3MemoryOptions.csePromptGuidance(), 'CSE 指导');
   assert.equal(v3MemoryOptions.processingPrompt(), '  破限接线\n');
+  assert.equal(v3MemoryOptions.storyClockReferenceTags(), 'Ti,时标');
   assert.equal(typeof v3MemoryOptions.sanitizerOptions, 'function');
+  assert.equal(Object.hasOwn(v3MemoryOptions.sanitizerOptions(), 'storyClockReferenceTags'), false);
   assert.equal(v3MemoryOptions.persistAnchors, persistAnchors, '生产入口必须把真实消息挂标能力注入 memory runtime');
   assert.equal(Object.hasOwn(foundationOptions, 'persistAnchors'), false, 'foundation runtime 不得吞掉挂标能力');
   assert.equal(foundationOptions.deferChatChangeRefreshUntilPrepared, true, '生产切聊刷新必须等待 lifecycle 完成身份准备后再由 memory.start 读取');
