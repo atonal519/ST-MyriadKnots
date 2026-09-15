@@ -131,7 +131,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.2.0');
+  assert.equal(manifest.version, '0.2.1');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
@@ -325,9 +325,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/v3/foundation-runtime.js', { createFoundationRuntime: options => { foundationOptions = options; return {}; } });
   const branchInitializer = async () => ({ status: 'inherited' });
   define('./src/v3/chat-branch-inheritance.js', { createChatBranchInitializer: options => { branchInitializerOptions = options; return branchInitializer; } });
-  let timeOptions;
+  let timeOptions, timeBindOptions;
   const timeBatches = [];
-  const timeRuntime = { runBatch: receipt => { timeBatches.push(receipt); }, recallProjection: async () => null, stop: async () => {}, bind() {} };
+  const timeRuntime = { runBatch: receipt => { timeBatches.push(receipt); }, recallProjection: async () => null, stop: async () => {}, bind(options) { timeBindOptions = options; } };
   define('./src/v3/time-runtime.js', { createTimeStore: () => ({}), createTimeRuntime: options => { timeOptions = options; return timeRuntime; } });
   define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() { backgroundStarts.push('memory'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, getState: () => ({}), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
   define('./src/v3/message-floor-anchor.js', { persistMessageFloorAnchors: persistAnchors });
@@ -352,10 +352,15 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   await new Promise(resolvePromise => setImmediate(resolvePromise));
 
   assert.equal(v3MemoryOptions.generateAnalysisTask, analysisTask);
-  assert.equal(timeOptions.generateAnalysisTask, analysisTask);
+  assert.equal(timeOptions.generateTimeTask, utilityTask);
+  assert.equal(Object.hasOwn(timeOptions, 'generateAnalysisTask'), false);
+  assert.equal(timeOptions.sanitizerOptions, v3MemoryOptions.sanitizerOptions);
+  assert.equal(timeOptions.storyClockReferenceTags(), 'Ti,时标');
+  assert.ok(timeBindOptions.foundationRuntime);
+  assert.equal(timeBindOptions.eventSource, productionEventSource);
   assert.equal(timeOptions.isEnabled(), false);
-  v3MemoryOptions.onMemoryBatchCommitted({ chatId: 'test' });
-  assert.equal(timeBatches.length, 1);
+  assert.equal(Object.hasOwn(v3MemoryOptions, 'onMemoryBatchCommitted'), false, '时间从foundation生命周期读正文，不等摘要CSE完成回调');
+  assert.equal(timeBatches.length, 0);
   assert.equal(memoryManagementOptions.timeRuntime, timeRuntime);
   const ledgerEnabled = bootstrapOptions.isSevenDaysLedgerInjectionEnabled;
   const peer = peerExtensionSettings['schedule-planner'];

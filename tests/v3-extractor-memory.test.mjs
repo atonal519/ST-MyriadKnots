@@ -1370,6 +1370,37 @@ test('foundation reload 单飞会消费运行中到达的尾部 ready，旧 epoc
   assert.equal(state.floors.at(-1).assistantSeq, 3);
 });
 
+test('召回选材中root推进，精确ready快照绕过另一次挂起刷新且不重复整图读', async () => {
+  const seed = harness({ initialChat: [user('继续'), assistant('裴晚生提醒带伞。'), assistant('钟楼仍在等待。'), assistant('确认上一楼稳定。')] });
+  await seed.runtime.start(); const floors = seed.runtime.getState().floors;
+  await seed.runtime.extractFloor(floors[0].floorId, { analyzeState: false });
+  let held = false, inspectCalls = 0, releaseInspect, markHeld;
+  const heldStarted = new Promise(resolve => { markHeld = resolve; });
+  const foundationRuntime = { ...seed.foundationRuntime, inspect: async () => { inspectCalls += 1; if (held) { markHeld(); await new Promise(resolve => { releaseInspect = resolve; }); } return seed.foundationRuntime.getState(); } };
+  const task = async () => { throw new Error('准备不应请求模型'); };
+  const memory = createV3MemoryRuntime({ foundationRuntime, store: seed.store, hostAdapter: seed.hostAdapter, generateAnalysisTask: task, generateUtilityTask: task, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  await memory.start(); await waitFor(() => memory.getState().memorySyncStatus === 'idle');
+  seed.context.chat.push(user('带伞')); seed.context.constants = { promptTypes: { IN_CHAT: 1 }, promptRoles: { SYSTEM: 0 } }; seed.context.setExtensionPrompt = () => {};
+  let refresh, selects = 0, beforeCommitInspects = 0, beforeCommitReads = 0; const prepareOptions = [];
+  const recall = createV3RecallRuntime({ store: seed.store, hostAdapter: seed.hostAdapter, prepareMemory: options => { prepareOptions.push(options); return memory.prepareCurrent(options); },
+    selector: async options => {
+      selects += 1; await seed.runtime.extractFloor(floors[1].floorId, { analyzeState: false }); await memory.refreshStatus({ preferCached: false });
+      await waitFor(() => memory.getState().memorySyncStatus === 'idle'); held = true; refresh = memory.refreshStatus({ preferCached: false }); await heldStarted;
+      beforeCommitInspects = inspectCalls; beforeCommitReads = seed.readReachableModes.length; return selectRecall(options);
+    }, pluginVersion: 'test-ready-root', now: () => new Date(NOW), logger: { warn() {} } });
+  let timer;
+  try {
+    const result = await Promise.race([recall.intercept(structuredClone(seed.context.chat), 12000, null, 'normal'), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('精确快照不应等挂起刷新')), 800); })]);
+    assert.equal(selects, 1); assert.equal(inspectCalls, beforeCommitInspects); assert.equal(seed.readReachableModes.length, beforeCommitReads);
+    assert.equal(prepareOptions.at(-1).preferCached, false); assert.equal(prepareOptions.at(-1).rootResult.status, 'ready');
+    assert.ok(['ready', 'empty'].includes(result.lastRecall.status)); assert.equal(result.lastRecall.selectionStatus, 'completed');
+  } finally { clearTimeout(timer); releaseInspect?.(); await refresh; }
+  const rootResult = await seed.store.readRoot();
+  for (const change of [{ revision: rootResult.revision + 1 }, { data: { ...rootResult.data, narrativeGeneration: 'different' } }, { data: { ...rootResult.data, headCheckpointId: 'different' } }, { data: { ...rootResult.data, chatId: 'different' } }]) {
+    held = false; const before = inspectCalls; await memory.prepareCurrent({ preferCached: false, rootResult: { ...rootResult, ...change } }); assert.equal(inspectCalls, before + 1, '不匹配仍走fresh');
+  }
+});
+
 test('CHAT_CHANGED 与 start 并发发布同版本 foundation 快照时共用后台同步并收敛 coverage', async () => {
   const graph = {
     status: 'ready', rootRevision: 1,

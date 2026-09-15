@@ -299,7 +299,7 @@ function appendStateProgressions(lines, stateProgressions, states) {
   }
 }
 
-function formatStorylineInjection({ coverage, floors, states, cseChanges, stateProgressions, entityById, storylines }) {
+function formatStorylineInjection({ coverage, floors, states, cseChanges, stateProgressions, entityById, storylines, timeDependencies }) {
   const hasNarrative = floors.some(floor => floor.items.some(value => value.category === 'narrative'));
   const lines = [
     '<qqj_recalled_context>',
@@ -373,6 +373,7 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, stateP
     }
     if (lineStates.length) lines.push('[已保存人物状态依据]');
     for (const value of lineStates) {
+      if (value._timeDependency) timeDependencies?.corrections.push(value._timeDependency);
       const target = value.toward ? `，对 ${value.toward}` : '';
       const source = value.sourceAssistantSeq ? `，来源 AI #${value.sourceAssistantSeq}` : '';
       const boundary = value.visibility === 'private' ? '，仅可用于该人物' : value.visibility === 'authorial' ? '，作者塑造参考，不代表人物知情' : '';
@@ -393,18 +394,19 @@ export function formatRecallInjection(input) {
   const corrections = input.timeProjection?.corrections ?? {};
   const states = input.states.map(state => {
     const correction = corrections[`${state.stateId}|${state.subjectEntityId}|${state.sourceFloorId}`];
-    return correction ? { ...state, text: correction.text, _timeCorrection: true } : state;
+    return correction ? { ...state, text: correction.text, _timeCorrection: true, _timeDependency: { key: `${state.stateId}|${state.subjectEntityId}|${state.sourceFloorId}`, itemId: correction.itemId, text: correction.text, sourceSignature: correction.sourceSignature ?? null } } : state;
   });
   const base = formatBaseRecallInjection({ ...input, states });
   const reminders = input.timeReminders ?? [];
   if (!reminders.length) return base;
+  input.timeDependencies?.reminders.push(...reminders.map(item => ({ itemId: item.itemId, text: item.text, sourceSignature: item.sourceSignature ?? null })));
   const block = ['[时间参考（当前推测、预计节点或到期事项）]', ...reminders.map(item => `- ${item.text}`)].join('\n');
   return base ? base.replace('</qqj_recalled_context>', `${block}\n</qqj_recalled_context>`) : `<qqj_recalled_context>\n${block}\n</qqj_recalled_context>`;
 }
 
-function formatBaseRecallInjection({ coverage, floors, states, cseChanges = [], stateProgressions = [], entityById, storylines = [] }) {
+function formatBaseRecallInjection({ coverage, floors, states, cseChanges = [], stateProgressions = [], entityById, storylines = [], timeDependencies }) {
   if (!floors.length && !states.length && !cseChanges.length && !stateProgressions.length) return '';
-  if (storylines.length) return formatStorylineInjection({ coverage, floors, states, cseChanges, stateProgressions, entityById, storylines });
+  if (storylines.length) return formatStorylineInjection({ coverage, floors, states, cseChanges, stateProgressions, entityById, storylines, timeDependencies });
   const hasNarrative = floors.some(floor => floor.items.some(value => value.category === 'narrative'));
   const lines = [
     '<qqj_recalled_context>',
@@ -456,6 +458,7 @@ function formatBaseRecallInjection({ coverage, floors, states, cseChanges = [], 
   if (states.length) {
     lines.push('', '[已保存人物状态依据]');
     for (const value of states) {
+      if (value._timeDependency) timeDependencies?.corrections.push(value._timeDependency);
       const target = value.toward ? `，对 ${value.toward}` : '';
       const source = value.sourceAssistantSeq ? `，来源 AI #${value.sourceAssistantSeq}` : '';
       const boundary = value.visibility === 'private' ? '，仅可用于该人物' : value.visibility === 'authorial' ? '，作者塑造参考，不代表任何人物知情' : '';
@@ -1258,9 +1261,9 @@ export function buildRecallCseCandidatePool({ source, queryContext, cseContext =
 
 export function selectRecall({ source, queryContext, historyContext: providedHistoryContext = null, cseContext: providedCseContext = null, contextSize = 8192, maxFloors = MAX_RECALLED_FLOORS, maxItems = MAX_TOTAL_ITEMS, selectedHistoryCandidates, selectedCseCandidates, excludedHistoryCandidates = [], excludedCseCandidates = [], stateProgressionCandidates = [], reservedTokens = 0, reservedCharacters = 0 } = {}) {
   const emptyStages = input => Object.freeze({ input, candidates: 0, dropRecent: 0, dropPersistent: 0, dropVisibility: 0, selected: 0, recentSummaryCount: 0, distantHistoryItemCount: 0, linkedHistoryItemCount: 0, stateCount: 0, currentStateCount: 0, cseChangeCount: 0, linkedCseChangeCount: 0, stateProgressionCount: 0, budgetDroppedCount: 0, finalInjectionItemCount: 0 });
-  if (source?.status !== 'ready') return Object.freeze({ status: 'empty', injectionText: '', floors: Object.freeze([]), states: Object.freeze([]), cseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), stages: emptyStages(0), skipReasons: Object.freeze(['sourceUnavailable']) });
+  if (source?.status !== 'ready') return Object.freeze({ status: 'empty', injectionText: '', floors: Object.freeze([]), states: Object.freeze([]), cseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), timeDependencies: Object.freeze({ mode: 'selected', corrections: Object.freeze([]), reminders: Object.freeze([]) }), stages: emptyStages(0), skipReasons: Object.freeze(['sourceUnavailable']) });
   const query = clean(queryContext?.text, MAX_QUERY_CHARACTERS);
-  if (!query) return Object.freeze({ status: 'empty', injectionText: '', floors: Object.freeze([]), states: Object.freeze([]), cseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), coverage: source.coverage, stages: Object.freeze({ ...emptyStages(0), candidates: source.floorMemories.length }), skipReasons: Object.freeze(['emptyQuery']) });
+  if (!query) return Object.freeze({ status: 'empty', injectionText: '', floors: Object.freeze([]), states: Object.freeze([]), cseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), timeDependencies: Object.freeze({ mode: 'selected', corrections: Object.freeze([]), reminders: Object.freeze([]) }), coverage: source.coverage, stages: Object.freeze({ ...emptyStages(0), candidates: source.floorMemories.length }), skipReasons: Object.freeze(['emptyQuery']) });
   const historyContext = providedHistoryContext ?? historySelectionContext(source, queryContext);
   const cseContext = providedCseContext ?? cseSelectionContext(source, queryContext);
   const oldMemories = historyContext.oldMemories;
@@ -1383,7 +1386,9 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
       sourceAssistantSeq: value.sourceAssistantSeq ?? null, timeBasis: value.timeBasis, suggestion: value.suggestion,
       evidence: value.evidence.map(item => ({ kind: item.kind === 'recent' ? 'history' : item.kind, floorId: item.floorId, assistantSeq: item.assistantSeq })),
     }));
-    return { floors, states: publicStates, cseChanges: publicChanges, stateProgressions: publicProgressions, storylines, text: formatRecallInjection({ coverage: source.coverage, floors, states: publicStates, cseChanges: publicChanges, stateProgressions: publicProgressions, entityById, storylines, timeProjection: source.timeProjection, timeReminders: chosenTimeReminders }) };
+    const timeDependencies = { mode: 'selected', corrections: [], reminders: [] };
+    const text = formatRecallInjection({ coverage: source.coverage, floors, states: publicStates, cseChanges: publicChanges, stateProgressions: publicProgressions, entityById, storylines, timeProjection: source.timeProjection, timeReminders: chosenTimeReminders, timeDependencies });
+    return { floors, states: publicStates, cseChanges: publicChanges, stateProgressions: publicProgressions, storylines, timeDependencies, text };
   };
   let dropSemanticDuplicate = 0;
   const historyCoversCse = value => {
@@ -1473,6 +1478,7 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
   return Object.freeze({
     status: injectionText ? 'ready' : 'empty',
     injectionText,
+    timeDependencies: Object.freeze({ mode: 'selected', corrections: Object.freeze(rendered.timeDependencies.corrections.map(value => Object.freeze(value))), reminders: Object.freeze(rendered.timeDependencies.reminders.map(value => Object.freeze(value))) }),
     coverage: source.coverage,
     query: Object.freeze({ text: query, latestUserText: clean(queryContext?.latestUserText, 4000) }),
     floors: Object.freeze(floors.map(floor => Object.freeze({ ...floor, reasons: Object.freeze(floor.reasons), items: Object.freeze(floor.items.map(value => Object.freeze(value))) }))),

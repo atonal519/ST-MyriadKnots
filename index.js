@@ -123,10 +123,13 @@ const identityProjectionProvider = async () => {
 };
 let v3RecallRuntime;
 const timeRuntime = createTimeRuntime({
+  newUuid,
   store: createTimeStore({ client: backendClient }), foundationStore, hostAdapter, session,
   getReachable: () => foundationRuntime.getReachable(),
   getMemoryState: () => v3MemoryRuntime.getState(),
-  generateAnalysisTask: taskRouter.generateAnalysisTask,
+  generateTimeTask: taskRouter.generateUtilityTask,
+  sanitizerOptions,
+  storyClockReferenceTags: () => settings.get().storyClockReferenceTags,
   isEnabled: () => settings.isEnabled() && settings.get().timeEvolutionEnabled === true,
   onInvalidate: () => v3RecallRuntime?.invalidate('timeChanged'),
 });
@@ -144,7 +147,6 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
   isMainGenerationActive: isGenerating,
   onAutomaticSummaryCommitted: receipt => peopleWorkspaceRuntime?.requestAutomaticMaintenance(receipt),
-  onMemoryBatchCommitted: receipt => timeRuntime.runBatch(receipt),
   extractorPromptGuidance: summaryPrompt,
   csePromptGuidance: csePrompt,
   processingPrompt,
@@ -241,7 +243,7 @@ ui = bootstrap({
   onPluginEnabledChange: setAllEnabled,
   onStoryClockChange: options => refreshStoryClock({ ...options, announce: options?.readOnly !== true }),
   onAutoHideChange: options => autoHideController.applySettings(options),
-  onTimeEvolutionChange: () => timeRuntime.stop(),
+  onTimeEvolutionChange: async () => { await timeRuntime.stop(); await timeRuntime.runBatch(); },
   timeRuntime,
   subscribeDialogContextChange: handler => {
     const currentHost = hostContext();
@@ -281,7 +283,7 @@ refreshStoryClock({ announce: true });
 lifecycle.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes });
 v3MemoryRuntime.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes });
 v3RecallRuntime.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes });
-timeRuntime.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes });
+timeRuntime.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes, foundationRuntime });
 for (const name of ['CHAT_CHANGED', 'GENERATION_STARTED']) {
   const eventName = host?.eventTypes?.[name];
   if (eventName) host?.eventSource?.on?.(eventName, () => refreshStoryClock());

@@ -46,9 +46,10 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   const publish = () => { for (const listener of timeListeners) listener(timeState); };
   const timeRuntime = { getState: () => structuredClone(timeState), subscribe(listener) { timeListeners.add(listener); return () => timeListeners.delete(listener); },
     async refreshStatus(options) { refreshes += 1; if (!cached || options?.force) { reads += 1; cached = true; timeState = { ...timeState, status: 'completed', last: { status: 'completed', items: 1 }, trackedItems: [item] }; } publish(); return timeState; },
+    async prepareHistoryPlan() { return { floorCount: 1, batchCount: 1, apiCalls: 1 }; },
     async organize() { organizes += 1; timeState = { ...timeState, status: 'completed', last: { status: 'completed', items: 1 }, trackedItems: [{ ...item, projection: '可能有所减轻' }] }; publish(); return timeState; } };
   const container = new Node('main'); container.scrollTop = 45;
-  const view = createV3FoundationView({ runtime, timeRuntime, documentRef }); view.setPage('memories'); view.mount(container);
+  const view = createV3FoundationView({ runtime, timeRuntime, documentRef, confirmImpl: () => true }); view.setPage('memories'); view.mount(container);
   let toggle = flatten(container).find(node => node.textContent === '近期事项');
   assert.equal(toggle.attributes['aria-expanded'], 'false'); assert.equal(reads, 0); assert.equal(refreshes, 0);
   let body = flatten(container).find(node => node.id === toggle.attributes['aria-controls']); assert.equal(body.hidden, true);
@@ -65,15 +66,15 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   assert.equal(list.scrollTop, 28); assert.equal(entry.scrollTop, 9);
   timeState = { ...timeState, active: true, canOrganize: false }; publish();
   assert.equal(list.children[0], entry); assert.equal(list.replaceCount, listReplaceCount);
-  assert.equal(flatten(body).find(node => node.textContent === '整理时间事项').disabled, true, '清单相同时busy仍更新按钮');
+  assert.equal(flatten(body).find(node => node.textContent === '补查历史').disabled, true, '清单相同时busy仍更新按钮');
   timeState = { ...timeState, active: false, canOrganize: true }; publish();
-  assert.equal(flatten(body).find(node => node.textContent === '整理时间事项').disabled, false);
+  assert.equal(flatten(body).find(node => node.textContent === '补查历史').disabled, false);
   flatten(container).find(node => node.textContent === '编辑').click();
   const input = flatten(container).find(node => node.tag === 'textarea'); input.value = '未保存草稿'; input.fire('input'); input.focus();
   toggle = flatten(container).find(node => node.textContent === '近期事项（1）');
   const replaceCount = container.replaceCount;
   const editedBody = flatten(container).find(node => node.id === 'qqj-recent-items'), editedList = editedBody.children.at(-1), oldEntry = editedList.children[0];
-  await flatten(container).find(node => node.textContent === '整理时间事项').click();
+  await flatten(container).find(node => node.textContent === '补查历史').click();
   assert.notEqual(editedList.children[0], oldEntry, '真实显示内容改变才替换事项');
   assert.equal(organizes, 1); assert.equal(container.replaceCount, replaceCount); assert.equal(input.value, '未保存草稿');
   assert.equal(documentRef.activeElement, input); assert.equal(container.scrollTop, 45);
@@ -81,14 +82,14 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   assert.ok(flatten(container).some(node => node.attributes['data-qqj-floor-id'] === 'floor'), 'timeState 返回不得替换 memoryState');
   timeState = { ...timeState, status: 'waiting', canOrganize: false, trackedItems: null }; publish();
   emit({ ...state, memorySnapshotStatus: 'syncing', memorySyncStatus: 'syncing', memoryWorkBusy: true });
-  assert.equal(toggle.disabled, false); assert.equal(flatten(container).find(node => node.textContent === '整理时间事项').disabled, true);
+  assert.equal(toggle.disabled, false); assert.equal(flatten(container).find(node => node.textContent === '补查历史').disabled, true);
   timeState = { ...timeState, status: 'completed', canOrganize: true, trackedItems: [item] };
   emit({ ...state, memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: false });
   assert.equal(container.replaceCount, replaceCount); assert.equal(input.value, '未保存草稿'); assert.equal(toggle.disabled, false);
   await toggle.click(); await toggle.click(); assert.equal(reads, 1); assert.equal(toggle.attributes['aria-expanded'], 'true');
   timeState = { ...timeState, status: 'failed', trackedItems: null, last: { status: 'failed', reason: 'read', message: '读取失败' } }; publish();
   const retry = flatten(container).find(node => node.textContent === '重试读取'); assert.equal(retry.hidden, false);
-  assert.equal(flatten(container).find(node => node.textContent === '重试整理时间事项').disabled, true);
+  assert.equal(flatten(container).find(node => node.textContent === '继续补查历史').disabled, true);
   await retry.click(); assert.equal(reads, 2); assert.equal(organizes, 1);
   view.deactivate(); assert.equal(timeListeners.size, 0); assert.equal(memoryListeners.size, 0);
   view.mount(container); assert.equal(timeListeners.size, 1); assert.equal(memoryListeners.size, 1); assert.equal(reads, 2);
@@ -102,6 +103,110 @@ function peopleRuntime(candidates, selected = candidates.map(item => item.entity
   let state = { status: 'ready', selectedEntityIds: [...selected], people: candidates.map(item => ({ aliases: [], appearanceCount: 1, recommended: false, ...item, selected: selected.includes(item.entityId) })), active: null };
   return { getState: () => state, refresh: async () => state, setSelectedEntityIds: async ids => { state = { ...state, selectedEntityIds: [...ids], people: state.people.map(item => ({ ...item, selected: ids.includes(item.entityId) })) }; return state; } };
 }
+
+test('近期事项人工编辑保草稿焦点，失败重试与取消零写，停止项同缓存恢复', async () => {
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: false, stableCount: 0, rememberedCount: 0, unprocessedCount: 0, floors: [] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  let item = { id: 'body-item', observationKey: 'key-one', status: 'active', person: '甲', label: '旧擦伤', type: 'body', observation: '原观察', observationTime: { date: '2026-05-11', raw: '次日', clock: '08:00' }, occurrenceTime: { date: '2026-05-10', raw: '昨天', clock: '08:00' }, dueTime: { date: null }, periodDays: null, elapsedHours: null, elapsedDays: null, observationElapsedHours: null, observationElapsedDays: 2, projection: '旧推测' };
+  let timeState = { status: 'completed', active: false, canOrganize: true, disabledReason: '', last: { status: 'completed', items: 1 }, trackedItems: [item], stoppedItems: [] }, writes = 0, reads = 0, fail = true;
+  let lastFields; const listeners = new Set(); const emit = () => { for (const listener of listeners) listener(timeState); };
+  const timeRuntime = { getState: () => structuredClone(timeState), subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); }, refreshStatus: async () => { reads += 1; emit(); return timeState; },
+    async editItem(id, fields, key) { writes += 1; lastFields = fields; assert.equal(id, item.id); assert.equal(key, item.observationKey); if (fail) { fail = false; throw new Error('mock save failed'); }
+      item = { ...item, ...fields, observationKey: `key-${writes}`, projection: null };
+      timeState = { ...timeState, trackedItems: item.status === 'active' ? [item] : [], stoppedItems: item.status === 'active' ? [] : [item] }; emit(); return timeState;
+    } };
+  const container = new Node('main'); container.scrollTop = 35;
+  const view = createV3FoundationView({ runtime, timeRuntime, documentRef, confirmImpl: () => true }); view.setPage('memories'); view.mount(container);
+  await flatten(container).find(node => node.textContent === '近期事项（1）').click();
+  const itemMenu = flatten(container).find(node => node.className === 'qqj-profile-menu');
+  assert.equal(itemMenu.parentNode.className, 'qqj-recent-item-head'); assert.equal(itemMenu.parentNode.children.at(-1), itemMenu);
+  assert.equal(itemMenu.children[0].textContent, '⋮'); assert.equal(itemMenu.children[0].attributes['aria-haspopup'], 'menu'); assert.match(itemMenu.children[0].attributes['aria-label'], /事项操作/u);
+  assert.ok(flatten(itemMenu).filter(node => node.tag === 'button').every(node => node.className.includes('qqj-profile-menu-action') && node.attributes.role === 'menuitem'));
+  itemMenu.open = true;
+  await flatten(container).find(node => node.textContent === '编辑事项').click();
+  assert.equal(itemMenu.open, false);
+  let description = flatten(container).find(node => node.attributes['aria-label'] === '观察描述');
+  description.value = '人工观察草稿'; description.fire('input'); description.selectionStart = 3; description.focus();
+  const oldNode = description, replacements = container.replaceCount;
+  timeState = { ...timeState, active: true, canOrganize: false }; emit();
+  assert.equal(flatten(container).find(node => node.attributes['aria-label'] === '观察描述'), oldNode);
+  assert.equal(flatten(container).find(node => node.textContent === '保存事项').disabled, true);
+  timeState = { ...timeState, active: false, canOrganize: true }; emit();
+  assert.equal(description.value, '人工观察草稿'); assert.equal(documentRef.activeElement, description); assert.equal(description.selectionStart, 3); assert.equal(container.scrollTop, 35);
+  await flatten(container).find(node => node.textContent === '保存事项').click();
+  assert.equal(description.value, '人工观察草稿'); assert.match(flatten(container).map(node => node.textContent).join('|'), /保存失败/u);
+  assert.equal(documentRef.activeElement, description); assert.equal(container.replaceCount, replacements);
+  await flatten(container).find(node => node.textContent === '保存事项').click(); assert.equal(item.observation, '人工观察草稿'); assert.equal(item.projection, null);
+  assert.equal(flatten(container).some(node => node.textContent === '保存事项'), false);
+  await flatten(container).find(node => node.textContent === '编辑事项').click();
+  await flatten(container).find(node => node.textContent === '保存事项').click(); assert.equal(writes, 2, '原样保存不写新批次或清推测');
+  await flatten(container).find(node => node.textContent === '编辑事项').click();
+  description = flatten(container).find(node => node.attributes['aria-label'] === '观察描述'); description.value = '取消的内容'; description.fire('input');
+  await flatten(container).find(node => node.textContent === '取消事项编辑').click(); assert.equal(writes, 2); assert.equal(item.observation, '人工观察草稿');
+  const oldTimes = { observationTime: structuredClone(item.observationTime), occurrenceTime: structuredClone(item.occurrenceTime), dueTime: structuredClone(item.dueTime) };
+  await flatten(container).find(node => node.textContent === '编辑事项').click();
+  const name = flatten(container).find(node => node.attributes['aria-label'] === '事项名称'); name.value = '只改名称'; name.fire('input');
+  await flatten(container).find(node => node.textContent === '保存事项').click();
+  assert.deepEqual(lastFields, { label: '只改名称' });
+  for (const [key, value] of Object.entries(oldTimes)) assert.deepEqual(item[key], value);
+  await flatten(container).find(node => node.textContent === '暂停').click();
+  assert.equal(flatten(container).some(node => node.textContent === '确认保存'), false, '弹窗确认后直接保存，不再嵌套确认');
+  assert.equal(item.status, 'paused'); assert.equal(flatten(container).find(node => node.className.includes('qqj-profile-more')).textContent, '近期事项（0）');
+  const beforeStopped = reads; await flatten(container).find(node => node.textContent === '查看停止项（1）').click(); assert.equal(reads, beforeStopped);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /已暂停/u);
+  for (const status of ['completed', 'paused', 'cancelled']) {
+    timeState = { ...timeState, stoppedItems: [{ ...item, type: 'cycle', status, dueTime: { date: '2026-05-15' }, periodDays: 5 }] }; emit();
+    const text = flatten(container).map(node => node.textContent).join('|');
+    assert.match(text, /已停止追踪/u); assert.doesNotMatch(text, /等待推算|尚未确认发生或完成|当前推测/u);
+  }
+  await flatten(container).find(node => node.textContent === '恢复追踪').click();
+  assert.equal(item.status, 'active'); assert.equal(flatten(container).find(node => node.className.includes('qqj-profile-more')).textContent, '近期事项（1）');
+  await flatten(container).find(node => node.textContent === '返回追踪中事项').click(); assert.match(flatten(container).map(node => node.textContent).join('|'), /人工观察草稿/u);
+  assert.equal(reads, beforeStopped); view.deactivate(); assert.equal(listeners.size, 0);
+});
+
+test('近期事项菜单确认取消零写，失败重试，同内容通知及迟到确认守卫', async () => {
+  const css = await readFile(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
+  assert.match(css, /\.qqj-recent-item-head\{display:flex;align-items:center;gap:8px\}/u);
+  assert.match(css, /\.qqj-recent-item-head>span\{flex:1;min-width:0;overflow-wrap:anywhere\}/u);
+  async function scenario() {
+    const doc = eventDocument(), memoryListeners = new Set(), timeListeners = new Set();
+    const floor = { floorId: 'floor', assistantSeq: 1, messageIndex: 0, status: 'ready', memoryId: 'memory', summary: '原摘要', memory: { summaryEvidenceRefs: [] }, cse: { status: 'ready', deltaId: 'delta' } };
+    let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: false, stableCount: 1, rememberedCount: 1, unprocessedCount: 0, floors: [floor] };
+    let item = { id: 'item', observationKey: 'key', status: 'active', person: '甲', label: '擦伤', type: 'body', observation: '原观察', observationTime: { date: '2026-05-10' }, occurrenceTime: { date: null }, dueTime: { date: null }, elapsedHours: null, elapsedDays: null, observationElapsedHours: null, observationElapsedDays: 2, projection: null };
+    let timeState = { status: 'completed', active: false, canOrganize: true, last: { status: 'completed', items: 1 }, trackedItems: [item], stoppedItems: [] }, writes = 0, fail = false, resolveConfirm, confirms = 0;
+    const emitTime = () => { for (const listener of timeListeners) listener(timeState); };
+    const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, subscribe(listener) { memoryListeners.add(listener); return () => memoryListeners.delete(listener); } };
+    const timeRuntime = { getState: () => structuredClone(timeState), refreshStatus: async () => timeState, subscribe(listener) { timeListeners.add(listener); return () => timeListeners.delete(listener); }, async editItem(id, fields, key) {
+      writes += 1; assert.equal(id, item.id); assert.equal(key, item.observationKey); assert.deepEqual(Object.keys(fields), ['status']);
+      if (fail) { fail = false; throw new Error('mock status save failure'); }
+      item = { ...item, ...fields, observationKey: 'saved-key', projection: null }; timeState = { ...timeState, trackedItems: [], stoppedItems: [item] }; emitTime(); return timeState;
+    } };
+    const container = new Node('main'), view = createV3FoundationView({ runtime, timeRuntime, documentRef: doc, confirmImpl: options => { confirms += 1; assert.equal(options.cancelText, '取消'); assert.match(options.body, /保存不调用模型/u); return new Promise(resolve => { resolveConfirm = resolve; }); } });
+    view.setPage('memories'); view.mount(container); await flatten(container).find(node => node.textContent === '近期事项（1）').click();
+    return { container, view, doc, writes: () => writes, confirms: () => confirms, failNext: () => { fail = true; }, confirm: value => resolveConfirm(value), emitTime,
+      changeTime: patch => { timeState = { ...timeState, ...patch }; emitTime(); }, changeKey: () => { timeState = { ...timeState, trackedItems: [{ ...item, observationKey: 'new-key' }] }; emitTime(); },
+      changeChat: () => { state = { ...state, chatId: 'another-chat' }; for (const listener of memoryListeners) listener(state); } };
+  }
+  const s = await scenario(), action = label => flatten(s.container).find(node => node.textContent === label);
+  const menu = flatten(s.container).find(node => node.className === 'qqj-profile-menu'), entry = menu.parentNode.parentNode, list = entry.parentNode;
+  const summaryMenu = flatten(s.container).find(node => node.className === 'qqj-memory-menu');
+  list.scrollTop = 24; menu.open = true; let pending = action('完成').click(); assert.equal(menu.open, false);
+  assert.equal(action('编辑事项').disabled, true); assert.equal(action('移除').disabled, true);
+  await action('编辑事项').click(); assert.equal(action('保存事项'), undefined);
+  s.emitTime(); assert.equal(flatten(s.container).find(node => node.className === 'qqj-profile-menu'), menu); assert.equal(list.children[0], entry); assert.equal(list.scrollTop, 24);
+  s.confirm(false); await pending; assert.equal(s.writes(), 0); assert.equal(action('完成').disabled, false);
+  s.failNext(); pending = action('完成').click(); s.confirm(true); await pending; assert.equal(s.writes(), 1); assert.match(flatten(entry).map(node => node.textContent).join('|'), /保存失败/u);
+  assert.equal(action('完成').disabled, false); pending = action('完成').click(); s.confirm(true); await pending; assert.equal(s.writes(), 2);
+  assert.equal(action('确认保存'), undefined); assert.equal(action('保存事项'), undefined);
+  summaryMenu.open = true; s.doc.click({ composedPath: () => [] }); assert.equal(summaryMenu.open, false, '局部时间清单更新保留摘要菜单的外部关闭注册');
+  assert.equal(s.doc.clickListenerCount(), 1); s.view.deactivate(); assert.equal(s.doc.clickListenerCount(), 0);
+  for (const mutation of ['chat', 'key', 'busy', 'page']) {
+    const late = await scenario(); const pending = flatten(late.container).find(node => node.textContent === '移除').click();
+    if (mutation === 'chat') late.changeChat(); else if (mutation === 'key') late.changeKey(); else if (mutation === 'busy') late.changeTime({ active: true, canOrganize: false }); else late.view.setPage('management');
+    late.confirm(true); await pending; assert.equal(late.writes(), 0, `${mutation}变化后旧确认不保存`); late.view.deactivate();
+  }
+});
 
 test('管理视图先显示壳并在激活时自动刷新，只在管理页提供手工刷新', async () => {
   let release;
@@ -976,6 +1081,35 @@ test('召回区分无可靠命中与来源更新/不可用的安全跳过', () =
   }
 });
 
+test('复制回执仅诊断，独立fallback不切抽屉或重绘草稿，失败阶段不冒称注入', async () => {
+  const foundation = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, memorySyncStatus: 'idle', floors: [] };
+  const runtime = { getState: () => foundation, refreshStatus: async () => foundation, confirmLatest: async () => foundation };
+  const record = { status: 'error', userMessageIndex: 4, createdAt: '2026-09-15T00:00:00Z', generationType: 'normal', receiptPersistence: 'none', selectedFloors: [{ floorId: 'secret-floor' }], selectedStates: [{ text: '人物状态秘密原文', subject: '隐私姓名', layer: 'core' }], selectedCseChanges: [], injectionText: '注入正文SECRET_AUTH_COOKIE', skipReasons: ['error'],
+    coverage: { rememberedAiFloors: 8, stableAiFloors: 8, cseThroughAssistantSeq: 8 }, stages: { input: 2, candidates: 8, recentSummaryCount: 3, distantHistoryItemCount: 2, stateCount: 1, currentStateCount: 1, cseChangeCount: 0, finalInjectionItemCount: 6, budgetDroppedCount: 0 },
+    diagnosticAttempt: 1, diagnosticPhase: 'commit', selectionStatus: 'completed', timings: { totalMs: 64000, selectorMs: 28000, sourceMs: 1300, sourceReadAttempts: { reachableReads: 0, exitPoint: 'validatedSnapshot' } },
+    selectorDiagnostic: { mode: 'llm', historyCandidateCount: 8, stateCandidateCount: 1, historyRetainedCount: 2, stateRetainedCount: 1 }, error: { code: 'V3_RECALL_MEMORY_PREPARATION_TIMEOUT', message: '不能复制的原始响应SECRET_ERROR' },
+    attemptDiagnostics: [{ attempt: 1, phase: 'commit', selectionStatus: 'completed', timings: { totalMs: 33000 }, error: { code: 'TEST_FIRST_COMMIT' } }, { attempt: 2, phase: 'source', selectionStatus: 'notStarted', timings: { totalMs: 5000 }, error: { code: 'V3_RECALL_MEMORY_PREPARATION_TIMEOUT' } }] };
+  for (const mode of ['success', 'denied', 'missing']) {
+    const copied = [], navigatorRef = mode === 'missing' ? {} : { clipboard: { writeText: async value => { copied.push(value); if (mode === 'denied') throw new Error('denied'); } } };
+    const recallRuntime = { getState: () => ({ recallStatus: 'error', lastRecall: record }), getPrequel: () => ({ text: '前情私密正文' }), savePrequel: async () => ({}) };
+    const container = new Node('main'), view = createV3FoundationView({ runtime, recallRuntime, documentRef, navigatorRef }); view.mount(container);
+    const button = flatten(container).find(node => node.textContent === '复制回执'), drawer = button.parentNode.parentNode;
+    drawer.open = true; drawer.fire('toggle'); container.scrollTop = 52;
+    const draft = flatten(container).find(node => node.className.includes('qqj-prequel-editor')); draft.value = '草稿内容PRIVATE'; draft.fire('input');
+    for (const node of flatten(drawer).filter(node => node.children.length)) Object.defineProperty(node, 'textContent', { configurable: true, get: () => node.children.map(child => child.textContent).join('') });
+    const replacements = container.replaceCount; await button.click();
+    assert.equal(drawer.open, true); assert.equal(container.replaceCount, replacements); assert.equal(container.scrollTop, 52); assert.equal(flatten(container).find(node => node.className.includes('qqj-prequel-editor')), draft); assert.equal(draft.value, '草稿内容PRIVATE');
+    const fallback = flatten(drawer).find(node => node.attributes['aria-label'] === '召回回执诊断复制文本');
+    const text = mode === 'success' ? copied[0] : fallback.value;
+    assert.match(text, /记忆 8\/8.*第 1 次尝试的候选选材结果/su); assert.match(text, /第 2 次尝试.*来源读取.*未执行选材/su); assert.match(text, /实际注入：无/u); assert.match(text, /V3_RECALL_MEMORY_PREPARATION_TIMEOUT/u);
+    assert.equal(text.match(/触发用户楼/gu).length, 1, '真实DOM聚合textContent不能重复拼字段');
+    assert.doesNotMatch(text, /注入正文|秘密原文|隐私姓名|SECRET_|前情私密|PRIVATE|收据复用或未执行|最终注入 1/u);
+    if (mode === 'success') assert.equal(fallback, undefined); else { assert.equal(fallback.readOnly, true); assert.ok(flatten(drawer).includes(fallback)); }
+    view.deactivate();
+  }
+  const container = new Node('main'); createV3FoundationView({ runtime, documentRef }).mount(container); assert.equal(flatten(container).some(node => node.textContent === '复制回执'), false);
+});
+
 test('召回归属旧字段缺失自然降级，候选回复使用中文标签且不拒绝正文', () => {
   const foundation = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 2, rememberedCount: 2, unprocessedCount: 0, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'head', activeRun: null, activeExtraction: null, activeCse: null, lastRun: null, lastError: null, lastExtractorError: null, lastCseError: null, unreachableCount: 0, metrics: {}, floors: [] };
   const runtime = { getState: () => foundation, refreshStatus: async () => foundation, confirmLatest: async () => foundation };
@@ -1835,4 +1969,12 @@ test('历史流水界面同时显示摘要与CSE实际进度，时间任务不�
   state = { ...state, activeExtraction: null, activeCse: null, memoryWorkBusy: false, activeAutoMemory: null, lastCseError: null, lastExtractorError: { message: '本楼摘要失败', floorId: 'failed' } };
   assert.match(copy(), /本楼摘要失败/);
   assert.doesNotMatch(copy(), /正在推算时间状态/);
+});
+
+test('时间补查真实view先计划后确认，取消零整理；摘要CSE忙不阻断，二次收起和通知仍收起',async()=>{
+  const state={status:'ready',pluginEnabled:true,chatId:CHAT,foundationStatus:'ready',memorySnapshotStatus:'ready',memorySyncStatus:'idle',memoryWorkBusy:true,activeCse:{phase:'analyzing'},floors:[]};let plans=0,runs=0,confirmed=false,shown;const listeners=new Set();
+  const runtime={getState:()=>state,refreshStatus:async()=>state,confirmLatest:async()=>state,subscribe:()=>()=>{}};const timeState={status:'completed',active:false,canOrganize:true,trackedItems:[],stoppedItems:[],coverage:{checkedFloors:1,totalFloors:5,startAssistantSeq:5,earlierUnchecked:4,pendingFloors:1},last:{status:'empty'}};
+  const timeRuntime={getState:()=>structuredClone(timeState),subscribe:listener=>{listeners.add(listener);return()=>listeners.delete(listener);},refreshStatus:async()=>{},prepareHistoryPlan:async()=>{plans++;return {floorCount:4,batchCount:2,apiCalls:2};},organize:async plan=>{runs++;assert.equal(plan.apiCalls,2);}};
+  const container=new Node('main'),view=createV3FoundationView({runtime,timeRuntime,documentRef,confirmImpl:options=>{shown=options;return confirmed;}});view.setPage('memories');view.mount(container);const toggle=flatten(container).find(node=>node.className.includes('qqj-profile-more'));await toggle.click();const body=flatten(container).find(node=>node.id==='qqj-recent-items'),button=flatten(body).find(node=>node.textContent==='补查历史');assert.equal(button.disabled,false);
+  assert.match(flatten(body).map(node=>node.textContent).join('|'),/此前 4 楼正文未检查.*1 楼等待稳定绑定/u);await button.click();assert.equal(plans,1);assert.equal(runs,0);assert.match(shown.body,/4 个 AI 楼.*2 批、2 次摘要 API/);confirmed=true;await button.click();assert.equal(runs,1);await toggle.click();assert.equal(body.hidden,true);for(const listener of listeners)listener(timeState);assert.equal(body.hidden,true);view.deactivate();
 });

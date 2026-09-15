@@ -133,7 +133,8 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   assert.equal(calls.length, callsBeforeHelp, '打开静态教程不得读取或激活记忆runtime');
   assert.equal(helpDialog.title, '千千结使用说明'); assert.equal(helpDialog.confirmText, '关闭'); assert.equal(helpDialog.cancelText, '');
   const helpSections = flatten(helpDialog.content).filter(node => node.tag === 'details');
-  assert.equal(helpSections.length, 8); assert.equal(helpSections[0].open, true); assert.ok(helpSections.slice(1).every(node => node.open === false));
+  assert.equal(helpSections.length, 9); assert.equal(helpSections[0].open, true); assert.ok(helpSections.slice(1).every(node => node.open === false));
+  assert.equal(helpSections.at(-1).children[0].textContent, '排障手册');
   assert.match(flatten(helpDialog.content).map(node => node.textContent).join('|'), /保留包裹符.*清洗包裹符.*人物状态重构/);
   dialogActive = false;
   const copyExample = flatten(documentation).find(node => node.tag === 'button' && node.textContent === '复制接口示例');

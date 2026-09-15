@@ -300,6 +300,7 @@ export function createChatMemoryManagement({
       const prepared = await session.prepare();
       sameOwner();
       if (prepared?.status !== 'ready') throw errorWith('QQJ_REBUILD_IDENTITY_NOT_READY', '新聊天身份未完成准备，完全重构没有开始生成。');
+      await timeRuntime?.authorizeHistory?.();
       return memoryRuntime.startHistoricalRebuild();
     })().finally(() => { if (rebuilding === operation) rebuilding = null; notify(); });
     return operation.promise;

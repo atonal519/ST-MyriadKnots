@@ -78,10 +78,11 @@ function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, s
   const memoryRuntime = { async startHistoricalRebuild() { const chatId = context.chatMetadata.qianqianjie.chatId; calls.push(['history', chatId]); records.set(`chat-${chatId}/v3-root`, { recordId: 'v3-root', revision: 1, data: { chatId } }); return { status: 'ready', chatId }; }, getState: () => ({ ...state, chatId: CHAT_ID }), invalidate(options) { memoryInvalidations.push(options); invalidated.push('memory'); } };
   const recallRuntime = { getState: () => ({}), invalidate() { invalidated.push('recall'); }, clearCurrent() { invalidated.push('recall-clear'); } };
   const peopleRuntime = { getState: () => ({}), invalidate() { invalidated.push('people'); } };
+  const timeRuntime = { async stop() { calls.push(['stopTime']); }, async authorizeHistory() { calls.push(['timeHistory', context.chatMetadata.qianqianjie.chatId]); } };
   const hostAdapter = { snapshot: () => ({ chatId: context.chatId, chat: context.chat, context }) };
   const autoHideController = { async stop() { calls.push(['stopAutoHide']); } };
   const fetchImpl = async (url, options) => { calls.push(['hostRead', url, JSON.parse(options.body)]); return { ok: true, json: async () => [{ chat_metadata: structuredClone(persistedMetadata) }, ...cloneMessages(persistedMessages)] }; };
-  const manager = createChatMemoryManagement({ client, session, hostAdapter, foundationRuntime: runtime('foundation'), memoryRuntime, recallRuntime, peopleRuntime, autoHideController, isMainGenerationActive: () => false, fetchImpl, logger: { warn() {} } });
+  const manager = createChatMemoryManagement({ client, session, hostAdapter, foundationRuntime: runtime('foundation'), memoryRuntime, recallRuntime, peopleRuntime, timeRuntime, autoHideController, isMainGenerationActive: () => false, fetchImpl, logger: { warn() {} } });
   return { manager, records, calls, invalidated, memoryInvalidations, context, user, hidden, malformedHidden, manualHidden, receipt, floorMarker, identity, releaseHeld };
 }
 
@@ -130,6 +131,9 @@ test('完全重构删除整collection与前情后新建身份，普通删除仍�
   for (const id of ['v3-time-head', 'v3-time-batch-old', 'v3-baseline-old', 'unknown-unreachable']) f.records.set(`chat-${CHAT_ID}/${id}`, { recordId: id, revision: 1, data: { old: true } });
   const texts = f.context.chat.map(message => message.mes);
   const result = await f.manager.fullRebuild(CHAT_ID);
+  const timeIndex = f.calls.findIndex(call => call[0] === 'timeHistory'), summaryIndex = f.calls.findIndex(call => call[0] === 'history');
+  assert.ok(timeIndex >= 0 && timeIndex < summaryIndex, '新UUID先授时间历史，再启动摘要，无CSE齐全门槛');
+  assert.equal(f.calls[timeIndex][1], f.calls[summaryIndex][1]);
   assert.notEqual(result.chatId, CHAT_ID);
   assert.equal([...f.records.keys()].some(key => key.startsWith(`chat-${CHAT_ID}/`)), false);
   assert.equal(f.records.has(`chat-identity-bindings/binding-${CHAT_ID}`), false);

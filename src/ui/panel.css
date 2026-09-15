@@ -116,3 +116,5 @@ button:focus-visible,summary:focus-visible{outline:2px solid var(--knot);outline
 
 #qqj-settings-time{justify-content:space-between}
 #qqj-recent-items[hidden]{display:none}
+.qqj-recent-item-head{display:flex;align-items:center;gap:8px}.qqj-recent-item-head>span{flex:1;min-width:0;overflow-wrap:anywhere}.qqj-recent-item-head>.qqj-profile-menu{flex:0 0 auto}
+.qqj-section-summary>.qqj-recall-copy{flex:0 0 auto;min-height:0;padding:4px 7px;font-size:10px}.qqj-recall-copy-fallback{min-height:120px;resize:vertical}

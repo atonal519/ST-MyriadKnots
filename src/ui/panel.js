@@ -302,7 +302,7 @@ export function createPanel({
       settings.update({ timeEvolutionEnabled: timeInput.checked });
       await onTimeEvolutionChange?.();
     });
-    memoryBody.append(timeToggle, element('p', 'settings-hint', '根据剧情时间推算身体状态、周期与约定期限，为正文提供时间参考。与【构画】的【刻度】功能重叠，请只开启一方的注入，避免重复注入。有新事项或时间推进时可能额外调用分析 API；事项与整理入口位于摘要页的“近期事项”。'));
+    memoryBody.append(timeToggle, element('p', 'settings-hint', '根据剧情时间推算身体状态、周期与约定期限，为正文提供时间参考。与【构画】的【刻度】功能重叠，请只开启一方的注入，避免重复注入。直接读取 AI 正文，摘要和人物状态可以为空；使用摘要 API，每批最多一次请求。默认从当前 AI 楼起追踪，此前正文未检查。“补查历史”位于摘要页的“近期事项”，先确认楼数、批次与调用量，成功批次保留，可停止后继续。'));
     const autoHideToggle = element('label', 'setting-switch');
     const autoHideInput = element('input'); autoHideInput.type = 'checkbox'; autoHideInput.checked = settings.get().autoHideEnabled === true;
     autoHideToggle.append(autoHideInput, element('span', '', '自动隐藏已记忆旧楼'));

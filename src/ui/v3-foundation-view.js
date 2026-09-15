@@ -147,7 +147,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   let peopleMode = 'current', selectedCsePersonId = null, showMoreCsePeople = false;
   let foundationState = runtime.getState(), recallState = recallRuntime?.getState?.() ?? null, peopleState = peopleRuntime?.getState?.() ?? null, managementState = memoryManagement?.getState?.() ?? null, chatId = foundationState?.chatId ?? null, healthNode = null;
   let syncingChatId = null;
-  let recentItemsOpen = false, recentItemsUi = null;
+  let recentItemsOpen = false, recentItemsUi = null, showStoppedItems = false, recentItemDraft = null;
   let relationSwitcherNode = null, relationSwitcherSignature = null, relationSwitcherChatId = chatId, relationSwitcherScrollLeft = 0;
   const drafts = new Map();
   const cseDrafts = new Map();
@@ -177,6 +177,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   };
   const resetForChat = nextChatId => {
     if (nextChatId === chatId) return false;
+    showStoppedItems = false; recentItemDraft = null;
     if (chatId !== null) { prequelDraft = null; prequelFeedback = ''; }
     chatId = nextChatId; drafts.clear(); cseDrafts.clear(); openState.clear(); recentItemsOpen = false; recentItemsUi = null; peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; feedback = '';
     return true;
@@ -268,12 +269,12 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     block.append(healthNode); return block;
   };
 
-  async function copy(value) {
+  async function copy(value, { local = false } = {}) {
     if (navigatorRef?.clipboard?.writeText) {
-      try { await navigatorRef.clipboard.writeText(value); fallbackText = ''; return '已复制。'; }
+      try { await navigatorRef.clipboard.writeText(value); if (!local) fallbackText = ''; return '已复制。'; }
       catch { /* 浏览器或壳层拒绝剪贴板权限时改用只读文本框。 */ }
     }
-    fallbackText = value; return '浏览器不允许直接复制，请在下方文本框长按全选复制。';
+    if (!local) fallbackText = value; return '浏览器不允许直接复制，请在下方文本框长按全选复制。';
   }
   const readDiagnosticState = provider => { try { return provider?.() ?? null; } catch { return null; } };
   const stateDiagnostic = () => {
@@ -522,57 +523,150 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   }
   function updateRecentItems() {
     if (!active || page !== 'memories' || !recentItemsUi) return;
-    const { toggle, body, status, organize, retryRead, reason, list } = recentItemsUi;
+    const { toggle, body, status, organize, retryRead, reason, list, stoppedToggle, stop } = recentItemsUi;
     const state = timeRuntime?.getState?.(), result = state?.last, tracked = state?.trackedItems;
     toggle.textContent = `近期事项${Array.isArray(tracked) ? `（${tracked.length}）` : ''}`;
     toggle.className = `secondary-action qqj-profile-more${recentItemsOpen ? ' active' : ''}`;
     toggle.disabled = false;
     toggle.setAttribute('aria-expanded', String(recentItemsOpen)); body.hidden = !recentItemsOpen;
     if (!recentItemsOpen) return;
-    const label = state?.status === 'disabled' ? '已关闭' : state?.active ? '处理中' : state?.status === 'waiting' ? '等待记忆同步' : result?.status === 'completed' ? '已处理' : result?.status === 'empty' ? '已检查无适合事项' : result?.status === 'failed' ? '失败' : result?.status === 'interrupted' ? '上次未完成' : '待初始化';
-    status.textContent = `${label}${Array.isArray(tracked) ? ` · 追踪中事项 ${tracked.length} 条` : ''}${Number.isInteger(result?.cutoffAssistantSeq) && result.cutoffAssistantSeq > 0 ? ` · 已检查至 AI 第 ${result.cutoffAssistantSeq} 楼` : ''}${result?.message ? `。${result.message}` : ''}`;
+    const label = state?.status === 'disabled' ? '已关闭' : state?.active ? state.phase === 'saving' ? '保存中' : '处理中' : state?.status === 'waiting' ? '等待记忆同步' : result?.status === 'completed' ? '已处理' : result?.status === 'empty' ? '已检查无适合事项' : result?.status === 'failed' ? '失败' : result?.status === 'interrupted' ? '上次未完成' : '待初始化';
+    status.textContent = `${label}${Array.isArray(tracked) ? ` · 追踪中事项 ${tracked.length} 条` : ''}${state?.coverage ? ` · 正文完整已检查 ${state.coverage.checkedFloors}/${state.coverage.totalFloors} 楼` : ''}${state?.progress ? ` · 本次批次 ${state.progress.completed}/${state.progress.total}` : ''}${result?.message ? `。${result.message}` : ''}`;
     status.className = result?.status === 'failed' ? 'settings-result error' : 'settings-result';
-    organize.textContent = ['failed', 'interrupted'].includes(result?.status) ? '重试整理时间事项' : '整理时间事项';
-    organize.disabled = state?.canOrganize !== true || workBusy(syncingDisplayState(foundationState)) || result?.reason === 'read';
+    organize.textContent = ['failed', 'interrupted'].includes(result?.status) ? '继续补查历史' : '补查历史';
+    organize.disabled = state?.canOrganize !== true || result?.reason === 'read' || Boolean(recentItemsUi.pendingAction);
+    if (stop) { stop.hidden = !state?.active || state.phase === 'saving'; stop.disabled = !state?.active; }
     retryRead.hidden = result?.reason !== 'read'; retryRead.disabled = state?.active === true || state?.status === 'disabled' || state?.status === 'waiting';
-    reason.textContent = state?.disabledReason || '整理只处理时间事项，不重做摘要或人物状态。每次点击最多一次分析请求；没有需处理材料时可能不请求。';
-    const message = !Array.isArray(tracked) ? state?.status === 'disabled' ? '时间推演已关闭；已有记录保留。' : result?.reason === 'read' ? '时间清单读取失败，请点击“重试读取”。' : '等待当前聊天记忆同步与时间记录读取。' : '当前没有追踪中的时间事项。';
-    const displayItems = (Array.isArray(tracked) ? tracked : []).map(item => {
+    const stopped = state?.stoppedItems;
+    stoppedToggle.textContent = showStoppedItems ? '返回追踪中事项' : `查看停止项${Array.isArray(stopped) ? `（${stopped.length}）` : ''}`;
+    stoppedToggle.setAttribute('aria-pressed', String(showStoppedItems));
+    stoppedToggle.disabled = recentItemDraft !== null || Boolean(recentItemsUi.pendingAction);
+    reason.textContent = state?.disabledReason || recentItemsUi.planFeedback || `${state?.coverage?.startAssistantSeq ? `从 AI 第 ${state.coverage.startAssistantSeq} 楼开始追踪；${state.coverage.earlierUnchecked > 0 ? `此前 ${state.coverage.earlierUnchecked} 楼正文未检查` : '此前正文已检查'}。` : '等待当前 AI 楼成为追踪起点。'}${state?.coverage?.pendingFloors ? `另有 ${state.coverage.pendingFloors} 楼等待稳定绑定，正文未检查。` : ''}直接读取正文，摘要和人物状态可为空。补查历史会先确认楼数、批次与摘要 API 调用量；成功批次保留，可停止后继续。`;
+    if (recentItemDraft) {
+      for (const control of recentItemDraft.controls) control.disabled = recentItemDraft.saving || state?.canOrganize !== true;
+      recentItemDraft.cancel.disabled = recentItemDraft.saving;
+      recentItemDraft.feedback.textContent = recentItemDraft.error;
+      organize.disabled = true;
+      return;
+    }
+    const visibleItems = showStoppedItems ? stopped : tracked;
+    const message = !Array.isArray(visibleItems) ? state?.status === 'disabled' ? '时间推演已关闭；已有记录保留。' : result?.reason === 'read' ? '时间清单读取失败，请点击“重试读取”。' : '等待当前聊天记忆同步与时间记录读取。' : showStoppedItems ? '当前没有停止的时间事项。' : '当前没有追踪中的时间事项。';
+    const displayItems = (Array.isArray(visibleItems) ? visibleItems : []).map(item => {
+      const stopped = item.status && item.status !== 'active';
+      const stoppedLabel = { completed: '已完成', paused: '已暂停', cancelled: '已移除' }[item.status];
       const formatTime = value => value?.date ? `${value.date}${value.clock ? ` ${value.clock}` : ''}` : value?.raw || '时间未知';
       const elapsed = item.elapsedHours !== null && item.elapsedHours >= 0 ? `发生后已过 ${Math.round(item.elapsedHours * 10) / 10} 小时`
         : item.elapsedDays !== null && item.elapsedDays >= 0 ? `发生后已过 ${item.elapsedDays} 天`
           : item.observationElapsedHours !== null && item.observationElapsedHours >= 0 ? `观察后已过 ${Math.round(item.observationElapsedHours * 10) / 10} 小时`
             : item.observationElapsedDays !== null && item.observationElapsedDays >= 0 ? `观察后已过 ${item.observationElapsedDays} 天` : '经过时间未知';
-      return [`${item.person} · ${item.label}`, `原观察：${item.observation}`,
+      return [`${item.person} · ${item.label}${item.status && item.status !== 'active' ? ` · ${{ completed: '已完成', paused: '已暂停', cancelled: '已移除' }[item.status]}` : ''}`, `原观察：${item.observation}`,
         `观察时间：${formatTime(item.observationTime)}${item.occurrenceTime?.date ? `；发生时间：${formatTime(item.occurrenceTime)}` : ''}；${elapsed}`,
-        item.projection ? `当前推测：${item.projection}` : '尚无当前有效推测，等待推算或新观察。',
-        ...(['cycle', 'deadline'].includes(item.type) ? [`${item.type === 'cycle' ? '预计周期日' : '约定期限'}：${formatTime(item.dueTime)}${item.periodDays ? `；明确周期 ${item.periodDays} 天` : ''}；尚未确认发生或完成。`] : [])];
+        stopped ? `${stoppedLabel}，已停止追踪；需要时可恢复。` : item.projection ? `当前推测：${item.projection}` : '尚无当前有效推测，等待推算或新观察。',
+        ...(['cycle', 'deadline'].includes(item.type) ? [`${item.type === 'cycle' ? '预计周期日' : '约定期限'}：${formatTime(item.dueTime)}${item.periodDays ? `；明确周期 ${item.periodDays} 天` : ''}${stopped ? '' : '；尚未确认发生或完成。'}`] : [])];
     });
-    const signature = JSON.stringify(displayItems.length ? displayItems : message);
-    if (recentItemsUi.listSignature === signature) return;
+    const signature = JSON.stringify([displayItems.length ? displayItems : message, (visibleItems ?? []).map(item => [item.id, item.observationKey])]);
+    if (recentItemsUi.listSignature === signature) { for (const control of recentItemsUi.itemControls) control.disabled = state?.canOrganize !== true || Boolean(recentItemsUi.pendingAction); return; }
     recentItemsUi.listSignature = signature;
     list.replaceChildren();
+    recentItemsUi.itemControls = [];
     if (!displayItems.length) list.append(element('p', 'settings-hint', message));
-    else for (const [title, ...lines] of displayItems) {
+    else for (const [index, [title, ...lines]] of displayItems.entries()) {
       const entry = element('div', 'settings-field');
-      entry.append(element('span', '', title), ...lines.map(line => element('p', 'settings-hint', line))); list.append(entry);
+      const head = element('div', 'qqj-recent-item-head'); head.append(element('span', '', title));
+      entry.append(head, ...lines.map(line => element('p', 'settings-hint', line))); list.append(entry);
+      const item = visibleItems[index], actions = operationMenus.register(element('details', 'qqj-profile-menu'));
+      const menuToggle = element('summary', 'qqj-profile-menu-toggle', '⋮'); menuToggle.setAttribute('aria-label', `${item.label}事项操作`); menuToggle.setAttribute('title', '事项操作'); menuToggle.setAttribute('aria-haspopup', 'menu');
+      const menuBody = element('div', 'qqj-profile-menu-pop'); menuBody.setAttribute('role', 'menu');
+      const actionFeedback = element('p', 'settings-result error');
+      const addAction = (label, callback) => { const button = element('button', `qqj-profile-menu-action${label === '移除' ? ' danger' : ''}`, label); button.type = 'button'; button.setAttribute('role', 'menuitem'); button.disabled = state?.canOrganize !== true || Boolean(recentItemsUi.pendingAction); button.addEventListener('click', () => { if (button.disabled) return; actions.open = false; return callback(); }); menuBody.append(button); recentItemsUi.itemControls.push(button); };
+      if (typeof timeRuntime?.editItem === 'function') {
+        addAction('编辑事项', () => startRecentEdit(item, entry));
+        if (item.status === 'active') for (const [label, value] of [['完成', 'completed'], ['暂停', 'paused'], ['移除', 'cancelled']]) addAction(label, () => changeRecentStatus(item, value, actionFeedback));
+        else addAction('恢复追踪', () => changeRecentStatus(item, 'active', actionFeedback));
+        actions.append(menuToggle, menuBody); head.append(actions); entry.append(actionFeedback);
+      }
     }
   }
+  async function changeRecentStatus(item, status, actionFeedback) {
+    const ui = recentItemsUi, originalChatId = chatId, mine = epoch;
+    const action = { completed: '完成', paused: '暂停', cancelled: '移除', active: '恢复追踪' }[status];
+    const currentUi = () => active && page === 'memories' && recentItemsUi === ui && chatId === originalChatId && epoch === mine && runtime.getState()?.chatId === originalChatId;
+    const canSave = () => { const state = timeRuntime.getState(); return currentUi() && !recentItemDraft && state.canOrganize === true && [...(state.trackedItems ?? []), ...(state.stoppedItems ?? [])].some(value => value.id === item.id && value.observationKey === item.observationKey); };
+    if (ui.pendingAction || !canSave()) return;
+    const pending = {}; ui.pendingAction = pending; actionFeedback.textContent = ''; updateRecentItems();
+    try {
+      const confirmed = await Promise.resolve(confirmImpl({ title: `${action}时间事项`, body: `确认${action}“${item.label}”？${status === 'active' ? '恢复后可继续追踪。' : '停止项仍可查看和恢复。'}保存不调用模型，会清除旧推测。`, confirmText: action, cancelText: '取消' }));
+      if (!confirmed || !canSave()) return;
+      await timeRuntime.editItem(item.id, { status }, item.observationKey);
+    } catch (error) { if (currentUi()) actionFeedback.textContent = `保存失败：${publicErrorMessage(error, { fallback: '事项未保存，请重试。' })}`; }
+    finally { if (ui.pendingAction === pending) ui.pendingAction = null; updateRecentItems(); }
+  }
+  function startRecentEdit(item, entry) {
+    const timeValue = value => value?.raw || (value?.date ? `${value.date}${value.clock ? ` ${value.clock}` : ''}` : '');
+    const draft = { item, chatId, foundationState, ui: recentItemsUi, fields: { label: item.label, observation: item.observation, observationTime: timeValue(item.observationTime), occurrenceTime: timeValue(item.occurrenceTime), dueTime: timeValue(item.dueTime), periodDays: item.periodDays ?? '' }, controls: [], saving: false, error: '' };
+    const initialFields = { ...draft.fields };
+    recentItemDraft = draft;
+    const editor = element('div', 'qqj-profile-form');
+    {
+      const field = (name, label, multiline = false) => { const row = element('label', 'settings-field'), input = element(multiline ? 'textarea' : 'input', 'settings-input'); input.value = draft.fields[name]; input.addEventListener('input', () => { draft.fields[name] = input.value; }); input.setAttribute('aria-label', label); row.append(element('span', '', label), input); editor.append(row); draft.controls.push(input); };
+      field('label', '事项名称'); field('observation', '观察描述', true); field('observationTime', '观察时间'); field('occurrenceTime', '发生时间（可空，优先用于计算经过时间）');
+      if (['cycle', 'deadline'].includes(item.type)) field('dueTime', item.type === 'cycle' ? '预计周期日' : '约定期限');
+      if (item.type === 'cycle') { field('periodDays', '周期天数（可空）'); editor.append(element('p', 'settings-hint', '已知发生时间与周期天数时，预计周期日由程序计算。模糊时间保留原词，不补现实年份。')); }
+    }
+    editor.append(element('p', 'settings-hint', '人工保存不调用模型，会清除旧推测。后续真实正文仍可更新事项，没有永久锁。'));
+    const actions = element('div', 'v3-foundation-actions'), save = element('button', 'secondary-action', '保存事项'), cancel = element('button', 'secondary-action', '取消事项编辑');
+    save.type = 'button'; cancel.type = 'button'; draft.controls.push(save); draft.cancel = cancel; draft.feedback = element('p', 'settings-result error');
+    actions.append(save, cancel); editor.append(actions, draft.feedback); entry.append(editor);
+    const finish = () => { recentItemDraft = null; draft.ui.listSignature = null; if (active && container && page === 'memories' && draft.foundationState !== foundationState) render(foundationState); else updateRecentItems(); };
+    cancel.addEventListener('click', () => { if (!draft.saving) finish(); });
+    save.addEventListener('click', async () => {
+      if (save.disabled || draft.saving) return;
+      const fields = Object.fromEntries(Object.entries(draft.fields).filter(([name, value]) => value !== initialFields[name]));
+      if (!Object.keys(fields).length) { finish(); return; }
+      draft.saving = true; draft.error = ''; updateRecentItems();
+      try {
+        await timeRuntime.editItem(item.id, fields, item.observationKey);
+        if (recentItemDraft !== draft || chatId !== draft.chatId) return;
+        finish();
+      } catch (error) { if (recentItemDraft === draft && chatId === draft.chatId) { draft.saving = false; draft.error = `保存失败：${publicErrorMessage(error, { fallback: '事项未保存，请重试。' })}`; } }
+      updateRecentItems();
+    });
+    for (const control of recentItemsUi.itemControls) control.disabled = true;
+    updateRecentItems();
+  }
   function renderRecentItems() {
+    if (recentItemDraft) { recentItemsUi = recentItemDraft.ui; updateRecentItems(); return recentItemsUi.section; }
     const section = element('section', 'qqj-profile-toolbar');
     const actions = element('div', 'qqj-profile-toolbar-actions');
     const toggle = element('button', 'secondary-action qqj-profile-more', '近期事项'); toggle.type = 'button';
     const body = element('div', 'settings-block'); body.id = 'qqj-recent-items'; toggle.setAttribute('aria-controls', body.id);
     const row = element('div', 'qqj-profile-switch-row'), copy = element('div');
     const status = element('p', 'settings-result'); status.setAttribute('role', 'status');
-    const organize = element('button', 'secondary-action', '整理时间事项'); organize.type = 'button';
+    const organize = element('button', 'secondary-action', '补查历史'); organize.type = 'button';
     const retryRead = element('button', 'secondary-action', '重试读取'); retryRead.type = 'button';
-    const buttons = element('div', 'qqj-profile-toolbar-actions'); buttons.append(retryRead, organize);
+    const stop = element('button', 'secondary-action', '停止补查'); stop.type = 'button'; stop.hidden = true;
+    stop.addEventListener('click', () => timeRuntime?.stop?.());
+    const buttons = element('div', 'qqj-profile-toolbar-actions'); buttons.append(retryRead, stop, organize);
     const reason = element('p', 'settings-hint'), list = element('div', 'v3-foundation');
-    copy.append(status, reason); row.append(copy, buttons); body.append(row, list); actions.append(toggle); section.append(actions, body);
-    recentItemsUi = { toggle, body, status, organize, retryRead, reason, list, listSignature: null };
+    const stoppedToggle = element('button', 'secondary-action', '查看停止项'); stoppedToggle.type = 'button';
+    stoppedToggle.addEventListener('click', () => { if (stoppedToggle.disabled) return; showStoppedItems = !showStoppedItems; updateRecentItems(); });
+    copy.append(status, reason); row.append(copy, buttons); body.append(row, stoppedToggle, list); actions.append(toggle); section.append(actions, body);
+    recentItemsUi = { section, toggle, body, status, organize, retryRead, reason, list, stoppedToggle, stop, itemControls: [], listSignature: null };
     toggle.addEventListener('click', () => { recentItemsOpen = !recentItemsOpen; updateRecentItems(); if (recentItemsOpen) void timeRuntime?.refreshStatus?.(); });
-    organize.addEventListener('click', async () => { if (organize.disabled) return; await timeRuntime?.organize?.(); updateRecentItems(); });
+    organize.addEventListener('click', async () => {
+      if (organize.disabled) return;
+      const ui = recentItemsUi, mine = epoch, originalChatId = chatId;
+      const pending = {}; ui.pendingAction = pending; ui.planFeedback = ''; updateRecentItems();
+      try {
+        const plan = await timeRuntime?.prepareHistoryPlan?.();
+        if (!plan || !active || recentItemsUi !== ui || epoch !== mine || chatId !== originalChatId) return;
+        if (!plan.apiCalls) { ui.planFeedback = '当前正文已检查，暂无需要补算的事项。'; return; }
+        const confirmed = await Promise.resolve(confirmImpl({ title: plan.supplement ? '补算时间事项' : '补查历史正文',
+          body: `本次待查 ${plan.floorCount} 个 AI 楼，预计 ${plan.batchCount} 批、${plan.apiCalls} 次摘要 API 调用。${plan.supplement ? '正文已检查，本次只重新推算已登记事项。' : '每批最多20楼并受完整输入预算限制；长楼会分片。成功批次保留，失败或停止后可继续。'}`, confirmText: '开始补查', cancelText: '取消' }));
+        if (confirmed && active && recentItemsUi === ui && epoch === mine && chatId === originalChatId) await timeRuntime.organize(plan);
+      } catch (error) { if (recentItemsUi === ui) ui.planFeedback = publicErrorMessage(error, { fallback: '历史计划读取失败，请重试。' }); }
+      finally { if (ui.pendingAction === pending) ui.pendingAction = null; updateRecentItems(); }
+    });
     retryRead.addEventListener('click', async () => { if (retryRead.disabled) return; await timeRuntime?.refreshStatus?.({ force: true }); updateRecentItems(); });
     updateRecentItems();
     if (recentItemsOpen) void timeRuntime?.refreshStatus?.();
@@ -923,33 +1017,56 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const body = element('div', 'qqj-management-drawer-body'); if (receiptFeedback) body.append(element('p', 'v3-foundation-feedback error', receiptFeedback));
     if (!record) { body.append(element('p', 'settings-hint', state?.activeRecall ? `正在处理 ${state.activeRecall.generationType} · ${state.activeRecall.phase}` : '下一次正文生成后，这里会保留最近一次召回结果。')); drawer.append(body); return drawer; }
     const coverage = record.coverage, stages = record.stages, timings = record.timings, sourceReads = timings?.sourceReadAttempts;
+    const uncommitted = ['error', 'stale'].includes(record.status);
+    const phaseCopy = value => ({ input: '输入准备', source: '来源读取', selecting: '选材', commit: '提交前核验', receipt: '回执保存' })[value] ?? '未记录阶段';
+    const selectionCopy = value => ({ notStarted: '未执行选材', incomplete: '选材未完成', completed: '选材已完成', receiptCandidate: '回执复用候选，未提交', reused: '已复用回执' })[value] ?? (record.reusedReceipt ? '复用回执，未发起新选材' : record.restoredReceipt ? '历史回执未记录阶段' : stages ? '选材已完成' : '未执行选材');
     const sourceExitCopy = { ready: '读取成功', validatedSnapshot: '已使用完成校验的快照', memoryPreparation: '记忆准备未完成', memoryPreparationTimeout: '记忆准备超时', memoryPreparationFailed: '记忆准备失败', stale: '读取时已失效', unavailable: '来源不可用' };
     const sourceReadCopy = sourceReads ? `完整快照 ${sourceReads.reachableReads} 次 · 退出 ${sourceExitCopy[sourceReads.exitPoint] ?? '未知'}` : record.restoredReceipt ? '历史回执不重新读取来源' : '未记录';
     const floors = (record.selectedFloors ?? []).map(value => floorCopy(foundationState, value, '来源楼号未提供')).join('、') || '无', states = (record.selectedStates ?? []).map(value => `${value.subject} / ${value.layer}`).join('、') || '无';
     const changes = (record.selectedCseChanges ?? []).map(value => `${value.subject} / ${value.layer} / ${cseActionCopy(value.action)} / ${floorCopy(foundationState, value, '来源楼号未提供')}`).join('、') || '无';
     const stageCopy = stages && [stages.recentSummaryCount, stages.distantHistoryItemCount, stages.stateCount].every(Number.isSafeInteger)
       ? { main:`输入 ${stages.input} → 记忆楼 ${stages.candidates} → 近期摘要 ${stages.recentSummaryCount} → 远期旧事 ${stages.distantHistoryItemCount}${Number.isSafeInteger(stages.linkedHistoryItemCount) ? `（关联补入 ${stages.linkedHistoryItemCount}）` : ''} → 当前态 ${stages.currentStateCount ?? stages.stateCount} → 历史变化 ${stages.cseChangeCount ?? 0}${Number.isSafeInteger(stages.linkedCseChangeCount) ? `（关联补入 ${stages.linkedCseChangeCount}）` : ''}${Number.isSafeInteger(stages.stateProgressionCount) ? ` → 状态推演 ${stages.stateProgressionCount}` : ''}${[stages.timeCorrectionCount, stages.timeReminderCount].every(Number.isSafeInteger) ? ` → 时间参考 ${stages.timeCorrectionCount + stages.timeReminderCount}` : ''}${Number.isSafeInteger(stages.storylineCount) ? ` → 剧情线 ${stages.storylineCount}` : ''}${Number.isSafeInteger(stages.budgetDroppedCount) ? ` → 未选入 ${stages.budgetDroppedCount}（含预算、条数或剧情线限制） → 最终材料 ${stages.finalInjectionItemCount}` : ''}`, token:Number.isSafeInteger(stages.estimatedTokenCount) && Number.isSafeInteger(stages.estimatedTokenBudget) ? `Token 保守估算 ${stages.estimatedTokenCount}/${stages.estimatedTokenBudget}${Number.isSafeInteger(stages.ordinaryEstimatedTokenBudget) ? ` · 普通材料额度 ${stages.ordinaryEstimatedTokenBudget}` : ''}` : '' }
-      : { main:stages ? `输入 ${stages.input} → 记忆楼 ${stages.candidates} → 去近期 ${stages.dropRecent} → 去常驻重复 ${stages.dropPersistent ?? 0} → 去越界 ${stages.dropVisibility} → 选中楼 ${stages.selected}` : '收据复用或未执行', token:'' };
+      : { main:stages ? `输入 ${stages.input} → 记忆楼 ${stages.candidates} → 去近期 ${stages.dropRecent} → 去常驻重复 ${stages.dropPersistent ?? 0} → 去越界 ${stages.dropVisibility} → 选中楼 ${stages.selected}` : selectionCopy(record.selectionStatus), token:'' };
+    if (uncommitted) stageCopy.main = `${record.diagnosticAttempt ? `第 ${record.diagnosticAttempt} 次尝试的` : ''}候选选材结果（本轮未注入） · ${stageCopy.main.replace('最终材料', '候选材料')}`;
     const selector = record.selectorDiagnostic;
     const selectorCount = value => Number.isSafeInteger(value) ? String(value) : '未知';
     const hasExclusionCounts = ['historyExcludedCount', 'stateExcludedCount', 'historyRetainedCount', 'stateRetainedCount'].some(key => Number.isSafeInteger(selector?.[key]));
-    const selectorCountCopy = hasExclusionCounts
+    let selectorCountCopy = hasExclusionCounts
       ? `历史候选 ${selectorCount(selector?.historyCandidateCount)} → 模型排除 ${selectorCount(selector?.historyExcludedCount)} → 保留 ${selectorCount(selector?.historyRetainedCount)} → 关联补入 ${selectorCount(stages?.linkedHistoryItemCount)} → 最终远期 ${selectorCount(stages?.distantHistoryItemCount)} · 人物候选 ${selectorCount(selector?.stateCandidateCount)} → 模型排除 ${selectorCount(selector?.stateExcludedCount)} → 保留 ${selectorCount(selector?.stateRetainedCount)} → 关联补入 ${selectorCount(stages?.linkedCseChangeCount)} → 最终注入 ${Number.isSafeInteger(stages?.currentStateCount) && Number.isSafeInteger(stages?.cseChangeCount) ? stages.currentStateCount + stages.cseChangeCount : '未知'}`
       : `历史候选 ${selectorCount(selector?.historyCandidateCount)} → 模型选择 ${selectorCount(selector?.historyModelSelectedCount)} → 最终远期 ${selectorCount(stages?.distantHistoryItemCount)} · 人物候选 ${selectorCount(selector?.stateCandidateCount)} → 模型选择 ${selectorCount(selector?.stateModelSelectedCount)} → 最终注入 ${Number.isSafeInteger(stages?.currentStateCount) && Number.isSafeInteger(stages?.cseChangeCount) ? stages.currentStateCount + stages.cseChangeCount : '未知'}`;
+    if (uncommitted) selectorCountCopy = selectorCountCopy.replace('最终注入', '候选材料');
     const persistenceCopy = { sessionOnly: '仅当前页面可复用', saveUnconfirmed: '已请求宿主保存，结果未确认', chatRecord: '从聊天记录读取', none: '未保存' };
     const selectorBreakdown = selector?.mode === 'local' && Number.isFinite(selector?.localSelectionMs)
       ? `未发起选材接口 · 本地选材 ${Number(selector.localSelectionMs).toFixed(1)} ms`
       : Number.isFinite(selector?.utilityRoundTripMs) && Number.isFinite(selector?.localSelectionMs)
       ? `接口往返（含传输） ${Number(selector.utilityRoundTripMs).toFixed(1)} ms · 本地选材 ${Number(selector.localSelectionMs).toFixed(1)} ms`
       : '接口往返与本地选材未记录';
-    const timingCopy = record.reusedReceipt
+    let timingCopy = record.reusedReceipt
       ? `${Number.isFinite(timings?.totalMs) ? `本轮复用耗时 ${Number(timings.totalMs).toFixed(1)} ms` : '本轮复用耗时未记录'} · 未发起新选材请求 · 原回执${selectorBreakdown}`
       : record.restoredReceipt
         ? `历史原始耗时：${Number.isFinite(timings?.totalMs) ? `总等待 ${Number(timings.totalMs).toFixed(1)} ms · ` : ''}${Number.isFinite(timings?.selectorMs) ? `选材总等待 ${Number(timings.selectorMs).toFixed(1)} ms · ` : ''}${selectorBreakdown}${Number.isFinite(timings?.sourceMs) ? ` · 读取 ${Number(timings.sourceMs).toFixed(1)} ms` : ''}`
         : timings ? `${Number.isFinite(timings.totalMs) ? `本轮召回等待 ${Number(timings.totalMs).toFixed(1)} ms · ` : ''}${Number.isFinite(timings.selectorMs) ? `选材总等待 ${Number(timings.selectorMs).toFixed(1)} ms · ` : ''}${selectorBreakdown}${Number.isFinite(timings.sourceMs) ? ` · 读取 ${Number(timings.sourceMs).toFixed(1)} ms` : ''}` : '未记录';
+    if (uncommitted && record.diagnosticAttempt) timingCopy = `选材与读取耗时来自第 ${record.diagnosticAttempt} 次尝试 · ${timingCopy}`;
     const filterReasons = (record.skipReasons ?? []).filter(value => value !== 'historySelectionFallback').map(skipReasonCopy);
     const details = element('dl', 'v3-foundation-grid'); details.append(row('触发用户楼', userFloorCopy(record.userMessageIndex)), row('生成时间', localTimeCopy(record.createdAt)), row('生成类型', generationTypeCopy(record.generationType)), row('收据', record.legacyReadOnly ? '旧版只读记录' : record.restoredReceipt ? '从聊天记录读取 · 仅恢复历史展示，不会再次注入' : `${record.reusedReceipt ? '复用' : '新算'} · ${persistenceCopy[record.receiptPersistence] ?? record.receiptPersistence ?? '未知'}`), row('召回旧楼', floors), row('当前人物状态', states), row('人物状态历史变化', changes), row('覆盖范围', coverage ? `记忆 ${coverage.rememberedAiFloors}/${coverage.stableAiFloors} · ${coverage.cseThroughAssistantSeq ? `CSE 到${floorCopy(foundationState, { assistantSeq: coverage.cseThroughAssistantSeq }, '终点楼号未提供')}` : 'CSE 尚未覆盖'}` : '本轮未读取'), stageRow('筛选阶段', stageCopy), row('选材方式', selectorModeCopy(selector?.mode)), row('智能选材计数', selectorCountCopy), ...(selector?.mode === 'fallback' ? [row('选材失败原因', `${selectorFailureCopy(selector.code)}${selector.httpStatus ? `（HTTP ${selector.httpStatus}）` : ''}`)] : []), row('耗时', timingCopy), row('来源读取', sourceReadCopy), row('普通过滤说明', filterReasons.join('、') || '无'));
+    if (record.diagnosticPhase) details.append(row('所示诊断阶段', `${record.diagnosticAttempt ? `第 ${record.diagnosticAttempt} 次尝试 · ` : ''}${phaseCopy(record.diagnosticPhase)} · ${selectionCopy(record.selectionStatus)}${uncommitted ? ' · 本轮未注入' : ''}`));
+    for (const attempt of record.attemptDiagnostics ?? []) details.append(row(`第 ${attempt.attempt} 次尝试`, `${phaseCopy(attempt.phase)} · ${selectionCopy(attempt.selectionStatus)}${attempt.error?.code ? ` · 错误 ${attempt.error.code}` : ''}${Number.isFinite(attempt.timings?.totalMs) ? ` · ${Number(attempt.timings.totalMs).toFixed(1)} ms` : ''}`));
     body.append(details); const safeError = errorMessage(state?.lastRecallError) || errorMessage(record.error); if (safeError) body.append(element('p', 'v3-foundation-feedback error', safeError));
+    const errorCode = state?.lastRecallError?.code ?? record.error?.code;
+    if (errorCode) body.append(element('p', 'settings-hint', `错误代码：${errorCode}`));
+    const copyButton = element('button', 'secondary-action qqj-recall-copy', '复制回执'); copyButton.type = 'button'; copyButton.setAttribute('aria-label', '复制召回回执诊断');
+    summary.append(copyButton);
+    const copyFeedback = element('p', 'settings-result'), copyFallback = element('div'); body.append(copyFeedback, copyFallback);
+    copyButton.addEventListener('click', async event => {
+      event.preventDefault(); event.stopPropagation();
+      const excluded = new Set(['召回旧楼', '当前人物状态', '人物状态历史变化']);
+      const nodeCopy = node => node.children?.length ? Array.from(node.children).map(nodeCopy).filter(Boolean).join(' ') : node.textContent || '';
+      const value = [`召回回执：${recallStatus}`, ...Array.from(details.children).filter(node => !excluded.has(node.children[0]?.textContent)).map(node => nodeCopy(node)),
+        `实际注入：${record.restoredReceipt || record.legacyReadOnly ? '历史展示，不代表本轮' : record.injectionText && !uncommitted ? '有' : '无'}；旧楼 ${record.selectedFloors?.length ?? 0}，状态 ${record.selectedStates?.length ?? 0}，变化 ${record.selectedCseChanges?.length ?? 0}`,
+        ...(errorCode ? [`错误代码：${errorCode}`, `错误：${publicErrorMessage({ code: errorCode }, { fallback: '召回未完成，请按错误代码检查。' })}`] : [])].join('\n');
+      copyFeedback.textContent = await copy(value, { local: true }); copyFallback.replaceChildren();
+      if (copyFeedback.textContent !== '已复制。') { const input = element('textarea', 'v3-diagnostic-fallback qqj-recall-copy-fallback'); input.value = value; input.readOnly = true; input.setAttribute('aria-label', '召回回执诊断复制文本'); copyFallback.append(input); }
+    });
     if (record.legacyReadOnly) body.append(element('p', 'settings-hint', '这是旧版只读记录，不会复用、注入或升级为当前回执。'));
     if (record.injectionText) {
       body.append(element('pre', 'v3-recall-injection', record.injectionText));
@@ -1058,7 +1175,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const rebuildActionable = state.rebuildHasActionableWork ?? !['caughtUp', 'waitingRealtime'].includes(state.rebuildStatus);
     if (state.rebuildStatus === 'rebuilding' && typeof runtime.pauseHistoricalRebuild === 'function') { const pause = element('button', 'primary-action', '暂停补齐'); pause.type = 'button'; pause.disabled = !state.activeAutoMemory; pause.addEventListener('click', () => { void run('暂停补齐', () => runtime.pauseHistoricalRebuild(), { resultCopy: automaticResult('补齐缺失') }); }); actions.append(pause); }
     else if (!['paused', 'failed'].includes(state.cseRebuildStatus)) { const begin = runtime.startHistoricalRebuild ?? runtime.retryAutomation; const proceedLabel = ['paused', 'failed', 'partial'].includes(state.rebuildStatus) ? '继续补齐' : '补齐缺失'; const proceed = element('button', 'primary-action', busy ? workPhaseCopy(state) : proceedLabel); proceed.type = 'button'; proceed.disabled = busy || typeof begin !== 'function' || !rebuildActionable; proceed.addEventListener('click', () => { void run(proceedLabel, () => begin.call(runtime, state.chatId), { resultCopy: automaticResult(proceedLabel) }); }); actions.append(proceed); }
-    const reset = element('button', 'secondary-action', '完全重构'); reset.type = 'button'; reset.disabled = busy || typeof memoryManagement?.fullRebuild !== 'function'; reset.addEventListener('click', async () => { if (!await Promise.resolve(confirmImpl({ title: '完全重构当前聊天记忆', body: '当前聊天的千千结记录将全部删除，包括摘要、人物状态、千人人物资料、头像、重要人物选择、时间事项、前情及所有人工修改，再从头重新生成；聊天正文、其他插件数据和全局设置保留。', confirmText: '完全重构', cancelText: '取消' }))) { feedback = '已取消完全重构。'; render(foundationState); return; } const resetDraft = prequelDraft; void run('完全重构', () => memoryManagement.fullRebuild(state.chatId), { after: () => { if (prequelDraft === resetDraft) { prequelDraft = null; prequelFeedback = ''; } }, resultCopy: automaticResult('完全重构') }); }); actions.append(reset);
+    const reset = element('button', 'secondary-action', '完全重构'); reset.type = 'button'; reset.disabled = busy || typeof memoryManagement?.fullRebuild !== 'function'; reset.addEventListener('click', async () => { if (!await Promise.resolve(confirmImpl({ title: '完全重构当前聊天记忆', body: '当前聊天的千千结记录将全部删除，包括摘要、人物状态、千人人物资料、头像、重要人物选择、时间事项、前情及所有人工修改，再从头重新生成，并按正文分批补查时间事项（每批最多20楼且受输入预算限制，会使用摘要 API）；聊天正文、其他插件数据和全局设置保留。', confirmText: '完全重构', cancelText: '取消' }))) { feedback = '已取消完全重构。'; render(foundationState); return; } const resetDraft = prequelDraft; void run('完全重构', () => memoryManagement.fullRebuild(state.chatId), { after: () => { if (prequelDraft === resetDraft) { prequelDraft = null; prequelFeedback = ''; } }, resultCopy: automaticResult('完全重构') }); }); actions.append(reset);
     const cseRunning = state.cseRebuildStatus === 'running' && state.activeAutoMemory?.mode === 'cseRebuild';
     const cseResume = ['paused', 'failed'].includes(state.cseRebuildStatus);
     const cseAction = element('button', 'secondary-action', cseRunning ? '暂停人物状态重构' : cseResume ? '继续人物状态重构' : '人物状态重构'); cseAction.type = 'button';
@@ -1150,7 +1267,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     }
     syncingChatId = null;
     const { state, mustReplace } = adoptFoundationState(snapshot);
-    if (page === 'memories' && drafts.size && !mustReplace) {
+    if (page === 'memories' && (drafts.size || recentItemDraft) && !mustReplace) {
       for (const draft of drafts.values()) for (const control of draft.controls ?? []) control.disabled = draft.saving === true || workBusy(state);
       updateHealth(state); updateRecentItems(); if (recentItemsOpen) void timeRuntime?.refreshStatus?.(); return;
     }

@@ -11,7 +11,7 @@ import { publicErrorMessage } from '../public-error.js';
 
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
-export const RECALL_RECEIPT_SCHEMA_VERSION = 13;
+export const RECALL_RECEIPT_SCHEMA_VERSION = 14;
 export const RECALL_STRATEGY_VERSION = 'continuity-v11';
 
 const SUPPORTED_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -146,7 +146,9 @@ const legacyReceiptMaterial = receipt => [
   receipt.userMessageIndex, receipt.userContentFingerprint, receipt.queryFingerprint, receipt.generationType,
   receipt.selectedFloors, receipt.selectedStates, receipt.coverage, receipt.injectionText, receipt.stages, receipt.skipReasons, receipt.completionStatus, receipt.createdAt,
 ];
-const receiptMaterial = receipt => receipt.schemaVersion >= 13
+const receiptMaterial = receipt => receipt.schemaVersion >= 14
+  ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings, receipt.storylines, receipt.stateProgressions, receipt.timeDependencies]
+  : receipt.schemaVersion >= 13
   ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings, receipt.storylines, receipt.stateProgressions]
   : receipt.schemaVersion >= 12
   ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings, receipt.storylines]
@@ -160,6 +162,26 @@ const optionalBoundedString = (value, maximum) => value === null || boundedStrin
 const nonNegativeInteger = value => Number.isSafeInteger(value) && value >= 0;
 const optionalPositiveInteger = value => value === null || (Number.isSafeInteger(value) && value > 0);
 const finiteDuration = value => Number.isFinite(value) && value >= 0;
+function timeDependenciesValid(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  if (value.mode === 'projection') return optionalBoundedString(value.fingerprint, 200);
+  const itemValid = item => item && typeof item === 'object' && !Array.isArray(item)
+    && boundedString(item.itemId, 500) && boundedString(item.text, 20000)
+    && optionalBoundedString(item.sourceSignature, 20000);
+  return value.mode === 'selected' && Array.isArray(value.corrections) && value.corrections.length <= MAX_RECEIPT_STATES
+    && value.corrections.every(item => itemValid(item) && boundedString(item.key, 1600))
+    && Array.isArray(value.reminders)
+    && value.reminders.every(itemValid);
+}
+
+function timeDependenciesCurrent(value, projection) {
+  if (!timeDependenciesValid(value)) return false;
+  if (value.mode === 'projection') return value.fingerprint === (projection?.fingerprint ?? null);
+  const sameItem = (saved, current) => current && saved.itemId === current.itemId && saved.text === current.text
+    && saved.sourceSignature === (current.sourceSignature ?? null);
+  return value.corrections.every(item => sameItem(item, projection?.corrections?.[item.key]))
+    && value.reminders.every(item => (projection?.reminders ?? []).some(current => sameItem(item, current)));
+}
 const selectorDiagnosticSnapshot = value => {
   const api = sanitizeTaskMetadata(value);
   return Object.freeze({
@@ -200,6 +222,7 @@ const stateChangeSideValid = (value, { identifiersRequired = false } = {}) => va
   && boundedString(value.reason, 4000, { empty: true }) && ['baseline', 'floor', 'reasonableProgression', 'manual'].includes(value.origin)
   && optionalBoundedString(value.towardEntityId, 500) && optionalPositiveInteger(value.sourceAssistantSeq));
 function receiptShapeValid(receipt, { historical = false } = {}) {
+  if (receipt?.schemaVersion >= 14 && !timeDependenciesValid(receipt.timeDependencies)) return false;
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)
     || !['ready', 'empty'].includes(receipt.completionStatus)
     || !boundedString(receipt.pluginVersion, 120)
@@ -322,7 +345,8 @@ async function receiptValid(receipt, { source, userIndex, userFingerprint, query
       || snapshot.queryFingerprint !== queryFingerprint
       || snapshot.bodyMatchFingerprint !== source.bodyMatch?.fingerprint
       || snapshot.receiptFingerprint !== await fingerprint(JSON.stringify(receiptMaterial(snapshot)))
-      || !sourceRefsValid(snapshot, source)) return null;
+      || !sourceRefsValid(snapshot, source)
+      || !timeDependenciesCurrent(snapshot.timeDependencies, source.timeProjection)) return null;
     return snapshot;
   } catch {
     return null;
@@ -349,7 +373,7 @@ async function historicalSignedReceiptValid(receipt, { chatId, userIndex, userFi
   try {
     const snapshot = clone(receipt);
     if (!receiptShapeValid(snapshot, { historical: true })
-      || ![6, 7, 8, 9, 10, 11, 12, RECALL_RECEIPT_SCHEMA_VERSION].includes(snapshot.schemaVersion)
+      || ![6, 7, 8, 9, 10, 11, 12, 13, RECALL_RECEIPT_SCHEMA_VERSION].includes(snapshot.schemaVersion)
       || snapshot.chatId !== chatId
       || snapshot.userMessageIndex !== userIndex
       || snapshot.userContentFingerprint !== userFingerprint
@@ -425,7 +449,7 @@ export async function projectHistoricalRecallReceipt(message, { chatId, userMess
     || typeof fingerprint !== 'function') return null;
   const receipt = message.extra?.[RECALL_RECEIPT_KEY];
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return null;
-  if ([6, 7, 8, 9, 10, 11, 12, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
+  if ([6, 7, 8, 9, 10, 11, 12, 13, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
     const snapshot = await historicalSignedReceiptValid(receipt, {
       chatId: chatId.trim(),
       userIndex: userMessageIndex,
@@ -598,7 +622,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const code = source?.error?.code ?? (status === 'timeout' ? 'V3_RECALL_MEMORY_PREPARATION_TIMEOUT' : 'V3_RECALL_SOURCE_UNAVAILABLE');
     return Object.assign(new Error(detail || (status === 'timeout' ? '当前聊天记忆在 5 秒内未准备完成。' : '当前聊天记忆暂时无法读取。')), { code });
   };
-  async function basePreparedSource(snapshot, sanitizerSnapshot, { fresh = false, operation = null } = {}) {
+  async function basePreparedSource(snapshot, sanitizerSnapshot, { fresh = false, operation = null, rootResult = null } = {}) {
     const identityProjection = typeof identityProjectionProvider === 'function' ? await identityProjectionProvider() : null;
     if (typeof prepareMemory === 'function') {
       let timer = null;
@@ -608,7 +632,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       try {
         outcome = await Promise.race([
           Promise.resolve().then(async () => {
-            const prepared = await prepareMemory({ preferCached: !fresh });
+            const prepared = await prepareMemory({ preferCached: !fresh, rootResult });
             if (prepared?.status === 'ready' && prepared.reachable?.root) return { prepared, fallback: null };
             if (['disabled', 'stale'].includes(prepared?.status)) return { prepared, fallback: null };
             if (expired || (operation && (operation.token !== epoch || operation.controller.signal.aborted))) return { prepared, fallback: null };
@@ -811,7 +835,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     return [session, stored].filter((value, index, values) => value && typeof value === 'object' && values.indexOf(value) === index);
   }
 
-  async function commitPromptIfCurrent({ operation, source, selectedFloors, selectedStates, selectedCseChanges = [], userIndex, userFingerprint, hostGuard, injectionText }) {
+  async function commitPromptIfCurrent({ operation, source, selectedFloors, selectedStates, selectedCseChanges = [], timeDependencies, userIndex, userFingerprint, hostGuard, injectionText }) {
     if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };
     const before = hostAdapter.snapshot();
     const beforeUser = latestUser(before);
@@ -834,7 +858,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       && rootResult.data?.narrativeGeneration === source.narrativeGeneration
       && rootResult.data?.headCheckpointId === source.headCheckpointId;
     if (!sameRoot) {
-      if (canReadRoot) currentSource = await preparedSource(verifyHostCoverage ? before : null, currentSanitizerOptions(), { fresh: true, operation });
+      if (canReadRoot) currentSource = await basePreparedSource(verifyHostCoverage ? before : null, currentSanitizerOptions(), { fresh: true, operation, rootResult });
       else {
         currentSource = await sourceReader({
           store,
@@ -857,11 +881,14 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (currentSource.narrativeGeneration !== source.narrativeGeneration) return { ok: false, reason: 'narrativeChanged' };
       currentSource = Object.freeze({ ...currentSource, bodyMatch: await attachCoreBodyMatch(currentSource, operation.coreBodyWitness, before, operation.sanitizerOptions, fingerprint) });
     }
-    if (typeof timeProjectionProvider === 'function') {
-      let liveTime = null;
-      try { liveTime = await timeProjectionProvider(currentSource); }
-      catch (error) { logger?.warn?.('[qianqianjie] optional time projection check failed', { code: error?.code ?? error?.name ?? 'QQJ_TIME_READ_FAILED' }); }
-      if ((liveTime?.fingerprint ?? null) !== (source.timeProjection?.fingerprint ?? null)) return { ok: false, reason: 'selectedRefsChanged' };
+    if (!timeDependenciesValid(timeDependencies)) return { ok: false, reason: 'selectedRefsChanged' };
+    if (timeDependencies.mode === 'projection' || timeDependencies.corrections.length || timeDependencies.reminders.length) {
+      let liveTime = currentSource.timeProjection;
+      if (typeof timeProjectionProvider === 'function') {
+        try { liveTime = await timeProjectionProvider(currentSource); }
+        catch (error) { liveTime = null; logger?.warn?.('[qianqianjie] optional time projection check failed', { code: error?.code ?? error?.name ?? 'QQJ_TIME_READ_FAILED' }); }
+      }
+      if (!timeDependenciesCurrent(timeDependencies, liveTime)) return { ok: false, reason: 'selectedRefsChanged' };
     }
     if (!sourceRefsValid({ selectedFloors, selectedStates, selectedCseChanges }, currentSource)) return { ok: false, reason: 'selectedRefsChanged' };
     const selectedSourceGuards = captureSelectedSourceGuards({ selectedFloors, selectedStates, selectedCseChanges }, currentSource, before);
@@ -902,6 +929,17 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     return { ok: true, snapshot: after, user: afterUser };
   }
 
+  function runtimeDiagnostic(operation, timings, retainCompleted = false) {
+    const attempts = operation.diagnostics ?? [];
+    const latest = [...attempts].reverse();
+    const chosen = retainCompleted ? latest.find(value => ['completed', 'receiptCandidate', 'reused'].includes(value.selectionStatus)) ?? latest.find(value => value.coverage) ?? attempts.at(-1) : attempts.at(-1);
+    return { coverage: chosen?.coverage ?? null, stages: chosen?.stages ?? null, selectorDiagnostic: chosen?.selectorDiagnostic ?? null,
+      selectionStatus: chosen?.selectionStatus ?? 'notStarted', diagnosticAttempt: chosen?.attempt ?? null, diagnosticPhase: chosen?.phase ?? operation.phase,
+      attemptDiagnostics: Object.freeze(attempts.map(value => Object.freeze({ attempt: value.attempt, phase: value.phase, selectionStatus: value.selectionStatus,
+        coverage: value.coverage, stages: value.stages, selectorDiagnostic: value.selectorDiagnostic, error: value.error ?? null, timings: clone(value.timings ?? timings) }))),
+      timings: Object.freeze({ ...(chosen?.timings ?? timings), totalMs: Date.now() - operation.started }) };
+  }
+
   async function intercept(coreChat, contextSize, abort, rawType) {
     const token = ++epoch;
     active?.controller.abort('superseded');
@@ -909,7 +947,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const type = SUPPORTED_TYPES.has(rawType) ? rawType : rawType === undefined ? 'normal' : String(rawType ?? 'normal');
     const lifecycle = generationQueue.find(value => value.token === null && value.type === type);
     if (lifecycle) lifecycle.token = token;
-    const operation = { token, type, phase: 'input', controller: new AbortController(), started: Date.now() };
+    const operation = { token, type, phase: 'input', controller: new AbortController(), started: Date.now(), diagnostics: [] };
     lastRecall = null; lastPrequel = null; lastRecallBinding = null;
     active = operation; lastError = null; notify();
     const timings = {};
@@ -922,6 +960,9 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const coreInput = Array.isArray(coreChat) ? coreChat : [];
     coreChat = null;
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      for (const key of Object.keys(timings)) delete timings[key];
+      const diagnostic = { attempt: attempt + 1, phase: 'input', selectionStatus: 'notStarted', coverage: null, stages: null, selectorDiagnostic: null, started: Date.now() };
+      operation.diagnostics.push(diagnostic);
       try {
       if (lifecycle?.stopped) return finishStale(operation, timings, 'stopped');
       if (!enabled()) return finishSkipped(operation, 'disabled', timings);
@@ -946,7 +987,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       const inputStarted = Date.now();
       const [userFingerprint, baseQueryFingerprint] = await Promise.all([fingerprint(user.message.mes), fingerprint(queryContext.text)]);
       timings.inputMs = Date.now() - inputStarted;
-      operation.phase = 'source'; notify();
+      operation.phase = diagnostic.phase = 'source'; notify();
       const sourceStarted = Date.now();
       const readSource = await preparedSource(before, sanitizerSnapshot, { fresh: attempt > 0, operation });
       let source = readSource?.status === 'ready'
@@ -954,6 +995,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         : readSource;
       timings.sourceMs = Date.now() - sourceStarted;
       if (source?.sourceReadAttempts) timings.sourceReadAttempts = clone(source.sourceReadAttempts);
+      if (source?.status === 'ready') diagnostic.coverage = clone(source.coverage);
       if (source.status !== 'ready') {
         const reason = source.status === 'timeout' ? 'memoryPreparationTimeout'
           : source.sourceReadAttempts?.exitPoint === 'memoryPreparationFailed' ? 'memoryPreparationFailed'
@@ -1006,7 +1048,9 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           if (snapshot) { candidate = snapshot; break; }
         }
         if (candidate) {
-          const committed = await commitPromptIfCurrent({ operation, source, selectedFloors: candidate.selectedFloors, selectedStates: candidate.selectedStates, selectedCseChanges: candidate.selectedCseChanges, userIndex: user.index, userFingerprint, hostGuard, injectionText: candidate.injectionText });
+          diagnostic.selectionStatus = 'receiptCandidate'; diagnostic.coverage = clone(candidate.coverage); diagnostic.stages = clone(candidate.stages); diagnostic.selectorDiagnostic = clone(candidate.selectorDiagnostic);
+          operation.phase = diagnostic.phase = 'commit';
+          const committed = await commitPromptIfCurrent({ operation, source, selectedFloors: candidate.selectedFloors, selectedStates: candidate.selectedStates, selectedCseChanges: candidate.selectedCseChanges, timeDependencies: candidate.timeDependencies, userIndex: user.index, userFingerprint, hostGuard, injectionText: candidate.injectionText });
           if (!committed.ok) return stopForFinalSafety(committed.reason);
           if (partialReasons.length) {
             try { notifyUser?.({ kind: 'warning', text: candidate.injectionText
@@ -1016,15 +1060,17 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
           timings.totalMs = Date.now() - operation.started;
           const displayedCandidate = partialReasons.length ? { ...candidate, skipReasons: [...new Set([...(candidate.skipReasons ?? []), ...partialReasons])] } : candidate;
-          lastRecall = stateFromReceipt(displayedCandidate, { generationType: type, timings });
+          diagnostic.selectionStatus = 'reused'; diagnostic.timings = clone(timings);
+          lastRecall = Object.freeze({ ...stateFromReceipt(displayedCandidate, { generationType: type, timings }), ...runtimeDiagnostic(operation, timings) });
           if (operation.prequelCommitted) lastPrequel = prequelState(operation);
           bindLastRecall(committed.snapshot, committed.user); lastError = null; active = null; notify(); return getState();
         }
       }
-      operation.phase = 'selecting'; notify();
+      operation.phase = diagnostic.phase = 'selecting'; diagnostic.selectionStatus = 'incomplete'; notify();
       const selectorStarted = Date.now();
-      const selection = await selectionRunner({ source, queryContext, contextSize, signal: operation.controller.signal, reservedTokens: operation.prequelSelection.estimatedTokens, reservedCharacters: operation.prequelSelection.estimatedCharacters });
-      timings.selectorMs = Date.now() - selectorStarted;
+      let selection;
+      try { selection = await selectionRunner({ source, queryContext, contextSize, signal: operation.controller.signal, reservedTokens: operation.prequelSelection.estimatedTokens, reservedCharacters: operation.prequelSelection.estimatedCharacters }); }
+      finally { timings.selectorMs = Date.now() - selectorStarted; }
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       const receiptBase = {
         schemaVersion: RECALL_RECEIPT_SCHEMA_VERSION,
@@ -1039,6 +1085,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         bodyMatchFingerprint: source.bodyMatch.fingerprint,
         strategyVersion: RECALL_STRATEGY_VERSION,
         generationType: type,
+        timeDependencies: clone(selection.timeDependencies ?? { mode: 'projection', fingerprint: source.timeProjection?.fingerprint ?? null }),
         selectedFloors: selection.floors.map(value => ({ floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq, reasons: [...value.reasons] })),
         selectedStates: selection.states.map(value => ({
           stateId: value.stateId, sourceFloorId: value.sourceFloorId, sourceDeltaId: value.sourceDeltaId,
@@ -1088,7 +1135,9 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         createdAt: nowIso(now),
       };
       receiptBase.completionStatus = receiptBase.injectionText ? 'ready' : 'empty';
-      const committed = await commitPromptIfCurrent({ operation, source, selectedFloors: receiptBase.selectedFloors, selectedStates: receiptBase.selectedStates, selectedCseChanges: receiptBase.selectedCseChanges, userIndex: user.index, userFingerprint, hostGuard, injectionText: receiptBase.injectionText });
+      diagnostic.selectionStatus = 'completed'; diagnostic.coverage = clone(receiptBase.coverage); diagnostic.stages = clone(receiptBase.stages); diagnostic.selectorDiagnostic = clone(receiptBase.selectorDiagnostic);
+      operation.phase = diagnostic.phase = 'commit';
+      const committed = await commitPromptIfCurrent({ operation, source, selectedFloors: receiptBase.selectedFloors, selectedStates: receiptBase.selectedStates, selectedCseChanges: receiptBase.selectedCseChanges, timeDependencies: receiptBase.timeDependencies, userIndex: user.index, userFingerprint, hostGuard, injectionText: receiptBase.injectionText });
       if (!committed.ok) return stopForFinalSafety(committed.reason);
       if (partialReasons.length) {
         try { notifyUser?.({ kind: 'warning', text: receiptBase.injectionText
@@ -1098,7 +1147,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       const sealedReceipt = Object.freeze({ ...receiptBase, receiptFingerprint: await fingerprint(JSON.stringify(receiptMaterial(receiptBase))) });
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
-      operation.phase = 'receipt'; notify();
+      operation.phase = diagnostic.phase = 'receipt'; notify();
       const sessionCandidate = Object.freeze({ key, receipt: Object.freeze({ ...sealedReceipt, receiptPersistence: 'sessionOnly' }) });
       sessionReceipt = sessionCandidate;
       const receiptStarted = Date.now();
@@ -1110,7 +1159,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       }
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       timings.totalMs = Date.now() - operation.started;
-      lastRecall = stateFromReceipt(receipt, { generationType: type, reusedReceipt: false, timings });
+      diagnostic.timings = clone(timings);
+      lastRecall = Object.freeze({ ...stateFromReceipt(receipt, { generationType: type, reusedReceipt: false, timings }), ...runtimeDiagnostic(operation, timings) });
       if (operation.prequelCommitted) lastPrequel = prequelState(operation);
       bindLastRecall(committed.snapshot, committed.user);
       lastError = null; active = null; notify(); return getState();
@@ -1120,12 +1170,13 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       operation.prequelCommitted = false;
       lastPrequel = null;
       const safe = Object.freeze({ code: clean(error?.code ?? error?.name ?? 'V3_RECALL_FAILED', 120), message: clean(error?.message ?? '召回失败，已安全停止。', 500) });
+      diagnostic.error = safe; diagnostic.timings = clone({ ...timings, totalMs: Date.now() - diagnostic.started });
       if (attempt === 0) {
         try { notifyUser?.({ kind: 'warning', text: '记忆召回未完成，正在重试一次。' }); } catch { /* notification must not affect recall */ }
         continue;
       }
       lastError = safe;
-      lastRecall = Object.freeze({ status: 'error', userMessageIndex: operation.user?.index ?? null, generationType: type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings, totalMs: Date.now() - operation.started }), skipReasons: Object.freeze(['error']), error: safe, createdAt: nowIso(now) });
+      lastRecall = Object.freeze({ status: 'error', userMessageIndex: operation.user?.index ?? null, generationType: type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, ...runtimeDiagnostic(operation, timings, true), skipReasons: Object.freeze(['error']), error: safe, createdAt: nowIso(now) });
       bindOperationRecall(operation);
       try { notifyUser?.({ kind: 'warning', text: `记忆召回重试后仍失败，已停止正文生成：${publicErrorMessage({ code: safe.code, message: safe.message }, { fallback: '记忆召回失败，请稍后重试。' })}` }); } catch { /* notification must not affect recall */ }
       active = null;
@@ -1139,7 +1190,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (operation.token !== epoch) return finishStale(operation, timings);
     timings.totalMs = Date.now() - operation.started;
     const reasons = Array.isArray(reason) ? reason : [reason];
-    lastRecall = Object.freeze({ status: 'skipped', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings }), skipReasons: Object.freeze([...reasons]), error: null, createdAt: nowIso(now) });
+    lastRecall = Object.freeze({ status: 'skipped', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, ...runtimeDiagnostic(operation, timings), skipReasons: Object.freeze([...reasons]), error: null, createdAt: nowIso(now) });
     if (operation.prequelCommitted) lastPrequel = prequelState(operation);
     bindOperationRecall(operation);
     active = null; notify(); return getState();
@@ -1149,7 +1200,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (active === operation) active = null;
     if (operation.token === epoch) {
       clearSlot(operation.token);
-      lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ ...timings, totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([FINAL_REASONS.has(reason) ? reason : 'narrativeChanged']), error: null, createdAt: nowIso(now) }); lastPrequel = null;
+      lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, ...runtimeDiagnostic(operation, timings), skipReasons: Object.freeze([FINAL_REASONS.has(reason) ? reason : 'narrativeChanged']), error: null, createdAt: nowIso(now) }); lastPrequel = null;
       bindOperationRecall(operation);
       notify();
     }
@@ -1255,7 +1306,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       let receiptSnapshot = receipt.schemaVersion === RECALL_RECEIPT_SCHEMA_VERSION
         ? await persistedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint, pluginVersion }, fingerprint)
         : null;
-      if (!receiptSnapshot && [6, 7, 8, 9, 10, 11, 12, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
+      if (!receiptSnapshot && [6, 7, 8, 9, 10, 11, 12, 13, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
         const historical = await historicalSignedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint }, fingerprint);
         if (historical) receiptSnapshot = Object.freeze({ ...stateFromReceipt(historical, { restoredReceipt: true }), legacyReadOnly: true });
       }

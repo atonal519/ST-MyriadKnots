@@ -725,8 +725,14 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     refreshInFlight = entry;
     return entry.promise;
   }
-  async function prepareCurrent({ preferCached = true } = {}) {
+  async function prepareCurrent({ preferCached = true, rootResult = null } = {}) {
     const hostChatId = currentHostChatId();
+    const foundation = foundationRuntime.getState();
+    const matchesRoot = value => rootResult?.status === 'ready' && value?.status === 'ready' && value.root?.chatId === hostChatId
+      && rootResult.data?.chatId === hostChatId && value.rootRevision === rootResult.revision
+      && value.root.narrativeGeneration === rootResult.data.narrativeGeneration && value.root.headCheckpointId === rootResult.data.headCheckpointId;
+    if (enabled() && hostChatId && memorySnapshotStatus === 'ready' && foundation?.status === 'ready' && foundation.chatId === hostChatId
+      && matchesRoot(reachable) && matchesRoot(foundationRuntime.getReachable?.())) return Object.freeze({ status: 'ready', reachable, memorySyncStatus });
     if (preferCached && hostChatId && reachable?.root?.chatId === hostChatId && memorySnapshotStatus === 'ready') {
       return Object.freeze({ status: 'ready', reachable, memorySyncStatus });
     }
