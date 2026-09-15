@@ -11,6 +11,42 @@ const setup = extensionSettings => {
   return { settings, saves: () => saves };
 };
 
+test('召回默认随摘要与分析链，独立选择冻结在途而下一次取新配置', async () => {
+  const extensionSettings = { qianqianjie: { apiUrl: 'https://main.test/v1', apiKey: 'M', summaryPresetId: 'summary' }, 'schedule-planner': { apiPresets: [configured('摘要', 'summary'), configured('召回', 'recall')] } };
+  const { settings } = setup(extensionSettings), resolver = createApiResolver({ settings });
+  assert.equal(settings.get().recallPresetId, '');
+  let release; const gate = new Promise(resolve => { release = resolve; }); const seen = [];
+  const router = createTaskRouter({ resolver, compactClient: { generateTask: async ({ config }) => { seen.push(config); if (seen.length === 1) await gate; return { jsonData: {} }; } } });
+  const first = router.generateRecallTask({});
+  settings.update({ recallPresetId: 'recall' });
+  settings.upsertSharedPreset('摘要已改', { ...configured('摘要', 'summary'), model: 'new-summary-model' }, 'summary');
+  release(); const firstResult = await first;
+  assert.equal(firstResult.taskMetadata.source, 'shared-summary-preset');
+  assert.equal(seen[0].model, 'test-model');
+  const independent = await router.generateRecallTask({});
+  assert.equal(independent.taskMetadata.source, 'shared-recall-preset');
+  assert.equal(seen.at(-1).id, 'recall');
+  settings.update({ recallPresetId: '' });
+  await router.generateRecallTask({});
+  assert.equal(seen.at(-1).model, 'new-summary-model');
+  settings.setSummaryPresetId('');
+  await router.generateRecallTask({});
+  assert.equal(seen.at(-1).url, 'https://main.test/v1');
+});
+
+test('失效独立召回不借其他配置，删除只清QQJ召回选择而保留构画角色', async () => {
+  const extensionSettings = { qianqianjie: { apiUrl: 'https://main.test/v1', apiKey: 'M', recallPresetId: 'missing' }, 'schedule-planner': { apiPresets: [configured('召回', 'recall')], utilityPresetId: 'recall', apiPresetActiveId: 'recall' } };
+  const { settings } = setup(extensionSettings), resolver = createApiResolver({ settings });
+  let calls = 0;
+  const router = createTaskRouter({ resolver, compactClient: { generateTask: async () => { calls += 1; } } });
+  await assert.rejects(router.generateRecallTask({}), error => error.code === 'QQJ_PRESET_INVALID');
+  assert.equal(calls, 0);
+  settings.update({ recallPresetId: 'recall' }); settings.deleteSharedPreset('recall');
+  assert.equal(settings.get().recallPresetId, '');
+  assert.equal(extensionSettings['schedule-planner'].utilityPresetId, 'recall');
+  assert.equal(extensionSettings['schedule-planner'].apiPresetActiveId, 'recall');
+});
+
 test('记忆提取周期固定为 1，旧配置与更新请求都不能继续生效', () => {
   const extensionSettings = {};
   const { settings, saves } = setup(extensionSettings);

@@ -59,6 +59,23 @@ function parseHistoryBullet(line, allowedSequences, group, section) {
   return text ? Object.freeze({ assistantSeq, text, section }) : null;
 }
 
+function splitTimeReference(injectionText) {
+  const lines = injectionText.split('\n');
+  const heading = '[时间参考（当前推测、预计节点或到期事项）]';
+  if (lines[0] !== RECALL_OPEN || lines.at(-1) !== RECALL_CLOSE) return { historyText: injectionText, items: [], onlyTime: false };
+  const index = lines.lastIndexOf(heading);
+  let historyLines = lines, items = [];
+  if (index >= 1) {
+    const entries = lines.slice(index + 1, -1);
+    if (!entries.length || entries.some(line => !line.startsWith('- ') || !line.slice(2).trim())) return { historyText: injectionText, items: [], onlyTime: false };
+    items = entries.map(line => line.slice(2));
+    historyLines = [...lines.slice(0, index), RECALL_CLOSE];
+  }
+  const corrections = historyLines.filter(line => line.startsWith('- [时间校正] ')).map(line => line.slice(2));
+  return { historyText: historyLines.join('\n'), items: [...corrections, ...items],
+    onlyTime: items.length > 0 && historyLines.slice(1, -1).every(line => !line || [RECALL_NOTICE, RECALL_PRIVACY, STORYLINE_NOTICE].includes(line)) };
+}
+
 function parseRecallHistory(injectionText, selectedFloors) {
   if (typeof injectionText !== 'string' || !injectionText) return null;
   const lines = injectionText.split('\n');
@@ -234,7 +251,7 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
 export function projectInlineRecallReceipt(receipt) {
   if (!receipt) return Object.freeze({
     kind: 'user', status: 'empty', statusText: '未记录本轮召回', summary: '本轮没有可核验的召回回执。',
-    injectionText: '', floorCount: 0, stateCount: 0, cseChangeCount: 0, stateProgressionCount: 0, selectedFloors: Object.freeze([]), historyItems: Object.freeze([]), historyGroups: Object.freeze([]), storylines: Object.freeze([]), storylineGroups: Object.freeze([]), stateItems: Object.freeze([]), cseChangeItems: Object.freeze([]), stateProgressionItems: Object.freeze([]), protocolRecognized: false,
+    injectionText: '', floorCount: 0, stateCount: 0, cseChangeCount: 0, stateProgressionCount: 0, selectedFloors: Object.freeze([]), historyItems: Object.freeze([]), historyGroups: Object.freeze([]), storylines: Object.freeze([]), storylineGroups: Object.freeze([]), stateItems: Object.freeze([]), cseChangeItems: Object.freeze([]), stateProgressionItems: Object.freeze([]), timeReferenceItems: Object.freeze([]), timeReferenceCount: 0, protocolRecognized: false,
   });
   const hasFloorArray = Array.isArray(receipt.selectedFloors), hasStateArray = Array.isArray(receipt.selectedStates);
   const rawFloors = hasFloorArray ? receipt.selectedFloors : [];
@@ -323,7 +340,12 @@ export function projectInlineRecallReceipt(receipt) {
   const storylines = Object.freeze((safeShape && storylineProtocol ? rawStorylines : []).map(value => Object.freeze({
     storylineId: frozenText(value.storylineId, 80), title: frozenText(value.title, 160), basis: frozenText(value.basis, 500),
   })));
-  const parsedHistory = safeShape ? (storylineProtocol ? parseStorylineHistory(injectionText, selectedFloors, cseChangeItems, storylines) : parseRecallHistory(injectionText, selectedFloors)) : null;
+  const timeReference = splitTimeReference(injectionText);
+  const parsedHistory = safeShape ? (timeReference.onlyTime && !selectedFloors.length && !stateItems.length && !cseChangeItems.length && !storylines.length
+    ? Object.freeze([])
+    : storylineProtocol ? parseStorylineHistory(timeReference.historyText, selectedFloors, cseChangeItems, storylines) : parseRecallHistory(timeReference.historyText, selectedFloors)) : null;
+  const timeReferenceItems = Object.freeze(parsedHistory !== null && ['ready', 'empty'].includes(receipt.status ?? 'ready') ? timeReference.items : []);
+  const timeReferenceCount = timeReferenceItems.length;
   const historyItems = parsedHistory ?? Object.freeze([]);
   const historyGroups = groupRecallHistory(historyItems, selectedFloors);
   const storylineGroups = Object.freeze(storylines.map(storyline => {
@@ -346,6 +368,6 @@ export function projectInlineRecallReceipt(receipt) {
     : status === 'empty' ? '本轮没有需要注入的记忆。' : '本轮没有已注入的记忆。';
   return Object.freeze({
     kind: 'user', status, statusText, summary,
-    injectionText, floorCount, stateCount, cseChangeCount, stateProgressionCount, recentSummaryCount, distantHistoryItemCount, selectedFloors, historyItems, historyGroups, storylines, storylineGroups, stateItems, cseChangeItems, stateProgressionItems, protocolRecognized,
+    injectionText, floorCount, stateCount, cseChangeCount, stateProgressionCount, recentSummaryCount, distantHistoryItemCount, selectedFloors, historyItems, historyGroups, storylines, storylineGroups, stateItems, cseChangeItems, stateProgressionItems, timeReferenceItems, timeReferenceCount, protocolRecognized,
   });
 }

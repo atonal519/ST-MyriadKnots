@@ -22,6 +22,7 @@ import { createTaskRouter } from '../src/api-routing.js';
 import { createChatIdentityCoordinator, CHAT_IDENTITY_COLLECTION } from '../src/chat-identity.js';
 import { createChatSession } from '../src/chat-session.js';
 import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
+import { createTimeRuntime, createTimeStore } from '../src/v3/time-runtime.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GENERATION = '22222222-2222-4222-8222-222222222222';
@@ -114,7 +115,7 @@ function browserStorage(initial = {}) {
   };
 }
 
-function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted = () => {}, extractorPromptGuidance, csePromptGuidance, processingPrompt, storyClockReferenceTags = 'Ti', foundationRefresh, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null, failureStorage = undefined, now = () => new Date(NOW) } = {}) {
+function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, extractorPromptGuidance, csePromptGuidance, processingPrompt, storyClockReferenceTags = 'Ti', foundationRefresh, foundationFetch = undefined, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null, failureStorage = undefined, now = () => new Date(NOW) } = {}) {
   let enabled = true;
   const handlers = new Map();
   const warnings = [];
@@ -139,7 +140,7 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
       return baseStore.readReachable(options);
     },
   });
-  const foundationBase = createFoundationRuntime({ hostAdapter, store, contextProvider: () => context, isEnabled: () => enabled, scanCandidates: modernAnchors ? scanAssistantCandidates : legacyScanner, newUuid: uuidFactory(), now: () => new Date(NOW), logger: { warn() {} } });
+  const foundationBase = createFoundationRuntime({ hostAdapter, store, fetchImpl: foundationFetch, contextProvider: () => context, isEnabled: () => enabled, scanCandidates: modernAnchors ? scanAssistantCandidates : legacyScanner, newUuid: uuidFactory(), now: () => new Date(NOW), logger: { warn() {} } });
   const foundationRuntime = {
     ...foundationBase,
     ...(!readOnlyLifecycle ? { inspect: reason => foundationBase.reconcile(`testSetup:${reason}`) } : {}),
@@ -151,7 +152,7 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
     if (utility) return utility(options, calls.length);
     return { jsonData: { summary: '裴晚生提醒用户带伞。', people: [{ name: '裴晚生' }, { name: '你', role: 'user' }], events: [{ title: '带伞提醒', description: '裴晚生提醒用户带伞。' }] }, taskMetadata: { source: 'shared-utility', sourceLabel: '机械副 API', model: 'mock-model', finishReason: 'stop' } };
   };
-  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), storyClockReferenceTags: () => typeof storyClockReferenceTags === 'function' ? storyClockReferenceTags() : storyClockReferenceTags, persistAnchors, identityProjectionProvider, failureStorage, now, newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
+  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted, onMemoryBatchCommitted, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), storyClockReferenceTags: () => typeof storyClockReferenceTags === 'function' ? storyClockReferenceTags() : storyClockReferenceTags, persistAnchors, identityProjectionProvider, failureStorage, now, newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
   const emit = (name, ...args) => (handlers.get(name) ?? []).forEach(listener => listener(...args));
   return { runtime, foundationRuntime, store, backend, context, hostAdapter, calls, warnings, emit, readReachableModes, snapshotCount: () => snapshotCalls, setEnabled(value) { enabled = value; }, setAutomation(value) { automation = value; } };
@@ -1933,7 +1934,10 @@ test('已有聊天启动、绑定、面板刷新与开启自动维护都只检�
   assert.equal(state.rebuildCompletedCount, 5);
   assert.equal(state.rebuildTotalCount, 5);
   assert.equal(h.runtime.shouldBlockMainGeneration(), false, '历史重建完成后必须释放主生成门禁');
-  assert.deepEqual(h.calls.map(call => call.systemPrompt), [...Array(5).fill(EXTRACTOR_SYSTEM_PROMPT), ...Array(5).fill(CSE_SYSTEM_PROMPT)]);
+  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 5);
+  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 5);
+  const cseContents = h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).map(call => JSON.parse(call.taskMessages[0].content).payload.canonicalContent);
+  assert.deepEqual(cseContents, Array.from({ length: 5 }, (_, index) => `历史 AI ${index + 1}`));
 });
 
 test('重建展示进度按各楼 memory/delta 独立完成计数，摘要重提不使后楼失效', async () => {
@@ -2259,7 +2263,7 @@ test('历史按钮单楼失败后继续保存独立后楼并撤销授权；刷�
   assert.ok(automaticSummaryReceipts.every(receipt => receipt.chatId === CHAT
     && h.runtime.getState().floors.some(floor => floor.floorId === receipt.floorId && floor.memoryId === receipt.memoryId && floor.status === 'ready')),
   '自动通知必须携带当前 ready 摘要的 chatId/floorId/memoryId');
-  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 2, '摘要失败不阻断另外两楼独立提交 CSE');
+  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 1, '人物状态只处理摘要缺口之前，失败后的独立摘要保留待后续补齐');
   const callsAtFailure = h.calls.length;
   await h.runtime.refreshAutomation();
   await h.runtime.refreshStatus();
@@ -3313,7 +3317,7 @@ test('CSE 失败不再拖停后续摘要，同一稳定快照只有限尝试且�
   assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 5, '手动继续只按顺序补两处人物状态');
 });
 
-test('手动历史补齐先保存捕获范围全部摘要，首个 CSE 失败后继续只补人物状态', async () => {
+test('历史首楼串行初始化，首个CSE失败仍继续全部摘要，继续只补人物状态', async () => {
   let failCse = true;
   const h = harness({
     initialChat: [user('开始'), assistant('历史一'), assistant('历史二'), assistant('历史三'), assistant('待确认尾楼')],
@@ -3332,7 +3336,7 @@ test('手动历史补齐先保存捕获范围全部摘要，首个 CSE 失败后
   await waitFor(() => h.runtime.getState().lastAutoMemory?.status === 'partial' && !h.runtime.getState().memoryWorkBusy);
   let state = h.runtime.getState();
   assert.deepEqual(h.calls.map(call => call.systemPrompt), [
-    EXTRACTOR_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT,
+    EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT,
   ]);
   assert.equal(state.rememberedCount, 3);
   assert.equal(state.summaryCompletedCount, 3);
@@ -3405,8 +3409,11 @@ test('启动与设置刷新只检查连续摘要尾账，手动继续才按楼�
     await resumed.runtime.startHistoricalRebuild();
     await waitFor(() => registeredGraphCaughtUp(resumed.runtime.getState()) && !resumed.runtime.getState().memoryWorkBusy, `${mode} 未追平连续摘要尾账`);
     const promptKinds = resumed.calls.map(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? 'extractor' : 'cse');
-    assert.deepEqual(promptKinds, [...Array(debtCount).fill('extractor'), ...Array(debtCount).fill('cse')],
-      `${mode} 必须先补完摘要，再按楼补人物状态`);
+    assert.equal(promptKinds.filter(kind => kind === 'extractor').length, debtCount);
+    assert.equal(promptKinds.filter(kind => kind === 'cse').length, debtCount);
+    const cseContents = resumed.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).map(call => JSON.parse(call.taskMessages[0].content).payload.canonicalContent);
+    const summaryContents = resumed.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).map(call => JSON.parse(call.taskMessages[0].content).payload.canonicalContent);
+    assert.deepEqual(cseContents, summaryContents, `${mode} 逐楼CSE必须保留摘要顺序`);
     assert.equal(resumed.runtime.getState().lastAutoMemory.processed, debtCount);
     assert.equal(resumed.runtime.getState().lastAutoMemory.cseProcessed, debtCount);
   }
@@ -3468,7 +3475,7 @@ test('首个 CSE 失败前已捕获摘要全部保存；提取失败跳过本楼
   assert.equal(extractorFailed.runtime.getState().lastAutoMemory?.reason, 'manualHistoricalRebuild', '摘要历史缺口必须走已有的当前聊天补齐授权，不能给普通自动重试泛化权限');
 });
 
-test('同楼提取失败按聊天持久累计，后楼成功不清且本楼成功、完全重构成功才清', async () => {
+test('同楼提取失败按聊天持久累计，后楼成功不清且本楼成功或真实删除才清', async () => {
   const otherKey = 'qqj_v3_floor_failures:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
   const storage = browserStorage({ [otherKey]: '{"keep":true}' });
   const failureByContent = new Map([['失败楼 B', true]]);
@@ -3542,13 +3549,8 @@ test('同楼提取失败按聊天持久累计，后楼成功不清且本楼成�
   await resumed.runtime.editSummary(floorC.floorId, '人工修订后的 C 摘要');
   assert.equal(resumed.runtime.getState().floors.find(floor => floor.floorId === floorC.floorId).error, null, '人工修订成功应清本楼失败提示');
 
-  resumed.backend.setConflictRoot(true);
-  await assert.rejects(resumed.runtime.fullRebuild(), error => error?.code === 'V3_MEMORY_CAS_CONFLICT');
-  resumed.backend.setConflictRoot(false);
-  assert.equal(storage.values.has(key), true, '完全重构提交失败不能提前清除失败表');
-  failureByContent.clear();
-  await resumed.runtime.fullRebuild();
-  assert.equal(storage.values.has(key), false, '完全重构真实提交成功后应清当前聊天失败表');
+  resumed.runtime.invalidate({ deletedChatId: CHAT });
+  assert.equal(storage.values.has(key), false, '真实删除失效后清当前聊天失败表');
   assert.equal(storage.values.get(otherKey), '{"keep":true}', '其他聊天的浏览器记录不能受影响');
 });
 
@@ -3788,77 +3790,6 @@ test('CSE 等待期间到达的新稳定楼不混入当前边界，当前失败�
   assert.equal(resumed.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 2, '当前边界与后续新增楼应各提取一次');
   assert.equal(cseCalls, 3, '最早 CSE 失败一次后只重试一次，再顺序处理新增楼');
   assert.equal(notifications.filter(item => item.kind === 'warning').length, 1, '旧边界失败只提示一次');
-});
-
-test('完全重构用新 root 切断旧派生图，同一模型输出仍重新逐楼生成且不会撞旧不可变记录', async () => {
-  const h = harness({
-    initialChat: [user('开始'), assistant('第一楼'), assistant('第二楼'), assistant('待确认尾楼')],
-    automation: { enabled: true, batchSize: 20 },
-    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
-      ? { jsonData: { summary: `摘要-${JSON.parse(options.taskMessages[0].content).payload.canonicalContent}`, people: [{ name: '路人甲' }] } }
-      : { jsonData: { noMaterialChange: true } },
-  });
-  await h.runtime.start();
-  await h.runtime.startHistoricalRebuild();
-  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().activeAutoMemory);
-  const before = h.runtime.getState();
-  const oldHead = before.headCheckpointId;
-  const oldMemoryIds = before.floors.map(floor => floor.memoryId);
-  const oldNpcId = before.memoryEntities.find(entity => entity.displayName === '路人甲')?.entityId;
-  h.calls.splice(0);
-  await h.runtime.fullRebuild();
-  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().activeAutoMemory);
-  const after = h.runtime.getState();
-  assert.notEqual(after.headCheckpointId, oldHead);
-  assert.equal(after.autoMemoryBatchSize, 1);
-  assert.equal(after.rememberedCount, 2);
-  assert.equal(after.cseReady, true);
-  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 2);
-  assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 2);
-  assert.ok(after.floors.every((floor, index) => floor.memoryId !== oldMemoryIds[index]));
-  assert.notEqual(after.memoryEntities.find(entity => entity.displayName === '路人甲')?.entityId, oldNpcId);
-});
-
-test('完全重构占用现有主生成门禁，GENERATION_STARTED 抢入会取消 root 切换', async () => {
-  const h = harness({ initialChat: [user('开始'), assistant('第一楼'), assistant('待确认尾楼')], automation: { enabled: true, batchSize: 1 } });
-  await h.runtime.start();
-  await h.runtime.startHistoricalRebuild();
-  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().activeAutoMemory);
-  const oldHead = h.runtime.getState().headCheckpointId;
-  const gate = h.backend.holdNextRootPut();
-  const rebuilding = h.runtime.fullRebuild();
-  assert.equal(h.runtime.shouldBlockMainGeneration(), true, '点击完全重构后应同步占用已有主生成门禁');
-  await gate.started;
-  h.emit('GENERATION_STARTED', 'normal');
-  assert.equal(h.runtime.shouldBlockMainGeneration(), true, '重构取消收拢前门禁仍应保持');
-  gate.release();
-  await assert.rejects(rebuilding, error => error?.name === 'AbortError' || error?.code === 'V3_MEMORY_STALE');
-  assert.equal(h.runtime.getState().headCheckpointId, oldHead, '主生成抢入后不得切换 root head');
-  assert.equal(h.runtime.shouldBlockMainGeneration(), false);
-  h.emit('GENERATION_ENDED');
-});
-
-test('完全重构 CAS 冲突保留旧有效图，预备图只保留 baseline 人物与 floorOrder 索引', async () => {
-  const h = harness({ initialChat: [user('开始'), assistant('第一楼'), assistant('待确认尾楼')], automation: { enabled: true, batchSize: 1 } });
-  await h.runtime.start(); await h.runtime.startHistoricalRebuild();
-  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().activeAutoMemory);
-  const before = await h.store.readReachable({ mode: 'runtime' });
-  h.backend.setConflictRoot(true);
-  await assert.rejects(h.runtime.fullRebuild(), error => error?.code === 'V3_MEMORY_CAS_CONFLICT');
-  h.backend.setConflictRoot(false);
-  const after = await h.store.readReachable({ mode: 'runtime' });
-  assert.equal(after.root.headCheckpointId, before.root.headCheckpointId);
-  assert.deepEqual(after.floorMemories.map(item => item.id), before.floorMemories.map(item => item.id));
-  const stagedRun = [...h.backend.records.values()].map(value => value.data).find(record => record?.recordType === 'run' && record?.diagnostics?.kind === 'fullRebuild');
-  const stagedCheckpoint = [...h.backend.records.values()].map(value => value.data).find(record => record?.recordType === 'checkpoint' && record?.runId === stagedRun?.id);
-  assert.ok(stagedRun && stagedCheckpoint);
-  assert.deepEqual(new Set(stagedCheckpoint.producedRefs.entities), new Set([before.baseline.userPersona.entityId, before.baseline.characterCard.entityId]));
-  assert.deepEqual(stagedCheckpoint.producedRefs.floorMemories, []);
-  assert.deepEqual(stagedCheckpoint.producedRefs.stateDeltas, []);
-  assert.deepEqual(stagedCheckpoint.producedRefs.currentStates, []);
-  const indexKinds = stagedCheckpoint.producedRefs.indexes.map(key => h.backend.records.get(`chat-${CHAT}/${key}`)?.data?.kind);
-  assert.equal(stagedCheckpoint.indexLayout, 'floorOrder-v1');
-  assert.deepEqual(new Set(indexKinds), new Set(['floorOrder']));
 });
 
 test('CSE 重构锁定已有摘要前缀并逐楼替换状态链，不调用摘要模型', async () => {
@@ -4127,47 +4058,6 @@ test('冷读把跨代实体视图投影到当前首见楼，不改后端实体�
   assert.equal(persisted.firstSeenFloorId, deletedFirstFloorId);
 });
 
-test('完全重构前置 refresh 等待时切聊天不会重置任一聊天或在新聊天启动提取', async () => {
-  let armed = false, releaseRefresh, markStarted;
-  const started = new Promise(resolve => { markStarted = resolve; });
-  const h = harness({
-    initialChat: [user('开始'), assistant('第一楼'), assistant('待确认尾楼')], automation: { enabled: true, batchSize: 1 },
-    foundationRefresh: async base => { if (armed) { armed = false; markStarted(); await new Promise(resolve => { releaseRefresh = resolve; }); } return base.refreshStatus(); },
-  });
-  await h.runtime.start(); await h.runtime.startHistoricalRebuild();
-  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().activeAutoMemory);
-  const oldRoot = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`).data);
-  h.calls.splice(0); armed = true;
-  const rebuilding = h.runtime.fullRebuild(); await started;
-  const otherChat = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-  h.context.chatMetadata = { qianqianjie: { schemaVersion: 1, chatId: otherChat } }; h.context.chatId = 'host-other'; h.context.chat = [user('新聊天'), assistant('新楼'), assistant('尾楼')]; h.emit('CHAT_CHANGED');
-  releaseRefresh();
-  await assert.rejects(rebuilding, error => error?.code === 'V3_MEMORY_STALE');
-  assert.equal(h.backend.records.get(`chat-${CHAT}/v3-root`).data.headCheckpointId, oldRoot.headCheckpointId);
-  assert.equal([...h.backend.records.entries()].some(([key, value]) => key.startsWith(`chat-${otherChat}/`) && value.data?.diagnostics?.kind === 'fullRebuild'), false);
-  assert.equal(h.calls.length, 0);
-});
-
-test('完全重构提交旧聊天 root 后切换聊天不会把旧重构记录写入新聊天', async () => {
-  let armed = false, refreshCount = 0, releaseRefresh, markStarted;
-  const started = new Promise(resolve => { markStarted = resolve; });
-  const h = harness({
-    initialChat: [user('开始'), assistant('第一楼'), assistant('待确认尾楼')], automation: { enabled: true, batchSize: 1 },
-    foundationRefresh: async base => { if (armed && ++refreshCount === 2) { markStarted(); await new Promise(resolve => { releaseRefresh = resolve; }); } return base.refreshStatus(); },
-  });
-  await h.runtime.start(); await h.runtime.startHistoricalRebuild();
-  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().activeAutoMemory);
-  const oldHead = h.backend.records.get(`chat-${CHAT}/v3-root`).data.headCheckpointId;
-  h.calls.splice(0); armed = true;
-  const rebuilding = h.runtime.fullRebuild(); await started;
-  assert.notEqual(h.backend.records.get(`chat-${CHAT}/v3-root`).data.headCheckpointId, oldHead, '第二次 refresh 前 reset root 已提交');
-  const otherChat = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-  h.context.chatMetadata = { qianqianjie: { schemaVersion: 1, chatId: otherChat } }; h.context.chatId = 'host-other'; h.context.chat = [user('新聊天'), assistant('新楼'), assistant('尾楼')]; h.emit('CHAT_CHANGED');
-  releaseRefresh(); await rebuilding;
-  await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal([...h.backend.records.entries()].some(([key, value]) => key.startsWith(`chat-${otherChat}/`) && value.data?.diagnostics?.kind === 'fullRebuild'), false);
-});
-
 test('GENERATION_STARTED 抢在 isGenerating 变真前仍拒绝历史授权，STOPPED/ENDED 后可幂等恢复', async () => {
   let blockHistoricalRefresh = false;
   let releaseRefresh;
@@ -4225,7 +4115,7 @@ test('dry-run GENERATION_STARTED 不会占用主生成事实，历史按钮仍�
   await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().activeAutoMemory);
 
   assert.equal(h.runtime.getState().rememberedCount, 2);
-  assert.deepEqual(h.calls.map(call => call.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
+  assert.deepEqual(h.calls.map(call => call.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
   assert.match(notifications[0].text, /从第 1 楼起还有 2 楼摘要未完成.*不会自动补/);
   assert.deepEqual(notifications[1], { kind: 'info', text: '千千结开始补齐 2 楼摘要（从第 1 楼起）。' });
   assert.deepEqual(notifications[2], { kind: 'success', text: '千千结已完成历史记忆维护：新增摘要 2 楼，补齐人物状态 2 楼。' });
@@ -4475,7 +4365,7 @@ test('生成生命周期常量不齐时整体回退 isGenerating，不会产生�
     await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().activeAutoMemory);
 
     assert.equal(h.runtime.getState().rememberedCount, 2);
-    assert.deepEqual(h.calls.map(call => call.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
+    assert.deepEqual(h.calls.map(call => call.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
     assert.match(notifications[0].text, /从第 1 楼起还有 2 楼摘要未完成.*不会自动补/);
     assert.deepEqual(notifications[1], { kind: 'info', text: '千千结开始补齐 2 楼摘要（从第 1 楼起）。' });
     assert.deepEqual(notifications[2], { kind: 'success', text: '千千结已完成历史记忆维护：新增摘要 2 楼，补齐人物状态 2 楼。' });
@@ -4631,7 +4521,7 @@ test('按钮启动的历史会话暂停后，当前会话的设置刷新与新�
   await waitFor(() => !first.runtime.getState().activeAutoMemory);
   assert.equal(first.runtime.getState().rebuildStatus, 'paused');
   assert.equal(first.runtime.getState().rememberedCount, 1);
-  assert.equal(first.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 0, '摘要阶段暂停时不应提前开始 CSE');
+  assert.equal(first.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 1, '暂停保留首楼已完成初始化CSE，不得继续后楼');
   const callsAtPause = first.calls.length;
   await first.runtime.refreshAutomation();
   first.emit('GENERATION_STARTED', 'normal');
@@ -5218,12 +5108,7 @@ test('正文编辑后的明确摘要重提不碰 CSE，显式 CSE 重分析只�
   await h.runtime.refreshStatus();
   assert.deepEqual([h.runtime.getState().floors[0].memoryId, h.runtime.getState().cseFloors[0].deltaId], [replaced.memoryId, replacedDeltaId]);
   assert.equal(h.calls.length, 0);
-  await h.runtime.fullRebuild(CHAT);
-  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()));
-  const rebuildRequests = h.calls.map(call => ({ systemPrompt: call.systemPrompt, payload: JSON.parse(call.taskMessages[0].content).payload }));
-  assert.deepEqual(rebuildRequests.map(request => request.systemPrompt), [EXTRACTOR_SYSTEM_PROMPT, CSE_SYSTEM_PROMPT]);
-  assert.equal(rebuildRequests[0].payload.canonicalContent, '再次编辑但不重提');
-  assert.equal(rebuildRequests[1].payload.canonicalContent, '再次编辑但不重提');
+
 });
 
 test('删除中间 AI 后保留后楼 memory/delta 与历史来源，并支持摘要再改及三种模式冷读', async () => {
@@ -5543,4 +5428,186 @@ test('摘要在途 USER 编辑、删除和后置确认删除都提交捕获快�
     h.context.chat.splice(target.messageIndex + 1, 1);
     h.emit('MESSAGE_DELETED', target.messageIndex + 1);
   });
+});
+
+
+test('时间接线：历史多楼摘要与CSE完成后只通知一批，不逐楼请求', async () => {
+  const batches = [];
+  const h = harness({ initialChat: [
+    { is_user: false, mes: '裴晚生第一天手腕受伤。' }, { is_user: true, mes: '继续' },
+    { is_user: false, mes: '裴晚生第二天手腕仍痛。' }, { is_user: true, mes: '继续' },
+    { is_user: false, mes: '裴晚生第三天创口已干。' }, { is_user: true, mes: '继续' },
+  ], onMemoryBatchCommitted: receipt => { batches.push(receipt); } });
+  await h.runtime.start();
+  assert.equal(batches.length, 0);
+  await h.runtime.startHistoricalRebuild();
+  assert.equal(h.runtime.getState().rememberedCount, 3);
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0].historical, true);
+});
+
+test('历史流水真实请求重叠，摘要先/CSE先提交都保全图且各链最多一请求', async t => {
+  for (const winner of ['summary', 'cse']) await t.test(winner, async () => {
+    let releaseSummary, releaseCse, summaryStarted, cseStarted;
+    const summaryGate = new Promise(resolve => { releaseSummary = resolve; });
+    const cseGate = new Promise(resolve => { releaseCse = resolve; });
+    const summaryStart = new Promise(resolve => { summaryStarted = resolve; });
+    const cseStart = new Promise(resolve => { cseStarted = resolve; });
+    const active = { summary: 0, cse: 0 }, max = { summary: 0, cse: 0 }, order = [], summaries = [], batches = [];
+    const h = harness({ initialChat: [user('开始'), ...['流水一', '流水二', '流水三', '流水四'].map(assistant), user('确认')],
+      onAutomaticSummaryCommitted: receipt => summaries.push(receipt),
+      onMemoryBatchCommitted: receipt => { assert.deepEqual(active, { summary: 0, cse: 0 }); batches.push(receipt); },
+      utility: async options => {
+        const kind = options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? 'summary' : 'cse';
+        const payload = JSON.parse(options.taskMessages[0].content).payload;
+        const content = payload.canonicalContent;
+        active[kind] += 1; max[kind] = Math.max(max[kind], active[kind]); order.push(`${kind}:${content}`);
+        try {
+          if (kind === 'summary' && content === '流水三') { summaryStarted(); await summaryGate; }
+          if (kind === 'cse' && content === '流水二') { cseStarted(); await cseGate; }
+          return kind === 'summary' ? { jsonData: { summary: `摘要-${content}`, ...(content === '流水三' ? { people: [{ name: '后楼客人' }] } : {}) } } : { jsonData: { subjects: payload.trackedSubjects.map(subject => ({ subject: subject.name, situational: [{ text: `${content}的有效状态`, reason: content, visibility: 'observable' }] })) } };
+        } finally { active[kind] -= 1; }
+      } });
+    await h.runtime.start();
+    const running = h.runtime.startHistoricalRebuild();
+    await Promise.all([summaryStart, cseStart]);
+    assert.deepEqual(active, { summary: 1, cse: 1 }, 'S(n+1)与CSE(n)真实同时在途');
+    assert.equal(batches.length, 0);
+    assert.ok(order.indexOf('cse:流水一') < order.indexOf('summary:流水二'), '先完成首楼基线/role初始化再流水');
+    if (winner === 'summary') {
+      releaseSummary();
+      await waitFor(() => h.runtime.getState().rememberedCount === 4);
+      assert.equal(batches.length, 0, '摘要结束时CSE仍在途，不提前通知时间任务');
+      releaseCse();
+    } else {
+      releaseCse();
+      await waitFor(() => ['ready', 'noChange'].includes(h.runtime.getState().floors[1]?.cse?.status));
+      assert.equal(h.runtime.getState().rememberedCount, 2);
+      releaseSummary();
+    }
+    await running;
+    assert.deepEqual(max, { summary: 1, cse: 1 });
+    assert.equal(summaries.length, 4);
+    assert.equal(batches.length, 1);
+    assert.deepEqual(order.filter(value => value.startsWith('cse:')), ['cse:流水一', 'cse:流水二', 'cse:流水三', 'cse:流水四']);
+    const graph = await h.store.readReachable({ mode: 'runtime' });
+    assert.equal(graph.status, 'ready'); assert.equal(graph.floorMemories.length, 4); assert.equal(graph.stateDeltas.length, 4);
+    assert.ok(graph.entities.some(entity => entity.displayName === '后楼客人'), '后摘要实体不丢，早CSE不被未来实体影响');
+  });
+});
+
+test('历史流水双在途暂停或切聊，两路迟到结果均不提交', async t => {
+  for (const cancellation of ['pause', 'chat', 'commitWait']) await t.test(cancellation, async () => {
+    let releaseSummary, releaseCse, summaryStarted, cseStarted;
+    const summaryGate = new Promise(resolve => { releaseSummary = resolve; });
+    const cseGate = new Promise(resolve => { releaseCse = resolve; });
+    const summaryStart = new Promise(resolve => { summaryStarted = resolve; });
+    const cseStart = new Promise(resolve => { cseStarted = resolve; });
+    const batches = [];
+    const h = harness({ initialChat: [user('开始'), ...['取消一', '取消二', '取消三', '取消四'].map(assistant), user('确认')],
+      onMemoryBatchCommitted: receipt => batches.push(receipt),
+      utility: async options => {
+        const summary = options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT;
+        const content = JSON.parse(options.taskMessages[0].content).payload.canonicalContent;
+        if (summary && content === '取消三') { summaryStarted(); await summaryGate; }
+        if (!summary && content === '取消二') { cseStarted(); await cseGate; }
+        return summary ? { jsonData: { summary: `摘要-${content}` } } : { jsonData: { noMaterialChange: true } };
+      } });
+    await h.runtime.start();
+    const running = h.runtime.startHistoricalRebuild();
+    await Promise.all([summaryStart, cseStart]);
+    const rootEntry = [...h.backend.records.entries()].find(([key]) => key.endsWith('/v3-root'));
+    const durableRoot = structuredClone(rootEntry[1]);
+    let rootGate;
+    if (cancellation === 'commitWait') {
+      rootGate = h.backend.holdNextRootPut();
+      releaseSummary();
+      await rootGate.started;
+      releaseCse();
+      await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(h.backend.records.get(rootEntry[0]), durableRoot, '摘要持有提交门，CSE不得先提交覆盖');
+    }
+    if (cancellation === 'chat') {
+      h.context.chatId = 'host-other';
+      h.context.chatMetadata = { qianqianjie: { schemaVersion: 1, chatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' } };
+      h.context.chat = [user('另一聊天'), assistant('另一正文')];
+      h.emit('CHAT_CHANGED');
+    } else h.runtime.pauseHistoricalRebuild();
+    await waitFor(() => !h.runtime.shouldBlockMainGeneration());
+    releaseSummary(); releaseCse(); rootGate?.release();
+    await running;
+    assert.deepEqual(h.backend.records.get(rootEntry[0]), durableRoot, '暂停或切聊后，持锁及等待提交的两路结果均不改旧root');
+    assert.equal(batches.length, 0, '取消批次不触发时间任务');
+    assert.equal(h.calls.length, 5, '停止后不启动下一楼请求');
+  });
+});
+
+test('刷新中断后手动补最后CSE才通知时间并落盘，非最后、失败和已ready重析不通知', async () => {
+  const seed = harness({ initialChat: [user('开始'), ...['伤后观察', '时间推进', '当前观察'].map((text, index) => assistant(`<!-- QQJ-start | date=2026-09-15 | weekday=周二 | time=${8 + index}:00 -->${text}<!-- QQJ-end | date=2026-09-15 | weekday=周二 | time=${9 + index}:00 -->`)), user('确认')],
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? { jsonData: { summary: '林岚手腕擦伤仍可见', people: [{ name: '林岚', role: 'user' }], observations: [{ subject: '林岚', kind: 'injury', description: '手腕擦伤' }] } } : { jsonData: { noMaterialChange: true } } });
+  await seed.runtime.start();
+  for (const floor of seed.runtime.getState().floors) await seed.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  await seed.runtime.analyzeNextState();
+  let fail = true, timeCalls = 0, timePromise;
+  const receipts = [];
+  const timeStore = createTimeStore({ client: seed.backend.client });
+  const time = createTimeRuntime({ store: timeStore, foundationStore: seed.store, hostAdapter: seed.hostAdapter, session: { identity: () => ({ chatId: CHAT }) }, isEnabled: () => true, logger: { warn() {} },
+    generateAnalysisTask: async options => { timeCalls += 1; const request = JSON.parse(options.taskMessages[0].content), source = request.observations[0]; assert.ok(source, '真实摘要身体观察进入时间任务'); return { changes: [{ itemId: null, sourceKeys: [source.sourceKey], subjectEntityId: source.subjectEntityId, type: 'body', label: '手腕擦伤', observation: '擦伤仍可见', occurrenceTime: '', dueTime: '', status: 'active', stateRefs: [] }] }; } });
+  const resumed = harness({ sharedBackend: seed.backend, sharedContext: seed.context,
+    utility: () => { if (fail) throw new Error('受控CSE失败'); return { jsonData: { noMaterialChange: true } }; },
+    onMemoryBatchCommitted: receipt => { assert.equal(resumed.runtime.getState().memoryWorkBusy, false); receipts.push(receipt); timePromise = time.runBatch(receipt); } });
+  await resumed.runtime.start();
+  await resumed.runtime.analyzeNextState();
+  assert.equal(receipts.length, 0, '失败不通知');
+  fail = false;
+  await resumed.runtime.analyzeNextState();
+  assert.equal(receipts.length, 0, '仍有最后缺口不通知');
+  const last = resumed.runtime.getState().floors.at(-1);
+  await resumed.runtime.retryStateAnalysis(last.floorId);
+  await timePromise;
+  assert.equal(receipts.length, 1); assert.equal(timeCalls, 1);
+  const stored = await timeStore.read(CHAT);
+  assert.ok(stored.head); assert.equal(stored.batches.length, 1);
+  await resumed.runtime.retryStateAnalysis(last.floorId);
+  await resumed.runtime.refreshStatus();
+  assert.equal(receipts.length, 1, '已ready重析或刷新不自动时间任务');
+});
+
+test('手动最后CSE取消不通知，时间开关关闭仍不调用时间模型', async () => {
+  let release;
+  const h = harness({ utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? { jsonData: { summary: '摘要' } } : new Promise(resolve => { release = () => resolve({ jsonData: { noMaterialChange: true } }); }), onMemoryBatchCommitted: () => assert.fail('取消不得通知时间') });
+  await h.runtime.start(); await h.runtime.extractFloor(h.runtime.getState().floors[0].floorId, { analyzeState: false });
+  const running = h.runtime.analyzeNextState();
+  await waitFor(() => release); h.runtime.invalidate(); release(); await running;
+  let calls = 0;
+  const off = createTimeRuntime({ store: {}, foundationStore: {}, hostAdapter: {}, session: { identity: () => ({ chatId: CHAT }) }, isEnabled: () => false, generateAnalysisTask: () => { calls += 1; } });
+  await off.runBatch({ chatId: CHAT, historical: true });
+  assert.equal(calls, 0);
+});
+
+
+test('手动刷新既成缺 integrity 尾删档经过完整读回恢复摘要与CSE，普通refresh只inspect', async () => {
+  let h, reads = 0;
+  h = harness({ readOnlyLifecycle: true, modernAnchors: true,
+    initialChat: [assistant('第一楼'), user('一'), assistant('第二楼'), user('二'), assistant('第三楼'), user('三')],
+    foundationFetch: async () => { reads++; return { ok: true, json: async () => [{ chat_metadata: structuredClone(h.context.chatMetadata) }, ...structuredClone(h.context.chat)] }; },
+    persistAnchors: async ({ chatId, bindings }) => { for (const binding of bindings) h.context.chat[binding.messageIndex].extra = { ...(h.context.chat[binding.messageIndex].extra ?? {}), qianqianjie_floor: { schemaVersion: 1, chatId, floorId: binding.floorId } }; },
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? { jsonData: { summary: '摘要', people: [{ name: '裴晚生' }] } } : { jsonData: { noMaterialChange: true } } });
+  h.context.chatMetadata.integrity = 'complete';
+  await h.runtime.start(); await h.runtime.startHistoricalRebuild();
+  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()));
+  const full = h.foundationRuntime.getReachable(), root = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`));
+  const callCount = h.calls.length;
+  delete h.context.chatMetadata.integrity; h.context.chat.splice(4);
+  await h.runtime.refreshStatus({ preferCached: false });
+  await waitFor(() => h.runtime.getState().memorySyncStatus !== 'syncing');
+  assert.equal(reads, 0); assert.equal(h.runtime.getState().memorySyncStatus, 'needsReview');
+  assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), root);
+  await h.runtime.refreshStatus({ preferCached: false, recoverTailDeletion: true });
+  await waitFor(() => h.runtime.getState().memorySyncStatus !== 'syncing');
+  const after = h.runtime.getState(), cut = h.foundationRuntime.getReachable();
+  assert.equal(reads, 1); assert.equal(after.memorySyncStatus, 'idle'); assert.equal(after.stableCount, 2);
+  assert.deepEqual(cut.floorMemories, full.floorMemories.slice(0, 2));
+  assert.deepEqual(cut.stateDeltas, full.stateDeltas.slice(0, 2));
+  assert.equal(h.calls.length, callCount, '恢复不调用模型');
 });

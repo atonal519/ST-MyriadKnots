@@ -6,6 +6,7 @@ export const SETTINGS_ID = 'qianqianjie';
 export const DEFAULT_SETTINGS = Object.freeze({
   pluginEnabled: true,
   storyClockEnabled: true,
+  timeEvolutionEnabled: false,
   storyClockPrompt: '',
   storyClockReferenceTags: 'Ti',
   autoMemoryBatchSize: 1,
@@ -14,6 +15,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   apiMode: 'auto',
   selectedSevenDaysPresetId: '',
   summaryPresetId: '',
+  recallPresetId: '',
   apiUrl: '',
   apiKey: '',
   apiModel: '',
@@ -128,6 +130,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     settings.appearanceScale = normalizeScale(settings.appearanceScale);
     settings.apiTimeoutSec = normalizeTimeout(settings.apiTimeoutSec);
     settings.autoMemoryBatchSize = normalizeAutoMemoryBatchSize(settings.autoMemoryBatchSize);
+    settings.timeEvolutionEnabled = settings.timeEvolutionEnabled === true;
     settings.autoHideEnabled = settings.autoHideEnabled === true;
     settings.autoHideKeepAiCount = normalizeAutoHideKeepAiCount(settings.autoHideKeepAiCount);
     settings.storyClockReferenceTags = normalizeStoryClockReferenceTags(settings.storyClockReferenceTags).join(',');
@@ -140,6 +143,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
   const update = (patch, { observeSaveFailure = false } = {}) => {
     const settings = get();
     if (own(patch, 'pluginEnabled')) settings.pluginEnabled = patch.pluginEnabled !== false;
+    if (own(patch, 'timeEvolutionEnabled')) settings.timeEvolutionEnabled = patch.timeEvolutionEnabled === true;
     if (own(patch, 'storyClockEnabled')) settings.storyClockEnabled = patch.storyClockEnabled !== false;
     if (own(patch, 'storyClockPrompt')) settings.storyClockPrompt = text(patch.storyClockPrompt);
     if (own(patch, 'storyClockReferenceTags')) settings.storyClockReferenceTags = normalizeStoryClockReferenceTags(patch.storyClockReferenceTags).join(',');
@@ -149,6 +153,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'apiMode')) settings.apiMode = API_MODES.has(patch.apiMode) ? patch.apiMode : 'auto';
     if (own(patch, 'selectedSevenDaysPresetId')) settings.selectedSevenDaysPresetId = text(patch.selectedSevenDaysPresetId).trim();
     if (own(patch, 'summaryPresetId')) settings.summaryPresetId = text(patch.summaryPresetId).trim();
+    if (own(patch, 'recallPresetId')) settings.recallPresetId = text(patch.recallPresetId).trim();
     if (own(patch, 'apiUrl')) settings.apiUrl = text(patch.apiUrl).trim();
     if (own(patch, 'apiKey')) settings.apiKey = text(patch.apiKey).trim();
     if (own(patch, 'apiModel')) settings.apiModel = text(patch.apiModel).trim();
@@ -321,6 +326,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
       current.selectedSevenDaysPresetId = '';
     }
     if (text(current.summaryPresetId).trim() === presetId) current.summaryPresetId = '';
+    if (text(current.recallPresetId).trim() === presetId) current.recallPresetId = '';
     notify();
     return true;
   };

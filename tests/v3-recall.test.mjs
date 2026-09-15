@@ -1798,7 +1798,7 @@ function cseLaggingReachable(removeDeltaId = 'delta-remove') {
   };
 }
 
-function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaultSelector = false, generateUtilityTask, queryBuilder = buildRecallQueryContext, saveChat = true, reachableReader, rootReader, prepareMemory, preparationTimeoutMs, snapshotHook, fingerprint, memoryStatus, realtimeOrigin, notifyUser, identityProjectionProvider, pluginVersion = TEST_PLUGIN_VERSION, prequel = null } = {}) {
+function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaultSelector = false, generateUtilityTask, queryBuilder = buildRecallQueryContext, saveChat = true, reachableReader, rootReader, prepareMemory, preparationTimeoutMs, snapshotHook, fingerprint, memoryStatus, realtimeOrigin, notifyUser, identityProjectionProvider, timeProjectionProvider, pluginVersion = TEST_PLUGIN_VERSION, prequel = null } = {}) {
   const prompts = [];
   const handlers = new Map();
   const userMessage = { is_user: true, is_system: false, mes: '阿裴，我们回钟楼赴约。' };
@@ -1832,6 +1832,7 @@ function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaul
     ...(realtimeOrigin ? { realtimeOrigin } : {}),
     ...(notifyUser ? { notifyUser } : {}),
     ...(identityProjectionProvider ? { identityProjectionProvider } : {}),
+    ...(timeProjectionProvider ? { timeProjectionProvider } : {}),
     ...(prepareMemory ? { prepareMemory } : {}),
     ...(preparationTimeoutMs ? { preparationTimeoutMs } : {}),
     ...(fingerprint ? { fingerprint } : {}),
@@ -1850,6 +1851,29 @@ function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaul
 }
 
 const latestPromptValue = (prompts, slot) => prompts.filter(call => call[0] === slot).at(-1)?.[1];
+
+test('签名时间校正首次提交与回执复用保留原CSE，原CSE篡改仍拒绝', async () => {
+  const raw = reachable(); let selections = 0;
+  const sourceReader = ({ now }) => readRecallSource({ now, store: { readReachable: async () => structuredClone(raw) } });
+  const harness = createRuntimeHarness({ sourceReader, reachableReader: async () => structuredClone(raw),
+    timeProjectionProvider: async source => {
+      const state = source.currentState[0].situational[0];
+      return { fingerprint: 'fixed-time-reference', corrections: { [`${state.stateId}|${PERSON}|${state.sourceFloorId}`]: { text: '原观察仍疲惫；当前推测可能恢复', itemId: 'time-item' } }, reminders: [] };
+    }, selector: input => { selections += 1; return selectRecall(input); } });
+  const initial = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  const receipt = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
+  assert.equal(initial.lastRecall.status, 'ready');
+  assert.equal(receipt.selectedStates[0].text, '始终记得雨夜承诺');
+  assert.match(receipt.injectionText, /\[时间校正\].*当前推测可能恢复/u);
+  const projected = projectInlineRecallReceipt(receipt);
+  assert.equal(projected.timeReferenceItems.length, 1);
+  assert.equal(projected.timeReferenceItems[0], receipt.injectionText.split('\n').find(line => line.startsWith('- [时间校正] ')).slice(2));
+  const reused = await harness.runtime.intercept(harness.chat, 12000, null, 'continue');
+  assert.equal(reused.lastRecall.reusedReceipt, true); assert.equal(selections, 1);
+  raw.stateDeltas[0].subjectSnapshots[0].situational[0].text = '原CSE真实变更';
+  const changed = await harness.runtime.intercept(harness.chat, 12000, null, 'continue');
+  assert.equal(changed.lastRecall.reusedReceipt, false); assert.equal(selections, 2);
+});
 
 test('ready runtime 将实际前情预算传给 LLM selector，双槽合计不超过原总预算且 stop/disable 同步清理', async () => {
   let selectorInput = null;

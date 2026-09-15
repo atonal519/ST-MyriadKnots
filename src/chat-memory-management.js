@@ -1,5 +1,5 @@
 import { CHAT_IDENTITY_COLLECTION } from './chat-identity.js';
-import { isUuid } from './host-context.js';
+import { isUuid, readHostState } from './host-context.js';
 import { V3_ROOT_RECORD_ID } from './v3/foundation-store.js';
 import { MESSAGE_FLOOR_ANCHOR_KEY } from './v3/message-floor-anchor.js';
 import { publicErrorMessage } from './public-error.js';
@@ -18,10 +18,12 @@ export function createChatMemoryManagement({
   client,
   session,
   hostAdapter,
+  contextProvider = () => hostAdapter.snapshot().context,
   foundationRuntime,
   memoryRuntime,
   recallRuntime,
   peopleRuntime,
+  timeRuntime,
   autoHideController,
   isMainGenerationActive = () => false,
   fetchImpl = globalThis.fetch,
@@ -31,6 +33,7 @@ export function createChatMemoryManagement({
     throw new TypeError('当前聊天记忆删除依赖无效');
   }
   let active = null;
+  let rebuilding = null;
   let pending = null;
   let lastResult = null;
   const subscribers = new Set();
@@ -52,7 +55,7 @@ export function createChatMemoryManagement({
       error: scopedPending?.error ?? null,
       deletedCount: scopedPending?.deletedCount ?? (scopedResult ? lastResult.deletedCount : 0),
       blockedByOtherChat: Boolean((pending && !scopedPending) || (active && !scopedActive)),
-      workBusy: busy(),
+      workBusy: busy() || rebuilding !== null,
     });
   };
   const notify = () => { const state = getState(); for (const listener of subscribers) { try { listener(state); } catch { /* UI listener isolation */ } } return state; };
@@ -106,7 +109,7 @@ export function createChatMemoryManagement({
     || (Array.isArray(message?.swipe_info) && message.swipe_info.some(swipe => MEMORY_MESSAGE_KEYS.some(key => Object.hasOwn(swipe?.extra ?? {}, key))));
   const hasValidAutoHideMarker = extra => extra?.[AUTO_HIDE_KEY]?.schemaVersion === 1 && isUuid(extra[AUTO_HIDE_KEY].chatId);
 
-  async function clearMessageMemoryKeys(identity) {
+  async function clearMessageMemoryKeys(identity, assertOwner) {
     const snapshot = currentHost(identity);
     const changed = [];
     for (const [messageIndex, message] of snapshot.chat.entries()) {
@@ -129,8 +132,10 @@ export function createChatMemoryManagement({
     try {
       if (typeof snapshot.context?.saveChat !== 'function') throw errorWith('QQJ_DELETE_CHAT_SAVE_UNAVAILABLE', '宿主不支持保存聊天记忆标识清理结果。');
       await snapshot.context.saveChat();
+      assertOwner?.();
       currentHost(identity);
       const persisted = await readPersistedChat(identity);
+      assertOwner?.();
       const restoredIndexes = new Set(changed.filter(item => item.restoreVisibility).map(item => item.messageIndex));
       if (persisted.messages.length !== snapshot.chat.length || persisted.messages.some(hasMemoryKeys)
         || persisted.messages.some((message, index) => restoredIndexes.has(index) && message?.is_system !== false)) {
@@ -158,22 +163,28 @@ export function createChatMemoryManagement({
     }
   }
 
-  async function clearMetadata(identity) {
+  async function clearMetadata(identity, { clearPrequel = false, assertOwner } = {}) {
     const snapshot = currentHost(identity);
     const context = snapshot.context;
     const metadata = context.chatMetadata;
     const previous = clone(metadata.qianqianjie);
+    const hadPrequel = Object.hasOwn(metadata, 'qianqianjiePrequel');
+    const previousPrequel = metadata.qianqianjiePrequel;
     delete metadata.qianqianjie;
+    if (clearPrequel) delete metadata.qianqianjiePrequel;
     try {
       if (typeof context.saveChatMetadata === 'function') {
         if (await context.saveChatMetadata() !== true) throw errorWith('QQJ_DELETE_METADATA_SAVE_FAILED', '聊天元数据未能持久化。');
       } else if (typeof context.saveMetadata === 'function') await context.saveMetadata();
       else throw errorWith('QQJ_DELETE_METADATA_SAVE_UNAVAILABLE', '宿主不支持保存聊天元数据。');
-      if (context.chatMetadata?.qianqianjie !== undefined) throw errorWith('QQJ_DELETE_METADATA_VERIFY_FAILED', '聊天元数据清理后未能读回。');
+      assertOwner?.();
+      if (context.chatMetadata?.qianqianjie !== undefined || (clearPrequel && context.chatMetadata?.qianqianjiePrequel !== undefined)) throw errorWith('QQJ_DELETE_METADATA_VERIFY_FAILED', '聊天元数据清理后未能读回。');
       const persisted = await readPersistedChat(identity, { requireMetadata: false });
-      if (persisted.metadata?.qianqianjie !== undefined) throw errorWith('QQJ_DELETE_METADATA_VERIFY_FAILED', '聊天元数据没有完成持久化；原身份已保留，可重试。');
+      assertOwner?.();
+      if (persisted.metadata?.qianqianjie !== undefined || (clearPrequel && persisted.metadata?.qianqianjiePrequel !== undefined)) throw errorWith('QQJ_DELETE_METADATA_VERIFY_FAILED', '聊天元数据没有完成持久化；原身份已保留，可重试。');
     } catch (error) {
       metadata.qianqianjie = previous;
+      if (clearPrequel && hadPrequel) metadata.qianqianjiePrequel = previousPrequel;
       throw error;
     }
   }
@@ -189,39 +200,61 @@ export function createChatMemoryManagement({
   async function perform(operation) {
     const { identity, controller } = operation;
     const collection = `chat-${identity.chatId}`;
-    currentHost(identity);
+    const assertCurrent = () => { currentHost(identity); operation.assertOwner?.(); };
+    assertCurrent();
     invalidateRuntimes();
+    await timeRuntime?.stop?.();
+    assertCurrent();
     await autoHideController.stop();
-    currentHost(identity);
+    assertCurrent();
 
     operation.phase = 'deletingRecords'; notify();
     const listed = await client.list(collection, { signal: controller.signal });
+    assertCurrent();
     if (!Array.isArray(listed)) throw errorWith('QQJ_DELETE_LIST_INVALID', '后端没有返回可核对的记录清单。');
     const records = [...listed];
     const regular = records.filter(item => item?.recordId !== V3_ROOT_RECORD_ID);
     const roots = records.filter(item => item?.recordId === V3_ROOT_RECORD_ID);
-    for (const envelope of [...regular, ...roots]) {
-      currentHost(identity);
+    let cursor = 0, firstError = null;
+    await Promise.all(Array.from({ length: Math.min(4, regular.length) }, async () => {
+      while (!firstError && cursor < regular.length) {
+        const envelope = regular[cursor++];
+        try {
+          assertCurrent();
+          await removeEnvelope(collection, envelope, controller.signal);
+          operation.deletedCount += 1;
+          assertCurrent();
+        } catch (error) { firstError ??= error; }
+      }
+    }));
+    if (firstError) throw firstError;
+    for (const envelope of roots) {
+      assertCurrent();
       await removeEnvelope(collection, envelope, controller.signal);
       operation.deletedCount += 1;
+      assertCurrent();
     }
 
     operation.phase = 'deletingBinding'; notify();
     try {
       const binding = await client.get(CHAT_IDENTITY_COLLECTION, `binding-${identity.chatId}`);
+      assertCurrent();
       await removeEnvelope(CHAT_IDENTITY_COLLECTION, { ...binding, recordId: `binding-${identity.chatId}` }, controller.signal);
       operation.deletedCount += 1;
+      assertCurrent();
     } catch (error) { if (error?.status !== 404) throw error; }
 
     operation.phase = 'clearingHost'; notify();
-    await clearMessageMemoryKeys(identity);
-    await clearMetadata(identity);
+    assertCurrent();
+    await clearMessageMemoryKeys(identity, operation.assertOwner);
+    assertCurrent();
+    await clearMetadata(identity, operation);
     invalidateRuntimes(identity.chatId);
     session.resume(identity.chatId);
     return Object.freeze({ status: 'completed', hostChatId: identity.hostChatId, chatId: identity.chatId, deletedCount: operation.deletedCount });
   }
 
-  function deleteCurrent() {
+  function deleteCurrent({ clearPrequel = false, assertOwner = null } = {}) {
     if (active) return inCurrentHost(active.identity) ? active.promise : Promise.reject(errorWith('QQJ_DELETE_OTHER_CHAT_ACTIVE', '另一聊天正在删除记忆；当前聊天没有执行删除。'));
     let identity;
     try {
@@ -231,21 +264,50 @@ export function createChatMemoryManagement({
       if (!pending && busy()) throw errorWith('QQJ_DELETE_BUSY', '当前正在生成或处理记忆，请等待完成后再删除。');
       if (!pending) session.suspend(identity.chatId);
     } catch (error) { return Promise.reject(error); }
-    const operation = { identity, controller: new AbortController(), phase: 'starting', deletedCount: pending?.deletedCount ?? 0, promise: null };
+    const operation = { identity, assertOwner: assertOwner ?? pending?.assertOwner, clearPrequel: clearPrequel || pending?.clearPrequel === true, controller: new AbortController(), phase: 'starting', deletedCount: pending?.deletedCount ?? 0, promise: null };
     active = operation; pending = null; lastResult = null; notify();
     operation.promise = perform(operation).then(result => {
       lastResult = result;
       return result;
     }).catch(error => {
-      pending = Object.freeze({ identity, error: publicError(error), deletedCount: operation.deletedCount });
+      pending = Object.freeze({ identity, assertOwner: operation.assertOwner, clearPrequel: operation.clearPrequel, error: publicError(error), deletedCount: operation.deletedCount });
       logger?.warn?.('[qianqianjie] current chat memory deletion incomplete', { code: error?.code ?? error?.name ?? 'QQJ_DELETE_FAILED' });
       throw error;
     }).finally(() => { if (active === operation) active = null; notify(); });
     return operation.promise;
   }
 
+  function fullRebuild(expectedChatId) {
+    const owner = readHostState(contextProvider());
+    if (!owner.ok || (expectedChatId && owner.chatId !== expectedChatId)) return Promise.reject(errorWith('QQJ_REBUILD_CHAT_CHANGED', '当前聊天身份已经变化，完全重构未开始。'));
+    const sameOwner = () => {
+      const current = readHostState(contextProvider());
+      if (!current.ok || current.hostChatId !== owner.hostChatId || current.characterAvatar !== owner.characterAvatar || current.personaAvatar !== owner.personaAvatar || isMainGenerationActive()) throw errorWith('QQJ_REBUILD_CHAT_CHANGED', '当前聊天或生成状态已经变化，完全重构已停止。');
+    };
+    if (rebuilding) return rebuilding.hostChatId === owner.hostChatId ? rebuilding.promise : Promise.reject(errorWith('QQJ_REBUILD_BUSY', '另一聊天正在完全重构。'));
+    const operation = { hostChatId: owner.hostChatId, promise: null };
+    rebuilding = operation; notify();
+    operation.promise = (async () => {
+      sameOwner();
+      if (!pending) {
+        try { session.identity(); }
+        catch { await session.prepare(); sameOwner(); }
+      }
+      if (owner.chatId && readHostState(contextProvider()).chatId !== owner.chatId) throw errorWith('QQJ_REBUILD_CHAT_CHANGED', '确认的聊天身份已经变化，未删除新身份的数据。');
+      await deleteCurrent({ clearPrequel: true, assertOwner: sameOwner });
+      lastResult = null; notify();
+      sameOwner();
+      const prepared = await session.prepare();
+      sameOwner();
+      if (prepared?.status !== 'ready') throw errorWith('QQJ_REBUILD_IDENTITY_NOT_READY', '新聊天身份未完成准备，完全重构没有开始生成。');
+      return memoryRuntime.startHistoricalRebuild();
+    })().finally(() => { if (rebuilding === operation) rebuilding = null; notify(); });
+    return operation.promise;
+  }
+
   return Object.freeze({
     deleteCurrent,
+    fullRebuild,
     getState,
     subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('删除状态 listener 无效'); subscribers.add(listener); return () => subscribers.delete(listener); },
   });

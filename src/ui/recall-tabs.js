@@ -155,6 +155,17 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     progression.append(list); events.append(progression);
   }
 
+  if (projection.timeReferenceItems?.length) {
+    const reference = node('details', 'time-progression');
+    reference.append(node('summary', '', `本轮时间参考（${projection.timeReferenceItems.length}条）`));
+    const list = node('div', 'time-progression-list');
+    for (const text of projection.timeReferenceItems) {
+      const entry = node('article', 'time-progression-item');
+      entry.append(node('p', 'time-progression-copy', text)); list.append(entry);
+    }
+    reference.append(list); events.append(reference);
+  }
+
   const identity = value => value.subjectEntityId || `name:${value.subject}`;
   const statesByPerson = new Map();
   for (const state of projection.stateItems ?? []) {

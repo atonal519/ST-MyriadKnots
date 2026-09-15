@@ -157,6 +157,7 @@ export function createFoundationRuntime({
   now = () => new Date(),
   newUuid = newIdentityUuid,
   logger = console,
+  fetchImpl = globalThis.fetch,
 } = {}) {
   if (typeof hostAdapter?.snapshot !== 'function') throw new TypeError('V3 runtime HostAdapter 无效');
   if (!store || ['readReachable', 'readRecord', 'putRecord', 'replaceRecord', 'settleRun', 'commitRoot', 'invalidate', 'recordKey'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 runtime store 无效');
@@ -171,6 +172,7 @@ export function createFoundationRuntime({
   let inspectionScheduled = null;
   let dirtyReason = null;
   let dirtyStableThrough = null;
+  let dirtyTailDeletion = null;
   const requestConfirmations = new Map();
   let bound = false;
   let lastRun = null;
@@ -234,6 +236,7 @@ export function createFoundationRuntime({
     inspectionScheduled = null;
     dirtyReason = null;
     dirtyStableThrough = null;
+    dirtyTailDeletion = null;
     cache = null;
     pending = null;
     unregisteredCandidates = Object.freeze([]);
@@ -579,6 +582,56 @@ export function createFoundationRuntime({
     return null;
   }
 
+  function tailDeletionMatches(evidence, candidates, floors, stableCount) {
+    if (!evidence || evidence.epoch !== sessionEpoch || !Number.isSafeInteger(evidence.newLen) || evidence.newLen < 0) return false;
+    let captured;
+    try { captured = capture(); } catch { return false; }
+    if (JSON.stringify(captured.identity) !== JSON.stringify(evidence.identity) || captured.host.chat.length !== evidence.newLen
+      || stableCount !== candidates.length || candidates.length >= floors.length) return false;
+    const bindings = matchFloorCandidates(floors, candidates);
+    return !bindings.issue && candidates.every((candidate, index) => {
+      const match = bindings.candidateMatches.get(index);
+      return match?.floor.id === floors[index].id && match.locatorMatches
+        && match.rawFingerprintMatches && match.canonicalFingerprintMatches;
+    }) && floors.slice(candidates.length).every(floor => Number.isSafeInteger(floor.hostLocator?.messageIndex)
+      && floor.hostLocator.messageIndex >= evidence.newLen);
+  }
+
+  // Only the user refresh may read the complete saved chat to establish a
+  // deletion proof. Opening a page remains a projection-only inspection.
+  async function recoverTailDeletion() {
+    const inspected = await inspect('manualTailRecovery', { allowCached: false });
+    if (inspected.status !== 'needsReview' || inspected.reviewReason?.code !== 'stableCountMismatch'
+      || activeOperation || typeof fetchImpl !== 'function') return publicState;
+    let captured;
+    try { captured = capture(); } catch { return publicState; }
+    if (captured.host.context.groupId !== null && captured.host.context.groupId !== undefined) return publicState;
+    const evidence = { identity: captured.identity, epoch: sessionEpoch, newLen: captured.host.chat.length };
+    const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions(), chatId: captured.identity.chatId });
+    if (!tailDeletionMatches(evidence, candidates, cache?.floors ?? [], stableCountFor(candidates, cache?.floors ?? [], false))) return publicState;
+    const messageSnapshot = messages => JSON.stringify(messages.map(message => ({
+      is_user: message?.is_user, is_system: message?.is_system, mes: message?.mes,
+      swipes: message?.swipes, swipe_id: message?.swipe_id, send_date: message?.send_date,
+      type: message?.extra?.type, anchor: message?.extra?.qianqianjie_floor,
+    })));
+    const before = messageSnapshot(captured.host.chat);
+    try {
+      const context = captured.host.context;
+      const character = context.characters?.[context.characterId];
+      const response = await fetchImpl('/api/chats/get', { method: 'POST', cache: 'no-cache',
+        headers: context.getRequestHeaders?.() ?? {}, body: JSON.stringify({ ch_name: String(character?.name ?? context.name2 ?? ''),
+          file_name: captured.identity.hostChatId, avatar_url: captured.identity.characterLocator }) });
+      if (!response?.ok) return publicState;
+      const payload = await response.json();
+      if (!Array.isArray(payload) || payload[0]?.chat_metadata?.qianqianjie?.chatId !== captured.identity.chatId
+        || payload.length - 1 !== evidence.newLen || messageSnapshot(payload.slice(1)) !== before) return publicState;
+      const after = capture();
+      if (evidence.epoch !== sessionEpoch || JSON.stringify(after.identity) !== JSON.stringify(evidence.identity)
+        || messageSnapshot(after.host.chat) !== before) return publicState;
+      return reconcile('manualTailRecovery', { tailDeletion: evidence });
+    } catch { return publicState; }
+  }
+
   async function seal(operation, { candidates, stableCount, confirmLatest = false, stableThrough = operation?.stableThrough ?? null, sourceSnapshot = null, rebaseAttempt = 0 }) {
     const snapshot = sourceSnapshot ?? await foundationInputSnapshot(candidates, stableCount);
     const existing = cache.floors;
@@ -601,7 +654,7 @@ export function createFoundationRuntime({
     }
     const removedFloorIds = existing.filter(floor => !usedFloorIds.has(floor.id)).map(floor => floor.id);
     const destructiveRemoval = stableCandidates.length < existing.length || removedFloorIds.some(floorId => memoryFloorIds.has(floorId));
-    if (destructiveRemoval && operation.chatComplete !== true) throw statusError('needsReview', '当前聊天没有完整加载证明，未把暂时不可见的消息当作已删除。');
+    if (destructiveRemoval && operation.chatComplete !== true && !(operation.chatComplete == null && tailDeletionMatches(operation.tailDeletion, candidates, existing, stableCount))) throw statusError('needsReview', '当前聊天没有完整加载证明，未把暂时不可见的消息当作已删除。');
     const locatorChanged = existing.length === stableCandidates.length && existing.some((floor, index) => !sameLocator(floor.hostLocator, stableCandidates[index]?.hostLocator));
     const identityChanged = existing.length !== aligned.length || existing.some((floor, index) => aligned[index]?.id !== floor.id);
     if (!identityChanged && !locatorChanged && !cache.indexesMissing
@@ -780,16 +833,17 @@ export function createFoundationRuntime({
     return publishOperation(operation, 'ready');
   }
 
-  async function reconcile(reason = 'manualRefresh', { confirmLatest = false, stableThrough = null } = {}) {
+  async function reconcile(reason = 'manualRefresh', { confirmLatest = false, stableThrough = null, tailDeletion = null } = {}) {
     if (!enabled()) return publish('disabled');
     if (activeOperation) {
       dirtyReason = reason;
       if (stableThrough) dirtyStableThrough = stableThrough;
+      if (tailDeletion) dirtyTailDeletion = tailDeletion;
       return activeOperation.promise;
     }
     const operation = {
       id: newUuid(), chatId: null, epoch: sessionEpoch, controller: new AbortController(), reason, phase: 'capturing',
-      startedAt: timestamp(now()), promise: null, runBase: null, runRecord: null, runRevision: 0, stableThrough,
+      startedAt: timestamp(now()), promise: null, runBase: null, runRecord: null, runRevision: 0, stableThrough, tailDeletion,
     };
     activeOperation = operation;
     publishOperation(operation, 'running');
@@ -859,9 +913,11 @@ export function createFoundationRuntime({
         if (dirtyReason && enabled()) {
           const nextReason = dirtyReason;
           const nextStableThrough = dirtyStableThrough;
+          const nextTailDeletion = dirtyTailDeletion;
           dirtyReason = null;
           dirtyStableThrough = null;
-          Promise.resolve().then(() => reconcile(nextReason, { stableThrough: nextStableThrough })).catch(error => { lastError = publicErrorMessage(error, { fallback: '后端数据同步任务启动失败，请稍后重试。' }); publish('error'); });
+          dirtyTailDeletion = null;
+          Promise.resolve().then(() => reconcile(nextReason, { stableThrough: nextStableThrough, tailDeletion: nextTailDeletion })).catch(error => { lastError = publicErrorMessage(error, { fallback: '后端数据同步任务启动失败，请稍后重试。' }); publish('error'); });
         }
       }
     })();
@@ -869,14 +925,16 @@ export function createFoundationRuntime({
     return operation.promise;
   }
 
-  function schedule(reason) {
+  function schedule(reason, tailDeletion = null) {
     if (!enabled()) return Promise.resolve(publish('disabled'));
     dirtyReason = reason;
+    if (tailDeletion) dirtyTailDeletion = tailDeletion;
     if (scheduled) return scheduled;
     scheduled = Promise.resolve().then(() => {
       scheduled = null;
       const next = dirtyReason; dirtyReason = null;
-      return reconcile(next);
+      const nextTailDeletion = dirtyTailDeletion; dirtyTailDeletion = null;
+      return reconcile(next, { tailDeletion: nextTailDeletion });
     }).catch(error => {
       lastError = publicErrorMessage(error, { fallback: '后端数据同步任务启动失败，请稍后重试。' });
       logger?.warn?.('[qianqianjie] V3 foundation schedule failed', { code: error?.code ?? error?.name ?? 'V3_SCHEDULE_FAILED' });
@@ -922,9 +980,16 @@ export function createFoundationRuntime({
         }
         if (name === 'MORE_MESSAGES_LOADED') return;
         if (name === 'MESSAGE_SENT' && !validSentUserIndex(args[0])) return;
+        let tailDeletion = null;
+        if (name === 'MESSAGE_DELETED' && Number.isSafeInteger(args[0]) && args[0] >= 0) {
+          try {
+            const captured = capture();
+            if (captured.host.chat.length === args[0]) tailDeletion = { identity: captured.identity, epoch: sessionEpoch, newLen: args[0] };
+          } catch { /* identity not ready: no deletion proof */ }
+        }
         hostAdapter.mutationMetadata(args);
         const mayWrite = typeof allowAutomaticWrite !== 'function' || allowAutomaticWrite(name, args) === true;
-        void (mayWrite ? schedule(name) : scheduleInspect(name));
+        void (mayWrite ? schedule(name, tailDeletion) : scheduleInspect(name));
       });
     }
     bound = true;
@@ -970,6 +1035,7 @@ export function createFoundationRuntime({
     bind,
     start: () => enabled() ? reconcile('start') : Promise.resolve(publish('disabled')),
     inspect,
+    recoverTailDeletion,
     reconcile,
     refreshStatus: () => reconcile('manualRefresh'),
     stabilizeThrough: boundary => reconcile('earlyAssistantStarted', { stableThrough: boundary }),

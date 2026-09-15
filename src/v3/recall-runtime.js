@@ -565,7 +565,7 @@ function coveredBodyGuardsCurrent(guards, snapshot, sanitizerOptions) {
   });
 }
 
-export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = 5000, realtimeOrigin = () => false, notifyUser = null, sourceReader = readRecallSource, selector = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
+export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = 5000, realtimeOrigin = () => false, notifyUser = null, sourceReader = readRecallSource, selector = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, timeProjectionProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 recall host adapter 无效');
   if (typeof fingerprint !== 'function') throw new TypeError('V3 recall fingerprint 无效');
@@ -598,7 +598,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const code = source?.error?.code ?? (status === 'timeout' ? 'V3_RECALL_MEMORY_PREPARATION_TIMEOUT' : 'V3_RECALL_SOURCE_UNAVAILABLE');
     return Object.assign(new Error(detail || (status === 'timeout' ? '当前聊天记忆在 5 秒内未准备完成。' : '当前聊天记忆暂时无法读取。')), { code });
   };
-  async function preparedSource(snapshot, sanitizerSnapshot, { fresh = false, operation = null } = {}) {
+  async function basePreparedSource(snapshot, sanitizerSnapshot, { fresh = false, operation = null } = {}) {
     const identityProjection = typeof identityProjectionProvider === 'function' ? await identityProjectionProvider() : null;
     if (typeof prepareMemory === 'function') {
       let timer = null;
@@ -632,6 +632,14 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       return Object.freeze({ status, sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: 'memoryPreparation' }) });
     }
     return sourceReader({ store, now, hostSnapshot: snapshot, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin(), identityProjection: identityProjection?.data ?? identityProjection });
+  }
+  async function preparedSource(snapshot, sanitizerSnapshot, options = {}) {
+    const source = await basePreparedSource(snapshot, sanitizerSnapshot, options);
+    if (source?.status !== 'ready' || typeof timeProjectionProvider !== 'function') return source;
+    let timeProjection = null;
+    try { timeProjection = await timeProjectionProvider(source); }
+    catch (error) { logger?.warn?.('[qianqianjie] optional time projection failed', { code: error?.code ?? error?.name ?? 'QQJ_TIME_READ_FAILED' }); }
+    return Object.freeze({ ...source, timeProjection });
   }
   const notify = () => { const state = getState(); for (const listener of subscribers) { try { listener(state); } catch { /* listener isolation */ } } return state; };
   const promptSlot = (slot, value, owner = null, checkedContext = null, binding = null) => {
@@ -849,6 +857,12 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (currentSource.narrativeGeneration !== source.narrativeGeneration) return { ok: false, reason: 'narrativeChanged' };
       currentSource = Object.freeze({ ...currentSource, bodyMatch: await attachCoreBodyMatch(currentSource, operation.coreBodyWitness, before, operation.sanitizerOptions, fingerprint) });
     }
+    if (typeof timeProjectionProvider === 'function') {
+      let liveTime = null;
+      try { liveTime = await timeProjectionProvider(currentSource); }
+      catch (error) { logger?.warn?.('[qianqianjie] optional time projection check failed', { code: error?.code ?? error?.name ?? 'QQJ_TIME_READ_FAILED' }); }
+      if ((liveTime?.fingerprint ?? null) !== (source.timeProjection?.fingerprint ?? null)) return { ok: false, reason: 'selectedRefsChanged' };
+    }
     if (!sourceRefsValid({ selectedFloors, selectedStates, selectedCseChanges }, currentSource)) return { ok: false, reason: 'selectedRefsChanged' };
     const selectedSourceGuards = captureSelectedSourceGuards({ selectedFloors, selectedStates, selectedCseChanges }, currentSource, before);
     if (selectedSourceGuards === null) return { ok: false, reason: 'selectedRefsChanged' };
@@ -972,9 +986,11 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       const prequelQueryFingerprint = operation.prequelSelection.injectionText
         ? await fingerprint(JSON.stringify([baseQueryFingerprint, operation.prequelSelection.injectionText, operation.prequelSelection.estimatedTokens, operation.prequelSelection.estimatedCharacters]))
         : baseQueryFingerprint;
-      const queryFingerprint = hasIdentityProjection
+      const identityQueryFingerprint = hasIdentityProjection
         ? await fingerprint(JSON.stringify([prequelQueryFingerprint, projection]))
         : prequelQueryFingerprint;
+      const queryFingerprint = source.timeProjection?.fingerprint
+        ? await fingerprint(JSON.stringify([identityQueryFingerprint, source.timeProjection.fingerprint])) : identityQueryFingerprint;
       const afterSource = hostAdapter.snapshot();
       const afterUser = latestUser(afterSource);
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
@@ -1051,6 +1067,9 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         stages: selection.stages ? {
           ...clone(selection.stages),
           stateCount: Number.isSafeInteger(selection.stages.stateCount) ? selection.stages.stateCount : selection.states.length,
+          timeReminderCount: selection.stages.timeReminderCount ?? 0,
+          timeCorrectionCount: selection.stages.timeCorrectionCount ?? 0,
+          timeBudgetDropped: selection.stages.timeBudgetDropped ?? 0,
           currentStateCount: Number.isSafeInteger(selection.stages.currentStateCount) ? selection.stages.currentStateCount : selection.states.length,
           cseChangeCount: Number.isSafeInteger(selection.stages.cseChangeCount) ? selection.stages.cseChangeCount : (selection.cseChanges ?? []).length,
           stateProgressionCount: Number.isSafeInteger(selection.stages.stateProgressionCount) ? selection.stages.stateProgressionCount : (selection.stateProgressions ?? []).length,

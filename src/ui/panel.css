@@ -112,3 +112,7 @@ button:focus-visible,summary:focus-visible{outline:2px solid var(--knot);outline
 .panel:has(.qqj-manual-save-bar) .panel-resize-handle{background:var(--panel)}
 /* This follows the base display:grid rule so the mobile handle cannot reappear. */
 @media(max-width:640px){.panel>.panel-resize-handle{display:none}}
+
+
+#qqj-settings-time{justify-content:space-between}
+#qqj-recent-items[hidden]{display:none}

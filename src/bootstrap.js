@@ -12,8 +12,11 @@ export function bootstrap({
   onPluginEnabledChange,
   onStoryClockChange,
   onAutoHideChange,
+  onTimeEvolutionChange,
+  timeRuntime,
   subscribeDialogContextChange,
   isSevenDaysAvailable,
+  isSevenDaysLedgerInjectionEnabled,
   sourcePermissions,
   v3FoundationRuntime,
   v3RecallRuntime,
@@ -43,7 +46,7 @@ export function bootstrap({
   let panel, fab;
   const dialog = dialogFactory({ documentRef, $: globalThis.jQuery ?? globalThis.$, subscribeContextChange: subscribeDialogContextChange });
   if (dialog?.host) (documentRef.documentElement ?? documentRef.body).append(dialog.host);
-  const foundationView = v3FoundationViewFactory({ runtime: v3FoundationRuntime, recallRuntime: v3RecallRuntime, peopleRuntime: peopleWorkspaceRuntime, memoryManagement: chatMemoryManagement, sessionStateProvider, backendDiagnosticProvider, pluginVersion, uiDiagnosticProvider: () => panel?.getUiDiagnostic?.() ?? '{}', documentRef, confirmImpl: options => dialog.confirm(options), infoImpl: options => dialog.info(options), customImpl: options => dialog.custom(options) });
+  const foundationView = v3FoundationViewFactory({ runtime: v3FoundationRuntime, recallRuntime: v3RecallRuntime, peopleRuntime: peopleWorkspaceRuntime, timeRuntime, memoryManagement: chatMemoryManagement, sessionStateProvider, backendDiagnosticProvider, pluginVersion, uiDiagnosticProvider: () => panel?.getUiDiagnostic?.() ?? '{}', documentRef, confirmImpl: options => dialog.confirm(options), infoImpl: options => dialog.info(options), customImpl: options => dialog.custom(options) });
   const peopleProfilesView = peopleProfilesViewFactory({ runtime: peopleWorkspaceRuntime, sessionStateProvider, prepareSession, documentRef, dialog });
   const syncAppearance = value => { fab?.setAppearance?.(value); inlineRenderer?.setAppearance?.(value); };
   let pluginEnabled = settings?.isEnabled?.() !== false;
@@ -69,7 +72,9 @@ export function bootstrap({
     onPluginEnabledChange,
     onStoryClockChange,
     onAutoHideChange,
+    onTimeEvolutionChange,
     isSevenDaysAvailable,
+    isSevenDaysLedgerInjectionEnabled,
     dialog,
     onFabShowChange: () => syncFabVisibility(),
     onAppearanceChange: syncAppearance,

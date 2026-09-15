@@ -131,7 +131,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.1.28');
+  assert.equal(manifest.version, '0.2.0');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
@@ -231,6 +231,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const entrySource = await readFile(resolve(root, 'index.js'), 'utf8');
   const utilityTask = async () => ({ jsonData: 'utility' });
   const analysisTask = async () => ({ jsonData: 'analysis' });
+  const recallTask = async () => ({ jsonData: 'recall' });
 
   let v3MemoryOptions;
   let v3MemoryRuntime;
@@ -274,7 +275,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
     return module;
   };
   define('/scripts/personas.js', { user_avatar: 'me.png' });
-  define('/scripts/extensions.js', { extension_settings: { disabledExtensions: [] }, extensionNames: ['third-party/ST-SevenDaysCal'] });
+  const peerExtensionSettings = { disabledExtensions: [], 'schedule-planner': {} };
+  const peerExtensionNames = ['third-party/ST-SevenDaysCal'];
+  define('/scripts/extensions.js', { extension_settings: peerExtensionSettings, extensionNames: peerExtensionNames });
   const scriptModule = define('/script.js', { is_send_press: false, saveSettingsDebounced() {} });
   const groupModule = define('/scripts/group-chats.js', { is_group_generating: false });
   const nativeWorld = { entries: {} };
@@ -289,7 +292,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/api-routing.js', {
     createApiResolver: () => ({}),
     createApiTools: () => ({ abortAll() {} }),
-    createTaskRouter: () => ({ generateAnalysisTask: analysisTask, generateUtilityTask: utilityTask, abortAll() {} }),
+    createTaskRouter: () => ({ generateAnalysisTask: analysisTask, generateUtilityTask: utilityTask, generateRecallTask: recallTask, abortAll() {} }),
   });
   define('./src/compact-api-client.js', { createCompactApiClient: options => { compactOptions = options; return {}; } });
   define('./src/chat-session.js', { createChatSession: options => {
@@ -316,11 +319,16 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
     },
   });
   define('./src/source-permission.js', { createSourcePermissionController: () => ({}) });
-  define('./src/v3/host-adapter.js', { createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => ({ eventSource: productionEventSource, eventTypes: productionEventTypes, uuidv4, getRequestHeaders: () => ({ 'X-CSRF-Token': 'token' }) }), snapshot: () => ({}) }; } });
+  const productionHostContext = { eventSource: productionEventSource, eventTypes: productionEventTypes, uuidv4, getRequestHeaders: () => ({ 'X-CSRF-Token': 'token' }), groupId: null, characterId: 0, characters: [{ avatar: 'char.png' }] };
+  define('./src/v3/host-adapter.js', { createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => productionHostContext, snapshot: () => ({}) }; } });
   define('./src/v3/foundation-store.js', { createFoundationStore: () => ({}) });
   define('./src/v3/foundation-runtime.js', { createFoundationRuntime: options => { foundationOptions = options; return {}; } });
   const branchInitializer = async () => ({ status: 'inherited' });
   define('./src/v3/chat-branch-inheritance.js', { createChatBranchInitializer: options => { branchInitializerOptions = options; return branchInitializer; } });
+  let timeOptions;
+  const timeBatches = [];
+  const timeRuntime = { runBatch: receipt => { timeBatches.push(receipt); }, recallProjection: async () => null, stop: async () => {}, bind() {} };
+  define('./src/v3/time-runtime.js', { createTimeStore: () => ({}), createTimeRuntime: options => { timeOptions = options; return timeRuntime; } });
   define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() { backgroundStarts.push('memory'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, getState: () => ({}), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
   define('./src/v3/message-floor-anchor.js', { persistMessageFloorAnchors: persistAnchors });
   define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; v3RecallRuntime = { bind() {}, async setEnabled(value) { runtimeEnables.push(`recall:${value}`); }, async intercept() {}, getState: () => ({}), getPromptSnapshot: () => null }; return v3RecallRuntime; } });
@@ -344,6 +352,26 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   await new Promise(resolvePromise => setImmediate(resolvePromise));
 
   assert.equal(v3MemoryOptions.generateAnalysisTask, analysisTask);
+  assert.equal(timeOptions.generateAnalysisTask, analysisTask);
+  assert.equal(timeOptions.isEnabled(), false);
+  v3MemoryOptions.onMemoryBatchCommitted({ chatId: 'test' });
+  assert.equal(timeBatches.length, 1);
+  assert.equal(memoryManagementOptions.timeRuntime, timeRuntime);
+  const ledgerEnabled = bootstrapOptions.isSevenDaysLedgerInjectionEnabled;
+  const peer = peerExtensionSettings['schedule-planner'];
+  assert.equal(ledgerEnabled(), false, '共享预设对象不代表开启刻度注入');
+  peer.ledgerCaptureEnabled = true; assert.equal(ledgerEnabled(), false, '仅自动标注不冲突');
+  peer.ledgerInject = true; assert.equal(ledgerEnabled(), true, '点击时读取当前实际注入设置');
+  for (const setting of ['pluginEnabled', 'injectEnabled']) { peer[setting] = false; assert.equal(ledgerEnabled(), false); delete peer[setting]; }
+  peerExtensionSettings.disabledExtensions.push(peerExtensionNames[0]); assert.equal(ledgerEnabled(), false);
+  peerExtensionSettings.disabledExtensions.length = 0;
+  const installed = peerExtensionNames.pop(); assert.equal(ledgerEnabled(), false, '无安装不能仅按设置对象判冲突'); peerExtensionNames.push(installed);
+  peer.characterExcludeAvatars = ['char.png']; assert.equal(ledgerEnabled(), false, '当前单聊角色排除生效');
+  productionHostContext.groupId = 'group'; assert.equal(ledgerEnabled(), true, '群聊不套单人排除');
+  productionHostContext.groupId = null; productionHostContext.characters[0].avatar = ''; peer.characterExcludeAvatars.push(''); assert.equal(ledgerEnabled(), true, '空avatar不作为角色排除');
+  productionHostContext.characters[0].avatar = 'char.png'; peer.characterExcludeAvatars = 'prefix-char.png-suffix'; assert.equal(ledgerEnabled(), true, '非数组排除池不作字符串子串匹配'); peer.characterExcludeAvatars = [];
+  peer.ledgerInject = false; assert.equal(ledgerEnabled(), false);
+  assert.equal(typeof v3RecallOptions.timeProjectionProvider, 'function');
   assert.equal(v3MemoryOptions.generateUtilityTask, utilityTask);
   assert.notEqual(v3MemoryOptions.generateAnalysisTask, v3MemoryOptions.generateUtilityTask);
   assert.equal(await hostAdapterOptions.worldInfoBindings.loadWorldInfo('全局书'), nativeWorld);
@@ -427,7 +455,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(typeof publicMemoryBridgeOptions.sanitizerOptions, 'function');
   assert.ok(v3RecallOptions.store);
   assert.ok(v3RecallOptions.hostAdapter);
-  assert.equal(v3RecallOptions.generateUtilityTask, utilityTask);
+  assert.equal(v3RecallOptions.generateUtilityTask, recallTask);
   assert.equal(Object.hasOwn(v3RecallOptions, 'processingPrompt'), false, '召回链不得接入破限提示词');
   assert.equal(v3RecallOptions.pluginVersion, '0.1.9-test', '生产回执版本必须由 manifest.version 单一注入');
   assert.ok(autoHideOptions.hostAdapter); assert.equal(autoHideOptions.memoryRuntime, v3MemoryRuntime);
@@ -478,7 +506,7 @@ test('生产 bundle 不向现有消息楼插入节点、样式或楼卡专属订
   assert.equal(result.message.className, 'mes user-owned');
   assert.equal(result.styleAppendCalls, 0);
   assert.equal(result.observerInstances, 0);
-  assert.equal(result.eventRegistrations.get('chat'), 5, '保留 lifecycle、V3 foundation、V3 memory、V3 recall 与时间戳协调五份结构订阅');
+  assert.equal(result.eventRegistrations.get('chat'), 6, '保留 lifecycle、V3 foundation、V3 memory、V3 recall、时间推演与时间戳协调六份结构订阅');
   assert.equal(result.eventRegistrations.get('persona'), 1);
 });
 

@@ -480,7 +480,7 @@ test('批量整理按 personKey 独立接受合法项并准确报告遗漏、未
   assert.deepEqual(invalid.runtime.getState().profilesByEntityId, {});
 });
 
-test('当前人物重新整理仅请求一次并带旧 AI 资料，最新人工字段与人工清空不会被模型覆盖', async () => {
+test('当前人物重新整理仅请求一次且不带旧 AI 资料，最新人工字段与人工清空不会被模型覆盖', async () => {
   let calls = 0, request;
   const h = harness({ generate: async options => {
     calls += 1; request = JSON.parse(options.taskMessages[0].content);
@@ -492,14 +492,14 @@ test('当前人物重新整理仅请求一次并带旧 AI 资料，最新人工�
   await h.runtime.regenerateProfile(first.id);
   const profile = h.runtime.getState().profilesByEntityId[first.id];
   assert.equal(calls, 1); assert.deepEqual(request.people.map(item => item.personKey), ['person-1']);
-  assert.deepEqual(request.people[0].existingProfile, { background: '原背景' }); assert.deepEqual(request.people[0].manualProfile, { name: '原名', notes: '' }); assert.deepEqual(request.people[0].manualFields, ['name', 'notes']);
+  assert.deepEqual(request.people[0].existingProfile, {}); assert.deepEqual(request.people[0].manualProfile, { name: '原名', notes: '' }); assert.deepEqual(request.people[0].manualFields, ['name', 'notes']);
   assert.equal(Object.hasOwn(request.people[0].existingProfile, 'name'), false, '人工字段只走 manualProfile，不伪装成旧 AI 字段');
   assert.equal(Object.hasOwn(request.people[0].manualProfile, 'background'), false, '旧 AI 字段不混入人工资料');
   assert.equal(profile.name, '原名'); assert.equal(profile.notes, ''); assert.equal(profile.background, '模型新背景'); assert.equal(profile.gender, '女');
   assert.equal(h.runtime.getState().profilesByEntityId[second.id], undefined, '未授权的另一人物保持不变');
 });
 
-test('模型回复按字段 patch 合并：缺省保留、合法空值清除、错误类型只忽略本字段', async () => {
+test('主动重整替换旧AI：缺省及错误字段不继承，合法字段和空值按本轮保存', async () => {
   let mode = 'initial', calls = 0, patchRequest;
   const h = harness({ generate: async options => {
     calls += 1;
@@ -515,10 +515,10 @@ test('模型回复按字段 patch 合并：缺省保留、合法空值清除、�
   await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([id]); await h.runtime.generateMissingProfiles();
   mode = 'partial'; await h.runtime.regenerateProfile(id);
   let profile = h.runtime.getState().profilesByEntityId[id];
-  assert.equal(profile.name, '新名'); assert.equal(profile.aliases, '旧别名', '坏数组元素不得把旧 aliases 误清空');
-  assert.equal(profile.background, '旧背景'); assert.equal(profile.appearance, '旧外貌'); assert.equal(profile.notes, '旧补充');
+  assert.equal(profile.name, '新名'); assert.equal(profile.aliases, '', '重整不得因错误字段继承旧AI');
+  assert.equal(profile.background, ''); assert.equal(profile.appearance, ''); assert.equal(profile.notes, '');
   assert.equal(profile.personality, '', '合法空字符串表示明确清除'); assert.equal(profile.likes, '热茶');
-  assert.deepEqual(patchRequest.people[0].existingProfile, { name: '旧名', aliases: '旧别名', background: '旧背景', appearance: '旧外貌', personality: '旧性格', notes: '旧补充' });
+  assert.deepEqual(patchRequest.people[0].existingProfile, {});
   mode = 'clear'; await h.runtime.regenerateProfile(id);
   assert.equal(h.runtime.getState().profilesByEntityId[id].aliases, '', '合法空数组表示明确清除 aliases');
   mode = 'string'; await h.runtime.regenerateProfile(id);
@@ -551,7 +551,7 @@ test('模型 aliases 数组拼接超过 20000 字符时仅忽略别名字段并�
   await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([id]); await h.runtime.generateMissingProfiles();
   mode = 'patch'; await h.runtime.regenerateProfile(id);
   const profile = h.runtime.getState().profilesByEntityId[id];
-  assert.equal(profile.aliases, '旧别名');
+  assert.equal(profile.aliases, '');
   assert.equal(profile.name, '新名'); assert.equal(profile.background, '新背景');
 });
 
@@ -842,4 +842,55 @@ test('自动增量失败不自我重排，invalidate 后旧 finally 不复活待
   await waitFor(() => calls === 2 && h.runtime.getState().active?.kind === 'generating');
   h.runtime.invalidate(); release();
   await new Promise(resolve => setTimeout(resolve, 30)); assert.equal(calls, 2, '失效后的旧收尾不得创建新任务');
+});
+
+test('主动重整多批只累计本轮AI，失败不提前清旧档，重试从空重新开始', async () => {
+  let mode = 'failure', calls = 0; const requests = [];
+  const h = harness({ sourceCandidates: [{ id: 'worldbook:long', kind: 'worldbook', world: '长资料', label: '人物资料', content: '设'.repeat(PEOPLE_PROFILE_INPUT_CHAR_BUDGET * 2) }],
+    generate: async options => {
+      const request = JSON.parse(options.taskMessages[0].content); requests.push(request); calls++;
+      if (mode === 'failure') throw new Error('首批失败');
+      if (mode === 'laterFailure' && calls === 2) throw new Error('后批失败');
+      return { jsonData: { profiles: [{ personKey: 'person-1', ...(calls === 1 ? { name: '本轮新名' } : { likes: '本轮喜好' }) }] } };
+    } });
+  await h.runtime.refresh(); const id = h.peopleEntities[0].id;
+  await h.runtime.setSelectedEntityIds([id]); await h.runtime.setPersonOrderEntityIds([id]);
+  await h.runtime.saveProfile(id, { name: '上次AI名', gender: '上次AI性别', background: '上次AI背景', notes: '人工保留' }, { manualFields: ['notes'] });
+  await h.runtime.saveAvatar(id, 'data:image/png;base64,AAAA');
+  const original = structuredClone(h.runtime.getState().profilesByEntityId[id]);
+  await assert.rejects(h.runtime.regenerateProfile(id), /首批失败/);
+  assert.deepEqual(h.runtime.getState().profilesByEntityId[id], original);
+  assert.deepEqual(requests[0].people[0].existingProfile, {});
+  mode = 'laterFailure'; calls = 0; requests.length = 0;
+  await assert.rejects(h.runtime.regenerateProfile(id), /后批失败/);
+  assert.deepEqual(requests[0].people[0].existingProfile, {});
+  assert.deepEqual(requests[1].people[0].existingProfile, { name: '本轮新名' });
+  assert.equal(h.runtime.getState().profilesByEntityId[id].background, '');
+  mode = 'success'; calls = 0; requests.length = 0;
+  await h.runtime.regenerateProfile(id);
+  assert.ok(calls > 1); assert.deepEqual(requests[0].people[0].existingProfile, {}, '失败后用户重试仍从空重新开始');
+  assert.ok(requests.every(request => !JSON.stringify(request).includes('上次AI')));
+  assert.ok(requests.every(request => request.people[0].manualProfile.notes === '人工保留'));
+  assert.equal(requests[1].people[0].existingProfile.name, '本轮新名');
+  const state = h.runtime.getState(), profile = state.profilesByEntityId[id];
+  assert.equal(profile.name, '本轮新名'); assert.equal(profile.likes, '本轮喜好'); assert.equal(profile.gender, ''); assert.equal(profile.background, '');
+  assert.equal(profile.notes, '人工保留'); assert.deepEqual(profile.manualFields, ['notes']);
+  assert.equal(state.avatarsByEntityId[id], 'data:image/png;base64,AAAA');
+  assert.deepEqual(state.selectedEntityIds, [id]); assert.deepEqual(state.personOrderEntityIds, [id]);
+});
+
+test('自动增量仍输入旧AI档案，模型缺省字段与人工字段继续保留', async () => {
+  let request, calls = 0;
+  const h = harness({ generate: async options => { calls++; request = JSON.parse(options.taskMessages[0].content); return { jsonData: { profiles: [{ personKey: 'person-1', likes: '新的爱好' }] } }; } });
+  const id = h.peopleEntities[0].id, floorId = ids[14], memoryId = ids[15];
+  h.setReachable({ ...h.reachable, floors: [{ id: floorId, assistantSeq: 1, content: { canonicalContent: '正文' } }],
+    floorMemories: [{ id: memoryId, floorId, recordStatus: 'active', summary: { aiText: '人物1新增一项爱好。' }, participants: [{ entityId: id }] }] });
+  await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([id]);
+  await h.runtime.saveProfile(id, { name: '旧AI姓名', gender: '旧AI性别', background: '旧AI背景', notes: '人工补充' }, { manualFields: ['notes'] });
+  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId, memoryId });
+  await waitFor(() => calls === 1 && h.runtime.getState().active === null);
+  assert.deepEqual(request.people[0].existingProfile, { name: '旧AI姓名', gender: '旧AI性别', background: '旧AI背景' });
+  const profile = h.runtime.getState().profilesByEntityId[id];
+  assert.equal(profile.name, '旧AI姓名'); assert.equal(profile.gender, '旧AI性别'); assert.equal(profile.background, '旧AI背景');
+  assert.equal(profile.likes, '新的爱好'); assert.equal(profile.notes, '人工补充'); assert.equal(calls, 1);
 });

@@ -263,6 +263,43 @@ test('无构画设置可从 UI 点击已存预设，并让后续分析与摘要�
   ]);
 });
 
+test('召回跟随链编辑真实目标，另存与删除只切召回角色', async () => {
+  const extensionSettings = {};
+  const settings = createSettingsStore({ extensionSettings, save() {}, now: () => 2, random: () => 0.5 });
+  settings.saveMainConfig({ url: 'https://main.test/v1', key: 'M', model: 'main' });
+  settings.upsertSharedPreset('摘要', { url: 'https://summary.test/v1', key: 'S', model: 'summary' }, 'summary');
+  settings.setSummaryPresetId('summary');
+  const confirmations = [];
+  const mount = () => createApiSettings({ settings, apiTools: { fetchModels: async () => [], testConnection: async () => ({}) }, documentRef, promptImpl: () => '召回专用', confirmImpl: options => { confirmations.push(options); return true; } }).node;
+  let node = mount();
+  await focusInline(fieldControl(node, '召回API（默认跟随摘要）'));
+  assert.equal(fieldControl(node, 'URL').value, 'https://summary.test/v1');
+  assert.match(node.textContent, /召回 API 跟随摘要.*保存会更新当前摘要配置/u);
+  fieldControl(node, 'URL').value = 'https://summary-edited.test/v1';
+  await node.find(n => n.textContent === '保存设置').fire('click');
+  assert.equal(settings.sharedPresets().find(item => item.id === 'summary').url, 'https://summary-edited.test/v1');
+  assert.equal(settings.mainConfig().url, 'https://main.test/v1');
+  await chooseInline(fieldControl(node, '摘要API（建议快速模型）'), '');
+  await focusInline(fieldControl(node, '召回API（默认跟随摘要）'));
+  assert.match(node.textContent, /召回 API 跟随摘要，摘要跟随分析/u);
+  assert.equal(fieldControl(node, 'URL').value, 'https://main.test/v1');
+  await chooseInline(fieldControl(node, '摘要API（建议快速模型）'), 'summary');
+  await focusInline(fieldControl(node, '召回API（默认跟随摘要）'));
+  fieldControl(node, 'URL').value = 'https://recall.test/v1';
+  await node.find(n => n.textContent === '另存为预设').fire('click');
+  const recallId = settings.get().recallPresetId;
+  assert.ok(recallId);
+  assert.equal(settings.summaryPresetId(), 'summary');
+  assert.equal(settings.get().apiMode, 'auto');
+  node = mount();
+  await focusInline(fieldControl(node, '召回API（默认跟随摘要）'));
+  assert.equal(fieldControl(node, 'URL').value, 'https://recall.test/v1');
+  await node.find(n => n.textContent === '删除当前预设').fire('click');
+  assert.equal(settings.get().recallPresetId, '');
+  assert.equal(settings.summaryPresetId(), 'summary');
+  assert.match(confirmations[0].note, /召回 API 将改为跟随摘要/u);
+});
+
 test('API 预设删除按当前编辑角色清理引用，取消/主配置/失效竞态均不误改', async () => {
   const mount = ({ analysisId = 'target', utilityId = 'keep', role = 'analysis', sevenDays = false, confirmImpl = () => true } = {}) => {
     const current = { apiMode: analysisId ? 'seven-preset' : 'auto', selectedSevenDaysPresetId: analysisId };

@@ -39,7 +39,9 @@ export function createPanel({
   onPluginEnabledChange,
   onStoryClockChange,
   onAutoHideChange,
+  onTimeEvolutionChange,
   isSevenDaysAvailable,
+  isSevenDaysLedgerInjectionEnabled,
   dialog,
   onFabShowChange,
   onAppearanceChange,
@@ -279,6 +281,28 @@ export function createPanel({
     page.append(general);
 
     const { drawer: memoryGroup, body: memoryBody } = groupOf('memory', '记忆设置');
+    const timeToggle = element('label', 'setting-switch');
+    timeToggle.id = 'qqj-settings-time';
+    const timeInput = element('input'); timeInput.type = 'checkbox'; timeInput.checked = settings.get().timeEvolutionEnabled === true;
+    timeInput.setAttribute('aria-label', '时间推演');
+    timeToggle.append(element('span', '', '开启时间推演'), timeInput);
+    timeToggle.addEventListener('click', event => event.stopPropagation());
+    timeInput.addEventListener('change', async () => {
+      if (timeInput.checked && settings.get().timeEvolutionEnabled !== true && isSevenDaysLedgerInjectionEnabled?.()) {
+        const confirmationEpoch = activationEpoch;
+        timeInput.checked = false;
+        timeInput.disabled = true;
+        let confirmed;
+        try {
+          confirmed = await dialog?.confirm?.({ title: '时间参考重复注入', body: '【构画】的【刻度】注入已开启，与时间推演功能重叠。建议只保留一方的注入，避免重复注入。是否仍要开启时间推演？', confirmText: '仍要开启', cancelText: '取消' });
+        } finally { timeInput.disabled = false; }
+        if (!confirmed || confirmationEpoch !== activationEpoch || host.hidden) return;
+        timeInput.checked = true;
+      }
+      settings.update({ timeEvolutionEnabled: timeInput.checked });
+      await onTimeEvolutionChange?.();
+    });
+    memoryBody.append(timeToggle, element('p', 'settings-hint', '根据剧情时间推算身体状态、周期与约定期限，为正文提供时间参考。与【构画】的【刻度】功能重叠，请只开启一方的注入，避免重复注入。有新事项或时间推进时可能额外调用分析 API；事项与整理入口位于摘要页的“近期事项”。'));
     const autoHideToggle = element('label', 'setting-switch');
     const autoHideInput = element('input'); autoHideInput.type = 'checkbox'; autoHideInput.checked = settings.get().autoHideEnabled === true;
     autoHideToggle.append(autoHideInput, element('span', '', '自动隐藏已记忆旧楼'));

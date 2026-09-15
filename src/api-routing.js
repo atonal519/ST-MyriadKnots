@@ -57,7 +57,14 @@ export function createApiResolver({ settings } = {}) {
     const resolved = resolve();
     return { kind: resolved.kind, source: resolved.source, sourceLabel: resolved.sourceLabel, configured: resolved.kind === 'independent', sevenDaysPresets: describeSevenDaysPresets() };
   };
-  return { resolve, resolveUtility, describe, describeSevenDaysPresets };
+  const resolveRecall = () => {
+    const selectedPresetId = String(settings.get().recallPresetId ?? '').trim();
+    if (!selectedPresetId) return resolveUtility();
+    const preset = sevenDaysPresets(settings.sevenDaysSettings()).find(item => item.id === selectedPresetId);
+    if (preset && validConfig(preset)) return { kind: 'independent', source: 'shared-recall-preset', sourceLabel: preset.name, config: { ...preset } };
+    return { kind: 'unavailable', source: 'shared-recall-preset', sourceLabel: preset?.name || '失效预设', config: null, reason: 'preset_missing', selectedPresetId };
+  };
+  return { resolve, resolveUtility, resolveRecall, describe, describeSevenDaysPresets };
 }
 
 export function createTaskRouter({ resolver, compactClient, isEnabled = () => true } = {}) {
@@ -96,7 +103,8 @@ export function createTaskRouter({ resolver, compactClient, isEnabled = () => tr
     return resolver.resolveUtility();
   });
   const generateAnalysisTask = options => run(options, () => resolver.resolve());
-  return { generateAnalysisTask, generateUtilityTask, abortAll, getActiveCount: () => active.size };
+  const generateRecallTask = options => run(options, () => resolver.resolveRecall());
+  return { generateAnalysisTask, generateUtilityTask, generateRecallTask, abortAll, getActiveCount: () => active.size };
 }
 
 export function createApiTools({ resolver, compactClient, isEnabled = () => true } = {}) {

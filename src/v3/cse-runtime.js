@@ -65,7 +65,7 @@ async function dependencySnapshot(value, floorId, entities, previousState, story
 
 const sameDependencySnapshot = (left, right) => Boolean(left && right && JSON.stringify(left) === JSON.stringify(right));
 
-export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isEnabled = true, promptGuidance = () => '', processingPrompt = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), storyClockSignatureForFloor = () => '', onGraphCommitted = null, onFailureHint = null, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
+export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isEnabled = true, promptGuidance = () => '', processingPrompt = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), storyClockSignatureForFloor = () => '', onGraphCommitted = null, onFailureHint = null, commitGate = task => task(), now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
   if (!store || ['readReachable', 'putRecord', 'commitRoot', 'recordKey'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 CSE store 无效');
   if (typeof generateAnalysisTask !== 'function') throw new TypeError('V3 CSE analysis route 无效');
   if (typeof filterWorldInfoSources !== 'function') throw new TypeError('V3 CSE 世界书过滤器无效');
@@ -261,6 +261,11 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
 
   async function ensureBaseline(value, operation) {
     if (value.baseline) return value;
+    return commitGate(async () => {
+    const latest = await store.readReachable({ mode: 'runtime' });
+    if (operation.epoch !== epoch || operation.controller.signal.aborted || latest.status !== 'ready' || latest.root.chatId !== value.root.chatId || latest.root.narrativeGeneration !== value.root.narrativeGeneration) throw errorWith('V3_CSE_STALE', '聊天在基线提交前已变化。');
+    value = latest;
+    if (value.baseline) return value;
     const created = await captureCseBaseline({ hostAdapter, chatId: value.root.chatId, narrativeGeneration: value.root.narrativeGeneration, entities: value.entities, sanitizerOptions: typeof sanitizerOptions === 'function' ? sanitizerOptions() : sanitizerOptions, now: operation.startedAt });
     const saved = await store.putRecord(created.baseline, { signal: operation.controller.signal });
     let adopted = ['saved', 'reused'].includes(saved.status) ? saved.data : null;
@@ -279,6 +284,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const next = committed.reachable;
     if (next?.status !== 'ready' || next.rootRevision !== committed.revision || next.baseline?.id !== adopted.id) throw errorWith('V3_CSE_BASELINE_COLD_READ_FAILED', '聊天基线提交后回读失败。');
     return next;
+    });
   }
 
   async function commitDeltaGraph({ operation, current, floor, memory, delta, deltas, entities, diagnostics }) {
@@ -310,6 +316,10 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
   }
 
   async function commitDelta(operation, result, roleEntities) {
+    return commitGate(() => commitDeltaUnlocked(operation, result, roleEntities));
+  }
+
+  async function commitDeltaUnlocked(operation, result, roleEntities) {
     let current = null;
     if (reachable?.root && typeof store.readRoot === 'function') {
       const rootResult = await store.readRoot();

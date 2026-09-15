@@ -3,7 +3,7 @@ import { createInlineSelect } from '../inline-select.js';
 import { publicErrorMessage } from '../../public-error.js';
 import { scrollManualEditorToTop } from '../manual-editor-scroll.js';
 
-// API 配置：分析/摘要角色选择（change 即存）＋预设编辑区（手动 保存/另存/测试/拉取模型）＋高级设置子抽屉。
+// API 角色选中即存；预设编辑区手动保存，跟随角色编辑其实际使用的配置。
 export function createApiSettings({
   settings,
   apiTools,
@@ -13,7 +13,7 @@ export function createApiSettings({
   advancedOpen = false,
   onAdvancedToggle,
   rerender,
-  confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true,
+  confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}\n\n${options?.note ?? ''}`) === true,
   promptImpl = options => globalThis.prompt?.(typeof options === 'string' ? options : options?.title, typeof options === 'string' ? '' : options?.initialValue) ?? null,
   isSevenDaysAvailable = () => false,
 } = {}) {
@@ -27,6 +27,7 @@ export function createApiSettings({
   let editingRole = 'analysis';
   const analysisPresetId = current.apiMode === 'seven-preset' ? current.selectedSevenDaysPresetId : '';
   const summaryPresetId = settings.summaryPresetId();
+  const recallPresetId = String(current.recallPresetId ?? '').trim();
   const presetOptions = (first, selectedId) => [
     { value: '', label: first },
     ...presets.map(preset => ({ value: preset.id, label: preset.name })),
@@ -41,12 +42,20 @@ export function createApiSettings({
     onFocus: () => setEditingRole('summary'), onChange: value => changeSummary(value),
   });
   const analysisSelect = analysisPicker.node, summarySelect = summaryPicker.node;
+  const recallPicker = createInlineSelect({
+    documentRef, options: presetOptions('跟随摘要API', recallPresetId), value: recallPresetId, ariaLabel: '召回 API',
+    onFocus: () => setEditingRole('recall'), onChange: value => {
+      settings.update({ recallPresetId: value }); setEditingRole('recall');
+    },
+  });
+  const recallSelect = recallPicker.node;
   const presetById = id => settings.sharedPresets().find(item => item.id === id) ?? null;
   const editingTarget = () => {
-    const followsAnalysis = editingRole === 'summary' && !summarySelect.value;
-    const presetId = followsAnalysis || editingRole === 'analysis' ? analysisSelect.value : summarySelect.value;
+    const followsSummary = editingRole === 'recall' && !recallSelect.value;
+    const followsAnalysis = (editingRole === 'summary' || followsSummary) && !summarySelect.value;
+    const presetId = editingRole === 'recall' && !followsSummary ? recallSelect.value : followsAnalysis || editingRole === 'analysis' ? analysisSelect.value : summarySelect.value;
     const config = presetId ? presetById(presetId) : settings.mainConfig();
-    return Object.freeze({ sourceRole: editingRole, followsAnalysis, presetId, config, label: presetId ? (config?.name || '已失效预设') : '主配置' });
+    return Object.freeze({ sourceRole: editingRole, followsSummary, followsAnalysis, presetId, config, label: presetId ? (config?.name || '已失效预设') : '主配置' });
   };
 
   const url = element('input', 'settings-input'); url.placeholder = 'API URL';
@@ -104,13 +113,15 @@ export function createApiSettings({
     exclude.value = (config.excludeParams ?? []).join('\n');
     timeout.value = String(config.timeoutSec ?? 180);
     stream.checked = config.stream === true;
-    editingHint.textContent = target.followsAnalysis
+    editingHint.textContent = target.followsSummary
+      ? `正在编辑：召回 API 跟随摘要${target.followsAnalysis ? '，摘要跟随分析' : ''} · ${target.label}。直接保存会更新当前${target.followsAnalysis ? '分析' : '摘要'}配置；另存可建立召回专用预设。`
+      : target.followsAnalysis
       ? `正在编辑：摘要 API 跟随分析 · ${target.label}。直接保存会更新当前分析配置；另存可建立摘要专用预设。`
-      : `正在编辑：${target.sourceRole === 'summary' ? '摘要' : '分析'} API · ${target.label}`;
+      : `正在编辑：${target.sourceRole === 'recall' ? '召回' : target.sourceRole === 'summary' ? '摘要' : '分析'} API · ${target.label}`;
     if (remove) remove.disabled = !target.presetId || !target.config;
   };
 
-  // 分析/摘要角色选择：内联选中即存，打开时切换当前编辑目标。
+  // 打开角色选择时同步编辑目标，选择立即用于后续请求。
   function changeAnalysis(value) {
     settings.update({ apiMode: value ? 'seven-preset' : 'auto', selectedSevenDaysPresetId: value });
     editingRole = 'analysis';
@@ -185,7 +196,8 @@ export function createApiSettings({
     const name = String(await Promise.resolve(promptImpl({ title: '另存为预设', body: '为当前 API 配置输入一个名称。', initialValue: '千千结预设', placeholder: '预设名称', confirmText: '保存', validate: value => String(value ?? '').trim() ? '' : '请输入预设名称。' })) ?? '').trim();
     if (!name) return;
     const id = settings.upsertSharedPreset(name, draft());
-    if (editingRole === 'summary') settings.setSummaryPresetId(id);
+    if (editingRole === 'recall') settings.update({ recallPresetId: id });
+    else if (editingRole === 'summary') settings.setSummaryPresetId(id);
     else settings.update({ apiMode: 'seven-preset', selectedSevenDaysPresetId: id });
     rerender?.();
   });
@@ -203,11 +215,15 @@ export function createApiSettings({
     const analysisUsesTarget = currentSelection.apiMode === 'seven-preset' && currentSelection.selectedSevenDaysPresetId === target.presetId;
     const summaryUsesTarget = settings.summaryPresetId() === target.presetId;
     const summaryFollowsAnalysis = !settings.summaryPresetId();
+    const recallUsesTarget = currentSelection.recallPresetId === target.presetId;
+    const recallFollowsSummary = !currentSelection.recallPresetId;
     const effects = [];
     if (analysisUsesTarget) effects.push('分析 API 将回退到主配置。');
     if (summaryUsesTarget) effects.push('摘要 API 将改为跟随分析。');
     else if (analysisUsesTarget && summaryFollowsAnalysis) effects.push('摘要 API 当前跟随分析，也将随分析回退到主配置。');
-    if (!effects.length) effects.push('当前分析和摘要 API 不会切换。');
+    if (recallUsesTarget) effects.push('召回 API 将改为跟随摘要。');
+    else if (recallFollowsSummary && (summaryUsesTarget || analysisUsesTarget && summaryFollowsAnalysis)) effects.push('召回 API 当前跟随摘要，也将随摘要使用回退后的配置。');
+    if (!effects.length) effects.push('当前分析、摘要和召回 API 不会切换。');
     const sevenDaysAvailable = typeof isSevenDaysAvailable === 'function' ? isSevenDaysAvailable() : isSevenDaysAvailable === true;
     if (sevenDaysAvailable) effects.push('构画中也会移除这个共享预设。');
     const confirmed = await Promise.resolve(confirmImpl({ title: '删除 API 预设', body: `删除预设「${target.config.name}」？`, note: effects.join('\n'), confirmText: '删除', cancelText: '取消' }));
@@ -250,7 +266,9 @@ export function createApiSettings({
   body.append(
     field('分析API（建议高质模型）', analysisSelect),
     field('摘要API（建议快速模型）', summarySelect),
+    field('召回API（默认跟随摘要）', recallSelect),
     editingHint,
+    element('p', 'settings-hint', '召回可选择另一 API 预设；默认使用摘要配置。不同预设仍可能共用同一账号的并发额度。'),
     element('div', 'settings-divider'),
     field('URL', url),
     field('Key', key),

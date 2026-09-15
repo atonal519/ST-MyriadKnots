@@ -14,7 +14,7 @@ import { CSE_SYSTEM_PROMPT } from '../src/v3/cse-engine.js';
 const CHAT_ID = '123e4567-e89b-42d3-a456-426614174000';
 const OTHER_ID = '223e4567-e89b-42d3-a456-426614174000';
 
-function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, silentSaveChatFailure = false, failSaveMetadata = false, busy = false } = {}) {
+function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, silentSaveChatFailure = false, failSaveMetadata = false, busy = false, prepareHook = null, removeHook = null } = {}) {
   const records = new Map([
     [`chat-${CHAT_ID}/floor-a`, { recordId: 'floor-a', revision: 2, data: { kind: 'floor' } }],
     [`chat-${CHAT_ID}/orphan-old`, { recordId: 'orphan-old', revision: 5, data: { kind: 'old-version' } }],
@@ -32,6 +32,7 @@ function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, s
     async get(collection, recordId) { calls.push(['get', collection, recordId]); const value = records.get(`${collection}/${recordId}`); if (!value) throw Object.assign(new Error('missing'), { status: 404 }); return structuredClone(value); },
     async remove(collection, recordId, revision) {
       calls.push(['remove', collection, recordId, revision]);
+      await removeHook?.(collection, recordId);
       if (holdRemove === recordId) { holdRemove = null; await held; }
       if (removeFailure === recordId) { removeFailure = null; throw Object.assign(new Error('conflict'), { status: 409 }); }
       const key = `${collection}/${recordId}`, value = records.get(key);
@@ -52,7 +53,7 @@ function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, s
   let persistedMessages = cloneMessages([user, hidden, malformedHidden, manualHidden]);
   let persistedMetadata = { qianqianjie: { schemaVersion: 2, chatId: CHAT_ID }, qianqianjiePrequel: '用户手工前情', otherPlugin: { keep: true } };
   const context = {
-    chatId: 'host-chat', characterId: 0, characters: [{ name: '角色', avatar: 'char' }], getRequestHeaders: () => ({ 'x-test': 'yes' }), chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: CHAT_ID }, qianqianjiePrequel: '用户手工前情', otherPlugin: { keep: true } }, chat: [user, hidden, malformedHidden, manualHidden],
+    chatId: 'host-chat', userAvatar: 'persona', characterId: 0, characters: [{ name: '角色', avatar: 'char' }], getRequestHeaders: () => ({ 'x-test': 'yes' }), chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: CHAT_ID }, qianqianjiePrequel: '用户手工前情', otherPlugin: { keep: true } }, chat: [user, hidden, malformedHidden, manualHidden],
     async saveChat() { calls.push(['saveChat']); if (saveChatFailure) { saveChatFailure = false; throw new Error('save chat failed'); } if (silentSaveChatFailure) { silentSaveChatFailure = false; return; } persistedMessages = cloneMessages(context.chat); },
     async saveChatMetadata() { calls.push(['saveMetadata']); if (saveMetadataFailure) { saveMetadataFailure = false; return false; } persistedMetadata = structuredClone(context.chatMetadata); return true; },
     swipe: { refresh() { calls.push(['swipeRefresh']); } },
@@ -65,15 +66,16 @@ function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, s
     },
   };
   let suspended = false;
-  const identity = Object.freeze({ hostChatId: 'host-chat', chatId: CHAT_ID, characterLocator: 'char', personaLocator: 'persona' });
+  let identity = Object.freeze({ hostChatId: 'host-chat', chatId: CHAT_ID, characterLocator: 'char', personaLocator: 'persona' });
   const session = {
+    async prepare() { calls.push(['prepare']); await prepareHook?.(context); const chatId = '323e4567-e89b-42d3-a456-426614174000'; context.chatMetadata.qianqianjie = { schemaVersion: 2, chatId }; await context.saveChatMetadata(); identity = { ...identity, chatId }; return { status: 'ready', identity }; },
     identity() { if (suspended) throw Object.assign(new Error('suspended'), { code: 'CHAT_SESSION_SUSPENDED' }); return identity; },
     suspend(chatId) { assert.equal(chatId, CHAT_ID); calls.push(['suspend', chatId]); suspended = true; return { status: 'suspended', identity }; },
     resume(chatId) { assert.equal(chatId, CHAT_ID); calls.push(['resume', chatId]); suspended = false; return true; },
   };
   const state = { memoryWorkBusy: busy };
   const runtime = name => ({ getState: () => state, invalidate() { invalidated.push(name); } });
-  const memoryRuntime = { getState: () => ({ ...state, chatId: CHAT_ID }), invalidate(options) { memoryInvalidations.push(options); invalidated.push('memory'); } };
+  const memoryRuntime = { async startHistoricalRebuild() { const chatId = context.chatMetadata.qianqianjie.chatId; calls.push(['history', chatId]); records.set(`chat-${chatId}/v3-root`, { recordId: 'v3-root', revision: 1, data: { chatId } }); return { status: 'ready', chatId }; }, getState: () => ({ ...state, chatId: CHAT_ID }), invalidate(options) { memoryInvalidations.push(options); invalidated.push('memory'); } };
   const recallRuntime = { getState: () => ({}), invalidate() { invalidated.push('recall'); }, clearCurrent() { invalidated.push('recall-clear'); } };
   const peopleRuntime = { getState: () => ({}), invalidate() { invalidated.push('people'); } };
   const hostAdapter = { snapshot: () => ({ chatId: context.chatId, chat: context.chat, context }) };
@@ -84,6 +86,75 @@ function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, s
 }
 
 function cloneMessages(messages) { return structuredClone(messages); }
+
+test('全清普通记录最多4在途，普通项结束才删根与binding', async () => {
+  let active = 0, maxActive = 0; const releases = [];
+  const f = fixture({ removeHook: async (_, id) => {
+    if (id === 'v3-root' || id.startsWith('binding-')) { assert.equal(active, 0); return; }
+    active += 1; maxActive = Math.max(maxActive, active);
+    if (releases.length < 4) await new Promise(resolve => { releases.push(resolve); });
+    active -= 1;
+  } });
+  for (let index = 0; index < 6; index += 1) f.records.set(`chat-${CHAT_ID}/extra-${index}`, { recordId: `extra-${index}`, revision: 1, data: {} });
+  const pending = f.manager.deleteCurrent();
+  while (releases.length < 4) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(active, 4); assert.equal(f.calls.filter(call => call[0] === 'remove').length, 4);
+  assert.equal(f.records.has(`chat-${CHAT_ID}/v3-root`), true);
+  releases.forEach(release => release());
+  const result = await pending;
+  assert.equal(maxActive, 4); assert.equal(result.deletedCount, 11);
+  assert.deepEqual(f.calls.filter(call => call[0] === 'remove').slice(-2).map(call => call[2]), ['v3-root', `binding-${CHAT_ID}`]);
+});
+
+test('首错停止领项，所有已发删除完成才失败且累计成功数，重试仍全清', async () => {
+  let fail = true, settled = false; const releases = [];
+  const f = fixture({ removeHook: async (_, id) => {
+    if (!fail) return;
+    if (id === 'floor-a') throw Object.assign(new Error('conflict'), { status: 409 });
+    await new Promise(resolve => { releases.push(resolve); });
+  } });
+  for (let index = 0; index < 3; index += 1) f.records.set(`chat-${CHAT_ID}/extra-${index}`, { recordId: `extra-${index}`, revision: 1, data: {} });
+  const pending = f.manager.deleteCurrent().then(() => { settled = true; }, error => { settled = true; return error; });
+  while (releases.length < 3) await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false); assert.equal(f.calls.filter(call => call[0] === 'remove').length, 4);
+  releases.forEach(release => release());
+  assert.equal((await pending).status, 409); assert.equal(f.manager.getState().deletedCount, 3);
+  assert.equal(f.records.has(`chat-${CHAT_ID}/v3-root`), true);
+  assert.equal(f.calls.some(call => call[0] === 'saveChat'), false);
+  fail = false; assert.equal((await f.manager.deleteCurrent()).deletedCount, 8);
+});
+
+test('完全重构删除整collection与前情后新建身份，普通删除仍保留前情', async () => {
+  const f = fixture();
+  for (const id of ['v3-time-head', 'v3-time-batch-old', 'v3-baseline-old', 'unknown-unreachable']) f.records.set(`chat-${CHAT_ID}/${id}`, { recordId: id, revision: 1, data: { old: true } });
+  const texts = f.context.chat.map(message => message.mes);
+  const result = await f.manager.fullRebuild(CHAT_ID);
+  assert.notEqual(result.chatId, CHAT_ID);
+  assert.equal([...f.records.keys()].some(key => key.startsWith(`chat-${CHAT_ID}/`)), false);
+  assert.equal(f.records.has(`chat-identity-bindings/binding-${CHAT_ID}`), false);
+  assert.equal(f.records.has(`chat-${OTHER_ID}/v3-root`), true);
+  assert.equal(f.context.chatMetadata.qianqianjiePrequel, undefined);
+  assert.deepEqual(f.context.chatMetadata.otherPlugin, { keep: true });
+  assert.deepEqual(f.context.chat.map(message => message.mes), texts);
+  assert.equal(f.hidden.is_system, false); assert.equal(f.manualHidden.is_system, true);
+  assert.ok(f.calls.findIndex(call => call[0] === 'prepare') > f.calls.findLastIndex(call => call[0] === 'remove'));
+  assert.equal(f.calls.filter(call => call[0] === 'history').length, 1);
+  assert.equal(f.manager.getState().status, 'idle', '新档不沿用普通删除结果文案');
+});
+
+test('完全重构删除失败不准备不生成，续删后才新建；新prepare中换owner不生成', async () => {
+  const failed = fixture({ failRemove: 'orphan-old' });
+  await assert.rejects(failed.manager.fullRebuild(CHAT_ID));
+  assert.equal(failed.calls.some(call => ['prepare', 'history'].includes(call[0])), false);
+  await failed.manager.fullRebuild(CHAT_ID);
+  assert.equal(failed.calls.filter(call => call[0] === 'history').length, 1);
+  for (const change of ['chatId', 'userAvatar']) {
+    const switched = fixture({ prepareHook: context => { context[change] = 'other-owner'; } });
+    await assert.rejects(switched.manager.fullRebuild(CHAT_ID), error => error.code === 'QQJ_REBUILD_CHAT_CHANGED');
+    assert.equal(switched.calls.some(call => call[0] === 'history'), false);
+  }
+});
 
 test('按实际revision删除全collection后root和binding，并保留正文、他插件字段与人工隐藏边界', async () => {
   const f = fixture();
@@ -196,7 +267,7 @@ test('真实删除后空ID完全重构自行建立新身份，并从已恢复USE
   const session = createChatSession({ contextProvider: () => context, ensureChatId: async raw => { prepareCalls += 1; raw.chatMetadata.qianqianjie = { schemaVersion: 2, chatId: nextId }; await raw.saveChatMetadata(); return nextId; } });
   assert.equal((await session.prepare()).identity.chatId, CHAT_ID);
   const missing = () => { throw Object.assign(new Error('missing'), { status: 404 }); };
-  const records = new Map();
+  const records = new Map(['v3-root', 'v3-people-workspace', 'v3-time-head', 'v3-time-batch-old', 'unknown-unreachable'].map(recordId => [`chat-${CHAT_ID}/${recordId}`, { recordId, revision: 1, data: { oldChatId: CHAT_ID, selectedEntityIds: ['old-person'], profiles: [{ avatar: 'old-avatar', identityRedirects: ['old-person'] }] } }]));
   const client = {
     list: async collection => [...records.entries()].filter(([key]) => key.startsWith(`${collection}/`)).map(([, value]) => structuredClone(value)),
     get: async (collection, recordId) => records.has(`${collection}/${recordId}`) ? structuredClone(records.get(`${collection}/${recordId}`)) : missing(),
@@ -205,7 +276,7 @@ test('真实删除后空ID完全重构自行建立新身份，并从已恢复USE
       if ((previous?.revision ?? 0) !== expectedRevision) throw Object.assign(new Error('conflict'), { status: 409 });
       const envelope = { recordId, revision: expectedRevision + 1, data: structuredClone(data) }; records.set(key, envelope); return structuredClone(envelope);
     },
-    remove: async () => missing(),
+    remove: async (collection, recordId, revision) => { const key = `${collection}/${recordId}`, envelope = records.get(key); if (!envelope) return missing(); assert.equal(envelope.revision, revision); records.delete(key); return { trashId: recordId }; },
   };
   const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => context } } });
   const store = createFoundationStore({ client, contextProvider: () => session.identity() });
@@ -221,13 +292,14 @@ test('真实删除后空ID完全重构自行建立新身份，并从已恢复USE
   const autoHideController = createAutoHideController({ hostAdapter, memoryRuntime: memory, settings: { get: () => ({ pluginEnabled: true, autoHideEnabled: false, autoHideKeepAiCount: 3 }) }, logger: { warn() {} } });
   const manager = createChatMemoryManagement({ client, session, hostAdapter, foundationRuntime: foundation, memoryRuntime: memory, recallRuntime: { getState: () => ({}), invalidate() {}, clearCurrent() {} }, peopleRuntime: { getState: () => ({}), invalidate() {} }, autoHideController, fetchImpl: async () => ({ ok: true, json: async () => [{ chat_metadata: structuredClone(persistedMetadata) }, ...structuredClone(persistedMessages)] }) });
   assert.equal((await manager.deleteCurrent()).status, 'completed');
+  assert.equal([...records.keys()].some(key => key.startsWith(`chat-${CHAT_ID}/`)), false, '未知旧记录、workspace与time均无活动残留');
   assert.equal(context.chatMetadata.qianqianjie, undefined);
   assert.equal(session.getState().status, 'idle');
   assert.equal(prepareCalls, 0, '删除完成前未创建替代身份');
-  const rebuilt = await memory.fullRebuild(null);
+  const rebuilt = await manager.fullRebuild(null);
   assert.equal(rebuilt.chatId, nextId);
-  assert.equal(session.getState().identity.chatId, nextId, 'fullRebuild(null) 必须经现有 session.prepare 建立新 UUID');
-  assert.equal(prepareCalls, 1);
+  assert.equal(session.getState().identity.chatId, nextId, '管理层fullRebuild(null) 经 session.prepare 建立新 UUID');
+  assert.equal(prepareCalls, 2, '无ID档先准备后清理，再认领全新身份');
   assert.equal(context.chat[1].mes, '旧回复仍保留');
   assert.equal(context.chat[0].is_system, false);
   assert.equal(context.chat[1].is_system, false);
@@ -236,6 +308,7 @@ test('真实删除后空ID完全重构自行建立新身份，并从已恢复USE
   assert.equal(context.chat[1].extra[MESSAGE_FLOOR_ANCHOR_KEY], undefined);
   assert.equal(rebuilt.rememberedCount, 1);
   assert.equal(rebuilt.cseReady, true);
+  assert.equal(JSON.stringify(await store.readReachable()).includes(CHAT_ID), false, '真实新图不含旧UUID、旧人物与旧时间引用');
   assert.equal(requests.filter(request => request.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 1);
   assert.equal(requests.filter(request => request.systemPrompt === CSE_SYSTEM_PROMPT).length, 1);
   const extractorPayload = JSON.parse(requests.find(request => request.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).taskMessages[0].content).payload;

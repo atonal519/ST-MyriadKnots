@@ -192,7 +192,7 @@ async function installLegacyIndexFixture(h) {
   return { rootEnvelope, checkpointEnvelope, indexes, keys };
 }
 
-function harness(chat = [assistant('A'), assistant('B'), assistant('C')], { enhanced = false, prepareSession = null, modernAnchors = false } = {}) {
+function harness(chat = [assistant('A'), assistant('B'), assistant('C')], { enhanced = false, prepareSession = null, modernAnchors = false, fetchImpl = undefined, sanitizerOptions = () => ({}) } = {}) {
   let context = hostContext(chat);
   let enabled = true;
   const handlers = new Map();
@@ -207,6 +207,8 @@ function harness(chat = [assistant('A'), assistant('B'), assistant('C')], { enha
   const runtime = createFoundationRuntime({
     hostAdapter,
     store,
+    fetchImpl,
+    sanitizerOptions,
     contextProvider: () => context,
     prepareSession,
     scanCandidates: modernAnchors ? scanAssistantCandidates : legacyScanner,
@@ -2059,3 +2061,81 @@ test('已挂有效 marker 且属于当前图的末楼即使尚无摘要，失去
 });
 
 const EVENT_NAMES = ['CHAT_CHANGED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'CHARACTER_MESSAGE_RENDERED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MORE_MESSAGES_LOADED'];
+
+
+test('无 integrity 的真实删尾事件保留完整旧前缀，连续删除采用最新长度', async () => {
+  const chat = Array.from({ length: 56 }, (_, index) => [assistant(`楼-${index}`), user(`后续-${index}`)]).flat();
+  const h = harness(chat, { modernAnchors: true });
+  await h.runtime.start();
+  const old = h.runtime.getReachable().floors.map(floor => floor.id);
+  delete h.context.chatMetadata.integrity;
+  h.context.chat.splice(104); h.handlers.get('MESSAGE_DELETED')(104);
+  h.context.chat.splice(96); h.handlers.get('MESSAGE_DELETED')(96);
+  await h.runtime.inspect('awaitEvent');
+  assert.equal(h.runtime.getState().status, 'ready');
+  assert.equal(h.runtime.getReachable().floors.length, 48);
+  assert.deepEqual(h.runtime.getReachable().floors.map(floor => floor.id), old.slice(0, 48));
+});
+
+test('没有事件证据、错误长度、中间缺口、正文替换或切聊的删尾均不放行', async () => {
+  for (const mode of ['noEvent', 'wrongLength', 'middle', 'replaced', 'duplicateMarker', 'foreignMarker', 'explicitIncomplete', 'switched']) {
+    const h = harness([assistant('A'), user('a'), assistant('B'), user('b'), assistant('C'), user('c')], { modernAnchors: true });
+    await h.runtime.start();
+    const root = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`));
+    delete h.context.chatMetadata.integrity;
+    if (mode === 'middle') h.context.chat.splice(2, 2);
+    else h.context.chat.splice(4);
+    if (mode === 'replaced') h.context.chat[0].mes = h.context.chat[0].swipes[0] = '替换';
+    if (mode === 'duplicateMarker') {
+      const anchor = { schemaVersion: 1, chatId: CHAT, floorId: h.runtime.getReachable().floors[0].id };
+      h.context.chat[0].extra.qianqianjie_floor = anchor; h.context.chat[2].extra.qianqianjie_floor = { ...anchor };
+    }
+    if (mode === 'explicitIncomplete') h.context.chatMetadata.integrity = false;
+    if (mode === 'foreignMarker') h.context.chat[0].extra.qianqianjie_floor = { schemaVersion: 1, chatId: OTHER_CHAT, floorId: h.runtime.getReachable().floors[0].id };
+    if (mode !== 'noEvent') h.handlers.get('MESSAGE_DELETED')(mode === 'wrongLength' ? 5 : 4);
+    if (mode === 'switched') { h.handlers.get('CHAT_CHANGED')(); h.setEnabled(false); }
+    else await h.runtime.refreshStatus();
+    assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), root, mode);
+  }
+});
+
+test('既成尾删档只有手动刷新完整读回同正文同标识后恢复；打开只读', async () => {
+  for (const mode of ['success', 'failed', 'wrongBody', 'wrongLength', 'wrongIdentity', 'changedDuringRead']) {
+    let h, reads = 0;
+    h = harness([assistant('A'), user('a'), assistant('B'), user('b'), assistant('C'), user('c')], { modernAnchors: true,
+      fetchImpl: async (url, init) => {
+        reads += 1; assert.equal(url, '/api/chats/get'); assert.equal(JSON.parse(init.body).file_name, h.context.chatId);
+        const payload = [{ chat_metadata: structuredClone(h.context.chatMetadata) }, ...structuredClone(h.context.chat)];
+        if (mode === 'wrongBody') payload[1].mes = '别的正文';
+        if (mode === 'wrongLength') payload.pop();
+        if (mode === 'wrongIdentity') payload[0].chat_metadata.qianqianjie.chatId = OTHER_CHAT;
+        if (mode === 'changedDuringRead') h.context.chat[0].mes = h.context.chat[0].swipes[0] = '已变化';
+        return { ok: mode !== 'failed', json: async () => payload };
+      } });
+    await h.runtime.start();
+    const root = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`));
+    delete h.context.chatMetadata.integrity; h.context.chat.splice(4);
+    const calls = h.backend.calls.length;
+    const inspected = await h.runtime.inspect('open');
+    assert.equal(inspected.reviewReason.code, 'stableCountMismatch'); assert.equal(reads, 0);
+    assert.ok(h.backend.calls.slice(calls).every(call => call[0] === 'get'));
+    await h.runtime.recoverTailDeletion(); assert.equal(reads, 1);
+    if (mode === 'success') { assert.equal(h.runtime.getState().status, 'ready'); assert.equal(h.runtime.getReachable().floors.length, 2); }
+    else assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), root, mode);
+  }
+});
+
+
+test('清洗配置变化但前缀正文结果相同允许尾删，清洗正文结果变化仍拒绝', async () => {
+  for (const changedBody of [false, true]) {
+    let options = { keepTags: 'content' };
+    const h = harness([assistant('<content>A</content>'), user('a'), assistant('<content>B</content>'), user('b'), assistant('<content>C</content>'), user('c')],
+      { modernAnchors: true, sanitizerOptions: () => options });
+    await h.runtime.start(); const root = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`));
+    options = { keepTags: changedBody ? '' : 'content,unused' };
+    delete h.context.chatMetadata.integrity; h.context.chat.splice(4); h.handlers.get('MESSAGE_DELETED')(4);
+    await h.runtime.inspect('awaitEvent');
+    if (changedBody) assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), root);
+    else { assert.equal(h.runtime.getState().status, 'ready'); assert.equal(h.runtime.getReachable().floors.length, 2); }
+  }
+});

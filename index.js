@@ -18,6 +18,7 @@ import { createSourcePermissionController } from './src/source-permission.js';
 import { createHostAdapter } from './src/v3/host-adapter.js';
 import { createFoundationStore } from './src/v3/foundation-store.js';
 import { createFoundationRuntime } from './src/v3/foundation-runtime.js';
+import { createTimeStore, createTimeRuntime } from './src/v3/time-runtime.js';
 import { createV3MemoryRuntime } from './src/v3/memory-runtime.js';
 import { persistMessageFloorAnchors } from './src/v3/message-floor-anchor.js';
 import { createV3RecallRuntime } from './src/v3/recall-runtime.js';
@@ -46,6 +47,14 @@ const sevenDaysClockState = () => extensionStoryClockState({ extensionNames, dis
 const isSevenDaysAvailable = () => {
   const extensionId = extensionNames.find(name => String(name).endsWith('/ST-SevenDaysCal'));
   return Boolean(extensionId && !extension_settings.disabledExtensions?.includes(extensionId));
+};
+const isSevenDaysLedgerInjectionEnabled = () => {
+  if (!isSevenDaysAvailable()) return false;
+  const peer = extension_settings['schedule-planner'];
+  if (peer?.pluginEnabled === false || peer?.injectEnabled === false || peer?.ledgerInject !== true) return false;
+  const current = hostContext();
+  const avatar = current.characters?.[current.characterId]?.avatar;
+  return current.groupId != null || !(typeof avatar === 'string' && avatar !== '' && Array.isArray(peer.characterExcludeAvatars) && peer.characterExcludeAvatars.includes(avatar));
 };
 const storyClockController = createMyKnotsStoryClockController({ context: hostContext, settings: () => settings.get(), peerState: sevenDaysClockState });
 const STORY_CLOCK_COORDINATION_EVENT = 'qqj-sdc-story-clock-settings-changed';
@@ -113,6 +122,14 @@ const identityProjectionProvider = async () => {
   return (await peopleWorkspaceStore.read(identity)).data ?? {};
 };
 let v3RecallRuntime;
+const timeRuntime = createTimeRuntime({
+  store: createTimeStore({ client: backendClient }), foundationStore, hostAdapter, session,
+  getReachable: () => foundationRuntime.getReachable(),
+  getMemoryState: () => v3MemoryRuntime.getState(),
+  generateAnalysisTask: taskRouter.generateAnalysisTask,
+  isEnabled: () => settings.isEnabled() && settings.get().timeEvolutionEnabled === true,
+  onInvalidate: () => v3RecallRuntime?.invalidate('timeChanged'),
+});
 const v3MemoryRuntime = createV3MemoryRuntime({
   foundationRuntime,
   store: foundationStore,
@@ -126,8 +143,8 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   }),
   notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
   isMainGenerationActive: isGenerating,
-  onFullRebuildCommitted: () => v3RecallRuntime?.invalidate('fullRebuild'),
   onAutomaticSummaryCommitted: receipt => peopleWorkspaceRuntime?.requestAutomaticMaintenance(receipt),
+  onMemoryBatchCommitted: receipt => timeRuntime.runBatch(receipt),
   extractorPromptGuidance: summaryPrompt,
   csePromptGuidance: csePrompt,
   processingPrompt,
@@ -141,7 +158,7 @@ const v3MemoryRuntime = createV3MemoryRuntime({
 v3RecallRuntime = createV3RecallRuntime({
   store: foundationStore,
   hostAdapter,
-  generateUtilityTask: taskRouter.generateUtilityTask,
+  generateUtilityTask: taskRouter.generateRecallTask,
   isEnabled: settings.isEnabled,
   memoryStatus: () => v3MemoryRuntime.getState(),
   prepareMemory: options => v3MemoryRuntime.prepareCurrent(options),
@@ -149,6 +166,7 @@ v3RecallRuntime = createV3RecallRuntime({
   notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
   sanitizerOptions,
   identityProjectionProvider,
+  timeProjectionProvider: source => timeRuntime.recallProjection(source),
   pluginVersion,
 });
 peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
@@ -172,6 +190,7 @@ const autoHideController = createAutoHideController({
 });
 const inlineRenderer = createInlineRenderer({ memoryRuntime: v3MemoryRuntime, recallRuntime: v3RecallRuntime, hostAdapter });
 const chatMemoryManagement = createChatMemoryManagement({
+  contextProvider,
   client: backendClient,
   session,
   hostAdapter,
@@ -179,6 +198,7 @@ const chatMemoryManagement = createChatMemoryManagement({
   memoryRuntime: v3MemoryRuntime,
   recallRuntime: v3RecallRuntime,
   peopleRuntime: peopleWorkspaceRuntime,
+  timeRuntime,
   autoHideController,
   isMainGenerationActive: isGenerating,
 });
@@ -203,6 +223,7 @@ const setAllEnabled = async enabled => {
   if (!enabled) {
     inlineRenderer.setEnabled(false);
     autoHideController.stop();
+    await timeRuntime.stop();
     await peopleWorkspaceRuntime.setEnabled(false);
     await v3RecallRuntime.setEnabled(false);
     const v3Result = await v3MemoryRuntime.setEnabled(false);
@@ -220,6 +241,8 @@ ui = bootstrap({
   onPluginEnabledChange: setAllEnabled,
   onStoryClockChange: options => refreshStoryClock({ ...options, announce: options?.readOnly !== true }),
   onAutoHideChange: options => autoHideController.applySettings(options),
+  onTimeEvolutionChange: () => timeRuntime.stop(),
+  timeRuntime,
   subscribeDialogContextChange: handler => {
     const currentHost = hostContext();
     const eventName = currentHost?.eventTypes?.CHAT_CHANGED;
@@ -228,6 +251,7 @@ ui = bootstrap({
     return () => currentHost.eventSource.removeListener?.(eventName, handler);
   },
   isSevenDaysAvailable,
+  isSevenDaysLedgerInjectionEnabled,
   sourcePermissions,
   v3FoundationRuntime: v3MemoryRuntime,
   v3RecallRuntime,
@@ -257,6 +281,7 @@ refreshStoryClock({ announce: true });
 lifecycle.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes });
 v3MemoryRuntime.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes });
 v3RecallRuntime.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes });
+timeRuntime.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes });
 for (const name of ['CHAT_CHANGED', 'GENERATION_STARTED']) {
   const eventName = host?.eventTypes?.[name];
   if (eventName) host?.eventSource?.on?.(eventName, () => refreshStoryClock());

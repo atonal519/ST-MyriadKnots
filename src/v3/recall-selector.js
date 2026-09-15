@@ -376,7 +376,7 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, stateP
       const target = value.toward ? `，对 ${value.toward}` : '';
       const source = value.sourceAssistantSeq ? `，来源 AI #${value.sourceAssistantSeq}` : '';
       const boundary = value.visibility === 'private' ? '，仅可用于该人物' : value.visibility === 'authorial' ? '，作者塑造参考，不代表人物知情' : '';
-      lines.push(`- [当前] ${value.subject} / ${value.layer}${target} / ${value.visibility}${boundary}：${value.text}（依据：${value.reason}${source}）`);
+      lines.push(`- ${value._timeCorrection ? '[时间校正] ' : ''}[当前] ${value.subject} / ${value.layer}${target} / ${value.visibility}${boundary}：${value.text}（依据：${value.reason}${source}）`);
     }
   }
   appendStateProgressions(lines, stateProgressions, states);
@@ -389,7 +389,20 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, stateP
   return lines.join('\n');
 }
 
-export function formatRecallInjection({ coverage, floors, states, cseChanges = [], stateProgressions = [], entityById, storylines = [] }) {
+export function formatRecallInjection(input) {
+  const corrections = input.timeProjection?.corrections ?? {};
+  const states = input.states.map(state => {
+    const correction = corrections[`${state.stateId}|${state.subjectEntityId}|${state.sourceFloorId}`];
+    return correction ? { ...state, text: correction.text, _timeCorrection: true } : state;
+  });
+  const base = formatBaseRecallInjection({ ...input, states });
+  const reminders = input.timeReminders ?? [];
+  if (!reminders.length) return base;
+  const block = ['[时间参考（当前推测、预计节点或到期事项）]', ...reminders.map(item => `- ${item.text}`)].join('\n');
+  return base ? base.replace('</qqj_recalled_context>', `${block}\n</qqj_recalled_context>`) : `<qqj_recalled_context>\n${block}\n</qqj_recalled_context>`;
+}
+
+function formatBaseRecallInjection({ coverage, floors, states, cseChanges = [], stateProgressions = [], entityById, storylines = [] }) {
   if (!floors.length && !states.length && !cseChanges.length && !stateProgressions.length) return '';
   if (storylines.length) return formatStorylineInjection({ coverage, floors, states, cseChanges, stateProgressions, entityById, storylines });
   const hasNarrative = floors.some(floor => floor.items.some(value => value.category === 'narrative'));
@@ -446,7 +459,7 @@ export function formatRecallInjection({ coverage, floors, states, cseChanges = [
       const target = value.toward ? `，对 ${value.toward}` : '';
       const source = value.sourceAssistantSeq ? `，来源 AI #${value.sourceAssistantSeq}` : '';
       const boundary = value.visibility === 'private' ? '，仅可用于该人物' : value.visibility === 'authorial' ? '，作者塑造参考，不代表任何人物知情' : '';
-      lines.push(`- ${value.subject} / ${value.layer}${target} / ${value.visibility}${boundary}：${value.text}（依据：${value.reason}${source}）`);
+      lines.push(`- ${value._timeCorrection ? '[时间校正] ' : ''}${value.subject} / ${value.layer}${target} / ${value.visibility}${boundary}：${value.text}（依据：${value.reason}${source}）`);
     }
   }
   if (cseChanges.length) {
@@ -1330,6 +1343,7 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
   const { characterLimit: progressionCharLimit, tokenLimit: progressionTokenLimit } = recallBudgetWithProgression(contextSize, { reservedTokens, reservedCharacters });
   const historyTokenTarget = Math.floor(tokenLimit * 0.72);
   const historyCharTarget = Math.floor(charLimit * 2 / 3), cseCharTarget = charLimit - historyCharTarget;
+  const chosenTimeReminders = [];
   const chosenStates = [], chosenChanges = [], chosenProgressions = [], chosenRecent = [], chosenDistant = [], chosenHistory = [], chosenFloorIds = new Set();
   const render = (states = chosenStates, changes = chosenChanges, history = chosenHistory, progressions = chosenProgressions) => {
     const floorMap = new Map();
@@ -1369,7 +1383,7 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
       sourceAssistantSeq: value.sourceAssistantSeq ?? null, timeBasis: value.timeBasis, suggestion: value.suggestion,
       evidence: value.evidence.map(item => ({ kind: item.kind === 'recent' ? 'history' : item.kind, floorId: item.floorId, assistantSeq: item.assistantSeq })),
     }));
-    return { floors, states: publicStates, cseChanges: publicChanges, stateProgressions: publicProgressions, storylines, text: formatRecallInjection({ coverage: source.coverage, floors, states: publicStates, cseChanges: publicChanges, stateProgressions: publicProgressions, entityById, storylines }) };
+    return { floors, states: publicStates, cseChanges: publicChanges, stateProgressions: publicProgressions, storylines, text: formatRecallInjection({ coverage: source.coverage, floors, states: publicStates, cseChanges: publicChanges, stateProgressions: publicProgressions, entityById, storylines, timeProjection: source.timeProjection, timeReminders: chosenTimeReminders }) };
   };
   let dropSemanticDuplicate = 0;
   const historyCoversCse = value => {
@@ -1433,6 +1447,7 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
   const selectedCseKeys = () => new Set([...chosenStates, ...chosenChanges].map(cseStableKey));
   let progressionBudgetDropped = 0;
   for (const value of Array.isArray(stateProgressionCandidates) ? stateProgressionCandidates.slice(0, 8) : []) {
+    if (source.timeProjection?.corrections?.[`${value.sourceStateId}|${value.subjectEntityId}|${value.sourceFloorId}`]) continue;
     const cseKeysNow = selectedCseKeys(), historyKeysNow = selectedHistoryKeys();
     if (!cseKeysNow.has(value.sourceStateStableKey)) continue;
     if (!value.evidence.every(item => item.kind === 'recent'
@@ -1441,6 +1456,12 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
     const text = render(chosenStates, chosenChanges, chosenHistory, [...chosenProgressions, value]).text;
     if (text.length <= progressionCharLimit && estimateRecallTokens(text) <= progressionTokenLimit) chosenProgressions.push(value);
     else progressionBudgetDropped += 1;
+  }
+  let timeBudgetDropped = 0;
+  for (const reminder of source.timeProjection?.reminders ?? []) {
+    chosenTimeReminders.push(reminder);
+    const candidate = render().text;
+    if (candidate.length > charLimit || estimateRecallTokens(candidate) > tokenLimit) { chosenTimeReminders.pop(); timeBudgetDropped += 1; }
   }
   const rendered = render();
   const floors = rendered.floors, states = rendered.states, cseChanges = rendered.cseChanges, stateProgressions = rendered.stateProgressions, storylines = rendered.storylines, injectionText = rendered.text;
@@ -1459,7 +1480,7 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
     cseChanges: Object.freeze(cseChanges.map(value => Object.freeze(value))),
     stateProgressions: Object.freeze(stateProgressions.map(value => Object.freeze({ ...value, evidence: Object.freeze(value.evidence.map(item => Object.freeze(item))) }))),
     storylines: Object.freeze(storylines.map(value => Object.freeze({ ...value }))),
-    stages: Object.freeze({ input: queryContext?.messageCount ?? 0, candidates: source.floorMemories.length, dropRecent: source.floorMemories.length - oldMemories.length, dropPersistent, dropVisibility: source.coverage.cseCurrent ? 0 : source.currentState.reduce((sum, subject) => sum + subject.core.length + subject.adaptive.length + subject.situational.length, 0), selected: floors.length, recentSummaryCount: chosenRecent.length, distantHistoryItemCount: chosenDistant.length, linkedHistoryItemCount: chosenDistant.filter(value => value._relationEvidence === 'source' || value._relationEvidence === 'topic').length, stateCount: states.length, currentStateCount: states.length, cseChangeCount: cseChanges.length, linkedCseChangeCount: chosenChanges.filter(value => value._relationEvidence === 'source').length, stateProgressionCount: stateProgressions.length, storylineCount: storylines.length, semanticDuplicateCount: dropSemanticDuplicate, recentSummaryDroppedByBudget: recentHistory.length - chosenRecent.length, distantHistoryDroppedByBudget: uniqueHistory.length - chosenDistant.length, budgetDroppedCount: Math.max(0, recentHistory.length - chosenRecent.length) + Math.max(0, baseHistory.length - chosenDistant.length) + Math.max(0, uniqueStates.length + uniqueChanges.length - states.length - cseChanges.length - dropSemanticDuplicate) + progressionBudgetDropped, finalInjectionItemCount: chosenHistory.length + states.length + cseChanges.length + stateProgressions.length, estimatedTokenCount: estimateRecallTokens(injectionText), estimatedTokenBudget: progressionTokenLimit, ordinaryEstimatedTokenBudget: tokenLimit }),
+    stages: Object.freeze({ input: queryContext?.messageCount ?? 0, candidates: source.floorMemories.length, dropRecent: source.floorMemories.length - oldMemories.length, dropPersistent, dropVisibility: source.coverage.cseCurrent ? 0 : source.currentState.reduce((sum, subject) => sum + subject.core.length + subject.adaptive.length + subject.situational.length, 0), selected: floors.length, recentSummaryCount: chosenRecent.length, distantHistoryItemCount: chosenDistant.length, linkedHistoryItemCount: chosenDistant.filter(value => value._relationEvidence === 'source' || value._relationEvidence === 'topic').length, stateCount: states.length, currentStateCount: states.length, cseChangeCount: cseChanges.length, linkedCseChangeCount: chosenChanges.filter(value => value._relationEvidence === 'source').length, stateProgressionCount: stateProgressions.length, timeReminderCount: chosenTimeReminders.length, timeCorrectionCount: states.filter(state => source.timeProjection?.corrections?.[`${state.stateId}|${state.subjectEntityId}|${state.sourceFloorId}`]).length, timeBudgetDropped, storylineCount: storylines.length, semanticDuplicateCount: dropSemanticDuplicate, recentSummaryDroppedByBudget: recentHistory.length - chosenRecent.length, distantHistoryDroppedByBudget: uniqueHistory.length - chosenDistant.length, budgetDroppedCount: Math.max(0, recentHistory.length - chosenRecent.length) + Math.max(0, baseHistory.length - chosenDistant.length) + Math.max(0, uniqueStates.length + uniqueChanges.length - states.length - cseChanges.length - dropSemanticDuplicate) + progressionBudgetDropped + timeBudgetDropped, finalInjectionItemCount: chosenHistory.length + states.length + cseChanges.length + stateProgressions.length + chosenTimeReminders.length, estimatedTokenCount: estimateRecallTokens(injectionText), estimatedTokenBudget: progressionTokenLimit, ordinaryEstimatedTokenBudget: tokenLimit }),
     skipReasons: Object.freeze(skipReasons),
     limits: Object.freeze({ maxFloors: floorLimit, maxItems: allowedItems, maxCharacters: progressionCharLimit, ordinaryMaxCharacters: charLimit, actualCharacters: injectionText.length, estimatedTokenBudget: progressionTokenLimit, ordinaryEstimatedTokenBudget: tokenLimit, estimatedTokenCount: estimateRecallTokens(injectionText), tokenEstimateMethod: 'cjk1-latin4-punctuation2', historyEstimatedTokenTarget: historyTokenTarget, stateItemTarget: cseItemTarget, cseItemTarget, historyItemTarget: historyTarget, stateCharacterTarget: cseCharTarget, cseCharacterTarget: cseCharTarget, historyCharacterTarget: historyCharTarget }),
   });

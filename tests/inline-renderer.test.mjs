@@ -86,6 +86,40 @@ const recallInjection = (...bullets) => [
 
 const descendantText = node => `${node?.textContent ?? ''}${(node?.children ?? []).map(descendantText).join('')}`;
 
+test('独立时间签名文本兼容纯时间及覆盖说明后的两种历史，旧楼展示原文与预算结果', async () => {
+  const reminder = '甲 / 擦伤：原观察；当前推测：可能减轻 <script>示例</script>';
+  const timeProjection = { corrections: {}, reminders: [{ itemId: 'time', text: reminder, distance: 0 }] };
+  const coverage = { memoryComplete: true, cseCurrent: true };
+  const onlyText = formatRecallInjection({ coverage, floors: [], states: [], entityById: new Map(), timeProjection, timeReminders: timeProjection.reminders });
+  const only = { schemaVersion: 13, status: 'ready', selectedFloors: [], selectedStates: [], selectedCseChanges: [], stateProgressions: [], storylines: [], injectionText: onlyText };
+  assert.equal(projectInlineRecallReceipt(only).protocolRecognized, true);
+  assert.deepEqual(projectInlineRecallReceipt(only).timeReferenceItems, [reminder]);
+  for (const storylines of [undefined, [{ storylineId: 'recent', title: '近期剧情接续', basis: '真实旧事' }]]) {
+    const floor = { floorId: HISTORY_FLOOR, assistantSeq: 1, chronology: [], items: [{ category: 'objective', text: '黄昏抵达钟楼', ...(storylines ? { storylineId: 'recent' } : {}) }], section: 'recent' };
+    const injectionText = formatRecallInjection({ coverage, floors: [floor], states: [], entityById: new Map(), storylines, timeProjection, timeReminders: timeProjection.reminders });
+    const receipt = { ...only, schemaVersion: storylines ? 13 : 11, selectedFloors: [floor], storylines: storylines ?? [], injectionText };
+    const projection = projectInlineRecallReceipt(receipt);
+    assert.equal(projection.protocolRecognized, true, injectionText);
+    assert.equal(projection.historyItems.length, 1);
+    assert.deepEqual(projection.timeReferenceItems, [reminder]);
+  }
+  const chat = [{ is_user: true, is_system: false, mes: '继续', extra: { [RECALL_RECEIPT_KEY]: only } }];
+  const h = createHarness({ chat, memoryState: { floors: [], memoryEntities: [] }, projectReceipt: async () => only });
+  const node = messageElement(0, { user: true }); h.chatRoot.append(node); h.renderer.start(); await h.flushMicrotasks();
+  const view = resolveInlineAnchor(node).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  const drawer = view.recallUi.events.querySelector('.time-progression');
+  assert.match(descendantText(drawer), /本轮时间参考（1条）/u);
+  assert.notEqual(drawer.open, true);
+  assert.equal(drawer.querySelector('.time-progression-copy').textContent, reminder);
+  assert.equal(drawer.querySelector('script'), null);
+  timeProjection.reminders[0].text = '后来后台的新推测';
+  assert.deepEqual(projectInlineRecallReceipt(only).timeReferenceItems, [reminder]);
+  assert.deepEqual(projectInlineRecallReceipt({ ...only, status: 'stale' }).timeReferenceItems, []);
+  assert.deepEqual(projectInlineRecallReceipt({ ...only, injectionText: '' }).timeReferenceItems, []);
+  const old = { ...only, schemaVersion: 11, injectionText: recallInjection('AI #1：原观察这个词不应猜成校正'), selectedFloors: [{ floorId: HISTORY_FLOOR, assistantSeq: 1 }] };
+  assert.deepEqual(projectInlineRecallReceipt(old).timeReferenceItems, []);
+});
+
 async function actualCseReceipt() {
   const chatId = MARKER_CHAT, personId = '66666666-6666-4666-8666-666666666666';
   const empty = { chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };

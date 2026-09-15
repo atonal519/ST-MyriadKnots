@@ -21,6 +21,7 @@ import {
 import { validateCseGraph } from './cse-schema.js';
 import { matchFloorCandidates } from './floor-binding.js';
 import { createPeopleWorkspaceStore } from './people-workspace.js';
+import { createTimeStore } from './time-runtime.js';
 import { persistBranchedMessageMetadata } from './message-floor-anchor.js';
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
@@ -226,6 +227,7 @@ export function createChatBranchInitializer({
       throw fail('V3_BRANCH_TARGET_UNAVAILABLE', '分支目标记忆暂时无法读取。');
     }
 
+    await createTimeStore({ client }).copyPrefix(sourceChatId, targetChatId, target.floors ?? [], signal);
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     await persistBranchedMessageMetadata({ hostAdapter, hostChatId: host.hostChatId, sourceChatId, targetChatId, bindings, retainedFloorIds, signal, fetchImpl });
     return Object.freeze({ status: retainedFloorIds.length ? 'inherited' : 'empty', inheritedFloors: retainedFloorIds.length });
