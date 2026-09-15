@@ -1,5 +1,5 @@
 import { estimateRecallTokens } from './recall-selector.js';
-import { TIME_HEAD_ID, TIME_SYSTEM_PROMPT, prepareTimeBatch, compileTimeResponse, compileTimeEdit, replayTimeBatches, storyTimes, projectTime, timeRecallProjection, timeFingerprint, timeDistance, timeHours, validTimeProjection, timeBodyReads } from './time-engine.js';
+import { TIME_HEAD_ID, TIME_SYSTEM_PROMPT, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdit, replayTimeBatches, storyTimes, projectTime, timeRecallProjection, timeFingerprint, timeDistance, timeHours, validTimeProjection, timeBodyReads } from './time-engine.js';
 import { projectRecallSource } from './recall-source.js';
 import { sanitizeTaskMetadata } from './safe-metadata.js';
 import { publicErrorMessage } from '../public-error.js';
@@ -59,7 +59,7 @@ export async function prepareTimeRequest(reachable, batches = [], options = {}) 
   const linkedStates = new Set(prepared.trackedRecords.flatMap(item => (item.stateRefs ?? []).map(ref => ref.stateId)));
   prepared.request.currentStates = recall.currentState.filter(subject => subjects.has(subject.subjectEntityId)).flatMap(subject => ['core', 'adaptive', 'situational'].flatMap(layer => subject[layer].map(state => ({ ...state, subjectEntityId: subject.subjectEntityId, layer })))).filter(state => linkFloors.has(state.sourceFloorId) || linkedStates.has(state.stateId));
   prepared.request.chatId = reachable.root.chatId;
-  while ((JSON.stringify(prepared.request).length > 24000 || estimateRecallTokens(JSON.stringify(prepared.request) + TIME_SYSTEM_PROMPT) > 6000) && prepared.request.currentStates.length) prepared.request.currentStates.pop();
+  while (estimateRecallTokens(JSON.stringify(prepared.request) + TIME_SYSTEM_PROMPT) > (options.inputTokens ?? TIME_INPUT_TOKENS) && prepared.request.currentStates.length) prepared.request.currentStates.pop();
   return prepared;
 }
 

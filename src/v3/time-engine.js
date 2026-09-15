@@ -3,7 +3,8 @@ import { sha256 } from '../identity.js';
 import { resolveIdentityEntityId } from './entity-identity.js';
 
 export const TIME_HEAD_ID = 'v3-time-head';
-export const TIME_INPUT_CHARACTERS = 24000;
+export const TIME_INPUT_TOKENS = 30000;
+export const TIME_BODY_AUXILIARY_TOKENS = 1000;
 const DAY = 86400000;
 export function timeDistance(from, to) {
   if (Number.isInteger(from?.day) && Number.isInteger(to?.day)) return to.day - from.day;
@@ -169,16 +170,22 @@ export function validTimeProjection(item, currentTime) {
       || (timeHours(item.projection.applicableTime, currentTime) >= 0 && timeHours(item.projection.applicableTime, currentTime) < 6)));
 }
 
-export async function prepareTimeBatch(reachable, batches = [], { fragments = [], cutoffBody = null, inputTokens = 6000, allowInitialProjection = false } = {}) {
-  const cutoff = fragments.at(-1) ?? cutoffBody ?? reachable.bodyFloors?.filter(body => body.floorId).at(-1) ?? reachable.floors.at(-1);
+export function createTimeBodyRequest(reachable, fragments, cutoff) {
   const currentTime = cutoff?.observationTime ?? reachable.bodyTimes?.get(cutoff?.id) ?? storyTimes(reachable.floorMemories ?? [], reachable.floors ?? []).get(cutoff?.id) ?? projectTime('');
+  const observations = fragments.map(fragment => ({ ...fragment, sourceKey: `sha256:${'0'.repeat(64)}`,
+    observationElapsedDays: timeDistance(fragment.observationTime, currentTime), observationElapsedHours: timeHours(fragment.observationTime, currentTime) }));
+  return { chatId: reachable.root.chatId, currentTime, cutoffFloorId: cutoff?.floorId ?? cutoff?.id ?? null, people: [], observations, trackedItems: [], context: [], currentStates: [] };
+}
+
+export async function prepareTimeBatch(reachable, batches = [], { fragments = [], cutoffBody = null, inputTokens = TIME_INPUT_TOKENS, allowInitialProjection = false } = {}) {
+  const cutoff = fragments.at(-1) ?? cutoffBody ?? reachable.bodyFloors?.filter(body => body.floorId).at(-1) ?? reachable.floors.at(-1);
+  const request = createTimeBodyRequest(reachable, fragments, cutoff);
+  const { currentTime, observations } = request;
   const replay = evaluateTimeBatches(batches, reachable), items = replay.items;
-  const observations = [];
-  for (const fragment of fragments) observations.push({ ...fragment, sourceKey: await timeFingerprint([fragment.floorId, fragment.canonicalFingerprint, fragment.from, fragment.to]),
-    observationElapsedDays: timeDistance(fragment.observationTime, currentTime), observationElapsedHours: timeHours(fragment.observationTime, currentTime) });
+  for (const observation of observations) observation.sourceKey = await timeFingerprint([observation.floorId, observation.canonicalFingerprint, observation.from, observation.to]);
   const identityPeople = (reachable.entities ?? []).filter(entity => entity.entityType === 'person').map(entity => ({ entityId: entity.id, name: entity.displayName, aliases: entity.aliases ?? [] }));
   const people = identityPeople.filter(person => items.some(item => item.subjectEntityId === person.entityId) || observations.some(row => [person.name, ...person.aliases].some(name => name && row.description.includes(name))));
-  const request = { chatId: reachable.root.chatId, currentTime, cutoffFloorId: cutoff?.floorId ?? cutoff?.id ?? null, people, observations, trackedItems: [], context: [], currentStates: [] };
+  request.people = people;
   const trackedRecords = [];
   // Reserve the complete body payload first; auxiliary records never turn into a whitelist.
   for (const item of items) {

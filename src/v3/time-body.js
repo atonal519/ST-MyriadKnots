@@ -1,7 +1,7 @@
 import { scanAssistantCandidates } from './foundation-domain.js';
 import { matchFloorCandidates } from './floor-binding.js';
 import { parseSharedStoryClock, parseStoryClockReference } from '../story-clock.js';
-import { projectTime, storyTimes, timeFingerprint, timeBodyReads } from './time-engine.js';
+import { projectTime, storyTimes, timeFingerprint, timeBodyReads, createTimeBodyRequest, TIME_INPUT_TOKENS, TIME_BODY_AUXILIARY_TOKENS, TIME_SYSTEM_PROMPT } from './time-engine.js';
 import { inferCanonicalCurrentTime } from './extractor.js';
 import { estimateRecallTokens } from './recall-selector.js';
 
@@ -41,10 +41,16 @@ export function resolveTimeStart(start, source) {
     && JSON.stringify(body.hostLocator) === JSON.stringify(start?.hostLocator)) ?? null;
 }
 
-export function planTimeBody(source, batches, { start = null, history = false, fragmentTokens = 1800, batchTokens = 3500 } = {}) {
+export function planTimeBody(source, batches, { start = null, history = false, inputTokens = TIME_INPUT_TOKENS } = {}) {
   const reads = timeBodyReads(batches, source), startBody = resolveTimeStart(start, source);
   const eligible = source.bodyFloors.filter(body => body.floorId && (history || startBody && body.assistantSeq >= startBody.assistantSeq));
-  const fragments = [];
+  const fragments = [], groups = [];
+  const fits = rows => new Set(rows.map(row => row.floorId)).size <= 20
+    && estimateRecallTokens(JSON.stringify(createTimeBodyRequest(source, rows, rows.at(-1))) + TIME_SYSTEM_PROMPT) <= inputTokens - TIME_BODY_AUXILIARY_TOKENS;
+  const fragment = (body, from, to) => ({ floorId: body.floorId, assistantSeq: body.assistantSeq,
+    canonicalFingerprint: body.canonicalFingerprint, rawFingerprint: body.rawFingerprint, timeSourceFingerprint: body.timeSourceFingerprint,
+    from, to, totalCharacters: body.content.length, observationTime: body.observationTime, description: body.content.slice(from, to) });
+  const add = row => { let group = groups.at(-1); if (!group || !fits([...group, row])) { group = []; groups.push(group); } group.push(row); fragments.push(row); };
   for (const body of eligible) {
     const covered = (reads.get(body.floorId) ?? []).sort((a, b) => a.from - b.from);
     let cursor = 0;
@@ -52,22 +58,23 @@ export function planTimeBody(source, batches, { start = null, history = false, f
     for (const range of covered) { if (range.from > cursor) missing.push([cursor, range.from]); cursor = Math.max(cursor, range.to); }
     if (cursor < body.content.length) missing.push([cursor, body.content.length]);
     for (const [from, to] of missing) {
+      const whole = fragment(body, from, to);
+      if (fits([whole])) { add(whole); continue; }
+      // Only an interval that cannot fit on its own is split; ordinary floors stay whole.
       let position = from;
       while (position < to) {
-        let end = Math.min(to, position + 6000);
-        while (estimateRecallTokens(body.content.slice(position, end)) > fragmentTokens) end = position + Math.max(1, Math.floor((end - position) * 0.8));
-        if (end < to) { const paragraph = body.content.lastIndexOf('\n', end); if (paragraph > position + (end - position) / 2) end = paragraph + 1; }
-        fragments.push({ floorId: body.floorId, assistantSeq: body.assistantSeq, canonicalFingerprint: body.canonicalFingerprint, rawFingerprint: body.rawFingerprint, timeSourceFingerprint: body.timeSourceFingerprint,
-          from: position, to: end, totalCharacters: body.content.length, observationTime: body.observationTime, description: body.content.slice(position, end) });
+        let low = position + 1, high = to, end = position;
+        while (low <= high) {
+          const middle = Math.floor((low + high) / 2);
+          if (fits([fragment(body, position, middle)])) { end = middle; low = middle + 1; }
+          else high = middle - 1;
+        }
+        if (end === position) throw Object.assign(new Error('正文元数据超过输入预算，无法规划批次。'), { code: 'QQJ_TIME_INVALID' });
+        if (end < to) { const paragraph = body.content.lastIndexOf('\n', end - 1); if (paragraph > position + (end - position) / 2) end = paragraph + 1; }
+        add(fragment(body, position, end));
         position = end;
       }
     }
-  }
-  const groups = [];
-  for (const fragment of fragments) {
-    let group = groups.at(-1);
-    if (!group || new Set([...group, fragment].map(row => row.floorId)).size > 20 || estimateRecallTokens(JSON.stringify([...group, fragment])) > batchTokens) { group = []; groups.push(group); }
-    group.push(fragment);
   }
   const fullyRead = body => body.floorId && (reads.get(body.floorId) ?? []).sort((a,b) => a.from-b.from).reduce((end, range) => range.from <= end ? Math.max(end, range.to) : end, 0) >= body.content.length;
   const checked = source.bodyFloors.filter(fullyRead).length;

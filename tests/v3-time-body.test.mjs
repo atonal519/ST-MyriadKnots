@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { scanAssistantCandidates, createFloorRecord } from '../src/v3/foundation-domain.js';
 import { readTimeBody, planTimeBody, timeBodyStart } from '../src/v3/time-body.js';
 import { createTimeRuntime, createTimeStore, prepareTimeRequest } from '../src/v3/time-runtime.js';
-import { compileTimeResponse, compileTimeEdit, replayTimeBatches, timeBodyReads, projectTime } from '../src/v3/time-engine.js';
+import { compileTimeResponse, compileTimeEdit, replayTimeBatches, timeBodyReads, projectTime, TIME_INPUT_TOKENS, TIME_SYSTEM_PROMPT } from '../src/v3/time-engine.js';
 import { estimateRecallTokens, selectRecall, buildRecallQueryContext } from '../src/v3/recall-selector.js';
 import { projectInlineRecallReceipt } from '../src/ui/inline-projection.js';
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', PERSON = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -21,7 +21,7 @@ async function harness({ count=2, unstable=false, generate=()=>({changes:[]}), s
   await seal(); const back=backend(),store=createTimeStore(back),hostAdapter={snapshot:()=>({chat,chatId:'host',context:{chatMetadata:{qianqianjie:{chatId}}}})};
   const options={store,hostAdapter,newUuid:()=>`test-${++counter}`,foundationStore:{readRoot:async()=>({data:source.root})},session:{identity:()=>({chatId,hostChatId:'host'})},
     getReachable:()=>source,getMemoryState:()=>({memoryWorkBusy:busy,activeCse:cse?{}:null,memorySyncStatus:sync}),sanitizerOptions:()=>sanitizer,storyClockReferenceTags:()=>tags,isEnabled:()=>on,logger:{warn(){}},
-    generateTimeTask:async task=>{calls++;assert.equal(task.transportBudget.remaining,1);assert.equal(task.transportRetries,0);assert.ok(estimateRecallTokens(task.systemPrompt+task.taskMessages[0].content)<=6000);return generate(JSON.parse(task.taskMessages[0].content),calls,task);}};
+    generateTimeTask:async task=>{calls++;assert.equal(task.transportBudget.remaining,1);assert.equal(task.transportRetries,0);assert.ok(estimateRecallTokens(task.systemPrompt+task.taskMessages[0].content)<=TIME_INPUT_TOKENS);return generate(JSON.parse(task.taskMessages[0].content),calls,task);}};
   let runtime=createTimeRuntime(options);
   return {source,chat,store,back,seal,hostAdapter,get runtime(){return runtime;},reload(){runtime=createTimeRuntime(options);return runtime;},calls:()=>calls,setChat:value=>chatId=value,setEnabled:value=>on=value,setSync:value=>sync=value,body:()=>readTimeBody(source,hostAdapter.snapshot(),{sanitizerOptions:sanitizer,storyClockReferenceTags:tags})};
 }
@@ -55,8 +55,34 @@ test('20楼和完整预算、长楼分片、空成功留痕、第二批失败只
   const h=await harness({count:25,generate:(_,calls)=>{if(calls===2)throw new Error('synthetic');return {changes:[]};}});
   let plan=await h.runtime.prepareHistoryPlan();assert.ok(plan.groups.every(group=>new Set(group.map(row=>row.floorId)).size<=20));assert.ok(plan.batchCount>=2);await h.runtime.organize(plan);
   let stored=await h.store.read(CHAT);assert.equal(stored.batches.length,1);assert.equal(stored.batches[0].changes.length,0);plan=await h.runtime.prepareHistoryPlan();assert.equal(plan.floorCount,25-stored.batches[0].bodyReads.length);await h.runtime.organize(plan);assert.equal((await h.runtime.prepareHistoryPlan()).floorCount,0);
-  const long=await harness({count:1});long.chat[0].mes=raw(0,'阿岚观察。\n'+ '长正文。'.repeat(7000));await long.seal();plan=await long.runtime.prepareHistoryPlan();assert.ok(plan.batchCount>1);assert.ok(plan.groups.flat().every(row=>row.to-row.from<row.totalCharacters));
+  const long=await harness({count:1});long.chat[0].mes=raw(0,'阿岚观察。\n'+ '长正文。'.repeat(10000));await long.seal();plan=await long.runtime.prepareHistoryPlan();assert.ok(plan.batchCount>1);assert.ok(plan.groups.flat().every(row=>row.to-row.from<row.totalCharacters));
   await long.runtime.organize(plan);stored=await long.store.read(CHAT);const reads=timeBodyReads(stored.batches,await long.body()).get('floor-1').sort((a,b)=>a.from-b.from);assert.equal(reads[0].from,0);assert.equal(reads.at(-1).to,reads[0].totalCharacters);assert.equal(long.runtime.getState().coverage.checkedFloors,1);assert.equal((await long.runtime.prepareHistoryPlan()).apiCalls,0);
+});
+
+test('30000完整输入预算优先整楼合批，辅助长材料按剩余空间且无旧字符上限',async()=>{
+  const h=await harness({count:4});
+  for(let i=0;i<4;i++) h.chat[i*2].mes=raw(i,'阿岚观察。\n'+'正文'.repeat(3000));
+  await h.seal();const source=await h.body();
+  source.entities=[{id:PERSON,entityType:'person',displayName:'阿岚',aliases:['冗长辅助材料'.repeat(10000)]}];
+  source.floorMemories=source.floors.map(floor=>({id:`memory-${floor.id}`,floorId:floor.id,recordStatus:'active',summary:{effectiveSource:'user',userText:'辅助摘要'.repeat(10000)}}));
+  const plan=planTimeBody(source,[],{history:true});assert.equal(plan.batchCount,1);assert.equal(plan.groups[0].length,4);
+  for(const row of plan.groups[0]) {assert.equal(row.from,0);assert.equal(row.to,row.totalCharacters);}
+  const prepared=await prepareTimeRequest(source,[],{fragments:plan.groups[0]});
+  assert.ok(estimateRecallTokens(TIME_SYSTEM_PROMPT+JSON.stringify(prepared.request))<=TIME_INPUT_TOKENS);
+  assert.deepEqual(prepared.request.observations.map(row=>row.description),source.bodyFloors.map(row=>row.content));
+  const ascii=await harness({count:1});ascii.chat[0].mes=raw(0,'A'.repeat(90000));await ascii.seal();
+  const asciiSource=await ascii.body(),asciiPlan=planTimeBody(asciiSource,[],{history:true});assert.equal(asciiPlan.batchCount,1);assert.equal(asciiPlan.groups[0][0].to,90000);
+  const asciiRequest=await prepareTimeRequest(asciiSource,[],{fragments:asciiPlan.groups[0]});assert.ok(JSON.stringify(asciiRequest.request).length>24000);assert.ok(estimateRecallTokens(TIME_SYSTEM_PROMPT+JSON.stringify(asciiRequest.request))<=TIME_INPUT_TOKENS);
+});
+
+test('超长单楼在长元数据下完整分片，每批实际request不超完整预算、区间无漏无重',async()=>{
+  const h=await harness({count:1});h.chat[0].mes=raw(0,('超长完整正文。\n').repeat(10000));await h.seal();
+  const source=await h.body();source.root.chatId='长聊天身份'.repeat(1000);
+  source.bodyFloors[0].rawFingerprint='长元数据'.repeat(1000);source.bodyFloors[0].timeSourceFingerprint='长时间元数据'.repeat(1000);
+  const plan=planTimeBody(source,[],{history:true});assert.ok(plan.batchCount>1);
+  const rows=plan.groups.flat();let cursor=0;for(const row of rows){assert.equal(row.from,cursor);cursor=row.to;assert.equal(row.description,source.bodyFloors[0].content.slice(row.from,row.to));}
+  assert.equal(cursor,source.bodyFloors[0].content.length);
+  for(const group of plan.groups){const prepared=await prepareTimeRequest(source,[],{fragments:group});assert.ok(estimateRecallTokens(TIME_SYSTEM_PROMPT+JSON.stringify(prepared.request))<=TIME_INPUT_TOKENS);}
 });
 
 test('已确认范围不被新楼扩展；摘要/CSE普通root推进不丢批；正文或身份变化迟到不写',async()=>{
