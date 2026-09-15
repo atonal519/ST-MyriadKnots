@@ -46,7 +46,9 @@ export function createTimeStore({ client }) {
       const copied = { ...structuredClone(batch), chatId: targetChatId };
       await putBatch(targetChatId, copied, signal); ids.push(copied.id);
     }
-    await putHead(targetChatId, { schemaVersion: 1, chatId: targetChatId, batchIds: ids, ...(source.head.bodyStart?.floorId && floors.has(source.head.bodyStart.floorId) ? { bodyStart: source.head.bodyStart } : {}), lastAttemptSignature: batches.at(-1)?.signature ?? null, lastAttemptTime: batches.at(-1)?.currentTime ?? null }, 0, signal);
+    const partial = batches.at(-1)?.status === 'partial' ? batches.at(-1) : source.head.lastRun?.status === 'partial' ? batches.findLast(batch => batch.status === 'partial') : null;
+    await putHead(targetChatId, { schemaVersion: 1, chatId: targetChatId, batchIds: ids, ...(source.head.bodyStart?.floorId && floors.has(source.head.bodyStart.floorId) ? { bodyStart: source.head.bodyStart } : {}), lastAttemptSignature: batches.at(-1)?.signature ?? null, lastAttemptTime: batches.at(-1)?.currentTime ?? null,
+      ...(partial ? { lastRun: { status: 'partial', itemErrors: partial.itemErrors, message: '已保留部分成功事项；仍有正文待补查，请手动继续。' } } : {}) }, 0, signal);
   }
   return Object.freeze({ read, putHead, putBatch, copyPrefix });
 }
@@ -121,7 +123,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     if (pending) await pending;
   }
   const itemCount = (batches, reachable) => replayTimeBatches(batches, reachable).filter(item => item.status === 'active').length;
-  const retryable = (head, batches) => ['failed', 'running'].includes(head?.lastRun?.status) || Boolean(head?.lastAttemptSignature && !head.lastRun && head.lastAttemptSignature !== batches.at(-1)?.signature);
+  const retryable = (head, batches) => ['failed', 'running', 'partial'].includes(head?.lastRun?.status) || Boolean(head?.lastAttemptSignature && !head.lastRun && head.lastAttemptSignature !== batches.at(-1)?.signature);
   async function refreshStatus({ force = false } = {}) {
     if (!enabled() || active) return notify();
     if (last?.status === 'failed' && last.persisted === false) return notify();
@@ -165,7 +167,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     if (token !== epoch || source.root.chatId !== identity().chatId) throw new Error('当前聊天已变化。');
     const plan = planTimeBody(source, stored.batches, { history: true, start: stored.head?.bodyStart });
     const prepared = await prepareTimeRequest(source, stored.batches, { allowInitialProjection: true });
-    const supplement = !plan.groups.length && prepared.shouldRequest && stored.head?.lastRun?.initialProjectionCheckedSignature !== prepared.signature;
+    const supplement = !plan.groups.length && prepared.shouldRequest && (stored.head?.lastRun?.status === 'partial' || stored.head?.lastRun?.initialProjectionCheckedSignature !== prepared.signature);
     return { ...plan, groups: plan.groups.length ? plan.groups : supplement ? [[]] : [], batchCount: plan.batchCount || (supplement ? 1 : 0),
       apiCalls: plan.apiCalls || (supplement ? 1 : 0), currentWitness: source.bodyFloors.filter(body => body.floorId).at(-1), supplement, epoch: token, chatId: identity().chatId, narrativeGeneration: source.root.narrativeGeneration };
   }
@@ -254,21 +256,24 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
           const result = await generateTimeTask({ systemPrompt: TIME_SYSTEM_PROMPT, taskMessages: [{ role: 'user', content: JSON.stringify(prepared.request) }],
             temperature: 0, includeCharacterCard: false, worldInfoSource: 'none', parseMode: 'semantic', transportBudget, transportRetries: 0, signal: operation.controller.signal });
           if (!current(operation)) return;
+          operation.phase = 'saving'; notify();
           const batch = await compileTimeResponse(result, prepared, stored.batches);
           batch.id = `v3-time-batch-${newUuid()}`;
           if (!await validateBody(operation, source, [...witnesses, ...batch.dependencies.filter(ref => ref.canonicalFingerprint).map(ref => ({ floorId: ref.floorId, canonicalFingerprint: ref.canonicalFingerprint, totalCharacters: source.bodyFloors.find(body => body.floorId === ref.floorId)?.content.length }))])) throw new Error('正文来源已变化，本批未应用。');
           await store.putBatch(operation.chatId, batch, operation.controller.signal);
           if (!await validateBody(operation, source, witnesses)) throw new Error('正文来源已变化，本批未应用。');
-          const completed = { ...run, status: batch.changes.length ? 'completed' : 'empty', items: itemCount([...stored.batches, batch], source),
-            ...(!fragments.length ? { initialProjectionCheckedSignature: prepared.signature } : {}) };
+          const completed = { ...run, status: batch.status === 'partial' ? 'partial' : batch.changes.length ? 'completed' : 'empty',
+            ...(batch.itemErrors?.length ? { itemErrors: batch.itemErrors, message: `已保存 ${batch.changes.length} 项；${batch.itemErrors.map(item => `第${item.index}项：${item.reason}`).join('；')} 本批仍待补查，请手动继续。` } : {}), items: itemCount([...stored.batches, batch], source),
+            ...(!fragments.length && batch.status !== 'partial' ? { initialProjectionCheckedSignature: prepared.signature } : {}) };
           const nextHead = { ...head, batchIds: [...head.batchIds, batch.id], lastRun: completed };
           const saved = await store.putHead(operation.chatId, nextHead, stored.revision, operation.controller.signal);
           if (!current(operation)) return;
           stored = { head: nextHead, revision: saved.revision, batches: [...stored.batches, batch] };
-          operation.progress.completed += 1;
+          if (batch.status !== 'partial') operation.progress.completed += 1;
           cacheItems(stored.batches, source); coverage = planTimeBody(source, stored.batches, { start: stored.head.bodyStart });
           last = { ...completed, requests: operation.requests, api: sanitizeTaskMetadata(result?.taskMetadata) };
           projectionCache = null; onInvalidate(); notify();
+          if (batch.status === 'partial') break;
         }
         if (historyAuthorization?.chatId === operation.chatId) {
           const remaining = planTimeBody({ ...source, bodyFloors: source.bodyFloors.filter(body => body.assistantSeq <= historyAuthorization.through) }, stored.batches, { history: true });
@@ -276,7 +281,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
         }
       } catch (error) {
         if (current(operation)) {
-          const message = publicErrorMessage({ code: error?.code, name: error?.name, status: error?.status }, { fallback: '本批时间正文处理失败；成功批次已保留，可补查剩余正文。' });
+          const message = error?.code === 'QQJ_TIME_INVALID' && error.itemErrors?.length ? `${error.itemErrors.map(item => `第${item.index}项：${item.reason}`).join('；')} 本批未保存，可手动补查。` : publicErrorMessage({ code: error?.code, name: error?.name, status: error?.status }, { fallback: '本批时间正文处理失败；成功批次已保留，可补查剩余正文。' });
           last = { status: 'failed', message, persisted: false }; statusKey = null;
           try {
             const latest = await store.read(operation.chatId);
@@ -302,7 +307,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       let stored = await store.read(identity().chatId);
       if (token !== epoch || !enabled() || source.root.chatId !== identity().chatId) return getState();
       stored = await ensureStart(source, stored, controller.signal);
-      if (manualBlock()) return refreshStatus();
+      if (manualBlock() || stored.head?.lastRun?.status === 'partial') return refreshStatus();
       let history = historyAuthorization?.chatId === identity().chatId;
       if (history) {
         const remaining = planTimeBody({ ...source, bodyFloors: source.bodyFloors.filter(body => body.assistantSeq <= historyAuthorization.through) }, stored.batches, { history: true });

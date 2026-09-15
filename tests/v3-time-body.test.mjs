@@ -199,3 +199,68 @@ test('观察F1但生成/人工批截止F2的未来上下文，旧F1重查不清�
   const unchanged=await compileTimeResponse(bodyModel(prepared.request,{itemId:old.id,subjectEntityId:old.subjectEntityId,progression:''}),prepared);assert.deepEqual(unchanged.changes[0].projection,old.projection);assert.ok(unchanged.dependencies.some(ref=>ref.floorId==='floor-2'));
   await h.store.putBatch(CHAT,empty);const stored=await h.store.read(CHAT);await h.store.putHead(CHAT,{...stored.head,batchIds:[...stored.head.batchIds,empty.id]},stored.revision);await h.store.copyPrefix(CHAT,'past-origin',h.source.floors.slice(0,1));assert.equal((await h.store.read('past-origin')).batches.length,0);
 });
+
+
+test('短来源与完整键精确等价，未知单项隔离，全坏与顶层坏仍失败，空成功覆盖',async()=>{
+  const h=await harness(),source=await h.body(),fragments=planTimeBody(source,[],{history:true}).groups[0];
+  const prepared=await prepareTimeRequest(source,[],{fragments});assert.deepEqual(prepared.request.observations.map(row=>row.sourceKey),['S1','S2']);
+  const short=await compileTimeResponse(bodyModel(prepared.request),prepared);
+  const full=await compileTimeResponse(bodyModel(prepared.request,{sourceKeys:[prepared.sourceKeys[0]]}),prepared);
+  assert.deepEqual(short.changes,full.changes);assert.equal(short.changes[0].sourceRefs[0].sourceKey,prepared.sourceKeys[0]);
+  const bad={...bodyModel(prepared.request).changes[0],sourceKeys:['S99']};
+  const partial=await compileTimeResponse({changes:[bodyModel(prepared.request).changes[0],bad]},prepared);
+  assert.equal(partial.status,'partial');assert.equal(partial.changes.length,1);assert.deepEqual(partial.bodyReads,[]);
+  assert.deepEqual(partial.itemErrors,[{index:2,reason:'来源编号未在本次请求中出现。'}]);assert.equal(timeBodyReads([partial],source).size,0);
+  assert.equal(replayTimeBatches([partial],source).length,1);assert.ok(partial.dependencies.some(ref=>ref.floorId==='floor-1'));
+  await assert.rejects(compileTimeResponse({changes:[bad]},prepared),error=>error.code==='QQJ_TIME_INVALID'&&error.itemErrors[0].index===1);
+  await assert.rejects(compileTimeResponse({changes:null},prepared));await assert.rejects(compileTimeResponse('not JSON',prepared));
+  const programError={get type(){throw new TypeError('internal');}};await assert.rejects(compileTimeResponse({changes:[bodyModel(prepared.request).changes[0],programError]},prepared),TypeError);
+  const empty=await compileTimeResponse({changes:[]},prepared);assert.equal(empty.status,undefined);assert.equal(timeBodyReads([empty],source).size,2);
+});
+
+test('partial续查来源重编号与数组换序保真实ID/观察及人工停止，遗漏旧项不删除，分支保来源',async()=>{
+  const h=await harness({count:3}),source=await h.body(),rows=planTimeBody(source,[],{history:true}).groups[0];
+  let prepared=await prepareTimeRequest(source,[],{fragments:rows.slice(1)});
+  const initial=await compileTimeResponse({changes:[bodyModel(prepared.request,{sourceKeys:['S1','S2']}).changes[0],bodyModel(prepared.request,{sourceKeys:['unknown']}).changes[0]]},prepared);
+  const manual=await compileTimeEdit(initial.changes[0],{label:'人工保留',status:'paused'},source,'manual');
+  prepared=await prepareTimeRequest(source,[initial,manual],{fragments:rows});
+  const retry=await compileTimeResponse(bodyModel(prepared.request,{sourceKeys:['S3','S2'],observation:'模型换了说法'}),prepared,[initial,manual]);
+  assert.equal(retry.changes[0].id,initial.changes[0].id);assert.equal(retry.changes[0].observationKey,manual.changes[0].observationKey);
+  assert.equal(retry.changes[0].label,'人工保留');assert.equal(retry.changes[0].status,'paused');assert.equal(replayTimeBatches([initial,manual,retry],source).length,1);
+  const empty=await compileTimeResponse({changes:[]},prepared,[initial,manual]);assert.equal(replayTimeBatches([initial,manual,empty],source).length,1);
+  await h.store.putBatch(CHAT,initial);await h.store.putHead(CHAT,{schemaVersion:1,chatId:CHAT,batchIds:[initial.id]},0);
+  await h.store.copyPrefix(CHAT,'child',source.floors);const child=await h.store.read('child');assert.equal(child.batches[0].status,'partial');assert.equal(child.head.lastRun.status,'partial');assert.equal(timeBodyReads(child.batches,source).size,0);
+  await h.store.copyPrefix(CHAT,'short-child',source.floors.slice(0,1));assert.equal((await h.store.read('short-child')).batches.length,0);
+});
+
+test('partial停批与后台/重载守卫，手动续查合法旧项保留，saving阶段与存储异常如实失败',async()=>{
+  let h;h=await harness({count:25,generate:async(request,calls)=>{
+    if(calls===1){void h.runtime.runBatch();return {changes:[bodyModel(request).changes[0],bodyModel(request,{sourceKeys:['S99']}).changes[0]]};}
+    return {changes:[]};
+  }});
+  const phases=[];h.runtime.subscribe(state=>phases.push(state.phase));await h.runtime.organize(await h.runtime.prepareHistoryPlan());
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(h.calls(),1);assert.ok(phases.includes('saving'));
+  let stored=await h.store.read(CHAT);assert.equal(stored.head.lastRun.status,'partial');assert.equal(stored.batches.length,1);assert.equal(h.runtime.getState().coverage.checkedFloors,0);assert.match(h.runtime.getState().last.message,/第2项/);
+  await h.runtime.runBatch();h.reload();await h.runtime.runBatch();await h.runtime.refreshStatus({force:true});assert.equal(h.calls(),1);assert.equal(h.runtime.getState().last.status,'partial');
+  await h.runtime.organize(await h.runtime.prepareHistoryPlan());stored=await h.store.read(CHAT);assert.equal(stored.head.lastRun.status,'empty');assert.equal(replayTimeBatches(stored.batches,await h.body()).length,1);assert.equal((await h.runtime.prepareHistoryPlan()).floorCount,0);
+  const broken=await harness({generate:request=>({changes:[bodyModel(request).changes[0],bodyModel(request,{sourceKeys:['S99']}).changes[0]]})});
+  broken.back.client.put=async(c,id,data,revision,options)=>{if(id.startsWith('v3-time-batch-'))throw new Error('storage failed');const key=`${c}/${id}`;const result={data:structuredClone(data),revision:revision+1};broken.back.records.set(key,result);return result;};await broken.runtime.organize(await broken.runtime.prepareHistoryPlan());assert.equal(broken.runtime.getState().last.status,'failed');assert.equal((await broken.store.read(CHAT)).batches.length,0);
+});
+
+
+test('无新正文补算partial保手动续查机会，旧partial检查标记不能封死补算，完整成功才完成',async()=>{
+  const h=await harness({generate:(request,calls)=>{
+    if(request.observations.length)return bodyModel(request,{progression:''});
+    if(calls===2){const item=request.trackedItems[0];return {changes:[{...item,itemId:item.id,sourceKeys:[],occurrenceTime:'',dueTime:'',progression:''},{...item,itemId:item.id,sourceKeys:['unknown']}]};}
+    return {changes:[]};
+  }});
+  await h.runtime.organize(await h.runtime.prepareHistoryPlan());const original=h.runtime.getState().trackedItems[0];
+  let plan=await h.runtime.prepareHistoryPlan();assert.equal(plan.supplement,true);await h.runtime.organize(plan);
+  let stored=await h.store.read(CHAT);assert.equal(stored.head.lastRun.status,'partial');assert.equal(stored.head.lastRun.initialProjectionCheckedSignature,undefined);
+  assert.equal(h.runtime.getState().trackedItems[0].observationKey,original.observationKey);assert.equal(h.calls(),2);
+  await h.runtime.runBatch();assert.equal(h.calls(),2);plan=await h.runtime.prepareHistoryPlan();assert.equal(plan.supplement,true);assert.equal(plan.apiCalls,1);
+  await h.store.putHead(CHAT,{...stored.head,lastRun:{...stored.head.lastRun,initialProjectionCheckedSignature:stored.head.lastAttemptSignature}},stored.revision);
+  h.reload();plan=await h.runtime.prepareHistoryPlan();assert.equal(plan.supplement,true);assert.equal(plan.apiCalls,1);
+  await h.runtime.organize(plan);assert.equal(h.calls(),3);stored=await h.store.read(CHAT);assert.equal(stored.head.lastRun.status,'empty');assert.equal(stored.head.lastRun.initialProjectionCheckedSignature,stored.head.lastAttemptSignature);
+  assert.equal((await h.runtime.prepareHistoryPlan()).apiCalls,0);assert.equal(h.runtime.getState().trackedItems.length,1);
+});

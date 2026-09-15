@@ -530,10 +530,10 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     toggle.disabled = false;
     toggle.setAttribute('aria-expanded', String(recentItemsOpen)); body.hidden = !recentItemsOpen;
     if (!recentItemsOpen) return;
-    const label = state?.status === 'disabled' ? '已关闭' : state?.active ? state.phase === 'saving' ? '保存中' : '处理中' : state?.status === 'waiting' ? '等待记忆同步' : result?.status === 'completed' ? '已处理' : result?.status === 'empty' ? '已检查无适合事项' : result?.status === 'failed' ? '失败' : result?.status === 'interrupted' ? '上次未完成' : '待初始化';
+    const label = state?.status === 'disabled' ? '已关闭' : state?.active ? state.phase === 'saving' ? '保存中' : '处理中' : state?.status === 'waiting' ? '等待记忆同步' : result?.status === 'completed' ? '已处理' : result?.status === 'empty' ? '已检查无适合事项' : result?.status === 'partial' ? '部分完成' : result?.status === 'failed' ? '失败' : result?.status === 'interrupted' ? '上次未完成' : '待初始化';
     status.textContent = `${label}${Array.isArray(tracked) ? ` · 追踪中事项 ${tracked.length} 条` : ''}${state?.coverage ? ` · 正文完整已检查 ${state.coverage.checkedFloors}/${state.coverage.totalFloors} 楼` : ''}${state?.progress ? ` · 本次批次 ${state.progress.completed}/${state.progress.total}` : ''}${result?.message ? `。${result.message}` : ''}`;
-    status.className = result?.status === 'failed' ? 'settings-result error' : 'settings-result';
-    organize.textContent = ['failed', 'interrupted'].includes(result?.status) ? '继续补查历史' : '补查历史';
+    status.className = ['failed', 'partial'].includes(result?.status) ? 'settings-result error' : 'settings-result';
+    organize.textContent = ['failed', 'interrupted', 'partial'].includes(result?.status) ? '继续补查历史' : '补查历史';
     organize.disabled = state?.canOrganize !== true || result?.reason === 'read' || Boolean(recentItemsUi.pendingAction);
     if (stop) { stop.hidden = !state?.active || state.phase === 'saving'; stop.disabled = !state?.active; }
     retryRead.hidden = result?.reason !== 'read'; retryRead.disabled = state?.active === true || state?.status === 'disabled' || state?.status === 'waiting';

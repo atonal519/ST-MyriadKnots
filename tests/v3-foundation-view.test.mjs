@@ -87,6 +87,9 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   emit({ ...state, memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: false });
   assert.equal(container.replaceCount, replaceCount); assert.equal(input.value, '未保存草稿'); assert.equal(toggle.disabled, false);
   await toggle.click(); await toggle.click(); assert.equal(reads, 1); assert.equal(toggle.attributes['aria-expanded'], 'true');
+  timeState = { ...timeState, last: { status: 'partial', message: '第2项：来源编号未在本次请求中出现。请手动继续。' } }; publish();
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /部分完成.*第2项/);
+  assert.equal(flatten(container).find(node => node.textContent === '继续补查历史').disabled, false);
   timeState = { ...timeState, status: 'failed', trackedItems: null, last: { status: 'failed', reason: 'read', message: '读取失败' } }; publish();
   const retry = flatten(container).find(node => node.textContent === '重试读取'); assert.equal(retry.hidden, false);
   assert.equal(flatten(container).find(node => node.textContent === '继续补查历史').disabled, true);
