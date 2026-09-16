@@ -11,6 +11,7 @@ import { EXTRACTOR_SYSTEM_PROMPT } from '../src/v3/extractor.js';
 import { createChatIdentityCoordinator, CHAT_IDENTITY_COLLECTION } from '../src/chat-identity.js';
 import { createChatSession } from '../src/chat-session.js';
 import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
+import { deterministicUuid } from '../src/v3/foundation-domain.js';
 
 const SOURCE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NOW = '2026-09-05T00:00:00.000Z';
@@ -309,6 +310,134 @@ test('CHAT_CHANGED 初始化同角色副本时只继承实际前缀，保留摘�
   const detachedPeople = await peopleStore.read(identity('复制聊天', targetChatId));
   assert.equal(detachedTarget.floorMemories[0].summary.userText, '人工确认的公共 A', '源档后续删除不能影响目标摘要');
   assert.equal(detachedPeople.data.profilesByEntityId[charEntity.id].name, '裴晚生最新版', '源档后续修改不能影响目标人物资料');
+});
+
+test('分支半成品无 root 且精确 marker 前缀已编辑时改用新目标完整继承', async () => {
+  const backend = backendHarness();
+  let activeContext = context('原聊天', SOURCE, [assistant('公共 A'), user('继续 A'), assistant('公共 B'), user('继续 B')]);
+  backend.records.set(`${CHAT_IDENTITY_COLLECTION}/binding-${SOURCE}`, {
+    revision: 1,
+    data: { schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId: SOURCE,
+      owner: { hostChatId: '原聊天', characterLocator: 'character.png', personaLocator: 'persona.png' },
+      state: 'ready', sourceChatId: null, createdAt: NOW, updatedAt: NOW },
+  });
+  const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => activeContext } } });
+  const sourceStore = createFoundationStore({ client: backend.client, contextProvider: () => identity('原聊天', SOURCE) });
+  const sourceRuntime = createFoundationRuntime({ hostAdapter, store: sourceStore, contextProvider: () => activeContext,
+    now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  await sourceRuntime.start();
+  const source = await sourceStore.readReachable();
+  assert.equal(source.floors.length, 2);
+  const sourceBefore = chatRecords(backend.records, SOURCE);
+
+  activeContext = context('复制聊天', SOURCE, [assistant('公共 A'), user('继续 A'), assistant('公共 B'), user('继续 B')]);
+  for (let index = 0; index < 2; index += 1) {
+    activeContext.chat[index * 2].extra = { qianqianjie_floor: { schemaVersion: 1, chatId: SOURCE, floorId: source.floors[index].id } };
+  }
+  let targetFloorPuts = 0;
+  let failPartial = true;
+  const branchClient = {
+    async get(collection, key) { return backend.client.get(collection, key); },
+    async put(collection, key, data, expectedRevision) {
+      if (failPartial && collection !== `chat-${SOURCE}` && key.startsWith('v3-floor-')) {
+        targetFloorPuts += 1;
+        if (targetFloorPuts === 2) throw Object.assign(new Error('测试：留下无 root 的分支半成品'), { status: 503 });
+      }
+      return backend.client.put(collection, key, data, expectedRevision);
+    },
+  };
+  const initializeBranch = createChatBranchInitializer({
+    client: branchClient, hostAdapter, now: () => new Date(NOW),
+    fetchImpl: async () => ({ ok: true, async json() { return [{ chat_metadata: structuredClone(activeContext.chatMetadata) }, ...structuredClone(activeContext.chat)]; } }),
+  });
+  const freshTarget = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const coordinator = createChatIdentityCoordinator({
+    client: branchClient,
+    listHostChats: async () => ['原聊天', '复制聊天'],
+    initializeBranch,
+    freshUuid: () => freshTarget,
+    now: () => new Date(NOW),
+  });
+  const session = createChatSession({ contextProvider: () => activeContext, identityCoordinator: coordinator });
+  await assert.rejects(session.prepare(), error => error?.status === 503);
+  const oldBinding = [...backend.records.values()].find(row => row.data?.state === 'preparing'
+    && row.data?.sourceChatId === SOURCE && row.data?.owner?.hostChatId === '复制聊天');
+  assert.ok(oldBinding);
+  const oldTarget = oldBinding.data.chatId;
+  assert.equal(backend.records.has(`chat-${oldTarget}/v3-root`), false);
+  const oldFloors = new Map([...backend.records.entries()].filter(([key]) => key.startsWith(`chat-${oldTarget}/v3-floor-`))
+    .map(([key, value]) => [key, structuredClone(value)]));
+  assert.ok(oldFloors.size >= 1, '首次失败必须真实留下至少一个 floor 半成品');
+
+  activeContext.chat[0].mes = activeContext.chat[0].swipes[0] = '公共 A（分支内人工编辑）';
+  failPartial = false;
+  session.invalidate();
+  const recovered = await session.prepare();
+  assert.equal(recovered.status, 'ready');
+  assert.equal(recovered.identity.chatId, freshTarget);
+  assert.notEqual(freshTarget, oldTarget);
+  assert.notEqual(freshTarget, SOURCE);
+  assert.equal(activeContext.chatMetadata.qianqianjie.chatId, freshTarget);
+  assert.equal(backend.records.has(`chat-${oldTarget}/v3-root`), false, '旧半成品不得补 root 或被当作源');
+  for (const [key, value] of oldFloors) assert.deepEqual(backend.records.get(key), value, '旧目标已写 floor 不得覆盖');
+  assert.equal((await createFoundationStore({ client: backend.client, contextProvider: () => identity('复制聊天', freshTarget) }).readReachable()).status, 'ready');
+  assert.equal(backend.records.get(`${CHAT_IDENTITY_COLLECTION}/binding-${freshTarget}`).data.sourceChatId, SOURCE);
+  assert.equal(backend.records.get(`${CHAT_IDENTITY_COLLECTION}/binding-${freshTarget}`).data.state, 'ready');
+  assert.equal(chatRecords(backend.records, SOURCE), sourceBefore, '恢复不得修改源聊天记录');
+});
+
+test('直接打开 preparing 分支也沿原 source 换新目标，root存在或非目标错误不回退', async () => {
+  const freshTarget = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const owner = { hostChatId: '复制聊天', characterLocator: 'character.png', personaLocator: 'persona.png' };
+  const oldTarget = await deterministicUuid(['qqj-chat-independent-v2', SOURCE, owner.hostChatId, owner.characterLocator]);
+  const preparing = {
+    schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId: oldTarget, owner,
+    state: 'preparing', sourceChatId: SOURCE, createdAt: NOW, updatedAt: NOW,
+  };
+  const run = async ({ root = false, rootReadFailure = null, errorCode = 'V3_BRANCH_RECORD_CONFLICT', abort = false } = {}) => {
+    const backend = backendHarness();
+    backend.records.set(`${CHAT_IDENTITY_COLLECTION}/binding-${oldTarget}`, { revision: 1, data: structuredClone(preparing) });
+    if (root) backend.records.set(`chat-${oldTarget}/v3-root`, { revision: 1, data: { occupied: true } });
+    const calls = [];
+    const client = rootReadFailure ? {
+      async get(collection, key) {
+        if (collection === `chat-${oldTarget}` && key === 'v3-root') throw Object.assign(new Error('root read failed'), { status: rootReadFailure });
+        return backend.client.get(collection, key);
+      },
+      async put(...args) { return backend.client.put(...args); },
+    } : backend.client;
+    const activeContext = context(owner.hostChatId, oldTarget, []);
+    const initializeBranch = async ({ sourceChatId, targetChatId }) => {
+      calls.push({ sourceChatId, targetChatId });
+      if (targetChatId === oldTarget) {
+        if (abort) throw new DOMException('Aborted', 'AbortError');
+        throw Object.assign(new Error('controlled branch failure'), { code: errorCode });
+      }
+    };
+    const session = createChatSession({
+      contextProvider: () => activeContext,
+      identityCoordinator: createChatIdentityCoordinator({ client, initializeBranch, freshUuid: () => freshTarget, now: () => new Date(NOW) }),
+    });
+    return { backend, calls, activeContext, session };
+  };
+
+  const recovered = await run();
+  const ready = await recovered.session.prepare();
+  assert.equal(ready.identity.chatId, freshTarget);
+  assert.deepEqual(recovered.calls, [
+    { sourceChatId: SOURCE, targetChatId: oldTarget },
+    { sourceChatId: SOURCE, targetChatId: freshTarget },
+  ], '新目标必须继续从原source继承，不能把半成品旧target当source');
+  assert.equal(recovered.activeContext.chatMetadata.qianqianjie.chatId, freshTarget);
+
+  for (const options of [{ root: true }, { rootReadFailure: 503 }, { errorCode: 'V3_BRANCH_FLOOR_MATCH_INVALID' }, { abort: true }]) {
+    const rejected = await run(options);
+    await assert.rejects(rejected.session.prepare(), error => options.abort ? error?.name === 'AbortError'
+      : error?.code === options.errorCode || error?.code === 'V3_BRANCH_RECORD_CONFLICT');
+    assert.deepEqual(rejected.calls, [{ sourceChatId: SOURCE, targetChatId: oldTarget }]);
+    assert.equal(rejected.backend.records.has(`${CHAT_IDENTITY_COLLECTION}/binding-${freshTarget}`), false, JSON.stringify(options));
+    assert.equal(rejected.activeContext.chatMetadata.qianqianjie.chatId, oldTarget, JSON.stringify(options));
+  }
 });
 
 test('源 root 不存在时仍清理副本携带的旧 marker/receipt，并以同一独立身份幂等打开', async () => {

@@ -5,7 +5,7 @@ import { is_send_press as i, saveSettingsDebounced as a } from "/script.js";
 import { is_group_generating as o } from "/scripts/group-chats.js";
 import { loadWorldInfo as s, selected_world_info as c, world_info as l, world_info_case_sensitive as u, world_info_match_whole_words as d, world_names as f } from "/scripts/world-info.js";
 //#region manifest.json
-var p = "0.2.62", m = "qianqianjie", h = "/api/plugins/st-bainiaodata", g = Object.freeze([
+var p = "0.2.63", m = "qianqianjie", h = "/api/plugins/st-bainiaodata", g = Object.freeze([
 	["v3-floor-", "floor"],
 	["v3-run-", "run"],
 	["v3-checkpoint-", "checkpoint"],
@@ -16922,14 +16922,25 @@ function Cf({ client: e, persist: t = Io, freshUuid: n = Po, listHostChats: r = 
 			throw e;
 		}
 	}
-	let d = Promise.resolve(), f = (e) => {
+	async function d(e, t, n) {
+		if (e?.code !== "V3_BRANCH_RECORD_CONFLICT") return !1;
+		p(n);
+		let r;
+		try {
+			r = await u(t);
+		} catch {
+			return p(n), !1;
+		}
+		return p(n), !r;
+	}
+	let f = Promise.resolve(), p = (e) => {
 		if (e?.aborted) throw gf("QQJ_CHAT_PREPARE_STALE", "聊天身份准备已过期。");
 	};
-	function p(e, t) {
-		let n = d.then(async () => (f(t), e()));
-		return d = n.then(() => void 0, () => void 0), n;
+	function m(e, t) {
+		let n = f.then(async () => (p(t), e()));
+		return f = n.then(() => void 0, () => void 0), n;
 	}
-	async function m(e, n, r, i = null) {
+	async function h(e, n, r, i = null) {
 		let a = await l(xf({
 			chatId: r,
 			owner: n,
@@ -16938,9 +16949,9 @@ function Cf({ client: e, persist: t = Io, freshUuid: n = Po, listHostChats: r = 
 		}));
 		return !vf(a.data.owner, n) || a.data.state !== "ready" ? null : (await t(e, r), r);
 	}
-	async function h(t, n, { signal: r, matches: i = yf } = {}) {
+	async function g(t, n, { signal: r, matches: i = yf } = {}) {
 		if (i(t.data.owner, n)) return t;
-		f(r);
+		p(r);
 		let a = Object.freeze({
 			...t.data,
 			owner: {
@@ -16954,112 +16965,130 @@ function Cf({ client: e, persist: t = Io, freshUuid: n = Po, listHostChats: r = 
 		} catch (e) {
 			if (e?.status !== 409) throw e;
 			let a = await c(t.data.chatId);
-			if (f(r), !a || a.data.state !== "ready" || !i(a.data.owner, n)) throw gf("QQJ_CHAT_RENAME_CONFLICT", "聊天身份改名时发生冲突，未覆盖胜出记录。");
+			if (p(r), !a || a.data.state !== "ready" || !i(a.data.owner, n)) throw gf("QQJ_CHAT_RENAME_CONFLICT", "聊天身份改名时发生冲突，未覆盖胜出记录。");
 			l = a;
 		}
-		if (f(r), !i(l.data.owner, n)) throw gf("QQJ_CHAT_RENAME_CONFLICT", "聊天身份未能安全更新，已停止恢复。");
+		if (p(r), !i(l.data.owner, n)) throw gf("QQJ_CHAT_RENAME_CONFLICT", "聊天身份未能安全更新，已停止恢复。");
 		return l;
 	}
-	async function g(n, r, a, l) {
+	async function _(n, r, a, l) {
 		let u = _f(r);
 		if (!yf(a.data.owner, u) || a.data.state !== "preparing" || !No(a.data.sourceChatId)) return null;
 		if (!i) throw gf("QQJ_CHAT_BRANCH_INITIALIZER_UNAVAILABLE", "聊天副本继承尚未接入，未冒报准备完成。");
-		f(l), await i({
+		p(l), await i({
 			raw: n,
 			host: r,
 			sourceChatId: a.data.sourceChatId,
 			targetChatId: a.data.chatId,
 			createdAt: a.data.createdAt,
 			signal: l
-		}), f(l);
+		}), p(l);
 		let d = Object.freeze({
 			...a.data,
 			state: "ready",
 			updatedAt: s()
-		}), p;
+		}), f;
 		try {
-			p = Sf(await e.put(mf, o(a.data.chatId), d, a.revision, { signal: l }), a.data.chatId);
+			f = Sf(await e.put(mf, o(a.data.chatId), d, a.revision, { signal: l }), a.data.chatId);
 		} catch (e) {
 			if (e?.status !== 409) throw e;
-			p = await c(a.data.chatId);
+			f = await c(a.data.chatId);
 		}
-		if (f(l), !p || p.data.state !== "ready" || p.data.sourceChatId !== a.data.sourceChatId || !yf(p.data.owner, u)) throw gf("QQJ_CHAT_BRANCH_BINDING_CONFLICT", "聊天副本身份发生冲突，未覆盖已有认领。");
-		return await t(n, p.data.chatId), p.data.chatId;
+		if (p(l), !f || f.data.state !== "ready" || f.data.sourceChatId !== a.data.sourceChatId || !yf(f.data.owner, u)) throw gf("QQJ_CHAT_BRANCH_BINDING_CONFLICT", "聊天副本身份发生冲突，未覆盖已有认领。");
+		return await t(n, f.data.chatId), f.data.chatId;
 	}
-	async function _(e, r, i, { inherit: a = !1, signal: o } = {}) {
-		let c = _f(r), u = No(i) ? i : null, d = await jt([
+	async function v(e, r, i, { inherit: a = !1, signal: o, skipChatIds: c = [] } = {}) {
+		let u = _f(r), f = No(i) ? i : null, p = await jt([
 			"qqj-chat-independent-v2",
 			i,
-			c.hostChatId,
-			c.characterLocator
-		]), f = async (n) => {
-			if (!a) return m(e, c, n, u);
+			u.hostChatId,
+			u.characterLocator
+		]), m = new Set(c), g = async (n) => {
+			if (!a) return h(e, u, n, f);
 			let i = await l(xf({
 				chatId: n,
-				owner: c,
+				owner: u,
 				state: "preparing",
-				sourceChatId: u,
+				sourceChatId: f,
 				createdAt: s()
 			}));
-			return !yf(i.data.owner, c) || i.data.sourceChatId !== u ? null : i.data.state === "ready" ? (await t(e, n), n) : g(e, r, i, o);
-		}, p = await f(d);
-		if (p) return p;
+			return !yf(i.data.owner, u) || i.data.sourceChatId !== f ? null : i.data.state === "ready" ? (await t(e, n), n) : _(e, r, i, o);
+		}, v = async (e) => {
+			if (m.has(e)) return null;
+			m.add(e);
+			try {
+				return await g(e);
+			} catch (t) {
+				if (!a || !await d(t, e, o)) throw t;
+				return null;
+			}
+		}, y = await v(p);
+		if (y) return y;
 		for (let e = 0; e < 8; e += 1) {
 			let e = n();
 			if (e === i) continue;
-			let t = await f(e);
+			let t = await v(e);
 			if (t) return t;
 		}
 		throw gf("QQJ_CHAT_BINDING_CONFLICT", "无法为当前聊天建立独立身份，请刷新后重试。");
 	}
-	async function v(e, i, a) {
+	async function y(e, i, a) {
 		let o = _f(i);
-		if (!No(i.chatId)) return await m(e, o, n()) || _(e, i, "new-chat");
-		let d = await c(i.chatId);
-		if (!d) {
-			if (await u(i.chatId)) return _(e, i, i.chatId);
-			d = await l(xf({
+		if (!No(i.chatId)) return await h(e, o, n()) || v(e, i, "new-chat");
+		let f = await c(i.chatId);
+		if (!f) {
+			if (await u(i.chatId)) return v(e, i, i.chatId);
+			f = await l(xf({
 				chatId: i.chatId,
 				owner: o,
 				createdAt: s()
 			}));
 		}
-		if (vf(d.data.owner, o) && d.data.state === "ready") return f(a), await t(e, d.data.chatId), d.data.chatId;
-		let p = d.data.state === "preparing" && No(d.data.sourceChatId) ? await jt([
+		if (vf(f.data.owner, o) && f.data.state === "ready") return p(a), await t(e, f.data.chatId), f.data.chatId;
+		let m = f.data.state === "preparing" && No(f.data.sourceChatId) ? await jt([
 			"qqj-chat-independent-v2",
-			d.data.sourceChatId,
+			f.data.sourceChatId,
 			o.hostChatId,
 			o.characterLocator
 		]) : null;
-		if (yf(d.data.owner, o) && d.data.state === "preparing" && d.data.chatId === i.chatId && d.data.chatId === p) return g(e, i, d, a);
-		if (r && d.data.state === "ready" && d.data.owner.characterLocator === o.characterLocator && d.data.owner.hostChatId !== o.hostChatId) {
+		if (yf(f.data.owner, o) && f.data.state === "preparing" && f.data.chatId === i.chatId && f.data.chatId === m) try {
+			return await _(e, i, f, a);
+		} catch (t) {
+			if (!await d(t, f.data.chatId, a)) throw t;
+			return v(e, i, f.data.sourceChatId, {
+				inherit: !0,
+				signal: a,
+				skipChatIds: [f.data.chatId]
+			});
+		}
+		if (r && f.data.state === "ready" && f.data.owner.characterLocator === o.characterLocator && f.data.owner.hostChatId !== o.hostChatId) {
 			let n = await r(o.characterLocator, { signal: a });
-			if (f(a), n.includes(o.hostChatId) && !n.includes(d.data.owner.hostChatId)) return d = await h(d, o, {
+			if (p(a), n.includes(o.hostChatId) && !n.includes(f.data.owner.hostChatId)) return f = await g(f, o, {
 				signal: a,
 				matches: vf
-			}), f(a), await t(e, d.data.chatId), d.data.chatId;
-			if (n.includes(o.hostChatId) && n.includes(d.data.owner.hostChatId)) return _(e, i, i.chatId, {
+			}), p(a), await t(e, f.data.chatId), f.data.chatId;
+			if (n.includes(o.hostChatId) && n.includes(f.data.owner.hostChatId)) return v(e, i, i.chatId, {
 				inherit: !0,
 				signal: a
 			});
 		}
-		return _(e, i, i.chatId);
+		return v(e, i, i.chatId);
 	}
-	function y(e, t, { signal: n } = {}) {
-		return p(() => v(e, t, n), n);
+	function b(e, t, { signal: n } = {}) {
+		return m(() => y(e, t, n), n);
 	}
-	async function b(t, n, r) {
+	async function x(t, n, r) {
 		let i = String(t ?? ""), a = String(n ?? "");
 		if (!i || !a || i === a) throw gf("QQJ_CHARACTER_RENAME_EVIDENCE_INVALID", "角色改名证据无效，未修改聊天身份。");
 		if (typeof e.list != "function") throw gf("QQJ_CHARACTER_RENAME_UNAVAILABLE", "聊天身份后端不支持角色改名迁移。");
 		let l = await e.list(mf, { signal: r });
-		if (f(r), !Array.isArray(l)) throw gf("QQJ_CHARACTER_RENAME_LIST_INVALID", "角色改名时无法读取聊天身份列表。");
+		if (p(r), !Array.isArray(l)) throw gf("QQJ_CHARACTER_RENAME_LIST_INVALID", "角色改名时无法读取聊天身份列表。");
 		let u = 0, d = 0;
 		for (let t of l) {
 			if (t?.data?.owner?.characterLocator !== i) continue;
 			let n = t?.data?.chatId, l = Sf(t, n);
 			if (t.recordId !== void 0 && t.recordId !== o(n)) throw gf("QQJ_CHAT_BINDING_INVALID", "聊天身份认领记录损坏，已停止读写以避免串档。");
-			let p = (t) => {
+			let f = (t) => {
 				let i = Object.freeze({
 					...t.data,
 					owner: {
@@ -17071,25 +17100,25 @@ function Cf({ client: e, persist: t = Io, freshUuid: n = Po, listHostChats: r = 
 				return e.put(mf, o(n), i, t.revision, { signal: r });
 			};
 			try {
-				Sf(await p(l), n), u += 1;
+				Sf(await f(l), n), u += 1;
 				continue;
 			} catch (e) {
 				if (e?.status !== 409) throw e;
 			}
 			let m = await c(n);
-			if (f(r), !m) throw gf("QQJ_CHARACTER_RENAME_CONFLICT", "角色改名迁移冲突且无法读取胜出记录。");
+			if (p(r), !m) throw gf("QQJ_CHARACTER_RENAME_CONFLICT", "角色改名迁移冲突且无法读取胜出记录。");
 			if (m.data.owner.characterLocator !== a) {
 				if (m.data.owner.characterLocator !== i) {
 					d += 1;
 					continue;
 				}
 				try {
-					Sf(await p(m), n), u += 1;
+					Sf(await f(m), n), u += 1;
 					continue;
 				} catch (e) {
 					if (e?.status !== 409) throw e;
 				}
-				if (m = await c(n), f(r), m?.data.owner.characterLocator !== a) {
+				if (m = await c(n), p(r), m?.data.owner.characterLocator !== a) {
 					if (m && m.data.owner.characterLocator !== i) {
 						d += 1;
 						continue;
@@ -17104,11 +17133,11 @@ function Cf({ client: e, persist: t = Io, freshUuid: n = Po, listHostChats: r = 
 			skippedCount: d
 		});
 	}
-	function x(e, t, { signal: n } = {}) {
-		return p(() => b(e, t, n), n);
+	function S(e, t, { signal: n } = {}) {
+		return m(() => x(e, t, n), n);
 	}
-	let S = (e) => Array.isArray(e) ? e.length > 0 : e && typeof e == "object" ? Object.keys(e).length > 0 : !!e;
-	async function C(t) {
+	let C = (e) => Array.isArray(e) ? e.length > 0 : e && typeof e == "object" ? Object.keys(e).length > 0 : !!e;
+	async function w(t) {
 		let n;
 		try {
 			n = await e.get(`chat-${t}`, "v3-root");
@@ -17118,7 +17147,7 @@ function Cf({ client: e, persist: t = Io, freshUuid: n = Po, listHostChats: r = 
 		}
 		let r = n?.data;
 		if (!r || r.chatId !== t || r.recordType !== "root") throw gf("QQJ_CHAT_RENAME_TEMP_INVALID", "改名期间建立的临时记忆档无法安全核验，已停止自动恢复。");
-		if (r.baselineId || r.activeRunId || S(r.activeStateRefs) || S(r.activeThreadRefs)) throw gf("QQJ_CHAT_RENAME_TEMP_HAS_MEMORY", "改名期间的新档已经产生业务记忆，请先人工确认后再恢复旧档。");
+		if (r.baselineId || r.activeRunId || C(r.activeStateRefs) || C(r.activeThreadRefs)) throw gf("QQJ_CHAT_RENAME_TEMP_HAS_MEMORY", "改名期间的新档已经产生业务记忆，请先人工确认后再恢复旧档。");
 		if (!r.headCheckpointId) return;
 		let i;
 		try {
@@ -17142,35 +17171,35 @@ function Cf({ client: e, persist: t = Io, freshUuid: n = Po, listHostChats: r = 
 			"threads"
 		].some((e) => !Array.isArray(o[e]) || o[e].length > 0)) throw gf("QQJ_CHAT_RENAME_TEMP_HAS_MEMORY", "改名期间的新档已经产生业务记忆，请先人工确认后再恢复旧档。");
 	}
-	async function w(e, n, r, i, a, o) {
+	async function T(e, n, r, i, a, o) {
 		let s = _f(n), l = i?.chatId, u = String(i?.hostChatId ?? ""), d = bf(r?.oldFileName);
 		if (!No(l) || !u || !d || d !== u || r?.groupId || bf(r?.newFileName) === "" || s.hostChatId === u || s.characterLocator !== i?.characterLocator || s.personaLocator !== i?.personaLocator || r?.avatarId !== void 0 && r?.avatarId !== null && String(r.avatarId) !== s.characterLocator) throw gf("QQJ_CHAT_RENAME_EVIDENCE_INVALID", "聊天改名证据与当前身份不一致，已保持独立档案。");
 		if (a?.hostChatId !== s.hostChatId || a?.chatId !== n.chatId || a?.characterLocator !== s.characterLocator || a?.personaLocator !== s.personaLocator) throw gf("QQJ_CHAT_RENAME_RECEIPT_INVALID", "当前聊天身份不是本次切换准备的结果，已保持独立档案。");
-		let p = await c(l), m = {
+		let f = await c(l), m = {
 			hostChatId: u,
 			characterLocator: i.characterLocator,
 			personaLocator: i.personaLocator
 		};
-		if (!p || p.data.state !== "ready" || !yf(p.data.owner, m) && !yf(p.data.owner, s)) throw gf("QQJ_CHAT_RENAME_SOURCE_INVALID", "原聊天身份已变化，已停止改名恢复以避免覆盖其它档案。");
-		let g = n.chatId;
-		if (g !== null && g !== l) {
-			if (!No(g)) throw gf("QQJ_CHAT_RENAME_TARGET_INVALID", "当前聊天身份无效，已停止改名恢复。");
-			let e = await c(g);
+		if (!f || f.data.state !== "ready" || !yf(f.data.owner, m) && !yf(f.data.owner, s)) throw gf("QQJ_CHAT_RENAME_SOURCE_INVALID", "原聊天身份已变化，已停止改名恢复以避免覆盖其它档案。");
+		let h = n.chatId;
+		if (h !== null && h !== l) {
+			if (!No(h)) throw gf("QQJ_CHAT_RENAME_TARGET_INVALID", "当前聊天身份无效，已停止改名恢复。");
+			let e = await c(h);
 			if (!e || e.data.state !== "ready" || e.data.sourceChatId !== l || !yf(e.data.owner, s)) throw gf("QQJ_CHAT_RENAME_TARGET_INVALID", "当前聊天并非本次改名产生的临时身份，已保持独立档案。");
-			await C(g);
+			await w(h);
 		}
-		return await h(p, s, {
+		return await g(f, s, {
 			signal: o,
 			matches: yf
-		}), f(o), await t(e, l), l;
+		}), p(o), await t(e, l), l;
 	}
-	function T(e, t, { event: n, previousIdentity: r, preparedIdentity: i, signal: a } = {}) {
-		return p(() => w(e, t, n, r, i, a), a);
+	function E(e, t, { event: n, previousIdentity: r, preparedIdentity: i, signal: a } = {}) {
+		return m(() => T(e, t, n, r, i, a), a);
 	}
 	return Object.freeze({
-		prepare: y,
-		rename: T,
-		renameCharacter: x,
+		prepare: b,
+		rename: E,
+		renameCharacter: S,
 		read: c
 	});
 }
@@ -18309,9 +18338,9 @@ function _p(e, t, n) {
 		})
 	}) : e));
 	if (s.issue || s.unmatchedFloorIndexes.length || s.matches.length !== r.length) return null;
-	for (let e = 0; e < r.length; e += 1) {
-		let t = s.candidateMatches.get(e);
-		if (!t || t.floorIndex !== e || t.candidateIndex !== e || !t.locatorMatches || !t.rawFingerprintMatches || !t.canonicalFingerprintMatches || !t.sanitizerFingerprintMatches) return null;
+	for (let t = 0; t < r.length; t += 1) {
+		let n = s.candidateMatches.get(t), r = n?.kind === "marker" && n.markerStatus === "valid" && n.candidate?.messageAnchor?.anchor?.chatId === e.root.chatId && n.candidate.messageAnchor.anchor.floorId === n.floor?.id, i = n?.rawFingerprintMatches && n?.canonicalFingerprintMatches;
+		if (!n || n.floorIndex !== t || n.candidateIndex !== t || !n.locatorMatches || !n.sanitizerFingerprintMatches || !i && !r) return null;
 	}
 	return [...s.candidateMatches.keys()].some((e) => e >= r.length) ? null : Object.freeze({
 		chatId: o.chatId,

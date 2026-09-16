@@ -80,6 +80,15 @@ export function createChatIdentityCoordinator({
     try { await client.get(`chat-${chatId}`, 'v3-root'); return true; }
     catch (error) { if (error?.status === 404) return false; throw error; }
   }
+  async function abandonedBranchTarget(error, chatId, signal) {
+    if (error?.code !== 'V3_BRANCH_RECORD_CONFLICT') return false;
+    assertCurrent(signal);
+    let rootExists;
+    try { rootExists = await legacyRootExists(chatId); }
+    catch { assertCurrent(signal); return false; }
+    assertCurrent(signal);
+    return !rootExists;
+  }
   let sequence = Promise.resolve();
   const assertCurrent = signal => {
     if (signal?.aborted) throw errorWith('QQJ_CHAT_PREPARE_STALE', '聊天身份准备已过期。');
@@ -143,10 +152,11 @@ export function createChatIdentityCoordinator({
     await persist(raw, completed.data.chatId);
     return completed.data.chatId;
   }
-  async function independent(raw, host, carriedChatId, { inherit = false, signal } = {}) {
+  async function independent(raw, host, carriedChatId, { inherit = false, signal, skipChatIds = [] } = {}) {
     const owner = ownerFrom(host);
     const sourceChatId = isUuid(carriedChatId) ? carriedChatId : null;
     const deterministicChatId = await deterministicUuid(['qqj-chat-independent-v2', carriedChatId, owner.hostChatId, owner.characterLocator]);
+    const attempted = new Set(skipChatIds);
     const claim = async chatId => {
       if (!inherit) return claimReady(raw, owner, chatId, sourceChatId);
       const claimed = await create(bindingRecord({ chatId, owner, state: 'preparing', sourceChatId, createdAt: nowIso() }));
@@ -154,12 +164,21 @@ export function createChatIdentityCoordinator({
       if (claimed.data.state === 'ready') { await persist(raw, chatId); return chatId; }
       return completePreparingBranch(raw, host, claimed, signal);
     };
-    const claimed = await claim(deterministicChatId);
+    const tryClaim = async chatId => {
+      if (attempted.has(chatId)) return null;
+      attempted.add(chatId);
+      try { return await claim(chatId); }
+      catch (error) {
+        if (!inherit || !await abandonedBranchTarget(error, chatId, signal)) throw error;
+        return null;
+      }
+    };
+    const claimed = await tryClaim(deterministicChatId);
     if (claimed) return claimed;
     for (let attempt = 0; attempt < 8; attempt += 1) {
       const fallback = freshUuid();
       if (fallback === carriedChatId) continue;
-      const fallbackClaim = await claim(fallback);
+      const fallbackClaim = await tryClaim(fallback);
       if (fallbackClaim) return fallbackClaim;
     }
     throw errorWith('QQJ_CHAT_BINDING_CONFLICT', '无法为当前聊天建立独立身份，请刷新后重试。');
@@ -187,7 +206,11 @@ export function createChatIdentityCoordinator({
       : null;
     if (sameExactOwner(claimed.data.owner, owner) && claimed.data.state === 'preparing'
       && claimed.data.chatId === host.chatId && claimed.data.chatId === expectedPreparingChatId) {
-      return completePreparingBranch(raw, host, claimed, signal);
+      try { return await completePreparingBranch(raw, host, claimed, signal); }
+      catch (error) {
+        if (!await abandonedBranchTarget(error, claimed.data.chatId, signal)) throw error;
+        return independent(raw, host, claimed.data.sourceChatId, { inherit: true, signal, skipChatIds: [claimed.data.chatId] });
+      }
     }
     if (listHostChats && claimed.data.state === 'ready'
       && claimed.data.owner.characterLocator === owner.characterLocator

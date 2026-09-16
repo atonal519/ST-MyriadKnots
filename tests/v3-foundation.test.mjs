@@ -2019,9 +2019,12 @@ test('memory 实际打开路径只清完整47楼前缀后的首个孤儿锚并�
     floorMemories: graphBefore.floorMemories, stateDeltas: graphBefore.stateDeltas,
     entities: graphBefore.entities, baseline: graphBefore.baseline,
   });
+  const preservedFloorsBefore = structuredClone(graphBefore.floors.map(floor => ({ id: floor.id, content: floor.content, hostLocator: floor.hostLocator })));
   for (let index = 0; index < 47; index += 1) {
     h.context.chat[index * 2].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: originalFloorIds[index] };
   }
+  h.context.chat[20].mes = h.context.chat[20].swipes[0] = '已存正文 11<!--人工包装-->';
+  h.context.chat[92].mes = h.context.chat[92].swipes[0] = '已存正文 47（人工修订）';
   const orphan = assistant('新尾楼 48', { pluginKept: { value: 1 }, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } });
   orphan.swipes = ['新尾楼 48', '备用候选', '新尾楼 48']; orphan.swipe_id = 0;
   orphan.swipe_info = [
@@ -2030,6 +2033,11 @@ test('memory 实际打开路径只清完整47楼前缀后的首个孤儿锚并�
     { extra: { lastKept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } } },
   ];
   h.context.chat.push(orphan, user('确认新尾楼 48'), assistant('新尾楼 49'));
+  const editedCandidates = await scanAssistantCandidates(h.context.chat, { sanitizerOptions: {}, chatId: CHAT });
+  assert.notEqual(editedCandidates[10].rawFingerprint, graphBefore.floors[10].content.rawFingerprint, '包装编辑应改变 raw 指纹');
+  assert.equal(editedCandidates[10].canonicalFingerprint, graphBefore.floors[10].content.canonicalFingerprint, '包装编辑清洗后正文应保持一致');
+  assert.notEqual(editedCandidates[46].rawFingerprint, graphBefore.floors[46].content.rawFingerprint, '普通正文修订应改变 raw 指纹');
+  assert.notEqual(editedCandidates[46].canonicalFingerprint, graphBefore.floors[46].content.canonicalFingerprint, '普通正文修订应改变 canonical 指纹');
   const untouchedBody = structuredClone({ mes: orphan.mes, swipes: orphan.swipes, swipe_id: orphan.swipe_id });
   h.runtime.invalidate();
   const reopenedMemory = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
@@ -2049,6 +2057,8 @@ test('memory 实际打开路径只清完整47楼前缀后的首个孤儿锚并�
   let graphAfter = await h.store.readReachable({ mode: 'runtime' });
   assert.deepEqual({ floorMemories: graphAfter.floorMemories, stateDeltas: graphAfter.stateDeltas, entities: graphAfter.entities, baseline: graphAfter.baseline }, preservedBefore,
     '已有摘要、CSE、实体和基线必须逐字节语义不变');
+  assert.deepEqual(graphAfter.floors.slice(0, 47).map(floor => ({ id: floor.id, content: floor.content, hostLocator: floor.hostLocator })), preservedFloorsBefore,
+    '普通编辑只作为精确 marker 的恢复证据，不得改写既有 floor 正文或身份');
   h.context.chat.push(user('确认新尾楼 49'));
   await h.runtime.refreshStatus();
   assert.equal(h.runtime.getReachable().floors.length, 49, '后续新尾楼继续走普通登记');
@@ -2060,12 +2070,13 @@ test('memory 实际打开路径只清完整47楼前缀后的首个孤儿锚并�
   assert.deepEqual(graphAfter.floors.slice(0, 47).map(floor => floor.id), originalFloorIds);
 });
 
-test('尾部孤儿修复拒绝中段、正文不符、foreign、invalid、duplicate 与重复孤儿，不保存也不改 root', async () => {
+test('尾部孤儿修复拒绝无锚编辑、定位或清洗变化、错序、中段、foreign、invalid、duplicate 与重复孤儿', async () => {
   const orphanFloorId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
-  for (const mode of ['middle', 'prefixMismatch', 'foreign', 'invalid', 'duplicate', 'sameOrphan']) {
-    let h, saveCalls = 0;
+  for (const mode of ['middle', 'unmarkedPrefixMismatch', 'locatorMismatch', 'sanitizerMismatch', 'wrongOrder', 'foreign', 'invalid', 'duplicate', 'sameOrphan']) {
+    let h, saveCalls = 0, sanitizerChanged = false;
     h = harness(Array.from({ length: 3 }, (_, index) => [assistant(`拒绝正文 ${index + 1}`), user(`确认 ${index + 1}`)]).flat(), {
       modernAnchors: true,
+      sanitizerOptions: () => ({ keepTags: 'content', extraTags: sanitizerChanged ? 'changed-tag' : '' }),
       fetchImpl: async () => ({ ok: true, json: async () => [{ chat_metadata: structuredClone(h.context.chatMetadata) }, ...structuredClone(h.context.chat)] }),
     });
     h.context.saveChat = async () => { saveCalls += 1; return true; };
@@ -2075,8 +2086,19 @@ test('尾部孤儿修复拒绝中段、正文不符、foreign、invalid、duplic
     const next = assistant('候选 4');
     h.context.chat.push(next, user('确认候选 4'), assistant('候选 5'));
     if (mode === 'middle') h.context.chat[2].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId };
-    else if (mode === 'prefixMismatch') {
+    else if (mode === 'unmarkedPrefixMismatch') {
       h.context.chat[0].mes = h.context.chat[0].swipes[0] = '前缀正文已变化';
+      delete h.context.chat[0].extra.qianqianjie_floor;
+      next.extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId };
+    } else if (mode === 'locatorMismatch') {
+      h.context.chat.unshift(user('改变全部楼定位'));
+      next.extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId };
+    } else if (mode === 'sanitizerMismatch') {
+      sanitizerChanged = true;
+      next.extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId };
+    } else if (mode === 'wrongOrder') {
+      [h.context.chat[0].extra.qianqianjie_floor, h.context.chat[2].extra.qianqianjie_floor]
+        = [h.context.chat[2].extra.qianqianjie_floor, h.context.chat[0].extra.qianqianjie_floor];
       next.extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId };
     } else if (mode === 'foreign') next.extra.qianqianjie_floor = { schemaVersion: 1, chatId: OTHER_CHAT, floorId: orphanFloorId };
     else if (mode === 'invalid') next.extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: 'invalid-floor' };
@@ -2084,6 +2106,13 @@ test('尾部孤儿修复拒绝中段、正文不符、foreign、invalid、duplic
       next.extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId };
       h.context.chat.at(-1).extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId };
     } else next.extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: floorIds[0] };
+    if (mode === 'sanitizerMismatch') {
+      const changedCandidates = await scanAssistantCandidates(h.context.chat, {
+        sanitizerOptions: { keepTags: 'content', extraTags: 'changed-tag' }, chatId: CHAT,
+      });
+      assert.notEqual(changedCandidates[0].sanitizerFingerprint, h.runtime.getReachable().floors[0].content.sanitizerFingerprint,
+        '反例必须真实改变清洗配置指纹');
+    }
     const rootBefore = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`));
     const markerBefore = structuredClone(mode === 'middle' ? h.context.chat[2].extra.qianqianjie_floor : next.extra.qianqianjie_floor);
     h.runtime.invalidate();

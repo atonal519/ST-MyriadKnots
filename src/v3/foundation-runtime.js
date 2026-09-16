@@ -63,8 +63,12 @@ function orphanTailAnchorRepair(value, candidates, bindings) {
   if (repaired.issue || repaired.unmatchedFloorIndexes.length || repaired.matches.length !== floors.length) return null;
   for (let index = 0; index < floors.length; index += 1) {
     const match = repaired.candidateMatches.get(index);
+    const exactMarker = match?.kind === 'marker' && match.markerStatus === 'valid'
+      && match.candidate?.messageAnchor?.anchor?.chatId === value.root.chatId
+      && match.candidate.messageAnchor.anchor.floorId === match.floor?.id;
+    const fingerprintsMatch = match?.rawFingerprintMatches && match?.canonicalFingerprintMatches;
     if (!match || match.floorIndex !== index || match.candidateIndex !== index || !match.locatorMatches
-      || !match.rawFingerprintMatches || !match.canonicalFingerprintMatches || !match.sanitizerFingerprintMatches) return null;
+      || !match.sanitizerFingerprintMatches || (!fingerprintsMatch && !exactMarker)) return null;
   }
   if ([...repaired.candidateMatches.keys()].some(index => index >= floors.length)) return null;
   return Object.freeze({ chatId: anchor.chatId, floorId: anchor.floorId, messageIndex: candidate.hostLocator.messageIndex });
