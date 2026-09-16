@@ -107,10 +107,10 @@ test('独立时间签名文本兼容纯时间及覆盖说明后的两种历史�
   const h = createHarness({ chat, memoryState: { floors: [], memoryEntities: [] }, projectReceipt: async () => only });
   const node = messageElement(0, { user: true }); h.chatRoot.append(node); h.renderer.start(); await h.flushMicrotasks();
   const view = resolveInlineAnchor(node).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  const drawer = view.recallUi.events.querySelector('.time-progression');
+  const drawer = view.recallUi.events.querySelector('.time-reference');
   assert.match(descendantText(drawer), /本轮时间参考（1条）/u);
   assert.notEqual(drawer.open, true);
-  assert.equal(drawer.querySelector('.time-progression-copy').textContent, reminder);
+  assert.equal(drawer.querySelector('.time-reference-copy').textContent, reminder);
   assert.equal(drawer.querySelector('script'), null);
   timeProjection.reminders[0].text = '后来后台的新推测';
   assert.deepEqual(projectInlineRecallReceipt(only).timeReferenceItems, [reminder]);
@@ -392,13 +392,13 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
 
 });
 
-test('真实schema14回执分为事与人，完整保留私密变化并按楼层倒序展示', async () => {
+test('真实schema15回执分为事与人，完整保留私密变化并按楼层倒序展示', async () => {
   const { chat, receipt, floorIds } = await actualCseReceipt();
   const memoryState = { floors: floorIds.map((floorId, index) => ({ floorId, assistantSeq: index + 1, messageIndex: 41 + index })), memoryEntities: [] };
   const h = createHarness({ chat, memoryState, projectReceipt: async () => receipt });
   const userElement = messageElement(1, { user: true }); h.chatRoot.append(userElement); h.renderer.start(); await h.flushMicrotasks();
   const view = resolveInlineAnchor(userElement).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  assert.equal(receipt.schemaVersion, 14);
+  assert.equal(receipt.schemaVersion, 15);
   assert.equal(receipt.selectedCseChanges.find(value => value.action === 'remove' && value.before?.text === '仍在钟楼等候')?.before.text, '仍在钟楼等候');
   const projection = projectInlineRecallReceipt(receipt);
   assert.equal(projection.protocolRecognized, true);
@@ -442,30 +442,27 @@ test('真实schema14回执分为事与人，完整保留私密变化并按楼层
 
 });
 
-test('schema13 时间推演只在事页生成一个默认折叠区，并逐字保留状态与推演正文', async () => {
+test('schema13 旧推演保留原回执正文，但不再生成专属投影或卡片区', async () => {
   const state = { stateId:'state-time', sourceFloorId:'progress-floor', sourceDeltaId:'progress-delta', subjectEntityId:'person-time', subject:'左佐', layer:'situational', towardEntityId:null, toward:null, text:'保存时仍明显疲惫', reason:'当时连续奔波', visibility:'private', sourceAssistantSeq:7, storylineId:'line-time' };
   const progression = { subjectEntityId:'person-time', subject:'左佐', towardEntityId:null, toward:null, savedText:state.text, visibility:'private', sourceStateId:state.stateId, sourceFloorId:state.sourceFloorId, sourceAssistantSeq:7, timeBasis:'入夜后过了一阵；具体时长未知', suggestion:'保存时仍明显疲惫 → 此刻可表现为有所恢复，但精力尚未完全回稳', evidence:[] };
   const storylines = [{ storylineId:'line-time', title:'相关人物状态补充', basis:'当前输入直接匹配以下已有人物状态材料。' }];
   const coverage = { stableAiFloors:7, stableThroughAssistantSeq:7, rememberedAiFloors:7, cseThroughAssistantSeq:7, memoryComplete:true, cseCurrent:true, missingAssistantSeq:[] };
-  const injectionText = formatRecallInjection({ coverage, floors:[], states:[state], cseChanges:[], stateProgressions:[progression], entityById:new Map(), storylines });
+  const baseInjection = formatRecallInjection({ coverage, floors:[], states:[state], cseChanges:[], entityById:new Map(), storylines });
+  const injectionText = baseInjection.replace('</qqj_recalled_context>', `[时间推演（仅供作者续写表现参考，不是新剧情事实，也不表示任何角色已知）]\n- ${progression.suggestion}\n</qqj_recalled_context>`);
   const receipt = { schemaVersion:13, status:'ready', injectionText, selectedFloors:[], selectedStates:[state], selectedCseChanges:[], stateProgressions:[progression], storylines, stages:{ recentSummaryCount:0, distantHistoryItemCount:0, stateCount:1, cseChangeCount:0, stateProgressionCount:1 } };
   const projection = projectInlineRecallReceipt(receipt);
   assert.equal(projection.protocolRecognized, true);
-  assert.deepEqual(projection.stateProgressionItems, [progression]);
+  assert.equal(Object.hasOwn(projection, 'stateProgressionItems'), false);
   assert.match(injectionText, new RegExp(progression.suggestion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   const chat = [{ is_user:true, is_system:false, mes:'继续', extra:{ [RECALL_RECEIPT_KEY]:receipt } }];
   const memoryState = { floors:[{ floorId:'progress-floor', assistantSeq:7, messageIndex:77 }], memoryEntities:[] };
   const h = createHarness({ chat, memoryState, projectReceipt:async () => receipt });
   const userElement = messageElement(0, { user:true }); h.chatRoot.append(userElement); h.renderer.start(); await h.flushMicrotasks();
   const view = resolveInlineAnchor(userElement).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  const details = view.recallUi.events.querySelector('.time-progression');
-  assert.ok(details);
-  assert.notEqual(details.open, true);
-  assert.match(view.recallStyle.textContent, /\.time-progression:not\(\[open\]\)>\.time-progression-list\{display:none\}/);
-  assert.match(descendantText(details), /左佐 · 原记录：仅本人知晓/);
-  assert.equal(details.querySelector('.time-progression-copy').textContent, `${state.text}\n推测应为：${progression.suggestion}`);
-  assert.equal(details.querySelector('.time-progression-meta'), null);
+  assert.equal(view.recallUi.events.querySelector('.time-progression'), null);
   assert.equal(view.recallUi.people.querySelector('.time-progression'), null);
+  assert.doesNotMatch(descendantText(view.recallUi.events), new RegExp(progression.suggestion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(projection.injectionText, new RegExp(progression.suggestion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
 
 test('refine 显示删除与新增两侧，当前状态独立常驻并使用真实宿主楼号', async () => {
@@ -538,10 +535,6 @@ test('新剧情线格式由来源标题统领同楼旧事与变化，集中边�
     deltaId: 'delta-11', floorId: 'floor-11', assistantSeq: 11, subjectEntityId: 'p1', subject: '左佐', storylineId: 'line-a', layer: 'situational', action: 'remove',
     before: { stateId: 'state-old', sourceFloorId: 'floor-8', sourceDeltaId: 'delta-8', text: '仍在门外等待', visibility: 'private', reason: '旧楼私下计划', sourceAssistantSeq: 8 }, after: null,
   }];
-  const progressions = [
-    { subjectEntityId: 'p1', subject: '左佐', towardEntityId: 'p2', toward: '辛夷', savedText: states[0].text, visibility: 'private', sourceStateId: 'state-private', sourceFloorId: 'floor-11', sourceAssistantSeq: 11, timeBasis: '次日清晨；具体时长未知', suggestion: '控制冲动仍可能有余波，但不预设下一步决定', evidence: [{ kind: 'history', floorId: 'floor-11', assistantSeq: 11 }] },
-    { subjectEntityId: 'p2', subject: '辛夷', towardEntityId: null, toward: null, savedText: states[1].text, visibility: 'authorial', sourceStateId: 'state-authorial', sourceFloorId: 'floor-8', sourceAssistantSeq: 8, timeBasis: '经过一夜', suggestion: '迟疑可以淡化，但仍由后文决定是否表现出来', evidence: [] },
-  ];
   const floors = [
     { floorId: 'floor-8', floorMemoryId: 'memory-8', assistantSeq: 8, chronology: [{ time: { kind: 'explicit', precision: 'approximate', sourceText: '冬至夜' } }], items: [
       { category: 'narrative', kind: 'summary', text: '左佐没有说出口的计划仍未完成', recallSection: 'distant', storylineId: 'line-a' },
@@ -555,20 +548,20 @@ test('新剧情线格式由来源标题统领同楼旧事与变化，集中边�
   ];
   const injectionText = formatRecallInjection({
     coverage: { memoryComplete: true, cseCurrent: true, missingAssistantSeq: [], rememberedAiFloors: 2, stableAiFloors: 2, cseThroughAssistantSeq: 11 },
-    floors, states, cseChanges: changes, stateProgressions: progressions,
+    floors, states, cseChanges: changes,
     entityById: new Map([['p1', { displayName: '左佐' }], ['p2', { displayName: '辛夷' }]]), storylines,
   });
   const projection = projectInlineRecallReceipt({
     schemaVersion: 13, strategyVersion: 'continuity-v9', status: 'ready', injectionText, storylines,
     selectedFloors: floors.map(value => ({ floorId: value.floorId, assistantSeq: value.assistantSeq, reasons: [] })),
-    selectedStates: states, selectedCseChanges: changes, stateProgressions: progressions,
+    selectedStates: states, selectedCseChanges: changes,
   });
   assert.equal(projection.protocolRecognized, true);
   assert.deepEqual(projection.historyItems.map(value => value.assistantSeq), [8, 8, 8, 8, 11]);
   assert.equal(projection.historyItems[2].text, 'AI #2：门上刻着的编号仍需核对', '新格式正文以 AI # 开头时仍继承标题来源并逐字保留');
   assert.equal(projection.historyItems[3].text, '[变化] 只是旧事原文，不是控制行', '新格式正文以变化标签开头时不得被当成控制行');
   assert.equal(projection.cseChangeCount, 1);
-  assert.equal(projection.stateProgressionCount, 2);
+  assert.equal(Object.hasOwn(projection, 'stateProgressionCount'), false);
   assert.equal(injectionText.split('叙事回顾可能含内心、计划或未完成事项').length - 1, 1);
   assert.equal(injectionText.match(/AI #8（明确时间（约略）：冬至夜）/gu)?.length, 1, '同楼完整时间只写在来源标题');
   assert.doesNotMatch(injectionText, /^- AI #\d+（/mu);
@@ -577,11 +570,6 @@ test('新剧情线格式由来源标题统领同楼旧事与变化，集中边�
   assert.match(injectionText, /\[来源 AI #11\][\s\S]*- \[变化\]/u);
   assert.match(injectionText, /状态来源 AI #8/u, '变化侧来自不同楼时仍明确保留来源');
   assert.match(injectionText, /“之前”只是被移除的旧状态，不是当前状态/u);
-  const progressionSection = injectionText.split('[时间推演')[1];
-  assert.doesNotMatch(progressionSection, new RegExp(states[0].text, 'u'));
-  assert.doesNotMatch(progressionSection, new RegExp(states[1].text, 'u'));
-  assert.match(progressionSection, /接续上方 adaptive 当前状态[\s\S]*原记录知情范围 private，仅可用于该人物/u);
-  assert.match(progressionSection, /接续上方 situational 当前状态[\s\S]*原记录知情范围 authorial，仅供作者塑造/u);
 });
 
 test('旧版召回胶囊近到远共用展示区，重绘保留选择且切聊不串状态', async () => {

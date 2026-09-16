@@ -1,7 +1,7 @@
 import { sha256 } from '../identity.js';
 import { sanitizeSensitiveText, sanitizeTaskMetadata } from './safe-metadata.js';
 import { projectRecallSource, readRecallSource } from './recall-source.js';
-import { buildRecallQueryContext, buildRecallQueryFrame } from './recall-selector.js';
+import { buildRecallQueryContext, buildRecallQueryFrame, formatRecallInjection, estimateRecallTokens } from './recall-selector.js';
 import { selectRecallWithLlm } from './recall-llm-selector.js';
 import { selectAssistantMessage } from './foundation-domain.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
@@ -11,8 +11,9 @@ import { publicErrorMessage } from '../public-error.js';
 
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
-export const RECALL_RECEIPT_SCHEMA_VERSION = 14;
-export const RECALL_STRATEGY_VERSION = 'continuity-v11';
+export const RECALL_RECEIPT_SCHEMA_VERSION = 15;
+export const RECALL_STRATEGY_VERSION = 'continuity-v14';
+const IDENTIFIED_RECALL_STRATEGIES = [RECALL_STRATEGY_VERSION, 'continuity-v13', 'continuity-v12', 'continuity-v11'];
 
 const SUPPORTED_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 const REUSE_TYPES = new Set(['regenerate', 'swipe', 'continue']);
@@ -146,7 +147,9 @@ const legacyReceiptMaterial = receipt => [
   receipt.userMessageIndex, receipt.userContentFingerprint, receipt.queryFingerprint, receipt.generationType,
   receipt.selectedFloors, receipt.selectedStates, receipt.coverage, receipt.injectionText, receipt.stages, receipt.skipReasons, receipt.completionStatus, receipt.createdAt,
 ];
-const receiptMaterial = receipt => receipt.schemaVersion >= 14
+const receiptMaterial = receipt => receipt.schemaVersion >= 15
+  ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings, receipt.storylines, receipt.timeDependencies]
+  : receipt.schemaVersion >= 14
   ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings, receipt.storylines, receipt.stateProgressions, receipt.timeDependencies]
   : receipt.schemaVersion >= 13
   ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings, receipt.storylines, receipt.stateProgressions]
@@ -181,6 +184,58 @@ function timeDependenciesCurrent(value, projection) {
     && saved.sourceSignature === (current.sourceSignature ?? null);
   return value.corrections.every(item => sameItem(item, projection?.corrections?.[item.key]))
     && value.reminders.every(item => (projection?.reminders ?? []).some(current => sameItem(item, current)));
+}
+
+// Re-render only the saved selection. A lost time estimate restores the saved CSE.
+function withoutStaleTime(receipt, source, projection) {
+  const saved = receipt.timeDependencies;
+  if (saved.mode !== 'selected' || !saved.renderPlan) return null;
+  const same = (item, live) => live && item.itemId === live.itemId && item.text === live.text && item.sourceSignature === (live.sourceSignature ?? null);
+  const corrections = Object.fromEntries(saved.corrections.filter(item => same(item, projection?.corrections?.[item.key])).map(item => [item.key, item]));
+  const reminders = saved.reminders.filter(item => (projection?.reminders ?? []).some(live => same(item, live)));
+  const floors = clone(saved.renderPlan.floors), states = clone(receipt.selectedStates), changes = clone(receipt.selectedCseChanges);
+  const limits = saved.renderPlan.limits;
+  const entityById = new Map((source.entities ?? []).map(entity => [entity.entityId, entity]));
+  let text, dependencies, storylines;
+  const render = () => {
+    const active = new Set([...floors.flatMap(floor => floor.items), ...states, ...changes].map(value => value.storylineId));
+    storylines = receipt.storylines.filter(line => active.has(line.storylineId));
+    dependencies = { mode: 'selected', corrections: [], reminders: [] };
+    text = formatRecallInjection({ coverage: receipt.coverage, floors, states, cseChanges: changes, storylines, entityById,
+      timeProjection: { corrections }, timeReminders: reminders, timeDependencies: dependencies });
+  };
+  render();
+  let budgetDropped = 0;
+  const trimmedHistoryFloors = new Set();
+  while (text.length > limits.maxCharacters || estimateRecallTokens(text) > limits.estimatedTokenBudget) {
+    if (reminders.length) reminders.pop();
+    else if (floors.length) { const floor = floors.at(-1); trimmedHistoryFloors.add(floor.floorId); floor.items.pop(); if (!floor.items.length) floors.pop(); }
+    else if (changes.length) changes.pop();
+    else if (states.length) states.pop();
+    else break;
+    budgetDropped += 1;
+    render();
+  }
+  render();
+  dependencies.renderPlan = { floors, limits };
+  const history = floors.flatMap(floor => floor.items);
+  const originalHistory = saved.renderPlan.floors.flatMap(floor => floor.items);
+  const recentDropped = originalHistory.filter(item => item.recallSection === 'recent').length - history.filter(item => item.recallSection === 'recent').length;
+  const distantDropped = originalHistory.length - history.length - recentDropped;
+  const stages = receipt.stages ? { ...receipt.stages, selected: floors.length, recentSummaryCount: history.filter(item => item.recallSection === 'recent').length,
+    distantHistoryItemCount: history.filter(item => item.recallSection !== 'recent').length,
+    linkedHistoryItemCount: history.filter(item => item.recallSection !== 'recent' && ['source', 'topic'].includes(item.relationEvidence)).length,
+    linkedCseChangeCount: changes.filter(item => item.relationEvidence === 'source').length, stateCount: states.length, currentStateCount: states.length, cseChangeCount: changes.length,
+    storylineCount: storylines.length, timeReminderCount: dependencies.reminders.length, timeCorrectionCount: dependencies.corrections.length,
+    finalInjectionItemCount: history.length + states.length + changes.length + dependencies.reminders.length,
+    estimatedTokenCount: estimateRecallTokens(text), optionalTimeDropped: (receipt.stages.optionalTimeDropped ?? 0) + saved.corrections.length + saved.reminders.length - dependencies.corrections.length - dependencies.reminders.length,
+    recentSummaryDroppedByBudget: (receipt.stages.recentSummaryDroppedByBudget ?? 0) + recentDropped,
+    distantHistoryDroppedByBudget: (receipt.stages.distantHistoryDroppedByBudget ?? 0) + distantDropped,
+    budgetDroppedCount: (receipt.stages.budgetDroppedCount ?? 0) + budgetDropped } : null;
+  return { ...receipt, selectedFloors: floors.map(({ floorId, floorMemoryId, assistantSeq, reasons }) => ({ floorId, floorMemoryId, assistantSeq, reasons })), selectedStates: states,
+    selectedCseChanges: changes, storylines, timeDependencies: dependencies, injectionText: text, completionStatus: text ? 'ready' : 'empty', stages,
+    selectorDiagnostic: receipt.selectorDiagnostic ? { ...receipt.selectorDiagnostic, historyRetainedCount: history.length, stateRetainedCount: states.length + changes.length } : null,
+    skipReasons: [...new Set([...receipt.skipReasons, 'optionalTimeChanged'])] };
 }
 const selectorDiagnosticSnapshot = value => {
   const api = sanitizeTaskMetadata(value);
@@ -223,6 +278,14 @@ const stateChangeSideValid = (value, { identifiersRequired = false } = {}) => va
   && optionalBoundedString(value.towardEntityId, 500) && optionalPositiveInteger(value.sourceAssistantSeq));
 function receiptShapeValid(receipt, { historical = false } = {}) {
   if (receipt?.schemaVersion >= 14 && !timeDependenciesValid(receipt.timeDependencies)) return false;
+  const plan = receipt?.timeDependencies?.renderPlan;
+  if (plan && (!Array.isArray(plan.floors) || plan.floors.length > MAX_RECEIPT_FLOORS
+    || !plan.floors.every(floor => Array.isArray(floor.items) && floor.items.every(item => item && boundedString(item.text, 4000)))
+    || !nonNegativeInteger(plan.limits?.maxCharacters) || plan.limits.maxCharacters > 20000
+    || !nonNegativeInteger(plan.limits?.estimatedTokenBudget) || plan.limits.estimatedTokenBudget > (receipt.schemaVersion >= 15 ? 4000 : 5000)
+    || (receipt.schemaVersion === 14 && (!nonNegativeInteger(plan.limits?.ordinaryMaxCharacters) || plan.limits.ordinaryMaxCharacters > 16000
+      || !nonNegativeInteger(plan.limits?.ordinaryEstimatedTokenBudget) || plan.limits.ordinaryEstimatedTokenBudget > 4000))
+    || JSON.stringify(plan).length > 200000)) return false;
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)
     || !['ready', 'empty'].includes(receipt.completionStatus)
     || !boundedString(receipt.pluginVersion, 120)
@@ -235,13 +298,13 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     || !boundedString(receipt.queryFingerprint, 200)
     || (receipt.schemaVersion >= 8 && !boundedString(receipt.bodyMatchFingerprint, 200))
     || (receipt.schemaVersion >= 9 && (historical
-      ? ![RECALL_STRATEGY_VERSION, 'continuity-v10', 'continuity-v9', 'continuity-v8', 'continuity-v7', 'continuity-v6', 'continuity-v5', 'continuity-v4', 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
+      ? ![RECALL_STRATEGY_VERSION, 'continuity-v13', 'continuity-v12', 'continuity-v11', 'continuity-v10', 'continuity-v9', 'continuity-v8', 'continuity-v7', 'continuity-v6', 'continuity-v5', 'continuity-v4', 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
       : receipt.strategyVersion !== RECALL_STRATEGY_VERSION))
     || !SUPPORTED_TYPES.has(receipt.generationType)
     || !Array.isArray(receipt.selectedFloors) || receipt.selectedFloors.length > MAX_RECEIPT_FLOORS
     || !Array.isArray(receipt.selectedStates) || receipt.selectedStates.length > MAX_RECEIPT_STATES
     || !Array.isArray(receipt.skipReasons) || receipt.skipReasons.length > MAX_RECEIPT_SKIP_REASONS
-    || !boundedString(receipt.injectionText, [RECALL_STRATEGY_VERSION, 'continuity-v10'].includes(receipt.strategyVersion) ? 20000 : 16000, { empty: true })
+    || !boundedString(receipt.injectionText, ['continuity-v13', 'continuity-v12', 'continuity-v11', 'continuity-v10'].includes(receipt.strategyVersion) ? 20000 : 16000, { empty: true })
     || !boundedString(receipt.receiptFingerprint, 200)
     || !boundedString(receipt.createdAt, 100) || !Number.isFinite(Date.parse(receipt.createdAt))
     || (receipt.completionStatus === 'ready') !== Boolean(receipt.injectionText)) return false;
@@ -251,7 +314,7 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     && Array.isArray(value.reasons) && value.reasons.length <= 32
     && value.reasons.every(reason => boundedString(reason, 500)))) return false;
   if (!receipt.selectedStates.every(value => value && typeof value === 'object' && !Array.isArray(value)
-    && (receipt.strategyVersion !== RECALL_STRATEGY_VERSION || (boundedString(value.stateId, 500) && boundedString(value.storylineId, 80)))
+    && (!IDENTIFIED_RECALL_STRATEGIES.includes(receipt.strategyVersion) || (boundedString(value.stateId, 500) && boundedString(value.storylineId, 80)))
     && (value.stateId === undefined || optionalBoundedString(value.stateId, 500))
     && (value.sourceFloorId === undefined || optionalBoundedString(value.sourceFloorId, 500))
     && (value.sourceDeltaId === undefined || optionalBoundedString(value.sourceDeltaId, 500))
@@ -268,9 +331,9 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
         && boundedString(value.deltaId, 500) && boundedString(value.floorId, 500) && Number.isSafeInteger(value.assistantSeq) && value.assistantSeq > 0
         && boundedString(value.subjectEntityId, 500) && boundedString(value.subject, 500)
         && ['core', 'adaptive', 'situational'].includes(value.layer) && ['add', 'remove', 'update', 'refine'].includes(value.action)
-        && stateChangeSideValid(value.before, { identifiersRequired: receipt.strategyVersion === RECALL_STRATEGY_VERSION })
-        && stateChangeSideValid(value.after, { identifiersRequired: receipt.strategyVersion === RECALL_STRATEGY_VERSION })
-        && (receipt.strategyVersion !== RECALL_STRATEGY_VERSION || boundedString(value.storylineId, 80)))) return false;
+        && stateChangeSideValid(value.before, { identifiersRequired: IDENTIFIED_RECALL_STRATEGIES.includes(receipt.strategyVersion) })
+        && stateChangeSideValid(value.after, { identifiersRequired: IDENTIFIED_RECALL_STRATEGIES.includes(receipt.strategyVersion) })
+        && (!IDENTIFIED_RECALL_STRATEGIES.includes(receipt.strategyVersion) || boundedString(value.storylineId, 80)))) return false;
     const diagnostic = receipt.selectorDiagnostic;
     if (!diagnostic || typeof diagnostic !== 'object' || Array.isArray(diagnostic)
       || !['llm', 'fallback', 'local'].includes(diagnostic.mode)
@@ -280,7 +343,7 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
       || !(diagnostic.transportAttempts === null || nonNegativeInteger(diagnostic.transportAttempts)) || !finiteDuration(diagnostic.durationMs)
       || !(diagnostic.utilityRoundTripMs === null || diagnostic.utilityRoundTripMs === undefined || finiteDuration(diagnostic.utilityRoundTripMs))
       || !(diagnostic.localSelectionMs === null || diagnostic.localSelectionMs === undefined || finiteDuration(diagnostic.localSelectionMs))
-      || (receipt.strategyVersion === RECALL_STRATEGY_VERSION && !['historyCandidateCount', 'stateCandidateCount', 'historyExcludedCount', 'stateExcludedCount', 'historyRetainedCount', 'stateRetainedCount'].every(key => diagnostic[key] === null || nonNegativeInteger(diagnostic[key])))) return false;
+      || (IDENTIFIED_RECALL_STRATEGIES.includes(receipt.strategyVersion) && !['historyCandidateCount', 'stateCandidateCount', 'historyExcludedCount', 'stateExcludedCount', 'historyRetainedCount', 'stateRetainedCount'].every(key => diagnostic[key] === null || nonNegativeInteger(diagnostic[key])))) return false;
     const timings = receipt.timings;
     if (!timings || typeof timings !== 'object' || Array.isArray(timings)
       || !['inputMs', 'sourceMs', 'selectorMs'].every(key => finiteDuration(timings[key]))
@@ -294,7 +357,7 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     || new Set(receipt.storylines.map(value => value.storylineId)).size !== receipt.storylines.length
     || !receipt.selectedStates.every(value => receipt.storylines.some(line => line.storylineId === value.storylineId))
     || !receipt.selectedCseChanges.every(value => receipt.storylines.some(line => line.storylineId === value.storylineId)))) return false;
-  if (receipt.schemaVersion >= 13) {
+  if (receipt.schemaVersion >= 13 && receipt.schemaVersion <= 14) {
     const selectedStateKeys = new Set(receipt.selectedStates.map(value => `${value.stateId}|${value.subjectEntityId}|${value.sourceFloorId ?? ''}`));
     const selectedEvidence = new Set([
       ...receipt.selectedFloors.map(value => `history|${value.floorId}|${value.assistantSeq}`),
@@ -326,7 +389,7 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     || (receipt.schemaVersion >= 10 && !['currentStateCount', 'cseChangeCount'].every(key => nonNegativeInteger(receipt.stages[key])))
     || (receipt.schemaVersion >= 11 && !['linkedHistoryItemCount', 'linkedCseChangeCount', 'budgetDroppedCount', 'finalInjectionItemCount'].every(key => nonNegativeInteger(receipt.stages[key])))
     || (receipt.schemaVersion >= 12 && !['storylineCount', 'estimatedTokenCount', 'estimatedTokenBudget'].every(key => nonNegativeInteger(receipt.stages[key])))
-    || (receipt.schemaVersion >= 13 && !nonNegativeInteger(receipt.stages.stateProgressionCount)))) return false;
+    || (receipt.schemaVersion >= 13 && receipt.schemaVersion <= 14 && !nonNegativeInteger(receipt.stages.stateProgressionCount)))) return false;
   return receipt.skipReasons.every(reason => boundedString(reason, 120));
 }
 
@@ -373,7 +436,7 @@ async function historicalSignedReceiptValid(receipt, { chatId, userIndex, userFi
   try {
     const snapshot = clone(receipt);
     if (!receiptShapeValid(snapshot, { historical: true })
-      || ![6, 7, 8, 9, 10, 11, 12, 13, RECALL_RECEIPT_SCHEMA_VERSION].includes(snapshot.schemaVersion)
+      || ![6, 7, 8, 9, 10, 11, 12, 13, 14, RECALL_RECEIPT_SCHEMA_VERSION].includes(snapshot.schemaVersion)
       || snapshot.chatId !== chatId
       || snapshot.userMessageIndex !== userIndex
       || snapshot.userContentFingerprint !== userFingerprint
@@ -394,7 +457,6 @@ function stateFromReceipt(receipt, { generationType = receipt.generationType, re
     selectedFloors: Object.freeze(clone(receipt.selectedFloors ?? [])),
     selectedStates: Object.freeze(clone(receipt.selectedStates ?? [])),
     selectedCseChanges: Object.freeze(clone(receipt.selectedCseChanges ?? [])),
-    stateProgressions: Object.freeze(clone(receipt.stateProgressions ?? [])),
     storylines: Object.freeze(clone(receipt.storylines ?? [])),
     selectorDiagnostic: receipt.selectorDiagnostic ? Object.freeze(clone(receipt.selectorDiagnostic)) : null,
     injectionText: receipt.injectionText,
@@ -426,7 +488,6 @@ function legacyStateFromReceipt(receipt, { chatId, userIndex }) {
     selectedFloors: Object.freeze(clone(selectedFloors)),
     selectedStates: Object.freeze(clone(selectedStates)),
     selectedCseChanges: Object.freeze([]),
-    stateProgressions: Object.freeze([]),
     storylines: Object.freeze([]),
     selectorDiagnostic: null,
     injectionText: receipt.injectionText,
@@ -449,7 +510,7 @@ export async function projectHistoricalRecallReceipt(message, { chatId, userMess
     || typeof fingerprint !== 'function') return null;
   const receipt = message.extra?.[RECALL_RECEIPT_KEY];
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return null;
-  if ([6, 7, 8, 9, 10, 11, 12, 13, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
+  if ([6, 7, 8, 9, 10, 11, 12, 13, 14, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
     const snapshot = await historicalSignedReceiptValid(receipt, {
       chatId: chatId.trim(),
       userIndex: userMessageIndex,
@@ -835,7 +896,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     return [session, stored].filter((value, index, values) => value && typeof value === 'object' && values.indexOf(value) === index);
   }
 
-  async function commitPromptIfCurrent({ operation, source, selectedFloors, selectedStates, selectedCseChanges = [], timeDependencies, userIndex, userFingerprint, hostGuard, injectionText }) {
+  async function commitPromptIfCurrent({ operation, source, receipt, selectedFloors, selectedStates, selectedCseChanges = [], timeDependencies, userIndex, userFingerprint, hostGuard, injectionText }) {
+    let finalReceipt = receipt, liveTime;
     if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };
     const before = hostAdapter.snapshot();
     const beforeUser = latestUser(before);
@@ -883,12 +945,16 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     }
     if (!timeDependenciesValid(timeDependencies)) return { ok: false, reason: 'selectedRefsChanged' };
     if (timeDependencies.mode === 'projection' || timeDependencies.corrections.length || timeDependencies.reminders.length) {
-      let liveTime = currentSource.timeProjection;
+      liveTime = currentSource.timeProjection;
       if (typeof timeProjectionProvider === 'function') {
         try { liveTime = await timeProjectionProvider(currentSource); }
         catch (error) { liveTime = null; logger?.warn?.('[qianqianjie] optional time projection check failed', { code: error?.code ?? error?.name ?? 'QQJ_TIME_READ_FAILED' }); }
       }
-      if (!timeDependenciesCurrent(timeDependencies, liveTime)) return { ok: false, reason: 'selectedRefsChanged' };
+      if (!timeDependenciesCurrent(timeDependencies, liveTime)) {
+        finalReceipt = withoutStaleTime(receipt, currentSource, liveTime);
+        if (!finalReceipt) return { ok: false, reason: 'selectedRefsChanged' };
+        injectionText = finalReceipt.injectionText;
+      }
     }
     if (!sourceRefsValid({ selectedFloors, selectedStates, selectedCseChanges }, currentSource)) return { ok: false, reason: 'selectedRefsChanged' };
     const selectedSourceGuards = captureSelectedSourceGuards({ selectedFloors, selectedStates, selectedCseChanges }, currentSource, before);
@@ -920,13 +986,23 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (!selectedSourcesCurrent) return { ok: false, reason: 'selectedRefsChanged' };
       return { ok: false, reason: 'narrativeChanged' };
     }
+    if (liveTime?.currentBodyWitness) {
+      const witness = liveTime.currentBodyWitness;
+      const message = after.chat?.[witness.hostLocator.messageIndex];
+      if (!message || message.is_system === true || message.is_hidden === true || message.hidden === true
+        || !coveredBodyGuardsCurrent([witness], after, bodyGuardSanitizer)) {
+        finalReceipt = withoutStaleTime(finalReceipt, currentSource, null);
+        if (!finalReceipt) return { ok: false, reason: 'selectedRefsChanged' };
+        injectionText = finalReceipt.injectionText;
+      }
+    }
     const binding = { chatId: source.chatId, hostChatId: operation.hostChatId };
     if (injectionText) prompt(injectionText, operation.token, after.context, binding);
     if (operation.prequelSelection?.injectionText) {
       promptPrequel(operation.prequelSelection.injectionText, operation.token, after.context, binding);
       operation.prequelCommitted = true;
     }
-    return { ok: true, snapshot: after, user: afterUser };
+    return { ok: true, snapshot: after, user: afterUser, receipt: finalReceipt };
   }
 
   function runtimeDiagnostic(operation, timings, retainCompleted = false) {
@@ -1050,8 +1126,17 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         if (candidate) {
           diagnostic.selectionStatus = 'receiptCandidate'; diagnostic.coverage = clone(candidate.coverage); diagnostic.stages = clone(candidate.stages); diagnostic.selectorDiagnostic = clone(candidate.selectorDiagnostic);
           operation.phase = diagnostic.phase = 'commit';
-          const committed = await commitPromptIfCurrent({ operation, source, selectedFloors: candidate.selectedFloors, selectedStates: candidate.selectedStates, selectedCseChanges: candidate.selectedCseChanges, timeDependencies: candidate.timeDependencies, userIndex: user.index, userFingerprint, hostGuard, injectionText: candidate.injectionText });
+          const committed = await commitPromptIfCurrent({ operation, source, receipt: candidate, selectedFloors: candidate.selectedFloors, selectedStates: candidate.selectedStates, selectedCseChanges: candidate.selectedCseChanges, timeDependencies: candidate.timeDependencies, userIndex: user.index, userFingerprint, hostGuard, injectionText: candidate.injectionText });
           if (!committed.ok) return stopForFinalSafety(committed.reason);
+          if (committed.receipt !== candidate) {
+            candidate = { ...committed.receipt, receiptFingerprint: await fingerprint(JSON.stringify(receiptMaterial(committed.receipt))) };
+            if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
+            candidate.receiptPersistence = await persistReceipt(committed.snapshot, committed.user, candidate);
+            if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
+            sessionReceipt = Object.freeze({ key, receipt: candidate });
+          }
+          diagnostic.stages = clone(candidate.stages);
+          diagnostic.selectorDiagnostic = clone(candidate.selectorDiagnostic);
           if (partialReasons.length) {
             try { notifyUser?.({ kind: 'warning', text: candidate.injectionText
               ? '当前聊天仍有摘要或人物状态缺口；本轮已使用能确认归属的已保存记忆，正文继续生成。'
@@ -1072,7 +1157,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       try { selection = await selectionRunner({ source, queryContext, contextSize, signal: operation.controller.signal, reservedTokens: operation.prequelSelection.estimatedTokens, reservedCharacters: operation.prequelSelection.estimatedCharacters }); }
       finally { timings.selectorMs = Date.now() - selectorStarted; }
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
-      const receiptBase = {
+      let receiptBase = {
         schemaVersion: RECALL_RECEIPT_SCHEMA_VERSION,
         pluginVersion,
         chatId: source.chatId,
@@ -1097,15 +1182,9 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           deltaId: value.deltaId, floorId: value.floorId, assistantSeq: value.assistantSeq,
           subjectEntityId: value.subjectEntityId, subject: value.subject, layer: value.layer, action: value.action,
           storylineId: value.storylineId,
+          relationEvidence: value.relationEvidence,
           before: value.before ? { stateId: value.before.stateId, sourceFloorId: value.before.sourceFloorId, sourceDeltaId: value.before.sourceDeltaId, text: value.before.text, visibility: value.before.visibility, reason: value.before.reason, origin: value.before.origin, towardEntityId: value.before.towardEntityId, sourceAssistantSeq: value.before.sourceAssistantSeq } : null,
           after: value.after ? { stateId: value.after.stateId, sourceFloorId: value.after.sourceFloorId, sourceDeltaId: value.after.sourceDeltaId, text: value.after.text, visibility: value.after.visibility, reason: value.after.reason, origin: value.after.origin, towardEntityId: value.after.towardEntityId, sourceAssistantSeq: value.after.sourceAssistantSeq } : null,
-        })),
-        stateProgressions: (selection.stateProgressions ?? []).map(value => ({
-          subjectEntityId: value.subjectEntityId, subject: value.subject, towardEntityId: value.towardEntityId ?? null, toward: value.toward ?? null,
-          savedText: value.savedText, visibility: value.visibility, sourceStateId: value.sourceStateId,
-          sourceFloorId: value.sourceFloorId ?? null, sourceAssistantSeq: value.sourceAssistantSeq ?? null,
-          timeBasis: value.timeBasis, suggestion: value.suggestion,
-          evidence: (value.evidence ?? []).map(item => ({ kind: item.kind, floorId: item.floorId ?? null, assistantSeq: item.assistantSeq ?? null })),
         })),
         storylines: (selection.storylines ?? []).map(value => ({ storylineId: value.storylineId, title: value.title, basis: value.basis })),
         selectorDiagnostic: selectorDiagnosticSnapshot(selection.selectorDiagnostic),
@@ -1119,13 +1198,12 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           timeBudgetDropped: selection.stages.timeBudgetDropped ?? 0,
           currentStateCount: Number.isSafeInteger(selection.stages.currentStateCount) ? selection.stages.currentStateCount : selection.states.length,
           cseChangeCount: Number.isSafeInteger(selection.stages.cseChangeCount) ? selection.stages.cseChangeCount : (selection.cseChanges ?? []).length,
-          stateProgressionCount: Number.isSafeInteger(selection.stages.stateProgressionCount) ? selection.stages.stateProgressionCount : (selection.stateProgressions ?? []).length,
           linkedHistoryItemCount: Number.isSafeInteger(selection.stages.linkedHistoryItemCount) ? selection.stages.linkedHistoryItemCount : 0,
           linkedCseChangeCount: Number.isSafeInteger(selection.stages.linkedCseChangeCount) ? selection.stages.linkedCseChangeCount : 0,
           budgetDroppedCount: Number.isSafeInteger(selection.stages.budgetDroppedCount) ? selection.stages.budgetDroppedCount : 0,
           finalInjectionItemCount: Number.isSafeInteger(selection.stages.finalInjectionItemCount)
             ? selection.stages.finalInjectionItemCount
-            : selection.floors.reduce((sum, floor) => sum + (floor.items?.length ?? 1), 0) + selection.states.length + (selection.cseChanges ?? []).length + (selection.stateProgressions ?? []).length,
+            : selection.floors.reduce((sum, floor) => sum + (floor.items?.length ?? 1), 0) + selection.states.length + (selection.cseChanges ?? []).length,
           storylineCount: Number.isSafeInteger(selection.stages.storylineCount) ? selection.stages.storylineCount : (selection.storylines ?? []).length,
           estimatedTokenCount: Number.isSafeInteger(selection.stages.estimatedTokenCount) ? selection.stages.estimatedTokenCount : 0,
           estimatedTokenBudget: Number.isSafeInteger(selection.stages.estimatedTokenBudget) ? selection.stages.estimatedTokenBudget : 0,
@@ -1134,11 +1212,18 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         skipReasons: [...new Set([...(selection.skipReasons ?? []), ...partialReasons])],
         createdAt: nowIso(now),
       };
+      if (receiptBase.timeDependencies.mode === 'selected' && (receiptBase.timeDependencies.corrections.length || receiptBase.timeDependencies.reminders.length) && selection.limits) {
+        receiptBase.timeDependencies.renderPlan = { floors: selection.floors.map(({ floorId, floorMemoryId, assistantSeq, reasons, chronology, items }) => ({ floorId, floorMemoryId, assistantSeq, reasons: [...reasons], chronology: clone(chronology),
+          items: items.map(({ rankScore, rankBranches, rankEntityBranches, ...item }) => clone(item)) })), limits: { maxCharacters: selection.limits.maxCharacters, estimatedTokenBudget: selection.limits.estimatedTokenBudget } };
+      }
       receiptBase.completionStatus = receiptBase.injectionText ? 'ready' : 'empty';
       diagnostic.selectionStatus = 'completed'; diagnostic.coverage = clone(receiptBase.coverage); diagnostic.stages = clone(receiptBase.stages); diagnostic.selectorDiagnostic = clone(receiptBase.selectorDiagnostic);
       operation.phase = diagnostic.phase = 'commit';
-      const committed = await commitPromptIfCurrent({ operation, source, selectedFloors: receiptBase.selectedFloors, selectedStates: receiptBase.selectedStates, selectedCseChanges: receiptBase.selectedCseChanges, timeDependencies: receiptBase.timeDependencies, userIndex: user.index, userFingerprint, hostGuard, injectionText: receiptBase.injectionText });
+      const committed = await commitPromptIfCurrent({ operation, source, receipt: receiptBase, selectedFloors: receiptBase.selectedFloors, selectedStates: receiptBase.selectedStates, selectedCseChanges: receiptBase.selectedCseChanges, timeDependencies: receiptBase.timeDependencies, userIndex: user.index, userFingerprint, hostGuard, injectionText: receiptBase.injectionText });
       if (!committed.ok) return stopForFinalSafety(committed.reason);
+      receiptBase = committed.receipt;
+      diagnostic.stages = clone(receiptBase.stages);
+      diagnostic.selectorDiagnostic = clone(receiptBase.selectorDiagnostic);
       if (partialReasons.length) {
         try { notifyUser?.({ kind: 'warning', text: receiptBase.injectionText
           ? '当前聊天仍有摘要或人物状态缺口；本轮已使用能确认归属的已保存记忆，正文继续生成。'
@@ -1176,7 +1261,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         continue;
       }
       lastError = safe;
-      lastRecall = Object.freeze({ status: 'error', userMessageIndex: operation.user?.index ?? null, generationType: type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, ...runtimeDiagnostic(operation, timings, true), skipReasons: Object.freeze(['error']), error: safe, createdAt: nowIso(now) });
+      lastRecall = Object.freeze({ status: 'error', userMessageIndex: operation.user?.index ?? null, generationType: type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, ...runtimeDiagnostic(operation, timings, true), skipReasons: Object.freeze(['error']), error: safe, createdAt: nowIso(now) });
       bindOperationRecall(operation);
       try { notifyUser?.({ kind: 'warning', text: `记忆召回重试后仍失败，已停止正文生成：${publicErrorMessage({ code: safe.code, message: safe.message }, { fallback: '记忆召回失败，请稍后重试。' })}` }); } catch { /* notification must not affect recall */ }
       active = null;
@@ -1190,7 +1275,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (operation.token !== epoch) return finishStale(operation, timings);
     timings.totalMs = Date.now() - operation.started;
     const reasons = Array.isArray(reason) ? reason : [reason];
-    lastRecall = Object.freeze({ status: 'skipped', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, ...runtimeDiagnostic(operation, timings), skipReasons: Object.freeze([...reasons]), error: null, createdAt: nowIso(now) });
+    lastRecall = Object.freeze({ status: 'skipped', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, ...runtimeDiagnostic(operation, timings), skipReasons: Object.freeze([...reasons]), error: null, createdAt: nowIso(now) });
     if (operation.prequelCommitted) lastPrequel = prequelState(operation);
     bindOperationRecall(operation);
     active = null; notify(); return getState();
@@ -1200,7 +1285,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (active === operation) active = null;
     if (operation.token === epoch) {
       clearSlot(operation.token);
-      lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, ...runtimeDiagnostic(operation, timings), skipReasons: Object.freeze([FINAL_REASONS.has(reason) ? reason : 'narrativeChanged']), error: null, createdAt: nowIso(now) }); lastPrequel = null;
+      lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, ...runtimeDiagnostic(operation, timings), skipReasons: Object.freeze([FINAL_REASONS.has(reason) ? reason : 'narrativeChanged']), error: null, createdAt: nowIso(now) }); lastPrequel = null;
       bindOperationRecall(operation);
       notify();
     }
@@ -1226,7 +1311,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     active.controller.abort(reason);
     active = null;
     if (slotOwner === generation.token) clearSlot(generation.token);
-    lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), stateProgressions: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([reason]), error: null, createdAt: nowIso(now) }); lastPrequel = null;
+    lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, timings: Object.freeze({ totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([reason]), error: null, createdAt: nowIso(now) }); lastPrequel = null;
     bindOperationRecall(operation);
     notify();
     return true;
@@ -1306,7 +1391,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       let receiptSnapshot = receipt.schemaVersion === RECALL_RECEIPT_SCHEMA_VERSION
         ? await persistedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint, pluginVersion }, fingerprint)
         : null;
-      if (!receiptSnapshot && [6, 7, 8, 9, 10, 11, 12, 13, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
+      if (!receiptSnapshot && [6, 7, 8, 9, 10, 11, 12, 13, 14, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
         const historical = await historicalSignedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint }, fingerprint);
         if (historical) receiptSnapshot = Object.freeze({ ...stateFromReceipt(historical, { restoredReceipt: true }), legacyReadOnly: true });
       }

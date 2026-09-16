@@ -1,4 +1,5 @@
 import { user_avatar } from '/scripts/personas.js';
+import { power_user } from '/scripts/power-user.js';
 import { extension_settings, extensionNames } from '/scripts/extensions.js';
 import { is_send_press, saveSettingsDebounced } from '/script.js';
 import { is_group_generating } from '/scripts/group-chats.js';
@@ -19,6 +20,7 @@ import { createHostAdapter } from './src/v3/host-adapter.js';
 import { createFoundationStore } from './src/v3/foundation-store.js';
 import { createFoundationRuntime } from './src/v3/foundation-runtime.js';
 import { createTimeStore, createTimeRuntime } from './src/v3/time-runtime.js';
+import { isIdentityDeleted, resolveIdentityEntityId } from './src/v3/entity-identity.js';
 import { createV3MemoryRuntime } from './src/v3/memory-runtime.js';
 import { persistMessageFloorAnchors } from './src/v3/message-floor-anchor.js';
 import { createV3RecallRuntime } from './src/v3/recall-runtime.js';
@@ -128,6 +130,20 @@ const timeRuntime = createTimeRuntime({
   getReachable: () => foundationRuntime.getReachable(),
   getMemoryState: () => v3MemoryRuntime.getState(),
   generateTimeTask: taskRouter.generateUtilityTask,
+  annualSettingsProvider: () => {
+    const reachable = foundationRuntime.getReachable(), state = peopleWorkspaceRuntime?.getState?.();
+    if (!reachable?.baseline?.userPersona?.entityId || state?.status !== 'ready' || state.chatId !== session.identity().chatId) return { ready: false };
+    const projection = { identityRedirectsByEntityId: state.identityRedirectsByEntityId, deletedEntityIds: state.deletedEntityIds };
+    const entityNames = new Map((reachable.entities ?? []).map(entity => [resolveIdentityEntityId(entity.id, projection), entity.displayName]));
+    const profiles = new Map();
+    for (const [sourceId, profile] of Object.entries(state.profilesByEntityId ?? {})) {
+      const entityId = resolveIdentityEntityId(sourceId, projection);
+      if (!entityId || isIdentityDeleted(entityId, projection) || profiles.has(entityId) && sourceId !== entityId) continue;
+      profiles.set(entityId, { entityId, displayName: profile?.name || entityNames.get(entityId), profile });
+    }
+    return { ready: true, people: [...profiles.values()], userPersona: { entityId: reachable.baseline.userPersona.entityId,
+      name: reachable.baseline.userPersona.name, description: power_user.persona_description ?? '' } };
+  },
   sanitizerOptions,
   storyClockReferenceTags: () => settings.get().storyClockReferenceTags,
   isEnabled: () => settings.isEnabled() && settings.get().timeEvolutionEnabled === true,
@@ -184,6 +200,7 @@ peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
   processingPrompt,
   isEnabled: settings.isEnabled,
 });
+peopleWorkspaceRuntime.subscribe?.(state => { if (state?.status === 'ready' && state.chatId === session.identity().chatId) void timeRuntime.runBatch({ chatId: state.chatId }); });
 const autoHideController = createAutoHideController({
   hostAdapter,
   memoryRuntime: v3MemoryRuntime,

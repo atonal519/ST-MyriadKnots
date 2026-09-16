@@ -9,7 +9,7 @@ import { CSE_ISOLATION_CODES, CSE_VISIBILITIES, LATEST_CSE_CALIBRATION_VERSION, 
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey } from './entity-identity.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-18';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-19';
 export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-11';
 export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
@@ -34,14 +34,14 @@ previousState 按 subject 分列各人的 ownState，只说明对应人物自身
 
 判断每条候选信息时，在内部依次问三个问题：第一，这条主要回答人物现在怎样、处境如何，还是此刻怎样对待某人？第二，另一人只是背景、原因或事件参与者，还是这项态度或相处反应的明确对象？第三，这里有两条独立且分别有正文依据的信息，需要拆开表达，还是同一信息的重复描述？只输出判断后的状态，不要输出思考过程、问题答案或分类解释。
 
-主要说明人物自身现状时不填写 toward；正文明确支持人物针对某个已知人物的看法、态度或相处反应时，Adaptive 或 Situational 才填写 toward。关系反应可以通过明确指向对方的言语和行为表现，不需要直接说出态度；但不能只因一个行为有受事者就自动判为关系态度，也不能把行为一律排除出关系反应。对各方使用同一判断标准。混合信息只在确有独立依据时拆分，不强制双栏填满，不重复同一事实，也不编造态度。private 只表示可见性，明确的私密态度仍可填写 toward。previousState 中旧 toward 也必须按本楼证据审视，不得盲从；本楼不足以更新相应分类时应省略该分类以保留旧状态，不要把旧状态改写成“未知”。无法唯一判断对象时留空。单方 A→B 不得自动镜像成 B→A，也不能把某人的单方声称写成双方态度。Core 不使用 toward；一次关系反应也不能被拔高为 Core 或长期 Adaptive。Situational 只有在正文给出明确时间流逝时才可写 reasonableProgression，不能补造新事件。reason 是可选的简短解释；直接状态数组中的条目省略 reason 时，会标记为“未提供依据”。这不免除持续校准合同对 evidence 的要求，reason 也不能代替 evidence。不要输出数据库 ID。
+主要说明人物自身现状时不填写 toward；文本中心是人物针对某个明确已知人物的看法、态度或相处反应时，Adaptive 或 Situational 应填写 toward。关系反应可以通过明确指向对方的言语和行为表现，不需要直接说出态度；但不能只因一个行为有受事者就自动判为关系态度，也不能把行为一律排除出关系反应。物品摆放、自身身体状态等信息即使提到他人，也不能仅凭该提及变成关系态度。对各方使用同一判断标准。混合信息只在确有独立依据时拆分，不强制双栏填满，不重复同一事实，也不编造态度。private 只表示可见性，明确的私密态度仍可填写 toward，不能因私密而留空。previousState 中旧 toward 也必须按本楼证据审视，不得盲从；旧 toward 为空不妨碍本轮为有明确对象的状态填写 toward。本楼不足以更新相应分类时应省略该分类以保留旧状态，不要把旧状态改写成“未知”。自身状态或无法唯一判断对象时留空，不要求每项都有对象。单方 A→B 不得自动镜像成 B→A，也不能把某人的单方声称写成双方态度。Core 不使用 toward；一次关系反应也不能被拔高为 Core 或长期 Adaptive。Situational 只有在正文给出明确时间流逝时才可写 reasonableProgression，不能补造新事件。reason 是可选的简短解释；直接状态数组中的条目省略 reason 时，会标记为“未提供依据”。这不免除持续校准合同对 evidence 的要求，reason 也不能代替 evidence。不要输出数据库 ID。
 
-Situational 记录本楼结束时仍然有效的当前情境，不是历史事件台账。已发生的经历应提炼为仍影响当下的状态，原事件细节交给摘要，不在此复述来往过程。保留未解决的处境、仍有效的身体状态和有依据的当下关系反应，合并同义重复；有新依据表明旧情境已结束或被替代时，应移除或更新，不能仅因本楼未提及就删除持续状态。输出 situational 时给出完整当前列表；确有依据判断没有仍有效项时用 []，不得以省略分类冒充清空。是否保留得知的信息、获得的事物或行动表现，应按其仍然造成的当下影响判断，并遵守上述事实、隐私和知识来源边界。
+Situational 记录本楼结束时值得持续关注的当前情境，不是历史事件台账。某个事实仍然成立，不等于它必须一直占据当前情境。已完成动作、过去见闻、收发信和物品流转等过程记录交给摘要；若没有需要持续关注的当下影响，可退出当前列表，不需要正文特意宣布这些记录“结束”。这只是整理当前状态，不代表否认历史、人物失忆或尚未完成的任务已经结束。保留真正持续的伤势、未解决处境、仍有效约定和有依据的当下关系反应，不能仅因本楼未提及就删除持续状态；有新依据表明它们结束或被替代时再移除或更新。同一处境或变化过程提炼合并为简短当前状态，text 和 reason 都不要逐楼追加历史行动链；previousState 中已有的流水项也应在本轮更新该类时整理，留下仍有当下影响的部分。输出 situational 时给出完整当前列表；确有依据判断没有需要保留的当前项时用 []，不得以省略分类冒充清空。是否保留得知的信息、获得的事物或行动表现，应按其仍然造成的当下影响判断，并遵守上述事实、隐私和知识来源边界。
 
 【持续校准合同】
 每次都审视本楼相关人物的已有 Core 与 Adaptive，并把它们同最新作者设定、明确用户纠正和本楼正文一起判断。旧结论本身及其旧 reason 不能自证；相容且没有新依据时保持原项，出现可定位反证或明确的新适用条件时才 refine/remove。剧情允许人物改变，但不强制每楼改写；单个戏剧性场景不能覆盖明确作者锚点，普通角色扮演中的用户台词、动作或心理也不自动等于作者纠正。
 
-单次情绪、动作或台词默认只支持 Situational，不能据此概括人物“总是”“习惯”“一贯如此”。新增或扩大 Adaptive 必须由明确作者设定、明确用户纠正，或本次可定位材料中的多个相互独立事实共同支持重复模式；同一事件链中的多个动作不算跨事件的独立重复证据，不得拿 previousState、旧 reason 或自行假设的未提供历史凑成多个事实。单个反例也不自动证明旧模式完全反转；若证据只说明适用条件变窄，用 refine 写清条件。
+单次情绪、动作或台词若有值得保留的当下影响，默认只支持 Situational，不要求每个动作都写成情境，也不能据此概括人物“总是”“习惯”“一贯如此”。新增或扩大 Adaptive 必须由明确作者设定、明确用户纠正，或本次可定位材料中的多个相互独立事实共同支持重复模式；同一事件链中的多个动作不算跨事件的独立重复证据，不得拿 previousState、旧 reason 或自行假设的未提供历史凑成多个事实。单个反例也不自动证明旧模式完全反转；若证据只说明适用条件变窄，用 refine 写清条件。
 
 人物被提及不等于本人在场；第三方声称某人的处境、行动或心理，不等于该内容已被客观证实。证据只支持时，可以记录说话者作出该声称，或有实际送达证据时记录接收者得知该说法；不得据此给被提及者新增 observable 状态或把传闻写成事实。
 
@@ -52,7 +52,7 @@ authorNote 是作者侧持续参考，其中的未来要求、写作风格或塑
 
 Core/Adaptive 每类采用 review/additions 新协议，或沿用旧的直接 after-state 数组，不能同时使用两套。review 以 previousText（Adaptive 同名时再用 toward）精确指向旧项，action 只能是 keep、refine、remove；refine 还需 text。未提到项保留。新增项放 additions。review 中的 refine、remove，以及 additions 中的每个新增项，都必须给 evidence:[{source,quote}]；reason 可省略，keep 可不带 evidence。不要把 previousState、旧 reason 或 authorialOtherStateContext 写成 evidence source。
 
-省略人物或分类表示保留已有状态。直接输出的 adaptive、situational 数组表示该类在本楼结束时的完整结果；situational 中仍有效者保留，已结束者移除。空数组表示明确清空该类，不要用它表示“没有新变化”；无足够依据更新整个类别时省略该类别。review 或 additions 中某类的空数组只表示没有相应操作。adaptive review 的 previousText 与 toward 必须按上文规则精确指向旧项。
+省略人物或分类表示保留已有状态。直接输出的 adaptive、situational 数组表示该类在本楼结束时的完整结果；situational 中仍需持续关注者保留，已结束或仅剩历史流水者按上述规则移除或提炼。空数组表示明确清空该类，不要用它表示“没有新变化”；无足够依据更新整个类别时省略该类别。review 或 additions 中某类的空数组只表示没有相应操作。adaptive review 的 previousText 与 toward 必须按上文规则精确指向旧项。
 
 返回一个实际分析结果的 JSON 对象。确无需要输出的状态变化时，返回 {"subjects":[]}；不要返回 JSON Schema、空对象、null 或格式说明。所有 JSON 字符串都必须使用标准 JSON 转义：字符串内容中的英文双引号写成 \\", 反斜杠写成 \\\\, 实际换行写成 \\n；evidence.quote 引用正文原句时也必须遵守同一转义规则。JSON 解码后的 quote 必须保留原文字面，不得换成其他引号、删去字符或改写内容。
 英文 JSON 字段名保持示例写法；状态 text、reason 使用中文。变化说明由程序按实际前后状态生成，无需填写 changeSummary。根级 changeSummary/summary 不会被当作人物状态，也不得用来代替 subjects。

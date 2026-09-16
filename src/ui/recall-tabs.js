@@ -35,13 +35,12 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     .event-caption{font-size:10px;color:var(--muted);margin:0 0 8px}
     .event-copy{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.9}
     .event-copy+.event-copy{margin-top:10px}
-    .time-progression{margin-top:14px;border-top:1px solid var(--qqj-inline-line);padding-top:10px}
-    .time-progression>summary{cursor:pointer;font-size:11px;font-weight:600;list-style-position:inside}
-    .time-progression:not([open])>.time-progression-list{display:none}
-    .time-progression-list{display:grid;gap:10px;margin-top:9px}
-    .time-progression-item{padding:9px 10px;border-radius:6px;background:var(--soft)}
-    .time-progression-subject{display:block;font-size:11px;margin-bottom:3px}
-    .time-progression-copy{margin:0;font-size:11px;line-height:1.85;white-space:pre-wrap;overflow-wrap:anywhere}
+    .time-reference{margin-top:14px;border-top:1px solid var(--qqj-inline-line);padding-top:10px}
+    .time-reference>summary{cursor:pointer;font-size:11px;font-weight:600;list-style-position:inside}
+    .time-reference:not([open])>.time-reference-list{display:none}
+    .time-reference-list{display:grid;gap:10px;margin-top:9px}
+    .time-reference-item{padding:9px 10px;border-radius:6px;background:var(--soft)}
+    .time-reference-copy{margin:0;font-size:11px;line-height:1.85;white-space:pre-wrap;overflow-wrap:anywhere}
     .people-current>summary,.people-history>summary{cursor:pointer;list-style:none}
     .people-current>summary::-webkit-details-marker,.people-history>summary::-webkit-details-marker{display:none}
     .people-current:not([open])>.section-heading,.people-history:not([open])>.section-heading{margin-bottom:0}
@@ -141,27 +140,13 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     pills.append(pill);
   }
   showEvent(); events.append(pills, display);
-  if (projection.stateProgressionItems?.length) {
-    const progression = node('details', 'time-progression');
-    progression.append(node('summary', '', '时间推演'));
-    const list = node('div', 'time-progression-list');
-    const progressionVisibility = { private:'仅本人知晓', observable:'可观察', expressed:'已表达', shared:'已共享', authorial:'作者视角' };
-    for (const item of projection.stateProgressionItems) {
-      const entry = node('article', 'time-progression-item');
-      entry.append(node('strong', 'time-progression-subject', `${item.subject}${item.toward ? ` → ${item.toward}` : ''} · 原记录：${progressionVisibility[item.visibility] ?? item.visibility}`));
-      entry.append(node('p', 'time-progression-copy', `${item.savedText}\n推测应为：${item.suggestion}`));
-      list.append(entry);
-    }
-    progression.append(list); events.append(progression);
-  }
-
   if (projection.timeReferenceItems?.length) {
-    const reference = node('details', 'time-progression');
+    const reference = node('details', 'time-reference');
     reference.append(node('summary', '', `本轮时间参考（${projection.timeReferenceItems.length}条）`));
-    const list = node('div', 'time-progression-list');
+    const list = node('div', 'time-reference-list');
     for (const text of projection.timeReferenceItems) {
-      const entry = node('article', 'time-progression-item');
-      entry.append(node('p', 'time-progression-copy', text)); list.append(entry);
+      const entry = node('article', 'time-reference-item');
+      entry.append(node('p', 'time-reference-copy', text)); list.append(entry);
     }
     reference.append(list); events.append(reference);
   }

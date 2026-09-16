@@ -101,15 +101,10 @@ button:focus-visible,summary:focus-visible{outline:2px solid var(--knot);outline
 .qqj-profile-summary{padding-bottom:2px;border-bottom:0}.qqj-profile-section h3{color:var(--knot)}.qqj-profile-section.lead{padding-top:17px}.qqj-profile-read-row{align-items:baseline}
 .qqj-relation-layer{display:grid;gap:3px}.qqj-relation-layer+.qqj-relation-layer{margin-top:8px}.qqj-relation-layer-title{color:var(--soft);font-size:9px;font-weight:600}
 .qqj-profile-switcher,.qqj-relation-switcher{padding-bottom:4px;scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--soft) 45%,transparent) transparent;cursor:grab}.qqj-profile-switcher.dragging,.qqj-relation-switcher.dragging{cursor:grabbing;user-select:none}.qqj-profile-switcher::-webkit-scrollbar,.qqj-relation-switcher::-webkit-scrollbar{display:block;height:4px}.qqj-profile-switcher::-webkit-scrollbar-thumb,.qqj-relation-switcher::-webkit-scrollbar-thumb{border-radius:999px;background:color-mix(in srgb,var(--soft) 45%,transparent)}.qqj-people-order-open{flex:0 0 auto;padding:4px 8px;font-size:11px}
-/* Sticky bottoms sit above the scroller's padding; include that inset to avoid a content slit. */
-.body{--qqj-body-bottom-inset:20px;padding-bottom:var(--qqj-body-bottom-inset)}
-.qqj-manual-editor{position:relative}.qqj-manual-save-bar{position:sticky;bottom:calc(-1 * var(--qqj-body-bottom-inset,20px));z-index:4;margin-top:12px;padding:9px 0;background:var(--panel);box-shadow:0 -1px 0 color-mix(in srgb,var(--line) 72%,transparent)}.qqj-profile-save-row.qqj-manual-save-bar{margin-inline:-17px;margin-bottom:calc(-1 * var(--qqj-body-bottom-inset,20px));padding:9px 17px var(--qqj-body-bottom-inset,20px);border-top:0}.v3-cse-subject.qqj-manual-editor-host,.qqj-prequel-drawer.qqj-manual-editor-host,#qqj-settings-group-general:has(#qqj-settings-api[open]){overflow:visible}
+.qqj-manual-editor{position:relative}.qqj-manual-save-bar{position:sticky;bottom:0;z-index:4;margin-top:12px;padding:9px 0}.qqj-profile-save-row.qqj-manual-save-bar{border-top:0}.v3-cse-subject.qqj-manual-editor-host,.qqj-prequel-drawer.qqj-manual-editor-host,#qqj-settings-group-general:has(#qqj-settings-api[open]){overflow:visible}
+.qqj-cse-more:has(.qqj-manual-save-bar){overflow:visible}
 /* The advanced drawer already pads its summary; cancel the parent's 9px grid gap here. */
 .qqj-api-editor>.settings-sub-body>.sub-advanced+.qqj-manual-save-bar{margin-top:-9px}
-@media(max-width:390px){.qqj-profile-save-row.qqj-manual-save-bar{margin-inline:-10px;padding-right:10px;padding-left:10px}}
-.panel:has(.qqj-manual-save-bar){background:var(--panel)}
-.panel:has(.qqj-manual-save-bar)>.body{background:var(--paper)}
-.panel:has(.qqj-manual-save-bar) .panel-resize-handle{background:var(--panel)}
 /* This follows the base display:grid rule so the mobile handle cannot reappear. */
 @media(max-width:640px){.panel>.panel-resize-handle{display:none}}
 

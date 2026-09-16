@@ -78,8 +78,9 @@ test('formatter仅记录实际渲染的校正，时间项来源变化也进入�
   const state = { stateId: 'state', subjectEntityId: PERSON, sourceFloorId: FLOOR, storylineId: 'unrendered-line', text: '原状态' };
   const projection = { corrections: { [`state|${PERSON}|${FLOOR}`]: { itemId: 'body', text: '时间校正文本' } } };
   const deps = { corrections: [], reminders: [] };
-  const text = formatRecallInjection({ states: [state], floors: [], cseChanges: [], coverage: { memoryComplete: true, cseCurrent: true }, entityById: new Map(), storylines: [{ storylineId: 'other-line', title: '另一条线', basis: '测试' }], timeProjection: projection, timeDependencies: deps });
+  const text = formatRecallInjection({ states: [state], floors: [], cseChanges: [], coverage: { memoryComplete: true, cseCurrent: true }, entityById: new Map(), storylines: [{ storylineId: 'other-line', title: '另一条线', basis: '测试' }], timeProjection: projection, timeReminders:[{ itemId:'body', text:'独立提醒' }], timeDependencies: deps });
   assert.equal(text.includes('时间校正文本'), false); assert.deepEqual(deps.corrections, []);
+  assert.match(text, /独立提醒/); assert.equal(deps.reminders.length, 1, '未渲染的校正不能删除实际提醒');
   const item = { id: 'body', subjectEntityId: PERSON, type: 'body', label: '擦伤', status: 'active', observation: '擦伤', observationKey: 'observation', observationTime: projectTime('2026-05-09'), occurrenceTime: projectTime('2026-05-09'), dueTime: projectTime(''), stateRefs: [{ stateId: 'state', sourceFloorId: FLOOR }], sourceRefs: [{ floorId: FLOOR, canonicalFingerprint: 'old-body' }] };
   const source = { entities: [{ entityId: PERSON, displayName: '甲' }], currentState: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [state] }] };
   const first = timeRecallProjection([item], source, projectTime('2026-05-11')).corrections[`state|${PERSON}|${FLOOR}`];
@@ -111,7 +112,7 @@ test('有效身体推测无同源CSE时独立参考同预算，首次观察与�
   source.currentState = [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [{ stateId: 'state', sourceFloorId: FLOOR, text: '擦伤' }] }];
   const matched = timeRecallProjection([item], source, current);
   assert.equal(Object.keys(matched.corrections).length, 1);
-  assert.equal(matched.reminders.length, 0);
+  assert.equal(matched.reminders.length, 1, "候选匹配不等于实际注入，最终由formatter去重");
 });
 
 
@@ -141,4 +142,89 @@ test('同日时钟回退时未来推演不可采用', () => {
   const projection = timeRecallProjection([item], source, projectTime('2026-05-10 08:00'));
   assert.equal(projection.corrections[`state|${PERSON}|${FLOOR}`].text.includes('未来预计状态'), false);
   assert.match(projection.corrections[`state|${PERSON}|${FLOOR}`].text, /待新观察确认/u);
+});
+
+function budgetSource() {
+  return { status: 'ready', chatId: CHAT, entities: [
+    { entityId: PERSON, displayName: '阿岚', aliases: ['岚岚'], specialRole: 'char' },
+    { entityId: 'other', displayName: '别人', aliases: ['你', 'user'] },
+  ], floorMemories: [], cseChanges: [], currentState: [], coverage: { memoryComplete: true, cseCurrent: true, stableThroughAssistantSeq: 40 }, bodyMatch: { visibleFloorIds: [], summaryCoveredFloorIds: [] } };
+}
+const budgetQuery = buildRecallQueryContext({ coreChat: [{ is_user: false, mes: '阿岚的手腕擦伤需要复查。' }, { is_user: true, mes: '岚岚今天手腕复查怎么样' }] });
+const runBudget = (source, options = {}) => selectRecall({ source, queryContext: budgetQuery, contextSize: 50000, ...options });
+
+function fillBudgetHistory(source) {
+  source.floorMemories = Array.from({ length: 40 }, (_, index) => ({
+    floorId: `budget-floor-${index}`, floorMemoryId: `budget-memory-${index}`, assistantSeq: index + 1,
+    summary: `阿岚手腕复查 ${index + 1} ${String.fromCodePoint(0x4e00 + index).repeat(420)}`,
+    observations: [{ subjectEntityId: PERSON, description: `阿岚手腕复查${index + 1} ${String.fromCodePoint(0x4f00 + index).repeat(400)}` }],
+    chronology: [], participants: [{ entityId: PERSON }], locations: [], commitments: [], openLoops: [], exactAnchors: [], events: [], actions: [], privateCognition: [], informationTransfers: [],
+  }));
+}
+
+test('时间BM25先选相关观察，人物别名与临近节点参与排序，同分稳定且身体0不作到期', () => {
+  const source = budgetSource();
+  const padding = '事项说明'.repeat(75);
+  source.timeProjection = { corrections: {}, reminders: [
+    { itemId: 'expired', type: 'deadline', distance: -100, text: `别人旧买菜 ${padding}` },
+    { itemId: 'body', type: 'body', distance: 0, text: `身体无关 ${padding}` },
+    { itemId: 'near', type: 'deadline', distance: 1, text: `临近节点 ${padding}` },
+    { itemId: 'relevant', type: 'deadline', subjectEntityId: PERSON, distance: 5, rankText: '手腕擦伤 复查', text: `复查相关 ${padding}` },
+  ] };
+  assert.deepEqual(runBudget(source).timeDependencies.reminders.map(value => value.itemId), ['relevant']);
+  source.timeProjection.reminders = source.timeProjection.reminders.slice(0, 3);
+  assert.deepEqual(runBudget(source).timeDependencies.reminders.map(value => value.itemId), ['near']);
+  source.timeProjection.reminders = [
+    { itemId: 'generic', subjectEntityId: 'other', rankText: '独立事务', text: `无关人物 ${padding}` },
+    { itemId: 'person', subjectEntityId: PERSON, rankText: '独立事务', text: `相关人物 ${padding}` },
+  ];
+  assert.deepEqual(runBudget(source).timeDependencies.reminders.map(value => value.itemId), ['person']);
+  source.timeProjection.reminders[0].subjectEntityId = null;
+  source.timeProjection.reminders[1].subjectEntityId = null;
+  assert.deepEqual(runBudget(source).timeDependencies.reminders.map(value => value.itemId), ['generic']);
+});
+
+test('满普通预算时间仍入选，少量实际预占余量给普通；无项与超大项不改变普通选材', () => {
+  const source = budgetSource(); fillBudgetHistory(source);
+  const original = runBudget(source);
+  assert.ok(original.stages.estimatedTokenCount > 3400, `实际近满预算fixture ${original.stages.estimatedTokenCount} floors ${original.floors.length}`);
+  source.timeProjection = { corrections: {}, reminders: [] };
+  assert.deepEqual(runBudget(source), original);
+  source.timeProjection.reminders = [{ itemId: 'huge', text: '复查'.repeat(400) }];
+  const oversized = runBudget(source);
+  assert.deepEqual(oversized.floors, original.floors);
+  assert.equal(oversized.injectionText, original.injectionText);
+  assert.equal(oversized.stages.timeBudgetDropped, 1);
+  source.timeProjection.reminders = [{ itemId: 'small', type: 'deadline', subjectEntityId: PERSON, text: '阿岚今天手腕复查', distance: 0 }];
+  const small = runBudget(source);
+  assert.equal(small.stages.timeReminderCount, 1);
+  assert.ok(small.stages.estimatedTokenCount > 3400, '只消耗实际文本，未固定扣掉600');
+  assert.ok(small.stages.estimatedTokenCount <= 4000);
+  assert.ok(small.injectionText.length <= 16000);
+  const reserved = runBudget(source, { reservedTokens: 3750, reservedCharacters: 15700 });
+  assert.ok(reserved.stages.estimatedTokenCount <= 250);
+  assert.ok(reserved.injectionText.length <= 300);
+});
+
+test('实际CSE校正代替提醒且空间归还，候选没渲染则提醒保留，超大替代不算预算丢失', () => {
+  const source = budgetSource(); fillBudgetHistory(source);
+  const state = { stateId: 'wrist', sourceFloorId: 'state-floor', text: '岚岚手腕仍有擦伤', visibility: 'observable', reason: '观察', sourceAssistantSeq: 1 };
+  source.currentState = [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [state] }];
+  const key = `wrist|${PERSON}|state-floor`;
+  source.timeProjection = { corrections: { [key]: { itemId: 'wrist', text: '擦伤当前可能减轻' } }, reminders: [{ itemId: 'wrist', type: 'body', subjectEntityId: PERSON, text: '擦伤独立时间推测'.repeat(30) }] };
+  const selected = runBudget(source);
+  assert.equal(selected.timeDependencies.corrections.length, 1);
+  assert.equal(selected.timeDependencies.reminders.length, 0);
+  assert.equal(selected.stages.timeReminderCount, 0);
+  assert.equal(selected.stages.timeCorrectionCount, 1);
+  assert.equal(selected.stages.timeBudgetDropped, 0);
+  assert.equal(selected.injectionText.includes('独立时间推测'), false);
+  const noReminder = structuredClone(source); noReminder.timeProjection.reminders = [];
+  assert.equal(selected.injectionText, runBudget(noReminder).injectionText, '去重后空出的空间供后续普通材料使用');
+  source.timeProjection.reminders[0].text = '巨型提醒'.repeat(300);
+  assert.equal(runBudget(source).stages.timeBudgetDropped, 0, '被实际校正代替不是预算丢失');
+  source.timeProjection.reminders[0].text = '擦伤独立时间推测';
+  const excluded = runBudget(source, { selectedCseCandidates: [] });
+  assert.equal(excluded.timeDependencies.corrections.length, 0);
+  assert.equal(excluded.stages.timeReminderCount, 1);
 });

@@ -218,8 +218,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     if (state.memorySnapshotStatus === 'syncing' && !(state.floors ?? []).length) return '正在读取当前聊天记忆';
     if (state.activeExtraction && state.activeCse) return `摘要与人物状态并行 · 摘要 ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼 · 人物状态待分析 ${state.csePendingCount ?? 0} 楼`;
     if (!memoryBusy(state) && !cseBusy(state) && !workBusy(state) && !errorCopy(state)) {
-      if (time?.active) return time.phase === 'projecting' ? '正在推算时间状态' : '正在整理时间事项';
-      if (page === 'management' && time?.status === 'failed') return time.last?.message ?? '时间事项处理失败';
+      if (time?.active) return time.phase === 'saving' ? '正在保存时间事项' : time.phase === 'projecting' ? '正在推算时间状态' : '正在整理时间事项';
+      if (page === 'management' && ['failed', 'partial'].includes(time?.status)) return time.last?.message ?? '时间事项处理失败';
     }
     if (page === 'memories') {
       if (memoryBusy(state)) return `正在处理摘要 · ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼${state.activeAutoMemory?.cseBlocked ? ' · 人物状态待重试' : ''}`;
@@ -453,7 +453,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const input = element('textarea', 'settings-input'); input.value = draft.summary; input.placeholder = '输入用户修订摘要'; input.addEventListener('input', () => { draft.summary = input.value; });
       editBox.append(label('摘要', input));
       const note = element('input', 'settings-input'); note.value = draft.note; note.placeholder = '修订说明（可选）'; note.addEventListener('input', () => { draft.note = note.value; });
-      const actions = element('div', 'v3-foundation-actions qqj-manual-save-bar');
+      const actions = element('div', 'v3-foundation-actions');
       if (draft.saveError) editBox.append(element('p', 'v3-foundation-feedback error', draft.saveError));
       const save = element('button', 'primary-action', draft.saving ? '保存中…' : '保存'); save.type = 'button'; save.disabled = draft.saving === true || workBusy(state);
       const cancel = element('button', 'secondary-action', '取消'); cancel.type = 'button'; cancel.disabled = draft.saving === true || workBusy(state);
@@ -524,8 +524,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   function updateRecentItems() {
     if (!active || page !== 'memories' || !recentItemsUi) return;
     const { toggle, body, status, organize, retryRead, reason, list, stoppedToggle, stop } = recentItemsUi;
-    const state = timeRuntime?.getState?.(), result = state?.last, tracked = state?.trackedItems;
-    toggle.textContent = `近期事项${Array.isArray(tracked) ? `（${tracked.length}）` : ''}`;
+    const state = timeRuntime?.getState?.(), result = state?.last, tracked = state?.trackedItems, annual = state?.annualItems;
+    toggle.textContent = `近期事项${Array.isArray(tracked) ? `（${tracked.length + (annual?.length ?? 0)}）` : ''}`;
     toggle.className = `secondary-action qqj-profile-more${recentItemsOpen ? ' active' : ''}`;
     toggle.disabled = false;
     toggle.setAttribute('aria-expanded', String(recentItemsOpen)); body.hidden = !recentItemsOpen;
@@ -533,7 +533,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const label = state?.status === 'disabled' ? '已关闭' : state?.active ? state.phase === 'saving' ? '保存中' : '处理中' : state?.status === 'waiting' ? '等待记忆同步' : result?.status === 'completed' ? '已处理' : result?.status === 'empty' ? '已检查无适合事项' : result?.status === 'partial' ? '部分完成' : result?.status === 'failed' ? '失败' : result?.status === 'interrupted' ? '上次未完成' : '待初始化';
     status.textContent = `${label}${Array.isArray(tracked) ? ` · 追踪中事项 ${tracked.length} 条` : ''}${state?.coverage ? ` · 正文完整已检查 ${state.coverage.checkedFloors}/${state.coverage.totalFloors} 楼` : ''}${state?.progress ? ` · 本次批次 ${state.progress.completed}/${state.progress.total}` : ''}${result?.message ? `。${result.message}` : ''}`;
     status.className = ['failed', 'partial'].includes(result?.status) ? 'settings-result error' : 'settings-result';
-    organize.textContent = ['failed', 'interrupted', 'partial'].includes(result?.status) ? '继续补查历史' : '补查历史';
+    organize.textContent = result?.currentReview && ['failed', 'interrupted', 'partial'].includes(result?.status) ? '重新更新当前事项' : ['failed', 'interrupted', 'partial'].includes(result?.status) ? '继续补查历史' : '补查历史';
     organize.disabled = state?.canOrganize !== true || result?.reason === 'read' || Boolean(recentItemsUi.pendingAction);
     if (stop) { stop.hidden = !state?.active || state.phase === 'saving'; stop.disabled = !state?.active; }
     retryRead.hidden = result?.reason !== 'read'; retryRead.disabled = state?.active === true || state?.status === 'disabled' || state?.status === 'waiting';
@@ -559,12 +559,18 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         : item.elapsedDays !== null && item.elapsedDays >= 0 ? `发生后已过 ${item.elapsedDays} 天`
           : item.observationElapsedHours !== null && item.observationElapsedHours >= 0 ? `观察后已过 ${Math.round(item.observationElapsedHours * 10) / 10} 小时`
             : item.observationElapsedDays !== null && item.observationElapsedDays >= 0 ? `观察后已过 ${item.observationElapsedDays} 天` : '经过时间未知';
-      return [`${item.person} · ${item.label}${item.status && item.status !== 'active' ? ` · ${{ completed: '已完成', paused: '已暂停', cancelled: '已移除' }[item.status]}` : ''}`, `原观察：${item.observation}`,
+      return [`${item.person} · ${item.label}${item.status && item.status !== 'active' ? ` · ${item.mergedInto ? '已归并' : { completed: '已完成', paused: '已暂停', cancelled: '已移除' }[item.status]}` : ''}`, `原观察：${item.observation}`,
+        ...(item.mergeDescription ? [`归并经历：${item.mergeDescription}`] : []),
         `观察时间：${formatTime(item.observationTime)}${item.occurrenceTime?.date ? `；发生时间：${formatTime(item.occurrenceTime)}` : ''}；${elapsed}`,
-        stopped ? `${stoppedLabel}，已停止追踪；需要时可恢复。` : item.projection ? `当前推测：${item.projection}` : '尚无当前有效推测，等待推算或新观察。',
+        stopped ? item.mergedInto ? '因归并退出独立追踪，原观察保留；恢复会解除归并。' : `${stoppedLabel}，已停止追踪；需要时可恢复。` : item.projection ? `当前推测：${item.projection}` : item.assessmentReason ? `当前依据不足：${item.assessmentReason}` : item.reviewStatus === 'omitted' ? '本次未纳入当前评估。' : item.reviewStatus === 'unanswered' ? '本次未返回有效当前评估，请手动更新。' : '当前估计待更新，原观察仍保留。',
+        ...(!stopped && item.projection && item.reviewStatus ? [item.reviewStatus === 'omitted' ? '本次未纳入当前评估。' : '本次未返回有效当前评估，请手动更新。'] : []),
+        ...(!stopped && item.oldProjection ? [`截至 ${formatTime(item.oldProjection.applicableTime)} 的旧推测：${item.oldProjection.text}；当前待更新。`] : []),
         ...(['cycle', 'deadline'].includes(item.type) ? [`${item.type === 'cycle' ? '预计周期日' : '约定期限'}：${formatTime(item.dueTime)}${item.periodDays ? `；明确周期 ${item.periodDays} 天` : ''}${stopped ? '' : '；尚未确认发生或完成。'}`] : [])];
     });
-    const signature = JSON.stringify([displayItems.length ? displayItems : message, (visibleItems ?? []).map(item => [item.id, item.observationKey])]);
+    if (!showStoppedItems) for (const item of annual ?? []) displayItems.push([`${item.person} · ${item.label} · ${item.status}`, `原日期：${item.originalDate}`,
+      item.nextDate ? `下次日期：${item.nextDate}${Number.isInteger(item.distance) ? item.distance === 0 ? '；已到本日' : `；还有 ${item.distance} 天` : '；当前休眠'}` : '日期待明确：保留原设定，不自动套用公历。',
+      `${item.note ? `年度含义：${item.note}；` : ''}只读事项，请在千人基础资料或用户人设中修改。`]);
+    const signature = JSON.stringify([displayItems.length ? displayItems : message, (visibleItems ?? []).map(item => [item.id, item.observationKey]), (annual ?? []).map(item => [item.id, item.status, item.nextDate])]);
     if (recentItemsUi.listSignature === signature) { for (const control of recentItemsUi.itemControls) control.disabled = state?.canOrganize !== true || Boolean(recentItemsUi.pendingAction); return; }
     recentItemsUi.listSignature = signature;
     list.replaceChildren();
@@ -574,7 +580,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const entry = element('div', 'settings-field');
       const head = element('div', 'qqj-recent-item-head'); head.append(element('span', '', title));
       entry.append(head, ...lines.map(line => element('p', 'settings-hint', line))); list.append(entry);
-      const item = visibleItems[index], actions = operationMenus.register(element('details', 'qqj-profile-menu'));
+      const item = visibleItems[index];
+      if (!item) continue;
+      const actions = operationMenus.register(element('details', 'qqj-profile-menu'));
       const menuToggle = element('summary', 'qqj-profile-menu-toggle', '⋮'); menuToggle.setAttribute('aria-label', `${item.label}事项操作`); menuToggle.setAttribute('title', '事项操作'); menuToggle.setAttribute('aria-haspopup', 'menu');
       const menuBody = element('div', 'qqj-profile-menu-pop'); menuBody.setAttribute('role', 'menu');
       const actionFeedback = element('p', 'settings-result error');
@@ -595,7 +603,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     if (ui.pendingAction || !canSave()) return;
     const pending = {}; ui.pendingAction = pending; actionFeedback.textContent = ''; updateRecentItems();
     try {
-      const confirmed = await Promise.resolve(confirmImpl({ title: `${action}时间事项`, body: `确认${action}“${item.label}”？${status === 'active' ? '恢复后可继续追踪。' : '停止项仍可查看和恢复。'}保存不调用模型，会清除旧推测。`, confirmText: action, cancelText: '取消' }));
+      const confirmed = await Promise.resolve(confirmImpl({ title: `${action}时间事项`, body: `确认${action}“${item.label}”？${status === 'active' ? item.mergedInto ? '本次解除归并，恢复独立跟进；主项当前合并描述与推测失效，原观察保留。' : '恢复后可继续追踪。' : '停止项仍可查看和恢复。'}保存不调用模型，会清除旧推测。`, confirmText: action, cancelText: '取消' }));
       if (!confirmed || !canSave()) return;
       await timeRuntime.editItem(item.id, { status }, item.observationKey);
     } catch (error) { if (currentUi()) actionFeedback.textContent = `保存失败：${publicErrorMessage(error, { fallback: '事项未保存，请重试。' })}`; }
@@ -660,9 +668,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       try {
         const plan = await timeRuntime?.prepareHistoryPlan?.();
         if (!plan || !active || recentItemsUi !== ui || epoch !== mine || chatId !== originalChatId) return;
-        if (!plan.apiCalls) { ui.planFeedback = '当前正文已检查，暂无需要补算的事项。'; return; }
-        const confirmed = await Promise.resolve(confirmImpl({ title: plan.supplement ? '补算时间事项' : '补查历史正文',
-          body: `本次待查 ${plan.floorCount} 个 AI 楼，预计 ${plan.batchCount} 批、${plan.apiCalls} 次摘要 API 调用。${plan.supplement ? '正文已检查，本次只重新推算已登记事项。' : '每批最多20楼并受完整输入预算限制；长楼会分片。成功批次保留，失败或停止后可继续。'}`, confirmText: '开始补查', cancelText: '取消' }));
+        if (!plan.apiCalls) { ui.planFeedback = plan.annualSetting?.pending ? `有 ${plan.annualSetting.pending} 个年度设定来源超过单次输入预算，未截断、未标记为已处理；请缩短对应基础资料后重试。` : '当前正文与年度设定已检查，暂无需要补算的事项。'; return; }
+        const confirmed = await Promise.resolve(confirmImpl({ title: plan.retryCurrentReview ? '重新更新当前事项' : plan.supplement ? '更新当前时间事项' : '补查历史正文',
+          body: `本次待查 ${plan.floorCount} 个 AI 楼，正文预计 ${plan.bodyBatchCount ?? plan.batchCount} 批${plan.currentReview ? '，结束后最多追加 1 次当前事项评估' : ''}${plan.annualSetting?.shouldRequest ? '，另补读年度设定 1 次' : ''}，共最多 ${plan.apiCalls} 次摘要 API 调用。${plan.supplement ? plan.retryCurrentReview ? '上次收尾已尝试，本次明确重新授权更新一次，不自动重试。' : '正文已检查，本次只更新已登记的活跃事项一次。' : '每批最多20楼并受完整输入预算限制；长楼会分片。失败、部分完成或停止时先暂停，不做收尾；已保存结果保留。'}收尾按预算评估活跃事项，未纳入或依据不足会明确说明。`, confirmText: '开始补查', cancelText: '取消' }));
         if (confirmed && active && recentItemsUi === ui && epoch === mine && chatId === originalChatId) await timeRuntime.organize(plan);
       } catch (error) { if (recentItemsUi === ui) ui.planFeedback = publicErrorMessage(error, { fallback: '历史计划读取失败，请重试。' }); }
       finally { if (ui.pendingAction === pending) ui.pendingAction = null; updateRecentItems(); }
@@ -695,8 +703,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const block = element('div', 'v3-cse-group'); block.append(element('h5', '', label));
       if (!values.length) { if (empty) { block.append(element('p', 'settings-hint', '暂无')); card.append(block); } return; }
       if (groupByTarget) {
-        const grouped = new Map(); for (const value of values) { const key = value.towardDisplayName || '未指定对象'; grouped.set(key, [...(grouped.get(key) ?? []), value]); }
-        for (const [target, targetItems] of grouped) { block.append(element('h6', '', `对 ${target}`)); const ul = element('ul', 'v3-cse-items'); targetItems.forEach(value => ul.append(item(value))); block.append(ul); }
+        const grouped = new Map(); for (const value of values) { const key = value.towardEntityId || null; grouped.set(key, [...(grouped.get(key) ?? []), value]); }
+        for (const [target, targetItems] of grouped) { block.append(element('h6', '', target ? `对 ${targetItems[0].towardDisplayName || '未知人物'}` : '自身状态')); const ul = element('ul', 'v3-cse-items'); targetItems.forEach(value => ul.append(item(value))); block.append(ul); }
       } else { const ul = element('ul', 'v3-cse-items'); values.forEach(value => ul.append(item(value))); block.append(ul); }
       card.append(block);
     };
@@ -721,7 +729,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         const meta = element('div', 'qqj-cse-edit-meta'); meta.append(visibility);
         rowNode.append(input, meta);
         if (toward) {
-          const target = createInlineSelect({ documentRef, options: [{ value: '', label: '未指定对象' }, ...(state.cseTowardCandidates ?? []).map(candidate => ({ value: candidate.entityId, label: candidate.displayName }))], value: item.towardEntityId ?? '', ariaLabel: `${label}对象`, onChange: value => { item.towardEntityId = value || null; } }).node;
+          const target = createInlineSelect({ documentRef, options: [{ value: '', label: '自身状态' }, ...(state.cseTowardCandidates ?? []).map(candidate => ({ value: candidate.entityId, label: candidate.displayName }))], value: item.towardEntityId ?? '', ariaLabel: `${label}对象`, onChange: value => { item.towardEntityId = value || null; } }).node;
           target.disabled = disabled; controls.push(target); meta.append(target);
         }
         const remove = element('button', 'secondary-action', '删除'); remove.type = 'button'; remove.disabled = disabled; remove.addEventListener('click', () => { draft[field].splice(index, 1); render(foundationState); }); controls.push(remove); meta.append(remove); group.append(rowNode);
@@ -1025,7 +1033,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const floors = (record.selectedFloors ?? []).map(value => floorCopy(foundationState, value, '来源楼号未提供')).join('、') || '无', states = (record.selectedStates ?? []).map(value => `${value.subject} / ${value.layer}`).join('、') || '无';
     const changes = (record.selectedCseChanges ?? []).map(value => `${value.subject} / ${value.layer} / ${cseActionCopy(value.action)} / ${floorCopy(foundationState, value, '来源楼号未提供')}`).join('、') || '无';
     const stageCopy = stages && [stages.recentSummaryCount, stages.distantHistoryItemCount, stages.stateCount].every(Number.isSafeInteger)
-      ? { main:`输入 ${stages.input} → 记忆楼 ${stages.candidates} → 近期摘要 ${stages.recentSummaryCount} → 远期旧事 ${stages.distantHistoryItemCount}${Number.isSafeInteger(stages.linkedHistoryItemCount) ? `（关联补入 ${stages.linkedHistoryItemCount}）` : ''} → 当前态 ${stages.currentStateCount ?? stages.stateCount} → 历史变化 ${stages.cseChangeCount ?? 0}${Number.isSafeInteger(stages.linkedCseChangeCount) ? `（关联补入 ${stages.linkedCseChangeCount}）` : ''}${Number.isSafeInteger(stages.stateProgressionCount) ? ` → 状态推演 ${stages.stateProgressionCount}` : ''}${[stages.timeCorrectionCount, stages.timeReminderCount].every(Number.isSafeInteger) ? ` → 时间参考 ${stages.timeCorrectionCount + stages.timeReminderCount}` : ''}${Number.isSafeInteger(stages.storylineCount) ? ` → 剧情线 ${stages.storylineCount}` : ''}${Number.isSafeInteger(stages.budgetDroppedCount) ? ` → 未选入 ${stages.budgetDroppedCount}（含预算、条数或剧情线限制） → 最终材料 ${stages.finalInjectionItemCount}` : ''}`, token:Number.isSafeInteger(stages.estimatedTokenCount) && Number.isSafeInteger(stages.estimatedTokenBudget) ? `Token 保守估算 ${stages.estimatedTokenCount}/${stages.estimatedTokenBudget}${Number.isSafeInteger(stages.ordinaryEstimatedTokenBudget) ? ` · 普通材料额度 ${stages.ordinaryEstimatedTokenBudget}` : ''}` : '' }
+      ? { main:`输入 ${stages.input} → 记忆楼 ${stages.candidates} → 近期摘要 ${stages.recentSummaryCount} → 远期旧事 ${stages.distantHistoryItemCount}${Number.isSafeInteger(stages.linkedHistoryItemCount) ? `（关联补入 ${stages.linkedHistoryItemCount}）` : ''} → 当前态 ${stages.currentStateCount ?? stages.stateCount} → 历史变化 ${stages.cseChangeCount ?? 0}${Number.isSafeInteger(stages.linkedCseChangeCount) ? `（关联补入 ${stages.linkedCseChangeCount}）` : ''}${[stages.timeCorrectionCount, stages.timeReminderCount].every(Number.isSafeInteger) ? ` → 时间参考 ${stages.timeCorrectionCount + stages.timeReminderCount}` : ''}${Number.isSafeInteger(stages.storylineCount) ? ` → 剧情线 ${stages.storylineCount}` : ''}${Number.isSafeInteger(stages.budgetDroppedCount) ? ` → 未选入 ${stages.budgetDroppedCount}（含预算、条数或剧情线限制） → 最终材料 ${stages.finalInjectionItemCount}` : ''}`, token:Number.isSafeInteger(stages.estimatedTokenCount) && Number.isSafeInteger(stages.estimatedTokenBudget) ? `Token 保守估算 ${stages.estimatedTokenCount}/${stages.estimatedTokenBudget}` : '' }
       : { main:stages ? `输入 ${stages.input} → 记忆楼 ${stages.candidates} → 去近期 ${stages.dropRecent} → 去常驻重复 ${stages.dropPersistent ?? 0} → 去越界 ${stages.dropVisibility} → 选中楼 ${stages.selected}` : selectionCopy(record.selectionStatus), token:'' };
     if (uncommitted) stageCopy.main = `${record.diagnosticAttempt ? `第 ${record.diagnosticAttempt} 次尝试的` : ''}候选选材结果（本轮未注入） · ${stageCopy.main.replace('最终材料', '候选材料')}`;
     const selector = record.selectorDiagnostic;
@@ -1175,7 +1183,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const rebuildActionable = state.rebuildHasActionableWork ?? !['caughtUp', 'waitingRealtime'].includes(state.rebuildStatus);
     if (state.rebuildStatus === 'rebuilding' && typeof runtime.pauseHistoricalRebuild === 'function') { const pause = element('button', 'primary-action', '暂停补齐'); pause.type = 'button'; pause.disabled = !state.activeAutoMemory; pause.addEventListener('click', () => { void run('暂停补齐', () => runtime.pauseHistoricalRebuild(), { resultCopy: automaticResult('补齐缺失') }); }); actions.append(pause); }
     else if (!['paused', 'failed'].includes(state.cseRebuildStatus)) { const begin = runtime.startHistoricalRebuild ?? runtime.retryAutomation; const proceedLabel = ['paused', 'failed', 'partial'].includes(state.rebuildStatus) ? '继续补齐' : '补齐缺失'; const proceed = element('button', 'primary-action', busy ? workPhaseCopy(state) : proceedLabel); proceed.type = 'button'; proceed.disabled = busy || typeof begin !== 'function' || !rebuildActionable; proceed.addEventListener('click', () => { void run(proceedLabel, () => begin.call(runtime, state.chatId), { resultCopy: automaticResult(proceedLabel) }); }); actions.append(proceed); }
-    const reset = element('button', 'secondary-action', '完全重构'); reset.type = 'button'; reset.disabled = busy || typeof memoryManagement?.fullRebuild !== 'function'; reset.addEventListener('click', async () => { if (!await Promise.resolve(confirmImpl({ title: '完全重构当前聊天记忆', body: '当前聊天的千千结记录将全部删除，包括摘要、人物状态、千人人物资料、头像、重要人物选择、时间事项、前情及所有人工修改，再从头重新生成，并按正文分批补查时间事项（每批最多20楼且受输入预算限制，会使用摘要 API）；聊天正文、其他插件数据和全局设置保留。', confirmText: '完全重构', cancelText: '取消' }))) { feedback = '已取消完全重构。'; render(foundationState); return; } const resetDraft = prequelDraft; void run('完全重构', () => memoryManagement.fullRebuild(state.chatId), { after: () => { if (prequelDraft === resetDraft) { prequelDraft = null; prequelFeedback = ''; } }, resultCopy: automaticResult('完全重构') }); }); actions.append(reset);
+    const reset = element('button', 'secondary-action', '完全重构'); reset.type = 'button'; reset.disabled = busy || typeof memoryManagement?.fullRebuild !== 'function'; reset.addEventListener('click', async () => { if (!await Promise.resolve(confirmImpl({ title: '完全重构当前聊天记忆', body: '当前聊天的千千结记录将全部删除，包括摘要、人物状态、千人人物资料、头像、重要人物选择、时间事项、前情及所有人工修改，再从头重新生成，并按正文分批补查时间事项（每批最多20楼且受输入预算限制，会使用摘要 API；全部稳定范围完成后最多再调用一次摘要 API评估当前活跃事项，失败、部分完成或停止不自动重试）；聊天正文、其他插件数据和全局设置保留。', confirmText: '完全重构', cancelText: '取消' }))) { feedback = '已取消完全重构。'; render(foundationState); return; } const resetDraft = prequelDraft; void run('完全重构', () => memoryManagement.fullRebuild(state.chatId), { after: () => { if (prequelDraft === resetDraft) { prequelDraft = null; prequelFeedback = ''; } }, resultCopy: automaticResult('完全重构') }); }); actions.append(reset);
     const cseRunning = state.cseRebuildStatus === 'running' && state.activeAutoMemory?.mode === 'cseRebuild';
     const cseResume = ['paused', 'failed'].includes(state.cseRebuildStatus);
     const cseAction = element('button', 'secondary-action', cseRunning ? '暂停人物状态重构' : cseResume ? '继续人物状态重构' : '人物状态重构'); cseAction.type = 'button';

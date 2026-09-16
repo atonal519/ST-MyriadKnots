@@ -1,7 +1,7 @@
 import { scanAssistantCandidates } from './foundation-domain.js';
 import { matchFloorCandidates } from './floor-binding.js';
 import { parseSharedStoryClock, parseStoryClockReference } from '../story-clock.js';
-import { projectTime, storyTimes, timeFingerprint, timeBodyReads, createTimeBodyRequest, TIME_INPUT_TOKENS, TIME_BODY_AUXILIARY_TOKENS, TIME_SYSTEM_PROMPT } from './time-engine.js';
+import { projectTime, projectTimeSource, storyTimes, timeFingerprint, timeBodyReads, createTimeBodyRequest, TIME_INPUT_TOKENS, TIME_BODY_AUXILIARY_TOKENS, TIME_SYSTEM_PROMPT } from './time-engine.js';
 import { inferCanonicalCurrentTime } from './extractor.js';
 import { estimateRecallTokens } from './recall-selector.js';
 
@@ -11,18 +11,20 @@ export async function readTimeBody(reachable, host, { sanitizerOptions = {}, sto
   const binding = matchFloorCandidates(reachable.floors ?? [], candidates);
   if (binding.issue) throw Object.assign(new Error('正文楼绑定不唯一，未完成检查。'), { code: 'QQJ_TIME_BINDING' });
   const fallback = storyTimes(reachable.floorMemories ?? [], reachable.floors ?? []);
+  const sourceFallback = storyTimes(reachable.floorMemories ?? [], reachable.floors ?? [], projectTimeSource);
   const bodies = [], floors = [];
-  let previous = null;
+  let previous = null, previousSource = null;
   for (const [index, candidate] of candidates.entries()) {
     const match = binding.candidateMatches.get(index);
     const shared = parseSharedStoryClock(candidate.rawContent), reference = parseStoryClockReference(candidate.rawContent, storyClockReferenceTags);
     const meta = shared?.endMeta ?? shared?.startMeta;
     const raw = meta?.date ? `${meta.date} ${meta.time ?? ''}` : reference?.referenceText ?? inferCanonicalCurrentTime(candidate.canonicalContent)?.text ?? '';
     const time = raw ? projectTime(raw.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previous) : fallback.get(match?.floor.id) ?? projectTime('');
-    previous = time;
-    const timeSourceFingerprint = await timeFingerprint(raw ? [time.date, time.clock, time.date ? null : raw] : ['no-body-time']);
-    const body = { timeSourceFingerprint, floorId: match?.floor.id ?? null, assistantSeq: candidate.assistantSeq, canonicalFingerprint: candidate.canonicalFingerprint,
-      rawFingerprint: candidate.rawFingerprint, hostLocator: candidate.hostLocator, content: candidate.canonicalContent, observationTime: time };
+    const sourceTime = raw ? projectTimeSource(raw.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previousSource) : sourceFallback.get(match?.floor.id) ?? projectTimeSource('');
+    previous = time; previousSource = sourceTime;
+    const timeSourceFingerprint = await timeFingerprint(raw ? [sourceTime.date, sourceTime.clock, sourceTime.date ? null : raw] : ['no-body-time']);
+    const body = { stable: Boolean(candidate.stabilityProof), timeSourceFingerprint, floorId: match?.floor.id ?? null, assistantSeq: candidate.assistantSeq, canonicalFingerprint: candidate.canonicalFingerprint,
+      rawFingerprint: candidate.rawFingerprint, rawContent: candidate.rawContent, hostLocator: candidate.hostLocator, content: candidate.canonicalContent, observationTime: time };
     bodies.push(body);
     if (match) floors.push({ ...match.floor, assistantSeq: candidate.assistantSeq, canonicalFingerprint: candidate.canonicalFingerprint, timeSourceFingerprint, content: candidate.canonicalContent });
   }

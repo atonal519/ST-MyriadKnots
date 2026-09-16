@@ -220,7 +220,7 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   assert.match(panelCss, /\.icon-btn svg\{width:18px;height:18px;[^}]*stroke-width:1\.8/);
   assert.doesNotMatch(panelCss, /@media\(max-width:640px\)[^}]*\.icon-btn\{width:30px/, '手机端不应再次缩小三枚顶部按钮的实际图形或点击框');
   assert.match(panelCss, /@media\(max-width:640px\)\{\.panel>\.panel-resize-handle\{display:none\}\}/, '手机把手隐藏规则须覆盖通用 display:grid，避免生成多余底部行');
-  assert.match(panelCss, /\.panel:has\(\.qqj-manual-save-bar\)\{background:var\(--panel\)\}/, '编辑页底部使用完整统一背景，不拼固定高度色块');
+  assert.doesNotMatch(panelCss, /\.panel:has\(\.qqj-manual-save-bar\)\{background:var\(--panel\)\}/, '编辑页底部不应再绘制整条保存栏背景');
   assert.doesNotMatch(panelCss, /linear-gradient\(to top,var\(--panel\)/, '不得重新引入底部高度拼接接缝');
   assert.match(panelCss, /\.qqj-api-editor>\.settings-sub-body>\.sub-advanced\+\.qqj-manual-save-bar\{margin-top:-9px\}/, '高级设置和 API 按钮栏之间抵消父容器 gap，避免重复留白');
   assert.doesNotMatch(panelCss, /\.qqj-profile-switcher\{touch-action:pan-x\}/, '人物横条不得用pan-x-only阻断从条内起步的整页纵向滚动');

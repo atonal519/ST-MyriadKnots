@@ -55,7 +55,7 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   let body = flatten(container).find(node => node.id === toggle.attributes['aria-controls']); assert.equal(body.hidden, true);
   assert.ok(flatten(container).some(node => node.className === 'v3-memory-list'));
   await toggle.click(); assert.equal(reads, 1); assert.equal(toggle.textContent, '近期事项（1）'); assert.equal(body.hidden, false);
-  assert.match(flatten(body).map(node => node.textContent).join('|'), /手腕擦伤 <b>原文<\/b>.*观察后已过 2 天.*尚无当前有效推测/u);
+  assert.match(flatten(body).map(node => node.textContent).join('|'), /手腕擦伤 <b>原文<\/b>.*观察后已过 2 天.*当前估计待更新/u);
   assert.equal(flatten(body).some(node => node.tag === 'details'), false, '列表不再嵌套另一折叠层');
   const list = body.children.at(-1), entry = list.children[0], listReplaceCount = list.replaceCount;
   list.scrollTop = 28; entry.scrollTop = 9;
@@ -87,6 +87,10 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   emit({ ...state, memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: false });
   assert.equal(container.replaceCount, replaceCount); assert.equal(input.value, '未保存草稿'); assert.equal(toggle.disabled, false);
   await toggle.click(); await toggle.click(); assert.equal(reads, 1); assert.equal(toggle.attributes['aria-expanded'], 'true');
+  timeState = { ...timeState, trackedItems: [{ ...item, oldProjection: { text: '旧推测', applicableTime: { date: '2026-05-11' } }, assessmentReason: '没有新观察，无法判断。' }] }; publish();
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /当前依据不足.*截至 2026-05-11 的旧推测/);
+  timeState = { ...timeState, trackedItems: [{ ...item, reviewStatus: 'omitted' }] }; publish();
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /本次未纳入当前评估/);
   timeState = { ...timeState, last: { status: 'partial', message: '第2项：来源编号未在本次请求中出现。请手动继续。' } }; publish();
   assert.match(flatten(container).map(node => node.textContent).join('|'), /部分完成.*第2项/);
   assert.equal(flatten(container).find(node => node.textContent === '继续补查历史').disabled, false);
@@ -119,7 +123,7 @@ test('近期事项人工编辑保草稿焦点，失败重试与取消零写，�
       timeState = { ...timeState, trackedItems: item.status === 'active' ? [item] : [], stoppedItems: item.status === 'active' ? [] : [item] }; emit(); return timeState;
     } };
   const container = new Node('main'); container.scrollTop = 35;
-  const view = createV3FoundationView({ runtime, timeRuntime, documentRef, confirmImpl: () => true }); view.setPage('memories'); view.mount(container);
+  let confirmedCopy; const view = createV3FoundationView({ runtime, timeRuntime, documentRef, confirmImpl: options => { confirmedCopy = options; return true; } }); view.setPage('memories'); view.mount(container);
   await flatten(container).find(node => node.textContent === '近期事项（1）').click();
   const itemMenu = flatten(container).find(node => node.className === 'qqj-profile-menu');
   assert.equal(itemMenu.parentNode.className, 'qqj-recent-item-head'); assert.equal(itemMenu.parentNode.children.at(-1), itemMenu);
@@ -162,7 +166,10 @@ test('近期事项人工编辑保草稿焦点，失败重试与取消零写，�
     const text = flatten(container).map(node => node.textContent).join('|');
     assert.match(text, /已停止追踪/u); assert.doesNotMatch(text, /等待推算|尚未确认发生或完成|当前推测/u);
   }
+  timeState = { ...timeState, stoppedItems: [{ ...item, mergedInto: 'primary' }] }; emit();
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /已归并.*因归并退出独立追踪/u);
   await flatten(container).find(node => node.textContent === '恢复追踪').click();
+  assert.match(confirmedCopy.body, /解除归并，恢复独立跟进/u);
   assert.equal(item.status, 'active'); assert.equal(flatten(container).find(node => node.className.includes('qqj-profile-more')).textContent, '近期事项（1）');
   await flatten(container).find(node => node.textContent === '返回追踪中事项').click(); assert.match(flatten(container).map(node => node.textContent).join('|'), /人工观察草稿/u);
   assert.equal(reads, beforeStopped); view.deactivate(); assert.equal(listeners.size, 0);
@@ -1038,7 +1045,7 @@ test('轻量召回运行结果自动显示实际注入、收据、阶段与覆�
       status: 'ready', userMessageIndex: 67, createdAt: '2026-09-03T00:00:00.000Z', generationType: 'continue', reusedReceipt: true, receiptPersistence: 'saveUnconfirmed',
       selectedFloors: [{ assistantSeq: 2 }], selectedStates: [{ subject: '裴晚生', layer: 'core' }], selectedCseChanges: [{ subject: '裴晚生', layer: 'situational', action: 'remove', assistantSeq: 2 }],
       coverage: { rememberedAiFloors: 8, stableAiFloors: 8, cseThroughAssistantSeq: 8 },
-      stages: { input: 3, candidates: 8, dropRecent: 3, dropPersistent: 0, dropVisibility: 0, selected: 1, recentSummaryCount: 1, distantHistoryItemCount: 3, linkedHistoryItemCount: 2, stateCount: 1, currentStateCount: 1, cseChangeCount: 2, linkedCseChangeCount: 1, stateProgressionCount: 2, budgetDroppedCount: 4, finalInjectionItemCount: 7, estimatedTokenCount:1234, estimatedTokenBudget:5000, ordinaryEstimatedTokenBudget:4000 },
+      stages: { input: 3, candidates: 8, dropRecent: 3, dropPersistent: 0, dropVisibility: 0, selected: 1, recentSummaryCount: 1, distantHistoryItemCount: 3, linkedHistoryItemCount: 2, stateCount: 1, currentStateCount: 1, cseChangeCount: 2, linkedCseChangeCount: 1, budgetDroppedCount: 4, finalInjectionItemCount: 5, estimatedTokenCount:1234, estimatedTokenBudget:4000 },
       selectorDiagnostic: { mode: 'llm', historyCandidateCount: 12, stateCandidateCount: 7, historyExcludedCount: 2, stateExcludedCount: 1, historyRetainedCount: 10, stateRetainedCount: 6, utilityRoundTripMs: 8, localSelectionMs: 3 },
       timings: { totalMs: 12, sourceReadAttempts: { reachableReads: 1, exitPoint: 'ready' } }, skipReasons: ['recentRawWindow'],
       injectionText: '<qqj_recalled_context>\n旧约仍然有效\n</qqj_recalled_context>', error: null,
@@ -1048,11 +1055,11 @@ test('轻量召回运行结果自动显示实际注入、收据、阶段与覆�
   const copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /触发用户楼|第 67 楼|生成时间|生成类型|继续生成（continue）|复用 · 已请求宿主保存，结果未确认|来源楼号未提供|终点楼号未提供|裴晚生 \/ core|裴晚生 \/ situational \/ 移除/);
   assert.match(copy, /本轮复用耗时 12\.0 ms · 未发起新选材请求 · 原回执接口往返（含传输） 8\.0 ms · 本地选材 3\.0 ms/);
-  assert.match(copy, /输入 3 → 记忆楼 8 → 近期摘要 1 → 远期旧事 3（关联补入 2） → 当前态 1 → 历史变化 2（关联补入 1） → 状态推演 2 → 未选入 4（含预算、条数或剧情线限制） → 最终材料 7/);
+  assert.match(copy, /输入 3 → 记忆楼 8 → 近期摘要 1 → 远期旧事 3（关联补入 2） → 当前态 1 → 历史变化 2（关联补入 1） → 未选入 4（含预算、条数或剧情线限制） → 最终材料 5/);
   const stage = flatten(container).find(node => node.className === 'v3-foundation-row' && node.children[0]?.textContent === '筛选阶段');
   assert.equal(stage.children[1].children.length, 2, 'Token估算须在筛选阶段原位置使用独立DOM行');
-  assert.match(stage.children[1].children[0].textContent, /最终材料 7$/);
-  assert.equal(stage.children[1].children[1].textContent, 'Token 保守估算 1234/5000 · 普通材料额度 4000');
+  assert.match(stage.children[1].children[0].textContent, /最终材料 5$/);
+  assert.equal(stage.children[1].children[1].textContent, 'Token 保守估算 1234/4000');
   assert.match(copy, /智能选材计数.*历史候选 12 → 模型排除 2 → 保留 10 → 关联补入 2 → 最终远期 3 · 人物候选 7 → 模型排除 1 → 保留 6 → 关联补入 1 → 最终注入 3/);
   assert.match(copy, /完整快照 1 次 · 退出 读取成功/);
   assert.match(copy, /旧约仍然有效/);
@@ -1060,7 +1067,7 @@ test('轻量召回运行结果自动显示实际注入、收据、阶段与覆�
   recall.lastRecall.stages.timeCorrectionCount = 1;
   recall.lastRecall.stages.timeReminderCount = 2;
   for (const listener of listeners) listener(recall);
-  assert.match(flatten(container).map(node => node.textContent).join('|'), /状态推演 2 → 时间参考 3/u);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /历史变化 2（关联补入 1） → 时间参考 3/u);
   view.deactivate();
   assert.equal(listeners.size, 0);
 });
@@ -1309,7 +1316,7 @@ test('未修改、改回原值与未动时间 fallback 直接退出编辑并保�
   const view = createV3FoundationView({ runtime, documentRef }); view.setPage('memories'); view.mount(container);
   let card = flatten(container).find(node => String(node.className).includes('qqj-memory-card')); card.open = true; card.fire('toggle');
   flatten(container).find(node => node.textContent === '编辑').click();
-  assert.ok(flatten(container).find(node => node.className.includes('v3-memory-edit') && node.className.includes('qqj-manual-editor'))); assert.ok(flatten(container).find(node => node.className.includes('qqj-manual-save-bar')));
+  assert.ok(flatten(container).find(node => node.className.includes('v3-memory-edit') && node.className.includes('qqj-manual-editor'))); assert.equal(flatten(container).some(node => node.className.includes('qqj-manual-save-bar')),false,'摘要编辑保存栏恢复普通内容流');
   const summary = flatten(container).find(node => node.placeholder === '输入用户修订摘要'); summary.value = '临时修改'; summary.fire('input'); summary.value = '原摘要'; summary.fire('input');
   assert.equal(flatten(container).find(node => node.placeholder === '日期、时间范围或相对时间').value, '10月4日 15:30');
   flatten(container).find(node => node.textContent === '保存').click(); await new Promise(resolve => setImmediate(resolve));
@@ -1342,7 +1349,7 @@ test('CSE 历史每楼只显示实际变化，并可折叠查看该楼结束状�
     { category: 'adaptive', action: 'refine', beforeText: '会谨慎回应', afterText: '会谨慎回应', before: { text: '会谨慎回应', towardDisplayName: '甲', visibility: 'private', reason: '旧依据', origin: 'floor' }, after: { text: '会谨慎回应', towardDisplayName: '乙', visibility: 'observable', reason: '新依据', origin: 'floor' } },
     { category: 'situational', action: 'update', beforeText: '仍在门边', afterText: '已经落座', before: { text: '仍在门边', visibility: 'observable', reason: '站在门边', origin: 'floor' }, after: { text: '已经落座', visibility: 'observable', reason: '坐到桌旁', origin: 'floor' } },
     { category: 'situational', action: 'remove', beforeText: '仍在等雨停', afterText: null, before: { text: '仍在等雨停', visibility: 'observable', reason: '雨还没停', origin: 'floor' }, after: null },
-  ] }], endStateSubjects: [{ displayName: '裴晚生', core: [{ text: '重视承诺', visibility: 'authorial', reason: '角色卡设定', origin: 'baseline', sourceFloorId: null }], adaptive: [{ text: '会谨慎回应', towardDisplayName: '乙', visibility: 'observable', reason: '新依据', origin: 'floor', sourceFloorId: 'floor' }], situational: [{ text: '已经落座', visibility: 'observable', reason: '坐到桌旁', origin: 'floor', sourceFloorId: 'floor' }] }] } } };
+  ] }], endStateSubjects: [{ displayName: '裴晚生', core: [{ text: '重视承诺', visibility: 'authorial', reason: '角色卡设定', origin: 'baseline', sourceFloorId: null }], adaptive: [{ text: '会谨慎回应', towardEntityId: 'entity-乙', towardDisplayName: '乙', visibility: 'observable', reason: '新依据', origin: 'floor', sourceFloorId: 'floor' }], situational: [{ text: '已经落座', visibility: 'observable', reason: '坐到桌旁', origin: 'floor', sourceFloorId: 'floor' }] }] } } };
   const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, cseReady: true, csePendingCount: 0, cseFailedCount: 0, cseSubjects: [], floors: [floor] };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, retryStateAnalysis: async () => state };
   const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef }); view.setPage('people'); view.mount(container);
@@ -1581,7 +1588,7 @@ test('双丝网精确区分双方关系、自身状态与选中 NPC 的其他关
     currentStateId: '50000000-0000-4000-8000-000000000005', currentStateFingerprint: `sha256:${'a'.repeat(64)}`,
     memoryEntities: [{ entityId: userId, displayName: '你', specialRole: 'user' }, { entityId: aId, displayName: '左佐' }, { entityId: bId, displayName: '乙' }, { entityId: cId, displayName: '一个非常非常长的未关注人物名字' }],
     cseSubjects: [
-      { subjectEntityId: userId, displayName: '你', core: [], adaptive: [{ text: '会长期信任左佐', towardEntityId: aId, towardDisplayName: '左佐' }, { text: '你对乙保持警惕', towardEntityId: bId, towardDisplayName: '乙' }, { text: '习惯独自复盘', towardEntityId: null }], situational: [{ text: '此刻担心左佐', towardEntityId: aId }, { text: '用户自身疲惫', towardEntityId: null }] },
+      { subjectEntityId: userId, displayName: '你', core: [], adaptive: [{ text: '会长期信任左佐', towardEntityId: aId, towardDisplayName: '左佐' }, { text: '你对乙保持警惕', towardEntityId: bId, towardDisplayName: '乙' }, { text: '习惯独自复盘', towardEntityId: null, towardDisplayName: '不应使用的旧名字' }, { text: '另一同名人物的关系', towardEntityId: cId, towardDisplayName: '乙' }, { text: '缺名人物的关系', towardEntityId: 'missing-person' }], situational: [{ text: '此刻担心左佐', towardEntityId: aId }, { text: '用户自身疲惫', towardEntityId: null }] },
       { subjectEntityId: aId, displayName: '左佐', core: [{ text: '谨慎' }], adaptive: [{ text: '会保护你', towardEntityId: userId }, { text: '会偿还你的恩情', towardEntityId: userId }, { text: '对乙保持警惕', towardEntityId: bId }, { text: '习惯独自复盘', towardEntityId: null }], situational: [{ text: '正在门外等候', towardEntityId: null }, { text: '此刻等你回应', towardEntityId: userId }, { text: '正在观察乙', towardEntityId: bId }] },
       { subjectEntityId: bId, displayName: '乙', core: [], adaptive: [{ text: '乙对左佐的态度不应混入', towardEntityId: aId }], situational: [] },
     ],
@@ -1591,7 +1598,10 @@ test('双丝网精确区分双方关系、自身状态与选中 NPC 的其他关
   const menuDocument = eventDocument();
   const container = new Node('main'), view = createV3FoundationView({ runtime, peopleRuntime: sharedPeople, documentRef: menuDocument }); view.setPage('people'); view.mount(container);
   const userAnchorCopy = flatten(container).find(node => node.className === 'qqj-user-anchor').children.flatMap(flatten).map(node => node.textContent).join('|');
-  assert.match(userAnchorCopy, /长期倾向.*对 左佐.*会长期信任左佐.*对 乙.*你对乙保持警惕.*对 未指定对象.*习惯独自复盘.*用户自身疲惫/, '用户总览必须显示全部长期倾向并标明对象');
+  assert.match(userAnchorCopy, /长期倾向.*对 左佐.*会长期信任左佐.*对 乙.*你对乙保持警惕.*自身状态.*习惯独自复盘.*用户自身疲惫/, '用户总览必须显示全部长期倾向并区分关系与自身状态');
+  const anchorGroups = flatten(container).find(node => node.className === 'qqj-user-anchor');
+  assert.deepEqual(flatten(anchorGroups).filter(node => node.tag === 'h6').map(node => node.textContent), ['对 左佐', '对 乙', '自身状态', '对 乙', '对 未知人物'], '按人物 ID 分组，同名不同人不混组，缺名关系不当自身状态');
+  assert.doesNotMatch(userAnchorCopy, /对 未指定对象|不应使用的旧名字/);
   assert.doesNotMatch(userAnchorCopy, /此刻担心左佐/, '有对象的用户当前情境仍只显示在关系方向中');
   const pair = flatten(container).find(node => node.className === 'qqj-relation-card'), pairCopy = flatten(pair).map(node => node.textContent).join('|');
   assert.match(pairCopy, /你 → 左佐.*当前态度.*此刻担心左佐.*长期相处方式.*会长期信任左佐.*左佐 → 你.*当前态度.*此刻等你回应.*长期相处方式.*会保护你.*会偿还你的恩情/, '下方关系栏仍保留同一条有对象长期倾向');
@@ -1739,6 +1749,11 @@ test('人物状态编辑保存期间冻结全部草稿控件并复制输入，�
   let editor = flatten(container).find(node => node.className.split(' ').includes('qqj-cse-edit'));
   assert.ok(editor.className.includes('qqj-manual-editor')); assert.ok(flatten(editor).find(node => node.className.includes('qqj-manual-save-bar')));
   assert.equal(flatten(editor).some(node => node.tag === 'select'), false, 'CSE 信息范围与对象不得使用手机原生选择器');
+  const ownTarget = flatten(editor).filter(node => node.attributes?.['aria-label'] === '长期倾向对象')[0];
+  assert.equal(flatten(ownTarget).find(node => node.className === 'qqj-inline-select-value').textContent, '自身状态');
+  ownTarget.click(); flatten(ownTarget.parentNode).find(node => node.attributes?.['data-value'] === targetId).click();
+  ownTarget.click(); const ownOption = flatten(ownTarget.parentNode).find(node => node.attributes?.['data-value'] === '');
+  assert.equal(ownOption.textContent, '自身状态'); ownOption.click();
   let situational = flatten(editor).find(node => node.placeholder === '当前情境内容');
   const adaptive = flatten(editor).filter(node => node.placeholder === '长期倾向内容');
   adaptive[0].value = '会定期独自复盘'; adaptive[0].fire('input');
@@ -1977,7 +1992,7 @@ test('历史流水界面同时显示摘要与CSE实际进度，时间任务不�
 test('时间补查真实view先计划后确认，取消零整理；摘要CSE忙不阻断，二次收起和通知仍收起',async()=>{
   const state={status:'ready',pluginEnabled:true,chatId:CHAT,foundationStatus:'ready',memorySnapshotStatus:'ready',memorySyncStatus:'idle',memoryWorkBusy:true,activeCse:{phase:'analyzing'},floors:[]};let plans=0,runs=0,confirmed=false,shown;const listeners=new Set();
   const runtime={getState:()=>state,refreshStatus:async()=>state,confirmLatest:async()=>state,subscribe:()=>()=>{}};const timeState={status:'completed',active:false,canOrganize:true,trackedItems:[],stoppedItems:[],coverage:{checkedFloors:1,totalFloors:5,startAssistantSeq:5,earlierUnchecked:4,pendingFloors:1},last:{status:'empty'}};
-  const timeRuntime={getState:()=>structuredClone(timeState),subscribe:listener=>{listeners.add(listener);return()=>listeners.delete(listener);},refreshStatus:async()=>{},prepareHistoryPlan:async()=>{plans++;return {floorCount:4,batchCount:2,apiCalls:2};},organize:async plan=>{runs++;assert.equal(plan.apiCalls,2);}};
+  const timeRuntime={getState:()=>structuredClone(timeState),subscribe:listener=>{listeners.add(listener);return()=>listeners.delete(listener);},refreshStatus:async()=>{},prepareHistoryPlan:async()=>{plans++;return {floorCount:4,bodyBatchCount:2,batchCount:3,apiCalls:3,currentReview:true};},organize:async plan=>{runs++;assert.equal(plan.apiCalls,3);}};
   const container=new Node('main'),view=createV3FoundationView({runtime,timeRuntime,documentRef,confirmImpl:options=>{shown=options;return confirmed;}});view.setPage('memories');view.mount(container);const toggle=flatten(container).find(node=>node.className.includes('qqj-profile-more'));await toggle.click();const body=flatten(container).find(node=>node.id==='qqj-recent-items'),button=flatten(body).find(node=>node.textContent==='补查历史');assert.equal(button.disabled,false);
-  assert.match(flatten(body).map(node=>node.textContent).join('|'),/此前 4 楼正文未检查.*1 楼等待稳定绑定/u);await button.click();assert.equal(plans,1);assert.equal(runs,0);assert.match(shown.body,/4 个 AI 楼.*2 批、2 次摘要 API/);confirmed=true;await button.click();assert.equal(runs,1);await toggle.click();assert.equal(body.hidden,true);for(const listener of listeners)listener(timeState);assert.equal(body.hidden,true);view.deactivate();
+  assert.match(flatten(body).map(node=>node.textContent).join('|'),/此前 4 楼正文未检查.*1 楼等待稳定绑定/u);await button.click();assert.equal(plans,1);assert.equal(runs,0);assert.match(shown.body,/4 个 AI 楼.*2 批.*追加 1 次当前事项评估.*最多 3 次摘要 API/);confirmed=true;await button.click();assert.equal(runs,1);await toggle.click();assert.equal(body.hidden,true);for(const listener of listeners)listener(timeState);assert.equal(body.hidden,true);view.deactivate();
 });

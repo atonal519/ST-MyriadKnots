@@ -9,57 +9,7 @@ export const RECALL_LLM_SYSTEM_PROMPT = `为接下来的剧情续写分别排除
 
 C 的 kind=current 表示最后保存的状态快照，不代表此刻已经重新确认；kind=change 记录来源楼当时的 before→after，不要把其中的旧状态当作当前状态，尤其 remove 的 before 只是当时被移除的状态。toward 表示主体对该对象的单向状态，不推导反向关系。
 
-可选输出 state_progressions，最多 8 项。每项的 source_state_key 必须是本次保留的 kind=current C 键；evidence_keys 最多引用 6 个输入中实际提供且未被排除的 P/R/C 键。若额外时间依据仅来自 query，evidence_keys 可以为空。time_basis 简述时间依据；suggestion 只写此刻的表现建议，不重复原状态或“保存时→此刻”格式。综合来源时间、当前故事时间线索和可见后文：明确后文优先；再次提及不等于重新发生；起点未知就保持未知；可用“过了一阵、入夜、次日”等模糊时间，不编造分钟、恢复期限或百分比。状态可以恢复、淡化或持续，但不得无依据恶化；长期关系、性格、承诺不得按时间自动清零。建议应简短、不冒充新剧情事实、不替人物作关键决定。这是作者侧续写表现建议，不表示任何角色已经知道；不得借推演传播证据中的私有信息，也不得让人物表达其尚未获知的内容。没有充分依据时省略。
-
-只输出 {"history_exclude_keys":[],"state_exclude_keys":[],"state_progressions":[]}。state_progressions 可省略。`;
-
-const cleanOptional = (value, limit) => typeof value === 'string' && value.trim() ? value.replace(/\s+/gu, ' ').trim().slice(0, limit) : '';
-
-function normalizeStateProgressions(value, { recentByKey, historyByKey, cseByKey, excludedKeys }) {
-  if (!Array.isArray(value?.state_progressions)) return [];
-  const result = [], seen = new Set();
-  for (const item of value.state_progressions.slice(0, 8)) {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
-    const sourceKey = cleanOptional(item.source_state_key, 20);
-    const source = cseByKey.get(sourceKey);
-    const suggestion = cleanOptional(item.suggestion, 600), timeBasis = cleanOptional(item.time_basis, 300);
-    if (!source || source.source !== 'current' || excludedKeys.has(sourceKey) || !suggestion || !timeBasis || !Array.isArray(item.evidence_keys)) continue;
-    if (item.evidence_keys.some(key => typeof key !== 'string')) continue;
-    const evidenceKeys = [...new Set(item.evidence_keys)];
-    if (evidenceKeys.length > 6 || evidenceKeys.some(key => excludedKeys.has(key) || (!recentByKey.has(key) && !historyByKey.has(key) && !cseByKey.has(key)))) continue;
-    const stable = `${source.stableKey}|${suggestion}|${timeBasis}`;
-    if (seen.has(stable)) continue;
-    seen.add(stable);
-    const state = source.value;
-    result.push(Object.freeze({
-      sourceStateStableKey: source.stableKey,
-      subjectEntityId: state.subjectEntityId,
-      subject: state.subject,
-      towardEntityId: state.towardEntityId ?? null,
-      toward: state.toward ?? null,
-      savedText: state.text,
-      visibility: state.visibility,
-      sourceStateId: state.stateId,
-      sourceFloorId: state.sourceFloorId,
-      sourceAssistantSeq: state.sourceAssistantSeq ?? null,
-      timeBasis,
-      suggestion,
-      evidence: Object.freeze(evidenceKeys.map(key => {
-        const recent = recentByKey.get(key);
-        const candidate = historyByKey.get(key) ?? cseByKey.get(key);
-        const fact = recent ?? candidate.value;
-        return Object.freeze({
-          stableKey: candidate?.stableKey ?? null,
-          kind: recent ? 'recent' : historyByKey.has(key) ? 'history' : candidate.source === 'current' ? 'state' : 'change',
-          floorId: fact.floorId ?? fact.sourceFloorId ?? fact.after?.sourceFloorId ?? fact.before?.sourceFloorId ?? null,
-          assistantSeq: fact.assistantSeq ?? fact.sourceAssistantSeq ?? fact.after?.sourceAssistantSeq ?? fact.before?.sourceAssistantSeq ?? null,
-          ...(recent ? { text:recent.summary } : {}),
-        });
-      })),
-    }));
-  }
-  return result;
-}
+只输出 {"history_exclude_keys":[],"state_exclude_keys":[]}。`;
 
 const abortError = reason => {
   try { return new DOMException(String(reason ?? 'The operation was aborted.'), 'AbortError'); }
@@ -183,19 +133,12 @@ export async function selectRecallWithLlm({
     const excludedCse = stateKeys.map(key => cseByKey.get(key)).filter(Boolean);
     const retainedHistory = historyPool.candidates.filter(candidate => !historyKeys.includes(candidate.key));
     const retainedCse = csePool.candidates.filter(candidate => !stateKeys.includes(candidate.key));
-    const stateProgressionCandidates = normalizeStateProgressions(parsed, {
-      recentByKey,
-      historyByKey,
-      cseByKey,
-      excludedKeys: new Set([...historyKeys, ...stateKeys]),
-    });
     const selection = selectRecall({
         ...baseInput,
         selectedHistoryCandidates: retainedHistory,
         selectedCseCandidates: retainedCse,
         excludedHistoryCandidates: excludedHistory,
         excludedCseCandidates: excludedCse,
-        stateProgressionCandidates,
       });
     const selectorCompleted = Date.now();
     // 本地选材包含请求前的候选准备，以及回包后的解析与最终材料选择。

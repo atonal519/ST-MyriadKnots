@@ -251,24 +251,18 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
 export function projectInlineRecallReceipt(receipt) {
   if (!receipt) return Object.freeze({
     kind: 'user', status: 'empty', statusText: '未记录本轮召回', summary: '本轮没有可核验的召回回执。',
-    injectionText: '', floorCount: 0, stateCount: 0, cseChangeCount: 0, stateProgressionCount: 0, selectedFloors: Object.freeze([]), historyItems: Object.freeze([]), historyGroups: Object.freeze([]), storylines: Object.freeze([]), storylineGroups: Object.freeze([]), stateItems: Object.freeze([]), cseChangeItems: Object.freeze([]), stateProgressionItems: Object.freeze([]), timeReferenceItems: Object.freeze([]), timeReferenceCount: 0, protocolRecognized: false,
+    injectionText: '', floorCount: 0, stateCount: 0, cseChangeCount: 0, selectedFloors: Object.freeze([]), historyItems: Object.freeze([]), historyGroups: Object.freeze([]), storylines: Object.freeze([]), storylineGroups: Object.freeze([]), stateItems: Object.freeze([]), cseChangeItems: Object.freeze([]), timeReferenceItems: Object.freeze([]), timeReferenceCount: 0, protocolRecognized: false,
   });
   const hasFloorArray = Array.isArray(receipt.selectedFloors), hasStateArray = Array.isArray(receipt.selectedStates);
   const rawFloors = hasFloorArray ? receipt.selectedFloors : [];
   const rawStates = hasStateArray ? receipt.selectedStates : [];
   const rawChanges = Array.isArray(receipt.selectedCseChanges) ? receipt.selectedCseChanges : [];
-  const progressionProtocol = Number(receipt.schemaVersion) >= 13;
-  const rawProgressions = Array.isArray(receipt.stateProgressions) ? receipt.stateProgressions : [];
   const rawStorylines = Array.isArray(receipt.storylines) ? receipt.storylines : [];
   const rawStorylineIds = new Set(rawStorylines.map(value => value?.storylineId).filter(value => typeof value === 'string'));
   const newLimits = Number(receipt.schemaVersion) >= 11;
   const storylineProtocol = Number(receipt.schemaVersion) >= 12;
   const safeShape = hasFloorArray && hasStateArray && rawFloors.length <= (newLimits ? 48 : 12) && rawStates.length <= (newLimits ? 24 : 18) && rawChanges.length <= (newLimits ? 24 : 6)
     && (!newLimits || rawStates.length + rawChanges.length <= 24)
-    && (!progressionProtocol || (Array.isArray(receipt.stateProgressions) && rawProgressions.length <= 8
-      && rawProgressions.every(value => value && typeof value === 'object' && !Array.isArray(value)
-        && typeof value.subject === 'string' && typeof value.savedText === 'string' && typeof value.suggestion === 'string'
-        && typeof value.timeBasis === 'string' && typeof value.visibility === 'string' && Array.isArray(value.evidence) && value.evidence.length <= 6)))
     && (!storylineProtocol || (rawStorylines.length <= 4 && rawStorylines.every(value => value && typeof value === 'object' && !Array.isArray(value)
       && typeof value.storylineId === 'string' && value.storylineId.length > 0 && value.storylineId.length <= 80
       && typeof value.title === 'string' && value.title.length > 0 && value.title.length <= 160
@@ -319,19 +313,6 @@ export function projectInlineRecallReceipt(receipt) {
     }) : null,
   })).filter(value => value.subject && (value.before?.text || value.after?.text)));
   const cseChangeCount = cseChangeItems.length;
-  const stateProgressionItems = Object.freeze((safeShape && progressionProtocol ? rawProgressions : []).map(value => Object.freeze({
-    subjectEntityId: frozenText(value.subjectEntityId, 500), subject: frozenText(value.subject, 500),
-    towardEntityId: frozenText(value.towardEntityId, 500) || null, toward: frozenText(value.toward, 500) || null,
-    savedText: frozenText(value.savedText), visibility: frozenText(value.visibility, 80),
-    sourceStateId: frozenText(value.sourceStateId, 500), sourceFloorId: frozenText(value.sourceFloorId, 500),
-    sourceAssistantSeq: Number.isSafeInteger(value.sourceAssistantSeq) ? value.sourceAssistantSeq : null,
-    timeBasis: frozenText(value.timeBasis, 300), suggestion: frozenText(value.suggestion, 600),
-    evidence: Object.freeze(value.evidence.map(item => Object.freeze({
-      kind: frozenText(item?.kind, 20), floorId: frozenText(item?.floorId, 500),
-      assistantSeq: Number.isSafeInteger(item?.assistantSeq) ? item.assistantSeq : null,
-    }))),
-  })).filter(value => value.subject && value.savedText && value.suggestion && value.timeBasis));
-  const stateProgressionCount = stateProgressionItems.length;
   const hasExactStageCounts = [receipt.stages?.recentSummaryCount, receipt.stages?.distantHistoryItemCount, receipt.stages?.stateCount].every(Number.isSafeInteger);
   const recentSummaryCount = hasExactStageCounts ? receipt.stages.recentSummaryCount : null;
   const distantHistoryItemCount = hasExactStageCounts ? receipt.stages.distantHistoryItemCount : null;
@@ -368,6 +349,6 @@ export function projectInlineRecallReceipt(receipt) {
     : status === 'empty' ? '本轮没有需要注入的记忆。' : '本轮没有已注入的记忆。';
   return Object.freeze({
     kind: 'user', status, statusText, summary,
-    injectionText, floorCount, stateCount, cseChangeCount, stateProgressionCount, recentSummaryCount, distantHistoryItemCount, selectedFloors, historyItems, historyGroups, storylines, storylineGroups, stateItems, cseChangeItems, stateProgressionItems, timeReferenceItems, timeReferenceCount, protocolRecognized,
+    injectionText, floorCount, stateCount, cseChangeCount, recentSummaryCount, distantHistoryItemCount, selectedFloors, historyItems, historyGroups, storylines, storylineGroups, stateItems, cseChangeItems, timeReferenceItems, timeReferenceCount, protocolRecognized,
   });
 }
