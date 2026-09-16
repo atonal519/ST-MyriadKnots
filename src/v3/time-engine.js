@@ -434,10 +434,12 @@ export async function compileTimeResponse(response, prepared, batches = []) {
       let old = value.itemId ? prior.get(value.itemId) : null;
       let subjectEntityId = value.subjectEntityId, subjectName = text(value.subjectName, 100);
       const matches = subjectName ? directory.filter(person => [person.name, ...(person.aliases ?? [])].includes(subjectName)) : [];
-      if (matches.length > 1) throw itemFail('时间事项人物归属不明确。');
+      const identified = people.has(subjectEntityId) ? directory.find(person => person.entityId === subjectEntityId) : null;
+      if (identified && subjectName && ![identified.name, ...(identified.aliases ?? [])].includes(subjectName)) throw itemFail('时间事项人物归属不明确。');
       if (old?.subjectName && (subjectEntityId === old.subjectEntityId || !subjectEntityId && !subjectName || subjectName === old.subjectName || matches.length === 1 && matches[0].entityId === subjectEntityId && [matches[0].name, ...(matches[0].aliases ?? [])].includes(old.subjectName))) {
         subjectEntityId = old.subjectEntityId; subjectName = old.subjectName;
       } else if (!people.has(subjectEntityId)) {
+        if (matches.length > 1) throw itemFail('时间事项人物归属不明确。');
         const existing = [...prior.values(), ...(prepared.existingRecords ?? [])].filter(item => item.subjectName === subjectName);
         const subjects = new Set(existing.map(item => item.subjectEntityId));
         if (subjects.size > 1) throw itemFail('时间事项人物归属不明确。');

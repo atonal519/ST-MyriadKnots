@@ -164,7 +164,21 @@ test('同楼分片两个新伤独立；继承NPC旧键沿显式itemId更新，�
   const h=await harness({count:1});const source=await h.body(), rows=planTimeBody(source,[],{history:true}).groups[0];let prepared=await prepareTimeRequest(source,[],{fragments:rows});const first=await compileTimeResponse(bodyModel(prepared.request,{progression:''}),prepared);
   prepared=await prepareTimeRequest(source,[first],{fragments:rows});const second=await compileTimeResponse(bodyModel(prepared.request,{label:'膝盖新伤',observation:'膝盖新伤',occurrenceTime:'今天',progression:''}),prepared);assert.notEqual(second.changes[0].id,first.changes[0].id);assert.equal(replayTimeBatches([first,second],source).length,2);
   const inherited={...source,root:{...source.root,chatId:'child'}};prepared=await prepareTimeRequest(inherited,[first],{fragments:rows});const update=await compileTimeResponse(bodyModel(prepared.request,{itemId:first.changes[0].id,progression:''}),prepared);assert.equal(update.changes[0].subjectEntityId,first.changes[0].subjectEntityId);assert.equal(update.changes[0].previousObservationKey,first.changes[0].observationKey);
-  inherited.entities=[{id:PERSON,entityType:'person',displayName:'阿岚',aliases:[]}];prepared=await prepareTimeRequest(inherited,[first],{fragments:rows});const appeared=await compileTimeResponse(bodyModel(prepared.request,{subjectEntityId:PERSON,itemId:first.changes[0].id,progression:''}),prepared);assert.equal(appeared.changes[0].subjectEntityId,first.changes[0].subjectEntityId);
+  inherited.entities=[{id:PERSON,entityType:'person',displayName:'阿岚',aliases:[]},{id:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',entityType:'person',displayName:'阿岚',aliases:[]}];prepared=await prepareTimeRequest(inherited,[first],{fragments:rows});const appeared=await compileTimeResponse(bodyModel(prepared.request,{subjectEntityId:PERSON,itemId:first.changes[0].id,progression:''}),prepared);assert.equal(appeared.changes[0].subjectEntityId,first.changes[0].subjectEntityId);
+});
+
+test('人物目录同名由有效ID消歧；无ID或ID姓名相悖单项隔离并保合法项',async()=>{
+  const h=await harness({count:1}),source=await h.body(),other='cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  source.entities=[{id:PERSON,entityType:'person',displayName:'阿岚',aliases:['小岚']},{id:other,entityType:'person',displayName:'阿岚',aliases:['阿夏']}];
+  const rows=planTimeBody(source,[],{history:true}).groups[0],prepared=await prepareTimeRequest(source,[],{fragments:rows});
+  const change=patch=>bodyModel(prepared.request,{progression:'',...patch}).changes[0];
+  const validPerson=change({subjectEntityId:PERSON,subjectName:'阿岚',label:'甲方事项'});
+  const ambiguous=change({subjectEntityId:null,subjectName:'阿岚',label:'姓名歧义事项'});
+  const validOther=change({subjectEntityId:other,subjectName:'阿岚',label:'乙方事项'});
+  const conflicting=change({subjectEntityId:PERSON,subjectName:'阿夏',label:'身份冲突事项'});
+  const partial=await compileTimeResponse({changes:[validPerson,ambiguous,validOther,conflicting]},prepared);
+  assert.equal(partial.status,'partial');assert.deepEqual(partial.changes.map(item=>item.subjectEntityId),[PERSON,other]);assert.deepEqual(partial.itemErrors,[{index:2,reason:'时间事项人物归属不明确。'},{index:4,reason:'时间事项人物归属不明确。'}]);assert.deepEqual(partial.bodyReads,[]);
+  await assert.rejects(compileTimeResponse({changes:[ambiguous]},prepared),error=>error.code==='QQJ_TIME_INVALID'&&error.itemErrors[0].reason==='时间事项人物归属不明确。');
 });
 
 test('实际摘要API resolver接线，时间一批只走utility配置，不读analysis配置',async()=>{

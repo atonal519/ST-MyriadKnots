@@ -5,7 +5,7 @@ import { is_send_press as i, saveSettingsDebounced as a } from "/script.js";
 import { is_group_generating as o } from "/scripts/group-chats.js";
 import { loadWorldInfo as s, selected_world_info as c, world_info as l, world_info_case_sensitive as u, world_info_match_whole_words as d, world_names as f } from "/scripts/world-info.js";
 //#region manifest.json
-var p = "0.2.4", m = "qianqianjie", h = "/api/plugins/st-bainiaodata", g = Object.freeze([
+var p = "0.2.5", m = "qianqianjie", h = "/api/plugins/st-bainiaodata", g = Object.freeze([
 	["v3-floor-", "floor"],
 	["v3-run-", "run"],
 	["v3-checkpoint-", "checkpoint"],
@@ -20148,10 +20148,11 @@ async function _m(e, t, n = []) {
 		let o = i.sourceKeys.map((e) => a.get(e));
 		if (o.some((e) => !e)) throw zp("来源编号未在本次请求中出现。");
 		i.sourceKeys = [...new Set(o.map((e) => e.sourceKey))];
-		let p = i.itemId ? s.get(i.itemId) : null, h = i.subjectEntityId, g = Lp(i.subjectName, 100), _ = g ? l.filter((e) => [e.name, ...e.aliases ?? []].includes(g)) : [];
-		if (_.length > 1) throw zp("时间事项人物归属不明确。");
+		let p = i.itemId ? s.get(i.itemId) : null, h = i.subjectEntityId, g = Lp(i.subjectName, 100), _ = g ? l.filter((e) => [e.name, ...e.aliases ?? []].includes(g)) : [], v = u.has(h) ? l.find((e) => e.entityId === h) : null;
+		if (v && g && ![v.name, ...v.aliases ?? []].includes(g)) throw zp("时间事项人物归属不明确。");
 		if (p?.subjectName && (h === p.subjectEntityId || !h && !g || g === p.subjectName || _.length === 1 && _[0].entityId === h && [_[0].name, ..._[0].aliases ?? []].includes(p.subjectName))) h = p.subjectEntityId, g = p.subjectName;
 		else if (!u.has(h)) {
+			if (_.length > 1) throw zp("时间事项人物归属不明确。");
 			let e = [...s.values(), ...t.existingRecords ?? []].filter((e) => e.subjectName === g);
 			if (new Set(e.map((e) => e.subjectEntityId)).size > 1) throw zp("时间事项人物归属不明确。");
 			if (e.length) h = e[0].subjectEntityId;
@@ -20172,29 +20173,29 @@ async function _m(e, t, n = []) {
 			}
 		}
 		i.subjectEntityId = h;
-		let v = i.itemId ? null : `time-${(await Bp([
+		let y = i.itemId ? null : `time-${(await Bp([
 			i.subjectEntityId,
 			i.type,
 			i.sourceKeys,
 			i.label
-		])).slice(7, 39)}`, y = o.length ? await Bp([
+		])).slice(7, 39)}`, b = o.length ? await Bp([
 			h,
 			i.type,
 			[...i.sourceKeys].sort(),
 			i.label
 		]) : null;
-		if (!p && v && (p = s.get(v) ?? (t.existingRecords ?? []).find((e) => e.id === v || e.sourceIdentity === y || !e.sourceIdentity && e.subjectEntityId === h && e.type === i.type && e.label === Lp(i.label, 150) && JSON.stringify([...new Set((e.sourceRefs ?? []).map((e) => e.sourceKey).filter(Boolean))].sort()) === JSON.stringify([...i.sourceKeys].sort())) ?? null), p?.mergedInto && s.has(p.mergedInto) && (p = s.get(p.mergedInto), i.itemId = p.id), o.some((e) => !e || e.subjectEntityId && e.subjectEntityId !== i.subjectEntityId) || i.itemId && (!p || p.subjectEntityId !== i.subjectEntityId || p.type !== i.type) || !p && !o.length) throw zp("时间事项来源无效。");
-		let b = [...o].sort((e, t) => t.assistantSeq - e.assistantSeq)[0], x = p ? Math.max(0, ...(p.sourceRefs ?? []).filter((e) => e.sourceKey).map((e) => t.floorSequences?.get(e.floorId) ?? 0)) : 0, S = p && b && (p.sourceRefs ?? []).some((e) => e.sourceKey && e.floorId === b.floorId && (!e.canonicalFingerprint || e.canonicalFingerprint === b.canonicalFingerprint && e.sourceKey === b.sourceKey)), C = !!(b && b.assistantSeq >= x && !S), w = C ? b.observationTime : p.observationTime, T = Jp(i.occurrenceTime, w), E = p && !(i.type === "cycle" && C && T.date) ? p.occurrenceTime : T, D = C && Number.isInteger(i.periodDays) && i.periodDays > 0 && i.periodDays <= 3660 ? i.periodDays : p?.periodDays ?? null, O = C ? i.type === "cycle" && D && qp(E)?.date ? Qp(E, D) : Jp(i.dueTime, w) : p.dueTime, k = p?.id ?? v;
-		if (m.has(k)) throw zp("时间事项重复。");
-		if (C && !Lp(i.observation)) throw zp("时间事项缺少原观察。");
-		let A = C ? await Bp([i.sourceKeys, i.observation]) : p.observationKey, j = new Map((t.request.currentStates ?? []).filter((e) => e.subjectEntityId === i.subjectEntityId).map((e) => [`${e.stateId}|${e.sourceFloorId}`, e])), M = C ? (Array.isArray(i.stateRefs) ? i.stateRefs : []).filter((e) => j.has(`${e.stateId}|${e.sourceFloorId}`) && o.some((t) => t.floorId === e.sourceFloorId)).map((e) => ({
+		if (!p && y && (p = s.get(y) ?? (t.existingRecords ?? []).find((e) => e.id === y || e.sourceIdentity === b || !e.sourceIdentity && e.subjectEntityId === h && e.type === i.type && e.label === Lp(i.label, 150) && JSON.stringify([...new Set((e.sourceRefs ?? []).map((e) => e.sourceKey).filter(Boolean))].sort()) === JSON.stringify([...i.sourceKeys].sort())) ?? null), p?.mergedInto && s.has(p.mergedInto) && (p = s.get(p.mergedInto), i.itemId = p.id), o.some((e) => !e || e.subjectEntityId && e.subjectEntityId !== i.subjectEntityId) || i.itemId && (!p || p.subjectEntityId !== i.subjectEntityId || p.type !== i.type) || !p && !o.length) throw zp("时间事项来源无效。");
+		let x = [...o].sort((e, t) => t.assistantSeq - e.assistantSeq)[0], S = p ? Math.max(0, ...(p.sourceRefs ?? []).filter((e) => e.sourceKey).map((e) => t.floorSequences?.get(e.floorId) ?? 0)) : 0, C = p && x && (p.sourceRefs ?? []).some((e) => e.sourceKey && e.floorId === x.floorId && (!e.canonicalFingerprint || e.canonicalFingerprint === x.canonicalFingerprint && e.sourceKey === x.sourceKey)), w = !!(x && x.assistantSeq >= S && !C), T = w ? x.observationTime : p.observationTime, E = Jp(i.occurrenceTime, T), D = p && !(i.type === "cycle" && w && E.date) ? p.occurrenceTime : E, O = w && Number.isInteger(i.periodDays) && i.periodDays > 0 && i.periodDays <= 3660 ? i.periodDays : p?.periodDays ?? null, k = w ? i.type === "cycle" && O && qp(D)?.date ? Qp(D, O) : Jp(i.dueTime, T) : p.dueTime, A = p?.id ?? y;
+		if (m.has(A)) throw zp("时间事项重复。");
+		if (w && !Lp(i.observation)) throw zp("时间事项缺少原观察。");
+		let j = w ? await Bp([i.sourceKeys, i.observation]) : p.observationKey, M = new Map((t.request.currentStates ?? []).filter((e) => e.subjectEntityId === i.subjectEntityId).map((e) => [`${e.stateId}|${e.sourceFloorId}`, e])), N = w ? (Array.isArray(i.stateRefs) ? i.stateRefs : []).filter((e) => M.has(`${e.stateId}|${e.sourceFloorId}`) && o.some((t) => t.floorId === e.sourceFloorId)).map((e) => ({
 			stateId: e.stateId,
 			sourceFloorId: e.sourceFloorId,
-			stateText: j.get(`${e.stateId}|${e.sourceFloorId}`).text,
-			sourceDeltaId: j.get(`${e.stateId}|${e.sourceFloorId}`).sourceDeltaId ?? null
-		})) : p.stateRefs, N = !C && (o.length || p.status !== "active") ? p.status : i.status, P = d ? Lp(i.assessmentReason, 150) || (!t.request.currentTime?.date || !qp(w)?.date ? "缺少明确时间，无法可靠判断当前进展。" : Ip(w, t.request.currentTime) === null ? "日期身份或间隔不明，无法可靠判断当前进展。" : Ip(w, t.request.currentTime) < 0 || Zp(w, t.request.currentTime) < 0 ? "当前时点早于原观察，无法推算。" : "") : "";
-		m.add(k), f.push({
-			id: k,
+			stateText: M.get(`${e.stateId}|${e.sourceFloorId}`).text,
+			sourceDeltaId: M.get(`${e.stateId}|${e.sourceFloorId}`).sourceDeltaId ?? null
+		})) : p.stateRefs, P = !w && (o.length || p.status !== "active") ? p.status : i.status, F = d ? Lp(i.assessmentReason, 150) || (!t.request.currentTime?.date || !qp(T)?.date ? "缺少明确时间，无法可靠判断当前进展。" : Ip(T, t.request.currentTime) === null ? "日期身份或间隔不明，无法可靠判断当前进展。" : Ip(T, t.request.currentTime) < 0 || Zp(T, t.request.currentTime) < 0 ? "当前时点早于原观察，无法推算。" : "") : "";
+		m.add(A), f.push({
+			id: A,
 			...p?.mergedInto ? { mergedInto: p.mergedInto } : {},
 			...p?.mergedItemIds?.length ? {
 				mergedItemIds: p.mergedItemIds,
@@ -20202,35 +20203,35 @@ async function _m(e, t, n = []) {
 				mergeEvidenceKey: p.mergeEvidenceKey
 			} : {},
 			...p?.mergeRestoredObservationKey ? { mergeRestoredObservationKey: p.mergeRestoredObservationKey } : {},
-			sourceIdentity: C ? y : p.sourceIdentity ?? y,
+			sourceIdentity: w ? b : p.sourceIdentity ?? b,
 			subjectEntityId: i.subjectEntityId,
 			subjectName: g || p?.subjectName || null,
 			type: i.type,
-			label: C ? Lp(i.label, 150) : p.label,
-			status: N,
-			observation: C ? Lp(i.observation) : p.observation,
-			observationKey: A,
-			periodDays: D,
+			label: w ? Lp(i.label, 150) : p.label,
+			status: P,
+			observation: w ? Lp(i.observation) : p.observation,
+			observationKey: j,
+			periodDays: O,
 			previousObservationKey: p?.observationKey ?? null,
-			observationTime: w,
-			occurrenceTime: E,
-			dueTime: O,
-			sourceRefs: C ? o.map((e) => ({
+			observationTime: T,
+			occurrenceTime: D,
+			dueTime: k,
+			sourceRefs: w ? o.map((e) => ({
 				...rm(e),
 				sourceKey: e.sourceKey
 			})) : p.sourceRefs,
-			stateRefs: M,
-			...d ? { reviewAssessment: P ? {
-				reason: P,
+			stateRefs: N,
+			...d ? { reviewAssessment: F ? {
+				reason: F,
 				applicableTime: t.request.currentTime,
 				applicableFloorId: t.cutoffFloorId,
-				observationKey: A
+				observationKey: j
 			} : null } : p?.reviewAssessment ? { reviewAssessment: p.reviewAssessment } : {},
-			projection: P ? p?.projection ?? null : p && (t.floorSequences?.get(p.projection?.applicableFloorId) ?? 0) > t.cutoffAssistantSeq ? p.projection : Lp(i.progression) && N === "active" && !P && (d || !C && p && sm(w, t.request.currentTime) || C && i.type === "body" && sm(w, t.request.currentTime)) ? {
+			projection: F ? p?.projection ?? null : p && (t.floorSequences?.get(p.projection?.applicableFloorId) ?? 0) > t.cutoffAssistantSeq ? p.projection : Lp(i.progression) && P === "active" && !F && (d || !w && p && sm(T, t.request.currentTime) || w && i.type === "body" && sm(T, t.request.currentTime)) ? {
 				text: Lp(i.progression),
 				applicableTime: t.request.currentTime,
 				applicableFloorId: t.cutoffFloorId,
-				observationKey: A
+				observationKey: j
 			} : null
 		});
 	} catch (t) {
