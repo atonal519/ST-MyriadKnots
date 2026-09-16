@@ -27,6 +27,7 @@ import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
 import { validateCseGraph } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 import { matchFloorCandidates } from './floor-binding.js';
+import { clearExactMessageFloorAnchor } from './message-floor-anchor.js';
 
 const EVENTS = Object.freeze([
   'CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED',
@@ -44,6 +45,30 @@ const clone = value => structuredClone(value);
 const sameLocator = (left, right) => left?.messageIndex === right?.messageIndex
   && left?.swipeId === right?.swipeId
   && left?.selectedSwipeIndex === right?.selectedSwipeIndex;
+
+function orphanTailAnchorRepair(value, candidates, bindings) {
+  const floors = value?.floors ?? [];
+  const issue = bindings?.issue;
+  if (!value?.root || floors.length === 0 || issue?.code !== 'markerConflict' || issue.markerStatus !== 'valid'
+    || issue.candidateIndex !== floors.length) return null;
+  const candidate = candidates[issue.candidateIndex];
+  const anchor = candidate?.messageAnchor?.anchor;
+  if (!anchor || value.root.chatId !== anchor.chatId || floors.some(floor => floor.id === anchor.floorId)) return null;
+  const sameOrphan = candidates.filter(item => item?.messageAnchor?.status === 'valid'
+    && item.messageAnchor.anchor.chatId === anchor.chatId && item.messageAnchor.anchor.floorId === anchor.floorId);
+  if (sameOrphan.length !== 1) return null;
+  const withoutOrphan = candidates.map((item, index) => index === issue.candidateIndex
+    ? Object.freeze({ ...item, messageAnchor: Object.freeze({ status: 'none', anchor: null }) }) : item);
+  const repaired = matchFloorCandidates(floors, withoutOrphan);
+  if (repaired.issue || repaired.unmatchedFloorIndexes.length || repaired.matches.length !== floors.length) return null;
+  for (let index = 0; index < floors.length; index += 1) {
+    const match = repaired.candidateMatches.get(index);
+    if (!match || match.floorIndex !== index || match.candidateIndex !== index || !match.locatorMatches
+      || !match.rawFingerprintMatches || !match.canonicalFingerprintMatches || !match.sanitizerFingerprintMatches) return null;
+  }
+  if ([...repaired.candidateMatches.keys()].some(index => index >= floors.length)) return null;
+  return Object.freeze({ chatId: anchor.chatId, floorId: anchor.floorId, messageIndex: candidate.hostLocator.messageIndex });
+}
 
 function normalizedIdentity(contextProvider) {
   const raw = contextProvider();
@@ -632,6 +657,13 @@ export function createFoundationRuntime({
     } catch { return publicState; }
   }
 
+  async function recoverOrphanTailAnchor() {
+    const inspected = await inspect('orphanTailRecovery', { allowCached: false });
+    if (inspected.status !== 'needsReview' || inspected.reviewReason?.code !== 'markerMismatch'
+      || inspected.reviewReason?.bindingIssue !== 'markerConflict' || activeOperation) return publicState;
+    return reconcile('orphanTailRecovery');
+  }
+
   async function seal(operation, { candidates, stableCount, confirmLatest = false, stableThrough = operation?.stableThrough ?? null, sourceSnapshot = null, rebaseAttempt = 0 }) {
     const snapshot = sourceSnapshot ?? await foundationInputSnapshot(candidates, stableCount);
     const existing = cache.floors;
@@ -863,11 +895,21 @@ export function createFoundationRuntime({
         if (!loaded || current(operation) !== 'current') return publishOperation(operation, 'stale');
         const scanMetrics = {};
         const started = globalThis.performance?.now?.() ?? Date.now();
-        const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions(), chatId: captured.identity.chatId, metrics: scanMetrics });
+        let candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions(), chatId: captured.identity.chatId, metrics: scanMetrics });
         const elapsed = (globalThis.performance?.now?.() ?? Date.now()) - started;
         if (current(operation) !== 'current') return publishOperation(operation, 'stale');
         metrics = Object.freeze({ assistantFloors: candidates.length, canonicalCharacters: candidates.reduce((sum, item) => sum + item.canonicalContent.length, 0), scanMs: elapsed, maximumChunkMs: scanMetrics.maximumChunkMs ?? elapsed, algorithm: 'ordered-O(n)' });
-        const candidateBindings = matchFloorCandidates(loaded.floors, candidates);
+        let candidateBindings = matchFloorCandidates(loaded.floors, candidates);
+        const orphanRepair = orphanTailAnchorRepair(loaded, candidates, candidateBindings);
+        if (orphanRepair && operation.orphanRepairAttempted !== true) {
+          operation.orphanRepairAttempted = true;
+          await clearExactMessageFloorAnchor({ hostAdapter, ...orphanRepair, signal: operation.controller.signal, fetchImpl });
+          if (current(operation) !== 'current') return publishOperation(operation, 'stale');
+          const repairedHost = capture();
+          candidates = await scanCandidates(repairedHost.host.chat, { sanitizerOptions: sanitizerOptions(), chatId: repairedHost.identity.chatId });
+          if (current(operation) !== 'current') return publishOperation(operation, 'stale');
+          candidateBindings = matchFloorCandidates(loaded.floors, candidates);
+        }
         if (candidateBindings.issue) {
           inspectedStableCount = stableCountFor(candidates, loaded.floors, confirmLatest, stableThrough);
           updateCandidateProjection(candidates, loaded.floors, inspectedStableCount);
@@ -1035,6 +1077,7 @@ export function createFoundationRuntime({
     bind,
     start: () => enabled() ? reconcile('start') : Promise.resolve(publish('disabled')),
     inspect,
+    recoverOrphanTailAnchor,
     recoverTailDeletion,
     reconcile,
     refreshStatus: () => reconcile('manualRefresh'),

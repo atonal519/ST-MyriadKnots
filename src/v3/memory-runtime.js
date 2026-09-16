@@ -679,11 +679,17 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     memorySyncError = null;
     if (!reachable) memorySnapshotStatus = 'syncing';
     notify();
-    const foundation = recoverTailDeletion && typeof foundationRuntime.recoverTailDeletion === 'function'
-      ? await foundationRuntime.recoverTailDeletion()
-      : typeof foundationRuntime.inspect === 'function'
+    let foundation = typeof foundationRuntime.inspect === 'function'
       ? await foundationRuntime.inspect('memoryRefresh', { allowCached: preferCached })
       : await foundationRuntime.refreshStatus();
+    if (!preferCached && foundation.status === 'needsReview' && foundation.reviewReason?.code === 'markerMismatch'
+      && foundation.reviewReason?.bindingIssue === 'markerConflict'
+      && typeof foundationRuntime.recoverOrphanTailAnchor === 'function') {
+      foundation = await foundationRuntime.recoverOrphanTailAnchor();
+    }
+    if (recoverTailDeletion && foundation.status === 'needsReview' && typeof foundationRuntime.recoverTailDeletion === 'function') {
+      foundation = await foundationRuntime.recoverTailDeletion();
+    }
     if (expectedEpoch !== epoch || expectedChatId !== currentHostChatId()) return getState();
     if (!enabled() || foundation.status === 'disabled') { reachable = null; memorySnapshotStatus = 'unavailable'; memorySyncStatus = 'idle'; return notify(); }
     const foundationReachable = foundationRuntime.getReachable?.() ?? null;

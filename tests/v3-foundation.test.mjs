@@ -219,7 +219,7 @@ function harness(chat = [assistant('A'), assistant('B'), assistant('C')], { enha
   });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
   return {
-    runtime, backend, handlers,
+    runtime, backend, handlers, store, hostAdapter,
     get context() { return context; },
     setChat(next, uuid = CHAT) { context.chat = next; context.chatMetadata.qianqianjie.chatId = uuid; context.chatId = `host-${uuid}`; },
     setEnabled(value) { enabled = value; },
@@ -1989,6 +1989,176 @@ test('生产 scanner 的连续 AI 尾部全部进入只读待摘要投影，正�
   state = await caughtUp.runtime.start();
   assert.equal(state.stableCount, 1);
   assert.deepEqual(state.unregisteredCandidates, []);
+});
+
+test('memory 实际打开路径只清完整47楼前缀后的首个孤儿锚并正常登记49候选', async () => {
+  const orphanFloorId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const initialChat = Array.from({ length: 47 }, (_, index) => [assistant(`已存正文 ${index + 1}`), user(`确认 ${index + 1}`)]).flat();
+  let h, saveCalls = 0;
+  const fetchImpl = async (url, init) => {
+    assert.equal(url, '/api/chats/get');
+    assert.equal(JSON.parse(init.body).file_name, h.context.chatId);
+    return { ok: true, json: async () => [{ chat_metadata: structuredClone(h.context.chatMetadata) }, ...structuredClone(h.context.chat)] };
+  };
+  h = harness(initialChat, { modernAnchors: true, fetchImpl });
+  h.context.name1 = '林岚'; h.context.name2 = '裴晚生';
+  h.context.characters[0] = { name: '裴晚生', avatar: 'character.png', description: '角色资料' };
+  h.context.saveChat = async () => { saveCalls += 1; return true; };
+  await h.runtime.start();
+  const originalFloorIds = h.runtime.getReachable().floors.map(floor => floor.id);
+  const task = async options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
+    ? { jsonData: { summary: '必须保留的既有摘要' } }
+    : { jsonData: { noMaterialChange: true } };
+  const seededMemory = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
+    generateAnalysisTask: task, generateUtilityTask: task, now: () => new Date('2026-09-02T00:00:00.000Z'), newUuid: uuidFactory(30000), logger: { warn() {} } });
+  await seededMemory.start();
+  await seededMemory.extractFloor(originalFloorIds[0]);
+  const graphBefore = await h.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual([graphBefore.floorMemories.length, graphBefore.stateDeltas.length], [1, 1]);
+  const preservedBefore = structuredClone({
+    floorMemories: graphBefore.floorMemories, stateDeltas: graphBefore.stateDeltas,
+    entities: graphBefore.entities, baseline: graphBefore.baseline,
+  });
+  for (let index = 0; index < 47; index += 1) {
+    h.context.chat[index * 2].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: originalFloorIds[index] };
+  }
+  const orphan = assistant('新尾楼 48', { pluginKept: { value: 1 }, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } });
+  orphan.swipes = ['新尾楼 48', '备用候选', '新尾楼 48']; orphan.swipe_id = 0;
+  orphan.swipe_info = [
+    { extra: { firstKept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } } },
+    { extra: { middleKept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: originalFloorIds[0] } } },
+    { extra: { lastKept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } } },
+  ];
+  h.context.chat.push(orphan, user('确认新尾楼 48'), assistant('新尾楼 49'));
+  const untouchedBody = structuredClone({ mes: orphan.mes, swipes: orphan.swipes, swipe_id: orphan.swipe_id });
+  h.runtime.invalidate();
+  const reopenedMemory = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
+    generateAnalysisTask: task, generateUtilityTask: task, now: () => new Date('2026-09-02T00:00:00.000Z'), newUuid: uuidFactory(31000), logger: { warn() {} } });
+  const reopened = await reopenedMemory.start();
+  assert.equal(reopened.foundationStatus, 'ready');
+  assert.equal(saveCalls, 1, '实际打开路径应只保存一次精确清理');
+  assert.deepEqual(h.runtime.getReachable().floors.slice(0, 47).map(floor => floor.id), originalFloorIds);
+  assert.equal(h.runtime.getReachable().floors.length, 48, '清理后首个已稳定新楼走既有登记');
+  assert.deepEqual({ mes: orphan.mes, swipes: orphan.swipes, swipe_id: orphan.swipe_id }, untouchedBody);
+  assert.deepEqual(orphan.extra, { pluginKept: { value: 1 } });
+  assert.deepEqual(orphan.swipe_info.map(item => item.extra), [
+    { firstKept: true },
+    { middleKept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: originalFloorIds[0] } },
+    { lastKept: true },
+  ]);
+  let graphAfter = await h.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual({ floorMemories: graphAfter.floorMemories, stateDeltas: graphAfter.stateDeltas, entities: graphAfter.entities, baseline: graphAfter.baseline }, preservedBefore,
+    '已有摘要、CSE、实体和基线必须逐字节语义不变');
+  h.context.chat.push(user('确认新尾楼 49'));
+  await h.runtime.refreshStatus();
+  assert.equal(h.runtime.getReachable().floors.length, 49, '后续新尾楼继续走普通登记');
+  orphan.swipe_id = 2; orphan.mes = orphan.swipes[2];
+  await h.runtime.refreshStatus();
+  assert.equal(h.runtime.getState().status, 'ready');
+  assert.equal(orphan.swipe_info[2].extra.qianqianjie_floor, undefined, '切回同孤儿 swipe 不得复活旧标识');
+  graphAfter = await h.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual(graphAfter.floors.slice(0, 47).map(floor => floor.id), originalFloorIds);
+});
+
+test('尾部孤儿修复拒绝中段、正文不符、foreign、invalid、duplicate 与重复孤儿，不保存也不改 root', async () => {
+  const orphanFloorId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  for (const mode of ['middle', 'prefixMismatch', 'foreign', 'invalid', 'duplicate', 'sameOrphan']) {
+    let h, saveCalls = 0;
+    h = harness(Array.from({ length: 3 }, (_, index) => [assistant(`拒绝正文 ${index + 1}`), user(`确认 ${index + 1}`)]).flat(), {
+      modernAnchors: true,
+      fetchImpl: async () => ({ ok: true, json: async () => [{ chat_metadata: structuredClone(h.context.chatMetadata) }, ...structuredClone(h.context.chat)] }),
+    });
+    h.context.saveChat = async () => { saveCalls += 1; return true; };
+    await h.runtime.start();
+    const floorIds = h.runtime.getReachable().floors.map(floor => floor.id);
+    for (let index = 0; index < 3; index += 1) h.context.chat[index * 2].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: floorIds[index] };
+    const next = assistant('候选 4');
+    h.context.chat.push(next, user('确认候选 4'), assistant('候选 5'));
+    if (mode === 'middle') h.context.chat[2].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId };
+    else if (mode === 'prefixMismatch') {
+      h.context.chat[0].mes = h.context.chat[0].swipes[0] = '前缀正文已变化';
+      next.extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId };
+    } else if (mode === 'foreign') next.extra.qianqianjie_floor = { schemaVersion: 1, chatId: OTHER_CHAT, floorId: orphanFloorId };
+    else if (mode === 'invalid') next.extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: 'invalid-floor' };
+    else if (mode === 'sameOrphan') {
+      next.extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId };
+      h.context.chat.at(-1).extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId };
+    } else next.extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: floorIds[0] };
+    const rootBefore = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`));
+    const markerBefore = structuredClone(mode === 'middle' ? h.context.chat[2].extra.qianqianjie_floor : next.extra.qianqianjie_floor);
+    h.runtime.invalidate();
+    const rejectModel = async () => { throw new Error('拒绝场景不得调用模型'); };
+    const memory = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
+      generateAnalysisTask: rejectModel, generateUtilityTask: rejectModel, logger: { warn() {} } });
+    await memory.start();
+    assert.equal(h.runtime.getState().status, 'needsReview', mode);
+    assert.equal(saveCalls, 0, mode);
+    assert.deepEqual(mode === 'middle' ? h.context.chat[2].extra.qianqianjie_floor : next.extra.qianqianjie_floor, markerBefore, mode);
+    if (mode === 'sameOrphan') assert.deepEqual(h.context.chat.at(-1).extra.qianqianjie_floor, markerBefore, mode);
+    assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), rootBefore, mode);
+  }
+});
+
+test('memory 管理刷新路径在 tail recovery 前自愈首个尾部孤儿', async () => {
+  const orphanFloorId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  let h, saveCalls = 0;
+  h = harness([assistant('刷新既有 1'), user('确认 1'), assistant('刷新既有 2'), user('确认 2')], {
+    modernAnchors: true,
+    fetchImpl: async () => ({ ok: true, json: async () => [{ chat_metadata: structuredClone(h.context.chatMetadata) }, ...structuredClone(h.context.chat)] }),
+  });
+  h.context.saveChat = async () => { saveCalls += 1; return true; };
+  await h.runtime.start();
+  const floorIds = h.runtime.getReachable().floors.map(floor => floor.id);
+  h.context.chat[0].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: floorIds[0] };
+  h.context.chat[2].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: floorIds[1] };
+  const rejectModel = async () => { throw new Error('管理刷新自愈不得调用模型'); };
+  const memory = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
+    generateAnalysisTask: rejectModel, generateUtilityTask: rejectModel, logger: { warn() {} } });
+  await memory.start();
+  const orphan = assistant('刷新新尾楼', { qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } });
+  h.context.chat.push(orphan, user('确认刷新新尾楼'));
+  const refreshed = await memory.refreshStatus({ preferCached: false, recoverTailDeletion: true });
+  assert.equal(refreshed.foundationStatus, 'ready');
+  assert.equal(saveCalls, 1);
+  assert.equal(orphan.extra.qianqianjie_floor, undefined);
+  assert.equal(h.runtime.getReachable().floors.length, 3);
+  assert.deepEqual(h.runtime.getReachable().floors.slice(0, 2).map(floor => floor.id), floorIds);
+});
+
+test('尾部孤儿保存失败或切聊时恢复标识，不写旧 root', async () => {
+  const orphanFloorId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  for (const mode of ['saveFailed', 'chatChanged']) {
+    let h, saveCalls = 0;
+    h = harness([assistant('既有正文'), user('确认既有正文')], {
+      modernAnchors: true,
+      fetchImpl: async () => ({ ok: true, json: async () => [{ chat_metadata: structuredClone(h.context.chatMetadata) }, ...structuredClone(h.context.chat)] }),
+    });
+    await h.runtime.start();
+    const floorId = h.runtime.getReachable().floors[0].id;
+    h.context.chat[0].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId };
+    const orphan = assistant('待恢复孤儿', { kept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } });
+    orphan.swipe_info = [{ extra: { swipeKept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } } }];
+    h.context.chat.push(orphan, user('确认待恢复孤儿'));
+    h.context.saveChat = async () => {
+      saveCalls += 1;
+      if (mode === 'chatChanged') {
+        h.context.chatMetadata.qianqianjie.chatId = OTHER_CHAT;
+        h.context.chatId = `host-${OTHER_CHAT}`;
+        return true;
+      }
+      return false;
+    };
+    const rootBefore = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`));
+    h.runtime.invalidate();
+    const rejectModel = async () => { throw new Error('失败恢复不得调用模型'); };
+    const memory = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
+      generateAnalysisTask: rejectModel, generateUtilityTask: rejectModel, logger: { warn() {} } });
+    await memory.start();
+    assert.equal(saveCalls, 1, mode);
+    assert.deepEqual(orphan.extra, { kept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } }, mode);
+    assert.deepEqual(orphan.swipe_info[0].extra, { swipeKept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } }, mode);
+    assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), rootBefore, mode);
+  }
 });
 
 test('MESSAGE_SENT 在 user 入列时稳定前一 AI；重复事件、同锚正文编辑与尾楼 reroll 均不破坏前缀', async () => {

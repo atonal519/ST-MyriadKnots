@@ -21,6 +21,95 @@ export function inspectMessageFloorAnchor(message, expectedChatId = '') {
   return Object.freeze({ status: expectedChatId && value.chatId !== expectedChatId ? 'foreign' : 'valid', anchor });
 }
 
+export async function clearExactMessageFloorAnchor({ hostAdapter, chatId, floorId, messageIndex, signal, fetchImpl = globalThis.fetch } = {}) {
+  if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 message anchor HostAdapter 无效');
+  if (!isUuid(chatId) || !isUuid(floorId) || !Number.isSafeInteger(messageIndex) || messageIndex < 0) {
+    throw fail('V3_MESSAGE_ANCHOR_CLEAR_SCOPE_INVALID', '待清理的消息记忆标识范围无效。');
+  }
+  const before = hostAdapter.snapshot();
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  if (chatIdFrom(before) !== chatId || !Array.isArray(before.chat)) throw fail('V3_MESSAGE_ANCHOR_CHAT_CHANGED', '聊天已切换，未清理旧聊天的记忆标识。');
+  const message = before.chat[messageIndex];
+  const exactTarget = extra => {
+    const inspected = inspectMessageFloorAnchor({ extra }, chatId);
+    return inspected.status === 'valid' && inspected.anchor.floorId === floorId;
+  };
+  if (!assistantMessage(message) || !exactTarget(message.extra)) throw fail('V3_MESSAGE_ANCHOR_CLEAR_TARGET_CHANGED', '待清理的孤儿标识已经变化。');
+  const candidateSnapshot = value => JSON.stringify({
+    is_user: value?.is_user, is_system: value?.is_system, mes: value?.mes, swipes: value?.swipes,
+    swipe_id: value?.swipe_id, send_date: value?.send_date, type: value?.extra?.type,
+  });
+  const anchorSnapshot = value => JSON.stringify({
+    outer: value?.extra?.[MESSAGE_FLOOR_ANCHOR_KEY] ?? null,
+    swipes: Array.isArray(value?.swipe_info) ? value.swipe_info.map(swipe => swipe?.extra?.[MESSAGE_FLOOR_ANCHOR_KEY] ?? null) : [],
+  });
+  const capturedCandidate = candidateSnapshot(message);
+  const previousOuter = message.extra?.[MESSAGE_FLOOR_ANCHOR_KEY];
+  const clearTarget = extra => {
+    if (!exactTarget(extra)) return null;
+    const next = extra && typeof extra === 'object' && !Array.isArray(extra) ? { ...extra } : {};
+    delete next[MESSAGE_FLOOR_ANCHOR_KEY];
+    return next;
+  };
+  const appliedOuter = clearTarget(message.extra);
+  message.extra = appliedOuter;
+  const changedSwipes = [];
+  if (Array.isArray(message.swipe_info)) message.swipe_info = message.swipe_info.map(swipe => {
+    const extra = clearTarget(swipe?.extra);
+    if (!extra) return swipe;
+    const applied = { ...swipe, extra };
+    changedSwipes.push({ applied, previousAnchor: swipe?.extra?.[MESSAGE_FLOOR_ANCHOR_KEY] });
+    return applied;
+  });
+  const expectedAnchors = anchorSnapshot(message);
+  const restoreAnchor = (extra, previous, present = true) => {
+    const next = extra && typeof extra === 'object' && !Array.isArray(extra) ? { ...extra } : {};
+    if (present) next[MESSAGE_FLOOR_ANCHOR_KEY] = previous;
+    else delete next[MESSAGE_FLOOR_ANCHOR_KEY];
+    return next;
+  };
+  const rollback = () => {
+    if (message.extra === appliedOuter && candidateSnapshot(message) === capturedCandidate) {
+      message.extra = restoreAnchor(message.extra, previousOuter);
+    }
+    if (Array.isArray(message.swipe_info)) for (const changed of changedSwipes) {
+      const index = message.swipe_info.indexOf(changed.applied);
+      if (index >= 0) message.swipe_info[index] = { ...changed.applied, extra: restoreAnchor(changed.applied.extra, changed.previousAnchor) };
+    }
+  };
+  try {
+    const context = before.context;
+    if (typeof context?.saveChat !== 'function') throw fail('V3_MESSAGE_ANCHOR_SAVE_UNAVAILABLE', '宿主不支持保存消息记忆标识。');
+    const saved = await context.saveChat();
+    if (saved === false) throw fail('V3_MESSAGE_ANCHOR_SAVE_FAILED', '宿主未确认孤儿消息记忆标识已清理。');
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const after = hostAdapter.snapshot();
+    if (chatIdFrom(after) !== chatId || after.chat !== before.chat || after.chat[messageIndex] !== message
+      || candidateSnapshot(message) !== capturedCandidate || anchorSnapshot(message) !== expectedAnchors) {
+      throw fail('V3_MESSAGE_ANCHOR_CHAT_CHANGED', '清理消息记忆标识时聊天或候选已经变化。');
+    }
+    if (typeof fetchImpl !== 'function') throw fail('V3_MESSAGE_ANCHOR_VERIFY_UNAVAILABLE', '宿主不支持读回消息记忆标识。');
+    const character = Array.isArray(context.characters) ? context.characters[context.characterId] : context.characters?.[context.characterId];
+    const response = await fetchImpl('/api/chats/get', { method: 'POST', cache: 'no-cache', headers: context.getRequestHeaders?.() ?? {}, body: JSON.stringify({ ch_name: String(character?.name ?? context.name2 ?? ''), file_name: before.chatId, avatar_url: String(character?.avatar ?? before.characterAvatar ?? '') }), signal });
+    if (!response?.ok) throw fail('V3_MESSAGE_ANCHOR_VERIFY_FAILED', '宿主保存后无法读回孤儿消息记忆标识。');
+    const payload = await response.json();
+    const persisted = Array.isArray(payload) ? payload.slice(1) : null;
+    if (!persisted || payload[0]?.chat_metadata?.qianqianjie?.chatId !== chatId || persisted.length !== before.chat.length
+      || candidateSnapshot(persisted[messageIndex]) !== capturedCandidate || anchorSnapshot(persisted[messageIndex]) !== expectedAnchors) {
+      throw fail('V3_MESSAGE_ANCHOR_VERIFY_FAILED', '孤儿消息记忆标识没有完成持久化，可安全重试。');
+    }
+    const settled = hostAdapter.snapshot();
+    if (chatIdFrom(settled) !== chatId || settled.chat !== before.chat || settled.chat[messageIndex] !== message
+      || candidateSnapshot(message) !== capturedCandidate || anchorSnapshot(message) !== expectedAnchors) {
+      throw fail('V3_MESSAGE_ANCHOR_CHAT_CHANGED', '读回消息记忆标识时聊天或候选已经变化。');
+    }
+    return Object.freeze({ status: 'persisted', persisted: 1 });
+  } catch (error) {
+    rollback();
+    throw error;
+  }
+}
+
 export async function persistMessageFloorAnchors({ hostAdapter, chatId, bindings, signal, fetchImpl = globalThis.fetch } = {}) {
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 message anchor HostAdapter 无效');
   if (!isUuid(chatId)) throw fail('V3_MESSAGE_ANCHOR_CHAT_INVALID', '消息记忆标识缺少有效聊天身份。');
