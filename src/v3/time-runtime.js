@@ -1,5 +1,5 @@
 import { estimateRecallTokens } from './recall-selector.js';
-import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdit, replayTimeBatches, storyTimes, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, timeDistance, timeHours, validTimeProjection, timeBodyReads } from './time-engine.js';
+import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdit, replayTimeBatches, storyTimes, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, timeDistance, timeHours, validTimeProjection, timeBodyReads, timeItemFailures } from './time-engine.js';
 import { projectRecallSource } from './recall-source.js';
 import { sanitizeTaskMetadata } from './safe-metadata.js';
 import { publicErrorMessage } from '../public-error.js';
@@ -50,7 +50,7 @@ export function createTimeStore({ client }) {
     const partial = batches.at(-1)?.status === 'partial' ? batches.at(-1) : source.head.lastRun?.status === 'partial' ? batches.findLast(batch => batch.status === 'partial') : null;
     await putHead(targetChatId, { schemaVersion: 1, chatId: targetChatId, batchIds: ids, ...(source.head.bodyStart?.floorId && floors.has(source.head.bodyStart.floorId) ? { bodyStart: source.head.bodyStart } : {}), lastAttemptSignature: batches.at(-1)?.signature ?? null, lastAttemptTime: batches.at(-1)?.currentTime ?? null,
       ...(source.head.currentReviewAttempt && floors.has(source.head.currentReviewAttempt.cutoffFloorId) && batches.some(batch => batch.currentReview) ? { currentReviewAttempt: source.head.currentReviewAttempt } : {}),
-      ...(partial ? { lastRun: { status: 'partial', itemErrors: partial.itemErrors, message: '已保留部分成功事项；仍有正文待补查，请手动继续。' } } : {}) }, 0, signal);
+      ...(partial ? { lastRun: { status: 'partial', cutoffFloorId: partial.cutoffFloorId, cutoffAssistantSeq: partial.cutoffAssistantSeq, itemErrors: partial.itemErrors, message: '已保留部分成功事项；失败项可在后续新正文或手动补查时再试。' } } : {}) }, 0, signal);
   }
   return Object.freeze({ read, putHead, putBatch, copyPrefix });
 }
@@ -129,6 +129,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     const reviewCurrent = reviewBatch && JSON.stringify(reviewBatch.currentTime) === JSON.stringify(currentTime);
     const selectedIds = new Set(reviewBatch?.currentReview?.selectedItemIds ?? []);
     const answeredIds = new Set(reviewBatch?.changes?.map(item => item.id) ?? []);
+    const failures = timeItemFailures(batches, source);
     const names = new Map((source.entities ?? []).map(entity => [entity.id, entity.displayName]));
     const items = replayTimeBatches(batches, source).map(item => ({
       id: item.id, mergedInto: item.mergedInto ?? null, mergeDescription: item.mergeDescription ?? null, observationKey: item.observationKey, status: item.status, person: names.get(item.subjectEntityId) ?? item.subjectName ?? '人物未提供', label: item.label, type: item.type,
@@ -139,6 +140,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       projection: validTimeProjection(item, currentTime) ? item.projection.text : null,
       oldProjection: item.projection?.observationKey === item.observationKey && !validTimeProjection(item, currentTime) ? { text: item.projection.text, applicableTime: item.projection.applicableTime } : null,
       assessmentReason: item.reviewAssessment?.observationKey === item.observationKey && JSON.stringify(item.reviewAssessment.applicableTime) === JSON.stringify(currentTime) ? item.reviewAssessment.reason : null,
+      failureReason: item.status !== 'cancelled' ? failures.get(item.id) ?? null : null,
       reviewStatus: reviewCurrent && item.status === 'active' ? !selectedIds.has(item.id) ? 'omitted' : !answeredIds.has(item.id) ? 'unanswered' : null : null,
     }));
     trackedItems = items.filter(item => item.status === 'active'); stoppedItems = items.filter(item => item.status !== 'active');
@@ -252,7 +254,20 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       if (!valid()) throw new Error('当前聊天记忆已变化，本次编辑未应用。');
       const lastRun = stored.head?.lastRun ? { ...stored.head.lastRun, items: itemCount([...stored.batches, batch], reachable) } : null;
       if (lastRun) delete lastRun.initialProjectionCheckedSignature;
-      const nextHead = { ...stored.head, batchIds: [...stored.head.batchIds, batch.id], ...(lastRun ? { lastRun } : {}) };
+      const priorPartial = lastRun?.currentReview ? stored.batches.findLast(value => value.status === 'partial' && value.currentReview && value.signature === stored.head.lastAttemptSignature) : null;
+      const afterItems = replayTimeBatches([...stored.batches, batch], reachable);
+      const unresolvedIds = new Set((priorPartial?.itemErrors ?? []).flatMap(error => error.itemIds ?? []));
+      if (priorPartial) {
+        const answered = new Set(priorPartial.changes?.map(value => value.id) ?? []);
+        for (const id of priorPartial.currentReview.selectedItemIds ?? []) if (!answered.has(id)) unresolvedIds.add(id);
+      }
+      const hasUnlocated = Boolean(priorPartial?.itemErrors?.some(error => !error.itemIds?.length));
+      const unresolved = [...unresolvedIds].some(id => afterItems.find(value => value.id === id)?.status !== 'cancelled');
+      const resolvedByRemoval = lastRun?.status === 'partial' && priorPartial && !hasUnlocated && !unresolved;
+      if (resolvedByRemoval) Object.assign(lastRun, { status: 'completed', message: '本次未完成事项已移除；原内容未记作评估成功。' });
+      const currentReviewAttempt = resolvedByRemoval && stored.head?.currentReviewAttempt?.status === 'partial'
+        ? { ...stored.head.currentReviewAttempt, status: 'resolved' } : stored.head?.currentReviewAttempt;
+      const nextHead = { ...stored.head, ...(currentReviewAttempt ? { currentReviewAttempt } : {}), batchIds: [...stored.head.batchIds, batch.id], ...(lastRun ? { lastRun } : {}) };
       await store.putHead(operation.chatId, nextHead, stored.revision, operation.controller.signal);
       if (!valid()) throw new Error('当前聊天记忆已变化，本次编辑未应用到当前事项。');
       const freshAnnual = await annualSnapshot();
@@ -370,7 +385,10 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
           const prepared = await prepareTimeRequest(source, stored.batches, { fragments, cutoffBody: !fragments.length ? plan.currentWitness : null, allowInitialProjection: manual || currentReview, currentReview });
           if (!prepared.shouldRequest) { if (currentReview) operation.progress.total -= 1; continue; }
           operation.currentReview = currentReview;
-          const run = { ...(currentReview ? { currentReview: { pending: true, omitted: prepared.omitted } } : {}), status: 'running', cutoffFloorId: prepared.cutoffFloorId, cutoffAssistantSeq: prepared.cutoffAssistantSeq, items: itemCount(stored.batches, source) };
+          const latestSourceBody = source.bodyFloors.filter(body => body.floorId).at(-1);
+          const run = { ...(currentReview ? { currentReview: { pending: true, omitted: prepared.omitted } } : {}), status: 'running', cutoffFloorId: prepared.cutoffFloorId, cutoffAssistantSeq: prepared.cutoffAssistantSeq,
+            sourceScope: latestSourceBody ? { floorId: latestSourceBody.floorId, assistantSeq: latestSourceBody.assistantSeq, canonicalFingerprint: latestSourceBody.canonicalFingerprint } : null,
+            items: itemCount(stored.batches, source) };
           const reviewAttempt = currentReview ? { authorization: plan.reviewAuthorization, scopeKey: await reviewScopeKey(source, plan.currentWitness), signature: prepared.signature, cutoffFloorId: prepared.cutoffFloorId, cutoffAssistantSeq: prepared.cutoffAssistantSeq, status: 'running' } : null;
           const head = { ...stored.head, ...(reviewAttempt ? { currentReviewAttempt: reviewAttempt } : {}), lastAttemptSignature: prepared.signature, lastAttemptTime: prepared.request.currentTime, lastRun: run };
           const attempted = await store.putHead(operation.chatId, head, stored.revision, operation.controller.signal);
@@ -388,7 +406,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
           await store.putBatch(operation.chatId, batch, operation.controller.signal);
           if (!await validateBody(operation, source, witnesses)) throw new Error('正文来源已变化，本批未应用。');
           const completed = { ...run, status: batch.status === 'partial' ? 'partial' : batch.changes.length ? 'completed' : 'empty',
-            ...(batch.itemErrors?.length ? { itemErrors: batch.itemErrors, message: `已保存 ${batch.changes.length} 项；${batch.itemErrors.map(item => `第${item.index}项：${item.reason}`).join('；')} 本批仍待补查，请手动继续。` } : {}), items: itemCount([...stored.batches, batch], source),
+            ...(batch.itemErrors?.length ? { itemErrors: batch.itemErrors, message: `已保存 ${batch.changes.length} 项；${batch.itemErrors.map(item => `第${item.index}项：${item.reason}`).join('；')} 失败项可在后续新正文或手动补查时再试。` } : {}), items: itemCount([...stored.batches, batch], source),
             ...(!fragments.length && batch.status !== 'partial' ? { initialProjectionCheckedSignature: prepared.signature } : {}) };
           if (batch.currentReview) { completed.currentReview = batch.currentReview; completed.message = `当前评估：估计 ${batch.currentReview.updated} 项，依据不足 ${batch.currentReview.insufficient} 项，归并退出 ${batch.currentReview.merged ?? 0} 项，未纳入 ${batch.currentReview.omitted} 项。${completed.message ?? ''}`; }
           const nextHead = { ...head, ...(reviewAttempt ? { currentReviewAttempt: { ...reviewAttempt, status: completed.status } } : {}), batchIds: [...head.batchIds, batch.id], lastRun: completed };
@@ -436,10 +454,36 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       let stored = await store.read(identity().chatId);
       if (token !== epoch || !enabled() || source.root.chatId !== identity().chatId) return getState();
       stored = await ensureStart(source, stored, controller.signal);
-      if (manualBlock() || stored.head?.lastRun?.status === 'partial') return refreshStatus();
+      if (manualBlock()) return refreshStatus();
+      const latestSourceBody = source.bodyFloors.filter(body => body.floorId).at(-1);
+      if (stored.head?.lastRun?.status === 'partial') {
+        const currentScope = latestSourceBody ? { floorId: latestSourceBody.floorId, assistantSeq: latestSourceBody.assistantSeq, canonicalFingerprint: latestSourceBody.canonicalFingerprint } : null;
+        if (!stored.head.lastRun.sourceScope) {
+          const attemptedBody = source.bodyFloors.find(body => body.floorId === stored.head.lastRun.cutoffFloorId)
+            ?? source.bodyFloors.find(body => body.assistantSeq === stored.head.lastRun.cutoffAssistantSeq);
+          const attemptedScope = attemptedBody ? { floorId: attemptedBody.floorId, assistantSeq: attemptedBody.assistantSeq, canonicalFingerprint: attemptedBody.canonicalFingerprint } : currentScope;
+          const head = { ...stored.head, lastRun: { ...stored.head.lastRun, sourceScope: attemptedScope } };
+          const saved = await store.putHead(source.root.chatId, head, stored.revision, controller.signal);
+          stored = { ...stored, head, revision: saved.revision };
+          if (JSON.stringify(attemptedScope) === JSON.stringify(currentScope)) return refreshStatus({ force: true });
+        }
+        if (JSON.stringify(stored.head.lastRun.sourceScope) === JSON.stringify(currentScope)) return refreshStatus();
+      }
       const history = historyAuthorization?.chatId === identity().chatId;
       const plan = planTimeBody(source, stored.batches, { start: stored.head.bodyStart, history });
       if (history) plan.groups = plan.groups.map(group => group.filter(row => row.assistantSeq <= historyAuthorization.through)).filter(group => group.length);
+      if (stored.head?.lastRun?.status === 'partial') {
+        const partialBatch = stored.batches.findLast(batch => batch.status === 'partial');
+        if (partialBatch) {
+          const groups = [];
+          for (const group of plan.groups) {
+            const prepared = await prepareTimeRequest(source, stored.batches, { fragments: group });
+            if (prepared.cutoffFloorId === partialBatch.cutoffFloorId && JSON.stringify(prepared.sourceKeys) === JSON.stringify(partialBatch.sourceKeys)) continue;
+            groups.push(group);
+          }
+          plan.groups = groups;
+        }
+      }
       if (plan.groups.length) {
         const prepared = await prepareTimeRequest(source, stored.batches, { fragments: plan.groups[0] });
         if (stored.head.lastAttemptSignature === prepared.signature && ['running', 'failed'].includes(stored.head.lastRun?.status)) return refreshStatus();

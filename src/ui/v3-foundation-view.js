@@ -563,6 +563,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         ...(item.mergeDescription ? [`归并经历：${item.mergeDescription}`] : []),
         `观察时间：${formatTime(item.observationTime)}${item.occurrenceTime?.date ? `；发生时间：${formatTime(item.occurrenceTime)}` : ''}；${elapsed}`,
         stopped ? item.mergedInto ? '因归并退出独立追踪，原观察保留；恢复会解除归并。' : `${stoppedLabel}，已停止追踪；需要时可恢复。` : item.projection ? `当前推测：${item.projection}` : item.assessmentReason ? `当前依据不足：${item.assessmentReason}` : item.reviewStatus === 'omitted' ? '本次未纳入当前评估。' : item.reviewStatus === 'unanswered' ? '本次未返回有效当前评估，请手动更新。' : '当前估计待更新，原观察仍保留。',
+        ...(item.failureReason ? [`本次未更新：${item.failureReason} 原内容已保留，可编辑或移除。`] : []),
         ...(!stopped && item.projection && item.reviewStatus ? [item.reviewStatus === 'omitted' ? '本次未纳入当前评估。' : '本次未返回有效当前评估，请手动更新。'] : []),
         ...(!stopped && item.oldProjection ? [`截至 ${formatTime(item.oldProjection.applicableTime)} 的旧推测：${item.oldProjection.text}；当前待更新。`] : []),
         ...(['cycle', 'deadline'].includes(item.type) ? [`${item.type === 'cycle' ? '预计周期日' : '约定期限'}：${formatTime(item.dueTime)}${item.periodDays ? `；明确周期 ${item.periodDays} 天` : ''}${stopped ? '' : '；尚未确认发生或完成。'}`] : [])];

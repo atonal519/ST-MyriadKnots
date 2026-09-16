@@ -91,6 +91,8 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   assert.match(flatten(container).map(node => node.textContent).join('|'), /当前依据不足.*截至 2026-05-11 的旧推测/);
   timeState = { ...timeState, trackedItems: [{ ...item, reviewStatus: 'omitted' }] }; publish();
   assert.match(flatten(container).map(node => node.textContent).join('|'), /本次未纳入当前评估/);
+  timeState = { ...timeState, trackedItems: [{ ...item, failureReason: '来源编号无效。' }] }; publish();
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /本次未更新：来源编号无效。 原内容已保留，可编辑或移除/);
   timeState = { ...timeState, last: { status: 'partial', message: '第2项：来源编号未在本次请求中出现。请手动继续。' } }; publish();
   assert.match(flatten(container).map(node => node.textContent).join('|'), /部分完成.*第2项/);
   assert.equal(flatten(container).find(node => node.textContent === '继续补查历史').disabled, false);

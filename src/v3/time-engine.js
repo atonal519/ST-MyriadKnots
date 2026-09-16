@@ -235,6 +235,30 @@ export function replayTimeBatches(batches, reachable) {
   return evaluateTimeBatches(batches, reachable).items;
 }
 
+export function timeItemFailures(batches, reachable) {
+  const { items, validBatches } = evaluateTimeBatches(batches, reachable);
+  const failures = new Map();
+  for (const batch of validBatches) {
+    const resolvedIds = Array.isArray(batch.resolvedItemIds) ? batch.resolvedItemIds
+      : batch.currentReview ? (batch.changes ?? []).map(item => item.id) : [];
+    for (const id of resolvedIds) failures.delete(id);
+    const attached = new Set();
+    for (const error of batch.itemErrors ?? []) for (const id of error.itemIds ?? []) {
+      if (typeof id !== 'string') continue;
+      failures.set(id, error.reason); attached.add(id);
+    }
+    if (batch.currentReview) {
+      const answered = new Set(batch.changes?.map(item => item.id) ?? []);
+      for (const id of batch.currentReview.selectedItemIds ?? []) if (!answered.has(id) && !attached.has(id)) {
+        failures.set(id, '上次评估未完成。');
+      }
+    }
+  }
+  const statusById = new Map(items.map(item => [item.id, item.status]));
+  for (const [id] of failures) if (statusById.get(id) === 'cancelled') failures.delete(id);
+  return failures;
+}
+
 export async function compileTimeEdit(item, fields, reachable, batchId, items = []) {
   const fail = message => Object.assign(new Error(message), { code: 'QQJ_TIME_EDIT_INVALID' });
   const label = fields.label === undefined ? item.label : String(fields.label).trim();
@@ -490,7 +514,8 @@ export async function compileTimeResponse(response, prepared, batches = []) {
         } : null });
     } catch (error) {
       if (!error?.timeItemInvalid) throw error;
-      itemErrors.push({ index: index + 1, reason: error.message });
+      const inputId = original?.itemId, itemId = mergedTargets.get(inputId) ?? inputId;
+      itemErrors.push({ index: index + 1, reason: error.message, ...(prior.has(itemId) ? { itemIds: [itemId] } : {}) });
     }
   }
   const mergeGroups = [], rejectedMergeIds = new Set();
@@ -528,23 +553,26 @@ export async function compileTimeResponse(response, prepared, batches = []) {
       mergeGroups.push({ itemIds: groupChanges.map(item => item.id) });
     } catch (error) {
       if (!error?.timeItemInvalid) throw error;
+      const itemIds = new Set();
       for (const id of [proposal?.itemId, ...(Array.isArray(proposal?.mergedItemIds) ? proposal.mergedItemIds : [])]) {
-        rejectedMergeIds.add(mergedTargets.get(id) ?? id);
-        for (const memberId of prior.get(id)?.mergedItemIds ?? []) rejectedMergeIds.add(memberId);
+        const targetId = mergedTargets.get(id) ?? id;
+        rejectedMergeIds.add(targetId);
+        if (prior.has(targetId)) itemIds.add(targetId);
+        for (const memberId of prior.get(targetId)?.mergedItemIds ?? []) { rejectedMergeIds.add(memberId); if (prior.has(memberId)) itemIds.add(memberId); }
       }
-      itemErrors.push({ index: index + 1, reason: `归并组：${error.message}` });
+      itemErrors.push({ index: index + 1, reason: `归并组：${error.message}`, ...(itemIds.size ? { itemIds: [...itemIds] } : {}) });
     }
   }
   for (const group of mergeGroups) if (group.itemIds.some(id => rejectedMergeIds.has(id))) for (const id of group.itemIds) rejectedMergeIds.add(id);
   for (let index = mergeGroups.length - 1; index >= 0; index--) if (mergeGroups[index].itemIds.some(id => rejectedMergeIds.has(id))) mergeGroups.splice(index, 1);
   for (let index = changes.length - 1; index >= 0; index--) if (rejectedMergeIds.has(changes[index].id)) { ids.delete(changes[index].id); changes.splice(index, 1); }
-  if (currentReview) for (const [index, item] of prepared.request.trackedItems.entries()) if (!ids.has(item.id) && !data.changes.some(value => value?.itemId === item.id)) itemErrors.push({ index: index + 1, reason: '本次未返回该事项的有效当前评估。' });
+  if (currentReview) for (const [index, item] of prepared.request.trackedItems.entries()) if (!ids.has(item.id) && !data.changes.some(value => value?.itemId === item.id)) itemErrors.push({ index: index + 1, reason: '本次未返回该事项的有效当前评估。', itemIds: [item.id] });
   if (itemErrors.length && !changes.length) throw Object.assign(fail('本批时间事项均无效。'), { itemErrors });
   const futureRefs = (prepared.trackedRecords ?? []).flatMap(item => item.sourceRefs ?? []).filter(ref => ref.sourceKey && (prepared.floorSequences?.get(ref.floorId) ?? 0) > prepared.cutoffAssistantSeq);
   const dependencies = [...new Map([...changes.flatMap(item => item.sourceRefs), ...(prepared.bodyReads ?? []), ...(prepared.reviewWitness ? [prepared.reviewWitness] : []), ...futureRefs, ...(prepared.futureContextRefs ?? [])].map(ref => [JSON.stringify(timeDependency(ref)), timeDependency(ref)])).values()];
   return { schemaVersion: 1, chatId: prepared.request.chatId, id: `v3-time-batch-${(await timeFingerprint([prepared.signature, batches.length])).slice(7, 39)}`,
     signature: prepared.signature, currentTime: prepared.request.currentTime, cutoffFloorId: prepared.cutoffFloorId, cutoffAssistantSeq: prepared.cutoffAssistantSeq,
-    sourceKeys: prepared.sourceKeys, selectedItemIds: prepared.trackedRecords.map(item => item.id), ...(mergeGroups.length ? { mergeGroups } : {}), dependencies, bodyReads: itemErrors.length ? [] : prepared.bodyReads ?? [], changes,
+    sourceKeys: prepared.sourceKeys, selectedItemIds: prepared.trackedRecords.map(item => item.id), resolvedItemIds: [...new Set(changes.map(item => item.id))], ...(mergeGroups.length ? { mergeGroups } : {}), dependencies, bodyReads: itemErrors.length ? [] : prepared.bodyReads ?? [], changes,
     ...(itemErrors.length ? { status: 'partial', itemErrors } : {}),
     ...(currentReview ? { currentReview: { selectedItemIds: prepared.trackedRecords.map(item => item.id), updated: changes.filter(item => item.status === 'active' && !item.reviewAssessment).length, insufficient: changes.filter(item => item.status === 'active' && item.reviewAssessment).length, merged: changes.filter(item => item.mergedInto && item.status === 'paused').length, omitted: prepared.omitted } } : {}) };
 }
