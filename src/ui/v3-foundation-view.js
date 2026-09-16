@@ -78,7 +78,9 @@ const reviewReasonCopy = value => {
   ];
   const mismatches = fingerprintLabels.filter(([key]) => value[key] === false).map(([, copy]) => copy);
   const fingerprints = mismatches.length ? ` · 不一致：${mismatches.join('、')}` : '';
-  return `${label}${floor}${counts}${marker}${fingerprints}`;
+  const binding = value.bindingIssue === 'markerConflict' ? ' · 绑定冲突：消息标识指向当前记录之外的楼'
+    : ['duplicateMarker', 'duplicateBinding'].includes(value.bindingIssue) ? ' · 绑定冲突：多楼共用同一标识' : '';
+  return `${label}${floor}${counts}${marker}${binding}${fingerprints}`;
 };
 const selectorFailureCopy = value => ({
   QQJ_TIMEOUT: 'API 请求超时', QQJ_RATE_LIMIT: 'API 请求过于频繁', QQJ_SERVER: 'API 服务暂时异常', QQJ_NETWORK: '无法连接 API',
@@ -99,6 +101,9 @@ const workPhaseCopy = state => ({ reconciling: '正在同步楼层', extracting:
 const DIAGNOSTIC_STATUS = new Set(['idle', 'preparing', 'ready', 'error', 'disabled', 'suspended', 'running', 'uninitialized', 'stale', 'needsReview', 'conflict', 'empty', 'skipped', 'failed', 'partial', 'pending', 'noChange', 'notApplicable', 'unavailable', 'syncing', 'caughtUp', 'waitingRealtime', 'pendingRebuild', 'rebuilding', 'paused', 'completed', 'deleting', 'historicalDebt', 'realtimeTail', 'notReady', 'unknown']);
 const DIAGNOSTIC_PHASE = new Set(['capturing', 'completed', 'stale', 'retryableError', 'anchor', 'load', 'foundation', 'extracting', 'validating', 'committing', 'resetting', 'reconciling', 'analyzingCse', 'revisingCse', 'revising', 'baseline', 'analyzing', 'correcting', 'pending', 'input', 'source', 'selecting', 'receipt', 'starting', 'deletingRecords', 'deletingBinding', 'clearingHost', 'unknown']);
 const DIAGNOSTIC_KIND = new Set(['manual', 'auto', 'unknown']);
+const DIAGNOSTIC_REVIEW_REASON = new Set(['missingRoot', 'indexNeedsReseal', 'stableCountMismatch', 'candidateCountMismatch', 'locatorMismatch', 'markerMismatch', 'fingerprintMismatch']);
+const DIAGNOSTIC_MARKER_STATUS = new Set(['none', 'valid', 'foreign', 'invalid']);
+const DIAGNOSTIC_BINDING_ISSUE = new Set(['markerConflict', 'duplicateMarker', 'duplicateBinding', 'markerRejected']);
 const STANDARD_ERROR_NAMES = new Set(['Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError', 'AggregateError', 'AbortError', 'DOMException', 'TimeoutError']);
 const enumDiagnostic = (value, allowed) => allowed.has(value) ? value : 'unknown';
 const booleanDiagnostic = value => typeof value === 'boolean' ? value : 'unknown';
@@ -107,6 +112,21 @@ const presenceDiagnostic = (source, key) => source && Object.hasOwn(source, key)
 const operationDiagnostic = (value, { kind = false } = {}) => value
   ? { present: true, ...(kind ? { kind: enumDiagnostic(value.kind, DIAGNOSTIC_KIND) } : {}), phase: enumDiagnostic(value.phase, DIAGNOSTIC_PHASE) }
   : { present: false, ...(kind ? { kind: null } : {}), phase: null };
+function reviewReasonDiagnostic(value, sourceKnown = true) {
+  if (!sourceKnown) return { present: 'unknown' };
+  if (!value) return { present: false };
+  const numberOrNull = (candidate, { zero = false } = {}) => Number.isSafeInteger(candidate) && candidate >= (zero ? 0 : 1) ? candidate : null;
+  return {
+    present: true,
+    code: enumDiagnostic(value.code, DIAGNOSTIC_REVIEW_REASON),
+    assistantSeq: numberOrNull(value.assistantSeq),
+    messageIndex: numberOrNull(value.messageIndex, { zero: true }),
+    expectedCount: numberOrNull(value.expectedCount, { zero: true }),
+    actualCount: numberOrNull(value.actualCount, { zero: true }),
+    markerStatus: value.markerStatus === undefined ? null : enumDiagnostic(value.markerStatus, DIAGNOSTIC_MARKER_STATUS),
+    bindingIssue: value.bindingIssue === undefined ? null : enumDiagnostic(value.bindingIssue, DIAGNOSTIC_BINDING_ISSUE),
+  };
+}
 function errorDiagnostic(value, sourceKnown = true) {
   if (!sourceKnown) return { present: 'unknown' };
   if (!value) return { present: false };
@@ -300,6 +320,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         pluginEnabled: booleanDiagnostic(memory?.pluginEnabled),
         chatIdPresent: presenceDiagnostic(memory, 'chatId'),
         headCheckpointPresent: presenceDiagnostic(memory, 'headCheckpointId'),
+        reviewReason: reviewReasonDiagnostic(memory?.reviewReason, memoryKnown),
         activeRun: memoryKnown ? operationDiagnostic(memory.activeRun) : { present: 'unknown', phase: 'unknown' },
         lastError: errorDiagnostic(memory?.lastError, memoryKnown),
       },

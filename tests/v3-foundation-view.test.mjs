@@ -330,6 +330,32 @@ test('needsReview 终态显示准确中文和安全原因，不向页面泄露�
   view.setPage('people'); assert.match(flatten(container).map(node => node.textContent).join('|'), /needsReview 下仍可见的人物状态/);
 });
 
+test('无正文分支冲突在待核对文案与状态诊断中区分标识指向外部楼和多楼共用标识', async () => {
+  let copied = '';
+  const base = { status: 'needsReview', pluginEnabled: true, chatId: CHAT, foundationStatus: 'needsReview', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle',
+    stableCount: 4, rememberedCount: 2, unprocessedCount: 2, memoryWorkBusy: false, activeAutoMemory: null, activeExtraction: null, activeCse: null,
+    rebuildStatus: 'notReady', cseRebuildStatus: 'idle', floors: [] };
+  let state = { ...base, reviewReason: { code: 'markerMismatch', assistantSeq: 3, messageIndex: 8, expectedCount: 4, actualCount: 4, markerStatus: 'valid', bindingIssue: 'markerConflict' } };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, documentRef, navigatorRef: { clipboard: { writeText: async value => { copied = value; } } } }); view.mount(container);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /绑定冲突：消息标识指向当前记录之外的楼/u);
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  await new Promise(resolve => setImmediate(resolve));
+  let diagnostic = JSON.parse(copied).foundation.reviewReason;
+  assert.deepEqual(diagnostic, { present: true, code: 'markerMismatch', assistantSeq: 3, messageIndex: 8, expectedCount: 4, actualCount: 4, markerStatus: 'valid', bindingIssue: 'markerConflict' });
+  assert.doesNotMatch(copied, new RegExp(CHAT, 'u'));
+  assert.doesNotMatch(copied, /floorId|聊天正文/u);
+
+  state = { ...base, reviewReason: { code: 'markerMismatch', assistantSeq: 2, messageIndex: 6, expectedCount: 4, actualCount: 4, markerStatus: 'valid', bindingIssue: 'duplicateMarker' } };
+  view.render(state);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /绑定冲突：多楼共用同一标识/u);
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  await new Promise(resolve => setImmediate(resolve));
+  diagnostic = JSON.parse(copied).foundation.reviewReason;
+  assert.equal(diagnostic.bindingIssue, 'duplicateMarker');
+});
+
 test('完整诊断必须显式确认，clipboard 不可用时显示可选择文本框', async () => {
   let confirmed = false;
   const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
