@@ -102,7 +102,7 @@ export function projectAnnualSettings(records = [], currentTime = null, bodyRemi
       ...item, nextDate: next?.date ?? null, distance: next?.distance ?? null, status });
     if (next && Number.isInteger(next.distance) && next.distance <= 7 && !duplicate) reminders.push({ itemId: id, type: 'annual', subjectEntityId: record.subjectEntityId,
       rankText: `${record.subjectName} ${item.label} ${item.note}`, distance: next.distance, sourceSignature: JSON.stringify([record.sourceKey, record.fingerprint, item]),
-      text: `${record.subjectName} / ${item.label}：原日期 ${item.originalDate}；下次日期 ${next.date}，${next.distance ? `还有${next.distance}天` : '已到本日'}。${item.note ? `年度含义：${item.note}；` : ''}尚未确认庆祝、纪念或履约。` });
+      text: `${record.subjectName} / ${item.label}：原日期 ${item.originalDate}；下次日期 ${next.date}，${next.distance ? `还有${next.distance}天` : '已到本日'}。${item.note ? `年度含义：${item.note}` : ''}` });
   }
   return { items, reminders };
 }

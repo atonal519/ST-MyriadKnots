@@ -19,7 +19,7 @@ function fieldsFrom(person) {
 function sameFields(left, right) { return PEOPLE_PROFILE_FIELDS.every(field => String(left?.[field] ?? '') === String(right?.[field] ?? '')); }
 
 export function createPeopleProfilesView({ runtime, sessionStateProvider = null, prepareSession = null, dialog = null, documentRef = globalThis.document, imageFactory = () => new Image(), urlApi = globalThis.URL } = {}) {
-  if (!runtime || ['getState', 'refresh', 'setSelectedEntityIds', 'setPersonOrderEntityIds', 'saveProfile', 'saveAvatar', 'mergePeople', 'deletePerson', 'generateMissingProfiles', 'regenerateProfile'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('千人人物资料 runtime 无效');
+  if (!runtime || ['getState', 'refresh', 'setSelectedEntityIds', 'setPersonOrderEntityIds', 'saveProfile', 'saveAvatar', 'mergePeople', 'deletePerson', 'generateMissingProfiles', 'rewriteSelectedProfiles', 'regenerateProfile'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('千人人物资料 runtime 无效');
   if (!documentRef?.createElement) throw new TypeError('千人人物资料 documentRef 无效');
   let container = null, active = false, epoch = 0, unsubscribe = null, state = runtime.getState(), chatId = state.chatId ?? null, feedback = '人物资料状态已显示。';
   let currentEntityId = null, showMore = false, cropDraft = null, cropLoadId = 0, cropLoadController = null;
@@ -41,7 +41,11 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   const statusCopy = value => {
     if (value.status === 'disabled') return '千千结已关闭';
     if (value.active?.kind === 'loading') return '正在读取当前聊天的人物资料';
-    if (value.active?.kind === 'generating') return '正在整理人物资料';
+    if (value.active?.kind === 'generating') {
+      const index = value.active.batchIndex, total = value.active.batchTotal;
+      const progress = Number.isSafeInteger(index) && Number.isSafeInteger(total) && index > 0 && total >= index ? ` · 第 ${index}/${total} 批` : '';
+      return `正在整理人物资料${progress}`;
+    }
     if (value.active?.kind === 'savingSelection') return '正在保存重要人物选择';
     if (value.active?.kind === 'savingOrder') return '正在保存人物顺序';
     if (value.active?.kind === 'savingProfile') return '正在保存人物资料';
@@ -132,10 +136,18 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   }
   function generationButton(className = 'secondary-action') {
     const button = element('button', className, '整理');
-    const description = state.active?.kind === 'generating' ? '正在整理人物资料' : `整理待建档人物${state.unprofiledSelectedCount ? `（${state.unprofiledSelectedCount}）` : ''}`;
+    const selectedCount = state.people.filter(person => person.selected).length;
+    const description = state.active?.kind === 'generating' ? '正在整理人物资料' : `整档整理已选人物${selectedCount ? `（${selectedCount}）` : ''}`;
     button.setAttribute?.('title', description); button.setAttribute?.('aria-label', description);
-    button.type = 'button'; button.disabled = Boolean(state.active) || state.unprofiledSelectedCount < 1;
-    button.addEventListener('click', () => { void run('整理基础资料', () => runtime.generateMissingProfiles(), { generationReport: true }); });
+    button.type = 'button'; button.disabled = Boolean(state.active) || selectedCount < 1;
+    button.addEventListener('click', () => { void (async () => {
+      if (!dialog?.confirm) { feedback = '当前环境无法打开整档整理确认窗口。'; render(state); return; }
+      const confirmed = await dialog.confirm({ title: `整档整理 ${selectedCount} 位人物`,
+        body: '将用已有档案（含人工设定）、人物卡、获准世界书和 CSE Core，一次请求重新分类全部已选人物；不会扫描逐楼历史。',
+        note: '成功人物会整体替换旧档案；失败或无法安全绑定的人物保留原档案。', confirmText: '开始整理', cancelText: '取消' });
+      if (!confirmed) return;
+      await run('整档整理人物资料', () => runtime.rewriteSelectedProfiles(), { generationReport: true });
+    })(); });
     return button;
   }
   function personGenerationButton(person, className = 'secondary-action') {

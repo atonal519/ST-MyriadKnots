@@ -50,7 +50,7 @@ test('提示词模块字段 change 即持久化', () => {
   const { node } = createPromptsSettings({ settings, documentRef });
   const wrappers = node.find(n => n.id === 'qqj-settings-wrappers');
   assert.ok(wrappers); assert.equal(wrappers.open, false);
-  assert.equal(wrappers.children[0].textContent, '提示词');
+  assert.equal(wrappers.children[0].textContent, '包裹符');
   assert.match(node.children[1].className, /settings-drawer-list/);
   const keep = fieldControl(wrappers, '保留包裹符');
   keep.value = 'content,summary'; keep.fire('change');
@@ -62,13 +62,14 @@ test('提示词模块字段 change 即持久化', () => {
 });
 
 test('提示词模块提供时间戳开关、独立参考标签、原样自定义、恢复默认与协调状态', async () => {
-  const current = { sourceKeepTags: 'content', sourceExtraTags: '', storyClockEnabled: true, storyClockPrompt: '', storyClockReferenceTags: 'Ti' };
+  const current = { sourceKeepTags: 'content', sourceExtraTags: '', storyClockEnabled: true, storyClockPrompt: '', storyClockReferenceTags: '' };
   const patches = [], refreshes = [];
   const settings = { get: () => ({ ...current }), update: patch => { Object.assign(current, patch); patches.push(patch); return { ...current }; } };
   const { node } = createPromptsSettings({ settings, documentRef, onStoryClockChange: options => { refreshes.push(options ?? {}); return { label: current.storyClockPrompt ? '使用自定义时间戳提示词' : '已调用千千结时间戳' }; } });
   assert.equal(node.find(n => n.id === 'qqj-story-clock-status').textContent, '已调用千千结时间戳');
   const referenceTags = fieldControl(node, '正文时间参考标签');
-  assert.equal(referenceTags.value, 'Ti');
+  assert.equal(referenceTags.value, '');
+  assert.doesNotMatch(referenceTags.placeholder, /Ti/u);
   referenceTags.value = 'Ti,时标'; await referenceTags.fire('change');
   assert.deepEqual(patches.at(-1), { storyClockReferenceTags: 'Ti,时标' });
   assert.match(node.textContent, /不改变正文清洗/);

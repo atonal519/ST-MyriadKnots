@@ -41,7 +41,7 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   const memoryListeners = new Set(), timeListeners = new Set();
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => state, editSummary: async () => state, subscribe(listener) { memoryListeners.add(listener); return () => memoryListeners.delete(listener); } };
   const emit = next => { state = next; for (const listener of memoryListeners) listener(next); };
-  const item = { person: '甲', label: '擦伤', type: 'body', observation: '手腕擦伤 <b>原文</b>', observationTime: { date: '2026-05-10' }, occurrenceTime: { date: null }, observationElapsedDays: 2, observationElapsedHours: null, elapsedDays: null, elapsedHours: null, projection: null };
+  const item = { person: '甲', label: '擦伤', type: 'body', status: 'active', observation: '手腕擦伤 <b>原文</b>', observationTime: { date: '2026-05-10' }, occurrenceTime: { date: null }, observationElapsedDays: 2, observationElapsedHours: null, elapsedDays: null, elapsedHours: null, projection: null };
   let timeState = { status: 'idle', active: false, canOrganize: true, disabledReason: '', last: null, trackedItems: null }, reads = 0, refreshes = 0, organizes = 0, cached = false;
   const publish = () => { for (const listener of timeListeners) listener(timeState); };
   const timeRuntime = { getState: () => structuredClone(timeState), subscribe(listener) { timeListeners.add(listener); return () => timeListeners.delete(listener); },
@@ -89,10 +89,17 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   await toggle.click(); await toggle.click(); assert.equal(reads, 1); assert.equal(toggle.attributes['aria-expanded'], 'true');
   timeState = { ...timeState, trackedItems: [{ ...item, oldProjection: { text: '旧推测', applicableTime: { date: '2026-05-11' } }, assessmentReason: '没有新观察，无法判断。' }] }; publish();
   assert.match(flatten(container).map(node => node.textContent).join('|'), /当前依据不足.*截至 2026-05-11 的旧推测/);
+  assert.ok(flatten(container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'));
   timeState = { ...timeState, trackedItems: [{ ...item, reviewStatus: 'omitted' }] }; publish();
   assert.match(flatten(container).map(node => node.textContent).join('|'), /本次未纳入当前评估/);
+  assert.equal(flatten(container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'), false, '未纳入不是事项错误');
   timeState = { ...timeState, trackedItems: [{ ...item, failureReason: '来源编号无效。' }] }; publish();
   assert.match(flatten(container).map(node => node.textContent).join('|'), /本次未更新：来源编号无效。 原内容已保留，可编辑或移除/);
+  assert.ok(flatten(container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'));
+  timeState = { ...timeState, trackedItems: [{ ...item, reviewStatus: 'unanswered' }] }; publish();
+  assert.ok(flatten(container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'));
+  timeState = { ...timeState, trackedItems: [item] }; publish();
+  assert.equal(flatten(container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'), false, '健康后标题恢复普通色');
   timeState = { ...timeState, last: { status: 'partial', message: '第2项：来源编号未在本次请求中出现。请手动继续。' } }; publish();
   assert.match(flatten(container).map(node => node.textContent).join('|'), /部分完成.*第2项/);
   assert.equal(flatten(container).find(node => node.textContent === '继续补查历史').disabled, false);
@@ -164,9 +171,10 @@ test('近期事项人工编辑保草稿焦点，失败重试与取消零写，�
   const beforeStopped = reads; await flatten(container).find(node => node.textContent === '查看停止项（1）').click(); assert.equal(reads, beforeStopped);
   assert.match(flatten(container).map(node => node.textContent).join('|'), /已暂停/u);
   for (const status of ['completed', 'paused', 'cancelled']) {
-    timeState = { ...timeState, stoppedItems: [{ ...item, type: 'cycle', status, dueTime: { date: '2026-05-15' }, periodDays: 5 }] }; emit();
+    timeState = { ...timeState, stoppedItems: [{ ...item, type: 'cycle', status, failureReason: '旧失败', assessmentReason: '旧依据不足', reviewStatus: 'unanswered', dueTime: { date: '2026-05-15' }, periodDays: 5 }] }; emit();
     const text = flatten(container).map(node => node.textContent).join('|');
     assert.match(text, /已停止追踪/u); assert.doesNotMatch(text, /等待推算|尚未确认发生或完成|当前推测/u);
+    assert.equal(flatten(container).find(node => node.textContent.includes('甲 · 只改名称')).className.includes('error'), false, '结束事项不保留错误标题色');
   }
   timeState = { ...timeState, stoppedItems: [{ ...item, mergedInto: 'primary' }] }; emit();
   assert.match(flatten(container).map(node => node.textContent).join('|'), /已归并.*因归并退出独立追踪/u);
@@ -218,6 +226,29 @@ test('近期事项菜单确认取消零写，失败重试，同内容通知及�
     if (mutation === 'chat') late.changeChat(); else if (mutation === 'key') late.changeKey(); else if (mutation === 'busy') late.changeTime({ active: true, canOrganize: false }); else late.view.setPage('management');
     late.confirm(true); await pending; assert.equal(late.writes(), 0, `${mutation}变化后旧确认不保存`); late.view.deactivate();
   }
+});
+
+test('近期事项批量勾选当前列表或问题项，年度设定保持只读且一次提交', async () => {
+  let memoryState = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: false, floors: [] };
+  const memoryListeners = new Set(), timeListeners = new Set(), calls = [];
+  const item = (id, extra = {}) => ({ id, observationKey: `key-${id}`, status: 'active', person: '甲', label: id, type: 'body', observation: `${id}观察`, observationTime: { date: '2026-05-10' }, occurrenceTime: { date: null }, dueTime: { date: null }, elapsedHours: null, elapsedDays: null, observationElapsedHours: null, observationElapsedDays: 2, projection: null, ...extra });
+  let timeState = { status: 'completed', active: false, canOrganize: true, trackedItems: [item('健康'), item('失败', { failureReason: '来源无效' }), item('不足', { assessmentReason: '时间不明' })], stoppedItems: [], annualItems: [{ id: 'annual', person: '甲', label: '生日', status: '休眠', originalDate: '8月1日' }] };
+  const emitTime = () => { for (const listener of timeListeners) listener(timeState); };
+  const runtime = { getState: () => memoryState, refreshStatus: async () => memoryState, confirmLatest: async () => memoryState, subscribe(listener) { memoryListeners.add(listener); return () => memoryListeners.delete(listener); } };
+  const timeRuntime = { getState: () => structuredClone(timeState), refreshStatus: async () => timeState, subscribe(listener) { timeListeners.add(listener); return () => timeListeners.delete(listener); },
+    async editItems(edits) { calls.push(structuredClone(edits)); const ids = new Set(edits.map(edit => edit.itemId)); const stopped = timeState.trackedItems.filter(value => ids.has(value.id)).map(value => ({ ...value, status: edits.find(edit => edit.itemId === value.id).fields.status, observationKey: `${value.observationKey}-saved` })); timeState = { ...timeState, trackedItems: timeState.trackedItems.filter(value => !ids.has(value.id)), stoppedItems: stopped }; emitTime(); return timeState; },
+    async editItem() { throw new Error('批量路径不应循环调用 editItem'); } };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, timeRuntime, documentRef, confirmImpl: () => true }); view.setPage('memories'); view.mount(container);
+  await flatten(container).find(node => node.textContent === '近期事项（4）').click(); await flatten(container).find(node => node.textContent === '批量管理').click();
+  assert.equal(flatten(container).filter(node => node.className === 'qqj-recent-item-select').length, 3, '年度设定没有复选框');
+  await flatten(container).find(node => node.textContent === '选择问题项').click();
+  const checks = flatten(container).filter(node => node.className === 'qqj-recent-item-select');assert.deepEqual(checks.map(node => node.checked), [false, true, true]);
+  assert.ok(flatten(container).some(node => node.textContent === '批量完成'));assert.ok(flatten(container).some(node => node.textContent === '批量移除'));
+  await flatten(container).find(node => node.textContent === '批量暂停').click();assert.equal(calls.length, 1);assert.deepEqual(calls[0].map(edit => edit.itemId), ['失败', '不足']);assert.ok(calls[0].every(edit => edit.fields.status === 'paused'));
+  await flatten(container).find(node => node.textContent === '批量管理').click();await flatten(container).find(node => node.textContent === '选择当前列表').click();
+  assert.equal(flatten(container).filter(node => node.className === 'qqj-recent-item-select' && node.checked).length, 1);assert.match(flatten(container).map(node => node.textContent).join('|'), /甲 · 生日 · 休眠.*只读事项/u);
+  memoryState = { ...memoryState, chatId: 'new-chat' };for (const listener of memoryListeners) listener(memoryState);
+  assert.equal(flatten(container).some(node => node.className === 'qqj-recent-item-select'), false, '切聊天清空批量模式与选择');view.deactivate();
 });
 
 test('管理视图先显示壳并在激活时自动刷新，只在管理页提供手工刷新', async () => {
@@ -282,6 +313,38 @@ test('未建档聊天的空同步 ID 不误锁刷新与显式补齐', async () =
   rebuild.click();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(rebuilds, 1, '补齐仍调用既有 startHistoricalRebuild');
+});
+
+test('补齐与完全重构用标准两按钮选择本次模式，关闭时不开始任务或删除', async () => {
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle',
+    stableCount: 20, rememberedCount: 0, unprocessedCount: 20, memoryWorkBusy: false, activeAutoMemory: null, activeExtraction: null, activeCse: null,
+    rebuildStatus: 'pendingRebuild', rebuildHasActionableWork: true, cseRebuildStatus: 'idle', floors: [] };
+  const starts = [], resets = [], dialogs = [], selections = [true, false, null, null];
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    startHistoricalRebuild: async options => { starts.push(options); return state; } };
+  const chooseImpl = async options => { dialogs.push(options); return selections.shift(); };
+  const memoryManagement = { getState: () => ({}), deleteCurrent: async () => ({}), fullRebuild: async (chatId, options) => { resets.push([chatId, options]); return state; } };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, memoryManagement, documentRef, chooseImpl }); view.mount(container);
+  await flatten(container).find(node => node.textContent === '补齐缺失').click();
+  await new Promise(resolve => setImmediate(resolve));
+  await flatten(container).find(node => node.textContent === '完全重构').click();
+  await new Promise(resolve => setImmediate(resolve));
+  await flatten(container).find(node => node.textContent === '补齐缺失').click();
+  await new Promise(resolve => setImmediate(resolve));
+  await flatten(container).find(node => node.textContent === '完全重构').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(starts, [{ aggregate: true }]);
+  assert.deepEqual(resets, [[CHAT, { aggregate: false }]]);
+  assert.equal(dialogs.length, 4);
+  for (const dialog of dialogs) {
+    assert.deepEqual(dialog.choices, [
+      { value: false, label: '否（普通逐楼模式）' },
+      { value: true, label: '是（高楼压缩模式）', primary: true },
+    ]);
+    assert.match(dialog.note, /关闭窗口不会开始任务/u);
+  }
+  assert.match(dialogs[1].body, /全部删除.*所有人工修改/u, '完全重构必须保留清空警告');
 });
 
 test('未建立记忆按现有历史与自动摘要开关提示，三页均不把正常空态报错', () => {

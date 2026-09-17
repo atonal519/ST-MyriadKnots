@@ -33,6 +33,31 @@ test('共享绑定按 marker、同位置 canonical、移动后唯一指纹依次
   assert.equal(result.matches[0].canonicalFingerprintMatches, true);
 });
 
+test('同位置原文精确一致可跨清洗配置变化，离开原位置仍不得仅凭原文绑定', () => {
+  const samePosition = matchFloorCandidates(
+    [floor('floor-a', 0, 'raw-a', 'canonical-old')],
+    [candidate(0, 'raw-a', 'canonical-new')],
+  );
+  assert.equal(samePosition.issue, null);
+  assert.deepEqual(samePosition.matches.map(match => [match.floor.id, match.kind]), [['floor-a', 'locatorRaw']]);
+  assert.equal(samePosition.matches[0].rawFingerprintMatches, true);
+  assert.equal(samePosition.matches[0].canonicalFingerprintMatches, false);
+
+  const moved = matchFloorCandidates(
+    [floor('floor-a', 0, 'raw-a', 'canonical-old')],
+    [candidate(2, 'raw-a', 'canonical-new')],
+  );
+  assert.deepEqual(moved.unmatchedFloorIndexes, [0]);
+  assert.deepEqual(moved.unmatchedCandidateIndexes, [0]);
+
+  const duplicateCandidate = matchFloorCandidates(
+    [floor('floor-a', 0, 'raw-a', 'canonical-old')],
+    [candidate(0, 'raw-a', 'canonical-new'), candidate(0, 'raw-a', 'canonical-new')],
+  );
+  assert.equal(duplicateCandidate.matches.length, 1);
+  assert.deepEqual(duplicateCandidate.unmatchedCandidateIndexes, [1]);
+});
+
 test('valid marker 优先且允许正文变化，外来、冲突及重复 marker 均拒绝', () => {
   const floors = [floor('floor-a', 0, 'raw-a'), floor('floor-b', 2, 'raw-b')];
   const valid = status => ({ status, anchor: status === 'valid' ? { floorId: 'floor-b' } : null });

@@ -8,7 +8,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   storyClockEnabled: true,
   timeEvolutionEnabled: false,
   storyClockPrompt: '',
-  storyClockReferenceTags: 'Ti',
+  storyClockReferenceTags: '',
   autoMemoryBatchSize: 1,
   autoHideEnabled: false,
   autoHideKeepAiCount: 3,

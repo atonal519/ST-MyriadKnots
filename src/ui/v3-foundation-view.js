@@ -31,6 +31,8 @@ const messageIndexFor = (state, reference = {}) => {
   return null;
 };
 const floorCopy = (state, reference, fallback = '楼号未提供') => {
+  const range = Array.isArray(reference?.sourceMessageIndexes) ? reference.sourceMessageIndexes.filter(validMessageIndex) : [];
+  if (range.length > 1) return `第 ${range[0]}–${range.at(-1)} 楼`;
   const messageIndex = messageIndexFor(state, reference);
   return messageIndex === null ? fallback : `第 ${messageIndex} 楼`;
 };
@@ -153,7 +155,7 @@ const CSE_VISIBILITY_OPTIONS = Object.freeze([['private', '私密'], ['expressed
 const visibilityCopy = value => Object.fromEntries(CSE_VISIBILITY_OPTIONS)[value] ?? text(value);
 const originCopy = value => ({ baseline: '聊天基线', floor: '本楼分析', reasonableProgression: '合理进展', manual: '用户纠正' })[value] ?? '本地重放';
 
-export function createV3FoundationView({ runtime, recallRuntime = null, peopleRuntime = null, timeRuntime = null, memoryManagement = null, sessionStateProvider = null, backendDiagnosticProvider = null, pluginVersion = 'unknown', uiDiagnosticProvider = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, infoImpl = () => Promise.resolve(true), customImpl = null } = {}) {
+export function createV3FoundationView({ runtime, recallRuntime = null, peopleRuntime = null, timeRuntime = null, memoryManagement = null, sessionStateProvider = null, backendDiagnosticProvider = null, pluginVersion = 'unknown', uiDiagnosticProvider = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, chooseImpl = null, infoImpl = () => Promise.resolve(true), customImpl = null } = {}) {
   if (!runtime || ['getState', 'refreshStatus', 'confirmLatest'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('V3 foundation view runtime 无效');
   if (recallRuntime && typeof recallRuntime.getState !== 'function') throw new TypeError('V3 recall view runtime 无效');
   if (peopleRuntime && typeof peopleRuntime.getState !== 'function') throw new TypeError('V3 people workspace runtime 无效');
@@ -167,7 +169,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   let peopleMode = 'current', selectedCsePersonId = null, showMoreCsePeople = false;
   let foundationState = runtime.getState(), recallState = recallRuntime?.getState?.() ?? null, peopleState = peopleRuntime?.getState?.() ?? null, managementState = memoryManagement?.getState?.() ?? null, chatId = foundationState?.chatId ?? null, healthNode = null;
   let syncingChatId = null;
-  let recentItemsOpen = false, recentItemsUi = null, showStoppedItems = false, recentItemDraft = null;
+  let recentItemsOpen = false, recentItemsUi = null, showStoppedItems = false, recentItemDraft = null, recentBatchMode = false;
+  const selectedRecentItems = new Map();
   let relationSwitcherNode = null, relationSwitcherSignature = null, relationSwitcherChatId = chatId, relationSwitcherScrollLeft = 0;
   const drafts = new Map();
   const cseDrafts = new Map();
@@ -181,6 +184,27 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     if (className) node.className = className;
     if (value !== '') node.textContent = value;
     return node;
+  };
+  const confirmHistoricalMode = async ({ fullRebuild = false } = {}) => {
+    const title = fullRebuild ? '完全重构当前聊天记忆' : '补齐当前聊天记忆';
+    const body = fullRebuild
+      ? '当前聊天的千千结记录将全部删除，包括摘要、人物状态、千人人物资料、头像、重要人物选择、时间事项、前情及所有人工修改，再从头重新生成，并按正文分批补查时间事项（每批最多20楼且受输入预算限制，会使用摘要 API；全部稳定范围完成后最多再调用一次摘要 API评估当前活跃事项，失败、部分完成或停止不自动重试）；聊天正文、其他插件数据和全局设置保留。'
+      : '已有摘要和人物状态会保留，只处理缺失部分；刷新页面后不会自动续跑。';
+    if (typeof chooseImpl !== 'function') {
+      if (!fullRebuild) return Object.freeze({ aggregate: false });
+      const confirmed = await Promise.resolve(confirmImpl({ title, body, confirmText: '完全重构', cancelText: '取消' }));
+      return confirmed ? Object.freeze({ aggregate: false }) : null;
+    }
+    const selected = await Promise.resolve(chooseImpl({
+      title,
+      body,
+      note: '选择“是”会把连续 10 个 AI 楼合成一份压缩记忆，并在批末分析一次人物状态，能减少请求和记忆数量，但会舍去较多枝节；选择“否”会按普通逐楼模式处理。关闭窗口不会开始任务。',
+      choices: [
+        { value: false, label: '否（普通逐楼模式）' },
+        { value: true, label: '是（高楼压缩模式）', primary: true },
+      ],
+    }));
+    return typeof selected === 'boolean' ? Object.freeze({ aggregate: selected }) : null;
   };
   const scrollEditorToTop = selector => scrollManualEditorToTop(container.querySelector(selector));
   const row = (label, value) => { const node = element('div', 'v3-foundation-row'); node.append(element('dt', '', label), element('dd', '', text(value))); return node; };
@@ -197,7 +221,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   };
   const resetForChat = nextChatId => {
     if (nextChatId === chatId) return false;
-    showStoppedItems = false; recentItemDraft = null;
+    showStoppedItems = false; recentItemDraft = null; recentBatchMode = false; selectedRecentItems.clear();
     if (chatId !== null) { prequelDraft = null; prequelFeedback = ''; }
     chatId = nextChatId; drafts.clear(); cseDrafts.clear(); openState.clear(); recentItemsOpen = false; recentItemsUi = null; peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; feedback = '';
     return true;
@@ -517,7 +541,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         const edit = element('button', 'qqj-memory-menu-action', '编辑'); edit.type = 'button'; edit.disabled = workBusy(state);
         edit.addEventListener('click', () => { const memory = floor.memory; const names = new Map((state.memoryEntities ?? []).map(entity => [entity.entityId, entity.displayName])); const originalTimeText = timeDisplay(memory?.chronology) || floor.timeFallback || ''; const locations = (memory?.locations ?? []).map(item => ({ itemId: item.itemId, name: item.name ?? '' })); const participantNames = (memory?.participants ?? []).map(item => names.get(item.entityId)).filter(Boolean); drafts.set(key, { floorId: floor.floorId, canonicalFingerprint: floor.canonicalFingerprint, rawFingerprint: floor.rawFingerprint, summary: floor.summary, originalSummary: floor.summary, timeText: originalTimeText, originalTimeText, locations, originalLocations: locations.map(item => ({ ...item })), peopleText: participantNames.join('、'), originalParticipantNames: participantNames, note: '', saving: false, saveError: '' }); render(foundationState); });
         const extract = element('button', 'qqj-memory-menu-action', '重新提取'); extract.type = 'button'; extract.disabled = workBusy(state) || typeof runtime.extractFloor !== 'function';
-        extract.addEventListener('click', async () => { if (!await Promise.resolve(confirmImpl({ title: '重新提取本楼摘要', body: '重新提取只会替换本楼摘要；已保存的人物状态与其他楼记录保持不变。', confirmText: '重新提取', cancelText: '取消' }))) { feedback = '已取消重新提取。'; render(foundationState); return; } void run('重新提取', () => runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('重新提取', floor.floorId) }); });
+        extract.addEventListener('click', async () => { const ranged = (floor.sourceFloorIds?.length ?? 0) > 1; if (!await Promise.resolve(confirmImpl({ title: ranged ? '重新提取整段压缩记忆' : '重新提取本楼摘要', body: ranged ? `${floorCopy(state, floor)}会作为一个整体重新压缩并替换这一张范围记忆；已保存的人物状态与其他范围记忆保持不变。` : '重新提取只会替换本楼摘要；已保存的人物状态与其他楼记录保持不变。', confirmText: '重新提取', cancelText: '取消' }))) { feedback = '已取消重新提取。'; render(foundationState); return; } void run('重新提取', () => runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('重新提取', floor.floorId) }); });
         menuBody.append(edit, extract);
       } else {
         const extract = element('button', 'qqj-memory-menu-action', '提取摘要'); extract.type = 'button'; extract.disabled = workBusy(state) || typeof runtime.extractFloor !== 'function';
@@ -544,8 +568,10 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   }
   function updateRecentItems() {
     if (!active || page !== 'memories' || !recentItemsUi) return;
-    const { toggle, body, status, organize, retryRead, reason, list, stoppedToggle, stop } = recentItemsUi;
+    const { toggle, body, status, organize, retryRead, reason, list, stoppedToggle, stop, batchEntry, batchControls, batchAll, batchProblems, batchActions } = recentItemsUi;
     const state = timeRuntime?.getState?.(), result = state?.last, tracked = state?.trackedItems, annual = state?.annualItems;
+    const trackedById = new Map((tracked ?? []).map(item => [item.id, item]));
+    for (const [id, key] of selectedRecentItems) if (trackedById.get(id)?.observationKey !== key) selectedRecentItems.delete(id);
     toggle.textContent = `近期事项${Array.isArray(tracked) ? `（${tracked.length + (annual?.length ?? 0)}）` : ''}`;
     toggle.className = `secondary-action qqj-profile-more${recentItemsOpen ? ' active' : ''}`;
     toggle.disabled = false;
@@ -562,6 +588,14 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     stoppedToggle.textContent = showStoppedItems ? '返回追踪中事项' : `查看停止项${Array.isArray(stopped) ? `（${stopped.length}）` : ''}`;
     stoppedToggle.setAttribute('aria-pressed', String(showStoppedItems));
     stoppedToggle.disabled = recentItemDraft !== null || Boolean(recentItemsUi.pendingAction);
+    batchEntry.hidden = showStoppedItems;
+    batchEntry.textContent = recentBatchMode ? '取消批量' : '批量管理';
+    batchEntry.disabled = recentItemDraft !== null || Boolean(recentItemsUi.pendingAction) || !Array.isArray(tracked);
+    batchControls.hidden = !recentBatchMode || showStoppedItems;
+    const batchBusy = state?.canOrganize !== true || Boolean(recentItemsUi.pendingAction);
+    batchAll.disabled = batchBusy || !tracked?.length;
+    batchProblems.disabled = batchBusy || !(tracked ?? []).some(item => item.failureReason || item.assessmentReason || item.reviewStatus === 'unanswered');
+    for (const control of batchActions) control.disabled = batchBusy || selectedRecentItems.size === 0;
     reason.textContent = state?.disabledReason || recentItemsUi.planFeedback || `${state?.coverage?.startAssistantSeq ? `从 AI 第 ${state.coverage.startAssistantSeq} 楼开始追踪；${state.coverage.earlierUnchecked > 0 ? `此前 ${state.coverage.earlierUnchecked} 楼正文未检查` : '此前正文已检查'}。` : '等待当前 AI 楼成为追踪起点。'}${state?.coverage?.pendingFloors ? `另有 ${state.coverage.pendingFloors} 楼等待稳定绑定，正文未检查。` : ''}直接读取正文，摘要和人物状态可为空。补查历史会先确认楼数、批次与摘要 API 调用量；成功批次保留，可停止后继续。`;
     if (recentItemDraft) {
       for (const control of recentItemDraft.controls) control.disabled = recentItemDraft.saving || state?.canOrganize !== true;
@@ -583,16 +617,18 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       return [`${item.person} · ${item.label}${item.status && item.status !== 'active' ? ` · ${item.mergedInto ? '已归并' : { completed: '已完成', paused: '已暂停', cancelled: '已移除' }[item.status]}` : ''}`, `原观察：${item.observation}`,
         ...(item.mergeDescription ? [`归并经历：${item.mergeDescription}`] : []),
         `观察时间：${formatTime(item.observationTime)}${item.occurrenceTime?.date ? `；发生时间：${formatTime(item.occurrenceTime)}` : ''}；${elapsed}`,
-        stopped ? item.mergedInto ? '因归并退出独立追踪，原观察保留；恢复会解除归并。' : `${stoppedLabel}，已停止追踪；需要时可恢复。` : item.projection ? `当前推测：${item.projection}` : item.assessmentReason ? `当前依据不足：${item.assessmentReason}` : item.reviewStatus === 'omitted' ? '本次未纳入当前评估。' : item.reviewStatus === 'unanswered' ? '本次未返回有效当前评估，请手动更新。' : '当前估计待更新，原观察仍保留。',
+        stopped ? item.mergedInto ? '因归并退出独立追踪，原观察保留；恢复会解除归并。' : item.retirementReason ? `已暂停自动跟进：${item.retirementReason}；这不代表已痊愈，需要时可恢复。` : `${stoppedLabel}，已停止追踪；需要时可恢复。` : item.projection ? `当前推测：${item.projection}` : item.assessmentReason ? `当前依据不足：${item.assessmentReason}` : item.reviewStatus === 'omitted' ? '本次未纳入当前评估。' : item.reviewStatus === 'unanswered' ? '本次未返回有效当前评估，请手动更新。' : '当前估计待更新，原观察仍保留。',
         ...(item.failureReason ? [`本次未更新：${item.failureReason} 原内容已保留，可编辑或移除。`] : []),
         ...(!stopped && item.projection && item.reviewStatus ? [item.reviewStatus === 'omitted' ? '本次未纳入当前评估。' : '本次未返回有效当前评估，请手动更新。'] : []),
         ...(!stopped && item.oldProjection ? [`截至 ${formatTime(item.oldProjection.applicableTime)} 的旧推测：${item.oldProjection.text}；当前待更新。`] : []),
         ...(['cycle', 'deadline'].includes(item.type) ? [`${item.type === 'cycle' ? '预计周期日' : '约定期限'}：${formatTime(item.dueTime)}${item.periodDays ? `；明确周期 ${item.periodDays} 天` : ''}${stopped ? '' : '；尚未确认发生或完成。'}`] : [])];
     });
+    const titleIssues = (Array.isArray(visibleItems) ? visibleItems : []).map(item => item.status === 'active'
+      && Boolean(item.failureReason || item.assessmentReason || item.reviewStatus === 'unanswered'));
     if (!showStoppedItems) for (const item of annual ?? []) displayItems.push([`${item.person} · ${item.label} · ${item.status}`, `原日期：${item.originalDate}`,
       item.nextDate ? `下次日期：${item.nextDate}${Number.isInteger(item.distance) ? item.distance === 0 ? '；已到本日' : `；还有 ${item.distance} 天` : '；当前休眠'}` : '日期待明确：保留原设定，不自动套用公历。',
-      `${item.note ? `年度含义：${item.note}；` : ''}只读事项，请在千人基础资料或用户人设中修改。`]);
-    const signature = JSON.stringify([displayItems.length ? displayItems : message, (visibleItems ?? []).map(item => [item.id, item.observationKey]), (annual ?? []).map(item => [item.id, item.status, item.nextDate])]);
+      `${item.note ? `年度含义：${item.note}；` : ''}只读事项，请在千人基础资料或用户人设中修改。`]), titleIssues.push(false);
+    const signature = JSON.stringify([displayItems.length ? displayItems : message, titleIssues, recentBatchMode, [...selectedRecentItems], (visibleItems ?? []).map(item => [item.id, item.observationKey]), (annual ?? []).map(item => [item.id, item.status, item.nextDate])]);
     if (recentItemsUi.listSignature === signature) { for (const control of recentItemsUi.itemControls) control.disabled = state?.canOrganize !== true || Boolean(recentItemsUi.pendingAction); return; }
     recentItemsUi.listSignature = signature;
     list.replaceChildren();
@@ -600,16 +636,23 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     if (!displayItems.length) list.append(element('p', 'settings-hint', message));
     else for (const [index, [title, ...lines]] of displayItems.entries()) {
       const entry = element('div', 'settings-field');
-      const head = element('div', 'qqj-recent-item-head'); head.append(element('span', '', title));
-      entry.append(head, ...lines.map(line => element('p', 'settings-hint', line))); list.append(entry);
+      const head = element('div', 'qqj-recent-item-head');
       const item = visibleItems[index];
+      if (recentBatchMode && !showStoppedItems && item) {
+        const select = element('input', 'qqj-recent-item-select'); select.type = 'checkbox'; select.checked = selectedRecentItems.get(item.id) === item.observationKey;
+        select.setAttribute('aria-label', `选择${item.label}`); select.disabled = batchBusy;
+        select.addEventListener('change', () => { if (select.checked) selectedRecentItems.set(item.id, item.observationKey); else selectedRecentItems.delete(item.id); recentItemsUi.listSignature = null; updateRecentItems(); });
+        head.append(select); recentItemsUi.itemControls.push(select);
+      }
+      head.append(element('span', `qqj-recent-item-title${titleIssues[index] ? ' error' : ''}`, title));
+      entry.append(head, ...lines.map(line => element('p', 'settings-hint', line))); list.append(entry);
       if (!item) continue;
       const actions = operationMenus.register(element('details', 'qqj-profile-menu'));
       const menuToggle = element('summary', 'qqj-profile-menu-toggle', '⋮'); menuToggle.setAttribute('aria-label', `${item.label}事项操作`); menuToggle.setAttribute('title', '事项操作'); menuToggle.setAttribute('aria-haspopup', 'menu');
       const menuBody = element('div', 'qqj-profile-menu-pop'); menuBody.setAttribute('role', 'menu');
       const actionFeedback = element('p', 'settings-result error');
       const addAction = (label, callback) => { const button = element('button', `qqj-profile-menu-action${label === '移除' ? ' danger' : ''}`, label); button.type = 'button'; button.setAttribute('role', 'menuitem'); button.disabled = state?.canOrganize !== true || Boolean(recentItemsUi.pendingAction); button.addEventListener('click', () => { if (button.disabled) return; actions.open = false; return callback(); }); menuBody.append(button); recentItemsUi.itemControls.push(button); };
-      if (typeof timeRuntime?.editItem === 'function') {
+      if (typeof timeRuntime?.editItem === 'function' && !recentBatchMode) {
         addAction('编辑事项', () => startRecentEdit(item, entry));
         if (item.status === 'active') for (const [label, value] of [['完成', 'completed'], ['暂停', 'paused'], ['移除', 'cancelled']]) addAction(label, () => changeRecentStatus(item, value, actionFeedback));
         else addAction('恢复追踪', () => changeRecentStatus(item, 'active', actionFeedback));
@@ -628,6 +671,26 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const confirmed = await Promise.resolve(confirmImpl({ title: `${action}时间事项`, body: `确认${action}“${item.label}”？${status === 'active' ? item.mergedInto ? '本次解除归并，恢复独立跟进；主项当前合并描述与推测失效，原观察保留。' : '恢复后可继续追踪。' : '停止项仍可查看和恢复。'}保存不调用模型，会清除旧推测。`, confirmText: action, cancelText: '取消' }));
       if (!confirmed || !canSave()) return;
       await timeRuntime.editItem(item.id, { status }, item.observationKey);
+    } catch (error) { if (currentUi()) actionFeedback.textContent = `保存失败：${publicErrorMessage(error, { fallback: '事项未保存，请重试。' })}`; }
+    finally { if (ui.pendingAction === pending) ui.pendingAction = null; updateRecentItems(); }
+  }
+  async function changeRecentStatuses(status, actionFeedback) {
+    const ui = recentItemsUi, originalChatId = chatId, mine = epoch, selected = [...selectedRecentItems].map(([itemId, observationKey]) => ({ itemId, observationKey, fields: { status } }));
+    const action = { completed: '完成', paused: '暂停', cancelled: '移除' }[status];
+    const currentUi = () => active && page === 'memories' && recentItemsUi === ui && chatId === originalChatId && epoch === mine && runtime.getState()?.chatId === originalChatId;
+    const canSave = () => {
+      const state = timeRuntime.getState(), current = new Map((state.trackedItems ?? []).map(item => [item.id, item]));
+      return currentUi() && recentBatchMode && !recentItemDraft && state.canOrganize === true && selected.length > 0
+        && selected.every(edit => current.get(edit.itemId)?.observationKey === edit.observationKey);
+    };
+    if (ui.pendingAction || typeof timeRuntime?.editItems !== 'function' || !canSave()) return;
+    const pending = {}; ui.pendingAction = pending; actionFeedback.textContent = ''; updateRecentItems();
+    try {
+      const confirmed = await Promise.resolve(confirmImpl({ title: `批量${action}时间事项`, body: `确认${action}已选的 ${selected.length} 项？停止项仍可查看和恢复。保存不调用模型，会清除旧推测。`, confirmText: `批量${action}`, cancelText: '取消' }));
+      if (!confirmed || !canSave()) return;
+      await timeRuntime.editItems(selected);
+      if (!currentUi()) return;
+      selectedRecentItems.clear(); recentBatchMode = false;
     } catch (error) { if (currentUi()) actionFeedback.textContent = `保存失败：${publicErrorMessage(error, { fallback: '事项未保存，请重试。' })}`; }
     finally { if (ui.pendingAction === pending) ui.pendingAction = null; updateRecentItems(); }
   }
@@ -678,10 +741,21 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     stop.addEventListener('click', () => timeRuntime?.stop?.());
     const buttons = element('div', 'qqj-profile-toolbar-actions'); buttons.append(retryRead, stop, organize);
     const reason = element('p', 'settings-hint'), list = element('div', 'v3-foundation');
+    const listActions = element('div', 'qqj-recent-list-actions');
     const stoppedToggle = element('button', 'secondary-action', '查看停止项'); stoppedToggle.type = 'button';
-    stoppedToggle.addEventListener('click', () => { if (stoppedToggle.disabled) return; showStoppedItems = !showStoppedItems; updateRecentItems(); });
-    copy.append(status, reason); row.append(copy, buttons); body.append(row, stoppedToggle, list); actions.append(toggle); section.append(actions, body);
-    recentItemsUi = { section, toggle, body, status, organize, retryRead, reason, list, stoppedToggle, stop, itemControls: [], listSignature: null };
+    const batchEntry = element('button', 'secondary-action', '批量管理'); batchEntry.type = 'button';
+    listActions.append(stoppedToggle, batchEntry);
+    const batchControls = element('div', 'qqj-recent-batch-controls'); batchControls.hidden = true;
+    const batchAll = element('button', 'secondary-action', '选择当前列表'), batchProblems = element('button', 'secondary-action', '选择问题项'); batchAll.type = 'button'; batchProblems.type = 'button';
+    const batchActions = [['批量完成', 'completed'], ['批量暂停', 'paused'], ['批量移除', 'cancelled']].map(([label, value]) => { const button = element('button', `secondary-action${value === 'cancelled' ? ' danger' : ''}`, label); button.type = 'button'; button.addEventListener('click', () => changeRecentStatuses(value, batchFeedback)); return button; });
+    const batchFeedback = element('p', 'settings-result error');
+    batchControls.append(batchAll, batchProblems, ...batchActions); listActions.append(batchControls);
+    stoppedToggle.addEventListener('click', () => { if (stoppedToggle.disabled) return; showStoppedItems = !showStoppedItems; recentBatchMode = false; selectedRecentItems.clear(); updateRecentItems(); });
+    batchEntry.addEventListener('click', () => { if (batchEntry.disabled) return; recentBatchMode = !recentBatchMode; if (!recentBatchMode) selectedRecentItems.clear(); recentItemsUi.listSignature = null; updateRecentItems(); });
+    batchAll.addEventListener('click', () => { if (batchAll.disabled) return; selectedRecentItems.clear(); for (const item of timeRuntime.getState().trackedItems ?? []) selectedRecentItems.set(item.id, item.observationKey); recentItemsUi.listSignature = null; updateRecentItems(); });
+    batchProblems.addEventListener('click', () => { if (batchProblems.disabled) return; selectedRecentItems.clear(); for (const item of timeRuntime.getState().trackedItems ?? []) if (item.failureReason || item.assessmentReason || item.reviewStatus === 'unanswered') selectedRecentItems.set(item.id, item.observationKey); recentItemsUi.listSignature = null; updateRecentItems(); });
+    copy.append(status, reason); row.append(copy, buttons); body.append(row, listActions, batchFeedback, list); actions.append(toggle); section.append(actions, body);
+    recentItemsUi = { section, toggle, body, status, organize, retryRead, reason, list, stoppedToggle, stop, batchEntry, batchControls, batchAll, batchProblems, batchActions, itemControls: [], listSignature: null };
     toggle.addEventListener('click', () => { recentItemsOpen = !recentItemsOpen; updateRecentItems(); if (recentItemsOpen) void timeRuntime?.refreshStatus?.(); });
     organize.addEventListener('click', async () => {
       if (organize.disabled) return;
@@ -1054,8 +1128,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const sourceReadCopy = sourceReads ? `完整快照 ${sourceReads.reachableReads} 次 · 退出 ${sourceExitCopy[sourceReads.exitPoint] ?? '未知'}` : record.restoredReceipt ? '历史回执不重新读取来源' : '未记录';
     const floors = (record.selectedFloors ?? []).map(value => floorCopy(foundationState, value, '来源楼号未提供')).join('、') || '无', states = (record.selectedStates ?? []).map(value => `${value.subject} / ${value.layer}`).join('、') || '无';
     const changes = (record.selectedCseChanges ?? []).map(value => `${value.subject} / ${value.layer} / ${cseActionCopy(value.action)} / ${floorCopy(foundationState, value, '来源楼号未提供')}`).join('、') || '无';
+    const droppedCopy = record.strategyVersion === 'continuity-v15'
+      ? `${Number.isSafeInteger(stages?.relevanceFilteredCount) ? ` → 相关性或锚依据不足 ${stages.relevanceFilteredCount}` : ''}${Number.isSafeInteger(stages?.budgetDroppedCount) ? ` → 总容量未选入 ${stages.budgetDroppedCount}` : ''}`
+      : Number.isSafeInteger(stages?.budgetDroppedCount) ? ` → 未选入 ${stages.budgetDroppedCount}（含预算、条数或剧情线限制）` : '';
     const stageCopy = stages && [stages.recentSummaryCount, stages.distantHistoryItemCount, stages.stateCount].every(Number.isSafeInteger)
-      ? { main:`输入 ${stages.input} → 记忆楼 ${stages.candidates} → 近期摘要 ${stages.recentSummaryCount} → 远期旧事 ${stages.distantHistoryItemCount}${Number.isSafeInteger(stages.linkedHistoryItemCount) ? `（关联补入 ${stages.linkedHistoryItemCount}）` : ''} → 当前态 ${stages.currentStateCount ?? stages.stateCount} → 历史变化 ${stages.cseChangeCount ?? 0}${Number.isSafeInteger(stages.linkedCseChangeCount) ? `（关联补入 ${stages.linkedCseChangeCount}）` : ''}${[stages.timeCorrectionCount, stages.timeReminderCount].every(Number.isSafeInteger) ? ` → 时间参考 ${stages.timeCorrectionCount + stages.timeReminderCount}` : ''}${Number.isSafeInteger(stages.storylineCount) ? ` → 剧情线 ${stages.storylineCount}` : ''}${Number.isSafeInteger(stages.budgetDroppedCount) ? ` → 未选入 ${stages.budgetDroppedCount}（含预算、条数或剧情线限制） → 最终材料 ${stages.finalInjectionItemCount}` : ''}`, token:Number.isSafeInteger(stages.estimatedTokenCount) && Number.isSafeInteger(stages.estimatedTokenBudget) ? `Token 保守估算 ${stages.estimatedTokenCount}/${stages.estimatedTokenBudget}` : '' }
+      ? { main:`输入 ${stages.input} → 记忆楼 ${stages.candidates} → 近期摘要 ${stages.recentSummaryCount} → 远期旧事 ${stages.distantHistoryItemCount}${Number.isSafeInteger(stages.linkedHistoryItemCount) ? `（关联补入 ${stages.linkedHistoryItemCount}）` : ''} → 当前态 ${stages.currentStateCount ?? stages.stateCount} → 历史变化 ${stages.cseChangeCount ?? 0}${Number.isSafeInteger(stages.linkedCseChangeCount) ? `（关联补入 ${stages.linkedCseChangeCount}）` : ''}${[stages.timeCorrectionCount, stages.timeReminderCount].every(Number.isSafeInteger) ? ` → 时间参考 ${stages.timeCorrectionCount + stages.timeReminderCount}` : ''}${Number.isSafeInteger(stages.storylineCount) ? ` → 剧情线 ${stages.storylineCount}` : ''}${droppedCopy}${Number.isSafeInteger(stages.finalInjectionItemCount) ? ` → 最终材料 ${stages.finalInjectionItemCount}` : ''}`, token:Number.isSafeInteger(stages.estimatedTokenCount) && Number.isSafeInteger(stages.estimatedTokenBudget) ? `Token 保守估算 ${stages.estimatedTokenCount}/${stages.estimatedTokenBudget}` : '' }
       : { main:stages ? `输入 ${stages.input} → 记忆楼 ${stages.candidates} → 去近期 ${stages.dropRecent} → 去常驻重复 ${stages.dropPersistent ?? 0} → 去越界 ${stages.dropVisibility} → 选中楼 ${stages.selected}` : selectionCopy(record.selectionStatus), token:'' };
     if (uncommitted) stageCopy.main = `${record.diagnosticAttempt ? `第 ${record.diagnosticAttempt} 次尝试的` : ''}候选选材结果（本轮未注入） · ${stageCopy.main.replace('最终材料', '候选材料')}`;
     const selector = record.selectorDiagnostic;
@@ -1204,8 +1281,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     actions.append(refresh);
     const rebuildActionable = state.rebuildHasActionableWork ?? !['caughtUp', 'waitingRealtime'].includes(state.rebuildStatus);
     if (state.rebuildStatus === 'rebuilding' && typeof runtime.pauseHistoricalRebuild === 'function') { const pause = element('button', 'primary-action', '暂停补齐'); pause.type = 'button'; pause.disabled = !state.activeAutoMemory; pause.addEventListener('click', () => { void run('暂停补齐', () => runtime.pauseHistoricalRebuild(), { resultCopy: automaticResult('补齐缺失') }); }); actions.append(pause); }
-    else if (!['paused', 'failed'].includes(state.cseRebuildStatus)) { const begin = runtime.startHistoricalRebuild ?? runtime.retryAutomation; const proceedLabel = ['paused', 'failed', 'partial'].includes(state.rebuildStatus) ? '继续补齐' : '补齐缺失'; const proceed = element('button', 'primary-action', busy ? workPhaseCopy(state) : proceedLabel); proceed.type = 'button'; proceed.disabled = busy || typeof begin !== 'function' || !rebuildActionable; proceed.addEventListener('click', () => { void run(proceedLabel, () => begin.call(runtime, state.chatId), { resultCopy: automaticResult(proceedLabel) }); }); actions.append(proceed); }
-    const reset = element('button', 'secondary-action', '完全重构'); reset.type = 'button'; reset.disabled = busy || typeof memoryManagement?.fullRebuild !== 'function'; reset.addEventListener('click', async () => { if (!await Promise.resolve(confirmImpl({ title: '完全重构当前聊天记忆', body: '当前聊天的千千结记录将全部删除，包括摘要、人物状态、千人人物资料、头像、重要人物选择、时间事项、前情及所有人工修改，再从头重新生成，并按正文分批补查时间事项（每批最多20楼且受输入预算限制，会使用摘要 API；全部稳定范围完成后最多再调用一次摘要 API评估当前活跃事项，失败、部分完成或停止不自动重试）；聊天正文、其他插件数据和全局设置保留。', confirmText: '完全重构', cancelText: '取消' }))) { feedback = '已取消完全重构。'; render(foundationState); return; } const resetDraft = prequelDraft; void run('完全重构', () => memoryManagement.fullRebuild(state.chatId), { after: () => { if (prequelDraft === resetDraft) { prequelDraft = null; prequelFeedback = ''; } }, resultCopy: automaticResult('完全重构') }); }); actions.append(reset);
+    else if (!['paused', 'failed'].includes(state.cseRebuildStatus)) { const begin = runtime.startHistoricalRebuild ?? runtime.retryAutomation; const proceedLabel = ['paused', 'failed', 'partial'].includes(state.rebuildStatus) ? '继续补齐' : '补齐缺失'; const proceed = element('button', 'primary-action', busy ? workPhaseCopy(state) : proceedLabel); proceed.type = 'button'; proceed.disabled = busy || typeof begin !== 'function' || !rebuildActionable; proceed.addEventListener('click', async () => { const mode = await confirmHistoricalMode(); if (!mode) { feedback = `已取消${proceedLabel}。`; render(foundationState); return; } void run(proceedLabel, () => begin === runtime.startHistoricalRebuild ? begin.call(runtime, mode) : begin.call(runtime), { resultCopy: automaticResult(proceedLabel) }); }); actions.append(proceed); }
+    const reset = element('button', 'secondary-action', '完全重构'); reset.type = 'button'; reset.disabled = busy || typeof memoryManagement?.fullRebuild !== 'function'; reset.addEventListener('click', async () => { const mode = await confirmHistoricalMode({ fullRebuild: true }); if (!mode) { feedback = '已取消完全重构。'; render(foundationState); return; } const resetDraft = prequelDraft; void run('完全重构', () => memoryManagement.fullRebuild(state.chatId, mode), { after: () => { if (prequelDraft === resetDraft) { prequelDraft = null; prequelFeedback = ''; } }, resultCopy: automaticResult('完全重构') }); }); actions.append(reset);
     const cseRunning = state.cseRebuildStatus === 'running' && state.activeAutoMemory?.mode === 'cseRebuild';
     const cseResume = ['paused', 'failed'].includes(state.cseRebuildStatus);
     const cseAction = element('button', 'secondary-action', cseRunning ? '暂停人物状态重构' : cseResume ? '继续人物状态重构' : '人物状态重构'); cseAction.type = 'button';

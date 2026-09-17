@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { scanAssistantCandidates, createFloorRecord } from '../src/v3/foundation-domain.js';
-import { readTimeBody, planTimeBody, timeBodyStart } from '../src/v3/time-body.js';
+import { readTimeBody, planTimeBody, timeBodyStart, resolveTimeStart } from '../src/v3/time-body.js';
 import { createTimeRuntime, createTimeStore, prepareTimeRequest } from '../src/v3/time-runtime.js';
-import { compileTimeResponse, compileTimeEdit, replayTimeBatches, timeBodyReads, timeItemFailures, projectTime, validTimeProjection, timeRecallProjection, TIME_INPUT_TOKENS, TIME_SYSTEM_PROMPT } from '../src/v3/time-engine.js';
+import { compileTimeResponse, compileTimeEdit, compileTimeEdits, replayTimeBatches, timeBodyReads, timeItemFailures, projectTime, validTimeProjection, timeRecallProjection, TIME_INPUT_TOKENS, TIME_SYSTEM_PROMPT, TIME_CURRENT_REVIEW_PROMPT } from '../src/v3/time-engine.js';
 import { estimateRecallTokens, selectRecall, buildRecallQueryContext } from '../src/v3/recall-selector.js';
 import { projectInlineRecallReceipt } from '../src/ui/inline-projection.js';
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', PERSON = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -13,7 +13,7 @@ function backend() {
     async put(c,id,data,revision,{signal}={}) { if(signal?.aborted) throw new DOMException('abort','AbortError'); const key=`${c}/${id}`, old=records.get(key); assert.equal(old?.revision??0,revision); const result={data:structuredClone(data),revision:revision+1}; records.set(key,result); return structuredClone(result); } } };
 }
 const raw = (i, body='陌生人阿岚的手腕擦伤仍疼痛。') => `<!-- QQJ-start | date=2026-05-${String(i+1).padStart(2,'0')} | weekday=周一 | time=08:00 -->${body}<!-- QQJ-end | date=2026-05-${String(i+1).padStart(2,'0')} | weekday=周一 | time=09:00 -->`;
-async function harness({ count=2, unstable=false, generate=()=>({changes:[]}), sanitizer={}, tags='Ti' }={}) {
+async function harness({ count=2, unstable=false, generate=()=>({changes:[]}), sanitizer={}, tags='' }={}) {
   let chatId=CHAT,on=true,calls=0,busy=true,cse=false,sync='idle', counter=0;
   const chat=[]; for(let i=0;i<count;i++) { chat.push({is_user:false,mes:raw(i)}); if(!unstable||i<count-1) chat.push({is_user:true,mes:'继续'}); }
   const source={status:'ready',root:{chatId:CHAT,narrativeGeneration:'gen',headCheckpointId:'head'},rootRevision:1,floors:[],floorMemories:[],stateDeltas:[],entities:[],capabilities:{}};
@@ -35,7 +35,7 @@ const rankedSeed = (source,changes,{id='rank-seed',cutoff=source.bodyFloors[0]}=
   cutoffFloorId:cutoff.floorId,cutoffAssistantSeq:cutoff.assistantSeq,sourceKeys:[],dependencies:[],bodyReads:[],changes});
 
 test('召回时钟取未摘要可见正文；覆盖49变50不推进时间，同root正文或默认swipe变化不复用旧缓存', async () => {
-  const h = await harness({ count: 50 });
+  const h = await harness({ count: 50, tags: 'Ti' });
   h.chat[96].mes = '<Ti>7月19日 20:30</Ti>此前正文。';
   h.chat[98].mes = '<Ti>7月19日 21:40</Ti>最新正文。';
   await h.seal();
@@ -65,7 +65,7 @@ test('无摘要/CSE正文、新NPC由真实scanner登记，独立召回和楼内
   assert.equal(h.runtime.getState().coverage.checkedFloors,2);assert.equal(h.source.floorMemories.length,0);assert.equal(h.source.entities.length,0);
   const recall={status:'ready',chatId:CHAT,headCheckpointId:'head',rootRevision:1,bodyMatchRefs:h.source.floors.map(floor=>({floorId:floor.id,assistantSeq:floor.assistantSeq})),floorMemories:[],entities:[],currentState:[],cseChanges:[],identityProjection:{},coverage:{memoryComplete:false,cseCurrent:false},bodyMatch:{visibleFloorIds:[],summaryCoveredFloorIds:[]}};
   recall.timeProjection=await h.runtime.recallProjection(recall);assert.match(recall.timeProjection.reminders[0].text,/阿岚/);
-  const selected=selectRecall({source:recall,queryContext:buildRecallQueryContext({coreChat:[{is_user:true,mes:'现在怎么样'}]}),contextSize:8192});assert.match(selected.injectionText,/阿岚.*手腕擦伤/);
+  const selected=selectRecall({source:recall,queryContext:buildRecallQueryContext({coreChat:[{is_user:true,mes:'阿岚手腕擦伤现在怎么样'}]}),contextSize:8192});assert.match(selected.injectionText,/阿岚.*手腕擦伤/);
   assert.equal(projectInlineRecallReceipt({schemaVersion:11,status:selected.status,injectionText:selected.injectionText,selectedFloors:selected.floors,selectedStates:selected.states}).timeReferenceCount,1);
   await h.runtime.editItem(item.id,{label:'人工名称'},item.observationKey);const edited=(await h.store.read(CHAT)).batches.at(-1);assert.equal(edited.dependencies[0].canonicalFingerprint,item.sourceRefs[0].canonicalFingerprint);assert.equal(h.calls(),2);
   h.reload();await h.runtime.refreshStatus();assert.equal(h.runtime.getState().trackedItems[0].label,'人工名称');
@@ -75,6 +75,29 @@ test('首次开启冻结未稳定实际当前AI，不扫前楼；稳定后只从
   const h=await harness({count:3,unstable:true});await h.runtime.runBatch();assert.equal(h.calls(),0);const head=(await h.store.read(CHAT)).head;assert.equal(head.bodyStart.floorId,null);assert.equal(head.bodyStart.hostLocator.messageIndex,4);
   h.chat.push({is_user:true,mes:'继续'});await h.seal();await h.runtime.runBatch();assert.equal(h.calls(),1);const stored=await h.store.read(CHAT);assert.deepEqual(stored.batches[0].bodyReads.map(row=>row.floorId),['floor-3']);assert.equal(h.runtime.getState().coverage.checkedFloors,1);assert.equal(h.runtime.getState().coverage.startAssistantSeq,3);
   const empty=await harness({count:0});await empty.runtime.runBatch();assert.equal((await empty.store.read(CHAT)).head.bodyStart.awaitingFirst,true);empty.chat.push({is_user:false,mes:raw(0)},{is_user:true,mes:'继续'});await empty.seal();await empty.runtime.runBatch();assert.equal(empty.calls(),1);
+});
+
+test('未绑定起点前删楼后仅凭唯一双指纹迁移并持久化，稳定后仍只从原起点开始',async()=>{
+  const h=await harness({count:4,unstable:true});await h.runtime.runBatch();let stored=await h.store.read(CHAT);
+  const original=structuredClone(stored.head.bodyStart);assert.equal(original.floorId,null);assert.equal(original.hostLocator.messageIndex,6);
+  h.chat.splice(0,4);await h.seal();await h.runtime.runBatch();stored=await h.store.read(CHAT);
+  assert.equal(h.calls(),0);assert.equal(stored.head.bodyStart.floorId,null);assert.equal(stored.head.bodyStart.hostLocator.messageIndex,2);
+  assert.equal(stored.head.bodyStart.rawFingerprint,original.rawFingerprint);assert.equal(stored.head.bodyStart.canonicalFingerprint,original.canonicalFingerprint);
+  h.reload();await h.runtime.refreshStatus();assert.equal((await h.store.read(CHAT)).head.bodyStart.hostLocator.messageIndex,2,'重载读回迁移后位置');
+  h.chat.push({is_user:true,mes:'继续'});await h.seal();await h.runtime.runBatch();stored=await h.store.read(CHAT);
+  assert.equal(h.calls(),1);assert.equal(stored.head.bodyStart.floorId,'floor-2');assert.equal(stored.head.bodyStart.hostLocator.messageIndex,2);
+  assert.deepEqual(stored.batches[0].bodyReads.map(row=>row.floorId),['floor-2'],'起点前仍存在的稳定楼不得补扫');assert.equal(h.runtime.getState().coverage.startAssistantSeq,2);
+});
+
+test('未绑定起点移位只接受非空且唯一的raw与canonical双精确命中',()=>{
+  const body=(messageIndex,rawFingerprint='raw',canonicalFingerprint='canonical',floorId=null)=>({floorId,hostLocator:{messageIndex,swipeId:0},rawFingerprint,canonicalFingerprint,assistantSeq:messageIndex+1});
+  const start={floorId:null,hostLocator:{messageIndex:9,swipeId:0},rawFingerprint:'raw',canonicalFingerprint:'canonical'};
+  assert.equal(resolveTimeStart(start,{bodyFloors:[body(2)]})?.hostLocator.messageIndex,2);
+  assert.equal(resolveTimeStart(start,{bodyFloors:[body(2),body(3)]}),null,'重复双指纹不猜');
+  assert.equal(resolveTimeStart(start,{bodyFloors:[body(2,'changed','canonical')]}),null,'raw变化不恢复');
+  assert.equal(resolveTimeStart(start,{bodyFloors:[body(2,'raw','changed')]}),null,'canonical变化不恢复');
+  assert.equal(resolveTimeStart({...start,rawFingerprint:''},{bodyFloors:[body(2,'','canonical')]}),null,'空指纹不恢复');
+  assert.equal(resolveTimeStart({...start,floorId:'bound'},{bodyFloors:[body(2,'raw','canonical','other')]}),null,'已绑定起点只按floorId，不回退指纹');
 });
 
 test('打开与取消计划零API零标记，默认当前追踪不是历史授权；关闭重开保范围',async()=>{
@@ -87,11 +110,12 @@ test('20楼和完整预算、长楼分片、空成功留痕、第二批失败只
   const h=await harness({count:25,generate:(_,calls)=>{if(calls===2)throw new Error('synthetic');return {changes:[]};}});
   let plan=await h.runtime.prepareHistoryPlan();assert.ok(plan.groups.every(group=>new Set(group.map(row=>row.floorId)).size<=20));assert.ok(plan.batchCount>=2);await h.runtime.organize(plan);
   let stored=await h.store.read(CHAT);assert.equal(stored.batches.length,1);assert.equal(stored.batches[0].changes.length,0);plan=await h.runtime.prepareHistoryPlan();assert.equal(plan.floorCount,25-stored.batches[0].bodyReads.length);await h.runtime.organize(plan);assert.equal((await h.runtime.prepareHistoryPlan()).floorCount,0);
-  const long=await harness({count:1});long.chat[0].mes=raw(0,'阿岚观察。\n'+ '长正文。'.repeat(10000));await long.seal();plan=await long.runtime.prepareHistoryPlan();assert.ok(plan.batchCount>1);assert.ok(plan.groups.flat().every(row=>row.to-row.from<row.totalCharacters));
+  const long=await harness({count:1});long.chat[0].mes=raw(0,'阿岚观察。\n'+ '长正文。'.repeat(20000));await long.seal();plan=await long.runtime.prepareHistoryPlan();assert.ok(plan.groups.length>1);assert.ok(plan.groups.flat().every(row=>row.to-row.from<row.totalCharacters));
   await long.runtime.organize(plan);stored=await long.store.read(CHAT);const reads=timeBodyReads(stored.batches,await long.body()).get('floor-1').sort((a,b)=>a.from-b.from);assert.equal(reads[0].from,0);assert.equal(reads.at(-1).to,reads[0].totalCharacters);assert.equal(long.runtime.getState().coverage.checkedFloors,1);assert.equal((await long.runtime.prepareHistoryPlan()).apiCalls,0);
 });
 
-test('30000完整输入预算优先整楼合批，辅助长材料按剩余空间且无旧字符上限',async()=>{
+test('60000完整输入预算优先整楼合批，辅助长材料按剩余空间且无旧字符上限',async()=>{
+  assert.equal(TIME_INPUT_TOKENS,60000);
   const h=await harness({count:4});
   for(let i=0;i<4;i++) h.chat[i*2].mes=raw(i,'阿岚观察。\n'+'正文'.repeat(3000));
   await h.seal();const source=await h.body();
@@ -279,18 +303,47 @@ test('partial续查来源重编号与数组换序保真实ID/观察及人工停�
   await h.store.copyPrefix(CHAT,'short-child',source.floors.slice(0,1));assert.equal((await h.store.read('short-child')).batches.length,0);
 });
 
-test('partial停批与后台/重载守卫，手动续查合法旧项保留，saving阶段与存储异常如实失败',async()=>{
+test('partial继续后组与一次收尾，后台不回环，手动只补失败范围，存储异常如实失败',async()=>{
+  const requests=[];
   let h;h=await harness({count:25,generate:async(request,calls)=>{
+    requests.push(request);
     if(calls===1){void h.runtime.runBatch();return {changes:[bodyModel(request).changes[0],bodyModel(request,{sourceKeys:['S99']}).changes[0]]};}
     return request.currentReview ? reviewModel(request) : {changes:[]};
   }});
   const phases=[];h.runtime.subscribe(state=>phases.push(state.phase));await h.runtime.organize(await h.runtime.prepareHistoryPlan());
-  await new Promise(resolve=>setImmediate(resolve));assert.equal(h.calls(),1);assert.ok(phases.includes('saving'));
-  let stored=await h.store.read(CHAT);assert.equal(stored.head.lastRun.status,'partial');assert.equal(stored.batches.length,1);assert.equal(h.runtime.getState().coverage.checkedFloors,0);assert.match(h.runtime.getState().last.message,/第2项/);
-  await h.runtime.runBatch();h.reload();await h.runtime.runBatch();await h.runtime.refreshStatus({force:true});assert.equal(h.calls(),1);assert.equal(h.runtime.getState().last.status,'partial');
-  await h.runtime.organize(await h.runtime.prepareHistoryPlan());stored=await h.store.read(CHAT);assert.equal(stored.head.lastRun.status,'completed');assert.equal(replayTimeBatches(stored.batches,await h.body()).length,1);assert.equal((await h.runtime.prepareHistoryPlan()).floorCount,0);
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(h.calls(),3);assert.ok(phases.includes('saving'));assert.equal(requests.filter(request=>request.currentReview).length,1);
+  let stored=await h.store.read(CHAT);assert.equal(stored.head.lastRun.status,'partial');assert.equal(stored.head.lastRun.failedBatchCount,1);assert.equal(stored.batches.length,3);assert.equal(h.runtime.getState().coverage.checkedFloors,5);assert.match(h.runtime.getState().last.message,/本轮 1 批未完成/);
+  assert.equal(stored.batches[0].status,'partial');assert.deepEqual(stored.batches[0].bodyReads,[]);assert.equal(stored.batches[1].changes.length,0);assert.equal(stored.head.currentReviewAttempt.status,'completed');
+  await h.runtime.runBatch();h.reload();await h.runtime.runBatch();await h.runtime.refreshStatus({force:true});assert.equal(h.calls(),3);assert.equal(h.runtime.getState().last.status,'partial');
+  const retryPlan=await h.runtime.prepareHistoryPlan();assert.equal(retryPlan.floorCount,20);await h.runtime.organize(retryPlan);stored=await h.store.read(CHAT);assert.equal(h.calls(),4);assert.equal(stored.head.lastRun.status,'empty');assert.equal(replayTimeBatches(stored.batches,await h.body()).length,1);assert.equal((await h.runtime.prepareHistoryPlan()).floorCount,0);
+  assert.equal(requests[3].observations.at(-1).assistantSeq,20,'手动只补失败的首组，不重扫后组');
   const broken=await harness({generate:request=>({changes:[bodyModel(request).changes[0],bodyModel(request,{sourceKeys:['S99']}).changes[0]]})});
   broken.back.client.put=async(c,id,data,revision,options)=>{if(id.startsWith('v3-time-batch-'))throw new Error('storage failed');const key=`${c}/${id}`;const result={data:structuredClone(data),revision:revision+1};broken.back.records.set(key,result);return result;};await broken.runtime.organize(await broken.runtime.prepareHistoryPlan());assert.equal(broken.runtime.getState().last.status,'failed');assert.equal((await broken.store.read(CHAT)).batches.length,0);
+});
+
+test('API异常、畸形JSON与全坏事项均只失败本组，后组继续且失败范围不计已读',async()=>{
+  for(const [name,first] of [
+    ['api',()=>{throw new Error('synthetic api');}],
+    ['json',()=> 'not JSON'],
+    ['invalid',request=>bodyModel(request,{sourceKeys:['S99']})],
+  ]) {
+    const requests=[];const h=await harness({count:25,unstable:true,generate:(request,calls)=>{requests.push(request);return calls===1?first(request):{changes:[]};}});
+    await h.runtime.organize(await h.runtime.prepareHistoryPlan());const stored=await h.store.read(CHAT),source=await h.body(),reads=timeBodyReads(stored.batches,source);
+    assert.equal(h.calls(),2,name);assert.equal(stored.head.lastRun.status,'partial',name);assert.equal(stored.head.lastRun.failedBodyAttempts.length,1,name);assert.equal(stored.batches.length,1,name);
+    assert.equal(reads.has('floor-1'),false,name);assert.equal(reads.has('floor-20'),false,name);assert.equal(reads.has('floor-21'),true,name);assert.equal(h.runtime.getState().coverage.checkedFloors,4,name);
+    await h.runtime.runBatch();h.reload();await h.runtime.runBatch();assert.equal(h.calls(),2,`${name}同正文不得自动回环`);
+    const retry=await h.runtime.prepareHistoryPlan();assert.equal(retry.floorCount,20,name);assert.equal(requests.some(request=>request.currentReview),false,name);
+  }
+});
+
+test('正文首批异常不阻止后批登记与最终评估，末批成功不掩盖整轮partial',async()=>{
+  const requests=[];const h=await harness({count:25,unstable:true,generate:(request,calls)=>{
+    requests.push(request);if(calls===1)throw new Error('first body failed');return request.currentReview?reviewModel(request):bodyModel(request,{label:'后组事项',progression:''});
+  }});
+  await h.runtime.organize(await h.runtime.prepareHistoryPlan());const stored=await h.store.read(CHAT);
+  assert.equal(h.calls(),3);assert.deepEqual(requests.map(request=>Boolean(request.currentReview)),[false,false,true]);assert.equal(stored.head.currentReviewAttempt.status,'completed');
+  assert.equal(stored.head.lastRun.status,'partial');assert.equal(stored.head.lastRun.failedBatchCount,1);assert.equal(replayTimeBatches(stored.batches,await h.body()).length,1);
+  await h.runtime.runBatch();assert.equal(h.calls(),3,'完成后的自动通知不能立即重试失败组或重复最终评估');
 });
 
 test('partial同正文不自动重发，新增正文仍正常处理且保留先前成功项',async()=>{
@@ -335,6 +388,34 @@ async function seedTimeItems(h,count=19,{paused=0,observation='仍有局部不�
   await h.store.putHead(CHAT,{schemaVersion:1,chatId:CHAT,batchIds:batches.map(batch=>batch.id)},0);return {source,batches};
 }
 
+test('批量人工状态一次保存一个批次并拒绝旧观察键',async()=>{
+  const h=await harness(),seed=await seedTimeItems(h,3);await h.runtime.refreshStatus();let state=h.runtime.getState();
+  const selected=state.trackedItems.slice(0,2),before=await h.store.read(CHAT);
+  await h.runtime.editItems(selected.map(item=>({itemId:item.id,observationKey:item.observationKey,fields:{status:'paused'}})));
+  const after=await h.store.read(CHAT),batch=after.batches.at(-1);assert.equal(after.batches.length,before.batches.length+1);assert.equal(batch.changes.length,2);assert.equal(after.revision,before.revision+1);
+  state=h.runtime.getState();assert.equal(state.trackedItems.length,1);assert.equal(state.stoppedItems.filter(item=>item.status==='paused').length,2);assert.equal(h.calls(),0);
+  await assert.rejects(h.runtime.editItems([{itemId:state.trackedItems[0].id,observationKey:'旧键',fields:{status:'completed'}}]),/事项已变化|来源已失效/u);
+  assert.equal((await h.store.read(CHAT)).batches.length,after.batches.length);assert.equal(seed.batches.length,1);
+});
+
+test('短期轻微body可由常规或集中评估暂停，非body与新建退休拒绝，恢复后重新活跃',async()=>{
+  assert.match(TIME_SYSTEM_PROMPT,/短期、轻微.*retirementReason/u);assert.match(TIME_CURRENT_REVIEW_PROMPT,/retirementReason.*不等于已痊愈/u);
+  const h=await harness(),{source,batches}=await seedTimeItems(h,1,{observation:'轻微擦红'});
+  let prepared=await prepareTimeRequest(source,batches,{currentReview:true,allowInitialProjection:true});const item=prepared.request.trackedItems[0];
+  const retired=await compileTimeResponse({changes:[{itemId:item.id,progression:'',assessmentReason:'',retirementReason:'轻微短期影响经过数日，材料无持续或恶化信号。'}]},prepared,batches);
+  assert.equal(retired.changes[0].status,'paused');assert.match(retired.changes[0].retirementReason,/无持续或恶化/u);assert.equal(retired.currentReview.retired,1);assert.equal(retired.currentReview.updated,0);
+  let replay=replayTimeBatches([...batches,retired],source);assert.equal(timeRecallProjection(replay,{entities:[],currentState:[],identityProjection:{}},prepared.request.currentTime).reminders.length,0);
+  const restored=await compileTimeEdit(replay[0],{status:'active'},source,'restore',replay);assert.equal(restored.changes[0].retirementReason,null);assert.equal(restored.changes[0].status,'active');
+  const cycleBatch=structuredClone(batches[0]);cycleBatch.id='cycle-seed';cycleBatch.changes[0].type='cycle';cycleBatch.changes[0].dueTime=projectTime('2026-05-20');
+  prepared=await prepareTimeRequest(source,[cycleBatch],{currentReview:true,allowInitialProjection:true});
+  await assert.rejects(compileTimeResponse({changes:[{itemId:prepared.request.trackedItems[0].id,progression:'',assessmentReason:'',retirementReason:'时间过去了'}]},prepared,[cycleBatch]),/均无效/u);
+  prepared=await prepareTimeRequest(source,[],{fragments:planTimeBody(source,[],{history:true}).groups.flat()});
+  const fresh=bodyModel(prepared.request,{progression:'',retirementReason:'刚登记就退出'});await assert.rejects(compileTimeResponse(fresh,prepared),/均无效/u);
+  prepared=await prepareTimeRequest(source,batches,{fragments:planTimeBody(source,batches,{history:true}).groups.flat()});
+  const regular={changes:[{itemId:item.id,type:'body',status:'active',sourceKeys:[],progression:'',retirementReason:'轻微短期影响已过足够故事时间，未见持续信号'}]};
+  assert.equal((await compileTimeResponse(regular,prepared,batches)).changes[0].status,'paused');
+});
+
 test('partial错误精确挂到事项，人工编辑保留、移除收敛，后续模型成功清除',async()=>{
   const partialReply=request=>({changes:reviewModel(request).changes.map((change,index)=>index?{...change,sourceKeys:['S1']}:change)});
   const removed=await harness({generate:partialReply});await seedTimeItems(removed,3);await removed.runtime.organize(await removed.runtime.prepareHistoryPlan());
@@ -365,9 +446,9 @@ test('历史N批加一次收尾，19active逐项评估，冻结稳定当前不�
 
 test('收尾排除停止项，最多现40项/预算优先且遗漏可见，未知时间说明不足，保人工字段',async()=>{
   const h=await harness();const {source,batches}=await seedTimeItems(h,45,{paused:2});
-  let prepared=await prepareTimeRequest(source,batches,{currentReview:true,allowInitialProjection:true});assert.equal(prepared.trackedRecords.length,40);assert.equal(prepared.omitted,3);assert.ok(prepared.trackedRecords.every(item=>item.status==='active'));assert.ok(estimateRecallTokens(prepared.systemPrompt+JSON.stringify(prepared.request))<=30000);
+  let prepared=await prepareTimeRequest(source,batches,{currentReview:true,allowInitialProjection:true});assert.equal(prepared.trackedRecords.length,40);assert.equal(prepared.omitted,3);assert.ok(prepared.trackedRecords.every(item=>item.status==='active'));assert.ok(estimateRecallTokens(prepared.systemPrompt+JSON.stringify(prepared.request))<=TIME_INPUT_TOKENS);
   const batch=await compileTimeResponse(reviewModel(prepared.request,{progression:'',assessmentReason:'没有后续观察，无法判断。'}),prepared,batches);assert.equal(batch.currentReview.insufficient,40);assert.equal(batch.currentReview.omitted,3);assert.equal(batch.changes[0].observationKey,prepared.trackedRecords[0].observationKey);
-  prepared=await prepareTimeRequest(source,batches,{currentReview:true,allowInitialProjection:true,inputTokens:1500});assert.ok(prepared.omitted>3);assert.ok(estimateRecallTokens(prepared.systemPrompt+JSON.stringify(prepared.request))<=1500);
+  prepared=await prepareTimeRequest(source,batches,{currentReview:true,allowInitialProjection:true,inputTokens:1800});assert.ok(prepared.omitted>3);assert.ok(estimateRecallTokens(prepared.systemPrompt+JSON.stringify(prepared.request))<=1800);
   const first=batches[0].changes[2],manual=await compileTimeEdit(first,{label:'人工名称',periodDays:7,status:'active'},source,'manual'),manualBatches=[batches[0],manual];prepared=await prepareTimeRequest(source,manualBatches,{currentReview:true,allowInitialProjection:true});
   const reviewed=await compileTimeResponse(reviewModel(prepared.request,{label:'错误改名',observation:'模型新事实',occurrenceTime:'今天',periodDays:28,status:'completed'}),prepared,manualBatches);const changed=reviewed.changes.find(item=>item.id===first.id);assert.equal(changed.label,'人工名称');assert.equal(changed.observation,manual.changes[0].observation);assert.equal(changed.periodDays,7);assert.equal(changed.status,'active');
   const unknown=structuredClone(source);unknown.bodyTimes=new Map(unknown.floors.map(floor=>[floor.id,projectTime('')]));unknown.bodyFloors=unknown.bodyFloors.map(body=>({...body,observationTime:projectTime('')}));prepared=await prepareTimeRequest(unknown,batches,{currentReview:true,allowInitialProjection:true});const noTime=await compileTimeResponse(reviewModel(prepared.request),prepared,batches);assert.ok(noTime.changes.every(item=>item.reviewAssessment&&!item.projection));
@@ -500,7 +581,7 @@ test('同响应归并共同经历保来源/日期与人工原观察，独立原�
   const replay=replayTimeBatches([...batches,batch],source),main=replay.find(item=>item.id===items[0].id),member=replay.find(item=>item.id===items[1].id);
   assert.equal(main.observation,items[0].observation);assert.deepEqual(main.observationTime,items[0].observationTime);assert.deepEqual(main.occurrenceTime,items[0].occurrenceTime);assert.equal(main.sourceRefs.length,2);assert.equal(member.mergedInto,main.id);assert.equal(member.status,'paused');assert.deepEqual(member.observationTime,items[1].observationTime);assert.equal(replay.find(item=>item.id===items[2].id).status,'active');
   prepared=await prepareTimeRequest(source,[...batches,batch],{currentReview:true,allowInitialProjection:true});assert.equal(prepared.request.trackedItems.length,2);assert.equal(prepared.request.trackedItems.some(item=>item.id===member.id),false);assert.equal(prepared.request.trackedItems.find(item=>item.id===main.id).mergedObservations[0].observation,member.observation);
-  const review=await compileTimeResponse(reviewModel(prepared.request),prepared,[...batches,batch]);const projected=timeRecallProjection(replayTimeBatches([...batches,batch,review],source),{entities:[],currentState:[],identityProjection:{}},prepared.request.currentTime);assert.equal(projected.reminders.length,2);assert.equal(projected.reminders.some(item=>item.itemId===member.id),false);assert.match(projected.reminders.find(item=>item.itemId===main.id).text,/归并共同经历：.*手腕与膝盖.*当前推测/);
+  const review=await compileTimeResponse(reviewModel(prepared.request),prepared,[...batches,batch]);const projected=timeRecallProjection(replayTimeBatches([...batches,batch,review],source),{entities:[],currentState:[],identityProjection:{}},prepared.request.currentTime);assert.equal(projected.reminders.length,2);assert.equal(projected.reminders.some(item=>item.itemId===member.id),false);assert.match(projected.reminders.find(item=>item.itemId===main.id).text,/事项0（归并：.*手腕与膝盖.*）：观察于.*当前推测/);
 });
 
 test('N+1同次归并成员算已处理，不漏答，不需要单独API',async()=>{
@@ -534,6 +615,28 @@ test('连续归并写时展平，旧从项ID/同来源重试沿最终主项，�
   prepared=await prepareTimeRequest(source,[...batches,first,second],{fragments:[rows[1]]});const retry=await compileTimeResponse(bodyModel(prepared.request,{label:items[1].label,observation:items[1].observation}),prepared,[...batches,first,second]);assert.equal(retry.changes[0].id,items[2].id);assert.equal(retry.changes[0].sourceIdentity,items[2].sourceIdentity);assert.equal(replayTimeBatches([...batches,first,second,retry],source).filter(item=>item.status==='active').length,1);
 });
 
+test('同批恢复多个归并成员正确合并主项变化',async()=>{
+  const h=await harness({count:3}),{source,rows,batches,items}=await seedMergeItems(h);let prepared=await prepareTimeRequest(source,batches,{fragments:rows});
+  const first=await compileTimeResponse({changes:[],merges:[mergeProposal(items[0],items[1])]},prepared,batches);
+  prepared=await prepareTimeRequest(source,[...batches,first],{fragments:rows});const second=await compileTimeResponse({changes:[],merges:[mergeProposal(items[2],items[0])]},prepared,[...batches,first]);
+  const prior=replayTimeBatches([...batches,first,second],source),members=prior.filter(item=>item.mergedInto===items[2].id);assert.equal(members.length,2);
+  const edit=await compileTimeEdits(members.map(item=>({itemId:item.id,observationKey:item.observationKey,fields:{status:'active'}})),source,'restore-many',prior);
+  const replay=replayTimeBatches([...batches,first,second,edit],source),main=replay.find(item=>item.id===items[2].id);
+  assert.equal(replay.filter(item=>item.status==='active').length,3);assert.deepEqual(main.mergedItemIds,[]);assert.equal(main.mergeDescription,null);assert.equal(edit.mergeGroups.length,1);assert.deepEqual(new Set(edit.mergeGroups[0].itemIds),new Set([main.id,...members.map(item=>item.id)]));
+});
+
+test('归并成员不能单独退休主项，混合严重度须按完整归并项判断',async()=>{
+  const h=await harness({count:3}),{source,rows,batches,items}=await seedMergeItems(h);let prepared=await prepareTimeRequest(source,batches,{fragments:rows});const merge=await compileTimeResponse({changes:[],merges:[mergeProposal(items[0],items[1])]},prepared,batches);
+  const member=merge.changes.find(item=>item.mergedInto===items[0].id);member.observation='严重慢性损伤仍在持续，不能按轻微短期影响退出';
+  prepared=await prepareTimeRequest(source,[...batches,merge],{currentReview:true,allowInitialProjection:true});
+  assert.match(TIME_CURRENT_REVIEW_PROMPT,/全部mergedObservations整体判断/);assert.match(TIME_CURRENT_REVIEW_PROMPT,/任一成员属严重、慢性、后遗或仍持续影响时，整项不退出/);
+  const retired=await compileTimeResponse({changes:prepared.request.trackedItems.map(item=>item.id===items[0].id
+    ? {itemId:member.id,progression:'',assessmentReason:'',retirementReason:'轻微共同影响经过足够故事时间，未见持续信号'}
+    : {itemId:item.id,progression:'仍待后续观察确认。',assessmentReason:'',retirementReason:''})},prepared,[...batches,merge]);
+  assert.equal(retired.status,'partial');assert.equal(retired.changes.length,1);assert.equal(retired.changes[0].id,items[2].id);assert.equal(retired.currentReview.retired,0);assert.match(retired.itemErrors[0].reason,/退出跟进只允许已有活跃身体事项/);
+  assert.equal(replayTimeBatches([...batches,merge,retired],source).find(item=>item.id===items[0].id).status,'active');
+});
+
 test('人工解除归并原ID独立，主项描述推测失效，旧观察不能立即重归并，新事实可继续',async()=>{
   const h=await harness({count:3}),{source,rows,batches,items}=await seedMergeItems(h);let prepared=await prepareTimeRequest(source,batches,{fragments:rows});const merge=await compileTimeResponse({changes:[],merges:[mergeProposal(items[0],items[1])]},prepared,batches);await saveTimeBatch(h,merge);await h.runtime.refreshStatus();const merged=h.runtime.getState().stoppedItems[0];assert.equal(merged.mergedInto,items[0].id);
   await h.runtime.editItem(merged.id,{status:'active',label:'人工独立更正'},merged.observationKey);const stored=await h.store.read(CHAT);let replay=replayTimeBatches(stored.batches,await h.body());const restored=replay.find(item=>item.id===merged.id),main=replay.find(item=>item.id===items[0].id);assert.equal(restored.mergedInto,null);assert.equal(restored.id,items[1].id);assert.equal(main.mergedItemIds.length,0);assert.equal(main.mergeDescription,null);assert.equal(main.projection,null);assert.equal(h.calls(),0);
@@ -549,7 +652,7 @@ test('人工编辑仍归并暂停的从项观察与时间，同步使主项旧�
   const mainEdit=await compileTimeEdit({...priorMain,stateRefs:[{stateId:'linked',sourceFloorId:'floor-1'}]},{observation:'人工更正主项原观察',observationTime:'2026-05-09 09:00'},source,'manual-main',priorItems),editedMain=mainEdit.changes[0];
   assert.equal(editedMain.mergeDescription,null);assert.equal(editedMain.mergeEvidenceKey,null);assert.equal(editedMain.projection,null);assert.deepEqual(editedMain.mergedItemIds,[items[1].id]);
   const correction=timeRecallProjection([editedMain],{entities:[],currentState:[{subjectEntityId:editedMain.subjectEntityId,core:[{stateId:'linked',sourceFloorId:'floor-1',text:'原状态'}],adaptive:[],situational:[]}],identityProjection:{}},prepared.request.currentTime).corrections;
-  assert.match(Object.values(correction)[0].text,/人工更正主项原观察/);assert.equal(Object.values(correction)[0].text.includes(priorMain.mergeDescription),false);
+  assert.match(Object.values(correction)[0].text,/事项0：观察于2026-05-09 09:00；发生于2026-04-30；距发生3天；当前状态待新观察确认/);assert.equal(Object.values(correction)[0].text.includes('人工更正主项原观察'),false);assert.equal(Object.values(correction)[0].text.includes(priorMain.mergeDescription),false);
   const editedPrepared=await prepareTimeRequest(source,[...batches,merge,review,mainEdit],{currentReview:true,allowInitialProjection:true});assert.equal(editedPrepared.request.trackedItems.find(item=>item.id===priorMain.id).mergeDescription,null);assert.equal(editedPrepared.request.trackedItems.find(item=>item.id===priorMain.id).mergedObservations[0].itemId,items[1].id);
   const member=h.runtime.getState().stoppedItems.find(item=>item.id===items[1].id);await h.runtime.editItem(member.id,{observation:'人工确认膝盖影响已更正',observationTime:'2026-05-09 12:00'},member.observationKey);
   const stored=await h.store.read(CHAT),edited=stored.batches.at(-1),replayed=replayTimeBatches(stored.batches,source),main=replayed.find(item=>item.id===items[0].id),currentMember=replayed.find(item=>item.id===member.id);
@@ -567,7 +670,7 @@ test('完整归并前缀才继承，旧记录正常回放，人工当前版本�
 
 
 test('旧观察解析恢复计算但completed收尾签名未变仍不重开，面板使用有效视图',async()=>{
-  const h=await harness({generate:bodyModel});
+  const h=await harness({generate:bodyModel,tags:'Ti'});
   h.chat[0].mes='<Ti>七月十七10:30</Ti>阿岚手腕擦伤仍疼痛。';
   h.chat[2].mes='<Ti>7月19日20:30</Ti>阿岚仍有不适。';
   await h.seal();await h.runtime.organize(await h.runtime.prepareHistoryPlan());assert.equal(h.calls(),2);

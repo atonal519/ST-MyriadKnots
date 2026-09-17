@@ -277,7 +277,7 @@ export function createChatMemoryManagement({
     return operation.promise;
   }
 
-  function fullRebuild(expectedChatId) {
+  function fullRebuild(expectedChatId, options = {}) {
     const owner = readHostState(contextProvider());
     if (!owner.ok || (expectedChatId && owner.chatId !== expectedChatId)) return Promise.reject(errorWith('QQJ_REBUILD_CHAT_CHANGED', '当前聊天身份已经变化，完全重构未开始。'));
     const sameOwner = () => {
@@ -301,7 +301,7 @@ export function createChatMemoryManagement({
       sameOwner();
       if (prepared?.status !== 'ready') throw errorWith('QQJ_REBUILD_IDENTITY_NOT_READY', '新聊天身份未完成准备，完全重构没有开始生成。');
       await timeRuntime?.authorizeHistory?.();
-      return memoryRuntime.startHistoricalRebuild();
+      return memoryRuntime.startHistoricalRebuild({ aggregate: options?.aggregate === true });
     })().finally(() => { if (rebuilding === operation) rebuilding = null; notify(); });
     return operation.promise;
   }

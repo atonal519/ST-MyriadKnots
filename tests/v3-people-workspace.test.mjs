@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPeopleProfileSystemPrompt, createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, DEFAULT_PROFILE_GUIDANCE, PEOPLE_PROFILE_INPUT_CHAR_BUDGET, PEOPLE_WORKSPACE_RECORD_ID, PROFILE_FIXED_CONTRACT, validatePeopleWorkspace } from '../src/v3/people-workspace.js';
+import { buildPeopleProfileSystemPrompt, createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, DEFAULT_PROFILE_GUIDANCE, PEOPLE_PROFILE_FULL_REWRITE_CHAR_BUDGET, PEOPLE_PROFILE_INPUT_CHAR_BUDGET, PEOPLE_WORKSPACE_RECORD_ID, PROFILE_FIXED_CONTRACT, validatePeopleWorkspace } from '../src/v3/people-workspace.js';
 import { PEOPLE_PROFILE_DEFINITIONS, PEOPLE_PROFILE_FIELDS, PEOPLE_PROFILE_LABELS } from '../src/v3/people-profile-fields.js';
 import { filterSourcesByPermission } from '../src/source-permission.js';
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
@@ -81,6 +81,8 @@ test('人物资料业务指导可替换，固定合同与基础处理层始终�
   assert.match(custom, /根对象必须包含 profiles 数组/);
   assert.match(custom, /\{"profiles":\[\{"personKey":"person-1","name":"示例姓名"\}\]\}/);
   assert.match(custom, /summaryUpdates 是本次新摘要/);
+  assert.match(custom, /聚合多楼 history 可省略 storyContent/);
+  assert.match(custom, /不得猜测未提供的正文/);
   assert.match(custom, /没有新信息时省略字段/);
   assert.match(custom, /本批可能只包含该来源的一部分/);
   assert.match(custom, /明确要求删除旧资料且没有替代值/);
@@ -91,6 +93,76 @@ test('人物资料业务指导可替换，固定合同与基础处理层始终�
   assert.deepEqual(Object.keys(PEOPLE_PROFILE_DEFINITIONS), PEOPLE_PROFILE_FIELDS);
   assert.ok(PEOPLE_PROFILE_FIELDS.every(field => PEOPLE_PROFILE_LABELS[field] && PEOPLE_PROFILE_DEFINITIONS[field]));
   assert.equal(custom.split(BASE_PROCESSING_PROMPT).length - 1, 1);
+});
+
+test('整档整理一次请求覆盖全部已选人物，材料不含逐楼历史，合法人物部分替换并迁移人工字段', async () => {
+  let calls = 0, request, systemPrompt;
+  const complete = (personKey, name, manualFields = []) => ({ personKey, manualFields,
+    ...Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, field === 'name' ? name : ''])),
+  });
+  const h = harness({ generate: async options => {
+    calls += 1; systemPrompt = options.systemPrompt; request = JSON.parse(options.taskMessages[0].content);
+    const first = complete('person-1', '人物1新档', ['background']); first.background = '人工说明被整理到背景';
+    const invalidSecond = complete('person-2', '人物2新档'); delete invalidSecond.notes;
+    return { jsonData: { profiles: [first, invalidSecond] } };
+  } });
+  const [first, second] = h.peopleEntities;
+  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([first.id, second.id]);
+  await h.runtime.saveProfile(first.id, { ...Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, ''])), name: '人物1旧档', notes: '{{char}}人工说明' }, { manualFields: ['notes'] });
+  const putsBefore = h.db.calls.filter(call => call[0] === 'put').length;
+  await h.runtime.rewriteSelectedProfiles();
+  assert.equal(calls, 1); assert.equal(h.db.calls.filter(call => call[0] === 'put').length, putsBefore + 1);
+  assert.deepEqual(request.people.map(person => person.currentName), ['人物1', '人物2']);
+  assert.equal(request.people[0].existingProfile.notes, '剧情标题人工说明'); assert.deepEqual(request.people[0].manualFields, ['notes']);
+  assert.equal(JSON.stringify(request).includes('history'), false); assert.equal(JSON.stringify(request).includes('priorContext'), false);
+  assert.equal(request.allowedWorldInfo.length, 1); assert.ok(Array.isArray(request.characterCards));
+  assert.match(systemPrompt, /完整结果会整体替换旧档案/); assert.match(systemPrompt, /manualFields/);
+  assert.doesNotMatch(systemPrompt, /上次 AI 档案中本轮未生成的字段不保留/);
+  const state = h.runtime.getState(); assert.equal(state.profilesByEntityId[first.id].name, '人物1新档');
+  assert.equal(state.profilesByEntityId[first.id].background, '人工说明被整理到背景'); assert.deepEqual(state.profilesByEntityId[first.id].manualFields, ['background']);
+  assert.equal(state.profilesByEntityId[second.id], undefined, '字段不完整的人物保留原档案');
+  assert.deepEqual(state.profileMaterialProgressByEntityId, {}, '整档整理不冒充逐楼历史进度');
+  assert.deepEqual(state.lastGenerationReport, { requested: 2, saved: 1, missing: 0, conflicts: 0, invalid: 1, unknown: 0, skipped: 0 });
+});
+
+test('整档整理在途人工修改优先，模型结果跳过该人物且不覆盖', async () => {
+  let h;
+  const complete = Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, ''])); complete.name = '模型结果';
+  h = harness({ generate: async options => {
+    const request = JSON.parse(options.taskMessages[0].content), target = h.peopleEntities[0];
+    await h.runtime.saveProfile(target.id, { ...complete, name: '在途人工新值' }, { manualFields: ['name'] });
+    return { jsonData: { profiles: [{ personKey: request.people[0].personKey, manualFields: [], ...complete }] } };
+  } });
+  const target = h.peopleEntities[0]; await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]);
+  await h.runtime.rewriteSelectedProfiles();
+  const state = h.runtime.getState(); assert.equal(state.profilesByEntityId[target.id].name, '在途人工新值');
+  assert.equal(state.lastGenerationReport.saved, 0); assert.equal(state.lastGenerationReport.skipped, 1);
+});
+
+test('整档回复不得用空人工字段吞掉原非空人工内容', async () => {
+  const fields = Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, ''])); fields.name = '模型结果';
+  const h = harness({ generate: async () => ({ jsonData: { profiles: [{ personKey: 'person-1', manualFields: ['notes'], ...fields }] } }) });
+  const target = h.peopleEntities[0]; await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]);
+  await h.runtime.saveProfile(target.id, { ...fields, name: '原档案', notes: '不可丢的人工内容' }, { manualFields: ['notes'] });
+  await assert.rejects(h.runtime.rewriteSelectedProfiles(), error => error.code === 'QQJ_PEOPLE_GENERATION_BINDING_INVALID');
+  const state = h.runtime.getState(); assert.equal(state.profilesByEntityId[target.id].notes, '不可丢的人工内容'); assert.equal(state.lastGenerationReport.invalid, 1);
+});
+
+test('整档整理约35705字符仍单次提交，超过60000字符才在模型调用前拒绝', async () => {
+  let acceptedCalls = 0, acceptedLength = 0;
+  const accepted = harness({ sourceCandidates: [{ id: 'worldbook:medium', kind: 'worldbook', world: '中长世界书', label: '中长条目', content: '中'.repeat(35000) }], generate: async options => {
+    acceptedCalls += 1; const request = JSON.parse(options.taskMessages[0].content); acceptedLength = options.taskMessages[0].content.length;
+    const fields = Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, field === 'name' ? request.people[0].currentName : '']));
+    return { jsonData: { profiles: [{ personKey: request.people[0].personKey, manualFields: [], ...fields }] } };
+  } });
+  await accepted.runtime.refresh(); await accepted.runtime.setSelectedEntityIds([accepted.peopleEntities[0].id]); await accepted.runtime.rewriteSelectedProfiles();
+  assert.equal(acceptedCalls, 1); assert.ok(acceptedLength > 35000 && acceptedLength <= PEOPLE_PROFILE_FULL_REWRITE_CHAR_BUDGET);
+
+  let calls = 0;
+  const h = harness({ sourceCandidates: [{ id: 'worldbook:large', kind: 'worldbook', world: '长世界书', label: '长条目', content: '长'.repeat(61000) }], generate: async () => { calls += 1; return { jsonData: { profiles: [] } }; } });
+  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([h.peopleEntities[0].id]);
+  await assert.rejects(h.runtime.rewriteSelectedProfiles(), error => error.code === 'QQJ_PEOPLE_FULL_REWRITE_TOO_LARGE' && /60000 字符/.test(error.message));
+  assert.equal(calls, 0);
 });
 
 test('v1/v2 人工资料与头像无损归一到 v3，只有旧人工六字段获得保护', () => {
@@ -361,6 +433,93 @@ test('人物输入优先使用与有效摘要同存正文，构造空串不回�
   assert.equal(request.people[0].history[2].storyContent, '人物1穿着绿色旧外套。');
   assert.equal(JSON.stringify(request).includes('人物1仍是蓝发'), false);
   assert.equal(JSON.stringify(request).includes('这段旧正文不得回退'), false);
+});
+
+test('聚合人物历史省略多楼正文但保留用户摘要、目标事实和原句，普通单楼正文不变', async () => {
+  let request;
+  const h = harness({ generate: async options => {
+    request = JSON.parse(options.taskMessages[0].content);
+    return { jsonData: { profiles: [{ personKey: 'person-1', name: '人物1' }] } };
+  } });
+  const [target, other] = h.peopleEntities;
+  const aggregateFloorIds = Array.from({ length: 10 }, (_, index) => `a${String(index + 1).padStart(7, '0')}-1111-4111-8111-${String(index + 1).padStart(12, '0')}`);
+  const aggregateFloorId = aggregateFloorIds.at(-1), singletonFloorId = ids[12];
+  h.setReachable({
+    ...h.reachable,
+    floors: [
+      ...aggregateFloorIds.map((id, index) => ({ id, assistantSeq: index + 1, content: { canonicalContent: `聚合成员正文${index + 1}` } })),
+      { id: singletonFloorId, assistantSeq: 11, content: { canonicalContent: '普通单楼正文保留。' } },
+    ],
+    floorMemories: [
+      {
+        floorId: aggregateFloorId, sourceFloorIds: aggregateFloorIds, recordStatus: 'active',
+        sourceCanonicalContent: `聚合十楼全文${'甲'.repeat(6000)}`,
+        summary: { effectiveSource: 'user', aiText: '旧AI摘要', userText: '用户修订后的聚合摘要。' },
+        participants: [{ entityId: target.id }],
+        actions: [
+          { actorEntityId: target.id, targetEntityIds: [], action: '目标人物作出决定', completion: 'completed', result: null },
+          { actorEntityId: other.id, targetEntityIds: [], action: '他人动作不应归入', completion: 'completed', result: null },
+        ],
+        exactAnchors: [{ speakerEntityId: target.id, kind: 'dialogue', exactText: '我会亲自处理。', whyPreserve: '关键承诺' }],
+      },
+      {
+        floorId: singletonFloorId, recordStatus: 'active', sourceCanonicalContent: '普通单楼正文保留。',
+        summary: { effectiveSource: 'ai', aiText: '普通单楼摘要。' }, participants: [{ entityId: target.id }],
+      },
+    ],
+  });
+  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]); await h.runtime.generateMissingProfiles();
+  const [aggregate, singleton] = request.people[0].history;
+  assert.equal(Object.hasOwn(aggregate, 'storyContent'), false, '聚合记忆不再重复携带十楼全文');
+  assert.equal(aggregate.summary, '用户修订后的聚合摘要。');
+  assert.deepEqual(aggregate.facts.actions, [{ role: 'actor', action: '目标人物作出决定', completion: 'completed' }]);
+  assert.deepEqual(aggregate.facts.exactAnchors, [{ kind: 'dialogue', exactText: '我会亲自处理。', whyPreserve: '关键承诺' }]);
+  assert.equal(JSON.stringify(aggregate).includes('他人动作不应归入'), false, '目标事实归属边界不变');
+  assert.equal(singleton.storyContent, '普通单楼正文保留。');
+  assert.equal(singleton.summary, '普通单楼摘要。');
+});
+
+test('固定混合历史中聚合正文减量会收敛人物整理批数且普通正文仍计入', async () => {
+  let calls = 0; const requests = [];
+  const h = harness({ generate: async options => {
+    calls += 1; requests.push(JSON.parse(options.taskMessages[0].content));
+    return { jsonData: { profiles: [{ personKey: 'person-1', name: '人物1' }] } };
+  } });
+  const target = h.peopleEntities[0];
+  const floorMemories = Array.from({ length: 67 }, (_, index) => {
+    const floorId = `b${String(index + 1).padStart(7, '0')}-1111-4111-8111-${String(index + 1).padStart(12, '0')}`;
+    const aggregate = index < 33;
+    return {
+      floorId, ...(aggregate ? { sourceFloorIds: [ids[14], floorId] } : {}), recordStatus: 'active',
+      sourceCanonicalContent: `${aggregate ? '聚合正文不得进入' : '普通正文必须进入'}-${index}-${'文'.repeat(aggregate ? 20000 : 2000)}`,
+      summary: { effectiveSource: 'ai', aiText: `人物1历史摘要-${index}-${'摘'.repeat(3000)}` },
+      participants: [{ entityId: target.id }],
+    };
+  });
+  h.setReachable({
+    ...h.reachable,
+    floors: floorMemories.map((memory, index) => ({ id: memory.floorId, assistantSeq: index + 1, content: { canonicalContent: memory.sourceCanonicalContent } })),
+    floorMemories,
+  });
+  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]); await h.runtime.generateMissingProfiles();
+  const serialized = requests.map(request => JSON.stringify(request)).join('');
+  assert.equal(calls, 14, '固定 33 聚合加 34 单楼材料在现有 24k 分批规则下收敛为 14 批');
+  assert.equal(serialized.includes('聚合正文不得进入'), false);
+  assert.equal(serialized.includes('普通正文必须进入'), true);
+  assert.equal(requests.every(request => JSON.stringify(request).length <= PEOPLE_PROFILE_INPUT_CHAR_BUDGET + 1000), true);
+
+  let fullTextCalls = 0;
+  const fullText = harness({ generate: async options => {
+    fullTextCalls += 1; const request = JSON.parse(options.taskMessages[0].content);
+    return { jsonData: { profiles: [{ personKey: request.people[0].personKey, name: '人物1' }] } };
+  } });
+  fullText.setReachable({
+    ...fullText.reachable,
+    floors: floorMemories.map((memory, index) => ({ id: memory.floorId, assistantSeq: index + 1, content: { canonicalContent: memory.sourceCanonicalContent } })),
+    floorMemories: floorMemories.map(memory => { const copy = structuredClone(memory); delete copy.sourceFloorIds; return copy; }),
+  });
+  await fullText.runtime.refresh(); await fullText.runtime.setSelectedEntityIds([fullText.peopleEntities[0].id]); await fullText.runtime.generateMissingProfiles();
+  assert.equal(fullTextCalls, 42, '相同固定材料若把聚合正文按普通单楼投入会产生 42 批');
 });
 
 test('长历史按楼序连续分批，前批档案进入后批且覆盖首尾', async () => {

@@ -22,7 +22,7 @@ import {
   V3_INDEX_LAYOUT_FLOOR_ORDER,
 } from './foundation-schema.js';
 import { publicErrorMessage } from '../public-error.js';
-import { collectFloorMemoryEntityIds, projectEntityFloorBounds, validateMemoryGraph } from './memory-schema.js';
+import { collectFloorMemoryEntityIds, memorySourceFloorIds, projectEntityFloorBounds, validateMemoryGraph } from './memory-schema.js';
 import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
 import { validateCseGraph } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
@@ -92,8 +92,14 @@ function commonRecord({ recordType, id, chatId, narrativeGeneration, now, record
 
 export async function projectFoundationPrefix({ source, floors, chatId, narrativeGeneration, now, currentStateId, previousCurrentStateId = null }) {
   const floorIdSet = new Set(floors.map(floor => floor.id));
-  const floorMemories = (source.floorMemories ?? []).filter(memory => floorIdSet.has(memory.floorId));
-  const survivingDeltas = (source.stateDeltas ?? []).filter(delta => floorIdSet.has(delta.floorId));
+  const sourceFloorOrder = new Map((source.floors ?? []).map((floor, index) => [floor.id, index]));
+  const brokenAggregateOrder = (source.floorMemories ?? [])
+    .filter(memory => memorySourceFloorIds(memory).length > 1 && !memorySourceFloorIds(memory).every(floorId => floorIdSet.has(floorId)))
+    .reduce((earliest, memory) => Math.min(earliest, sourceFloorOrder.get(memory.floorId) ?? Number.POSITIVE_INFINITY), Number.POSITIVE_INFINITY);
+  const floorMemories = (source.floorMemories ?? []).filter(memory => memorySourceFloorIds(memory).every(floorId => floorIdSet.has(floorId))
+    && (memorySourceFloorIds(memory).length === 1 || (sourceFloorOrder.get(memory.floorId) ?? Number.POSITIVE_INFINITY) < brokenAggregateOrder));
+  const survivingDeltas = (source.stateDeltas ?? []).filter(delta => floorIdSet.has(delta.floorId)
+    && (sourceFloorOrder.get(delta.floorId) ?? Number.POSITIVE_INFINITY) < brokenAggregateOrder);
   let stateDeltas = filterReachableDeltas({ floors, floorMemories, stateDeltas: survivingDeltas });
   const referencedEntityIds = new Set();
   floorMemories.forEach(memory => collectFloorMemoryEntityIds(memory).forEach(id => referencedEntityIds.add(id)));
@@ -325,7 +331,7 @@ export function createFoundationRuntime({
       throw statusError('stale', '提前稳定边界已变化，本次操作不再提交。');
     }
     const bindings = matchFloorCandidates(floors, candidates);
-    const savedFloorIds = new Set((cache?.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => memory.floorId));
+    const savedFloorIds = new Set((cache?.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').flatMap(memorySourceFloorIds));
     let count = 0;
     while (candidates[count]) {
       const marker = candidates[count].messageAnchor;
@@ -672,7 +678,7 @@ export function createFoundationRuntime({
     const snapshot = sourceSnapshot ?? await foundationInputSnapshot(candidates, stableCount);
     const existing = cache.floors;
     const stableCandidates = candidates.slice(0, stableCount);
-    const memoryFloorIds = new Set((cache.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => memory.floorId));
+    const memoryFloorIds = new Set((cache.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').flatMap(memorySourceFloorIds));
     const bindings = matchFloorCandidates(existing, stableCandidates);
     if (bindings.issue?.code === 'markerRejected') throw statusError('needsReview', '消息记忆标识无效或来自其他聊天，未静默接管。');
     if (bindings.issue?.code === 'markerConflict') throw statusError('needsReview', '消息记忆标识指向当前图中不存在的楼，未静默猜测。');

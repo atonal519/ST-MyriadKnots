@@ -27,6 +27,7 @@ const RECORD_PREFIX = Object.freeze({
   index: 'v3-index-',
 });
 const CONFIRMED_CONTENT_TYPES = new Set(['floor', 'floorMemory', 'entity', 'baseline', 'stateDelta', 'currentState']);
+const READ_CONCURRENCY = 16;
 
 function fail(code) { throw Object.assign(new TypeError(code), { code }); }
 function identity(raw) {
@@ -210,7 +211,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       const before = operationState(operation);
       if (before !== 'current') return { status: before };
       try {
-        const result = await task(operation.identity);
+        const result = await task(operation.identity, operation);
         const after = operationState(operation);
         return after === 'current' ? result : { status: after };
       } catch (error) {
@@ -219,6 +220,33 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
         throw error;
       }
     })();
+  }
+  async function readMany(operation, values, reader, { settled = false } = {}) {
+    const items = Array.from(values ?? []);
+    const results = new Array(items.length);
+    let cursor = 0;
+    let firstError = null;
+    async function worker() {
+      while (firstError === null) {
+        const before = operationState(operation);
+        if (before !== 'current') { firstError = Object.assign(new Error(`V3_${before.toUpperCase()}`), { operationStatus: before }); return; }
+        const index = cursor;
+        if (index >= items.length) return;
+        cursor += 1;
+        if (settled) {
+          try { results[index] = { status: 'fulfilled', value: await reader(items[index], index) }; }
+          catch (reason) { results[index] = { status: 'rejected', reason }; }
+        } else {
+          try { results[index] = await reader(items[index], index); }
+          catch (error) { firstError ??= error; return; }
+        }
+        const after = operationState(operation);
+        if (after !== 'current') { firstError ??= Object.assign(new Error(`V3_${after.toUpperCase()}`), { operationStatus: after }); return; }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(READ_CONCURRENCY, items.length) }, () => worker()));
+    if (firstError) throw firstError;
+    return results;
   }
   async function read(identityValue, key, validator, missingStatus = 'missing') {
     try {
@@ -397,15 +425,20 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
   }
   async function readReachable({ mode = V3_READ_MODES.full, allowRecallCseFallback = false } = {}) {
     if (!Object.values(V3_READ_MODES).includes(mode)) fail('V3_STORE_READ_MODE_INVALID');
-    const rootResult = await readRoot();
+    return execute(async (current, operation) => {
+    const readType = (recordType, idOrKey) => {
+      const key = String(idOrKey).startsWith('v3-') ? String(idOrKey) : `${RECORD_PREFIX[recordType] ?? ''}${idOrKey}`;
+      return read(current, key, validatorFor(recordType));
+    };
+    const rootResult = await read(current, V3_ROOT_RECORD_ID, validateFoundationRoot, 'uninitialized');
     if (rootResult.status !== 'ready') return rootResult;
     const root = rootResult.data;
     if (!root.headCheckpointId) return { ...rootResult, checkpoint: null, floors: [], indexes: [] };
-    const checkpointResult = await readRecord('checkpoint', root.headCheckpointId);
+    const checkpointResult = await readType('checkpoint', root.headCheckpointId);
     if (checkpointResult.status !== 'ready') fail('V3_STORE_CHECKPOINT_MISSING');
     const checkpoint = checkpointResult.data;
     if (checkpoint.narrativeGeneration !== root.narrativeGeneration || !checkpoint.capabilities.foundationReady) fail('V3_STORE_CHECKPOINT_MISMATCH');
-    const runResult = await readRecord('run', checkpoint.runId);
+    const runResult = await readType('run', checkpoint.runId);
     if (runResult.status !== 'ready') fail('V3_STORE_RUN_MISSING');
     const legacySnapshot = root.sourceSnapshotFingerprint === null
       || checkpoint.sourceSnapshotFingerprint === null
@@ -416,15 +449,15 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       : effectiveMode === V3_READ_MODES.runtime
         ? checkpoint.producedRefs.indexes.filter(key => String(key).startsWith('v3-index-floorOrder-') || String(key).startsWith('v3-index-fingerprint-'))
         : checkpoint.producedRefs.indexes.filter(key => String(key).startsWith('v3-index-floorOrder-'));
-    const floorResults = await Promise.all(checkpoint.producedRefs.floors.map(id => readRecord('floor', id)));
+    const floorResults = await readMany(operation, checkpoint.producedRefs.floors, id => readType('floor', id));
     if (floorResults.some(result => result.status !== 'ready')) fail('V3_STORE_FLOOR_MISSING');
-    const indexResults = await Promise.all(selectedIndexKeys.map(key => readRecord('index', key)));
+    const indexResults = await readMany(operation, selectedIndexKeys, key => readType('index', key));
     const indexesMissing = indexResults.some(result => result.status === 'missing');
     if (indexResults.some(result => !['ready', 'missing'].includes(result.status))) fail('V3_STORE_INDEX_UNAVAILABLE');
     if (indexesMissing && !legacySnapshot) fail('V3_STORE_INDEX_MISSING');
-    const memoryResults = await Promise.all(checkpoint.producedRefs.floorMemories.map(id => readRecord('floorMemory', id)));
+    const memoryResults = await readMany(operation, checkpoint.producedRefs.floorMemories, id => readType('floorMemory', id));
     if (memoryResults.some(result => result.status !== 'ready')) fail('V3_STORE_FLOOR_MEMORY_MISSING');
-    const entityResults = await Promise.all(checkpoint.producedRefs.entities.map(id => readRecord('entity', id)));
+    const entityResults = await readMany(operation, checkpoint.producedRefs.entities, id => readType('entity', id));
     if (entityResults.some(result => result.status !== 'ready')) fail('V3_STORE_ENTITY_MISSING');
     let baselineResult;
     let deltaResults;
@@ -433,18 +466,16 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     let deltaFailed = false;
     let currentStateFailed = false;
     if (!allowRecallCseFallback) {
-      baselineResult = root.baselineId ? await readRecord('baseline', root.baselineId) : null;
+      baselineResult = root.baselineId ? await readType('baseline', root.baselineId) : null;
       if (baselineResult && baselineResult.status !== 'ready') fail('V3_STORE_BASELINE_MISSING');
-      deltaResults = await Promise.all(checkpoint.producedRefs.stateDeltas.map(id => readRecord('stateDelta', id)));
+      deltaResults = await readMany(operation, checkpoint.producedRefs.stateDeltas, id => readType('stateDelta', id));
       if (deltaResults.some(result => result.status !== 'ready')) fail('V3_STORE_STATE_DELTA_MISSING');
-      currentStateResults = await Promise.all(checkpoint.producedRefs.currentStates.map(id => readRecord('currentState', id)));
+      currentStateResults = await readMany(operation, checkpoint.producedRefs.currentStates, id => readType('currentState', id));
       if (currentStateResults.some(result => result.status !== 'ready')) fail('V3_STORE_CURRENT_STATE_MISSING');
     } else {
-      const [baselineSettled, deltaSettled, currentSettled] = await Promise.all([
-        root.baselineId ? Promise.allSettled([readRecord('baseline', root.baselineId)]) : Promise.resolve([]),
-        Promise.allSettled(checkpoint.producedRefs.stateDeltas.map(id => readRecord('stateDelta', id))),
-        Promise.allSettled(checkpoint.producedRefs.currentStates.map(id => readRecord('currentState', id))),
-      ]);
+      const baselineSettled = root.baselineId ? await readMany(operation, [root.baselineId], id => readType('baseline', id), { settled: true }) : [];
+      const deltaSettled = await readMany(operation, checkpoint.producedRefs.stateDeltas, id => readType('stateDelta', id), { settled: true });
+      const currentSettled = await readMany(operation, checkpoint.producedRefs.currentStates, id => readType('currentState', id), { settled: true });
       const interrupted = [...baselineSettled, ...deltaSettled, ...currentSettled]
         .find(result => result.status === 'fulfilled' && ['stale', 'disabled'].includes(result.value?.status));
       if (interrupted) return { status: interrupted.value.status };
@@ -518,6 +549,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       indexesComplete,
       readMode: effectiveMode,
       cseUnavailable,
+    });
     });
   }
   return Object.freeze({

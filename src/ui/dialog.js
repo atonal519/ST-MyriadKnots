@@ -28,6 +28,7 @@ export function createDialogManager({ documentRef = globalThis.document, $ = glo
   return Object.freeze({
     host,
     confirm: core.confirm,
+    choose: core.choose,
     prompt: core.prompt,
     custom: core.custom,
     info,

@@ -4,6 +4,7 @@ import {
   buildEntityIdentityDirectory, normalizeIdentityProjection, projectCseStateIdentityReferences,
   projectFloorMemoryIdentityReferences, resolveIdentityEntityId,
 } from './entity-identity.js';
+import { memorySourceFloorIds } from './memory-schema.js';
 
 const safeText = (value, maximum = 4000) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
 const aliasText = alias => safeText(typeof alias === 'string' ? alias : alias?.name, 500);
@@ -43,10 +44,13 @@ function chronologyDto(memory, floorSeqById) {
 }
 
 function memoryDto(memory, floor, { chronologyAllowed = true, floorSeqById = new Map() } = {}) {
+  const sourceFloorIds = memorySourceFloorIds(memory);
   return Object.freeze({
     floorId: floor.id,
     floorMemoryId: memory.id,
     assistantSeq: floor.assistantSeq,
+    sourceFloorIds: Object.freeze(sourceFloorIds),
+    sourceAssistantSeqs: Object.freeze(sourceFloorIds.map(floorId => floorSeqById.get(floorId)).filter(Number.isSafeInteger)),
     summary: summaryText(memory),
     chronology: chronologyAllowed ? chronologyDto(memory, floorSeqById) : Object.freeze([]),
     participants: Object.freeze((memory.participants ?? []).map(item => ({ entityId: item.entityId, presence: item.presence }))),
@@ -136,13 +140,13 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
   const floors = first.floors ?? [];
   const floorById = new Map(floors.map(floor => [floor.id, floor]));
   const memoryGroups = new Map();
-  for (const memory of first.floorMemories ?? []) if (floorById.has(memory.floorId)) memoryGroups.set(memory.floorId, [...(memoryGroups.get(memory.floorId) ?? []), memory]);
+  for (const memory of first.floorMemories ?? []) if (floorById.has(memory.floorId)) for (const floorId of memorySourceFloorIds(memory)) if (floorById.has(floorId)) memoryGroups.set(floorId, [...(memoryGroups.get(floorId) ?? []), memory]);
   const activeMemories = [];
+  const activeMemoryIds = new Set();
   for (const floor of floors) {
     const active = (memoryGroups.get(floor.id) ?? []).filter(memory => memory.recordStatus === 'active');
-    if (active.length === 1) activeMemories.push(active[0]);
+    if (active.length === 1 && !activeMemoryIds.has(active[0].id)) { activeMemories.push(active[0]); activeMemoryIds.add(active[0].id); }
   }
-  const activeMemoryIds = new Set(activeMemories.map(memory => memory.id));
   const degradedReasons = first.cseUnavailable === true ? ['cseReplayUnavailable'] : [];
   let trustedDeltas = [], replayed = null, cseTimeline = [];
   try {
@@ -179,7 +183,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
   const coverage = Object.freeze({
     stableAiFloors: floors.length,
     stableThroughAssistantSeq,
-    rememberedAiFloors: activeMemories.length,
+    rememberedAiFloors: floors.length - missingAssistantSeq.length,
     missingAssistantSeq,
     cseThroughAssistantSeq: throughAssistantSeq,
     memoryComplete,
@@ -197,7 +201,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     degradedReasons: Object.freeze(degradedReasons),
     entities,
     bodyMatchRefs: Object.freeze([...floors.map(floor => {
-      const memory = activeMemories.find(value => value.floorId === floor.id) ?? null;
+      const memory = (memoryGroups.get(floor.id) ?? []).find(value => activeMemoryIds.has(value.id)) ?? null;
       if (!floor || !Number.isSafeInteger(floor.hostLocator?.messageIndex)
         || typeof floor.content?.rawFingerprint !== 'string' || typeof floor.content?.canonicalFingerprint !== 'string') return null;
       return Object.freeze({

@@ -38,6 +38,8 @@ test('七日前至当天提醒，过后取下一年，闰日不改日期，特�
   ] }];
   let projected = projectAnnualSettings(records, projectTime('2026-09-13'), []);
   assert.equal(projected.reminders[0].distance, 7); assert.equal(projected.items[1].status, '日期待明确');
+  assert.match(projected.reminders[0].text, /生日：原日期 1999年9月20日；下次日期 2026-09-20，还有7天/u);
+  assert.doesNotMatch(projected.reminders[0].text, /尚未确认庆祝、纪念或履约/u, '通用未确认提示由时间参考总则统一说明');
   projected = projectAnnualSettings(records, projectTime('2026-09-21'), []);
   assert.equal(projected.reminders.length, 0); assert.equal(projected.items[0].nextDate, '2027-09-20');
   projected = projectAnnualSettings(records, projectTime('9月13日'), []);

@@ -106,6 +106,23 @@ test('构画同源确认、提示、输入校验与外部关闭保留 QQJ 生命
   h.find('[data-dialog-choice="0"]').trigger('click');
   assert.equal(await informed, true);
 
+  const chosen = h.manager.choose({ title: '选择模式', choices: [{ value: false, label: '否' }, { value: true, label: '是', primary: true }] });
+  assert.equal(h.find('[data-dialog-choice]').length, 2);
+  h.find('[data-dialog-choice="1"]').trigger('click');
+  assert.equal(await chosen, true);
+
+  const declinedMode = h.manager.choose({ title: '普通逐楼', choices: [{ value: false, label: '否' }, { value: true, label: '是' }] });
+  h.find('[data-dialog-choice="0"]').trigger('click');
+  assert.equal(await declinedMode, false, 'choose 必须保留严格 false，不能把普通逐楼误作关闭');
+
+  const escaped = h.manager.choose({ title: '关闭不执行', choices: [{ value: false, label: '否' }, { value: true, label: '是' }] });
+  h.$(h.active()).trigger({ type: 'keydown', key: 'Escape', target: h.active(), preventDefault() {} });
+  assert.equal(await escaped, null);
+
+  const outsideChoice = h.manager.choose({ title: '点遮罩关闭', choices: [{ value: false, label: '否' }, { value: true, label: '是' }] });
+  h.$(h.active()).trigger({ type: 'click', target: h.active(), preventDefault() {} });
+  assert.equal(await outsideChoice, null);
+
   const outside = h.manager.prompt({ title: '外部关闭', initialValue: '保留草稿' });
   h.$(h.active()).trigger({ type: 'click', target: h.active(), preventDefault() {} });
   assert.equal(await outside, null);
@@ -142,11 +159,11 @@ test('自定义内容沿用同一关闭生命周期，提交失败留窗可重�
 
 test('宿主 CHAT_CHANGED 经同源生命周期立即关闭确认窗', async () => {
   const h = fakeDom({ withContextChange: true });
-  let confirmed = false;
-  const pending = h.manager.confirm({ title: '完全重构', body: '切聊后不可继续' }).then(value => { confirmed = value; return value; });
+  let selected = 'pending';
+  const pending = h.manager.choose({ title: '完全重构', body: '切聊后不可继续', choices: [{ value: false, label: '否' }, { value: true, label: '是' }] }).then(value => { selected = value; return value; });
   h.fireContextChange();
-  assert.equal(await pending, false);
-  assert.equal(confirmed, false);
+  assert.equal(await pending, null);
+  assert.equal(selected, null);
   assert.equal(h.manager.hasActive(), false);
 });
 

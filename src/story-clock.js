@@ -64,7 +64,7 @@ export function parseSharedStoryClock(value) {
   return candidates.sort((left, right) => Number(right.complete) - Number(left.complete) || left.sourceIndex - right.sourceIndex)[0];
 }
 
-export function parseStoryClockReference(value, referenceTags = 'Ti') {
+export function parseStoryClockReference(value, referenceTags = '') {
   const source = text(value);
   const configured = normalizeStoryClockReferenceTags(referenceTags);
   if (!source || !configured.length) return null;
@@ -109,7 +109,7 @@ export function parseStoryClockReference(value, referenceTags = 'Ti') {
   });
 }
 
-export function parseStoryClockEvidence(value, referenceTags = 'Ti') {
+export function parseStoryClockEvidence(value, referenceTags = '') {
   return parseSharedStoryClock(value) ?? parseStoryClockReference(value, referenceTags);
 }
 

@@ -1,5 +1,5 @@
 import { estimateRecallTokens } from './recall-selector.js';
-import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdit, replayTimeBatches, storyTimes, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, timeDistance, timeHours, validTimeProjection, timeBodyReads, timeItemFailures } from './time-engine.js';
+import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdits, replayTimeBatches, storyTimes, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, timeDistance, timeHours, validTimeProjection, timeBodyReads, timeItemFailures } from './time-engine.js';
 import { projectRecallSource } from './recall-source.js';
 import { sanitizeTaskMetadata } from './safe-metadata.js';
 import { publicErrorMessage } from '../public-error.js';
@@ -67,12 +67,21 @@ export async function prepareTimeRequest(reachable, batches = [], options = {}) 
   return prepared;
 }
 
-export function createTimeRuntime({ store, foundationStore, hostAdapter, session, generateTimeTask, annualSettingsProvider = () => ({ ready: false }), sanitizerOptions = () => ({}), storyClockReferenceTags = () => 'Ti', newUuid = newIdentityUuid, getReachable = () => null, getMemoryState = () => null, isEnabled = () => false, onInvalidate = () => {}, logger = console }) {
+export function createTimeRuntime({ store, foundationStore, hostAdapter, session, generateTimeTask, annualSettingsProvider = () => ({ ready: false }), sanitizerOptions = () => ({}), storyClockReferenceTags = () => '', newUuid = newIdentityUuid, getReachable = () => null, getMemoryState = () => null, isEnabled = () => false, onInvalidate = () => {}, logger = console }) {
   let epoch = 0, active = null, last = null, projectionCache = null, pendingReceipt = null, statusKey = null, statusRead = null, trackedItems = null, stoppedItems = null, annualItems = null, itemsKey = null, coverage = null, historyAuthorization = null, automatic = null, startingController = null;
   const subscribers = new Set();
   const enabled = () => isEnabled() === true;
   const identity = () => { try { return session.identity(); } catch { return { chatId: null }; } };
   const current = operation => enabled() && operation.epoch === epoch && !operation.controller.signal.aborted && identity().chatId === operation.chatId;
+  const bodyAttempt = (fragments, prepared = null) => ({
+    cutoffFloorId: prepared?.cutoffFloorId ?? fragments.at(-1)?.floorId ?? null,
+    cutoffAssistantSeq: prepared?.cutoffAssistantSeq ?? fragments.at(-1)?.assistantSeq ?? 0,
+    ...(prepared ? { sourceKeys: prepared.sourceKeys } : {}),
+    fragments: fragments.map(({ floorId, canonicalFingerprint, timeSourceFingerprint, from, to, totalCharacters }) => ({ floorId, canonicalFingerprint, timeSourceFingerprint, from, to, totalCharacters })),
+  });
+  const sameBodyAttempt = (attempt, fragments, prepared = null) => Array.isArray(attempt?.fragments)
+    ? JSON.stringify(attempt.fragments) === JSON.stringify(bodyAttempt(fragments).fragments)
+    : prepared && prepared.cutoffFloorId === attempt?.cutoffFloorId && JSON.stringify(prepared.sourceKeys) === JSON.stringify(attempt?.sourceKeys);
   const manualBlock = (ignoreActive = false) => {
     if (!enabled()) return '时间推演已关闭。';
     if (active && !ignoreActive) return active.phase === 'saving' ? '正在保存时间事项。' : '正在整理时间事项。';
@@ -132,7 +141,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     const failures = timeItemFailures(batches, source);
     const names = new Map((source.entities ?? []).map(entity => [entity.id, entity.displayName]));
     const items = replayTimeBatches(batches, source).map(item => ({
-      id: item.id, mergedInto: item.mergedInto ?? null, mergeDescription: item.mergeDescription ?? null, observationKey: item.observationKey, status: item.status, person: names.get(item.subjectEntityId) ?? item.subjectName ?? '人物未提供', label: item.label, type: item.type,
+      id: item.id, mergedInto: item.mergedInto ?? null, mergeDescription: item.mergeDescription ?? null, retirementReason: item.retirementReason ?? null, observationKey: item.observationKey, status: item.status, person: names.get(item.subjectEntityId) ?? item.subjectName ?? '人物未提供', label: item.label, type: item.type,
       observation: item.observation, observationTime: effectiveTime(item.observationTime), occurrenceTime: effectiveTime(item.occurrenceTime),
       dueTime: effectiveTime(item.dueTime), periodDays: item.periodDays,
       elapsedDays: timeDistance(item.occurrenceTime, currentTime), elapsedHours: timeHours(item.occurrenceTime, currentTime),
@@ -233,8 +242,9 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     if (!plan || plan.epoch !== epoch || plan.chatId !== identity().chatId || manualBlock()) return notify();
     return runPlan(plan, true);
   }
-  async function editItem(itemId, fields, observationKey) {
+  async function editItems(edits) {
     const blocked = manualBlock(); if (blocked) throw new Error(blocked);
+    if (!Array.isArray(edits) || !edits.length || new Set(edits.map(edit => edit?.itemId)).size !== edits.length) throw new Error('请选择有效且不重复的时间事项。');
     const operation = { epoch, chatId: identity().chatId, controller: new AbortController(), phase: 'saving', promise: null, manual: true };
     active = operation; notify();
     operation.promise = (async () => {
@@ -245,9 +255,11 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       const stored = await store.read(operation.chatId);
       if (!valid()) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
       const currentItems = replayTimeBatches(stored.batches, reachable);
-      const item = currentItems.find(value => value.id === itemId);
-      if (!item || item.observationKey !== observationKey) throw new Error('事项已变化或来源已失效，请取消编辑并刷新后重试。');
-      const batch = await compileTimeEdit(item, fields, reachable, `v3-time-batch-${newUuid()}`, currentItems);
+      for (const edit of edits) {
+        const item = currentItems.find(value => value.id === edit?.itemId);
+        if (!item || item.observationKey !== edit.observationKey) throw new Error('事项已变化或来源已失效，请取消编辑并刷新后重试。');
+      }
+      const batch = await compileTimeEdits(edits, reachable, `v3-time-batch-${newUuid()}`, currentItems);
       const root = await foundationStore.readRoot();
       if (!valid() || root.data?.chatId !== operation.chatId || root.data?.narrativeGeneration !== reachable.root.narrativeGeneration) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
       await store.putBatch(operation.chatId, batch, operation.controller.signal);
@@ -279,10 +291,13 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     finally { if (active === operation) active = null; notify(); }
     return getState();
   }
+  const editItem = (itemId, fields, observationKey) => editItems([{ itemId, fields, observationKey }]);
   async function ensureStart(source, stored, signal) {
     let start = stored.head?.bodyStart ?? timeBodyStart(source);
     const bound = resolveTimeStart(start, source);
-    if (bound?.floorId && !start.floorId) start = { ...start, floorId: bound.floorId, awaitingFirst: undefined };
+    if (bound && !start.floorId && !start.awaitingFirst) start = { ...start, hostLocator: bound.hostLocator, rawFingerprint: bound.rawFingerprint, canonicalFingerprint: bound.canonicalFingerprint,
+      ...(bound.floorId ? { floorId: bound.floorId, awaitingFirst: undefined } : {}) };
+    else if (bound?.floorId && !start.floorId) start = { ...start, floorId: bound.floorId, awaitingFirst: undefined };
     if (JSON.stringify(start) !== JSON.stringify(stored.head?.bodyStart)) {
       const head = { schemaVersion: 1, chatId: source.root.chatId, batchIds: [], ...stored.head, bodyStart: start };
       const result = await store.putHead(source.root.chatId, head, stored.revision, signal);
@@ -363,16 +378,12 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
         if (!current(operation)) return;
         if (plan.annualSetting?.ready) { const freshAnnual = await annualSnapshot(); cacheItems(stored.batches, source, currentAnnualRecords(stored.head, freshAnnual)); coverage = planTimeBody(source, stored.batches, { start: stored.head.bodyStart }); }
         const groups = [...plan.groups];
+        const roundFailures = [];
         if (plan.currentReview && groups.at(-1)?.length) groups.push([]);
         for (const planned of groups) {
           const currentReview = Boolean(plan.currentReview && !planned.length);
           if (currentReview && plan.reviewAuthorization && stored.head?.currentReviewAttempt?.authorization === plan.reviewAuthorization) break;
           const reads = timeBodyReads(stored.batches, source);
-          if (currentReview && plan.groups.flat().some(fragment => {
-            let cursor = fragment.from;
-            for (const range of (reads.get(fragment.floorId) ?? []).sort((a, b) => a.from - b.from)) if (range.from <= cursor) cursor = Math.max(cursor, range.to);
-            return cursor < fragment.to;
-          })) break;
           const fragments = planned.filter(fragment => {
             let cursor = fragment.from;
             for (const range of (reads.get(fragment.floorId) ?? []).sort((a,b) => a.from-b.from)) if (range.from <= cursor) cursor = Math.max(cursor, range.to);
@@ -381,8 +392,25 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
           if (planned.length && !fragments.length) { operation.progress.completed += 1; notify(); continue; }
           const witnesses = fragments.length ? fragments : plan.currentWitness ? [{ ...plan.currentWitness, totalCharacters: plan.currentWitness.content.length }] : [];
           if (!witnesses.length) continue;
-          if (!current(operation) || !await validateBody(operation, source, witnesses)) throw new Error('正文来源已变化，本批未应用。');
-          const prepared = await prepareTimeRequest(source, stored.batches, { fragments, cutoffBody: !fragments.length ? plan.currentWitness : null, allowInitialProjection: manual || currentReview, currentReview });
+          if (!current(operation)) return;
+          if (!await validateBody(operation, source, witnesses)) throw Object.assign(new Error('正文来源已变化，本批未应用。'), { code: 'QQJ_TIME_SOURCE_CHANGED' });
+          let prepared;
+          try {
+            prepared = await prepareTimeRequest(source, stored.batches, { fragments, cutoffBody: !fragments.length ? plan.currentWitness : null, allowInitialProjection: manual || currentReview, currentReview });
+          } catch (error) {
+            if (!current(operation) || error?.name === 'AbortError' || error?.code !== 'QQJ_TIME_INVALID') throw error;
+            const message = publicErrorMessage({ code: error.code, name: error.name, status: error.status }, { fallback: '本批时间正文无法准备；其余批次已继续处理，可手动补查本批。' });
+            const attempt = currentReview ? {} : bodyAttempt(fragments);
+            const failedRun = { status: 'partial', cutoffFloorId: attempt.cutoffFloorId ?? plan.currentWitness?.floorId ?? null,
+              cutoffAssistantSeq: attempt.cutoffAssistantSeq ?? plan.currentWitness?.assistantSeq ?? 0, items: itemCount(stored.batches, source), message };
+            const failedHead = { ...stored.head, lastRun: failedRun };
+            const saved = await store.putHead(operation.chatId, failedHead, stored.revision, operation.controller.signal);
+            stored = { ...stored, head: failedHead, revision: saved.revision };
+            roundFailures.push({ currentReview, message, ...attempt });
+            operation.progress.completed += 1; statusKey = null;
+            last = { ...failedRun, requests: operation.requests, persisted: true }; notify();
+            continue;
+          }
           if (!prepared.shouldRequest) { if (currentReview) operation.progress.total -= 1; continue; }
           operation.currentReview = currentReview;
           const latestSourceBody = source.bodyFloors.filter(body => body.floorId).at(-1);
@@ -396,31 +424,58 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
           operation.phase = prepared.request.trackedItems.length ? 'projecting' : 'collecting'; notify();
           const transportBudget = { remaining: 1, used: 0 };
           operation.requests += 1;
-          const result = await generateTimeTask({ systemPrompt: prepared.systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(prepared.request) }],
-            temperature: 0, includeCharacterCard: false, worldInfoSource: 'none', parseMode: 'semantic', transportBudget, transportRetries: 0, signal: operation.controller.signal });
-          if (!current(operation)) return;
-          operation.phase = 'saving'; notify();
-          const batch = await compileTimeResponse(result, prepared, stored.batches);
+          let result, batch;
+          try {
+            result = await generateTimeTask({ systemPrompt: prepared.systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(prepared.request) }],
+              temperature: 0, includeCharacterCard: false, worldInfoSource: 'none', parseMode: 'semantic', transportBudget, transportRetries: 0, signal: operation.controller.signal });
+            if (!current(operation)) return;
+            operation.phase = 'saving'; notify();
+            batch = await compileTimeResponse(result, prepared, stored.batches);
+          } catch (error) {
+            if (!current(operation) || error?.name === 'AbortError') throw error;
+            const message = error?.code === 'QQJ_TIME_INVALID' && error.itemErrors?.length
+              ? `${error.itemErrors.map(item => `第${item.index}项：${item.reason}`).join('；')} 本批未保存，可手动补查。`
+              : publicErrorMessage({ code: error?.code, name: error?.name, status: error?.status }, { fallback: '本批时间正文处理失败；成功批次已保留，可补查本批。' });
+            const failedRun = { ...run, status: 'partial', message };
+            const failedHead = { ...head, ...(reviewAttempt ? { currentReviewAttempt: { ...reviewAttempt, status: 'failed' } } : {}), lastRun: failedRun };
+            const saved = await store.putHead(operation.chatId, failedHead, stored.revision, operation.controller.signal);
+            stored = { ...stored, head: failedHead, revision: saved.revision };
+            roundFailures.push({ currentReview, message, ...(currentReview ? {} : bodyAttempt(fragments, prepared)) });
+            operation.progress.completed += 1; statusKey = null;
+            last = { ...failedRun, requests: operation.requests, persisted: true }; notify();
+            continue;
+          }
           batch.id = `v3-time-batch-${newUuid()}`;
-          if (!await validateBody(operation, source, [...witnesses, ...batch.dependencies.filter(ref => ref.canonicalFingerprint).map(ref => ({ floorId: ref.floorId, canonicalFingerprint: ref.canonicalFingerprint, totalCharacters: source.bodyFloors.find(body => body.floorId === ref.floorId)?.content.length }))])) throw new Error('正文来源已变化，本批未应用。');
+          if (!await validateBody(operation, source, [...witnesses, ...batch.dependencies.filter(ref => ref.canonicalFingerprint).map(ref => ({ floorId: ref.floorId, canonicalFingerprint: ref.canonicalFingerprint, totalCharacters: source.bodyFloors.find(body => body.floorId === ref.floorId)?.content.length }))])) throw Object.assign(new Error('正文来源已变化，本批未应用。'), { code: 'QQJ_TIME_SOURCE_CHANGED' });
           await store.putBatch(operation.chatId, batch, operation.controller.signal);
-          if (!await validateBody(operation, source, witnesses)) throw new Error('正文来源已变化，本批未应用。');
+          if (!await validateBody(operation, source, witnesses)) throw Object.assign(new Error('正文来源已变化，本批未应用。'), { code: 'QQJ_TIME_SOURCE_CHANGED' });
           const completed = { ...run, status: batch.status === 'partial' ? 'partial' : batch.changes.length ? 'completed' : 'empty',
             ...(batch.itemErrors?.length ? { itemErrors: batch.itemErrors, message: `已保存 ${batch.changes.length} 项；${batch.itemErrors.map(item => `第${item.index}项：${item.reason}`).join('；')} 失败项可在后续新正文或手动补查时再试。` } : {}), items: itemCount([...stored.batches, batch], source),
             ...(!fragments.length && batch.status !== 'partial' ? { initialProjectionCheckedSignature: prepared.signature } : {}) };
-          if (batch.currentReview) { completed.currentReview = batch.currentReview; completed.message = `当前评估：估计 ${batch.currentReview.updated} 项，依据不足 ${batch.currentReview.insufficient} 项，归并退出 ${batch.currentReview.merged ?? 0} 项，未纳入 ${batch.currentReview.omitted} 项。${completed.message ?? ''}`; }
+          if (batch.currentReview) { completed.currentReview = batch.currentReview; completed.message = `当前评估：估计 ${batch.currentReview.updated} 项，依据不足 ${batch.currentReview.insufficient} 项，短期事项退出 ${batch.currentReview.retired ?? 0} 项，归并退出 ${batch.currentReview.merged ?? 0} 项，未纳入 ${batch.currentReview.omitted} 项。${completed.message ?? ''}`; }
           const nextHead = { ...head, ...(reviewAttempt ? { currentReviewAttempt: { ...reviewAttempt, status: completed.status } } : {}), batchIds: [...head.batchIds, batch.id], lastRun: completed };
           const saved = await store.putHead(operation.chatId, nextHead, stored.revision, operation.controller.signal);
           if (!current(operation)) return;
           stored = { head: nextHead, revision: saved.revision, batches: [...stored.batches, batch] };
-          if (batch.status !== 'partial') operation.progress.completed += 1;
+          operation.progress.completed += 1;
+          if (batch.status === 'partial') roundFailures.push({ currentReview, message: completed.message ?? '本批有未完成事项，可手动补查。', ...(currentReview ? {} : bodyAttempt(fragments, prepared)) });
           const freshAnnual = await annualSnapshot();
           if (!current(operation)) return;
           cacheItems(stored.batches, source, currentAnnualRecords(stored.head, freshAnnual)); coverage = planTimeBody(source, stored.batches, { start: stored.head.bodyStart });
           const visibleCompleted = operation.annualMessage ? { ...completed, status: 'partial', message: [completed.message, operation.annualMessage].filter(Boolean).join(' ') } : completed;
           last = { ...visibleCompleted, requests: operation.requests, api: sanitizeTaskMetadata(result?.taskMetadata) };
           projectionCache = null; onInvalidate(); notify();
-          if (batch.status === 'partial') break;
+        }
+        if (roundFailures.length && current(operation)) {
+          const failedBodyAttempts = roundFailures.filter(failure => !failure.currentReview).map(({ cutoffFloorId, cutoffAssistantSeq, sourceKeys, fragments }) => ({ cutoffFloorId, cutoffAssistantSeq, sourceKeys, fragments }));
+          const details = roundFailures.slice(0, 3).map(failure => failure.message).filter(Boolean).join(' ');
+          const message = `本轮 ${roundFailures.length} 批未完成；其余批次已继续处理，失败范围仍可手动补查。${details ? ` ${details}` : ''}`;
+          const aggregate = { ...stored.head.lastRun, status: 'partial', message, failedBatchCount: roundFailures.length,
+            ...(failedBodyAttempts.length ? { failedBodyAttempts } : {}) };
+          const nextHead = { ...stored.head, lastRun: aggregate };
+          const saved = await store.putHead(operation.chatId, nextHead, stored.revision, operation.controller.signal);
+          stored = { ...stored, head: nextHead, revision: saved.revision };
+          last = { ...aggregate, requests: operation.requests, persisted: true }; statusKey = null; notify();
         }
         if (historyAuthorization?.chatId === operation.chatId) {
           const remaining = planTimeBody({ ...source, bodyFloors: source.bodyFloors.filter(body => body.assistantSeq <= historyAuthorization.through) }, stored.batches, { history: true });
@@ -474,11 +529,13 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       if (history) plan.groups = plan.groups.map(group => group.filter(row => row.assistantSeq <= historyAuthorization.through)).filter(group => group.length);
       if (stored.head?.lastRun?.status === 'partial') {
         const partialBatch = stored.batches.findLast(batch => batch.status === 'partial');
-        if (partialBatch) {
+        const failedBodyAttempts = [...(stored.head.lastRun.failedBodyAttempts ?? []), ...(partialBatch ? [{ cutoffFloorId: partialBatch.cutoffFloorId, sourceKeys: partialBatch.sourceKeys }] : [])];
+        if (failedBodyAttempts.length) {
           const groups = [];
           for (const group of plan.groups) {
+            if (failedBodyAttempts.some(attempt => sameBodyAttempt(attempt, group))) continue;
             const prepared = await prepareTimeRequest(source, stored.batches, { fragments: group });
-            if (prepared.cutoffFloorId === partialBatch.cutoffFloorId && JSON.stringify(prepared.sourceKeys) === JSON.stringify(partialBatch.sourceKeys)) continue;
+            if (failedBodyAttempts.some(attempt => sameBodyAttempt(attempt, group, prepared))) continue;
             groups.push(group);
           }
           plan.groups = groups;
@@ -559,6 +616,6 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     foundationRuntime?.subscribe?.(state => { if (['ready', 'needsReseal'].includes(state?.status)) void runBatch(); });
     void runBatch();
   }
-  return Object.freeze({ runBatch, prepareHistoryPlan, organize, authorizeHistory, editItem, refreshStatus, recallProjection, getState, invalidate, stop, bind,
+  return Object.freeze({ runBatch, prepareHistoryPlan, organize, authorizeHistory, editItem, editItems, refreshStatus, recallProjection, getState, invalidate, stop, bind,
     subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

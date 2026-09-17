@@ -17,7 +17,7 @@ const NULLABLE_MENTION_KEY = Object.freeze({ type: ['string', 'null'] });
 const EVIDENCE_SEGMENT_LIMIT = 8;
 const EVIDENCE_OCCURRENCE_LIMIT = 256;
 const EVIDENCE_REF_LIMIT = 40;
-const EVIDENCE = Object.freeze({ type: 'object', additionalProperties: false, required: ['quoteSegments', 'supports', 'evidenceMode', 'sourceMentionKey'], properties: { quoteSegments: { type: 'array', minItems: 1, maxItems: EVIDENCE_SEGMENT_LIMIT, items: { type: 'string', minLength: 1, maxLength: 2000 } }, supports: { type: 'string' }, evidenceMode: { type: 'string', enum: ['explicit', 'witnessed', 'reported', 'privateCognition'] }, sourceMentionKey: NULLABLE_MENTION_KEY, sourceType: { type: 'string', enum: ['assistant', 'precedingUser'] }, sourceSnapshotIndex: { type: 'integer' } } });
+const EVIDENCE = Object.freeze({ type: 'object', additionalProperties: false, required: ['quoteSegments', 'supports', 'evidenceMode', 'sourceMentionKey'], properties: { quoteSegments: { type: 'array', minItems: 1, maxItems: EVIDENCE_SEGMENT_LIMIT, items: { type: 'string', minLength: 1, maxLength: 2000 } }, supports: { type: 'string' }, evidenceMode: { type: 'string', enum: ['explicit', 'witnessed', 'reported', 'privateCognition'] }, sourceMentionKey: NULLABLE_MENTION_KEY, sourceFloorKey: { type: 'string' }, sourceType: { type: 'string', enum: ['assistant', 'precedingUser'] }, sourceSnapshotIndex: { type: 'integer' } } });
 const strictObject = (required, properties) => ({ type: 'object', additionalProperties: false, required, properties });
 const itemArray = (properties, maxItems = FLOOR_MEMORY_ITEM_LIMIT) => ({ type: 'array', maxItems, items: strictObject(Object.keys(properties), properties) });
 const mentionKeyArray = { type: 'array', maxItems: 40, items: MENTION_KEY };
@@ -36,7 +36,7 @@ const FLOOR_PROPERTIES = Object.freeze({
   privateCognition: itemArray({ ownerMentionKey: MENTION_KEY, kind: { type: 'string', enum: ['thought', 'emotion', 'intention', 'dream', 'privateDecision', 'suspicion'] }, content: { type: 'string' }, expressedPublicly: { type: 'boolean', const: false }, evidence: evidenceArray }),
   commitments: itemArray({ speakerMentionKey: MENTION_KEY, targetMentionKeys: mentionKeyArray, kind: { type: 'string', enum: ['promise', 'agreement', 'command', 'codePhrase', 'plan', 'boundary'] }, content: { type: 'string' }, status: { type: 'string', enum: ['made', 'accepted', 'refused', 'uncertain'] }, exactText: { type: ['string', 'null'] }, evidence: evidenceArray }),
   eventFragments: itemArray({ title: { type: 'string' }, description: { type: 'string' }, evidence: evidenceArray }),
-  exactAnchors: { type: 'array', maxItems: EXACT_ANCHOR_LIMIT, items: strictObject(['kind', 'exactText', 'speakerMentionKey', 'whyPreserve'], { kind: { type: 'string', enum: ['promise', 'codePhrase', 'wording', 'number', 'date', 'riddle', 'title', 'other'] }, exactText: { type: 'string' }, speakerMentionKey: NULLABLE_MENTION_KEY, whyPreserve: { type: 'string' }, sourceType: { type: 'string', enum: ['assistant', 'precedingUser'] }, sourceSnapshotIndex: { type: 'integer' } }) },
+  exactAnchors: { type: 'array', maxItems: EXACT_ANCHOR_LIMIT, items: strictObject(['kind', 'exactText', 'speakerMentionKey', 'whyPreserve'], { kind: { type: 'string', enum: ['promise', 'codePhrase', 'wording', 'number', 'date', 'riddle', 'title', 'other'] }, exactText: { type: 'string' }, speakerMentionKey: NULLABLE_MENTION_KEY, whyPreserve: { type: 'string' }, sourceFloorKey: { type: 'string' }, sourceType: { type: 'string', enum: ['assistant', 'precedingUser'] }, sourceSnapshotIndex: { type: 'integer' } }) },
   openLoops: itemArray({ description: { type: 'string' }, ownerMentionKeys: mentionKeyArray, evidence: evidenceArray }),
   ambiguities: itemArray({ question: { type: 'string' }, possibleReadings: { type: 'array', maxItems: 12, items: { type: 'string' } }, evidence: { type: 'array', maxItems: 40, items: EVIDENCE } }),
   cseSignals: itemArray({ subjectMentionKey: MENTION_KEY, objectMentionKey: NULLABLE_MENTION_KEY, signalType: { type: 'string', enum: ['emotion', 'boundary', 'conflict', 'reconciliation', 'vulnerability', 'trust', 'betrayal', 'repeatedPattern', 'relationDefinition', 'persistentCondition', 'other'] }, description: { type: 'string' }, evidence: evidenceArray }),
@@ -88,7 +88,6 @@ export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
 7. knowledge 用于正文明确呈现的观察或事实：subject 是事实关联的人物（无明确人物可留空），kind 区分身体、伤势、物品、环境、情境或其他；某人得知了什么应写 informationTransfers，只属于人物内心的内容应写 privateThoughts。cseSignals 只记录正文支持的人物情绪、边界、冲突/和解、脆弱、信任/背叛、重复模式、关系定义或持续状况等状态信号，不要把普通剧情事实都改写成状态信号。
 8. exactQuotes 只在措辞确有长期保留价值且原句实际出现在 canonicalContent 或 precedingUserInput 时填写；可直接写原句字符串，也可写含 exactText、kind、speaker、whyPreserve、source 的对象。能确认说话人时应写 speaker，以保留原句归属；不能确认时不要猜。若相同原句同时出现在不同来源，必须写 source，程序会在实际原文中定位。openLoops 的每项包含 description 和可选 owners，用于确实尚未解决的目标、疑问或风险；已经完成的事项不要继续列为未决。
 9. summary 中可供后续记忆使用的关键事实若对应 events、actions、knowledge、informationTransfers、privateThoughts、commitments、openLoops、exactQuotes 或 cseSignals，也必须进入相应结构字段，不能因为 summary 已写过就省略。有正文依据的相关字段应充分记录；无内容的字段可以留空，不要为了满足数据库 Schema 凑数或编造。
-
 参考结构：
 ${EXTRACTOR_OUTPUT_CONTRACT}
 
@@ -99,6 +98,16 @@ export function buildExtractorSystemPrompt(guidance = '', processingPrompt = '')
   const custom = typeof guidance === 'string' ? guidance : '';
   const businessGuidance = custom.trim() ? custom : DEFAULT_EXTRACTOR_GUIDANCE;
   return withBaseProcessingPrompt(`${businessGuidance}\n\n${EXTRACTOR_FIXED_CONTRACT}`, processingPrompt);
+}
+
+export function buildHighFloorExtractorSystemPrompt(guidance = '', processingPrompt = '') {
+  const extra = typeof guidance === 'string' && guidance.trim() ? `\n\n【用户补充偏好】\n${guidance.trim()}` : '';
+  const aggregate = `你正在为一段连续的旧聊天生成一份压缩记忆。完整阅读 payload.sourceFloors，按 floorKey 与 assistantSeq 的顺序理解剧情，只输出一份整体结果，不要逐楼返回多份摘要或 floors 数组。
+
+summary 与结构字段都只保留会影响后续剧情理解的关键转折、结果、承诺、未完成事项、人物状态变化及必要的时间顺序；合并重复过程并删去枝节，不要把每楼内容逐项展开成十倍条目。300字只是体量示意，不是硬截断；材料确有必要时可更长，但仍须压缩。
+
+evidence 和 exactQuotes 若引用某个成员楼，必须填写该成员的 sourceFloorKey；引文只能在对应楼的 canonicalContent 或 precedingUserInput 中定位。`;
+  return withBaseProcessingPrompt(`${aggregate}${extra}\n\n${EXTRACTOR_FIXED_CONTRACT}`, processingPrompt);
 }
 
 export const EXTRACTOR_SYSTEM_PROMPT = buildExtractorSystemPrompt();
@@ -259,19 +268,43 @@ function sourceDescriptor(value, path) {
 
 function sourceContentFor({ floor, envelope, value, path }) {
   const descriptor = sourceDescriptor(value, path);
-  const content = descriptor.sourceType === 'precedingUser'
-    ? envelope?.scope?.sourceUserInputSnapshot?.messages?.[descriptor.sourceSnapshotIndex]?.content
-    : floor?.content?.canonicalContent;
+  const bindings = envelope?.scope?.sourceFloorBindings ?? [];
+  const requestedKey = typeof value?.sourceFloorKey === 'string' ? value.sourceFloorKey.trim() : '';
+  const candidates = bindings.length ? bindings : [{ floorKey: 'floor-1', floorId: floor.id, canonicalContent: floor.content.canonicalContent, sourceUserInputSnapshot: envelope?.scope?.sourceUserInputSnapshot ?? null }];
+  const sourceFor = binding => descriptor.sourceType === 'precedingUser'
+    ? binding.sourceUserInputSnapshot?.messages?.[descriptor.sourceSnapshotIndex]?.content
+    : binding.canonicalContent;
+  let matching = requestedKey ? candidates.filter(binding => binding.floorKey === requestedKey) : candidates;
+  if (!requestedKey && matching.length > 1) {
+    const segments = Array.isArray(value?.quoteSegments) ? value.quoteSegments : [value?.exactText].filter(Boolean);
+    matching = matching.filter(binding => {
+      const content = sourceFor(binding);
+      return typeof content === 'string' && content && segments.length > 0 && segments.every(segment => content.includes(segment));
+    });
+  }
+  if (matching.length !== 1) throw extractorError('V3_EXTRACTOR_EVIDENCE_SOURCE_INVALID', `${path}.sourceFloorKey`);
+  const content = sourceFor(matching[0]);
   if (typeof content !== 'string' || !content) throw extractorError('V3_EXTRACTOR_EVIDENCE_SOURCE_INVALID', path);
-  return Object.freeze({ ...descriptor, content });
+  return Object.freeze({ ...descriptor, content, floorId: matching[0].floorId, floorKey: matching[0].floorKey });
 }
 
-export async function createExtractorEnvelope({ batchId, chatId, narrativeGeneration, checkpointId, floor, entities = [], identityProjection = null, userIdentity = null, identityHints = [], storyClock = null, previousStoryClock = null, previousFloorContext = null, sourceUserInputSnapshot = null, sourceVariableReference = null }) {
+export async function createExtractorEnvelope({ batchId, chatId, narrativeGeneration, checkpointId, floor, sourceFloors = null, entities = [], identityProjection = null, userIdentity = null, identityHints = [], storyClock = null, previousStoryClock = null, previousFloorContext = null, sourceUserInputSnapshot = null, sourceVariableReference = null }) {
   const normalizedIdentityProjection = normalizeIdentityProjection(identityProjection ?? {});
   const catalogSnapshot = catalogEntries(entities, normalizedIdentityProjection);
   const normalizedUserIdentity = safeIdentity(userIdentity);
   const normalizedUserInputSnapshot = safeUserInputSnapshot(sourceUserInputSnapshot);
   const normalizedVariableReference = copyFloorVariableReference(sourceVariableReference);
+  const sourceFloorBindings = (Array.isArray(sourceFloors) && sourceFloors.length ? sourceFloors : [{ floor, sourceUserInputSnapshot, storyClock }]).map((entry, index) => Object.freeze({
+    floorKey: `floor-${index + 1}`,
+    floorId: entry.floor.id,
+    assistantSeq: entry.floor.assistantSeq,
+    messageIndex: entry.floor.hostLocator?.messageIndex ?? null,
+    canonicalContent: entry.floor.content.canonicalContent,
+    rawFingerprint: entry.floor.content.rawFingerprint,
+    sourceUserInputSnapshot: safeUserInputSnapshot(entry.sourceUserInputSnapshot),
+    storyClock: entry.storyClock ?? null,
+    storyClockSignature: String(entry.storyClockSignature ?? ''),
+  }));
   const request = Object.freeze({
     task: 'extractFloorSemantics', locale: 'zh-CN',
     payload: {
@@ -284,6 +317,7 @@ export async function createExtractorEnvelope({ batchId, chatId, narrativeGenera
       userIdentity: normalizedUserIdentity,
       knownPeople: catalogSnapshot.map(entry => entry.semantic),
       identityHints: identityHints.filter(hint => typeof hint === 'string').slice(0, 20).map(hint => hint.slice(0, 500)),
+      ...(sourceFloorBindings.length > 1 ? { sourceFloors: sourceFloorBindings.map(binding => ({ floorKey: binding.floorKey, assistantSeq: binding.assistantSeq, messageIndex: binding.messageIndex, canonicalContent: binding.canonicalContent, precedingUserInput: binding.sourceUserInputSnapshot?.messages?.map((message, sourceSnapshotIndex) => ({ sourceSnapshotIndex, content: message.content })) ?? [], storyClock: binding.storyClock })) } : {}),
     },
   });
   const scope = Object.freeze({
@@ -294,6 +328,9 @@ export async function createExtractorEnvelope({ batchId, chatId, narrativeGenera
     identityProjection: normalizedIdentityProjection,
     userIdentity: normalizedUserIdentity,
     sourceUserInputSnapshot: normalizedUserInputSnapshot,
+    sourceFloorBindings: Object.freeze(sourceFloorBindings),
+    sourceFloorRawFingerprints: Object.freeze(Object.fromEntries(sourceFloorBindings.map(binding => [binding.floorId, binding.rawFingerprint]))),
+    sourceFloorStoryClockSignatures: Object.freeze(Object.fromEntries(sourceFloorBindings.map(binding => [binding.floorId, binding.storyClockSignature]))),
     sourceVariableReference: normalizedVariableReference,
   });
   return Object.freeze({ request, scope });
@@ -491,7 +528,7 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
         const supports = generatedText(item.supports, `${itemPath}.supports`, 2000);
         const sourceEntityId = pointer(item.sourceMentionKey, `${itemPath}.sourceMentionKey`, { nullable: true });
         if (result.length + located.length > EVIDENCE_REF_LIMIT) throw extractorError('V3_EXTRACTOR_EVIDENCE_REFS_TRUNCATED', itemPath);
-        result.push(...located.map(segment => ({ floorId: floor.id, anchorId: null, quotedText: segment.quotedText, occurrence: segment.occurrence, evidenceMode: item.evidenceMode, supports, sourceEntityId, ...source.stored })));
+        result.push(...located.map(segment => ({ floorId: source.floorId, anchorId: null, quotedText: segment.quotedText, occurrence: segment.occurrence, evidenceMode: item.evidenceMode, supports, sourceEntityId, ...source.stored })));
       } catch (error) { isolate(issueField, ownerIndex ?? index, error, itemPath); }
     }
     if (required && !result.length) throw extractorError('V3_EXTRACTOR_EVIDENCE_REQUIRED', path);
@@ -520,16 +557,16 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
   const exactAnchors = await convert('exactAnchors', async item => {
     const exactText = boundedLiteralText(item.exactText, 'exactAnchors.exactText', 2000);
     const source = sourceContentFor({ floor, envelope, value: item, path: 'exactAnchors' });
-    const occurrenceKey = JSON.stringify([source.sourceType, source.sourceSnapshotIndex, exactText]);
+    const occurrenceKey = JSON.stringify([source.floorId, source.sourceType, source.sourceSnapshotIndex, exactText]);
     const nextOccurrence = (anchorOccurrences.get(occurrenceKey) ?? 0) + 1;
     anchorOccurrences.set(occurrenceKey, nextOccurrence);
     if (occurrence(source.content, exactText) < nextOccurrence) throw extractorError('V3_EXTRACTOR_ANCHOR_OCCURRENCE_INVALID', 'exactAnchors.exactText');
-    return { anchorId: await deterministicUuid(['v3-anchor', floor.id, source.sourceType, source.sourceSnapshotIndex, item.kind, exactText, nextOccurrence]), kind: item.kind, exactText, occurrence: nextOccurrence, speakerEntityId: pointer(item.speakerMentionKey, 'exactAnchors.speakerMentionKey', { nullable: true }), whyPreserve: generatedText(item.whyPreserve, 'exactAnchors.whyPreserve', 1000), ...source.stored };
+    return { anchorId: await deterministicUuid(['v3-anchor', source.floorId, source.sourceType, source.sourceSnapshotIndex, item.kind, exactText, nextOccurrence]), kind: item.kind, exactText, occurrence: nextOccurrence, speakerEntityId: pointer(item.speakerMentionKey, 'exactAnchors.speakerMentionKey', { nullable: true }), whyPreserve: generatedText(item.whyPreserve, 'exactAnchors.whyPreserve', 1000), ...(source.floorId !== floor.id ? { sourceFloorId: source.floorId } : {}), ...source.stored };
   });
   const anchorByText = new Map();
-  const anchorSourceKey = (sourceType, sourceSnapshotIndex, exactText) => JSON.stringify([sourceType ?? 'assistant', sourceSnapshotIndex ?? null, exactText]);
+  const anchorSourceKey = (sourceFloorId, sourceType, sourceSnapshotIndex, exactText) => JSON.stringify([sourceFloorId ?? floor.id, sourceType ?? 'assistant', sourceSnapshotIndex ?? null, exactText]);
   for (const anchor of exactAnchors) {
-    const key = anchorSourceKey(anchor.sourceType, anchor.sourceSnapshotIndex, anchor.exactText);
+    const key = anchorSourceKey(anchor.sourceFloorId, anchor.sourceType, anchor.sourceSnapshotIndex, anchor.exactText);
     anchorByText.set(key, [...(anchorByText.get(key) ?? []), anchor.anchorId]);
   }
   const commitmentAnchorOffsets = new Map();
@@ -538,7 +575,7 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
     let exactAnchorId = null;
     if (exactText) {
       const evidenceSource = Array.isArray(item.evidence) && item.evidence.length ? sourceContentFor({ floor, envelope, value: item.evidence[0], path: `commitments[${index}].evidence[0]` }) : sourceContentFor({ floor, envelope, value: {}, path: `commitments[${index}]` });
-      const key = anchorSourceKey(evidenceSource.sourceType, evidenceSource.sourceSnapshotIndex, exactText);
+      const key = anchorSourceKey(evidenceSource.floorId, evidenceSource.sourceType, evidenceSource.sourceSnapshotIndex, exactText);
       const anchorOffset = commitmentAnchorOffsets.get(key) ?? 0;
       commitmentAnchorOffsets.set(key, anchorOffset + 1);
       exactAnchorId = evidenceSource.content.includes(exactText) ? (anchorByText.get(key)?.[anchorOffset] ?? null) : null;
@@ -554,7 +591,18 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
   const sourceRawFingerprint = /^sha256:[0-9a-f]{64}$/u.test(floor.content.rawFingerprint ?? '')
     ? floor.content.rawFingerprint
     : null;
+  const batchSources = envelope?.scope?.sourceFloorBindings ?? [];
+  const sourceFloorIds = batchSources.map(source => source.floorId);
+  const sourceFloorSnapshots = batchSources.map(source => ({
+    floorId: source.floorId,
+    canonicalContent: source.canonicalContent,
+    sourceUserInputSnapshot: source.sourceUserInputSnapshot,
+    rawFingerprint: source.floorId === floor.id ? sourceRawFingerprint : envelope?.scope?.sourceFloorRawFingerprints?.[source.floorId],
+    storyClockSignature: envelope?.scope?.sourceFloorStoryClockSignatures?.[source.floorId] ?? '',
+  }));
+  const aggregateFields = sourceFloorIds.length > 1 ? { sourceFloorIds, sourceFloorSnapshots } : {};
   const memory = validateFloorMemory({ schemaVersion: 3, recordType: 'floorMemory', id: memoryId, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration, floorId: floor.id, extractorVersion: EXTRACTOR_VERSION, sourceCanonicalContent: floor.content.canonicalContent, sourceUserInputSnapshot,
+    ...aggregateFields,
     ...(sourceVariableReference ? { sourceVariableReference } : {}),
     ...(sourceRawFingerprint ? { sourceRawFingerprint } : {}),
     summary: { aiText: summary, userText: preservedSummary?.userText ?? null, effectiveSource: preservedSummary?.effectiveSource === 'user' && preservedSummary.userText ? 'user' : 'ai', revisionNote: preservedSummary?.effectiveSource === 'user' ? '重新提取后保留用户摘要' : null }, summaryEvidenceRefs,
@@ -775,16 +823,18 @@ function semanticPacket(value, { finishReason } = {}) {
 }
 
 function semanticSource(item, quote, floor, envelope) {
-  const sources = [
-    { sourceType: 'assistant', sourceSnapshotIndex: null, content: floor.content.canonicalContent },
-    ...(envelope?.scope?.sourceUserInputSnapshot?.messages ?? []).map((message, sourceSnapshotIndex) => ({ sourceType: 'precedingUser', sourceSnapshotIndex, content: message.content })),
-  ];
+  const bindings = envelope?.scope?.sourceFloorBindings ?? [{ floorKey: 'floor-1', floorId: floor.id, canonicalContent: floor.content.canonicalContent, sourceUserInputSnapshot: envelope?.scope?.sourceUserInputSnapshot ?? null }];
+  const sources = bindings.flatMap(binding => [
+    { floorKey: binding.floorKey, floorId: binding.floorId, sourceType: 'assistant', sourceSnapshotIndex: null, content: binding.canonicalContent },
+    ...(binding.sourceUserInputSnapshot?.messages ?? []).map((message, sourceSnapshotIndex) => ({ floorKey: binding.floorKey, floorId: binding.floorId, sourceType: 'precedingUser', sourceSnapshotIndex, content: message.content })),
+  ]);
   const sourceHint = item && typeof item === 'object' && !Array.isArray(item) ? field(item, ['source', 'sourceType', 'evidenceSource', '来源']) : '';
   const hint = normalizedKey(semanticText(sourceHint, [], 80));
   const hintedType = ['canonicalcontent', 'assistant', 'ai', '正文', 'ai正文'].includes(hint) ? 'assistant'
     : ['precedinguserinput', 'precedinguser', 'userinput', 'currentuserinput', 'user', '前置用户输入', '用户输入'].includes(hint) ? 'precedingUser'
       : null;
-  const matches = sources.filter(source => (!hintedType || source.sourceType === hintedType) && source.content.includes(quote));
+  const floorKey = semanticText(field(item, ['sourceFloorKey', 'floorKey', '来源楼']), [], 80);
+  const matches = sources.filter(source => (!floorKey || source.floorKey === floorKey) && (!hintedType || source.sourceType === hintedType) && source.content.includes(quote));
   return matches.length === 1 ? matches[0] : null;
 }
 
@@ -792,7 +842,7 @@ function semanticEvidence(item, floor, envelope) {
   const quote = literalText(item, ['exactQuote', 'quote', 'sourceText', 'originalText', '原句', '引文'], 2000);
   const source = quote ? semanticSource(item, quote, floor, envelope) : null;
   if (!source) return [];
-  return [{ quoteSegments: [quote], supports: '本地定位的语义条目', evidenceMode: 'explicit', sourceMentionKey: null, sourceType: source.sourceType, ...(source.sourceType === 'precedingUser' ? { sourceSnapshotIndex: source.sourceSnapshotIndex } : {}) }];
+  return [{ quoteSegments: [quote], supports: '本地定位的语义条目', evidenceMode: 'explicit', sourceMentionKey: null, sourceFloorKey: source.floorKey, sourceType: source.sourceType, ...(source.sourceType === 'precedingUser' ? { sourceSnapshotIndex: source.sourceSnapshotIndex } : {}) }];
 }
 
 function enumOr(value, mappings, fallback) {
@@ -802,7 +852,10 @@ function enumOr(value, mappings, fallback) {
 
 async function compileSemanticPacket({ response, finishReason, envelope, floor, existingEntities, now, supersedes, preservedSummary, expectedScope }) {
   const parsed = semanticPacket(response, { finishReason });
-  if (parsed.legacy) return normalizeLegacyExtractorResponse({ response: parsed.legacy, envelope, floor, existingEntities, now, supersedes, preservedSummary, expectedScope });
+  if (parsed.legacy) {
+    const normalized = await normalizeLegacyExtractorResponse({ response: parsed.legacy, envelope, floor, existingEntities, now, supersedes, preservedSummary, expectedScope });
+    return normalized;
+  }
   const { packet, summary } = parsed;
   const isolated = [];
   const issue = (fieldName, index, code, path = fieldName) => {
@@ -1013,7 +1066,7 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
       continue;
     }
     const kind = enumOr(semanticText(item, ['kind', 'type']), { promise: 'promise', codephrase: 'codePhrase', wording: 'wording', number: 'number', date: 'date', riddle: 'riddle', title: 'title', other: 'other', '承诺': 'promise', '暗号': 'codePhrase', '数字': 'number', '日期': 'date', '谜语': 'riddle', '标题': 'title' }, 'wording');
-    target.exactAnchors.push({ kind, exactText, speakerMentionKey: mentionFor(field(item, ['speaker', 'person'])), whyPreserve: semanticText(item, ['why', 'reason', 'whyPreserve', '原因'], 1000) || '关键原句', sourceType: source.sourceType, ...(source.sourceType === 'precedingUser' ? { sourceSnapshotIndex: source.sourceSnapshotIndex } : {}) });
+    target.exactAnchors.push({ kind, exactText, speakerMentionKey: mentionFor(field(item, ['speaker', 'person'])), whyPreserve: semanticText(item, ['why', 'reason', 'whyPreserve', '原因'], 1000) || '关键原句', sourceFloorKey: source.floorKey, sourceType: source.sourceType, ...(source.sourceType === 'precedingUser' ? { sourceSnapshotIndex: source.sourceSnapshotIndex } : {}) });
   }
   for (const [index, item] of boundedItems(['openLoops', 'unresolved', 'unfinished', 'looseEnds', '未决事项', '悬念'], 'openLoops').entries()) {
     const description = semanticText(item, ['description', 'content', 'text', '内容', '描述']);
@@ -1064,12 +1117,12 @@ export function inferCanonicalCurrentTime(canonicalContent) {
   return relative ? Object.freeze({ text: relative, kind: 'relative' }) : null;
 }
 
-export async function runExtractorRequest({ generateUtilityTask, envelope, floor, existingEntities = [], now, supersedes = null, preservedSummary = null, expectedScope, promptGuidance = '', processingPrompt = '', signal }) {
+export async function runExtractorRequest({ generateUtilityTask, envelope, floor, existingEntities = [], now, supersedes = null, preservedSummary = null, expectedScope, promptGuidance = '', processingPrompt = '', aggregate = false, signal }) {
   if (typeof generateUtilityTask !== 'function') throw new TypeError('V3 Extractor utility route unavailable');
   if (!expectedScope) throw extractorError('V3_EXTRACTOR_LOCAL_SCOPE_INVALID', 'expectedScope');
   const validationErrors = [];
   const transportBudget = { remaining: 3, used: 0 };
-  const systemPrompt = buildExtractorSystemPrompt(promptGuidance, processingPrompt);
+  const systemPrompt = aggregate ? buildHighFloorExtractorSystemPrompt(promptGuidance, processingPrompt) : buildExtractorSystemPrompt(promptGuidance, processingPrompt);
   const taskMessages = [{ role: 'user', content: JSON.stringify(envelope.request) }];
   for (let attempts = 1; attempts <= 3; attempts += 1) {
     let candidate = null, metadata = sanitizeTaskMetadata(null), responseFingerprint = null, receivedResult = false;

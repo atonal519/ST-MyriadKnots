@@ -515,6 +515,56 @@ test('旧 CSE load 的重放迟到时不得覆盖已经成功提交的人工长�
   assert.deepEqual(afterLateLoad.cseSubjects.find(item => item.subjectEntityId === subject.subjectEntityId).adaptive.map(item => item.text), ['新长期倾向']);
 });
 
+test('CSE root耐久后重放期间失效，不向外层回传旧epoch图', async () => {
+  const h = runtimeHarness({ chat: [user('开始'), assistant('第一楼。'), user('确认一'), assistant('第二楼。'), user('确认二')],
+    cse: () => ({ jsonData: { noMaterialChange: true } }) });
+  await h.runtime.start();
+  await h.runtime.extractNext();
+  const [, second] = h.runtime.getState().floors;
+  await h.runtime.extractFloor(second.floorId, { analyzeState: false });
+  const graph = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(graph.stateDeltas.length, 1);
+
+  let gateNextDigest = false, releaseReplay, markReplayStarted, callbacks = 0;
+  const replayStarted = new Promise(resolve => { markReplayStarted = resolve; });
+  const replayGate = new Promise(resolve => { releaseReplay = resolve; });
+  const wrappedStore = {
+    ...h.store,
+    async commitRoot(...args) {
+      const result = await h.store.commitRoot(...args);
+      if (result.status === 'saved' && result.reachable?.stateDeltas?.length > graph.stateDeltas.length) gateNextDigest = true;
+      return result;
+    },
+  };
+  const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } });
+  const runtime = createCseRuntime({ store: wrappedStore, hostAdapter,
+    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
+    onGraphCommitted: () => { callbacks += 1; }, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  await runtime.load(graph);
+
+  const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  const realCrypto = globalThis.crypto;
+  const realDigest = realCrypto.subtle.digest.bind(realCrypto.subtle);
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, enumerable: true, value: {
+    subtle: { digest: async (...args) => {
+      if (gateNextDigest) { gateNextDigest = false; markReplayStarted(); await replayGate; }
+      return realDigest(...args);
+    } },
+  } });
+  try {
+    const running = runtime.analyzeFloor(second.floorId);
+    await replayStarted;
+    runtime.invalidate();
+    releaseReplay();
+    await running;
+  } finally {
+    releaseReplay();
+    Object.defineProperty(globalThis, 'crypto', cryptoDescriptor);
+  }
+  assert.equal(callbacks, 0, '失效重放不得向外层memory runtime回灌旧图');
+  assert.equal((await h.store.readReachable({ mode: 'runtime' })).stateDeltas.length, 2, 'root已耐久的CSE仍保留给后续冷读');
+});
+
 test('人工纠正可追加末 delta 未携带主体，并识别情境对象的无变、改向与清空', async () => {
   const envelope = createCseEnvelope({ floor: floor(FLOOR1, '甲在场。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [entities[1]], entities });
   const compiled = await compileCseResponse({

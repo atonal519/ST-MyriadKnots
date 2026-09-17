@@ -114,7 +114,7 @@ export async function selectRecallWithLlm({
       systemPrompt: RECALL_LLM_SYSTEM_PROMPT,
       taskMessages,
       temperature: 0,
-      maxTokens: 2048,
+      maxTokens: 8192,
       parseMode: 'semantic',
       includeCharacterCard: false,
       worldInfoSource: 'none',

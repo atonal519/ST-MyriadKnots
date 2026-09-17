@@ -1950,6 +1950,82 @@ test('lifecycle 接管刷新时身份准备失败仍发布真实 foundation erro
   assert.deepEqual(backend.calls, [], '身份失败不得尝试读取聊天记忆');
 });
 
+test('高楼 readReachable 最多并发 16 条，并在切聊后停止派发且不混读新聊天', async () => {
+  const h = harness([...Array.from({ length: 40 }, (_, index) => assistant(`高楼正文 ${index + 1}`)), user('稳定全部高楼')]);
+  await h.runtime.start();
+  assert.equal(h.runtime.getReachable().floors.length, 40);
+  let active = 0, maximum = 0;
+  const boundedClient = {
+    ...h.backend.client,
+    async get(collection, key) {
+      active += 1; maximum = Math.max(maximum, active);
+      try { await new Promise(resolve => setTimeout(resolve, 2)); return await h.backend.client.get(collection, key); }
+      finally { active -= 1; }
+    },
+  };
+  const identityA = { hostChatId: `host-${CHAT}`, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' };
+  const cold = createFoundationStore({ client: boundedClient, contextProvider: () => identityA });
+  const ready = await cold.readReachable({ mode: 'projection' });
+  assert.equal(ready.status, 'ready');
+  assert.equal(ready.floors.length, 40);
+  assert.ok(maximum > 1 && maximum <= 16, `最大并发应在2..16，实际 ${maximum}`);
+
+  let currentIdentity = identityA;
+  let floorActive = 0, releaseFloors;
+  const floorGate = new Promise(resolve => { releaseFloors = resolve; });
+  let firstWaveResolve;
+  const firstWave = new Promise(resolve => { firstWaveResolve = resolve; });
+  const collections = [];
+  const switchingClient = {
+    ...h.backend.client,
+    async get(collection, key) {
+      collections.push(collection);
+      if (key.startsWith('v3-floor-')) {
+        floorActive += 1;
+        if (floorActive === 16) firstWaveResolve();
+        await floorGate;
+      }
+      return h.backend.client.get(collection, key);
+    },
+  };
+  const switching = createFoundationStore({ client: switchingClient, contextProvider: () => currentIdentity });
+  const pending = switching.readReachable({ mode: 'projection' });
+  await firstWave;
+  currentIdentity = { hostChatId: `host-${OTHER_CHAT}`, chatId: OTHER_CHAT, characterLocator: 'other.png', personaLocator: 'other.png' };
+  releaseFloors();
+  const stale = await pending;
+  assert.equal(stale.status, 'stale');
+  assert.deepEqual([...new Set(collections)], [`chat-${CHAT}`], '整次读取只能访问起始聊天 collection');
+  assert.equal(collections.filter((_, index) => index >= 3).length, 16, '切聊后不得继续派发剩余楼层读取');
+
+  let storeEnabled = true;
+  let disabledFloorActive = 0, releaseDisabledFloors;
+  const disabledGate = new Promise(resolve => { releaseDisabledFloors = resolve; });
+  let disabledWaveResolve;
+  const disabledWave = new Promise(resolve => { disabledWaveResolve = resolve; });
+  const disabledCalls = [];
+  const disablingClient = {
+    ...h.backend.client,
+    async get(collection, key) {
+      disabledCalls.push([collection, key]);
+      if (key.startsWith('v3-floor-')) {
+        disabledFloorActive += 1;
+        if (disabledFloorActive === 16) disabledWaveResolve();
+        await disabledGate;
+      }
+      return h.backend.client.get(collection, key);
+    },
+  };
+  const disabling = createFoundationStore({ client: disablingClient, contextProvider: () => identityA, isEnabled: () => storeEnabled });
+  const disabledPending = disabling.readReachable({ mode: 'projection' });
+  await disabledWave;
+  storeEnabled = false;
+  releaseDisabledFloors();
+  const disabled = await disabledPending;
+  assert.equal(disabled.status, 'disabled');
+  assert.equal(disabledCalls.slice(3).length, 16, '关闭后不得继续派发剩余楼层读取');
+});
+
 test('生产 scanner 只用紧邻普通 user 稳定 AI，真 system 不算而 auto-hide user 算', async () => {
   const autoHideUser = { is_user: true, is_system: true, mes: '已自动隐藏的用户消息', send_date: 'anchor-auto-hide', extra: { qianqianjieAutoHide: true } };
   const trueSystem = { is_user: true, is_system: true, mes: '真实系统消息', send_date: 'system-1', extra: { type: 'narrator' } };

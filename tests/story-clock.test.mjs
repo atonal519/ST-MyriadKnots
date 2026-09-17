@@ -66,6 +66,7 @@ test('三前缀各自配对，合法并存不算重复，残缺格式按完整�
 test('可配置时间参考标签保留完整语义与原文顺序，标准时间戳仍优先', () => {
   assert.deepEqual(normalizeStoryClockReferenceTags(' Ti，时标\nti '), ['Ti', '时标']);
   const raw = '<Slate><Ti>0081年10月20日·<b>清晨</b>·06:12</Ti><content>正文</content><ti>0081年10月20日·午前·10:40</ti></Slate>';
+  assert.equal(parseStoryClockReference(raw), null);
   const reference = parseStoryClockReference(raw, 'TI,时标');
   assert.equal(reference.namespace, 'tag:TI');
   assert.equal(reference.referenceText, '0081年10月20日·清晨·06:12\n0081年10月20日·午前·10:40');

@@ -6,7 +6,7 @@ import { inferCanonicalCurrentTime } from './extractor.js';
 import { estimateRecallTokens } from './recall-selector.js';
 
 // Private projection: current selected body witnesses never rewrite foundation records.
-export async function readTimeBody(reachable, host, { sanitizerOptions = {}, storyClockReferenceTags = 'Ti' } = {}) {
+export async function readTimeBody(reachable, host, { sanitizerOptions = {}, storyClockReferenceTags = '' } = {}) {
   const candidates = await scanAssistantCandidates(host.chat ?? [], { sanitizerOptions, chatId: reachable.root.chatId, captureRawContent: true });
   const binding = matchFloorCandidates(reachable.floors ?? [], candidates);
   if (binding.issue) throw Object.assign(new Error('正文楼绑定不唯一，未完成检查。'), { code: 'QQJ_TIME_BINDING' });
@@ -39,8 +39,12 @@ export function timeBodyStart(source) {
 export function resolveTimeStart(start, source) {
   if (start?.awaitingFirst) return source.bodyFloors[0] ?? null;
   if (start?.floorId) return source.bodyFloors.find(body => body.floorId === start.floorId) ?? null;
-  return source.bodyFloors.find(body => body.rawFingerprint === start?.rawFingerprint && body.canonicalFingerprint === start?.canonicalFingerprint
-    && JSON.stringify(body.hostLocator) === JSON.stringify(start?.hostLocator)) ?? null;
+  const exact = source.bodyFloors.find(body => body.rawFingerprint === start?.rawFingerprint && body.canonicalFingerprint === start?.canonicalFingerprint
+    && JSON.stringify(body.hostLocator) === JSON.stringify(start?.hostLocator));
+  if (exact) return exact;
+  if (typeof start?.rawFingerprint !== 'string' || !start.rawFingerprint || typeof start?.canonicalFingerprint !== 'string' || !start.canonicalFingerprint) return null;
+  const relocated = source.bodyFloors.filter(body => body.rawFingerprint === start.rawFingerprint && body.canonicalFingerprint === start.canonicalFingerprint);
+  return relocated.length === 1 ? relocated[0] : null;
 }
 
 export function planTimeBody(source, batches, { start = null, history = false, inputTokens = TIME_INPUT_TOKENS } = {}) {

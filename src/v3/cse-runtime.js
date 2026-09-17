@@ -25,7 +25,9 @@ const errorWith = (code, message) => { const error = new Error(message ?? code);
 const coreMeaning = items => JSON.stringify((items ?? []).map(item => [item.text, item.visibility, item.towardEntityId ?? null]));
 const effectiveMemorySummary = memory => memory?.summary?.effectiveSource === 'user' ? memory.summary.userText : memory?.summary?.aiText;
 function currentUserInputFromMemory(memory) {
-  const messages = memory?.sourceUserInputSnapshot?.messages;
+  const messages = Array.isArray(memory?.sourceFloorSnapshots)
+    ? memory.sourceFloorSnapshots.flatMap(snapshot => snapshot?.sourceUserInputSnapshot?.messages ?? [])
+    : memory?.sourceUserInputSnapshot?.messages;
   if (!Array.isArray(messages) || !messages.length) return null;
   return Object.freeze({ messages: Object.freeze(messages.map((message, sourceSnapshotIndex) => Object.freeze({ sourceSnapshotIndex, messageIndex: message.messageIndex, content: message.content }))) });
 }
@@ -312,7 +314,10 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_CSE_STALE', 'CSE 操作已取消。');
     const next = committed.reachable;
     if (next?.status !== 'ready') throw errorWith('V3_CSE_COMMIT_SNAPSHOT_INVALID', 'CSE 提交后的已验证快照无效。');
-    reachable = next; await calculateReplay(next); onGraphCommitted?.(next); publishFailureHint(next, floor.id, null); lastFailure = null; return notify();
+    reachable = next;
+    const replayCurrent = await calculateReplay(next);
+    if (!replayCurrent || operation.epoch !== epoch || operation.controller.signal.aborted || reachable !== next) return notify();
+    onGraphCommitted?.(next); publishFailureHint(next, floor.id, null); lastFailure = null; return notify();
   }
 
   async function commitDelta(operation, result, roleEntities) {

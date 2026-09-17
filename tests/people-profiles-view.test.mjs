@@ -62,7 +62,7 @@ function runtimeHarness({ profile = null, profiles = null, selected = [A], failS
   let state = { status: 'ready', chatId: CHAT, revision: 1, selectedEntityIds: [...selected], profilesByEntityId: initialProfiles,
     people: [person(A, '甲', selected.includes(A), initialProfiles[A] ?? null, 3), person(B, '乙', selected.includes(B), initialProfiles[B] ?? null)], active: null,
     unprofiledSelectedCount: selected.filter(id => !initialProfiles[id]).length, lastError: null };
-  const listeners = new Set(), calls = { select: [], order: [], save: [], avatar: [], merge: [], delete: [], generate: 0, regenerate: [] };
+  const listeners = new Set(), calls = { select: [], order: [], save: [], avatar: [], merge: [], delete: [], generate: 0, rewrite: 0, regenerate: [] };
   const emit = () => { for (const listener of listeners) listener(state); return state; };
   const runtime = {
     getState: () => state, refresh: async () => state,
@@ -88,6 +88,7 @@ function runtimeHarness({ profile = null, profiles = null, selected = [A], failS
       }
       return state;
     },
+    async rewriteSelectedProfiles() { calls.rewrite += 1; return runtime.generateMissingProfiles(); },
     async regenerateProfile(entityId) { calls.regenerate.push(entityId); return emit(); },
     async saveAvatar(entityId, avatar) { calls.avatar.push([entityId, avatar]); state = { ...state, people: state.people.map(item => item.entityId === entityId ? { ...item, avatar } : item) }; return emit(); },
     async mergePeople(sourceEntityId, targetEntityId, profileSource) {
@@ -403,16 +404,17 @@ test('基础资料四项按紧凑行分组且空字段隐藏；头像弹窗裁�
   view.deactivate();
 });
 
-test('整理动作只在存在未建档重要人物时可用且每次点击只调用一次 runtime', async () => {
-  const h = runtimeHarness(), container = new Node('main'); createPeopleProfilesView({ runtime: h.runtime, documentRef }).mount(container);
-  const button = flatten(container).find(node => node.textContent === '整理'); assert.equal(button.disabled, false); assert.equal(button.attributes['aria-label'], '整理待建档人物（1）');
-  button.click(); await new Promise(resolve => setImmediate(resolve)); assert.equal(h.calls.generate, 1);
+test('整理动作覆盖全部已选人物，确认后每次点击只调用一次整档 runtime', async () => {
+  const dialogs = dialogHarness(), h = runtimeHarness(), container = new Node('main'); createPeopleProfilesView({ runtime: h.runtime, dialog: dialogs.dialog, documentRef }).mount(container);
+  const button = flatten(container).find(node => node.textContent === '整理'); assert.equal(button.disabled, false); assert.equal(button.attributes['aria-label'], '整档整理已选人物（1）');
+  button.click(); await new Promise(resolve => setImmediate(resolve)); assert.equal(h.calls.rewrite, 1); assert.equal(h.calls.generate, 1);
+  assert.match(dialogs.confirms[0].body, /已有档案（含人工设定）/); assert.match(dialogs.confirms[0].body, /不会扫描逐楼历史/);
   const profile = { entityId: A, name: '甲', aliases: '', background: '', appearance: '', personality: '', notes: '', source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
   const complete = runtimeHarness({ profile }), completeContainer = new Node('main'); createPeopleProfilesView({ runtime: complete.runtime, documentRef }).mount(completeContainer);
-  assert.equal(flatten(completeContainer).find(node => node.textContent === '整理')?.disabled, true);
+  assert.equal(flatten(completeContainer).find(node => node.textContent === '整理')?.disabled, false);
 
   const partial = runtimeHarness({ generatedProfile: { entityId: A, name: '甲', aliases: '', background: '', appearance: '', personality: '', notes: '', source: 'generated', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' }, generationReport: { requested: 3, saved: 1, missing: 1, conflicts: 1, invalid: 0, unknown: 1, skipped: 0 } });
-  const partialContainer = new Node('main'); createPeopleProfilesView({ runtime: partial.runtime, documentRef }).mount(partialContainer);
+  const partialContainer = new Node('main'); createPeopleProfilesView({ runtime: partial.runtime, dialog: dialogHarness().dialog, documentRef }).mount(partialContainer);
   flatten(partialContainer).find(node => node.textContent === '整理').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.match(visible(partialContainer), /保存 1\/3 位；遗漏 1 位；冲突 1 位；未知目标 1 项/);
@@ -422,17 +424,27 @@ test('整理动作只在存在未建档重要人物时可用且每次点击只�
   assert.doesNotMatch(visible(partialContainer), /保存 1\/3 位/, '后续非整理操作不得复用旧批次报告');
 });
 
+test('人物整理沿用 runtime 总批次进度并随批次推进更新', () => {
+  const h = runtimeHarness(), container = new Node('main');
+  createPeopleProfilesView({ runtime: h.runtime, documentRef }).mount(container);
+  h.emitState({ ...h.state, active: { kind: 'generating', batchIndex: 3, batchTotal: 11 } });
+  assert.match(visible(container), /正在整理人物资料 · 第 3\/11 批/);
+  h.emitState({ ...h.state, active: { kind: 'generating', batchIndex: 4, batchTotal: 11 } });
+  assert.match(visible(container), /正在整理人物资料 · 第 4\/11 批/);
+  assert.doesNotMatch(visible(container), /第 3\/11 批/);
+});
+
 test('整理完成会刷新未触碰表单，用户整理期间已输入的草稿则保持原样', async () => {
   const generated = { entityId: A, name: '模型甲', aliases: '新别名', background: '生成背景', appearance: '', personality: '', notes: '', source: 'generated', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
   const untouched = runtimeHarness({ generatedProfile: generated }), untouchedContainer = new Node('main');
-  createPeopleProfilesView({ runtime: untouched.runtime, documentRef }).mount(untouchedContainer);
+  createPeopleProfilesView({ runtime: untouched.runtime, dialog: dialogHarness().dialog, documentRef }).mount(untouchedContainer);
   flatten(untouchedContainer).find(node => node.textContent === '整理').click();
   await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
   assert.match(visible(untouchedContainer), /模型甲.*生成背景/);
 
   let release; const gate = new Promise(resolve => { release = resolve; });
   const editing = runtimeHarness({ generatedProfile: generated, generateGate: gate }), editingContainer = new Node('main');
-  createPeopleProfilesView({ runtime: editing.runtime, documentRef }).mount(editingContainer);
+  createPeopleProfilesView({ runtime: editing.runtime, dialog: dialogHarness().dialog, documentRef }).mount(editingContainer);
   flatten(editingContainer).find(node => node.textContent === '编辑资料').click();
   flatten(editingContainer).find(node => node.textContent === '整理').click();
   const name = fieldControl(editingContainer, '姓名'); name.value = '我正在填写'; name.fire('input');

@@ -1,4 +1,5 @@
 import { filterReachableDeltas } from './cse-engine.js';
+import { memorySourceFloorIds } from './memory-schema.js';
 import { isHostNarratorMessage, scanAssistantCandidates, selectAssistantMessage } from './foundation-domain.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 import { matchFloorCandidates } from './floor-binding.js';
@@ -84,7 +85,7 @@ function activeMemoriesByFloor(reachable) {
   const groups = new Map();
   for (const memory of reachable?.floorMemories ?? []) {
     if (memory?.recordStatus !== 'active') continue;
-    groups.set(memory.floorId, [...(groups.get(memory.floorId) ?? []), memory]);
+    for (const floorId of memorySourceFloorIds(memory)) groups.set(floorId, [...(groups.get(floorId) ?? []), memory]);
   }
   return new Map([...groups].filter(([, values]) => values.length === 1).map(([floorId, values]) => [floorId, values[0]]));
 }
@@ -153,7 +154,11 @@ export function assessMemoryCoverage({ reachable, snapshot, hostCandidates, real
     : (summaryCompleted > 0 || realtimeOrigin === true) && (summaryRealtimeProtected || unregisteredSummaryRefs.length > 0) && !summaryHasPartialWork && !branchRebuild ? 'realtimeTail' : 'historicalDebt';
   let deltaByFloor;
   try {
-    deltaByFloor = new Map(filterReachableDeltas({ floors, floorMemories: reachable.floorMemories ?? [], stateDeltas: reachable.stateDeltas ?? [] }).map(delta => [delta.floorId, delta]));
+    const anchorMemory = new Map((reachable.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => [memory.floorId, memory]));
+    deltaByFloor = new Map();
+    for (const delta of filterReachableDeltas({ floors, floorMemories: reachable.floorMemories ?? [], stateDeltas: reachable.stateDeltas ?? [] })) {
+      for (const floorId of memorySourceFloorIds(anchorMemory.get(delta.floorId))) deltaByFloor.set(floorId, delta);
+    }
   } catch {
     return Object.freeze({ status: 'unknown', hostConfirmed: true, completed: 0, total: floors.length, nextAssistantSeq: floors[0]?.assistantSeq ?? null, pendingFloorIds: Object.freeze(floors.map(floor => floor.id)), realtimeProtected: false, hasPartialWork: false, summaryStatus, summaryCompleted, summaryNextAssistantSeq: summaryPending[0]?.assistantSeq ?? unregisteredSummaryRefs[0]?.assistantSeq ?? null, summaryPendingFloorIds, summaryMissingFloorIds, visibleSummaryFloorIds, summaryRealtimeProtected, summaryHasPartialWork, unregisteredSummaryRefs });
   }

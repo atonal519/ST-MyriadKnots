@@ -81,7 +81,7 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
     v3FoundationViewFactory: options => { foundationOptions = options; return stubView(); }, peopleProfilesViewFactory: options => { peopleOptions = options; return stubView(); }, peopleWorkspaceRuntime: { getState: () => ({}) },
     documentRef: { activeElement: null, defaultView: {}, getElementById: () => null, createElement: () => ({}), documentElement: { append: node => appended.push(node) }, body: { append: node => bodyAppended.push(node) } },
     inlineRenderer: { setAppearance(value) { inlineAppearances.push(value); } },
-    panelFactory: options => { panelOptions = options; return panel; }, dialogFactory: () => ({ host: dialogHost, confirm() {}, info() {}, setAppearance() {} }), wandInstaller() {},
+    panelFactory: options => { panelOptions = options; return panel; }, dialogFactory: () => ({ host: dialogHost, confirm() {}, choose: () => 'chosen', info() {}, setAppearance() {} }), wandInstaller() {},
   });
   assert.deepEqual(appended, [dialogHost], '弹窗 host 应挂在 documentElement，避免手机宿主 body 布局裁切');
   assert.equal(peopleOptions.dialog.host, dialogHost, '千人头像裁剪应复用 QQJ 弹窗管理器');
@@ -90,7 +90,7 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   assert.equal(panelOptions.isSevenDaysLedgerInjectionEnabled, isSevenDaysLedgerInjectionEnabled);
   assert.equal(panelOptions.timeRuntime, undefined); assert.equal(panelOptions.memoryRuntime, undefined);
   assert.equal(foundationOptions.timeRuntime, timeRuntime); assert.equal(foundationOptions.runtime, memoryRuntime);
-  assert.deepEqual(bodyAppended, [panel.host, fabHost]); assert.equal(typeof fabOptions.onClick, 'function'); assert.equal(typeof foundationOptions.infoImpl, 'function');
+  assert.deepEqual(bodyAppended, [panel.host, fabHost]); assert.equal(typeof fabOptions.onClick, 'function'); assert.equal(typeof foundationOptions.infoImpl, 'function'); assert.equal(await foundationOptions.chooseImpl({}), 'chosen');
   assert.equal(foundationOptions.sessionStateProvider, sessionStateProvider); assert.deepEqual(foundationOptions.sessionStateProvider(), { status: 'preparing' }); assert.equal(sessionReads, 1);
   assert.equal(foundationOptions.backendDiagnosticProvider, backendDiagnosticProvider); assert.equal(backendReads, 0); assert.deepEqual(foundationOptions.backendDiagnosticProvider(), { sinceClientCreatedRequestCounts: { get: 2, put: 1, delete: 0 } }); assert.equal(backendReads, 1);
   assert.equal(foundationOptions.pluginVersion, '0.1.9-test');

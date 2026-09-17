@@ -144,9 +144,12 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     const reference = node('details', 'time-reference');
     reference.append(node('summary', '', `本轮时间参考（${projection.timeReferenceItems.length}条）`));
     const list = node('div', 'time-reference-list');
-    for (const text of projection.timeReferenceItems) {
+    for (const [index, text] of projection.timeReferenceItems.entries()) {
       const entry = node('article', 'time-reference-item');
-      entry.append(node('p', 'time-reference-copy', text)); list.append(entry);
+      const display = projection.timeReferenceDisplayItems?.[index];
+      if (display?.source && display?.projection) entry.append(node('p', 'time-reference-copy', `源状态：${display.source}`), node('p', 'time-reference-copy', `推算状态：${display.projection}`));
+      else entry.append(node('p', 'time-reference-copy', display?.text ?? text));
+      list.append(entry);
     }
     reference.append(list); events.append(reference);
   }

@@ -16,10 +16,11 @@ import { PREQUEL_METADATA_KEY, selectPrequel } from './recall-prequel.js';
 export const PEOPLE_WORKSPACE_RECORD_ID = 'v3-people-workspace';
 export const PEOPLE_WORKSPACE_SCHEMA_VERSION = 3;
 export const PEOPLE_PROFILE_INPUT_CHAR_BUDGET = 24000;
+export const PEOPLE_PROFILE_FULL_REWRITE_CHAR_BUDGET = 60000;
 
 export const DEFAULT_PROFILE_GUIDANCE = `你是“千千结”的人物基础资料整理员。只整理输入材料中有明确依据、适合长期建档的目标人物资料，不推测或续写剧情。
 
-人物卡和世界书属于明确设定；逐楼 history 的 storyContent 是与该楼有效 summary 同次保存、按用户包裹符设置清洗后的正文，facts 是按目标人物归属筛出的结构事实；CSE Core 是已有的人物分析，不自动等同作者明确设定。自动增量整理可参考旧 AI 档案；主动重新整理只参考当前材料及本轮已生成资料。长材料可能通过 sourceFragments 分批提供，本批没出现的来源或字段不代表它们不存在。按目标人物和来源归属整理信息，不要把正文里其他人物的描写、不同人物、不同来源或彼此冲突的说法擅自拼成目标人物事实。遇到来源差异时不要输出核验说明或替作者裁决，只整理能够明确归属的稳定资料。
+人物卡和世界书属于明确设定；逐楼 history 中，普通单楼的 storyContent 是与该楼有效 summary 同次保存、按用户包裹符设置清洗后的正文；聚合多楼 history 可省略 storyContent，此时 summary、facts 及其中的 exactAnchors 原句是该范围提供的材料，不得猜测未提供的正文。facts 是按目标人物归属筛出的结构事实；CSE Core 是已有的人物分析，不自动等同作者明确设定。自动增量整理可参考旧 AI 档案；主动重新整理只参考当前材料及本轮已生成资料。长材料可能通过 sourceFragments 分批提供，本批没出现的来源或字段不代表它们不存在。按目标人物和来源归属整理信息，不要把正文里其他人物的描写、不同人物、不同来源或彼此冲突的说法擅自拼成目标人物事实。遇到来源差异时不要输出核验说明或替作者裁决，只整理能够明确归属的稳定资料。
 
 priorContext 若存在，是用户导入的过去经历资料。只把其中明确属于目标人物、适合长期建档的信息作为参考；过去的短期状态不等于现在仍持续，existingProfile、当前 history 与 CSE 中明确出现的新变化优先。
 
@@ -30,7 +31,7 @@ const PROFILE_FIELD_GUIDE = PEOPLE_PROFILE_FIELDS
   .join('\n');
 
 export const PROFILE_FIXED_CONTRACT = `【固定人物资料合同】
-1. 只处理输入 people 中的目标人物。characterCard、allowedWorldInfo、history、cseCoreTraits、priorContext、existingProfile 与 manualProfile 是分开的来源；history.storyContent 是与对应楼有效 summary 同次保存的清洗正文，summary 只是归纳，必须结合该楼目标相关事实判断归属，不得把正文中其他人物的描写写给目标人物，也不得把他人的私密认知当成目标人物资料。priorContext 标记为导入前情，只能作为过去经历背景，不是当前楼或当前状态。
+1. 只处理输入 people 中的目标人物。characterCard、allowedWorldInfo、history、cseCoreTraits、priorContext、existingProfile 与 manualProfile 是分开的来源；普通单楼的 history.storyContent 是与对应楼有效 summary 同次保存的清洗正文。聚合多楼 history 可省略 storyContent，此时只根据 summary、目标相关 facts 及其中的 exactAnchors 原句整理，不得猜测未提供的正文。必须按目标相关事实判断归属，不得把正文中其他人物的描写写给目标人物，也不得把他人的私密认知当成目标人物资料。priorContext 标记为导入前情，只能作为过去经历背景，不是当前楼或当前状态。
 2. history.auxiliaryStateSnapshot 若存在，是对应楼当前分支当时已保存的只读变量快照，只作人物整理辅助。它可能同时包含多个人物、不完整或过时信息，不能整份归给目标人物，也不能当作人工字段或权威证据；与正文或用户明确事实冲突时以正文和用户明确事实为准。
 3. 只返回一个 JSON 对象，根对象必须包含 profiles 数组；profiles 每个输入人物恰好一项，且每项内部的 personKey 必须逐字使用输入中的键，不得新增、遗漏或合并人物。合法形状示例：{"profiles":[{"personKey":"person-1","name":"示例姓名"}]}。
 4. 每项除 personKey 外只返回需要新增或纠正的字段。有明确新值时返回正确的新值；没有新信息时省略字段，表示保留输入 existingProfile 的值。主动重新整理首批 existingProfile 为空，后批仅包含本轮累计资料，上次 AI 档案中本轮未生成的字段不保留。只有材料明确要求删除旧资料且没有替代值时才返回空字符串；aliases 可返回字符串或字符串数组，明确清除 aliases 时返回空字符串或空数组。不要返回 null、对象或其他错误类型。
@@ -44,6 +45,19 @@ ${PROFILE_FIELD_GUIDE}`;
 export function buildPeopleProfileSystemPrompt(guidance = '', processingPrompt = '') {
   const custom = typeof guidance === 'string' ? guidance : '';
   return withBaseProcessingPrompt(`${custom.trim() ? custom : DEFAULT_PROFILE_GUIDANCE}\n\n${PROFILE_FIXED_CONTRACT}`, processingPrompt);
+}
+
+export const PROFILE_FULL_REWRITE_CONTRACT = `你是“千千结”的人物基础资料整档整理员。本次只处理输入 people 中的目标人物，把已有档案、人物卡、获准世界书与 CSE Core 当作材料，去重、纠错并重新分类。不要续写剧情或臆造缺失资料；无依据字段返回空字符串。
+
+必须保留 manualProfile 中人工设定的含义与明确事实，允许改写措辞或移动到更合适的字段。每个人返回 manualFields，列出整理后承载人工信息的字段；只能使用下方合法字段名。普通外貌不得放入 nsfw；剧情中的短暂身体、情绪、关系或处境不得固定成人设。appearance 只放无法归入细分外貌字段的必要补充，notes 只放无法归入其他字段但值得长期保存的信息。
+
+只返回一个 JSON 对象，根对象为 profiles 数组。每个输入人物恰好一项，personKey 必须逐字使用输入键；不得新增、遗漏、重复或合并人物。每项必须包含 personKey、manualFields 和下方全部字段；aliases 可为字符串或字符串数组，其余字段必须是字符串。完整结果会整体替换旧档案，不能用省略字段表示沿用旧值。合法形状：{"profiles":[{"personKey":"person-1","manualFields":["notes"],"name":"示例姓名",…其余全部字段…}]}。
+
+【字段中文定义】
+${PROFILE_FIELD_GUIDE}`;
+
+export function buildPeopleProfileFullRewritePrompt(processingPrompt = '') {
+  return withBaseProcessingPrompt(PROFILE_FULL_REWRITE_CONTRACT, processingPrompt);
 }
 
 function errorWith(code, message) { return Object.assign(new Error(message), { code }); }
@@ -372,10 +386,11 @@ function targetHistory(reachable, entityId, macros, projection = {}) {
     const participated = (memory.participants ?? []).some(item => resolveIdentityEntityId(item.entityId, projection) === entityId);
     if (!participated && !Object.keys(facts).length) return [];
     const summary = macroText(clean(effectiveSummary(memory), 4000), macros);
-    const storyContent = macroText(memory.sourceCanonicalContent ?? floorContent.get(memory.floorId) ?? '', macros);
+    const aggregate = Array.isArray(memory.sourceFloorIds) && memory.sourceFloorIds.length > 1;
+    const storyContent = aggregate ? null : macroText(memory.sourceCanonicalContent ?? floorContent.get(memory.floorId) ?? '', macros);
     return [Object.freeze({
       sourceFloor: floorSequence.get(memory.floorId) ?? (Number.isSafeInteger(memory.assistantSeq) ? memory.assistantSeq : index + 1),
-      storyContent,
+      ...(!aggregate ? { storyContent } : {}),
       ...(summary ? { summary } : {}),
       ...(Object.keys(facts).length ? { facts: Object.freeze(facts) } : {}),
       ...(memory.sourceVariableReference ? { auxiliaryStateSnapshot: clone(memory.sourceVariableReference) } : {}),
@@ -804,6 +819,25 @@ export function createPeopleWorkspaceRuntime({
     const request = { task: '整理选中人物的静态基础资料', people: peopleRequest, allowedWorldInfo: worldInfo };
     return { request, keys: new Map(peopleRequest.map((person, index) => [person.personKey, targets[index].entityId])) };
   }
+  async function fullRewriteEnvelope(operation, targets) {
+    const reachable = foundationRuntime.getReachable?.(), memoryState = memoryRuntime.getState(), macros = operation.macros;
+    const contexts = targets.map(target => targetContext(reachable, memoryState, target, workspace, macros));
+    const peopleRequest = targets.map((target, index) => ({
+      personKey: `person-${index + 1}`, currentName: contexts[index].currentName, aliases: contexts[index].aliases,
+      cseCoreTraits: contexts[index].cseCoreTraits,
+      existingProfile: profileWithMacros(target.profile ?? {}, macros), manualProfile: manualProfile(target.profile, macros), manualFields: target.profile?.manualFields ?? [],
+    }));
+    const characterCards = contexts.flatMap((context, index) => context.characterCard ? [{ personKey: `person-${index + 1}`, ...context.characterCard }] : []);
+    const hostContext = contextProvider(), catalog = await scanner(hostContext); assertCurrent(operation);
+    const candidates = await sourceCandidateFactory(catalog);
+    const allowed = sourcePermissions.filterCandidates({ chatId: operation.identity.chatId, candidates });
+    if (!Array.isArray(allowed)) throw errorWith('QQJ_PEOPLE_WORLDBOOK_FILTER_INVALID', '世界书许可过滤结果无效。');
+    const options = typeof sanitizerOptions === 'function' ? sanitizerOptions() : sanitizerOptions;
+    const allowedWorldInfo = allowed.map(candidate => ({ source: candidate.world, label: candidate.label,
+      content: macroText(sanitizeMemoryContent(candidate.content, options), macros) })).filter(item => item.content);
+    const request = { task: '一次性整档重写已选人物的静态基础资料', people: peopleRequest, characterCards, allowedWorldInfo };
+    return { request, keys: new Map(peopleRequest.map((person, index) => [person.personKey, targets[index].entityId])) };
+  }
   function automaticGenerationEnvelope(operation, targets, receipts) {
     const reachable = foundationRuntime.getReachable?.();
     const memoryState = memoryRuntime.getState();
@@ -877,6 +911,29 @@ export function createPeopleWorkspaceRuntime({
         else invalid += 1;
       }
       catch { invalid += 1; }
+    }
+    return Object.freeze({ generated, requested: keys.size, missing, conflicts, invalid, unknown });
+  }
+  function parseFullRewrite(result, keys, macros, manualSources) {
+    const raw = result?.jsonData ?? result?.textData ?? result;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !Array.isArray(raw.profiles)) throw errorWith('QQJ_PEOPLE_GENERATION_INVALID', '人物整档回复格式无效，旧档案已保留。');
+    const grouped = new Map([...keys.keys()].map(key => [key, []])); let unknown = 0;
+    for (const item of raw.profiles) {
+      const key = typeof item?.personKey === 'string' ? item.personKey.trim() : '';
+      if (!keys.has(key)) { unknown += 1; continue; }
+      grouped.get(key).push(item);
+    }
+    const generated = new Map(); let missing = 0, conflicts = 0, invalid = 0;
+    for (const [key, items] of grouped) {
+      if (!items.length) { missing += 1; continue; }
+      if (items.length > 1) { conflicts += 1; continue; }
+      const item = items[0], entityId = keys.get(key);
+      const manual = Array.isArray(item?.manualFields) && item.manualFields.every(field => PEOPLE_PROFILE_FIELD_SET.has(field)) ? [...new Set(item.manualFields)] : null;
+      const patch = generatedProfilePatch(item, macros);
+      const complete = PEOPLE_PROFILE_FIELDS.every(field => Object.hasOwn(item, field)) && Object.keys(patch.fields).length === PEOPLE_PROFILE_FIELDS.length && patch.invalidFields === 0;
+      const preservesManualContent = manual?.some(field => Boolean(patch.fields[field]));
+      if (!complete || !patch.fields.name || !manual || manualSources.get(entityId) === true && !preservesManualContent) { invalid += 1; continue; }
+      generated.set(entityId, Object.freeze({ fields: patch.fields, manualFields: Object.freeze(manual) }));
     }
     return Object.freeze({ generated, requested: keys.size, missing, conflicts, invalid, unknown });
   }
@@ -996,6 +1053,54 @@ export function createPeopleWorkspaceRuntime({
       lastError = null; return finalState;
     });
   }
+  async function rewriteSelectedProfiles() {
+    const operation = begin('generating');
+    operation.macros = macrosFor(foundationRuntime.getReachable?.());
+    const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
+    const systemPrompt = buildPeopleProfileFullRewritePrompt(processingPromptSnapshot);
+    return settle(operation, async () => {
+      const targets = candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace).filter(person => person.selected);
+      if (!targets.length) throw errorWith('QQJ_PEOPLE_NOTHING_TO_GENERATE', '请先选择要整理的重要人物。');
+      const startingProfiles = new Map(targets.map(target => [target.entityId, JSON.stringify(workspace?.profilesByEntityId?.[target.entityId] ?? null)]));
+      const manualSources = new Map(targets.map(target => {
+        const raw = workspace?.profilesByEntityId?.[target.entityId];
+        return [target.entityId, (raw?.manualFields ?? []).some(field => Boolean(String(raw?.[field] ?? '').trim()))];
+      }));
+      const envelope = await fullRewriteEnvelope(operation, targets);
+      const serialized = JSON.stringify(envelope.request);
+      if (serialized.length > PEOPLE_PROFILE_FULL_REWRITE_CHAR_BUDGET) {
+        throw errorWith('QQJ_PEOPLE_FULL_REWRITE_TOO_LARGE', `本次整档材料 ${serialized.length} 字符，超过单次 ${PEOPLE_PROFILE_FULL_REWRITE_CHAR_BUDGET} 字符；请缩短已有档案或获准世界书后重试。`);
+      }
+      operation.batchIndex = 1; operation.batchTotal = 1; notify(); assertCurrent(operation);
+      const result = await generateUtilityTask({ systemPrompt, taskMessages: [{ role: 'user', content: serialized }],
+        maxTokens: 30000, temperature: 0, signal: operation.controller.signal, includeCharacterCard: false, worldInfoSource: 'none' });
+      assertCurrent(operation);
+      const parsed = parseFullRewrite(result, envelope.keys, operation.macros, manualSources);
+      if (!parsed.generated.size) {
+        lastGenerationReport = Object.freeze({ requested: targets.length, saved: 0, missing: parsed.missing, conflicts: parsed.conflicts, invalid: parsed.invalid, unknown: parsed.unknown, skipped: 0 });
+        throw errorWith('QQJ_PEOPLE_GENERATION_BINDING_INVALID', '人物整档回复没有可安全保存的目标，旧档案已全部保留。');
+      }
+      let saved = 0, skipped = 0;
+      const persisted = await mutate(operation, current => {
+        const profiles = { ...clone(current.profilesByEntityId) }, projection = identityProjection(current);
+        const selected = new Set(current.selectedEntityIds.map(id => resolveIdentityEntityId(id, projection)));
+        let changed = false; const timestamp = nowIso(now);
+        for (const [entityId, generated] of parsed.generated) {
+          const existing = profiles[entityId] ?? null;
+          if (!selected.has(entityId) || JSON.stringify(existing) !== startingProfiles.get(entityId)) { skipped += 1; continue; }
+          const sameManual = JSON.stringify(existing?.manualFields ?? []) === JSON.stringify(generated.manualFields);
+          if (existing && sameFields(existing, generated.fields) && sameManual) { skipped += 1; continue; }
+          profiles[entityId] = { entityId, ...generated.fields, manualFields: [...generated.manualFields],
+            source: generated.manualFields.length ? 'manual' : 'generated', createdAt: existing?.createdAt ?? timestamp, updatedAt: timestamp };
+          saved += 1; changed = true;
+        }
+        return changed ? { ...clone(current), profilesByEntityId: profiles, updatedAt: timestamp } : null;
+      });
+      lastGenerationReport = Object.freeze({ requested: targets.length, saved, missing: parsed.missing, conflicts: parsed.conflicts,
+        invalid: parsed.invalid, unknown: parsed.unknown, skipped });
+      lastError = null; notify(); return persisted.state;
+    });
+  }
   async function generateMissingProfiles() {
     return generateProfiles(candidates => candidates.filter(person => person.selected && !person.profiled));
   }
@@ -1012,7 +1117,7 @@ export function createPeopleWorkspaceRuntime({
     if (!workspace) return;
     try { if (capture().chatId !== chatId) return; project(); notify(); scheduleAutomaticMaintenance(); } catch { /* lifecycle owns identity transition */ }
   }) : null;
-  return Object.freeze({ refresh, start: () => enabled() ? refresh() : Promise.resolve(getState()), setSelectedEntityIds, setPersonOrderEntityIds, saveProfile, saveAvatar, mergePeople, deletePerson, generateMissingProfiles, regenerateProfile, requestAutomaticMaintenance, invalidate, abortAll: invalidate, setEnabled,
+  return Object.freeze({ refresh, start: () => enabled() ? refresh() : Promise.resolve(getState()), setSelectedEntityIds, setPersonOrderEntityIds, saveProfile, saveAvatar, mergePeople, deletePerson, generateMissingProfiles, rewriteSelectedProfiles, regenerateProfile, requestAutomaticMaintenance, invalidate, abortAll: invalidate, setEnabled,
     getIdentityProjection: () => identityProjection(workspace),
     getState, subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('人物工作区 listener 无效'); subscribers.add(listener); return () => subscribers.delete(listener); },
     destroy() { destroyed = true; unsubscribeMemory?.(); invalidate(); },

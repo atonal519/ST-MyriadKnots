@@ -7,7 +7,8 @@ const contentOf = floor => floor?.content ?? {};
 /**
  * Prove a one-to-one mapping between persisted floors and current host candidates.
  * Valid anchors are reserved first, then unanchored candidates may use the same
- * locator with the same canonical body, or a globally unique raw+canonical pair.
+ * locator with the same canonical body or exact raw body, or a globally unique
+ * raw+canonical pair.
  */
 export function matchFloorCandidates(floors = [], candidates = []) {
   const floorList = Array.isArray(floors) ? floors : [];
@@ -72,8 +73,13 @@ export function matchFloorCandidates(floors = [], candidates = []) {
       .map((floor, floorIndex) => ({ floor, floorIndex }))
       .filter(({ floor, floorIndex }) => !floorMatches.has(floorIndex)
         && sameLocator(floor?.hostLocator, candidate?.hostLocator)
-        && contentOf(floor).canonicalFingerprint === candidate?.canonicalFingerprint);
-    if (matches.length === 1) bind(candidateIndex, matches[0].floorIndex, 'locatorCanonical');
+        && (contentOf(floor).canonicalFingerprint === candidate?.canonicalFingerprint
+          || contentOf(floor).rawFingerprint === candidate?.rawFingerprint));
+    if (matches.length === 1) {
+      const floor = matches[0].floor;
+      bind(candidateIndex, matches[0].floorIndex,
+        contentOf(floor).canonicalFingerprint === candidate?.canonicalFingerprint ? 'locatorCanonical' : 'locatorRaw');
+    }
     else if (matches.length > 1) fail('ambiguousLocatorCanonical', candidateIndex);
   }
 
