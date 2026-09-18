@@ -225,7 +225,7 @@ test('只双向共享 schedule-planner 预设池；千千结主配置与两边�
   assert.equal(extensionSettings['schedule-planner'].apiUrl, 'https://main.old/v1'); assert.equal(extensionSettings['schedule-planner'].apiPresetActiveId, 'keep'); assert.equal(extensionSettings['schedule-planner'].utilityPresetId, 'target');
   assert.equal(settings.mainConfig().url, 'https://qqj.new/v1'); assert.equal(settings.summaryPresetId(), 'keep');
 
-  const source = await readFile('/home/admin/sillytavern/public/scripts/extensions/third-party/ST-SevenDaysCal/runtime/settings.js', 'utf8');
+  const source = await readFile(new URL('../../ST-SevenDaysCal/runtime/settings.js', import.meta.url), 'utf8');
   globalThis.__QQJ_SEVEN_TEST_SETTINGS__ = extensionSettings; globalThis.__QQJ_SEVEN_TEST_SAVES__ = 0;
   const executable = source
     .replace("import { extension_settings } from '../../../../extensions.js';", 'const extension_settings = globalThis.__QQJ_SEVEN_TEST_SETTINGS__;')

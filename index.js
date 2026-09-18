@@ -28,6 +28,7 @@ import { createAutoHideController } from './src/v3/auto-hide.js';
 import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime } from './src/v3/people-workspace.js';
 import { createChatBranchInitializer } from './src/v3/chat-branch-inheritance.js';
 import { installPublicMemoryBridge } from './src/v3/public-memory-bridge.js';
+import { installPublicQianshiBridge } from './src/v3/public-qianshi-bridge.js';
 import { createMyKnotsStoryClockController, createStoryClockStatusProjection, extensionStoryClockState } from './src/story-clock.js';
 import { createInlineRenderer } from './src/ui/inline-renderer.js';
 
@@ -185,6 +186,7 @@ v3RecallRuntime = createV3RecallRuntime({
   sanitizerOptions,
   identityProjectionProvider,
   timeProjectionProvider: source => timeRuntime.recallProjection(source),
+  qianshiProgressProvider: async (source, context) => v3MemoryRuntime.getQianshiRecall({ ...context, ...(await timeRuntime.currentStoryContext(source) ?? {}) }),
   pluginVersion,
 });
 peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
@@ -233,7 +235,9 @@ const publicMemoryBridgeMount = installPublicMemoryBridge({
   sanitizerOptions,
   identityProjectionProvider,
 });
+const publicQianshiBridgeMount = installPublicQianshiBridge({ memoryRuntime: v3MemoryRuntime });
 globalThis.addEventListener?.('beforeunload', publicMemoryBridgeMount.cleanup, { once: true });
+globalThis.addEventListener?.('beforeunload', publicQianshiBridgeMount.cleanup, { once: true });
 globalThis.addEventListener?.('beforeunload', autoHideController.dispose, { once: true });
 globalThis.addEventListener?.('beforeunload', inlineRenderer.destroy, { once: true });
 globalThis.qqj_v3_recall_interceptor = (coreChat, contextSize, abort, type) => v3RecallRuntime.intercept(coreChat, contextSize, abort, type);

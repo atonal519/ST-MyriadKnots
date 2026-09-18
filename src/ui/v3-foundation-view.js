@@ -59,7 +59,7 @@ const waitingFloorCopy = value => ({
 const waitingFloorExplanation = value => ({
   waitingNextUser: '这一楼尚未摘要。发送下一条用户消息后会重新检查。',
   waitingEarlierFloor: '这一楼尚未摘要。前面的 AI 楼尚未确认，当前不会进入摘要处理。',
-  consecutiveAssistant: '这一楼尚未摘要。检测到连续 AI 消息，现有规则尚不能确认这楼。',
+  consecutiveAssistant: '这一楼尚未摘要。可在记忆页确认后，将连续 AI 回复分别登记并按顺序摘要。',
   registrationNeedsReview: '这一楼尚未摘要。消息与已有记忆的对应关系需要先核对。',
 })[value] ?? '这一楼尚未摘要，正在等待确认。';
 const reviewReasonCopy = value => {
@@ -784,6 +784,23 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const floors = [...(state.floors ?? [])];
     const registeredMessageIndexes = new Set(floors.map(floor => floor.messageIndex).filter(validMessageIndex));
     const waiting = (state.unregisteredCandidates ?? []).filter(candidate => validMessageIndex(candidate?.messageIndex) && !registeredMessageIndexes.has(candidate.messageIndex));
+    const consecutive = waiting.filter(candidate => candidate.reason === 'consecutiveAssistant');
+    const hasWaitingTail = waiting.some(candidate => candidate.reason === 'waitingNextUser');
+    const confirmationScope = state.consecutiveAssistantConfirmation;
+    const confirmationCandidates = Array.isArray(confirmationScope?.candidates) ? confirmationScope.candidates : [];
+    if (consecutive.length && confirmationCandidates.length && typeof runtime.confirmConsecutiveAssistants === 'function') {
+      const action = element('div', 'qqj-inline-panel');
+      action.append(element('p', 'settings-hint', `检测到连续 AI 段，共 ${confirmationCandidates.length} 个回复可在本次确认后按原顺序分别登记并进入摘要；其中 ${consecutive.length} 个回复需要你的明确确认。${hasWaitingTail ? '当前最后一条 AI 仍等待下一条用户消息。' : '列表中的回复全部属于本次范围。'}`));
+      const confirm = element('button', 'secondary-action', '确认连续 AI 并分别记录'); confirm.type = 'button'; confirm.disabled = workBusy(state);
+      confirm.addEventListener('click', async () => {
+        const range = confirmationCandidates.map(candidate => `第 ${candidate.messageIndex} 楼`).join('、');
+        const accepted = await Promise.resolve(confirmImpl({ title: '确认连续 AI 回复',
+          body: `${range} 将分别登记，并按原顺序进入摘要。正文不会删除或合并；${hasWaitingTail ? '当前最后一条 AI 不在本次范围内，仍等待下一条用户消息。' : '以上列表就是本次完整确认范围。'}`, confirmText: '确认并分别记录', cancelText: '取消' }));
+        if (!accepted) { feedback = '已取消连续 AI 确认。'; render(foundationState); return; }
+        void run('确认连续 AI', () => runtime.confirmConsecutiveAssistants(confirmationScope));
+      });
+      action.append(confirm); pageNode.append(action);
+    }
     const rows = [
       ...floors.map(value => ({ kind: 'registered', value })),
       ...waiting.map(value => ({ kind: 'waiting', value })),

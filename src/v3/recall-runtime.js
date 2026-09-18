@@ -13,6 +13,7 @@ export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
 export const RECALL_RECEIPT_SCHEMA_VERSION = 15;
 export const RECALL_STRATEGY_VERSION = 'continuity-v15';
+const RECALL_PROMPT_DEPTH = 2;
 const IDENTIFIED_RECALL_STRATEGIES = [RECALL_STRATEGY_VERSION, 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11'];
 
 const SUPPORTED_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
@@ -207,6 +208,7 @@ function timeDependenciesCurrent(value, projection) {
 }
 
 const qianshiBlock = value => value?.text ? `<qqj_qianshi_progress>\n${value.text}\n</qqj_qianshi_progress>` : '';
+const appendQianshiProgress = (text, value) => [String(text ?? '').trim(), qianshiBlock(value)].filter(Boolean).join('\n\n');
 const qianshiTokenBudget = value => estimateRecallTokens(qianshiBlock(value));
 const reservedQianshiTokenBudget = value => value?.text ? estimateRecallTokens(`\n\n${qianshiBlock(value)}`) : 0;
 const stagesWithQianshiBudget = (stages, value) => {
@@ -215,6 +217,19 @@ const stagesWithQianshiBudget = (stages, value) => {
   if (Number.isSafeInteger(stages.qianshiTokenBudget)) return stages;
   return { ...stages, estimatedTokenBudget: (Number.isSafeInteger(stages.estimatedTokenBudget) ? stages.estimatedTokenBudget : 0) + tokens, qianshiTokenBudget: tokens };
 };
+const stagesWithoutQianshi = (stages, value, injectionText) => {
+  if (!stages) return stages;
+  const reserved = Number.isSafeInteger(stages.qianshiTokenBudget) ? stages.qianshiTokenBudget : 0;
+  const next = { ...stages, estimatedTokenCount: estimateRecallTokens(injectionText), estimatedTokenBudget: Math.max(0, (Number.isSafeInteger(stages.estimatedTokenBudget) ? stages.estimatedTokenBudget : 0) - reserved) };
+  delete next.qianshiTokenBudget;
+  return next;
+};
+const removeQianshiProgress = (text, value) => {
+  const block = qianshiBlock(value);
+  const source = String(text ?? '');
+  return block && source.endsWith(block) ? source.slice(0, -block.length).trimEnd() : source;
+};
+const qianshiProgressCurrent = (saved, current) => !saved || Boolean(current && saved.fingerprint === current.fingerprint);
 
 // Re-render only the saved selection. A lost time estimate restores the saved CSE.
 function withoutStaleTime(receipt, source, projection) {
@@ -233,7 +248,7 @@ function withoutStaleTime(receipt, source, projection) {
     dependencies = { mode: 'selected', corrections: [], reminders: [] };
     ordinaryText = formatRecallInjection({ coverage: receipt.coverage, floors, states, cseChanges: changes, storylines, entityById,
       timeProjection: { corrections }, timeReminders: reminders, timeDependencies: dependencies });
-    text = ordinaryText;
+    text = appendQianshiProgress(ordinaryText, receipt.qianshiProgress);
   };
   render();
   let budgetDropped = 0;
@@ -253,7 +268,7 @@ function withoutStaleTime(receipt, source, projection) {
   const originalHistory = saved.renderPlan.floors.flatMap(floor => floor.items);
   const recentDropped = originalHistory.filter(item => item.recallSection === 'recent').length - history.filter(item => item.recallSection === 'recent').length;
   const distantDropped = originalHistory.length - history.length - recentDropped;
-  const stages = receipt.stages ? { ...receipt.stages, selected: floors.length, recentSummaryCount: history.filter(item => item.recallSection === 'recent').length,
+  const stages = receipt.stages ? { ...stagesWithQianshiBudget(receipt.stages, receipt.qianshiProgress), selected: floors.length, recentSummaryCount: history.filter(item => item.recallSection === 'recent').length,
     distantHistoryItemCount: history.filter(item => item.recallSection !== 'recent').length,
     linkedHistoryItemCount: history.filter(item => item.recallSection !== 'recent' && ['source', 'topic'].includes(item.relationEvidence)).length,
     linkedCseChangeCount: changes.filter(item => item.relationEvidence === 'source').length, stateCount: states.length, currentStateCount: states.length, cseChangeCount: changes.length,
@@ -347,6 +362,7 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
   if (receipt.schemaVersion >= 15 && receipt.qianshiProgress !== undefined && receipt.qianshiProgress !== null) {
     const value = receipt.qianshiProgress;
     if (!value || typeof value !== 'object' || Array.isArray(value) || !boundedString(value.fingerprint, 200)
+      || (value.projectionVersion !== undefined && !nonNegativeInteger(value.projectionVersion))
       || !boundedString(value.text, 4000) || !Array.isArray(value.eventIds) || value.eventIds.length > 160
       || !Array.isArray(value.matterIds) || value.matterIds.length > 160
       || !value.eventIds.every(id => boundedString(id, 500)) || !value.matterIds.every(id => boundedString(id, 500))) return false;
@@ -443,7 +459,6 @@ async function receiptValid(receipt, { source, userIndex, userFingerprint, query
     const snapshot = clone(receipt);
     if (!receiptShapeValid(snapshot)
       || snapshot.schemaVersion !== RECALL_RECEIPT_SCHEMA_VERSION
-      || snapshot.qianshiProgress
       || snapshot.pluginVersion !== pluginVersion
       || snapshot.chatId !== source.chatId
       || snapshot.narrativeGeneration !== source.narrativeGeneration
@@ -698,7 +713,7 @@ function coveredBodyGuardsCurrent(guards, snapshot, sanitizerOptions) {
   });
 }
 
-export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = 5000, realtimeOrigin = () => false, notifyUser = null, sourceReader = readRecallSource, selector = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, timeProjectionProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
+export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = 5000, realtimeOrigin = () => false, notifyUser = null, sourceReader = readRecallSource, selector = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, timeProjectionProvider = null, qianshiProgressProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 recall host adapter 无效');
   if (typeof fingerprint !== 'function') throw new TypeError('V3 recall fingerprint 无效');
@@ -773,6 +788,20 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     }
     return sourceReader({ store, now, hostSnapshot: snapshot, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin(), identityProjection: identityProjection?.data ?? identityProjection });
   }
+  async function attachQianshiProgress(source, queryContext, hostSnapshot = null) {
+    if (source?.status !== 'ready') return source;
+    let qianshiProgress = null;
+    if (typeof qianshiProgressProvider === 'function') try {
+      const value = await qianshiProgressProvider(source, { queryContext, hostSnapshot });
+      const anchorMatches = value?.anchor?.headCheckpointId === source.headCheckpointId && value?.anchor?.narrativeGeneration === source.narrativeGeneration;
+      if (anchorMatches && typeof value?.text === 'string' && value.text.trim()) {
+        const material = { projectionVersion: Number.isSafeInteger(value.projectionVersion) ? value.projectionVersion : 0,
+          text: value.text.trim().slice(0, 4000), eventIds: [...new Set(value.eventIds ?? [])].slice(0, 160), matterIds: [...new Set(value.matterIds ?? [])].slice(0, 160) };
+        qianshiProgress = Object.freeze({ ...material, fingerprint: await fingerprint(JSON.stringify(material)) });
+      }
+    } catch (error) { logger?.warn?.('[qianqianjie] optional qianshi projection failed', { code: error?.code ?? error?.name ?? 'QQJ_QIANSHI_READ_FAILED' }); }
+    return Object.freeze({ ...source, qianshiProgress });
+  }
   async function preparedSource(snapshot, sanitizerSnapshot, options = {}) {
     let source = await basePreparedSource(snapshot, sanitizerSnapshot, options);
     if (source?.status !== 'ready') return source;
@@ -790,7 +819,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const role = context.constants?.promptRoles?.SYSTEM ?? 0;
     if (slot === PREQUEL_PROMPT_SLOT) prequelSlotActive = Boolean(value);
     const text = String(value ?? '');
-    setter(slot, text, position, 1, false, role);
+    setter(slot, text, position, RECALL_PROMPT_DEPTH, false, role);
     if (text) {
       const current = promptSnapshot?.owner === owner ? promptSnapshot : null;
       promptSnapshot = Object.freeze({
@@ -1011,6 +1040,14 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         injectionText = finalReceipt.injectionText;
       }
     }
+    currentSource = await attachQianshiProgress(Object.freeze({ ...currentSource, timeProjection: liveTime ?? currentSource.timeProjection }), operation.queryContext, before);
+    if (!qianshiProgressCurrent(finalReceipt.qianshiProgress, currentSource.qianshiProgress)) {
+      injectionText = removeQianshiProgress(injectionText, finalReceipt.qianshiProgress);
+      finalReceipt = { ...finalReceipt, qianshiProgress: null, injectionText,
+        stages: stagesWithoutQianshi(finalReceipt.stages, finalReceipt.qianshiProgress, injectionText),
+        completionStatus: injectionText ? 'ready' : 'empty',
+        skipReasons: [...new Set([...(finalReceipt.skipReasons ?? []), 'optionalQianshiChanged'])] };
+    }
     if (!sourceRefsValid({ selectedFloors, selectedStates, selectedCseChanges }, currentSource)) return { ok: false, reason: 'selectedRefsChanged' };
     const selectedSourceGuards = captureSelectedSourceGuards({ selectedFloors, selectedStates, selectedCseChanges }, currentSource, before);
     if (selectedSourceGuards === null) return { ok: false, reason: 'selectedRefsChanged' };
@@ -1108,6 +1145,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       operation.liveFrameKey = liveRecallFrameKey(before);
       const sanitizerSnapshot = currentSanitizerOptions();
       const queryContext = queryBuilder({ coreChat: coreInput, assistantTurns: 1 });
+      operation.queryContext = queryContext;
       operation.prequelSourceText = currentPrequelText(before);
       operation.prequelSelection = selectPrequel({ text: operation.prequelSourceText, queryContext, contextSize });
       const coreBodyWitness = await captureCoreBodyWitness(coreInput, sanitizerSnapshot, fingerprint);
@@ -1124,6 +1162,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       let source = readSource?.status === 'ready'
         ? Object.freeze({ ...readSource, bodyMatch: await attachCoreBodyMatch(readSource, coreBodyWitness, before, sanitizerSnapshot, fingerprint) })
         : readSource;
+      if (source?.status === 'ready') source = await attachQianshiProgress(source, queryContext, before);
       timings.sourceMs = Date.now() - sourceStarted;
       if (source?.sourceReadAttempts) timings.sourceReadAttempts = clone(source.sourceReadAttempts);
       if (source?.status === 'ready') diagnostic.coverage = clone(source.coverage);
@@ -1209,9 +1248,11 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       operation.phase = diagnostic.phase = 'selecting'; diagnostic.selectionStatus = 'incomplete'; notify();
       const selectorStarted = Date.now();
       let selection;
+      const qianshiCharacters = qianshiBlock(source.qianshiProgress).length;
+      const qianshiTokens = reservedQianshiTokenBudget(source.qianshiProgress);
       try { selection = await selectionRunner({ source, queryContext, contextSize, signal: operation.controller.signal,
-        reservedTokens: operation.prequelSelection.estimatedTokens,
-        reservedCharacters: operation.prequelSelection.estimatedCharacters }); }
+        reservedTokens: operation.prequelSelection.estimatedTokens + qianshiTokens,
+        reservedCharacters: operation.prequelSelection.estimatedCharacters + qianshiCharacters }); }
       finally { timings.selectorMs = Date.now() - selectorStarted; }
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       let receiptBase = {
@@ -1227,6 +1268,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         bodyMatchFingerprint: source.bodyMatch.fingerprint,
         strategyVersion: RECALL_STRATEGY_VERSION,
         generationType: type,
+        qianshiProgress: source.qianshiProgress ? clone(source.qianshiProgress) : null,
         timeDependencies: clone(selection.timeDependencies ?? { mode: 'projection', fingerprint: source.timeProjection?.fingerprint ?? null }),
         selectedFloors: selection.floors.map(value => ({ floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq, reasons: [...value.reasons] })),
         selectedStates: selection.states.map(value => ({
@@ -1246,7 +1288,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         storylines: (selection.storylines ?? []).map(value => ({ storylineId: value.storylineId, title: value.title, basis: value.basis })),
         selectorDiagnostic: selectorDiagnosticSnapshot(selection.selectorDiagnostic),
         coverage: clone(selection.coverage ?? source.coverage),
-        injectionText: selection.injectionText,
+        injectionText: appendQianshiProgress(selection.injectionText, source.qianshiProgress),
         stages: selection.stages ? {
           ...clone(selection.stages),
           stateCount: Number.isSafeInteger(selection.stages.stateCount) ? selection.stages.stateCount : selection.states.length,
@@ -1262,8 +1304,9 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
             ? selection.stages.finalInjectionItemCount
             : selection.floors.reduce((sum, floor) => sum + (floor.items?.length ?? 1), 0) + selection.states.length + (selection.cseChanges ?? []).length,
           storylineCount: Number.isSafeInteger(selection.stages.storylineCount) ? selection.stages.storylineCount : (selection.storylines ?? []).length,
-          estimatedTokenCount: estimateRecallTokens(selection.injectionText),
-          estimatedTokenBudget: Number.isSafeInteger(selection.stages.estimatedTokenBudget) ? selection.stages.estimatedTokenBudget : 0,
+          estimatedTokenCount: estimateRecallTokens(appendQianshiProgress(selection.injectionText, source.qianshiProgress)),
+          estimatedTokenBudget: (Number.isSafeInteger(selection.stages.estimatedTokenBudget) ? selection.stages.estimatedTokenBudget : 0) + qianshiTokens,
+          ...(source.qianshiProgress ? { qianshiTokenBudget: qianshiTokens } : {}),
         } : null,
         timings: receiptTimingSnapshot(timings),
         skipReasons: [...new Set([...(selection.skipReasons ?? []), ...partialReasons])],

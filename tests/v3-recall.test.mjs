@@ -1974,7 +1974,7 @@ function cseLaggingReachable(removeDeltaId = 'delta-remove') {
   };
 }
 
-function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaultSelector = false, generateUtilityTask, queryBuilder = buildRecallQueryContext, saveChat = true, reachableReader, rootReader, prepareMemory, preparationTimeoutMs, snapshotHook, fingerprint, memoryStatus, realtimeOrigin, notifyUser, identityProjectionProvider, timeProjectionProvider, pluginVersion = TEST_PLUGIN_VERSION, prequel = null } = {}) {
+function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaultSelector = false, generateUtilityTask, queryBuilder = buildRecallQueryContext, saveChat = true, reachableReader, rootReader, prepareMemory, preparationTimeoutMs, snapshotHook, fingerprint, memoryStatus, realtimeOrigin, notifyUser, identityProjectionProvider, timeProjectionProvider, qianshiProgressProvider, pluginVersion = TEST_PLUGIN_VERSION, prequel = null } = {}) {
   const prompts = [];
   const handlers = new Map();
   const userMessage = { is_user: true, is_system: false, mes: '阿裴，我们回钟楼赴约。' };
@@ -2009,6 +2009,7 @@ function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaul
     ...(notifyUser ? { notifyUser } : {}),
     ...(identityProjectionProvider ? { identityProjectionProvider } : {}),
     ...(timeProjectionProvider ? { timeProjectionProvider } : {}),
+    ...(qianshiProgressProvider ? { qianshiProgressProvider } : {}),
     ...(prepareMemory ? { prepareMemory } : {}),
     ...(preparationTimeoutMs ? { preparationTimeoutMs } : {}),
     ...(fingerprint ? { fingerprint } : {}),
@@ -2874,7 +2875,7 @@ test('runtime normal 先完成一次 prompt commit，再最多保存一次 schem
   assert.equal(harness.prompts[0][1], '', '每次生成先清旧槽位');
   const injection = harness.prompts.find(call => call[1]);
   assert.ok(injection, '必须实际注入非空召回文本');
-  assert.deepEqual(injection.slice(2), [23, 1, false, 47]);
+  assert.deepEqual(injection.slice(2), [23, 2, false, 47]);
   assert.match(injection[1], /<qqj_recalled_context>/);
   assert.equal(harness.saves, 1, '正常路径只在 prompt commit 后保存一次完成态回执');
   const receipt = harness.userMessage.extra?.[RECALL_RECEIPT_KEY];
@@ -2902,34 +2903,111 @@ test('runtime normal 先完成一次 prompt commit，再最多保存一次 schem
   assert.equal(typeof result.lastRecall.timings.totalMs, 'number');
 });
 
-test('正式候选只读展示旧千事回执但拒绝复用，重新生成只含普通召回且保持8000上限', async () => {
-  let selections = 0;
-  const harness = createRuntimeHarness({ selector: input => { selections += 1; return selectRecall(input); } });
-  await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
-  const ordinary = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
-  const qianshiProgress = { text:'[当前剧情进度]\n- [待办] 归还旧书', fingerprint:'sha256:qianshi', eventIds:['event-1'], matterIds:['matter-1'] };
-  const block = '\n\n<qqj_qianshi_progress>\n' + qianshiProgress.text + '\n</qqj_qianshi_progress>';
-  const legacy = structuredClone(ordinary);
-  legacy.qianshiProgress = qianshiProgress;
-  legacy.injectionText += block;
-  legacy.stages.estimatedTokenCount = estimateRecallTokens(legacy.injectionText);
-  legacy.stages.qianshiTokenBudget = estimateRecallTokens(block);
-  legacy.stages.estimatedTokenBudget += legacy.stages.qianshiTokenBudget;
+test('千事当前进度计入普通召回预算并写入同一 schema15 回执与注入槽', async () => {
+  let providerSource = null, providerContext = null, ordinarySelection = null;
+  const harness = createRuntimeHarness({ selector: input => { ordinarySelection = selectRecall(input); return ordinarySelection; }, qianshiProgressProvider: (source, context) => { providerSource = source; providerContext = context; return ({
+    anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' },
+    projectionVersion: 1,
+    text: '[当前剧情进度]\n- [待办] 归还旧书；时间：明日：顾舟仍需归还档案室旧书',
+    eventIds: ['event-qianshi-1'], matterIds: ['matter-qianshi-1'],
+  }); } });
+  const result = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  assert.deepEqual([providerSource?.narrativeGeneration, providerSource?.headCheckpointId], [GEN, 'head']);
+  assert.equal(result.lastRecall.status, 'ready');
+  assert.match(result.lastRecall.injectionText, /<qqj_qianshi_progress>[\s\S]*归还旧书/u);
+  const receipt = harness.userMessage.extra[RECALL_RECEIPT_KEY];
+  assert.equal(receipt.schemaVersion, 15);
+  assert.equal(receipt.qianshiProgress.projectionVersion, 1);
+  assert.equal(providerContext.queryContext.latestUserText, '阿裴,我们回钟楼赴约。');
+  assert.deepEqual(receipt.qianshiProgress.eventIds, ['event-qianshi-1']);
+  assert.equal(receipt.injectionText, latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT));
+  const progressTokens = estimateRecallTokens(`\n\n<qqj_qianshi_progress>\n${receipt.qianshiProgress.text}\n</qqj_qianshi_progress>`);
+  assert.equal(receipt.stages.estimatedTokenCount, estimateRecallTokens(receipt.injectionText));
+  assert.equal(receipt.stages.qianshiTokenBudget, progressTokens);
+  assert.equal(receipt.stages.estimatedTokenBudget, ordinarySelection.stages.estimatedTokenBudget + progressTokens);
+  assert.equal(receipt.stages.estimatedTokenBudget <= 8000, true, '稀疏材料可少于上限，但不得突破原总额度');
+});
+
+test('千事总预算兼容新旧回执且不重复加，刷新只投影正确口径不改历史签名', async () => {
+  const prequel = '钟楼旧约。'.repeat(400);
+  const harness = createRuntimeHarness({ prequel, qianshiProgressProvider: () => ({ anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' },
+    text:'[当前剧情进度]\n- [待办] 归还旧书', eventIds:['event-1'], matterIds:['matter-1'] }) });
+  const first = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  const current = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
+  const totalBudget = current.stages.estimatedTokenBudget;
+  assert.equal(totalBudget + first.lastPrequel.estimatedTokens, recallBudget(12000).totalTokens, '前情仍独立占用原总额度');
+  assert.equal(first.lastRecall.stages.estimatedTokenBudget, totalBudget);
+
+  harness.runtime.invalidate('restore-current');
+  let restored = await harness.runtime.restorePersistedReceipt();
+  assert.equal(restored.lastRecall.stages.estimatedTokenBudget, totalBudget, '已修回执不得重复加千事额度');
+
+  const legacy = structuredClone(current);
+  legacy.stages.estimatedTokenBudget -= legacy.stages.qianshiTokenBudget;
+  delete legacy.stages.qianshiTokenBudget;
   legacy.receiptFingerprint = await receiptFingerprint(legacy);
   harness.userMessage.extra[RECALL_RECEIPT_KEY] = legacy;
-  harness.runtime.invalidate('restoreLegacyQianshi');
-  const restored = await harness.runtime.restorePersistedReceipt();
-  assert.equal(restored.lastRecall.qianshiProgress.text, qianshiProgress.text, '旧回执仍可只读展示');
-  assert.match(restored.lastRecall.injectionText, /qqj_qianshi_progress/u);
+  harness.runtime.invalidate('restore-legacy');
+  restored = await harness.runtime.restorePersistedReceipt();
+  assert.equal(restored.lastRecall.restoredReceipt, true);
+  assert.equal(restored.lastRecall.stages.estimatedTokenCount, legacy.stages.estimatedTokenCount);
+  assert.equal(restored.lastRecall.stages.estimatedTokenBudget, totalBudget, '旧回执只读显示补齐千事额度');
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].stages.qianshiTokenBudget, undefined, '不得重写历史存档');
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].receiptFingerprint, legacy.receiptFingerprint, '不得改历史签名');
+});
 
-  await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
-  assert.equal(selections, 2, '含千事旧回执不能用于正式注入复用');
-  const current = harness.userMessage.extra[RECALL_RECEIPT_KEY];
-  assert.equal(Object.hasOwn(current, 'qianshiProgress'), false);
-  assert.equal(Object.hasOwn(current.stages, 'qianshiTokenBudget'), false);
-  assert.doesNotMatch(current.injectionText, /qqj_qianshi_progress/u);
-  assert.equal(current.stages.estimatedTokenCount, estimateRecallTokens(current.injectionText));
-  assert.equal(current.stages.estimatedTokenBudget <= 8000, true);
+test('提交前千事进度变化只撤千事块，普通召回材料与本轮生成继续保留', async () => {
+  let reads = 0; const queries = [];
+  const harness = createRuntimeHarness({ qianshiProgressProvider: (_source, context) => {
+    reads += 1;
+    queries.push(structuredClone(context.queryContext));
+    return { anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' },
+      text: reads === 1 ? '[当前剧情进度]\n- [待办] 归还旧书' : '', eventIds: reads === 1 ? ['event-1'] : [], matterIds: reads === 1 ? ['matter-1'] : [] };
+  } });
+  const result = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  assert.equal(reads, 2); assert.equal(result.lastRecall.status, 'ready');
+  assert.match(result.lastRecall.injectionText, /<qqj_recalled_context>/u);
+  assert.doesNotMatch(result.lastRecall.injectionText, /qqj_qianshi_progress|归还旧书/u);
+  const receipt = harness.userMessage.extra[RECALL_RECEIPT_KEY];
+  assert.equal(receipt.qianshiProgress, null);
+  assert.equal(Object.hasOwn(receipt.stages, 'qianshiTokenBudget'), false);
+  assert.equal(receipt.stages.estimatedTokenCount, estimateRecallTokens(receipt.injectionText));
+  assert.equal(receipt.skipReasons.includes('optionalQianshiChanged'), true);
+  assert.deepEqual(queries[1], queries[0], '提交复验必须使用初选同一轮 queryContext');
+});
+
+test('千事 projection 版本变化时复用回执不会继续注入旧大清单', async () => {
+  let version = 0, selections = 0;
+  const harness = createRuntimeHarness({ selector: input => { selections += 1; return selectRecall(input); }, qianshiProgressProvider: () => ({
+    anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion: version,
+    text: version === 0 ? '[当前剧情进度]\n- [待办] 旧大清单' : '[相关时间线]\n- 10月4日：新短版',
+    eventIds: [`event-${version}`], matterIds: [`matter-${version}`],
+  }) });
+  await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  assert.match(harness.userMessage.extra[RECALL_RECEIPT_KEY].injectionText, /旧大清单/u);
+  version = 1;
+  const reused = await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
+  assert.equal(selections, 1);
+  assert.equal(reused.lastRecall.reusedReceipt, true);
+  assert.doesNotMatch(reused.lastRecall.injectionText, /旧大清单|新短版|qqj_qianshi_progress/u);
+  assert.equal(reused.lastRecall.skipReasons.includes('optionalQianshiChanged'), true);
+});
+
+test('复用回执时千事变化不重跑普通选材，只局部撤下旧千事块', async () => {
+  let activeProgress = true, selections = 0;
+  const harness = createRuntimeHarness({
+    selector: input => { selections += 1; return selectRecall(input); },
+    qianshiProgressProvider: () => ({ anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' },
+      text: activeProgress ? '[当前剧情进度]\n- [待办] 归还旧书' : '', eventIds: activeProgress ? ['event-1'] : [], matterIds: activeProgress ? ['matter-1'] : [] }),
+  });
+  const first = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  assert.equal(first.lastRecall.status, 'ready'); assert.equal(selections, 1);
+  activeProgress = false;
+  const reused = await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
+  assert.equal(selections, 1, '千事变化不得触发普通 selector 或额外 selector API');
+  assert.equal(reused.lastRecall.status, 'ready'); assert.equal(reused.lastRecall.reusedReceipt, true);
+  assert.match(reused.lastRecall.injectionText, /<qqj_recalled_context>/u);
+  assert.doesNotMatch(reused.lastRecall.injectionText, /qqj_qianshi_progress|归还旧书/u);
 });
 
 test('摘要已齐但CSE欠尾时真实delta的私密移除跨 source/selector/schema15 保存恢复复用，delta变化后重选', async () => {

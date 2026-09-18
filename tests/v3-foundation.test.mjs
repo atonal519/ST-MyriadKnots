@@ -192,7 +192,7 @@ async function installLegacyIndexFixture(h) {
   return { rootEnvelope, checkpointEnvelope, indexes, keys };
 }
 
-function harness(chat = [assistant('A'), assistant('B'), assistant('C')], { enhanced = false, prepareSession = null, modernAnchors = false, fetchImpl = undefined, sanitizerOptions = () => ({}) } = {}) {
+function harness(chat = [assistant('A'), assistant('B'), assistant('C')], { enhanced = false, prepareSession = null, modernAnchors = false, fetchImpl = undefined, sanitizerOptions = () => ({}), scanCandidatesOverride = null } = {}) {
   let context = hostContext(chat);
   let enabled = true;
   const handlers = new Map();
@@ -211,7 +211,7 @@ function harness(chat = [assistant('A'), assistant('B'), assistant('C')], { enha
     sanitizerOptions,
     contextProvider: () => context,
     prepareSession,
-    scanCandidates: modernAnchors ? scanAssistantCandidates : legacyScanner,
+    scanCandidates: scanCandidatesOverride ?? (modernAnchors ? scanAssistantCandidates : legacyScanner),
     isEnabled: () => enabled,
     newUuid: uuidFactory(),
     now: () => new Date('2026-09-02T00:00:00.000Z'),
@@ -265,6 +265,51 @@ test('纯扫描只枚举有效 AI 楼；无 user 锚时确认入口也不能越�
   assert.equal(state.pending.assistantSeq, 3);
   assert.equal(state.foundationStatus, 'ready');
   assert.deepEqual(state.stableBoundary.assistantSeq, 2);
+});
+
+test('用户可一次确认多段连续 AI，各楼按原顺序独立登记，普通尾楼仍等待', async () => {
+  const h = harness([assistant('第一段一'), assistant('第一段二'), user('确认第一段'), assistant('第二段一'), assistant('第二段二'), user('确认第二段'), assistant('普通尾楼')], { modernAnchors: true });
+  let state = await h.runtime.start();
+  assert.equal(state.stableCount, 0);
+  assert.deepEqual(state.unregisteredCandidates.map(item => item.reason), ['consecutiveAssistant', 'waitingEarlierFloor', 'consecutiveAssistant', 'waitingEarlierFloor', 'waitingNextUser']);
+  const scope = structuredClone(state.consecutiveAssistantConfirmation);
+  assert.deepEqual(scope.candidates.map(item => [item.assistantSeq, item.messageIndex, item.confirmationRequired]), [[1, 0, true], [2, 1, false], [3, 3, true], [4, 4, false]]);
+  state = await h.runtime.confirmConsecutiveAssistants(scope);
+  assert.equal(state.stableCount, 4);
+  assert.equal(state.pending.assistantSeq, 5);
+  assert.deepEqual(h.runtime.getReachable().floors.map(floor => floor.content.canonicalContent), ['第一段一', '第一段二', '第二段一', '第二段二']);
+  assert.deepEqual(h.runtime.getReachable().floors.map(floor => floor.stability.stabilizedBy), ['manual', 'nextUser', 'manual', 'nextUser']);
+  state = await h.runtime.refreshStatus();
+  assert.equal(state.stableCount, 4, '刷新后manual稳定楼仍按精确正文继续认可');
+  assert.equal(state.pending.assistantSeq, 5, '确认不得顺带放行普通孤立尾楼');
+});
+
+test('连续 AI 确认冻结正文指纹，确认扫描后正文变化不登记旧范围', async () => {
+  let armed = false, scans = 0;
+  const scanner = async (chat, options) => {
+    if (armed && ++scans === 2) { chat[0].mes = '确认期间改写'; chat[0].swipes[0] = '确认期间改写'; }
+    return scanAssistantCandidates(chat, options);
+  };
+  const h = harness([assistant('待确认一'), assistant('已有用户锚二'), user('确认第二楼')], { modernAnchors: true, scanCandidatesOverride: scanner });
+  let state = await h.runtime.start();
+  assert.equal(state.stableCount, 0);
+  const scope = structuredClone(state.consecutiveAssistantConfirmation);
+  armed = true;
+  state = await h.runtime.confirmConsecutiveAssistants(scope);
+  assert.equal(state.stableCount, 0);
+  assert.equal(h.runtime.getReachable()?.floors?.length ?? 0, 0);
+  assert.equal(state.unregisteredCandidates[0].reason, 'consecutiveAssistant');
+});
+
+test('连续 AI 弹窗打开后新增候选不会被旧确认范围顺带登记', async () => {
+  const h = harness([assistant('已见一'), assistant('已见二'), user('确认已见段'), assistant('当时的普通尾楼')], { modernAnchors: true });
+  let state = await h.runtime.start();
+  const scope = structuredClone(state.consecutiveAssistantConfirmation);
+  h.context.chat.push(assistant('弹窗后新增'), user('新增楼的锚'));
+  state = await h.runtime.confirmConsecutiveAssistants(scope);
+  assert.equal(state.status, 'stale');
+  assert.equal(state.stableCount, 0);
+  assert.equal(h.runtime.getReachable()?.floors?.length ?? 0, 0);
 });
 
 test('新楼首正文边界只晋升启动前 pending，空占位不落 Floor 且后续刷新保持稳定', async () => {

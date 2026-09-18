@@ -720,7 +720,7 @@ test('Extractor 失败且尚无 FloorMemory 时仍可复制诊断并直接提取
   assert.equal(confirmations, 0, '无摘要楼的首次提取不是破坏性操作，不弹重提确认');
 });
 
-test('摘要页列出全部尚未摘要候选并显示真实等待原因，无 floorId 时不提供提取操作', () => {
+test('摘要页列出全部尚未摘要候选并显示真实等待原因，无 floorId 时不提供提取操作', async () => {
   const memory = { chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
   const registered = { floorId: 'floor-42', assistantSeq: 42, messageIndex: 82, status: 'ready', memoryId: 'memory-42', summary: '旧摘要仍然可见', summarySource: 'ai', aiSummary: '旧摘要仍然可见', counts: {}, memory };
   let state = {
@@ -731,18 +731,40 @@ test('摘要页列出全部尚未摘要候选并显示真实等待原因，无 f
       { assistantSeq: 44, messageIndex: 85, reason: 'waitingEarlierFloor' },
       { assistantSeq: 45, messageIndex: 87, reason: 'waitingNextUser' },
     ],
+    consecutiveAssistantConfirmation: { chatId: CHAT, candidates: [
+      { assistantSeq: 43, messageIndex: 84, confirmationRequired: true },
+      { assistantSeq: 44, messageIndex: 85, confirmationRequired: false },
+    ] },
   };
-  let extractCalls = 0;
-  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => { extractCalls += 1; return state; } };
-  const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef }); view.setPage('memories'); view.mount(container);
+  let extractCalls = 0, consecutiveCalls = 0, confirmation = null, receivedScope = null;
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    confirmConsecutiveAssistants: async scope => { consecutiveCalls += 1; receivedScope = scope; return state; }, extractFloor: async () => { extractCalls += 1; return state; } };
+  const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef, confirmImpl: options => { confirmation = options; return true; } }); view.setPage('memories'); view.mount(container);
   let copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /已记忆 42\/42 楼.*另有 3 楼尚未摘要，正在等待确认/);
-  assert.match(copy, /第 84 楼.*连续 AI，尚待确认.*检测到连续 AI 消息/);
+  assert.match(copy, /检测到连续 AI 段，共 2 个回复.*第 84 楼.*连续 AI，尚待确认/);
   assert.match(copy, /第 85 楼.*等待前面楼层处理.*前面的 AI 楼尚未确认/);
   assert.match(copy, /第 87 楼.*等待下一条用户消息.*发送下一条用户消息后会重新检查/);
   assert.match(copy, /旧摘要仍然可见/);
+  const confirmConsecutive = flatten(container).find(node => node.textContent === '确认连续 AI 并分别记录');
+  assert.ok(confirmConsecutive); confirmConsecutive.click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(consecutiveCalls, 1);
+  assert.equal(receivedScope, state.consecutiveAssistantConfirmation, '弹窗必须把渲染时冻结的精确范围原样传入');
+  assert.deepEqual(confirmation, { title: '确认连续 AI 回复', body: '第 84 楼、第 85 楼 将分别登记，并按原顺序进入摘要。正文不会删除或合并；当前最后一条 AI 不在本次范围内，仍等待下一条用户消息。', confirmText: '确认并分别记录', cancelText: '取消' });
   assert.equal(flatten(container).filter(node => node.textContent === '提取摘要').length, 0);
   assert.equal(extractCalls, 0);
+
+  state = { ...state, unregisteredCandidates: state.unregisteredCandidates.filter(candidate => candidate.reason !== 'waitingNextUser') };
+  view.render(state);
+  flatten(container).find(node => node.textContent === '确认连续 AI 并分别记录').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(confirmation.body, '第 84 楼、第 85 楼 将分别登记，并按原顺序进入摘要。正文不会删除或合并；以上列表就是本次完整确认范围。');
+
+  runtime.confirmConsecutiveAssistants = async () => { throw Object.assign(new Error('连续 AI 确认范围已经变化，请重新查看后再确认。'), { code: 'V3_MEMORY_STALE' }); };
+  flatten(container).find(node => node.textContent === '确认连续 AI 并分别记录').click();
+  await new Promise(resolve => setImmediate(resolve));
+  copy = flatten(container).map(node => node.textContent).join('|');
+  assert.match(copy, /确认连续 AI失败：连续 AI 确认范围已经变化，请重新查看后再确认/);
 
   state = { ...state, stableCount: 43, unprocessedCount: 1,
     floors: [...state.floors, { floorId: 'floor-45', assistantSeq: 45, messageIndex: 87, status: 'unprocessed', memoryId: null, summary: '', counts: {}, memory: null }],

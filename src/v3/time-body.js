@@ -1,9 +1,36 @@
-import { scanAssistantCandidates } from './foundation-domain.js';
+import { scanAssistantCandidates, selectAssistantMessage } from './foundation-domain.js';
 import { matchFloorCandidates } from './floor-binding.js';
 import { parseSharedStoryClock, parseStoryClockReference } from '../story-clock.js';
 import { projectTime, projectTimeSource, storyTimes, timeFingerprint, timeBodyReads, createTimeBodyRequest, TIME_INPUT_TOKENS, TIME_BODY_AUXILIARY_TOKENS, TIME_SYSTEM_PROMPT } from './time-engine.js';
 import { inferCanonicalCurrentTime } from './extractor.js';
 import { estimateRecallTokens } from './recall-selector.js';
+
+// Recall only needs the current visible body clock and a short recent span. Keep
+// this path independent from the full body binding/hash pass used by time jobs.
+export function readRecentBodyStoryTimes(host, { storyClockReferenceTags = '', limit = 32 } = {}) {
+  const selected = [];
+  const chat = Array.isArray(host?.chat) ? host.chat : [];
+  for (let messageIndex = chat.length - 1; messageIndex >= 0 && selected.length < limit; messageIndex -= 1) {
+    const message = chat[messageIndex];
+    if (message?.is_system === true || message?.is_hidden === true || message?.hidden === true) continue;
+    const assistant = selectAssistantMessage(message);
+    if (assistant?.rawContent) selected.push({ messageIndex, rawContent: assistant.rawContent });
+  }
+  selected.reverse();
+  const reliable = [];
+  let previous = null;
+  for (const item of selected) {
+    const shared = parseSharedStoryClock(item.rawContent), reference = parseStoryClockReference(item.rawContent, storyClockReferenceTags);
+    const meta = shared?.endMeta ?? shared?.startMeta;
+    const raw = meta?.date ? `${meta.date} ${meta.time ?? ''}` : reference?.lastReferenceText ?? reference?.referenceText ?? inferCanonicalCurrentTime(item.rawContent)?.text ?? '';
+    if (!raw) continue;
+    const observationTime = projectTime(raw.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previous);
+    if (!observationTime.date && !Number.isInteger(observationTime.minute)) continue;
+    previous = observationTime;
+    reliable.push({ messageIndex: item.messageIndex, observationTime });
+  }
+  return reliable;
+}
 
 // Private projection: current selected body witnesses never rewrite foundation records.
 export async function readTimeBody(reachable, host, { sanitizerOptions = {}, storyClockReferenceTags = '' } = {}) {
@@ -18,12 +45,12 @@ export async function readTimeBody(reachable, host, { sanitizerOptions = {}, sto
     const match = binding.candidateMatches.get(index);
     const shared = parseSharedStoryClock(candidate.rawContent), reference = parseStoryClockReference(candidate.rawContent, storyClockReferenceTags);
     const meta = shared?.endMeta ?? shared?.startMeta;
-    const raw = meta?.date ? `${meta.date} ${meta.time ?? ''}` : reference?.referenceText ?? inferCanonicalCurrentTime(candidate.canonicalContent)?.text ?? '';
+    const raw = meta?.date ? `${meta.date} ${meta.time ?? ''}` : reference?.lastReferenceText ?? reference?.referenceText ?? inferCanonicalCurrentTime(candidate.canonicalContent)?.text ?? '';
     const time = raw ? projectTime(raw.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previous) : fallback.get(match?.floor.id) ?? projectTime('');
     const sourceTime = raw ? projectTimeSource(raw.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previousSource) : sourceFallback.get(match?.floor.id) ?? projectTimeSource('');
     previous = time; previousSource = sourceTime;
     const timeSourceFingerprint = await timeFingerprint(raw ? [sourceTime.date, sourceTime.clock, sourceTime.date ? null : raw] : ['no-body-time']);
-    const body = { stable: Boolean(candidate.stabilityProof), timeSourceFingerprint, floorId: match?.floor.id ?? null, assistantSeq: candidate.assistantSeq, canonicalFingerprint: candidate.canonicalFingerprint,
+    const body = { stable: Boolean(candidate.stabilityProof), timeSourceKind: raw ? 'body' : 'summaryFallback', timeSourceFingerprint, floorId: match?.floor.id ?? null, assistantSeq: candidate.assistantSeq, canonicalFingerprint: candidate.canonicalFingerprint,
       rawFingerprint: candidate.rawFingerprint, rawContent: candidate.rawContent, hostLocator: candidate.hostLocator, content: candidate.canonicalContent, observationTime: time };
     bodies.push(body);
     if (match) floors.push({ ...match.floor, assistantSeq: candidate.assistantSeq, canonicalFingerprint: candidate.canonicalFingerprint, timeSourceFingerprint, content: candidate.canonicalContent });

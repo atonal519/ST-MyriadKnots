@@ -70,11 +70,15 @@ test('可配置时间参考标签保留完整语义与原文顺序，标准时�
   const reference = parseStoryClockReference(raw, 'TI,时标');
   assert.equal(reference.namespace, 'tag:TI');
   assert.equal(reference.referenceText, '0081年10月20日·清晨·06:12\n0081年10月20日·午前·10:40');
+  assert.equal(reference.lastReferenceText, '0081年10月20日·午前·10:40');
   assert.equal(reference.complete, false);
   assert.equal(reference.start, null);
   assert.equal(reference.end, null);
   assert.match(storyClockSignature(reference), /0081年10月20日/);
   assert.equal(parseStoryClockReference('<时标>第三次忍界大战后某年·7月15日·18:00</时标>', '时标').referenceText, '第三次忍界大战后某年·7月15日·18:00');
+  const multiline = parseStoryClockReference('<bbs_start><i>大陆历1686年10月30日</i>\n13:30</bbs_start><section><bbs_end>大陆历1686年10月30日\n14:15</bbs_end></section>', 'bbs_start,bbs_end');
+  assert.equal(multiline.referenceText, '大陆历1686年10月30日\n13:30\n大陆历1686年10月30日\n14:15');
+  assert.equal(multiline.lastReferenceText, '大陆历1686年10月30日\n14:15');
   assert.equal(parseStoryClockReference('<Ti>时间不明</Ti>', ''), null);
   assert.equal(parseStoryClockReference('<Ti>没有闭合', 'Ti'), null);
   const standard = parseStoryClockEvidence(`${raw}${pair('QQJ')}`, 'Ti');

@@ -298,7 +298,7 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
     const waitingCopy = ({
       waitingNextUser: ['等待下一条用户消息', '这一楼尚未摘要。发送下一条用户消息后会重新检查。'],
       waitingEarlierFloor: ['等待前面楼层处理', '这一楼尚未摘要。前面的 AI 楼尚未确认，当前不会进入摘要处理。'],
-      consecutiveAssistant: ['连续 AI，尚待确认', '这一楼尚未摘要。检测到连续 AI 消息，现有规则尚不能确认这楼。'],
+      consecutiveAssistant: ['连续 AI，尚待确认', '这一楼尚未摘要。可在记忆页确认后，将连续 AI 回复分别登记并按顺序摘要。'],
       registrationNeedsReview: ['消息对应关系待核对', '这一楼尚未摘要。消息与已有记忆的对应关系需要先核对。'],
     })[pending?.reason] ?? ['尚待确认', '这一楼尚未摘要，正在等待确认。'];
     return Object.freeze({

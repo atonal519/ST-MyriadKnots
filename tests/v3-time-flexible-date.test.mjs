@@ -83,14 +83,14 @@ test('旧正文来源指纹含独立旧anchor链，覆盖继续有效且时间�
   const chat=raws.flatMap(raw=>[{is_user:false,mes:`<Ti>${raw}</Ti>甲仍有不适。`},{is_user:true,mes:'继续'}]);
   const candidates=await scanAssistantCandidates(chat,{chatId:'chat'});
   const reachable={root:{chatId:'chat'},floors:candidates.map((candidate,index)=>createFloorRecord({candidate,id:`floor${index}`,chatId:'chat',narrativeGeneration:'gen'})),floorMemories:[]};
-  const source=await readTimeBody(reachable,{chat},{storyClockReferenceTags:'Ti'});
+  const source=await readTimeBody(reachable,{chat});
   const expected=[await timeFingerprint([null,null,raws[0]]),await timeFingerprint([null,'11:30',raws[1]]),await timeFingerprint(['2026-07-19','20:30',null]),await timeFingerprint(['2026-07-19','21:30',null])];
   assert.deepEqual(source.bodyFloors.map(body=>body.timeSourceFingerprint),expected);
   assert.equal(source.bodyFloors[0].observationTime.monthDay,17); assert.equal(source.bodyFloors[1].observationTime.monthDay,18);
   const body=source.bodyFloors[0], batch={cutoffFloorId:body.floorId,dependencies:[],sourceKeys:[],changes:[],bodyReads:[{floorId:body.floorId,canonicalFingerprint:body.canonicalFingerprint,timeSourceFingerprint:expected[0],from:0,to:body.content.length,totalCharacters:body.content.length}]};
   assert.equal(timeBodyReads([batch],source).get(body.floorId).length,1);
   chat[0].mes=chat[0].mes.replace(raws[0],'七月十八10:30');
-  const changed=await readTimeBody(reachable,{chat},{storyClockReferenceTags:'Ti'});
+  const changed=await readTimeBody(reachable,{chat});
   assert.notEqual(changed.bodyFloors[0].timeSourceFingerprint,expected[0]); assert.equal(timeBodyReads([batch],changed).size,0);
   assert.equal(projectTimeSource(raws[0]).date,null);
 });

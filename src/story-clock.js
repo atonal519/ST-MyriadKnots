@@ -105,6 +105,7 @@ export function parseStoryClockReference(value, referenceTags = '') {
     duplicate: matches.length > 1,
     complete: false,
     referenceText: matches.map(match => match.referenceText).join('\n'),
+    lastReferenceText: matches.at(-1).referenceText,
     sourceIndex: matches[0].sourceIndex,
   });
 }

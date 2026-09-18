@@ -59,6 +59,43 @@ test('召回时钟取未摘要可见正文；覆盖49变50不推进时间，同r
   assert.equal(h.calls(), 0);
 });
 
+test('千事当前时钟关闭刻度仍只取正文可靠时间，不把摘要 fallback 当当前时间', async () => {
+  const h = await harness({ count: 4 });
+  h.setEnabled(false);
+  const source = { status: 'ready', chatId: CHAT, narrativeGeneration: 'gen', headCheckpointId: 'head' };
+  let context = await h.runtime.currentStoryContext(source);
+  assert.equal(context.currentTime.date, '2026-05-04');
+  assert.equal(context.currentTime.clock, '09:00');
+  assert.equal(context.recentStoryTimes.length, 4);
+  h.chat[6].mes = '这楼正文没有可识别的故事时间。';
+  await h.seal();
+  context = await h.runtime.currentStoryContext(source);
+  assert.equal(context.currentTime.date, '2026-05-03');
+  assert.equal(context.currentTime.clock, '09:00');
+  assert.equal(context.recentStoryTimes.length, 3);
+  h.chat[4].is_hidden = true;
+  context = await h.runtime.currentStoryContext(source);
+  assert.equal(context.currentTime.date, '2026-05-02');
+  assert.equal(context.currentTime.clock, '09:00');
+  assert.equal(context.recentStoryTimes.length, 2);
+  assert.equal(h.calls(), 0);
+});
+
+test('双正文参考标签保留完整原文合同并以末标签作为当前时间', async () => {
+  const h = await harness({ count: 1, tags: 'bbs_start,bbs_end' });
+  h.setEnabled(false);
+  h.chat[0].mes = '正文继续。<bbs_start><i>2026-05-01</i>\n08:00</bbs_start><section><bbs_end>2026-05-02\n09:30</bbs_end></section>';
+  await h.seal();
+  const source = { status: 'ready', chatId: CHAT, narrativeGeneration: 'gen', headCheckpointId: 'head' };
+  const context = await h.runtime.currentStoryContext(source);
+  assert.equal(context.currentTime.date, '2026-05-02');
+  assert.equal(context.currentTime.clock, '09:30');
+  const body = await h.body();
+  assert.equal(body.bodyFloors[0].observationTime.date, '2026-05-02');
+  assert.equal(body.bodyFloors[0].observationTime.clock, '09:30');
+  assert.equal(h.calls(), 0);
+});
+
 test('无摘要/CSE正文、新NPC由真实scanner登记，独立召回和楼内参考可见，人工编辑保正文依赖',async()=>{
   const h=await harness({generate:bodyModel}); const plan=await h.runtime.prepareHistoryPlan(); assert.equal(h.calls(),0); await h.runtime.organize(plan);assert.equal(h.calls(),2);
   const stored=await h.store.read(CHAT), body=await h.body(), item=replayTimeBatches(stored.batches,body)[0];assert.equal(item.subjectName,'阿岚');assert.match(item.subjectEntityId,/^time-person-/);assert.equal(item.projection.text,'截至当前可能仍有轻微不适，未确认恢复。');
