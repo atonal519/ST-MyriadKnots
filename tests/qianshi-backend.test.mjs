@@ -12,6 +12,50 @@ const NOW = '2026-09-16T00:00:00.000Z';
 const floor = (id, assistantSeq) => ({ id, chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq, content: { canonicalContent: `第${assistantSeq}楼` } });
 const memory = (id, source, qianshiDelta) => ({ id, floorId: source.id, recordStatus: 'active', chronology: [], qianshiDelta });
 
+test('同一稳定人物在单个事件只建一条参与边，跨事件仍分别建边', async () => {
+  const source = floor('11111111-1111-4111-8111-111111111111', 1);
+  const personId = '22222222-2222-4222-8222-222222222222';
+  const entity = { id: personId, entityType: 'person', displayName: '裴晚生', aliases: [{ name: '阿裴' }], specialRole: 'char',
+    recordStatus: 'active', status: 'established', chatId: CHAT, narrativeGeneration: GENERATION };
+  const packet = { qianshi: { events: [
+    { key: 'arrive', title: '抵达会场', description: '裴晚生以阿裴之名赴会', status: 'occurred', matter: false, people: ['裴晚生', '阿裴'] },
+    { key: 'leave', title: '离开会场', description: '阿裴独自离开', status: 'occurred', matter: false, people: ['阿裴'] },
+  ], order: [] } };
+  const originalPacket = structuredClone(packet);
+  const delta = await compileQianshiDelta({ floor: source, now: NOW, entities: [entity], packet });
+  assert.deepEqual(packet, originalPacket, '编译不改写输入 people');
+  assert.deepEqual(delta.events[0].people, [{ entityId: personId, name: '裴晚生' }, { entityId: personId, name: '阿裴' }], '原始本名和别名都保留');
+  const reachable = { root: { narrativeGeneration: GENERATION, headCheckpointId: '33333333-3333-4333-8333-333333333333' }, rootRevision: 1,
+    floors: [source], floorMemories: [memory('44444444-4444-4444-8444-444444444444', source, delta)], entities: [entity] };
+  const projection = projectQianshiGraph(reachable);
+  assert.equal(projection.graph.filterEdges((_edge, attributes) => attributes.type === 'participates').length, 2);
+  assert.deepEqual(projection.events[0].people, delta.events[0].people, '图投影不改写事件 people');
+  assert.doesNotThrow(() => prepareQianshiCandidates(reachable, { canonicalContent: '继续会场剧情' }));
+});
+
+test('合法旧数据的 null 同名参与者去重，不同实体的同名参与者不合并', async () => {
+  const source = floor('11111111-1111-4111-8111-111111111111', 1);
+  const base = await compileQianshiDelta({ floor: source, now: NOW, packet: { qianshi: { events: [
+    { key: 'watch', title: '共同观看', description: '众人同时看向钟楼', status: 'occurred', matter: false },
+  ], order: [] } } });
+  const firstId = '22222222-2222-4222-8222-222222222222';
+  const secondId = '33333333-3333-4333-8333-333333333333';
+  const people = [{ entityId: null, name: '路人' }, { entityId: null, name: '路人' },
+    { entityId: firstId, name: '守卫' }, { entityId: secondId, name: '守卫' }];
+  const oldDataInput = { ...structuredClone(base), events: [{ ...structuredClone(base.events[0]), people }] };
+  const originalInput = structuredClone(oldDataInput);
+  const oldData = validateQianshiDelta(oldDataInput, { floorId: source.id });
+  const reachable = { root: { narrativeGeneration: GENERATION, headCheckpointId: '44444444-4444-4444-8444-444444444444' }, rootRevision: 1,
+    floors: [source], floorMemories: [memory('55555555-5555-4555-8555-555555555555', source, oldData)], entities: [] };
+  const projection = projectQianshiGraph(reachable);
+  const participationEdges = projection.graph.filterEdges((_edge, attributes) => attributes.type === 'participates');
+  assert.equal(participationEdges.length, 3, 'null 同名合一，两个实体 ID 各自保留');
+  assert.ok(projection.graph.hasEdge(`participates:${firstId}:${oldData.events[0].id}`));
+  assert.ok(projection.graph.hasEdge(`participates:${secondId}:${oldData.events[0].id}`));
+  assert.deepEqual(projection.events[0].people, people);
+  assert.deepEqual(oldDataInput, originalInput, '校验和图投影均不改写旧事件输入');
+});
+
 test('一次性日常事件保持为独立事件，计划才建立事项', async () => {
   const source = floor('11111111-1111-4111-8111-111111111111', 1);
   const delta = await compileQianshiDelta({ floor: source, now: NOW, packet: { qianshi: { events: [

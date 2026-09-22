@@ -5,7 +5,7 @@ import { is_send_press as i, saveSettingsDebounced as a } from "/script.js";
 import { is_group_generating as o } from "/scripts/group-chats.js";
 import { loadWorldInfo as s, selected_world_info as c, world_info as l, world_info_case_sensitive as u, world_info_match_whole_words as d, world_names as f } from "/scripts/world-info.js";
 //#region \0rolldown/runtime.js
-var p = (e, t) => () => (t || (e((t = { exports: {} }).exports, t), e = null), t.exports), m = "0.4.2", h = "qianqianjie", g = "/api/plugins/st-bainiaodata", _ = Object.freeze([
+var p = (e, t) => () => (t || (e((t = { exports: {} }).exports, t), e = null), t.exports), m = "0.4.3", h = "qianqianjie", g = "/api/plugins/st-bainiaodata", _ = Object.freeze([
 	["v3-floor-", "floor"],
 	["v3-run-", "run"],
 	["v3-checkpoint-", "checkpoint"],
@@ -11821,12 +11821,12 @@ function Ku(e, { identityProjection: t = null, progressCharacters: n = ku } = {}
 					matterId: e.matterId
 				}), r.addDirectedEdgeWithKey(`matter-progress:${e.matterId}:${e.id}`, Hu(e.matterId), Vu(e.id), { type: "matterProgress" }));
 				for (let t of e.people) {
-					let n = t.entityId ?? `label:${t.name}`;
+					let n = t.entityId ?? `label:${t.name}`, i = `participates:${n}:${e.id}`;
 					y(Uu(n), {
 						kind: "person",
 						entityId: t.entityId,
 						name: l.get(t.entityId)?.displayName ?? t.name
-					}), r.addDirectedEdgeWithKey(`participates:${n}:${e.id}`, Uu(n), Vu(e.id), { type: "participates" });
+					}), r.hasEdge(i) || r.addDirectedEdgeWithKey(i, Uu(n), Vu(e.id), { type: "participates" });
 				}
 				i.addNode(Vu(e.id), { value: e });
 				for (let t of e.continuesFromEventIds) g.has(t) || (m.push(`${e.id}:${t}`), h.add(e.sourceFloorId));

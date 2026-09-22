@@ -87,8 +87,9 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
       }
       for (const person of event.people) {
         const stable = person.entityId ?? `label:${person.name}`;
+        const edgeKey = `participates:${stable}:${event.id}`;
         addNode(personNode(stable), { kind: 'person', entityId: person.entityId, name: entityById.get(person.entityId)?.displayName ?? person.name });
-        graph.addDirectedEdgeWithKey(`participates:${stable}:${event.id}`, personNode(stable), eventNode(event.id), { type: 'participates' });
+        if (!graph.hasEdge(edgeKey)) graph.addDirectedEdgeWithKey(edgeKey, personNode(stable), eventNode(event.id), { type: 'participates' });
       }
       orderGraph.addNode(eventNode(event.id), { value: event });
       for (const sourceId of event.continuesFromEventIds) if (!eventById.has(sourceId)) {
