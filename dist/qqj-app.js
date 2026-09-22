@@ -18820,7 +18820,7 @@ function Ah(e, t = !0) {
 	if (!e) return { present: !1 };
 	let n = { present: !0 };
 	if (e && typeof e == "object") {
-		Ch.has(e.name) && (n.name = e.name), typeof e.code == "string" && (/^(?:QQJ|V3|CHAT_SESSION)_[A-Z0-9_]{1,80}$/.test(e.code) || e.code === "BACKEND_TIMEOUT") && (n.code = e.code);
+		Ch.has(e.name) ? n.name = e.name : Ch.has(e.code) && (n.name = e.code), typeof e.code == "string" && (/^(?:QQJ|V3|CHAT_SESSION)_[A-Z0-9_]{1,80}$/.test(e.code) || e.code === "BACKEND_TIMEOUT") && (n.code = e.code), typeof e.phase == "string" && (n.phase = wh(e.phase, vh)), Number.isSafeInteger(e.count) && e.count > 0 && (n.count = e.count);
 		let t = e.httpStatus ?? e.status;
 		Number.isSafeInteger(t) && t >= 100 && t <= 599 && (n.httpStatus = t);
 	}

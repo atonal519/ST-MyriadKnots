@@ -135,7 +135,10 @@ function errorDiagnostic(value, sourceKnown = true) {
   const result = { present: true };
   if (value && typeof value === 'object') {
     if (STANDARD_ERROR_NAMES.has(value.name)) result.name = value.name;
+    else if (STANDARD_ERROR_NAMES.has(value.code)) result.name = value.code;
     if (typeof value.code === 'string' && (/^(?:QQJ|V3|CHAT_SESSION)_[A-Z0-9_]{1,80}$/.test(value.code) || value.code === 'BACKEND_TIMEOUT')) result.code = value.code;
+    if (typeof value.phase === 'string') result.phase = enumDiagnostic(value.phase, DIAGNOSTIC_PHASE);
+    if (Number.isSafeInteger(value.count) && value.count > 0) result.count = value.count;
     const httpStatus = value.httpStatus ?? value.status;
     if (Number.isSafeInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599) result.httpStatus = httpStatus;
   }
