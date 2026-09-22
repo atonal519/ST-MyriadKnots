@@ -514,7 +514,7 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
   let fallback = flatten(container).find(node => node.className === 'v3-diagnostic-fallback');
   assert.equal(fallback?.readOnly, true); assert.equal(fallback?.disabled, false, '同步遮罩不得禁用只读复制 fallback');
   let diagnostic = JSON.parse(fallback.value);
-  assert.equal(diagnostic.formatVersion, 1); assert.equal(diagnostic.pluginVersion, '0.1.9-test'); assert.match(diagnostic.capturedAt, /^\d{4}-/);
+  assert.equal(diagnostic.formatVersion, 2); assert.equal(diagnostic.pluginVersion, '0.1.9-test'); assert.match(diagnostic.capturedAt, /^\d{4}-/);
   assert.deepEqual(diagnostic.backend, backendState);
   assert.deepEqual(diagnostic.identity, { status: 'preparing', identityPresent: true, error: { present: true, name: 'Error', code: 'QQJ_CHAT_BINDING_CONFLICT', httpStatus: 409 } });
   assert.equal(diagnostic.foundation.chatIdPresent, true); assert.equal(diagnostic.foundation.headCheckpointPresent, true); assert.equal(diagnostic.foundation.activeRun.phase, 'capturing');
@@ -523,7 +523,7 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
   assert.equal(diagnostic.memory.activeExtraction.phase, 'extracting'); assert.equal(Object.hasOwn(diagnostic.memory.activeAutoMemory, 'kind'), false); assert.equal(diagnostic.memory.activeAutoMemory.phase, 'analyzingCse');
   assert.deepEqual(diagnostic.memory.syncError, { present: true, name: 'TimeoutError', code: 'BACKEND_TIMEOUT' });
   assert.deepEqual(diagnostic.memory.lastExtractorError, { present: true, name: 'TypeError', code: 'V3_EXTRACTOR_FAILED', httpStatus: 429 });
-  assert.deepEqual(diagnostic.memory.lastAutomationError, { present: true, name: 'Error', code: 'V3_AUTO_MEMORY_FAILED' });
+  assert.deepEqual(diagnostic.memory.lastAutomationError, { present: true, name: 'Error', code: 'V3_AUTO_MEMORY_FAILED', prepareStep: null, detail: null, location: null, lastFailedAt: null });
   assert.equal(diagnostic.cse.active.phase, 'committing'); assert.equal(diagnostic.recall.active.phase, 'selecting');
   assert.deepEqual(diagnostic.management, { status: 'deleting', phase: 'deletingRecords', workBusy: true, blockedByOtherChat: true, error: { present: true } });
   assert.deepEqual(diagnostic.ui, { syncingOverlayActive: true, workBusy: true, deleting: true, deletePending: false });

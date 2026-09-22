@@ -19,6 +19,7 @@ import { captureFloorVariableReference } from './floor-variable-reference.js';
 import { publicErrorMessage } from '../public-error.js';
 import { compileQianshiDelta, pendingQianshiDelta, prepareQianshiCandidates, projectQianshiRecall, publicQianshiSnapshot, QIANSHI_CANDIDATE_CHARACTER_BUDGET, QIANSHI_HISTORY_INPUT_TOKENS, QIANSHI_HISTORY_OUTPUT_TOKENS, QIANSHI_RECALL_PROJECTION_VERSION } from './qianshi-domain.js';
 import { estimateRecallTokens } from './recall-selector.js';
+import { markPreparationFailure, preparationFailureDiagnostic, preparationStepFor, storedPreparationDiagnostic } from './preparation-diagnostic.js';
 
 const EVENTS = Object.freeze(['CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
 const HISTORY_MUTATION_EVENTS = new Set(['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
@@ -154,7 +155,7 @@ const FLOOR_FAILURE_STORAGE_PREFIX = 'qqj_v3_floor_failures:';
 const normalizeAutoBatchSize = () => 1;
 const floorFailureStorageKey = chatId => `${FLOOR_FAILURE_STORAGE_PREFIX}${chatId}`;
 
-export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, extractorPromptGuidance = () => '', csePromptGuidance = () => '', processingPrompt = () => '', storyClockReferenceTags = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), persistAnchors = null, identityProjectionProvider = null, failureStorage = undefined, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
+export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, extractorPromptGuidance = () => '', csePromptGuidance = () => '', processingPrompt = () => '', storyClockReferenceTags = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), persistAnchors = null, identityProjectionProvider = null, qianshiCandidatePreparer = prepareQianshiCandidates, failureStorage = undefined, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
   if (!foundationRuntime || ['start', 'refreshStatus', 'confirmLatest', 'setEnabled', 'bind', 'getState'].some(name => typeof foundationRuntime[name] !== 'function')) throw new TypeError('V3 memory foundation runtime 无效');
   if (!store || ['readReachable', 'readRecord', 'putRecord', 'commitRoot', 'recordKey', 'invalidate'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 memory store 无效');
   if (typeof generateAnalysisTask !== 'function') throw new TypeError('V3 memory analysis route 无效');
@@ -246,6 +247,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       lastFailedAt: typeof entry.lastFailedAt === 'string' ? entry.lastFailedAt.slice(0, 80) : '',
     };
   };
+  const readAutomationFailureHint = entry => {
+    const common = readFailureHint(entry, 'V3_AUTO_MEMORY_FAILED');
+    if (!common) return null;
+    return { ...common, phase: String(entry.phase ?? 'unknown').slice(0, 80), ...storedPreparationDiagnostic(entry) };
+  };
   const nextFailureHint = (previous, failure, fallbackCode) => ({
     count: Number.isSafeInteger(previous?.count) && previous.count > 0 ? previous.count + 1 : 1,
     lastReason: safeErrorMessage(failure.message),
@@ -267,8 +273,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           if (summary) failures[floor.id] = summary;
           if (cse) cseFailures[floor.id] = cse;
         }
-        const savedAutomation = readFailureHint(parsed.automationFailure, 'V3_AUTO_MEMORY_FAILED');
-        if (savedAutomation) automationFailure = { ...savedAutomation, phase: String(parsed.automationFailure.phase ?? 'unknown').slice(0, 80) };
+        const savedAutomation = readAutomationFailureHint(parsed.automationFailure);
+        if (savedAutomation) automationFailure = savedAutomation;
       }
     } catch { /* optional browser failure hints must not block memory */ }
     failureScope = { chatId: root.chatId, narrativeGeneration: root.narrativeGeneration, failures, cseFailures, automationFailure };
@@ -328,7 +334,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     try {
       readFailureScope(value);
       if (!failureScopeMatches(value?.root)) return;
-      failureScope = { ...failureScope, automationFailure: { ...nextFailureHint(failureScope.automationFailure, failure, 'V3_AUTO_MEMORY_FAILED'), phase: String(failure.phase ?? 'unknown').slice(0, 80) } };
+      failureScope = { ...failureScope, automationFailure: { ...nextFailureHint(failureScope.automationFailure, failure, 'V3_AUTO_MEMORY_FAILED'), phase: String(failure.phase ?? 'unknown').slice(0, 80), ...storedPreparationDiagnostic(failure) } };
       writeFailureScope(value);
     } catch { /* optional browser failure hints must not replace the real automation error */ }
   };
@@ -593,7 +599,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               : coverage.status === 'realtimeTail' ? 'waitingRealtime'
               : coverage.status === 'historicalDebt' ? 'pendingRebuild' : 'notReady';
     const savedAutomation = failureScopeMatches(reachable?.root) ? failureScope.automationFailure : null;
-    const lastAutomationError = savedAutomation ? Object.freeze({ code: savedAutomation.code, message: savedFailureMessage(savedAutomation), phase: savedAutomation.phase, count: savedAutomation.count, lastFailedAt: savedAutomation.lastFailedAt }) : null;
+    const lastAutomationError = savedAutomation ? Object.freeze({ code: savedAutomation.code, name: savedAutomation.name, message: savedFailureMessage(savedAutomation), phase: savedAutomation.phase, prepareStep: savedAutomation.prepareStep, detail: savedAutomation.detail, location: savedAutomation.location, count: savedAutomation.count, lastFailedAt: savedAutomation.lastFailedAt }) : null;
     return Object.freeze({ ...foundation, ...cse, status: workRun || active || cse.activeCse ? 'running' : foundation.status, memorySnapshotStatus, memorySyncStatus, memorySyncError, stableCount, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: Math.max(0, stableCount - rememberedCount), reviewCount: 0, failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, floors: Object.freeze(combinedFloors), memoryEntities, memoryWorkBusy: workRun !== null, activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workRun.phase, floorIds: Object.freeze([...workRun.floorIds]) }) : null, activeExtraction: active ? { floorId: active.floorId, floorIds: Object.freeze([...(active.floorIds ?? [active.floorId])].filter(Boolean)), runId: active.runId, phase: active.phase } : null, qianshiHistoryActive: qianshiHistoryRun !== null, lastExtractorError: lastFailure, lastAutomationError, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: stableCount, rebuildNextAssistantSeq, rebuildHasActionableWork, highFloorHistoricalActive: workRun?.aggregateHistorical === true, cseRebuildStatus: cseRebuildPlan?.status ?? 'idle', cseRebuildCompletedCount: cseRebuildPlan?.nextIndex ?? 0, cseRebuildTotalCount: cseRebuildPlan?.targets.length ?? rememberedCount, cseRebuildNextAssistantSeq: cseRebuildPlan?.targets[cseRebuildPlan.nextIndex]?.assistantSeq ?? null, cseRebuildError: cseRebuildPlan?.error ?? null, activeAutoMemory: workRun?.kind === 'auto' ? Object.freeze({ reason: workRun.reason, phase: workRun.phase, mode: workRun.mode ?? 'realtime', aggregateHistorical: workRun.aggregateHistorical === true, cseBlocked: workRun.cseBlocked === true, floorIds: Object.freeze([...workRun.floorIds]) }) : null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
   }
 
@@ -1069,7 +1075,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
 
   async function prepareExtractorInput({ floorId = null, floorIds = null, selectNext = false, intent, manualWork }) {
     let rootChecks = 0;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    let prepareStep = 'synchronizing';
+    try { for (let attempt = 0; attempt < 2; attempt += 1) {
+      prepareStep = 'synchronizing';
       if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在提取准备期间已经变化，本次请求未发送。');
       const foundation = await foundationRuntime.refreshStatus();
       if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在后端数据同步期间已经变化，本次请求未发送。');
@@ -1079,8 +1087,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const settlement = backgroundSync;
       if (settlement) await settlement;
       if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在记忆读取期间已经变化，本次请求未发送。');
+      prepareStep = 'snapshotClone';
       const source = reachable ? clone(reachable) : null;
       const hostSnapshot = hostAdapter.snapshot();
+      prepareStep = 'sourceSelection';
       const memoryMap = currentMemoryMap(source);
       const requestedFloors = Array.isArray(floorIds) && floorIds.length
         ? floorIds.map(id => source?.floors?.find(item => item.id === id))
@@ -1096,14 +1106,20 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if (selectedSources.some(item => !item.selected)) throw errorWith('V3_MEMORY_STALE', '当前压缩范围或所选候选回复已变化，请刷新后重试。');
       const selected = selectedSources.at(-1).selected;
       const sourceRawFingerprint = `sha256:${await sha256(selected.rawContent)}`;
+      prepareStep = 'timeSources';
       const referenceTagsSnapshot = currentReferenceTags();
+      prepareStep = 'sourceSanitization';
       const sourceFloors = selectedSources.map(({ floor: sourceFloor, selected: sourceSelected }) => {
         const canonicalContent = sanitizeMemoryContent(sourceSelected.rawContent, sanitizerOptions());
+        const sourceUserInputSnapshot = capturePrecedingUserInputFromSnapshot(hostSnapshot, sourceFloor, sanitizerOptions());
+        prepareStep = 'timeSources';
+        const storyClockEvidence = clockEvidence(sourceSelected, referenceTagsSnapshot);
+        prepareStep = 'sourceSanitization';
         return { floor: { ...sourceFloor, content: { ...sourceFloor.content, canonicalContent } }, selected: sourceSelected, canonicalContent,
-          rawFingerprint: sourceFloor.content.rawFingerprint, sourceUserInputSnapshot: capturePrecedingUserInputFromSnapshot(hostSnapshot, sourceFloor, sanitizerOptions()),
-          storyClockEvidence: clockEvidence(sourceSelected, referenceTagsSnapshot) };
+          rawFingerprint: sourceFloor.content.rawFingerprint, sourceUserInputSnapshot, storyClockEvidence };
       });
       for (const entry of sourceFloors) entry.rawFingerprint = `sha256:${await sha256(entry.selected.rawContent)}`;
+      prepareStep = 'timeSources';
       const aggregate = requestedFloors !== null;
       const canonicalContent = aggregate
         ? sourceFloors.map((entry, index) => `[floor-${index + 1} | AI #${entry.floor.assistantSeq} | message ${entry.floor.hostLocator.messageIndex}]\n${entry.canonicalContent}`).join('\n\n')
@@ -1117,16 +1133,21 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const runId = await deterministicUuid(['v3-extractor-run', source.root.headCheckpointId, floor.id, newUuid()]);
       const expectedScope = { batchId: runId, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration, checkpointId: source.root.headCheckpointId, floorId: floor.id, rawContentFingerprint: sourceRawFingerprint };
       const floorIndex = source.floors.findIndex(item => item.id === floor.id);
+      prepareStep = 'identityDirectory';
       const scopedEntities = entitiesThroughFloorIds(source.entities, new Set(source.floors.slice(0, floorIndex + 1).map(item => item.id)));
       const identityProjectionSnapshot = await readIdentityProjection();
       let previousStoryClock = null;
+      prepareStep = 'timeSources';
       for (let index = floorIndex - 1; index >= 0 && !previousStoryClock; index -= 1) previousStoryClock = clockEvidence(rawSelectionFromSnapshot(hostSnapshot, source.floors[index]), referenceTagsSnapshot).clock;
+      prepareStep = 'sourceSelection';
       const previousMemoryContext = previousFloorContext(source, floorIndex, memoryMap);
       const firstFloorIndex = source.floors.findIndex(item => item.id === aggregateFloors[0].id);
       const qianshiPrefixFloorIds = new Set(source.floors.slice(0, firstFloorIndex).map(item => item.id));
-      const qianshiCandidates = prepareQianshiCandidates({ ...source, floors: source.floors.slice(0, firstFloorIndex),
+      prepareStep = 'qianshiCandidates';
+      const qianshiCandidates = qianshiCandidatePreparer({ ...source, floors: source.floors.slice(0, firstFloorIndex),
         floorMemories: source.floorMemories.filter(memory => qianshiPrefixFloorIds.has(memory.floorId)), entities: scopedEntities },
       { canonicalContent, precedingUserInput: sourceUserInputSnapshot, identityProjection: identityProjectionSnapshot });
+      prepareStep = 'extractorEnvelope';
       const envelope = await createExtractorEnvelope({ ...expectedScope, floor: liveFloor,
         sourceFloors: aggregate ? sourceFloors.map(entry => ({ floor: { ...entry.floor, content: { ...entry.floor.content, rawFingerprint: entry.rawFingerprint } }, sourceUserInputSnapshot: entry.sourceUserInputSnapshot, storyClock: entry.storyClockEvidence.clock, storyClockSignature: entry.storyClockEvidence.signature })) : null,
         entities: scopedEntities, identityProjection: identityProjectionSnapshot, userIdentity, identityHints: [], storyClock: sourceClock.clock, previousStoryClock, previousFloorContext: previousMemoryContext, sourceUserInputSnapshot, sourceVariableReference, qianshiCandidates });
@@ -1134,9 +1155,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const promptGuidanceSnapshot = typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : extractorPromptGuidance;
       const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
       const verifiedUserIdentity = currentUserIdentity();
+      prepareStep = 'dependencySnapshot';
       const dependencySnapshot = await extractorDependencySnapshot(source, floor.id, { userIdentity: verifiedUserIdentity,
         promptGuidance: promptGuidanceSnapshot, identityProjectionSnapshot, referenceTags: referenceTagsSnapshot, hostSnapshot });
       if (typeof store.readRoot === 'function') {
+        prepareStep = 'rootCheck';
         const rootResult = await store.readRoot();
         rootChecks += 1;
         if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在版本核对期间已经变化，本次请求未发送。');
@@ -1164,11 +1187,15 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       };
     }
     throw errorWith('V3_MEMORY_STALE', '提取准备未能收敛，本次请求未发送。');
+    }
+    catch (error) { throw markPreparationFailure(error, prepareStep); }
   }
 
   async function extractFloorInternal(floorId, { analyzeState = true, preparedInput = null, manualWork, aggregate = false, floorIds = null } = {}) {
     if (!enabled()) return notify();
     if (active) return getState();
+    let handedToExtractor = false;
+    try {
     const timingWork = manualWork ?? { startedAt: nowIso(now), startedMonotonic: monotonicNow() };
     const intent = preparedInput?.intent ?? { epoch, chatId: currentHostChatId() };
     const prepared = preparedInput ?? await prepareExtractorInput({ floorId, floorIds, intent, manualWork: timingWork });
@@ -1191,7 +1218,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (!preparedStillCurrent()) throw errorWith('V3_MEMORY_PREFIX_CHANGED', '聊天、目标楼或身份在请求前已经变化，本次请求未发送。');
     const operation = { floorId: floor.id, floorIds: [...prepared.sourceFloorIds], aggregate, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature, epoch: intent.epoch, controller: new AbortController(), runId, startedAt: pending?.startedAt ?? timingWork.startedAt, commitTimestamp: pending?.commitTimestamp ?? null, phase: pending ? 'committing' : 'extracting', dependencySnapshot, qianshiDependency, preflightTiming: Object.freeze({ ...prepared.preflightTiming, requestDispatchMs: elapsedMs(timingWork.startedMonotonic) }) };
     const releaseConfirmation = foundationRuntime.holdExtractionConfirmation?.(floor.id, runId) ?? null;
-    active = operation; notify();
+    active = operation; handedToExtractor = true; notify();
     let result = null;
     let summaryCommitted = false;
     try {
@@ -1222,6 +1249,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if (suffixGenerationContext?.runId === operation.runId) suffixGenerationContext = null;
     }
     return notify();
+    } catch (error) {
+      if (!handedToExtractor && !preparationStepFor(error)) markPreparationFailure(error, 'extractorHandoff');
+      throw error;
+    }
   }
 
   async function extractNextInternal(manualWork) {
@@ -1731,10 +1762,12 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           if (manualHistorical && historicalAuthorization === authorizedChatId) historicalAuthorization = null;
           lastAutomaticInputKey = capturedInputKey ?? currentInputKey();
           const didCommit = processed > 0 || cseProcessed > 0;
+          const diagnostic = preparationFailureDiagnostic(error);
           lastAutoRun = Object.freeze({ status: didCommit ? 'partial' : 'failed', reason, phase: operation.phase, batchSize: config.batchSize, floorId: operation.floorIds[0] ?? null, assistantSeq: null, processed, cseProcessed, failedItems: Object.freeze([...summaryFailures]), message: safeErrorMessage(error?.message ?? '自动记忆失败，将在下一次稳定回复后重试。') });
-          rememberAutomationFailure(reachable, { message: lastAutoRun.message, code: error?.code ?? error?.name ?? 'V3_AUTO_MEMORY_FAILED', phase: operation.phase });
-          logger?.warn?.('[qianqianjie] V3 automatic memory failed', { code: error?.code ?? error?.name ?? 'V3_AUTO_MEMORY_FAILED' });
-          notifyOnce(`outer:${reason}:${capturedInputKey ?? currentInputKey()}:${operation.phase}:${error?.code ?? error?.name ?? 'failed'}`, { kind: didCommit ? 'warning' : 'error', text: `千千结自动记忆${didCommit ? '部分完成' : '未完成'}：已新增摘要 ${processed} 楼、补齐人物状态 ${cseProcessed} 楼；${lastAutoRun.message} 当前未完成摘要楼数无法可靠确认；相同内容不会自动重试，请在记忆管理中点击继续。` });
+          rememberAutomationFailure(reachable, { message: lastAutoRun.message, code: diagnostic.code ?? 'V3_AUTO_MEMORY_FAILED', name: diagnostic.name, phase: operation.phase, prepareStep: diagnostic.prepareStep, detail: diagnostic.detail, location: diagnostic.location });
+          const diagnosticCode = diagnostic.code ?? diagnostic.name ?? 'V3_AUTO_MEMORY_FAILED';
+          logger?.warn?.('[qianqianjie] V3 automatic memory failed', { code: diagnosticCode });
+          notifyOnce(`outer:${reason}:${capturedInputKey ?? currentInputKey()}:${operation.phase}:${diagnosticCode}`, { kind: didCommit ? 'warning' : 'error', text: `千千结自动记忆${didCommit ? '部分完成' : '未完成'}：已新增摘要 ${processed} 楼、补齐人物状态 ${cseProcessed} 楼；${lastAutoRun.message} 当前未完成摘要楼数无法可靠确认；相同内容不会自动重试，请在记忆管理中点击继续。` });
           notify();
         }
         return getState();

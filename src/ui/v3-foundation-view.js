@@ -107,6 +107,8 @@ const DIAGNOSTIC_REVIEW_REASON = new Set(['missingRoot', 'indexNeedsReseal', 'st
 const DIAGNOSTIC_MARKER_STATUS = new Set(['none', 'valid', 'foreign', 'invalid']);
 const DIAGNOSTIC_BINDING_ISSUE = new Set(['markerConflict', 'duplicateMarker', 'duplicateBinding', 'markerRejected']);
 const STANDARD_ERROR_NAMES = new Set(['Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError', 'AggregateError', 'AbortError', 'DOMException', 'TimeoutError']);
+const DIAGNOSTIC_PREPARE_STEP = new Set(['synchronizing', 'snapshotClone', 'sourceSelection', 'sourceSanitization', 'timeSources', 'identityDirectory', 'qianshiCandidates', 'extractorEnvelope', 'dependencySnapshot', 'rootCheck', 'extractorHandoff']);
+const AUTOMATION_DETAILS = new Set(['Graphology 检测到重复图边。', '结构化复制失败。', '类型检查失败。', '插件内部错误码已记录。', '未分类错误。']);
 const enumDiagnostic = (value, allowed) => allowed.has(value) ? value : 'unknown';
 const booleanDiagnostic = value => typeof value === 'boolean' ? value : 'unknown';
 const countDiagnostic = value => Number.isSafeInteger(value) && value >= 0 ? value : 'unknown';
@@ -143,6 +145,25 @@ function errorDiagnostic(value, sourceKnown = true) {
     if (Number.isSafeInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599) result.httpStatus = httpStatus;
   }
   return result;
+}
+function automationErrorDiagnostic(value, sourceKnown = true) {
+  const result = errorDiagnostic(value, sourceKnown);
+  if (result.present !== true) return result;
+  const safeName = typeof value?.name === 'string' && /^[A-Za-z][A-Za-z0-9]{0,79}$/u.test(value.name) ? value.name : null;
+  const safeCode = Number.isSafeInteger(value?.code)
+    ? value.code
+    : typeof value?.code === 'string' && /^(?:(?:QQJ|V3|CHAT_SESSION|QIANSHI)_[A-Z0-9_]{1,80}|BACKEND_TIMEOUT)$/u.test(value.code) ? value.code : null;
+  const safeLocation = typeof value?.location === 'string' && /^(?:src\/[A-Za-z0-9_./-]+\.js|index\.js|dist\/qqj-app\.js):[1-9]\d{0,6}:[1-9]\d{0,6}$/u.test(value.location) ? value.location : null;
+  const failedAt = typeof value?.lastFailedAt === 'string' && Number.isFinite(Date.parse(value.lastFailedAt)) ? value.lastFailedAt.slice(0, 80) : null;
+  return {
+    ...result,
+    name: safeName,
+    code: safeCode,
+    prepareStep: value?.prepareStep == null ? null : enumDiagnostic(value.prepareStep, DIAGNOSTIC_PREPARE_STEP),
+    detail: AUTOMATION_DETAILS.has(value?.detail) ? value.detail : null,
+    location: safeLocation,
+    lastFailedAt: failedAt,
+  };
 }
 const diagnosticVersion = value => typeof value === 'string' && /^[0-9A-Za-z][0-9A-Za-z.-]{0,39}$/.test(value) ? value : 'unknown';
 const splitPeople = value => [...new Set(String(value ?? '').split(/[、,，\n]/u).map(item => item.trim()).filter(Boolean))];
@@ -355,7 +376,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const memoryKnown = memory !== null, identityKnown = identity !== null, recallKnown = recall !== null, managementKnown = management !== null;
     const deleting = management?.status === 'deleting', deletePending = management?.status === 'failed';
     return {
-      formatVersion: 1,
+      formatVersion: 2,
       pluginVersion: diagnosticVersion(pluginVersion),
       capturedAt: new Date().toISOString(),
       backend: readDiagnosticState(backendDiagnosticProvider),
@@ -386,7 +407,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         activeAutoMemory: memoryKnown ? operationDiagnostic(memory.activeAutoMemory) : { present: 'unknown', phase: 'unknown' },
         syncError: errorDiagnostic(memory?.memorySyncError, memoryKnown),
         lastExtractorError: errorDiagnostic(memory?.lastExtractorError, memoryKnown),
-        lastAutomationError: errorDiagnostic(memory?.lastAutomationError, memoryKnown),
+        lastAutomationError: automationErrorDiagnostic(memory?.lastAutomationError, memoryKnown),
       },
       cse: {
         active: memoryKnown ? operationDiagnostic(memory.activeCse) : { present: 'unknown', phase: 'unknown' },

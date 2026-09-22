@@ -68,6 +68,7 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
   const entityById = new Map(directory.map(entry => [entry.entityId, entry]));
   const events = [], relations = [], discardedOrderRelations = [], danglingRelationIds = [], danglingContinuationIds = [], degradedFloorIds = new Set();
   const eventById = new Map();
+  const relationById = new Map();
   const matterEvents = new Map();
   const addNode = (id, attributes) => { if (!graph.hasNode(id)) graph.addNode(id, attributes); };
   for (const { floor, memory } of activeMemories(reachable)) {
@@ -106,17 +107,24 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
       if (relation.type === 'progress' && (!fromEvent.matterId || fromEvent.matterId !== toEvent.matterId || !toEvent.updatesMatter)) {
         danglingRelationIds.push(relation.id); degradedFloorIds.add(memory.floorId); continue;
       }
-      const value = frozen({ ...structuredClone(relation) });
-      relations.push(value);
-      graph.addDirectedEdgeWithKey(`relation:${relation.id}`, eventNode(relation.fromEventId), eventNode(relation.toEventId), { type: relation.type, certainty: relation.certainty });
-      if (relation.type === 'progress' && !progressGraph.hasDirectedEdge(eventNode(relation.fromEventId), eventNode(relation.toEventId))) {
-        progressGraph.addDirectedEdgeWithKey(`progress:${relation.id}`, eventNode(relation.fromEventId), eventNode(relation.toEventId), { relationId: relation.id });
+      const previous = relationById.get(relation.id);
+      if (previous && (previous.type !== relation.type || previous.fromEventId !== relation.fromEventId || previous.toEventId !== relation.toEventId)) {
+        throw qianshiError('QIANSHI_RELATION_ID_CONFLICT', 'relations');
       }
-      if (relation.type === 'before') {
-        const from = eventNode(relation.fromEventId), to = eventNode(relation.toEventId);
-        if (!orderGraph.hasDirectedEdge(from, to) && !willCreateCycle(orderGraph, from, to)) orderGraph.addDirectedEdgeWithKey(`order:${relation.id}`, from, to, { relationId: relation.id });
-        else discardedOrderRelations.push(relation.id);
-      }
+      relationById.set(relation.id, relation);
+    }
+  }
+  for (const relation of relationById.values()) {
+    const value = frozen({ ...structuredClone(relation) });
+    relations.push(value);
+    graph.addDirectedEdgeWithKey(`relation:${relation.id}`, eventNode(relation.fromEventId), eventNode(relation.toEventId), { type: relation.type, certainty: relation.certainty });
+    if (relation.type === 'progress' && !progressGraph.hasDirectedEdge(eventNode(relation.fromEventId), eventNode(relation.toEventId))) {
+      progressGraph.addDirectedEdgeWithKey(`progress:${relation.id}`, eventNode(relation.fromEventId), eventNode(relation.toEventId), { relationId: relation.id });
+    }
+    if (relation.type === 'before') {
+      const from = eventNode(relation.fromEventId), to = eventNode(relation.toEventId);
+      if (!orderGraph.hasDirectedEdge(from, to) && !willCreateCycle(orderGraph, from, to)) orderGraph.addDirectedEdgeWithKey(`order:${relation.id}`, from, to, { relationId: relation.id });
+      else discardedOrderRelations.push(relation.id);
     }
   }
   const timeGroup = value => Number.isInteger(value?.day) ? 'absolute'

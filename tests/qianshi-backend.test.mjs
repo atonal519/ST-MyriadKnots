@@ -4,6 +4,7 @@ import { compileQianshiDelta, prepareQianshiCandidates, projectQianshiGraph, pro
 import { projectTime } from '../src/v3/time-engine.js';
 import { createExtractorEnvelope, runExtractorRequest } from '../src/v3/extractor.js';
 import { createPublicQianshiBridge } from '../src/v3/public-qianshi-bridge.js';
+import { validateQianshiDelta } from '../src/v3/qianshi-schema.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GENERATION = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -25,6 +26,45 @@ test('一次性日常事件保持为独立事件，计划才建立事项', async
   assert.equal(projection.matters.length, 1);
   assert.match(projection.currentProgress.text, /钟楼会面/u);
   assert.doesNotMatch(projection.currentProgress.text, /喝水/u);
+});
+
+test('跨楼重复关系按确定性 ID 只投影一次，后值 certainty 生效且不同关系不丢', async () => {
+  const floors = [1, 2, 3, 4].map((value, index) => floor(`${String(value).repeat(8)}-${String(value).repeat(4)}-4${String(value).repeat(3)}-8${String(value).repeat(3)}-${String(value).repeat(12)}`, index + 1));
+  const first = await compileQianshiDelta({ floor: floors[0], now: NOW, packet: { qianshi: { events: [
+    { key: 'a', title: '事项甲', description: '事项甲', status: 'planned', matter: true },
+    { key: 'b', title: '事项乙', description: '事项乙', status: 'planned', matter: true },
+  ], order: [] } } });
+  const [a, b] = first.events;
+  const relationId = '55555555-5555-4555-8555-555555555555';
+  const otherRelationId = '66666666-6666-4666-8666-666666666666';
+  const base = (source, event, relations) => validateQianshiDelta({ schemaVersion: 1, status: 'ready', reason: null, compiledAt: NOW,
+    candidateStats: { count: 0, characters: 0 }, events: [event], relations }, { floorId: source.id });
+  const event = (source, id, title) => ({ id, matterId: null, updatesMatter: false, title, description: title, status: 'occurred', storyTime: null, scheduledTime: null, people: [], object: null, sourceFloorId: source.id, continuesFromEventIds: [] });
+  const repeatedStrong = { id: relationId, type: 'before', fromEventId: a.id, toEventId: b.id, certainty: 'strong' };
+  const repeatedExplicit = { ...repeatedStrong, certainty: 'explicit' };
+  const distinct = { id: otherRelationId, type: 'before', fromEventId: b.id, toEventId: a.id, certainty: 'explicit' };
+  const deltas = [first,
+    base(floors[1], event(floors[1], '77777777-7777-4777-8777-777777777777', '旁支一'), [repeatedStrong]),
+    base(floors[2], event(floors[2], '88888888-8888-4888-8888-888888888888', '旁支二'), [repeatedExplicit]),
+    base(floors[3], event(floors[3], '99999999-9999-4999-8999-999999999999', '旁支三'), [distinct])];
+  const projection = projectQianshiGraph({ floors, floorMemories: deltas.map((delta, index) => memory(`aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa${index}`, floors[index], delta)), entities: [] });
+  assert.deepEqual(projection.relations.map(item => [item.id, item.certainty]), [[relationId, 'explicit'], [otherRelationId, 'explicit']]);
+  assert.equal(projection.graph.filterEdges((_edge, attributes) => attributes.type === 'before').length, 2);
+
+  const conflicting = { ...repeatedExplicit, fromEventId: b.id, toEventId: a.id };
+  assert.throws(() => projectQianshiGraph({ floors: floors.slice(0, 3), floorMemories: [first,
+    base(floors[1], event(floors[1], '77777777-7777-4777-8777-777777777777', '旁支一'), [repeatedStrong]),
+    base(floors[2], event(floors[2], '88888888-8888-4888-8888-888888888888', '旁支二'), [conflicting]),
+  ].map((delta, index) => memory(`bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb${index}`, floors[index], delta)), entities: [] }), error => error?.code === 'QIANSHI_RELATION_ID_CONFLICT');
+
+  const missing = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const dangling = { ...repeatedStrong, toEventId: missing };
+  const damaged = projectQianshiGraph({ floors: floors.slice(0, 3), floorMemories: [first,
+    base(floors[1], event(floors[1], '77777777-7777-4777-8777-777777777777', '旁支一'), [dangling]),
+    base(floors[2], event(floors[2], '88888888-8888-4888-8888-888888888888', '旁支二'), [dangling]),
+  ].map((delta, index) => memory(`cccccccc-cccc-4ccc-8ccc-ccccccccccc${index}`, floors[index], delta)), entities: [] });
+  assert.deepEqual(damaged.diagnostics.degradedFloorIds, [floors[1].id, floors[2].id], '重复悬空关系仍要给每个来源楼记录降级');
+  assert.deepEqual(damaged.diagnostics.danglingRelationIds, [relationId, relationId]);
 });
 
 test('倒叙补证归入同一事项但不推进当前状态，progress 图不沿 before 串入其他事项', async () => {
