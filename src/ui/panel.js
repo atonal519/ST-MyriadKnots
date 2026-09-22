@@ -35,6 +35,7 @@ export function createPanel({
   apiTools,
   v3FoundationView,
   peopleProfilesView,
+  storageManagementView,
   sourcePermissionView,
   onPluginEnabledChange,
   onStoryClockChange,
@@ -54,6 +55,9 @@ export function createPanel({
   }
   if (!peopleProfilesView || ['mount', 'activate', 'deactivate'].some(name => typeof peopleProfilesView[name] !== 'function')) {
     throw new TypeError('peopleProfilesView 无效');
+  }
+  if (!storageManagementView || ['mount', 'activate', 'deactivate'].some(name => typeof storageManagementView[name] !== 'function')) {
+    throw new TypeError('storageManagementView 无效');
   }
   const host = documentRef.createElement('div');
   host.id = 'qqj-panel-host';
@@ -149,6 +153,7 @@ export function createPanel({
   const unmountContent = () => {
     v3FoundationView.deactivate();
     peopleProfilesView.deactivate();
+    storageManagementView.deactivate();
     view.replaceChildren();
     mountedContentView = null;
     settingsManagementError = null;
@@ -280,7 +285,17 @@ export function createPanel({
     generalBody.append(prompts.node, appearanceSettings.node);
     page.append(general);
 
-    const { drawer: memoryGroup, body: memoryBody } = groupOf('memory', '记忆设置');
+    let storageGroup;
+    const storageOpen = settingsDrawerState.isOpen('storage', false);
+    const syncStorageActivation = () => {
+      if (memoryGroup.open && storageGroup?.open) void storageManagementView.activate();
+      else storageManagementView.deactivate();
+    };
+    const { drawer: memoryGroup, body: memoryBody } = createSettingsDrawer({
+      documentRef, title: '记忆设置', level: 'group', id: 'qqj-settings-group-memory',
+      open: settingsDrawerState.isOpen('memory', false),
+      onToggle: open => { settingsDrawerState.set('memory', open); syncStorageActivation(); },
+    });
     const timeToggle = element('label', 'setting-switch');
     timeToggle.id = 'qqj-settings-time';
     const timeInput = element('input'); timeInput.type = 'checkbox'; timeInput.checked = settings.get().timeEvolutionEnabled === true;
@@ -332,7 +347,13 @@ export function createPanel({
     };
     autoHideInput.addEventListener('change', () => { void applyAutoHide({ autoHideEnabled: autoHideInput.checked }); });
     keepInput.addEventListener('change', () => { void applyAutoHide({ autoHideKeepAiCount: Number(keepInput.value) }); });
-    memoryBody.append(autoHideToggle, keepRow, autoHideResult);
+    const storageDrawer = createSettingsDrawer({
+      documentRef, title: '存储管理', level: 'sub', id: 'qqj-settings-sub-storage', open: storageOpen,
+      onToggle: open => { settingsDrawerState.set('storage', open); syncStorageActivation(); },
+    });
+    storageGroup = storageDrawer.drawer;
+    storageManagementView.mount(storageDrawer.body);
+    memoryBody.append(autoHideToggle, keepRow, autoHideResult, storageGroup);
     page.append(memoryGroup);
 
     // 当前聊天的记忆操作紧跟通用设置，避免与总开关混成同一层级。
@@ -366,6 +387,7 @@ export function createPanel({
     v3FoundationView.setPage?.('management');
     view.append(page);
     if (enabled) void activateManagement();
+    syncStorageActivation();
     restoreScroll('settings');
     if (focusSources) worldbook?.scrollIntoView?.({ block: 'start' });
   }
@@ -388,6 +410,7 @@ export function createPanel({
     activationEpoch += 1;
     v3FoundationView.deactivate();
     peopleProfilesView.deactivate();
+    storageManagementView.deactivate();
     geometry.cancelGesture();
     swipeGesture = null;
     scrollDiagnostics.stop();

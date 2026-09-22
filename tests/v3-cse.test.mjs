@@ -870,9 +870,9 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.equal(compiled.delta.subjectSnapshots[0].situational[0].reason, '正文明确写出甲亲耳听见并记住');
   assert.equal(compiled.delta.source.promptVersion, CSE_PROMPT_VERSION);
   assert.equal(compiled.delta.source.compilerVersion, CSE_COMPILER_VERSION);
-  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-19');
+  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-20');
   assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-11');
-  assert.match(CSE_SYSTEM_PROMPT, /单次情绪、动作或台词若有值得保留的当下影响，默认只支持 Situational/);
+  assert.match(CSE_SYSTEM_PROMPT, /单次事件造成的即时情绪、动作或台词若有值得保留的当下影响，只可进入 Situational/);
   assert.match(CSE_SYSTEM_PROMPT, /人物被提及不等于本人在场/);
   assert.match(CSE_SYSTEM_PROMPT, /这条主要回答人物现在怎样、处境如何，还是此刻怎样对待某人/);
   assert.match(CSE_SYSTEM_PROMPT, /另一人只是背景、原因或事件参与者，还是这项态度或相处反应的明确对象/);
@@ -889,6 +889,14 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.match(CSE_SYSTEM_PROMPT, /previousState 按 subject 分列各人的 ownState.*不代表其他人物已经知道它/s);
   assert.match(CSE_SYSTEM_PROMPT, /直接输出的 adaptive、situational 数组表示该类在本楼结束时的完整结果/);
   assert.match(CSE_SYSTEM_PROMPT, /situational 中仍需持续关注者保留，已结束或仅剩历史流水者按上述规则移除或提炼/);
+  assert.match(CSE_SYSTEM_PROMPT, /同一楼、同一连续事件链中的多个动作、台词或多个 quote 始终只算一次事件证据/);
+  assert.match(CSE_SYSTEM_PROMPT, /单次事件造成的即时情绪、动作或台词.*只可进入 Situational.*不得把它改写成“当 X 时总会\/会……”之类长期条件模式/s);
+  assert.match(CSE_SYSTEM_PROMPT, /新增 Adaptive 只能由明确作者设定、明确作者纠正，或正文明确回顾并证实多个彼此独立的既往事件形成重复模式/);
+  assert.match(CSE_SYSTEM_PROMPT, /不得拿 previousState、旧状态的 reason.*补足独立证据/s);
+  assert.match(CSE_SYSTEM_PROMPT, /已发送或已收到消息、已拍到照片、已完成部署、已达成一次行动、已得知一条信息等已经完成的过程默认交给摘要/);
+  assert.match(CSE_SYSTEM_PROMPT, /若确有未解决后果，只写仍在生效的后果，不保留过程流水/);
+  assert.match(CSE_SYSTEM_PROMPT, /每次输出某人物的 situational 完整列表时，必须同时清理 previousState 中已经结束、已被替代或只剩历史意义的条目/);
+  assert.match(CSE_SYSTEM_PROMPT, /这些过程退出当前列表不需要正文逐条宣布“结束”/);
   assert.match(CSE_SYSTEM_PROMPT, /无足够依据更新整个类别时省略该类别/);
   assert.match(CSE_SYSTEM_PROMPT, /合并身份后同一个人的有效状态.*不要把合并前的旧名称或旧身份另算作另一人/s);
   assert.match(CSE_SYSTEM_PROMPT, /adaptive review 的 previousText 与 toward 必须按上文规则精确指向旧项/);
@@ -997,6 +1005,9 @@ test('生产 CSE 请求 seam 固定样例可并存自身无对象与行为关系
   assert.doesNotMatch(sentSystemPrompt, /你是“千千结”的人物状态理解器/);
   assert.match(sentSystemPrompt, /这条主要回答人物现在怎样、处境如何，还是此刻怎样对待某人/);
   assert.match(sentSystemPrompt, /关系反应可以通过明确指向对方的言语和行为表现/);
+  assert.match(sentSystemPrompt, /同一楼、同一连续事件链中的多个动作、台词或多个 quote 始终只算一次事件证据/);
+  assert.match(sentSystemPrompt, /新增 Adaptive 只能由明确作者设定、明确作者纠正，或正文明确回顾并证实多个彼此独立的既往事件形成重复模式/);
+  assert.match(sentSystemPrompt, /每次输出某人物的 situational 完整列表时，必须同时清理 previousState 中已经结束、已被替代或只剩历史意义的条目/);
   assert.deepEqual(result.delta.subjectSnapshots[0].situational.map(item => [item.text, item.towardEntityId, item.visibility]), [
     ['困倦放松，正在入睡', null, 'private'],
     ['拒绝乙触碰', B, 'observable'],

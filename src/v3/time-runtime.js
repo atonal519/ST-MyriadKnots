@@ -4,7 +4,7 @@ import { projectRecallSource } from './recall-source.js';
 import { sanitizeTaskMetadata } from './safe-metadata.js';
 import { publicErrorMessage } from '../public-error.js';
 import { newIdentityUuid } from '../identity.js';
-import { readTimeBody, timeBodyStart, resolveTimeStart, planTimeBody } from './time-body.js';
+import { readRecentBodyStoryTimes, readTimeBody, timeBodyStart, resolveTimeStart, planTimeBody } from './time-body.js';
 import { ANNUAL_SETTING_SYSTEM_PROMPT, buildAnnualSettingSources, compileAnnualSettingResponse, projectAnnualSettings } from './time-annual-setting.js';
 
 export function createTimeStore({ client }) {
@@ -605,6 +605,20 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       return null;
     }
   }
+  async function currentStoryContext(source) {
+    if (source?.status !== 'ready' || identity().chatId !== source.chatId) return null;
+    const cached = getReachable();
+    if (!cached?.root || cached.root.chatId !== source.chatId || cached.root.narrativeGeneration !== source.narrativeGeneration
+      || cached.root.headCheckpointId !== source.headCheckpointId) return null;
+    const owner = identity(), host = hostAdapter.snapshot();
+    if (!owner.chatId || owner.hostChatId && owner.hostChatId !== host.chatId
+      || host.context?.chatMetadata?.qianqianjie?.chatId && host.context.chatMetadata.qianqianjie.chatId !== owner.chatId) return null;
+    const reliable = readRecentBodyStoryTimes(host, { storyClockReferenceTags: storyClockReferenceTags(), limit: 32 });
+    const currentBody = reliable.at(-1);
+    if (!currentBody) return null;
+    return { currentTime: currentBody.observationTime,
+      recentStoryTimes: reliable.slice(-32).map(item => item.observationTime) };
+  }
   function bind({ eventSource, eventTypes, foundationRuntime } = {}) {
     const event = eventTypes?.CHAT_CHANGED;
     if (event && eventSource?.on) eventSource.on(event, invalidate);
@@ -616,6 +630,6 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     foundationRuntime?.subscribe?.(state => { if (['ready', 'needsReseal'].includes(state?.status)) void runBatch(); });
     void runBatch();
   }
-  return Object.freeze({ runBatch, prepareHistoryPlan, organize, authorizeHistory, editItem, editItems, refreshStatus, recallProjection, getState, invalidate, stop, bind,
+  return Object.freeze({ runBatch, prepareHistoryPlan, organize, authorizeHistory, editItem, editItems, refreshStatus, recallProjection, currentStoryContext, getState, invalidate, stop, bind,
     subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

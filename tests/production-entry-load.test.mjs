@@ -132,7 +132,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.3.0');
+  assert.equal(manifest.version, '0.4.0');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
@@ -246,9 +246,12 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let peopleWorkspaceOptions;
   let peopleStoreOptions;
   let publicMemoryBridgeOptions;
+  let publicQianshiBridgeOptions;
   let autoHideOptions;
   let memoryManagementOptions;
   let chatMemoryManagement;
+  let storageManagementOptions;
+  let storageManagement;
   let inlineRendererOptions;
   let hostAdapterOptions;
   const inlineEnabled = [];
@@ -305,6 +308,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/chat-identity.js', { createChatIdentityCoordinator: options => { identityOptions = options; return { prepare: () => options.freshUuid() }; } });
   define('./src/host-context.js', { createHostChatList: options => { hostChatListOptions = options; return productionListHostChats; } });
   define('./src/chat-memory-management.js', { createChatMemoryManagement: options => { memoryManagementOptions = options; chatMemoryManagement = { getState: () => ({ status: 'idle' }), deleteCurrent() {} }; return chatMemoryManagement; } });
+  define('./src/storage-management.js', { createStorageManagement: options => { storageManagementOptions = options; storageManagement = { getState: () => ({ status: 'idle' }), scan() {}, cleanup() {}, setAutoEnabled() {}, subscribe() {}, dispose() {} }; return storageManagement; } });
   define('./src/plugin-lifecycle.js', {
     createPluginLifecycle: options => {
       lifecycleOptions = options;
@@ -335,9 +339,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/v3/chat-branch-inheritance.js', { createChatBranchInitializer: options => { branchInitializerOptions = options; return branchInitializer; } });
   let timeOptions, timeBindOptions;
   const timeBatches = [];
-  const timeRuntime = { runBatch: receipt => { timeBatches.push(receipt); }, recallProjection: async () => null, stop: async () => {}, bind(options) { timeBindOptions = options; } };
+  const timeRuntime = { runBatch: receipt => { timeBatches.push(receipt); }, recallProjection: async () => null, currentStoryContext: async () => null, stop: async () => {}, bind(options) { timeBindOptions = options; } };
   define('./src/v3/time-runtime.js', { createTimeStore: () => ({}), createTimeRuntime: options => { timeOptions = options; return timeRuntime; } });
-  define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() { backgroundStarts.push('memory'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, getState: () => ({}), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
+  define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() { backgroundStarts.push('memory'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, getState: () => ({}), getQianshiRecall: () => ({ text: '' }), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
   define('./src/v3/message-floor-anchor.js', { persistMessageFloorAnchors: persistAnchors });
   define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; v3RecallRuntime = { bind() {}, async setEnabled(value) { runtimeEnables.push(`recall:${value}`); }, async intercept() {}, getState: () => ({}), getPromptSnapshot: () => null }; return v3RecallRuntime; } });
   define('./src/v3/auto-hide.js', { createAutoHideController: options => { autoHideOptions = options; return { applySettings() {}, stop() {}, dispose() {} }; } });
@@ -350,6 +354,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
     createPeopleWorkspaceRuntime: options => { peopleWorkspaceOptions = options; return peopleWorkspaceRuntime; },
   });
   define('./src/v3/public-memory-bridge.js', { installPublicMemoryBridge: options => { publicMemoryBridgeOptions = options; return { bridge: {}, cleanup() {} }; } });
+  define('./src/v3/public-qianshi-bridge.js', { installPublicQianshiBridge: options => { publicQianshiBridgeOptions = options; return { bridge: {}, cleanup() {} }; } });
   define('./src/story-clock.js', { createMyKnotsStoryClockController: () => ({ refresh: () => ({ status: 'closed' }), getState: () => ({ status: 'closed' }), clear() {} }), createStoryClockStatusProjection: ({ controller, labelFor }) => options => ({ ...controller.refresh(options), label: labelFor(controller.getState()) }), extensionStoryClockState: () => ({ active: false, custom: false }) });
 
   const entry = new SourceTextModule(entrySource, { context, identifier: pathToFileURL(resolve(root, 'index.js')).href });
@@ -450,6 +455,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.ok(peopleWorkspaceOptions.session); assert.ok(peopleWorkspaceOptions.foundationRuntime); assert.ok(peopleWorkspaceOptions.memoryRuntime);
   assert.equal(bootstrapOptions.peopleWorkspaceRuntime, peopleWorkspaceRuntime);
   assert.equal(bootstrapOptions.chatMemoryManagement, chatMemoryManagement);
+  assert.equal(bootstrapOptions.storageManagement, storageManagement);
+  assert.equal(storageManagementOptions.client, backendClient);
+  assert.equal(storageManagementOptions.memoryRuntime, v3MemoryRuntime);
   assert.deepEqual(bootstrapOptions.sessionStateProvider(), sessionState);
   const claimsBeforeUiWait = hostUuidCalls;
   assert.equal(await bootstrapOptions.prepareSession(), hostUuid);
@@ -467,11 +475,13 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(publicMemoryBridgeOptions.memoryRuntime, v3MemoryRuntime, '结构化快照必须复用生产 memory runtime');
   assert.equal(publicMemoryBridgeOptions.peopleRuntime, peopleWorkspaceRuntime, '结构化快照必须复用生产 people runtime');
   assert.equal(publicMemoryBridgeOptions.recallRuntime, v3RecallRuntime, '轻量 prompt 快照必须接入生产 recall runtime');
+  assert.equal(publicQianshiBridgeOptions.memoryRuntime, v3MemoryRuntime, '千事公共桥必须复用生产 memory runtime');
   assert.equal(typeof publicMemoryBridgeOptions.isEnabled, 'function');
   assert.equal(typeof publicMemoryBridgeOptions.sanitizerOptions, 'function');
   assert.ok(v3RecallOptions.store);
   assert.ok(v3RecallOptions.hostAdapter);
   assert.equal(v3RecallOptions.generateUtilityTask, recallTask);
+  assert.deepEqual(await v3RecallOptions.qianshiProgressProvider(), { text: '' }, '召回必须从同一 memory runtime 读取千事进度');
   assert.equal(Object.hasOwn(v3RecallOptions, 'processingPrompt'), false, '召回链不得接入破限提示词');
   assert.equal(v3RecallOptions.pluginVersion, '0.1.9-test', '生产回执版本必须由 manifest.version 单一注入');
   assert.ok(autoHideOptions.hostAdapter); assert.equal(autoHideOptions.memoryRuntime, v3MemoryRuntime);
@@ -535,7 +545,7 @@ test('生产 bundle 的原生/Luker × Text/Chat 入口动态调用同一 recall
     const recallCalls = result.promptCalls.filter(call => call[0] === 'qqj_v3_recalled_context');
     const clockCalls = result.promptCalls.filter(call => call[0] === 'myknots_story_clock');
     assert.equal(recallCalls.length, 4, `${hostGlobalName}/${mainApi}`);
-    for (const call of recallCalls) assert.deepEqual(call, ['qqj_v3_recalled_context', '', 17, 1, false, 29]);
+    for (const call of recallCalls) assert.deepEqual(call, ['qqj_v3_recalled_context', '', 17, 2, false, 29]);
     assert.deepEqual(clockCalls, [['myknots_story_clock', '']], `${hostGlobalName}/${mainApi}`);
   }
 });

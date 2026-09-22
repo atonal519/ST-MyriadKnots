@@ -77,6 +77,21 @@ test('自动隐藏默认关闭并保留最近 3 个 AI 楼，数量只接受合�
   assert.equal(settings.get().autoHideKeepAiCount, 3);
 });
 
+test('存储自动清理默认关闭，只保存合法的逐聊天稳定楼进度', () => {
+  const extensionSettings = {};
+  const { settings, saves } = setup(extensionSettings);
+  assert.equal(settings.get().storageAutoCleanupEnabled, false);
+  assert.deepEqual(settings.get().storageAutoCleanupProgress, {});
+  settings.update({ storageAutoCleanupEnabled: true, storageAutoCleanupProgress: {
+    '123e4567-e89b-42d3-a456-426614174000': 20,
+    invalid: 10,
+    '223e4567-e89b-42d3-a456-426614174000': -1,
+  } });
+  assert.equal(settings.get().storageAutoCleanupEnabled, true);
+  assert.deepEqual(settings.get().storageAutoCleanupProgress, { '123e4567-e89b-42d3-a456-426614174000': 20 });
+  assert.equal(saves(), 1);
+});
+
 test('时间戳功能默认开启，参考标签独立规范化，五类自定义提示词保留用户原文', () => {
   const extensionSettings = {};
   const { settings } = setup(extensionSettings);
@@ -225,7 +240,7 @@ test('只双向共享 schedule-planner 预设池；千千结主配置与两边�
   assert.equal(extensionSettings['schedule-planner'].apiUrl, 'https://main.old/v1'); assert.equal(extensionSettings['schedule-planner'].apiPresetActiveId, 'keep'); assert.equal(extensionSettings['schedule-planner'].utilityPresetId, 'target');
   assert.equal(settings.mainConfig().url, 'https://qqj.new/v1'); assert.equal(settings.summaryPresetId(), 'keep');
 
-  const source = await readFile('/home/admin/sillytavern/public/scripts/extensions/third-party/ST-SevenDaysCal/runtime/settings.js', 'utf8');
+  const source = await readFile(new URL('../../ST-SevenDaysCal/runtime/settings.js', import.meta.url), 'utf8');
   globalThis.__QQJ_SEVEN_TEST_SETTINGS__ = extensionSettings; globalThis.__QQJ_SEVEN_TEST_SAVES__ = 0;
   const executable = source
     .replace("import { extension_settings } from '../../../../extensions.js';", 'const extension_settings = globalThis.__QQJ_SEVEN_TEST_SETTINGS__;')

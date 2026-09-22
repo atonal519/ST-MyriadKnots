@@ -14,6 +14,7 @@ import { createChatSession } from './src/chat-session.js';
 import { createChatIdentityCoordinator } from './src/chat-identity.js';
 import { createHostChatList } from './src/host-context.js';
 import { createChatMemoryManagement } from './src/chat-memory-management.js';
+import { createStorageManagement } from './src/storage-management.js';
 import { createPluginLifecycle } from './src/plugin-lifecycle.js';
 import { createSourcePermissionController } from './src/source-permission.js';
 import { createHostAdapter } from './src/v3/host-adapter.js';
@@ -28,6 +29,7 @@ import { createAutoHideController } from './src/v3/auto-hide.js';
 import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime } from './src/v3/people-workspace.js';
 import { createChatBranchInitializer } from './src/v3/chat-branch-inheritance.js';
 import { installPublicMemoryBridge } from './src/v3/public-memory-bridge.js';
+import { installPublicQianshiBridge } from './src/v3/public-qianshi-bridge.js';
 import { createMyKnotsStoryClockController, createStoryClockStatusProjection, extensionStoryClockState } from './src/story-clock.js';
 import { createInlineRenderer } from './src/ui/inline-renderer.js';
 
@@ -185,6 +187,7 @@ v3RecallRuntime = createV3RecallRuntime({
   sanitizerOptions,
   identityProjectionProvider,
   timeProjectionProvider: source => timeRuntime.recallProjection(source),
+  qianshiProgressProvider: async (source, context) => v3MemoryRuntime.getQianshiRecall({ ...context, ...(await timeRuntime.currentStoryContext(source) ?? {}) }),
   pluginVersion,
 });
 peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
@@ -221,6 +224,19 @@ const chatMemoryManagement = createChatMemoryManagement({
   autoHideController,
   isMainGenerationActive: isGenerating,
 });
+const storageManagement = createStorageManagement({
+  client: backendClient,
+  store: foundationStore,
+  session,
+  hostAdapter,
+  settings,
+  memoryRuntime: v3MemoryRuntime,
+  activitySources: [foundationRuntime, v3RecallRuntime, peopleWorkspaceRuntime, timeRuntime, chatMemoryManagement],
+  isBusy: () => {
+    const memory = v3MemoryRuntime.getState(), management = chatMemoryManagement.getState();
+    return Boolean(management.workBusy || management.status === 'deleting' || timeRuntime.getState().active || memory.qianshiHistoryActive);
+  },
+});
 const publicMemoryBridgeMount = installPublicMemoryBridge({
   session,
   store: foundationStore,
@@ -233,9 +249,12 @@ const publicMemoryBridgeMount = installPublicMemoryBridge({
   sanitizerOptions,
   identityProjectionProvider,
 });
+const publicQianshiBridgeMount = installPublicQianshiBridge({ memoryRuntime: v3MemoryRuntime });
 globalThis.addEventListener?.('beforeunload', publicMemoryBridgeMount.cleanup, { once: true });
+globalThis.addEventListener?.('beforeunload', publicQianshiBridgeMount.cleanup, { once: true });
 globalThis.addEventListener?.('beforeunload', autoHideController.dispose, { once: true });
 globalThis.addEventListener?.('beforeunload', inlineRenderer.destroy, { once: true });
+globalThis.addEventListener?.('beforeunload', storageManagement.dispose, { once: true });
 globalThis.qqj_v3_recall_interceptor = (coreChat, contextSize, abort, type) => v3RecallRuntime.intercept(coreChat, contextSize, abort, type);
 const setAllEnabled = async enabled => {
   refreshStoryClock({ announce: true });
@@ -276,6 +295,7 @@ ui = bootstrap({
   v3RecallRuntime,
   peopleWorkspaceRuntime,
   chatMemoryManagement,
+  storageManagement,
   sessionStateProvider: () => session.getState(),
   prepareSession: () => session.prepare(),
   backendDiagnosticProvider: () => backendClient.getDiagnosticSnapshot(),

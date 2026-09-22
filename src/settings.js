@@ -12,6 +12,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   autoMemoryBatchSize: 1,
   autoHideEnabled: false,
   autoHideKeepAiCount: 3,
+  storageAutoCleanupEnabled: false,
+  storageAutoCleanupProgress: {},
   apiMode: 'auto',
   selectedSevenDaysPresetId: '',
   summaryPresetId: '',
@@ -44,6 +46,9 @@ const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 const text = value => typeof value === 'string' ? value : '';
 const APPEARANCE_THEMES = new Set(['auto', 'day', 'night']);
 const normalizeScale = value => Math.min(1.5, Math.max(0.75, Number.isFinite(Number(value)) ? Number(value) : 1));
+const normalizeStorageCleanupProgress = value => value && typeof value === 'object' && !Array.isArray(value)
+  ? Object.fromEntries(Object.entries(value).filter(([chatId, count]) => /^[0-9a-f-]{36}$/i.test(chatId) && Number.isSafeInteger(count) && count >= 0))
+  : {};
 
 export function normalizeAutoMemoryBatchSize(value) {
   return 1;
@@ -133,6 +138,8 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     settings.timeEvolutionEnabled = settings.timeEvolutionEnabled === true;
     settings.autoHideEnabled = settings.autoHideEnabled === true;
     settings.autoHideKeepAiCount = normalizeAutoHideKeepAiCount(settings.autoHideKeepAiCount);
+    settings.storageAutoCleanupEnabled = settings.storageAutoCleanupEnabled === true;
+    settings.storageAutoCleanupProgress = normalizeStorageCleanupProgress(settings.storageAutoCleanupProgress);
     settings.storyClockReferenceTags = normalizeStoryClockReferenceTags(settings.storyClockReferenceTags).join(',');
     return settings;
   };
@@ -150,6 +157,8 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'autoMemoryBatchSize')) settings.autoMemoryBatchSize = normalizeAutoMemoryBatchSize(patch.autoMemoryBatchSize);
     if (own(patch, 'autoHideEnabled')) settings.autoHideEnabled = patch.autoHideEnabled === true;
     if (own(patch, 'autoHideKeepAiCount')) settings.autoHideKeepAiCount = normalizeAutoHideKeepAiCount(patch.autoHideKeepAiCount);
+    if (own(patch, 'storageAutoCleanupEnabled')) settings.storageAutoCleanupEnabled = patch.storageAutoCleanupEnabled === true;
+    if (own(patch, 'storageAutoCleanupProgress')) settings.storageAutoCleanupProgress = normalizeStorageCleanupProgress(patch.storageAutoCleanupProgress);
     if (own(patch, 'apiMode')) settings.apiMode = API_MODES.has(patch.apiMode) ? patch.apiMode : 'auto';
     if (own(patch, 'selectedSevenDaysPresetId')) settings.selectedSevenDaysPresetId = text(patch.selectedSevenDaysPresetId).trim();
     if (own(patch, 'summaryPresetId')) settings.summaryPresetId = text(patch.summaryPresetId).trim();

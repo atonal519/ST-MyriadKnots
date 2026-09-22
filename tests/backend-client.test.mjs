@@ -13,6 +13,19 @@ test('backend GET 超时会退出且不自动重试', async () => {
   assert.equal(calls, 1);
 });
 
+test('backend collection list 使用独立长超时，普通请求仍使用默认短超时', async () => {
+  let calls = 0;
+  const fetchImpl = (_url, { signal }) => new Promise((resolve, reject) => {
+    calls += 1;
+    const timer = setTimeout(() => resolve({ ok: true, status: 200, json: async () => [] }), 20);
+    signal.addEventListener('abort', () => { clearTimeout(timer); reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); }, { once: true });
+  });
+  const client = createBackendClient({ fetchImpl, timeoutMs: 5, listTimeoutMs: 50 });
+  await assert.rejects(client.get('chat-x', 'v3-root'), error => error.code === 'BACKEND_TIMEOUT');
+  assert.deepEqual(await client.list('chat-x'), []);
+  assert.equal(calls, 2);
+});
+
 test('backend 成功响应头之后读取 body 超时仍记为 timeout，不会误报 success 或自动重试', async () => {
   let calls = 0;
   const client = createBackendClient({
@@ -106,7 +119,7 @@ test('backend PUT 可选 signal 传给 fetch，不传时仍兼容', async () => 
   assert.ok(calls[1].signal instanceof AbortSignal);
 });
 
-test('backend list/remove 使用当前 namespace 与精确 revision', async () => {
+test('backend list/remove/permanent remove 使用当前 namespace、独立路径与精确 revision', async () => {
   const calls = [];
   const fetchImpl = async (url, options) => {
     calls.push({ url, options });
@@ -115,10 +128,27 @@ test('backend list/remove 使用当前 namespace 与精确 revision', async () =
   const client = createBackendClient({ fetchImpl, baseUrl: '/api/plugins/bainiaodata/v1', timeoutMs: 50 });
   assert.deepEqual(await client.list('chat/a b'), []);
   await client.remove('chat/a b', 'root/id', 7);
+  await client.removePermanent('chat/a b', 'root/id', 8);
   assert.match(calls[0].url, /\/records\/qianqianjie\/chat%2Fa%20b$/);
   assert.match(calls[1].url, /\/records\/qianqianjie\/chat%2Fa%20b\/root%2Fid$/);
   assert.equal(calls[1].options.method, 'DELETE');
   assert.deepEqual(JSON.parse(calls[1].options.body), { expectedRevision: 7 });
+  assert.match(calls[2].url, /\/records\/qianqianjie\/chat%2Fa%20b\/root%2Fid\/permanent$/);
+  assert.equal(calls[2].options.method, 'DELETE');
+  assert.deepEqual(JSON.parse(calls[2].options.body), { expectedRevision: 8 });
+});
+
+test('backend permanent remove 沿用普通请求超时与 HTTP 错误合同', async () => {
+  const timeoutClient = createBackendClient({
+    timeoutMs: 5,
+    fetchImpl: (_url, { signal }) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true })),
+  });
+  await assert.rejects(timeoutClient.removePermanent('chat-x', 'v3-run-x', 1), error => error.code === 'BACKEND_TIMEOUT');
+
+  let bodyReads = 0;
+  const missingClient = createBackendClient({ fetchImpl: async () => ({ ok: false, status: 404, json: async () => { bodyReads += 1; return {}; } }) });
+  await assert.rejects(missingClient.removePermanent('chat-x', 'v3-run-x', 1), error => error.status === 404);
+  assert.equal(bodyReads, 0);
 });
 
 test('backend 诊断按 client 生命周期统计 records 请求并只暴露固定记录类型', async () => {

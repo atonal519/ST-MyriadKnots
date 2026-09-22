@@ -86,6 +86,11 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
     async activate() { calls.push(['profiles-activate']); return { status: 'ready' }; },
     deactivate() { calls.push(['profiles-deactivate']); },
   };
+  const storageManagementView = {
+    mount(target) { calls.push(['storage-mount', target]); target.replaceChildren(new Node('storage')); },
+    async activate() { calls.push(['storage-activate']); return { status: 'ready' }; },
+    deactivate() { calls.push(['storage-deactivate']); },
+  };
   const values = { pluginEnabled: true, appearanceTheme: 'auto', fabShow: true, autoHideEnabled: false, autoHideKeepAiCount: 3 };
   const updates = [];
   const settings = { isEnabled: () => true, get: () => values, update(value) { Object.assign(values, value); updates.push(value); return value; } };
@@ -100,7 +105,7 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   const memoryRuntime = { subscribe(listener) { memoryListeners.add(listener); return () => memoryListeners.delete(listener); } };
   const autoHideApplies = [];
   let autoHideApplyStatus = null;
-  const panel = entry.namespace.createPanel({ settings, v3FoundationView, timeRuntime, memoryRuntime, peopleProfilesView, documentRef, isSevenDaysLedgerInjectionEnabled: () => ledgerInjectionEnabled, onTimeEvolutionChange: () => { timeChanges += 1; }, navigatorRef: { clipboard: { async writeText(value) { clipboardWrites.push(value); if (clipboardFail) throw new Error('clipboard denied'); } } }, dialog: { setAppearance() {}, confirm(options) { timeConfirms.push(options); dialogActive = true; return new Promise(resolve => { resolveTimeConfirm = result => { dialogActive = false; resolve(result); }; }); }, custom(options) { helpDialog = options; dialogActive = true; return Promise.resolve(true); }, closeAll() { resolveTimeConfirm?.(false); dialogActive = false; }, hasActive: () => dialogActive, cancelTop() { dialogCancels += 1; dialogActive = false; } }, onFabShowChange: value => { fabVisible = value; }, onAutoHideChange: async value => { autoHideApplies.push(value); return autoHideApplyStatus ? { status: autoHideApplyStatus } : undefined; } });
+  const panel = entry.namespace.createPanel({ settings, v3FoundationView, timeRuntime, memoryRuntime, peopleProfilesView, storageManagementView, documentRef, isSevenDaysLedgerInjectionEnabled: () => ledgerInjectionEnabled, onTimeEvolutionChange: () => { timeChanges += 1; }, navigatorRef: { clipboard: { async writeText(value) { clipboardWrites.push(value); if (clipboardFail) throw new Error('clipboard denied'); } } }, dialog: { setAppearance() {}, confirm(options) { timeConfirms.push(options); dialogActive = true; return new Promise(resolve => { resolveTimeConfirm = result => { dialogActive = false; resolve(result); }; }); }, custom(options) { helpDialog = options; dialogActive = true; return Promise.resolve(true); }, closeAll() { resolveTimeConfirm?.(false); dialogActive = false; }, hasActive: () => dialogActive, cancelTop() { dialogCancels += 1; dialogActive = false; } }, onFabShowChange: value => { fabVisible = value; }, onAutoHideChange: async value => { autoHideApplies.push(value); return autoHideApplyStatus ? { status: autoHideApplyStatus } : undefined; } });
 
   await panel.show();
   assert.equal(diagnostics.starts, 1); assert.match(root.innerHTML, /\.body\{[^}]*touch-action:pan-y/);
@@ -115,7 +120,7 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   assert.equal(view.children[0]?.className, 'settings-page', '设置页应真实占据面板内容容器');
   assert.equal(view.children[0]?.children.some(node => node.className === 'master-switch'), true, '设置首开不得被真实 setPage 重绘清掉总开关');
   const settingsGroups = view.children[0]?.children.filter(node => node.tag === 'details');
-  assert.deepEqual(settingsGroups.map(node => node.drawerTitle), ['通用设置', '记忆设置', '教程与配置文件'], '设置页应有三个同级大抽屉');
+  assert.deepEqual(settingsGroups.map(node => node.drawerTitle), ['通用设置', '记忆设置', '教程与配置文件'], '存储管理应收进记忆设置，不再占用顶层抽屉');
   const documentation = settingsGroups[2];
   assert.equal(documentation.open, false); assert.equal(view.children[0].children.at(-1), documentation, '教程与配置文件必须是设置页最后一项');
   const documentationCopy = flatten(documentation).map(node => node.textContent).join('|');
@@ -151,6 +156,20 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   fallback = flatten(rerenderedDocumentation).find(node => node.className === 'v3-diagnostic-fallback');
   assert.match(fallback?.value ?? '', /globalThis\.qqj_v3_public_bridge_v1/, '设置页重绘后保留手动复制文本');
   const memoryControls = settingsGroups[1].children[0].children;
+  const storageDrawer = memoryControls.find(node => node.drawerTitle === '存储管理');
+  assert.equal(storageDrawer?.drawerLevel, 'sub');
+  assert.equal(storageDrawer?.id, 'qqj-settings-sub-storage');
+  const storageActivationsBefore = calls.filter(([kind]) => kind === 'storage-activate').length;
+  storageDrawer.open = true; storageDrawer.fire('toggle');
+  assert.equal(calls.filter(([kind]) => kind === 'storage-activate').length, storageActivationsBefore, '父抽屉收起时子抽屉不得读取清单');
+  settingsGroups[1].open = true; settingsGroups[1].fire('toggle');
+  assert.equal(calls.filter(([kind]) => kind === 'storage-activate').length, storageActivationsBefore + 1);
+  settingsGroups[1].open = false; settingsGroups[1].fire('toggle');
+  assert.equal(calls.at(-1)[0], 'storage-deactivate');
+  settingsGroups[1].open = true; settingsGroups[1].fire('toggle');
+  assert.equal(calls.filter(([kind]) => kind === 'storage-activate').length, storageActivationsBefore + 2);
+  storageDrawer.open = false; storageDrawer.fire('toggle');
+  assert.equal(calls.at(-1)[0], 'storage-deactivate');
   const autoHideInput = memoryControls.find(node => node.tag === 'label' && node.children.some(child => child.textContent === '自动隐藏已记忆旧楼'))?.children.find(node => node.tag === 'input');
   const keepInput = memoryControls.find(node => node.className === 'qqj-auto-hide-row')?.children.find(node => node.tag === 'input');
   assert.equal(autoHideInput?.checked, false); assert.equal(keepInput?.value, '3'); assert.equal(keepInput?.className, 'settings-input settings-num');
@@ -187,6 +206,8 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   assert.match(panelCss, /\.settings-group-body\{[^}]*padding:0 12px 8px 26px/);
   assert.match(panelCss, /\.settings-sub-body\.settings-drawer-list\{gap:0;padding:0 2px\}/);
   assert.match(panelCss, /\.settings-sub>\.settings-sub-summary\{[^}]*min-height:36px;padding:8px 2px/);
+  assert.match(panelCss, /\.qqj-storage-management\{display:grid;gap:9px\}/);
+  assert.doesNotMatch(panelCss, /\.qqj-storage-management\{[^}]*(?:padding|border-top)/);
   autoHideInput.checked = true; autoHideInput.fire('change'); await new Promise(resolve => setImmediate(resolve));
   assert.equal(autoHideApplies.at(-1).enabled, true); assert.equal(autoHideApplies.at(-1).keepAiCount, 3);
   assert.equal(memoryControls.find(node => node.className?.split?.(' ').includes('settings-result'))?.textContent, '已开启；后续按最近 3 个 AI 楼保留，已隐藏楼保持隐藏。');

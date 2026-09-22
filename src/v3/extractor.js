@@ -7,9 +7,10 @@ import { copyFloorVariableReference } from './floor-variable-reference.js';
 import { sanitizeDiagnosticValue, sanitizeTaskMetadata } from './safe-metadata.js';
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey, normalizeIdentityProjection, resolveIdentityEntityId } from './entity-identity.js';
+import { compileQianshiDelta } from './qianshi-domain.js';
 
 export const EXTRACTOR_SCHEMA_VERSION = 3;
-export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-18';
+export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-19';
 export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-3/semantic-compiler-8`;
 const ENTITY_TYPES = ['person', 'group', 'organization', 'place', 'object', 'creature', 'concept', 'unknown'];
 const MENTION_KEY = Object.freeze({ type: 'string' });
@@ -62,6 +63,24 @@ export const EXTRACTOR_RESPONSE_SCHEMA = Object.freeze({
     ] } },
     openLoops: { type: 'array', items: { type: 'object', properties: { description: { type: 'string' }, owners: { type: 'array', items: { type: 'string' } } } } },
     cseSignals: { type: 'array', items: { type: 'object', properties: { subject: { type: 'string' }, object: { type: ['string', 'null'] }, signalType: { type: 'string', enum: ['emotion', 'boundary', 'conflict', 'reconciliation', 'vulnerability', 'trust', 'betrayal', 'repeatedPattern', 'relationDefinition', 'persistentCondition', 'other'] }, description: { type: 'string' } } } },
+    qianshi: { type: 'object', properties: {
+      events: { type: 'array', items: { type: 'object', properties: {
+        key: { type: 'string', description: '本次 qianshi.events 数组内按顺序使用 event-1、event-2 等局部编号，不能填写标题' }, sourceFloorKey: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' },
+        status: { type: 'string', enum: ['planned', 'inProgress', 'completed', 'cancelled', 'occurred', 'unknown'] },
+        storyTime: { type: ['string', 'null'] }, scheduledTime: { type: ['string', 'null'] },
+        people: { type: 'array', items: { type: 'string' } }, object: { type: ['string', 'null'] },
+        matter: { type: 'boolean', description: '只有计划、持续推进或需要跟踪状态的事项实例才为 true' },
+        links: { type: 'array', items: { type: 'object', properties: {
+          candidateKey: { type: 'string', description: '只可复制 payload.qianshiCandidates 中的 candidate-N' },
+          kind: { type: 'string', enum: ['progress', 'context'] },
+        } } },
+      } } },
+      order: { type: 'array', items: { type: 'object', properties: {
+        before: { type: 'string', description: '只可复制本次 qianshi.events[].key 的 event-N，或明确指向单一旧事件的 candidate-N' },
+        after: { type: 'string', description: '只可复制本次 qianshi.events[].key 的 event-N，或明确指向单一旧事件的 candidate-N' },
+        certainty: { type: 'string', enum: ['explicit', 'strong'] },
+      } } },
+    } },
   },
 });
 
@@ -79,7 +98,7 @@ export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
 5. summary 必须是有信息的本楼总结，最多 4000 字符。people、time、locations 也要分别检查并提取：正文有依据时写出，没有依据时可留空；不要为了填字段猜人、猜地点或拿现实日期补故事日期。时间是唯一允许合理推定的例外：本楼没有明确时间锚时，可结合 previousFloorContext、previousStoryClock 与本楼叙事，推定“同日稍后”“次日清晨”等相对时间，或在线索足够时推定合理的具体故事时间；必须标明合适的 kind 与 precision。没有足够线索时可留空或写“时间未明确”。推定时间不能附带正文没有的事件、人物、因果或结果。
 
 【固定输出边界】
-1. 只输出语义，不输出 UUID、记录 ID、楼层指针、哈希、create/update/delete 操作、mentionKey、普通 entityKey 或证据坐标。唯一例外是 people.sameAsEntityKey：只在确认同一身份时逐字复制 payload.knownPeople 本次给出的 catalog-N；不得自造、猜测或输出其他内部键。
+1. 只输出语义，不输出 UUID、记录 ID、楼层指针、哈希、create/update/delete 操作、mentionKey、普通 entityKey 或证据坐标。例外只有三类本次请求局部键：people.sameAsEntityKey 只可逐字复制 payload.knownPeople 中确认同一身份的 catalog-N；qianshi.events[].key 必须按当前 events 数组顺序填写 event-1、event-2 等局部编号，不能填写标题；qianshi.events[].links[].candidateKey 只可逐字复制 payload.qianshiCandidates 中确认同一事项实例的 candidate-N。不得自造、猜测或输出其他内部键。
 2. payload.userIdentity.displayName 非空时，summary 及其他语义描述必须使用这个实际显示名；{{user}} 只可作为 canonicalContent、precedingUserInput 或 aliases 中的输入别名，不得原样写入生成的语义文本。exactQuotes.exactText、承诺原话及证据引文必须逐字照抄相应来源，不得因这条规则改写。原句来自用户输入时，可在相应条目或 exactQuotes 对象中写 source:"precedingUserInput"；来自 AI 正文时可写 source:"canonicalContent"。只提示来源类别，不要输出消息序号或证据坐标。
 3. people 只写人能读懂的姓名、别名和角色。entityKind=individual 表示单人，entityKind=group 表示正文暂时只能整体辨认的多人集合；缺省按 individual 兼容。已知同一身份时优先填写 sameAsEntityKey；否则只可依据同类型的完整姓名或有效别名唯一精确对应，不得用相似、包含或模糊匹配。群体 aliases 只收整体称谓，不能把成员姓名塞成群体别名；成员能分别辨认时分别列 individual，无法辨认时不要编造个体。“别人”“客户”等泛称通常不是稳定人物别名。当正文中的“你”、{{user}} 或用户姓名指向宿主用户时，role 写 user。被 actions、knowledge、informationTransfers、privateThoughts、commitments、exactQuotes、openLoops 或 cseSignals 引用的人物也要列入 people，人物字段使用 people 中的姓名或别名。
 4. people.presence 区分本人在场 present、远程参与 remote、仅被提及 mentioned、只有其私密认知 privateCognitionOnly；提及或推断不等于本人在场或知情，不确定时写 mentioned。
@@ -88,6 +107,8 @@ export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
 7. knowledge 用于正文明确呈现的观察或事实：subject 是事实关联的人物（无明确人物可留空），kind 区分身体、伤势、物品、环境、情境或其他；某人得知了什么应写 informationTransfers，只属于人物内心的内容应写 privateThoughts。cseSignals 只记录正文支持的人物情绪、边界、冲突/和解、脆弱、信任/背叛、重复模式、关系定义或持续状况等状态信号，不要把普通剧情事实都改写成状态信号。
 8. exactQuotes 只在措辞确有长期保留价值且原句实际出现在 canonicalContent 或 precedingUserInput 时填写；可直接写原句字符串，也可写含 exactText、kind、speaker、whyPreserve、source 的对象。能确认说话人时应写 speaker，以保留原句归属；不能确认时不要猜。若相同原句同时出现在不同来源，必须写 source，程序会在实际原文中定位。openLoops 的每项包含 description 和可选 owners，用于确实尚未解决的目标、疑问或风险；已经完成的事项不要继续列为未决。
 9. summary 中可供后续记忆使用的关键事实若对应 events、actions、knowledge、informationTransfers、privateThoughts、commitments、openLoops、exactQuotes 或 cseSignals，也必须进入相应结构字段，不能因为 summary 已写过就省略。有正文依据的相关字段应充分记录；无内容的字段可以留空，不要为了满足数据库 Schema 凑数或编造。
+10. qianshi 是可选的剧情事件增量。逐项记录本楼新发生、推进、完成、取消或明确安排的事件；一次性日常事件也可记录，但 matter 应为 false。只有计划、持续推进或需要跟踪状态的事项实例才把 matter 写为 true。相同物品或相似标题不代表同一事项。正文明确推进旧事项时，在 links 中复制对应 candidate-N 并写 kind=progress；倒叙补充、回忆或只补充背景属于同一事项但没有推进当前状态时写 kind=context。storyTime 是事件在故事中发生的时间，scheduledTime 是约定、预计或到期时间，两者不可混写。events 为空数组表示已检查且本楼没有事件增量。order.before 与 order.after 只能逐字复制本次 qianshi.events[].key 的 event-N，或在确实指向单一明确旧事件时复制 payload.qianshiCandidates 的 candidate-N；不能填写事件标题或描述。order 只写正文或可靠时间锚明确支持的先后关系；未知、同日但先后不明或不可比较时不输出。不要输出因果、矛盾等未授权知识图谱关系。
+
 参考结构：
 ${EXTRACTOR_OUTPUT_CONTRACT}
 
@@ -106,7 +127,7 @@ export function buildHighFloorExtractorSystemPrompt(guidance = '', processingPro
 
 summary 与结构字段都只保留会影响后续剧情理解的关键转折、结果、承诺、未完成事项、人物状态变化及必要的时间顺序；合并重复过程并删去枝节，不要把每楼内容逐项展开成十倍条目。300字只是体量示意，不是硬截断；材料确有必要时可更长，但仍须压缩。
 
-evidence 和 exactQuotes 若引用某个成员楼，必须填写该成员的 sourceFloorKey；引文只能在对应楼的 canonicalContent 或 precedingUserInput 中定位。`;
+evidence、exactQuotes 和 qianshi.events 若引用某个成员楼，必须填写该成员的 sourceFloorKey；引文只能在对应楼的 canonicalContent 或 precedingUserInput 中定位。qianshi 仍是一份批次结果，每个事件用真实来源楼的 sourceFloorKey，不得一律挂到最后一楼。`;
   return withBaseProcessingPrompt(`${aggregate}${extra}\n\n${EXTRACTOR_FIXED_CONTRACT}`, processingPrompt);
 }
 
@@ -288,7 +309,7 @@ function sourceContentFor({ floor, envelope, value, path }) {
   return Object.freeze({ ...descriptor, content, floorId: matching[0].floorId, floorKey: matching[0].floorKey });
 }
 
-export async function createExtractorEnvelope({ batchId, chatId, narrativeGeneration, checkpointId, floor, sourceFloors = null, entities = [], identityProjection = null, userIdentity = null, identityHints = [], storyClock = null, previousStoryClock = null, previousFloorContext = null, sourceUserInputSnapshot = null, sourceVariableReference = null }) {
+export async function createExtractorEnvelope({ batchId, chatId, narrativeGeneration, checkpointId, floor, sourceFloors = null, entities = [], identityProjection = null, userIdentity = null, identityHints = [], storyClock = null, previousStoryClock = null, previousFloorContext = null, sourceUserInputSnapshot = null, sourceVariableReference = null, qianshiCandidates = null }) {
   const normalizedIdentityProjection = normalizeIdentityProjection(identityProjection ?? {});
   const catalogSnapshot = catalogEntries(entities, normalizedIdentityProjection);
   const normalizedUserIdentity = safeIdentity(userIdentity);
@@ -317,6 +338,7 @@ export async function createExtractorEnvelope({ batchId, chatId, narrativeGenera
       userIdentity: normalizedUserIdentity,
       knownPeople: catalogSnapshot.map(entry => entry.semantic),
       identityHints: identityHints.filter(hint => typeof hint === 'string').slice(0, 20).map(hint => hint.slice(0, 500)),
+      qianshiCandidates: Array.isArray(qianshiCandidates?.request) ? qianshiCandidates.request : [],
       ...(sourceFloorBindings.length > 1 ? { sourceFloors: sourceFloorBindings.map(binding => ({ floorKey: binding.floorKey, assistantSeq: binding.assistantSeq, messageIndex: binding.messageIndex, canonicalContent: binding.canonicalContent, precedingUserInput: binding.sourceUserInputSnapshot?.messages?.map((message, sourceSnapshotIndex) => ({ sourceSnapshotIndex, content: message.content })) ?? [], storyClock: binding.storyClock })) } : {}),
     },
   });
@@ -332,6 +354,8 @@ export async function createExtractorEnvelope({ batchId, chatId, narrativeGenera
     sourceFloorRawFingerprints: Object.freeze(Object.fromEntries(sourceFloorBindings.map(binding => [binding.floorId, binding.rawFingerprint]))),
     sourceFloorStoryClockSignatures: Object.freeze(Object.fromEntries(sourceFloorBindings.map(binding => [binding.floorId, binding.storyClockSignature]))),
     sourceVariableReference: normalizedVariableReference,
+    qianshiCandidateBindings: Object.freeze(Array.isArray(qianshiCandidates?.bindings) ? qianshiCandidates.bindings : []),
+    qianshiCandidateStats: Object.freeze({ count: Number(qianshiCandidates?.stats?.count) || 0, characters: Number(qianshiCandidates?.stats?.characters) || 0 }),
   });
   return Object.freeze({ request, scope });
 }
@@ -854,7 +878,7 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
   const parsed = semanticPacket(response, { finishReason });
   if (parsed.legacy) {
     const normalized = await normalizeLegacyExtractorResponse({ response: parsed.legacy, envelope, floor, existingEntities, now, supersedes, preservedSummary, expectedScope });
-    return normalized;
+    return Object.freeze({ ...normalized, qianshiPacket: parsed.legacy.floors?.[0] ?? null });
   }
   const { packet, summary } = parsed;
   const isolated = [];
@@ -1081,30 +1105,54 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
     target.cseSignals.push({ subjectMentionKey, objectMentionKey: mentionFor(field(item, ['object', 'target', 'to'])), signalType, description, evidence: evidence(item) });
   }
   const normalized = await normalizeLegacyExtractorResponse({ response: legacy, envelope, floor, existingEntities, now, supersedes, preservedSummary, expectedScope });
-  return Object.freeze({ ...normalized, isolated: Object.freeze([...isolated, ...normalized.isolated].slice(0, 80)), needsReview: false });
+  return Object.freeze({ ...normalized, isolated: Object.freeze([...isolated, ...normalized.isolated].slice(0, 80)), needsReview: false, qianshiPacket: packet });
 }
 
 export async function normalizeExtractorResponse(options) {
-  const normalized = await compileSemanticPacket(options);
+  const compiled = await compileSemanticPacket(options);
+  const { qianshiPacket, ...normalized } = compiled;
+  let qianshiDelta;
+  try {
+    qianshiDelta = await compileQianshiDelta({ packet: qianshiPacket, floor: options.floor,
+      sourceFloorBindings: options.envelope?.scope?.sourceFloorBindings,
+      candidateBindings: [...(options.envelope?.scope?.qianshiCandidateBindings ?? []), ...(options.qianshiCandidateBindings ?? [])],
+      candidateStats: options.envelope?.scope?.qianshiCandidateStats,
+      entities: options.existingEntities ?? [], identityProjection: options.envelope?.scope?.identityProjection,
+      compiledBindings: options.qianshiCompiledBindings, now: options.now });
+  } catch {
+    // 千事是摘要同次返回的可选子结果；它的格式或编译失败不能触发摘要 API 重试。
+    qianshiDelta = await compileQianshiDelta({ packet: null, floor: options.floor, sourceFloorBindings: options.envelope?.scope?.sourceFloorBindings, candidateStats: options.envelope?.scope?.qianshiCandidateStats, now: options.now });
+  }
+  const memoryWithQianshi = validateFloorMemory({ ...normalized.memory, qianshiDelta }, { expectedChatId: options.floor.chatId });
+  const withQianshi = Object.freeze({ ...normalized, memory: memoryWithQianshi });
   const clock = options.envelope?.request?.payload?.storyClock;
   const complete = clock?.complete && clock.start?.date && clock.start?.weekday && clock.start?.time && clock.end?.date && clock.end?.weekday && clock.end?.time;
-  if (!complete && normalized.memory.chronology.length) return normalized;
+  const pairs = Array.isArray(clock?.pairs) && clock.pairs.length ? clock.pairs : complete ? [{ start: clock.start, end: clock.end }] : [];
+  if (!pairs.length && withQianshi.memory.chronology.length) return withQianshi;
   const clockPart = value => [value?.date, value?.weekday, value?.time].filter(Boolean).join(' ');
   const start = clockPart(clock?.start), end = clockPart(clock?.end);
-  const sourceText = complete ? `${start} → ${end}`.slice(0, 500) : [...new Set([start, end].filter(Boolean))].join(' → ').slice(0, 500);
+  const sourceText = pairs.length ? `${clockPart(pairs[0].start)} → ${clockPart(pairs[0].end)}`.slice(0, 500) : [...new Set([start, end].filter(Boolean))].join(' → ').slice(0, 500);
   const referenceText = typeof clock?.referenceText === 'string' ? clock.referenceText.trim().slice(0, 500) : '';
   const canonicalTime = inferCanonicalCurrentTime(options.floor?.content?.canonicalContent);
   const fallbackText = sourceText || referenceText || canonicalTime?.text || '时间未明确';
-  const itemIdInput = ['v3-floor-memory-story-clock', options.expectedScope.batchId, options.floor.id, clock?.namespace ?? 'unknown', clock?.start?.raw ?? null, clock?.end?.raw ?? null];
-  if (referenceText) itemIdInput.push(referenceText);
-  const chronology = [{
-    itemId: await deterministicUuid(itemIdInput),
+  const chronology = pairs.length ? await Promise.all(pairs.map(async (pair, index) => {
+    const pairText = `${clockPart(pair.start)} → ${clockPart(pair.end)}`.slice(0, 500);
+    const itemIdInput = ['v3-floor-memory-story-clock', options.expectedScope.batchId, options.floor.id, clock?.namespace ?? 'unknown', pair.start?.raw ?? null, pair.end?.raw ?? null];
+    if (pairs.length > 1) itemIdInput.push(index);
+    return {
+      itemId: await deterministicUuid(itemIdInput),
+      time: { kind: 'explicit', sourceText: pairText, normalized: null, precision: 'exact', relativeToFloorId: null },
+      description: pairText,
+      evidenceRefs: [],
+    };
+  })) : [{
+    itemId: await deterministicUuid(['v3-floor-memory-story-clock', options.expectedScope.batchId, options.floor.id, clock?.namespace ?? 'unknown', clock?.start?.raw ?? null, clock?.end?.raw ?? null, ...(referenceText ? [referenceText] : [])]),
     time: { kind: sourceText ? 'explicit' : referenceText ? 'unknown' : canonicalTime?.kind ?? 'unknown', sourceText: fallbackText, normalized: null, precision: complete ? 'exact' : referenceText ? 'unresolved' : canonicalTime ? 'approximate' : 'unresolved', relativeToFloorId: null },
     description: fallbackText,
     evidenceRefs: [],
   }];
-  const memory = validateFloorMemory({ ...normalized.memory, chronology }, { expectedChatId: options.floor.chatId });
-  return Object.freeze({ ...normalized, memory, storyClockSource: clock?.namespace ?? null });
+  const memory = validateFloorMemory({ ...withQianshi.memory, chronology }, { expectedChatId: options.floor.chatId });
+  return Object.freeze({ ...withQianshi, memory, storyClockSource: clock?.namespace ?? null });
 }
 
 export function inferCanonicalCurrentTime(canonicalContent) {

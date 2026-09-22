@@ -36,15 +36,27 @@ export function parseClockFields(raw) {
 }
 
 function namespaceCandidate(source, namespace) {
-  const startRe = new RegExp(`<!--\\s*${namespace}-start\\s+([\\s\\S]*?)\\s*-->`, 'igu');
-  const endRe = new RegExp(`<!--\\s*${namespace}-end\\s+([\\s\\S]*?)\\s*-->`, 'igu');
-  const starts = [...source.matchAll(startRe)], ends = [...source.matchAll(endRe)];
-  if (!starts.length && !ends.length) return null;
-  const start = starts[0] ?? null, end = ends[0] ?? null;
+  const tokenRe = new RegExp(`<!--\\s*${namespace}-(start|end)\\s+([\\s\\S]*?)\\s*-->`, 'igu');
+  const tokens = [...source.matchAll(tokenRe)].map(match => Object.freeze({
+    kind: match[1].toLocaleLowerCase('en-US'),
+    raw: match[2],
+    meta: parseClockFields(match[2]),
+    index: match.index,
+  }));
+  if (!tokens.length) return null;
+  const starts = tokens.filter(token => token.kind === 'start');
+  const ends = tokens.filter(token => token.kind === 'end');
+  const pairs = [];
+  for (let index = 0; index < tokens.length - 1; index += 1) {
+    const start = tokens[index], end = tokens[index + 1];
+    if (start.kind !== 'start' || end.kind !== 'end' || !start.meta.complete || !end.meta.complete) continue;
+    pairs.push(Object.freeze({ startMeta: start.meta, endMeta: end.meta, sourceIndex: start.index }));
+    index += 1;
+  }
+  const firstPair = pairs[0] ?? null;
+  const startMeta = firstPair?.startMeta ?? starts[0]?.meta ?? null;
+  const endMeta = firstPair?.endMeta ?? ends[0]?.meta ?? null;
   const duplicate = starts.length !== 1 || ends.length !== 1;
-  const ordered = Boolean(start && end && end.index >= start.index + start[0].length);
-  const startMeta = start ? parseClockFields(start[1]) : null;
-  const endMeta = end ? parseClockFields(end[1]) : null;
   return Object.freeze({
     namespace,
     start: startMeta?.raw ?? null,
@@ -52,8 +64,10 @@ function namespaceCandidate(source, namespace) {
     startMeta,
     endMeta,
     duplicate,
-    complete: !duplicate && ordered && startMeta?.complete === true && endMeta?.complete === true,
-    sourceIndex: Math.min(start?.index ?? Infinity, end?.index ?? Infinity),
+    complete: pairs.length > 0,
+    pairs: Object.freeze(pairs),
+    tokens: Object.freeze(tokens.map(token => Object.freeze({ kind: token.kind, raw: token.meta.raw }))),
+    sourceIndex: tokens[0].index,
   });
 }
 
@@ -105,6 +119,7 @@ export function parseStoryClockReference(value, referenceTags = '') {
     duplicate: matches.length > 1,
     complete: false,
     referenceText: matches.map(match => match.referenceText).join('\n'),
+    lastReferenceText: matches.at(-1).referenceText,
     sourceIndex: matches[0].sourceIndex,
   });
 }
@@ -115,7 +130,10 @@ export function parseStoryClockEvidence(value, referenceTags = '') {
 
 export function storyClockSignature(clock) {
   if (!clock) return '';
-  if (clock.referenceText == null) return JSON.stringify([clock.namespace.toLocaleLowerCase(), clock.start ?? null, clock.end ?? null]);
+  if (clock.referenceText == null) {
+    if (!Array.isArray(clock.tokens) || clock.tokens.length <= 2) return JSON.stringify([clock.namespace.toLocaleLowerCase(), clock.start ?? null, clock.end ?? null]);
+    return JSON.stringify([clock.namespace.toLocaleLowerCase(), ...clock.tokens.map(token => [token.kind, token.raw])]);
+  }
   return JSON.stringify([clock.namespace.toLocaleLowerCase('en-US'), null, null, clock.referenceText]);
 }
 

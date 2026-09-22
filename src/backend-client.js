@@ -15,7 +15,7 @@ function recordTypeFromId(recordId) {
   if (value.startsWith('v3-floor-memory-')) return 'floorMemory';
   return RECORD_TYPE_PREFIXES.find(([prefix]) => value.startsWith(prefix))?.[1] ?? 'unknown';
 }
-export function createBackendClient({ fetchImpl = globalThis.fetch, headers = () => ({}), baseUrl = API_BASE, timeoutMs = 15000 } = {}) {
+export function createBackendClient({ fetchImpl = globalThis.fetch, headers = () => ({}), baseUrl = API_BASE, timeoutMs = 15000, listTimeoutMs = 120000 } = {}) {
   if (typeof fetchImpl !== 'function') throw new Error('fetch 不可用');
   const diagnostic = { sinceClientCreatedRequestCounts: { get: 0, put: 0, delete: 0 }, latestRead: null, latestWrite: null, lastFailure: null };
   let diagnosticSequence = 0;
@@ -34,13 +34,13 @@ export function createBackendClient({ fetchImpl = globalThis.fetch, headers = ()
     diagnostic[requestDiagnostic.method === 'GET' ? 'latestRead' : 'latestWrite'] = record;
     if (outcome !== 'success') diagnostic.lastFailure = record;
   };
-  const request = async (path, options = {}, requestDiagnostic = null) => {
+  const request = async (path, options = {}, requestDiagnostic = null, requestTimeoutMs = timeoutMs) => {
     const startedAt = Date.now();
     if (requestDiagnostic) diagnostic.sinceClientCreatedRequestCounts[requestDiagnostic.method.toLowerCase()] += 1;
     const controller = new AbortController(), outerSignal = options.signal; let timedOut = false;
     const abortFromOuter = () => controller.abort(outerSignal?.reason);
     if (outerSignal?.aborted) abortFromOuter(); else outerSignal?.addEventListener?.('abort', abortFromOuter, { once: true });
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, Math.max(1, Number(timeoutMs) || 15000));
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, Math.max(1, Number(requestTimeoutMs) || 15000));
     try {
       const response = await fetchImpl(`${baseUrl}${path}`, { ...options, signal: controller.signal, headers: { Accept: 'application/json', ...headers(), ...(options.body ? { 'Content-Type': 'application/json' } : {}) } });
       if (!response.ok) { const error = safeError(response.status); error.status = response.status; throw error; }
@@ -67,10 +67,11 @@ export function createBackendClient({ fetchImpl = globalThis.fetch, headers = ()
       if (!result?.ok || result.api?.current !== 1 || !result.api?.supported?.includes(1) || result.capabilities?.records !== true || result.capabilities?.optimisticRevision !== true) throw new Error('后端能力不兼容');
       return result;
     },
-    async list(collection, { signal } = {}) { return request(collectionKey(collection), { signal }, { method: 'GET', recordType: 'collection' }); },
+    async list(collection, { signal } = {}) { return request(collectionKey(collection), { signal }, { method: 'GET', recordType: 'collection' }, listTimeoutMs); },
     async get(collection, recordId) { return request(key(collection, recordId), {}, { method: 'GET', recordType: recordTypeFromId(recordId) }); },
     async put(collection, recordId, data, expectedRevision, { signal } = {}) { return request(key(collection, recordId), { method: 'PUT', body: JSON.stringify({ data, expectedRevision }), signal }, { method: 'PUT', recordType: recordTypeFromId(recordId) }); },
     async remove(collection, recordId, expectedRevision, { signal } = {}) { return request(key(collection, recordId), { method: 'DELETE', body: JSON.stringify({ expectedRevision }), signal }, { method: 'DELETE', recordType: recordTypeFromId(recordId) }); },
+    async removePermanent(collection, recordId, expectedRevision, { signal } = {}) { return request(`${key(collection, recordId)}/permanent`, { method: 'DELETE', body: JSON.stringify({ expectedRevision }), signal }, { method: 'DELETE', recordType: recordTypeFromId(recordId) }); },
     getDiagnosticSnapshot() {
       const copy = value => value ? { ...value } : null;
       return {

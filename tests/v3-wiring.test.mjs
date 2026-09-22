@@ -11,13 +11,14 @@ test('生产入口只装配 V3 记忆与独立人物工作区，面板提供四�
     readFile(new URL('../dist/qqj-app.js', import.meta.url), 'utf8'),
     readFile(new URL('../manifest.json', import.meta.url), 'utf8').then(JSON.parse),
   ]);
-  for (const factory of ['createChatSession', 'createPluginLifecycle', 'createHostAdapter', 'createFoundationStore', 'createFoundationRuntime', 'createChatBranchInitializer', 'createV3MemoryRuntime', 'createV3RecallRuntime', 'createPeopleWorkspaceStore', 'createPeopleWorkspaceRuntime', 'installPublicMemoryBridge']) {
+  for (const factory of ['createChatSession', 'createPluginLifecycle', 'createHostAdapter', 'createFoundationStore', 'createFoundationRuntime', 'createChatBranchInitializer', 'createV3MemoryRuntime', 'createV3RecallRuntime', 'createPeopleWorkspaceStore', 'createPeopleWorkspaceRuntime', 'createStorageManagement', 'installPublicMemoryBridge', 'installPublicQianshiBridge']) {
     assert.equal((entry.match(new RegExp(`${factory}\\s*\\(`, 'g')) || []).length, 1, factory);
   }
   assert.match(entry, /filterWorldInfoSources:\s*sourcePermissions\.filterWorldInfoSources/, '生产入口必须把共享整本排除过滤器注入 V3 memory runtime');
   assert.match(entry, /import\s*\{\s*version\s+as\s+pluginVersion\s*\}\s*from\s*['"]\.\/manifest\.json['"]/, '生产回执版本必须只从 manifest.version 导入');
   assert.match(entry, /createV3RecallRuntime\([\s\S]*?pluginVersion,\s*\n\}\)/);
-  assert.equal(manifest.version, '0.3.0');
+  assert.match(entry, /qianshiProgressProvider:\s*async\s*\(source, context\)\s*=>\s*v3MemoryRuntime\.getQianshiRecall\(\{\s*\.\.\.context,\s*\.\.\.\(await timeRuntime\.currentStoryContext\(source\)\s*\?\?\s*\{\}\)\s*\}\)/);
+  assert.equal(manifest.version, '0.4.0');
   for (const marker of ['createArchiveV2', 'archiveV2', 'archive-v2', 'myriad-knots-bond-draft', '首次建立双丝网']) {
     assert.doesNotMatch(entry + panel + bootstrap + bundle, new RegExp(marker, 'i'));
   }

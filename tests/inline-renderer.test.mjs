@@ -280,6 +280,16 @@ test('楼内纯投影沿用宿主角色语义，并给出紧凑记忆/准确召�
   assert.equal(unknown.historyItems.length, 0); assert.equal(unknown.summary, '召回内容请在详细回执中查看。');
 });
 
+test('楼内旧内部时间字段优先显示正文提取的多段 fallback，正常时间不被覆盖', () => {
+  const project = (sourceText, timeFallback) => projectInlineMemoryFloor({ floors: [{ floorId: 'floor', assistantSeq: 1, messageIndex: 1, status: 'ready', summary: '摘要', timeFallback, memory: { chronology: [{ time: { sourceText } }], locations: [], participants: [] } }] }, 1);
+  const time252 = '10月30日 周五 12:45 → 10月30日 周五 13:10；10月30日 周五 14:30 → 10月30日 周五 14:50';
+  const time254 = '11月2日 周一 08:00 → 11月2日 周一 08:20；11月2日 周一 09:10 → 11月2日 周一 09:40；11月2日 周一 11:00 → 11月2日 周一 11:15；11月2日 周一 13:30 → 11月2日 周一 14:00';
+  assert.equal(project('| date=0081-10-30 | weekday=周五 | time=12:45', time252).time, time252, '252 型只显示两段完整区间，不显示悬空尾');
+  assert.equal(project('| date=0081-11-02 | time=08:00', time254).time, time254, '254 型显示全部四段完整区间');
+  assert.equal(project('人工校准：次日清晨', '不应覆盖').time, '人工校准：次日清晨');
+  assert.equal(project('| date=0081-11-02 | time=08:00', '').time, '| date=0081-11-02 | time=08:00', '无 fallback 时保持旧值，不凭空改写');
+});
+
 test('楼内空投影区分同步、读取失败与真正未稳定，并始终禁用提取', () => {
   const syncing = projectInlineMemoryFloor({ memorySnapshotStatus: 'syncing', floors: [], pending: { messageIndex: 2 } }, 0);
   assert.deepEqual({ status: syncing.status, statusText: syncing.statusText, canExtract: syncing.canExtract }, { status: 'syncing', statusText: '正在读取本楼状态', canExtract: false });
@@ -297,7 +307,7 @@ test('楼内空投影区分同步、读取失败与真正未稳定，并始终�
   ] };
   const consecutive = projectInlineMemoryFloor(waitingState, 84, 43);
   assert.deepEqual({ status: consecutive.status, statusText: consecutive.statusText, canExtract: consecutive.canExtract }, { status: 'pending', statusText: '连续 AI，尚待确认', canExtract: false });
-  assert.match(consecutive.summary, /尚未摘要.*连续 AI 消息/);
+  assert.match(consecutive.summary, /尚未摘要.*连续 AI 回复分别登记并按顺序摘要/);
   const earlier = projectInlineMemoryFloor(waitingState, 85, 44);
   assert.equal(earlier.statusText, '等待前面楼层处理'); assert.match(earlier.summary, /前面的 AI 楼尚未确认/);
   const latest = projectInlineMemoryFloor(waitingState, 87, 45);

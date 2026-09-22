@@ -2,6 +2,7 @@ import { selectAssistantMessage } from '../v3/foundation-domain.js';
 import { publicErrorMessage } from '../public-error.js';
 
 const uniqueText = values => [...new Set(values.map(value => String(value ?? '').trim()).filter(Boolean))];
+const hasInternalTimeFields = value => /\|\s*(?:date|weekday|time)\s*=/iu.test(String(value ?? ''));
 const RECALL_OPEN = '<qqj_recalled_context>';
 const RECALL_CLOSE = '</qqj_recalled_context>';
 const QIANSHI_OPEN = '<qqj_qianshi_progress>';
@@ -298,7 +299,7 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
     const waitingCopy = ({
       waitingNextUser: ['等待下一条用户消息', '这一楼尚未摘要。发送下一条用户消息后会重新检查。'],
       waitingEarlierFloor: ['等待前面楼层处理', '这一楼尚未摘要。前面的 AI 楼尚未确认，当前不会进入摘要处理。'],
-      consecutiveAssistant: ['连续 AI，尚待确认', '这一楼尚未摘要。检测到连续 AI 消息，现有规则尚不能确认这楼。'],
+      consecutiveAssistant: ['连续 AI，尚待确认', '这一楼尚未摘要。可在记忆页确认后，将连续 AI 回复分别登记并按顺序摘要。'],
       registrationNeedsReview: ['消息对应关系待核对', '这一楼尚未摘要。消息与已有记忆的对应关系需要先核对。'],
     })[pending?.reason] ?? ['尚待确认', '这一楼尚未摘要，正在等待确认。'];
     return Object.freeze({
@@ -312,7 +313,8 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
   }
   const memory = floor.memory ?? null;
   const times = uniqueText((memory?.chronology ?? []).map(item => item?.time?.sourceText || item?.time?.normalized || item?.description)).join('；');
-  const time = times || floor.timeFallback || '时间未明确';
+  const fallbackTime = String(floor.timeFallback ?? '').trim();
+  const time = times && fallbackTime && hasInternalTimeFields(times) ? fallbackTime : times || fallbackTime || '时间未明确';
   const locations = uniqueText((memory?.locations ?? []).map(item => item?.name)).join('、') || '未提取';
   const names = new Map((state?.memoryEntities ?? []).map(entity => [entity?.entityId, entity?.displayName]));
   const people = uniqueText((memory?.participants ?? []).map(item => names.get(item?.entityId) || '未知人物')).join('、') || '未提取';

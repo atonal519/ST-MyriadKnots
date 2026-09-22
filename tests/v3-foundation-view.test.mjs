@@ -36,6 +36,9 @@ const flatten = node => [node, ...(node.children ?? []).flatMap(flatten)];
 test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点击，读失败仅重试读取与生命周期清理', async () => {
   const css = await readFile(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
   assert.match(css, /#qqj-recent-items\[hidden\]\{display:none\}/u, '作者样式需显式覆盖 settings-block 的 display:grid，不能仅依赖 UA hidden');
+  assert.match(css, /\.qqj-cse-page-heading>strong\{[^}]*white-space:nowrap/u, '分析记录标题在桌面窄栏不得被搜索框挤成逐字换行');
+  assert.match(css, /\.qqj-cse-page-heading>\.qqj-history-search\{[^}]*flex:1 1 auto/u, '分析记录搜索框应按标题和返回按钮之外的剩余宽度伸缩');
+  assert.match(css, /@media\(max-width:390px\)\{[^\n]*\.qqj-cse-page-heading\{[^}]*flex-wrap:wrap/u, '手机窄屏应让分析记录工具栏合理换行');
   const floor = { floorId: 'floor', assistantSeq: 1, messageIndex: 2, canonicalFingerprint: 'sha256:same', status: 'ready', memoryId: 'memory', summary: '原摘要', summarySource: 'ai', memory: { summaryEvidenceRefs: [] }, cse: { status: 'ready', deltaId: 'delta' } };
   let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: false, stableCount: 1, rememberedCount: 1, unprocessedCount: 0, cseReady: true, csePendingCount: 0, cseFailedCount: 0, floors: [floor] };
   const memoryListeners = new Set(), timeListeners = new Set();
@@ -51,6 +54,8 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   const container = new Node('main'); container.scrollTop = 45;
   const view = createV3FoundationView({ runtime, timeRuntime, documentRef, confirmImpl: () => true }); view.setPage('memories'); view.mount(container);
   let toggle = flatten(container).find(node => node.textContent === '近期事项');
+  const memoryToolbar = flatten(container).find(node => String(node.className).split(' ').includes('qqj-memory-toolbar'));
+  assert.equal(memoryToolbar.children[0].className, 'qqj-history-search'); assert.equal(memoryToolbar.children[1], toggle, '摘要搜索位于近期事项左侧');
   assert.equal(toggle.attributes['aria-expanded'], 'false'); assert.equal(reads, 0); assert.equal(refreshes, 0);
   let body = flatten(container).find(node => node.id === toggle.attributes['aria-controls']); assert.equal(body.hidden, true);
   assert.ok(flatten(container).some(node => node.className === 'v3-memory-list'));
@@ -720,7 +725,7 @@ test('Extractor 失败且尚无 FloorMemory 时仍可复制诊断并直接提取
   assert.equal(confirmations, 0, '无摘要楼的首次提取不是破坏性操作，不弹重提确认');
 });
 
-test('摘要页列出全部尚未摘要候选并显示真实等待原因，无 floorId 时不提供提取操作', () => {
+test('摘要页列出全部尚未摘要候选并显示真实等待原因，无 floorId 时不提供提取操作', async () => {
   const memory = { chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
   const registered = { floorId: 'floor-42', assistantSeq: 42, messageIndex: 82, status: 'ready', memoryId: 'memory-42', summary: '旧摘要仍然可见', summarySource: 'ai', aiSummary: '旧摘要仍然可见', counts: {}, memory };
   let state = {
@@ -731,18 +736,40 @@ test('摘要页列出全部尚未摘要候选并显示真实等待原因，无 f
       { assistantSeq: 44, messageIndex: 85, reason: 'waitingEarlierFloor' },
       { assistantSeq: 45, messageIndex: 87, reason: 'waitingNextUser' },
     ],
+    consecutiveAssistantConfirmation: { chatId: CHAT, candidates: [
+      { assistantSeq: 43, messageIndex: 84, confirmationRequired: true },
+      { assistantSeq: 44, messageIndex: 85, confirmationRequired: false },
+    ] },
   };
-  let extractCalls = 0;
-  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => { extractCalls += 1; return state; } };
-  const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef }); view.setPage('memories'); view.mount(container);
+  let extractCalls = 0, consecutiveCalls = 0, confirmation = null, receivedScope = null;
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    confirmConsecutiveAssistants: async scope => { consecutiveCalls += 1; receivedScope = scope; return state; }, extractFloor: async () => { extractCalls += 1; return state; } };
+  const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef, confirmImpl: options => { confirmation = options; return true; } }); view.setPage('memories'); view.mount(container);
   let copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /已记忆 42\/42 楼.*另有 3 楼尚未摘要，正在等待确认/);
-  assert.match(copy, /第 84 楼.*连续 AI，尚待确认.*检测到连续 AI 消息/);
+  assert.match(copy, /检测到连续 AI 段，共 2 个回复.*第 84 楼.*连续 AI，尚待确认/);
   assert.match(copy, /第 85 楼.*等待前面楼层处理.*前面的 AI 楼尚未确认/);
   assert.match(copy, /第 87 楼.*等待下一条用户消息.*发送下一条用户消息后会重新检查/);
   assert.match(copy, /旧摘要仍然可见/);
+  const confirmConsecutive = flatten(container).find(node => node.textContent === '确认连续 AI 并分别记录');
+  assert.ok(confirmConsecutive); confirmConsecutive.click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(consecutiveCalls, 1);
+  assert.equal(receivedScope, state.consecutiveAssistantConfirmation, '弹窗必须把渲染时冻结的精确范围原样传入');
+  assert.deepEqual(confirmation, { title: '确认连续 AI 回复', body: '第 84 楼、第 85 楼 将分别登记，并按原顺序进入摘要。正文不会删除或合并；当前最后一条 AI 不在本次范围内，仍等待下一条用户消息。', confirmText: '确认并分别记录', cancelText: '取消' });
   assert.equal(flatten(container).filter(node => node.textContent === '提取摘要').length, 0);
   assert.equal(extractCalls, 0);
+
+  state = { ...state, unregisteredCandidates: state.unregisteredCandidates.filter(candidate => candidate.reason !== 'waitingNextUser') };
+  view.render(state);
+  flatten(container).find(node => node.textContent === '确认连续 AI 并分别记录').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(confirmation.body, '第 84 楼、第 85 楼 将分别登记，并按原顺序进入摘要。正文不会删除或合并；以上列表就是本次完整确认范围。');
+
+  runtime.confirmConsecutiveAssistants = async () => { throw Object.assign(new Error('连续 AI 确认范围已经变化，请重新查看后再确认。'), { code: 'V3_MEMORY_STALE' }); };
+  flatten(container).find(node => node.textContent === '确认连续 AI 并分别记录').click();
+  await new Promise(resolve => setImmediate(resolve));
+  copy = flatten(container).map(node => node.textContent).join('|');
+  assert.match(copy, /确认连续 AI失败：连续 AI 确认范围已经变化，请重新查看后再确认/);
 
   state = { ...state, stableCount: 43, unprocessedCount: 1,
     floors: [...state.floors, { floorId: 'floor-45', assistantSeq: 45, messageIndex: 87, status: 'unprocessed', memoryId: null, summary: '', counts: {}, memory: null }],
@@ -919,7 +946,7 @@ test('自动批次活跃时面板提取、CSE 与修订入口统一禁用，结�
   assert.equal(flatten(container).find(node => node.textContent === '完全重构')?.disabled, false);
 });
 
-test('历史欠账与人物状态重构按钮各自开始暂停继续，CSE 同一位置显示进度', async () => {
+test('历史欠账与人物状态重构按钮各自开始暂停继续，CSE 进度独立显示并保留失败原因', async () => {
   const base = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 5, rememberedCount: 2, unprocessedCount: 3, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'checkpoint', activeRun: null, activeExtraction: null, activeCse: null, memoryWorkBusy: false, activeAutoMemory: null, lastRun: null, lastError: null, lastExtractorError: null, lastCseError: null, unreachableCount: 0, metrics: {}, autoMemoryEnabled: false, autoMemoryBatchSize: 2, rebuildStatus: 'pendingRebuild', rebuildCompletedCount: 2, rebuildTotalCount: 5, rebuildNextAssistantSeq: 3, cseRebuildStatus: 'idle', cseRebuildCompletedCount: 0, cseRebuildTotalCount: 2, cseReady: false, csePendingCount: 0, cseFailedCount: 0, baselineId: null, cseSubjects: [], floors: [] };
   let state = base, starts = 0, pauses = 0, resetChatId = 'unset', cseChatId = null, csePauses = 0, cseResumes = 0;
   const confirmations = [];
@@ -974,10 +1001,30 @@ test('历史欠账与人物状态重构按钮各自开始暂停继续，CSE 同�
   state = { ...base, cseRebuildStatus: 'paused', cseRebuildCompletedCount: 1, cseRebuildTotalCount: 2 };
   view.render(state);
   assert.equal(flatten(container).filter(node => node.textContent === '继续人物状态重构').length, 1, '暂停态只保留同一枚 CSE 按钮');
+  const pausedProgress = flatten(container).find(node => node.className === 'qqj-management-progress');
+  assert.ok(pausedProgress); assert.notEqual(pausedProgress.parentNode, flatten(container).find(node => node.className.includes('qqj-management-actions')), '进度必须位于按钮行之外');
   assert.equal(flatten(container).some(node => node.textContent === '继续'), false, '通用历史继续不得接管 CSE 作业');
   flatten(container).find(node => node.textContent === '继续人物状态重构').click(); await new Promise(resolve => setImmediate(resolve));
   assert.equal(cseResumes, 1); assert.equal(cseChatId, CHAT);
   assert.match(flatten(container).map(node => node.textContent).join('|'), /人物状态已暂停 · 1\/2/);
+
+  state = { ...base, cseRebuildStatus: 'paused', cseRebuildCompletedCount: 1, cseRebuildTotalCount: 2, lastCseError: { message: 'BACKEND_TIMEOUT' }, memorySnapshotStatus: 'ready', memorySyncStatus: 'idle' };
+  view.render(state);
+  let copyWithOldFailure = flatten(container).map(node => node.textContent).join('|');
+  assert.match(copyWithOldFailure, /上次人物状态分析失败：请求超时，请稍后重试；可继续人物状态重构/);
+  assert.equal(flatten(container).find(node => node.textContent === '继续人物状态重构')?.disabled, false, '旧 CSE 超时不应锁死继续按钮');
+
+  state = { ...base, cseRebuildStatus: 'failed', cseRebuildCompletedCount: 1, cseRebuildTotalCount: 2, cseRebuildNextAssistantSeq: 2, cseRebuildError: '第 4 楼返回的人物状态 JSON 不完整。', lastCseError: null,
+    memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', floors: [{ floorId: 'floor-1', assistantSeq: 1, messageIndex: 2 }, { floorId: 'floor-2', assistantSeq: 2, messageIndex: 4 }] };
+  view.render(state);
+  await flatten(container).find(node => node.textContent === '刷新状态').click();
+  await new Promise(resolve => setImmediate(resolve));
+  let failure = flatten(container).find(node => node.className.includes('qqj-management-feedback'));
+  assert.match(failure.textContent, /当前聊天已读取完成/);
+  const oldFailure = flatten(container).find(node => node.textContent.includes('上次人物状态分析失败'));
+  assert.match(oldFailure.textContent, /第 4 楼返回的人物状态 JSON 不完整.*可继续人物状态重构/);
+  view.setPage('memories'); view.setPage('management');
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /上次人物状态分析失败：第 4 楼返回的人物状态 JSON 不完整/, '切页回来仍显示 runtime 当前掌握的失败原因');
 
   state = { ...base, rebuildStatus: 'waitingRealtime', rebuildHasActionableWork: true };
   view.render(state);
@@ -1298,18 +1345,27 @@ test('三页职责分离，千结只保留摘要编辑/重提，双丝网归位�
   for (const button of flatten(container).filter(node => node.tag === 'button')) assert.equal(button.type, 'button');
 });
 
-test('管理页刷新状态按钮只发起 fresh 读取', async () => {
-  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, headCheckpointId: 'head', lastError: null, lastExtractorError: null, lastCseError: null, floors: [], memoryWorkBusy: false };
+test('管理页刷新状态按钮发起 fresh 读取并显式核对 foundation', async () => {
+  const state = { status: 'ready', memorySnapshotStatus: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, headCheckpointId: 'head', lastError: null, lastExtractorError: null, lastCseError: null, floors: [], memoryWorkBusy: false };
   const calls = [];
-  const runtime = { getState: () => state, refreshStatus: async options => { calls.push(options); return state; }, confirmLatest: async () => state };
+  let releaseRefresh;
+  const pendingRefresh = new Promise(resolve => { releaseRefresh = () => resolve(state); });
+  const runtime = { getState: () => state, refreshStatus: options => { calls.push(options); return pendingRefresh; }, confirmLatest: async () => state };
   const container = new Node('main');
   const view = createV3FoundationView({ runtime, documentRef });
   view.setPage('management'); view.mount(container);
   const button = flatten(container).find(node => node.textContent === '刷新状态');
   assert.ok(button);
+  const replaceCount = container.replaceCount;
   button.click();
+  const pendingFeedback = flatten(container).find(node => node.className.includes('qqj-management-feedback'));
+  assert.equal(pendingFeedback.textContent, '正在刷新状态…', '未决刷新必须立即显示在实际反馈节点');
+  assert.equal(pendingFeedback.className.includes('error'), false);
+  assert.equal(container.replaceCount, replaceCount, '显示刷新进度不得整页重绘');
+  releaseRefresh();
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(calls, [{ preferCached: false, recoverTailDeletion: true }]);
+  assert.deepEqual(calls, [{ preferCached: false, recoverTailDeletion: true, reconcileFoundation: true }]);
+  assert.equal(flatten(container).find(node => node.className.includes('qqj-management-feedback')).textContent, '当前聊天已读取完成。');
 });
 
 test('同聊天记忆同步保留千结与双丝网已确认文字，确认结果或切聊后再替换', () => {
@@ -1397,6 +1453,28 @@ test('未处理空楼保留恢复入口，长时间仅由样式省略且长摘�
   assert.match(flatten(emptyCard).map(node => node.textContent).join('|'), /未处理.*这一楼尚未生成摘要.*提取摘要/);
 });
 
+test('旧内部时间字段只在有正文时间 fallback 时改用多段显示，并同步作为编辑初值', () => {
+  const oldTime = '| date=0081-10-30 | weekday=周五 | time=12:45';
+  const time252 = '10月30日 周五 12:45 → 10月30日 周五 13:10；10月30日 周五 14:30 → 10月30日 周五 14:50';
+  const time254 = '11月2日 周一 08:00 → 11月2日 周一 08:20；11月2日 周一 09:10 → 11月2日 周一 09:40；11月2日 周一 11:00 → 11月2日 周一 11:15；11月2日 周一 13:30 → 11月2日 周一 14:00';
+  const memory = sourceText => ({ summaryEvidenceRefs: [], chronology: [{ time: { sourceText } }], locations: [], participants: [] });
+  const floors = [
+    { floorId: 'floor-252', messageIndex: 252, memoryId: 'memory-252', status: 'ready', summary: '两段完整、悬空尾不猜', timeFallback: time252, memory: memory(oldTime) },
+    { floorId: 'floor-254', messageIndex: 254, memoryId: 'memory-254', status: 'ready', summary: '四段完整', timeFallback: time254, memory: memory('| date=0081-11-02 | time=08:00') },
+    { floorId: 'floor-normal', messageIndex: 256, memoryId: 'memory-normal', status: 'ready', summary: '正常人工时间', timeFallback: '不应覆盖', memory: memory('人工校准：次日清晨') },
+  ];
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 3, rememberedCount: 3, unprocessedCount: 0, cseReady: false, csePendingCount: 0, cseFailedCount: 0, floors };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, editMemory: async () => state };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef }); view.setPage('memories'); view.mount(container);
+  const cards = flatten(container).filter(node => String(node.className).split(' ').includes('qqj-memory-card'));
+  const cardFor = floorId => cards.find(node => node.attributes['data-qqj-floor-id'] === floorId);
+  assert.equal(flatten(cardFor('floor-252')).find(node => node.className === 'qqj-floor-time').textContent, time252);
+  assert.equal(flatten(cardFor('floor-254')).find(node => node.className === 'qqj-floor-time').textContent, time254);
+  assert.equal(flatten(cardFor('floor-normal')).find(node => node.className === 'qqj-floor-time').textContent, '人工校准：次日清晨');
+  flatten(cardFor('floor-252')).find(node => node.textContent === '编辑').click();
+  assert.equal(flatten(container).find(node => node.placeholder === '日期、时间范围或相对时间').value, time252);
+});
+
 test('未修改、改回原值与未动时间 fallback 直接退出编辑并保持展开，零保存调用', async () => {
   const memory = { summary: { revisionNote: '旧说明' }, summaryEvidenceRefs: [], chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
   const floor = { floorId: 'floor', messageIndex: 18, canonicalFingerprint: 'sha256:content', rawFingerprint: 'sha256:raw', memoryId: 'memory', status: 'ready', summary: '原摘要', timeFallback: '10月4日 15:30', memory, cse: { status: 'ready', deltaId: 'delta' } };
@@ -1440,7 +1518,8 @@ test('CSE 历史每楼只显示实际变化，并可折叠查看该楼结束状�
     { category: 'adaptive', action: 'refine', beforeText: '会谨慎回应', afterText: '会谨慎回应', before: { text: '会谨慎回应', towardDisplayName: '甲', visibility: 'private', reason: '旧依据', origin: 'floor' }, after: { text: '会谨慎回应', towardDisplayName: '乙', visibility: 'observable', reason: '新依据', origin: 'floor' } },
     { category: 'situational', action: 'update', beforeText: '仍在门边', afterText: '已经落座', before: { text: '仍在门边', visibility: 'observable', reason: '站在门边', origin: 'floor' }, after: { text: '已经落座', visibility: 'observable', reason: '坐到桌旁', origin: 'floor' } },
     { category: 'situational', action: 'remove', beforeText: '仍在等雨停', afterText: null, before: { text: '仍在等雨停', visibility: 'observable', reason: '雨还没停', origin: 'floor' }, after: null },
-  ] }], endStateSubjects: [{ displayName: '裴晚生', core: [{ text: '重视承诺', visibility: 'authorial', reason: '角色卡设定', origin: 'baseline', sourceFloorId: null }], adaptive: [{ text: '会谨慎回应', towardEntityId: 'entity-乙', towardDisplayName: '乙', visibility: 'observable', reason: '新依据', origin: 'floor', sourceFloorId: 'floor' }], situational: [{ text: '已经落座', visibility: 'observable', reason: '坐到桌旁', origin: 'floor', sourceFloorId: 'floor' }] }] } } };
+    { category: 'situational', action: 'add', beforeText: null, afterText: '刚刚握紧钥匙', before: null, after: { text: '刚刚握紧钥匙', visibility: 'private', reason: '准备开门', origin: 'floor' } },
+  ] }], endStateSubjects: [{ displayName: '裴晚生', core: [{ text: '重视承诺', visibility: 'authorial', reason: '角色卡设定', origin: 'baseline', sourceFloorId: null }], adaptive: [{ text: '会谨慎回应', towardEntityId: 'entity-乙', towardDisplayName: '乙', visibility: 'observable', reason: '新依据', origin: 'floor', sourceFloorId: 'floor' }], situational: [{ text: '已经落座', visibility: 'observable', reason: '坐到桌旁', origin: 'floor', sourceFloorId: 'floor' }, { text: '刚刚握紧钥匙', visibility: 'private', reason: '准备开门', origin: 'floor', sourceFloorId: 'floor' }] }] } } };
   const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 1, cseReady: true, csePendingCount: 0, cseFailedCount: 0, cseSubjects: [], floors: [floor] };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, retryStateAnalysis: async () => state };
   const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef }); view.setPage('people'); view.mount(container);
@@ -1449,13 +1528,15 @@ test('CSE 历史每楼只显示实际变化，并可折叠查看该楼结束状�
   assert.equal(rowNode.tag, 'details'); assert.equal(rowNode.open, false);
   const copy = flatten(rowNode).map(node => node.textContent).join('|');
   const resultCopy = flatten(rowNode).find(node => node.className === 'qqj-cse-floor-result').children[1];
-  assert.match(flatten(resultCopy).map(node => node.textContent).join('|'), /长期倾向：会谨慎回应.*当前情境：已经落座/);
+  assert.match(flatten(resultCopy).map(node => node.textContent).join('|'), /长期倾向：会谨慎回应.*当前情境：已经落座.*当前情境：刚刚握紧钥匙/);
   assert.doesNotMatch(flatten(resultCopy).map(node => node.textContent).join('|'), /重视承诺|仍在门边|仍在等雨停|甲/);
   assert.match(copy, /裴晚生.*当前情境更新：仍在门边 → 已经落座/);
   assert.match(copy, /长期倾向属性更新：会谨慎回应.*对象：甲 → 乙.*信息范围：私密 → 可观察.*依据：旧依据 → 新依据/);
   assert.match(copy, /移除当前情境：仍在等雨停/);
+  assert.match(copy, /新增当前情境：刚刚握紧钥匙/);
+  assert.match(copy, /变更详情 · 4 项/);
   assert.match(copy, /部分内容未通过校验，已保留有效结果（2 项校验记录）/);
-  assert.match(copy, /查看本楼已保存状态.*核心特质.*重视承诺.*长期倾向.*对 乙.*会谨慎回应.*当前情境.*已经落座/);
+  assert.match(copy, /查看本楼已保存状态.*核心特质.*重视承诺.*长期倾向.*对 乙.*会谨慎回应.*当前情境.*已经落座.*刚刚握紧钥匙/);
   assert.equal(flatten(rowNode).find(node => node.className === 'qqj-cse-floor-state').open, false);
   assert.doesNotMatch(copy, /被拒的模型自报/);
   rowNode.open = true; rowNode.fire('toggle'); view.setPage('memories'); view.setPage('people');
@@ -1506,6 +1587,56 @@ test('CSE 新固定空变化仍显示无变化与可折叠本楼快照', () => {
   assert.ok(flatten(rowNode).find(node => node.className === 'qqj-cse-floor-changes'));
   assert.ok(flatten(rowNode).find(node => node.className === 'qqj-cse-floor-state'));
   assert.doesNotMatch(copy, /旧记录未保存|旧记录没有固定/);
+});
+
+test('摘要搜索遍历全部已存楼，清空恢复列表且切聊天不保留查询', () => {
+  const memory = { summaryEvidenceRefs: [] }, listeners = new Set();
+  const floor = (floorId, messageIndex, summary) => ({ floorId, assistantSeq: messageIndex, messageIndex, memoryId: `memory-${floorId}`, status: 'ready', summary, memory, cse: { status: 'pending', deltaId: null } });
+  let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 3, rememberedCount: 3, csePendingCount: 3, cseFailedCount: 0, floors: [floor('old', 2, `${'很早的内容'.repeat(25)}远古线索在末尾`), floor('middle', 40, '中间摘要'), floor('new', 88, '最新摘要')] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef }); view.setPage('memories'); view.mount(container);
+  const search = flatten(container).find(node => node.attributes['aria-label'] === '搜索当前聊天的全部摘要');
+  assert.ok(search, '没有时间 runtime 也必须显示摘要搜索');
+  search.value = '远古线索'; search.fire('input');
+  let results = flatten(container).filter(node => node.className === 'qqj-history-search-result');
+  assert.equal(results.length, 1); assert.match(flatten(results[0]).map(node => node.textContent).join('|'), /第 2 楼.*….*远古线索/u);
+  assert.equal(flatten(container).filter(node => String(node.className).split(' ').includes('qqj-memory-card')).length, 0, '搜索时用结果列表替换常规列表');
+  results[0].click();
+  const opened = flatten(container).find(node => node.attributes['data-qqj-floor-id'] === 'old');
+  assert.equal(search.value, ''); assert.equal(opened.open, true, '点击结果回到并展开原摘要卡片');
+  assert.match(flatten(opened).map(node => node.textContent).join('|'), /远古线索.*编辑.*重新提取/u, '原卡片保留完整摘要与操作');
+  search.value = '不存在的文字'; search.fire('input');
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /找到 0 条结果.*没有包含该文字的摘要/u);
+  flatten(container).find(node => node.textContent === '清空').click();
+  assert.equal(flatten(container).filter(node => String(node.className).split(' ').includes('qqj-memory-card')).length, 3);
+  const currentSearch = flatten(container).find(node => node.attributes['aria-label'] === '搜索当前聊天的全部摘要'); currentSearch.value = '最新'; currentSearch.fire('input');
+  state = { ...state, chatId: 'new-chat', stableCount: 1, rememberedCount: 1, floors: [floor('other', 4, '新聊天摘要')] }; for (const listener of listeners) listener(state);
+  const switchedSearch = flatten(container).find(node => node.attributes['aria-label'] === '搜索当前聊天的全部摘要');
+  assert.equal(switchedSearch.value, ''); assert.match(flatten(container).map(node => node.textContent).join('|'), /新聊天摘要/u); view.deactivate();
+});
+
+test('CSE 搜索覆盖不同人物的变更前旧值与历史快照', () => {
+  const memory = { summaryEvidenceRefs: [] };
+  const oldFloor = { floorId: 'old', assistantSeq: 2, messageIndex: 2, memoryId: 'memory-old', status: 'ready', summary: '摘要', memory, cse: { status: 'ready', deltaId: 'delta-old', record: { fixedChangesAvailable: true, subjects: [{ displayName: '甲', changes: [{ category: 'adaptive', action: 'update', beforeText: '旧雨夜约定', afterText: '改为白天见面' }] }], endStateSubjects: [] } } };
+  const newFloor = { floorId: 'new', assistantSeq: 80, messageIndex: 80, memoryId: 'memory-new', status: 'ready', summary: '摘要', memory, cse: { status: 'ready', deltaId: 'delta-new', record: { fixedChangesAvailable: false, subjects: [], endStateSubjects: [{ displayName: '乙', core: [], adaptive: [], situational: [{ text: '保留在旧记录快照里的银色钥匙', visibility: 'private', reason: '旧档快照', origin: 'floor' }] }] } } };
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 2, rememberedCount: 2, cseReady: true, csePendingCount: 0, cseFailedCount: 0, cseSubjects: [], floors: [oldFloor, newFloor] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef }); view.setPage('people'); view.mount(container); flatten(container).find(node => node.textContent === '分析记录').click();
+  const search = flatten(container).find(node => node.attributes['aria-label'] === '搜索当前聊天的全部人物状态历史');
+  const heading = search.parentNode.parentNode; assert.equal(heading.children.at(-1).textContent, '返回当前状态', '搜索位于返回按钮左侧');
+  search.value = '旧雨夜约定'; search.fire('input');
+  let result = flatten(container).find(node => node.className === 'qqj-history-search-result');
+  assert.match(flatten(result).map(node => node.textContent).join('|'), /甲.*第 2 楼.*长期倾向.*旧雨夜约定/u);
+  result.click();
+  let row = flatten(container).find(node => node.className === 'qqj-cse-history-row' && flatten(node).some(child => child.textContent === '第 2 楼'));
+  assert.equal(search.value, ''); assert.equal(row.open, true, '点击结果回到并展开原分析楼');
+  assert.ok(flatten(row).filter(node => node.tag === 'details').every(node => node.open), '完整变更与状态详情一并展开');
+  assert.match(flatten(row).map(node => node.textContent).join('|'), /旧雨夜约定.*改为白天见面.*查看本楼已保存状态/u);
+  search.value = '银色钥匙'; search.fire('input');
+  result = flatten(container).find(node => node.className === 'qqj-history-search-result');
+  assert.match(flatten(result).map(node => node.textContent).join('|'), /乙.*第 80 楼.*当前情境.*银色钥匙.*旧档快照/u);
+  flatten(container).find(node => node.textContent === '清空').click();
+  assert.equal(flatten(container).filter(node => node.className === 'qqj-cse-history-row').length, 2, '清空后恢复逐楼历史'); view.deactivate();
 });
 
 test('CSE 完整隔离不伪造成功，旧楼缺诊断字段不冒充零隔离', () => {

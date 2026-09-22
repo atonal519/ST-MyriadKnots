@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { applyAppearance, createAppearanceController, resolveAppearance } from '../src/ui/appearance.js';
+
+test('面板标题与人物名沿用用户字体，不再由固定宋体覆盖', async () => {
+  const css = await readFile(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
+  assert.doesNotMatch(css, /宋体,"Songti SC",serif/u);
+  assert.equal(css.match(/var\(--qqj-custom-font,inherit\),-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif/gu)?.length, 22);
+});
 
 test('外观仅写千千结 host 与其 Shadow Root 字体链接', () => {
   const attributes = {};

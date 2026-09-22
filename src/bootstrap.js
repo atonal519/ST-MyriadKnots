@@ -4,6 +4,7 @@ import { installWandEntry } from './ui/wand-entry.js';
 import { createSourcePermissionView } from './ui/source-permission-view.js';
 import { createV3FoundationView } from './ui/v3-foundation-view.js';
 import { createPeopleProfilesView } from './ui/people-profiles-view.js';
+import { createStorageManagementView } from './ui/storage-management-view.js';
 import { createDialogManager } from './ui/dialog.js';
 
 export function bootstrap({
@@ -22,6 +23,7 @@ export function bootstrap({
   v3RecallRuntime,
   peopleWorkspaceRuntime,
   chatMemoryManagement,
+  storageManagement,
   sessionStateProvider,
   prepareSession,
   backendDiagnosticProvider,
@@ -30,6 +32,7 @@ export function bootstrap({
   sourcePermissionViewFactory = createSourcePermissionView,
   v3FoundationViewFactory = createV3FoundationView,
   peopleProfilesViewFactory = createPeopleProfilesView,
+  storageManagementViewFactory = createStorageManagementView,
   documentRef = globalThis.document,
   panelFactory = createPanel,
   fabFactory = createFab,
@@ -48,6 +51,7 @@ export function bootstrap({
   if (dialog?.host) (documentRef.documentElement ?? documentRef.body).append(dialog.host);
   const foundationView = v3FoundationViewFactory({ runtime: v3FoundationRuntime, recallRuntime: v3RecallRuntime, peopleRuntime: peopleWorkspaceRuntime, timeRuntime, memoryManagement: chatMemoryManagement, sessionStateProvider, backendDiagnosticProvider, pluginVersion, uiDiagnosticProvider: () => panel?.getUiDiagnostic?.() ?? '{}', documentRef, confirmImpl: options => dialog.confirm(options), chooseImpl: options => dialog.choose?.(options) ?? null, infoImpl: options => dialog.info(options), customImpl: options => dialog.custom(options) });
   const peopleProfilesView = peopleProfilesViewFactory({ runtime: peopleWorkspaceRuntime, sessionStateProvider, prepareSession, documentRef, dialog });
+  const storageManagementView = storageManagementViewFactory({ manager: storageManagement, documentRef, confirmImpl: options => dialog.confirm(options) });
   const syncAppearance = value => { fab?.setAppearance?.(value); inlineRenderer?.setAppearance?.(value); };
   let pluginEnabled = settings?.isEnabled?.() !== false;
   const enabled = () => pluginEnabled;
@@ -68,6 +72,7 @@ export function bootstrap({
     apiTools,
     v3FoundationView: foundationView,
     peopleProfilesView,
+    storageManagementView,
     sourcePermissionView,
     onPluginEnabledChange,
     onStoryClockChange,
