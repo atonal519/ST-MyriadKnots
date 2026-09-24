@@ -60,8 +60,10 @@ test('七日前至当天提醒，过后取下一年，闰日不改日期，特�
 function backend() {
   const records = new Map();
   return { client: {
+    async health() { return { capabilities: { permanentDelete: true } }; },
     async get(collection, id) { const value = records.get(`${collection}/${id}`); if (!value) throw Object.assign(new Error('missing'), { status: 404 }); return structuredClone(value); },
     async put(collection, id, data, revision) { const key = `${collection}/${id}`, old = records.get(key); assert.equal(old?.revision ?? 0, revision); const value = { data: structuredClone(data), revision: revision + 1 }; records.set(key, value); return structuredClone(value); },
+    async removePermanent(collection, id, revision) { const key = `${collection}/${id}`, old = records.get(key); if (!old) throw Object.assign(new Error('missing'), { status: 404 }); if (old.revision !== revision) throw Object.assign(new Error('conflict'), { status: 409 }); records.delete(key); return { ok: true }; },
   } };
 }
 
@@ -71,9 +73,10 @@ test('同一计划处理正文与年度时只多一次请求，正文保存和�
   const root = { chatId: CHAT, narrativeGeneration: 'generation', headCheckpointId: 'head' };
   const source = { status: 'ready', root, rootRevision: 1, floors: candidates.filter(row => row.stabilityProof).map((candidate, index) => createFloorRecord({ candidate, id: `floor-${index + 1}`, chatId: CHAT, narrativeGeneration: root.narrativeGeneration })), floorMemories: [], stateDeltas: [], entities: [], baseline: { userPersona: { entityId: USER, name: '用户' } } };
   const store = createTimeStore({ client: backend().client });
+  const profile = { name: '阿岚', birthday: '9月20日' };
   const runtime = createTimeRuntime({ store, foundationStore: { readRoot: async () => ({ data: root }) }, hostAdapter: { snapshot: () => ({ chat, chatId: 'host', context: { chatMetadata: { qianqianjie: { chatId: CHAT } } } }) },
     session: { identity: () => ({ chatId: CHAT, hostChatId: 'host' }) }, getReachable: () => source, getMemoryState: () => ({ memorySyncStatus: 'idle' }), isEnabled: () => true,
-    annualSettingsProvider: () => ({ ready: true, people: [{ entityId: PERSON, displayName: '阿岚', profile: { name: '阿岚', birthday: '9月20日' } }] }),
+    annualSettingsProvider: () => ({ ready: true, people: [{ entityId: PERSON, displayName: '阿岚', profile }] }),
     generateTimeTask: async ({ taskMessages }) => { const request = JSON.parse(taskMessages[0].content);
       if (request.task === 'annual-settings') return { jsonData: { sources: request.sources.map(row => ({ sourceId: row.sourceId, items: [{ category: 'birthday', label: '生日', originalDate: row.content, calendar: 'gregorian', month: 9, day: 20, note: '' }] })) } };
       if (request.currentReview) return { jsonData: { changes: request.trackedItems.map(item => ({ itemId: item.id, progression: '仍待后续正文确认。', assessmentReason: '' })) } };
@@ -87,6 +90,14 @@ test('同一计划处理正文与年度时只多一次请求，正文保存和�
   const item = runtime.getState().trackedItems[0];
   await runtime.editItem(item.id, { label: '人工回信期限' }, item.observationKey);
   assert.equal(runtime.getState().annualItems.length, 1, '编辑正文事项后保留年度UI');
+  let stored = await store.read(CHAT);
+  const pending = [{ id: 'expired-time-batch', revision: 1 }];
+  await store.putHead(CHAT, { ...stored.head, pendingDeletionRecords: pending }, stored.revision);
+  runtime.invalidate(); await runtime.refreshStatus({ force: true }); assert.equal(runtime.getState().pendingDeletionCount, 1);
+  profile.birthday = '9月21日'; await runtime.runBatch();
+  assert.equal(runtime.getState().pendingDeletionCount, 1, '年度资料更新改写lastRun后仍显示持久待清理状态');
+  stored = await store.read(CHAT); assert.deepEqual(stored.head.pendingDeletionRecords, pending);
+  await runtime.deleteItems([]); assert.equal(runtime.getState().pendingDeletionCount, 0, '年度更新后仍能从同一入口续清');
 });
 
 test('旧档无正文可补读；相同和无关变化不调用，相关变化调用，失败同触发抑制且手动可重试，清空撤项', async () => {

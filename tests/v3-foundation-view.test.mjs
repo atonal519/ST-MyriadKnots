@@ -128,7 +128,7 @@ function peopleRuntime(candidates, selected = candidates.map(item => item.entity
 test('近期事项人工编辑保草稿焦点，失败重试与取消零写，停止项同缓存恢复', async () => {
   const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: false, stableCount: 0, rememberedCount: 0, unprocessedCount: 0, floors: [] };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
-  let item = { id: 'body-item', observationKey: 'key-one', status: 'active', person: '甲', label: '旧擦伤', type: 'body', observation: '原观察', observationTime: { date: '2026-05-11', raw: '次日', clock: '08:00' }, occurrenceTime: { date: '2026-05-10', raw: '昨天', clock: '08:00' }, dueTime: { date: null }, periodDays: null, elapsedHours: null, elapsedDays: null, observationElapsedHours: null, observationElapsedDays: 2, projection: '旧推测' };
+  let item = { id: 'body-item', observationKey: 'key-one', status: 'active', person: '甲', label: '旧擦伤', type: 'body', observation: '原观察', observationTime: { date: '2026-05-11', raw: '次日', clock: '08:00' }, occurrenceTime: { date: '纪1年10月4日', raw: '纪元年10月4日' }, dueTime: { date: null }, periodDays: null, elapsedHours: null, elapsedDays: null, observationElapsedHours: null, observationElapsedDays: 2, projection: '旧推测' };
   let timeState = { status: 'completed', active: false, canOrganize: true, disabledReason: '', last: { status: 'completed', items: 1 }, trackedItems: [item], stoppedItems: [] }, writes = 0, reads = 0, fail = true;
   let lastFields; const listeners = new Set(); const emit = () => { for (const listener of listeners) listener(timeState); };
   const timeRuntime = { getState: () => structuredClone(timeState), subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); }, refreshStatus: async () => { reads += 1; emit(); return timeState; },
@@ -139,6 +139,7 @@ test('近期事项人工编辑保草稿焦点，失败重试与取消零写，�
   const container = new Node('main'); container.scrollTop = 35;
   let confirmedCopy; const view = createV3FoundationView({ runtime, timeRuntime, documentRef, confirmImpl: options => { confirmedCopy = options; return true; } }); view.setPage('memories'); view.mount(container);
   await flatten(container).find(node => node.textContent === '近期事项（1）').click();
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /观察时间：2026-05-11 08:00；发生时间：纪元年10月4日/u, '相对词沿用锚定日期，任意纪年原文覆盖旧派生日期');
   const itemMenu = flatten(container).find(node => node.className === 'qqj-profile-menu');
   assert.equal(itemMenu.parentNode.className, 'qqj-recent-item-head'); assert.equal(itemMenu.parentNode.children.at(-1), itemMenu);
   assert.equal(itemMenu.children[0].textContent, '⋮'); assert.equal(itemMenu.children[0].attributes['aria-haspopup'], 'menu'); assert.match(itemMenu.children[0].attributes['aria-label'], /事项操作/u);
@@ -514,7 +515,7 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
   let fallback = flatten(container).find(node => node.className === 'v3-diagnostic-fallback');
   assert.equal(fallback?.readOnly, true); assert.equal(fallback?.disabled, false, '同步遮罩不得禁用只读复制 fallback');
   let diagnostic = JSON.parse(fallback.value);
-  assert.equal(diagnostic.formatVersion, 1); assert.equal(diagnostic.pluginVersion, '0.1.9-test'); assert.match(diagnostic.capturedAt, /^\d{4}-/);
+  assert.equal(diagnostic.formatVersion, 2); assert.equal(diagnostic.pluginVersion, '0.1.9-test'); assert.match(diagnostic.capturedAt, /^\d{4}-/);
   assert.deepEqual(diagnostic.backend, backendState);
   assert.deepEqual(diagnostic.identity, { status: 'preparing', identityPresent: true, error: { present: true, name: 'Error', code: 'QQJ_CHAT_BINDING_CONFLICT', httpStatus: 409 } });
   assert.equal(diagnostic.foundation.chatIdPresent, true); assert.equal(diagnostic.foundation.headCheckpointPresent, true); assert.equal(diagnostic.foundation.activeRun.phase, 'capturing');
@@ -523,7 +524,7 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
   assert.equal(diagnostic.memory.activeExtraction.phase, 'extracting'); assert.equal(Object.hasOwn(diagnostic.memory.activeAutoMemory, 'kind'), false); assert.equal(diagnostic.memory.activeAutoMemory.phase, 'analyzingCse');
   assert.deepEqual(diagnostic.memory.syncError, { present: true, name: 'TimeoutError', code: 'BACKEND_TIMEOUT' });
   assert.deepEqual(diagnostic.memory.lastExtractorError, { present: true, name: 'TypeError', code: 'V3_EXTRACTOR_FAILED', httpStatus: 429 });
-  assert.deepEqual(diagnostic.memory.lastAutomationError, { present: true, name: 'Error', code: 'V3_AUTO_MEMORY_FAILED' });
+  assert.deepEqual(diagnostic.memory.lastAutomationError, { present: true, name: 'Error', code: 'V3_AUTO_MEMORY_FAILED', prepareStep: null, detail: null, location: null, lastFailedAt: null });
   assert.equal(diagnostic.cse.active.phase, 'committing'); assert.equal(diagnostic.recall.active.phase, 'selecting');
   assert.deepEqual(diagnostic.management, { status: 'deleting', phase: 'deletingRecords', workBusy: true, blockedByOtherChat: true, error: { present: true } });
   assert.deepEqual(diagnostic.ui, { syncingOverlayActive: true, workBusy: true, deleting: true, deletePending: false });
@@ -2217,4 +2218,28 @@ test('时间补查真实view先计划后确认，取消零整理；摘要CSE忙�
   const timeRuntime={getState:()=>structuredClone(timeState),subscribe:listener=>{listeners.add(listener);return()=>listeners.delete(listener);},refreshStatus:async()=>{},prepareHistoryPlan:async()=>{plans++;return {floorCount:4,bodyBatchCount:2,batchCount:3,apiCalls:3,currentReview:true};},organize:async plan=>{runs++;assert.equal(plan.apiCalls,3);}};
   const container=new Node('main'),view=createV3FoundationView({runtime,timeRuntime,documentRef,confirmImpl:options=>{shown=options;return confirmed;}});view.setPage('memories');view.mount(container);const toggle=flatten(container).find(node=>node.className.includes('qqj-profile-more'));await toggle.click();const body=flatten(container).find(node=>node.id==='qqj-recent-items'),button=flatten(body).find(node=>node.textContent==='补查历史');assert.equal(button.disabled,false);
   assert.match(flatten(body).map(node=>node.textContent).join('|'),/此前 4 楼正文未检查.*1 楼等待稳定绑定/u);await button.click();assert.equal(plans,1);assert.equal(runs,0);assert.match(shown.body,/4 个 AI 楼.*2 批.*追加 1 次当前事项评估.*最多 3 次摘要 API/);confirmed=true;await button.click();assert.equal(runs,1);await toggle.click();assert.equal(body.hidden,true);for(const listener of listeners)listener(timeState);assert.equal(body.hidden,true);view.deactivate();
+});
+
+test('停止项复用批量控件永久删除，取消零写，失败后同入口续做',async()=>{
+  const state={status:'ready',pluginEnabled:true,chatId:CHAT,foundationStatus:'ready',memorySnapshotStatus:'ready',memorySyncStatus:'idle',memoryWorkBusy:false,floors:[]};
+  const runtime={getState:()=>state,refreshStatus:async()=>state,confirmLatest:async()=>state,subscribe:()=>()=>{}};const listeners=new Set();let confirmed=false,shown,calls=[];
+  let timeState={status:'completed',active:false,canOrganize:true,pendingDeletionCount:0,trackedItems:[{id:'active',observationKey:'active-key',label:'追踪项',status:'active'}],stoppedItems:[
+    {id:'done',observationKey:'done-key',label:'完成项',status:'completed',person:'甲',observation:'已完成'},
+    {id:'merged',observationKey:'merged-key',label:'归并项',status:'paused',mergedInto:'main',person:'乙',observation:'已归并'},
+  ],coverage:{checkedFloors:1,totalFloors:1},last:{status:'completed'}};
+  const timeRuntime={getState:()=>structuredClone(timeState),subscribe:listener=>{listeners.add(listener);return()=>listeners.delete(listener);},refreshStatus:async()=>{},
+    async deleteItems(items){calls.push(structuredClone(items));if(calls.length===1)throw new Error('模拟旧记录清理失败');timeState={...timeState,pendingDeletionCount:0,stoppedItems:[],last:{status:'completed'}};for(const listener of listeners)listener(timeState);}};
+  const container=new Node('main'),view=createV3FoundationView({runtime,timeRuntime,documentRef,confirmImpl:options=>{shown=options;return confirmed;}});view.setPage('memories');view.mount(container);
+  await flatten(container).find(node=>node.className.includes('qqj-profile-more')).click();let body=flatten(container).find(node=>node.id==='qqj-recent-items');await flatten(body).find(node=>node.textContent==='查看停止项（2）').click();
+  await flatten(body).find(node=>node.textContent==='批量管理').click();assert.equal(flatten(body).find(node=>node.textContent==='选择问题项').hidden,true);assert.ok(flatten(body).filter(node=>node.className==='qqj-recent-item-select').length===2);
+  await flatten(body).find(node=>node.textContent==='选择当前列表').click();let remove=flatten(body).find(node=>node.textContent==='批量永久删除');assert.equal(remove.disabled,false);
+  await remove.click();assert.equal(calls.length,0);assert.match(shown.body,/已选的 2 项.*不可恢复.*摘要与千事保留.*不调用模型/u);
+  confirmed=true;await remove.click();assert.deepEqual(calls[0],[{itemId:'done',observationKey:'done-key'},{itemId:'merged',observationKey:'merged-key'}]);assert.match(flatten(body).map(node=>node.textContent).join('|'),/永久删除未完成：模拟旧记录清理失败/u);
+  for(const checkbox of flatten(body).filter(node=>node.className==='qqj-recent-item-select')) { checkbox.checked=false; await checkbox.fire('change'); }
+  assert.ok(flatten(body).filter(node=>node.className==='qqj-recent-item-select').every(node=>!node.checked),'此时同一停止列表没有新选择');
+  timeState={...timeState,pendingDeletionCount:2,last:{status:'partial'}};for(const listener of listeners)listener(timeState);
+  remove=flatten(body).find(node=>node.textContent==='继续永久删除');assert.equal(remove.disabled,false);
+  assert.ok(flatten(body).filter(node=>node.className==='qqj-recent-item-select').every(node=>node.disabled&&!node.checked),'续清期间不能把新勾选混进旧删除');
+  assert.equal(flatten(body).find(node=>node.textContent==='选择当前列表').disabled,true);
+  await remove.click();assert.deepEqual(calls[1],[]);assert.equal(flatten(body).some(node=>node.textContent==='继续永久删除'),false);view.deactivate();
 });

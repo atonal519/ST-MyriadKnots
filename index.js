@@ -149,7 +149,6 @@ const timeRuntime = createTimeRuntime({
   sanitizerOptions,
   storyClockReferenceTags: () => settings.get().storyClockReferenceTags,
   isEnabled: () => settings.isEnabled() && settings.get().timeEvolutionEnabled === true,
-  onInvalidate: () => v3RecallRuntime?.invalidate('timeChanged'),
 });
 const v3MemoryRuntime = createV3MemoryRuntime({
   foundationRuntime,
@@ -231,6 +230,7 @@ const storageManagement = createStorageManagement({
   hostAdapter,
   settings,
   memoryRuntime: v3MemoryRuntime,
+  foundationRuntime,
   activitySources: [foundationRuntime, v3RecallRuntime, peopleWorkspaceRuntime, timeRuntime, chatMemoryManagement],
   isBusy: () => {
     const memory = v3MemoryRuntime.getState(), management = chatMemoryManagement.getState();

@@ -22,7 +22,7 @@ class Node {
 }
 const flatten = node => [node, ...(node.children ?? []).flatMap(flatten)];
 
-test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢复各页滚动位置', async () => {
+test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，并恢复各页滚动位置', async () => {
   const [source, panelHtml, panelCss] = await Promise.all([
     readFile(new URL('../src/ui/panel.js', import.meta.url), 'utf8'),
     readFile(new URL('../src/ui/panel.html', import.meta.url), 'utf8'),
@@ -32,9 +32,9 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   const panelNode = new Node('section'), body = new Node('main'), view = new Node('div');
   const topbar = new Node('header'), resize = new Node('button'), close = new Node('button'), themeButton = new Node('button'), fabButton = new Node('button');
   const themeSvg = new Node('svg'); themeButton.querySelector = selector => selector === 'svg' ? themeSvg : null;
-  const profileTab = new Node('button'), eventTab = new Node('button'), peopleTab = new Node('button'), settingsTab = new Node('button'); profileTab.dataset.tab = 'profiles'; eventTab.dataset.tab = 'events'; peopleTab.dataset.tab = 'people'; settingsTab.dataset.tab = 'settings';
+  const profileTab = new Node('button'), eventTab = new Node('button'), qianshiTab = new Node('button'), peopleTab = new Node('button'), settingsTab = new Node('button'); profileTab.dataset.tab = 'profiles'; eventTab.dataset.tab = 'events'; qianshiTab.dataset.tab = 'qianshi'; peopleTab.dataset.tab = 'people'; settingsTab.dataset.tab = 'settings';
   const nodeMap = new Map([['.panel', panelNode], ['.body', body], ['.view', view], ['.topbar', topbar], ['.panel-resize-handle', resize], ['.close', close], ['.theme-btn', themeButton], ['.fab-toggle-btn', fabButton]]);
-  const root = { innerHTML: '', querySelector: selector => nodeMap.get(selector) ?? null, querySelectorAll: selector => selector === '.tab' ? [profileTab, eventTab, peopleTab, settingsTab] : [] };
+  const root = { innerHTML: '', querySelector: selector => nodeMap.get(selector) ?? null, querySelectorAll: selector => selector === '.tab' ? [profileTab, eventTab, qianshiTab, peopleTab, settingsTab] : [] };
   const host = new Node('host'); host.attachShadow = () => root;
   let firstElement = true;
   const documentEvents = {};
@@ -86,6 +86,11 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
     async activate() { calls.push(['profiles-activate']); return { status: 'ready' }; },
     deactivate() { calls.push(['profiles-deactivate']); },
   };
+  const qianshiTimelineView = {
+    mount(target) { calls.push(['qianshi-mount', target]); target.replaceChildren(new Node('qianshi')); },
+    async activate() { calls.push(['qianshi-activate']); return { status: 'ready' }; },
+    deactivate() { calls.push(['qianshi-deactivate']); },
+  };
   const storageManagementView = {
     mount(target) { calls.push(['storage-mount', target]); target.replaceChildren(new Node('storage')); },
     async activate() { calls.push(['storage-activate']); return { status: 'ready' }; },
@@ -105,7 +110,7 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   const memoryRuntime = { subscribe(listener) { memoryListeners.add(listener); return () => memoryListeners.delete(listener); } };
   const autoHideApplies = [];
   let autoHideApplyStatus = null;
-  const panel = entry.namespace.createPanel({ settings, v3FoundationView, timeRuntime, memoryRuntime, peopleProfilesView, storageManagementView, documentRef, isSevenDaysLedgerInjectionEnabled: () => ledgerInjectionEnabled, onTimeEvolutionChange: () => { timeChanges += 1; }, navigatorRef: { clipboard: { async writeText(value) { clipboardWrites.push(value); if (clipboardFail) throw new Error('clipboard denied'); } } }, dialog: { setAppearance() {}, confirm(options) { timeConfirms.push(options); dialogActive = true; return new Promise(resolve => { resolveTimeConfirm = result => { dialogActive = false; resolve(result); }; }); }, custom(options) { helpDialog = options; dialogActive = true; return Promise.resolve(true); }, closeAll() { resolveTimeConfirm?.(false); dialogActive = false; }, hasActive: () => dialogActive, cancelTop() { dialogCancels += 1; dialogActive = false; } }, onFabShowChange: value => { fabVisible = value; }, onAutoHideChange: async value => { autoHideApplies.push(value); return autoHideApplyStatus ? { status: autoHideApplyStatus } : undefined; } });
+  const panel = entry.namespace.createPanel({ settings, v3FoundationView, timeRuntime, memoryRuntime, peopleProfilesView, qianshiTimelineView, storageManagementView, documentRef, isSevenDaysLedgerInjectionEnabled: () => ledgerInjectionEnabled, onTimeEvolutionChange: () => { timeChanges += 1; }, navigatorRef: { clipboard: { async writeText(value) { clipboardWrites.push(value); if (clipboardFail) throw new Error('clipboard denied'); } } }, dialog: { setAppearance() {}, confirm(options) { timeConfirms.push(options); dialogActive = true; return new Promise(resolve => { resolveTimeConfirm = result => { dialogActive = false; resolve(result); }; }); }, custom(options) { helpDialog = options; dialogActive = true; return Promise.resolve(true); }, closeAll() { resolveTimeConfirm?.(false); dialogActive = false; }, hasActive: () => dialogActive, cancelTop() { dialogCancels += 1; dialogActive = false; } }, onFabShowChange: value => { fabVisible = value; }, onAutoHideChange: async value => { autoHideApplies.push(value); return autoHideApplyStatus ? { status: autoHideApplyStatus } : undefined; } });
 
   await panel.show();
   assert.equal(diagnostics.starts, 1); assert.match(root.innerHTML, /\.body\{[^}]*touch-action:pan-y/);
@@ -138,7 +143,7 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   assert.equal(calls.length, callsBeforeHelp, '打开静态教程不得读取或激活记忆runtime');
   assert.equal(helpDialog.title, '千千结使用说明'); assert.equal(helpDialog.confirmText, '关闭'); assert.equal(helpDialog.cancelText, '');
   const helpSections = flatten(helpDialog.content).filter(node => node.tag === 'details');
-  assert.equal(helpSections.length, 9); assert.equal(helpSections[0].open, true); assert.ok(helpSections.slice(1).every(node => node.open === false));
+  assert.equal(helpSections.length, 10); assert.equal(helpSections[0].open, true); assert.ok(helpSections.slice(1).every(node => node.open === false));
   assert.equal(helpSections.at(-1).children[0].textContent, '排障手册');
   assert.match(flatten(helpDialog.content).map(node => node.textContent).join('|'), /保留包裹符.*清洗包裹符.*人物状态重构/);
   dialogActive = false;
@@ -223,6 +228,10 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   assert.equal(view.children[0]?.className, 'qqj-page qqj-people-page', '返回内容页应移除设置 DOM 并呈现真实内容视图');
   eventTab.fire('click');
   assert.equal(body.scrollTop, 71, '回到千结时恢复千结滚动位置');
+  qianshiTab.fire('click'); body.scrollTop = 57;
+  assert.ok(calls.some(([kind]) => kind === 'qianshi-activate'), '千事必须挂载独立时间线视图');
+  eventTab.fire('click');
+  assert.equal(body.scrollTop, 71, '从千事返回千结仍恢复千结滚动位置');
   profileTab.fire('click');
   assert.equal(body.scrollTop, 31, '回到千人时恢复千人滚动位置');
 
@@ -277,7 +286,7 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
   const buttonEnd = touchEvent({ changedTouches: [touch(160, 105)], target: buttonTarget }); body.fire('touchend', buttonEnd);
   if (!buttonEnd.defaultPrevented) buttonTarget.click();
   assert.equal(buttonEnd.defaultPrevented, true); assert.equal(buttonClicks, 0, '按钮起始的横滑不得触发业务点击');
-  assert.equal(panel.getState().activeTab, 'people', '按钮起始横滑应进入双丝网');
+  assert.equal(panel.getState().activeTab, 'qianshi', '按钮起始横滑应进入千事');
   body.fire('touchstart', touchEvent({ touches: [touch(120, 100)], target: buttonTarget }));
   const buttonTapEnd = touchEvent({ changedTouches: [touch(120, 100)], target: buttonTarget }); body.fire('touchend', buttonTapEnd);
   if (!buttonTapEnd.defaultPrevented) buttonTarget.click();
@@ -285,7 +294,10 @@ test('真实面板入口按千人/千结/双丝网/设置映射视图，并恢�
 
   body.fire('touchstart', { touches: [touch(260, 100)], target: swipeTarget });
   body.fire('touchend', { changedTouches: [touch(160, 105)], target: swipeTarget });
-  assert.equal(panel.getState().screen, 'settings', '第三次左滑应进入设置页');
+  assert.equal(panel.getState().activeTab, 'people', '第三次左滑应进入双丝网');
+  body.fire('touchstart', { touches: [touch(260, 100)], target: swipeTarget });
+  body.fire('touchend', { changedTouches: [touch(160, 105)], target: swipeTarget });
+  assert.equal(panel.getState().screen, 'settings', '第四次左滑应进入设置页');
   const settingsInputTarget = { closest: selector => selector.includes('input') ? {} : null };
   body.fire('touchstart', { touches: [touch(100, 100)], target: settingsInputTarget });
   body.fire('touchend', { changedTouches: [touch(200, 105)], target: settingsInputTarget });

@@ -2309,6 +2309,29 @@ test('memory 管理刷新路径在 tail recovery 前自愈首个尾部孤儿', a
   assert.deepEqual(h.runtime.getReachable().floors.slice(0, 2).map(floor => floor.id), floorIds);
 });
 
+test('管理刷新首轮inspect失败立即显示错误，不在同次点击重读或写入', async () => {
+  const h = harness([assistant('已有稳定正文'), user('确认已有稳定正文')], { modernAnchors: true });
+  await h.runtime.start();
+  const rejectModel = async () => { throw new Error('失败检查路径不得调用模型'); };
+  const memory = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
+    generateAnalysisTask: rejectModel, generateUtilityTask: rejectModel, logger: { warn() {} } });
+  await memory.start();
+  h.runtime.invalidate();
+  let failRootOnce = true;
+  h.backend.setBeforeGet(({ key }) => {
+    if (key === 'v3-root' && failRootOnce) { failRootOnce = false; throw new Error('模拟检查读取失败'); }
+  });
+  const before = h.backend.calls.length;
+  const writesBefore = h.backend.calls.filter(call => call[0] === 'put').length;
+  const state = await memory.refreshStatus({ preferCached: false, recoverTailDeletion: true, reconcileFoundation: true });
+  h.backend.setBeforeGet(null);
+  const reads = h.backend.calls.slice(before).filter(call => call[0] === 'get');
+  assert.deepEqual(reads.map(call => call[2]), ['v3-root'], '首轮inspect只发起一次root读取，没有进入第二次reconcile大图');
+  assert.equal(h.backend.calls.filter(call => call[0] === 'put').length, writesBefore, '失败分支不写基础记忆');
+  assert.equal(state.memorySyncStatus, 'error');
+  assert.equal(state.memorySyncError.message, '模拟检查读取失败');
+});
+
 test('memory 人工刷新登记未经过事件的新稳定尾楼，普通 fresh 只读且并发人工意图不被吞', async () => {
   const h = harness([assistant('已登记正文'), user('确认已登记正文')], { modernAnchors: true });
   await h.runtime.start();
@@ -2325,8 +2348,13 @@ test('memory 人工刷新登记未经过事件的新稳定尾楼，普通 fresh 
   const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store: h.store, hostAdapter: h.hostAdapter,
     generateAnalysisTask: rejectModel, generateUtilityTask: rejectModel, logger: { warn() {} } });
   const waitForMemorySync = async expected => {
-    for (let attempt = 0; attempt < 20 && memory.getState().memorySyncStatus === 'syncing'; attempt += 1) await new Promise(resolve => setImmediate(resolve));
-    assert.equal(memory.getState().memorySyncStatus, expected);
+    await new Promise((resolve, reject) => {
+      let unsubscribe = () => {};
+      const timer = setTimeout(() => { unsubscribe(); reject(new Error(`memorySyncStatus 未到达 ${expected}，当前：${memory.getState().memorySyncStatus}`)); }, 5000);
+      const finish = () => { clearTimeout(timer); unsubscribe(); resolve(); };
+      unsubscribe = memory.subscribe(state => { if (state.memorySyncStatus === expected) finish(); });
+      if (memory.getState().memorySyncStatus === expected) finish();
+    });
   };
   await memory.start();
   h.context.chat.push(assistant('未经过事件的新稳定正文'), user('确认新正文'));

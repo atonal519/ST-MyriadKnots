@@ -17,6 +17,12 @@ function exactKeys(value, keys, path) {
   if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) fail(path);
 }
 
+function exactKeysWithOptional(value, keys, optionalKeys, path) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail(path);
+  const allowed = new Set([...keys, ...optionalKeys]);
+  if (keys.some(key => !Object.hasOwn(value, key)) || Object.keys(value).some(key => !allowed.has(key))) fail(path);
+}
+
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
 
 export function validateQianshiDelta(input, { floorId = null, floorIds = null } = {}) {
@@ -32,8 +38,9 @@ export function validateQianshiDelta(input, { floorId = null, floorIds = null } 
   const eventIds = new Set();
   for (const [index, event] of value.events.entries()) {
     const path = `qianshiDelta.events[${index}]`;
-    exactKeys(event, ['id', 'matterId', 'updatesMatter', 'title', 'description', 'status', 'storyTime', 'scheduledTime', 'people', 'object', 'sourceFloorId', 'continuesFromEventIds'], path);
+    exactKeysWithOptional(event, ['id', 'matterId', 'updatesMatter', 'title', 'description', 'status', 'storyTime', 'scheduledTime', 'people', 'object', 'sourceFloorId', 'continuesFromEventIds'], ['important'], path);
     if (!uuid(event.id) || eventIds.has(event.id) || event.matterId !== null && !uuid(event.matterId) || typeof event.updatesMatter !== 'boolean') fail(`${path}.id`);
+    if (Object.hasOwn(event, 'important') && typeof event.important !== 'boolean') fail(`${path}.important`);
     if (event.updatesMatter && event.matterId === null) fail(`${path}.updatesMatter`);
     eventIds.add(event.id);
     if (!clean(event.title, 500) || !clean(event.description, 4000) || !STATUSES.has(event.status)) fail(path);

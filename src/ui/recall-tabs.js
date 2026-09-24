@@ -8,7 +8,7 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
   const signature = JSON.stringify([projection, [...sources]]);
   if (card.recallSignature === signature) return;
   card.recallSignature = signature;
-  const state = uiStates.get(card.stateKey) ?? { tab:'events', event:null, person:null, floors:new Map(), currentOpen:false, historyOpen:false };
+  const state = uiStates.get(card.stateKey) ?? { tab:'events', event:null, person:null, floors:new Map(), qianshiOpen:false, currentOpen:false, historyOpen:false };
   uiStates.set(card.stateKey, state);
   const node = (tag, className, text) => {
     const value = doc.createElement(tag);
@@ -140,6 +140,16 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     pills.append(pill);
   }
   showEvent(); events.append(pills, display);
+  let qianshi = null;
+  if (projection.qianshiProgressText) {
+    qianshi = node('details', 'time-reference qianshi-progress');
+    qianshi.open = state.qianshiOpen === true;
+    qianshi.addEventListener('toggle', () => { state.qianshiOpen = qianshi.open === true; });
+    qianshi.append(node('summary', '', '本轮千事进度'));
+    const list = node('div', 'time-reference-list');
+    list.append(node('p', 'time-reference-copy', projection.qianshiProgressText));
+    qianshi.append(list); events.append(qianshi);
+  }
   if (projection.timeReferenceItems?.length) {
     const reference = node('details', 'time-reference');
     reference.append(node('summary', '', `本轮时间参考（${projection.timeReferenceItems.length}条）`));
@@ -230,5 +240,5 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
   else timelines.append(node('p', 'recall-empty', '本轮未召回人物变化。'));
   history.append(picker, timelines); people.append(current, history);
   card.body.replaceChildren(root);
-  card.recallUi = { root, eventTab, peopleTab, events, people, pills, display, current, history, picker, timelines };
+  card.recallUi = { root, eventTab, peopleTab, events, people, pills, display, qianshi, current, history, picker, timelines };
 }

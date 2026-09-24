@@ -221,7 +221,13 @@ export function createInlineRenderer({
   };
 
   const liveRecallFor = (state, chatId, messageIndex) => {
-    if (state?.activeRecall?.chatId === chatId && state.activeRecall.userMessageIndex === messageIndex) return Object.freeze({ status: 'running', statusText: '寻回中', summary: '正在生成本轮召回回执。', injectionText: '', selectedFloors: Object.freeze([]), historyGroups: Object.freeze([]), kind: 'user' });
+    if (state?.activeRecall?.chatId === chatId && state.activeRecall.userMessageIndex === messageIndex) {
+      const phase = state.activeRecall.phase;
+      const preparing = phase === 'input' || phase === 'source', selecting = phase === 'selecting';
+      return Object.freeze({ status: 'running', statusText: preparing ? '准备召回中' : selecting ? '召回中' : '寻回中',
+        summary: preparing ? '正在准备本轮召回。' : selecting ? '正在生成本轮召回。' : '正在生成本轮召回回执。',
+        injectionText: '', selectedFloors: Object.freeze([]), historyGroups: Object.freeze([]), kind: 'user' });
+    }
     if (state?.lastRecallBinding?.chatId === chatId && state.lastRecallBinding.userMessageIndex === messageIndex
       && state?.lastRecall?.userMessageIndex === messageIndex) return projectInlineRecallReceipt(state.lastRecall);
     return null;

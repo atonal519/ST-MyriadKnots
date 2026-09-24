@@ -373,7 +373,8 @@ export function formatRecallInjection(input) {
   const correctedIds = new Set(timeDependencies.corrections.map(value => value.itemId));
   const reminders = (input.timeReminders ?? []).filter(value => !correctedIds.has(value.itemId));
   if (!reminders.length) return base;
-  input.timeDependencies?.reminders.push(...reminders.map(item => ({ itemId: item.itemId, text: item.text, sourceSignature: item.sourceSignature ?? null })));
+  input.timeDependencies?.reminders.push(...reminders.map(item => ({ itemId: item.itemId, text: item.text, sourceSignature: item.sourceSignature ?? null,
+    ...(item.qianshiRef ? { qianshiRef: { ...item.qianshiRef } } : {}) })));
   const block = ['[时间参考（当前推测及预计/期限节点尚未获正文确认，不代表已经发生或完成）]', ...reminders.map(item => `- ${item.text}`)].join('\n');
   return base ? base.replace('</qqj_recalled_context>', `${block}\n</qqj_recalled_context>`) : `<qqj_recalled_context>\n${block}\n</qqj_recalled_context>`;
 }
@@ -510,14 +511,18 @@ function scoreCandidates(candidates, queries, { summaryAssist = false, keepUnmat
   }).filter(value => keepUnmatched || value.score > 0);
 }
 
+const timeUrgencyBoost = value => ['cycle', 'deadline', 'annual'].includes(value?.type)
+  && Number.isFinite(value?.distance) && Math.abs(value.distance) <= 7
+  ? 0.12 * (1 - Math.abs(value.distance) / 8)
+  : 0;
+
 function rankedTimeReminders(source, queryContext, query, entityById) {
   const candidates = (source.timeProjection?.reminders ?? []).map((value, index) => ({
     ...value, _rankText: value.rankText ?? value.text,
     _entityText: entityNameText([value.subjectEntityId], entityById), _sourceOrder: index,
   }));
   return scoreCandidates(candidates, recallQueries(queryContext, query), { keepUnmatched: true })
-    .map(value => ({ ...value, score: value.score + (['cycle', 'deadline', 'annual'].includes(value.type)
-      && Number.isFinite(value.distance) && Math.abs(value.distance) <= 7 ? 0.12 * (1 - Math.abs(value.distance) / 8) : 0) }))
+    .map(value => ({ ...value, score: value.score + timeUrgencyBoost(value) }))
     .sort((a, b) => b.score - a.score || a._sourceOrder - b._sourceOrder);
 }
 
@@ -636,12 +641,18 @@ const relationAnchorOrder = (left, right) => (Number(right.branchScores?.latestU
   || (Number(right.assistantSeq ?? right.sourceAssistantSeq) || 0) - (Number(left.assistantSeq ?? left.sourceAssistantSeq) || 0)
   || (Number(left._sourceOrder) || 0) - (Number(right._sourceOrder) || 0);
 
-function materiallySame(left, right) {
-  const a = clean(left?._coreText ?? left?.text, 4000), b = clean(right?._coreText ?? right?.text, 4000);
-  if (!a || !b) return false;
-  const compactA = compact(a), compactB = compact(b);
-  if (compactA && compactB && (compactA.includes(compactB) || compactB.includes(compactA))) return true;
-  const aTokens = new Set(tokenizeRecallText(a)), bTokens = new Set(tokenizeRecallText(b));
+const materialText = value => value?._coreText ?? value?.text;
+const prepareMaterial = value => {
+  const text = clean(materialText(value), 4000);
+  return { text, compactText: text ? compact(text) : '', tokens: null };
+};
+const materialTokens = value => value.tokens ??= new Set(tokenizeRecallText(value.text));
+
+function materiallySame(left, right, prepare = prepareMaterial) {
+  const a = prepare(left), b = prepare(right);
+  if (!a.text || !b.text) return false;
+  if (a.compactText && b.compactText && (a.compactText.includes(b.compactText) || b.compactText.includes(a.compactText))) return true;
+  const aTokens = materialTokens(a), bTokens = materialTokens(b);
   const smaller = Math.min(aTokens.size, bTokens.size);
   return smaller > 0 && setIntersection(aTokens, bTokens).length / smaller >= 0.72;
 }
@@ -659,8 +670,19 @@ function expandLinkedHistory({ context, selectedHistory, selectedCse, excludedHi
     if (!stableKeysByValue.has(value)) stableKeysByValue.set(value, historyStableKey(value));
     return stableKeysByValue.get(value);
   };
+  const preparedMaterialsByText = new Map();
+  const prepareMaterialOnce = value => {
+    const text = String(materialText(value) ?? '');
+    if (!preparedMaterialsByText.has(text)) preparedMaterialsByText.set(text, prepareMaterial(value));
+    return preparedMaterialsByText.get(text);
+  };
   const excludedStableKeys = new Set(excludedHistory.map(value => value?.stableKey ?? stableKeyFor(value?.value ?? value)));
   const excludedValues = excludedHistory.map(value => value?.value ?? value).filter(Boolean);
+  const excludedByValue = new Map();
+  const textIsExcluded = value => {
+    if (!excludedByValue.has(value)) excludedByValue.set(value, excludedValues.some(excluded => materiallySame(value, excluded, prepareMaterialOnce)));
+    return excludedByValue.get(value);
+  };
   const selectedStableKeys = new Set(selectedHistory.map(stableKeyFor));
   const selectedFloorIds = new Set(selectedHistory.map(value => value.floorId));
   const sourceAnchorsByFloor = new Map();
@@ -679,7 +701,7 @@ function expandLinkedHistory({ context, selectedHistory, selectedCse, excludedHi
   selectedAnchors.forEach(value => rememberAnchor(value.floorId, value));
   const allowed = value => !selectedStableKeys.has(stableKeyFor(value))
     && !excludedStableKeys.has(stableKeyFor(value))
-    && !excludedValues.some(excluded => materiallySame(value, excluded));
+    && !textIsExcluded(value);
   const result = [];
   const add = (value, kind, anchor = null, relationTerms = []) => {
     if (!value || !allowed(value) || result.some(existing => duplicateKeyFor(existing) === duplicateKeyFor(value))) return false;
@@ -1311,7 +1333,8 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
   evidenceFiltered += [...(cseContext?.states ?? []), ...(cseContext?.changes ?? [])].filter(value => value.score <= 0).length;
   evidenceFiltered += [...historyContext.facts, ...historyContext.summaries].filter(value => value.score <= 0).length;
   const relationRank = value => value._relationEvidence === 'source' ? 1 : value._relationEvidence === 'topic' ? 2 : value._relationEvidence === 'nearby' ? 3 : 0;
-  const competitionOrder = (a, b) => (Number(b.value.branchScores?.latestUser) || 0) - (Number(a.value.branchScores?.latestUser) || 0)
+  const competitionPrimary = entry => (Number(entry.value.branchScores?.latestUser) || 0) + (entry.kind === 'time' ? timeUrgencyBoost(entry.value) : 0);
+  const competitionOrder = (a, b) => competitionPrimary(b) - competitionPrimary(a)
     || (Number(b.value.score) || 0) - (Number(a.value.score) || 0)
     || relationRank(a.value) - relationRank(b.value)
     || (Number(b.value.priority) || 0) - (Number(a.value.priority) || 0)

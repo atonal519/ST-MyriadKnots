@@ -4,6 +4,7 @@ import { installWandEntry } from './ui/wand-entry.js';
 import { createSourcePermissionView } from './ui/source-permission-view.js';
 import { createV3FoundationView } from './ui/v3-foundation-view.js';
 import { createPeopleProfilesView } from './ui/people-profiles-view.js';
+import { createQianshiTimelineView } from './ui/qianshi-timeline-view.js';
 import { createStorageManagementView } from './ui/storage-management-view.js';
 import { createDialogManager } from './ui/dialog.js';
 
@@ -32,6 +33,7 @@ export function bootstrap({
   sourcePermissionViewFactory = createSourcePermissionView,
   v3FoundationViewFactory = createV3FoundationView,
   peopleProfilesViewFactory = createPeopleProfilesView,
+  qianshiTimelineViewFactory = createQianshiTimelineView,
   storageManagementViewFactory = createStorageManagementView,
   documentRef = globalThis.document,
   panelFactory = createPanel,
@@ -51,6 +53,7 @@ export function bootstrap({
   if (dialog?.host) (documentRef.documentElement ?? documentRef.body).append(dialog.host);
   const foundationView = v3FoundationViewFactory({ runtime: v3FoundationRuntime, recallRuntime: v3RecallRuntime, peopleRuntime: peopleWorkspaceRuntime, timeRuntime, memoryManagement: chatMemoryManagement, sessionStateProvider, backendDiagnosticProvider, pluginVersion, uiDiagnosticProvider: () => panel?.getUiDiagnostic?.() ?? '{}', documentRef, confirmImpl: options => dialog.confirm(options), chooseImpl: options => dialog.choose?.(options) ?? null, infoImpl: options => dialog.info(options), customImpl: options => dialog.custom(options) });
   const peopleProfilesView = peopleProfilesViewFactory({ runtime: peopleWorkspaceRuntime, sessionStateProvider, prepareSession, documentRef, dialog });
+  const qianshiTimelineView = qianshiTimelineViewFactory({ runtime: v3FoundationRuntime, documentRef, dialog });
   const storageManagementView = storageManagementViewFactory({ manager: storageManagement, documentRef, confirmImpl: options => dialog.confirm(options) });
   const syncAppearance = value => { fab?.setAppearance?.(value); inlineRenderer?.setAppearance?.(value); };
   let pluginEnabled = settings?.isEnabled?.() !== false;
@@ -72,6 +75,7 @@ export function bootstrap({
     apiTools,
     v3FoundationView: foundationView,
     peopleProfilesView,
+    qianshiTimelineView,
     storageManagementView,
     sourcePermissionView,
     onPluginEnabledChange,

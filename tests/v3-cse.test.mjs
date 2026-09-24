@@ -870,7 +870,7 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.equal(compiled.delta.subjectSnapshots[0].situational[0].reason, '正文明确写出甲亲耳听见并记住');
   assert.equal(compiled.delta.source.promptVersion, CSE_PROMPT_VERSION);
   assert.equal(compiled.delta.source.compilerVersion, CSE_COMPILER_VERSION);
-  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-20');
+  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-22');
   assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-11');
   assert.match(CSE_SYSTEM_PROMPT, /单次事件造成的即时情绪、动作或台词若有值得保留的当下影响，只可进入 Situational/);
   assert.match(CSE_SYSTEM_PROMPT, /人物被提及不等于本人在场/);
@@ -881,6 +881,10 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.match(CSE_SYSTEM_PROMPT, /对各方使用同一判断标准/);
   assert.match(CSE_SYSTEM_PROMPT, /private 只表示可见性，明确的私密态度仍可填写 toward/);
   assert.match(CSE_SYSTEM_PROMPT, /previousState 中旧 toward 也必须按本楼证据审视，不得盲从/);
+  assert.match(CSE_SYSTEM_PROMPT, /authorialOtherStateContext 不重复 previousState 已提供的人物/);
+  assert.match(CSE_SYSTEM_PROMPT, /仅针对填写了 toward 的 Adaptive，text 直接写具体长期倾向/);
+  assert.match(CSE_SYSTEM_PROMPT, /同一含义应写成“更愿意主动解释误会”.*不要写成“在和人物乙相处过程中，更愿意主动解释误会”/s);
+  assert.match(buildCseSystemPrompt('仅保留我的自定义指导'), /必要的适用条件、第三人，以及本身有实际语义的对象名称仍应保留/);
   assert.match(CSE_SYSTEM_PROMPT, /单方 A→B 不得自动镜像成 B→A/);
   assert.match(CSE_SYSTEM_PROMPT, /最新作者设定、明确用户纠正和本楼正文/);
   assert.match(CSE_SYSTEM_PROMPT, /根级 changeSummary\/summary 不会被当作人物状态/);
@@ -2024,19 +2028,38 @@ test('合并身份编译以 canonical 并集判断变化，并用旧成员空快
   assert.deepEqual(projectCseStateIdentityReferences(afterLaterOld, { ...chainProjection, deletedEntityIds: [USER] }).subjects, [], '删除 canonical 的既有投影过滤保持不变');
 });
 
-test('他人状态移入独立作者态上下文并保持隐私过滤；空 delta 也可重放为已分析', async () => {
+test('作者态上下文按 entityId 排除 previousState 已提供人物，并保留其余人物公开状态', async () => {
+  const sameNameId = '88888888-2222-4222-8222-222222222222';
+  const sameNameEntity = { id: sameNameId, entityType: 'person', displayName: '甲', aliases: [{ name: '另一位甲' }], specialRole: 'none' };
+  const allEntities = [...entities, sameNameEntity];
   const current = { subjects: [
     { subjectEntityId: USER, core: [], adaptive: [], situational: [{ text: '用户私心', visibility: 'private', reason: '私密', origin: 'floor', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: null }] },
-    { subjectEntityId: A, core: [{ text: '作者设定', visibility: 'authorial', reason: '卡', origin: 'baseline', towardEntityId: null, sourceFloorId: null, sourceDeltaId: null }], adaptive: [], situational: [{ text: '公开动作', visibility: 'observable', reason: '看见', origin: 'floor', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: null }] },
+    { subjectEntityId: A, core: [{ text: '作者设定', visibility: 'authorial', reason: '卡', origin: 'baseline', towardEntityId: null, sourceFloorId: null, sourceDeltaId: null }], adaptive: [{ text: '甲的私下判断', visibility: 'private', reason: '内心', origin: 'floor', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: null }], situational: [{ text: '甲的公开动作', visibility: 'observable', reason: '看见', origin: 'floor', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: null }] },
+    { subjectEntityId: B, core: [{ text: '乙的作者设定', visibility: 'authorial', reason: '卡', origin: 'baseline', towardEntityId: null, sourceFloorId: null, sourceDeltaId: null }], adaptive: [{ text: '乙的私下判断', visibility: 'private', reason: '内心', origin: 'floor', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: null }], situational: [{ text: '乙的公开动作', visibility: 'observable', reason: '看见', origin: 'floor', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: null }] },
+    { subjectEntityId: sameNameId, core: [], adaptive: [], situational: [{ text: '同名人物公开动作', visibility: 'observable', reason: '看见', origin: 'floor', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: null }] },
   ] };
-  const envelope = createCseEnvelope({ floor: floor(FLOOR1, '正文'), floorMemory: memory(MEMORY1), baseline, currentState: current, trackedSubjects: entities.slice(0, 2), entities });
+  const envelope = createCseEnvelope({ floor: floor(FLOOR1, '正文'), floorMemory: memory(MEMORY1), baseline, currentState: current, trackedSubjects: entities.slice(0, 2), entities: allEntities });
   const forUser = envelope.request.payload.previousState.find(item => item.subject === '林岚');
   assert.equal('publicStateOfOthers' in forUser, false);
   assert.deepEqual(Object.keys(forUser), ['subject', 'coreUserEdited', 'ownState']);
   assert.equal(forUser.coreUserEdited, false);
-  const authorialForA = envelope.request.payload.authorialOtherStateContext.find(item => item.subject === '甲');
-  assert.deepEqual(authorialForA.core, []);
-  assert.deepEqual(authorialForA.situational.map(item => item.text), ['公开动作']);
+  const forA = envelope.request.payload.previousState.find(item => item.subject === '甲');
+  assert.deepEqual(forA.ownState.core.map(item => item.text), ['作者设定']);
+  assert.deepEqual(forA.ownState.adaptive.map(item => item.text), ['甲的私下判断']);
+  assert.deepEqual(forA.ownState.situational.map(item => item.text), ['甲的公开动作']);
+  const authorial = envelope.request.payload.authorialOtherStateContext;
+  assert.equal(authorial.some(item => item.subject === '林岚'), false);
+  assert.deepEqual(authorial.map(item => item.subject), ['乙', '甲'], '同名不同 entityId 不能随 tracked 甲误删');
+  assert.deepEqual(authorial.flatMap(item => [...item.core, ...item.adaptive, ...item.situational].map(value => value.text)), ['乙的公开动作', '同名人物公开动作']);
+
+  const noPrevious = createCseEnvelope({ floor: floor(FLOOR1, '正文'), floorMemory: memory(MEMORY1), baseline, currentState: { subjects: [current.subjects[1]] }, trackedSubjects: [entities[2]], entities: allEntities });
+  assert.deepEqual(noPrevious.request.payload.previousState, [], 'tracked 人物没有前态时不得伪造 previousState');
+  assert.deepEqual(noPrevious.request.payload.authorialOtherStateContext[0].situational.map(item => item.text), ['甲的公开动作'], '其他人物已有公开状态仍须保留');
+
+  const empty = createCseEnvelope({ floor: floor(FLOOR1, '正文'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [entities[0]], entities: allEntities });
+  assert.deepEqual(empty.request.payload.previousState, []);
+  assert.deepEqual(empty.request.payload.authorialOtherStateContext, []);
+
   const compiled = await compileCseResponse({ response: { noMaterialChange: true }, envelope, previousCurrentState: null, now: NOW, deltaId: 'cccccccc-1111-4111-8111-111111111111' });
   assert.equal(compiled.delta.noMaterialChange, true);
   const replay = await replayCurrentState({ chatId: CHAT, narrativeGeneration: GEN, baselineId: baseline.id, floors: [floor(FLOOR1, '正文')], floorMemories: [{ ...memory(MEMORY1), floorId: FLOOR1, recordStatus: 'active' }], stateDeltas: [compiled.delta], now: NOW });

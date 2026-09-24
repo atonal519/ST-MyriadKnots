@@ -9,7 +9,7 @@ import { CSE_ISOLATION_CODES, CSE_VISIBILITIES, LATEST_CSE_CALIBRATION_VERSION, 
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey } from './entity-identity.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-20';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-22';
 export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-11';
 export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
@@ -28,13 +28,15 @@ relevantPriorContext 若存在，是用户导入的过去经历资料，仅用�
 
 subjectRelevantEvidence 按 tracked subject 汇集角色相关条目，relationToSubject 只说明该人物在既有 FloorMemory 条目里的结构角色，不是“此人已知证据”。participant 的 mentioned/privateCognitionOnly 不表示本人在场；行动 target 不表示本人知情，completion 为 intended/attempted/interrupted/uncertain 时尤其不能写成已完成；信息发送者只证明其说出或发出了相应内容，不证明消息内容客观为真，只有正文或实际送达证据才能支持接收者知情；承诺或指令的 target 不自动表示收到、同意或执行，plan 也不能写成已执行；cseSignal 的 object 只表示相关对象。远程行为与通信要按正文中的行为主体、对象、消息来源、接收者、渠道和完成状态分别理解，待转告不等于已经转告。不得把正文明确写出的人物认知反写为不知；人物被提及、被计划涉及或从叙述中推断出相关性，也不等于本人在场、参与或知情。
 
-previousState 按 subject 分列各人的 ownState，只说明对应人物自身的前态；这里展示的是合并身份后同一个人的有效状态，不要把合并前的旧名称或旧身份另算作另一人。authorialOtherStateContext 已按 visibility 排除 private 和 authorial 状态项，是作者侧连续性参考。某条状态出现在这些材料中，不代表其他人物已经知道它。作者态推断与人物本人已知必须分开：observable 只用于正文中实际可观察的状态，private 只属于该人物的内心或明确知情，authorial 只作作者塑造参考。
+previousState 按 subject 分列各人的 ownState，只说明对应人物自身的前态；这里展示的是合并身份后同一个人的有效状态，不要把合并前的旧名称或旧身份另算作另一人。authorialOtherStateContext 不重复 previousState 已提供的人物，并已按 visibility 排除 private 和 authorial 状态项，是其余人物的作者侧连续性参考。某条状态出现在这些材料中，不代表其他人物已经知道它。作者态推断与人物本人已知必须分开：observable 只用于正文中实际可观察的状态，private 只属于该人物的内心或明确知情，authorial 只作作者塑造参考。
 
 只可为输入中的 trackedSubjects 输出状态；trackedSubjects 是候选范围，不要求逐人补写，也不要求每个分类凑数。若本楼没有足够新依据，可省略该人物；若只支持某些分类，可省略其他分类，让编译器沿用旧状态。不要用“本楼未出现”“状态无变化”之类空话替换旧状态，也不要因为缺少证据而反推“不知道”。knownPeople 仅用于 toward 对象绑定，不代表他们本楼也要输出状态。
 
 判断每条候选信息时，在内部依次问三个问题：第一，这条主要回答人物现在怎样、处境如何，还是此刻怎样对待某人？第二，另一人只是背景、原因或事件参与者，还是这项态度或相处反应的明确对象？第三，这里有两条独立且分别有正文依据的信息，需要拆开表达，还是同一信息的重复描述？只输出判断后的状态，不要输出思考过程、问题答案或分类解释。
 
 主要说明人物自身现状时不填写 toward；文本中心是人物针对某个明确已知人物的看法、态度或相处反应时，Adaptive 或 Situational 应填写 toward。关系反应可以通过明确指向对方的言语和行为表现，不需要直接说出态度；但不能只因一个行为有受事者就自动判为关系态度，也不能把行为一律排除出关系反应。物品摆放、自身身体状态等信息即使提到他人，也不能仅凭该提及变成关系态度。对各方使用同一判断标准。混合信息只在确有独立依据时拆分，不强制双栏填满，不重复同一事实，也不编造态度。private 只表示可见性，明确的私密态度仍可填写 toward，不能因私密而留空。previousState 中旧 toward 也必须按本楼证据审视，不得盲从；旧 toward 为空不妨碍本轮为有明确对象的状态填写 toward。本楼不足以更新相应分类时应省略该分类以保留旧状态，不要把旧状态改写成“未知”。自身状态或无法唯一判断对象时留空，不要求每项都有对象。单方 A→B 不得自动镜像成 B→A，也不能把某人的单方声称写成双方态度。Core 不使用 toward；一次关系反应也不能被拔高为 Core 或长期 Adaptive。Situational 只有在正文给出明确时间流逝时才可写 reasonableProgression，不能补造新事件。reason 是可选的简短解释；直接状态数组中的条目省略 reason 时，会标记为“未提供依据”。这不免除持续校准合同对 evidence 的要求，reason 也不能代替 evidence。不要输出数据库 ID。
+
+仅针对填写了 toward 的 Adaptive，text 直接写具体长期倾向，省略“在和某人相处过程中”“面对某人时”等仅重复 toward 对象、没有新增语义的套话开头。例如同一含义应写成“更愿意主动解释误会”，不要写成“在和人物乙相处过程中，更愿意主动解释误会”。必要的适用条件、第三人，以及本身有实际语义的对象名称仍应保留；不要为调整措辞增加证据、扩大长期程度、放宽 refine/evidence 合同，也不要把应 keep 的旧项强制改成 refine。
 
 Situational 记录本楼结束时仍在进行或仍限制人物的当前情境，不是“已发生事实”清单。某个事实仍然成立，不等于它必须一直占据当前情境。已发送或已收到消息、已拍到照片、已完成部署、已达成一次行动、已得知一条信息等已经完成的过程默认交给摘要；若确有未解决后果，只写仍在生效的后果，不保留过程流水。这些过程退出当前列表不需要正文逐条宣布“结束”，也不代表否认历史、人物失忆或把尚未完成的任务写成完成。保留真正持续的伤势、未解决处境、仍有效约定和有依据的当下关系反应，不能仅因本楼未提及就删除仍在持续的状态；有新依据表明它们结束或被替代时再移除或更新。同一处境或变化过程提炼合并为简短当前状态，text 和 reason 都不要逐楼追加历史行动链。每次输出某人物的 situational 完整列表时，必须同时清理 previousState 中已经结束、已被替代或只剩历史意义的条目，只留下仍有当下影响的部分；确有依据判断没有需要保留的当前项时用 []，不得以省略分类冒充清空。是否保留得知的信息、获得的事物或行动表现，应按其仍然造成的当下影响判断，并遵守上述事实、隐私和知识来源边界。
 
@@ -236,9 +238,13 @@ function semanticItems(items, entities) {
   return items.map(item => ({ text: item.text, visibility: item.visibility, reason: item.reason, origin: item.origin, ...(item.towardEntityId ? { toward: byId.get(item.towardEntityId) ?? null } : {}) }));
 }
 
-function previousForPrompt(currentState, tracked, entities, coreUserEditedSubjectEntityIds) {
+function previousSubjectsForPrompt(currentState, tracked) {
   const trackedIds = new Set(tracked.map(entity => entity.id));
-  return (currentState?.subjects ?? []).filter(subject => trackedIds.has(subject.subjectEntityId)).map(subject => {
+  return (currentState?.subjects ?? []).filter(subject => trackedIds.has(subject.subjectEntityId));
+}
+
+function previousForPrompt(subjects, entities, coreUserEditedSubjectEntityIds) {
+  return subjects.map(subject => {
     const owner = entities.find(entity => entity.id === subject.subjectEntityId);
     return { subject: owner?.displayName ?? '未知人物', coreUserEdited: coreUserEditedSubjectEntityIds.has(subject.subjectEntityId), ownState: { core: semanticItems(subject.core, entities), adaptive: semanticItems(subject.adaptive, entities), situational: semanticItems(subject.situational, entities) } };
   });
@@ -269,9 +275,9 @@ function currentUserInputPayload(value) {
   return value?.content ? { source: 'currentUserInput', messageIndex: value.messageIndex, content: value.content } : null;
 }
 
-function authorialOtherStateContext(currentState, entities) {
+function authorialOtherStateContext(currentState, entities, previousSubjectIds) {
   const visible = items => items.filter(item => item.visibility !== 'private' && item.visibility !== 'authorial');
-  return (currentState?.subjects ?? []).map(subject => ({
+  return (currentState?.subjects ?? []).filter(subject => !previousSubjectIds.has(subject.subjectEntityId)).map(subject => ({
     subject: entities.find(entity => entity.id === subject.subjectEntityId)?.displayName ?? '未知人物',
     core: semanticItems(visible(subject.core), entities),
     adaptive: semanticItems(visible(subject.adaptive), entities),
@@ -297,6 +303,8 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
   const effectiveWorldInfoSources = Array.isArray(effectiveSources.worldInfoSources) ? effectiveSources.worldInfoSources : requestWorldInfoSources;
   const evidenceSources = cseEvidenceSources({ floor, baseline, currentUserInput, requestSources: { ...effectiveSources, worldInfoSources: effectiveWorldInfoSources } });
   const coreUserEdited = new Set(coreUserEditedSubjectEntityIds);
+  const previousSubjects = previousSubjectsForPrompt(currentState, trackedSubjects);
+  const previousSubjectIds = new Set(previousSubjects.map(subject => subject.subjectEntityId));
   const nameForSubjectId = entityId => directoryById.get(entityId)?.displayName
     ?? (entityId === baseline.userPersona.entityId ? baseline.userPersona.name : entityId === baseline.characterCard.entityId ? baseline.characterCard.name : null);
   return Object.freeze({
@@ -304,7 +312,7 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       canonicalContent: floor.content.canonicalContent,
       floorMemory: semanticMemory(floorMemory, entities),
       ...(floorMemory.sourceVariableReference ? { auxiliaryStateSnapshot: floorMemory.sourceVariableReference } : {}),
-      previousState: previousForPrompt(currentState, trackedSubjects, entities, coreUserEdited),
+      previousState: previousForPrompt(previousSubjects, entities, coreUserEdited),
       relevantBaseline: {
         userPersona: { name: effectiveUserPersona.name, description: effectiveUserPersona.description, visibility: 'authorial' },
         characterCard: { name: effectiveCharacterCard.name, description: effectiveCharacterCard.description, personality: effectiveCharacterCard.personality, scenario: effectiveCharacterCard.scenario, visibility: 'authorial' },
@@ -314,7 +322,7 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       currentUserInput: currentUserInputPayload(currentUserInput),
       evidenceSourceCatalog: evidenceSources.map(source => ({ source: source.source, kind: source.kind, ...(source.subjectEntityId ? { subject: nameForSubjectId(source.subjectEntityId) } : {}) })),
       subjectRelevantEvidence: subjectRelevantEvidence(floorMemory, trackedSubjects, entities),
-      authorialOtherStateContext: authorialOtherStateContext(currentState, entities),
+      authorialOtherStateContext: authorialOtherStateContext(currentState, entities, previousSubjectIds),
       ...(relevantPriorContext ? { relevantPriorContext } : {}),
       trackedSubjects: trackedSubjects.map(entity => ({ name: entity.displayName, aliases: labelsFor(entity), coreUserEdited: coreUserEdited.has(entity.id) })),
       knownPeople: activeKnownEntities.map(entry => ({ name: entry.displayName, aliases: entry.labels })),

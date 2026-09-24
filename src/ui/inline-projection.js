@@ -1,5 +1,6 @@
 import { selectAssistantMessage } from '../v3/foundation-domain.js';
 import { publicErrorMessage } from '../public-error.js';
+import { renderedQianshiProgressText } from '../v3/recall-runtime.js';
 
 const uniqueText = values => [...new Set(values.map(value => String(value ?? '').trim()).filter(Boolean))];
 const hasInternalTimeFields = value => /\|\s*(?:date|weekday|time)\s*=/iu.test(String(value ?? ''));
@@ -30,11 +31,15 @@ const PROGRESSION_HEADINGS = new Set([
 
 const frozenText = (value, limit = 12000) => typeof value === 'string' ? value.trim().slice(0, limit) : '';
 
-function recallProtocolText(injectionText, qianshiProgress) {
+function recallProtocolText(injectionText, qianshiProgress, timeDependencies = null) {
   const source = typeof injectionText === 'string' ? injectionText : '';
-  if (typeof qianshiProgress?.text !== 'string' || !qianshiProgress.text) return source;
-  const suffix = `\n\n${QIANSHI_OPEN}\n${qianshiProgress.text}\n${QIANSHI_CLOSE}`;
-  return source.endsWith(suffix) ? source.slice(0, -suffix.length) : source;
+  if (typeof qianshiProgress?.text !== 'string' || !qianshiProgress.text) return Object.freeze({ text: source, matched: false, only: false });
+  const rendered = renderedQianshiProgressText(qianshiProgress, timeDependencies);
+  if (!rendered) return Object.freeze({ text: source, matched: false, only: false });
+  const block = `${QIANSHI_OPEN}\n${rendered}\n${QIANSHI_CLOSE}`;
+  if (source === block) return Object.freeze({ text: '', matched: true, only: true });
+  const suffix = `\n\n${block}`;
+  return Object.freeze({ text: source.endsWith(suffix) ? source.slice(0, -suffix.length) : source, matched: source.endsWith(suffix), only: false });
 }
 
 function skipBalancedFullwidthParens(text, start) {
@@ -337,7 +342,7 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
 export function projectInlineRecallReceipt(receipt) {
   if (!receipt) return Object.freeze({
     kind: 'user', status: 'empty', statusText: '未记录本轮召回', summary: '本轮没有可核验的召回回执。',
-    injectionText: '', floorCount: 0, stateCount: 0, cseChangeCount: 0, selectedFloors: Object.freeze([]), historyItems: Object.freeze([]), historyGroups: Object.freeze([]), storylines: Object.freeze([]), storylineGroups: Object.freeze([]), stateItems: Object.freeze([]), cseChangeItems: Object.freeze([]), timeReferenceItems: Object.freeze([]), timeReferenceDisplayItems: Object.freeze([]), timeReferenceCount: 0, protocolRecognized: false,
+    injectionText: '', qianshiProgressText: '', floorCount: 0, stateCount: 0, cseChangeCount: 0, selectedFloors: Object.freeze([]), historyItems: Object.freeze([]), historyGroups: Object.freeze([]), storylines: Object.freeze([]), storylineGroups: Object.freeze([]), stateItems: Object.freeze([]), cseChangeItems: Object.freeze([]), timeReferenceItems: Object.freeze([]), timeReferenceDisplayItems: Object.freeze([]), timeReferenceCount: 0, protocolRecognized: false,
   });
   const hasFloorArray = Array.isArray(receipt.selectedFloors), hasStateArray = Array.isArray(receipt.selectedStates);
   const rawFloors = hasFloorArray ? receipt.selectedFloors : [];
@@ -409,12 +414,16 @@ export function projectInlineRecallReceipt(receipt) {
   const distantHistoryItemCount = hasExactStageCounts ? receipt.stages.distantHistoryItemCount : null;
   const exactStateCount = hasExactStageCounts ? receipt.stages.stateCount : null;
   const injectionText = typeof receipt.injectionText === 'string' ? receipt.injectionText : '';
-  const protocolText = recallProtocolText(injectionText, receipt.qianshiProgress);
+  const signedQianshiProgress = Number(receipt.schemaVersion) >= 15 ? receipt.qianshiProgress : null;
+  const qianshiProtocol = recallProtocolText(injectionText, signedQianshiProgress, receipt.timeDependencies);
   const storylines = Object.freeze((safeShape && storylineProtocol ? rawStorylines : []).map(value => Object.freeze({
     storylineId: frozenText(value.storylineId, 80), title: frozenText(value.title, 160), basis: frozenText(value.basis, 500),
   })));
-  const timeReference = splitTimeReference(protocolText);
-  const parsedHistory = safeShape ? (timeReference.onlyTime && !selectedFloors.length && !stateItems.length && !cseChangeItems.length && !storylines.length
+  const timeReference = splitTimeReference(qianshiProtocol.text);
+  const noOrdinaryRecall = !selectedFloors.length && !stateItems.length && !cseChangeItems.length && !storylines.length;
+  const parsedHistory = safeShape ? (qianshiProtocol.only && noOrdinaryRecall
+    ? Object.freeze([])
+    : timeReference.onlyTime && noOrdinaryRecall
     ? Object.freeze([])
     : storylineProtocol ? parseStorylineHistory(timeReference.historyText, selectedFloors, cseChangeItems, storylines) : parseRecallHistory(timeReference.historyText, selectedFloors)) : null;
   const timeReferenceItems = Object.freeze(parsedHistory !== null && ['ready', 'empty'].includes(receipt.status ?? 'ready') ? timeReference.items : []);
@@ -430,6 +439,7 @@ export function projectInlineRecallReceipt(receipt) {
     return Object.freeze({ ...storyline, floors, stateItems: Object.freeze(stateItems.filter(value => value.storylineId === storyline.storylineId)), cseChangeItems: Object.freeze(cseChangeItems.filter(value => value.storylineId === storyline.storylineId)) });
   }));
   const protocolRecognized = parsedHistory !== null;
+  const qianshiProgressText = qianshiProtocol.matched ? renderedQianshiProgressText(signedQianshiProgress, receipt.timeDependencies) : '';
   const status = receipt.status ?? (receipt.injectionText ? 'ready' : 'empty');
   const statusText = receipt.legacyReadOnly ? '旧版只读记录'
     : status === 'ready' || status === 'empty' ? `寻回 ${floorCount} 个结`
@@ -441,9 +451,10 @@ export function projectInlineRecallReceipt(receipt) {
     ? `已召回 ${historyItems.length} 条旧事${stateCount ? ` · ${stateCount} 条当前人物状态` : ''}${cseChangeCount ? ` · ${cseChangeCount} 条历史变化` : ''}`
     : stateCount || cseChangeCount ? `已记录${stateCount ? ` ${stateCount} 条当前人物状态` : ''}${stateCount && cseChangeCount ? ' ·' : ''}${cseChangeCount ? ` ${cseChangeCount} 条历史变化` : ''}`
       : floorCount || !safeShape || (receipt.legacyReadOnly && !protocolRecognized) ? '召回内容请在详细回执中查看。'
+    : qianshiProgressText ? '本轮已注入千事进度。'
     : status === 'empty' ? '本轮没有需要注入的记忆。' : '本轮没有已注入的记忆。';
   return Object.freeze({
     kind: 'user', status, statusText, summary,
-    injectionText, floorCount, stateCount, cseChangeCount, recentSummaryCount, distantHistoryItemCount, selectedFloors, historyItems, historyGroups, storylines, storylineGroups, stateItems, cseChangeItems, timeReferenceItems, timeReferenceDisplayItems, timeReferenceCount, protocolRecognized,
+    injectionText, qianshiProgressText, floorCount, stateCount, cseChangeCount, recentSummaryCount, distantHistoryItemCount, selectedFloors, historyItems, historyGroups, storylines, storylineGroups, stateItems, cseChangeItems, timeReferenceItems, timeReferenceDisplayItems, timeReferenceCount, protocolRecognized,
   });
 }

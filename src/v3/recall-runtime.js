@@ -190,7 +190,9 @@ function timeDependenciesValid(value, { correctionLimit = MAX_RECEIPT_STATES } =
   if (value.mode === 'projection') return optionalBoundedString(value.fingerprint, 200);
   const itemValid = item => item && typeof item === 'object' && !Array.isArray(item)
     && boundedString(item.itemId, 500) && boundedString(item.text, 20000)
-    && optionalBoundedString(item.sourceSignature, 20000);
+    && optionalBoundedString(item.sourceSignature, 20000)
+    && (item.qianshiRef === undefined || item.qianshiRef && typeof item.qianshiRef === 'object' && !Array.isArray(item.qianshiRef)
+      && boundedString(item.qianshiRef.matterId, 500) && boundedString(item.qianshiRef.originEventId, 500));
   return value.mode === 'selected' && Array.isArray(value.corrections) && value.corrections.length <= correctionLimit
     && value.corrections.every(item => itemValid(item) && boundedString(item.key, 1600))
     && Array.isArray(value.reminders)
@@ -206,8 +208,27 @@ function timeDependenciesCurrent(value, projection) {
     && value.reminders.every(item => (projection?.reminders ?? []).some(current => sameItem(item, current)));
 }
 
-const qianshiBlock = value => value?.text ? `<qqj_qianshi_progress>\n${value.text}\n</qqj_qianshi_progress>` : '';
-const appendQianshiProgress = (text, value) => [String(text ?? '').trim(), qianshiBlock(value)].filter(Boolean).join('\n\n');
+export function renderedQianshiProgressText(value, timeDependencies = null) {
+  const source = typeof value?.text === 'string' ? value.text : '';
+  const suppressed = new Set((timeDependencies?.reminders ?? []).map(item => item.qianshiRef?.matterId).filter(Boolean));
+  if (!source || !suppressed.size || !Array.isArray(value?.matterIds) || !value.matterIds.length) return source;
+  let matterIndex = 0;
+  return source.split(/\n\n/u).map(section => {
+    const lines = section.split('\n');
+    if (lines[0] !== '[当前待接续]') return section;
+    const kept = lines.slice(1).filter(line => {
+      if (!line.startsWith('- ')) return true;
+      const matterId = value.matterIds[matterIndex++];
+      return !suppressed.has(matterId);
+    });
+    return kept.some(line => line.startsWith('- ')) ? [lines[0], ...kept].join('\n') : '';
+  }).filter(Boolean).join('\n\n');
+}
+const qianshiBlock = (value, timeDependencies = null) => {
+  const content = renderedQianshiProgressText(value, timeDependencies);
+  return content ? `<qqj_qianshi_progress>\n${content}\n</qqj_qianshi_progress>` : '';
+};
+const appendQianshiProgress = (text, value, timeDependencies = null) => [String(text ?? '').trim(), qianshiBlock(value, timeDependencies)].filter(Boolean).join('\n\n');
 const qianshiTokenBudget = value => estimateRecallTokens(qianshiBlock(value));
 const reservedQianshiTokenBudget = value => value?.text ? estimateRecallTokens(`\n\n${qianshiBlock(value)}`) : 0;
 const stagesWithQianshiBudget = (stages, value) => {
@@ -223,8 +244,8 @@ const stagesWithoutQianshi = (stages, value, injectionText) => {
   delete next.qianshiTokenBudget;
   return next;
 };
-const removeQianshiProgress = (text, value) => {
-  const block = qianshiBlock(value);
+const removeQianshiProgress = (text, value, timeDependencies = null) => {
+  const block = qianshiBlock(value, timeDependencies);
   const source = String(text ?? '');
   return block && source.endsWith(block) ? source.slice(0, -block.length).trimEnd() : source;
 };
@@ -247,7 +268,7 @@ function withoutStaleTime(receipt, source, projection) {
     dependencies = { mode: 'selected', corrections: [], reminders: [] };
     ordinaryText = formatRecallInjection({ coverage: receipt.coverage, floors, states, cseChanges: changes, storylines, entityById,
       timeProjection: { corrections }, timeReminders: reminders, timeDependencies: dependencies });
-    text = appendQianshiProgress(ordinaryText, receipt.qianshiProgress);
+    text = appendQianshiProgress(ordinaryText, receipt.qianshiProgress, dependencies);
   };
   render();
   let budgetDropped = 0;
@@ -764,19 +785,25 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     }
     return sourceReader({ store, now, hostSnapshot: snapshot, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin(), identityProjection: identityProjection?.data ?? identityProjection });
   }
-  async function attachQianshiProgress(source, queryContext, hostSnapshot = null) {
+  async function sealQianshiProgress(value) {
+    if (typeof value?.text !== 'string' || !value.text.trim()) return null;
+    const material = { projectionVersion: Number.isSafeInteger(value.projectionVersion) ? value.projectionVersion : 0,
+      text: value.text.trim().slice(0, 4000), eventIds: [...new Set(value.eventIds ?? [])].slice(0, 160), matterIds: [...new Set(value.matterIds ?? [])].slice(0, 160) };
+    return Object.freeze({ ...material, fingerprint: await fingerprint(JSON.stringify(material)) });
+  }
+  async function attachQianshiProgress(source, queryContext, hostSnapshot = null, selection = null) {
     if (source?.status !== 'ready') return source;
     let qianshiProgress = null;
     if (typeof qianshiProgressProvider === 'function') try {
-      const value = await qianshiProgressProvider(source, { queryContext, hostSnapshot });
+      const value = await qianshiProgressProvider(source, { queryContext, hostSnapshot,
+        ...(selection ? { selectedEventIds: selection.eventIds ?? [], selectedMatterIds: selection.matterIds ?? [] } : {}) });
       const anchorMatches = value?.anchor?.headCheckpointId === source.headCheckpointId && value?.anchor?.narrativeGeneration === source.narrativeGeneration;
-      if (anchorMatches && typeof value?.text === 'string' && value.text.trim()) {
-        const material = { projectionVersion: Number.isSafeInteger(value.projectionVersion) ? value.projectionVersion : 0,
-          text: value.text.trim().slice(0, 4000), eventIds: [...new Set(value.eventIds ?? [])].slice(0, 160), matterIds: [...new Set(value.matterIds ?? [])].slice(0, 160) };
-        qianshiProgress = Object.freeze({ ...material, fingerprint: await fingerprint(JSON.stringify(material)) });
-      }
+      if (anchorMatches) qianshiProgress = await sealQianshiProgress(value);
+      const qianshiCandidates = anchorMatches && !selection && Array.isArray(value?.candidates) ? Object.freeze(clone(value.candidates)) : Object.freeze([]);
+      const qianshiCurrentStoryTime = anchorMatches && typeof value?.currentStoryTime === 'string' ? value.currentStoryTime : null;
+      return Object.freeze({ ...source, qianshiProgress, qianshiCandidates, qianshiCurrentStoryTime });
     } catch (error) { logger?.warn?.('[qianqianjie] optional qianshi projection failed', { code: error?.code ?? error?.name ?? 'QQJ_QIANSHI_READ_FAILED' }); }
-    return Object.freeze({ ...source, qianshiProgress });
+    return Object.freeze({ ...source, qianshiProgress, qianshiCandidates: Object.freeze([]) });
   }
   async function preparedSource(snapshot, sanitizerSnapshot, options = {}) {
     let source = await basePreparedSource(snapshot, sanitizerSnapshot, options);
@@ -1043,9 +1070,10 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         injectionText = finalReceipt.injectionText;
       }
     }
-    currentSource = await attachQianshiProgress(Object.freeze({ ...currentSource, timeProjection: liveTime ?? currentSource.timeProjection }), operation.queryContext, before);
+    currentSource = await attachQianshiProgress(Object.freeze({ ...currentSource, timeProjection: liveTime ?? currentSource.timeProjection }), operation.queryContext, before,
+      { eventIds: finalReceipt.qianshiProgress?.eventIds ?? [], matterIds: finalReceipt.qianshiProgress?.matterIds ?? [] });
     if (!qianshiProgressCurrent(finalReceipt.qianshiProgress, currentSource.qianshiProgress)) {
-      injectionText = removeQianshiProgress(injectionText, finalReceipt.qianshiProgress);
+      injectionText = removeQianshiProgress(injectionText, finalReceipt.qianshiProgress, finalReceipt.timeDependencies);
       finalReceipt = { ...finalReceipt, qianshiProgress: null, injectionText,
         stages: stagesWithoutQianshi(finalReceipt.stages, finalReceipt.qianshiProgress, injectionText),
         completionStatus: injectionText ? 'ready' : 'empty',
@@ -1133,6 +1161,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     for (let attempt = 0; attempt < 2; attempt += 1) {
       for (const key of Object.keys(timings)) delete timings[key];
       const diagnostic = { attempt: attempt + 1, phase: 'input', selectionStatus: 'notStarted', coverage: null, stages: null, selectorDiagnostic: null, started: Date.now() };
+      operation.phase = 'input';
       operation.diagnostics.push(diagnostic);
       try {
       if (lifecycle?.stopped) return finishStale(operation, timings, 'stopped');
@@ -1146,6 +1175,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       operation.hostChatId = currentHostChatId(before);
       operation.userText = user.message.mes;
       operation.liveFrameKey = liveRecallFrameKey(before);
+      notify();
       const queryContext = queryBuilder({ coreChat: coreInput, assistantTurns: 1 });
       operation.queryContext = queryContext;
       operation.prequelSourceText = currentPrequelText(before);
@@ -1233,13 +1263,17 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       operation.phase = diagnostic.phase = 'selecting'; diagnostic.selectionStatus = 'incomplete'; notify();
       const selectorStarted = Date.now();
       let selection;
-      const qianshiCharacters = qianshiBlock(source.qianshiProgress).length;
-      const qianshiTokens = reservedQianshiTokenBudget(source.qianshiProgress);
+      const initialQianshiCharacters = source.qianshiProgress?.text ? `\n\n${qianshiBlock(source.qianshiProgress)}`.length : 0;
+      const initialQianshiTokens = reservedQianshiTokenBudget(source.qianshiProgress);
       try { selection = await selectionRunner({ source, queryContext, contextSize, signal: operation.controller.signal,
-        reservedTokens: operation.prequelSelection.estimatedTokens + qianshiTokens,
-        reservedCharacters: operation.prequelSelection.estimatedCharacters + qianshiCharacters }); }
+        reservedTokens: operation.prequelSelection.estimatedTokens + initialQianshiTokens,
+        reservedCharacters: operation.prequelSelection.estimatedCharacters + initialQianshiCharacters }); }
       finally { timings.selectorMs = Date.now() - selectorStarted; }
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
+      if (Object.hasOwn(selection, 'qianshiProgress')) {
+        source = Object.freeze({ ...source, qianshiProgress: await sealQianshiProgress(selection.qianshiProgress) });
+      }
+      const qianshiTokens = reservedQianshiTokenBudget(source.qianshiProgress);
       let receiptBase = {
         schemaVersion: RECALL_RECEIPT_SCHEMA_VERSION,
         pluginVersion,
@@ -1273,7 +1307,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         storylines: (selection.storylines ?? []).map(value => ({ storylineId: value.storylineId, title: value.title, basis: value.basis })),
         selectorDiagnostic: selectorDiagnosticSnapshot(selection.selectorDiagnostic),
         coverage: clone(selection.coverage ?? source.coverage),
-        injectionText: appendQianshiProgress(selection.injectionText, source.qianshiProgress),
+        injectionText: appendQianshiProgress(selection.injectionText, source.qianshiProgress, selection.timeDependencies),
         stages: selection.stages ? {
           ...clone(selection.stages),
           stateCount: Number.isSafeInteger(selection.stages.stateCount) ? selection.stages.stateCount : selection.states.length,
@@ -1289,7 +1323,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
             ? selection.stages.finalInjectionItemCount
             : selection.floors.reduce((sum, floor) => sum + (floor.items?.length ?? 1), 0) + selection.states.length + (selection.cseChanges ?? []).length,
           storylineCount: Number.isSafeInteger(selection.stages.storylineCount) ? selection.stages.storylineCount : (selection.storylines ?? []).length,
-          estimatedTokenCount: estimateRecallTokens(appendQianshiProgress(selection.injectionText, source.qianshiProgress)),
+          estimatedTokenCount: estimateRecallTokens(appendQianshiProgress(selection.injectionText, source.qianshiProgress, selection.timeDependencies)),
           estimatedTokenBudget: (Number.isSafeInteger(selection.stages.estimatedTokenBudget) ? selection.stages.estimatedTokenBudget : 0) + qianshiTokens,
           ...(source.qianshiProgress ? { qianshiTokenBudget: qianshiTokens } : {}),
         } : null,

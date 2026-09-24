@@ -6,6 +6,8 @@
 
 新楼仍只调用现有摘要 API。请求 `payload.qianshiCandidates` 提供与本楼人物、当前故事时间和未完事项相关的旧事项候选；候选键是本次请求内的 `candidate-N`，模型不得输出后端 UUID。
 
+新生成的千事事件不再输出重要标记。旧增量中的可选布尔字段 `important` 仍由 schema 接受，以保持历史档案可读；编译器不会新建该字段，派生图和公开快照也会忽略旧值。
+
 响应可选字段：
 
 ```json
@@ -88,16 +90,19 @@ const bridge = globalThis.qqj_qianshi_backend_v1;
   events: [],
   matters: [],
   relations: [],
+  timeline: { segments: [], undatedEventIds: [], hasGlobalLatest, globalLatestGroupId },
   currentProgress: { text, characterCount, eventIds, matterIds },
   history: { status, jobId, processedFloors, totalFloors, calls, message }
 }
 ```
 
-`events` 字段为 `id`、`matterId`（独立日常事件为 `null`）、`updatesMatter`、`title`、`description`、`status`、`storyTime`、`scheduledTime`、`people[{entityId,name}]`、`object`、`sourceFloorId`、`sourceFloorMemoryId`、`sourceAssistantSeq`。
+`events` 字段为 `id`、`matterId`（独立日常事件为 `null`）、`updatesMatter`、`title`、`description`、`status`、`storyTime`、`scheduledTime`、`people[{entityId,name}]`、`object`、`sourceFloorId`、`sourceFloorMemoryId`、`sourceAssistantSeq`、`sourceMessageIndex`。`sourceMessageIndex` 沿用插件现有宿主楼号显示口径，旧调用方可忽略这些新增展示字段。
 
 `matters` 字段为 `matterId`、`title`、`description`、`status`、`object`、`people`、`storyTime`、`scheduledTime`、`origin{eventId,title,description,storyTime,scheduledTime,sourceFloorId,sourceAssistantSeq}`、`latestEventIds`、`eventIds`、`sourceFloorId`、`sourceAssistantSeq`。`relations` 字段为 `id`、`type`（`progress` 或 `before`）、`fromEventId`、`toEventId`、`certainty`。调用方拿不到 Graphology 实例或内部可变对象。
 
-`currentProgress` 仍是供公开读取和前端展示的详细进度快照，不直接等于正文注入。正文生成会从同一可达图另行投影短版：`[相关时间线]` 只保留本轮查询命中的事项及其已有 progress 链关键节点，`[当前待接续]` 只保留正文故事时钟附近且状态仍为 planned / inProgress 的事项，并统一表述为“尚未记录完成”。scheduledTime 仅作为约定期限，不作为已经发生的时间。该投影不修改事件、事项、关系或公开快照。
+`timeline` 是完整页面使用的展示投影，只保存分段、日期组和事件 ID，不复制或裁短事件正文。可靠的剧情发生日期优先于来源楼和事项推进顺序；同日双方都有明确分钟时按分钟排序，否则保持稳定顺序。不同明确纪年、不可比较日期和时间未明事件不会被强行塞进一条虚假的统一时间轴。该投影按事件各提取一次排序键，不使用召回小集合的两两比较。
+
+`currentProgress` 仍是供公开读取和前端展示的详细进度快照，不直接等于正文注入。正文生成会从同一可达图准备有界千事候选，并让它与既有历史／人物材料共用一次选材：`[相关时间线]` 只保留实际选中的事项起因、关键进展或独立事件，`[当前待接续]` 可包含所有状态仍为 planned / inProgress 的候选，不因话题变化、时间未知或经过数日直接消失；候选进入模型不等于最终必然注入。没有既有历史／人物候选时不为千事单独调用模型，而使用同一有界候选的保守本地投影。scheduledTime 仅作为约定期限，不作为已经发生的时间。最终投影仍受4000字符及召回总预算限制，也不修改事件、事项、关系或公开快照。
 
 ### `read()`
 

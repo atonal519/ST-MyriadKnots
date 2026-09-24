@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { projectTime, timeDistance, timeHours, nextCycleTime, storyTimes, timeRecallProjection } from '../src/v3/time-engine.js';
+import { formatStoryTime, projectTime, timeDistance, timeHours, nextCycleTime, storyTimes, timeRecallProjection } from '../src/v3/time-engine.js';
 import { formatRecallInjection, selectRecall, buildRecallQueryContext, estimateRecallTokens } from '../src/v3/recall-selector.js';
 import { projectInlineRecallReceipt } from '../src/ui/inline-projection.js';
 
@@ -17,7 +17,7 @@ function reachable(date = '2026-05-10', extra = false) {
   return { status: 'ready', rootRevision: 1, root: { chatId: CHAT, narrativeGeneration: GEN, headCheckpointId: 'head' }, checkpoint: { id: 'head' }, cseUnavailable: true, floors, floorMemories: memories,
     entities: [{ id: PERSON, entityType: 'person', displayName: '甲', aliases: [], recordStatus: 'active', status: 'established' }] };
 }
-test('明确年月日、相对日、无年同月算术与未知边界', () => {
+test('明确年月日、相对日、无年公历跨月算术与未知边界', () => {
   const anchor = projectTime('2026年5月10日');
   assert.equal(projectTime('昨天', anchor).date, '2026-05-09');
   assert.equal(timeDistance(projectTime('昨天', anchor), anchor), 1);
@@ -25,11 +25,37 @@ test('明确年月日、相对日、无年同月算术与未知边界', () => {
   const yearless = projectTime('5月10日');
   assert.equal(yearless.year, null);
   assert.equal(timeDistance(yearless, projectTime('5月12日')), 2);
-  assert.equal(timeDistance(yearless, projectTime('6月1日')), null);
+  assert.equal(timeDistance(yearless, projectTime('6月1日')), 22);
+  assert.equal(timeDistance(projectTime('10月31日 23:15'), projectTime('11月1日 08:15')), 1);
+  assert.equal(timeDistance(projectTime('11月1日 08:15'), projectTime('10月31日 23:15')), -1);
+  assert.equal(timeHours(projectTime('10月31日 23:15'), projectTime('11月1日 08:15')), 9);
+  assert.equal(timeDistance(projectTime('2月28日'), projectTime('3月1日')), null, '无年份跨二月末不能猜闰年');
+  assert.equal(timeDistance(projectTime('3月1日'), projectTime('2月28日')), null, '反向比较也不能猜闰年');
+  assert.equal(timeDistance(projectTime('12月31日'), projectTime('1月1日')), null, '无年份不能把年末到年初猜成跨年');
   assert.equal(projectTime('次日', yearless).monthDay, 11);
   assert.equal(projectTime('次日', projectTime('2月28日')).date, null);
   assert.equal(projectTime('木叶历七年霜月').date, null);
   assert.equal(projectTime('昨天').date, null);
+});
+
+test('纪元年保留具名身份与同月日差，中文数字与裸数字纪年仍按既有公历数值计算', () => {
+  for (const value of ['纪元年10月4日', '星辉历纪元年霜月初四']) {
+    const projected = projectTime(value);
+    assert.equal(projected.raw, value);
+    assert.equal(projected.year, null);
+    assert.doesNotMatch(projected.date, /纪1年/u);
+  }
+  assert.equal(timeDistance(projectTime('纪元年10月3日'), projectTime('纪元年10月5日')), 2);
+  assert.equal(timeDistance(projectTime('纪元年10月3日'), projectTime('纪元年霜月5日')), null);
+  assert.equal(timeDistance(projectTime('星辉历纪元年霜月初三'), projectTime('星辉历纪元年霜月初五')), 2);
+  assert.equal(timeDistance(projectTime('星辉历纪元年霜月初三'), projectTime('星辉历纪元年雪月初五')), null);
+  assert.equal(projectTime('三零五三年10月4日').year, 3053);
+  assert.equal(timeDistance(projectTime('三零五三年10月4日'), projectTime('三零五三年10月6日')), 2);
+  assert.equal(projectTime('3053年10月4日').year, 3053);
+  assert.equal(timeDistance(projectTime('3053年10月4日'), projectTime('3053年10月6日')), 2);
+  assert.equal(projectTime('公历2026年10月4日').date, '2026-10-04');
+  assert.equal(projectTime('2026-10-04').date, '2026-10-04');
+  assert.equal(projectTime('纪元年·秋').raw, '纪元年·秋', '未知自由文本保留，不拒存');
 });
 
 
@@ -51,6 +77,26 @@ test('程序回灌区分观察与发生时间、经过单一单位及预计标�
   const without = formatRecallInjection({ floors: [], states: [state], coverage: { memoryComplete: true, cseCurrent: true }, entityById: new Map() }); assert.match(without, /现在仍受伤/u);
   const fresh = { ...source, currentState: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [{ stateId: 'new', sourceFloorId: 'floor-2' }] }] };
   assert.equal(Object.keys(timeRecallProjection([item], fresh, projectTime('2026-05-11')).corrections).length, 0);
+});
+
+test('刻度召回日期标签优先保留来源文本且不重复追加时钟', () => {
+  const source = { entities: [{ entityId: PERSON, displayName: '甲' }], identityProjection: {}, currentState: [] };
+  const item = { id: 'deadline', subjectEntityId: PERSON, type: 'deadline', label: '归还档案', status: 'active', observation: '约定归还',
+    observationKey: 'key', observationTime: projectTime('3053年10月3日 08:00'), occurrenceTime: projectTime(''),
+    dueTime: projectTime('3053年10月4日 08:00') };
+  const projection = timeRecallProjection([item], source, projectTime('3053年10月3日 08:00'));
+  assert.match(projection.reminders[0].text, /约定期限 3053年10月4日 08:00，还有1天/u);
+  assert.doesNotMatch(projection.reminders[0].text, /08:00 08:00/u);
+  const unpadded = projectTime('3053年10月4日 8:00');
+  assert.equal(unpadded.clock, '08:00');
+  assert.equal((formatStoryTime(unpadded).match(/8:00|08:00/gu) ?? []).length, 1, '原文 8:00 与解析后的 08:00 按分钟等价去重');
+  const eraFullWidthClock = projectTime('纪元年10月4日 ８：００');
+  assert.equal(formatStoryTime(eraFullWidthClock), '纪元年10月4日 ８：００', '识别全角时钟去重，但显示保持原文');
+  for (const raw of ['昨天 ８：００', '昨天 8：00']) {
+    const anchoredRelative = projectTime(raw, projectTime('2026-05-10'));
+    assert.equal(anchoredRelative.date, '2026-05-09');
+    assert.equal(formatStoryTime(anchoredRelative), '2026-05-09 08:00', '识别全角数字或混合冒号后，仍显示已锚定的相对日期投影');
+  }
 });
 
 

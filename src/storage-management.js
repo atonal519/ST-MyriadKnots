@@ -141,6 +141,7 @@ export function createStorageManagement({
   hostAdapter,
   settings,
   memoryRuntime,
+  foundationRuntime,
   activitySources = [],
   isBusy = () => false,
   logger = console,
@@ -153,6 +154,8 @@ export function createStorageManagement({
   let operation = null;
   let resultState = { status: 'idle', chatId: null, stats: null, lastResult: null, error: null, autoPending: false };
   let automaticCheck = null;
+  const automaticAttempts = new Map();
+  let reusableAutomaticSnapshot = null;
   let disposed = false;
   const subscribers = new Set();
 
@@ -211,9 +214,64 @@ export function createStorageManagement({
     return identity;
   };
 
+  const currentStableCount = identity => {
+    const state = memoryRuntime.getState();
+    return state?.chatId === identity.chatId && Number.isSafeInteger(state.stableCount) ? state.stableCount : null;
+  };
+  const warmReachable = identity => {
+    const reachable = foundationRuntime?.getReachable?.();
+    if (reachable?.status !== 'ready' || reachable.root?.chatId !== identity.chatId
+      || reachable.root?.headCheckpointId !== reachable.checkpoint?.id || !reachable.indexesComplete
+      || reachable.indexesMissing || reachable.cseUnavailable === true
+      || !Number.isSafeInteger(reachable.rootRevision)
+      || typeof reachable.root?.narrativeGeneration !== 'string'
+      || reachable.checkpoint?.narrativeGeneration !== reachable.root.narrativeGeneration
+      || reachable.checkpoint?.sourceSnapshotFingerprint !== reachable.root.sourceSnapshotFingerprint
+      || reachable.run?.inputSnapshotFingerprint !== reachable.root.sourceSnapshotFingerprint) return null;
+    return reachable;
+  };
+  const rootMatchesAnchor = (root, anchor) => anchor?.status === 'ready'
+    ? root?.status === 'ready' && root.revision === anchor.revision && root.data?.chatId === anchor.chatId
+      && root.data?.narrativeGeneration === anchor.narrativeGeneration && root.data?.headCheckpointId === anchor.headCheckpointId
+      && root.data?.sourceSnapshotFingerprint === anchor.sourceSnapshotFingerprint
+    : anchor?.status === root?.status;
+  async function currentRootAnchor(identity) {
+    const root = await store.readRoot();
+    assertCurrent(identity);
+    return root?.status === 'ready'
+      ? Object.freeze({ status: 'ready', chatId: root.data.chatId, revision: root.revision,
+        narrativeGeneration: root.data.narrativeGeneration, headCheckpointId: root.data.headCheckpointId,
+        sourceSnapshotFingerprint: root.data.sourceSnapshotFingerprint })
+      : Object.freeze({ status: root?.status ?? 'unavailable' });
+  }
+  const rememberAutomaticSnapshot = (identity, snapshot, stableCount) => {
+    if (snapshot?.status === 'ready' && stableCount !== null && currentStableCount(identity) === stableCount && inCurrentHost(identity)) {
+      reusableAutomaticSnapshot = { identity, stableCount, snapshot };
+    }
+  };
+  async function takeReusableAutomaticSnapshot(identity, stableCount) {
+    const cached = reusableAutomaticSnapshot;
+    if (!cached || cached.stableCount !== stableCount || !sameIdentity(cached.identity, identity) || !inCurrentHost(identity)) return { snapshot: null, stale: false };
+    const root = await store.readRoot();
+    assertCurrent(identity);
+    const matches = rootMatchesAnchor(root, cached.snapshot.anchor);
+    reusableAutomaticSnapshot = null;
+    return matches ? { snapshot: cached.snapshot, stale: false } : { snapshot: null, stale: true };
+  }
+
   async function scanSnapshot(identity) {
     assertCurrent(identity);
-    const reachable = await store.readReachable({ mode: 'full' });
+    let reachable = warmReachable(identity);
+    if (reachable && typeof store.readRoot === 'function') {
+      const root = await store.readRoot();
+      assertCurrent(identity);
+      if (root?.status !== 'ready' || root.revision !== reachable.rootRevision
+        || root.data?.chatId !== reachable.root.chatId
+        || root.data?.narrativeGeneration !== reachable.root.narrativeGeneration
+        || root.data?.headCheckpointId !== reachable.root.headCheckpointId
+        || root.data?.sourceSnapshotFingerprint !== reachable.root.sourceSnapshotFingerprint) reachable = null;
+    } else reachable = null;
+    if (!reachable) reachable = await store.readReachable({ mode: 'full' });
     assertCurrent(identity);
     const records = await client.list(`chat-${identity.chatId}`);
     assertCurrent(identity);
@@ -228,17 +286,21 @@ export function createStorageManagement({
     const classified = await classifyStorageRecords(records, reachable, identity.chatId);
     return Object.freeze({
       status: 'ready', identity, stats: classified.stats, candidates: classified.candidates,
-      anchor: Object.freeze({ chatId: reachable.root.chatId, revision: reachable.rootRevision, headCheckpointId: reachable.root.headCheckpointId }),
+      anchor: Object.freeze({ status: 'ready', chatId: reachable.root.chatId, revision: reachable.rootRevision, headCheckpointId: reachable.root.headCheckpointId,
+        narrativeGeneration: reachable.root.narrativeGeneration, sourceSnapshotFingerprint: reachable.root.sourceSnapshotFingerprint }),
     });
   }
 
   async function scan() {
     if (operation) return operation.promise;
     const identity = capture();
+    const stableCount = currentStableCount(identity);
+    reusableAutomaticSnapshot = null;
     const current = { kind: 'scanning', identity, promise: null };
     operation = current; notify();
     current.promise = scanSnapshot(identity).then(snapshot => {
       setResult(identity, { status: snapshot.status, stats: snapshot.stats, error: null, lastResult: null });
+      rememberAutomaticSnapshot(identity, snapshot, stableCount);
       return snapshot;
     }).catch(error => {
       if (inCurrentHost(identity)) setResult(identity, { status: 'error', stats: null, error, lastResult: null });
@@ -340,6 +402,7 @@ export function createStorageManagement({
     const result = Object.freeze({ status, deletedCount: removed.deletedCount, convergedCount: removed.convergedCount, remainingCount, automatic,
       error, rootChanged });
     setResult(identity, { status: refreshed?.status ?? 'error', stats: refreshed?.stats ?? snapshot.stats, error: result.error, lastResult: result });
+    rememberAutomaticSnapshot(identity, refreshed, currentStableCount(identity));
     return result;
   }
 
@@ -347,9 +410,15 @@ export function createStorageManagement({
     if (operation) throw errorWith('QQJ_STORAGE_ACTIVE', '存储统计或清理正在进行。');
     const identity = capture();
     if (workBusy()) throw errorWith('QQJ_STORAGE_BUSY', '当前正在生成或处理千千结任务，请等待完成后再清理。');
+    const stableCount = currentStableCount(identity);
+    reusableAutomaticSnapshot = null;
     const current = { kind: 'cleaning', identity, promise: null };
     operation = current; notify();
-    current.promise = (async () => cleanFromSnapshot(identity, await scanSnapshot(identity), { automatic }))().catch(error => {
+    current.promise = (async () => {
+      const snapshot = await scanSnapshot(identity);
+      if (snapshot.status === 'ready' && snapshot.candidates.length === 0) rememberAutomaticSnapshot(identity, snapshot, stableCount);
+      return cleanFromSnapshot(identity, snapshot, { automatic });
+    })().catch(error => {
       if (inCurrentHost(identity)) setResult(identity, { status: resultState.stats ? 'ready' : 'error', error, lastResult: null });
       throw error;
     }).finally(() => { if (operation === current) operation = null; notify(); scheduleAutomatic(); });
@@ -373,6 +442,7 @@ export function createStorageManagement({
     const previous = progress()[identity.chatId];
     if (!Number.isSafeInteger(previous) || previous < 0 || memory.stableCount < previous) {
       updateProgress(identity.chatId, memory.stableCount);
+      automaticAttempts.delete(identity.chatId);
       setResult(identity, { autoPending: false });
       return;
     }
@@ -384,7 +454,28 @@ export function createStorageManagement({
       const current = { kind: 'scanning', identity, promise: null };
       operation = current; notify();
       current.promise = (async () => {
-        const snapshot = await scanSnapshot(identity);
+        const reusable = await takeReusableAutomaticSnapshot(identity, targetStableCount);
+        if (reusable.stale) automaticAttempts.delete(identity.chatId);
+        const previousAttempt = automaticAttempts.get(identity.chatId);
+        if (!reusable.snapshot && !reusable.stale && previousAttempt
+          && targetStableCount - previousAttempt.stableCount < AUTO_FLOOR_INTERVAL) {
+          const currentAnchor = await currentRootAnchor(identity);
+          if (rootMatchesAnchor({ status: currentAnchor.status, revision: currentAnchor.revision, data: currentAnchor }, previousAttempt.rootAnchor)) return false;
+          automaticAttempts.delete(identity.chatId);
+        }
+        let snapshot = reusable.snapshot;
+        if (!snapshot) {
+          try { snapshot = await scanSnapshot(identity); }
+          catch (error) {
+            if (inCurrentHost(identity) && !['QQJ_STORAGE_ROOT_CHANGED', 'QQJ_STORAGE_ROOT_IDENTITY_MISMATCH', 'QQJ_STORAGE_CHAT_CHANGED'].includes(error?.code)) {
+              try {
+                const rootAnchor = await currentRootAnchor(identity);
+                automaticAttempts.set(identity.chatId, { stableCount: targetStableCount, rootAnchor });
+              } catch { /* A failed root read cannot establish a retry version. */ }
+            }
+            throw error;
+          }
+        }
         if (snapshot.status !== 'ready') return false;
         if (snapshot.stats.cleanup.count >= STORAGE_AUTO_RECORD_THRESHOLD || snapshot.stats.cleanup.bytes >= STORAGE_AUTO_BYTE_THRESHOLD) {
           current.kind = 'cleaning'; notify();
@@ -393,7 +484,13 @@ export function createStorageManagement({
         return true;
       })();
       try {
-        if (await current.promise && inCurrentHost(identity)) updateProgress(identity.chatId, targetStableCount);
+        const completed = await current.promise;
+        if (completed && inCurrentHost(identity)) {
+          updateProgress(identity.chatId, targetStableCount);
+          automaticAttempts.delete(identity.chatId);
+        }
+      } catch (error) {
+        throw error;
       } finally {
         if (operation === current) operation = null;
         notify();

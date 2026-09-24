@@ -4,23 +4,27 @@ import { readFile } from 'node:fs/promises';
 import { scanAssistantCandidates, createFloorRecord } from '../src/v3/foundation-domain.js';
 import { readTimeBody, planTimeBody, timeBodyStart, resolveTimeStart } from '../src/v3/time-body.js';
 import { createTimeRuntime, createTimeStore, prepareTimeRequest } from '../src/v3/time-runtime.js';
-import { compileTimeResponse, compileTimeEdit, compileTimeEdits, replayTimeBatches, timeBodyReads, timeItemFailures, projectTime, validTimeProjection, timeRecallProjection, TIME_INPUT_TOKENS, TIME_SYSTEM_PROMPT, TIME_CURRENT_REVIEW_PROMPT } from '../src/v3/time-engine.js';
+import { compileTimeResponse, compileTimeEdit, compileTimeEdits, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, timeBodyReads, timeItemFailures, projectTime, validTimeProjection, timeRecallProjection, TIME_INPUT_TOKENS, TIME_SYSTEM_PROMPT, TIME_CURRENT_REVIEW_PROMPT } from '../src/v3/time-engine.js';
 import { estimateRecallTokens, selectRecall, buildRecallQueryContext } from '../src/v3/recall-selector.js';
 import { projectInlineRecallReceipt } from '../src/ui/inline-projection.js';
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', PERSON = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 function backend() {
-  const records = new Map(); return { records, client: { async get(c,id) { const result=records.get(`${c}/${id}`); if (!result) throw Object.assign(new Error('missing'),{status:404}); return structuredClone(result); },
-    async put(c,id,data,revision,{signal}={}) { if(signal?.aborted) throw new DOMException('abort','AbortError'); const key=`${c}/${id}`, old=records.get(key); assert.equal(old?.revision??0,revision); const result={data:structuredClone(data),revision:revision+1}; records.set(key,result); return structuredClone(result); } } };
+  const records = new Map(); let permanentDelete=true,removeHook=null;
+  return { records, client: { async health(){return {ok:true,api:{current:1,supported:[1]},capabilities:{records:true,optimisticRevision:true,permanentDelete}};},
+    async get(c,id) { const result=records.get(`${c}/${id}`); if (!result) throw Object.assign(new Error('missing'),{status:404}); return structuredClone(result); },
+    async put(c,id,data,revision,{signal}={}) { if(signal?.aborted) throw new DOMException('abort','AbortError'); const key=`${c}/${id}`, old=records.get(key); assert.equal(old?.revision??0,revision); const result={data:structuredClone(data),revision:revision+1}; records.set(key,result); return structuredClone(result); },
+    async removePermanent(c,id,revision,{signal}={}){if(signal?.aborted)throw new DOMException('abort','AbortError');await removeHook?.(id,revision);const key=`${c}/${id}`,old=records.get(key);if(!old)throw Object.assign(new Error('missing'),{status:404});if(old.revision!==revision)throw Object.assign(new Error('conflict'),{status:409});records.delete(key);return {ok:true};}},
+    setPermanentDelete(value){permanentDelete=value;},setRemoveHook(value){removeHook=value;} };
 }
 const raw = (i, body='陌生人阿岚的手腕擦伤仍疼痛。') => `<!-- QQJ-start | date=2026-05-${String(i+1).padStart(2,'0')} | weekday=周一 | time=08:00 -->${body}<!-- QQJ-end | date=2026-05-${String(i+1).padStart(2,'0')} | weekday=周一 | time=09:00 -->`;
-async function harness({ count=2, unstable=false, generate=()=>({changes:[]}), sanitizer={}, tags='' }={}) {
+async function harness({ count=2, unstable=false, generate=()=>({changes:[]}), sanitizer={}, tags='', annualSettingsProvider=()=>({ready:false}) }={}) {
   let chatId=CHAT,on=true,calls=0,busy=true,cse=false,sync='idle', counter=0;
   const chat=[]; for(let i=0;i<count;i++) { chat.push({is_user:false,mes:raw(i)}); if(!unstable||i<count-1) chat.push({is_user:true,mes:'继续'}); }
   const source={status:'ready',root:{chatId:CHAT,narrativeGeneration:'gen',headCheckpointId:'head'},rootRevision:1,floors:[],floorMemories:[],stateDeltas:[],entities:[],capabilities:{}};
   async function seal() { const candidates=await scanAssistantCandidates(chat,{sanitizerOptions:sanitizer,chatId:CHAT}); source.floors=candidates.filter(candidate=>candidate.stabilityProof).map((candidate,i)=>createFloorRecord({candidate,id:`floor-${i+1}`,chatId:CHAT,narrativeGeneration:'gen'})); }
   await seal(); const back=backend(),store=createTimeStore(back),hostAdapter={snapshot:()=>({chat,chatId:'host',context:{chatMetadata:{qianqianjie:{chatId}}}})};
   const options={store,hostAdapter,newUuid:()=>`test-${++counter}`,foundationStore:{readRoot:async()=>({data:source.root})},session:{identity:()=>({chatId,hostChatId:'host'})},
-    getReachable:()=>source,getMemoryState:()=>({memoryWorkBusy:busy,activeCse:cse?{}:null,memorySyncStatus:sync}),sanitizerOptions:()=>sanitizer,storyClockReferenceTags:()=>tags,isEnabled:()=>on,logger:{warn(){}},
+    getReachable:()=>source,getMemoryState:()=>({memoryWorkBusy:busy,activeCse:cse?{}:null,memorySyncStatus:sync}),sanitizerOptions:()=>sanitizer,storyClockReferenceTags:()=>tags,isEnabled:()=>on,annualSettingsProvider,logger:{warn(){}},
     generateTimeTask:async task=>{calls++;assert.equal(task.transportBudget.remaining,1);assert.equal(task.transportRetries,0);assert.ok(estimateRecallTokens(task.systemPrompt+task.taskMessages[0].content)<=TIME_INPUT_TOKENS);return generate(JSON.parse(task.taskMessages[0].content),calls,task);}};
   let runtime=createTimeRuntime(options);
   return {source,chat,store,back,seal,hostAdapter,get runtime(){return runtime;},reload(){runtime=createTimeRuntime(options);return runtime;},calls:()=>calls,setChat:value=>chatId=value,setEnabled:value=>on=value,setSync:value=>sync=value,body:()=>readTimeBody(source,hostAdapter.snapshot(),{sanitizerOptions:sanitizer,storyClockReferenceTags:tags})};
@@ -33,6 +37,67 @@ const rankedItem = (id,{type='deadline',label=id,observation=label,dueTime='',st
 });
 const rankedSeed = (source,changes,{id='rank-seed',cutoff=source.bodyFloors[0]}={}) => ({schemaVersion:1,chatId:CHAT,id,signature:id,currentTime:cutoff.observationTime,
   cutoffFloorId:cutoff.floorId,cutoffAssistantSeq:cutoff.assistantSeq,sourceKeys:[],dependencies:[],bodyReads:[],changes});
+
+test('刻度关联只接受本次千事候选，省略与坏key保留旧关联，null解链且人工操作不改剧情语义', async () => {
+  const observation = { sourceKey:'S1', floorId:'floor-1', assistantSeq:1, canonicalFingerprint:'body-1', timeSourceFingerprint:'time-1',
+    subjectEntityId:PERSON, description:'阿岚答应明日归还旧书。', observationTime:projectTime('2026-05-01') };
+  const candidate = { key:'candidate-1', matterId:'matter-1', originEventId:'event-origin-1' };
+  const basePrepared = { request:{chatId:CHAT,currentTime:projectTime('2026-05-01'),currentStates:[],trackedItems:[]}, sourceObservations:[observation],
+    identityPeople:[{entityId:PERSON,name:'阿岚',aliases:[]}], floorSequences:new Map([['floor-1',1]]), existingRecords:[], trackedRecords:[],
+    qianshiCandidateBindings:[candidate], cutoffFloorId:'floor-1', cutoffAssistantSeq:1, signature:'link', sourceKeys:['S1'], bodyReads:[] };
+  const change = { itemId:null, sourceKeys:['S1'], subjectEntityId:PERSON, subjectName:'阿岚', type:'deadline', label:'归还旧书', observation:'答应归还旧书',
+    occurrenceTime:'2026-05-01', dueTime:'2026-05-02', periodDays:null, status:'active', stateRefs:[], progression:'', qianshiCandidateKey:'candidate-1' };
+  const linkedBatch = await compileTimeResponse({changes:[change]}, basePrepared);
+  const linked = linkedBatch.changes[0];
+  assert.deepEqual(linked.qianshiRef, {matterId:'matter-1',originEventId:'event-origin-1'});
+
+  const updatePrepared = { ...basePrepared, request:{...basePrepared.request,trackedItems:[{...linked,qianshiRef:undefined,sourceRefs:undefined,stateRefs:undefined}]},
+    existingRecords:[linked], trackedRecords:[linked], signature:'update' };
+  const update = { ...change, itemId:linked.id, sourceKeys:[], qianshiCandidateKey:'candidate-404' };
+  const tolerant = await compileTimeResponse({changes:[{...update,qianshiCandidateKey:['candidate-1']}]}, updatePrepared, [linkedBatch]);
+  assert.deepEqual(tolerant.changes[0].qianshiRef,linked.qianshiRef,'单元素数组可无歧义归一');
+  for (const badKey of ['candidate-404',['candidate-1','candidate-404'],{key:'candidate-1'},42]) {
+    const invalid = await compileTimeResponse({changes:[{...update,qianshiCandidateKey:badKey}]}, updatePrepared, [linkedBatch]);
+    assert.deepEqual(invalid.changes[0].qianshiRef, linked.qianshiRef, '未知或坏格式key只忽略关联字段');
+  }
+  const omitted = await compileTimeResponse({changes:[Object.fromEntries(Object.entries(update).filter(([key]) => key !== 'qianshiCandidateKey'))]}, updatePrepared, [linkedBatch]);
+  assert.deepEqual(omitted.changes[0].qianshiRef, linked.qianshiRef, '省略字段保留旧关联');
+  const detached = await compileTimeResponse({changes:[{...update,qianshiCandidateKey:null}]}, updatePrepared, [linkedBatch]);
+  assert.equal(Object.hasOwn(detached.changes[0],'qianshiRef'),false,'显式null解除关联');
+
+  const reachable = { root:{chatId:CHAT}, floors:[{id:'floor-1',assistantSeq:1}], floorMemories:[], bodyTimes:new Map([['floor-1',projectTime('2026-05-01')]]) };
+  for (const fields of [{dueTime:'2026-05-03'},{status:'paused'},{status:'cancelled'},{status:'active'}]) {
+    const edited = await compileTimeEdit(linked, fields, reachable, `edit-${Object.values(fields)[0]}`);
+    assert.deepEqual(edited.changes[0].qianshiRef, linked.qianshiRef);
+  }
+});
+
+test('有效千事关联合并刻度当前提醒，明确完成或剧情取消不催，悬空关联保留独立刻度', () => {
+  const item = {...rankedItem('linked',{label:'刻度旧名',observation:'约定归还旧书',dueTime:'2026-05-02'}),qianshiRef:{matterId:'matter-1',originEventId:'event-origin-1'}};
+  const source = {entities:[{entityId:PERSON,displayName:'阿岚'}],currentState:[],identityProjection:{}};
+  const matter = {matterId:'matter-1',status:'inProgress',title:'已从书架取下旧书',description:'准备归还',storyTime:'2026-05-01',scheduledTime:'2026-05-02',object:'旧书',
+    origin:{eventId:'event-origin-1',title:'归还旧书',description:'答应归还',storyTime:'2026-05-01'}};
+  const active = timeRecallProjection([item],source,projectTime('2026-05-01'),[],{matters:[matter]});
+  assert.equal(active.reminders.length,1); assert.deepEqual(active.reminders[0].qianshiRef,item.qianshiRef);
+  assert.match(active.reminders[0].text,/千事事项 \/ 归还旧书（旧书）；当前进展：已从书架取下旧书；刻度/u);
+  for (const status of ['completed','cancelled']) assert.equal(timeRecallProjection([item],source,projectTime('2026-05-01'),[],{matters:[{...matter,status}]}).reminders.length,0,status);
+  for (const projection of [null,{matters:[]},{matters:[{...matter,matterId:'matter-other'}]}]) {
+    const ordinary = timeRecallProjection([item],source,projectTime('2026-05-01'),[],projection);
+    assert.equal(ordinary.reminders.length,1); assert.equal(ordinary.reminders[0].qianshiRef,undefined); assert.doesNotMatch(ordinary.reminders[0].text,/千事事项/u);
+  }
+});
+
+test('千事候选派生图异常局部降级为空，不阻断原刻度请求', async () => {
+  const h=await harness({count:1});
+  const event = id => ({id,matterId:'matter-bad',updatesMatter:true,title:id,description:id,status:'inProgress',storyTime:'2026-05-01',scheduledTime:null,people:[],object:null,sourceFloorId:'floor-1',continuesFromEventIds:[]});
+  h.source.floorMemories=[{id:'memory-bad',floorId:'floor-1',recordStatus:'active',chronology:[],qianshiDelta:{status:'ready',events:[event('event-a'),event('event-b')],relations:[
+    {id:'relation-duplicate',type:'before',fromEventId:'event-a',toEventId:'event-b',certainty:'explicit'},
+    {id:'relation-duplicate',type:'before',fromEventId:'event-b',toEventId:'event-a',certainty:'explicit'},
+  ]}}];
+  const body=await h.body(), plan=planTimeBody(body,[],{history:true});
+  const prepared=await prepareTimeRequest(body,[],{fragments:plan.groups[0]});
+  assert.equal(prepared.request.observations.length,1); assert.deepEqual(prepared.request.qianshiCandidates,[]); assert.deepEqual(prepared.qianshiCandidateBindings,[]);
+});
 
 test('召回时钟取未摘要可见正文；覆盖49变50不推进时间，同root正文或默认swipe变化不复用旧缓存', async () => {
   const h = await harness({ count: 50, tags: 'Ti' });
@@ -612,6 +677,100 @@ async function seedMergeItems(h) {
 const mergeProposal=(main,member,description='同一场景共同原因的轻微影响，手腕与膝盖分别保留原日期。')=>({itemId:main.id,mergedItemIds:[member.id],description});
 async function saveTimeBatch(h,batch){const stored=await h.store.read(CHAT);await h.store.putBatch(CHAT,batch);await h.store.putHead(CHAT,{...stored.head,batchIds:[...stored.head.batchIds,batch.id]},stored.revision);}
 
+async function seedDeletionHistory(h) {
+  const source=await h.body(),cutoff=source.bodyFloors.at(-1),first=source.bodyFloors[0];
+  const removed={...rankedItem('delete-me',{status:'active'}),observationKey:'delete-v1'},survivor={...rankedItem('keep-me',{status:'active'}),observationKey:'keep-v1'};
+  const coverage={floorId:first.floorId,canonicalFingerprint:first.canonicalFingerprint,timeSourceFingerprint:first.timeSourceFingerprint,from:0,to:first.content.length,totalCharacters:first.content.length};
+  const initial={...rankedSeed(source,[removed,survivor],{id:'delete-seed',cutoff}),bodyReads:[coverage],selectedItemIds:[removed.id,survivor.id],resolvedItemIds:[removed.id,survivor.id]};
+  const stopped={...removed,status:'completed',previousObservationKey:removed.observationKey,observationKey:'delete-v2'};
+  const final={...rankedSeed(source,[stopped],{id:'delete-final',cutoff}),bodyReads:[coverage],selectedItemIds:[removed.id],resolvedItemIds:[removed.id],currentReview:{selectedItemIds:[removed.id],updated:0,insufficient:0,retired:0,merged:0,omitted:0},status:'partial',itemErrors:[{index:1,reason:'旧失败',itemIds:[removed.id]},{index:2,reason:'未知旧失败'}]};
+  await h.store.putBatch(CHAT,initial);await h.store.putBatch(CHAT,final);
+  await h.store.putHead(CHAT,{schemaVersion:1,chatId:CHAT,batchIds:[initial.id,final.id],lastRun:{status:'partial',items:2,itemErrors:structuredClone(final.itemErrors)}},0);
+  await h.runtime.refreshStatus({force:true});
+  return {source,removed:stopped,survivor,initial,final};
+}
+
+test('时间批删净化只清结构引用，删主项不激活从项，删从项保留主项正文',()=>{
+  const main={id:'main',status:'completed',observationKey:'main-key',mergedItemIds:['member','other'],mergeDescription:'共同描述',mergeEvidenceKey:'evidence',projection:{text:'推测'},reviewAssessment:{reason:'依据'}};
+  const member={id:'member',status:'paused',observationKey:'member-key',mergedInto:'main',projection:{text:'从项推测'},reviewAssessment:{reason:'从项依据'}};
+  const other={id:'other',status:'paused',observationKey:'other-key',mergedInto:'main'};
+  const batch={id:'batch',changes:[main,member,other],mergeGroups:[{itemIds:['main','member','other']}],selectedItemIds:['main','member','other'],resolvedItemIds:['member'],currentReview:{selectedItemIds:['main','member']},itemErrors:[{reason:'located',itemIds:['member']},{reason:'unknown'}],bodyReads:[{floorId:'floor'}]};
+  const withoutMember=sanitizeTimeBatchForDeletion(batch,['member']);
+  assert.equal(withoutMember.changes.some(item=>item.id==='member'),false);const keptMain=withoutMember.changes.find(item=>item.id==='main');
+  assert.deepEqual(keptMain.mergedItemIds,['other']);assert.equal(keptMain.mergeDescription,null);assert.equal(keptMain.projection,null);assert.deepEqual(withoutMember.bodyReads,batch.bodyReads);assert.deepEqual(withoutMember.itemErrors,[{reason:'unknown'}]);
+  const withoutMain=sanitizeTimeBatchForDeletion(batch,['main']);const keptMember=withoutMain.changes.find(item=>item.id==='member');
+  assert.equal(keptMember.status,'paused');assert.equal(keptMember.mergedInto,null);assert.equal(keptMember.projection,null);assert.deepEqual(withoutMain.selectedItemIds,['member','other']);
+});
+
+test('删除头记录清选中事项但保留独立失败状态',()=>{
+  const head={lastRun:{status:'partial',currentReview:{selectedItemIds:['gone','kept']},itemErrors:[{reason:'located',itemIds:['gone']}],failedBatchCount:1,failedBodyAttempts:[{cutoffFloorId:'old'}]}};
+  const cleaned=sanitizeTimeHeadForDeletion(head,['gone']);
+  assert.deepEqual(cleaned.lastRun.currentReview.selectedItemIds,['kept']);assert.equal(cleaned.lastRun.itemErrors,undefined);
+  assert.equal(cleaned.lastRun.failedBatchCount,1);assert.equal(cleaned.lastRun.failedBodyAttempts.length,1);assert.equal(cleaned.lastRun.status,'partial');
+  const itemOnly=sanitizeTimeHeadForDeletion({lastRun:{status:'partial',itemErrors:[{reason:'located',itemIds:['gone']}]}},['gone']);
+  assert.equal(itemOnly.lastRun.status,'completed');
+});
+
+test('停止项永久批删换新历史后单次CAS切head，保留共享覆盖且分支不复活',async()=>{
+  const h=await harness({count:2}),seed=await seedDeletionHistory(h);assert.equal(h.runtime.getState().stoppedItems.length,1);
+  await h.runtime.deleteItems([{itemId:seed.removed.id,observationKey:seed.removed.observationKey}]);
+  const stored=await h.store.read(CHAT),replayed=replayTimeBatches(stored.batches,await h.body());
+  assert.deepEqual(replayed.map(item=>item.id),[seed.survivor.id]);assert.equal(stored.head.pendingDeletionRecords,undefined);assert.equal(stored.batches.length,2);assert.equal(stored.batches[1].changes.length,0);assert.equal(timeBodyReads(stored.batches,await h.body()).size,1);
+  assert.equal(h.back.records.has(`chat-${CHAT}/${seed.initial.id}`),false);assert.equal(h.back.records.has(`chat-${CHAT}/${seed.final.id}`),false);assert.equal(h.calls(),0);
+  await h.store.copyPrefix(CHAT,'delete-child',h.source.floors);const child=await h.store.read('delete-child');assert.deepEqual(replayTimeBatches(child.batches,await h.body()).map(item=>item.id),[seed.survivor.id]);
+  await assert.rejects(h.runtime.deleteItems([{itemId:seed.survivor.id,observationKey:seed.survivor.observationKey}]),/停止事项/);
+});
+
+test('清旧中途失败不假成功，冷重载同入口将已删404与剩余记录收敛',async()=>{
+  const h=await harness({count:2}),seed=await seedDeletionHistory(h);let removes=0;
+  h.back.setRemoveHook(()=>{removes++;if(removes===2)throw new Error('模拟清理失败');});
+  await assert.rejects(h.runtime.deleteItems([{itemId:seed.removed.id,observationKey:seed.removed.observationKey}]),/模拟清理失败/);
+  let stored=await h.store.read(CHAT);assert.equal(stored.head.pendingDeletionRecords.length,2);assert.deepEqual(replayTimeBatches(stored.batches,await h.body()).map(item=>item.id),[seed.survivor.id]);assert.equal(h.runtime.getState().pendingDeletionCount,2);
+  h.chat.push({is_user:false,mes:raw(2)},{is_user:true,mes:'继续'});await h.seal();await h.runtime.runBatch();
+  stored=await h.store.read(CHAT);assert.equal(stored.head.pendingDeletionRecords.length,2);assert.equal(h.runtime.getState().pendingDeletionCount,2,'新正文处理覆盖lastRun后仍显示待续清');
+  await assert.rejects(h.runtime.deleteItems([{itemId:seed.survivor.id,observationKey:seed.survivor.observationKey}]),/先在同一入口完成清理/u);
+  assert.equal(h.runtime.getState().pendingDeletionCount,2);assert.ok(replayTimeBatches((await h.store.read(CHAT)).batches,await h.body()).some(item=>item.id===seed.survivor.id));
+  h.back.setRemoveHook(null);h.reload();await h.runtime.refreshStatus({force:true});assert.equal(h.runtime.getState().pendingDeletionCount,2);
+  await h.runtime.deleteItems([]);stored=await h.store.read(CHAT);assert.equal(stored.head.pendingDeletionRecords,undefined);assert.equal(h.back.records.has(`chat-${CHAT}/${seed.final.id}`),false);assert.equal(h.calls(),0);
+});
+
+test('切聊后旧删除失败与年度快照迟到都不覆盖当前运行时状态',async()=>{
+  const h=await harness({count:2}),seed=await seedDeletionHistory(h);let attempted=false;
+  h.back.setRemoveHook(()=>{if(!attempted){attempted=true;h.setChat('other-chat');h.runtime.invalidate();throw new Error('旧聊天清理失败');}});
+  await assert.rejects(h.runtime.deleteItems([{itemId:seed.removed.id,observationKey:seed.removed.observationKey}]),/旧聊天清理失败/u);
+  assert.equal(h.runtime.getState().last,null);assert.equal(h.runtime.getState().pendingDeletionCount,0);
+
+  let providerCalls=0,releaseAnnual;
+  const annualGate=new Promise(resolve=>{releaseAnnual=resolve;});
+  const tail=await harness({count:2,annualSettingsProvider:()=>{providerCalls++;return providerCalls>=3?annualGate:{ready:false};}}),tailSeed=await seedDeletionHistory(tail);
+  const deleting=tail.runtime.deleteItems([{itemId:tailSeed.removed.id,observationKey:tailSeed.removed.observationKey}]);
+  while(providerCalls<3) await new Promise(resolve=>setImmediate(resolve));
+  tail.setChat('other-chat');tail.runtime.invalidate();releaseAnnual({ready:false});
+  await assert.rejects(deleting,/当前聊天已变化/u);assert.equal(tail.runtime.getState().last,null);assert.equal(tail.runtime.getState().pendingDeletionCount,0);
+});
+
+test('旧后端能力不足与head CAS失败都不改原清单',async()=>{
+  const unsupported=await harness({count:2}),first=await seedDeletionHistory(unsupported),before=JSON.stringify([...unsupported.back.records]);unsupported.back.setPermanentDelete(false);
+  await assert.rejects(unsupported.runtime.deleteItems([{itemId:first.removed.id,observationKey:first.removed.observationKey}]),error=>error.code==='QQJ_TIME_PERMANENT_DELETE_UNAVAILABLE');assert.equal(JSON.stringify([...unsupported.back.records]),before);
+  const conflicted=await harness({count:2}),second=await seedDeletionHistory(conflicted),originalPut=conflicted.back.client.put.bind(conflicted.back.client);let failed=false;
+  conflicted.back.client.put=async(c,id,data,revision,options)=>{if(id==='v3-time-head'&&revision>0&&!failed){failed=true;throw Object.assign(new Error('head conflict'),{status:409});}return originalPut(c,id,data,revision,options);};
+  await assert.rejects(conflicted.runtime.deleteItems([{itemId:second.removed.id,observationKey:second.removed.observationKey}]),/head conflict/);
+  const stored=await conflicted.store.read(CHAT);assert.deepEqual(stored.head.batchIds,[second.initial.id,second.final.id]);assert.ok(replayTimeBatches(stored.batches,await conflicted.body()).some(item=>item.id===second.removed.id));assert.equal(stored.head.pendingDeletionRecords,undefined);
+});
+
+test('净化副本准备写入失败时原head清单保持可回放',async()=>{
+  const h=await harness({count:2}),seed=await seedDeletionHistory(h),originalPut=h.back.client.put.bind(h.back.client),recordsBefore=[...h.back.records.keys()];
+  h.back.client.put=async(collection,id,data,revision,options)=>{
+    if(id.startsWith('v3-time-batch-')) throw new Error('净化副本准备失败');
+    return originalPut(collection,id,data,revision,options);
+  };
+  await assert.rejects(h.runtime.deleteItems([{itemId:seed.removed.id,observationKey:seed.removed.observationKey}]),/净化副本准备失败/u);
+  const stored=await h.store.read(CHAT);
+  assert.deepEqual(stored.head.batchIds,[seed.initial.id,seed.final.id]);assert.equal(stored.head.pendingDeletionRecords,undefined);
+  assert.ok(replayTimeBatches(stored.batches,await h.body()).some(item=>item.id===seed.removed.id));
+  assert.deepEqual([...h.back.records.keys()],recordsBefore);
+});
+
 test('同响应归并共同经历保来源/日期与人工原观察，独立原因保留，后续仅主项跟进/召回',async()=>{
   const h=await harness({count:3}),{source,rows,batches,items}=await seedMergeItems(h);let prepared=await prepareTimeRequest(source,batches,{fragments:rows});
   const batch=await compileTimeResponse({changes:[],merges:[mergeProposal(items[0],items[1])]},prepared,batches);
@@ -720,4 +879,36 @@ test('旧观察解析恢复计算但completed收尾签名未变仍不重开，�
   assert.equal(h.runtime.getState().trackedItems[0].observationTime.monthDay,17);
   const plan=await h.runtime.prepareHistoryPlan();assert.equal(plan.floorCount,0);assert.equal(plan.currentReview,false);assert.equal(plan.apiCalls,0);
   assert.equal(h.calls(),2,'读取计算视图不调用模型或改变重试策略');
+});
+
+test('时间batch冷读最多16路、保持head顺序且传播单项读取失败', async () => {
+  async function readFixture(failAt = -1) {
+    const ids = Array.from({ length: 41 }, (_, index) => `batch-${index}`);
+    let active = 0, peak = 0;
+    const failure = new TypeError('batch read failed');
+    const client = { async get(_collection, id) {
+      if (id === 'v3-time-head') return { revision: 3, data: { schemaVersion: 1, chatId: CHAT, batchIds: ids } };
+      active += 1; peak = Math.max(peak, active);
+      try {
+        await new Promise(resolve => setTimeout(resolve, Number(id.slice(6)) % 3));
+        if (Number(id.slice(6)) === failAt) throw failure;
+        return { revision: Number(id.slice(6)) + 1, data: { schemaVersion: 1, chatId: CHAT, id, order: Number(id.slice(6)) } };
+      } finally { active -= 1; }
+    } };
+    return { result: await createTimeStore({ client }).read(CHAT), peak, failure };
+  }
+  const loaded = await readFixture();
+  assert.ok(loaded.peak <= 16, `实际峰值并发为 ${loaded.peak}`);
+  assert.deepEqual(loaded.result.batches.map(batch => batch.order), Array.from({ length: 41 }, (_, index) => index));
+  assert.deepEqual(loaded.result.batchRecords.map(record => record.id), Array.from({ length: 41 }, (_, index) => `batch-${index}`));
+
+  const ids = Array.from({ length: 41 }, (_, index) => `batch-${index}`);
+  const failure = new TypeError('batch read failed');
+  const client = { async get(_collection, id) {
+    if (id === 'v3-time-head') return { revision: 3, data: { schemaVersion: 1, chatId: CHAT, batchIds: ids } };
+    await new Promise(resolve => setImmediate(resolve));
+    if (id === 'batch-7') throw failure;
+    return { revision: 1, data: { schemaVersion: 1, chatId: CHAT, id } };
+  } };
+  await assert.rejects(createTimeStore({ client }).read(CHAT), error => error === failure);
 });

@@ -21,6 +21,15 @@ const pair = (namespace, start = '10月4日 | weekday=周二 | time=15:30', end 
 test('默认 QQJ，且 QQJ、SDC、旧 myknots 与星期别名均能读成完整时间戳', () => {
   assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /QQJ-start/);
   assert.doesNotMatch(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /myknots-start/);
+  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /date=大陆历1686年10月4日/);
+  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /开场白和本轮实际生效的世界书/);
+  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /创作符合世界观的故事年份或纪年/);
+  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /中途没有可靠故事年份或纪年时/);
+  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /纪元年、中文数字、阿拉伯数字或世界观自定义纪年表达/);
+  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /不得使用系统或服务器现实年份/);
+  assert.doesNotMatch(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /未知故事年份：/);
+  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /start 与 end 的 date 都必须写出完整年份/);
+  assert.equal(parseClockFields('date=大陆历1686年10月4日 | weekday=周二 | time=15:30').date, '大陆历1686年10月4日');
   for (const namespace of ['QQJ', 'myknots', 'SDC']) {
     const parsed = parseSharedStoryClock(pair(namespace));
     assert.equal(parsed.namespace, namespace);
@@ -118,4 +127,8 @@ test('协调矩阵与 controller 只操作自己的 prompt key', () => {
   assert.equal(controller.refresh().status, 'custom');
   assert.deepEqual(calls, [[MYKNOTS_STORY_CLOCK_KEY, ''], [MYKNOTS_STORY_CLOCK_KEY, '逐字原样', 7, 0, false, 9]]);
   assert.equal(calls.some(call => call[0] === 'sdc_story_clock'), false);
+
+  const peerCalls = [], peerController = createMyKnotsStoryClockController({ context: () => ({ ...host, setExtensionPrompt: (...args) => peerCalls.push(args) }), settings: () => ({ ...settings, storyClockPrompt: '' }), peerState: () => ({ active: true, custom: false }) });
+  assert.equal(peerController.refresh().status, 'adapted-sdc');
+  assert.deepEqual(peerCalls, [[MYKNOTS_STORY_CLOCK_KEY, '']]);
 });

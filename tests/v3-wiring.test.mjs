@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { access, readFile } from 'node:fs/promises';
 
-test('生产入口只装配 V3 记忆与独立人物工作区，面板提供四个主页面且旧 V1/V2 入口不存在', async () => {
+test('生产入口只装配 V3 记忆与独立人物工作区，面板提供五个主页面且旧 V1/V2 入口不存在', async () => {
   const [entry, panel, html, bootstrap, bundle, manifest] = await Promise.all([
     readFile(new URL('../index.js', import.meta.url), 'utf8'),
     readFile(new URL('../src/ui/panel.js', import.meta.url), 'utf8'),
@@ -18,12 +18,13 @@ test('生产入口只装配 V3 记忆与独立人物工作区，面板提供四�
   assert.match(entry, /import\s*\{\s*version\s+as\s+pluginVersion\s*\}\s*from\s*['"]\.\/manifest\.json['"]/, '生产回执版本必须只从 manifest.version 导入');
   assert.match(entry, /createV3RecallRuntime\([\s\S]*?pluginVersion,\s*\n\}\)/);
   assert.match(entry, /qianshiProgressProvider:\s*async\s*\(source, context\)\s*=>\s*v3MemoryRuntime\.getQianshiRecall\(\{\s*\.\.\.context,\s*\.\.\.\(await timeRuntime\.currentStoryContext\(source\)\s*\?\?\s*\{\}\)\s*\}\)/);
-  assert.equal(manifest.version, '0.4.0');
+  assert.equal(manifest.version, '0.5.0');
   for (const marker of ['createArchiveV2', 'archiveV2', 'archive-v2', 'myriad-knots-bond-draft', '首次建立双丝网']) {
     assert.doesNotMatch(entry + panel + bootstrap + bundle, new RegExp(marker, 'i'));
   }
-  assert.deepEqual([...html.matchAll(/data-tab="([^"]+)">([^<]+)/g)].map(match => [match[1], match[2]]), [['profiles', '千人'], ['events', '千结'], ['people', '双丝网'], ['settings', '设置']]);
+  assert.deepEqual([...html.matchAll(/data-tab="([^"]+)">([^<]+)/g)].map(match => [match[1], match[2]]), [['profiles', '千人'], ['events', '千结'], ['qianshi', '千事'], ['people', '双丝网'], ['settings', '设置']]);
   assert.match(panel, /activeTab === 'profiles'/, '千人必须使用独立人物资料视图');
+  assert.match(panel, /activeTab === 'qianshi'/, '千事必须使用独立完整时间线视图');
   assert.match(panel, /setPage\?\.\(activeTab === 'people' \? 'people' : 'memories'\)/, '真实内容入口必须显式选择千结或双丝网页，不能落入视图默认管理页');
   assert.match(panel, /setPage\?\.\('management'\)/, '设置页必须挂载记忆管理视图');
   for (const path of [

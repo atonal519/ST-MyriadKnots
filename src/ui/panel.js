@@ -35,6 +35,7 @@ export function createPanel({
   apiTools,
   v3FoundationView,
   peopleProfilesView,
+  qianshiTimelineView,
   storageManagementView,
   sourcePermissionView,
   onPluginEnabledChange,
@@ -55,6 +56,9 @@ export function createPanel({
   }
   if (!peopleProfilesView || ['mount', 'activate', 'deactivate'].some(name => typeof peopleProfilesView[name] !== 'function')) {
     throw new TypeError('peopleProfilesView 无效');
+  }
+  if (!qianshiTimelineView || ['mount', 'activate', 'deactivate'].some(name => typeof qianshiTimelineView[name] !== 'function')) {
+    throw new TypeError('qianshiTimelineView 无效');
   }
   if (!storageManagementView || ['mount', 'activate', 'deactivate'].some(name => typeof storageManagementView[name] !== 'function')) {
     throw new TypeError('storageManagementView 无效');
@@ -153,6 +157,7 @@ export function createPanel({
   const unmountContent = () => {
     v3FoundationView.deactivate();
     peopleProfilesView.deactivate();
+    qianshiTimelineView.deactivate();
     storageManagementView.deactivate();
     view.replaceChildren();
     mountedContentView = null;
@@ -179,6 +184,13 @@ export function createPanel({
       restoreScroll(activeTab);
       const result = await peopleProfilesView.activate();
       return result;
+    }
+    if (activeTab === 'qianshi') {
+      if (mountedContentView !== 'qianshi') {
+        unmountContent(); qianshiTimelineView.mount(view); mountedContentView = 'qianshi';
+      }
+      restoreScroll(activeTab);
+      return qianshiTimelineView.activate();
     }
     v3FoundationView.setPage?.(activeTab === 'people' ? 'people' : 'memories');
     if (mountedContentView !== 'foundation') {
@@ -410,6 +422,7 @@ export function createPanel({
     activationEpoch += 1;
     v3FoundationView.deactivate();
     peopleProfilesView.deactivate();
+    qianshiTimelineView.deactivate();
     storageManagementView.deactivate();
     geometry.cancelGesture();
     swipeGesture = null;
@@ -427,6 +440,7 @@ export function createPanel({
     if (!enabled) {
       activationEpoch += 1;
       v3FoundationView.deactivate();
+      qianshiTimelineView.deactivate();
       if (!host.hidden && screen === 'content') showStatus('千千结当前已关闭。设置仍可打开。');
     } else if (!host.hidden && screen === 'content') void activateFoundation().catch(() => showStatus('当前聊天暂时无法读取千结记忆。'));
     else if (!host.hidden && screen === 'settings') void activateManagement();
@@ -452,7 +466,7 @@ export function createPanel({
     if (Math.abs(gesture.dx) < 60 || Math.abs(gesture.dx) <= Math.abs(gesture.dy) * 1.35) return;
     event.preventDefault?.();
     scrollDiagnostics.markQqjSwipeIntercepted();
-    const swipeTabs = ['profiles', 'events', 'people', 'settings'], current = screen === 'settings' ? 'settings' : activeTab, index = swipeTabs.indexOf(current), next = index + (gesture.dx < 0 ? 1 : -1);
+    const swipeTabs = ['profiles', 'events', 'qianshi', 'people', 'settings'], current = screen === 'settings' ? 'settings' : activeTab, index = swipeTabs.indexOf(current), next = index + (gesture.dx < 0 ? 1 : -1);
     if (next >= 0 && next < swipeTabs.length) selectTab(swipeTabs[next]);
   }, { passive: false });
   body?.addEventListener?.('touchcancel', () => { swipeGesture = null; }, { passive: true });
@@ -485,6 +499,7 @@ export function createPanel({
     async refresh() {
       if (host.hidden || screen !== 'content') return { status: 'closed' };
       v3FoundationView.deactivate();
+      qianshiTimelineView.deactivate();
       return activateFoundation();
     },
     getUiDiagnostic: () => JSON.stringify(scrollDiagnostics.snapshot(), null, 2),

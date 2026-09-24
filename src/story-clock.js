@@ -5,15 +5,15 @@ export const DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT = [
   '【故事时间戳 QQJ｜每楼附加元数据】',
   '请在本楼正文最前与最后各放一个 HTML 注释，作为本楼的附加故事时间元数据。HTML 注释不会显示给读者。',
   '日期与时间的表达方式应与当前故事背景及正文保持一致。沿用正文已经使用的纪年、历法和计时方式，不因示例而切换格式。',
-  '格式示例（仅示意字段结构，不指定故事年代或计时方式；请替换为本楼实际内容）：',
-  '  <!-- QQJ-start | date=10月4日 | weekday=周二 | time=15:30 -->正文<!-- QQJ-end | date=10月4日 | weekday=周二 | time=16:00 -->',
-  'start 与 end 都必须同时填写 date、weekday、time；weekday 只能使用周一至周日。上下文已有完整故事纪年时，date 原样复制年号与年份；未知年份时只写月日，不得猜现实年份。日期、历法、状态栏、时间戳等其他世界书要求仍须完整执行，QQJ 不替代、不合并、不改写它们。',
+  '格式示例（仅示意字段结构，不构成剧情事实，也不指定故事必须使用公历或数字年份；请替换为本楼实际内容）：',
+  '  已知故事年份：<!-- QQJ-start | date=大陆历1686年10月4日 | weekday=周二 | time=15:30 -->正文<!-- QQJ-end | date=大陆历1686年10月4日 | weekday=周二 | time=16:00 -->',
+  'start 与 end 都必须同时填写 date、weekday、time；weekday 只能使用周一至周日。有可靠故事年份或纪年时，start 与 end 的 date 都必须写出完整年份并沿用原有年号和历法；跨年、倒叙或改历时，以本楼正文及可靠故事时间依据为准，不能机械照抄上一楼。开局没有可沿用的故事年份时，先从开场白和本轮实际生效的世界书采用明确纪年；中途没有可靠故事年份或纪年时，先依据已经发生的正文和本轮实际生效的世界书确定合理纪年；这些材料都未提供可用纪年时，再结合上下文创作符合世界观的故事年份或纪年，并写入本楼 start 与 end。年份可用纪元年、中文数字、阿拉伯数字或世界观自定义纪年表达，不限四位公历格式；不得使用系统或服务器现实年份，也不要因示例改变故事既有纪年格式。日期、历法、状态栏、时间戳等其他世界书要求仍须完整执行，QQJ 不替代、不合并、不改写它们。',
   '通常以上一楼 end 为参考推进本楼时间；若本楼没有可用参考，按当前剧情设定合理填写。除这两个注释外，不要在正文中讨论 QQJ。',
 ].join('\n');
 
 const text = value => typeof value === 'string' ? value : '';
 const field = (raw, name) => new RegExp(`(?:^|[|｜,，;；\\n])\\s*(?:${name})\\s*[=＝:]\\s*([^|｜,，;；\\n]+)`, 'iu').exec(raw)?.[1]?.trim() || null;
-const REFERENCE_TAG_NAME = /^\p{L}[\p{L}\p{N}_-]*~?$/u;
+const REFERENCE_TAG_NAME = /^[\p{L}][\p{L}\p{N}_-]*~?$/u;
 
 export function normalizeStoryClockReferenceTags(value) {
   const values = Array.isArray(value) ? value : String(value ?? '').split(/[\n,，]/u);
@@ -139,7 +139,8 @@ export function storyClockSignature(clock) {
 
 export function buildMyKnotsClockPrompt(settings = {}) {
   const raw = text(settings.storyClockPrompt);
-  return raw.trim() ? raw : DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT;
+  if (raw.trim()) return raw;
+  return DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT;
 }
 
 export function decideStoryClockInjection({ owner, ownActive, ownCustom, peerActive, peerCustom } = {}) {

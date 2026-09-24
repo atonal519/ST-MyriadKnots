@@ -132,11 +132,14 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.4.0');
+  assert.equal(manifest.version, '0.5.0');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
   assert.equal(cacheMatch[5], bundleDigest.slice(0, 16), 'manifest cache key 必须随实际 bundle 内容变化，禁止漏 bump 假通过');
+  for (const marker of ['0.5.0', 'prepareStep', 'qianshiCandidates', 'Graphology 检测到重复图边。', 'DataCloneError']) {
+    assert.equal(bundleSource.includes(marker), true, `生产 bundle 缺少候选版本或安全准备诊断字段：${marker}`);
+  }
   await assert.rejects(access(resolve(root, 'dist/index.js')));
   await assert.rejects(access(resolve(root, 'src/ui/v3-floor-cards.js')));
   await assert.rejects(access(resolve(root, 'src/v3/chat-fork-migrator.js')));
@@ -257,6 +260,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const inlineEnabled = [];
   const backgroundStarts = [];
   const runtimeEnables = [];
+  const recallInvalidations = [];
   let bootstrapOptions;
   let compactOptions;
   let foundationOptions;
@@ -339,11 +343,11 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/v3/chat-branch-inheritance.js', { createChatBranchInitializer: options => { branchInitializerOptions = options; return branchInitializer; } });
   let timeOptions, timeBindOptions;
   const timeBatches = [];
-  const timeRuntime = { runBatch: receipt => { timeBatches.push(receipt); }, recallProjection: async () => null, currentStoryContext: async () => null, stop: async () => {}, bind(options) { timeBindOptions = options; } };
+  const timeRuntime = { runBatch: receipt => { timeBatches.push(receipt); }, completeStoredUpdate() { timeOptions.onInvalidate?.(); }, recallProjection: async () => null, currentStoryContext: async () => null, stop: async () => {}, bind(options) { timeBindOptions = options; } };
   define('./src/v3/time-runtime.js', { createTimeStore: () => ({}), createTimeRuntime: options => { timeOptions = options; return timeRuntime; } });
   define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() { backgroundStarts.push('memory'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, getState: () => ({}), getQianshiRecall: () => ({ text: '' }), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
   define('./src/v3/message-floor-anchor.js', { persistMessageFloorAnchors: persistAnchors });
-  define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; v3RecallRuntime = { bind() {}, async setEnabled(value) { runtimeEnables.push(`recall:${value}`); }, async intercept() {}, getState: () => ({}), getPromptSnapshot: () => null }; return v3RecallRuntime; } });
+  define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; v3RecallRuntime = { bind() {}, async setEnabled(value) { runtimeEnables.push(`recall:${value}`); }, async intercept() {}, invalidate(reason) { recallInvalidations.push(reason); }, getState: () => ({}), getPromptSnapshot: () => null }; return v3RecallRuntime; } });
   define('./src/v3/auto-hide.js', { createAutoHideController: options => { autoHideOptions = options; return { applySettings() {}, stop() {}, dispose() {} }; } });
   define('./src/ui/inline-renderer.js', { createInlineRenderer: options => { inlineRendererOptions = options; return { setEnabled(value) { inlineEnabled.push(value); }, destroy() {} }; } });
   const peopleWorkspaceRuntime = { async refresh(options) { backgroundStarts.push(['people', options]); }, async setEnabled(value) { runtimeEnables.push(`people:${value}`); }, invalidate() {}, getState: () => ({ status: 'ready', chatId: 'test',
@@ -372,6 +376,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(timeOptions.sanitizerOptions, v3MemoryOptions.sanitizerOptions);
   assert.equal(timeOptions.storyClockReferenceTags(), 'Ti,时标');
   assert.equal(timeOptions.annualSettingsProvider().people.map(person => person.entityId).sort().join(','), 'awake-id,sleep-id', '年度来源保留不在当前人物展示候选中的有效资料，并应用合并/删除规则');
+  assert.equal(Object.hasOwn(timeOptions, 'onInvalidate'), false, '生产入口不得把普通刻度更新接成整轮召回失效');
+  timeRuntime.completeStoredUpdate();
+  assert.deepEqual(recallInvalidations, [], '刻度正常落盘不得取消正在进行的召回');
   assert.ok(timeBindOptions.foundationRuntime);
   assert.equal(timeBindOptions.eventSource, productionEventSource);
   assert.equal(timeOptions.isEnabled(), false);

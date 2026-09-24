@@ -55,7 +55,10 @@ function reachable(chatId = CHAT) {
   return {
     status: 'ready', rootRevision: 9,
     root: rootData(chatId),
-    checkpoint: { id: HEAD, runId: RUN, producedRefs: { floors: [FLOOR], floorMemories: [MEMORY], entities: [ENTITY], stateDeltas: [DELTA], currentStates: [CURRENT], indexes: [validEnvelope('index', INDEX).recordId] } },
+    run: { inputSnapshotFingerprint: null },
+    indexesComplete: true,
+    checkpoint: { id: HEAD, runId: RUN, narrativeGeneration: GENERATION, sourceSnapshotFingerprint: null,
+      producedRefs: { floors: [FLOOR], floorMemories: [MEMORY], entities: [ENTITY], stateDeltas: [DELTA], currentStates: [CURRENT], indexes: [validEnvelope('index', INDEX).recordId] } },
   };
 }
 function recordsWithOld(oldCount = 3) {
@@ -78,9 +81,14 @@ function recordsWithOld(oldCount = 3) {
   ];
 }
 
-function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId = CHAT, removeHook = null } = {}) {
-  let items = recordsWithOld(oldCount), memoryState = { chatId: CHAT, stableCount: 10 }, isBusy = busy;
+function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId = CHAT, removeHook = null, warmCache = false,
+  cacheRootChanged = false, scanFailure = null, stableCount = 10, autoEnabled = false } = {}) {
+  let items = recordsWithOld(oldCount), memoryState = { chatId: CHAT, stableCount }, isBusy = busy;
   const removes = [], ordinaryRemoves = [], listeners = new Set(), sessionCalls = [];
+  let listCalls = 0, rootReads = 0, fullReads = 0, listFailure = null, rootReadFailure = null, maintenanceRootFailure = null;
+  let cacheRootMismatch = cacheRootChanged;
+  let rootVersion = 9;
+  let pendingScanFailure = scanFailure;
   const identity = { hostChatId: HOST, chatId: CHAT, characterLocator: 'char', personaLocator: 'persona' };
   let sessionState = { status: 'ready', identity };
   const session = {
@@ -93,12 +101,13 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
     async prepare() { sessionCalls.push('prepare'); sessionState = { status: 'ready', identity }; return sessionState; },
     getState: () => sessionState,
   };
-  const settingsValue = { storageAutoCleanupEnabled: false, storageAutoCleanupProgress: {} };
+  const settingsValue = { storageAutoCleanupEnabled: autoEnabled, storageAutoCleanupProgress: autoEnabled ? { [CHAT]: stableCount - 10 } : {} };
   const settings = { get: () => settingsValue, update(patch) { Object.assign(settingsValue, structuredClone(patch)); } };
   const client = {
-    async list() { return structuredClone(items); },
+    async list() { listCalls += 1; if (listFailure) { const failure = listFailure; listFailure = null; throw failure; } return structuredClone(items); },
     async get(_collection, recordId) {
       assert.equal(recordId, 'v3-root');
+      if (maintenanceRootFailure) { const failure = maintenanceRootFailure; maintenanceRootFailure = null; throw failure; }
       return { revision: rootChanged ? 10 : 9, data: rootData(CHAT, rootChanged ? RUN : HEAD) };
     },
     async remove(_collection, recordId, revision) {
@@ -116,14 +125,27 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
     },
   };
   const store = {
-    async readReachable() { return structuredClone(reachable(rootChatId)); },
+    async readRoot() { rootReads += 1; if (rootReadFailure) { const failure = rootReadFailure; rootReadFailure = null; throw failure; }
+      const root = cacheRootMismatch ? reachable('other-chat').root : rootData(CHAT, rootVersion === 9 ? HEAD : RUN);
+      return { status: 'ready', revision: cacheRootMismatch ? 10 : rootVersion, data: root }; },
+    async readReachable() {
+      fullReads += 1;
+      if (pendingScanFailure) { const failure = pendingScanFailure; pendingScanFailure = null; throw failure; }
+      const value = reachable(rootChatId);
+      if (!cacheRootMismatch && rootVersion !== 9) {
+        value.rootRevision = rootVersion;
+        value.root.headCheckpointId = RUN;
+        value.checkpoint.id = RUN;
+      }
+      return structuredClone(value);
+    },
   };
   const memoryRuntime = {
     getState: () => memoryState,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };
   const manager = createStorageManagement({
-    client, store, settings, memoryRuntime,
+    client, store, settings, memoryRuntime, foundationRuntime: { getReachable: () => warmCache ? reachable() : null },
     session,
     hostAdapter: { snapshot: () => ({ chatId: HOST, context: { chatMetadata: { qianqianjie: { chatId: CHAT } } } }) },
     isBusy: () => isBusy,
@@ -131,12 +153,37 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
   });
   return {
     manager, removes, ordinaryRemoves, settingsValue, session, sessionCalls,
+    counts: () => ({ listCalls, rootReads, fullReads }),
+    failNextScan(error) { pendingScanFailure = error; },
+    failNextList(error) { listFailure = error; },
+    failNextRootRead(error) { rootReadFailure = error; },
+    failNextMaintenanceRootRead(error) { maintenanceRootFailure = error; },
+    changeCacheRoot() { cacheRootMismatch = true; },
+    setRootVersion(value) { rootVersion = value; },
     setBusy(value) { isBusy = value; for (const listener of listeners) listener(memoryState); },
     setStableCount(value) { memoryState = { ...memoryState, stableCount: value }; for (const listener of listeners) listener(memoryState); },
     records: () => items,
-  };
+};
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
+function waitForOperationSettled(manager, timeoutMs = 5000) {
+  return new Promise(resolve => {
+    let sawOperation = false, idleNotifications = 0, timer = null;
+    const finish = settled => {
+      clearTimeout(timer);
+      unsubscribe();
+      if (settled) { setImmediate(() => resolve(true)); return; }
+      resolve(false);
+    };
+    const unsubscribe = manager.subscribe(state => {
+      if (['scanning', 'cleaning'].includes(state.status)) {
+        sawOperation = true;
+        idleNotifications = 0;
+      } else if (sawOperation && ++idleNotifications >= 2) finish(true);
+    });
+    timer = setTimeout(() => finish(false), timeoutMs);
+  });
+}
 
 test('统计只把通过生产完整 schema 校验且不可达的九类 foundation 记录列为旧版本', async () => {
   const oldTypes = ['run', 'checkpoint', 'currentState', 'index', 'floor', 'floorMemory', 'entity', 'baseline', 'stateDelta'];
@@ -182,6 +229,21 @@ test('root 在扫描后变化时零删除，busy 时同样拒绝且不访问 rem
   const mismatched = fixture({ rootChatId: 'other-chat' });
   await assert.rejects(mismatched.manager.cleanup(), error => error.code === 'QQJ_STORAGE_ROOT_IDENTITY_MISMATCH');
   assert.deepEqual(mismatched.removes, []);
+});
+
+test('仅复用完整暖地基且root一致；仍list，冷图或root变化回退full', async () => {
+  const warm = fixture({ warmCache: true });
+  const snapshot = await warm.manager.scan();
+  assert.equal(snapshot.status, 'ready');
+  assert.deepEqual(warm.counts(), { listCalls: 1, rootReads: 1, fullReads: 0 });
+
+  const cold = fixture();
+  await cold.manager.scan();
+  assert.deepEqual(cold.counts(), { listCalls: 1, rootReads: 0, fullReads: 1 });
+
+  const stale = fixture({ warmCache: true, cacheRootChanged: true });
+  await stale.manager.scan();
+  assert.deepEqual(stale.counts(), { listCalls: 1, rootReads: 1, fullReads: 1 });
 });
 
 test('root 二次核验后到删除结束之间 session 保持暂停，新 foundation 写入无法取得身份', async () => {
@@ -258,6 +320,153 @@ test('自动清理默认关闭；显式开启后每新增10个稳定楼检查，
   for (let index = 0; index < 200 && f.manager.getState().stats?.cleanup?.count !== 0; index += 1) await tick();
   assert.equal(f.removes.length, STORAGE_AUTO_RECORD_THRESHOLD);
   assert.equal(f.manager.getState().stats.cleanup.count, 0);
+  assert.equal(f.settingsValue.storageAutoCleanupProgress[CHAT], 20);
+});
+
+test('手动扫描结果只在同稳定楼节点经root复核后供自动决策复用', async () => {
+  const f = fixture({ oldCount: 1 });
+  await f.manager.scan();
+  f.manager.setAutoEnabled(true);
+  f.setBusy(true); f.setStableCount(20); await tick();
+  await f.manager.scan();
+  const afterManualScan = f.counts().fullReads;
+  f.setBusy(false);
+  for (let index = 0; index < 80 && f.settingsValue.storageAutoCleanupProgress[CHAT] !== 20; index += 1) await tick();
+  assert.equal(f.counts().fullReads, afterManualScan, '自动阈值决策复用手动扫描图，不再完整读取');
+  assert.equal(f.counts().rootReads, 1, '复用前重新核对root身份');
+  assert.equal(f.settingsValue.storageAutoCleanupProgress[CHAT], 20);
+});
+
+test('手动清理后的复扫结果供同节点自动检查复用', async () => {
+  const f = fixture({ oldCount: 1, stableCount: 20, autoEnabled: true });
+  await f.manager.cleanup();
+  const afterManualCleanup = f.counts().fullReads;
+  for (let index = 0; index < 80 && f.settingsValue.storageAutoCleanupProgress[CHAT] !== 20; index += 1) await tick();
+  assert.equal(f.counts().fullReads, afterManualCleanup, '清理后的统计供自动阈值决策复用');
+  assert.equal(f.settingsValue.storageAutoCleanupProgress[CHAT], 20);
+});
+
+test('自动扫描实际失败后同节点不连番重试，下一十楼节点重试且busy恢复立即扫描', async () => {
+  const f = fixture();
+  await f.manager.scan();
+  f.manager.setAutoEnabled(true);
+  f.setBusy(true); f.setStableCount(20); await tick();
+  f.failNextScan(new TypeError('network unavailable'));
+  const failedCheck = waitForOperationSettled(f.manager);
+  f.setBusy(false);
+  assert.equal(await failedCheck, true, '自动扫描失败及其退避登记应完整收尾');
+  assert.equal(f.counts().fullReads, 2, 'busy解除后立即开始一次自动扫描');
+  const sameNodeCheck = waitForOperationSettled(f.manager);
+  f.setStableCount(20); await tick();
+  assert.equal(await sameNodeCheck, true, '同节点决策应完成');
+  assert.equal(f.counts().fullReads, 2, '同一楼节点的通知不重复触发失败扫描');
+  const nextNodeCheck = waitForOperationSettled(f.manager);
+  f.setStableCount(30);
+  assert.equal(await nextNodeCheck, true, '下一节点扫描应完成');
+  assert.equal(f.counts().fullReads, 3, '下一个十楼节点恢复自动尝试');
+  assert.equal(f.settingsValue.storageAutoCleanupProgress[CHAT], 30);
+});
+
+test('先前自动扫描失败后同节点的手动刷新仍提供自动阈值决策', async () => {
+  const f = fixture({ oldCount: 1 });
+  await f.manager.scan();
+  f.manager.setAutoEnabled(true);
+  f.setBusy(true); f.setStableCount(20); await tick();
+  f.failNextScan(new TypeError('network unavailable'));
+  f.setBusy(false);
+  for (let index = 0; index < 80 && f.counts().fullReads < 2; index += 1) await tick();
+  assert.equal(f.counts().fullReads, 2);
+  f.setBusy(true);
+  await f.manager.scan();
+  const afterManualScan = f.counts().fullReads;
+  f.setBusy(false);
+  for (let index = 0; index < 80 && f.settingsValue.storageAutoCleanupProgress[CHAT] !== 20; index += 1) await tick();
+  assert.equal(f.counts().fullReads, afterManualScan, '已失败节点的手动刷新结果仍触发阈值判断');
+  assert.equal(f.settingsValue.storageAutoCleanupProgress[CHAT], 20);
+});
+
+test('复用手动结果时root核验瞬时失败不消费节点，同节点可重试', async () => {
+  const f = fixture({ oldCount: 1 });
+  await f.manager.scan();
+  f.manager.setAutoEnabled(true);
+  f.setBusy(true); f.setStableCount(20); await tick();
+  await f.manager.scan();
+  const fullReads = f.counts().fullReads;
+  f.failNextRootRead(new TypeError('root read unavailable'));
+  f.setBusy(false);
+  for (let index = 0; index < 80 && (f.counts().rootReads < 1 || ['scanning', 'cleaning'].includes(f.manager.getState().status)); index += 1) await tick();
+  f.setStableCount(20);
+  for (let index = 0; index < 80 && f.settingsValue.storageAutoCleanupProgress[CHAT] !== 20; index += 1) await tick();
+  assert.equal(f.counts().fullReads, fullReads, 'root复核重试仍使用原手动图');
+  assert.equal(f.settingsValue.storageAutoCleanupProgress[CHAT], 20);
+});
+
+test('自动清理阶段异常不登记扫描失败节点，同节点仍可重试', async () => {
+  const f = fixture({ oldCount: STORAGE_AUTO_RECORD_THRESHOLD });
+  await f.manager.scan();
+  f.manager.setAutoEnabled(true);
+  f.failNextMaintenanceRootRead(new TypeError('cleanup root read unavailable'));
+  f.setBusy(true); f.setStableCount(20); await tick();
+  const failedCleanup = waitForOperationSettled(f.manager);
+  f.setBusy(false);
+  assert.equal(await failedCleanup, true, '首次清理失败及异常收尾应完成');
+  assert.equal(f.counts().fullReads, 2);
+  const retriedCleanup = waitForOperationSettled(f.manager);
+  f.setStableCount(20);
+  assert.equal(await retriedCleanup, true, '同节点重新扫描、清理与复扫应完成');
+  assert.equal(f.counts().fullReads, 4, '重试完整扫描并完成清理后还会复扫统计');
+  assert.equal(f.settingsValue.storageAutoCleanupProgress[CHAT], 20);
+});
+
+test('同稳定楼数下root版本改变会解除自动失败退避', async () => {
+  const f = fixture({ oldCount: 1, warmCache: true });
+  await f.manager.scan();
+  f.manager.setAutoEnabled(true);
+  f.setBusy(true); f.setStableCount(20); await tick();
+  f.failNextList(new TypeError('storage list unavailable'));
+  const failedCheck = waitForOperationSettled(f.manager);
+  f.setBusy(false);
+  assert.equal(await failedCheck, true, '旧root对应扫描失败后退避登记及finally应完成');
+  assert.equal(f.counts().listCalls, 2);
+  const retry = waitForOperationSettled(f.manager);
+  f.changeCacheRoot();
+  f.setStableCount(20);
+  assert.equal(await retry, true, 'root变化后的同节点重试应完成');
+  assert.equal(f.counts().fullReads, 1, 'root版本改变后同楼节点重新完整读取');
+  assert.equal(f.settingsValue.storageAutoCleanupProgress[CHAT], 20);
+});
+
+test('过期暖图的冷扫描list失败按失败后的root退避；新root同节点恢复重试', async () => {
+  const f = fixture({ warmCache: true });
+  await f.manager.scan();
+  f.manager.setAutoEnabled(true);
+  f.setBusy(true); f.setStableCount(20); await tick();
+  f.setRootVersion(10);
+  f.failNextList(new TypeError('storage list unavailable'));
+  const beforeAutomaticFailure = f.counts();
+  const failedCheck = waitForOperationSettled(f.manager);
+  f.setBusy(false);
+  assert.equal(await failedCheck, true, '冷扫描失败后的退避登记及自动检查finally应完成');
+  assert.equal(f.counts().rootReads, beforeAutomaticFailure.rootReads + 2, '过期暖图核验与失败后当前root读取均发生');
+  assert.equal(f.counts().fullReads, 1, '暖图root过期后先冷读当前完整图');
+  assert.equal(f.counts().listCalls, 2, '冷读成功后本轮list失败');
+
+  const afterFailure = f.counts();
+  const sameNodeCheck = waitForOperationSettled(f.manager);
+  f.setStableCount(20);
+  assert.equal(await sameNodeCheck, true, '同节点root比较及自动检查finally应完成');
+  assert.equal(f.counts().rootReads, afterFailure.rootReads + 1, '同节点只读取root确认退避');
+  assert.equal(f.counts().fullReads, 1, '同节点按失败后root退避，不重复冷扫');
+  assert.equal(f.counts().listCalls, 2, '同节点不重复list');
+
+  const beforeNewRoot = f.counts();
+  const retry = waitForOperationSettled(f.manager);
+  f.setRootVersion(11);
+  f.setStableCount(20);
+  assert.equal(await retry, true, '新root触发的同节点重试应完成');
+  assert.equal(f.counts().rootReads, beforeNewRoot.rootReads + 2, '先观察到root变化，再在扫描前核验暖图');
+  assert.equal(f.counts().fullReads, 2, '真实root版本变化解除退避并重新冷扫');
+  assert.equal(f.counts().listCalls, 3);
   assert.equal(f.settingsValue.storageAutoCleanupProgress[CHAT], 20);
 });
 

@@ -49,7 +49,6 @@ const normalizeScale = value => Math.min(1.5, Math.max(0.75, Number.isFinite(Num
 const normalizeStorageCleanupProgress = value => value && typeof value === 'object' && !Array.isArray(value)
   ? Object.fromEntries(Object.entries(value).filter(([chatId, count]) => /^[0-9a-f-]{36}$/i.test(chatId) && Number.isSafeInteger(count) && count >= 0))
   : {};
-
 export function normalizeAutoMemoryBatchSize(value) {
   return 1;
 }
