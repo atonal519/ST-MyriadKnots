@@ -23,6 +23,7 @@ import { createChatIdentityCoordinator, CHAT_IDENTITY_COLLECTION } from '../src/
 import { createChatSession } from '../src/chat-session.js';
 import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
 import { createTimeRuntime, createTimeStore } from '../src/v3/time-runtime.js';
+import { prepareQianshiCandidates } from '../src/v3/qianshi-domain.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GENERATION = '22222222-2222-4222-8222-222222222222';
@@ -44,7 +45,7 @@ const taskRouter = fetchImpl => {
   return createTaskRouter({ resolver: { resolve: () => route, resolveUtility: () => route }, compactClient: createCompactApiClient({ fetchImpl, retryWait: async () => {}, timeoutMs: () => 2 }) });
 };
 
-function viewHarness(runtime) {
+function viewHarness(runtime, { navigatorRef, pluginVersion = 'test', page = 'memories' } = {}) {
   const documentRef = { activeElement: null, createElement: tag => new ViewNode(tag) };
   class ViewNode {
     constructor(tag) { this.tag = tag; this.children = []; this.listeners = {}; this.textContent = ''; this.className = ''; this.disabled = false; this.value = ''; this.open = false; this.selectionStart = 0; this.selectionEnd = 0; this.attributes = {}; }
@@ -67,7 +68,7 @@ function viewHarness(runtime) {
   }
   const flatten = node => [node, ...(node.children ?? []).flatMap(flatten)];
   const container = new ViewNode('main');
-  const view = createV3FoundationView({ runtime, documentRef }); view.setPage('memories'); view.mount(container);
+  const view = createV3FoundationView({ runtime, documentRef, navigatorRef, pluginVersion }); view.setPage(page); view.mount(container);
   return { view, container, flatten };
 }
 
@@ -116,7 +117,7 @@ function browserStorage(initial = {}) {
   };
 }
 
-function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, extractorPromptGuidance, csePromptGuidance, processingPrompt, storyClockReferenceTags = '', sanitizerOptions = () => ({}), foundationRefresh, foundationFetch = undefined, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null, failureStorage = undefined, now = () => new Date(NOW) } = {}) {
+function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, extractorPromptGuidance, csePromptGuidance, processingPrompt, storyClockReferenceTags = '', sanitizerOptions = () => ({}), foundationRefresh, foundationFetch = undefined, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null, qianshiCandidatePreparer = undefined, failureStorage = undefined, now = () => new Date(NOW) } = {}) {
   let enabled = true;
   const handlers = new Map();
   const warnings = [];
@@ -157,7 +158,7 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
     }
     return { jsonData: { summary: '裴晚生提醒用户带伞。', people: [{ name: '裴晚生' }, { name: '你', role: 'user' }], events: [{ title: '带伞提醒', description: '裴晚生提醒用户带伞。' }] }, taskMetadata: { source: 'shared-utility', sourceLabel: '机械副 API', model: 'mock-model', finishReason: 'stop' } };
   };
-  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted, onMemoryBatchCommitted, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), storyClockReferenceTags: () => typeof storyClockReferenceTags === 'function' ? storyClockReferenceTags() : storyClockReferenceTags, sanitizerOptions: currentSanitizerOptions, persistAnchors, identityProjectionProvider, failureStorage, now, newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
+  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted, onMemoryBatchCommitted, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), storyClockReferenceTags: () => typeof storyClockReferenceTags === 'function' ? storyClockReferenceTags() : storyClockReferenceTags, sanitizerOptions: currentSanitizerOptions, persistAnchors, identityProjectionProvider, ...(qianshiCandidatePreparer ? { qianshiCandidatePreparer } : {}), failureStorage, now, newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
   const emit = (name, ...args) => (handlers.get(name) ?? []).forEach(listener => listener(...args));
   return { runtime, foundationRuntime, store, backend, context, hostAdapter, calls, warnings, emit, readReachableModes, snapshotCount: () => snapshotCalls, setEnabled(value) { enabled = value; }, setAutomation(value) { automation = value; } };
@@ -4420,6 +4421,206 @@ test('自动任务外层错误跨刷新保留，暂停不清且仅在后续批�
   saved = JSON.parse(storage.values.get(key));
   assert.equal(saved.automationFailure, undefined);
   assert.equal(saved.cseFailures[firstFloorId].count, 1);
+});
+
+test('合法跨楼重复千事关系只投影一次并让自动高楼继续到模拟提取与保存', async () => {
+  let extractorCalls = 0;
+  const utility = options => {
+    const request = JSON.parse(options.taskMessages[0].content);
+    if (request.task !== 'extractFloorSemantics') return { jsonData: { noMaterialChange: true } };
+    extractorCalls += 1;
+    const title = ['事项甲', '事项乙', '旁支丙', '旁支丁'][extractorCalls - 1] ?? `后续 ${extractorCalls}`;
+    const qianshi = { events: [{ key: `event-${extractorCalls}`, title, description: `${title}的固定测试描述`, status: 'planned', matter: true }], order: [] };
+    if (extractorCalls >= 3 && extractorCalls <= 4) {
+      const byTitle = new Map(request.payload.qianshiCandidates.map(item => [item.title, item.key]));
+      assert.ok(byTitle.get('事项甲') && byTitle.get('事项乙'), '后续楼必须通过真实候选目录引用前两项');
+      qianshi.order.push({ before: byTitle.get('事项甲'), after: byTitle.get('事项乙'), certainty: 'explicit' });
+    }
+    return { jsonData: { summary: `摘要-${title}`, qianshi } };
+  };
+  const h = harness({
+    modernAnchors: true,
+    initialChat: Array.from({ length: 4 }, (_, index) => [assistant(`种子楼 ${index + 1}`), user(`确认种子 ${index + 1}`)]).flat().concat(assistant('种子尾楼')),
+    automation: { enabled: false, batchSize: 1 }, utility,
+  });
+  await h.runtime.start();
+  await h.runtime.startHistoricalRebuild();
+  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().memoryWorkBusy);
+  assert.equal(extractorCalls, 4);
+  const seeded = await h.store.readReachable({ mode: 'runtime' });
+  const relationIds = seeded.floorMemories.flatMap(memory => memory.qianshiDelta?.relations ?? []).map(relation => relation.id);
+  assert.equal(relationIds.length, 2); assert.equal(new Set(relationIds).size, 1, '两个合法 delta 应形成同一确定性关系 ID');
+
+  h.context.chat.pop();
+  for (let index = 0; index < 10; index += 1) h.context.chat.push(assistant(`待压缩楼 ${index + 1}`), user(`确认待压缩 ${index + 1}`));
+  h.context.chat.push(assistant('新的待确认尾楼'));
+  await h.foundationRuntime.refreshStatus();
+  await h.runtime.refreshStatus();
+  const utilityCallsBefore = h.calls.length;
+  h.backend.calls.splice(0);
+  await h.runtime.startHistoricalRebuild({ aggregate: true });
+  const state = h.runtime.getState();
+  assert.equal(extractorCalls, 5, '重复关系去重后必须到达一次高楼模拟提取');
+  assert.equal(h.calls.length, utilityCallsBefore + 2, '高楼摘要与批末 CSE 各走一次既有模拟调用');
+  assert.ok(h.backend.calls.some(call => call[0] === 'put'), '模拟结果必须沿真实提交链保存');
+  assert.equal(state.lastExtractorError, null);
+  assert.equal(state.lastAutomationError, null);
+  assert.equal(state.rememberedCount, 14);
+  const projected = prepareQianshiCandidates(await h.store.readReachable({ mode: 'runtime' }));
+  assert.ok(projected.stats.count >= 2, '重复关系不能丢失其关联事项');
+});
+
+test('准备期受控重复边异常贯通持久、重载、累计与两种复制方式，成功后清除', async () => {
+  const storage = browserStorage();
+  let failPreparation = false;
+  const qianshiCandidatePreparer = (...args) => {
+    if (!failPreparation) return prepareQianshiCandidates(...args);
+    const error = new Error('Graph.addDirectedEdgeWithKey: PRIVATE_BODY entity=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa https://api.example.test/v1?key=SECRET edge already exists in the graph.');
+    error.name = 'UsageGraphError';
+    throw error;
+  };
+  const utility = options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
+    ? { jsonData: { summary: '安全摘要' } }
+    : { jsonData: { noMaterialChange: true } };
+  const h = harness({ modernAnchors: true, initialChat: [assistant('种子楼'), user('确认种子'), assistant('种子尾楼')], automation: { enabled: false, batchSize: 1 }, utility, qianshiCandidatePreparer, failureStorage: storage });
+  await h.runtime.start(); await h.runtime.startHistoricalRebuild();
+  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().memoryWorkBusy);
+  h.context.chat.pop();
+  for (let index = 0; index < 10; index += 1) h.context.chat.push(assistant(`待压缩 ${index + 1}`), user(`确认 ${index + 1}`));
+  h.context.chat.push(assistant('新尾楼'));
+  await h.foundationRuntime.refreshStatus(); await h.runtime.refreshStatus();
+  h.backend.calls.splice(0); const callsBefore = h.calls.length; failPreparation = true;
+  await h.runtime.startHistoricalRebuild({ aggregate: true });
+  const state = h.runtime.getState();
+  assert.equal(h.calls.length, callsBefore); assert.equal(h.backend.calls.filter(call => call[0] === 'put').length, 0);
+  assert.equal(state.lastExtractorError, null);
+  assert.deepEqual({ phase: state.lastAutomationError.phase, prepareStep: state.lastAutomationError.prepareStep, name: state.lastAutomationError.name, code: state.lastAutomationError.code, detail: state.lastAutomationError.detail, count: state.lastAutomationError.count }, {
+    phase: 'extracting', prepareStep: 'qianshiCandidates', name: 'UsageGraphError', code: 'V3_AUTO_MEMORY_FAILED', detail: 'Graphology 检测到重复图边。', count: 1,
+  });
+  assert.match(state.lastAutomationError.location, /^src\/v3\/memory-runtime\.js:\d+:\d+$/u);
+  const key = [...storage.values.keys()][0], serializedFailure = storage.values.get(key);
+  assert.doesNotMatch(serializedFailure, /事项甲|事项乙|旁支|33333333|relation:|https?:|TEST_KEY/u);
+  assert.doesNotMatch(serializedFailure, /PRIVATE_BODY|aaaaaaaa-aaaa|SECRET|api\.example/u);
+  const saved = JSON.parse(serializedFailure).automationFailure;
+  const savedEnvelope = JSON.parse(serializedFailure);
+  assert.deepEqual({ phase: saved.phase, prepareStep: saved.prepareStep, name: saved.name, code: saved.code, detail: saved.detail, location: saved.location, count: saved.count }, {
+    phase: 'extracting', prepareStep: 'qianshiCandidates', name: 'UsageGraphError', code: 'V3_AUTO_MEMORY_FAILED',
+    detail: 'Graphology 检测到重复图边。', location: state.lastAutomationError.location, count: 1,
+  });
+
+  h.runtime.invalidate();
+  const resumed = harness({ sharedBackend: h.backend, sharedContext: h.context, automation: { enabled: false, batchSize: 1 }, utility, qianshiCandidatePreparer, failureStorage: storage });
+  await resumed.runtime.start();
+  assert.deepEqual(resumed.runtime.getState().lastAutomationError, state.lastAutomationError, '重载必须恢复同一份受控诊断');
+  await resumed.runtime.startHistoricalRebuild({ aggregate: true });
+  assert.equal(resumed.runtime.getState().lastAutomationError.count, 2, '相同准备失败仍沿现有语义累计');
+
+  let clipboardValue = '';
+  const clipboardUi = viewHarness(resumed.runtime, { page: 'management', pluginVersion: '0.4.2', navigatorRef: { clipboard: { writeText: async value => { clipboardValue = value; } } } });
+  clipboardUi.flatten(clipboardUi.container).find(node => node.textContent === '复制状态诊断').click();
+  await new Promise(resolve => setImmediate(resolve));
+  const clipboardDiagnostic = JSON.parse(clipboardValue);
+  assert.equal(clipboardDiagnostic.formatVersion, 2); assert.equal(clipboardDiagnostic.pluginVersion, '0.4.2');
+  assert.deepEqual(clipboardDiagnostic.memory.lastAutomationError, {
+    present: true, name: 'UsageGraphError', code: 'V3_AUTO_MEMORY_FAILED', phase: 'extracting', count: 2,
+    prepareStep: 'qianshiCandidates', detail: 'Graphology 检测到重复图边。', location: state.lastAutomationError.location,
+    lastFailedAt: state.lastAutomationError.lastFailedAt,
+  });
+  const fallbackUi = viewHarness(resumed.runtime, { page: 'management', pluginVersion: '0.4.2', navigatorRef: { clipboard: { writeText: async () => { throw new Error('clipboard denied'); } } } });
+  fallbackUi.flatten(fallbackUi.container).find(node => node.textContent === '复制状态诊断').click();
+  await new Promise(resolve => setImmediate(resolve));
+  const fallback = fallbackUi.flatten(fallbackUi.container).find(node => node.className === 'v3-diagnostic-fallback');
+  assert.equal(fallback?.readOnly, true);
+  assert.deepEqual(JSON.parse(fallback.value).memory.lastAutomationError, clipboardDiagnostic.memory.lastAutomationError, '手机 fallback 必须得到同一诊断字段');
+  assert.doesNotMatch(fallback.value, /PRIVATE_BODY|aaaaaaaa-aaaa|SECRET|api\.example|\/home\/admin/u);
+
+  failPreparation = false;
+  await resumed.runtime.startHistoricalRebuild({ aggregate: true });
+  await waitFor(() => registeredGraphCaughtUp(resumed.runtime.getState()) && !resumed.runtime.getState().memoryWorkBusy);
+  assert.equal(resumed.runtime.getState().lastAutomationError, null);
+  assert.equal(storage.values.has(key), false, '成功后沿既有语义删除整份空失败提示');
+
+  storage.values.set(key, JSON.stringify({ ...savedEnvelope, automationFailure: {
+    count: 3, lastReason: '旧版通用错误', code: 'UsageGraphError', phase: 'extracting', lastFailedAt: NOW,
+  } }));
+  resumed.runtime.invalidate();
+  const legacy = harness({ sharedBackend: h.backend, sharedContext: h.context, automation: { enabled: false, batchSize: 1 }, utility, qianshiCandidatePreparer, failureStorage: storage });
+  await legacy.runtime.start();
+  assert.deepEqual(legacy.runtime.getState().lastAutomationError, {
+    code: null, name: 'UsageGraphError', message: `连续失败 3 次；最近：旧版通用错误（${NOW}）`, phase: 'extracting', prepareStep: null,
+    detail: null, location: null, count: 3, lastFailedAt: NOW,
+  }, '旧0.4.0/0.4.1失败提示可恢复已有类型，新字段如实null');
+});
+
+test('准备期身份目录异常标记真实步骤，不会全部退化成交接阶段', async () => {
+  let failIdentity = false;
+  const identityProjectionProvider = async () => {
+    if (failIdentity) throw new TypeError('PRIVATE_BODY https://api.example.test/?key=SECRET');
+    return null;
+  };
+  const utility = options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
+    ? { jsonData: { summary: '安全摘要' } }
+    : { jsonData: { noMaterialChange: true } };
+  const h = harness({ modernAnchors: true, initialChat: [assistant('种子楼'), user('确认种子'), assistant('种子尾楼')], automation: { enabled: false, batchSize: 1 }, utility, identityProjectionProvider });
+  await h.runtime.start(); await h.runtime.startHistoricalRebuild();
+  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().memoryWorkBusy);
+  h.context.chat.pop();
+  for (let index = 0; index < 10; index += 1) h.context.chat.push(assistant(`待压缩 ${index + 1}`), user(`确认 ${index + 1}`));
+  h.context.chat.push(assistant('新尾楼'));
+  await h.foundationRuntime.refreshStatus(); await h.runtime.refreshStatus();
+  const callsBefore = h.calls.length; h.backend.calls.splice(0); failIdentity = true;
+  await h.runtime.startHistoricalRebuild({ aggregate: true });
+  assert.equal(h.calls.length, callsBefore); assert.equal(h.backend.calls.filter(call => call[0] === 'put').length, 0);
+  assert.deepEqual({
+    phase: h.runtime.getState().lastAutomationError.phase,
+    prepareStep: h.runtime.getState().lastAutomationError.prepareStep,
+    name: h.runtime.getState().lastAutomationError.name,
+    code: h.runtime.getState().lastAutomationError.code,
+    detail: h.runtime.getState().lastAutomationError.detail,
+  }, { phase: 'extracting', prepareStep: 'identityDirectory', name: 'TypeError', code: 'V3_AUTO_MEMORY_FAILED', detail: '类型检查失败。' });
+});
+
+test('准备期时间来源异常经持久、重载与复制仍精确归类 timeSources', async () => {
+  const storage = browserStorage();
+  let failTimeSources = false;
+  const storyClockReferenceTags = () => {
+    if (failTimeSources) throw new TypeError('PRIVATE_TIME https://api.example.test/?key=SECRET');
+    return '';
+  };
+  const utility = options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
+    ? { jsonData: { summary: '安全摘要' } }
+    : { jsonData: { noMaterialChange: true } };
+  const options = { automation: { enabled: false, batchSize: 1 }, utility, storyClockReferenceTags, failureStorage: storage };
+  const h = harness({ ...options, modernAnchors: true, initialChat: [assistant('种子楼'), user('确认种子'), assistant('种子尾楼')] });
+  await h.runtime.start(); await h.runtime.startHistoricalRebuild();
+  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().memoryWorkBusy);
+  h.context.chat.pop();
+  for (let index = 0; index < 10; index += 1) h.context.chat.push(assistant(`待压缩 ${index + 1}`), user(`确认 ${index + 1}`));
+  h.context.chat.push(assistant('新尾楼'));
+  await h.foundationRuntime.refreshStatus(); await h.runtime.refreshStatus();
+  failTimeSources = true;
+  await h.runtime.startHistoricalRebuild({ aggregate: true });
+  const failure = h.runtime.getState().lastAutomationError;
+  assert.deepEqual({ phase: failure.phase, prepareStep: failure.prepareStep, name: failure.name, code: failure.code, detail: failure.detail }, {
+    phase: 'extracting', prepareStep: 'timeSources', name: 'TypeError', code: 'V3_AUTO_MEMORY_FAILED', detail: '类型检查失败。',
+  });
+  const serialized = [...storage.values.values()][0];
+  assert.equal(JSON.parse(serialized).automationFailure.prepareStep, 'timeSources');
+  assert.doesNotMatch(serialized, /PRIVATE_TIME|SECRET|api\.example/u);
+
+  h.runtime.invalidate();
+  failTimeSources = false;
+  const resumed = harness({ ...options, sharedBackend: h.backend, sharedContext: h.context });
+  await resumed.runtime.start();
+  assert.deepEqual(resumed.runtime.getState().lastAutomationError, failure, '重载必须恢复同一时间步骤诊断');
+  let clipboardValue = '';
+  const ui = viewHarness(resumed.runtime, { page: 'management', pluginVersion: '0.4.2', navigatorRef: { clipboard: { writeText: async value => { clipboardValue = value; } } } });
+  ui.flatten(ui.container).find(node => node.textContent === '复制状态诊断').click();
+  await new Promise(resolve => setImmediate(resolve));
+  const copied = JSON.parse(clipboardValue).memory.lastAutomationError;
+  assert.equal(copied.prepareStep, 'timeSources');
+  assert.equal(copied.location, failure.location);
+  assert.doesNotMatch(clipboardValue, /PRIVATE_TIME|SECRET|api\.example/u);
 });
 
 test('捕获 A/B/C 补 B 期间另一实例完成新 D，仍按捕获楼 ID 补完 B 的 CSE', async () => {
