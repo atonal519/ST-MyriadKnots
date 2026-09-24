@@ -66,6 +66,15 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   list.scrollTop = 28; entry.scrollTop = 9;
   await toggle.click(); assert.equal(body.hidden, true); assert.equal(toggle.attributes['aria-expanded'], 'false');
   publish(); assert.equal(body.hidden, true); assert.equal(toggle.attributes['aria-expanded'], 'false', '时间通知不得重新展开已收起区域');
+  timeState = { ...timeState, last: { status: 'failed', automaticFailure: true, automaticFailureMessage: '再次推演失败。', message: '原失败原因：年表读取错误' } }; publish();
+  const automaticFailure = flatten(memoryToolbar).find(node => node.className.includes('qqj-time-automatic-failure'));
+  assert.equal(automaticFailure.hidden, false, '自动推演失败在折叠状态也要显示小字');
+  assert.match(automaticFailure.textContent, /原失败原因：年表读取错误/u, '自动准备失败时保留已记录的具体原因');
+  timeState = { ...timeState, last: { status: 'partial', message: '有两条事项尚待处理。' } }; publish();
+  assert.equal(automaticFailure.hidden, false); assert.match(automaticFailure.textContent, /部分未完成：有两条事项尚待处理/u);
+  timeState = { ...timeState, status: 'waiting', last: { status: 'failed', message: '旧周期失败' } }; publish();
+  assert.equal(automaticFailure.hidden, true, '等待记忆同步时不展示可能过期的失败');
+  timeState = { ...timeState, status: 'idle', last: { status: 'completed' } }; publish(); assert.equal(automaticFailure.hidden, true, '成功后清除瞬时失败提示');
   await toggle.click(); assert.equal(body.hidden, false); assert.equal(reads, 1);
   assert.equal(list.children[0], entry); assert.equal(list.replaceCount, listReplaceCount, '不同clone内容相同与cache-hit notify不得重建列表');
   assert.equal(list.scrollTop, 28); assert.equal(entry.scrollTop, 9);

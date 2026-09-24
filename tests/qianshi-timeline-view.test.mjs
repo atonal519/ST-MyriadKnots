@@ -34,12 +34,13 @@ function fixture() {
     history: { status: 'idle', processedFloors: 0, totalFloors: 0, calls: 0, message: '' } };
 }
 
-function harness({ confirm = false, initialSnapshot = fixture() } = {}) {
+function harness({ confirm = false, initialSnapshot = fixture(), plan = null, startResult = { status: 'completed', message: '' } } = {}) {
   let snapshot = structuredClone(initialSnapshot), state = { status: 'ready', memoryWorkBusy: false, qianshiHistoryActive: false }, prepareCalls = 0, startCalls = 0;
   const listeners = new Set(), confirms = [];
   const runtime = { getState: () => state, getQianshiSnapshot: () => structuredClone(snapshot), subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    async prepareQianshiHistory() { prepareCalls += 1; return { status: 'ready', planId: 'plan', totalFloors: 2, batchCount: 1, apiCalls: 1, estimatedInputTokens: 900, unavailableFloors: [] }; },
-    async startQianshiHistory() { startCalls += 1; return { status: 'completed' }; }, async stopQianshiHistory() { return { status: 'stopped' }; } };
+    async prepareQianshiHistory() { prepareCalls += 1; return { status: 'ready', planId: 'plan', totalFloors: 2, batchCount: 1, apiCalls: 1, localRepairFloors: 1, modelFloors: 2, estimatedInputTokens: 900, unavailableFloors: [], ...(plan ?? {}) }; },
+    async startQianshiHistory() { startCalls += 1; snapshot.history = { ...snapshot.history, ...startResult }; for (const listener of listeners) listener(state); return startResult; },
+    async stopQianshiHistory() { return { status: 'stopped' }; } };
   const documentRef = { createElement: tag => new Node(tag), defaultView: { matchMedia: () => ({ matches: false }) } };
   const view = createQianshiTimelineView({ runtime, documentRef, dialog: { async confirm(options) { confirms.push(options); return typeof confirm === 'function' ? confirm(options) : confirm; } } });
   const container = new Node('main'); view.mount(container);
@@ -65,6 +66,15 @@ test('千事页以健康条和共享搜索开头，说明与事项全链按需�
   assert.equal(flatten(first).filter(node => node.className.includes('qqj-qianshi-matter-event')).length, 0, '顶层展开不立即复制事项链');
   matter.open = true; matter.fire('toggle');
   assert.equal(flatten(first).filter(node => node.className.includes('qqj-qianshi-matter-event')).length, 7, '事项超过5节点仍完整可查，含背景节点');
+});
+
+test('覆盖状态同屏列出各缺口并把有效摘要楼数写清楚', () => {
+  const snapshot = fixture();
+  snapshot.coverage = { eligibleFloors: 8, completeFloors: 3, pendingFloors: 1, partialFloors: 2, degradedFloors: 2, unavailableFloors: 1 };
+  const h = harness({ initialSnapshot: snapshot });
+  const coverage = flatten(h.container).map(node => node.textContent).join('|');
+  assert.match(coverage, /已完成 3 楼；待补 1 楼；部分整理 2 楼；断链 2 楼；无唯一有效摘要 1 楼/u);
+  assert.match(coverage, /分母是 8 个有唯一有效摘要的楼/u);
 });
 
 test('百节点同事项仍按线性顶层渲染，事项链只在二次展开时创建一次', () => {
@@ -259,9 +269,28 @@ test('历史补齐先展示真实计划，取消零调用模型，确认后才�
   const cancelled = harness({ confirm: false }); byText(cancelled.container, '补齐旧楼').fire('click'); await tick();
   assert.deepEqual(cancelled.calls(), { prepareCalls: 1, startCalls: 0 });
   assert.match(cancelled.confirms[0].body, /2 楼.*1 批.*1 次.*900 tokens/u);
+  assert.match(cancelled.confirms[0].body, /2 楼进入模型补齐.*1 楼会在本地隔离确证失效引用/u);
+  assert.match(cancelled.confirms[0].note, /打开计划和取消均不会写入或调用 API/u);
   assert.match(copy(cancelled.container), /已取消；没有调用模型/u);
   const confirmed = harness({ confirm: true }); byText(confirmed.container, '补齐旧楼').fire('click'); await tick(); await tick();
   assert.deepEqual(confirmed.calls(), { prepareCalls: 1, startCalls: 1 });
+});
+
+test('聚合计划区分可模型楼、本地修整和跳过说明，空计划与执行失败均有可见原因', async () => {
+  const plan = { totalFloors: 1, batchCount: 0, apiCalls: 0, modelFloors: 0, localRepairFloors: 1,
+    aggregateSkippedFloors: [{ floorId: 'aggregate', assistantSeq: 10 }] };
+  const confirmed = harness({ confirm: true, plan, startResult: { status: 'partial', message: '其中 1 楼本地隔离未成功，原记录保留；请重新准备计划。' } });
+  byText(confirmed.container, '补齐旧楼').fire('click'); await tick(); await tick();
+  assert.match(confirmed.confirms[0].body, /0 楼进入模型补齐.*1 楼会在本地隔离.*1 楼由多个正文楼聚合/u);
+  assert.match(confirmed.confirms[0].body, /跳过模型替换以保留成员来源/u);
+  assert.match(copy(confirmed.container), /本地隔离未成功，原记录保留/u, '执行失败时 UI 显示失败事实而不宣称已隔离');
+
+  const emptySnapshot = fixture();
+  const empty = harness({ initialSnapshot: emptySnapshot, plan: { status: 'empty', totalFloors: 0, batchCount: 0,
+    apiCalls: 0, aggregateSkippedFloors: [{ floorId: 'aggregate', assistantSeq: 10 }] } });
+  byText(empty.container, '补齐旧楼').fire('click'); await tick();
+  assert.match(copy(empty.container), /由多个正文楼聚合.*跳过模型替换/u);
+  assert.equal(empty.calls().startCalls, 0);
 });
 
 test('历史确认等待期间切聊或后台转忙，不执行旧计划', async () => {

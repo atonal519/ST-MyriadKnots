@@ -183,6 +183,12 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   }
   const memoryNeedsSync = () => ['syncing', 'needsReview', 'error'].includes(getMemoryState()?.memorySyncStatus)
     || ['needsReview', 'error'].includes(getMemoryState()?.status);
+  const clearAutomaticFailure = () => {
+    if (!last?.automaticFailure) return;
+    if (last.reason === 'automatic') { last = null; return; }
+    const { automaticFailure: _automaticFailure, automaticFailureMessage: _automaticFailureMessage, ...previous } = last;
+    last = previous;
+  };
   function cacheItems(batches, source, annualRecords = []) {
     const times = source.bodyTimes ?? storyTimes(source.floorMemories, source.floors), currentTime = times.get(source.floors.at(-1)?.id) ?? projectTime('');
     const reviewBatch = batches.findLast(batch => batch.currentReview);
@@ -679,13 +685,27 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       const triggerBody = source.bodyFloors.filter(body => body.floorId).at(-1);
       const triggerFingerprint = await timeFingerprint([source.root.narrativeGeneration, triggerBody?.floorId ?? null, triggerBody?.canonicalFingerprint ?? null]);
       const annualSetting = await prepareAnnualSetting(settingSnapshot, stored.head, triggerFingerprint, false);
-      if (plan.groups.length || currentReview || annualSetting.shouldRequest || annualSetting.removed?.length) return runPlan({ ...plan, groups: plan.groups.length ? plan.groups : currentReview ? [[]] : [], currentWitness,
+      if (plan.groups.length || currentReview || annualSetting.shouldRequest || annualSetting.removed?.length) {
+        clearAutomaticFailure();
+        return runPlan({ ...plan, groups: plan.groups.length ? plan.groups : currentReview ? [[]] : [], currentWitness,
         currentReview, reviewAuthorization: historyAuthorization?.reviewAuthorization, annualSetting: { ...annualSetting, fingerprint: settingSnapshot.fingerprint, triggerFingerprint }, chatId: source.root.chatId, narrativeGeneration: source.root.narrativeGeneration }, false);
+      }
       if (history && !plan.groups.length && !source.bodyFloors.some(body => body.assistantSeq <= historyAuthorization.through && !body.floorId)) historyAuthorization = null;
       cacheItems(stored.batches, source, currentAnnualRecords(stored.head, settingSnapshot)); coverage = plan;
+      clearAutomaticFailure();
       if (annualSetting.pending) last = { status: 'partial', items: itemCount(stored.batches, source), message: `有 ${annualSetting.pending} 个年度设定来源超过单次输入预算，尚未标记为已处理。` };
       return notify();
-    } catch { return getState(); } finally { if (startingController === controller) startingController = null; }
+    } catch (error) {
+      if (token === epoch && !controller.signal.aborted && enabled() && identity().chatId === receipt?.chatId && error?.name !== 'AbortError'
+        ) {
+        const failureMessage = publicErrorMessage(error, { fallback: '自动时间推演本次未能完成。' });
+        last = ['failed', 'partial'].includes(last?.status)
+          ? { ...last, automaticFailure: true, automaticFailureMessage: '本次自动时间推演也未能完成。' }
+          : { status: 'failed', automaticFailure: true, reason: 'automatic', message: failureMessage };
+        notify();
+      }
+      return getState();
+    } finally { if (startingController === controller) startingController = null; }
   }
   async function authorizeHistory() {
     const token = epoch, chatId = identity().chatId;

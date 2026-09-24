@@ -67,7 +67,9 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
   const directory = buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], identityProjection: normalizeIdentityProjection(identityProjection ?? {}) });
   const entityById = new Map(directory.map(entry => [entry.entityId, entry]));
   const events = [], relations = [], discardedOrderRelations = [], danglingRelationIds = [], danglingContinuationIds = [], degradedFloorIds = new Set();
+  const danglingRelations = [], danglingContinuations = [];
   const eventById = new Map();
+  const eventMemoryFloorById = new Map();
   const relationById = new Map();
   const matterEvents = new Map();
   const addNode = (id, attributes) => { if (!graph.hasNode(id)) graph.addNode(id, attributes); };
@@ -80,6 +82,7 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
       const event = frozen({ ...eventData, floorMemoryId: memory.id, assistantSeq: floor.assistantSeq, parsedStoryTime: sourceTimeFor(raw, floorTimes.get(floor.id)) });
       if (eventById.has(event.id)) continue;
       eventById.set(event.id, event); events.push(event);
+      eventMemoryFloorById.set(event.id, memory.floorId);
       addNode(eventNode(event.id), { kind: 'event', value: event });
       progressGraph.addNode(eventNode(event.id), { value: event });
       if (event.matterId !== null) {
@@ -94,21 +97,28 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
         if (!graph.hasEdge(edgeKey)) graph.addDirectedEdgeWithKey(edgeKey, personNode(stable), eventNode(event.id), { type: 'participates' });
       }
       orderGraph.addNode(eventNode(event.id), { value: event });
-      for (const sourceId of event.continuesFromEventIds) if (!eventById.has(sourceId)) {
-        danglingContinuationIds.push(`${event.id}:${sourceId}`); degradedFloorIds.add(event.sourceFloorId);
-      }
     }
+  }
+  for (const event of events) for (const sourceId of event.continuesFromEventIds) if (!eventById.has(sourceId)) {
+    danglingContinuationIds.push(`${event.id}:${sourceId}`);
+    const memoryFloorId = eventMemoryFloorById.get(event.id);
+    danglingContinuations.push(frozen({ floorId: event.sourceFloorId, memoryFloorId, eventId: event.id, sourceEventId: sourceId }));
+    degradedFloorIds.add(memoryFloorId);
   }
   for (const { memory } of activeMemories(reachable)) {
     const delta = memory.qianshiDelta;
     if (!delta || !['ready', 'partial'].includes(delta.status)) continue;
     for (const relation of delta.relations) {
       if (!eventById.has(relation.fromEventId) || !eventById.has(relation.toEventId)) {
-        danglingRelationIds.push(relation.id); degradedFloorIds.add(memory.floorId); continue;
+        danglingRelationIds.push(relation.id); danglingRelations.push(frozen({ floorId: memory.floorId, relationId: relation.id,
+          fromEventId: relation.fromEventId, toEventId: relation.toEventId, reason: 'missing-event' }));
+        degradedFloorIds.add(memory.floorId); continue;
       }
       const fromEvent = eventById.get(relation.fromEventId), toEvent = eventById.get(relation.toEventId);
       if (relation.type === 'progress' && (!fromEvent.matterId || fromEvent.matterId !== toEvent.matterId || !toEvent.updatesMatter)) {
-        danglingRelationIds.push(relation.id); degradedFloorIds.add(memory.floorId); continue;
+        danglingRelationIds.push(relation.id); danglingRelations.push(frozen({ floorId: memory.floorId, relationId: relation.id,
+          fromEventId: relation.fromEventId, toEventId: relation.toEventId, reason: 'invalid-progress' }));
+        degradedFloorIds.add(memory.floorId); continue;
       }
       const previous = relationById.get(relation.id);
       if (previous && (previous.type !== relation.type || previous.fromEventId !== relation.fromEventId || previous.toEventId !== relation.toEventId)) {
@@ -208,20 +218,23 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
   const currentProgress = frozen({ text: progressLines.length ? ['[当前剧情进度]', ...progressLines].join('\n') : '', characterCount: progressLines.join('\n').length,
     eventIds: frozen([...new Set(progressEventIds)]), matterIds: frozen(progressMatterIds) });
   const eligible = activeMemories(reachable);
-  const deltaStatuses = eligible.map(({ memory }) => memory.qianshiDelta?.status ?? 'unprocessed');
+  const eligibleStatuses = eligible.map(({ floor, memory }) => ({ floorId: floor.id, status: memory.qianshiDelta?.status ?? 'unprocessed' }));
+  const deltaStatuses = eligibleStatuses.map(value => value.status);
+  const completeFloorIds = eligibleStatuses.filter(value => ['ready', 'empty'].includes(value.status) && !degradedFloorIds.has(value.floorId));
   const coverage = frozen({
     eligibleFloors: eligible.length,
     readyFloors: deltaStatuses.filter(status => status === 'ready').length,
     emptyFloors: deltaStatuses.filter(status => status === 'empty').length,
-    completeFloors: deltaStatuses.filter(status => ['ready', 'empty'].includes(status)).length,
-    partialFloors: deltaStatuses.filter(status => status === 'partial').length,
+    completeFloors: completeFloorIds.length,
+    partialFloors: eligibleStatuses.filter(value => value.status === 'partial' && !degradedFloorIds.has(value.floorId)).length,
     pendingFloors: deltaStatuses.filter(status => ['pending', 'unprocessed'].includes(status)).length,
     degradedFloors: degradedFloorIds.size,
     unavailableFloors: (floors.length - eligible.length),
   });
   return frozen({ graph, orderGraph, events: frozen(events), matters: frozen(matterDtos), relations: frozen(relations), currentProgress, coverage,
     diagnostics: frozen({ discardedOrderRelations: frozen(discardedOrderRelations), danglingRelationIds: frozen(danglingRelationIds),
-      danglingContinuationIds: frozen(danglingContinuationIds), degradedFloorIds: frozen([...degradedFloorIds]), graphNodes: graph.order, graphEdges: graph.size,
+      danglingContinuationIds: frozen(danglingContinuationIds), danglingContinuations: frozen(danglingContinuations),
+      danglingRelations: frozen(danglingRelations), degradedFloorIds: frozen([...degradedFloorIds]), graphNodes: graph.order, graphEdges: graph.size,
       progressNodes: progressGraph.order, progressEdges: progressGraph.size, orderNodes: orderGraph.order, orderEdges: orderGraph.size }) });
 }
 
@@ -635,13 +648,27 @@ export function projectQianshiCandidateSelection(candidates, { excludedKeys = []
 
 export function prepareQianshiCandidates(reachable, { canonicalContent = '', precedingUserInput = null, characterBudget = QIANSHI_CANDIDATE_CHARACTER_BUDGET, identityProjection = null } = {}) {
   const projection = projectQianshiGraph(reachable, { identityProjection });
+  return prepareQianshiCandidatesFromMatters(projection.matters, { canonicalContent, precedingUserInput, characterBudget });
+}
+
+function qianshiCandidateQuery(canonicalContent, precedingUserInput) {
+  return clean([canonicalContent, ...(precedingUserInput?.messages ?? []).map(message => message.content)].join(' '), 24000).toLocaleLowerCase('zh-CN');
+}
+
+function prepareQianshiCandidatesFromMatters(matters, { canonicalContent = '', precedingUserInput = null, characterBudget = QIANSHI_CANDIDATE_CHARACTER_BUDGET, terminalMatterIds = null } = {}) {
   const query = clean([canonicalContent, ...(precedingUserInput?.messages ?? []).map(message => message.content)].join(' '), 24000);
-  const documents = projection.matters.map(matter => ({ id: matter.matterId, text: relevanceText(matter) }));
+  const normalizedQuery = query.toLocaleLowerCase('zh-CN');
+  const documents = matters.filter(matter => !TERMINAL_STATUSES.has(matter.status)).map(matter => ({ id: matter.matterId, text: relevanceText(matter) }));
   const ranked = new Map(rankRecallDocuments({ documents, queries: [{ key: 'targetFloor', text: query, weight: 1 }] }).map(item => [item.id, item]));
-  const scored = projection.matters.map(matter => {
+  const scored = matters.map(matter => {
     const rank = ranked.get(matter.matterId);
     const unfinished = !TERMINAL_STATUSES.has(matter.status);
-    return { matter, relevant: (rank?.branchMatchCounts?.targetFloor ?? 0) > 0, score: Number(unfinished) * 100000 + (rank?.score ?? 0) * 10000 + matter.sourceAssistantSeq };
+    const title = clean(matter.title, 500).toLocaleLowerCase('zh-CN');
+    const object = clean(matter.object, 1000).toLocaleLowerCase('zh-CN');
+    const terminalReopen = terminalMatterIds ? terminalMatterIds.has(matter.matterId)
+      : Boolean(normalizedQuery && (title && normalizedQuery.includes(title) || object.length >= 2 && normalizedQuery.includes(object)));
+    return { matter, relevant: unfinished ? (rank?.branchMatchCounts?.targetFloor ?? 0) > 0 : terminalReopen,
+      score: Number(unfinished) * 100000 + (rank?.score ?? 0) * 10000 + matter.sourceAssistantSeq };
   }).filter(item => !TERMINAL_STATUSES.has(item.matter.status) || item.relevant)
     .sort((left, right) => right.score - left.score || left.matter.matterId.localeCompare(right.matter.matterId));
   const request = [], bindings = [], lines = [];
@@ -660,6 +687,148 @@ export function prepareQianshiCandidates(reachable, { canonicalContent = '', pre
       sourceAssistantSeq: matter.sourceAssistantSeq, latestStoryTime: matter.storyTime, latestScheduledTime: matter.scheduledTime }));
   }
   return frozen({ request: frozen(request), bindings: frozen(bindings), stats: frozen({ count: request.length, characters: lines.join('\n').length, budget: characterBudget }) });
+}
+
+export function createQianshiCandidateIndex({ projector = projectQianshiGraph } = {}) {
+  let snapshot = null;
+  const identityKey = value => JSON.stringify(value?.identityProjection ?? {});
+  const floorMemoryIds = reachable => {
+    const groups = new Map();
+    for (const memory of reachable?.floorMemories ?? []) if (memory.recordStatus === 'active') groups.set(memory.floorId, [...(groups.get(memory.floorId) ?? []), memory]);
+    return (reachable?.floors ?? []).map(floor => {
+      const values = groups.get(floor.id) ?? [];
+      const memory = values.length === 1 ? values[0] : null;
+      const ambiguousIds = values.length > 1 ? values.map(item => item.id).sort().join(',') : null;
+      return [floor.id, memory?.id ?? null, ambiguousIds];
+    });
+  };
+  const matterCopy = matter => ({ ...matter, people: (matter.people ?? []).map(person => ({ ...person })), latestEventIds: [...(matter.latestEventIds ?? [])],
+    eventIds: [...(matter.eventIds ?? [])], origin: { ...matter.origin } });
+  const terminalPhrases = matter => [...new Set([clean(matter.title, 500).toLocaleLowerCase('zh-CN'), clean(matter.object, 1000).toLocaleLowerCase('zh-CN')]
+    .filter((phrase, index) => phrase && (index === 0 || phrase.length >= 2)))];
+  function updateTerminalIndex(state, matterId, prior, next) {
+    if (prior && TERMINAL_STATUSES.has(prior.status)) for (const phrase of state.terminalPhrasesByMatter.get(matterId) ?? []) {
+      const postings = phrase.length === 1 ? state.terminalSingleChar : state.terminalBigrams;
+      const grams = phrase.length === 1 ? [phrase] : [...new Set(Array.from({ length: phrase.length - 1 }, (_, index) => phrase.slice(index, index + 2)))];
+      for (const gram of grams) { const ids = postings.get(gram); ids?.delete(matterId); if (!ids?.size) postings.delete(gram); }
+      state.terminalPhrasesByMatter.delete(matterId);
+    }
+    if (next && TERMINAL_STATUSES.has(next.status)) {
+      const phrases = terminalPhrases(next);
+      state.terminalPhrasesByMatter.set(matterId, phrases);
+      for (const phrase of phrases) {
+        const postings = phrase.length === 1 ? state.terminalSingleChar : state.terminalBigrams;
+        const grams = phrase.length === 1 ? [phrase] : [...new Set(Array.from({ length: phrase.length - 1 }, (_, index) => phrase.slice(index, index + 2)))];
+        for (const gram of grams) postings.set(gram, new Set([...(postings.get(gram) ?? []), matterId]));
+      }
+    }
+  }
+  const addFrontierEvent = (matter, event, assistantSeq) => {
+    const frontier = [...(matter?._frontier ?? []), { id: event.id, assistantSeq }]
+      .filter((item, index, all) => all.findIndex(value => value.id === item.id) === index)
+      .sort((left, right) => right.assistantSeq - left.assistantSeq || right.id.localeCompare(left.id));
+    return { ...matter, _frontier: frontier, latestEventIds: frontier.map(item => item.id), eventIds: [...(matter?.eventIds ?? []), event.id] };
+  };
+  function appendDelta(state, floor, memory) {
+    const delta = memory?.qianshiDelta;
+    if (!delta || !['ready', 'partial'].includes(delta.status)) return true;
+    const affected = new Set();
+    for (const event of delta.events ?? []) {
+      if (state.events.has(event.id)) continue;
+      const projectedEvent = { ...event, assistantSeq: floor.assistantSeq };
+      state.events.set(event.id, projectedEvent);
+      if (!event.matterId || !event.updatesMatter) continue;
+      const prior = state.matters.get(event.matterId);
+      const current = prior ?? { matterId: event.matterId, origin: { eventId: event.id, title: event.title, description: event.description,
+        storyTime: event.storyTime, scheduledTime: event.scheduledTime, sourceFloorId: event.sourceFloorId, sourceAssistantSeq: floor.assistantSeq },
+        people: [], latestEventIds: [], eventIds: [], _frontier: [] };
+      state.matters.set(event.matterId, addFrontierEvent(current, event, floor.assistantSeq));
+      affected.add(event.matterId);
+    }
+    for (const relation of delta.relations ?? []) {
+      const prior = state.relations.get(relation.id);
+      if (prior && (prior.type !== relation.type || prior.fromEventId !== relation.fromEventId || prior.toEventId !== relation.toEventId)) return false;
+      state.relations.set(relation.id, relation);
+      const from = state.events.get(relation.fromEventId), to = state.events.get(relation.toEventId);
+      if (relation.type !== 'progress' || !from || !to || !from.matterId || from.matterId !== to.matterId || !to.updatesMatter) continue;
+      const matter = state.matters.get(to.matterId);
+      if (!matter) continue;
+      const frontier = (matter._frontier ?? []).filter(item => item.id !== from.id);
+      if (!frontier.some(item => item.id === to.id)) frontier.push({ id: to.id, assistantSeq: to.assistantSeq });
+      frontier.sort((left, right) => right.assistantSeq - left.assistantSeq || right.id.localeCompare(left.id));
+      state.matters.set(to.matterId, { ...matter, _frontier: frontier, latestEventIds: frontier.map(item => item.id) });
+      affected.add(to.matterId);
+    }
+    for (const matterId of affected) {
+      const prior = state.matters.get(matterId), representative = state.events.get(prior?._frontier?.[0]?.id);
+      if (!representative) continue;
+      const next = { ...prior, title: representative.title, object: representative.object, status: representative.status,
+        people: (representative.people ?? []).map(person => ({ ...person })), sourceFloorId: representative.sourceFloorId,
+        sourceAssistantSeq: representative.assistantSeq, storyTime: representative.storyTime, scheduledTime: representative.scheduledTime,
+        description: representative.description };
+      updateTerminalIndex(state, matterId, prior, next);
+      if (!TERMINAL_STATUSES.has(prior.status)) state.activeMatterIds.delete(matterId);
+      if (!TERMINAL_STATUSES.has(next.status)) state.activeMatterIds.add(matterId);
+      state.matters.set(matterId, next);
+    }
+    return true;
+  }
+  function matchingTerminalMatterIds(state, query) {
+    const candidates = new Set();
+    for (let index = 0; index < query.length; index += 1) {
+      const single = state.terminalSingleChar.get(query[index]);
+      if (single) for (const id of single) candidates.add(id);
+      if (index + 1 < query.length) {
+        const ids = state.terminalBigrams.get(query.slice(index, index + 2));
+        if (ids) for (const id of ids) candidates.add(id);
+      }
+    }
+    const matched = new Set();
+    for (const id of candidates) if ((state.terminalPhrasesByMatter.get(id) ?? []).some(phrase => query.includes(phrase))) matched.add(id);
+    return matched;
+  }
+  return Object.freeze({
+    prepare(reachable, options = {}) {
+      const keys = floorMemoryIds(reachable), root = reachable?.root ?? {};
+      const samePrefix = snapshot && snapshot.chatId === root.chatId && snapshot.generation === root.narrativeGeneration
+        && snapshot.identityKey === identityKey(options) && snapshot.keys.length <= keys.length
+        && snapshot.keys.every((key, index) => key.every((part, partIndex) => part === keys[index][partIndex]));
+      if (!samePrefix) {
+        const projection = projector(reachable, { identityProjection: options.identityProjection });
+        const events = new Map(projection.events.map(event => [event.id, event]));
+        const matters = new Map(projection.matters.map(matter => [matter.matterId, { ...matterCopy(matter),
+          _frontier: matter.latestEventIds.map(id => ({ id, assistantSeq: events.get(id)?.assistantSeq ?? matter.sourceAssistantSeq })) }]));
+        snapshot = { chatId: root.chatId, generation: root.narrativeGeneration, identityKey: identityKey(options), keys,
+          events, relations: new Map(projection.relations.map(relation => [relation.id, relation])), matters, activeMatterIds: new Set(),
+          terminalBigrams: new Map(), terminalSingleChar: new Map(), terminalPhrasesByMatter: new Map() };
+        for (const matter of matters.values()) {
+          if (TERMINAL_STATUSES.has(matter.status)) updateTerminalIndex(snapshot, matter.matterId, null, matter);
+          else snapshot.activeMatterIds.add(matter.matterId);
+        }
+      } else if (keys.length > snapshot.keys.length) {
+        const memoryById = new Map((reachable.floorMemories ?? []).map(memory => [memory.id, memory]));
+        for (let index = snapshot.keys.length; index < keys.length; index += 1) {
+          const [floorId, memoryId, ambiguousIds] = keys[index];
+          const floor = reachable.floors[index];
+          if (ambiguousIds) {
+            snapshot = null;
+            return this.prepare(reachable, options);
+          }
+          if (memoryId && !appendDelta(snapshot, floor, memoryById.get(memoryId))) {
+            snapshot = null;
+            return this.prepare(reachable, options);
+          }
+        }
+        snapshot.keys = keys;
+      }
+      const query = qianshiCandidateQuery(options.canonicalContent, options.precedingUserInput);
+      const reopened = matchingTerminalMatterIds(snapshot, query);
+      const matters = [...snapshot.activeMatterIds].map(id => snapshot.matters.get(id)).filter(Boolean);
+      for (const id of reopened) matters.push(snapshot.matters.get(id));
+      return prepareQianshiCandidatesFromMatters(matters, { ...options, terminalMatterIds: reopened });
+    },
+    invalidate() { snapshot = null; },
+  });
 }
 
 function packetQianshi(packet) {

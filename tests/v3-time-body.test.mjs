@@ -423,6 +423,40 @@ test('partial继续后组与一次收尾，后台不回环，手动只补失败�
   broken.back.client.put=async(c,id,data,revision,options)=>{if(id.startsWith('v3-time-batch-'))throw new Error('storage failed');const key=`${c}/${id}`;const result={data:structuredClone(data),revision:revision+1};broken.back.records.set(key,result);return result;};await broken.runtime.organize(await broken.runtime.prepareHistoryPlan());assert.equal(broken.runtime.getState().last.status,'failed');assert.equal((await broken.store.read(CHAT)).batches.length,0);
 });
 
+test('自动时间推演外层失败可见，成功后清除，失效后没有旧提示',async()=>{
+  let failAnnual = true;
+  const h = await harness({ count: 1, annualSettingsProvider: async () => {
+    if (failAnnual) throw new Error('synthetic automatic preparation failure');
+    return { ready: false };
+  } });
+  await h.runtime.runBatch();
+  assert.equal(h.runtime.getState().last.automaticFailure, true);
+  assert.equal(h.runtime.getState().last.status, 'failed');
+  failAnnual = false;
+  await h.runtime.runBatch();
+  assert.notEqual(h.runtime.getState().last?.automaticFailure, true, '下一次自动准备成功后清掉瞬时失败');
+  failAnnual = true;
+  await h.runtime.runBatch();
+  assert.equal(h.runtime.getState().last.automaticFailure, true);
+  h.setChat('other');
+  h.runtime.invalidate();
+  assert.notEqual(h.runtime.getState().last?.automaticFailure, true, '失效后旧失败不能串到新周期');
+});
+
+test('自动时间推演停止时迟到的取消异常不会变成失败提示',async()=>{
+  let rejectAnnual;
+  let markAnnualStarted;
+  const annualStarted = new Promise(resolve => { markAnnualStarted = resolve; });
+  const pendingAnnual = new Promise((_, reject) => { rejectAnnual = reject; });
+  const h = await harness({ count: 1, annualSettingsProvider: () => { markAnnualStarted(); return pendingAnnual; } });
+  const run = h.runtime.runBatch();
+  await annualStarted;
+  await h.runtime.stop();
+  rejectAnnual(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+  await run;
+  assert.notEqual(h.runtime.getState().last?.automaticFailure, true);
+});
+
 test('API异常、畸形JSON与全坏事项均只失败本组，后组继续且失败范围不计已读',async()=>{
   for(const [name,first] of [
     ['api',()=>{throw new Error('synthetic api');}],

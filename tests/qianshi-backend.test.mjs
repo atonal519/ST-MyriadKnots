@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { compileQianshiDelta, prepareQianshiCandidates, prepareQianshiRecallCandidates, projectQianshiCandidateSelection, projectQianshiGraph, projectQianshiRecall, projectQianshiTimeline, publicQianshiSnapshot } from '../src/v3/qianshi-domain.js';
+import { compileQianshiDelta, createQianshiCandidateIndex, prepareQianshiCandidates, prepareQianshiRecallCandidates, projectQianshiCandidateSelection, projectQianshiGraph, projectQianshiRecall, projectQianshiTimeline, publicQianshiSnapshot } from '../src/v3/qianshi-domain.js';
 import { projectTime } from '../src/v3/time-engine.js';
 import { createExtractorEnvelope, runExtractorRequest } from '../src/v3/extractor.js';
 import { createPublicQianshiBridge } from '../src/v3/public-qianshi-bridge.js';
@@ -302,6 +302,35 @@ test('跨楼重复关系按确定性 ID 只投影一次，后值 certainty 生�
   ].map((delta, index) => memory(`cccccccc-cccc-4ccc-8ccc-ccccccccccc${index}`, floors[index], delta)), entities: [] });
   assert.deepEqual(damaged.diagnostics.degradedFloorIds, [floors[1].id, floors[2].id], '重复悬空关系仍要给每个来源楼记录降级');
   assert.deepEqual(damaged.diagnostics.danglingRelationIds, [relationId, relationId]);
+  assert.deepEqual(damaged.diagnostics.danglingRelations.map(item => [item.floorId, item.relationId, item.fromEventId, item.toEventId, item.reason]), [
+    [floors[1].id, relationId, a.id, missing, 'missing-event'], [floors[2].id, relationId, a.id, missing, 'missing-event'],
+  ], '诊断提供来源楼和完整端点，修整可精确定位坏边');
+  assert.equal(damaged.coverage.completeFloors, 1, '已断链的 ready 楼不再计入健康完成数');
+});
+
+test('同楼后列事件引用有效，聚合记忆坏 continues 按锚楼归类', () => {
+  const first = floor('11111111-1111-4111-8111-111111111111', 1);
+  const anchor = floor('22222222-2222-4222-8222-222222222222', 2);
+  const event = (source, id, continuesFromEventIds = []) => ({ id, matterId: null, updatesMatter: false,
+    title: id, description: id, status: 'occurred', storyTime: null, scheduledTime: null, people: [], object: null,
+    sourceFloorId: source.id, continuesFromEventIds });
+  const laterId = '33333333-3333-4333-8333-333333333333';
+  const localDelta = { schemaVersion: 1, status: 'ready', reason: null, compiledAt: NOW,
+    candidateStats: { count: 0, characters: 0 },
+    events: [event(first, '44444444-4444-4444-8444-444444444444', [laterId]), event(first, laterId)], relations: [] };
+  const local = projectQianshiGraph({ floors: [first], floorMemories: [{ ...memory('55555555-5555-4555-8555-555555555555', first, localDelta),
+    sourceFloorIds: [first.id] }], entities: [] });
+  assert.deepEqual(local.diagnostics.danglingContinuations, [], '全集收集完后再判定，合法的同楼后列引用不会被误隔离');
+  assert.deepEqual(local.diagnostics.degradedFloorIds, []);
+
+  const missingId = '66666666-6666-4666-8666-666666666666';
+  const aggregateDelta = { ...localDelta, events: [event(first, '77777777-7777-4777-8777-777777777777', [missingId]), event(anchor, laterId)] };
+  const aggregateMemory = { ...memory('88888888-8888-4888-8888-888888888888', anchor, aggregateDelta), sourceFloorIds: [first.id, anchor.id] };
+  const aggregate = projectQianshiGraph({ floors: [first, anchor], floorMemories: [aggregateMemory], entities: [] });
+  assert.deepEqual(aggregate.diagnostics.danglingContinuations.map(item => [item.floorId, item.memoryFloorId]), [[first.id, anchor.id]],
+    '保留坏引用所在来源楼，同时标明唯一持有该聚合记忆的锚楼');
+  assert.deepEqual(aggregate.diagnostics.degradedFloorIds, [anchor.id], '聚合记忆的降级归属锚楼');
+  assert.equal(aggregate.coverage.degradedFloors, 1, 'coverage 只把有该聚合记忆的锚楼计为断链');
 });
 
 test('倒叙补证归入同一事项但不推进当前状态，progress 图不沿 before 串入其他事项', async () => {
@@ -342,6 +371,89 @@ test('候选使用中文 BM25，并同时携带事项起点和最新进展', asy
   assert.equal(candidates.request.length, 1);
   assert.match(candidates.request[0].origin.description, /借了档案室/u);
   assert.match(candidates.request[0].latestProgress.description, /延到明日/u);
+});
+
+test('千事候选索引只冷投影一次，顺序新楼增量结果与全量候选相同，前缀替换后重建', async () => {
+  const first = floor('11111111-1111-4111-8111-111111111111', 1);
+  const second = floor('22222222-2222-4222-8222-222222222222', 2);
+  const d1 = await compileQianshiDelta({ floor: first, now: NOW, packet: { qianshi: { events: [
+    { key: 'book', title: '归还旧书', description: '顾舟答应归还档案室旧书', status: 'planned', matter: true, object: '蓝皮档案' },
+  ], order: [] } } });
+  const d2 = await compileQianshiDelta({ floor: second, now: NOW, packet: { qianshi: { events: [
+    { key: 'letter', title: '寄出红蜡信', description: '沈砚准备寄出红蜡信', status: 'planned', matter: true },
+  ], order: [] } } });
+  const reachable = { root: { chatId: CHAT, narrativeGeneration: GENERATION, headCheckpointId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }, rootRevision: 1,
+    floors: [first], floorMemories: [memory('dddddddd-dddd-4ddd-8ddd-dddddddddddd', first, d1)], entities: [] };
+  let projections = 0;
+  const index = createQianshiCandidateIndex({ projector: (...args) => { projections += 1; return projectQianshiGraph(...args); } });
+  const options = { canonicalContent: '继续借书和信件安排' };
+  index.prepare(reachable, options);
+  reachable.floors.push(second);
+  reachable.floorMemories.push(memory('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', second, d2));
+  const incremental = index.prepare(reachable, options);
+  assert.equal(projections, 1, '追加新楼只应用其 delta，不再重建完整图');
+  assert.deepEqual(incremental, prepareQianshiCandidates(reachable, options));
+  reachable.floorMemories[0] = memory('ffffffff-ffff-4fff-8fff-ffffffffffff', first, d1);
+  index.prepare(reachable, options);
+  assert.equal(projections, 2, '有效前缀身份改变后从权威前缀冷建');
+  reachable.root.narrativeGeneration = '33333333-3333-4333-8333-333333333333';
+  index.prepare(reachable, options);
+  assert.equal(projections, 3, '聊天分支代次变化后冷建');
+  reachable.root.chatId = 'other-chat';
+  index.prepare(reachable, options);
+  assert.equal(projections, 4, '聊天身份变化后冷建');
+  index.prepare(reachable, { ...options, identityProjection: { version: 1 } });
+  assert.equal(projections, 5, '人物身份投影变化后冷建');
+  reachable.floors.pop(); reachable.floorMemories = reachable.floorMemories.filter(item => item.floorId !== second.id);
+  index.prepare(reachable, { ...options, identityProjection: { version: 1 } });
+  assert.equal(projections, 6, '删尾造成索引前缀缩短时冷建');
+});
+
+test('增量事项前沿只按有效 progress 边推进，失效 continuation ID 保留原端点', async () => {
+  const first = floor('11111111-1111-4111-8111-111111111111', 1), second = floor('22222222-2222-4222-8222-222222222222', 2);
+  const d1 = await compileQianshiDelta({ floor: first, now: NOW, packet: { qianshi: { events: [
+    { key: 'start', title: '归还蓝皮档案', description: '顾舟答应归还蓝皮档案', status: 'planned', matter: true, object: '蓝皮档案' },
+  ], order: [] } } });
+  const origin = d1.events[0];
+  const compiled = await compileQianshiDelta({ floor: second, now: NOW, candidateBindings: [{ key: 'candidate-1', matterId: origin.matterId,
+    latestEventIds: [origin.id], latestStoryTime: origin.storyTime, sourceFloorId: first.id, sourceAssistantSeq: 1 }], packet: { qianshi: { events: [
+    { key: 'later', title: '继续归还', description: '之后继续安排归还档案', status: 'inProgress', links: [{ candidateKey: 'candidate-1', kind: 'progress' }] },
+  ], order: [] } } });
+  const validReachable = { root: { chatId: CHAT, narrativeGeneration: GENERATION }, floors: [first],
+    floorMemories: [memory('dddddddd-dddd-4ddd-8ddd-dddddddddddd', first, d1)], entities: [] };
+  const validIndex = createQianshiCandidateIndex();
+  validIndex.prepare(validReachable);
+  validReachable.floors.push(second);
+  validReachable.floorMemories.push(memory('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', second, compiled));
+  const validIncremental = validIndex.prepare(validReachable, { canonicalContent: '继续' });
+  assert.deepEqual(validIncremental, prepareQianshiCandidates(validReachable, { canonicalContent: '继续' }));
+  assert.deepEqual(validIncremental.bindings[0].latestEventIds, [compiled.events[0].id], '有效 progress 边将前沿推进到新事件');
+  const brokenContinuation = validateQianshiDelta({ ...structuredClone(compiled), relations: [] }, { floorId: second.id });
+  const reachable = { root: { chatId: CHAT, narrativeGeneration: GENERATION }, floors: [first],
+    floorMemories: [memory('dddddddd-dddd-4ddd-8ddd-dddddddddddd', first, d1)], entities: [] };
+  const index = createQianshiCandidateIndex();
+  index.prepare(reachable);
+  reachable.floors.push(second);
+  reachable.floorMemories.push(memory('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', second, brokenContinuation));
+  const incremental = index.prepare(reachable, { canonicalContent: '继续' });
+  const authoritative = prepareQianshiCandidates(reachable, { canonicalContent: '继续' });
+  assert.deepEqual(incremental, authoritative);
+  assert.deepEqual(incremental.bindings[0].latestEventIds, [compiled.events[0].id, origin.id], '没有有效 progress 边时旧事项端点仍是最新前沿之一');
+});
+
+test('终结事项只在正文明确提到完整标题或对象短语时重提', async () => {
+  const source = floor('11111111-1111-4111-8111-111111111111', 1);
+  const delta = await compileQianshiDelta({ floor: source, now: NOW, packet: { qianshi: { events: [
+    { key: 'done', title: '归还蓝皮档案', description: '顾舟把蓝皮档案送回档案室', status: 'completed', matter: true, object: '蓝皮档案' },
+  ], order: [] } } });
+  const reachable = { root: { narrativeGeneration: GENERATION }, floors: [source], floorMemories: [memory('dddddddd-dddd-4ddd-8ddd-dddddddddddd', source, delta)], entities: [] };
+  assert.equal(prepareQianshiCandidates(reachable, { canonicalContent: '今天终于有空，之前的事情也都处理了' }).request.length, 0);
+  assert.equal(prepareQianshiCandidates(reachable, { canonicalContent: '那份蓝皮档案现在在哪' }).request.length, 1);
+  assert.equal(prepareQianshiCandidates(reachable, { canonicalContent: '别的剧情', precedingUserInput: { messages: [{ content: '蓝皮档案现在在哪' }] } }).request.length, 1,
+    '前置 USER 材料属于这次新楼的关联输入，可触发明确对象重提');
+  const index = createQianshiCandidateIndex();
+  assert.deepEqual(index.prepare(reachable, { canonicalContent: '别的剧情', precedingUserInput: { messages: [{ content: '蓝皮档案现在在哪' }] } }),
+    prepareQianshiCandidates(reachable, { canonicalContent: '别的剧情', precedingUserInput: { messages: [{ content: '蓝皮档案现在在哪' }] } }));
 });
 
 test('删尾或分支前缀只投影仍可达楼，未来完成态不会残留', async () => {

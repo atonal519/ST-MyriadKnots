@@ -626,7 +626,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   }
   function updateRecentItems() {
     if (!active || page !== 'memories' || !recentItemsUi) return;
-    const { toggle, body, status, organize, retryRead, reason, list, stoppedToggle, stop, batchEntry, batchControls, batchAll, batchProblems, batchActions, batchDelete } = recentItemsUi;
+    const { toggle, body, status, organize, retryRead, reason, list, stoppedToggle, stop, batchEntry, batchControls, batchAll, batchProblems, batchActions, batchDelete, automaticFailure } = recentItemsUi;
     const state = timeRuntime?.getState?.(), result = state?.last, tracked = state?.trackedItems, stopped = state?.stoppedItems, annual = state?.annualItems;
     const selectable = new Map(((showStoppedItems ? stopped : tracked) ?? []).map(item => [item.id, item]));
     if (state?.pendingDeletionCount > 0) selectedRecentItems.clear();
@@ -635,6 +635,13 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     toggle.className = `secondary-action qqj-profile-more${recentItemsOpen ? ' active' : ''}`;
     toggle.disabled = false;
     toggle.setAttribute('aria-expanded', String(recentItemsOpen)); body.hidden = !recentItemsOpen;
+    const failureNotice = state?.status === 'waiting' || state?.status === 'disabled' ? ''
+      : state?.last?.automaticFailure
+        ? `${state.last.automaticFailureMessage ?? '自动时间推演本次未能完成。'}${state.last.message ? ` ${state.last.message}` : ''}`
+        : state?.last?.status === 'failed' ? `时间推演失败：${state.last.message || '本次没有完成。'}`
+          : state?.last?.status === 'partial' ? `时间推演部分未完成：${state.last.message || '部分事项仍待处理。'}` : '';
+    automaticFailure.textContent = failureNotice;
+    automaticFailure.hidden = !failureNotice;
     if (!recentItemsOpen) return;
     const label = state?.status === 'disabled' ? '已关闭' : state?.active ? state.phase === 'saving' ? '保存中' : '处理中' : state?.status === 'waiting' ? '等待记忆同步' : result?.status === 'completed' ? '已处理' : result?.status === 'empty' ? '已检查无适合事项' : result?.status === 'partial' ? '部分完成' : result?.status === 'failed' ? '失败' : result?.status === 'interrupted' ? '上次未完成' : '待初始化';
     status.textContent = `${label}${Array.isArray(tracked) ? ` · 追踪中事项 ${tracked.length} 条` : ''}${state?.coverage ? ` · 正文完整已检查 ${state.coverage.checkedFloors}/${state.coverage.totalFloors} 楼` : ''}${state?.progress ? ` · 本次批次 ${state.progress.completed}/${state.progress.total}` : ''}${result?.message ? `。${result.message}` : ''}`;
@@ -817,6 +824,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const section = element('section', 'qqj-profile-toolbar');
     const actions = element('div', 'qqj-profile-toolbar-actions qqj-memory-toolbar');
     const toggle = element('button', 'secondary-action qqj-profile-more', '近期事项'); toggle.type = 'button';
+    const automaticFailure = element('small', 'settings-hint qqj-time-automatic-failure', '时间自动推演这次未能完成，请打开近期事项查看或重试。'); automaticFailure.hidden = true;
     const body = element('div', 'settings-block'); body.id = 'qqj-recent-items'; toggle.setAttribute('aria-controls', body.id);
     const row = element('div', 'qqj-profile-switch-row'), copy = element('div');
     const status = element('p', 'settings-result'); status.setAttribute('role', 'status');
@@ -840,8 +848,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     batchEntry.addEventListener('click', () => { if (batchEntry.disabled) return; recentBatchMode = !recentBatchMode; if (!recentBatchMode) selectedRecentItems.clear(); recentItemsUi.listSignature = null; updateRecentItems(); });
     batchAll.addEventListener('click', () => { if (batchAll.disabled) return; selectedRecentItems.clear(); for (const item of showStoppedItems ? timeRuntime.getState().stoppedItems ?? [] : timeRuntime.getState().trackedItems ?? []) selectedRecentItems.set(item.id, item.observationKey); recentItemsUi.listSignature = null; updateRecentItems(); });
     batchProblems.addEventListener('click', () => { if (batchProblems.disabled) return; selectedRecentItems.clear(); for (const item of timeRuntime.getState().trackedItems ?? []) if (item.failureReason || item.assessmentReason || item.reviewStatus === 'unanswered') selectedRecentItems.set(item.id, item.observationKey); recentItemsUi.listSignature = null; updateRecentItems(); });
-    copy.append(status, reason); row.append(copy, buttons); body.append(row, listActions, batchFeedback, list); actions.append(memorySearch, toggle); section.append(actions, body);
-    recentItemsUi = { section, toggle, body, status, organize, retryRead, reason, list, stoppedToggle, stop, batchEntry, batchControls, batchAll, batchProblems, batchActions, batchDelete, itemControls: [], listSignature: null };
+    copy.append(status, reason); row.append(copy, buttons); body.append(row, listActions, batchFeedback, list); actions.append(memorySearch, toggle, automaticFailure); section.append(actions, body);
+    recentItemsUi = { section, toggle, body, status, organize, retryRead, reason, list, stoppedToggle, stop, batchEntry, batchControls, batchAll, batchProblems, batchActions, batchDelete, automaticFailure, itemControls: [], listSignature: null };
     toggle.addEventListener('click', () => { recentItemsOpen = !recentItemsOpen; updateRecentItems(); if (recentItemsOpen) void timeRuntime?.refreshStatus?.(); });
     organize.addEventListener('click', async () => {
       if (organize.disabled) return;

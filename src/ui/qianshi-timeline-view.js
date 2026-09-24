@@ -17,13 +17,14 @@ function coverageProjection(snapshot) {
   const complete = Number(coverage.completeFloors) || 0, eligible = Number(coverage.eligibleFloors) || 0;
   const pending = Number(coverage.pendingFloors) || 0, partial = Number(coverage.partialFloors) || 0;
   const degraded = Number(coverage.degradedFloors) || 0, unavailable = Number(coverage.unavailableFloors) || 0;
-  const suffix = unavailable ? `另有 ${unavailable} 个故事楼没有唯一有效摘要，尚不能整理千事。` : '';
-  if (degraded) return { kind: 'degraded', label: '部分关系失效', copy: `已完整检查 ${complete}/${eligible} 个可用摘要楼；${degraded} 楼的旧事项关系不完整。${suffix}` };
-  if (partial) return { kind: 'partial', label: '部分整理', copy: `已完整检查 ${complete}/${eligible} 个可用摘要楼；${partial} 楼只保存了合法事项，其余条目待补。${suffix}` };
-  if (pending) return { kind: complete ? 'partial' : 'pending', label: complete ? '部分整理' : '等待补齐', copy: `已完整检查 ${complete}/${eligible} 个可用摘要楼；${pending} 楼尚未完成千事整理。${suffix}` };
-  if (unavailable) return { kind: 'partial', label: '覆盖不完整', copy: `已完整检查 ${complete}/${eligible} 个可用摘要楼。${suffix}` };
-  if (!events.length) return { kind: 'empty', label: '已检查为空', copy: `已检查 ${complete}/${eligible} 个可用摘要楼，目前没有保存的剧情事件。` };
-  return { kind: 'ready', label: '覆盖就绪', copy: `已完整检查 ${complete}/${eligible} 个可用摘要楼，共保存 ${events.length} 件事件。` };
+  const suffix = unavailable ? `无唯一有效摘要 ${unavailable} 楼` : '';
+  const breakdown = `已完成 ${complete} 楼；待补 ${pending} 楼；部分整理 ${partial} 楼；断链 ${degraded} 楼${suffix ? `；${suffix}` : ''}。分母是 ${eligible} 个有唯一有效摘要的楼。`;
+  if (degraded) return { kind: 'degraded', label: '部分关系失效', copy: `${breakdown}断链楼的事件和摘要仍保留；确认补齐后，只会隔离可确证的失效引用。` };
+  if (partial) return { kind: 'partial', label: '部分整理', copy: `${breakdown}部分楼只保存了合法事项，其余条目待补。` };
+  if (pending) return { kind: complete ? 'partial' : 'pending', label: complete ? '部分整理' : '等待补齐', copy: `${breakdown}有摘要的楼尚未完成千事整理。` };
+  if (unavailable) return { kind: 'partial', label: '覆盖不完整', copy: `${breakdown}这些楼当前不能进入千事计划。` };
+  if (!events.length) return { kind: 'empty', label: '已检查为空', copy: `${breakdown}目前没有保存的剧情事件。` };
+  return { kind: 'ready', label: '覆盖就绪', copy: `${breakdown}共保存 ${events.length} 件事件。` };
 }
 
 export function createQianshiTimelineView({ runtime, dialog = null, documentRef = globalThis.document } = {}) {
@@ -229,11 +230,16 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     try {
       const plan = await runtime.prepareQianshiHistory();
       if (!active || operationEpoch !== epoch || runtime.getQianshiSnapshot()?.identity?.qqjChatId !== operationChatId) return;
-      if (plan.status === 'empty') { feedback = plan.unavailableFloors?.length ? `当前没有可补齐的摘要楼；${plan.unavailableFloors.length} 楼缺少摘要来源。` : '现有可处理楼都已完成千事整理。'; render(); return; }
+      if (plan.status === 'empty') { feedback = plan.aggregateSkippedFloors?.length
+        ? `${plan.aggregateSkippedFloors.length} 楼由多个正文楼聚合；为保留成员事件来源，当前跳过模型替换。`
+        : plan.unavailableFloors?.length ? `当前没有可补齐的摘要楼；${plan.unavailableFloors.length} 楼缺少摘要来源。` : '现有可处理楼都已完成千事整理。'; render(); return; }
       const unavailable = plan.unavailableFloors?.length ?? 0;
+      const localRepairFloors = Number(plan.localRepairFloors) || 0;
+      const modelFloors = Number(plan.modelFloors) || 0;
+      const aggregateSkipped = plan.aggregateSkippedFloors?.length ?? 0;
       const confirmed = await dialog?.confirm?.({ title: '补齐旧楼千事',
-        body: `将处理 ${plan.totalFloors} 楼，分 ${plan.batchCount} 批，预计调用摘要 API ${plan.apiCalls} 次；保守估算输入 ${plan.estimatedInputTokens} tokens。`,
-        note: unavailable ? `另有 ${unavailable} 楼缺少唯一有效摘要，当前计划不会处理。成功批次会立即保留，可随时停止后重新规划继续。` : '成功批次会立即保留，可随时停止后重新规划继续。',
+        body: `将处理 ${plan.totalFloors} 楼，其中 ${modelFloors} 楼进入模型补齐，分 ${plan.batchCount} 批，预计调用摘要 API ${plan.apiCalls} 次；保守估算输入 ${plan.estimatedInputTokens} tokens。${localRepairFloors ? `${localRepairFloors} 楼会在本地隔离确证失效引用。` : ''}${aggregateSkipped ? `${aggregateSkipped} 楼由多个正文楼聚合，跳过模型替换以保留成员来源；其中只有发现确证坏引用的楼才会本地隔离。` : ''}`,
+        note: unavailable ? `另有 ${unavailable} 楼缺少唯一有效摘要，当前计划不会处理。打开计划和取消均不会写入或调用 API；确认后才会执行本地修整和模型任务。成功批次会立即保留，可随时停止后重新规划继续。` : '打开计划和取消均不会写入或调用 API；确认后才会执行列明的本地修整与模型任务。成功批次会立即保留，可随时停止后重新规划继续。',
         confirmText: '开始补齐', cancelText: '取消' });
       if (!active || operationEpoch !== epoch || runtime.getQianshiSnapshot()?.identity?.qqjChatId !== operationChatId) return;
       if (!confirmed) { feedback = '已取消；没有调用模型。'; render(); return; }
