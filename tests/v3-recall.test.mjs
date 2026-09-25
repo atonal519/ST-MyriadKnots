@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { formatChronologyAnchor, projectRecallSource, readRecallSource } from '../src/v3/recall-source.js';
 import { buildRecallCseCandidatePool, buildRecallHistoryCandidatePool, buildRecallQueryContext, cseSelectionContext, estimateRecallTokens, formatRecallInjection, historySelectionContext, recallBudget, selectRecall } from '../src/v3/recall-selector.js';
-import { RECALL_LLM_SYSTEM_PROMPT, selectRecallWithLlm } from '../src/v3/recall-llm-selector.js';
+import { RECALL_LLM_SYSTEM_PROMPT, removeExactQianshiDuplicates, selectRecallWithLlm } from '../src/v3/recall-llm-selector.js';
 import { createV3RecallRuntime, projectHistoricalRecallReceipt, renderedQianshiProgressText, RECALL_PROMPT_SLOT, RECALL_RECEIPT_KEY, RECALL_RECEIPT_SCHEMA_VERSION } from '../src/v3/recall-runtime.js';
 import { PREQUEL_PROMPT_SLOT } from '../src/v3/recall-prequel.js';
 import { sha256 } from '../src/identity.js';
@@ -337,6 +337,79 @@ test('近期摘要先排除空摘要与正文覆盖，再向更老的已存摘�
   const allUnavailable = selectRecall({ source, queryContext: { text: '完全不命中远期', latestUserText: '完全不命中远期', messageCount: 1 }, selectedHistoryCandidates: [] });
   assert.equal(allUnavailable.stages.recentSummaryCount, 4);
   assert.deepEqual(allUnavailable.floors.map(value => value.assistantSeq), [5, 6, 7, 8]);
+});
+
+test('聚合摘要只有全成员被当前正文覆盖才排除，部分覆盖仍进入近期/远期筛选并留下可见诊断', () => {
+  const memories = Array.from({ length: 12 }, (_, index) => recallMemory(index + 1, { summary: `普通摘要 ${index + 1}` }));
+  memories[1] = { ...recallMemory(2, { summary: '雨夜将铜钥匙留在灰匣，次日取回' }),
+    floorId: 'aggregate-floor-2', sourceFloorIds: ['aggregate-member-1', 'aggregate-floor-2'] };
+  const source = selectorSource({ memories });
+  source.bodyMatch = { coveredFloorIds: ['aggregate-member-1'] };
+  const queryContext = { text: '铜钥匙灰匣次日取回', latestUserText: '铜钥匙灰匣次日取回', messageCount: 1 };
+  const partialContext = historySelectionContext(source, queryContext);
+  assert.ok(partialContext.oldMemories.some(memory => memory.floorId === 'aggregate-floor-2'));
+  const partial = selectRecall({ source, queryContext });
+  assert.ok(partial.floors.some(floor => floor.floorId === 'aggregate-floor-2'));
+  assert.ok(partial.skipReasons.includes('partialAggregateBodyOverlap'));
+  assert.equal(partial.skipReasons.includes('coreBodyDuplicate'), false);
+
+  source.bodyMatch = { coveredFloorIds: ['aggregate-member-1', 'aggregate-floor-2'] };
+  const fullyCovered = selectRecall({ source, queryContext });
+  assert.equal(fullyCovered.floors.some(floor => floor.floorId === 'aggregate-floor-2'), false);
+  assert.ok(fullyCovered.skipReasons.includes('coreBodyDuplicate'));
+  assert.equal(fullyCovered.skipReasons.includes('partialAggregateBodyOverlap'), false);
+});
+
+test('Q 排重只比较最终客观旧事条目；完整相同才删，Q独有字段及 private/shared/narrative 保留', async () => {
+  const memories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
+  memories[1] = recallMemory(2, { events: [{ title: '2026年9月3日', description: '钟楼钥匙已归还', candidateStatus: 'accepted' }] });
+  const source = selectorSource({ memories });
+  const queryContext = { text: '钟楼钥匙已归还', latestUserText: '钟楼钥匙已归还', messageCount: 1 };
+  const selection = selectRecall({ source, queryContext });
+  const objective = selection.floors.flatMap(floor => floor.items).find(item => item.category === 'objective');
+  assert.match(objective?.text ?? '', /^2026年9月3日[:：]钟楼钥匙已归还$/u, '比较输入来自生产 selector 最终实际选中的客观条目');
+  const exactProgress = { projectionVersion: 4,
+    text: `[相关时间线]\n- ${objective.text}\n\n[当前待接续]\n- 仍需归还旧书；尚未记录完成。`,
+    eventIds: ['same-event'], matterIds: ['pending-matter'] };
+  const exact = removeExactQianshiDuplicates(exactProgress, selection);
+  assert.equal(exact.text, '[当前待接续]\n- 仍需归还旧书；尚未记录完成。');
+  assert.deepEqual(exact.eventIds, []);
+  assert.deepEqual(exact.matterIds, ['pending-matter']);
+  assert.equal(exact.characterCount, exact.text.length);
+
+  source.qianshiCandidates = [qianshiCandidate('Q1', 'history', objective.text, { line: `- ${objective.text}` })];
+  const integrated = await selectRecallWithLlm({ source, queryContext,
+    generateUtilityTask: async () => ({ jsonData: { history_exclude_keys: [], state_exclude_keys: [] } }) });
+  assert.ok(integrated.floors.flatMap(floor => floor.items).some(item => item.category === 'objective' && item.text === objective.text));
+  assert.deepEqual(integrated.qianshiProgress.eventIds, [], '真实 LLM 选材完成后从实际入选 objective 中移除同一 Q 行');
+  assert.equal(integrated.qianshiProgress.text, '');
+
+  const qHasUniqueStatus = removeExactQianshiDuplicates({ projectionVersion: 4,
+    text: `[相关时间线]\n- ${objective.text}（后续又延期）`, eventIds: ['status-event'], matterIds: [] }, selection);
+  assert.match(qHasUniqueStatus.text, /后续又延期/u);
+  assert.deepEqual(qHasUniqueStatus.eventIds, ['status-event']);
+
+  const qHasUniqueTime = removeExactQianshiDuplicates({ projectionVersion: 4,
+    text: `[相关时间线]\n- 2026年9月4日：${objective.text}`, eventIds: ['time-event'], matterIds: [] }, selection);
+  assert.match(qHasUniqueTime.text, /2026年9月4日/u);
+  assert.deepEqual(qHasUniqueTime.eventIds, ['time-event']);
+
+  const categoryCases = [
+    ['private', { privateCognition: [{ ownerEntityId: PERSON, kind: 'belief', content: '蓝铜钥匙留在灰匣' }] }, '蓝铜钥匙留在灰匣'],
+    ['shared', { commitments: [{ speakerEntityId: PERSON, targetEntityIds: ['88888888-7777-4777-8777-777777777777'], kind: 'promise', content: '蓝铜钥匙留在灰匣', status: 'accepted', exactAnchorId: null }] }, '蓝铜钥匙留在灰匣'],
+    ['narrative', { summary: '蓝铜钥匙留在灰匣' }, '蓝铜钥匙留在灰匣'],
+  ];
+  for (const [category, patch] of categoryCases) {
+    const categoryMemories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
+    categoryMemories[1] = recallMemory(2, patch);
+    const categorySelection = selectRecall({ source: selectorSource({ memories: categoryMemories }),
+      queryContext: { text: '蓝铜钥匙留在灰匣', latestUserText: '蓝铜钥匙留在灰匣', messageCount: 1 } });
+    const item = categorySelection.floors.flatMap(floor => floor.items).find(value => value.category === category);
+    assert.ok(item, `${category} 需真实进入最终选择`);
+    const retained = removeExactQianshiDuplicates({ projectionVersion: 4, text: `[相关时间线]\n- ${item.text}`,
+      eventIds: [`${category}-event`], matterIds: [] }, categorySelection);
+    assert.deepEqual(retained.eventIds, [`${category}-event`], `${category} 同字也不参与跨源删除`);
+  }
 });
 
 test('真实摘要长度与小上下文下优先保最近楼，LLM 所见近期接续和最终注入一致', async () => {
@@ -937,12 +1010,12 @@ test('真实 LLM 入口每轮只建立一份选择上下文，查询和材料变
   });
 
   await run({ ...llmQuery, text: '左佐和辛夷的门锁', latestUserText: '左佐和辛夷的门锁' });
-  assert.equal(floorReads, 8, '同轮只应读取一次 history context，并由预演、payload 与最终选择复用');
+  assert.equal(floorReads, 7, '同轮只应读取一次 history context，并由预演、payload 与最终选择复用');
   assert.equal(currentStateReads, 1, '实际 CSE 候选同轮只应建立一次 CSE context');
   floorMemories = floorMemories.map((memory, index) => index === 0 ? { ...memory, summary: `${memory.summary} 第二轮新材料` } : memory);
   currentState = currentState.map(subject => ({ ...subject, situational: subject.situational.map(item => ({ ...item, text: `${item.text} 第二轮新材料` })) }));
   await run({ ...llmQuery, text: '第二轮新材料', latestUserText: '第二轮新材料' });
-  assert.equal(floorReads, 16, '新调用必须按新查询和新材料重新建立上下文');
+  assert.equal(floorReads, 14, '新调用必须按新查询和新材料重新建立上下文');
   assert.equal(currentStateReads, 2, '第二轮必须按新查询和新 CSE 材料重新建立上下文');
 });
 
@@ -972,7 +1045,7 @@ test('Q 候选搭乘同一次 R/C 选材，当前故事时间可见且可选字�
     qianshiCandidate('Q2', 'pending', '仍需归还钟楼钥匙'),
   ];
   source.qianshiProgress = {
-    projectionVersion: 3,
+    projectionVersion: 4,
     text: '[相关时间线]\n- 时间未知：已被普通历史充分覆盖的钟楼日常\n\n[当前待接续]\n- 仍需归还钟楼钥匙；尚未记录完成。',
     eventIds: ['Q1-event'], matterIds: ['Q2-matter'],
   };
@@ -1042,7 +1115,7 @@ test('R/C 智能选材可排已充分覆盖的相关旧观察，同时保留独�
 test('Q-only 保持零 API，本地降级仍保留有界未竟提醒', async () => {
   const source = selectorSource();
   source.qianshiCandidates = [qianshiCandidate('Q1', 'pending', '旧日承诺仍未履行')];
-  source.qianshiProgress = { projectionVersion: 3, text: '[当前待接续]\n- 旧日承诺仍未履行；尚未记录完成。', eventIds: [], matterIds: ['Q1-matter'] };
+  source.qianshiProgress = { projectionVersion: 4, text: '[当前待接续]\n- 旧日承诺仍未履行；尚未记录完成。', eventIds: [], matterIds: ['Q1-matter'] };
   let calls = 0;
   const selected = await selectRecallWithLlm({ source, queryContext: { ...llmQuery, text: '宇宙飞船', latestUserText: '宇宙飞船' },
     generateUtilityTask: async () => { calls += 1; } });
@@ -3185,7 +3258,7 @@ test('runtime Q候选只用一次既有utility，provider初取与按所选ID复
       providerCalls += 1; providerContexts.push({ queryContext: structuredClone(context.queryContext),
         ...(Object.hasOwn(context, 'selectedEventIds') ? { selectedEventIds: [...context.selectedEventIds], selectedMatterIds: [...context.selectedMatterIds] } : {}) });
       const selected = Object.hasOwn(context, 'selectedEventIds');
-      return { anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion: 3,
+      return { anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion: 4,
         text: selected ? '[当前待接续]\n- 仍需归还钟楼钥匙；尚未记录完成。'
           : '[相关时间线]\n- 时间未知：已被R覆盖的钟楼旧日常\n\n[当前待接续]\n- 仍需归还钟楼钥匙；尚未记录完成。',
         eventIds: selected ? [] : ['Q1-event'], matterIds: ['Q2-matter'],
@@ -3227,9 +3300,9 @@ test('候选与Q正文共用既有anchor守卫，选中事项提交前终态只�
       qianshiProgressProvider: (_source, context) => {
         providerCalls += 1;
         const selected = Object.hasOwn(context, 'selectedMatterIds');
-        if (mode === 'wrong-anchor') return { anchor: { narrativeGeneration: 'wrong', headCheckpointId: 'wrong' }, projectionVersion: 3,
+        if (mode === 'wrong-anchor') return { anchor: { narrativeGeneration: 'wrong', headCheckpointId: 'wrong' }, projectionVersion: 4,
           text: '[当前待接续]\n- 不应越过anchor；尚未记录完成。', eventIds: [], matterIds: ['Q1-matter'], candidates: [candidate] };
-        return { anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion: 3,
+        return { anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion: 4,
           text: selected ? '' : '[当前待接续]\n- 仍待完成的旧约；尚未记录完成。', eventIds: [], matterIds: selected ? [] : ['Q1-matter'],
           ...(!selected ? { candidates: [candidate] } : {}) };
       },

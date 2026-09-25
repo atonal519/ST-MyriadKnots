@@ -76,12 +76,12 @@ const normalizeDateDigits = value => value.replace(/[０-９]/gu, char => String
 export function effectiveTime(value) {
   return value && !value.date && value.raw ? { ...value, ...projectTime(value.raw) } : value;
 }
-export function projectTime(value, anchor = null) {
+export function projectTime(value, anchor = null, { allowShortGregorianYear = false } = {}) {
   const raw = text(value, 500), normalized = normalizeDateDigits(raw);
   anchor = effectiveTime(anchor);
   const clock = normalized.match(/(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?:[:：]\d{2})?(?:Z)?(?=$|[\s，])/u);
   const dateText = clock ? normalized.slice(0, clock.index).trim().replace(/[T，]$/u, '').trim() : normalized;
-  const date = !dateText && clock && anchor?.date ? { ...anchor } : flexibleDate(dateText, anchor);
+  const date = !dateText && clock && anchor?.date ? { ...anchor } : flexibleDate(dateText, anchor, { allowShortGregorianYear });
   return { ...date, raw: raw || date.raw, minute: clock ? Number(clock[1]) * 60 + Number(clock[2]) : null,
     clock: clock ? `${clock[1].padStart(2, '0')}:${clock[2]}` : null };
 }
@@ -109,7 +109,7 @@ export function formatStoryTime(value, sourceText = '') {
   return `${formatted}${value.clock && !hasClock(formatted, value.minute) ? ` ${value.clock}` : ''}`;
 }
 const GREGORIAN_ERAS = ['公元','公历','公曆','西历','西曆'];
-function flexibleDate(raw, anchor) {
+function flexibleDate(raw, anchor, options = {}) {
   // A trailing weekday annotates a date; ordinal weekdays remain the date itself.
   const dateText = raw.replace(/(?:[\s，,]+|(?<=[日号]))(?:星期|周|週)[一二三四五六日天]\s*$|[\s，,]*[（(](?:星期|周|週)[一二三四五六日天][）)]\s*$/u, '').trim();
   const unknown = () => ({ raw: raw || '时间未知', date: null, day: null, year: null, month: null, monthDay: null });
@@ -162,11 +162,11 @@ function flexibleDate(raw, anchor) {
     }
     const monthDay = cnNumber(match[5]);
     if (month === null || monthDay === null) return unknown();
-    return projectDateSource(`${yearText ? `${year}年` : ''}${month}月${monthDay}日`, anchor);
+    return projectDateSource(`${yearText ? `${year}年` : ''}${month}月${monthDay}日`, anchor, options);
   }
   const yearPrefix = dateText.match(new RegExp(`^([\\p{L}]*?)(${CN_NUMBER})\\s*年`, 'u'));
   if (/[闰閏]/u.test(dateText) || yearPrefix?.[1] && !GREGORIAN_ERAS.includes(yearPrefix[1])) return unknown();
-  return { ...projectDateSource(normalized, anchor), raw: raw || '时间未知' };
+  return { ...projectDateSource(normalized, anchor, options), raw: raw || '时间未知' };
 }
 export function timeHours(from, to) {
   from = effectiveTime(from); to = effectiveTime(to);
@@ -182,18 +182,21 @@ export function nextCycleTime(item) {
   // An unconfirmed expected cycle is still due; no automatic rollover claims it happened.
   return item.dueTime;
 }
-function projectDateSource(value, anchor = null) {
+function projectDateSource(value, anchor = null, { allowShortGregorianYear = false } = {}) {
   const raw = text(value, 500);
-  const match = raw.match(/(?:^|[^\d])(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})(?:日)?(?:[^\d]|$)/u);
+  const yearWidth = allowShortGregorianYear ? '{1,4}' : '{4}';
+  const match = raw.match(new RegExp(`(?:^|[^\\d])(\\d${yearWidth})[-/年](\\d{1,2})[-/月](\\d{1,2})(?:日)?(?:[^\\d]|$)`, 'u'));
   if (match) {
     const [year, month, day] = match.slice(1).map(Number);
-    const stamp = Date.UTC(year, month - 1, day);
-    const date = new Date(stamp);
-    if (year >= 1000 && date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day) {
+    const date = new Date(0);
+    date.setUTCHours(0, 0, 0, 0);
+    date.setUTCFullYear(year, month - 1, day);
+    const stamp = date.getTime();
+    if (year >= (allowShortGregorianYear ? 1 : 1000) && year <= 9999 && date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day) {
       return { raw, date: date.toISOString().slice(0, 10), day: stamp / DAY, year, month, monthDay: day };
     }
   }
-  const monthOnly = !/\d{4}[-/年]/u.test(raw) && raw.match(/(?:^|[^\d])(\d{1,2})[月/.-](\d{1,2})(?:日|号)?(?:[^\d]|$)/u);
+  const monthOnly = !new RegExp(`\\d${yearWidth}(?:年|[-/])`, 'u').test(raw) && raw.match(/(?:^|[^\d])(\d{1,2})[月/.-](\d{1,2})(?:日|号)?(?:[^\d]|$)/u);
   if (monthOnly) {
     const month = Number(monthOnly[1]), monthDay = Number(monthOnly[2]);
     if (month >= 1 && month <= 12 && monthDay >= 1 && monthDay <= [31,29,31,30,31,30,31,31,30,31,30,31][month - 1]) {

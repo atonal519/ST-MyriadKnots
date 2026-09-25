@@ -92,7 +92,8 @@ const selectorFailureCopy = value => ({
   V3_RECALL_LLM_SCHEMA_INVALID: '选材结果结构无效', V3_RECALL_LLM_KEYS_INVALID: '选材结果没有合法候选项', V3_RECALL_LLM_UNAVAILABLE: '智能选材路由不可用',
 })[value] ?? text(value, '无');
 const skipReasonCopy = value => ({
-  coreBodyDuplicate: '已排除当前正文覆盖的摘要', noReliableMemoryMatch: '未找到可靠的远期匹配', persistentStateDuplicate: '已去除重复材料',
+  coreBodyDuplicate: '已排除当前正文完整覆盖的摘要', partialAggregateBodyOverlap: '部分聚合摘要与当前正文来源重叠；整条材料仍参与相关性和预算筛选，可能重复，未逐成员拆分',
+  noReliableMemoryMatch: '未找到可靠的远期匹配', persistentStateDuplicate: '已去除重复材料',
   dynamicStateCoverageIncomplete: '当前人物状态覆盖不完整，本轮只参考可信历史变化', cseReplayUnavailable: '人物状态重放不可用',
   memoryNotReady: '当前记忆仍有缺口', coverageUnconfirmed: '记忆与正文对应关系尚未确认', memoryRebuildFailed: '上次记忆补齐未完成',
   historicalRebuildRequired: '仍有历史摘要缺口', memoryPreparationTimeout: '记忆准备超时，本轮正文已继续', memoryPreparationFailed: '记忆准备失败，本轮正文已继续',

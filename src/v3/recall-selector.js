@@ -586,10 +586,15 @@ export function historySelectionContext(source, queryContext) {
   if (source?.status !== 'ready' || !query) return null;
   const queries = recallQueries(queryContext, query);
   const bodyCoveredFloorIds = new Set([...(source.bodyMatch?.coveredFloorIds ?? []), ...(source.bodyMatch?.visibleFloorIds ?? [])]);
-  const overlapsBody = memory => (memory.sourceFloorIds?.length ? memory.sourceFloorIds : [memory.floorId]).some(floorId => bodyCoveredFloorIds.has(floorId));
+  const floorMemories = source.floorMemories;
+  const bodyCoverage = memory => {
+    const sourceFloorIds = memory.sourceFloorIds?.length ? memory.sourceFloorIds : [memory.floorId];
+    const coveredCount = sourceFloorIds.filter(floorId => bodyCoveredFloorIds.has(floorId)).length;
+    return coveredCount === 0 ? 'none' : coveredCount === sourceFloorIds.length ? 'all' : 'partial';
+  };
   const entityById = new Map(source.entities.map(entity => [entity.entityId, entity]));
-  const recentWindow = [...source.floorMemories]
-    .filter(memory => memory.assistantSeq <= source.coverage.stableThroughAssistantSeq && !overlapsBody(memory) && clean(memory.summary, 12000))
+  const recentWindow = [...floorMemories]
+    .filter(memory => memory.assistantSeq <= source.coverage.stableThroughAssistantSeq && bodyCoverage(memory) !== 'all' && clean(memory.summary, 12000))
     .sort((a, b) => b.assistantSeq - a.assistantSeq || b.floorId.localeCompare(a.floorId))
     .slice(0, RECENT_CONTINUITY_FLOORS)
     .sort((a, b) => a.assistantSeq - b.assistantSeq || a.floorId.localeCompare(b.floorId));
@@ -597,7 +602,7 @@ export function historySelectionContext(source, queryContext) {
   const recentSummaries = recentWindow
     .map(memory => historySummary(memory, entityById)).filter(Boolean)
     .map(value => ({ ...value, score: 1, branchScores: Object.freeze({}), entityBranchScores: Object.freeze({}), summaryScores: Object.freeze({}), recallSection: 'recent' }));
-  const oldMemories = source.floorMemories.filter(memory => !overlapsBody(memory) && !recentWindowFloorIds.has(memory.floorId));
+  const oldMemories = floorMemories.filter(memory => bodyCoverage(memory) !== 'all' && !recentWindowFloorIds.has(memory.floorId));
   const facts = scoreCandidates(oldMemories.flatMap(memory => historyFacts(memory, entityById)), queries, { keepUnmatched: true });
   const compactFactTextsByFloor = new Map();
   for (const fact of facts) {
@@ -619,7 +624,10 @@ export function historySelectionContext(source, queryContext) {
       adjacent.push({ ...neighbor, score: anchor.score * 0.2, _adjacentSummary: true, _relationEvidence: 'nearby', _relationAnchorStableKey: historyStableKey(anchor) });
     }
   }
-  return { query, queries, oldMemories, entityById, facts, summaries, direct, adjacent, bodyCoveredFloorIds, recentWindow, recentWindowFloorIds, recentSummaries };
+  const partialAggregateBodyOverlap = floorMemories.some(memory => (memory.sourceFloorIds?.length ?? 0) > 1 && bodyCoverage(memory) === 'partial');
+  const fullyCoveredMemoryCount = floorMemories.filter(memory => bodyCoverage(memory) === 'all').length;
+  return { query, queries, oldMemories, entityById, facts, summaries, direct, adjacent, bodyCoveredFloorIds,
+    fullyCoveredMemoryCount, partialAggregateBodyOverlap, recentWindow, recentWindowFloorIds, recentSummaries };
 }
 
 const setIntersection = (left, right) => [...left].filter(value => right.has(value));
@@ -1424,7 +1432,8 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
   const timeBudgetDropped = timeRanked.filter(value => value.score > 0 && !rendered.timeDependencies.reminders.some(item => item.itemId === value.itemId) && !correctedTimeIds.has(value.itemId)).length;
   const floors = rendered.floors, states = rendered.states, cseChanges = rendered.cseChanges, storylines = rendered.storylines, injectionText = rendered.text;
   const skipReasons = [...(source.degradedReasons ?? [])];
-  if (historyContext.bodyCoveredFloorIds.size) skipReasons.push('coreBodyDuplicate');
+  if (historyContext.fullyCoveredMemoryCount) skipReasons.push('coreBodyDuplicate');
+  if (historyContext.partialAggregateBodyOverlap) skipReasons.push('partialAggregateBodyOverlap');
   if (!historical.length) skipReasons.push('noReliableMemoryMatch');
   if (dropPersistent) skipReasons.push('persistentStateDuplicate');
   if (!source.coverage.cseCurrent) skipReasons.push('dynamicStateCoverageIncomplete');

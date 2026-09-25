@@ -27,7 +27,7 @@ const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-
 
 export function validateQianshiDelta(input, { floorId = null, floorIds = null } = {}) {
   const value = structuredClone(input);
-  exactKeys(value, ['schemaVersion', 'status', 'reason', 'compiledAt', 'candidateStats', 'events', 'relations'], 'qianshiDelta');
+  exactKeysWithOptional(value, ['schemaVersion', 'status', 'reason', 'compiledAt', 'candidateStats', 'events', 'relations'], ['historyReview'], 'qianshiDelta');
   if (value.schemaVersion !== QIANSHI_SCHEMA_VERSION || !DELTA_STATUSES.has(value.status)) fail('qianshiDelta.status');
   if (value.reason !== null && (!clean(value.reason, 500) || value.reason.length > 500)) fail('qianshiDelta.reason');
   if (!Number.isFinite(Date.parse(value.compiledAt))) fail('qianshiDelta.compiledAt');
@@ -62,6 +62,43 @@ export function validateQianshiDelta(input, { floorId = null, floorIds = null } 
       || !uuid(relation.fromEventId) || !uuid(relation.toEventId) || relation.fromEventId === relation.toEventId
       || !['explicit', 'strong'].includes(relation.certainty)) fail(path);
     relationIds.add(relation.id);
+  }
+  if (value.historyReview !== undefined) {
+    const review = value.historyReview;
+    exactKeysWithOptional(review, ['rawFingerprint', 'priorStatus', 'priorReason', 'candidates'],
+      ['batchId', 'priorMemoryId', 'reconciliationStatus', 'reconciliationReason', 'closureBasis'], 'qianshiDelta.historyReview');
+    if (typeof review.rawFingerprint !== 'string' || !/^sha256:[0-9a-f]{64}$/iu.test(review.rawFingerprint)
+      || !['ready', 'partial'].includes(review.priorStatus) || review.priorReason !== null && (!clean(review.priorReason, 500) || review.priorReason.length > 500)
+      || !Array.isArray(review.candidates) || review.candidates.length > 160) fail('qianshiDelta.historyReview');
+    if (Object.hasOwn(review, 'batchId') && !uuid(review.batchId)
+      || Object.hasOwn(review, 'priorMemoryId') && !uuid(review.priorMemoryId)
+      || Object.hasOwn(review, 'reconciliationStatus') && !['pending', 'ready', 'partial'].includes(review.reconciliationStatus)
+      || Object.hasOwn(review, 'closureBasis') && review.closureBasis !== 'userAcceptedCurrent'
+      || Object.hasOwn(review, 'reconciliationReason') && review.reconciliationReason !== null
+        && (!clean(review.reconciliationReason, 500) || review.reconciliationReason.length > 500)
+      || review.reconciliationStatus === 'partial' && !review.reconciliationReason
+      || review.reconciliationStatus === 'ready' && review.reconciliationReason !== null
+      || review.reconciliationStatus === 'pending' && review.reconciliationReason !== null) fail('qianshiDelta.historyReview');
+    const candidateIds = new Set();
+    let reviewRelationCount = 0;
+    for (const [index, candidate] of review.candidates.entries()) {
+      const path = `qianshiDelta.historyReview.candidates[${index}]`;
+      exactKeys(candidate, ['candidateId', 'decision', 'event', 'relations', 'recommendedEventId', 'matchBasis'], path);
+      if (!uuid(candidate.candidateId) || candidateIds.has(candidate.candidateId)
+        || !['pending', 'new', 'duplicate'].includes(candidate.decision)
+        || candidate.recommendedEventId !== null && !uuid(candidate.recommendedEventId)
+        || !Array.isArray(candidate.matchBasis) || candidate.matchBasis.length > 12
+        || candidate.matchBasis.some(item => !clean(item, 200) || item.length > 200)) fail(path);
+      candidateIds.add(candidate.candidateId);
+      reviewRelationCount += candidate.relations.length;
+      if (reviewRelationCount > 320) fail('qianshiDelta.historyReview.candidates');
+      const checked = validateQianshiDelta({ schemaVersion: QIANSHI_SCHEMA_VERSION, status: 'ready', reason: null,
+        compiledAt: value.compiledAt, candidateStats: { count: 1, characters: 0 }, events: [candidate.event],
+        relations: candidate.relations }, { floorId });
+      if (checked.events[0].id !== candidate.candidateId || candidate.relations.length > 320) fail(path);
+      if (candidate.decision === 'pending' && candidate.recommendedEventId === null && candidate.matchBasis.length) fail(path);
+    }
+    if (JSON.stringify(review).length > 480000) fail('qianshiDelta.historyReview');
   }
   if (value.status === 'empty' && value.events.length || value.status === 'ready' && !value.events.length
     || value.status === 'pending' && value.events.length || value.status === 'partial' && !value.events.length) fail('qianshiDelta.status');

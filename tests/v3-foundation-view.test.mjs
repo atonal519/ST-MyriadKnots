@@ -1237,6 +1237,10 @@ test('召回区分无可靠命中与来源更新/不可用的安全跳过', () =
     assert.match(text, new RegExp(copy));
     assert.doesNotMatch(text, /聊天身份/);
   }
+  recall = { recallStatus: 'ready', activeRecall: null, lastRecallError: null,
+    lastRecall: { ...recall.lastRecall, status: 'ready', skipReasons: ['partialAggregateBodyOverlap'] } };
+  for (const listener of listeners) listener(recall);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /部分聚合摘要与当前正文来源重叠；整条材料仍参与相关性和预算筛选，可能重复，未逐成员拆分/u);
 });
 
 test('复制回执仅诊断，独立fallback不切抽屉或重绘草稿，失败阶段不冒称注入', async () => {

@@ -44,6 +44,31 @@ const qianshiCharacters = value => value?.text ? `\n\n${qianshiBlock(value)}`.le
 const QIANSHI_SHELL = '\n\n<qqj_qianshi_progress>\n\n</qqj_qianshi_progress>';
 const QIANSHI_SHELL_TOKENS = estimateRecallTokens(QIANSHI_SHELL);
 
+const exactRecallLine = value => String(value ?? '').normalize('NFKC').replace(/^\s*[-•]\s*/u, '').replace(/\s+/gu, ' ').trim();
+
+export function removeExactQianshiDuplicates(progress, selection) {
+  if (!progress?.text || !Array.isArray(progress.eventIds) || !progress.eventIds.length) return progress;
+  const recalledLines = new Set((selection?.floors ?? []).flatMap(floor => floor.items ?? [])
+    .filter(item => item.category === 'objective').map(item => exactRecallLine(item.text)).filter(Boolean));
+  if (!recalledLines.size) return progress;
+  const blocks = progress.text.split(/\n\n/u), timelineIndex = blocks.findIndex(block => block.startsWith('[相关时间线]'));
+  if (timelineIndex < 0) return progress;
+  const timelineLines = blocks[timelineIndex].split('\n'), keptRows = [], keptEventIds = [];
+  let eventIndex = 0, removed = false;
+  for (const line of timelineLines.slice(1)) {
+    if (!line.trim()) continue;
+    const eventId = progress.eventIds[eventIndex++];
+    if (eventId && recalledLines.has(exactRecallLine(line))) { removed = true; continue; }
+    keptRows.push(line);
+    if (eventId) keptEventIds.push(eventId);
+  }
+  if (!removed) return progress;
+  if (keptRows.length) blocks[timelineIndex] = ['[相关时间线]', ...keptRows].join('\n');
+  else blocks.splice(timelineIndex, 1);
+  const text = blocks.filter(Boolean).join('\n\n');
+  return Object.freeze({ ...progress, text, characterCount: text.length, eventIds: Object.freeze(keptEventIds) });
+}
+
 const diagnostic = ({ mode, metadata = null, durationMs = 0, utilityRoundTripMs = null, localSelectionMs = null, historyCandidateCount = null, stateCandidateCount = null, historyExcludedCount = null, stateExcludedCount = null, historyRetainedCount = null, stateRetainedCount = null } = {}) => {
   const api = sanitizeTaskMetadata(metadata);
   return Object.freeze({
@@ -106,13 +131,14 @@ export async function selectRecallWithLlm({
   const allCandidates = [...historyPool.candidates, ...csePool.candidates];
   const candidateCounts = { historyCandidateCount: historyPool.candidates.length, stateCandidateCount: csePool.candidates.length };
   if (!allCandidates.length) {
-    const qianshiProgress = qianshiCandidates.length ? projectCandidates([]) : source?.qianshiProgress ?? null;
+    const projectedQianshi = qianshiCandidates.length ? projectCandidates([]) : source?.qianshiProgress ?? null;
+    const qianshiProgress = projectedQianshi;
     const selection = selectRecall({ ...baseInput,
       reservedTokens: externalReservedTokens + qianshiTokens(qianshiProgress),
       reservedCharacters: externalReservedCharacters + qianshiCharacters(qianshiProgress),
       selectedHistoryCandidates: [], selectedCseCandidates: [] });
     const durationMs = Date.now() - selectorStarted;
-    return Object.freeze({ ...selection, qianshiProgress,
+    return Object.freeze({ ...selection, qianshiProgress: removeExactQianshiDuplicates(qianshiProgress, selection),
       selectorDiagnostic: diagnostic({ mode: 'local', durationMs, utilityRoundTripMs: 0, localSelectionMs: durationMs, ...candidateCounts, historyRetainedCount: 0, stateRetainedCount: 0 }) });
   }
   if (typeof generateUtilityTask !== 'function') throw Object.assign(new Error('历史智能选材服务不可用。'), { code: 'V3_RECALL_LLM_UNAVAILABLE' });
@@ -177,9 +203,10 @@ export async function selectRecallWithLlm({
     const excludedCse = stateKeys.map(key => cseByKey.get(key)).filter(Boolean);
     const retainedHistory = historyPool.candidates.filter(candidate => !historyKeys.includes(candidate.key));
     const retainedCse = csePool.candidates.filter(candidate => !stateKeys.includes(candidate.key));
-    const qianshiProgress = qianshiCandidates.length
+    const projectedQianshi = qianshiCandidates.length
       ? projectCandidates(qianshiKeys)
       : source?.qianshiProgress ?? null;
+    const qianshiProgress = projectedQianshi;
     const finalInput = { ...baseInput,
       reservedTokens: externalReservedTokens + qianshiTokens(qianshiProgress),
       reservedCharacters: externalReservedCharacters + qianshiCharacters(qianshiProgress) };
@@ -194,7 +221,7 @@ export async function selectRecallWithLlm({
     // 本地选材包含请求前的候选准备，以及回包后的解析与最终材料选择。
     return Object.freeze({
       ...selection,
-      qianshiProgress,
+      qianshiProgress: removeExactQianshiDuplicates(qianshiProgress, selection),
       selectorDiagnostic: diagnostic({
         mode: 'llm', metadata: result?.taskMetadata,
         durationMs: selectorCompleted - selectorStarted,

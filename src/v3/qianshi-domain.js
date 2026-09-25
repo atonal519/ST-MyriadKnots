@@ -11,7 +11,7 @@ export const QIANSHI_CANDIDATE_CHARACTER_BUDGET = 24000;
 export const QIANSHI_PROGRESS_CHARACTER_BUDGET = 3200;
 export const QIANSHI_HISTORY_INPUT_TOKENS = 70000;
 export const QIANSHI_HISTORY_OUTPUT_TOKENS = 30000;
-export const QIANSHI_RECALL_PROJECTION_VERSION = 3;
+export const QIANSHI_RECALL_PROJECTION_VERSION = 4;
 
 const STATUSES = new Set(['planned', 'inProgress', 'completed', 'cancelled', 'occurred', 'unknown']);
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'occurred']);
@@ -47,9 +47,12 @@ const eventNode = id => nodeId('event', id);
 const matterNode = id => nodeId('matter', id);
 const personNode = id => nodeId('person', id);
 
-function sourceTimeFor(event, floorTime) {
+const projectQianshiTime = (value, anchor = null) => projectTime(value, anchor, { allowShortGregorianYear: true });
+
+function sourceTimeFor(event, floorTime, { aggregate = false } = {}) {
+  if (aggregate) return projectQianshiTime(event.storyTime ?? '', null);
   if (!event.storyTime) return floorTime ?? projectTime('');
-  return projectTime(event.storyTime, floorTime ?? null);
+  return projectQianshiTime(event.storyTime, floorTime ?? null);
 }
 
 function comparableBefore(left, right) {
@@ -62,7 +65,7 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
   const orderGraph = new DirectedGraph({ allowSelfLoops: false });
   const progressGraph = new DirectedGraph({ allowSelfLoops: false });
   const floors = reachable?.floors ?? [];
-  const floorSeq = new Map(floors.map(floor => [floor.id, floor.assistantSeq]));
+  const floorById = new Map(floors.map(floor => [floor.id, floor]));
   const floorTimes = storyTimes((reachable?.floorMemories ?? []), floors);
   const directory = buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], identityProjection: normalizeIdentityProjection(identityProjection ?? {}) });
   const entityById = new Map(directory.map(entry => [entry.entityId, entry]));
@@ -76,10 +79,14 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
   for (const { floor, memory } of activeMemories(reachable)) {
     const delta = memory.qianshiDelta;
     if (!delta || !['ready', 'partial'].includes(delta.status)) continue;
+    const aggregate = (memory.sourceFloorIds ?? [memory.floorId]).length > 1;
     for (const raw of delta.events) {
       const eventData = structuredClone(raw);
       delete eventData.important;
-      const event = frozen({ ...eventData, floorMemoryId: memory.id, assistantSeq: floor.assistantSeq, parsedStoryTime: sourceTimeFor(raw, floorTimes.get(floor.id)) });
+      const sourceFloor = floorById.get(raw.sourceFloorId);
+      const assistantSeq = aggregate ? sourceFloor?.assistantSeq ?? null : floor.assistantSeq;
+      const event = frozen({ ...eventData, floorMemoryId: memory.id, assistantSeq,
+        parsedStoryTime: sourceTimeFor(raw, floorTimes.get(floor.id), { aggregate }) });
       if (eventById.has(event.id)) continue;
       eventById.set(event.id, event); events.push(event);
       eventMemoryFloorById.set(event.id, memory.floorId);
@@ -290,9 +297,9 @@ function recallTimelineTime(event) {
   const rangeStart = rangeSeparator ? sortableRaw.slice(0, rangeSeparator.index).trim() : sortableRaw;
   const ranged = Boolean(event.parsedStoryTime?.rangeText) || Boolean(rangeSeparator);
   const relative = isRelativeStoryTime(rangeStart);
-  const time = ranged ? rangeSeparator && rangeStart ? projectTime(rangeStart) : null
-    : relative && !event.parsedStoryTime?.date ? null
-      : relative ? event.parsedStoryTime : sortableRaw ? projectTime(sortableRaw) : event.parsedStoryTime;
+  const time = ranged ? rangeSeparator && rangeStart ? projectQianshiTime(rangeStart) : null
+      : relative && !event.parsedStoryTime?.date ? null
+      : relative ? event.parsedStoryTime : sortableRaw ? projectQianshiTime(sortableRaw) : event.parsedStoryTime;
   let era = '', monthName = '';
   if (time?.monthIdentity) try {
     const identity = JSON.parse(time.monthIdentity);
@@ -415,7 +422,7 @@ function timelineDateCopy(view, raw) {
 function timelineSegmentLabel(segment, groups) {
   if (segment.id === 'gregorian') return '公历';
   if (segment.id === 'yearless') return '年份未明';
-  if (segment.id === 'bare') return '未注明纪年';
+  if (segment.id === 'bare') return '年份已知，历法未注明';
   if (segment.id.startsWith('named:')) return clean(segment.id.slice('named:'.length), 120) || '具名纪年';
   return clean(groups[0]?.period, 120) || '独立日期段';
 }
@@ -454,9 +461,9 @@ export function projectQianshiTimeline(projection) {
     const groupKey = JSON.stringify(tuple);
     let segment = segments.get(segmentId);
     if (!segment) {
-      segment = { id: segmentId, firstIndex: eventIndex.get(event.id), groups: new Map() };
+      segment = { id: segmentId, firstIndex: eventIndex.get(event.id), hasKnownYear: Number.isInteger(view.time?.year), groups: new Map() };
       segments.set(segmentId, segment);
-    }
+    } else if (Number.isInteger(view.time?.year)) segment.hasKnownYear = true;
     let group = segment.groups.get(groupKey);
     if (!group) {
       group = { id: `qianshi-day-${segment.firstIndex}-${segment.groups.size}`, segmentId, tuple, firstIndex: eventIndex.get(event.id), ...copy, eventIds: [] };
@@ -466,7 +473,8 @@ export function projectQianshiTimeline(projection) {
   }
   for (const segment of segments.values()) for (const group of segment.groups.values()) group.eventIds.sort((leftId, rightId) =>
     compareOccurrenceTime({ view: views.get(leftId), index: eventIndex.get(leftId) }, { view: views.get(rightId), index: eventIndex.get(rightId) }));
-  const segmentList = [...segments.values()].sort((left, right) => left.firstIndex - right.firstIndex);
+  const segmentList = [...segments.values()].sort((left, right) => Number(right.hasKnownYear) - Number(left.hasKnownYear)
+    || left.firstIndex - right.firstIndex);
   const resultSegments = segmentList.map(segment => {
     // Incomparable calendars retain source order; their events are sorted only inside each calendar.
     const groups = [...segment.groups.values()].sort((left, right) => compareTuple(left.tuple, right.tuple) || left.firstIndex - right.firstIndex);
@@ -613,11 +621,9 @@ export function prepareQianshiRecallCandidates(reachable, { queryContext = null,
     candidates.push(value); lines.push(line); usedCharacters = characters;
   };
   for (const { matter } of selected.pending) {
-    const eventIds = representativeEventIds([matter.origin.eventId, ...(matter.latestEventIds ?? [])], selected.eventById);
-    add({ kind: 'pending', fact: { title: matter.title, status: matter.status, people: matter.people.map(person => person.name), object: matter.object,
-      origin: { title: matter.origin.title, description: matter.origin.description, storyTime: matter.origin.storyTime, scheduledTime: matter.origin.scheduledTime },
-      latestProgress: { title: matter.title, description: matter.description, storyTime: matter.storyTime, scheduledTime: matter.scheduledTime } },
-      eventIds: frozen(eventIds), matterIds: frozen([matter.matterId]), eventRows: frozen(rowsFor(eventIds)), pendingRows: frozen([pendingRecallRow(matter)]) });
+    const currentStatusLine = pendingRecallRow(matter).line;
+    add({ kind: 'pending', fact: { title: matter.title, status: matter.status, people: matter.people.map(person => person.name), object: matter.object, currentStatusLine },
+      eventIds: frozen([]), matterIds: frozen([matter.matterId]), eventRows: frozen([]), pendingRows: frozen([pendingRecallRow(matter)]) });
   }
   for (const { matter } of selected.directMatters) {
     const eventIds = selected.matterEventIds(matter);
@@ -646,9 +652,38 @@ export function projectQianshiCandidateSelection(candidates, { excludedKeys = []
   return renderQianshiRows([...eventRows.values()].sort((left, right) => left.order - right.order), [...pendingRows.values()], characterBudget);
 }
 
-export function prepareQianshiCandidates(reachable, { canonicalContent = '', precedingUserInput = null, characterBudget = QIANSHI_CANDIDATE_CHARACTER_BUDGET, identityProjection = null } = {}) {
+export function prepareQianshiCandidates(reachable, { canonicalContent = '', precedingUserInput = null, characterBudget = QIANSHI_CANDIDATE_CHARACTER_BUDGET,
+  identityProjection = null, includeEventContextCandidates = false } = {}) {
   const projection = projectQianshiGraph(reachable, { identityProjection });
-  return prepareQianshiCandidatesFromMatters(projection.matters, { canonicalContent, precedingUserInput, characterBudget });
+  const matters = prepareQianshiCandidatesFromMatters(projection.matters, { canonicalContent, precedingUserInput, characterBudget });
+  if (!includeEventContextCandidates) return matters;
+  const query = clean([canonicalContent, ...(precedingUserInput?.messages ?? []).map(message => message.content)].join(' '), 24000);
+  if (!query || matters.stats.characters >= characterBudget) return matters;
+  const eventCandidates = projection.events.filter(event => event.matterId === null);
+  if (!eventCandidates.length) return matters;
+  const ranked = rankRecallDocuments({ documents: eventCandidates.map(event => ({ id: event.id, text: relevanceText(event) })),
+    queries: [{ key: 'targetFloor', text: query, weight: 1 }] });
+  const ordered = new Map(ranked.map(item => [item.id, item]));
+  const request = [...matters.request], bindings = [...matters.bindings], lines = matters.request.map(value => JSON.stringify(value));
+  for (const event of eventCandidates.filter(item => (ordered.get(item.id)?.branchMatchCounts?.targetFloor ?? 0) > 0)
+    .sort((left, right) => (ordered.get(right.id)?.score ?? 0) - (ordered.get(left.id)?.score ?? 0)
+      || right.assistantSeq - left.assistantSeq || left.id.localeCompare(right.id))) {
+    const key = `candidate-${request.length + 1}`;
+    const value = { key, candidateType: 'event', title: event.title, status: event.status,
+      people: event.people.map(person => person.name), object: event.object,
+      origin: { title: event.title, description: event.description, storyTime: event.storyTime,
+        scheduledTime: event.scheduledTime, sourceAssistantSeq: event.assistantSeq },
+      latestProgress: { title: event.title, description: event.description, storyTime: event.storyTime,
+        scheduledTime: event.scheduledTime, sourceAssistantSeq: event.assistantSeq } };
+    const line = JSON.stringify(value);
+    if (lines.join('\n').length + line.length > Math.max(0, characterBudget)) continue;
+    request.push(frozen(value)); lines.push(line);
+    bindings.push(frozen({ key, matterId: null, originEventId: event.id, latestEventIds: frozen([event.id]),
+      sourceFloorId: event.sourceFloorId, sourceAssistantSeq: event.assistantSeq, latestStoryTime: event.storyTime,
+      latestScheduledTime: event.scheduledTime }));
+  }
+  return frozen({ request: frozen(request), bindings: frozen(bindings), stats: frozen({ count: request.length,
+    characters: lines.join('\n').length, budget: characterBudget }) });
 }
 
 function qianshiCandidateQuery(canonicalContent, precedingUserInput) {
@@ -674,7 +709,7 @@ function prepareQianshiCandidatesFromMatters(matters, { canonicalContent = '', p
   const request = [], bindings = [], lines = [];
   for (const { matter } of scored) {
     const key = `candidate-${request.length + 1}`;
-    const value = { key, title: matter.title, status: matter.status, people: matter.people.map(person => person.name), object: matter.object,
+    const value = { key, candidateType: 'matter', title: matter.title, status: matter.status, people: matter.people.map(person => person.name), object: matter.object,
       origin: { title: matter.origin.title, description: matter.origin.description, storyTime: matter.origin.storyTime,
         scheduledTime: matter.origin.scheduledTime, sourceAssistantSeq: matter.origin.sourceAssistantSeq },
       latestProgress: { title: matter.title, description: matter.description, storyTime: matter.storyTime,
@@ -729,20 +764,22 @@ export function createQianshiCandidateIndex({ projector = projectQianshiGraph } 
       .sort((left, right) => right.assistantSeq - left.assistantSeq || right.id.localeCompare(left.id));
     return { ...matter, _frontier: frontier, latestEventIds: frontier.map(item => item.id), eventIds: [...(matter?.eventIds ?? []), event.id] };
   };
-  function appendDelta(state, floor, memory) {
+  function appendDelta(state, floor, memory, floorSeq) {
     const delta = memory?.qianshiDelta;
     if (!delta || !['ready', 'partial'].includes(delta.status)) return true;
+    const aggregate = (memory.sourceFloorIds ?? [memory.floorId]).length > 1;
     const affected = new Set();
     for (const event of delta.events ?? []) {
       if (state.events.has(event.id)) continue;
-      const projectedEvent = { ...event, assistantSeq: floor.assistantSeq };
+      const assistantSeq = aggregate ? floorSeq.get(event.sourceFloorId) ?? null : floor.assistantSeq;
+      const projectedEvent = { ...event, assistantSeq };
       state.events.set(event.id, projectedEvent);
       if (!event.matterId || !event.updatesMatter) continue;
       const prior = state.matters.get(event.matterId);
       const current = prior ?? { matterId: event.matterId, origin: { eventId: event.id, title: event.title, description: event.description,
-        storyTime: event.storyTime, scheduledTime: event.scheduledTime, sourceFloorId: event.sourceFloorId, sourceAssistantSeq: floor.assistantSeq },
+        storyTime: event.storyTime, scheduledTime: event.scheduledTime, sourceFloorId: event.sourceFloorId, sourceAssistantSeq: assistantSeq },
         people: [], latestEventIds: [], eventIds: [], _frontier: [] };
-      state.matters.set(event.matterId, addFrontierEvent(current, event, floor.assistantSeq));
+      state.matters.set(event.matterId, addFrontierEvent(current, projectedEvent, assistantSeq));
       affected.add(event.matterId);
     }
     for (const relation of delta.relations ?? []) {
@@ -814,7 +851,7 @@ export function createQianshiCandidateIndex({ projector = projectQianshiGraph } 
             snapshot = null;
             return this.prepare(reachable, options);
           }
-          if (memoryId && !appendDelta(snapshot, floor, memoryById.get(memoryId))) {
+          if (memoryId && !appendDelta(snapshot, floor, memoryById.get(memoryId), new Map(reachable.floors.map(item => [item.id, item.assistantSeq])))) {
             snapshot = null;
             return this.prepare(reachable, options);
           }
@@ -865,6 +902,13 @@ export async function compileQianshiDelta({ packet, floor, sourceFloorBindings =
   const local = new Map();
   const events = [], relations = [], issues = [];
   const resolvePerson = personDirectory(entities, identityProjection);
+  const eventCompileIssue = (index, error) => {
+    const number = index + 1;
+    if (error?.code === 'QIANSHI_EVENT_KEY_DUPLICATE') return `第 ${number} 件事件的内部标识与前面重复，未保存。`;
+    if (error?.code === 'QIANSHI_EVENT_SOURCE_FLOOR_INVALID') return `第 ${number} 件事件无法对应到原文楼层，未保存。`;
+    if (error?.code === 'QIANSHI_EVENT_INVALID') return `第 ${number} 件事件缺少有效标题或说明，未保存。`;
+    return `第 ${number} 件事件未能完成本地整理，原条目未保存。`;
+  };
   for (const [index, raw] of qianshi.events.slice(0, 160).entries()) {
     try {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw qianshiError('QIANSHI_EVENT_INVALID', `events[${index}]`);
@@ -878,26 +922,30 @@ export async function compileQianshiDelta({ packet, floor, sourceFloorBindings =
       const rawLinks = list(raw.links).map(link => ({ candidateKey: keyText(link?.candidateKey ?? link?.candidate), kind: link?.kind === 'context' ? 'context' : 'progress' }));
       if (!rawLinks.length) for (const candidateKey of list(raw.continues ?? raw.continuesCandidates ?? raw.relatedCandidates).map(keyText).filter(Boolean)) rawLinks.push({ candidateKey, kind: 'progress' });
       const resolvedLinks = rawLinks.map(link => ({ ...link, candidate: candidateByKey.get(link.candidateKey) })).filter(link => link.candidate);
-      if (rawLinks.length !== resolvedLinks.length) issues.push(`事件 ${index + 1} 含无效旧事项候选引用。`);
+      const invalidReference = rawLinks.length !== resolvedLinks.length;
+      if (invalidReference) issues.push(`事件 ${index + 1} 含无效旧事项候选引用。`);
       const matterIds = [...new Set(resolvedLinks.map(item => item.candidate.matterId))];
       if (matterIds.length > 1) { issues.push(`事件 ${index + 1} 同时引用多个旧事项，已按独立事件保存。`); resolvedLinks.length = 0; }
       const id = await deterministicUuid(['qianshi-event-v1', sourceFloorId, localKey, title, description, status]);
       const storyTime = clean(raw.storyTime ?? raw.occurredAt, 500) || null;
       const link = resolvedLinks[0] ?? null;
+      const invalidProgress = link?.kind === 'progress' && !link.candidate.matterId;
+      if (invalidProgress) issues.push(`事件 ${index + 1} 将一次性事件当作持续事项的进展；应改为背景关联或补充先后顺序。`);
       const backdated = link?.kind === 'progress' && storyTime && link.candidate.latestStoryTime
         && comparableBefore(projectTime(storyTime), projectTime(link.candidate.latestStoryTime));
-      const updatesMatter = link ? link.kind === 'progress' && !backdated : raw.matter === true || ['planned', 'inProgress'].includes(status);
-      const matterId = link?.candidate.matterId ?? (updatesMatter ? await deterministicUuid(['qianshi-matter-v1', id, clean(raw.object, 1000), title]) : null);
+      const invalidLink = invalidReference || invalidProgress;
+      const updatesMatter = invalidLink ? false : link ? link.kind === 'progress' && !backdated : raw.matter === true || ['planned', 'inProgress'].includes(status);
+      const matterId = invalidLink ? null : link?.candidate.matterId ?? (updatesMatter ? await deterministicUuid(['qianshi-matter-v1', id, clean(raw.object, 1000), title]) : null);
       const people = [...new Set(list(raw.people ?? raw.participants).map(value => clean(typeof value === 'string' ? value : value?.name, 500)).filter(Boolean))]
         .map(name => ({ entityId: resolvePerson(name), name }));
       const event = { id, matterId, updatesMatter, title, description, status, storyTime,
         scheduledTime: clean(raw.scheduledTime ?? raw.expectedAt ?? raw.dueTime, 500) || null, people, object: clean(raw.object ?? raw.subject, 1000) || null,
-        sourceFloorId, continuesFromEventIds: [...new Set(resolvedLinks.flatMap(item => item.candidate.latestEventIds ?? []))] };
+        sourceFloorId, continuesFromEventIds: invalidLink ? [] : [...new Set(resolvedLinks.flatMap(item => item.candidate.latestEventIds ?? []))] };
       events.push(event); local.set(localKey, event);
       if (Array.isArray(compiledBindings)) compiledBindings.push(Object.freeze({ localKey, event: Object.freeze({ ...event }) }));
       if (updatesMatter && link?.kind === 'progress') for (const priorEventId of event.continuesFromEventIds) relations.push({ id: await deterministicUuid(['qianshi-relation-v1', 'progress', priorEventId, id]), type: 'progress', fromEventId: priorEventId, toEventId: id, certainty: 'explicit' });
     } catch (error) {
-      issues.push(clean(error?.validationPath || error?.message || `事件 ${index + 1} 无效`, 300));
+      issues.push(eventCompileIssue(index, error));
     }
   }
   const resolveEventRef = value => {
