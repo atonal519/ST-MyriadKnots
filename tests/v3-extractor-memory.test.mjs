@@ -7256,6 +7256,181 @@ test('旧 partial 有事件按已存档冷读，正文普通编辑后不回算�
   assert.equal((await coldHarness.runtime.prepareQianshiHistory()).status, 'empty', '刷新后的旧档仍跳过历史补齐');
 });
 
+test('千事文字编辑只改标题和经过，保留楼档其他字段、事件身份与后楼关系', async () => {
+  const utility = options => {
+    const request = JSON.parse(options.taskMessages[0].content);
+    if (request.task !== 'extractFloorSemantics') return { jsonData: { noMaterialChange: true } };
+    return { jsonData: { summary: '两件事情的简短摘要。', qianshi: { events: [
+      { key: 'start', title: '找到旧信', description: '林岚在桌上找到旧信。', status: 'occurred', matter: false },
+      { key: 'read', title: '读完旧信', description: '林岚读完旧信并收好。', status: 'occurred', matter: false },
+    ], order: [{ before: 'start', after: 'read' }] } } };
+  };
+  const h = harness({ modernAnchors: true, initialChat: [user('开始'), assistant('林岚找到并读完一封旧信。'), user('稳定')], utility });
+  await h.runtime.start();
+  const floor = h.runtime.getState().floors[0];
+  await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  const beforeGraph = await h.store.readReachable({ mode: 'runtime' });
+  const beforeMemory = beforeGraph.floorMemories.find(value => value.floorId === floor.floorId);
+  const event = beforeMemory.qianshiDelta.events[0], originalId = beforeMemory.id;
+  const originalRelations = structuredClone(beforeMemory.qianshiDelta.relations);
+  const baseline = structuredClone(beforeMemory);
+  assert.equal(h.runtime.canEditQianshiEventText(event.id), true);
+  const sourceStateFloor = h.runtime.getState().floors[0], editedMessage = h.context.chat[sourceStateFloor.messageIndex];
+  editedMessage.extra = { qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: sourceStateFloor.floorId } };
+  editedMessage.mes = '林岚找到并读完一封旧信，后来又确认信封来历。';
+  if (editedMessage.swipes?.length) editedMessage.swipes[0] = editedMessage.mes;
+  h.emit('MESSAGE_EDITED', sourceStateFloor.messageIndex);
+  assert.equal((await h.foundationRuntime.refreshStatus()).status, 'ready', '正文编辑后的真实地基已稳定');
+  await waitFor(() => h.runtime.getState().memorySyncStatus !== 'syncing' && h.runtime.getQianshiSnapshot().status === 'ready');
+  const afterBodyEdit = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(afterBodyEdit.floorMemories.find(value => value.floorId === floor.floorId).id, originalId,
+    '正文普通编辑并稳定后，已有正式千事档案仍可用');
+  await h.runtime.editQianshiEventText({ eventId: event.id, expected: { memoryId: beforeMemory.id, title: event.title, description: event.description }, title: '找到信封', description: '林岚从桌上拿起信封并拆开。' });
+  const afterGraph = await h.store.readReachable({ mode: 'runtime' });
+  const afterMemory = afterGraph.floorMemories.find(value => value.floorId === floor.floorId);
+  assert.notEqual(afterMemory.id, originalId);
+  assert.equal(afterMemory.supersedes, originalId);
+  const comparable = structuredClone(afterMemory);
+  comparable.id = baseline.id; comparable.updatedAt = baseline.updatedAt; comparable.supersedes = baseline.supersedes;
+  const edited = comparable.qianshiDelta.events.find(value => value.id === event.id);
+  edited.title = event.title; edited.description = event.description;
+  assert.deepEqual(comparable, baseline, '除 revision 头字段及目标事件两段文字外，FloorMemory 字段逐项不变');
+  const savedEvent = afterMemory.qianshiDelta.events.find(value => value.id === event.id);
+  assert.equal(savedEvent.sourceFloorId, event.sourceFloorId);
+  assert.deepEqual(afterMemory.qianshiDelta.relations, originalRelations);
+  assert.deepEqual(h.runtime.getQianshiSnapshot().relations.map(({ id, fromEventId, toEventId }) => ({ id, fromEventId, toEventId })),
+    originalRelations.map(({ id, fromEventId, toEventId }) => ({ id, fromEventId, toEventId })), '原有关系端点仍在图中');
+  const nextCandidates = prepareQianshiCandidates(afterGraph, { canonicalContent: '信封', includeEventContextCandidates: true });
+  const nextCandidate = nextCandidates.request.find(value => value.candidateType === 'event' && value.title === '找到信封');
+  assert.equal(nextCandidate?.origin.description, '林岚从桌上拿起信封并拆开。', '下一轮千事候选输入读到新经过');
+  assert.equal(nextCandidates.request.some(value => value.title === '找到旧信'), false);
+  await assert.rejects(h.runtime.editQianshiEventText({ eventId: event.id, expected: { memoryId: afterMemory.id, title: '旧基线', description: savedEvent.description }, title: '覆盖', description: '不应写入' }), { code: 'QIANSHI_TEXT_EDIT_BASELINE_CHANGED' });
+  const afterStaleAttempt = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(afterStaleAttempt.floorMemories.find(value => value.floorId === floor.floorId).qianshiDelta.events.find(value => value.id === event.id).title, '找到信封');
+  assert.equal(h.calls.filter(options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics').length, 1, '编辑不调用模型');
+});
+
+test('千事文字编辑在目标档案发生并发 revision 后拒绝旧草稿', async () => {
+  const utility = options => {
+    const request = JSON.parse(options.taskMessages[0].content);
+    if (request.task !== 'extractFloorSemantics') return { jsonData: { noMaterialChange: true } };
+    return { jsonData: { summary: '摘要。', qianshi: { events: [
+      { key: 'fact', title: '旧事实', description: '原始经过。', status: 'occurred', matter: false },
+    ], order: [] } } };
+  };
+  const h = harness({ initialChat: [user('开始'), assistant('旧事实。'), user('稳定')], utility });
+  await h.runtime.start();
+  const floor = h.runtime.getState().floors[0];
+  await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  const memory = (await h.store.readReachable({ mode: 'runtime' })).floorMemories.find(value => value.floorId === floor.floorId);
+  const event = memory.qianshiDelta.events[0];
+  const competitor = harness({ sharedBackend: h.backend, sharedContext: h.context, utility });
+  await competitor.runtime.start();
+  const gate = h.backend.holdNextRootPut();
+  const pendingEdit = h.runtime.editQianshiEventText({ eventId: event.id, expected: { memoryId: memory.id, title: event.title, description: event.description }, title: '迟到草稿', description: '过期修改。' });
+  await gate.started;
+  await competitor.runtime.editSummary(floor.floorId, '并发摘要修订。');
+  gate.release();
+  await assert.rejects(pendingEdit, { code: 'QIANSHI_TEXT_EDIT_TARGET_CHANGED' });
+  const after = await h.store.readReachable({ mode: 'runtime' });
+  const saved = after.floorMemories.find(value => value.floorId === floor.floorId);
+  assert.equal(saved.qianshiDelta.events[0].title, '旧事实');
+  assert.equal(saved.summary.userText, '并发摘要修订。');
+});
+
+test('聚合楼千事编辑保留成员来源，成员原文离开当前分支后拒绝保存', async () => {
+  const utility = options => {
+    const request = JSON.parse(options.taskMessages[0].content);
+    if (request.task !== 'extractFloorSemantics') return { jsonData: { noMaterialChange: true } };
+    return { jsonData: { summary: '聚合摘要。', qianshi: { events: [
+      { key: 'member-event', title: '早楼找到徽章', description: '早楼原始经过。', status: 'occurred', matter: false },
+    ], order: [] } } };
+  };
+  const h = harness({ modernAnchors: true, initialChat: [user('开始'), assistant('第一楼是徽章来源。'), user('继续'), assistant('第二楼汇总前情。'), user('稳定')], utility });
+  await h.runtime.start();
+  const [memberFloor, targetFloor] = h.runtime.getState().floors;
+  await h.runtime.extractFloor(targetFloor.floorId, { analyzeState: false });
+  const sourceGraph = await h.store.readReachable({ mode: 'runtime' });
+  const target = sourceGraph.floorMemories.find(value => value.floorId === targetFloor.floorId);
+  const sourceFloors = [memberFloor, targetFloor].map(value => sourceGraph.floors.find(floor => floor.id === value.floorId));
+  const recordKey = `chat-${CHAT}/v3-floor-memory-${target.id}`, stored = h.backend.records.get(recordKey);
+  const aggregate = validateFloorMemory({ ...target, sourceFloorIds: [memberFloor.floorId, targetFloor.floorId],
+    sourceFloorSnapshots: sourceFloors.map(floor => ({ floorId: floor.id, canonicalContent: floor.content.canonicalContent,
+      sourceUserInputSnapshot: structuredClone(target.sourceUserInputSnapshot), rawFingerprint: floor.content.rawFingerprint, storyClockSignature: '' })),
+    qianshiDelta: { ...target.qianshiDelta, events: target.qianshiDelta.events.map(event => ({ ...event, sourceFloorId: memberFloor.floorId })) },
+  }, { expectedChatId: CHAT });
+  h.backend.records.set(recordKey, { ...stored, data: aggregate });
+  const cold = harness({ sharedBackend: h.backend, sharedContext: h.context, utility });
+  await cold.runtime.start();
+  const memberIndex = sourceFloors[0].hostLocator.messageIndex, memberMessage = h.context.chat[memberIndex];
+  memberMessage.extra = { qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: memberFloor.floorId } };
+  memberMessage.mes = '第一楼原文编辑后确认仍是徽章线索。';
+  if (memberMessage.swipes?.length) memberMessage.swipes[0] = memberMessage.mes;
+  cold.emit('MESSAGE_EDITED', memberIndex);
+  assert.equal((await cold.foundationRuntime.refreshStatus()).status, 'ready', '聚合成员正文编辑后的真实地基已稳定');
+  await waitFor(() => cold.runtime.getState().memorySyncStatus !== 'syncing' && cold.runtime.getQianshiSnapshot().status === 'ready');
+  const event = cold.runtime.getQianshiSnapshot().events.find(value => value.id === target.qianshiDelta.events[0].id);
+  assert.equal(event.sourceFloorId, memberFloor.floorId);
+  await cold.runtime.editQianshiEventText({ eventId: event.id, expected: { memoryId: target.id, title: event.title, description: event.description }, title: '调整文字', description: '来源仍是第一楼。' });
+  const saved = await cold.store.readReachable({ mode: 'runtime' });
+  const savedMemory = saved.floorMemories.find(value => value.floorId === targetFloor.floorId);
+  assert.deepEqual(savedMemory.sourceFloorIds, [memberFloor.floorId, targetFloor.floorId]);
+  assert.equal(savedMemory.qianshiDelta.events[0].sourceFloorId, memberFloor.floorId);
+  assert.equal(savedMemory.qianshiDelta.events[0].title, '调整文字');
+  const savedEvent = savedMemory.qianshiDelta.events[0];
+  const sourceIndex = sourceFloors[0].hostLocator.messageIndex, changedMember = h.context.chat[sourceIndex];
+  cold.backend.setBeforePut(async ({ collection, key, data }) => {
+    if (collection !== `chat-${CHAT}` || !key.startsWith('v3-floor-memory-') || data.qianshiDelta?.events?.[0]?.title !== '不应覆盖') return;
+    changedMember.mes = '第一楼原文再次编辑，徽章事实已移除。';
+    if (changedMember.swipes?.length) changedMember.swipes[0] = changedMember.mes;
+    cold.backend.setBeforePut(null);
+  });
+  const revisionBeforeReject = saved.rootRevision;
+  await assert.rejects(cold.runtime.editQianshiEventText({ eventId: savedEvent.id,
+    expected: { memoryId: savedMemory.id, title: savedEvent.title, description: savedEvent.description }, title: '不应覆盖', description: '来源失效。' }),
+  { code: 'QIANSHI_TEXT_EDIT_SOURCE_CHANGED' });
+  const afterRejected = await cold.store.readReachable({ mode: 'runtime' });
+  assert.equal(afterRejected.rootRevision, revisionBeforeReject);
+  assert.equal(afterRejected.floorMemories.find(value => value.floorId === targetFloor.floorId).qianshiDelta.events[0].title, '调整文字');
+});
+
+test('正式事件仍与带关系的旧审核候选完全同签名时，文字编辑明确拒绝且不提交 revision', async () => {
+  const utility = options => {
+    const request = JSON.parse(options.taskMessages[0].content);
+    if (request.task !== 'extractFloorSemantics') return { jsonData: { noMaterialChange: true } };
+    return { jsonData: { summary: '摘要。', qianshi: { events: [
+      { key: 'first', title: '先找到地图', description: '原文：找到地图。', status: 'occurred', matter: false },
+      { key: 'second', title: '再读地图', description: '后来读地图。', status: 'occurred', matter: false },
+    ], order: [] } } };
+  };
+  const h = harness({ initialChat: [user('开始'), assistant('先后发现并阅读地图。'), user('稳定')], utility });
+  await h.runtime.start();
+  const floor = h.runtime.getState().floors[0];
+  await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  const before = (await h.store.readReachable({ mode: 'runtime' })).floorMemories.find(value => value.floorId === floor.floorId);
+  const event = before.qianshiDelta.events[0], original = structuredClone(before);
+  const stored = h.backend.records.get(`chat-${CHAT}/v3-floor-memory-${before.id}`);
+  const withReview = validateFloorMemory({ ...before, qianshiDelta: { ...before.qianshiDelta, historyReview: {
+    rawFingerprint: before.sourceRawFingerprint, priorStatus: 'ready', priorReason: null,
+    candidates: [{ candidateId: event.id, decision: 'pending', event: structuredClone(event), relations: [{
+      id: '11111111-1111-4111-8111-111111111111', type: 'before', fromEventId: event.id,
+      toEventId: before.qianshiDelta.events[1].id, certainty: 'explicit',
+    }], recommendedEventId: null, matchBasis: [] }],
+  } } }, { expectedChatId: CHAT });
+  h.backend.records.set(`chat-${CHAT}/v3-floor-memory-${before.id}`, { ...stored, data: withReview });
+  const cold = harness({ sharedBackend: h.backend, sharedContext: h.context, utility });
+  await cold.runtime.start();
+  const latestGraph = await cold.store.readReachable({ mode: 'runtime' });
+  const latest = latestGraph.floorMemories.find(value => value.floorId === floor.floorId);
+  await assert.rejects(cold.runtime.editQianshiEventText({ eventId: event.id,
+    expected: { memoryId: latest.id, title: event.title, description: event.description }, title: '更改标题', description: '修改经过。' }),
+  { code: 'QIANSHI_TEXT_EDIT_RELATION_CONFLICT' });
+  const after = await cold.store.readReachable({ mode: 'runtime' });
+  assert.equal(after.rootRevision, latestGraph.rootRevision);
+  assert.deepEqual(after.floorMemories.find(value => value.floorId === floor.floorId), latest);
+  assert.notEqual(JSON.stringify(original), JSON.stringify(latest), 'fixture确实包含旧审核候选');
+});
+
 test('旧 pending 草稿冷读进入千事覆盖与召回，并跳过历史补齐', async () => {
   const utility = options => {
     const request = JSON.parse(options.taskMessages[0].content);

@@ -7,8 +7,8 @@ import { compileQianshiDelta, projectQianshiGraph, projectQianshiTimeline, publi
 
 class Node {
   constructor(tag = 'div') { this.tag = tag; this.children = []; this.listeners = {}; this.attributes = {}; this.dataset = {}; this.className = ''; this.textContent = ''; this.hidden = false; this.open = false; this.disabled = false; this.value = ''; this.scrollTop = 0; }
-  append(...nodes) { this.children.push(...nodes); }
-  replaceChildren(...nodes) { this.children = [...nodes]; }
+  append(...nodes) { for (const node of nodes) if (node && typeof node === 'object') node.parent = this; this.children.push(...nodes); }
+  replaceChildren(...nodes) { for (const node of nodes) if (node && typeof node === 'object') node.parent = this; this.children = [...nodes]; }
   addEventListener(name, listener) { this.listeners[name] = listener; }
   fire(name, event = {}) { return this.listeners[name]?.(event); }
   setAttribute(name, value) { this.attributes[name] = String(value); }
@@ -27,7 +27,7 @@ function fixture() {
     id: `event-${index + 1}`, matterId: 'matter-1', updatesMatter: index !== 1, title: index === 0 ? '取得旧信' : `旧信进展 ${index + 1}`,
     description: index === 0 ? '这是完整说明正文，不是另造的第二份详情。' : `完整经过 ${index + 1}`,
     status: index === 6 ? 'completed' : index ? 'inProgress' : 'planned', storyTime: `2026-07-${String(index + 1).padStart(2, '0')} 10:00`,
-    scheduledTime: index === 0 ? '2026-07-09' : null, people: [{ entityId: 'person', name: index === 0 ? '沈棠' : '闻舟' }], object: '旧信', sourceMessageIndex: 12 + index,
+    scheduledTime: index === 0 ? '2026-07-09' : null, people: [{ entityId: 'person', name: index === 0 ? '沈棠' : '闻舟' }], object: '旧信', sourceFloorMemoryId: `memory-${index + 1}`, sourceMessageIndex: 12 + index,
   }));
   events.push({ id: 'undated', matterId: null, updatesMatter: false, title: '无日期回忆', description: '后来提及但没有可靠日期。', status: 'occurred', storyTime: null, scheduledTime: null, people: [{ entityId: 'other', name: '旧友' }], object: null, sourceMessageIndex: 30 });
   return { status: 'ready', identity: { qqjChatId: 'chat-a' }, coverage: { eligibleFloors: 9, completeFloors: 7, pendingFloors: 2, partialFloors: 0, degradedFloors: 0, unavailableFloors: 0 },
@@ -36,19 +36,197 @@ function fixture() {
     history: { status: 'idle', processedFloors: 0, totalFloors: 0, calls: 0, message: '' } };
 }
 
-function harness({ confirm = false, choose = null, initialSnapshot = fixture(), plan = null, startResult = { status: 'completed', message: '' } } = {}) {
+function harness({ confirm = false, choose = null, initialSnapshot = fixture(), plan = null, startResult = { status: 'completed', message: '' }, canEdit = true, editText = null } = {}) {
   let snapshot = structuredClone(initialSnapshot), state = { status: 'ready', memoryWorkBusy: false, qianshiHistoryActive: false }, prepareCalls = 0, startCalls = 0;
   const listeners = new Set(), confirms = [];
   const runtime = { getState: () => state, getQianshiSnapshot: () => structuredClone(snapshot), subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    canEditQianshiEventText(id) { return typeof canEdit === 'function' ? canEdit(id) : canEdit; },
+    _setEventText(id, title, description) { const event = snapshot.events.find(item => item.id === id); event.title = title; event.description = description; for (const listener of listeners) listener(state); },
+    async editQianshiEventText(input) { if (editText) return editText(input); runtime._setEventText(input.eventId, input.title, input.description); return { status: 'saved' }; },
     async prepareQianshiHistory() { prepareCalls += 1; return { status: 'ready', planId: 'plan', totalFloors: 2, batchCount: 1, apiCalls: 1, modelFloors: 2, estimatedInputTokens: 900, unavailableFloors: [], ...(plan ?? {}) }; },
     async startQianshiHistory() { startCalls += 1; if (typeof startResult === 'function') return startResult({ setHistory(history) { snapshot.history = history; for (const listener of listeners) listener(state); } }); snapshot.history = { ...snapshot.history, ...startResult }; for (const listener of listeners) listener(state); return startResult; },
     async stopQianshiHistory() { return { status: 'stopped' }; } };
-  const documentRef = { createElement: tag => new Node(tag), defaultView: { matchMedia: () => ({ matches: false }) } };
+  const documentRef = { listeners: {}, createElement: tag => new Node(tag), defaultView: { matchMedia: () => ({ matches: false }) },
+    addEventListener(name, listener) { this.listeners[name] = listener; }, removeEventListener(name) { delete this.listeners[name]; },
+    fire(name, event) { return this.listeners[name]?.(event); } };
   const view = createQianshiTimelineView({ runtime, documentRef, dialog: { async confirm(options) { confirms.push(options); return typeof confirm === 'function' ? confirm(options) : confirm; },
     async choose(options) { confirms.push(options); return typeof choose === 'function' ? choose(options) : choose; } } });
   const container = new Node('main'); view.mount(container);
   return { view, container, runtime, documentRef, confirms, calls: () => ({ prepareCalls, startCalls }), emit(nextSnapshot = snapshot, nextState = state) { snapshot = nextSnapshot; state = nextState; for (const listener of listeners) listener(state); } };
 }
+
+test('折叠事件右侧菜单可打开编辑，取消和无变化都不写入', async () => {
+  let writes = 0, submitted = null;
+  const h = harness({ editText: async input => { writes += 1; submitted = input; return { status: 'saved' }; } });
+  const first = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  assert.equal(first.open, false);
+  let menu = flatten(first.parent).find(node => node.className.includes('qqj-qianshi-event-menu'));
+  assert.ok(menu, '折叠行上仍有事件菜单');
+  assert.equal(menu.parent.className, 'qqj-qianshi-event-row');
+  assert.equal(first.parent, menu.parent, '事件 details 和菜单是可见 wrapper 的兄弟');
+  assert.equal(first.contains(menu), false, '关闭 details 不会隐藏菜单');
+  const summary = flatten(first).find(node => node.tag === 'summary');
+  assert.equal(summary.contains(menu), false, '菜单不在事件展开 summary 子树中');
+  byText(menu, '⋮').fire('click');
+  assert.equal(first.open, false, '点击三点按钮不会触发事件展开');
+  menu.open = true;
+  let edit = byText(menu, '编辑详情');
+  assert.ok(edit); edit.fire('click');
+  let card = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  assert.equal(card.open, true, '选择编辑后自动展开事件');
+  let form = flatten(card).find(node => node.className === 'qqj-qianshi-text-form');
+  assert.equal(form.querySelector('.qqj-qianshi-title-input').value, '取得旧信');
+  byText(form, '取消').fire('click');
+  assert.equal(writes, 0);
+  card = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  menu = flatten(card.parent).find(node => node.className.includes('qqj-qianshi-event-menu'));
+  byText(menu, '编辑详情').fire('click');
+  card = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  form = flatten(card).find(node => node.className === 'qqj-qianshi-text-form');
+  assert.equal(form.querySelector('.qqj-qianshi-title-input').value, '取得旧信');
+  assert.equal(form.querySelector('.qqj-qianshi-description-input').value, '这是完整说明正文，不是另造的第二份详情。');
+  await form.fire('submit', { preventDefault() {} });
+  assert.equal(writes, 0, `不变更字段不创建 revision: ${JSON.stringify(submitted)}`);
+  assert.match(copy(h.container), /内容没有变化，没有写入新版本/u);
+});
+
+test('文字编辑保留失败草稿和错误，成功后刷新年表文字', async () => {
+  let fail = true, writes = 0;
+  const h = harness({ editText: async input => {
+    writes += 1;
+    if (fail) throw new Error('临时拒绝保存');
+    h.runtime._setEventText(input.eventId, input.title, input.description);
+    return { status: 'saved' };
+  } });
+  const first = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  const menu = flatten(first.parent).find(node => node.className.includes('qqj-qianshi-event-menu'));
+  byText(menu, '编辑详情').fire('click');
+  let form = flatten(flatten(h.container).find(node => node.dataset.eventId === 'event-1')).find(node => node.className === 'qqj-qianshi-text-form');
+  const title = form.querySelector('.qqj-qianshi-title-input'); title.value = '新标题'; title.fire('input', { target: title });
+  const description = form.querySelector('.qqj-qianshi-description-input'); description.value = '新经过'; description.fire('input', { target: description });
+  await form.fire('submit', { preventDefault() {} });
+  form = flatten(flatten(h.container).find(node => node.dataset.eventId === 'event-1')).find(node => node.className === 'qqj-qianshi-text-form');
+  assert.equal(form.querySelector('.qqj-qianshi-title-input').value, '新标题');
+  assert.equal(form.querySelector('.qqj-qianshi-description-input').value, '新经过');
+  assert.match(copy(form), /临时拒绝保存/u);
+  assert.equal(writes, 1);
+  fail = false;
+  await form.fire('submit', { preventDefault() {} });
+  assert.equal(writes, 2);
+  const updated = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  assert.match(copy(updated), /新标题.*新经过/u);
+  assert.match(copy(h.container), /事件文字已保存/u);
+});
+
+test('空文字显示错误，审核候选不提供编辑入口', async () => {
+  let writes = 0;
+  const h = harness({ canEdit: id => id !== 'event-1', editText: async () => { writes += 1; } });
+  const first = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  assert.equal(flatten(first.parent).some(node => node.className.includes('qqj-qianshi-event-menu')), false, 'review-only event has no menu');
+  h.runtime.canEditQianshiEventText = id => id === 'event-1';
+  h.emit();
+  const refreshed = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  byText(flatten(refreshed.parent).find(node => node.className.includes('qqj-qianshi-event-menu')), '编辑详情').fire('click');
+  const editedCard = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  let form = flatten(editedCard).find(node => node.className === 'qqj-qianshi-text-form');
+  const title = form.querySelector('.qqj-qianshi-title-input'); title.value = '  '; title.fire('input', { target: title });
+  await form.fire('submit', { preventDefault() {} });
+  assert.match(copy(flatten(h.container).find(node => node.dataset.eventId === 'event-1')), /都不能为空/u);
+  assert.equal(writes, 0);
+});
+
+test('同日代表事件仅顶层有菜单，其余事件各有内层菜单且事项重复展示只读', () => {
+  const grouped = fixture();
+  grouped.timeline.segments[0].groups[0].eventIds = ['event-1', 'event-2', 'event-3'];
+  const h = harness({ initialSnapshot: grouped });
+  let card = flatten(h.container).find(node => node.dataset.cardId === 'day-1:matter-1');
+  assert.equal(flatten(card.parent).filter(node => node.className.includes('qqj-qianshi-event-menu')).length, 1, '折叠卡片的代表事件仅有一个顶层菜单');
+  const representativeMenu = flatten(card.parent).find(node => node.className.includes('qqj-qianshi-event-menu'));
+  assert.equal(representativeMenu.dataset.qianshiEventId, 'event-3');
+  card.open = true; card.fire('toggle');
+  const rows = flatten(card).filter(node => node.className.includes('qqj-qianshi-matter-event'));
+  assert.equal(rows.length, 3);
+  assert.deepEqual(rows.map(row => flatten(row.parent).filter(node => node.className.includes('qqj-qianshi-event-menu')).length), [1, 1, 0]);
+  for (const row of rows) {
+    const rowMenu = flatten(row.parent).find(node => node.className.includes('qqj-qianshi-event-menu'));
+    if (rowMenu) assert.equal(row.contains(rowMenu), false, '同日关闭 details 不包含菜单');
+  }
+  assert.equal(flatten(card.parent).filter(node => node.className.includes('qqj-qianshi-event-menu')).length, 3, '代表只在顶层一次，其余事件各自一份');
+  const matter = flatten(card).find(node => node.className === 'qqj-qianshi-matter');
+  matter.open = true; matter.fire('toggle');
+  assert.equal(flatten(matter).filter(node => node.className.includes('qqj-qianshi-event-menu')).length, 0, '事项链重复展示不添加菜单');
+
+  const inner = harness({ initialSnapshot: grouped });
+  card = flatten(inner.container).find(node => node.dataset.cardId === 'day-1:matter-1');
+  card.open = true; card.fire('toggle');
+  const innerRow = flatten(card).find(node => node.dataset.qianshiEventId === 'event-2');
+  byText(flatten(innerRow.parent).find(node => node.className.includes('qqj-qianshi-event-menu')), '编辑详情').fire('click');
+  card = flatten(inner.container).find(node => node.dataset.cardId === 'day-1:matter-1');
+  const editedRow = flatten(card).find(node => node.dataset.qianshiEventId === 'event-2');
+  assert.ok(editedRow.open, '内层菜单自动展开对应事件');
+  assert.equal(flatten(editedRow).find(node => node.className === 'qqj-qianshi-text-form')?.querySelector('.qqj-qianshi-title-input').value, '旧信进展 2');
+
+  const topLevel = harness({ initialSnapshot: grouped });
+  card = flatten(topLevel.container).find(node => node.dataset.cardId === 'day-1:matter-1');
+  const topMenu = flatten(card.parent).find(node => node.className.includes('qqj-qianshi-event-menu'));
+  byText(topMenu, '编辑详情').fire('click');
+  card = flatten(topLevel.container).find(node => node.dataset.cardId === 'day-1:matter-1');
+  const editedRepresentative = flatten(card).find(node => node.dataset.eventId === 'event-3');
+  assert.ok(editedRepresentative.open, '顶层菜单自动展开代表事件');
+  assert.equal(flatten(editedRepresentative).find(node => node.className === 'qqj-qianshi-text-form')?.querySelector('.qqj-qianshi-title-input').value, '旧信进展 3');
+});
+
+test('事件菜单支持外点关闭并在离开页面时清除文档监听', () => {
+  const h = harness();
+  const event = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  const menu = flatten(event.parent).find(node => node.className.includes('qqj-qianshi-event-menu'));
+  assert.equal(typeof h.documentRef.listeners.click, 'function');
+  menu.open = true;
+  const inside = byText(menu, '⋮');
+  h.documentRef.fire('click', { target: inside, composedPath: () => [inside, menu, event] });
+  assert.equal(menu.open, true, '点菜单内部不关闭当前菜单');
+  const outside = new Node('button');
+  h.documentRef.fire('click', { target: outside, composedPath: () => [outside] });
+  assert.equal(menu.open, false, '点到菜单外关闭');
+  h.view.deactivate();
+  assert.equal(h.documentRef.listeners.click, undefined, '离开页面后解除全局 click 监听');
+});
+
+test('右侧菜单在窄事件栏保留标题空间，内层浮层父级不裁切', () => {
+  const css = readFileSync(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
+  assert.match(css, /\.qqj-qianshi-event-menu\{position:absolute;[^}]*right:0/u);
+  assert.match(css, /\.qqj-qianshi-event-row,\.qqj-qianshi-day-event-row\{position:relative/u);
+  assert.match(css, /\.qqj-qianshi-event>summary\{[^}]*padding-right:35px/u);
+  assert.match(css, /\.qqj-qianshi-matter,\.qqj-qianshi-day-progress\{border-top:1px dashed var\(--line\)\}/u);
+  assert.doesNotMatch(css, /\.qqj-qianshi-matter,\.qqj-qianshi-day-progress\{overflow:hidden/u);
+});
+
+test('A 聊天保存挂起时切到 B，迟到回调不改 B 页草稿或反馈', async () => {
+  let resolveSave;
+  const h = harness({ editText: () => new Promise(resolve => { resolveSave = resolve; }) });
+  let card = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  byText(flatten(card.parent).find(node => node.className.includes('qqj-qianshi-event-menu')), '编辑详情').fire('click');
+  card = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  let form = flatten(card).find(node => node.className === 'qqj-qianshi-text-form');
+  const aTitle = form.querySelector('.qqj-qianshi-title-input'); aTitle.value = 'A 页待保存'; aTitle.fire('input', { target: aTitle });
+  const aSave = form.fire('submit', { preventDefault() {} });
+  await tick();
+  const chatB = fixture();
+  chatB.identity.qqjChatId = 'chat-b';
+  chatB.events[0] = { ...chatB.events[0], title: 'B 页事件', description: 'B 页原说明。', sourceFloorMemoryId: 'memory-B' };
+  h.emit(chatB);
+  card = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  byText(flatten(card.parent).find(node => node.className.includes('qqj-qianshi-event-menu')), '编辑详情').fire('click');
+  card = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  form = flatten(card).find(node => node.className === 'qqj-qianshi-text-form');
+  assert.equal(form.querySelector('.qqj-qianshi-title-input').value, 'B 页事件');
+  resolveSave({ status: 'saved' }); await aSave;
+  card = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  form = flatten(card).find(node => node.className === 'qqj-qianshi-text-form');
+  assert.ok(form, 'B 页编辑草稿仍在');
+  assert.equal(form.querySelector('.qqj-qianshi-title-input').value, 'B 页事件');
+  assert.doesNotMatch(copy(h.container), /事件文字已保存/u);
+});
 
 test('千事页以健康条和共享搜索开头，说明与事项全链按需展开且不虚构地点', () => {
   const h = harness();
@@ -325,7 +503,7 @@ test('千事时间线不再接收 settings，也不创建任何重要操作按�
     { ...grouped.timeline.segments[0].groups[0], eventIds: ['event-1', 'event-2', 'event-3'] },
     ...grouped.timeline.segments[0].groups.slice(3),
   ];
-  const runtime = { getState: () => ({}), getQianshiSnapshot: () => grouped, subscribe: () => () => {}, prepareQianshiHistory: async () => ({}), startQianshiHistory: async () => ({}), stopQianshiHistory: async () => ({}) };
+  const runtime = { getState: () => ({}), getQianshiSnapshot: () => grouped, subscribe: () => () => {}, prepareQianshiHistory: async () => ({}), startQianshiHistory: async () => ({}), stopQianshiHistory: async () => ({}), canEditQianshiEventText: () => false, editQianshiEventText: async () => ({}) };
   const documentRef = { createElement: tag => new Node(tag) };
   const view = createQianshiTimelineView({ runtime, documentRef });
   const container = new Node('main'); view.mount(container);

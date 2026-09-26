@@ -1,4 +1,5 @@
 import { publicErrorMessage } from '../public-error.js';
+import { createOperationMenuController } from './operation-menu-controller.js';
 
 const VALID_STATUS = new Set(['planned', 'inProgress', 'completed', 'cancelled', 'occurred', 'unknown']);
 const STATUS_COPY = Object.freeze({ planned: '已计划 / 尚未记录完成', inProgress: '进行中 / 尚未记录完成', completed: '已完成', cancelled: '已取消', occurred: '已发生', unknown: '状态未明' });
@@ -29,12 +30,15 @@ function coverageProjection(snapshot) {
 }
 
 export function createQianshiTimelineView({ runtime, dialog = null, documentRef = globalThis.document } = {}) {
-  if (!runtime || ['getState', 'getQianshiSnapshot', 'prepareQianshiHistory', 'startQianshiHistory', 'stopQianshiHistory', 'subscribe']
+  if (!runtime || ['getState', 'getQianshiSnapshot', 'prepareQianshiHistory', 'startQianshiHistory', 'stopQianshiHistory', 'canEditQianshiEventText', 'editQianshiEventText', 'subscribe']
     .some(name => typeof runtime[name] !== 'function')) throw new TypeError('千事时间线 runtime 无效');
   if (!documentRef?.createElement) throw new TypeError('千事时间线 documentRef 无效');
   let container = null, active = false, unsubscribe = null, epoch = 0;
   let snapshot = runtime.getQianshiSnapshot(), runtimeState = runtime.getState(), chatId = snapshot?.identity?.qqjChatId ?? null;
   let query = '', reverse = true, feedback = '';
+  const textEditors = new Map();
+  const editableEvents = new Map();
+  const operationMenus = createOperationMenuController(documentRef);
   const openIds = new Set(), nestedOpenIds = new Set(), matterOpenIds = new Set();
   const element = (tag, className = '', copy = '') => {
     const node = documentRef.createElement(tag);
@@ -44,7 +48,11 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   };
   const resetForChat = nextChatId => {
     if (chatId === nextChatId) return;
-    epoch += 1; chatId = nextChatId; query = ''; reverse = true; feedback = ''; openIds.clear(); nestedOpenIds.clear(); matterOpenIds.clear();
+    epoch += 1; chatId = nextChatId; query = ''; reverse = true; feedback = ''; textEditors.clear(); editableEvents.clear(); openIds.clear(); nestedOpenIds.clear(); matterOpenIds.clear();
+  };
+  const canEditEvent = eventId => {
+    if (!editableEvents.has(eventId)) editableEvents.set(eventId, runtime.canEditQianshiEventText(eventId));
+    return editableEvents.get(eventId);
   };
   const visibleEvents = () => {
     const needle = text(query).trim();
@@ -95,7 +103,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         head.append(element('span', '', `${item.storyTime || '时间未明'} · ${item.title}${item.updatesMatter === false ? '（背景 / 补充）' : ''}`), statusBadge(item));
         row.append(head);
         let rowBuilt = false;
-        const ensureRow = () => { if (!rowBuilt) { row.append(eventDetails(item, 'qqj-qianshi-day-event-detail')); rowBuilt = true; } };
+        const ensureRow = () => { if (!rowBuilt) { row.append(eventDetails(item, 'qqj-qianshi-day-event-detail', false)); rowBuilt = true; } };
         if (row.open) ensureRow();
         row.addEventListener('toggle', () => { if (row.open) { nestedOpenIds.add(rowKey); ensureRow(); } else nestedOpenIds.delete(rowKey); });
         list.append(row);
@@ -109,7 +117,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     return section;
   }
 
-  function eventDetails(event, className = 'qqj-qianshi-expanded') {
+  function eventDetails(event, className = 'qqj-qianshi-expanded', allowEdit = true) {
     const body = element('div', className);
     body.append(element('p', 'qqj-qianshi-description', event.description));
     const meta = element('dl', 'qqj-qianshi-meta');
@@ -123,21 +131,92 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     row('约定', event.scheduledTime ? `${event.scheduledTime}（约定 / 预计）` : '');
     row('来源', sourceCopy(event), 'source');
     body.append(meta);
+    if (allowEdit && canEditEvent(event.id) && textEditors.get(event.id)?.editing) body.append(eventTextEditor(event));
     return body;
   }
 
-  function sameDayHistory(events, representativeId) {
+  function eventTextEditor(event) {
+    const state = textEditors.get(event.id);
+    const section = element('section', 'qqj-qianshi-text-editor');
+    const form = element('form', 'qqj-qianshi-text-form');
+    const titleLabel = element('label', 'qqj-qianshi-text-label', '标题');
+    const title = element('input', 'settings-input qqj-qianshi-title-input'); title.value = state.title; title.maxLength = 500; title.disabled = state.pending;
+    titleLabel.append(title);
+    const descriptionLabel = element('label', 'qqj-qianshi-text-label', '经过说明');
+    const description = element('textarea', 'settings-input qqj-qianshi-description-input'); description.value = state.description; description.maxLength = 4000; description.disabled = state.pending;
+    descriptionLabel.append(description);
+    title.addEventListener('input', event => { state.title = event.target.value; });
+    description.addEventListener('input', event => { state.description = event.target.value; });
+    form.append(titleLabel, descriptionLabel);
+    if (state.error) form.append(element('p', 'qqj-qianshi-edit-error', state.error));
+    const actions = element('div', 'qqj-qianshi-edit-actions');
+    const save = element('button', 'primary-action', state.pending ? '正在保存…' : '保存'); save.type = 'submit'; save.disabled = state.pending;
+    const cancel = element('button', 'secondary-action', '取消'); cancel.type = 'button'; cancel.disabled = state.pending;
+    cancel.addEventListener('click', () => { textEditors.delete(event.id); render(); });
+    actions.append(save, cancel); form.append(actions);
+    form.addEventListener('submit', async submission => {
+      submission.preventDefault?.();
+      const clean = value => String(value ?? '').normalize('NFKC').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+      const next = { title: clean(state.title).slice(0, 500), description: clean(state.description).slice(0, 4000) };
+      state.title = next.title; state.description = next.description;
+      if (!next.title || !next.description) { state.error = '标题和经过说明都不能为空。'; render(); return; }
+      if (next.title === clean(state.baseline.title).slice(0, 500) && next.description === clean(state.baseline.description).slice(0, 4000)) { textEditors.delete(event.id); feedback = '内容没有变化，没有写入新版本。'; render(); return; }
+      state.pending = true; state.error = ''; render();
+      const saveEpoch = epoch, saveChatId = chatId;
+      try {
+        const result = await runtime.editQianshiEventText({ eventId: event.id, expected: state.baseline, ...next });
+        if (epoch !== saveEpoch || chatId !== saveChatId) return;
+        textEditors.delete(event.id);
+        feedback = result?.status === 'unchanged' ? '内容没有变化，没有写入新版本。' : '事件文字已保存。';
+      } catch (error) {
+        if (epoch !== saveEpoch || chatId !== saveChatId) return;
+        state.pending = false;
+        state.error = publicErrorMessage(error?.message, { fallback: '保存失败，请检查当前记录后重试。' });
+      }
+      render();
+    });
+    section.append(form);
+    return section;
+  }
+
+  function eventOperationMenu(event, { cardId = event.id, nestedRowKey = null } = {}) {
+    if (!canEditEvent(event.id) || textEditors.get(event.id)?.editing) return null;
+    const menu = operationMenus.register(element('details', 'qqj-profile-menu qqj-qianshi-event-menu'));
+    menu.dataset.qianshiEventId = event.id;
+    const toggle = element('summary', 'qqj-profile-menu-toggle', '⋮');
+    toggle.setAttribute?.('aria-label', `${event.title}操作`); toggle.setAttribute?.('title', `${event.title}操作`);
+    const menuBody = element('div', 'qqj-profile-menu-pop');
+    const edit = element('button', 'qqj-profile-menu-action', '编辑详情'); edit.type = 'button';
+    edit.addEventListener('click', () => {
+      menu.open = false;
+      openIds.add(cardId);
+      if (nestedRowKey) nestedOpenIds.add(nestedRowKey);
+      textEditors.set(event.id, { editing: true, title: event.title, description: event.description,
+        baseline: { memoryId: event.sourceFloorMemoryId, title: event.title, description: event.description }, error: '', pending: false });
+      render();
+    });
+    menuBody.append(edit); menu.append(toggle, menuBody);
+    return menu;
+  }
+
+  function sameDayHistory(events, representativeId, cardId) {
     const section = element('section', 'qqj-qianshi-day-progress');
     section.append(element('p', 'qqj-qianshi-day-progress-title', `当天过程 · ${events.length} 条`));
     const list = element('div', 'qqj-qianshi-matter-list');
     for (const item of events) {
+      const itemRow = element('div', 'qqj-qianshi-day-event-row');
       const rowKey = `day:${representativeId}:${item.id}`, row = element('details', `qqj-qianshi-matter-event${item.id === representativeId ? ' current' : ''}`);
+      row.dataset.qianshiEventId = item.id;
       row.open = nestedOpenIds.has(rowKey);
       const status = VALID_STATUS.has(item.status) ? STATUS_COPY[item.status] : '状态未明';
       const suffix = [item.updatesMatter === false ? '背景 / 补充' : '', status ? `当时：${status}` : ''].filter(Boolean).join(' · ');
       const summary = element('summary');
       summary.append(element('span', '', `${item.storyTime || '时间未明'} · ${item.title}${suffix ? `（${suffix}）` : ''}`), statusBadge(item));
       row.append(summary);
+      if (item.id !== representativeId) {
+        const menu = eventOperationMenu(item, { cardId, nestedRowKey: rowKey });
+        if (menu) itemRow.append(menu);
+      }
       let built = false;
       row.addEventListener('toggle', () => {
         if (row.open) nestedOpenIds.add(rowKey); else nestedOpenIds.delete(rowKey);
@@ -145,23 +224,24 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         row.append(eventDetails(item, 'qqj-qianshi-day-event-detail')); built = true;
       });
       if (row.open) { row.append(eventDetails(item, 'qqj-qianshi-day-event-detail')); built = true; }
-      list.append(row);
+      itemRow.append(row); list.append(itemRow);
     }
     section.append(list);
     return section;
   }
 
-  function expandedContent(event, matterEvents, dayEvents) {
+  function expandedContent(event, matterEvents, dayEvents, cardId) {
     const body = element('div', 'qqj-qianshi-expanded');
-    if (dayEvents.length > 1) body.append(sameDayHistory(dayEvents, event.id));
+    if (dayEvents.length > 1) body.append(sameDayHistory(dayEvents, event.id, cardId));
     else body.append(eventDetails(event, 'qqj-qianshi-event-detail'));
     const history = matterHistory(event, matterEvents); if (history) body.append(history);
     return body;
   }
 
   function eventNode(event, matterEvents, { cardId = event.id, dayEvents = [event] } = {}) {
-    const details = element('details', 'qqj-qianshi-event'); details.dataset.eventId = event.id;
-    details.dataset.cardId = cardId; details.open = openIds.has(cardId);
+    const itemRow = element('div', 'qqj-qianshi-event-row');
+    const details = element('details', 'qqj-qianshi-event'); details.dataset.eventId = event.id; details.dataset.cardId = cardId;
+    details.open = openIds.has(cardId);
     const summary = element('summary', 'qqj-qianshi-event-summary');
     if (event.storyTime) summary.append(element('span', 'qqj-qianshi-event-time', event.storyTime));
     const title = element('span', 'qqj-qianshi-event-title', event.title);
@@ -170,15 +250,18 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     summary.append(title);
     summary.append(element('p', 'qqj-qianshi-preview', event.description));
     details.append(summary);
+    const nestedRowKey = dayEvents.length > 1 ? `day:${event.id}:${event.id}` : null;
+    const menu = eventOperationMenu(event, { cardId, nestedRowKey });
     const ensureBody = () => {
       if (!details.children || [...details.children].some(node => String(node.className).includes('qqj-qianshi-expanded'))) return;
-      details.append(expandedContent(event, matterEvents, dayEvents));
+      details.append(expandedContent(event, matterEvents, dayEvents, cardId));
     };
     if (details.open) ensureBody();
     details.addEventListener('toggle', () => {
       if (details.open) { openIds.add(cardId); ensureBody(); } else openIds.delete(cardId);
     });
-    return details;
+    itemRow.append(details); if (menu) itemRow.append(menu);
+    return itemRow;
   }
 
   function timelineContent(events) {
@@ -273,6 +356,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     const resultsHadFocus = preserveResults && (previousResults === documentRef.activeElement
       || previousResults.contains?.(documentRef.activeElement));
     resetForChat(currentChatId);
+    operationMenus.reset();
     const page = element('section', 'qqj-qianshi-page');
     const coverage = coverageProjection(snapshot), coverageBox = element('section', `qqj-qianshi-coverage ${coverage.kind}`);
     const coverageText = element('div'); coverageText.append(element('strong', '', coverage.label), element('p', '', coverage.copy));
@@ -328,13 +412,13 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   function subscribe() {
     unsubscribe?.();
     unsubscribe = runtime.subscribe(next => {
-      runtimeState = next; snapshot = runtime.getQianshiSnapshot();
+      runtimeState = next; snapshot = runtime.getQianshiSnapshot(); editableEvents.clear();
       if (feedback === HISTORY_START_PENDING_FEEDBACK && snapshot?.history?.status === 'running') feedback = '';
       if (active) render();
     });
   }
-  function mount(target) { unsubscribe?.(); unsubscribe = null; container = target; active = true; snapshot = runtime.getQianshiSnapshot(); runtimeState = runtime.getState(); render(); subscribe(); return target; }
-  async function activate() { active = true; snapshot = runtime.getQianshiSnapshot(); runtimeState = runtime.getState(); render(); subscribe(); return { status: snapshot?.status ?? 'unavailable' }; }
-  function deactivate() { active = false; epoch += 1; unsubscribe?.(); unsubscribe = null; }
+  function mount(target) { unsubscribe?.(); unsubscribe = null; operationMenus.deactivate(); container = target; active = true; snapshot = runtime.getQianshiSnapshot(); runtimeState = runtime.getState(); editableEvents.clear(); render(); operationMenus.activate(); subscribe(); return target; }
+  async function activate() { active = true; operationMenus.activate(); snapshot = runtime.getQianshiSnapshot(); runtimeState = runtime.getState(); editableEvents.clear(); render(); subscribe(); return { status: snapshot?.status ?? 'unavailable' }; }
+  function deactivate() { active = false; epoch += 1; operationMenus.deactivate(); unsubscribe?.(); unsubscribe = null; }
   return Object.freeze({ mount, activate, deactivate, render });
 }
