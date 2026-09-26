@@ -22,13 +22,12 @@ test('默认 QQJ，且 QQJ、SDC、旧 myknots 与星期别名均能读成完整
   assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /QQJ-start/);
   assert.doesNotMatch(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /myknots-start/);
   assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /date=大陆历1686年10月4日/);
-  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /开场白和本轮实际生效的世界书/);
-  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /创作符合世界观的故事年份或纪年/);
-  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /中途没有可靠故事年份或纪年时/);
-  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /纪元年、中文数字、阿拉伯数字或世界观自定义纪年表达/);
-  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /不得使用系统或服务器现实年份/);
+  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /世界书中的日期和时间要求仍须完整执行/);
+  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /沿用该年份和正文时间写法/);
+  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /没有可靠年份时不要补写年份或猜算跨年日期/);
+  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /不用系统或服务器现实年份填补/);
   assert.doesNotMatch(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /未知故事年份：/);
-  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /start 与 end 的 date 都必须写出完整年份/);
+  assert.doesNotMatch(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /历法|公历/);
   assert.equal(parseClockFields('date=大陆历1686年10月4日 | weekday=周二 | time=15:30').date, '大陆历1686年10月4日');
   for (const namespace of ['QQJ', 'myknots', 'SDC']) {
     const parsed = parseSharedStoryClock(pair(namespace));

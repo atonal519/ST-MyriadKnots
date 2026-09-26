@@ -132,12 +132,12 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.5.2');
+  assert.equal(manifest.version, '0.5.3');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
   assert.equal(cacheMatch[5], bundleDigest.slice(0, 16), 'manifest cache key 必须随实际 bundle 内容变化，禁止漏 bump 假通过');
-  for (const marker of ['0.5.2', 'prepareStep', 'qianshiCandidates', 'Graphology 检测到重复图边。', 'DataCloneError']) {
+  for (const marker of ['0.5.3', 'prepareStep', 'qianshiCandidates', 'Graphology 检测到重复图边。', 'DataCloneError']) {
     assert.equal(bundleSource.includes(marker), true, `生产 bundle 缺少候选版本或安全准备诊断字段：${marker}`);
   }
   await assert.rejects(access(resolve(root, 'dist/index.js')));

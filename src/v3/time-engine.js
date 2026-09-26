@@ -18,7 +18,10 @@ function yearlessGregorianOrdinal(value) {
 export function timeDistance(from, to) {
   from = effectiveTime(from); to = effectiveTime(to);
   if (from?.monthIdentity || to?.monthIdentity) {
-    if (!from?.monthIdentity || from.monthIdentity !== to?.monthIdentity) return null;
+    const knownSpecialYear = value => Number.isInteger(value?.year) || value?.yearIdentityKnown === true
+      || /纪元年|紀元年/u.test(String(value?.raw ?? value?.date ?? ''));
+    const sameKnownYear = knownSpecialYear(from) && knownSpecialYear(to);
+    if (!from?.monthIdentity || from.monthIdentity !== to?.monthIdentity || !sameKnownYear) return null;
     if (Number.isInteger(from.monthDay) && Number.isInteger(to.monthDay)) return to.monthDay - from.monthDay;
     if (from.weekday === to.weekday && Number.isInteger(from.weekOrdinal) && Number.isInteger(to.weekOrdinal)) return (to.weekOrdinal - from.weekOrdinal) * 7;
     return null;
@@ -27,6 +30,7 @@ export function timeDistance(from, to) {
   const fromOrdinal = yearlessGregorianOrdinal(from), toOrdinal = yearlessGregorianOrdinal(to);
   if (fromOrdinal !== null && toOrdinal !== null) {
     if (from.month === to.month) return to.monthDay - from.monthDay;
+    if (from.month === 12 && to.month === 1 || from.month === 1 && to.month === 12) return null;
     // Without a year, a span across the end of February differs by one day in
     // leap years. Keep that interval unknown instead of inventing a year.
     if ((from.month <= 2 && to.month >= 3) || (to.month <= 2 && from.month >= 3)) return null;
@@ -48,7 +52,7 @@ export function projectTimeSource(value, anchor = null) {
   return { ...date, raw: raw || date.raw, minute: clock ? Number(clock[1]) * 60 + Number(clock[2]) : null,
     clock: clock ? `${clock[1].padStart(2, '0')}:${clock[2]}` : null };
 }
-// Adapted from cn-date.js's stateless number parsing; no calendar or host dependency.
+// Adapted from cn-date.js's stateless number parsing; it has no host date dependency.
 const CN_DIGITS = '零〇一二两兩三四五六七八九壹贰貳叁參叄肆伍陆陸柒捌玖';
 const CN_NUMBER = `(?:元|[0-9${CN_DIGITS}十拾百佰千仟廿卄卅卌]+)`;
 const RELATIVE_DATE_WORDS = new Set(['今天', '当日', '当天', '今日', '昨天', '昨日', '前一天', '前天', '前日', '明天', '明日', '次日', '翌日', '后天', '後天', '去年', '今年', '明年', '前年', '后年', '後年']);
@@ -108,11 +112,30 @@ export function formatStoryTime(value, sourceText = '') {
   const formatted = !relative ? String(date).replace(/(?<=日)(?=(?:[01]?\d|2[0-3]):[0-5]\d(?:$|\s))/u, ' ') : date;
   return `${formatted}${value.clock && !hasClock(formatted, value.minute) ? ` ${value.clock}` : ''}`;
 }
-const GREGORIAN_ERAS = ['公元','公历','公曆','西历','西曆'];
+const STANDARD_DATE_PREFIXES = ['公元','公历','公曆','西历','西曆'];
 function flexibleDate(raw, anchor, options = {}) {
   // A trailing weekday annotates a date; ordinal weekdays remain the date itself.
   const dateText = raw.replace(/(?:[\s，,]+|(?<=[日号]))(?:星期|周|週)[一二三四五六日天]\s*$|[\s，,]*[（(](?:星期|周|週)[一二三四五六日天][）)]\s*$/u, '').trim();
   const unknown = () => ({ raw: raw || '时间未知', date: null, day: null, year: null, month: null, monthDay: null });
+  const namedIso = dateText.match(/^([\p{L}]+)[\s:：,，·]*?(\d{1,4})[-/.](\d{1,2})[-/.](\d{1,3})$/u);
+  if (namedIso && !STANDARD_DATE_PREFIXES.includes(namedIso[1])) {
+    const [, era, yearText, monthText, dayText] = namedIso;
+    const year = Number(yearText), month = Number(monthText), monthDay = Number(dayText);
+    if (year < 1 || year > 9999 || month < 1 || month > 12 || monthDay < 1) return unknown();
+    return { raw, date: dateText, day: null, year, month, monthDay, yearIdentityKnown: true,
+      monthIdentity: JSON.stringify([era, year, `${month}月`]) };
+  }
+  const namedMonthOnly = dateText.match(/^([\p{L}]+?)(\d{1,2})\s*月\s*(?:初)?(\d{1,2})(?:日|号)?$/u);
+  if (namedMonthOnly && !namedMonthOnly[1].includes('年') && !/[闰閏]/u.test(namedMonthOnly[1])
+    && !STANDARD_DATE_PREFIXES.includes(namedMonthOnly[1])) {
+    const [, era, monthText, dayText] = namedMonthOnly;
+    const month = Number(monthText), monthDay = Number(dayText);
+    if (month >= 1 && month <= 12 && monthDay >= 1 && monthDay <= [31,29,31,30,31,30,31,31,30,31,30,31][month - 1]) {
+      const monthName = `${month}月`;
+      return { raw, date: `${monthName}${monthDay}日（年份未明）`, day: null, year: null, month, monthDay,
+        yearIdentityKnown: false, monthIdentity: JSON.stringify([era, null, monthName]) };
+    }
+  }
   const relative = dateText.match(new RegExp(`^(${CN_NUMBER})\\s*(天|日|周|星期)(前|后|後)$`, 'u'));
   const normalized = relative && cnNumber(relative[1]) !== null ? `${cnNumber(relative[1])}${relative[2]}${relative[3]}` : dateText;
   const offsetText = normalized.match(/^(\d{1,4})(天|日|周|星期)(前|后|後)$/u);
@@ -136,7 +159,7 @@ function flexibleDate(raw, anchor, options = {}) {
     const monthDay = cnNumber(dayText), era = `${eraPrefix}元`;
     if (!Number.isInteger(monthDay) || monthDay < 1) return unknown();
     return { raw, date: `${era}年${monthName}${monthDay}日`, day: null, year: null, month,
-      monthDay, monthIdentity: JSON.stringify([era, null, monthName]) };
+      monthDay, yearIdentityKnown: true, monthIdentity: JSON.stringify([era, null, monthName]) };
   }
   const match = dateText.match(new RegExp(`^(?:([\\p{L}]*?)(${CN_NUMBER})\\s*年\\s*)?(闰|閏)?(${CN_NUMBER}|正|冬|腊|臘|[\\p{L}]{1,12}?)?\\s*月\\s*(?:初)?(${CN_NUMBER})(?:日|号)?$`, 'u'));
   const ordinal = dateText.match(new RegExp(`^(?:([\\p{L}]*?)(${CN_NUMBER})\\s*年\\s*)?(闰|閏)?(${CN_NUMBER}|正|冬|腊|臘|[\\p{L}]{1,12}?)?\\s*月\\s*第(${CN_NUMBER})(?:个|個)?(星期|周)([一二三四五六日天])$`, 'u'));
@@ -145,7 +168,7 @@ function flexibleDate(raw, anchor, options = {}) {
     if (!monthText && !leap) return unknown();
     const year = yearText ? cnNumber(yearText) : null;
     const month = ({ 正:1, 冬:11, 腊:12, 臘:12 })[monthText] ?? (monthText ? cnNumber(monthText) : null);
-    const special = Boolean(era && !GREGORIAN_ERAS.includes(era) || leap || month === null || ordinal);
+    const special = Boolean(era && !STANDARD_DATE_PREFIXES.includes(era) || leap || month === null || ordinal);
     if (yearText && year === null) return unknown();
     if (special) {
       const monthName = `${leap ? '闰' : ''}${month ?? monthText ?? ''}月`;
@@ -154,18 +177,21 @@ function flexibleDate(raw, anchor, options = {}) {
       if (ordinal) {
         const weekOrdinal = cnNumber(ordinal[5]), weekday = ({ 一:1, 二:2, 三:3, 四:4, 五:5, 六:6, 日:7, 天:7 })[ordinal[7]];
         if (!Number.isInteger(weekOrdinal) || weekOrdinal < 1) return unknown();
-        return { raw, date: `${yearName}${monthName}第${weekOrdinal}个星期${"一二三四五六日"[weekday - 1]}`, day: null, year, month, monthDay: null, monthIdentity, weekOrdinal, weekday };
+        return { raw, date: `${yearName}${monthName}第${weekOrdinal}个星期${"一二三四五六日"[weekday - 1]}`, day: null, year, month, monthDay: null,
+          yearIdentityKnown: Boolean(yearText), monthIdentity, weekOrdinal, weekday };
       }
       const monthDay = cnNumber(match[5]);
       if (!Number.isInteger(monthDay) || monthDay < 1) return unknown();
-      return { raw, date: `${yearName}${monthName}${monthDay}日`, day: null, year, month, monthDay, monthIdentity };
+        return { raw, date: `${yearName}${monthName}${monthDay}日`, day: null, year, month, monthDay, yearIdentityKnown: Boolean(yearText), monthIdentity };
     }
     const monthDay = cnNumber(match[5]);
     if (month === null || monthDay === null) return unknown();
     return projectDateSource(`${yearText ? `${year}年` : ''}${month}月${monthDay}日`, anchor, options);
   }
   const yearPrefix = dateText.match(new RegExp(`^([\\p{L}]*?)(${CN_NUMBER})\\s*年`, 'u'));
-  if (/[闰閏]/u.test(dateText) || yearPrefix?.[1] && !GREGORIAN_ERAS.includes(yearPrefix[1])) return unknown();
+  const namedNumericPrefix = dateText.match(/^([\p{L}]+)[^\p{L}\d]*\d/u);
+  if (namedNumericPrefix && !STANDARD_DATE_PREFIXES.includes(namedNumericPrefix[1])) return unknown();
+  if (/[闰閏]/u.test(dateText) || yearPrefix?.[1] && !STANDARD_DATE_PREFIXES.includes(yearPrefix[1])) return unknown();
   return { ...projectDateSource(normalized, anchor, options), raw: raw || '时间未知' };
 }
 export function timeHours(from, to) {
@@ -664,7 +690,7 @@ export async function compileTimeResponse(response, prepared, batches = []) {
           if (candidate) qianshiRef = { matterId: candidate.matterId, originEventId: candidate.originEventId };
         }
       }
-      const assessmentReason = currentReview ? text(value.assessmentReason, 150) || (!prepared.request.currentTime?.date || !effectiveTime(observationTime)?.date ? '缺少明确时间，无法可靠判断当前进展。' : timeDistance(observationTime, prepared.request.currentTime) === null ? '日期身份或间隔不明，无法可靠判断当前进展。' : timeDistance(observationTime, prepared.request.currentTime) < 0 || timeHours(observationTime, prepared.request.currentTime) < 0 ? '当前时点早于原观察，无法推算。' : '') : '';
+      const assessmentReason = currentReview ? text(value.assessmentReason, 150) || (!prepared.request.currentTime?.date || !effectiveTime(observationTime)?.date ? '缺少明确时间，无法可靠判断当前进展。' : timeDistance(observationTime, prepared.request.currentTime) === null ? '时间间隔无法确认，不能可靠判断当前进展。' : timeDistance(observationTime, prepared.request.currentTime) < 0 || timeHours(observationTime, prepared.request.currentTime) < 0 ? '当前时点早于原观察，无法推算。' : '') : '';
       ids.add(id);
       changes.push({ id, ...(old?.mergedInto ? { mergedInto: old.mergedInto } : {}),
         ...(old?.mergedItemIds?.length ? { mergedItemIds: old.mergedItemIds, mergeDescription: old.mergeDescription, mergeEvidenceKey: old.mergeEvidenceKey } : {}),
@@ -791,6 +817,6 @@ export function timeRecallProjection(items, source, currentTime, annualRecords =
     }
   }
   reminders.push(...projectAnnualSettings(annualRecords.map(record => ({ ...record, subjectEntityId: resolveIdentityEntityId(record.subjectEntityId, source.identityProjection) })), currentTime, reminders).reminders);
-  reminders.sort((a, b) => Math.abs(a.distance) - Math.abs(b.distance));
+  reminders.sort((a, b) => (Number.isFinite(a.distance) ? Math.abs(a.distance) : Infinity) - (Number.isFinite(b.distance) ? Math.abs(b.distance) : Infinity));
   return { corrections, reminders, currentTime };
 }

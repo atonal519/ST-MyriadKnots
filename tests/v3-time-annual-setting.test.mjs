@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildAnnualSettingSources, compileAnnualSettingResponse, projectAnnualSettings } from '../src/v3/time-annual-setting.js';
+import { ANNUAL_SETTING_SYSTEM_PROMPT, buildAnnualSettingSources, compileAnnualSettingResponse, projectAnnualSettings } from '../src/v3/time-annual-setting.js';
 import { createTimeRuntime, createTimeStore } from '../src/v3/time-runtime.js';
-import { projectTime } from '../src/v3/time-engine.js';
+import { projectTime, timeRecallProjection } from '../src/v3/time-engine.js';
+import { buildRecallQueryContext, selectRecall } from '../src/v3/recall-selector.js';
 import { scanAssistantCandidates, createFloorRecord } from '../src/v3/foundation-domain.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', PERSON = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', USER = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
@@ -24,37 +25,82 @@ test('每来源恰好一个结果才留痕，合法空结果可保存且坏来�
   ];
   const compiled = compileAnnualSettingResponse({ sources: [
     { sourceId: 'S1', items: [] },
-    { sourceId: 'S2', items: [{ category: 'anniversary', label: '相识纪念日', originalDate: '每年10月2日', calendar: 'gregorian', month: 10, day: 2, note: '相识周年' }] },
+    { sourceId: 'S2', items: [{ category: 'anniversary', label: '相识纪念日', originalDate: '每年10月2日', note: '相识周年' }] },
   ] }, { sources });
   assert.equal(compiled.succeeded.length, 2); assert.deepEqual(compiled.succeeded[0].items, []); assert.equal(compiled.errors.length, 0);
+  assert.deepEqual(compiled.succeeded[1].items[0], { category: 'anniversary', label: '相识纪念日', originalDate: '每年10月2日', month: 10, day: 2, note: '相识周年' });
+  assert.doesNotMatch(ANNUAL_SETTING_SYSTEM_PROMPT, /calendar|历法|公历/u, '年度提取提示与新条目不再要求分类日期体系');
+  assert.equal(Object.hasOwn(compiled.succeeded[1].items[0], 'calendar'), false);
   const partial = compileAnnualSettingResponse({ sources: [{ sourceId: 'S1', items: [] }, { sourceId: 'S2', items: [] }, { sourceId: 'S2', items: [] }] }, { sources });
   assert.deepEqual(partial.succeeded.map(row => row.sourceKey), ['one']); assert.equal(partial.errors[0].sourceKey, 'two');
 });
 
-test('七日前至当天提醒，过后取下一年，闰日不改日期，特殊历法只显示', () => {
+test('年度提醒只看本年，月日可跨月，跨年不猜，旧特殊日期保留原文', () => {
   const records = [{ sourceKey: 'birthday', fingerprint: 'fp', subjectEntityId: PERSON, subjectName: '阿岚', items: [
-    { category: 'birthday', label: '生日', originalDate: '1999年9月20日', calendar: 'gregorian', month: 9, day: 20, note: '' },
+    { category: 'birthday', label: '生日', originalDate: '1999年9月20日', month: 9, day: 20, note: '' },
     { category: 'anniversary', label: '月神祭', originalDate: '霜月初三', calendar: 'special', month: null, day: null, note: '每年祭典' },
   ] }];
   let projected = projectAnnualSettings(records, projectTime('2026-09-13'), []);
-  assert.equal(projected.reminders[0].distance, 7); assert.equal(projected.items[1].status, '日期待明确');
+  assert.equal(projected.reminders[0].distance, 7); assert.equal(projected.items[1].status, '日期或年份未明确');
   assert.match(projected.reminders[0].text, /生日：原日期 1999年9月20日；下次日期 2026-09-20，还有7天/u);
   assert.doesNotMatch(projected.reminders[0].text, /尚未确认庆祝、纪念或履约/u, '通用未确认提示由时间参考总则统一说明');
   projected = projectAnnualSettings(records, projectTime('2026-09-21'), []);
-  assert.equal(projected.reminders.length, 0); assert.equal(projected.items[0].nextDate, '2027-09-20');
+  assert.equal(projected.items[0].nextDate, null); assert.equal(projected.items[0].status, '本年日期已过');
+  assert.ok(projected.reminders.some(item => /原日期 1999年9月20日/u.test(item.text) && !Number.isFinite(item.distance)), '已过日期保留原文供相关召回判断，不猜下次年份');
+  assert.ok(projected.reminders.some(item => /原日期 霜月初三/u.test(item.text) && !Number.isFinite(item.distance)), '特殊日期作为原文线索进入召回，不声称临近');
   projected = projectAnnualSettings(records, projectTime('9月13日'), []);
   assert.equal(projected.reminders[0].distance, 7); assert.equal(projected.items[0].nextDate, '9月20日（年份未明）');
+  const crossMonth = [{ ...records[0], items: [{ category: 'anniversary', label: '纪念日', originalDate: '每年10月2日', month: 10, day: 2, note: '' }] }];
+  projected = projectAnnualSettings(crossMonth, projectTime('2026-09-29'), []);
+  assert.equal(projected.reminders[0].distance, 3, '明确公历当前年允许普通跨月日期进入7日提醒');
+  projected = projectAnnualSettings(crossMonth, projectTime('大陆历1686年9月29日'), []);
+  assert.equal(projected.reminders[0].distance, null, '特殊当前故事时间不借公历月日推年度提醒');
+  assert.match(projected.reminders[0].text, /原日期 每年10月2日[\s\S]*当前日期关系不明确/u);
+  for (const originalDate of ['公曆10月2日', '西曆2026年10月2日']) {
+    const prefixed = [{ ...records[0], items: [{ category: 'anniversary', label: '纪念日', originalDate, note: '' }] }];
+    const item = projectAnnualSettings(prefixed, projectTime('2026-09-29'), []).items[0];
+    assert.equal(item.distance, 3, `${originalDate} 应与已有普通日期前缀保持一致`);
+  }
+  assert.equal(projectAnnualSettings(crossMonth, projectTime('2026-12-31'), []).items[0].nextDate, null, '本年已过的日期不自动滚到下一年');
+  const special = [{ ...records[0], items: [{ category: 'anniversary', label: '祭典', originalDate: '大陆历1686年10月2日', month: 10, day: 2 }] }];
+  projected = projectAnnualSettings(special, projectTime('2026-09-29'), []);
+  assert.equal(projected.reminders.length, 1, '旧 calendar 不覆盖特殊纪年，未计算的原文仍进入召回');
+  assert.match(projected.reminders[0].text, /原日期 大陆历1686年10月2日[\s\S]*当前日期关系不明确/u);
+  assert.equal(projected.reminders[0].distance, null);
+  assert.equal(Object.hasOwn(projected.items[0], 'calendar'), false, '旧 calendar 只读取为兼容，不进入新输出');
   const leap = [{ ...records[0], items: [{ category: 'birthday', label: '生日', originalDate: '2月29日', calendar: 'gregorian', month: 2, day: 29, note: '' }] }];
   projected = projectAnnualSettings(leap, projectTime('2025-03-01'), []);
-  assert.equal(projected.items[0].nextDate, '2028-02-29'); assert.equal(projected.reminders.length, 0);
+  assert.equal(projected.items[0].nextDate, null); assert.equal(projected.items[0].status, '本年没有该日期');
+  assert.ok(projected.reminders.some(item => /原日期 2月29日/u.test(item.text) && !Number.isFinite(item.distance)));
+  projected = projectAnnualSettings(leap, projectTime('2024-02-28'), []);
+  assert.equal(projected.items[0].nextDate, '2024-02-29');
+  projected = projectAnnualSettings([{ ...records[0], items: [{ ...crossMonth[0].items[0], month: null, day: null }] }], projectTime('9月29日'), []);
+  assert.equal(projected.items[0].distance, 3, '旧年份不明普通月日跨月可按同年区间计算');
   const duplicate = [{ type: 'deadline', subjectEntityId: PERSON, dueTime: projectTime('2026-09-20'), label: '生日提醒', observation: '生日将至' }];
-  assert.equal(projectAnnualSettings(records, projectTime('2026-09-19'), duplicate).reminders.length, 0, '仅本轮同一次正文提醒去重');
+  const deduplicated = projectAnnualSettings(records, projectTime('2026-09-19'), duplicate).reminders;
+  assert.equal(deduplicated.some(item => /原日期 1999年9月20日/u.test(item.text)), false, '仅本轮同一次正文提醒去重');
+  assert.ok(deduplicated.some(item => /原日期 霜月初三/u.test(item.text)), '去重不隐藏未计算的其他原文线索');
   duplicate[0].dueTime = projectTime('2025-09-20');
-  assert.equal(projectAnnualSettings(records, projectTime('2026-09-19'), duplicate).reminders.length, 1, '旧年事项不能压掉今年提醒');
+  assert.equal(projectAnnualSettings(records, projectTime('2026-09-19'), duplicate).reminders.length, 2, '旧年事项不能压掉今年提醒，其他原文线索仍可召回');
   duplicate[0].type = 'cycle'; duplicate[0].dueTime = projectTime('2026-09-20');
-  assert.equal(projectAnnualSettings(records, projectTime('2026-09-19'), duplicate).reminders.length, 1, '周期事项不能冒充年度日期去重');
+  assert.equal(projectAnnualSettings(records, projectTime('2026-09-19'), duplicate).reminders.length, 2, '周期事项不能冒充年度日期去重');
   duplicate[0].type = 'deadline'; duplicate[0].dueTime = projectTime('9月20日');
-  assert.equal(projectAnnualSettings(records, projectTime('9月19日'), duplicate).reminders.length, 0, '年份未明时同月同日的正文期限仍可去重');
+  assert.equal(projectAnnualSettings(records, projectTime('9月19日'), duplicate).reminders.length, 1, '年份未明时正文期限去重，特殊原文线索仍保留');
+});
+
+test('未计算的年度原文经过真实主楼召回选择器进入相关上下文', () => {
+  const records = [{ sourceKey: 'annual', fingerprint: 'fp', subjectEntityId: PERSON, subjectName: '阿岚', items: [
+    { category: 'anniversary', label: '霜月纪念', originalDate: '大陆历1686年霜月初三', month: null, day: null, note: '每年霜月祭典' },
+  ] }];
+  const projection = timeRecallProjection([], { entities: [{ entityId: PERSON, displayName: '阿岚' }], identityProjection: {}, currentState: [] },
+    projectTime('2026-10-10'), records);
+  assert.equal(projection.reminders[0].distance, null);
+  const source = { status: 'ready', chatId: CHAT, entities: [{ entityId: PERSON, displayName: '阿岚', aliases: [], entityType: 'person', specialRole: 'char' }],
+    floorMemories: [], cseChanges: [], currentState: [], coverage: { memoryComplete: true, cseCurrent: true },
+    bodyMatch: { visibleFloorIds: [], summaryCoveredFloorIds: [] }, timeProjection: projection };
+  const selected = selectRecall({ source, queryContext: buildRecallQueryContext({ coreChat: [{ is_user: true, mes: '阿岚的霜月纪念是什么' }] }), contextSize: 8192 });
+  assert.match(selected.injectionText, /原日期 大陆历1686年霜月初三/u);
+  assert.doesNotMatch(selected.injectionText, /还有\d+天|临近|最近/u);
 });
 
 function backend() {
@@ -78,7 +124,7 @@ test('同一计划处理正文与年度时只多一次请求，正文保存和�
     session: { identity: () => ({ chatId: CHAT, hostChatId: 'host' }) }, getReachable: () => source, getMemoryState: () => ({ memorySyncStatus: 'idle' }), isEnabled: () => true,
     annualSettingsProvider: () => ({ ready: true, people: [{ entityId: PERSON, displayName: '阿岚', profile }] }),
     generateTimeTask: async ({ taskMessages }) => { const request = JSON.parse(taskMessages[0].content);
-      if (request.task === 'annual-settings') return { jsonData: { sources: request.sources.map(row => ({ sourceId: row.sourceId, items: [{ category: 'birthday', label: '生日', originalDate: row.content, calendar: 'gregorian', month: 9, day: 20, note: '' }] })) } };
+      if (request.task === 'annual-settings') return { jsonData: { sources: request.sources.map(row => ({ sourceId: row.sourceId, items: [{ category: 'birthday', label: '生日', originalDate: '9月20日', note: '' }] })) } };
       if (request.currentReview) return { jsonData: { changes: request.trackedItems.map(item => ({ itemId: item.id, progression: '仍待后续正文确认。', assessmentReason: '' })) } };
       return { jsonData: { changes: [{ itemId: null, subjectEntityId: null, subjectName: '阿岚', type: 'deadline', label: '回信期限', observation: '阿岚准备回信', occurrenceTime: '2026-09-19', dueTime: '2026-09-20', periodDays: null, status: 'active', stateRefs: [], progression: '尚未确认回信。', sourceKeys: [request.observations[0].sourceKey] }] } }; },
     newUuid: (() => { let id = 0; return () => `annual-body-${++id}`; })() });
@@ -111,7 +157,7 @@ test('旧档无正文可补读；相同和无关变化不调用，相关变化�
     getReachable: () => source, getMemoryState: () => ({ memorySyncStatus: 'idle' }), isEnabled: () => enabled,
     annualSettingsProvider: () => providerReady ? ({ ready: true, people: [{ entityId: PERSON, displayName: '阿岚', profile }], userPersona: { entityId: USER, name: '用户', description: '' } }) : ({ ready: false }),
     generateTimeTask: async ({ taskMessages }) => { calls += 1; if (fail) throw new Error('synthetic'); const request = JSON.parse(taskMessages[0].content); if (hold) { announceHold(); await hold; }
-      return { jsonData: { sources: request.sources.map(row => ({ sourceId: row.sourceId, items: row.field === 'birthday' ? [{ category: 'birthday', label: '生日', originalDate: row.content, calendar: 'gregorian', month: 9, day: 20, note: '' }] : [] })) } }; },
+      return { jsonData: { sources: request.sources.map(row => ({ sourceId: row.sourceId, items: row.field === 'birthday' ? [{ category: 'birthday', label: '生日', originalDate: '9月20日', note: '' }] : [] })) } }; },
     newUuid: () => `id-${calls}`,
   });
   await runtime.runBatch(); assert.equal(calls, 1); assert.equal(Object.keys((await store.read(CHAT)).head.settingAnnualSources).length, 1);

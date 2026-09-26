@@ -695,7 +695,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const titleIssues = (Array.isArray(visibleItems) ? visibleItems : []).map(item => item.status === 'active'
       && Boolean(item.failureReason || item.assessmentReason || item.reviewStatus === 'unanswered'));
     if (!showStoppedItems) for (const item of annual ?? []) displayItems.push([`${item.person} · ${item.label} · ${item.status}`, `原日期：${item.originalDate}`,
-      item.nextDate ? `下次日期：${item.nextDate}${Number.isInteger(item.distance) ? item.distance === 0 ? '；已到本日' : `；还有 ${item.distance} 天` : '；当前休眠'}` : '日期待明确：保留原设定，不自动套用公历。',
+      item.nextDate ? `本年日期：${item.nextDate}${Number.isInteger(item.distance) ? item.distance === 0 ? '；已到本日' : `；还有 ${item.distance} 天` : '；当前休眠'}`
+        : item.status === '本年日期已过' ? '本年日期已过；不推算下一年份。'
+          : item.status === '本年没有该日期' ? '本年没有对应日期；不推测替代日期。' : '日期或年份未明确：保留原设定，不补猜日期。',
       `${item.note ? `年度含义：${item.note}；` : ''}只读事项，请在千人基础资料或用户人设中修改。`]), titleIssues.push(false);
     const signature = JSON.stringify([displayItems.length ? displayItems : message, titleIssues, recentBatchMode, [...selectedRecentItems], state?.pendingDeletionCount ?? 0, (visibleItems ?? []).map(item => [item.id, item.observationKey]), (annual ?? []).map(item => [item.id, item.status, item.nextDate])]);
     if (recentItemsUi.listSignature === signature) { for (const control of recentItemsUi.itemControls) control.disabled = state?.canOrganize !== true || Boolean(recentItemsUi.pendingAction) || showStoppedItems && state?.pendingDeletionCount > 0; return; }

@@ -26,9 +26,9 @@ test('汉字/全角日期、初廿卅、省略日号和紧邻时钟，仍守公�
 
 test('命名月、纪年与闰月独立身份，只算确认的同月日序', () => {
   const leap=projectTime('闰七月初五 08:00');
-  assert.equal(timeDistance(leap,projectTime('闰七月初七')),2);
+  assert.equal(timeDistance(leap,projectTime('闰七月初七')),null,'没有可确认年份的特殊月份不推测日差');
   assert.equal(timeDistance(leap,projectTime('七月初七')),null);
-  assert.equal(timeDistance(projectTime('闰月初五'),projectTime('闰月初七')),2);
+  assert.equal(timeDistance(projectTime('闰月初五'),projectTime('闰月初七')),null,'没有可确认年份的特殊月份不推测日差');
   assert.equal(timeDistance(projectTime('闰月初五'),leap),null);
   const a=projectTime('星际007年秋月三十五 10:30'), b=projectTime('星际007年秋月三十七 20:30');
   assert.equal(a.day,null); assert.equal(a.year,7); assert.equal(a.monthDay,35); assert.match(a.date,/星际/); assert.equal(a.raw,'星际007年秋月三十五 10:30');
@@ -75,7 +75,7 @@ test('旧date:null在计算/有效推测/模型DTO/编译/召回获得统一视�
   reachable.bodyTimes.set('floor',projectTime('星际007年霜月初五'));
   const incomparable=await prepareTimeBatch(reachable,batches,{currentReview:true,allowInitialProjection:true});
   const unknown=await compileTimeResponse({changes:[{itemId:'main',progression:'可能减轻',assessmentReason:''}]},incomparable,batches);
-  assert.match(unknown.changes[0].reviewAssessment.reason,/间隔不明/);
+  assert.match(unknown.changes[0].reviewAssessment.reason,/时间间隔无法确认/);
 });
 
 test('旧正文来源指纹含独立旧anchor链，覆盖继续有效且时间改动仍使覆盖失效', async () => {

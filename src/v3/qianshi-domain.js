@@ -42,12 +42,55 @@ const activeMemories = reachable => {
   });
 };
 
+const eventSignature = event => {
+  const value = structuredClone(event);
+  delete value.important;
+  return JSON.stringify(value);
+};
+const relationSignature = relation => JSON.stringify([relation.type, relation.fromEventId, relation.toEventId, relation.certainty]);
+
+export function effectiveQianshiDelta(memory) {
+  const delta = memory?.qianshiDelta;
+  const formalEvents = ['ready', 'partial'].includes(delta?.status) ? (delta.events ?? []) : [];
+  const formalRelations = ['ready', 'partial'].includes(delta?.status) ? (delta.relations ?? []) : [];
+  const events = [...formalEvents], relations = [...formalRelations], reviewEvents = [], reviewRelations = [], reviewRelationEntries = [], conflicts = [];
+  const eventById = new Map(formalEvents.map(event => [event.id, event]));
+  const relationById = new Map(formalRelations.map(relation => [relation.id, relation]));
+  for (const candidate of delta?.historyReview?.candidates ?? []) {
+    if (!['pending', 'new'].includes(candidate.decision)) continue;
+    const event = candidate.event, priorEvent = eventById.get(event.id);
+    let eventCompatible = true;
+    if (priorEvent) {
+      if (eventSignature(priorEvent) !== eventSignature(event)) {
+        conflicts.push(frozen({ kind: 'event', id: event.id }));
+        eventCompatible = false;
+      }
+    } else {
+      eventById.set(event.id, event); events.push(event); reviewEvents.push(event);
+    }
+    if (!eventCompatible) continue;
+    for (const relation of candidate.relations ?? []) {
+      const priorRelation = relationById.get(relation.id);
+      if (priorRelation) {
+        if (relationSignature(priorRelation) !== relationSignature(relation)) conflicts.push(frozen({ kind: 'relation', id: relation.id }));
+      } else {
+        relationById.set(relation.id, relation); relations.push(relation); reviewRelations.push(relation);
+        reviewRelationEntries.push(frozen({ relation, ownerEventId: event.id, ownerEventSignature: eventSignature(event) }));
+      }
+    }
+  }
+  return frozen({ events: frozen(events), relations: frozen(relations), formalEvents: frozen([...formalEvents]),
+    formalRelations: frozen([...formalRelations]), reviewEvents: frozen(reviewEvents), reviewRelations: frozen(reviewRelations), reviewRelationEntries: frozen(reviewRelationEntries),
+    conflicts: frozen(conflicts) });
+}
+
 const nodeId = (kind, id) => `${kind}:${id}`;
 const eventNode = id => nodeId('event', id);
 const matterNode = id => nodeId('matter', id);
 const personNode = id => nodeId('person', id);
 
 const projectQianshiTime = (value, anchor = null) => projectTime(value, anchor, { allowShortGregorianYear: true });
+const GREGORIAN_MONTH_DAYS = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
 function sourceTimeFor(event, floorTime, { aggregate = false } = {}) {
   if (aggregate) return projectQianshiTime(event.storyTime ?? '', null);
@@ -71,40 +114,59 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
   const entityById = new Map(directory.map(entry => [entry.entityId, entry]));
   const events = [], relations = [], discardedOrderRelations = [], danglingRelationIds = [], danglingContinuationIds = [], degradedFloorIds = new Set();
   const danglingRelations = [], danglingContinuations = [];
+  const legacyReviewConflicts = [];
   const eventById = new Map();
   const eventMemoryFloorById = new Map();
   const relationById = new Map();
   const matterEvents = new Map();
   const addNode = (id, attributes) => { if (!graph.hasNode(id)) graph.addNode(id, attributes); };
-  for (const { floor, memory } of activeMemories(reachable)) {
-    const delta = memory.qianshiDelta;
-    if (!delta || !['ready', 'partial'].includes(delta.status)) continue;
-    const aggregate = (memory.sourceFloorIds ?? [memory.floorId]).length > 1;
-    for (const raw of delta.events) {
-      const eventData = structuredClone(raw);
-      delete eventData.important;
-      const sourceFloor = floorById.get(raw.sourceFloorId);
-      const assistantSeq = aggregate ? sourceFloor?.assistantSeq ?? null : floor.assistantSeq;
-      const event = frozen({ ...eventData, floorMemoryId: memory.id, assistantSeq,
-        parsedStoryTime: sourceTimeFor(raw, floorTimes.get(floor.id), { aggregate }) });
-      if (eventById.has(event.id)) continue;
-      eventById.set(event.id, event); events.push(event);
-      eventMemoryFloorById.set(event.id, memory.floorId);
-      addNode(eventNode(event.id), { kind: 'event', value: event });
-      progressGraph.addNode(eventNode(event.id), { value: event });
-      if (event.matterId !== null) {
-        matterEvents.set(event.matterId, [...(matterEvents.get(event.matterId) ?? []), event]);
-        addNode(matterNode(event.matterId), { kind: 'matter', matterId: event.matterId });
-        graph.addDirectedEdgeWithKey(`matter-progress:${event.matterId}:${event.id}`, matterNode(event.matterId), eventNode(event.id), { type: 'matterProgress' });
+  const memoryRows = activeMemories(reachable).map(({ floor, memory }) => ({ floor, memory, effective: effectiveQianshiDelta(memory) }));
+  for (const { floor, memory, effective } of memoryRows) for (const conflict of effective.conflicts) {
+    legacyReviewConflicts.push(frozen({ floorId: floor.id, memoryId: memory.id, ...conflict }));
+  }
+  const formalEventsById = new Map(memoryRows.flatMap(({ effective }) => effective.formalEvents.map(event => [event.id, event])));
+  const eventEntries = [
+    ...memoryRows.flatMap(row => row.effective.formalEvents.map(event => ({ ...row, event, review: false }))),
+    ...memoryRows.flatMap(row => row.effective.reviewEvents.map(event => ({ ...row, event, review: true }))),
+  ];
+  const acceptedReviewEventById = new Map();
+  for (const { floor, memory, event: raw, review } of eventEntries) {
+    if (review) {
+      const formal = formalEventsById.get(raw.id), accepted = acceptedReviewEventById.get(raw.id);
+      if (formal) {
+        if (eventSignature(formal) !== eventSignature(raw)) legacyReviewConflicts.push(frozen({ floorId: floor.id, memoryId: memory.id, kind: 'event', id: raw.id }));
+        continue;
       }
-      for (const person of event.people) {
-        const stable = person.entityId ?? `label:${person.name}`;
-        const edgeKey = `participates:${stable}:${event.id}`;
-        addNode(personNode(stable), { kind: 'person', entityId: person.entityId, name: entityById.get(person.entityId)?.displayName ?? person.name });
-        if (!graph.hasEdge(edgeKey)) graph.addDirectedEdgeWithKey(edgeKey, personNode(stable), eventNode(event.id), { type: 'participates' });
+      if (accepted) {
+        if (eventSignature(accepted.event) !== eventSignature(raw)) legacyReviewConflicts.push(frozen({ floorId: floor.id, memoryId: memory.id, kind: 'event', id: raw.id }));
+        continue;
       }
-      orderGraph.addNode(eventNode(event.id), { value: event });
+      acceptedReviewEventById.set(raw.id, { event: raw, memoryId: memory.id });
     }
+    const aggregate = (memory.sourceFloorIds ?? [memory.floorId]).length > 1;
+    const eventData = structuredClone(raw);
+    delete eventData.important;
+    const sourceFloor = floorById.get(raw.sourceFloorId);
+    const assistantSeq = aggregate ? sourceFloor?.assistantSeq ?? null : floor.assistantSeq;
+    const event = frozen({ ...eventData, floorMemoryId: memory.id, assistantSeq,
+      parsedStoryTime: sourceTimeFor(raw, floorTimes.get(floor.id), { aggregate }) });
+    if (eventById.has(event.id)) continue;
+    eventById.set(event.id, event); events.push(event);
+    eventMemoryFloorById.set(event.id, memory.floorId);
+    addNode(eventNode(event.id), { kind: 'event', value: event });
+    progressGraph.addNode(eventNode(event.id), { value: event });
+    if (event.matterId !== null) {
+      matterEvents.set(event.matterId, [...(matterEvents.get(event.matterId) ?? []), event]);
+      addNode(matterNode(event.matterId), { kind: 'matter', matterId: event.matterId });
+      graph.addDirectedEdgeWithKey(`matter-progress:${event.matterId}:${event.id}`, matterNode(event.matterId), eventNode(event.id), { type: 'matterProgress' });
+    }
+    for (const person of event.people) {
+      const stable = person.entityId ?? `label:${person.name}`;
+      const edgeKey = `participates:${stable}:${event.id}`;
+      addNode(personNode(stable), { kind: 'person', entityId: person.entityId, name: entityById.get(person.entityId)?.displayName ?? person.name });
+      if (!graph.hasEdge(edgeKey)) graph.addDirectedEdgeWithKey(edgeKey, personNode(stable), eventNode(event.id), { type: 'participates' });
+    }
+    orderGraph.addNode(eventNode(event.id), { value: event });
   }
   for (const event of events) for (const sourceId of event.continuesFromEventIds) if (!eventById.has(sourceId)) {
     danglingContinuationIds.push(`${event.id}:${sourceId}`);
@@ -112,10 +174,29 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
     danglingContinuations.push(frozen({ floorId: event.sourceFloorId, memoryFloorId, eventId: event.id, sourceEventId: sourceId }));
     degradedFloorIds.add(memoryFloorId);
   }
-  for (const { memory } of activeMemories(reachable)) {
-    const delta = memory.qianshiDelta;
-    if (!delta || !['ready', 'partial'].includes(delta.status)) continue;
-    for (const relation of delta.relations) {
+  const formalRelationsById = new Map(memoryRows.flatMap(({ effective }) => effective.formalRelations.map(relation => [relation.id, relation])));
+  const acceptedReviewRelationById = new Map();
+  const relationEntries = [
+    ...memoryRows.flatMap(row => row.effective.formalRelations.map(relation => ({ ...row, relation, review: false }))),
+    ...memoryRows.flatMap(row => row.effective.reviewRelationEntries.map(entry => ({ ...row, ...entry, review: true }))),
+  ];
+  for (const { memory, floor, relation, review, ownerEventId, ownerEventSignature } of relationEntries) {
+      if (review) {
+        const formalOwner = formalEventsById.get(ownerEventId), acceptedOwner = acceptedReviewEventById.get(ownerEventId);
+        const ownerAccepted = formalOwner && eventSignature(formalOwner) === ownerEventSignature
+          || acceptedOwner && eventSignature(acceptedOwner.event) === ownerEventSignature;
+        if (!ownerAccepted) continue;
+        const formal = formalRelationsById.get(relation.id), accepted = acceptedReviewRelationById.get(relation.id);
+        if (formal) {
+          if (relationSignature(formal) !== relationSignature(relation)) legacyReviewConflicts.push(frozen({ floorId: floor.id, memoryId: memory.id, kind: 'relation', id: relation.id }));
+          continue;
+        }
+        if (accepted) {
+          if (relationSignature(accepted.relation) !== relationSignature(relation)) legacyReviewConflicts.push(frozen({ floorId: floor.id, memoryId: memory.id, kind: 'relation', id: relation.id }));
+          continue;
+        }
+        acceptedReviewRelationById.set(relation.id, { relation, memoryId: memory.id });
+      }
       if (!eventById.has(relation.fromEventId) || !eventById.has(relation.toEventId)) {
         danglingRelationIds.push(relation.id); danglingRelations.push(frozen({ floorId: memory.floorId, relationId: relation.id,
           fromEventId: relation.fromEventId, toEventId: relation.toEventId, reason: 'missing-event' }));
@@ -132,7 +213,6 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
         throw qianshiError('QIANSHI_RELATION_ID_CONFLICT', 'relations');
       }
       relationById.set(relation.id, relation);
-    }
   }
   for (const relation of relationById.values()) {
     const value = frozen({ ...structuredClone(relation) });
@@ -149,16 +229,27 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
   }
   const timeGroup = value => Number.isInteger(value?.day) ? 'absolute'
     : value?.monthIdentity ? `named:${value.monthIdentity}`
-      : value?.year === null && Number.isInteger(value?.month) ? `month:${value.month}` : null;
+      : value?.year === null && Number.isInteger(value?.month) ? 'month-day' : null;
   const timedGroups = new Map();
   for (const event of events) {
     const key = timeGroup(event.parsedStoryTime);
     if (key) timedGroups.set(key, [...(timedGroups.get(key) ?? []), event]);
   }
+  const sameTimedDate = (left, right) => {
+    if (Number.isInteger(left?.day) && Number.isInteger(right?.day)) return left.day === right.day;
+    if (left?.monthIdentity || right?.monthIdentity) return left?.monthIdentity === right?.monthIdentity
+      && left?.monthDay === right?.monthDay && left?.weekOrdinal === right?.weekOrdinal && left?.weekday === right?.weekday;
+    if (Number.isInteger(left?.month) && Number.isInteger(right?.month)) return left.month === right.month && left.monthDay === right.monthDay;
+    if (Number.isInteger(left?.monthDay) && Number.isInteger(right?.monthDay)) return left.monthDay === right.monthDay
+      && left.weekOrdinal === right.weekOrdinal && left.weekday === right.weekday;
+    return false;
+  };
   for (const values of timedGroups.values()) {
     const sortableTime = value => Number.isInteger(value?.day) ? value.day
-      : Number.isInteger(value?.monthDay) ? value.monthDay
-        : Number.isInteger(value?.weekOrdinal) ? value.weekOrdinal * 7 : 0;
+      : Number.isInteger(value?.month) && Number.isInteger(value?.monthDay) && !value?.monthIdentity
+        ? GREGORIAN_MONTH_DAYS.slice(0, value.month - 1).reduce((sum, days) => sum + days, 0) + value.monthDay
+        : Number.isInteger(value?.monthDay) ? value.monthDay
+          : Number.isInteger(value?.weekOrdinal) ? value.weekOrdinal * 7 : 0;
     values.sort((left, right) => {
       const a = left.parsedStoryTime, b = right.parsedStoryTime;
       return sortableTime(a) - sortableTime(b)
@@ -167,22 +258,21 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
     const timeBuckets = [];
     for (const event of values) {
       const current = timeBuckets.at(-1), representative = current?.[0];
-      if (representative && !comparableBefore(representative.parsedStoryTime, event.parsedStoryTime)
-        && !comparableBefore(event.parsedStoryTime, representative.parsedStoryTime)) current.push(event);
+      if (representative && sameTimedDate(representative.parsedStoryTime, event.parsedStoryTime)) current.push(event);
       else timeBuckets.push([event]);
     }
     for (let index = 1; index < timeBuckets.length; index += 1) {
       const earlier = timeBuckets[index - 1], later = timeBuckets[index];
       if (!comparableBefore(earlier[0].parsedStoryTime, later[0].parsedStoryTime)) continue;
-      const boundary = `time-boundary:${orderGraph.order}:${index}`;
-      orderGraph.addNode(boundary, { value: null });
       for (const event of earlier) {
         const from = eventNode(event.id);
-        if (!willCreateCycle(orderGraph, from, boundary)) orderGraph.addDirectedEdge(from, boundary, { relationId: null, inferredFromExplicitTime: true });
-      }
-      for (const event of later) {
-        const to = eventNode(event.id);
-        if (!willCreateCycle(orderGraph, boundary, to)) orderGraph.addDirectedEdge(boundary, to, { relationId: null, inferredFromExplicitTime: true });
+        for (const next of later) {
+          const to = eventNode(next.id);
+          if (comparableBefore(event.parsedStoryTime, next.parsedStoryTime)
+            && !orderGraph.hasDirectedEdge(from, to) && !willCreateCycle(orderGraph, from, to)) {
+            orderGraph.addDirectedEdgeWithKey(`time:${event.id}:${next.id}`, from, to, { relationId: null, inferredFromExplicitTime: true });
+          }
+        }
       }
     }
   }
@@ -225,23 +315,28 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
   const currentProgress = frozen({ text: progressLines.length ? ['[当前剧情进度]', ...progressLines].join('\n') : '', characterCount: progressLines.join('\n').length,
     eventIds: frozen([...new Set(progressEventIds)]), matterIds: frozen(progressMatterIds) });
   const eligible = activeMemories(reachable);
-  const eligibleStatuses = eligible.map(({ floor, memory }) => ({ floorId: floor.id, status: memory.qianshiDelta?.status ?? 'unprocessed' }));
+  const eligibleStatuses = eligible.map(({ floor, memory }) => {
+    const effective = effectiveQianshiDelta(memory);
+    return { floorId: floor.id, status: memory.qianshiDelta?.status ?? 'unprocessed', hasEvents: effective.events.length > 0,
+      legacyPendingOnly: memory.qianshiDelta?.status === 'pending' && effective.reviewEvents.length > 0 };
+  });
   const deltaStatuses = eligibleStatuses.map(value => value.status);
-  const completeFloorIds = eligibleStatuses.filter(value => ['ready', 'empty'].includes(value.status) && !degradedFloorIds.has(value.floorId));
+  const completeFloorIds = eligibleStatuses.filter(value => (['ready', 'empty'].includes(value.status) || value.status === 'partial' && value.hasEvents || value.legacyPendingOnly)
+    && (!degradedFloorIds.has(value.floorId) || value.status === 'partial' && value.hasEvents || value.legacyPendingOnly));
   const coverage = frozen({
     eligibleFloors: eligible.length,
     readyFloors: deltaStatuses.filter(status => status === 'ready').length,
     emptyFloors: deltaStatuses.filter(status => status === 'empty').length,
     completeFloors: completeFloorIds.length,
-    partialFloors: eligibleStatuses.filter(value => value.status === 'partial' && !degradedFloorIds.has(value.floorId)).length,
-    pendingFloors: deltaStatuses.filter(status => ['pending', 'unprocessed'].includes(status)).length,
+    partialFloors: eligibleStatuses.filter(value => value.status === 'partial' && !value.hasEvents && !degradedFloorIds.has(value.floorId)).length,
+    pendingFloors: eligibleStatuses.filter(value => ['pending', 'unprocessed'].includes(value.status) && !value.legacyPendingOnly).length,
     degradedFloors: degradedFloorIds.size,
     unavailableFloors: (floors.length - eligible.length),
   });
   return frozen({ graph, orderGraph, events: frozen(events), matters: frozen(matterDtos), relations: frozen(relations), currentProgress, coverage,
     diagnostics: frozen({ discardedOrderRelations: frozen(discardedOrderRelations), danglingRelationIds: frozen(danglingRelationIds),
       danglingContinuationIds: frozen(danglingContinuationIds), danglingContinuations: frozen(danglingContinuations),
-      danglingRelations: frozen(danglingRelations), degradedFloorIds: frozen([...degradedFloorIds]), graphNodes: graph.order, graphEdges: graph.size,
+      danglingRelations: frozen(danglingRelations), degradedFloorIds: frozen([...degradedFloorIds]), legacyReviewConflicts: frozen(legacyReviewConflicts), graphNodes: graph.order, graphEdges: graph.size,
       progressNodes: progressGraph.order, progressEdges: progressGraph.size, orderNodes: orderGraph.order, orderEdges: orderGraph.size }) });
 }
 
@@ -285,7 +380,6 @@ function representativeEventIds(ids, eventById, maximum = 5) {
   return values.filter(event => chosen.has(event.id)).map(event => event.id);
 }
 
-const GREGORIAN_ERA_PREFIX = /^(?:公元|公历|公曆|西历|西曆)/u;
 const DAY_PERIOD_SUFFIX = /[\s，,]*(?:凌晨|清晨|拂晓|黎明|早晨|早上|上午|中午|正午|下午|傍晚|黄昏|晚上|夜晚|夜间|夜里|午夜|深夜)$/u;
 const STORY_TIME_RANGE = /(?:→|->|⟶|至|到|～|~|—|–|\s+-\s+|(?<=日)\s*-\s*(?=\d)|(?<=:\d{2})\s*-\s*(?=\d{1,2}:[0-5]\d))/u;
 const STORY_SECONDS = /(?<!\d)(?:[01]?\d|2[0-3]):[0-5]\d[:：]([0-5]\d)(?:Z)?(?=$|[\s，])/u;
@@ -300,42 +394,17 @@ function recallTimelineTime(event) {
   const time = ranged ? rangeSeparator && rangeStart ? projectQianshiTime(rangeStart) : null
       : relative && !event.parsedStoryTime?.date ? null
       : relative ? event.parsedStoryTime : sortableRaw ? projectQianshiTime(sortableRaw) : event.parsedStoryTime;
-  let era = '', monthName = '';
-  if (time?.monthIdentity) try {
-    const identity = JSON.parse(time.monthIdentity);
-    era = typeof identity?.[0] === 'string' ? identity[0] : '';
-    monthName = typeof identity?.[2] === 'string' ? identity[2] : '';
-  } catch { /* invalid persisted identities remain incomparable */ }
-  const explicitGregorian = GREGORIAN_ERA_PREFIX.test(raw);
-  const explicitNamed = Boolean(era && raw.startsWith(era));
-  const kind = explicitGregorian ? 'gregorian' : explicitNamed || era ? `named:${era}`
-    : Number.isInteger(time?.year) ? 'bare' : time?.monthIdentity ? `month:${time.monthIdentity}` : 'unknown';
-  const standardMonth = Number.isInteger(time?.month) && monthName !== `闰${time.month}月`;
-  return { time, kind, explicit: explicitGregorian || explicitNamed, standardMonth, second: rangeStart.match(STORY_SECONDS)?.[1] };
+  const kind = time?.monthIdentity ? `special:${time.monthIdentity}`
+    : Number.isInteger(time?.day) ? 'dated' : Number.isInteger(time?.month) && Number.isInteger(time?.monthDay) ? 'month-day' : 'unknown';
+  const standardMonth = !time?.monthIdentity && Number.isInteger(time?.month) && Number.isInteger(time?.monthDay);
+  return { time, kind, standardMonth, second: rangeStart.match(STORY_SECONDS)?.[1] };
 }
 
-function recallTimelineTimeComparator(events, calendarEvidenceEvents = events) {
+function recallTimelineTimeComparator(events) {
   const views = new Map(events.map(event => [event.id, recallTimelineTime(event)]));
-  const explicitCalendarsByYear = new Map();
-  for (const event of calendarEvidenceEvents) {
-    const view = views.get(event.id) ?? recallTimelineTime(event);
-    if (!view.explicit || !Number.isInteger(view.time?.year)) continue;
-    explicitCalendarsByYear.set(view.time.year, new Set([...(explicitCalendarsByYear.get(view.time.year) ?? []), view.kind]));
-  }
-  const calendar = view => {
-    if (view.kind !== 'bare') return view.kind;
-    const candidates = explicitCalendarsByYear.get(view.time?.year);
-    return candidates?.size === 1 ? [...candidates][0] : 'bare';
-  };
   return (left, right) => {
     const a = views.get(left.id), b = views.get(right.id);
-    if (!a?.time || !b?.time || calendar(a) !== calendar(b)) return 0;
-    if (a.standardMonth && b.standardMonth
-      && [a.time.year, a.time.month, a.time.monthDay, b.time.year, b.time.month, b.time.monthDay].every(Number.isInteger)) {
-      const dateOrder = a.time.year - b.time.year || a.time.month - b.time.month || a.time.monthDay - b.time.monthDay;
-      if (dateOrder) return dateOrder;
-      return Number.isInteger(a.time.minute) && Number.isInteger(b.time.minute) ? a.time.minute - b.time.minute : 0;
-    }
+    if (!a?.time || !b?.time || a.kind !== b.kind) return 0;
     const distance = timeDistance(a.time, b.time);
     if (distance !== null && distance !== 0) return distance > 0 ? -1 : 1;
     return distance === 0 && Number.isInteger(a.time.minute) && Number.isInteger(b.time.minute)
@@ -343,12 +412,12 @@ function recallTimelineTimeComparator(events, calendarEvidenceEvents = events) {
   };
 }
 
-function orderRecallTimelineEvents(events, relations, calendarEvidenceEvents = events) {
+function orderRecallTimelineEvents(events, relations) {
   if (events.length < 2) return events;
   const graph = new DirectedGraph({ allowSelfLoops: false });
   const byId = new Map(events.map(event => [event.id, event]));
   events.forEach(event => graph.addNode(event.id));
-  const compareTime = recallTimelineTimeComparator(events, calendarEvidenceEvents);
+  const compareTime = recallTimelineTimeComparator(events);
   for (let leftIndex = 0; leftIndex < events.length; leftIndex += 1) for (let rightIndex = leftIndex + 1; rightIndex < events.length; rightIndex += 1) {
     const left = events[leftIndex], right = events[rightIndex];
     const order = compareTime(left, right);
@@ -420,36 +489,22 @@ function timelineDateCopy(view, raw) {
 }
 
 function timelineSegmentLabel(segment, groups) {
-  if (segment.id === 'gregorian') return '公历';
-  if (segment.id === 'yearless') return '年份未明';
-  if (segment.id === 'bare') return '年份已知，历法未注明';
-  if (segment.id.startsWith('named:')) return clean(segment.id.slice('named:'.length), 120) || '具名纪年';
-  return clean(groups[0]?.period, 120) || '独立日期段';
+  if (segment.id === 'dated') return '完整日期';
+  if (segment.id === 'month-day') return '仅月日';
+  return clean(groups[0]?.period, 120) || '时间未明确';
 }
 
 /** Full-page projection: one parsed key per event, with no pairwise event comparison. */
 export function projectQianshiTimeline(projection) {
   const events = Array.isArray(projection?.events) ? projection.events : [];
   const views = new Map(events.map(event => [event.id, recallTimelineTime(event)]));
-  const explicitCalendarsByYear = new Map();
-  for (const event of events) {
-    const view = views.get(event.id);
-    if (!view?.explicit || !Number.isInteger(view.time?.year)) continue;
-    explicitCalendarsByYear.set(view.time.year, new Set([...(explicitCalendarsByYear.get(view.time.year) ?? []), view.kind]));
-  }
-  const calendar = view => {
-    if (view.kind !== 'bare') return view.kind;
-    const candidates = explicitCalendarsByYear.get(view.time?.year);
-    return candidates?.size === 1 ? [...candidates][0] : 'bare';
-  };
   const segmentFor = view => {
     const tuple = timelineDateTuple(view);
     if (!tuple) return null;
-    const kind = calendar(view);
-    if (Number.isInteger(view.time?.day)) return kind;
-    if (view.standardMonth && Number.isInteger(view.time?.year)) return kind;
-    if (view.standardMonth && view.time?.year === null && Number.isInteger(view.time?.month) && !view.time?.monthIdentity) return 'yearless';
-    if (view.time?.monthIdentity) return `month:${view.time.monthIdentity}`;
+    if (view.time?.monthIdentity) return `special:${view.time.monthIdentity}`;
+    if (Number.isInteger(view.time?.day)) return 'dated';
+    if (view.standardMonth && view.time?.year === null) return 'month-day';
+    if (view.standardMonth && Number.isInteger(view.time?.year)) return 'dated';
     return null;
   };
   const eventIndex = new Map(events.map((event, index) => [event.id, index]));
@@ -461,9 +516,14 @@ export function projectQianshiTimeline(projection) {
     const groupKey = JSON.stringify(tuple);
     let segment = segments.get(segmentId);
     if (!segment) {
-      segment = { id: segmentId, firstIndex: eventIndex.get(event.id), hasKnownYear: Number.isInteger(view.time?.year), groups: new Map() };
+      segment = { id: segmentId, firstIndex: eventIndex.get(event.id), hasKnownYear: Number.isInteger(view.time?.year),
+        hasJanuary: false, hasDecember: false, groups: new Map() };
       segments.set(segmentId, segment);
     } else if (Number.isInteger(view.time?.year)) segment.hasKnownYear = true;
+    if (segmentId === 'month-day') {
+      segment.hasJanuary ||= view.time.month === 1;
+      segment.hasDecember ||= view.time.month === 12;
+    }
     let group = segment.groups.get(groupKey);
     if (!group) {
       group = { id: `qianshi-day-${segment.firstIndex}-${segment.groups.size}`, segmentId, tuple, firstIndex: eventIndex.get(event.id), ...copy, eventIds: [] };
@@ -476,15 +536,18 @@ export function projectQianshiTimeline(projection) {
   const segmentList = [...segments.values()].sort((left, right) => Number(right.hasKnownYear) - Number(left.hasKnownYear)
     || left.firstIndex - right.firstIndex);
   const resultSegments = segmentList.map(segment => {
-    // Incomparable calendars retain source order; their events are sorted only inside each calendar.
-    const groups = [...segment.groups.values()].sort((left, right) => compareTuple(left.tuple, right.tuple) || left.firstIndex - right.firstIndex);
-    const latest = groups.at(-1);
+    const preserveSourceOrder = segment.id === 'month-day' && segment.hasJanuary && segment.hasDecember;
+    const groups = [...segment.groups.values()].sort((left, right) => preserveSourceOrder
+      ? left.firstIndex - right.firstIndex : compareTuple(left.tuple, right.tuple) || left.firstIndex - right.firstIndex);
+    const latest = preserveSourceOrder ? null : groups.at(-1);
     const label = timelineSegmentLabel(segment, groups);
     return frozen({ id: segment.id, label, groups: frozen(groups.map(group => frozen({ id: group.id, day: group.day,
-      period: segment.id.startsWith('named:') && group.period && !group.period.startsWith(label) ? `${label}${group.period}` : group.period, full: group.full,
+      period: group.period, full: group.full,
       eventIds: frozen([...group.eventIds]) }))), latestGroupId: latest?.id ?? null });
   });
-  const hasGlobalLatest = resultSegments.length === 1 && undatedEventIds.length === 0;
+  const yearlessBoundaryAmbiguous = segments.size === 1 && [...segments.values()][0].id === 'month-day'
+    && [...segments.values()][0].hasJanuary && [...segments.values()][0].hasDecember;
+  const hasGlobalLatest = resultSegments.length === 1 && undatedEventIds.length === 0 && !yearlessBoundaryAmbiguous;
   return frozen({ segments: frozen(resultSegments), undatedEventIds: frozen(undatedEventIds), hasGlobalLatest,
     globalLatestGroupId: hasGlobalLatest ? resultSegments[0].latestGroupId : null });
 }
@@ -766,10 +829,12 @@ export function createQianshiCandidateIndex({ projector = projectQianshiGraph } 
   };
   function appendDelta(state, floor, memory, floorSeq) {
     const delta = memory?.qianshiDelta;
+    const effective = effectiveQianshiDelta(memory);
+    if (effective.reviewEvents.length || effective.reviewRelations.length) return false;
     if (!delta || !['ready', 'partial'].includes(delta.status)) return true;
     const aggregate = (memory.sourceFloorIds ?? [memory.floorId]).length > 1;
     const affected = new Set();
-    for (const event of delta.events ?? []) {
+    for (const event of effective.events) {
       if (state.events.has(event.id)) continue;
       const assistantSeq = aggregate ? floorSeq.get(event.sourceFloorId) ?? null : floor.assistantSeq;
       const projectedEvent = { ...event, assistantSeq };
@@ -782,7 +847,7 @@ export function createQianshiCandidateIndex({ projector = projectQianshiGraph } 
       state.matters.set(event.matterId, addFrontierEvent(current, projectedEvent, assistantSeq));
       affected.add(event.matterId);
     }
-    for (const relation of delta.relations ?? []) {
+    for (const relation of effective.relations) {
       const prior = state.relations.get(relation.id);
       if (prior && (prior.type !== relation.type || prior.fromEventId !== relation.fromEventId || prior.toEventId !== relation.toEventId)) return false;
       state.relations.set(relation.id, relation);
@@ -827,8 +892,13 @@ export function createQianshiCandidateIndex({ projector = projectQianshiGraph } 
   return Object.freeze({
     prepare(reachable, options = {}) {
       const keys = floorMemoryIds(reachable), root = reachable?.root ?? {};
+      const extendsLegacyReviewPrefix = snapshot && keys.length > snapshot.keys.length && activeMemories(reachable).some(({ memory }) => {
+        const effective = effectiveQianshiDelta(memory);
+        return effective.reviewEvents.length > 0 || effective.reviewRelations.length > 0;
+      });
       const samePrefix = snapshot && snapshot.chatId === root.chatId && snapshot.generation === root.narrativeGeneration
         && snapshot.identityKey === identityKey(options) && snapshot.keys.length <= keys.length
+        && !extendsLegacyReviewPrefix
         && snapshot.keys.every((key, index) => key.every((part, partIndex) => part === keys[index][partIndex]));
       if (!samePrefix) {
         const projection = projector(reachable, { identityProjection: options.identityProjection });
@@ -923,14 +993,12 @@ export async function compileQianshiDelta({ packet, floor, sourceFloorBindings =
       if (!rawLinks.length) for (const candidateKey of list(raw.continues ?? raw.continuesCandidates ?? raw.relatedCandidates).map(keyText).filter(Boolean)) rawLinks.push({ candidateKey, kind: 'progress' });
       const resolvedLinks = rawLinks.map(link => ({ ...link, candidate: candidateByKey.get(link.candidateKey) })).filter(link => link.candidate);
       const invalidReference = rawLinks.length !== resolvedLinks.length;
-      if (invalidReference) issues.push(`事件 ${index + 1} 含无效旧事项候选引用。`);
       const matterIds = [...new Set(resolvedLinks.map(item => item.candidate.matterId))];
-      if (matterIds.length > 1) { issues.push(`事件 ${index + 1} 同时引用多个旧事项，已按独立事件保存。`); resolvedLinks.length = 0; }
+      if (matterIds.length > 1) resolvedLinks.length = 0;
       const id = await deterministicUuid(['qianshi-event-v1', sourceFloorId, localKey, title, description, status]);
       const storyTime = clean(raw.storyTime ?? raw.occurredAt, 500) || null;
       const link = resolvedLinks[0] ?? null;
       const invalidProgress = link?.kind === 'progress' && !link.candidate.matterId;
-      if (invalidProgress) issues.push(`事件 ${index + 1} 将一次性事件当作持续事项的进展；应改为背景关联或补充先后顺序。`);
       const backdated = link?.kind === 'progress' && storyTime && link.candidate.latestStoryTime
         && comparableBefore(projectTime(storyTime), projectTime(link.candidate.latestStoryTime));
       const invalidLink = invalidReference || invalidProgress;
@@ -959,13 +1027,13 @@ export async function compileQianshiDelta({ packet, floor, sourceFloorBindings =
     : list(qianshi.order).slice(0, 320);
   for (const [index, raw] of rawOrder.entries()) {
     const fromEventId = resolveEventRef(raw?.before), toEventId = resolveEventRef(raw?.after);
-    if (!fromEventId || !toEventId || fromEventId === toEventId) { issues.push(`先后关系 ${index + 1} 引用无效。`); continue; }
+    if (!fromEventId || !toEventId || fromEventId === toEventId) continue;
     relations.push({ id: await deterministicUuid(['qianshi-relation-v1', 'before', fromEventId, toEventId]), type: 'before', fromEventId, toEventId,
       certainty: raw?.certainty === 'strong' ? 'strong' : 'explicit' });
   }
   const dedupedRelations = [...new Map(relations.map(item => [item.id, item])).values()];
-  const status = events.length ? issues.length ? 'partial' : 'ready' : issues.length ? 'pending' : 'empty';
-  const reason = issues.length ? clean(`${issues.length} 项未能编译：${issues.slice(0, 3).join('；')}`, 500) : null;
+  const status = events.length ? 'ready' : qianshi.events.length === 0 ? 'empty' : 'pending';
+  const reason = issues.length && !events.length ? clean(`${issues.length} 项未能编译：${issues.slice(0, 3).join('；')}`, 500) : null;
   return validateQianshiDelta({ schemaVersion: QIANSHI_SCHEMA_VERSION, status, reason, compiledAt: now, candidateStats: stats, events, relations: dedupedRelations }, { floorIds: sourceFloorIds });
 }
 

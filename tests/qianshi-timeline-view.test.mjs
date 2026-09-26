@@ -36,19 +36,18 @@ function fixture() {
     history: { status: 'idle', processedFloors: 0, totalFloors: 0, calls: 0, message: '' } };
 }
 
-function harness({ confirm = false, choose = null, initialSnapshot = fixture(), plan = null, startResult = { status: 'completed', message: '' }, reviewResult = null } = {}) {
+function harness({ confirm = false, choose = null, initialSnapshot = fixture(), plan = null, startResult = { status: 'completed', message: '' } } = {}) {
   let snapshot = structuredClone(initialSnapshot), state = { status: 'ready', memoryWorkBusy: false, qianshiHistoryActive: false }, prepareCalls = 0, startCalls = 0;
-  const listeners = new Set(), confirms = [], reviewCalls = [];
+  const listeners = new Set(), confirms = [];
   const runtime = { getState: () => state, getQianshiSnapshot: () => structuredClone(snapshot), subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    async prepareQianshiHistory() { prepareCalls += 1; return { status: 'ready', planId: 'plan', totalFloors: 2, batchCount: 1, apiCalls: 1, localRepairFloors: 1, modelFloors: 2, estimatedInputTokens: 900, unavailableFloors: [], ...(plan ?? {}) }; },
+    async prepareQianshiHistory() { prepareCalls += 1; return { status: 'ready', planId: 'plan', totalFloors: 2, batchCount: 1, apiCalls: 1, modelFloors: 2, estimatedInputTokens: 900, unavailableFloors: [], ...(plan ?? {}) }; },
     async startQianshiHistory() { startCalls += 1; if (typeof startResult === 'function') return startResult({ setHistory(history) { snapshot.history = history; for (const listener of listeners) listener(state); } }); snapshot.history = { ...snapshot.history, ...startResult }; for (const listener of listeners) listener(state); return startResult; },
-    async confirmQianshiHistoryReview({ independent, ...review }) { reviewCalls.push({ independent, ...review }); if (reviewResult) return reviewResult({ independent, review, snapshot, emit(next = state) { for (const listener of listeners) listener(next); } }); snapshot.history.pendingReviews = []; snapshot.history.message = independent ? '已确认独立新事实。' : '已拒绝追加。'; for (const listener of listeners) listener(state); return snapshot.history; },
     async stopQianshiHistory() { return { status: 'stopped' }; } };
   const documentRef = { createElement: tag => new Node(tag), defaultView: { matchMedia: () => ({ matches: false }) } };
   const view = createQianshiTimelineView({ runtime, documentRef, dialog: { async confirm(options) { confirms.push(options); return typeof confirm === 'function' ? confirm(options) : confirm; },
     async choose(options) { confirms.push(options); return typeof choose === 'function' ? choose(options) : choose; } } });
   const container = new Node('main'); view.mount(container);
-  return { view, container, runtime, documentRef, confirms, reviewCalls, calls: () => ({ prepareCalls, startCalls }), emit(nextSnapshot = snapshot, nextState = state) { snapshot = nextSnapshot; state = nextState; for (const listener of listeners) listener(state); } };
+  return { view, container, runtime, documentRef, confirms, calls: () => ({ prepareCalls, startCalls }), emit(nextSnapshot = snapshot, nextState = state) { snapshot = nextSnapshot; state = nextState; for (const listener of listeners) listener(state); } };
 }
 
 test('千事页以健康条和共享搜索开头，说明与事项全链按需展开且不虚构地点', () => {
@@ -77,8 +76,30 @@ test('覆盖状态同屏列出各缺口并把有效摘要楼数写清楚', () =>
   snapshot.coverage = { eligibleFloors: 8, completeFloors: 3, pendingFloors: 1, partialFloors: 2, degradedFloors: 2, unavailableFloors: 1 };
   const h = harness({ initialSnapshot: snapshot });
   const coverage = flatten(h.container).map(node => node.textContent).join('|');
+  assert.equal(flatten(h.container).find(node => node.tag === 'strong')?.textContent, '部分关系失效');
   assert.match(coverage, /已完成 3 楼；待补 1 楼；部分整理 2 楼；断链 2 楼；无唯一有效摘要 1 楼/u);
   assert.match(coverage, /分母是 8 个有唯一有效摘要的楼/u);
+  assert.match(coverage, /补齐旧楼只处理尚未存档的楼，不会重算已存事件/u);
+  assert.doesNotMatch(coverage, /隔离/u);
+});
+
+test('全局覆盖说明区分已结案楼和仍待补楼，complete 加 pending 不再称部分整理', () => {
+  const mixedPartial = fixture();
+  mixedPartial.coverage = { eligibleFloors: 9, completeFloors: 5, pendingFloors: 1, partialFloors: 2, degradedFloors: 0, unavailableFloors: 0 };
+  const mixed = harness({ initialSnapshot: mixedPartial });
+  const mixedNodes = flatten(mixed.container);
+  assert.equal(mixedNodes.find(node => node.tag === 'strong')?.textContent, '尚有其他楼未完成');
+  assert.match(copy(mixed.container), /已完成 5 楼；待补 1 楼；部分整理 2 楼/u);
+  assert.match(copy(mixed.container), /已有事件的楼按已存档计入完成/u);
+
+  const pending = fixture();
+  pending.coverage = { eligibleFloors: 9, completeFloors: 7, pendingFloors: 2, partialFloors: 0, degradedFloors: 0, unavailableFloors: 0 };
+  const withPending = harness({ initialSnapshot: pending });
+  const pendingNodes = flatten(withPending.container);
+  assert.equal(pendingNodes.find(node => node.tag === 'strong')?.textContent, '尚有其他楼未完成');
+  assert.doesNotMatch(pendingNodes.find(node => node.tag === 'strong')?.textContent ?? '', /部分整理/u);
+  assert.match(copy(withPending.container), /已完成 7 楼；待补 2 楼；部分整理 0 楼/u);
+  assert.match(copy(withPending.container), /已有事件的楼按已存档计入完成/u);
 });
 
 test('百节点同事项仍按线性顶层渲染，事项链只在二次展开时创建一次', () => {
@@ -129,7 +150,7 @@ test('同日同事项合成当天末条代表，搜索覆盖非代表且排序�
   assert.match(copy(searched), /取得旧信/u, '非代表成员命中时仍可展开查看匹配项');
 });
 
-test('默认最新在前，方向切换按真实日期反转各自区域且不混排无年记录', () => {
+test('默认最新在前，方向切换按各自时间组反转，跨组不推断先后', () => {
   const snapshot = fixture();
   snapshot.events = [
     { id: 'old', matterId: null, title: '旧年', description: '旧年说明', status: 'occurred', storyTime: '公历2024年12月31日', scheduledTime: null, people: [] },
@@ -139,27 +160,46 @@ test('默认最新在前，方向切换按真实日期反转各自区域且不�
     { id: 'range', matterId: null, title: '时间范围', description: '范围说明', status: 'unknown', storyTime: '10月1日至10月3日', scheduledTime: null, people: [] },
   ];
   snapshot.timeline = { hasGlobalLatest: false, globalLatestGroupId: null, segments: [
-    { id: 'gregorian', label: '公历', latestGroupId: 'new-day', groups: [
+    { id: 'dated', label: '完整日期', latestGroupId: 'new-day', groups: [
       { id: 'old-day', day: '31日', period: '2024年12月', full: '公历2024年12月31日', eventIds: ['old'] },
       { id: 'new-day', day: '1日', period: '2025年1月', full: '公历2025年1月1日', eventIds: ['new'] },
     ] },
-    { id: 'yearless', label: '年份未明', latestGroupId: 'nov-day', groups: [
+    { id: 'month-day', label: '仅月日', latestGroupId: 'nov-day', groups: [
       { id: 'oct-day', day: '1日', period: '10月', full: '10月1日（年份未明）', eventIds: ['oct', 'range'] },
       { id: 'nov-day', day: '3日', period: '11月', full: '11月3日（年份未明）', eventIds: ['nov'] },
     ] },
   ], undatedEventIds: [] };
   const h = harness({ initialSnapshot: snapshot });
   const dayOrder = () => flatten(h.container).filter(node => node.id && node.className.startsWith('qqj-qianshi-day')).map(node => node.id);
-  assert.deepEqual(dayOrder(), ['new-day', 'old-day', 'nov-day', 'oct-day'], '初始最新在前，每个历法区域独立降序');
+  assert.deepEqual(dayOrder(), ['new-day', 'old-day', 'nov-day', 'oct-day'], '初始最新在前，每个时间组独立降序');
   assert.equal(byText(h.container, '由晚到早') !== undefined, true, '按钮显示当前排序方向');
-  assert.match(copy(h.container), /年份未明 · 与其他时间区域不可直接比较/u);
+  assert.match(copy(h.container), /仅月日 · 不依据其他组推断先后/u);
   byText(h.container, '由晚到早').fire('click');
-  assert.deepEqual(dayOrder(), ['old-day', 'new-day', 'oct-day', 'nov-day'], '切换后每个可比区域升序，区域顺序不被假装成绝对时间');
+  assert.deepEqual(dayOrder(), ['old-day', 'new-day', 'oct-day', 'nov-day'], '切换后每个时间组升序，组间保持原有顺序');
   assert.match(copy(h.container), /10月1日至10月3日/u, '可识别左端点的范围留在对应日期，并继续展示完整原文');
   assert.equal(byText(h.container, '由早到晚') !== undefined, true);
 });
 
-test('真实投影与时间线视图始终先显示有年份日期段，再显示月日段', () => {
+test('无年份的年末与年初页面保留来源顺序，不显示虚假的段内最近', () => {
+  const snapshot = fixture();
+  snapshot.events = [
+    { id: 'dec', matterId: null, updatesMatter: false, title: '年末事件', description: '只有月日', status: 'occurred', storyTime: '12月31日', scheduledTime: null, people: [], object: null },
+    { id: 'jan', matterId: null, updatesMatter: false, title: '年初事件', description: '只有月日', status: 'occurred', storyTime: '1月1日', scheduledTime: null, people: [], object: null },
+  ];
+  snapshot.matters = []; snapshot.relations = [];
+  snapshot.timeline = projectQianshiTimeline({ events: snapshot.events, relations: [] });
+  assert.equal(snapshot.timeline.hasGlobalLatest, false);
+  assert.equal(snapshot.timeline.segments[0].latestGroupId, null);
+  const h = harness({ initialSnapshot: snapshot });
+  const dayOrder = () => flatten(h.container).filter(node => node.id && node.className.startsWith('qqj-qianshi-day')).map(node => node.id);
+  const sourceOrder = snapshot.timeline.segments[0].groups.map(group => group.id);
+  assert.deepEqual(dayOrder(), sourceOrder, '倒序默认状态也尊重来源顺序');
+  assert.equal(flatten(h.container).some(node => node.className.includes('qqj-qianshi-latest-tag')), false, '年末或年初不显示最近标记');
+  byText(h.container, '由晚到早').fire('click');
+  assert.deepEqual(dayOrder(), sourceOrder, '切换页面排序时也不反转不可比较的跨年组');
+});
+
+test('真实投影以中性文案显示完整日期、特殊月份和仅月日', () => {
   const snapshot = fixture();
   snapshot.events = [
     { id: 'yearless-late', matterId: null, title: '旧档九月二十四日', description: '无年份', status: 'occurred', storyTime: '9月24日', scheduledTime: null, people: [] },
@@ -172,25 +212,26 @@ test('真实投影与时间线视图始终先显示有年份日期段，再显�
   snapshot.timeline = projectQianshiTimeline({ events: snapshot.events, relations: snapshot.relations });
   const h = harness({ initialSnapshot: snapshot });
   const dayOrder = () => flatten(h.container).filter(node => node.id && node.className.startsWith('qqj-qianshi-day')).map(node => node.id);
-  assert.deepEqual(snapshot.timeline.segments.map(segment => segment.id), ['gregorian', 'named:大陆历', 'yearless'],
-    '明确年份段优先，已知年份段内部保持首次出现顺序');
+  assert.equal(snapshot.timeline.segments[0].id, 'dated');
+  assert.match(snapshot.timeline.segments[1].id, /^special:/u);
+  assert.equal(snapshot.timeline.segments[2].id, 'month-day');
   const segmentLabels = () => flatten(h.container).filter(node => node.className === 'qqj-qianshi-segment-label').map(node => node.textContent);
   assert.deepEqual(segmentLabels(), [
-    '公历 · 与其他时间区域不可直接比较', '大陆历 · 与其他时间区域不可直接比较', '年份未明 · 与其他时间区域不可直接比较',
+    '完整日期 · 不依据其他组推断先后', '大陆历1686年9月 · 不依据其他组推断先后', '仅月日 · 不依据其他组推断先后',
   ]);
   assert.match(copy(h.container), /无法确定单一发生时间 · 1 件/u, '无法排序的日期仍留在底部折叠区');
 
   const initialOrder = dayOrder();
   assert.equal(initialOrder[0], snapshot.timeline.segments[0].groups.at(-1).id, '默认显示方向只反转段内日期');
-  assert.equal(initialOrder[2], snapshot.timeline.segments[1].groups[0].id, '不同历法段仍按稳定首次顺序排列');
+  assert.equal(initialOrder[2], snapshot.timeline.segments[1].groups[0].id, '不同时间组仍按稳定首次顺序排列');
   byText(h.container, '由晚到早').fire('click');
   const ascendingOrder = dayOrder();
-  assert.deepEqual(ascendingOrder.slice(0, 2), snapshot.timeline.segments[0].groups.map(group => group.id), '升序仍保持公历年份段在前');
-  assert.equal(ascendingOrder[2], snapshot.timeline.segments[1].groups[0].id, '升序仍保持第二历法段在前于无年段');
+  assert.deepEqual(ascendingOrder.slice(0, 2), snapshot.timeline.segments[0].groups.map(group => group.id), '升序仍保持完整日期段在前');
+  assert.equal(ascendingOrder[2], snapshot.timeline.segments[1].groups[0].id, '升序保留特殊月份组在仅月日之前');
   assert.equal(ascendingOrder.at(-1), snapshot.timeline.segments[2].groups[0].id, '升序仍将无年份月日段放在最后');
 });
 
-test('编译到真实快照与视图中，普通楼和聚合楼的2010年均标为年份已知', async () => {
+test('普通楼和聚合楼的完整日期进入同组，特殊日期原文独立显示', async () => {
   const chatId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', generation = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
   const floors = [1, 2].map(index => ({ id: index === 1 ? '11111111-1111-4111-8111-111111111111' : '22222222-2222-4222-8222-222222222222',
     chatId, narrativeGeneration: generation, assistantSeq: index, hostLocator: { messageIndex: index }, content: { canonicalContent: `第${index}楼` } }));
@@ -210,25 +251,25 @@ test('编译到真实快照与视图中，普通楼和聚合楼的2010年均标�
       { id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', floorId: floors[1].id, sourceFloorIds: floors.map(floor => floor.id), recordStatus: 'active', chronology: [], qianshiDelta: aggregateDelta },
     ], entities: [] };
   const projection = projectQianshiGraph(reachable), snapshot = publicQianshiSnapshot(reachable);
-  const dated = snapshot.timeline.segments.find(segment => segment.id === 'bare');
-  assert.equal(dated.label, '年份已知，历法未注明');
+  const dated = snapshot.timeline.segments.find(segment => segment.id === 'dated');
+  assert.equal(dated.label, '完整日期');
   assert.ok(dated.groups.some(group => group.eventIds.includes(projection.events.find(event => event.title === '普通楼明确日期').id)));
   assert.ok(dated.groups.some(group => group.eventIds.includes(projection.events.find(event => event.title === '聚合楼明确日期').id)));
-  assert.equal(snapshot.timeline.segments.findIndex(segment => segment.id === 'yearless') > snapshot.timeline.segments.findIndex(segment => segment.id === 'bare'), true,
+  assert.equal(snapshot.timeline.segments.findIndex(segment => segment.id === 'month-day') > snapshot.timeline.segments.findIndex(segment => segment.id === 'dated'), true,
     '无年份月日仍在明确年份段之后独立展示');
 
   const h = harness({ initialSnapshot: snapshot });
   const segmentLabels = () => flatten(h.container).filter(node => node.className === 'qqj-qianshi-segment-label').map(node => node.textContent);
   assert.deepEqual(segmentLabels(), [
-    '年份已知，历法未注明 · 与其他时间区域不可直接比较', '大陆历 · 与其他时间区域不可直接比较', '年份未明 · 与其他时间区域不可直接比较',
+    '完整日期 · 不依据其他组推断先后', '大陆历1686年9月 · 不依据其他组推断先后', '仅月日 · 不依据其他组推断先后',
   ]);
   assert.match(copy(h.container), /2010年9月22日/u);
   assert.match(copy(h.container), /2010年9月23日/u);
   assert.doesNotMatch(copy(h.container), /2010年9月(?:22|23)日[^|]*年份未明/u);
   byText(h.container, '由晚到早').fire('click');
   assert.deepEqual(segmentLabels(), [
-    '年份已知，历法未注明 · 与其他时间区域不可直接比较', '大陆历 · 与其他时间区域不可直接比较', '年份未明 · 与其他时间区域不可直接比较',
-  ], '正倒序只改变各段内部日期，不改年份精度分组');
+    '完整日期 · 不依据其他组推断先后', '大陆历1686年9月 · 不依据其他组推断先后', '仅月日 · 不依据其他组推断先后',
+  ], '正倒序只改变各组内部日期，不改时间信息分组');
 });
 
 test('同日事项根据事件原文的显式秒倒序显示且切换后正序，保留原文时间', () => {
@@ -284,7 +325,7 @@ test('千事时间线不再接收 settings，也不创建任何重要操作按�
     { ...grouped.timeline.segments[0].groups[0], eventIds: ['event-1', 'event-2', 'event-3'] },
     ...grouped.timeline.segments[0].groups.slice(3),
   ];
-  const runtime = { getState: () => ({}), getQianshiSnapshot: () => grouped, subscribe: () => () => {}, prepareQianshiHistory: async () => ({}), startQianshiHistory: async () => ({}), stopQianshiHistory: async () => ({}), confirmQianshiHistoryReview: async () => ({}) };
+  const runtime = { getState: () => ({}), getQianshiSnapshot: () => grouped, subscribe: () => () => {}, prepareQianshiHistory: async () => ({}), startQianshiHistory: async () => ({}), stopQianshiHistory: async () => ({}) };
   const documentRef = { createElement: tag => new Node(tag) };
   const view = createQianshiTimelineView({ runtime, documentRef });
   const container = new Node('main'); view.mount(container);
@@ -345,90 +386,20 @@ test('历史补齐先展示真实计划，取消零调用模型，确认后才�
   const cancelled = harness({ confirm: false }); byText(cancelled.container, '补齐旧楼').fire('click'); await tick();
   assert.deepEqual(cancelled.calls(), { prepareCalls: 1, startCalls: 0 });
   assert.match(cancelled.confirms[0].body, /2 楼.*1 批.*1 次.*900 token/u);
-  assert.match(cancelled.confirms[0].body, /2 楼进入模型补齐.*1 楼会在本地隔离确证失效引用/u);
+  assert.match(cancelled.confirms[0].body, /2 楼进入模型补齐/u);
   assert.match(cancelled.confirms[0].note, /打开计划和取消均不会写入或调用 API/u);
   assert.match(copy(cancelled.container), /已取消；没有调用模型/u);
   const confirmed = harness({ confirm: true }); byText(confirmed.container, '补齐旧楼').fire('click'); await tick(); await tick();
   assert.deepEqual(confirmed.calls(), { prepareCalls: 1, startCalls: 1 });
 });
 
-test('已审楼结案只显示一个批量入口，预览明确零 API 且逐楼结果可见', async () => {
-  const h = harness({ confirm: true });
-  let prepareCount = 0, startCount = 0;
-  h.runtime.prepareQianshiReviewedClose = async () => { prepareCount += 1; return { status: 'ready', planId: 'reviewed-plan', totalFloors: 3, apiCalls: 0 }; };
-  h.runtime.startQianshiReviewedClose = async planId => {
-    startCount += 1; assert.equal(planId, 'reviewed-plan');
-    return { outcomes: [
-      { floorId: 'one', status: 'saved-complete' },
-      { floorId: 'two', status: 'saved-partial' },
-      { floorId: 'three', status: 'failed' },
-    ] };
-  };
-  const snapshot = h.runtime.getQianshiSnapshot();
-  snapshot.history.persistedIssues = [{ floorId: 'one', assistantSeq: 1, canAcceptCurrent: true, message: '待处理' },
-    { floorId: 'two', assistantSeq: 2, canAcceptCurrent: true, message: '待处理' },
-    { floorId: 'three', assistantSeq: 3, canAcceptCurrent: true, message: '待处理' }];
-  h.emit(snapshot);
-  const buttons = flatten(h.container).filter(node => node.tag === 'button');
-  const action = buttons.find(node => /按已审结果结案/u.test(node.textContent));
-  assert.equal(action.textContent, '按已审结果结案 · 3 楼');
-  assert.equal(buttons.filter(node => /按已审结果结案/u.test(node.textContent)).length, 1, '只显示单个批量入口');
-  assert.equal(buttons.some(node => /第 [123] 楼.*结案/u.test(node.textContent)), false, '不增加逐楼操作按钮');
-  action.fire('click'); await tick(); await tick();
-  assert.equal(prepareCount, 1); assert.equal(startCount, 1);
-  assert.match(h.confirms[0].body, /模型 API 调用 0 次/u);
-  assert.match(copy(h.container), /结案完成：1 楼结案，1 楼保持部分状态，1 楼失败；模型 API 调用 0 次/u);
-});
-
-test('历史补齐运行时显示真实阶段，并在待确认卡中跨列展示长文本', async () => {
-  let markStartCalled, markRunning, releaseStart, releaseRun;
-  const startCalled = new Promise(resolve => { markStartCalled = resolve; }), runningStarted = new Promise(resolve => { markRunning = resolve; });
-  const waitForStart = new Promise(resolve => { releaseStart = resolve; }), waitForRun = new Promise(resolve => { releaseRun = resolve; });
-  const longText = `原记录与后续引用存在冲突：${'仍需核对'.repeat(30)}`;
-  const snapshot = fixture();
-  snapshot.history = { status: 'partial', jobId: 'job', processedFloors: 0, totalFloors: 1, calls: 1,
-    conflictFloors: 1, pendingReviews: [{ floorId: 'floor-75', assistantSeq: 75, reason: longText,
-      events: [{ id: 'pending-event', title: '待确认事件', description: longText }] }] };
-  const h = harness({ initialSnapshot: snapshot, confirm: true, startResult: async ({ setHistory }) => {
-    markStartCalled(); await waitForStart;
-    setHistory({ status: 'running', processedFloors: 0, totalFloors: 1, calls: 0, attemptedFloors: 1,
-      savedCompleteFloors: 0, savedPartialFloors: 0, failedFloors: 1, conflictFloors: 0, skippedFloors: 0,
-      outcomes: [{ assistantSeq: 75, status: 'failed', reasonCode: 'QIANSHI_HISTORY_CANDIDATE_STALE', message: '本批实际引用的前楼事项语义已变化，本楼原记录保留。' }],
-      message: '正在重新读取并核对当前聊天与千事存档…' });
-    markRunning(); await waitForRun;
-    const result = { status: 'completed', message: '补齐完成。', calls: 1, processedFloors: 1, totalFloors: 1 };
-    setHistory(result); return result;
-  } });
-  const card = flatten(h.container).find(node => node.className === 'qqj-qianshi-history-review');
-  assert.ok(card); assert.match(copy(card), new RegExp(longText));
-  const css = readFileSync(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
-  assert.match(css, /\.qqj-qianshi-history-review\{[^}]*grid-column:1\/-1;[^}]*min-width:0/u);
-  assert.match(css, /\.qqj-qianshi-history-review-actions>\.secondary-action\{[^}]*max-width:100%;white-space:normal/u);
-
-  byText(h.container, '补齐旧楼').fire('click'); await startCalled;
-  assert.match(copy(h.container), /计划已确认；正在启动本地核对/u, 'runtime 首次发布运行状态前保留短暂提示');
-  releaseStart(); await runningStarted;
-  assert.match(copy(h.container), /已成功保存替换 0\/1 楼 · 已尝试 1 楼；失败 1 楼；待确认 0 楼；跳过 0 楼 · 模型任务尝试 0 次 · 正在重新读取并核对当前聊天与千事存档/u,
-    'running 状态分别呈现成功替换、尝试和失败数量，并显示 runtime 阶段');
-  assert.doesNotMatch(copy(h.container), /计划已确认；正在启动本地核对/u, '核对阶段不残留启动提示');
-  releaseRun(); await tick(); await tick();
-  assert.match(copy(h.container), /补齐完成/u);
-  assert.doesNotMatch(copy(h.container), /计划已确认；正在启动本地核对/u, '结束状态也不残留启动提示');
-
-  const failed = harness({ confirm: true, startResult: async () => { throw new Error('测试启动失败'); } });
-  byText(failed.container, '补齐旧楼').fire('click'); await tick(); await tick();
-  assert.match(copy(failed.container), /历史补齐未开始：测试启动失败/u, '启动异常仍显示最终错误提示');
-  assert.doesNotMatch(copy(failed.container), /计划已确认；正在启动本地核对/u);
-});
-
-test('聚合计划区分可模型楼、本地修整和跳过说明，空计划与执行失败均有可见原因', async () => {
-  const plan = { totalFloors: 1, batchCount: 0, apiCalls: 0, modelFloors: 0, localRepairFloors: 1,
+test('聚合楼从模型计划中跳过并说明原因，空计划与执行失败均有可见原因', async () => {
+  const plan = { totalFloors: 1, batchCount: 1, apiCalls: 1, modelFloors: 1,
     aggregateSkippedFloors: [{ floorId: 'aggregate', assistantSeq: 10 }] };
-  const confirmed = harness({ confirm: true, plan, startResult: { status: 'partial', message: '其中 1 楼本地隔离未成功，原记录保留；请重新准备计划。' } });
+  const confirmed = harness({ confirm: true, plan, startResult: { status: 'partial', message: '其中 1 楼未补齐。' } });
   byText(confirmed.container, '补齐旧楼').fire('click'); await tick(); await tick();
-  assert.match(confirmed.confirms[0].body, /0 楼进入模型补齐.*1 楼会在本地隔离.*1 楼由多个正文楼聚合/u);
-  assert.match(confirmed.confirms[0].body, /跳过模型替换以保留成员来源/u);
-  assert.match(copy(confirmed.container), /本地隔离未成功，原记录保留/u, '执行失败时 UI 显示失败事实而不宣称已隔离');
+  assert.match(confirmed.confirms[0].body, /1 楼进入模型补齐.*1 楼由多个正文楼聚合.*跳过模型补齐以保留成员来源/u);
+  assert.match(copy(confirmed.container), /1 楼未补齐/u, '执行失败时 UI 显示失败事实');
 
   const emptySnapshot = fixture();
   const empty = harness({ initialSnapshot: emptySnapshot, plan: { status: 'empty', totalFloors: 0, batchCount: 0,
@@ -451,196 +422,22 @@ test('历史确认等待期间切聊或后台转忙，不执行旧计划', async
   assert.match(copy(busy.container), /后台任务状态已经变化/u);
 });
 
-test('待审列表可搜索，选中后展示相似旧条和依据并提供明确二选一', async () => {
+test('历史批次部分失败时，在时间线中显示楼号和失败原因', () => {
   const snapshot = fixture();
-  snapshot.history = { status: 'partial', jobId: 'job', processedFloors: 0, totalFloors: 1, calls: 1,
-    attemptedFloors: 1, savedCompleteFloors: 0, savedPartialFloors: 0, conflictFloors: 1, skippedFloors: 0, failedFloors: 0,
-    outcomes: [{ floorId: 'floor-73', assistantSeq: 73, status: 'conflict-review', reasonCode: 'QIANSHI_HISTORY_REPLACEMENT_CONFLICT', message: '后楼仍引用旧事件' }],
-    pendingReviews: [{ floorId: 'floor-73', assistantSeq: 73, reason: '新事件与本楼旧记录存在可见文本重合，请审阅后决定。', events: [
-      { id: 'new-event', title: '新约定', description: '新事实正文', matchBasis: ['共同词项“旧信”'],
-        recommendedEvent: { id: 'old-event', title: '旧约定', description: '已存的旧约定正文', sourceAssistantSeq: 10,
-          storyTime: '2026-07-01', people: [{ name: '沈棠' }], object: '旧信', referenceCount: 2 } },
-    ] }] };
+  snapshot.history = { status: 'partial', message: '1 楼补齐失败。', processedFloors: 0, attemptedFloors: 1,
+    savedCompleteFloors: 0, conflictFloors: 0, skippedFloors: 0, failedFloors: 1,
+    outcomes: [{ floorId: 'floor-74', assistantSeq: 74, status: 'failed',
+      reasonCode: 'QIANSHI_HISTORY_COMPILE_FAILED', message: '事件 1 的关系无法验证，本楼原档案保持不变。' }], pendingReviews: [] };
   const h = harness({ initialSnapshot: snapshot });
-  assert.match(copy(h.container), /待审候选 1 项/u);
-  assert.match(copy(h.container), /第 73 楼 · 新约定/u);
-  assert.match(copy(h.container), /旧约定.*已存的旧约定正文.*第 10 楼/u);
-  assert.match(copy(h.container), /共同词项“旧信”/u);
-  assert.match(copy(h.container), /这些词项只用于定位可能相似的旧条，是否为重复由你决定/u);
-  assert.deepEqual(flatten(h.container).filter(node => node.tag === 'button').map(node => node.textContent).filter(value => /保存为新事件|这是重复/u.test(value)),
-    ['保存为新事件', '这是重复，不保存']);
-  const actions = flatten(h.container).find(node => node.className === 'qqj-qianshi-history-review-actions');
-  assert.deepEqual(actions.children.map(node => node.textContent), ['保存为新事件', '这是重复，不保存'], '两个操作按钮在同一局部容器');
-  const css = readFileSync(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
-  assert.match(css, /\.qqj-qianshi-history-review-list\{[^}]*margin-top:8px/u, '搜索框与候选列表之间保留垂直间距');
-  assert.match(css, /\.qqj-qianshi-history-review-actions\{[^}]*flex-wrap:wrap;gap:8px/u, '窄屏可换行且按钮间距为 8px');
-  assert.equal(h.confirms.length, 0, '展示待审卡不启动弹窗');
-});
-
-test('冷启动 idle 时恢复持久待审候选与已审楼异常', () => {
-  const snapshot = fixture();
-  snapshot.history = { status: 'idle', pendingReviews: [{ floorId: 'floor-21', assistantSeq: 21, reason: '待确认候选',
-    events: [{ id: 'restored-candidate', title: '恢复后的候选', description: '候选正文' },
-      { id: 'restored-candidate-b', title: '同楼第二候选', description: '第二项候选正文' }] }],
-    persistedIssues: [{ floorId: 'floor-22', assistantSeq: 22, reconciliationStatus: 'partial', message: '关系端点仍待处理。' }] };
-  const h = harness({ initialSnapshot: snapshot });
-  assert.match(copy(h.container), /已恢复 2 项待审候选；本地核对已结束，但 1 楼仍未能证明千事完整/u);
-  assert.doesNotMatch(copy(h.container), /已审楼仍待处理/u, '已审楼记录不再显示成候选仍待处理');
-  assert.match(copy(h.container), /待审候选 2 项.*恢复后的候选.*同楼第二候选/u);
-  const disclosure = flatten(h.container).find(node => node.className === 'qqj-qianshi-history-terminal-partial');
-  assert.equal(disclosure.open, false, '刷新恢复的终态 partial 默认收起');
-  assert.equal(disclosure.children[0].textContent, '已核对，仍为部分完成 · 1 楼');
-  const results = flatten(disclosure).find(node => node.className === 'qqj-qianshi-history-results');
-  assert.equal(results.attributes['aria-label'], '已结束核对但仍部分完成的楼层');
-  assert.match(copy(disclosure), /已核对，仍为部分完成.*第 22 楼：关系端点仍待处理/u);
-  assert.deepEqual(flatten(h.container).filter(node => node.tag === 'button').map(node => node.textContent).filter(value => /保存为新事件|这是重复/u.test(value)),
-    ['保存为新事件', '这是重复，不保存'], '两个审阅操作仍只对应待审候选，没有为已审楼增加处理按钮');
-});
-
-test('审阅保存错误显示卡内反馈，刷新切聊后不误提交旧卡', async () => {
-  const snapshot = fixture();
-  snapshot.history = { status: 'partial', totalFloors: 1, calls: 1,
-    pendingReviews: [{ floorId: 'floor-73', assistantSeq: 73, reason: '后楼仍引用旧事件',
-      events: [{ id: 'new-event', title: '新约定', description: '新事实正文' }] }] };
-  let attempt = 0;
-  const h = harness({ initialSnapshot: snapshot, reviewResult: async ({ independent, review, snapshot: current, emit }) => {
-    assert.equal(independent, true, '明确独立选择向生产 seam 传 true');
-    assert.equal(review.eventId, 'new-event');
-    if (attempt++ === 0) throw new Error('后端请求超时，保存状态待核对');
-    current.history.pendingReviews = [];
-    current.history.message = '已确认独立新事实。'; emit(); return current.history;
-  } });
-  byText(h.container, '保存为新事件').fire('click'); await tick(); await tick();
-  const cardAfterTimeout = flatten(h.container).find(node => node.className === 'qqj-qianshi-history-review');
-  assert.match(copy(cardAfterTimeout), /保存结果待核对：后端请求超时/u, '失败原因显示在当前待确认卡内');
-  assert.equal(flatten(cardAfterTimeout).filter(node => node.tag === 'button').find(node => node.textContent === '保存为新事件').disabled, false,
-    '失败后保留用户决定是否重试的入口');
-  byText(cardAfterTimeout, '保存为新事件').fire('click'); await tick(); await tick();
-  assert.equal(h.reviewCalls.length, 2, '重试由用户再次点击触发');
-  assert.equal(flatten(h.container).some(node => node.className === 'qqj-qianshi-history-review'), false, '确认成功后卡片消失');
-  assert.match(copy(h.container), /已保存为新事件/u);
-
-  const switched = harness({ initialSnapshot: snapshot });
-  const staleReview = switched.runtime.confirmQianshiHistoryReview;
-  switched.emit({ ...snapshot, identity: { qqjChatId: 'chat-b' }, history: { status: 'idle', pendingReviews: [] } });
-  byText(switched.container, '保存为新事件')?.fire('click'); await tick();
-  assert.equal(switched.reviewCalls.length, 0, '切聊后旧卡入口已移除');
-  assert.equal(typeof staleReview, 'function');
-});
-
-test('历史编译 partial 在时间线中显示楼号和逐楼原因', () => {
-  const snapshot = fixture();
-  snapshot.history = { status: 'partial', message: '1 楼保存部分结果。', attemptedFloors: 1,
-    savedCompleteFloors: 0, savedPartialFloors: 1, conflictFloors: 0, skippedFloors: 0, failedFloors: 0,
-    outcomes: [{ floorId: 'floor-74', assistantSeq: 74, status: 'saved-partial',
-      reasonCode: 'QIANSHI_HISTORY_COMPILE_PARTIAL', message: '事件 1 将一次性事件当作持续事项的进展；应改为背景关联或补充先后顺序。' }], pendingReviews: [] };
-  const h = harness({ initialSnapshot: snapshot });
-  assert.match(copy(h.container), /第 74 楼：事件 1 将一次性事件当作持续事项的进展/u);
+  assert.match(copy(h.container), /1 楼补齐失败/u);
+  assert.match(copy(h.container), /第 74 楼：事件 1 的关系无法验证，本楼原档案保持不变/u);
   assert.doesNotMatch(copy(h.container), /QIANSHI_|qianshi_|events\[|\bprogress\b|\bcontext\b|\bpartial\b|\bfloors\b|\btokens\b/u);
-});
-
-test('刷新后终态 partial 默认收起，重绘保留展开状态且详情跨 coverage 双列', () => {
-  const snapshot = fixture();
-  snapshot.history = { status: 'idle', pendingReviews: [], persistedIssues: [
-    { floorId: 'floor-73', assistantSeq: 73, reconciliationStatus: 'partial', message: '已保存的独立事件仍有关系端点或关系未入账，本楼保持部分状态。' },
-  ] };
-  const h = harness({ initialSnapshot: snapshot });
-  const disclosure = h.container.querySelector('.qqj-qianshi-history-terminal-partial');
-  assert.ok(disclosure, '冷启动恢复已审楼终态 partial');
-  assert.equal(disclosure.open, false, '冷启动恢复详情默认收起');
-  assert.match(copy(disclosure), /第 73 楼：已保存的独立事件仍有关系端点或关系未入账，本楼保持部分状态/u);
-  assert.match(copy(h.container), /再次点补齐不会重新核对这些楼/u);
-  assert.equal(flatten(h.container).some(node => node.tag === 'strong' && node.textContent.includes('候选已审完但')), false,
-    '已终态楼不再进入待处理提示');
-
-  disclosure.open = true; disclosure.fire('toggle');
-  h.emit({ ...snapshot, history: { ...snapshot.history, message: '状态刷新' } });
-  assert.equal(h.container.querySelector('.qqj-qianshi-history-terminal-partial').open, true, '同聊天后台通知后保留展开状态');
-  const search = h.container.querySelector('.qqj-history-search-input');
-  search.fire('input', { target: { value: '旧信', selectionStart: 2 } });
-  assert.equal(h.container.querySelector('.qqj-qianshi-history-terminal-partial').open, true, '搜索重绘后保留展开状态');
-  byText(h.container, '由晚到早').fire('click');
-  assert.equal(h.container.querySelector('.qqj-qianshi-history-terminal-partial').open, true, '排序重绘后保留展开状态');
-
-  const css = readFileSync(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
-  assert.match(css, /\.qqj-qianshi-history-terminal-partial\{grid-column:1\/-1;min-width:0\}/u,
-    '详情在 coverage 双列和窄屏单列时都占满结果宽度');
-  h.emit({ ...snapshot, identity: { qqjChatId: 'chat-b' } });
-  assert.equal(h.container.querySelector('.qqj-qianshi-history-terminal-partial').open, false, '切换聊天时回到默认收起');
-});
-
-test('本轮终态核对 partial 默认收起，真实失败继续显示在顶部结果区且楼层不重复', () => {
-  const snapshot = fixture();
-  snapshot.history = { status: 'partial', message: '本地核对完成；未能证明完整的楼仍保留部分状态并显示原因。',
-    attemptedFloors: 2, totalFloors: 2, savedCompleteFloors: 0, savedPartialFloors: 1, failedFloors: 1,
-    outcomes: [
-      { floorId: 'floor-73', assistantSeq: 73, status: 'saved-partial', reasonCode: 'QIANSHI_HISTORY_RECONCILE_PARTIAL', message: '关系端点尚未可证。' },
-      { floorId: 'floor-74', assistantSeq: 74, status: 'failed', reasonCode: 'BACKEND_TIMEOUT', message: '本楼本地保存失败，原记录已保留。' },
-    ], pendingReviews: [], persistedIssues: [
-      { floorId: 'floor-73', assistantSeq: 73, reconciliationStatus: 'partial', message: '关系端点尚未可证。' },
-    ] };
-  const h = harness({ initialSnapshot: snapshot });
-  const disclosure = h.container.querySelector('.qqj-qianshi-history-terminal-partial');
-  assert.ok(disclosure);
-  assert.equal(disclosure.open, false, '本轮结束结果默认收起');
-  assert.equal((copy(h.container).match(/第 73 楼：关系端点尚未可证。/gu) ?? []).length, 1, 'outcome 与持久快照同一楼只展示一次');
-  assert.match(copy(disclosure), /第 73 楼：关系端点尚未可证/u);
-  const visibleResults = flatten(h.container).find(node => node.className === 'qqj-qianshi-history-results'
-    && node.attributes['aria-label'] === '历史补齐逐楼结果');
-  assert.ok(visibleResults, '真实失败仍在单独的顶部结果区显示');
-  assert.match(copy(visibleResults), /第 74 楼：本楼本地保存失败/u);
-  assert.doesNotMatch(copy(visibleResults), /第 73 楼/u);
-  assert.match(copy(h.container), /本地核对已结束，但 1 楼仍未能证明千事完整；再次点补齐不会重新核对这些楼/u);
-});
-
-test('待审搜索后详情和操作只绑定当前可见候选', async () => {
-  const snapshot = fixture();
-  snapshot.history = { status: 'partial', pendingReviews: [{ floorId: 'floor-8', assistantSeq: 8, reason: '两项待确认', events: [
-    { id: 'candidate-a', title: 'Alpha 旧候选', description: '第一个候选详情', recommendedEvent: { title: 'Alpha 旧条', description: '旧条说明' } },
-    { id: 'candidate-b', title: 'Beta 新候选', description: '第二个候选详情', recommendedEvent: { title: 'Beta 旧条', description: '目标旧条说明' } },
-  ] }] };
-  const h = harness({ initialSnapshot: snapshot });
-  const search = flatten(h.container).find(node => node.className.split(/\s+/u).includes('qqj-qianshi-review-search'));
-  search.value = 'Beta'; search.fire('input', { target: { value: 'Beta', selectionStart: 4 } });
-  const panel = flatten(h.container).find(node => node.className === 'qqj-qianshi-history-review');
-  assert.match(copy(panel), /新候选：Beta 新候选.*第二个候选详情.*最相似旧条：Beta 旧条/u);
-  assert.doesNotMatch(copy(panel), /Alpha 旧候选|第一个候选详情|Alpha 旧条/u, '过滤后不显示其他候选的详情');
-  assert.equal(flatten(panel).filter(node => node.attributes.role === 'option').length, 1, '选项和详情使用同一过滤集合');
-  byText(panel, '保存为新事件').fire('click'); await tick();
-  assert.equal(h.reviewCalls.length, 1);
-  assert.equal(h.reviewCalls[0].eventId, 'candidate-b', '确认按钮操作当前搜索命中的候选');
-});
-
-test('点击待审列表底部候选后，同聊天重绘保留列表位置与该候选焦点，切聊天时重置', () => {
-  const snapshot = fixture();
-  snapshot.history = { status: 'partial', pendingReviews: [
-    { floorId: 'floor-3', assistantSeq: 3, events: [{ id: 'candidate-3', title: '第三楼候选', description: '低楼说明' }] },
-    { floorId: 'floor-8', assistantSeq: 8, events: [{ id: 'candidate-8', title: '第八楼候选', description: '中楼说明' }] },
-    { floorId: 'floor-15', assistantSeq: 15, events: [{ id: 'candidate-15', title: '第十五楼候选', description: '底部候选说明' }] },
-  ] };
-  const h = harness({ initialSnapshot: snapshot });
-  const list = h.container.querySelector('.qqj-qianshi-history-review-list');
-  const bottom = list.children.at(-1);
-  list.scrollTop = 137;
-  h.documentRef.activeElement = bottom;
-  bottom.fire('click');
-
-  const redrawnList = h.container.querySelector('.qqj-qianshi-history-review-list');
-  const redrawnBottom = redrawnList.children.at(-1);
-  assert.equal(redrawnList.scrollTop, 137, '重绘保留列表内部滚动位置');
-  assert.equal(redrawnBottom.focused, true, '重绘把焦点还给刚点选的底部候选');
-  assert.match(copy(h.container), /新候选：第十五楼候选.*底部候选说明/u, '详情仍显示刚点选的候选');
-
-  h.emit({ ...snapshot, identity: { qqjChatId: 'chat-b' } });
-  const switchedList = h.container.querySelector('.qqj-qianshi-history-review-list');
-  assert.equal(switchedList.scrollTop, 0, '切换聊天后列表从顶部开始');
-  assert.equal(switchedList.children.at(-1).focused, undefined, '切换聊天时不转移旧聊天的焦点');
 });
 
 test('历史逐楼结果限高半屏、独立滚动并在同聊天重绘保留位置与焦点', () => {
   const snapshot = fixture();
   snapshot.history = { status: 'running', totalFloors: 20, calls: 1, attemptedFloors: 2, savedCompleteFloors: 1,
-    savedPartialFloors: 0, conflictFloors: 1, skippedFloors: 0, failedFloors: 0,
+    conflictFloors: 1, skippedFloors: 0, failedFloors: 0,
     outcomes: [
       { assistantSeq: 12, status: 'conflict-review', reasonCode: 'QIANSHI_HISTORY_REPLACEMENT_CONFLICT', message: '第十二楼等待确认。' },
       { assistantSeq: 13, status: 'failed', reasonCode: 'BACKEND_TIMEOUT', message: '第十三楼请求超时。' },
@@ -683,7 +480,7 @@ test('历史逐楼结果限高半屏、独立滚动并在同聊天重绘保留�
 test('历史逐楼反馈保留中文原因与楼号，不显示内部错误码或状态枚举', () => {
   const snapshot = fixture();
   snapshot.history = { status: 'partial', message: '', processedFloors: 0, totalFloors: 7, calls: 3,
-    attemptedFloors: 7, savedCompleteFloors: 0, savedPartialFloors: 1, conflictFloors: 3, skippedFloors: 1, failedFloors: 2,
+    attemptedFloors: 7, savedCompleteFloors: 0, conflictFloors: 3, skippedFloors: 1, failedFloors: 2,
     outcomes: [
       { assistantSeq: 56, status: 'conflict-review', reasonCode: 'QIANSHI_HISTORY_REPLACEMENT_CONFLICT', message: '新千事结果漏掉仍被后楼引用事件，旧记录保留。' },
       { assistantSeq: 67, status: 'failed', reasonCode: 'BACKEND_TIMEOUT', message: '后端请求超时，请稍后重试。' },
@@ -708,7 +505,7 @@ test('历史逐楼反馈保留中文原因与楼号，不显示内部错误码�
 test('恢复的历史结果缺少楼号时说明目标楼已变化，不伪造楼号', () => {
   const snapshot = fixture();
   snapshot.history = { status: 'partial', message: '', processedFloors: 0, totalFloors: 1, calls: 0,
-    attemptedFloors: 1, savedCompleteFloors: 0, savedPartialFloors: 0, conflictFloors: 0, skippedFloors: 0, failedFloors: 1,
+    attemptedFloors: 1, savedCompleteFloors: 0, conflictFloors: 0, skippedFloors: 0, failedFloors: 1,
     outcomes: [{ floorId: 'deleted-floor', status: 'failed', reasonCode: 'QIANSHI_HISTORY_FLOOR_MISSING',
       message: '目标楼已变化，原记录保留。' }], pendingReviews: [] };
   const h = harness({ initialSnapshot: snapshot });
@@ -724,4 +521,14 @@ test('千事快照 memo 在历史通知时复用全图，reachable 或身份投�
   const historyOnly = memo(reachableA, identityA, { status: 'running' });
   assert.equal(first.marker, historyOnly.marker); assert.equal(historyOnly.history.status, 'running'); assert.equal(builds, 1);
   memo(reachableB, identityA, { status: 'idle' }); memo(reachableB, identityB, { status: 'idle' }); assert.equal(builds, 3);
+});
+
+test('旧快照的 historyReview 仅兼容读取，不恢复待审或结案入口', () => {
+  const snapshot = fixture();
+  snapshot.history.pendingReviews = [{ floorId: 'old-floor', events: [{ title: '旧候选' }] }];
+  snapshot.history.persistedIssues = [{ floorId: 'old-floor', canAcceptCurrent: true, message: '旧审核状态' }];
+  const h = harness({ initialSnapshot: snapshot });
+  const rendered = copy(h.container);
+  assert.doesNotMatch(rendered, /待审|结案|审核状态|相似旧条/u);
+  assert.equal(flatten(h.container).some(node => /审阅|结案/u.test(node.textContent)), false);
 });

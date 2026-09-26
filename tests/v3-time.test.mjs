@@ -17,15 +17,20 @@ function reachable(date = '2026-05-10', extra = false) {
   return { status: 'ready', rootRevision: 1, root: { chatId: CHAT, narrativeGeneration: GEN, headCheckpointId: 'head' }, checkpoint: { id: 'head' }, cseUnavailable: true, floors, floorMemories: memories,
     entities: [{ id: PERSON, entityType: 'person', displayName: '甲', aliases: [], recordStatus: 'active', status: 'established' }] };
 }
-test('明确年月日、相对日、无年公历跨月算术与未知边界', () => {
+test('普通年月日跨月跨年计算，无年日期不猜跨年或未知闰年', () => {
   const anchor = projectTime('2026年5月10日');
   assert.equal(projectTime('昨天', anchor).date, '2026-05-09');
   assert.equal(timeDistance(projectTime('昨天', anchor), anchor), 1);
   assert.equal(projectTime('2026-02-30').date, null);
+  assert.equal(timeDistance(projectTime('2026-05-31'), projectTime('2026-06-01')), 1);
+  assert.equal(timeDistance(projectTime('2024-02-28'), projectTime('2024-03-01')), 2);
+  assert.equal(timeDistance(projectTime('2026-12-31'), projectTime('2027-01-01')), 1);
   const yearless = projectTime('5月10日');
   assert.equal(yearless.year, null);
   assert.equal(timeDistance(yearless, projectTime('5月12日')), 2);
   assert.equal(timeDistance(yearless, projectTime('6月1日')), 22);
+  assert.equal(timeDistance(projectTime('5月31日'), projectTime('6月1日')), 1);
+  assert.equal(timeDistance(projectTime('9月29日'), projectTime('10月2日')), 3);
   assert.equal(timeDistance(projectTime('10月31日 23:15'), projectTime('11月1日 08:15')), 1);
   assert.equal(timeDistance(projectTime('11月1日 08:15'), projectTime('10月31日 23:15')), -1);
   assert.equal(timeHours(projectTime('10月31日 23:15'), projectTime('11月1日 08:15')), 9);
@@ -38,7 +43,7 @@ test('明确年月日、相对日、无年公历跨月算术与未知边界', ()
   assert.equal(projectTime('昨天').date, null);
 });
 
-test('纪元年保留具名身份与同月日差，中文数字与裸数字纪年仍按既有公历数值计算', () => {
+test('保留纪年原文；特殊月份只比较同一年同月，普通数字日期独立计算', () => {
   for (const value of ['纪元年10月4日', '星辉历纪元年霜月初四']) {
     const projected = projectTime(value);
     assert.equal(projected.raw, value);
@@ -46,14 +51,44 @@ test('纪元年保留具名身份与同月日差，中文数字与裸数字纪�
     assert.doesNotMatch(projected.date, /纪1年/u);
   }
   assert.equal(timeDistance(projectTime('纪元年10月3日'), projectTime('纪元年10月5日')), 2);
+  assert.equal(timeDistance(projectTime('纪元年10月3日'), projectTime('纪元年11月5日')), null);
   assert.equal(timeDistance(projectTime('纪元年10月3日'), projectTime('纪元年霜月5日')), null);
   assert.equal(timeDistance(projectTime('星辉历纪元年霜月初三'), projectTime('星辉历纪元年霜月初五')), 2);
+  assert.equal(timeDistance(projectTime('大陆历1686年7月29日'), projectTime('大陆历1686年8月1日')), null, '具名纪年即使数字月份也不套公历月长');
+  const namedIso = projectTime('大陆历1686-09-29');
+  assert.equal(namedIso.day, null, '具名前缀 ISO 写法不可落回普通公历日期');
+  assert.ok(namedIso.monthIdentity);
+  assert.equal(timeDistance(namedIso, projectTime('大陆历1686-09-30')), 1, '具名日期同月且同年仍可比较日号');
+  assert.equal(timeDistance(namedIso, projectTime('大陆历1686-10-02')), null, '具名日期跨月不套普通月长');
+  for (const prefixed of ['大陆历 1686-09-29', '大陆历：1686-09-29', '大陆历： 1686-09-29']) {
+    const parsed = projectTime(prefixed);
+    assert.equal(parsed.day, null, `${prefixed} 保留具名纪年身份`);
+    assert.equal(timeDistance(parsed, projectTime(prefixed.replace('09-29', '09-30'))), 1, `${prefixed} 同月仍按日号比较`);
+    assert.equal(timeDistance(parsed, projectTime(prefixed.replace('09-29', '10-02'))), null, `${prefixed} 跨月不套公历间隔`);
+  }
+  const shortEra = projectTime('四季历1-01-30');
+  assert.equal(shortEra.year, 1); assert.ok(shortEra.monthIdentity);
+  assert.equal(timeDistance(shortEra, projectTime('四季历1-02-01')), null, '具名短年日期不落入普通月日兜底');
+  const dottedEra = projectTime('四季历1686.09.29');
+  assert.ok(dottedEra.monthIdentity);
+  assert.equal(timeDistance(dottedEra, projectTime('四季历1686.09.30')), 1, '点号日期同月按日号计算');
+  assert.equal(timeDistance(dottedEra, projectTime('四季历1686.10.02')), null, '点号日期跨月不套公历间隔');
+  assert.equal(timeDistance(projectTime('四季历1686-02-29'), projectTime('四季历1686-02-30')), 1,
+    '特殊月份同月日号不因普通公历月长拒绝');
+  const legacyNamedEra = projectTime('星纪元年霜月初一'); delete legacyNamedEra.yearIdentityKnown;
+  assert.equal(timeDistance(legacyNamedEra, projectTime('星纪元年霜月初二')), 1, '旧缓存缺 yearIdentityKnown 时从原文读时兼容纪元年身份');
+  assert.equal(timeDistance(projectTime('星纪年霜月初一'), projectTime('星纪年霜月初二')), null, '普通无年特殊月份仍不推算');
+  assert.equal(timeDistance(projectTime('大陆历7月29日'), projectTime('大陆历7月30日')), null, '特殊月份没有明确年份时不推算日差');
+  assert.equal(timeDistance(projectTime('2026年10月3日'), projectTime('大陆历1686年10月5日')), null, '普通裸日期不借用特殊纪年');
   assert.equal(timeDistance(projectTime('星辉历纪元年霜月初三'), projectTime('星辉历纪元年雪月初五')), null);
   assert.equal(projectTime('三零五三年10月4日').year, 3053);
   assert.equal(timeDistance(projectTime('三零五三年10月4日'), projectTime('三零五三年10月6日')), 2);
   assert.equal(projectTime('3053年10月4日').year, 3053);
   assert.equal(timeDistance(projectTime('3053年10月4日'), projectTime('3053年10月6日')), 2);
   assert.equal(projectTime('公历2026年10月4日').date, '2026-10-04');
+  assert.equal(projectTime('公历 2026-09-29').date, '2026-09-29');
+  assert.equal(timeDistance(projectTime('公历：2026-09-29'), projectTime('公历：2026-10-02')), 3,
+    '明确普通公历前缀仍使用公历跨月间隔');
   assert.equal(projectTime('2026-10-04').date, '2026-10-04');
   assert.equal(projectTime('纪元年·秋').raw, '纪元年·秋', '未知自由文本保留，不拒存');
 });
