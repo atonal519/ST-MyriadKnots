@@ -34,7 +34,7 @@ import { createMyKnotsStoryClockController, createStoryClockStatusProjection, ex
 import { createInlineRenderer } from './src/ui/inline-renderer.js';
 
 const isGenerating = () => Boolean(is_send_press || is_group_generating);
-const hostAdapter = createHostAdapter({ worldInfoBindings: {
+const hostAdapter = createHostAdapter({ personaIdentifierProvider: () => user_avatar, worldInfoBindings: {
   loadWorldInfo,
   getSelectedWorldInfo: () => selected_world_info,
   getWorldInfoSettings: () => world_info,

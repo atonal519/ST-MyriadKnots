@@ -64,7 +64,7 @@ function backendHarness({ conflictRootPut = null, beforeGet = null, beforePut = 
   } };
 }
 
-function runtimeHarness({ cse, extractor, host = 'official', backendOptions, sharedBackend = null, clock = () => new Date(NOW), chat = null, chatWorldInfo = null, filterWorldInfoSources = sources => sources, failureStorage = undefined } = {}) {
+function runtimeHarness({ cse, extractor, host = 'official', backendOptions, sharedBackend = null, clock = () => new Date(NOW), chat = null, chatWorldInfo = null, filterWorldInfoSources = sources => sources, failureStorage = undefined, personaIdentifierProvider = null, testPersonaIdentifierOverride = null } = {}) {
   const handlers = new Map(), calls = [], backend = sharedBackend ?? backendHarness(backendOptions);
   let enabled = true;
   const books = new Map([['当前书', { entries: { 1: { uid: 1, constant: true, content: '<content>启用作者设定</content>' }, 2: { uid: 2, constant: true, content: '禁用支线', disable: true } } }], ['聊天书', { entries: { 4: { uid: 4, constant: true, content: '聊天书作者设定' } } }], ['未链接书', { entries: { 3: { uid: 3, constant: true, content: '不得进入基线' } } }]]);
@@ -79,7 +79,15 @@ function runtimeHarness({ cse, extractor, host = 'official', backendOptions, sha
     eventSource: { on(name, listener) { handlers.set(name, [...(handlers.get(name) ?? []), listener]); } },
   };
   const globalRef = host === 'luker' ? { Luker: { getContext: () => context } } : { SillyTavern: { getContext: () => context } };
-  const hostAdapter = createHostAdapter({ globalRef });
+  const baseHostAdapter = createHostAdapter({ globalRef, personaIdentifierProvider });
+  const hostAdapter = testPersonaIdentifierOverride ? Object.freeze({
+    ...baseHostAdapter,
+    snapshot: () => {
+      const snapshot = baseHostAdapter.snapshot();
+      return Object.freeze({ ...snapshot, userIdentity: Object.freeze({ ...snapshot.userIdentity, personaIdentifier: testPersonaIdentifierOverride() }) });
+    },
+    getUserIdentity: () => Object.freeze({ ...baseHostAdapter.getUserIdentity(), personaIdentifier: testPersonaIdentifierOverride() }),
+  }) : baseHostAdapter;
   const baseStore = createFoundationStore({ client: backend.client, contextProvider: () => ({ hostChatId: context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }), isEnabled: () => enabled });
   const readModes = [];
   const commitResults = [];
@@ -88,7 +96,8 @@ function runtimeHarness({ cse, extractor, host = 'official', backendOptions, sha
     readReachable(options) { readModes.push(options?.mode ?? 'full'); return baseStore.readReachable(options); },
     async commitRoot(...args) { const result = await baseStore.commitRoot(...args); commitResults.push(result); return result; },
   };
-  const foundationRuntime = createFoundationRuntime({ hostAdapter, store, contextProvider: () => context, isEnabled: () => enabled, scanCandidates: legacyScanner, now: clock, newUuid: uuidFactory(), logger: { warn() {} } });
+  const foundationContext = () => personaIdentifierProvider ? { ...context, userAvatar: personaIdentifierProvider() } : context;
+  const foundationRuntime = createFoundationRuntime({ hostAdapter, store, contextProvider: foundationContext, isEnabled: () => enabled, scanCandidates: legacyScanner, now: clock, newUuid: uuidFactory(), logger: { warn() {} } });
   const generateUtilityTask = async options => {
     calls.push({ ...options, testRoute: 'utility' });
     assert.equal(options.systemPrompt, EXTRACTOR_SYSTEM_PROMPT, 'Extractor 必须只走摘要路由');
@@ -101,7 +110,7 @@ function runtimeHarness({ cse, extractor, host = 'official', backendOptions, sha
   };
   const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled: () => enabled, filterWorldInfoSources, sanitizerOptions: () => ({ keepTags: 'content' }), failureStorage, now: clock, newUuid: uuidFactory(), logger: { warn() {} } });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
-  return { runtime, foundationRuntime, store, baseStore, backend, context, calls, commitResults, readModes, emit(name, ...args) { for (const listener of handlers.get(name) ?? []) listener(...args); }, setEnabled(value) { enabled = value; } };
+  return { runtime, foundationRuntime, store, baseStore, backend, context, hostAdapter, calls, commitResults, readModes, emit(name, ...args) { for (const listener of handlers.get(name) ?? []) listener(...args); }, setEnabled(value) { enabled = value; } };
 }
 
 const entities = [
@@ -989,6 +998,58 @@ test('切换 Persona 身份时迟到的自动提取结果不落盘', async () =>
   const graph = await h.store.readReachable({ mode: 'runtime' });
   assert.equal(graph.stateDeltas.length, 0);
   assert.equal(state.cseFloors[0].deltaId, null);
+});
+
+test('入口 Persona 标识按需补入标准宿主身份，并随切换更新；迟到结果仍被拒绝', async () => {
+  let livePersona = 'persona-from-entry-a';
+  let analysisCalls = 0;
+  const h = runtimeHarness({ host: 'luker', personaIdentifierProvider: () => livePersona, cse: options => {
+    analysisCalls += 1;
+    const request = JSON.parse(options.taskMessages[0].content);
+    assert.ok(request.payload.userCoreExtraction);
+    if (analysisCalls === 1) {
+      return { jsonData: { userCoreExtraction: { status: 'traits' }, subjects: [{ subject: '林岚', additions: { core: [{ text: '重视查明事实', evidence: [{ source: 'userPersona', quote: '重视查明事实' }] }] } }] } };
+    }
+    livePersona = 'persona-from-entry-c';
+    return { jsonData: { userCoreExtraction: { status: 'insufficient' }, subjects: [{ subject: '林岚', situational: [{ text: '继续调查', visibility: 'private' }] }] } };
+  } });
+  delete h.context.personaId;
+  delete h.context.userAvatar;
+  h.context.powerUserSettings.persona_description = '调查员林岚，重视查明事实。';
+  assert.equal(h.hostAdapter.snapshot().userIdentity.personaIdentifier, 'persona-from-entry-a');
+  await h.runtime.start();
+  const firstState = await h.runtime.extractNext();
+  let graph = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(graph.stateDeltas[0].source.userCoreExtraction.personaLocator, 'persona-from-entry-a');
+  assert.equal(graph.stateDeltas[0].source.userCoreExtraction.status, 'traits');
+  assert.deepEqual(firstState.cseSubjects.find(subject => subject.displayName === '林岚')?.core.map(item => item.text), ['重视查明事实']);
+
+  livePersona = 'persona-from-entry-b';
+  assert.equal(h.hostAdapter.snapshot().userIdentity.personaIdentifier, 'persona-from-entry-b');
+  livePersona = 'persona-from-entry-a';
+  h.context.chat.push(assistant('Persona 切换后的新楼。'), assistant('下一楼已稳定。'));
+  await h.runtime.refreshStatus();
+  const state = await h.runtime.extractNext();
+  graph = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(graph.stateDeltas.length, 1, '切换 Persona 后迟到的旧请求不得追加状态');
+  assert.equal(state.cseFloors.at(-1).deltaId, null);
+});
+
+test('缺少 Persona locator 时跳过用户 Core 辅助提取，普通 CSE 仍保存', async () => {
+  let calls = 0;
+  const h = runtimeHarness({ testPersonaIdentifierOverride: () => '', cse: options => {
+    calls += 1;
+    const request = JSON.parse(options.taskMessages[0].content);
+    assert.equal(request.payload.userCoreExtraction, undefined);
+    return { jsonData: { subjects: [{ subject: '主角', situational: [{ text: '本楼状态仍可记录', visibility: 'private' }] }] } };
+  } });
+  h.context.powerUserSettings.persona_description = '有内容但没有可用 Persona 身份';
+  const state = await h.runtime.start().then(() => h.runtime.extractNext());
+  const graph = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(calls, 1);
+  assert.equal(graph.stateDeltas.length, 1);
+  assert.equal(graph.stateDeltas[0].source.userCoreExtraction, undefined);
+  assert.ok(state.cseFloors[0].deltaId);
 });
 
 test('CSE 按主体整理角色相关证据，不把提及、指令对象、计划或信息发送者冒充人物已知', () => {

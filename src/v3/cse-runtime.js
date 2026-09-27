@@ -455,7 +455,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
         return extraction?.userEntityId === userEntityId && extraction.personaLocator === personaLocator
           && ['traits', 'insufficient'].includes(extraction.status);
       });
-      const userCoreExtraction = !hasManualCore && !hasExistingCore && !hasCompletedExtraction
+      const userCoreExtraction = Boolean(personaLocator) && !hasManualCore && !hasExistingCore && !hasCompletedExtraction
         ? { userEntityId, personaLocator, descriptionFingerprint: `sha256:${await sha256(requestSources.userPersona.description)}`, hasDescription: hasPersonaDescription }
         : null;
       operation.userCoreExtraction = userCoreExtraction;

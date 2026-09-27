@@ -12,7 +12,7 @@ function text(value, maximum = 500) {
   return result.slice(0, maximum);
 }
 
-function userIdentityFrom(context, source) {
+function userIdentityFrom(context, source, personaIdentifierProvider) {
   const displayName = text(context?.name1 ?? context?.userName ?? context?.username ?? context?.persona?.name);
   const personaIdentifier = text(
     context?.personaId
@@ -20,7 +20,7 @@ function userIdentityFrom(context, source) {
       ?? context?.userAvatar
       ?? context?.personaAvatar
       ?? context?.user_avatar,
-  );
+  ) || text(personaIdentifierProvider?.());
   const aliases = [...new Set([displayName, '你', '{{user}}'].filter(Boolean))];
   return Object.freeze({
     displayName,
@@ -30,7 +30,7 @@ function userIdentityFrom(context, source) {
   });
 }
 
-export function createHostAdapter({ globalRef = globalThis, mutationMetadataCapability = false, worldInfoBindings = {} } = {}) {
+export function createHostAdapter({ globalRef = globalThis, mutationMetadataCapability = false, worldInfoBindings = {}, personaIdentifierProvider = null } = {}) {
   const standardContext = () => contextFrom(globalRef?.SillyTavern);
   const fallbackContext = () => contextFrom(globalRef?.Luker);
   let observedMutationMetadata = mutationMetadataCapability === true;
@@ -61,7 +61,7 @@ export function createHostAdapter({ globalRef = globalThis, mutationMetadataCapa
       eventTypes: context.eventTypes ?? {},
       mode: metadataCapability ? 'enhanced' : 'standard',
       source: standard ? 'SillyTavern' : 'Luker',
-      userIdentity: userIdentityFrom(context, standard ? 'SillyTavern' : 'Luker'),
+      userIdentity: userIdentityFrom(context, standard ? 'SillyTavern' : 'Luker', personaIdentifierProvider),
       capabilities: Object.freeze({ mutationMetadata: metadataCapability, chatComplete }),
     });
   }
@@ -70,7 +70,7 @@ export function createHostAdapter({ globalRef = globalThis, mutationMetadataCapa
     const standard = standardContext();
     const context = standard ?? fallbackContext();
     if (!context) throw new Error('宿主上下文不可用');
-    return userIdentityFrom(context, standard ? 'SillyTavern' : 'Luker');
+    return userIdentityFrom(context, standard ? 'SillyTavern' : 'Luker', personaIdentifierProvider);
   }
 
   function mutationMetadata(args = []) {

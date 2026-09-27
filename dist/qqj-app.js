@@ -5,7 +5,7 @@ import { is_send_press as i, saveSettingsDebounced as a } from "/script.js";
 import { is_group_generating as o } from "/scripts/group-chats.js";
 import { loadWorldInfo as s, selected_world_info as c, world_info as l, world_info_case_sensitive as u, world_info_match_whole_words as d, world_names as f } from "/scripts/world-info.js";
 //#region \0rolldown/runtime.js
-var p = (e, t) => () => (t || (e((t = { exports: {} }).exports, t), e = null), t.exports), m = "0.5.5", h = "qianqianjie", g = "/api/plugins/st-bainiaodata", _ = Object.freeze([
+var p = (e, t) => () => (t || (e((t = { exports: {} }).exports, t), e = null), t.exports), m = "0.5.6", h = "qianqianjie", g = "/api/plugins/st-bainiaodata", _ = Object.freeze([
 	["v3-floor-", "floor"],
 	["v3-run-", "run"],
 	["v3-checkpoint-", "checkpoint"],
@@ -4018,7 +4018,7 @@ function Dr({ entities: e = [], floorIds: t = null, identityProjection: n = null
 	}));
 }
 //#endregion
-//#region node_modules/graphology/dist/graphology.mjs
+//#region ../../home/admin/sillytavern/public/scripts/extensions/third-party/ST-QianQianJie/node_modules/graphology/dist/graphology.mjs
 var Or = (/* @__PURE__ */ p(((e, t) => {
 	var n = typeof Reflect == "object" ? Reflect : null, r = n && typeof n.apply == "function" ? n.apply : function(e, t, n) {
 		return Function.prototype.apply.call(e, t, n);
@@ -6095,7 +6095,7 @@ function ba(e) {
 }
 ba(ma), ba(ha), ba(ga), ba(_a), ba(va), ba(ya), ma.Graph = ma, ma.DirectedGraph = ha, ma.UndirectedGraph = ga, ma.MultiGraph = _a, ma.MultiDirectedGraph = va, ma.MultiUndirectedGraph = ya, ma.InvalidArgumentsGraphError = Vr, ma.NotFoundGraphError = Q, ma.UsageGraphError = Hr;
 //#endregion
-//#region node_modules/graphology-utils/is-graph.js
+//#region ../../home/admin/sillytavern/public/scripts/extensions/third-party/ST-QianQianJie/node_modules/graphology-utils/is-graph.js
 var xa = /* @__PURE__ */ p(((e, t) => {
 	t.exports = function(e) {
 		return typeof e == "object" && !!e && typeof e.addUndirectedEdgeWithKey == "function" && typeof e.dropNode == "function" && typeof e.multi == "boolean";
@@ -25604,70 +25604,70 @@ function Av(e) {
 function jv(e, t = 500) {
 	return (typeof e == "string" ? e.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim() : "").slice(0, t);
 }
-function Mv(e, t) {
-	let n = jv(e?.name1 ?? e?.userName ?? e?.username ?? e?.persona?.name), r = jv(e?.personaId ?? e?.persona?.id ?? e?.userAvatar ?? e?.personaAvatar ?? e?.user_avatar), i = [...new Set([
-		n,
+function Mv(e, t, n) {
+	let r = jv(e?.name1 ?? e?.userName ?? e?.username ?? e?.persona?.name), i = jv(e?.personaId ?? e?.persona?.id ?? e?.userAvatar ?? e?.personaAvatar ?? e?.user_avatar) || jv(n?.()), a = [...new Set([
+		r,
 		"你",
 		"{{user}}"
 	].filter(Boolean))];
 	return Object.freeze({
-		displayName: n,
-		aliases: Object.freeze(i),
-		personaIdentifier: r,
+		displayName: r,
+		aliases: Object.freeze(a),
+		personaIdentifier: i,
 		source: t
 	});
 }
-function Nv({ globalRef: e = globalThis, mutationMetadataCapability: t = !1, worldInfoBindings: n = {} } = {}) {
-	let r = () => Av(e?.SillyTavern), i = () => Av(e?.Luker), a = t === !0;
-	function o() {
-		let e = r() ?? i();
+function Nv({ globalRef: e = globalThis, mutationMetadataCapability: t = !1, worldInfoBindings: n = {}, personaIdentifierProvider: r = null } = {}) {
+	let i = () => Av(e?.SillyTavern), a = () => Av(e?.Luker), o = t === !0;
+	function s() {
+		let e = i() ?? a();
 		if (!e) throw Error("宿主上下文不可用");
 		return e;
 	}
-	function s() {
-		let e = r(), t = e ? null : i(), n = e ?? t;
+	function c() {
+		let e = i(), t = e ? null : a(), n = e ?? t;
 		if (!n) throw Error("宿主上下文不可用");
-		let o = a || [
+		let s = o || [
 			n.getMessageMutationMetadata,
 			n.getMutationMetadata,
 			n.messageMutationMetadata
-		].some((e) => typeof e == "function" || e && typeof e == "object"), s = n.chatMetadata?.integrity, c = s === void 0 ? null : !!s;
+		].some((e) => typeof e == "function" || e && typeof e == "object"), c = n.chatMetadata?.integrity, l = c === void 0 ? null : !!c;
 		return Object.freeze({
 			context: n,
 			chat: Array.isArray(n.chat) ? n.chat : [],
 			chatId: String(n.chatId ?? n.getCurrentChatId?.() ?? "").trim(),
 			eventSource: n.eventSource ?? null,
 			eventTypes: n.eventTypes ?? {},
-			mode: o ? "enhanced" : "standard",
+			mode: s ? "enhanced" : "standard",
 			source: e ? "SillyTavern" : "Luker",
-			userIdentity: Mv(n, e ? "SillyTavern" : "Luker"),
+			userIdentity: Mv(n, e ? "SillyTavern" : "Luker", r),
 			capabilities: Object.freeze({
-				mutationMetadata: o,
-				chatComplete: c
+				mutationMetadata: s,
+				chatComplete: l
 			})
 		});
 	}
-	function c() {
-		let e = r(), t = e ?? i();
+	function l() {
+		let e = i(), t = e ?? a();
 		if (!t) throw Error("宿主上下文不可用");
-		return Mv(t, e ? "SillyTavern" : "Luker");
+		return Mv(t, e ? "SillyTavern" : "Luker", r);
 	}
-	function l(e = []) {
+	function u(e = []) {
 		for (let t = e.length - 1; t >= 0; --t) {
 			let n = e[t];
-			if (!(!n || typeof n != "object" || Array.isArray(n)) && kv.some((e) => Object.hasOwn(n, e))) return a = !0, n;
+			if (!(!n || typeof n != "object" || Array.isArray(n)) && kv.some((e) => Object.hasOwn(n, e))) return o = !0, n;
 		}
 		return null;
 	}
-	function u() {
+	function d() {
 		return n && typeof n == "object" ? n : {};
 	}
 	return Object.freeze({
-		getContext: o,
-		getUserIdentity: c,
-		getWorldInfoBindings: u,
-		snapshot: s,
-		mutationMetadata: l
+		getContext: s,
+		getUserIdentity: l,
+		getWorldInfoBindings: d,
+		snapshot: c,
+		mutationMetadata: u
 	});
 }
 //#endregion
@@ -29099,7 +29099,7 @@ function _y({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 			}), ae = await D(A), oe = await D(G), se = br(u.baseline.userPersona.entityId, x), K = W.userPersona.personaLocator ?? "", q = !!W.userPersona.description.trim(), ce = F?.subjects?.find((e) => e.subjectEntityId === se), J = d?.subjectSnapshots.find((e) => br(e.subjectEntityId, x) === se), le = oe.includes(se) || ce?.core?.some((e) => e.origin === "manual") === !0 || J?.core?.some((e) => e.origin === "manual") === !0, Y = (ce?.core?.length ?? 0) > 0 || (J?.core?.length ?? 0) > 0, ue = G.some((e) => {
 				let t = e.source?.userCoreExtraction ?? e.source?.userCoreCheck;
 				return t?.userEntityId === se && t.personaLocator === K && ["traits", "insufficient"].includes(t.status);
-			}), de = !le && !Y && !ue ? {
+			}), de = K && !le && !Y && !ue ? {
 				userEntityId: se,
 				personaLocator: K,
 				descriptionFingerprint: `sha256:${await Ae(W.userPersona.description)}`,
@@ -37278,14 +37278,17 @@ function qC({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 }
 //#endregion
 //#region index.js
-var JC = () => !!(i || o), YC = Nv({ worldInfoBindings: {
-	loadWorldInfo: s,
-	getSelectedWorldInfo: () => c,
-	getWorldInfoSettings: () => l,
-	getWorldInfoNames: () => f,
-	getDefaultCaseSensitive: () => u,
-	getDefaultMatchWholeWords: () => d
-} }), XC = () => YC.getContext(), ZC = () => XC().uuidv4(), QC = () => ({
+var JC = () => !!(i || o), YC = Nv({
+	personaIdentifierProvider: () => e,
+	worldInfoBindings: {
+		loadWorldInfo: s,
+		getSelectedWorldInfo: () => c,
+		getWorldInfoSettings: () => l,
+		getWorldInfoNames: () => f,
+		getDefaultCaseSensitive: () => u,
+		getDefaultMatchWholeWords: () => d
+	}
+}), XC = () => YC.getContext(), ZC = () => XC().uuidv4(), QC = () => ({
 	...XC(),
 	userAvatar: e
 }), $C = _h({
