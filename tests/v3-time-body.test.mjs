@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { scanAssistantCandidates, createFloorRecord } from '../src/v3/foundation-domain.js';
-import { readTimeBody, planTimeBody, timeBodyStart, resolveTimeStart } from '../src/v3/time-body.js';
+import { readTimeBody, planTimeBody, timeBodyStart, resolveTimeStart, clockContentFingerprint } from '../src/v3/time-body.js';
 import { createTimeRuntime, createTimeStore, prepareTimeRequest } from '../src/v3/time-runtime.js';
 import { compileTimeResponse, compileTimeEdit, compileTimeEdits, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, timeBodyReads, timeItemFailures, projectTime, validTimeProjection, timeRecallProjection, TIME_INPUT_TOKENS, TIME_SYSTEM_PROMPT, TIME_CURRENT_REVIEW_PROMPT } from '../src/v3/time-engine.js';
 import { estimateRecallTokens, selectRecall, buildRecallQueryContext } from '../src/v3/recall-selector.js';
@@ -257,7 +257,7 @@ test('正文实际时间从raw自定义参考/嵌套保留取，不补现实年�
   const plan=await h.runtime.prepareHistoryPlan();const first=await prepareTimeRequest(source,[],{fragments:plan.groups[0]});assert.deepEqual(first.request.currentTime,plan.groups[0].at(-1).observationTime);assert.notEqual(first.request.currentTime.date,source.bodyFloors.at(-1).observationTime.date);
 });
 
-test('旧schema正常回放但coverage0；正文canonical严格、缺memoryId不能undefined误通过；人工旧材料不覆盖而新事实可更新',async()=>{
+test('旧schema正常回放但coverage0；普通正文版本变化不撤回已存批次；人工旧材料不覆盖而新事实可更新',async()=>{
   const h=await harness({count:2});h.source.entities=[{id:PERSON,entityType:'person',displayName:'阿岚',aliases:[]}];const source=await h.body(),plan=planTimeBody(source,[],{history:true}),prepared=await prepareTimeRequest(source,[],{fragments:plan.groups[0]});
   const initial=await compileTimeResponse(bodyModel(prepared.request,{subjectEntityId:PERSON,type:'cycle',periodDays:28,progression:''}),prepared);
   const manual=await compileTimeEdit(initial.changes[0],{label:'人工名称',periodDays:5,status:'cancelled'},source,'manual');
@@ -265,8 +265,100 @@ test('旧schema正常回放但coverage0；正文canonical严格、缺memoryId不
   assert.equal(updated.changes[0].label,'人工名称');assert.equal(updated.changes[0].periodDays,5);assert.equal(updated.changes[0].status,'cancelled');
   const newer=await prepareTimeRequest(source,[initial,manual],{fragments:[plan.groups[0][1]]});const fresh=await compileTimeResponse(bodyModel(newer.request,{subjectEntityId:PERSON,itemId:manual.changes[0].id,type:'cycle',periodDays:28,label:'新观察',progression:''}),newer);assert.equal(fresh.changes[0].label,'新观察');assert.equal(fresh.changes[0].previousObservationKey,manual.changes[0].observationKey);
   const legacy={...structuredClone(initial),dependencies:[{floorId:'floor-1',memoryId:'memory-1'}],bodyReads:undefined};const legacySource={...source,floorMemories:[{id:'memory-1',floorId:'floor-1',recordStatus:'active'}]};assert.equal(replayTimeBatches([legacy],legacySource).length,1);assert.equal(timeBodyReads([legacy],legacySource).size,0);
-  assert.equal(replayTimeBatches([{...initial,dependencies:[{floorId:'floor-1'}]}],source).length,0);const changed=structuredClone(source);changed.floors[0].canonicalFingerprint='wrong';assert.equal(replayTimeBatches([initial],changed).length,0);
+  assert.equal(replayTimeBatches([{...initial,dependencies:[{floorId:'missing-floor'}]}],source).length,0);const changed=structuredClone(source);changed.floors[0].canonicalFingerprint='wrong';assert.equal(replayTimeBatches([initial],changed).length,1);
   const relative={...manual.changes[0],observationTime:projectTime('次日',projectTime('2026-05-10')),occurrenceTime:projectTime('昨天',projectTime('2026-05-11'))};const renamed=(await compileTimeEdit(relative,{label:'仅更名'},source,'rename')).changes[0];assert.deepEqual(renamed.observationTime,relative.observationTime);assert.deepEqual(renamed.occurrenceTime,relative.occurrenceTime);
+});
+
+test('完整旧楼按保存时覆盖封存；partial 同版续读、改版自动跳过而人工从新版零起',async()=>{
+  const h=await harness({count:2}), source=await h.body(), all=planTimeBody(source,[],{history:true}).groups.flat();
+  const prepared=await prepareTimeRequest(source,[],{fragments:[all[0]]}), completed=await compileTimeResponse({changes:[]},prepared);
+  const oldBody=source.bodyFloors[0], changed=structuredClone(source), changedBody=changed.bodyFloors[0];
+  changedBody.content=`${changedBody.content} 新增长度`; changedBody.canonicalFingerprint='canonical-edited'; changedBody.timeSourceFingerprint='clock-edited';
+  changed.floors[0].canonicalFingerprint='canonical-edited'; changed.floors[0].timeSourceFingerprint='clock-edited';
+  let plan=planTimeBody(changed,[completed],{history:false});
+  assert.equal(plan.checkedFloors,1,'原楼完整覆盖依据保存在旧 totalCharacters');
+  assert.equal(plan.groups.flat().some(row=>row.floorId===oldBody.floorId),false,'完整旧楼编辑不重新读取');
+  plan=planTimeBody(changed,[completed],{history:true});
+  assert.equal(plan.groups.flat().find(row=>row.floorId===oldBody.floorId).from,0,'明确人工补查允许按新版从零重读');
+
+  const partial={...completed,id:'partial-old-version',bodyReads:[{...completed.bodyReads[0],from:0,to:Math.max(5,Math.floor(completed.bodyReads[0].to/2))}],status:'partial'};
+  const unchangedPlan=planTimeBody(source,[partial],{history:true});
+  const sameVersion=unchangedPlan.groups.flat().find(row=>row.floorId===oldBody.floorId);
+  assert.equal(sameVersion.from,partial.bodyReads[0].to,'同版本 partial 从已读区间后继续');
+  plan=planTimeBody(changed,[partial],{history:false});
+  assert.equal(plan.groups.flat().some(row=>row.floorId===oldBody.floorId),false,'自动流程不把旧 partial 接到新正文');
+  plan=planTimeBody(changed,[partial],{history:true});
+  const manualVersion=plan.groups.flat().find(row=>row.floorId===oldBody.floorId);
+  assert.equal(manualVersion.from,0,'明确补查按新版正文从零开始');
+});
+
+test('时间戳提醒指纹只覆盖 QQJ/SDC/myknots 注释和已配置成对标签内容',async()=>{
+  const base='前文标点，变句号。<!-- QQJ-start | date=2026-05-01 | weekday=周一 | time=08:00 --><!-- QQJ-end | date=2026-05-01 | weekday=周一 | time=09:00 -->'
+    +'<!-- SDC-start | date=2026-05-01 | weekday=周一 | time=08:00 --><!-- SDC-end | date=2026-05-01 | weekday=周一 | time=09:00 -->'
+    +'<!-- myknots-start | date=2026-05-01 | weekday=周一 | time=08:00 --><!-- myknots-end | date=2026-05-01 | weekday=周一 | time=09:00 -->'
+    +'<bbsstart>5月1日 周一 08:00</bbsstart><unknown>不观察</unknown>';
+  const fingerprint=await clockContentFingerprint(base,'bbsstart');
+  assert.equal(await clockContentFingerprint(base.replace('前文标点，','前文标点。'),'bbsstart'),fingerprint,'标签外普通正文不触发');
+  for(const changed of [base.replace('weekday=周一','weekday=周二'),base.replace('<bbsstart>5月1日 周一 08:00','<bbsstart>5月1日 周一 09:00'),base.replace('SDC-start | date=2026-05-01','SDC-start | date=2026-05-02'),base.replace('myknots-start | date=2026-05-01','myknots-start | date=2026-05-02'),base.replace('QQJ-start | date=2026-05-01','QQJ-start | date=2026-05-02')]) {
+    assert.notEqual(await clockContentFingerprint(changed,'bbsstart'),fingerprint);
+  }
+  assert.equal(await clockContentFingerprint(base.replace('<unknown>不观察</unknown>','<unknown>改了也不观察</unknown>'),'bbsstart'),fingerprint);
+  assert.equal(await clockContentFingerprint(base.replace('5月1日 周一 08:00','5月1日 周一 09:00'),'未配置标签'),await clockContentFingerprint(base,'未配置标签'));
+  assert.notEqual(await clockContentFingerprint('<bbsstart>周一<br>08:00</bbsstart>','bbsstart'),await clockContentFingerprint('<bbsstart>周一08:00</bbsstart>','bbsstart'),'br 的换行需进入时间戳见证');
+  assert.equal(await clockContentFingerprint('<bbsstart>周一<br>08:00</bbsstart>','bbsstart'),await clockContentFingerprint('<bbsstart>周一\n08:00</bbsstart>','bbsstart'),'指纹换行归一与解析器一致');
+});
+
+test('较晚落盘的旧楼补查不覆盖当前楼模型时钟；事项与召回时钟保持稳定',async()=>{
+  const h=await harness({count:2,generate:request=>request.currentReview?reviewModel(request):bodyModel(request)});
+  await h.runtime.authorizeHistory();
+  const stored=await h.store.read(CHAT), source=await h.body(), oldFloor=source.bodyFloors[0];
+  const oldRead=planTimeBody(source,[],{history:true}).groups.flat().find(row=>row.floorId===oldFloor.floorId);
+  const prepared=await prepareTimeRequest(source,stored.batches,{fragments:[oldRead]});
+  const lateOldBatch=await compileTimeResponse({changes:[]},prepared,stored.batches);
+  await saveTimeBatch(h,lateOldBatch);
+  const currentBatch=stored.batches.findLast(batch=>!batch.manualEdit&&batch.cutoffFloorId==='floor-2');
+  assert.ok(currentBatch?.currentTime);
+  const beforeItem=h.runtime.getState().trackedItems[0];
+  h.chat[2].mes=h.chat[2].mes.replace('date=2026-05-02','date=2026-06-02');await h.seal();
+  await h.runtime.refreshStatus({force:true});
+  const afterItem=h.runtime.getState().trackedItems[0];
+  assert.notEqual(beforeItem.elapsedDays,null);assert.equal(afterItem.elapsedDays,beforeItem.elapsedDays,'事项展示继续使用当前楼已保存的模型时钟');
+  const recall={status:'ready',chatId:CHAT,headCheckpointId:'head',rootRevision:1,bodyMatchRefs:h.source.floors.map(floor=>({floorId:floor.id,assistantSeq:floor.assistantSeq})),floorMemories:[],entities:[],currentState:[],cseChanges:[],identityProjection:{}};
+  const projection=await h.runtime.recallProjection(recall);
+  assert.deepEqual(projection.currentTime,currentBatch.currentTime);
+});
+
+test('普通旧正文编辑不提醒；时间戳内容改变只显示提醒、不调用模型，恢复原文自动清除',async()=>{
+  const h=await harness({count:1});await h.runtime.authorizeHistory();assert.equal(h.calls(),1);
+  await h.runtime.refreshStatus({force:true});assert.equal(h.runtime.getState().clockContentChanged,false);
+  const initial=h.chat[0].mes;
+  h.chat[0].mes=initial.replace('仍疼痛。','仍疼痛！');await h.seal();await h.runtime.refreshStatus({force:true});
+  await h.runtime.runBatch();assert.equal(h.runtime.getState().clockContentChanged,false);assert.equal(h.calls(),1);
+  h.chat[0].mes=h.chat[0].mes.replace('weekday=周一','weekday=周二');await h.seal();await h.runtime.refreshStatus({force:true});await h.runtime.runBatch();
+  assert.equal(h.runtime.getState().clockContentChanged,true);assert.equal(h.calls(),1);assert.equal(h.runtime.getState().coverage.checkedFloors,1);
+  h.chat[0].mes=initial;await h.seal();await h.runtime.refreshStatus({force:true});
+  assert.equal(h.runtime.getState().clockContentChanged,false);assert.equal(h.calls(),1);
+});
+
+test('旧楼时间戳改动只提示，不撤回已保存推测、当前评估或自动调用',async()=>{
+  const h=await harness({count:1,generate:request=>request.currentReview?reviewModel(request):bodyModel(request,{progression:''})});
+  await h.runtime.authorizeHistory();assert.equal(h.calls(),2);
+  const before=h.runtime.getState().trackedItems[0],stored=await h.store.read(CHAT),attempt=structuredClone(stored.head.currentReviewAttempt);
+  h.chat[0].mes=h.chat[0].mes.replace('weekday=周一','weekday=周二');await h.seal();await h.runtime.runBatch();await h.runtime.refreshStatus({force:true});
+  const after=h.runtime.getState().trackedItems[0],latest=await h.store.read(CHAT);
+  assert.equal(h.calls(),2);assert.equal(after.projection,before.projection);assert.equal(after.assessmentReason,before.assessmentReason);
+  assert.deepEqual(latest.head.currentReviewAttempt,attempt);assert.equal(h.runtime.getState().clockContentChanged,true);
+});
+
+test('后续新楼更新旧事项时，提交校验比较发起时的旧楼正文见证',async()=>{
+  const h=await harness({count:1,generate:(request,calls)=>request.currentReview?reviewModel(request):calls===1?bodyModel(request,{progression:''}):bodyModel(request,{itemId:request.trackedItems[0]?.id,sourceKeys:[],subjectEntityId:request.trackedItems[0]?.subjectEntityId,label:request.trackedItems[0]?.label,observation:request.trackedItems[0]?.observation,type:request.trackedItems[0]?.type,status:'active',periodDays:request.trackedItems[0]?.periodDays,progression:''})});
+  await h.runtime.authorizeHistory();assert.equal(h.calls(),2);
+  h.chat[0].mes=h.chat[0].mes.replace('仍疼痛。','仍疼痛！');await h.seal();
+  h.chat.push({is_user:false,mes:raw(1,'阿岚仍有新的手腕观察。')},{is_user:true,mes:'继续'});await h.seal();
+  await h.runtime.runBatch();const stored=await h.store.read(CHAT);
+  assert.equal(h.calls(),3);assert.equal(stored.batches.at(-1).cutoffFloorId,'floor-2');
+  assert.ok(stored.batches.at(-1).dependencies.some(ref=>ref.floorId==='floor-1'&&ref.canonicalFingerprint),'旧事项历史来源继续保留审计指纹');
+  assert.equal(replayTimeBatches(stored.batches,await h.body()).length,1);
 });
 
 test('分支仅有效前缀canonical、空changes成功覆盖；二次分支去manual断链不记checked，删尾与正文改动仅失效相关批',async()=>{
@@ -275,7 +367,7 @@ test('分支仅有效前缀canonical、空changes成功覆盖；二次分支去m
   await h.store.putHead(CHAT,{schemaVersion:1,chatId:CHAT,batchIds:batches.map(batch=>batch.id),bodyStart:{floorId:'floor-1'}},0);
   await h.store.copyPrefix(CHAT,'child',h.source.floors.slice(0,2));const child=await h.store.read('child');assert.equal(child.batches.length,2);assert.equal(child.head.bodyStart.floorId,'floor-1');assert.equal(timeBodyReads(child.batches,{...source,floors:source.floors.slice(0,2)}).size,2);
   await h.store.copyPrefix('child','empty',[]);assert.equal((await h.store.read('empty')).batches.length,0);assert.equal((await h.store.read('empty')).head.lastAttemptTime,null);
-  const changed=structuredClone(source);changed.floors[1].canonicalFingerprint='changed';assert.equal(timeBodyReads(batches,changed).size,2);
+  const changed=structuredClone(source);changed.floors[1].canonicalFingerprint='changed';assert.equal(timeBodyReads(batches,changed).size,3);
   const broken={...batches[1],changes:[{id:'missing-old',observationKey:'new',previousObservationKey:'manual-removed'}]};assert.equal(timeBodyReads([batches[0],broken],source).has('floor-2'),false);
 });
 
@@ -338,13 +430,13 @@ test('来源ready且memory短sync自动照正文处理，无第二ready也不等
 });
 
 test('仅正文时间标签修正使覆盖待补，原观察和人工字段/key不丢；重查成功恢复覆盖，无关排版不重查；分支现时间再核',async()=>{
-  let model;const h=await harness({count:2,generate:request=>model?bodyModel(request,{subjectEntityId:model.subjectEntityId,itemId:null,type:'cycle',periodDays:28,label:'手腕擦伤',status:'active',progression:''}):bodyModel(request,{type:'cycle',periodDays:28,progression:''})});
+  let model;const h=await harness({count:2,generate:request=>request.currentReview?reviewModel(request):model?bodyModel(request,{subjectEntityId:model.subjectEntityId,itemId:null,type:'cycle',periodDays:28,label:'手腕擦伤',status:'active',progression:''}):bodyModel(request,{type:'cycle',periodDays:28,progression:''})});
   await h.runtime.organize(await h.runtime.prepareHistoryPlan());let item=h.runtime.getState().trackedItems[0];await h.runtime.editItem(item.id,{label:'人工名称',periodDays:5,status:'cancelled'},item.observationKey);model=(await h.store.read(CHAT)).batches.at(-1).changes[0];const oldKey=model.observationKey;
   h.chat[0].mes=h.chat[0].mes.replaceAll('2026-05-','2026-06-');let plan=await h.runtime.prepareHistoryPlan();assert.equal(plan.floorCount,1);assert.equal(replayTimeBatches((await h.store.read(CHAT)).batches,await h.body())[0].observationKey,oldKey);await h.runtime.organize(plan);item=replayTimeBatches((await h.store.read(CHAT)).batches,await h.body())[0];assert.equal(item.observationKey,oldKey);assert.equal(item.label,'人工名称');assert.equal(item.periodDays,5);assert.equal(item.status,'cancelled');assert.equal((await h.runtime.prepareHistoryPlan()).floorCount,0);
   const collisionPrepared=await prepareTimeRequest(await h.body(),(await h.store.read(CHAT)).batches,{fragments:plan.groups[0]});collisionPrepared.request.trackedItems=[];collisionPrepared.trackedRecords=[];
   const budgetOmitted=await compileTimeResponse(bodyModel(collisionPrepared.request,{itemId:null,type:'cycle',periodDays:28,label:'手腕擦伤',status:'active',progression:''}),collisionPrepared);assert.equal(budgetOmitted.changes[0].observationKey,oldKey);assert.equal(budgetOmitted.changes[0].status,'cancelled');
   h.chat[0].mes+='<!-- layout-only -->';assert.equal((await h.runtime.prepareHistoryPlan()).floorCount,0);
-  await h.store.copyPrefix(CHAT,'child',h.source.floors);const copied=await h.store.read('child'),body=await h.body();assert.equal(timeBodyReads(copied.batches,body).size,2);body.floors[0].timeSourceFingerprint='different-child-clock';assert.equal(timeBodyReads(copied.batches,body).has('floor-1'),false);
+  await h.store.copyPrefix(CHAT,'child',h.source.floors);const copied=await h.store.read('child'),body=await h.body();assert.equal(timeBodyReads(copied.batches,body).size,2);body.floors[0].timeSourceFingerprint='different-child-clock';assert.equal(timeBodyReads(copied.batches,body).has('floor-1'),true);
 });
 
 test('确认停留期间当前楼已被自动成功读过，原冻结历史计划只发尚未读片段，不重复付费检查',async()=>{
@@ -483,7 +575,7 @@ test('正文首批异常不阻止后批登记与最终评估，末批成功不�
 });
 
 test('partial同正文不自动重发，新增正文仍正常处理且保留先前成功项',async()=>{
-  const h=await harness({count:1,generate:(request,calls)=>{
+  const requests=[];const h=await harness({count:1,generate:(request,calls)=>{requests.push(request);
     if(calls===1)return {changes:[bodyModel(request).changes[0],bodyModel(request,{sourceKeys:['S99']}).changes[0]]};
     const next=bodyModel(request,{subjectName:'沈砚',label:'膝伤',observation:'沈砚膝伤仍疼痛'});
     next.changes[0].sourceKeys=[request.observations.at(-1).sourceKey];return next;
@@ -492,6 +584,7 @@ test('partial同正文不自动重发，新增正文仍正常处理且保留先�
   await h.runtime.runBatch();h.reload();await h.runtime.runBatch();await h.runtime.refreshStatus({force:true});assert.equal(h.calls(),1,'同一正文的partial不得自动重发');
   h.chat.push({is_user:false,mes:raw(1,'沈砚膝伤仍疼痛。')},{is_user:true,mes:'继续'});await h.seal();await h.runtime.runBatch();
   stored=await h.store.read(CHAT);assert.equal(h.calls(),2,'真实新增正文应继续一次正常请求');assert.equal(stored.head.lastRun.status,'completed');
+  assert.deepEqual(requests[1].observations.map(row=>row.floorId),['floor-2'],'新楼自动处理请求只携带高水位后的观察楼');
   assert.deepEqual(replayTimeBatches(stored.batches,await h.body()).map(item=>item.label).sort(),['手腕擦伤','膝伤']);
   await h.runtime.runBatch();assert.equal(h.calls(),2,'新正文处理完成后重复通知仍不额外请求');
 });
@@ -654,7 +747,7 @@ test('轮换只统计当前cutoff以前的有效批次，并兼容旧review选�
   batches.push({schemaVersion:1,chatId:CHAT,id:'future',signature:'future',currentTime:second.observationTime,cutoffFloorId:second.floorId,cutoffAssistantSeq:second.assistantSeq,
     sourceKeys:[],dependencies:[],bodyReads:[],changes:[],selectedItemIds:['waiting']});
   const prepared=await prepareTimeRequest(source,batches,{cutoffBody:first,currentReview:true,allowInitialProjection:true});
-  assert.equal(prepared.trackedRecords[0].id,'waiting');
+  assert.equal(prepared.trackedRecords[0].id,'sent','仅 floor 仍可达时，旧canonical指纹不撤销已落盘送审记录');
 });
 
 test('停止项只保留正文相关性与稳定顺序，不能靠调度加分长期挤占活跃项',async()=>{
@@ -895,7 +988,7 @@ test('完整归并前缀才继承，旧记录正常回放，人工当前版本�
   const h=await harness({count:3}),{source,rows,batches,items}=await seedMergeItems(h);const manual=await compileTimeEdit(items[0],{label:'人工名称',observation:'人工修订的当前观察'},source,'manual');const prepared=await prepareTimeRequest(source,[...batches,manual],{fragments:rows});assert.equal(prepared.request.trackedItems.find(item=>item.id===items[0].id).observation,'人工修订的当前观察');
   const merge=await compileTimeResponse({changes:[],merges:[mergeProposal(items[0],items[1])]},prepared,[...batches,manual]);assert.equal(merge.changes.find(item=>item.id===items[0].id).observation,'人工修订的当前观察');await saveTimeBatch(h,manual);await saveTimeBatch(h,merge);
   await h.store.copyPrefix(CHAT,'merge-child',source.floors);const child=await h.store.read('merge-child');assert.equal(replayTimeBatches(child.batches,source).filter(item=>item.status==='active').length,2);assert.ok(child.batches.at(-1).mergeGroups);
-  const changed=source.floors.map(floor=>floor.id==='floor-2'?{...floor,canonicalFingerprint:'changed'}:floor);await h.store.copyPrefix(CHAT,'merge-broken-child',changed);assert.equal((await h.store.read('merge-broken-child')).batches.some(batch=>batch.mergeGroups),false);
+  const changed=source.floors.map(floor=>floor.id==='floor-2'?{...floor,canonicalFingerprint:'changed'}:floor);await h.store.copyPrefix(CHAT,'merge-edited-child',changed);assert.equal((await h.store.read('merge-edited-child')).batches.some(batch=>batch.mergeGroups),true);
 });
 
 

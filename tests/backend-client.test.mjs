@@ -96,6 +96,38 @@ test('backend 非成功 HTTP 不读取 JSON body，仍保留原状态诊断', as
   assert.deepEqual(snapshot.sinceClientCreatedRequestCounts, { get: 1, put: 1, delete: 1 });
 });
 
+test('backend HTTP 400 仅将短 error/message 写入诊断，解析失败仍保留原始 HTTP 错误', async () => {
+  const responses = [
+    { ok: false, status: 400, json: async () => ({ error: 'VALIDATION_ERROR', message: '字段格式无效', details: { private: 'PRIVATE_DETAIL' } }) },
+    { ok: true, status: 200, json: async () => ({ ok: true }) },
+    { ok: false, status: 400, json: async () => { throw new SyntaxError('PRIVATE_BAD_JSON'); } },
+    { ok: false, status: 400, json: async () => '<html>PRIVATE_HTML</html>' },
+  ];
+  const client = createBackendClient({ fetchImpl: async () => responses.shift() });
+  await assert.rejects(client.put('private-chat', 'v3-floor-memory-private', { private: 'PRIVATE_REQUEST' }, 0), error => error.status === 400 && error.message === '后端请求失败（HTTP 400）');
+  const valid = client.getDiagnosticSnapshot();
+  assert.equal(valid.latestWrite.backendError, 'VALIDATION_ERROR');
+  assert.equal(valid.lastFailure.backendMessage, '字段格式无效');
+  assert.doesNotMatch(JSON.stringify(valid), /PRIVATE_DETAIL|PRIVATE_REQUEST|private-chat|v3-floor-memory-private/);
+  await client.get('private-chat', 'v3-root');
+  assert.equal(client.getDiagnosticSnapshot().latestRead.outcome, 'success');
+  assert.deepEqual(client.getDiagnosticSnapshot().lastFailure, valid.lastFailure);
+
+  await assert.rejects(client.put('private-chat', 'v3-floor-memory-private', {}, 0), error => error.status === 400 && error.message === '后端请求失败（HTTP 400）');
+  const malformed = client.getDiagnosticSnapshot();
+  assert.equal(malformed.latestWrite.httpStatus, 400);
+  assert.equal(malformed.latestWrite.backendError, undefined);
+  assert.equal(malformed.latestWrite.backendMessage, undefined);
+
+  await assert.rejects(client.put('private-chat', 'v3-floor-memory-private', {}, 0), error => error.status === 400 && error.message === '后端请求失败（HTTP 400）');
+  const nonJson = client.getDiagnosticSnapshot();
+  assert.equal(nonJson.lastFailure.httpStatus, 400);
+  assert.equal(nonJson.lastFailure.backendError, undefined);
+  assert.equal(nonJson.lastFailure.backendMessage, undefined);
+  assert.doesNotMatch(JSON.stringify(nonJson), /PRIVATE_BAD_JSON|PRIVATE_HTML/);
+  assert.equal(createBackendClient({ fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }) }).getDiagnosticSnapshot().lastFailure, null);
+});
+
 test('backend 正常响应仍保持原 GET/PUT 合同', async () => {
   const calls = [];
   const fetchImpl = async (url, options) => { calls.push({ url, options }); return { ok: true, status: 200, json: async () => ({ ok: true }) }; };

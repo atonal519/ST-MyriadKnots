@@ -40,6 +40,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   const editableEvents = new Map();
   const operationMenus = createOperationMenuController(documentRef);
   const openIds = new Set(), nestedOpenIds = new Set(), matterOpenIds = new Set();
+  const openDayStates = new Map();
   const element = (tag, className = '', copy = '') => {
     const node = documentRef.createElement(tag);
     if (className) node.className = className;
@@ -48,7 +49,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   };
   const resetForChat = nextChatId => {
     if (chatId === nextChatId) return;
-    epoch += 1; chatId = nextChatId; query = ''; reverse = true; feedback = ''; textEditors.clear(); editableEvents.clear(); openIds.clear(); nestedOpenIds.clear(); matterOpenIds.clear();
+    epoch += 1; chatId = nextChatId; query = ''; reverse = true; feedback = ''; textEditors.clear(); editableEvents.clear(); openIds.clear(); nestedOpenIds.clear(); matterOpenIds.clear(); openDayStates.clear();
   };
   const canEditEvent = eventId => {
     if (!editableEvents.has(eventId)) editableEvents.set(eventId, runtime.canEditQianshiEventText(eventId));
@@ -58,13 +59,14 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     const needle = text(query).trim();
     return (snapshot?.events ?? []).filter(event => !needle || searchText(event).includes(needle));
   };
+  const dayStateId = (segment, group) => JSON.stringify([segment.id, group.key ?? [group.period ?? '', group.day ?? '']]);
   const historyBusy = () => snapshot?.history?.status === 'running' || runtimeState?.qianshiHistoryActive === true;
   const otherWorkBusy = () => runtimeState?.memoryWorkBusy === true || Boolean(runtimeState?.activeExtraction || runtimeState?.activeCse);
   const sourceCopy = event => validMessageIndex(event.sourceMessageIndex) ? `第 ${event.sourceMessageIndex} 楼` : `AI 记录 ${event.sourceAssistantSeq ?? '未明'}`;
   const statusBadge = event => {
     const status = VALID_STATUS.has(event.status) ? event.status : 'unknown';
     const badge = element('small', `qqj-qianshi-state status-${status}`, STATUS_BADGE_COPY[status]);
-    badge.title = `当时状态：${STATUS_BADGE_COPY[status]}`;
+    badge.title = `那时状态：${STATUS_BADGE_COPY[status]}`;
     badge.setAttribute('aria-label', badge.title);
     return badge;
   };
@@ -126,8 +128,8 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       const dt = element('dt', '', label), dd = element('dd', valueClass, value); meta.append(dt, dd);
     };
     row('人物', (event.people ?? []).map(person => person.name).filter(Boolean).join('、'));
-    row('对象', event.object);
-    row('当时', VALID_STATUS.has(event.status) ? STATUS_COPY[event.status] : '状态未明');
+    row('涉及物品', event.object);
+    row('那时', VALID_STATUS.has(event.status) ? STATUS_COPY[event.status] : '状态未明');
     row('约定', event.scheduledTime ? `${event.scheduledTime}（约定 / 预计）` : '');
     row('来源', sourceCopy(event), 'source');
     body.append(meta);
@@ -145,9 +147,13 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     const descriptionLabel = element('label', 'qqj-qianshi-text-label', '经过说明');
     const description = element('textarea', 'settings-input qqj-qianshi-description-input'); description.value = state.description; description.maxLength = 4000; description.disabled = state.pending;
     descriptionLabel.append(description);
+    const objectLabel = element('label', 'qqj-qianshi-text-label', '涉及物品');
+    const object = element('input', 'settings-input qqj-qianshi-object-input'); object.value = state.object; object.maxLength = 1000; object.disabled = state.pending;
+    objectLabel.append(object, element('small', 'qqj-qianshi-object-hint', '只填对后续有用的具体物品；多个用顿号分隔；没有可留空。'));
     title.addEventListener('input', event => { state.title = event.target.value; });
     description.addEventListener('input', event => { state.description = event.target.value; });
-    form.append(titleLabel, descriptionLabel);
+    object.addEventListener('input', event => { state.object = event.target.value; });
+    form.append(titleLabel, descriptionLabel, objectLabel);
     if (state.error) form.append(element('p', 'qqj-qianshi-edit-error', state.error));
     const actions = element('div', 'qqj-qianshi-edit-actions');
     const save = element('button', 'primary-action', state.pending ? '正在保存…' : '保存'); save.type = 'submit'; save.disabled = state.pending;
@@ -157,10 +163,11 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     form.addEventListener('submit', async submission => {
       submission.preventDefault?.();
       const clean = value => String(value ?? '').normalize('NFKC').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
-      const next = { title: clean(state.title).slice(0, 500), description: clean(state.description).slice(0, 4000) };
-      state.title = next.title; state.description = next.description;
+      const next = { title: clean(state.title).slice(0, 500), description: clean(state.description).slice(0, 4000), object: clean(state.object).slice(0, 1000) || null };
+      state.title = next.title; state.description = next.description; state.object = next.object ?? '';
       if (!next.title || !next.description) { state.error = '标题和经过说明都不能为空。'; render(); return; }
-      if (next.title === clean(state.baseline.title).slice(0, 500) && next.description === clean(state.baseline.description).slice(0, 4000)) { textEditors.delete(event.id); feedback = '内容没有变化，没有写入新版本。'; render(); return; }
+      if (next.title === clean(state.baseline.title).slice(0, 500) && next.description === clean(state.baseline.description).slice(0, 4000)
+        && next.object === (clean(state.baseline.object).slice(0, 1000) || null)) { textEditors.delete(event.id); feedback = '内容没有变化，没有写入新版本。'; render(); return; }
       state.pending = true; state.error = ''; render();
       const saveEpoch = epoch, saveChatId = chatId;
       try {
@@ -192,14 +199,14 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       openIds.add(cardId);
       if (nestedRowKey) nestedOpenIds.add(nestedRowKey);
       textEditors.set(event.id, { editing: true, title: event.title, description: event.description,
-        baseline: { memoryId: event.sourceFloorMemoryId, title: event.title, description: event.description }, error: '', pending: false });
+        object: event.object ?? '', baseline: { memoryId: event.sourceFloorMemoryId, title: event.title, description: event.description, object: event.object ?? null }, error: '', pending: false });
       render();
     });
     menuBody.append(edit); menu.append(toggle, menuBody);
     return menu;
   }
 
-  function sameDayHistory(events, representativeId, cardId) {
+  function sameDayHistory(events, representativeId, cardId, representativeMenu, setRepresentativeRow) {
     const section = element('section', 'qqj-qianshi-day-progress');
     section.append(element('p', 'qqj-qianshi-day-progress-title', `当天过程 · ${events.length} 条`));
     const list = element('div', 'qqj-qianshi-matter-list');
@@ -208,12 +215,15 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       const rowKey = `day:${representativeId}:${item.id}`, row = element('details', `qqj-qianshi-matter-event${item.id === representativeId ? ' current' : ''}`);
       row.dataset.qianshiEventId = item.id;
       row.open = nestedOpenIds.has(rowKey);
-      const status = VALID_STATUS.has(item.status) ? STATUS_COPY[item.status] : '状态未明';
-      const suffix = [item.updatesMatter === false ? '背景 / 补充' : '', status ? `当时：${status}` : ''].filter(Boolean).join(' · ');
       const summary = element('summary');
-      summary.append(element('span', '', `${item.storyTime || '时间未明'} · ${item.title}${suffix ? `（${suffix}）` : ''}`), statusBadge(item));
+      summary.append(element('span', '', `${item.storyTime || '时间未明'} · ${item.title}`));
+      if (item.updatesMatter === false) summary.append(element('small', 'qqj-qianshi-event-role', '背景 / 补充'));
+      summary.append(statusBadge(item));
       row.append(summary);
-      if (item.id !== representativeId) {
+      if (item.id === representativeId) {
+        setRepresentativeRow(itemRow);
+        if (representativeMenu) itemRow.append(representativeMenu);
+      } else {
         const menu = eventOperationMenu(item, { cardId, nestedRowKey: rowKey });
         if (menu) itemRow.append(menu);
       }
@@ -230,9 +240,9 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     return section;
   }
 
-  function expandedContent(event, matterEvents, dayEvents, cardId) {
+  function expandedContent(event, matterEvents, dayEvents, cardId, representativeMenu, setRepresentativeRow) {
     const body = element('div', 'qqj-qianshi-expanded');
-    if (dayEvents.length > 1) body.append(sameDayHistory(dayEvents, event.id, cardId));
+    if (dayEvents.length > 1) body.append(sameDayHistory(dayEvents, event.id, cardId, representativeMenu, setRepresentativeRow));
     else body.append(eventDetails(event, 'qqj-qianshi-event-detail'));
     const history = matterHistory(event, matterEvents); if (history) body.append(history);
     return body;
@@ -252,15 +262,25 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     details.append(summary);
     const nestedRowKey = dayEvents.length > 1 ? `day:${event.id}:${event.id}` : null;
     const menu = eventOperationMenu(event, { cardId, nestedRowKey });
+    let representativeRow = null;
+    const placeRepresentativeMenu = expanded => {
+      if (!menu || !representativeRow) return;
+      const activeInsideMenu = menu.contains?.(documentRef.activeElement);
+      menu.open = false;
+      if (expanded) representativeRow.append(menu);
+      else itemRow.append(menu);
+      if (!expanded && activeInsideMenu) menu.querySelector?.('.qqj-profile-menu-toggle')?.focus?.({ preventScroll: true });
+    };
     const ensureBody = () => {
       if (!details.children || [...details.children].some(node => String(node.className).includes('qqj-qianshi-expanded'))) return;
-      details.append(expandedContent(event, matterEvents, dayEvents, cardId));
+      details.append(expandedContent(event, matterEvents, dayEvents, cardId, menu, row => { representativeRow = row; }));
     };
-    if (details.open) ensureBody();
     details.addEventListener('toggle', () => {
-      if (details.open) { openIds.add(cardId); ensureBody(); } else openIds.delete(cardId);
+      if (details.open) { openIds.add(cardId); ensureBody(); placeRepresentativeMenu(true); }
+      else { openIds.delete(cardId); placeRepresentativeMenu(false); }
     });
     itemRow.append(details); if (menu) itemRow.append(menu);
+    if (details.open) { ensureBody(); placeRepresentativeMenu(true); }
     return itemRow;
   }
 
@@ -274,6 +294,14 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     const visibleIds = new Set(events.map(event => event.id)), timeline = snapshot.timeline ?? { segments: [], undatedEventIds: [] };
     const wrapper = element('div', 'qqj-qianshi-timeline');
     let groupCount = 0;
+    const orderedVisibleGroups = (timeline.segments ?? []).flatMap(segment => {
+      let groups = (segment.groups ?? []).filter(group => group.eventIds.some(id => visibleIds.has(id)));
+      const ambiguous = segment.id === 'month-day' && groups.some(group => group.period === '1月') && groups.some(group => group.period === '12月');
+      if (reverse && !ambiguous) groups = groups.reverse();
+      return groups;
+    });
+    const defaultGroupId = timeline.hasGlobalLatest && orderedVisibleGroups.some(group => group.id === timeline.globalLatestGroupId)
+      ? timeline.globalLatestGroupId : orderedVisibleGroups[0]?.id;
     for (const [segmentIndex, segment] of (timeline.segments ?? []).entries()) {
       let groups = (segment.groups ?? []).map(group => ({ ...group, eventIds: [...group.eventIds] })).filter(group => group.eventIds.some(id => visibleIds.has(id)));
       if (!groups.length) continue;
@@ -282,19 +310,52 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       if (reverse && !yearBoundaryAmbiguous) groups = groups.reverse();
       const block = element('section', 'qqj-qianshi-segment');
       if ((timeline.segments ?? []).length > 1) block.append(element('p', 'qqj-qianshi-segment-label', `${segment.label || (segmentIndex ? '另一组时间' : '时间')} · 不依据其他组推断先后`));
-      for (const group of groups) {
+      for (const [groupIndex, group] of groups.entries()) {
         const latest = !yearBoundaryAmbiguous && group.id === segment.latestGroupId;
-        const day = element('section', `qqj-qianshi-day${latest ? ' latest' : ''}`); day.id = group.id;
+        const stateId = dayStateId(segment, group);
+        const axisPosition = groups.length === 1 ? 'single' : groupIndex === 0 ? 'first' : groupIndex === groups.length - 1 ? 'last' : 'middle';
+        const day = element('div', `qqj-qianshi-day qqj-qianshi-day-${axisPosition}${latest ? ' latest' : ''}`); day.id = group.id; day.dataset.dayStateId = stateId;
+        const searchExpanded = Boolean(query.trim());
+        const defaultExpanded = group.id === defaultGroupId;
+        const dayOpen = searchExpanded || (openDayStates.has(stateId) ? openDayStates.get(stateId) : defaultExpanded);
+        const visibleEventCount = group.eventIds.filter(id => visibleIds.has(id)).length;
         const date = element('div', 'qqj-qianshi-date'); date.title = group.full;
-        date.append(element('span', 'qqj-qianshi-day-name', group.day), element('span', 'qqj-qianshi-period', group.period));
+        date.append(element('span', 'qqj-qianshi-day-name', group.day), element('span', 'qqj-qianshi-period', group.period), element('span', 'qqj-qianshi-day-count', `${visibleEventCount} 件`));
         if (latest) date.append(element('span', 'qqj-qianshi-latest-tag', timeline.hasGlobalLatest ? '最近' : '该段最近'));
-        const dot = element('i', 'qqj-qianshi-dot'); dot.setAttribute('aria-hidden', 'true');
-        const eventList = element('div', 'qqj-qianshi-events');
+        const disclosure = element('details', 'qqj-qianshi-day-disclosure'); disclosure.open = dayOpen;
+        const summary = element('summary', 'qqj-qianshi-day-summary'); summary.dataset.dayStateId = stateId; summary.setAttribute('aria-label', `${group.full || `${group.period ?? ''}${group.day ?? ''}`}，${visibleEventCount} 件，${dayOpen ? '收起' : '展开'}`);
+        summary.append(date);
+        summary.addEventListener('click', event => {
+          if (event.isTrusted === true && !query.trim()) openDayStates.set(stateId, !disclosure.open);
+        });
+        const updateDayLabel = () => {
+          summary?.setAttribute('aria-label', `${group.full || `${group.period ?? ''}${group.day ?? ''}`}，${visibleEventCount} 件，${disclosure.open ? '收起' : '展开'}`);
+        };
         let cards = groupedDayCards(group.id, group.eventIds, eventById).filter(card => card.events.some(event => visibleIds.has(event.id)));
         if (reverse) cards = cards.reverse();
+        if (dayOpen && cards.length > 1) day.className += ' qqj-qianshi-day-has-card-axis';
+        const lastEvent = [...group.eventIds].reverse().map(id => eventById.get(id)).find(event => event && visibleIds.has(event.id));
+        const preview = element('div', 'qqj-qianshi-day-preview'); preview.hidden = dayOpen;
+        if (lastEvent) {
+          if (lastEvent.storyTime) preview.append(element('span', 'qqj-qianshi-event-time', lastEvent.storyTime));
+          const previewTitle = element('div', 'qqj-qianshi-day-preview-title', lastEvent.title);
+          previewTitle.append(statusBadge(lastEvent));
+          preview.append(previewTitle, element('p', 'qqj-qianshi-preview', lastEvent.description));
+        }
+        const eventList = element('div', 'qqj-qianshi-events');
+        eventList.hidden = !dayOpen;
         groupCount += cards.length;
         for (const card of cards) eventList.append(eventNode(card.representative, matterEvents, { cardId: card.id, dayEvents: card.events }));
-        day.append(date, dot, eventList); block.append(day);
+        disclosure.addEventListener('toggle', () => {
+          preview.hidden = disclosure.open;
+          eventList.hidden = !disclosure.open;
+          day.className = day.className.replace(/\s+qqj-qianshi-day-has-card-axis/u, '')
+            + (disclosure.open && cards.length > 1 ? ' qqj-qianshi-day-has-card-axis' : '');
+          updateDayLabel();
+        });
+        disclosure.append(summary);
+        const dot = element('i', 'qqj-qianshi-dot'); dot.setAttribute('aria-hidden', 'true');
+        day.append(disclosure, dot, preview, eventList); block.append(day);
       }
       wrapper.append(block);
     }
@@ -353,16 +414,28 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     const previousResults = container.querySelector?.('.qqj-qianshi-history-results');
     const preserveResults = previousChatId === currentChatId && previousResults;
     const resultsScrollTop = preserveResults ? previousResults.scrollTop : 0;
+    const outerScrollPositions = [];
+    for (let ancestor = container.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      if (ancestor.scrollTop) outerScrollPositions.push([ancestor, ancestor.scrollTop]);
+    }
     const resultsHadFocus = preserveResults && (previousResults === documentRef.activeElement
       || previousResults.contains?.(documentRef.activeElement));
+    const focusedControlKey = documentRef.activeElement?.dataset?.focusKey ?? null;
+    const focusedDayStateId = documentRef.activeElement?.className === 'qqj-qianshi-day-summary' ? documentRef.activeElement.dataset?.dayStateId : null;
     resetForChat(currentChatId);
     operationMenus.reset();
     const page = element('section', 'qqj-qianshi-page');
     const coverage = coverageProjection(snapshot), coverageBox = element('section', `qqj-qianshi-coverage ${coverage.kind}`);
     const coverageText = element('div'); coverageText.append(element('strong', '', coverage.label), element('p', '', coverage.copy));
-    const history = snapshot?.history ?? {}, historyAction = element('button', 'secondary-action', historyBusy() ? '停止' : '补齐旧楼'); historyAction.type = 'button';
-    historyAction.disabled = !historyBusy() && otherWorkBusy(); historyAction.addEventListener('click', () => { void (historyBusy() ? stopHistory() : prepareHistory()); });
-    coverageBox.append(coverageText, historyAction);
+    const history = snapshot?.history ?? {}, historyRunning = historyBusy();
+    const coverageCounts = snapshot?.coverage ?? {};
+    const hasHistoryToComplete = snapshot?.status === 'ready'
+      && (Number(coverageCounts.pendingFloors) || 0) + (Number(coverageCounts.partialFloors) || 0) > 0;
+    if (historyRunning || hasHistoryToComplete) {
+      const historyAction = element('button', 'secondary-action', historyRunning ? '停止' : '补齐旧楼'); historyAction.type = 'button';
+      historyAction.disabled = !historyRunning && otherWorkBusy(); historyAction.addEventListener('click', () => { void (historyRunning ? stopHistory() : prepareHistory()); });
+      coverageBox.append(coverageText, historyAction);
+    } else coverageBox.append(coverageText);
     if (history.status && history.status !== 'idle') {
       const outcomes = history.outcomes ?? [];
       const progress = history.status === 'running'
@@ -382,7 +455,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     }
     page.append(coverageBox);
     const search = element('div', 'qqj-history-search');
-    const input = element('input', 'settings-input qqj-history-search-input'); input.type = 'search'; input.value = query; input.placeholder = '搜索事件、说明、人物、对象或时间'; input.setAttribute('aria-label', input.placeholder);
+    const input = element('input', 'settings-input qqj-history-search-input'); input.type = 'search'; input.value = query; input.placeholder = '搜索事件、说明、人物、涉及物品或时间'; input.setAttribute('aria-label', input.placeholder);
     input.addEventListener('input', event => {
       query = event.target.value; const cursor = event.target.selectionStart; render();
       const next = container.querySelector?.('.qqj-history-search-input'); next?.focus?.(); next?.setSelectionRange?.(cursor, cursor);
@@ -396,10 +469,17 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       const toolbar = element('div', 'qqj-qianshi-toolbar');
       toolbar.append(element('span', '', query ? `匹配 ${visible.length} 件事件 · 显示 ${renderedTimeline.groupCount} 组` : '沿着时间，回看故事'));
       const tools = element('div');
-      const order = element('button', '', reverse ? '由晚到早' : '由早到晚'); order.type = 'button'; order.addEventListener('click', () => { reverse = !reverse; render(); });
+      const order = element('button', '', reverse ? '由晚到早' : '由早到晚'); order.type = 'button'; order.dataset.focusKey = 'timeline-order'; order.addEventListener('click', () => { reverse = !reverse; render(); });
       tools.append(order); toolbar.append(tools); page.append(toolbar, renderedTimeline.node);
     }
     container.replaceChildren(page);
+    if (focusedControlKey) {
+      const nextControl = [...(container.children ?? [])].flatMap(node => {
+        const visit = current => [current, ...(current.children ?? []).flatMap(visit)];
+        return visit(node);
+      }).find(node => node.dataset?.focusKey === focusedControlKey);
+      nextControl?.focus?.({ preventScroll: true });
+    }
     if (preserveResults) {
       const nextResults = container.querySelector?.('.qqj-qianshi-history-results');
       if (nextResults) {
@@ -407,6 +487,14 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         if (resultsHadFocus) nextResults.focus();
       }
     }
+    if (focusedDayStateId) {
+      const nextSummary = [...(container.children ?? [])].flatMap(node => {
+        const visit = current => [current, ...(current.children ?? []).flatMap(visit)];
+        return visit(node);
+      }).find(node => node.className === 'qqj-qianshi-day-summary' && node.dataset?.dayStateId === focusedDayStateId);
+      nextSummary?.focus?.({ preventScroll: true });
+    }
+    for (const [ancestor, scrollTop] of outerScrollPositions) ancestor.scrollTop = scrollTop;
   }
 
   function subscribe() {

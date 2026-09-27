@@ -274,12 +274,11 @@ export function storyTimes(memories, floors, project = projectTime) {
 }
 
 export function evaluateTimeBatches(batches, reachable) {
-  const memories = new Map((reachable.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => [memory.floorId, memory.id]));
   const floorById = new Map((reachable.floors ?? []).map(floor => [floor.id, floor]));
   const floors = new Set(floorById.keys());
   const items = new Map(), processedSourceKeys = new Set(), bodyReads = new Map(), validBatches = [];
   for (const batch of batches) {
-    if (!floors.has(batch.cutoffFloorId) || !(batch.dependencies ?? []).every(ref => typeof ref.canonicalFingerprint === 'string' ? floorById.get(ref.floorId)?.canonicalFingerprint === ref.canonicalFingerprint : typeof ref.memoryId === 'string' && memories.get(ref.floorId) === ref.memoryId)) continue;
+    if (!floors.has(batch.cutoffFloorId) || !(batch.dependencies ?? []).every(ref => floors.has(ref.floorId))) continue;
     let complete = true;
     const changesById = new Map((batch.changes ?? []).map(item => [item.id, item]));
     const invalidGroupIds = new Set((batch.mergeGroups ?? []).filter(group => group.itemIds.some(id => {
@@ -295,10 +294,9 @@ export function evaluateTimeBatches(batches, reachable) {
       validBatches.push(batch);
       for (const key of batch.sourceKeys ?? []) processedSourceKeys.add(key);
       for (const read of batch.bodyReads ?? []) {
-        const floor = floorById.get(read.floorId);
-        if (!floor || typeof read.canonicalFingerprint !== 'string' || floor.canonicalFingerprint !== read.canonicalFingerprint || read.timeSourceFingerprint && floor.timeSourceFingerprint !== read.timeSourceFingerprint
-          || !Number.isInteger(read.from) || !Number.isInteger(read.to) || read.from < 0 || read.to <= read.from || read.to > read.totalCharacters
-          || floor.content?.length !== read.totalCharacters) continue;
+        if (!floors.has(read.floorId) || typeof read.canonicalFingerprint !== 'string'
+          || !Number.isInteger(read.totalCharacters) || read.totalCharacters < 1
+          || !Number.isInteger(read.from) || !Number.isInteger(read.to) || read.from < 0 || read.to <= read.from || read.to > read.totalCharacters) continue;
         const ranges = bodyReads.get(read.floorId) ?? []; ranges.push(read); bodyReads.set(read.floorId, ranges);
       }
     }
@@ -426,7 +424,7 @@ export async function compileTimeEdit(item, fields, reachable, batchId, items = 
       previousObservationKey: primary.observationKey, observationKey: await timeFingerprint([detached ? 'detach' : 'member-edit', primary.observationKey, item.id, observationKey]), projection: null, reviewAssessment: null });
   }
   const cutoff = reachable.floors.at(-1), times = reachable.bodyTimes ?? storyTimes(reachable.floorMemories, reachable.floors);
-  return { schemaVersion: 1, chatId: reachable.root.chatId, id: batchId,
+  return { schemaVersion: 1, chatId: reachable.root.chatId, id: batchId, manualEdit: true,
     signature: await timeFingerprint(['edit', item.id, observationKey]), currentTime: times.get(cutoff.id) ?? projectTime(''),
     cutoffFloorId: cutoff.id, cutoffAssistantSeq: cutoff.assistantSeq, sourceKeys: [],
     dependencies: [...new Map(changes.flatMap(value => value.sourceRefs).map(ref => [JSON.stringify(timeDependency(ref)), timeDependency(ref)])).values()],
@@ -459,7 +457,7 @@ export async function compileTimeEdits(edits, reachable, batchId, items = []) {
     mergedGroups.push(combined);
   }
   const values = [...changes.values()], cutoff = reachable.floors.at(-1), times = reachable.bodyTimes ?? storyTimes(reachable.floorMemories, reachable.floors);
-  return { schemaVersion: 1, chatId: reachable.root.chatId, id: batchId,
+  return { schemaVersion: 1, chatId: reachable.root.chatId, id: batchId, manualEdit: true,
     signature: await timeFingerprint(['edit-many', values.map(item => [item.id, item.observationKey])]), currentTime: times.get(cutoff.id) ?? projectTime(''),
     cutoffFloorId: cutoff.id, cutoffAssistantSeq: cutoff.assistantSeq, sourceKeys: [],
     dependencies: [...new Map(values.flatMap(value => value.sourceRefs).map(ref => [JSON.stringify(timeDependency(ref)), timeDependency(ref)])).values()],
@@ -576,6 +574,8 @@ export async function prepareTimeBatch(reachable, batches = [], { fragments = []
   const initialProjectionPending = trackedRecords.some(item => item.status === 'active' && item.type === 'body' && !item.projection && bodyProjectionDue(item.observationTime, currentTime));
   return { request, systemPrompt, ...(currentReview ? { reviewWitness: timeDependency({ ...cutoff, floorId: cutoff?.floorId ?? cutoff?.id }) } : {}), sourceObservations, identityPeople, futureContextRefs, floorSequences: new Map(reachable.floors.map(floor => [floor.id, floor.assistantSeq])), existingRecords: items, trackedRecords, signature, initialProjectionPending, shouldRequest: Boolean(observations.length || allowInitialProjection && trackedRecords.some(item => item.status === 'active')),
     sourceKeys: sourceObservations.map(row => row.sourceKey), bodyReads: fragments.map(({ floorId, canonicalFingerprint, timeSourceFingerprint, from, to, totalCharacters }) => ({ floorId, canonicalFingerprint, timeSourceFingerprint, from, to, totalCharacters })),
+    clockWitnesses: [...new Map((fragments.length ? fragments : cutoffBody ? [cutoffBody] : []).filter(row => row.floorId && row.clockContentFingerprint)
+      .map(row => [row.floorId, { floorId: row.floorId, clockContentFingerprint: row.clockContentFingerprint }])).values()],
     cutoffFloorId: request.cutoffFloorId, cutoffAssistantSeq: cutoff?.assistantSeq ?? 0, omitted: candidates.length - trackedRecords.length };
 }
 
@@ -767,6 +767,7 @@ export async function compileTimeResponse(response, prepared, batches = []) {
     signature: prepared.signature, currentTime: prepared.request.currentTime, cutoffFloorId: prepared.cutoffFloorId, cutoffAssistantSeq: prepared.cutoffAssistantSeq,
     sourceKeys: prepared.sourceKeys, selectedItemIds: prepared.trackedRecords.map(item => item.id), resolvedItemIds: [...new Set(changes.map(item => item.id))], ...(mergeGroups.length ? { mergeGroups } : {}), dependencies, bodyReads: itemErrors.length ? [] : prepared.bodyReads ?? [], changes,
     ...(itemErrors.length ? { status: 'partial', itemErrors } : {}),
+    clockWitnesses: prepared.clockWitnesses ?? [],
     ...(currentReview ? { currentReview: { selectedItemIds: prepared.trackedRecords.map(item => item.id), updated: changes.filter(item => item.status === 'active' && !item.reviewAssessment).length, insufficient: changes.filter(item => item.status === 'active' && item.reviewAssessment).length, retired: changes.filter(item => item.status === 'paused' && item.retirementReason).length, merged: changes.filter(item => item.mergedInto && item.status === 'paused').length, omitted: prepared.omitted } } : {}) };
 }
 

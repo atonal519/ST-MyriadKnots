@@ -146,6 +146,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.equal(helpSections.length, 10); assert.equal(helpSections[0].open, true); assert.ok(helpSections.slice(1).every(node => node.open === false));
   assert.equal(helpSections.at(-1).children[0].textContent, '排障手册');
   assert.match(flatten(helpDialog.content).map(node => node.textContent).join('|'), /保留包裹符.*清洗包裹符.*人物状态重构/);
+  assert.match(flatten(helpDialog.content).map(node => node.textContent).join('|'), /千事.*涉及物品.*搜索/u);
   dialogActive = false;
   const copyExample = flatten(documentation).find(node => node.tag === 'button' && node.textContent === '复制接口示例');
   copyExample.fire('click'); await new Promise(resolve => setImmediate(resolve));

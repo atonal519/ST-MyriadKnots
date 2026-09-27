@@ -144,6 +144,16 @@ export function validateStateDeltaRecord(input, { expectedChatId } = {}) {
   object(value.source, 'V3_STATEDELTA_INVALID', 'source');
   text(value.source.promptVersion, 'V3_STATEDELTA_INVALID', 'source.promptVersion', { maximum: 160 });
   text(value.source.compilerVersion, 'V3_STATEDELTA_INVALID', 'source.compilerVersion', { maximum: 160 });
+  for (const key of ['userCoreExtraction', 'userCoreCheck']) {
+    if (!Object.hasOwn(value.source, key)) continue;
+    const extraction = object(value.source[key], 'V3_STATEDELTA_INVALID', `source.${key}`);
+    if (Object.keys(extraction).some(field => !['status', 'userEntityId', 'personaLocator', 'descriptionFingerprint'].includes(field))) fail('V3_STATEDELTA_INVALID', `source.${key}`);
+    if (!['traits', 'insufficient', 'sourceEmpty', 'failed'].includes(extraction.status)) fail('V3_STATEDELTA_INVALID', `source.${key}.status`);
+    uuid(extraction.userEntityId, 'V3_STATEDELTA_INVALID', `source.${key}.userEntityId`);
+    text(extraction.personaLocator, 'V3_STATEDELTA_INVALID', `source.${key}.personaLocator`, { maximum: 500 });
+    fingerprint(extraction.descriptionFingerprint, 'V3_STATEDELTA_INVALID', `source.${key}.descriptionFingerprint`);
+  }
+
   if (Object.hasOwn(value.source, 'isolationSummary')) {
     const summary = object(value.source.isolationSummary, 'V3_STATEDELTA_INVALID', 'source.isolationSummary');
     if (Object.keys(summary).some(key => !['count', 'codes'].includes(key))
@@ -185,6 +195,15 @@ export function validateStateDeltaRecord(input, { expectedChatId } = {}) {
     array(value.source.manualSubjectEntityIds, 'V3_STATEDELTA_INVALID', 'source.manualSubjectEntityIds', 80).forEach((id, index) => {
       uuid(id, 'V3_STATEDELTA_INVALID', `source.manualSubjectEntityIds[${index}]`);
       if (seen.has(id) || !subjectIds.has(id)) fail('V3_STATEDELTA_INVALID', `source.manualSubjectEntityIds[${index}]`);
+      seen.add(id);
+    });
+  }
+  if (Object.hasOwn(value.source, 'manualCoreSubjectEntityIds')) {
+    const subjectIds = new Set(value.subjectSnapshots.map(subject => subject.subjectEntityId));
+    const seen = new Set();
+    array(value.source.manualCoreSubjectEntityIds, 'V3_STATEDELTA_INVALID', 'source.manualCoreSubjectEntityIds', 80).forEach((id, index) => {
+      uuid(id, 'V3_STATEDELTA_INVALID', `source.manualCoreSubjectEntityIds[${index}]`);
+      if (seen.has(id) || !subjectIds.has(id)) fail('V3_STATEDELTA_INVALID', `source.manualCoreSubjectEntityIds[${index}]`);
       seen.add(id);
     });
   }

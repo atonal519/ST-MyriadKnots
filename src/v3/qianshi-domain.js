@@ -541,7 +541,7 @@ export function projectQianshiTimeline(projection) {
       ? left.firstIndex - right.firstIndex : compareTuple(left.tuple, right.tuple) || left.firstIndex - right.firstIndex);
     const latest = preserveSourceOrder ? null : groups.at(-1);
     const label = timelineSegmentLabel(segment, groups);
-    return frozen({ id: segment.id, label, groups: frozen(groups.map(group => frozen({ id: group.id, day: group.day,
+    return frozen({ id: segment.id, label, groups: frozen(groups.map(group => frozen({ id: group.id, key: JSON.stringify(group.tuple), day: group.day,
       period: group.period, full: group.full,
       eventIds: frozen([...group.eventIds]) }))), latestGroupId: latest?.id ?? null });
   });

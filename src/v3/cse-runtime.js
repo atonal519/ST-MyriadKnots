@@ -83,6 +83,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const protectedIds = new Set();
     const cache = new Map(deltas.map(delta => [delta.id, delta]));
     for (const activeDelta of deltas) {
+      for (const subjectId of activeDelta.source?.manualCoreSubjectEntityIds ?? []) protectedIds.add(subjectId);
       for (const audit of activeDelta.source?.calibrationAudit ?? []) {
         if (audit.category === 'core' && audit.evidence?.some(evidence => evidence.source === 'currentUserInput')) protectedIds.add(audit.subjectEntityId);
       }
@@ -309,6 +310,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     await persistPhaseA([...newEntities, delta, currentState, ...indexes], operation.controller.signal);
     await persist([run, checkpoint], operation.controller.signal);
     if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_CSE_STALE', 'CSE 操作已取消。');
+    if (operation.userCoreExtraction && (hostAdapter.snapshot?.()?.userIdentity?.personaIdentifier ?? '') !== operation.userCoreExtraction.personaLocator) throw errorWith('V3_CSE_STALE', '用户人设身份已切换，旧身份的核心特质提取结果已丢弃。');
     const committed = await store.commitRoot(root, current.rootRevision, { signal: operation.controller.signal });
     if (committed.status !== 'saved') throw errorWith(committed.status === 'conflict' ? 'V3_CSE_CAS_CONFLICT' : 'V3_CSE_COMMIT_FAILED', 'CSE 提交遇到并发更新，未覆盖新数据。');
     if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_CSE_STALE', 'CSE 操作已取消。');
@@ -349,6 +351,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const coreUserEditedSubjectEntityIds = await coreUserEditedSubjects(dependencyPrecedingDeltas);
     const currentDependency = await dependencySnapshot(current, operation.floorId, [...dependencyEntitiesById.values()], dependencyPreviousState, currentFloor => current.floorMemories.find(item => item.floorId === currentFloor.id && item.recordStatus === 'active')?.sourceStoryClockSignature ?? current.run?.diagnostics?.floorProvenance?.[currentFloor.id]?.storyClockSignature ?? storyClockSignatureForFloor(currentFloor), coreUserEditedSubjectEntityIds, hostAdapter, identityProjection);
     if (!sameDependencySnapshot(operation.dependencySnapshot, currentDependency)) throw errorWith('V3_CSE_STALE', '人物状态所依赖的楼层前缀、摘要、前态或身份目录已变化，迟到状态不会写入。');
+
     const floorOrder = new Map(current.floors.map((item, index) => [item.id, index]));
     const deltas = filterReachableDeltas({ floors: current.floors, floorMemories: current.floorMemories, stateDeltas: current.stateDeltas })
       .filter(delta => delta.floorId !== floor.id);
@@ -435,14 +438,34 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
         sourceSnapshot: { canonicalContent: memory.sourceCanonicalContent ?? floor.content.canonicalContent, rawFingerprint: memory.sourceRawFingerprint ?? floor.content.rawFingerprint },
       });
       operation.sourceDiagnostics = requestSources.diagnostics;
+      const allReachableDeltas = filterReachableDeltas({ floors: value.floors, floorMemories: value.floorMemories, stateDeltas: value.stateDeltas });
       const coreUserEditedSubjectEntityIds = await coreUserEditedSubjects(precedingDeltas);
+      const allCoreUserEditedSubjectEntityIds = await coreUserEditedSubjects(allReachableDeltas);
+      const userEntityId = resolveIdentityEntityId(value.baseline.userPersona.entityId, identityProjection);
+      const personaLocator = requestSources.userPersona.personaLocator ?? '';
+      const hasPersonaDescription = Boolean(requestSources.userPersona.description.trim());
+      const currentUserSubject = projectedPreviousCurrentState?.subjects?.find(subject => subject.subjectEntityId === userEntityId);
+      const existingUserSubject = existing?.subjectSnapshots.find(subject => resolveIdentityEntityId(subject.subjectEntityId, identityProjection) === userEntityId);
+      const hasManualCore = allCoreUserEditedSubjectEntityIds.includes(userEntityId)
+        || currentUserSubject?.core?.some(item => item.origin === 'manual') === true
+        || existingUserSubject?.core?.some(item => item.origin === 'manual') === true;
+      const hasExistingCore = (currentUserSubject?.core?.length ?? 0) > 0 || (existingUserSubject?.core?.length ?? 0) > 0;
+      const hasCompletedExtraction = allReachableDeltas.some(delta => {
+        const extraction = delta.source?.userCoreExtraction ?? delta.source?.userCoreCheck;
+        return extraction?.userEntityId === userEntityId && extraction.personaLocator === personaLocator
+          && ['traits', 'insufficient'].includes(extraction.status);
+      });
+      const userCoreExtraction = !hasManualCore && !hasExistingCore && !hasCompletedExtraction
+        ? { userEntityId, personaLocator, descriptionFingerprint: `sha256:${await sha256(requestSources.userPersona.description)}`, hasDescription: hasPersonaDescription }
+        : null;
+      operation.userCoreExtraction = userCoreExtraction;
       operation.dependencySnapshot = await dependencySnapshot(value, floor.id, entities, previousCurrentState, currentFloor => value.floorMemories.find(item => item.floorId === currentFloor.id && item.recordStatus === 'active')?.sourceStoryClockSignature ?? value.run?.diagnostics?.floorProvenance?.[currentFloor.id]?.storyClockSignature ?? storyClockSignatureForFloor(currentFloor), coreUserEditedSubjectEntityIds, hostAdapter, identityProjection);
       if (!operation.dependencySnapshot) throw errorWith('V3_CSE_STALE', '人物状态分析依赖的楼层前缀不可用。');
       const identityMemberEntityIdsBySubject = Object.fromEntries(tracked.map(entity => [entity.id, (previousCurrentState?.subjects ?? [])
         .filter(subject => resolveIdentityEntityId(subject.subjectEntityId, identityProjection) === entity.id)
         .filter(subject => ['core', 'adaptive', 'situational'].some(category => subject[category]?.length))
         .map(subject => subject.subjectEntityId)]));
-      const envelope = createCseEnvelope({ floor: analysisFloor, floorMemory: projectedMemory, baseline: projectedBaseline, currentState: projectedPreviousCurrentState, trackedSubjects: tracked, entities: scopedEntities, requestSources, currentUserInput, coreUserEditedSubjectEntityIds: coreUserEditedSubjectEntityIds.map(id => resolveIdentityEntityId(id, identityProjection)), identityMemberEntityIdsBySubject, relevantPriorContext });
+      const envelope = createCseEnvelope({ floor: analysisFloor, floorMemory: projectedMemory, baseline: projectedBaseline, currentState: projectedPreviousCurrentState, trackedSubjects: tracked, entities: scopedEntities, requestSources, currentUserInput, coreUserEditedSubjectEntityIds: coreUserEditedSubjectEntityIds.map(id => resolveIdentityEntityId(id, identityProjection)), identityMemberEntityIdsBySubject, relevantPriorContext, userCoreExtraction });
       const deltaId = await deterministicUuid(['v3-cse-delta', operation.runId, floor.id, memory.id]);
       const promptGuidanceSnapshot = typeof promptGuidance === 'function' ? promptGuidance() : promptGuidance;
       const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
@@ -454,7 +477,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       await commitDelta(operation, result, roleEntities);
     } catch (error) {
       if (error?.name === 'AbortError' || error?.code === 'V3_CSE_STALE') lastFailure = { floorId, runId: operation.runId, code: 'V3_CSE_STALE', message: '聊天、分支或 FloorMemory 已变化，迟到状态没有写入。', phase: 'stale' };
-      else lastFailure = { floorId, runId: operation.runId, code: String(error?.code ?? 'V3_CSE_FAILED').slice(0, 120), message: sanitizeSensitiveText(error?.message ?? '状态分析失败，可单独重试。').slice(0, 500), phase: 'retryableError', diagnostics: sanitizeDiagnosticValue(error?.cseDiagnostics ?? error?.sourceDiagnostics ?? null) };
+      else lastFailure = { floorId, runId: operation.runId, code: String(error?.code ?? 'V3_CSE_FAILED').slice(0, 120), message: sanitizeSensitiveText(error?.message ?? '状态分析失败，可单独重试。').slice(0, 500), phase: 'retryableError', ...(operation.userCoreExtraction ? { userCoreExtraction: operation.userCoreExtraction } : {}), diagnostics: sanitizeDiagnosticValue(error?.cseDiagnostics ?? error?.sourceDiagnostics ?? null) };
       if (lastFailure.phase === 'retryableError') publishFailureHint(reachable, floorId, lastFailure);
       logger?.warn?.('[qianqianjie] V3 CSE failed', { code: error?.code ?? error?.name ?? 'V3_CSE_FAILED' });
     } finally { if (active === operation) active = null; }
@@ -468,6 +491,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const floor = reachable?.floors?.find(item => memoryByFloor.has(item.id) && !deltaByFloor.has(item.id));
     return floor ? analyzeFloor(floor.id) : getState();
   }
+
 
   async function correctSubjectState({ subjectEntityId, expectedCurrentStateId, expectedCurrentStateFingerprint, core, adaptive, situational } = {}) {
     if (!enabled()) throw errorWith('V3_CSE_DISABLED', '人物状态功能当前不可用。');

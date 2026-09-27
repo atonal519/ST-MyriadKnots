@@ -36,6 +36,8 @@ const flatten = node => [node, ...(node.children ?? []).flatMap(flatten)];
 test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点击，读失败仅重试读取与生命周期清理', async () => {
   const css = await readFile(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
   assert.match(css, /#qqj-recent-items\[hidden\]\{display:none\}/u, '作者样式需显式覆盖 settings-block 的 display:grid，不能仅依赖 UA hidden');
+  assert.match(css, /\.qqj-time-clock-reminder\{[^}]*flex:0 0 100%/u, '时间戳提醒单独占一行');
+  assert.match(css, /\.qqj-time-clock-reminder\[hidden\]\{display:none\}/u, 'hidden 必须覆盖提醒自身的 display');
   assert.match(css, /\.qqj-cse-page-heading>strong\{[^}]*white-space:nowrap/u, '分析记录标题在桌面窄栏不得被搜索框挤成逐字换行');
   assert.match(css, /\.qqj-cse-page-heading>\.qqj-history-search\{[^}]*flex:1 1 auto/u, '分析记录搜索框应按标题和返回按钮之外的剩余宽度伸缩');
   assert.match(css, /@media\(max-width:390px\)\{[^\n]*\.qqj-cse-page-heading\{[^}]*flex-wrap:wrap/u, '手机窄屏应让分析记录工具栏合理换行');
@@ -45,7 +47,7 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => state, editSummary: async () => state, subscribe(listener) { memoryListeners.add(listener); return () => memoryListeners.delete(listener); } };
   const emit = next => { state = next; for (const listener of memoryListeners) listener(next); };
   const item = { person: '甲', label: '擦伤', type: 'body', status: 'active', observation: '手腕擦伤 <b>原文</b>', observationTime: { date: '2026-05-10' }, occurrenceTime: { date: null }, observationElapsedDays: 2, observationElapsedHours: null, elapsedDays: null, elapsedHours: null, projection: null };
-  let timeState = { status: 'idle', active: false, canOrganize: true, disabledReason: '', last: null, trackedItems: null }, reads = 0, refreshes = 0, organizes = 0, cached = false;
+  let timeState = { status: 'idle', active: false, canOrganize: true, disabledReason: '', last: null, trackedItems: null, clockContentChanged: false }, reads = 0, refreshes = 0, organizes = 0, cached = false;
   const publish = () => { for (const listener of timeListeners) listener(timeState); };
   const timeRuntime = { getState: () => structuredClone(timeState), subscribe(listener) { timeListeners.add(listener); return () => timeListeners.delete(listener); },
     async refreshStatus(options) { refreshes += 1; if (!cached || options?.force) { reads += 1; cached = true; timeState = { ...timeState, status: 'completed', last: { status: 'completed', items: 1 }, trackedItems: [item] }; } publish(); return timeState; },
@@ -56,6 +58,11 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   let toggle = flatten(container).find(node => node.textContent === '近期事项');
   const memoryToolbar = flatten(container).find(node => String(node.className).split(' ').includes('qqj-memory-toolbar'));
   assert.equal(memoryToolbar.children[0].className, 'qqj-history-search'); assert.equal(memoryToolbar.children[1], toggle, '摘要搜索位于近期事项左侧');
+  const clockReminder = memoryToolbar.children.find(node => String(node.className).includes('qqj-time-clock-reminder'));
+  assert.ok(clockReminder); assert.equal(clockReminder.hidden, true);
+  timeState = { ...timeState, clockContentChanged: true }; publish();
+  assert.equal(clockReminder.hidden, false); assert.equal(clockReminder.textContent, '时间信息可能变化，请用户核实');
+  timeState = { ...timeState, clockContentChanged: false }; publish(); assert.equal(clockReminder.hidden, true);
   assert.equal(toggle.attributes['aria-expanded'], 'false'); assert.equal(reads, 0); assert.equal(refreshes, 0);
   let body = flatten(container).find(node => node.id === toggle.attributes['aria-controls']); assert.equal(body.hidden, true);
   assert.ok(flatten(container).some(node => node.className === 'v3-memory-list'));
@@ -1941,6 +1948,8 @@ test('双丝网按实体 ID 展示已有 user 状态，且空状态关系卡仍�
   assert.match(copy, /林岚.*冷静.*尚未选择重要人物.*更多人物（1）/);
   const anchor = flatten(container).find(node => node.className === 'qqj-user-anchor');
   assert.equal(flatten(anchor).some(node => ['设为重要', '移出重要'].includes(node.textContent)), false, 'user 状态不提供千人选择操作');
+  assert.equal(flatten(anchor).some(node => /核对我的核心特质/.test(node.textContent)), false, '人物页不再显示手动核心特质核对流程');
+  assert.equal(flatten(anchor).some(node => node.tag === 'button' && node.textContent === '编辑我的状态'), true, '人工状态编辑入口仍保留');
 
   state = { ...state, cseSubjects: [] }; view.render(state); copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /尚未选择重要人物/); assert.doesNotMatch(copy, /林岚.*人物状态/);

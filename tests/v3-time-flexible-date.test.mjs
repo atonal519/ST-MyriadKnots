@@ -78,7 +78,7 @@ test('旧date:null在计算/有效推测/模型DTO/编译/召回获得统一视�
   assert.match(unknown.changes[0].reviewAssessment.reason,/时间间隔无法确认/);
 });
 
-test('旧正文来源指纹含独立旧anchor链，覆盖继续有效且时间改动仍使覆盖失效', async () => {
+test('时间标签变动仍保留已落盘覆盖', async () => {
   const raws=['七月十七10:30','次日 11:30','2026-07-19 20:30','21:30'];
   const chat=raws.flatMap(raw=>[{is_user:false,mes:`<Ti>${raw}</Ti>甲仍有不适。`},{is_user:true,mes:'继续'}]);
   const candidates=await scanAssistantCandidates(chat,{chatId:'chat'});
@@ -91,7 +91,8 @@ test('旧正文来源指纹含独立旧anchor链，覆盖继续有效且时间�
   assert.equal(timeBodyReads([batch],source).get(body.floorId).length,1);
   chat[0].mes=chat[0].mes.replace(raws[0],'七月十八10:30');
   const changed=await readTimeBody(reachable,{chat},{storyClockReferenceTags:'Ti'});
-  assert.notEqual(changed.bodyFloors[0].timeSourceFingerprint,expected[0]); assert.equal(timeBodyReads([batch],changed).size,0);
+  assert.notEqual(changed.bodyFloors[0].timeSourceFingerprint,expected[0]);
+  assert.deepEqual(timeBodyReads([batch],changed).get(body.floorId),[batch.bodyReads[0]],'时间标签变化不撤销保存时的已读区间');
   assert.equal(projectTimeSource(raws[0]).date,null);
 });
 

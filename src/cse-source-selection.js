@@ -135,7 +135,7 @@ export async function captureCseRequestSources({ hostAdapter, baseline, floor, e
   const ctx = before.context;
   const character = currentCharacter(ctx) ?? {};
   const latest = Object.freeze({
-    userPersona: Object.freeze({ ...baseline.userPersona, description: clean(ctx?.powerUserSettings?.persona_description ?? ctx?.personaDescription ?? ctx?.persona?.description) }),
+    userPersona: Object.freeze({ ...baseline.userPersona, description: clean(ctx?.powerUserSettings?.persona_description ?? ctx?.personaDescription ?? ctx?.persona?.description), personaLocator: before.userIdentity?.personaIdentifier ?? '' }),
     characterCard: Object.freeze({
       ...baseline.characterCard,
       description: characterField(character, 'description'), personality: characterField(character, 'personality'), scenario: characterField(character, 'scenario'),

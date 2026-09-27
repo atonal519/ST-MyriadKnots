@@ -9,8 +9,8 @@ import { CSE_ISOLATION_CODES, CSE_VISIBILITIES, LATEST_CSE_CALIBRATION_VERSION, 
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey } from './entity-identity.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-22';
-export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-11';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-23';
+export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-12';
 export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
 export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。完整阅读本楼正文，并结合结构化楼层记忆、人物此前状态与相关初始设定，分析人物在本楼结束时的状态。
@@ -285,7 +285,7 @@ function authorialOtherStateContext(currentState, entities, previousSubjectIds) 
   }));
 }
 
-export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, requestSources = null, worldInfoSources = null, currentUserInput = null, coreUserEditedSubjectEntityIds = [], identityMemberEntityIdsBySubject = {}, relevantPriorContext = '' }) {
+export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, requestSources = null, worldInfoSources = null, currentUserInput = null, coreUserEditedSubjectEntityIds = [], identityMemberEntityIdsBySubject = {}, relevantPriorContext = '', userCoreExtraction = null }) {
   const directory = buildEntityIdentityDirectory({ entities });
   const directoryById = new Map(directory.map(entry => [entry.entityId, entry]));
   const labelsFor = entity => directoryById.get(entity.id)?.labels ?? entityLabels(entity);
@@ -326,6 +326,10 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       ...(relevantPriorContext ? { relevantPriorContext } : {}),
       trackedSubjects: trackedSubjects.map(entity => ({ name: entity.displayName, aliases: labelsFor(entity), coreUserEdited: coreUserEdited.has(entity.id) })),
       knownPeople: activeKnownEntities.map(entry => ({ name: entry.displayName, aliases: entry.labels })),
+      ...(userCoreExtraction?.hasDescription ? { userCoreExtraction: {
+        subject: nameForSubjectId(userCoreExtraction.userEntityId) ?? effectiveUserPersona.name,
+        task: '只提取 userPersona 原文中的稳定、长期核心特质，不把短期情绪、一次行为、角色扮演表现或推测当作事实。若有依据，在 subjects 中仅将可定位原句支持的内容放入该用户的 additions.core，并同时返回 userCoreExtraction:{status:"traits"}；若依据不足则不要新增 Core，并返回 userCoreExtraction:{status:"insufficient"}。新增项 evidence 必须使用 userPersona 和逐字原句。不得改变其他人物或其他分类。',
+      } } : {}),
     } }),
     scope: Object.freeze({
       floorId: floor.id, floorMemoryId: floorMemory.id, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration, baselineId: baseline.id,
@@ -334,6 +338,7 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       evidenceSources,
       sourceSnapshotFingerprint: typeof effectiveSources.fingerprint === 'string' ? effectiveSources.fingerprint : null,
       coreUserEditedSubjectEntityIds: [...coreUserEdited],
+      ...(userCoreExtraction ? { userCoreExtraction } : {}),
       identityMemberEntityIdsBySubject: Object.freeze(Object.fromEntries(trackedSubjects.map(entity => [entity.id, Object.freeze([...new Set([entity.id, ...(identityMemberEntityIdsBySubject?.[entity.id] ?? [])].filter(id => typeof id === 'string' && id))])]))),
     }),
   });
@@ -565,7 +570,7 @@ async function compileCalibratedCategory({ rawSubject, category, binding, previo
   return output;
 }
 
-export async function compileCseResponse({ response, finishReason, envelope, previousCurrentState, now, deltaId }) {
+export async function compileCseResponse({ response, finishReason, envelope, previousCurrentState, now, deltaId, userCoreExtraction = null }) {
   const packet = parsePacket(response, { finishReason });
   if (!hasRecognizableCseResult(packet)) throw errorWith('V3_CSE_FORMAT_INVALID', 'CSE 返回不含可识别的人物状态结果。');
   const isolated = [];
@@ -603,6 +608,38 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
     }
     compiled.set(binding.entityId, { subjectEntityId: binding.entityId, core, adaptive, situational, changeSummary: [], coreChallenges: [...new Set(challenges)].slice(0, 40) });
   }
+  let userCoreExtractionResult = null;
+  if (userCoreExtraction) {
+    const rawReview = field(packet, ['userCoreExtraction', '用户核心特质提取']);
+    const rawSubmittedStatus = field(rawReview, ['status', '状态']);
+    const submittedStatus = rawReview && typeof rawReview === 'object' && !Array.isArray(rawReview)
+      && rawSubmittedStatus !== undefined ? normalized(rawSubmittedStatus) : '';
+    const userAdditions = calibrationAudit.filter(entry => entry.subjectEntityId === userCoreExtraction.userEntityId
+      && entry.category === 'core' && entry.action === 'add'
+      && entry.evidence.length > 0 && entry.evidence.every(evidence => evidence.source === 'userPersona'));
+    let status = !userCoreExtraction.hasDescription ? 'sourceEmpty'
+      : submittedStatus === 'insufficient' && userAdditions.length === 0 ? 'insufficient'
+        : submittedStatus === 'traits' && userAdditions.length > 0 ? 'traits' : 'failed';
+    const user = compiled.get(userCoreExtraction.userEntityId);
+    const previous = previousById.get(userCoreExtraction.userEntityId);
+    const acceptedTexts = new Set(userAdditions.map(entry => normalized(entry.text)));
+    const acceptedCore = status === 'traits'
+      ? (user?.core ?? []).filter(item => item.sourceDeltaId === deltaId && acceptedTexts.has(normalized(item.text)))
+      : [];
+    if (user) {
+      user.core = [...(previous?.core ?? []), ...acceptedCore];
+    }
+    const acceptedAuditTexts = new Set(acceptedCore.map(item => normalized(item.text)));
+    const retainedAudit = calibrationAudit.filter(entry => entry.subjectEntityId !== userCoreExtraction.userEntityId || entry.category !== 'core')
+      .concat(userAdditions.filter(entry => acceptedAuditTexts.has(normalized(entry.text))));
+    calibrationAudit.splice(0, calibrationAudit.length, ...retainedAudit);
+    userCoreExtractionResult = {
+      status,
+      userEntityId: userCoreExtraction.userEntityId,
+      personaLocator: userCoreExtraction.personaLocator,
+      descriptionFingerprint: userCoreExtraction.descriptionFingerprint,
+    };
+  }
   for (const binding of envelope.scope.trackedBindings) if (!compiled.has(binding.entityId) && !previousById.has(binding.entityId)) compiled.set(binding.entityId, { subjectEntityId: binding.entityId, core: [], adaptive: [], situational: [], changeSummary: [], coreChallenges: [] });
   const logicalSubjectSnapshots = [...compiled.values()].map(subject => {
     const previous = previousById.get(subject.subjectEntityId) ?? { core: [], adaptive: [], situational: [] };
@@ -628,7 +665,7 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
   });
   const fingerprint = `sha256:${await sha256(JSON.stringify([envelope.scope.floorId, envelope.scope.floorMemoryId, subjectSnapshots, noMaterialChange, { fixedChanges }]))}`;
   const isolationCodes = [...new Set(isolated.map(item => item.code).filter(code => CSE_ISOLATION_CODES.includes(code)))];
-  const delta = validateStateDeltaRecord({ schemaVersion: 3, recordType: 'stateDelta', id: deltaId, chatId: envelope.scope.chatId, narrativeGeneration: envelope.scope.narrativeGeneration, floorId: envelope.scope.floorId, floorMemoryId: envelope.scope.floorMemoryId, baselineId: envelope.scope.baselineId, previousCurrentStateId: previousCurrentState?.id ?? null, subjectSnapshots, fixedChanges, noMaterialChange, fingerprint, source: { promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, calibrationVersion: CSE_CALIBRATION_VERSION, ...(calibrationAudit.length ? { calibrationAudit } : {}), ...(isolated.length ? { isolationSummary: { count: isolated.length, codes: isolationCodes } } : {}) }, createdAt: now, updatedAt: now, recordStatus: 'active', supersedes: null }, { expectedChatId: envelope.scope.chatId });
+  const delta = validateStateDeltaRecord({ schemaVersion: 3, recordType: 'stateDelta', id: deltaId, chatId: envelope.scope.chatId, narrativeGeneration: envelope.scope.narrativeGeneration, floorId: envelope.scope.floorId, floorMemoryId: envelope.scope.floorMemoryId, baselineId: envelope.scope.baselineId, previousCurrentStateId: previousCurrentState?.id ?? null, subjectSnapshots, fixedChanges, noMaterialChange, fingerprint, source: { promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, calibrationVersion: CSE_CALIBRATION_VERSION, ...(userCoreExtractionResult ? { userCoreExtraction: userCoreExtractionResult } : {}), ...(calibrationAudit.length ? { calibrationAudit } : {}), ...(isolated.length ? { isolationSummary: { count: isolated.length, codes: isolationCodes } } : {}) }, createdAt: now, updatedAt: now, recordStatus: 'active', supersedes: null }, { expectedChatId: envelope.scope.chatId });
   return Object.freeze({ delta, isolated: Object.freeze(isolated) });
 }
 
@@ -695,6 +732,8 @@ export async function createManualCseCorrection({ anchorDelta, currentState, sub
   snapshots.push(corrected);
   const snapshotIds = new Set(snapshots.map(snapshot => snapshot.subjectEntityId));
   const manualSubjectEntityIds = [...new Set([...(anchorDelta.source?.manualSubjectEntityIds ?? []), ...memberIds])].filter(id => snapshotIds.has(id));
+  const coreChanged = JSON.stringify(normalizedEdits.core.map(item => [String(item?.text ?? '').trim(), item?.visibility])) !== JSON.stringify(currentSubject.core.map(item => [item.text, item.visibility]));
+  const manualCoreSubjectEntityIds = [...new Set([...(anchorDelta.source?.manualCoreSubjectEntityIds ?? []), ...(coreChanged ? [subjectEntityId] : [])])].filter(id => snapshotIds.has(id));
   const noMaterialChange = false;
   const targetItems = actualSubjectChanges({ before: currentSubject, after: corrected, audits: [] });
   const fixedChanges = [
@@ -715,7 +754,10 @@ export async function createManualCseCorrection({ anchorDelta, currentState, sub
       compilerVersion: CSE_COMPILER_VERSION,
       ...(isSupportedCseCalibrationVersion(anchorDelta.source?.calibrationVersion) ? { calibrationVersion: anchorDelta.source.calibrationVersion } : {}),
       ...(Array.isArray(anchorDelta.source?.calibrationAudit) ? { calibrationAudit: anchorDelta.source.calibrationAudit } : {}),
+      ...(anchorDelta.source?.userCoreExtraction ? { userCoreExtraction: anchorDelta.source.userCoreExtraction } : {}),
+      ...(anchorDelta.source?.userCoreCheck ? { userCoreCheck: anchorDelta.source.userCoreCheck } : {}),
       ...(anchorDelta.source?.isolationSummary ? { isolationSummary: anchorDelta.source.isolationSummary } : {}),
+      ...(manualCoreSubjectEntityIds.length ? { manualCoreSubjectEntityIds } : {}),
       manualSubjectEntityIds,
     },
     createdAt: now,
@@ -737,7 +779,7 @@ export async function runCseRequest({ generateAnalysisTask, envelope, previousCu
       receivedResult = true;
       candidate = result?.jsonData ?? result?.textData ?? result;
       metadata = sanitizeTaskMetadata(result?.taskMetadata);
-      const compiled = await compileCseResponse({ response: candidate, finishReason: result?.taskMetadata?.finishReason, envelope, previousCurrentState, now, deltaId });
+      const compiled = await compileCseResponse({ response: candidate, finishReason: result?.taskMetadata?.finishReason, envelope, previousCurrentState, now, deltaId, userCoreExtraction: envelope.scope.userCoreExtraction });
       return Object.freeze({ ...compiled, metadata, attempts, transportAttempts: transportBudget.used || result?.taskMetadata?.transportAttempts || null, responseFingerprint: `sha256:${await sha256(JSON.stringify(candidate))}` });
     } catch (error) {
       if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');

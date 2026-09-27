@@ -26,7 +26,7 @@ const EVENTS = Object.freeze(['CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'M
 const HISTORY_MUTATION_EVENTS = new Set(['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
 const MANUAL_HISTORY_REASON = 'manualHistoricalRebuild';
 const MANUAL_CSE_REBUILD_REASON = 'manualCseRebuild';
-const QIANSHI_HISTORY_SYSTEM_PROMPT = `你是“千千结”的千事历史提取器。只输出 JSON：{"floors":[{"floorKey":"floor-N","qianshi":{"events":[],"order":[]}}]}。每个 qianshi.order 必须是对象数组，例如 [{"before":"event-1","after":"event-2","certainty":"explicit"}]；只写材料明确支持的先后关系，引用键沿用本楼和候选键合同。顶层 qianshiCandidates 是本批共享候选池，每楼只能使用其 qianshiCandidateKeys 列出的键。候选 candidateType=event 表示一次性事件，只能用于 context 或先后关系端点；只有持续事项候选才能用于 progress。每个事件正文必须放在 description 字段，事件对象示例：{"key":"event-1","title":"事件标题","description":"事件正文","status":"occurred","matter":false}；不得用 chatSummary 等自造字段替代 description。每个事件最多关联一个旧事项候选（links 中最多一个 candidateKey）；同一叙事影响多个旧事项时，按事项分别写成独立事件，每个事件只链接对应的一个候选。逐楼提取，但每楼按对后续叙事有用的事件单位整理，不按每个动作逐条拆分；同一场景同一事项的连续动作合成一件完整事件，没有新增事实、关系变化或事项进展的重复日常不另立事件。新计划、事项实质推进、完成、取消和关键变化仍须记录。只有计划、持续事项 matter=true；带来新事实或变化的一次性事件可为 matter=false。links 使用 candidateKey 和 kind=progress|context，倒叙补证必须用 context；禁止把无效 progress 默默降级为 context。可让后楼引用同批更早楼事件，candidateKey 写“更早floorKey:该事件key”，不得跨 floorKey 合并事件来源。storyTime 是发生时间，scheduledTime 是预计时间；材料已有故事年份或纪年时必须保留，只有月日或相对时间时不得猜当前故事年或现实年份。不得改写摘要，不得输出人物资料。`;
+const QIANSHI_HISTORY_SYSTEM_PROMPT = `你是“千千结”的千事历史提取器。只输出 JSON：{"floors":[{"floorKey":"floor-N","qianshi":{"events":[],"order":[]}}]}。每个 qianshi.order 必须是对象数组，例如 [{"before":"event-1","after":"event-2","certainty":"explicit"}]；只写材料明确支持的先后关系，引用键沿用本楼和候选键合同。顶层 qianshiCandidates 是本批共享候选池，每楼只能使用其 qianshiCandidateKeys 列出的键。候选 candidateType=event 表示一次性事件，只能用于 context 或先后关系端点；只有持续事项候选才能用于 progress。每个事件正文必须放在 description 字段，事件对象示例：{"key":"event-1","title":"事件标题","description":"事件正文","status":"occurred","matter":false}；不得用 chatSummary 等自造字段替代 description。每个事件最多关联一个旧事项候选（links 中最多一个 candidateKey）；同一叙事影响多个旧事项时，按事项分别写成独立事件，每个事件只链接对应的一个候选。逐楼提取，但每楼按对后续叙事有用的事件单位整理，不按每个动作逐条拆分；同一场景同一事项的连续动作合成一件完整事件，没有新增事实、关系变化或事项进展的重复日常不另立事件。新计划、事项实质推进、完成、取消和关键变化仍须记录。只有计划、持续事项 matter=true；带来新事实或变化的一次性事件可为 matter=false。object 只填写对后续叙事有用的具体物品，多个物品用“、”分隔；人物写入 people，地点或建筑及事件主题应在相应事件正文信息中表达，不要混入 object，也不要凭空补物品；没有合适物品时 object 写 null。links 使用 candidateKey 和 kind=progress|context，倒叙补证必须用 context；禁止把无效 progress 默默降级为 context。可让后楼引用同批更早楼事件，candidateKey 写“更早floorKey:该事件key”，不得跨 floorKey 合并事件来源。storyTime 是发生时间，scheduledTime 是预计时间；材料已有故事年份或纪年时必须保留，只有月日或相对时间时不得猜当前故事年或现实年份。不得改写摘要，不得输出人物资料。`;
 const qianshiHistoryInputTokens = request => estimateRecallTokens(QIANSHI_HISTORY_SYSTEM_PROMPT + JSON.stringify(request));
 const qianshiHistoryBudgetRequest = inputs => ({ task: 'extractQianshiHistoryV1',
   qianshiCandidates: inputs.map((_, index) => ({ key: `candidate-budget-${index + 1}`, candidateType: 'matter',
@@ -1013,12 +1013,16 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       throw errorWith('QIANSHI_TEXT_EDIT_TARGET_CHANGED', '事件所属档案在保存期间已变化；当前记录保持不变，请刷新后重新编辑。');
     }
     const floor = current.floors.find(item => item.id === replacement.floorId);
-    const selected = floor ? currentRawSelection(hostAdapter, floor) : null;
+    const selected = !operation.qianshiHistory && floor ? currentRawSelection(hostAdapter, floor) : null;
     const liveRawFingerprint = selected ? `sha256:${await sha256(selected.rawContent)}` : null;
+    if (operation.qianshiHistory && current.root.chatId !== currentHostChatId()) {
+      throw errorWith('QIANSHI_HISTORY_PLAN_STALE', '当前聊天已变化；历史补齐结果未保存。');
+    }
+    // Historical completion is based on the archived floor snapshot. Live edits/swipes do not invalidate that evidence.
     if (!floor || floor.narrativeGeneration !== replacement.narrativeGeneration
-      || (operation.floorRawFingerprint && liveRawFingerprint !== operation.floorRawFingerprint)) {
+      || (!operation.qianshiHistory && operation.floorRawFingerprint && liveRawFingerprint !== operation.floorRawFingerprint)) {
       throw operation.qianshiHistory
-        ? errorWith('QIANSHI_HISTORY_SOURCE_CHANGED', `第 ${replacement.assistantSeq ?? floor?.assistantSeq ?? '?'} 楼正文或所选分支已变化；本次历史结果未保存，旧档案保持不变。`)
+        ? errorWith('QIANSHI_HISTORY_SOURCE_CHANGED', `第 ${replacement.assistantSeq ?? floor?.assistantSeq ?? '?'} 楼身份已变化；本次历史结果未保存，旧档案保持不变。`)
         : operation.qianshiTextEdit
           ? errorWith('QIANSHI_TEXT_EDIT_SOURCE_CHANGED', '事件所属楼正文或所选分支已变化；本次文字没有保存，请刷新后确认。')
         : errorWith('V3_MEMORY_PREFIX_CHANGED', '正文分支、稳定锚或时间戳已变化，本次结果已作废。');
@@ -1026,7 +1030,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (operation.qianshiTextEdit) {
       const targetEvent = expectedTargetMemory?.qianshiDelta?.events?.find(event => event.id === operation.qianshiTextEdit.eventId);
       if (!targetEvent || qianshiTextEventSignature(targetEvent) !== operation.qianshiTextEdit.eventSignature
-        || targetEvent.title !== operation.qianshiTextEdit.expected.title || targetEvent.description !== operation.qianshiTextEdit.expected.description) {
+        || targetEvent.title !== operation.qianshiTextEdit.expected.title || targetEvent.description !== operation.qianshiTextEdit.expected.description
+        || targetEvent.object !== operation.qianshiTextEdit.expected.object) {
         throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事件文字已被其他操作修改；当前记录保持不变，请刷新后重新编辑。');
       }
       const sourceFloor = current.floors.find(item => item.id === operation.qianshiTextEdit.sourceFloorId);
@@ -1158,6 +1163,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     await persistRecords([...newEntities, revisionReplacement, ...(currentState ? [currentState] : []), ...indexes], operation.controller.signal);
     await persistRecords([run, checkpoint], operation.controller.signal, { concurrency: 1 });
     if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_MEMORY_CANCELLED', '操作已取消。');
+    if (operation.qianshiHistory && currentHostChatId() !== current.root.chatId) {
+      throw errorWith('QIANSHI_HISTORY_PLAN_STALE', '当前聊天已变化；历史补齐结果未保存。');
+    }
     if (operation.qianshiTextEdit) {
       const liveTargetMemory = currentMemoryMap(current).get(operation.floorId);
       const sourceFloor = current.floors.find(item => item.id === operation.qianshiTextEdit.sourceFloorId);
@@ -2328,6 +2336,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           return;
         }
         if (HISTORY_MUTATION_EVENTS.has(name)) {
+          // A deletion can shift every later host locator, so in-flight history must be replanned.
+          if (name === 'MESSAGE_DELETED') {
+            qianshiHistoryRun?.controller.abort('targetFloorDeleted');
+            qianshiHistoryPlan = null;
+          }
           const operation = active;
           if (operation && reachable?.root?.chatId === currentHostChatId()) {
             void extractorDependencySnapshot(reachable, operation.floorId, {
@@ -2421,6 +2434,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           markMemorySyncing();
           notify();
           return;
+        }
+        if (name === 'CHAT_CHANGED') {
+          qianshiHistoryRun?.controller.abort(name);
+          qianshiHistoryPlan = null;
         }
         if (['CHAT_CHANGED', 'CHAT_RENAMED'].includes(name)
           && reachable?.root?.chatId
@@ -2712,13 +2729,16 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       && reachable.floors.some(floor => floor.id === matched.event.sourceFloorId && floor.narrativeGeneration === reachable.root.narrativeGeneration));
   }
 
-  async function editQianshiEventText({ eventId, expected, title, description } = {}) {
+  async function editQianshiEventText({ eventId, expected, title, description, object } = {}) {
     if (workRun || active || qianshiHistoryRun) throw errorWith('QIANSHI_TEXT_EDIT_BUSY', '当前有其他记忆操作正在进行，请稍后再试。');
     if (typeof eventId !== 'string' || !eventId || !expected || typeof expected.memoryId !== 'string'
-      || typeof expected.title !== 'string' || typeof expected.description !== 'string') {
+      || typeof expected.title !== 'string' || typeof expected.description !== 'string'
+      || (expected.object !== null && typeof expected.object !== 'string') || (object !== null && typeof object !== 'string')) {
       throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '事件编辑信息无效，请刷新页面后重试。');
     }
-    const nextText = { title: qianshiText(title, 500), description: qianshiText(description, 4000) };
+    const normalizedObject = object === null ? null : qianshiText(object, 1001) || null;
+    if (normalizedObject?.length > 1000) throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '涉及物品最多 1000 个字符；原记录保持不变。');
+    const nextText = { title: qianshiText(title, 500), description: qianshiText(description, 4000), object: normalizedObject };
     if (!nextText.title || !nextText.description) throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '标题和经过说明都不能为空。');
     return runManualWork('editingQianshiText', async manualOperation => {
       const expectedEpoch = epoch;
@@ -2729,10 +2749,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if (!matched) throw errorWith('QIANSHI_TEXT_EDIT_UNAVAILABLE', '这条正式事件已不在当前聊天或有效分支中；刷新千事页后再编辑。');
       const { memory: old, event } = matched;
       if (old.id !== expected.memoryId) throw errorWith('QIANSHI_TEXT_EDIT_TARGET_CHANGED', '事件所属档案已变化；请刷新千事页后再编辑。');
-      if (event.title !== expected.title || event.description !== expected.description) {
+      if (event.title !== expected.title || event.description !== expected.description || event.object !== expected.object) {
         throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事件文字已变化；当前记录保持不变，请刷新后重新编辑。');
       }
-      if (qianshiText(event.title, 500) === nextText.title && qianshiText(event.description, 4000) === nextText.description) return { status: 'unchanged' };
+      if (qianshiText(event.title, 500) === nextText.title && qianshiText(event.description, 4000) === nextText.description
+        && event.object === nextText.object) return { status: 'unchanged' };
       const sourceFloor = reachable.floors.find(item => item.id === event.sourceFloorId);
       const sourceSelection = sourceFloor ? currentRawSelection(hostAdapter, sourceFloor) : null;
       const liveSourceFingerprint = sourceSelection ? `sha256:${await sha256(sourceSelection.rawContent)}` : null;
@@ -2757,7 +2778,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const operation = { ...manualOperation, floorId: old.floorId, floorIds: memorySourceFloorIds(old), floorRawFingerprint: targetSelection ? `sha256:${await sha256(targetSelection.rawContent)}` : null,
         epoch, controller: new AbortController(), runId: await deterministicUuid(['v3-memory-revision-run', old.id, 'qianshiTextEdit', nowValue, newUuid()]),
         startedAt: nowValue, phase: 'committing', qianshiTextEdit: { eventId, sourceFloorId: event.sourceFloorId, memoryId: old.id,
-          memorySignature: JSON.stringify(old), eventSignature: qianshiTextEventSignature(event), expected: { title: event.title, description: event.description },
+          memorySignature: JSON.stringify(old), eventSignature: qianshiTextEventSignature(event), expected: { title: event.title, description: event.description, object: event.object },
           sourceBaseline: { hostLocator: clone(sourceFloor.hostLocator), rawFingerprint: liveSourceFingerprint,
             swipeId: sourceSelection.swipeId, selectedSwipeIndex: sourceSelection.selectedSwipeIndex } } };
       if (!targetSelection) throw errorWith('QIANSHI_TEXT_EDIT_SOURCE_CHANGED', '事件所属楼已无法对应当前分支；没有保存文字，请刷新后确认。');
@@ -2769,7 +2790,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }, action: 'qianshiTextEdit', validationErrors: [] });
       if (operation.qianshiRejected) throw errorWith('QIANSHI_TEXT_EDIT_RELATION_CONFLICT', '千事关系校验未接受这次文字修改；原记录保持不变。');
       const saved = formalQianshiEvent(eventId);
-      if (!saved || saved.event.title !== nextText.title || saved.event.description !== nextText.description) {
+      if (!saved || saved.event.title !== nextText.title || saved.event.description !== nextText.description || saved.event.object !== nextText.object) {
         throw errorWith('QIANSHI_TEXT_EDIT_COMMIT_AMBIGUOUS', '保存状态待核对；请刷新千事页确认，系统不会自动重试。');
       }
       return { status: 'saved' };

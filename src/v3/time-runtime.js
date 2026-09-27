@@ -1,5 +1,5 @@
 import { estimateRecallTokens } from './recall-selector.js';
-import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdits, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, storyTimes, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, timeDistance, timeHours, validTimeProjection, timeBodyReads, timeItemFailures } from './time-engine.js';
+import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdits, evaluateTimeBatches, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, storyTimes, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, timeDistance, timeHours, validTimeProjection, timeBodyReads, timeItemFailures } from './time-engine.js';
 import { projectRecallSource } from './recall-source.js';
 import { sanitizeTaskMetadata } from './safe-metadata.js';
 import { publicErrorMessage } from '../public-error.js';
@@ -62,8 +62,7 @@ export function createTimeStore({ client }) {
     const normalized = retainedFloors.map(floor => ({ ...floor, canonicalFingerprint: floor.content?.canonicalFingerprint ?? floor.canonicalFingerprint,
       content: typeof floor.content === 'string' ? floor.content : floor.content?.canonicalContent }));
     const floors = new Set(normalized.map(floor => floor.id));
-    const candidates = source.batches.filter(batch => floors.has(batch.cutoffFloorId) && batch.dependencies.every(ref => floors.has(ref.floorId)
-      && (typeof ref.canonicalFingerprint !== 'string' || normalized.find(floor => floor.id === ref.floorId)?.canonicalFingerprint === ref.canonicalFingerprint)));
+    const candidates = source.batches.filter(batch => floors.has(batch.cutoffFloorId) && (batch.dependencies ?? []).every(ref => floors.has(ref.floorId)));
     const observations = new Map(), batches = [];
     for (const batch of candidates) {
       if ((batch.changes ?? []).some(item => item.previousObservationKey && observations.get(item.id) !== item.previousObservationKey)) continue;
@@ -119,7 +118,7 @@ export async function prepareTimeRequest(reachable, batches = [], options = {}) 
 }
 
 export function createTimeRuntime({ store, foundationStore, hostAdapter, session, generateTimeTask, annualSettingsProvider = () => ({ ready: false }), sanitizerOptions = () => ({}), storyClockReferenceTags = () => '', newUuid = newIdentityUuid, getReachable = () => null, getMemoryState = () => null, isEnabled = () => false, onInvalidate = () => {}, logger = console }) {
-  let epoch = 0, active = null, last = null, pendingDeletionCount = 0, projectionCache = null, pendingReceipt = null, statusKey = null, statusRead = null, trackedItems = null, stoppedItems = null, annualItems = null, itemsKey = null, coverage = null, historyAuthorization = null, automatic = null, startingController = null;
+  let epoch = 0, active = null, last = null, pendingDeletionCount = 0, projectionCache = null, pendingReceipt = null, statusKey = null, statusRead = null, trackedItems = null, stoppedItems = null, annualItems = null, itemsKey = null, coverage = null, clockContentChanged = false, historyAuthorization = null, automatic = null, startingController = null;
   const subscribers = new Set();
   const enabled = () => isEnabled() === true;
   const identity = () => { try { return session.identity(); } catch { return { chatId: null }; } };
@@ -189,8 +188,41 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     const { automaticFailure: _automaticFailure, automaticFailureMessage: _automaticFailureMessage, ...previous } = last;
     last = previous;
   };
+  const stableCurrentTime = (batches, source) => {
+    const host = hostAdapter.snapshot();
+    const currentBody = source.bodyFloors?.filter(body => {
+      const message = host.chat?.[body.hostLocator?.messageIndex];
+      return message && message.is_user !== true && message.is_system !== true && message.is_hidden !== true && message.hidden !== true;
+    }).at(-1);
+    const modelBatch = currentBody && evaluateTimeBatches(batches, source).validBatches.findLast(batch => batch.cutoffFloorId === currentBody.floorId
+      && !batch.manualEdit && (batch.currentReview || batch.sourceKeys?.length || batch.bodyReads?.length));
+    const cutoffFloor = source.floors?.find(floor => floor.id === modelBatch?.cutoffFloorId);
+    const sameBody = currentBody?.floorId === modelBatch?.cutoffFloorId
+      || currentBody?.hostLocator && cutoffFloor?.hostLocator && JSON.stringify(currentBody.hostLocator) === JSON.stringify(cutoffFloor.hostLocator);
+    return currentBody && sameBody && modelBatch.currentTime
+      ? modelBatch.currentTime : currentBody?.observationTime
+        ?? (source.bodyTimes ?? storyTimes(source.floorMemories, source.floors)).get(source.floors.at(-1)?.id) ?? projectTime('');
+  };
+  const hasClockContentChanges = (batches, source) => {
+    const witnesses = new Map();
+    for (const batch of evaluateTimeBatches(batches, source).validBatches) for (const witness of batch.clockWitnesses ?? []) {
+      if (source.bodyFloors.some(body => body.floorId === witness.floorId)) witnesses.set(witness.floorId, witness.clockContentFingerprint);
+    }
+    return source.bodyFloors.some(body => body.floorId && witnesses.has(body.floorId)
+      && witnesses.get(body.floorId) !== body.clockContentFingerprint);
+  };
+  const liveBodyWitnesses = (source, refs = [], base = []) => {
+    const witnesses = new Map(base.filter(value => value?.floorId).map(value => [value.floorId, value]));
+    for (const ref of refs) {
+      const body = source.bodyFloors?.find(value => value.floorId === ref?.floorId);
+      if (body) witnesses.set(body.floorId, { floorId: body.floorId, canonicalFingerprint: body.canonicalFingerprint,
+        timeSourceFingerprint: body.timeSourceFingerprint, rawFingerprint: body.rawFingerprint, totalCharacters: body.content.length });
+    }
+    return [...witnesses.values()];
+  };
   function cacheItems(batches, source, annualRecords = []) {
-    const times = source.bodyTimes ?? storyTimes(source.floorMemories, source.floors), currentTime = times.get(source.floors.at(-1)?.id) ?? projectTime('');
+    const currentTime = stableCurrentTime(batches, source);
+    clockContentChanged = hasClockContentChanges(batches, source);
     const reviewBatch = batches.findLast(batch => batch.currentReview);
     const reviewCurrent = reviewBatch && JSON.stringify(reviewBatch.currentTime) === JSON.stringify(currentTime);
     const selectedIds = new Set(reviewBatch?.currentReview?.selectedItemIds ?? []);
@@ -218,11 +250,11 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   const getState = () => {
     const disabledReason = manualBlock();
     const canDisplay = enabled() && !memoryNeedsSync() && itemsKey === sourceKey(getReachable());
-    return { status: active ? 'running' : enabled() ? memoryNeedsSync() ? 'waiting' : last?.status ?? 'idle' : 'disabled', phase: active?.phase ?? null, active: Boolean(active), last, coverage, progress: active?.progress ?? null, canOrganize: !disabledReason, disabledReason, pendingDeletionCount, trackedItems: canDisplay ? structuredClone(trackedItems) : null, stoppedItems: canDisplay ? structuredClone(stoppedItems) : null, annualItems: canDisplay ? structuredClone(annualItems) : null };
+    return { status: active ? 'running' : enabled() ? memoryNeedsSync() ? 'waiting' : last?.status ?? 'idle' : 'disabled', phase: active?.phase ?? null, active: Boolean(active), last, coverage, clockContentChanged: enabled() && clockContentChanged, progress: active?.progress ?? null, canOrganize: !disabledReason, disabledReason, pendingDeletionCount, trackedItems: canDisplay ? structuredClone(trackedItems) : null, stoppedItems: canDisplay ? structuredClone(stoppedItems) : null, annualItems: canDisplay ? structuredClone(annualItems) : null };
   };
   const notify = () => { const state = getState(); for (const listener of subscribers) try { listener(state); } catch { /* UI isolation */ } return state; };
   function invalidate() {
-    epoch += 1; active?.controller.abort(); startingController?.abort(); startingController = null; automatic = null; last = null; pendingDeletionCount = 0; projectionCache = null; pendingReceipt = null; statusKey = null; statusRead = null; trackedItems = null; stoppedItems = null; annualItems = null; itemsKey = null; coverage = null; historyAuthorization = null; onInvalidate(); notify();
+    epoch += 1; active?.controller.abort(); startingController?.abort(); startingController = null; automatic = null; last = null; pendingDeletionCount = 0; projectionCache = null; pendingReceipt = null; statusKey = null; statusRead = null; trackedItems = null; stoppedItems = null; annualItems = null; itemsKey = null; coverage = null; clockContentChanged = false; historyAuthorization = null; onInvalidate(); notify();
   }
   async function stop() {
     const pending = active?.promise;
@@ -278,7 +310,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     })();
     return read.promise;
   }
-  const reviewScopeKey = (source, witness) => timeFingerprint([source.root.narrativeGeneration, witness.floorId, witness.canonicalFingerprint, witness.timeSourceFingerprint]);
+  const reviewScopeKey = (source, witness) => timeFingerprint([source.root.narrativeGeneration, witness.floorId]);
   async function prepareHistoryPlan() {
     if (manualBlock()) throw new Error(manualBlock());
     const token = epoch, source = await bodySource(), stored = await store.read(identity().chatId);
@@ -287,11 +319,11 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     const currentWitness = source.bodyFloors.filter(body => body.floorId).at(-1);
     const prepared = await prepareTimeRequest(source, stored.batches, { cutoffBody: currentWitness, allowInitialProjection: true, currentReview: true });
     const settingSnapshot = await annualSnapshot();
-    const triggerFingerprint = await timeFingerprint([source.root.narrativeGeneration, currentWitness?.floorId ?? null, currentWitness?.canonicalFingerprint ?? null]);
+    const triggerFingerprint = await timeFingerprint([source.root.narrativeGeneration, currentWitness?.floorId ?? null]);
     const annualSetting = await prepareAnnualSetting(settingSnapshot, stored.head, triggerFingerprint, true);
-    const sameAttempt = currentWitness && stored.head?.currentReviewAttempt?.scopeKey === await reviewScopeKey(source, currentWitness);
+    const sameAttempt = currentWitness && stored.head?.currentReviewAttempt?.cutoffFloorId === currentWitness.floorId;
     const retryCurrentReview = Boolean(sameAttempt && ['running', 'failed', 'partial'].includes(stored.head.currentReviewAttempt.status));
-    const currentReview = Boolean(currentWitness && (plan.groups.length ? !sameAttempt : prepared.shouldRequest && (!sameAttempt || retryCurrentReview || stored.head.currentReviewAttempt.signature !== prepared.signature)));
+    const currentReview = Boolean(currentWitness && (plan.groups.length ? !sameAttempt : prepared.shouldRequest && (!sameAttempt || retryCurrentReview)));
     const supplement = !plan.groups.length && currentReview;
     return { ...plan, groups: plan.groups.length ? plan.groups : supplement ? [[]] : [], bodyBatchCount: plan.batchCount,
       batchCount: plan.batchCount + Number(currentReview) + Number(annualSetting.shouldRequest), apiCalls: plan.apiCalls + Number(currentReview) + Number(annualSetting.shouldRequest),
@@ -337,9 +369,10 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       const unresolved = [...unresolvedIds].some(id => afterItems.find(value => value.id === id)?.status !== 'cancelled');
       const resolvedByRemoval = lastRun?.status === 'partial' && priorPartial && !hasUnlocated && !unresolved;
       if (resolvedByRemoval) Object.assign(lastRun, { status: 'completed', message: '本次未完成事项已移除；原内容未记作评估成功。' });
+      const { currentReviewAttempt: _currentReviewAttempt, ...headWithoutReviewAttempt } = stored.head;
       const currentReviewAttempt = resolvedByRemoval && stored.head?.currentReviewAttempt?.status === 'partial'
-        ? { ...stored.head.currentReviewAttempt, status: 'resolved' } : stored.head?.currentReviewAttempt;
-      const nextHead = { ...stored.head, ...(currentReviewAttempt ? { currentReviewAttempt } : {}), batchIds: [...stored.head.batchIds, batch.id], ...(lastRun ? { lastRun } : {}) };
+        ? { ...stored.head.currentReviewAttempt, status: 'resolved' } : null;
+      const nextHead = { ...headWithoutReviewAttempt, ...(currentReviewAttempt ? { currentReviewAttempt } : {}), batchIds: [...stored.head.batchIds, batch.id], ...(lastRun ? { lastRun } : {}) };
       await store.putHead(operation.chatId, nextHead, stored.revision, operation.controller.signal);
       if (!valid()) throw new Error('当前聊天记忆已变化，本次编辑未应用到当前事项。');
       const freshAnnual = await annualSnapshot();
@@ -519,7 +552,9 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
           const reads = timeBodyReads(stored.batches, source);
           const fragments = planned.filter(fragment => {
             let cursor = fragment.from;
-            for (const range of (reads.get(fragment.floorId) ?? []).sort((a,b) => a.from-b.from)) if (range.from <= cursor) cursor = Math.max(cursor, range.to);
+            const sameVersion = (reads.get(fragment.floorId) ?? []).filter(range => range.canonicalFingerprint === fragment.canonicalFingerprint
+              && range.timeSourceFingerprint === fragment.timeSourceFingerprint && range.totalCharacters === fragment.totalCharacters).sort((a,b) => a.from-b.from);
+            for (const range of sameVersion) if (range.from <= cursor) cursor = Math.max(cursor, range.to);
             return cursor < fragment.to;
           });
           if (planned.length && !fragments.length) { operation.progress.completed += 1; notify(); continue; }
@@ -545,10 +580,12 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
             continue;
           }
           if (!prepared.shouldRequest) { if (currentReview) operation.progress.total -= 1; continue; }
+          const preparedWitnesses = liveBodyWitnesses(source, prepared.futureContextRefs ?? [], witnesses);
+          if (!await validateBody(operation, source, preparedWitnesses)) throw Object.assign(new Error('正文来源已变化，本批未应用。'), { code: 'QQJ_TIME_SOURCE_CHANGED' });
           operation.currentReview = currentReview;
           const latestSourceBody = source.bodyFloors.filter(body => body.floorId).at(-1);
           const run = { ...(currentReview ? { currentReview: { pending: true, omitted: prepared.omitted } } : {}), status: 'running', cutoffFloorId: prepared.cutoffFloorId, cutoffAssistantSeq: prepared.cutoffAssistantSeq,
-            sourceScope: latestSourceBody ? { floorId: latestSourceBody.floorId, assistantSeq: latestSourceBody.assistantSeq, canonicalFingerprint: latestSourceBody.canonicalFingerprint } : null,
+            sourceScope: latestSourceBody ? { floorId: latestSourceBody.floorId, assistantSeq: latestSourceBody.assistantSeq } : null,
             items: itemCount(stored.batches, source) };
           const reviewAttempt = currentReview ? { authorization: plan.reviewAuthorization, scopeKey: await reviewScopeKey(source, plan.currentWitness), signature: prepared.signature, cutoffFloorId: prepared.cutoffFloorId, cutoffAssistantSeq: prepared.cutoffAssistantSeq, status: 'running' } : null;
           const head = { ...stored.head, ...(reviewAttempt ? { currentReviewAttempt: reviewAttempt } : {}), lastAttemptSignature: prepared.signature, lastAttemptTime: prepared.request.currentTime, lastRun: run };
@@ -579,9 +616,10 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
             continue;
           }
           batch.id = `v3-time-batch-${newUuid()}`;
-          if (!await validateBody(operation, source, [...witnesses, ...batch.dependencies.filter(ref => ref.canonicalFingerprint).map(ref => ({ floorId: ref.floorId, canonicalFingerprint: ref.canonicalFingerprint, totalCharacters: source.bodyFloors.find(body => body.floorId === ref.floorId)?.content.length }))])) throw Object.assign(new Error('正文来源已变化，本批未应用。'), { code: 'QQJ_TIME_SOURCE_CHANGED' });
+          const submitWitnesses = liveBodyWitnesses(source, [...(batch.dependencies ?? []), ...(prepared.futureContextRefs ?? [])], witnesses);
+          if (!await validateBody(operation, source, submitWitnesses)) throw Object.assign(new Error('正文来源已变化，本批未应用。'), { code: 'QQJ_TIME_SOURCE_CHANGED' });
           await store.putBatch(operation.chatId, batch, operation.controller.signal);
-          if (!await validateBody(operation, source, witnesses)) throw Object.assign(new Error('正文来源已变化，本批未应用。'), { code: 'QQJ_TIME_SOURCE_CHANGED' });
+          if (!await validateBody(operation, source, submitWitnesses)) throw Object.assign(new Error('正文来源已变化，本批未应用。'), { code: 'QQJ_TIME_SOURCE_CHANGED' });
           const completed = { ...run, status: batch.status === 'partial' ? 'partial' : batch.changes.length ? 'completed' : 'empty',
             ...(batch.itemErrors?.length ? { itemErrors: batch.itemErrors, message: `已保存 ${batch.changes.length} 项；${batch.itemErrors.map(item => `第${item.index}项：${item.reason}`).join('；')} 失败项可在后续新正文或手动补查时再试。` } : {}), items: itemCount([...stored.batches, batch], source),
             ...(!fragments.length && batch.status !== 'partial' ? { initialProjectionCheckedSignature: prepared.signature } : {}) };
@@ -645,21 +683,33 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       if (manualBlock()) return refreshStatus();
       const latestSourceBody = source.bodyFloors.filter(body => body.floorId).at(-1);
       if (stored.head?.lastRun?.status === 'partial') {
-        const currentScope = latestSourceBody ? { floorId: latestSourceBody.floorId, assistantSeq: latestSourceBody.assistantSeq, canonicalFingerprint: latestSourceBody.canonicalFingerprint } : null;
+        const currentScope = latestSourceBody ? { floorId: latestSourceBody.floorId, assistantSeq: latestSourceBody.assistantSeq } : null;
+        const sameScope = (left, right) => left?.floorId === right?.floorId && left?.assistantSeq === right?.assistantSeq;
         if (!stored.head.lastRun.sourceScope) {
           const attemptedBody = source.bodyFloors.find(body => body.floorId === stored.head.lastRun.cutoffFloorId)
             ?? source.bodyFloors.find(body => body.assistantSeq === stored.head.lastRun.cutoffAssistantSeq);
-          const attemptedScope = attemptedBody ? { floorId: attemptedBody.floorId, assistantSeq: attemptedBody.assistantSeq, canonicalFingerprint: attemptedBody.canonicalFingerprint } : currentScope;
+          const attemptedScope = attemptedBody ? { floorId: attemptedBody.floorId, assistantSeq: attemptedBody.assistantSeq } : currentScope;
           const head = { ...stored.head, lastRun: { ...stored.head.lastRun, sourceScope: attemptedScope } };
           const saved = await store.putHead(source.root.chatId, head, stored.revision, controller.signal);
           stored = { ...stored, head, revision: saved.revision };
-          if (JSON.stringify(attemptedScope) === JSON.stringify(currentScope)) return refreshStatus({ force: true });
+          if (sameScope(attemptedScope, currentScope)) return refreshStatus({ force: true });
         }
-        if (JSON.stringify(stored.head.lastRun.sourceScope) === JSON.stringify(currentScope)) return refreshStatus();
+        if (sameScope(stored.head.lastRun.sourceScope, currentScope)) return refreshStatus();
       }
       const history = historyAuthorization?.chatId === identity().chatId;
       const plan = planTimeBody(source, stored.batches, { start: stored.head.bodyStart, history });
       if (history) plan.groups = plan.groups.map(group => group.filter(row => row.assistantSeq <= historyAuthorization.through)).filter(group => group.length);
+      else {
+        const validBatches = evaluateTimeBatches(stored.batches, source).validBatches;
+        const modelCutoff = validBatches.reduce((highest, batch) => !batch.manualEdit
+          && (batch.currentReview || batch.sourceKeys?.length || batch.bodyReads?.length)
+          ? Math.max(highest, batch.cutoffAssistantSeq ?? 0) : highest, 0);
+        const attemptedBody = source.bodyFloors.find(body => body.floorId === stored.head?.lastRun?.cutoffFloorId)
+          ?? source.bodyFloors.find(body => body.assistantSeq === stored.head?.lastRun?.cutoffAssistantSeq);
+        const attemptedCutoff = attemptedBody?.assistantSeq ?? stored.head?.lastRun?.cutoffAssistantSeq ?? 0;
+        const highWater = Math.max(modelCutoff, attemptedCutoff);
+        if (highWater > 0) plan.groups = plan.groups.map(group => group.filter(row => row.assistantSeq > highWater)).filter(group => group.length);
+      }
       if (stored.head?.lastRun?.status === 'partial') {
         const partialBatch = stored.batches.findLast(batch => batch.status === 'partial');
         const failedBodyAttempts = [...(stored.head.lastRun.failedBodyAttempts ?? []), ...(partialBatch ? [{ cutoffFloorId: partialBatch.cutoffFloorId, sourceKeys: partialBatch.sourceKeys }] : [])];
@@ -680,10 +730,10 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       }
       const currentWitness = history ? source.bodyFloors.filter(body => body.floorId && body.assistantSeq <= historyAuthorization.through).at(-1) : null;
       const currentReview = Boolean(currentWitness && !source.bodyFloors.some(body => body.assistantSeq <= historyAuthorization.through && !body.floorId)
-        && stored.head?.currentReviewAttempt?.scopeKey !== await reviewScopeKey(source, currentWitness));
+        && stored.head?.currentReviewAttempt?.cutoffFloorId !== currentWitness.floorId);
       const settingSnapshot = await annualSnapshot();
       const triggerBody = source.bodyFloors.filter(body => body.floorId).at(-1);
-      const triggerFingerprint = await timeFingerprint([source.root.narrativeGeneration, triggerBody?.floorId ?? null, triggerBody?.canonicalFingerprint ?? null]);
+      const triggerFingerprint = await timeFingerprint([source.root.narrativeGeneration, triggerBody?.floorId ?? null]);
       const annualSetting = await prepareAnnualSetting(settingSnapshot, stored.head, triggerFingerprint, false);
       if (plan.groups.length || currentReview || annualSetting.shouldRequest || annualSetting.removed?.length) {
         clearAutomaticFailure();
@@ -725,19 +775,17 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       if (!enabled() || token !== epoch || identity().chatId !== source.chatId) return null;
       // Recall already validated this narrow source; no second foundation graph read is needed.
       const memories = source.floorMemories.map(memory => ({ ...memory, id: memory.floorMemoryId, recordStatus: 'active' }));
-      const floors = (source.bodyMatchRefs?.length ? source.bodyMatchRefs : source.floorMemories).map(ref => ({ id: ref.floorId, assistantSeq: ref.assistantSeq }));
-      const allowed = new Set(floors.map(floor => floor.id));
       const cached = getReachable();
       if (cached?.root?.chatId !== source.chatId) return null;
       const reachable = await bodySource({ root: cached.root, floorMemories: memories,
-        floors: cached.floors.filter(floor => allowed.has(floor.id)), entities: [] });
+        floors: cached.floors, entities: [] });
       const items = replayTimeBatches(stored.batches, reachable);
       const host = hostAdapter.snapshot();
       const currentBody = reachable.bodyFloors.filter(body => {
         const message = host.chat?.[body.hostLocator.messageIndex];
         return message && message.is_system !== true && message.is_hidden !== true && message.hidden !== true;
       }).at(-1);
-      const currentTime = currentBody?.observationTime ?? projectTime('');
+      const currentTime = stableCurrentTime(stored.batches, reachable);
       let qianshiProjection = null;
       try { qianshiProjection = projectQianshiGraph(cached, { identityProjection: source.identityProjection }); }
       catch { /* Optional associations never suppress the ordinary time projection. */ }

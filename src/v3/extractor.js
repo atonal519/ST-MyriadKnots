@@ -10,7 +10,7 @@ import { buildEntityIdentityDirectory, identityLabelKey, normalizeIdentityProjec
 import { compileQianshiDelta } from './qianshi-domain.js';
 
 export const EXTRACTOR_SCHEMA_VERSION = 3;
-export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-23';
+export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-24';
 export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-3/semantic-compiler-10`;
 const ENTITY_TYPES = ['person', 'group', 'organization', 'place', 'object', 'creature', 'concept', 'unknown'];
 const MENTION_KEY = Object.freeze({ type: 'string' });
@@ -107,7 +107,7 @@ export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
 7. knowledge 用于正文明确呈现的观察或事实：subject 是事实关联的人物（无明确人物可留空），kind 区分身体、伤势、物品、环境、情境或其他；某人得知了什么应写 informationTransfers，只属于人物内心的内容应写 privateThoughts。cseSignals 只记录正文支持的人物情绪、边界、冲突/和解、脆弱、信任/背叛、重复模式、关系定义或持续状况等状态信号，不要把普通剧情事实都改写成状态信号。
 8. exactQuotes 只在措辞确有长期保留价值且原句实际出现在 canonicalContent 或 precedingUserInput 时填写；可直接写原句字符串，也可写含 exactText、kind、speaker、whyPreserve、source 的对象。能确认说话人时应写 speaker，以保留原句归属；不能确认时不要猜。若相同原句同时出现在不同来源，必须写 source，程序会在实际原文中定位。openLoops 的每项包含 description 和可选 owners，用于确实尚未解决的目标、疑问或风险；已经完成的事项不要继续列为未决。
 9. summary 中可供后续记忆使用的关键事实若对应 events、actions、knowledge、informationTransfers、privateThoughts、commitments、openLoops、exactQuotes 或 cseSignals，也必须进入相应结构字段，不能因为 summary 已写过就省略。有正文依据的相关字段应充分记录；无内容的字段可以留空，不要为了满足数据库 Schema 凑数或编造。
-10. qianshi 是可选的剧情事件增量，按对后续叙事有用的事件单位整理，不按每个动作逐条拆分。同一 sourceFloorKey（来源楼）的同一场景中，属于同一事项的一串连续动作合并成一件完整事件；不得跨 sourceFloorKey 合并不同来源楼的事件。没有新增事实、关系变化或事项进展的重复日常不另立事件。新计划、事项的实质推进、完成、取消和其他关键变化仍须记录。只有计划、持续推进或需要跟踪状态的事项实例才把 matter 写为 true；带来新事实或变化的一次性事件可记录为 matter=false。相同物品或相似标题不代表同一事项。candidateType=matter 且指向真实持续事项的候选才可用于 progress；candidateType=event 是一次性事件，只能用于 context 或先后关系端点。正文明确推进旧事项时，在 links 中复制对应 candidate-N 并写 kind=progress；倒叙补充、回忆或只补充背景写 kind=context。无效 progress 必须留作部分错误，不能默默降级为 context 或新事项。storyTime 是事件在故事中发生的时间，scheduledTime 是约定、预计或到期时间，两者不可混写。events 为空数组表示已检查且本楼没有事件增量。order 必须使用对象数组，例如 [{"before":"event-1","after":"event-2","certainty":"explicit"}]；before 与 after 只能逐字复制本次 qianshi.events[].key 的 event-N，或在确实指向单一明确旧事件时复制 payload.qianshiCandidates 的 candidate-N；不能填写事件标题或描述。order 只写正文或可靠时间锚明确支持的先后关系；未知、同日但先后不明或不可比较时不输出。不要输出因果、矛盾等未授权知识图谱关系。
+10. qianshi 是可选的剧情事件增量，按对后续叙事有用的事件单位整理，不按每个动作逐条拆分。同一 sourceFloorKey（来源楼）的同一场景中，属于同一事项的一串连续动作合并成一件完整事件；不得跨 sourceFloorKey 合并不同来源楼的事件。没有新增事实、关系变化或事项进展的重复日常不另立事件。新计划、事项的实质推进、完成、取消和其他关键变化仍须记录。只有计划、持续推进或需要跟踪状态的事项实例才把 matter 写为 true；带来新事实或变化的一次性事件可记录为 matter=false。object 只填写对后续叙事有用的具体物品，多个物品用“、”分隔；人物写入 people，地点或建筑及事件主题应在相应正文事件信息中表达，不要混入 object，也不要凭空补物品；没有合适物品时 object 写 null。相同物品或相似标题不代表同一事项。candidateType=matter 且指向真实持续事项的候选才可用于 progress；candidateType=event 是一次性事件，只能用于 context 或先后关系端点。正文明确推进旧事项时，在 links 中复制对应 candidate-N 并写 kind=progress；倒叙补充、回忆或只补充背景写 kind=context。无效 progress 必须留作部分错误，不能默默降级为 context 或新事项。storyTime 是事件在故事中发生的时间，scheduledTime 是约定、预计或到期时间，两者不可混写。events 为空数组表示已检查且本楼没有事件增量。order 必须使用对象数组，例如 [{"before":"event-1","after":"event-2","certainty":"explicit"}]；before 与 after 只能逐字复制本次 qianshi.events[].key 的 event-N，或在确实指向单一明确旧事件时复制 payload.qianshiCandidates 的 candidate-N；不能填写事件标题或描述。order 只写正文或可靠时间锚明确支持的先后关系；未知、同日但先后不明或不可比较时不输出。不要输出因果、矛盾等未授权知识图谱关系。
 
 参考结构：
 ${EXTRACTOR_OUTPUT_CONTRACT}
