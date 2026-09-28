@@ -32,7 +32,22 @@ export function parseClockFields(raw) {
   const weekday = field(value, 'weekday|星期');
   const time = field(value, 'time');
   const weekdayValid = /^(?:周|週|星期|礼拜|禮拜)[一二三四五六日天]$/u.test(weekday ?? '');
-  return Object.freeze({ raw: value, date, weekday, time, complete: Boolean(date && weekdayValid && time) });
+  const normalizedTime = String(time ?? '').replace(/[０-９]/gu, char => String(char.charCodeAt(0) - 0xFF10)).replace(/：/gu, ':');
+  const clocks = [...normalizedTime.matchAll(/(?<!\d)(\d{1,2}):(\d{2})(?!\d)/gu)];
+  const hasNumericClock = /\d+:\d+/u.test(normalizedTime);
+  const period = /上午|下午|中午|正午|凌晨|清晨|早晨|早上|晚上|夜里|夜间|午夜|\b(?:AM|PM)\b/iu.test(normalizedTime);
+  const timeValid = Boolean(time) && (!hasNumericClock || clocks.length > 0 && clocks.every(match => Number(match[1]) <= (period ? 12 : 23) && Number(match[2]) <= 59 && (!period || Number(match[1]) >= 1)));
+  const normalizedDate = String(date ?? '').normalize('NFKC');
+  const numericDate = normalizedDate.match(/(?:^|\D)(\d{1,2})月(\d{1,2})(?:日|号|號)?(?:\D|$)/u)
+    ?? normalizedDate.match(/(?:^|\D)\d{1,4}[-/.](\d{1,2})[-/.](\d{1,2})(?:\D|$)/u);
+  const month = Number(numericDate?.[1]), day = Number(numericDate?.[2]);
+  const gregorianYear = /^(\d{4})[-/.]\d{1,2}[-/.]\d{1,2}$/u.exec(normalizedDate)?.[1]
+    ?? /^(\d{4})年\d{1,2}月\d{1,2}(?:日|号|號)?$/u.exec(normalizedDate)?.[1];
+  const maxDay = numericDate && month >= 1 && month <= 12
+    ? gregorianYear ? new Date(Date.UTC(Number(gregorianYear), month, 0)).getUTCDate() : 31
+    : 0;
+  const dateValid = Boolean(date) && (!numericDate || month >= 1 && month <= 12 && day >= 1 && day <= maxDay);
+  return Object.freeze({ raw: value, date, weekday, time, complete: Boolean(dateValid && weekdayValid && timeValid) });
 }
 
 function namespaceCandidate(source, namespace) {
@@ -53,9 +68,9 @@ function namespaceCandidate(source, namespace) {
     pairs.push(Object.freeze({ startMeta: start.meta, endMeta: end.meta, sourceIndex: start.index }));
     index += 1;
   }
-  const firstPair = pairs[0] ?? null;
-  const startMeta = firstPair?.startMeta ?? starts[0]?.meta ?? null;
-  const endMeta = firstPair?.endMeta ?? ends[0]?.meta ?? null;
+  const currentPair = pairs.at(-1) ?? null;
+  const startMeta = currentPair?.startMeta ?? starts[0]?.meta ?? null;
+  const endMeta = currentPair?.endMeta ?? ends[0]?.meta ?? null;
   const duplicate = starts.length !== 1 || ends.length !== 1;
   return Object.freeze({
     namespace,
@@ -75,12 +90,28 @@ export function parseSharedStoryClock(value) {
   const source = text(value);
   const candidates = ['SDC', 'QQJ', 'myknots'].map(namespace => namespaceCandidate(source, namespace)).filter(Boolean);
   if (!candidates.length) return null;
-  return candidates.sort((left, right) => Number(right.complete) - Number(left.complete) || left.sourceIndex - right.sourceIndex)[0];
+  candidates.sort((left, right) => Number(right.complete) - Number(left.complete) || left.sourceIndex - right.sourceIndex);
+  const usable = candidates.filter(candidate => candidate.complete);
+  if (usable.length < 2) return candidates[0];
+  const shape = candidate => JSON.stringify(candidate.pairs.map(pair => [pair.startMeta.date, pair.startMeta.weekday, pair.startMeta.time, pair.endMeta.date, pair.endMeta.weekday, pair.endMeta.time]));
+  if (usable.every(candidate => shape(candidate) === shape(usable[0]))) return usable[0];
+  const count = Math.max(...usable.map(candidate => candidate.pairs.length));
+  const merge = values => {
+    const fields = ['date', 'weekday', 'time'];
+    const merged = Object.fromEntries(fields.map(key => [key, values.every(value => value?.[key] === values[0]?.[key]) ? values[0]?.[key] ?? null : null]));
+    return Object.freeze({ raw: values.map(value => value?.raw).filter(Boolean).join(' / '), ...merged, complete: Boolean(merged.date && merged.weekday && merged.time) });
+  };
+  const pairs = Array.from({ length: count }, (_, index) => Object.freeze({
+    startMeta: merge(usable.map(candidate => candidate.pairs[index]?.startMeta)),
+    endMeta: merge(usable.map(candidate => candidate.pairs[index]?.endMeta)),
+  }));
+  return Object.freeze({ ...usable[0], start: pairs[0]?.startMeta.raw ?? null, end: pairs[0]?.endMeta.raw ?? null,
+    startMeta: pairs[0]?.startMeta ?? null, endMeta: pairs[0]?.endMeta ?? null, complete: false, ambiguous: true, pairs: Object.freeze(pairs) });
 }
 
 export function parseStoryClockReference(value, referenceTags = '') {
   const source = text(value);
-  const configured = normalizeStoryClockReferenceTags(referenceTags);
+  const configured = [...new Set([...normalizeStoryClockReferenceTags(referenceTags), 'bbs_start', 'bbs_end'])];
   if (!source || !configured.length) return null;
   const configuredByKey = new Map(configured.map(name => [name.toLocaleLowerCase('en-US'), name]));
   const openByKey = new Map();
@@ -125,7 +156,24 @@ export function parseStoryClockReference(value, referenceTags = '') {
 }
 
 export function parseStoryClockEvidence(value, referenceTags = '') {
-  return parseSharedStoryClock(value) ?? parseStoryClockReference(value, referenceTags);
+  const shared = parseSharedStoryClock(value);
+  const reference = parseStoryClockReference(value, referenceTags);
+  return shared?.ambiguous || shared?.complete ? shared : reference ?? shared;
+}
+
+export function resolveStoryClock(value, referenceTags = '') {
+  const evidence = parseStoryClockEvidence(value, referenceTags);
+  if (!evidence) return null;
+  if (evidence.ambiguous) return Object.freeze({ status: 'ambiguous', source: 'timestamp', evidence, signature: storyClockSignature(evidence) });
+  if (evidence.complete && !evidence.referenceText) {
+    const currentPair = evidence.pairs?.at(-1);
+    const meta = currentPair?.endMeta ?? evidence.endMeta ?? evidence.startMeta;
+    return Object.freeze({ status: 'available', source: 'timestamp', evidence, meta,
+      text: [meta?.date, meta?.time].filter(Boolean).join(' '), signature: storyClockSignature(evidence) });
+  }
+  const textValue = evidence.lastReferenceText ?? evidence.referenceText;
+  if (textValue) return Object.freeze({ status: 'available', source: 'reference', evidence, text: textValue, signature: storyClockSignature(evidence) });
+  return Object.freeze({ status: 'incomplete', source: 'timestamp', evidence, signature: storyClockSignature(evidence) });
 }
 
 export function storyClockSignature(clock) {

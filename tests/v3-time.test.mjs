@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatStoryTime, projectTime, timeDistance, timeHours, nextCycleTime, storyTimes, timeRecallProjection } from '../src/v3/time-engine.js';
+import { formatStoryTime, projectTime, projectTimeSource, timeDistance, timeHours, nextCycleTime, storyTimes, timeRecallProjection } from '../src/v3/time-engine.js';
 import { formatRecallInjection, selectRecall, buildRecallQueryContext, estimateRecallTokens } from '../src/v3/recall-selector.js';
 import { projectInlineRecallReceipt } from '../src/ui/inline-projection.js';
+import { inferCanonicalCurrentTime } from '../src/v3/extractor.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const PERSON = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -41,6 +42,25 @@ test('普通年月日跨月跨年计算，无年日期不猜跨年或未知闰�
   assert.equal(projectTime('次日', projectTime('2月28日')).date, null);
   assert.equal(projectTime('木叶历七年霜月').date, null);
   assert.equal(projectTime('昨天').date, null);
+});
+
+test('上午下午与 AM/PM 按 12 点边界换算，普通日期范围不取首日冒充单点', () => {
+  for (const [raw, clock] of [['2026年5月10日 上午12:15', '00:15'], ['2026年5月10日 下午12:15', '12:15'], ['2026年5月10日 下午2:15', '14:15'], ['2026-05-10 12:15 AM', '00:15'], ['2026-05-10 12:15 PM', '12:15'], ['2026-05-10 2:15 PM', '14:15']]) {
+    assert.equal(projectTime(raw).clock, clock, raw);
+  }
+  const range = projectTime('2026年5月10日 08:00 → 2026年5月12日 09:00');
+  assert.equal(range.date, null);
+  assert.equal(range.clock, null);
+  assert.equal(range.raw, '2026年5月10日 08:00 → 2026年5月12日 09:00');
+  for (const raw of ['2026年5月10日至2026年5月12日', '2026年5月10日～2026年5月12日', '2026-05-10 08:00－2026-05-12 09:00', '2026-05-10 08:00 - 2026-05-12 09:00']) {
+    assert.equal(projectTime(raw).date, null, raw);
+    assert.equal(projectTime(raw).raw, raw);
+  }
+  for (const [raw, minute, clock] of [['2026-05-10 08:00 → 2026-05-12 09:00', 8 * 60, '08:00'], ['2026-05-10 08:00至2026-05-12 09:00', 9 * 60, '09:00'], ['2026-05-10 08:00～2026-05-12 09:00', 9 * 60, '09:00']]) {
+    assert.equal(projectTimeSource(raw).date, '2026-05-10', raw);
+    assert.equal(projectTimeSource(raw).minute, minute, raw);
+    assert.equal(projectTimeSource(raw).clock, clock, raw);
+  }
 });
 
 test('保留纪年原文；特殊月份只比较同一年同月，普通数字日期独立计算', () => {
@@ -91,6 +111,34 @@ test('保留纪年原文；特殊月份只比较同一年同月，普通数字�
     '明确普通公历前缀仍使用公历跨月间隔');
   assert.equal(projectTime('2026-10-04').date, '2026-10-04');
   assert.equal(projectTime('纪元年·秋').raw, '纪元年·秋', '未知自由文本保留，不拒存');
+});
+
+test('具名历法期间不要求“月”字，期间内按日号计算并保留来源解析合同', () => {
+  const summer = projectTime('1年夏1日');
+  assert.equal(summer.year, 1);
+  assert.equal(summer.monthDay, 1);
+  assert.equal(timeDistance(summer, projectTime('1年夏27日')), 26);
+  assert.equal(timeDistance(summer, projectTime('1年秋1日')), null);
+  assert.equal(timeDistance(summer, projectTime('2年夏1日')), null);
+  assert.equal(timeDistance(summer, projectTime('大陆历1年夏1日')), null);
+  for (const [raw, day] of [['1年夏初一日', 1], ['1年夏廿三日', 23], ['1年夏三十日', 30]]) {
+    assert.equal(projectTime(raw).monthIdentity, summer.monthIdentity, raw);
+    assert.equal(projectTime(raw).monthDay, day, raw);
+  }
+  assert.equal(timeDistance(projectTime('1年夏初一日'), projectTime('1年夏初三日')), 2);
+  assert.equal(timeDistance(projectTime('1年夏廿三日'), projectTime('1年夏三十日')), 7);
+  assert.equal(timeDistance(projectTime('大陆历1686年收获期初三'), projectTime('大陆历1686年收获期五日')), 2);
+  assert.equal(timeDistance(projectTime('夏1日'), projectTime('夏2日')), null);
+  assert.equal(projectTime('1年夏1日 周一 10:15-10:25').date, null);
+  assert.equal(projectTimeSource('1年夏1日').date, null);
+  assert.equal(inferCanonicalCurrentTime('当前时间：1年夏1日 10:15')?.text, '1年夏1日 10:15');
+  for (const value of [
+    '<StatusBar>当前时间：1年夏1日 周一 10:15-10:25</StatusBar>',
+    '<StatusBar>当前时间：1年夏1日到1年夏3日</StatusBar>',
+    '<StatusBar>1年夏1日 周一 10:15-10:25</StatusBar>',
+    '<StatusBar>1年夏1日到1年夏3日</StatusBar>',
+  ]) assert.equal(inferCanonicalCurrentTime(value)?.kind, 'ambiguous', value);
+  assert.equal(inferCanonicalCurrentTime('<StatusBar>1年夏1日 周一 10:15</StatusBar>')?.text, '1年夏1日 周一 10:15');
 });
 
 

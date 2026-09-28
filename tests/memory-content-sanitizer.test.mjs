@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeMemoryTagList, sanitizeMemoryContent } from '../src/memory-content-sanitizer.js';
+import { normalizeMemoryTagList, readMemoryTagBlocks, sanitizeMemoryContent, stripMemoryTagBlocks } from '../src/memory-content-sanitizer.js';
 import { findEarliestCanonicalDivergence, scanAssistantCandidates, sanitizerFingerprint } from '../src/v3/foundation-domain.js';
 
 test('默认 content 去标签保留正文，并二次删除内部嵌套噪声', () => {
@@ -23,6 +23,14 @@ test('成对 think/reasoning/status/snow/details 块连同内容删除，普通�
 test('注释、孤立与自闭合标签删除，空行收紧并 trim', () => {
   const source = '  <!-- SECRET -->\n正文<br/>\n\n\n<orphan attr="x">\n尾声</dangling>  ';
   assert.equal(sanitizeMemoryContent(source), '正文\n\n尾声');
+});
+
+test('仅时间标签读取把 br 当 void，旧正文清洗保留原配对语义', () => {
+  assert.equal(sanitizeMemoryContent('甲<br>乙</br>丙'), '甲丙');
+  assert.equal(sanitizeMemoryContent('<meta>说明</meta>'), '');
+  const source = '<StatusBar>当前状态：2026年5月10日<br><content>后文</content></StatusBar>';
+  assert.equal(stripMemoryTagBlocks(source, 'content'), '<StatusBar>当前状态：2026年5月10日<br> </StatusBar>');
+  assert.deepEqual(readMemoryTagBlocks(source).map(block => [block.name, block.ancestors]), [['statusbar', []], ['content', ['statusbar']]]);
 });
 
 test('标签列表规范化与 keep/extra 行为沿用构画合同', () => {

@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { scanAssistantCandidates, createFloorRecord } from '../src/v3/foundation-domain.js';
-import { readTimeBody, planTimeBody, timeBodyStart, resolveTimeStart, clockContentFingerprint } from '../src/v3/time-body.js';
+import { readTimeBody, readRecentBodyStoryTimes, planTimeBody, timeBodyStart, resolveTimeStart, clockContentFingerprint } from '../src/v3/time-body.js';
 import { createTimeRuntime, createTimeStore, prepareTimeRequest } from '../src/v3/time-runtime.js';
-import { compileTimeResponse, compileTimeEdit, compileTimeEdits, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, timeBodyReads, timeItemFailures, projectTime, validTimeProjection, timeRecallProjection, TIME_INPUT_TOKENS, TIME_SYSTEM_PROMPT, TIME_CURRENT_REVIEW_PROMPT } from '../src/v3/time-engine.js';
+import { compileTimeResponse, compileTimeEdit, compileTimeEdits, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, timeBodyReads, timeItemFailures, projectTime, timeFingerprint, validTimeProjection, timeRecallProjection, TIME_INPUT_TOKENS, TIME_SYSTEM_PROMPT, TIME_CURRENT_REVIEW_PROMPT } from '../src/v3/time-engine.js';
 import { estimateRecallTokens, selectRecall, buildRecallQueryContext } from '../src/v3/recall-selector.js';
 import { projectInlineRecallReceipt } from '../src/ui/inline-projection.js';
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', PERSON = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -161,6 +161,258 @@ test('双正文参考标签保留完整原文合同并以末标签作为当前�
   assert.equal(h.calls(), 0);
 });
 
+test('状态栏在清洗前从目标 AI 楼原文进入时间推演', async () => {
+  const h = await harness({ count: 1, sanitizer: { keepTags: ['content'] } });
+  h.chat[0].mes = '<content>阿岚继续调查。</content><StatusBar><span>当前状态</span>：2026年5月10日 下午2:30</StatusBar>';
+  await h.seal();
+  const source = await h.body();
+  assert.doesNotMatch(source.bodyFloors[0].content, /2026年5月10日/u, '状态栏按原清洗合同不进入模型正文');
+  assert.equal(source.bodyFloors[0].observationTime.date, '2026-05-10');
+  assert.equal(source.bodyFloors[0].observationTime.clock, '14:30');
+});
+
+test('通用状态行与独立场景头进入楼层和近期时钟，状态结束时间优先于场景开始时间', async () => {
+  const cases = [
+    ['<Ruan_Status><span>[Time: 2026-09-29 | Tuesday | 19:30 | cloudy]</span></Ruan_Status>阿岚停留。', '2026-09-29', '19:30'],
+    ['<Status>[Time: 2026-09-29 | 晚上19:30]</Status>阿岚停留。', '2026-09-29', '19:30'],
+    ['<time-box><date>2026-09-29</date><time>晚上19:30</time></time-box>阿岚停留。', '2026-09-29', '19:30'],
+    ['|||2026年9月29日 | 19:12 | 雨|||\n正文继续。', '2026-09-29', '19:12'],
+    ['|||2026年9月29日 19:12|||<unknown-state>[Time: 2026-09-29 | 19:30]</unknown-state>阿岚停留。', '2026-09-29', '19:30'],
+    ['<unknown-shell><date>11月14日</date><time>19:20</time></unknown-shell>阿岚停留。', 'yearless', '19:20'],
+    ['<unknown-shell><date>2026年9月29日</date></unknown-shell><other-shell><time>19:20</time></other-shell>阿岚停留。', '2026-09-29', null],
+    ['<unknown-shell>【当前状态】01:32</unknown-shell>阿岚停留。', null, null],
+  ];
+  for (const [rawContent, expectedDate, expectedClock] of cases) {
+    const h = await harness({ count: 1 });
+    h.chat[0].mes = rawContent;
+    await h.seal();
+    const body = await h.body();
+    if (expectedDate === 'yearless') {
+      assert.equal(body.bodyFloors[0].observationTime.year, null, rawContent);
+      assert.equal(body.bodyFloors[0].observationTime.month, 11, rawContent);
+      assert.equal(body.bodyFloors[0].observationTime.monthDay, 14, rawContent);
+    } else assert.equal(body.bodyFloors[0].observationTime.date, expectedDate, rawContent);
+    assert.equal(body.bodyFloors[0].observationTime.clock, expectedClock, rawContent);
+    const recent = await readRecentBodyStoryTimes(h.hostAdapter.snapshot(), { reachable: h.source, limit: 1 });
+    if (expectedDate === 'yearless') {
+      assert.equal(recent.at(-1)?.observationTime.year ?? null, null, rawContent);
+      assert.equal(recent.at(-1)?.observationTime.month ?? null, 11, rawContent);
+      assert.equal(recent.at(-1)?.observationTime.monthDay ?? null, 14, rawContent);
+    } else assert.equal(recent.at(-1)?.observationTime.date ?? null, expectedDate, rawContent);
+    assert.equal(recent.at(-1)?.observationTime.clock ?? null, expectedClock, rawContent);
+    assert.equal(h.calls(), 0);
+  }
+  assert.equal(projectTime('2026-09-29 晚上19:30').clock, '19:30');
+});
+
+test('同父字段容器允许其他包装节点，非法状态日期不压住正文合法时间', async () => {
+  for (const rawContent of [
+    '<time_bar><section><date>11月14日</date><time>19:20</time></section><note>decorative label</note></time_bar>阿岚停留。',
+    '<Status>[Time: 2026-13-44 | 19:30]</Status><content>2026年9月29日 18:00 阿岚停留。</content>',
+  ]) {
+    const h = await harness({ count: 1 });
+    h.chat[0].mes = rawContent;
+    await h.seal();
+    const body = await h.body();
+    const time = body.bodyFloors[0].observationTime;
+    if (rawContent.includes('<time_bar>')) {
+      assert.equal(time.year, null);
+      assert.equal(time.month, 11);
+      assert.equal(time.monthDay, 14);
+      assert.equal(time.clock, '19:20');
+    } else {
+      assert.equal(time.date, '2026-09-29');
+      assert.equal(time.clock, '18:00');
+    }
+    const recent = await readRecentBodyStoryTimes(h.hostAdapter.snapshot(), { reachable: h.source, limit: 1 });
+    assert.equal(recent.at(-1)?.observationTime.clock, rawContent.includes('<time_bar>') ? '19:20' : '18:00');
+  }
+});
+
+test('raw无可用戳或状态时才从清洗后的正文开头回退时间', async () => {
+  for (const rawContent of [
+    '<content>2026年5月10日 14:30 阿岚继续调查。</content>',
+    '<!-- SDC-start | date=2026年5月9日 | time=08:00 -->2026年5月10日 14:30 阿岚继续调查。',
+  ]) {
+    const h = await harness({ count: 1 });
+    h.chat[0].mes = rawContent;
+    await h.seal();
+    const body = await h.body();
+    assert.equal(body.bodyFloors[0].observationTime.date, '2026-05-10');
+    assert.equal(body.bodyFloors[0].observationTime.clock, '14:30');
+    const context = await h.runtime.currentStoryContext({ status: 'ready', chatId: CHAT, narrativeGeneration: 'gen', headCheckpointId: 'head' });
+    assert.equal(context.currentTime.date, '2026-05-10');
+    assert.equal(context.currentTime.clock, '14:30');
+    assert.equal(context.recentStoryTimes.at(-1).clock, '14:30');
+    assert.equal(h.calls(), 0);
+  }
+});
+
+test('同楼原文状态栏时间优先于 content 正文中的当前时间', async () => {
+  const cases = [
+    ['<content>外层<content>内层</content>当前时间：2026年5月1日</content><StatusBar>当前状态：2026年5月2日</StatusBar>', '2026-05-02'],
+    ['<StatusBar>当前状态：2026年5月2日</StatusBar><content>外层<content>内层</content>当前时间：5月1日</content>', '2026-05-02'],
+    ['<CONTENT>5月1日</CONTENT><content>当前时间：5月1日</content><StatusBar>当前状态：2026年5月2日</StatusBar>', '2026-05-02'],
+    ['<!-- QQJ-start | date=2026年5月3日 | weekday=周日 | time=08:00 --><content>当前时间：2026年5月1日</content><StatusBar>当前状态：2026年5月2日</StatusBar><!-- QQJ-end | date=2026年5月3日 | weekday=周日 | time=09:00 -->', '2026-05-03'],
+    ['<content>当前时间：2026年5月1日<StatusBar>当前状态：2026年5月2日</StatusBar>', '2026-05-02'],
+    ['<content>当前时间：2026年5月1日</content>', '2026-05-01'],
+  ];
+  for (const [rawContent, expectedDate] of cases) {
+    const h = await harness({ count: 1 });
+    h.chat[0].mes = rawContent;
+    await h.seal();
+    const body = await h.body();
+    assert.equal(body.bodyFloors[0].observationTime.date, expectedDate, rawContent);
+    const context = await h.runtime.currentStoryContext({ status: 'ready', chatId: CHAT, narrativeGeneration: 'gen', headCheckpointId: 'head' });
+    assert.equal(context.currentTime.date, expectedDate, rawContent);
+    assert.equal(context.recentStoryTimes.at(-1).date, expectedDate, rawContent);
+    assert.equal(h.calls(), 0);
+  }
+});
+
+test('冲突戳不降级伪装成当前时间，同 namespace 多段以最后一段作为当前锚', async () => {
+  const h = await harness({ count: 1 });
+  h.chat[0].mes = '<StatusBar>当前状态：2026年5月12日 12:00</StatusBar><!-- SDC-start | date=2026年5月10日 | weekday=周日 | time=09:00 -->正文<!-- SDC-end | date=2026年5月10日 | weekday=周日 | time=10:00 --><!-- QQJ-start | date=2026年5月10日 | weekday=周日 | time=09:00 -->正文<!-- QQJ-end | date=2026年5月11日 | weekday=周一 | time=11:00 -->';
+  await h.seal();
+  const conflicted = await h.body();
+  assert.equal(conflicted.bodyFloors[0].observationTime.date, null);
+  assert.equal(conflicted.bodyFloors[0].timeSourceKind, 'body');
+
+  h.chat[0].mes = '<!-- SDC-start | date=2026年5月9日 | time=08:00 --><StatusBar>当前状态：2026年5月10日 14:30</StatusBar>正文';
+  await h.seal();
+  const statusFallback = await h.body();
+  assert.equal(statusFallback.bodyFloors[0].observationTime.date, '2026-05-10', '残缺高层戳不遮蔽有效状态栏');
+  assert.equal(statusFallback.bodyFloors[0].observationTime.clock, '14:30');
+
+  h.chat[0].mes = '<!-- QQJ-start | date=2026年5月10日 | weekday=周日 | time=09:00 -->第一段<!-- QQJ-end | date=2026年5月10日 | weekday=周日 | time=10:00 --><!-- QQJ-start | date=2026年5月11日 | weekday=周一 | time=11:00 -->第二段<!-- QQJ-end | date=2026年5月11日 | weekday=周一 | time=12:00 -->';
+  await h.seal();
+  const multiple = await h.body();
+  assert.equal(multiple.bodyFloors[0].observationTime.date, '2026-05-11');
+  assert.equal(multiple.bodyFloors[0].observationTime.clock, '12:00');
+});
+
+test('人工时间修订只覆盖所属楼的自动戳，并成为当前/近期时钟', async () => {
+  const h = await harness({ count: 2 });
+  const [first, second] = h.source.floors;
+  h.source.floorMemories = [
+    { id: 'memory-first', floorId: first.id, recordStatus: 'active', chronology: [{ time: { kind: 'explicit', sourceText: '2026-04-01 10:00', normalized: null } }] },
+    { id: 'memory-second', floorId: second.id, recordStatus: 'active', chronology: [{ time: { kind: 'explicit', sourceText: '2026-04-02 10:00', normalized: null } }] },
+  ];
+  h.source.run = { diagnostics: { floorProvenance: { [first.id]: { timeEdited: true }, [second.id]: { timeEdited: false } } } };
+  const body = await h.body();
+  assert.equal(body.bodyFloors[0].observationTime.date, '2026-04-01');
+  assert.equal(body.bodyFloors[0].observationTime.clock, '10:00');
+  assert.equal(body.bodyFloors[0].timeSourceKind, 'manual');
+  assert.equal(body.bodyFloors[1].observationTime.date, '2026-05-02', '邻楼仍使用自身自动时间戳');
+
+  h.source.floorMemories[1].chronology = [{ time: { kind: 'explicit', sourceText: '2026-03-03 11:30', normalized: null } }];
+  h.source.run.diagnostics.floorProvenance[second.id].timeEdited = true;
+  const context = await h.runtime.currentStoryContext({ status: 'ready', chatId: CHAT, narrativeGeneration: 'gen', headCheckpointId: 'head' });
+  assert.equal(context.currentTime.date, '2026-03-03');
+  assert.equal(context.currentTime.clock, '11:30');
+  assert.equal(context.recentStoryTimes.at(-1).date, '2026-03-03');
+  const recall = await h.runtime.recallProjection({ status: 'ready', chatId: CHAT, headCheckpointId: 'head', rootRevision: 1,
+    floorMemories: h.source.floorMemories.map(memory => ({ ...memory, floorMemoryId: memory.id })), entities: [], currentState: [], identityProjection: {} });
+  assert.ok(recall, JSON.stringify(h.runtime.getState().last));
+  assert.equal(recall.currentTime.date, '2026-03-03', '回忆投影的旧模型时钟不得压过人工修订');
+  assert.equal(h.calls(), 0);
+});
+
+test('只有自动摘要 chronology 而无本楼时间戳/状态时不充当当前故事时钟', async () => {
+  const h = await harness({ count: 1 });
+  h.chat[0].mes = '只有普通剧情正文，没有当前故事时间。';
+  await h.seal();
+  const floor = h.source.floors[0];
+  h.source.floorMemories = [{ id: 'summary-only', floorId: floor.id, recordStatus: 'active', chronology: [{ time: { kind: 'explicit', sourceText: '2026-04-01 10:00', normalized: null } }] }];
+  const body = await h.body();
+  assert.equal(body.bodyFloors[0].observationTime.date, null);
+  assert.equal(body.bodyFloors[0].timeSourceKind, 'unknown');
+  assert.equal(await h.runtime.currentStoryContext({ status: 'ready', chatId: CHAT, narrativeGeneration: 'gen', headCheckpointId: 'head' }), null);
+  h.chat[0].is_hidden = true;
+  assert.equal(await h.runtime.currentStoryContext({ status: 'ready', chatId: CHAT, narrativeGeneration: 'gen', headCheckpointId: 'head' }), null,
+    '隐藏楼的自动 chronology 不回退成可见当前锚');
+  assert.equal(h.calls(), 0);
+});
+
+test('人工 chronology 按楼身份跟随正文重排，替换正文不继承旧楼修订', async () => {
+  const h = await harness({ count: 2 });
+  h.chat[0].mes = raw(0, '楼一独特正文');
+  h.chat[2].mes = raw(1, '楼二独特正文');
+  await h.seal();
+  const [first, second] = h.source.floors;
+  h.source.floorMemories = [{ id: 'manual-second', floorId: second.id, recordStatus: 'active', chronology: [{ time: { kind: 'explicit', sourceText: '2026-04-02 10:00', normalized: null } }] }];
+  h.source.run = { diagnostics: { floorProvenance: { [second.id]: { timeEdited: true } } } };
+
+  const originalChat = h.chat.slice();
+  h.chat.splice(0, h.chat.length, originalChat[2], originalChat[3], originalChat[0], originalChat[1]);
+  let context = await h.runtime.currentStoryContext({ status: 'ready', chatId: CHAT, narrativeGeneration: 'gen', headCheckpointId: 'head' });
+  assert.equal(context.recentStoryTimes[0].date, '2026-04-02', '重排后仍读取人工修订楼的 chronology');
+  assert.equal(context.currentTime.date, '2026-05-01', '最后一楼使用自己的自动时间，不继承旧 messageIndex 的人工值');
+
+  h.chat[0].mes = raw(2, '替换楼的新正文');
+  context = await h.runtime.currentStoryContext({ status: 'ready', chatId: CHAT, narrativeGeneration: 'gen', headCheckpointId: 'head' });
+  assert.equal(context.recentStoryTimes[0].date, '2026-05-03', '无法绑定到旧 floorId 的替换正文不继承旧人工 chronology');
+  assert.equal(context.recentStoryTimes[1].date, '2026-05-01', '另一楼的原正文绑定保持独立');
+  assert.equal(h.calls(), 0);
+});
+
+test('隐藏楼日期不能为后续可见 BBS 钟点补日期', async () => {
+  const h = await harness({ count: 2 });
+  h.chat[0].is_hidden = true;
+  h.chat[2].mes = '<bbs_start>10:30</bbs_start>正文继续。';
+  await h.seal();
+  const source = await h.body();
+  assert.equal(source.bodyFloors[1].observationTime.date, null);
+  assert.equal(source.bodyFloors[1].observationTime.clock, '10:30');
+  const context = await h.runtime.currentStoryContext({ status: 'ready', chatId: CHAT, narrativeGeneration: 'gen', headCheckpointId: 'head' });
+  assert.equal(context.currentTime.date, null);
+  assert.equal(context.currentTime.clock, '10:30');
+  assert.equal(context.recentStoryTimes.length, 1, '近期可见时钟不纳入隐藏楼');
+  assert.equal(h.calls(), 0);
+});
+
+test('完整时间戳中的自定义历法期间进入正文时钟视图且不改写旧source指纹输入', async () => {
+  const h = await harness({ count: 1 });
+  h.chat[0].mes = '<!-- QQJ-start | date=1年夏1日 | weekday=周一 | time=10:15 --><content>当前时间：1年夏1日</content><!-- QQJ-end | date=1年夏1日 | weekday=周一 | time=10:25 -->';
+  await h.seal();
+  const body = await h.body(), observation = body.bodyFloors[0].observationTime;
+  assert.equal(observation.monthDay, 1);
+  assert.equal(observation.monthIdentity, '["",1,"夏"]');
+  assert.equal(observation.clock, '10:25');
+  assert.equal(body.bodyFloors[0].timeSourceFingerprint,
+    await timeFingerprint([null, '10:25', '1年夏1日 10:25']));
+  const recent = await readRecentBodyStoryTimes(h.hostAdapter.snapshot(), { reachable: h.source, limit: 1 });
+  assert.equal(recent.at(-1).observationTime.monthIdentity, observation.monthIdentity);
+  assert.equal(h.calls(), 0);
+});
+
+test('状态栏范围日期判歧义并阻止后续纯钟点楼继承旧日期', async () => {
+  for (const range of ['1年夏1日 周一 10:15-10:25', '1年夏1日到1年夏3日']) {
+    const h = await harness({ count: 3 });
+    h.chat[0].mes = '<StatusBar>1年夏1日 周一 09:00</StatusBar>第一楼。';
+    h.chat[2].mes = `<StatusBar>${range}</StatusBar>第二楼。`;
+    h.chat[4].mes = '<bbs_start>10:30</bbs_start>第三楼继续。';
+    await h.seal();
+    const recent = await readRecentBodyStoryTimes(h.hostAdapter.snapshot(), { reachable: h.source, limit: 3 });
+    assert.equal(recent.length, 3, range);
+    assert.equal(recent[0].observationTime.monthDay, 1);
+    assert.equal(recent[1].observationTime.date, null);
+    assert.equal(recent.at(-1)?.observationTime.date, null, range);
+    assert.equal(recent.at(-1)?.observationTime.clock, '10:30', range);
+    assert.equal(h.calls(), 0);
+  }
+});
+
+test('主时间响应复用统一 JSON completion parser', async () => {
+  const h = await harness({ count: 1 }), source = await h.body();
+  const rows = planTimeBody(source, [], { history: true }).groups[0];
+  const prepared = await prepareTimeRequest(source, [], { fragments: [rows[0]] });
+  const response = await compileTimeResponse({ textData: 'Here is the JSON:\n```json\n{"changes":[]}\n```' }, prepared);
+  assert.deepEqual(response.changes, []);
+  await assert.rejects(compileTimeResponse({ textData: '{"changes":[]} {"changes":[]}' }, prepared), error => error.code === 'QQJ_COMPLETION_JSON');
+  await assert.rejects(compileTimeResponse({ textData: '{"changes":[', taskMetadata: { finishReason: 'length' } }, prepared), error => error.code === 'QQJ_OUTPUT_TRUNCATED');
+});
+
 test('无摘要/CSE正文、新NPC由真实scanner登记，独立召回和楼内参考可见，人工编辑保正文依赖',async()=>{
   const h=await harness({generate:bodyModel}); const plan=await h.runtime.prepareHistoryPlan(); assert.equal(h.calls(),0); await h.runtime.organize(plan);assert.equal(h.calls(),2);
   const stored=await h.store.read(CHAT), body=await h.body(), item=replayTimeBatches(stored.batches,body)[0];assert.equal(item.subjectName,'阿岚');assert.match(item.subjectEntityId,/^time-person-/);assert.equal(item.projection.text,'截至当前可能仍有轻微不适，未确认恢复。');
@@ -296,10 +548,10 @@ test('时间戳提醒指纹只覆盖 QQJ/SDC/myknots 注释和已配置成对标
   const base='前文标点，变句号。<!-- QQJ-start | date=2026-05-01 | weekday=周一 | time=08:00 --><!-- QQJ-end | date=2026-05-01 | weekday=周一 | time=09:00 -->'
     +'<!-- SDC-start | date=2026-05-01 | weekday=周一 | time=08:00 --><!-- SDC-end | date=2026-05-01 | weekday=周一 | time=09:00 -->'
     +'<!-- myknots-start | date=2026-05-01 | weekday=周一 | time=08:00 --><!-- myknots-end | date=2026-05-01 | weekday=周一 | time=09:00 -->'
-    +'<bbsstart>5月1日 周一 08:00</bbsstart><unknown>不观察</unknown>';
+    +'<bbsstart>5月1日 周一 08:00</bbsstart><bbs_start>2026年5月1日 08:00</bbs_start><bbs_end>2026年5月1日 09:00</bbs_end><unknown>不观察</unknown>';
   const fingerprint=await clockContentFingerprint(base,'bbsstart');
   assert.equal(await clockContentFingerprint(base.replace('前文标点，','前文标点。'),'bbsstart'),fingerprint,'标签外普通正文不触发');
-  for(const changed of [base.replace('weekday=周一','weekday=周二'),base.replace('<bbsstart>5月1日 周一 08:00','<bbsstart>5月1日 周一 09:00'),base.replace('SDC-start | date=2026-05-01','SDC-start | date=2026-05-02'),base.replace('myknots-start | date=2026-05-01','myknots-start | date=2026-05-02'),base.replace('QQJ-start | date=2026-05-01','QQJ-start | date=2026-05-02')]) {
+  for(const changed of [base.replace('weekday=周一','weekday=周二'),base.replace('<bbsstart>5月1日 周一 08:00','<bbsstart>5月1日 周一 09:00'),base.replace('<bbs_end>2026年5月1日 09:00','<bbs_end>2026年5月1日 10:00'),base.replace('SDC-start | date=2026-05-01','SDC-start | date=2026-05-02'),base.replace('myknots-start | date=2026-05-01','myknots-start | date=2026-05-02'),base.replace('QQJ-start | date=2026-05-01','QQJ-start | date=2026-05-02')]) {
     assert.notEqual(await clockContentFingerprint(changed,'bbsstart'),fingerprint);
   }
   assert.equal(await clockContentFingerprint(base.replace('<unknown>不观察</unknown>','<unknown>改了也不观察</unknown>'),'bbsstart'),fingerprint);
@@ -308,7 +560,7 @@ test('时间戳提醒指纹只覆盖 QQJ/SDC/myknots 注释和已配置成对标
   assert.equal(await clockContentFingerprint('<bbsstart>周一<br>08:00</bbsstart>','bbsstart'),await clockContentFingerprint('<bbsstart>周一\n08:00</bbsstart>','bbsstart'),'指纹换行归一与解析器一致');
 });
 
-test('较晚落盘的旧楼补查不覆盖当前楼模型时钟；事项与召回时钟保持稳定',async()=>{
+test('同楼实时戳优先于旧模型currentTime，时间事项与召回随新锚更新',async()=>{
   const h=await harness({count:2,generate:request=>request.currentReview?reviewModel(request):bodyModel(request)});
   await h.runtime.authorizeHistory();
   const stored=await h.store.read(CHAT), source=await h.body(), oldFloor=source.bodyFloors[0];
@@ -319,13 +571,15 @@ test('较晚落盘的旧楼补查不覆盖当前楼模型时钟；事项与召�
   const currentBatch=stored.batches.findLast(batch=>!batch.manualEdit&&batch.cutoffFloorId==='floor-2');
   assert.ok(currentBatch?.currentTime);
   const beforeItem=h.runtime.getState().trackedItems[0];
-  h.chat[2].mes=h.chat[2].mes.replace('date=2026-05-02','date=2026-06-02');await h.seal();
+  h.chat[2].mes=h.chat[2].mes.replaceAll('date=2026-05-02','date=2026-06-02');await h.seal();
   await h.runtime.refreshStatus({force:true});
   const afterItem=h.runtime.getState().trackedItems[0];
-  assert.notEqual(beforeItem.elapsedDays,null);assert.equal(afterItem.elapsedDays,beforeItem.elapsedDays,'事项展示继续使用当前楼已保存的模型时钟');
+  assert.equal(afterItem.id,beforeItem.id,'正文时钟刷新不替换既有时间事项');
   const recall={status:'ready',chatId:CHAT,headCheckpointId:'head',rootRevision:1,bodyMatchRefs:h.source.floors.map(floor=>({floorId:floor.id,assistantSeq:floor.assistantSeq})),floorMemories:[],entities:[],currentState:[],cseChanges:[],identityProjection:{}};
   const projection=await h.runtime.recallProjection(recall);
-  assert.deepEqual(projection.currentTime,currentBatch.currentTime);
+  assert.equal(projection.currentTime.date,'2026-06-02');
+  assert.equal(projection.currentTime.clock,'09:00');
+  assert.notDeepEqual(projection.currentTime,currentBatch.currentTime);
 });
 
 test('普通旧正文编辑不提醒；时间戳内容改变只显示提醒、不调用模型，恢复原文自动清除',async()=>{

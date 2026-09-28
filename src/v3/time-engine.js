@@ -3,6 +3,7 @@ import { rankRecallDocuments } from './recall-ranking.js';
 import { sha256 } from '../identity.js';
 import { resolveIdentityEntityId } from './entity-identity.js';
 import { projectAnnualSettings } from './time-annual-setting.js';
+import { parseJsonOutput } from '../compact-api-client.js';
 
 export const TIME_HEAD_ID = 'v3-time-head';
 export const TIME_INPUT_TOKENS = 60000;
@@ -43,18 +44,45 @@ const fail = message => Object.assign(new Error(message), { code: 'QQJ_TIME_INVA
 const itemFail = message => Object.assign(fail(message), { timeItemInvalid: true });
 export const timeFingerprint = async value => `sha256:${await sha256(JSON.stringify(value))}`;
 
+function parseClock(raw) {
+  const match = raw.match(/(?<!\d)(上午|下午|中午|正午|凌晨|清晨|早晨|早上|晚上|夜里|夜间|夜間|午夜|AM|PM)?\s*([01]?\d|2[0-3]):([0-5]\d)(?:[:：]\d{2})?(?:\s*(AM|PM))?(?!\d)/iu);
+  if (!match) return null;
+  const marker = String(match[1] || match[4] || '').toLocaleUpperCase('en-US');
+  const englishMeridiem = marker === 'AM' || marker === 'PM';
+  let hour = Number(match[2]);
+  if (englishMeridiem && (hour < 1 || hour > 12)) return null;
+  if (!englishMeridiem && marker && hour < 1) return null;
+  if ((marker === 'PM' || ['下午', '中午', '正午', '晚上', '夜里', '夜间', '夜間'].includes(marker)) && hour <= 12) hour = hour % 12 + 12;
+  else if ((marker === 'AM' || ['上午', '凌晨', '清晨', '早晨', '早上', '午夜'].includes(marker)) && hour <= 12) hour %= 12;
+  if (hour > 23) return null;
+  return { match: match[0], minute: hour * 60 + Number(match[3]), clock: `${String(hour).padStart(2, '0')}:${match[3]}` };
+}
+function temporalPoint(value) {
+  return /(?:\d{1,4}年\s*)?\d{1,2}月\s*\d{1,2}(?:日|号|號)?|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}:\d{2}/u.test(value);
+}
+function isTemporalRange(value) {
+  const separators = [/(?:→|->|⟶)/u, /(?:至|到)/u, /[~～—–－]/u, /\s-\s/u,
+    /(?<=\d)-(?=\s*(?:\d{4}[-/.]|\d{1,2}月|(?:[01]?\d|2[0-3]):[0-5]\d))/u];
+  return separators.some(pattern => {
+    const matcher = new RegExp(pattern.source, 'gu');
+    return [...value.matchAll(matcher)].some(match => temporalPoint(value.slice(0, match.index)) && temporalPoint(value.slice(match.index + match[0].length)));
+  });
+}
+const unknownProjectedTime = raw => ({ raw, date: null, day: null, year: null, month: null, monthDay: null, minute: null, clock: null });
+
 // Persisted body-source fingerprints retain this exact numeric-date interpretation.
 export function projectTimeSource(value, anchor = null) {
   const raw = text(value, 500);
-  const clock = raw.match(/(?:^|[T\s，])([01]?\d|2[0-3]):([0-5]\d)(?:[:：]\d{2})?(?:Z)?(?:$|[\s，])/u);
-  const dateText = clock ? raw.replace(clock[0], ' ').trim() : raw;
+  const match = raw.match(/(?:^|[T\s，])([01]?\d|2[0-3]):([0-5]\d)(?:[:：]\d{2})?(?:Z)?(?:$|[\s，])/u);
+  const clock = match ? { match: match[0], minute: Number(match[1]) * 60 + Number(match[2]), clock: `${match[1].padStart(2, '0')}:${match[2]}` } : null;
+  const dateText = clock ? raw.replace(clock.match, ' ').trim() : raw;
   const date = !dateText && clock && anchor?.date ? { ...anchor } : projectDateSource(dateText, anchor);
-  return { ...date, raw: raw || date.raw, minute: clock ? Number(clock[1]) * 60 + Number(clock[2]) : null,
-    clock: clock ? `${clock[1].padStart(2, '0')}:${clock[2]}` : null };
+  return { ...date, raw: raw || date.raw, minute: clock?.minute ?? null, clock: clock?.clock ?? null };
 }
 // Adapted from cn-date.js's stateless number parsing; it has no host date dependency.
 const CN_DIGITS = '零〇一二两兩三四五六七八九壹贰貳叁參叄肆伍陆陸柒捌玖';
 const CN_NUMBER = `(?:元|[0-9${CN_DIGITS}十拾百佰千仟廿卄卅卌]+)`;
+const PERIOD_TEXT = `(?:(?![0-9${CN_DIGITS}十拾百佰千仟廿卄卅卌初月日号號])\\p{L}){1,12}?`;
 const RELATIVE_DATE_WORDS = new Set(['今天', '当日', '当天', '今日', '昨天', '昨日', '前一天', '前天', '前日', '明天', '明日', '次日', '翌日', '后天', '後天', '去年', '今年', '明年', '前年', '后年', '後年']);
 const CN_VALUES = Object.fromEntries([...CN_DIGITS].map((char, index) => [char, [0,0,1,2,2,2,3,4,5,6,7,8,9,1,2,2,3,3,3,4,5,6,6,7,8,9][index]]));
 function cnNumber(value) {
@@ -75,6 +103,19 @@ function cnNumber(value) {
   return total + (digit ?? 0);
 }
 const normalizeDateDigits = value => value.replace(/[０-９]/gu, char => String(char.charCodeAt(0) - 0xFF10)).replace(/：/gu, ':');
+function splitTrailingParentheticals(value) {
+  let body = value;
+  const annotations = [];
+  const suffix = /(?:\([^()（）]*\)|（[^()（）]*）)\s*$/u;
+  while (true) {
+    const match = body.match(suffix);
+    if (!match) break;
+    const annotation = match[0].trim();
+    annotations.unshift(annotation.slice(1, -1));
+    body = body.slice(0, match.index).trimEnd();
+  }
+  return { body, annotations };
+}
 
 // Old observations gain a calculation/input view; their stored objects and keys stay intact.
 export function effectiveTime(value) {
@@ -83,11 +124,19 @@ export function effectiveTime(value) {
 export function projectTime(value, anchor = null, { allowShortGregorianYear = false } = {}) {
   const raw = text(value, 500), normalized = normalizeDateDigits(raw);
   anchor = effectiveTime(anchor);
-  const clock = normalized.match(/(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?:[:：]\d{2})?(?:Z)?(?=$|[\s，])/u);
-  const dateText = clock ? normalized.slice(0, clock.index).trim().replace(/[T，]$/u, '').trim() : normalized;
+  const { body, annotations } = splitTrailingParentheticals(normalized);
+  if (isTemporalRange(body)) return unknownProjectedTime(raw);
+  const clock = parseClock(body);
+  const dateText = clock ? body.replace(clock.match, ' ').trim().replace(/[T，]$/u, '').trim() : body;
   const date = !dateText && clock && anchor?.date ? { ...anchor } : flexibleDate(dateText, anchor, { allowShortGregorianYear });
-  return { ...date, raw: raw || date.raw, minute: clock ? Number(clock[1]) * 60 + Number(clock[2]) : null,
-    clock: clock ? `${clock[1].padStart(2, '0')}:${clock[2]}` : null };
+  const dateConflict = date.date && annotations.some(annotation => {
+    const note = normalizeDateDigits(annotation);
+    const noteClock = parseClock(note);
+    const noteDate = flexibleDate(noteClock ? note.replace(noteClock.match, ' ').trim() : note, anchor, { allowShortGregorianYear });
+    return Boolean(noteDate.date) && noteDate.date !== date.date;
+  });
+  if (dateConflict) return { ...unknownProjectedTime(raw), minute: clock?.minute ?? null, clock: clock?.clock ?? null };
+  return { ...date, raw: raw || date.raw, minute: clock?.minute ?? null, clock: clock?.clock ?? null };
 }
 export function isRelativeStoryTime(value) {
   const raw = text(typeof value === 'string' ? value : value?.raw, 500);
@@ -160,6 +209,21 @@ function flexibleDate(raw, anchor, options = {}) {
     if (!Number.isInteger(monthDay) || monthDay < 1) return unknown();
     return { raw, date: `${era}年${monthName}${monthDay}日`, day: null, year: null, month,
       monthDay, yearIdentityKnown: true, monthIdentity: JSON.stringify([era, null, monthName]) };
+  }
+  const namedPeriod = dateText.match(new RegExp(`^([\\p{L}]*?)(${CN_NUMBER})\\s*年\\s*(${PERIOD_TEXT})\\s*(?:初(${CN_NUMBER})(?:日|号|號)?|(${CN_NUMBER})(?:日|号|號))$`, 'u'));
+  if (namedPeriod) {
+    const [, era, yearText, period, initialDay, numericDay] = namedPeriod;
+    const year = cnNumber(yearText), monthDay = cnNumber(initialDay ?? numericDay);
+    if (!Number.isInteger(year) || year < 1 || !Number.isInteger(monthDay) || monthDay < 1) return unknown();
+    return { raw, date: `${era}${year}年${period}${monthDay}日`, day: null, year, month: null, monthDay,
+      yearIdentityKnown: true, monthIdentity: JSON.stringify([era, year, period]) };
+  }
+  const yearlessNamedPeriod = dateText.match(new RegExp(`^(${PERIOD_TEXT})\\s*(?:初(${CN_NUMBER})(?:日|号|號)?|(${CN_NUMBER})(?:日|号|號))$`, 'u'));
+  if (yearlessNamedPeriod) {
+    const [, period, initialDay, numericDay] = yearlessNamedPeriod, monthDay = cnNumber(initialDay ?? numericDay);
+    if (!Number.isInteger(monthDay) || monthDay < 1) return unknown();
+    return { raw, date: `${period}${monthDay}日`, day: null, year: null, month: null, monthDay,
+      yearIdentityKnown: false, monthIdentity: JSON.stringify(['', null, period]) };
   }
   const match = dateText.match(new RegExp(`^(?:([\\p{L}]*?)(${CN_NUMBER})\\s*年\\s*)?(闰|閏)?(${CN_NUMBER}|正|冬|腊|臘|[\\p{L}]{1,12}?)?\\s*月\\s*(?:初)?(${CN_NUMBER})(?:日|号)?$`, 'u'));
   const ordinal = dateText.match(new RegExp(`^(?:([\\p{L}]*?)(${CN_NUMBER})\\s*年\\s*)?(闰|閏)?(${CN_NUMBER}|正|冬|腊|臘|[\\p{L}]{1,12}?)?\\s*月\\s*第(${CN_NUMBER})(?:个|個)?(星期|周)([一二三四五六日天])$`, 'u'));
@@ -608,7 +672,7 @@ ${TIME_MERGE_CONTRACT}`;
 
 export async function compileTimeResponse(response, prepared, batches = []) {
   let data = response?.jsonData ?? response?.textData ?? response;
-  if (typeof data === 'string') data = JSON.parse(data.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, ''));
+  if (typeof data === 'string') data = parseJsonOutput(data, { finishReason: response?.taskMetadata?.finishReason });
   if (!data || !Array.isArray(data.changes) || data.changes.length > 40 || data.merges !== undefined && (!Array.isArray(data.merges) || data.merges.length > 40)) throw fail('时间事项结果格式无效。');
   const sourceObservations = prepared.sourceObservations ?? prepared.request.observations;
   const sources = new Map(sourceObservations.map(item => [item.sourceKey, item]));

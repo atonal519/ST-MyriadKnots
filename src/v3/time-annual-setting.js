@@ -1,3 +1,5 @@
+import { parseJsonOutput } from '../compact-api-client.js';
+
 const clean = (value, maximum = 4000) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, maximum);
 const ANNUAL_WORDS = /生日|诞辰|誕辰|忌日|周年|週年|纪念日|紀念日|每年|每逢|年年/u;
 const DATE_CONTEXT = /(?:年|月|日|号|號|初[一二三四五六七八九十]|\d{1,2}[/.~-]\d{1,2})/u;
@@ -53,7 +55,7 @@ function ordinaryMonthDay(value) {
 
 export function compileAnnualSettingResponse(response, prepared) {
   let data = response?.jsonData ?? response?.textData ?? response;
-  if (typeof data === 'string') data = JSON.parse(data.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, ''));
+  if (typeof data === 'string') data = parseJsonOutput(data, { finishReason: response?.taskMetadata?.finishReason });
   if (!data || !Array.isArray(data.sources)) throw new Error('年度设定结果格式无效。');
   const byId = new Map(), duplicated = new Set();
   for (const row of data.sources) {

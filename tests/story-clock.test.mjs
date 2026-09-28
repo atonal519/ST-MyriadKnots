@@ -13,6 +13,7 @@ import {
   parseSharedStoryClock,
   parseStoryClockEvidence,
   parseStoryClockReference,
+  resolveStoryClock,
   storyClockSignature,
 } from '../src/story-clock.js';
 
@@ -84,11 +85,32 @@ test('同一前缀按标签顺序逐段配对，保留完整区间且不猜悬�
     pair('myknots', '10月30日 | weekday=周五 | time=19:30', '10月30日 | weekday=周五 | time=19:40'),
   ].join('正文'));
   assert.deepEqual(four.pairs.map(item => [item.startMeta.time, item.endMeta.time]), [['15:40', '16:15'], ['16:30', '17:00'], ['19:00', '19:15'], ['19:30', '19:40']]);
+  assert.equal(four.endMeta.time, '19:40', '本楼当前时钟使用最后一对完整标签的结束时间');
+  assert.equal(resolveStoryClock(`${pair('QQJ', '10月30日 | weekday=周五 | time=12:45', '10月30日 | weekday=周五 | time=13:10')}${pair('QQJ', '10月30日 | weekday=周五 | time=14:30', '10月30日 | weekday=周五 | time=14:50')}`).text, '10月30日 14:50');
 
   const startStartEnd = parseSharedStoryClock('<!-- SDC-start | date=10月30日 | weekday=周五 | time=10:00 --><!-- SDC-start | date=10月30日 | weekday=周五 | time=10:10 --><!-- SDC-end | date=10月30日 | weekday=周五 | time=10:20 -->');
   assert.deepEqual(startStartEnd.pairs.map(item => [item.startMeta.time, item.endMeta.time]), [['10:10', '10:20']]);
   assert.equal(parseSharedStoryClock('<!-- SDC-end | date=10月30日 | weekday=周五 | time=10:20 -->').pairs.length, 0);
   assert.equal(parseSharedStoryClock('<!-- SDC-end | date=10月30日 | weekday=周五 | time=10:20 --><!-- SDC-start | date=10月30日 | weekday=周五 | time=10:30 -->').pairs.length, 0);
+});
+
+test('完整戳并存时保留共同字段，残缺高优先戳回退真实 BBS 标签', () => {
+  const conflict = parseSharedStoryClock(`${pair('SDC', '2026年5月10日 | weekday=周日 | time=09:00', '2026年5月10日 | weekday=周日 | time=10:00')}\n${pair('QQJ', '2026年5月10日 | weekday=周日 | time=09:00', '2026年5月11日 | weekday=周一 | time=11:00')}`);
+  assert.equal(conflict.ambiguous, true);
+  assert.equal(conflict.endMeta.date, null, '冲突日期不得暗选');
+  assert.equal(conflict.endMeta.time, null, '冲突钟点不得暗选');
+  assert.equal(conflict.startMeta.time, '09:00', '共同确认部分仍可保留');
+  const withBbs = `${pair('SDC', '2026年5月10日 | weekday=周日 | time=09:00', '2026年5月10日 | weekday=周日 | time=10:00')}${pair('QQJ', '2026年5月10日 | weekday=周日 | time=09:00', '2026年5月11日 | weekday=周一 | time=11:00')}<bbs_start>2026年5月12日 12:00</bbs_start><bbs_end>2026年5月12日 13:00</bbs_end>`;
+  assert.equal(resolveStoryClock(withBbs).status, 'ambiguous', '高层完整戳冲突不能被 BBS 静默覆盖');
+  const fallback = parseStoryClockEvidence(`<!-- SDC-start | date=2026年5月10日 -->正文<bbs_start>2026年5月11日 12:30</bbs_start><bbs_end>2026年5月11日 13:00</bbs_end>`);
+  assert.equal(fallback.namespace, 'tag:bbs_start,bbs_end');
+  assert.match(fallback.lastReferenceText, /13:00/u);
+  assert.equal(parseClockFields('date=2026-02-30 | weekday=周一 | time=12:00').complete, false);
+  assert.equal(parseClockFields('date=2026年5月10日 | weekday=周日 | time=99:99').complete, false);
+  assert.equal(parseClockFields('date=2026年5月10日 | weekday=周日 | time=25:7').complete, false);
+  assert.equal(parseStoryClockEvidence('<bbs_start>2026年5月11日 12:30</bbs_start><bbs_end>2026年5月11日 13:00</bbs_end><!-- SDC-start | date=2026年5月10日 | weekday=周日 | time=99:99 --><!-- SDC-end | date=2026年5月10日 | weekday=周日 | time=10:00 -->').namespace, 'tag:bbs_start,bbs_end');
+  assert.equal(parseStoryClockEvidence('<bbs_start>2026年5月11日 12:30</bbs_start><bbs_end>2026年5月11日 13:00</bbs_end><!-- SDC-start | date=2026年5月10日 | weekday=周日 | time=25:7 --><!-- SDC-end | date=2026年5月10日 | weekday=周日 | time=10:00 -->').namespace, 'tag:bbs_start,bbs_end');
+  assert.equal(parseClockFields('date=10月4日 | weekday=周二 | time=辰时').complete, true, '非数字架空时间保持可用');
 });
 
 test('可配置时间参考标签保留完整语义与原文顺序，标准时间戳仍优先', () => {

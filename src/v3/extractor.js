@@ -8,6 +8,8 @@ import { sanitizeDiagnosticValue, sanitizeTaskMetadata } from './safe-metadata.j
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey, normalizeIdentityProjection, resolveIdentityEntityId } from './entity-identity.js';
 import { compileQianshiDelta } from './qianshi-domain.js';
+import { readMemoryTagBlocks, stripMemoryTagBlocks } from '../memory-content-sanitizer.js';
+import { projectTime } from './time-engine.js';
 
 export const EXTRACTOR_SCHEMA_VERSION = 3;
 export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-24';
@@ -1155,13 +1157,112 @@ export async function normalizeExtractorResponse(options) {
   return Object.freeze({ ...withQianshi, memory, storyClockSource: clock?.namespace ?? null });
 }
 
-export function inferCanonicalCurrentTime(canonicalContent) {
-  const opening = String(canonicalContent ?? '').slice(0, 400);
-  const explicitPattern = '(?:\\d{2,4}年)?\\d{1,2}月\\d{1,2}日(?:\\s*(?:周|星期)[一二三四五六日天])?(?:\\s*(?:上午|下午|晚上|凌晨)?\\d{1,2}[：:]\\d{2})?|(?:上午|下午|晚上|凌晨)?\\d{1,2}[：:]\\d{2}';
+export function inferCanonicalCurrentTime(canonicalContent, { allowOpeningFallback = true } = {}) {
+  const source = String(canonicalContent ?? '');
+  const safeSource = source.replace(/<!--[\s\S]*?-->/gu, ' ');
+  const datePattern = '(?:\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2}|(?:(?<![\\p{L}\\p{N}])|(?<=[至到]))(?:\\d{2,4}年\\s*)?\\d{1,2}月\\s*\\d{1,2}日|(?:(?<![\\p{L}\\p{N}])|(?<=[至到]))(?:[\\p{L}]{1,12})?\\d{1,4}年\\s*(?:(?![0-9零〇一二两兩三四五六七八九壹贰貳叁參叄肆伍陆陸柒捌玖十拾百佰千仟廿卄卅卌初月日号號])\\p{L}){1,12}?\\s*(?:初)?[0-9零〇一二两兩三四五六七八九十拾廿卄卅卌]+日)';
+  const clockPattern = '(?:(?:上午|下午|中午|正午|晚上|凌晨|清晨|早晨|早上|夜里|夜间|夜間|午夜|AM|PM)?\\s*\\d{1,2}[：:]\\d{2}\\s*(?:AM|PM)?)';
+  const rangeSeparator = '(?:→|->|⟶|至|到|[~～—–－]|\\s-\\s|(?<=\\d)-(?=\\d))';
+  const explicitDate = `(?:${datePattern})(?:\\s*(?:周|星期)[一二三四五六日天])?`;
+  const explicitPattern = `(?:${explicitDate})(?:\\s*${clockPattern})?(?:\\s*${rangeSeparator}\\s*(?:${explicitDate}|${clockPattern}))?|${clockPattern}(?:\\s*${rangeSeparator}\\s*${clockPattern})?`;
   const relativePattern = '(?:次日|翌日|第二天|当天|当晚|翌晨|随后|片刻后|不久后|[一二三四五六七八九十百两\\d]+(?:分钟|小时|天|周|个月|年)(?:前|后))';
-  const explicit = new RegExp(`^\\s*(?:【[^】]{0,40}】\\s*)?(?:(${explicitPattern})|(?:故事时间|当前时间|日期)\\s*[：:]\\s*(${explicitPattern}))`, 'u').exec(opening)?.slice(1).find(Boolean) ?? '';
-  if (explicit) return Object.freeze({ text: explicit, kind: 'explicit' });
-  const relative = new RegExp(`^\\s*(?:【[^】]{0,40}】\\s*)?(${relativePattern})`, 'u').exec(opening)?.[1] ?? '';
+  const timeValue = new RegExp(explicitPattern, 'u');
+  const dateValue = new RegExp(datePattern, 'iu');
+  const hasDate = value => {
+    const date = dateValue.exec(String(value ?? ''))?.[0];
+    return Boolean(date && projectTime(date).date);
+  };
+  const isClock = value => {
+    const normalized = String(value).replace(/[０-９]/gu, char => String(char.charCodeAt(0) - 0xFF10)).replace(/：/gu, ':').trim();
+    const match = /^(上午|下午|中午|正午|晚上|凌晨|清晨|早晨|早上|夜里|夜间|夜間|午夜|AM|PM)?\s*(\d{1,2}):(\d{2})\s*(AM|PM)?$/iu.exec(normalized);
+    if (!match) return false;
+    const englishMeridiem = [match[1], match[4]].some(part => /^(?:AM|PM)$/iu.test(part ?? ''));
+    const hour = Number(match[2]), minute = Number(match[3]);
+    return minute <= 59 && (englishMeridiem ? hour >= 1 && hour <= 12 : hour <= 23);
+  };
+  const parts = value => {
+    const dates = [...String(value).matchAll(new RegExp(datePattern, 'giu'))].map(match => match[0].trim());
+    const rawClocks = [...String(value).matchAll(new RegExp(clockPattern, 'giu'))].map(match => match[0].trim());
+    const clocks = rawClocks.filter(isClock);
+    const weekdays = [...String(value).matchAll(/(?:周|星期)[一二三四五六日天]/gu)].map(match => match[0]);
+    if (dates.length === 1 && !hasDate(dates[0])) return null;
+    if (dates.length > 1 || clocks.length > 1 || weekdays.length > 1) return { ambiguous: true, signature: JSON.stringify([dates, clocks, weekdays]) };
+    if (!dates.length && !clocks.length) return null;
+    return { text: [dates[0], weekdays[0], clocks[0]].filter(Boolean).join(' '), kind: 'explicit' };
+  };
+  const candidates = [];
+  const add = (candidate, priority, depth = 0) => { if (candidate) candidates.push({ ...candidate, priority, depth }); };
+  const isStatusName = name => /(?:^|[_-])status(?:$|[_-])/iu.test(name) || /^(?:statusbar|story_status)$/iu.test(name);
+  const excluded = /^(?:chat_history|status_history|history|events?|timeline|records?|details|think|thinking|snow|reasoning|archive|log|due|deadline)$/iu;
+  const excludedTags = ['chat_history', 'status_history', 'history', 'events', 'event', 'timeline', 'records', 'details', 'think', 'thinking', 'snow', 'reasoning', 'archive', 'log', 'due', 'deadline'];
+  const blocks = readMemoryTagBlocks(safeSource).filter(block => block.closed
+    && !excluded.test(block.name) && !block.ancestors.some(name => excluded.test(name)));
+  for (const block of blocks) {
+    const plain = stripMemoryTagBlocks(block.rawContent, excludedTags).replace(/<[^>]*>/gu, ' ').replace(/\s+/gu, ' ').trim();
+    const direct = block.directText.replace(/\s+/gu, ' ').trim();
+    for (const match of direct.matchAll(/(?:故事时间|当前时间|现在时间|本楼时间)\s*[：:=]\s*([^\r\n]+)/giu)) {
+      const candidate = parts(match[1]);
+      if (candidate && (candidate.ambiguous ? hasDate(match[1]) : hasDate(candidate.text))) add(candidate, 5, block.depth);
+    }
+    const statusContainer = isStatusName(block.name) || block.ancestors.some(isStatusName);
+    for (const match of direct.matchAll(/\bTime\s*[:：]\s*([^\]\r\n]*)/giu)) {
+      const candidate = parts(match[1]);
+      if (candidate && (candidate.ambiguous ? hasDate(match[1]) : hasDate(candidate.text))) add(candidate, statusContainer ? 4 : 3, block.depth);
+    }
+    const childFields = readMemoryTagBlocks(block.rawContent).filter(field => field.name === 'date' || field.name === 'time')
+      .filter(field => field.closed && !field.ancestors.some(name => excluded.test(name)));
+    const fieldGroups = new Map();
+    for (const field of childFields) {
+      const parentKey = field.parentRange ? field.parentRange.join(':') : 'root';
+      const group = fieldGroups.get(parentKey) ?? { date: [], time: [] };
+      group[field.name].push(field);
+      fieldGroups.set(parentKey, group);
+    }
+    for (const group of fieldGroups.values()) {
+      if (group.date.length > 1 || group.time.length > 1) add({ ambiguous: true, signature: JSON.stringify([group.date.length, group.time.length]) }, 4, block.depth);
+      else if (group.date.length === 1 && group.time.length === 1) {
+        const dateText = group.date[0].rawContent.replace(/<[^>]*>/gu, ' ').trim();
+        const clockText = group.time[0].rawContent.replace(/<[^>]*>/gu, ' ').trim();
+        add(parts(`${dateText} ${clockText}`), 4, block.depth);
+      }
+    }
+    const currentHeadings = [...plain.matchAll(/当前状态|本楼状态|此刻状态/gu)];
+    for (const heading of currentHeadings) {
+      const current = plain.slice(heading.index + heading[0].length, heading.index + heading[0].length + 240);
+      const structured = parts(current), explicit = current.match(timeValue)?.[0];
+      const candidate = structured ?? (explicit ? { text: explicit.trim(), kind: 'explicit' } : null);
+      if (candidate && (candidate.ambiguous ? hasDate(current) : hasDate(candidate.text))) add(candidate, 4, block.depth);
+    }
+    const semanticContainer = /^(?:time|clock|date|status|statusbar|status_bar|story_status|时间|状态|状态栏|时间栏)$/iu.test(block.name) || statusContainer;
+    const values = [...plain.matchAll(new RegExp(explicitPattern, 'gu'))].map(match => match[0]);
+    const containsHistory = /历史|回忆|过去|此前|之前|旧记录|截止|到期|deadline|due|event|事件|Date\s*\/\s*Event/iu.test(plain);
+    const uniqueValue = values.length === 1 ? parts(values[0]) : null;
+    const uniqueValueHasDate = uniqueValue?.ambiguous ? hasDate(values[0]) : hasDate(uniqueValue?.text);
+    if (semanticContainer && !containsHistory && uniqueValue && uniqueValueHasDate) add(uniqueValue, 2, block.depth);
+    const sceneCluster = /(?:当前场景|本楼场景|场景|地点|在场人物)/u.test(plain);
+    if (!semanticContainer && sceneCluster && !containsHistory && uniqueValue && uniqueValueHasDate) add(uniqueValue, 2, block.depth);
+  }
+  const opening = safeSource.split(/\r?\n/u, 1)[0].slice(0, 400);
+  const openingCandidate = parts(opening);
+  const openingDateIndex = opening.search(dateValue);
+  const openingPrefix = openingDateIndex < 0 ? '' : opening.slice(0, openingDateIndex).trim();
+  const openingPrefixValid = !openingPrefix || /^[\p{P}\p{S}\s]*$/u.test(openingPrefix)
+    || /^(?:(?:当前|本楼)?(?:场景|地点|日期|时间)|Time)\s*[:：=]?\s*$/iu.test(openingPrefix);
+  if (openingCandidate && openingDateIndex >= 0 && openingPrefixValid) add(openingCandidate, 1, 0);
+  if (candidates.length) {
+    const priority = Math.max(...candidates.map(candidate => candidate.priority));
+    const priorityWinners = candidates.filter(candidate => candidate.priority === priority);
+    const depth = Math.max(...priorityWinners.map(candidate => candidate.depth));
+    const winners = priorityWinners.filter(candidate => candidate.depth === depth);
+    const texts = [...new Set(winners.filter(candidate => candidate.text).map(candidate => candidate.text.replace(/\s+/gu, ' ').trim()))];
+    if (winners.some(candidate => candidate.ambiguous) || texts.length > 1) return Object.freeze({ kind: 'ambiguous', signature: JSON.stringify(winners.map(candidate => candidate.signature ?? candidate.text ?? '').sort()) });
+    if (texts.length === 1) return Object.freeze({ text: texts[0], kind: 'explicit' });
+  }
+  if (!allowOpeningFallback) return null;
+  const openingFallback = safeSource.slice(0, 400);
+  const explicit = new RegExp(`^\\s*(?:【[^】]{0,40}】\\s*)?(?:日期\\s*[：:]\\s*)?(${explicitPattern})`, 'iu').exec(openingFallback)?.[1] ?? '';
+  if (explicit && hasDate(explicit)) return Object.freeze({ text: explicit, kind: 'explicit' });
+  const relative = new RegExp(`^\\s*(?:【[^】]{0,40}】\\s*)?(${relativePattern})`, 'u').exec(openingFallback)?.[1] ?? '';
   return relative ? Object.freeze({ text: relative, kind: 'relative' }) : null;
 }
 

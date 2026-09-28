@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { projectTime, projectTimeSource, effectiveTime, timeDistance, timeHours, shiftTime, bodyProjectionDue, validTimeProjection, prepareTimeBatch, compileTimeResponse, timeFingerprint, timeBodyReads, timeRecallProjection } from '../src/v3/time-engine.js';
-import { readTimeBody } from '../src/v3/time-body.js';
+import { readTimeBody, planTimeBody } from '../src/v3/time-body.js';
 import { scanAssistantCandidates, createFloorRecord } from '../src/v3/foundation-domain.js';
 
 const oldTime = raw => ({ raw, date:null, day:null, year:null, month:null, monthDay:null, minute:null, clock:null });
@@ -79,20 +79,47 @@ test('旧date:null在计算/有效推测/模型DTO/编译/召回获得统一视�
 });
 
 test('时间标签变动仍保留已落盘覆盖', async () => {
-  const raws=['七月十七10:30','次日 11:30','2026-07-19 20:30','21:30'];
+  const raws=['七月十七10:30','次日 11:30','2026-07-19 20:30','21:30','2026年5月10日至2026年5月12日'];
   const chat=raws.flatMap(raw=>[{is_user:false,mes:`<Ti>${raw}</Ti>甲仍有不适。`},{is_user:true,mes:'继续'}]);
   const candidates=await scanAssistantCandidates(chat,{chatId:'chat'});
   const reachable={root:{chatId:'chat'},floors:candidates.map((candidate,index)=>createFloorRecord({candidate,id:`floor${index}`,chatId:'chat',narrativeGeneration:'gen'})),floorMemories:[]};
   const source=await readTimeBody(reachable,{chat},{storyClockReferenceTags:'Ti'});
   const expected=[await timeFingerprint([null,null,raws[0]]),await timeFingerprint([null,'11:30',raws[1]]),await timeFingerprint(['2026-07-19','20:30',null]),await timeFingerprint(['2026-07-19','21:30',null])];
+  expected.push('sha256:4a2da73f7bcb96dbc8db7981a915650497584d75ad6db4e2048503b34b2444ba');
   assert.deepEqual(source.bodyFloors.map(body=>body.timeSourceFingerprint),expected);
   assert.equal(source.bodyFloors[0].observationTime.monthDay,17); assert.equal(source.bodyFloors[1].observationTime.monthDay,18);
+  assert.equal(projectTimeSource(raws[0]).clock,null,'来源指纹维持旧规则，不把紧邻日期数字的时钟并入旧哈希');
   const body=source.bodyFloors[0], batch={cutoffFloorId:body.floorId,dependencies:[],sourceKeys:[],changes:[],bodyReads:[{floorId:body.floorId,canonicalFingerprint:body.canonicalFingerprint,timeSourceFingerprint:expected[0],from:0,to:body.content.length,totalCharacters:body.content.length}]};
   assert.equal(timeBodyReads([batch],source).get(body.floorId).length,1);
+  assert.equal(planTimeBody(source,[batch],{history:true}).groups.flat().some(row=>row.floorId===body.floorId),false,'旧完整读取覆盖不因哈希算法升级重读');
+  const partial={...batch,bodyReads:[{...batch.bodyReads[0],to:Math.floor(body.content.length/2)}]};
+  const partialPlan=planTimeBody(source,[partial],{history:true}).groups.flat().filter(row=>row.floorId===body.floorId);
+  assert.equal(partialPlan.length,1); assert.equal(partialPlan[0].from,partial.bodyReads[0].to,'旧部分覆盖从原 to 续读');
   chat[0].mes=chat[0].mes.replace(raws[0],'七月十八10:30');
   const changed=await readTimeBody(reachable,{chat},{storyClockReferenceTags:'Ti'});
   assert.notEqual(changed.bodyFloors[0].timeSourceFingerprint,expected[0]);
   assert.deepEqual(timeBodyReads([batch],changed).get(body.floorId),[batch.bodyReads[0]],'时间标签变化不撤销保存时的已读区间');
+  assert.equal(planTimeBody(changed,[batch],{history:true}).groups.flat().find(row=>row.floorId===body.floorId)?.from,0,'正文时间值真实变化后开启新正文版本');
+
+  const rangeBody=source.bodyFloors[4], rangeBatch={cutoffFloorId:rangeBody.floorId,dependencies:[],sourceKeys:[],changes:[],bodyReads:[{floorId:rangeBody.floorId,canonicalFingerprint:rangeBody.canonicalFingerprint,timeSourceFingerprint:expected[4],from:0,to:rangeBody.content.length,totalCharacters:rangeBody.content.length}]};
+  assert.equal(projectTimeSource(raws[4]).date,'2026-05-10','v0.5.7 来源视图仍取日期范围首日');
+  assert.equal(planTimeBody(source,[rangeBatch],{history:true}).groups.flat().some(row=>row.floorId===rangeBody.floorId),false,'完整旧范围指纹视为已读');
+  const rangePartial={...rangeBatch,bodyReads:[{...rangeBatch.bodyReads[0],to:Math.floor(rangeBody.content.length/2)}]};
+  const rangePartialPlan=planTimeBody(source,[rangePartial],{history:true}).groups.flat().find(row=>row.floorId===rangeBody.floorId);
+  assert.equal(rangePartialPlan?.from,rangePartial.bodyReads[0].to,'部分旧范围覆盖从原位置续读');
+
+  const manualFloor=reachable.floors[2], manualReachable={...reachable,
+    floorMemories:[{id:'manual-time',floorId:manualFloor.id,recordStatus:'active',chronology:[{time:{kind:'explicit',sourceText:'2026-07-19 20:30',normalized:null}}]}],
+    run:{diagnostics:{floorProvenance:{[manualFloor.id]:{timeEdited:true}}}},
+  };
+  const manualSource=await readTimeBody(manualReachable,{chat},{storyClockReferenceTags:'Ti'}), manualBody=manualSource.bodyFloors[2];
+  assert.equal(manualBody.timeSourceFingerprint,expected[2],'人工时间与原戳相同时沿用旧哈希视图');
+  const manualBatch={cutoffFloorId:manualFloor.id,dependencies:[],sourceKeys:[],changes:[],bodyReads:[{floorId:manualFloor.id,canonicalFingerprint:manualBody.canonicalFingerprint,timeSourceFingerprint:expected[2],from:0,to:manualBody.content.length,totalCharacters:manualBody.content.length}]};
+  assert.equal(planTimeBody(manualSource,[manualBatch],{history:true}).groups.flat().some(row=>row.floorId===manualFloor.id),false,'手动 history 识别旧完整覆盖');
+  manualReachable.floorMemories[0].chronology[0].time.sourceText='2026-07-20 21:30';
+  const manualChanged=await readTimeBody(manualReachable,{chat},{storyClockReferenceTags:'Ti'});
+  assert.notEqual(manualChanged.bodyFloors[2].timeSourceFingerprint,expected[2],'只改人工时间值也开启新正文版本');
+  assert.equal(planTimeBody(manualChanged,[manualBatch],{history:true}).groups.flat().find(row=>row.floorId===manualFloor.id)?.from,0);
   assert.equal(projectTimeSource(raws[0]).date,null);
 });
 
@@ -112,4 +139,25 @@ test('末尾星期注记保汉字日期/纪年/闰月身份，失败时不退成
   assert.equal(projectTime('星际007年3月5日 原因未知').date,null);
   assert.equal(projectTime('闰3月5日 原因未知').date,null);
   assert.equal(projectTimeSource('星际007年3月5日 周三').date,'3月5日（年份未明）','来源专用旧算法不修改');
+});
+
+test('末尾成对括注只作为计算视图，钟点不从括注借入且冲突日期不盲取', () => {
+  const samples = [
+    ['1年夏1日 周一 18:00(匿名说明)', '1年夏1日', 18 * 60],
+    ['1年夏1日 周一 18:00（匿名说明）', '1年夏1日', 18 * 60],
+    ['1年夏1日 周一 (18:00)', '1年夏1日', null],
+    ['1年夏1日 周一（约18:00）', '1年夏1日', null],
+    ['1年夏1日 周一（18:00-18:10）', '1年夏1日', null],
+    ['2026年7月17日 周五 18:00（补充说明）', '2026-07-17', 18 * 60],
+    ['2026年7月17日 周五（2026年7月18日）', null, null],
+  ];
+  for (const [raw, date, minute] of samples) {
+    const time = projectTime(raw);
+    assert.equal(time.raw, raw, '完整原文保留');
+    assert.equal(time.date, date, raw);
+    assert.equal(time.minute, minute, raw);
+  }
+  assert.equal(projectTime('2026年7月17日 18:00').date, '2026-07-17', '无括注公历仍可解析');
+  assert.equal(projectTime('1年夏1日 周一').monthDay, 1, '无括注中文日号仍可解析');
+  assert.equal(projectTimeSource('2026年7月17日 18:00(匿名说明)').minute, null, '旧来源投影合同不变');
 });

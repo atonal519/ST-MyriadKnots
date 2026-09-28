@@ -99,7 +99,8 @@ test('CHAT_CHANGED 初始化同角色副本时只继承实际前缀，保留摘�
       return { jsonData: { summary: `摘要-${content}`, people: [{ name: '裴晚生', presence: 'present' }] }, taskMetadata: { source: 'test', sourceLabel: '测试', model: 'mock' } };
     }
     cseCalls += 1;
-    return { jsonData: { subjects: [{ subject: '裴晚生', situational: [{ text: `源状态-${cseCalls}`, visibility: 'observable', reason: `第${cseCalls}楼正文` }] }] }, taskMetadata: { source: 'test', sourceLabel: '测试', model: 'mock' } };
+    const { trackedSubjects } = JSON.parse(options.taskMessages[0].content).payload;
+    return { jsonData: { subjects: trackedSubjects.map(({ name }) => ({ subject: name, situational: [{ text: `源状态-${cseCalls}`, visibility: 'observable', reason: `第${cseCalls}楼正文` }] })) }, taskMetadata: { source: 'test', sourceLabel: '测试', model: 'mock' } };
   };
   const sourceMemory = createV3MemoryRuntime({
     foundationRuntime: sourceFoundation, store: sourceStore, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask,

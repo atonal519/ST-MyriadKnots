@@ -1,15 +1,16 @@
 import { scanAssistantCandidates, selectAssistantMessage } from './foundation-domain.js';
 import { matchFloorCandidates } from './floor-binding.js';
-import { parseSharedStoryClock, parseStoryClockReference } from '../story-clock.js';
+import { resolveStoryClock } from '../story-clock.js';
 import { projectTime, projectTimeSource, storyTimes, timeFingerprint, timeBodyReads, createTimeBodyRequest, TIME_INPUT_TOKENS, TIME_BODY_AUXILIARY_TOKENS, TIME_SYSTEM_PROMPT } from './time-engine.js';
 import { inferCanonicalCurrentTime } from './extractor.js';
 import { estimateRecallTokens } from './recall-selector.js';
 import { normalizeStoryClockReferenceTags } from '../story-clock.js';
+import { stripMemoryTagBlocks } from '../memory-content-sanitizer.js';
 
 export async function clockContentFingerprint(rawContent, referenceTags = '') {
   const raw = String(rawContent ?? '');
   const clocks = [...raw.matchAll(/<!--\s*(?:QQJ|SDC|myknots)-(?:start|end)\b[\s\S]*?-->/giu)].map(match => match[0]);
-  const configured = new Set(normalizeStoryClockReferenceTags(referenceTags).map(name => name.toLocaleLowerCase('en-US')));
+  const configured = new Set([...normalizeStoryClockReferenceTags(referenceTags), 'bbs_start', 'bbs_end'].map(name => name.toLocaleLowerCase('en-US')));
   const open = new Map(), references = [];
   const tagPattern = /<\s*(\/?)\s*(\p{L}[\p{L}\p{N}_-]*~?)(?=[\s/>])[^>]*>/giu;
   for (const token of raw.matchAll(tagPattern)) {
@@ -27,29 +28,62 @@ export async function clockContentFingerprint(rawContent, referenceTags = '') {
   return timeFingerprint([clocks, references]);
 }
 
-// Recall only needs the current visible body clock and a short recent span. Keep
-// this path independent from the full body binding/hash pass used by time jobs.
-export function readRecentBodyStoryTimes(host, { storyClockReferenceTags = '', limit = 32 } = {}) {
-  const selected = [];
+function currentBodyClock(rawContent, canonicalContent, referenceTags) {
+  const timestamp = resolveStoryClock(rawContent, referenceTags);
+  if (timestamp && timestamp.status !== 'incomplete') return timestamp;
+  const statusSource = stripMemoryTagBlocks(rawContent, 'content');
+  const status = inferCanonicalCurrentTime(statusSource, { allowOpeningFallback: false });
+  if (status?.kind === 'ambiguous') return Object.freeze({ status: 'ambiguous', source: 'status', signature: status.signature ?? 'ambiguous-status-time' });
+  if (status?.text) return Object.freeze({ status: 'available', source: 'status', text: status.text, signature: JSON.stringify([status.kind, status.text]) });
+  const content = inferCanonicalCurrentTime(canonicalContent);
+  if (content?.text) return Object.freeze({ status: 'available', source: 'content', text: content.text, signature: JSON.stringify([content.kind, content.text]) });
+  return timestamp?.status === 'incomplete' ? null : timestamp;
+}
+
+// Recent clock reads scan only their selected tail; persisted floors stay whole
+// so the existing binder can reject ambiguous identity matches.
+export async function readRecentBodyStoryTimes(host, { reachable = null, sanitizerOptions = {}, storyClockReferenceTags = '', limit = 32 } = {}) {
   const chat = Array.isArray(host?.chat) ? host.chat : [];
-  for (let messageIndex = chat.length - 1; messageIndex >= 0 && selected.length < limit; messageIndex -= 1) {
-    const message = chat[messageIndex];
+  if (!(limit > 0)) return [];
+  let startIndex = chat.length, visibleCount = 0;
+  for (let index = chat.length - 1; index >= 0 && visibleCount < limit; index -= 1) {
+    const message = chat[index];
     if (message?.is_system === true || message?.is_hidden === true || message?.hidden === true) continue;
-    const assistant = selectAssistantMessage(message);
-    if (assistant?.rawContent) selected.push({ messageIndex, rawContent: assistant.rawContent });
+    if (selectAssistantMessage(message)?.rawContent) { startIndex = index; visibleCount += 1; }
   }
-  selected.reverse();
+  const candidates = (await scanAssistantCandidates(chat.slice(startIndex), { sanitizerOptions, chatId: reachable?.root?.chatId ?? '', captureRawContent: true }))
+    .map(candidate => ({ ...candidate, hostLocator: { ...candidate.hostLocator, messageIndex: candidate.hostLocator.messageIndex + startIndex } }));
+  const binding = matchFloorCandidates(reachable?.floors ?? [], candidates);
+  const memories = storyTimes(reachable?.floorMemories ?? [], reachable?.floors ?? []);
+  const provenance = reachable?.run?.diagnostics?.floorProvenance ?? {};
+  const visibleCandidates = candidates.map((candidate, index) => ({ candidate, match: binding.candidateMatches.get(index) }))
+    .filter(({ candidate }) => {
+      const message = chat[candidate.hostLocator.messageIndex];
+      return message && message.is_system !== true && message.is_hidden !== true && message.hidden !== true;
+    });
+  const selected = visibleCandidates.slice(-limit);
   const reliable = [];
   let previous = null;
-  for (const item of selected) {
-    const shared = parseSharedStoryClock(item.rawContent), reference = parseStoryClockReference(item.rawContent, storyClockReferenceTags);
-    const meta = shared?.endMeta ?? shared?.startMeta;
-    const raw = meta?.date ? `${meta.date} ${meta.time ?? ''}` : reference?.lastReferenceText ?? reference?.referenceText ?? inferCanonicalCurrentTime(item.rawContent)?.text ?? '';
-    if (!raw) continue;
-    const observationTime = projectTime(raw.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previous);
+  for (const { candidate, match } of selected) {
+    const messageIndex = candidate.hostLocator.messageIndex;
+    const floorId = match?.floor.id;
+    if (floorId && provenance[floorId]?.timeEdited === true) {
+      const observationTime = memories.get(floorId) ?? projectTime('');
+      previous = observationTime.date || Number.isInteger(observationTime.minute) ? observationTime : null;
+      reliable.push({ messageIndex, floorId, observationTime, manual: true });
+      continue;
+    }
+    const clock = currentBodyClock(candidate.rawContent, candidate.canonicalContent, storyClockReferenceTags);
+    if (!clock) continue;
+    if (clock.status === 'ambiguous') {
+      previous = null;
+      reliable.push({ messageIndex, floorId: floorId ?? null, observationTime: projectTime(''), ambiguous: true });
+      continue;
+    }
+    const observationTime = projectTime(clock.text.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previous);
     if (!observationTime.date && !Number.isInteger(observationTime.minute)) continue;
     previous = observationTime;
-    reliable.push({ messageIndex: item.messageIndex, observationTime });
+    reliable.push({ messageIndex, floorId: floorId ?? null, observationTime });
   }
   return reliable;
 }
@@ -59,21 +93,34 @@ export async function readTimeBody(reachable, host, { sanitizerOptions = {}, sto
   const candidates = await scanAssistantCandidates(host.chat ?? [], { sanitizerOptions, chatId: reachable.root.chatId, captureRawContent: true });
   const binding = matchFloorCandidates(reachable.floors ?? [], candidates);
   if (binding.issue) throw Object.assign(new Error('正文楼绑定不唯一，未完成检查。'), { code: 'QQJ_TIME_BINDING' });
-  const fallback = storyTimes(reachable.floorMemories ?? [], reachable.floors ?? []);
-  const sourceFallback = storyTimes(reachable.floorMemories ?? [], reachable.floors ?? [], projectTimeSource);
+  const manualTimes = storyTimes(reachable.floorMemories ?? [], reachable.floors ?? []);
+  const manualSourceTimes = storyTimes(reachable.floorMemories ?? [], reachable.floors ?? [], projectTimeSource);
+  const provenance = reachable.run?.diagnostics?.floorProvenance ?? {};
+  const manualTime = floorId => Boolean(floorId && provenance[floorId]?.timeEdited === true);
   const bodies = [], floors = [];
-  let previous = null, previousSource = null;
+  let previousHistory = null, previousVisible = null, previousHistorySource = null, previousVisibleSource = null;
   for (const [index, candidate] of candidates.entries()) {
     const match = binding.candidateMatches.get(index);
-    const shared = parseSharedStoryClock(candidate.rawContent), reference = parseStoryClockReference(candidate.rawContent, storyClockReferenceTags);
-    const meta = shared?.endMeta ?? shared?.startMeta;
-    const raw = meta?.date ? `${meta.date} ${meta.time ?? ''}` : reference?.lastReferenceText ?? reference?.referenceText ?? inferCanonicalCurrentTime(candidate.canonicalContent)?.text ?? '';
-    const time = raw ? projectTime(raw.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previous) : fallback.get(match?.floor.id) ?? projectTime('');
-    const sourceTime = raw ? projectTimeSource(raw.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previousSource) : sourceFallback.get(match?.floor.id) ?? projectTimeSource('');
-    previous = time; previousSource = sourceTime;
-    const timeSourceFingerprint = await timeFingerprint(raw ? [sourceTime.date, sourceTime.clock, sourceTime.date ? null : raw] : ['no-body-time']);
+    const message = host.chat?.[candidate.hostLocator?.messageIndex];
+    const visible = message && message.is_system !== true && message.is_hidden !== true && message.hidden !== true;
+    const previous = visible ? previousVisible : previousHistory;
+    const previousSource = visible ? previousVisibleSource : previousHistorySource;
+    const clock = currentBodyClock(candidate.rawContent, candidate.canonicalContent, storyClockReferenceTags);
+    const raw = clock?.text ?? '';
+    const manual = manualTime(match?.floor.id);
+    const ambiguous = !manual && clock?.status === 'ambiguous';
+    const time = manual ? manualTimes.get(match?.floor.id) ?? projectTime('')
+      : ambiguous ? projectTime('')
+        : raw ? projectTime(raw.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previous) : projectTime('');
+    const sourceTime = manual ? manualSourceTimes.get(match?.floor.id) ?? projectTimeSource('')
+      : ambiguous ? projectTimeSource('')
+        : raw ? projectTimeSource(raw.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previousSource) : projectTimeSource('');
+    previousHistory = time; previousHistorySource = sourceTime;
+    if (visible) { previousVisible = time; previousVisibleSource = sourceTime; }
+    const timeSourceFingerprint = await timeFingerprint(manual ? [sourceTime.date, sourceTime.clock, sourceTime.date ? null : sourceTime.raw]
+      : ambiguous ? ['ambiguous-body-time', clock.signature] : raw ? [sourceTime.date, sourceTime.clock, sourceTime.date ? null : raw] : ['no-body-time']);
     const clockFingerprint = await clockContentFingerprint(candidate.rawContent, storyClockReferenceTags);
-    const body = { stable: Boolean(candidate.stabilityProof), timeSourceKind: raw ? 'body' : 'summaryFallback', timeSourceFingerprint, floorId: match?.floor.id ?? null, assistantSeq: candidate.assistantSeq, canonicalFingerprint: candidate.canonicalFingerprint,
+    const body = { stable: Boolean(candidate.stabilityProof), timeSourceKind: manual ? 'manual' : raw || ambiguous ? 'body' : 'unknown', timeSourceFingerprint, floorId: match?.floor.id ?? null, assistantSeq: candidate.assistantSeq, canonicalFingerprint: candidate.canonicalFingerprint,
       rawFingerprint: candidate.rawFingerprint, clockContentFingerprint: clockFingerprint, rawContent: candidate.rawContent, hostLocator: candidate.hostLocator, content: candidate.canonicalContent, observationTime: time };
     bodies.push(body);
     if (match) floors.push({ ...match.floor, assistantSeq: candidate.assistantSeq, canonicalFingerprint: candidate.canonicalFingerprint, timeSourceFingerprint, content: candidate.canonicalContent });

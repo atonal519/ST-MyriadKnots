@@ -1,5 +1,5 @@
 import { estimateRecallTokens } from './recall-selector.js';
-import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdits, evaluateTimeBatches, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, storyTimes, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, timeDistance, timeHours, validTimeProjection, timeBodyReads, timeItemFailures } from './time-engine.js';
+import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdits, evaluateTimeBatches, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, timeDistance, timeHours, validTimeProjection, timeBodyReads, timeItemFailures } from './time-engine.js';
 import { projectRecallSource } from './recall-source.js';
 import { sanitizeTaskMetadata } from './safe-metadata.js';
 import { publicErrorMessage } from '../public-error.js';
@@ -188,20 +188,13 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     const { automaticFailure: _automaticFailure, automaticFailureMessage: _automaticFailureMessage, ...previous } = last;
     last = previous;
   };
-  const stableCurrentTime = (batches, source) => {
+  const stableCurrentTime = source => {
     const host = hostAdapter.snapshot();
     const currentBody = source.bodyFloors?.filter(body => {
       const message = host.chat?.[body.hostLocator?.messageIndex];
       return message && message.is_user !== true && message.is_system !== true && message.is_hidden !== true && message.hidden !== true;
     }).at(-1);
-    const modelBatch = currentBody && evaluateTimeBatches(batches, source).validBatches.findLast(batch => batch.cutoffFloorId === currentBody.floorId
-      && !batch.manualEdit && (batch.currentReview || batch.sourceKeys?.length || batch.bodyReads?.length));
-    const cutoffFloor = source.floors?.find(floor => floor.id === modelBatch?.cutoffFloorId);
-    const sameBody = currentBody?.floorId === modelBatch?.cutoffFloorId
-      || currentBody?.hostLocator && cutoffFloor?.hostLocator && JSON.stringify(currentBody.hostLocator) === JSON.stringify(cutoffFloor.hostLocator);
-    return currentBody && sameBody && modelBatch.currentTime
-      ? modelBatch.currentTime : currentBody?.observationTime
-        ?? (source.bodyTimes ?? storyTimes(source.floorMemories, source.floors)).get(source.floors.at(-1)?.id) ?? projectTime('');
+    return currentBody?.observationTime ?? projectTime('');
   };
   const hasClockContentChanges = (batches, source) => {
     const witnesses = new Map();
@@ -221,7 +214,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     return [...witnesses.values()];
   };
   function cacheItems(batches, source, annualRecords = []) {
-    const currentTime = stableCurrentTime(batches, source);
+    const currentTime = stableCurrentTime(source);
     clockContentChanged = hasClockContentChanges(batches, source);
     const reviewBatch = batches.findLast(batch => batch.currentReview);
     const reviewCurrent = reviewBatch && JSON.stringify(reviewBatch.currentTime) === JSON.stringify(currentTime);
@@ -778,14 +771,14 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       const cached = getReachable();
       if (cached?.root?.chatId !== source.chatId) return null;
       const reachable = await bodySource({ root: cached.root, floorMemories: memories,
-        floors: cached.floors, entities: [] });
+        floors: cached.floors, run: cached.run, entities: [] });
       const items = replayTimeBatches(stored.batches, reachable);
       const host = hostAdapter.snapshot();
       const currentBody = reachable.bodyFloors.filter(body => {
         const message = host.chat?.[body.hostLocator.messageIndex];
         return message && message.is_system !== true && message.is_hidden !== true && message.hidden !== true;
       }).at(-1);
-      const currentTime = stableCurrentTime(stored.batches, reachable);
+      const currentTime = stableCurrentTime(reachable);
       let qianshiProjection = null;
       try { qianshiProjection = projectQianshiGraph(cached, { identityProjection: source.identityProjection }); }
       catch { /* Optional associations never suppress the ordinary time projection. */ }
@@ -811,7 +804,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     const owner = identity(), host = hostAdapter.snapshot();
     if (!owner.chatId || owner.hostChatId && owner.hostChatId !== host.chatId
       || host.context?.chatMetadata?.qianqianjie?.chatId && host.context.chatMetadata.qianqianjie.chatId !== owner.chatId) return null;
-    const reliable = readRecentBodyStoryTimes(host, { storyClockReferenceTags: storyClockReferenceTags(), limit: 32 });
+    const reliable = await readRecentBodyStoryTimes(host, { reachable: cached, sanitizerOptions: sanitizerOptions(), storyClockReferenceTags: storyClockReferenceTags(), limit: 32 });
     const currentBody = reliable.at(-1);
     if (!currentBody) return null;
     return { currentTime: currentBody.observationTime,

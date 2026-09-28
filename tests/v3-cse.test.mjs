@@ -122,6 +122,13 @@ const baseline = { id: '88888888-1111-4111-8111-111111111111', userPersona: { en
 const memory = id => ({ id, summary: { effectiveSource: 'ai', aiText: '摘要' }, chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], cseSignals: [] });
 const floor = (id, content) => ({ id, chatId: CHAT, narrativeGeneration: GEN, content: { canonicalContent: content } });
 
+test('CSE 直接消费该楼当前保存的人工 chronology，不重新解析自动时间戳', () => {
+  const chronology = [{ itemId: 'manual-clock', time: { kind: 'explicit', sourceText: '后来入夜时', normalized: null, precision: 'unresolved' }, description: '后来入夜时', evidenceRefs: [] }];
+  const envelope = createCseEnvelope({ floor: floor(FLOOR1, '<!-- QQJ-start | date=2026-05-10 | weekday=周日 | time=08:00 -->正文<!-- QQJ-end | date=2026-05-10 | weekday=周日 | time=09:00 -->'),
+    floorMemory: { ...memory(MEMORY1), chronology }, baseline, currentState: null, trackedSubjects: [entities[1]], entities });
+  assert.deepEqual(envelope.request.payload.floorMemory.chronology, chronology);
+});
+
 test('baseline 一次冻结；摘要重提不自动改 CSE，显式重分析才读取新来源', async () => {
   const h = runtimeHarness({ host: 'luker' });
   let state = await h.runtime.start().then(() => h.runtime.extractNext());

@@ -35,6 +35,14 @@ test('每来源恰好一个结果才留痕，合法空结果可保存且坏来�
   assert.deepEqual(partial.succeeded.map(row => row.sourceKey), ['one']); assert.equal(partial.errors[0].sourceKey, 'two');
 });
 
+test('年度设定接受唯一 JSON 前导说明与单一代码栅栏', () => {
+  const prepared = { sources: [{ id: 'S1', sourceKey: 'one', fingerprint: 'fp1', subjectEntityId: PERSON, subjectName: '阿岚', field: 'birthday' }] };
+  const response = { textData: 'Here is the JSON:\n```json\n{"sources":[{"sourceId":"S1","items":[]}]}\n```' };
+  assert.deepEqual(compileAnnualSettingResponse(response, prepared).succeeded.map(row => row.sourceKey), ['one']);
+  assert.throws(() => compileAnnualSettingResponse({ textData: '{"sources":[]} {"sources":[]}' }, prepared), error => error.code === 'QQJ_COMPLETION_JSON');
+  assert.throws(() => compileAnnualSettingResponse({ textData: '{"sources":[', taskMetadata: { finishReason: 'length' } }, prepared), error => error.code === 'QQJ_OUTPUT_TRUNCATED');
+});
+
 test('年度提醒只看本年，月日可跨月，跨年不猜，旧特殊日期保留原文', () => {
   const records = [{ sourceKey: 'birthday', fingerprint: 'fp', subjectEntityId: PERSON, subjectName: '阿岚', items: [
     { category: 'birthday', label: '生日', originalDate: '1999年9月20日', month: 9, day: 20, note: '' },

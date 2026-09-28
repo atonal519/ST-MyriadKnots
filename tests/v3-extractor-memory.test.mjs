@@ -11,7 +11,7 @@ import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
 import { createQianshiTimelineView } from '../src/ui/qianshi-timeline-view.js';
 import { readRecallSource } from '../src/v3/recall-source.js';
 import { historySelectionContext, selectRecall } from '../src/v3/recall-selector.js';
-import { buildExtractorSystemPrompt, buildHighFloorExtractorSystemPrompt, createExtractorEnvelope, DEFAULT_EXTRACTOR_GUIDANCE, EXTRACTOR_FIXED_CONTRACT, EXTRACTOR_OUTPUT_CONTRACT, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_SYSTEM_PROMPT, normalizeExtractorResponse, runExtractorRequest } from '../src/v3/extractor.js';
+import { buildExtractorSystemPrompt, buildHighFloorExtractorSystemPrompt, createExtractorEnvelope, DEFAULT_EXTRACTOR_GUIDANCE, EXTRACTOR_FIXED_CONTRACT, EXTRACTOR_OUTPUT_CONTRACT, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_SYSTEM_PROMPT, inferCanonicalCurrentTime, normalizeExtractorResponse, runExtractorRequest } from '../src/v3/extractor.js';
 import { buildCseSystemPrompt, CSE_FIXED_CONTRACT, CSE_SYSTEM_PROMPT, createCseEnvelope, DEFAULT_CSE_GUIDANCE } from '../src/v3/cse-engine.js';
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
 import { buildEntityIdentityDirectory } from '../src/v3/entity-identity.js';
@@ -38,6 +38,46 @@ const legacyScanner = async (chat, options) => {
     : candidate));
 };
 const uuidFactory = () => { let value = 0; return () => `${(++value).toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`; };
+test('当前时间证据读取原文状态栏，避开历史区块和不明确的未知容器', () => {
+  assert.deepEqual(inferCanonicalCurrentTime('<StatusBar><b>当前状态</b>：2026年5月10日 下午2:30</StatusBar>'), { text: '2026年5月10日 下午2:30', kind: 'explicit' });
+  assert.deepEqual(inferCanonicalCurrentTime('<x>当前状态：场景进行中，2026年5月10日 14:30</x>'), { text: '2026年5月10日 14:30', kind: 'explicit' });
+  assert.equal(inferCanonicalCurrentTime('<x>一段普通说明 2026年5月10日 14:30</x>'), null);
+  assert.equal(inferCanonicalCurrentTime('<chat_history><status>当前时间：2026年5月10日 14:30</status></chat_history><details><summary>Date</summary>2026年5月11日</details>正文'), null);
+  assert.equal(inferCanonicalCurrentTime('<status_history><status>当前状态：2026年5月8日 11:00</status></status_history><p>正文</p>'), null);
+  assert.deepEqual(inferCanonicalCurrentTime('<StatusBar>Date：2026年5月8日 11:00；Event：旧事发生。<b>当前状态</b>：2026年5月10日 14:30</StatusBar>'), { text: '2026年5月10日 14:30', kind: 'explicit' });
+  assert.equal(inferCanonicalCurrentTime('<StatusBar>Date：2026年5月8日 11:00；Event：旧事发生</StatusBar>'), null);
+});
+
+test('时间状态字段按同一容器局部配对，兼容分隔的 Time 行与 date/time 子项', () => {
+  assert.deepEqual(inferCanonicalCurrentTime('<Ruan_Status><span>[Time: 2026-09-29 | Tuesday | 19:30 | cloudy]</span></Ruan_Status>'), { text: '2026-09-29 19:30', kind: 'explicit' });
+  assert.deepEqual(inferCanonicalCurrentTime('<Status>[Time: 2026-09-29 | Tuesday]</Status>'), { text: '2026-09-29', kind: 'explicit' }, '日期-only 保留精度');
+  assert.deepEqual(inferCanonicalCurrentTime('<any-shell><date>11月14日</date><time>19:20</time></any-shell>'), { text: '11月14日 19:20', kind: 'explicit' });
+  const splitParents = inferCanonicalCurrentTime('<left><date>2026年9月29日</date></left><right><time>19:20</time></right>');
+  assert.ok(!splitParents?.text?.includes('19:20'), '不同父节点不拼接为一个日期时间');
+  const nestedSplitParents = inferCanonicalCurrentTime('<root><left><date>2026年9月29日</date></left><right><time>19:20</time></right></root>');
+  assert.ok(!nestedSplitParents?.text?.includes('19:20'), '共同外壳不令不同字段父节点自动配对');
+  assert.equal(inferCanonicalCurrentTime('<Ruan_Status>[Time: 2026-09-29 | 19:20 / 21:30]</Ruan_Status>').kind, 'ambiguous', '同一状态行的多个钟点不暗取首个');
+  assert.equal(inferCanonicalCurrentTime('<Ruan_Status>[Time: 2026-09-29 | 19:20][Time: 2026-09-30 | 00:30]</Ruan_Status>').kind, 'ambiguous', '多个状态时间不暗取首个');
+  assert.deepEqual(inferCanonicalCurrentTime('|||2026年9月29日 | Tuesday | 19:12 | rainy|||'), { text: '2026年9月29日 19:12', kind: 'explicit' });
+  assert.deepEqual(inferCanonicalCurrentTime('【2026年9月29日 | 19:12】'), { text: '2026年9月29日 19:12', kind: 'explicit' });
+  assert.deepEqual(inferCanonicalCurrentTime('〔2026-09-29——19:12〕'), { text: '2026-09-29 19:12', kind: 'explicit' });
+  assert.deepEqual(inferCanonicalCurrentTime('2026年9月29日 | 19:12'), { text: '2026年9月29日 19:12', kind: 'explicit' });
+  assert.equal(inferCanonicalCurrentTime('阿岚回忆 2026年9月29日 19:12'), null, '不在正文任意位置全局搜日期');
+  assert.equal(inferCanonicalCurrentTime('【当前状态】01:32'), null, '单独指标时长不作钟点');
+  assert.equal(inferCanonicalCurrentTime('<unknown><history>[Time: 2026-09-29 | 19:20]</history></unknown>'), null);
+  assert.equal(inferCanonicalCurrentTime('<unknown><details>[Time: 2026-09-29 | 19:20]</details></unknown>'), null);
+  assert.equal(inferCanonicalCurrentTime('<unknown><think>[Time: 2026-09-29 | 19:20]</think></unknown>'), null);
+  assert.equal(inferCanonicalCurrentTime('<unknown><snow><StatusBar>当前状态：2026-09-29 19:20</StatusBar></snow></unknown>'), null);
+  assert.equal(inferCanonicalCurrentTime('大陆历1686年10月4日 15:30'), null, '不截取具名纪年中的数字作为公历');
+  assert.deepEqual(inferCanonicalCurrentTime('<time-box><date>2026-09-29</date><time>19：20</time></time-box>'), { text: '2026-09-29 19：20', kind: 'explicit' });
+  assert.deepEqual(inferCanonicalCurrentTime('<Status>[Time: 2026-09-29 | 晚上19:30]</Status>'), { text: '2026-09-29 晚上19:30', kind: 'explicit' });
+  assert.deepEqual(inferCanonicalCurrentTime('<time-box><date>2026-09-29</date><time>晚上19:30</time></time-box>'), { text: '2026-09-29 晚上19:30', kind: 'explicit' });
+  assert.equal(inferCanonicalCurrentTime('<Status>[Time: 2026-13-44 | 19:30]</Status>'), null, '无效年月日不能凭时分压住其他正文来源');
+  assert.deepEqual(inferCanonicalCurrentTime('<root><Ruan_Status><span>[Time: 2026-09-29 | 19:30]</span></Ruan_Status><meow_fm><span>[Time: 2026-09-29 | 19:10-20:30-21:00]</span></meow_fm></root>'), { text: '2026-09-29 19:30', kind: 'explicit' }, '明确状态容器胜过普通附录时段');
+  assert.equal(inferCanonicalCurrentTime('<root><Ruan_Status><span>[Time: 2026-09-29 | 19:30]</span></Ruan_Status><content><p>[Time: 2026-09-30 | 20:30]</p></content></root>').text, '2026-09-29 19:30', '不把后续正文时间串到当前状态容器');
+  assert.equal(inferCanonicalCurrentTime('<Ruan_Status>[Time: 2026-09-29 | 19:30-20:00]</Ruan_Status>').kind, 'ambiguous', '同一当前状态行的多个钟点继续保留歧义');
+  assert.deepEqual(inferCanonicalCurrentTime('<root><Ruan_Status><span>[Time: 2026-09-29 | 19:30]</span></Ruan_Status><br><content><p>[Time: 2026-09-30 | 20:30]</p></content></root>'), { text: '2026-09-29 19:30', kind: 'explicit' }, 'HTML 换行元素不延长前一容器');
+});
 const compactResponse = (content, status = 200) => status >= 400
   ? { ok: false, status, text: async () => '' }
   : { ok: true, status, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content } }] }) };

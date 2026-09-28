@@ -69,6 +69,11 @@ function snapshotSource(records) {
     .sort(([left], [right]) => left.localeCompare(right)));
 }
 
+function cseReply(options, text, reason) {
+  const { trackedSubjects } = JSON.parse(options.taskMessages[0].content).payload;
+  return { jsonData: { subjects: trackedSubjects.map(({ name }) => ({ subject: name, situational: [{ text, visibility: 'observable', reason }] })) }, taskMetadata: { source: 'test', sourceLabel: '测试', model: 'seed' } };
+}
+
 test('候选生产 bundle 经真实 CHAT_CHANGED 初始化同角色副本，目标 ready/root 可读且模型调用为零', async () => {
   const backend = createRecordBackend();
   let activeHost = hostChat('原聊天', SOURCE, [user('开始'), assistant('公共 A'), user('继续 A')]);
@@ -84,10 +89,10 @@ test('候选生产 bundle 经真实 CHAT_CHANGED 初始化同角色副本，目�
     foundationRuntime: sourceFoundation, store: sourceStore, hostAdapter: seedHostAdapter,
     generateAnalysisTask: async options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
       ? { jsonData: { summary: '公共 A 摘要', people: [{ name: '裴晚生', presence: 'present' }] }, taskMetadata: { source: 'test', sourceLabel: '测试', model: 'seed' } }
-      : { jsonData: { subjects: [{ subject: '裴晚生', situational: [{ text: '公共 A 状态', visibility: 'observable', reason: '公共 A' }] }] }, taskMetadata: { source: 'test', sourceLabel: '测试', model: 'seed' } },
+      : cseReply(options, '公共 A 状态', '公共 A'),
     generateUtilityTask: async options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
       ? { jsonData: { summary: '公共 A 摘要', people: [{ name: '裴晚生', presence: 'present' }] }, taskMetadata: { source: 'test', sourceLabel: '测试', model: 'seed' } }
-      : { jsonData: { subjects: [{ subject: '裴晚生', situational: [{ text: '公共 A 状态', visibility: 'observable', reason: '公共 A' }] }] }, taskMetadata: { source: 'test', sourceLabel: '测试', model: 'seed' } },
+      : cseReply(options, '公共 A 状态', '公共 A'),
     now: () => new Date(NOW), newUuid: () => `${(++seedUuid).toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`,
     logger: { warn() {} },
   });

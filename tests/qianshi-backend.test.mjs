@@ -225,6 +225,22 @@ test('千事时间轴保留时间原文，只按明确可比的普通日期或�
   assert.equal(eraMonth.full, '纪元年10月4日', '具名纪年的完整原文仍保留');
 });
 
+test('千事时间轴可按末尾说明括注归组，括注时间不伪装成精确钟点', () => {
+  const rawTimes = [
+    ['described-clock', '1年夏1日 周一 18:00(匿名说明)'],
+    ['parenthetical-clock', '1年夏1日 周一 (18:00)'],
+    ['approximate-clock', '1年夏1日 周一（约18:00）'],
+    ['conflicting-date', '1年夏1日 周一（1年夏2日）'],
+  ];
+  const events = rawTimes.map(([id, storyTime]) => ({ id, storyTime, parsedStoryTime: projectTime(storyTime) }));
+  const timeline = projectQianshiTimeline({ events, relations: [] });
+  const grouped = new Set(timeline.segments.flatMap(segment => segment.groups.flatMap(group => group.eventIds)));
+  for (const [id] of rawTimes.slice(0, 3)) assert.equal(grouped.has(id), true, `${id} 按外层日期归组`);
+  assert.equal(grouped.has('conflicting-date'), false, '括注日期冲突时保持未定');
+  assert.deepEqual(timeline.undatedEventIds, ['conflicting-date']);
+  assert.equal(events[0].storyTime, '1年夏1日 周一 18:00(匿名说明)', '时间线投影不改写存储原文');
+});
+
 test('千事年表按真实成员楼和事件绝对时间投影，聚合 null/相对时间不借锚钟', async () => {
   const first = floor('11111111-1111-4111-8111-111111111111', 1);
   const anchor = floor('22222222-2222-4222-8222-222222222222', 2);
@@ -295,6 +311,21 @@ test('千事 opt-in 识别一至四位年份并拒绝非法日期，默认共享
   assert.deepEqual(timeline.undatedEventIds, ['date-3', 'date-5', 'date-6'], '非法显式日期不会退化成无年同月日');
   assert.equal(projectTime('994年2月28日').year, null, '共享时间推演默认仍不把三位数字改判为年份');
   assert.equal(projectTime('公历2024年2月29日').date, '2024-02-29', '具名公历和闰年合同不变');
+});
+
+test('已保存的季节历事件投影到日期组并保留事件原始时间', () => {
+  const events = [
+    { id: 'summer-start', storyTime: '1年夏1日' },
+    { id: 'summer-later', storyTime: '1年夏27日' },
+    { id: 'autumn-start', storyTime: '1年秋1日' },
+  ];
+  const timeline = projectQianshiTimeline({ events, relations: [] });
+  assert.deepEqual(timeline.undatedEventIds, []);
+  const groups = timeline.segments.flatMap(segment => segment.groups);
+  assert.ok(groups.some(group => group.eventIds.includes('summer-start') && group.period === '1年夏'));
+  assert.ok(groups.some(group => group.eventIds.includes('summer-later') && group.period === '1年夏'));
+  assert.ok(groups.some(group => group.eventIds.includes('autumn-start') && group.period === '1年秋'));
+  assert.deepEqual(events.map(event => event.storyTime), ['1年夏1日', '1年夏27日', '1年秋1日']);
 });
 
 test('千事日期主标签压缩至月日，完整日期和仅月日分组，详情原文与相对投影保留', () => {
