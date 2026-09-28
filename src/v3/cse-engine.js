@@ -9,8 +9,8 @@ import { CSE_ISOLATION_CODES, CSE_VISIBILITIES, LATEST_CSE_CALIBRATION_VERSION, 
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey } from './entity-identity.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-23';
-export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-12';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-24';
+export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-13';
 export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
 export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。完整阅读本楼正文，并结合结构化楼层记忆、人物此前状态与相关初始设定，分析人物在本楼结束时的状态。
@@ -41,6 +41,8 @@ previousState 按 subject 分列各人的 ownState，只说明对应人物自身
 Situational 记录本楼结束时仍在进行或仍限制人物的当前情境，不是“已发生事实”清单。某个事实仍然成立，不等于它必须一直占据当前情境。已发送或已收到消息、已拍到照片、已完成部署、已达成一次行动、已得知一条信息等已经完成的过程默认交给摘要；若确有未解决后果，只写仍在生效的后果，不保留过程流水。这些过程退出当前列表不需要正文逐条宣布“结束”，也不代表否认历史、人物失忆或把尚未完成的任务写成完成。保留真正持续的伤势、未解决处境、仍有效约定和有依据的当下关系反应，不能仅因本楼未提及就删除仍在持续的状态；有新依据表明它们结束或被替代时再移除或更新。同一处境或变化过程提炼合并为简短当前状态，text 和 reason 都不要逐楼追加历史行动链。每次输出某人物的 situational 完整列表时，必须同时清理 previousState 中已经结束、已被替代或只剩历史意义的条目，只留下仍有当下影响的部分；确有依据判断没有需要保留的当前项时用 []，不得以省略分类冒充清空。是否保留得知的信息、获得的事物或行动表现，应按其仍然造成的当下影响判断，并遵守上述事实、隐私和知识来源边界。
 
 【持续校准合同】
+若本次请求包含 userCoreExtraction，必须独立检查 relevantBaseline.userPersona.description 中是否存在有原句支持的稳定长期核心特质。该任务不依赖本楼是否出现变化，也不依赖 previousState 中是否已有 Core：没有新变化或旧 Core 为空都不能作为跳过理由。有明确依据时，在用户 subject 的 additions.core 中写入特质及 userPersona 逐字证据，并返回 userCoreExtraction:{status:"traits"}；依据不足时不新增 Core，并返回 userCoreExtraction:{status:"insufficient"}。此提取任务不得仅凭 Persona 改动其他人物或其他分类；本楼对所有 trackedSubjects 的常规状态分析仍照常进行。
+
 每次都审视本楼相关人物的已有 Core 与 Adaptive，并把它们同最新作者设定、明确用户纠正和本楼正文一起判断。旧结论本身及其旧 reason 不能自证；相容且没有新依据时保持原项，出现可定位反证或明确的新适用条件时才 refine/remove。剧情允许人物改变，但不强制每楼改写；单个戏剧性场景不能覆盖明确作者锚点，普通角色扮演中的用户台词、动作或心理也不自动等于作者纠正。
 
 单次事件造成的即时情绪、动作或台词若有值得保留的当下影响，只可进入 Situational；不要求每个动作都写成情境，也不得把它改写成“当 X 时总会/会……”之类长期条件模式，不能据此概括人物“总是”“习惯”“一贯如此”。新增 Adaptive 只能由明确作者设定、明确作者纠正，或正文明确回顾并证实多个彼此独立的既往事件形成重复模式。同一楼、同一连续事件链中的多个动作、台词或多个 quote 始终只算一次事件证据，不能据此新增或扩大 Adaptive；不得拿 previousState、旧状态的 reason 或自行假设的未提供历史补足独立证据。单个反例也不自动证明旧模式完全反转；若证据只说明适用条件变窄，用 refine 写清条件。
@@ -309,6 +311,10 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
     ?? (entityId === baseline.userPersona.entityId ? baseline.userPersona.name : entityId === baseline.characterCard.entityId ? baseline.characterCard.name : null);
   return Object.freeze({
     request: Object.freeze({ task: 'understandCharacterStateAfterFloor', locale: 'zh-CN', payload: {
+      ...(userCoreExtraction?.hasDescription ? { userCoreExtraction: {
+        subject: nameForSubjectId(userCoreExtraction.userEntityId) ?? effectiveUserPersona.name,
+        task: '独立核验 relevantBaseline.userPersona.description 中用户本人的稳定长期核心特质，不把短期情绪、一次行为、角色扮演表现或推测当作事实。此任务不依赖本楼是否有变化，也不依赖 previousState 是否已有 Core；不得以“本楼无变化”或“旧 Core 为空”为由跳过。有明确长期特质且可由 Persona 原句支持时，在 subjects 中仅将内容放入该用户的 additions.core，并同时返回 userCoreExtraction:{status:"traits"}；依据不足时不要新增 Core，并返回 userCoreExtraction:{status:"insufficient"}。新增项 evidence 必须使用 userPersona 和逐字原句。不得仅凭 Persona 改动其他人物或其他分类；本楼对其他 trackedSubjects 的常规状态分析仍照常进行。',
+      } } : {}),
       canonicalContent: floor.content.canonicalContent,
       floorMemory: semanticMemory(floorMemory, entities),
       ...(floorMemory.sourceVariableReference ? { auxiliaryStateSnapshot: floorMemory.sourceVariableReference } : {}),
@@ -326,10 +332,6 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       ...(relevantPriorContext ? { relevantPriorContext } : {}),
       trackedSubjects: trackedSubjects.map(entity => ({ name: entity.displayName, aliases: labelsFor(entity), coreUserEdited: coreUserEdited.has(entity.id) })),
       knownPeople: activeKnownEntities.map(entry => ({ name: entry.displayName, aliases: entry.labels })),
-      ...(userCoreExtraction?.hasDescription ? { userCoreExtraction: {
-        subject: nameForSubjectId(userCoreExtraction.userEntityId) ?? effectiveUserPersona.name,
-        task: '只提取 userPersona 原文中的稳定、长期核心特质，不把短期情绪、一次行为、角色扮演表现或推测当作事实。若有依据，在 subjects 中仅将可定位原句支持的内容放入该用户的 additions.core，并同时返回 userCoreExtraction:{status:"traits"}；若依据不足则不要新增 Core，并返回 userCoreExtraction:{status:"insufficient"}。新增项 evidence 必须使用 userPersona 和逐字原句。不得改变其他人物或其他分类。',
-      } } : {}),
     } }),
     scope: Object.freeze({
       floorId: floor.id, floorMemoryId: floorMemory.id, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration, baselineId: baseline.id,
@@ -365,10 +367,41 @@ function parsePacket(value, { finishReason } = {}) {
 
 const CSE_SUBJECT_RESULT_FIELDS = Object.freeze(['subjects', 'people', 'characters', 'states', '人物', '角色', '状态']);
 
+function subjectResultCandidates(packet) {
+  if (!packet || typeof packet !== 'object' || Array.isArray(packet)) return [];
+  const entries = Object.entries(packet);
+  const candidates = [];
+  for (const name of CSE_SUBJECT_RESULT_FIELDS) {
+    const found = entries.find(([key]) => normalized(key) === normalized(name));
+    if (!found) continue;
+    const value = found[1];
+    if (Array.isArray(value) || (value && typeof value === 'object')) candidates.push({ name, value });
+  }
+  return candidates;
+}
+
+function stableCandidate(value) {
+  if (Array.isArray(value)) return `[${value.map(stableCandidate).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableCandidate(value[key])}`).join(',')}}`;
+  return JSON.stringify(value);
+}
+
+function selectSubjectResults(packet) {
+  const candidates = subjectResultCandidates(packet);
+  const nonempty = candidates.filter(({ value }) => Array.isArray(value) ? value.length > 0 : Object.keys(value).length > 0);
+  if (nonempty.length > 1 && nonempty.some(candidate => stableCandidate(candidate.value) !== stableCandidate(nonempty[0].value))) {
+    throw errorWith('V3_CSE_SUBJECT_RESULT_AMBIGUOUS', 'CSE 返回了互相冲突的人物状态字段。');
+  }
+  const standard = candidates.find(candidate => candidate.name === 'subjects' && (Array.isArray(candidate.value) || candidate.value));
+  if (standard && (Array.isArray(standard.value) ? standard.value.length > 0 : Object.keys(standard.value).length > 0)) return standard.value;
+  if (nonempty.length) return nonempty[0].value;
+  return standard?.value ?? candidates[0]?.value ?? undefined;
+}
+
 function hasRecognizableCseResult(packet) {
   if (!packet || typeof packet !== 'object' || Array.isArray(packet)) return false;
   if (field(packet, ['noMaterialChange']) === true) return true;
-  const subjects = field(packet, CSE_SUBJECT_RESULT_FIELDS);
+  const subjects = selectSubjectResults(packet);
   return Array.isArray(subjects) || Boolean(subjects && typeof subjects === 'object');
 }
 
@@ -386,7 +419,7 @@ const itemSemantic = item => typeof item === 'string' ? item.trim() : text(field
 const stateMeaning = item => [item.text, item.visibility, item.reason, item.origin, item.towardEntityId ?? ''];
 const storedProjection = subject => ({ core: subject.core.map(stateMeaning), adaptive: subject.adaptive.map(stateMeaning), situational: subject.situational.map(stateMeaning) });
 
-async function compileItems({ raw, category, binding, knownBindings, deltaId, floorId, previous, isolated }) {
+async function compileItems({ raw, category, binding, knownBindings, deltaId, floorId, previous, isolated, acceptedIntents }) {
   const output = [];
   for (const [index, item] of list(raw).slice(0, 120).entries()) {
     const value = itemSemantic(item);
@@ -400,13 +433,14 @@ async function compileItems({ raw, category, binding, knownBindings, deltaId, fl
     }
     const reason = typeof item === 'object' ? text(field(item, ['reason', 'because', '依据', '原因']), 4000) : '';
     output.push({ id: await deterministicUuid(['v3-cse-state-item', deltaId, binding.entityId, category, index, value, towardEntityId]), text: value, visibility: visibility(typeof item === 'object' ? field(item, ['visibility', '可见性']) : null), reason: reason || '未提供依据', origin: origin(typeof item === 'object' ? field(item, ['origin', '来源']) : null), towardEntityId, sourceFloorId: floorId, sourceDeltaId: deltaId });
+    acceptedIntents.count += 1;
   }
   return output;
 }
 
 async function compileAfterStateCategory(options) {
   const output = await compileItems(options);
-  if (Array.isArray(options.raw) && options.raw.length === 0) return output;
+  if (Array.isArray(options.raw) && options.raw.length === 0) { options.acceptedIntents.count += 1; return output; }
   return output.length ? output : options.previous;
 }
 
@@ -509,7 +543,7 @@ function calibrationAuditEntry({ binding, category, action, original = null, ite
   };
 }
 
-async function compileCalibratedCategory({ rawSubject, category, binding, previous, envelope, deltaId, isolated, calibrationAudit }) {
+async function compileCalibratedCategory({ rawSubject, category, binding, previous, envelope, deltaId, isolated, calibrationAudit, acceptedIntents }) {
   const reviewContainer = field(rawSubject, ['review', '复核']);
   const additionsContainer = field(rawSubject, ['additions', '新增']);
   const reviewRaw = field(reviewContainer, categoryNames(category));
@@ -540,7 +574,7 @@ async function compileCalibratedCategory({ rawSubject, category, binding, previo
     if (matches.length !== 1 || reviewedIds.has(matches[0]?.id)) { isolated.push({ field: `${category}.review`, index, code: 'V3_CSE_REVIEW_TARGET_AMBIGUOUS' }); continue; }
     const matched = matches[0];
     reviewedIds.add(matched.id);
-    if (action === 'keep') continue;
+    if (action === 'keep') { acceptedIntents.count += 1; continue; }
     const evidence = calibratedEvidence(review, { envelope, binding, category, index, isolated });
     if (!calibratedMutationAllowed({ category, evidence, manualCore })) { isolated.push({ field: `${category}.review`, index, code: 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT' }); continue; }
     const currentIndex = output.findIndex(item => item.id === matched.id);
@@ -548,6 +582,7 @@ async function compileCalibratedCategory({ rawSubject, category, binding, previo
     if (action === 'remove') {
       output.splice(currentIndex, 1);
       calibrationAudit.push(calibrationAuditEntry({ binding, category, action, original: matched, raw: review, evidence }));
+      acceptedIntents.count += 1;
       continue;
     }
     const replacement = await calibratedStateItem({ raw: review, category, binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, index, isolated, evidence, original: matched });
@@ -555,6 +590,7 @@ async function compileCalibratedCategory({ rawSubject, category, binding, previo
       output.splice(currentIndex, 1, replacement);
       calibrationAudit.push(calibrationAuditEntry({ binding, category, action, original: matched, item: replacement, raw: review, evidence }));
     }
+    if (replacement) acceptedIntents.count += 1;
   }
 
   for (const [index, addition] of list(additionsRaw).slice(0, 120).entries()) {
@@ -562,6 +598,7 @@ async function compileCalibratedCategory({ rawSubject, category, binding, previo
     const evidence = calibratedEvidence(addition, { envelope, binding, category, index, isolated });
     if (!calibratedMutationAllowed({ category, evidence, manualCore })) { isolated.push({ field: `${category}.additions`, index, code: 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT' }); continue; }
     const item = await calibratedStateItem({ raw: addition, category, binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, index: original.length + index, isolated, evidence });
+    if (item) acceptedIntents.count += 1;
     if (item && !output.some(existing => normalized(existing.text) === normalized(item.text) && existing.towardEntityId === item.towardEntityId)) {
       output.push(item);
       calibrationAudit.push(calibrationAuditEntry({ binding, category, action: 'add', item, raw: addition, evidence }));
@@ -577,27 +614,29 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
   const previousById = new Map((previousCurrentState?.subjects ?? []).map(subject => [subject.subjectEntityId, subject]));
   const compiled = new Map();
   const calibrationAudit = [];
-  const rawSubjects = list(field(packet, CSE_SUBJECT_RESULT_FIELDS));
+  const rawSubjects = list(selectSubjectResults(packet));
+  const acceptedIntents = { count: 0 };
   for (const [subjectIndex, raw] of rawSubjects.slice(0, 80).entries()) {
     const binding = bindingFor(raw, envelope.scope.trackedBindings);
     if (!binding) { isolated.push({ field: 'subjects', index: subjectIndex, code: 'V3_CSE_SUBJECT_UNBOUND' }); continue; }
     if (compiled.has(binding.entityId)) { isolated.push({ field: 'subjects', index: subjectIndex, code: 'V3_CSE_SUBJECT_DUPLICATE' }); continue; }
+    const acceptedBeforeSubject = acceptedIntents.count;
     const previous = previousById.get(binding.entityId) ?? { core: [], adaptive: [], situational: [] };
     const hasCore = field(raw, categoryNames('core')) !== undefined;
     const hasAdaptive = field(raw, categoryNames('adaptive')) !== undefined;
     const hasSituational = field(raw, ['situational', 'situation', '短期状态', '情境']) !== undefined;
-    let calibratedCore = await compileCalibratedCategory({ rawSubject: raw, category: 'core', binding, previous, envelope, deltaId, isolated, calibrationAudit });
-    const calibratedAdaptive = await compileCalibratedCategory({ rawSubject: raw, category: 'adaptive', binding, previous, envelope, deltaId, isolated, calibrationAudit });
+    let calibratedCore = await compileCalibratedCategory({ rawSubject: raw, category: 'core', binding, previous, envelope, deltaId, isolated, calibrationAudit, acceptedIntents });
+    const calibratedAdaptive = await compileCalibratedCategory({ rawSubject: raw, category: 'adaptive', binding, previous, envelope, deltaId, isolated, calibrationAudit, acceptedIntents });
     const hasAuthorNote = envelope.scope.evidenceSources.some(source => source.source === 'authorNote');
     if (calibratedCore === null && hasCore && previous.core.length === 0 && hasAuthorNote) {
       calibratedCore = await compileCalibratedCategory({
         rawSubject: { additions: { core: field(raw, categoryNames('core')) } },
-        category: 'core', binding, previous, envelope, deltaId, isolated, calibrationAudit,
+        category: 'core', binding, previous, envelope, deltaId, isolated, calibrationAudit, acceptedIntents,
       });
     }
-    const proposedCore = calibratedCore ?? (hasCore ? await compileAfterStateCategory({ raw: field(raw, categoryNames('core')), category: 'core', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous: previous.core, isolated }) : previous.core);
-    const adaptive = calibratedAdaptive ?? (hasAdaptive ? await compileAfterStateCategory({ raw: field(raw, categoryNames('adaptive')), category: 'adaptive', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous: previous.adaptive, isolated }) : previous.adaptive);
-    const situational = hasSituational ? await compileAfterStateCategory({ raw: field(raw, ['situational', 'situation', '短期状态', '情境']), category: 'situational', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous: previous.situational, isolated }) : previous.situational;
+    const proposedCore = calibratedCore ?? (hasCore ? await compileAfterStateCategory({ raw: field(raw, categoryNames('core')), category: 'core', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous: previous.core, isolated, acceptedIntents }) : previous.core);
+    const adaptive = calibratedAdaptive ?? (hasAdaptive ? await compileAfterStateCategory({ raw: field(raw, categoryNames('adaptive')), category: 'adaptive', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous: previous.adaptive, isolated, acceptedIntents }) : previous.adaptive);
+    const situational = hasSituational ? await compileAfterStateCategory({ raw: field(raw, ['situational', 'situation', '短期状态', '情境']), category: 'situational', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous: previous.situational, isolated, acceptedIntents }) : previous.situational;
     const explicitChallenges = list(field(raw, ['coreChallenges', 'coreChallenge', '核心挑战'])).map(itemSemantic).filter(Boolean);
     let core = proposedCore;
     const challenges = [...explicitChallenges];
@@ -607,7 +646,10 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
       if (hasCore && JSON.stringify(proposedCore.map(item => item.text)) !== JSON.stringify(previous.core.map(item => item.text))) challenges.push(...proposedCore.map(item => `AI 建议改写 Core：${item.text}`));
     }
     compiled.set(binding.entityId, { subjectEntityId: binding.entityId, core, adaptive, situational, changeSummary: [], coreChallenges: [...new Set(challenges)].slice(0, 40) });
+    if (acceptedIntents.count === acceptedBeforeSubject && !hasCore && !hasAdaptive && !hasSituational
+      && calibratedCore === null && calibratedAdaptive === null) acceptedIntents.count += 1;
   }
+  if (rawSubjects.length > 0 && acceptedIntents.count === 0 && isolated.length > 0) throw errorWith('V3_CSE_ALL_CANDIDATES_ISOLATED', 'CSE 返回的人物状态候选均未能有效处理，请重试。');
   let userCoreExtractionResult = null;
   if (userCoreExtraction) {
     const rawReview = field(packet, ['userCoreExtraction', '用户核心特质提取']);

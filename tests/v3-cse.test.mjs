@@ -180,7 +180,7 @@ test('自动 CSE 输入同时含正文、FloorMemory、previousState、baseline�
   const cseCall = h.calls.find(call => call.systemPrompt === CSE_SYSTEM_PROMPT);
   assert.ok(cseCall);
   const request = JSON.parse(cseCall.taskMessages[0].content);
-  assert.deepEqual(Object.keys(request.payload).slice(0, 4), ['canonicalContent', 'floorMemory', 'previousState', 'relevantBaseline']);
+  assert.deepEqual(Object.keys(request.payload).slice(0, 5), ['userCoreExtraction', 'canonicalContent', 'floorMemory', 'previousState', 'relevantBaseline']);
   assert.match(request.payload.canonicalContent, /裴晚生提醒你带伞/);
   assert.deepEqual(request.payload.currentUserInput, { source: 'currentUserInput', messages: [{ sourceSnapshotIndex: 0, messageIndex: 0, content: '继续' }] });
   assert.ok(request.payload.evidenceSourceCatalog.some(item => item.source === 'currentUserInput' && item.kind === 'userInput'));
@@ -791,25 +791,21 @@ test('作者注释进入最新请求与证据目录，但不能单独作为 Core
   assert.equal(envelope.request.payload.relevantBaseline.authorNote.content, requestSources.authorNote.content);
   assert.ok(envelope.request.payload.evidenceSourceCatalog.some(item => item.source === 'authorNote' && item.kind === 'authorialReference'));
   assert.equal(envelope.scope.sourceSnapshotFingerprint, requestSources.fingerprint);
-  const compiled = await compileCseResponse({
+  await assert.rejects(compileCseResponse({
     response: { subjects: [{ subject: '甲', additions: { core: [{ text: '性格果断', evidence: [{ source: 'authorNote', quote: '让甲更加果断' }] }] } }] },
     envelope,
     previousCurrentState: null,
     now: NOW,
     deltaId: '90909090-1111-4111-8111-909090909090',
-  });
-  assert.equal(compiled.delta.subjectSnapshots[0].core.length, 0);
-  assert.ok(compiled.isolated.some(item => item.code === 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT'));
+  }), error => error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED');
 
-  const legacyDirect = await compileCseResponse({
+  await assert.rejects(compileCseResponse({
     response: { subjects: [{ subject: '甲', core: [{ text: '性格果断', evidence: [{ source: 'authorNote', quote: '让甲更加果断' }] }] }] },
     envelope,
     previousCurrentState: null,
     now: NOW,
     deltaId: '91919191-1111-4111-8111-919191919191',
-  });
-  assert.equal(legacyDirect.delta.subjectSnapshots[0].core.length, 0, '旧 direct Core 也不得绕过 authorNote 证据边界');
-  assert.ok(legacyDirect.isolated.some(item => item.code === 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT'));
+  }), error => error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED', '旧 direct Core 也不得绕过 authorNote 证据边界');
 
   const groundedDirect = await compileCseResponse({
     response: { subjects: [{ subject: '甲', core: [{ text: '遵循最新角色设定', evidence: [{ source: 'characterCard', quote: '最新角色设定' }] }] }] },
@@ -827,6 +823,51 @@ test('用户核心特质提取同次 CSE 验证结果并在漏答时不额外请
   const currentUserInput = { messages: [{ sourceSnapshotIndex: 0, messageIndex: 0, content: '我刚才表现得很谨慎。' }] };
   const envelope = createCseEnvelope({ floor: floor(FLOOR1, '林岚继续调查。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [entities[0]], entities, requestSources, currentUserInput, userCoreExtraction: check });
   assert.equal(envelope.request.payload.userCoreExtraction.subject, '林岚');
+  const dynamicCalls = [];
+  const runDynamic = response => runCseRequest({
+    generateAnalysisTask: async options => { dynamicCalls.push(options); return { jsonData: response }; },
+    envelope, previousCurrentState: null, now: NOW, deltaId: `98989898-1111-4111-8111-${String(dynamicCalls.length + 1).padStart(12, '0')}`,
+  });
+  const dynamicTraits = await runDynamic({
+    userCoreExtraction: { status: 'traits' },
+    subjects: [{ subject: '林岚', additions: { core: [{ text: '重视查明事实', evidence: [{ source: 'userPersona', quote: '重视查明事实' }] }] } }],
+  });
+  const assembled = dynamicCalls[0];
+  const assembledRequest = JSON.parse(assembled.taskMessages[0].content);
+  assert.match(assembled.systemPrompt, /若本次请求包含 userCoreExtraction.*不依赖本楼是否出现变化.*旧 Core 为空都不能作为跳过理由/s);
+  assert.equal(Object.keys(assembledRequest.payload)[0], 'userCoreExtraction', '首次 Core 提取任务应在动态请求开头');
+  assert.equal(assembledRequest.payload.userCoreExtraction.subject, '林岚');
+  assert.match(assembledRequest.payload.userCoreExtraction.task, /不依赖本楼是否有变化.*旧 Core 为空.*逐字原句/s);
+  assert.equal(dynamicTraits.delta.source.userCoreExtraction.status, 'traits');
+  assert.deepEqual(dynamicTraits.delta.subjectSnapshots[0].core.map(item => item.text), ['重视查明事实']);
+
+  const dynamicInsufficient = await runDynamic({ userCoreExtraction: { status: 'insufficient' }, subjects: [] });
+  assert.equal(dynamicInsufficient.delta.source.userCoreExtraction.status, 'insufficient');
+  assert.deepEqual(dynamicInsufficient.delta.subjectSnapshots[0].core, []);
+
+  const sameTurnEnvelope = createCseEnvelope({ floor: floor(FLOOR1, '林岚和甲都继续调查。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [entities[0], entities[1]], entities, requestSources, currentUserInput, userCoreExtraction: check });
+  const sameTurnOptions = [];
+  const sameTurn = await runCseRequest({
+    generateAnalysisTask: async options => {
+      sameTurnOptions.push(options);
+      return { jsonData: {
+        userCoreExtraction: { status: 'traits' },
+        subjects: [
+          { subject: '林岚', additions: { core: [{ text: '重视查明事实', evidence: [{ source: 'userPersona', quote: '重视查明事实' }] }] } },
+          { subject: '甲', situational: [{ text: '仍在等候消息', visibility: 'observable' }] },
+        ],
+      } };
+    },
+    envelope: sameTurnEnvelope, previousCurrentState: null, now: NOW, deltaId: '98989898-1111-4111-8111-000000000003',
+  });
+  const sameTurnRequest = JSON.parse(sameTurnOptions[0].taskMessages[0].content);
+  assert.match(sameTurnOptions[0].systemPrompt, /不得仅凭 Persona 改动其他人物或其他分类.*所有 trackedSubjects 的常规状态分析仍照常进行/s);
+  assert.match(sameTurnRequest.payload.userCoreExtraction.task, /不得仅凭 Persona 改动其他人物或其他分类.*其他 trackedSubjects 的常规状态分析仍照常进行/s);
+  assert.deepEqual(sameTurnRequest.payload.trackedSubjects.map(subject => subject.name), ['林岚', '甲']);
+  assert.equal(sameTurn.delta.source.userCoreExtraction.status, 'traits');
+  assert.deepEqual(sameTurn.delta.subjectSnapshots.find(subject => subject.subjectEntityId === USER).core.map(item => item.text), ['重视查明事实']);
+  assert.deepEqual(sameTurn.delta.subjectSnapshots.find(subject => subject.subjectEntityId === A).situational.map(item => item.text), ['仍在等候消息']);
+
   const good = await compileCseResponse({
     response: { userCoreExtraction: { status: 'traits' }, subjects: [{ subject: '林岚', additions: { core: [{ text: '重视查明事实', evidence: [{ source: 'userPersona', quote: '重视查明事实' }] }] } }] },
     envelope, previousCurrentState: null, now: NOW, deltaId: '98989898-1111-4111-8111-989898989898', userCoreExtraction: check,
@@ -961,7 +1002,7 @@ test('无 Persona 暂记 sourceEmpty，补填后正常 CSE 尝试，稳定结论
   const h = runtimeHarness({ cse: options => {
     calls += 1;
     const request = JSON.parse(options.taskMessages[0].content);
-    if (request.payload.userCoreExtraction) assert.match(request.payload.userCoreExtraction.task, /稳定、长期核心特质/);
+    if (request.payload.userCoreExtraction) assert.match(request.payload.userCoreExtraction.task, /稳定长期核心特质/);
     return { jsonData: { userCoreExtraction: { status: 'insufficient' }, subjects: [{ subject: '林岚', situational: [{ text: '正在调查', visibility: 'private' }] }] } };
   } });
   h.context.powerUserSettings.persona_description = '';
@@ -1112,8 +1153,8 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.equal(compiled.delta.subjectSnapshots[0].situational[0].reason, '正文明确写出甲亲耳听见并记住');
   assert.equal(compiled.delta.source.promptVersion, CSE_PROMPT_VERSION);
   assert.equal(compiled.delta.source.compilerVersion, CSE_COMPILER_VERSION);
-  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-23');
-  assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-12');
+  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-24');
+  assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-13');
   assert.match(CSE_SYSTEM_PROMPT, /单次事件造成的即时情绪、动作或台词若有值得保留的当下影响，只可进入 Situational/);
   assert.match(CSE_SYSTEM_PROMPT, /人物被提及不等于本人在场/);
   assert.match(CSE_SYSTEM_PROMPT, /这条主要回答人物现在怎样、处境如何，还是此刻怎样对待某人/);
@@ -1200,6 +1241,26 @@ test('CSE 只接受可识别业务根，保留合法空结果、别名容器、�
   });
   assert.deepEqual(singleSubjectContainer.delta.subjectSnapshots[0].situational.map(item => item.text), ['保持警觉']);
 
+  const aliased = await compileCseResponse({
+    response: { subjects: [], people: [{ subject: '甲', situational: [{ text: '别名候选有效' }] }] },
+    ...options,
+  });
+  assert.deepEqual(aliased.delta.subjectSnapshots[0].situational.map(item => item.text), ['别名候选有效']);
+  const nullStandard = await compileCseResponse({
+    response: { subjects: null, people: [{ subject: '甲', situational: [{ text: '标准字段为空时读别名' }] }] },
+    ...options,
+  });
+  assert.deepEqual(nullStandard.delta.subjectSnapshots[0].situational.map(item => item.text), ['标准字段为空时读别名']);
+  const duplicatedFields = await compileCseResponse({
+    response: { subjects: [{ subject: '甲', situational: [{ text: '重复字段内容' }] }], people: [{ subject: '甲', situational: [{ text: '重复字段内容' }] }] },
+    ...options,
+  });
+  assert.deepEqual(duplicatedFields.delta.subjectSnapshots[0].situational.map(item => item.text), ['重复字段内容']);
+  await assert.rejects(compileCseResponse({
+    response: { subjects: [{ subject: '甲', situational: [{ text: '标准候选' }] }], people: [{ subject: '甲', situational: [{ text: '冲突别名候选' }] }] },
+    ...options,
+  }), error => error.code === 'V3_CSE_SUBJECT_RESULT_AMBIGUOUS');
+
   const partiallyValid = await compileCseResponse({
     response: { subjects: [null, { subject: '甲', situational: [{ text: '再次检查门锁' }, {}] }, { error: true }] },
     ...options,
@@ -1209,6 +1270,49 @@ test('CSE 只接受可识别业务根，保留合法空结果、别名容器、�
   assert.ok(partiallyValid.isolated.some(item => item.code === 'V3_CSE_OPTIONAL_ITEM_INVALID'));
 });
 
+test('CSE 全候选隔离会重试并失败，合法 no-op 夹坏项仍能保存', async () => {
+  const tracked = [entities[0]];
+  const firstEnvelope = createCseEnvelope({ floor: floor(FLOOR1, '第一楼保持警惕。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: tracked, entities });
+  const initial = await compileCseResponse({
+    response: { subjects: [{ subject: '林岚', adaptive: [{ text: '仍会谨慎观察' }] }] },
+    envelope: firstEnvelope, previousCurrentState: null, now: NOW, deltaId: '73737373-1111-4111-8111-737373737373',
+  });
+  const previous = { id: '72727272-1111-4111-8111-727272727272', subjects: initial.delta.subjectSnapshots };
+  const envelope = createCseEnvelope({ floor: floor(FLOOR2, '第二楼没有状态变化。'), floorMemory: memory(MEMORY2), baseline, currentState: previous, trackedSubjects: tracked, entities });
+  await assert.rejects(compileCseResponse({
+    response: { subjects: [{ subject: '林岚', core: null, adaptive: [{}, { text: 'toward 无法绑定', toward: '不存在的人' }], situational: [{ text: '' }] }] },
+    envelope, previousCurrentState: previous, now: NOW, deltaId: '74747474-1111-4111-8111-747474747474',
+  }), error => error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED');
+
+  await assert.rejects(compileCseResponse({
+    response: { subjects: [{ subject: '林岚', review: { core: [], adaptive: [] }, additions: { core: [], adaptive: [] }, situational: [{ text: '担心', toward: '不存在的人' }] }] },
+    envelope, previousCurrentState: previous, now: NOW, deltaId: '76767676-1111-4111-8111-767676767676',
+  }), error => error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED');
+
+  const emptyTemplate = await compileCseResponse({
+    response: { subjects: [{ subject: '林岚', review: { core: [], adaptive: [] }, additions: { core: [], adaptive: [] } }] },
+    envelope, previousCurrentState: previous, now: NOW, deltaId: '77777777-1111-4111-8111-777777777777',
+  });
+  assert.equal(emptyTemplate.delta.noMaterialChange, true);
+  assert.equal(emptyTemplate.isolated.length, 0);
+
+  const keptWithBadItem = await compileCseResponse({
+    response: { subjects: [{ subject: '林岚', review: { adaptive: [{ previousText: '仍会谨慎观察', action: 'keep' }] }, situational: [{ text: '' }] }] },
+    envelope, previousCurrentState: previous, now: NOW, deltaId: '75757575-1111-4111-8111-757575757575',
+  });
+  assert.equal(keptWithBadItem.delta.noMaterialChange, true);
+  assert.ok(keptWithBadItem.isolated.some(item => item.code === 'V3_CSE_OPTIONAL_ITEM_INVALID'));
+
+  let calls = 0;
+  const runtime = runtimeHarness({ cse: () => { calls += 1; return { jsonData: { subjects: [{ subject: '林岚', adaptive: [{ text: '', toward: '不存在的人' }] }] } }; } });
+  const state = await runtime.runtime.start().then(() => runtime.runtime.extractNext());
+  assert.equal(calls, 3);
+  assert.equal(state.cseFloors[0].status, 'failed');
+  assert.equal(state.cseFloors[0].deltaId, null);
+  const graph = await runtime.store.readReachable({ mode: 'runtime' });
+  assert.equal(graph.stateDeltas.length, 0);
+});
+
 test('导入前情作为 CSE 独立作者背景，不进入证据目录或编译证据', async () => {
   const relevantPriorContext = '【用户导入的过去经历资料】\n【前情片段 3】\n甲过去曾在雪山受伤。';
   const envelope = createCseEnvelope({ floor: floor(FLOOR1, '甲今天状态平稳。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [entities[1]], entities, relevantPriorContext });
@@ -1216,11 +1320,10 @@ test('导入前情作为 CSE 独立作者背景，不进入证据目录或编译
   assert.equal(envelope.request.payload.evidenceSourceCatalog.some(item => item.source === 'relevantPriorContext'), false);
   assert.equal(envelope.scope.evidenceSources.some(item => item.source === 'relevantPriorContext'), false);
   assert.match(CSE_SYSTEM_PROMPT, /relevantPriorContext.*不是本楼证据/s);
-  const compiled = await compileCseResponse({
+  await assert.rejects(compileCseResponse({
     response: { subjects: [{ subject: '甲', additions: { adaptive: [{ text: '长期虚弱', evidence: [{ source: 'relevantPriorContext', quote: '雪山受伤' }] }] } }] },
     envelope, previousCurrentState: null, now: NOW, deltaId: '90909090-1111-4111-8111-909090909090',
-  });
-  assert.equal(compiled.delta.subjectSnapshots[0].adaptive.length, 0, '前情伪证据沿原编译机制不应被接受');
+  }), error => error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED', '前情伪证据沿原编译机制不应被接受');
 });
 
 test('生产 CSE 请求 seam 固定样例可并存自身无对象与行为关系对象，且自定义引导不覆盖固定边界合同', async () => {
@@ -2116,7 +2219,7 @@ test('模型省略已有主体或分类时，compile 与 replay 都保留相应�
   assert.deepEqual(replay.subjects.find(item => item.subjectEntityId === A).situational.map(item => item.text), ['等候消息']);
 });
 
-test('非空分类全部无效时保留旧状态，只有显式空数组清空，好坏混合使用合法项', async () => {
+test('非空分类全部无效时失败，只有显式空数组清空，好坏混合使用合法项', async () => {
   const tracked = [entities[0]];
   const initialEnvelope = createCseEnvelope({ floor: floor(FLOOR1, '第一楼'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: tracked, entities });
   const initial = await compileCseResponse({
@@ -2126,16 +2229,10 @@ test('非空分类全部无效时保留旧状态，只有显式空数组清空�
   const previous = { id: '72727272-1111-4111-8111-727272727272', subjects: initial.delta.subjectSnapshots };
   const nextEnvelope = createCseEnvelope({ floor: floor(FLOOR2, '第二楼'), floorMemory: memory(MEMORY2), baseline, currentState: previous, trackedSubjects: tracked, entities });
 
-  const allInvalid = await compileCseResponse({
+  await assert.rejects(compileCseResponse({
     response: { subjects: [{ subject: '林岚', core: null, adaptive: [{}, { text: '对象无法绑定', toward: '不存在的人' }], situational: {} }] },
     envelope: nextEnvelope, previousCurrentState: previous, now: NOW, deltaId: '73737373-1111-4111-8111-737373737373',
-  });
-  assert.deepEqual(allInvalid.delta.subjectSnapshots[0].adaptive.map(item => item.text), ['仍会谨慎观察']);
-  assert.deepEqual(allInvalid.delta.subjectSnapshots[0].situational.map(item => item.text), ['感到疲惫']);
-  assert.equal(allInvalid.delta.noMaterialChange, true);
-  assert.deepEqual(allInvalid.delta.subjectSnapshots[0].changeSummary, []);
-  assert.ok(allInvalid.isolated.some(item => item.code === 'V3_CSE_OPTIONAL_ITEM_INVALID'));
-  assert.ok(allInvalid.isolated.some(item => item.code === 'V3_CSE_TOWARD_UNBOUND'));
+  }), error => error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED');
 
   const explicitEmpty = await compileCseResponse({
     response: { subjects: [{ subject: '林岚', adaptive: [], situational: [] }] },
@@ -2164,17 +2261,13 @@ test('英文大小写与全角姓名统一绑定主体和 toward，歧义仍不�
 
   const duplicateBob = { ...bob, id: '79797979-1111-4111-8111-797979797979', displayName: 'BOB' };
   const ambiguousEnvelope = createCseEnvelope({ floor: floor(FLOOR1, 'Alice 正在关注 Bob。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [alice], entities: [alice, bob, duplicateBob] });
-  const ambiguous = await compileCseResponse({ response: { subjects: [{ subject: 'alice', adaptive: [{ text: '保持关注', toward: 'bob' }] }] }, envelope: ambiguousEnvelope, previousCurrentState: null, now: NOW, deltaId: '80808080-1111-4111-8111-808080808080' });
-  assert.deepEqual(ambiguous.delta.subjectSnapshots[0].adaptive, []);
-  assert.ok(ambiguous.isolated.some(item => item.code === 'V3_CSE_TOWARD_UNBOUND'));
+  await assert.rejects(compileCseResponse({ response: { subjects: [{ subject: 'alice', adaptive: [{ text: '保持关注', toward: 'bob' }] }] }, envelope: ambiguousEnvelope, previousCurrentState: null, now: NOW, deltaId: '80808080-1111-4111-8111-808080808080' }), error => error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED');
 });
 
 test('已知 toward 同名仍按歧义失败隔离，不猜测绑定', async () => {
   const ambiguous = [...entities, { id: 'dddddddd-1111-4111-8111-111111111111', entityType: 'person', displayName: '丙', aliases: [{ name: '乙' }], specialRole: 'none' }];
   const envelope = createCseEnvelope({ floor: floor(FLOOR1, '歧义楼'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [entities[0]], entities: ambiguous });
-  const result = await compileCseResponse({ response: { subjects: [{ subject: '你', adaptive: [{ text: '警惕', toward: '乙', visibility: 'observable' }] }] }, envelope, previousCurrentState: null, now: NOW, deltaId: 'eeeeeeee-1111-4111-8111-111111111111' });
-  assert.deepEqual(result.delta.subjectSnapshots[0].adaptive, []);
-  assert.ok(result.isolated.some(item => item.code === 'V3_CSE_TOWARD_UNBOUND'));
+  await assert.rejects(compileCseResponse({ response: { subjects: [{ subject: '你', adaptive: [{ text: '警惕', toward: '乙', visibility: 'observable' }] }] }, envelope, previousCurrentState: null, now: NOW, deltaId: 'eeeeeeee-1111-4111-8111-111111111111' }), error => error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED');
 });
 
 test('模型输出 manual 来源仍按普通楼层编译，不能伪造人工纠正标记', async () => {
@@ -2409,9 +2502,7 @@ test('校准证据必须能定位且符合 Core 来源边界，manual Core 只�
   const protectedEnvelope = createCseEnvelope({ floor: floor(FLOOR2, '林岚继续行动。'), floorMemory: memory(MEMORY2), baseline, currentState: replayed, trackedSubjects: [entities[0]], entities, currentUserInput: correctionInput, coreUserEditedSubjectEntityIds: [USER] });
   assert.equal(protectedEnvelope.request.payload.previousState[0].coreUserEdited, true);
   assert.equal(protectedEnvelope.request.payload.trackedSubjects[0].coreUserEdited, true);
-  const baselineRejected = await compileCseResponse({ response: { subjects: [{ subject: '林岚', review: { core: [{ previousText: '人工确认的自主边界', action: 'refine', text: '被旧设定覆盖', evidence: [{ source: 'userPersona', quote: '用户设定' }] }] } }] }, envelope: protectedEnvelope, previousCurrentState: replayed, now: NOW, deltaId: '40404040-1111-4111-8111-404040404040' });
-  assert.deepEqual(baselineRejected.delta.subjectSnapshots[0].core.map(item => item.text), ['人工确认的自主边界']);
-  assert.ok(baselineRejected.isolated.some(item => item.code === 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT'));
+  await assert.rejects(compileCseResponse({ response: { subjects: [{ subject: '林岚', review: { core: [{ previousText: '人工确认的自主边界', action: 'refine', text: '被旧设定覆盖', evidence: [{ source: 'userPersona', quote: '用户设定' }] }] } }] }, envelope: protectedEnvelope, previousCurrentState: replayed, now: NOW, deltaId: '40404040-1111-4111-8111-404040404040' }), error => error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED');
 
   const userCorrected = await compileCseResponse({ response: { subjects: [{ subject: '林岚', review: { core: [{ previousText: '人工确认的自主边界', action: 'refine', text: '会明确维护自己的决定', evidence: [{ source: 'currentUserInput', quote: '会明确维护自己的决定' }] }] } }] }, envelope: protectedEnvelope, previousCurrentState: replayed, now: NOW, deltaId: '41414141-1111-4111-8111-414141414141' });
   assert.deepEqual(userCorrected.delta.subjectSnapshots[0].core.map(item => item.text), ['会明确维护自己的决定']);
@@ -2425,13 +2516,9 @@ test('校准证据必须能定位且符合 Core 来源边界，manual Core 只�
   });
   assert.deepEqual(replayedCorrection.subjects.find(subject => subject.subjectEntityId === USER).core.map(item => item.text), ['会明确维护自己的决定']);
   const nextFloorEnvelope = createCseEnvelope({ floor: floor('47474747-1111-4111-8111-474747474747', '下一楼没有新的作者纠正。'), floorMemory: memory('48484848-1111-4111-8111-484848484848'), baseline, currentState: replayedCorrection, trackedSubjects: [entities[0]], entities, coreUserEditedSubjectEntityIds: [USER] });
-  const rollbackRejected = await compileCseResponse({ response: { subjects: [{ subject: '林岚', review: { core: [{ previousText: '会明确维护自己的决定', action: 'refine', text: '被旧设定再次覆盖', evidence: [{ source: 'userPersona', quote: '用户设定' }] }] } }] }, envelope: nextFloorEnvelope, previousCurrentState: replayedCorrection, now: NOW, deltaId: '49494949-1111-4111-8111-494949494949' });
-  assert.deepEqual(rollbackRejected.delta.subjectSnapshots[0].core.map(item => item.text), ['会明确维护自己的决定'], '已接受的 user Core 纠正不能在下一楼被旧 baseline 改回');
-  assert.ok(rollbackRejected.isolated.some(item => item.code === 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT'));
+  await assert.rejects(compileCseResponse({ response: { subjects: [{ subject: '林岚', review: { core: [{ previousText: '会明确维护自己的决定', action: 'refine', text: '被旧设定再次覆盖', evidence: [{ source: 'userPersona', quote: '用户设定' }] }] } }] }, envelope: nextFloorEnvelope, previousCurrentState: replayedCorrection, now: NOW, deltaId: '49494949-1111-4111-8111-494949494949' }), error => error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED', '已接受的 user Core 纠正不能在下一楼被旧 baseline 改回');
 
-  const inventedQuote = await compileCseResponse({ response: { subjects: [{ subject: '林岚', additions: { adaptive: [{ text: '凭空新增', evidence: [{ source: 'canonicalContent', quote: '正文不存在的句子' }] }] } }] }, envelope: protectedEnvelope, previousCurrentState: replayed, now: NOW, deltaId: '42424242-1111-4111-8111-424242424242' });
-  assert.equal(inventedQuote.delta.subjectSnapshots[0].adaptive.length, 0);
-  assert.ok(inventedQuote.isolated.some(item => item.code === 'V3_CSE_EVIDENCE_UNLOCATED'));
+  await assert.rejects(compileCseResponse({ response: { subjects: [{ subject: '林岚', additions: { adaptive: [{ text: '凭空新增', evidence: [{ source: 'canonicalContent', quote: '正文不存在的句子' }] }] } }] }, envelope: protectedEnvelope, previousCurrentState: replayed, now: NOW, deltaId: '42424242-1111-4111-8111-424242424242' }), error => error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED');
 });
 
 test('校准证据只统一明确引号样式，并把审计引用保存为来源原句', async () => {
@@ -2615,11 +2702,7 @@ test('timeline 与 replay 共用 legacy Core 保护，manual override 可生效�
   withIsolation.source.isolationSummary = { count: 1, codes: ['V3_CSE_NOT_CONTROLLED'] };
   assert.throws(() => validateStateDeltaRecord(withIsolation, { expectedChatId: CHAT }), error => error.code === 'V3_STATEDELTA_INVALID');
 
-  const fullyIsolated = await compileCseResponse({ response: { subjects: [{ subject: '甲', adaptive: [{ text: '' }], changeSummary: ['模型声称已经写入'] }] }, envelope, previousCurrentState: null, now: NOW, deltaId: '62626262-1111-4111-8111-626262626262' });
-  const isolatedTimeline = deriveCseTimeline([fullyIsolated.delta]);
-  assert.equal(isolatedTimeline[0].noMaterialChange, true);
-  assert.equal(isolatedTimeline[0].changes.length, 0);
-  assert.deepEqual(fullyIsolated.delta.source.isolationSummary, { count: 1, codes: ['V3_CSE_OPTIONAL_ITEM_INVALID'] });
+  await assert.rejects(compileCseResponse({ response: { subjects: [{ subject: '甲', adaptive: [{ text: '' }], changeSummary: ['模型声称已经写入'] }] }, envelope, previousCurrentState: null, now: NOW, deltaId: '62626262-1111-4111-8111-626262626262' }), error => error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED');
 });
 
 test('真实 runtime 投影保留情境对象名称且只暴露有效变化与安全隔离摘要', async () => {
