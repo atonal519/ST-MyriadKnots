@@ -22,6 +22,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   apiKey: '',
   apiModel: '',
   apiExcludeParams: [],
+  apiQianqianjieTemperature: null,
   apiTimeoutSec: 180,
   apiStream: false,
   apiPresets: [],
@@ -63,13 +64,20 @@ export function normalizeTimeout(value) {
   return Number.isInteger(number) && number >= 5 && number <= 600 ? number : 180;
 }
 
+export function normalizeTemperature(value) {
+  if (value === null || value === undefined || typeof value === 'string' && value.trim() === '') return null;
+  if (!['number', 'string'].includes(typeof value)) return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 && number <= 2 ? number : null;
+}
+
 export function parseExcludeParams(value) {
   const values = Array.isArray(value) ? value : String(value ?? '').split(/[\n,，]/);
   return [...new Set(values.map(item => String(item).trim()).filter(Boolean))];
 }
 
 export function normalizePreset(value = {}) {
-  return {
+  const normalized = {
     id: text(value.id).trim(),
     name: text(value.name).trim() || '未命名',
     url: text(value.url).trim(),
@@ -79,6 +87,9 @@ export function normalizePreset(value = {}) {
     timeoutSec: normalizeTimeout(value.timeoutSec),
     stream: value.stream === true,
   };
+  const qqjTemperature = normalizeTemperature(value.qqjTemperature);
+  if (qqjTemperature !== null) normalized.qqjTemperature = qqjTemperature;
+  return normalized;
 }
 
 export function createPresetId(now = Date.now, random = Math.random) {
@@ -166,6 +177,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'apiKey')) settings.apiKey = text(patch.apiKey).trim();
     if (own(patch, 'apiModel')) settings.apiModel = text(patch.apiModel).trim();
     if (own(patch, 'apiExcludeParams')) settings.apiExcludeParams = parseExcludeParams(patch.apiExcludeParams);
+    if (own(patch, 'apiQianqianjieTemperature')) settings.apiQianqianjieTemperature = normalizeTemperature(patch.apiQianqianjieTemperature);
     if (own(patch, 'apiTimeoutSec')) settings.apiTimeoutSec = normalizeTimeout(patch.apiTimeoutSec);
     if (own(patch, 'apiStream')) settings.apiStream = patch.apiStream === true;
     if (own(patch, 'apiPresetActiveId')) settings.apiPresetActiveId = text(patch.apiPresetActiveId).trim();
@@ -193,6 +205,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
       excludeParams: settings.apiExcludeParams,
       timeoutSec: settings.apiTimeoutSec,
       stream: settings.apiStream,
+      qqjTemperature: settings.apiQianqianjieTemperature,
     });
   };
   const mainConfig = () => ({ ...localConfig(), name: '主配置' });
@@ -272,7 +285,12 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
   const sharedPresets = () => {
     const list = sevenDaysSettings()?.apiPresets;
     if (!Array.isArray(list)) return [];
-    return list.map(value => value && typeof value === 'object' ? { ...value, ...normalizePreset(value) } : null).filter(value => value?.id);
+    return list.map(value => {
+      if (!value || typeof value !== 'object') return null;
+      const normalized = normalizePreset(value), preset = { ...value, ...normalized };
+      if (normalized.qqjTemperature === undefined) delete preset.qqjTemperature;
+      return preset;
+    }).filter(value => value?.id);
   };
   const saveMainConfig = config => {
     const current = get(), normalized = normalizePreset(config);
@@ -282,6 +300,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     current.apiExcludeParams = normalized.excludeParams;
     current.apiTimeoutSec = normalized.timeoutSec;
     current.apiStream = normalized.stream;
+    current.apiQianqianjieTemperature = normalized.qqjTemperature ?? null;
     notify();
     return mainConfig();
   };
@@ -302,6 +321,11 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
       timeoutSec: normalized.timeoutSec,
       stream: normalized.stream,
     };
+    if (normalized.qqjTemperature !== undefined) snapshot.qqjTemperature = normalized.qqjTemperature;
+    else if (index >= 0 && list[index] && typeof list[index] === 'object') {
+      list[index] = { ...list[index] };
+      delete list[index].qqjTemperature;
+    }
     if (index >= 0) list[index] = { ...list[index], ...snapshot, id: presetId };
     else list.push({ ...snapshot, id: presetId });
     shared.apiPresets = list;
@@ -372,6 +396,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
       excludeParams: own(shared, 'apiExcludeParams') ? shared.apiExcludeParams : current.apiExcludeParams,
       timeoutSec: own(shared, 'apiTimeoutSec') ? shared.apiTimeoutSec : current.apiTimeoutSec,
       stream: own(shared, 'apiStream') ? shared.apiStream : current.apiStream,
+      qqjTemperature: own(shared, 'apiQianqianjieTemperature') ? shared.apiQianqianjieTemperature : current.apiQianqianjieTemperature,
     });
     current.apiUrl = migratedMain.url;
     current.apiKey = migratedMain.key;
@@ -379,6 +404,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     current.apiExcludeParams = migratedMain.excludeParams;
     current.apiTimeoutSec = migratedMain.timeoutSec;
     current.apiStream = migratedMain.stream;
+    current.apiQianqianjieTemperature = migratedMain.qqjTemperature ?? null;
     const legacySummaryId = text(shared.utilityPresetId).trim();
     const legacySummary = legacySummaryId ? sharedList.map(normalizePreset).find(item => item.id === legacySummaryId) : null;
     current.summaryPresetId = legacySummary?.url && legacySummary?.key ? legacySummaryId : '';

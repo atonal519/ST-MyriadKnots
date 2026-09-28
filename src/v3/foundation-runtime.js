@@ -22,7 +22,7 @@ import {
   V3_INDEX_LAYOUT_FLOOR_ORDER,
 } from './foundation-schema.js';
 import { publicErrorMessage } from '../public-error.js';
-import { collectFloorMemoryEntityIds, memorySourceFloorIds, projectEntityFloorBounds, validateMemoryGraph } from './memory-schema.js';
+import { collectFloorMemoryEntityIds, collectStateDeltaEntityIds, memorySourceFloorIds, projectEntityFloorBounds, validateMemoryGraph } from './memory-schema.js';
 import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
 import { validateCseGraph } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
@@ -103,10 +103,7 @@ export async function projectFoundationPrefix({ source, floors, chatId, narrativ
   let stateDeltas = filterReachableDeltas({ floors, floorMemories, stateDeltas: survivingDeltas });
   const referencedEntityIds = new Set();
   floorMemories.forEach(memory => collectFloorMemoryEntityIds(memory).forEach(id => referencedEntityIds.add(id)));
-  stateDeltas.forEach(delta => {
-    delta.subjectSnapshots.forEach(subject => { referencedEntityIds.add(subject.subjectEntityId); for (const category of ['adaptive', 'situational']) subject[category].forEach(item => { if (item.towardEntityId) referencedEntityIds.add(item.towardEntityId); }); });
-    (delta.fixedChanges ?? []).forEach(subject => { referencedEntityIds.add(subject.subjectEntityId); subject.items.forEach(change => { for (const item of [change.before, change.after]) if (item?.towardEntityId) referencedEntityIds.add(item.towardEntityId); }); });
-  });
+  stateDeltas.forEach(delta => collectStateDeltaEntityIds(delta).forEach(id => referencedEntityIds.add(id)));
   if (source.baseline) { referencedEntityIds.add(source.baseline.userPersona.entityId); referencedEntityIds.add(source.baseline.characterCard.entityId); }
   const entities = projectEntityFloorBounds((source.entities ?? []).filter(entity => referencedEntityIds.has(entity.id)
     || (entity.firstSeenFloorId && floorIdSet.has(entity.firstSeenFloorId))), floors, floorMemories, stateDeltas);

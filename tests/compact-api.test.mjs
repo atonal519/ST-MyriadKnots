@@ -344,6 +344,32 @@ test('模型列表与测试连接走安全代理；短测试不含聊天、人�
   assert.equal(testBody.messages[0].content.includes(BASE_PROCESSING_PROMPT), false, '连接测试不得携带内容处理层');
   await client.testConnection({ config: config({ excludeParams: ['temperature'] }) });
   assert.equal(Object.hasOwn(requests[2].body, 'temperature'), false, '连接测试仍须沿用现有排除参数合同');
+  await client.testConnection({ config: config({ qqjTemperature: 0.63 }) });
+  assert.equal(requests[3].body.temperature, 0.63, '连接测试跟随当前配置温度');
+});
+
+test('每套千千结配置温度覆盖任务默认值，清空回退且排除参数最后生效', async () => {
+  const bodies = [];
+  const client = createCompactApiClient({ fetchImpl: async (_path, options) => {
+    bodies.push(JSON.parse(options.body));
+    return jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] });
+  } });
+  await client.generateTask({ config: config(), taskMessages: [], temperature: 0 });
+  await client.generateTask({ config: config(), taskMessages: [] });
+  await client.generateTask({ config: config({ qqjTemperature: 0 }), taskMessages: [], temperature: 0.2 });
+  await client.generateTask({ config: config({ qqjTemperature: 1.37 }), taskMessages: [], temperature: 0 });
+  await client.generateTask({ config: config({ qqjTemperature: '' }), taskMessages: [], temperature: 0 });
+  await client.generateTask({ config: config({ qqjTemperature: 2.01 }), taskMessages: [], temperature: 0.2 });
+  await client.generateTask({ config: config({ qqjTemperature: 0.8, excludeParams: ['temperature'] }), taskMessages: [], temperature: 0 });
+  await client.generateTask({ config: config({ qqjTemperature: true }), taskMessages: [], temperature: 0.2 });
+  await client.generateTask({ config: config({ qqjTemperature: false }), taskMessages: [], temperature: 0 });
+  await client.generateTask({ config: config({ qqjTemperature: [] }), taskMessages: [], temperature: 0.2 });
+  await client.generateTask({ config: config({ qqjTemperature: [1] }), taskMessages: [], temperature: 0.2 });
+  await client.generateTask({ config: config({ qqjTemperature: '0.63' }), taskMessages: [], temperature: 0 });
+  assert.deepEqual(bodies.slice(0, 6).map(body => body.temperature), [0, 0.2, 0, 1.37, 0, 0.2]);
+  assert.deepEqual(bodies.slice(7, 11).map(body => body.temperature), [0.2, 0, 0.2, 0.2], '遗留布尔和数组值回退到该任务温度');
+  assert.equal(bodies[11].temperature, 0.63, '数字字符串仍是有效配置');
+  assert.equal(Object.hasOwn(bodies[6], 'temperature'), false, '排除参数须在温度覆盖后删除参数');
 });
 
 test('测试连接沿用流式配置并拼接纯文本，空回、截断和认证失败仍报错', async () => {

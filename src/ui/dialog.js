@@ -35,9 +35,10 @@ export function createDialogManager({ documentRef = globalThis.document, $ = glo
     hasActive: core.hasActive,
     cancelTop: core.cancelActive,
     closeAll: core.cancelActive,
-    setAppearance({ mode = 'auto', effectiveTheme: nextTheme = 'day', palette = {} } = {}) {
+    setAppearance({ mode = 'auto', effectiveTheme: nextTheme = 'day', palette = {}, fixedScale = 1 } = {}) {
       effectiveTheme = nextTheme === 'night' ? 'night' : 'day';
       host.setAttribute('data-theme-mode', mode); host.setAttribute('data-effective-theme', effectiveTheme);
+      host.style?.setProperty?.('--qqj-dialog-scale', String(Number.isFinite(Number(fixedScale)) ? Number(fixedScale) : 1));
       for (const [name, value] of Object.entries({ sheet: palette.panel, surface: palette.paper, ink: palette.ink, soft: palette.soft, divider: palette.line, primary: palette.knot })) if (value) host.style?.setProperty?.(`--qqj-dialog-${name}`, value);
     },
   });

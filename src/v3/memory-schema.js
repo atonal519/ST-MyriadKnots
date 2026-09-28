@@ -260,7 +260,7 @@ export function validateEntityRecord(input, { expectedChatId } = {}) {
   return Object.freeze(value);
 }
 
-export function collectFloorMemoryEntityIds(memory) {
+export function collectFloorMemoryEntityIds(memory, { includeReviewCandidates = true } = {}) {
   const result = new Set();
   const add = value => { if (isUuid(value)) result.add(value); };
   const addMany = values => (Array.isArray(values) ? values : []).forEach(add);
@@ -277,6 +277,30 @@ export function collectFloorMemoryEntityIds(memory) {
   memory.cseSignals.forEach(item => { add(item.subjectEntityId); add(item.objectEntityId); });
   for (const field of ['chronology', 'locations', 'participants', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'openLoops', 'ambiguities', 'cseSignals']) {
     memory[field].forEach(item => (item.evidenceRefs ?? []).forEach(evidence => add(evidence.sourceEntityId)));
+  }
+  for (const event of memory.qianshiDelta?.events ?? []) for (const person of event.people ?? []) add(person.entityId);
+  if (includeReviewCandidates) for (const candidate of memory.qianshiDelta?.historyReview?.candidates ?? []) {
+    for (const person of candidate.event?.people ?? []) add(person.entityId);
+  }
+  return result;
+}
+
+export function collectStateDeltaEntityIds(delta) {
+  const result = new Set();
+  const add = value => { if (isUuid(value)) result.add(value); };
+  const addStateItems = items => (items ?? []).forEach(item => add(item.towardEntityId));
+  for (const subject of delta.subjectSnapshots ?? []) {
+    add(subject.subjectEntityId);
+    for (const category of ['core', 'adaptive', 'situational']) addStateItems(subject[category]);
+  }
+  for (const subject of delta.fixedChanges ?? []) {
+    add(subject.subjectEntityId);
+    for (const change of subject.items ?? []) for (const item of [change.before, change.after]) add(item?.towardEntityId);
+  }
+  for (const audit of delta.source?.calibrationAudit ?? []) {
+    add(audit.subjectEntityId);
+    add(audit.previousTowardEntityId);
+    add(audit.towardEntityId);
   }
   return result;
 }
@@ -355,7 +379,7 @@ export async function validateMemoryGraph({ root = null, checkpoint, run = null,
     if (sourceFloorIds.some(floorId => !floorIds.has(floorId))
       || sourceFloorIds.some((floorId, index) => index > 0 && floorOrder.get(floorId) !== floorOrder.get(sourceFloorIds[index - 1]) + 1)) fail('V3_MEMORY_GRAPH_FLOOR_REF_INVALID');
     seenFloors.add(memory.floorId);
-    for (const entityId of collectFloorMemoryEntityIds(memory)) if (!entityIdSet.has(entityId)) fail('V3_MEMORY_GRAPH_ENTITY_REF_INVALID');
+    for (const entityId of collectFloorMemoryEntityIds(memory, { includeReviewCandidates: false })) if (!entityIdSet.has(entityId)) fail('V3_MEMORY_GRAPH_ENTITY_REF_INVALID');
     const sourceContentFor = source => {
       const sourceFloorId = source?.floorId ?? source?.sourceFloorId ?? memory.floorId;
       const sourceFloor = floors.find(item => item.id === sourceFloorId);

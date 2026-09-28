@@ -3,6 +3,7 @@ import { inspectMessageFloorAnchor } from '../v3/message-floor-anchor.js';
 import { classifyInlineMessage, projectInlineMemoryFloor, projectInlineRecallReceipt } from './inline-projection.js';
 
 import { patchRecallTabs } from './recall-tabs.js';
+import { scaleCssFontSizes } from './font-scale.js';
 
 const RETRY_DELAYS = Object.freeze([0, 80, 180, 320, 500, 850, 1300, 2000, 3000, 4200]);
 const HOST_SELECTOR = '[data-qqj-inline-host="true"]';
@@ -56,7 +57,7 @@ function append(parent, ...children) { parent?.append?.(...children); return par
 
 function createCard(documentRef, host, kind, expanded, onToggle, onExtract) {
   const root = host.attachShadow({ mode: 'open' });
-  const style = documentRef.createElement('style'); style.textContent = INLINE_STYLE;
+  const style = documentRef.createElement('style'); style.textContent = scaleCssFontSizes(INLINE_STYLE, '--qqj-inline-fixed-scale');
   const card = documentRef.createElement('article'); card.className = `card ${kind}`;
   const head = documentRef.createElement('div'); head.className = 'head';
   const mark = documentRef.createElement('span'); mark.className = 'mark'; mark.setAttribute?.('aria-hidden', 'true');
@@ -168,12 +169,14 @@ export function createInlineRenderer({
   const cards = new Map(), expanded = new Map(), groupExpanded = new Map(), expectedIndices = new Set(), eventBindings = [];
   let unsubscribeMemory = null, unsubscribeRecall = null;
   let palette = Object.freeze({ knot: '#a8322f', line: 'color-mix(in srgb,currentColor 18%,transparent)' });
+  let fontScale = 1;
   const receiptCache = new WeakMap();
   const owner = {};
 
   const applyPalette = host => {
     setStyleProperty(host?.style, '--qqj-inline-knot', palette.knot);
     setStyleProperty(host?.style, '--qqj-inline-line', palette.line);
+    setStyleProperty(host?.style, '--qqj-inline-fixed-scale', String(fontScale));
   };
 
   const clearRetry = () => { if (timer !== null) { windowRef?.clearTimeout?.(timer); timer = null; } observer?.disconnect?.(); observer = null; attempt += 1; };
@@ -378,6 +381,7 @@ export function createInlineRenderer({
   }
   function setEnabled(value) { return value === true ? start() : stop(); }
   function setAppearance(value) {
+    fontScale = Number.isFinite(Number(value?.fixedScale)) ? Number(value.fixedScale) : 1;
     palette = Object.freeze({
       knot: paletteColor(value?.palette?.knot, '#a8322f'),
       line: paletteColor(value?.palette?.line, 'color-mix(in srgb,currentColor 18%,transparent)'),

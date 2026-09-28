@@ -10,6 +10,7 @@ import { publicErrorMessage } from '../public-error.js';
 import { createScrollDiagnostics } from './scroll-diagnostics.js';
 import { openHelpGuide } from './help-guide.js';
 import { applyPluginEnabledImmediately } from '../settings.js';
+import { scaleCssFontSizes } from './font-scale.js';
 
 const PUBLIC_API_EXAMPLE = `const bridge = globalThis.qqj_v3_public_bridge_v1;
 const status = bridge.getStatus();
@@ -68,7 +69,7 @@ export function createPanel({
   host.hidden = true;
   host.setAttribute('aria-hidden', 'true');
   const root = host.attachShadow({ mode: 'open' });
-  root.innerHTML = `<style>${shellCss}\n${css}</style>${html}`;
+  root.innerHTML = `<style>${shellCss}\n${scaleCssFontSizes(css, '--qqj-ui-fixed-scale', true)}</style>${html}`;
   const panel = root.querySelector('.panel');
   const body = root.querySelector('.body');
   const view = root.querySelector('.view');

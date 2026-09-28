@@ -52,6 +52,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
     './panel.html?raw': { default: '' }, './panel.css?inline': { default: '' },
     './layout.js': { createPanelGeometryController: () => ({ restore() {}, cancelGesture() {} }) },
     './appearance.js': { createAppearanceController: ({ onChange }) => { const state = { mode: 'auto', effectiveTheme: 'day', palette: {} }; onChange?.(state); return { apply() { onChange?.(state); return state; }, getState: () => state, destroy() {} }; } },
+    './font-scale.js': { scaleCssFontSizes: css => css },
     './settings-drawer.js': { createSettingsDrawer: drawer, createSettingsDrawerState: () => ({ open(key) { drawerState.set(key, true); }, set(key, value) { drawerState.set(key, value); }, isOpen: (key, fallback) => drawerState.has(key) ? drawerState.get(key) : fallback }) },
     './settings/api-settings.js': { createApiSettings: () => ({ node: new Node() }) },
     './settings/prompts-settings.js': { createPromptsSettings: () => ({ node: new Node() }) },
@@ -249,6 +250,12 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.doesNotMatch(panelHtml, /status-(?:line|dot|label)/, '导航下方不应再渲染重复页名与装饰菱形');
   assert.doesNotMatch(panelCss, /\.status-(?:line|dot|label)\b/, '重复状态行的专用样式应一并删除');
   assert.match(panelCss, /\.icon-btn svg\{width:18px;height:18px;[^}]*stroke-width:1\.8/);
+  assert.match(panelCss, /\.qqj-person-summary,\.qqj-section-summary\{[^}]*flex-wrap:wrap/,
+    'summary 标题、状态和回执按钮在高倍率或窄面板中应能换行');
+  assert.match(panelCss, /\.qqj-person-summary strong,\.qqj-section-summary strong\{[^}]*flex:1 1 8em;min-width:min\(100%,8em\)/,
+    'summary 标题应保留可读宽度并允许长标题自然换行');
+  assert.match(panelCss, /\.qqj-person-summary>\.v3-memory-status,\.qqj-section-summary>\.v3-memory-status\{[^}]*white-space:normal;overflow-wrap:anywhere/,
+    'summary 状态胶囊应在窄宽度下完整换行显示');
   assert.doesNotMatch(panelCss, /@media\(max-width:640px\)[^}]*\.icon-btn\{width:30px/, '手机端不应再次缩小三枚顶部按钮的实际图形或点击框');
   assert.match(panelCss, /@media\(max-width:640px\)\{\.panel>\.panel-resize-handle\{display:none\}\}/, '手机把手隐藏规则须覆盖通用 display:grid，避免生成多余底部行');
   assert.doesNotMatch(panelCss, /\.panel:has\(\.qqj-manual-save-bar\)\{background:var\(--panel\)\}/, '编辑页底部不应再绘制整条保存栏背景');

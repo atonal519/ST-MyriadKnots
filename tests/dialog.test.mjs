@@ -179,10 +179,11 @@ test('复制构画实际结构/CSS闭包并映射 QQJ 实色主题', async () =>
   assert.equal(h.active().classes.has('sp-root'), true);
   assert.equal(h.active().classes.has('sp-dialog-overlay'), true, '同一遮罩同时命中两条同权重规则，顺序才决定最终点击能力');
   h.manager.closeAll(); await active;
-  h.manager.setAppearance({ mode: 'auto', effectiveTheme: 'night', palette: { paper: '#paper', panel: '#panel', ink: '#ink', soft: '#soft', line: '#line', knot: '#knot' } });
+  h.manager.setAppearance({ mode: 'auto', effectiveTheme: 'night', fixedScale: 1.5 / 0.85, palette: { paper: '#paper', panel: '#panel', ink: '#ink', soft: '#soft', line: '#line', knot: '#knot' } });
   assert.equal(h.manager.host.style['--qqj-dialog-sheet'], '#panel');
   assert.equal(h.manager.host.style['--qqj-dialog-surface'], '#paper');
   assert.equal(h.manager.host.style['--qqj-dialog-primary'], '#knot');
+  assert.equal(h.manager.host.style['--qqj-dialog-scale'], String(1.5 / 0.85));
   const source = await readFile(new URL('../src/ui/gouhua-dialog-core.js', import.meta.url), 'utf8');
   for (const name of ['prepareDialog', 'mountDialog', 'choose', 'confirm', 'prompt']) assert.match(source, new RegExp(`function ${name}\\(`));
   assert.doesNotMatch(source, /selectMany|selectOne|promptTextarea|promptFields/);

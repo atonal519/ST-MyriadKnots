@@ -440,7 +440,7 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
   assert.equal(aiView.toggle.getAttribute('aria-label'), '展开第 1 个结'); assert.equal(pendingAiView.toggle.getAttribute('aria-label'), '展开第 3 个结');
   assert.match(aiView.root.children[0].textContent, /background:transparent/); assert.match(aiView.root.children[0].textContent, /border:1px solid var\(--qqj-inline-line\)/); assert.match(aiView.root.children[0].textContent, /border-left:2px solid var\(--qqj-inline-knot\)/); assert.match(aiView.root.children[0].textContent, /\.knot\{/);
   assert.match(aiView.root.children[0].textContent, /\.mark\{position:absolute;left:0;top:18px/); assert.doesNotMatch(aiView.root.children[0].textContent, /border-left:1px dashed/);
-  assert.match(aiView.root.children[0].textContent, /grid-template-columns:minmax\(0,1fr\) auto/); assert.match(aiView.root.children[0].textContent, /\.title\{[^}]*font-size:12px/);
+  assert.match(aiView.root.children[0].textContent, /grid-template-columns:minmax\(0,1fr\) auto/); assert.match(aiView.root.children[0].textContent, /\.title\{[^}]*font-size:calc\(12px \* var\(--qqj-inline-fixed-scale,1\)\)/);
   assert.equal(aiView.root.querySelectorAll('.chevron').length, 0); assert.equal(aiView.status.className, 'status ready'); assert.equal(userView.status.className, 'status');
   assert.match(aiView.root.children[0].textContent, /\.status\.running\{/); assert.match(aiView.root.children[0].textContent, /\.status\.review\{/); assert.match(aiView.root.children[0].textContent, /\.status\.error\{/);
   assert.equal(aiView.extract.title, '重新提取第 1 个结摘要'); assert.equal(aiView.extract.getAttribute('aria-label'), '重新提取第 1 个结摘要'); assert.equal(aiView.extract.textContent, '\uf2f1');
@@ -893,16 +893,33 @@ test('重复、foreign和invalid marker均不猜绑，重复floorId不会退回�
   assert.deepEqual(view.recallUi.pills.children.map(pill => pill.textContent), ['来源结号未提供', '来源结号未提供', '来源结号未提供']);
 });
 
-test('楼内主题变量同步已有卡与后生卡，更新颜色不重建或折叠已有卡', async () => {
-  const chat = [{ is_user: false, is_system: false, mes: 'AI正文' }], state = readyState(); state.floors[0].messageIndex = 0;
-  const h = createHarness({ chat, memoryState: state });
-  h.renderer.setAppearance({ palette: { knot: '#112233', line: '#445566' } });
-  h.chatRoot.append(messageElement(0)); h.renderer.start(); await h.flushMicrotasks();
+test('楼内主题变量同步主卡与召回卡字号，75/100/150%均按单一倍率生效', async () => {
+  const chat = [
+    { is_user: false, is_system: false, mes: 'AI正文' },
+    { is_user: true, is_system: false, mes: '带召回回执的用户楼', extra: { [RECALL_RECEIPT_KEY]: { schemaVersion: 11 } } },
+  ], state = readyState(); state.floors[0].messageIndex = 0;
+  const recallProjection = { schemaVersion: 11, status: 'ready', injectionText: recallInjection('AI #1：召回字号校验'), selectedFloors: [{ floorId: HISTORY_FLOOR, assistantSeq: 1, reasons: [] }], selectedStates: [] };
+  const h = createHarness({ chat, memoryState: state, projectReceipt: async () => recallProjection });
+  h.renderer.setAppearance({ fixedScale: 0.75 / 0.85, palette: { knot: '#112233', line: '#445566' } });
+  h.chatRoot.append(messageElement(0)); h.chatRoot.append(messageElement(1, { user: true })); h.renderer.start(); await h.flushMicrotasks();
   const firstHost = h.chatRoot.querySelector('[data-qqj-inline-host="true"]'), firstView = firstHost.__qqjInlineCard;
   assert.equal(firstHost.style['--qqj-inline-knot'], '#112233'); assert.equal(firstHost.style['--qqj-inline-line'], '#445566');
+  assert.equal(firstHost.style['--qqj-inline-fixed-scale'], String(0.75 / 0.85));
+  const recallHost = h.chatRoot.querySelectorAll('[data-qqj-inline-host="true"]')[1], recallView = recallHost.__qqjInlineCard;
+  assert.match(recallView.recallStyle.textContent, /font-size:calc\(14px \* var\(--qqj-inline-fixed-scale,1\)\)!important/u, '召回页签重要声明也使用楼内倍率');
+  const calcBase = css => Number(/calc\((\d+(?:\.\d+)?)px \* var\(--qqj-inline-fixed-scale,1\)\)/u.exec(css)?.[1]);
+  const recallTabBase = Number(/\.recall-tab\{[^}]*font-size:calc\((\d+(?:\.\d+)?)px/u.exec(recallView.recallStyle.textContent)?.[1]);
+  for (const [scale, ratio] of [[0.75, 0.75 / 0.85], [0.85, 1], [1, 1 / 0.85], [1.5, 1.5 / 0.85]]) {
+    h.renderer.setAppearance({ fixedScale: ratio, palette: { knot: '#112233', line: '#445566' } });
+    assert.equal(firstHost.style['--qqj-inline-fixed-scale'], String(ratio));
+    assert.equal(recallHost.style['--qqj-inline-fixed-scale'], String(ratio));
+    assert.equal(calcBase(firstView.root.children[0].textContent) * ratio, 12 * ratio, '主卡字号由85%旧版基线按比例缩放');
+    assert.equal(recallTabBase * ratio, 14 * ratio, '召回页签字号由85%旧版基线按比例缩放');
+  }
   firstView.toggle.emit('click'); const root = firstView.root;
-  h.renderer.setAppearance({ palette: { knot: '#d9707a', line: '#2b363b' } });
+  h.renderer.setAppearance({ fixedScale: 1.5 / 0.85, palette: { knot: '#d9707a', line: '#2b363b' } });
   assert.equal(firstHost.style['--qqj-inline-knot'], '#d9707a'); assert.equal(firstHost.style['--qqj-inline-line'], '#2b363b');
+  assert.equal(firstHost.style['--qqj-inline-fixed-scale'], String(1.5 / 0.85));
   assert.equal(firstView.root, root); assert.equal(firstView.body.hidden, false); assert.equal(firstView.expanded, true);
 
   chat.push({ is_user: true, is_system: false, mes: '后生用户楼' });

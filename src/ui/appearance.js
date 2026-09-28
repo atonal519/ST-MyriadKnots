@@ -1,3 +1,5 @@
+import { fixedFontScale, normalizeFontScale } from './font-scale.js';
+
 function text(value) { return typeof value === 'string' ? value.trim() : ''; }
 function sanitizeFamily(value) { return String(value ?? '').replace(/["\\\r\n]/g, ' ').replace(/\s+/g, ' ').trim(); }
 function parseFontFamily(css) {
@@ -71,8 +73,10 @@ export function applyAppearance({ host, root, settings, documentRef = globalThis
   host?.setAttribute?.('data-qqj-theme', appearance.effectiveTheme);
   host?.setAttribute?.('data-qqj-theme-mode', appearance.mode);
   for (const [name, color] of Object.entries(appearance.palette)) host?.style?.setProperty?.(`--${name}`, color);
-  const scale = Math.min(1.5, Math.max(0.75, Number(value.appearanceScale) || 1));
+  const scale = normalizeFontScale(value.appearanceScale);
   host?.style?.setProperty?.('--qqj-ui-scale', String(scale));
+  const fixedScale = fixedFontScale(scale);
+  host?.style?.setProperty?.('--qqj-ui-fixed-scale', String(fixedScale));
 
   const url = text(value.appearanceFontCssUrl);
   const cachedFamily = sanitizeFamily(value.appearanceFontFamily);
@@ -110,7 +114,7 @@ export function applyAppearance({ host, root, settings, documentRef = globalThis
     })();
   }
 
-  return { theme: appearance.mode, mode: appearance.mode, effectiveTheme: appearance.effectiveTheme, hasHostSignal: appearance.hasHostSignal, palette: appearance.palette, scale, family: cachedFamily, fontCssUrl: url, fontReady };
+  return { theme: appearance.mode, mode: appearance.mode, effectiveTheme: appearance.effectiveTheme, hasHostSignal: appearance.hasHostSignal, palette: appearance.palette, scale, fixedScale, family: cachedFamily, fontCssUrl: url, fontReady };
 }
 
 export function createAppearanceController({ host, root, settings, documentRef = globalThis.document, windowRef = documentRef?.defaultView ?? globalThis, fetchImpl = globalThis.fetch, onChange } = {}) {

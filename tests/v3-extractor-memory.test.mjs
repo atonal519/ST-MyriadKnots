@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createHostAdapter } from '../src/v3/host-adapter.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
-import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
+import { createFoundationRuntime, projectFoundationPrefix } from '../src/v3/foundation-runtime.js';
 import { createV3MemoryRuntime, projectMemoryPersonEntities } from '../src/v3/memory-runtime.js';
 import { scanAssistantCandidates } from '../src/v3/foundation-domain.js';
 import { createV3RecallRuntime } from '../src/v3/recall-runtime.js';
@@ -16,7 +16,7 @@ import { buildCseSystemPrompt, CSE_FIXED_CONTRACT, CSE_SYSTEM_PROMPT, createCseE
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
 import { buildEntityIdentityDirectory } from '../src/v3/entity-identity.js';
 import { projectInlineMemoryFloor } from '../src/ui/inline-projection.js';
-import { validateFloorMemory } from '../src/v3/memory-schema.js';
+import { collectFloorMemoryEntityIds, collectStateDeltaEntityIds, validateEntityRecord, validateFloorMemory, validateMemoryGraph } from '../src/v3/memory-schema.js';
 import { captureFloorVariableReference } from '../src/v3/floor-variable-reference.js';
 import { createCompactApiClient } from '../src/compact-api-client.js';
 import { createTaskRouter } from '../src/api-routing.js';
@@ -1460,6 +1460,110 @@ test('code fence、前后说明、数组包裹、尾逗号、常见键别名与�
   const floorWrapped = await direct({ floors: [{ summary: '楼层包裹摘要。' }] });
   assert.equal(floorWrapped.memory.summary.aiText, '楼层包裹摘要。');
 });
+
+test('人物裁剪引用覆盖千事候选与 CSE 的全部有效关系位置', () => {
+  const ids = Array.from({ length: 10 }, (_, index) => `${String(index + 1).padStart(8, '0')}-0000-4000-8000-000000000000`);
+  const memory = {
+    summaryEvidenceRefs: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], exactAnchors: [], openLoops: [], cseSignals: [], chronology: [], eventFragments: [], ambiguities: [],
+    qianshiDelta: {
+      events: [{ people: [{ entityId: ids[0] }] }],
+      historyReview: { candidates: [{ event: { people: [{ entityId: ids[1] }] } }] },
+    },
+  };
+  assert.deepEqual([...collectFloorMemoryEntityIds(memory)].sort(), ids.slice(0, 2).sort());
+  assert.deepEqual([...collectFloorMemoryEntityIds(memory, { includeReviewCandidates: false })], [ids[0]], '旧图校验仍只要求正式事件引用实体');
+  const delta = {
+    subjectSnapshots: [{ subjectEntityId: ids[2], core: [{ towardEntityId: ids[3] }], adaptive: [{ towardEntityId: ids[4] }], situational: [{ towardEntityId: ids[5] }] }],
+    fixedChanges: [{ subjectEntityId: ids[6], items: [{ before: { towardEntityId: ids[7] }, after: { towardEntityId: ids[8] } }] }],
+    source: { calibrationAudit: [{ subjectEntityId: ids[9], previousTowardEntityId: ids[3], towardEntityId: ids[4] }] },
+  };
+  assert.deepEqual([...collectStateDeltaEntityIds(delta)].sort(), ids.slice(2).sort());
+});
+
+test('千事引用经 runtime 保存和冷读保留，分支投影保留待审/CSE audit 人物并裁掉无引用人物', async () => {
+  const h = harness({
+    initialChat: [assistant('沈砚首次出场。'), user('确认一'), assistant('沈砚将旧书交给顾舟。'), user('确认二')],
+    utility: options => {
+      const request = JSON.parse(options.taskMessages[0].content);
+      if (request.task === 'extractFloorSemantics') {
+        if (request.payload.canonicalContent === '沈砚首次出场。') return { jsonData: { summary: '沈砚首次出场。', people: [{ name: '沈砚' }, { name: '顾舟' }] } };
+        return { jsonData: { summary: '沈砚将旧书交给顾舟。', people: [{ name: '沈砚' }, { name: '顾舟' }],
+          qianshi: { events: [{ key: 'event-1', title: '交付旧书', description: '沈砚将旧书交给顾舟。', status: 'occurred', matter: false, people: ['沈砚', '顾舟'] }] },
+        } };
+      }
+      return { jsonData: { noMaterialChange: true } };
+    },
+  });
+  h.context.chatMetadata.integrity = 'complete';
+  await h.runtime.start();
+  const floors = h.runtime.getState().floors;
+  await h.runtime.extractFloor(floors[0].floorId);
+  await h.runtime.extractFloor(floors[1].floorId);
+  const saved = await h.store.readReachable({ mode: 'runtime' });
+  const savedMemory = saved.floorMemories.find(memory => memory.floorId === floors[1].floorId);
+  const qianshiEntityIds = savedMemory.qianshiDelta.events[0].people.map(person => person.entityId);
+  assert.equal(qianshiEntityIds.length, 2);
+  assert.ok(qianshiEntityIds.every(id => saved.entities.some(entity => entity.id === id)), '真实 runtime 提交后的有效图含有千事人物');
+  const cold = await h.store.readReachable({ mode: 'full' });
+  assert.ok(qianshiEntityIds.every(id => cold.entities.some(entity => entity.id === id)), '完整冷读仍能解析千事人物引用');
+  const legacyReviewMemory = { ...savedMemory, qianshiDelta: { ...savedMemory.qianshiDelta, historyReview: {
+    rawFingerprint: savedMemory.sourceRawFingerprint, priorStatus: savedMemory.qianshiDelta.status, priorReason: savedMemory.qianshiDelta.reason,
+    candidates: [{ candidateId: '99999999-9999-4999-8999-999999999997', decision: 'pending',
+      event: { ...savedMemory.qianshiDelta.events[0], id: '99999999-9999-4999-8999-999999999997', people: [{ entityId: '99999999-9999-4999-8999-999999999999', name: '旧存档遗留人物' }] },
+      relations: [], recommendedEventId: null, matchBasis: [] }],
+  } } };
+  await validateMemoryGraph({ ...cold, indexKeys: cold.checkpoint.producedRefs.indexes,
+    floorMemories: cold.floorMemories.map(memory => memory.floorId === savedMemory.floorId ? legacyReviewMemory : memory) });
+
+  assert.ok(saved.baseline, 'runtime 保存应建立有效 CSE baseline');
+  const branchFloor = saved.floors[0];
+  const removedFloor = saved.floors[1];
+  const branchFloorId = branchFloor.id;
+  const removedFloorId = removedFloor.id;
+  const makeEntity = (id, name) => validateEntityRecord({
+    schemaVersion: 3, recordType: 'entity', id, chatId: CHAT, narrativeGeneration: GENERATION,
+    entityType: 'person', displayName: name, aliases: [], specialRole: 'none',
+    firstSeenFloorId: removedFloorId, lastSeenFloorId: removedFloorId, status: 'established', mergedIntoEntityId: null,
+    mergeEvidenceRefs: [], baselineClaimIds: [], createdAt: NOW, updatedAt: NOW, recordStatus: 'active', supersedes: null,
+  }, { expectedChatId: CHAT });
+  const ids = [
+    '99999999-9999-4999-8999-999999999901', '99999999-9999-4999-8999-999999999902',
+    '99999999-9999-4999-8999-999999999903', '99999999-9999-4999-8999-999999999904',
+    '99999999-9999-4999-8999-999999999905',
+  ];
+  const branchMemoryBase = saved.floorMemories.find(memory => memory.floorId === branchFloorId);
+  const eventId = '99999999-9999-4999-8999-999999999906';
+  const reviewId = '99999999-9999-4999-8999-999999999907';
+  const formalEvent = { id: eventId, matterId: null, updatesMatter: false, title: '正式事件', description: '正式事件说明', status: 'occurred',
+    storyTime: null, scheduledTime: null, people: [{ entityId: ids[0], name: '正式人物' }], object: null, sourceFloorId: branchFloorId, continuesFromEventIds: [] };
+  const reviewEvent = { ...formalEvent, id: reviewId, title: '待审事件', people: [{ entityId: ids[1], name: '待审人物' }] };
+  const branchMemory = validateFloorMemory({ ...branchMemoryBase, qianshiDelta: {
+    schemaVersion: 1, status: 'ready', reason: null, compiledAt: NOW, candidateStats: { count: 1, characters: 1 }, events: [formalEvent], relations: [],
+    historyReview: { rawFingerprint: 'sha256:' + 'a'.repeat(64), priorStatus: 'ready', priorReason: null, candidates: [{
+      candidateId: reviewId, decision: 'pending', event: reviewEvent, relations: [], recommendedEventId: null, matchBasis: [],
+    }] },
+  } }, { expectedChatId: CHAT });
+  const branchDelta = structuredClone(saved.stateDeltas.find(delta => delta.floorId === branchFloorId));
+  assert.ok(branchDelta?.subjectSnapshots.length, '分支用现存 CSE delta 必须带有效人物快照');
+  const calibrationAudit = { subjectEntityId: ids[2], category: 'core', action: 'add', previousText: null, previousTowardEntityId: null,
+    text: '与审计人物的关系', towardEntityId: ids[3], reason: '有证据的状态新增', evidence: [{ source: 'floor', quote: '原文依据' }] };
+  calibrationAudit.subjectEntityId = branchDelta.subjectSnapshots[0].subjectEntityId;
+  branchDelta.source = { ...branchDelta.source, calibrationVersion: 1, calibrationAudit: [calibrationAudit] };
+  const projected = await projectFoundationPrefix({
+    source: { ...saved, floorMemories: saved.floorMemories.map(memory => memory.floorId === branchFloorId ? branchMemory : memory),
+      stateDeltas: saved.stateDeltas.map(delta => delta.floorId === branchFloorId ? branchDelta : delta),
+      entities: [...saved.entities, ...[[ids[0], '正式人物'], [ids[1], '待审人物'], [ids[3], '审计关系人物'], [ids[4], '无引用人物']].map(([id, name]) => makeEntity(id, name))] },
+    floors: [branchFloor], chatId: CHAT, narrativeGeneration: GENERATION, now: NOW,
+  });
+  const projectedIds = new Set(projected.entities.map(entity => entity.id));
+  for (const id of [ids[0], ids[1], ids[3], branchDelta.subjectSnapshots[0].subjectEntityId]) assert.ok(projectedIds.has(id), '分支投影保留被引用人物 ' + id);
+  assert.equal(projected.baseline.id, saved.baseline.id);
+  assert.deepEqual(projected.stateDeltas.map(delta => delta.id), [branchDelta.id], '有效 baseline 下分支保留 CSE delta');
+  assert.ok(projected.currentState.appliedDeltaIds.includes(branchDelta.id), '投影重放后的 currentState 确实应用了保留的 CSE delta');
+  assert.ok(projected.floorMemories[0].qianshiDelta.historyReview.candidates.some(candidate => candidate.candidateId === reviewId), '分支 FloorMemory 保留待审候选');
+  assert.ok(!projectedIds.has(ids[4]), 'firstSeen 楼已退出分支且没有任何引用的人物会被裁掉');
+});
+
 
 test('中英/粤语原句与括号译文不会让整楼失败或待复核', async () => {
   const content = '裴晚生说：“食咗饭未？”*(吃饭了吗？)* 随后说“Take care.”（保重。）';

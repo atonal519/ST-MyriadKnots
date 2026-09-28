@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { applyAppearance, createAppearanceController, resolveAppearance } from '../src/ui/appearance.js';
+import { fixedFontScale, scaleCssFontSizes } from '../src/ui/font-scale.js';
 
 test('面板标题与人物名沿用用户字体，不再由固定宋体覆盖', async () => {
   const css = await readFile(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
@@ -21,9 +22,36 @@ test('外观仅写千千结 host 与其 Shadow Root 字体链接', () => {
   assert.equal(result.theme, 'night');
   assert.equal(attributes['data-qqj-theme'], 'night');
   assert.equal(properties['--qqj-ui-scale'], '1.25');
+  assert.equal(properties['--qqj-ui-fixed-scale'], String(1.25 / 0.85));
   assert.equal(properties['--qqj-custom-font'], '"Test Font"');
   assert.equal(children.length, 1);
   assert.deepEqual(unrelated, {});
+});
+
+test('固定字号以85%为旧版基线，面板根字号仍按滑杆值缩放', async () => {
+  const css = await readFile(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
+  const scaled = scaleCssFontSizes(css, '--qqj-ui-fixed-scale', true);
+  assert.match(scaled, /font:700 calc\(19px \* var\(--qqj-ui-fixed-scale,1\)\)\/1/u);
+  assert.match(scaled, /font-size:calc\(8px \* var\(--qqj-ui-fixed-scale,1\)\)/u);
+  assert.match(scaled, /:host\{[^}]*font:calc\(13px \* var\(--qqj-ui-scale,1\)\)/u);
+  const summaryHeading = /\.settings-sub-summary h4\{[^}]*font:600 calc\((\d+(?:\.\d+)?)px \* var\(--qqj-ui-fixed-scale,1\)\)\/calc\((\d+(?:\.\d+)?)px \* var\(--qqj-ui-fixed-scale,1\)\)/u.exec(scaled);
+  assert.deepEqual(summaryHeading?.slice(1).map(Number), [13, 20]);
+  assert.doesNotMatch(scaled, /font-size:\d+(?:\.\d+)?px/u);
+  const important = scaleCssFontSizes('.tab{font-size:14px!important}.label{font-size:11px !important}');
+  assert.match(important, /font-size:calc\(14px \* var\(--qqj-ui-fixed-scale,1\)\)!important/u);
+  assert.match(important, /font-size:calc\(11px \* var\(--qqj-ui-fixed-scale,1\)\) !important/u);
+  assert.match(await readFile(new URL('../src/ui/gouhua-dialog-style.js', import.meta.url), 'utf8'), /--sp-scale:var\(--qqj-dialog-scale,1\)/u);
+  for (const [slider, expectedRatio] of [[0.75, 0.75 / 0.85], [0.85, 1], [1, 1 / 0.85], [1.5, 1.5 / 0.85]]) {
+    assert.equal(fixedFontScale(slider), expectedRatio);
+    assert.equal(19 * fixedFontScale(slider) / (slider / 0.85), 19, '固定字号相对旧版85%基线保持单调比例');
+  }
+  assert.equal(fixedFontScale(0.75) < fixedFontScale(0.85), true);
+  assert.equal(fixedFontScale(0.85) < fixedFontScale(1), true);
+  assert.equal(fixedFontScale(1) < fixedFontScale(1.5), true);
+  for (const [slider, ratio] of [[0.75, 0.75 / 0.85], [0.85, 1], [1, 1 / 0.85], [1.5, 1.5 / 0.85]]) {
+    assert.ok(Math.abs(13 * ratio - 13 * slider / 0.85) < 1e-10, '设置小标题字号跟随固定字号倍率');
+    assert.ok(Math.abs(20 * ratio - 20 * slider / 0.85) < 1e-10, '设置小标题行高跟随固定字号倍率');
+  }
 });
 
 test('手动日间使用冷白表面与唯一强调红，夜间强调红保持同源', () => {

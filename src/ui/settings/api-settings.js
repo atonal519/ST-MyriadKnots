@@ -71,6 +71,8 @@ export function createApiSettings({
   modelSummary.append(modelChevron, modelCount); modelBody.append(modelSearch, modelItems); modelSection.append(modelSummary, modelBody);
   const exclude = element('textarea', 'settings-input'); exclude.placeholder = '排除参数，每行一个';
   const timeout = element('input', 'settings-input'); timeout.type = 'number'; timeout.min = '5'; timeout.max = '600';
+  const temperature = element('input', 'settings-input'); temperature.type = 'number'; temperature.min = '0'; temperature.max = '2'; temperature.step = '0.01'; temperature.placeholder = '留空使用任务默认值';
+  const temperatureHint = element('p', 'settings-hint', '留空沿用当前任务温度；较高温度可能降低结构化提取稳定性。');
   const stream = element('input'); stream.type = 'checkbox';
   const editingHint = element('p', 'settings-hint');
   let remove;
@@ -112,6 +114,7 @@ export function createApiSettings({
     model.value = config.model ?? '';
     exclude.value = (config.excludeParams ?? []).join('\n');
     timeout.value = String(config.timeoutSec ?? 180);
+    temperature.value = config.qqjTemperature == null ? '' : String(config.qqjTemperature);
     stream.checked = config.stream === true;
     editingHint.textContent = target.followsSummary
       ? `正在编辑：召回 API 跟随摘要${target.followsAnalysis ? '，摘要跟随分析' : ''} · ${target.label}。直接保存会更新当前${target.followsAnalysis ? '分析' : '摘要'}配置；另存可建立召回专用预设。`
@@ -143,7 +146,14 @@ export function createApiSettings({
     excludeParams: exclude.value,
     timeoutSec: Number(timeout.value),
     stream: stream.checked,
+    qqjTemperature: temperature.value.trim() === '' ? null : Number(temperature.value),
   });
+  const validTemperature = () => {
+    const raw = temperature.value.trim();
+    if (!raw) return true;
+    const value = Number(raw);
+    return Number.isFinite(value) && value >= 0 && value <= 2 && Math.abs(value * 100 - Math.round(value * 100)) < 1e-8;
+  };
 
   const result = element('p', 'settings-result');
   const selection = () => {
@@ -176,6 +186,10 @@ export function createApiSettings({
   model.addEventListener('input', () => { if (!modelSection.hidden) renderModels(); });
 
   const save = button('保存设置', 'primary-action', () => {
+    if (!validTemperature()) {
+      result.textContent = '温度须在 0–2 之间，并按 0.01 递增。'; result.className = 'settings-result error';
+      return;
+    }
     const target = editingTarget();
     if (target.presetId && !target.config) {
       result.textContent = '所选 API 预设已失效，请重新选择或另存为新预设。';
@@ -193,6 +207,10 @@ export function createApiSettings({
     scrollManualEditorToTop(drawer);
   });
   const create = button('另存为预设', 'secondary-action', async () => {
+    if (!validTemperature()) {
+      result.textContent = '温度须在 0–2 之间，并按 0.01 递增。'; result.className = 'settings-result error';
+      return;
+    }
     const name = String(await Promise.resolve(promptImpl({ title: '另存为预设', body: '为当前 API 配置输入一个名称。', initialValue: '千千结预设', placeholder: '预设名称', confirmText: '保存', validate: value => String(value ?? '').trim() ? '' : '请输入预设名称。' })) ?? '').trim();
     if (!name) return;
     const id = settings.upsertSharedPreset(name, draft());
@@ -243,6 +261,10 @@ export function createApiSettings({
     rerender?.();
   });
   const test = button('测试连接', 'secondary-action', async () => {
+    if (!validTemperature()) {
+      result.textContent = '温度须在 0–2 之间，并按 0.01 递增。'; result.className = 'settings-result error';
+      return;
+    }
     result.textContent = '正在测试…'; result.className = 'settings-result';
     try {
       const response = await apiTools.testConnection(selection());
@@ -261,7 +283,7 @@ export function createApiSettings({
   const { drawer: advanced, body: advancedBody } = subDrawer({ title: '高级设置', id: 'qqj-settings-api-advanced', open: advancedOpen, onToggle: onAdvancedToggle });
   advanced.classList.add('sub-advanced');
   const streamLabel = element('label', 'setting-switch'); streamLabel.append(stream, element('span', '', '流式请求'));
-  advancedBody.append(field('排除参数', exclude), streamLabel, field('超时秒数', timeout));
+  advancedBody.append(field('排除参数', exclude), streamLabel, field('超时秒数', timeout), field('千千结温度（0–2）', temperature), temperatureHint);
 
   body.append(
     field('分析API（建议高质模型）', analysisSelect),

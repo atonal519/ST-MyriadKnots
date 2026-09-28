@@ -138,7 +138,7 @@ test('外观模块内联选择即存并即时应用；程序设置同步标签�
 
 test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调用与另存均不改分析选择', async () => {
   let main = { id: '', name: '主配置', url: 'https://main.test/v1', key: 'MAIN_KEY', model: 'main-model', excludeParams: [], timeoutSec: 180, stream: false };
-  let presets = [{ id: 'fast', name: '摘要快速', url: 'https://fast.test/v1', key: 'FAST_KEY', model: 'fast-model', excludeParams: ['seed'], timeoutSec: 60, stream: true }];
+  let presets = [{ id: 'fast', name: '摘要快速', url: 'https://fast.test/v1', key: 'FAST_KEY', model: 'fast-model', excludeParams: ['seed'], timeoutSec: 60, stream: true, qqjTemperature: 0.42 }];
   let utilityPresetId = 'fast';
   const analysisUpdates = [], utilityUpdates = [], saves = [], toolCalls = [];
   const settings = {
@@ -173,13 +173,15 @@ test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调�
   assert.equal(node.find(n => n.tagName === 'select'), undefined, 'API 角色预设不得唤起手机原生选择器');
   const url = fieldControl(node, 'URL'), key = fieldControl(node, 'Key');
   const model = fieldControl(node, '模型').find(n => n.tagName === 'input');
+  const temperature = fieldControl(node, '千千结温度（0–2）');
   assert.equal(url.value, 'https://main.test/v1');
   await focusInline(summary);
   assert.equal(url.value, 'https://fast.test/v1');
   assert.equal(model.value, 'fast-model');
+  assert.equal(temperature.value, '0.42', '角色切换应回显所选配置温度');
   assert.match(node.find(n => n.className === 'settings-hint').textContent, /摘要 API · 摘要快速/);
 
-  url.value = 'https://fast-draft.test/v1'; model.value = 'fast-draft-model'; key.value = '';
+  url.value = 'https://fast-draft.test/v1'; model.value = 'fast-draft-model'; key.value = ''; temperature.value = '0.31';
   const fetchBtn = node.find(n => n.tagName === 'button' && n.textContent === '拉取模型');
   await fetchBtn.fire('click'); await flush();
   await node.find(n => n.tagName === 'button' && n.textContent === '测试连接').fire('click'); await flush();
@@ -187,6 +189,7 @@ test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调�
     ['models', 'https://fast-draft.test/v1', 'FAST_KEY', 'fast-draft-model'],
     ['test', 'https://fast-draft.test/v1', 'FAST_KEY', 'fast-draft-model'],
   ]);
+  assert.equal(toolCalls.find(([kind]) => kind === 'test')[1].config.qqjTemperature, 0.31, '连接测试使用当前编辑温度');
   const modelSection = node.find(n => n.tagName === 'details' && n.className === 'qqj-model-list-section');
   assert.equal(modelSection.hidden, false); assert.equal(modelSection.open, true);
   assert.match(modelSection.textContent, /已加载 2 个模型/);
@@ -201,6 +204,7 @@ test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调�
   assert.equal(scroller.scrollTop, 120, 'API 保存并刷新字段后回到配置抽屉顶部');
   assert.equal(presets.find(item => item.id === 'fast').url, 'https://fast-draft.test/v1');
   assert.equal(presets.find(item => item.id === 'fast').key, 'FAST_KEY', 'Key 留空必须保留摘要预设原值');
+  assert.equal(presets.find(item => item.id === 'fast').qqjTemperature, 0.31, '共享预设保存温度');
   assert.deepEqual(analysisUpdates, [], '保存摘要配置不得切换分析 API');
 
   await chooseInline(summary, '');
@@ -208,12 +212,24 @@ test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调�
   assert.equal(url.value, 'https://main.test/v1');
   assert.match(node.find(n => n.className === 'settings-hint').textContent, /摘要 API 跟随分析/);
   url.value = 'https://main-through-summary.test/v1'; key.value = '';
+  temperature.value = '2.01';
+  await save.fire('click');
+  assert.equal(main.url, 'https://main.test/v1', '越界温度阻止保存');
+  assert.match(node.find(n => n.className.includes('settings-result')).textContent, /温度须在 0–2/u);
+  temperature.value = '0';
   await save.fire('click');
   assert.equal(main.url, 'https://main-through-summary.test/v1');
   assert.equal(main.key, 'MAIN_KEY', '跟随分析时 Key 留空必须保留实际主配置原值');
+  assert.equal(main.qqjTemperature, 0, '0 是有效的温度设置');
   assert.deepEqual(analysisUpdates, [], '通过跟随摘要保存共享目标不得改分析选择');
 
   const saveCountBeforePrompt = saves.length;
+  temperature.value = '2.001';
+  await node.find(n => n.tagName === 'button' && n.textContent === '另存为预设').fire('click');
+  assert.equal(promptCalls.length, 0, '非法温度不得打开另存预设流程');
+  assert.equal(saves.length, saveCountBeforePrompt, '非法温度不得写入共享预设');
+  assert.match(node.find(n => n.className.includes('settings-result')).textContent, /温度须在 0–2/u);
+  temperature.value = '0';
   await node.find(n => n.tagName === 'button' && n.textContent === '另存为预设').fire('click');
   assert.equal(saves.length, saveCountBeforePrompt, '取消另存输入不得创建预设'); assert.equal(rerenders, 0);
   promptResponse = '摘要专用新预设';
@@ -229,9 +245,10 @@ test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调�
 test('无构画设置可从 UI 点击已存预设，并让后续分析与摘要路由使用该配置', async () => {
   const extensionSettings = {};
   const settings = createSettingsStore({ extensionSettings, save() {}, now: () => 1, random: () => 0.5 });
-  const presetId = settings.upsertSharedPreset('预设 A', { url: 'https://preset-a.test/v1', key: 'KEY_A', model: 'model-a', excludeParams: ['seed'], timeoutSec: 45, stream: true }, 'preset-a');
+  const presetId = settings.upsertSharedPreset('预设 A', { url: 'https://preset-a.test/v1', key: 'KEY_A', model: 'model-a', excludeParams: ['seed'], timeoutSec: 45, stream: true, qqjTemperature: 0.73 }, 'preset-a');
   assert.equal(presetId, 'preset-a');
   assert.equal(settings.sharedPresets().length, 1, '没有构画初始记录时仍能建立共享预设池');
+  assert.equal(settings.sharedPresets()[0].qqjTemperature, 0.73, '共享预设保留千千结专属温度');
 
   const routed = [];
   const resolver = createApiResolver({ settings });
@@ -257,11 +274,23 @@ test('无构画设置可从 UI 点击已存预设，并让后续分析与摘要�
   assert.equal(fieldControl(node, 'URL').value, 'https://preset-a.test/v1');
 
   await router.generateAnalysisTask({});
+  assert.equal(routed.at(-1).qqjTemperature, 0.73, '路由后的实际配置包含预设温度');
   await router.generateUtilityTask({});
   assert.deepEqual(routed.map(config => [config.url, config.key, config.model]), [
     ['https://preset-a.test/v1', 'KEY_A', 'model-a'],
     ['https://preset-a.test/v1', 'KEY_A', 'model-a'],
   ]);
+});
+
+test('共享预设更新保留宿主未知字段，清空温度后回显未设置', () => {
+  const extensionSettings = { 'schedule-planner': { apiPresets: [{ id: 'shared', name: '旧名', url: 'https://old.test/v1', key: 'OLD_KEY', model: 'old', timeoutSec: 30, stream: false, qqjTemperature: 0.44, hostField: 'keep' }] } };
+  const settings = createSettingsStore({ extensionSettings, save() {} });
+  settings.upsertSharedPreset('更新后', { url: 'https://new.test/v1', key: 'NEW_KEY', model: 'new', timeoutSec: 45, stream: true, qqjTemperature: 0.91 }, 'shared');
+  assert.equal(extensionSettings['schedule-planner'].apiPresets[0].qqjTemperature, 0.91);
+  assert.equal(extensionSettings['schedule-planner'].apiPresets[0].hostField, 'keep');
+  settings.upsertSharedPreset('更新后', { url: 'https://new.test/v1', key: 'NEW_KEY', model: 'new', timeoutSec: 45, stream: true, qqjTemperature: null }, 'shared');
+  assert.equal(Object.hasOwn(extensionSettings['schedule-planner'].apiPresets[0], 'qqjTemperature'), false, '清空时删除旧值');
+  assert.equal(settings.sharedPresets()[0].qqjTemperature, undefined, '清空后回显为空');
 });
 
 test('召回跟随链编辑真实目标，另存与删除只切召回角色', async () => {

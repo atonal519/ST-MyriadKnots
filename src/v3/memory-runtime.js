@@ -3,7 +3,7 @@ import { buildFoundationIndexes } from './foundation-runtime.js';
 import { createCheckpointInputFingerprints, deterministicUuid, scanAssistantCandidates } from './foundation-domain.js';
 import { validateFoundationCheckpoint, validateFoundationRoot, validateFoundationRun, V3_INDEX_LAYOUT_FLOOR_ORDER } from './foundation-schema.js';
 import { buildExtractorSystemPrompt, buildHighFloorExtractorSystemPrompt, runExtractorRequest, createExtractorEnvelope, inferCanonicalCurrentTime, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_VERSION } from './extractor.js';
-import { memorySourceFloorIds, validateEntityRecord, validateFloorMemory } from './memory-schema.js';
+import { collectFloorMemoryEntityIds, collectStateDeltaEntityIds, memorySourceFloorIds, validateEntityRecord, validateFloorMemory } from './memory-schema.js';
 import { sanitizeDiagnosticValue, sanitizeSensitiveText, sanitizeTaskMetadata } from './safe-metadata.js';
 import { createCseRuntime } from './cse-runtime.js';
 import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
@@ -1155,12 +1155,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       entitiesById.set(entity.id, entity);
     }
     const provisionalDeltas = filterReachableDeltas({ floors: current.floors, floorMemories, stateDeltas: current.stateDeltas ?? [] });
-    const stateEntityIds = new Set(provisionalDeltas.flatMap(delta => [
-      ...delta.subjectSnapshots.flatMap(subject => [subject.subjectEntityId, ...['adaptive', 'situational'].flatMap(category => subject[category].map(item => item.towardEntityId).filter(Boolean))]),
-      ...(delta.fixedChanges ?? []).flatMap(subject => [subject.subjectEntityId, ...subject.items.flatMap(change => [change.before?.towardEntityId, change.after?.towardEntityId].filter(Boolean))]),
-    ]));
+    const memoryEntityIds = new Set(floorMemories.flatMap(memory => [...collectFloorMemoryEntityIds(memory)]));
+    const stateEntityIds = new Set(provisionalDeltas.flatMap(delta => [...collectStateDeltaEntityIds(delta)]));
     const baselineEntityIds = new Set(current.baseline ? [current.baseline.userPersona.entityId, current.baseline.characterCard.entityId] : []);
-    const entities = [...entitiesById.values()].filter(entity => current.floors.some(item => item.id === entity.firstSeenFloorId) || floorMemories.some(memory => JSON.stringify(memory).includes(entity.id)) || stateEntityIds.has(entity.id) || baselineEntityIds.has(entity.id));
+    const entities = [...entitiesById.values()].filter(entity => current.floors.some(item => item.id === entity.firstSeenFloorId) || memoryEntityIds.has(entity.id) || stateEntityIds.has(entity.id) || baselineEntityIds.has(entity.id));
     const nowValue = operation.commitTimestamp ??= nowIso(now);
     const runId = await deterministicUuid(['v3-memory-commit-run', operation.runId, current.root.headCheckpointId, attempt]);
     const checkpointId = await deterministicUuid(['v3-memory-checkpoint', current.root.headCheckpointId, current.root.narrativeGeneration, action, revisionReplacement.id, entities.map(entity => entity.id), runId]);

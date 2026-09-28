@@ -1,4 +1,6 @@
 // Recall-only presentation; source indices and UI state are scoped to the owning chat.
+import { scaleCssFontSizes } from './font-scale.js';
+
 export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
   const floorIds = [...new Set([
     ...(projection.selectedFloors ?? []).map(item => item.floorId),
@@ -18,7 +20,7 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
   };
   const button = (className, text) => { const value = node('button', className, text); value.type = 'button'; return value; };
   const style = card.recallStyle ?? node('style');
-  style.textContent = `
+  style.textContent = scaleCssFontSizes(`
     .recall-design [hidden]{display:none!important}
     .recall-design{font-size:12px;line-height:1.7;padding:0 2px 3px;--soft:color-mix(in srgb,currentColor 5%,transparent);--muted:color-mix(in srgb,currentColor 57%,transparent)}
     .recall-design button{font:inherit;color:inherit;cursor:pointer;box-shadow:none;text-shadow:none}
@@ -73,7 +75,7 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     .change-removed .change-copy{text-decoration:line-through;text-decoration-thickness:1px}
     .change-copy{white-space:pre-wrap;overflow-wrap:anywhere}
     .change-visibility{font-size:9px;color:var(--muted);margin-left:6px;white-space:nowrap}
-  `;
+  `, '--qqj-inline-fixed-scale');
   if (!card.recallStyle) { card.root.append(style); card.recallStyle = style; }
   const root = node('div', 'recall-design');
   const tabs = node('div', 'recall-tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', '召回内容');

@@ -354,10 +354,15 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
         : 'Process only the supplied task input. Return only JSON matching the requested schema.' },
       ...(Array.isArray(taskMessages) ? taskMessages : []).filter(message => ['system', 'user'].includes(message?.role) && typeof message.content === 'string').map(message => ({ role: message.role, content: message.content })),
     ];
+    const configuredValue = config?.qqjTemperature;
+    const configuredTemperature = configuredValue === null || configuredValue === undefined || typeof configuredValue === 'string' && configuredValue.trim() === ''
+      ? null : typeof configuredValue === 'number' || typeof configuredValue === 'string' ? Number(configuredValue) : NaN;
+    const requestTemperature = Number.isFinite(configuredTemperature) && configuredTemperature >= 0 && configuredTemperature <= 2
+      ? configuredTemperature : temperature;
     const body = {
       chat_completion_source: 'openai', reverse_proxy: normalizeApiUrl(config?.url), proxy_password: config?.key,
       model: config?.model || DEFAULT_MODEL, messages: compactMessages, stream: config?.stream === true,
-      temperature, max_tokens: maxTokens,
+      temperature: requestTemperature, max_tokens: maxTokens,
     };
     if (jsonSchema) body.json_schema = { name: jsonSchema.name || 'qianqianjie_task', value: jsonSchema.value || jsonSchema.schema, strict: jsonSchema.strict !== false };
     for (const item of config?.excludeParams || []) {

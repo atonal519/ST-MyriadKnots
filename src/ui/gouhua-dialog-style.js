@@ -4,7 +4,7 @@ export const gouhuaDialogCss = `
 :host{position:fixed;top:0;left:0;width:100vw;width:100dvw;height:100vh;height:100dvh;z-index:2000003;display:block;overflow:hidden;pointer-events:none}
 *{box-sizing:border-box}
 .sp-root{
-    --sp-scale:1;
+    --sp-scale:var(--qqj-dialog-scale,1);
     --sp-font:var(--qqj-dialog-font,-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif);
     --sp-fs-72:calc(11.52px * var(--sp-scale));
     --sp-fs-75:calc(12px * var(--sp-scale));
