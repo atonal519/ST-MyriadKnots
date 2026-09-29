@@ -254,6 +254,43 @@ function createHarness({ chat, memoryState, recallState = { recallStatus: 'idle'
   return { documentRef, chatRoot, context, snapshot, memoryRuntime, recallRuntime, renderer, handlers, observers, timers, extractionCalls, memorySubscribers, recallSubscribers, emit, flushMicrotasks, runNextTimer, get snapshotCalls() { return snapshotCalls; }, setMemory(value) { memoryState = value; }, setRecall(value) { recallState = value; } };
 }
 
+test('楼层召回与记忆独立隐藏并可恢复，正文和运行状态不变', async () => {
+  const chat = [{ is_user: true, mes: '继续' }, { is_user: false, mes: '正文' }];
+  const memory = readyState();
+  const h = createHarness({ chat, memoryState: memory });
+  const user = messageElement(0, { user: true }), assistant = messageElement(1);
+  const originalChildren = [...resolveInlineAnchor(user).children];
+  h.chatRoot.append(user, assistant); h.renderer.start(); await h.flushMicrotasks();
+  const card = node => node.querySelector('[data-qqj-inline-host="true"]');
+  assert.ok(card(user)); assert.ok(card(assistant));
+  const assistantCard = card(assistant);
+  h.renderer.setVisibility({ recall: false, memory: true }); await h.flushMicrotasks();
+  assert.equal(card(user), null); assert.equal(card(assistant), assistantCard);
+  assert.deepEqual(resolveInlineAnchor(user).children, originalChildren, '隐藏后不留下卡片占位');
+  h.renderer.setVisibility({ recall: true, memory: false }); await h.flushMicrotasks();
+  assert.ok(card(user)); assert.equal(card(assistant), null);
+  h.renderer.setVisibility({ recall: false, memory: false }); await h.flushMicrotasks();
+  assert.equal(h.renderer.getDebugState().cards, 0);
+  assert.equal(h.renderer.getDebugState().retrying, false);
+  assert.equal(h.memorySubscribers.size, 1); assert.equal(h.recallSubscribers.size, 1);
+  assert.equal(h.memoryRuntime.getState(), memory); assert.deepEqual(h.extractionCalls, []);
+  assert.equal(user.querySelector('.mes_text').textContent, '正文节点');
+  h.renderer.setVisibility({ recall: true, memory: true }); await h.flushMicrotasks();
+  assert.ok(card(user)); assert.ok(card(assistant));
+  assert.equal(h.renderer.getDebugState().cards, 2);
+  h.renderer.destroy();
+});
+
+test('隐藏的楼层角色缺少 DOM 时不触发重试', async () => {
+  const h = createHarness({ chat: [{ is_user: true, mes: '继续' }, { is_user: false, mes: '正文' }], memoryState: readyState() });
+  h.chatRoot.append(messageElement(1));
+  h.renderer.setVisibility({ recall: false, memory: true }); h.renderer.start();
+  h.emit('USER_MESSAGE_RENDERED', 0); await h.flushMicrotasks();
+  assert.equal(h.renderer.getDebugState().cards, 1);
+  assert.equal(h.renderer.getDebugState().retrying, false);
+  h.renderer.destroy();
+});
+
 const readyState = () => ({
   chatId: 'chat-a', memoryWorkBusy: false, activeAutoMemory: null, activeExtraction: null, activeCse: null,
   memoryEntities: [{ entityId: 'p1', displayName: '裴晚生' }],

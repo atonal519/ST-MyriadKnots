@@ -163,7 +163,7 @@ function S({ fetchImpl: e = globalThis.fetch, headers: t = () => ({}), baseUrl: 
 }
 //#endregion
 //#region src/ui/panel.html?raw
-var C = "<section class=\"panel\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"qqj-dialog-title\">\n<header class=\"topbar\"><div class=\"brand\"><span class=\"mark\" id=\"qqj-dialog-title\">千<span class=\"em\">千</span>结</span><span class=\"sub\">Myriad Knots</span></div><div class=\"header-actions\"><button class=\"icon-btn theme-btn\" type=\"button\" aria-label=\"主题：跟随酒馆\" title=\"主题：跟随酒馆（点击切换到日间）\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 3a9 9 0 1 0 0 18V3Z\"></path><circle cx=\"12\" cy=\"12\" r=\"9\"></circle></svg></button><button class=\"icon-btn fab-toggle-btn active\" type=\"button\" aria-label=\"隐藏悬浮球\" title=\"悬浮球：显示\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\"></circle><circle cx=\"12\" cy=\"12\" r=\"2.7\"></circle></svg></button><button class=\"icon-btn close\" type=\"button\" aria-label=\"关闭\" title=\"关闭\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M3.5 3.5l17 17M20.5 3.5l-17 17\"></path></svg></button></div></header>\n<nav class=\"tabs\" role=\"tablist\" aria-label=\"记忆模块\"><button class=\"tab active\" type=\"button\" role=\"tab\" aria-selected=\"true\" data-tab=\"profiles\">千人</button><button class=\"tab\" type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab=\"events\">千结</button><button class=\"tab\" type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab=\"qianshi\">千事</button><button class=\"tab\" type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab=\"people\">双丝网</button><button class=\"tab\" type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab=\"settings\">设置</button></nav>\n<main class=\"body\"><div class=\"view\"></div></main>\n<button class=\"panel-resize-handle\" type=\"button\" aria-label=\"调整千千结面板大小\" title=\"拖动调整面板大小\"><span class=\"resize-grip\" aria-hidden=\"true\"></span></button>\n</section>\n", w = ":host{--paper:#f7f8fa;--panel:#fff;--ink:#22282b;--soft:#637077;--faint:#929da2;--line:#dce2e5;--thread:#cbd4d8;--crimson:#b63745;--knot:#b63745;--blue:#4f8781;--success:#4b7d63;--scroll-thumb:#63707752;--scroll-thumb-hover:#63707785;color:var(--ink);font:calc(13px * var(--qqj-ui-scale,1))/1.55 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif}:host([data-qqj-theme=night]){--paper:#13181b;--panel:#1c2327;--ink:#e7ecee;--soft:#9db0b5;--faint:#6c7c81;--line:#2b363b;--thread:#33424a;--crimson:#d9707a;--knot:#d9707a;--blue:#77b0aa;--success:#77b193;--scroll-thumb:#9db0b54d;--scroll-thumb-hover:#9db0b580}*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:var(--scroll-thumb) transparent}:hover{scrollbar-color:var(--scroll-thumb-hover) transparent}::-webkit-scrollbar{background:0 0;width:5px;height:5px}::-webkit-scrollbar-track{background:0 0}::-webkit-scrollbar-corner{background:0 0}::-webkit-scrollbar-thumb{background:var(--scroll-thumb);background-clip:padding-box;border:1px solid #0000;border-radius:999px;min-height:24px}::-webkit-scrollbar-thumb:hover{background:var(--scroll-thumb-hover);background-clip:padding-box}::-webkit-scrollbar-button{appearance:none!important;background:0 0!important;border:0!important;width:0!important;min-width:0!important;height:0!important;min-height:0!important;display:none!important}::-webkit-scrollbar-button:single-button{appearance:none!important;background:0 0!important;border:0!important;width:0!important;min-width:0!important;height:0!important;min-height:0!important;display:none!important}::-webkit-scrollbar-button:double-button{appearance:none!important;background:0 0!important;border:0!important;width:0!important;min-width:0!important;height:0!important;min-height:0!important;display:none!important}::-webkit-scrollbar-button:horizontal{appearance:none!important;background:0 0!important;border:0!important;width:0!important;min-width:0!important;height:0!important;min-height:0!important;display:none!important}::-webkit-scrollbar-button:vertical{appearance:none!important;background:0 0!important;border:0!important;width:0!important;min-width:0!important;height:0!important;min-height:0!important;display:none!important}::-webkit-scrollbar-button:start{appearance:none!important;background:0 0!important;border:0!important;width:0!important;min-width:0!important;height:0!important;min-height:0!important;display:none!important}::-webkit-scrollbar-button:end{appearance:none!important;background:0 0!important;border:0!important;width:0!important;min-width:0!important;height:0!important;min-height:0!important;display:none!important}@supports selector(::-webkit-scrollbar){*,:hover{scrollbar-width:auto;scrollbar-color:auto}}button,input,select,textarea{font:inherit}.panel{border:1px solid var(--line);background:var(--paper);box-shadow:none;border-radius:14px;overflow:hidden}.topbar{border-bottom:1px solid var(--line);background:var(--paper);cursor:move;-webkit-user-select:none;user-select:none;align-items:center;gap:10px;min-height:52px;padding:12px 16px;display:flex}.brand{align-items:baseline;gap:8px;min-width:0;display:flex}.mark{font:700 19px/1 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;letter-spacing:.12em}.mark .em{color:var(--crimson)}.sub{color:var(--faint);letter-spacing:.18em;font-size:8px}.header-actions{flex:none;align-items:center;gap:2px;margin-left:auto;display:flex}.icon-btn{background:var(--panel);width:32px;height:32px;color:var(--soft);cursor:pointer;border:0;border-radius:50%;place-items:center;padding:0;transition:background .15s,color .15s;display:grid}.icon-btn:hover{color:var(--ink);background:color-mix(in srgb,var(--ink) 7%,var(--panel))}.icon-btn.active{color:var(--knot)}.icon-btn svg{fill:none;stroke:currentColor;stroke-width:1.8px;stroke-linecap:round;stroke-linejoin:round;width:18px;height:18px}.tabs{border-bottom:1px solid var(--line);background:var(--paper);display:flex;position:relative;overflow:auto hidden}.tab{background:var(--paper);color:var(--soft);white-space:nowrap;border:0;flex:1 0 auto;padding:11px 13px;position:relative}.tab.active{color:var(--ink);font-weight:700}.tab.active:after{content:\"\";background:var(--knot);height:2px;transition:background .18s;position:absolute;bottom:-1px;left:27%;right:27%}.body{padding:12px 17px 20px}.view{min-width:0}.empty-state{text-align:center;place-items:center;gap:8px;min-height:230px;display:grid}.empty-state h2,.settings-page h2{font:700 20px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;margin:0}.empty-state p{max-width:27em;color:var(--soft);margin:0}.panel-resize-handle{background:var(--paper);width:24px;height:24px;color:var(--faint);cursor:nwse-resize;border:0;place-items:center;margin-left:auto;display:grid}.resize-grip{width:13px;height:13px;position:relative}.resize-grip:before,.resize-grip:after{content:\"\";border-bottom:1.5px solid;border-right:1.5px solid;position:absolute;bottom:1px;right:1px}.resize-grip:before{width:10px;height:10px}.resize-grip:after{width:5px;height:5px}.settings-page{gap:13px;display:grid}.settings-page>h2{font:700 20px/1.2 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;letter-spacing:.04em;margin:0 2px 1px}.settings-block{border:1px solid var(--line);background:var(--panel);border-radius:10px;gap:11px;padding:13px 14px;display:grid}.settings-block h3{font:700 13.5px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;letter-spacing:.03em;margin:0}.settings-field{color:var(--soft);gap:5px;font-size:11px;display:grid}.settings-field>span{letter-spacing:.02em;color:var(--soft);font-weight:600}.settings-row{grid-template-columns:1fr 1fr;gap:9px;display:grid}.settings-subhead{border-top:1px dashed var(--line);color:var(--faint);letter-spacing:.08em;margin:4px 0 -3px;padding-top:10px;font-size:10px;font-weight:700}.settings-input,.settings-field input,.settings-field select,.settings-field textarea{border:1px solid var(--line);background:var(--paper);width:100%;min-width:0;color:var(--ink);border-radius:8px;padding:8px 9px;transition:border-color .15s,box-shadow .15s}.settings-field input:focus,.settings-field select:focus,.settings-field textarea:focus,.settings-input:focus{border-color:var(--knot);box-shadow:0 0 0 2px color-mix(in srgb,var(--knot) 18%,transparent);outline:none}.settings-field textarea{resize:vertical;min-height:62px;line-height:1.5}.setting-switch{color:var(--ink);align-items:center;gap:9px;padding:2px 0;font-size:12px;display:flex}.setting-switch input{width:15px;height:15px;accent-color:var(--knot);flex:none}.settings-scale{align-items:center;gap:9px;display:flex}.settings-scale input{flex:1}.settings-scale output{min-width:3.2em;color:var(--soft);text-align:right;flex:none;font-size:11px}.settings-hint{color:var(--faint);margin:-1px 0 0;font-size:10.5px;line-height:1.6}.settings-result{color:var(--soft);margin:1px 0 0;font-size:10.5px}.settings-result.success{color:var(--success)}.settings-result.error{color:var(--crimson)}.settings-actions{flex-wrap:wrap;gap:8px;margin-top:2px;display:flex}.primary-action,.secondary-action,.danger-action{cursor:pointer;border-radius:7px;padding:7px 10px}.primary-action{border:1px solid var(--crimson);background:var(--crimson);color:#fff}.secondary-action{border:1px solid var(--line);background:var(--panel);color:var(--ink)}.danger-action{border:1px solid color-mix(in srgb,var(--crimson) 45%,var(--line));background:color-mix(in srgb,var(--crimson) 7%,var(--panel));color:var(--crimson)}button:disabled{border-color:var(--line);background:var(--line);color:var(--soft);cursor:not-allowed}.source-permission-list{gap:7px;max-height:min(40vh,320px);display:grid;overflow-y:auto}.source-toggle-row{align-items:flex-start;gap:7px;padding:6px 2px;display:flex}.source-toggle-row span{min-width:0;display:grid}.source-toggle-row input{accent-color:var(--crimson);margin-top:3px}@media (width<=640px){.topbar{padding-inline:10px}.header-actions{gap:0}.tab{min-width:0;padding-inline:9px}}@media (width<=390px){.body{padding-left:10px;padding-right:10px}.settings-actions{display:grid}.settings-actions button{width:100%}}.settings-drawer{padding:0;overflow:hidden}.settings-drawer-summary{cursor:pointer;align-items:center;gap:8px;padding:10px 11px;list-style:none;display:flex}.settings-drawer-summary::-webkit-details-marker{display:none}.settings-drawer-summary:before{content:\"›\";color:var(--soft);flex:none;font-size:18px;line-height:1;transition:transform .15s}.settings-drawer[open]>.settings-drawer-summary:before{transform:rotate(90deg)}.settings-drawer-summary h3{min-width:0;margin:0}.settings-drawer-body{gap:8px;padding:0 11px 11px;display:grid}@media (width<=520px){.settings-drawer-summary,.settings-drawer-body{padding-inline:9px}}.v3-foundation{gap:11px;display:grid}.v3-foundation-heading{gap:4px;display:grid}.v3-foundation-heading h2{font:700 19px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;margin:0}.v3-foundation-heading p,.v3-foundation-metrics,.v3-foundation-feedback{color:var(--soft);margin:0;font-size:10px}.v3-foundation-grid{border:1px solid var(--line);background:var(--panel);border-radius:9px;gap:0;margin:0;display:grid;overflow:hidden}.v3-foundation-row{border-bottom:1px solid var(--line);grid-template-columns:92px minmax(0,1fr);gap:8px;padding:7px 9px;display:grid}.v3-foundation-row:last-child{border-bottom:0}.v3-foundation-row dt{color:var(--soft)}.v3-foundation-row dd{overflow-wrap:anywhere;margin:0}.v3-foundation-actions{flex-wrap:wrap;gap:6px;display:flex}.v3-foundation-feedback.error{color:var(--crimson)}.v3-memory-floor{border:1px solid var(--line);background:var(--panel);border-radius:9px;overflow:hidden}.v3-memory-floor[open]{border-color:color-mix(in srgb,var(--blue) 45%,var(--line))}.v3-memory-floor-summary{cursor:pointer;justify-content:space-between;align-items:center;gap:8px;padding:9px 10px;display:flex}.v3-memory-floor-summary strong{font-size:11px}.v3-memory-status{background:color-mix(in srgb,var(--blue) 10%,var(--panel));color:var(--blue);border-radius:999px;flex:none;padding:2px 6px;font-size:9px}.status-failed .v3-memory-status,.status-error .v3-memory-status{background:color-mix(in srgb,var(--crimson) 10%,var(--panel));color:var(--crimson)}.status-ready .v3-memory-status{background:color-mix(in srgb,var(--success) 10%,var(--panel));color:var(--success)}.v3-memory-floor-body{border-top:1px solid var(--line);gap:8px;padding:0 10px 10px;display:grid}.v3-memory-effective{white-space:pre-wrap;margin:9px 0 0}.v3-memory-counts{color:var(--soft);margin:0;font-size:9px}.v3-memory-json{background:color-mix(in srgb,var(--blue) 6%,var(--paper));white-space:pre-wrap;overflow-wrap:anywhere;border-radius:7px;max-height:240px;margin:0;padding:8px;font-size:9px;overflow:auto}.v3-memory-edit{gap:6px;display:grid}.v3-memory-edit textarea{resize:vertical;min-height:72px}.v3-diagnostic-fallback{border:1px solid var(--line);background:var(--panel);width:100%;min-height:180px;color:var(--ink);border-radius:7px;padding:8px;font:9px/1.45 monospace}.v3-cse-current{border:1px solid color-mix(in srgb,var(--blue) 30%,var(--line));background:color-mix(in srgb,var(--blue) 8%,var(--panel));border-radius:10px;gap:9px;padding:10px;display:grid}.v3-cse-heading{justify-content:space-between;align-items:center;gap:8px;display:flex}.v3-cse-heading h3,.v3-cse-subject h4,.v3-cse-group h5,.v3-cse-group h6{margin:0}.v3-cse-heading h3{font:700 14px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif}.v3-cse-subjects{gap:8px;display:grid}.v3-cse-subject{border:1px solid var(--line);background:var(--panel);border-radius:8px;overflow:hidden}.v3-cse-subject h4{font:700 13px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif}.v3-cse-group{gap:5px;display:grid}.v3-cse-group h5{color:var(--blue);font-size:10px}.v3-cse-group h6{color:var(--soft);font-size:9px}.v3-cse-items{gap:5px;margin:0;padding:0;list-style:none;display:grid}.v3-cse-item{border-left:2px solid var(--blue);background:color-mix(in srgb,var(--blue) 6%,var(--panel));border-radius:0 6px 6px 0;gap:2px;padding:6px 7px;display:grid}.v3-cse-item-text{overflow-wrap:anywhere}.v3-cse-item-meta{color:var(--soft);overflow-wrap:anywhere;font-size:8px}.v3-recall-preview{border:1px solid color-mix(in srgb,var(--success) 34%,var(--line));background:color-mix(in srgb,var(--success) 8%,var(--panel));border-radius:10px;gap:9px;padding:10px;display:grid}.v3-recall-injection{border:1px solid var(--line);background:var(--panel);white-space:pre-wrap;overflow-wrap:anywhere;border-radius:8px;max-height:260px;margin:0;padding:9px;font-size:9px;line-height:1.5;overflow:auto}.settings-page{gap:10px}.master-switch{border:1px solid var(--line);border-left:3px solid var(--crimson);background:var(--panel);border-radius:10px;gap:4px;padding:10px 12px;display:grid}.master-switch .setting-switch{font-weight:600}.master-switch .settings-result:empty{display:none}.settings-group{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:0;overflow:hidden}.settings-group>.settings-group-summary{cursor:pointer;align-items:center;gap:8px;padding:11px 13px;list-style:none;display:flex}.settings-group-summary::-webkit-details-marker{display:none}.settings-group-summary:before{content:\"›\";color:var(--soft);flex:none;font-size:17px;line-height:1;transition:transform .15s}.settings-group[open]>.settings-group-summary:before{transform:rotate(90deg)}.settings-group-summary h3{min-width:0;font:700 15px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;letter-spacing:.02em;margin:0}.settings-group-body{gap:0;padding:0 12px 8px 26px;display:grid}.settings-sub{border:0;border-top:1px solid var(--line);background:var(--panel);border-radius:0;padding:0}.settings-sub>.settings-sub-summary{cursor:pointer;align-items:center;gap:7px;min-height:36px;padding:8px 2px;list-style:none;display:flex}.settings-sub-summary::-webkit-details-marker{display:none}.settings-sub-summary:before{content:\"›\";color:var(--faint);flex:none;font-size:14px;line-height:1;transition:transform .15s}.settings-sub[open]>.settings-sub-summary:before{transform:rotate(90deg)}.settings-sub-summary h4{min-width:0;font:600 13px/calc(20px * var(--qqj-ui-fixed-scale,1)) var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;color:var(--ink);margin:0}.settings-sub-body{gap:9px;padding:2px 2px 12px 14px;display:grid}.settings-sub-body.settings-drawer-list{gap:0;padding:0 2px}.settings-sub-body>.settings-sub{margin-left:10px}.settings-document-row{min-height:42px;color:var(--ink);justify-content:space-between;align-items:center;gap:12px;font-size:12px;display:flex}.settings-document-row+.settings-document-row{border-top:1px solid var(--line)}.settings-document-row>.secondary-action{white-space:nowrap;flex:none}.settings-group-body>.settings-hint:empty,.settings-group-body>.settings-result:empty{display:none}.qqj-management-progress{gap:2px;margin:0;line-height:1.6;display:grid}.qqj-management-feedback{color:var(--soft);overflow-wrap:anywhere;margin:0;font-size:11px;line-height:1.6}.qqj-management-feedback.error{border-left:3px solid var(--crimson);background:color-mix(in srgb,var(--crimson) 7%,var(--panel));color:var(--crimson);border-radius:0 6px 6px 0;padding:7px 9px}.qqj-management-delete{border-top:1px solid var(--line);justify-content:flex-start;padding-top:10px;display:flex}.qqj-floor-diagnostics-list{border-top:1px solid var(--line);gap:0;padding:0 8px;display:grid}.qqj-floor-diagnostics-list>.qqj-diagnostic-row{grid-template-columns:minmax(0,1fr) auto auto;gap:5px;padding:4px 0;font-size:11px}.qqj-floor-diagnostics-list>.qqj-diagnostic-row>button{grid-column:auto;width:auto;min-height:28px;padding:4px 7px;font-size:11px;line-height:1.4}.settings-sub.sub-advanced{border-top-style:dashed;margin-top:2px}.settings-sub.sub-advanced>.settings-sub-summary h4{color:var(--soft)}.settings-divider{background:var(--line);height:1px;margin:3px 0}.settings-inline{grid-template-columns:minmax(0,1fr) auto;align-items:stretch;gap:7px;display:grid}.settings-inline>.secondary-action{white-space:nowrap;align-self:stretch}.qqj-inline-select{min-width:0;display:grid}.qqj-inline-select-trigger{text-align:left;cursor:pointer;justify-content:space-between;align-items:center;gap:8px;min-height:34px;display:flex}.qqj-inline-select-value{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.qqj-inline-select-chevron{flex:none;font-size:15px;line-height:1;transition:transform .15s;transform:rotate(90deg)}.qqj-inline-select.open>.qqj-inline-select-trigger .qqj-inline-select-chevron{transform:rotate(-90deg)}.qqj-inline-select-options{overscroll-behavior:contain;border:1px solid var(--line);background:var(--paper);border-radius:8px;max-height:220px;margin-top:4px;padding:3px;display:grid;overflow:hidden auto}.qqj-inline-select-options[hidden]{display:none}.qqj-inline-select-option{border:1px solid var(--paper);background:var(--paper);width:100%;min-width:0;color:var(--ink);text-align:left;overflow-wrap:anywhere;cursor:pointer;border-radius:6px;padding:7px 8px;display:block}.qqj-inline-select-option:hover{background:color-mix(in srgb,var(--knot) 6%,var(--paper))}.qqj-inline-select-option.active{border-color:var(--knot);background:color-mix(in srgb,var(--knot) 9%,var(--paper));color:var(--knot)}.qqj-inline-select-option:focus-visible{outline:2px solid var(--knot);outline-offset:-2px}.qqj-model-list-section{border:1px solid var(--line);background:var(--panel);border-radius:8px;overflow:hidden}.qqj-model-list-section[hidden]{display:none}.qqj-model-list-summary{color:var(--soft);cursor:pointer;-webkit-user-select:none;user-select:none;background:var(--panel);align-items:center;gap:8px;padding:8px 11px;font-size:10.5px;list-style:none;display:flex}.qqj-model-list-summary::-webkit-details-marker{display:none}.qqj-model-list-summary:hover{background:color-mix(in srgb,var(--knot) 6%,var(--panel))}.qqj-model-list-chevron{font-size:14px;line-height:1;transition:transform .15s}.qqj-model-list-section[open] .qqj-model-list-chevron{transform:rotate(90deg)}.qqj-model-list-body{border-top:1px solid var(--line);background:var(--panel);flex-direction:column;gap:6px;padding:8px 10px 10px;display:flex}.qqj-model-list-search{font-size:10.5px}.qqj-model-list-items{overscroll-behavior:contain;background:var(--paper);flex-direction:column;gap:3px;max-height:260px;padding-right:2px;display:flex;overflow:hidden auto}.qqj-model-list-items::-webkit-scrollbar{width:4px}.qqj-model-list-items::-webkit-scrollbar-thumb{background:var(--line);border-radius:2px}.qqj-model-list-item{border:1px solid var(--paper);background:var(--paper);width:100%;color:var(--ink);text-align:left;word-break:break-all;cursor:pointer;border-radius:6px;padding:8px 10px;transition:background .12s,border-color .12s,color .12s;display:block}.qqj-model-list-item:hover{background:color-mix(in srgb,var(--knot) 6%,var(--paper))}.qqj-model-list-item:active{background:color-mix(in srgb,var(--knot) 10%,var(--paper))}.qqj-model-list-item.active{border-color:var(--knot);background:color-mix(in srgb,var(--knot) 8%,var(--paper));color:var(--knot)}.qqj-model-list-empty{color:var(--soft);text-align:center;background:var(--paper);padding:14px;font-size:10px}.settings-input.settings-num{text-align:center;width:48px}.qqj-auto-hide-row{min-height:34px;color:var(--ink);justify-content:space-between;align-items:center;gap:10px;font-size:12px;display:flex}.qqj-auto-hide-row>.settings-num{flex:0 0 48px;height:26px;padding-block:2px}.settings-input[type=number]{-moz-appearance:textfield}.settings-input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}.settings-input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}.source-exclude-count{color:var(--soft);margin:0 0 2px;font-size:10.5px}.qqj-page{gap:12px;display:grid}.qqj-view-heading{gap:4px;display:grid}.qqj-view-heading h2{font:700 20px/1.2 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;letter-spacing:.04em;margin:0}.qqj-view-heading>p{color:var(--soft);margin:0;font-size:10.5px}.qqj-page-health{border-left:3px solid var(--success);background:color-mix(in srgb,var(--success) 10%,var(--panel));color:var(--soft);border-radius:0 7px 7px 0;align-items:center;gap:7px;padding:7px 9px;font-size:10px;display:flex}.qqj-page-health.checking,.qqj-page-health.error{border-left-color:var(--crimson);color:var(--soft);background:color-mix(in srgb,var(--crimson) 10%,var(--panel))}.qqj-page-health.healthy{border-left-color:var(--success);color:var(--soft);background:color-mix(in srgb,var(--success) 10%,var(--panel))}.qqj-memories-page{gap:0}.qqj-memories-page>.qqj-page-health{margin-bottom:4px}.v3-memory-list{gap:0;display:grid}.qqj-memory-card{border:0;border-bottom:1px solid var(--line);background:0 0;border-radius:0;overflow:visible}.qqj-memory-card:first-child{border-top:0}.qqj-memory-card-head{cursor:pointer;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:8px;padding:12px 0;list-style:none;display:grid}.qqj-memory-card-head::-webkit-details-marker{display:none}.qqj-floor-number{font:800 12px/1.2 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;font-variant-numeric:tabular-nums;letter-spacing:.02em;white-space:nowrap}.qqj-memory-card[open]>.qqj-memory-card-head .qqj-floor-number{color:var(--knot)}.qqj-floor-time{min-width:0;color:var(--faint);text-overflow:ellipsis;white-space:nowrap;font-size:9px;overflow:hidden}.qqj-memory-card-head>.v3-memory-status{white-space:nowrap;justify-content:center;align-items:center;min-height:18px;display:inline-flex}.qqj-memory-card-head>.v3-memory-status.is-user{background:color-mix(in srgb,var(--knot) 10%,var(--panel));color:var(--knot)}.qqj-memory-chevron{color:var(--faint);font-size:16px;line-height:1;transition:transform .15s}.qqj-memory-card[open]>.qqj-memory-card-head .qqj-memory-chevron{transform:rotate(90deg)}.qqj-memory-card-body{border:0;border-left:1px solid var(--line);gap:9px;margin:0 0 3px 4px;padding:2px 0 14px 15px;display:grid;position:relative}.qqj-memory-card-body:before{content:\"\";background:var(--knot);border-radius:1px;width:5px;height:5px;position:absolute;top:11px;left:-3px;transform:rotate(45deg)}.qqj-memory-main{color:var(--ink);font:500 12px/1.8 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;white-space:pre-wrap;overflow-wrap:anywhere;margin:0 32px 1px 0}.qqj-memory-main.is-empty{color:var(--soft);font-family:inherit;font-style:italic}.qqj-memory-meta{color:var(--soft);flex-wrap:wrap;gap:5px 11px;padding-right:30px;font-size:9px;line-height:1.5;display:flex}.qqj-memory-meta-item{gap:4px;min-width:0;display:inline-flex}.qqj-memory-meta strong{color:var(--ink);font-weight:600}.qqj-memory-meta-item>span{overflow-wrap:anywhere}.qqj-memory-menu{position:absolute;top:-1px;right:-2px}.qqj-memory-menu>summary{list-style:none}.qqj-memory-menu>summary::-webkit-details-marker{display:none}.qqj-memory-menu-toggle{width:29px;height:29px;color:var(--soft);cursor:pointer;border-radius:7px;place-items:center;font-size:19px;line-height:1;display:grid}.qqj-memory-menu-toggle:hover{color:var(--knot);background:color-mix(in srgb,var(--knot) 7%,var(--panel))}.qqj-memory-menu-pop{z-index:4;border:1px solid var(--line);background:var(--panel);border-radius:9px;min-width:132px;padding:5px;display:none;position:absolute;top:30px;right:0;box-shadow:0 10px 24px #121c2124}.qqj-memory-menu[open]>.qqj-memory-menu-pop{display:grid}.qqj-memory-menu-action{width:100%;color:var(--ink);text-align:left;white-space:nowrap;cursor:pointer;background:0 0;border:0;border-radius:6px;padding:8px 9px;font-size:11px;display:block}.qqj-memory-menu-action:hover{background:color-mix(in srgb,var(--knot) 7%,var(--panel))}.qqj-memory-menu-action:disabled{color:var(--faint);cursor:not-allowed;background:0 0}.status-failed>.qqj-memory-card-head .v3-memory-status,.status-error>.qqj-memory-card-head .v3-memory-status{background:color-mix(in srgb,var(--crimson) 10%,var(--panel));color:var(--crimson)}.status-ready>.qqj-memory-card-head .v3-memory-status{background:color-mix(in srgb,var(--success) 10%,var(--panel));color:var(--success)}.status-ready>.qqj-memory-card-head .v3-memory-status.is-user{background:color-mix(in srgb,var(--knot) 10%,var(--panel));color:var(--knot)}.qqj-memory-edit-field,.qqj-memory-edit-group{gap:6px;display:grid}.qqj-memory-edit-field>span,.qqj-memory-edit-group>strong{color:var(--soft);font-size:10px}.qqj-memory-edit-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:6px;display:grid}.qqj-memory-edit-group:nth-of-type(3) .qqj-memory-edit-row{grid-template-columns:minmax(0,1fr) auto}.qqj-memory-person-option{grid-template-columns:auto minmax(0,1fr) minmax(110px,.8fr);align-items:center;gap:7px;display:grid}.qqj-memory-person-option input{accent-color:var(--knot)}.qqj-card-actions{flex-wrap:wrap;justify-content:flex-end;gap:6px;display:flex}.qqj-inline-empty,.qqj-main-character-empty{border:1px dashed var(--line);background:var(--panel);color:var(--soft);text-align:center;border-radius:9px;padding:18px 14px}.qqj-main-character-empty{text-align:left;gap:9px;display:grid}.v3-cse-subject.is-main{border-color:color-mix(in srgb,var(--crimson) 38%,var(--line))}.v3-cse-subject.is-main>.qqj-person-summary{box-shadow:inset 3px 0 var(--crimson)}.qqj-people-toolbar{justify-content:space-between;align-items:center;gap:8px;display:flex}.qqj-person-summary,.qqj-section-summary{cursor:pointer;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;padding:10px 11px;list-style:none;display:flex}.qqj-person-summary::-webkit-details-marker{display:none}.qqj-section-summary::-webkit-details-marker{display:none}.qqj-person-summary:before,.qqj-section-summary:before{content:\"›\";color:var(--soft);flex:none;font-size:17px;line-height:1;transition:transform .15s}.v3-cse-subject[open]>.qqj-person-summary:before,.qqj-cse-history[open]>.qqj-section-summary:before,.qqj-management-drawer[open]>.qqj-section-summary:before,.qqj-more-people[open]>.qqj-section-summary:before{transform:rotate(90deg)}.qqj-person-summary strong,.qqj-section-summary strong{overflow-wrap:anywhere;min-width:min(100%,8em);font:700 13px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;flex:8em;margin-right:auto}.qqj-person-summary>.v3-memory-status,.qqj-section-summary>.v3-memory-status{white-space:normal;overflow-wrap:anywhere;flex:0 auto;min-width:0;max-width:100%}.qqj-person-body{border-top:1px solid var(--line);gap:8px;padding:9px 11px 11px;display:grid}.qqj-cse-edit,.qqj-cse-edit-group{gap:7px;display:grid}.qqj-cse-edit-group>strong{color:var(--blue);font-size:10px}.qqj-cse-scope-heading{color:var(--soft);align-items:center;gap:5px;font-size:10px;font-weight:600;display:flex}.qqj-cse-help{border:1px solid var(--line);background:var(--panel);width:19px;height:19px;color:var(--soft);cursor:pointer;border-radius:50%;place-items:center;padding:0;font:700 11px/1 inherit;display:grid}.qqj-cse-edit-row{grid-template-columns:minmax(0,1fr);align-items:start;gap:6px;display:grid}.qqj-cse-edit-row textarea{resize:vertical;width:100%;min-height:64px}.qqj-cse-edit-meta{flex-wrap:wrap;align-items:flex-start;gap:6px;display:flex}.qqj-cse-edit-meta>.qqj-inline-select{flex:110px;max-width:220px}.qqj-cse-edit-meta>.secondary-action{flex:none;min-height:34px;margin-left:auto}.qqj-profiles-page{gap:0}.qqj-profile-toolbar{gap:7px;margin-bottom:19px;display:grid}.qqj-profile-switch-row{border-bottom:1px solid var(--line);grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding-bottom:12px;display:grid}.qqj-profile-switcher{overscroll-behavior-x:contain;scrollbar-width:none;gap:3px;min-width:0;padding:0;display:flex;overflow-x:auto}.qqj-profile-switcher::-webkit-scrollbar{display:none}.qqj-profile-tab{box-sizing:border-box;min-width:0;max-width:min(170px,100%);color:var(--soft);text-overflow:ellipsis;white-space:nowrap;cursor:pointer;background:0 0;border:0;border-radius:6px;flex:none;padding:6px 9px;font-size:12px;overflow:hidden}.qqj-profile-tab:hover{color:var(--knot);background:color-mix(in srgb,var(--knot) 6%,var(--paper))}.qqj-profile-tab.active{background:color-mix(in srgb,var(--knot) 10%,var(--paper));color:var(--knot);font-weight:700}.qqj-profile-switch-empty{color:var(--faint);white-space:nowrap;align-self:center;padding:6px 4px;font-size:10px}.qqj-profile-more{white-space:nowrap}.qqj-profile-more.active{border-color:var(--knot);color:var(--knot)}.qqj-profile-toolbar-actions{flex-wrap:wrap;justify-content:flex-end;gap:6px;display:flex}.qqj-profile-card{background:0 0;border:0;border-radius:0;overflow:visible}.qqj-profile-picker,.qqj-more-people{border:1px solid var(--line);background:var(--panel);border-radius:9px;overflow:hidden}.qqj-profile-summary{border-bottom:1px solid var(--line);grid-template-columns:50px minmax(0,1fr) auto;align-items:start;gap:13px;padding:0 0 20px;display:grid}.qqj-profile-mark{border:1px solid var(--line);background:var(--panel);width:50px;height:50px;color:var(--knot);border-radius:10px;place-items:center;display:grid}.qqj-profile-mark svg{width:38px;height:25px;display:block}.qqj-profile-identity{min-width:0;padding-top:1px}.qqj-profile-identity h2{font:600 27px/1.25 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;letter-spacing:.05em;overflow-wrap:anywhere;margin:0}.qqj-profile-alias{color:var(--soft);white-space:pre-wrap;overflow-wrap:anywhere;margin:5px 0 0;font-size:11px;line-height:1.55}.qqj-profile-badges{flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:5px;padding-top:3px;display:flex}.qqj-profile-picker-heading{align-items:center;gap:8px;padding:10px 11px;display:flex}.qqj-profile-picker-heading strong{font:700 14px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;margin-right:auto}.qqj-profile-body{gap:0;padding:0;display:grid}.qqj-profile-reading{display:grid}.qqj-profile-section{margin:0;padding:17px 0 0}.qqj-profile-section h3{color:var(--soft);letter-spacing:.08em;align-items:center;gap:8px;margin:0 0 7px;font-size:11px;font-weight:500;display:flex}.qqj-profile-section h3:after{content:\"\";background:var(--line);flex:1;height:1px}.qqj-profile-section p{color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font-size:13px;line-height:1.9}.qqj-profile-section.lead p{font-size:14px}.qqj-profile-form{gap:12px;padding-top:17px;display:grid}.qqj-profile-field{gap:5px;display:grid}.qqj-profile-field>span{color:var(--soft);font-size:11px}.qqj-profile-field textarea{resize:vertical;min-height:80px;line-height:1.7}.qqj-profile-save-row{border-top:1px solid var(--line);flex-wrap:wrap;align-items:center;gap:8px;margin-top:17px;padding-top:14px;display:flex}.qqj-profile-save-result{min-width:0;color:var(--soft);overflow-wrap:anywhere;margin:0;font-size:10.5px}.qqj-profile-save-result.success{color:var(--success)}.qqj-profile-save-result.error{color:var(--crimson)}.qqj-more-people-list{border-top:1px solid var(--line);gap:7px;padding:9px;display:grid}.qqj-more-person-row{border:1px solid var(--line);background:var(--paper);border-radius:8px;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:8px 9px;display:grid}.qqj-more-person-copy{gap:2px;min-width:0;display:grid}.qqj-more-person-copy strong{font:700 12px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;overflow-wrap:anywhere}.qqj-more-person-copy small{color:var(--soft);overflow-wrap:anywhere;font-size:9px}.qqj-cse-more>.qqj-more-people-list>.v3-cse-subject{background:var(--paper)}.qqj-profile-menu{position:relative}.qqj-profile-menu>summary{list-style:none}.qqj-profile-menu>summary::-webkit-details-marker{display:none}.qqj-profile-menu-toggle{width:29px;height:29px;color:var(--soft);cursor:pointer;background:0 0;border:0;border-radius:7px;place-items:center;font-size:19px;line-height:1;display:grid}.qqj-profile-menu-toggle:hover{color:var(--knot);background:color-mix(in srgb,var(--knot) 7%,var(--panel))}.qqj-profile-menu-pop{z-index:3;border:1px solid var(--line);background:var(--panel);border-radius:9px;min-width:166px;padding:5px;display:none;position:absolute;top:34px;right:0;box-shadow:0 10px 24px #121c2124}.qqj-profile-menu[open]>.qqj-profile-menu-pop{display:grid}.qqj-profile-menu-pop .qqj-profile-menu-action{width:100%;color:var(--ink);text-align:left;white-space:nowrap;cursor:pointer;background:0 0;border:0;border-radius:6px;padding:8px 9px;font-size:11px;display:block}.qqj-profile-menu-pop .qqj-profile-menu-action:hover{background:color-mix(in srgb,var(--knot) 7%,var(--panel))}.qqj-profile-menu-pop .qqj-profile-menu-action.danger{color:var(--crimson)}.qqj-profile-menu-pop .qqj-profile-menu-action:disabled{color:var(--faint);cursor:not-allowed;background:0 0}.qqj-profile-menu-separator{background:var(--line);height:1px;margin:4px 5px}.qqj-profile-reading-result{border-top:1px solid var(--line);margin-top:17px;padding-top:12px}.qqj-profile-picker{overflow:visible}.qqj-more-person-actions{justify-content:flex-end;align-items:center;gap:5px;display:flex}.qqj-more-person-actions .qqj-profile-menu{flex:none}.qqj-cse-history,.qqj-management-drawer{border:1px solid var(--line);background:var(--panel);border-radius:9px;overflow:hidden}.qqj-cse-history-list,.qqj-management-drawer-body{border-top:1px solid var(--line);gap:8px;padding:10px;display:grid}.qqj-cse-history-row{border:1px solid var(--line);background:var(--paper);border-radius:8px;overflow:hidden}.qqj-cse-floor-summary{cursor:pointer;justify-content:space-between;align-items:center;gap:7px;padding:8px 9px;list-style:none;display:flex}.qqj-cse-floor-summary::-webkit-details-marker{display:none}.qqj-cse-floor-summary:before{content:\"›\";color:var(--soft);font-size:16px;line-height:1;transition:transform .15s}.qqj-cse-history-row[open]>.qqj-cse-floor-summary:before{transform:rotate(90deg)}.qqj-cse-floor-summary>span:first-of-type{margin-right:auto}.qqj-cse-floor-body{border-top:1px solid var(--line);gap:8px;padding:9px;display:grid}.qqj-cse-record-subject{gap:6px;display:grid}.qqj-cse-record-subject>strong{font:700 12px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif}.qqj-management-notice{border-left:3px solid var(--crimson);background:color-mix(in srgb,var(--crimson) 6%,var(--panel));color:var(--soft);margin:0;padding:9px 10px;font-size:10.5px;line-height:1.55}.qqj-management-actions{padding:1px 0}.qqj-diagnostic-row{border-bottom:1px solid var(--line);grid-template-columns:minmax(72px,1fr) auto auto;align-items:center;gap:6px;padding:7px 0;display:grid}.qqj-diagnostic-row:last-child{border-bottom:0}.qqj-settings-management{border:1px solid var(--line);background:var(--panel);border-radius:10px;gap:10px;padding:13px 14px;display:grid}.qqj-settings-management .qqj-page{gap:10px}.qqj-settings-management .qqj-view-heading>h2{font-size:16px}.qqj-settings-management .qqj-view-heading>p{display:none}.qqj-cse-isolation-hint{border-left:2px solid var(--thread);background:color-mix(in srgb,var(--thread) 7%,var(--panel));color:var(--soft);margin:0;padding:7px 8px;font-size:9.5px;line-height:1.5}.qqj-cse-floor-state{border-top:1px dashed var(--line);overflow:hidden}.qqj-cse-floor-state-summary{color:var(--soft);cursor:pointer;padding:7px 2px;font-size:10px;list-style:none}.qqj-cse-floor-state-summary::-webkit-details-marker{display:none}.qqj-cse-floor-state-summary:before{content:\"›\";margin-right:5px;transition:transform .15s;display:inline-block}.qqj-cse-floor-state[open]>.qqj-cse-floor-state-summary:before{transform:rotate(90deg)}.qqj-cse-floor-state-body{gap:8px;padding:2px 0 3px;display:grid}.qqj-cse-state-group{gap:4px;display:grid}.qqj-cse-state-label{color:var(--soft);font-size:9px}button:focus-visible,summary:focus-visible{outline:2px solid var(--knot);outline-offset:2px}@media (prefers-reduced-motion:reduce){.qqj-person-summary:before,.qqj-section-summary:before,.qqj-memory-chevron,.qqj-cse-floor-summary:before,.qqj-cse-floor-state-summary:before{transition:none}}@media (width<=390px){.qqj-memory-card-head{padding-inline:0}.qqj-memory-card-body{padding-left:15px;padding-right:0}.qqj-card-actions{grid-template-columns:1fr 1fr;display:grid}.qqj-card-actions button{width:100%}.qqj-memory-edit-row,.qqj-memory-person-option{grid-template-columns:minmax(0,1fr)}.qqj-memory-edit-row button{width:100%}.qqj-diagnostic-row{grid-template-columns:minmax(0,1fr) auto}.qqj-diagnostic-row>button{grid-column:1/-1;width:100%}.qqj-settings-management{padding-inline:10px}.qqj-more-person-row{grid-template-columns:minmax(0,1fr)}.qqj-more-person-row button{width:100%}.qqj-profile-switch-row{grid-template-columns:minmax(0,1fr)}.qqj-profile-toolbar-actions{justify-content:flex-start}.qqj-profile-summary{grid-template-columns:46px minmax(0,1fr);gap:11px}.qqj-profile-mark{width:46px;height:46px}.qqj-profile-badges{grid-column:2;justify-content:flex-start;padding-top:0}.qqj-profile-save-row{align-items:stretch}.qqj-profile-save-row button{flex:auto}.qqj-profile-save-result{flex-basis:100%}.qqj-cse-edit-meta>.qqj-inline-select{max-width:none}.qqj-cse-edit-meta>.secondary-action{width:auto}.qqj-auto-hide-row{flex-wrap:wrap}}.source-permission-list,.qqj-inline-select-options,.qqj-model-list-items{touch-action:pan-y}.qqj-ui-diagnostic-action{flex-wrap:wrap;align-items:center;gap:7px;display:flex}.qqj-ui-diagnostic-action .settings-hint{margin:0}.qqj-storage-management{gap:9px;display:grid}.qqj-storage-grid{border:1px solid var(--line);background:var(--paper);border-radius:8px;gap:0;display:grid;overflow:hidden}.qqj-storage-row{border-bottom:1px solid var(--line);grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:9px;padding:7px 9px;font-size:10.5px;display:grid}.qqj-storage-row:last-child{border-bottom:0}.qqj-storage-row>span{color:var(--soft)}.qqj-storage-row>strong{color:var(--ink);text-align:right;font-weight:600}.qqj-storage-breakdown{border:1px solid var(--line);background:var(--paper);border-radius:8px;overflow:hidden}.qqj-storage-breakdown>summary{color:var(--soft);cursor:pointer;padding:7px 9px;font-size:10.5px}.qqj-storage-breakdown-body{border-top:1px solid var(--line)}.qqj-people-page,.qqj-cse-history-page{gap:12px}.qqj-people-page>.qqj-page-health,.qqj-cse-history-page>.qqj-page-health{margin:0}.qqj-user-anchor{border-bottom:1px solid var(--line);gap:10px;padding:13px 0 14px;display:grid}.qqj-user-anchor-title{align-items:center;gap:8px;display:flex}.qqj-user-anchor-title>strong{font:800 20px/1.2 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;overflow-wrap:anywhere}.qqj-user-anchor .v3-cse-group,.qqj-relation-note .v3-cse-group{gap:4px}.qqj-user-anchor .v3-cse-group h5,.qqj-relation-note .v3-cse-group h5{color:var(--soft);align-items:center;gap:8px;font-size:10px;font-weight:600;display:flex}.qqj-user-anchor .v3-cse-group h5:after,.qqj-relation-note .v3-cse-group h5:after{content:\"\";background:var(--line);flex:1;height:1px}.qqj-user-anchor .v3-cse-items,.qqj-relation-note .v3-cse-items{gap:4px}.qqj-user-anchor .v3-cse-item,.qqj-relation-note .v3-cse-item{background:0 0;padding:3px 0 3px 10px}.qqj-cse-edit-action{justify-self:start}.qqj-cse-page-heading{align-items:center;gap:8px;margin-top:2px;display:flex}.qqj-cse-page-heading>strong{font:800 15px/1.3 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;white-space:nowrap;flex:none}.qqj-cse-page-heading>.v3-memory-status{margin-left:auto}.qqj-cse-page-heading>.qqj-history-search{flex:auto}.qqj-cse-page-heading>.qqj-history-search .qqj-history-search-input{flex:auto;width:auto;min-width:0}.qqj-cse-view-toggle{white-space:nowrap;margin-left:auto;padding:5px 9px}.qqj-relation-switcher{overscroll-behavior-x:contain;scrollbar-width:none;gap:7px;min-width:0;padding-bottom:0;display:flex;overflow-x:auto}.qqj-relation-switcher::-webkit-scrollbar{display:none}.qqj-relation-person{border:1px solid var(--line);background:var(--panel);max-width:170px;color:var(--soft);text-overflow:ellipsis;white-space:nowrap;cursor:pointer;border-radius:8px;flex:none;padding:7px 12px;font-size:11px;overflow:hidden}.qqj-relation-person.active{border-color:color-mix(in srgb,var(--knot) 42%,var(--line));background:color-mix(in srgb,var(--knot) 9%,var(--panel));color:var(--knot);font-weight:700}.qqj-people-page>.v3-cse-subject{background:0 0}.qqj-people-page>.v3-cse-subject>.qqj-person-summary{padding-inline:2px}.qqj-people-page>.v3-cse-subject>.qqj-person-body{border-top:1px solid var(--line);padding-inline:2px}.qqj-relation-card{border:1px solid var(--line);background:var(--panel);border-radius:12px;overflow:visible}.qqj-relation-head{border-bottom:1px solid var(--line);align-items:center;gap:8px;padding:12px;display:flex}.qqj-relation-head>strong{font:800 18px/1.2 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;overflow-wrap:anywhere}.qqj-relation-head>span{color:var(--faint);font-size:12px}.qqj-relation-menu{margin-left:auto;position:relative;top:auto;right:auto}.qqj-relation-menu .qqj-memory-menu-pop{z-index:5}.qqj-relation-menu .qqj-memory-menu-action.danger{color:var(--crimson)}.qqj-relation-dual{grid-template-columns:minmax(0,1fr) 1px minmax(0,1fr);padding:12px;display:grid}.qqj-relation-divider{background:linear-gradient(to bottom,transparent,var(--line) 10%,var(--line) 90%,transparent);width:1px;min-height:54px}.qqj-relation-lane{min-width:0;padding:0 10px}.qqj-relation-lane:first-child{padding-left:0}.qqj-relation-lane:last-child{padding-right:0}.qqj-relation-lane-title{color:var(--soft);overflow-wrap:anywhere;margin-bottom:8px;font-size:10px;display:block}.qqj-relation-lane.from-user .qqj-relation-lane-title{color:var(--knot)}.qqj-relation-items{gap:0;margin:0;padding:0;list-style:none;display:grid}.qqj-relation-item{border-top:1px solid var(--line);gap:2px;padding:7px 0;display:grid}.qqj-relation-item:first-child{border-top:0}.qqj-relation-item .v3-cse-item-text{white-space:pre-wrap;font-size:11px;line-height:1.55}.qqj-relation-item .v3-cse-item-meta{line-height:1.45}.qqj-relation-lane>.settings-hint{margin:0;padding:7px 0}.qqj-other-relations{border-top:1px solid var(--line);overflow:hidden}.qqj-other-relations>.qqj-section-summary{padding-inline:2px}.qqj-other-relations[open]>.qqj-section-summary:before{transform:rotate(90deg)}.qqj-other-relations-body{gap:8px;padding:8px 2px 2px;display:grid}.qqj-other-relation{border:1px solid var(--line);background:var(--panel);border-radius:8px;gap:3px;padding:8px 9px;display:grid}.qqj-other-relation>strong{color:var(--soft);font-size:9px}.qqj-other-relation>.qqj-relation-item{list-style:none}.qqj-cse-history-page>.qqj-cse-history-list{border-top:0;padding:0}.qqj-cse-floor-result{gap:8px;display:grid}.qqj-cse-floor-result-title{font:700 12px/1.3 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif}.qqj-cse-floor-changes{border-top:1px dashed var(--line);overflow:hidden}.qqj-cse-floor-changes[open]>.qqj-cse-floor-state-summary:before{transform:rotate(90deg)}.qqj-cse-floor-changes-body{gap:8px;padding:2px 0 3px;display:grid}.qqj-cse-change.is-add{border-left-color:var(--success);background:color-mix(in srgb,var(--success) 7%,var(--panel))}.qqj-cse-change.is-update,.qqj-cse-change.is-refine{background:color-mix(in srgb,#ad7b2f 8%,var(--panel));border-left-color:#ad7b2f}.qqj-cse-change.is-remove{border-left-color:var(--faint);background:color-mix(in srgb,var(--faint) 8%,var(--panel));color:var(--soft)}@media (width<=390px){.qqj-relation-dual{grid-template-columns:minmax(0,1fr);gap:10px}.qqj-relation-divider{width:100%;height:1px;min-height:0}.qqj-relation-lane{padding:0}.qqj-cse-page-heading{flex-wrap:wrap;align-items:flex-start}.qqj-cse-page-heading>.v3-memory-status{display:none}.qqj-cse-page-heading>.qqj-history-search{flex-basis:100%;order:3;width:100%}.qqj-cse-page-heading>.qqj-cse-view-toggle{margin-left:auto}}.qqj-page-status{gap:4px;display:grid}.qqj-page-health{margin:0}.qqj-memories-page,.qqj-profiles-page{gap:12px}.qqj-profile-health{margin:0}.qqj-profile-toolbar{margin-bottom:0}.qqj-profile-summary{grid-template-columns:50px minmax(0,1fr);padding-right:82px;position:relative}.qqj-profile-mark{cursor:pointer;width:50px;height:50px;min-height:50px;padding:0;overflow:hidden}.qqj-profile-mark.has-alias{align-self:stretch;height:auto}.qqj-profile-avatar{object-fit:cover;width:100%;height:100%}.qqj-avatar-file{display:none}.qqj-profile-badges{padding-top:0;position:absolute;top:3px;right:0}.qqj-profile-read-row{grid-template-columns:20px minmax(0,1fr);column-gap:15px;padding:5px 0;font-size:10px;display:grid}.qqj-profile-read-row>span{color:var(--faint);font-size:inherit;overflow-wrap:anywhere}.qqj-profile-read-row>p{min-width:0;color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font-size:13px;line-height:1.7}.qqj-profile-section-basic{grid-template-columns:repeat(2,minmax(0,1fr));column-gap:14px;display:grid}.qqj-profile-section-basic>h3,.qqj-profile-section-basic>.qqj-profile-read-notes{grid-column:1/-1}.qqj-profile-form{gap:15px}.qqj-profile-form-group{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;display:grid}.qqj-profile-form-group>h3{color:var(--soft);grid-column:1/-1;margin:0;font-size:12px}.qqj-profile-field:has(textarea){grid-column:1/-1}.qqj-profile-field textarea{min-height:66px}@media (width<=390px){.qqj-profile-summary{grid-template-columns:46px minmax(0,1fr);padding-right:70px}.qqj-profile-mark{width:46px;height:46px;min-height:46px}.qqj-profile-mark.has-alias{height:auto}.qqj-profile-form-group{grid-template-columns:minmax(0,1fr)}.qqj-profile-form-group>h3{grid-column:1}.qqj-profile-field:has(textarea){grid-column:1}.qqj-profile-section-basic{column-gap:9px}}.qqj-relation-switch-row{align-items:center;gap:7px;min-width:0;display:flex}.qqj-relation-switch-row>.qqj-relation-switcher{flex:auto}.qqj-relation-more-toggle{text-overflow:ellipsis;white-space:nowrap;flex:none;max-width:42%;overflow:hidden}.qqj-relation-more-toggle.active{border-color:var(--knot);color:var(--knot)}.qqj-profile-toolbar-actions>.secondary-action{border-radius:6px;padding:5px 9px;font-size:12px}.qqj-time-automatic-failure{color:var(--crimson,var(--error));flex-basis:100%;margin:0}.qqj-time-automatic-failure[hidden]{display:none}.qqj-history-search{align-items:center;gap:5px;min-width:0;display:flex}.qqj-history-search-input{box-sizing:border-box;width:min(230px,38vw);min-width:120px;padding:5px 8px;font-size:11px}.qqj-history-search-clear{white-space:nowrap;border-radius:6px;padding:5px 8px;font-size:11px}.qqj-history-search-clear[hidden]{display:none}.qqj-memory-toolbar{align-items:center}.qqj-memory-toolbar>.qqj-history-search{margin-right:auto}.qqj-search-count{color:var(--soft);margin:0;padding:8px 0;font-size:10px}.qqj-history-search-result{border-bottom:1px solid var(--line);gap:5px;padding:10px 0;display:grid}.qqj-history-search-result[role=button]{cursor:pointer}.qqj-history-search-result[role=button]:focus-visible{outline:2px solid color-mix(in srgb,var(--knot) 65%,transparent);outline-offset:2px}.qqj-history-search-result:last-child{border-bottom:0}.qqj-history-search-title{color:var(--soft);flex-wrap:wrap;align-items:center;gap:6px;font-size:10px;display:flex}.qqj-history-search-title>strong{color:var(--ink);font-size:12px;font-weight:700}.qqj-history-search-snippet{color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font-size:12px;line-height:1.7}.qqj-relation-more-toggle{border-radius:8px;padding:7px 12px;font-size:11px}.qqj-cse-change.is-remove .v3-cse-item-text{color:var(--faint);text-decoration:line-through;-webkit-text-decoration-color:color-mix(in srgb,var(--faint) 55%,transparent);text-decoration-color:color-mix(in srgb,var(--faint) 55%,transparent);text-decoration-thickness:1px}.qqj-relation-note{border-top:1px solid var(--line);background:color-mix(in srgb,var(--panel) 94%,var(--line));border-radius:0 0 12px 12px;min-width:0;padding:9px 12px 11px}.qqj-relation-note-body{gap:10px;min-width:0;display:grid}.qqj-relation-note .v3-cse-item{border-left-color:var(--knot)}.qqj-relation-note .v3-cse-item-text{white-space:pre-wrap}.qqj-relation-note .settings-hint{margin:0}.qqj-relation-head>strong{min-width:0}.qqj-relation-head>span{white-space:nowrap;flex-shrink:0}.qqj-profile-summary{border-bottom:0;padding-bottom:2px}.qqj-profile-section h3{color:var(--knot)}.qqj-profile-section.lead{padding-top:17px}.qqj-profile-read-row{align-items:baseline}.qqj-relation-layer{gap:3px;display:grid}.qqj-relation-layer+.qqj-relation-layer{margin-top:8px}.qqj-relation-layer-title{color:var(--soft);font-size:9px;font-weight:600}.qqj-profile-switcher,.qqj-relation-switcher{scrollbar-width:none;cursor:grab;padding-bottom:0}.qqj-profile-switcher.dragging,.qqj-relation-switcher.dragging{cursor:grabbing;-webkit-user-select:none;user-select:none}.qqj-profile-switcher::-webkit-scrollbar{display:none}.qqj-relation-switcher::-webkit-scrollbar{display:none}.qqj-people-order-open{flex:none;padding:4px 8px;font-size:11px}.qqj-manual-editor{position:relative}.qqj-manual-save-bar{z-index:4;margin-top:12px;padding:9px 0;position:sticky;bottom:0}.qqj-profile-save-row.qqj-manual-save-bar{border-top:0}.v3-cse-subject.qqj-manual-editor-host,.qqj-prequel-drawer.qqj-manual-editor-host{overflow:visible}#qqj-settings-group-general:has(#qqj-settings-api[open]){overflow:visible}.qqj-cse-more:has(.qqj-manual-save-bar){overflow:visible}.qqj-api-editor>.settings-sub-body>.sub-advanced+.qqj-manual-save-bar{margin-top:-9px}@media (width<=640px){.panel>.panel-resize-handle{display:none}}.qqj-qianshi-page{gap:12px;min-width:0;display:grid}.qqj-qianshi-page>.qqj-history-search{width:100%}.qqj-qianshi-page>.qqj-history-search .qqj-history-search-input{flex:auto;width:auto;min-width:0}.qqj-qianshi-coverage{border-left:3px solid var(--blue);background:color-mix(in srgb,var(--blue) 5%,var(--paper));grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:8px 10px;padding:9px 10px;display:grid}.qqj-qianshi-coverage.partial,.qqj-qianshi-coverage.pending{background:color-mix(in srgb,#ad7b2f 6%,var(--paper));border-left-color:#ad7b2f}.qqj-qianshi-coverage.degraded,.qqj-qianshi-coverage.unavailable{border-left-color:var(--crimson);background:color-mix(in srgb,var(--crimson) 5%,var(--paper))}.qqj-qianshi-coverage.empty{border-left-color:var(--thread);background:var(--paper)}.qqj-qianshi-coverage strong{font-size:11px;display:block}.qqj-qianshi-coverage p{color:var(--soft);margin:2px 0 0;font-size:9.5px;line-height:1.6}.qqj-qianshi-history-status{border-top:1px solid var(--line);overflow-wrap:anywhere;grid-column:1/-1;min-width:0;padding-top:5px;margin:0!important}.qqj-qianshi-history-results{overflow-wrap:anywhere;overscroll-behavior:contain;grid-column:1/-1;gap:5px;min-width:0;max-height:50vh;display:grid;overflow-y:auto}.qqj-qianshi-feedback{color:var(--soft);margin:0;font-size:10px}.qqj-qianshi-toolbar{border-bottom:1px solid var(--line);color:var(--blue);letter-spacing:.04em;justify-content:space-between;align-items:center;gap:10px;padding:0 0 9px;font-size:10px;display:flex}.qqj-qianshi-toolbar>div{gap:12px;display:flex}.qqj-qianshi-toolbar button{color:var(--soft);white-space:nowrap;cursor:pointer;background:0 0;border:0;padding:2px 0;font-size:10px}.qqj-qianshi-toolbar button:hover{color:var(--knot)}.qqj-qianshi-timeline{min-width:0;display:grid}.qqj-qianshi-segment{--qqj-date-width:43px;--qqj-axis-gap:11px;--qqj-axis-width:10px;display:grid;position:relative}.qqj-qianshi-segment:before{content:\"\";top:15px;bottom:17px;left:calc(var(--qqj-date-width) + var(--qqj-axis-gap) + 4px);background:var(--thread);width:1px;position:absolute}.qqj-qianshi-segment+.qqj-qianshi-segment{border-top:1px dashed var(--line);margin-top:5px;padding-top:13px}.qqj-qianshi-segment-label{color:var(--soft);margin:0 0 11px;font-size:9px}.qqj-qianshi-date{text-align:right;padding-top:2px}.qqj-qianshi-day-name{font:700 15px/1.3 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;white-space:nowrap;display:block}.qqj-qianshi-period{color:var(--soft);overflow-wrap:anywhere;margin-top:3px;font-size:8.5px;line-height:1.4;display:block}.qqj-qianshi-day-count{color:var(--soft);white-space:nowrap;margin-top:4px;font-size:8px;display:block}.qqj-qianshi-latest-tag{color:var(--knot);white-space:nowrap;margin-top:4px;font-size:8px;display:block}.qqj-qianshi-dot{z-index:1;box-sizing:content-box;border:2px solid var(--paper);background:var(--thread);border-radius:50%;width:7px;height:7px;margin-top:6px;display:block;position:relative}.qqj-qianshi-day.latest .qqj-qianshi-dot{background:var(--knot);box-shadow:0 0 0 1px var(--knot)}.qqj-qianshi-day.latest .qqj-qianshi-day-name{color:var(--knot)}.qqj-qianshi-events{min-width:0}.qqj-qianshi-event-row,.qqj-qianshi-day-event-row{min-width:0;position:relative}.qqj-qianshi-event-row+.qqj-qianshi-event-row{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}.qqj-qianshi-event>summary{cursor:pointer;list-style:none;display:block}.qqj-qianshi-event>summary::-webkit-details-marker{display:none}.qqj-qianshi-event-time{color:var(--blue);margin-bottom:2px;font-size:9px;display:block}.qqj-qianshi-event-title{min-width:0;color:var(--ink);overflow-wrap:anywhere;flex-wrap:wrap;align-items:baseline;gap:5px;font-size:12px;font-weight:700;line-height:1.55;display:flex}.qqj-qianshi-event-status{color:var(--soft);font-size:8.5px;font-weight:500}.qqj-qianshi-event[open]>.qqj-qianshi-event-summary .qqj-qianshi-event-title,.qqj-qianshi-event>summary:hover .qqj-qianshi-event-title{color:var(--knot)}.qqj-qianshi-preview{color:var(--soft);overflow-wrap:anywhere;-webkit-line-clamp:2;-webkit-box-orient:vertical;margin:4px 0 0;font-size:11px;line-height:1.75;display:-webkit-box;overflow:hidden}.qqj-qianshi-event[open]>.qqj-qianshi-event-summary .qqj-qianshi-preview{display:none}.qqj-qianshi-expanded{border-left:2px solid var(--thread);gap:9px;margin-top:8px;padding-left:10px;display:grid}.qqj-qianshi-description{color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font-size:11px;line-height:1.85}.qqj-qianshi-meta{color:var(--soft);grid-template-columns:max-content minmax(0,1fr);gap:3px 7px;margin:0;font-size:9px;line-height:1.7;display:grid}.qqj-qianshi-meta dt{color:var(--faint)}.qqj-qianshi-meta dd{overflow-wrap:anywhere;margin:0}.qqj-qianshi-meta dd.source{color:var(--blue)}.qqj-qianshi-matter,.qqj-qianshi-day-progress{border-top:1px dashed var(--line)}.qqj-qianshi-matter>summary,.qqj-qianshi-day-progress-title,.qqj-qianshi-undated>summary{color:var(--soft);padding:7px 0;font-size:10px;list-style:none}.qqj-qianshi-matter>summary,.qqj-qianshi-undated>summary{cursor:pointer}.qqj-qianshi-day-progress-title{margin:0}.qqj-qianshi-matter>summary::-webkit-details-marker{display:none}.qqj-qianshi-undated>summary::-webkit-details-marker{display:none}.qqj-qianshi-matter-list{gap:5px;padding-bottom:3px;display:grid}.qqj-qianshi-matter-event{border-left:2px solid var(--thread);background:color-mix(in srgb,var(--panel) 70%,var(--paper));padding:6px 7px;position:relative}.qqj-qianshi-matter-event.current{border-left-color:var(--knot)}.qqj-qianshi-matter-event>summary{color:var(--soft);cursor:pointer;padding-right:35px;font-size:9px;line-height:1.55}.qqj-qianshi-matter-event>p{color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;margin:5px 0 0;font-size:10px;line-height:1.7}.qqj-qianshi-day-event-detail,.qqj-qianshi-event-detail{gap:7px;padding-top:6px;display:grid}.qqj-qianshi-event>summary{padding-right:35px}.qqj-qianshi-matter-event{position:static}.qqj-qianshi-event-menu{z-index:4;position:absolute;top:0;right:0}.qqj-qianshi-event-menu[open]{z-index:8}.qqj-qianshi-text-editor,.qqj-qianshi-text-form{gap:7px;display:grid}.qqj-qianshi-text-label{color:var(--soft);gap:4px;font-size:10px;display:grid}.qqj-qianshi-description-input{resize:vertical;min-height:78px;line-height:1.6}.qqj-qianshi-edit-actions{gap:7px;display:flex}.qqj-qianshi-edit-error{color:var(--crimson);margin:0;font-size:10px;line-height:1.6}.qqj-qianshi-undated{border-top:1px dashed var(--line);margin-top:7px;padding-top:8px}.qqj-qianshi-undated-hint{color:var(--soft);margin:0 0 4px;font-size:9px}.qqj-qianshi-undated-list{gap:11px;padding:8px 0 0 16px;display:grid}.qqj-qianshi-empty{color:var(--soft);text-align:center;padding:27px 12px;font-size:11px}.qqj-qianshi-state{border:1px solid var(--line);letter-spacing:0;white-space:nowrap;background:var(--paper);min-height:17px;color:var(--soft);border-radius:999px;align-items:center;padding:1px 5px;font-size:8px;font-weight:600;line-height:1.2;display:inline-flex}.qqj-qianshi-state.status-planned{border-color:color-mix(in srgb,var(--soft) 35%,var(--line));color:var(--soft)}.qqj-qianshi-state.status-inProgress{border-color:color-mix(in srgb,var(--blue) 35%,var(--line));color:var(--blue)}.qqj-qianshi-state.status-completed{border-color:color-mix(in srgb,var(--success) 35%,var(--line));color:var(--success)}.qqj-qianshi-state.status-cancelled{border-color:color-mix(in srgb,var(--crimson) 35%,var(--line));color:var(--crimson)}.qqj-qianshi-state.status-occurred{color:var(--soft)}.qqj-qianshi-state.status-unknown{color:var(--faint);border-style:dashed}.qqj-qianshi-matter-event>summary{flex-wrap:wrap;align-items:center;gap:5px;display:flex}.qqj-qianshi-matter-event>summary>span:first-child{overflow-wrap:anywhere;min-width:0}@media (width<=340px){.qqj-qianshi-segment{--qqj-date-width:36px;--qqj-axis-gap:8px}.qqj-qianshi-day-name{font-size:14px}.qqj-qianshi-coverage{grid-template-columns:minmax(0,1fr)}.qqj-qianshi-coverage>.secondary-action{justify-self:start}.qqj-qianshi-history-status{grid-column:1}.qqj-qianshi-history-results{grid-column:1/-1}}.qqj-qianshi-segment{--qqj-date-width:48px}.qqj-qianshi-day{isolation:isolate}.qqj-qianshi-day:before{content:\"\";z-index:-1;top:0;bottom:0;left:calc(var(--qqj-date-width) + var(--qqj-axis-gap) + 5px);background:var(--thread);width:1px;position:absolute}.qqj-qianshi-day-first:before{top:11px}.qqj-qianshi-day-last:before{bottom:calc(100% - 11px)}.qqj-qianshi-day-single:before{content:none}.qqj-qianshi-date{grid-template-columns:minmax(0,1fr);align-items:start;display:grid;position:relative}.qqj-qianshi-day-name{grid-area:1/1}.qqj-qianshi-day-disclosure[open] .qqj-qianshi-period,.qqj-qianshi-day-count,.qqj-qianshi-latest-tag{grid-column:1/-1}.qqj-qianshi-day-preview{grid-area:1/3;min-width:0;padding:1px 0 0}.qqj-qianshi-day-preview-title{min-width:0;color:var(--ink);overflow-wrap:anywhere;flex-wrap:wrap;align-items:baseline;gap:5px;font-size:12px;font-weight:700;line-height:1.55;display:flex}.qqj-qianshi-day-preview .qqj-qianshi-event-time{overflow-wrap:anywhere}.qqj-qianshi-day-preview .qqj-qianshi-preview{margin-top:3px}@media (width<=340px){.qqj-qianshi-segment{--qqj-date-width:46px}}#qqj-settings-time{justify-content:space-between}#qqj-recent-items[hidden]{display:none}.qqj-recent-list-actions,.qqj-recent-batch-controls{flex-wrap:wrap;align-items:center;gap:6px;display:flex}.qqj-recent-batch-controls[hidden]{display:none}.qqj-recent-item-head{align-items:center;gap:8px;display:flex}.qqj-recent-item-head>span{overflow-wrap:anywhere;flex:1;min-width:0}.settings-field input.qqj-recent-item-select{flex:0 0 15px;width:15px;min-width:15px;height:15px;margin:0;padding:0}.qqj-recent-item-title.error{color:var(--crimson)}.qqj-recent-item-head>.qqj-profile-menu{flex:none}.qqj-section-summary>.qqj-recall-copy{flex:none;min-height:0;padding:4px 7px;font-size:10px}.qqj-recall-copy-fallback{resize:vertical;min-height:120px}.qqj-qianshi-coverage.ready{border-left-color:var(--success);background:color-mix(in srgb,var(--success) 5%,var(--paper))}.qqj-qianshi-day{grid-template-columns:var(--qqj-date-width) var(--qqj-axis-width) minmax(0,1fr);column-gap:var(--qqj-axis-gap);align-items:start;min-width:0;padding-bottom:24px;display:grid;position:relative}.qqj-qianshi-day:last-child{padding-bottom:11px}.qqj-qianshi-day-disclosure{grid-column:1;min-width:0}.qqj-qianshi-day-summary{cursor:pointer;list-style:none;display:block}.qqj-qianshi-day-summary::-webkit-details-marker{display:none}.qqj-qianshi-day-summary:focus-visible{outline:2px solid var(--knot);outline-offset:2px}.qqj-qianshi-dot{grid-area:1/2;margin-top:6px}.qqj-qianshi-events{grid-area:1/3;min-width:0}.qqj-qianshi-day [hidden]{display:none}.qqj-qianshi-segment:before{content:none}.qqj-qianshi-day-summary:after{content:none;display:none}@media (width<=340px){.qqj-qianshi-segment{--qqj-date-width:46px}}.qqj-time-clock-reminder{color:var(--soft);flex:0 0 100%;margin-top:2px;font-size:9px;line-height:1.4;display:block}.qqj-time-clock-reminder[hidden]{display:none}.qqj-qianshi-day-last.qqj-qianshi-day-has-card-axis{padding-bottom:0}.qqj-qianshi-day-last.qqj-qianshi-day-has-card-axis:before{bottom:0}.qqj-qianshi-day-single.qqj-qianshi-day-has-card-axis:before{content:\"\";top:11px;bottom:0}", T = "qqj-panel-pos-v2", E = "qqj-panel-size-v2", D = (e) => Number.isFinite(Number(e)), O = (e, t, n) => Math.min(n, Math.max(t, e)), k = (e, t) => ({
+var C = "<section class=\"panel\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"qqj-dialog-title\">\r\n<header class=\"topbar\"><div class=\"brand\"><span class=\"mark\" id=\"qqj-dialog-title\">千<span class=\"em\">千</span>结</span><span class=\"sub\">Myriad Knots</span></div><div class=\"header-actions\"><button class=\"icon-btn theme-btn\" type=\"button\" aria-label=\"主题：跟随酒馆\" title=\"主题：跟随酒馆（点击切换到日间）\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 3a9 9 0 1 0 0 18V3Z\"></path><circle cx=\"12\" cy=\"12\" r=\"9\"></circle></svg></button><button class=\"icon-btn fab-toggle-btn active\" type=\"button\" aria-label=\"隐藏悬浮球\" title=\"悬浮球：显示\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\"></circle><circle cx=\"12\" cy=\"12\" r=\"2.7\"></circle></svg></button><button class=\"icon-btn close\" type=\"button\" aria-label=\"关闭\" title=\"关闭\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M3.5 3.5l17 17M20.5 3.5l-17 17\"></path></svg></button></div></header>\r\n<nav class=\"tabs\" role=\"tablist\" aria-label=\"记忆模块\"><button class=\"tab active\" type=\"button\" role=\"tab\" aria-selected=\"true\" data-tab=\"profiles\">千人</button><button class=\"tab\" type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab=\"events\">千结</button><button class=\"tab\" type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab=\"qianshi\">千事</button><button class=\"tab\" type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab=\"people\">双丝网</button><button class=\"tab\" type=\"button\" role=\"tab\" aria-selected=\"false\" data-tab=\"settings\">设置</button></nav>\r\n<main class=\"body\"><div class=\"view\"></div></main>\r\n<button class=\"panel-resize-handle\" type=\"button\" aria-label=\"调整千千结面板大小\" title=\"拖动调整面板大小\"><span class=\"resize-grip\" aria-hidden=\"true\"></span></button>\r\n</section>\r\n", w = ":host{--paper:#f7f8fa;--panel:#fff;--ink:#22282b;--soft:#637077;--faint:#929da2;--line:#dce2e5;--thread:#cbd4d8;--crimson:#b63745;--knot:#b63745;--blue:#4f8781;--success:#4b7d63;--scroll-thumb:#63707752;--scroll-thumb-hover:#63707785;color:var(--ink);font:calc(13px * var(--qqj-ui-scale,1))/1.55 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif}:host([data-qqj-theme=night]){--paper:#13181b;--panel:#1c2327;--ink:#e7ecee;--soft:#9db0b5;--faint:#6c7c81;--line:#2b363b;--thread:#33424a;--crimson:#d9707a;--knot:#d9707a;--blue:#77b0aa;--success:#77b193;--scroll-thumb:#9db0b54d;--scroll-thumb-hover:#9db0b580}*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:var(--scroll-thumb) transparent}:hover{scrollbar-color:var(--scroll-thumb-hover) transparent}::-webkit-scrollbar{background:0 0;width:5px;height:5px}::-webkit-scrollbar-track{background:0 0}::-webkit-scrollbar-corner{background:0 0}::-webkit-scrollbar-thumb{background:var(--scroll-thumb);background-clip:padding-box;border:1px solid #0000;border-radius:999px;min-height:24px}::-webkit-scrollbar-thumb:hover{background:var(--scroll-thumb-hover);background-clip:padding-box}::-webkit-scrollbar-button{appearance:none!important;background:0 0!important;border:0!important;width:0!important;min-width:0!important;height:0!important;min-height:0!important;display:none!important}::-webkit-scrollbar-button:single-button{appearance:none!important;background:0 0!important;border:0!important;width:0!important;min-width:0!important;height:0!important;min-height:0!important;display:none!important}::-webkit-scrollbar-button:double-button{appearance:none!important;background:0 0!important;border:0!important;width:0!important;min-width:0!important;height:0!important;min-height:0!important;display:none!important}::-webkit-scrollbar-button:horizontal{appearance:none!important;background:0 0!important;border:0!important;width:0!important;min-width:0!important;height:0!important;min-height:0!important;display:none!important}::-webkit-scrollbar-button:vertical{appearance:none!important;background:0 0!important;border:0!important;width:0!important;min-width:0!important;height:0!important;min-height:0!important;display:none!important}::-webkit-scrollbar-button:start{appearance:none!important;background:0 0!important;border:0!important;width:0!important;min-width:0!important;height:0!important;min-height:0!important;display:none!important}::-webkit-scrollbar-button:end{appearance:none!important;background:0 0!important;border:0!important;width:0!important;min-width:0!important;height:0!important;min-height:0!important;display:none!important}@supports selector(::-webkit-scrollbar){*,:hover{scrollbar-width:auto;scrollbar-color:auto}}button,input,select,textarea{font:inherit}.panel{border:1px solid var(--line);background:var(--paper);box-shadow:none;border-radius:14px;overflow:hidden}.topbar{border-bottom:1px solid var(--line);background:var(--paper);cursor:move;-webkit-user-select:none;user-select:none;align-items:center;gap:10px;min-height:52px;padding:12px 16px;display:flex}.brand{align-items:baseline;gap:8px;min-width:0;display:flex}.mark{font:700 19px/1 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;letter-spacing:.12em}.mark .em{color:var(--crimson)}.sub{color:var(--faint);letter-spacing:.18em;font-size:8px}.header-actions{flex:none;align-items:center;gap:2px;margin-left:auto;display:flex}.icon-btn{background:var(--panel);width:32px;height:32px;color:var(--soft);cursor:pointer;border:0;border-radius:50%;place-items:center;padding:0;transition:background .15s,color .15s;display:grid}.icon-btn:hover{color:var(--ink);background:color-mix(in srgb,var(--ink) 7%,var(--panel))}.icon-btn.active{color:var(--knot)}.icon-btn svg{fill:none;stroke:currentColor;stroke-width:1.8px;stroke-linecap:round;stroke-linejoin:round;width:18px;height:18px}.tabs{border-bottom:1px solid var(--line);background:var(--paper);display:flex;position:relative;overflow:auto hidden}.tab{background:var(--paper);color:var(--soft);white-space:nowrap;border:0;flex:1 0 auto;padding:11px 13px;position:relative}.tab.active{color:var(--ink);font-weight:700}.tab.active:after{content:\"\";background:var(--knot);height:2px;transition:background .18s;position:absolute;bottom:-1px;left:27%;right:27%}.body{padding:12px 17px 20px}.view{min-width:0}.empty-state{text-align:center;place-items:center;gap:8px;min-height:230px;display:grid}.empty-state h2,.settings-page h2{font:700 20px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;margin:0}.empty-state p{max-width:27em;color:var(--soft);margin:0}.panel-resize-handle{background:var(--paper);width:24px;height:24px;color:var(--faint);cursor:nwse-resize;border:0;place-items:center;margin-left:auto;display:grid}.resize-grip{width:13px;height:13px;position:relative}.resize-grip:before,.resize-grip:after{content:\"\";border-bottom:1.5px solid;border-right:1.5px solid;position:absolute;bottom:1px;right:1px}.resize-grip:before{width:10px;height:10px}.resize-grip:after{width:5px;height:5px}.settings-page{gap:13px;display:grid}.settings-page>h2{font:700 20px/1.2 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;letter-spacing:.04em;margin:0 2px 1px}.settings-block{border:1px solid var(--line);background:var(--panel);border-radius:10px;gap:11px;padding:13px 14px;display:grid}.settings-block h3{font:700 13.5px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;letter-spacing:.03em;margin:0}.settings-field{color:var(--soft);gap:5px;font-size:11px;display:grid}.settings-field>span{letter-spacing:.02em;color:var(--soft);font-weight:600}.settings-row{grid-template-columns:1fr 1fr;gap:9px;display:grid}.settings-subhead{border-top:1px dashed var(--line);color:var(--faint);letter-spacing:.08em;margin:4px 0 -3px;padding-top:10px;font-size:10px;font-weight:700}.settings-input,.settings-field input,.settings-field select,.settings-field textarea{border:1px solid var(--line);background:var(--paper);width:100%;min-width:0;color:var(--ink);border-radius:8px;padding:8px 9px;transition:border-color .15s,box-shadow .15s}.settings-field input:focus,.settings-field select:focus,.settings-field textarea:focus,.settings-input:focus{border-color:var(--knot);box-shadow:0 0 0 2px color-mix(in srgb,var(--knot) 18%,transparent);outline:none}.settings-field textarea{resize:vertical;min-height:62px;line-height:1.5}.setting-switch{color:var(--ink);align-items:center;gap:9px;padding:2px 0;font-size:12px;display:flex}.setting-switch input{width:15px;height:15px;accent-color:var(--knot);flex:none}.settings-scale{align-items:center;gap:9px;display:flex}.settings-scale input{flex:1}.settings-scale output{min-width:3.2em;color:var(--soft);text-align:right;flex:none;font-size:11px}.settings-hint{color:var(--faint);margin:-1px 0 0;font-size:10.5px;line-height:1.6}.settings-result{color:var(--soft);margin:1px 0 0;font-size:10.5px}.settings-result.success{color:var(--success)}.settings-result.error{color:var(--crimson)}.settings-actions{flex-wrap:wrap;gap:8px;margin-top:2px;display:flex}.primary-action,.secondary-action,.danger-action{cursor:pointer;border-radius:7px;padding:7px 10px}.primary-action{border:1px solid var(--crimson);background:var(--crimson);color:#fff}.secondary-action{border:1px solid var(--line);background:var(--panel);color:var(--ink)}.danger-action{border:1px solid color-mix(in srgb,var(--crimson) 45%,var(--line));background:color-mix(in srgb,var(--crimson) 7%,var(--panel));color:var(--crimson)}button:disabled{border-color:var(--line);background:var(--line);color:var(--soft);cursor:not-allowed}.source-permission-list{gap:7px;max-height:min(40vh,320px);display:grid;overflow-y:auto}.source-toggle-row{align-items:flex-start;gap:7px;padding:6px 2px;display:flex}.source-toggle-row span{min-width:0;display:grid}.source-toggle-row input{accent-color:var(--crimson);margin-top:3px}@media (width<=640px){.topbar{padding-inline:10px}.header-actions{gap:0}.tab{min-width:0;padding-inline:9px}}@media (width<=390px){.body{padding-left:10px;padding-right:10px}.settings-actions{display:grid}.settings-actions button{width:100%}}.settings-drawer{padding:0;overflow:hidden}.settings-drawer-summary{cursor:pointer;align-items:center;gap:8px;padding:10px 11px;list-style:none;display:flex}.settings-drawer-summary::-webkit-details-marker{display:none}.settings-drawer-summary:before{content:\"›\";color:var(--soft);flex:none;font-size:18px;line-height:1;transition:transform .15s}.settings-drawer[open]>.settings-drawer-summary:before{transform:rotate(90deg)}.settings-drawer-summary h3{min-width:0;margin:0}.settings-drawer-body{gap:8px;padding:0 11px 11px;display:grid}@media (width<=520px){.settings-drawer-summary,.settings-drawer-body{padding-inline:9px}}.v3-foundation{gap:11px;display:grid}.v3-foundation-heading{gap:4px;display:grid}.v3-foundation-heading h2{font:700 19px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;margin:0}.v3-foundation-heading p,.v3-foundation-metrics,.v3-foundation-feedback{color:var(--soft);margin:0;font-size:10px}.v3-foundation-grid{border:1px solid var(--line);background:var(--panel);border-radius:9px;gap:0;margin:0;display:grid;overflow:hidden}.v3-foundation-row{border-bottom:1px solid var(--line);grid-template-columns:92px minmax(0,1fr);gap:8px;padding:7px 9px;display:grid}.v3-foundation-row:last-child{border-bottom:0}.v3-foundation-row dt{color:var(--soft)}.v3-foundation-row dd{overflow-wrap:anywhere;margin:0}.v3-foundation-actions{flex-wrap:wrap;gap:6px;display:flex}.v3-foundation-feedback.error{color:var(--crimson)}.v3-memory-floor{border:1px solid var(--line);background:var(--panel);border-radius:9px;overflow:hidden}.v3-memory-floor[open]{border-color:color-mix(in srgb,var(--blue) 45%,var(--line))}.v3-memory-floor-summary{cursor:pointer;justify-content:space-between;align-items:center;gap:8px;padding:9px 10px;display:flex}.v3-memory-floor-summary strong{font-size:11px}.v3-memory-status{background:color-mix(in srgb,var(--blue) 10%,var(--panel));color:var(--blue);border-radius:999px;flex:none;padding:2px 6px;font-size:9px}.status-failed .v3-memory-status,.status-error .v3-memory-status{background:color-mix(in srgb,var(--crimson) 10%,var(--panel));color:var(--crimson)}.status-ready .v3-memory-status{background:color-mix(in srgb,var(--success) 10%,var(--panel));color:var(--success)}.v3-memory-floor-body{border-top:1px solid var(--line);gap:8px;padding:0 10px 10px;display:grid}.v3-memory-effective{white-space:pre-wrap;margin:9px 0 0}.v3-memory-counts{color:var(--soft);margin:0;font-size:9px}.v3-memory-json{background:color-mix(in srgb,var(--blue) 6%,var(--paper));white-space:pre-wrap;overflow-wrap:anywhere;border-radius:7px;max-height:240px;margin:0;padding:8px;font-size:9px;overflow:auto}.v3-memory-edit{gap:6px;display:grid}.v3-memory-edit textarea{resize:vertical;min-height:72px}.v3-diagnostic-fallback{border:1px solid var(--line);background:var(--panel);width:100%;min-height:180px;color:var(--ink);border-radius:7px;padding:8px;font:9px/1.45 monospace}.v3-cse-current{border:1px solid color-mix(in srgb,var(--blue) 30%,var(--line));background:color-mix(in srgb,var(--blue) 8%,var(--panel));border-radius:10px;gap:9px;padding:10px;display:grid}.v3-cse-heading{justify-content:space-between;align-items:center;gap:8px;display:flex}.v3-cse-heading h3,.v3-cse-subject h4,.v3-cse-group h5,.v3-cse-group h6{margin:0}.v3-cse-heading h3{font:700 14px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif}.v3-cse-subjects{gap:8px;display:grid}.v3-cse-subject{border:1px solid var(--line);background:var(--panel);border-radius:8px;overflow:hidden}.v3-cse-subject h4{font:700 13px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif}.v3-cse-group{gap:5px;display:grid}.v3-cse-group h5{color:var(--blue);font-size:10px}.v3-cse-group h6{color:var(--soft);font-size:9px}.v3-cse-items{gap:5px;margin:0;padding:0;list-style:none;display:grid}.v3-cse-item{border-left:2px solid var(--blue);background:color-mix(in srgb,var(--blue) 6%,var(--panel));border-radius:0 6px 6px 0;gap:2px;padding:6px 7px;display:grid}.v3-cse-item-text{overflow-wrap:anywhere}.v3-cse-item-meta{color:var(--soft);overflow-wrap:anywhere;font-size:8px}.v3-recall-preview{border:1px solid color-mix(in srgb,var(--success) 34%,var(--line));background:color-mix(in srgb,var(--success) 8%,var(--panel));border-radius:10px;gap:9px;padding:10px;display:grid}.v3-recall-injection{border:1px solid var(--line);background:var(--panel);white-space:pre-wrap;overflow-wrap:anywhere;border-radius:8px;max-height:260px;margin:0;padding:9px;font-size:9px;line-height:1.5;overflow:auto}.settings-page{gap:10px}.master-switch{border:1px solid var(--line);border-left:3px solid var(--crimson);background:var(--panel);border-radius:10px;gap:4px;padding:10px 12px;display:grid}.master-switch .setting-switch{font-weight:600}.master-switch .settings-result:empty{display:none}.settings-group{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:0;overflow:hidden}.settings-group>.settings-group-summary{cursor:pointer;align-items:center;gap:8px;padding:11px 13px;list-style:none;display:flex}.settings-group-summary::-webkit-details-marker{display:none}.settings-group-summary:before{content:\"›\";color:var(--soft);flex:none;font-size:17px;line-height:1;transition:transform .15s}.settings-group[open]>.settings-group-summary:before{transform:rotate(90deg)}.settings-group-summary h3{min-width:0;font:700 15px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;letter-spacing:.02em;margin:0}.settings-group-body{gap:0;padding:0 12px 8px 26px;display:grid}.settings-sub{border:0;border-top:1px solid var(--line);background:var(--panel);border-radius:0;padding:0}.settings-sub>.settings-sub-summary{cursor:pointer;align-items:center;gap:7px;min-height:36px;padding:8px 2px;list-style:none;display:flex}.settings-sub-summary::-webkit-details-marker{display:none}.settings-sub-summary:before{content:\"›\";color:var(--faint);flex:none;font-size:14px;line-height:1;transition:transform .15s}.settings-sub[open]>.settings-sub-summary:before{transform:rotate(90deg)}.settings-sub-summary h4{min-width:0;font:600 13px/calc(20px * var(--qqj-ui-fixed-scale,1)) var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;color:var(--ink);margin:0}.settings-sub-body{gap:9px;padding:2px 2px 12px 14px;display:grid}.settings-sub-body.settings-drawer-list{gap:0;padding:0 2px}.settings-sub-body>.settings-sub{margin-left:10px}.settings-document-row{min-height:42px;color:var(--ink);justify-content:space-between;align-items:center;gap:12px;font-size:12px;display:flex}.settings-document-row+.settings-document-row{border-top:1px solid var(--line)}.settings-document-row>.secondary-action{white-space:nowrap;flex:none}.settings-group-body>.settings-hint:empty,.settings-group-body>.settings-result:empty{display:none}.qqj-management-progress{gap:2px;margin:0;line-height:1.6;display:grid}.qqj-management-feedback{color:var(--soft);overflow-wrap:anywhere;margin:0;font-size:11px;line-height:1.6}.qqj-management-feedback.error{border-left:3px solid var(--crimson);background:color-mix(in srgb,var(--crimson) 7%,var(--panel));color:var(--crimson);border-radius:0 6px 6px 0;padding:7px 9px}.qqj-management-delete{border-top:1px solid var(--line);justify-content:flex-start;padding-top:10px;display:flex}.qqj-floor-diagnostics-list{border-top:1px solid var(--line);gap:0;padding:0 8px;display:grid}.qqj-floor-diagnostics-list>.qqj-diagnostic-row{grid-template-columns:minmax(0,1fr) auto auto;gap:5px;padding:4px 0;font-size:11px}.qqj-floor-diagnostics-list>.qqj-diagnostic-row>button{grid-column:auto;width:auto;min-height:28px;padding:4px 7px;font-size:11px;line-height:1.4}.settings-sub.sub-advanced{border-top-style:dashed;margin-top:2px}.settings-sub.sub-advanced>.settings-sub-summary h4{color:var(--soft)}.settings-divider{background:var(--line);height:1px;margin:3px 0}.settings-inline{grid-template-columns:minmax(0,1fr) auto;align-items:stretch;gap:7px;display:grid}.settings-inline>.secondary-action{white-space:nowrap;align-self:stretch}.qqj-inline-select{min-width:0;display:grid}.qqj-inline-select-trigger{text-align:left;cursor:pointer;justify-content:space-between;align-items:center;gap:8px;min-height:34px;display:flex}.qqj-inline-select-value{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.qqj-inline-select-chevron{flex:none;font-size:15px;line-height:1;transition:transform .15s;transform:rotate(90deg)}.qqj-inline-select.open>.qqj-inline-select-trigger .qqj-inline-select-chevron{transform:rotate(-90deg)}.qqj-inline-select-options{overscroll-behavior:contain;border:1px solid var(--line);background:var(--paper);border-radius:8px;max-height:220px;margin-top:4px;padding:3px;display:grid;overflow:hidden auto}.qqj-inline-select-options[hidden]{display:none}.qqj-inline-select-option{border:1px solid var(--paper);background:var(--paper);width:100%;min-width:0;color:var(--ink);text-align:left;overflow-wrap:anywhere;cursor:pointer;border-radius:6px;padding:7px 8px;display:block}.qqj-inline-select-option:hover{background:color-mix(in srgb,var(--knot) 6%,var(--paper))}.qqj-inline-select-option.active{border-color:var(--knot);background:color-mix(in srgb,var(--knot) 9%,var(--paper));color:var(--knot)}.qqj-inline-select-option:focus-visible{outline:2px solid var(--knot);outline-offset:-2px}.qqj-model-list-section{border:1px solid var(--line);background:var(--panel);border-radius:8px;overflow:hidden}.qqj-model-list-section[hidden]{display:none}.qqj-model-list-summary{color:var(--soft);cursor:pointer;-webkit-user-select:none;user-select:none;background:var(--panel);align-items:center;gap:8px;padding:8px 11px;font-size:10.5px;list-style:none;display:flex}.qqj-model-list-summary::-webkit-details-marker{display:none}.qqj-model-list-summary:hover{background:color-mix(in srgb,var(--knot) 6%,var(--panel))}.qqj-model-list-chevron{font-size:14px;line-height:1;transition:transform .15s}.qqj-model-list-section[open] .qqj-model-list-chevron{transform:rotate(90deg)}.qqj-model-list-body{border-top:1px solid var(--line);background:var(--panel);flex-direction:column;gap:6px;padding:8px 10px 10px;display:flex}.qqj-model-list-search{font-size:10.5px}.qqj-model-list-items{overscroll-behavior:contain;background:var(--paper);flex-direction:column;gap:3px;max-height:260px;padding-right:2px;display:flex;overflow:hidden auto}.qqj-model-list-items::-webkit-scrollbar{width:4px}.qqj-model-list-items::-webkit-scrollbar-thumb{background:var(--line);border-radius:2px}.qqj-model-list-item{border:1px solid var(--paper);background:var(--paper);width:100%;color:var(--ink);text-align:left;word-break:break-all;cursor:pointer;border-radius:6px;padding:8px 10px;transition:background .12s,border-color .12s,color .12s;display:block}.qqj-model-list-item:hover{background:color-mix(in srgb,var(--knot) 6%,var(--paper))}.qqj-model-list-item:active{background:color-mix(in srgb,var(--knot) 10%,var(--paper))}.qqj-model-list-item.active{border-color:var(--knot);background:color-mix(in srgb,var(--knot) 8%,var(--paper));color:var(--knot)}.qqj-model-list-empty{color:var(--soft);text-align:center;background:var(--paper);padding:14px;font-size:10px}.settings-input.settings-num{text-align:center;width:48px}.qqj-auto-hide-row{min-height:34px;color:var(--ink);justify-content:space-between;align-items:center;gap:10px;font-size:12px;display:flex}.qqj-auto-hide-row>.settings-num{flex:0 0 48px;height:26px;padding-block:2px}.settings-input[type=number]{-moz-appearance:textfield}.settings-input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}.settings-input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}.source-exclude-count{color:var(--soft);margin:0 0 2px;font-size:10.5px}.qqj-page{gap:12px;display:grid}.qqj-view-heading{gap:4px;display:grid}.qqj-view-heading h2{font:700 20px/1.2 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;letter-spacing:.04em;margin:0}.qqj-view-heading>p{color:var(--soft);margin:0;font-size:10.5px}.qqj-page-health{border-left:3px solid var(--success);background:color-mix(in srgb,var(--success) 10%,var(--panel));color:var(--soft);border-radius:0 7px 7px 0;align-items:center;gap:7px;padding:7px 9px;font-size:10px;display:flex}.qqj-page-health.checking,.qqj-page-health.error{border-left-color:var(--crimson);color:var(--soft);background:color-mix(in srgb,var(--crimson) 10%,var(--panel))}.qqj-page-health.healthy{border-left-color:var(--success);color:var(--soft);background:color-mix(in srgb,var(--success) 10%,var(--panel))}.qqj-memories-page{gap:0}.qqj-memories-page>.qqj-page-health{margin-bottom:4px}.v3-memory-list{gap:0;display:grid}.qqj-memory-card{border:0;border-bottom:1px solid var(--line);background:0 0;border-radius:0;overflow:visible}.qqj-memory-card:first-child{border-top:0}.qqj-memory-card-head{cursor:pointer;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:8px;padding:12px 0;list-style:none;display:grid}.qqj-memory-card-head::-webkit-details-marker{display:none}.qqj-floor-number{font:800 12px/1.2 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;font-variant-numeric:tabular-nums;letter-spacing:.02em;white-space:nowrap}.qqj-memory-card[open]>.qqj-memory-card-head .qqj-floor-number{color:var(--knot)}.qqj-floor-time{min-width:0;color:var(--faint);text-overflow:ellipsis;white-space:nowrap;font-size:9px;overflow:hidden}.qqj-memory-card-head>.v3-memory-status{white-space:nowrap;justify-content:center;align-items:center;min-height:18px;display:inline-flex}.qqj-memory-card-head>.v3-memory-status.is-user{background:color-mix(in srgb,var(--knot) 10%,var(--panel));color:var(--knot)}.qqj-memory-chevron{color:var(--faint);font-size:16px;line-height:1;transition:transform .15s}.qqj-memory-card[open]>.qqj-memory-card-head .qqj-memory-chevron{transform:rotate(90deg)}.qqj-memory-card-body{border:0;border-left:1px solid var(--line);gap:9px;margin:0 0 3px 4px;padding:2px 0 14px 15px;display:grid;position:relative}.qqj-memory-card-body:before{content:\"\";background:var(--knot);border-radius:1px;width:5px;height:5px;position:absolute;top:11px;left:-3px;transform:rotate(45deg)}.qqj-memory-main{color:var(--ink);font:500 12px/1.8 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;white-space:pre-wrap;overflow-wrap:anywhere;margin:0 32px 1px 0}.qqj-memory-main.is-empty{color:var(--soft);font-family:inherit;font-style:italic}.qqj-memory-meta{color:var(--soft);flex-wrap:wrap;gap:5px 11px;padding-right:30px;font-size:9px;line-height:1.5;display:flex}.qqj-memory-meta-item{gap:4px;min-width:0;display:inline-flex}.qqj-memory-meta strong{color:var(--ink);font-weight:600}.qqj-memory-meta-item>span{overflow-wrap:anywhere}.qqj-memory-menu{position:absolute;top:-1px;right:-2px}.qqj-memory-menu>summary{list-style:none}.qqj-memory-menu>summary::-webkit-details-marker{display:none}.qqj-memory-menu-toggle{width:29px;height:29px;color:var(--soft);cursor:pointer;border-radius:7px;place-items:center;font-size:19px;line-height:1;display:grid}.qqj-memory-menu-toggle:hover{color:var(--knot);background:color-mix(in srgb,var(--knot) 7%,var(--panel))}.qqj-memory-menu-pop{z-index:4;border:1px solid var(--line);background:var(--panel);border-radius:9px;min-width:132px;padding:5px;display:none;position:absolute;top:30px;right:0;box-shadow:0 10px 24px #121c2124}.qqj-memory-menu[open]>.qqj-memory-menu-pop{display:grid}.qqj-memory-menu-action{width:100%;color:var(--ink);text-align:left;white-space:nowrap;cursor:pointer;background:0 0;border:0;border-radius:6px;padding:8px 9px;font-size:11px;display:block}.qqj-memory-menu-action:hover{background:color-mix(in srgb,var(--knot) 7%,var(--panel))}.qqj-memory-menu-action:disabled{color:var(--faint);cursor:not-allowed;background:0 0}.status-failed>.qqj-memory-card-head .v3-memory-status,.status-error>.qqj-memory-card-head .v3-memory-status{background:color-mix(in srgb,var(--crimson) 10%,var(--panel));color:var(--crimson)}.status-ready>.qqj-memory-card-head .v3-memory-status{background:color-mix(in srgb,var(--success) 10%,var(--panel));color:var(--success)}.status-ready>.qqj-memory-card-head .v3-memory-status.is-user{background:color-mix(in srgb,var(--knot) 10%,var(--panel));color:var(--knot)}.qqj-memory-edit-field,.qqj-memory-edit-group{gap:6px;display:grid}.qqj-memory-edit-field>span,.qqj-memory-edit-group>strong{color:var(--soft);font-size:10px}.qqj-memory-edit-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:6px;display:grid}.qqj-memory-edit-group:nth-of-type(3) .qqj-memory-edit-row{grid-template-columns:minmax(0,1fr) auto}.qqj-memory-person-option{grid-template-columns:auto minmax(0,1fr) minmax(110px,.8fr);align-items:center;gap:7px;display:grid}.qqj-memory-person-option input{accent-color:var(--knot)}.qqj-card-actions{flex-wrap:wrap;justify-content:flex-end;gap:6px;display:flex}.qqj-inline-empty,.qqj-main-character-empty{border:1px dashed var(--line);background:var(--panel);color:var(--soft);text-align:center;border-radius:9px;padding:18px 14px}.qqj-main-character-empty{text-align:left;gap:9px;display:grid}.v3-cse-subject.is-main{border-color:color-mix(in srgb,var(--crimson) 38%,var(--line))}.v3-cse-subject.is-main>.qqj-person-summary{box-shadow:inset 3px 0 var(--crimson)}.qqj-people-toolbar{justify-content:space-between;align-items:center;gap:8px;display:flex}.qqj-person-summary,.qqj-section-summary{cursor:pointer;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;padding:10px 11px;list-style:none;display:flex}.qqj-person-summary::-webkit-details-marker{display:none}.qqj-section-summary::-webkit-details-marker{display:none}.qqj-person-summary:before,.qqj-section-summary:before{content:\"›\";color:var(--soft);flex:none;font-size:17px;line-height:1;transition:transform .15s}.v3-cse-subject[open]>.qqj-person-summary:before,.qqj-cse-history[open]>.qqj-section-summary:before,.qqj-management-drawer[open]>.qqj-section-summary:before,.qqj-more-people[open]>.qqj-section-summary:before{transform:rotate(90deg)}.qqj-person-summary strong,.qqj-section-summary strong{overflow-wrap:anywhere;min-width:min(100%,8em);font:700 13px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;flex:8em;margin-right:auto}.qqj-person-summary>.v3-memory-status,.qqj-section-summary>.v3-memory-status{white-space:normal;overflow-wrap:anywhere;flex:0 auto;min-width:0;max-width:100%}.qqj-person-body{border-top:1px solid var(--line);gap:8px;padding:9px 11px 11px;display:grid}.qqj-cse-edit,.qqj-cse-edit-group{gap:7px;display:grid}.qqj-cse-edit-group>strong{color:var(--blue);font-size:10px}.qqj-cse-scope-heading{color:var(--soft);align-items:center;gap:5px;font-size:10px;font-weight:600;display:flex}.qqj-cse-help{border:1px solid var(--line);background:var(--panel);width:19px;height:19px;color:var(--soft);cursor:pointer;border-radius:50%;place-items:center;padding:0;font:700 11px/1 inherit;display:grid}.qqj-cse-edit-row{grid-template-columns:minmax(0,1fr);align-items:start;gap:6px;display:grid}.qqj-cse-edit-row textarea{resize:vertical;width:100%;min-height:64px}.qqj-cse-edit-meta{flex-wrap:wrap;align-items:flex-start;gap:6px;display:flex}.qqj-cse-edit-meta>.qqj-inline-select{flex:110px;max-width:220px}.qqj-cse-edit-meta>.secondary-action{flex:none;min-height:34px;margin-left:auto}.qqj-profiles-page{gap:0}.qqj-profile-toolbar{gap:7px;margin-bottom:19px;display:grid}.qqj-profile-switch-row{border-bottom:1px solid var(--line);grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding-bottom:12px;display:grid}.qqj-profile-switcher{overscroll-behavior-x:contain;scrollbar-width:none;gap:3px;min-width:0;padding:0;display:flex;overflow-x:auto}.qqj-profile-switcher::-webkit-scrollbar{display:none}.qqj-profile-tab{box-sizing:border-box;min-width:0;max-width:min(170px,100%);color:var(--soft);text-overflow:ellipsis;white-space:nowrap;cursor:pointer;background:0 0;border:0;border-radius:6px;flex:none;padding:6px 9px;font-size:12px;overflow:hidden}.qqj-profile-tab:hover{color:var(--knot);background:color-mix(in srgb,var(--knot) 6%,var(--paper))}.qqj-profile-tab.active{background:color-mix(in srgb,var(--knot) 10%,var(--paper));color:var(--knot);font-weight:700}.qqj-profile-switch-empty{color:var(--faint);white-space:nowrap;align-self:center;padding:6px 4px;font-size:10px}.qqj-profile-more{white-space:nowrap}.qqj-profile-more.active{border-color:var(--knot);color:var(--knot)}.qqj-profile-toolbar-actions{flex-wrap:wrap;justify-content:flex-end;gap:6px;display:flex}.qqj-profile-card{background:0 0;border:0;border-radius:0;overflow:visible}.qqj-profile-picker,.qqj-more-people{border:1px solid var(--line);background:var(--panel);border-radius:9px;overflow:hidden}.qqj-profile-summary{border-bottom:1px solid var(--line);grid-template-columns:50px minmax(0,1fr) auto;align-items:start;gap:13px;padding:0 0 20px;display:grid}.qqj-profile-mark{border:1px solid var(--line);background:var(--panel);width:50px;height:50px;color:var(--knot);border-radius:10px;place-items:center;display:grid}.qqj-profile-mark svg{width:38px;height:25px;display:block}.qqj-profile-identity{min-width:0;padding-top:1px}.qqj-profile-identity h2{font:600 27px/1.25 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;letter-spacing:.05em;overflow-wrap:anywhere;margin:0}.qqj-profile-alias{color:var(--soft);white-space:pre-wrap;overflow-wrap:anywhere;margin:5px 0 0;font-size:11px;line-height:1.55}.qqj-profile-badges{flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:5px;padding-top:3px;display:flex}.qqj-profile-picker-heading{align-items:center;gap:8px;padding:10px 11px;display:flex}.qqj-profile-picker-heading strong{font:700 14px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;margin-right:auto}.qqj-profile-body{gap:0;padding:0;display:grid}.qqj-profile-reading{display:grid}.qqj-profile-section{margin:0;padding:17px 0 0}.qqj-profile-section h3{color:var(--soft);letter-spacing:.08em;align-items:center;gap:8px;margin:0 0 7px;font-size:11px;font-weight:500;display:flex}.qqj-profile-section h3:after{content:\"\";background:var(--line);flex:1;height:1px}.qqj-profile-section p{color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font-size:13px;line-height:1.9}.qqj-profile-section.lead p{font-size:14px}.qqj-profile-form{gap:12px;padding-top:17px;display:grid}.qqj-profile-field{gap:5px;display:grid}.qqj-profile-field>span{color:var(--soft);font-size:11px}.qqj-profile-field textarea{resize:vertical;min-height:80px;line-height:1.7}.qqj-profile-save-row{border-top:1px solid var(--line);flex-wrap:wrap;align-items:center;gap:8px;margin-top:17px;padding-top:14px;display:flex}.qqj-profile-save-result{min-width:0;color:var(--soft);overflow-wrap:anywhere;margin:0;font-size:10.5px}.qqj-profile-save-result.success{color:var(--success)}.qqj-profile-save-result.error{color:var(--crimson)}.qqj-more-people-list{border-top:1px solid var(--line);gap:7px;padding:9px;display:grid}.qqj-more-person-row{border:1px solid var(--line);background:var(--paper);border-radius:8px;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:8px 9px;display:grid}.qqj-more-person-copy{gap:2px;min-width:0;display:grid}.qqj-more-person-copy strong{font:700 12px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;overflow-wrap:anywhere}.qqj-more-person-copy small{color:var(--soft);overflow-wrap:anywhere;font-size:9px}.qqj-cse-more>.qqj-more-people-list>.v3-cse-subject{background:var(--paper)}.qqj-profile-menu{position:relative}.qqj-profile-menu>summary{list-style:none}.qqj-profile-menu>summary::-webkit-details-marker{display:none}.qqj-profile-menu-toggle{width:29px;height:29px;color:var(--soft);cursor:pointer;background:0 0;border:0;border-radius:7px;place-items:center;font-size:19px;line-height:1;display:grid}.qqj-profile-menu-toggle:hover{color:var(--knot);background:color-mix(in srgb,var(--knot) 7%,var(--panel))}.qqj-profile-menu-pop{z-index:3;border:1px solid var(--line);background:var(--panel);border-radius:9px;min-width:166px;padding:5px;display:none;position:absolute;top:34px;right:0;box-shadow:0 10px 24px #121c2124}.qqj-profile-menu[open]>.qqj-profile-menu-pop{display:grid}.qqj-profile-menu-pop .qqj-profile-menu-action{width:100%;color:var(--ink);text-align:left;white-space:nowrap;cursor:pointer;background:0 0;border:0;border-radius:6px;padding:8px 9px;font-size:11px;display:block}.qqj-profile-menu-pop .qqj-profile-menu-action:hover{background:color-mix(in srgb,var(--knot) 7%,var(--panel))}.qqj-profile-menu-pop .qqj-profile-menu-action.danger{color:var(--crimson)}.qqj-profile-menu-pop .qqj-profile-menu-action:disabled{color:var(--faint);cursor:not-allowed;background:0 0}.qqj-profile-menu-separator{background:var(--line);height:1px;margin:4px 5px}.qqj-profile-reading-result{border-top:1px solid var(--line);margin-top:17px;padding-top:12px}.qqj-profile-picker{overflow:visible}.qqj-more-person-actions{justify-content:flex-end;align-items:center;gap:5px;display:flex}.qqj-more-person-actions .qqj-profile-menu{flex:none}.qqj-cse-history,.qqj-management-drawer{border:1px solid var(--line);background:var(--panel);border-radius:9px;overflow:hidden}.qqj-cse-history-list,.qqj-management-drawer-body{border-top:1px solid var(--line);gap:8px;padding:10px;display:grid}.qqj-cse-history-row{border:1px solid var(--line);background:var(--paper);border-radius:8px;overflow:hidden}.qqj-cse-floor-summary{cursor:pointer;justify-content:space-between;align-items:center;gap:7px;padding:8px 9px;list-style:none;display:flex}.qqj-cse-floor-summary::-webkit-details-marker{display:none}.qqj-cse-floor-summary:before{content:\"›\";color:var(--soft);font-size:16px;line-height:1;transition:transform .15s}.qqj-cse-history-row[open]>.qqj-cse-floor-summary:before{transform:rotate(90deg)}.qqj-cse-floor-summary>span:first-of-type{margin-right:auto}.qqj-cse-floor-body{border-top:1px solid var(--line);gap:8px;padding:9px;display:grid}.qqj-cse-record-subject{gap:6px;display:grid}.qqj-cse-record-subject>strong{font:700 12px var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif}.qqj-management-notice{border-left:3px solid var(--crimson);background:color-mix(in srgb,var(--crimson) 6%,var(--panel));color:var(--soft);margin:0;padding:9px 10px;font-size:10.5px;line-height:1.55}.qqj-management-actions{padding:1px 0}.qqj-diagnostic-row{border-bottom:1px solid var(--line);grid-template-columns:minmax(72px,1fr) auto auto;align-items:center;gap:6px;padding:7px 0;display:grid}.qqj-diagnostic-row:last-child{border-bottom:0}.qqj-settings-management{border:1px solid var(--line);background:var(--panel);border-radius:10px;gap:10px;padding:13px 14px;display:grid}.qqj-settings-management .qqj-page{gap:10px}.qqj-settings-management .qqj-view-heading>h2{font-size:16px}.qqj-settings-management .qqj-view-heading>p{display:none}.qqj-cse-isolation-hint{border-left:2px solid var(--thread);background:color-mix(in srgb,var(--thread) 7%,var(--panel));color:var(--soft);margin:0;padding:7px 8px;font-size:9.5px;line-height:1.5}.qqj-cse-floor-state{border-top:1px dashed var(--line);overflow:hidden}.qqj-cse-floor-state-summary{color:var(--soft);cursor:pointer;padding:7px 2px;font-size:10px;list-style:none}.qqj-cse-floor-state-summary::-webkit-details-marker{display:none}.qqj-cse-floor-state-summary:before{content:\"›\";margin-right:5px;transition:transform .15s;display:inline-block}.qqj-cse-floor-state[open]>.qqj-cse-floor-state-summary:before{transform:rotate(90deg)}.qqj-cse-floor-state-body{gap:8px;padding:2px 0 3px;display:grid}.qqj-cse-state-group{gap:4px;display:grid}.qqj-cse-state-label{color:var(--soft);font-size:9px}button:focus-visible,summary:focus-visible{outline:2px solid var(--knot);outline-offset:2px}@media (prefers-reduced-motion:reduce){.qqj-person-summary:before,.qqj-section-summary:before,.qqj-memory-chevron,.qqj-cse-floor-summary:before,.qqj-cse-floor-state-summary:before{transition:none}}@media (width<=390px){.qqj-memory-card-head{padding-inline:0}.qqj-memory-card-body{padding-left:15px;padding-right:0}.qqj-card-actions{grid-template-columns:1fr 1fr;display:grid}.qqj-card-actions button{width:100%}.qqj-memory-edit-row,.qqj-memory-person-option{grid-template-columns:minmax(0,1fr)}.qqj-memory-edit-row button{width:100%}.qqj-diagnostic-row{grid-template-columns:minmax(0,1fr) auto}.qqj-diagnostic-row>button{grid-column:1/-1;width:100%}.qqj-settings-management{padding-inline:10px}.qqj-more-person-row{grid-template-columns:minmax(0,1fr)}.qqj-more-person-row button{width:100%}.qqj-profile-switch-row{grid-template-columns:minmax(0,1fr)}.qqj-profile-toolbar-actions{justify-content:flex-start}.qqj-profile-summary{grid-template-columns:46px minmax(0,1fr);gap:11px}.qqj-profile-mark{width:46px;height:46px}.qqj-profile-badges{grid-column:2;justify-content:flex-start;padding-top:0}.qqj-profile-save-row{align-items:stretch}.qqj-profile-save-row button{flex:auto}.qqj-profile-save-result{flex-basis:100%}.qqj-cse-edit-meta>.qqj-inline-select{max-width:none}.qqj-cse-edit-meta>.secondary-action{width:auto}.qqj-auto-hide-row{flex-wrap:wrap}}.source-permission-list,.qqj-inline-select-options,.qqj-model-list-items{touch-action:pan-y}.qqj-ui-diagnostic-action{flex-wrap:wrap;align-items:center;gap:7px;display:flex}.qqj-ui-diagnostic-action .settings-hint{margin:0}.qqj-storage-management{gap:9px;display:grid}.qqj-storage-grid{border:1px solid var(--line);background:var(--paper);border-radius:8px;gap:0;display:grid;overflow:hidden}.qqj-storage-row{border-bottom:1px solid var(--line);grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:9px;padding:7px 9px;font-size:10.5px;display:grid}.qqj-storage-row:last-child{border-bottom:0}.qqj-storage-row>span{color:var(--soft)}.qqj-storage-row>strong{color:var(--ink);text-align:right;font-weight:600}.qqj-storage-breakdown{border:1px solid var(--line);background:var(--paper);border-radius:8px;overflow:hidden}.qqj-storage-breakdown>summary{color:var(--soft);cursor:pointer;padding:7px 9px;font-size:10.5px}.qqj-storage-breakdown-body{border-top:1px solid var(--line)}.qqj-people-page,.qqj-cse-history-page{gap:12px}.qqj-people-page>.qqj-page-health,.qqj-cse-history-page>.qqj-page-health{margin:0}.qqj-user-anchor{border-bottom:1px solid var(--line);gap:10px;padding:13px 0 14px;display:grid}.qqj-user-anchor-title{align-items:center;gap:8px;display:flex}.qqj-user-anchor-title>strong{font:800 20px/1.2 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;overflow-wrap:anywhere}.qqj-user-anchor .v3-cse-group,.qqj-relation-note .v3-cse-group{gap:4px}.qqj-user-anchor .v3-cse-group h5,.qqj-relation-note .v3-cse-group h5{color:var(--soft);align-items:center;gap:8px;font-size:10px;font-weight:600;display:flex}.qqj-user-anchor .v3-cse-group h5:after,.qqj-relation-note .v3-cse-group h5:after{content:\"\";background:var(--line);flex:1;height:1px}.qqj-user-anchor .v3-cse-items,.qqj-relation-note .v3-cse-items{gap:4px}.qqj-user-anchor .v3-cse-item,.qqj-relation-note .v3-cse-item{background:0 0;padding:3px 0 3px 10px}.qqj-cse-edit-action{justify-self:start}.qqj-cse-page-heading{align-items:center;gap:8px;margin-top:2px;display:flex}.qqj-cse-page-heading>strong{font:800 15px/1.3 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;white-space:nowrap;flex:none}.qqj-cse-page-heading>.v3-memory-status{margin-left:auto}.qqj-cse-page-heading>.qqj-history-search{flex:auto}.qqj-cse-page-heading>.qqj-history-search .qqj-history-search-input{flex:auto;width:auto;min-width:0}.qqj-cse-view-toggle{white-space:nowrap;margin-left:auto;padding:5px 9px}.qqj-relation-switcher{overscroll-behavior-x:contain;scrollbar-width:none;gap:7px;min-width:0;padding-bottom:0;display:flex;overflow-x:auto}.qqj-relation-switcher::-webkit-scrollbar{display:none}.qqj-relation-person{border:1px solid var(--line);background:var(--panel);max-width:170px;color:var(--soft);text-overflow:ellipsis;white-space:nowrap;cursor:pointer;border-radius:8px;flex:none;padding:7px 12px;font-size:11px;overflow:hidden}.qqj-relation-person.active{border-color:color-mix(in srgb,var(--knot) 42%,var(--line));background:color-mix(in srgb,var(--knot) 9%,var(--panel));color:var(--knot);font-weight:700}.qqj-people-page>.v3-cse-subject{background:0 0}.qqj-people-page>.v3-cse-subject>.qqj-person-summary{padding-inline:2px}.qqj-people-page>.v3-cse-subject>.qqj-person-body{border-top:1px solid var(--line);padding-inline:2px}.qqj-relation-card{border:1px solid var(--line);background:var(--panel);border-radius:12px;overflow:visible}.qqj-relation-head{border-bottom:1px solid var(--line);align-items:center;gap:8px;padding:12px;display:flex}.qqj-relation-head>strong{font:800 18px/1.2 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;overflow-wrap:anywhere}.qqj-relation-head>span{color:var(--faint);font-size:12px}.qqj-relation-menu{margin-left:auto;position:relative;top:auto;right:auto}.qqj-relation-menu .qqj-memory-menu-pop{z-index:5}.qqj-relation-menu .qqj-memory-menu-action.danger{color:var(--crimson)}.qqj-relation-dual{grid-template-columns:minmax(0,1fr) 1px minmax(0,1fr);padding:12px;display:grid}.qqj-relation-divider{background:linear-gradient(to bottom,transparent,var(--line) 10%,var(--line) 90%,transparent);width:1px;min-height:54px}.qqj-relation-lane{min-width:0;padding:0 10px}.qqj-relation-lane:first-child{padding-left:0}.qqj-relation-lane:last-child{padding-right:0}.qqj-relation-lane-title{color:var(--soft);overflow-wrap:anywhere;margin-bottom:8px;font-size:10px;display:block}.qqj-relation-lane.from-user .qqj-relation-lane-title{color:var(--knot)}.qqj-relation-items{gap:0;margin:0;padding:0;list-style:none;display:grid}.qqj-relation-item{border-top:1px solid var(--line);gap:2px;padding:7px 0;display:grid}.qqj-relation-item:first-child{border-top:0}.qqj-relation-item .v3-cse-item-text{white-space:pre-wrap;font-size:11px;line-height:1.55}.qqj-relation-item .v3-cse-item-meta{line-height:1.45}.qqj-relation-lane>.settings-hint{margin:0;padding:7px 0}.qqj-other-relations{border-top:1px solid var(--line);overflow:hidden}.qqj-other-relations>.qqj-section-summary{padding-inline:2px}.qqj-other-relations[open]>.qqj-section-summary:before{transform:rotate(90deg)}.qqj-other-relations-body{gap:8px;padding:8px 2px 2px;display:grid}.qqj-other-relation{border:1px solid var(--line);background:var(--panel);border-radius:8px;gap:3px;padding:8px 9px;display:grid}.qqj-other-relation>strong{color:var(--soft);font-size:9px}.qqj-other-relation>.qqj-relation-item{list-style:none}.qqj-cse-history-page>.qqj-cse-history-list{border-top:0;padding:0}.qqj-cse-floor-result{gap:8px;display:grid}.qqj-cse-floor-result-title{font:700 12px/1.3 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif}.qqj-cse-floor-changes{border-top:1px dashed var(--line);overflow:hidden}.qqj-cse-floor-changes[open]>.qqj-cse-floor-state-summary:before{transform:rotate(90deg)}.qqj-cse-floor-changes-body{gap:8px;padding:2px 0 3px;display:grid}.qqj-cse-change.is-add{border-left-color:var(--success);background:color-mix(in srgb,var(--success) 7%,var(--panel))}.qqj-cse-change.is-update,.qqj-cse-change.is-refine{background:color-mix(in srgb,#ad7b2f 8%,var(--panel));border-left-color:#ad7b2f}.qqj-cse-change.is-remove{border-left-color:var(--faint);background:color-mix(in srgb,var(--faint) 8%,var(--panel));color:var(--soft)}@media (width<=390px){.qqj-relation-dual{grid-template-columns:minmax(0,1fr);gap:10px}.qqj-relation-divider{width:100%;height:1px;min-height:0}.qqj-relation-lane{padding:0}.qqj-cse-page-heading{flex-wrap:wrap;align-items:flex-start}.qqj-cse-page-heading>.v3-memory-status{display:none}.qqj-cse-page-heading>.qqj-history-search{flex-basis:100%;order:3;width:100%}.qqj-cse-page-heading>.qqj-cse-view-toggle{margin-left:auto}}.qqj-page-status{gap:4px;display:grid}.qqj-page-health{margin:0}.qqj-memories-page,.qqj-profiles-page{gap:12px}.qqj-profile-health{margin:0}.qqj-profile-toolbar{margin-bottom:0}.qqj-profile-summary{grid-template-columns:50px minmax(0,1fr);padding-right:82px;position:relative}.qqj-profile-mark{cursor:pointer;width:50px;height:50px;min-height:50px;padding:0;overflow:hidden}.qqj-profile-mark.has-alias{align-self:stretch;height:auto}.qqj-profile-avatar{object-fit:cover;width:100%;height:100%}.qqj-avatar-file{display:none}.qqj-profile-badges{padding-top:0;position:absolute;top:3px;right:0}.qqj-profile-read-row{grid-template-columns:20px minmax(0,1fr);column-gap:15px;padding:5px 0;font-size:10px;display:grid}.qqj-profile-read-row>span{color:var(--faint);font-size:inherit;overflow-wrap:anywhere}.qqj-profile-read-row>p{min-width:0;color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font-size:13px;line-height:1.7}.qqj-profile-section-basic{grid-template-columns:repeat(2,minmax(0,1fr));column-gap:14px;display:grid}.qqj-profile-section-basic>h3,.qqj-profile-section-basic>.qqj-profile-read-notes{grid-column:1/-1}.qqj-profile-form{gap:15px}.qqj-profile-form-group{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;display:grid}.qqj-profile-form-group>h3{color:var(--soft);grid-column:1/-1;margin:0;font-size:12px}.qqj-profile-field:has(textarea){grid-column:1/-1}.qqj-profile-field textarea{min-height:66px}@media (width<=390px){.qqj-profile-summary{grid-template-columns:46px minmax(0,1fr);padding-right:70px}.qqj-profile-mark{width:46px;height:46px;min-height:46px}.qqj-profile-mark.has-alias{height:auto}.qqj-profile-form-group{grid-template-columns:minmax(0,1fr)}.qqj-profile-form-group>h3{grid-column:1}.qqj-profile-field:has(textarea){grid-column:1}.qqj-profile-section-basic{column-gap:9px}}.qqj-relation-switch-row{align-items:center;gap:7px;min-width:0;display:flex}.qqj-relation-switch-row>.qqj-relation-switcher{flex:auto}.qqj-relation-more-toggle{text-overflow:ellipsis;white-space:nowrap;flex:none;max-width:42%;overflow:hidden}.qqj-relation-more-toggle.active{border-color:var(--knot);color:var(--knot)}.qqj-profile-toolbar-actions>.secondary-action{border-radius:6px;padding:5px 9px;font-size:12px}.qqj-time-automatic-failure{color:var(--crimson,var(--error));flex-basis:100%;margin:0}.qqj-time-automatic-failure[hidden]{display:none}.qqj-history-search{align-items:center;gap:5px;min-width:0;display:flex}.qqj-history-search-input{box-sizing:border-box;width:min(230px,38vw);min-width:120px;padding:5px 8px;font-size:11px}.qqj-history-search-clear{white-space:nowrap;border-radius:6px;padding:5px 8px;font-size:11px}.qqj-history-search-clear[hidden]{display:none}.qqj-memory-toolbar{align-items:center}.qqj-memory-toolbar>.qqj-history-search{margin-right:auto}.qqj-search-count{color:var(--soft);margin:0;padding:8px 0;font-size:10px}.qqj-history-search-result{border-bottom:1px solid var(--line);gap:5px;padding:10px 0;display:grid}.qqj-history-search-result[role=button]{cursor:pointer}.qqj-history-search-result[role=button]:focus-visible{outline:2px solid color-mix(in srgb,var(--knot) 65%,transparent);outline-offset:2px}.qqj-history-search-result:last-child{border-bottom:0}.qqj-history-search-title{color:var(--soft);flex-wrap:wrap;align-items:center;gap:6px;font-size:10px;display:flex}.qqj-history-search-title>strong{color:var(--ink);font-size:12px;font-weight:700}.qqj-history-search-snippet{color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font-size:12px;line-height:1.7}.qqj-relation-more-toggle{border-radius:8px;padding:7px 12px;font-size:11px}.qqj-cse-change.is-remove .v3-cse-item-text{color:var(--faint);text-decoration:line-through;-webkit-text-decoration-color:color-mix(in srgb,var(--faint) 55%,transparent);text-decoration-color:color-mix(in srgb,var(--faint) 55%,transparent);text-decoration-thickness:1px}.qqj-relation-note{border-top:1px solid var(--line);background:color-mix(in srgb,var(--panel) 94%,var(--line));border-radius:0 0 12px 12px;min-width:0;padding:9px 12px 11px}.qqj-relation-note-body{gap:10px;min-width:0;display:grid}.qqj-relation-note .v3-cse-item{border-left-color:var(--knot)}.qqj-relation-note .v3-cse-item-text{white-space:pre-wrap}.qqj-relation-note .settings-hint{margin:0}.qqj-relation-head>strong{min-width:0}.qqj-relation-head>span{white-space:nowrap;flex-shrink:0}.qqj-profile-summary{border-bottom:0;padding-bottom:2px}.qqj-profile-section h3{color:var(--knot)}.qqj-profile-section.lead{padding-top:17px}.qqj-profile-read-row{align-items:baseline}.qqj-relation-layer{gap:3px;display:grid}.qqj-relation-layer+.qqj-relation-layer{margin-top:8px}.qqj-relation-layer-title{color:var(--soft);font-size:9px;font-weight:600}.qqj-profile-switcher,.qqj-relation-switcher{scrollbar-width:none;cursor:grab;padding-bottom:0}.qqj-profile-switcher.dragging,.qqj-relation-switcher.dragging{cursor:grabbing;-webkit-user-select:none;user-select:none}.qqj-profile-switcher::-webkit-scrollbar{display:none}.qqj-relation-switcher::-webkit-scrollbar{display:none}.qqj-people-order-open{flex:none;padding:4px 8px;font-size:11px}.qqj-manual-editor{position:relative}.qqj-manual-save-bar{z-index:4;margin-top:12px;padding:9px 0;position:sticky;bottom:0}.qqj-profile-save-row.qqj-manual-save-bar{border-top:0}.v3-cse-subject.qqj-manual-editor-host,.qqj-prequel-drawer.qqj-manual-editor-host{overflow:visible}#qqj-settings-group-general:has(#qqj-settings-api[open]){overflow:visible}.qqj-cse-more:has(.qqj-manual-save-bar){overflow:visible}.qqj-api-editor>.settings-sub-body>.sub-advanced+.qqj-manual-save-bar{margin-top:-9px}@media (width<=640px){.panel>.panel-resize-handle{display:none}}.qqj-qianshi-page{gap:12px;min-width:0;display:grid}.qqj-qianshi-page>.qqj-history-search{width:100%}.qqj-qianshi-page>.qqj-history-search .qqj-history-search-input{flex:auto;width:auto;min-width:0}.qqj-qianshi-coverage{border-left:3px solid var(--blue);background:color-mix(in srgb,var(--blue) 5%,var(--paper));grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:8px 10px;padding:9px 10px;display:grid}.qqj-qianshi-coverage.partial,.qqj-qianshi-coverage.pending{background:color-mix(in srgb,#ad7b2f 6%,var(--paper));border-left-color:#ad7b2f}.qqj-qianshi-coverage.degraded,.qqj-qianshi-coverage.unavailable{border-left-color:var(--crimson);background:color-mix(in srgb,var(--crimson) 5%,var(--paper))}.qqj-qianshi-coverage.empty{border-left-color:var(--thread);background:var(--paper)}.qqj-qianshi-coverage strong{font-size:11px;display:block}.qqj-qianshi-coverage p{color:var(--soft);margin:2px 0 0;font-size:9.5px;line-height:1.6}.qqj-qianshi-history-status{border-top:1px solid var(--line);overflow-wrap:anywhere;grid-column:1/-1;min-width:0;padding-top:5px;margin:0!important}.qqj-qianshi-history-results{overflow-wrap:anywhere;overscroll-behavior:contain;grid-column:1/-1;gap:5px;min-width:0;max-height:50vh;display:grid;overflow-y:auto}.qqj-qianshi-feedback{color:var(--soft);margin:0;font-size:10px}.qqj-qianshi-toolbar{border-bottom:1px solid var(--line);color:var(--blue);letter-spacing:.04em;justify-content:space-between;align-items:center;gap:10px;padding:0 0 9px;font-size:10px;display:flex}.qqj-qianshi-toolbar>div{gap:12px;display:flex}.qqj-qianshi-toolbar button{color:var(--soft);white-space:nowrap;cursor:pointer;background:0 0;border:0;padding:2px 0;font-size:10px}.qqj-qianshi-toolbar button:hover{color:var(--knot)}.qqj-qianshi-timeline{min-width:0;display:grid}.qqj-qianshi-segment{--qqj-date-width:43px;--qqj-axis-gap:11px;--qqj-axis-width:10px;display:grid;position:relative}.qqj-qianshi-segment:before{content:\"\";top:15px;bottom:17px;left:calc(var(--qqj-date-width) + var(--qqj-axis-gap) + 4px);background:var(--thread);width:1px;position:absolute}.qqj-qianshi-segment+.qqj-qianshi-segment{border-top:1px dashed var(--line);margin-top:5px;padding-top:13px}.qqj-qianshi-segment-label{color:var(--soft);margin:0 0 11px;font-size:9px}.qqj-qianshi-date{text-align:right;padding-top:2px}.qqj-qianshi-day-name{font:700 15px/1.3 var(--qqj-custom-font,inherit),-apple-system,BlinkMacSystemFont,\"PingFang SC\",\"Microsoft YaHei\",sans-serif;white-space:nowrap;display:block}.qqj-qianshi-period{color:var(--soft);overflow-wrap:anywhere;margin-top:3px;font-size:8.5px;line-height:1.4;display:block}.qqj-qianshi-day-count{color:var(--soft);white-space:nowrap;margin-top:4px;font-size:8px;display:block}.qqj-qianshi-latest-tag{color:var(--knot);white-space:nowrap;margin-top:4px;font-size:8px;display:block}.qqj-qianshi-dot{z-index:1;box-sizing:content-box;border:2px solid var(--paper);background:var(--thread);border-radius:50%;width:7px;height:7px;margin-top:6px;display:block;position:relative}.qqj-qianshi-day.latest .qqj-qianshi-dot{background:var(--knot);box-shadow:0 0 0 1px var(--knot)}.qqj-qianshi-day.latest .qqj-qianshi-day-name{color:var(--knot)}.qqj-qianshi-events{min-width:0}.qqj-qianshi-event-row,.qqj-qianshi-day-event-row{min-width:0;position:relative}.qqj-qianshi-event-row+.qqj-qianshi-event-row{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}.qqj-qianshi-event>summary{cursor:pointer;list-style:none;display:block}.qqj-qianshi-event>summary::-webkit-details-marker{display:none}.qqj-qianshi-event-time{color:var(--blue);margin-bottom:2px;font-size:9px;display:block}.qqj-qianshi-event-title{min-width:0;color:var(--ink);overflow-wrap:anywhere;flex-wrap:wrap;align-items:baseline;gap:5px;font-size:12px;font-weight:700;line-height:1.55;display:flex}.qqj-qianshi-event-status{color:var(--soft);font-size:8.5px;font-weight:500}.qqj-qianshi-event[open]>.qqj-qianshi-event-summary .qqj-qianshi-event-title,.qqj-qianshi-event>summary:hover .qqj-qianshi-event-title{color:var(--knot)}.qqj-qianshi-preview{color:var(--soft);overflow-wrap:anywhere;-webkit-line-clamp:2;-webkit-box-orient:vertical;margin:4px 0 0;font-size:11px;line-height:1.75;display:-webkit-box;overflow:hidden}.qqj-qianshi-event[open]>.qqj-qianshi-event-summary .qqj-qianshi-preview{display:none}.qqj-qianshi-expanded{border-left:2px solid var(--thread);gap:9px;margin-top:8px;padding-left:10px;display:grid}.qqj-qianshi-description{color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font-size:11px;line-height:1.85}.qqj-qianshi-meta{color:var(--soft);grid-template-columns:max-content minmax(0,1fr);gap:3px 7px;margin:0;font-size:9px;line-height:1.7;display:grid}.qqj-qianshi-meta dt{color:var(--faint)}.qqj-qianshi-meta dd{overflow-wrap:anywhere;margin:0}.qqj-qianshi-meta dd.source{color:var(--blue)}.qqj-qianshi-matter,.qqj-qianshi-day-progress{border-top:1px dashed var(--line)}.qqj-qianshi-matter>summary,.qqj-qianshi-day-progress-title,.qqj-qianshi-undated>summary{color:var(--soft);padding:7px 0;font-size:10px;list-style:none}.qqj-qianshi-matter>summary,.qqj-qianshi-undated>summary{cursor:pointer}.qqj-qianshi-day-progress-title{margin:0}.qqj-qianshi-matter>summary::-webkit-details-marker{display:none}.qqj-qianshi-undated>summary::-webkit-details-marker{display:none}.qqj-qianshi-matter-list{gap:5px;padding-bottom:3px;display:grid}.qqj-qianshi-matter-event{border-left:2px solid var(--thread);background:color-mix(in srgb,var(--panel) 70%,var(--paper));padding:6px 7px;position:relative}.qqj-qianshi-matter-event.current{border-left-color:var(--knot)}.qqj-qianshi-matter-event>summary{color:var(--soft);cursor:pointer;padding-right:35px;font-size:9px;line-height:1.55}.qqj-qianshi-matter-event>p{color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;margin:5px 0 0;font-size:10px;line-height:1.7}.qqj-qianshi-day-event-detail,.qqj-qianshi-event-detail{gap:7px;padding-top:6px;display:grid}.qqj-qianshi-event>summary{padding-right:35px}.qqj-qianshi-matter-event{position:static}.qqj-qianshi-event-menu{z-index:4;position:absolute;top:0;right:0}.qqj-qianshi-event-menu[open]{z-index:8}.qqj-qianshi-text-editor,.qqj-qianshi-text-form{gap:7px;display:grid}.qqj-qianshi-text-label{color:var(--soft);gap:4px;font-size:10px;display:grid}.qqj-qianshi-description-input{resize:vertical;min-height:78px;line-height:1.6}.qqj-qianshi-edit-actions{gap:7px;display:flex}.qqj-qianshi-edit-error{color:var(--crimson);margin:0;font-size:10px;line-height:1.6}.qqj-qianshi-undated{border-top:1px dashed var(--line);margin-top:7px;padding-top:8px}.qqj-qianshi-undated-hint{color:var(--soft);margin:0 0 4px;font-size:9px}.qqj-qianshi-undated-list{gap:11px;padding:8px 0 0 16px;display:grid}.qqj-qianshi-empty{color:var(--soft);text-align:center;padding:27px 12px;font-size:11px}.qqj-qianshi-state{border:1px solid var(--line);letter-spacing:0;white-space:nowrap;background:var(--paper);min-height:17px;color:var(--soft);border-radius:999px;align-items:center;padding:1px 5px;font-size:8px;font-weight:600;line-height:1.2;display:inline-flex}.qqj-qianshi-state.status-planned{border-color:color-mix(in srgb,var(--soft) 35%,var(--line));color:var(--soft)}.qqj-qianshi-state.status-inProgress{border-color:color-mix(in srgb,var(--blue) 35%,var(--line));color:var(--blue)}.qqj-qianshi-state.status-completed{border-color:color-mix(in srgb,var(--success) 35%,var(--line));color:var(--success)}.qqj-qianshi-state.status-cancelled{border-color:color-mix(in srgb,var(--crimson) 35%,var(--line));color:var(--crimson)}.qqj-qianshi-state.status-occurred{color:var(--soft)}.qqj-qianshi-state.status-unknown{color:var(--faint);border-style:dashed}.qqj-qianshi-matter-event>summary{flex-wrap:wrap;align-items:center;gap:5px;display:flex}.qqj-qianshi-matter-event>summary>span:first-child{overflow-wrap:anywhere;min-width:0}@media (width<=340px){.qqj-qianshi-segment{--qqj-date-width:36px;--qqj-axis-gap:8px}.qqj-qianshi-day-name{font-size:14px}.qqj-qianshi-coverage{grid-template-columns:minmax(0,1fr)}.qqj-qianshi-coverage>.secondary-action{justify-self:start}.qqj-qianshi-history-status{grid-column:1}.qqj-qianshi-history-results{grid-column:1/-1}}.qqj-qianshi-segment{--qqj-date-width:48px}.qqj-qianshi-day{isolation:isolate}.qqj-qianshi-day:before{content:\"\";z-index:-1;top:0;bottom:0;left:calc(var(--qqj-date-width) + var(--qqj-axis-gap) + 5px);background:var(--thread);width:1px;position:absolute}.qqj-qianshi-day-first:before{top:11px}.qqj-qianshi-day-last:before{bottom:calc(100% - 11px)}.qqj-qianshi-day-single:before{content:none}.qqj-qianshi-date{grid-template-columns:minmax(0,1fr);align-items:start;display:grid;position:relative}.qqj-qianshi-day-name{grid-area:1/1}.qqj-qianshi-day-disclosure[open] .qqj-qianshi-period,.qqj-qianshi-day-count,.qqj-qianshi-latest-tag{grid-column:1/-1}.qqj-qianshi-day-preview{grid-area:1/3;min-width:0;padding:1px 0 0}.qqj-qianshi-day-preview-title{min-width:0;color:var(--ink);overflow-wrap:anywhere;flex-wrap:wrap;align-items:baseline;gap:5px;font-size:12px;font-weight:700;line-height:1.55;display:flex}.qqj-qianshi-day-preview .qqj-qianshi-event-time{overflow-wrap:anywhere}.qqj-qianshi-day-preview .qqj-qianshi-preview{margin-top:3px}@media (width<=340px){.qqj-qianshi-segment{--qqj-date-width:46px}}#qqj-settings-time{justify-content:space-between}#qqj-recent-items[hidden]{display:none}.qqj-recent-list-actions,.qqj-recent-batch-controls{flex-wrap:wrap;align-items:center;gap:6px;display:flex}.qqj-recent-batch-controls[hidden]{display:none}.qqj-recent-item-head{align-items:center;gap:8px;display:flex}.qqj-recent-item-head>span{overflow-wrap:anywhere;flex:1;min-width:0}.settings-field input.qqj-recent-item-select{flex:0 0 15px;width:15px;min-width:15px;height:15px;margin:0;padding:0}.qqj-recent-item-title.error{color:var(--crimson)}.qqj-recent-item-head>.qqj-profile-menu{flex:none}.qqj-section-summary>.qqj-recall-copy{flex:none;min-height:0;padding:4px 7px;font-size:10px}.qqj-recall-copy-fallback{resize:vertical;min-height:120px}.qqj-qianshi-coverage.ready{border-left-color:var(--success);background:color-mix(in srgb,var(--success) 5%,var(--paper))}.qqj-qianshi-day{grid-template-columns:var(--qqj-date-width) var(--qqj-axis-width) minmax(0,1fr);column-gap:var(--qqj-axis-gap);align-items:start;min-width:0;padding-bottom:24px;display:grid;position:relative}.qqj-qianshi-day:last-child{padding-bottom:11px}.qqj-qianshi-day-disclosure{grid-column:1;min-width:0}.qqj-qianshi-day-summary{cursor:pointer;list-style:none;display:block}.qqj-qianshi-day-summary::-webkit-details-marker{display:none}.qqj-qianshi-day-summary:focus-visible{outline:2px solid var(--knot);outline-offset:2px}.qqj-qianshi-dot{grid-area:1/2;margin-top:6px}.qqj-qianshi-events{grid-area:1/3;min-width:0}.qqj-qianshi-day [hidden]{display:none}.qqj-qianshi-segment:before{content:none}.qqj-qianshi-day-summary:after{content:none;display:none}@media (width<=340px){.qqj-qianshi-segment{--qqj-date-width:46px}}.qqj-time-clock-reminder{color:var(--soft);flex:0 0 100%;margin-top:2px;font-size:9px;line-height:1.4;display:block}.qqj-time-clock-reminder[hidden]{display:none}.qqj-qianshi-day-last.qqj-qianshi-day-has-card-axis{padding-bottom:0}.qqj-qianshi-day-last.qqj-qianshi-day-has-card-axis:before{bottom:0}.qqj-qianshi-day-single.qqj-qianshi-day-has-card-axis:before{content:\"\";top:11px;bottom:0}", T = "qqj-panel-pos-v2", E = "qqj-panel-size-v2", D = (e) => Number.isFinite(Number(e)), O = (e, t, n) => Math.min(n, Math.max(t, e)), k = (e, t) => ({
 	width: Math.max(0, Number(e) || 0),
 	height: Math.max(0, Number(t) || 0)
 });
@@ -472,7 +472,7 @@ var V = Object.freeze({
 		value: `rgb(${t.join(", ")})`,
 		rgb: t
 	};
-}, W = (e, t) => {
+}, ee = (e, t) => {
 	let n = R(t);
 	if (!n || n.toLowerCase() === "transparent") return null;
 	let r = /^#([\da-f]{3,8})$/iu.exec(n);
@@ -507,7 +507,7 @@ var V = Object.freeze({
 	} catch {
 		return null;
 	}
-}, ee = ({ documentRef: e, windowRef: t }) => {
+}, te = ({ documentRef: e, windowRef: t }) => {
 	try {
 		let n = t?.getComputedStyle?.(e?.documentElement);
 		if (!n) return {};
@@ -522,23 +522,23 @@ var V = Object.freeze({
 	} catch {
 		return {};
 	}
-}, te = (e) => Math.min(255, Math.max(0, Number(e) || 0)), G = (e) => e?.rgb ? .2126 * te(e.rgb[0]) + .7152 * te(e.rgb[1]) + .0722 * te(e.rgb[2]) : null;
+}, W = (e) => Math.min(255, Math.max(0, Number(e) || 0)), G = (e) => e?.rgb ? .2126 * W(e.rgb[0]) + .7152 * W(e.rgb[1]) + .0722 * W(e.rgb[2]) : null;
 function ne({ value: e = {}, documentRef: t = globalThis.document, windowRef: n = t?.defaultView ?? globalThis } = {}) {
 	let r = [
 		"auto",
 		"day",
 		"night"
-	].includes(e.appearanceTheme) ? e.appearanceTheme : "auto", i = ee({
+	].includes(e.appearanceTheme) ? e.appearanceTheme : "auto", i = te({
 		documentRef: t,
 		windowRef: n
-	}), a = W(t, i.body), o = a ? (G(a) ?? 0) > 127 ? "night" : "day" : null, s = n?.matchMedia?.("(prefers-color-scheme: light)")?.matches ? "day" : "night", c = r === "auto" ? o ?? s : r, l = (r === "auto" ? H : V)[c];
+	}), a = ee(t, i.body), o = a ? (G(a) ?? 0) > 127 ? "night" : "day" : null, s = n?.matchMedia?.("(prefers-color-scheme: light)")?.matches ? "day" : "night", c = r === "auto" ? o ?? s : r, l = (r === "auto" ? H : V)[c];
 	if (r !== "auto") return {
 		mode: r,
 		effectiveTheme: c,
 		palette: l,
 		hasHostSignal: !!o
 	};
-	let u = (e, n) => W(t, e)?.value ?? n;
+	let u = (e, n) => ee(t, e)?.value ?? n;
 	return {
 		mode: r,
 		effectiveTheme: c,
@@ -958,9 +958,9 @@ function fe({ settings: e, apiTools: t, documentRef: n = globalThis.document, op
 	H.type = "number", H.min = "5", H.max = "600";
 	let U = d("input", "settings-input");
 	U.type = "number", U.min = "0", U.max = "2", U.step = "0.01", U.placeholder = "留空使用任务默认值";
-	let W = d("p", "settings-hint", "留空沿用当前任务温度；较高温度可能降低结构化提取稳定性。"), ee = d("input");
-	ee.type = "checkbox";
-	let te = d("p", "settings-hint"), G, ne = [], K = 0, q = (e = z.value) => {
+	let ee = d("p", "settings-hint", "留空沿用当前任务温度；较高温度可能降低结构化提取稳定性。"), te = d("input");
+	te.type = "checkbox";
+	let W = d("p", "settings-hint"), G, ne = [], K = 0, q = (e = z.value) => {
 		L.textContent = `已加载 ${ne.length} 个模型`;
 		let t = String(e ?? "").trim().toLocaleLowerCase(), n = t ? ne.filter((e) => e.toLocaleLowerCase().includes(t)) : ne;
 		if (!n.length) {
@@ -978,7 +978,7 @@ function fe({ settings: e, apiTools: t, documentRef: n = globalThis.document, op
 	}, ie = () => {
 		re();
 		let e = A(), t = e.config ?? {};
-		j.value = t.url ?? "", M.value = "", M.placeholder = t.key ? "已保存，留空保持不变" : "输入 API Key", N.value = t.model ?? "", V.value = (t.excludeParams ?? []).join("\n"), H.value = String(t.timeoutSec ?? 180), U.value = t.qqjTemperature == null ? "" : String(t.qqjTemperature), ee.checked = t.stream === !0, te.textContent = e.followsSummary ? `正在编辑：召回 API 跟随摘要${e.followsAnalysis ? "，摘要跟随分析" : ""} · ${e.label}。直接保存会更新当前${e.followsAnalysis ? "分析" : "摘要"}配置；另存可建立召回专用预设。` : e.followsAnalysis ? `正在编辑：摘要 API 跟随分析 · ${e.label}。直接保存会更新当前分析配置；另存可建立摘要专用预设。` : `正在编辑：${e.sourceRole === "recall" ? "召回" : e.sourceRole === "summary" ? "摘要" : "分析"} API · ${e.label}`, G && (G.disabled = !e.presetId || !e.config);
+		j.value = t.url ?? "", M.value = "", M.placeholder = t.key ? "已保存，留空保持不变" : "输入 API Key", N.value = t.model ?? "", V.value = (t.excludeParams ?? []).join("\n"), H.value = String(t.timeoutSec ?? 180), U.value = t.qqjTemperature == null ? "" : String(t.qqjTemperature), te.checked = t.stream === !0, W.textContent = e.followsSummary ? `正在编辑：召回 API 跟随摘要${e.followsAnalysis ? "，摘要跟随分析" : ""} · ${e.label}。直接保存会更新当前${e.followsAnalysis ? "分析" : "摘要"}配置；另存可建立召回专用预设。` : e.followsAnalysis ? `正在编辑：摘要 API 跟随分析 · ${e.label}。直接保存会更新当前分析配置；另存可建立摘要专用预设。` : `正在编辑：${e.sourceRole === "recall" ? "召回" : e.sourceRole === "summary" ? "摘要" : "分析"} API · ${e.label}`, G && (G.disabled = !e.presetId || !e.config);
 	};
 	function J(t) {
 		e.update({
@@ -998,7 +998,7 @@ function fe({ settings: e, apiTools: t, documentRef: n = globalThis.document, op
 		model: N.value.trim(),
 		excludeParams: V.value,
 		timeoutSec: Number(H.value),
-		stream: ee.checked,
+		stream: te.checked,
 		qqjTemperature: U.value.trim() === "" ? null : Number(U.value)
 	}), le = () => {
 		let e = U.value.trim();
@@ -1118,7 +1118,7 @@ function fe({ settings: e, apiTools: t, documentRef: n = globalThis.document, op
 	});
 	be.classList.add("sub-advanced");
 	let Se = d("label", "setting-switch");
-	return Se.append(ee, d("span", "", "流式请求")), xe.append(p("排除参数", V), Se, p("超时秒数", H), p("千千结温度（0–2）", U), W), g.append(p("分析API（建议高质模型）", E), p("摘要API（建议快速模型）", D), p("召回API（默认跟随摘要）", O), te, d("p", "settings-hint", "召回可选择另一 API 预设；默认使用摘要配置。不同预设仍可能共用同一账号的并发额度。"), d("div", "settings-divider"), p("URL", j), p("Key", M), p("模型", ve), P, fe, be, ye), { node: h };
+	return Se.append(te, d("span", "", "流式请求")), xe.append(p("排除参数", V), Se, p("超时秒数", H), p("千千结温度（0–2）", U), ee), g.append(p("分析API（建议高质模型）", E), p("摘要API（建议快速模型）", D), p("召回API（默认跟随摘要）", O), W, d("p", "settings-hint", "召回可选择另一 API 预设；默认使用摘要配置。不同预设仍可能共用同一账号的并发额度。"), d("div", "settings-divider"), p("URL", j), p("Key", M), p("模型", ve), P, fe, be, ye), { node: h };
 }
 //#endregion
 //#region src/story-clock.js
@@ -4191,7 +4191,7 @@ function Fr({ entities: e = [], floorIds: t = null, identityProjection: n = null
 	}));
 }
 //#endregion
-//#region node_modules/graphology/dist/graphology.mjs
+//#region ../tt-update/node_modules/graphology/dist/graphology.mjs
 var Ir = (/* @__PURE__ */ p(((e, t) => {
 	var n = typeof Reflect == "object" ? Reflect : null, r = n && typeof n.apply == "function" ? n.apply : function(e, t, n) {
 		return Function.prototype.apply.call(e, t, n);
@@ -6268,7 +6268,7 @@ function Oa(e) {
 }
 Oa(Sa), Oa(Ca), Oa(wa), Oa(Ta), Oa(Ea), Oa(Da), Sa.Graph = Sa, Sa.DirectedGraph = Ca, Sa.UndirectedGraph = wa, Sa.MultiGraph = Ta, Sa.MultiDirectedGraph = Ea, Sa.MultiUndirectedGraph = Da, Sa.InvalidArgumentsGraphError = Yr, Sa.NotFoundGraphError = Q, Sa.UsageGraphError = Xr;
 //#endregion
-//#region node_modules/graphology-utils/is-graph.js
+//#region ../tt-update/node_modules/graphology-utils/is-graph.js
 var ka = /* @__PURE__ */ p(((e, t) => {
 	t.exports = function(e) {
 		return typeof e == "object" && !!e && typeof e.addUndirectedEdgeWithKey == "function" && typeof e.dropNode == "function" && typeof e.multi == "boolean";
@@ -10684,7 +10684,7 @@ function ql({ source: e, queryContext: t, historyContext: n = null, cseContext: 
 	}) : null, V = N.map((e) => ({
 		...e,
 		_storylineId: "recent"
-	})), H = z.history, U = z.states, W = z.changes, ee = [...B ? [B] : [], ...z.storylines], te = Number.isSafeInteger(a) && a >= 0 ? a : null, G = te ?? 2 ** 53 - 1, { characterLimit: ne, tokenLimit: K } = Qc(i, {
+	})), H = z.history, U = z.states, ee = z.changes, te = [...B ? [B] : [], ...z.storylines], W = Number.isSafeInteger(a) && a >= 0 ? a : null, G = W ?? 2 ** 53 - 1, { characterLimit: ne, tokenLimit: K } = Qc(i, {
 		reservedTokens: d,
 		reservedCharacters: f
 	}), q = [], re = [], ie = [], J = [], ae = [], Y = [], oe = /* @__PURE__ */ new Set(), se = (t = re, n = ie, r = Y) => {
@@ -10714,7 +10714,7 @@ function ql({ source: e, queryContext: t, historyContext: n = null, cseContext: 
 			...a.flatMap((e) => e.items.map((e) => e.storylineId)),
 			...s.map((e) => e.storylineId),
 			...c.map((e) => e.storylineId)
-		].filter(Boolean)), u = ee.filter((e) => l.has(e.storylineId)), d = {
+		].filter(Boolean)), u = te.filter((e) => l.has(e.storylineId)), d = {
 			mode: "selected",
 			corrections: [],
 			reminders: []
@@ -10769,7 +10769,7 @@ function ql({ source: e, queryContext: t, historyContext: n = null, cseContext: 
 			kind: "state",
 			value: e
 		})),
-		...W.map((e) => ({
+		...ee.map((e) => ({
 			kind: "change",
 			value: e
 		})),
@@ -10802,7 +10802,7 @@ function ql({ source: e, queryContext: t, historyContext: n = null, cseContext: 
 			states: re,
 			changes: ie
 		});
-		ae.splice(0, ae.length, ...e.history), re.splice(0, re.length, ...e.states), ie.splice(0, ie.length, ...e.changes), Y.splice(0, Y.length, ...J, ...ae), ee = [...B && J.length ? [B] : [], ...e.storylines];
+		ae.splice(0, ae.length, ...e.history), re.splice(0, re.length, ...e.states), ie.splice(0, ie.length, ...e.changes), Y.splice(0, Y.length, ...J, ...ae), te = [...B && J.length ? [B] : [], ...e.storylines];
 	}, Ae = () => {
 		let e = [
 			...ae.map((e) => ({
@@ -10895,7 +10895,7 @@ function ql({ source: e, queryContext: t, historyContext: n = null, cseContext: 
 		}),
 		skipReasons: Object.freeze(Ve),
 		limits: Object.freeze({
-			maxFloors: te,
+			maxFloors: W,
 			maxItems: k,
 			maxCharacters: ne,
 			actualCharacters: Be.length,
@@ -12787,11 +12787,11 @@ function Fd(e, { identityProjection: t = null, progressCharacters: n = md } = {}
 			hasEvents: n.events.length > 0,
 			legacyPendingOnly: t.qianshiDelta?.status === "pending" && n.reviewEvents.length > 0
 		};
-	}), W = U.map((e) => e.status), ee = U.filter((e) => (["ready", "empty"].includes(e.status) || e.status === "partial" && e.hasEvents || e.legacyPendingOnly) && (!g.has(e.floorId) || e.status === "partial" && e.hasEvents || e.legacyPendingOnly)), te = $({
+	}), ee = U.map((e) => e.status), te = U.filter((e) => (["ready", "empty"].includes(e.status) || e.status === "partial" && e.hasEvents || e.legacyPendingOnly) && (!g.has(e.floorId) || e.status === "partial" && e.hasEvents || e.legacyPendingOnly)), W = $({
 		eligibleFloors: H.length,
-		readyFloors: W.filter((e) => e === "ready").length,
-		emptyFloors: W.filter((e) => e === "empty").length,
-		completeFloors: ee.length,
+		readyFloors: ee.filter((e) => e === "ready").length,
+		emptyFloors: ee.filter((e) => e === "empty").length,
+		completeFloors: te.length,
 		partialFloors: U.filter((e) => e.status === "partial" && !e.hasEvents && !g.has(e.floorId)).length,
 		pendingFloors: U.filter((e) => ["pending", "unprocessed"].includes(e.status) && !e.legacyPendingOnly).length,
 		degradedFloors: g.size,
@@ -12804,7 +12804,7 @@ function Fd(e, { identityProjection: t = null, progressCharacters: n = md } = {}
 		matters: $(L),
 		relations: $(f),
 		currentProgress: V,
-		coverage: te,
+		coverage: W,
 		diagnostics: $({
 			discardedOrderRelations: $(p),
 			danglingRelationIds: $(m),
@@ -15025,14 +15025,14 @@ async function np({ response: e, envelope: t, floor: n, existingEntities: r = []
 		claimText: C(e.claimText, "informationTransfers.claimText", 2e3),
 		channel: e.channel,
 		evidenceRefs: L(e, "informationTransfers.evidence")
-	})), W = await I("privateCognition", async (e) => ({
+	})), ee = await I("privateCognition", async (e) => ({
 		itemId: await F("privateCognition", e),
 		ownerEntityId: j(e.ownerMentionKey, "privateCognition.ownerMentionKey"),
 		kind: e.kind,
 		content: C(e.content, "privateCognition.content", 2e3),
 		expressedPublicly: !1,
 		evidenceRefs: L(e, "privateCognition.evidence")
-	})), ee = /* @__PURE__ */ new Map(), te = await I("exactAnchors", async (e) => {
+	})), te = /* @__PURE__ */ new Map(), W = await I("exactAnchors", async (e) => {
 		let r = zf(e.exactText, "exactAnchors.exactText", 2e3), i = $f({
 			floor: n,
 			envelope: t,
@@ -15043,8 +15043,8 @@ async function np({ response: e, envelope: t, floor: n, existingEntities: r = []
 			i.sourceType,
 			i.sourceSnapshotIndex,
 			r
-		]), o = (ee.get(a) ?? 0) + 1;
-		if (ee.set(a, o), Uf(i.content, r) < o) throw If("V3_EXTRACTOR_ANCHOR_OCCURRENCE_INVALID", "exactAnchors.exactText");
+		]), o = (te.get(a) ?? 0) + 1;
+		if (te.set(a, o), Uf(i.content, r) < o) throw If("V3_EXTRACTOR_ANCHOR_OCCURRENCE_INVALID", "exactAnchors.exactText");
 		return {
 			anchorId: await Ht([
 				"v3-anchor",
@@ -15069,7 +15069,7 @@ async function np({ response: e, envelope: t, floor: n, existingEntities: r = []
 		r ?? null,
 		i
 	]);
-	for (let e of te) {
+	for (let e of W) {
 		let t = ne(e.sourceFloorId, e.sourceType, e.sourceSnapshotIndex, e.exactText);
 		G.set(t, [...G.get(t) ?? [], e.anchorId]);
 	}
@@ -15168,10 +15168,10 @@ async function np({ response: e, envelope: t, floor: n, existingEntities: r = []
 		actions: V,
 		observations: H,
 		informationTransfers: U,
-		privateCognition: W,
+		privateCognition: ee,
 		commitments: q,
 		eventFragments: re,
-		exactAnchors: te,
+		exactAnchors: W,
 		openLoops: ie,
 		ambiguities: J,
 		cseSignals: ae,
@@ -17930,22 +17930,22 @@ function nh({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 		};
 		return t ? O.add(n) : g = n, S = null, x = null, j(), n;
 	}
-	function W(e, t) {
+	function ee(e, t) {
 		P(e), _ = t.data ?? Km(e.identity.chatId, Em(p)), v = t.revision, y = e.identity.chatId, I(), F();
 	}
-	async function ee(t) {
+	async function te(t) {
 		let n = await e.read(t.identity);
 		return P(t), n;
 	}
-	async function te(t, n) {
+	async function W(t, n) {
 		for (let r = 0; r < 4; r += 1) {
-			let r = await ee(t), i = n(r.data ?? Km(t.identity.chatId, Em(p)));
-			if (!i) return W(t, r), {
+			let r = await te(t), i = n(r.data ?? Km(t.identity.chatId, Em(p)));
+			if (!i) return ee(t, r), {
 				changed: !1,
 				state: H()
 			};
 			try {
-				return W(t, await e.put(t.identity, i, r.revision, { signal: t.controller.signal })), {
+				return ee(t, await e.put(t.identity, i, r.revision, { signal: t.controller.signal })), {
 					changed: !0,
 					state: H()
 				};
@@ -17972,14 +17972,14 @@ function nh({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 	async function ne({ refreshMemory: t = !0 } = {}) {
 		if (g) return H();
 		let i = U("loading");
-		return G(i, async () => (t && typeof r.refreshStatus == "function" && await r.refreshStatus({ preferCached: !0 }), P(i), W(i, await e.read(i.identity)), (D !== y || E === null) && (D = y, E = (n.getReachable?.()?.floors ?? []).length), x = null, j()));
+		return G(i, async () => (t && typeof r.refreshStatus == "function" && await r.refreshStatus({ preferCached: !0 }), P(i), ee(i, await e.read(i.identity)), (D !== y || E === null) && (D = y, E = (n.getReachable?.()?.floors ?? []).length), x = null, j()));
 	}
 	async function K(e) {
 		let t = U("savingSelection");
 		return G(t, async () => {
 			let i = JSON.stringify(_?.selectedEntityIds ?? []), a = new Set(Wm(n.getReachable?.(), r.getState(), _).map((e) => e.entityId)), o = [...new Set((Array.isArray(e) ? e : []).map(String))];
 			if (o.some((e) => !Ap(e) || !a.has(e))) throw Sm("QQJ_PEOPLE_SELECTION_INVALID", "重要人物选择包含当前聊天不可用的人物。");
-			let s = await te(t, (e) => {
+			let s = await W(t, (e) => {
 				if (JSON.stringify(e.selectedEntityIds) === JSON.stringify(o)) return null;
 				if (JSON.stringify(e.selectedEntityIds) !== i) throw Sm("QQJ_PEOPLE_SELECTION_CONFLICT", "重要人物选择已在其他页面更新，本次没有覆盖新选择，请重试。");
 				return {
@@ -17996,7 +17996,7 @@ function nh({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 		return G(t, async () => {
 			let i = JSON.stringify(_?.personOrderEntityIds ?? []), a = new Set(Wm(n.getReachable?.(), r.getState(), _).map((e) => e.entityId)), o = [...new Set((Array.isArray(e) ? e : []).map(String))];
 			if (o.some((e) => !Ap(e) || !a.has(e))) throw Sm("QQJ_PEOPLE_ORDER_INVALID", "人物顺序包含当前聊天不可用的人物。");
-			let s = await te(t, (e) => {
+			let s = await W(t, (e) => {
 				if (JSON.stringify(e.personOrderEntityIds) === JSON.stringify(o)) return null;
 				if (JSON.stringify(e.personOrderEntityIds) !== i) throw Sm("QQJ_PEOPLE_ORDER_CONFLICT", "人物顺序已在其他页面更新，本次没有覆盖新顺序，请重试。");
 				return {
@@ -18013,7 +18013,7 @@ function nh({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 		return G(a, async () => {
 			let o = _?.profilesByEntityId?.[e] ?? null;
 			if (!Wm(n.getReachable?.(), r.getState(), _).find((t) => t.entityId === e)) throw Sm("QQJ_PEOPLE_PROFILE_ENTITY_INVALID", "这个人物已不在当前聊天的可用人物中。");
-			let s = Om(t), c = await te(a, (t) => {
+			let s = Om(t), c = await W(a, (t) => {
 				let a = Hm(t);
 				if (Or(e, a) !== e || Ar(e, a) || !Wm(n.getReachable?.(), r.getState(), t).some((t) => t.entityId === e)) throw Sm("QQJ_PEOPLE_PROFILE_ENTITY_INVALID", "这个人物已删除或归属变化，本次资料没有写入。");
 				let c = t.profilesByEntityId[e];
@@ -18048,7 +18048,7 @@ function nh({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 		return G(i, async () => {
 			let a = _?.avatarsByEntityId?.[e] ?? null;
 			if (!Wm(n.getReachable?.(), r.getState(), _).find((t) => t.entityId === e)) throw Sm("QQJ_PEOPLE_PROFILE_ENTITY_INVALID", "这个人物已不在当前聊天的可用人物中。");
-			let o = t === null || t === "" ? null : Rm(t, e), s = await te(i, (t) => {
+			let o = t === null || t === "" ? null : Rm(t, e), s = await W(i, (t) => {
 				let i = Hm(t);
 				if (Or(e, i) !== e || Ar(e, i) || !Wm(n.getReachable?.(), r.getState(), t).some((t) => t.entityId === e)) throw Sm("QQJ_PEOPLE_PROFILE_ENTITY_INVALID", "这个人物已删除或归属变化，本次头像没有写入。");
 				let s = t.avatarsByEntityId[e] ?? null;
@@ -18070,7 +18070,7 @@ function nh({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 			if (!Ap(e) || !Ap(t) || e === t || !["source", "target"].includes(i)) throw Sm("QQJ_PEOPLE_MERGE_INVALID", "请选择两个不同人物及要采用的整份资料。");
 			let o = Wm(n.getReachable?.(), r.getState(), _), s = o.find((t) => t.entityId === e), c = o.find((e) => e.entityId === t);
 			if (!s || !c) throw Sm("QQJ_PEOPLE_MERGE_TARGET_INVALID", "合并人物已不在当前聊天的可用人物中。");
-			let l = c.displayName || c.entityDisplayName, u = await te(a, (n) => {
+			let l = c.displayName || c.entityDisplayName, u = await W(a, (n) => {
 				let r = Hm(n);
 				if (Or(e, r) !== e || Or(t, r) !== t || Ar(e, r) || Ar(t, r)) throw Sm("QQJ_PEOPLE_MERGE_CONFLICT", "人物归属已经变化，本次没有覆盖新结果，请重试。");
 				let a = i === "source" ? e : t, o = n.profilesByEntityId[a] ?? null, s = n.avatarsByEntityId[a] ?? null, c = n.profilesByEntityId[t] ?? null, u = Em(p), d = {
@@ -18117,7 +18117,7 @@ function nh({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 		return G(t, async () => {
 			if (!Ap(e)) throw Sm("QQJ_PEOPLE_DELETE_INVALID", "要删除的人物标识无效。");
 			if (!Wm(n.getReachable?.(), r.getState(), _).find((t) => t.entityId === e)) throw Sm("QQJ_PEOPLE_DELETE_TARGET_INVALID", "这个人物已不在当前聊天的人物管理列表中。");
-			let i = await te(t, (t) => {
+			let i = await W(t, (t) => {
 				let n = Hm(t), r = Or(e, n);
 				if (r !== e || Ar(r, n)) throw Sm("QQJ_PEOPLE_DELETE_CONFLICT", "人物归属已经变化，请刷新后重试。");
 				let i = new Set(kr(r, n)), a = { ...Cm(t.profilesByEntityId) }, o = { ...Cm(t.avatarsByEntityId) }, s = { ...Cm(t.profileMaterialProgressByEntityId ?? {}) };
@@ -18341,7 +18341,7 @@ function nh({ store: e, session: t, foundationRuntime: n, memoryRuntime: r, gene
 					completedBatches: e.overallIndex - 1,
 					...T
 				}), Sm("QQJ_PEOPLE_GENERATION_BINDING_INVALID", "人物资料回复没有可安全绑定的目标；此前批次已保存，可重新整理继续吸收资料。");
-				let g = [], x = 0, D = await te(c, (e) => {
+				let g = [], x = 0, D = await W(c, (e) => {
 					if (a && (c.automaticSourceSignature !== Ym(oe(n.getReachable?.())) || c.automaticSelectedSignature !== Ym([...e.selectedEntityIds].sort()))) throw Sm("QQJ_PEOPLE_STALE", "原文或重要人物选择已变化，迟到的人物粗扫结果未写入。");
 					let i = { ...Cm(e.profilesByEntityId) }, o = { ...Cm(e.profileMaterialProgressByEntityId ?? {}) }, s = !1, u = Em(p), f = Hm(e), _ = new Set(e.selectedEntityIds.map((e) => Or(e, f)));
 					g = [], x = 0;
@@ -18608,12 +18608,19 @@ function ih({ settings: e, documentRef: t = globalThis.document, open: n = !1, o
 		e.update({ appearanceScale: Number(m.value) }), d();
 	}), p.append(m, h);
 	let g = a("input", "settings-input");
-	return g.value = u.appearanceFontCssUrl ?? "", g.placeholder = "https://…/font.css", g.addEventListener("change", () => {
+	g.value = u.appearanceFontCssUrl ?? "", g.placeholder = "https://…/font.css", g.addEventListener("change", () => {
 		e.update({
 			appearanceFontCssUrl: g.value,
 			appearanceFontFamily: ""
 		}), d();
-	}), l.append(o("主题", f), o("界面缩放", p), o("自定义字体 CSS URL", g)), { node: c };
+	}), l.append(o("主题", f), o("界面缩放", p), o("自定义字体 CSS URL", g)), l.append(a("p", "settings-subhead", "楼层卡片"));
+	for (let [t, n] of [["inlineRecallVisible", "显示楼层召回卡片"], ["inlineMemoryVisible", "显示楼层记忆卡片"]]) {
+		let r = a("label", "setting-switch"), i = a("input");
+		i.type = "checkbox", i.checked = u[t] !== !1, i.setAttribute("aria-label", n), i.addEventListener("change", () => {
+			e.update({ [t]: i.checked }), d();
+		}), r.append(i, a("span", "", n)), l.append(r);
+	}
+	return l.append(a("p", "settings-hint", "分别控制“本轮召回”和“第几个结”，对所有聊天立即生效。隐藏仅影响显示，摘要、人物分析和召回注入照常运行。")), { node: c };
 }
 //#endregion
 //#region src/ui/scroll-diagnostics.js
@@ -18927,6 +18934,8 @@ var gh = "qianqianjie", _h = Object.freeze({
 	csePrompt: "",
 	profilePrompt: "",
 	appearanceTheme: "auto",
+	inlineRecallVisible: !0,
+	inlineMemoryVisible: !0,
 	fabShow: !0,
 	appearanceScale: 1,
 	appearanceFontCssUrl: "",
@@ -19037,7 +19046,7 @@ function Nh({ extensionSettings: e, save: t = () => {}, now: n, random: r } = {}
 			apiPresets: []
 		};
 		for (let [e, n] of Object.entries(_h)) yh(t, e) || (t[e] = Array.isArray(n) ? [] : n && typeof n == "object" ? {} : n);
-		return vh.has(t.apiMode) || (t.apiMode = "auto"), Array.isArray(t.apiExcludeParams) || (t.apiExcludeParams = []), Array.isArray(t.apiPresets) || (t.apiPresets = []), Array.isArray(t.sourceWorldInfoExcludedBooks) || (t.sourceWorldInfoExcludedBooks = []), xh.has(t.appearanceTheme) || (t.appearanceTheme = "auto"), t.fabShow = t.fabShow !== !1, t.appearanceScale = Sh(t.appearanceScale), t.apiTimeoutSec = Eh(t.apiTimeoutSec), t.autoMemoryBatchSize = wh(t.autoMemoryBatchSize), t.timeEvolutionEnabled = t.timeEvolutionEnabled === !0, t.autoHideEnabled = t.autoHideEnabled === !0, t.autoHideKeepAiCount = Th(t.autoHideKeepAiCount), t.storageAutoCleanupEnabled = t.storageAutoCleanupEnabled === !0, t.storageAutoCleanupProgress = Ch(t.storageAutoCleanupProgress), t.storyClockReferenceTags = ve(t.storyClockReferenceTags).join(","), t;
+		return vh.has(t.apiMode) || (t.apiMode = "auto"), Array.isArray(t.apiExcludeParams) || (t.apiExcludeParams = []), Array.isArray(t.apiPresets) || (t.apiPresets = []), Array.isArray(t.sourceWorldInfoExcludedBooks) || (t.sourceWorldInfoExcludedBooks = []), xh.has(t.appearanceTheme) || (t.appearanceTheme = "auto"), t.fabShow = t.fabShow !== !1, t.inlineRecallVisible = t.inlineRecallVisible !== !1, t.inlineMemoryVisible = t.inlineMemoryVisible !== !1, t.appearanceScale = Sh(t.appearanceScale), t.apiTimeoutSec = Eh(t.apiTimeoutSec), t.autoMemoryBatchSize = wh(t.autoMemoryBatchSize), t.timeEvolutionEnabled = t.timeEvolutionEnabled === !0, t.autoHideEnabled = t.autoHideEnabled === !0, t.autoHideKeepAiCount = Th(t.autoHideKeepAiCount), t.storageAutoCleanupEnabled = t.storageAutoCleanupEnabled === !0, t.storageAutoCleanupProgress = Ch(t.storageAutoCleanupProgress), t.storyClockReferenceTags = ve(t.storyClockReferenceTags).join(","), t;
 	}, a = (e = !1) => {
 		try {
 			return t();
@@ -19046,7 +19055,7 @@ function Nh({ extensionSettings: e, save: t = () => {}, now: n, random: r } = {}
 		}
 	}, o = (e, { observeSaveFailure: t = !1 } = {}) => {
 		let n = i();
-		return yh(e, "pluginEnabled") && (n.pluginEnabled = e.pluginEnabled !== !1), yh(e, "timeEvolutionEnabled") && (n.timeEvolutionEnabled = e.timeEvolutionEnabled === !0), yh(e, "storyClockEnabled") && (n.storyClockEnabled = e.storyClockEnabled !== !1), yh(e, "storyClockPrompt") && (n.storyClockPrompt = bh(e.storyClockPrompt)), yh(e, "storyClockReferenceTags") && (n.storyClockReferenceTags = ve(e.storyClockReferenceTags).join(",")), yh(e, "autoMemoryBatchSize") && (n.autoMemoryBatchSize = wh(e.autoMemoryBatchSize)), yh(e, "autoHideEnabled") && (n.autoHideEnabled = e.autoHideEnabled === !0), yh(e, "autoHideKeepAiCount") && (n.autoHideKeepAiCount = Th(e.autoHideKeepAiCount)), yh(e, "storageAutoCleanupEnabled") && (n.storageAutoCleanupEnabled = e.storageAutoCleanupEnabled === !0), yh(e, "storageAutoCleanupProgress") && (n.storageAutoCleanupProgress = Ch(e.storageAutoCleanupProgress)), yh(e, "apiMode") && (n.apiMode = vh.has(e.apiMode) ? e.apiMode : "auto"), yh(e, "selectedSevenDaysPresetId") && (n.selectedSevenDaysPresetId = bh(e.selectedSevenDaysPresetId).trim()), yh(e, "summaryPresetId") && (n.summaryPresetId = bh(e.summaryPresetId).trim()), yh(e, "recallPresetId") && (n.recallPresetId = bh(e.recallPresetId).trim()), yh(e, "apiUrl") && (n.apiUrl = bh(e.apiUrl).trim()), yh(e, "apiKey") && (n.apiKey = bh(e.apiKey).trim()), yh(e, "apiModel") && (n.apiModel = bh(e.apiModel).trim()), yh(e, "apiExcludeParams") && (n.apiExcludeParams = Oh(e.apiExcludeParams)), yh(e, "apiQianqianjieTemperature") && (n.apiQianqianjieTemperature = Dh(e.apiQianqianjieTemperature)), yh(e, "apiTimeoutSec") && (n.apiTimeoutSec = Eh(e.apiTimeoutSec)), yh(e, "apiStream") && (n.apiStream = e.apiStream === !0), yh(e, "apiPresetActiveId") && (n.apiPresetActiveId = bh(e.apiPresetActiveId).trim()), yh(e, "sourceWorldInfoExcludedBooks") && (n.sourceWorldInfoExcludedBooks = Array.isArray(e.sourceWorldInfoExcludedBooks) ? e.sourceWorldInfoExcludedBooks : []), yh(e, "sourceKeepTags") && (n.sourceKeepTags = _t(e.sourceKeepTags).join(",")), yh(e, "sourceExtraTags") && (n.sourceExtraTags = _t(e.sourceExtraTags).join(",")), yh(e, "processingPrompt") && (n.processingPrompt = bh(e.processingPrompt)), yh(e, "summaryPrompt") && (n.summaryPrompt = bh(e.summaryPrompt)), yh(e, "csePrompt") && (n.csePrompt = bh(e.csePrompt)), yh(e, "profilePrompt") && (n.profilePrompt = bh(e.profilePrompt)), yh(e, "appearanceTheme") && (n.appearanceTheme = xh.has(e.appearanceTheme) ? e.appearanceTheme : "auto"), yh(e, "fabShow") && (n.fabShow = e.fabShow !== !1), yh(e, "appearanceScale") && (n.appearanceScale = Sh(e.appearanceScale)), yh(e, "appearanceFontCssUrl") && (n.appearanceFontCssUrl = bh(e.appearanceFontCssUrl).trim()), yh(e, "appearanceFontFamily") && (n.appearanceFontFamily = bh(e.appearanceFontFamily).trim()), a(t), n;
+		return yh(e, "pluginEnabled") && (n.pluginEnabled = e.pluginEnabled !== !1), yh(e, "timeEvolutionEnabled") && (n.timeEvolutionEnabled = e.timeEvolutionEnabled === !0), yh(e, "storyClockEnabled") && (n.storyClockEnabled = e.storyClockEnabled !== !1), yh(e, "storyClockPrompt") && (n.storyClockPrompt = bh(e.storyClockPrompt)), yh(e, "storyClockReferenceTags") && (n.storyClockReferenceTags = ve(e.storyClockReferenceTags).join(",")), yh(e, "autoMemoryBatchSize") && (n.autoMemoryBatchSize = wh(e.autoMemoryBatchSize)), yh(e, "autoHideEnabled") && (n.autoHideEnabled = e.autoHideEnabled === !0), yh(e, "autoHideKeepAiCount") && (n.autoHideKeepAiCount = Th(e.autoHideKeepAiCount)), yh(e, "storageAutoCleanupEnabled") && (n.storageAutoCleanupEnabled = e.storageAutoCleanupEnabled === !0), yh(e, "storageAutoCleanupProgress") && (n.storageAutoCleanupProgress = Ch(e.storageAutoCleanupProgress)), yh(e, "apiMode") && (n.apiMode = vh.has(e.apiMode) ? e.apiMode : "auto"), yh(e, "selectedSevenDaysPresetId") && (n.selectedSevenDaysPresetId = bh(e.selectedSevenDaysPresetId).trim()), yh(e, "summaryPresetId") && (n.summaryPresetId = bh(e.summaryPresetId).trim()), yh(e, "recallPresetId") && (n.recallPresetId = bh(e.recallPresetId).trim()), yh(e, "apiUrl") && (n.apiUrl = bh(e.apiUrl).trim()), yh(e, "apiKey") && (n.apiKey = bh(e.apiKey).trim()), yh(e, "apiModel") && (n.apiModel = bh(e.apiModel).trim()), yh(e, "apiExcludeParams") && (n.apiExcludeParams = Oh(e.apiExcludeParams)), yh(e, "apiQianqianjieTemperature") && (n.apiQianqianjieTemperature = Dh(e.apiQianqianjieTemperature)), yh(e, "apiTimeoutSec") && (n.apiTimeoutSec = Eh(e.apiTimeoutSec)), yh(e, "apiStream") && (n.apiStream = e.apiStream === !0), yh(e, "apiPresetActiveId") && (n.apiPresetActiveId = bh(e.apiPresetActiveId).trim()), yh(e, "sourceWorldInfoExcludedBooks") && (n.sourceWorldInfoExcludedBooks = Array.isArray(e.sourceWorldInfoExcludedBooks) ? e.sourceWorldInfoExcludedBooks : []), yh(e, "sourceKeepTags") && (n.sourceKeepTags = _t(e.sourceKeepTags).join(",")), yh(e, "sourceExtraTags") && (n.sourceExtraTags = _t(e.sourceExtraTags).join(",")), yh(e, "processingPrompt") && (n.processingPrompt = bh(e.processingPrompt)), yh(e, "summaryPrompt") && (n.summaryPrompt = bh(e.summaryPrompt)), yh(e, "csePrompt") && (n.csePrompt = bh(e.csePrompt)), yh(e, "profilePrompt") && (n.profilePrompt = bh(e.profilePrompt)), yh(e, "appearanceTheme") && (n.appearanceTheme = xh.has(e.appearanceTheme) ? e.appearanceTheme : "auto"), yh(e, "fabShow") && (n.fabShow = e.fabShow !== !1), yh(e, "inlineRecallVisible") && (n.inlineRecallVisible = e.inlineRecallVisible !== !1), yh(e, "inlineMemoryVisible") && (n.inlineMemoryVisible = e.inlineMemoryVisible !== !1), yh(e, "appearanceScale") && (n.appearanceScale = Sh(e.appearanceScale)), yh(e, "appearanceFontCssUrl") && (n.appearanceFontCssUrl = bh(e.appearanceFontCssUrl).trim()), yh(e, "appearanceFontFamily") && (n.appearanceFontFamily = bh(e.appearanceFontFamily).trim()), a(t), n;
 	}, s = () => {
 		let e = i();
 		return kh({
@@ -19249,7 +19258,7 @@ function Ih({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 		getPage: () => O === "settings" ? "settings" : D,
 		windowRef: g.defaultView ?? globalThis,
 		navigatorRef: g.defaultView?.navigator ?? globalThis.navigator
-	}), W = (t) => {
+	}), ee = (t) => {
 		let n = e?.get?.().appearanceTheme ?? "auto", r = n === "auto" ? "日间" : n === "day" ? "夜间" : "跟随酒馆", i = n === "auto" ? "跟随酒馆" : n === "day" ? "日间" : "夜间";
 		if (I) {
 			I.dataset.themeMode = n, I.title = `主题：${i}（点击切换到${r}）`, I.setAttribute("aria-label", `主题：${i}`);
@@ -19258,13 +19267,13 @@ function Ih({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 		}
 		let a = e?.get?.().fabShow !== !1;
 		R && (R.classList.toggle("active", a), R.title = `悬浮球：${a ? "显示" : "隐藏"}`, R.setAttribute("aria-label", a ? "隐藏悬浮球" : "显示悬浮球"), R.setAttribute("aria-pressed", String(a))), p?.setAppearance?.(t), h?.(t);
-	}, ee = q({
+	}, te = q({
 		host: v,
 		root: y,
 		settings: e,
 		documentRef: g,
-		onChange: W
-	}), te = (e, t = "", n = "") => {
+		onChange: ee
+	}), W = (e, t = "", n = "") => {
 		let r = g.createElement(e);
 		return t && (r.className = t), n !== "" && (r.textContent = n), r;
 	}, G = async () => {
@@ -19292,8 +19301,8 @@ function Ih({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 		x && (x.scrollTop = F.get(e) || 0);
 	}, oe = (e) => {
 		M += 1, K();
-		let t = te("section", "empty-state");
-		t.append(te("h2", "", "千千结"), te("p", "", e)), S.append(t);
+		let t = W("section", "empty-state");
+		t.append(W("h2", "", "千千结"), W("p", "", e)), S.append(t);
 	};
 	async function se() {
 		return v.hidden || O !== "content" ? { status: "closed" } : A ? (M += 1, D === "profiles" ? (k !== "profiles" && (K(), r.mount(S), k = "profiles"), Y(D), await r.activate()) : D === "qianshi" ? (k !== "qianshi" && (K(), i.mount(S), k = "qianshi"), Y(D), i.activate()) : (n.setPage?.(D === "people" ? "people" : "memories"), k !== "foundation" && (K(), n.mount(S), k = "foundation"), Y(D), await n.activate())) : (oe("千千结当前已关闭。记忆不会读取后端或写入数据。"), { status: "disabled" });
@@ -19313,11 +19322,11 @@ function Ih({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 			let t = e.dataset.tab === "settings";
 			e.classList.toggle("active", t), e.setAttribute("aria-selected", String(t));
 		}), K(), r && (N.open("general"), N.open("worldbook"));
-		let i = te("section", "settings-page");
-		i.append(te("h2", "", "千千结设置"));
-		let m = te("div", "master-switch"), h = te("label", "setting-switch"), _ = te("input");
-		_.type = "checkbox", _.checked = e.get().pluginEnabled !== !1, h.append(_, te("span", "", "启用千千结"));
-		let y = te("p", "settings-result");
+		let i = W("section", "settings-page");
+		i.append(W("h2", "", "千千结设置"));
+		let m = W("div", "master-switch"), h = W("label", "setting-switch"), _ = W("input");
+		_.type = "checkbox", _.checked = e.get().pluginEnabled !== !1, h.append(_, W("span", "", "启用千千结"));
+		let y = W("p", "settings-result");
 		_.addEventListener("change", async () => {
 			let t = e.isEnabled(), n = _.checked;
 			_.disabled = !0, y.textContent = n ? "正在开启并保存…" : "正在关闭并保存…", y.className = "settings-result";
@@ -19335,8 +19344,8 @@ function Ih({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 				_.disabled = !1;
 			}
 		}), m.append(h, y), i.append(m);
-		let b = te("div", "qqj-settings-management");
-		B = te("p", "v3-foundation-feedback error"), B.hidden = !0;
+		let b = W("div", "qqj-settings-management");
+		B = W("p", "v3-foundation-feedback error"), B.hidden = !0;
 		let x = (e, t) => J({
 			documentRef: g,
 			title: t,
@@ -19370,12 +19379,12 @@ function Ih({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 			documentRef: g,
 			open: C("appearance"),
 			onToggle: w("appearance"),
-			applyAppearance: () => ee.apply()
+			applyAppearance: () => te.apply()
 		});
 		D.append(j.node), P && D.append(P), D.append(F.node, I.node), i.append(E);
 		let L, R = N.isOpen("storage", !1), z = () => {
 			U.open && L?.open ? a.activate() : a.deactivate();
-		}, { drawer: U, body: W } = J({
+		}, { drawer: U, body: ee } = J({
 			documentRef: g,
 			title: "记忆设置",
 			level: "group",
@@ -19384,10 +19393,10 @@ function Ih({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 			onToggle: (e) => {
 				N.set("memory", e), z();
 			}
-		}), q = te("label", "setting-switch");
+		}), q = W("label", "setting-switch");
 		q.id = "qqj-settings-time";
-		let re = te("input");
-		re.type = "checkbox", re.checked = e.get().timeEvolutionEnabled === !0, re.setAttribute("aria-label", "时间推演"), q.append(te("span", "", "开启时间推演"), re), q.addEventListener("click", (e) => e.stopPropagation()), re.addEventListener("change", async () => {
+		let re = W("input");
+		re.type = "checkbox", re.checked = e.get().timeEvolutionEnabled === !0, re.setAttribute("aria-label", "时间推演"), q.append(W("span", "", "开启时间推演"), re), q.addEventListener("click", (e) => e.stopPropagation()), re.addEventListener("change", async () => {
 			if (re.checked && e.get().timeEvolutionEnabled !== !0 && f?.()) {
 				let e = M;
 				re.checked = !1, re.disabled = !0;
@@ -19406,14 +19415,14 @@ function Ih({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 				re.checked = !0;
 			}
 			e.update({ timeEvolutionEnabled: re.checked }), await u?.();
-		}), W.append(q, te("p", "settings-hint", "根据剧情时间推算身体状态、周期与约定期限，为正文提供时间参考。与【构画】的【刻度】功能重叠，请只开启一方的注入，避免重复注入。直接读取 AI 正文，摘要和人物状态可以为空；使用摘要 API，每批最多一次请求。默认从当前 AI 楼起追踪，此前正文未检查。“补查历史”位于摘要页的“近期事项”，先确认楼数、批次与调用量，成功批次保留，可停止后继续。"));
-		let ie = te("label", "setting-switch"), oe = te("input");
-		oe.type = "checkbox", oe.checked = e.get().autoHideEnabled === !0, ie.append(oe, te("span", "", "自动隐藏已记忆旧楼"));
-		let se = te("label", "qqj-auto-hide-row");
-		se.append(te("span", "", "保留最近 AI 楼数"));
-		let ce = te("input", "settings-input settings-num");
+		}), ee.append(q, W("p", "settings-hint", "根据剧情时间推算身体状态、周期与约定期限，为正文提供时间参考。与【构画】的【刻度】功能重叠，请只开启一方的注入，避免重复注入。直接读取 AI 正文，摘要和人物状态可以为空；使用摘要 API，每批最多一次请求。默认从当前 AI 楼起追踪，此前正文未检查。“补查历史”位于摘要页的“近期事项”，先确认楼数、批次与调用量，成功批次保留，可停止后继续。"));
+		let ie = W("label", "setting-switch"), oe = W("input");
+		oe.type = "checkbox", oe.checked = e.get().autoHideEnabled === !0, ie.append(oe, W("span", "", "自动隐藏已记忆旧楼"));
+		let se = W("label", "qqj-auto-hide-row");
+		se.append(W("span", "", "保留最近 AI 楼数"));
+		let ce = W("input", "settings-input settings-num");
 		ce.type = "number", ce.min = "1", ce.max = "50", ce.step = "1", ce.value = String(e.get().autoHideKeepAiCount ?? 3), se.append(ce);
-		let de = te("p", "settings-result"), pe = async (t) => {
+		let de = W("p", "settings-result"), pe = async (t) => {
 			oe.disabled = !0, ce.disabled = !0, de.className = "settings-result", de.textContent = "正在保存并整理当前聊天…";
 			try {
 				e.update(t);
@@ -19447,24 +19456,24 @@ function Ih({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 				N.set("storage", e), z();
 			}
 		});
-		L = he.drawer, a.mount(he.body), W.append(ie, se, de, L), i.append(U), i.append(b, B);
-		let { drawer: ge, body: _e } = x("documentation", "教程与配置文件"), ve = te("div", "settings-document-row"), ye = te("button", "secondary-action", "教程文档");
+		L = he.drawer, a.mount(he.body), ee.append(ie, se, de, L), i.append(U), i.append(b, B);
+		let { drawer: ge, body: _e } = x("documentation", "教程与配置文件"), ve = W("div", "settings-document-row"), ye = W("button", "secondary-action", "教程文档");
 		ye.type = "button", ye.addEventListener("click", () => {
 			hh({
 				documentRef: g,
 				customImpl: (e) => p?.custom?.(e)
 			});
-		}), ve.append(te("span", "", "教程文档"), ye);
-		let be = te("div", "settings-document-row"), xe = te("button", "secondary-action", "复制接口示例");
+		}), ve.append(W("span", "", "教程文档"), ye);
+		let be = W("div", "settings-document-row"), xe = W("button", "secondary-action", "复制接口示例");
 		xe.type = "button";
-		let Se = te("span", "settings-hint", H), Ce = te("div"), we = () => {
+		let Se = W("span", "settings-hint", H), Ce = W("div"), we = () => {
 			if (Se.textContent = H, Ce.replaceChildren(), !V) return;
-			let e = te("textarea", "v3-diagnostic-fallback");
-			e.value = V, e.textContent = V, e.readOnly = !0, Ce.append(te("p", "settings-hint", "调用示例（长按全选复制）"), e);
+			let e = W("textarea", "v3-diagnostic-fallback");
+			e.value = V, e.textContent = V, e.readOnly = !0, Ce.append(W("p", "settings-hint", "调用示例（长按全选复制）"), e);
 		};
 		xe.addEventListener("click", async () => {
 			await G(), we();
-		}), be.append(te("span", "", "API 接口"), xe), Se.setAttribute("role", "status"), _e.append(ve, be, Se, Ce), we(), i.append(ge), n.mount(b), k = "foundation-settings", n.setPage?.("management"), S.append(i), A && ne(), z(), Y("settings"), r && P?.scrollIntoView?.({ block: "start" });
+		}), be.append(W("span", "", "API 接口"), xe), Se.setAttribute("role", "status"), _e.append(ve, be, Se, Ce), we(), i.append(ge), n.mount(b), k = "foundation-settings", n.setPage?.("management"), S.append(i), A && ne(), z(), Y("settings"), r && P?.scrollIntoView?.({ block: "start" });
 	}
 	function de(e) {
 		j = e ?? j, v.hidden = !1, v.setAttribute("aria-hidden", "false"), U.start(), E.restore();
@@ -19522,12 +19531,12 @@ function Ih({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 		z = null;
 	}, { passive: !0 }), y.querySelector(".close")?.addEventListener("click", pe), I?.addEventListener("click", () => {
 		let t = e.get().appearanceTheme ?? "auto";
-		e.update({ appearanceTheme: t === "auto" ? "day" : t === "day" ? "night" : "auto" }), ee.apply();
+		e.update({ appearanceTheme: t === "auto" ? "day" : t === "day" ? "night" : "auto" }), te.apply();
 		let n = y.querySelector("#qqj-appearance-theme");
 		n && (n.value = e.get().appearanceTheme);
 	}), R?.addEventListener("click", () => {
 		let t = e.get().fabShow === !1;
-		e.update({ fabShow: t }), W(ee.getState()), m?.(t);
+		e.update({ fabShow: t }), ee(te.getState()), m?.(t);
 	}), T.forEach((e) => e.addEventListener("click", () => ce(e.dataset.tab))), g.addEventListener?.("keydown", (e) => {
 		if (!(e.key !== "Escape" || v.hidden)) {
 			if (p?.hasActive?.()) {
@@ -19548,7 +19557,7 @@ function Ih({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 		showStatus: oe,
 		openSourceSettings: () => le({ focusSources: !0 }),
 		activateFoundation: se,
-		syncAppearance: () => ee.apply(),
+		syncAppearance: () => te.apply(),
 		async refresh() {
 			return v.hidden || O !== "content" ? { status: "closed" } : (n.deactivate(), i.deactivate(), se());
 		},
@@ -20127,7 +20136,7 @@ function Gg({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, time
 	if (a !== null && typeof a != "function") throw TypeError("聊天身份状态 provider 无效");
 	if (c !== null && typeof c != "function") throw TypeError("界面诊断 provider 无效");
 	if (!l?.createElement) throw TypeError("V3 foundation view documentRef 无效");
-	let h = null, g = !1, _ = 0, v = "", y = "", b = "", x = "", S = null, C = "management", w = "current", T = null, E = !1, D = e.getState(), O = t?.getState?.() ?? null, k = n?.getState?.() ?? null, A = i?.getState?.() ?? null, j = D?.chatId ?? null, M = null, N = null, P = null, F = !1, I = null, L = !1, R = null, z = !1, B = "", V = "", H = /* @__PURE__ */ new Map(), U = null, W = null, ee = j, te = 0, G = /* @__PURE__ */ new Map(), ne = /* @__PURE__ */ new Map(), K = null, q = /* @__PURE__ */ new Map(), re = /* @__PURE__ */ new Map([["current", 0], ["history", 0]]), ie = Gh(l), J = (e, t = "", n = "") => {
+	let h = null, g = !1, _ = 0, v = "", y = "", b = "", x = "", S = null, C = "management", w = "current", T = null, E = !1, D = e.getState(), O = t?.getState?.() ?? null, k = n?.getState?.() ?? null, A = i?.getState?.() ?? null, j = D?.chatId ?? null, M = null, N = null, P = null, F = !1, I = null, L = !1, R = null, z = !1, B = "", V = "", H = /* @__PURE__ */ new Map(), U = null, ee = null, te = j, W = 0, G = /* @__PURE__ */ new Map(), ne = /* @__PURE__ */ new Map(), K = null, q = /* @__PURE__ */ new Map(), re = /* @__PURE__ */ new Map([["current", 0], ["history", 0]]), ie = Gh(l), J = (e, t = "", n = "") => {
 		let r = l.createElement(e);
 		return t && (r.className = t), n !== "" && (r.textContent = n), r;
 	}, ae = async ({ fullRebuild: e = !1 } = {}) => {
@@ -20158,7 +20167,7 @@ function Gg({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, time
 	}, ce = (e, t) => {
 		let n = J("div", "v3-foundation-row"), r = J("dd");
 		return r.append(J("div", "", t.main)), t.token && r.append(J("div", "", t.token)), n.append(J("dt", "", e), r), n;
-	}, le = (e, t, n = !1) => (e.open = q.has(t) ? q.get(t) : n, e.addEventListener("toggle", () => q.set(t, e.open === !0)), e), fe = (e) => e !== j && (L = !1, R = null, z = !1, H.clear(), j !== null && (K = null, b = ""), j = e, G.clear(), ne.clear(), q.clear(), F = !1, I = null, B = "", V = "", w = "current", T = null, E = !1, re.set("current", 0), re.set("history", 0), U = null, W = null, ee = e, te = 0, x = "", v = "", !0), pe = (e, t) => (e?.chatId ?? null) !== (t?.chatId ?? null), me = ({ value: e, placeholder: t, ariaLabel: n, onInput: r, onClear: i }) => {
+	}, le = (e, t, n = !1) => (e.open = q.has(t) ? q.get(t) : n, e.addEventListener("toggle", () => q.set(t, e.open === !0)), e), fe = (e) => e !== j && (L = !1, R = null, z = !1, H.clear(), j !== null && (K = null, b = ""), j = e, G.clear(), ne.clear(), q.clear(), F = !1, I = null, B = "", V = "", w = "current", T = null, E = !1, re.set("current", 0), re.set("history", 0), U = null, ee = null, te = e, W = 0, x = "", v = "", !0), pe = (e, t) => (e?.chatId ?? null) !== (t?.chatId ?? null), me = ({ value: e, placeholder: t, ariaLabel: n, onInput: r, onClear: i }) => {
 		let a = J("div", "qqj-history-search"), o = J("input", "settings-input qqj-history-search-input");
 		o.type = "search", o.value = e, o.placeholder = t, o.setAttribute("aria-label", n);
 		let s = J("button", "secondary-action qqj-history-search-clear", "清空");
@@ -21760,11 +21769,11 @@ function Gg({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, time
 	}
 	function ct(e) {
 		if (!h) return;
-		U && (te = Number(U.scrollLeft) || 0);
-		let r = W, a = ee;
+		U && (W = Number(U.scrollLeft) || 0);
+		let r = ee, a = te;
 		if (U = null, I = null, ie.reset(), O = t?.getState?.() ?? O, k = n?.getState?.() ?? k, A = i?.getState?.() ?? A, M = null, N = null, h.replaceChildren(C === "memories" ? We(e) : C === "people" ? nt(e) : st(e)), U) {
 			let t = (e.memoryEntities ?? []).find((e) => e.specialRole === "user")?.entityId ?? null, n = JSON.stringify((k?.people ?? []).filter((e) => e.entityId !== t && e.selected).map((e) => e.entityId).sort()), i = a === (e.chatId ?? null) && r === n;
-			U.scrollLeft = i ? te : 0, W = n, ee = e.chatId ?? null, te = U.scrollLeft;
+			U.scrollLeft = i ? W : 0, ee = n, te = e.chatId ?? null, W = U.scrollLeft;
 		}
 	}
 	let lt = (e) => P && P === e?.chatId ? {
@@ -22340,7 +22349,7 @@ function e_({ runtime: e, sessionStateProvider: t = null, prepareSession: n = nu
 			}
 		});
 	}
-	function W(t) {
+	function ee(t) {
 		let n = D("section", "qqj-profile-card");
 		n.setAttribute("data-qqj-person-id", t.entityId);
 		let r = Qg(t), i = S.has(t.entityId) ? F(t) : null, a = D("header", "qqj-profile-summary"), o = !!r.aliases, s = D("button", `qqj-profile-mark${o ? " has-alias" : ""}`);
@@ -22410,7 +22419,7 @@ function e_({ runtime: e, sessionStateProvider: t = null, prepareSession: n = nu
 			let o = D("button", "secondary-action", "取消");
 			o.type = "button", o.disabled = i.saving || O(d), o.addEventListener("click", () => {
 				S.delete(t.entityId), K(d);
-			}), r.append(o), (i.notice || i.error) && r.append(ee(i)), e.append(r), p.append(e);
+			}), r.append(o), (i.notice || i.error) && r.append(te(i)), e.append(r), p.append(e);
 		} else {
 			let e = D("div", "qqj-profile-reading");
 			for (let t of $p) {
@@ -22425,17 +22434,17 @@ function e_({ runtime: e, sessionStateProvider: t = null, prepareSession: n = nu
 				e.append(i);
 			}
 			if (p.append(e), i?.notice || i?.error) {
-				let e = ee(i);
+				let e = te(i);
 				e.className += " qqj-profile-reading-result", p.append(e);
 			}
 		}
 		return n.append(p), n;
 	}
-	function ee(e) {
+	function te(e) {
 		let t = D("p", `qqj-profile-save-result${e.error ? " error" : e.notice === "已保存" ? " success" : ""}`, e.error || e.notice);
 		return t.setAttribute?.("role", "status"), t.setAttribute?.("aria-live", "polite"), t;
 	}
-	function te(e) {
+	function W(e) {
 		let t = D("div", "qqj-profile-switcher");
 		return t.setAttribute?.("role", "tablist"), t.setAttribute?.("aria-label", "重要人物切换"), e.forEach((n, r) => {
 			let i = n.entityId === m, a = n.displayName || n.entityDisplayName, o = D("button", `qqj-profile-tab${i ? " active" : ""}`, a);
@@ -22499,7 +22508,7 @@ function e_({ runtime: e, sessionStateProvider: t = null, prepareSession: n = nu
 		o.setAttribute?.("role", "status"), a.append(o, D("p", `v3-foundation-feedback${p.includes("失败") ? " error" : ""}`, p)), i.append(a);
 		let c = d.people.filter((e) => e.selected), l = d.people.length - c.length;
 		c.some((e) => e.entityId === m) || (E(), m = c[0]?.entityId ?? null);
-		let u = JSON.stringify(c.map((e) => e.entityId).sort()), g = te(c), _ = n === f && r === u, v = D("div", "qqj-profile-toolbar"), S = D("div", "qqj-profile-switch-row");
+		let u = JSON.stringify(c.map((e) => e.entityId).sort()), g = W(c), _ = n === f && r === u, v = D("div", "qqj-profile-toolbar"), S = D("div", "qqj-profile-switch-row");
 		S.append(g);
 		let w = D("div", "qqj-profile-toolbar-actions"), T = D("button", `secondary-action qqj-profile-more${h ? " active" : ""}`, h ? "返回资料" : `更多人物（${l}）`);
 		if (T.type = "button", T.addEventListener("click", () => {
@@ -22507,7 +22516,7 @@ function e_({ runtime: e, sessionStateProvider: t = null, prepareSession: n = nu
 		}), w.append(T), S.append(w), v.append(S), i.append(v), h) i.append(ne(d.people));
 		else {
 			let e = c.find((e) => e.entityId === m);
-			e ? i.append(W(e)) : i.append(D("div", "qqj-inline-empty", d.people.length ? "尚未选择重要人物。点击上方“更多人物”即可自由选择，选择 0 位也完全可以。" : "尚无已识别人物。摘要和人物状态分析后会在此显示；已有聊天历史可在“记忆管理”中点击“补齐缺失”。"));
+			e ? i.append(ee(e)) : i.append(D("div", "qqj-inline-empty", d.people.length ? "尚未选择重要人物。点击上方“更多人物”即可自由选择，选择 0 位也完全可以。" : "尚无已识别人物。摘要和人物状态分析后会在此显示；已有聊天历史可在“记忆管理”中点击“补齐缺失”。"));
 		}
 		let O = d.selectedEntityIds.length - c.length;
 		O > 0 && i.append(D("p", "settings-hint", `有 ${O} 个旧人物选择在当前记忆图中暂不可匹配；其选择与资料仍保留。`)), s.replaceChildren(i), g.scrollLeft = _ ? x : 0, y = g, b = u, x = g.scrollLeft;
@@ -23028,16 +23037,16 @@ function d_({ runtime: e, dialog: t = null, documentRef: n = globalThis.document
 	function U(t) {
 		return a?.(), a = null, h.deactivate(), r = t, i = !0, s = e.getQianshiSnapshot(), c = e.getState(), m.clear(), V(), h.activate(), H(), t;
 	}
-	async function W() {
+	async function ee() {
 		return i = !0, h.activate(), s = e.getQianshiSnapshot(), c = e.getState(), m.clear(), V(), H(), { status: s?.status ?? "unavailable" };
 	}
-	function ee() {
+	function te() {
 		i = !1, o += 1, h.deactivate(), a?.(), a = null;
 	}
 	return Object.freeze({
 		mount: U,
-		activate: W,
-		deactivate: ee,
+		activate: ee,
+		deactivate: te,
 		render: V
 	});
 }
@@ -23403,9 +23412,14 @@ function S_({ settings: e, apiTools: t, onPluginEnabledChange: n, onStoryClockCh
 		manager: h,
 		documentRef: E,
 		confirmImpl: (e) => I.confirm(e)
-	}), V = (e) => {
-		F?.setAppearance?.(e), b?.setAppearance?.(e);
-	}, H = e?.isEnabled?.() !== !1, U = () => H, W = async (e) => {
+	}), V = (t) => {
+		F?.setAppearance?.(t), b?.setAppearance?.(t);
+		let n = e?.get?.();
+		b?.setVisibility?.({
+			recall: n?.inlineRecallVisible,
+			memory: n?.inlineMemoryVisible
+		});
+	}, H = e?.isEnabled?.() !== !1, U = () => H, ee = async (e) => {
 		if (!U()) return P.show(e?.currentTarget || e?.target || E.activeElement), P.setEnabled(!1);
 		try {
 			(await P.show(e?.currentTarget || e?.target || E.activeElement))?.status === "disabled" && P.showStatus("千千结已关闭");
@@ -23428,25 +23442,25 @@ function S_({ settings: e, apiTools: t, onPluginEnabledChange: n, onStoryClockCh
 		isSevenDaysAvailable: c,
 		isSevenDaysLedgerInjectionEnabled: l,
 		dialog: I,
-		onFabShowChange: () => te(),
+		onFabShowChange: () => W(),
 		onAppearanceChange: V,
 		documentRef: E
 	}), P.host.hidden = !0, E.body.append(P.host), F = j || typeof E.createElement != "function" ? O({
-		onClick: (e) => P.host.hidden ? W(e) : P.close(),
+		onClick: (e) => P.host.hidden ? ee(e) : P.close(),
 		documentRef: E,
 		windowRef: E.defaultView ?? globalThis
 	}) : { host: null };
-	let ee = () => e?.get?.().fabShow !== !1, te = () => {
-		F?.host?.style && (F.host.style.display = U() && ee() ? "" : "none");
+	let te = () => e?.get?.().fabShow !== !1, W = () => {
+		F?.host?.style && (F.host.style.display = U() && te() ? "" : "none");
 	};
-	F.host && (F.host.style ||= {}, te(), E.body.append(F.host)), V(P.syncAppearance?.()), k(W);
+	F.host && (F.host.style ||= {}, W(), E.body.append(F.host)), V(P.syncAppearance?.()), k(ee);
 	let G = {
 		...P,
 		fab: F,
 		dialog: I,
-		show: W,
+		show: ee,
 		setEnabled(e) {
-			H = e === !0, P.setEnabled(H), te();
+			H = e === !0, P.setEnabled(H), W();
 		},
 		async refresh() {
 			return P.host.hidden || !U() ? { status: U() ? "closed" : "disabled" } : P.refresh();
@@ -25313,7 +25327,7 @@ function jv({ client: e, store: t, session: n, hostAdapter: r, settings: i, memo
 				lastResult: null
 			}), t;
 		}).finally(() => {
-			u === n && (u = null), w(), W();
+			u === n && (u = null), w(), ee();
 		}), n.promise;
 	}
 	async function F(t) {
@@ -25447,7 +25461,7 @@ function jv({ client: e, store: t, session: n, hostAdapter: r, settings: i, memo
 				lastResult: null
 			}), e;
 		}).finally(() => {
-			u === r && (u = null), w(), W();
+			u === r && (u = null), w(), ee();
 		}), r.promise;
 	}
 	let V = () => {
@@ -25545,17 +25559,17 @@ function jv({ client: e, store: t, session: n, hostAdapter: r, settings: i, memo
 			f = null, w();
 		});
 	}
-	let W = () => {
+	let ee = () => {
 		Promise.resolve().then(U);
-	}, ee = () => {
-		w(), W();
-	}, te = [.../* @__PURE__ */ new Set([a, ...s])].map((e) => typeof e?.subscribe == "function" ? e.subscribe(ee) : null).filter(Boolean);
+	}, te = () => {
+		w(), ee();
+	}, W = [.../* @__PURE__ */ new Set([a, ...s])].map((e) => typeof e?.subscribe == "function" ? e.subscribe(te) : null).filter(Boolean);
 	function G(e) {
 		let t = E();
 		if (e === !0 && (!d.stats || d.chatId !== t.chatId)) throw Sv("QQJ_STORAGE_AUTO_SCAN_REQUIRED", "请先刷新并查看当前聊天的存储统计，再开启自动清理。");
 		return i.update({ storageAutoCleanupEnabled: e === !0 }), e === !0 && H(t.chatId, a.getState()?.stableCount ?? 0), T(t, { autoPending: !1 }), C();
 	}
-	return W(), Object.freeze({
+	return ee(), Object.freeze({
 		scan: P,
 		cleanup: B,
 		setAutoEnabled: G,
@@ -25566,7 +25580,7 @@ function jv({ client: e, store: t, session: n, hostAdapter: r, settings: i, memo
 		},
 		dispose() {
 			h = !0;
-			for (let e of te) e();
+			for (let e of W) e();
 			g.clear();
 		}
 	});
@@ -26253,7 +26267,7 @@ function py({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			floors: uy(i, r.indexes)
 		}, E = dy(r.run, "recovered"), p;
 	}
-	let W = (e, t) => t?.assistantSeq === e?.assistantSeq && t?.messageIndex === e?.hostLocator?.messageIndex && t?.swipeId === (e?.hostLocator?.swipeId ?? null) && t?.selectedSwipeIndex === (e?.hostLocator?.selectedSwipeIndex ?? null) && t?.rawFingerprint === e?.rawFingerprint && t?.canonicalFingerprint === e?.canonicalFingerprint && t?.sanitizerFingerprint === e?.sanitizerFingerprint, ee = (e, t) => Object.freeze({
+	let ee = (e, t) => t?.assistantSeq === e?.assistantSeq && t?.messageIndex === e?.hostLocator?.messageIndex && t?.swipeId === (e?.hostLocator?.swipeId ?? null) && t?.selectedSwipeIndex === (e?.hostLocator?.selectedSwipeIndex ?? null) && t?.rawFingerprint === e?.rawFingerprint && t?.canonicalFingerprint === e?.canonicalFingerprint && t?.sanitizerFingerprint === e?.sanitizerFingerprint, te = (e, t) => Object.freeze({
 		assistantSeq: e.assistantSeq,
 		messageIndex: e.hostLocator.messageIndex,
 		swipeId: e.hostLocator.swipeId ?? null,
@@ -26262,18 +26276,18 @@ function py({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 		canonicalFingerprint: e.canonicalFingerprint,
 		sanitizerFingerprint: e.sanitizerFingerprint,
 		confirmationRequired: t
-	}), te = (e, t, n) => {
+	}), W = (e, t, n) => {
 		if (!_ || n >= e.length || fc(t ?? [], e).issue) return null;
 		let r = e.at(-1)?.stabilityProof?.kind === "nextUser" ? e.length : e.length - 1;
 		if (r <= n) return null;
 		let i = e.slice(n, r);
 		if (i.some((e) => e?.messageAnchor?.status !== "none")) return null;
-		let a = i.map((e) => ee(e, e.stabilityProof?.kind !== "nextUser"));
+		let a = i.map((e) => te(e, e.stabilityProof?.kind !== "nextUser"));
 		return a.some((e) => e.confirmationRequired) ? Object.freeze({
 			chatId: _,
 			candidates: Object.freeze(a)
 		}) : null;
-	}, G = (e, t) => !!(e && t && e.chatId === t.chatId && e.candidates?.length === t.candidates?.length && e.candidates.every((e, n) => e.confirmationRequired === t.candidates[n]?.confirmationRequired && W({
+	}, G = (e, t) => !!(e && t && e.chatId === t.chatId && e.candidates?.length === t.candidates?.length && e.candidates.every((e, n) => e.confirmationRequired === t.candidates[n]?.confirmationRequired && ee({
 		assistantSeq: t.candidates[n]?.assistantSeq,
 		hostLocator: {
 			messageIndex: t.candidates[n]?.messageIndex,
@@ -26292,8 +26306,8 @@ function py({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 		}
 		let a = fc(t, e), o = new Set((p?.floorMemories ?? []).filter((e) => e.recordStatus === "active").flatMap(or)), s = 0;
 		for (; e[s];) {
-			let t = e[s].messageAnchor, n = a.candidateMatches.get(s), r = n?.floor ?? null, c = r?.stability?.stabilizedBy === "manual" && n.rawFingerprintMatches && n.canonicalFingerprintMatches && n.sanitizerFingerprintMatches, l = !!(r && (t?.status === "valid" || o.has(r.id) || c)), u = t?.status === "none" && r && w.has(r.id), d = Array.isArray(i) && i.some((t) => t.confirmationRequired === !0 && W(e[s], t));
-			if (e[s].stabilityProof?.kind !== "nextUser" && !l && !u && !d || (s += 1, Array.isArray(i) && i.length && W(e[s - 1], i.at(-1)))) break;
+			let t = e[s].messageAnchor, n = a.candidateMatches.get(s), r = n?.floor ?? null, c = r?.stability?.stabilizedBy === "manual" && n.rawFingerprintMatches && n.canonicalFingerprintMatches && n.sanitizerFingerprintMatches, l = !!(r && (t?.status === "valid" || o.has(r.id) || c)), u = t?.status === "none" && r && w.has(r.id), d = Array.isArray(i) && i.some((t) => t.confirmationRequired === !0 && ee(e[s], t));
+			if (e[s].stabilityProof?.kind !== "nextUser" && !l && !u && !d || (s += 1, Array.isArray(i) && i.length && ee(e[s - 1], i.at(-1)))) break;
 		}
 		return s;
 	}
@@ -26347,7 +26361,7 @@ function py({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 				messageIndex: n.hostLocator.messageIndex,
 				reason: r
 			});
-		})), g = te(e, t, n);
+		})), g = W(e, t, n);
 	}
 	function J(e) {
 		return !p?.root || p.root.chatId !== (() => {
@@ -26708,11 +26722,11 @@ function py({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			candidates: f,
 			entities: L,
 			now: M
-		}), W = U.map((e) => t.recordKey(e)), ee = N.map((e) => e.id), te = gc(p), G = [
+		}), ee = U.map((e) => t.recordKey(e)), te = N.map((e) => e.id), W = gc(p), G = [
 			"MESSAGE_SENT",
 			"MESSAGE_RECEIVED",
 			"earlyAssistantStarted"
-		].includes(e.reason) && !S && (j?.chatId === e.chatId || te !== null) ? {
+		].includes(e.reason) && !S && (j?.chatId === e.chatId || W !== null) ? {
 			chatId: e.chatId,
 			narrativeGeneration: C,
 			sourceSnapshotFingerprint: u.fingerprint
@@ -26737,7 +26751,7 @@ function py({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 				...P.map((e) => `v3-floor-${e.id}`),
 				...I.filter((e) => !(p.stateDeltas ?? []).some((t) => t.id === e.id)).map((e) => t.recordKey(e)),
 				...V ? [t.recordKey(V)] : [],
-				...W,
+				...ee,
 				`v3-checkpoint-${A}`
 			],
 			startedAt: e.startedAt
@@ -26746,7 +26760,7 @@ function py({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 		ne = await ce(e, "validating");
 		let K = await $v([
 			C,
-			ee,
+			te,
 			N.map((e) => e.content.canonicalFingerprint)
 		]), q = {
 			...ay({
@@ -26765,14 +26779,14 @@ function py({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			floorRange: {
 				fromAssistantSeq: +!!N.length,
 				toAssistantSeq: N.length,
-				floorIds: ee
+				floorIds: te
 			},
 			inputFingerprints: Wt(N, {
 				candidates: f,
 				previous: p.checkpoint?.inputFingerprints
 			}),
 			producedRefs: {
-				floors: ee,
+				floors: te,
 				floorMemories: F.map((e) => e.id),
 				entities: L.map((e) => e.id),
 				events: [],
@@ -26783,7 +26797,7 @@ function py({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 				stateProjections: [],
 				episodes: [],
 				threads: [],
-				indexes: W
+				indexes: ee
 			},
 			validation: {
 				schemaValid: !0,
@@ -26799,7 +26813,7 @@ function py({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			floorMemories: F,
 			entities: L,
 			indexes: U,
-			indexKeys: W
+			indexKeys: ee
 		}), J = xn({
 			...q,
 			validation: {
@@ -26848,9 +26862,9 @@ function py({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			activeRunId: null,
 			indexManifest: {
 				...Qv(),
-				floor: W.filter((e) => e.includes("-floorOrder-") || e.includes("-fingerprint-")),
-				entity: W.filter((e) => e.includes("-entity-")),
-				reverseRef: W.filter((e) => e.includes("-reverseRef-"))
+				floor: ee.filter((e) => e.includes("-floorOrder-") || e.includes("-fingerprint-")),
+				entity: ee.filter((e) => e.includes("-entity-")),
+				reverseRef: ee.filter((e) => e.includes("-reverseRef-"))
 			},
 			activeStateRefs: V ? [V.id] : [],
 			activeThreadRefs: []
@@ -26863,7 +26877,7 @@ function py({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 			floorMemories: F,
 			entities: L,
 			indexes: U,
-			indexKeys: W,
+			indexKeys: ee,
 			baseline: z,
 			stateDeltas: I,
 			currentStates: V ? [V] : []
@@ -26996,7 +27010,7 @@ function py({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 				}
 				if (g.issue) return M = ne(u, a.floors, n, i, h.manualConfirmation), ie(u, a.floors, M), O = q(g.issue, a.floors, u), D = null, R(h, "needsReview");
 				if (h.manualConfirmation) {
-					let e = ne(u, a.floors, n, i, null), t = te(u, a.floors, e);
+					let e = ne(u, a.floors, n, i, null), t = W(u, a.floors, e);
 					if (!G({
 						chatId: h.chatId,
 						candidates: h.manualConfirmation
@@ -27150,7 +27164,7 @@ function py({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 		});
 		if (t.identity.chatId !== _ || e?.chatId !== t.identity.chatId) return L("stale");
 		if (fc(p.floors ?? [], n).issue) return ye("manualConfirmConsecutive");
-		let r = ne(n, p.floors ?? [], !1, null), i = te(n, p.floors ?? [], r);
+		let r = ne(n, p.floors ?? [], !1, null), i = W(n, p.floors ?? [], r);
 		return G(e, i) ? ye("manualConfirmConsecutive", { manualConfirmation: i.candidates }) : (ie(n, p.floors ?? [], r), L("stale"));
 	}
 	return Object.freeze({
@@ -27709,7 +27723,7 @@ function Cy({ store: e, foundationStore: t, hostAdapter: n, session: r, generate
 		"syncing",
 		"needsReview",
 		"error"
-	].includes(u()?.memorySyncStatus) || ["needsReview", "error"].includes(u()?.status), W = () => {
+	].includes(u()?.memorySyncStatus) || ["needsReview", "error"].includes(u()?.status), ee = () => {
 		if (!g?.automaticFailure) return;
 		if (g.reason === "automatic") {
 			g = null;
@@ -27717,13 +27731,13 @@ function Cy({ store: e, foundationStore: t, hostAdapter: n, session: r, generate
 		}
 		let { automaticFailure: e, automaticFailureMessage: t, ...n } = g;
 		g = n;
-	}, ee = (e) => {
+	}, te = (e) => {
 		let t = n.snapshot();
 		return e.bodyFloors?.filter((e) => {
 			let n = t.chat?.[e.hostLocator?.messageIndex];
 			return n && n.is_user !== !0 && n.is_system !== !0 && n.is_hidden !== !0 && n.hidden !== !0;
 		}).at(-1)?.observationTime ?? Mu("");
-	}, te = (e, t) => {
+	}, W = (e, t) => {
 		let n = /* @__PURE__ */ new Map();
 		for (let r of Uu(e, t).validBatches) for (let e of r.clockWitnesses ?? []) t.bodyFloors.some((t) => t.floorId === e.floorId) && n.set(e.floorId, e.clockContentFingerprint);
 		return t.bodyFloors.some((e) => e.floorId && n.has(e.floorId) && n.get(e.floorId) !== e.clockContentFingerprint);
@@ -27742,8 +27756,8 @@ function Cy({ store: e, foundationStore: t, hostAdapter: n, session: r, generate
 		return [...r.values()];
 	};
 	function ne(e, t, n = []) {
-		let r = ee(t);
-		D = te(e, t);
+		let r = te(t);
+		D = W(e, t);
 		let i = e.findLast((e) => e.currentReview), a = i && JSON.stringify(i.currentTime) === JSON.stringify(r), o = new Set(i?.currentReview?.selectedItemIds ?? []), s = new Set(i?.changes?.map((e) => e.id) ?? []), c = Zu(e, t), u = new Map((t.entities ?? []).map((e) => [e.id, e.displayName])), d = Ku(e, t).map((e) => ({
 			id: e.id,
 			mergedInto: e.mergedInto ?? null,
@@ -28602,7 +28616,7 @@ function Cy({ store: e, foundationStore: t, hostAdapter: n, session: r, generate
 				if (i.head.lastAttemptSignature === e.signature && ["running", "failed"].includes(i.head.lastRun?.status)) return Y();
 			}
 			let c = o ? t.bodyFloors.filter((e) => e.floorId && e.assistantSeq <= O.through).at(-1) : null, l = !!(c && !t.bodyFloors.some((e) => e.assistantSeq <= O.through && !e.floorId) && i.head?.currentReviewAttempt?.cutoffFloorId !== c.floorId), u = await B(), d = t.bodyFloors.filter((e) => e.floorId).at(-1), f = await hu([t.root.narrativeGeneration, d?.floorId ?? null]), p = await H(u, i.head, f, !1);
-			return s.groups.length || l || p.shouldRequest || p.removed?.length ? (W(), ge({
+			return s.groups.length || l || p.shouldRequest || p.removed?.length ? (ee(), ge({
 				...s,
 				groups: s.groups.length ? s.groups : l ? [[]] : [],
 				currentWitness: c,
@@ -28615,7 +28629,7 @@ function Cy({ store: e, foundationStore: t, hostAdapter: n, session: r, generate
 				},
 				chatId: t.root.chatId,
 				narrativeGeneration: t.root.narrativeGeneration
-			}, !1)) : (o && !s.groups.length && !t.bodyFloors.some((e) => e.assistantSeq <= O.through && !e.floorId) && (O = null), ne(i.batches, t, V(i.head, u)), E = s, W(), p.pending && (g = {
+			}, !1)) : (o && !s.groups.length && !t.bodyFloors.some((e) => e.assistantSeq <= O.through && !e.floorId) && (O = null), ne(i.batches, t, V(i.head, u)), E = s, ee(), p.pending && (g = {
 				status: "partial",
 				items: J(i.batches, t),
 				message: `有 ${p.pending} 个年度设定来源超过单次输入预算，尚未标记为已处理。`
@@ -28679,7 +28693,7 @@ function Cy({ store: e, foundationStore: t, hostAdapter: n, session: r, generate
 			}), f = Ku(s.batches, d), p = n.snapshot(), h = d.bodyFloors.filter((e) => {
 				let t = p.chat?.[e.hostLocator.messageIndex];
 				return t && t.is_system !== !0 && t.is_hidden !== !0 && t.hidden !== !0;
-			}).at(-1), g = ee(d), _ = null;
+			}).at(-1), g = te(d), _ = null;
 			try {
 				_ = Fd(u, { identityProjection: t.identityProjection });
 			} catch {}
@@ -29371,7 +29385,7 @@ function Py({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 				entities: T,
 				floorMemories: L,
 				floorMemory: R
-			}), V = new Set(B.map((e) => e.id)), H = new Set((F?.subjects ?? []).map((e) => e.subjectEntityId)), U = new Set(B.filter((e) => !H.has(e.id)).map((e) => e.id)), W = U.size > 0, ee = W ? U : V, te = C.filter((e) => ee.has(e.entityId)).flatMap((e) => e.labels), G = gm({
+			}), V = new Set(B.map((e) => e.id)), H = new Set((F?.subjects ?? []).map((e) => e.subjectEntityId)), U = new Set(B.filter((e) => !H.has(e.id)).map((e) => e.id)), ee = U.size > 0, te = ee ? U : V, W = C.filter((e) => te.has(e.entityId)).flatMap((e) => e.labels), G = gm({
 				text: (() => {
 					try {
 						let e = t.snapshot()?.context;
@@ -29381,12 +29395,12 @@ function Py({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 					}
 				})(),
 				queryContext: {
-					latestUserText: te.join(" "),
+					latestUserText: W.join(" "),
 					recentAssistantText: `${S.content.canonicalContent ?? ""}\n${Ay(R) ?? ""}`,
 					previousUserText: ""
 				},
-				maxCharacters: W ? 6e3 : 2400,
-				maxTokens: W ? 2500 : 1e3,
+				maxCharacters: ee ? 6e3 : 2400,
+				maxTokens: ee ? 2500 : 1e3,
 				requireMatch: !0,
 				fallbackToTail: !1
 			}).injectionText, ne = jy(b), K = await Qp({
@@ -29998,7 +30012,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 	} catch {
 		T = null;
 	}
-	let E = 0, D = null, O = null, k = null, A = !1, j = !1, M = null, N = null, P = "unavailable", F = "idle", I = null, L = null, R = null, z = null, B = null, V = 0, H = null, U = null, W = null, ee = null, te = !1, G = null, ne = !1, K = null, q = null, re = null, ie = 0, J = 0, ae = null, Y = /* @__PURE__ */ new Set(), oe = null, se = null, ce = xb(0), le = null, ue = null, de = Dr(), fe = /* @__PURE__ */ new Map(), pe = null, me = /* @__PURE__ */ new Map(), he = /* @__PURE__ */ new Map(), ge = null, _e = null, ye = Object.freeze({
+	let E = 0, D = null, O = null, k = null, A = !1, j = !1, M = null, N = null, P = "unavailable", F = "idle", I = null, L = null, R = null, z = null, B = null, V = 0, H = null, U = null, ee = null, te = null, W = !1, G = null, ne = !1, K = null, q = null, re = null, ie = 0, J = 0, ae = null, Y = /* @__PURE__ */ new Set(), oe = null, se = null, ce = xb(0), le = null, ue = null, de = Dr(), fe = /* @__PURE__ */ new Map(), pe = null, me = /* @__PURE__ */ new Map(), he = /* @__PURE__ */ new Map(), ge = null, _e = null, ye = Object.freeze({
 		status: "idle",
 		jobId: null,
 		processedFloors: 0,
@@ -30254,7 +30268,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		return e;
 	}, Ze = () => {
 		F = "syncing", I = null, O || (P = "syncing");
-	}, Qe = () => O?.root ? `${O.root.chatId}:${O.root.narrativeGeneration}:${O.root.sourceSnapshotFingerprint}:${O.root.stableBoundary?.floorId ?? ""}:${O.root.stableBoundary?.canonicalFingerprint ?? ""}` : null, $e = () => !!O?.floorMemories?.some((e) => e?.recordStatus === "active"), et = () => !!(Me() && ae === Me()), tt = () => $e() || et() || Xe().enabled && Vn() || z?.kind === "manual" || ee !== null || G !== null, nt = (e, t) => {
+	}, Qe = () => O?.root ? `${O.root.chatId}:${O.root.narrativeGeneration}:${O.root.sourceSnapshotFingerprint}:${O.root.stableBoundary?.floorId ?? ""}:${O.root.stableBoundary?.canonicalFingerprint ?? ""}` : null, $e = () => !!O?.floorMemories?.some((e) => e?.recordStatus === "active"), et = () => !!(Me() && ae === Me()), tt = () => $e() || et() || Xe().enabled && Vn() || z?.kind === "manual" || te !== null || G !== null, nt = (e, t) => {
 		if (!e || e === ue) return !1;
 		ue = e;
 		try {
@@ -30269,7 +30283,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		return t.enabled && (e.summaryCoverageStatus === "realtimeTail" && n >= t.batchSize || e.cseFloors.some((e) => e.status === "pending"));
 	}, ct = (e = bt()) => {
 		let t = Xe(), n = ot();
-		if (!t.enabled || e.summaryCoverageStatus !== "historicalDebt" || n === 0 || ["partial", "failed"].includes(W?.status) && le === Qe() || e.cseFloors.some((e) => e.status === "pending")) return !1;
+		if (!t.enabled || e.summaryCoverageStatus !== "historicalDebt" || n === 0 || ["partial", "failed"].includes(ee?.status) && le === Qe() || e.cseFloors.some((e) => e.status === "pending")) return !1;
 		let r = Eb(O), i = O?.floors?.find((e) => r.get(e.id)?.recordStatus !== "active") ?? null;
 		return nt(`authorization:${Qe()}:${i?.id ?? "unknown"}:${n}`, {
 			kind: "warning",
@@ -30280,7 +30294,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			})}`
 		});
 	}, ut = (e = "automationCancelled") => {
-		V += 1, H = null, U = null, ee = null, te = !1, z?.kind === "auto" && (z.mode === "cseRebuild" && G?.status === "running" && (G = {
+		V += 1, H = null, U = null, te = null, W = !1, z?.kind === "auto" && (z.mode === "cseRebuild" && G?.status === "running" && (G = {
 			...G,
 			status: "paused"
 		}), D?.controller.abort(e), De.cancelActive?.());
@@ -30296,7 +30310,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			totalFloors: 0,
 			calls: 0,
 			message: ""
-		}), xe?.invalidate(), E += 1, D?.controller.abort("memoryInvalidated"), D = null, z = null, G = null, O = null, P = "unavailable", F = "idle", I = null, L = null, R = null, fe = /* @__PURE__ */ new Map(), pe = null, ce = xb(0), se = null, ne = !1, K = null, q = null, re = null, J = 0, ae = null, Y.clear(), oe = null, k = null, W = null, le = null, ue = null, j = !1, te = !1, me.clear(), he.clear(), De.invalidate(), X();
+		}), xe?.invalidate(), E += 1, D?.controller.abort("memoryInvalidated"), D = null, z = null, G = null, O = null, P = "unavailable", F = "idle", I = null, L = null, R = null, fe = /* @__PURE__ */ new Map(), pe = null, ce = xb(0), se = null, ne = !1, K = null, q = null, re = null, J = 0, ae = null, Y.clear(), oe = null, k = null, ee = null, le = null, ue = null, j = !1, W = !1, me.clear(), he.clear(), De.invalidate(), X();
 	};
 	De.subscribe(() => X());
 	function pt(e, t) {
@@ -30425,7 +30439,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		}).length, b = (O?.floors ?? []).find((e) => {
 			let t = r.get(e.id);
 			return t?.recordStatus !== "active" || !v.get(t.floorId)?.deltaId;
-		})?.assistantSeq ?? null, x = Math.min(ce.summaryCompleted ?? s, o), S = ["paused", "failed"].includes(G?.status), C = ce.status !== "unknown" && ce.completed < ce.total || t.canInitialize === !0 || S, w = Xe(), T = z?.kind === "auto" && z.mode === "historical" ? "rebuilding" : t.canInitialize === !0 ? "pendingRebuild" : ["failed", "partial"].includes(W?.status) && ce.status !== "caughtUp" ? W.status : W?.status === "paused" && ce.status !== "caughtUp" ? "paused" : ce.status === "caughtUp" ? "caughtUp" : ce.status === "realtimeTail" ? "waitingRealtime" : ce.status === "historicalDebt" ? "pendingRebuild" : "notReady", E = Fe(O?.root) ? pe.automationFailure : null, A = E ? Object.freeze({
+		})?.assistantSeq ?? null, x = Math.min(ce.summaryCompleted ?? s, o), S = ["paused", "failed"].includes(G?.status), C = ce.status !== "unknown" && ce.completed < ce.total || t.canInitialize === !0 || S, w = Xe(), T = z?.kind === "auto" && z.mode === "historical" ? "rebuilding" : t.canInitialize === !0 ? "pendingRebuild" : ["failed", "partial"].includes(ee?.status) && ce.status !== "caughtUp" ? ee.status : ee?.status === "paused" && ce.status !== "caughtUp" ? "paused" : ce.status === "caughtUp" ? "caughtUp" : ce.status === "realtimeTail" ? "waitingRealtime" : ce.status === "historicalDebt" ? "pendingRebuild" : "notReady", E = Fe(O?.root) ? pe.automationFailure : null, A = E ? Object.freeze({
 			code: E.code,
 			name: E.name,
 			message: ze(E),
@@ -30489,7 +30503,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				cseBlocked: z.cseBlocked === !0,
 				floorIds: Object.freeze([...z.floorIds])
 			}) : null,
-			lastAutoMemory: W,
+			lastAutoMemory: ee,
 			promptVersion: gf,
 			extractorVersion: _f
 		});
@@ -30549,7 +30563,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		let d = l, f = Promise.resolve().then(async () => {
 			if (await De.load(d), r !== E || O !== d || !a && !o && (await Ye(d, r), r !== E || O !== d) || !s && (await xt(r), r !== E || O !== d)) return;
 			let t = e.getState();
-			k?.floorId === null && ["load", "foundation"].includes(k.phase) && [t?.status, t?.foundationStatus].includes("ready") && (k = null), F = a ? "needsReview" : k?.phase === "anchor" ? "error" : "idle", I = a ? null : k?.phase === "anchor" ? k : null, X(), !a && st() && W?.status === "caughtUp" && le !== Qe() && pn("postBoundaryCatchup");
+			k?.floorId === null && ["load", "foundation"].includes(k.phase) && [t?.status, t?.foundationStatus].includes("ready") && (k = null), F = a ? "needsReview" : k?.phase === "anchor" ? "error" : "idle", I = a ? null : k?.phase === "anchor" ? k : null, X(), !a && st() && ee?.status === "caughtUp" && le !== Qe() && pn("postBoundaryCatchup");
 		}).catch((e) => {
 			r === E && O === d && (F = "error", I = Object.freeze({
 				code: e?.code ?? "V3_MEMORY_SYNC_FAILED",
@@ -30978,12 +30992,12 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				d.root.narrativeGeneration,
 				d.floors.map((e) => e.id),
 				d.floors.map((e) => e.content.canonicalFingerprint)
-			]), W = {
+			]), ee = {
 				foundationReady: !0,
 				memoryReady: H,
 				cseReady: H && x.filter((e) => e.recordStatus === "active").every((e) => w.some((t) => t.floorId === e.floorId)),
 				recallReady: !1
-			}, ee = xn({
+			}, te = xn({
 				schemaVersion: 3,
 				recordType: "checkpoint",
 				id: P,
@@ -30993,7 +31007,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				runId: N,
 				sourceSnapshotFingerprint: d.root.sourceSnapshotFingerprint,
 				indexLayout: nn,
-				capabilities: W,
+				capabilities: ee,
 				floorRange: {
 					fromAssistantSeq: +!!d.floors.length,
 					toAssistantSeq: d.floors.length,
@@ -31025,9 +31039,9 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				updatedAt: M,
 				recordStatus: "active",
 				supersedes: null
-			}, { expectedChatId: d.root.chatId }), te = _n({
+			}, { expectedChatId: d.root.chatId }), W = _n({
 				...d.root,
-				capabilities: W,
+				capabilities: ee,
 				headCheckpointId: P,
 				activeStateRefs: R ? [R.id] : [],
 				indexManifest: {
@@ -31039,8 +31053,8 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				updatedAt: M
 			}, { expectedChatId: d.root.chatId });
 			if (await Wo({
-				root: te,
-				checkpoint: ee,
+				root: W,
+				checkpoint: te,
 				run: V,
 				floors: d.floors,
 				floorMemories: x,
@@ -31055,7 +31069,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				v,
 				...R ? [R] : [],
 				...F
-			], r.controller.signal), await At([V, ee], r.controller.signal, { concurrency: 1 }), r.epoch !== E || r.controller.signal.aborted) throw wb("V3_MEMORY_CANCELLED", "操作已取消。");
+			], r.controller.signal), await At([V, te], r.controller.signal, { concurrency: 1 }), r.epoch !== E || r.controller.signal.aborted) throw wb("V3_MEMORY_CANCELLED", "操作已取消。");
 			if (r.qianshiHistory && Me() !== d.root.chatId) throw wb("QIANSHI_HISTORY_PLAN_STALE", "当前聊天已变化；历史补齐结果未保存。");
 			if (r.qianshiTextEdit) {
 				let e = Tb(d).get(r.floorId), t = d.floors.find((e) => e.id === r.qianshiTextEdit.sourceFloorId), i = d.floors.find((e) => e.id === r.floorId), a = t ? kb(n, t) : null, o = i ? kb(n, i) : null, s = a ? `sha256:${await Pe(a.rawContent)}` : null, c = o ? `sha256:${await Pe(o.rawContent)}` : null, l = r.qianshiTextEdit.sourceBaseline;
@@ -31063,7 +31077,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			}
 			let G;
 			try {
-				G = await t.commitRoot(te, d.rootRevision, { signal: r.controller.signal });
+				G = await t.commitRoot(W, d.rootRevision, { signal: r.controller.signal });
 			} catch (e) {
 				if (l !== "qianshiHistory" && l !== "qianshiTextEdit") throw e;
 				try {
@@ -31235,15 +31249,15 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 					rawContentFingerprint: D
 				}, V = _.floors.findIndex((e) => e.id === S.id);
 				l = "identityDirectory";
-				let H = Er(_.entities, new Set(_.floors.slice(0, V + 1).map((e) => e.id))), U = await ke(), W = null;
+				let H = Er(_.entities, new Set(_.floors.slice(0, V + 1).map((e) => e.id))), U = await ke(), ee = null;
 				l = "timeSources";
-				for (let e = V - 1; e >= 0 && !W; --e) W = Pb(Ab(v, _.floors[e]), k).clock;
+				for (let e = V - 1; e >= 0 && !ee; --e) ee = Pb(Ab(v, _.floors[e]), k).clock;
 				l = "sourceSelection";
-				let ee = _b(_, V, b), te = _.floors.findIndex((e) => e.id === w[0].id), G = new Set(_.floors.slice(0, te).map((e) => e.id));
+				let te = _b(_, V, b), W = _.floors.findIndex((e) => e.id === w[0].id), G = new Set(_.floors.slice(0, W).map((e) => e.id));
 				l = "qianshiCandidates";
 				let ne = {
 					..._,
-					floors: _.floors.slice(0, te),
+					floors: _.floors.slice(0, W),
 					floorMemories: _.floorMemories.filter((e) => G.has(e.floorId)),
 					entities: H
 				}, K = {
@@ -31272,8 +31286,8 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 					userIdentity: R,
 					identityHints: [],
 					storyClock: P.clock,
-					previousStoryClock: W,
-					previousFloorContext: ee,
+					previousStoryClock: ee,
+					previousFloorContext: te,
 					sourceUserInputSnapshot: F,
 					sourceVariableReference: I,
 					qianshiCandidates: q
@@ -31727,7 +31741,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 	}
 	let ln = (e) => cn(e, { full: !1 }), un = (e) => cn(e, { full: !0 });
 	async function dn(t = "stableAssistant", n = null) {
-		let r = Xe(), i = t === Qy, a = i && te === !0, o = i || t === "manualRetry" || !!n, c = i ? ee : null;
+		let r = Xe(), i = t === Qy, a = i && W === !0, o = i || t === "manualRetry" || !!n, c = i ? te : null;
 		if (!Ae() || !i && !r.enabled || i && !c || n && (!(et() || Vn()) || O?.root?.chatId !== n.chatId) || z || D || De.getState().activeCse) return bt();
 		let d = {
 			kind: "auto",
@@ -31742,7 +31756,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		return z = d, X(), d.promise = (async () => {
 			let f = null, p = null, m = 0, h = 0, g = null, _ = null, v = [], y = [], b = /* @__PURE__ */ new Set(), x = !1, S = null, C = !1, T = null, D = null, k = 0, A = 0;
 			try {
-				let u = () => d.token === V && Ae() && (i ? ee === c : Xe().enabled), w = i || n?.allowHistoricalDebt === !0, j = i, M = !1, N = !1, P = () => !!(O?.baseline && [O.baseline.userPersona.entityId, O.baseline.characterCard.entityId].every((e) => O.entities.some((t) => t.id === e))), R = () => T ? T.serial >= k ? !1 : (T = null, d.cseBlocked = !1, !0) : !0, z = () => {
+				let u = () => d.token === V && Ae() && (i ? te === c : Xe().enabled), w = i || n?.allowHistoricalDebt === !0, j = i, M = !1, N = !1, P = () => !!(O?.baseline && [O.baseline.userPersona.entityId, O.baseline.characterCard.entityId].every((e) => O.entities.some((t) => t.id === e))), R = () => T ? T.serial >= k ? !1 : (T = null, d.cseBlocked = !1, !0) : !0, z = () => {
 					if (!j || !u() || !p || !R() || D?.serial === k) return Promise.resolve();
 					if (S) return C = !0, S;
 					let e = k;
@@ -31829,7 +31843,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 					let B = new Set(p), V = p.length, H = (e, t) => (e?.[t] ?? []).some((e) => B.has(e));
 					if (w && !H(R, "pendingFloorIds") && !H(R, "summaryPendingFloorIds")) {
 						if (S && await S, !u()) return bt();
-						if (i && ee === c && (ee = null), i && (te = !1), le = f, W = Object.freeze(m || h ? {
+						if (i && te === c && (te = null), i && (W = !1), le = f, ee = Object.freeze(m || h ? {
 							status: "completed",
 							reason: t,
 							mode: i ? "historical" : "realtime",
@@ -31857,7 +31871,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 						return X();
 					}
 					let U = Qe();
-					if (!o && le === U) return ["failed", "partial"].includes(W?.status) || (W = Object.freeze({
+					if (!o && le === U) return ["failed", "partial"].includes(ee?.status) || (ee = Object.freeze({
 						status: "waiting",
 						reason: t,
 						mode: "realtime",
@@ -31914,7 +31928,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 									message: bt().lastExtractorError?.message ?? "高楼压缩记忆提取失败，可重新选择高楼压缩后从本批重试。"
 								});
 								for (let e of q) b.add(e.id);
-								return y.push(n), ee = null, te = !1, le = f ?? U, W = Object.freeze({
+								return y.push(n), te = null, W = !1, le = f ?? U, ee = Object.freeze({
 									status: m ? "partial" : "failed",
 									reason: t,
 									mode: d.mode,
@@ -31986,7 +32000,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 					if (!(w && H(re, "summaryPendingFloorIds") && y.length === 0)) {
 						if (j) {
 							if (await z(), !u()) return bt();
-							if (D) return W = Object.freeze({
+							if (D) return ee = Object.freeze({
 								status: m || h ? "partial" : "failed",
 								reason: t,
 								mode: d.mode,
@@ -32005,7 +32019,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 							}), X();
 							if (A === k ? re = ce : (re = await xt(E), A = k), T) {
 								let e = T.floor;
-								return le = f ?? U, W = Object.freeze({
+								return le = f ?? U, ee = Object.freeze({
 									status: m || h ? "partial" : "failed",
 									reason: t,
 									mode: d.mode,
@@ -32033,7 +32047,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 							if (["ready", "noChange"].includes(o?.cse?.status) || await De.analyzeFloor(a.id), !u()) return bt();
 							let s = bt().floors.find((e) => e.floorId === a.id);
 							if (!["ready", "noChange"].includes(s?.cse?.status)) {
-								i && ee === c && (ee = null), le = f ?? U, W = Object.freeze({
+								i && te === c && (te = null), le = f ?? U, ee = Object.freeze({
 									status: m > 0 || h > 0 ? "partial" : "failed",
 									reason: t,
 									mode: d.mode,
@@ -32051,15 +32065,15 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 								let e = w ? "千千结人物状态分析失败" : m > 0 ? "千千结已保存新楼摘要，但最早待处理楼的人物状态分析失败" : "千千结人物状态追赶失败", n = ot(B), o = n > 0 ? "相同内容不会自动重试，另有历史摘要缺口不会自动补，请在记忆管理中点击继续。" : "相同内容不会自动重试，后续有新稳定回复时会有限重试，也可现在点击继续。";
 								return nt(`analyzingCse:${t}:${f ?? U}:${a.id}:${n}`, {
 									kind: "warning",
-									text: `${e}：${it(a)}人物状态未完成，未完成摘要 ${n} 楼；${o}${bb(W.message)}`
+									text: `${e}：${it(a)}人物状态未完成，未完成摘要 ${n} 楼；${o}${bb(ee.message)}`
 								}), X();
 							}
 							if (h += 1, await Ct(E), re = await xt(E), re.status === "unknown") throw wb("V3_MEMORY_COVERAGE_UNCONFIRMED", "人物状态保存后覆盖校验未确认，自动追赶已暂停。");
 						}
 						if (y.length) {
-							i && ee === c && (ee = null), le = f ?? U;
+							i && te === c && (te = null), le = f ?? U;
 							let e = m > 0 || h > 0;
-							W = Object.freeze({
+							ee = Object.freeze({
 								status: e ? "partial" : "failed",
 								reason: t,
 								mode: d.mode,
@@ -32083,7 +32097,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 						}
 						if (!w) {
 							if (le = null, re.summaryStatus === "historicalDebt" && H(re, "summaryPendingFloorIds")) {
-								W = Object.freeze({
+								ee = Object.freeze({
 									status: "authorizationRequired",
 									reason: t,
 									mode: "historical",
@@ -32096,17 +32110,17 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 									cseProcessed: h
 								});
 								let e = O.floors?.find((e) => re.summaryPendingFloorIds.includes(e.id)) ?? null, n = h ? `千千结已补齐 ${h} 楼人物状态；` : "千千结发现需要用户确认的历史摘要缺口：";
-								return nt(`authorization:${f ?? U}:${e?.id ?? "unknown"}:${W.available}`, {
+								return nt(`authorization:${f ?? U}:${e?.id ?? "unknown"}:${ee.available}`, {
 									kind: "warning",
 									text: `${n}${at({
 										floor: e,
-										count: W.available,
+										count: ee.available,
 										retry: "这是历史缺口，不会自动补，请在记忆管理中点击继续。"
 									})}`
 								}), X();
 							}
 							if (H(re, "summaryPendingFloorIds")) {
-								if (W = Object.freeze({
+								if (ee = Object.freeze({
 									status: "waiting",
 									reason: t,
 									mode: "realtime",
@@ -32126,7 +32140,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 								return X();
 							}
 							let e = m > 0 || h > 0;
-							if (W = Object.freeze({
+							if (ee = Object.freeze({
 								status: e ? "completed" : "caughtUp",
 								reason: t,
 								mode: "realtime",
@@ -32151,9 +32165,9 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				return bt();
 			} catch (e) {
 				if (d.token === V) {
-					i && ee === c && (ee = null), le = f ?? Qe();
+					i && te === c && (te = null), le = f ?? Qe();
 					let n = m > 0 || h > 0, a = Jy(e);
-					W = Object.freeze({
+					ee = Object.freeze({
 						status: n ? "partial" : "failed",
 						reason: t,
 						phase: d.phase,
@@ -32165,7 +32179,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 						failedItems: Object.freeze([...y]),
 						message: bb(e?.message ?? "自动记忆失败，将在下一次稳定回复后重试。")
 					}), Ke(O, {
-						message: W.message,
+						message: ee.message,
 						code: a.code ?? "V3_AUTO_MEMORY_FAILED",
 						name: a.name,
 						phase: d.phase,
@@ -32176,12 +32190,12 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 					let o = a.code ?? a.name ?? "V3_AUTO_MEMORY_FAILED";
 					w?.warn?.("[qianqianjie] V3 automatic memory failed", { code: o }), nt(`outer:${t}:${f ?? Qe()}:${d.phase}:${o}`, {
 						kind: n ? "warning" : "error",
-						text: `千千结自动记忆${n ? "部分完成" : "未完成"}：已新增摘要 ${m} 楼、补齐人物状态 ${h} 楼；${W.message} 当前未完成摘要楼数无法可靠确认；相同内容不会自动重试，请在记忆管理中点击继续。`
+						text: `千千结自动记忆${n ? "部分完成" : "未完成"}：已新增摘要 ${m} 楼、补齐人物状态 ${h} 楼；${ee.message} 当前未完成摘要楼数无法可靠确认；相同内容不会自动重试，请在记忆管理中点击继续。`
 					}), X();
 				}
 				return bt();
 			} finally {
-				if (S && await S, i && ee === c && (ee = null), z === d && (z = null), X(), d.token === V && (m || h) && W?.status === "completed" && O?.root) try {
+				if (S && await S, i && te === c && (te = null), z === d && (z = null), X(), d.token === V && (m || h) && ee?.status === "completed" && O?.root) try {
 					u({
 						chatId: O.root.chatId,
 						headCheckpointId: O.root.headCheckpointId,
@@ -32189,12 +32203,12 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 					});
 				} catch {}
 				let e = f !== null && f !== Qe();
-				!i && d.token === V && st() && (W?.status === "waiting" && le !== Qe() || e) && (H ??= "postBoundaryCatchup"), H && fn(H) && pn(H, U);
+				!i && d.token === V && st() && (ee?.status === "waiting" && le !== Qe() || e) && (H ??= "postBoundaryCatchup"), H && fn(H) && pn(H, U);
 			}
 		})(), d.promise;
 	}
 	function fn(e) {
-		return Ae() ? e === Qy ? !!ee : e === "manualRetry" ? Xe().enabled : Xe().enabled && W?.status !== "paused" : !1;
+		return Ae() ? e === Qy ? !!te : e === "manualRetry" ? Xe().enabled : Xe().enabled && ee?.status !== "paused" : !1;
 	}
 	function pn(e = "stableAssistant", t = null) {
 		return fn(e) ? (H = e, t && (U = t), B || (B = Promise.resolve().then(() => {
@@ -32268,7 +32282,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		return !i || !jn(i.rawContent) ? null : i.rawContent !== e.startRawContent || i.swipeId !== e.startSwipeId || i.selectedSwipeIndex !== e.startSelectedSwipeIndex ? Object.freeze({ messageIndex: r }) : null;
 	}
 	function En(e, t) {
-		if (!t || Y.has(t) || !Ae() || !Xe().enabled || !tt() || W?.status === "paused") return !1;
+		if (!t || Y.has(t) || !Ae() || !Xe().enabled || !tt() || ee?.status === "paused") return !1;
 		let n = O?.root?.chatId ?? ae;
 		if (!n) return !1;
 		for (Y.add(t); Y.size > 24;) Y.delete(Y.values().next().value);
@@ -32604,7 +32618,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 					totalFloors: 0,
 					calls: 0,
 					message: ""
-				}), E += 1, D?.controller.abort(e), D = null, z = null, P = "syncing", O = null, F = "syncing", I = null, fe = /* @__PURE__ */ new Map(), ce = xb(0), k = null, me.clear(), he.clear(), De.invalidate(), j = !0, ["MESSAGE_SENT", "MESSAGE_RECEIVED"].includes(e) || (se = null, le = null, ue = null), ["MESSAGE_SENT", "MESSAGE_RECEIVED"].includes(e) && Xe().enabled && (H = e), (e === "CHAT_CHANGED" || e === "CHAT_RENAMED" || Zy.has(e)) && (W = null), X();
+				}), E += 1, D?.controller.abort(e), D = null, z = null, P = "syncing", O = null, F = "syncing", I = null, fe = /* @__PURE__ */ new Map(), ce = xb(0), k = null, me.clear(), he.clear(), De.invalidate(), j = !0, ["MESSAGE_SENT", "MESSAGE_RECEIVED"].includes(e) || (se = null, le = null, ue = null), ["MESSAGE_SENT", "MESSAGE_RECEIVED"].includes(e) && Xe().enabled && (H = e), (e === "CHAT_CHANGED" || e === "CHAT_RENAMED" || Zy.has(e)) && (ee = null), X();
 			});
 		}
 		return A = !0, !0;
@@ -32638,7 +32652,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 		}
 		let n = await e.refreshStatus(Qy, { verifyRoot: !0 });
 		if (n.status !== "ready") {
-			W = Object.freeze({
+			ee = Object.freeze({
 				status: "failed",
 				reason: Qy,
 				mode: "historical",
@@ -32651,7 +32665,7 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			try {
 				s?.({
 					kind: "error",
-					text: `历史记忆维护未开始：${W.message} 已保存的记忆保持不变，请稍后点击继续补齐。`
+					text: `历史记忆维护未开始：${ee.message} 已保存的记忆保持不变，请稍后点击继续补齐。`
 				});
 			} catch {}
 			return X();
@@ -32670,12 +32684,12 @@ function Vb({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			} catch {}
 			return X();
 		}
-		return !O?.root || !["historicalDebt", "realtimeTail"].includes(a.status) ? X() : (ee = O.root.chatId, te = t?.aggregate === !0, pn(Qy));
+		return !O?.root || !["historicalDebt", "realtimeTail"].includes(a.status) ? X() : (te = O.root.chatId, W = t?.aggregate === !0, pn(Qy));
 	}
-	let Bn = () => !!(Ae() && (ee && O?.root?.chatId === ee || z?.mode === "cseRebuild")), Vn = () => !!(gc(O) || se && (O?.root ? se.chatId === O.root.chatId && (se.narrativeGeneration === null || se.narrativeGeneration === O.root.narrativeGeneration) : se.narrativeGeneration === null && se.chatId === Me()));
+	let Bn = () => !!(Ae() && (te && O?.root?.chatId === te || z?.mode === "cseRebuild")), Vn = () => !!(gc(O) || se && (O?.root ? se.chatId === O.root.chatId && (se.narrativeGeneration === null || se.narrativeGeneration === O.root.narrativeGeneration) : se.narrativeGeneration === null && se.chatId === Me()));
 	function Hn() {
-		let e = ee !== null || z?.kind === "auto" && z.mode === "historical", t = z?.token ?? V;
-		return ee = null, te = !1, H === Qy && (H = null), z?.kind === "auto" && z.mode === "historical" && (V += 1, D?.controller.abort(), De.cancelActive?.()), e && (W = Object.freeze({
+		let e = te !== null || z?.kind === "auto" && z.mode === "historical", t = z?.token ?? V;
+		return te = null, W = !1, H === Qy && (H = null), z?.kind === "auto" && z.mode === "historical" && (V += 1, D?.controller.abort(), De.cancelActive?.()), e && (ee = Object.freeze({
 			status: "paused",
 			reason: Qy,
 			mode: "historical",
@@ -34617,7 +34631,7 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 			qianshiCandidates: Object.freeze([])
 		});
 	}
-	async function W(e, t, n = {}) {
+	async function ee(e, t, n = {}) {
 		let r = await V(e, t, n);
 		if (r?.status !== "ready") return r;
 		let i = null;
@@ -34631,13 +34645,13 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 			timeProjection: i
 		});
 	}
-	let ee = () => {
+	let te = () => {
 		let e = J();
 		for (let t of M) try {
 			t(e);
 		} catch {}
 		return e;
-	}, te = (e, n, r = null, i = null, a = null) => {
+	}, W = (e, n, r = null, i = null, a = null) => {
 		let o = i ?? t.snapshot().context, s = o?.setExtensionPrompt;
 		if (typeof s != "function") throw Object.assign(/* @__PURE__ */ Error("宿主不支持 setExtensionPrompt。"), { code: "V3_RECALL_PROMPT_UNAVAILABLE" });
 		let c = o.constants?.promptTypes?.IN_CHAT ?? 1, l = o.constants?.promptRoles?.SYSTEM ?? 0;
@@ -34660,7 +34674,7 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 			});
 			E = t.recallText || t.prequelText ? t : null;
 		}
-	}, G = (e, t = null, n = null, r = null) => te(ex, e, t, n, r), ne = (e, t = null, n = null, r = null) => te(om, e, t, n, r), K = (e, { preserveSnapshot: n = !1 } = {}) => {
+	}, G = (e, t = null, n = null, r = null) => W(ex, e, t, n, r), ne = (e, t = null, n = null, r = null) => W(om, e, t, n, r), K = (e, { preserveSnapshot: n = !1 } = {}) => {
 		if (e !== void 0 && w !== null && w !== e) return !1;
 		let r = n ? E : null;
 		n || (E = null);
@@ -35044,7 +35058,7 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 			started: Date.now(),
 			diagnostics: []
 		};
-		D = null, O = null, A = null, C = l, k = null, ee();
+		D = null, O = null, A = null, C = l, k = null, te();
 		let u = {}, p = (e) => {
 			if (![
 				"chatChanged",
@@ -35079,7 +35093,7 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 				if (!ax.has(o)) return ge(l, ["quiet", "impersonate"].includes(o) ? o : "unsupportedGenerationType", u);
 				let r = t.snapshot(), h = Ex(r);
 				if (!h) return ge(l, "emptyUserInput", u);
-				l.user = h, l.chatId = xx(r), l.hostChatId = Sx(r), l.userText = h.message.mes, l.liveFrameKey = Dx(r), ee();
+				l.user = h, l.chatId = xx(r), l.hostChatId = Sx(r), l.userText = h.message.mes, l.liveFrameKey = Dx(r), te();
 				let g = d({
 					coreChat: m,
 					assistantTurns: 1
@@ -35110,7 +35124,7 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 					}
 				}
 				if (w) {
-					i.selectionStatus = "receiptCandidate", i.coverage = yx(w.coverage), i.stages = yx(w.stages), i.selectorDiagnostic = yx(w.selectorDiagnostic), l.phase = i.phase = "commit", ee();
+					i.selectionStatus = "receiptCandidate", i.coverage = yx(w.coverage), i.stages = yx(w.stages), i.selectorDiagnostic = yx(w.selectorDiagnostic), l.phase = i.phase = "commit", te();
 					let e = fe({
 						operation: l,
 						receipt: w,
@@ -35123,11 +35137,11 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 							timings: u
 						}),
 						...me(l, u)
-					}), l.prequelCommitted && (O = se(l)), q(e.snapshot, e.user), k = null, C = null, ee(), J()) : p(e.reason);
+					}), l.prequelCommitted && (O = se(l)), q(e.snapshot, e.user), k = null, C = null, te(), J()) : p(e.reason);
 				}
 				let T = I(), [E, A] = await Promise.all([oS(m, T, f), f(g.text)]);
-				l.coreBodyWitness = E, l.sanitizerOptions = T, l.phase = i.phase = "source", ee();
-				let j = Date.now(), M = await W(r, T, {
+				l.coreBodyWitness = E, l.sanitizerOptions = T, l.phase = i.phase = "source", te();
+				let j = Date.now(), M = await ee(r, T, {
 					fresh: e > 0,
 					operation: l
 				}), N = M?.status === "ready" ? Object.freeze({
@@ -35165,16 +35179,16 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 					...N,
 					degradedReasons: Object.freeze([.../* @__PURE__ */ new Set([...N.degradedReasons ?? [], ...L])])
 				}));
-				let V = N.identityProjection ?? {}, te = Object.keys(V.identityRedirectsByEntityId ?? {}).length > 0 || (V.deletedEntityIds ?? []).length > 0, G = l.prequelSelection.injectionText ? await f(JSON.stringify([
+				let V = N.identityProjection ?? {}, W = Object.keys(V.identityRedirectsByEntityId ?? {}).length > 0 || (V.deletedEntityIds ?? []).length > 0, G = l.prequelSelection.injectionText ? await f(JSON.stringify([
 					A,
 					l.prequelSelection.injectionText,
 					l.prequelSelection.estimatedTokens,
 					l.prequelSelection.estimatedCharacters
-				])) : A, ne = te ? await f(JSON.stringify([G, V])) : G, K = N.timeProjection?.fingerprint ? await f(JSON.stringify([ne, N.timeProjection.fingerprint])) : ne, re = t.snapshot(), ie = Ex(re);
+				])) : A, ne = W ? await f(JSON.stringify([G, V])) : G, K = N.timeProjection?.fingerprint ? await f(JSON.stringify([ne, N.timeProjection.fingerprint])) : ne, re = t.snapshot(), ie = Ex(re);
 				if (a !== b || l.controller.signal.aborted) return _e(l, u);
 				if (xx(re) !== N.chatId) return _e(l, u, "chatChanged");
 				if (ie?.index !== h.index || ie?.message !== y.userMessage || await f(ie?.message?.mes) !== S) return _e(l, u, "userChanged");
-				l.phase = i.phase = "selecting", i.selectionStatus = "incomplete", ee();
+				l.phase = i.phase = "selecting", i.selectionStatus = "incomplete", te();
 				let ae = Date.now(), Y, oe = N.qianshiProgress?.text ? `\n\n${Hx(N.qianshiProgress)}`.length : 0, he = Gx(N.qianshiProgress);
 				try {
 					Y = await R({
@@ -35334,7 +35348,7 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 					receiptFingerprint: await f(JSON.stringify(Nx(ye)))
 				});
 				if (a !== b || l.controller.signal.aborted) return _e(l, u);
-				l.phase = i.phase = "receipt", ee();
+				l.phase = i.phase = "receipt", te();
 				let Se = Object.freeze({
 					userMessage: be.user.message,
 					receipt: Object.freeze({
@@ -35359,7 +35373,7 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 						timings: u
 					}),
 					...me(l, u)
-				}), l.prequelCommitted && (O = se(l)), q(be.snapshot, be.user), k = null, C = null, ee(), J());
+				}), l.prequelCommitted && (O = se(l)), q(be.snapshot, be.user), k = null, C = null, te(), J());
 			} catch (t) {
 				if (a !== b || l.controller.signal.aborted) return _e(l, u);
 				K(a), l.prequelCommitted = !1, O = null;
@@ -35407,7 +35421,7 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 						}, { fallback: "记忆召回失败，请稍后重试。" })}`
 					});
 				} catch {}
-				return C = null, typeof r == "function" && r(!0), y?.warn?.("[qianqianjie] V3 recall failed after retry", { code: n.code }), ee(), J();
+				return C = null, typeof r == "function" && r(!0), y?.warn?.("[qianqianjie] V3 recall failed after retry", { code: n.code }), te(), J();
 			}
 		}
 	}
@@ -35433,7 +35447,7 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 			skipReasons: Object.freeze([...r]),
 			error: null,
 			createdAt: _x(_)
-		}), e.prequelCommitted && (O = se(e)), re(e), C = null, ee(), J();
+		}), e.prequelCommitted && (O = se(e)), re(e), C = null, te(), J();
 	}
 	function _e(e, t, n = ie(e)) {
 		return C === e && (C = null), e.token === b && (K(e.token), D = Object.freeze({
@@ -35454,10 +35468,10 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 			skipReasons: Object.freeze([Tx.has(n) ? n : "narrativeChanged"]),
 			error: null,
 			createdAt: _x(_)
-		}), O = null, re(e), ee()), J();
+		}), O = null, re(e), te()), J();
 	}
 	function ve(e = "invalidated") {
-		b += 1, C?.controller.abort(Tx.has(e) ? e : "superseded"), C = null, P = null, N.length = 0, S = 0, K(), D = null, O = null, A = null, k = null, ee();
+		b += 1, C?.controller.abort(Tx.has(e) ? e : "superseded"), C = null, P = null, N.length = 0, S = 0, K(), D = null, O = null, A = null, k = null, te();
 	}
 	function ye(e, t, n) {
 		if (n === !0) return;
@@ -35490,7 +35504,7 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 			skipReasons: Object.freeze([t]),
 			error: null,
 			createdAt: _x(_)
-		}), O = null, re(n), ee(), !0;
+		}), O = null, re(n), te(), !0;
 	}
 	function xe() {
 		let e = [...N].reverse().find((e) => e.token === C?.token) ?? [...N].reverse().find((e) => e.token === w) ?? N.at(-1);
@@ -35530,7 +35544,7 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 			"MESSAGE_SWIPE_DELETED"
 		]) r(e, () => {
 			let e = t.snapshot(), n = Ex(e), r = !!A && (xx(e) !== A.chatId || n?.message !== A.message || n?.message?.mes !== A.text), i = null;
-			C && (xx(e) === C.chatId ? n?.message !== C.user?.message || n?.message?.mes !== C.userText ? i = "userChanged" : Dx(e) !== C.liveFrameKey && (i = "narrativeChanged") : i = "chatChanged"), !(!r && !i) && (b += 1, i && (C.controller.abort(i), C = null, P = null), K(), r && (P = null, D = null, A = null, k = null), ee());
+			C && (xx(e) === C.chatId ? n?.message !== C.user?.message || n?.message?.mes !== C.userText ? i = "userChanged" : Dx(e) !== C.liveFrameKey && (i = "narrativeChanged") : i = "chatChanged"), !(!r && !i) && (b += 1, i && (C.controller.abort(i), C = null, P = null), K(), r && (P = null, D = null, A = null, k = null), te());
 		});
 	}
 	async function we() {
@@ -35572,7 +35586,7 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 				userIndex: r.index
 			}), !c) return J();
 			let l = t.snapshot(), u = Ex(l);
-			return e !== b || C || D || xx(l) !== i || u?.index !== r.index || u.message !== r.message || u.message.extra?.qqj_v3_recall_receipt !== a || u.message.mes !== o ? J() : (D = c.legacyReadOnly ? c : rS(c, { restoredReceipt: !0 }), q(l, u), k = null, ee(), J());
+			return e !== b || C || D || xx(l) !== i || u?.index !== r.index || u.message !== r.message || u.message.extra?.qqj_v3_recall_receipt !== a || u.message.mes !== o ? J() : (D = c.legacyReadOnly ? c : rS(c, { restoredReceipt: !0 }), q(l, u), k = null, te(), J());
 		} catch (e) {
 			return y?.warn?.("[qianqianjie] V3 persisted recall receipt ignored", { code: vx(e?.code ?? e?.name ?? "V3_RECALL_RECEIPT_RESTORE_FAILED", 120) }), J();
 		}
@@ -35581,7 +35595,7 @@ function dS({ store: e, hostAdapter: t, generateUtilityTask: n = null, isEnabled
 		return j = e === !0, j || ve("disabled"), J();
 	}
 	function Ee() {
-		return K(), D = null, O = null, A = null, k = null, ee(), J();
+		return K(), D = null, O = null, A = null, k = null, te(), J();
 	}
 	return Object.freeze({
 		intercept: he,
@@ -36981,12 +36995,12 @@ function HC(e) {
 			stateItems: Object.freeze(v.filter((t) => t.storylineId === e.storylineId)),
 			cseChangeItems: Object.freeze(b.filter((t) => t.storylineId === e.storylineId))
 		});
-	})), B = M !== null, V = O.matched ? Vx(D, e.timeDependencies) : "", H = e.status ?? (e.injectionText ? "ready" : "empty"), U = e.legacyReadOnly ? "旧版只读记录" : H === "ready" || H === "empty" ? `寻回 ${_} 个结` : H === "stale" ? "本轮结果已失效" : H === "error" ? "本轮召回失败" : "本轮已跳过", W = S ? `近期摘要 ${C} 条 · 远期旧事 ${w} 条 · 当前人物状态 ${T} 条${Number.isSafeInteger(e.stages?.cseChangeCount) ? ` · 历史变化 ${e.stages.cseChangeCount} 条` : ""}` : L.length ? `已召回 ${L.length} 条旧事${y ? ` · ${y} 条当前人物状态` : ""}${x ? ` · ${x} 条历史变化` : ""}` : y || x ? `已记录${y ? ` ${y} 条当前人物状态` : ""}${y && x ? " ·" : ""}${x ? ` ${x} 条历史变化` : ""}` : _ || !h || e.legacyReadOnly && !B ? "召回内容请在详细回执中查看。" : V ? "本轮已注入千事进度。" : H === "empty" ? "本轮没有需要注入的记忆。" : "本轮没有已注入的记忆。";
+	})), B = M !== null, V = O.matched ? Vx(D, e.timeDependencies) : "", H = e.status ?? (e.injectionText ? "ready" : "empty"), U = e.legacyReadOnly ? "旧版只读记录" : H === "ready" || H === "empty" ? `寻回 ${_} 个结` : H === "stale" ? "本轮结果已失效" : H === "error" ? "本轮召回失败" : "本轮已跳过", ee = S ? `近期摘要 ${C} 条 · 远期旧事 ${w} 条 · 当前人物状态 ${T} 条${Number.isSafeInteger(e.stages?.cseChangeCount) ? ` · 历史变化 ${e.stages.cseChangeCount} 条` : ""}` : L.length ? `已召回 ${L.length} 条旧事${y ? ` · ${y} 条当前人物状态` : ""}${x ? ` · ${x} 条历史变化` : ""}` : y || x ? `已记录${y ? ` ${y} 条当前人物状态` : ""}${y && x ? " ·" : ""}${x ? ` ${x} 条历史变化` : ""}` : _ || !h || e.legacyReadOnly && !B ? "召回内容请在详细回执中查看。" : V ? "本轮已注入千事进度。" : H === "empty" ? "本轮没有需要注入的记忆。" : "本轮没有已注入的记忆。";
 	return Object.freeze({
 		kind: "user",
 		status: H,
 		statusText: U,
-		summary: W,
+		summary: ee,
 		injectionText: E,
 		qianshiProgressText: V,
 		floorCount: _,
@@ -37394,40 +37408,40 @@ function uw({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 	if (!e || typeof e.getState != "function" || typeof e.extractFloor != "function") throw TypeError("楼内渲染 memory runtime 无效");
 	if (!t || typeof t.getState != "function") throw TypeError("楼内渲染 recall runtime 无效");
 	if (!n || typeof n.snapshot != "function") throw TypeError("楼内渲染 host adapter 无效");
-	let s = !1, c = !1, l = 0, u = 0, d = 0, f = null, p = null, m = null, h = !1, g = /* @__PURE__ */ new Map(), _ = /* @__PURE__ */ new Map(), v = /* @__PURE__ */ new Map(), y = /* @__PURE__ */ new Set(), b = [], x = null, S = null, C = Object.freeze({
+	let s = !1, c = !1, l = 0, u = 0, d = 0, f = null, p = null, m = null, h = !1, g = /* @__PURE__ */ new Map(), _ = /* @__PURE__ */ new Map(), v = /* @__PURE__ */ new Map(), y = /* @__PURE__ */ new Set(), b = [], x = null, S = null, C = !0, w = !0, T = (e) => e === "user" ? C : e === "assistant" && w, E = Object.freeze({
 		knot: "#a8322f",
 		line: "color-mix(in srgb,currentColor 18%,transparent)"
-	}), w = 1, T = /* @__PURE__ */ new WeakMap(), E = {}, D = (e) => {
-		ew(e?.style, "--qqj-inline-knot", C.knot), ew(e?.style, "--qqj-inline-line", C.line), ew(e?.style, "--qqj-inline-fixed-scale", String(w));
-	}, O = () => {
+	}), D = 1, O = /* @__PURE__ */ new WeakMap(), k = {}, A = (e) => {
+		ew(e?.style, "--qqj-inline-knot", E.knot), ew(e?.style, "--qqj-inline-line", E.line), ew(e?.style, "--qqj-inline-fixed-scale", String(D));
+	}, j = () => {
 		m !== null && (i?.clearTimeout?.(m), m = null), p?.disconnect?.(), p = null, u += 1;
-	}, k = () => {
+	}, M = () => {
 		for (let e of g.values()) ZC(e.host);
 		g.clear();
 		for (let e of r?.querySelectorAll?.(GC) ?? []) ZC(e);
-	}, A = () => {
-		l += 1, O(), y.clear(), f = null, k();
-	}, j = (e, t, n) => `${e}:${t}:${n}`, M = (e) => {
+	}, N = () => {
+		l += 1, j(), y.clear(), f = null, M();
+	}, P = (e, t, n) => `${e}:${t}:${n}`, F = (e) => {
 		e.expanded = !e.expanded, _.set(e.stateKey, e.expanded), ow(e);
-	}, N = (t) => {
+	}, I = (t) => {
 		let n = t.projection;
 		!s || t.extracting || n?.kind !== "assistant" || !n.canExtract || !n.floorId || (t.extracting = !0, t.extract.disabled = !0, Promise.resolve(e.extractFloor(n.floorId)).catch((e) => {
 			o?.warn?.("[qianqianjie] 楼内重新提取失败", { code: String(e?.code ?? e?.name ?? "V3_INLINE_EXTRACT_FAILED").slice(0, 120) });
 		}).finally(() => {
-			t.extracting = !1, B();
+			t.extracting = !1, U();
 		}));
-	}, P = (e, t, n, i) => {
+	}, L = (e, t, n, i) => {
 		let a = nw(e);
 		if (!a?.append) return null;
 		let o = g.get(t);
 		if (o && (o.kind !== n || o.host?.parentElement !== a || o.host?.isConnected === !1) && (ZC(o.host), g.delete(t), o = null), !o) {
 			let e = [...a.querySelectorAll?.(GC) ?? []].find((e) => tw(e) === t) ?? null;
-			e && e.__qqjInlineOwner !== E && (ZC(e), e = null), e || (e = r.createElement("div"), e.className = "qqj-inline-host", e.setAttribute?.("data-qqj-inline-host", "true"), e.setAttribute?.("data-message-id", String(t)), e.dataset && (e.dataset.qqjInlineHost = "true", e.dataset.messageId = String(t)), a.append(e)), e.__qqjInlineOwner = E, D(e);
-			let s = j(i, t, n);
-			o = e.__qqjInlineCard ?? aw(r, e, n, _.get(s) === !0, M, N), o.stateKey = s, o.kind = n, g.set(t, o);
+			e && e.__qqjInlineOwner !== k && (ZC(e), e = null), e || (e = r.createElement("div"), e.className = "qqj-inline-host", e.setAttribute?.("data-qqj-inline-host", "true"), e.setAttribute?.("data-message-id", String(t)), e.dataset && (e.dataset.qqjInlineHost = "true", e.dataset.messageId = String(t)), a.append(e)), e.__qqjInlineOwner = k, A(e);
+			let s = P(i, t, n);
+			o = e.__qqjInlineCard ?? aw(r, e, n, _.get(s) === !0, F, I), o.stateKey = s, o.kind = n, g.set(t, o);
 		}
 		return o;
-	}, F = (e, t, n) => {
+	}, R = (e, t, n) => {
 		if (e?.activeRecall?.chatId === t && e.activeRecall.userMessageIndex === n) {
 			let t = e.activeRecall.phase, n = t === "input" || t === "source", r = t === "selecting";
 			return Object.freeze({
@@ -37441,24 +37455,24 @@ function uw({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 			});
 		}
 		return e?.lastRecallBinding?.chatId === t && e.lastRecallBinding.userMessageIndex === n && e?.lastRecall?.userMessageIndex === n ? HC(e.lastRecall) : null;
-	}, I = (e, t, n, r) => {
+	}, z = (e, t, n, r) => {
 		let i = e.extra?.[tx];
 		if (!i || typeof i != "object") return Promise.resolve(null);
-		let o = T.get(i);
+		let o = O.get(i);
 		if (o && o.chatId === t && o.messageIndex === n && o.messageText === e.mes && o.stamp === r) return o.promise;
 		let s = Promise.resolve(a(e, {
 			chatId: t,
 			userMessageIndex: n
 		})).catch(() => null);
-		return T.set(i, {
+		return O.set(i, {
 			chatId: t,
 			messageIndex: n,
 			messageText: e.mes,
 			stamp: r,
 			promise: s
 		}), s;
-	}, L = (i, a, o, c, u, d, p) => {
-		let m = F(d, c, o), h = a.extra?.[tx];
+	}, B = (i, a, o, c, u, d, p) => {
+		let m = R(d, c, o), h = a.extra?.[tx];
 		if (!h || typeof h != "object") {
 			lw(i, m ?? HC(null), r, u, v);
 			return;
@@ -37477,7 +37491,7 @@ function uw({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 			historyGroups: Object.freeze([]),
 			kind: "user"
 		}), r, u, v);
-		I(a, c, o, y).then((u) => {
+		z(a, c, o, y).then((u) => {
 			if (!s || p !== l || a.mes !== _ || a.extra?.qqj_v3_recall_receipt !== h || QC(h) !== y || g.get(o) !== i) return;
 			let d;
 			try {
@@ -37488,11 +37502,12 @@ function uw({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 			let m = Array.isArray(d?.chat) ? d.chat : [], b = String(d?.context?.chatMetadata?.qianqianjie?.chatId ?? "").trim();
 			if (`${b || d?.chatId || "no-chat"}|${d?.chatId || ""}` !== f || b !== c || m[o] !== a) return;
 			i.receiptIdentity = h, i.receiptMessageText = _, i.receiptStamp = y, i.receiptChatId = c, i.receiptSettled = !0;
-			let x = F(t.getState(), c, o);
+			let x = R(t.getState(), c, o);
 			lw(i, x?.status === "running" ? x : u ? HC(u) : x ?? HC(null), r, sw(m, b, e.getState()), v);
 		});
-	}, R = () => {
+	}, V = () => {
 		if (!s || c || !r?.querySelector) return !0;
+		if (!C && !w) return M(), y.clear(), !0;
 		let a;
 		try {
 			a = n.snapshot();
@@ -37500,13 +37515,13 @@ function uw({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 			return !1;
 		}
 		let o = Array.isArray(a?.chat) ? a.chat : [], u = String(a?.context?.chatMetadata?.qianqianjie?.chatId ?? "").trim(), d = `${u || a?.chatId || "no-chat"}|${a?.chatId || ""}`;
-		f !== d && (l += 1, m !== null && (i?.clearTimeout?.(m), m = null), p?.disconnect?.(), p = null, y.clear(), k(), f = d);
+		f !== d && (l += 1, m !== null && (i?.clearTimeout?.(m), m = null), p?.disconnect?.(), p = null, y.clear(), M(), f = d);
 		let h = l, _ = r.querySelector("#chat");
 		if (!_?.querySelectorAll) return !1;
 		let b = /* @__PURE__ */ new Map();
 		for (let e of _.querySelectorAll(".mes")) {
 			let t = tw(e), n = BC(JC(t) ? o[t] : null);
-			if (!n) continue;
+			if (!T(n)) continue;
 			let r = b.get(t);
 			(!r || rw(e, n) >= r.priority) && b.set(t, {
 				element: e,
@@ -37514,30 +37529,30 @@ function uw({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 				priority: rw(e, n)
 			});
 		}
-		let x = e.getState(), S = t.getState(), C = sw(o, u, x), w = /* @__PURE__ */ new Map(), T = 0;
-		for (let e = 0; e < o.length; e += 1) BC(o[e]) === "assistant" && w.set(e, ++T);
-		let E = !0;
+		let x = e.getState(), S = t.getState(), E = sw(o, u, x), D = /* @__PURE__ */ new Map(), O = 0;
+		for (let e = 0; e < o.length; e += 1) BC(o[e]) === "assistant" && D.set(e, ++O);
+		let k = !0;
 		for (let [e, t] of b) {
-			let n = P(t.element, e, t.role, d);
+			let n = L(t.element, e, t.role, d);
 			if (!n) {
-				E = !1;
+				k = !1;
 				continue;
 			}
-			t.role === "assistant" ? lw(n, VC(x, e, w.get(e)), r, C, v) : L(n, o[e], e, u, C, S, h);
+			t.role === "assistant" ? lw(n, VC(x, e, D.get(e)), r, E, v) : B(n, o[e], e, u, E, S, h);
 		}
 		for (let [e, t] of [...g]) b.has(e) || (ZC(t.host), g.delete(e));
 		for (let e of r.querySelectorAll(GC)) {
 			let t = tw(e);
 			(!JC(t) || g.get(t)?.host !== e) && ZC(e);
 		}
-		o.reduce((e, t) => e + +!!BC(t), 0) > 0 && b.size === 0 && (E = !1);
-		for (let e of y) BC(o[e]) && !b.has(e) && (E = !1);
-		return E && y.clear(), E;
-	}, z = (e) => {
-		if (!s || c || e !== u || (p?.disconnect?.(), p = null, R()) || d >= WC.length) return;
+		o.reduce((e, t) => e + +!!T(BC(t)), 0) > 0 && b.size === 0 && (k = !1);
+		for (let e of y) T(BC(o[e])) && !b.has(e) && (k = !1);
+		return k && y.clear(), k;
+	}, H = (e) => {
+		if (!s || c || e !== u || (p?.disconnect?.(), p = null, V()) || d >= WC.length) return;
 		let t = i?.MutationObserver ?? globalThis.MutationObserver, n = r?.querySelector?.("#chat") ?? r?.body;
 		typeof t == "function" && n && (p = new t(() => {
-			p?.disconnect?.(), p = null, m !== null && (i?.clearTimeout?.(m), m = null), z(e);
+			p?.disconnect?.(), p = null, m !== null && (i?.clearTimeout?.(m), m = null), H(e);
 		}), p.observe(n, {
 			childList: !0,
 			subtree: !0,
@@ -37546,10 +37561,10 @@ function uw({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 		}));
 		let a = d;
 		d += 1, m = i?.setTimeout?.(() => {
-			m = null, z(e);
+			m = null, H(e);
 		}, WC[a]) ?? null;
 	};
-	function B(...e) {
+	function U(...e) {
 		if (!(!s || c)) {
 			for (let t of e) {
 				let e = YC(t);
@@ -37565,11 +37580,11 @@ function uw({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 				}
 			}
 			h || (h = !0, Promise.resolve().then(() => {
-				h = !1, !(!s || c) && (O(), d = 0, z(u));
+				h = !1, !(!s || c) && (j(), d = 0, H(u));
 			}));
 		}
 	}
-	let V = () => {
+	let ee = () => {
 		let e;
 		try {
 			e = n.snapshot();
@@ -37594,7 +37609,7 @@ function uw({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 			let n = r[e];
 			if (!n) continue;
 			let i = (...t) => {
-				(e === "CHAT_CHANGED" || e === "CHAT_RENAMED") && A(), B(...t);
+				(e === "CHAT_CHANGED" || e === "CHAT_RENAMED") && N(), U(...t);
 			};
 			t.on(n, i), b.push({
 				source: t,
@@ -37603,36 +37618,45 @@ function uw({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 			});
 		}
 	};
-	function H() {
-		return c || s ? { status: c ? "destroyed" : "ready" } : (s = !0, V(), x = e.subscribe?.(() => B()) ?? null, S = t.subscribe?.(() => B()) ?? null, B(), { status: "ready" });
+	function te() {
+		return c || s ? { status: c ? "destroyed" : "ready" } : (s = !0, ee(), x = e.subscribe?.(() => U()) ?? null, S = t.subscribe?.(() => U()) ?? null, U(), { status: "ready" });
 	}
-	function U() {
-		s = !1, A(), x?.(), x = null, S?.(), S = null;
+	function W() {
+		s = !1, N(), x?.(), x = null, S?.(), S = null;
 		for (let { source: e, event: t, handler: n } of b.splice(0)) typeof e.removeListener == "function" ? e.removeListener(t, n) : e.off?.(t, n);
 		return { status: "stopped" };
 	}
-	function W(e) {
-		return e === !0 ? H() : U();
+	function G(e) {
+		return e === !0 ? te() : W();
 	}
-	function ee(e) {
-		w = Number.isFinite(Number(e?.fixedScale)) ? Number(e.fixedScale) : 1, C = Object.freeze({
+	function ne({ recall: e = !0, memory: t = !0 } = {}) {
+		let n = e !== !1, r = t !== !1;
+		if (n !== C || r !== w) {
+			C = n, w = r;
+			for (let [e, t] of g) T(t.kind) || (ZC(t.host), g.delete(e));
+			U();
+		}
+	}
+	function K(e) {
+		D = Number.isFinite(Number(e?.fixedScale)) ? Number(e.fixedScale) : 1, E = Object.freeze({
 			knot: $C(e?.palette?.knot, "#a8322f"),
 			line: $C(e?.palette?.line, "color-mix(in srgb,currentColor 18%,transparent)")
 		});
-		for (let e of g.values()) D(e.host);
-		return C;
+		for (let e of g.values()) A(e.host);
+		return E;
 	}
-	function te() {
-		U(), c = !0, O(), k(), _.clear(), v.clear();
+	function q() {
+		W(), c = !0, j(), M(), _.clear(), v.clear();
 	}
 	return Object.freeze({
-		start: H,
-		stop: U,
-		setEnabled: W,
-		setAppearance: ee,
-		destroy: te,
-		schedule: B,
-		refresh: R,
+		start: te,
+		stop: W,
+		setEnabled: G,
+		setAppearance: K,
+		setVisibility: ne,
+		destroy: q,
+		schedule: U,
+		refresh: V,
 		getDebugState: () => Object.freeze({
 			active: s,
 			destroyed: c,

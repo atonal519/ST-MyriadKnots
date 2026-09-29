@@ -168,6 +168,8 @@ export function createInlineRenderer({
   let active = false, destroyed = false, session = 0, attempt = 0, retryIndex = 0, activeChatKey = null, observer = null, timer = null, queued = false;
   const cards = new Map(), expanded = new Map(), groupExpanded = new Map(), expectedIndices = new Set(), eventBindings = [];
   let unsubscribeMemory = null, unsubscribeRecall = null;
+  let showRecall = true, showMemory = true;
+  const visibleRole = role => role === 'user' ? showRecall : role === 'assistant' && showMemory;
   let palette = Object.freeze({ knot: '#a8322f', line: 'color-mix(in srgb,currentColor 18%,transparent)' });
   let fontScale = 1;
   const receiptCache = new WeakMap();
@@ -272,6 +274,7 @@ export function createInlineRenderer({
 
   const refresh = () => {
     if (!active || destroyed || !documentRef?.querySelector) return true;
+    if (!showRecall && !showMemory) { removeAll(); expectedIndices.clear(); return true; }
     let snapshot;
     try { snapshot = hostAdapter.snapshot(); } catch { return false; }
     const chat = Array.isArray(snapshot?.chat) ? snapshot.chat : [];
@@ -291,7 +294,7 @@ export function createInlineRenderer({
       const messageIndex = resolveInlineMessageIndex(element);
       const message = validIndex(messageIndex) ? chat[messageIndex] : null;
       const role = classifyInlineMessage(message);
-      if (!role) continue;
+      if (!visibleRole(role)) continue;
       const previous = chosen.get(messageIndex);
       if (!previous || elementPriority(element, role) >= previous.priority) chosen.set(messageIndex, { element, role, priority: elementPriority(element, role) });
     }
@@ -311,9 +314,9 @@ export function createInlineRenderer({
       const index = resolveInlineMessageIndex(host);
       if (!validIndex(index) || cards.get(index)?.host !== host) remove(host);
     }
-    const renderableCount = chat.reduce((count, message) => count + (classifyInlineMessage(message) ? 1 : 0), 0);
+    const renderableCount = chat.reduce((count, message) => count + (visibleRole(classifyInlineMessage(message)) ? 1 : 0), 0);
     if (renderableCount > 0 && chosen.size === 0) complete = false;
-    for (const messageIndex of expectedIndices) if (classifyInlineMessage(chat[messageIndex]) && !chosen.has(messageIndex)) complete = false;
+    for (const messageIndex of expectedIndices) if (visibleRole(classifyInlineMessage(chat[messageIndex])) && !chosen.has(messageIndex)) complete = false;
     if (complete) expectedIndices.clear();
     return complete;
   };
@@ -380,6 +383,13 @@ export function createInlineRenderer({
     return { status: 'stopped' };
   }
   function setEnabled(value) { return value === true ? start() : stop(); }
+  function setVisibility({ recall = true, memory = true } = {}) {
+    const nextRecall = recall !== false, nextMemory = memory !== false;
+    if (nextRecall === showRecall && nextMemory === showMemory) return;
+    showRecall = nextRecall; showMemory = nextMemory;
+    for (const [index, view] of cards) if (!visibleRole(view.kind)) { remove(view.host); cards.delete(index); }
+    schedule();
+  }
   function setAppearance(value) {
     fontScale = Number.isFinite(Number(value?.fixedScale)) ? Number(value.fixedScale) : 1;
     palette = Object.freeze({
@@ -391,5 +401,5 @@ export function createInlineRenderer({
   }
   function destroy() { stop(); destroyed = true; clearRetry(); removeAll(); expanded.clear(); groupExpanded.clear(); }
 
-  return Object.freeze({ start, stop, setEnabled, setAppearance, destroy, schedule, refresh, getDebugState: () => Object.freeze({ active, destroyed, session, cards: cards.size, observing: Boolean(observer), retrying: timer !== null, eventBindings: eventBindings.length }) });
+  return Object.freeze({ start, stop, setEnabled, setAppearance, setVisibility, destroy, schedule, refresh, getDebugState: () => Object.freeze({ active, destroyed, session, cards: cards.size, observing: Boolean(observer), retrying: timer !== null, eventBindings: eventBindings.length }) });
 }

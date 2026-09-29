@@ -118,6 +118,24 @@ test('破限、摘要、CSE 与人物资料提示词各自 change 即存，可�
   assert.equal(processing.value, ''); assert.equal(summary.value, ''); assert.equal(cse.value, ''); assert.equal(profile.value, '');
 });
 
+test('楼层卡片开关分别持久化，重新打开设置保留选择', async () => {
+  const extensionSettings = {}; let saved = 0, applied = 0;
+  const settings = createSettingsStore({ extensionSettings, save: () => { saved++; } });
+  assert.equal(settings.get().inlineRecallVisible, true); assert.equal(settings.get().inlineMemoryVisible, true);
+  const { node } = createAppearanceSettings({ settings, documentRef, applyAppearance: () => { applied++; } });
+  const toggle = title => node.find(n => n.attributes['aria-label'] === title);
+  toggle('显示楼层召回卡片').checked = false; await toggle('显示楼层召回卡片').fire('change');
+  assert.equal(settings.get().inlineRecallVisible, false); assert.equal(settings.get().inlineMemoryVisible, true);
+  toggle('显示楼层记忆卡片').checked = false; await toggle('显示楼层记忆卡片').fire('change');
+  assert.equal(saved, 2); assert.equal(applied, 2);
+  const reloaded = createSettingsStore({ extensionSettings });
+  const reopened = createAppearanceSettings({ settings: reloaded, documentRef }).node;
+  assert.equal(reopened.find(n => n.attributes['aria-label'] === '显示楼层召回卡片').checked, false);
+  assert.equal(reopened.find(n => n.attributes['aria-label'] === '显示楼层记忆卡片').checked, false);
+  reloaded.update({ inlineRecallVisible: true });
+  assert.equal(reloaded.get().inlineRecallVisible, true); assert.equal(reloaded.get().inlineMemoryVisible, false);
+});
+
 test('外观模块内联选择即存并即时应用；程序设置同步标签，改 URL 清空缓存 family', async () => {
   const patches = []; let applied = 0;
   const settings = { get: () => ({ appearanceTheme: 'auto', appearanceScale: 1, appearanceFontCssUrl: '' }), update: patch => { patches.push(patch); return patch; } };

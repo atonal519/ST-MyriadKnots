@@ -71,7 +71,8 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   const dayAppearance = { mode: 'auto', effectiveTheme: 'day', palette: { knot: '#b63745', line: '#dce2e5' } };
   const panel = { host: { hidden: true }, show() { shows += 1; this.host.hidden = false; return { status: 'ready' }; }, close() { closes += 1; this.host.hidden = true; }, setEnabled() {}, refresh: async () => ({ status: 'ready' }), getUiDiagnostic: () => '{"schemaVersion":1}', syncAppearance: () => dayAppearance };
   const stubView = () => ({ mount() {}, activate: async () => ({ status: 'ready' }), deactivate() {} });
-  const current = { fabShow: true };
+  const current = { fabShow: true, inlineRecallVisible: false, inlineMemoryVisible: true };
+  const inlineVisibility = [];
   let sessionReads = 0; const sessionStateProvider = () => { sessionReads += 1; return { status: 'preparing' }; };
   const prepareSession = async () => ({ status: 'ready' });
   const isSevenDaysLedgerInjectionEnabled = () => true;
@@ -82,7 +83,7 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
     sessionStateProvider, prepareSession, backendDiagnosticProvider, isSevenDaysLedgerInjectionEnabled, timeRuntime, v3FoundationRuntime: memoryRuntime, pluginVersion: '0.1.9-test',
     v3FoundationViewFactory: options => { foundationOptions = options; return stubView(); }, peopleProfilesViewFactory: options => { peopleOptions = options; return stubView(); }, qianshiTimelineViewFactory: options => { qianshiOptions = options; return stubView(); }, peopleWorkspaceRuntime: { getState: () => ({}) },
     documentRef: { activeElement: null, defaultView: {}, getElementById: () => null, createElement: () => ({}), documentElement: { append: node => appended.push(node) }, body: { append: node => bodyAppended.push(node) } },
-    inlineRenderer: { setAppearance(value) { inlineAppearances.push(value); } },
+    inlineRenderer: { setAppearance(value) { inlineAppearances.push(value); }, setVisibility(value) { inlineVisibility.push({ ...value }); } },
     storageManagement: { getState() {}, scan() {}, cleanup() {}, setAutoEnabled() {}, subscribe() {} },
     storageManagementViewFactory: options => { storageOptions = options; return stubView(); },
     panelFactory: options => { panelOptions = options; return panel; }, dialogFactory: () => ({ host: dialogHost, confirm() {}, choose: () => 'chosen', info() {}, setAppearance() {} }), wandInstaller() {},
@@ -105,8 +106,11 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   assert.equal(foundationOptions.pluginVersion, '0.1.9-test');
   assert.equal(foundationOptions.uiDiagnosticProvider(), '{"schemaVersion":1}', '只读provider应在panel创建后导出界面诊断且不触发TDZ');
   assert.deepEqual(fabAppearances, [dayAppearance]); assert.deepEqual(inlineAppearances, [dayAppearance]);
+  assert.deepEqual(inlineVisibility, [{ recall: false, memory: true }], '启动时应用保存的楼层卡片显隐设置');
+  current.inlineRecallVisible = true; current.inlineMemoryVisible = false;
   const nightAppearance = { mode: 'auto', effectiveTheme: 'night', palette: { knot: '#d9707a', line: '#2b363b' } };
   panelOptions.onAppearanceChange(nightAppearance);
+  assert.deepEqual(inlineVisibility.at(-1), { recall: true, memory: false }, '外观更新立即同步两个独立开关');
   assert.equal(fabAppearances.at(-1), nightAppearance); assert.equal(inlineAppearances.at(-1), nightAppearance, '自动主题回调应同步楼内卡颜色');
   await fabOptions.onClick({ currentTarget: fabHost }); assert.equal(shows, 1); assert.equal(panel.host.hidden, false);
   await fabOptions.onClick({ currentTarget: fabHost }); assert.equal(closes, 1); assert.equal(panel.host.hidden, true);

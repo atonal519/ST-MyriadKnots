@@ -36,6 +36,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   csePrompt: '',
   profilePrompt: '',
   appearanceTheme: 'auto',
+  inlineRecallVisible: true,
+  inlineMemoryVisible: true,
   fabShow: true,
   appearanceScale: 1,
   appearanceFontCssUrl: '',
@@ -142,6 +144,8 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (!Array.isArray(settings.sourceWorldInfoExcludedBooks)) settings.sourceWorldInfoExcludedBooks = [];
     if (!APPEARANCE_THEMES.has(settings.appearanceTheme)) settings.appearanceTheme = 'auto';
     settings.fabShow = settings.fabShow !== false;
+    settings.inlineRecallVisible = settings.inlineRecallVisible !== false;
+    settings.inlineMemoryVisible = settings.inlineMemoryVisible !== false;
     settings.appearanceScale = normalizeScale(settings.appearanceScale);
     settings.apiTimeoutSec = normalizeTimeout(settings.apiTimeoutSec);
     settings.autoMemoryBatchSize = normalizeAutoMemoryBatchSize(settings.autoMemoryBatchSize);
@@ -190,6 +194,8 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'profilePrompt')) settings.profilePrompt = text(patch.profilePrompt);
     if (own(patch, 'appearanceTheme')) settings.appearanceTheme = APPEARANCE_THEMES.has(patch.appearanceTheme) ? patch.appearanceTheme : 'auto';
     if (own(patch, 'fabShow')) settings.fabShow = patch.fabShow !== false;
+    if (own(patch, 'inlineRecallVisible')) settings.inlineRecallVisible = patch.inlineRecallVisible !== false;
+    if (own(patch, 'inlineMemoryVisible')) settings.inlineMemoryVisible = patch.inlineMemoryVisible !== false;
     if (own(patch, 'appearanceScale')) settings.appearanceScale = normalizeScale(patch.appearanceScale);
     if (own(patch, 'appearanceFontCssUrl')) settings.appearanceFontCssUrl = text(patch.appearanceFontCssUrl).trim();
     if (own(patch, 'appearanceFontFamily')) settings.appearanceFontFamily = text(patch.appearanceFontFamily).trim();

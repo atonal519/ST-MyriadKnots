@@ -55,7 +55,11 @@ export function bootstrap({
   const peopleProfilesView = peopleProfilesViewFactory({ runtime: peopleWorkspaceRuntime, sessionStateProvider, prepareSession, documentRef, dialog });
   const qianshiTimelineView = qianshiTimelineViewFactory({ runtime: v3FoundationRuntime, documentRef, dialog });
   const storageManagementView = storageManagementViewFactory({ manager: storageManagement, documentRef, confirmImpl: options => dialog.confirm(options) });
-  const syncAppearance = value => { fab?.setAppearance?.(value); inlineRenderer?.setAppearance?.(value); };
+  const syncAppearance = value => {
+    fab?.setAppearance?.(value); inlineRenderer?.setAppearance?.(value);
+    const current = settings?.get?.();
+    inlineRenderer?.setVisibility?.({ recall: current?.inlineRecallVisible, memory: current?.inlineMemoryVisible });
+  };
   let pluginEnabled = settings?.isEnabled?.() !== false;
   const enabled = () => pluginEnabled;
   const open = async event => {
