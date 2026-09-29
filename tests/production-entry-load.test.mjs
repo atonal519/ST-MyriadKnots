@@ -7,12 +7,23 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const nativeJson = value => Array.isArray(value) ? value.map(nativeJson) : value && typeof value === 'object'
+  ? Object.fromEntries(Object.keys(value).sort().map(key => [key, nativeJson(value[key])])) : value;
 
-async function isolateBundle(hostGlobalName, { enabled = false, withExistingPanel = false, mainApi = 'openai', invokeTypes = [], initializeWithoutSubtle = false } = {}) {
+async function isolateBundle(hostGlobalName, { enabled = false, withExistingPanel = false, mainApi = 'openai', invokeTypes = [], initializeWithoutSubtle = false, tauri = false } = {}) {
   const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
   const bundlePath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : resolve(root, manifest.js.split('?')[0]);
   const eventRegistrations = new Map();
   const backendRecords = new Map();
+  const ttRecords = new Map();
+  const ttKey = ({ namespace, table = 'main', key }) => `${namespace}/${table}/${key}`;
+  const ttStore = {
+    async tryGetJson(options) { const key = ttKey(options); return ttRecords.has(key) ? { found: true, value: structuredClone(ttRecords.get(key)) } : { found: false }; },
+    async deleteJson(options) { ttRecords.delete(ttKey(options)); },
+    async setJson(options) { ttRecords.set(ttKey(options), nativeJson(options.value)); },
+    async listKeys({ namespace, table = 'main' }) { const prefix = `${namespace}/${table}/`; return [...ttRecords.keys()].filter(key => key.startsWith(prefix)).map(key => key.slice(prefix.length)); },
+    async listTables({ namespace }) { return [...new Set([...ttRecords.keys()].filter(key => key.startsWith(`${namespace}/`)).map(key => key.split('/')[1]))]; },
+  };
   let hostShaCalls = 0;
   const hostShaInputs = [];
   const host = {
@@ -58,6 +69,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
     createElement: tag => ({ tag, dataset: {}, style: {}, children: [], append(...nodes) { this.children.push(...nodes); }, replaceChildren(...nodes) { this.children = [...nodes]; }, addEventListener() {}, querySelector: () => null }),
   } : undefined;
   const context = createContext({
+    ...(tauri ? { __TAURITAVERN__: { ready: Promise.resolve(), api: { extension: { store: ttStore } } } } : {}),
     console, crypto: initializeWithoutSubtle ? {} : globalThis.crypto, TextEncoder, TextDecoder, URL, URLSearchParams, AbortController, DOMException, structuredClone, setTimeout, clearTimeout,
     fetch: async (url, options = {}) => {
       backendCalls += 1;
@@ -101,6 +113,16 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
   await entry.link((specifier, referencing) => load(new URL(specifier, referencing.identifier).href));
   await entry.evaluate();
   await new Promise(resolvePromise => setImmediate(resolvePromise));
+  if (tauri && enabled) {
+    for (let attempt = 0; attempt < 100 && ttRecords.size === 0; attempt += 1) {
+      await new Promise(resolvePromise => setTimeout(resolvePromise, 5));
+    }
+    assert.ok(ttRecords.size > 0, 'TT bundle must write through the native store');
+    assert.ok([...ttRecords.values()].some(value => {
+      const slot = value.format === 'qqj-tt-json-v2' ? JSON.parse(value.serialized) : value;
+      return slot.current?.data?.kind === 'qqj-chat-identity-binding';
+    }));
+  }
   if (initializeWithoutSubtle) {
     for (let attempt = 0; attempt < 200 && hostShaCalls === 0; attempt += 1) {
       await new Promise(resolvePromise => setImmediate(resolvePromise));
@@ -114,6 +136,13 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
   const publicBridgePromptSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getPromptSnapshot?.()?.status;
   return { status: entry.status, backendCalls, backendRecords, hostShaCalls, hostShaInputs, eventRegistrations, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, abortCalls };
 }
+
+test('TT production bundle boots and persists chat identity through native store without BaiNiao HTTP', async () => {
+  const result = await isolateBundle('SillyTavern', { enabled: true, tauri: true });
+  assert.equal(result.status, 'evaluated');
+  assert.equal(result.backendCalls, 0);
+  assert.equal(result.interceptorType, 'function');
+});
 
 test('实际生产 bundle 缺少 crypto.subtle 时经宿主 SHA 完成身份认领与地基指纹扫描', async () => {
   const result = await isolateBundle('SillyTavern', { enabled: true, initializeWithoutSubtle: true });
@@ -133,6 +162,8 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
   assert.equal(manifest.version, '0.5.11');
+  assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
+  assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');

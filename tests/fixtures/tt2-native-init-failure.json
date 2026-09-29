@@ -1,0 +1,267 @@
+{
+  "sourceCommit": "04029cc0dbfd0d62fc7aacdf859812bb5ba16e92",
+  "description": "Synthetic tt.2 initialization failure after sorted native JSON round-trip; no user data.",
+  "context": {
+    "characterId": 0,
+    "groupId": null,
+    "chatId": "host-chat",
+    "characters": [
+      {
+        "avatar": "char.png"
+      }
+    ],
+    "userAvatar": "me.png",
+    "chatMetadata": {
+      "qianqianjie": {
+        "schemaVersion": 1,
+        "chatId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      }
+    },
+    "chat": [
+      {
+        "is_user": false,
+        "is_system": false,
+        "mes": "开场白",
+        "extra": {}
+      },
+      {
+        "is_user": true,
+        "is_system": false,
+        "mes": "你好",
+        "send_date": "2026-09-25T00:00:00Z"
+      },
+      {
+        "is_user": false,
+        "is_system": false,
+        "mes": "回应",
+        "extra": {}
+      }
+    ]
+  },
+  "slots": [
+    {
+      "collection": "chat-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "current": {
+        "createdAt": "2026-09-25T10:34:53.472Z",
+        "data": {
+          "chatId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "completedFloorIds": [
+            "f1870808-5b7e-5d8f-8cee-1de32e674c39"
+          ],
+          "createdAt": "2026-09-25T10:34:53.471Z",
+          "diagnostics": {},
+          "failedItems": [
+            {
+              "code": "V3_GRAPH_INDEX_ROUTE_INVALID",
+              "retryCount": 0,
+              "stage": "committing"
+            }
+          ],
+          "id": "dac629bc-24d4-5a5c-8821-1f1c84538f95",
+          "inputFloorIds": [
+            "f1870808-5b7e-5d8f-8cee-1de32e674c39"
+          ],
+          "inputSnapshotFingerprint": "sha256:8568b852363bd59e994bbc3e8841ff195c0250d880a0acd94ad091905a44d67c",
+          "mode": "initialize",
+          "narrativeGeneration": "0ba18861-0339-50be-82e2-c3ca98c972a0",
+          "parentCheckpointId": null,
+          "phase": "retryableError",
+          "preparedRecordRefs": [
+            "v3-floor-f1870808-5b7e-5d8f-8cee-1de32e674c39",
+            "v3-index-floorOrder-0-360fbe10-ca54-5205-82e3-97384baeefee",
+            "v3-checkpoint-b061f800-4f44-5e30-8e3a-6160f52342ef"
+          ],
+          "recordStatus": "staged",
+          "recordType": "run",
+          "schemaVersion": 3,
+          "sessionEpoch": 0,
+          "startedAt": "2026-09-25T10:34:53.469Z",
+          "supersedes": null,
+          "updatedAt": "2026-09-25T10:34:53.481Z"
+        },
+        "generationId": "d01d2869-30df-4924-ab43-05f8ac086aa5",
+        "revision": 5,
+        "schemaVersion": 1,
+        "updatedAt": "2026-09-25T10:34:53.481Z"
+      },
+      "format": "qqj-tt-record-v1",
+      "namespace": "qianqianjie",
+      "recordId": "v3-run-dac629bc-24d4-5a5c-8821-1f1c84538f95",
+      "trash": []
+    },
+    {
+      "collection": "chat-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "current": {
+        "createdAt": "2026-09-25T10:34:53.476Z",
+        "data": {
+          "chatId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "contentFingerprint": "sha256:e6e148c5e8a3fb7bef76734d4abbcd76302991ba208e514a5e07f70296ad053a",
+          "createdAt": "2026-09-25T10:34:53.471Z",
+          "entries": [
+            {
+              "key": "1",
+              "refs": [
+                {
+                  "itemId": "{\"messageIndex\":0,\"swipeId\":null,\"selectedSwipeIndex\":null}",
+                  "recordId": "f1870808-5b7e-5d8f-8cee-1de32e674c39",
+                  "recordType": "floor"
+                }
+              ]
+            }
+          ],
+          "entryCount": 1,
+          "id": "360fbe10-ca54-5205-82e3-97384baeefee",
+          "kind": "floorOrder",
+          "narrativeGeneration": "0ba18861-0339-50be-82e2-c3ca98c972a0",
+          "recordStatus": "staged",
+          "recordType": "index",
+          "schemaVersion": 3,
+          "shard": "0",
+          "sourceCheckpointId": "b061f800-4f44-5e30-8e3a-6160f52342ef",
+          "supersedes": null,
+          "updatedAt": "2026-09-25T10:34:53.471Z"
+        },
+        "generationId": "3a1ffc3a-4c35-47d0-97d2-df93e73cc357",
+        "revision": 1,
+        "schemaVersion": 1,
+        "updatedAt": "2026-09-25T10:34:53.476Z"
+      },
+      "format": "qqj-tt-record-v1",
+      "namespace": "qianqianjie",
+      "recordId": "v3-index-floorOrder-0-360fbe10-ca54-5205-82e3-97384baeefee",
+      "trash": []
+    },
+    {
+      "collection": "chat-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "current": {
+        "createdAt": "2026-09-25T10:34:53.476Z",
+        "data": {
+          "assistantSeq": 1,
+          "chatId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "content": {
+            "canonicalContent": "开场白",
+            "canonicalFingerprint": "sha256:4a83accbad2c11e13f3418cde3487e83ca2fc3a81cdd880781ab64e06ca8adf0",
+            "formatVersion": 1,
+            "rawFingerprint": "sha256:4a83accbad2c11e13f3418cde3487e83ca2fc3a81cdd880781ab64e06ca8adf0",
+            "sanitizerFingerprint": "sha256:140e394f7fb2b492113c97d48cd07401ff0f388930c742a804c1a3388dd277b1"
+          },
+          "createdAt": "2026-09-25T10:34:53.471Z",
+          "hostLocator": {
+            "messageIndex": 0,
+            "selectedSwipeIndex": null,
+            "swipeId": null
+          },
+          "id": "f1870808-5b7e-5d8f-8cee-1de32e674c39",
+          "narrativeGeneration": "0ba18861-0339-50be-82e2-c3ca98c972a0",
+          "predecessorFloorId": null,
+          "processing": {
+            "checkpointId": "b061f800-4f44-5e30-8e3a-6160f52342ef",
+            "cseReady": false,
+            "cseRequired": false,
+            "memoryReady": false,
+            "recallReady": false,
+            "runId": "dac629bc-24d4-5a5c-8821-1f1c84538f95",
+            "sourceSaved": true
+          },
+          "recordStatus": "staged",
+          "recordType": "floor",
+          "schemaVersion": 3,
+          "stability": {
+            "proof": {
+              "fingerprint": "sha256:6d0c0dca95324e15ae8e24a4a4ad9568c6e102ef8df344471315fcb597fcbe20",
+              "kind": "nextUser",
+              "messageIndex": 1
+            },
+            "stabilizedAt": "2026-09-25T10:34:53.471Z",
+            "stabilizedBy": "nextUser",
+            "status": "stable"
+          },
+          "supersedes": null,
+          "updatedAt": "2026-09-25T10:34:53.471Z"
+        },
+        "generationId": "e3a05eec-c448-4521-a390-736b94c260f4",
+        "revision": 1,
+        "schemaVersion": 1,
+        "updatedAt": "2026-09-25T10:34:53.476Z"
+      },
+      "format": "qqj-tt-record-v1",
+      "namespace": "qianqianjie",
+      "recordId": "v3-floor-f1870808-5b7e-5d8f-8cee-1de32e674c39",
+      "trash": []
+    },
+    {
+      "collection": "chat-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "current": {
+        "createdAt": "2026-09-25T10:34:53.477Z",
+        "data": {
+          "capabilities": {
+            "cseReady": false,
+            "foundationReady": true,
+            "memoryReady": false,
+            "recallReady": false
+          },
+          "chatId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "createdAt": "2026-09-25T10:34:53.471Z",
+          "floorRange": {
+            "floorIds": [
+              "f1870808-5b7e-5d8f-8cee-1de32e674c39"
+            ],
+            "fromAssistantSeq": 1,
+            "toAssistantSeq": 1
+          },
+          "id": "b061f800-4f44-5e30-8e3a-6160f52342ef",
+          "indexLayout": "floorOrder-v1",
+          "inputFingerprints": [
+            {
+              "canonicalFingerprint": "sha256:4a83accbad2c11e13f3418cde3487e83ca2fc3a81cdd880781ab64e06ca8adf0",
+              "floorId": "f1870808-5b7e-5d8f-8cee-1de32e674c39",
+              "stabilityFingerprint": "sha256:6d0c0dca95324e15ae8e24a4a4ad9568c6e102ef8df344471315fcb597fcbe20"
+            }
+          ],
+          "narrativeGeneration": "0ba18861-0339-50be-82e2-c3ca98c972a0",
+          "parentCheckpointId": null,
+          "producedRefs": {
+            "claims": [],
+            "currentStates": [],
+            "entities": [],
+            "episodes": [],
+            "events": [],
+            "floorMemories": [],
+            "floors": [
+              "f1870808-5b7e-5d8f-8cee-1de32e674c39"
+            ],
+            "indexes": [
+              "v3-index-floorOrder-0-360fbe10-ca54-5205-82e3-97384baeefee"
+            ],
+            "knowledge": [],
+            "stateDeltas": [],
+            "stateProjections": [],
+            "threads": []
+          },
+          "recordStatus": "active",
+          "recordType": "checkpoint",
+          "runId": "dac629bc-24d4-5a5c-8821-1f1c84538f95",
+          "schemaVersion": 3,
+          "sealedAt": "2026-09-25T10:34:53.471Z",
+          "sourceSnapshotFingerprint": "sha256:8568b852363bd59e994bbc3e8841ff195c0250d880a0acd94ad091905a44d67c",
+          "supersedes": null,
+          "updatedAt": "2026-09-25T10:34:53.471Z",
+          "validation": {
+            "orderedReplayValid": true,
+            "referencesValid": true,
+            "schemaValid": true,
+            "stateFingerprint": "sha256:ffdf4281bd5a0c2b320f3bc92ee6d80a0426264f5431903a41190dcdb7d69a78"
+          }
+        },
+        "generationId": "78560570-3837-49a6-a7b7-6e03fb7b7eca",
+        "revision": 1,
+        "schemaVersion": 1,
+        "updatedAt": "2026-09-25T10:34:53.477Z"
+      },
+      "format": "qqj-tt-record-v1",
+      "namespace": "qianqianjie",
+      "recordId": "v3-checkpoint-b061f800-4f44-5e30-8e3a-6160f52342ef",
+      "trash": []
+    }
+  ]
+}
