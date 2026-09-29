@@ -99,11 +99,11 @@ const skipReasonCopy = value => ({
   historicalRebuildRequired: '仍有历史摘要缺口', memoryPreparationTimeout: '记忆准备超时，本轮正文已继续', memoryPreparationFailed: '记忆准备失败，本轮正文已继续',
 })[value] ?? text(value);
 const workBusy = state => Boolean(state.memoryWorkBusy || state.activeAutoMemory || state.activeExtraction || state.activeCse);
-const memoryBusy = state => Boolean(state.activeExtraction || ['revising', 'extracting', 'reconciling', 'committing'].includes(state.activeMemoryWork?.phase) || state.activeAutoMemory?.phase === 'extracting');
+const memoryBusy = state => Boolean((state.activeExtraction && state.activeExtraction.phase !== 'analyzingCse') || ['revising', 'extracting', 'reconciling', 'committing'].includes(state.activeMemoryWork?.phase) || state.activeAutoMemory?.phase === 'extracting');
 const cseBusy = state => Boolean(state.activeCse || state.activeMemoryWork?.phase === 'analyzingCse' || state.activeAutoMemory?.phase === 'analyzingCse');
-const workPhaseCopy = state => ({ reconciling: '正在同步楼层', extracting: '正在提取摘要', analyzingCse: '正在分析人物状态', revisingCse: '正在保存人物状态', committing: '正在保存结果', resetting: '正在重建后端数据', revising: '正在保存修订' })[state.activeMemoryWork?.phase ?? state.activeAutoMemory?.phase ?? state.activeExtraction?.phase ?? state.activeCse?.phase] ?? '正在处理';
+const workPhaseCopy = state => ({ reconciling: '正在同步楼层', syncing: '正在同步记忆状态', extracting: '正在提取摘要', analyzingCse: '正在分析人物状态', revisingCse: '正在保存人物状态', committing: '正在保存结果', resetting: '正在重建后端数据', revising: '正在保存修订' })[state.activeMemoryWork?.phase ?? state.activeAutoMemory?.phase ?? state.activeExtraction?.phase ?? state.activeCse?.phase] ?? '正在处理';
 const DIAGNOSTIC_STATUS = new Set(['idle', 'preparing', 'ready', 'error', 'disabled', 'suspended', 'running', 'uninitialized', 'stale', 'needsReview', 'conflict', 'empty', 'skipped', 'failed', 'partial', 'pending', 'noChange', 'notApplicable', 'unavailable', 'syncing', 'caughtUp', 'waitingRealtime', 'pendingRebuild', 'rebuilding', 'paused', 'completed', 'deleting', 'historicalDebt', 'realtimeTail', 'notReady', 'unknown']);
-const DIAGNOSTIC_PHASE = new Set(['capturing', 'completed', 'stale', 'retryableError', 'anchor', 'load', 'foundation', 'extracting', 'validating', 'committing', 'resetting', 'reconciling', 'analyzingCse', 'revisingCse', 'revising', 'baseline', 'analyzing', 'correcting', 'pending', 'input', 'source', 'selecting', 'receipt', 'starting', 'deletingRecords', 'deletingBinding', 'clearingHost', 'unknown']);
+const DIAGNOSTIC_PHASE = new Set(['capturing', 'completed', 'stale', 'retryableError', 'anchor', 'load', 'foundation', 'extracting', 'validating', 'committing', 'resetting', 'reconciling', 'syncing', 'analyzingCse', 'revisingCse', 'revising', 'baseline', 'analyzing', 'correcting', 'pending', 'input', 'source', 'selecting', 'receipt', 'starting', 'deletingRecords', 'deletingBinding', 'clearingHost', 'unknown']);
 const DIAGNOSTIC_KIND = new Set(['manual', 'auto', 'unknown']);
 const DIAGNOSTIC_REVIEW_REASON = new Set(['missingRoot', 'indexNeedsReseal', 'stableCountMismatch', 'candidateCountMismatch', 'locatorMismatch', 'markerMismatch', 'fingerprintMismatch']);
 const DIAGNOSTIC_MARKER_STATUS = new Set(['none', 'valid', 'foreign', 'invalid']);
@@ -309,16 +309,20 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const time = timeRuntime?.getState?.();
     const sessionError = sessionErrorCopy(); if (sessionError) return `记忆读取失败 · ${sessionError}`;
     if (state.memorySnapshotStatus === 'syncing' && !(state.floors ?? []).length) return '正在读取当前聊天记忆';
-    if (state.activeExtraction && state.activeCse) return `摘要与人物状态并行 · 摘要 ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼 · 人物状态待分析 ${state.csePendingCount ?? 0} 楼`;
+    if (state.activeExtraction && state.activeExtraction.phase !== 'analyzingCse' && state.activeCse) return `摘要与人物状态并行 · 摘要 ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼 · 人物状态待分析 ${state.csePendingCount ?? 0} 楼`;
+    if (state.activeExtraction?.phase === 'analyzingCse') return '摘要已保存，正在分析人物状态';
     if (!memoryBusy(state) && !cseBusy(state) && !workBusy(state) && !errorCopy(state)) {
       if (time?.active) return time.phase === 'saving' ? '正在保存时间事项' : time.phase === 'projecting' ? '正在推算时间状态' : '正在整理时间事项';
       if (page === 'management' && ['failed', 'partial'].includes(time?.status)) return time.last?.message ?? '时间事项处理失败';
     }
     if (page === 'memories') {
+      if (state.activeMemoryWork?.kind === 'auto' && state.activeMemoryWork.phase === 'reconciling' && !state.activeExtraction) return `正在同步楼层 · 已记忆 ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼`;
       if (memoryBusy(state)) return `正在处理摘要 · ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼${state.activeAutoMemory?.cseBlocked ? ' · 人物状态待重试' : ''}`;
       const error = errorCopy(state); if (error) return state.lastExtractorError?.phase === 'anchor'
         ? `消息标识保存待重试 · ${error}`
         : !state.lastExtractorError || state.lastExtractorError.floorId === null ? `记忆读取失败 · ${error}` : `摘要提取失败 · ${error}`;
+      if (cseBusy(state)) return `摘要已保存 · ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼 · 正在分析人物状态`;
+      if (state.activeMemoryWork?.phase === 'syncing') return `摘要已保存 · ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼 · 正在同步记忆状态`;
       const uninitialized = uninitializedCopy(state); if (uninitialized) return uninitialized;
       const waiting = state.unregisteredCandidates?.length ?? 0;
       return `已记忆 ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼 · 待摘要 ${state.unprocessedCount ?? 0} 楼${waiting ? ` · 另有 ${waiting} 楼尚未摘要，正在等待确认` : ''}${state.memorySyncStatus === 'syncing' ? ' · 后台同步中' : ''}`;
@@ -348,10 +352,12 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     healthNode.textContent = healthCopy(state);
     healthNode.className = healthClass(state);
   };
+  const currentFeedback = state => feedback === statusCopy('running')
+    ? (errorCopy(state) || (workBusy(state) || state.status === 'running' ? workPhaseCopy(state) : '记忆状态已刷新。')) : feedback;
   const pageStatus = state => {
     const block = element('div', 'qqj-page-status');
     healthNode = element('p', healthClass(state), healthCopy(state));
-    const copy = feedback || errorCopy(state) || '记忆状态已显示。';
+    const copy = currentFeedback(state) || errorCopy(state) || '记忆状态已显示。';
     block.append(healthNode, element('p', `v3-foundation-feedback${copy.includes('失败') || (!feedback && errorCopy(state)) ? ' error' : ''}`, copy));
     return block;
   };
@@ -1459,7 +1465,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   }
   function updateManagementFeedback(state) {
     if (!managementFeedbackNode) return;
-    const copy = (feedback || errorCopy(state) || '状态已显示。').replace('；历史召回回执已独立处理。', '');
+    const copy = (currentFeedback(state) || errorCopy(state) || '状态已显示。').replace('；历史召回回执已独立处理。', '');
     const isError = errorCopy(state) || copy.startsWith('记忆读取失败') || copy.startsWith('刷新状态未完成');
     managementFeedbackNode.className = `v3-foundation-feedback qqj-management-feedback${isError ? ' error' : ''}`;
     managementFeedbackNode.textContent = copy;

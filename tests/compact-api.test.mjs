@@ -13,6 +13,53 @@ const sseResponse = chunks => {
   return { ok: true, status: 200, body: { getReader: () => ({ read: async () => index < chunks.length ? { done: false, value: encoder.encode(chunks[index++]) } : { done: true } }) } };
 };
 
+async function settlesSoon(promise) {
+  let timer;
+  try { return await Promise.race([promise.then(() => 'success', error => typeof error.code === 'string' ? error.code : error.name),
+    new Promise(resolve => { timer = setTimeout(() => resolve('still-pending'), 150); })]); }
+  finally { clearTimeout(timer); }
+}
+
+test('SSE [DONE] settles and releases busy state even when the proxy keeps the stream open', async () => {
+  const busy = []; let reads = 0, cancelled = 0;
+  const client = createCompactApiClient({ onBusyChange: value => busy.push(value), timeoutMs: () => 15,
+    fetchImpl: async () => ({ ok: true, status: 200, body: { getReader: () => ({
+      read: async () => reads++ === 0 ? { done: false, value: new TextEncoder().encode('data: {"choices":[{"delta":{"content":"{\\"ok\\":true}"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n') } : new Promise(() => {}),
+      cancel: async () => { cancelled++; }, releaseLock() {},
+    }) } }),
+  });
+  assert.equal(await settlesSoon(client.generateTask({ config: config({ stream: true }), taskMessages: [] })), 'success');
+  assert.deepEqual(busy, [true, false]); assert.equal(reads, 1); assert.equal(cancelled, 1);
+});
+
+test('timeout releases API tasks even when host fetch, JSON body or SSE reader ignores abort', async () => {
+  for (const stage of ['fetch', 'json', 'sse']) {
+    const busy = []; let calls = 0;
+    const client = createCompactApiClient({ onBusyChange: value => busy.push(value), timeoutMs: () => 10,
+      fetchImpl: async () => { calls++;
+        if (stage === 'fetch') return new Promise(() => {});
+        if (stage === 'json') return { ok: true, status: 200, json: () => new Promise(() => {}) };
+        return { ok: true, status: 200, body: { getReader: () => ({ read: () => new Promise(() => {}), cancel: () => new Promise(() => {}), releaseLock() {} }) } };
+      },
+    });
+    assert.equal(await settlesSoon(client.generateTask({ config: config({ stream: stage === 'sse' }), taskMessages: [] })), 'QQJ_TIMEOUT', stage);
+    assert.deepEqual(busy, [true, false], stage); assert.equal(calls, 1, 'timeout must not automatically resend');
+  }
+});
+
+test('manual cancellation settles an uncooperative response body and ignores its late result', async () => {
+  let releaseBody, startBody; const started = new Promise(resolve => { startBody = resolve; });
+  const busy = [], controller = new AbortController();
+  const client = createCompactApiClient({ onBusyChange: value => busy.push(value), timeoutMs: () => 500,
+    fetchImpl: async () => ({ ok: true, status: 200, json: () => { startBody(); return new Promise(resolve => { releaseBody = resolve; }); } }),
+  });
+  const pending = client.generateTask({ config: config(), taskMessages: [], signal: controller.signal });
+  await started; controller.abort();
+  assert.equal(await settlesSoon(pending), 'AbortError'); assert.deepEqual(busy, [true, false]);
+  releaseBody({ choices: [{ message: { content: '{"late":true}' } }] });
+  await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(busy, [true, false]);
+});
+
 test('破限提示词仅用 trim 判断空白，自定义值逐字替换默认并保持拼接边界', () => {
   const custom = '  用户自定义破限\n';
   assert.equal(resolveProcessingPrompt(''), BASE_PROCESSING_PROMPT);

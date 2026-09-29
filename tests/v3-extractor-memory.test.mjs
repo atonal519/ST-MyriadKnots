@@ -218,6 +218,38 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
     setReadReachableGate(value) { readReachableGate = value; }, setEnabled(value) { enabled = value; }, setAutomation(value) { automation = value; } };
 }
 
+test('manual summary is ready while its subsequent CSE waits; success or timeout releases the work lock', async t => {
+  for (const outcome of ['success', 'timeout']) await t.test(outcome, async () => {
+    let finishCse, cseReleased = false;
+    const h = harness({ utility: options => {
+      if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { summary: '已保存的摘要' } };
+      if (cseReleased) throw Object.assign(new Error('API 请求超时'), { code: 'QQJ_TIMEOUT' });
+      return new Promise((resolve, reject) => { finishCse = () => {
+        cseReleased = true;
+        if (outcome === 'success') resolve({ jsonData: { noMaterialChange: true } });
+        else reject(Object.assign(new Error('API 请求超时'), { code: 'QQJ_TIMEOUT' }));
+      }; });
+    } });
+    await h.runtime.start();
+    const floorId = h.runtime.getState().floors[0].floorId;
+    const pending = h.runtime.extractFloor(floorId);
+    await waitFor(() => typeof finishCse === 'function');
+    const during = h.runtime.getState();
+    assert.equal(during.floors.find(floor => floor.floorId === floorId).status, 'ready');
+    assert.equal(during.floors.find(floor => floor.floorId === floorId).summary, '已保存的摘要');
+    assert.equal(during.activeExtraction.phase, 'analyzingCse');
+    assert.equal(during.activeMemoryWork.phase, 'analyzingCse');
+    assert.equal(during.memoryWorkBusy, true, 'CSE is still active; do not admit conflicting work');
+    finishCse(); await pending;
+    const settled = h.runtime.getState();
+    assert.equal(settled.memoryWorkBusy, false);
+    assert.equal(settled.activeExtraction, null);
+    assert.equal(settled.activeCse, null);
+    assert.equal(settled.floors.find(floor => floor.floorId === floorId).status, 'ready');
+    if (outcome === 'timeout') assert.equal(settled.lastCseError.code, 'QQJ_TIMEOUT');
+  });
+});
+
 async function waitFor(predicate, message = '等待异步状态超时') {
   for (let attempt = 0; attempt < 5000; attempt += 1) {
     if (predicate()) return;
@@ -5419,6 +5451,12 @@ test('切聊天及正文结构事件会撤销提前武装，迟到 token 不得�
   for (const mutation of ['CHAT_CHANGED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']) {
     const h = harness({ initialChat: [assistant('已建楼'), assistant('上一楼正文')], automation: { enabled: true, batchSize: 1 } });
     await primeEarlyGenerationTail(h);
+    let earlyStabilizationCalls = 0;
+    const stabilizeThrough = h.foundationRuntime.stabilizeThrough;
+    h.foundationRuntime.stabilizeThrough = (...args) => {
+      earlyStabilizationCalls += 1;
+      return stabilizeThrough(...args);
+    };
     h.context.chat.push(user('继续'));
     h.emit('GENERATION_STARTED', 'normal');
     h.context.chat.push(assistant(''));
@@ -5428,6 +5466,7 @@ test('切聊天及正文结构事件会撤销提前武装，迟到 token 不得�
     }
     h.emit(mutation, 0);
     h.emit('STREAM_TOKEN_RECEIVED', '迟到正文');
+    assert.equal(earlyStabilizationCalls, 0, `${mutation} 后不得把迟到 token 当作新的稳定楼证明`);
     await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(h.calls.length, 0, `${mutation} 后不得触发旧楼任务`);
   }
@@ -6624,7 +6663,10 @@ test('历史流水真实请求重叠，摘要先/CSE先提交都保全图且各�
     assert.ok(order.indexOf('cse:流水二') < order.indexOf('summary:流水三'), '首楼基线初始化后，下一楼摘要与前一楼 CSE 流水并行');
     if (winner === 'summary') {
       releaseSummary();
-      await waitFor(() => h.runtime.getState().rememberedCount === 5);
+      await waitFor(() => h.runtime.getState().rememberedCount === 5 && !h.runtime.getState().activeExtraction);
+      assert.equal(h.runtime.getState().activeMemoryWork.phase, 'analyzingCse');
+      assert.equal(h.runtime.getState().activeAutoMemory.phase, 'analyzingCse');
+      assert.equal(h.runtime.getState().memoryWorkBusy, true, '摘要已完成但 CSE 仍在途，继续保留工作锁');
       assert.equal(batches.length, 0, '摘要结束时CSE仍在途，不提前通知时间任务');
       releaseCse();
     } else {

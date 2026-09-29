@@ -238,17 +238,31 @@ export function parseJsonOutput(value, { finishReason } = {}) {
   return parsed;
 }
 
-async function readSseResponse(response) {
+function abortable(task, signal) {
+  if (!signal) return task();
+  return new Promise((resolve, reject) => {
+    const onAbort = () => { signal.removeEventListener('abort', onAbort); reject(abortError()); };
+    if (signal.aborted) { onAbort(); return; }
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve().then(() => {
+      if (signal.aborted) throw abortError();
+      return task();
+    }).then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
+async function readSseResponse(response, signal) {
   const reader = response.body?.getReader?.();
   if (!reader) {
     let data; try { data = await response.json(); } catch { throw safeError('http-response-json'); }
     return completionDetails(data);
   }
-  const decoder = new TextDecoder(); let buffer = '', output = '', event = [], finishReason = '';
+  const decoder = new TextDecoder(); let buffer = '', output = '', event = [], finishReason = '', complete = false, eof = false;
   const flush = () => {
     if (!event.length) return;
     const payload = event.join('\n').trim(); event = [];
-    if (!payload || payload === '[DONE]') return;
+    if (!payload) return;
+    if (payload === '[DONE]') { complete = true; return; }
     let value; try { value = JSON.parse(payload); } catch { throw safeError('stream-event-json'); }
     if (value?.error) throw safeError('unsupported');
     const currentFinishReason = normalizeFinishReason(value?.choices?.[0]?.finish_reason);
@@ -257,16 +271,24 @@ async function readSseResponse(response) {
     if (typeof delta === 'string') output += delta;
   };
   const line = value => {
+    if (complete) return;
     const text = String(value).replace(/\r$/, '');
     if (!text) return flush();
     if (text.startsWith('data:')) event.push(text.slice(5).replace(/^\s/, ''));
   };
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) { buffer += decoder.decode(); if (buffer) line(buffer); flush(); break; }
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n'); buffer = lines.pop() || '';
-    lines.forEach(line);
+  try {
+    while (!complete) {
+      const { done, value } = await abortable(() => reader.read(), signal);
+      if (done) { eof = true; buffer += decoder.decode(); if (buffer) line(buffer); flush(); break; }
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n'); buffer = lines.pop() || '';
+      lines.forEach(line);
+    }
+  } finally {
+    // Some proxies send [DONE] but leave the socket open; some native readers
+    // ignore AbortSignal. Never await cancellation of an uncooperative reader.
+    if (!eof) try { Promise.resolve(reader.cancel?.()).catch(() => {}); } catch { /* best effort */ }
+    try { reader.releaseLock?.(); } catch { /* a native read may still be pending */ }
   }
   if (truncatedFinishReason(finishReason)) throw safeError('output-truncated', 0, { finishReason });
   if (!output.trim()) { const error = safeError('empty'); if (finishReason) error.finishReason = finishReason; throw error; }
@@ -323,15 +345,16 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
         }
         const linked = linkedController(signal, config.timeoutSec, timeoutMs);
         try {
-          const response = await resolveFetch()(path, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: linked.controller.signal });
+          const response = await abortable(() => resolveFetch()(path, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: linked.controller.signal }), linked.controller.signal);
           if (!response.ok) {
             if ((response.status === 429 || response.status >= 500) && attempt < retries && retryAvailable()) {
               attempt += 1; linked.cleanup(); await retryWait(Math.min(400 * 2 ** attempt, 2000), signal); continue;
             }
-            throw mapHttpError(response.status, await readProviderError(response, [config.key, config.url, normalizeApiUrl(config.url)]));
+            throw mapHttpError(response.status, await abortable(() => readProviderError(response, [config.key, config.url, normalizeApiUrl(config.url)]), linked.controller.signal));
           }
-          if (stream) return await readSseResponse(response);
-          try { return await response.json(); } catch { throw safeError('http-response-json'); }
+          if (stream) return await abortable(() => readSseResponse(response, linked.controller.signal), linked.controller.signal);
+          try { return await abortable(() => response.json(), linked.controller.signal); }
+          catch (error) { if (linked.controller.signal.aborted) throw abortError(); throw safeError('http-response-json'); }
         } catch (error) {
           if (linked.timedOut()) throw safeError('timeout');
           if (signal?.aborted || error?.name === 'AbortError') throw abortError();
