@@ -163,7 +163,6 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   }),
   notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
   isMainGenerationActive: isGenerating,
-  onAutomaticSummaryCommitted: receipt => peopleWorkspaceRuntime?.requestAutomaticMaintenance(receipt),
   extractorPromptGuidance: summaryPrompt,
   csePromptGuidance: csePrompt,
   processingPrompt,

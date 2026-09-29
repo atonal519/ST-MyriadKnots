@@ -16,28 +16,27 @@ import { PREQUEL_METADATA_KEY, selectPrequel } from './recall-prequel.js';
 export const PEOPLE_WORKSPACE_RECORD_ID = 'v3-people-workspace';
 export const PEOPLE_WORKSPACE_SCHEMA_VERSION = 3;
 export const PEOPLE_PROFILE_INPUT_CHAR_BUDGET = 24000;
-export const PEOPLE_PROFILE_FULL_REWRITE_CHAR_BUDGET = 60000;
 
 export const DEFAULT_PROFILE_GUIDANCE = `你是“千千结”的人物基础资料整理员。只整理输入材料中有明确依据、适合长期建档的目标人物资料，不推测或续写剧情。
 
-人物卡和世界书属于明确设定；逐楼 history 中，普通单楼的 storyContent 是与该楼有效 summary 同次保存、按用户包裹符设置清洗后的正文；聚合多楼 history 可省略 storyContent，此时 summary、facts 及其中的 exactAnchors 原句是该范围提供的材料，不得猜测未提供的正文。facts 是按目标人物归属筛出的结构事实；CSE Core 是已有的人物分析，不自动等同作者明确设定。自动增量整理可参考旧 AI 档案；主动重新整理只参考当前材料及本轮已生成资料。长材料可能通过 sourceFragments 分批提供，本批没出现的来源或字段不代表它们不存在。按目标人物和来源归属整理信息，不要把正文里其他人物的描写、不同人物、不同来源或彼此冲突的说法擅自拼成目标人物事实。遇到来源差异时不要输出核验说明或替作者裁决，只整理能够明确归属的稳定资料。
+人物卡和世界书属于明确设定；逐楼 history 中，普通单楼的 storyContent 是与该楼有效 summary 同次保存、按用户包裹符设置清洗后的正文；聚合多楼 history 可省略 storyContent，此时 summary、facts 及其中的 exactAnchors 原句是该范围提供的材料，不得猜测未提供的正文。facts 是按目标人物归属筛出的结构事实；CSE Core 是已有的人物分析，不自动等同作者明确设定。自动粗扫以 recentFloors 中按楼标记的清洗原文为材料，结合旧 AI 档案和人工资料判断是否有明确新增；主动重新整理只参考当前材料及本轮已生成资料。长材料可能通过 sourceFragments 分批提供，本批没出现的来源或字段不代表它们不存在。按目标人物和来源归属整理信息，不要把正文里其他人物的描写、不同人物、不同来源或彼此冲突的说法擅自拼成目标人物事实。遇到来源差异时不要输出核验说明或替作者裁决，只整理能够明确归属的稳定资料。
 
 priorContext 若存在，是用户导入的过去经历资料。只把其中明确属于目标人物、适合长期建档的信息作为参考；过去的短期状态不等于现在仍持续，existingProfile、当前 history 与 CSE 中明确出现的新变化优先。
 
-按基础信息、外貌、身份、性格与 NSFW 五类整理稳定资料。性别、年龄、生日没有明确依据时不要输出对应字段，外观年龄不能当作实际年龄。短期情绪、当前关系变化和一时应对不应写成固定人格。appearance 只填写无法归入细分外貌字段的必要补充，不重复五官、发型、体态、着装等已有内容；notes 只填写无法归入其他字段、仍值得长期保存的人物信息，不写来源说明、整理过程、核验过程、解释或模型想法。主动重新整理时，把原始人物卡、允许的世界书、当前有效历史摘要与结构事实及 CSE 作为资料来源，不使用上次 AI 档案；分批时只延续本轮已生成的 existingProfile。自动增量整理有明确新值时返回纠正后的新值，没有新信息时省略字段并保留 existingProfile 旧值。只有材料明确要求删除旧资料且没有替代值时，才返回空字符串或空 aliases。人工字段由保存层保护，不需要逐字抄回。`;
+按基础信息、外貌、身份、性格与 NSFW 五类整理稳定资料。性别、年龄、生日没有明确依据时不要输出对应字段，外观年龄不能当作实际年龄。短期情绪、当前关系变化和一时应对不应写成固定人格。appearance 只填写无法归入细分外貌字段的必要补充，不重复五官、发型、体态、着装等已有内容；notes 只填写无法归入其他字段、仍值得长期保存的人物信息，不写来源说明、整理过程、核验过程、解释或模型想法。主动重新整理时，把原始人物卡、允许的世界书、当前有效历史摘要与结构事实及 CSE 作为资料来源，不使用上次 AI 档案；分批时只延续本轮已生成的 existingProfile。自动粗扫根据 recentFloors 中的原文补充稳定基础资料，旧 AI 档案与人工字段仅供对照；没有新增资料时省略字段。自动粗扫中的空字符串或空 aliases 一律表示无更新，不得清除现有档案；主动重新整理仅在材料明确要求删除旧资料且没有替代值时，才可返回空值。人工字段按当前存档原值及标记保留，不改写或迁移。`;
 
 const PROFILE_FIELD_GUIDE = PEOPLE_PROFILE_FIELDS
   .map(field => `${field}（${PEOPLE_PROFILE_LABELS[field]}）：${PEOPLE_PROFILE_DEFINITIONS[field]}`)
   .join('\n');
 
 export const PROFILE_FIXED_CONTRACT = `【固定人物资料合同】
-1. 只处理输入 people 中的目标人物。characterCard、allowedWorldInfo、history、cseCoreTraits、priorContext、existingProfile 与 manualProfile 是分开的来源；普通单楼的 history.storyContent 是与对应楼有效 summary 同次保存的清洗正文。聚合多楼 history 可省略 storyContent，此时只根据 summary、目标相关 facts 及其中的 exactAnchors 原句整理，不得猜测未提供的正文。必须按目标相关事实判断归属，不得把正文中其他人物的描写写给目标人物，也不得把他人的私密认知当成目标人物资料。priorContext 标记为导入前情，只能作为过去经历背景，不是当前楼或当前状态。
+1. 只处理输入 people 中的目标人物。recentFloors、characterCard、allowedWorldInfo、history、cseCoreTraits、priorContext、existingProfile 与 manualProfile 是分开的来源；recentFloors 是最近稳定AI楼按楼标记的清洗原文，楼内注明片段的内容并非完整楼。普通单楼的 history.storyContent 是与对应楼有效 summary 同次保存的清洗正文。聚合多楼 history 可省略 storyContent，此时只根据 summary、目标相关 facts 及其中的 exactAnchors 原句整理，不得猜测未提供的正文。必须按目标相关事实判断归属，不得把正文中其他人物的描写写给目标人物，也不得把他人的私密认知当成目标人物资料。priorContext 标记为导入前情，只能作为过去经历背景，不是当前楼或当前状态。
 2. history.auxiliaryStateSnapshot 若存在，是对应楼当前分支当时已保存的只读变量快照，只作人物整理辅助。它可能同时包含多个人物、不完整或过时信息，不能整份归给目标人物，也不能当作人工字段或权威证据；与正文或用户明确事实冲突时以正文和用户明确事实为准。
 3. 只返回一个 JSON 对象，根对象必须包含 profiles 数组；profiles 每个输入人物恰好一项，且每项内部的 personKey 必须逐字使用输入中的键，不得新增、遗漏或合并人物。合法形状示例：{"profiles":[{"personKey":"person-1","name":"示例姓名"}]}。
-4. 每项除 personKey 外只返回需要新增或纠正的字段。有明确新值时返回正确的新值；没有新信息时省略字段，表示保留输入 existingProfile 的值。主动重新整理首批 existingProfile 为空，后批仅包含本轮累计资料，上次 AI 档案中本轮未生成的字段不保留。只有材料明确要求删除旧资料且没有替代值时才返回空字符串；aliases 可返回字符串或字符串数组，明确清除 aliases 时返回空字符串或空数组。不要返回 null、对象或其他错误类型。
+4. 每项除 personKey 外只返回需要新增或纠正的字段。有明确新值时返回正确的新值；没有新信息时省略字段，表示保留输入 existingProfile 的值。自动粗扫不得用空字符串或空 aliases 表示清除，空值表示无更新。主动重新整理首批 existingProfile 为空，后批仅包含本轮累计资料，上次 AI 档案中本轮未生成的字段不保留；只有材料明确要求删除旧资料且没有替代值时才返回空值。aliases 可返回字符串或字符串数组。不要返回 null、对象或其他错误类型。
 5. sourceFragments 是长资料按顺序切出的连续来源片段；part/total 表示同一来源的连续位置，本批可能只包含该来源的一部分。吸收当前批次信息，以 existingProfile 作为前批累计结果继续整理；不要把本批未出现的来源或字段当成不存在，也不要把局部片段当成完整人物档。
 6. manualProfile 和 manualFields 由保存层保护，不需要模型复制；不输出解释、剧情续写、数据库 ID 或 JSON 之外的内容。
-7. 自动增量输入的 summaryUpdates 是本次新摘要，people[].summaryReferences 标明该人物对应的摘要及归属事实；结合 existingProfile 判断是否有新增或纠正，没有变化时该人物只返回 personKey。
+7. 自动粗扫每约十个新增稳定AI楼运行一次，输入为楼层标记的清洗原文；仅提取明确新增或重大变化的长期基础资料，例如稳定外貌、职业和身份。短期处境、换装和剧情状态不固化；无变化时该人物只返回 personKey。原文按最新楼优先提供，人工资料和旧档案仅作边界参考。
 
 【字段中文定义】
 ${PROFILE_FIELD_GUIDE}`;
@@ -45,19 +44,6 @@ ${PROFILE_FIELD_GUIDE}`;
 export function buildPeopleProfileSystemPrompt(guidance = '', processingPrompt = '') {
   const custom = typeof guidance === 'string' ? guidance : '';
   return withBaseProcessingPrompt(`${custom.trim() ? custom : DEFAULT_PROFILE_GUIDANCE}\n\n${PROFILE_FIXED_CONTRACT}`, processingPrompt);
-}
-
-export const PROFILE_FULL_REWRITE_CONTRACT = `你是“千千结”的人物基础资料整档整理员。本次只处理输入 people 中的目标人物，把已有档案、人物卡、获准世界书与 CSE Core 当作材料，去重、纠错并重新分类。不要续写剧情或臆造缺失资料；无依据字段返回空字符串。
-
-必须保留 manualProfile 中人工设定的含义与明确事实，允许改写措辞或移动到更合适的字段。每个人返回 manualFields，列出整理后承载人工信息的字段；只能使用下方合法字段名。普通外貌不得放入 nsfw；剧情中的短暂身体、情绪、关系或处境不得固定成人设。appearance 只放无法归入细分外貌字段的必要补充，notes 只放无法归入其他字段但值得长期保存的信息。
-
-只返回一个 JSON 对象，根对象为 profiles 数组。每个输入人物恰好一项，personKey 必须逐字使用输入键；不得新增、遗漏、重复或合并人物。每项必须包含 personKey、manualFields 和下方全部字段；aliases 可为字符串或字符串数组，其余字段必须是字符串。完整结果会整体替换旧档案，不能用省略字段表示沿用旧值。合法形状：{"profiles":[{"personKey":"person-1","manualFields":["notes"],"name":"示例姓名",…其余全部字段…}]}。
-
-【字段中文定义】
-${PROFILE_FIELD_GUIDE}`;
-
-export function buildPeopleProfileFullRewritePrompt(processingPrompt = '') {
-  return withBaseProcessingPrompt(PROFILE_FULL_REWRITE_CONTRACT, processingPrompt);
 }
 
 function errorWith(code, message) { return Object.assign(new Error(message), { code }); }
@@ -482,12 +468,9 @@ export function createPeopleWorkspaceRuntime({
   if (typeof generateUtilityTask !== 'function' || typeof contextProvider !== 'function') throw new TypeError('人物资料生成依赖无效');
   if (!sourcePermissions || typeof sourcePermissions.filterCandidates !== 'function') throw new TypeError('人物资料来源许可依赖无效');
   let epoch = 0, active = null, workspace = null, revision = 0, chatId = null, people = Object.freeze([]), lastError = null, lastGenerationReport = null;
-  let autoDrainQueued = false, destroyed = false;
+  let autoDrainQueued = false, pendingAutomaticScan = false, destroyed = false, automaticFloorCount = null, automaticChatId = null;
   const concurrentWrites = new Set();
   const subscribers = new Set();
-  const pendingAutomaticReceipts = new Map();
-  const seenAutomaticReceipts = new Set();
-  const lastAutomaticSourceByEntityId = new Map();
   const enabled = () => { try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; } catch { return false; } };
   const notify = () => { const value = getState(); for (const listener of subscribers) { try { listener(value); } catch { /* view isolation */ } } return value; };
   const capture = () => Object.freeze({ ...session.identity() });
@@ -514,7 +497,7 @@ export function createPeopleWorkspaceRuntime({
     return Boolean(state?.memoryWorkBusy || state?.activeExtraction || state?.activeCse);
   }
   function scheduleAutomaticMaintenance() {
-    if (destroyed || !enabled() || !workspace || !pendingAutomaticReceipts.size || autoDrainQueued) return;
+    if (destroyed || !enabled() || !workspace || !pendingAutomaticScan || autoDrainQueued) return;
     const scheduledEpoch = epoch;
     autoDrainQueued = true;
     setTimeout(() => {
@@ -523,35 +506,30 @@ export function createPeopleWorkspaceRuntime({
       void drainAutomaticMaintenance();
     }, 0);
   }
-  function requestAutomaticMaintenance(receipt) {
-    if (destroyed || !enabled() || !receipt || typeof receipt !== 'object') return;
-    const normalized = { chatId: String(receipt.chatId ?? ''), floorId: String(receipt.floorId ?? ''), memoryId: String(receipt.memoryId ?? '') };
-    if (!isUuid(normalized.chatId) || !isUuid(normalized.floorId) || !isUuid(normalized.memoryId)) return;
+  function observeStableFloors() {
+    if (destroyed || !enabled() || !workspace) return;
     let identity;
     try { identity = capture(); } catch { return; }
-    if (identity.chatId !== normalized.chatId) return;
-    const token = `${normalized.chatId}:${normalized.floorId}:${normalized.memoryId}`;
-    if (seenAutomaticReceipts.has(token)) return;
-    seenAutomaticReceipts.add(token);
-    pendingAutomaticReceipts.set(normalized.floorId, Object.freeze(normalized));
+    const reachable = foundationRuntime.getReachable?.();
+    if (!reachable || identity.chatId !== chatId || reachable.root?.chatId && reachable.root.chatId !== chatId) return;
+    const count = (reachable.floors ?? []).length;
+    if (automaticChatId !== chatId || automaticFloorCount === null) {
+      automaticChatId = chatId;
+      automaticFloorCount = count;
+      return;
+    }
+    if (count < automaticFloorCount) { automaticFloorCount = count; return; }
+    if (count - automaticFloorCount < 10) return;
+    automaticFloorCount = count;
+    pendingAutomaticScan = true;
     scheduleAutomaticMaintenance();
   }
   async function drainAutomaticMaintenance() {
-    if (destroyed || !pendingAutomaticReceipts.size || !workspace || active || memoryIsBusy()) return;
-    const reachable = foundationRuntime.getReachable?.();
-    const currentMemories = new Map((reachable?.floorMemories ?? []).filter(memory => memory?.recordStatus === 'active').map(memory => [memory.floorId, memory]));
-    const receipts = [];
-    for (const [floorId, receipt] of pendingAutomaticReceipts) {
-      if (receipt.chatId !== chatId) { pendingAutomaticReceipts.delete(floorId); continue; }
-      const memory = currentMemories.get(floorId);
-      if (!memory) continue;
-      pendingAutomaticReceipts.delete(floorId);
-      if (memory.id === receipt.memoryId) receipts.push(receipt);
-    }
-    if (!receipts.length) return;
+    if (destroyed || !pendingAutomaticScan || !workspace || active || memoryIsBusy()) return;
+    pendingAutomaticScan = false;
     try {
       await generateProfiles(candidates => candidates.filter(candidate => candidate.selected), {
-        replaceExisting: true, automatic: true, automaticReceipts: receipts, includeWorldInfo: false,
+        automatic: true, includeWorldInfo: false,
       });
     } catch (error) {
       if (error?.name !== 'AbortError' && error?.code !== 'QQJ_PEOPLE_STALE') {
@@ -619,7 +597,12 @@ export function createPeopleWorkspaceRuntime({
     const operation = begin('loading');
     return settle(operation, async () => {
       if (refreshMemory && typeof memoryRuntime.refreshStatus === 'function') await memoryRuntime.refreshStatus({ preferCached: true });
-      assertCurrent(operation); adopt(operation, await store.read(operation.identity)); lastError = null; return notify();
+      assertCurrent(operation); adopt(operation, await store.read(operation.identity));
+      if (automaticChatId !== chatId || automaticFloorCount === null) {
+        automaticChatId = chatId;
+        automaticFloorCount = (foundationRuntime.getReachable?.()?.floors ?? []).length;
+      }
+      lastError = null; return notify();
     });
   }
   async function setSelectedEntityIds(entityIds) {
@@ -660,6 +643,11 @@ export function createPeopleWorkspaceRuntime({
       if (!candidate) throw errorWith('QQJ_PEOPLE_PROFILE_ENTITY_INVALID', '这个人物已不在当前聊天的可用人物中。');
       const requested = profileFields(fields);
       const result = await mutate(operation, current => {
+        const projection = identityProjection(current);
+        if (resolveIdentityEntityId(entityId, projection) !== entityId || isIdentityDeleted(entityId, projection)
+          || !candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), current).some(person => person.entityId === entityId)) {
+          throw errorWith('QQJ_PEOPLE_PROFILE_ENTITY_INVALID', '这个人物已删除或归属变化，本次资料没有写入。');
+        }
         const existing = current.profilesByEntityId[entityId];
         if (JSON.stringify(existing ?? null) !== JSON.stringify(startingProfile)) throw errorWith('QQJ_PEOPLE_PROFILE_CONFLICT', '这个人物资料已在其他页面更新，本次没有覆盖新内容，请重试。');
         const declaredInput = requestedManualFields === null ? null : [...new Set(requestedManualFields)].filter(field => PEOPLE_PROFILE_FIELD_SET.has(field));
@@ -684,6 +672,11 @@ export function createPeopleWorkspaceRuntime({
       if (!candidate) throw errorWith('QQJ_PEOPLE_PROFILE_ENTITY_INVALID', '这个人物已不在当前聊天的可用人物中。');
       const requested = avatarDataUrl === null || avatarDataUrl === '' ? null : validateAvatar(avatarDataUrl, entityId);
       const result = await mutate(operation, current => {
+        const projection = identityProjection(current);
+        if (resolveIdentityEntityId(entityId, projection) !== entityId || isIdentityDeleted(entityId, projection)
+          || !candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), current).some(person => person.entityId === entityId)) {
+          throw errorWith('QQJ_PEOPLE_PROFILE_ENTITY_INVALID', '这个人物已删除或归属变化，本次头像没有写入。');
+        }
         const existing = current.avatarsByEntityId[entityId] ?? null;
         if (existing === requested) return null;
         if (existing !== startingAvatar) throw errorWith('QQJ_PEOPLE_PROFILE_CONFLICT', '这个人物头像已在其他页面更新，本次没有覆盖新头像，请重试。');
@@ -819,78 +812,46 @@ export function createPeopleWorkspaceRuntime({
     const request = { task: '整理选中人物的静态基础资料', people: peopleRequest, allowedWorldInfo: worldInfo };
     return { request, keys: new Map(peopleRequest.map((person, index) => [person.personKey, targets[index].entityId])) };
   }
-  async function fullRewriteEnvelope(operation, targets) {
-    const reachable = foundationRuntime.getReachable?.(), memoryState = memoryRuntime.getState(), macros = operation.macros;
-    const contexts = targets.map(target => targetContext(reachable, memoryState, target, workspace, macros));
-    const peopleRequest = targets.map((target, index) => ({
-      personKey: `person-${index + 1}`, currentName: contexts[index].currentName, aliases: contexts[index].aliases,
-      cseCoreTraits: contexts[index].cseCoreTraits,
-      existingProfile: profileWithMacros(target.profile ?? {}, macros), manualProfile: manualProfile(target.profile, macros), manualFields: target.profile?.manualFields ?? [],
-    }));
-    const characterCards = contexts.flatMap((context, index) => context.characterCard ? [{ personKey: `person-${index + 1}`, ...context.characterCard }] : []);
-    const hostContext = contextProvider(), catalog = await scanner(hostContext); assertCurrent(operation);
-    const candidates = await sourceCandidateFactory(catalog);
-    const allowed = sourcePermissions.filterCandidates({ chatId: operation.identity.chatId, candidates });
-    if (!Array.isArray(allowed)) throw errorWith('QQJ_PEOPLE_WORLDBOOK_FILTER_INVALID', '世界书许可过滤结果无效。');
-    const options = typeof sanitizerOptions === 'function' ? sanitizerOptions() : sanitizerOptions;
-    const allowedWorldInfo = allowed.map(candidate => ({ source: candidate.world, label: candidate.label,
-      content: macroText(sanitizeMemoryContent(candidate.content, options), macros) })).filter(item => item.content);
-    const request = { task: '一次性整档重写已选人物的静态基础资料', people: peopleRequest, characterCards, allowedWorldInfo };
-    return { request, keys: new Map(peopleRequest.map((person, index) => [person.personKey, targets[index].entityId])) };
+  function automaticRecentFloors(reachable) {
+    const floors = [...(reachable?.floors ?? [])].slice(-10);
+    let remaining = 19000;
+    const recentFloors = [];
+    for (const floor of [...floors].reverse()) {
+      const content = String(floor?.content?.canonicalContent ?? '');
+      if (!content.trim()) continue;
+      if (content.length <= remaining) {
+        recentFloors.unshift({ sourceFloor: floor.assistantSeq, floorId: floor.id, content });
+        remaining -= content.length;
+      } else if (recentFloors.length === 0 && remaining > 0) {
+        recentFloors.unshift({ sourceFloor: floor.assistantSeq, floorId: floor.id,
+          excerpt: `仅提供本楼开头 ${remaining} 字符，后文省略`, content: content.slice(0, remaining) });
+        remaining = 0;
+      }
+    }
+    return Object.freeze(recentFloors);
   }
-  function automaticGenerationEnvelope(operation, targets, receipts) {
+  function automaticGenerationEnvelope(operation, targets) {
     const reachable = foundationRuntime.getReachable?.();
     const memoryState = memoryRuntime.getState();
     const macros = operation.macros;
-    const projection = identityProjection(workspace);
-    const floorsById = new Map((reachable?.floors ?? []).map(floor => [floor.id, floor]));
-    const memoriesByFloorId = new Map((reachable?.floorMemories ?? []).filter(memory => memory?.recordStatus === 'active').map(memory => [memory.floorId, memory]));
-    const sources = receipts.flatMap((receipt, index) => {
-      const memory = memoriesByFloorId.get(receipt.floorId);
-      if (!memory || memory.id !== receipt.memoryId) return [];
-      return [{ summaryKey: `summary-${index + 1}`, floor: floorsById.get(receipt.floorId), memory,
-        summary: macroText(clean(effectiveSummary(memory), 4000), macros) }];
-    });
-    const floorIds = new Set(sources.map(source => source.memory.floorId));
-    const prepared = [];
-    for (const target of targets) {
-      const summariesByStableKey = new Map();
-      for (const source of sources) {
-        const history = targetHistory({ ...reachable, floors: source.floor ? [source.floor] : [], floorMemories: [source.memory] }, target.entityId, macros, projection);
-        if (!history.length) continue;
-        const facts = history[0].facts;
-        if (!source.summary && !facts) continue;
-        const stableValue = { summary: source.summary, ...(facts ? { facts } : {}) };
-        const stableKey = materialSignature(stableValue);
-        if (!summariesByStableKey.has(stableKey)) summariesByStableKey.set(stableKey, {
-          reference: { summaryKey: source.summaryKey, ...(facts ? { facts } : {}) },
-        });
-      }
-      const summaryReferences = [...summariesByStableKey.values()].map(item => item.reference);
-      if (!summaryReferences.length) continue;
+    const recentFloors = automaticRecentFloors(reachable);
+    if (!recentFloors.length) return null;
+    const peopleRequest = targets.map((target, index) => {
       const context = targetContext(reachable, memoryState, target, workspace, macros);
-      const subject = (memoryState?.cseSubjects ?? []).find(value => resolveIdentityEntityId(value.subjectEntityId, projection) === target.entityId);
-      const cseCoreTraits = [...new Set((subject?.core ?? []).filter(item => floorIds.has(item.sourceFloorId)).map(item => macroText(item.text, macros)).filter(Boolean))]
-        .sort().map(text => ({ text }));
-      const signature = materialSignature({ summaries: [...summariesByStableKey.keys()].sort(), currentName: context.currentName, aliases: context.aliases, cseCoreTraits });
-      if (lastAutomaticSourceByEntityId.get(target.entityId) === signature) continue;
-      prepared.push({ target, context, summaryReferences, cseCoreTraits, signature });
-    }
-    if (!prepared.length) return null;
-    const usedSummaryKeys = new Set(prepared.flatMap(item => item.summaryReferences.map(reference => reference.summaryKey)));
-    const summaryUpdates = sources.filter(source => usedSummaryKeys.has(source.summaryKey)).map(source => ({ summaryKey: source.summaryKey, summary: source.summary }));
-    const peopleRequest = prepared.map(({ target, context, summaryReferences, cseCoreTraits }, index) => ({
-      personKey: `person-${index + 1}`, currentName: context.currentName, aliases: context.aliases,
-      summaryReferences, cseCoreTraits,
-      existingProfile: existingAiProfile(target.profile, macros), manualProfile: manualProfile(target.profile, macros), manualFields: target.profile?.manualFields ?? [],
-    }));
+      return {
+        personKey: `person-${index + 1}`, currentName: context.currentName, aliases: context.aliases,
+        existingProfile: existingAiProfile(target.profile, macros), manualProfile: manualProfile(target.profile, macros), manualFields: target.profile?.manualFields ?? [],
+      };
+    });
     return {
-      targets: prepared.map(item => item.target), signatures: new Map(prepared.map(item => [item.target.entityId, item.signature])),
-      request: { task: '根据本次自动摘要增量更新相关人物的静态基础资料', summaryUpdates, people: peopleRequest, allowedWorldInfo: [] },
-      keys: new Map(peopleRequest.map((person, index) => [person.personKey, prepared[index].target.entityId])),
+      targets,
+      sourceSignature: materialSignature(recentFloors),
+      selectedSignature: materialSignature([...(workspace?.selectedEntityIds ?? [])].sort()),
+      request: { task: '根据最近稳定AI楼原文粗扫选中人物的长期基础资料；只返回明确新增或重大变化字段，无变化仅返回personKey', recentFloors, people: peopleRequest },
+      keys: new Map(peopleRequest.map((person, index) => [person.personKey, targets[index].entityId])),
     };
   }
-  function parseGenerated(result, keys, macros) {
+  function parseGenerated(result, keys, macros, { omitEmptyValues = false } = {}) {
     const raw = result?.jsonData ?? result?.textData ?? result;
     if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !Array.isArray(raw.profiles)) throw errorWith('QQJ_PEOPLE_GENERATION_INVALID', '人物资料回复格式无效，可重新整理。');
     const grouped = new Map([...keys.keys()].map(key => [key, []]));
@@ -907,37 +868,17 @@ export function createPeopleWorkspaceRuntime({
       if (items.length > 1) { conflicts += 1; continue; }
       try {
         const patch = generatedProfilePatch(items[0], macros);
-        if (Object.keys(patch.fields).length || patch.invalidFields === 0) generated.set(keys.get(key), patch.fields);
+        const fields = omitEmptyValues
+          ? Object.fromEntries(Object.entries(patch.fields).filter(([, value]) => value.trim()))
+          : patch.fields;
+        if (Object.keys(fields).length || patch.invalidFields === 0) generated.set(keys.get(key), fields);
         else invalid += 1;
       }
       catch { invalid += 1; }
     }
     return Object.freeze({ generated, requested: keys.size, missing, conflicts, invalid, unknown });
   }
-  function parseFullRewrite(result, keys, macros, manualSources) {
-    const raw = result?.jsonData ?? result?.textData ?? result;
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !Array.isArray(raw.profiles)) throw errorWith('QQJ_PEOPLE_GENERATION_INVALID', '人物整档回复格式无效，旧档案已保留。');
-    const grouped = new Map([...keys.keys()].map(key => [key, []])); let unknown = 0;
-    for (const item of raw.profiles) {
-      const key = typeof item?.personKey === 'string' ? item.personKey.trim() : '';
-      if (!keys.has(key)) { unknown += 1; continue; }
-      grouped.get(key).push(item);
-    }
-    const generated = new Map(); let missing = 0, conflicts = 0, invalid = 0;
-    for (const [key, items] of grouped) {
-      if (!items.length) { missing += 1; continue; }
-      if (items.length > 1) { conflicts += 1; continue; }
-      const item = items[0], entityId = keys.get(key);
-      const manual = Array.isArray(item?.manualFields) && item.manualFields.every(field => PEOPLE_PROFILE_FIELD_SET.has(field)) ? [...new Set(item.manualFields)] : null;
-      const patch = generatedProfilePatch(item, macros);
-      const complete = PEOPLE_PROFILE_FIELDS.every(field => Object.hasOwn(item, field)) && Object.keys(patch.fields).length === PEOPLE_PROFILE_FIELDS.length && patch.invalidFields === 0;
-      const preservesManualContent = manual?.some(field => Boolean(patch.fields[field]));
-      if (!complete || !patch.fields.name || !manual || manualSources.get(entityId) === true && !preservesManualContent) { invalid += 1; continue; }
-      generated.set(entityId, Object.freeze({ fields: patch.fields, manualFields: Object.freeze(manual) }));
-    }
-    return Object.freeze({ generated, requested: keys.size, missing, conflicts, invalid, unknown });
-  }
-  async function generateProfiles(targetResolver, { replaceExisting = false, automatic = false, materialPlans = null, includeWorldInfo = true, automaticReceipts = null } = {}) {
+  async function generateProfiles(targetResolver, { replaceExisting = false, automatic = false, materialPlans = null, includeWorldInfo = true } = {}) {
     const operation = begin('generating');
     operation.automatic = automatic;
     const rebuilding = replaceExisting && !automatic;
@@ -948,25 +889,26 @@ export function createPeopleWorkspaceRuntime({
     return settle(operation, async () => {
       let targets = targetResolver(candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace));
       if (!targets.length) {
-        if (automaticReceipts) return getState();
+        if (automatic) return getState();
         throw errorWith('QQJ_PEOPLE_NOTHING_TO_GENERATE', replaceExisting ? '当前人物不可重新整理。' : '选中的人物都已有基础资料。');
       }
-      const plans = automaticReceipts ? new Map() : (materialPlans ?? new Map(targets.map(target => [target.entityId, fullMaterialPlanFor(target)])));
+      const plans = automatic ? new Map() : (materialPlans ?? new Map(targets.map(target => [target.entityId, fullMaterialPlanFor(target)])));
       const preparedTargets = targets.map(target => ({ ...target, materialPlan: target.materialPlan ?? plans.get(target.entityId) }));
-      const envelope = automaticReceipts
-        ? automaticGenerationEnvelope(operation, targets, automaticReceipts)
+      const envelope = automatic
+        ? automaticGenerationEnvelope(operation, targets)
         : await generationEnvelope(operation, preparedTargets, { includeWorldInfo });
       if (!envelope) return getState();
-      if (automaticReceipts) {
+      if (automatic) {
         targets = envelope.targets;
-        for (const [entityId, signature] of envelope.signatures) lastAutomaticSourceByEntityId.set(entityId, signature);
+        operation.automaticSourceSignature = envelope.sourceSignature;
+        operation.automaticSelectedSignature = envelope.selectedSignature;
       }
       if (rebuilding) {
         envelope.request.task = '主动重新整理选中人物的静态基础资料';
         for (const person of envelope.request.people) person.existingProfile = {};
       }
       const serialized = JSON.stringify(envelope.request);
-      const requests = automaticReceipts || serialized.length <= PEOPLE_PROFILE_INPUT_CHAR_BUDGET
+      const requests = automatic || serialized.length <= PEOPLE_PROFILE_INPUT_CHAR_BUDGET
         ? Object.freeze([{ request: envelope.request, keys: envelope.keys, overallIndex: 1, overallTotal: 1 }])
         : longProfileBatches(envelope.request).map(batch => Object.freeze({ ...batch, keys: new Map([[batch.personKey, envelope.keys.get(batch.personKey)]]) }));
       const saved = new Set();
@@ -989,7 +931,10 @@ export function createPeopleWorkspaceRuntime({
         const result = await generateUtilityTask({ systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(request) }],
           maxTokens: 30000, temperature: 0, signal: operation.controller.signal, includeCharacterCard: false, worldInfoSource: 'none' });
         assertCurrent(operation);
-        const parsed = parseGenerated(result, batch.keys, operation.macros);
+        if (automatic && operation.automaticSourceSignature !== materialSignature(automaticRecentFloors(foundationRuntime.getReachable?.()))) {
+          throw errorWith('QQJ_PEOPLE_STALE', '最近稳定楼正文已变化，迟到的人物粗扫结果未写入。');
+        }
+        const parsed = parseGenerated(result, batch.keys, operation.macros, { omitEmptyValues: automatic });
         for (const entityId of parsed.generated.keys()) completedBatches.set(entityId, (completedBatches.get(entityId) ?? 0) + 1);
         const completedMaterialEntityIds = new Set([...expectedBatches]
           .filter(([entityId, count]) => completedBatches.get(entityId) === count).map(([entityId]) => entityId));
@@ -1000,6 +945,10 @@ export function createPeopleWorkspaceRuntime({
         }
         let savedEntityIds = [], skipped = 0;
         const persisted = await mutate(operation, current => {
+        if (automatic && (operation.automaticSourceSignature !== materialSignature(automaticRecentFloors(foundationRuntime.getReachable?.()))
+          || operation.automaticSelectedSignature !== materialSignature([...current.selectedEntityIds].sort()))) {
+          throw errorWith('QQJ_PEOPLE_STALE', '原文或重要人物选择已变化，迟到的人物粗扫结果未写入。');
+        }
         const profiles = { ...clone(current.profilesByEntityId) };
         const progress = { ...clone(current.profileMaterialProgressByEntityId ?? {}) };
         let changed = false; const timestamp = nowIso(now);
@@ -1007,20 +956,24 @@ export function createPeopleWorkspaceRuntime({
         const selected = new Set(current.selectedEntityIds.map(id => resolveIdentityEntityId(id, projection)));
         savedEntityIds = []; skipped = 0;
         for (const [entityId, patch] of parsed.generated) {
+          const canonicalId = resolveIdentityEntityId(entityId, projection);
+          const live = canonicalId === entityId && !isIdentityDeleted(canonicalId, projection)
+            && candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), current).some(item => item.entityId === canonicalId);
+          if (!live) { skipped += 1; continue; }
           if (automatic) {
             if (!selected.has(entityId)) { skipped += 1; continue; }
           }
           const existing = profiles[entityId];
-          if (existing && !replaceExisting && !saved.has(entityId)) { skipped += 1; continue; }
+          if (!automatic && existing && !replaceExisting && !saved.has(entityId)) { skipped += 1; continue; }
           const manual = existing?.manualFields ?? [];
-          if (!existing && !Object.keys(patch).length) { skipped += 1; continue; }
+          if (!Object.keys(patch).length) { skipped += 1; continue; }
           const merged = { ...profileFields(rebuilding ? rebuiltProfiles.get(entityId) ?? {} : existing ?? {}), ...patch };
           for (const field of manual) merged[field] = existing[field];
           if (existing && sameFields(existing, merged)) { skipped += 1; continue; }
           profiles[entityId] = { entityId, ...merged, manualFields: [...manual], source: manual.length ? 'manual' : 'generated', createdAt: existing?.createdAt ?? timestamp, updatedAt: timestamp };
           savedEntityIds.push(entityId); changed = true;
         }
-        if (!automaticReceipts) {
+        if (!automatic) {
           const reachable = foundationRuntime.getReachable?.();
           const memoryState = memoryRuntime.getState();
           const currentCandidates = candidateProjection(reachable, memoryState, current);
@@ -1053,54 +1006,6 @@ export function createPeopleWorkspaceRuntime({
       lastError = null; return finalState;
     });
   }
-  async function rewriteSelectedProfiles() {
-    const operation = begin('generating');
-    operation.macros = macrosFor(foundationRuntime.getReachable?.());
-    const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
-    const systemPrompt = buildPeopleProfileFullRewritePrompt(processingPromptSnapshot);
-    return settle(operation, async () => {
-      const targets = candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace).filter(person => person.selected);
-      if (!targets.length) throw errorWith('QQJ_PEOPLE_NOTHING_TO_GENERATE', '请先选择要整理的重要人物。');
-      const startingProfiles = new Map(targets.map(target => [target.entityId, JSON.stringify(workspace?.profilesByEntityId?.[target.entityId] ?? null)]));
-      const manualSources = new Map(targets.map(target => {
-        const raw = workspace?.profilesByEntityId?.[target.entityId];
-        return [target.entityId, (raw?.manualFields ?? []).some(field => Boolean(String(raw?.[field] ?? '').trim()))];
-      }));
-      const envelope = await fullRewriteEnvelope(operation, targets);
-      const serialized = JSON.stringify(envelope.request);
-      if (serialized.length > PEOPLE_PROFILE_FULL_REWRITE_CHAR_BUDGET) {
-        throw errorWith('QQJ_PEOPLE_FULL_REWRITE_TOO_LARGE', `本次整档材料 ${serialized.length} 字符，超过单次 ${PEOPLE_PROFILE_FULL_REWRITE_CHAR_BUDGET} 字符；请缩短已有档案或获准世界书后重试。`);
-      }
-      operation.batchIndex = 1; operation.batchTotal = 1; notify(); assertCurrent(operation);
-      const result = await generateUtilityTask({ systemPrompt, taskMessages: [{ role: 'user', content: serialized }],
-        maxTokens: 30000, temperature: 0, signal: operation.controller.signal, includeCharacterCard: false, worldInfoSource: 'none' });
-      assertCurrent(operation);
-      const parsed = parseFullRewrite(result, envelope.keys, operation.macros, manualSources);
-      if (!parsed.generated.size) {
-        lastGenerationReport = Object.freeze({ requested: targets.length, saved: 0, missing: parsed.missing, conflicts: parsed.conflicts, invalid: parsed.invalid, unknown: parsed.unknown, skipped: 0 });
-        throw errorWith('QQJ_PEOPLE_GENERATION_BINDING_INVALID', '人物整档回复没有可安全保存的目标，旧档案已全部保留。');
-      }
-      let saved = 0, skipped = 0;
-      const persisted = await mutate(operation, current => {
-        const profiles = { ...clone(current.profilesByEntityId) }, projection = identityProjection(current);
-        const selected = new Set(current.selectedEntityIds.map(id => resolveIdentityEntityId(id, projection)));
-        let changed = false; const timestamp = nowIso(now);
-        for (const [entityId, generated] of parsed.generated) {
-          const existing = profiles[entityId] ?? null;
-          if (!selected.has(entityId) || JSON.stringify(existing) !== startingProfiles.get(entityId)) { skipped += 1; continue; }
-          const sameManual = JSON.stringify(existing?.manualFields ?? []) === JSON.stringify(generated.manualFields);
-          if (existing && sameFields(existing, generated.fields) && sameManual) { skipped += 1; continue; }
-          profiles[entityId] = { entityId, ...generated.fields, manualFields: [...generated.manualFields],
-            source: generated.manualFields.length ? 'manual' : 'generated', createdAt: existing?.createdAt ?? timestamp, updatedAt: timestamp };
-          saved += 1; changed = true;
-        }
-        return changed ? { ...clone(current), profilesByEntityId: profiles, updatedAt: timestamp } : null;
-      });
-      lastGenerationReport = Object.freeze({ requested: targets.length, saved, missing: parsed.missing, conflicts: parsed.conflicts,
-        invalid: parsed.invalid, unknown: parsed.unknown, skipped });
-      lastError = null; notify(); return persisted.state;
-    });
-  }
   async function generateMissingProfiles() {
     return generateProfiles(candidates => candidates.filter(person => person.selected && !person.profiled));
   }
@@ -1110,16 +1015,17 @@ export function createPeopleWorkspaceRuntime({
   function invalidate() {
     epoch += 1; active?.controller.abort(); for (const operation of concurrentWrites) operation.controller.abort();
     active = null; concurrentWrites.clear(); workspace = null; revision = 0; chatId = null; people = Object.freeze([]); lastError = null; lastGenerationReport = null;
-    pendingAutomaticReceipts.clear(); seenAutomaticReceipts.clear(); lastAutomaticSourceByEntityId.clear(); syncIdentityProjection(); notify();
+    pendingAutomaticScan = false; automaticFloorCount = null; automaticChatId = null; syncIdentityProjection(); notify();
   }
   async function setEnabled(value) { if (value !== true) { invalidate(); return getState(); } return refresh(); }
   const unsubscribeMemory = typeof memoryRuntime.subscribe === 'function' ? memoryRuntime.subscribe(() => {
     if (!workspace) return;
     try { if (capture().chatId !== chatId) return; project(); notify(); scheduleAutomaticMaintenance(); } catch { /* lifecycle owns identity transition */ }
   }) : null;
-  return Object.freeze({ refresh, start: () => enabled() ? refresh() : Promise.resolve(getState()), setSelectedEntityIds, setPersonOrderEntityIds, saveProfile, saveAvatar, mergePeople, deletePerson, generateMissingProfiles, rewriteSelectedProfiles, regenerateProfile, requestAutomaticMaintenance, invalidate, abortAll: invalidate, setEnabled,
+  const unsubscribeFoundation = typeof foundationRuntime.subscribe === 'function' ? foundationRuntime.subscribe(() => observeStableFloors()) : null;
+  return Object.freeze({ refresh, start: () => enabled() ? refresh() : Promise.resolve(getState()), setSelectedEntityIds, setPersonOrderEntityIds, saveProfile, saveAvatar, mergePeople, deletePerson, generateMissingProfiles, regenerateProfile, invalidate, abortAll: invalidate, setEnabled,
     getIdentityProjection: () => identityProjection(workspace),
     getState, subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('人物工作区 listener 无效'); subscribers.add(listener); return () => subscribers.delete(listener); },
-    destroy() { destroyed = true; unsubscribeMemory?.(); invalidate(); },
+    destroy() { destroyed = true; unsubscribeMemory?.(); unsubscribeFoundation?.(); invalidate(); },
   });
 }

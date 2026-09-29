@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPeopleProfileSystemPrompt, createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, DEFAULT_PROFILE_GUIDANCE, PEOPLE_PROFILE_FULL_REWRITE_CHAR_BUDGET, PEOPLE_PROFILE_INPUT_CHAR_BUDGET, PEOPLE_WORKSPACE_RECORD_ID, PROFILE_FIXED_CONTRACT, validatePeopleWorkspace } from '../src/v3/people-workspace.js';
+import { buildPeopleProfileSystemPrompt, createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, DEFAULT_PROFILE_GUIDANCE, PEOPLE_PROFILE_INPUT_CHAR_BUDGET, PEOPLE_WORKSPACE_RECORD_ID, PROFILE_FIXED_CONTRACT, validatePeopleWorkspace } from '../src/v3/people-workspace.js';
 import { PEOPLE_PROFILE_DEFINITIONS, PEOPLE_PROFILE_FIELDS, PEOPLE_PROFILE_LABELS } from '../src/v3/people-profile-fields.js';
 import { filterSourcesByPermission } from '../src/source-permission.js';
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
@@ -14,13 +14,13 @@ const SYNTHETIC_CHAR = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 
 function failure(status) { return Object.assign(new Error(`HTTP ${status}`), { status }); }
 function backend() {
-  const records = new Map(), calls = [];
+  const records = new Map(), calls = [], hooks = { beforeGet: null, beforePut: null };
   return {
-    records, calls,
+    records, calls, hooks,
     client: {
-      async get(collection, key) { calls.push(['get', collection, key]); const value = records.get(`${collection}/${key}`); if (!value) throw failure(404); return structuredClone(value); },
+      async get(collection, key) { calls.push(['get', collection, key]); await hooks.beforeGet?.(collection, key); const value = records.get(`${collection}/${key}`); if (!value) throw failure(404); return structuredClone(value); },
       async put(collection, key, data, expectedRevision, options = {}) {
-        calls.push(['put', collection, key, expectedRevision]); if (options.signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+        calls.push(['put', collection, key, expectedRevision]); await hooks.beforePut?.(collection, key); if (options.signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
         const mapKey = `${collection}/${key}`, previous = records.get(mapKey); if ((previous?.revision ?? 0) !== expectedRevision) throw failure(409);
         const envelope = { revision: expectedRevision + 1, data: structuredClone(data) }; records.set(mapKey, envelope); return structuredClone(envelope);
       },
@@ -39,13 +39,13 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
     baseline: { characterCard: { entityId: SYNTHETIC_CHAR, name: '剧情标题', description: '角色卡描述', personality: '角色卡性格', scenario: '场景' } },
   };
   let memoryState = { cseSubjects: peopleEntities.map((person, index) => ({ subjectEntityId: person.id, displayName: person.displayName, core: index === 0 ? [{ text: '谨慎', origin: 'delta', sourceFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }] : [], adaptive: [], situational: [] })) };
-  const listeners = new Set();
+  const listeners = new Set(), foundationListeners = new Set();
   let memoryRefreshes = 0;
   const memoryRuntime = { getState: () => memoryState, refreshStatus: async () => { memoryRefreshes += 1; return memoryState; }, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); } };
   const sourceTrace = [];
   const runtime = createPeopleWorkspaceRuntime({
     store: createPeopleWorkspaceStore({ client: db.client }), session: { identity: () => structuredClone(identity) },
-    foundationRuntime: { getReachable: () => reachable }, memoryRuntime, generateUtilityTask: generate, profilePromptGuidance, processingPrompt,
+    foundationRuntime: { getReachable: () => reachable, subscribe(fn) { foundationListeners.add(fn); return () => foundationListeners.delete(fn); } }, memoryRuntime, generateUtilityTask: generate, profilePromptGuidance, processingPrompt,
     sourcePermissions: { filterCandidates({ chatId, candidates }) { sourceTrace.push(['filter', chatId, candidates.map(item => item.id)]); return permissionSettings ? filterSourcesByPermission({ chatId, candidates, settings: permissionSettings }) : candidates.filter(item => item.id !== 'worldbook:excluded'); } },
     contextProvider: () => ({ chat: [], marker: identity.chatId, chatMetadata: currentPrequel ? { qianqianjiePrequel: currentPrequel } : {} }),
     scanner: async context => { sourceTrace.push(['scan', context.marker]); return { entries: [{ content: '<secret>DROP</secret><content>ALLOWED</content>' }, { content: 'EXCLUDED' }] }; },
@@ -54,6 +54,7 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
     logger: { warn() {} },
   });
   return { db, runtime, peopleEntities, sourceTrace, get identity() { return identity; }, setIdentity(value) { identity = value; }, get reachable() { return reachable; }, setReachable(value) { reachable = value; },
+    notifyFoundation() { for (const listener of foundationListeners) listener({ status: 'ready', chatId: identity.chatId }); },
     get memoryState() { return memoryState; }, setMemoryState(value, notify = true) { memoryState = value; if (notify) for (const listener of listeners) listener(memoryState); },
     notifyMemory() { for (const listener of listeners) listener(memoryState); }, setPrequel(value) { currentPrequel = value; }, get memoryRefreshes() { return memoryRefreshes; } };
 }
@@ -80,10 +81,12 @@ test('人物资料业务指导可替换，固定合同与基础处理层始终�
   assert.match(custom, /personKey 必须逐字使用/);
   assert.match(custom, /根对象必须包含 profiles 数组/);
   assert.match(custom, /\{"profiles":\[\{"personKey":"person-1","name":"示例姓名"\}\]\}/);
-  assert.match(custom, /summaryUpdates 是本次新摘要/);
+  assert.match(custom, /recentFloors 是最近稳定AI楼/);
+  assert.match(custom, /自动粗扫每约十个新增稳定AI楼/);
   assert.match(custom, /聚合多楼 history 可省略 storyContent/);
   assert.match(custom, /不得猜测未提供的正文/);
   assert.match(custom, /没有新信息时省略字段/);
+  assert.match(custom, /自动粗扫不得用空字符串或空 aliases 表示清除/);
   assert.match(custom, /本批可能只包含该来源的一部分/);
   assert.match(custom, /明确要求删除旧资料且没有替代值/);
   assert.match(custom, /build（体型）：身体骨架、体态、比例/);
@@ -93,76 +96,6 @@ test('人物资料业务指导可替换，固定合同与基础处理层始终�
   assert.deepEqual(Object.keys(PEOPLE_PROFILE_DEFINITIONS), PEOPLE_PROFILE_FIELDS);
   assert.ok(PEOPLE_PROFILE_FIELDS.every(field => PEOPLE_PROFILE_LABELS[field] && PEOPLE_PROFILE_DEFINITIONS[field]));
   assert.equal(custom.split(BASE_PROCESSING_PROMPT).length - 1, 1);
-});
-
-test('整档整理一次请求覆盖全部已选人物，材料不含逐楼历史，合法人物部分替换并迁移人工字段', async () => {
-  let calls = 0, request, systemPrompt;
-  const complete = (personKey, name, manualFields = []) => ({ personKey, manualFields,
-    ...Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, field === 'name' ? name : ''])),
-  });
-  const h = harness({ generate: async options => {
-    calls += 1; systemPrompt = options.systemPrompt; request = JSON.parse(options.taskMessages[0].content);
-    const first = complete('person-1', '人物1新档', ['background']); first.background = '人工说明被整理到背景';
-    const invalidSecond = complete('person-2', '人物2新档'); delete invalidSecond.notes;
-    return { jsonData: { profiles: [first, invalidSecond] } };
-  } });
-  const [first, second] = h.peopleEntities;
-  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([first.id, second.id]);
-  await h.runtime.saveProfile(first.id, { ...Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, ''])), name: '人物1旧档', notes: '{{char}}人工说明' }, { manualFields: ['notes'] });
-  const putsBefore = h.db.calls.filter(call => call[0] === 'put').length;
-  await h.runtime.rewriteSelectedProfiles();
-  assert.equal(calls, 1); assert.equal(h.db.calls.filter(call => call[0] === 'put').length, putsBefore + 1);
-  assert.deepEqual(request.people.map(person => person.currentName), ['人物1', '人物2']);
-  assert.equal(request.people[0].existingProfile.notes, '剧情标题人工说明'); assert.deepEqual(request.people[0].manualFields, ['notes']);
-  assert.equal(JSON.stringify(request).includes('history'), false); assert.equal(JSON.stringify(request).includes('priorContext'), false);
-  assert.equal(request.allowedWorldInfo.length, 1); assert.ok(Array.isArray(request.characterCards));
-  assert.match(systemPrompt, /完整结果会整体替换旧档案/); assert.match(systemPrompt, /manualFields/);
-  assert.doesNotMatch(systemPrompt, /上次 AI 档案中本轮未生成的字段不保留/);
-  const state = h.runtime.getState(); assert.equal(state.profilesByEntityId[first.id].name, '人物1新档');
-  assert.equal(state.profilesByEntityId[first.id].background, '人工说明被整理到背景'); assert.deepEqual(state.profilesByEntityId[first.id].manualFields, ['background']);
-  assert.equal(state.profilesByEntityId[second.id], undefined, '字段不完整的人物保留原档案');
-  assert.deepEqual(state.profileMaterialProgressByEntityId, {}, '整档整理不冒充逐楼历史进度');
-  assert.deepEqual(state.lastGenerationReport, { requested: 2, saved: 1, missing: 0, conflicts: 0, invalid: 1, unknown: 0, skipped: 0 });
-});
-
-test('整档整理在途人工修改优先，模型结果跳过该人物且不覆盖', async () => {
-  let h;
-  const complete = Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, ''])); complete.name = '模型结果';
-  h = harness({ generate: async options => {
-    const request = JSON.parse(options.taskMessages[0].content), target = h.peopleEntities[0];
-    await h.runtime.saveProfile(target.id, { ...complete, name: '在途人工新值' }, { manualFields: ['name'] });
-    return { jsonData: { profiles: [{ personKey: request.people[0].personKey, manualFields: [], ...complete }] } };
-  } });
-  const target = h.peopleEntities[0]; await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]);
-  await h.runtime.rewriteSelectedProfiles();
-  const state = h.runtime.getState(); assert.equal(state.profilesByEntityId[target.id].name, '在途人工新值');
-  assert.equal(state.lastGenerationReport.saved, 0); assert.equal(state.lastGenerationReport.skipped, 1);
-});
-
-test('整档回复不得用空人工字段吞掉原非空人工内容', async () => {
-  const fields = Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, ''])); fields.name = '模型结果';
-  const h = harness({ generate: async () => ({ jsonData: { profiles: [{ personKey: 'person-1', manualFields: ['notes'], ...fields }] } }) });
-  const target = h.peopleEntities[0]; await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]);
-  await h.runtime.saveProfile(target.id, { ...fields, name: '原档案', notes: '不可丢的人工内容' }, { manualFields: ['notes'] });
-  await assert.rejects(h.runtime.rewriteSelectedProfiles(), error => error.code === 'QQJ_PEOPLE_GENERATION_BINDING_INVALID');
-  const state = h.runtime.getState(); assert.equal(state.profilesByEntityId[target.id].notes, '不可丢的人工内容'); assert.equal(state.lastGenerationReport.invalid, 1);
-});
-
-test('整档整理约35705字符仍单次提交，超过60000字符才在模型调用前拒绝', async () => {
-  let acceptedCalls = 0, acceptedLength = 0;
-  const accepted = harness({ sourceCandidates: [{ id: 'worldbook:medium', kind: 'worldbook', world: '中长世界书', label: '中长条目', content: '中'.repeat(35000) }], generate: async options => {
-    acceptedCalls += 1; const request = JSON.parse(options.taskMessages[0].content); acceptedLength = options.taskMessages[0].content.length;
-    const fields = Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, field === 'name' ? request.people[0].currentName : '']));
-    return { jsonData: { profiles: [{ personKey: request.people[0].personKey, manualFields: [], ...fields }] } };
-  } });
-  await accepted.runtime.refresh(); await accepted.runtime.setSelectedEntityIds([accepted.peopleEntities[0].id]); await accepted.runtime.rewriteSelectedProfiles();
-  assert.equal(acceptedCalls, 1); assert.ok(acceptedLength > 35000 && acceptedLength <= PEOPLE_PROFILE_FULL_REWRITE_CHAR_BUDGET);
-
-  let calls = 0;
-  const h = harness({ sourceCandidates: [{ id: 'worldbook:large', kind: 'worldbook', world: '长世界书', label: '长条目', content: '长'.repeat(61000) }], generate: async () => { calls += 1; return { jsonData: { profiles: [] } }; } });
-  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([h.peopleEntities[0].id]);
-  await assert.rejects(h.runtime.rewriteSelectedProfiles(), error => error.code === 'QQJ_PEOPLE_FULL_REWRITE_TOO_LARGE' && /60000 字符/.test(error.message));
-  assert.equal(calls, 0);
 });
 
 test('v1/v2 人工资料与头像无损归一到 v3，只有旧人工六字段获得保护', () => {
@@ -836,6 +769,30 @@ test('重新整理在途时新增的人工修改与人工清空仍以最新 CAS 
   assert.deepEqual(profile.manualFields, ['background', 'notes']);
 });
 
+test('单人重整没有有效字段时不清空旧AI档案', async () => {
+  let mode = 'initial';
+  const h = harness({ generate: async () => ({ jsonData: { profiles: [mode === 'initial'
+    ? { personKey: 'person-1', name: '旧AI姓名', background: '旧AI背景' }
+    : { personKey: 'person-1' }] } }) });
+  const id = h.peopleEntities[0].id; await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([id]);
+  await h.runtime.generateMissingProfiles(); const before = structuredClone(h.runtime.getState().profilesByEntityId[id]);
+  mode = 'empty'; await h.runtime.regenerateProfile(id);
+  assert.deepEqual(h.runtime.getState().profilesByEntityId[id], before);
+});
+
+test('删除目标后到达的生成人物结果不复活档案', async () => {
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  const h = harness({ generate: async () => { await gate; return { jsonData: { profiles: [{ personKey: 'person-1', name: '迟到档案' }] } }; } });
+  const id = h.peopleEntities[0].id; await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([id]);
+  const pending = h.runtime.generateMissingProfiles(); await new Promise(resolve => setImmediate(resolve));
+  const key = `chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`;
+  const latest = structuredClone(h.db.records.get(key)); latest.revision += 1; latest.data.selectedEntityIds = [];
+  latest.data.deletedEntityIds = [id]; delete latest.data.profilesByEntityId[id]; h.db.records.set(key, latest);
+  release(); await pending;
+  assert.equal(h.db.records.get(key).data.profilesByEntityId[id], undefined);
+  assert.deepEqual(h.runtime.getState().deletedEntityIds, [id]);
+});
+
 test('切聊天会取消在途整理，迟到结果不写旧聊天也不串入新聊天', async () => {
   let release; const gate = new Promise(resolve => { release = resolve; });
   const h = harness({ generate: async () => { await gate; return { jsonData: { profiles: [{ personKey: 'person-1', name: '迟到', aliases: [], background: '', appearance: '', personality: '', notes: '' }] } }; } });
@@ -860,147 +817,151 @@ test('外部页面改过同一选择或同一人物资料时拒绝静默覆盖',
   assert.equal(h.db.records.get(key).data.profilesByEntityId[second.id].name, '其他页面资料');
 });
 
-test('单次自动摘要只合并一次相关人物增量，不读取旧正文、世界书或写全历史进度', async () => {
+test('每十个稳定AI楼触发一次共享原文粗扫，摘要不参与筛楼', async () => {
   const requests = [];
-  const h = harness({ many: true, generate: async options => {
-    const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
-    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey })) } };
-  } });
-  const targets = h.peopleEntities.slice(0, 10);
-  const oldFloors = ids.slice(0, 8).map((id, index) => ({ id, assistantSeq: index + 1, content: { canonicalContent: `旧正文${index}${'甲'.repeat(8000)}` } }));
-  const oldMemories = oldFloors.map((floor, index) => ({ id: `${String(index + 20).padStart(8, '0')}-2222-4222-8222-${String(index + 20).padStart(12, '0')}`, floorId: floor.id, recordStatus: 'active',
-    summary: { effectiveSource: 'ai', aiText: `旧摘要${index}` }, participants: targets.map(person => ({ entityId: person.id })) }));
-  const floorId = ids[14], memoryId = ids[15];
-  h.setReachable({ ...h.reachable,
-    floors: [...oldFloors, { id: floorId, assistantSeq: 9, content: { canonicalContent: `本次正文${'乙'.repeat(30000)}` } }],
-    floorMemories: [...oldMemories, { id: memoryId, floorId, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '本次十人共同收到一封信。' }, participants: targets.map(person => ({ entityId: person.id })) }],
-  });
+  const h = harness({ generate: async options => { const request = JSON.parse(options.taskMessages[0].content); requests.push(request); return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, appearance: '有明确新事实' })) } }; } });
   await h.runtime.refresh({ refreshMemory: false });
-  await h.runtime.setSelectedEntityIds(targets.map(person => person.id));
-  for (const target of targets) await h.runtime.saveProfile(target.id, { name: target.displayName, aliases: '', background: '', appearance: '', personality: '', notes: '已有档案' });
-  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId, memoryId });
+  const [first, second] = h.peopleEntities;
+  await h.runtime.setSelectedEntityIds([first.id, second.id]);
+  for (const target of [first, second]) await h.runtime.saveProfile(target.id, { name: target.displayName, aliases: '', background: '', appearance: '', personality: '', notes: '' });
+  const floors = Array.from({ length: 9 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `第${index + 1}楼正文外貌` } }));
+  h.setReachable({ ...h.reachable, floors, floorMemories: [] });
+  h.notifyFoundation(); await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(requests.length, 0, '前九个稳定楼不请求');
+  h.setReachable({ ...h.reachable, floors: [...floors, { id: ids[9], assistantSeq: 10, content: { canonicalContent: '第十楼正文，摘要失败也有外貌' } }], floorMemories: [] });
+  h.notifyFoundation(); h.notifyFoundation();
   await waitFor(() => requests.length === 1 && h.runtime.getState().active === null);
-  assert.equal(requests.length, 1); assert.equal(requests[0].people.length, 10); assert.equal(requests[0].summaryUpdates.length, 1);
-  assert.equal(requests[0].summaryUpdates[0].summary, '本次十人共同收到一封信。');
-  assert.ok(requests[0].people.every(person => person.summaryReferences.length === 1 && person.manualProfile.notes === '已有档案'));
-  assert.equal(Object.hasOwn(requests[0], 'batch'), false); assert.deepEqual(requests[0].allowedWorldInfo, []);
-  assert.equal(JSON.stringify(requests[0]).includes('旧正文'), false); assert.equal(JSON.stringify(requests[0]).includes('本次正文'), false);
-  assert.deepEqual(h.runtime.getState().profileMaterialProgressByEntityId, {}, '自动增量不得伪写全历史覆盖进度');
+  assert.equal(requests.length, 1); assert.equal(requests[0].people.length, 2, '多个选中人物共用一次请求');
+  assert.equal(requests[0].recentFloors.length, 10);
+  assert.match(JSON.stringify(requests[0].recentFloors), /第十楼正文，摘要失败也有外貌/);
+  assert.match(JSON.stringify(requests[0].recentFloors), /第1楼正文外貌/);
+  assert.equal(Object.hasOwn(requests[0], 'summaryUpdates'), false);
+  assert.equal(Object.hasOwn(requests[0], 'allowedWorldInfo'), false);
 });
 
-test('自动摘要按归属和稳定内容本地去重，参与人物的自由摘要不会因 facts 为空丢失', async () => {
-  const requests = [];
-  const h = harness({ generate: async options => {
-    const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
-    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, notes: '已吸收生日' })) } };
-  } });
-  const [target, other] = h.peopleEntities;
-  await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
-  const unrelatedFloor = ids[8], unrelatedMemory = ids[9];
-  h.setReachable({ ...h.reachable, floors: [{ id: unrelatedFloor, assistantSeq: 1, content: { canonicalContent: '无关正文' } }],
-    floorMemories: [{ id: unrelatedMemory, floorId: unrelatedFloor, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '另一人物出现。' }, participants: [{ entityId: other.id }] }] });
-  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: unrelatedFloor, memoryId: unrelatedMemory });
-  await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(requests.length, 0);
-
-  const firstFloor = ids[10], firstMemory = ids[11];
-  const birthdayMemory = { id: firstMemory, floorId: firstFloor, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: '人物1说自己的生日是三月九日。' }, participants: [{ entityId: target.id }] };
-  h.setReachable({ ...h.reachable, floors: [{ id: firstFloor, assistantSeq: 2, content: { canonicalContent: '生日正文' } }], floorMemories: [birthdayMemory] });
-  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: firstFloor, memoryId: firstMemory });
-  await waitFor(() => requests.length === 1 && h.runtime.getState().active === null);
-  assert.equal(requests[0].summaryUpdates[0].summary, '人物1说自己的生日是三月九日。');
-  assert.deepEqual(requests[0].people[0].summaryReferences, [{ summaryKey: 'summary-1' }], '只有 participants 也必须保留自由摘要归属');
-  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: firstFloor, memoryId: firstMemory });
-  await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(requests.length, 1, '同一通知不重发');
-
-  const secondFloor = ids[12], secondMemory = ids[13];
-  h.setReachable({ ...h.reachable, floors: [{ id: secondFloor, assistantSeq: 99, content: { canonicalContent: '不同定位的相同事实' } }],
-    floorMemories: [{ ...birthdayMemory, id: secondMemory, floorId: secondFloor }] });
-  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: secondFloor, memoryId: secondMemory });
-  await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(requests.length, 1, '定位和版本变化但稳定来源相同不请求');
+test('轻量原文预算优先保留最新楼，单楼超限时明确标记截取', async () => {
+  let request;
+  const h = harness({ generate: async options => { request = JSON.parse(options.taskMessages[0].content); return { jsonData: { profiles: [{ personKey: 'person-1' }] } }; } });
+  const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
+  const floors = Array.from({ length: 10 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `${index === 9 ? '最新楼' : '旧楼'}${'甲'.repeat(index === 9 ? 25000 : 100)}` } }));
+  h.setReachable({ ...h.reachable, floors, floorMemories: [] }); h.notifyFoundation();
+  await waitFor(() => Boolean(request) && h.runtime.getState().active === null);
+  assert.equal(request.recentFloors.length, 1); assert.equal(request.recentFloors[0].sourceFloor, 10);
+  assert.match(request.recentFloors[0].excerpt, /后文省略/); assert.ok(request.recentFloors[0].content.length <= 19000);
 });
 
-test('自动摘要同批稳定内容去重且签名不受回执到达顺序影响', async () => {
-  const requests = [];
-  const h = harness({ generate: async options => {
-    const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
-    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, notes: `轮次${requests.length}` })) } };
-  } });
-  const target = h.peopleEntities[0];
-  await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
-  const uuids = Array.from({ length: 14 }, (_, index) => `${String(index + 40).padStart(8, '0')}-3333-4333-8333-${String(index + 40).padStart(12, '0')}`);
-  const memory = (index, summary) => ({ id: uuids[index * 2 + 1], floorId: uuids[index * 2], recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: summary }, participants: [{ entityId: target.id }] });
-  const all = [memory(0, '稳定摘要A')];
-  const publish = entries => h.setReachable({ ...h.reachable,
-    floors: entries.map((item, index) => ({ id: item.floorId, assistantSeq: index + 1 })), floorMemories: entries });
-  const notify = item => h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: item.floorId, memoryId: item.id });
-  publish(all); notify(all[0]); await waitFor(() => requests.length === 1 && h.runtime.getState().active === null);
-
-  const duplicateA = [memory(1, '稳定摘要A'), memory(2, '稳定摘要A')]; all.push(...duplicateA); publish(all);
-  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: true }); duplicateA.forEach(notify);
-  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: false }); await new Promise(resolve => setTimeout(resolve, 30));
-  assert.equal(requests.length, 1, '已处理 A 后合并到达 A/A 仍是相同稳定来源');
-
-  const pairAB = [memory(3, '稳定摘要A'), memory(4, '稳定摘要B')]; all.push(...pairAB); publish(all);
-  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: true }); pairAB.forEach(notify);
-  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: false }); await waitFor(() => requests.length === 2 && h.runtime.getState().active === null);
-  assert.equal(requests[1].summaryUpdates.length, 2);
-
-  const pairBA = [memory(5, '稳定摘要B'), memory(6, '稳定摘要A')]; all.push(...pairBA); publish(all);
-  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: true }); pairBA.forEach(notify);
-  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: false }); await new Promise(resolve => setTimeout(resolve, 30));
-  assert.equal(requests.length, 2, '相同 A/B 内容仅回执到达顺序改变不请求');
+test('自动原文请求失败不因同一通知重试，新增十楼后再尝试', async () => {
+  let calls = 0;
+  const h = harness({ generate: async () => { calls++; if (calls === 1) throw new Error('模拟失败'); return { jsonData: { profiles: [{ personKey: 'person-1' }] } }; } });
+  const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
+  const publish = count => { h.setReachable({ ...h.reachable, floors: Array.from({ length: count }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `稳定原文${index}` } })), floorMemories: [] }); h.notifyFoundation(); };
+  publish(10); await waitFor(() => calls === 1 && h.runtime.getState().active === null);
+  h.notifyFoundation(); h.notifyFoundation(); await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(calls, 1);
+  publish(20); await waitFor(() => calls === 2 && h.runtime.getState().active === null);
 });
 
-test('自动摘要在记忆忙态和人物生成中保留新通知，并将后续通知合成一次调用', async () => {
-  const requests = []; let releaseFirst;
-  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
-  const h = harness({ generate: async options => {
-    const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
-    if (requests.length === 1) await firstGate;
-    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, notes: `轮次${requests.length}` })) } };
-  } });
-  const target = h.peopleEntities[0];
-  await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
-  const memories = [0, 1, 2].map(index => ({ id: ids[index + 9], floorId: ids[index + 5], recordStatus: 'active',
-    summary: { effectiveSource: 'ai', aiText: `新增摘要${index + 1}` }, participants: [{ entityId: target.id }] }));
-  h.setReachable({ ...h.reachable, floors: memories.map((memory, index) => ({ id: memory.floorId, assistantSeq: index + 1, content: { canonicalContent: `正文${index + 1}` } })), floorMemories: memories });
-  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: true });
-  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: memories[0].floorId, memoryId: memories[0].id });
-  await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(requests.length, 0);
-  h.setMemoryState({ ...h.memoryState, memoryWorkBusy: false });
-  await waitFor(() => requests.length === 1 && h.runtime.getState().active?.kind === 'generating');
-  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: memories[1].floorId, memoryId: memories[1].id });
-  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: memories[2].floorId, memoryId: memories[2].id });
-  releaseFirst();
-  await waitFor(() => requests.length === 2 && h.runtime.getState().active === null);
-  assert.equal(requests[1].summaryUpdates.length, 2); assert.equal(requests.length, 2, '生成中到达的两条通知只形成后一轮一次调用');
+test('粗扫请求期间原文变化时丢弃迟到结果', async () => {
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  const h = harness({ generate: async () => { await gate; return { jsonData: { profiles: [{ personKey: 'person-1', name: '基于旧正文的迟到名' }] } }; } });
+  const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
+  const floors = Array.from({ length: 10 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `稳定原文${index}` } }));
+  h.setReachable({ ...h.reachable, floors, floorMemories: [] }); h.notifyFoundation();
+  await waitFor(() => h.runtime.getState().active?.kind === 'generating');
+  h.setReachable({ ...h.reachable, floors: floors.map((floor, index) => index === 9
+    ? { ...floor, content: { canonicalContent: '请求期间被用户修改的新正文' } } : floor), floorMemories: [] });
+  release(); await waitFor(() => h.runtime.getState().active === null);
+  assert.equal(h.runtime.getState().profilesByEntityId[target.id], undefined);
 });
 
-test('自动增量失败不自我重排，invalidate 后旧 finally 不复活待办', async () => {
-  let calls = 0, fail = true, release;
-  const gate = new Promise(resolve => { release = resolve; });
+test('未选择人物不自动建档，已选人物的人工填写与人工清空优先', async () => {
+  let calls = 0;
   const h = harness({ generate: async options => {
-    calls += 1;
-    if (fail) throw new Error('模拟自动失败');
-    await gate;
+    calls++;
     const request = JSON.parse(options.taskMessages[0].content);
-    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey })) } };
+    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, name: `模型名${calls}`, notes: `模型笔记${calls}` })) } };
   } });
-  const target = h.peopleEntities[0], firstFloor = ids[7], firstMemory = ids[8], secondFloor = ids[9], secondMemory = ids[10];
-  const makeMemory = (id, floorId, text) => ({ id, floorId, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: text }, participants: [{ entityId: target.id }] });
-  h.setReachable({ ...h.reachable, floors: [{ id: firstFloor, assistantSeq: 1 }, { id: secondFloor, assistantSeq: 2 }],
-    floorMemories: [makeMemory(firstMemory, firstFloor, '失败摘要'), makeMemory(secondMemory, secondFloor, '迟到摘要')] });
-  await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
-  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: firstFloor, memoryId: firstMemory });
-  await waitFor(() => calls === 1 && h.runtime.getState().active === null);
-  h.notifyMemory(); h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: firstFloor, memoryId: firstMemory });
-  await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(calls, 1, '失败材料不因状态通知或重复回执重试');
+  const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false });
+  const publish = count => { h.setReachable({ ...h.reachable, floors: Array.from({ length: count }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `稳定原文${index}` } })), floorMemories: [] }); h.notifyFoundation(); };
+  publish(10); await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(calls, 0, '未选人物不请求');
+  await h.runtime.setSelectedEntityIds([target.id]);
+  await h.runtime.saveProfile(target.id, { name: '旧AI名', notes: '人工笔记' }, { manualFields: ['notes'] });
+  publish(20); await waitFor(() => calls === 1 && h.runtime.getState().active === null);
+  let profile = h.runtime.getState().profilesByEntityId[target.id];
+  assert.equal(profile.name, '模型名1'); assert.equal(profile.notes, '人工笔记'); assert.deepEqual(profile.manualFields, ['notes']);
+  await h.runtime.saveProfile(target.id, { notes: '' }, { manualFields: ['notes'] });
+  publish(30); await waitFor(() => calls === 2 && h.runtime.getState().active === null);
+  profile = h.runtime.getState().profilesByEntityId[target.id];
+  assert.equal(profile.name, '模型名2'); assert.equal(profile.notes, ''); assert.deepEqual(profile.manualFields, ['notes']);
+});
 
-  fail = false;
-  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId: secondFloor, memoryId: secondMemory });
-  await waitFor(() => calls === 2 && h.runtime.getState().active?.kind === 'generating');
-  h.runtime.invalidate(); release();
-  await new Promise(resolve => setTimeout(resolve, 30)); assert.equal(calls, 2, '失效后的旧收尾不得创建新任务');
+test('自动粗扫把空字符串和空 aliases 当作无更新，且纯空结果不写存档', async () => {
+  let calls = 0;
+  const h = harness({ generate: async options => {
+    calls++;
+    const request = JSON.parse(options.taskMessages[0].content);
+    const values = calls === 1 ? { name: '稳定姓名', aliases: ['稳定别名'] }
+      : calls === 2 ? { name: '', aliases: [], background: '新背景' }
+        : { name: '', aliases: [], background: '' };
+    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, ...values })) } };
+  } });
+  const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
+  await h.runtime.saveProfile(target.id, { name: '旧姓名', aliases: '旧别名', background: '旧背景' }, { manualFields: [] });
+  const publish = count => {
+    h.setReachable({ ...h.reachable, floors: Array.from({ length: count }, (_, index) => ({
+      id: `${String(index + 1).padStart(8, '0')}-5555-4555-8555-${String(index + 1).padStart(12, '0')}`,
+      assistantSeq: index + 1, content: { canonicalContent: `稳定原文${index}` },
+    })), floorMemories: [] });
+    h.notifyFoundation();
+  };
+  publish(10); await waitFor(() => calls === 1 && h.runtime.getState().active === null);
+  publish(20); await waitFor(() => calls === 2 && h.runtime.getState().active === null);
+  let profile = h.runtime.getState().profilesByEntityId[target.id];
+  assert.equal(profile.name, '稳定姓名'); assert.equal(profile.aliases, '稳定别名'); assert.equal(profile.background, '新背景');
+  const putsBeforeEmptyRound = h.db.calls.filter(call => call[0] === 'put').length;
+  publish(30); await waitFor(() => calls === 3 && h.runtime.getState().active === null);
+  profile = h.runtime.getState().profilesByEntityId[target.id];
+  assert.equal(profile.name, '稳定姓名'); assert.equal(profile.aliases, '稳定别名'); assert.equal(profile.background, '新背景');
+  assert.equal(h.db.calls.filter(call => call[0] === 'put').length, putsBeforeEmptyRound, '没有非空变更时零写入');
+});
+
+test('原文在人物存档 read 等待期间变化时，CAS updater 拒绝迟到 patch', async () => {
+  let releaseRead, markRead;
+  const readGate = new Promise(resolve => { releaseRead = resolve; });
+  const readStarted = new Promise(resolve => { markRead = resolve; });
+  const h = harness({ generate: async () => ({ jsonData: { profiles: [{ personKey: 'person-1', name: '迟到旧名' }] } }) });
+  const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
+  await h.runtime.saveProfile(target.id, { name: '保留旧名' }, { manualFields: [] });
+  const floors = Array.from({ length: 10 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `稳定原文${index}` } }));
+  h.setReachable({ ...h.reachable, floors, floorMemories: [] });
+  let waitForRead = true;
+  h.db.hooks.beforeGet = async () => { if (!waitForRead) return; waitForRead = false; markRead(); await readGate; };
+  h.notifyFoundation(); await readStarted;
+  h.setReachable({ ...h.reachable, floors: floors.map((floor, index) => index === 9
+    ? { ...floor, content: { canonicalContent: 'read等待时的新正文' } } : floor), floorMemories: [] });
+  releaseRead(); await waitFor(() => h.runtime.getState().active === null);
+  assert.equal(h.runtime.getState().profilesByEntityId[target.id].name, '保留旧名');
+  assert.equal(h.db.calls.filter(call => call[0] === 'put').length, 2, '自动迟到 patch 未进入 CAS put');
+});
+
+test('人物选择在 CAS 冲突期间变化后，重试 updater 不写已取消人物', async () => {
+  let releasePut, markPut;
+  const putGate = new Promise(resolve => { releasePut = resolve; });
+  const putStarted = new Promise(resolve => { markPut = resolve; });
+  const h = harness({ generate: async () => ({ jsonData: { profiles: [{ personKey: 'person-1', name: '取消后的迟到名' }] } }) });
+  const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
+  await h.runtime.saveProfile(target.id, { name: '保留旧名' }, { manualFields: [] });
+  const floors = Array.from({ length: 10 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `稳定原文${index}` } }));
+  h.setReachable({ ...h.reachable, floors, floorMemories: [] });
+  let waitForPut = true;
+  h.db.hooks.beforePut = async () => { if (!waitForPut) return; waitForPut = false; markPut(); await putGate; };
+  h.notifyFoundation(); await putStarted;
+  const key = `chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`;
+  const latest = structuredClone(h.db.records.get(key)); latest.revision += 1; latest.data.selectedEntityIds = [];
+  h.db.records.set(key, latest);
+  releasePut(); await waitFor(() => h.runtime.getState().active === null);
+  await h.runtime.refresh({ refreshMemory: false });
+  assert.equal(h.db.records.get(key).data.profilesByEntityId[target.id].name, '保留旧名');
+  assert.deepEqual(h.runtime.getState().selectedEntityIds, []);
 });
 
 test('主动重整多批只累计本轮AI，失败不提前清旧档，重试从空重新开始', async () => {
@@ -1036,20 +997,4 @@ test('主动重整多批只累计本轮AI，失败不提前清旧档，重试从
   assert.equal(profile.notes, '人工保留'); assert.deepEqual(profile.manualFields, ['notes']);
   assert.equal(state.avatarsByEntityId[id], 'data:image/png;base64,AAAA');
   assert.deepEqual(state.selectedEntityIds, [id]); assert.deepEqual(state.personOrderEntityIds, [id]);
-});
-
-test('自动增量仍输入旧AI档案，模型缺省字段与人工字段继续保留', async () => {
-  let request, calls = 0;
-  const h = harness({ generate: async options => { calls++; request = JSON.parse(options.taskMessages[0].content); return { jsonData: { profiles: [{ personKey: 'person-1', likes: '新的爱好' }] } }; } });
-  const id = h.peopleEntities[0].id, floorId = ids[14], memoryId = ids[15];
-  h.setReachable({ ...h.reachable, floors: [{ id: floorId, assistantSeq: 1, content: { canonicalContent: '正文' } }],
-    floorMemories: [{ id: memoryId, floorId, recordStatus: 'active', summary: { aiText: '人物1新增一项爱好。' }, participants: [{ entityId: id }] }] });
-  await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([id]);
-  await h.runtime.saveProfile(id, { name: '旧AI姓名', gender: '旧AI性别', background: '旧AI背景', notes: '人工补充' }, { manualFields: ['notes'] });
-  h.runtime.requestAutomaticMaintenance({ chatId: CHAT_A, floorId, memoryId });
-  await waitFor(() => calls === 1 && h.runtime.getState().active === null);
-  assert.deepEqual(request.people[0].existingProfile, { name: '旧AI姓名', gender: '旧AI性别', background: '旧AI背景' });
-  const profile = h.runtime.getState().profilesByEntityId[id];
-  assert.equal(profile.name, '旧AI姓名'); assert.equal(profile.gender, '旧AI性别'); assert.equal(profile.background, '旧AI背景');
-  assert.equal(profile.likes, '新的爱好'); assert.equal(profile.notes, '人工补充'); assert.equal(calls, 1);
 });

@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import { access, readFile } from 'node:fs/promises';
 
 test('生产入口只装配 V3 记忆与独立人物工作区，面板提供五个主页面且旧 V1/V2 入口不存在', async () => {
-  const [entry, panel, html, bootstrap, bundle, manifest] = await Promise.all([
+  const [entry, panel, html, bootstrap, bundle, manifest, people] = await Promise.all([
     readFile(new URL('../index.js', import.meta.url), 'utf8'),
     readFile(new URL('../src/ui/panel.js', import.meta.url), 'utf8'),
     readFile(new URL('../src/ui/panel.html', import.meta.url), 'utf8'),
     readFile(new URL('../src/bootstrap.js', import.meta.url), 'utf8'),
     readFile(new URL('../dist/qqj-app.js', import.meta.url), 'utf8'),
     readFile(new URL('../manifest.json', import.meta.url), 'utf8').then(JSON.parse),
+    readFile(new URL('../src/v3/people-workspace.js', import.meta.url), 'utf8'),
   ]);
   for (const factory of ['createChatSession', 'createPluginLifecycle', 'createHostAdapter', 'createFoundationStore', 'createFoundationRuntime', 'createChatBranchInitializer', 'createV3MemoryRuntime', 'createV3RecallRuntime', 'createPeopleWorkspaceStore', 'createPeopleWorkspaceRuntime', 'createStorageManagement', 'installPublicMemoryBridge', 'installPublicQianshiBridge']) {
     assert.equal((entry.match(new RegExp(`${factory}\\s*\\(`, 'g')) || []).length, 1, factory);
@@ -18,7 +19,11 @@ test('生产入口只装配 V3 记忆与独立人物工作区，面板提供五�
   assert.match(entry, /import\s*\{\s*version\s+as\s+pluginVersion\s*\}\s*from\s*['"]\.\/manifest\.json['"]/, '生产回执版本必须只从 manifest.version 导入');
   assert.match(entry, /createV3RecallRuntime\([\s\S]*?pluginVersion,\s*\n\}\)/);
   assert.match(entry, /qianshiProgressProvider:\s*async\s*\(source, context\)\s*=>\s*v3MemoryRuntime\.getQianshiRecall\(\{\s*\.\.\.context,\s*\.\.\.\(await timeRuntime\.currentStoryContext\(source\)\s*\?\?\s*\{\}\)\s*\}\)/);
-  assert.equal(manifest.version, '0.5.10');
+  assert.doesNotMatch(entry, /onAutomaticSummaryCommitted:\s*receipt\s*=>\s*peopleWorkspaceRuntime/);
+  assert.match(people, /foundationRuntime\.subscribe\(\(\)\s*=>\s*observeStableFloors\(\)\)/);
+  assert.match(people, /count\s*-\s*automaticFloorCount\s*<\s*10/);
+  assert.match(people, /canonicalContent/);
+  assert.equal(manifest.version, '0.5.11');
   for (const marker of ['createArchiveV2', 'archiveV2', 'archive-v2', 'myriad-knots-bond-draft', '首次建立双丝网']) {
     assert.doesNotMatch(entry + panel + bootstrap + bundle, new RegExp(marker, 'i'));
   }
