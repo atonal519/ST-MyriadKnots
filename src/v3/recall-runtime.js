@@ -8,13 +8,14 @@ import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 import { PREQUEL_METADATA_KEY, PREQUEL_PROMPT_SLOT, selectPrequel } from './recall-prequel.js';
 import { publicErrorMessage } from '../public-error.js';
+import { normalizeAutoHideKeepAiCount } from '../settings.js';
 
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
-export const RECALL_RECEIPT_SCHEMA_VERSION = 15;
-export const RECALL_STRATEGY_VERSION = 'continuity-v15';
+export const RECALL_RECEIPT_SCHEMA_VERSION = 16;
+export const RECALL_STRATEGY_VERSION = 'continuity-v16';
 const RECALL_PROMPT_DEPTH = 2;
-const IDENTIFIED_RECALL_STRATEGIES = [RECALL_STRATEGY_VERSION, 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11'];
+const IDENTIFIED_RECALL_STRATEGIES = [RECALL_STRATEGY_VERSION, 'continuity-v15', 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11'];
 
 const SUPPORTED_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 const MAX_STOPPED_GENERATION_CHAINS = 16;
@@ -315,6 +316,9 @@ const selectorDiagnosticSnapshot = value => {
     sourceLabel: api.sourceLabel,
     model: api.model,
     transportAttempts: Number.isSafeInteger(value?.transportAttempts) && value.transportAttempts >= 0 ? value.transportAttempts : api.transportAttempts,
+    sourceStage: clean(value?.sourceStage ?? api.sourceStage, 80),
+    requestCharacters: nonNegativeInteger(value?.requestCharacters) ? value.requestCharacters : null,
+    requestEstimatedTokens: nonNegativeInteger(value?.requestEstimatedTokens) ? value.requestEstimatedTokens : null,
     durationMs: Math.max(0, Math.floor(Number(value?.durationMs) || 0)),
     utilityRoundTripMs: finiteDuration(value?.utilityRoundTripMs) ? Math.floor(value.utilityRoundTripMs) : null,
     localSelectionMs: finiteDuration(value?.localSelectionMs) ? Math.floor(value.localSelectionMs) : null,
@@ -369,7 +373,7 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     || !boundedString(receipt.queryFingerprint, 200)
     || (receipt.schemaVersion >= 8 && !boundedString(receipt.bodyMatchFingerprint, 200))
     || (receipt.schemaVersion >= 9 && (historical
-      ? ![RECALL_STRATEGY_VERSION, 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11', 'continuity-v10', 'continuity-v9', 'continuity-v8', 'continuity-v7', 'continuity-v6', 'continuity-v5', 'continuity-v4', 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
+      ? ![RECALL_STRATEGY_VERSION, 'continuity-v15', 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11', 'continuity-v10', 'continuity-v9', 'continuity-v8', 'continuity-v7', 'continuity-v6', 'continuity-v5', 'continuity-v4', 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
       : receipt.strategyVersion !== RECALL_STRATEGY_VERSION))
     || !SUPPORTED_TYPES.has(receipt.generationType)
     || !Array.isArray(receipt.selectedFloors) || receipt.selectedFloors.length > receiptFloorLimit
@@ -422,7 +426,10 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
       || !(diagnostic.transportAttempts === null || nonNegativeInteger(diagnostic.transportAttempts)) || !finiteDuration(diagnostic.durationMs)
       || !(diagnostic.utilityRoundTripMs === null || diagnostic.utilityRoundTripMs === undefined || finiteDuration(diagnostic.utilityRoundTripMs))
       || !(diagnostic.localSelectionMs === null || diagnostic.localSelectionMs === undefined || finiteDuration(diagnostic.localSelectionMs))
-      || (IDENTIFIED_RECALL_STRATEGIES.includes(receipt.strategyVersion) && !['historyCandidateCount', 'stateCandidateCount', 'historyExcludedCount', 'stateExcludedCount', 'historyRetainedCount', 'stateRetainedCount'].every(key => diagnostic[key] === null || nonNegativeInteger(diagnostic[key])))) return false;
+      || (IDENTIFIED_RECALL_STRATEGIES.includes(receipt.strategyVersion) && !['historyCandidateCount', 'stateCandidateCount', 'historyExcludedCount', 'stateExcludedCount', 'historyRetainedCount', 'stateRetainedCount'].every(key => diagnostic[key] === null || nonNegativeInteger(diagnostic[key])))
+      || !(diagnostic.requestCharacters === null || diagnostic.requestCharacters === undefined || nonNegativeInteger(diagnostic.requestCharacters))
+      || !(diagnostic.requestEstimatedTokens === null || diagnostic.requestEstimatedTokens === undefined || nonNegativeInteger(diagnostic.requestEstimatedTokens))
+      || !(diagnostic.sourceStage === undefined || boundedString(diagnostic.sourceStage, 80, { empty: true }))) return false;
     const timings = receipt.timings;
     if (!timings || typeof timings !== 'object' || Array.isArray(timings)
       || !['inputMs', 'sourceMs', 'selectorMs'].every(key => finiteDuration(timings[key]))
@@ -494,7 +501,7 @@ async function historicalSignedReceiptValid(receipt, { chatId, userIndex, userFi
   try {
     const snapshot = clone(receipt);
     if (!receiptShapeValid(snapshot, { historical: true })
-      || ![6, 7, 8, 9, 10, 11, 12, 13, 14, RECALL_RECEIPT_SCHEMA_VERSION].includes(snapshot.schemaVersion)
+      || ![6, 7, 8, 9, 10, 11, 12, 13, 14, 15, RECALL_RECEIPT_SCHEMA_VERSION].includes(snapshot.schemaVersion)
       || snapshot.chatId !== chatId
       || snapshot.userMessageIndex !== userIndex
       || snapshot.userContentFingerprint !== userFingerprint
@@ -570,7 +577,7 @@ export async function projectHistoricalRecallReceipt(message, { chatId, userMess
     || typeof fingerprint !== 'function') return null;
   const receipt = message.extra?.[RECALL_RECEIPT_KEY];
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return null;
-  if ([6, 7, 8, 9, 10, 11, 12, 13, 14, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
+  if ([6, 7, 8, 9, 10, 11, 12, 13, 14, 15, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
     const snapshot = await historicalSignedReceiptValid(receipt, {
       chatId: chatId.trim(),
       userIndex: userMessageIndex,
@@ -581,10 +588,12 @@ export async function projectHistoricalRecallReceipt(message, { chatId, userMess
   return legacyStateFromReceipt(receipt, { chatId: chatId.trim(), userIndex: userMessageIndex });
 }
 
-async function captureCoreBodyWitness(coreChat, sanitizerOptions, fingerprint) {
+export async function captureCoreBodyWitness(coreChat, sanitizerOptions, fingerprint, maximumFloors = 3) {
   const chat = Array.isArray(coreChat) ? coreChat : [];
   const selected = [];
-  for (let index = chat.length - 1; index >= 0 && selected.length < 3; index -= 1) {
+  // The same N that guides optional auto-hide defines recall's raw-body base,
+  // even when auto-hide is off; it never changes which messages the host sends.
+  for (let index = chat.length - 1; index >= 0 && selected.length < normalizeAutoHideKeepAiCount(maximumFloors); index -= 1) {
     const message = chat[index];
     if (!message || message.is_system === true || message.is_hidden === true || message.hidden === true) continue;
     if (message.is_user !== false || typeof message.mes !== 'string') continue;
@@ -601,12 +610,11 @@ async function captureCoreBodyWitness(coreChat, sanitizerOptions, fingerprint) {
   return Object.freeze(selected.reverse());
 }
 
-async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, fingerprint) {
+async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, fingerprint, maximumFloors = 3) {
+  // Recent-body overlap is trusted only when message position, selected swipe, and raw/canonical fingerprints agree.
   const visibleFloorIds = [...new Set(source.readiness?.visibleSummaryFloorIds ?? [])].sort();
-  const visibleFloorIdSet = new Set(visibleFloorIds);
   const verified = [];
   for (const ref of source.bodyMatchRefs ?? []) {
-    if (visibleFloorIdSet.has(ref.floorId)) continue;
     const liveMessage = snapshot?.chat?.[ref.hostLocator?.messageIndex];
     const selected = selectAssistantMessage(liveMessage);
     if (!selected || selected.swipeId !== ref.hostLocator.swipeId || selected.selectedSwipeIndex !== ref.hostLocator.selectedSwipeIndex) continue;
@@ -615,19 +623,35 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
     if (rawFingerprint !== ref.rawFingerprint || canonicalFingerprint !== ref.canonicalFingerprint) continue;
     verified.push({ ...ref, liveMessage, liveIndex: ref.hostLocator.messageIndex, rawContent: selected.rawContent, canonicalContent: canonical, key: `${rawFingerprint}|${canonicalFingerprint}` });
   }
-  const materialFor = covered => ({
+  const recentVisibleMessageIndexes = new Set();
+  let recentVisibleCount = 0;
+  for (let index = (snapshot?.chat?.length ?? 0) - 1; index >= 0 && recentVisibleCount < normalizeAutoHideKeepAiCount(maximumFloors); index -= 1) {
+    const message = snapshot.chat[index];
+    if (!message || message.is_system === true || message.is_hidden === true || message.hidden === true) continue;
+    const selected = selectAssistantMessage(message);
+    if (!selected?.rawContent?.trim() || !sanitizeMemoryContent(selected.rawContent, sanitizerOptions)) continue;
+    recentVisibleMessageIndexes.add(index);
+    recentVisibleCount += 1;
+  }
+  const recentVisibleFloorIds = [...new Set(verified.filter(ref => recentVisibleMessageIndexes.has(ref.liveIndex)).map(ref => ref.floorId))].sort();
+  const materialFor = (covered, recentBodyFloorIds) => ({
     version: 3,
     covered: covered.map(item => [item.floorId, item.floorMemoryId, item.assistantSeq, item.rawFingerprint, item.canonicalFingerprint]),
     visibleFloorIds,
+    recentBodyFloorIds,
   });
-  const resultFor = async covered => Object.freeze({
-    fingerprint: await fingerprint(JSON.stringify(materialFor(covered))),
+  const resultFor = async covered => {
+    const recentBodyFloorIds = Object.freeze([...new Set([...covered.map(item => item.floorId), ...recentVisibleFloorIds])].sort());
+    return Object.freeze({
+    fingerprint: await fingerprint(JSON.stringify(materialFor(covered, recentBodyFloorIds))),
     witnessCount: witness.length,
     matchedCount: covered.length,
     coveredFloorIds: Object.freeze(covered.map(item => item.floorId)),
     coveredRefs: Object.freeze(covered.map(item => Object.freeze({ floorId: item.floorId, floorMemoryId: item.floorMemoryId, assistantSeq: item.assistantSeq }))),
     visibleFloorIds: Object.freeze(visibleFloorIds),
+    recentBodyFloorIds,
   });
+  };
   if (!verified.length || !witness.length) return resultFor([]);
   const liveCandidates = [];
   for (let liveIndex = 0; liveIndex < (snapshot?.chat?.length ?? 0); liveIndex += 1) {
@@ -710,7 +734,7 @@ function coveredBodyGuardsCurrent(guards, snapshot, sanitizerOptions) {
   });
 }
 
-export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = 5000, realtimeOrigin = () => false, notifyUser = null, sourceReader = readRecallSource, selector = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, timeProjectionProvider = null, qianshiProgressProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
+export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = 5000, realtimeOrigin = () => false, recentBodyFloorLimit = () => 3, notifyUser = null, sourceReader = readRecallSource, selector = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, timeProjectionProvider = null, qianshiProgressProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 recall host adapter 无效');
   if (typeof fingerprint !== 'function') throw new TypeError('V3 recall fingerprint 无效');
@@ -1055,7 +1079,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         || currentSource.headCheckpointId !== rootResult.data?.headCheckpointId)) return { ok: false, reason: 'sourceUnavailable' };
       if (currentSource.chatId !== source.chatId) return { ok: false, reason: 'chatChanged' };
       if (currentSource.narrativeGeneration !== source.narrativeGeneration) return { ok: false, reason: 'narrativeChanged' };
-      currentSource = Object.freeze({ ...currentSource, bodyMatch: await attachCoreBodyMatch(currentSource, operation.coreBodyWitness, before, operation.sanitizerOptions, fingerprint) });
+      currentSource = Object.freeze({ ...currentSource, bodyMatch: await attachCoreBodyMatch(currentSource, operation.coreBodyWitness, before, operation.sanitizerOptions, fingerprint, recentBodyFloorLimit()) });
     }
     if (!timeDependenciesValid(timeDependencies)) return { ok: false, reason: 'selectedRefsChanged' };
     if (timeDependencies.mode === 'projection' || timeDependencies.corrections.length || timeDependencies.reminders.length) {
@@ -1203,7 +1227,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       }
       const sanitizerSnapshot = currentSanitizerOptions();
       const [coreBodyWitness, baseQueryFingerprint] = await Promise.all([
-        captureCoreBodyWitness(coreInput, sanitizerSnapshot, fingerprint),
+        captureCoreBodyWitness(coreInput, sanitizerSnapshot, fingerprint, recentBodyFloorLimit()),
         fingerprint(queryContext.text),
       ]);
       operation.coreBodyWitness = coreBodyWitness;
@@ -1212,13 +1236,14 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       const sourceStarted = Date.now();
       const readSource = await preparedSource(before, sanitizerSnapshot, { fresh: attempt > 0, operation });
       let source = readSource?.status === 'ready'
-        ? Object.freeze({ ...readSource, bodyMatch: await attachCoreBodyMatch(readSource, coreBodyWitness, before, sanitizerSnapshot, fingerprint) })
+        ? Object.freeze({ ...readSource, bodyMatch: await attachCoreBodyMatch(readSource, coreBodyWitness, before, sanitizerSnapshot, fingerprint, recentBodyFloorLimit()) })
         : readSource;
       if (source?.status === 'ready') source = await attachQianshiProgress(source, queryContext, before);
       timings.sourceMs = Date.now() - sourceStarted;
       if (source?.sourceReadAttempts) timings.sourceReadAttempts = clone(source.sourceReadAttempts);
       if (source?.status === 'ready') diagnostic.coverage = clone(source.coverage);
       if (source.status !== 'ready') {
+        // Technical source failures take the bounded retry path; a valid but uninitialized source can be skipped normally.
         const reason = source.status === 'timeout' ? 'memoryPreparationTimeout'
           : source.sourceReadAttempts?.exitPoint === 'memoryPreparationFailed' ? 'memoryPreparationFailed'
             : source.status === 'stale' ? 'sourceStale' : 'sourceUnavailable';
@@ -1266,6 +1291,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       const initialQianshiCharacters = source.qianshiProgress?.text ? `\n\n${qianshiBlock(source.qianshiProgress)}`.length : 0;
       const initialQianshiTokens = reservedQianshiTokenBudget(source.qianshiProgress);
       try { selection = await selectionRunner({ source, queryContext, contextSize, signal: operation.controller.signal,
+        recentBodyFloorCount: normalizeAutoHideKeepAiCount(recentBodyFloorLimit()),
         reservedTokens: operation.prequelSelection.estimatedTokens + initialQianshiTokens,
         reservedCharacters: operation.prequelSelection.estimatedCharacters + initialQianshiCharacters }); }
       finally { timings.selectorMs = Date.now() - selectorStarted; }
@@ -1373,7 +1399,14 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       clearSlot(token);
       operation.prequelCommitted = false;
       lastPrequel = null;
-      const safe = Object.freeze({ code: clean(error?.code ?? error?.name ?? 'V3_RECALL_FAILED', 120), message: clean(error?.message ?? '召回失败，已安全停止。', 500) });
+      const taskMetadata = sanitizeTaskMetadata(error?.taskMetadata);
+      const safe = Object.freeze({ code: clean(error?.code ?? error?.name ?? 'V3_RECALL_FAILED', 120), message: clean(error?.message ?? '召回失败，已安全停止。', 500),
+        source: taskMetadata.source, sourceLabel: taskMetadata.sourceLabel, model: taskMetadata.model,
+        sourceStage: error?.selectorDiagnostic?.sourceStage || taskMetadata.sourceStage || diagnostic.phase,
+        httpStatus: Number.isSafeInteger(error?.httpStatus ?? error?.status) ? error.httpStatus ?? error.status : taskMetadata.httpStatus,
+        formatStage: clean(error?.formatStage ?? taskMetadata.formatStage, 80), finishReason: taskMetadata.finishReason,
+        transportAttempts: Number.isSafeInteger(error?.transportAttempts ?? taskMetadata.transportAttempts) ? error.transportAttempts ?? taskMetadata.transportAttempts : null });
+      if (error?.selectorDiagnostic) diagnostic.selectorDiagnostic = selectorDiagnosticSnapshot(error.selectorDiagnostic);
       diagnostic.error = safe; diagnostic.timings = clone({ ...timings, totalMs: Date.now() - diagnostic.started });
       if (attempt === 0) {
         try { notifyUser?.({ kind: 'warning', text: '记忆召回未完成，正在重试一次。' }); } catch { /* notification must not affect recall */ }
@@ -1510,7 +1543,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       let receiptSnapshot = receipt.schemaVersion === RECALL_RECEIPT_SCHEMA_VERSION
         ? await persistedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint, pluginVersion }, fingerprint)
         : null;
-      if (!receiptSnapshot && [6, 7, 8, 9, 10, 11, 12, 13, 14, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
+      if (!receiptSnapshot && [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
         const historical = await historicalSignedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint }, fingerprint);
         if (historical) receiptSnapshot = Object.freeze({ ...stateFromReceipt(historical, { restoredReceipt: true }), legacyReadOnly: true });
       }

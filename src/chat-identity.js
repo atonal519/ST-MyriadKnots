@@ -87,6 +87,7 @@ export function createChatIdentityCoordinator({
     try { rootExists = await legacyRootExists(chatId); }
     catch { assertCurrent(signal); return false; }
     assertCurrent(signal);
+    // Retry under a fresh identity only when the conflicting target has no v3 root to preserve.
     return !rootExists;
   }
   let sequence = Promise.resolve();

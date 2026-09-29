@@ -70,7 +70,9 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
       if ((state.chatId ?? null) === operationChatId) after?.(state);
       if (active && mine === epoch) {
         const report = generationReport ? result?.lastGenerationReport : null;
-        const details = report ? [report.missing ? `遗漏 ${report.missing} 位` : '', report.conflicts ? `冲突 ${report.conflicts} 位` : '', report.invalid ? `格式无效 ${report.invalid} 位` : '', report.unknown ? `未知目标 ${report.unknown} 项` : '', report.skipped ? `并发跳过 ${report.skipped} 位` : ''].filter(Boolean) : [];
+        const details = report ? [report.missing ? `遗漏 ${report.missing} 位` : '', report.conflicts ? `冲突 ${report.conflicts} 位` : '', report.invalid ? `格式无效 ${report.invalid} 位` : '', report.unknown ? `未知目标 ${report.unknown} 项` : '', report.skipped ? `并发跳过 ${report.skipped} 位` : '',
+          Number.isSafeInteger(report.worldInfoMatched) ? `送入世界书 ${report.worldInfoMatched} 项` : '',
+          ].filter(Boolean) : [];
         feedback = report ? `保存 ${report.saved}/${report.requested} 位${details.length ? `；${details.join('；')}` : ''}。` : `${label}完成。`;
         render(state);
       }

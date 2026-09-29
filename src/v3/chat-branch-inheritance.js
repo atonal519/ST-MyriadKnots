@@ -51,6 +51,7 @@ function normalizeBranchCandidates(candidates, sourceChatId, targetChatId) {
 function inheritedPrefix(source, candidates) {
   const matched = matchFloorCandidates(source.floors, candidates);
   if (matched.issue) throw fail('V3_BRANCH_FLOOR_MATCH_INVALID', '分支消息与源记忆楼无法安全对应，未创建继承档。');
+  // A branch inherits only the uniquely matched, uninterrupted floor prefix it still contains.
   let count = 0;
   while (count < candidates.length) {
     const match = matched.candidateMatches.get(count);
@@ -73,6 +74,7 @@ async function copyLatestPeople({ peopleStore, sourceIdentity, targetIdentity, e
   const redirects = Object.fromEntries(Object.entries(source.data.identityRedirectsByEntityId ?? {})
     .filter(([from, to]) => allowed.has(from) && allowed.has(to)));
   const uniqueAllowed = values => [...new Set((values ?? []).filter(entityId => allowed.has(entityId)))];
+  // People keep their latest profile and manual fields; floor-scoped material progress belongs to the source chat.
   const workspace = {
     ...structuredClone(source.data),
     chatId: targetIdentity.chatId,

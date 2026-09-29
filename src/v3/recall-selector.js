@@ -585,7 +585,9 @@ export function historySelectionContext(source, queryContext) {
   const query = clean(queryContext?.text, MAX_QUERY_CHARACTERS);
   if (source?.status !== 'ready' || !query) return null;
   const queries = recallQueries(queryContext, query);
-  const bodyCoveredFloorIds = new Set([...(source.bodyMatch?.coveredFloorIds ?? []), ...(source.bodyMatch?.visibleFloorIds ?? [])]);
+  // This bounded fingerprint-matched set suppresses duplicate recall candidates; it does not describe the host's full prompt history.
+  // Older visible saved floors remain eligible recall candidates.
+  const bodyCoveredFloorIds = new Set(source.bodyMatch?.recentBodyFloorIds ?? source.bodyMatch?.coveredFloorIds ?? []);
   const floorMemories = source.floorMemories;
   const bodyCoverage = memory => {
     const sourceFloorIds = memory.sourceFloorIds?.length ? memory.sourceFloorIds : [memory.floorId];
@@ -624,6 +626,7 @@ export function historySelectionContext(source, queryContext) {
       adjacent.push({ ...neighbor, score: anchor.score * 0.2, _adjacentSummary: true, _relationEvidence: 'nearby', _relationAnchorStableKey: historyStableKey(anchor) });
     }
   }
+  // Aggregate summaries cannot be split by member here; partial body overlap is retained for diagnostics, not removal.
   const partialAggregateBodyOverlap = floorMemories.some(memory => (memory.sourceFloorIds?.length ?? 0) > 1 && bodyCoverage(memory) === 'partial');
   const fullyCoveredMemoryCount = floorMemories.filter(memory => bodyCoverage(memory) === 'all').length;
   return { query, queries, oldMemories, entityById, facts, summaries, direct, adjacent, bodyCoveredFloorIds,

@@ -136,6 +136,22 @@ test('外观模块内联选择即存并即时应用；程序设置同步标签�
   assert.equal(node.find(n => n.tagName === 'label' && n.children[0]?.textContent === '字体 family'), undefined);
 });
 
+test('外观设置的两个楼层卡片开关分别保存并立即应用', async () => {
+  const current = { appearanceTheme: 'auto', appearanceScale: 1, appearanceFontCssUrl: '', inlineRecallVisible: true, inlineMemoryVisible: true };
+  const patches = []; let applied = 0;
+  const settings = { get: () => ({ ...current }), update: patch => { Object.assign(current, patch); patches.push(patch); return { ...current }; } };
+  const { node } = createAppearanceSettings({ settings, documentRef, applyAppearance: () => { applied += 1; } });
+  const recall = node.find(n => n.tagName === 'input' && n.attributes['aria-label'] === '显示楼层召回卡片');
+  const memory = node.find(n => n.tagName === 'input' && n.attributes['aria-label'] === '显示楼层记忆卡片');
+  assert.equal(recall.checked, true); assert.equal(memory.checked, true);
+  recall.checked = false; await recall.fire('change');
+  assert.deepEqual(patches.at(-1), { inlineRecallVisible: false });
+  assert.equal(current.inlineMemoryVisible, true);
+  memory.checked = false; await memory.fire('change');
+  assert.deepEqual(patches.at(-1), { inlineMemoryVisible: false });
+  assert.equal(applied, 2);
+});
+
 test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调用与另存均不改分析选择', async () => {
   let main = { id: '', name: '主配置', url: 'https://main.test/v1', key: 'MAIN_KEY', model: 'main-model', excludeParams: [], timeoutSec: 180, stream: false };
   let presets = [{ id: 'fast', name: '摘要快速', url: 'https://fast.test/v1', key: 'FAST_KEY', model: 'fast-model', excludeParams: ['seed'], timeoutSec: 60, stream: true, qqjTemperature: 0.42 }];

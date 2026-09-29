@@ -209,6 +209,7 @@ export async function persistBranchedMessageMetadata({
   const before = snapshotForCurrentHost();
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
+  // Branch copies invalidate recall receipts and rehome only retained floor anchors and this plugin's hide markers.
   const rewriteExtra = (extra, forcedFloorId = null) => {
     const object = extra && typeof extra === 'object' && !Array.isArray(extra);
     const hasReceipt = object && Object.hasOwn(extra, RECALL_RECEIPT_KEY);

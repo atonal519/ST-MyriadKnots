@@ -8,10 +8,15 @@ import { BASE_PROCESSING_PROMPT, resolveProcessingPrompt, withBaseProcessingProm
 
 const config = overrides => ({ url: 'https://api.example.test', key: 'TEST_KEY', model: 'compact-model', excludeParams: [], timeoutSec: 5, stream: false, ...overrides });
 const jsonResponse = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
-const sseResponse = chunks => {
+const sseResponse = (chunks, contentType = 'text/event-stream') => {
   const encoder = new TextEncoder(); let index = 0;
-  return { ok: true, status: 200, body: { getReader: () => ({ read: async () => index < chunks.length ? { done: false, value: encoder.encode(chunks[index++]) } : { done: true } }) } };
+  return { ok: true, status: 200, headers: { get: () => contentType }, body: { getReader: () => ({ read: async () => index < chunks.length ? { done: false, value: encoder.encode(chunks[index++]) } : { done: true } }) } };
 };
+async function settlesSoon(promise) {
+  let timer;
+  try { return await Promise.race([promise.then(() => 'success', error => typeof error.code === 'string' ? error.code : error.name), new Promise(resolve => { timer = setTimeout(() => resolve('still-pending'), 150); })]); }
+  finally { clearTimeout(timer); }
+}
 
 test('破限提示词仅用 trim 判断空白，自定义值逐字替换默认并保持拼接边界', () => {
   const custom = '  用户自定义破限\n';
@@ -76,6 +81,57 @@ test('流式 SSE 与非流式 JSON 都经生产解析 seam，空输出/坏 JSON 
     const client = createCompactApiClient({ fetchImpl: async () => jsonResponse({ choices: [{ message: { content } }] }) });
     await assert.rejects(client.generateTask({ config: config(), taskMessages: [] }), error => /^QQJ_(EMPTY|COMPLETION_JSON)$/.test(error.code) && !error.message.includes('TEST_KEY'));
   }
+});
+
+test('流式 JSON 响应走普通 Chat Completions 解析，标称 SSE 却无 data 行时报协议错误', async () => {
+  const jsonClient = createCompactApiClient({ fetchImpl: async () => ({
+    ...jsonResponse({ choices: [{ finish_reason: 'stop', message: { content: '{"ok":true}' } }] }),
+    headers: { get: () => 'application/vnd.example+json; charset=utf-8' },
+  }) });
+  assert.deepEqual((await jsonClient.generateTask({ config: config({ stream: true }), taskMessages: [] })).jsonData, { ok: true });
+
+  const badSse = createCompactApiClient({ fetchImpl: async () => sseResponse(['{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}'], 'text/event-stream') });
+  await assert.rejects(badSse.generateTask({ config: config({ stream: true }), taskMessages: [] }), error => error.code === 'QQJ_STREAM_PROTOCOL');
+});
+
+test('SSE [DONE] 后代理不关闭连接时仍结束请求并释放忙碌状态', async () => {
+  const busy = []; let reads = 0, cancelled = 0;
+  const client = createCompactApiClient({ onBusyChange: value => busy.push(value), timeoutMs: () => 15,
+    fetchImpl: async () => ({ ok: true, status: 200, headers: { get: () => 'text/event-stream' }, body: { getReader: () => ({
+      read: async () => reads++ === 0 ? { done: false, value: new TextEncoder().encode('data: {"choices":[{"delta":{"content":"{\\"ok\\":true}"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n') } : new Promise(() => {}),
+      cancel: async () => { cancelled += 1; }, releaseLock() {},
+    }) } }),
+  });
+  assert.equal(await settlesSoon(client.generateTask({ config: config({ stream: true }), taskMessages: [] })), 'success');
+  assert.deepEqual(busy, [true, false]); assert.equal(reads, 1); assert.equal(cancelled, 1);
+});
+
+test('超时会退出不响应 abort 的 fetch、JSON body 和 SSE reader，且不自动重发', async () => {
+  for (const stage of ['fetch', 'json', 'sse']) {
+    const busy = []; let calls = 0;
+    const client = createCompactApiClient({ onBusyChange: value => busy.push(value), timeoutMs: () => 10,
+      fetchImpl: async () => { calls += 1;
+        if (stage === 'fetch') return new Promise(() => {});
+        if (stage === 'json') return { ok: true, status: 200, json: () => new Promise(() => {}) };
+        return { ok: true, status: 200, headers: { get: () => 'text/event-stream' }, body: { getReader: () => ({ read: () => new Promise(() => {}), cancel: () => new Promise(() => {}), releaseLock() {} }) } };
+      },
+    });
+    assert.equal(await settlesSoon(client.generateTask({ config: config({ stream: stage === 'sse' }), taskMessages: [] })), 'QQJ_TIMEOUT', stage);
+    assert.deepEqual(busy, [true, false], stage); assert.equal(calls, 1, 'timeout must not automatically resend');
+  }
+});
+
+test('手动取消会结束不响应 abort 的响应体等待，迟到响应不重复改变忙碌状态', async () => {
+  let releaseBody, startBody; const started = new Promise(resolve => { startBody = resolve; });
+  const busy = [], controller = new AbortController();
+  const client = createCompactApiClient({ onBusyChange: value => busy.push(value), timeoutMs: () => 500,
+    fetchImpl: async () => ({ ok: true, status: 200, json: () => { startBody(); return new Promise(resolve => { releaseBody = resolve; }); } }),
+  });
+  const pending = client.generateTask({ config: config(), taskMessages: [], signal: controller.signal });
+  await started; controller.abort();
+  assert.equal(await settlesSoon(pending), 'AbortError'); assert.deepEqual(busy, [true, false]);
+  releaseBody({ choices: [{ message: { content: '{"late":true}' } }] });
+  await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(busy, [true, false]);
 });
 
 test('semantic parseMode 把模型原文交给业务 normalizer，不被通用严格 JSON 解析提前拦截', async () => {

@@ -70,6 +70,7 @@ function renderSanitizerChildren(children, keep, rescueOnly = false) {
       if (!rescueOnly) output += child;
       continue;
     }
+    // Explicit keep blocks survive even inside discarded ancestors; unmatched wrappers only rescue visible text.
     if (child.closed && keep.has(child.name)) {
       output += renderSanitizerChildren(child.children, keep);
     } else if (!child.closed) {

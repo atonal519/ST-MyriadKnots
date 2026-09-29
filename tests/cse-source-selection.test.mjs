@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sha256 } from '../src/identity.js';
 import { captureCseAuthorNote, captureCseRequestSources, CSE_SECONDARY_LOGIC, cseWorldInfoKeyMatches, selectCseWorldInfoEntries } from '../src/cse-source-selection.js';
-import { scanWorldInfo } from '../src/world-info-scanner.js';
+import { createWorldInfoSourceCandidates, scanWorldInfo } from '../src/world-info-scanner.js';
+import { selectRelevantWorldInfoCandidates } from '../src/v3/people-workspace.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const assistant = mes => ({ is_user: false, is_system: false, mes, swipes: [mes], swipe_id: 0 });
@@ -121,6 +122,44 @@ test('读取前整本排除坏书，保留好书、人格书与角色内置书�
   assert.deepEqual(allExcluded.entries, []);
   const empty = await scanWorldInfo({ characters: [], chatMetadata: {} }, { strict: true, includeCatalog: false, filterBookNames: names => names });
   assert.deepEqual(empty.entries, []);
+});
+
+test('千人完整扫描保留超40k条目和筛选元数据，超过条目上限明确失败', async () => {
+  const large = `${'前'.repeat(40000)}尾段`;
+  const context = { characterId: 0, characters: [{ data: { extensions: { world: '完整书' } } }],
+    async loadWorldInfo() { return { entries: { 7: { uid: 7, comment: '人物小传', key: ['林澈'], keysecondary: ['旧名'], content: large } } }; } };
+  const ordinary = await scanWorldInfo(context, { includeCatalog: false });
+  const complete = await scanWorldInfo(context, { complete: true, strict: true, includeCatalog: false });
+  assert.equal(ordinary.entries[0].content.length, 40000);
+  assert.equal(complete.entries[0].content, large);
+  assert.equal(complete.entries[0].entryLabel, '人物小传');
+  assert.deepEqual(complete.entries[0].primaryKeys, ['林澈']);
+  assert.deepEqual(complete.entries[0].secondaryKeys, ['旧名']);
+  const oversized = { ...context, async loadWorldInfo() {
+    return { entries: Object.fromEntries(Array.from({ length: 5001 }, (_, index) => [String(index), { uid: index, content: '条目' }])) };
+  } };
+  await assert.rejects(scanWorldInfo(oversized, { complete: true, strict: true, includeCatalog: false }), error => error.code === 'QQJ_PEOPLE_WORLDBOOK_INCOMPLETE');
+});
+
+test('人物匹配分别读取完整 comment/title；完整模式超过500本明确失败', async () => {
+  const longTitle = `${'说明'.repeat(300)}张三背景`;
+  const context = { characterId: 0, characters: [{ data: { extensions: { world: '备注优先书' } } }],
+    async loadWorldInfo() { return { entries: {
+      1: { uid: 1, comment: '没有人物名的备注', title: longTitle, content: '正文' },
+      2: { uid: 2, comment: '李四小传', title: '无关标题', content: '正文' },
+    } }; } };
+  const catalog = await scanWorldInfo(context, { complete: true, strict: true, includeCatalog: false });
+  assert.equal(catalog.entries[0].title, longTitle);
+  assert.equal(catalog.entries[0].comment, '没有人物名的备注');
+  const candidates = await createWorldInfoSourceCandidates(catalog);
+  assert.deepEqual(selectRelevantWorldInfoCandidates(candidates, [{ currentName: '张三', aliases: [] }]).map(item => item.uid), ['1']);
+  assert.deepEqual(selectRelevantWorldInfoCandidates(candidates, [{ currentName: '李四', aliases: [] }]).map(item => item.uid), ['2']);
+
+  const names = Array.from({ length: 501 }, (_, index) => `世界书${index}`);
+  let loads = 0;
+  const tooMany = { chatMetadata: { world_info: names }, async loadWorldInfo() { loads += 1; return { entries: {} }; } };
+  await assert.rejects(scanWorldInfo(tooMany, { complete: true, strict: true, includeCatalog: false }), error => error.code === 'QQJ_PEOPLE_WORLDBOOK_INCOMPLETE');
+  assert.equal(loads, 0, '超过书本上限时在读取前失败，不会只读前500本再继续');
 });
 
 test('作者注释区分缺失与明确空值，角色禁用及 replace/before/after 合并均忽略 interval', () => {

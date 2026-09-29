@@ -352,7 +352,8 @@ export function projectInlineRecallReceipt(receipt) {
   const rawStorylineIds = new Set(rawStorylines.map(value => value?.storylineId).filter(value => typeof value === 'string'));
   const newLimits = Number(receipt.schemaVersion) >= 11;
   const storylineProtocol = Number(receipt.schemaVersion) >= 12;
-  const expandedSelection = receipt.strategyVersion === 'continuity-v15';
+  // Older receipts remain displayable under their original count limits; current receipts use the expanded contract.
+  const expandedSelection = ['continuity-v15', 'continuity-v16'].includes(receipt.strategyVersion);
   const floorLimit = expandedSelection ? 256 : newLimits ? 48 : 12;
   const stateLimit = expandedSelection ? 256 : newLimits ? 24 : 18;
   const changeLimit = expandedSelection ? 256 : newLimits ? 24 : 6;

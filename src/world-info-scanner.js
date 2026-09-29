@@ -5,7 +5,10 @@ const SCOPE_ORDER = Object.freeze(['char', 'chat', 'persona', 'global']);
 
 function text(value) { return typeof value === 'string' ? value.trim() : ''; }
 function currentCharacter(ctx) { return Array.isArray(ctx?.characters) ? ctx.characters[ctx.characterId] : ctx?.characters?.[ctx.characterId]; }
-function uniqueNames(values) { return [...new Set(values.map(text).filter(Boolean))].slice(0, LIMITS.books); }
+function uniqueNames(values, { complete = false } = {}) {
+  const names = [...new Set(values.map(text).filter(Boolean))];
+  return complete ? names : names.slice(0, LIMITS.books);
+}
 function safeValue(callback, fallback = null) { try { return callback() ?? fallback; } catch { return fallback; } }
 
 function characterFilename(ctx, character) {
@@ -14,7 +17,7 @@ function characterFilename(ctx, character) {
   return text(character?.avatar ?? character?.data?.avatar).replace(/\.[^.]+$/u, '');
 }
 
-function linkedWorldNames(ctx, bindings = {}) {
+function linkedWorldNames(ctx, bindings = {}, options = {}) {
   const names = [];
   const helperBooks = safeValue(() => globalThis.TavernHelper?.getCharLorebooks?.(), null);
   if (helperBooks?.primary) names.push(helperBooks.primary);
@@ -29,51 +32,51 @@ function linkedWorldNames(ctx, bindings = {}) {
     const extra = settings?.charLore?.find?.(entry => text(entry?.name) === filename)?.extraBooks;
     if (Array.isArray(extra)) names.push(...extra);
   }
-  return uniqueNames(names);
+  return uniqueNames(names, options);
 }
 
-function chatWorldNames(ctx) {
+function chatWorldNames(ctx, options = {}) {
   const fromApi = safeValue(() => ctx?.chatWorldInfo?.getNames?.(), null);
   const raw = Array.isArray(fromApi) ? fromApi : ctx?.chatMetadata?.world_info;
-  return uniqueNames(Array.isArray(raw) ? raw : [raw]);
+  return uniqueNames(Array.isArray(raw) ? raw : [raw], options);
 }
 
-function globalWorldNames(ctx, bindings = {}) {
+function globalWorldNames(ctx, bindings = {}, options = {}) {
   const helperNames = safeValue(() => globalThis.TavernHelper?.getLorebookSettings?.()?.selected_global_lorebooks, null);
-  if (Array.isArray(helperNames)) return uniqueNames(helperNames);
-  if (Array.isArray(ctx?.chatWorldInfo?.globalSelection)) return uniqueNames(ctx.chatWorldInfo.globalSelection);
+  if (Array.isArray(helperNames)) return uniqueNames(helperNames, options);
+  if (Array.isArray(ctx?.chatWorldInfo?.globalSelection)) return uniqueNames(ctx.chatWorldInfo.globalSelection, options);
   const moduleNames = safeValue(() => bindings.getSelectedWorldInfo?.(), null);
-  return Array.isArray(moduleNames) ? uniqueNames(moduleNames) : [];
+  return Array.isArray(moduleNames) ? uniqueNames(moduleNames, options) : [];
 }
 
-async function allWorldNames(ctx, bindings, known) {
+async function allWorldNames(ctx, bindings, known, options = {}) {
   const fallback = [...known];
   const moduleNames = safeValue(() => bindings.getWorldInfoNames?.(), null);
-  if (Array.isArray(moduleNames) && moduleNames.length) return uniqueNames([...fallback, ...moduleNames]);
+  if (Array.isArray(moduleNames) && moduleNames.length) return uniqueNames([...fallback, ...moduleNames], options);
   const cached = safeValue(() => ctx?.getWorldInfoNames?.(), null);
-  if (Array.isArray(cached) && cached.length) return uniqueNames([...fallback, ...cached]);
+  if (Array.isArray(cached) && cached.length) return uniqueNames([...fallback, ...cached], options);
   const helper = globalThis.TavernHelper;
   try {
     const fn = helper?.getWorldbookNames ?? helper?.getLorebooks;
     const names = typeof fn === 'function' ? await fn.call(helper) : null;
-    if (Array.isArray(names) && names.length) return uniqueNames([...fallback, ...names]);
+    if (Array.isArray(names) && names.length) return uniqueNames([...fallback, ...names], options);
   } catch { /* use linked names */ }
   if (typeof ctx?.updateWorldInfoList === 'function') {
     try {
       await ctx.updateWorldInfoList();
       const refreshed = ctx?.getWorldInfoNames?.();
-      if (Array.isArray(refreshed) && refreshed.length) return uniqueNames([...fallback, ...refreshed]);
+      if (Array.isArray(refreshed) && refreshed.length) return uniqueNames([...fallback, ...refreshed], options);
     } catch { /* an unavailable catalog does not change linked-source reads */ }
   }
-  return uniqueNames(fallback);
+  return uniqueNames(fallback, options);
 }
 
-function scopedWorldNames(ctx, bindings = {}) {
+function scopedWorldNames(ctx, bindings = {}, options = {}) {
   return new Map([
-    ['char', linkedWorldNames(ctx, bindings)],
-    ['chat', chatWorldNames(ctx)],
-    ['persona', uniqueNames([ctx?.powerUserSettings?.persona_description_lorebook])],
-    ['global', globalWorldNames(ctx, bindings)],
+    ['char', linkedWorldNames(ctx, bindings, options)],
+    ['chat', chatWorldNames(ctx, options)],
+    ['persona', uniqueNames([ctx?.powerUserSettings?.persona_description_lorebook], options)],
+    ['global', globalWorldNames(ctx, bindings, options)],
   ]);
 }
 
@@ -118,6 +121,7 @@ async function loadBooks(ctx, bindings, names, warnings, strict) {
       else warnings.push({ code: 'WORLDBOOK_READ_EMPTY', book: name.slice(0, 120) });
     } catch { warnings.push({ code: 'WORLDBOOK_READ_FAILED', book: name.slice(0, 120) }); }
   }
+  // CSE uses strict mode: every already-linked source must load before any of its material is sent.
   const missing = names.filter(name => !books.has(name));
   if (strict && missing.length) throw sourceReadError(missing, warnings);
   return books;
@@ -133,19 +137,24 @@ function stringList(value) {
   return values.map(text).filter(Boolean);
 }
 
-function preparedEntry({ book, uid, entry, scope, embedded = false }) {
+function preparedEntry({ book, uid, entry, scope, embedded = false, complete = false }) {
   if (!entry || typeof entry !== 'object') return null;
-  const content = typeof entry.content === 'string' ? entry.content.slice(0, LIMITS.contentCharacters) : '';
+  const rawContent = typeof entry.content === 'string' ? entry.content : '';
+  const content = complete ? rawContent : rawContent.slice(0, LIMITS.contentCharacters);
   const rawId = entry.uid ?? entry.id ?? uid;
   const id = rawId === undefined || rawId === null ? '' : String(rawId).trim();
   if (!id) return null;
+  const comment = text(entry.comment);
+  const title = text(entry.title);
   const primaryKeys = stringList(entry.key ?? entry.keys);
   const secondaryKeys = stringList(entry.keysecondary ?? entry.secondary_keys);
-  const label = text(entry.comment) || primaryKeys.join('、') || `条目 ${id}`;
+  const label = comment || title || primaryKeys.join('、') || `条目 ${id}`;
   const disabled = entry.disable === true || entry.disabled === true || (embedded && entry.enabled === false);
   const extensions = entry.extensions && typeof entry.extensions === 'object' ? entry.extensions : {};
   return Object.freeze({
     key: `${book}::${id}`, uid: id, label: label.slice(0, 512), preview: content.replace(/\s+/g, ' ').slice(0, 160),
+    // Display labels are bounded, but matching must still inspect both complete host fields independently.
+    entryLabel: label.slice(0, 512), comment, title,
     content, source: book, scope, embedded, disabled, hostEnabled: !disabled, constant: entry.constant === true,
     primaryKeys: Object.freeze(primaryKeys), secondaryKeys: Object.freeze(secondaryKeys), selective: entry.selective === true,
     selectiveLogic: Number.isInteger(entry.selectiveLogic) ? entry.selectiveLogic : Number.isInteger(extensions.selectiveLogic) ? extensions.selectiveLogic : 0,
@@ -154,43 +163,72 @@ function preparedEntry({ book, uid, entry, scope, embedded = false }) {
   });
 }
 
-export async function scanWorldInfo(ctx, { bindings = {}, strict = false, includeCatalog = true, filterBookNames = names => names } = {}) {
+export async function scanWorldInfo(ctx, { bindings = {}, strict = false, complete = false, includeCatalog = true, filterBookNames = names => names } = {}) {
   if (!ctx || typeof ctx !== 'object') throw new TypeError('世界书扫描上下文无效');
   const warnings = [];
-  const scopedNames = scopedWorldNames(ctx, bindings);
-  const relevantNames = uniqueNames([...scopedNames.values()].flat());
+  // Full profile rebuilds opt into uncapped names and exact entry bodies; exceeding scanner limits fails visibly instead of yielding a partial source set.
+  const scopedNames = scopedWorldNames(ctx, bindings, { complete });
+  const relevantNames = uniqueNames([...scopedNames.values()].flat(), { complete });
+  if (complete && relevantNames.length > LIMITS.books) {
+    const error = new Error('关联世界书数量超过完整读取上限，本次人物资料未保存。');
+    error.code = 'QQJ_PEOPLE_WORLDBOOK_INCOMPLETE';
+    throw error;
+  }
   const embedded = currentCharacter(ctx)?.data?.character_book;
   const embeddedBook = text(embedded?.name) || '角色内置世界书';
   const embeddedRows = Array.isArray(embedded?.entries) ? embedded.entries.map((entry, index) => [String(entry?.id ?? index), entry]) : [];
-  const filteredNames = filterBookNames(uniqueNames([...relevantNames, ...(embeddedRows.length ? [embeddedBook] : [])]));
+  const filteredNames = filterBookNames(uniqueNames([...relevantNames, ...(embeddedRows.length ? [embeddedBook] : [])], { complete }));
   if (!Array.isArray(filteredNames)) throw new TypeError('世界书整本过滤结果无效');
-  const allowedBooks = new Set(uniqueNames(filteredNames));
+  const allowedBooks = new Set(uniqueNames(filteredNames, { complete }));
+  if (complete && allowedBooks.size > LIMITS.books) {
+    const error = new Error('关联世界书数量超过完整读取上限，本次人物资料未保存。');
+    error.code = 'QQJ_PEOPLE_WORLDBOOK_INCOMPLETE';
+    throw error;
+  }
   for (const [scope, names] of scopedNames) scopedNames.set(scope, names.filter(name => allowedBooks.has(name)));
   const loadNames = relevantNames.filter(name => allowedBooks.has(name));
-  const books = await loadBooks(ctx, bindings, loadNames, warnings, strict);
+  let books;
+  try {
+    books = await loadBooks(ctx, bindings, loadNames, warnings, strict || complete);
+  } catch (cause) {
+    if (!complete) throw cause;
+    const error = new Error('关联世界书读取不完整，本次人物资料未保存。', { cause });
+    error.code = 'QQJ_PEOPLE_WORLDBOOK_INCOMPLETE';
+    throw error;
+  }
   const entries = [];
   const seen = new Set();
   for (const scope of SCOPE_ORDER) {
     for (const book of scopedNames.get(scope) ?? []) {
       for (const [uid, entry] of entryRows(books.get(book))) {
-        const prepared = preparedEntry({ book, uid, entry, scope });
+        const prepared = preparedEntry({ book, uid, entry, scope, complete });
         if (!prepared || seen.has(prepared.key)) continue;
+        if (complete && entries.length >= LIMITS.entries) {
+          const error = new Error('世界书条目数量超过完整读取上限，本次人物资料未保存。');
+          error.code = 'QQJ_PEOPLE_WORLDBOOK_INCOMPLETE';
+          throw error;
+        }
         seen.add(prepared.key);
         entries.push(Object.freeze({ ...prepared, activated: false, availability: prepared.hostEnabled ? 'enabled' : 'disabled' }));
-        if (entries.length >= LIMITS.entries) break;
+        if (!complete && entries.length >= LIMITS.entries) break;
       }
-      if (entries.length >= LIMITS.entries) break;
+      if (!complete && entries.length >= LIMITS.entries) break;
     }
-    if (entries.length >= LIMITS.entries) break;
+    if (!complete && entries.length >= LIMITS.entries) break;
   }
   for (const [uid, entry] of allowedBooks.has(embeddedBook) ? embeddedRows : []) {
-    const prepared = preparedEntry({ book: embeddedBook, uid, entry, scope: 'char', embedded: true });
+    const prepared = preparedEntry({ book: embeddedBook, uid, entry, scope: 'char', embedded: true, complete });
     if (!prepared || seen.has(prepared.key)) continue;
+    if (complete && entries.length >= LIMITS.entries) {
+      const error = new Error('世界书条目数量超过完整读取上限，本次人物资料未保存。');
+      error.code = 'QQJ_PEOPLE_WORLDBOOK_INCOMPLETE';
+      throw error;
+    }
     seen.add(prepared.key);
     entries.push(Object.freeze({ ...prepared, activated: false, availability: prepared.hostEnabled ? 'enabled' : 'disabled' }));
-    if (entries.length >= LIMITS.entries) break;
+    if (!complete && entries.length >= LIMITS.entries) break;
   }
-  const bookNames = includeCatalog ? await allWorldNames(ctx, bindings, [...loadNames, ...entries.map(entry => entry.source)]) : uniqueNames([...loadNames, ...entries.map(entry => entry.source)]);
+  const bookNames = includeCatalog ? await allWorldNames(ctx, bindings, [...loadNames, ...entries.map(entry => entry.source)], { complete }) : uniqueNames([...loadNames, ...entries.map(entry => entry.source)], { complete });
   return Object.freeze({
     entries: Object.freeze(entries), bookNames: Object.freeze(bookNames),
     warnings: Object.freeze(warnings.slice(0, 40).map(warning => Object.freeze(warning))),
@@ -206,7 +244,9 @@ export async function createWorldInfoSourceCandidates(catalog) {
   return Promise.all(catalog.entries.map(async entry => Object.freeze({
     id: `worldbook:${entry.source}:${entry.uid}`, kind: 'worldbook', locator: `${entry.source}:${entry.uid}`,
     world: entry.source, uid: entry.uid, permissionKey: entry.key, fingerprint: `sha256:${await sha256(entry.content)}`,
-    label: `${entry.source} · ${entry.label}`.slice(0, 240), content: entry.content, selected: true,
+    label: `${entry.source} · ${entry.label}`.slice(0, 240), entryLabel: entry.entryLabel ?? entry.label,
+    comment: entry.comment ?? '', title: entry.title ?? '', content: entry.content, selected: true,
+    primaryKeys: entry.primaryKeys, secondaryKeys: entry.secondaryKeys,
     availability: entry.hostEnabled === false ? 'disabled' : 'enabled', activated: false, hostEnabled: entry.hostEnabled !== false, linked: true, scope: entry.scope,
   })));
 }

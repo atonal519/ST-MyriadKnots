@@ -47,6 +47,7 @@ const safeError = (code, status = 0, details = {}) => {
     'request-format': 'API 请求参数或响应格式与当前网关不兼容',
     'http-response-json': 'API 响应不是合法 JSON',
     'stream-event-json': '流式响应事件不是合法 JSON',
+    'stream-protocol': '接口声明为 SSE 流式响应，但正文不符合 SSE 协议',
     'completion-json': '模型输出中没有唯一完整 JSON 对象',
     'output-truncated': '模型输出疑似被截断',
     'transport-budget': '本次任务的网络尝试次数已用完，请稍后重试',
@@ -238,17 +239,32 @@ export function parseJsonOutput(value, { finishReason } = {}) {
   return parsed;
 }
 
-async function readSseResponse(response) {
+function abortable(task, signal) {
+  if (!signal) return Promise.resolve().then(task);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => { signal.removeEventListener('abort', onAbort); reject(abortError()); };
+    if (signal.aborted) { onAbort(); return; }
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve().then(() => {
+      if (signal.aborted) throw abortError();
+      return task();
+    }).then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
+async function readSseResponse(response, { requireSse = false, signal } = {}) {
   const reader = response.body?.getReader?.();
   if (!reader) {
-    let data; try { data = await response.json(); } catch { throw safeError('http-response-json'); }
+    if (requireSse) throw safeError('stream-protocol');
+    let data; try { data = await abortable(() => response.json(), signal); } catch (error) { if (signal?.aborted || error?.name === 'AbortError') throw abortError(); throw safeError('http-response-json'); }
     return completionDetails(data);
   }
-  const decoder = new TextDecoder(); let buffer = '', output = '', event = [], finishReason = '';
+  const decoder = new TextDecoder(); let buffer = '', output = '', event = [], finishReason = '', sawDataLine = false, complete = false, eof = false;
   const flush = () => {
     if (!event.length) return;
     const payload = event.join('\n').trim(); event = [];
-    if (!payload || payload === '[DONE]') return;
+    if (!payload) return;
+    if (payload === '[DONE]') { complete = true; return; }
     let value; try { value = JSON.parse(payload); } catch { throw safeError('stream-event-json'); }
     if (value?.error) throw safeError('unsupported');
     const currentFinishReason = normalizeFinishReason(value?.choices?.[0]?.finish_reason);
@@ -257,17 +273,25 @@ async function readSseResponse(response) {
     if (typeof delta === 'string') output += delta;
   };
   const line = value => {
+    if (complete) return;
     const text = String(value).replace(/\r$/, '');
     if (!text) return flush();
-    if (text.startsWith('data:')) event.push(text.slice(5).replace(/^\s/, ''));
+    if (text.startsWith('data:')) { sawDataLine = true; event.push(text.slice(5).replace(/^\s/, '')); }
   };
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) { buffer += decoder.decode(); if (buffer) line(buffer); flush(); break; }
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n'); buffer = lines.pop() || '';
-    lines.forEach(line);
+  try {
+    while (!complete) {
+      const { done, value } = await abortable(() => reader.read(), signal);
+      if (done) { eof = true; buffer += decoder.decode(); if (buffer) line(buffer); flush(); break; }
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n'); buffer = lines.pop() || '';
+      lines.forEach(line);
+    }
+  } finally {
+    // Host readers may ignore AbortSignal, and some proxies leave the socket open after [DONE].
+    if (!eof) try { Promise.resolve(reader.cancel?.()).catch(() => {}); } catch { /* best effort */ }
+    try { reader.releaseLock?.(); } catch { /* a native read may still be pending */ }
   }
+  if (requireSse && !sawDataLine) throw safeError('stream-protocol');
   if (truncatedFinishReason(finishReason)) throw safeError('output-truncated', 0, { finishReason });
   if (!output.trim()) { const error = safeError('empty'); if (finishReason) error.finishReason = finishReason; throw error; }
   return { text: output.trim(), finishReason };
@@ -323,15 +347,23 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
         }
         const linked = linkedController(signal, config.timeoutSec, timeoutMs);
         try {
-          const response = await resolveFetch()(path, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: linked.controller.signal });
+          const response = await abortable(() => resolveFetch()(path, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: linked.controller.signal }), linked.controller.signal);
           if (!response.ok) {
             if ((response.status === 429 || response.status >= 500) && attempt < retries && retryAvailable()) {
               attempt += 1; linked.cleanup(); await retryWait(Math.min(400 * 2 ** attempt, 2000), signal); continue;
             }
-            throw mapHttpError(response.status, await readProviderError(response, [config.key, config.url, normalizeApiUrl(config.url)]));
+            throw mapHttpError(response.status, await abortable(() => readProviderError(response, [config.key, config.url, normalizeApiUrl(config.url)]), linked.controller.signal));
           }
-          if (stream) return await readSseResponse(response);
-          try { return await response.json(); } catch { throw safeError('http-response-json'); }
+          if (stream) {
+            const contentType = String(response.headers?.get?.('content-type') ?? '').split(';', 1)[0].trim().toLowerCase();
+            // Streaming stays on SSE unless the server explicitly labels its response as JSON.
+            if (contentType === 'application/json' || contentType.endsWith('+json')) {
+              let data; try { data = await abortable(() => response.json(), linked.controller.signal); } catch (error) { if (linked.controller.signal.aborted || error?.name === 'AbortError') throw abortError(); throw safeError('http-response-json'); }
+              return completionDetails(data);
+            }
+            return await abortable(() => readSseResponse(response, { requireSse: contentType === 'text/event-stream', signal: linked.controller.signal }), linked.controller.signal);
+          }
+          try { return await abortable(() => response.json(), linked.controller.signal); } catch (error) { if (linked.controller.signal.aborted || error?.name === 'AbortError') throw abortError(); throw safeError('http-response-json'); }
         } catch (error) {
           if (linked.timedOut()) throw safeError('timeout');
           if (signal?.aborted || error?.name === 'AbortError') throw abortError();
@@ -375,7 +407,7 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
       if (error && (typeof error === 'object' || typeof error === 'function') && transportBudget) error.transportAttempts = transportBudget.used;
       throw error;
     }
-    const completion = body.stream === true ? response : completionDetails(response);
+    const completion = body.stream === true && typeof response?.text === 'string' ? response : completionDetails(response);
     const payload = parseMode === 'semantic'
       ? { textData: completion.text }
       : { jsonData: parseJsonOutput(completion.text, { finishReason: completion.finishReason }) };

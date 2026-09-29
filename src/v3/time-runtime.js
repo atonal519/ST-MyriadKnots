@@ -73,6 +73,7 @@ export function createTimeStore({ client }) {
       const copied = { ...structuredClone(batch), chatId: targetChatId };
       await putBatch(targetChatId, copied, signal); ids.push(copied.id);
     }
+    // A batch is not effective for the current read until the committed head references it.
     const partial = batches.at(-1)?.status === 'partial' ? batches.at(-1) : source.head.lastRun?.status === 'partial' ? batches.findLast(batch => batch.status === 'partial') : null;
     await putHead(targetChatId, { schemaVersion: 1, chatId: targetChatId, batchIds: ids, ...(source.head.bodyStart?.floorId && floors.has(source.head.bodyStart.floorId) ? { bodyStart: source.head.bodyStart } : {}), lastAttemptSignature: batches.at(-1)?.signature ?? null, lastAttemptTime: batches.at(-1)?.currentTime ?? null,
       ...(source.head.currentReviewAttempt && floors.has(source.head.currentReviewAttempt.cutoffFloorId) && batches.some(batch => batch.currentReview) ? { currentReviewAttempt: source.head.currentReviewAttempt } : {}),

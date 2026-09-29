@@ -33,6 +33,43 @@ function eventDocument() {
 }
 const flatten = node => [node, ...(node.children ?? []).flatMap(flatten)];
 
+test('已保存摘要等待 CSE 时显示人物分析阶段', () => {
+  const state = { status: 'running', pluginEnabled: true, chatId: 'chat', foundationStatus: 'ready',
+    memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: true,
+    activeMemoryWork: { kind: 'manual', phase: 'analyzingCse' }, activeExtraction: { floorId: 'floor', phase: 'analyzingCse' },
+    activeCse: { floorId: 'floor', phase: 'analyzing' }, stableCount: 1, rememberedCount: 1, unprocessedCount: 0,
+    csePendingCount: 1, cseFailedCount: 0, floors: [{ floorId: 'floor', assistantSeq: 1, messageIndex: 0,
+      status: 'ready', memoryId: 'memory', summary: '已保存的摘要', cse: { status: 'running' } }] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => state };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, documentRef }); view.setPage('memories'); view.mount(container);
+  const texts = flatten(container).map(node => node.textContent);
+  assert.ok(texts.includes('摘要已保存，正在分析人物状态'));
+  assert.ok(!texts.some(value => value.includes('摘要与人物状态并行') || value.includes('正在处理摘要')));
+  view.deactivate();
+});
+
+test('批量摘要结束后反馈跟随 CSE、同步阶段并在完成后清除处理中状态', async () => {
+  let state = { status: 'running', pluginEnabled: true, chatId: 'batch', foundationStatus: 'ready',
+    memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: true,
+    activeMemoryWork: { kind: 'auto', phase: 'analyzingCse' }, activeAutoMemory: { phase: 'analyzingCse' },
+    activeExtraction: null, activeCse: { phase: 'analyzing' }, stableCount: 5, rememberedCount: 5,
+    unprocessedCount: 0, csePendingCount: 3, floors: [] };
+  let notify;
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, subscribe: listener => { notify = listener; return () => {}; } };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, documentRef }); view.setPage('memories'); view.mount(container); await view.activate();
+  const texts = () => flatten(container).map(node => node.textContent).join('|');
+  assert.match(texts(), /摘要已保存 · 5\/5 楼 · 正在分析人物状态/);
+  assert.doesNotMatch(texts(), /正在处理摘要|正在处理\|/);
+  state = { ...state, activeCse: null, activeMemoryWork: { kind: 'auto', phase: 'syncing' }, activeAutoMemory: { phase: 'syncing' } };
+  notify(state); assert.match(texts(), /正在同步记忆状态/);
+  state = { ...state, status: 'ready', memoryWorkBusy: false, activeMemoryWork: null, activeAutoMemory: null, csePendingCount: 0 };
+  notify(state); assert.match(texts(), /已记忆 5\/5 楼/); assert.match(texts(), /记忆状态已刷新/);
+  assert.doesNotMatch(texts(), /正在处理|正在分析人物状态|正在同步记忆状态/);
+  view.deactivate();
+});
+
 test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点击，读失败仅重试读取与生命周期清理', async () => {
   const css = await readFile(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
   assert.match(css, /#qqj-recent-items\[hidden\]\{display:none\}/u, '作者样式需显式覆盖 settings-block 的 display:grid，不能仅依赖 UA hidden');
@@ -1256,12 +1293,16 @@ test('复制回执仅诊断，独立fallback不切抽屉或重绘草稿，失败
   const record = { status: 'error', userMessageIndex: 4, createdAt: '2026-09-15T00:00:00Z', generationType: 'normal', receiptPersistence: 'none', selectedFloors: [{ floorId: 'secret-floor' }], selectedStates: [{ text: '人物状态秘密原文', subject: '隐私姓名', layer: 'core' }], selectedCseChanges: [], injectionText: '注入正文SECRET_AUTH_COOKIE', skipReasons: ['error'],
     coverage: { rememberedAiFloors: 8, stableAiFloors: 8, cseThroughAssistantSeq: 8 }, stages: { input: 2, candidates: 8, recentSummaryCount: 3, distantHistoryItemCount: 2, stateCount: 1, currentStateCount: 1, cseChangeCount: 0, finalInjectionItemCount: 6, budgetDroppedCount: 0 },
     diagnosticAttempt: 1, diagnosticPhase: 'commit', selectionStatus: 'completed', timings: { totalMs: 64000, selectorMs: 28000, sourceMs: 1300, sourceReadAttempts: { reachableReads: 0, exitPoint: 'validatedSnapshot' } },
-    selectorDiagnostic: { mode: 'llm', historyCandidateCount: 8, stateCandidateCount: 1, historyRetainedCount: 2, stateRetainedCount: 1 }, error: { code: 'V3_RECALL_MEMORY_PREPARATION_TIMEOUT', message: '不能复制的原始响应SECRET_ERROR' },
-    attemptDiagnostics: [{ attempt: 1, phase: 'commit', selectionStatus: 'completed', timings: { totalMs: 33000 }, error: { code: 'TEST_FIRST_COMMIT' } }, { attempt: 2, phase: 'source', selectionStatus: 'notStarted', timings: { totalMs: 5000 }, error: { code: 'V3_RECALL_MEMORY_PREPARATION_TIMEOUT' } }] };
+    selectorDiagnostic: { mode: 'llm', code: 'V3_RECALL_LLM_FIELDS_MISSING', finishReason: 'length', historyCandidateCount: 8, stateCandidateCount: 1, historyRetainedCount: 2, stateRetainedCount: 1 }, error: { code: 'V3_RECALL_MEMORY_PREPARATION_TIMEOUT', finishReason: 'stop', message: '不能复制的原始响应SECRET_ERROR' },
+    attemptDiagnostics: [{ attempt: 1, phase: 'commit', selectionStatus: 'completed', timings: { totalMs: 33000 }, error: { code: 'TEST_FIRST_COMMIT', finishReason: 'length' } }, { attempt: 2, phase: 'source', selectionStatus: 'notStarted', timings: { totalMs: 5000 }, error: { code: 'V3_RECALL_MEMORY_PREPARATION_TIMEOUT', finishReason: 'content_filter' } }] };
   for (const mode of ['success', 'denied', 'missing']) {
     const copied = [], navigatorRef = mode === 'missing' ? {} : { clipboard: { writeText: async value => { copied.push(value); if (mode === 'denied') throw new Error('denied'); } } };
     const recallRuntime = { getState: () => ({ recallStatus: 'error', lastRecall: record }), getPrequel: () => ({ text: '前情私密正文' }), savePrequel: async () => ({}) };
     const container = new Node('main'), view = createV3FoundationView({ runtime, recallRuntime, documentRef, navigatorRef }); view.mount(container);
+    const pageText = flatten(container).map(node => node.textContent).join('|');
+    assert.match(pageText, /结束原因 length/u, '页面展示智能选材的完成原因');
+    assert.match(pageText, /结束原因 stop/u, '页面展示本轮错误的完成原因');
+    assert.match(pageText, /结束原因 content_filter/u, '页面展示各次尝试的完成原因');
     const button = flatten(container).find(node => node.textContent === '复制回执'), drawer = button.parentNode.parentNode;
     drawer.open = true; drawer.fire('toggle'); container.scrollTop = 52;
     const draft = flatten(container).find(node => node.className.includes('qqj-prequel-editor')); draft.value = '草稿内容PRIVATE'; draft.fire('input');
@@ -1271,6 +1312,7 @@ test('复制回执仅诊断，独立fallback不切抽屉或重绘草稿，失败
     const fallback = flatten(drawer).find(node => node.attributes['aria-label'] === '召回回执诊断复制文本');
     const text = mode === 'success' ? copied[0] : fallback.value;
     assert.match(text, /记忆 8\/8.*第 1 次尝试的候选选材结果/su); assert.match(text, /第 2 次尝试.*来源读取.*未执行选材/su); assert.match(text, /实际注入：无/u); assert.match(text, /V3_RECALL_MEMORY_PREPARATION_TIMEOUT/u);
+    assert.match(text, /结束原因 length/u); assert.match(text, /结束原因 stop/u); assert.match(text, /结束原因 content_filter/u);
     assert.equal(text.match(/触发用户楼/gu).length, 1, '真实DOM聚合textContent不能重复拼字段');
     assert.doesNotMatch(text, /注入正文|秘密原文|隐私姓名|SECRET_|前情私密|PRIVATE|收据复用或未执行|最终注入 1/u);
     if (mode === 'success') assert.equal(fallback, undefined); else { assert.equal(fallback.readOnly, true); assert.ok(flatten(drawer).includes(fallback)); }

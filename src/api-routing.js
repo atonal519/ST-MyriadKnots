@@ -16,6 +16,7 @@ const taskMetadata = (route, finishReason = '', transportAttempts = null) => ({
   model: bounded(route?.config?.model, 160, 'unknown'),
   ...(finishReason ? { finishReason: bounded(finishReason, 32) } : {}),
   ...(Number.isSafeInteger(transportAttempts) ? { transportAttempts } : {}),
+  sourceStage: 'utility-request',
 });
 const withTaskMetadata = (result, route) => {
   const finishReason = result?.taskMetadata?.finishReason || result?.finishReason;
@@ -51,6 +52,7 @@ export function createApiResolver({ settings } = {}) {
       const config = Object.freeze({ ...preset, excludeParams: Object.freeze([...preset.excludeParams]) });
       return Object.freeze({ kind: 'independent', source: 'shared-summary-preset', sourceLabel: preset.name, config });
     }
+    // A missing user-selected preset is an error, never permission to send source material through another route.
     return Object.freeze({ kind: 'unavailable', source: 'shared-summary-preset', sourceLabel: preset?.name || '失效预设', config: null, reason: 'preset_missing', selectedPresetId });
   };
   const describe = () => {
@@ -62,6 +64,7 @@ export function createApiResolver({ settings } = {}) {
     if (!selectedPresetId) return resolveUtility();
     const preset = sevenDaysPresets(settings.sevenDaysSettings()).find(item => item.id === selectedPresetId);
     if (preset && validConfig(preset)) return { kind: 'independent', source: 'shared-recall-preset', sourceLabel: preset.name, config: { ...preset } };
+    // A broken recall preset fails closed; recall material must not silently move to a different API.
     return { kind: 'unavailable', source: 'shared-recall-preset', sourceLabel: preset?.name || '失效预设', config: null, reason: 'preset_missing', selectedPresetId };
   };
   return { resolve, resolveUtility, resolveRecall, describe, describeSevenDaysPresets };
@@ -92,7 +95,10 @@ export function createTaskRouter({ resolver, compactClient, isEnabled = () => tr
     catch (error) {
       if (controller.signal.aborted || !isEnabled() || mine !== epoch) throw abortError();
       if (error && (typeof error === 'object' || typeof error === 'function')) {
-        try { error.taskMetadata = taskMetadata(route, error?.finishReason || error?.taskMetadata?.finishReason, error?.transportAttempts ?? error?.taskMetadata?.transportAttempts); } catch { /* a frozen foreign error remains safe but cannot be annotated */ }
+        try { error.taskMetadata = { ...taskMetadata(route, error?.finishReason || error?.taskMetadata?.finishReason, error?.transportAttempts ?? error?.taskMetadata?.transportAttempts),
+          ...(Number.isSafeInteger(error?.httpStatus ?? error?.status) ? { httpStatus: error.httpStatus ?? error.status } : {}),
+          ...(typeof error?.formatStage === 'string' ? { formatStage: bounded(error.formatStage, 80) } : {}) };
+        } catch { /* a frozen foreign error remains safe but cannot be annotated */ }
       }
       throw error;
     }

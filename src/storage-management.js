@@ -116,6 +116,7 @@ export async function classifyStorageRecords(records, reachable, chatId) {
         breakdown.cleanup[safe.category].bytes += bytes;
         candidates.push(Object.freeze({ recordId: envelope.recordId, revision: envelope.revision }));
       } else {
+        // Unreachable is not proof of QQJ ownership; malformed or foreign records stay out of cleanup candidates.
         retained.count += 1; retained.bytes += bytes;
       }
     }

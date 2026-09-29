@@ -20,22 +20,33 @@ const abortError = reason => {
 };
 
 function validateExcludedKeys(value, field, allowed) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || !Object.hasOwn(value, field) || !Array.isArray(value[field])) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw Object.assign(new TypeError('历史选材输出结构无效'), { code: 'V3_RECALL_LLM_SCHEMA_INVALID' });
   }
+  if (!Object.hasOwn(value, field)) {
+    return [];
+  }
+  if (!Array.isArray(value[field])) throw Object.assign(new TypeError('历史选材输出结构无效'), { code: 'V3_RECALL_LLM_SCHEMA_INVALID' });
   const seen = new Set(), selected = [];
   for (const key of value[field]) {
-    if (typeof key !== 'string' || !allowed.has(key) || seen.has(key)) continue;
+    if (typeof key !== 'string' || !allowed.has(key)) throw Object.assign(new TypeError('历史排除包含本次候选池之外的键'), { code: 'V3_RECALL_LLM_KEYS_INVALID' });
+    if (seen.has(key)) continue;
     seen.add(key); selected.push(key);
   }
-  if (value[field].length && !selected.length) throw Object.assign(new TypeError('历史排除未包含合法候选键'), { code: 'V3_RECALL_LLM_KEYS_INVALID' });
   return selected;
 }
 
 function optionalExcludedKeys(value, field, allowed) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || !Object.hasOwn(value, field)) return [];
-  const raw = typeof value[field] === 'string' ? [value[field]] : Array.isArray(value[field]) ? value[field] : [];
-  return [...new Set(raw.filter(key => typeof key === 'string' && allowed.has(key)))];
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw Object.assign(new TypeError('历史选材输出结构无效'), { code: 'V3_RECALL_LLM_SCHEMA_INVALID' });
+  if (!Object.hasOwn(value, field)) return [];
+  const raw = typeof value[field] === 'string' ? [value[field]] : value[field];
+  if (!Array.isArray(raw)) throw Object.assign(new TypeError('千事候选排除结构无效'), { code: 'V3_RECALL_LLM_SCHEMA_INVALID' });
+  const seen = new Set(), selected = [];
+  for (const key of raw) {
+    if (typeof key !== 'string' || !allowed.has(key)) throw Object.assign(new TypeError('千事排除包含本次候选池之外的键'), { code: 'V3_RECALL_LLM_KEYS_INVALID' });
+    if (!seen.has(key)) { seen.add(key); selected.push(key); }
+  }
+  return selected;
 }
 
 const qianshiBlock = value => value?.text ? `<qqj_qianshi_progress>\n${value.text}\n</qqj_qianshi_progress>` : '';
@@ -69,18 +80,21 @@ export function removeExactQianshiDuplicates(progress, selection) {
   return Object.freeze({ ...progress, text, characterCount: text.length, eventIds: Object.freeze(keptEventIds) });
 }
 
-const diagnostic = ({ mode, metadata = null, durationMs = 0, utilityRoundTripMs = null, localSelectionMs = null, historyCandidateCount = null, stateCandidateCount = null, historyExcludedCount = null, stateExcludedCount = null, historyRetainedCount = null, stateRetainedCount = null } = {}) => {
+const diagnostic = ({ mode, metadata = null, error = null, durationMs = 0, utilityRoundTripMs = null, localSelectionMs = null, historyCandidateCount = null, stateCandidateCount = null, historyExcludedCount = null, stateExcludedCount = null, historyRetainedCount = null, stateRetainedCount = null, requestCharacters = null, requestEstimatedTokens = null } = {}) => {
   const api = sanitizeTaskMetadata(metadata);
   return Object.freeze({
     mode,
-    code: null,
-    httpStatus: null,
-    formatStage: null,
+    code: typeof error?.code === 'string' ? error.code.slice(0, 120) : null,
+    httpStatus: Number.isSafeInteger(error?.httpStatus ?? error?.status) ? (error.httpStatus ?? error.status) : null,
+    formatStage: typeof error?.formatStage === 'string' ? error.formatStage.slice(0, 80) : null,
     finishReason: String(api.finishReason ?? '').slice(0, 32),
     source: api.source,
     sourceLabel: api.sourceLabel,
     model: api.model,
     transportAttempts: Number.isSafeInteger(api.transportAttempts) ? api.transportAttempts : null,
+    sourceStage: api.sourceStage || 'recall-selector',
+    requestCharacters: Number.isSafeInteger(requestCharacters) && requestCharacters >= 0 ? requestCharacters : null,
+    requestEstimatedTokens: Number.isSafeInteger(requestEstimatedTokens) && requestEstimatedTokens >= 0 ? requestEstimatedTokens : null,
     durationMs: Math.max(0, Math.floor(Number(durationMs) || 0)),
     utilityRoundTripMs: Number.isFinite(utilityRoundTripMs) ? Math.max(0, Math.floor(utilityRoundTripMs)) : null,
     localSelectionMs: Number.isFinite(localSelectionMs) ? Math.max(0, Math.floor(localSelectionMs)) : null,
@@ -175,11 +189,16 @@ export async function selectRecallWithLlm({
       return { ...item, sourceTime: chronologyByFloor.get(floorId) || null };
     }) })),
   };
+  const serializedTaskInput = JSON.stringify(payload);
+  const requestCharacters = RECALL_LLM_SYSTEM_PROMPT.length + serializedTaskInput.length;
+  const requestEstimatedTokens = estimateRecallTokens(`${RECALL_LLM_SYSTEM_PROMPT}\n${serializedTaskInput}`);
+  let result = null;
+  const utilityStarted = Date.now();
   try {
+    // This selector makes one transport attempt; the runtime owns the single full recall retry with fresh sources.
     const transportBudget = { remaining: 1, used: 0 };
-    const taskMessages = [{ role: 'user', content: JSON.stringify(payload) }];
-    const utilityStarted = Date.now();
-    const result = await generateUtilityTask({
+    const taskMessages = [{ role: 'user', content: serializedTaskInput }];
+    result = await generateUtilityTask({
       systemPrompt: RECALL_LLM_SYSTEM_PROMPT,
       taskMessages,
       temperature: 0,
@@ -194,8 +213,14 @@ export async function selectRecallWithLlm({
     if (signal?.aborted) throw abortError(signal.reason);
     const raw = result?.jsonData ?? result?.textData ?? result;
     const parsed = parseJsonOutput(raw, { finishReason: result?.taskMetadata?.finishReason });
-    const historyKeys = validateExcludedKeys(parsed, 'history_exclude_keys', new Set(historyPool.candidates.map(candidate => candidate.key)));
-    const stateKeys = validateExcludedKeys(parsed, 'state_exclude_keys', new Set(csePool.candidates.map(candidate => candidate.key)));
+    const historyAllowed = new Set(historyPool.candidates.map(candidate => candidate.key));
+    const stateAllowed = new Set(csePool.candidates.map(candidate => candidate.key));
+    const historyKeys = validateExcludedKeys(parsed, 'history_exclude_keys', historyAllowed);
+    const stateKeys = validateExcludedKeys(parsed, 'state_exclude_keys', stateAllowed);
+    // A valid answer for either nonempty pool is enough; each supplied field is fully checked first, so any foreign key still fails the whole selection.
+    const answeredNonemptyPool = (historyAllowed.size > 0 && Object.hasOwn(parsed, 'history_exclude_keys'))
+      || (stateAllowed.size > 0 && Object.hasOwn(parsed, 'state_exclude_keys'));
+    if (!answeredNonemptyPool) throw Object.assign(new TypeError('非空历史候选池没有收到有效选材答复'), { code: 'V3_RECALL_LLM_FIELDS_MISSING' });
     const qianshiKeys = optionalExcludedKeys(parsed, 'qianshi_exclude_keys', new Set(qianshiCandidates.map(candidate => candidate.key)));
     const historyByKey = new Map(historyPool.candidates.map(candidate => [candidate.key, candidate]));
     const cseByKey = new Map(csePool.candidates.map(candidate => [candidate.key, candidate]));
@@ -228,12 +253,24 @@ export async function selectRecallWithLlm({
         utilityRoundTripMs: utilityCompleted - utilityStarted,
         localSelectionMs: (utilityStarted - selectorStarted) + (selectorCompleted - utilityCompleted),
         ...candidateCounts,
+        requestCharacters, requestEstimatedTokens,
         historyExcludedCount: historyKeys.length, stateExcludedCount: stateKeys.length,
         historyRetainedCount: retainedHistory.length, stateRetainedCount: retainedCse.length,
       }),
     });
   } catch (error) {
     if (signal?.aborted) throw abortError(signal.reason);
+    const metadata = result?.taskMetadata ?? error?.taskMetadata ?? null;
+    const utilityCompleted = Date.now();
+    const failureMetadata = result && metadata ? { ...metadata, sourceStage: 'selector-parse' } : metadata;
+    const failureDiagnostic = diagnostic({ mode: 'llm', metadata: failureMetadata, error, durationMs: utilityCompleted - selectorStarted,
+      utilityRoundTripMs: utilityCompleted - utilityStarted,
+      localSelectionMs: Math.max(0, utilityStarted - selectorStarted),
+      ...candidateCounts, requestCharacters, requestEstimatedTokens });
+    if (error && (typeof error === 'object' || typeof error === 'function')) {
+      error.selectorDiagnostic = failureDiagnostic;
+      if (metadata) error.taskMetadata = metadata;
+    }
     throw error;
   }
 }

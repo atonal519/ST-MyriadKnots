@@ -260,6 +260,41 @@ const readyState = () => ({
   floors: [{ floorId: 'floor-1', assistantSeq: 1, messageIndex: 1, status: 'ready', summarySource: 'ai', summary: '<img src=x onerror=alert(1)>仍是纯文字', timeFallback: '', metadataStale: false, manualTime: false, error: null, memory: { chronology: [{ time: { sourceText: '冬至夜十一点' } }], locations: [{ name: '钟楼' }], participants: [{ entityId: 'p1' }] } }],
 });
 
+test('召回卡片与记忆卡片可独立隐藏和恢复，隐藏不改变记忆运行状态', async () => {
+  const chat = [{ is_user: true, mes: '继续' }, { is_user: false, mes: '正文' }];
+  const memory = readyState();
+  const h = createHarness({ chat, memoryState: memory });
+  const userElement = messageElement(0, { user: true }), assistantElement = messageElement(1);
+  const originalChildren = [...resolveInlineAnchor(userElement).children];
+  h.chatRoot.append(userElement, assistantElement); h.renderer.start(); await h.flushMicrotasks();
+  const card = node => node.querySelector('[data-qqj-inline-host="true"]');
+  assert.ok(card(userElement)); assert.ok(card(assistantElement));
+  const assistantCard = card(assistantElement);
+  h.renderer.setVisibility({ recall: false, memory: true }); await h.flushMicrotasks();
+  assert.equal(card(userElement), null); assert.equal(card(assistantElement), assistantCard);
+  assert.deepEqual(resolveInlineAnchor(userElement).children, originalChildren, '隐藏后没有空白卡片占位');
+  h.renderer.setVisibility({ recall: true, memory: false }); await h.flushMicrotasks();
+  assert.ok(card(userElement)); assert.equal(card(assistantElement), null);
+  h.renderer.setVisibility({ recall: false, memory: false }); await h.flushMicrotasks();
+  assert.equal(h.renderer.getDebugState().cards, 0); assert.equal(h.renderer.getDebugState().retrying, false);
+  assert.equal(h.memorySubscribers.size, 1); assert.equal(h.recallSubscribers.size, 1);
+  assert.equal(h.memoryRuntime.getState(), memory); assert.deepEqual(h.extractionCalls, []);
+  assert.equal(userElement.querySelector('.mes_text').textContent, '正文节点');
+  h.renderer.setVisibility({ recall: true, memory: true }); await h.flushMicrotasks();
+  assert.ok(card(userElement)); assert.ok(card(assistantElement)); assert.equal(h.renderer.getDebugState().cards, 2);
+  h.renderer.destroy();
+});
+
+test('隐藏的楼层角色缺少 DOM 时不会启动重试', async () => {
+  const h = createHarness({ chat: [{ is_user: true, mes: '继续' }, { is_user: false, mes: '正文' }], memoryState: readyState() });
+  h.chatRoot.append(messageElement(1));
+  h.renderer.setVisibility({ recall: false, memory: true }); h.renderer.start();
+  h.emit('USER_MESSAGE_RENDERED', 0); await h.flushMicrotasks();
+  assert.equal(h.renderer.getDebugState().cards, 1);
+  assert.equal(h.renderer.getDebugState().retrying, false);
+  h.renderer.destroy();
+});
+
 test('楼内纯投影沿用宿主角色语义，并给出紧凑记忆/准确召回来源', () => {
   assert.equal(classifyInlineMessage({ is_user: true, is_system: true, mes: '隐藏但仍是普通用户楼' }), 'user');
   assert.equal(classifyInlineMessage({ is_user: false, is_system: true, mes: '隐藏但仍是普通AI楼' }), 'assistant');
@@ -458,13 +493,13 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
 
 });
 
-test('真实schema15回执分为事与人，完整保留私密变化并按楼层倒序展示', async () => {
+test('真实schema16回执分为事与人，完整保留私密变化并按楼层倒序展示', async () => {
   const { chat, receipt, floorIds } = await actualCseReceipt();
   const memoryState = { floors: floorIds.map((floorId, index) => ({ floorId, assistantSeq: index + 1, messageIndex: 41 + index })), memoryEntities: [] };
   const h = createHarness({ chat, memoryState, projectReceipt: async () => receipt });
   const userElement = messageElement(1, { user: true }); h.chatRoot.append(userElement); h.renderer.start(); await h.flushMicrotasks();
   const view = resolveInlineAnchor(userElement).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  assert.equal(receipt.schemaVersion, 15);
+  assert.equal(receipt.schemaVersion, 16);
   assert.equal(receipt.selectedCseChanges.find(value => value.action === 'remove' && value.before?.text === '仍在钟楼等候')?.before.text, '仍在钟楼等候');
   const projection = projectInlineRecallReceipt(receipt);
   assert.equal(projection.protocolRecognized, true);
@@ -591,7 +626,7 @@ test('桌面扁平页签合并同楼剧情线但不丢不同正文或人物变�
   assert.deepEqual(ui.timelines.children[0].querySelectorAll('.change-copy').map(node => node.textContent), ['甲线人物变化', '乙线人物变化']);
 });
 
-test('v15 楼内投影接受第五条剧情线，旧 v14 仍保持四线历史边界', () => {
+test('v15/v16 楼内投影接受第五条剧情线，旧 v14 仍保持四线历史边界', () => {
   const storylines = Array.from({ length:5 }, (_, index) => ({ storylineId:`line-${index + 1}`, title:`剧情线 ${index + 1}`, basis:`独立依据 ${index + 1}` }));
   const states = storylines.map((line, index) => ({
     stateId:`state-${index + 1}`, storylineId:line.storylineId, subjectEntityId:`person-${index + 1}`, subject:`人物 ${index + 1}`,
@@ -613,7 +648,7 @@ test('v15 楼内投影接受第五条剧情线，旧 v14 仍保持四线历史�
   assert.equal(legacy.stateItems.length, 0);
 });
 
-test('v15 楼内投影只精确剥离已签千事尾块，保留七组八条旧事及人物与时间', () => {
+test('v15/v16 楼内投影只精确剥离已签千事尾块，保留七组八条旧事及人物与时间', () => {
   const storylines = Array.from({ length:7 }, (_, index) => ({ storylineId:`line-${index + 1}`, title:`剧情线 ${index + 1}`, basis:`依据 ${index + 1}` }));
   const floors = storylines.map((line, index) => ({ floorId:`floor-${index + 1}`, floorMemoryId:`memory-${index + 1}`, assistantSeq:index + 1, chronology:[], items:[
     { category:'objective', kind:'event', text:`旧事 ${index + 1}-1`, recallSection:'distant', storylineId:line.storylineId },

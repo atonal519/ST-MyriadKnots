@@ -143,6 +143,7 @@ export function assessMemoryCoverage({ reachable, snapshot, hostCandidates, real
     ...unregisteredSummaryRefs.filter(ref => visibleAssistant(snapshot.chat[ref.hostLocator.messageIndex])).map(ref => ref.floorId),
   ]);
   const recent = recentVisibleIndexes(snapshot.chat);
+  // A contiguous missing suffix may be protected as live work; a gap followed by saved floors remains historical debt.
   const summaryRealtimeProtected = summaryPending.length > 0 && (realtimeOrigin === true
     || summaryCompleted > 0
     || summaryPending.every(floor => recent.has(floor.hostLocator.messageIndex) && visibleAssistant(snapshot.chat[floor.hostLocator.messageIndex])));

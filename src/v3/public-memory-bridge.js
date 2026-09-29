@@ -277,6 +277,7 @@ export function createPublicMemoryBridge({ session, store, hostAdapter, foundati
       let source = null;
       if (foundationSnapshot && typeof store.readRoot === 'function') {
         const rootResult = await store.readRoot();
+        // Cached records are reused only when the backend root still matches the cached snapshot exactly.
         if (sameReachableRoot(foundationSnapshot, rootResult)) {
           source = await projectRecallSource(
             foundationSnapshot,

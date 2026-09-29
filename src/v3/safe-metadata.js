@@ -31,5 +31,8 @@ export function sanitizeTaskMetadata(value) {
     model: metadataText(value?.model, 'unknown', 160),
     finishReason: metadataText(value?.finishReason, '', 32),
     transportAttempts: Number.isSafeInteger(value?.transportAttempts) && value.transportAttempts >= 0 ? value.transportAttempts : null,
+    httpStatus: Number.isSafeInteger(value?.httpStatus) && value.httpStatus >= 0 ? value.httpStatus : null,
+    formatStage: metadataText(value?.formatStage, '', 80),
+    sourceStage: metadataText(value?.sourceStage, '', 80),
   });
 }

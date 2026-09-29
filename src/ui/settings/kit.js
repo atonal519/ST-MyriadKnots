@@ -1,4 +1,3 @@
-// 设置模块共用的小工具：DOM 帮手 + 一个 sub 级抽屉外壳。
 import { createSettingsDrawer } from '../settings-drawer.js';
 
 export function createSettingsKit(documentRef = globalThis.document) {

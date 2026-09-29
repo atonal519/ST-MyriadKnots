@@ -107,6 +107,7 @@ export function createChatMemoryManagement({
   };
   const hasMemoryKeys = message => MEMORY_MESSAGE_KEYS.some(key => Object.hasOwn(message?.extra ?? {}, key))
     || (Array.isArray(message?.swipe_info) && message.swipe_info.some(swipe => MEMORY_MESSAGE_KEYS.some(key => Object.hasOwn(swipe?.extra ?? {}, key))));
+  // Only a valid marker from this plugin grants permission to restore a message's visibility.
   const hasValidAutoHideMarker = extra => extra?.[AUTO_HIDE_KEY]?.schemaVersion === 1 && isUuid(extra[AUTO_HIDE_KEY].chatId);
 
   async function clearMessageMemoryKeys(identity, assertOwner) {
@@ -153,6 +154,7 @@ export function createChatMemoryManagement({
       }
       return changed.length;
     } catch (error) {
+      // Restore the live objects after failure; a host save may already have written data before read-back fails.
       for (const item of changed) {
         item.message.extra = item.extra;
         item.message.swipe_info = item.swipeInfo;

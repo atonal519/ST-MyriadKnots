@@ -88,7 +88,7 @@ function runtimeHarness({ profile = null, profiles = null, selected = [A], failS
       }
       return state;
     },
-    async regenerateProfile(entityId) { calls.regenerate.push(entityId); return emit(); },
+    async regenerateProfile(entityId) { calls.regenerate.push(entityId); if (generationReport) state = { ...state, lastGenerationReport: generationReport }; return emit(); },
     async saveAvatar(entityId, avatar) { calls.avatar.push([entityId, avatar]); state = { ...state, people: state.people.map(item => item.entityId === entityId ? { ...item, avatar } : item) }; return emit(); },
     async mergePeople(sourceEntityId, targetEntityId, profileSource) {
       calls.merge.push([sourceEntityId, targetEntityId, profileSource]);
@@ -418,6 +418,19 @@ test('人物整理沿用 runtime 总批次进度并随批次推进更新', () =>
   h.emitState({ ...h.state, active: { kind: 'generating', batchIndex: 4, batchTotal: 11 } });
   assert.match(visible(container), /正在整理人物资料 · 第 4\/11 批/);
   assert.doesNotMatch(visible(container), /第 3\/11 批/);
+});
+
+test('人物整理报告准确显示实际送入世界书条目数，包括零条', async () => {
+  const h = runtimeHarness({ profile: { name: '旧档' }, generationReport: { saved: 1, requested: 1, worldInfoMatched: 2 } }), container = new Node('main');
+  createPeopleProfilesView({ runtime: h.runtime, documentRef }).mount(container);
+  flatten(container).find(node => node.textContent === '重新整理资料').click();
+  await waitFor(() => visible(container).includes('送入世界书 2 项'));
+  assert.doesNotMatch(visible(container), /命中世界书|未命中相关世界书/u);
+
+  const empty = runtimeHarness({ profile: { name: '旧档' }, generationReport: { saved: 1, requested: 1, worldInfoMatched: 0 } }), other = new Node('main');
+  createPeopleProfilesView({ runtime: empty.runtime, documentRef }).mount(other);
+  flatten(other).find(node => node.textContent === '重新整理资料').click();
+  await waitFor(() => visible(other).includes('送入世界书 0 项'));
 });
 
 test('真实 runtime 与 view 完成修改保存、新建档、no-op 与失败就地反馈', async () => {

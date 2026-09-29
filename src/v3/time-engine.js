@@ -371,6 +371,7 @@ export function evaluateTimeBatches(batches, reachable) {
     if (!floors.has(batch.cutoffFloorId) || !(batch.dependencies ?? []).every(ref => floors.has(ref.floorId))) continue;
     let complete = true;
     const changesById = new Map((batch.changes ?? []).map(item => [item.id, item]));
+    // A merged update is atomic against its full prior observation set; unrelated valid changes can still replay.
     const invalidGroupIds = new Set((batch.mergeGroups ?? []).filter(group => group.itemIds.some(id => {
       const change = changesById.get(id); return !change || change.previousObservationKey && items.get(id)?.observationKey !== change.previousObservationKey;
     })).flatMap(group => group.itemIds));

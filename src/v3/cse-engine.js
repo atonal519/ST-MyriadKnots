@@ -495,6 +495,7 @@ function calibratedEvidence(raw, { envelope, binding, category, index, isolated 
 function calibratedMutationAllowed({ category, evidence, manualCore }) {
   if (!evidence.length) return false;
   if (category !== 'core') return true;
+  // Once Core is user-authored, only evidence from the current user input can revise it.
   if (manualCore) return evidence.some(item => item.source === 'currentUserInput');
   return evidence.some(item => item.kind === 'authorialSetting' || item.source === 'currentUserInput');
 }

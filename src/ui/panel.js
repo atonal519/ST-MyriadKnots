@@ -369,7 +369,6 @@ export function createPanel({
     memoryBody.append(autoHideToggle, keepRow, autoHideResult, storageGroup);
     page.append(memoryGroup);
 
-    // 当前聊天的记忆操作紧跟通用设置，避免与总开关混成同一层级。
     page.append(managementMount, settingsManagementError);
 
     const { drawer: documentationGroup, body: documentationBody } = groupOf('documentation', '教程与配置文件');

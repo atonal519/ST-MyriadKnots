@@ -77,6 +77,19 @@ test('自动隐藏默认关闭并保留最近 3 个 AI 楼，数量只接受合�
   assert.equal(settings.get().autoHideKeepAiCount, 3);
 });
 
+test('楼层召回与记忆卡片默认显示，分别持久化且旧设置继续按默认显示', () => {
+  const extensionSettings = { qianqianjie: { apiUrl: 'https://main.test/v1' } };
+  const { settings, saves } = setup(extensionSettings);
+  assert.equal(settings.get().inlineRecallVisible, true);
+  assert.equal(settings.get().inlineMemoryVisible, true);
+  settings.update({ inlineRecallVisible: false });
+  assert.equal(settings.get().inlineRecallVisible, false);
+  assert.equal(settings.get().inlineMemoryVisible, true);
+  settings.update({ inlineMemoryVisible: false });
+  assert.deepEqual([settings.get().inlineRecallVisible, settings.get().inlineMemoryVisible], [false, false]);
+  assert.equal(saves(), 2);
+});
+
 test('存储自动清理默认关闭，只保存合法的逐聊天稳定楼进度', () => {
   const extensionSettings = {};
   const { settings, saves } = setup(extensionSettings);
@@ -342,7 +355,7 @@ test('记忆任务结果与错误只附带有界 API 来源/模型元数据', as
     compactClient: { generateTask: async () => ({ jsonData: { ok: true }, taskMetadata: { finishReason: 'stop' } }) },
   });
   const result = await independent.generateUtilityTask({});
-  assert.deepEqual(result.taskMetadata, { source: 'seven-utility', sourceLabel: '构画机械预设 · G3.5F', model: 'gemini-3-flash-preview', finishReason: 'stop' });
+  assert.deepEqual(result.taskMetadata, { source: 'seven-utility', sourceLabel: '构画机械预设 · G3.5F', model: 'gemini-3-flash-preview', finishReason: 'stop', sourceStage: 'utility-request' });
   assert.doesNotMatch(JSON.stringify(result.taskMetadata), /SECRET|https?:\/\//i);
   const failed = createTaskRouter({
     resolver: { resolve: () => ({ kind: 'independent', config: {} }), resolveUtility: () => ({ kind: 'independent', source: 'local', sourceLabel: '本地', config: { url: 'SECRET_URL', key: 'SECRET_KEY', model: 'safe-model' } }) },
@@ -465,7 +478,7 @@ test('有效副 API 精确走机械预设且元数据不泄密', async () => {
   const utilityResult = await router.generateUtilityTask({ taskMessages: [] });
   assert.equal(seen[0].config.key, 'UTILITY_SECRET');
   assert.equal(Object.isFrozen(seen[0].config), true);
-  assert.deepEqual(utilityResult.taskMetadata, { source: 'shared-summary-preset', sourceLabel: '机械预设', model: 'utility-model' });
+  assert.deepEqual(utilityResult.taskMetadata, { source: 'shared-summary-preset', sourceLabel: '机械预设', model: 'utility-model', sourceStage: 'utility-request' });
   assert.doesNotMatch(JSON.stringify(utilityResult.taskMetadata), /SECRET|https?:\/\//);
 });
 

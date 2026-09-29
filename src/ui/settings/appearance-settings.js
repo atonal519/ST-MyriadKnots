@@ -1,7 +1,7 @@
 import { createSettingsKit } from './kit.js';
 import { createInlineSelect } from '../inline-select.js';
 
-// 外观：主题 / 界面缩放 / 自定义字体 CSS URL（无 family 字段，字体名自动解析）。change 即存并即时应用。
+// 外观设置 change 即存并即时应用；楼层卡片开关只控制显示。
 export function createAppearanceSettings({ settings, documentRef = globalThis.document, open = false, onToggle, applyAppearance } = {}) {
   const { element, field, subDrawer } = createSettingsKit(documentRef);
   const { drawer, body } = subDrawer({ title: '外观', id: 'qqj-settings-appearance', open, onToggle });
@@ -30,5 +30,14 @@ export function createAppearanceSettings({ settings, documentRef = globalThis.do
   fontCssUrl.addEventListener('change', () => { settings.update({ appearanceFontCssUrl: fontCssUrl.value, appearanceFontFamily: '' }); apply(); });
 
   body.append(field('主题', theme), field('界面缩放', scaleWrap), field('自定义字体 CSS URL', fontCssUrl));
+  body.append(element('p', 'settings-subhead', '楼层卡片'));
+  for (const [key, title] of [['inlineRecallVisible', '显示楼层召回卡片'], ['inlineMemoryVisible', '显示楼层记忆卡片']]) {
+    const row = element('label', 'setting-switch');
+    const input = element('input'); input.type = 'checkbox'; input.checked = current[key] !== false;
+    input.setAttribute('aria-label', title);
+    input.addEventListener('change', () => { settings.update({ [key]: input.checked }); apply(); });
+    row.append(input, element('span', '', title)); body.append(row);
+  }
+  body.append(element('p', 'settings-hint', '分别控制“本轮召回”和“第几个结”，对所有聊天立即生效。隐藏仅影响显示，摘要、人物分析和召回注入照常运行。'));
   return { node: drawer };
 }

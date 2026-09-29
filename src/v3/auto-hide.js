@@ -9,6 +9,7 @@ const READY_MEMORY = new Set(['ready', 'needsReview']);
 const autoHideError = (code, message) => { const error = new Error(message); error.code = code; return error; };
 const isSystemEvent = message => isHostNarratorMessage(message) || (message?.is_system === true && Boolean(message?.extra?.type));
 const isAssistantMessage = message => message?.is_user === false && !isSystemEvent(message);
+// Visibility is restored only for messages carrying this plugin's valid marker for the same chat.
 const ownsMessage = (message, chatId) => message?.extra?.[MARKER_KEY]?.schemaVersion === 1 && message.extra[MARKER_KEY].chatId === chatId;
 const contiguousRanges = indexes => {
   const ranges = [];

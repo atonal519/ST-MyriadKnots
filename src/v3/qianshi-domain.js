@@ -53,6 +53,7 @@ export function effectiveQianshiDelta(memory) {
   const delta = memory?.qianshiDelta;
   const formalEvents = ['ready', 'partial'].includes(delta?.status) ? (delta.events ?? []) : [];
   const formalRelations = ['ready', 'partial'].includes(delta?.status) ? (delta.relations ?? []) : [];
+  // Legacy review candidates may fill missing IDs, but a conflicting ID never replaces the formal event or relation.
   const events = [...formalEvents], relations = [...formalRelations], reviewEvents = [], reviewRelations = [], reviewRelationEntries = [], conflicts = [];
   const eventById = new Map(formalEvents.map(event => [event.id, event]));
   const relationById = new Map(formalRelations.map(relation => [relation.id, relation]));
