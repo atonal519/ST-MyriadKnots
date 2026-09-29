@@ -12,6 +12,7 @@ import {
   normalizeIdentityProjection, resolveIdentityEntityId,
 } from './entity-identity.js';
 import { PREQUEL_METADATA_KEY, selectPrequel } from './recall-prequel.js';
+import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 
 export const PEOPLE_WORKSPACE_RECORD_ID = 'v3-people-workspace';
 export const PEOPLE_WORKSPACE_SCHEMA_VERSION = 3;
@@ -238,6 +239,19 @@ export function createPeopleWorkspaceStore({ client } = {}) {
 
 function identityProjection(workspace) {
   return normalizeIdentityProjection(workspace ?? {});
+}
+export function projectAnnualPeople(reachable, workspace) {
+  const projection = identityProjection(workspace);
+  const directory = activePersonDirectory(reachable, workspace);
+  const validIds = new Set(directory.map(entry => entry.entityId));
+  const names = new Map(directory.map(entry => [entry.entityId, entry.displayName]));
+  const people = new Map();
+  for (const [sourceId, profile] of Object.entries(workspace?.profilesByEntityId ?? {})) {
+    const entityId = resolveIdentityEntityId(sourceId, projection);
+    if (!entityId || !validIds.has(entityId) || isIdentityDeleted(entityId, projection) || people.has(entityId) && sourceId !== entityId) continue;
+    people.set(entityId, { entityId, displayName: profile?.name || names.get(entityId), profile });
+  }
+  return [...people.values()];
 }
 function activePersonDirectory(reachable, workspace) {
   return buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], identityProjection: identityProjection(workspace) })
@@ -524,7 +538,7 @@ function incompleteProfileResult(result) {
 }
 
 export function createPeopleWorkspaceRuntime({
-  store, session, foundationRuntime, memoryRuntime, generateUtilityTask, sourcePermissions,
+  store, session, foundationRuntime, foundationStore, hostAdapter, memoryRuntime, generateUtilityTask, sourcePermissions,
   contextProvider, scanner = scanWorldInfo,
   sourceCandidateFactory = createWorldInfoSourceCandidates, profilePromptGuidance = () => '', processingPrompt = () => '', isEnabled = true, now = () => new Date(), logger = console,
 } = {}) {
@@ -562,6 +576,106 @@ export function createPeopleWorkspaceRuntime({
   function memoryIsBusy() {
     const state = memoryRuntime.getState();
     return Boolean(state?.memoryWorkBusy || state?.activeExtraction || state?.activeCse);
+  }
+  function confirmedFoundationSnapshot(identity, { allowPending = false } = {}) {
+    const reachable = foundationRuntime.getReachable?.();
+    const state = foundationRuntime.getState?.();
+    const root = reachable?.root, checkpoint = reachable?.checkpoint;
+    if (!reachable || !state || state.status !== 'ready' || state.foundationStatus !== 'ready'
+      || state.chatId !== identity.chatId || state.activeRun || (state.pending && !allowPending)
+      || root?.status !== 'ready' || root.chatId !== identity.chatId || !root.headCheckpointId
+      || checkpoint?.id !== root.headCheckpointId || !checkpoint.capabilities?.foundationReady
+      || reachable.status !== 'ready') return null;
+    return { reachable, key: `${root.chatId}:${root.headCheckpointId}:${root.narrativeGeneration}` };
+  }
+  function pendingReplacementStillProven(proof, identity, snapshot) {
+    if (!proof || !hostAdapter || typeof hostAdapter.snapshot !== 'function') return false;
+    try {
+      const host = hostAdapter.snapshot();
+      if (host?.context?.chatMetadata?.qianqianjie?.chatId !== identity.chatId || !Array.isArray(host.chat)) return false;
+      const oldAnchorStillPresent = host.chat.some(message => message?.is_user === false
+        && inspectMessageFloorAnchor(message, identity.chatId).anchor?.floorId === proof.oldFloorId);
+      if (oldAnchorStillPresent) return false;
+      const replacementFloor = snapshot.reachable.floors?.find(floor => floor.id === proof.replacementFloorId
+        && floor.hostLocator?.messageIndex === proof.messageIndex);
+      const message = host.chat[proof.messageIndex];
+      const isAiFloorMessage = message?.is_user === false && message?.extra?.type !== 'narrator'
+        && !(message?.is_system === true && message?.extra?.type);
+      const anchor = isAiFloorMessage ? inspectMessageFloorAnchor(message, identity.chatId) : null;
+      return Boolean(replacementFloor && anchor?.status === 'valid' && anchor.anchor.floorId === proof.replacementFloorId);
+    } catch { return false; }
+  }
+  async function pendingTailRemovalProofs(operation, snapshot, selectedIds) {
+    if (!foundationStore || typeof foundationStore.readRecord !== 'function' || !hostAdapter || typeof hostAdapter.snapshot !== 'function') return new Map();
+    const proofs = new Map();
+    for (const entityId of selectedIds) {
+      try {
+        const entityResult = await foundationStore.readRecord('entity', entityId);
+        const entity = entityResult?.status === 'ready' ? entityResult.data : null;
+        const oldFloorId = entity?.firstSeenFloorId;
+        if (entity?.id !== entityId || entity.chatId !== operation.identity.chatId || entity.entityType !== 'person'
+          || entity.recordStatus !== 'active' || !oldFloorId) continue;
+        const floorResult = await foundationStore.readRecord('floor', oldFloorId);
+        const oldFloor = floorResult?.status === 'ready' ? floorResult.data : null;
+        const messageIndex = oldFloor?.hostLocator?.messageIndex;
+        if (oldFloor?.id !== oldFloorId || oldFloor.chatId !== operation.identity.chatId || !Number.isSafeInteger(messageIndex)) continue;
+        const host = hostAdapter.snapshot();
+        if (host?.context?.chatMetadata?.qianqianjie?.chatId !== operation.identity.chatId || !Array.isArray(host.chat)) continue;
+        const oldAnchorStillPresent = host.chat.some(message => message?.is_user === false
+          && inspectMessageFloorAnchor(message, operation.identity.chatId).anchor?.floorId === oldFloorId);
+        if (oldAnchorStillPresent) continue;
+        const replacement = snapshot.reachable.floors?.find(floor => floor.hostLocator?.messageIndex === messageIndex);
+        const message = host.chat[messageIndex];
+        const isAiFloorMessage = message?.is_user === false && message?.extra?.type !== 'narrator'
+          && !(message?.is_system === true && message?.extra?.type);
+        const anchor = isAiFloorMessage ? inspectMessageFloorAnchor(message, operation.identity.chatId) : null;
+        if (!replacement || replacement.id === oldFloorId || anchor?.status !== 'valid' || anchor.anchor.floorId !== replacement.id) continue;
+        proofs.set(entityId, Object.freeze({ oldFloorId, replacementFloorId: replacement.id, messageIndex }));
+      } catch { /* Missing or unreliable source records leave the user's selection untouched. */ }
+    }
+    return proofs;
+  }
+  async function pruneUnreachableSelections(operation) {
+    if (active !== operation || operation.kind !== 'loading' || memoryIsBusy()) return;
+    const initial = confirmedFoundationSnapshot(operation.identity, { allowPending: true });
+    if (!initial) return;
+    const foundationState = foundationRuntime.getState?.();
+    const hasPendingTail = Boolean(foundationState?.pending);
+    const pendingSignature = JSON.stringify(foundationState?.pending ?? null);
+    let pendingProofs = new Map();
+    if (hasPendingTail) {
+      const projection = identityProjection(workspace);
+      const reachablePeople = new Set(activePersonEntities(initial.reachable, workspace)
+        .map(entity => resolveIdentityEntityId(entity.id, projection))
+        .filter(entityId => entityId && !isIdentityDeleted(entityId, projection)));
+      const absentSelections = workspace.selectedEntityIds.filter(entityId => {
+        const canonicalId = resolveIdentityEntityId(entityId, projection);
+        return canonicalId && !isIdentityDeleted(canonicalId, projection) && !reachablePeople.has(canonicalId);
+      });
+      pendingProofs = await pendingTailRemovalProofs(operation, initial, absentSelections);
+      assertCurrent(operation);
+    }
+    await mutate(operation, current => {
+      const latestSnapshot = confirmedFoundationSnapshot(operation.identity, { allowPending: true });
+      if (!latestSnapshot || latestSnapshot.key !== initial.key || memoryIsBusy()
+        // A pending tail can appear while the workspace CAS reloads, even when root/head stay unchanged.
+        || JSON.stringify(foundationRuntime.getState?.()?.pending ?? null) !== pendingSignature) return null;
+      const currentProjection = identityProjection(current);
+      const reachablePeople = new Set(activePersonEntities(latestSnapshot.reachable, current)
+        .map(entity => resolveIdentityEntityId(entity.id, currentProjection))
+        .filter(entityId => entityId && !isIdentityDeleted(entityId, currentProjection)));
+      const selectedEntityIds = current.selectedEntityIds.filter(entityId => {
+        const canonicalId = resolveIdentityEntityId(entityId, currentProjection);
+        if (!canonicalId || isIdentityDeleted(canonicalId, currentProjection)) return false;
+        if (reachablePeople.has(canonicalId)) return true;
+        if (!hasPendingTail) return false;
+        const proof = pendingProofs.get(entityId) ?? pendingProofs.get(canonicalId);
+        return !(proof && pendingReplacementStillProven(proof, operation.identity, latestSnapshot));
+      });
+      if (selectedEntityIds.length === current.selectedEntityIds.length) return null;
+      // Removed-floor identities leave the active selection only; their saved profiles and other history remain user data.
+      return { ...clone(current), selectedEntityIds, updatedAt: nowIso(now) };
+    });
   }
   function scheduleAutomaticMaintenance() {
     if (destroyed || !enabled() || !workspace || !pendingAutomaticScan || autoDrainQueued) return;
@@ -666,6 +780,7 @@ export function createPeopleWorkspaceRuntime({
     return settle(operation, async () => {
       if (refreshMemory && typeof memoryRuntime.refreshStatus === 'function') await memoryRuntime.refreshStatus({ preferCached: true });
       assertCurrent(operation); adopt(operation, await store.read(operation.identity));
+      await pruneUnreachableSelections(operation);
       if (automaticChatId !== chatId || automaticFloorCount === null) {
         automaticChatId = chatId;
         automaticFloorCount = (foundationRuntime.getReachable?.()?.floors ?? []).length;
@@ -682,7 +797,7 @@ export function createPeopleWorkspaceRuntime({
         if (JSON.stringify(current.selectedEntityIds) !== startingSelection) throw errorWith('QQJ_PEOPLE_SELECTION_CONFLICT', '重要人物选择已在其他页面更新，本次没有覆盖新选择，请重试。');
         const previouslySelected = new Set(current.selectedEntityIds);
         const allowed = new Set(candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), current).map(person => person.entityId));
-        // A roster change may hide a previously selected person; retain that saved choice until the user explicitly removes it.
+        // Temporary roster gaps may keep a choice editable; confirmed checkpoint refresh removes IDs no longer canonical.
         if (requested.some(id => !isUuid(id) || (!allowed.has(id) && !previouslySelected.has(id)))) {
           throw errorWith('QQJ_PEOPLE_SELECTION_INVALID', '重要人物选择包含当前聊天不可用的人物。');
         }

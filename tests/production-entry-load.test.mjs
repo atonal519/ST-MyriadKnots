@@ -132,12 +132,12 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.5.11');
+  assert.equal(manifest.version, '0.6.0');
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
   assert.equal(cacheMatch[5], bundleDigest.slice(0, 16), 'manifest cache key 必须随实际 bundle 内容变化，禁止漏 bump 假通过');
-  for (const marker of ['0.5.11', 'prepareStep', 'qianshiCandidates', 'Graphology 检测到重复图边。', 'DataCloneError']) {
+  for (const marker of ['0.6.0', 'prepareStep', 'qianshiCandidates', 'Graphology 检测到重复图边。', 'DataCloneError']) {
     assert.equal(bundleSource.includes(marker), true, `生产 bundle 缺少候选版本或安全准备诊断字段：${marker}`);
   }
   await assert.rejects(access(resolve(root, 'dist/index.js')));
@@ -333,7 +333,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const productionHostContext = { eventSource: productionEventSource, eventTypes: productionEventTypes, uuidv4, getRequestHeaders: () => ({ 'X-CSRF-Token': 'token' }), groupId: null, characterId: 0, characters: [{ avatar: 'char.png' }] };
   define('./src/v3/host-adapter.js', { createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => productionHostContext, snapshot: () => ({}) }; } });
   define('./src/v3/foundation-store.js', { createFoundationStore: () => ({}) });
-  const productionReachable = { baseline: { userPersona: { entityId: 'user-id', name: '用户' } }, entities: [{ id: 'awake-id', displayName: '在场人物' }, { id: 'sleep-id', displayName: '休眠人物' }] };
+  const productionReachable = { baseline: { userPersona: { entityId: 'user-id', name: '用户' } }, entities: [
+    { id: 'awake-id', entityType: 'person', displayName: '在场人物' }, { id: 'sleep-id', entityType: 'person', displayName: '休眠人物' },
+  ] };
   define('./src/v3/foundation-runtime.js', { createFoundationRuntime: options => { foundationOptions = options; return { getReachable: () => productionReachable }; } });
   define('./src/v3/entity-identity.js', {
     resolveIdentityEntityId: (entityId, projection = {}) => projection.identityRedirectsByEntityId?.[entityId] ?? entityId,
@@ -356,6 +358,19 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/v3/people-workspace.js', {
     createPeopleWorkspaceStore: options => { peopleStoreOptions = options; return { read() {}, put() {} }; },
     createPeopleWorkspaceRuntime: options => { peopleWorkspaceOptions = options; return peopleWorkspaceRuntime; },
+    projectAnnualPeople: (reachable, workspace) => {
+      const projection = { identityRedirectsByEntityId: workspace.identityRedirectsByEntityId, deletedEntityIds: workspace.deletedEntityIds };
+      const valid = new Set(reachable.entities.filter(entity => entity.entityType === 'person' && entity.specialRole !== 'user')
+        .map(entity => projection.identityRedirectsByEntityId[entity.id] ?? entity.id)
+        .filter(entityId => !projection.deletedEntityIds.includes(entityId)));
+      const result = new Map();
+      for (const [sourceId, profile] of Object.entries(workspace.profilesByEntityId)) {
+        const entityId = projection.identityRedirectsByEntityId[sourceId] ?? sourceId;
+        if (!valid.has(entityId) || projection.deletedEntityIds.includes(entityId) || result.has(entityId) && sourceId !== entityId) continue;
+        result.set(entityId, { entityId, displayName: profile.name, profile });
+      }
+      return [...result.values()];
+    },
   });
   define('./src/v3/public-memory-bridge.js', { installPublicMemoryBridge: options => { publicMemoryBridgeOptions = options; return { bridge: {}, cleanup() {} }; } });
   define('./src/v3/public-qianshi-bridge.js', { installPublicQianshiBridge: options => { publicQianshiBridgeOptions = options; return { bridge: {}, cleanup() {} }; } });

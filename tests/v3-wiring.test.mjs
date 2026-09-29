@@ -23,7 +23,7 @@ test('生产入口只装配 V3 记忆与独立人物工作区，面板提供五�
   assert.match(people, /foundationRuntime\.subscribe\(\(\)\s*=>\s*observeStableFloors\(\)\)/);
   assert.match(people, /count\s*-\s*automaticFloorCount\s*<\s*10/);
   assert.match(people, /canonicalContent/);
-  assert.equal(manifest.version, '0.5.11');
+  assert.equal(manifest.version, '0.6.0');
   for (const marker of ['createArchiveV2', 'archiveV2', 'archive-v2', 'myriad-knots-bond-draft', '首次建立双丝网']) {
     assert.doesNotMatch(entry + panel + bootstrap + bundle, new RegExp(marker, 'i'));
   }

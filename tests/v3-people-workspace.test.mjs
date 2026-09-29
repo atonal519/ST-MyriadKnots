@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { buildPeopleProfileSystemPrompt, createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, DEFAULT_PROFILE_GUIDANCE, PEOPLE_PROFILE_INPUT_CHAR_BUDGET, PEOPLE_WORKSPACE_RECORD_ID, PROFILE_FIXED_CONTRACT, selectRelevantWorldInfoCandidates, validatePeopleWorkspace } from '../src/v3/people-workspace.js';
+import { buildPeopleProfileSystemPrompt, createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, DEFAULT_PROFILE_GUIDANCE, PEOPLE_PROFILE_INPUT_CHAR_BUDGET, PEOPLE_WORKSPACE_RECORD_ID, PROFILE_FIXED_CONTRACT, projectAnnualPeople, selectRelevantWorldInfoCandidates, validatePeopleWorkspace } from '../src/v3/people-workspace.js';
 import { PEOPLE_PROFILE_DEFINITIONS, PEOPLE_PROFILE_FIELDS, PEOPLE_PROFILE_LABELS } from '../src/v3/people-profile-fields.js';
 import { filterSourcesByPermission, filterWorldInfoSourcesByPermission } from '../src/source-permission.js';
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
@@ -32,8 +32,8 @@ function backend() {
 function entity(id, name, extra = {}) {
   return { id, entityType: 'person', displayName: name, aliases: [{ name: `${name}别名` }], specialRole: 'none', firstSeenFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', lastSeenFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', status: 'established', recordStatus: 'active', ...extra };
 }
-function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many = false, permissionSettings = null, sourceCandidates = null, scanner = null, profilePromptGuidance = () => '', processingPrompt = () => '', prequel = '' } = {}) {
-  const db = backend(); let identity = { chatId: CHAT_A, hostChatId: 'host-a', characterLocator: 'char.png', personaLocator: 'persona.png' }, currentPrequel = prequel;
+function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many = false, permissionSettings = null, sourceCandidates = null, scanner = null, profilePromptGuidance = () => '', processingPrompt = () => '', prequel = '', foundationState = null } = {}) {
+  const db = backend(), foundationRecords = new Map(); let hostChat = [], foundationReadHook = null, identity = { chatId: CHAT_A, hostChatId: 'host-a', characterLocator: 'char.png', personaLocator: 'persona.png' }, currentPrequel = prequel;
   const peopleEntities = ids.slice(0, many ? 12 : 4).map((id, index) => entity(id, `人物${index + 1}`));
   let reachable = {
     entities: [...peopleEntities, entity(USER, '用户', { specialRole: 'user' }), entity(SYNTHETIC_CHAR, '剧情标题', { specialRole: 'char', firstSeenFloorId: null, lastSeenFloorId: null })],
@@ -47,7 +47,9 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
   const sourceTrace = [];
   const runtime = createPeopleWorkspaceRuntime({
     store: createPeopleWorkspaceStore({ client: db.client }), session: { identity: () => structuredClone(identity) },
-    foundationRuntime: { getReachable: () => reachable, subscribe(fn) { foundationListeners.add(fn); return () => foundationListeners.delete(fn); } }, memoryRuntime, generateUtilityTask: generate, profilePromptGuidance, processingPrompt,
+    foundationRuntime: { getReachable: () => reachable, getState: () => foundationState, subscribe(fn) { foundationListeners.add(fn); return () => foundationListeners.delete(fn); } }, memoryRuntime, generateUtilityTask: generate, profilePromptGuidance, processingPrompt,
+    foundationStore: { async readRecord(type, id) { await foundationReadHook?.(type, id); const value = foundationRecords.get(`${type}/${id}`); return value ? { status: 'ready', data: structuredClone(value) } : { status: 'missing' }; } },
+    hostAdapter: { snapshot: () => ({ context: { chatMetadata: { qianqianjie: { chatId: identity.chatId } } }, chat: hostChat }) },
     sourcePermissions: {
       filterCandidates({ chatId, candidates }) { sourceTrace.push(['filter', chatId, candidates.map(item => item.id)]); return permissionSettings ? filterSourcesByPermission({ chatId, candidates, settings: permissionSettings }) : candidates.filter(item => item.id !== 'worldbook:excluded'); },
       filterWorldInfoSources(sources) { return filterWorldInfoSourcesByPermission({ sources, settings: permissionSettings ?? {} }); },
@@ -58,7 +60,7 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
     now: () => new Date('2026-09-06T00:00:00.000Z'),
     logger: { warn() {} },
   });
-  return { db, runtime, peopleEntities, sourceTrace, get identity() { return identity; }, setIdentity(value) { identity = value; }, get reachable() { return reachable; }, setReachable(value) { reachable = value; },
+  return { db, runtime, peopleEntities, sourceTrace, foundationRecords, setFoundationReadHook(value) { foundationReadHook = value; }, setHostChat(value) { hostChat = value; }, get identity() { return identity; }, setIdentity(value) { identity = value; }, get reachable() { return reachable; }, setReachable(value) { reachable = value; }, setFoundationState(value) { foundationState = value; },
     notifyFoundation() { for (const listener of foundationListeners) listener({ status: 'ready', chatId: identity.chatId }); },
     get memoryState() { return memoryState; }, setMemoryState(value, notify = true) { memoryState = value; if (notify) for (const listener of listeners) listener(memoryState); },
     notifyMemory() { for (const listener of listeners) listener(memoryState); }, setPrequel(value) { currentPrequel = value; }, get memoryRefreshes() { return memoryRefreshes; } };
@@ -122,6 +124,219 @@ test('身份成功续接可复用已准备的记忆，只读加载一次人物 w
   assert.equal(h.memoryRefreshes, 0, '人物续接不得重复刷新刚准备完成的记忆');
   assert.equal(h.db.calls.filter(call => call[0] === 'get' && call[2] === PEOPLE_WORKSPACE_RECORD_ID).length, 1);
   assert.equal(h.runtime.getState().status, 'ready');
+});
+
+test('ready checkpoint 刷新只移出失联旧 ID，保留同名新人物选择与旧档案', async () => {
+  const oldId = ids[0], newId = ids[1], otherId = ids[2];
+  const h = harness();
+  const oldPerson = entity(oldId, '同名人物'), newPerson = entity(newId, '同名人物'), otherPerson = entity(otherId, '未选人物');
+  h.setReachable({ ...h.reachable, entities: [...h.reachable.entities, oldPerson, newPerson, otherPerson] });
+  await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([oldId, newId]);
+  await h.runtime.saveProfile(oldId, { name: '旧档生日：旧日期' });
+  await h.runtime.saveProfile(newId, { name: '新档生日：新日期' });
+  await h.runtime.saveProfile(otherId, { name: '未选人物生日：有效日期' });
+  const root = { status: 'ready', chatId: CHAT_A, headCheckpointId: 'checkpoint-2', narrativeGeneration: 'generation-1' };
+  h.setReachable({ ...h.reachable, status: 'ready', entities: h.reachable.entities.filter(item => item.id !== oldId), root,
+    checkpoint: { id: root.headCheckpointId, capabilities: { foundationReady: true } } });
+  h.setFoundationState({ status: 'ready', foundationStatus: 'ready', chatId: CHAT_A, activeRun: null, pending: null });
+  const refreshed = await h.runtime.refresh({ refreshMemory: false });
+  assert.deepEqual(refreshed.selectedEntityIds, [newId]);
+  assert.equal(refreshed.profilesByEntityId[oldId].name, '旧档生日：旧日期', '失联人物资料仍保留供用户处理');
+  assert.equal(refreshed.profilesByEntityId[newId].name, '新档生日：新日期');
+  const annual = projectAnnualPeople(h.reachable, refreshed);
+  assert.deepEqual(annual.map(person => person.entityId).sort(), [newId, otherId].sort(), '年度来源包括当前有效但未选人物，排除旧 ID');
+});
+
+test('pending 尾楼期间只清除来源楼已被确认替换的失联选择', async () => {
+  const oldId = ids[0], newId = ids[1], oldFloorId = ids[4], replacementFloorId = ids[5], pendingFloorId = ids[6];
+  const anchor = (floorId, chatId = CHAT_A) => ({ is_user: false, mes: '合成测试消息', extra: { qianqianjie_floor: { schemaVersion: 1, chatId, floorId } } });
+  for (const { label, sourceAvailable, oldAnchorInPending, replacementAnchorValid, shouldPrune } of [
+    { label: '确认前缀同位置已有新楼锚且全聊天无旧锚', sourceAvailable: true, oldAnchorInPending: false, replacementAnchorValid: true, shouldPrune: true },
+    { label: '旧来源楼移到待处理尾部', sourceAvailable: true, oldAnchorInPending: true, replacementAnchorValid: true, shouldPrune: false },
+    { label: '旧人物或来源楼记录缺失', sourceAvailable: false, oldAnchorInPending: false, replacementAnchorValid: true, shouldPrune: false },
+    { label: '替换位置没有可靠有效锚', sourceAvailable: true, oldAnchorInPending: false, replacementAnchorValid: false, shouldPrune: false },
+  ]) {
+    const h = harness();
+    const oldPerson = entity(oldId, '旧人物', { firstSeenFloorId: oldFloorId });
+    const newPerson = entity(newId, '新人物', { firstSeenFloorId: replacementFloorId });
+    h.setReachable({ ...h.reachable, entities: [...h.reachable.entities.filter(item => ![oldId, newId].includes(item.id)), oldPerson, newPerson] });
+    await h.runtime.refresh({ refreshMemory: false });
+    await h.runtime.setSelectedEntityIds([oldId, newId]);
+    await h.runtime.saveProfile(oldId, { name: '仍保留的旧档生日' });
+    const root = { status: 'ready', chatId: CHAT_A, headCheckpointId: `pending-${label}`, narrativeGeneration: 'generation-1' };
+    const replacement = { id: replacementFloorId, hostLocator: { messageIndex: 4 }, assistantSeq: 5 };
+    h.setReachable({ ...h.reachable, status: 'ready', entities: h.reachable.entities.filter(item => item.id !== oldId), floors: [replacement],
+      root, checkpoint: { id: root.headCheckpointId, capabilities: { foundationReady: true } } });
+    h.setFoundationState({ status: 'ready', foundationStatus: 'ready', activeRun: null, pending: { floorId: pendingFloorId }, chatId: CHAT_A });
+    const currentReplacement = replacementAnchorValid ? anchor(replacementFloorId) : { is_user: false, mes: '无效锚', extra: { qianqianjie_floor: { schemaVersion: 9, chatId: CHAT_A, floorId: replacementFloorId } } };
+    h.setHostChat([{}, {}, {}, {}, currentReplacement, {}, oldAnchorInPending ? anchor(oldFloorId) : { is_user: false, mes: '待处理尾楼' }]);
+    if (sourceAvailable) {
+      h.foundationRecords.set(`entity/${oldId}`, { id: oldId, chatId: CHAT_A, entityType: 'person', firstSeenFloorId: oldFloorId, recordStatus: 'active' });
+      h.foundationRecords.set(`floor/${oldFloorId}`, { id: oldFloorId, chatId: CHAT_A, hostLocator: { messageIndex: 4 } });
+    }
+    const state = await h.runtime.refresh({ refreshMemory: false });
+    assert.deepEqual(state.selectedEntityIds, shouldPrune ? [newId] : [oldId, newId], label);
+    assert.equal(state.profilesByEntityId[oldId].name, '仍保留的旧档生日', '清选择不删除旧人物资料');
+  }
+});
+
+test('pending 楼层来源读取期间 root/head 改变时不清旧人物选择', async () => {
+  const oldId = ids[0], newId = ids[1], oldFloorId = ids[4], replacementFloorId = ids[5], h = harness();
+  const anchor = floorId => ({ is_user: false, mes: '合成测试消息', extra: { qianqianjie_floor: { schemaVersion: 1, chatId: CHAT_A, floorId } } });
+  const oldPerson = entity(oldId, '旧人物', { firstSeenFloorId: oldFloorId });
+  const newPerson = entity(newId, '新人物', { firstSeenFloorId: replacementFloorId });
+  h.setReachable({ ...h.reachable, entities: [...h.reachable.entities.filter(item => ![oldId, newId].includes(item.id)), oldPerson, newPerson] });
+  await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([oldId, newId]);
+  const root = { status: 'ready', chatId: CHAT_A, headCheckpointId: 'pending-before-read', narrativeGeneration: 'generation-1' };
+  h.setReachable({ ...h.reachable, status: 'ready', entities: h.reachable.entities.filter(item => item.id !== oldId), floors: [{ id: replacementFloorId, hostLocator: { messageIndex: 4 } }],
+    root, checkpoint: { id: root.headCheckpointId, capabilities: { foundationReady: true } } });
+  h.setFoundationState({ status: 'ready', foundationStatus: 'ready', activeRun: null, pending: { floorId: ids[6] }, chatId: CHAT_A });
+  h.setHostChat([{}, {}, {}, {}, anchor(replacementFloorId), {}, { is_user: false, mes: '待处理尾楼' }]);
+  h.foundationRecords.set(`entity/${oldId}`, { id: oldId, chatId: CHAT_A, entityType: 'person', firstSeenFloorId: oldFloorId, recordStatus: 'active' });
+  h.foundationRecords.set(`floor/${oldFloorId}`, { id: oldFloorId, chatId: CHAT_A, hostLocator: { messageIndex: 4 } });
+  h.setFoundationReadHook(async type => {
+    if (type !== 'floor') return;
+    const changedRoot = { ...root, headCheckpointId: 'pending-after-read' };
+    h.setReachable({ ...h.reachable, root: changedRoot, checkpoint: { id: changedRoot.headCheckpointId, capabilities: { foundationReady: true } } });
+  });
+  const state = await h.runtime.refresh({ refreshMemory: false });
+  assert.deepEqual(state.selectedEntityIds, [oldId, newId], '根或 head 变化后应放弃旧证据');
+});
+
+test('workspace CAS 重读期间出现 pending 且 root/head 不变时不按无 pending 路径清选择', async () => {
+  const oldId = ids[0], newId = ids[1], h = harness();
+  h.setReachable({ ...h.reachable, status: 'ready', entities: h.reachable.entities.map(item => item.id === oldId
+    ? entity(oldId, '待处理尾楼人物') : item), root: { status: 'ready', chatId: CHAT_A, headCheckpointId: 'same-head', narrativeGeneration: 'generation-1' },
+    checkpoint: { id: 'same-head', capabilities: { foundationReady: true } } });
+  h.setFoundationState({ status: 'ready', foundationStatus: 'ready', activeRun: null, pending: null, chatId: CHAT_A });
+  await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([oldId, newId]);
+  h.setReachable({ ...h.reachable, entities: h.reachable.entities.filter(item => item.id !== oldId) });
+  let reads = 0;
+  h.db.hooks.beforeGet = async (collection, key) => {
+    if (key !== PEOPLE_WORKSPACE_RECORD_ID || ++reads !== 2) return;
+    h.setFoundationState({ status: 'ready', foundationStatus: 'ready', activeRun: null, pending: { floorId: ids[7] }, chatId: CHAT_A });
+  };
+  const state = await h.runtime.refresh({ refreshMemory: false });
+  assert.equal(h.reachable.root.headCheckpointId, 'same-head');
+  assert.ok(h.runtime.getState().selectedEntityIds.includes(oldId), 'pending 在异步 workspace 重读期间出现，旧清理必须放弃');
+  assert.deepEqual(state.selectedEntityIds, [oldId, newId]);
+});
+
+test('foundation 非 ready、运行中、待确认或 root/head 不一致时不清理人物选择', async () => {
+  const unsafeStates = [
+    { label: '运行中', state: { status: 'running', foundationStatus: 'ready', activeRun: { id: 'run' }, pending: null, chatId: CHAT_A } },
+    { label: '状态过期', state: { status: 'stale', foundationStatus: 'ready', activeRun: null, pending: null, chatId: CHAT_A } },
+    { label: '待人工核对', state: { status: 'needsReview', foundationStatus: 'ready', activeRun: null, pending: null, chatId: CHAT_A } },
+    { label: '有待确认楼层', state: { status: 'ready', foundationStatus: 'ready', activeRun: null, pending: { floorId: ids[3] }, chatId: CHAT_A } },
+    { label: '读取错误', state: { status: 'ready', foundationStatus: 'error', activeRun: null, pending: null, chatId: CHAT_A } },
+    { label: 'foundation 属于另一聊天', state: { status: 'ready', foundationStatus: 'ready', activeRun: null, pending: null, chatId: CHAT_B } },
+  ];
+  for (const { label, state } of unsafeStates) {
+    const oldId = ids[0], newId = ids[1];
+    const h = harness();
+    h.setReachable({ ...h.reachable, entities: [...h.reachable.entities, entity(oldId, '同名人物'), entity(newId, '同名人物')] });
+    await h.runtime.refresh({ refreshMemory: false });
+    await h.runtime.setSelectedEntityIds([oldId, newId]);
+    const root = { status: 'ready', chatId: CHAT_A, headCheckpointId: 'checkpoint-2', narrativeGeneration: 'generation-1' };
+    h.setReachable({ ...h.reachable, status: 'ready', entities: h.reachable.entities.filter(item => item.id !== oldId), root,
+      checkpoint: { id: root.headCheckpointId, capabilities: { foundationReady: true } } });
+    h.setFoundationState(state);
+    const result = await h.runtime.refresh({ refreshMemory: false });
+    assert.deepEqual(result.selectedEntityIds, [oldId, newId], `${label} 时应保留选择`);
+  }
+});
+
+test('workspace CAS 冲突期间保留并发加入的有效人物选择，再移除失联旧 ID', async () => {
+  const oldId = ids[0], newId = ids[1], concurrentId = ids[2], h = harness();
+  h.setReachable({ ...h.reachable, entities: [...h.reachable.entities, entity(oldId, '同名人物'), entity(newId, '同名人物'), entity(concurrentId, '并发新选')] });
+  await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([oldId, newId]);
+  const root = { status: 'ready', chatId: CHAT_A, headCheckpointId: 'checkpoint-2', narrativeGeneration: 'generation-1' };
+  h.setReachable({ ...h.reachable, status: 'ready', entities: h.reachable.entities.filter(item => item.id !== oldId), root,
+    checkpoint: { id: root.headCheckpointId, capabilities: { foundationReady: true } } });
+  h.setFoundationState({ status: 'ready', foundationStatus: 'ready', chatId: CHAT_A, activeRun: null, pending: null });
+  let injectConflict = true;
+  h.db.hooks.beforePut = async (collection, key) => {
+    if (!injectConflict || key !== PEOPLE_WORKSPACE_RECORD_ID) return;
+    injectConflict = false;
+    const stored = h.db.records.get(`${collection}/${key}`);
+    stored.revision += 1;
+    stored.data.selectedEntityIds = [oldId, newId, concurrentId];
+  };
+  const result = await h.runtime.refresh({ refreshMemory: false });
+  assert.deepEqual(result.selectedEntityIds, [newId, concurrentId]);
+});
+
+test('CAS 读取期间 root/head 改变时保留原选择', async () => {
+  const oldId = ids[0], newId = ids[1], h = harness();
+  h.setReachable({ ...h.reachable, entities: [...h.reachable.entities, entity(oldId, '同名人物'), entity(newId, '同名人物')] });
+  await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([oldId, newId]);
+  const root = { status: 'ready', chatId: CHAT_A, headCheckpointId: 'checkpoint-2', narrativeGeneration: 'generation-1' };
+  h.setReachable({ ...h.reachable, status: 'ready', entities: h.reachable.entities.filter(item => item.id !== oldId), root,
+    checkpoint: { id: root.headCheckpointId, capabilities: { foundationReady: true } } });
+  h.setFoundationState({ status: 'ready', foundationStatus: 'ready', chatId: CHAT_A, activeRun: null, pending: null });
+  let workspaceReads = 0;
+  h.db.hooks.beforeGet = async (collection, key) => {
+    if (key !== PEOPLE_WORKSPACE_RECORD_ID || ++workspaceReads !== 2) return;
+    const changedRoot = { ...root, headCheckpointId: 'checkpoint-3' };
+    h.setReachable({ ...h.reachable, root: changedRoot, checkpoint: { id: changedRoot.headCheckpointId, capabilities: { foundationReady: true } } });
+  };
+  const result = await h.runtime.refresh({ refreshMemory: false });
+  assert.deepEqual(result.selectedEntityIds, [oldId, newId]);
+});
+
+test('刷新读取 workspace 时切聊天，不触发旧聊天的失联清理', async () => {
+  const oldId = ids[0], newId = ids[1], h = harness();
+  h.setReachable({ ...h.reachable, entities: [...h.reachable.entities, entity(oldId, '同名人物'), entity(newId, '同名人物')] });
+  await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([oldId, newId]);
+  const root = { status: 'ready', chatId: CHAT_A, headCheckpointId: 'checkpoint-2', narrativeGeneration: 'generation-1' };
+  h.setReachable({ ...h.reachable, status: 'ready', entities: h.reachable.entities.filter(item => item.id !== oldId), root,
+    checkpoint: { id: root.headCheckpointId, capabilities: { foundationReady: true } } });
+  h.setFoundationState({ status: 'ready', foundationStatus: 'ready', chatId: CHAT_A, activeRun: null, pending: null });
+  h.db.hooks.beforeGet = async (collection, key) => {
+    if (key === PEOPLE_WORKSPACE_RECORD_ID) h.setIdentity({ chatId: CHAT_B, hostChatId: 'host-b', characterLocator: 'char.png', personaLocator: 'persona.png' });
+  };
+  await assert.rejects(h.runtime.refresh({ refreshMemory: false }), error => error.code === 'QQJ_PEOPLE_STALE');
+  assert.deepEqual(h.db.records.get(`chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`).data.selectedEntityIds, [oldId, newId]);
+});
+
+test('redirect 到当前有效 canonical 人物时保留重要人物选择', async () => {
+  const oldId = ids[0], newId = ids[1], h = harness();
+  h.setReachable({ ...h.reachable, entities: [...h.reachable.entities, entity(oldId, '旧称'), entity(newId, '新称')] });
+  await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([oldId]);
+  const stored = h.db.records.get(`chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`);
+  const redirected = structuredClone(stored);
+  redirected.revision += 1;
+  redirected.data.identityRedirectsByEntityId = { [oldId]: newId };
+  h.db.records.set(`chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`, redirected);
+  const root = { status: 'ready', chatId: CHAT_A, headCheckpointId: 'checkpoint-3', narrativeGeneration: 'generation-1' };
+  h.setReachable({ ...h.reachable, status: 'ready', entities: h.reachable.entities.filter(item => item.id !== oldId), root,
+    checkpoint: { id: root.headCheckpointId, capabilities: { foundationReady: true } } });
+  h.setFoundationState({ status: 'ready', foundationStatus: 'ready', chatId: CHAT_A, activeRun: null, pending: null });
+  const result = await h.runtime.refresh({ refreshMemory: false });
+  assert.deepEqual(result.selectedEntityIds, [oldId], 'redirect 解析到有效新 ID 后，原选择仍有效');
+});
+
+test('年度人物资料只投影当前有效人物，不读取失联旧人物档案', () => {
+  const oldId = ids[0], currentId = ids[1], unselectedId = ids[2], invalidatedId = ids[3], inactiveId = ids[4];
+  const workspace = { selectedEntityIds: [currentId], profilesByEntityId: {
+    [oldId]: { entityId: oldId, name: '旧同名生日', birthday: '旧日期' },
+    [currentId]: { entityId: currentId, name: '新同名生日', birthday: '新日期' },
+    [unselectedId]: { entityId: unselectedId, name: '未选生日', birthday: '有效日期' },
+    [invalidatedId]: { entityId: invalidatedId, name: '失效生日', birthday: '失效日期' },
+    [inactiveId]: { entityId: inactiveId, name: '非活动生日', birthday: '非活动日期' },
+  }, identityRedirectsByEntityId: {}, deletedEntityIds: [] };
+  const reachable = { entities: [
+    entity(oldId, '旧同名人物', { status: 'merged', mergedIntoEntityId: currentId }),
+    entity(currentId, '新同名人物'), entity(unselectedId, '未选人物'),
+    entity(invalidatedId, '已失效人物', { status: 'invalidated' }), entity(inactiveId, '非活动人物', { recordStatus: 'superseded' }),
+  ] };
+  assert.deepEqual(projectAnnualPeople(reachable, workspace).map(person => person.entityId).sort(), [currentId, unselectedId].sort());
 });
 
 test('人物资料运行时冻结本次业务与破限提示词，设置变化只在下一次整理生效', async () => {

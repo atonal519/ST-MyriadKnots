@@ -21,12 +21,11 @@ import { createHostAdapter } from './src/v3/host-adapter.js';
 import { createFoundationStore } from './src/v3/foundation-store.js';
 import { createFoundationRuntime } from './src/v3/foundation-runtime.js';
 import { createTimeStore, createTimeRuntime } from './src/v3/time-runtime.js';
-import { isIdentityDeleted, resolveIdentityEntityId } from './src/v3/entity-identity.js';
 import { createV3MemoryRuntime } from './src/v3/memory-runtime.js';
 import { persistMessageFloorAnchors } from './src/v3/message-floor-anchor.js';
 import { createV3RecallRuntime } from './src/v3/recall-runtime.js';
 import { createAutoHideController } from './src/v3/auto-hide.js';
-import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime } from './src/v3/people-workspace.js';
+import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, projectAnnualPeople } from './src/v3/people-workspace.js';
 import { createChatBranchInitializer } from './src/v3/chat-branch-inheritance.js';
 import { installPublicMemoryBridge } from './src/v3/public-memory-bridge.js';
 import { installPublicQianshiBridge } from './src/v3/public-qianshi-bridge.js';
@@ -135,15 +134,7 @@ const timeRuntime = createTimeRuntime({
   annualSettingsProvider: () => {
     const reachable = foundationRuntime.getReachable(), state = peopleWorkspaceRuntime?.getState?.();
     if (!reachable?.baseline?.userPersona?.entityId || state?.status !== 'ready' || state.chatId !== session.identity().chatId) return { ready: false };
-    const projection = { identityRedirectsByEntityId: state.identityRedirectsByEntityId, deletedEntityIds: state.deletedEntityIds };
-    const entityNames = new Map((reachable.entities ?? []).map(entity => [resolveIdentityEntityId(entity.id, projection), entity.displayName]));
-    const profiles = new Map();
-    for (const [sourceId, profile] of Object.entries(state.profilesByEntityId ?? {})) {
-      const entityId = resolveIdentityEntityId(sourceId, projection);
-      if (!entityId || isIdentityDeleted(entityId, projection) || profiles.has(entityId) && sourceId !== entityId) continue;
-      profiles.set(entityId, { entityId, displayName: profile?.name || entityNames.get(entityId), profile });
-    }
-    return { ready: true, people: [...profiles.values()], userPersona: { entityId: reachable.baseline.userPersona.entityId,
+    return { ready: true, people: projectAnnualPeople(reachable, state), userPersona: { entityId: reachable.baseline.userPersona.entityId,
       name: reachable.baseline.userPersona.name, description: power_user.persona_description ?? '' } };
   },
   sanitizerOptions,
@@ -193,6 +184,8 @@ peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
   store: peopleWorkspaceStore,
   session,
   foundationRuntime,
+  foundationStore,
+  hostAdapter,
   memoryRuntime: v3MemoryRuntime,
   generateUtilityTask: taskRouter.generateUtilityTask,
   sourcePermissions,
