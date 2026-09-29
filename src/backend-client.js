@@ -1,4 +1,5 @@
 import { API_BASE, NAMESPACE } from './constants.js';
+import { createTauriBackendFetch, isTauriTavern } from './tauri-backend.js';
 
 const RECORD_TYPE_PREFIXES = Object.freeze([
   ['v3-floor-', 'floor'], ['v3-run-', 'run'], ['v3-checkpoint-', 'checkpoint'],
@@ -20,7 +21,9 @@ function recordTypeFromId(recordId) {
   if (value.startsWith('v3-floor-memory-')) return 'floorMemory';
   return RECORD_TYPE_PREFIXES.find(([prefix]) => value.startsWith(prefix))?.[1] ?? 'unknown';
 }
-export function createBackendClient({ fetchImpl = globalThis.fetch, headers = () => ({}), baseUrl = API_BASE, timeoutMs = 15000, listTimeoutMs = 120000 } = {}) {
+export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl = API_BASE, timeoutMs = 15000, listTimeoutMs = 120000 } = {}) {
+  // TT routing is limited to the default transport so injected and custom HTTP clients retain ownership.
+  fetchImpl ??= isTauriTavern() && baseUrl === API_BASE ? createTauriBackendFetch() : globalThis.fetch;
   if (typeof fetchImpl !== 'function') throw new Error('fetch 不可用');
   const diagnostic = { sinceClientCreatedRequestCounts: { get: 0, put: 0, delete: 0 }, latestRead: null, latestWrite: null, lastFailure: null };
   let diagnosticSequence = 0;
