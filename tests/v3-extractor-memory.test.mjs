@@ -877,10 +877,10 @@ async function seedMiddleSummaryGap() {
   return seed;
 }
 
-async function direct(response, { content = '裴晚生提醒你带伞。', entities = [], userIdentity = { displayName: '林岚', aliases: ['林岚', '你', '{{user}}'] }, batchId = '33333333-3333-4333-8333-333333333333', preservedSummary = null, sourceUserInputSnapshot = null, storyClock = null } = {}) {
+async function direct(response, { content = '裴晚生提醒你带伞。', entities = [], userIdentity = { displayName: '林岚', aliases: ['林岚', '你', '{{user}}'] }, batchId = '33333333-3333-4333-8333-333333333333', preservedSummary = null, sourceUserInputSnapshot = null, storyClock = null, finishReason } = {}) {
   const floor = { id: '11111111-1111-4111-8111-111111111111', chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq: 1, content: { canonicalContent: content } };
   const envelope = await createExtractorEnvelope({ batchId, chatId: CHAT, narrativeGeneration: GENERATION, checkpointId: null, floor, entities, userIdentity, sourceUserInputSnapshot, storyClock });
-  return normalizeExtractorResponse({ response, envelope, floor, existingEntities: entities, now: NOW, preservedSummary, expectedScope: envelope.scope });
+  return normalizeExtractorResponse({ response, finishReason, envelope, floor, existingEntities: entities, now: NOW, preservedSummary, expectedScope: envelope.scope });
 }
 
 test('新 user 实体在同批次保持确定，不同提取批次使用不同 ID', async () => {
@@ -894,6 +894,25 @@ test('新 user 实体在同批次保持确定，不同提取批次使用不同 I
   assert.ok(firstUser && sameBatchUser && retryUser);
   assert.equal(firstUser.id, sameBatchUser.id);
   assert.notEqual(firstUser.id, retryUser.id);
+});
+
+test('摘要人物键优先标准 people，空值回退 person 且坏人物不影响有效人物', async () => {
+  const single = await direct({ summary: '裴晚生提醒用户带伞。', person: { name: '裴晚生' } });
+  assert.equal(single.newEntities[0].displayName, '裴晚生');
+
+  for (const response of [
+    { summary: '裴晚生提醒用户带伞。', people: [], person: { name: '裴晚生' } },
+    { person: { name: '裴晚生' }, summary: '裴晚生提醒用户带伞。', people: null },
+    { summary: '裴晚生提醒用户带伞。', people: {}, person: { name: '裴晚生' } },
+    { summary: '裴晚生提醒用户带伞。', people: [{}], person: { name: '裴晚生' } },
+  ]) assert.equal((await direct(response)).newEntities[0].displayName, '裴晚生');
+
+  const conflict = await direct({ summary: '裴晚生提醒用户带伞。', person: { name: '错键人物' }, people: [{ name: '裴晚生' }] });
+  assert.deepEqual(conflict.newEntities.map(entity => entity.displayName), ['裴晚生']);
+
+  const isolated = await direct({ summary: '裴晚生提醒用户带伞。', person: [{ name: '' }, { name: '裴晚生' }] });
+  assert.deepEqual(isolated.newEntities.map(entity => entity.displayName), ['裴晚生']);
+  assert.ok(isolated.isolated.some(item => item.path === 'people[0].name'));
 });
 
 test('HostAdapter 优先 official 并为 official/Luker 提供同一宿主 user identity', () => {
@@ -1455,8 +1474,20 @@ test('code fence、前后说明、数组包裹、尾逗号、常见键别名与�
   assert.equal(englishLabel.memory.summary.aiText, '裴晚生提醒用户带伞。');
   const chineseLabel = await direct('总结: 裴晚生提醒用户带伞。');
   assert.equal(chineseLabel.memory.summary.aiText, '裴晚生提醒用户带伞。');
-  const explainedJson = await direct('说明：{"summary":"裴晚生提醒用户带伞。"} 完毕。');
-  assert.equal(explainedJson.memory.summary.aiText, '说明：{"summary":"裴晚生提醒用户带伞。"} 完毕。');
+  const explainedJson = await direct('说明：{"summary":"裴晚生提醒用户带伞。","people":[{"name":"裴晚生"}],"events":[{"title":"提醒","description":"裴晚生提醒用户带伞。"}]} 完毕。');
+  assert.equal(explainedJson.memory.summary.aiText, '裴晚生提醒用户带伞。');
+  assert.equal(explainedJson.newEntities[0].displayName, '裴晚生');
+  assert.equal(explainedJson.memory.eventFragments.length, 1);
+  const narrativeWithBraces = await direct('他看到墙上写着 {"summary":"旧记录"}，随后继续前行。');
+  assert.equal(narrativeWithBraces.memory.summary.aiText, '他看到墙上写着 {"summary":"旧记录"}，随后继续前行。');
+  await assert.rejects(direct('说明：{"summary":"候选甲。"} 完毕。\n{"summary":"候选乙。"}'), error => error.code === 'V3_EXTRACTOR_SUMMARY_INVALID');
+  for (const invalid of [
+    '说明：{"people":[{"name":"裴晚生"}]} 完毕。',
+    '说明：{"summary":broken} 完毕。',
+  ]) await assert.rejects(direct(invalid), error => error.code === 'V3_EXTRACTOR_SUMMARY_INVALID');
+  await assert.rejects(direct('说明：{"summary":"内容"'), error => error.code === 'V3_EXTRACTOR_SUMMARY_INVALID');
+  const repaired = await direct('说明：{"summary":"补齐后的有效业务摘要。"', { finishReason: 'stop' });
+  assert.equal(repaired.memory.summary.aiText, '补齐后的有效业务摘要。');
   const floorWrapped = await direct({ floors: [{ summary: '楼层包裹摘要。' }] });
   assert.equal(floorWrapped.memory.summary.aiText, '楼层包裹摘要。');
 });

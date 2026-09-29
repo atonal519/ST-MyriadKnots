@@ -727,6 +727,40 @@ test('无年份跨年歧义按当前屏上首组默认展开，无日期桶可�
   assert.match(copy(undated), /无日期回忆/u);
 });
 
+test('未定时间分组记住手动开合，编辑时自动展开并在搜索后恢复', () => {
+  const snapshot = fixture();
+  snapshot.events = [{ id: 'undated-edit', matterId: null, title: '未定时间事件', description: '等待编辑的经过', status: 'occurred',
+    storyTime: '18:00左右', scheduledTime: null, people: [], object: null, sourceFloorMemoryId: 'memory-undated' }];
+  snapshot.timeline = projectQianshiTimeline({ events: snapshot.events, relations: [] });
+  const h = harness({ initialSnapshot: snapshot });
+  let disclosure = flatten(h.container).find(node => node.className === 'qqj-qianshi-undated');
+  assert.equal(disclosure.open, false);
+  const summary = disclosure.children.find(node => node.tag === 'summary');
+  summary.fire('click', { isTrusted: true }); disclosure.open = true; h.emit();
+  disclosure = flatten(h.container).find(node => node.className === 'qqj-qianshi-undated');
+  assert.equal(disclosure.open, true, '重绘保留手动展开');
+  const event = flatten(disclosure).find(node => node.dataset.eventId === 'undated-edit');
+  const menu = flatten(event.parent).find(node => node.className.includes('qqj-qianshi-event-menu'));
+  byText(menu, '编辑详情').fire('click');
+  disclosure = flatten(h.container).find(node => node.className === 'qqj-qianshi-undated');
+  assert.equal(disclosure.open, true, '点击编辑后外层未定分组保持展开');
+  assert.ok(flatten(disclosure).some(node => node.className === 'qqj-qianshi-text-form'), '编辑表单立即可见');
+
+  const input = flatten(h.container).find(node => node.className.includes('qqj-history-search-input'));
+  input.value = '未定时间事件'; input.fire('input', { target: input, isTrusted: true });
+  assert.equal(flatten(h.container).find(node => node.className === 'qqj-qianshi-undated').open, true, '搜索时临时展开');
+  const clear = flatten(h.container).find(node => node.className.includes('qqj-history-search-clear'));
+  clear.fire('click');
+  assert.equal(flatten(h.container).find(node => node.className === 'qqj-qianshi-undated').open, true, '清空搜索恢复先前展开状态');
+
+  const collapsed = flatten(h.container).find(node => node.className === 'qqj-qianshi-undated');
+  collapsed.children.find(node => node.tag === 'summary').fire('click', { isTrusted: true }); collapsed.open = false; h.emit();
+  assert.equal(flatten(h.container).find(node => node.className === 'qqj-qianshi-undated').open, false, '手动收起在重绘后保留');
+  const next = structuredClone(snapshot); next.identity.qqjChatId = 'chat-b';
+  h.emit(next);
+  assert.equal(flatten(h.container).find(node => node.className === 'qqj-qianshi-undated').open, false, '切换聊天后按默认状态收起');
+});
+
 test('同日新增更早事件改变展示全文时，稳定日期键仍保留手动折叠', () => {
   const snapshot = fixture();
   snapshot.events = [

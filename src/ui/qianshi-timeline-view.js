@@ -41,6 +41,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   const operationMenus = createOperationMenuController(documentRef);
   const openIds = new Set(), nestedOpenIds = new Set(), matterOpenIds = new Set();
   const openDayStates = new Map();
+  let undatedOpenState = false;
   const element = (tag, className = '', copy = '') => {
     const node = documentRef.createElement(tag);
     if (className) node.className = className;
@@ -49,7 +50,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   };
   const resetForChat = nextChatId => {
     if (chatId === nextChatId) return;
-    epoch += 1; chatId = nextChatId; query = ''; reverse = true; feedback = ''; textEditors.clear(); editableEvents.clear(); openIds.clear(); nestedOpenIds.clear(); matterOpenIds.clear(); openDayStates.clear();
+    epoch += 1; chatId = nextChatId; query = ''; reverse = true; feedback = ''; textEditors.clear(); editableEvents.clear(); openIds.clear(); nestedOpenIds.clear(); matterOpenIds.clear(); openDayStates.clear(); undatedOpenState = false;
   };
   const canEditEvent = eventId => {
     if (!editableEvents.has(eventId)) editableEvents.set(eventId, runtime.canEditQianshiEventText(eventId));
@@ -196,6 +197,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     const edit = element('button', 'qqj-profile-menu-action', '编辑详情'); edit.type = 'button';
     edit.addEventListener('click', () => {
       menu.open = false;
+      if ((snapshot?.timeline?.undatedEventIds ?? []).includes(event.id)) undatedOpenState = true;
       openIds.add(cardId);
       if (nestedRowKey) nestedOpenIds.add(nestedRowKey);
       textEditors.set(event.id, { editing: true, title: event.title, description: event.description,
@@ -361,8 +363,11 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     }
     const undated = (timeline.undatedEventIds ?? []).filter(id => visibleIds.has(id)).map(id => eventById.get(id)).filter(Boolean);
     if (undated.length) {
-      const details = element('details', 'qqj-qianshi-undated'); if (query) details.open = true;
+      const details = element('details', 'qqj-qianshi-undated'); details.open = Boolean(query.trim()) || undatedOpenState;
       const summary = element('summary', '', `无法确定单一发生时间 · ${undated.length} 件`), list = element('div', 'qqj-qianshi-undated-list');
+      summary.addEventListener('click', event => {
+        if (event.isTrusted === true && !query.trim()) undatedOpenState = !details.open;
+      });
       for (const event of undated) list.append(eventNode(event, matterEvents));
       groupCount += undated.length;
       details.append(summary, element('p', 'qqj-qianshi-undated-hint', '缺少可靠日期、属于相对时间或时间范围的事项，不参与精确排序；此处保留原顺序与原文时间。'), list); wrapper.append(details);

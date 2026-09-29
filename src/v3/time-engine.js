@@ -55,7 +55,8 @@ function parseClock(raw) {
   if ((marker === 'PM' || ['下午', '中午', '正午', '晚上', '夜里', '夜间', '夜間'].includes(marker)) && hour <= 12) hour = hour % 12 + 12;
   else if ((marker === 'AM' || ['上午', '凌晨', '清晨', '早晨', '早上', '午夜'].includes(marker)) && hour <= 12) hour %= 12;
   if (hour > 23) return null;
-  return { match: match[0], minute: hour * 60 + Number(match[3]), clock: `${String(hour).padStart(2, '0')}:${match[3]}` };
+  const clockIndex = match.index + match[0].search(/(?:[01]?\d|2[0-3]):[0-5]\d/u);
+  return { match: match[0], index: match.index, clockIndex, minute: hour * 60 + Number(match[3]), clock: `${String(hour).padStart(2, '0')}:${match[3]}` };
 }
 function temporalPoint(value) {
   return /(?:\d{1,4}年\s*)?\d{1,2}月\s*\d{1,2}(?:日|号|號)?|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}:\d{2}/u.test(value);
@@ -83,6 +84,7 @@ export function projectTimeSource(value, anchor = null) {
 const CN_DIGITS = '零〇一二两兩三四五六七八九壹贰貳叁參叄肆伍陆陸柒捌玖';
 const CN_NUMBER = `(?:元|[0-9${CN_DIGITS}十拾百佰千仟廿卄卅卌]+)`;
 const PERIOD_TEXT = `(?:(?![0-9${CN_DIGITS}十拾百佰千仟廿卄卅卌初月日号號])\\p{L}){1,12}?`;
+const APPROXIMATE_DATE_PREFIX = new RegExp(`^(?:大约|大約|大概|约莫|约|約)(?=\\s|[0-9${CN_DIGITS}]|(?:公元|公历|公曆|西历|西曆|闰|閏|正月|冬月|腊月|臘月|今天|当日|当天|今日|昨天|昨日|前一天|前天|前日|明天|明日|次日|翌日|后天|後天|去年|今年|明年|前年|后年|後年))`, 'u');
 const RELATIVE_DATE_WORDS = new Set(['今天', '当日', '当天', '今日', '昨天', '昨日', '前一天', '前天', '前日', '明天', '明日', '次日', '翌日', '后天', '後天', '去年', '今年', '明年', '前年', '后年', '後年']);
 const CN_VALUES = Object.fromEntries([...CN_DIGITS].map((char, index) => [char, [0,0,1,2,2,2,3,4,5,6,7,8,9,1,2,2,3,3,3,4,5,6,6,7,8,9][index]]));
 function cnNumber(value) {
@@ -117,6 +119,8 @@ function splitTrailingParentheticals(value) {
   return { body, annotations };
 }
 
+const APPROXIMATE_PARENTHESES = /(?:\(\s*(?:左右|上下|前后|前後|大约|大約|大概|约莫|约|約)\s*\)|（\s*(?:左右|上下|前后|前後|大约|大約|大概|约莫|约|約)\s*）)/gu;
+
 // Old observations gain a calculation/input view; their stored objects and keys stay intact.
 export function effectiveTime(value) {
   return value && !value.date && value.raw ? { ...value, ...projectTime(value.raw) } : value;
@@ -124,19 +128,41 @@ export function effectiveTime(value) {
 export function projectTime(value, anchor = null, { allowShortGregorianYear = false } = {}) {
   const raw = text(value, 500), normalized = normalizeDateDigits(raw);
   anchor = effectiveTime(anchor);
-  const { body, annotations } = splitTrailingParentheticals(normalized);
+  const approximateParentheticals = [];
+  const annotationSource = normalized.replace(APPROXIMATE_PARENTHESES, (match, index) => {
+    approximateParentheticals.push({ start: index, end: index + match.length });
+    return ' '.repeat(match.length);
+  });
+  const { body, annotations } = splitTrailingParentheticals(annotationSource);
   if (isTemporalRange(body)) return unknownProjectedTime(raw);
-  const clock = parseClock(body);
-  const dateText = clock ? body.replace(clock.match, ' ').trim().replace(/[T，]$/u, '').trim() : body;
+  const approximateTail = body.match(/(?:左右|上下|前后|前後|约|約|大约|大約|大概|约莫)\s*$/u);
+  const dateAndClock = approximateTail ? body.slice(0, approximateTail.index).trimEnd() : body;
+  const clock = parseClock(dateAndClock);
+  const clockEnd = clock ? clock.index + clock.match.length : -1;
+  const approximateClockAnnotation = clock && approximateParentheticals.some(note => note.start >= clockEnd
+    && /^\s*$/u.test(annotationSource.slice(clockEnd, note.start)));
+  const approximateDateAnnotation = approximateParentheticals.some(note => !clock || note.end <= clock.clockIndex);
+  const approximatePrefix = clock && /(?:大约|大約|大概|约莫|约|約)\s*$/u.test(dateAndClock.slice(0, clock.index));
+  const approximateClock = Boolean(clock && (approximateClockAnnotation || approximatePrefix || approximateTail
+    && dateAndClock.slice(clock.index + clock.match.length).trim() === ''));
+  const clockSource = approximatePrefix
+    ? `${dateAndClock.slice(0, clock.index).replace(/(?:大约|大約|大概|约莫|约|約)\s*$/u, ' ')}${dateAndClock.slice(clock.index)}`
+    : dateAndClock;
+  const dateText = clock ? clockSource.replace(clock.match, ' ').trim().replace(/[T，]$/u, '').trim() : dateAndClock;
+  if (approximateDateAnnotation || APPROXIMATE_DATE_PREFIX.test(dateText)
+    || /(?:左右|上下|前后|前後|大约|大約|大概|约莫|约|約)\s*$/u.test(dateText)) return unknownProjectedTime(raw);
   const date = !dateText && clock && anchor?.date ? { ...anchor } : flexibleDate(dateText, anchor, { allowShortGregorianYear });
+  if (approximateTail && !approximateClock && !clock && date.date) return unknownProjectedTime(raw);
   const dateConflict = date.date && annotations.some(annotation => {
     const note = normalizeDateDigits(annotation);
     const noteClock = parseClock(note);
     const noteDate = flexibleDate(noteClock ? note.replace(noteClock.match, ' ').trim() : note, anchor, { allowShortGregorianYear });
     return Boolean(noteDate.date) && noteDate.date !== date.date;
   });
-  if (dateConflict) return { ...unknownProjectedTime(raw), minute: clock?.minute ?? null, clock: clock?.clock ?? null };
-  return { ...date, raw: raw || date.raw, minute: clock?.minute ?? null, clock: clock?.clock ?? null };
+  if (dateConflict) return { ...unknownProjectedTime(raw), minute: approximateClock ? null : clock?.minute ?? null,
+    clock: approximateClock ? null : clock?.clock ?? null };
+  return { ...date, raw: raw || date.raw, minute: approximateClock ? null : clock?.minute ?? null,
+    clock: approximateClock ? null : clock?.clock ?? null };
 }
 export function isRelativeStoryTime(value) {
   const raw = text(typeof value === 'string' ? value : value?.raw, 500);

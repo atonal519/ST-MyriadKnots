@@ -241,6 +241,94 @@ test('千事时间轴可按末尾说明括注归组，括注时间不伪装成�
   assert.equal(events[0].storyTime, '1年夏1日 周一 18:00(匿名说明)', '时间线投影不改写存储原文');
 });
 
+test('千事保留带约略钟点的明确日期，但不按约略分钟排序；约略日期仍未定', async () => {
+  const events = [
+    { id: 'special-approx', storyTime: '1年夏1日 周一 18:00左右' },
+    { id: 'special-prefix-approx', storyTime: '1年夏1日 周一 约18:00' },
+    { id: 'special-exact', storyTime: '1年夏1日 周一 17:00' },
+    { id: 'john-era-late', storyTime: '约翰历1年夏1日 18:00' },
+    { id: 'john-era-early', storyTime: '约翰历1年夏1日 17:00' },
+    { id: 'york-era-late', storyTime: '约克历1年夏1日 18:00' },
+    { id: 'york-era-early', storyTime: '约克历1年夏1日 17:00' },
+    { id: 'approx-era-word-late', storyTime: '大约历1年夏1日 18:00' },
+    { id: 'approx-era-word-early', storyTime: '大约历1年夏1日 17:00' },
+    { id: 'gregorian-approx', storyTime: '公历2026年5月10日 18:00左右' },
+    { id: 'approx-date', storyTime: '2026年5月10日左右' },
+    { id: 'approx-date-exact-clock', storyTime: '2026年5月10日左右 18:00' },
+    { id: 'approx-date-approx-clock', storyTime: '2026年5月10日左右 18:00左右' },
+    { id: 'prefix-approx-date', storyTime: '大约2026年5月10日 18:00' },
+    { id: 'special-prefix-approx-date', storyTime: '大约1年夏1日 周一 18:00' },
+    { id: 'approx-date-before-clock', storyTime: '1年夏1日 周一左右 18:00' },
+    { id: 'paren-approx-date', storyTime: '2026年5月10日（左右）' },
+    { id: 'paren-approx-date-clock', storyTime: '2026年5月10日（左右） 18:00' },
+    { id: 'paren-special-approx-date', storyTime: '1年夏1日 周一（左右）' },
+    { id: 'paren-approx-clock', storyTime: '2026年5月10日 18:00（左右）' },
+    { id: 'paren-approx-clock-ascii', storyTime: '2026年5月10日 18:00 (左右)' },
+    { id: 'ordinary-note-clock', storyTime: '2026年5月10日 18:00（补充说明）' },
+    { id: 'clock-only', storyTime: '18:00左右' },
+  ].map(event => ({ ...event, parsedStoryTime: projectTime(event.storyTime) }));
+  const timeline = projectQianshiTimeline({ events, relations: [] });
+  const groupFor = id => timeline.segments.flatMap(segment => segment.groups).find(group => group.eventIds.includes(id));
+  assert.ok(groupFor('special-approx'), '具名历法的明确日期仍进入对应日期组');
+  assert.ok(groupFor('special-prefix-approx'), '约在钟点前时保留具名历法日期');
+  assert.ok(groupFor('gregorian-approx'), '公历明确日期仍进入对应日期组');
+  for (const [lateId, earlyId] of [['john-era-late', 'john-era-early'], ['york-era-late', 'york-era-early'], ['approx-era-word-late', 'approx-era-word-early']]) {
+    const group = groupFor(lateId);
+    assert.ok(group?.eventIds.includes(earlyId), `${lateId} 保留具名纪年并按精确钟点排序`);
+    assert.ok(group.eventIds.indexOf(earlyId) < group.eventIds.indexOf(lateId), `${lateId} 的 18:00 在 17:00 后`);
+  }
+  assert.equal(groupFor('special-approx').eventIds[0], 'special-approx', '约略钟点不把 18:00 当精确分钟排到 17:00 之后');
+  assert.equal(events[1].parsedStoryTime.minute, null, '钟点前的约略词也不产生分钟');
+  assert.equal(events[0].parsedStoryTime.minute, null, '约略分钟不进入共享时间投影');
+  assert.equal(groupFor('approx-date'), undefined, '日期本身约略时不冒充确定日期');
+  assert.equal(groupFor('approx-date-exact-clock'), undefined, '约略日期后接精确钟点仍留在未定组');
+  assert.equal(groupFor('approx-date-approx-clock'), undefined, '约略日期和钟点均不提供精确日期');
+  for (const id of ['prefix-approx-date', 'special-prefix-approx-date', 'approx-date-before-clock']) {
+    assert.equal(groupFor(id), undefined, `${id} 的约略日期不能进入确定日期组`);
+  }
+  for (const id of ['paren-approx-date', 'paren-approx-date-clock', 'paren-special-approx-date']) {
+    assert.equal(groupFor(id), undefined, `${id} 的日期约略括注不能进入确定日期组`);
+  }
+  assert.ok(groupFor('paren-approx-clock'), '钟点约略括注保留明确日期');
+  assert.ok(groupFor('paren-approx-clock-ascii'), '英文括号内的钟点约略括注保留明确日期');
+  assert.ok(groupFor('ordinary-note-clock'), '普通括注继续保留明确日期');
+  assert.equal(events.find(event => event.id === 'paren-approx-clock').parsedStoryTime.minute, null);
+  assert.equal(events.find(event => event.id === 'ordinary-note-clock').parsedStoryTime.minute, 18 * 60);
+  assert.deepEqual(timeline.undatedEventIds, ['approx-date', 'approx-date-exact-clock', 'approx-date-approx-clock', 'prefix-approx-date', 'special-prefix-approx-date', 'approx-date-before-clock', 'paren-approx-date', 'paren-approx-date-clock', 'paren-special-approx-date', 'clock-only'], '约略日期和只有钟点的事件留在未定组');
+  assert.equal(events[0].storyTime, '1年夏1日 周一 18:00左右', '保留原始时间文本');
+
+  const source = floor('11111111-1111-4111-8111-111111111111', 1);
+  const delta = await compileQianshiDelta({ floor: source, now: NOW, packet: { qianshi: { events: [
+    { key: 'approx-recall', title: '蓝信会面约略时刻', description: '蓝信会面约略时刻记录', status: 'occurred', matter: false, storyTime: '1年夏1日 18:00左右' },
+    { key: 'exact-recall', title: '蓝信会面精确时刻', description: '蓝信会面精确时刻记录', status: 'occurred', matter: false, storyTime: '1年夏1日 17:00' },
+    { key: 'named-era-late-recall', title: '蓝信会面约翰历18时', description: '蓝信会面约翰历18时记录', status: 'occurred', matter: false, storyTime: '约翰历1年夏1日 18:00' },
+    { key: 'named-era-early-recall', title: '蓝信会面约翰历17时', description: '蓝信会面约翰历17时记录', status: 'occurred', matter: false, storyTime: '约翰历1年夏1日 17:00' },
+    { key: 'approx-date-recall', title: '蓝信会面日期范围时刻', description: '蓝信会面日期范围时刻记录', status: 'occurred', matter: false, storyTime: '2026年5月10日左右 18:00' },
+    { key: 'prefix-approx-date-recall', title: '蓝信会面前置范围日期', description: '蓝信会面前置范围日期记录', status: 'occurred', matter: false, storyTime: '大约2026年5月10日 18:00' },
+    { key: 'special-approx-date-recall', title: '蓝信会面特殊历法范围日期', description: '蓝信会面特殊历法范围日期记录', status: 'occurred', matter: false, storyTime: '大约1年夏1日 周一 18:00' },
+    { key: 'trailing-approx-date-recall', title: '蓝信会面日期后置模糊词', description: '蓝信会面日期后置模糊词记录', status: 'occurred', matter: false, storyTime: '1年夏1日 周一左右 18:00' },
+    { key: 'paren-approx-clock-recall', title: '蓝信会面括注约略时刻', description: '蓝信会面括注约略时刻记录', status: 'occurred', matter: false, storyTime: '2026年5月10日 18:00（左右）' },
+    { key: 'paren-exact-clock-recall', title: '蓝信会面括注前精确时刻', description: '蓝信会面括注前精确时刻记录', status: 'occurred', matter: false, storyTime: '2026年5月10日 17:00' },
+    { key: 'exact-date-recall', title: '蓝信会面确定日期时刻', description: '蓝信会面确定日期时刻记录', status: 'occurred', matter: false, storyTime: '2026年5月10日 17:00' },
+  ], order: [] } } });
+  const reachable = { floors: [source], floorMemories: [memory('dddddddd-dddd-4ddd-8ddd-dddddddddddd', source, delta)], entities: [] };
+  const recall = projectQianshiRecall(reachable, { queryContext: { text: '蓝信会面', latestUserText: '蓝信会面' } });
+  assert.match(recall.text, /蓝信会面约略时刻[\s\S]*蓝信会面精确时刻/u,
+    '召回排序使用同一解析结果，约略18:00不会压过明确17:00形成伪顺序');
+  assert.match(recall.text, /蓝信会面约翰历17时[\s\S]*蓝信会面约翰历18时/u,
+    '以“约”开头的具名纪年仍按其精确钟点参与召回排序');
+  assert.match(recall.text, /蓝信会面日期范围时刻[\s\S]*蓝信会面确定日期时刻/u,
+    '约略日期加精确钟点不能冒充确定日期参与召回排序');
+  assert.match(recall.text, /蓝信会面前置范围日期[\s\S]*蓝信会面确定日期时刻/u,
+    '日期前置约略词不能变成纪年并参与召回排序');
+  assert.match(recall.text, /蓝信会面特殊历法范围日期[\s\S]*蓝信会面确定日期时刻/u,
+    '特殊历法日期前置约略词同样不能参与精确排序');
+  assert.match(recall.text, /蓝信会面日期后置模糊词[\s\S]*蓝信会面确定日期时刻/u,
+    '日期后的范围词不会因钟点存在而留下精确分钟排序');
+  assert.match(recall.text, /蓝信会面括注约略时刻[\s\S]*蓝信会面括注前精确时刻/u,
+    '钟点后的左右括注清除分钟排序，但保留日期');
+});
+
 test('千事年表按真实成员楼和事件绝对时间投影，聚合 null/相对时间不借锚钟', async () => {
   const first = floor('11111111-1111-4111-8111-111111111111', 1);
   const anchor = floor('22222222-2222-4222-8222-222222222222', 2);

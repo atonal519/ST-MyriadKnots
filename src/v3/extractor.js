@@ -1,6 +1,6 @@
 import { isUuid, sha256 } from '../identity.js';
 import { balancedObjects } from '../compact-api-client.js';
-import { parseJsonWithSafeTrailingCommas, parseJsonWithSymbolRepair } from '../json-symbol-repair.js';
+import { parseJsonWithSafeTrailingCommas, parseJsonWithSymbolRepair, repairJsonWithUniqueMissingObjectClose } from '../json-symbol-repair.js';
 import { deterministicUuid } from './foundation-domain.js';
 import { EXACT_ANCHOR_LIMIT, FLOOR_MEMORY_ITEM_LIMIT, validateEntityRecord, validateFloorMemory } from './memory-schema.js';
 import { copyFloorVariableReference } from './floor-variable-reference.js';
@@ -779,6 +779,35 @@ function parseSemanticCandidate(value, { finishReason } = {}) {
     }
     throw extractorError('V3_EXTRACTOR_SUMMARY_INVALID', 'summary');
   }
+  const balanced = balancedObjects(text);
+  const structureStart = text.search(/[\[{]/u);
+  const prefix = structureStart < 0 ? '' : text.slice(0, structureStart).trim();
+  const hasOutputIntroduction = /^(?:(?:说明|结果|处理结果|提取结果|解析结果|JSON(?:结果)?|输出|以下(?:是)?(?:JSON|结果|内容)?)(?:如下|是)?\s*[:：,，。.!！]?\s*)+$/iu.test(prefix);
+  if (hasOutputIntroduction) {
+    const suffixPattern = /^(?:(?:以上|完毕|结束|完成|供参考|仅供参考|结果)(?:[。.!！])?\s*)*$/iu;
+    let candidate = null;
+    if (!balanced.unclosed && balanced.candidates.length === 1 && text.indexOf(balanced.candidates[0]) === structureStart) {
+      const balancedCandidate = balanced.candidates[0];
+      const suffix = text.slice(structureStart + balancedCandidate.length).trim();
+      if (suffixPattern.test(suffix)) candidate = balancedCandidate;
+    } else if (balanced.unclosed && balanced.candidates.length === 0 && text[structureStart] === '{') {
+      candidate = text.slice(structureStart);
+    }
+    if (candidate) {
+      const parsed = parseJsonWithSafeTrailingCommas(candidate)?.value
+        ?? parseJsonWithSymbolRepair(candidate, { finishReason })?.value
+        ?? repairJsonWithUniqueMissingObjectClose(candidate, { finishReason });
+      if (parsed !== undefined) {
+        try {
+          semanticPacketSingle(parsed, { finishReason });
+          return parsed;
+        } catch (error) {
+          if (error?.code !== 'V3_EXTRACTOR_SUMMARY_INVALID') throw error;
+        }
+      }
+    }
+    throw extractorError('V3_EXTRACTOR_SUMMARY_INVALID', 'summary');
+  }
   const summary = text.replace(/^(?:summary|摘要|总结)\s*[:：]\s*/iu, '').trim();
   if (!summary) throw extractorError('V3_EXTRACTOR_SUMMARY_INVALID', 'summary');
   return { summary: summary.slice(0, 4000) };
@@ -898,7 +927,15 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
   const entityByLabel = new Map();
   for (const entry of directory) for (const label of entry.labels.map(identityLabelKey)) entityByLabel.set(label, [...(entityByLabel.get(label) ?? []), entry.entity]);
   const existingUser = activeEntities.find(entity => entity.specialRole === 'user') ?? null;
-  const rawPeople = list(field(packet, ['people', 'persons', 'characters', 'entities', 'participants', '人物', '角色']));
+  const standardPeopleKey = Object.keys(packet).find(key => normalizedKey(key) === 'people');
+  const standardPeople = standardPeopleKey === undefined ? undefined : packet[standardPeopleKey];
+  const personFields = ['person', 'persons', 'characters', 'entities', 'participants', '人物', '角色'];
+  const hasUsablePerson = value => list(value).some(item => Boolean(semanticText(item, ['name', 'displayName', 'person', 'character', 'surface', '姓名', '人物'], 500)));
+  const fallbackPeople = personFields.map(name => field(packet, [name])).find(hasUsablePerson)
+    ?? personFields.map(name => field(packet, [name])).find(value => value !== undefined);
+  const rawPeople = hasUsablePerson(standardPeople) ? list(standardPeople)
+    : hasUsablePerson(fallbackPeople) ? list(fallbackPeople)
+      : standardPeopleKey !== undefined ? list(standardPeople) : list(fallbackPeople);
   const people = [];
   for (const [index, item] of rawPeople.slice(0, FLOOR_MEMORY_ITEM_LIMIT).entries()) {
     const name = semanticText(item, ['name', 'displayName', 'person', 'character', 'surface', '姓名', '人物'], 500);

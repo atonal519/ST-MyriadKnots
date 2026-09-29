@@ -161,3 +161,57 @@ test('末尾成对括注只作为计算视图，钟点不从括注借入且冲�
   assert.equal(projectTime('1年夏1日 周一').monthDay, 1, '无括注中文日号仍可解析');
   assert.equal(projectTimeSource('2026年7月17日 18:00(匿名说明)').minute, null, '旧来源投影合同不变');
 });
+
+test('约略词只修饰紧邻钟点，日期本身约略时不保留精确日期或分钟', () => {
+  const special = projectTime('1年夏1日 周一 约18:00');
+  assert.equal(special.date, '1年夏1日');
+  assert.equal(special.minute, null);
+  assert.equal(special.clock, null);
+  for (const raw of ['2026年5月10日左右 18:00', '2026年5月10日左右 18:00左右']) {
+    const time = projectTime(raw);
+    assert.equal(time.date, null, raw);
+    assert.equal(time.minute, null, raw);
+    assert.equal(time.raw, raw, '原始时间保留');
+  }
+  assert.equal(projectTime('2026年5月10日 18:00左右').date, '2026-05-10', '仅钟点约略时保留明确日期');
+  assert.equal(projectTime('2026年5月10日 18:00左右').minute, null);
+});
+
+test('日期前后约略词不被误读成纪年或钟点修饰', () => {
+  const approximateDates = [
+    '约2026年5月10日 18:00', '大约2026年5月10日 18:00', '大約2026年5月10日 18:00',
+    '大概2026年5月10日 18:00', '约莫2026年5月10日 18:00', '約2026年5月10日 18:00',
+    '约 二〇二六年5月10日 18:00', '約公历2026年5月10日 18:00',
+    '大约1年夏1日 周一 18:00', '1年夏1日 周一左右 18:00',
+  ];
+  for (const raw of approximateDates) {
+    const time = projectTime(raw);
+    assert.equal(time.date, null, raw);
+    assert.equal(time.minute, null, raw);
+    assert.equal(time.clock, null, raw);
+    assert.equal(time.raw, raw, '保留原文');
+  }
+  for (const raw of ['约翰历1年夏1日 18:00', '约克历1年夏1日 18:00', '大约历1年夏1日 18:00']) {
+    const time = projectTime(raw);
+    assert.ok(time.date, raw);
+    assert.equal(time.minute, 18 * 60, raw);
+  }
+  for (const raw of ['2026年5月10日 约18:00', '2026年5月10日左右 18:00']) {
+    const time = projectTime(raw);
+    assert.equal(time.date, raw.includes('左右') ? null : '2026-05-10', raw);
+    assert.equal(time.minute, null, raw);
+    assert.equal(time.clock, null, raw);
+  }
+  for (const raw of ['2026年5月10日（左右）', '2026年5月10日（左右） 18:00', '2026年5月10日 (左右) 18:00', '1年夏1日 周一（左右）']) {
+    const time = projectTime(raw);
+    assert.equal(time.date, null, raw);
+    assert.equal(time.minute, null, raw);
+    assert.equal(time.clock, null, raw);
+  }
+  for (const raw of ['2026年5月10日 18:00（左右）', '2026年5月10日 18:00 (around)']) {
+    const time = projectTime(raw);
+    assert.equal(time.date, '2026-05-10', raw);
+    assert.equal(time.minute, raw.includes('左右') ? null : 18 * 60, raw);
+  }
+  assert.equal(projectTime('2026年5月10日 18:00（补充说明）').minute, 18 * 60, '普通括注仍按原钟点解析');
+});
