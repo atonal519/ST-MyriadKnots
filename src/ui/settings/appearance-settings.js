@@ -38,6 +38,6 @@ export function createAppearanceSettings({ settings, documentRef = globalThis.do
     input.addEventListener('change', () => { settings.update({ [key]: input.checked }); apply(); });
     row.append(input, element('span', '', title)); body.append(row);
   }
-  body.append(element('p', 'settings-hint', '分别控制“本轮召回”和“第几个结”，对所有聊天立即生效。隐藏仅影响显示，摘要、人物分析和召回注入照常运行。'));
+  body.append(element('p', 'settings-hint', '控制“本轮召回”和“第几个结”的显示，所有聊天立即生效；隐藏不影响摘要、人物分析或注入。'));
   return { node: drawer };
 }

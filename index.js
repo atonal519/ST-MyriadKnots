@@ -162,6 +162,10 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   sanitizerOptions,
   persistAnchors: persistMessageFloorAnchors,
   identityProjectionProvider,
+  qianshiExternalReferenceProvider: () => {
+    if (!settings.get().timeEvolutionEnabled) return [];
+    return timeRuntime.getQianshiReferences();
+  },
   newUuid,
 });
 v3RecallRuntime = createV3RecallRuntime({

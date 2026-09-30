@@ -42,7 +42,7 @@
 - `partial`：保留合法事件，同时记录未能编译的条目数和简短原因。
 - `pending`：字段缺失或整体无效，摘要照常保存，本楼可由手动历史任务补齐。
 
-事件 ID 与事项 ID 由程序生成。一次性日常事件可以只有事件而没有事项 ID。模型只能用本批 `event-N` 和输入 `candidate-N` 建立关系；`progress` 推进当前状态，`context` 只表示同一事项的倒叙补证或背景。同一对象的不同安排默认是不同事项实例。
+事件 ID 与事项 ID 由程序生成。新的一次性事件也有独立记录线，但不进入持续事项的待接续候选；旧记录的空事项 ID 仍可读取。模型只能用本批 `event-N` 和输入 `candidate-N` 建立关系；`progress` 推进当前状态，`context` 只表示同一事项的倒叙补证或背景。同一对象的不同安排默认是不同事项实例。
 
 ## FloorMemory 增量
 
@@ -53,8 +53,17 @@
 - 事件推进的事项实例；
 - 明确的事项接续和时间先后关系；
 - 本次候选数量与字符规模。
+- 可选的人工关注覆盖（`trackingOverrides[{matterId, following}]`）及单事件删除标记（`deletedEventIds`）。它们随持有事件增量的 FloorMemory 一起重放；图投影隐藏被删事件并清理指向它的关系，不改写保留事件的历史状态。
 
-普通摘要文字修订保留原 delta；主动重提使用新结果。人工修改时间元数据不会改动已存 delta；明确主动重提后才用新结果替换。
+人工状态修订分为事件级字段覆盖与整线状态覆盖。整线覆盖通过 `manualMatterStatusOverrides[{matterId,status}]` 记录，恢复自动判断只清除此覆盖；事件级字段通过 `manualEventOverrides` 按稳定 `eventId` 保存。人工关注态由 `trackingOverrides` 单独表示，不能用停止关注代替已完成。单事件删除标记仍只隐藏指定事件及其关系端点，不对其他事件执行父子级联删除。
+
+普通摘要文字修订保留原 delta；主动重提刷新模型字段，按稳定事件 ID 合回人工字段，无法匹配时保留旧千事并提示。已存千事重判同样保留人工修订。
+
+### 人工发生时间
+
+详情编辑提供前缀、年、月、日、时钟五格。复用共用中文数字解析，纪年前缀、具名月份和闰月身份保留，不据此猜测完整历法。时钟按 `HH:mm` 或 `HH:mm~HH:mm` 保存。未修改五格时保留原始时间全文；修改时通过既有 `editQianshiEventText` 接口提交 `storyTime` 与 `expected.storyTime`，沿既有并发与提交检查保存，不调用模型。
+
+时间覆盖写入 `manualEventOverrides[{eventId,storyTime}]`，明确清空保存为 `null`。人工时间独立于来源楼时间：清空或仅填写时钟不会从楼层日期补全。图、页面日期分组、候选索引与召回共用此时间投影。刷新、重新提取及重判保留人工时间；约定时间 `scheduledTime`、楼层时间、摘要、CSE 和当前故事时钟不随此编辑改写。
 
 ## 公开桥
 
@@ -96,9 +105,9 @@ const bridge = globalThis.qqj_qianshi_backend_v1;
 }
 ```
 
-`events` 字段为 `id`、`matterId`（独立日常事件为 `null`）、`updatesMatter`、`title`、`description`、`status`、`storyTime`、`scheduledTime`、`people[{entityId,name}]`、`object`、`sourceFloorId`、`sourceFloorMemoryId`、`sourceAssistantSeq`、`sourceMessageIndex`。`sourceMessageIndex` 沿用插件现有宿主楼号显示口径，旧调用方可忽略这些新增展示字段。
+`events` 字段为 `id`、`matterId`（独立日常事件为 `null`）、`updatesMatter`、`title`、`description`、`status`、`actionStatus`、`statusManuallyEdited`、`timeManuallyEdited`、`storyTime`、`scheduledTime`、`people[{entityId,name}]`、`object`、`sourceFloorId`、`sourceFloorMemoryId`、`sourceAssistantSeq`、`sourceMessageIndex`。`sourceMessageIndex` 沿用插件现有宿主楼号显示口径，`status` 表示这次进展后的整线状态，`actionStatus` 表示本条动作状态；人工覆盖标记只说明字段来源，旧调用方可忽略新增字段。
 
-`matters` 字段为 `matterId`、`title`、`description`、`status`、`object`、`people`、`storyTime`、`scheduledTime`、`origin{eventId,title,description,storyTime,scheduledTime,sourceFloorId,sourceAssistantSeq}`、`latestEventIds`、`eventIds`、`sourceFloorId`、`sourceAssistantSeq`。`relations` 字段为 `id`、`type`（`progress` 或 `before`）、`fromEventId`、`toEventId`、`certainty`。调用方拿不到 Graphology 实例或内部可变对象。
+`matters` 字段为 `matterId`、`title`、`description`、`status`、`object`、`people`、`storyTime`、`scheduledTime`、`following`、`trackingOverride`、`origin{eventId,title,description,storyTime,scheduledTime,sourceFloorId,sourceAssistantSeq}`、`latestEventIds`、`eventIds`、`sourceFloorId`、`sourceAssistantSeq`。`following` 是各入口共享的当前关注态；`trackingOverride` 为 `true`、`false` 或 `null`（沿事件状态默认计算）。`relations` 字段为 `id`、`type`（`progress` 或 `before`）、`fromEventId`、`toEventId`、`certainty`。调用方拿不到 Graphology 实例或内部可变对象。
 
 `timeline` 是完整页面使用的展示投影，只保存分段、日期组和事件 ID，不复制或裁短事件正文。可靠的剧情发生日期优先于来源楼和事项推进顺序；同日双方都有明确分钟时按分钟排序，否则保持稳定顺序。不同明确纪年、不可比较日期和时间未明事件不会被强行塞进一条虚假的统一时间轴。该投影按事件各提取一次排序键，不使用召回小集合的两两比较。
 
@@ -136,3 +145,14 @@ await bridge.prepareHistory({
 - `getStatus()`、`getSnapshot()`、`read()`、`prepareHistory()` 均不调用模型。
 - 只有显式 `startHistory(planId)` 可以触发旧楼历史模型请求。
 - 读取、打开前端或订阅状态不会自动启动历史任务。
+
+
+### 已存千事重判的关联兼容
+
+重判保留原事件 ID 和事实文字，整组暂存后只提交一次；请求前后复用同版本存档并核对 root 与正文，不逐楼重读整档。
+所有千事编译入口共用关联归一化：`kind/type`、`candidateKey/candidate/targetKey/target/to` 转成标准字段后才校验。重判仅保留接续关联，背景关联不改变事件归线。未知关联类型不能默默当作接续，错误候选不能降级为新线。
+精确对应旧记录但引用有误时，原条目及其关系保留并标记部分整理，其他有效条目继续处理；整份返回不可解析、旧编号无法对应或状态无效时拒绝整组提交。模型省略 `matter` 但给出有效接续时，可以由关联确定事项归属。
+
+模型的整线状态、动作状态在共用编译器中先统一大小写、下划线、连字符及空格（例如 `in_progress` → `inProgress`），再按现有状态集合校验；存档仍只保存规范值，无法识别的状态不猜测。
+
+历史补齐和重判提示词明确列出规范状态；共用模型编译器兼容有限的明确等价词，例如 ongoing/underway→inProgress、done/finished→completed、canceled→cancelled，以及常见中文状态。等价词只改变表示方式，不推断自然剧情；无法识别的词仍拒绝。

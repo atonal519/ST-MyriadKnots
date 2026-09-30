@@ -2,6 +2,7 @@ import { newIdentityUuid, sha256 } from '../identity.js';
 import { buildFoundationIndexes } from './foundation-runtime.js';
 import { createCheckpointInputFingerprints, deterministicUuid, scanAssistantCandidates } from './foundation-domain.js';
 import { validateFoundationCheckpoint, validateFoundationRoot, validateFoundationRun, V3_INDEX_LAYOUT_FLOOR_ORDER } from './foundation-schema.js';
+import { validateQianshiDelta } from './qianshi-schema.js';
 import { buildExtractorSystemPrompt, buildHighFloorExtractorSystemPrompt, runExtractorRequest, createExtractorEnvelope, inferCanonicalCurrentTime, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_VERSION } from './extractor.js';
 import { collectFloorMemoryEntityIds, collectStateDeltaEntityIds, memorySourceFloorIds, validateEntityRecord, validateFloorMemory } from './memory-schema.js';
 import { sanitizeDiagnosticValue, sanitizeSensitiveText, sanitizeTaskMetadata } from './safe-metadata.js';
@@ -18,7 +19,7 @@ import { matchFloorCandidates } from './floor-binding.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 import { captureFloorVariableReference } from './floor-variable-reference.js';
 import { publicErrorMessage } from '../public-error.js';
-import { compileQianshiDelta, createQianshiCandidateIndex, effectiveQianshiDelta, pendingQianshiDelta, prepareQianshiCandidates, prepareQianshiRecallCandidates, projectQianshiCandidateSelection, projectQianshiGraph, projectQianshiRecall, publicQianshiSnapshot, QIANSHI_CANDIDATE_CHARACTER_BUDGET, QIANSHI_HISTORY_INPUT_TOKENS, QIANSHI_HISTORY_OUTPUT_TOKENS, QIANSHI_RECALL_PROJECTION_VERSION } from './qianshi-domain.js';
+import { compileQianshiDelta, createQianshiCandidateIndex, effectiveQianshiDelta, normalizeQianshiEventLinks, pendingQianshiDelta, prepareQianshiCandidates, prepareQianshiRecallCandidates, projectQianshiCandidateSelection, projectQianshiGraph, projectQianshiRecall, publicQianshiSnapshot, QIANSHI_CANDIDATE_CHARACTER_BUDGET, QIANSHI_HISTORY_INPUT_TOKENS, QIANSHI_HISTORY_OUTPUT_TOKENS, QIANSHI_RECALL_PROJECTION_VERSION } from './qianshi-domain.js';
 import { estimateRecallTokens } from './recall-selector.js';
 import { markPreparationFailure, preparationFailureDiagnostic, preparationStepFor, storedPreparationDiagnostic } from './preparation-diagnostic.js';
 
@@ -27,13 +28,16 @@ const HISTORY_MUTATION_EVENTS = new Set(['MESSAGE_EDITED', 'MESSAGE_DELETED', 'M
 const MANUAL_HISTORY_REASON = 'manualHistoricalRebuild';
 const MANUAL_CSE_REBUILD_REASON = 'manualCseRebuild';
 const QIANSHI_HISTORY_SYSTEM_PROMPT = `你是“千千结”的千事历史提取器。只输出 JSON：{"floors":[{"floorKey":"floor-N","qianshi":{"events":[],"order":[]}}]}。每个 qianshi.order 必须是对象数组，例如 [{"before":"event-1","after":"event-2","certainty":"explicit"}]；只写材料明确支持的先后关系，引用键沿用本楼和候选键合同。顶层 qianshiCandidates 是本批共享候选池，每楼只能使用其 qianshiCandidateKeys 列出的键。候选 candidateType=event 表示一次性事件，只能用于 context 或先后关系端点；只有持续事项候选才能用于 progress。每个事件正文必须放在 description 字段，事件对象示例：{"key":"event-1","title":"事件标题","description":"事件正文","status":"occurred","matter":false}；不得用 chatSummary 等自造字段替代 description。每个事件最多关联一个旧事项候选（links 中最多一个 candidateKey）；同一叙事影响多个旧事项时，按事项分别写成独立事件，每个事件只链接对应的一个候选。逐楼提取，但每楼按对后续叙事有用的事件单位整理，不按每个动作逐条拆分；同一场景同一事项的连续动作合成一件完整事件，没有新增事实、关系变化或事项进展的重复日常不另立事件。新计划、事项实质推进、完成、取消和关键变化仍须记录。只有计划、持续事项 matter=true；带来新事实或变化的一次性事件可为 matter=false。object 只填写对后续叙事有用的具体物品，多个物品用“、”分隔；人物写入 people，地点或建筑及事件主题应在相应事件正文信息中表达，不要混入 object，也不要凭空补物品；没有合适物品时 object 写 null。links 使用 candidateKey 和 kind=progress|context，倒叙补证必须用 context；禁止把无效 progress 默默降级为 context。可让后楼引用同批更早楼事件，candidateKey 写“更早floorKey:该事件key”，不得跨 floorKey 合并事件来源。storyTime 是发生时间，scheduledTime 是预计时间；材料已有故事年份或纪年时必须保留，只有月日或相对时间时不得猜当前故事年或现实年份。不得改写摘要，不得输出人物资料。`;
-const qianshiHistoryInputTokens = request => estimateRecallTokens(QIANSHI_HISTORY_SYSTEM_PROMPT + JSON.stringify(request));
+const QIANSHI_REJUDGE_SYSTEM_PROMPT = `你是“千千结”的已存千事重判器，只重判现有事件的归线关系、整线状态与动作状态，不重写原事件事实。只输出JSON：{"qianshi":{"events":[],"order":[]}}。输入records数组的key为本次请求唯一的旧记录键record-N；每条旧记录必须原样使用对应record-N，严禁换号、猜配、按标题或描述生成身份。可省略旧事件的title、description、object、people、storyTime、scheduledTime；程序会保留存档原值。每条记录必须尽量明确输出status（整线状态）、actionStatus（局部动作状态）、matter与links；status可使用兼容lineStatus表示整线状态、status表示动作状态。links必须使用标准字段，例如[{"candidateKey":"candidate-1","kind":"progress"}]。只有明确延续事项才用一个有效candidate-N的progress链接；context只表示回忆/背景，不能把记录归入该线。无链接且matter=true表示新建独立事项；无链接且matter=false表示一次性事件。候选candidateType=event只可context。允许新增确有必要的新记录，使用event-N键；不允许改写、删除或冒充record-N。order中的引用使用本次record-N/event-N或输入candidate-N。不要输出摘要、CSE、人物资料或非千事字段。人工修订是权威材料，须按已给记录保留人工保护；模型不得输出或创建人工覆盖标记。`;
+// 历史补齐和已存重判都明确要求规范状态；共用编译器另行兼容模型的等价表达。
+const QIANSHI_STATUS_GUIDANCE = 'status、lineStatus和actionStatus只能返回这些规范值：planned（计划/待办）、inProgress（进行中）、completed（已完成）、cancelled（已取消）、occurred（已发生的一次性事件）、unknown（未知）。千事状态分两层：优先用 status 表示本条进展后的整线状态、actionStatus 表示局部动作状态；局部动作完成不必然结束事项，整线可以仍为进行中。兼容 lineStatus + status 时，lineStatus 是整线状态、status 是局部动作状态。人工修订过的状态是权威材料，不被旧状态覆盖。';
+const qianshiHistoryInputTokens = request => estimateRecallTokens(`${QIANSHI_HISTORY_SYSTEM_PROMPT}\n\n${QIANSHI_STATUS_GUIDANCE}${JSON.stringify(request)}`);
 const qianshiHistoryBudgetRequest = inputs => ({ task: 'extractQianshiHistoryV1',
   qianshiCandidates: inputs.map((_, index) => ({ key: `candidate-budget-${index + 1}`, candidateType: 'matter',
     title: '候'.repeat(QIANSHI_CANDIDATE_CHARACTER_BUDGET) })),
   floors: inputs.map(input => ({ ...input, qianshiCandidateKeys: [] })) });
 const qianshiEventSemanticSignature = event => JSON.stringify({ id: event.id, matterId: event.matterId, updatesMatter: event.updatesMatter,
-  title: event.title, description: event.description, status: event.status, storyTime: event.storyTime,
+  title: event.title, description: event.description, status: event.status, actionStatus: event.actionStatus ?? null, storyTime: event.storyTime,
   scheduledTime: event.scheduledTime, people: event.people, object: event.object, sourceFloorId: event.sourceFloorId,
   continuesFromEventIds: event.continuesFromEventIds });
 const PREPARED_WRITE_CONCURRENCY = 4;
@@ -198,7 +202,7 @@ export function createQianshiSnapshotMemo(projector = publicQianshiSnapshot) {
   };
 }
 
-export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, extractorPromptGuidance = () => '', csePromptGuidance = () => '', processingPrompt = () => '', storyClockReferenceTags = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), persistAnchors = null, identityProjectionProvider = null, qianshiCandidatePreparer = prepareQianshiCandidates, qianshiCandidateIndexFactory = createQianshiCandidateIndex, failureStorage = undefined, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
+export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, extractorPromptGuidance = () => '', csePromptGuidance = () => '', processingPrompt = () => '', storyClockReferenceTags = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), persistAnchors = null, identityProjectionProvider = null, qianshiExternalReferenceProvider = () => [], qianshiCandidatePreparer = prepareQianshiCandidates, qianshiCandidateIndexFactory = createQianshiCandidateIndex, failureStorage = undefined, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
   if (!foundationRuntime || ['start', 'refreshStatus', 'confirmLatest', 'setEnabled', 'bind', 'getState'].some(name => typeof foundationRuntime[name] !== 'function')) throw new TypeError('V3 memory foundation runtime 无效');
   if (!store || ['readReachable', 'readRecord', 'putRecord', 'commitRoot', 'recordKey', 'invalidate'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 memory store 无效');
   if (typeof generateAnalysisTask !== 'function') throw new TypeError('V3 memory analysis route 无效');
@@ -249,6 +253,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   const sessionCandidates = new Map();
   const pendingResults = new Map();
   let qianshiHistoryPlan = null;
+  let qianshiRejudgePlan = null;
   let qianshiHistoryRun = null;
   let qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, outcomes: [], message: '' });
   const qianshiSnapshotMemo = createQianshiSnapshotMemo();
@@ -515,7 +520,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
   };
   const cancelEarlyStabilization = reason => { try { foundationRuntime.cancelEarlyStabilization?.(reason); } catch { /* foundation cancellation is best-effort */ } };
-  const invalidate = ({ deletedChatId = null } = {}) => { if (deletedChatId) clearChatFailures(deletedChatId); cancelEarlyStabilization('memoryInvalidated'); cancelAutomation('memoryInvalidated'); qianshiHistoryRun?.controller.abort('memoryInvalidated'); qianshiHistoryRun = null; qianshiHistoryPlan = null; qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '' }); qianshiCandidateIndex?.invalidate(); epoch += 1; active?.controller.abort('memoryInvalidated'); active = null; workRun = null; cseRebuildPlan = null; reachable = null; memorySnapshotStatus = 'unavailable'; memorySyncStatus = 'idle'; memorySyncError = null; backgroundSync = null; backgroundSyncKey = null; timeFallbackByFloor = new Map(); failureScope = null; coverage = unknownCoverage(0); emptyRealtimeOrigin = null; formalGenerationActive = false; generationArm = null; generationLifecycle = null; stoppedGenerationFinal = null; observedHostChatLength = 0; establishedMemoryChatId = null; grantedEventKeys.clear(); suffixGenerationContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; historicalAggregate = false; sessionCandidates.clear(); pendingResults.clear(); cseRuntime.invalidate(); notify(); };
+  const invalidate = ({ deletedChatId = null } = {}) => { if (deletedChatId) clearChatFailures(deletedChatId); cancelEarlyStabilization('memoryInvalidated'); cancelAutomation('memoryInvalidated'); qianshiHistoryRun?.controller.abort('memoryInvalidated'); qianshiHistoryRun = null; qianshiHistoryPlan = null; qianshiRejudgePlan = null; qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '' }); qianshiCandidateIndex?.invalidate(); epoch += 1; active?.controller.abort('memoryInvalidated'); active = null; workRun = null; cseRebuildPlan = null; reachable = null; memorySnapshotStatus = 'unavailable'; memorySyncStatus = 'idle'; memorySyncError = null; backgroundSync = null; backgroundSyncKey = null; timeFallbackByFloor = new Map(); failureScope = null; coverage = unknownCoverage(0); emptyRealtimeOrigin = null; formalGenerationActive = false; generationArm = null; generationLifecycle = null; stoppedGenerationFinal = null; observedHostChatLength = 0; establishedMemoryChatId = null; grantedEventKeys.clear(); suffixGenerationContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; historicalAggregate = false; sessionCandidates.clear(); pendingResults.clear(); cseRuntime.invalidate(); notify(); };
   cseRuntime.subscribe(() => notify());
   function runManualWork(reason, task) {
     if (workRun) return Promise.resolve(getState());
@@ -997,7 +1002,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
 
   async function latestCompatibleReachable(operation, preparedReachable = null) {
     const current = await latestReachableForCommit(operation, preparedReachable);
-    if (operation.qianshiHistory || operation.qianshiTextEdit) return current;
+    if (operation.qianshiHistory || operation.qianshiTextEdit || operation.qianshiRejudge) return current;
     const dependency = await extractorDependencySnapshot(current, operation.floorId, {
       userIdentity: currentUserIdentity(),
       promptGuidance: operation.dependencySnapshot?.promptGuidance,
@@ -1010,11 +1015,113 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     return current;
   }
 
-  async function commitRevision(operation, { oldReachable, replacement, newEntities = [], provenanceEntry, action, validationErrors = [] }) {
-    return commitGate(() => commitRevisionUnlocked(operation, { oldReachable, replacement, newEntities, provenanceEntry, action, validationErrors }));
+  function assertQianshiRejudgeSnapshot(current, operation) {
+    const plan = operation.qianshiRejudge;
+    if (!plan || current.root.chatId !== plan.chatId || current.root.narrativeGeneration !== plan.narrativeGeneration
+      || current.rootRevision !== plan.rootRevision || current.root.headCheckpointId !== plan.headCheckpointId
+      || current.root.sourceSnapshotFingerprint !== plan.sourceSnapshotFingerprint || current.root.chatId !== currentHostChatId()) {
+      throw errorWith('QIANSHI_REJUDGE_PLAN_STALE', '当前聊天、正文分支或存档版本已变化；本次重判尚未提交，旧记录保持不变。');
+    }
+    const currentReferences = qianshiExternalReferences().map(item => [item.id, item.matterId, item.originEventId])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    if (JSON.stringify(currentReferences) !== plan.externalReferenceSignature) {
+      throw errorWith('QIANSHI_REJUDGE_EXTERNAL_STATE_CHANGED', '千事关联提醒在重判期间发生变化；整组未提交。');
+    }
+    const memories = currentMemoryMap(current), floors = new Map(current.floors.map(floor => [floor.id, floor]));
+    for (const item of plan.items) {
+      const floor = floors.get(item.floorId), memory = memories.get(item.floorId);
+      if (!floor || floor.narrativeGeneration !== plan.narrativeGeneration || floor.content.rawFingerprint !== item.rawFingerprint
+        || floor.content.canonicalFingerprint !== item.canonicalFingerprint || !memory || memory.id !== item.memoryId
+        || JSON.stringify(memory) !== item.memorySignature || memorySourceFloorIds(memory).length !== 1) {
+        throw errorWith('QIANSHI_REJUDGE_SOURCE_CHANGED', `第 ${item.displayMessageIndex ?? item.assistantSeq} 楼原文或千事档案已变化；整组未提交，旧记录保持不变。`);
+      }
+    }
   }
 
-  async function commitRevisionUnlocked(operation, { oldReachable, replacement, newEntities, provenanceEntry, action, validationErrors }) {
+  function qianshiExternalReferences() {
+    const references = qianshiExternalReferenceProvider();
+    if (!Array.isArray(references)) throw errorWith('QIANSHI_REJUDGE_EXTERNAL_STATE_UNAVAILABLE', '无法确认千事关联提醒当前状态；整组未提交。');
+    return references.filter(item => item?.qianshiRef?.matterId && item?.qianshiRef?.originEventId)
+      .map(item => ({ id: item.id, matterId: item.qianshiRef.matterId, originEventId: item.qianshiRef.originEventId }));
+  }
+
+  function prepareQianshiRejudgeReplacements(current, operation, replacements) {
+    assertQianshiRejudgeSnapshot(current, operation);
+    const oldMemories = currentMemoryMap(current), rows = [];
+    const referenceSignature = refs => JSON.stringify(refs.map(item => [item.id, item.matterId, item.originEventId]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+    if (referenceSignature(qianshiExternalReferences()) !== operation.qianshiRejudge.externalReferenceSignature) {
+      throw errorWith('QIANSHI_REJUDGE_EXTERNAL_STATE_CHANGED', '重判期间千事关联提醒发生变化；整组未提交。');
+    }
+    for (const replacement of replacements) {
+      const old = oldMemories.get(replacement.floorId);
+      if (!old || !replacement.qianshiDelta) throw errorWith('QIANSHI_REJUDGE_REPLACEMENT_INVALID', '重判批次缺少目标楼档案；整组未提交。');
+      const prior = old.qianshiDelta ?? {}, delta = clone(replacement.qianshiDelta);
+      for (const key of ['manualEventOverrides', 'manualMatterStatusOverrides', 'trackingOverrides', 'deletedEventIds', 'historyReview']) {
+        if (Object.hasOwn(prior, key)) delta[key] = clone(prior[key]);
+      }
+      const existingIds = new Set(delta.events.map(event => event.id));
+      for (const event of prior.events ?? []) if (!existingIds.has(event.id)) { delta.events.push(clone(event)); existingIds.add(event.id); }
+      const id = replacement.id;
+      rows.push(validateFloorMemory({ ...replacement, id, qianshiDelta: delta }, { expectedChatId: replacement.chatId }));
+    }
+    const rowsByFloor = new Map(rows.map(memory => [memory.floorId, memory]));
+    const finalMemories = current.floors.map(floor => rowsByFloor.get(floor.id) ?? oldMemories.get(floor.id)).filter(Boolean);
+    const finalReachable = { ...current, floorMemories: finalMemories };
+    const before = projectQianshiGraph(current), after = projectQianshiGraph(finalReachable);
+    const candidateEvents = new Map(after.events.map(event => [event.id, event]));
+    for (const binding of operation.qianshiRejudge.candidateSnapshots ?? []) {
+      const stale = binding.events.some(expected => {
+        const event = candidateEvents.get(expected.id);
+        return !event || !expected.signature || qianshiEventSemanticSignature(event) !== expected.signature
+          || binding.kind === 'matter' && (event.matterId !== binding.matterId || !event.updatesMatter);
+      });
+      if (stale) throw errorWith('QIANSHI_REJUDGE_CANDIDATE_STALE', '重判期间实际引用的前楼或旧事项候选已变化；整组未提交。');
+    }
+    const finalMatterOrigins = new Set(after.matters.map(matter => `${matter.matterId}|${matter.origin.eventId}`));
+    if (operation.qianshiRejudge.externalReferences.some(reference => !finalMatterOrigins.has(`${reference.matterId}|${reference.originEventId}`))) {
+      throw errorWith('QIANSHI_REJUDGE_EXTERNAL_REFERENCE', '重判会使范围外时间提醒失去原事项关联；整组未提交，请先处理提醒或保留原归线。');
+    }
+    const replacedIds = new Set(replacements.flatMap(replacement => oldMemories.get(replacement.floorId)?.qianshiDelta?.events?.map(event => event.id) ?? []));
+    const externalProgressIds = new Set((current.floorMemories ?? []).filter(memory => memory.recordStatus === 'active' && !rowsByFloor.has(memory.floorId))
+      .flatMap(memory => memory.qianshiDelta?.relations ?? []).filter(relation => relation.type === 'progress'
+        && (replacedIds.has(relation.fromEventId) || replacedIds.has(relation.toEventId))
+        && before.relations.some(value => value.id === relation.id)).map(relation => relation.id));
+    if ([...externalProgressIds].some(id => !after.relations.some(relation => relation.id === id))) {
+      throw errorWith('QIANSHI_REJUDGE_EXTERNAL_REFERENCE', '重判会使范围外楼的有效事项进展关系失效；整组未提交，请扩大范围或保留原记录。');
+    }
+    const finalEventById = new Map(after.events.map(event => [event.id, event]));
+    for (const replacement of replacements) {
+      const prior = oldMemories.get(replacement.floorId)?.qianshiDelta ?? {};
+      for (const override of prior.manualMatterStatusOverrides ?? []) {
+        const priorMatter = before.matters.find(matter => matter.matterId === override.matterId);
+        const finalOrigin = priorMatter && finalEventById.get(priorMatter.origin.eventId);
+        if (!finalOrigin || finalOrigin.matterId !== override.matterId) {
+          throw errorWith('QIANSHI_REJUDGE_MANUAL_LINE_CONFLICT', '重判会移动人工整线状态所锚定的原事项；请先人工解除或改判后再试，整组未提交。');
+        }
+      }
+    }
+    const replacedRelationIds = new Set(rows.flatMap(memory => memory.qianshiDelta.relations.map(relation => relation.id)));
+    if (after.diagnostics.danglingRelationIds.some(id => replacedRelationIds.has(id))) {
+      throw errorWith('QIANSHI_REJUDGE_REFERENCE_INVALID', '重判结果含有无法验证的事项关系；整组未提交，旧记录保持不变。');
+    }
+    const finalEventIds = new Set(after.events.map(event => event.id));
+    if (rows.some(memory => memory.qianshiDelta.events.some(event => event.continuesFromEventIds.some(id => !finalEventIds.has(id))))) {
+      throw errorWith('QIANSHI_REJUDGE_REFERENCE_INVALID', '重判结果引用了当前分支不存在的事件；整组未提交，旧记录保持不变。');
+    }
+    return rows;
+  }
+
+  async function commitRevision(operation, { oldReachable, replacement, replacements = null, newEntities = [], provenanceEntry, action, validationErrors = [] }) {
+    return commitGate(() => commitRevisionUnlocked(operation, { oldReachable, replacement, replacements, newEntities, provenanceEntry, action, validationErrors }));
+  }
+
+  async function commitRevisionUnlocked(operation, { oldReachable, replacement, replacements = null, newEntities, provenanceEntry, action, validationErrors }) {
+    const requestedReplacements = Array.isArray(replacements) ? replacements : [replacement];
+    if (!requestedReplacements.length || requestedReplacements.some(value => !value?.floorId)
+      || new Set(requestedReplacements.map(value => value.floorId)).size !== requestedReplacements.length) {
+      throw errorWith('V3_MEMORY_REPLACEMENT_INVALID', '记忆提交目标无效。');
+    }
+    replacement = requestedReplacements[0];
     let current = await latestCompatibleReachable(operation, oldReachable);
     if (!operation.qianshiHistory && !operation.qianshiTextEdit && current.rootRevision !== oldReachable.rootRevision
       && current.root.headCheckpointId === oldReachable.root.headCheckpointId
@@ -1024,6 +1131,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     delete operation.qianshiRejected;
     delete operation.qianshiRejectReason;
   for (let attempt = 0; attempt < MEMORY_REBASE_ATTEMPTS; attempt += 1) {
+    if (operation.qianshiRejudge) assertQianshiRejudgeSnapshot(current, operation);
     let qianshiRejected = false, qianshiRejectReason = null;
     const expectedTargetMemory = operation.qianshiHistory || operation.qianshiTextEdit ? currentMemoryMap(current).get(operation.floorId) : null;
     if (operation.qianshiHistory && (expectedTargetMemory?.id !== operation.qianshiHistoryTargetMemoryId
@@ -1036,7 +1144,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       throw errorWith('QIANSHI_TEXT_EDIT_TARGET_CHANGED', '事件所属档案在保存期间已变化；当前记录保持不变，请刷新后重新编辑。');
     }
     const floor = current.floors.find(item => item.id === replacement.floorId);
-    const selected = !operation.qianshiHistory && floor ? currentRawSelection(hostAdapter, floor) : null;
+    const selected = !operation.qianshiHistory && !operation.qianshiRejudge && floor ? currentRawSelection(hostAdapter, floor) : null;
     const liveRawFingerprint = selected ? `sha256:${await sha256(selected.rawContent)}` : null;
     if (operation.qianshiHistory && current.root.chatId !== currentHostChatId()) {
       throw errorWith('QIANSHI_HISTORY_PLAN_STALE', '当前聊天已变化；历史补齐结果未保存。');
@@ -1069,7 +1177,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         throw errorWith('QIANSHI_TEXT_EDIT_SOURCE_CHANGED', '事件来源楼或当前分支已变化；没有保存文字，请刷新后确认原文楼层仍有效。');
       }
     }
-    if (operation.qianshiCandidateSnapshot?.length) {
+    if (!operation.qianshiRejudge && operation.qianshiCandidateSnapshot?.length) {
       const liveEvents = new Map(projectQianshiGraph(current).events.map(event => [event.id, event]));
       const stale = operation.qianshiCandidateSnapshot.some(binding => binding.events.some(expected => {
         const event = liveEvents.get(expected.id);
@@ -1078,8 +1186,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }));
       if (stale) throw errorWith('QIANSHI_HISTORY_CANDIDATE_STALE', '提交期间实际引用的前楼事项语义已变化，本楼结果没有保存。');
     }
-    let revisionReplacement = replacement;
-    if (operation.qianshiDependency && replacement.qianshiDelta) {
+    let revisionReplacements = [replacement], revisionReplacement = replacement;
+    if (operation.qianshiRejudge) {
+      revisionReplacements = prepareQianshiRejudgeReplacements(current, operation, requestedReplacements);
+      revisionReplacement = revisionReplacements[0];
+    } else if (operation.qianshiDependency && replacement.qianshiDelta) {
       const currentQianshiDependency = await qianshiDependencySnapshot(current, replacement.floorId);
       if (JSON.stringify(currentQianshiDependency) !== JSON.stringify(operation.qianshiDependency)) {
         const qianshiDelta = pendingQianshiDelta(replacement.qianshiDelta, '摘要请求期间旧事项候选发生变化，千事结果待补。', operation.commitTimestamp ?? nowIso(now));
@@ -1089,7 +1200,49 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
     const memoryByFloor = currentMemoryMap(current);
     const oldTarget = memoryByFloor.get(revisionReplacement.floorId);
-    if (revisionReplacement.qianshiDelta) {
+    if (!operation.qianshiRejudge && ['extract', 'reextract'].includes(action) && revisionReplacement.qianshiDelta && oldTarget?.qianshiDelta) {
+      const priorDelta = oldTarget.qianshiDelta;
+      if (priorDelta.deletedEventIds?.length) {
+        // Old deletion markers remain readable; this paused feature keeps its historical floor delta intact.
+        const id = await deterministicUuid(['v3-memory-qianshi-deleted-preserved', revisionReplacement.id, oldTarget.id, current.root.headCheckpointId]);
+        revisionReplacement = validateFloorMemory({ ...revisionReplacement, id, qianshiDelta: priorDelta }, { expectedChatId: revisionReplacement.chatId });
+    } else {
+      const nextDelta = clone(revisionReplacement.qianshiDelta), nextEvents = new Map(nextDelta.events.map((event, index) => [event.id, index]));
+      let preservationConflict = null;
+      // Re-extraction can refresh model-authored fields, while each recorded manual field follows only its stored stable event ID.
+      for (const override of priorDelta.manualEventOverrides ?? []) {
+          const eventIndex = nextEvents.get(override.eventId);
+          if (eventIndex === undefined) { preservationConflict = '这楼的人工事件修订无法按原事件 ID 对位'; break; }
+          nextDelta.events[eventIndex] = { ...nextDelta.events[eventIndex], ...Object.fromEntries(
+            ['title', 'description', 'object', 'status', 'actionStatus', 'storyTime'].filter(key => Object.hasOwn(override, key)).map(key => [key, override[key]])) };
+        }
+        for (const override of priorDelta.manualMatterStatusOverrides ?? []) {
+          if (!nextDelta.events.some(event => event.matterId === override.matterId)) {
+            preservationConflict = '这楼的人工整线状态无法按原 matterId 对位'; break;
+          }
+        }
+        for (const override of priorDelta.trackingOverrides ?? []) {
+          if (!nextDelta.events.some(event => event.matterId === override.matterId)) {
+            preservationConflict = preservationConflict ?? '这楼的人工关注状态无法按原 matterId 对位'; break;
+          }
+        }
+        if (preservationConflict) {
+          qianshiRejected = true;
+          qianshiRejectReason = `${preservationConflict}；本楼旧千事记录已保留，摘要仍已保存。`;
+          const id = await deterministicUuid(['v3-memory-qianshi-manual-conflict', revisionReplacement.id, oldTarget.id, current.root.headCheckpointId]);
+          revisionReplacement = validateFloorMemory({ ...revisionReplacement, id, qianshiDelta: priorDelta }, { expectedChatId: revisionReplacement.chatId });
+        } else {
+          if (priorDelta.manualEventOverrides?.length) nextDelta.manualEventOverrides = priorDelta.manualEventOverrides;
+          if (priorDelta.manualMatterStatusOverrides?.length) nextDelta.manualMatterStatusOverrides = priorDelta.manualMatterStatusOverrides;
+          if (priorDelta.trackingOverrides?.length) nextDelta.trackingOverrides = priorDelta.trackingOverrides;
+          const id = await deterministicUuid(['v3-memory-qianshi-manual-merged', revisionReplacement.id, oldTarget.id, current.root.headCheckpointId]);
+          revisionReplacement = validateFloorMemory({ ...revisionReplacement, id, qianshiDelta: nextDelta }, { expectedChatId: revisionReplacement.chatId });
+        }
+      }
+    }
+    if (operation.qianshiRejudge) {
+      // All staged floor deltas are checked together against the original root before one checkpoint can publish them.
+    } else if (revisionReplacement.qianshiDelta) {
       const replacedFloorIds = new Set(oldTarget ? memorySourceFloorIds(oldTarget) : [revisionReplacement.floorId]);
       const oldEventIds = new Set(oldTarget?.qianshiDelta?.events?.map(event => event.id) ?? []);
       const preservedByOtherFloors = new Set(), currentProjection = projectQianshiGraph(current);
@@ -1114,9 +1267,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             && (!fromEvent.matterId || fromEvent.matterId !== toEvent.matterId || !toEvent.updatesMatter));
         });
       const externalValidProgressIds = new Set();
+      const manuallyDeletedIds = new Set(revisionReplacement.qianshiDelta.deletedEventIds ?? []);
       for (const memory of current.floorMemories ?? []) if (memory.recordStatus === 'active' && !replacedFloorIds.has(memory.floorId)) {
         for (const relation of memory.qianshiDelta?.relations ?? []) if (relation.type === 'progress'
           && (oldEventIds.has(relation.fromEventId) || oldEventIds.has(relation.toEventId))
+          && !manuallyDeletedIds.has(relation.fromEventId) && !manuallyDeletedIds.has(relation.toEventId)
           && validRelationSignatures.has(JSON.stringify([relation.id, relation.type, relation.fromEventId, relation.toEventId]))) {
           externalValidProgressIds.add(relation.id);
         }
@@ -1146,10 +1301,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         }
       }
     }
-    if (operation.qianshiTextEdit && qianshiRejected) {
+    if (operation.qianshiTextEdit && qianshiRejected && !operation.qianshiTextEdit.manualAction) {
       throw errorWith('QIANSHI_TEXT_EDIT_RELATION_CONFLICT', '这条事件带有旧审核关系；修改文字会使关系失去对应依据，首版暂不能编辑。原记录保持不变。');
     }
-    memoryByFloor.set(revisionReplacement.floorId, revisionReplacement);
+    if (!operation.qianshiRejudge) revisionReplacements = [revisionReplacement];
+    for (const value of revisionReplacements) memoryByFloor.set(value.floorId, value);
     const floorMemories = current.floors.map(item => memoryByFloor.get(item.id)).filter(Boolean);
     const entitiesById = new Map(current.entities.map(entity => [entity.id, entity]));
     for (const entity of newEntities) {
@@ -1164,16 +1320,18 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const entities = [...entitiesById.values()].filter(entity => current.floors.some(item => item.id === entity.firstSeenFloorId) || memoryEntityIds.has(entity.id) || stateEntityIds.has(entity.id) || baselineEntityIds.has(entity.id));
     const nowValue = operation.commitTimestamp ??= nowIso(now);
     const runId = await deterministicUuid(['v3-memory-commit-run', operation.runId, current.root.headCheckpointId, attempt]);
-    const checkpointId = await deterministicUuid(['v3-memory-checkpoint', current.root.headCheckpointId, current.root.narrativeGeneration, action, revisionReplacement.id, entities.map(entity => entity.id), runId]);
+    const checkpointMemoryIdentity = revisionReplacements.length === 1 ? revisionReplacement.id : revisionReplacements.map(value => [value.floorId, value.id]);
+    const checkpointId = await deterministicUuid(['v3-memory-checkpoint', current.root.headCheckpointId, current.root.narrativeGeneration, action,
+      checkpointMemoryIdentity, entities.map(entity => entity.id), runId]);
     const indexes = await buildFoundationIndexes({ chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, checkpointId, floors: current.floors, candidates: current.floors.map(floorItem => ({ hostLocator: floorItem.hostLocator, rawFingerprint: floorItem.content.rawFingerprint, canonicalFingerprint: floorItem.content.canonicalFingerprint })), entities, now: nowValue });
     const indexKeys = indexes.map(index => store.recordKey(index));
     const provenance = floorProvenance(current);
-    provenance[revisionReplacement.floorId] = { ...provenanceEntry, runId, memoryId: revisionReplacement.id, action };
+    for (const value of revisionReplacements) provenance[value.floorId] = { ...provenanceEntry, runId, memoryId: value.id, action };
     let currentState = null;
     if (current.baseline) currentState = await replayCurrentState({ chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, baselineId: current.baseline.id, floors: current.floors, floorMemories, stateDeltas: provisionalDeltas, now: nowValue, id: await deterministicUuid(['v3-cse-current-state', checkpointId]), previousId: current.currentStates?.at(-1)?.id ?? null });
     const preparedStateRefs = [...provisionalDeltas.map(delta => store.recordKey(delta)), ...(currentState ? [store.recordKey(currentState)] : [])];
     const runFloorIds = operation.floorIds?.length ? operation.floorIds : [revisionReplacement.floorId];
-    const run = validateFoundationRun({ schemaVersion: 3, recordType: 'run', id: runId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, inputSnapshotFingerprint: current.root.sourceSnapshotFingerprint, mode: 'localReextract', sessionEpoch: operation.epoch, inputFloorIds: runFloorIds, phase: 'completed', completedFloorIds: runFloorIds, failedItems: [], preparedRecordRefs: [store.recordKey(revisionReplacement), ...newEntities.map(entity => store.recordKey(entity)), ...preparedStateRefs, ...indexKeys, `v3-checkpoint-${checkpointId}`], diagnostics: { ...diagnosticsWithRealtimeOrigin(null, realtimeOriginFromReachable(current)), kind: 'extractor', promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION, floorProvenance: provenance, validationErrors: validationErrors.slice(-20) }, startedAt: operation.startedAt, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
+    const run = validateFoundationRun({ schemaVersion: 3, recordType: 'run', id: runId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, inputSnapshotFingerprint: current.root.sourceSnapshotFingerprint, mode: 'localReextract', sessionEpoch: operation.epoch, inputFloorIds: runFloorIds, phase: 'completed', completedFloorIds: runFloorIds, failedItems: [], preparedRecordRefs: [...revisionReplacements.map(value => store.recordKey(value)), ...newEntities.map(entity => store.recordKey(entity)), ...preparedStateRefs, ...indexKeys, `v3-checkpoint-${checkpointId}`], diagnostics: { ...diagnosticsWithRealtimeOrigin(null, realtimeOriginFromReachable(current)), kind: 'extractor', promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION, floorProvenance: provenance, validationErrors: validationErrors.slice(-20) }, startedAt: operation.startedAt, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
     const memoryReady = floorMemories.some(memory => memory.recordStatus === 'active');
     const stateFingerprint = await hash([current.root.narrativeGeneration, current.floors.map(item => item.id), current.floors.map(item => item.content.canonicalFingerprint)]);
     const cseReady = memoryReady && floorMemories.filter(memory => memory.recordStatus === 'active').every(memory => provisionalDeltas.some(delta => delta.floorId === memory.floorId));
@@ -1181,11 +1339,14 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const checkpoint = validateFoundationCheckpoint({ schemaVersion: 3, recordType: 'checkpoint', id: checkpointId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, runId, sourceSnapshotFingerprint: current.root.sourceSnapshotFingerprint, indexLayout: V3_INDEX_LAYOUT_FLOOR_ORDER, capabilities, floorRange: { fromAssistantSeq: current.floors.length ? 1 : 0, toAssistantSeq: current.floors.length, floorIds: current.floors.map(item => item.id) }, inputFingerprints: createCheckpointInputFingerprints(current.floors, { previous: current.checkpoint?.inputFingerprints }), producedRefs: { floors: current.floors.map(item => item.id), floorMemories: floorMemories.map(item => item.id), entities: entities.map(item => item.id), events: [], claims: [], knowledge: [], stateDeltas: provisionalDeltas.map(item => item.id), currentStates: currentState ? [currentState.id] : [], stateProjections: [], episodes: [], threads: [], indexes: indexKeys }, validation: { schemaValid: true, referencesValid: true, orderedReplayValid: true, stateFingerprint }, sealedAt: nowValue, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
     const root = validateFoundationRoot({ ...current.root, capabilities, headCheckpointId: checkpointId, activeStateRefs: currentState ? [currentState.id] : [], indexManifest: { ...emptyManifest(), floor: indexKeys.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-')), entity: indexKeys.filter(key => key.includes('-entity-')), reverseRef: indexKeys.filter(key => key.includes('-reverseRef-')) }, updatedAt: nowValue }, { expectedChatId: current.root.chatId });
     await validateCseGraph({ root, checkpoint, run, floors: current.floors, floorMemories, entities, indexes, indexKeys, baseline: current.baseline, stateDeltas: provisionalDeltas, currentStates: currentState ? [currentState] : [] });
-    await persistRecords([...newEntities, revisionReplacement, ...(currentState ? [currentState] : []), ...indexes], operation.controller.signal);
+    await persistRecords([...newEntities, ...revisionReplacements, ...(currentState ? [currentState] : []), ...indexes], operation.controller.signal);
     await persistRecords([run, checkpoint], operation.controller.signal, { concurrency: 1 });
     if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_MEMORY_CANCELLED', '操作已取消。');
     if (operation.qianshiHistory && currentHostChatId() !== current.root.chatId) {
       throw errorWith('QIANSHI_HISTORY_PLAN_STALE', '当前聊天已变化；历史补齐结果未保存。');
+    }
+    if (operation.qianshiRejudge && currentHostChatId() !== current.root.chatId) {
+      throw errorWith('QIANSHI_REJUDGE_PLAN_STALE', '当前聊天已变化；整组重判未提交，旧记录保持不变。');
     }
     if (operation.qianshiTextEdit) {
       const liveTargetMemory = currentMemoryMap(current).get(operation.floorId);
@@ -1206,24 +1367,32 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }
     }
     let committed;
+    operation.rootCommitAttempted = true;
     try { committed = await store.commitRoot(root, current.rootRevision, { signal: operation.controller.signal }); }
     catch (error) {
-      if (action !== 'qianshiHistory' && action !== 'qianshiTextEdit') throw error;
+      if (action !== 'qianshiHistory' && action !== 'qianshiTextEdit' && action !== 'qianshiRejudge') throw error;
       try {
         const cold = await store.readReachable({ mode: 'runtime' });
-        const saved = currentMemoryMap(cold).get(operation.floorId);
+        const coldMemories = currentMemoryMap(cold);
         const confirmed = cold.status === 'ready' && cold.rootRevision > current.rootRevision
           && cold.root?.chatId === current.root.chatId
           && cold.root?.sourceSnapshotFingerprint === current.root.sourceSnapshotFingerprint
-          && cold.root.headCheckpointId === checkpointId && saved?.id === revisionReplacement.id
-          && JSON.stringify(saved.qianshiDelta) === JSON.stringify(revisionReplacement.qianshiDelta);
+          && cold.root.headCheckpointId === checkpointId && revisionReplacements.every(value => {
+            const saved = coldMemories.get(value.floorId);
+            return saved?.id === value.id && JSON.stringify(saved.qianshiDelta) === JSON.stringify(value.qianshiDelta);
+          });
         if (!confirmed) throw error;
         committed = { status: 'saved', revision: cold.rootRevision, reachable: cold };
       } catch {
-        throw errorWith(action === 'qianshiTextEdit' ? 'QIANSHI_TEXT_EDIT_COMMIT_AMBIGUOUS' : 'QIANSHI_HISTORY_COMMIT_AMBIGUOUS', '保存状态待核对；请刷新千事页确认，系统不会自动重试。');
+        const code = action === 'qianshiTextEdit' ? 'QIANSHI_TEXT_EDIT_COMMIT_AMBIGUOUS'
+          : action === 'qianshiRejudge' ? 'QIANSHI_REJUDGE_COMMIT_AMBIGUOUS' : 'QIANSHI_HISTORY_COMMIT_AMBIGUOUS';
+        throw errorWith(code, '保存状态待核对；请刷新千事页确认，系统不会自动重试。');
       }
     }
-    if (committed.status === 'conflict' && attempt + 1 < MEMORY_REBASE_ATTEMPTS) {
+    operation.rootCommitReturned = committed.status;
+    operation.rootCommitSucceeded = committed.status === 'saved';
+    operation.rootCommitConflict = committed.status === 'conflict';
+    if (committed.status === 'conflict' && !operation.qianshiRejudge && attempt + 1 < MEMORY_REBASE_ATTEMPTS) {
       current = await latestCompatibleReachable(operation);
       continue;
     }
@@ -2365,7 +2534,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           // A deletion can shift every later host locator, so in-flight history must be replanned.
           if (name === 'MESSAGE_DELETED') {
             qianshiHistoryRun?.controller.abort('targetFloorDeleted');
-            qianshiHistoryPlan = null;
+            qianshiHistoryPlan = null; qianshiRejudgePlan = null;
           }
           // A later token cannot prove the boundary captured before an edit or swipe.
           if (generationArm?.proven === false) generationArm = null;
@@ -2465,7 +2634,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         }
         if (name === 'CHAT_CHANGED') {
           qianshiHistoryRun?.controller.abort(name);
-          qianshiHistoryPlan = null;
+          qianshiHistoryPlan = null; qianshiRejudgePlan = null;
         }
         if (['CHAT_CHANGED', 'CHAT_RENAMED'].includes(name)
           && reachable?.root?.chatId
@@ -2482,7 +2651,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         cancelAutomation(name);
         qianshiHistoryRun?.controller.abort(name);
         qianshiHistoryRun = null;
-        qianshiHistoryPlan = null;
+        qianshiHistoryPlan = null; qianshiRejudgePlan = null;
         qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '' });
         epoch += 1;
         active?.controller.abort(name);
@@ -2741,6 +2910,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
 
   function formalQianshiEvent(eventId, source = reachable) {
     if (!source?.root || source.status !== 'ready' || source.root.chatId !== currentHostChatId()) return null;
+    const visibleEventIds = new Set(projectQianshiGraph(source).events.map(event => event.id));
+    if (!visibleEventIds.has(eventId)) return null;
     const matches = [];
     for (const memory of source.floorMemories ?? []) {
       if (memory.recordStatus !== 'active' || !['ready', 'partial'].includes(memory.qianshiDelta?.status)) continue;
@@ -2757,13 +2928,19 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       && reachable.floors.some(floor => floor.id === matched.event.sourceFloorId && floor.narrativeGeneration === reachable.root.narrativeGeneration));
   }
 
-  async function editQianshiEventText({ eventId, expected, title, description, object } = {}) {
+  async function editQianshiEventText({ eventId, expected, title, description, object, status, actionStatus, storyTime, manualAction = null } = {}) {
     if (workRun || active || qianshiHistoryRun) throw errorWith('QIANSHI_TEXT_EDIT_BUSY', '当前有其他记忆操作正在进行，请稍后再试。');
     if (typeof eventId !== 'string' || !eventId || !expected || typeof expected.memoryId !== 'string'
       || typeof expected.title !== 'string' || typeof expected.description !== 'string'
       || (expected.object !== null && typeof expected.object !== 'string') || (object !== null && typeof object !== 'string')) {
       throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '事件编辑信息无效，请刷新页面后重试。');
     }
+    // 人工时间是独立字段覆盖，null 为明确未知；没有提供该字段的旧编辑请求保持原时间。
+    const timeProvided = storyTime !== undefined;
+    if (timeProvided && (storyTime !== null && typeof storyTime !== 'string'
+      || !Object.hasOwn(expected, 'storyTime'))) throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '时间编辑信息无效，请刷新后重试。');
+    const normalizedTime = timeProvided && storyTime !== null ? qianshiText(storyTime, 501) || null : null;
+    if (normalizedTime?.length > 500) throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '事件时间过长；原记录保持不变。');
     const normalizedObject = object === null ? null : qianshiText(object, 1001) || null;
     if (normalizedObject?.length > 1000) throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '涉及物品最多 1000 个字符；原记录保持不变。');
     const nextText = { title: qianshiText(title, 500), description: qianshiText(description, 4000), object: normalizedObject };
@@ -2774,14 +2951,45 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if (foundation.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '后端数据尚未与当前正文完成同步，当前不能编辑事件。');
       await loadCurrent(expectedEpoch);
       const matched = formalQianshiEvent(eventId);
+      if (!matched && manualAction?.type === 'deleteEvent' && (reachable.floorMemories ?? []).some(memory =>
+        memory.recordStatus === 'active' && memory.qianshiDelta?.deletedEventIds?.includes(eventId))) return { status: 'unchanged' };
       if (!matched) throw errorWith('QIANSHI_TEXT_EDIT_UNAVAILABLE', '这条正式事件已不在当前聊天或有效分支中；刷新千事页后再编辑。');
       const { memory: old, event } = matched;
+      if (manualAction?.type === 'tracking') {
+        const matter = projectQianshiGraph(reachable).matters.find(item => item.matterId === manualAction.matterId);
+        if (!matter || matter.origin.eventId !== eventId || matter.following !== manualAction.expectedFollowing) {
+          throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事项关注状态或所属楼已变化；请刷新千事页后重试。');
+        }
+      }
+      if (manualAction?.type === 'matterStatus') {
+        const matter = projectQianshiGraph(reachable).matters.find(item => item.matterId === manualAction.matterId);
+        if (!matter || matter.origin.eventId !== eventId || matter.status !== manualAction.expectedStatus
+          || matter.manualStatusOverride !== manualAction.expectedManualStatus) {
+          throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '整线状态或所属楼已变化；请刷新千事页后重试。');
+        }
+      }
       if (old.id !== expected.memoryId) throw errorWith('QIANSHI_TEXT_EDIT_TARGET_CHANGED', '事件所属档案已变化；请刷新千事页后再编辑。');
       if (event.title !== expected.title || event.description !== expected.description || event.object !== expected.object) {
         throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事件文字已变化；当前记录保持不变，请刷新后重新编辑。');
       }
-      if (qianshiText(event.title, 500) === nextText.title && qianshiText(event.description, 4000) === nextText.description
-        && event.object === nextText.object) return { status: 'unchanged' };
+      const nextStatus = status === undefined ? event.status : status;
+      const nextActionStatus = actionStatus === undefined ? event.actionStatus ?? event.status : actionStatus;
+      const allowedStatuses = new Set(['planned', 'inProgress', 'completed', 'cancelled', 'occurred', 'unknown']);
+      if (!allowedStatuses.has(nextStatus) || !allowedStatuses.has(nextActionStatus)) {
+        throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '事件状态无效；原记录保持不变。');
+      }
+      if (expected.status !== undefined && expected.status !== event.status
+        || expected.actionStatus !== undefined && expected.actionStatus !== (event.actionStatus ?? event.status)) {
+        throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事件状态已变化；当前记录保持不变，请刷新后重新编辑。');
+      }
+      const nextStoryTime = timeProvided ? normalizedTime : event.storyTime;
+      if (timeProvided && expected.storyTime !== event.storyTime) throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事件时间已变化，请刷新后重新编辑。');
+      const timeUnchanged = nextStoryTime === event.storyTime && (!timeProvided
+        || Object.hasOwn((old.qianshiDelta.manualEventOverrides ?? []).find(item => item.eventId === eventId) ?? {}, 'storyTime'));
+      const textUnchanged = qianshiText(event.title, 500) === nextText.title && qianshiText(event.description, 4000) === nextText.description
+        && event.object === nextText.object;
+      const statusUnchanged = nextStatus === event.status && nextActionStatus === (event.actionStatus ?? event.status);
+      if (textUnchanged && statusUnchanged && timeUnchanged && !manualAction) return { status: 'unchanged' };
       const sourceFloor = reachable.floors.find(item => item.id === event.sourceFloorId);
       const sourceSelection = sourceFloor ? currentRawSelection(hostAdapter, sourceFloor) : null;
       const liveSourceFingerprint = sourceSelection ? `sha256:${await sha256(sourceSelection.rawContent)}` : null;
@@ -2793,20 +3001,47 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         ['pending', 'new'].includes(candidate.decision) && candidate.event?.id === event.id
         && qianshiTextEventSignature(candidate.event) === qianshiTextEventSignature(event)
         && candidate.relations?.length > 0);
-      if (sameReviewCandidate) throw errorWith('QIANSHI_TEXT_EDIT_RELATION_CONFLICT', '这条事件带有旧审核关系；修改文字会使关系失去对应依据，首版暂不能编辑。原记录保持不变。');
+      if (!manualAction && sameReviewCandidate) throw errorWith('QIANSHI_TEXT_EDIT_RELATION_CONFLICT', '这条事件带有旧审核关系；修改文字会使关系失去对应依据，首版暂不能编辑。原记录保持不变。');
       const nowValue = nowIso(now), priorAudit = floorProvenance(reachable)[old.floorId] ?? {};
       const qianshiDelta = clone(old.qianshiDelta);
       const eventIndex = qianshiDelta.events.findIndex(item => item.id === eventId);
       if (eventIndex < 0) throw errorWith('QIANSHI_TEXT_EDIT_UNAVAILABLE', '这条正式事件已变化；请刷新后再编辑。');
-      qianshiDelta.events[eventIndex] = { ...qianshiDelta.events[eventIndex], ...nextText };
-      const id = await deterministicUuid(['v3-memory-revision', old.id, 'qianshiTextEdit', qianshiDelta, nowValue, newUuid()]);
+      if (manualAction?.type === 'deleteEvent') {
+        qianshiDelta.deletedEventIds = [...new Set([...(qianshiDelta.deletedEventIds ?? []), eventId])];
+        if (qianshiDelta.deletedEventIds.length === (old.qianshiDelta.deletedEventIds ?? []).length) return { status: 'unchanged' };
+      } else if (manualAction?.type === 'tracking') {
+        const prior = (qianshiDelta.trackingOverrides ?? []).find(item => item.matterId === manualAction.matterId);
+        if (prior?.following === manualAction.following) return { status: 'unchanged' };
+        qianshiDelta.trackingOverrides = [...(qianshiDelta.trackingOverrides ?? []).filter(item => item.matterId !== manualAction.matterId),
+          { matterId: manualAction.matterId, following: manualAction.following }];
+      } else if (manualAction?.type === 'matterStatus') {
+        const prior = (qianshiDelta.manualMatterStatusOverrides ?? []).find(item => item.matterId === manualAction.matterId);
+        if (manualAction.status === null && !prior || manualAction.status === prior?.status) return { status: 'unchanged' };
+        qianshiDelta.manualMatterStatusOverrides = (qianshiDelta.manualMatterStatusOverrides ?? []).filter(item => item.matterId !== manualAction.matterId);
+        if (manualAction.status !== null) qianshiDelta.manualMatterStatusOverrides.push({ matterId: manualAction.matterId, status: manualAction.status });
+      } else if (manualAction) throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '千事人工操作无效。');
+      if (!textUnchanged || !statusUnchanged || !timeUnchanged) qianshiDelta.events[eventIndex] = { ...qianshiDelta.events[eventIndex], ...nextText,
+        ...(!statusUnchanged ? { status: nextStatus, actionStatus: nextActionStatus } : {}),
+        ...(timeProvided ? { storyTime: nextStoryTime } : {}) };
+      const manualFields = { ...(qianshiDelta.manualEventOverrides ?? []).find(item => item.eventId === eventId) };
+      delete manualFields.eventId;
+      if (event.title !== nextText.title) manualFields.title = nextText.title;
+      if (event.description !== nextText.description) manualFields.description = nextText.description;
+      if (event.object !== nextText.object) manualFields.object = nextText.object;
+      if (timeProvided) manualFields.storyTime = nextStoryTime;
+      if (event.status !== nextStatus) manualFields.status = nextStatus;
+      if ((event.actionStatus ?? event.status) !== nextActionStatus) manualFields.actionStatus = nextActionStatus;
+      if (Object.keys(manualFields).length) qianshiDelta.manualEventOverrides = [...(qianshiDelta.manualEventOverrides ?? []).filter(item => item.eventId !== eventId),
+        { eventId, ...manualFields }];
+      const mutationKind = manualAction?.type ?? 'qianshiTextEdit';
+      const id = await deterministicUuid(['v3-memory-revision', old.id, mutationKind, qianshiDelta, nowValue, newUuid()]);
       const replacement = validateFloorMemory({ ...old, id, qianshiDelta, updatedAt: nowValue, recordStatus: 'active', supersedes: old.id }, { expectedChatId: old.chatId });
       const targetFloor = reachable.floors.find(item => item.id === old.floorId);
       const targetSelection = targetFloor ? currentRawSelection(hostAdapter, targetFloor) : null;
       const operation = { ...manualOperation, floorId: old.floorId, floorIds: memorySourceFloorIds(old), floorRawFingerprint: targetSelection ? `sha256:${await sha256(targetSelection.rawContent)}` : null,
-        epoch, controller: new AbortController(), runId: await deterministicUuid(['v3-memory-revision-run', old.id, 'qianshiTextEdit', nowValue, newUuid()]),
-        startedAt: nowValue, phase: 'committing', qianshiTextEdit: { eventId, sourceFloorId: event.sourceFloorId, memoryId: old.id,
-          memorySignature: JSON.stringify(old), eventSignature: qianshiTextEventSignature(event), expected: { title: event.title, description: event.description, object: event.object },
+        epoch, controller: new AbortController(), runId: await deterministicUuid(['v3-memory-revision-run', old.id, mutationKind, nowValue, newUuid()]),
+        startedAt: nowValue, phase: 'committing', qianshiTextEdit: { eventId, sourceFloorId: event.sourceFloorId, memoryId: old.id, manualAction,
+          memorySignature: JSON.stringify(old), eventSignature: qianshiTextEventSignature(event), expected: { title: event.title, description: event.description, object: event.object, status: event.status, actionStatus: event.actionStatus ?? event.status },
           sourceBaseline: { hostLocator: clone(sourceFloor.hostLocator), rawFingerprint: liveSourceFingerprint,
             swipeId: sourceSelection.swipeId, selectedSwipeIndex: sourceSelection.selectedSwipeIndex } } };
       if (!targetSelection) throw errorWith('QIANSHI_TEXT_EDIT_SOURCE_CHANGED', '事件所属楼已无法对应当前分支；没有保存文字，请刷新后确认。');
@@ -2818,11 +3053,54 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }, action: 'qianshiTextEdit', validationErrors: [] });
       if (operation.qianshiRejected) throw errorWith('QIANSHI_TEXT_EDIT_RELATION_CONFLICT', '千事关系校验未接受这次文字修改；原记录保持不变。');
       const saved = formalQianshiEvent(eventId);
-      if (!saved || saved.event.title !== nextText.title || saved.event.description !== nextText.description || saved.event.object !== nextText.object) {
+      const savedMatter = ['tracking', 'matterStatus'].includes(manualAction?.type) ? projectQianshiGraph(reachable).matters.find(item => item.matterId === manualAction.matterId) : null;
+      if (manualAction?.type === 'deleteEvent' && saved || manualAction?.type === 'tracking' && savedMatter?.following !== manualAction.following
+        || manualAction?.type === 'matterStatus' && savedMatter?.manualStatusOverride !== manualAction.status
+        || !manualAction && (!saved || saved.event.title !== nextText.title || saved.event.description !== nextText.description || saved.event.object !== nextText.object
+          || saved.event.status !== nextStatus || (saved.event.actionStatus ?? saved.event.status) !== nextActionStatus
+          || saved.event.storyTime !== nextStoryTime)) {
         throw errorWith('QIANSHI_TEXT_EDIT_COMMIT_AMBIGUOUS', '保存状态待核对；请刷新千事页确认，系统不会自动重试。');
       }
       return { status: 'saved' };
     });
+  }
+
+  async function setQianshiMatterFollowing({ matterId, following, expectedFollowing } = {}) {
+    const snapshot = qianshiSnapshot(), matter = snapshot?.matters?.find(item => item.matterId === matterId);
+    if (typeof following !== 'boolean' || typeof expectedFollowing !== 'boolean' || !matter) throw errorWith('QIANSHI_TEXT_EDIT_UNAVAILABLE', '事项已不在当前千事记录中；请刷新后重试。');
+    if (matter.following === following) return { status: 'unchanged' };
+    const event = snapshot.events.find(item => item.id === matter.origin.eventId);
+    if (!event) throw errorWith('QIANSHI_TEXT_EDIT_UNAVAILABLE', '事项来源事件已变化；请刷新后重试。');
+    return editQianshiEventText({ eventId: event.id, expected: { memoryId: event.sourceFloorMemoryId,
+      title: event.title, description: event.description, object: event.object }, title: event.title, description: event.description, object: event.object,
+    manualAction: { type: 'tracking', matterId, following, expectedFollowing } });
+  }
+
+  async function setQianshiMatterStatus({ matterId, status, expectedStatus, expectedManualStatus } = {}) {
+    const snapshot = qianshiSnapshot(), matter = snapshot?.matters?.find(item => item.matterId === matterId);
+    const allowedStatuses = new Set(['planned', 'inProgress', 'completed', 'cancelled', 'occurred', 'unknown']);
+    if (!matter || (status !== null && !allowedStatuses.has(status)) || !allowedStatuses.has(expectedStatus)
+      || (expectedManualStatus !== null && !allowedStatuses.has(expectedManualStatus))) {
+      throw errorWith('QIANSHI_TEXT_EDIT_UNAVAILABLE', '事项状态或所属事项已变化；请刷新后重试。');
+    }
+    const event = snapshot.events.find(item => item.id === matter.origin.eventId);
+    if (!event) throw errorWith('QIANSHI_TEXT_EDIT_UNAVAILABLE', '事项来源事件已变化；请刷新后重试。');
+    if (matter.manualStatusOverride === status && status !== null || status === null && matter.manualStatusOverride === null) return { status: 'unchanged' };
+    return editQianshiEventText({ eventId: event.id, expected: { memoryId: event.sourceFloorMemoryId,
+      title: event.title, description: event.description, object: event.object, status: event.status, actionStatus: event.actionStatus ?? event.status },
+      title: event.title, description: event.description, object: event.object,
+      manualAction: { type: 'matterStatus', matterId, status, expectedStatus, expectedManualStatus } });
+  }
+
+  async function deleteQianshiEvent({ eventId } = {}) {
+    const snapshot = qianshiSnapshot(), event = snapshot?.events?.find(item => item.id === eventId);
+    if (!event) {
+      if ((reachable?.floorMemories ?? []).some(memory => memory.recordStatus === 'active' && memory.qianshiDelta?.deletedEventIds?.includes(eventId))) return { status: 'unchanged' };
+      throw errorWith('QIANSHI_TEXT_EDIT_UNAVAILABLE', '这条事件已不在当前千事记录中；请刷新后重试。');
+    }
+    return editQianshiEventText({ eventId, expected: { memoryId: event.sourceFloorMemoryId,
+      title: event.title, description: event.description, object: event.object }, title: event.title, description: event.description, object: event.object,
+    manualAction: { type: 'deleteEvent' } });
   }
 
   async function prepareQianshiHistory({ maxInputTokens = QIANSHI_HISTORY_INPUT_TOKENS, maxOutputTokens = QIANSHI_HISTORY_OUTPUT_TOKENS } = {}) {
@@ -2970,7 +3248,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           }
         }
         const request = buildHistoryRequest();
-        const systemPrompt = QIANSHI_HISTORY_SYSTEM_PROMPT;
+        const systemPrompt = `${QIANSHI_HISTORY_SYSTEM_PROMPT}\n\n${QIANSHI_STATUS_GUIDANCE}`;
         const requestTokens = qianshiHistoryInputTokens(request);
         if (requestTokens > plan.maxInputTokens) {
           failures += prepared.length;
@@ -3065,7 +3343,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           if (delta.status === 'pending') { failures += 1; setOutcome(value.item.floorId, 'failed', 'QIANSHI_HISTORY_DELTA_PENDING', delta.reason || '千事结果未通过编译。', true); continue; }
           const usedBindings = [...(bindingsByFloor.get(value.item.floorId) ?? []), ...earlierBindings]
             .filter(binding => usedCandidateKeys.has(binding.key));
-          const qianshiCandidateSnapshot = usedBindings.map(binding => ({ kind: binding.matterId ? 'matter' : 'event',
+          const qianshiCandidateSnapshot = usedBindings.map(binding => ({ kind: binding.kind === 'matter' ? 'matter' : 'event',
             matterId: binding.matterId ?? null,
             events: [...new Set([binding.originEventId, ...(binding.latestEventIds ?? [])].filter(Boolean))]
               .map(id => ({ id, signature: binding.semanticSignatures?.[id] ?? binding.semanticSignature ?? null })) }));
@@ -3136,13 +3414,295 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
 
   async function stopQianshiHistory() {
+    if (qianshiHistoryRun?.committing) return structuredClone(qianshiHistoryState);
     qianshiHistoryRun?.controller.abort('stopped');
     try { await qianshiHistoryRun?.promise; } catch { /* final state is reported below */ }
     return structuredClone(qianshiHistoryState);
   }
 
+  async function prepareQianshiRejudge({ fromMessageIndex = null, toMessageIndex = null } = {}) {
+    if (qianshiHistoryRun) throw errorWith('QIANSHI_HISTORY_RUNNING', '千事历史操作正在运行。');
+    const foundation = await foundationRuntime.inspect('qianshiRejudgePreview', { allowCached: false });
+    const source = foundationRuntime.getReachable();
+    if (foundation.status !== 'ready' || !source?.root || source.status !== 'ready') throw errorWith('QIANSHI_REJUDGE_UNAVAILABLE', '当前聊天没有可用的千事存档。');
+    const memories = currentMemoryMap(source), unavailable = [], candidates = [];
+    for (const floor of source.floors) {
+      const memory = memories.get(floor.id);
+      if (!memory || memory.recordStatus !== 'active') { unavailable.push({ assistantSeq: floor.assistantSeq,
+        displayMessageIndex: floor.hostLocator?.messageIndex ?? null, reason: '该楼没有单楼有效存档。' }); continue; }
+      const delta = memory.qianshiDelta;
+      if (!delta || !Array.isArray(delta.events) || !delta.events.length) continue;
+      if (memorySourceFloorIds(memory).length !== 1 || memorySourceFloorIds(memory)[0] !== floor.id) {
+        unavailable.push({ assistantSeq: floor.assistantSeq, displayMessageIndex: floor.hostLocator?.messageIndex ?? null, reason: '该存档由多个正文楼聚合，本入口不能拆分重判。' }); continue;
+      }
+      const displayMessageIndex = floor.hostLocator?.messageIndex ?? null;
+      const sourceCanonicalContent = memory.sourceCanonicalContent ?? '';
+      if (typeof sourceCanonicalContent !== 'string' || !sourceCanonicalContent.trim()) {
+        unavailable.push({ assistantSeq: floor.assistantSeq, displayMessageIndex, reason: '该楼没有可用的原始千事正文快照。' }); continue;
+      }
+      candidates.push({ floorId: floor.id, assistantSeq: floor.assistantSeq, displayMessageIndex,
+        rawFingerprint: floor.content.rawFingerprint, canonicalFingerprint: floor.content.canonicalFingerprint,
+        memoryId: memory.id, memorySignature: JSON.stringify(memory),
+        input: { floorKey: `floor-${floor.assistantSeq}`, sourceCanonicalContent,
+          sourceUserInputSnapshot: memory.sourceUserInputSnapshot ?? null, effectiveSummary: effectiveSummary(memory) || '',
+          records: delta.events.filter(event => !(delta.deletedEventIds ?? []).includes(event.id)).map((event, index) => ({
+            key: `record-${index + 1}`, title: event.title, description: event.description, object: event.object,
+            people: (event.people ?? []).map(person => person.name), status: event.status, actionStatus: event.actionStatus ?? null,
+            matter: Boolean(event.matterId && event.updatesMatter), storyTime: event.storyTime, scheduledTime: event.scheduledTime })) } });
+    }
+    // 开放边界在本次实际存档中解析：起点从 0 开始，终点到最新可整理楼；显式 0 仍是第 0 楼。
+    const parseBoundary = value => value === null || String(value).trim() === '' ? null : Number(value);
+    const requestedFirst = parseBoundary(fromMessageIndex), requestedLast = parseBoundary(toMessageIndex);
+    if (requestedFirst !== null || requestedLast !== null) {
+      const first = requestedFirst ?? 0, last = requestedLast ?? candidates.reduce((latest, item) => Number.isSafeInteger(item.displayMessageIndex)
+        ? Math.max(latest, item.displayMessageIndex) : latest, -1);
+      if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last) || first < 0 || last < first) throw errorWith('QIANSHI_REJUDGE_RANGE_INVALID', '楼层范围无效，请输入从小到大的实际聊天楼号。');
+      const selected = candidates.filter(item => Number.isSafeInteger(item.displayMessageIndex)
+        && item.displayMessageIndex >= first && item.displayMessageIndex <= last);
+      const unavailableInRange = unavailable.filter(item => Number.isSafeInteger(item.displayMessageIndex)
+        && item.displayMessageIndex >= first && item.displayMessageIndex <= last);
+      if (unavailableInRange.length) throw errorWith('QIANSHI_REJUDGE_RANGE_UNAVAILABLE', `所选范围包含无法对应的楼：${unavailableInRange.map(item => `第 ${item.displayMessageIndex} 楼（${item.reason}）`).join('；')}`);
+      if (!selected.length) throw errorWith('QIANSHI_REJUDGE_RANGE_EMPTY', '所选范围没有可重判的单楼千事存档。');
+      if (selected.some((item, index) => index > 0 && item.displayMessageIndex <= selected[index - 1].displayMessageIndex)) throw errorWith('QIANSHI_REJUDGE_RANGE_INVALID', '所选楼层无法按实际聊天楼号确定顺序。');
+      const selectedIds = new Set(selected.map(item => item.floorId));
+      const fullIndex = new Map(source.floors.map((floor, index) => [floor.id, index]));
+      if (selected.some((item, index) => index > 0 && fullIndex.get(item.floorId) < fullIndex.get(selected[index - 1].floorId))) throw errorWith('QIANSHI_REJUDGE_RANGE_INVALID', '所选楼层顺序与当前聊天正文顺序不一致。');
+      for (const item of candidates) item.selected = selectedIds.has(item.floorId);
+    }
+    const items = candidates.filter(item => item.selected !== false);
+    const planId = await deterministicUuid(['qianshi-rejudge-plan-v1', source.root.chatId, source.root.narrativeGeneration,
+      source.rootRevision, source.root.headCheckpointId, items.map(item => [item.floorId, item.memoryId, item.rawFingerprint])]);
+    const externalReferences = qianshiExternalReferences();
+    const externalReferenceSignature = JSON.stringify(externalReferences.map(item => [item.id, item.matterId, item.originEventId])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+    qianshiRejudgePlan = { planId, chatId: source.root.chatId, narrativeGeneration: source.root.narrativeGeneration,
+      rootRevision: source.rootRevision, headCheckpointId: source.root.headCheckpointId,
+      sourceSnapshotFingerprint: source.root.sourceSnapshotFingerprint, externalReferences, externalReferenceSignature, items };
+    return structuredClone({ status: items.length ? 'ready' : 'empty', planId, totalFloors: items.length,
+      apiCalls: items.length, floors: items.map(item => ({ assistantSeq: item.assistantSeq, messageIndex: item.displayMessageIndex,
+        recordCount: item.input.records.length })), unavailableFloors: unavailable });
+  }
+
+  async function startQianshiRejudge(planId = qianshiRejudgePlan?.planId) {
+    if (qianshiHistoryRun) return structuredClone(qianshiHistoryState);
+    const plan = qianshiRejudgePlan;
+    if (!plan || planId !== plan.planId) throw errorWith('QIANSHI_REJUDGE_PLAN_STALE', '请重新准备已存千事重判计划。');
+    const controller = new AbortController(), jobId = await deterministicUuid(['qianshi-rejudge-job-v1', plan.planId, newUuid()]);
+    const operation = { jobId, controller }, epochAtStart = epoch;
+    let calls = 0;
+    qianshiHistoryRun = operation;
+    const publish = value => { if (qianshiHistoryRun !== operation) return false; qianshiHistoryState = Object.freeze(value); notify(); return true; };
+    const makeState = (status, processedFloors, message = '', outcomes = []) => ({ status, jobId, mode: 'rejudge', committing: Boolean(operation.committing), processedFloors,
+      totalFloors: plan.items.length, calls, attemptedFloors: calls,
+      savedCompleteFloors: ['completed', 'partial'].includes(status) ? outcomes.filter(item => item.status === 'saved-complete').length : 0,
+      failedFloors: outcomes.filter(item => item.status === 'failed').length, skippedFloors: 0, outcomes, message });
+    publish(makeState('running', 0, '正在读取原存档；本组结果尚未提交。'));
+    const task = (async () => {
+      const outcomes = [], staged = [], usedCandidateSnapshots = [];
+      let currentItem = null;
+      try {
+        await loadCurrent(epochAtStart);
+        assertQianshiRejudgeSnapshot(reachable, { qianshiRejudge: plan });
+        const original = reachable, identitySnapshot = await readIdentityProjection();
+        const liveSources = new Map(plan.items.map(item => [item.floorId,
+          currentRawSelection(hostAdapter, original.floors.find(floor => floor.id === item.floorId))?.rawContent]));
+        // 整组提交前原图不变；沿用已有的精确 root 版本核对，避免每个请求前后重读整份存档。
+        const verifyCurrent = async () => {
+          const current = await latestReachableForCommit({ epoch: epochAtStart, controller }, original);
+          assertQianshiRejudgeSnapshot(current, { qianshiRejudge: plan });
+          for (const item of plan.items) {
+            const floor = current.floors.find(value => value.id === item.floorId);
+            const selected = currentRawSelection(hostAdapter, floor);
+            if (!selected || selected.rawContent !== liveSources.get(item.floorId)) {
+              throw errorWith('QIANSHI_REJUDGE_SOURCE_CHANGED', `第 ${item.displayMessageIndex ?? item.assistantSeq} 楼正文已变化，请重新选择范围；原千事未修改。`);
+            }
+          }
+          return current;
+        };
+        for (let index = 0; index < plan.items.length; index += 1) {
+          if (controller.signal.aborted) break;
+          const item = plan.items[index];
+          currentItem = item;
+          await verifyCurrent();
+          const floor = reachable.floors.find(value => value.id === item.floorId), oldMemory = currentMemoryMap(reachable).get(item.floorId);
+          const prefixFloors = reachable.floors.slice(0, reachable.floors.findIndex(value => value.id === item.floorId));
+          const prefixIds = new Set(prefixFloors.map(value => value.id));
+          const stagedByFloor = new Map(staged.map(value => [value.floorId, value]));
+          const prefixMemories = reachable.floorMemories.filter(value => prefixIds.has(value.floorId)).map(value => stagedByFloor.get(value.floorId) ?? value);
+          const prefix = { ...reachable, floors: prefixFloors, floorMemories: prefixMemories };
+          const candidates = prepareQianshiCandidates(prefix, { canonicalContent: item.input.sourceCanonicalContent,
+            precedingUserInput: item.input.sourceUserInputSnapshot, identityProjection: identitySnapshot, includeEventContextCandidates: true });
+          const candidateValues = [...candidates.request], candidateBindings = candidates.bindings.map(binding => ({ ...binding }));
+          const prefixProjection = projectQianshiGraph(prefix, { identityProjection: identitySnapshot });
+          for (const binding of candidateBindings) {
+            const eventIds = [...new Set([binding.originEventId, ...(binding.latestEventIds ?? [])].filter(Boolean))];
+            binding.semanticSignatures = Object.fromEntries(eventIds.map(id => [id,
+              prefixProjection.events.some(event => event.id === id)
+                ? qianshiEventSemanticSignature(prefixProjection.events.find(event => event.id === id)) : null]));
+          }
+          const storedEvents = oldMemory.qianshiDelta.events.filter(event => !(oldMemory.qianshiDelta.deletedEventIds ?? []).includes(event.id));
+          const currentGraph = projectQianshiGraph(reachable), originEventIds = new Set(currentGraph.matters.map(matter => matter.origin.eventId));
+          const recordBindings = storedEvents.map((event, recordIndex) => ({ key: `record-${recordIndex + 1}`, event: clone(event),
+            preserveMatterIdOnNewLine: Boolean(event.matterId && originEventIds.has(event.id)) }));
+          const systemPrompt = `${QIANSHI_REJUDGE_SYSTEM_PROMPT}\n\n${QIANSHI_STATUS_GUIDANCE}`;
+          const request = { task: 'rejudgeStoredQianshiV1', floor: item.input.floorKey,
+            source: item.input.sourceCanonicalContent, summary: item.input.effectiveSummary,
+            precedingUserInput: item.input.sourceUserInputSnapshot, records: item.input.records,
+            qianshiCandidates: candidateValues };
+          publish(makeState('running', index, `正在重判第 ${index + 1}/${plan.items.length} 楼；此前楼结果仅暂存，尚未写入。`, outcomes));
+          calls += 1;
+          const result = await generateUtilityTask({ systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(request) }],
+            maxTokens: QIANSHI_HISTORY_OUTPUT_TOKENS, temperature: 0, signal: controller.signal, includeCharacterCard: false,
+            worldInfoSource: 'none', parseMode: 'semantic' });
+          await verifyCurrent();
+          const packet = result?.jsonData ?? result?.data
+            ?? (typeof result?.responseText === 'string' ? parseJsonOutput(result.responseText, { finishReason: result?.taskMetadata?.finishReason }) : null)
+            ?? (typeof result?.textData === 'string' ? parseJsonOutput(result.textData, { finishReason: result?.taskMetadata?.finishReason }) : null);
+          const qianshi = packet?.qianshi ?? packet;
+          if (!qianshi || !Array.isArray(qianshi.events)) throw errorWith('QIANSHI_REJUDGE_RESPONSE_INVALID', '模型没有返回可整理的千事事件；整组未提交。');
+          const originalByKey = new Map(recordBindings.map(binding => [binding.key, binding.event]));
+          const modelRecordByKey = new Map(item.input.records.map(record => [record.key, record])), incompleteRecordKeys = new Set();
+          const rawEvents = qianshi.events.map((event, eventIndex) => {
+            const candidateKey = String(event?.key ?? '');
+            const key = /^(?:record-|event-)[0-9]+$/u.test(candidateKey) ? candidateKey : `record-${Number.MAX_SAFE_INTEGER - eventIndex}`;
+            const originalEvent = originalByKey.get(key), modelRecord = modelRecordByKey.get(key), value = { ...event, key,
+              // 重判不把背景关联归入事项；先共用归一化，再过滤context，未知关联仍交给编译器拒绝。
+              links: normalizeQianshiEventLinks(event).filter(link => link.kind !== 'context') };
+            if (originalEvent && modelRecord) {
+              if (!String(value.title ?? value.name ?? '').trim()) value.title = modelRecord.title;
+              if (!String(value.description ?? value.summary ?? value.content ?? '').trim()) value.description = modelRecord.description;
+              if (!Object.hasOwn(value, 'lineStatus') && !Object.hasOwn(value, 'status')) {
+                value.lineStatus = originalEvent.status; incompleteRecordKeys.add(key);
+              }
+              if (!Object.hasOwn(value, 'actionStatus') && Object.hasOwn(originalEvent, 'actionStatus')) {
+                value.actionStatus = originalEvent.actionStatus; incompleteRecordKeys.add(key);
+              }
+              if (!Object.hasOwn(value, 'matter')) {
+                value.matter = Boolean(originalEvent.matterId && originalEvent.updatesMatter);
+                // 有效接续已明确事项归属，不需要模型重复填写matter；错误引用仍由编译器拒绝。
+                if (!value.links.some(link => link.kind === 'progress')) incompleteRecordKeys.add(key);
+              }
+            }
+            return value;
+          });
+          const compiledBindings = [], compilationIssues = [];
+          const delta = await compileQianshiDelta({ packet: { qianshi: { ...qianshi, events: rawEvents } }, floor,
+            candidateBindings, recordBindings, candidateStats: { count: candidateValues.length,
+              characters: JSON.stringify(candidateValues).length }, entities: reachable.entities,
+            identityProjection: identitySnapshot, compiledBindings, compilationIssues, now: nowIso(now) });
+          // 可精确对应的旧条目引用错了，按条保留原值并报partial；不是把错引用改成新线。
+          // 完全无法校验的返回、未知record键、坏状态或坏关联类型仍拒绝整组提交。
+          const onlyOldReferenceErrors = compilationIssues.length > 0
+            && compilationIssues.every(issue => ['QIANSHI_EVENT_REFERENCE_INVALID', 'QIANSHI_EVENT_PROGRESS_TARGET_INVALID'].includes(issue.code))
+            && rawEvents.every(event => originalByKey.has(event.key));
+          if (delta.status === 'pending' && !onlyOldReferenceErrors) throw errorWith('QIANSHI_REJUDGE_COMPILE_FAILED', delta.reason || '本楼结果未通过整理；整组未提交。');
+          const bindingByKey = new Map(recordBindings.map(binding => [binding.key, binding.event]));
+          const returnedKeys = new Set(rawEvents.map(event => String(event?.key ?? '')));
+          const missingRecordKeys = [];
+          const factsPreserved = delta.events.map(event => {
+            const binding = compiledBindings.find(value => value.event.id === event.id && value.localKey.startsWith('record-'));
+            const old = binding ? bindingByKey.get(binding.localKey) : null;
+            if (!old) return event;
+            const input = rawEvents.find(value => value.key === binding.localKey), missingMatterDecision = incompleteRecordKeys.has(binding.localKey)
+              && !input?.links?.some(link => link.kind === 'progress');
+            return { ...event, ...(missingMatterDecision ? { matterId: old.matterId, updatesMatter: old.updatesMatter } : {}), title: old.title, description: old.description, object: old.object,
+              people: clone(old.people ?? []), storyTime: old.storyTime, scheduledTime: old.scheduledTime, sourceFloorId: old.sourceFloorId };
+          });
+          const keptIds = new Set(factsPreserved.map(event => event.id));
+          for (const binding of recordBindings) if (!returnedKeys.has(binding.key) || !keptIds.has(binding.event.id)) {
+            missingRecordKeys.push(binding.key); if (!keptIds.has(binding.event.id)) { factsPreserved.push(clone(binding.event)); keptIds.add(binding.event.id); }
+          }
+          const retainedIds = new Set(factsPreserved.map(event => event.id));
+          const retainedOldRelations = (oldMemory.qianshiDelta.relations ?? []).filter(relation =>
+            retainedIds.has(relation.fromEventId) && retainedIds.has(relation.toEventId)
+            && (!storedEvents.some(event => event.id === relation.fromEventId) || !storedEvents.some(event => event.id === relation.toEventId)
+              || [...recordBindings].some(binding => missingRecordKeys.includes(binding.key)
+                && (binding.event.id === relation.fromEventId || binding.event.id === relation.toEventId))));
+          const combinedRelations = [...new Map([...delta.relations, ...retainedOldRelations].map(value => [value.id, value])).values()];
+          const incompleteCount = incompleteRecordKeys.size;
+          const issues = [...(delta.reason ? [delta.reason] : []), ...(missingRecordKeys.length ? [`${missingRecordKeys.join('、')} 未通过有效重判，已按原值保留。`] : []),
+            ...(incompleteCount ? [`${incompleteCount} 条旧记录缺少完整状态或归线判断，缺失部分沿用原值。`] : [])];
+          const nextDelta = validateQianshiDelta({ ...delta, status: missingRecordKeys.length || incompleteCount || delta.status === 'partial' ? 'partial' : delta.status,
+            reason: issues.length ? issues.join('；').slice(0, 500) : null, events: factsPreserved, relations: combinedRelations }, { floorIds: [floor.id] });
+          const nowValue = nowIso(now), newId = await deterministicUuid(['v3-qianshi-rejudge-memory', oldMemory.id, nextDelta, jobId]);
+          const replacement = validateFloorMemory({ ...oldMemory, id: newId, qianshiDelta: nextDelta, updatedAt: nowValue,
+            supersedes: oldMemory.id }, { expectedChatId: oldMemory.chatId });
+          staged.push(replacement);
+          const used = new Set([...rawEvents.flatMap(event => (event.links ?? []).map(link => String(link?.candidateKey ?? link?.candidate ?? ''))),
+            ...(qianshi.order ?? []).flatMap(value => [value?.before, value?.after]).filter(Boolean)]);
+          usedCandidateSnapshots.push(...candidateBindings.filter(binding => used.has(binding.key)).map(binding => ({
+            kind: binding.kind === 'matter' ? 'matter' : 'event', matterId: binding.matterId ?? null,
+            events: [...new Set([binding.originEventId, ...(binding.latestEventIds ?? [])])].filter(Boolean)
+              .map(id => ({ id, signature: binding.semanticSignatures?.[id] ?? null })) })));
+        const partial = nextDelta.status === 'partial';
+        outcomes.push({ floorId: floor.id, assistantSeq: floor.assistantSeq, status: partial ? 'saved-partial' : 'saved-complete',
+          reasonCode: delta.reason ? 'QIANSHI_REJUDGE_EVENT_PARTIAL' : missingRecordKeys.length ? 'QIANSHI_REJUDGE_RECORDS_MISSING' : incompleteCount ? 'QIANSHI_REJUDGE_DECISION_INCOMPLETE'
+            : partial ? 'QIANSHI_REJUDGE_EVENT_PARTIAL' : null,
+            message: partial ? `本楼只有部分记录通过整理；${nextDelta.reason || '其余旧记录按原值保留。'}本组尚未提交。`
+              : '本楼结果已暂存；本组尚未提交。' });
+        currentItem = null;
+        }
+        if (controller.signal.aborted) {
+          publish(makeState('stopped', staged.length, '已取消；整组未提交，原千事保持不变。', outcomes)); return structuredClone(qianshiHistoryState);
+        }
+        if (staged.length !== plan.items.length) throw errorWith('QIANSHI_REJUDGE_INCOMPLETE', '有楼未完成重判；整组未提交，原千事保持不变。');
+        await verifyCurrent();
+        const commitOperation = { jobId, controller, epoch: epochAtStart, floorIds: plan.items.map(item => item.floorId),
+          qianshiRejudge: { ...plan, candidateSnapshots: usedCandidateSnapshots },
+          runId: await deterministicUuid(['v3-qianshi-rejudge-commit', jobId]), startedAt: nowIso(now) };
+        operation.commitOperation = commitOperation;
+        const priorAudit = floorProvenance(reachable)[staged[0].floorId] ?? {};
+        // Root CAS is the atomic boundary; once entered, stop cannot promise that no write occurred.
+        operation.committing = true;
+        publish(makeState('running', staged.length, '正在一次提交整组结果；此阶段不能取消。', outcomes));
+        await commitRevision(commitOperation, { oldReachable: original, replacement: staged[0], replacements: staged,
+          newEntities: [], provenanceEntry: { ...priorAudit, qianshiRejudgeJobId: jobId }, action: 'qianshiRejudge', validationErrors: [] });
+        const hasPartialFloors = outcomes.some(item => item.status === 'saved-partial');
+        const committedOutcomes = outcomes.map(item => ({ ...item, message: item.status === 'saved-partial'
+          ? item.message.replace('本组尚未提交。', '整组已提交。') : '本楼完整结果已保存。' }));
+        // A single partial floor makes the atomic batch partial; complete counts exclude every such floor.
+        publish(makeState(hasPartialFloors ? 'partial' : 'completed', staged.length,
+          hasPartialFloors ? `整组已提交；${outcomes.filter(item => item.status === 'saved-partial').length} 楼只有部分记录通过整理，请查看逐楼原因。`
+            : '千事重判完成；整组已一次提交。', committedOutcomes));
+        qianshiRejudgePlan = null;
+        return structuredClone(qianshiHistoryState);
+      } catch (error) {
+        const stopped = controller.signal.aborted;
+        const reason = safeErrorMessage(error?.message || '千事重判失败。');
+        if (currentItem && !stopped && !operation.committing) outcomes.push({ floorId: currentItem.floorId,
+          assistantSeq: currentItem.assistantSeq, status: 'failed', reasonCode: error?.code ?? 'QIANSHI_REJUDGE_FAILED', message: reason });
+        const commit = operation.commitOperation, savedMemories = reachable?.root ? currentMemoryMap(reachable) : new Map();
+        const committedGraphMatches = Boolean(commit?.rootCommitSucceeded && reachable?.status === 'ready'
+          && reachable.root?.chatId === plan.chatId && reachable.root?.narrativeGeneration === plan.narrativeGeneration
+          && reachable.root?.sourceSnapshotFingerprint === plan.sourceSnapshotFingerprint && reachable.rootRevision > plan.rootRevision
+          && staged.every(value => { const saved = savedMemories.get(value.floorId);
+            return saved?.id === value.id && JSON.stringify(saved.qianshiDelta) === JSON.stringify(value.qianshiDelta); }));
+        const definitelyUncommitted = !commit?.rootCommitAttempted || commit.rootCommitConflict || error?.code === 'V3_MEMORY_CAS_CONFLICT';
+        if (committedGraphMatches) {
+          const hasPartialFloors = outcomes.some(item => item.status === 'saved-partial');
+          const committedOutcomes = outcomes.map(item => ({ ...item, message: item.status === 'saved-partial'
+            ? item.message.replace('本组尚未提交。', '整组已提交。') : '本楼完整结果已保存。' }));
+          publish(makeState(hasPartialFloors ? 'partial' : 'completed', staged.length,
+            `整组结果已确认保存，但提交后的界面刷新失败；请刷新千事页检查展示。系统不会自动重试。`, committedOutcomes));
+          qianshiRejudgePlan = null;
+        } else if (commit?.rootCommitAttempted && !definitelyUncommitted) {
+          const pendingOutcomes = outcomes.map(item => ({ ...item, status: 'commit-unknown',
+            reasonCode: item.reasonCode ?? 'QIANSHI_REJUDGE_COMMIT_AMBIGUOUS',
+            message: '本楼结果已暂存，但是否保存需要刷新确认。' }));
+          publish(makeState('failed', staged.length,
+            `${reason}；整组保存状态待核对，请刷新千事页确认。系统不会自动重试。`, pendingOutcomes));
+        } else publish(makeState(stopped ? 'stopped' : 'failed', staged.length,
+          `${reason}；整组未提交，原千事保持不变。`, outcomes));
+        return structuredClone(qianshiHistoryState);
+      }
+    })().finally(() => { if (qianshiHistoryRun === operation) qianshiHistoryRun = null; notify(); });
+    operation.promise = task;
+    return task;
+  }
+
   return Object.freeze({ bind, start, setEnabled, refreshAutomation, startHistoricalRebuild, pauseHistoricalRebuild, retryAutomation, rebuildCse, resumeCseRebuild, pauseCseRebuild, invalidate, refreshStatus, prepareCurrent, confirmLatest, confirmConsecutiveAssistants, extractNext, extractFloor, analyzeNextState, retryStateAnalysis, correctSubjectState, editSummary, editMemory, restoreAi, markError, copySafeDiagnostic, copyFullDiagnostic, shouldBlockMainGeneration, allowsRealtimeTailFromEmpty, setIdentityProjection,
-    getQianshiSnapshot: () => structuredClone(qianshiSnapshot()), canEditQianshiEventText, editQianshiEventText, getQianshiRecall: ({ queryContext = null, currentTime = null, selectedEventIds = null, selectedMatterIds = null } = {}) => {
+    getQianshiSnapshot: () => structuredClone(qianshiSnapshot()), canEditQianshiEventText, editQianshiEventText,
+    setQianshiMatterFollowing, setQianshiMatterStatus, getQianshiRecall: ({ queryContext = null, currentTime = null, selectedEventIds = null, selectedMatterIds = null } = {}) => {
       if (!reachable?.root) return { projectionVersion: QIANSHI_RECALL_PROJECTION_VERSION, text: '', eventIds: [], matterIds: [], anchor: null };
       const anchor = { narrativeGeneration: reachable.root.narrativeGeneration, headCheckpointId: reachable.root.headCheckpointId, rootRevision: reachable.rootRevision };
       if (Array.isArray(selectedEventIds) || Array.isArray(selectedMatterIds)) {
@@ -3157,6 +3717,6 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       return structuredClone({ ...recall, candidates: prepared.candidates, candidateStats: prepared.stats,
         currentStoryTime: [storyDate, storyClock].filter(Boolean).join(' ') || null, anchor });
     },
-    prepareQianshiHistory, startQianshiHistory, stopQianshiHistory, getState,
+    prepareQianshiHistory, startQianshiHistory, stopQianshiHistory, prepareQianshiRejudge, startQianshiRejudge, getState,
     subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

@@ -146,8 +146,8 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   async function deletePerson(person) {
     if (!dialog?.confirm) { feedback = '当前环境无法打开删除确认窗口。'; render(state); return; }
     const name = person.displayName || person.entityDisplayName || '该人物';
-    const confirmed = await dialog.confirm({ title: `删除人物 · ${name}`, body: '这会删除该人物的千人档案、头像和重要人物选择，并从当前人物管理候选中隐藏。',
-      note: '聊天楼、历史摘要和 CSE 记录不会删除。今后若剧情识别出新的同名身份，仍可重新出现。', confirmText: '删除人物', cancelText: '取消' });
+    const confirmed = await dialog.confirm({ title: `删除人物 · ${name}`, body: '删除人物档案、头像和重要人物选择，并从人物候选中隐藏。',
+      note: '正文、摘要和双丝网保留；剧情出现新的同名身份时，可能重新入列。', confirmText: '删除人物', cancelText: '取消' });
     if (!confirmed) return;
     await run('删除人物', () => runtime.deletePerson(person.entityId), { after: () => {
       drafts.delete(person.entityId); if (currentEntityId === person.entityId) currentEntityId = null;
@@ -158,7 +158,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     const nameOf = value => value?.displayName || value?.entityDisplayName || '未命名人物';
     const profileChoice = value => `保留「${nameOf(value)}」的资料与头像${value?.profiled ? '' : '（尚未建档）'}`;
     const panel = element('section', 'qqj-merge-dialog');
-    panel.append(element('p', 'qqj-merge-dialog-intro', '双方的聊天楼、历史摘要和 CSE 都会保留，并统一归到合并目标。请选择保留哪一方的整份人物资料和头像。'));
+    panel.append(element('p', 'qqj-merge-dialog-intro', '保留双方正文、摘要和双丝网，统一人物归属；选择保留哪一方的资料和头像。'));
 
     const targetField = element('div', 'qqj-merge-field');
     targetField.append(element('span', 'qqj-merge-field-title', '合并目标'));
@@ -400,7 +400,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
         : '尚无已识别人物。摘要和人物状态分析后会在此显示；已有聊天历史可在“记忆管理”中点击“补齐缺失”。'));
     }
     const unavailable = state.selectedEntityIds.length - selected.length;
-    if (unavailable > 0) page.append(element('p', 'settings-hint', `有 ${unavailable} 个旧人物选择在当前记忆图中暂不可匹配；其选择与资料仍保留。`));
+    if (unavailable > 0) page.append(element('p', 'settings-hint', `${unavailable} 个旧人物暂未匹配，选择与资料仍保留。`));
     container.replaceChildren(page);
     nextSwitcher.scrollLeft = preserveSwitcherScroll ? switcherScrollLeft : 0;
     switcherNode = nextSwitcher; switcherSignature = nextSignature; switcherScrollLeft = nextSwitcher.scrollLeft;

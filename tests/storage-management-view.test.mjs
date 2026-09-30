@@ -43,13 +43,13 @@ test('存储面板渲染约数、刷新、自动开关和危险清理确认；�
   view.mount(container); await view.activate();
   assert.deepEqual(f.calls, ['scan']);
   let text = container.textContent;
-  for (const copy of ['当前聊天', '总记录', '当前有效基础数据', '可清理的旧版本', '约 20.00 MiB', '每新增 10 个稳定 AI 楼', '100 条', '约 8 MiB']) assert.match(text, new RegExp(copy));
+  for (const copy of ['本聊天', '总记录', '当前有效基础数据', '可清理的旧版本', '约 20.00 MiB', '每新增 10 个稳定 AI 楼', '100 条', '约 8 MiB']) assert.match(text, new RegExp(copy));
   let nodes = flatten(container), refresh = nodes.find(node => node.tag === 'button' && node.textContent === '刷新统计');
   await refresh.fire('click'); assert.deepEqual(f.calls, ['scan', 'scan']);
   nodes = flatten(container); let clean = nodes.find(node => node.tag === 'button' && node.textContent === '清理旧版本');
   assert.equal(clean.disabled, false);
   await clean.fire('click'); assert.equal(f.calls.includes('cleanup'), false); assert.match(container.textContent, /已取消清理/);
-  assert.match(confirmOptions.body, /摘要.*双丝网.*千人人物资料.*刻度.*聊天正文.*不可恢复/);
+  assert.match(confirmOptions.body, /不可恢复.*有效摘要.*双丝网.*人物资料.*刻度.*聊天正文保留/);
   nodes = flatten(container); const auto = nodes.find(node => node.tag === 'input'); auto.checked = true; auto.fire('change');
   assert.deepEqual(f.calls.at(-1), ['auto', true]); assert.match(container.textContent, /自动清理已开启/);
   confirm = true; clean = flatten(container).find(node => node.tag === 'button' && node.textContent === '清理旧版本'); await clean.fire('click');

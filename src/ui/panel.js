@@ -322,7 +322,7 @@ export function createPanel({
         timeInput.disabled = true;
         let confirmed;
         try {
-          confirmed = await dialog?.confirm?.({ title: '时间参考重复注入', body: '【构画】的【刻度】注入已开启，与时间推演功能重叠。建议只保留一方的注入，避免重复注入。是否仍要开启时间推演？', confirmText: '仍要开启', cancelText: '取消' });
+          confirmed = await dialog?.confirm?.({ title: '时间参考重复注入', body: '构画的刻度已在注入时间参考，建议只启用一方。仍要开启时间推演吗？', confirmText: '仍要开启', cancelText: '取消' });
         } finally { timeInput.disabled = false; }
         if (!confirmed || confirmationEpoch !== activationEpoch || host.hidden) return;
         timeInput.checked = true;
@@ -330,7 +330,7 @@ export function createPanel({
       settings.update({ timeEvolutionEnabled: timeInput.checked });
       await onTimeEvolutionChange?.();
     });
-    memoryBody.append(timeToggle, element('p', 'settings-hint', '根据剧情时间推算身体状态、周期与约定期限，为正文提供时间参考。与【构画】的【刻度】功能重叠，请只开启一方的注入，避免重复注入。直接读取 AI 正文，摘要和人物状态可以为空；使用摘要 API，每批最多一次请求。默认从当前 AI 楼起追踪，此前正文未检查。“补查历史”位于摘要页的“近期事项”，先确认楼数、批次与调用量，成功批次保留，可停止后继续。'));
+    memoryBody.append(timeToggle, element('p', 'settings-hint', '按剧情时间推算身体状态、周期与期限，直接读 AI 正文，使用摘要 API（每批最多一次）。从当前楼开始追踪；旧楼请到摘要页“近期事项”补查。已保存结果可保留并续跑。与构画刻度建议只开一方注入。'));
     const autoHideToggle = element('label', 'setting-switch');
     const autoHideInput = element('input'); autoHideInput.type = 'checkbox'; autoHideInput.checked = settings.get().autoHideEnabled === true;
     autoHideToggle.append(autoHideInput, element('span', '', '自动隐藏已记忆旧楼'));

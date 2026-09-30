@@ -33,28 +33,39 @@ function fixture() {
   }));
   events.push({ id: 'undated', matterId: null, updatesMatter: false, title: '无日期回忆', description: '后来提及但没有可靠日期。', status: 'occurred', storyTime: null, scheduledTime: null, people: [{ entityId: 'other', name: '旧友' }], object: null, sourceMessageIndex: 30 });
   return { status: 'ready', identity: { qqjChatId: 'chat-a' }, coverage: { eligibleFloors: 9, completeFloors: 7, pendingFloors: 2, partialFloors: 0, degradedFloors: 0, unavailableFloors: 0 },
-    events, matters: [{ matterId: 'matter-1', eventIds: events.slice(0, 5).map(event => event.id) }], relations: [],
+    events, matters: [{ matterId: 'matter-1', following: true, eventIds: events.slice(0, 5).map(event => event.id) }], relations: [],
     timeline: { hasGlobalLatest: true, globalLatestGroupId: 'day-7', segments: [{ id: 'gregorian', label: '公历', latestGroupId: 'day-7', groups: events.slice(0, 7).map((event, index) => ({ id: `day-${index + 1}`, day: `${index + 1}日`, period: '2026年7月', full: event.storyTime, eventIds: [event.id] })) }], undatedEventIds: ['undated'] },
     history: { status: 'idle', processedFloors: 0, totalFloors: 0, calls: 0, message: '' } };
 }
 
-function harness({ confirm = false, choose = null, initialSnapshot = fixture(), plan = null, startResult = { status: 'completed', message: '' }, canEdit = true, editText = null } = {}) {
-  let snapshot = structuredClone(initialSnapshot), state = { status: 'ready', memoryWorkBusy: false, qianshiHistoryActive: false }, prepareCalls = 0, startCalls = 0;
+function harness({ confirm = false, choose = null, custom = null, initialSnapshot = fixture(), plan = null, startResult = { status: 'completed', message: '' }, rejudgeStartResult = { status: 'running' }, canEdit = true, editText = null, manualActions = false, promptValues = ['12~18'] } = {}) {
+  let snapshot = structuredClone(initialSnapshot), state = { status: 'ready', memoryWorkBusy: false, qianshiHistoryActive: false }, prepareCalls = 0, startCalls = 0, rejudgePrepareCalls = 0, rejudgeStartCalls = 0, rejudgeRange = null, promptIndex = 0;
   const listeners = new Set(), confirms = [];
   const runtime = { getState: () => state, getQianshiSnapshot: () => structuredClone(snapshot), subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     canEditQianshiEventText(id) { return typeof canEdit === 'function' ? canEdit(id) : canEdit; },
     _setEventText(id, title, description, object) { const event = snapshot.events.find(item => item.id === id); event.title = title; event.description = description; if (object !== undefined) event.object = object; for (const listener of listeners) listener(state); },
     async editQianshiEventText(input) { if (editText) return editText(input); runtime._setEventText(input.eventId, input.title, input.description, input.object); return { status: 'saved' }; },
+    ...(manualActions ? {
+      async setQianshiMatterFollowing(input) { snapshot.matters.find(item => item.matterId === input.matterId).following = input.following; for (const listener of listeners) listener(state); return { status: 'saved' }; },
+      async setQianshiMatterStatus(input) { const matter = snapshot.matters.find(item => item.matterId === input.matterId); matter.manualStatusOverride = input.status; if (input.status !== null) matter.status = input.status; for (const listener of listeners) listener(state); return { status: 'saved' }; },
+    } : {}),
     async prepareQianshiHistory() { prepareCalls += 1; return { status: 'ready', planId: 'plan', totalFloors: 2, batchCount: 1, apiCalls: 1, modelFloors: 2, estimatedInputTokens: 900, unavailableFloors: [], ...(plan ?? {}) }; },
     async startQianshiHistory() { startCalls += 1; if (typeof startResult === 'function') return startResult({ setHistory(history) { snapshot.history = history; for (const listener of listeners) listener(state); } }); snapshot.history = { ...snapshot.history, ...startResult }; for (const listener of listeners) listener(state); return startResult; },
-    async stopQianshiHistory() { return { status: 'stopped' }; } };
+    async stopQianshiHistory() { return { status: 'stopped' }; },
+    async prepareQianshiRejudge(range) { rejudgePrepareCalls += 1; rejudgeRange = range; return { status: 'ready', planId: 'rejudge-plan', totalFloors: 2, apiCalls: 2,
+      floors: [{ assistantSeq: 3, messageIndex: 12, recordCount: 2 }, { assistantSeq: 4, messageIndex: 18, recordCount: 1 }], ...(plan ?? {}) }; },
+    async startQianshiRejudge() { rejudgeStartCalls += 1; snapshot.history = { ...snapshot.history, mode: 'rejudge', ...rejudgeStartResult }; for (const listener of listeners) listener(state); return rejudgeStartResult; } };
   const documentRef = { listeners: {}, createElement: tag => new Node(tag), defaultView: { matchMedia: () => ({ matches: false }) },
     addEventListener(name, listener) { this.listeners[name] = listener; }, removeEventListener(name) { delete this.listeners[name]; },
     fire(name, event) { return this.listeners[name]?.(event); } };
   const view = createQianshiTimelineView({ runtime, documentRef, dialog: { async confirm(options) { confirms.push(options); return typeof confirm === 'function' ? confirm(options) : confirm; },
-    async choose(options) { confirms.push(options); return typeof choose === 'function' ? choose(options) : choose; } } });
+    async choose(options) { confirms.push(options); return typeof choose === 'function' ? choose(options) : choose; },
+    async custom(options) { confirms.push(options); return typeof custom === 'function' ? custom(options) : null; },
+    async prompt(options) { confirms.push(options); return promptValues[promptIndex++] ?? null; } } });
   const container = new Node('main'); view.mount(container);
-  return { view, container, runtime, documentRef, confirms, calls: () => ({ prepareCalls, startCalls }), emit(nextSnapshot = snapshot, nextState = state) { snapshot = nextSnapshot; state = nextState; for (const listener of listeners) listener(state); } };
+  return { view, container, runtime, documentRef, confirms, calls: () => ({ prepareCalls, startCalls }),
+    rejudgeCalls: () => ({ prepareCalls: rejudgePrepareCalls, startCalls: rejudgeStartCalls, range: rejudgeRange }),
+    emit(nextSnapshot = snapshot, nextState = state) { snapshot = nextSnapshot; state = nextState; for (const listener of listeners) listener(state); } };
 }
 
 test('折叠事件右侧菜单可打开编辑，取消和无变化都不写入', async () => {
@@ -95,6 +106,65 @@ test('折叠事件右侧菜单可打开编辑，取消和无变化都不写入',
   assert.match(copy(h.container), /内容没有变化，没有写入新版本/u);
 });
 
+test('事件菜单仅有编辑、删除和状态入口，插件弹窗四种状态及恢复自动判断明确保存', async () => {
+  let next = 'completed';
+  const snapshot = fixture(); snapshot.matters[0].status = 'inProgress';
+  const h = harness({ initialSnapshot: snapshot, manualActions: true, custom: async options => {
+    assert.equal(options.title, '修改状态');
+    assert.deepEqual(flatten(options.content).filter(node => node.tag === 'input').map(node => node.value),
+      ['planned', 'inProgress', 'completed', 'occurred', 'automatic']);
+    assert.match(copy(options.content), /已经安排，尚未开始.*已经开始，后面还有进展.*一次性的事情已经发生/u);
+    assert.equal(flatten(options.content).some(node => node.tag === 'select'), false);
+    const radio = flatten(options.content).find(node => node.tag === 'input' && node.value === next);
+    radio.checked = true; radio.fire('change');
+    assert.notEqual(h.runtime.getQianshiSnapshot().matters[0].manualStatusOverride, next, '选中还没有保存');
+    return options.submit();
+  } });
+  let menu = flatten(h.container).find(node => node.dataset.qianshiEventId === 'event-1');
+  const actions = flatten(menu).filter(node => node.className.includes('qqj-profile-menu-action'));
+  assert.deepEqual(actions.map(node => node.textContent), ['编辑详情', '删除', '修改状态']);
+  assert.equal(byText(menu, '删除').disabled, true);
+  assert.doesNotMatch(copy(menu), /停止主动关注|继续关注|恢复自动判断|保存整线状态/u);
+  byText(menu, '修改状态').fire('click'); await tick(); await tick();
+  assert.equal(h.runtime.getQianshiSnapshot().matters[0].manualStatusOverride, 'completed');
+  assert.match(copy(h.container), /状态已保存/u);
+  next = 'automatic';
+  menu = flatten(h.container).find(node => node.dataset.qianshiEventId === 'event-1');
+  byText(menu, '修改状态').fire('click'); await tick(); await tick();
+  assert.equal(h.runtime.getQianshiSnapshot().matters[0].manualStatusOverride, null);
+  assert.match(copy(h.container), /已恢复自动判断/u);
+});
+
+test('状态弹窗取消不保存，切聊后的迟到确认也不能修改新聊天', async () => {
+  const cancelled = harness({ manualActions: true });
+  const menu = flatten(cancelled.container).find(node => node.dataset.qianshiEventId === 'event-1');
+  byText(menu, '修改状态').fire('click'); await tick();
+  assert.equal(cancelled.runtime.getQianshiSnapshot().matters[0].manualStatusOverride, undefined);
+  const h = harness({ manualActions: true, custom: async options => {
+    const chatB = fixture(); chatB.identity.qqjChatId = 'chat-b'; h.emit(chatB);
+    await assert.rejects(options.submit, /聊天已变化/u); return null;
+  } });
+  byText(flatten(h.container).find(node => node.dataset.qianshiEventId === 'event-1'), '修改状态').fire('click'); await tick();
+  assert.equal(h.runtime.getQianshiSnapshot().matters[0].manualStatusOverride, undefined);
+});
+
+test('独立记录状态弹窗只修改本条，旧未知状态不能被人工选入', async () => {
+  const snapshot = fixture(); snapshot.events[0].matterId = null; snapshot.events[0].status = 'unknown';
+  let submitted;
+  const h = harness({ initialSnapshot: snapshot, editText: async input => { submitted = input; return { status: 'saved' }; },
+    custom: async options => {
+      const inputs = flatten(options.content).filter(node => node.tag === 'input');
+      assert.deepEqual(inputs.map(node => node.value), ['planned', 'inProgress', 'completed', 'occurred']);
+      assert.equal(inputs.some(node => node.checked), false, '旧未知状态不会默认转为待办');
+      await assert.rejects(options.submit, /请选择状态/u);
+      const radio = inputs.find(node => node.value === 'occurred'); radio.checked = true; radio.fire('change');
+      return options.submit();
+    } });
+  byText(flatten(h.container).find(node => node.dataset.qianshiEventId === 'event-1'), '修改状态').fire('click'); await tick(); await tick();
+  assert.equal(submitted.status, 'occurred'); assert.equal(submitted.actionStatus, 'occurred');
+  assert.equal(h.runtime.getQianshiSnapshot().matters[0].manualStatusOverride, undefined);
+});
+
 test('事件编辑可改或清空涉及物品，其他字段不变时仍按物品差异保存', async () => {
   const submitted = [];
   const h = harness({ editText: async input => { submitted.push(input); return { status: 'saved' }; } });
@@ -115,6 +185,94 @@ test('事件编辑可改或清空涉及物品，其他字段不变时仍按物�
   const clear = form.querySelector('.qqj-qianshi-object-input'); clear.value = '   '; clear.fire('input', { target: clear });
   await form.fire('submit', { preventDefault() {} });
   assert.equal(submitted[1].object, null, '空值按既有合同落为 null');
+});
+
+test('时间五格草稿保留，取消零写，保存带时间及原值校验', async () => {
+  const submitted = [];
+  const h = harness({ editText: async input => { submitted.push(input); return { status: 'saved' }; } });
+  const open = () => {
+    const event = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+    byText(flatten(event.parent).find(node => node.className.includes('qqj-qianshi-event-menu')), '编辑详情').fire('click');
+    return h.container.querySelector('.qqj-qianshi-text-form');
+  };
+  let form = open();
+  let controls = flatten(form).filter(node => node.className.includes('qqj-qianshi-time-input'));
+  assert.deepEqual(controls.map(node => node.value), ['', '2026', '7', '1', '10:00']);
+  assert.equal(h.container.querySelector('.qqj-qianshi-description'), null);
+  controls[0].value = '大陆历'; controls[0].fire('input');
+  controls[2].value = '夏月'; controls[2].fire('input');
+  assert.match(copy(form), /保存后：大陆历2026年夏月1日 10:00/u);
+  assert.equal(byText(form, '保存').disabled, false);
+  h.emit(); form = h.container.querySelector('.qqj-qianshi-text-form');
+  assert.equal(flatten(form).find(node => node.attributes['aria-label'] === '发生时间前缀').value, '大陆历');
+  byText(form, '取消').fire('click');
+  assert.equal(submitted.length, 0);
+  assert.equal(h.runtime.getQianshiSnapshot().events[0].storyTime, '2026-07-01 10:00');
+  form = open(); controls = flatten(form).filter(node => node.className.includes('qqj-qianshi-time-input'));
+  controls[2].value = '贰月'; controls[2].fire('input');
+  await form.fire('submit', { preventDefault() {} });
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].storyTime, '2026年2月1日 10:00');
+  assert.equal(submitted[0].expected.storyTime, '2026-07-01 10:00');
+});
+
+test('时间清空提交明确 null；无效时钟保留草稿且不写入', async () => {
+  const submitted = [];
+  const h = harness({ editText: async input => { submitted.push(input); return { status: 'saved' }; } });
+  const event = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  byText(flatten(event.parent).find(node => node.className.includes('qqj-qianshi-event-menu')), '编辑详情').fire('click');
+  let form = h.container.querySelector('.qqj-qianshi-text-form');
+  const clock = flatten(form).find(node => node.attributes['aria-label'] === '发生时间时间');
+  clock.value = '25:00'; clock.fire('input');
+  await form.fire('submit', { preventDefault() {} });
+  assert.equal(submitted.length, 0);
+  form = h.container.querySelector('.qqj-qianshi-text-form');
+  assert.match(copy(form), /时间请填写/u);
+  assert.equal(flatten(form).find(node => node.attributes['aria-label'] === '发生时间时间').value, '25:00');
+  byText(form, '清空').fire('click'); form = h.container.querySelector('.qqj-qianshi-text-form');
+  assert.match(copy(form), /保存后：时间未知/u);
+  await form.fire('submit', { preventDefault() {} });
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].storyTime, null);
+});
+
+test('时间预填使用共用投影，真实时间段保留原文，普通文字保存不带时间字段', async () => {
+  for (const raw of ['大陆历1686年9月22日 20:30 星期三', '1年夏1日 周一 10:15-10:25']) {
+    const snapshot = fixture(); snapshot.events[0].storyTime = raw;
+    let submitted;
+    const h = harness({ initialSnapshot: snapshot, editText: async input => { submitted = input; return { status: 'saved' }; } });
+    const event = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+    byText(flatten(event.parent).find(node => node.className.includes('qqj-qianshi-event-menu')), '编辑详情').fire('click');
+    const form = h.container.querySelector('.qqj-qianshi-text-form');
+    assert.ok(copy(form).includes(`原时间：${raw}`));
+    if (raw.startsWith('大陆历')) assert.deepEqual(flatten(form).filter(node => node.className.includes('qqj-qianshi-time-input'))
+      .map(node => node.value), ['大陆历', '1686', '9月', '22', '20:30']);
+    const title = form.querySelector('.qqj-qianshi-title-input'); title.value = '人工标题'; title.fire('input', { target: title });
+    await form.fire('submit', { preventDefault() {} });
+    assert.equal(submitted.title, '人工标题');
+    assert.equal(Object.hasOwn(submitted, 'storyTime'), false);
+    assert.equal(Object.hasOwn(submitted, 'timeDraft'), false);
+    assert.equal(h.runtime.getQianshiSnapshot().events[0].storyTime, raw);
+  }
+});
+
+test('事件编辑分别提交本条动作状态与整线状态', async () => {
+  const submitted = [];
+  const h = harness({ editText: async input => { submitted.push(input); return { status: 'saved' }; } });
+  const event = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
+  byText(flatten(event.parent).find(node => node.className.includes('qqj-qianshi-event-menu')), '编辑详情').fire('click');
+  const form = flatten(h.container).find(node => node.className === 'qqj-qianshi-text-form');
+  const selects = flatten(form).filter(node => node.className.includes('qqj-qianshi-status-select'));
+  assert.equal(selects.length, 2);
+  assert.equal(flatten(form).some(node => node.tag === 'select'), false, '编辑表单也复用插件内状态选择');
+  selects[0].querySelector('.qqj-inline-select-trigger').fire('click');
+  flatten(selects[0]).find(node => node.attributes['data-value'] === 'completed').fire('click');
+  selects[1].querySelector('.qqj-inline-select-trigger').fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+  flatten(selects[1]).find(node => node.attributes['data-value'] === 'inProgress').fire('keydown', { key: 'Enter', preventDefault() {} });
+  assert.equal(submitted.length, 0, '选项的键盘操作不会提交整个编辑表单');
+  await form.fire('submit', { preventDefault() {} });
+  assert.equal(submitted[0].actionStatus, 'completed');
+  assert.equal(submitted[0].status, 'inProgress');
 });
 
 test('文字编辑保留失败草稿和错误，成功后刷新年表文字', async () => {
@@ -142,7 +300,7 @@ test('文字编辑保留失败草稿和错误，成功后刷新年表文字', as
   assert.equal(writes, 2);
   const updated = flatten(h.container).find(node => node.dataset.eventId === 'event-1');
   assert.match(copy(updated), /新标题.*新经过/u);
-  assert.match(copy(h.container), /事件文字已保存/u);
+  assert.match(copy(h.container), /事件修改已保存/u);
 });
 
 test('空文字显示错误，审核候选不提供编辑入口', async () => {
@@ -353,7 +511,7 @@ test('A 聊天保存挂起时切到 B，迟到回调不改 B 页草稿或反馈'
   form = flatten(card).find(node => node.className === 'qqj-qianshi-text-form');
   assert.ok(form, 'B 页编辑草稿仍在');
   assert.equal(form.querySelector('.qqj-qianshi-title-input').value, 'B 页事件');
-  assert.doesNotMatch(copy(h.container), /事件文字已保存/u);
+  assert.doesNotMatch(copy(h.container), /事件修改已保存/u);
 });
 
 test('千事页以健康条和共享搜索开头，说明与事项全链按需展开且不虚构地点', () => {
@@ -798,7 +956,7 @@ test('默认展开产生的异步原生 toggle 不会记成用户手动状态', 
   assert.equal(flatten(h.container).filter(node => node.className === 'qqj-qianshi-day-disclosure' && node.open).length, 1);
 });
 
-test('状态胶囊保留那时语义，已发生不伪装成完成', () => {
+test('状态胶囊显示本条动作状态，已发生不伪装成完成', () => {
   const snapshot = fixture(), statuses = ['planned', 'inProgress', 'completed', 'cancelled', 'occurred', 'unknown'];
   snapshot.events = snapshot.events.slice(0, statuses.length).map((event, index) => ({ ...event, id: `status-${index}`, matterId: null, status: statuses[index] }));
   snapshot.timeline.segments[0].groups = snapshot.events.map((event, index) => ({ id: `status-day-${index}`, day: `${index + 1}日`, period: '状态历', full: event.storyTime, eventIds: [event.id] }));
@@ -807,10 +965,10 @@ test('状态胶囊保留那时语义，已发生不伪装成完成', () => {
   const badges = flatten(h.container).filter(node => node.className.includes('qqj-qianshi-state')
     && !Array.from((function* () { for (let parent = node.parent; parent; parent = parent.parent) yield parent; })()).some(parent => parent.className === 'qqj-qianshi-day-preview'));
   assert.deepEqual(badges.map(node => node.textContent), ['状态未明', '已发生', '已取消', '已完成', '进行中', '待办']);
-  assert.deepEqual(badges.map(node => node.attributes['aria-label']), ['那时状态：状态未明', '那时状态：已发生', '那时状态：已取消', '那时状态：已完成', '那时状态：进行中', '那时状态：待办']);
+  assert.deepEqual(badges.map(node => node.attributes['aria-label']), ['本条动作状态：状态未明', '本条动作状态：已发生', '本条动作状态：已取消', '本条动作状态：已完成', '本条动作状态：进行中', '本条动作状态：待办']);
 });
 
-test('同日过程只显示短状态徽标，展开详情显示该事件那时的状态', () => {
+test('同日过程只显示短状态徽标，展开详情显示该事件的动作状态', () => {
   const snapshot = fixture();
   snapshot.events[0] = { ...snapshot.events[0], storyTime: '2026-07-01 09:00', status: 'planned', updatesMatter: false };
   snapshot.events[1] = { ...snapshot.events[1], storyTime: '2026-07-01 10:00', status: 'completed', updatesMatter: true };
@@ -830,8 +988,8 @@ test('同日过程只显示短状态徽标，展开详情显示该事件那时�
   earlier.open = true; earlier.fire('toggle');
   const detail = flatten(earlier).find(node => node.className === 'qqj-qianshi-day-event-detail');
   const labels = flatten(detail).filter(node => node.tag === 'dt');
-  const statusIndex = labels.findIndex(node => node.textContent === '那时');
-  assert.notEqual(statusIndex, -1, '展开详情字段名为“那时”');
+  const statusIndex = labels.findIndex(node => node.textContent === '本条动作状态');
+  assert.notEqual(statusIndex, -1, '展开详情区分本条动作状态');
   assert.equal(detail.children[1].children[statusIndex * 2 + 1].textContent, '已计划 / 尚未记录完成');
   assert.equal(snapshot.events[0].status, 'planned', '事项当前已完成不回写旧事件状态');
 });
@@ -922,10 +1080,96 @@ test('历史补齐先展示真实计划，取消零调用模型，确认后才�
   assert.deepEqual(cancelled.calls(), { prepareCalls: 1, startCalls: 0 });
   assert.match(cancelled.confirms[0].body, /2 楼.*1 批.*1 次.*900 token/u);
   assert.match(cancelled.confirms[0].body, /2 楼进入模型补齐/u);
-  assert.match(cancelled.confirms[0].note, /打开计划和取消均不会写入或调用 API/u);
+  assert.match(cancelled.confirms[0].note, /确认后才调用 API.*取消不调用模型或写入/u);
   assert.match(copy(cancelled.container), /已取消；没有调用模型/u);
   const confirmed = harness({ confirm: true }); byText(confirmed.container, '补齐旧楼').fire('click'); await tick(); await tick();
   assert.deepEqual(confirmed.calls(), { prepareCalls: 1, startCalls: 1 });
+});
+
+test('已存千事有独立重判入口，按用户楼号预览，取消不启动请求', async () => {
+  const cancelled = harness({ confirm: false, promptValues: ['12~18'] });
+  byText(cancelled.container, '重新整理已存千事').fire('click');
+  await tick(); await tick(); await tick(); await tick();
+  assert.deepEqual(cancelled.rejudgeCalls(), { prepareCalls: 1, startCalls: 0, range: { fromMessageIndex: 12, toMessageIndex: 18 } });
+  const preview = cancelled.confirms.find(value => value.title === '确认重判已存千事');
+  assert.match(preview.body, /第 12–18 楼/u);
+  assert.match(preview.body, /2 个 AI 楼、3 条旧记录/u);
+  assert.match(preview.note, /只重判千事的归线和状态/u);
+  assert.match(copy(cancelled.container), /已取消；没有调用模型或写入/u);
+  assert.equal(cancelled.confirms.filter(value => value.title === '重新整理已存千事').length, 1, '只询问一次范围');
+  assert.equal(cancelled.confirms.length, 2, '一次输入直接进入预览确认');
+
+  const confirmed = harness({ confirm: true, promptValues: [' 12 ～ 18 '] });
+  byText(confirmed.container, '重新整理已存千事').fire('click');
+  await tick(); await tick(); await tick(); await tick();
+  assert.equal(confirmed.rejudgeCalls().startCalls, 1, '仅确认后启动重判请求');
+  assert.deepEqual(confirmed.rejudgeCalls().range, { fromMessageIndex: 12, toMessageIndex: 18 });
+  assert.equal(confirmed.calls().startCalls, 0, '新入口不调用旧补齐计划');
+});
+
+test('重判进度和保存结果接管启动提示，不同时显示未来暂存与已提交', async () => {
+  const h = harness({ confirm: true });
+  byText(h.container, '重新整理已存千事').fire('click'); await tick(); await tick();
+  assert.match(copy(h.container), /已暂存 0\/0 楼/u);
+  assert.equal(h.container.querySelector('.qqj-qianshi-feedback'), null, '真实进度到达后移除启动提示');
+  const snapshot = fixture();
+  snapshot.history = { mode: 'rejudge', status: 'running', committing: true, processedFloors: 2, totalFloors: 2 };
+  h.emit(snapshot);
+  assert.match(copy(h.container), /整组正在提交/u);
+  assert.doesNotMatch(copy(h.container), /正在启动|结果将先暂存/u);
+  snapshot.history = { ...snapshot.history, status: 'completed', committing: false, message: '千事重判完成；整组已一次提交。' };
+  h.emit(snapshot);
+  assert.match(copy(h.container), /千事重判完成；整组已一次提交/u);
+  assert.doesNotMatch(copy(h.container), /整组正在提交|正在启动|结果将先暂存/u);
+});
+
+test('直接收到重判终态也清除启动提示，并保留成功、失败或取消的实际结果', async () => {
+  for (const status of ['completed', 'partial', 'failed', 'stopped']) {
+    const message = status === 'completed' ? '整组已保存。' : status === 'partial' ? '已保存；1 楼部分通过。'
+      : status === 'failed' ? '请求超时；原千事保持不变。' : '已取消；原千事保持不变。';
+    const h = harness({ confirm: true, rejudgeStartResult: { status, message } });
+    byText(h.container, '重新整理已存千事').fire('click'); await tick(); await tick();
+    assert.ok(copy(h.container).includes(message));
+    assert.equal(h.container.querySelector('.qqj-qianshi-feedback'), null);
+  }
+});
+
+test('数百楼重判预览只显示首尾和计数，提示长度不随楼数增长', async () => {
+  const h = harness({ plan: { totalFloors: 300, apiCalls: 300,
+    floors: Array.from({ length: 300 }, (_, i) => ({ assistantSeq: i + 1, messageIndex: i * 2, recordCount: 2 })) } });
+  byText(h.container, '重新整理已存千事').fire('click'); await tick(); await tick();
+  const preview = h.confirms.find(value => value.title === '确认重判已存千事');
+  assert.match(preview.body, /第 0–598 楼.*300 个 AI 楼、600 条旧记录.*API 300 次/u);
+  assert.ok(preview.body.length < 100, '范围再长也不逐楼列举');
+  assert.match(preview.note, /人工修订.*提交前取消或失败不改原档/u);
+  assert.equal(h.rejudgeCalls().startCalls, 0);
+});
+
+test('千事重判单次输入支持全部、范围和取消，错误格式不启动', async () => {
+  for (const input of ['0', '  ', '0~']) {
+    const h = harness({ promptValues: [input] });
+    byText(h.container, '重新整理已存千事').fire('click');
+    await tick(); await tick(); await tick(); await tick();
+    assert.deepEqual(h.rejudgeCalls(), { prepareCalls: 1, startCalls: 0, range: { fromMessageIndex: 0, toMessageIndex: null } });
+    assert.match(h.confirms.find(value => value.title === '重新整理已存千事').body, /当前最新为第 30 楼/u);
+  }
+  const zero = harness({ promptValues: ['0~0'] });
+  byText(zero.container, '重新整理已存千事').fire('click');
+  await tick(); await tick(); await tick(); await tick();
+  assert.deepEqual(zero.rejudgeCalls().range, { fromMessageIndex: 0, toMessageIndex: 0 });
+  const cancelled = harness({ promptValues: [null] });
+  byText(cancelled.container, '重新整理已存千事').fire('click');
+  await tick(); await tick(); await tick(); await tick();
+  assert.equal(cancelled.rejudgeCalls().prepareCalls, 0);
+  assert.equal(cancelled.rejudgeCalls().startCalls, 0);
+  for (const input of ['abc', '12~~18']) {
+    const invalid = harness({ promptValues: [input] });
+    byText(invalid.container, '重新整理已存千事').fire('click');
+    await tick(); await tick();
+    assert.equal(invalid.rejudgeCalls().prepareCalls, 0);
+    assert.equal(invalid.rejudgeCalls().startCalls, 0);
+    assert.match(copy(invalid.container), /请输入楼号范围/u);
+  }
 });
 
 test('覆盖就绪时健康色为绿且隐藏补齐入口；已有在途任务仍显示停止', () => {
@@ -953,7 +1197,7 @@ test('聚合楼从模型计划中跳过并说明原因，空计划与执行失�
     aggregateSkippedFloors: [{ floorId: 'aggregate', assistantSeq: 10 }] };
   const confirmed = harness({ confirm: true, plan, startResult: { status: 'partial', message: '其中 1 楼未补齐。' } });
   byText(confirmed.container, '补齐旧楼').fire('click'); await tick(); await tick();
-  assert.match(confirmed.confirms[0].body, /1 楼进入模型补齐.*1 楼由多个正文楼聚合.*跳过模型补齐以保留成员来源/u);
+  assert.match(confirmed.confirms[0].body, /1 楼进入模型补齐.*跳过聚合记忆 1 楼/u);
   assert.match(copy(confirmed.container), /1 楼未补齐/u, '执行失败时 UI 显示失败事实');
 
   const emptySnapshot = fixture();

@@ -46,14 +46,14 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
   storyClockBody.append(
     clockToggle,
     storyClockStatus,
-    element('p', 'settings-hint', '默认使用 QQJ-start/end。自定义内容会原样发送；QQJ、SDC 与旧 myknots 格式均可读取，但必须保留成对的 start/end 及 date、weekday、time 字段。'),
+    element('p', 'settings-hint', '默认 QQJ-start/end，也兼容 SDC 和旧 myknots 格式。自定义文本原样发送，请保留成对 start/end 及 date、weekday、time 字段。'),
     field('正文时间参考标签', storyClockReferenceTags),
-    element('p', 'settings-hint', '如正文另有时间参考标签，可在此填写标签名；多个名称用逗号或换行分隔，留空则关闭补充读取。无需把它加入正文保留列表，标准时间戳优先。这里只读取摘要时间参考，不改变正文清洗，也不受上方生成开关影响。'),
+    element('p', 'settings-hint', '额外时间标签名用逗号或换行分隔，留空关闭。标准时间戳优先；这里只补读摘要时间，不改变正文清洗，也不受生成开关影响。'),
     field('完整自定义提示词', storyClockPrompt),
     clockActions,
   );
 
-  const promptEditor = ({ body: editorBody, control, key, defaultText, label, hint = '这里只编辑内容要求；字段结构、人物绑定、事实来源和隐私边界由程序固定维护。恢复默认后会使用千千结内置文本。' }) => {
+  const promptEditor = ({ body: editorBody, control, key, defaultText, label, hint = '这里只改内容要求；输出结构、人物绑定和信息范围由程序维护。恢复默认会使用内置文本。' }) => {
     control.addEventListener('change', () => settings.update({ [key]: control.value }));
     const load = button('载入默认再改', 'secondary-action', () => { control.value = defaultText; settings.update({ [key]: control.value }); });
     const restore = button('恢复默认', 'secondary-action', () => { control.value = ''; settings.update({ [key]: '' }); });
@@ -64,7 +64,7 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
       actions,
     );
   };
-  promptEditor({ body: processingBody, control: processingPrompt, key: 'processingPrompt', defaultText: BASE_PROCESSING_PROMPT, label: '破限提示词', hint: '用于摘要、CSE 与人物资料整理。留空时使用千千结内置默认文本；自定义内容会原样发送，并替换内置默认。' });
+  promptEditor({ body: processingBody, control: processingPrompt, key: 'processingPrompt', defaultText: BASE_PROCESSING_PROMPT, label: '破限提示词', hint: '用于摘要、双丝网和人物整理。留空用默认；自定义文本原样发送，替换默认。' });
   promptEditor({ body: summaryBody, control: summaryPrompt, key: 'summaryPrompt', defaultText: DEFAULT_EXTRACTOR_GUIDANCE, label: '摘要内容要求' });
   promptEditor({ body: cseBody, control: csePrompt, key: 'csePrompt', defaultText: DEFAULT_CSE_GUIDANCE, label: 'CSE 推演要求' });
   promptEditor({ body: profileBody, control: profilePrompt, key: 'profilePrompt', defaultText: DEFAULT_PROFILE_GUIDANCE, label: '人物资料整理要求' });

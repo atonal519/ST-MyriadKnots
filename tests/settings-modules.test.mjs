@@ -79,7 +79,7 @@ test('提示词模块提供时间戳开关、独立参考标签、原样自定�
   assert.equal(node.find(n => n.id === 'qqj-story-clock-status').textContent, '使用自定义时间戳提示词');
   await node.find(n => n.tagName === 'button' && n.textContent === '载入默认再改').fire('click');
   assert.match(textarea.value, /<!-- QQJ-start/); assert.doesNotMatch(textarea.value, /myknots-start/);
-  assert.match(node.textContent, /QQJ、SDC 与旧 myknots 格式均可读取/);
+  assert.match(node.textContent, /QQJ-start\/end.*兼容 SDC 和旧 myknots 格式/);
   await node.find(n => n.tagName === 'button' && n.textContent === '恢复默认').fire('click');
   assert.deepEqual(patches.at(-1), { storyClockPrompt: '' }); assert.equal(textarea.value, '');
   assert.equal(refreshes[0].readOnly, true); assert.ok(refreshes.length >= 3);

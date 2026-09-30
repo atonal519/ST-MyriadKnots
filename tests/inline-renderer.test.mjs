@@ -478,7 +478,7 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
   assert.match(aiView.root.children[0].textContent, /grid-template-columns:minmax\(0,1fr\) auto/); assert.match(aiView.root.children[0].textContent, /\.title\{[^}]*font-size:calc\(12px \* var\(--qqj-inline-fixed-scale,1\)\)/);
   assert.equal(aiView.root.querySelectorAll('.chevron').length, 0); assert.equal(aiView.status.className, 'status ready'); assert.equal(userView.status.className, 'status');
   assert.match(aiView.root.children[0].textContent, /\.status\.running\{/); assert.match(aiView.root.children[0].textContent, /\.status\.review\{/); assert.match(aiView.root.children[0].textContent, /\.status\.error\{/);
-  assert.equal(aiView.extract.title, '重新提取第 1 个结摘要'); assert.equal(aiView.extract.getAttribute('aria-label'), '重新提取第 1 个结摘要'); assert.equal(aiView.extract.textContent, '\uf2f1');
+  assert.equal(aiView.extract.title, '重新提取第 1 个结摘要；已人工处理的千事记录保留'); assert.equal(aiView.extract.getAttribute('aria-label'), '重新提取第 1 个结摘要；已人工处理的千事记录保留'); assert.equal(aiView.extract.textContent, '\uf2f1');
   const rootIdentity = aiView.root, summaryIdentity = aiView.summary;
   const currentCount = ui.current.children.length, changeCount = ui.history.querySelectorAll('.change-entry').length;
   aiView.toggle.emit('click'); assert.equal(aiView.body.hidden, false);

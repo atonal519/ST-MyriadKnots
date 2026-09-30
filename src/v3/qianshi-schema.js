@@ -27,7 +27,8 @@ const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-
 
 export function validateQianshiDelta(input, { floorId = null, floorIds = null } = {}) {
   const value = structuredClone(input);
-  exactKeysWithOptional(value, ['schemaVersion', 'status', 'reason', 'compiledAt', 'candidateStats', 'events', 'relations'], ['historyReview'], 'qianshiDelta');
+  exactKeysWithOptional(value, ['schemaVersion', 'status', 'reason', 'compiledAt', 'candidateStats', 'events', 'relations'],
+    ['historyReview', 'trackingOverrides', 'deletedEventIds', 'manualEventOverrides', 'manualMatterStatusOverrides'], 'qianshiDelta');
   if (value.schemaVersion !== QIANSHI_SCHEMA_VERSION || !DELTA_STATUSES.has(value.status)) fail('qianshiDelta.status');
   if (value.reason !== null && (!clean(value.reason, 500) || value.reason.length > 500)) fail('qianshiDelta.reason');
   if (!Number.isFinite(Date.parse(value.compiledAt))) fail('qianshiDelta.compiledAt');
@@ -35,13 +36,55 @@ export function validateQianshiDelta(input, { floorId = null, floorIds = null } 
   if (!Number.isSafeInteger(value.candidateStats.count) || value.candidateStats.count < 0
     || !Number.isSafeInteger(value.candidateStats.characters) || value.candidateStats.characters < 0) fail('qianshiDelta.candidateStats');
   if (!Array.isArray(value.events) || !Array.isArray(value.relations) || value.events.length > 160 || value.relations.length > 320) fail('qianshiDelta');
+  if (Object.hasOwn(value, 'trackingOverrides')) {
+    if (!Array.isArray(value.trackingOverrides) || value.trackingOverrides.length > 160) fail('qianshiDelta.trackingOverrides');
+    const matterIds = new Set();
+    for (const [index, item] of value.trackingOverrides.entries()) {
+      exactKeys(item, ['matterId', 'following'], `qianshiDelta.trackingOverrides[${index}]`);
+      if (!uuid(item.matterId) || matterIds.has(item.matterId) || typeof item.following !== 'boolean') fail(`qianshiDelta.trackingOverrides[${index}]`);
+      matterIds.add(item.matterId);
+    }
+  }
+  if (Object.hasOwn(value, 'deletedEventIds')) {
+    if (!Array.isArray(value.deletedEventIds) || value.deletedEventIds.length > 160
+      || value.deletedEventIds.some((id, index) => !uuid(id) || value.deletedEventIds.indexOf(id) !== index)) fail('qianshiDelta.deletedEventIds');
+  }
+  if (Object.hasOwn(value, 'manualEventOverrides')) {
+    if (!Array.isArray(value.manualEventOverrides) || value.manualEventOverrides.length > 160) fail('qianshiDelta.manualEventOverrides');
+    const eventIds = new Set();
+    // 人工覆盖只包含已修订字段；物品或时间的 null 表示明确清空，不能当作缺省。
+    for (const [index, item] of value.manualEventOverrides.entries()) {
+      exactKeysWithOptional(item, ['eventId'], ['title', 'description', 'object', 'status', 'actionStatus', 'storyTime'], `qianshiDelta.manualEventOverrides[${index}]`);
+      const hasOverride = ['title', 'description', 'object', 'status', 'actionStatus', 'storyTime'].some(key => Object.hasOwn(item, key));
+      if (!uuid(item.eventId) || eventIds.has(item.eventId) || !hasOverride
+        || Object.hasOwn(item, 'title') && !clean(item.title, 500)
+        || Object.hasOwn(item, 'description') && !clean(item.description, 4000)
+        || Object.hasOwn(item, 'object') && item.object !== null && !clean(item.object, 1000)
+        || Object.hasOwn(item, 'storyTime') && item.storyTime !== null && !clean(item.storyTime, 500)
+        || Object.hasOwn(item, 'status') && !STATUSES.has(item.status)
+        || Object.hasOwn(item, 'actionStatus') && !STATUSES.has(item.actionStatus)) {
+        fail(`qianshiDelta.manualEventOverrides[${index}]`);
+      }
+      eventIds.add(item.eventId);
+    }
+  }
+  if (Object.hasOwn(value, 'manualMatterStatusOverrides')) {
+    if (!Array.isArray(value.manualMatterStatusOverrides) || value.manualMatterStatusOverrides.length > 160) fail('qianshiDelta.manualMatterStatusOverrides');
+    const matterIds = new Set();
+    for (const [index, item] of value.manualMatterStatusOverrides.entries()) {
+      exactKeys(item, ['matterId', 'status'], `qianshiDelta.manualMatterStatusOverrides[${index}]`);
+      if (!uuid(item.matterId) || matterIds.has(item.matterId) || !STATUSES.has(item.status)) fail(`qianshiDelta.manualMatterStatusOverrides[${index}]`);
+      matterIds.add(item.matterId);
+    }
+  }
   const eventIds = new Set();
   for (const [index, event] of value.events.entries()) {
     const path = `qianshiDelta.events[${index}]`;
-    exactKeysWithOptional(event, ['id', 'matterId', 'updatesMatter', 'title', 'description', 'status', 'storyTime', 'scheduledTime', 'people', 'object', 'sourceFloorId', 'continuesFromEventIds'], ['important'], path);
+    exactKeysWithOptional(event, ['id', 'matterId', 'updatesMatter', 'title', 'description', 'status', 'storyTime', 'scheduledTime', 'people', 'object', 'sourceFloorId', 'continuesFromEventIds'], ['important', 'actionStatus'], path);
     if (!uuid(event.id) || eventIds.has(event.id) || event.matterId !== null && !uuid(event.matterId) || typeof event.updatesMatter !== 'boolean') fail(`${path}.id`);
     if (Object.hasOwn(event, 'important') && typeof event.important !== 'boolean') fail(`${path}.important`);
     if (event.updatesMatter && event.matterId === null) fail(`${path}.updatesMatter`);
+    if (Object.hasOwn(event, 'actionStatus') && !STATUSES.has(event.actionStatus)) fail(`${path}.actionStatus`);
     eventIds.add(event.id);
     if (!clean(event.title, 500) || !clean(event.description, 4000) || !STATUSES.has(event.status)) fail(path);
     if (event.storyTime !== null && (!clean(event.storyTime, 500) || event.storyTime.length > 500)) fail(`${path}.storyTime`);

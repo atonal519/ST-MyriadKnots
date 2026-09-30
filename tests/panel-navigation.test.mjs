@@ -185,7 +185,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   const timeToggle = memoryControls.find(node => node.id === 'qqj-settings-time');
   assert.equal(timeToggle.tag, 'label'); assert.equal(timeToggle.children[0].textContent, '开启时间推演');
   assert.equal(timeToggle.children.at(-1).tag, 'input', '时间文字左/开关右');
-  assert.match(memoryControls.find(node => node.className === 'settings-hint')?.textContent ?? '', /身体状态、周期与约定期限.*只开启一方.*避免重复注入.*摘要页/u);
+  assert.match(memoryControls.find(node => node.className === 'settings-hint')?.textContent ?? '', /身体状态、周期与期限.*摘要页.*与构画刻度建议只开一方注入/u);
   const timeInput = timeToggle.children.find(node => node.tag === 'input');
   let stoppedToggleClick = 0;
   timeToggle.fire('click', { stopPropagation() { stoppedToggleClick += 1; } });

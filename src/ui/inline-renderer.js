@@ -66,7 +66,7 @@ function createCard(documentRef, host, kind, expanded, onToggle, onExtract) {
   const title = documentRef.createElement('span'); title.className = 'title';
   const status = documentRef.createElement('span'); status.className = 'status';
   append(toggle, title, status);
-  const extract = documentRef.createElement('button'); extract.type = 'button'; extract.className = 'extract'; extract.textContent = '\uf2f1'; extract.title = '重新提取本楼摘要'; extract.setAttribute?.('aria-label', '重新提取本楼摘要');
+  const extract = documentRef.createElement('button'); extract.type = 'button'; extract.className = 'extract'; extract.textContent = '\uf2f1'; extract.title = '重新提取本楼摘要；已人工处理的千事记录保留'; extract.setAttribute?.('aria-label', '重新提取本楼摘要；已人工处理的千事记录保留');
   const body = documentRef.createElement('div'); body.className = 'body';
   const facts = documentRef.createElement('div'); facts.className = 'facts';
   const time = documentRef.createElement('div'), locations = documentRef.createElement('div'), people = documentRef.createElement('div');
@@ -151,7 +151,7 @@ function patchView(view, projection, documentRef, sourceIndex, groupExpanded) {
     view.facts.hidden = false;
     setText(view.fields.time, `时间 ${projection.time}`); setText(view.fields.locations, `地点 ${projection.locations}`); setText(view.fields.people, `人物 ${projection.people}`);
     setText(view.summary, projection.summary); setText(view.error, projection.error); view.error.hidden = !projection.error;
-    const extractLabel = `重新提取${title}摘要`; view.extract.title = extractLabel; view.extract.setAttribute?.('aria-label', extractLabel);
+    const extractLabel = `重新提取${title}摘要；已人工处理的千事记录保留`; view.extract.title = extractLabel; view.extract.setAttribute?.('aria-label', extractLabel);
     view.extract.hidden = false; view.extract.disabled = view.extracting || !projection.canExtract;
   }
   patchExpanded(view);

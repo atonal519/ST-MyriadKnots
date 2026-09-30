@@ -100,6 +100,18 @@ export const gouhuaDialogCss = `
 .qqj-help-section-body{display:grid;gap:8px;padding:0 10px 10px;border-top:1px solid var(--sp-divider)}
 .qqj-help-section-body p{margin:8px 0 0;color:var(--sp-on-surface);font-size:var(--sp-fs-75);line-height:1.7;white-space:normal;overflow-wrap:anywhere}
 .qqj-help-list{display:grid;gap:6px;margin:8px 0 0;padding-left:18px;color:var(--sp-on-surface);font-size:var(--sp-fs-75);line-height:1.65}.qqj-help-list li{padding-left:1px;overflow-wrap:anywhere}
+/* 千事状态使用有说明的四项单选，继承插件弹窗主题与字号，不调用系统选择框。 */
+.qqj-qianshi-status-dialog{display:grid;min-width:0;gap:5px}
+.qqj-qianshi-status-intro{margin:0;color:var(--sp-on-surface);font-size:var(--sp-fs-83);line-height:1.5;overflow-wrap:anywhere}
+.qqj-qianshi-status-current{margin:0;color:var(--sp-subtle);font-size:var(--sp-fs-75);line-height:1.5}
+.qqj-qianshi-status-choices{display:grid}
+.qqj-qianshi-status-choice{display:grid;grid-template-columns:16px minmax(0,1fr);align-items:start;gap:9px;padding:9px 0;border-bottom:1px solid var(--sp-divider);cursor:pointer}
+.qqj-qianshi-status-choice:last-child{border-bottom:0}
+.qqj-qianshi-status-choice>input{width:15px;height:15px;margin:2px 0 0;accent-color:var(--sp-primary)}
+.qqj-qianshi-status-choice>span{display:grid;min-width:0;gap:3px}
+.qqj-qianshi-status-choice strong{color:var(--sp-on-surface);font-size:var(--sp-fs-83);font-weight:600;line-height:1.4}
+.qqj-qianshi-status-choice>span>span{color:var(--sp-subtle);font-size:var(--sp-fs-75);line-height:1.45;overflow-wrap:anywhere}
+.qqj-qianshi-status-choice>input:checked+span>strong{color:var(--sp-primary)}
 @media(max-width:390px){.qqj-merge-dialog{gap:12px}.qqj-merge-dialog .qqj-inline-select-options{max-height:min(190px,32dvh)}}
 @media(prefers-reduced-motion:reduce){.sp-root,.sp-root *{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 `;

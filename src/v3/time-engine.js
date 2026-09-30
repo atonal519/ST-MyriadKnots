@@ -105,6 +105,52 @@ function cnNumber(value) {
   return total + (digit ?? 0);
 }
 const normalizeDateDigits = value => value.replace(/[０-９]/gu, char => String(char.charCodeAt(0) - 0xFF10)).replace(/：/gu, ':');
+
+// 人工时间五格只负责固定格式；复用中文数字解析，不把具名月或纪年前缀解释成公历规则。
+export function formatStoryTimeFields(fields = {}) {
+  const clean = key => String(fields[key] ?? '').normalize('NFKC').trim();
+  const integer = (value, label) => {
+    if (!value) return '';
+    const number = cnNumber(value);
+    if (!Number.isSafeInteger(number) || number < 1) throw new Error(`${label}请填写正整数或中文数字。`);
+    return String(number);
+  };
+  const prefix = clean('prefix'), year = integer(clean('year').replace(/年$/u, ''), '年份');
+  const monthInput = clean('month');
+  let month = monthInput.replace(/月$/u, '').replace(/^閏/u, '闰'), monthSuffix = '';
+  if (month) {
+    const leap = month.startsWith('闰') ? '闰' : '', name = month.slice(leap.length);
+    if (!name) throw new Error('请填写月份名称或数字。');
+    const numeric = cnNumber(name);
+    if (numeric !== null) { month = `${leap}${integer(name, '月份')}`; monthSuffix = '月'; }
+    else if (!/^[\p{L}\p{M}\s·]+$/u.test(name)) throw new Error('月份请填写数字或名称，例如 2、贰月、夏月。');
+    else monthSuffix = monthInput.endsWith('月') || leap ? '月' : '';
+  }
+  const day = integer(clean('day').replace(/(?:日|号|號)$/u, '').replace(/^初/u, ''), '日期');
+  const inputClock = clean('clock').replace(/\s*(?:~|～|-|–|—|至|到)\s*/gu, '~');
+  let clock = '';
+  if (inputClock) {
+    const parts = inputClock.split('~');
+    if (parts.length > 2) throw new Error('时间请填写 HH:mm 或 HH:mm~HH:mm。');
+    clock = parts.map(part => {
+      const match = part.match(/^(\d{1,2}):(\d{1,2})$/u);
+      if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) throw new Error('时间请填写 HH:mm 或 HH:mm~HH:mm。');
+      return `${match[1].padStart(2, '0')}:${match[2].padStart(2, '0')}`;
+    }).join('~');
+  }
+  return `${prefix}${year ? `${year}年` : ''}${month ? `${month}${monthSuffix}` : ''}${day ? `${day}日` : ''}${clock ? ` ${clock}` : ''}`.trim() || null;
+}
+
+export function storyTimeFields(raw) {
+  // 旧时间仅用于预填；时间段先提取时钟，再用同一投影读取日期，未识别部分由原文保留。
+  const normalized = String(raw ?? '').normalize('NFKC').trim();
+  const range = normalized.match(/(?<!\d)(\d{1,2}:\d{2}\s*(?:~|～|-|–|—|至|到)\s*\d{1,2}:\d{2})(?!\d)/u);
+  const projected = projectTime(range ? normalized.replace(range[0], '').trim() : normalized, null, { allowShortGregorianYear: true });
+  const [era, , namedMonth] = projected.monthIdentity ? JSON.parse(projected.monthIdentity) : [];
+  return { prefix: era ?? normalized.match(/^(公元|公历|公曆|西历|西曆)/u)?.[1] ?? '',
+    year: projected.year == null ? '' : String(projected.year), month: namedMonth ?? (projected.month == null ? '' : String(projected.month)),
+    day: projected.monthDay == null ? '' : String(projected.monthDay), clock: range?.[0] ?? projected.clock ?? '' };
+}
 function splitTrailingParentheticals(value) {
   let body = value;
   const annotations = [];
@@ -873,7 +919,8 @@ export function timeRecallProjection(items, source, currentTime, annualRecords =
     const personName = names.get(item.subjectEntityId) ?? item.subjectName;
     const linkedMatter = item.qianshiRef && qianshiMatters.get(item.qianshiRef.matterId)?.origin?.eventId === item.qianshiRef.originEventId
       ? qianshiMatters.get(item.qianshiRef.matterId) : null;
-    const qianshiSignature = linkedMatter ? [linkedMatter.matterId, linkedMatter.origin.eventId, linkedMatter.status,
+    const qianshiFollowing = linkedMatter?.following ?? !['completed', 'cancelled', 'occurred'].includes(linkedMatter?.status);
+    const qianshiSignature = linkedMatter ? [linkedMatter.matterId, linkedMatter.origin.eventId, linkedMatter.status, linkedMatter.trackingOverride ?? null, qianshiFollowing,
       linkedMatter.title, linkedMatter.description, linkedMatter.storyTime, linkedMatter.scheduledTime] : null;
     const sourceSignature = JSON.stringify([item.subjectEntityId, item.observationKey, item.sourceRefs ?? [], qianshiSignature]);
     const since = timeDistance(item.occurrenceTime, currentTime);
@@ -899,7 +946,7 @@ export function timeRecallProjection(items, source, currentTime, annualRecords =
     if (item.type === 'body' && validProjection) reminders.push({ itemId: item.id, type: item.type, subjectEntityId: item.subjectEntityId, rankText: `${item.observation} ${item.mergeDescription ?? ''} ${item.projection.text}`, distance: 0, text: `时间状态参考 / ${personName} / ${corrected}`, sourceSignature });
     const due = nextCycleTime(item, currentTime);
     const distance = timeDistance(currentTime, due);
-    if (item.type === 'deadline' && ['completed', 'cancelled'].includes(linkedMatter?.status)) continue;
+    if (item.type === 'deadline' && linkedMatter && !qianshiFollowing) continue;
     if (['cycle', 'deadline'].includes(item.type) && distance !== null && distance <= 7) {
       const qianshiContext = linkedMatter ? `${linkedMatter.origin.title}${linkedMatter.object ? `（${linkedMatter.object}）` : ''}${linkedMatter.title !== linkedMatter.origin.title ? `；当前进展：${linkedMatter.title}` : ''}` : null;
       reminders.push({ itemId: item.id, type: item.type, subjectEntityId: item.subjectEntityId, label: item.label, observation: item.observation, dueTime: due,

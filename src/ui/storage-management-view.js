@@ -28,15 +28,15 @@ export function createStorageManagementView({
     if (state.status === 'scanning') return '正在读取当前聊天的后端记录…';
     if (state.status === 'cleaning') return '正在安全清理旧版本，请勿切换聊天…';
     if (state.status === 'uninitialized') return '当前聊天尚未建立千千结基础数据，没有可清理的旧版本。';
-    if (state.status === 'notReady') return '当前基础数据尚未处于可安全核对的 ready 状态，请稍后刷新。';
+    if (state.status === 'notReady') return '当前存档暂不能核对，请稍后刷新。';
     if (state.error) return publicErrorMessage(state.error, { fallback: '存储统计或清理暂时未完成，请稍后刷新。' });
-    if (!state.stats) return '展开后会读取当前聊天的千千结后端记录；不会修改数据。';
-    return '统计已刷新。占用为后端 JSON 的约数，不代表磁盘精确字节。';
+    if (!state.stats) return '展开后读取存储统计，不修改数据。';
+    return '统计已刷新，占用大小为估算值。';
   };
   function render(state = manager.getState()) {
     if (!active || !container) return;
     const page = element('div', 'qqj-storage-management');
-    page.append(element('p', 'settings-hint', '只管理当前聊天的千千结后台文件。摘要历史、双丝网状态、千人人物资料、刻度和聊天正文都不会进入旧版本候选。'));
+    page.append(element('p', 'settings-hint', '仅清理本聊天已失效的后台旧版本；有效摘要历史、双丝网、人物资料、刻度和正文保留。'));
     const status = element('p', `settings-result${state.error ? ' error' : ''}`, statusCopy(state));
     status.setAttribute?.('role', 'status');
     page.append(status);
@@ -71,7 +71,7 @@ export function createStorageManagementView({
       }
       render(manager.getState());
     });
-    page.append(toggle, element('p', 'settings-hint', '默认关闭。开启后，每新增 10 个稳定 AI 楼检查一次；只有无引用旧文件达到 100 条或约 8 MiB 才会清理。任务忙碌时顺延到下一次空闲机会。'));
+    page.append(toggle, element('p', 'settings-hint', '默认关闭；开启后每新增 10 个稳定 AI 楼检查一次。无引用旧文件达到 100 条或约 8 MiB 才清理，忙碌时延后。'));
     if (state.autoPending) page.append(element('p', 'settings-result', '已到检查节点；当前有千千结任务在运行，自动检查会在空闲后继续。'));
     const actions = element('div', 'settings-actions');
     const refresh = element('button', 'secondary-action', '刷新统计'); refresh.type = 'button';
@@ -88,7 +88,7 @@ export function createStorageManagementView({
       const mine = epoch;
       const confirmed = await Promise.resolve(confirmImpl({
         title: '清理当前聊天的后台旧版本',
-        body: '只删除当前版本已经不再引用的千千结基础文件。当前摘要、双丝网状态、千人人物资料、刻度和聊天正文都会保留；删除的旧后台版本不可恢复。',
+        body: '删除已失效的后台旧版本，不可恢复。有效摘要、双丝网、人物资料、刻度和聊天正文保留。',
         confirmText: '确认清理', cancelText: '取消',
       }));
       if (!active || mine !== epoch) return;

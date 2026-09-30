@@ -119,7 +119,7 @@ export async function prepareTimeRequest(reachable, batches = [], options = {}) 
 }
 
 export function createTimeRuntime({ store, foundationStore, hostAdapter, session, generateTimeTask, annualSettingsProvider = () => ({ ready: false }), sanitizerOptions = () => ({}), storyClockReferenceTags = () => '', newUuid = newIdentityUuid, getReachable = () => null, getMemoryState = () => null, isEnabled = () => false, onInvalidate = () => {}, logger = console }) {
-  let epoch = 0, active = null, last = null, pendingDeletionCount = 0, projectionCache = null, pendingReceipt = null, statusKey = null, statusRead = null, trackedItems = null, stoppedItems = null, annualItems = null, itemsKey = null, coverage = null, clockContentChanged = false, historyAuthorization = null, automatic = null, startingController = null;
+  let epoch = 0, active = null, last = null, pendingDeletionCount = 0, projectionCache = null, pendingReceipt = null, statusKey = null, statusRead = null, trackedItems = null, stoppedItems = null, annualItems = null, qianshiReferences = null, itemsKey = null, coverage = null, clockContentChanged = false, historyAuthorization = null, automatic = null, startingController = null;
   const subscribers = new Set();
   const enabled = () => isEnabled() === true;
   const identity = () => { try { return session.identity(); } catch { return { chatId: null }; } };
@@ -223,7 +223,11 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     const answeredIds = new Set(reviewBatch?.changes?.map(item => item.id) ?? []);
     const failures = timeItemFailures(batches, source);
     const names = new Map((source.entities ?? []).map(entity => [entity.id, entity.displayName]));
-    const items = replayTimeBatches(batches, source).map(item => ({
+    const replayedItems = replayTimeBatches(batches, source);
+    // Keep only the narrow association anchors needed to prevent Qianshi rejudge from orphaning reminders.
+    qianshiReferences = replayedItems.filter(item => item.qianshiRef?.matterId && item.qianshiRef?.originEventId)
+      .map(item => ({ id: item.id, qianshiRef: { ...item.qianshiRef } }));
+    const items = replayedItems.map(item => ({
       id: item.id, mergedInto: item.mergedInto ?? null, mergeDescription: item.mergeDescription ?? null, retirementReason: item.retirementReason ?? null, observationKey: item.observationKey, status: item.status, person: names.get(item.subjectEntityId) ?? item.subjectName ?? '人物未提供', label: item.label, type: item.type,
       observation: item.observation, observationTime: effectiveTime(item.observationTime), occurrenceTime: effectiveTime(item.occurrenceTime),
       dueTime: effectiveTime(item.dueTime), periodDays: item.periodDays,
@@ -248,7 +252,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   };
   const notify = () => { const state = getState(); for (const listener of subscribers) try { listener(state); } catch { /* UI isolation */ } return state; };
   function invalidate() {
-    epoch += 1; active?.controller.abort(); startingController?.abort(); startingController = null; automatic = null; last = null; pendingDeletionCount = 0; projectionCache = null; pendingReceipt = null; statusKey = null; statusRead = null; trackedItems = null; stoppedItems = null; annualItems = null; itemsKey = null; coverage = null; clockContentChanged = false; historyAuthorization = null; onInvalidate(); notify();
+    epoch += 1; active?.controller.abort(); startingController?.abort(); startingController = null; automatic = null; last = null; pendingDeletionCount = 0; projectionCache = null; pendingReceipt = null; statusKey = null; statusRead = null; trackedItems = null; stoppedItems = null; annualItems = null; qianshiReferences = null; itemsKey = null; coverage = null; clockContentChanged = false; historyAuthorization = null; onInvalidate(); notify();
   }
   async function stop() {
     const pending = active?.promise;
@@ -262,12 +266,12 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     if (last?.status === 'failed' && last.persisted === false) return notify();
     const source = getReachable();
     if (!source?.root || !['ready', 'needsReseal'].includes(source.status ?? 'ready') || source.root.chatId !== identity().chatId) {
-      trackedItems = null; stoppedItems = null; itemsKey = null; statusKey = null; last = { status: 'waiting', message: '等待当前聊天记忆读取。' }; return notify();
+      trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; last = { status: 'waiting', message: '等待当前聊天记忆读取。' }; return notify();
     }
     const bodyKey = sourceKey(source);
-    if (['needsReview', 'error'].includes(getMemoryState()?.memorySyncStatus) || ['needsReview', 'error'].includes(getMemoryState()?.status)) { trackedItems = null; stoppedItems = null; itemsKey = null; statusKey = null; last = { status: 'waiting', message: '请先同步当前聊天记忆。' }; return notify(); }
+    if (['needsReview', 'error'].includes(getMemoryState()?.memorySyncStatus) || ['needsReview', 'error'].includes(getMemoryState()?.status)) { trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; last = { status: 'waiting', message: '请先同步当前聊天记忆。' }; return notify(); }
     if (getMemoryState()?.memorySyncStatus === 'syncing') {
-      if (itemsKey !== bodyKey) { trackedItems = null; stoppedItems = null; itemsKey = null; statusKey = null; }
+      if (itemsKey !== bodyKey) { trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; }
       return notify();
     }
     const annual = await annualSnapshot();
@@ -298,7 +302,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
         }
         statusKey = key;
       } catch {
-        if (token === epoch && !active && identity().chatId === chatId) { trackedItems = null; stoppedItems = null; annualItems = null; itemsKey = null; last = { status: 'failed', reason: 'read', message: '时间记录读取失败，请稍后重新整理。' }; }
+        if (token === epoch && !active && identity().chatId === chatId) { trackedItems = null; stoppedItems = null; annualItems = null; qianshiReferences = null; itemsKey = null; last = { status: 'failed', reason: 'read', message: '时间记录读取失败，请稍后重新整理。' }; }
       } finally { if (statusRead === read) statusRead = null; }
       return notify();
     })();
@@ -822,6 +826,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     foundationRuntime?.subscribe?.(state => { if (['ready', 'needsReseal'].includes(state?.status)) void runBatch(); });
     void runBatch();
   }
-  return Object.freeze({ runBatch, prepareHistoryPlan, organize, authorizeHistory, editItem, editItems, deleteItems, refreshStatus, recallProjection, currentStoryContext, getState, invalidate, stop, bind,
+  return Object.freeze({ runBatch, prepareHistoryPlan, organize, authorizeHistory, editItem, editItems, deleteItems, refreshStatus, recallProjection, currentStoryContext,
+    getQianshiReferences: () => qianshiReferences === null ? null : structuredClone(qianshiReferences), getState, invalidate, stop, bind,
     subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

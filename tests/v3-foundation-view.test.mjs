@@ -401,9 +401,9 @@ test('补齐与完全重构用标准两按钮选择本次模式，关闭时不�
       { value: false, label: '否（普通逐楼模式）' },
       { value: true, label: '是（高楼压缩模式）', primary: true },
     ]);
-    assert.match(dialog.note, /关闭窗口不会开始任务/u);
+    assert.match(dialog.note, /关闭窗口不开始任务/u);
   }
-  assert.match(dialogs[1].body, /全部删除.*所有人工修改/u, '完全重构必须保留清空警告');
+  assert.match(dialogs[1].body, /删除本聊天全部千千结记录.*所有人工修改都会清除/u, '完全重构必须保留清空警告');
 });
 
 test('未建立记忆按现有历史与自动摘要开关提示，三页均不把正常空态报错', () => {
@@ -693,9 +693,9 @@ test('删除当前聊天记忆使用自绘异步确认，取消零写且确认�
   flatten(container).find(node => node.textContent === '删除当前聊天记忆').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls, 0);
-  assert.match(confirmation.body, /摘要、人物状态、人物资料、召回记录及历史派生版本/);
-  assert.match(confirmation.body, /聊天正文、手动前情和全局 API、提示词设置会保留.*手动前情可在“前情”中另行清空/);
-  assert.match(confirmation.note, /移入回收站.*不代表永久擦除/);
+  assert.match(confirmation.body, /摘要、双丝网、人物资料、召回及历史版本/);
+  assert.match(confirmation.body, /正文、手动前情和全局设置保留.*前情可另行清空/);
+  assert.match(confirmation.note, /移入回收站.*并非永久擦除/);
 });
 
 test('删除按钮使用管理器统一忙碌投影', () => {
@@ -801,15 +801,15 @@ test('摘要页列出全部尚未摘要候选并显示真实等待原因，无 f
   const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef, confirmImpl: options => { confirmation = options; return true; } }); view.setPage('memories'); view.mount(container);
   let copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /已记忆 42\/42 楼.*另有 3 楼尚未摘要，正在等待确认/);
-  assert.match(copy, /检测到连续 AI 段，共 2 个回复.*第 84 楼.*连续 AI，尚待确认/);
-  assert.match(copy, /第 85 楼.*等待前面楼层处理.*前面的 AI 楼尚未确认/);
-  assert.match(copy, /第 87 楼.*等待下一条用户消息.*发送下一条用户消息后会重新检查/);
+  assert.match(copy, /本次确认 2 个连续 AI 回复.*第 84 楼.*连续 AI，尚待确认/);
+  assert.match(copy, /第 85 楼.*等待前面楼层处理.*先确认前面的 AI 楼/);
+  assert.match(copy, /第 87 楼.*等待下一条用户消息.*发送下一条用户消息后检查/);
   assert.match(copy, /旧摘要仍然可见/);
   const confirmConsecutive = flatten(container).find(node => node.textContent === '确认连续 AI 并分别记录');
   assert.ok(confirmConsecutive); confirmConsecutive.click(); await new Promise(resolve => setImmediate(resolve));
   assert.equal(consecutiveCalls, 1);
   assert.equal(receivedScope, state.consecutiveAssistantConfirmation, '弹窗必须把渲染时冻结的精确范围原样传入');
-  assert.deepEqual(confirmation, { title: '确认连续 AI 回复', body: '第 84 楼、第 85 楼 将分别登记，并按原顺序进入摘要。正文不会删除或合并；当前最后一条 AI 不在本次范围内，仍等待下一条用户消息。', confirmText: '确认并分别记录', cancelText: '取消' });
+  assert.deepEqual(confirmation, { title: '确认连续 AI 回复', body: '第 84–85 楼，共 2 个 AI 回复，将按顺序分别摘要；正文不删除或合并。最新 AI 楼等待下一条用户消息，不在本次范围内。', confirmText: '确认并分别记录', cancelText: '取消' });
   assert.equal(flatten(container).filter(node => node.textContent === '提取摘要').length, 0);
   assert.equal(extractCalls, 0);
 
@@ -817,7 +817,7 @@ test('摘要页列出全部尚未摘要候选并显示真实等待原因，无 f
   view.render(state);
   flatten(container).find(node => node.textContent === '确认连续 AI 并分别记录').click();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(confirmation.body, '第 84 楼、第 85 楼 将分别登记，并按原顺序进入摘要。正文不会删除或合并；以上列表就是本次完整确认范围。');
+  assert.equal(confirmation.body, '第 84–85 楼，共 2 个 AI 回复，将按顺序分别摘要；正文不删除或合并。');
 
   runtime.confirmConsecutiveAssistants = async () => { throw Object.assign(new Error('连续 AI 确认范围已经变化，请重新查看后再确认。'), { code: 'V3_MEMORY_STALE' }); };
   flatten(container).find(node => node.textContent === '确认连续 AI 并分别记录').click();
@@ -1045,7 +1045,7 @@ test('历史欠账与人物状态重构按钮各自开始暂停继续，CSE 进�
   flatten(container).find(node => node.textContent === '人物状态重构').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(cseChatId, CHAT);
-  assert.match(`${confirmations.at(-1)?.body}`, /摘要及摘要人工修订都会保留.*CSE 人工纠正也会被覆盖.*未摘要楼不会处理/);
+  assert.match(`${confirmations.at(-1)?.body}`, /保留摘要.*双丝网人工纠正会被覆盖.*未摘要楼不处理/);
 
   state = { ...base, status: 'running', memoryWorkBusy: true, activeAutoMemory: { phase: 'analyzingCse', mode: 'cseRebuild', floorIds: ['floor-2'] }, cseRebuildStatus: 'running', cseRebuildCompletedCount: 1, cseRebuildTotalCount: 2 };
   view.render(state);
@@ -2049,7 +2049,7 @@ test('人物状态编辑保存期间冻结全部草稿控件并复制输入，�
   const situationalTarget = flatten(editor).find(node => node.attributes?.['aria-label'] === '当前情境对象');
   situationalTarget.click(); flatten(situationalTarget.parentNode).find(node => node.attributes?.['data-value'] === targetId).click();
   flatten(editor).find(node => node.className === 'qqj-cse-help').click();
-  assert.equal(infoCalls.length, 1); assert.match(`${infoCalls[0].body}\n${infoCalls[0].note}`, /不是上传或隐私权限.*私密：.*已表达：.*可观察：.*共享：.*作者设定：/s);
+  assert.equal(infoCalls.length, 1); assert.match(`${infoCalls[0].body}\n${infoCalls[0].note}`, /与上传权限无关.*私密：.*已表达：.*可观察：.*共享：.*作者设定：/s);
   assert.equal(situational.value, '已经平静', '打开信息范围帮助不得重建或清空编辑草稿');
   flatten(editor).find(node => node.textContent === '保存').click();
   assert.equal(calls.length, 1); assert.equal(calls[0].subjectEntityId, userId);
@@ -2281,7 +2281,7 @@ test('时间补查真实view先计划后确认，取消零整理；摘要CSE忙�
   const runtime={getState:()=>state,refreshStatus:async()=>state,confirmLatest:async()=>state,subscribe:()=>()=>{}};const timeState={status:'completed',active:false,canOrganize:true,trackedItems:[],stoppedItems:[],coverage:{checkedFloors:1,totalFloors:5,startAssistantSeq:5,earlierUnchecked:4,pendingFloors:1},last:{status:'empty'}};
   const timeRuntime={getState:()=>structuredClone(timeState),subscribe:listener=>{listeners.add(listener);return()=>listeners.delete(listener);},refreshStatus:async()=>{},prepareHistoryPlan:async()=>{plans++;return {floorCount:4,bodyBatchCount:2,batchCount:3,apiCalls:3,currentReview:true};},organize:async plan=>{runs++;assert.equal(plan.apiCalls,3);}};
   const container=new Node('main'),view=createV3FoundationView({runtime,timeRuntime,documentRef,confirmImpl:options=>{shown=options;return confirmed;}});view.setPage('memories');view.mount(container);const toggle=flatten(container).find(node=>node.className.includes('qqj-profile-more'));await toggle.click();const body=flatten(container).find(node=>node.id==='qqj-recent-items'),button=flatten(body).find(node=>node.textContent==='补查历史');assert.equal(button.disabled,false);
-  assert.match(flatten(body).map(node=>node.textContent).join('|'),/此前 4 楼正文未检查.*1 楼等待稳定绑定/u);await button.click();assert.equal(plans,1);assert.equal(runs,0);assert.match(shown.body,/4 个 AI 楼.*2 批.*追加 1 次当前事项评估.*最多 3 次摘要 API/);confirmed=true;await button.click();assert.equal(runs,1);await toggle.click();assert.equal(body.hidden,true);for(const listener of listeners)listener(timeState);assert.equal(body.hidden,true);view.deactivate();
+  assert.match(flatten(body).map(node=>node.textContent).join('|'),/此前 4 楼正文未检查.*1 楼等待稳定绑定/u);await button.click();assert.equal(plans,1);assert.equal(runs,0);assert.match(shown.body,/4 个 AI 楼.*2 批.*摘要 API 3 次.*一次当前事项评估/);confirmed=true;await button.click();assert.equal(runs,1);await toggle.click();assert.equal(body.hidden,true);for(const listener of listeners)listener(timeState);assert.equal(body.hidden,true);view.deactivate();
 });
 
 test('停止项复用批量控件永久删除，取消零写，失败后同入口续做',async()=>{
@@ -2297,7 +2297,7 @@ test('停止项复用批量控件永久删除，取消零写，失败后同入�
   await flatten(container).find(node=>node.className.includes('qqj-profile-more')).click();let body=flatten(container).find(node=>node.id==='qqj-recent-items');await flatten(body).find(node=>node.textContent==='查看停止项（2）').click();
   await flatten(body).find(node=>node.textContent==='批量管理').click();assert.equal(flatten(body).find(node=>node.textContent==='选择问题项').hidden,true);assert.ok(flatten(body).filter(node=>node.className==='qqj-recent-item-select').length===2);
   await flatten(body).find(node=>node.textContent==='选择当前列表').click();let remove=flatten(body).find(node=>node.textContent==='批量永久删除');assert.equal(remove.disabled,false);
-  await remove.click();assert.equal(calls.length,0);assert.match(shown.body,/已选的 2 项.*不可恢复.*摘要与千事保留.*不调用模型/u);
+  await remove.click();assert.equal(calls.length,0);assert.match(shown.body,/永久删除 2 项.*全部时间历史.*不可恢复.*不调用模型.*摘要与千事保留/u);
   confirmed=true;await remove.click();assert.deepEqual(calls[0],[{itemId:'done',observationKey:'done-key'},{itemId:'merged',observationKey:'merged-key'}]);assert.match(flatten(body).map(node=>node.textContent).join('|'),/永久删除未完成：模拟旧记录清理失败/u);
   for(const checkbox of flatten(body).filter(node=>node.className==='qqj-recent-item-select')) { checkbox.checked=false; await checkbox.fire('change'); }
   assert.ok(flatten(body).filter(node=>node.className==='qqj-recent-item-select').every(node=>!node.checked),'此时同一停止列表没有新选择');

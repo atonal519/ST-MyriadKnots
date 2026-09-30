@@ -308,7 +308,7 @@ test('人物菜单以两个内联选择完成整档合并，目标变化时资�
   createPeopleProfilesView({ runtime: h.runtime, dialog: dialogs.dialog, documentRef }).mount(container);
   h.emitState({ ...h.state, people: [...h.state.people, person(C, '一位名字很长也必须完整可读的丙', false)] });
   flatten(container).find(node => node.textContent === '合并到其他人物').click();
-  assert.equal(dialogs.active.title, '合并人物 · 甲档'); assert.match(visible(dialogs.active.content), /聊天楼.*历史摘要和 CSE.*统一归到合并目标/);
+  assert.equal(dialogs.active.title, '合并人物 · 甲档'); assert.match(visible(dialogs.active.content), /保留双方正文、摘要和双丝网.*统一人物归属/);
   assert.equal(flatten(dialogs.active.content).filter(node => node.tag === 'select').length, 0, '合并窗不得唤起系统原生选择器');
   let selects = flatten(dialogs.active.content).filter(node => node.className === 'qqj-inline-select');
   assert.equal(selects.length, 2); assert.equal(selects[0].value, B); assert.match(visible(selects[1]), /保留「乙」的资料与头像（尚未建档）/);
@@ -326,7 +326,7 @@ test('人物菜单删除继续复用现有确认弹窗并说明历史不会删�
   createPeopleProfilesView({ runtime: h.runtime, dialog: dialogs.dialog, documentRef }).mount(container);
   flatten(container).find(node => node.textContent === '删除人物').click(); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
   assert.equal(dialogs.confirms.length, 1); assert.equal(dialogs.confirms[0].title, '删除人物 · 甲'); assert.equal(dialogs.confirms[0].confirmText, '删除人物');
-  assert.match(dialogs.confirms[0].body, /删除该人物的千人档案、头像和重要人物选择/); assert.match(dialogs.confirms[0].note, /聊天楼、历史摘要和 CSE 记录不会删除/);
+  assert.match(dialogs.confirms[0].body, /删除人物档案、头像和重要人物选择/); assert.match(dialogs.confirms[0].note, /正文、摘要和双丝网保留/);
   assert.deepEqual(h.calls.delete, [A]);
 });
 

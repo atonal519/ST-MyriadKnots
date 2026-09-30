@@ -58,10 +58,10 @@ const waitingFloorCopy = value => ({
   registrationNeedsReview: '消息对应关系待核对',
 })[value] ?? '尚待确认';
 const waitingFloorExplanation = value => ({
-  waitingNextUser: '这一楼尚未摘要。发送下一条用户消息后会重新检查。',
-  waitingEarlierFloor: '这一楼尚未摘要。前面的 AI 楼尚未确认，当前不会进入摘要处理。',
-  consecutiveAssistant: '这一楼尚未摘要。可在记忆页确认后，将连续 AI 回复分别登记并按顺序摘要。',
-  registrationNeedsReview: '这一楼尚未摘要。消息与已有记忆的对应关系需要先核对。',
+  waitingNextUser: '尚未摘要，发送下一条用户消息后检查。',
+  waitingEarlierFloor: '尚未摘要，先确认前面的 AI 楼。',
+  consecutiveAssistant: '尚未摘要，请在记忆页确认连续 AI 回复。',
+  registrationNeedsReview: '尚未摘要，需核对楼层与记忆的对应关系。',
 })[value] ?? '这一楼尚未摘要，正在等待确认。';
 const reviewReasonCopy = value => {
   if (!value?.code) return '无';
@@ -229,7 +229,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   const confirmHistoricalMode = async ({ fullRebuild = false } = {}) => {
     const title = fullRebuild ? '完全重构当前聊天记忆' : '补齐当前聊天记忆';
     const body = fullRebuild
-      ? '当前聊天的千千结记录将全部删除，包括摘要、人物状态、千人人物资料、头像、重要人物选择、时间事项、前情及所有人工修改，再从头重新生成，并按正文分批补查时间事项（每批最多20楼且受输入预算限制，会使用摘要 API；全部稳定范围完成后最多再调用一次摘要 API评估当前活跃事项，失败、部分完成或停止不自动重试）；聊天正文、其他插件数据和全局设置保留。'
+      ? '删除本聊天全部千千结记录后，调用 API 从头重建。摘要、双丝网、千人人物资料、头像、重要人物选择、时间事项、前情及所有人工修改都会清除；聊天正文、其他插件和全局设置保留。时间事项按正文分批补查，完成后最多追加一次评估，失败不自动重试。'
       : '已有摘要和人物状态会保留，只处理缺失部分；刷新页面后不会自动续跑。';
     if (typeof chooseImpl !== 'function') {
       if (!fullRebuild) return Object.freeze({ aggregate: false });
@@ -239,7 +239,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const selected = await Promise.resolve(chooseImpl({
       title,
       body,
-      note: '选择“是”会把连续 10 个 AI 楼合成一份压缩记忆，并在批末分析一次人物状态，能减少请求和记忆数量，但会舍去较多枝节；选择“否”会按普通逐楼模式处理。关闭窗口不会开始任务。',
+      note: '压缩模式：每 10 个 AI 楼合成一份记忆，批末分析一次人物状态；请求更少，细节也更少。普通模式逐楼处理。关闭窗口不开始任务。',
       choices: [
         { value: false, label: '否（普通逐楼模式）' },
         { value: true, label: '是（高楼压缩模式）', primary: true },
@@ -370,7 +370,12 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
 
   async function copy(value, { local = false } = {}) {
     if (navigatorRef?.clipboard?.writeText) {
-      try { await navigatorRef.clipboard.writeText(value); if (!local) fallbackText = ''; return '已复制。'; }
+      try {
+        await navigatorRef.clipboard.writeText(value); if (!local) fallbackText = '';
+        // 剪贴板写入成功才提示；通知失败不应误报复制失败或切到手动复制。
+        try { globalThis.toastr?.success?.('已复制。'); } catch { /* 复制结果以剪贴板为准。 */ }
+        return '已复制。';
+      }
       catch { /* 浏览器或壳层拒绝剪贴板权限时改用只读文本框。 */ }
     }
     if (!local) fallbackText = value; return '浏览器不允许直接复制，请在下方文本框长按全选复制。';
@@ -485,9 +490,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const targetFloor = floorCopy(state, { messageIndex: result?.messageIndex, floorId: result?.floorId, assistantSeq: result?.assistantSeq }, '目标楼');
     if (result?.status === 'partial') return result.phase === 'analyzingCse'
       ? `${label}部分完成：新增摘要 ${result.processed ?? 0} 楼，补齐人物状态 ${result.cseProcessed ?? 0} 楼；${targetFloor}人物状态未完成。`
-      : `${label}部分完成：新增摘要 ${result.processed ?? 0} 楼，补齐人物状态 ${result.cseProcessed ?? 0} 楼；${result.failedItems?.map(item => item.floorLabel).filter(Boolean).join('、') || `${result.available ?? 0} 楼`}摘要仍需重试。`;
+      : `${label}部分完成：新增摘要 ${result.processed ?? 0} 楼，补齐人物状态 ${result.cseProcessed ?? 0} 楼；${result.failedItems?.length || result.available || 0} 楼摘要需重试，详见楼层列表。`;
     if (result?.status === 'failed') {
-      const failedFloors = result.failedItems?.map(item => item.floorLabel).filter(Boolean).join('、');
+      // 单楼错误保留具体楼号；多楼只报数量，避免提示随历史长度膨胀。
+      const failedFloors = result.failedItems?.length === 1 ? result.failedItems[0].floorLabel || floorCopy(state, result.failedItems[0], '目标楼')
+        : result.failedItems?.length ? `${result.failedItems.length} 楼失败` : '';
       return `${label}未完成：${failedFloors || (result.floorId ? targetFloor : '')}${failedFloors || result.floorId ? ' · ' : ''}${errorMessage(result.message) || '本次没有保存新结果，请重试。'}`;
     }
     if (result?.status === 'paused') return `${label}已暂停：已保存的结果不会丢失。`;
@@ -606,7 +613,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         const edit = element('button', 'qqj-memory-menu-action', '编辑'); edit.type = 'button'; edit.disabled = workBusy(state);
         edit.addEventListener('click', () => { const memory = floor.memory; const names = new Map((state.memoryEntities ?? []).map(entity => [entity.entityId, entity.displayName])); const originalTimeText = floorTimeDisplay(memory?.chronology, floor.timeFallback); const locations = (memory?.locations ?? []).map(item => ({ itemId: item.itemId, name: item.name ?? '' })); const participantNames = (memory?.participants ?? []).map(item => names.get(item.entityId)).filter(Boolean); drafts.set(key, { floorId: floor.floorId, canonicalFingerprint: floor.canonicalFingerprint, rawFingerprint: floor.rawFingerprint, summary: floor.summary, originalSummary: floor.summary, timeText: originalTimeText, originalTimeText, locations, originalLocations: locations.map(item => ({ ...item })), peopleText: participantNames.join('、'), originalParticipantNames: participantNames, note: '', saving: false, saveError: '' }); render(foundationState); });
         const extract = element('button', 'qqj-memory-menu-action', '重新提取'); extract.type = 'button'; extract.disabled = workBusy(state) || typeof runtime.extractFloor !== 'function';
-        extract.addEventListener('click', async () => { const ranged = (floor.sourceFloorIds?.length ?? 0) > 1; if (!await Promise.resolve(confirmImpl({ title: ranged ? '重新提取整段压缩记忆' : '重新提取本楼摘要', body: ranged ? `${floorCopy(state, floor)}会作为一个整体重新压缩并替换这一张范围记忆；已保存的人物状态与其他范围记忆保持不变。` : '重新提取只会替换本楼摘要；已保存的人物状态与其他楼记录保持不变。', confirmText: '重新提取', cancelText: '取消' }))) { feedback = '已取消重新提取。'; render(foundationState); return; } void run('重新提取', () => runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('重新提取', floor.floorId) }); });
+        extract.addEventListener('click', async () => { const ranged = (floor.sourceFloorIds?.length ?? 0) > 1; if (!await Promise.resolve(confirmImpl({ title: ranged ? '重新提取整段压缩记忆' : '重新提取本楼摘要', body: `${ranged ? `${floorCopy(state, floor)}将整体重新压缩。` : '将重新提取本楼摘要。'}已有的人物状态和其他楼不变；千事按字段保留人工修订，无法匹配时保留旧千事并提示。`, confirmText: '重新提取', cancelText: '取消' }))) { feedback = '已取消重新提取。'; render(foundationState); return; } void run('重新提取', () => runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('重新提取', floor.floorId) }); });
         menuBody.append(edit, extract);
       } else {
         const extract = element('button', 'qqj-memory-menu-action', '提取摘要'); extract.type = 'button'; extract.disabled = workBusy(state) || typeof runtime.extractFloor !== 'function';
@@ -787,7 +794,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     try {
       if (!timeRuntime.getState().pendingDeletionCount) {
         const confirmed = await Promise.resolve(confirmImpl({ title: '批量永久删除时间事项',
-          body: `确认永久删除已选的 ${selected.length} 项及其全部时间历史？删除后不可恢复；其他事项、摘要与千事保留，本操作不调用模型。`, confirmText: '永久删除', cancelText: '取消' }));
+          body: `永久删除 ${selected.length} 项及其全部时间历史，不可恢复。不调用模型，其他事项、摘要与千事保留。`, confirmText: '永久删除', cancelText: '取消' }));
         if (!confirmed || !canDelete()) return;
       }
       await timeRuntime.deleteItems(timeRuntime.getState().pendingDeletionCount ? [] : selected);
@@ -871,7 +878,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         if (!plan || !active || recentItemsUi !== ui || epoch !== mine || chatId !== originalChatId) return;
         if (!plan.apiCalls) { ui.planFeedback = plan.annualSetting?.pending ? `有 ${plan.annualSetting.pending} 个年度设定来源超过单次输入预算，未截断、未标记为已处理；请缩短对应基础资料后重试。` : '当前正文与年度设定已检查，暂无需要补算的事项。'; return; }
         const confirmed = await Promise.resolve(confirmImpl({ title: plan.retryCurrentReview ? '重新更新当前事项' : plan.supplement ? '更新当前时间事项' : '补查历史正文',
-          body: `本次待查 ${plan.floorCount} 个 AI 楼，正文预计 ${plan.bodyBatchCount ?? plan.batchCount} 批${plan.currentReview ? '，结束后最多追加 1 次当前事项评估' : ''}${plan.annualSetting?.shouldRequest ? '，另补读年度设定 1 次' : ''}，共最多 ${plan.apiCalls} 次摘要 API 调用。${plan.supplement ? plan.retryCurrentReview ? '上次收尾已尝试，本次明确重新授权更新一次，不自动重试。' : '正文已检查，本次只更新已登记的活跃事项一次。' : '每批最多20楼并受完整输入预算限制；长楼会分片。失败、部分完成或停止时先暂停，不做收尾；已保存结果保留。'}收尾按预算评估活跃事项，未纳入或依据不足会明确说明。`, confirmText: '开始补查', cancelText: '取消' }));
+          body: `${plan.floorCount} 个 AI 楼，正文 ${plan.bodyBatchCount ?? plan.batchCount} 批；最多调用摘要 API ${plan.apiCalls} 次。${plan.currentReview ? '含一次当前事项评估。' : ''}${plan.annualSetting?.shouldRequest ? '含一次年度设定读取。' : ''}${plan.supplement ? '正文已查，本次只更新活跃事项一次。' : '每批最多20楼，长楼分片；失败、部分完成或停止后暂停，已保存结果保留。'}不自动重试，未评估或依据不足的事项会列出。`, confirmText: '开始补查', cancelText: '取消' }));
         if (confirmed && active && recentItemsUi === ui && epoch === mine && chatId === originalChatId) await timeRuntime.organize(plan);
       } catch (error) { if (recentItemsUi === ui) ui.planFeedback = publicErrorMessage(error, { fallback: '历史计划读取失败，请重试。' }); }
       finally { if (ui.pendingAction === pending) ui.pendingAction = null; updateRecentItems(); }
@@ -894,12 +901,13 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const confirmationCandidates = Array.isArray(confirmationScope?.candidates) ? confirmationScope.candidates : [];
     if (consecutive.length && confirmationCandidates.length && typeof runtime.confirmConsecutiveAssistants === 'function') {
       const action = element('div', 'qqj-inline-panel');
-      action.append(element('p', 'settings-hint', `检测到连续 AI 段，共 ${confirmationCandidates.length} 个回复可在本次确认后按原顺序分别登记并进入摘要；其中 ${consecutive.length} 个回复需要你的明确确认。${hasWaitingTail ? '当前最后一条 AI 仍等待下一条用户消息。' : '列表中的回复全部属于本次范围。'}`));
+      action.append(element('p', 'settings-hint', `本次确认 ${confirmationCandidates.length} 个连续 AI 回复，按顺序分别摘要。${hasWaitingTail ? '最新 AI 楼仍等待下一条用户消息，不在本次范围内。' : ''}`));
       const confirm = element('button', 'secondary-action', '确认连续 AI 并分别记录'); confirm.type = 'button'; confirm.disabled = workBusy(state);
       confirm.addEventListener('click', async () => {
-        const range = confirmationCandidates.map(candidate => `第 ${candidate.messageIndex} 楼`).join('、');
+        const first = confirmationCandidates[0].messageIndex, last = confirmationCandidates.at(-1).messageIndex;
+        const range = first === last ? `第 ${first} 楼` : `第 ${first}–${last} 楼`;
         const accepted = await Promise.resolve(confirmImpl({ title: '确认连续 AI 回复',
-          body: `${range} 将分别登记，并按原顺序进入摘要。正文不会删除或合并；${hasWaitingTail ? '当前最后一条 AI 不在本次范围内，仍等待下一条用户消息。' : '以上列表就是本次完整确认范围。'}`, confirmText: '确认并分别记录', cancelText: '取消' }));
+          body: `${range}，共 ${confirmationCandidates.length} 个 AI 回复，将按顺序分别摘要；正文不删除或合并。${hasWaitingTail ? '最新 AI 楼等待下一条用户消息，不在本次范围内。' : ''}`, confirmText: '确认并分别记录', cancelText: '取消' }));
         if (!accepted) { feedback = '已取消连续 AI 确认。'; render(foundationState); return; }
         void run('确认连续 AI', () => runtime.confirmConsecutiveAssistants(confirmationScope));
       });
@@ -956,7 +964,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     editor.append(element('p', 'settings-hint', '修改会保存到对应楼层的人物状态。其他楼层的重算不会改写本楼记录。'));
     const scopeHeading = element('div', 'qqj-cse-scope-heading');
     const scopeHelp = element('button', 'qqj-cse-help', '?'); scopeHelp.type = 'button'; scopeHelp.disabled = disabled; scopeHelp.setAttribute('aria-label', '查看信息范围说明');
-    scopeHelp.addEventListener('click', () => { void Promise.resolve(infoImpl({ title: '信息范围', body: '信息范围用于描述人物状态在故事里的可知程度，不是上传或隐私权限，也不表示所有人物都知道。', note: '私密：本人内心或私有认知\n已表达：已经说出或表现，不代表人人收到\n可观察：剧情中外表、动作等可观察状态，不等于读心\n共享：已向相关人传达或共同知晓，不代表全员知情\n作者设定：塑造人物的参考，不代表角色知道', confirmText: '知道了' })); });
+    scopeHelp.addEventListener('click', () => { void Promise.resolve(infoImpl({ title: '信息范围', body: '说明剧情中谁能知道这项状态，与上传权限无关。', note: '私密：本人内心\n已表达：说出或表现，未必人人收到\n可观察：外表或动作，不能读心\n共享：相关人已知，不代表全员\n作者设定：塑造人物的参考，角色未必知道', confirmText: '知道了' })); });
     scopeHeading.append(element('span', '', '信息范围'), scopeHelp); editor.append(scopeHeading); controls.push(scopeHelp);
     const category = (field, label, { toward = false } = {}) => {
       const group = element('section', 'qqj-cse-edit-group');
@@ -1496,7 +1504,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     cseAction.addEventListener('click', async () => {
       if (cseRunning) { void run('暂停人物状态重构', () => runtime.pauseCseRebuild(), { resultCopy: cseRebuildResult('人物状态重构') }); return; }
       if (cseResume) { void run('继续人物状态重构', () => runtime.resumeCseRebuild(state.chatId), { resultCopy: cseRebuildResult('人物状态重构') }); return; }
-      if (!await Promise.resolve(confirmImpl({ title: '重构当前聊天人物状态', body: '所有摘要及摘要人工修订都会保留；已有摘要对应的人物状态将从头重新生成，CSE 人工纠正也会被覆盖。未摘要楼不会处理。', confirmText: '人物状态重构', cancelText: '取消' }))) { feedback = '已取消人物状态重构。'; render(foundationState); return; }
+      if (!await Promise.resolve(confirmImpl({ title: '重构当前聊天人物状态', body: '保留摘要，调用 API 重建其对应的双丝网状态；双丝网人工纠正会被覆盖。未摘要楼不处理。', confirmText: '人物状态重构', cancelText: '取消' }))) { feedback = '已取消人物状态重构。'; render(foundationState); return; }
       void run('人物状态重构', () => runtime.rebuildCse(state.chatId), { resultCopy: cseRebuildResult('人物状态重构') });
     });
     actions.append(cseAction);
@@ -1517,7 +1525,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const remove = element('button', 'primary-action', deleting ? '删除中…' : deletePending ? '继续删除当前聊天记忆' : '删除当前聊天记忆');
       remove.type = 'button'; remove.disabled = deleting || managementState?.blockedByOtherChat === true || (!deletePending && (managementState?.workBusy === true || !hasCurrentIdentity));
       remove.addEventListener('click', async () => {
-        if (!await Promise.resolve(confirmImpl({ title: '删除当前聊天记忆', body: '将删除本聊天的摘要、人物状态、人物资料、召回记录及历史派生版本。聊天正文、手动前情和全局 API、提示词设置会保留；手动前情可在“前情”中另行清空。下次建档需要从头开始。', note: '后端数据会移入回收站；这不代表永久擦除。', confirmText: deletePending ? '继续删除' : '删除记忆', cancelText: '取消' }))) { feedback = '已取消删除当前聊天记忆。'; render(foundationState); return; }
+        if (!await Promise.resolve(confirmImpl({ title: '删除当前聊天记忆', body: '删除本聊天的摘要、双丝网、人物资料、召回及历史版本，下次需重新建档。正文、手动前情和全局设置保留；前情可另行清空。', note: '后台记录移入回收站，并非永久擦除。', confirmText: deletePending ? '继续删除' : '删除记忆', cancelText: '取消' }))) { feedback = '已取消删除当前聊天记忆。'; render(foundationState); return; }
         void run(deletePending ? '继续删除当前聊天记忆' : '删除当前聊天记忆', () => memoryManagement.deleteCurrent(), { after: () => { managementState = memoryManagement.getState(); feedback = '当前聊天记忆已删除；聊天正文、手动前情与全局设置均已保留。手动前情可在“前情”中清空。'; return true; }, failed: () => { managementState = memoryManagement.getState(); return true; } });
       });
       deleteActions.append(remove);
