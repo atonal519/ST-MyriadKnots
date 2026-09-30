@@ -162,6 +162,7 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   sanitizerOptions,
   persistAnchors: persistMessageFloorAnchors,
   identityProjectionProvider,
+  onQianshiEventDeleted: () => v3RecallRuntime?.invalidate('qianshiManuallyDeleted'),
   qianshiExternalReferenceProvider: () => {
     if (!settings.get().timeEvolutionEnabled) return [];
     return timeRuntime.getQianshiReferences();
@@ -182,6 +183,7 @@ v3RecallRuntime = createV3RecallRuntime({
   identityProjectionProvider,
   timeProjectionProvider: source => timeRuntime.recallProjection(source),
   qianshiProgressProvider: async (source, context) => v3MemoryRuntime.getQianshiRecall({ ...context, ...(await timeRuntime.currentStoryContext(source) ?? {}) }),
+  qianshiDeletionProvider: () => v3MemoryRuntime.getQianshiDeletions(),
   pluginVersion,
 });
 peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({

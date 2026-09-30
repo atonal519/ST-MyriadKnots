@@ -8043,7 +8043,7 @@ test('聚合楼千事编辑保留成员来源，成员原文离开当前分支�
   const afterRejected = await cold.store.readReachable({ mode: 'runtime' });
   assert.equal(afterRejected.rootRevision, revisionBeforeReject);
   assert.equal(afterRejected.floorMemories.find(value => value.floorId === targetFloor.floorId).qianshiDelta.events[0].title, '调整文字');
-  assert.equal(cold.runtime.deleteQianshiEvent, undefined, '暂停中的聚合事件删除接口不公开');
+  assert.equal(typeof cold.runtime.deleteQianshiEvent, 'function', '聚合事件删除复用所属楼的人工事务');
 });
 
 test('正式事件仍与带关系的旧审核候选完全同签名时，文字编辑明确拒绝且不提交 revision', async () => {
@@ -8388,7 +8388,7 @@ test('千事整线与事件状态人工修订经冷读保存并按稳定 ID 合�
   assert.equal(stopped.events.find(item => item.id === firstEvent.id).status, 'inProgress', '停止跟踪保留事件当时状态');
   assert.equal(stopped.matters[0].following, false);
   assert.deepEqual(stoppedCold.runtime.getQianshiRecall({ queryContext: { latestUserText: '归还旧书' } }).matterIds, []);
-  assert.equal(stoppedCold.runtime.deleteQianshiEvent, undefined, '暂停的删除 WIP 不从 runtime 公共接口暴露');
+  assert.equal(typeof stoppedCold.runtime.deleteQianshiEvent, 'function', '删除入口已公开');
   const savedEvent = stopped.events.find(item => item.id === firstEvent.id);
   assert.equal((await stoppedCold.runtime.editQianshiEventText({ eventId: savedEvent.id,
     expected: { memoryId: savedEvent.sourceFloorMemoryId, title: savedEvent.title, description: savedEvent.description,
@@ -8551,4 +8551,66 @@ test('人工清空原本缺省的千事时间会落盘，冷读、重提、重�
   await finalCold.runtime.start();
   assert.equal(finalCold.runtime.getQianshiSnapshot().events[0].storyTime, null);
   assert.equal(finalCold.runtime.getQianshiSnapshot().events[0].timeManuallyEdited, true);
+});
+
+test('正式事件删除仅落所属楼标记，取消旧版本/来源变化，冷读仍隐藏且删除不调用模型', async () => {
+  const utility = options => {
+    const request = JSON.parse(options.taskMessages[0].content);
+    if (request.task !== 'extractFloorSemantics') return { jsonData: { noMaterialChange: true } };
+    return { jsonData: { summary: '原摘要。', qianshi: { events: [
+      { key: 'one', title: '误收录记录', description: '第一条。', status: 'planned', matter: true },
+      { key: 'two', title: '保留记录', description: '第二条。', status: 'occurred', matter: false },
+    ], order: [{ before: 'one', after: 'two' }] } } };
+  };
+  const h = harness({ modernAnchors: true, initialChat: [user('开始'), assistant('两条记录。'), user('稳定')], utility });
+  await h.runtime.start(); const floor = h.runtime.getState().floors[0];
+  await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  const before = await h.store.readReachable({ mode: 'runtime' }), old = before.floorMemories[0];
+  const first = h.runtime.getQianshiSnapshot().events[0];
+  const expected = { memoryId: first.sourceFloorMemoryId, title: first.title, description: first.description, object: first.object,
+    status: first.status, actionStatus: first.actionStatus ?? first.status, storyTime: first.storyTime };
+  await assert.rejects(h.runtime.deleteQianshiEvent({ eventId: first.id, expected: { ...expected, memoryId: 'changed-memory' } }), { code: 'QIANSHI_TEXT_EDIT_TARGET_CHANGED' });
+  assert.equal((await h.store.readReachable({ mode: 'runtime' })).rootRevision, before.rootRevision);
+  const calls = h.calls.length;
+  assert.equal((await h.runtime.deleteQianshiEvent({ eventId: first.id, expected })).status, 'saved');
+  const after = await h.store.readReachable({ mode: 'runtime' }), saved = after.floorMemories[0];
+  assert.deepEqual(saved.summary, old.summary); assert.deepEqual(saved.qianshiDelta.events, old.qianshiDelta.events);
+  assert.deepEqual(saved.qianshiDelta.deletedEventIds, [first.id]);
+  assert.equal(saved.qianshiDelta.manualEventOverrides, old.qianshiDelta.manualEventOverrides, '删除不新增时间/文字人工字段');
+  assert.equal(h.calls.length, calls); assert.equal(h.runtime.canEditQianshiEventText(first.id), false);
+  assert.deepEqual(await h.runtime.deleteQianshiEvent({ eventId: first.id }), { status: 'unchanged' });
+  const cold = harness({ sharedBackend: h.backend, sharedContext: h.context, modernAnchors: true, utility });
+  await cold.runtime.start(); assert.equal(cold.runtime.getQianshiSnapshot().events.length, 1);
+  const kept = cold.runtime.getQianshiSnapshot().events[0];
+  const revision = (await cold.store.readReachable({ mode: 'runtime' })).rootRevision;
+  cold.backend.setBeforePut(async ({ key }) => {
+    if (!key.startsWith('v3-floor-memory-')) return;
+    cold.context.chat[floor.messageIndex].mes = '来源在删除保存前改变';
+    cold.context.chat[floor.messageIndex].swipes[0] = cold.context.chat[floor.messageIndex].mes;
+    cold.backend.setBeforePut(null);
+  });
+  await assert.rejects(cold.runtime.deleteQianshiEvent({ eventId: kept.id }), { code: 'QIANSHI_TEXT_EDIT_SOURCE_CHANGED' });
+  assert.equal((await cold.store.readReachable({ mode: 'runtime' })).rootRevision, revision);
+});
+
+test('已有断链楼照常展示且可人工删除异常记录，不因旧坏引用拒绝删除事务', async () => {
+  const utility = options => {
+    const request = JSON.parse(options.taskMessages[0].content);
+    if (request.task !== 'extractFloorSemantics') return { jsonData: { noMaterialChange: true } };
+    return { jsonData: { summary: '原摘要。', qianshi: { events: [{ key: 'wrong', title: '误记事项', description: '误收录。', status: 'planned', matter: true }], order: [] } } };
+  };
+  const h = harness({ modernAnchors: true, initialChat: [user('开始'), assistant('一条记录。'), user('稳定')], utility });
+  await h.runtime.start(); const floor = h.runtime.getState().floors[0];
+  await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  const source = await h.store.readReachable({ mode: 'runtime' }), old = source.floorMemories[0];
+  const key = `chat-${CHAT}/v3-floor-memory-${old.id}`, record = h.backend.records.get(key);
+  h.backend.records.set(key, { ...record, data: { ...record.data, qianshiDelta: { ...old.qianshiDelta,
+    events: old.qianshiDelta.events.map(event => ({ ...event, continuesFromEventIds: ['ffffffff-ffff-4fff-8fff-ffffffffffff'] })) } } });
+  const cold = harness({ sharedBackend: h.backend, sharedContext: h.context, modernAnchors: true, utility });
+  await cold.runtime.start(); const snapshot = cold.runtime.getQianshiSnapshot();
+  assert.equal(snapshot.events.length, 1); assert.equal(snapshot.diagnostics.anomalyFloors.length, 1);
+  assert.equal(snapshot.diagnostics.anomalyFloors[0].messageIndex, floor.messageIndex);
+  assert.equal((await cold.runtime.deleteQianshiEvent({ eventId: snapshot.events[0].id })).status, 'saved');
+  assert.equal(cold.runtime.getQianshiSnapshot().events.length, 0); assert.equal(cold.runtime.getQianshiSnapshot().coverage.degradedFloors, 0);
+  assert.equal(cold.calls.length, 0, '删除与异常定位不调用模型');
 });

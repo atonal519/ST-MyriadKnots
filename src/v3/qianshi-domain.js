@@ -240,6 +240,15 @@ function comparableBefore(left, right) {
   return distance !== null && distance > 0;
 }
 
+// 删除身份只来自有效前缀的原事件与所属楼标记；供冻结注入和旧刻度关联复核，不猜语义。
+export function qianshiDeletedEvents(reachable) {
+  return activeMemories(reachable).flatMap(({ memory }) => {
+    const deleted = new Set(memory.qianshiDelta?.deletedEventIds ?? []);
+    return (memory.qianshiDelta?.events ?? []).filter(event => deleted.has(event.id))
+      .map(event => ({ eventId: event.id, matterId: event.matterId ?? `legacy-singleton:${event.id}` }));
+  });
+}
+
 export function projectQianshiGraph(reachable, { identityProjection = null, progressCharacters = QIANSHI_PROGRESS_CHARACTER_BUDGET } = {}) {
   const graph = new MultiDirectedGraph({ allowSelfLoops: false });
   const orderGraph = new DirectedGraph({ allowSelfLoops: false });
@@ -493,6 +502,7 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
     unavailableFloors: (floors.length - eligible.length),
   });
   return frozen({ graph, orderGraph, events: frozen(events), matters: frozen(matterDtos), relations: frozen(relations), currentProgress, coverage,
+    deletedEvents: frozen(qianshiDeletedEvents(reachable).map(frozen)),
     sourceOrderByEventId: frozen(Object.fromEntries(sourceIndex)),
     diagnostics: frozen({ discardedOrderRelations: frozen(discardedOrderRelations), danglingRelationIds: frozen(danglingRelationIds),
       danglingContinuationIds: frozen(danglingContinuationIds), danglingContinuations: frozen(danglingContinuations),
@@ -998,6 +1008,8 @@ export function createQianshiCandidateIndex({ projector = projectQianshiGraph } 
   };
   function appendDelta(state, floor, memory, floorSeq, floorTimes) {
     const delta = memory?.qianshiDelta;
+    // 有删除标记时回建统一完整投影，避免另算删除后接续而造成热/冷候选差异。
+    if (delta?.deletedEventIds?.length) return false;
     const effective = effectiveQianshiDelta(memory);
     if (effective.reviewEvents.length || effective.reviewRelations.length) return false;
     if (!delta || !['ready', 'partial'].includes(delta.status)) return true;
@@ -1288,8 +1300,19 @@ export function publicQianshiSnapshot(reachable, history = null, identityProject
     updatesMatter: event.updatesMatter, storyTime: event.storyTime, scheduledTime: event.scheduledTime, people: event.people.map(person => ({ ...person })), object: event.object,
     sourceFloorId: event.sourceFloorId, sourceFloorMemoryId: event.floorMemoryId, sourceAssistantSeq: event.assistantSeq,
     sourceMessageIndex: floorById.get(event.sourceFloorId)?.hostLocator?.messageIndex ?? null });
+  // 异常楼来自同一投影诊断，映射当前宿主楼号；不另存状态，也不把断链事件排除出年表。
+  const anomalyFloors = projection.diagnostics.degradedFloorIds.map(floorId => {
+    const floor = floorById.get(floorId);
+    const continuations = projection.diagnostics.danglingContinuations.filter(item => item.memoryFloorId === floorId);
+    const relations = projection.diagnostics.danglingRelations.filter(item => item.floorId === floorId);
+    const eventIds = [...new Set([...continuations.map(item => item.eventId), ...relations.flatMap(item => [item.fromEventId, item.toEventId])])]
+      .filter(id => projection.events.some(event => event.id === id));
+    const reasons = [...new Set([...continuations.map(() => '找不到前序事件'),
+      ...relations.map(item => item.reason === 'invalid-progress' ? '进展关联的事项身份不一致' : '关联的一端事件不存在')])];
+    return { floorId, messageIndex: floor?.hostLocator?.messageIndex ?? null, assistantSeq: floor?.assistantSeq ?? null, eventIds, reasons };
+  });
   return structuredClone({ status: 'ready', identity: { qqjChatId: reachable.root.chatId }, anchor: { narrativeGeneration: reachable.root.narrativeGeneration, headCheckpointId: reachable.root.headCheckpointId, rootRevision: reachable.rootRevision },
     coverage: projection.coverage, events: projection.events.map(publicEvent), matters: projection.matters, relations: projection.relations,
     timeline: projectQianshiTimeline(projection), currentProgress: projection.currentProgress,
-    history: history ?? { status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '' }, diagnostics: projection.diagnostics });
+    history: history ?? { status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '' }, diagnostics: { ...projection.diagnostics, anomalyFloors } });
 }

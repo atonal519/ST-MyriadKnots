@@ -2359,7 +2359,7 @@ function cseLaggingReachable(removeDeltaId = 'delta-remove') {
   };
 }
 
-function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaultSelector = false, generateUtilityTask, queryBuilder = buildRecallQueryContext, saveChat = true, reachableReader, rootReader, prepareMemory, preparationTimeoutMs, snapshotHook, fingerprint, memoryStatus, realtimeOrigin, notifyUser, identityProjectionProvider, timeProjectionProvider, qianshiProgressProvider, pluginVersion = TEST_PLUGIN_VERSION, prequel = null } = {}) {
+function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaultSelector = false, generateUtilityTask, queryBuilder = buildRecallQueryContext, saveChat = true, reachableReader, rootReader, prepareMemory, preparationTimeoutMs, snapshotHook, fingerprint, memoryStatus, realtimeOrigin, notifyUser, identityProjectionProvider, timeProjectionProvider, qianshiProgressProvider, qianshiDeletionProvider, pluginVersion = TEST_PLUGIN_VERSION, prequel = null } = {}) {
   const prompts = [];
   const handlers = new Map();
   const userMessage = { is_user: true, is_system: false, mes: '阿裴，我们回钟楼赴约。' };
@@ -2395,6 +2395,7 @@ function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaul
     ...(identityProjectionProvider ? { identityProjectionProvider } : {}),
     ...(timeProjectionProvider ? { timeProjectionProvider } : {}),
     ...(qianshiProgressProvider ? { qianshiProgressProvider } : {}),
+    ...(qianshiDeletionProvider ? { qianshiDeletionProvider } : {}),
     ...(prepareMemory ? { prepareMemory } : {}),
     ...(preparationTimeoutMs ? { preparationTimeoutMs } : {}),
     ...(fingerprint ? { fingerprint } : {}),
@@ -3291,6 +3292,54 @@ test('runtime normal 先完成一次 prompt commit，再最多保存一次 schem
   assert.equal(result.lastRecall.receiptPersistence, 'saveUnconfirmed');
   assert.equal(result.lastRecall.stages.selected, 5);
   assert.equal(typeof result.lastRecall.timings.totalMs, 'number');
+});
+
+test('实时回执保留时间去重依据，重叠千事不再让楼内旧事按钮消失', async () => {
+  const h = createRuntimeHarness({
+    qianshiProgressProvider: () => ({ anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion: 1,
+      text: '[当前待接续]\n- 归还旧书；尚未记录完成。', eventIds: [], matterIds: ['matter-book'] }),
+    timeProjectionProvider: () => ({ fingerprint: 'clock', corrections: {}, reminders: [{ itemId: 'book', text: '千事事项 / 归还旧书；刻度 / 明日归还',
+      sourceSignature: 'book', qianshiRef: { matterId: 'matter-book', originEventId: 'origin-book' } }] }),
+  });
+  await h.runtime.intercept(h.chat, 12000, null, 'normal');
+  const live = h.runtime.getState().lastRecall, saved = h.userMessage.extra[RECALL_RECEIPT_KEY];
+  assert.deepEqual(live.timeDependencies, saved.timeDependencies);
+  const projected = projectInlineRecallReceipt(live);
+  assert.equal(projected.protocolRecognized, true); assert.equal(projected.historyGroups.length, live.selectedFloors.length);
+  assert.ok(projected.historyGroups.length > 0);
+});
+
+test('人工删除只撤冻结千事对应行与关联刻度，普通召回保留且不重选；新回执不被旧标记反复撤', async () => {
+  let deletions = [], selections = 0, sourceReads = 0;
+  const h = createRuntimeHarness({ selector: input => { selections += 1; return selectRecall(input); },
+    sourceReader: async () => { sourceReads += 1; return structuredClone(h.source); },
+    qianshiDeletionProvider: () => ({ chatId: CHAT, events: deletions }),
+    qianshiProgressProvider: () => ({ anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion: 1,
+      text: `${deletions.length ? '[相关时间线]\n- 今日：保留记录' : '[相关时间线]\n- 旧日：误收录\n- 今日：保留记录'}\n\n[当前待接续]\n- 归还旧书；尚未记录完成。`,
+      eventIds: deletions.length ? ['event-keep'] : ['event-delete', 'event-keep'], matterIds: ['matter-book'], deletedEvents: deletions }),
+    timeProjectionProvider: () => ({ fingerprint: 'clock', corrections: {}, reminders: [{ itemId: 'book', text: '删除关联刻度', sourceSignature: 'book',
+      qianshiRef: { matterId: 'matter-book', originEventId: 'event-delete' } }, { itemId: 'ordinary', text: '保留独立刻度', sourceSignature: 'ordinary' }] }),
+  });
+  await h.runtime.intercept(h.chat, 12000, null, 'normal');
+  const original = structuredClone(h.userMessage.extra[RECALL_RECEIPT_KEY]);
+  assert.match(original.injectionText, /误收录|删除关联刻度/u);
+  deletions = [{ eventId: 'event-delete', matterId: 'matter-book' }];
+  h.runtime.invalidate('qianshiManuallyDeleted');
+  const reused = await h.runtime.intercept(h.chat, 12000, null, 'regenerate');
+  assert.equal(reused.lastRecall.reusedReceipt, true); assert.equal(selections, 1); assert.equal(sourceReads, 2);
+  assert.deepEqual(reused.lastRecall.selectedFloors, original.selectedFloors);
+  assert.deepEqual(reused.lastRecall.selectedStates, original.selectedStates);
+  assert.match(reused.lastRecall.injectionText, /保留记录|保留独立刻度/u);
+  assert.doesNotMatch(reused.lastRecall.injectionText, /误收录|删除关联刻度|归还旧书/u);
+  assert.deepEqual(h.userMessage.extra[RECALL_RECEIPT_KEY], original, '保留历史签名回执，只改变本次可用注入');
+  const again = await h.runtime.intercept(h.chat, 12000, null, 'continue');
+  assert.equal(again.lastRecall.injectionText, reused.lastRecall.injectionText); assert.equal(selections, 1);
+  // 新 user 首次选材已看到删除标记，后续冻结不把同一事项的新有效进展撤掉。
+  h.userMessage.mes += ' 新输入'; h.source.qianshiDeletedEvents = deletions;
+  await h.runtime.intercept(h.chat, 12000, null, 'normal');
+  const next = h.runtime.getState().lastRecall.injectionText;
+  await h.runtime.intercept(h.chat, 12000, null, 'regenerate');
+  assert.equal(h.runtime.getState().lastRecall.injectionText, next);
 });
 
 test('千事当前进度计入普通召回预算并写入同一 schema15 回执与注入槽', async () => {

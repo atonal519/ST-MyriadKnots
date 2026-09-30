@@ -166,7 +166,7 @@ const legacyReceiptMaterial = receipt => [
   receipt.userMessageIndex, receipt.userContentFingerprint, receipt.queryFingerprint, receipt.generationType,
   receipt.selectedFloors, receipt.selectedStates, receipt.coverage, receipt.injectionText, receipt.stages, receipt.skipReasons, receipt.completionStatus, receipt.createdAt,
 ];
-const receiptMaterial = receipt => receipt.schemaVersion >= 15 && receipt.qianshiProgress
+const baseReceiptMaterial = receipt => receipt.schemaVersion >= 15 && receipt.qianshiProgress
   ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings, receipt.storylines, receipt.timeDependencies, receipt.qianshiProgress]
   : receipt.schemaVersion >= 15
   ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings, receipt.storylines, receipt.timeDependencies]
@@ -180,6 +180,17 @@ const receiptMaterial = receipt => receipt.schemaVersion >= 15 && receipt.qiansh
   ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings]
   : receipt.schemaVersion >= 9 ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion]
   : receipt.schemaVersion >= 8 ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint] : legacyReceiptMaterial(receipt);
+// 删除见证是可选的签名扩展，旧回执维持原签名；只记录选中事项的删除指纹，不复制全档删除清单。
+const receiptMaterial = receipt => receipt.qianshiDeletionWitness === undefined ? baseReceiptMaterial(receipt)
+  : [...baseReceiptMaterial(receipt), receipt.qianshiDeletionWitness];
+async function qianshiDeletionWitness(receipt, deletedEvents, fingerprint) {
+  const matterIds = [...new Set([...(receipt.qianshiProgress?.matterIds ?? []),
+    ...(receipt.timeDependencies?.reminders ?? []).map(item => item.qianshiRef?.matterId).filter(Boolean)])];
+  const byMatter = new Map();
+  for (const event of deletedEvents) byMatter.set(event.matterId, [...(byMatter.get(event.matterId) ?? []), event.eventId]);
+  return Promise.all(matterIds.map(async matterId => ({ matterId,
+    fingerprint: await fingerprint(JSON.stringify([...(byMatter.get(matterId) ?? [])].sort())) })));
+}
 
 const boundedString = (value, maximum, { empty = false } = {}) => typeof value === 'string' && value.length <= maximum && (empty || value.length > 0);
 const optionalBoundedString = (value, maximum) => value === null || boundedString(value, maximum);
@@ -352,6 +363,9 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
   const receiptStateLimit = expandedSelection ? MAX_RECEIPT_STATES : LEGACY_MAX_RECEIPT_STATES;
   const receiptChangeLimit = expandedSelection ? MAX_RECEIPT_CSE_CHANGES : LEGACY_MAX_RECEIPT_CSE_CHANGES;
   const receiptStorylineLimit = expandedSelection ? MAX_RECEIPT_STORYLINES : LEGACY_MAX_RECEIPT_STORYLINES;
+  if (receipt?.qianshiDeletionWitness !== undefined && (!Array.isArray(receipt.qianshiDeletionWitness)
+    || receipt.qianshiDeletionWitness.length > 160 + receiptStateLimit
+    || !receipt.qianshiDeletionWitness.every(value => value && boundedString(value.matterId, 500) && boundedString(value.fingerprint, 200)))) return false;
   if (receipt?.schemaVersion >= 14 && !timeDependenciesValid(receipt.timeDependencies, { correctionLimit: receiptStateLimit })) return false;
   const plan = receipt?.timeDependencies?.renderPlan;
   if (plan && (!Array.isArray(plan.floors) || plan.floors.length > receiptFloorLimit
@@ -524,6 +538,8 @@ function stateFromReceipt(receipt, { generationType = receipt.generationType, re
     selectedStates: Object.freeze(clone(receipt.selectedStates ?? [])),
     selectedCseChanges: Object.freeze(clone(receipt.selectedCseChanges ?? [])),
     qianshiProgress: receipt.qianshiProgress ? Object.freeze(clone(receipt.qianshiProgress)) : null,
+    // 实时楼内展示需沿用同一时间去重依据，否则千事尾块对不上会连带隐藏已召回旧事。
+    timeDependencies: receipt.timeDependencies ? Object.freeze(clone(receipt.timeDependencies)) : null,
     storylines: Object.freeze(clone(receipt.storylines ?? [])),
     selectorDiagnostic: receipt.selectorDiagnostic ? Object.freeze(clone(receipt.selectorDiagnostic)) : null,
     injectionText: receipt.injectionText,
@@ -734,7 +750,7 @@ function coveredBodyGuardsCurrent(guards, snapshot, sanitizerOptions) {
   });
 }
 
-export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = 5000, realtimeOrigin = () => false, recentBodyFloorLimit = () => 3, notifyUser = null, sourceReader = readRecallSource, selector = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, timeProjectionProvider = null, qianshiProgressProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
+export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = 5000, realtimeOrigin = () => false, recentBodyFloorLimit = () => 3, notifyUser = null, sourceReader = readRecallSource, selector = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, timeProjectionProvider = null, qianshiProgressProvider = null, qianshiDeletionProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 recall host adapter 无效');
   if (typeof fingerprint !== 'function') throw new TypeError('V3 recall fingerprint 无效');
@@ -825,7 +841,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (anchorMatches) qianshiProgress = await sealQianshiProgress(value);
       const qianshiCandidates = anchorMatches && !selection && Array.isArray(value?.candidates) ? Object.freeze(clone(value.candidates)) : Object.freeze([]);
       const qianshiCurrentStoryTime = anchorMatches && typeof value?.currentStoryTime === 'string' ? value.currentStoryTime : null;
-      return Object.freeze({ ...source, qianshiProgress, qianshiCandidates, qianshiCurrentStoryTime });
+      return Object.freeze({ ...source, qianshiProgress, qianshiCandidates, qianshiCurrentStoryTime,
+        qianshiDeletedEvents: anchorMatches ? value.deletedEvents ?? [] : [] });
     } catch (error) { logger?.warn?.('[qianqianjie] optional qianshi projection failed', { code: error?.code ?? error?.name ?? 'QQJ_QIANSHI_READ_FAILED' }); }
     return Object.freeze({ ...source, qianshiProgress, qianshiCandidates: Object.freeze([]) });
   }
@@ -1004,11 +1021,60 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     return [session, stored].filter((value, index, values) => value && typeof value === 'object' && values.indexOf(value) === index);
   }
 
+  async function withoutDeletedQianshi(receipt) {
+    if (typeof qianshiDeletionProvider !== 'function' || !receipt.qianshiProgress
+      && !(receipt.timeDependencies?.reminders ?? []).some(item => item.qianshiRef)) return receipt;
+    const deletion = await qianshiDeletionProvider();
+    if (deletion.chatId !== receipt.chatId) throw Object.assign(new Error('当前聊天已变化。'), { code: 'V3_RECALL_CHAT_CHANGED' });
+    const deletedIds = new Set(deletion.events.map(event => event.eventId));
+    const witness = await qianshiDeletionWitness(receipt, deletion.events, fingerprint);
+    const prior = new Map((receipt.qianshiDeletionWitness ?? []).map(value => [value.matterId, value.fingerprint]));
+    const affectedMatters = new Set();
+    for (const value of witness) {
+      if (prior.has(value.matterId) ? prior.get(value.matterId) !== value.fingerprint
+        : deletion.events.some(event => event.matterId === value.matterId)) affectedMatters.add(value.matterId);
+    }
+    const oldQianshi = receipt.qianshiProgress;
+    const eventIds = (oldQianshi?.eventIds ?? []).filter(id => !deletedIds.has(id));
+    const matterIds = (oldQianshi?.matterIds ?? []).filter(id => !affectedMatters.has(id));
+    const savedTime = receipt.timeDependencies;
+    const reminders = (savedTime?.reminders ?? []).filter(item => !affectedMatters.has(item.qianshiRef?.matterId));
+    if (eventIds.length === (oldQianshi?.eventIds?.length ?? 0) && matterIds.length === (oldQianshi?.matterIds?.length ?? 0)
+      && reminders.length === (savedTime?.reminders?.length ?? 0)) return receipt;
+    // 只撤回明确删除涉及的行，不加入新材料、不重跑模型；普通摘要/CSE 与其余冻结材料逐字保留。
+    let qianshi = null;
+    if (oldQianshi) {
+      const retainedText = oldQianshi.text.split(/\n\n/u).map(section => {
+        const lines = section.split('\n'), ids = lines[0] === '[相关时间线]' ? oldQianshi.eventIds
+          : lines[0] === '[当前待接续]' ? oldQianshi.matterIds : null;
+        if (!ids) return '';
+        const kept = new Set(lines[0] === '[相关时间线]' ? eventIds : matterIds);
+        const rows = lines.slice(1).filter((line, index) => kept.has(ids[index]));
+        return rows.length ? [lines[0], ...rows].join('\n') : '';
+      }).filter(Boolean).join('\n\n');
+      qianshi = await sealQianshiProgress({ ...oldQianshi, text: retainedText, eventIds, matterIds });
+    }
+    let ordinaryText = removeQianshiProgress(receipt.injectionText, oldQianshi, savedTime);
+    const timeDependencies = savedTime?.mode === 'selected' ? { ...savedTime, reminders } : savedTime;
+    if (reminders.length !== (savedTime?.reminders?.length ?? 0)) {
+      const timeBlock = rows => rows.length ? ['[时间参考（当前推测及预计/期限节点尚未获正文确认，不代表已经发生或完成）]',
+        ...rows.map(item => `- ${item.text}`)].join('\n') + '\n' : '';
+      const suffix = `${timeBlock(savedTime.reminders)}</qqj_recalled_context>`;
+      if (ordinaryText.endsWith(suffix)) ordinaryText = ordinaryText.slice(0, -suffix.length) + `${timeBlock(reminders)}</qqj_recalled_context>`;
+      if (ordinaryText === '<qqj_recalled_context>\n</qqj_recalled_context>') ordinaryText = '';
+    }
+    const injectionText = appendQianshiProgress(ordinaryText, qianshi, timeDependencies);
+    const removedReminders = (savedTime?.reminders?.length ?? 0) - reminders.length;
+    const stages = receipt.stages ? { ...receipt.stages, estimatedTokenCount: estimateRecallTokens(injectionText),
+      timeReminderCount: reminders.length, finalInjectionItemCount: Math.max(0, (receipt.stages.finalInjectionItemCount ?? 0) - removedReminders) } : null;
+    return { ...receipt, qianshiProgress: qianshi, timeDependencies, injectionText, stages,
+      completionStatus: injectionText ? 'ready' : 'empty', skipReasons: [...new Set([...receipt.skipReasons, 'qianshiManuallyDeleted'])] };
+  }
+
   function commitFrozenReceiptIfCurrent({ operation, receipt, userIndex, hostGuard }) {
     if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };
-    // Frozen reuse intentionally does not inspect source/root/time/qianshi again. The
-    // user message object is the lifetime boundary; these checks and prompt commit
-    // remain synchronous so a stale operation cannot cross the final commit point.
+    // 人工删除的撤回在此前完成；普通冻结复用不重读来源、时间投影或重选千事。
+    // user 消息对象是生命周期边界；最后守卫与注入同步完成，迟到请求不能跨过提交点。
     const snapshot = hostAdapter.snapshot();
     const user = latestUser(snapshot);
     const current = operation.token === epoch
@@ -1215,6 +1281,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         if (snapshot) { candidate = snapshot; break; }
       }
       if (candidate) {
+        candidate = await withoutDeletedQianshi(candidate);
         diagnostic.selectionStatus = 'receiptCandidate'; diagnostic.coverage = clone(candidate.coverage); diagnostic.stages = clone(candidate.stages); diagnostic.selectorDiagnostic = clone(candidate.selectorDiagnostic);
         operation.phase = diagnostic.phase = 'commit'; notify();
         const committed = commitFrozenReceiptIfCurrent({ operation, receipt: candidate, userIndex: user.index, hostGuard });
@@ -1367,6 +1434,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       const committed = await commitPromptIfCurrent({ operation, source, receipt: receiptBase, selectedFloors: receiptBase.selectedFloors, selectedStates: receiptBase.selectedStates, selectedCseChanges: receiptBase.selectedCseChanges, timeDependencies: receiptBase.timeDependencies, userIndex: user.index, userFingerprint, hostGuard, injectionText: receiptBase.injectionText });
       if (!committed.ok) return stopForFinalSafety(committed.reason);
       receiptBase = committed.receipt;
+      if (typeof qianshiDeletionProvider === 'function') receiptBase.qianshiDeletionWitness = await qianshiDeletionWitness(receiptBase, source.qianshiDeletedEvents ?? [], fingerprint);
       diagnostic.stages = clone(receiptBase.stages);
       diagnostic.selectorDiagnostic = clone(receiptBase.selectorDiagnostic);
       if (partialReasons.length) {
@@ -1445,7 +1513,10 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
   }
 
   function invalidate(reason = 'invalidated') {
-    epoch += 1; active?.controller.abort(FINAL_REASONS.has(reason) ? reason : 'superseded'); active = null; sessionReceipt = null; generationQueue.length = 0; stoppedEndDebt = 0; clearSlot();
+    epoch += 1; active?.controller.abort(FINAL_REASONS.has(reason) ? reason : 'superseded'); active = null;
+    // 人工删除撤在途注入，但保留首次选材回执；下一次重生只剔除明确删除材料。
+    if (reason !== 'qianshiManuallyDeleted') sessionReceipt = null;
+    generationQueue.length = 0; stoppedEndDebt = 0; clearSlot();
     lastRecall = null; lastPrequel = null; lastRecallBinding = null; lastError = null; notify();
   }
 

@@ -19,7 +19,7 @@ import { matchFloorCandidates } from './floor-binding.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 import { captureFloorVariableReference } from './floor-variable-reference.js';
 import { publicErrorMessage } from '../public-error.js';
-import { compileQianshiDelta, createQianshiCandidateIndex, effectiveQianshiDelta, normalizeQianshiEventLinks, pendingQianshiDelta, prepareQianshiCandidates, prepareQianshiRecallCandidates, projectQianshiCandidateSelection, projectQianshiGraph, projectQianshiRecall, publicQianshiSnapshot, QIANSHI_CANDIDATE_CHARACTER_BUDGET, QIANSHI_HISTORY_INPUT_TOKENS, QIANSHI_HISTORY_OUTPUT_TOKENS, QIANSHI_RECALL_PROJECTION_VERSION } from './qianshi-domain.js';
+import { compileQianshiDelta, createQianshiCandidateIndex, effectiveQianshiDelta, normalizeQianshiEventLinks, pendingQianshiDelta, prepareQianshiCandidates, prepareQianshiRecallCandidates, projectQianshiCandidateSelection, projectQianshiGraph, projectQianshiRecall, publicQianshiSnapshot, qianshiDeletedEvents, QIANSHI_CANDIDATE_CHARACTER_BUDGET, QIANSHI_HISTORY_INPUT_TOKENS, QIANSHI_HISTORY_OUTPUT_TOKENS, QIANSHI_RECALL_PROJECTION_VERSION } from './qianshi-domain.js';
 import { estimateRecallTokens } from './recall-selector.js';
 import { markPreparationFailure, preparationFailureDiagnostic, preparationStepFor, storedPreparationDiagnostic } from './preparation-diagnostic.js';
 
@@ -223,7 +223,7 @@ export function createQianshiEventLookup(readSnapshot = createQianshiSnapshotMem
   };
 }
 
-export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, extractorPromptGuidance = () => '', csePromptGuidance = () => '', processingPrompt = () => '', storyClockReferenceTags = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), persistAnchors = null, identityProjectionProvider = null, qianshiExternalReferenceProvider = () => [], qianshiCandidatePreparer = prepareQianshiCandidates, qianshiCandidateIndexFactory = createQianshiCandidateIndex, failureStorage = undefined, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
+export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, onQianshiEventDeleted = () => {}, extractorPromptGuidance = () => '', csePromptGuidance = () => '', processingPrompt = () => '', storyClockReferenceTags = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), persistAnchors = null, identityProjectionProvider = null, qianshiExternalReferenceProvider = () => [], qianshiCandidatePreparer = prepareQianshiCandidates, qianshiCandidateIndexFactory = createQianshiCandidateIndex, failureStorage = undefined, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
   if (!foundationRuntime || ['start', 'refreshStatus', 'confirmLatest', 'setEnabled', 'bind', 'getState'].some(name => typeof foundationRuntime[name] !== 'function')) throw new TypeError('V3 memory foundation runtime 无效');
   if (!store || ['readReachable', 'readRecord', 'putRecord', 'commitRoot', 'recordKey', 'invalidate'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 memory store 无效');
   if (typeof generateAnalysisTask !== 'function') throw new TypeError('V3 memory analysis route 无效');
@@ -1225,7 +1225,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (!operation.qianshiRejudge && ['extract', 'reextract'].includes(action) && revisionReplacement.qianshiDelta && oldTarget?.qianshiDelta) {
       const priorDelta = oldTarget.qianshiDelta;
       if (priorDelta.deletedEventIds?.length) {
-        // Old deletion markers remain readable; this paused feature keeps its historical floor delta intact.
+        // 人工删除保护该楼已存千事，摘要重提不能重造稳定事件 ID 来绕过删除标记。
         const id = await deterministicUuid(['v3-memory-qianshi-deleted-preserved', revisionReplacement.id, oldTarget.id, current.root.headCheckpointId]);
         revisionReplacement = validateFloorMemory({ ...revisionReplacement, id, qianshiDelta: priorDelta }, { expectedChatId: revisionReplacement.chatId });
     } else {
@@ -1264,6 +1264,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
     if (operation.qianshiRejudge) {
       // All staged floor deltas are checked together against the original root before one checkpoint can publish them.
+    } else if (operation.qianshiTextEdit?.manualAction?.type === 'deleteEvent') {
+      // 单条删除只增加标记，不创建/改写关系；既有断链不能阻止用户移除误收录事件。
+      // 来源、目标版本和 CAS 校验仍由同一事务执行，派生图统一撤去删除端点。
     } else if (revisionReplacement.qianshiDelta) {
       const replacedFloorIds = new Set(oldTarget ? memorySourceFloorIds(oldTarget) : [revisionReplacement.floorId]);
       const oldEventIds = new Set(oldTarget?.qianshiDelta?.events?.map(event => event.id) ?? []);
@@ -1431,6 +1434,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       throw errorWith('V3_MEMORY_COLD_READ_FAILED', '记忆已提交，但提交结果缺少一致的冷读取校验。');
     }
     foundationRuntime.adoptReachable?.(reachable);
+    // 标记已获冷读确认后立即撤在途旧召回；回调不参与落盘，也不改变删除事务结果。
+    if (operation.qianshiTextEdit?.manualAction?.type === 'deleteEvent') {
+      try { onQianshiEventDeleted(); } catch { /* 注入撤回不改变已提交事实。 */ }
+    }
     clearFloorFailure(revisionReplacement.floorId, reachable);
     lastFailure = null;
     sessionCandidates.delete(revisionReplacement.floorId);
@@ -2997,12 +3004,15 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事件状态已变化；当前记录保持不变，请刷新后重新编辑。');
       }
       const nextStoryTime = timeProvided ? normalizedTime : event.storyTime;
-      if (timeProvided && expected.storyTime !== event.storyTime) throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事件时间已变化，请刷新后重新编辑。');
+      if ((timeProvided || Object.hasOwn(expected, 'storyTime')) && expected.storyTime !== event.storyTime) throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事件时间已变化，请刷新后重新编辑。');
       const timeUnchanged = nextStoryTime === event.storyTime && (!timeProvided
         || Object.hasOwn((old.qianshiDelta.manualEventOverrides ?? []).find(item => item.eventId === eventId) ?? {}, 'storyTime'));
       const textUnchanged = qianshiText(event.title, 500) === nextText.title && qianshiText(event.description, 4000) === nextText.description
         && event.object === nextText.object;
       const statusUnchanged = nextStatus === event.status && nextActionStatus === (event.actionStatus ?? event.status);
+      if (manualAction?.type === 'deleteEvent' && (!textUnchanged || !statusUnchanged || timeProvided)) {
+        throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '删除只移除这条事件，不能同时改写其内容。');
+      }
       if (textUnchanged && statusUnchanged && timeUnchanged && !manualAction) return { status: 'unchanged' };
       const sourceFloor = reachable.floors.find(item => item.id === event.sourceFloorId);
       const sourceSelection = sourceFloor ? currentRawSelection(hostAdapter, sourceFloor) : null;
@@ -3106,13 +3116,14 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       manualAction: { type: 'matterStatus', matterId, status, expectedStatus, expectedManualStatus } });
   }
 
-  async function deleteQianshiEvent({ eventId } = {}) {
+  async function deleteQianshiEvent({ eventId, expected = null } = {}) {
     const snapshot = qianshiSnapshot(), event = snapshot?.events?.find(item => item.id === eventId);
     if (!event) {
       if ((reachable?.floorMemories ?? []).some(memory => memory.recordStatus === 'active' && memory.qianshiDelta?.deletedEventIds?.includes(eventId))) return { status: 'unchanged' };
       throw errorWith('QIANSHI_TEXT_EDIT_UNAVAILABLE', '这条事件已不在当前千事记录中；请刷新后重试。');
     }
-    return editQianshiEventText({ eventId, expected: { memoryId: event.sourceFloorMemoryId,
+    // 删除保留原事实与人工字段，只在所属楼记稳定 ID；与编辑共用来源见证、CAS 和冷读。
+    return editQianshiEventText({ eventId, expected: expected ?? { memoryId: event.sourceFloorMemoryId,
       title: event.title, description: event.description, object: event.object }, title: event.title, description: event.description, object: event.object,
     manualAction: { type: 'deleteEvent' } });
   }
@@ -3715,20 +3726,26 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
 
   return Object.freeze({ bind, start, setEnabled, refreshAutomation, startHistoricalRebuild, pauseHistoricalRebuild, retryAutomation, rebuildCse, resumeCseRebuild, pauseCseRebuild, invalidate, refreshStatus, prepareCurrent, confirmLatest, confirmConsecutiveAssistants, extractNext, extractFloor, analyzeNextState, retryStateAnalysis, correctSubjectState, editSummary, editMemory, restoreAi, markError, copySafeDiagnostic, copyFullDiagnostic, shouldBlockMainGeneration, allowsRealtimeTailFromEmpty, setIdentityProjection,
-    getQianshiSnapshot: () => structuredClone(qianshiSnapshot()), canEditQianshiEventText, editQianshiEventText,
+    getQianshiSnapshot: () => structuredClone(qianshiSnapshot()), canEditQianshiEventText, editQianshiEventText, deleteQianshiEvent,
+    // 冻结召回只检查人工删除身份，不重选材；冷启动复用现有只读准备链。
+    getQianshiDeletions: async () => {
+      const prepared = await prepareCurrent();
+      if (prepared.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '当前千事删除状态尚未准备好，请刷新状态后重试。');
+      return { chatId: prepared.reachable.root.chatId, events: qianshiDeletedEvents(prepared.reachable) };
+    },
     setQianshiMatterFollowing, setQianshiMatterStatus, getQianshiRecall: ({ queryContext = null, currentTime = null, selectedEventIds = null, selectedMatterIds = null } = {}) => {
       if (!reachable?.root) return { projectionVersion: QIANSHI_RECALL_PROJECTION_VERSION, text: '', eventIds: [], matterIds: [], anchor: null };
       const anchor = { narrativeGeneration: reachable.root.narrativeGeneration, headCheckpointId: reachable.root.headCheckpointId, rootRevision: reachable.rootRevision };
       if (Array.isArray(selectedEventIds) || Array.isArray(selectedMatterIds)) {
         const recall = projectQianshiRecall(reachable, { identityProjection, selectedEventIds: selectedEventIds ?? [], selectedMatterIds: selectedMatterIds ?? [] });
-        return structuredClone({ ...recall, anchor });
+        return structuredClone({ ...recall, deletedEvents: qianshiDeletedEvents(reachable), anchor });
       }
       const prepared = prepareQianshiRecallCandidates(reachable, { queryContext, identityProjection });
       const recall = projectQianshiCandidateSelection(prepared.candidates);
       const storyDate = typeof currentTime?.date === 'string' && currentTime.date.trim() ? currentTime.date.trim()
         : typeof currentTime?.raw === 'string' && currentTime.raw.trim() ? currentTime.raw.trim() : '';
       const storyClock = typeof currentTime?.clock === 'string' && currentTime.clock.trim() && !storyDate.includes(currentTime.clock.trim()) ? currentTime.clock.trim() : '';
-      return structuredClone({ ...recall, candidates: prepared.candidates, candidateStats: prepared.stats,
+      return structuredClone({ ...recall, deletedEvents: qianshiDeletedEvents(reachable), candidates: prepared.candidates, candidateStats: prepared.stats,
         currentStoryTime: [storyDate, storyClock].filter(Boolean).join(' ') || null, anchor });
     },
     prepareQianshiHistory, startQianshiHistory, stopQianshiHistory, prepareQianshiRejudge, startQianshiRejudge, getState,

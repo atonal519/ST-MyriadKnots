@@ -127,12 +127,22 @@ test('事件菜单仅有编辑、删除和状态入口，插件弹窗四种状�
   assert.doesNotMatch(copy(menu), /停止主动关注|继续关注|恢复自动判断|保存整线状态/u);
   byText(menu, '修改状态').fire('click'); await tick(); await tick();
   assert.equal(h.runtime.getQianshiSnapshot().matters[0].manualStatusOverride, 'completed');
-  assert.match(copy(h.container), /状态已保存/u);
+  const card = flatten(h.container).find(node => node.dataset.eventId === 'event-7');
+  const badge = () => flatten(card.children[0]).find(node => node.className.includes('qqj-qianshi-state'));
+  assert.equal(badge().textContent, '已完成'); assert.equal(badge().title, '整件事状态：已完成');
+  const historicalCard = flatten(h.container).find(node => node.dataset.eventId === 'event-3');
+  assert.equal(flatten(historicalCard.children[0]).find(node => node.className.includes('qqj-qianshi-state')).textContent, '已完成');
+  historicalCard.open = true; historicalCard.fire('toggle');
+  const history = flatten(historicalCard).find(node => node.className === 'qqj-qianshi-matter');
+  history.open = true; history.fire('toggle');
+  assert.ok(flatten(history).some(node => node.title === '本条动作状态：进行中'), '历史动作不被整线完成改写');
+  assert.equal(h.runtime.getQianshiSnapshot().events[2].status, 'inProgress');
+  assert.doesNotMatch(copy(h.container), /正在保存|保存失败/u);
   next = 'automatic';
   menu = flatten(h.container).find(node => node.dataset.qianshiEventId === 'event-1');
   byText(menu, '修改状态').fire('click'); await tick(); await tick();
   assert.equal(h.runtime.getQianshiSnapshot().matters[0].manualStatusOverride, null);
-  assert.match(copy(h.container), /已恢复自动判断/u);
+  assert.doesNotMatch(copy(h.container), /正在保存|保存失败/u);
 });
 
 test('状态弹窗取消不保存，切聊后的迟到确认也不能修改新聊天', async () => {
@@ -146,6 +156,42 @@ test('状态弹窗取消不保存，切聊后的迟到确认也不能修改新�
   } });
   byText(flatten(h.container).find(node => node.dataset.qianshiEventId === 'event-1'), '修改状态').fire('click'); await tick();
   assert.equal(h.runtime.getQianshiSnapshot().matters[0].manualStatusOverride, undefined);
+});
+
+test('状态保存先关弹窗，原事件显示小字，浏览不中止保存，失败保留原状态且不串聊天', async () => {
+  for (const mode of ['success', 'failure', 'browse', 'chatChanged']) {
+    const snapshot = fixture(); snapshot.matters[0].status = 'inProgress';
+    let resolveSave, rejectSave, closed = false, writes = 0;
+    const done = new Promise((resolve, reject) => { resolveSave = resolve; rejectSave = reject; });
+    const h = harness({ initialSnapshot: snapshot, manualActions: true, custom: async options => {
+      const radio = flatten(options.content).find(node => node.value === 'completed'); radio.fire('change');
+      const choice = await options.submit(); closed = true; return choice;
+    } });
+    h.runtime.setQianshiMatterStatus = async () => {
+      assert.equal(closed, true, '关窗之后才启动落盘'); writes += 1; await done;
+      const saved = h.runtime.getQianshiSnapshot(); saved.matters[0].status = 'completed'; h.emit(saved);
+      return { status: 'saved' };
+    };
+    byText(flatten(h.container).find(node => node.dataset.qianshiEventId === 'event-7'), '修改状态').fire('click'); await tick();
+    assert.equal(writes, 1); assert.match(copy(h.container), /正在保存…/u);
+    assert.equal(h.runtime.getQianshiSnapshot().matters[0].status, 'inProgress', '落盘期间不提前显示成功');
+    assert.equal(byText(flatten(h.container).find(node => node.dataset.qianshiEventId === 'event-7'), '修改状态').disabled, true);
+    if (mode === 'browse') h.view.deactivate();
+    if (mode === 'chatChanged') { const other = fixture(); other.identity.qqjChatId = 'chat-b'; h.emit(other); }
+    if (mode === 'success') resolveSave(); else rejectSave(new Error('保存服务暂时不可用'));
+    await tick(); await tick();
+    if (mode === 'browse') await h.view.activate();
+    assert.doesNotMatch(copy(h.container), /正在保存/u);
+    if (mode === 'success') {
+      assert.equal(h.runtime.getQianshiSnapshot().matters[0].status, 'completed');
+      assert.doesNotMatch(copy(h.container), /保存失败/u);
+    } else if (mode === 'chatChanged') assert.doesNotMatch(copy(h.container), /保存失败/u);
+    else {
+      assert.match(copy(h.container), /保存失败.*保存服务暂时不可用/u);
+      assert.equal(h.runtime.getQianshiSnapshot().matters[0].status, 'inProgress');
+    }
+    assert.equal(writes, 1, '失败不自动重试');
+  }
 });
 
 test('独立记录状态弹窗只修改本条，旧未知状态不能被人工选入', async () => {
@@ -422,7 +468,7 @@ test('右侧菜单在窄事件栏保留标题空间，内层浮层父级不裁�
   assert.match(css, /\.qqj-qianshi-day-first::before\{top:11px\}/u, "timeline starts at the first dot");
   assert.match(css, /\.qqj-qianshi-day-last::before\{bottom:calc\(100% - 11px\)\}/u, "timeline stops at the last dot");
   assert.match(css, /\.qqj-qianshi-day-single::before\{content:none\}/u, "single-day segments have no dangling line");
-  assert.match(css, /\.qqj-qianshi-day-preview\{grid-column:3;grid-row:1;min-width:0/u, "collapsed preview uses the existing event column");
+  assert.match(css, /\.qqj-qianshi-day-preview\{grid-column:3;grid-row:1;[^}]*min-width:0/u, "collapsed preview uses the existing event column");
   assert.match(css, /@media\(max-width:340px\)\{\.qqj-qianshi-segment\{--qqj-date-width:46px\}\}/u, "narrow layouts retain enough date-label width");
   assert.doesNotMatch(css, /\.qqj-qianshi-day-chevron/u, "date disclosure has no replacement chevron");
   assert.match(css, /\.qqj-qianshi-date\{position:relative;display:grid;grid-template-columns:minmax\(0,1fr\);align-items:start\}/u, "date text reclaims the removed chevron column");
@@ -545,7 +591,7 @@ test('覆盖状态同屏列出各缺口并把有效摘要楼数写清楚', () =>
   assert.equal(flatten(h.container).find(node => node.tag === 'strong')?.textContent, '部分关系失效');
   assert.match(coverage, /已完成 3 楼；待补 1 楼；部分整理 2 楼；断链 2 楼；无唯一有效摘要 1 楼/u);
   assert.match(coverage, /分母是 8 个有唯一有效摘要的楼/u);
-  assert.match(coverage, /补齐旧楼只处理尚未存档的楼，不会重算已存事件/u);
+  assert.doesNotMatch(coverage, /断链楼的既有事件和摘要仍显示/u, '异常详情移入弹窗，不在顶部堆长文');
   assert.doesNotMatch(coverage, /隔离/u);
 });
 
@@ -1088,7 +1134,7 @@ test('历史补齐先展示真实计划，取消零调用模型，确认后才�
 
 test('已存千事有独立重判入口，按用户楼号预览，取消不启动请求', async () => {
   const cancelled = harness({ confirm: false, promptValues: ['12~18'] });
-  byText(cancelled.container, '重新整理已存千事').fire('click');
+  byText(cancelled.container, '整理').fire('click');
   await tick(); await tick(); await tick(); await tick();
   assert.deepEqual(cancelled.rejudgeCalls(), { prepareCalls: 1, startCalls: 0, range: { fromMessageIndex: 12, toMessageIndex: 18 } });
   const preview = cancelled.confirms.find(value => value.title === '确认重判已存千事');
@@ -1100,7 +1146,7 @@ test('已存千事有独立重判入口，按用户楼号预览，取消不启�
   assert.equal(cancelled.confirms.length, 2, '一次输入直接进入预览确认');
 
   const confirmed = harness({ confirm: true, promptValues: [' 12 ～ 18 '] });
-  byText(confirmed.container, '重新整理已存千事').fire('click');
+  byText(confirmed.container, '整理').fire('click');
   await tick(); await tick(); await tick(); await tick();
   assert.equal(confirmed.rejudgeCalls().startCalls, 1, '仅确认后启动重判请求');
   assert.deepEqual(confirmed.rejudgeCalls().range, { fromMessageIndex: 12, toMessageIndex: 18 });
@@ -1109,7 +1155,7 @@ test('已存千事有独立重判入口，按用户楼号预览，取消不启�
 
 test('重判进度和保存结果接管启动提示，不同时显示未来暂存与已提交', async () => {
   const h = harness({ confirm: true });
-  byText(h.container, '重新整理已存千事').fire('click'); await tick(); await tick();
+  byText(h.container, '整理').fire('click'); await tick(); await tick();
   assert.match(copy(h.container), /已暂存 0\/0 楼/u);
   assert.equal(h.container.querySelector('.qqj-qianshi-feedback'), null, '真实进度到达后移除启动提示');
   const snapshot = fixture();
@@ -1128,7 +1174,7 @@ test('直接收到重判终态也清除启动提示，并保留成功、失败�
     const message = status === 'completed' ? '整组已保存。' : status === 'partial' ? '已保存；1 楼部分通过。'
       : status === 'failed' ? '请求超时；原千事保持不变。' : '已取消；原千事保持不变。';
     const h = harness({ confirm: true, rejudgeStartResult: { status, message } });
-    byText(h.container, '重新整理已存千事').fire('click'); await tick(); await tick();
+    byText(h.container, '整理').fire('click'); await tick(); await tick();
     assert.ok(copy(h.container).includes(message));
     assert.equal(h.container.querySelector('.qqj-qianshi-feedback'), null);
   }
@@ -1137,7 +1183,7 @@ test('直接收到重判终态也清除启动提示，并保留成功、失败�
 test('数百楼重判预览只显示首尾和计数，提示长度不随楼数增长', async () => {
   const h = harness({ plan: { totalFloors: 300, apiCalls: 300,
     floors: Array.from({ length: 300 }, (_, i) => ({ assistantSeq: i + 1, messageIndex: i * 2, recordCount: 2 })) } });
-  byText(h.container, '重新整理已存千事').fire('click'); await tick(); await tick();
+  byText(h.container, '整理').fire('click'); await tick(); await tick();
   const preview = h.confirms.find(value => value.title === '确认重判已存千事');
   assert.match(preview.body, /第 0–598 楼.*300 个 AI 楼、600 条旧记录.*API 300 次/u);
   assert.ok(preview.body.length < 100, '范围再长也不逐楼列举');
@@ -1148,23 +1194,23 @@ test('数百楼重判预览只显示首尾和计数，提示长度不随楼数�
 test('千事重判单次输入支持全部、范围和取消，错误格式不启动', async () => {
   for (const input of ['0', '  ', '0~']) {
     const h = harness({ promptValues: [input] });
-    byText(h.container, '重新整理已存千事').fire('click');
+    byText(h.container, '整理').fire('click');
     await tick(); await tick(); await tick(); await tick();
     assert.deepEqual(h.rejudgeCalls(), { prepareCalls: 1, startCalls: 0, range: { fromMessageIndex: 0, toMessageIndex: null } });
     assert.match(h.confirms.find(value => value.title === '重新整理已存千事').body, /当前最新为第 30 楼/u);
   }
   const zero = harness({ promptValues: ['0~0'] });
-  byText(zero.container, '重新整理已存千事').fire('click');
+  byText(zero.container, '整理').fire('click');
   await tick(); await tick(); await tick(); await tick();
   assert.deepEqual(zero.rejudgeCalls().range, { fromMessageIndex: 0, toMessageIndex: 0 });
   const cancelled = harness({ promptValues: [null] });
-  byText(cancelled.container, '重新整理已存千事').fire('click');
+  byText(cancelled.container, '整理').fire('click');
   await tick(); await tick(); await tick(); await tick();
   assert.equal(cancelled.rejudgeCalls().prepareCalls, 0);
   assert.equal(cancelled.rejudgeCalls().startCalls, 0);
   for (const input of ['abc', '12~~18']) {
     const invalid = harness({ promptValues: [input] });
-    byText(invalid.container, '重新整理已存千事').fire('click');
+    byText(invalid.container, '整理').fire('click');
     await tick(); await tick();
     assert.equal(invalid.rejudgeCalls().prepareCalls, 0);
     assert.equal(invalid.rejudgeCalls().startCalls, 0);
@@ -1255,7 +1301,7 @@ test('历史逐楼结果限高半屏、独立滚动并在同聊天重绘保留�
   assert.equal(results.attributes['aria-label'], '历史补齐逐楼结果');
   assert.equal(results.attributes.tabindex, '0');
   assert.doesNotMatch(copy(results), /已成功保存替换/u, '总进度留在滚动容器外');
-  assert.equal(coverage.children.find(node => node.tag === 'button').textContent, '停止', '停止按钮留在滚动容器外');
+  assert.equal(flatten(coverage).find(node => node.tag === 'button').textContent, '停止', '停止按钮留在滚动容器外');
 
   const css = readFileSync(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
   assert.match(css, /\.qqj-qianshi-history-results\{[^}]*max-height:50vh;[^}]*overflow-y:auto/u);
@@ -1374,4 +1420,71 @@ test('旧快照的 historyReview 仅兼容读取，不恢复待审或结案入�
   const rendered = copy(h.container);
   assert.doesNotMatch(rendered, /待审|结案|审核状态|相似旧条/u);
   assert.equal(flatten(h.container).some(node => /审阅|结案/u.test(node.textContent)), false);
+});
+
+test('正式事件删除确认取消零写，保存后卡片消失，确认期间换聊天不删旧事件', async () => {
+  for (const mode of ['cancel', 'save', 'chatChanged']) {
+    let calls = 0, h;
+    h = harness({ confirm: () => {
+      if (mode === 'chatChanged') h.emit({ ...fixture(), identity: { qqjChatId: 'chat-b' } });
+      return mode !== 'cancel';
+    } });
+    h.runtime.deleteQianshiEvent = async input => {
+      calls += 1;
+      assert.equal(input.expected.memoryId, 'memory-1');
+      const next = h.runtime.getQianshiSnapshot(); next.events = next.events.filter(event => event.id !== input.eventId); h.emit(next);
+      return { status: 'saved' };
+    };
+    h.emit();
+    const menu = flatten(h.container).find(node => node.dataset.qianshiEventId === 'event-1');
+    const remove = byText(menu, '删除'); assert.equal(remove.disabled, false); remove.fire('click');
+    await tick(); await tick();
+    assert.equal(calls, mode === 'save' ? 1 : 0);
+    if (mode === 'save') assert.equal(flatten(h.container).some(node => node.dataset.eventId === 'event-1'), false);
+  }
+});
+
+test('过往日期预览可点击展开原事件菜单，后台结束后删除重新可用且先弹确认', async () => {
+  const h = harness(), original = h.runtime.getQianshiSnapshot(); original.projectionRevision = 1;
+  let deletes = 0;
+  h.runtime.deleteQianshiEvent = async () => { deletes += 1; };
+  const day = () => flatten(h.container).find(node => node.id === 'day-1');
+  const disclosure = () => flatten(day()).find(node => node.className === 'qqj-qianshi-day-disclosure');
+  const preview = () => flatten(day()).find(node => node.className === 'qqj-qianshi-day-preview');
+  const menu = () => flatten(day()).find(node => node.className.includes('qqj-qianshi-event-menu'));
+  h.emit(original, { memoryWorkBusy: true });
+  assert.equal(disclosure().open, false); assert.equal(visibleEventMenus(day()).length, 0);
+  assert.equal(preview().tag, 'button'); assert.match(preview().attributes['aria-label'], /展开.*1 件/u);
+  preview().fire('click'); disclosure().fire('toggle');
+  assert.equal(disclosure().open, true); assert.equal(preview().hidden, true);
+  assert.equal(visibleEventMenus(day()).length, 1, '只展开已有菜单，不在预览复制菜单');
+  assert.equal(byText(menu(), '删除').disabled, true); assert.match(byText(menu(), '删除').title, /后台记忆/u);
+  h.emit(original, { memoryWorkBusy: false });
+  assert.equal(disclosure().open, true, '忙闲通知重绘保留用户从预览展开的旧日');
+  assert.equal(byText(menu(), '删除').disabled, false);
+  byText(menu(), '删除').fire('click'); await tick();
+  assert.equal(h.confirms.at(-1).title, '删除这条千事'); assert.equal(deletes, 0, '确认取消不删除');
+});
+
+test('整理与处理异常短按钮并排，异常弹窗按楼展开并复用原事件编辑表单', async () => {
+  const snapshot = fixture(); snapshot.coverage.degradedFloors = 1;
+  snapshot.diagnostics = { anomalyFloors: [{ floorId: 'floor-1', messageIndex: 12, eventIds: ['event-1'], reasons: ['找不到前序事件'] }] };
+  let content;
+  const h = harness({ initialSnapshot: snapshot, custom: options => { content = options.content; return new Promise(() => {}); } });
+  const actions = flatten(h.container).find(node => node.className === 'qqj-qianshi-coverage-actions');
+  assert.deepEqual(actions.children.map(node => node.textContent), ['补齐旧楼', '整理', '处理异常']);
+  byText(actions, '处理异常').fire('click'); await tick();
+  assert.match(copy(content), /事件仍已收录.*部分关联失效/u);
+  assert.match(copy(content), /第 12 楼.*找不到前序事件/u);
+  assert.equal(flatten(content).some(node => node.dataset.eventId === 'event-1'), false, '折叠时不复制大量事件详情');
+  const floor = flatten(content).find(node => node.dataset.floorId === 'floor-1'); floor.open = true; floor.fire('toggle');
+  const menu = flatten(content).find(node => node.dataset.qianshiEventId === 'event-1');
+  byText(menu, '编辑详情').fire('click');
+  let form = flatten(content).find(node => node.className === 'qqj-qianshi-text-form'); assert.ok(form);
+  const input = flatten(form).find(node => node.className.includes('qqj-qianshi-title-input')); input.value = '人工校正标题'; input.fire('input', { target: input });
+  await form.fire('submit', { preventDefault() {} });
+  assert.equal(h.runtime.getQianshiSnapshot().events[0].title, '人工校正标题');
+  assert.match(copy(content), /人工校正标题/u);
+  const clean = fixture(); h.emit(clean);
+  assert.equal(byText(h.container, '处理异常'), undefined); assert.match(copy(content), /当前没有异常楼/u);
 });

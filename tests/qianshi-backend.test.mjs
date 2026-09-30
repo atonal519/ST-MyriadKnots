@@ -1718,3 +1718,40 @@ test('人工日期、明确未知及仅时钟在全图、日期分组与增量�
   assert.deepEqual(index.prepare(reachable, options), prepareQianshiCandidates(reachable, options), '热追加与完整读取使用相同人工时间');
   assert.deepEqual(stored.qianshiDelta.events, delta.events, '显示人工覆盖不改动原模型事件');
 });
+
+test('删首中尾与整线沿统一线性投影，人工整线状态优先且异常诊断可定位楼号', async () => {
+  const floors = [1, 2, 3].map(n => floor(`${String(n).repeat(8)}-${String(n).repeat(4)}-4${String(n).repeat(3)}-8${String(n).repeat(3)}-${String(n).repeat(12)}`, n));
+  let value = { status: 'ready', root: { chatId: CHAT, narrativeGeneration: GENERATION }, rootRevision: 1, floors: [], floorMemories: [], entities: [] };
+  for (let i = 0; i < floors.length; i += 1) {
+    const candidates = prepareQianshiCandidates(value, { canonicalContent: '归还旧书' });
+    const delta = await compileQianshiDelta({ floor: floors[i], now: NOW, candidateBindings: candidates.bindings, packet: { qianshi: { events: [{ key: `e${i}`,
+      title: ['归还旧书', '拿到旧书', '交还旧书'][i], description: `旧书进展${i}`, status: ['planned', 'inProgress', 'completed'][i],
+      matter: true, ...(i ? { links: [{ candidateKey: candidates.request[0].key, kind: 'progress' }] } : {}) }], order: [] } } });
+    value = { ...value, floors: [...value.floors, floors[i]], floorMemories: [...value.floorMemories, memory(`${String(i + 4).repeat(8)}-4444-4444-8444-444444444444`, floors[i], delta)] };
+  }
+  const original = projectQianshiGraph(value), ids = original.events.map(event => event.id), matterId = original.matters[0].matterId;
+  assert.equal(original.matters.length, 1);
+  for (const removed of [[ids[0]], [ids[1]], [ids[2]], ids]) {
+    const next = { ...value, floorMemories: value.floorMemories.map(row => ({ ...row, qianshiDelta: { ...row.qianshiDelta,
+      deletedEventIds: row.qianshiDelta.events.filter(event => removed.includes(event.id)).map(event => event.id) } })) };
+    const projection = projectQianshiGraph(next), kept = ids.filter(id => !removed.includes(id));
+    assert.deepEqual(projection.events.map(event => event.id), kept); assert.equal(projection.matters.length, kept.length ? 1 : 0);
+    if (kept.length) { assert.equal(projection.matters[0].matterId, matterId); assert.equal(projection.matters[0].currentEventId, kept.at(-1)); }
+    assert.deepEqual(projection.diagnostics.degradedFloorIds, []); assert.equal(projection.coverage.completeFloors, 3);
+  }
+  const manual = { ...value, floorMemories: value.floorMemories.map((row, i) => i ? row : { ...row,
+    qianshiDelta: { ...row.qianshiDelta, deletedEventIds: [ids[0]], manualMatterStatusOverrides: [{ matterId, status: 'inProgress' }] } }) };
+  assert.equal(projectQianshiGraph(manual).matters[0].status, 'inProgress');
+  const broken = { ...value, floorMemories: value.floorMemories.map((row, i) => i !== 1 ? row : { ...row,
+    qianshiDelta: { ...row.qianshiDelta, events: row.qianshiDelta.events.map(event => ({ ...event, continuesFromEventIds: ['99999999-9999-4999-8999-999999999999'] })) } }) };
+  const publicView = publicQianshiSnapshot(broken);
+  assert.equal(publicView.events.length, 3, '异常楼事件照常进入千事');
+  assert.deepEqual(publicView.diagnostics.anomalyFloors[0], { floorId: floors[1].id, messageIndex: 4, assistantSeq: 2,
+    eventIds: [ids[1]], reasons: ['找不到前序事件'] });
+  const prefix = { ...value, floors: value.floors.slice(0, 1), floorMemories: value.floorMemories.slice(0, 1) };
+  const deletedSuffix = { ...value, floors: value.floors.slice(0, 2), floorMemories: value.floorMemories.slice(0, 2).map((row, i) => i ? { ...row,
+    qianshiDelta: { ...row.qianshiDelta, deletedEventIds: [ids[1]] } } : row) };
+  const hot = createQianshiCandidateIndex(), cold = createQianshiCandidateIndex();
+  hot.prepare(prefix, { canonicalContent: '旧书' });
+  assert.deepEqual(hot.prepare(deletedSuffix, { canonicalContent: '旧书' }), cold.prepare(deletedSuffix, { canonicalContent: '旧书' }));
+});

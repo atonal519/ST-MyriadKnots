@@ -87,6 +87,20 @@ test('有效千事关联合并刻度当前提醒，明确完成或剧情取消�
   }
 });
 
+test('千事删首条后的旧刻度沿原事项继续，删空后撤提醒；不同事项身份不猜接', () => {
+  const ref = { matterId: 'matter-1', originEventId: 'deleted-origin' };
+  const item = { ...rankedItem('linked', { label: '归还旧书', dueTime: '2026-05-02' }), qianshiRef: ref };
+  const source = { entities: [{ entityId: PERSON, displayName: '阿岚' }], currentState: [], identityProjection: {} };
+  const matter = { matterId: ref.matterId, status: 'inProgress', title: '准备归还', origin: { eventId: 'next-event', title: '取得旧书' } };
+  const deletedEvents = [{ eventId: ref.originEventId, matterId: ref.matterId }];
+  const next = timeRecallProjection([item], source, projectTime('2026-05-01'), [], { matters: [matter], deletedEvents });
+  assert.equal(next.reminders.length, 1); assert.deepEqual(next.reminders[0].qianshiRef, ref);
+  assert.match(next.reminders[0].text, /千事事项 \/ 取得旧书/u);
+  assert.equal(timeRecallProjection([item], source, projectTime('2026-05-01'), [], { matters: [], deletedEvents }).reminders.length, 0);
+  const unrelated = timeRecallProjection([item], source, projectTime('2026-05-01'), [], { matters: [], deletedEvents: [{ ...deletedEvents[0], matterId: 'other' }] });
+  assert.equal(unrelated.reminders.length, 1); assert.equal(unrelated.reminders[0].qianshiRef, undefined);
+});
+
 test('千事候选派生图异常局部降级为空，不阻断原刻度请求', async () => {
   const h=await harness({count:1});
   const event = id => ({id,matterId:'matter-bad',updatesMatter:true,title:id,description:id,status:'inProgress',storyTime:'2026-05-01',scheduledTime:null,people:[],object:null,sourceFloorId:'floor-1',continuesFromEventIds:[]});

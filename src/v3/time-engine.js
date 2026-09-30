@@ -911,13 +911,17 @@ export async function compileTimeResponse(response, prepared, batches = []) {
 export function timeRecallProjection(items, source, currentTime, annualRecords = [], qianshiProjection = null) {
   const names = new Map(source.entities.map(entity => [entity.entityId, entity.displayName]));
   const qianshiMatters = new Map((qianshiProjection?.matters ?? []).map(matter => [matter.matterId, matter]));
+  const deletedQianshiEvents = new Map((qianshiProjection?.deletedEvents ?? []).map(event => [event.eventId, event.matterId]));
   const states = source.currentState.flatMap(subject => ['core', 'adaptive', 'situational'].flatMap(layer => subject[layer].map(state => ({ ...state, subjectEntityId: subject.subjectEntityId }))));
   const corrections = {}, reminders = [];
   const mapped = items.map(item => ({ ...item, observationTime: effectiveTime(item.observationTime), occurrenceTime: effectiveTime(item.occurrenceTime), dueTime: effectiveTime(item.dueTime), ...(item.projection ? { projection: { ...item.projection, applicableTime: effectiveTime(item.projection.applicableTime) } } : {}), subjectEntityId: resolveIdentityEntityId(item.subjectEntityId, source.identityProjection) }));
   for (const item of mapped) {
     if (item.status !== 'active' || !names.has(item.subjectEntityId) && !item.subjectName) continue;
     const personName = names.get(item.subjectEntityId) ?? item.subjectName;
-    const linkedMatter = item.qianshiRef && qianshiMatters.get(item.qianshiRef.matterId)?.origin?.eventId === item.qianshiRef.originEventId
+    // 原起点被人工删除只沿同一稳定事项继续；整线删空则撤提醒，不降成无关联刻度。
+    const deletedOrigin = item.qianshiRef && deletedQianshiEvents.get(item.qianshiRef.originEventId) === item.qianshiRef.matterId;
+    if (item.type === 'deadline' && deletedOrigin && !qianshiMatters.has(item.qianshiRef.matterId)) continue;
+    const linkedMatter = item.qianshiRef && (qianshiMatters.get(item.qianshiRef.matterId)?.origin?.eventId === item.qianshiRef.originEventId || deletedOrigin)
       ? qianshiMatters.get(item.qianshiRef.matterId) : null;
     const qianshiFollowing = linkedMatter?.following ?? !['completed', 'cancelled', 'occurred'].includes(linkedMatter?.status);
     const qianshiSignature = linkedMatter ? [linkedMatter.matterId, linkedMatter.origin.eventId, linkedMatter.status, linkedMatter.trackingOverride ?? null, qianshiFollowing,

@@ -24,7 +24,7 @@ function coverageProjection(snapshot) {
   const degraded = Number(coverage.degradedFloors) || 0, unavailable = Number(coverage.unavailableFloors) || 0;
   const suffix = unavailable ? `无唯一有效摘要 ${unavailable} 楼` : '';
   const breakdown = `已完成 ${complete} 楼；待补 ${pending} 楼；部分整理 ${partial} 楼；断链 ${degraded} 楼${suffix ? `；${suffix}` : ''}。分母是 ${eligible} 个有唯一有效摘要的楼。`;
-  if (degraded) return { kind: 'degraded', label: '部分关系失效', copy: `${breakdown}断链楼的既有事件和摘要仍显示；补齐旧楼只处理尚未存档的楼，不会重算已存事件。` };
+  if (degraded) return { kind: 'degraded', label: '部分关系失效', copy: breakdown };
   if (partial) return { kind: 'partial', label: '尚有其他楼未完成', copy: `${breakdown}已有事件的楼按已存档计入完成；尚有其他楼待补。` };
   if (pending) return { kind: complete ? 'partial' : 'pending', label: complete ? '尚有其他楼未完成' : '等待补齐',
     copy: `${breakdown}${complete ? '已有事件的楼按已存档计入完成；尚有其他楼待补。' : '有摘要的楼尚未完成千事整理。'}` };
@@ -47,10 +47,13 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       nextState?.memoryWorkBusy === true || Boolean(nextState?.activeExtraction || nextState?.activeCse), nextState?.qianshiHistoryActive === true])
     : null;
   const textEditors = new Map();
+  const statusSaves = new Map();
   const editableEvents = new Map();
   const operationMenus = createOperationMenuController(documentRef);
   const openIds = new Set(), nestedOpenIds = new Set(), matterOpenIds = new Set();
   const openDayStates = new Map();
+  let anomalyContent = null;
+  const anomalyOpenFloorIds = new Set();
   let undatedOpenState = false;
   const element = (tag, className = '', copy = '') => {
     const node = documentRef.createElement(tag);
@@ -69,7 +72,8 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   };
   const resetForChat = nextChatId => {
     if (chatId === nextChatId) return;
-    epoch += 1; chatId = nextChatId; query = ''; reverse = true; feedback = ''; textEditors.clear(); editableEvents.clear(); openIds.clear(); nestedOpenIds.clear(); matterOpenIds.clear(); openDayStates.clear(); undatedOpenState = false;
+    epoch += 1; chatId = nextChatId; query = ''; reverse = true; feedback = ''; textEditors.clear(); statusSaves.clear(); editableEvents.clear(); openIds.clear(); nestedOpenIds.clear(); matterOpenIds.clear(); openDayStates.clear(); undatedOpenState = false; anomalyOpenFloorIds.clear();
+    if (anomalyContent) dialog?.cancelTop?.();
   };
   const canEditEvent = eventId => {
     if (!editableEvents.has(eventId)) editableEvents.set(eventId, runtime.canEditQianshiEventText(eventId));
@@ -81,12 +85,25 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   };
   const dayStateId = (segment, group) => JSON.stringify([segment.id, group.key ?? [group.period ?? '', group.day ?? '']]);
   const historyBusy = () => snapshot?.history?.status === 'running' || runtimeState?.qianshiHistoryActive === true;
-  const otherWorkBusy = () => runtimeState?.memoryWorkBusy === true || Boolean(runtimeState?.activeExtraction || runtimeState?.activeCse);
+  const otherWorkBusy = () => runtimeState?.memoryWorkBusy === true || Boolean(runtimeState?.activeExtraction || runtimeState?.activeCse)
+    || [...statusSaves.values()].some(value => value.pending);
+  const statusSaveNote = eventId => {
+    const saving = statusSaves.get(eventId);
+    if (!saving) return null;
+    const note = element('p', `qqj-qianshi-save-note${saving.error ? ' error' : ''}`, saving.pending ? '正在保存…' : `保存失败：${saving.error}`);
+    note.setAttribute('role', saving.error ? 'alert' : 'status');
+    return note;
+  };
   const sourceCopy = event => validMessageIndex(event.sourceMessageIndex) ? `第 ${event.sourceMessageIndex} 楼` : `AI 记录 ${event.sourceAssistantSeq ?? '未明'}`;
-  const statusBadge = event => {
-    const status = VALID_STATUS.has(event.actionStatus ?? event.status) ? event.actionStatus ?? event.status : 'unknown';
+  const statusBadge = (event, { currentMatter = false } = {}) => {
+    const matter = currentMatter && event.updatesMatter && event.matterId
+      ? snapshot?.matters?.find(item => item.matterId === event.matterId && !item.synthetic) : null;
+    // 外层卡片与“修改状态”使用同一整件事状态；历史过程仍显示当时动作，不改写旧记录。
+    const wholeLine = matter && VALID_STATUS.has(matter.status);
+    const value = wholeLine ? matter.status : event.actionStatus ?? event.status;
+    const status = VALID_STATUS.has(value) ? value : 'unknown';
     const badge = element('small', `qqj-qianshi-state status-${status}`, STATUS_BADGE_COPY[status]);
-    badge.title = `本条动作状态：${STATUS_BADGE_COPY[status]}`;
+    badge.title = `${wholeLine ? '整件事状态' : '本条动作状态'}：${STATUS_BADGE_COPY[status]}`;
     badge.setAttribute('aria-label', badge.title);
     return badge;
   };
@@ -277,32 +294,78 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       inputs.push(input); row.append(input, copy); list.append(row);
     }
     content.append(list);
-    // 沿用现有整线人工覆盖；独立事件只改本条。弹窗取消零写，确认时复核聊天与任务状态。
+    // 弹窗只确认选择，关窗后沿原事务保存；期间可浏览，未获落盘确认不提前改状态。
     try {
-      const result = await dialog.custom({ title: '修改状态', content, confirmText: '保存', cancelText: '取消', submit: async () => {
+      const choice = await dialog.custom({ title: '修改状态', content, confirmText: '保存', cancelText: '取消', submit: async () => {
         if (!active || epoch !== operationEpoch || chatId !== operationChatId
           || runtime.getQianshiSnapshot()?.identity?.qqjChatId !== operationChatId) throw new Error('聊天已变化，请重新打开状态修改。');
         runtimeState = runtime.getState();
         if (otherWorkBusy() || historyBusy()) throw new Error('请等待当前任务结束后再保存。');
         if (!selected) throw new Error('请选择状态。');
-        if (wholeLine) return runtime.setQianshiMatterStatus({ matterId: matter.matterId,
-          status: selected === 'automatic' ? null : selected, expectedStatus: matter.status,
-          expectedManualStatus: matter.manualStatusOverride ?? null });
-        if (selected === currentStatus) return { status: 'unchanged' };
-        return runtime.editQianshiEventText({ eventId: event.id, expected: { memoryId: event.sourceFloorMemoryId,
-          title: event.title, description: event.description, object: event.object ?? null,
-          status: event.status, actionStatus: event.actionStatus ?? event.status }, title: event.title,
-          description: event.description, object: event.object ?? null, actionStatus: selected,
-          ...(!event.matterId ? { status: selected } : {}) });
+        return selected;
       } });
-      if (!active || epoch !== operationEpoch || chatId !== operationChatId || !result) return;
-      feedback = result.status === 'unchanged' ? '状态没有变化。' : selected === 'automatic' ? '已恢复自动判断。' : '状态已保存。';
-      render();
+      if (!active || epoch !== operationEpoch || chatId !== operationChatId || !choice) return;
+      const saving = { pending: true, error: '' };
+      statusSaves.set(event.id, saving); render();
+      // 页面离开不取消已确认的原事务；结果只回到同聊天的这条记录，切聊天不显示迟到提示。
+      void (async () => {
+        try {
+          if (wholeLine) await runtime.setQianshiMatterStatus({ matterId: matter.matterId,
+            status: choice === 'automatic' ? null : choice, expectedStatus: matter.status,
+            expectedManualStatus: matter.manualStatusOverride ?? null });
+          else if (choice !== currentStatus) await runtime.editQianshiEventText({ eventId: event.id, expected: { memoryId: event.sourceFloorMemoryId,
+            title: event.title, description: event.description, object: event.object ?? null,
+            status: event.status, actionStatus: event.actionStatus ?? event.status }, title: event.title,
+            description: event.description, object: event.object ?? null, actionStatus: choice,
+            ...(!event.matterId ? { status: choice } : {}) });
+          if (statusSaves.get(event.id) === saving) statusSaves.delete(event.id);
+        } catch (error) {
+          saving.pending = false;
+          saving.error = publicErrorMessage(error, { fallback: '请稍后重试。' });
+        } finally {
+          if (runtime.getQianshiSnapshot()?.identity?.qqjChatId === operationChatId && chatId === operationChatId) {
+            snapshot = runtime.getQianshiSnapshot(); runtimeState = runtime.getState();
+            if (active) render();
+          } else if (statusSaves.get(event.id) === saving) statusSaves.delete(event.id);
+        }
+      })();
     } catch (error) {
       if (active && epoch === operationEpoch && chatId === operationChatId) {
         feedback = `状态修改失败：${publicErrorMessage(error, { fallback: '请稍后重试。' })}`; render();
       }
     }
+  }
+
+  async function deleteEvent(event) {
+    const operationEpoch = epoch, operationChatId = chatId;
+    try {
+      const confirmed = await dialog.confirm({ title: '删除这条千事', body: `删除“${event.title}”？`,
+        note: '只移除这条事件，其他进展仍保留；删空后整条事项线消失。正文、摘要和双丝网保留，不调用模型。', confirmText: '删除', cancelText: '取消' });
+      if (!active || epoch !== operationEpoch || chatId !== operationChatId
+        || runtime.getQianshiSnapshot()?.identity?.qqjChatId !== operationChatId || !confirmed) return;
+      runtimeState = runtime.getState();
+      if (otherWorkBusy() || historyBusy()) throw new Error('请等待当前任务结束后再删除。');
+      // 确认针对所见版本，弹窗期间发生编辑/重判时由原事务拒绝，不能删除变化后的另一版。
+      const result = await runtime.deleteQianshiEvent({ eventId: event.id, expected: {
+        memoryId: event.sourceFloorMemoryId, title: event.title, description: event.description, object: event.object ?? null,
+        status: event.status, actionStatus: event.actionStatus ?? event.status, storyTime: event.storyTime } });
+      if (!active || epoch !== operationEpoch || chatId !== operationChatId) return;
+      textEditors.delete(event.id);
+      feedback = result?.status === 'unchanged' ? '这条事件已移除。' : '事件已删除。';
+      snapshot = runtime.getQianshiSnapshot(); render();
+    } catch (error) {
+      if (active && epoch === operationEpoch && chatId === operationChatId) {
+        feedback = `删除未完成：${publicErrorMessage(error, { fallback: '请刷新后核对当前记录。' })}`; render();
+      }
+    }
+  }
+
+  function runEventDialog(menu, action) {
+    const reopen = anomalyContent?.contains?.(menu), operationEpoch = epoch, operationChatId = chatId;
+    void action().finally(() => {
+      // 状态/删除确认沿用单弹窗管理器；结束后回到异常列表，不叠第二套编辑事务。
+      if (reopen && active && epoch === operationEpoch && chatId === operationChatId) void openAnomalies();
+    });
   }
 
   function eventOperationMenu(event, { cardId = event.id, nestedRowKey = null } = {}) {
@@ -326,13 +389,15 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
           status: event.status, actionStatus: event.actionStatus ?? event.status, storyTime: event.storyTime }, error: '', pending: false });
       render();
     });
-    // 菜单仅承载入口；状态的说明与选择放入插件弹窗，删除在接口完成前不可执行。
+    // 删除只接正式事件的原人工事务，确认取消不写档；旧审核只读沿用编辑权限。
     const remove = element('button', 'qqj-profile-menu-action danger', '删除'); remove.type = 'button';
-    remove.disabled = true; remove.title = '删除功能尚未开放。';
+    remove.disabled = otherWorkBusy() || historyBusy() || typeof dialog?.confirm !== 'function' || typeof runtime.deleteQianshiEvent !== 'function';
+    if (otherWorkBusy() || historyBusy()) remove.title = '后台记忆任务进行中，请结束后再删除。';
+    remove.addEventListener('click', () => { menu.open = false; runEventDialog(menu, () => deleteEvent(event)); });
     const change = element('button', 'qqj-profile-menu-action', '修改状态'); change.type = 'button';
     change.disabled = otherWorkBusy() || historyBusy() || typeof dialog?.custom !== 'function'
       || Boolean(event.updatesMatter && matter && typeof runtime.setQianshiMatterStatus !== 'function');
-    change.addEventListener('click', () => { menu.open = false; void changeEventStatus(event, matter); });
+    change.addEventListener('click', () => { menu.open = false; runEventDialog(menu, () => changeEventStatus(event, matter)); });
     menuBody.append(edit, remove, change); menu.append(toggle, menuBody);
     return menu;
   }
@@ -366,6 +431,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       });
       if (row.open) { row.append(eventDetails(item, 'qqj-qianshi-day-event-detail')); built = true; }
       itemRow.append(row); list.append(itemRow);
+      if (item.id !== representativeId) { const note = statusSaveNote(item.id); if (note) itemRow.append(note); }
     }
     section.append(list);
     return section;
@@ -387,7 +453,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     if (event.storyTime) summary.append(element('span', 'qqj-qianshi-event-time', event.storyTime));
     const title = element('span', 'qqj-qianshi-event-title', event.title);
     if (dayEvents.length > 1) title.append(element('small', 'qqj-qianshi-event-status', `当天 ${dayEvents.length} 条`));
-    title.append(statusBadge(event));
+    title.append(statusBadge(event, { currentMatter: true }));
     summary.append(title);
     summary.append(element('p', 'qqj-qianshi-preview', event.description));
     details.append(summary);
@@ -412,6 +478,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     });
     itemRow.append(details); if (menu) itemRow.append(menu);
     if (details.open) { ensureBody(); placeRepresentativeMenu(true); }
+    const note = statusSaveNote(event.id); if (note) itemRow.append(note);
     return itemRow;
   }
 
@@ -466,12 +533,19 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         if (reverse) cards = cards.reverse();
         if (dayOpen && cards.length > 1) day.className += ' qqj-qianshi-day-has-card-axis';
         const lastEvent = [...group.eventIds].reverse().map(id => eventById.get(id)).find(event => event && visibleIds.has(event.id));
-        const preview = element('div', 'qqj-qianshi-day-preview'); preview.hidden = dayOpen;
+        const preview = element('button', 'qqj-qianshi-day-preview'); preview.type = 'button'; preview.hidden = dayOpen;
+        preview.setAttribute('aria-label', `展开 ${group.full || `${group.period ?? ''}${group.day ?? ''}`} 的 ${visibleEventCount} 件千事`);
+        // 折叠预览也是展开入口；沿用原日期状态和事件菜单，避免旧日看似可点却毫无响应。
+        preview.addEventListener('click', () => {
+          if (!query.trim()) openDayStates.set(stateId, true);
+          disclosure.open = true;
+          summary.focus?.({ preventScroll: true });
+        });
         if (lastEvent) {
           if (lastEvent.storyTime) preview.append(element('span', 'qqj-qianshi-event-time', lastEvent.storyTime));
-          const previewTitle = element('div', 'qqj-qianshi-day-preview-title', lastEvent.title);
-          previewTitle.append(statusBadge(lastEvent));
-          preview.append(previewTitle, element('p', 'qqj-qianshi-preview', lastEvent.description));
+          const previewTitle = element('span', 'qqj-qianshi-day-preview-title', lastEvent.title);
+          previewTitle.append(statusBadge(lastEvent, { currentMatter: true }));
+          preview.append(previewTitle, element('span', 'qqj-qianshi-preview', lastEvent.description));
         }
         const eventList = element('div', 'qqj-qianshi-events');
         eventList.hidden = !dayOpen;
@@ -579,6 +653,46 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     }
   }
 
+  function renderAnomalies() {
+    if (!anomalyContent) return;
+    const scrollTop = anomalyContent.scrollTop;
+    const floors = snapshot?.diagnostics?.anomalyFloors ?? [], eventById = new Map((snapshot?.events ?? []).map(event => [event.id, event]));
+    const intro = element('p', 'qqj-qianshi-anomaly-intro', floors.length
+      ? `${floors.length} 个异常楼。事件仍已收录，只是部分关联失效；编辑、删除和状态修改沿用千事原入口。文字编辑不修复关联，需要时可关闭后用“整理”重判对应楼。`
+      : '当前没有异常楼。');
+    const list = element('div', 'qqj-qianshi-anomaly-list');
+    for (const floor of floors) {
+      const section = element('details', 'qqj-qianshi-anomaly-floor'); section.dataset.floorId = floor.floorId;
+      section.open = anomalyOpenFloorIds.has(floor.floorId);
+      const summary = element('summary', '', validMessageIndex(floor.messageIndex) ? `第 ${floor.messageIndex} 楼` : `AI 记录 ${floor.assistantSeq ?? '未明'}`);
+      summary.append(element('small', '', floor.reasons.join('；'))); section.append(summary);
+      let built = false;
+      const build = () => {
+        if (built) return;
+        for (const id of floor.eventIds) {
+          const event = eventById.get(id);
+          if (event) section.append(eventNode(event, new Map(), { cardId: `anomaly:${id}` }));
+        }
+        if (!floor.eventIds.length) section.append(element('p', '', '关联端点已不在当前有效千事中；可用“整理”重新核对这一楼。'));
+        built = true;
+      };
+      section.addEventListener('toggle', () => { if (section.open) { anomalyOpenFloorIds.add(floor.floorId); build(); }
+        else anomalyOpenFloorIds.delete(floor.floorId); });
+      if (section.open) build(); list.append(section);
+    }
+    anomalyContent.replaceChildren(intro, list, ...(feedback ? [element('p', 'qqj-qianshi-feedback', feedback)] : []));
+    anomalyContent.scrollTop = scrollTop;
+  }
+
+  async function openAnomalies() {
+    if (typeof dialog?.custom !== 'function') return;
+    snapshot = runtime.getQianshiSnapshot(); runtimeState = runtime.getState();
+    const content = element('section', 'qqj-qianshi-anomalies'); anomalyContent = content;
+    renderAnomalies();
+    await dialog.custom({ title: '处理异常', content, confirmText: '关闭', cancelText: '', submit: () => true,
+      onClose: () => { if (anomalyContent === content) anomalyContent = null; } });
+  }
+
   function render() {
     if (!container) return;
     const currentChatId = snapshot?.identity?.qqjChatId ?? null;
@@ -603,16 +717,24 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     const coverageCounts = snapshot?.coverage ?? {};
     const hasHistoryToComplete = snapshot?.status === 'ready'
       && (Number(coverageCounts.pendingFloors) || 0) + (Number(coverageCounts.partialFloors) || 0) > 0;
+    const coverageActions = element('div', 'qqj-qianshi-coverage-actions');
+    coverageBox.append(coverageText);
     if (historyRunning || hasHistoryToComplete) {
       const historyAction = element('button', 'secondary-action', historyRunning ? history.committing ? '提交中…' : '停止' : '补齐旧楼'); historyAction.type = 'button';
       historyAction.disabled = historyRunning ? Boolean(history.committing) : otherWorkBusy();
       historyAction.addEventListener('click', () => { void (historyRunning ? stopHistory() : prepareHistory()); });
-      coverageBox.append(coverageText, historyAction);
-    } else coverageBox.append(coverageText);
-    if (!historyRunning && snapshot?.events?.length && typeof runtime.prepareQianshiRejudge === 'function') {
-      const rejudge = element('button', 'secondary-action', '重新整理已存千事'); rejudge.type = 'button';
-      rejudge.disabled = otherWorkBusy(); rejudge.addEventListener('click', () => { void prepareRejudge(); }); coverageBox.append(rejudge);
+      coverageActions.append(historyAction);
     }
+    if (!historyRunning && snapshot?.events?.length && typeof runtime.prepareQianshiRejudge === 'function') {
+      const rejudge = element('button', 'secondary-action', '整理'); rejudge.type = 'button';
+      rejudge.disabled = otherWorkBusy(); rejudge.addEventListener('click', () => { void prepareRejudge(); }); coverageActions.append(rejudge);
+    }
+    if (snapshot?.diagnostics?.anomalyFloors?.length) {
+      const anomalies = element('button', 'secondary-action', '处理异常'); anomalies.type = 'button';
+      anomalies.disabled = typeof dialog?.custom !== 'function'; anomalies.addEventListener('click', () => { void openAnomalies(); });
+      coverageActions.append(anomalies);
+    }
+    if (coverageActions.children.length) coverageBox.append(coverageActions);
     if (history.status && history.status !== 'idle') {
       const outcomes = history.outcomes ?? [];
       const isRejudge = history.mode === 'rejudge';
@@ -674,6 +796,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       nextSummary?.focus?.({ preventScroll: true });
     }
     for (const [ancestor, scrollTop] of outerScrollPositions) ancestor.scrollTop = scrollTop;
+    renderAnomalies();
   }
 
   function subscribe() {
@@ -698,6 +821,6 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     if (active) return { status: snapshot?.status ?? 'unavailable' };
     active = true; operationMenus.activate(); snapshot = runtime.getQianshiSnapshot(); runtimeState = runtime.getState(); runtimeRenderKey = renderKey(snapshot, runtimeState); editableEvents.clear(); render(); subscribe(); return { status: snapshot?.status ?? 'unavailable' };
   }
-  function deactivate() { active = false; epoch += 1; operationMenus.deactivate(); unsubscribe?.(); unsubscribe = null; }
+  function deactivate() { active = false; epoch += 1; if (anomalyContent) dialog?.cancelTop?.(); operationMenus.deactivate(); unsubscribe?.(); unsubscribe = null; }
   return Object.freeze({ mount, activate, deactivate, render });
 }
