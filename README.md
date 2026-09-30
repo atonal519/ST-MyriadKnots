@@ -271,17 +271,23 @@
 
 ## 数据与兼容
 
-千千结通过 ST-BaiNiaoData 的通用记录接口保存记忆数据，并使用 revision/CAS 避免迟到任务或并发写覆盖当前状态。切换聊天、切换 Persona 或关闭插件会使旧会话任务失效；总开关关闭后停止后台读取、AI 任务与召回注入。
+普通 SillyTavern/Luker 通过 ST-BaiNiaoData 的通用记录接口保存记忆数据，并使用 revision/CAS 避免迟到任务或并发写覆盖当前状态；TauriTavern 2.2.0 使用原生扩展存储，详见 [TauriTavern 指南](docs/tauritavern.md)。切换聊天、切换 Persona 或关闭插件会使旧会话任务失效；总开关关闭后停止后台读取、AI 任务与召回注入。
 
 同角色分支会获得独立的聊天身份和存储目录。分支初始化完成后，源聊天与分支可分别修改或删除；跨角色复制仍按独立新聊天处理。
 
-删除当前聊天记忆会保留聊天正文和全局 API／提示词设置；后端记录进入回收站，当前不会自动永久清除。移动端面板使用浏览器原生纵向滚动；“详细诊断”可复制最近 24 条本地界面手势状态，不包含聊天正文或输入内容，也不会上传。该诊断用于继续定位偶发滚动问题，不代表所有手机壳浏览器均已完成真机验收。
+删除当前聊天记忆会保留聊天正文和全局 API／提示词设置；普通 SillyTavern/Luker 的后端记录进入回收站，当前不会自动永久清除。移动端面板使用浏览器原生纵向滚动；“详细诊断”可复制最近 24 条本地界面手势状态，不包含聊天正文或输入内容，也不会上传。该诊断用于继续定位偶发滚动问题，不代表所有手机壳浏览器均已完成真机验收。
 
 ## 安装
 
-千千结前端与白鳥数据后端是两份插件，需分别安装：
+### TauriTavern 2.2.0
 
-1. 安装 [ST-BaiNiaoData 后端](https://github.com/atonal519/ST-BaiNiaoData)。Luker 可用后台的服务端插件管理；原生酒馆默认将后端放在根目录 `plugins/ST-BaiNiaoData`，确认其中直接有 `index.mjs`，不要多套一层文件夹，也不要装进前端的 `public/scripts/extensions/third-party`。
+在 TauriTavern 2.2.0 中安装千千结前端即可：数据保存在 TauriTavern 提供的原生扩展存储中，不需要安装 ST-BaiNiaoData 服务端插件，也不需要为它配置或重启 SillyTavern 服务。已有 TauriTavern 千千结档案可继续读取；数据不会自动迁移到白鳥服务器，也不会与服务器数据同步。存储细节见 [TauriTavern 指南](docs/tauritavern.md)。
+
+### 普通 SillyTavern/Luker
+
+普通 SillyTavern/Luker 需要分别安装千千结前端与 ST-BaiNiaoData 服务端插件：
+
+1. 安装 [ST-BaiNiaoData 后端](https://github.com/atonal519/ST-BaiNiaoData)。Luker 可用后台的服务端插件管理；原生 SillyTavern 默认将后端放在根目录 `plugins/ST-BaiNiaoData`，确认其中直接有 `index.mjs`，不要多套一层文件夹，也不要装进前端的 `public/scripts/extensions/third-party`。
 2. 检查实际运行的酒馆根目录 `config.yaml`：将已有的 `enableServerPlugins` 设为 `true`，不要追加重复键。默认 `serverPluginsPath: ./plugins`，若改过则按其路径安装；`enableServerPluginsAutoUpdate` 只控制自动更新。
 3. 安装或改配置后完整重启酒馆服务，再刷新网页。仅刷新网页或切换千千结开关不会加载服务端插件。
 4. 在酒馆第三方扩展安装入口粘贴本仓库 URL。面板入口位于魔法棒菜单，也可在设置中开启悬浮球；生产清单只加载 `dist/qqj-app.js`。打开实际聊天后配置模型 API，新聊天逐步记录，旧聊天按需要手动补齐。
