@@ -193,12 +193,33 @@ const normalizeAutoBatchSize = () => 1;
 const floorFailureStorageKey = chatId => `${FLOOR_FAILURE_STORAGE_PREFIX}${chatId}`;
 
 export function createQianshiSnapshotMemo(projector = publicQianshiSnapshot) {
-  let cache = null;
+  let cache = null, projectionRevision = 0;
   return (reachable, identityProjection, history) => {
     if (cache?.reachable !== reachable || cache.identityProjection !== identityProjection) {
-      cache = { reachable, identityProjection, value: projector(reachable, null, identityProjection) };
+      cache = { reachable, identityProjection, value: projector(reachable, null, identityProjection), projectionRevision: ++projectionRevision };
     }
-    return { ...cache.value, history };
+    // 会话内投影版本只供界面判断内容是否变化，不落盘；进度通知不重新归线。
+    return { ...cache.value, projectionRevision: cache.projectionRevision, history };
+  };
+}
+
+export function createQianshiEventLookup(readSnapshot = createQianshiSnapshotMemo()) {
+  let cache = null;
+  return (eventId, source) => {
+    const events = readSnapshot(source).events;
+    if (cache?.source !== source || cache.events !== events) {
+      // 复用快照的可见事件，整份存档只建一次索引；重复来源和旧审核候选仍不可编辑。
+      const visibleIds = new Set(events.map(event => event.id)), matches = new Map();
+      for (const memory of source.floorMemories ?? []) {
+        if (memory.recordStatus !== 'active' || !['ready', 'partial'].includes(memory.qianshiDelta?.status)) continue;
+        for (const event of memory.qianshiDelta.events) {
+          if (!visibleIds.has(event.id)) continue;
+          matches.set(event.id, matches.has(event.id) ? null : { memory, event });
+        }
+      }
+      cache = { source, events, matches };
+    }
+    return cache.matches.get(eventId) ?? null;
   };
 }
 
@@ -257,6 +278,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   let qianshiHistoryRun = null;
   let qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, outcomes: [], message: '' });
   const qianshiSnapshotMemo = createQianshiSnapshotMemo();
+  const qianshiEventLookup = createQianshiEventLookup(source => qianshiSnapshotMemo(source, identityProjection, null));
   const qianshiCandidateIndex = qianshiCandidatePreparer === prepareQianshiCandidates ? qianshiCandidateIndexFactory() : null;
   const subscribers = new Set();
   const currentReferenceTags = () => normalizeStoryClockReferenceTags(typeof storyClockReferenceTags === 'function' ? storyClockReferenceTags() : storyClockReferenceTags);
@@ -2910,15 +2932,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
 
   function formalQianshiEvent(eventId, source = reachable) {
     if (!source?.root || source.status !== 'ready' || source.root.chatId !== currentHostChatId()) return null;
-    const visibleEventIds = new Set(projectQianshiGraph(source).events.map(event => event.id));
-    if (!visibleEventIds.has(eventId)) return null;
-    const matches = [];
-    for (const memory of source.floorMemories ?? []) {
-      if (memory.recordStatus !== 'active' || !['ready', 'partial'].includes(memory.qianshiDelta?.status)) continue;
-      const event = memory.qianshiDelta.events.find(item => item.id === eventId);
-      if (event) matches.push({ memory, event });
-    }
-    return matches.length === 1 ? matches[0] : null;
+    return qianshiEventLookup(eventId, source);
   }
 
   function canEditQianshiEventText(eventId) {

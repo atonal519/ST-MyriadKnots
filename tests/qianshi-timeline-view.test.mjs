@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createQianshiTimelineView } from '../src/ui/qianshi-timeline-view.js';
-import { createQianshiSnapshotMemo } from '../src/v3/memory-runtime.js';
+import { createQianshiSnapshotMemo, createQianshiEventLookup } from '../src/v3/memory-runtime.js';
 import { compileQianshiDelta, projectQianshiGraph, projectQianshiTimeline, publicQianshiSnapshot } from '../src/v3/qianshi-domain.js';
 
 class Node {
@@ -1320,6 +1320,50 @@ test('千事快照 memo 在历史通知时复用全图，reachable 或身份投�
   const historyOnly = memo(reachableA, identityA, { status: 'running' });
   assert.equal(first.marker, historyOnly.marker); assert.equal(historyOnly.history.status, 'running'); assert.equal(builds, 1);
   memo(reachableB, identityA, { status: 'idle' }); memo(reachableB, identityB, { status: 'idle' }); assert.equal(builds, 3);
+});
+
+test('事件编辑索引复用快照，换档、删除和来源冲突后重新判断权限', () => {
+  let builds = 0;
+  const memo = createQianshiSnapshotMemo(source => { builds += 1; return { events: source.visibleIds.map(id => ({ id })) }; });
+  const lookup = createQianshiEventLookup(source => memo(source, null, null));
+  const memory = (id, eventIds, status = 'ready', recordStatus = 'active') => ({ id, recordStatus,
+    qianshiDelta: { status, events: eventIds.map(id => ({ id })) } });
+  const source = { visibleIds: ['a', 'duplicate', 'review', 'partial', 'inactive'], floorMemories: [
+    memory('first', ['a', 'hidden', 'duplicate']), memory('second', ['duplicate']),
+    memory('partial', ['partial'], 'partial'), memory('inactive', ['inactive'], 'ready', 'superseded'),
+  ] };
+  for (let index = 0; index < 100; index += 1) assert.equal(lookup('a', source).memory.id, 'first');
+  assert.equal(builds, 1, '大量卡片查权限只计算一次快照');
+  for (const id of ['hidden', 'duplicate', 'review', 'inactive', 'missing']) assert.equal(lookup(id, source), null);
+  assert.equal(lookup('partial', source).memory.id, 'partial');
+  const deleted = { ...source, visibleIds: source.visibleIds.filter(id => id !== 'a') };
+  assert.equal(lookup('a', deleted), null, '删除后不能沿用旧权限');
+  const otherChat = { visibleIds: ['a'], floorMemories: [memory('new-chat', ['a'])] };
+  assert.equal(lookup('a', otherChat).memory.id, 'new-chat', '切档不能用前档来源');
+  assert.equal(builds, 3);
+});
+
+test('首次 mount 后 activate 不重复渲染，无关通知跳过而进度和存档变化及时更新', async () => {
+  const snapshot = fixture(); snapshot.projectionRevision = 1;
+  let permissions = 0;
+  const h = harness({ initialSnapshot: snapshot, canEdit: () => { permissions += 1; return true; } });
+  const page = h.container.children[0], firstChecks = permissions;
+  await h.view.activate();
+  assert.equal(h.container.children[0], page);
+  assert.equal(permissions, firstChecks);
+  h.emit(snapshot, { status: 'ready', syncStatus: 'syncing' });
+  assert.equal(h.container.children[0], page, '无关同步通知不重建页面');
+  const progress = structuredClone(snapshot); progress.history = { status: 'running', totalFloors: 10, processedFloors: 2 };
+  h.emit(progress);
+  assert.notEqual(h.container.children[0], page);
+  assert.match(copy(h.container), /已处理 2\/10 楼/u);
+  assert.equal(permissions, firstChecks, '进度变了，但事件编辑权限继续复用');
+  const changed = structuredClone(snapshot); changed.projectionRevision = 2; changed.events[0].title = '新的人工标题';
+  h.emit(changed);
+  assert.match(copy(h.container), /新的人工标题/u);
+  assert.ok(permissions > firstChecks, '新存档重新判断可编辑来源');
+  const prior = h.container.children[0]; h.view.deactivate(); await h.view.activate();
+  assert.notEqual(h.container.children[0], prior, '重新激活仍读取当前状态');
 });
 
 test('旧快照的 historyReview 仅兼容读取，不恢复待审或结案入口', () => {

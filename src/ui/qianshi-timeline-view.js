@@ -40,6 +40,12 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   let container = null, active = false, unsubscribe = null, epoch = 0;
   let snapshot = runtime.getQianshiSnapshot(), runtimeState = runtime.getState(), chatId = snapshot?.identity?.qqjChatId ?? null;
   let query = '', reverse = true, feedback = '';
+  let runtimeRenderKey = null;
+  // 只比较界面消费的后台状态。投影不变的通知不清空菜单权限，也不重建整页。
+  const renderKey = (nextSnapshot, nextState) => Number.isSafeInteger(nextSnapshot?.projectionRevision)
+    ? JSON.stringify([nextSnapshot.projectionRevision, nextSnapshot.status, nextSnapshot.history,
+      nextState?.memoryWorkBusy === true || Boolean(nextState?.activeExtraction || nextState?.activeCse), nextState?.qianshiHistoryActive === true])
+    : null;
   const textEditors = new Map();
   const editableEvents = new Map();
   const operationMenus = createOperationMenuController(documentRef);
@@ -673,17 +679,25 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   function subscribe() {
     unsubscribe?.();
     unsubscribe = runtime.subscribe(next => {
-      runtimeState = next; snapshot = runtime.getQianshiSnapshot(); editableEvents.clear();
+      const nextSnapshot = runtime.getQianshiSnapshot(), nextKey = renderKey(nextSnapshot, next);
+      const unchanged = nextKey !== null && nextKey === runtimeRenderKey;
+      const previousFeedback = feedback;
+      if (nextSnapshot?.projectionRevision === undefined || nextSnapshot.projectionRevision !== snapshot?.projectionRevision) editableEvents.clear();
+      runtimeState = next; snapshot = nextSnapshot; runtimeRenderKey = nextKey;
       // 启动提示只覆盖任务尚未接管进度的间隙；运行或最终状态到达后移除，避免保存成功仍显示“将暂存”。
       const history = snapshot?.history;
       if (history?.status && history.status !== 'idle'
         && (feedback === REJUDGE_START_PENDING_FEEDBACK && history.mode === 'rejudge'
           || feedback === HISTORY_START_PENDING_FEEDBACK && history.mode !== 'rejudge')) feedback = '';
-      if (active) render();
+      if (active && (!unchanged || feedback !== previousFeedback)) render();
     });
   }
-  function mount(target) { unsubscribe?.(); unsubscribe = null; operationMenus.deactivate(); container = target; active = true; snapshot = runtime.getQianshiSnapshot(); runtimeState = runtime.getState(); editableEvents.clear(); render(); operationMenus.activate(); subscribe(); return target; }
-  async function activate() { active = true; operationMenus.activate(); snapshot = runtime.getQianshiSnapshot(); runtimeState = runtime.getState(); editableEvents.clear(); render(); subscribe(); return { status: snapshot?.status ?? 'unavailable' }; }
+  function mount(target) { unsubscribe?.(); unsubscribe = null; operationMenus.deactivate(); container = target; active = true; snapshot = runtime.getQianshiSnapshot(); runtimeState = runtime.getState(); runtimeRenderKey = renderKey(snapshot, runtimeState); editableEvents.clear(); render(); operationMenus.activate(); subscribe(); return target; }
+  async function activate() {
+    // mount 已完成首次渲染和订阅；面板紧接着 activate 不再重复生成同一页。
+    if (active) return { status: snapshot?.status ?? 'unavailable' };
+    active = true; operationMenus.activate(); snapshot = runtime.getQianshiSnapshot(); runtimeState = runtime.getState(); runtimeRenderKey = renderKey(snapshot, runtimeState); editableEvents.clear(); render(); subscribe(); return { status: snapshot?.status ?? 'unavailable' };
+  }
   function deactivate() { active = false; epoch += 1; operationMenus.deactivate(); unsubscribe?.(); unsubscribe = null; }
   return Object.freeze({ mount, activate, deactivate, render });
 }
