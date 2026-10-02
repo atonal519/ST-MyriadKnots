@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { ANNUAL_SETTING_SYSTEM_PROMPT, buildAnnualSettingSources, compileAnnualSettingResponse, projectAnnualSettings } from '../src/v3/time-annual-setting.js';
 import { createTimeRuntime, createTimeStore } from '../src/v3/time-runtime.js';
 import { projectTime, timeRecallProjection } from '../src/v3/time-engine.js';
-import { buildRecallQueryContext, selectRecall } from '../src/v3/recall-selector.js';
+import { buildRecallAnnualCandidatePool, buildRecallQueryContext, selectRecall } from '../src/v3/recall-selector.js';
+import { selectRecallWithLlm } from '../src/v3/recall-llm-selector.js';
 import { scanAssistantCandidates, createFloorRecord } from '../src/v3/foundation-domain.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', PERSON = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', USER = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
@@ -55,6 +56,8 @@ test('年度提醒只看本年，月日可跨月，跨年不猜，旧特殊日�
   projected = projectAnnualSettings(records, projectTime('2026-09-21'), []);
   assert.equal(projected.items[0].nextDate, null); assert.equal(projected.items[0].status, '本年日期已过');
   assert.ok(projected.reminders.some(item => /原日期 1999年9月20日/u.test(item.text) && !Number.isFinite(item.distance)), '已过日期保留原文供相关召回判断，不猜下次年份');
+  assert.match(projected.reminders.find(item => /1999年9月20日/u.test(item.text)).text, /本年日期已过/u);
+  assert.doesNotMatch(projected.reminders.find(item => /1999年9月20日/u.test(item.text)).text, /日期关系不明确/u);
   assert.ok(projected.reminders.some(item => /原日期 霜月初三/u.test(item.text) && !Number.isFinite(item.distance)), '特殊日期作为原文线索进入召回，不声称临近');
   projected = projectAnnualSettings(records, projectTime('9月13日'), []);
   assert.equal(projected.reminders[0].distance, 7); assert.equal(projected.items[0].nextDate, '9月20日（年份未明）');
@@ -80,6 +83,8 @@ test('年度提醒只看本年，月日可跨月，跨年不猜，旧特殊日�
   projected = projectAnnualSettings(leap, projectTime('2025-03-01'), []);
   assert.equal(projected.items[0].nextDate, null); assert.equal(projected.items[0].status, '本年没有该日期');
   assert.ok(projected.reminders.some(item => /原日期 2月29日/u.test(item.text) && !Number.isFinite(item.distance)));
+  assert.match(projected.reminders[0].text, /本年没有该日期/u);
+  assert.doesNotMatch(projected.reminders[0].text, /日期关系不明确/u);
   projected = projectAnnualSettings(leap, projectTime('2024-02-28'), []);
   assert.equal(projected.items[0].nextDate, '2024-02-29');
   projected = projectAnnualSettings([{ ...records[0], items: [{ ...crossMonth[0].items[0], month: null, day: null }] }], projectTime('9月29日'), []);
@@ -109,6 +114,75 @@ test('未计算的年度原文经过真实主楼召回选择器进入相关上�
   const selected = selectRecall({ source, queryContext: buildRecallQueryContext({ coreChat: [{ is_user: true, mes: '阿岚的霜月纪念是什么' }] }), contextSize: 8192 });
   assert.match(selected.injectionText, /原日期 大陆历1686年霜月初三/u);
   assert.doesNotMatch(selected.injectionText, /还有\d+天|临近|最近/u);
+});
+
+function annualRecallSource(records, currentTime = projectTime('大陆历1686年9月29日')) {
+  return { status: 'ready', chatId: CHAT, entities: records.map(row => ({ entityId: row.subjectEntityId, displayName: row.subjectName, aliases: [], entityType: 'person' })),
+    floorMemories: [], cseChanges: [], currentState: [], coverage: { stableThroughAssistantSeq: 0, memoryComplete: true, cseCurrent: true },
+    bodyMatch: { coveredFloorIds: [] }, timeProjection: { corrections: {}, ...projectAnnualSettings(records, currentTime, []) } };
+}
+const annualRecord = (sourceKey, subjectEntityId, subjectName, originalDate = '9月20日') => ({
+  sourceKey, fingerprint: `fp-${sourceKey}`, subjectEntityId, subjectName,
+  items: [{ category: 'birthday', label: '生日', originalDate, note: '' }],
+});
+const annualQuery = text => buildRecallQueryContext({ coreChat: [{ is_user: true, mes: text }] });
+
+test('普通互动的人名匹配只送年度候选，同次选材不保留时不挤进生日；可靠临期和正文期限不受影响', async () => {
+  const source = annualRecallSource([annualRecord('unknown', PERSON, '阿岚')]);
+  source.timeProjection.reminders.push(
+    { itemId: 'near', type: 'annual', subjectEntityId: USER, distance: 2, text: '用户生日还有2天', sourceSignature: 'near' },
+    { itemId: 'deadline', type: 'deadline', subjectEntityId: PERSON, distance: 0, text: '阿岚今天归还旧书', sourceSignature: 'deadline' },
+  );
+  let calls = 0;
+  const result = await selectRecallWithLlm({ source, queryContext: annualQuery('阿岚去码头买点心'), generateUtilityTask: async options => {
+    calls += 1;
+    const payload = JSON.parse(options.taskMessages[0].content);
+    assert.equal(payload.annualCandidates.length, 1);
+    assert.match(payload.annualCandidates[0].fact, /阿岚.*日期关系不明确/u);
+    assert.equal(payload.candidates.length, 0);
+    assert.equal(options.transportBudget.remaining, 1);
+    return { jsonData: { history_exclude_keys: [], state_exclude_keys: [], annual_retain_keys: [] } };
+  } });
+  assert.equal(calls, 1, '年度判断复用本次选材而非追加请求');
+  assert.deepEqual(result.timeDependencies.reminders.map(item => item.itemId).sort(), ['deadline', 'near']);
+  assert.doesNotMatch(result.injectionText, /日期关系不明确/u);
+  assert.match(result.injectionText, /生日还有2天/u);
+});
+
+test('本轮明确询问已过生日时保留准确原文，其他在场人物的生日不默认注入', async () => {
+  const source = annualRecallSource([annualRecord('one', PERSON, '阿岚'), annualRecord('two', USER, '阿裴')], projectTime('2026-10-01'));
+  const result = await selectRecallWithLlm({ source, queryContext: annualQuery('阿裴问阿岚的生日是哪天，今年过了吗？'), generateUtilityTask: async options => {
+    const payload = JSON.parse(options.taskMessages[0].content);
+    assert.equal(payload.annualCandidates.length, 2);
+    const wanted = payload.annualCandidates.find(candidate => candidate.fact.startsWith('阿岚 /'));
+    return { jsonData: { annual_retain_keys: [wanted.key, wanted.key] } };
+  } });
+  assert.equal(result.timeDependencies.reminders.length, 1);
+  assert.match(result.injectionText, /阿岚 \/ 生日.*原日期 9月20日.*本年日期已过/u);
+  assert.doesNotMatch(result.injectionText, /阿裴 \/ 生日|日期关系不明确/u);
+});
+
+test('年度候选为空时不因生日增加请求；未知保留键和坏类型仍拒绝', async () => {
+  const source = annualRecallSource([annualRecord('one', PERSON, '阿岚')]);
+  const empty = await selectRecallWithLlm({ source, queryContext: annualQuery('独自检修发电机'), generateUtilityTask: async () => { throw new Error('无相关候选不应请求'); } });
+  assert.equal(empty.selectorDiagnostic.mode, 'local');
+  assert.equal(empty.timeDependencies.reminders.length, 0);
+  for (const answer of [{ annual_retain_keys: ['T999'] }, { annual_retain_keys: 'T1' }, { history_exclude_keys: [], state_exclude_keys: [] }]) {
+    await assert.rejects(selectRecallWithLlm({ source, queryContext: annualQuery('阿岚的生日'), generateUtilityTask: async () => ({ jsonData: answer }) }),
+      error => ['V3_RECALL_LLM_KEYS_INVALID', 'V3_RECALL_LLM_SCHEMA_INVALID', 'V3_RECALL_LLM_FIELDS_MISSING'].includes(error.code));
+  }
+});
+
+test('年度候选数量和文本有界，池外设定不会绕过同次语义选择', async () => {
+  const source = annualRecallSource(Array.from({ length: 30 }, (_, index) => annualRecord(`source-${index}`, PERSON, '阿岚')));
+  const queryContext = annualQuery('阿岚的生日');
+  const pool = buildRecallAnnualCandidatePool({ source, queryContext });
+  assert.equal(pool.length, 24);
+  assert.ok(pool.reduce((sum, candidate) => sum + candidate.fact.length, 0) <= 4000);
+  const result = await selectRecallWithLlm({ source, queryContext, generateUtilityTask: async () => ({ jsonData: { annual_retain_keys: [pool[0].key] } }) });
+  assert.deepEqual(result.timeDependencies.reminders.map(item => item.itemId), [pool[0].itemId]);
+  source.timeProjection.reminders[0].text = '阿岚生日'.repeat(2000);
+  assert.equal(buildRecallAnnualCandidatePool({ source, queryContext }).some(candidate => candidate.itemId === source.timeProjection.reminders[0].itemId), false);
 });
 
 function backend() {

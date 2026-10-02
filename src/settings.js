@@ -1,5 +1,6 @@
 import { normalizeMemoryTagList } from './memory-content-sanitizer.js';
 import { normalizeStoryClockReferenceTags } from './story-clock.js';
+import { normalizeStoryCalendar } from './v3/calendar-rules.js';
 
 export const SETTINGS_ID = 'qianqianjie';
 
@@ -7,6 +8,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   pluginEnabled: true,
   storyClockEnabled: true,
   timeEvolutionEnabled: false,
+  storyCalendars: {},
   storyClockPrompt: '',
   storyClockReferenceTags: '',
   autoMemoryBatchSize: 1,
@@ -52,6 +54,9 @@ const normalizeScale = value => Math.min(1.5, Math.max(0.75, Number.isFinite(Num
 const normalizeStorageCleanupProgress = value => value && typeof value === 'object' && !Array.isArray(value)
   ? Object.fromEntries(Object.entries(value).filter(([chatId, count]) => /^[0-9a-f-]{36}$/i.test(chatId) && Number.isSafeInteger(count) && count >= 0))
   : {};
+const normalizeStoryCalendars = value => value && typeof value === 'object' && !Array.isArray(value)
+  ? Object.fromEntries(Object.entries(value).filter(([chatId, calendar]) => /^[0-9a-f-]{36}$/iu.test(chatId) && normalizeStoryCalendar(calendar))
+    .map(([chatId, calendar]) => [chatId, normalizeStoryCalendar(calendar)])) : {};
 export function normalizeAutoMemoryBatchSize(value) {
   return 1;
 }
@@ -150,6 +155,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     settings.apiTimeoutSec = normalizeTimeout(settings.apiTimeoutSec);
     settings.autoMemoryBatchSize = normalizeAutoMemoryBatchSize(settings.autoMemoryBatchSize);
     settings.timeEvolutionEnabled = settings.timeEvolutionEnabled === true;
+    settings.storyCalendars = normalizeStoryCalendars(settings.storyCalendars);
     settings.autoHideEnabled = settings.autoHideEnabled === true;
     settings.autoHideKeepAiCount = normalizeAutoHideKeepAiCount(settings.autoHideKeepAiCount);
     settings.storageAutoCleanupEnabled = settings.storageAutoCleanupEnabled === true;
@@ -165,6 +171,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     const settings = get();
     if (own(patch, 'pluginEnabled')) settings.pluginEnabled = patch.pluginEnabled !== false;
     if (own(patch, 'timeEvolutionEnabled')) settings.timeEvolutionEnabled = patch.timeEvolutionEnabled === true;
+    if (own(patch, 'storyCalendars')) settings.storyCalendars = normalizeStoryCalendars(patch.storyCalendars);
     if (own(patch, 'storyClockEnabled')) settings.storyClockEnabled = patch.storyClockEnabled !== false;
     if (own(patch, 'storyClockPrompt')) settings.storyClockPrompt = text(patch.storyClockPrompt);
     if (own(patch, 'storyClockReferenceTags')) settings.storyClockReferenceTags = normalizeStoryClockReferenceTags(patch.storyClockReferenceTags).join(',');

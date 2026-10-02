@@ -1,3 +1,5 @@
+import { calendarMonthDays } from './v3/calendar-rules.js';
+
 export const MYKNOTS_STORY_CLOCK_KEY = 'myknots_story_clock';
 export const STORY_CLOCK_DEPTH = 0;
 
@@ -26,7 +28,7 @@ export function normalizeStoryClockReferenceTags(value) {
   });
 }
 
-export function parseClockFields(raw) {
+export function parseClockFields(raw, calendar = null) {
   const value = text(raw).trim();
   const date = field(value, 'date');
   const weekday = field(value, 'weekday|星期');
@@ -44,18 +46,19 @@ export function parseClockFields(raw) {
   const gregorianYear = /^(\d{4})[-/.]\d{1,2}[-/.]\d{1,2}$/u.exec(normalizedDate)?.[1]
     ?? /^(\d{4})年\d{1,2}月\d{1,2}(?:日|号|號)?$/u.exec(normalizedDate)?.[1];
   const maxDay = numericDate && month >= 1 && month <= 12
-    ? gregorianYear ? new Date(Date.UTC(Number(gregorianYear), month, 0)).getUTCDate() : 31
+    ? calendar ? calendarMonthDays(calendar)[month - 1] ?? 0
+      : gregorianYear ? new Date(Date.UTC(Number(gregorianYear), month, 0)).getUTCDate() : 31
     : 0;
   const dateValid = Boolean(date) && (!numericDate || month >= 1 && month <= 12 && day >= 1 && day <= maxDay);
   return Object.freeze({ raw: value, date, weekday, time, complete: Boolean(dateValid && weekdayValid && timeValid) });
 }
 
-function namespaceCandidate(source, namespace) {
+function namespaceCandidate(source, namespace, calendar) {
   const tokenRe = new RegExp(`<!--\\s*${namespace}-(start|end)\\s+([\\s\\S]*?)\\s*-->`, 'igu');
   const tokens = [...source.matchAll(tokenRe)].map(match => Object.freeze({
     kind: match[1].toLocaleLowerCase('en-US'),
     raw: match[2],
-    meta: parseClockFields(match[2]),
+    meta: parseClockFields(match[2], calendar),
     index: match.index,
   }));
   if (!tokens.length) return null;
@@ -86,9 +89,9 @@ function namespaceCandidate(source, namespace) {
   });
 }
 
-export function parseSharedStoryClock(value) {
+export function parseSharedStoryClock(value, calendar = null) {
   const source = text(value);
-  const candidates = ['SDC', 'QQJ', 'myknots'].map(namespace => namespaceCandidate(source, namespace)).filter(Boolean);
+  const candidates = ['SDC', 'QQJ', 'myknots'].map(namespace => namespaceCandidate(source, namespace, calendar)).filter(Boolean);
   if (!candidates.length) return null;
   candidates.sort((left, right) => Number(right.complete) - Number(left.complete) || left.sourceIndex - right.sourceIndex);
   const usable = candidates.filter(candidate => candidate.complete);
@@ -155,14 +158,14 @@ export function parseStoryClockReference(value, referenceTags = '') {
   });
 }
 
-export function parseStoryClockEvidence(value, referenceTags = '') {
-  const shared = parseSharedStoryClock(value);
+export function parseStoryClockEvidence(value, referenceTags = '', calendar = null) {
+  const shared = parseSharedStoryClock(value, calendar);
   const reference = parseStoryClockReference(value, referenceTags);
   return shared?.ambiguous || shared?.complete ? shared : reference ?? shared;
 }
 
-export function resolveStoryClock(value, referenceTags = '') {
-  const evidence = parseStoryClockEvidence(value, referenceTags);
+export function resolveStoryClock(value, referenceTags = '', calendar = null) {
+  const evidence = parseStoryClockEvidence(value, referenceTags, calendar);
   if (!evidence) return null;
   if (evidence.ambiguous) return Object.freeze({ status: 'ambiguous', source: 'timestamp', evidence, signature: storyClockSignature(evidence) });
   if (evidence.complete && !evidence.referenceText) {

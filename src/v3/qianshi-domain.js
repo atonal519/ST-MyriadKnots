@@ -2,6 +2,7 @@ import { MultiDirectedGraph, DirectedGraph } from 'graphology';
 import { topologicalSort, willCreateCycle } from 'graphology-dag';
 import { deterministicUuid } from './foundation-domain.js';
 import { formatStoryTime, isRelativeStoryTime, projectTime, storyTimes, timeDistance } from './time-engine.js';
+import { calendarKey } from './calendar-rules.js';
 import { buildEntityIdentityDirectory, normalizeIdentityProjection } from './entity-identity.js';
 import { rankRecallDocuments, tokenizeRecallText } from './recall-ranking.js';
 import { QIANSHI_SCHEMA_VERSION, validateQianshiDelta } from './qianshi-schema.js';
@@ -104,7 +105,7 @@ const eventNode = id => nodeId('event', id);
 const matterNode = id => nodeId('matter', id);
 const personNode = id => nodeId('person', id);
 
-const projectQianshiTime = (value, anchor = null) => projectTime(value, anchor, { allowShortGregorianYear: true });
+const projectQianshiTime = (value, anchor = null, calendar = anchor?.calendar ?? null) => projectTime(value, anchor, { allowShortGregorianYear: true, calendar });
 const GREGORIAN_MONTH_DAYS = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
 function stableTopologicalOrder(graph, indices) {
@@ -157,7 +158,7 @@ export function orderQianshiLineRecords(values, sourceIndex) {
   const graph = new DirectedGraph({ allowSelfLoops: false });
   for (const event of sourceOrder) graph.addNode(eventNode(event.id), { value: event });
   const indices = new Map(sourceOrder.map((event, index) => [event.id, index]));
-  const timeDomain = time => time?.monthIdentity ? `special:${time.monthIdentity}`
+  const timeDomain = time => time?.calendar ? `calendar:${calendarKey(time.calendar)}:${time.year === null ? 'yearless' : 'dated'}` : time?.monthIdentity ? `special:${time.monthIdentity}`
     : Number.isInteger(time?.day) ? 'absolute-day' : Number.isInteger(time?.monthDay) ? 'yearless-day' : null;
   const timedGroups = new Map();
   for (const event of sourceOrder) {
@@ -173,8 +174,8 @@ export function orderQianshiLineRecords(values, sourceIndex) {
     for (const event of group) {
       const time = event.parsedStoryTime;
       // A day number alone cannot identify a yearless date when its month is known.
-      const dateKey = domain === 'absolute-day' ? time.day
-        : domain === 'yearless-day' ? `${Number.isInteger(time.month) ? `month:${time.month}` : 'unknown-month'}:day:${time.monthDay}`
+      const dateKey = Number.isInteger(time.day) ? time.day
+        : Number.isInteger(time.month) ? `month:${time.month}:day:${time.monthDay}`
           : Number.isInteger(time.monthDay) ? `day:${time.monthDay}`
             : Number.isInteger(time.weekOrdinal) && time.weekday ? `week:${time.weekday}:${time.weekOrdinal}` : `unknown:${event.id}`;
       const bucket = buckets.get(dateKey);
@@ -195,7 +196,7 @@ export function orderQianshiLineRecords(values, sourceIndex) {
       for (let index = 1; index < ordered.length; index += 1) graph.addDirectedEdge(eventNode(ordered[index - 1].id), eventNode(ordered[index].id));
       return { events: ordered, firstSourceIndex: events.reduce((minimum, event) => Math.min(minimum, indices.get(event.id)), Number.MAX_SAFE_INTEGER) };
     });
-    if (domain === 'absolute-day') orderedBuckets.sort((left, right) => left.events[0].parsedStoryTime.day - right.events[0].parsedStoryTime.day);
+    if (Number.isInteger(group[0].parsedStoryTime.day)) orderedBuckets.sort((left, right) => left.events[0].parsedStoryTime.day - right.events[0].parsedStoryTime.day);
     else orderedBuckets.sort((left, right) => left.firstSourceIndex - right.firstSourceIndex);
     let previousComparable = null;
     for (const bucket of orderedBuckets) {
@@ -223,16 +224,16 @@ function deriveQianshiLine(values, sourceIndex) {
 const hasTrackableCurrent = matter => Boolean(matter && !matter.synthetic && matter.matterId && matter.currentEventId
   && matter.latestEventIds?.length === 1 && matter.latestEventIds[0] === matter.currentEventId);
 
-function sourceTimeFor(event, floorTime, { aggregate = false } = {}) {
+function sourceTimeFor(event, floorTime, { aggregate = false, calendar = floorTime?.calendar ?? null } = {}) {
   // 人工确认的发生时间独立于来源楼；清空或只填时钟都不能偷偷继承楼层日期。
   if (event.timeManuallyEdited) {
     const raw = event.storyTime ?? '', separator = STORY_TIME_RANGE.exec(raw);
-    const projected = projectQianshiTime(separator ? raw.slice(0, separator.index).trim() : raw, null);
+    const projected = projectQianshiTime(separator ? raw.slice(0, separator.index).trim() : raw, null, calendar);
     return separator ? { ...projected, rangeText: raw } : projected;
   }
-  if (aggregate) return projectQianshiTime(event.storyTime ?? '', null);
+  if (aggregate) return projectQianshiTime(event.storyTime ?? '', null, calendar);
   if (!event.storyTime) return floorTime ?? projectTime('');
-  return projectQianshiTime(event.storyTime, floorTime ?? null);
+  return projectQianshiTime(event.storyTime, floorTime ?? null, calendar);
 }
 
 function comparableBefore(left, right) {
@@ -249,13 +250,13 @@ export function qianshiDeletedEvents(reachable) {
   });
 }
 
-export function projectQianshiGraph(reachable, { identityProjection = null, progressCharacters = QIANSHI_PROGRESS_CHARACTER_BUDGET } = {}) {
+export function projectQianshiGraph(reachable, { identityProjection = null, progressCharacters = QIANSHI_PROGRESS_CHARACTER_BUDGET, calendar = reachable?.calendar ?? null } = {}) {
   const graph = new MultiDirectedGraph({ allowSelfLoops: false });
   const orderGraph = new DirectedGraph({ allowSelfLoops: false });
   const progressGraph = new DirectedGraph({ allowSelfLoops: false });
   const floors = reachable?.floors ?? [];
   const floorById = new Map(floors.map(floor => [floor.id, floor]));
-  const floorTimes = storyTimes((reachable?.floorMemories ?? []), floors);
+  const floorTimes = storyTimes((reachable?.floorMemories ?? []), floors, (raw, anchor) => projectQianshiTime(raw, anchor, calendar));
   const directory = buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], identityProjection: normalizeIdentityProjection(identityProjection ?? {}) });
   const entityById = new Map(directory.map(entry => [entry.entityId, entry]));
   const events = [], relations = [], discardedOrderRelations = [], danglingRelationIds = [], danglingContinuationIds = [], degradedFloorIds = new Set();
@@ -313,7 +314,7 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
     const sourceFloor = floorById.get(raw.sourceFloorId);
     const assistantSeq = aggregate ? sourceFloor?.assistantSeq ?? null : floor.assistantSeq;
     const event = frozen({ ...eventData, floorMemoryId: memory.id, assistantSeq,
-      parsedStoryTime: sourceTimeFor(eventData, floorTimes.get(floor.id), { aggregate }) });
+      parsedStoryTime: sourceTimeFor(eventData, floorTimes.get(floor.id), { aggregate, calendar }) });
     if (eventById.has(event.id)) continue;
     sourceIndex.set(event.id, events.length);
     eventById.set(event.id, event); events.push(event);
@@ -391,7 +392,7 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
       else discardedOrderRelations.push(relation.id);
     }
   }
-  const timeGroup = value => Number.isInteger(value?.day) ? 'absolute'
+  const timeGroup = value => value?.calendar ? `calendar:${calendarKey(value.calendar)}:${value.year === null ? 'yearless' : 'dated'}` : Number.isInteger(value?.day) ? 'absolute'
     : value?.monthIdentity ? `named:${value.monthIdentity}`
       : value?.year === null && Number.isInteger(value?.month) ? 'month-day' : null;
   const timedGroups = new Map();
@@ -409,7 +410,7 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
     return false;
   };
   for (const values of timedGroups.values()) {
-    const sortableTime = value => Number.isInteger(value?.day) ? value.day
+    const sortableTime = value => Number.isInteger(value?.day) ? value.day : Number.isInteger(value?.calendarOrdinal) ? value.calendarOrdinal
       : Number.isInteger(value?.month) && Number.isInteger(value?.monthDay) && !value?.monthIdentity
         ? GREGORIAN_MONTH_DAYS.slice(0, value.month - 1).reduce((sum, days) => sum + days, 0) + value.monthDay
         : Number.isInteger(value?.monthDay) ? value.monthDay
@@ -561,10 +562,11 @@ function recallTimelineTime(event) {
   const rangeStart = rangeSeparator ? sortableRaw.slice(0, rangeSeparator.index).trim() : sortableRaw;
   const ranged = Boolean(event.parsedStoryTime?.rangeText) || Boolean(rangeSeparator);
   const relative = isRelativeStoryTime(rangeStart);
-  const time = ranged ? rangeSeparator && rangeStart ? projectQianshiTime(rangeStart) : null
+  const calendar = event.parsedStoryTime?.calendar ?? null;
+  const time = ranged ? rangeSeparator && rangeStart ? projectQianshiTime(rangeStart, null, calendar) : null
       : relative && !event.parsedStoryTime?.date ? null
-      : relative ? event.parsedStoryTime : sortableRaw ? projectQianshiTime(sortableRaw) : event.parsedStoryTime;
-  const kind = time?.monthIdentity ? `special:${time.monthIdentity}`
+      : relative ? event.parsedStoryTime : sortableRaw ? projectQianshiTime(sortableRaw, null, calendar) : event.parsedStoryTime;
+  const kind = time?.calendar ? `calendar:${calendarKey(time.calendar)}:${time.year === null ? 'yearless' : 'dated'}` : time?.monthIdentity ? `special:${time.monthIdentity}`
     : Number.isInteger(time?.day) ? 'dated' : Number.isInteger(time?.month) && Number.isInteger(time?.monthDay) ? 'month-day' : 'unknown';
   const standardMonth = !time?.monthIdentity && Number.isInteger(time?.month) && Number.isInteger(time?.monthDay);
   return { time, kind, standardMonth, second: rangeStart.match(STORY_SECONDS)?.[1] };
@@ -653,14 +655,15 @@ function timelineDateCopy(view, raw) {
     const [era, year, month] = JSON.parse(time.monthIdentity);
     period = `${era || ''}${Number.isInteger(year) ? `${year}年` : ''}${month || ''}`;
   } catch { /* Persisted invalid identities keep the original label. */ }
-  else if (Number.isInteger(time?.year) && Number.isInteger(time?.month)) period = `${time.year}年${time.month}月`;
-  else if (Number.isInteger(time?.month)) period = `${time.month}月`;
+  else if (Number.isInteger(time?.year) && Number.isInteger(time?.month)) period = `${time.calendar?.prefix ?? ''}${time.year}年${time.month}月`;
+  else if (Number.isInteger(time?.month)) period = `${time.calendar?.prefix ?? ''}${time.month}月`;
   return { day, period, full };
 }
 
 function timelineSegmentLabel(segment, groups) {
   if (segment.id === 'dated') return '完整日期';
   if (segment.id === 'month-day') return '仅月日';
+  if (segment.id.startsWith('calendar:')) return segment.yearless ? '仅月日' : '完整日期';
   return clean(groups[0]?.period, 120) || '时间未明确';
 }
 
@@ -671,6 +674,8 @@ export function projectQianshiTimeline(projection) {
   const segmentFor = view => {
     const tuple = timelineDateTuple(view);
     if (!tuple) return null;
+    // 固定历法的年序不能与未经用户确认的其他纪年/公历混为同一时间轴。
+    if (view.time?.calendar) return view.kind;
     if (view.time?.monthIdentity) return `special:${view.time.monthIdentity}`;
     if (Number.isInteger(view.time?.day)) return 'dated';
     if (view.standardMonth && view.time?.year === null) return 'month-day';
@@ -687,12 +692,13 @@ export function projectQianshiTimeline(projection) {
     let segment = segments.get(segmentId);
     if (!segment) {
       segment = { id: segmentId, firstIndex: eventIndex.get(event.id), hasKnownYear: Number.isInteger(view.time?.year),
-        hasJanuary: false, hasDecember: false, groups: new Map() };
+        yearless: view.time?.year === null && !view.time?.monthIdentity,
+        hasFirstMonth: false, hasLastMonth: false, groups: new Map() };
       segments.set(segmentId, segment);
     } else if (Number.isInteger(view.time?.year)) segment.hasKnownYear = true;
-    if (segmentId === 'month-day') {
-      segment.hasJanuary ||= view.time.month === 1;
-      segment.hasDecember ||= view.time.month === 12;
+    if (segment.yearless) {
+      segment.hasFirstMonth ||= view.time.month === 1;
+      segment.hasLastMonth ||= view.time.month === (view.time.calendar?.months ?? 12);
     }
     let group = segment.groups.get(groupKey);
     if (!group) {
@@ -706,7 +712,7 @@ export function projectQianshiTimeline(projection) {
   const segmentList = [...segments.values()].sort((left, right) => Number(right.hasKnownYear) - Number(left.hasKnownYear)
     || left.firstIndex - right.firstIndex);
   const resultSegments = segmentList.map(segment => {
-    const preserveSourceOrder = segment.id === 'month-day' && segment.hasJanuary && segment.hasDecember;
+    const preserveSourceOrder = segment.yearless && segment.hasFirstMonth && segment.hasLastMonth;
     const groups = [...segment.groups.values()].sort((left, right) => preserveSourceOrder
       ? left.firstIndex - right.firstIndex : compareTuple(left.tuple, right.tuple) || left.firstIndex - right.firstIndex);
     const latest = preserveSourceOrder ? null : groups.at(-1);
@@ -715,8 +721,8 @@ export function projectQianshiTimeline(projection) {
       period: group.period, full: group.full,
       eventIds: frozen([...group.eventIds]) }))), latestGroupId: latest?.id ?? null });
   });
-  const yearlessBoundaryAmbiguous = segments.size === 1 && [...segments.values()][0].id === 'month-day'
-    && [...segments.values()][0].hasJanuary && [...segments.values()][0].hasDecember;
+  const onlySegment = segments.size === 1 ? [...segments.values()][0] : null;
+  const yearlessBoundaryAmbiguous = onlySegment?.yearless && onlySegment.hasFirstMonth && onlySegment.hasLastMonth;
   const hasGlobalLatest = resultSegments.length === 1 && undatedEventIds.length === 0 && !yearlessBoundaryAmbiguous;
   return frozen({ segments: frozen(resultSegments), undatedEventIds: frozen(undatedEventIds), hasGlobalLatest,
     globalLatestGroupId: hasGlobalLatest ? resultSegments[0].latestGroupId : null });
@@ -1291,8 +1297,8 @@ export function pendingQianshiDelta(previous, reason, now = new Date().toISOStri
     candidateStats: { count: Number(previous?.candidateStats?.count) || 0, characters: Number(previous?.candidateStats?.characters) || 0 }, events: [], relations: [] });
 }
 
-export function publicQianshiSnapshot(reachable, history = null, identityProjection = null) {
-  const projection = projectQianshiGraph(reachable, { identityProjection });
+export function publicQianshiSnapshot(reachable, history = null, identityProjection = null, calendar = null) {
+  const projection = projectQianshiGraph(reachable, { identityProjection, calendar });
   const floorById = new Map((reachable?.floors ?? []).map(floor => [floor.id, floor]));
   const publicEvent = event => ({ id: event.id, matterId: event.matterId, title: event.title, description: event.description, status: event.status,
     actionStatus: event.actionStatus ?? null, statusManuallyEdited: event.statusManuallyEdited === true,

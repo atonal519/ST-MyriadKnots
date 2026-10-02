@@ -1768,6 +1768,32 @@ test('零本地正向证据的 CSE 不送 LLM 也不为凑量进入最终召回'
   assert.equal(result.states.length, 0);
 });
 
+test('同次年度选材不替换旧事选择，漏返年度保留键不会恢复人名匹配的生日', async () => {
+  const source = changingCseSource({ withHistory: true });
+  source.floorMemories = source.floorMemories.map(memory => memory.assistantSeq >= 5
+    ? { ...memory, summary: `左佐在屋内等候，辛夷在院子休息（接续${memory.assistantSeq}）。` } : memory);
+  source.timeProjection = { corrections: {}, reminders: [{ itemId: 'unknown-birthday', type: 'annual', subjectEntityId: PERSON,
+    distance: null, rankText: '左佐 生日 霜月初三', text: '左佐 / 生日：原日期 霜月初三；当前日期关系不明确。', sourceSignature: 'annual-source' }] };
+  const queryContext = { ...llmQuery, text: '左佐和辛夷的门锁', latestUserText: '左佐和辛夷的门锁' };
+  let calls = 0;
+  const run = retainOld => selectRecallWithLlm({ source, queryContext, generateUtilityTask: async options => {
+    calls += 1;
+    const payload = JSON.parse(options.taskMessages[0].content);
+    assert.equal(payload.annualCandidates.length, 1);
+    assert.equal(payload.alreadyProvided.recentContinuation.length, 4);
+    const origin = payload.candidates.find(candidate => candidate.fact.includes('左佐早年买过一把旧门锁'));
+    assert.ok(origin, '独立旧事实仍在同次候选中供语义判断');
+    return { jsonData: { history_exclude_keys: payload.candidates.filter(candidate => !retainOld || candidate.key !== origin.key).map(candidate => candidate.key), state_exclude_keys: [] } };
+  } });
+  const retained = await run(true);
+  assert.match(retained.injectionText, /左佐早年买过一把旧门锁/u);
+  assert.equal(retained.timeDependencies.reminders.length, 0);
+  assert.doesNotMatch(retained.injectionText, /生日/u);
+  const excluded = await run(false);
+  assert.doesNotMatch(excluded.injectionText, /左佐早年买过一把旧门锁|生日/u);
+  assert.equal(calls, 2, '每轮各一次请求，年度判断不追加请求');
+});
+
 test('同一次 LLM 分开排除 history/current/change，空排除、全排除与非法键沿新合同处理', async () => {
   const source = changingCseSource({ withHistory: true });
   const queryContext = { ...llmQuery, text: '左佐辛夷旧门锁', latestUserText: '左佐辛夷旧门锁' };

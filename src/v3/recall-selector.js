@@ -526,6 +526,22 @@ function rankedTimeReminders(source, queryContext, query, entityById) {
     .sort((a, b) => b.score - a.score || a._sourceOrder - b._sourceOrder);
 }
 
+export function buildRecallAnnualCandidatePool({ source, queryContext, historyContext = null } = {}) {
+  const context = historyContext ?? historySelectionContext(source, queryContext);
+  if (!context) return [];
+  const candidates = [];
+  let characters = 0;
+  // 人名匹配只负责送入候选池；没有可靠临期依据的年度设定由同次选材判断用途。
+  for (const value of rankedTimeReminders(source, queryContext, context.query, context.entityById)) {
+    if (value.type !== 'annual' || timeUrgencyBoost(value) > 0 || value.score <= 0) continue;
+    if (candidates.length >= 24) break;
+    if (characters + value.text.length > 4000) continue;
+    candidates.push({ key: `T${candidates.length + 1}`, itemId: value.itemId, fact: value.text });
+    characters += value.text.length;
+  }
+  return candidates;
+}
+
 const stateSourceKey = value => {
   const stateId = cleanLiteral(value?.stateId, 500);
   if (stateId) return `id:${stateId}`;
@@ -1189,7 +1205,7 @@ export function buildRecallCseCandidatePool({ source, queryContext, cseContext =
   });
 }
 
-export function selectRecall({ source, queryContext, historyContext: providedHistoryContext = null, cseContext: providedCseContext = null, contextSize = 8192, maxFloors = null, maxItems = null, selectedHistoryCandidates, selectedCseCandidates, excludedHistoryCandidates = [], excludedCseCandidates = [], reservedTokens = 0, reservedCharacters = 0 } = {}) {
+export function selectRecall({ source, queryContext, historyContext: providedHistoryContext = null, cseContext: providedCseContext = null, contextSize = 8192, maxFloors = null, maxItems = null, selectedHistoryCandidates, selectedCseCandidates, selectedAnnualReminderIds, excludedHistoryCandidates = [], excludedCseCandidates = [], reservedTokens = 0, reservedCharacters = 0 } = {}) {
   const emptyStages = input => Object.freeze({ input, candidates: 0, dropRecent: 0, dropPersistent: 0, dropVisibility: 0, selected: 0, recentSummaryCount: 0, distantHistoryItemCount: 0, linkedHistoryItemCount: 0, stateCount: 0, currentStateCount: 0, cseChangeCount: 0, linkedCseChangeCount: 0, budgetDroppedCount: 0, finalInjectionItemCount: 0 });
   if (source?.status !== 'ready') return Object.freeze({ status: 'empty', injectionText: '', floors: Object.freeze([]), states: Object.freeze([]), cseChanges: Object.freeze([]), timeDependencies: Object.freeze({ mode: 'selected', corrections: Object.freeze([]), reminders: Object.freeze([]) }), stages: emptyStages(0), skipReasons: Object.freeze(['sourceUnavailable']) });
   const query = clean(queryContext?.text, MAX_QUERY_CHARACTERS);
@@ -1339,7 +1355,9 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
     chosenTimeReminders.pop(); budgetDropped += 1; return false;
   };
   for (const value of recentHistory) tryAddHistory(value);
-  const timeRanked = rankedTimeReminders(source, queryContext, query, entityById);
+  const annualSelection = Array.isArray(selectedAnnualReminderIds) ? new Set(selectedAnnualReminderIds) : null;
+  const timeRanked = rankedTimeReminders(source, queryContext, query, entityById)
+    .filter(value => value.type !== 'annual' || timeUrgencyBoost(value) > 0 || annualSelection === null || annualSelection.has(value.itemId));
   evidenceFiltered += timeRanked.filter(value => value.score <= 0).length;
   evidenceFiltered += [...(cseContext?.states ?? []), ...(cseContext?.changes ?? [])].filter(value => value.score <= 0).length;
   evidenceFiltered += [...historyContext.facts, ...historyContext.summaries].filter(value => value.score <= 0).length;

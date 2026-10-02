@@ -118,7 +118,7 @@ export async function prepareTimeRequest(reachable, batches = [], options = {}) 
   return prepared;
 }
 
-export function createTimeRuntime({ store, foundationStore, hostAdapter, session, generateTimeTask, annualSettingsProvider = () => ({ ready: false }), sanitizerOptions = () => ({}), storyClockReferenceTags = () => '', newUuid = newIdentityUuid, getReachable = () => null, getMemoryState = () => null, isEnabled = () => false, onInvalidate = () => {}, logger = console }) {
+export function createTimeRuntime({ store, foundationStore, hostAdapter, session, generateTimeTask, annualSettingsProvider = () => ({ ready: false }), storyCalendarProvider = () => null, sanitizerOptions = () => ({}), storyClockReferenceTags = () => '', newUuid = newIdentityUuid, getReachable = () => null, getMemoryState = () => null, isEnabled = () => false, onInvalidate = () => {}, logger = console }) {
   let epoch = 0, active = null, last = null, pendingDeletionCount = 0, projectionCache = null, pendingReceipt = null, statusKey = null, statusRead = null, trackedItems = null, stoppedItems = null, annualItems = null, qianshiReferences = null, itemsKey = null, coverage = null, clockContentChanged = false, historyAuthorization = null, automatic = null, startingController = null;
   const subscribers = new Set();
   const enabled = () => isEnabled() === true;
@@ -143,14 +143,14 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   };
   const sourceKey = source => {
     let host; try { host = hostAdapter.snapshot(); } catch { return null; }
-    return JSON.stringify([epoch, source?.root?.chatId, source?.root?.narrativeGeneration, (source?.floors ?? []).map(floor => floor.id),
+    return JSON.stringify([epoch, storyCalendarProvider(), source?.root?.chatId, source?.root?.narrativeGeneration, (source?.floors ?? []).map(floor => floor.id),
       host.chatId, host.chat.map(message => [message.is_user, message.is_system, message.is_hidden, message.hidden, message.mes, message.swipe_id, message.swipes?.[Number.isSafeInteger(message.swipe_id) ? message.swipe_id : 0]])]);
   };
   async function bodySource(base = getReachable()) {
     const owner = identity(), host = hostAdapter.snapshot();
     if (!owner.chatId || owner.hostChatId && owner.hostChatId !== host.chatId || host.context?.chatMetadata?.qianqianjie?.chatId && host.context.chatMetadata.qianqianjie.chatId !== owner.chatId) throw new Error('当前聊天身份已变化。');
     return readTimeBody(base ?? { root: { chatId: owner.chatId }, floors: [], floorMemories: [], entities: [] }, host,
-      { sanitizerOptions: sanitizerOptions(), storyClockReferenceTags: storyClockReferenceTags() });
+      { sanitizerOptions: sanitizerOptions(), storyClockReferenceTags: storyClockReferenceTags(), calendar: storyCalendarProvider() });
   }
   async function annualSnapshot() {
     const provided = await annualSettingsProvider();
@@ -785,7 +785,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       }).at(-1);
       const currentTime = stableCurrentTime(reachable);
       let qianshiProjection = null;
-      try { qianshiProjection = projectQianshiGraph(cached, { identityProjection: source.identityProjection }); }
+      try { qianshiProjection = projectQianshiGraph(cached, { identityProjection: source.identityProjection, calendar: storyCalendarProvider() }); }
       catch { /* Optional associations never suppress the ordinary time projection. */ }
       const projection = timeRecallProjection(items, source, currentTime, currentAnnualRecords(stored.head, annual), qianshiProjection);
       if (currentBody) projection.currentBodyWitness = { hostLocator: currentBody.hostLocator, rawContent: currentBody.rawContent, canonicalContent: currentBody.content };
@@ -809,7 +809,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     const owner = identity(), host = hostAdapter.snapshot();
     if (!owner.chatId || owner.hostChatId && owner.hostChatId !== host.chatId
       || host.context?.chatMetadata?.qianqianjie?.chatId && host.context.chatMetadata.qianqianjie.chatId !== owner.chatId) return null;
-    const reliable = await readRecentBodyStoryTimes(host, { reachable: cached, sanitizerOptions: sanitizerOptions(), storyClockReferenceTags: storyClockReferenceTags(), limit: 32 });
+    const reliable = await readRecentBodyStoryTimes(host, { reachable: cached, sanitizerOptions: sanitizerOptions(), storyClockReferenceTags: storyClockReferenceTags(), limit: 32, calendar: storyCalendarProvider() });
     const currentBody = reliable.at(-1);
     if (!currentBody) return null;
     return { currentTime: currentBody.observationTime,

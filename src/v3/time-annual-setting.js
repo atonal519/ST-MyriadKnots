@@ -1,4 +1,5 @@
 import { parseJsonOutput } from '../compact-api-client.js';
+import { calendarKey, fixedCalendarDate } from './calendar-rules.js';
 
 const clean = (value, maximum = 4000) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, maximum);
 const ANNUAL_WORDS = /生日|诞辰|誕辰|忌日|周年|週年|纪念日|紀念日|每年|每逢|年年/u;
@@ -44,13 +45,17 @@ export function buildAnnualSettingSources({ people = [], userPersona = null } = 
 }
 
 const validMonthDay = (month, day) => Number.isInteger(month) && month >= 1 && month <= 12 && Number.isInteger(day) && day >= 1 && day <= DAYS[month - 1];
-function ordinaryMonthDay(value) {
-  const raw = clean(value, 300).normalize('NFKC').replace(/^每年\s*/u, '').trim();
+function ordinaryMonthDay(value, calendar = null) {
+  let raw = clean(value, 300).normalize('NFKC').replace(/^每年\s*/u, '').trim();
+  if (calendar?.prefix && raw.startsWith(calendar.prefix)) raw = raw.slice(calendar.prefix.length).trim();
   if (/[历曆紀纪闰閏]/u.test(raw.replace(/^(?:公元|公历|公曆|西历|西曆)\s*/u, ''))) return null;
-  const full = raw.match(/^(?:(?:公元|公历|公曆|西历|西曆)\s*)?(?:\d{4}[-/.年])?(\d{1,2})[-/.月](\d{1,2})(?:日|号)?$/u);
+  const full = calendar
+    ? raw.match(/^(?:(?:公元|公历|公曆|西历|西曆)\s*)?(?:[\d〇零一二三四五六七八九十百千万]+[-/.年])?(\d{1,2}|春|夏|秋|冬)[-/.月](\d{1,2})(?:日|号)?$/u)
+    : raw.match(/^(?:(?:公元|公历|公曆|西历|西曆)\s*)?(?:\d{1,4}[-/.年])?(\d{1,2})[-/.月](\d{1,2})(?:日|号)?$/u);
   if (!full) return null;
-  const month = Number(full[1]), day = Number(full[2]);
-  return validMonthDay(month, day) ? { month, day } : null;
+  if (calendar?.months === 12 && /春|夏|秋|冬/u.test(full[1])) return null;
+  const month = ({ 春: 1, 夏: 2, 秋: 3, 冬: 4 })[full[1]] ?? Number(full[1]), day = Number(full[2]);
+  return calendar ? fixedCalendarDate(null, month, day, calendar) ? { month, day } : null : validMonthDay(month, day) ? { month, day } : null;
 }
 
 export function compileAnnualSettingResponse(response, prepared) {
@@ -84,13 +89,20 @@ export function compileAnnualSettingResponse(response, prepared) {
 
 function occurrence(item, currentTime) {
   const legacyCalendar = item.calendar;
-  if (legacyCalendar && legacyCalendar !== 'gregorian') return { reason: 'unknown-date' };
+  if (legacyCalendar && legacyCalendar !== 'gregorian' && !currentTime?.calendar) return { reason: 'unknown-date' };
   if (currentTime?.monthIdentity) return { reason: 'unknown-date' };
   const raw = clean(item.originalDate, 300).normalize('NFKC');
-  if (/[历曆紀纪闰閏]/u.test(raw.replace(/^(?:公元|公历|公曆|西历|西曆)\s*/u, ''))) return { reason: 'unknown-date' };
-  const parsed = ordinaryMonthDay(raw) ?? (legacyCalendar === 'gregorian' && validMonthDay(item.month, item.day) ? { month: item.month, day: item.day } : null);
+  if (!currentTime?.calendar && /[历曆紀纪闰閏]/u.test(raw.replace(/^(?:公元|公历|公曆|西历|西曆)\s*/u, ''))) return { reason: 'unknown-date' };
+  const parsed = ordinaryMonthDay(raw, currentTime?.calendar) ?? (!currentTime?.calendar && legacyCalendar === 'gregorian' && validMonthDay(item.month, item.day) ? { month: item.month, day: item.day } : null);
   if (!parsed) return { reason: 'unknown-date' };
   const { month, day } = parsed;
+  if (currentTime?.calendar) {
+    const next = fixedCalendarDate(currentTime.year, month, day, currentTime.calendar);
+    const distance = next && Number.isInteger(currentTime.calendarOrdinal) ? next.calendarOrdinal - currentTime.calendarOrdinal : null;
+    if (distance === null) return { reason: 'unknown-date' };
+    if (distance < 0) return { reason: currentTime.year === null ? 'unknown-year' : 'past-this-year' };
+    return { year: next.year, day: next.day, date: next.date, distance };
+  }
   if (!Number.isInteger(currentTime?.year) || !Number.isInteger(currentTime?.day)) {
     if (!Number.isInteger(currentTime?.month) || !Number.isInteger(currentTime?.monthDay)) return { reason: 'unknown-year' };
     if (month < currentTime.month || month === currentTime.month && day < currentTime.monthDay) return { reason: 'unknown-year' };
@@ -113,26 +125,29 @@ export function projectAnnualSettings(records = [], currentTime = null, bodyRemi
   const items = [], reminders = [];
   for (const record of records) for (const [index, item] of (record.items ?? []).entries()) {
     const next = occurrence(item, currentTime);
+    const monthDay = ordinaryMonthDay(item.originalDate, currentTime?.calendar);
     const { calendar: _legacyCalendar, ...currentItem } = item;
     const duplicate = next && bodyReminders.some(body => body.type === 'deadline' && body.subjectEntityId === record.subjectEntityId
+      && calendarKey(body.dueTime?.calendar) === calendarKey(currentTime?.calendar)
       && (Number.isInteger(next.day) ? Number.isInteger(body.dueTime?.day) && body.dueTime.day === next.day
-        : next.year === null && body.dueTime?.year == null && body.dueTime?.month === item.month && body.dueTime?.monthDay === item.day)
+        : next.year === null && body.dueTime?.year == null && body.dueTime?.month === monthDay?.month && body.dueTime?.monthDay === monthDay?.day)
       && (item.category === 'birthday' ? /生日|诞辰|誕辰/u : /周年|週年|纪念|紀念|忌日/u).test(`${body.label ?? ''} ${body.observation ?? ''}`));
     const id = `annual:${record.sourceKey}:${index}`;
     const status = !Number.isInteger(next?.distance) ? next?.reason === 'past-this-year' ? '本年日期已过'
       : next?.reason === 'no-date-this-year' ? '本年没有该日期' : '日期或年份未明确'
       : next.distance <= 7 ? next.distance === 0 ? '今天' : `临近（${next.distance}天后）` : '休眠';
     items.push({ id, sourceKey: record.sourceKey, subjectEntityId: record.subjectEntityId, person: record.subjectName,
-      ...currentItem, month: Number.isInteger(item.month) ? item.month : ordinaryMonthDay(item.originalDate)?.month ?? null,
-      day: Number.isInteger(item.day) ? item.day : ordinaryMonthDay(item.originalDate)?.day ?? null,
+      ...currentItem, month: monthDay?.month ?? item.month ?? null,
+      day: monthDay?.day ?? item.day ?? null,
       nextDate: Number.isInteger(next?.distance) ? next.date : null, distance: Number.isInteger(next?.distance) ? next.distance : null, status });
     if (next && Number.isInteger(next.distance) && next.distance <= 7 && !duplicate) reminders.push({ itemId: id, type: 'annual', subjectEntityId: record.subjectEntityId,
       rankText: `${record.subjectName} ${item.label} ${item.note}`, distance: next.distance, sourceSignature: JSON.stringify([record.sourceKey, record.fingerprint, item]),
       text: `${record.subjectName} / ${item.label}：原日期 ${item.originalDate}；下次日期 ${next.date}，${next.distance ? `还有${next.distance}天` : '已到本日'}。${item.note ? `年度含义：${item.note}` : ''}` });
+    // 已过日期/本年无此日仍可回答本轮日期问题，但不能伪装成日期关系未知或临期提醒。
     else if (next?.reason) reminders.push({ itemId: id, type: 'annual', subjectEntityId: record.subjectEntityId, label: item.label,
       rankText: `${record.subjectName} ${item.label} ${item.originalDate} ${item.note}`, distance: null,
       sourceSignature: JSON.stringify([record.sourceKey, record.fingerprint, item]),
-      text: `${record.subjectName} / ${item.label}：原日期 ${item.originalDate}；${item.note ? `年度含义：${item.note}；` : ''}当前日期关系不明确，保留原文供判断。` });
+      text: `${record.subjectName} / ${item.label}：原日期 ${item.originalDate}；${item.note ? `年度含义：${item.note}；` : ''}${next.reason === 'past-this-year' ? '本年日期已过，不推算下一年。' : next.reason === 'no-date-this-year' ? '本年没有该日期，不推算下一次。' : '当前日期关系不明确，保留原文供判断。'}` });
   }
   return { items, reminders };
 }

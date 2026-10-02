@@ -5,6 +5,7 @@ import { createContext, SourceTextModule, SyntheticModule } from 'node:vm';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
+import { normalizeStoryCalendar } from '../src/v3/calendar-rules.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const nativeJson = value => Array.isArray(value) ? value.map(nativeJson) : value && typeof value === 'object'
@@ -161,14 +162,14 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.6.3');
+  assert.equal(manifest.version, '0.6.4');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
   const bundleSource = await readFile(bundlePath, 'utf8');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
   assert.equal(cacheMatch[5], bundleDigest.slice(0, 16), 'manifest cache key 必须随实际 bundle 内容变化，禁止漏 bump 假通过');
-  for (const marker of ['0.6.3', 'prepareStep', 'qianshiCandidates', 'Graphology 检测到重复图边。', 'DataCloneError']) {
+  for (const marker of [manifest.version, 'prepareStep', 'qianshiCandidates', 'Graphology 检测到重复图边。', 'DataCloneError']) {
     assert.equal(bundleSource.includes(marker), true, `生产 bundle 缺少候选版本或安全准备诊断字段：${marker}`);
   }
   await assert.rejects(access(resolve(root, 'dist/index.js')));
@@ -329,7 +330,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const backendClient = { getDiagnosticSnapshot: () => backendSnapshot };
   define('./src/backend-client.js', { createBackendClient: () => backendClient });
   define('./src/bootstrap.js', { bootstrap: options => { bootstrapOptions = options; return { refresh() {}, setEnabled() {} }; } });
-  define('./src/settings.js', { createSettingsStore: () => ({ migrateLegacyApiSettings() {}, isEnabled: () => false, get: () => ({ generalPrompt: '旧通用附加残留', processingPrompt: '  破限接线\n', summaryPrompt: '摘要指导', csePrompt: 'CSE 指导', profilePrompt: '人物资料指导', storyClockReferenceTags: 'Ti,时标' }) }) });
+  const productionSettings = { generalPrompt: '旧通用附加残留', processingPrompt: '  破限接线\n', summaryPrompt: '摘要指导', csePrompt: 'CSE 指导', profilePrompt: '人物资料指导', storyClockReferenceTags: 'Ti,时标', storyCalendars: {} };
+  define('./src/settings.js', { createSettingsStore: () => ({ migrateLegacyApiSettings() {}, isEnabled: () => false, get: () => productionSettings, update: patch => Object.assign(productionSettings, patch) }) });
+  define('./src/v3/calendar-rules.js', { normalizeStoryCalendar });
   define('./src/api-routing.js', {
     createApiResolver: () => ({}),
     createApiTools: () => ({ abortAll() {} }),
@@ -376,7 +379,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/v3/chat-branch-inheritance.js', { createChatBranchInitializer: options => { branchInitializerOptions = options; return branchInitializer; } });
   let timeOptions, timeBindOptions;
   const timeBatches = [];
-  const timeRuntime = { runBatch: receipt => { timeBatches.push(receipt); }, completeStoredUpdate() { timeOptions.onInvalidate?.(); }, recallProjection: async () => null, currentStoryContext: async () => null, stop: async () => {}, bind(options) { timeBindOptions = options; } };
+  let calendarInvalidations = 0, calendarRefreshes = 0;
+  const timeRuntime = { runBatch: receipt => { timeBatches.push(receipt); }, getState: () => ({}), invalidate() { calendarInvalidations += 1; }, async refreshStatus() { calendarRefreshes += 1; }, completeStoredUpdate() { timeOptions.onInvalidate?.(); }, recallProjection: async () => null, currentStoryContext: async () => null, stop: async () => {}, bind(options) { timeBindOptions = options; } };
   define('./src/v3/time-runtime.js', { createTimeStore: () => ({}), createTimeRuntime: options => { timeOptions = options; return timeRuntime; } });
   define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() { backgroundStarts.push('memory'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, getState: () => ({}), getQianshiRecall: () => ({ text: '' }), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
   define('./src/v3/message-floor-anchor.js', { persistMessageFloorAnchors: persistAnchors });
@@ -430,6 +434,15 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(timeOptions.isEnabled(), false);
   assert.equal(Object.hasOwn(v3MemoryOptions, 'onMemoryBatchCommitted'), false, '时间从foundation生命周期读正文，不等摘要CSE完成回调');
   assert.equal(timeBatches.length, 0);
+  assert.equal(bootstrapOptions.calendarContextProvider().calendar, null);
+  await bootstrapOptions.onCalendarChange({ chatId: 'test', calendar: { months: 4, prefix: '启航' } });
+  assert.deepEqual(nativeJson(productionSettings.storyCalendars.test), { months: 4, prefix: '启航' });
+  assert.equal(v3MemoryOptions.storyCalendarProvider().months, 4);
+  assert.equal(timeOptions.storyCalendarProvider().prefix, '启航');
+  assert.equal(calendarInvalidations, 1); assert.equal(calendarRefreshes, 1);
+  assert.equal(timeBatches.length, 0, '保存历法只刷新计算视图，不开启时间 API');
+  await assert.rejects(bootstrapOptions.onCalendarChange({ chatId: 'other', calendar: { months: 12, prefix: '' } }), /聊天已变化/u);
+  await assert.rejects(bootstrapOptions.onCalendarChange({ chatId: 'test', calendar: { months: 6, prefix: '' } }), /特殊年/u);
   assert.equal(memoryManagementOptions.timeRuntime, timeRuntime);
   const ledgerEnabled = bootstrapOptions.isSevenDaysLedgerInjectionEnabled;
   const peer = peerExtensionSettings['schedule-planner'];

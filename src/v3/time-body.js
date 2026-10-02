@@ -28,8 +28,8 @@ export async function clockContentFingerprint(rawContent, referenceTags = '') {
   return timeFingerprint([clocks, references]);
 }
 
-function currentBodyClock(rawContent, canonicalContent, referenceTags) {
-  const timestamp = resolveStoryClock(rawContent, referenceTags);
+function currentBodyClock(rawContent, canonicalContent, referenceTags, calendar = null) {
+  const timestamp = resolveStoryClock(rawContent, referenceTags, calendar);
   if (timestamp && timestamp.status !== 'incomplete') return timestamp;
   const statusSource = stripMemoryTagBlocks(rawContent, 'content');
   const status = inferCanonicalCurrentTime(statusSource, { allowOpeningFallback: false });
@@ -42,7 +42,7 @@ function currentBodyClock(rawContent, canonicalContent, referenceTags) {
 
 // Recent clock reads scan only their selected tail; persisted floors stay whole
 // so the existing binder can reject ambiguous identity matches.
-export async function readRecentBodyStoryTimes(host, { reachable = null, sanitizerOptions = {}, storyClockReferenceTags = '', limit = 32 } = {}) {
+export async function readRecentBodyStoryTimes(host, { reachable = null, sanitizerOptions = {}, storyClockReferenceTags = '', limit = 32, calendar = null } = {}) {
   const chat = Array.isArray(host?.chat) ? host.chat : [];
   if (!(limit > 0)) return [];
   let startIndex = chat.length, visibleCount = 0;
@@ -54,7 +54,7 @@ export async function readRecentBodyStoryTimes(host, { reachable = null, sanitiz
   const candidates = (await scanAssistantCandidates(chat.slice(startIndex), { sanitizerOptions, chatId: reachable?.root?.chatId ?? '', captureRawContent: true }))
     .map(candidate => ({ ...candidate, hostLocator: { ...candidate.hostLocator, messageIndex: candidate.hostLocator.messageIndex + startIndex } }));
   const binding = matchFloorCandidates(reachable?.floors ?? [], candidates);
-  const memories = storyTimes(reachable?.floorMemories ?? [], reachable?.floors ?? []);
+  const memories = storyTimes(reachable?.floorMemories ?? [], reachable?.floors ?? [], (raw, anchor) => projectTime(raw, anchor, { calendar }));
   const provenance = reachable?.run?.diagnostics?.floorProvenance ?? {};
   const visibleCandidates = candidates.map((candidate, index) => ({ candidate, match: binding.candidateMatches.get(index) }))
     .filter(({ candidate }) => {
@@ -73,14 +73,14 @@ export async function readRecentBodyStoryTimes(host, { reachable = null, sanitiz
       reliable.push({ messageIndex, floorId, observationTime, manual: true });
       continue;
     }
-    const clock = currentBodyClock(candidate.rawContent, candidate.canonicalContent, storyClockReferenceTags);
+    const clock = currentBodyClock(candidate.rawContent, candidate.canonicalContent, storyClockReferenceTags, calendar);
     if (!clock) continue;
     if (clock.status === 'ambiguous') {
       previous = null;
       reliable.push({ messageIndex, floorId: floorId ?? null, observationTime: projectTime(''), ambiguous: true });
       continue;
     }
-    const observationTime = projectTime(clock.text.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previous);
+    const observationTime = projectTime(clock.text.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previous, { calendar });
     if (!observationTime.date && !Number.isInteger(observationTime.minute)) continue;
     previous = observationTime;
     reliable.push({ messageIndex, floorId: floorId ?? null, observationTime });
@@ -89,11 +89,11 @@ export async function readRecentBodyStoryTimes(host, { reachable = null, sanitiz
 }
 
 // Private projection: current selected body witnesses never rewrite foundation records.
-export async function readTimeBody(reachable, host, { sanitizerOptions = {}, storyClockReferenceTags = '' } = {}) {
+export async function readTimeBody(reachable, host, { sanitizerOptions = {}, storyClockReferenceTags = '', calendar = null } = {}) {
   const candidates = await scanAssistantCandidates(host.chat ?? [], { sanitizerOptions, chatId: reachable.root.chatId, captureRawContent: true });
   const binding = matchFloorCandidates(reachable.floors ?? [], candidates);
   if (binding.issue) throw Object.assign(new Error('正文楼绑定不唯一，未完成检查。'), { code: 'QQJ_TIME_BINDING' });
-  const manualTimes = storyTimes(reachable.floorMemories ?? [], reachable.floors ?? []);
+  const manualTimes = storyTimes(reachable.floorMemories ?? [], reachable.floors ?? [], (raw, anchor) => projectTime(raw, anchor, { calendar }));
   const manualSourceTimes = storyTimes(reachable.floorMemories ?? [], reachable.floors ?? [], projectTimeSource);
   const provenance = reachable.run?.diagnostics?.floorProvenance ?? {};
   const manualTime = floorId => Boolean(floorId && provenance[floorId]?.timeEdited === true);
@@ -105,27 +105,31 @@ export async function readTimeBody(reachable, host, { sanitizerOptions = {}, sto
     const visible = message && message.is_system !== true && message.is_hidden !== true && message.hidden !== true;
     const previous = visible ? previousVisible : previousHistory;
     const previousSource = visible ? previousVisibleSource : previousHistorySource;
-    const clock = currentBodyClock(candidate.rawContent, candidate.canonicalContent, storyClockReferenceTags);
+    const clock = currentBodyClock(candidate.rawContent, candidate.canonicalContent, storyClockReferenceTags, calendar);
+    // 历法改变日期可计算性，但不能改变旧正文读回的来源见证。
+    const sourceClock = calendar ? currentBodyClock(candidate.rawContent, candidate.canonicalContent, storyClockReferenceTags) : clock;
+    const sourceRaw = sourceClock?.text ?? '';
     const raw = clock?.text ?? '';
     const manual = manualTime(match?.floor.id);
     const ambiguous = !manual && clock?.status === 'ambiguous';
     const time = manual ? manualTimes.get(match?.floor.id) ?? projectTime('')
       : ambiguous ? projectTime('')
-        : raw ? projectTime(raw.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previous) : projectTime('');
+        : raw ? projectTime(raw.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previous, { calendar }) : projectTime('');
     const sourceTime = manual ? manualSourceTimes.get(match?.floor.id) ?? projectTimeSource('')
-      : ambiguous ? projectTimeSource('')
-        : raw ? projectTimeSource(raw.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previousSource) : projectTimeSource('');
+      : sourceClock?.status === 'ambiguous' ? projectTimeSource('')
+        : sourceRaw ? projectTimeSource(sourceRaw.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previousSource) : projectTimeSource('');
     previousHistory = time; previousHistorySource = sourceTime;
     if (visible) { previousVisible = time; previousVisibleSource = sourceTime; }
     const timeSourceFingerprint = await timeFingerprint(manual ? [sourceTime.date, sourceTime.clock, sourceTime.date ? null : sourceTime.raw]
-      : ambiguous ? ['ambiguous-body-time', clock.signature] : raw ? [sourceTime.date, sourceTime.clock, sourceTime.date ? null : raw] : ['no-body-time']);
+      : sourceClock?.status === 'ambiguous' ? ['ambiguous-body-time', sourceClock.signature]
+        : sourceRaw ? [sourceTime.date, sourceTime.clock, sourceTime.date ? null : sourceRaw] : ['no-body-time']);
     const clockFingerprint = await clockContentFingerprint(candidate.rawContent, storyClockReferenceTags);
     const body = { stable: Boolean(candidate.stabilityProof), timeSourceKind: manual ? 'manual' : raw || ambiguous ? 'body' : 'unknown', timeSourceFingerprint, floorId: match?.floor.id ?? null, assistantSeq: candidate.assistantSeq, canonicalFingerprint: candidate.canonicalFingerprint,
       rawFingerprint: candidate.rawFingerprint, clockContentFingerprint: clockFingerprint, rawContent: candidate.rawContent, hostLocator: candidate.hostLocator, content: candidate.canonicalContent, observationTime: time };
     bodies.push(body);
     if (match) floors.push({ ...match.floor, assistantSeq: candidate.assistantSeq, canonicalFingerprint: candidate.canonicalFingerprint, timeSourceFingerprint, content: candidate.canonicalContent });
   }
-  return { ...reachable, floors, bodyFloors: bodies, bodyTimes: new Map(bodies.filter(body => body.floorId).map(body => [body.floorId, body.observationTime])),
+  return { ...reachable, ...(calendar ? { calendar } : {}), floors, bodyFloors: bodies, bodyTimes: new Map(bodies.filter(body => body.floorId).map(body => [body.floorId, body.observationTime])),
     bodySignature: await timeFingerprint(bodies.map(body => [body.floorId, body.hostLocator, body.rawFingerprint, body.canonicalFingerprint])) };
 }
 

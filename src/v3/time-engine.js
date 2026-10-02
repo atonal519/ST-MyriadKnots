@@ -4,6 +4,7 @@ import { sha256 } from '../identity.js';
 import { resolveIdentityEntityId } from './entity-identity.js';
 import { projectAnnualSettings } from './time-annual-setting.js';
 import { parseJsonOutput } from '../compact-api-client.js';
+import { calendarKey, calendarMonthDays, fixedCalendarDate, normalizeStoryCalendar, shiftCalendarDate } from './calendar-rules.js';
 
 export const TIME_HEAD_ID = 'v3-time-head';
 export const TIME_INPUT_TOKENS = 60000;
@@ -17,6 +18,17 @@ function yearlessGregorianOrdinal(value) {
 }
 
 export function timeDistance(from, to) {
+  const calendar = to?.calendar ?? from?.calendar;
+  if (calendar) {
+    from = effectiveTime(from, calendar); to = effectiveTime(to, calendar);
+    if (!from?.calendar || calendarKey(from.calendar) !== calendarKey(to?.calendar)) return null;
+    if (Number.isInteger(from.day) && Number.isInteger(to.day)) return to.day - from.day;
+    if (from.year === null && to.year === null && Number.isInteger(from.calendarOrdinal) && Number.isInteger(to.calendarOrdinal)) {
+      if (from.month === calendar.months && to.month === 1 || from.month === 1 && to.month === calendar.months) return null;
+      return to.calendarOrdinal - from.calendarOrdinal;
+    }
+    return null;
+  }
   from = effectiveTime(from); to = effectiveTime(to);
   if (from?.monthIdentity || to?.monthIdentity) {
     const knownSpecialYear = value => Number.isInteger(value?.year) || value?.yearIdentityKnown === true
@@ -168,10 +180,15 @@ function splitTrailingParentheticals(value) {
 const APPROXIMATE_PARENTHESES = /(?:\(\s*(?:左右|上下|前后|前後|大约|大約|大概|约莫|约|約)\s*\)|（\s*(?:左右|上下|前后|前後|大约|大約|大概|约莫|约|約)\s*）)/gu;
 
 // Old observations gain a calculation/input view; their stored objects and keys stay intact.
-export function effectiveTime(value) {
+export function effectiveTime(value, calendar = value?.calendar) {
+  if (value && calendar) {
+    const input = isRelativeStoryTime(value.raw) ? value.date : value.raw || value.date;
+    const parsed = projectTime(input, null, { calendar });
+    return { ...parsed, raw: value.raw || input, minute: value.minute === undefined ? parsed.minute : value.minute, clock: value.clock === undefined ? parsed.clock : value.clock };
+  }
   return value && !value.date && value.raw ? { ...value, ...projectTime(value.raw) } : value;
 }
-export function projectTime(value, anchor = null, { allowShortGregorianYear = false } = {}) {
+export function projectTime(value, anchor = null, { allowShortGregorianYear = false, calendar = anchor?.calendar ?? null } = {}) {
   const raw = text(value, 500), normalized = normalizeDateDigits(raw);
   anchor = effectiveTime(anchor);
   const approximateParentheticals = [];
@@ -197,12 +214,12 @@ export function projectTime(value, anchor = null, { allowShortGregorianYear = fa
   const dateText = clock ? clockSource.replace(clock.match, ' ').trim().replace(/[T，]$/u, '').trim() : dateAndClock;
   if (approximateDateAnnotation || APPROXIMATE_DATE_PREFIX.test(dateText)
     || /(?:左右|上下|前后|前後|大约|大約|大概|约莫|约|約)\s*$/u.test(dateText)) return unknownProjectedTime(raw);
-  const date = !dateText && clock && anchor?.date ? { ...anchor } : flexibleDate(dateText, anchor, { allowShortGregorianYear });
+  const date = !dateText && clock && anchor?.date ? { ...anchor } : flexibleDate(dateText, anchor, { allowShortGregorianYear, calendar });
   if (approximateTail && !approximateClock && !clock && date.date) return unknownProjectedTime(raw);
   const dateConflict = date.date && annotations.some(annotation => {
     const note = normalizeDateDigits(annotation);
     const noteClock = parseClock(note);
-    const noteDate = flexibleDate(noteClock ? note.replace(noteClock.match, ' ').trim() : note, anchor, { allowShortGregorianYear });
+    const noteDate = flexibleDate(noteClock ? note.replace(noteClock.match, ' ').trim() : note, anchor, { allowShortGregorianYear, calendar });
     return Boolean(noteDate.date) && noteDate.date !== date.date;
   });
   if (dateConflict) return { ...unknownProjectedTime(raw), minute: approximateClock ? null : clock?.minute ?? null,
@@ -238,6 +255,32 @@ function flexibleDate(raw, anchor, options = {}) {
   // A trailing weekday annotates a date; ordinal weekdays remain the date itself.
   const dateText = raw.replace(/(?:[\s，,]+|(?<=[日号]))(?:星期|周|週)[一二三四五六日天]\s*$|[\s，,]*[（(](?:星期|周|週)[一二三四五六日天][）)]\s*$/u, '').trim();
   const unknown = () => ({ raw: raw || '时间未知', date: null, day: null, year: null, month: null, monthDay: null });
+  const calendar = normalizeStoryCalendar(options.calendar);
+  if (calendar) {
+    const explicitPrefix = calendar.prefix && dateText.startsWith(calendar.prefix);
+    const input = explicitPrefix ? dateText.slice(calendar.prefix.length).replace(/^[\s:：,，·]+/u, '')
+      : !calendar.prefix ? dateText.replace(/^(?:公元|公历|公曆|西历|西曆)[\s:：,，·]*/u, '') : dateText;
+    const numeric = input.match(/^(?:(\d{1,4})[-/.])?(\d{1,2})[-/.](\d{1,2})$/u);
+    const parts = input.match(new RegExp(`^(?:(${CN_NUMBER})年\\s*)?(${CN_NUMBER}|春|夏|秋|冬)月\\s*(?:初)?(${CN_NUMBER})(?:日|号|號)?$`, 'u'));
+    if (numeric || parts) {
+      const values = numeric ?? parts;
+      const year = values[1] ? cnNumber(values[1]) : null;
+      const month = ({ 春: 1, 夏: 2, 秋: 3, 冬: 4 })[values[2]] ?? cnNumber(values[2]);
+      const monthDay = cnNumber(values[3]);
+      // 四月制识别春夏秋冬；十二月制仍要求数字月份，不猜其他具名月份。
+      if (calendar.months === 12 && /春|夏|秋|冬/u.test(values[2])) return unknown();
+      const date = fixedCalendarDate(year, month, monthDay, calendar);
+      return date ? { ...date, raw } : unknown();
+    }
+    const relative = input.match(new RegExp(`^(${CN_NUMBER})(天|日|周|星期)(前|后|後)$`, 'u'));
+    const offsets = { 今天: 0, 当日: 0, 当天: 0, 今日: 0, 昨天: -1, 昨日: -1, 前一天: -1, 前天: -2, 前日: -2, 明天: 1, 明日: 1, 次日: 1, 翌日: 1, 后天: 2, 後天: 2 };
+    const offset = relative ? cnNumber(relative[1]) * (['周', '星期'].includes(relative[2]) ? 7 : 1) * (relative[3] === '前' ? -1 : 1) : offsets[input];
+    if (offset !== undefined && anchor?.calendar && calendarKey(anchor.calendar) === calendarKey(calendar)) {
+      const date = shiftCalendarDate(anchor, offset);
+      return date ? { ...date, raw } : unknown();
+    }
+    if (explicitPrefix) return unknown();
+  }
   const namedIso = dateText.match(/^([\p{L}]+)[\s:：,，·]*?(\d{1,4})[-/.](\d{1,2})[-/.](\d{1,3})$/u);
   if (namedIso && !STANDARD_DATE_PREFIXES.includes(namedIso[1])) {
     const [, era, yearText, monthText, dayText] = namedIso;
@@ -337,6 +380,10 @@ export function timeHours(from, to) {
 }
 export function shiftTime(time, days) {
   time = effectiveTime(time);
+  if (time?.calendar) {
+    const shifted = shiftCalendarDate(time, days);
+    return shifted ? { ...shifted, raw: `${days}天后`, minute: time.minute, clock: time.clock } : unknownProjectedTime(`${days}天后`);
+  }
   if (Number.isInteger(time?.day)) return projectTime(`${new Date((time.day + days) * DAY).toISOString().slice(0, 10)}${time.clock ? ` ${time.clock}` : ''}`);
   return projectTime(`${days}天后${time?.clock ? ` ${time.clock}` : ''}`, time);
 }
@@ -438,7 +485,11 @@ export function evaluateTimeBatches(batches, reachable) {
       }
     }
   }
-  return { items: [...items.values()], processedSourceKeys, bodyReads, validBatches };
+  // 规则只改变读时计算视图；旧增量、观察键和正文来源指纹保持原样。
+  const projectedItems = [...items.values()].map(item => reachable.calendar ? { ...item,
+    observationTime: effectiveTime(item.observationTime, reachable.calendar), occurrenceTime: effectiveTime(item.occurrenceTime, reachable.calendar),
+    dueTime: effectiveTime(item.dueTime, reachable.calendar) } : item);
+  return { items: projectedItems, processedSourceKeys, bodyReads, validBatches };
 }
 
 export const timeDependency = ref => typeof ref.canonicalFingerprint === 'string' ? { floorId: ref.floorId, canonicalFingerprint: ref.canonicalFingerprint, ...(ref.timeSourceFingerprint ? { timeSourceFingerprint: ref.timeSourceFingerprint } : {}) } : { floorId: ref.floorId, memoryId: ref.memoryId };
@@ -537,7 +588,7 @@ export async function compileTimeEdit(item, fields, reachable, batchId, items = 
   const observation = fields.observation === undefined ? item.observation : String(fields.observation).trim();
   const status = fields.status ?? item.status;
   if (!label || label.length > 150 || !observation || observation.length > 1200 || !['active', 'completed', 'cancelled', 'paused'].includes(status)) throw fail('事项名称、观察描述或状态无效。');
-  const observationTime = fields.observationTime === undefined ? item.observationTime : projectTime(fields.observationTime);
+  const observationTime = fields.observationTime === undefined ? item.observationTime : projectTime(fields.observationTime, null, { calendar: reachable.calendar });
   const occurrenceTime = fields.occurrenceTime === undefined ? item.occurrenceTime : projectTime(fields.occurrenceTime, observationTime);
   const periodDays = fields.periodDays === undefined ? item.periodDays : fields.periodDays === '' || fields.periodDays === null ? null : Number(fields.periodDays);
   if (periodDays !== null && periodDays !== undefined && (!Number.isInteger(periodDays) || periodDays <= 0 || periodDays > 3660)) throw fail('周期天数需为1到3660的整数，或留空。');
@@ -609,6 +660,7 @@ export function bodyProjectionDue(observationTime, currentTime) {
 }
 
 export function validTimeProjection(item, currentTime) {
+  if (calendarKey(item.projection?.applicableTime?.calendar) !== calendarKey(currentTime?.calendar)) return false;
   currentTime = effectiveTime(currentTime);
   const applicableTime = effectiveTime(item.projection?.applicableTime);
   if (item.reviewAssessment?.reason && item.reviewAssessment.observationKey === item.observationKey && JSON.stringify(item.reviewAssessment.applicableTime) === JSON.stringify(currentTime)) return false;
@@ -622,7 +674,9 @@ export function createTimeBodyRequest(reachable, fragments, cutoff) {
   const currentTime = effectiveTime(cutoff?.observationTime ?? reachable.bodyTimes?.get(cutoff?.id) ?? storyTimes(reachable.floorMemories ?? [], reachable.floors ?? []).get(cutoff?.id) ?? projectTime(''));
   const observations = fragments.map((fragment, index) => ({ ...fragment, observationTime: effectiveTime(fragment.observationTime), sourceKey: `S${index + 1}`,
     observationElapsedDays: timeDistance(fragment.observationTime, currentTime), observationElapsedHours: timeHours(fragment.observationTime, currentTime) }));
-  return { chatId: reachable.root.chatId, currentTime, cutoffFloorId: cutoff?.floorId ?? cutoff?.id ?? null, people: [], observations, trackedItems: [], context: [], currentStates: [] };
+  return { chatId: reachable.root.chatId, currentTime,
+    ...(currentTime.calendar ? { calendarRule: { ...currentTime.calendar, monthDays: calendarMonthDays(currentTime.calendar), leapYears: false } } : {}),
+    cutoffFloorId: cutoff?.floorId ?? cutoff?.id ?? null, people: [], observations, trackedItems: [], context: [], currentStates: [] };
 }
 
 function timeSelectionHistory(items, validBatches, cutoffAssistantSeq) {

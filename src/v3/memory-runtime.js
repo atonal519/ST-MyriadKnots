@@ -194,9 +194,10 @@ const floorFailureStorageKey = chatId => `${FLOOR_FAILURE_STORAGE_PREFIX}${chatI
 
 export function createQianshiSnapshotMemo(projector = publicQianshiSnapshot) {
   let cache = null, projectionRevision = 0;
-  return (reachable, identityProjection, history) => {
-    if (cache?.reachable !== reachable || cache.identityProjection !== identityProjection) {
-      cache = { reachable, identityProjection, value: projector(reachable, null, identityProjection), projectionRevision: ++projectionRevision };
+  return (reachable, identityProjection, history, calendar = null) => {
+    const calendarSignature = JSON.stringify(calendar);
+    if (cache?.reachable !== reachable || cache.identityProjection !== identityProjection || cache.calendarSignature !== calendarSignature) {
+      cache = { reachable, identityProjection, calendarSignature, value: projector(reachable, null, identityProjection, calendar), projectionRevision: ++projectionRevision };
     }
     // 会话内投影版本只供界面判断内容是否变化，不落盘；进度通知不重新归线。
     return { ...cache.value, projectionRevision: cache.projectionRevision, history };
@@ -223,7 +224,7 @@ export function createQianshiEventLookup(readSnapshot = createQianshiSnapshotMem
   };
 }
 
-export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, onQianshiEventDeleted = () => {}, extractorPromptGuidance = () => '', csePromptGuidance = () => '', processingPrompt = () => '', storyClockReferenceTags = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), persistAnchors = null, identityProjectionProvider = null, qianshiExternalReferenceProvider = () => [], qianshiCandidatePreparer = prepareQianshiCandidates, qianshiCandidateIndexFactory = createQianshiCandidateIndex, failureStorage = undefined, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
+export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, onQianshiEventDeleted = () => {}, extractorPromptGuidance = () => '', csePromptGuidance = () => '', processingPrompt = () => '', storyClockReferenceTags = () => '', storyCalendarProvider = () => null, filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), persistAnchors = null, identityProjectionProvider = null, qianshiExternalReferenceProvider = () => [], qianshiCandidatePreparer = prepareQianshiCandidates, qianshiCandidateIndexFactory = createQianshiCandidateIndex, failureStorage = undefined, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
   if (!foundationRuntime || ['start', 'refreshStatus', 'confirmLatest', 'setEnabled', 'bind', 'getState'].some(name => typeof foundationRuntime[name] !== 'function')) throw new TypeError('V3 memory foundation runtime 无效');
   if (!store || ['readReachable', 'readRecord', 'putRecord', 'commitRoot', 'recordKey', 'invalidate'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 memory store 无效');
   if (typeof generateAnalysisTask !== 'function') throw new TypeError('V3 memory analysis route 无效');
@@ -278,7 +279,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   let qianshiHistoryRun = null;
   let qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, outcomes: [], message: '' });
   const qianshiSnapshotMemo = createQianshiSnapshotMemo();
-  const qianshiEventLookup = createQianshiEventLookup(source => qianshiSnapshotMemo(source, identityProjection, null));
+  const qianshiEventLookup = createQianshiEventLookup(source => qianshiSnapshotMemo(source, identityProjection, null, storyCalendarProvider()));
   const qianshiCandidateIndex = qianshiCandidatePreparer === prepareQianshiCandidates ? qianshiCandidateIndexFactory() : null;
   const subscribers = new Set();
   const currentReferenceTags = () => normalizeStoryClockReferenceTags(typeof storyClockReferenceTags === 'function' ? storyClockReferenceTags() : storyClockReferenceTags);
@@ -2934,7 +2935,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
 
   function qianshiSnapshot() {
     if (!reachable?.root) return Object.freeze({ status: 'not-ready', message: '千事后端尚未准备好当前聊天。' });
-    return qianshiSnapshotMemo(reachable, identityProjection, qianshiHistoryState);
+    return qianshiSnapshotMemo(reachable, identityProjection, qianshiHistoryState, storyCalendarProvider());
   }
 
   function formalQianshiEvent(eventId, source = reachable) {
@@ -3735,12 +3736,13 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     },
     setQianshiMatterFollowing, setQianshiMatterStatus, getQianshiRecall: ({ queryContext = null, currentTime = null, selectedEventIds = null, selectedMatterIds = null } = {}) => {
       if (!reachable?.root) return { projectionVersion: QIANSHI_RECALL_PROJECTION_VERSION, text: '', eventIds: [], matterIds: [], anchor: null };
+      const calendarReachable = { ...reachable, calendar: storyCalendarProvider() };
       const anchor = { narrativeGeneration: reachable.root.narrativeGeneration, headCheckpointId: reachable.root.headCheckpointId, rootRevision: reachable.rootRevision };
       if (Array.isArray(selectedEventIds) || Array.isArray(selectedMatterIds)) {
-        const recall = projectQianshiRecall(reachable, { identityProjection, selectedEventIds: selectedEventIds ?? [], selectedMatterIds: selectedMatterIds ?? [] });
+        const recall = projectQianshiRecall(calendarReachable, { identityProjection, selectedEventIds: selectedEventIds ?? [], selectedMatterIds: selectedMatterIds ?? [] });
         return structuredClone({ ...recall, deletedEvents: qianshiDeletedEvents(reachable), anchor });
       }
-      const prepared = prepareQianshiRecallCandidates(reachable, { queryContext, identityProjection });
+      const prepared = prepareQianshiRecallCandidates(calendarReachable, { queryContext, identityProjection });
       const recall = projectQianshiCandidateSelection(prepared.candidates);
       const storyDate = typeof currentTime?.date === 'string' && currentTime.date.trim() ? currentTime.date.trim()
         : typeof currentTime?.raw === 'string' && currentTime.raw.trim() ? currentTime.raw.trim() : '';
