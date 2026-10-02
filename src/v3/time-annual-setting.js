@@ -51,6 +51,8 @@ function ordinaryMonthDay(value, calendar = null) {
   if (/[历曆紀纪闰閏]/u.test(raw.replace(/^(?:公元|公历|公曆|西历|西曆)\s*/u, ''))) return null;
   const full = calendar
     ? raw.match(/^(?:(?:公元|公历|公曆|西历|西曆)\s*)?(?:[\d〇零一二三四五六七八九十百千万]+[-/.年])?(\d{1,2}|春|夏|秋|冬)[-/.月](\d{1,2})(?:日|号)?$/u)
+      // 年度日期也接受四月制常用的“每年春1日”，不擅自用于十二月制。
+      ?? (calendar.months === 4 ? raw.match(/^(?:(?:公元|公历|公曆|西历|西曆)\s*)?(?:[\d〇零一二三四五六七八九十百千万]+年\s*)?(春|夏|秋|冬)\s*(\d{1,2})(?:日|号|號)?$/u) : null)
     : raw.match(/^(?:(?:公元|公历|公曆|西历|西曆)\s*)?(?:\d{1,4}[-/.年])?(\d{1,2})[-/.月](\d{1,2})(?:日|号)?$/u);
   if (!full) return null;
   if (calendar?.months === 12 && /春|夏|秋|冬/u.test(full[1])) return null;

@@ -54,6 +54,43 @@ test('配置逐聊天保存，默认不覆盖旧行为，非法规则不生效',
   for (const value of [{ months: 6, prefix: '' }, { months: 4, prefix: '启航387' }, { months: 4, prefix: '<启航>' }]) assert.equal(normalizeStoryCalendar(value), null);
 });
 
+test('四月制省略月字的季节日期贯通间隔、正文时钟、年度提醒和时间线', async () => {
+  const calendar = { months: 4, prefix: '' };
+  for (const [month, name] of ['春', '夏', '秋', '冬'].entries()) {
+    for (const raw of [`${name}1日`, `${name}月1日`, `启航五年${name}一日`]) {
+      const time = date(raw, raw.startsWith('启航') ? four : calendar);
+      assert.equal(time.month, month + 1, raw); assert.equal(time.monthDay, 1, raw);
+      assert.equal(time.raw, raw, '日期原文保持');
+    }
+    assert.equal(date(`${name}31日`, calendar).date, null);
+    assert.equal(date(`${name}1日`, { months: 12, prefix: '' }).date, null);
+  }
+  const from = date('春20日', calendar), to = date('夏10日', calendar);
+  assert.equal(timeDistance(from, to), 20);
+  assert.equal(timeDistance(date('春月20日', calendar), to), 20, '有月与无月写法可混用');
+  assert.equal(timeDistance(date('启航五年春二十日', four), date('启航五年夏十日', four)), 20);
+  assert.equal(timeDistance(date('冬30日', calendar), date('春1日', calendar)), null, '缺年份跨年不猜');
+  const end = date('启航5年冬30日', four), next = date('明天', four, end);
+  assert.equal(timeDistance(end, date('启航6年春1日', four)), 1);
+  assert.equal(next.year, 6); assert.equal(next.month, 1); assert.equal(next.monthDay, 1);
+  assert.equal(date('120日', calendar).date, null, '不会顺带让数字月份省略分隔符');
+
+  const timestamp = raw => `<!-- QQJ-start | date=${raw} | weekday=周一 | time=10:00 -->前往河边。<!-- QQJ-end | date=${raw} | weekday=周一 | time=11:00 -->`;
+  const host = { chat: ['春20日', '夏10日'].map(raw => ({ is_user: false, mes: timestamp(raw) })) };
+  const reachable = { root: { chatId: CHAT }, floors: [], floorMemories: [] };
+  const source = await readTimeBody(reachable, host, { calendar }), legacy = await readTimeBody(reachable, host);
+  assert.equal(timeDistance(source.bodyFloors[0].observationTime, source.bodyFloors[1].observationTime), 20);
+  assert.deepEqual(source.bodyFloors.map(body => body.timeSourceFingerprint), legacy.bodyFloors.map(body => body.timeSourceFingerprint));
+
+  const records = [{ sourceKey: 'spring', subjectEntityId: OTHER, subjectName: '甲', items: [{ category: 'anniversary', label: '纪念日', originalDate: '每年夏10日' }] }];
+  const annual = projectAnnualSettings(records, date('夏8日', calendar));
+  assert.equal(annual.reminders[0].distance, 2);
+  assert.equal(projectAnnualSettings(records, date('夏8日', calendar), [{ type: 'deadline', subjectEntityId: OTHER, label: '纪念日', dueTime: to }]).reminders.length, 0);
+  assert.equal(projectAnnualSettings(records, date('夏11日', calendar)).reminders[0].distance, null);
+  const timeline = projectQianshiTimeline({ events: ['夏10日', '春20日'].map((storyTime, index) => ({ id: `season-${index}`, storyTime, parsedStoryTime: date(storyTime, calendar) })) });
+  assert.deepEqual(timeline.segments[0].groups.flatMap(group => group.eventIds), ['season-1', 'season-0']);
+});
+
 test('旧时间增量获得当前计算视图，来源键与已保存观察不改写，旧模型推测不能跨历法复用', () => {
   const old = projectTimeSource('启航387年2月30日 10:30');
   const before = structuredClone(old), projected = effectiveTime(old, four);

@@ -44,8 +44,8 @@ export function timeDistance(from, to) {
   if (fromOrdinal !== null && toOrdinal !== null) {
     if (from.month === to.month) return to.monthDay - from.monthDay;
     if (from.month === 12 && to.month === 1 || from.month === 1 && to.month === 12) return null;
-    // Without a year, a span across the end of February differs by one day in
-    // leap years. Keep that interval unknown instead of inventing a year.
+    // Legacy reads without a confirmed calendar keep yearless February crossings unknown.
+    // The configured calendar branch above uses its fixed February length instead.
     if ((from.month <= 2 && to.month >= 3) || (to.month <= 2 && from.month >= 3)) return null;
     return toOrdinal - fromOrdinal;
   }
@@ -261,7 +261,9 @@ function flexibleDate(raw, anchor, options = {}) {
     const input = explicitPrefix ? dateText.slice(calendar.prefix.length).replace(/^[\s:：,，·]+/u, '')
       : !calendar.prefix ? dateText.replace(/^(?:公元|公历|公曆|西历|西曆)[\s:：,，·]*/u, '') : dateText;
     const numeric = input.match(/^(?:(\d{1,4})[-/.])?(\d{1,2})[-/.](\d{1,2})$/u);
-    const parts = input.match(new RegExp(`^(?:(${CN_NUMBER})年\\s*)?(${CN_NUMBER}|春|夏|秋|冬)月\\s*(?:初)?(${CN_NUMBER})(?:日|号|號)?$`, 'u'));
+    // 季节名本身就是四月制的月份名，可省略“月”；数字月份仍须有月或分隔符。
+    const parts = input.match(new RegExp(`^(?:(${CN_NUMBER})年\\s*)?(${CN_NUMBER})月\\s*(?:初)?(${CN_NUMBER})(?:日|号|號)?$`, 'u'))
+      ?? input.match(new RegExp(`^(?:(${CN_NUMBER})年\\s*)?(春|夏|秋|冬)(?:月)?\\s*(?:初)?(${CN_NUMBER})(?:日|号|號)?$`, 'u'));
     if (numeric || parts) {
       const values = numeric ?? parts;
       const year = values[1] ? cnNumber(values[1]) : null;

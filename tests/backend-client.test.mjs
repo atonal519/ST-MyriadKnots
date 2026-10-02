@@ -104,7 +104,7 @@ test('backend HTTP 400 仅将短 error/message 写入诊断，解析失败仍保
     { ok: false, status: 400, json: async () => '<html>PRIVATE_HTML</html>' },
   ];
   const client = createBackendClient({ fetchImpl: async () => responses.shift() });
-  await assert.rejects(client.put('private-chat', 'v3-floor-memory-private', { private: 'PRIVATE_REQUEST' }, 0), error => error.status === 400 && error.message === '后端请求失败（HTTP 400）');
+  await assert.rejects(client.put('private-chat', 'v3-floor-memory-private', { private: 'PRIVATE_REQUEST' }, 0), error => error.status === 400 && error.message === '后端请求失败（HTTP 400），请查看详细诊断。');
   const valid = client.getDiagnosticSnapshot();
   assert.equal(valid.latestWrite.backendError, 'VALIDATION_ERROR');
   assert.equal(valid.lastFailure.backendMessage, '字段格式无效');
@@ -113,13 +113,13 @@ test('backend HTTP 400 仅将短 error/message 写入诊断，解析失败仍保
   assert.equal(client.getDiagnosticSnapshot().latestRead.outcome, 'success');
   assert.deepEqual(client.getDiagnosticSnapshot().lastFailure, valid.lastFailure);
 
-  await assert.rejects(client.put('private-chat', 'v3-floor-memory-private', {}, 0), error => error.status === 400 && error.message === '后端请求失败（HTTP 400）');
+  await assert.rejects(client.put('private-chat', 'v3-floor-memory-private', {}, 0), error => error.status === 400 && error.message === '后端请求失败（HTTP 400），请查看详细诊断。');
   const malformed = client.getDiagnosticSnapshot();
   assert.equal(malformed.latestWrite.httpStatus, 400);
   assert.equal(malformed.latestWrite.backendError, undefined);
   assert.equal(malformed.latestWrite.backendMessage, undefined);
 
-  await assert.rejects(client.put('private-chat', 'v3-floor-memory-private', {}, 0), error => error.status === 400 && error.message === '后端请求失败（HTTP 400）');
+  await assert.rejects(client.put('private-chat', 'v3-floor-memory-private', {}, 0), error => error.status === 400 && error.message === '后端请求失败（HTTP 400），请查看详细诊断。');
   const nonJson = client.getDiagnosticSnapshot();
   assert.equal(nonJson.lastFailure.httpStatus, 400);
   assert.equal(nonJson.lastFailure.backendError, undefined);
@@ -258,7 +258,7 @@ test('backend 诊断保留最近失败，后续成功不清除 timeout 与 HTTP 
       ? { ok: false, status: 409, json: async () => ({ private: 'PRIVATE_HTTP_BODY' }) }
       : { ok: true, status: 200, json: async () => ({ ok: true }) };
   } });
-  await assert.rejects(httpClient.put('private', 'v3-entity-private', { private: 'PRIVATE_INPUT' }, 0), error => error.status === 409 && error.message === '后端请求失败（HTTP 409）');
+  await assert.rejects(httpClient.put('private', 'v3-entity-private', { private: 'PRIVATE_INPUT' }, 0), error => error.status === 409 && error.message === '后端请求失败（HTTP 409），请查看详细诊断。');
   const httpFailure = httpClient.getDiagnosticSnapshot().lastFailure;
   assert.equal(httpFailure.outcome, 'httpError'); assert.equal(httpFailure.httpStatus, 409);
   await httpClient.remove('private', 'v3-entity-private', 1);

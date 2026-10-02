@@ -276,7 +276,7 @@ export function createPanel({
     const subOpen = key => settingsDrawerState.isOpen(key, false);
     const subToggle = key => open => settingsDrawerState.set(key, open);
 
-    // 通用设置：API / 世界书排除 / 提示词 / 外观（各子项 change 即存，API 预设区保留手动保存）。
+    // 通用设置：世界书排除、提示词和外观即时保存；API 角色选择即时生效，配置编辑需点“保存设置”。
     const { drawer: general, body: generalBody } = groupOf('general', '通用设置');
     const api = createApiSettings({
       settings, apiTools, documentRef,
@@ -354,10 +354,10 @@ export function createPanel({
           autoHideResult.className = 'settings-result success';
           return;
         }
-        autoHideResult.textContent = current.autoHideEnabled ? `已开启；后续按最近 ${current.autoHideKeepAiCount} 个 AI 楼保留，已隐藏楼保持隐藏。` : '已关闭；千千结拥有的隐藏楼已恢复。';
+        autoHideResult.textContent = current.autoHideEnabled ? `已开启；后续按最近 ${current.autoHideKeepAiCount} 个 AI 楼保留，已隐藏楼保持隐藏。` : '已关闭；由千千结隐藏的消息已恢复。';
         autoHideResult.className = 'settings-result success';
       } catch (error) {
-        autoHideResult.textContent = `设置已保存，但当前聊天整理未完成：${publicErrorMessage(error, { fallback: '自动隐藏操作失败。' })} 请再次调整设置重试。`;
+        autoHideResult.textContent = `设置已保存，自动隐藏未完成：${publicErrorMessage(error, { fallback: '操作失败。' })}`;
         autoHideResult.className = 'settings-result error';
       } finally { autoHideInput.disabled = false; keepInput.disabled = false; }
     };
@@ -376,7 +376,7 @@ export function createPanel({
     calendarRow.append(choices);
     const prefixRow = element('label', 'qqj-calendar-row'); prefixRow.append(element('span', '', '特殊年'));
     const prefixInput = element('input', 'settings-input qqj-calendar-prefix'); prefixInput.type = 'text'; prefixInput.maxLength = 40;
-    prefixInput.placeholder = '例如启航'; prefixInput.value = calendarContext.calendar?.prefix ?? ''; prefixInput.disabled = !calendarContext.chatId;
+    prefixInput.placeholder = '如：启航'; prefixInput.value = calendarContext.calendar?.prefix ?? ''; prefixInput.disabled = !calendarContext.chatId;
     prefixInput.setAttribute('aria-label', '特殊纪年名称'); prefixRow.append(prefixInput);
     const calendarResult = element('p', 'settings-result'); calendarResult.hidden = true;
     const syncCalendarInputs = () => {
@@ -393,7 +393,7 @@ export function createPanel({
       for (const { input } of calendarInputs) input.disabled = true;
       prefixInput.disabled = true; calendarResult.hidden = true;
       try {
-        const confirmed = await dialog?.confirm?.({ title: '确认历法', body: `仅用于当前聊天的时间间隔计算。${months === 4 ? '一年4个月，每月30天。' : '一年12个月，使用固定大小月，二月28天，不计闰年。'}${prefix ? `纪年名称：${prefix}。` : '特殊年留空。'}`, confirmText: '确认', cancelText: '取消' });
+        const confirmed = await dialog?.confirm?.({ title: '确认历法', body: '仅当前聊天生效，仅影响间隔计算。', confirmText: '确认', cancelText: '取消' });
         if (!confirmed || confirmationEpoch !== activationEpoch || calendarContextProvider().chatId !== calendarContext.chatId) return;
         await onCalendarChange?.({ chatId: calendarContext.chatId, calendar: { months, prefix } });
       } catch (error) {
@@ -416,7 +416,8 @@ export function createPanel({
     storageGroup = storageDrawer.drawer;
     storageManagementView.mount(storageDrawer.body);
     memoryBody.append(autoHideToggle, keepRow, autoHideResult, calendarRow, prefixRow,
-      element('p', 'settings-hint', '历法用于推算时间间隔，仅当前聊天生效。'), calendarResult, storageGroup);
+      element('p', 'settings-hint', '历法用于推算时间间隔，仅当前聊天生效。特殊年只填年份前的完整纪年名称，不填数字或“年”。'),
+      element('p', 'settings-hint', '例：启航387年，填启航。'), calendarResult, storageGroup);
     page.append(memoryGroup);
 
     page.append(managementMount, settingsManagementError);

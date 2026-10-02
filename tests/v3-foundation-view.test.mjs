@@ -693,7 +693,7 @@ test('删除当前聊天记忆使用自绘异步确认，取消零写且确认�
   flatten(container).find(node => node.textContent === '删除当前聊天记忆').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls, 0);
-  assert.match(confirmation.body, /摘要、双丝网、人物资料、召回及历史版本/);
+  assert.match(confirmation.body, /摘要、双丝网、人物资料、时间事项、召回及历史版本/);
   assert.match(confirmation.body, /正文、手动前情和全局设置保留.*前情可另行清空/);
   assert.match(confirmation.note, /移入回收站.*并非永久擦除/);
 });

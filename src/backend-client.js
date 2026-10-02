@@ -6,7 +6,7 @@ const RECORD_TYPE_PREFIXES = Object.freeze([
   ['v3-entity-', 'entity'], ['v3-baseline-', 'baseline'], ['v3-state-delta-', 'stateDelta'],
   ['v3-current-state-', 'currentState'], ['v3-index-', 'index'],
 ]);
-function safeError(status) { return new Error(`后端请求失败（HTTP ${status}）`); }
+function safeError(status) { return new Error(`后端请求失败（HTTP ${status}），请查看详细诊断。`); }
 function shortDiagnosticText(value, limit) {
   if (typeof value !== 'string') return undefined;
   const text = value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, limit);

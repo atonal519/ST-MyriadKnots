@@ -36,7 +36,7 @@ export function createStorageManagementView({
   function render(state = manager.getState()) {
     if (!active || !container) return;
     const page = element('div', 'qqj-storage-management');
-    page.append(element('p', 'settings-hint', '仅清理本聊天已失效的后台旧版本；有效摘要历史、双丝网、人物资料、刻度和正文保留。'));
+    page.append(element('p', 'settings-hint', '仅清理本聊天已失效的后台旧版本；有效摘要历史、双丝网、人物资料、时间事项和正文保留。'));
     const status = element('p', `settings-result${state.error ? ' error' : ''}`, statusCopy(state));
     status.setAttribute?.('role', 'status');
     page.append(status);
@@ -88,7 +88,7 @@ export function createStorageManagementView({
       const mine = epoch;
       const confirmed = await Promise.resolve(confirmImpl({
         title: '清理当前聊天的后台旧版本',
-        body: '删除已失效的后台旧版本，不可恢复。有效摘要、双丝网、人物资料、刻度和聊天正文保留。',
+        body: '删除已失效的后台旧版本，不可恢复。有效摘要、双丝网、人物资料、时间事项和聊天正文保留。',
         confirmText: '确认清理', cancelText: '取消',
       }));
       if (!active || mine !== epoch) return;

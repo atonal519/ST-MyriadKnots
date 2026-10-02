@@ -60,7 +60,7 @@ const waitingFloorCopy = value => ({
 const waitingFloorExplanation = value => ({
   waitingNextUser: '尚未摘要，发送下一条用户消息后检查。',
   waitingEarlierFloor: '尚未摘要，先确认前面的 AI 楼。',
-  consecutiveAssistant: '尚未摘要，请在记忆页确认连续 AI 回复。',
+  consecutiveAssistant: '尚未摘要，请在记忆管理确认连续 AI 回复。',
   registrationNeedsReview: '尚未摘要，需核对楼层与记忆的对应关系。',
 })[value] ?? '这一楼尚未摘要，正在等待确认。';
 const reviewReasonCopy = value => {
@@ -1525,7 +1525,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const remove = element('button', 'primary-action', deleting ? '删除中…' : deletePending ? '继续删除当前聊天记忆' : '删除当前聊天记忆');
       remove.type = 'button'; remove.disabled = deleting || managementState?.blockedByOtherChat === true || (!deletePending && (managementState?.workBusy === true || !hasCurrentIdentity));
       remove.addEventListener('click', async () => {
-        if (!await Promise.resolve(confirmImpl({ title: '删除当前聊天记忆', body: '删除本聊天的摘要、双丝网、人物资料、召回及历史版本，下次需重新建档。正文、手动前情和全局设置保留；前情可另行清空。', note: '后台记录移入回收站，并非永久擦除。', confirmText: deletePending ? '继续删除' : '删除记忆', cancelText: '取消' }))) { feedback = '已取消删除当前聊天记忆。'; render(foundationState); return; }
+        if (!await Promise.resolve(confirmImpl({ title: '删除当前聊天记忆', body: '删除本聊天的摘要、双丝网、人物资料、时间事项、召回及历史版本，下次需重新建档。正文、手动前情和全局设置保留；前情可另行清空。', note: '后台记录移入回收站，并非永久擦除。', confirmText: deletePending ? '继续删除' : '删除记忆', cancelText: '取消' }))) { feedback = '已取消删除当前聊天记忆。'; render(foundationState); return; }
         void run(deletePending ? '继续删除当前聊天记忆' : '删除当前聊天记忆', () => memoryManagement.deleteCurrent(), { after: () => { managementState = memoryManagement.getState(); feedback = '当前聊天记忆已删除；聊天正文、手动前情与全局设置均已保留。手动前情可在“前情”中清空。'; return true; }, failed: () => { managementState = memoryManagement.getState(); return true; } });
       });
       deleteActions.append(remove);

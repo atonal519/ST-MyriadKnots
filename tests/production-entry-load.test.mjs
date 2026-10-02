@@ -6,6 +6,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { normalizeStoryCalendar } from '../src/v3/calendar-rules.js';
+import { ChatSessionError } from '../src/chat-session.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const nativeJson = value => Array.isArray(value) ? value.map(nativeJson) : value && typeof value === 'object'
@@ -162,7 +163,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.6.4');
+  assert.equal(manifest.version, '0.6.5');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -299,6 +300,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let branchInitializerOptions;
   let v3MemoryBindOptions;
   const sessionState = { status: 'preparing' };
+  let sessionIdentityError = null;
   const anchorCalls = [];
   const persistAnchors = async options => { anchorCalls.push(options); return { status: 'persisted' }; };
   const productionEventSource = { on() {}, removeListener() {} };
@@ -341,7 +343,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/compact-api-client.js', { createCompactApiClient: options => { compactOptions = options; return {}; } });
   define('./src/chat-session.js', { createChatSession: options => {
     sessionOptions = options;
-    return { prepare: () => options.identityCoordinator.prepare(), identity: () => ({ chatId: 'test' }), invalidate() {}, getState: () => sessionState };
+    return { prepare: () => options.identityCoordinator.prepare(), identity: () => { if (sessionIdentityError) throw sessionIdentityError; return { chatId: 'test' }; }, invalidate() {}, getState: () => sessionState };
   } });
   define('./src/chat-identity.js', { createChatIdentityCoordinator: options => { identityOptions = options; return { prepare: () => options.freshUuid() }; } });
   define('./src/host-context.js', { createHostChatList: options => { hostChatListOptions = options; return productionListHostChats; } });
@@ -435,6 +437,16 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(Object.hasOwn(v3MemoryOptions, 'onMemoryBatchCommitted'), false, '时间从foundation生命周期读正文，不等摘要CSE完成回调');
   assert.equal(timeBatches.length, 0);
   assert.equal(bootstrapOptions.calendarContextProvider().calendar, null);
+  for (const code of ['CHAT_SESSION_DISABLED', 'CHAT_SESSION_NOT_READY', 'CHAT_SESSION_CONTEXT_INVALID', 'CHAT_SESSION_SUSPENDED']) {
+    sessionIdentityError = new ChatSessionError('聊天身份暂不可用', code);
+    assert.deepEqual(nativeJson(bootstrapOptions.calendarContextProvider()), { chatId: null, calendar: null }, `${code} 不得阻止设置页显示`);
+    assert.equal(v3MemoryOptions.storyCalendarProvider(), null);
+    assert.equal(timeOptions.storyCalendarProvider(), null);
+    await assert.rejects(bootstrapOptions.onCalendarChange({ chatId: 'test', calendar: { months: 4, prefix: '启航' } }), error => error.code === code);
+    assert.deepEqual(nativeJson(productionSettings.storyCalendars), {}, '身份不可用时不得保存历法');
+    assert.equal(calendarInvalidations, 0); assert.equal(calendarRefreshes, 0);
+  }
+  sessionIdentityError = null;
   await bootstrapOptions.onCalendarChange({ chatId: 'test', calendar: { months: 4, prefix: '启航' } });
   assert.deepEqual(nativeJson(productionSettings.storyCalendars.test), { months: 4, prefix: '启航' });
   assert.equal(v3MemoryOptions.storyCalendarProvider().months, 4);

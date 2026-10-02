@@ -101,8 +101,15 @@ const listHostChats = createHostChatList({ headers: () => hostContext()?.getRequ
 const initializeChatBranch = createChatBranchInitializer({ client: backendClient, hostAdapter, sanitizerOptions });
 const identityCoordinator = createChatIdentityCoordinator({ client: backendClient, freshUuid: newUuid, listHostChats, initializeBranch: initializeChatBranch });
 const session = createChatSession({ contextProvider, isEnabled: settings.isEnabled, identityCoordinator });
+// 设置页在禁用、未选聊天及身份准备期间仍须可打开；此时不读写聊天历法，保存仍走严格身份校验。
+const calendarContextProvider = () => {
+  let owner;
+  try { owner = session.identity(); }
+  catch { return { chatId: null, calendar: null }; }
+  return { chatId: owner.chatId, calendar: settings.get().storyCalendars[owner.chatId] ?? null };
+};
 // 历法设置按 QQJ 聊天身份保存；读取计算规则不依赖时间推演开关。
-const storyCalendarProvider = () => settings.get().storyCalendars[session.identity()?.chatId] ?? null;
+const storyCalendarProvider = () => calendarContextProvider().calendar;
 const sourcePermissions = createSourcePermissionController({ settings, contextProvider });
 const summaryPrompt = () => settings.get().summaryPrompt;
 const csePrompt = () => settings.get().csePrompt;
@@ -283,7 +290,7 @@ ui = bootstrap({
   onStoryClockChange: options => refreshStoryClock({ ...options, announce: options?.readOnly !== true }),
   onAutoHideChange: options => autoHideController.applySettings(options),
   onTimeEvolutionChange: async () => { await timeRuntime.stop(); await timeRuntime.runBatch(); },
-  calendarContextProvider: () => ({ chatId: session.identity()?.chatId ?? null, calendar: storyCalendarProvider() }),
+  calendarContextProvider,
   onCalendarChange: async ({ chatId, calendar }) => {
     const normalized = normalizeStoryCalendar(calendar);
     if (!normalized) throw new Error('特殊年请填写不含数字的纪年名称，例如启航。');

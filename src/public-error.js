@@ -6,7 +6,7 @@ const CODE_COPY = Object.freeze({
   QQJ_PRESET_INVALID: '所选 API 预设已失效。',
   QQJ_TIMEOUT: 'API 请求超时，请检查网络或调高超时时间。',
   QQJ_AUTH: 'API 认证失败，请检查 Key 和模型权限。',
-  QQJ_NOT_FOUND: 'API 地址不存在，请检查 Base URL。',
+  QQJ_NOT_FOUND: 'API 404，请检查地址和模型名。',
   QQJ_RATE_LIMIT: 'API 请求过于频繁，请稍后再试。',
   QQJ_SERVER: 'API 服务暂时异常，请稍后再试。',
   QQJ_NETWORK: '无法连接 API，请检查地址和网络。',

@@ -5,7 +5,7 @@ import { is_send_press as i, saveSettingsDebounced as a } from "/script.js";
 import { is_group_generating as o } from "/scripts/group-chats.js";
 import { loadWorldInfo as s, selected_world_info as c, world_info as l, world_info_case_sensitive as u, world_info_match_whole_words as d, world_names as f } from "/scripts/world-info.js";
 //#region \0rolldown/runtime.js
-var p = (e, t) => () => (t || (e((t = { exports: {} }).exports, t), e = null), t.exports), m = "0.6.4", h = "qianqianjie", g = "/api/plugins/st-bainiaodata", _ = new TextEncoder();
+var p = (e, t) => () => (t || (e((t = { exports: {} }).exports, t), e = null), t.exports), m = "0.6.5", h = "qianqianjie", g = "/api/plugins/st-bainiaodata", _ = new TextEncoder();
 function v(e) {
 	return typeof e == "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(e);
 }
@@ -341,7 +341,7 @@ var L = Object.freeze([
 	["v3-index-", "index"]
 ]);
 function R(e) {
-	return /* @__PURE__ */ Error(`后端请求失败（HTTP ${e}）`);
+	return /* @__PURE__ */ Error(`后端请求失败（HTTP ${e}），请查看详细诊断。`);
 }
 function z(e, t) {
 	if (typeof e == "string") return e.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, t) || void 0;
@@ -1168,7 +1168,7 @@ var Te = /[\u3400-\u9fff]/u, Ee = Object.freeze({
 	QQJ_PRESET_INVALID: "所选 API 预设已失效。",
 	QQJ_TIMEOUT: "API 请求超时，请检查网络或调高超时时间。",
 	QQJ_AUTH: "API 认证失败，请检查 Key 和模型权限。",
-	QQJ_NOT_FOUND: "API 地址不存在，请检查 Base URL。",
+	QQJ_NOT_FOUND: "API 404，请检查地址和模型名。",
 	QQJ_RATE_LIMIT: "API 请求过于频繁，请稍后再试。",
 	QQJ_SERVER: "API 服务暂时异常，请稍后再试。",
 	QQJ_NETWORK: "无法连接 API，请检查地址和网络。",
@@ -2094,7 +2094,7 @@ var _t = (e) => {
 		config: "API 配置不完整，请检查 URL 和 Key",
 		timeout: "API 请求超时，请检查网络或调高超时时间",
 		auth: "API 认证失败，请检查 Key 和模型权限",
-		"not-found": "API 地址不存在，请检查 Base URL",
+		"not-found": "API 404，请检查地址和模型名。",
 		"rate-limit": "API 请求过于频繁，请稍后再试",
 		server: "API 服务暂时异常，请稍后再试",
 		network: "无法连接 API，请检查地址和网络",
@@ -11376,7 +11376,7 @@ var yu = (e, t) => Number.isInteger(e) && e >= 1 && e <= 12 && Number.isInteger(
 function bu(e, t = null) {
 	let n = fu(e, 300).normalize("NFKC").replace(/^每年\s*/u, "").trim();
 	if (t?.prefix && n.startsWith(t.prefix) && (n = n.slice(t.prefix.length).trim()), /[历曆紀纪闰閏]/u.test(n.replace(/^(?:公元|公历|公曆|西历|西曆)\s*/u, ""))) return null;
-	let r = t ? n.match(/^(?:(?:公元|公历|公曆|西历|西曆)\s*)?(?:[\d〇零一二三四五六七八九十百千万]+[-/.年])?(\d{1,2}|春|夏|秋|冬)[-/.月](\d{1,2})(?:日|号)?$/u) : n.match(/^(?:(?:公元|公历|公曆|西历|西曆)\s*)?(?:\d{1,4}[-/.年])?(\d{1,2})[-/.月](\d{1,2})(?:日|号)?$/u);
+	let r = t ? n.match(/^(?:(?:公元|公历|公曆|西历|西曆)\s*)?(?:[\d〇零一二三四五六七八九十百千万]+[-/.年])?(\d{1,2}|春|夏|秋|冬)[-/.月](\d{1,2})(?:日|号)?$/u) ?? (t.months === 4 ? n.match(/^(?:(?:公元|公历|公曆|西历|西曆)\s*)?(?:[\d〇零一二三四五六七八九十百千万]+年\s*)?(春|夏|秋|冬)\s*(\d{1,2})(?:日|号|號)?$/u) : null) : n.match(/^(?:(?:公元|公历|公曆|西历|西曆)\s*)?(?:\d{1,4}[-/.年])?(\d{1,2})[-/.月](\d{1,2})(?:日|号)?$/u);
 	if (!r || t?.months === 12 && /春|夏|秋|冬/u.test(r[1])) return null;
 	let i = {
 		春: 1,
@@ -11835,7 +11835,7 @@ function rd(e, t, n = {}) {
 		monthDay: null
 	}), a = Ne(n.calendar);
 	if (a) {
-		let n = a.prefix && r.startsWith(a.prefix), o = n ? r.slice(a.prefix.length).replace(/^[\s:：,，·]+/u, "") : a.prefix ? r : r.replace(/^(?:公元|公历|公曆|西历|西曆)[\s:：,，·]*/u, ""), s = o.match(/^(?:(\d{1,4})[-/.])?(\d{1,2})[-/.](\d{1,2})$/u), c = o.match(RegExp(`^(?:(${Bu})年\\s*)?(${Bu}|春|夏|秋|冬)月\\s*(?:初)?(${Bu})(?:日|号|號)?$`, "u"));
+		let n = a.prefix && r.startsWith(a.prefix), o = n ? r.slice(a.prefix.length).replace(/^[\s:：,，·]+/u, "") : a.prefix ? r : r.replace(/^(?:公元|公历|公曆|西历|西曆)[\s:：,，·]*/u, ""), s = o.match(/^(?:(\d{1,4})[-/.])?(\d{1,2})[-/.](\d{1,2})$/u), c = o.match(RegExp(`^(?:(${Bu})年\\s*)?(${Bu})月\\s*(?:初)?(${Bu})(?:日|号|號)?$`, "u")) ?? o.match(RegExp(`^(?:(${Bu})年\\s*)?(春|夏|秋|冬)(?:月)?\\s*(?:初)?(${Bu})(?:日|号|號)?$`, "u"));
 		if (s || c) {
 			let t = s ?? c, n = t[1] ? Gu(t[1]) : null, r = {
 				春: 1,
@@ -19496,7 +19496,7 @@ function Vh({ settings: e, documentRef: t = globalThis.document, open: n = !1, o
 	}), p = e.get(), m = a("input", "settings-input");
 	m.value = p.sourceKeepTags ?? "content", m.placeholder = "content";
 	let h = a("input", "settings-input");
-	h.value = p.sourceExtraTags ?? "", h.placeholder = "示例（不会自动生效）：think, reasoning, [[...]]";
+	h.value = p.sourceExtraTags ?? "", h.placeholder = "如：think, reasoning, [[...]]";
 	let g = a("input");
 	g.type = "checkbox", g.checked = p.storyClockEnabled !== !1;
 	let _ = a("textarea", "settings-input");
@@ -19546,7 +19546,7 @@ function Vh({ settings: e, documentRef: t = globalThis.document, open: n = !1, o
 	}), L = a("div", "v3-foundation-actions");
 	L.append(F, I);
 	let R = a("label", "setting-switch");
-	R.append(g, a("span", "", "启用正文时间戳")), x.append(R, y, a("p", "settings-hint", "默认 QQJ-start/end，也兼容 SDC 和旧 myknots 格式。自定义文本原样发送，请保留成对 start/end 及 date、weekday、time 字段。"), s("正文时间参考标签", v), a("p", "settings-hint", "额外时间标签名用逗号或换行分隔，留空关闭。标准时间戳优先；这里只补读摘要时间，不改变正文清洗，也不受生成开关影响。"), s("完整自定义提示词", _), L);
+	R.append(g, a("span", "", "启用正文时间戳")), x.append(R, y, a("p", "settings-hint", "默认 QQJ-start/end，也兼容 SDC 和旧 myknots 格式。自定义文本原样发送，请保留成对 start/end 及 date、weekday、time 字段。"), s("正文时间参考标签", v), a("p", "settings-hint", "额外时间标签名用逗号或换行分隔，留空关闭。标准时间戳优先；补读故事时间，不改变正文清洗，也不受生成开关影响。"), s("完整自定义提示词", _), L);
 	let z = ({ body: t, control: n, key: r, defaultText: i, label: c, hint: l = "这里只改内容要求；输出结构、人物绑定和信息范围由程序维护。恢复默认会使用内置文本。" }) => {
 		n.addEventListener("change", () => e.update({ [r]: n.value }));
 		let u = o("载入默认再改", "secondary-action", () => {
@@ -19792,7 +19792,7 @@ var Yh = "千千结使用说明", Xh = [
 			"普通 SillyTavern/Luker 在实际运行的酒馆根目录 config.yaml 中检查 enableServerPlugins: true；已有该键就修改原值，不要重复追加。默认 serverPluginsPath 是 ./plugins，改过则按配置路径安装；enableServerPluginsAutoUpdate 只控制自动更新，不是加载条件。安装或改配置后完整重启酒馆服务，再刷新网页；只刷新网页或切换插件开关不会加载后端。遇到后端 404 先看下面的“排障手册”，不要删除记忆来修安装。",
 			"先到“设置 → 通用设置 → API 配置”。分析 API 用于双丝网人物状态分析；摘要 API 负责逐楼摘要和千人人物资料整理；召回 API 负责 LLM 召回选材。摘要默认跟随分析，召回默认跟随摘要，也可各自选择共享预设。不同预设仍可能共用同一账号的并发额度。在 API 配置页里，保存设置不发请求；“测试连接”或“拉取模型”会发出请求。",
 			"新聊天正常对话即可逐步建立记忆，不需要先打开千千结面板。旧聊天可到“设置 → 记忆管理”手动补齐；空聊天还没有可保存的记忆属于正常情况。",
-			"故事有特殊纪年或一年只有四个月时，先到“设置 → 记忆设置”确认历法，并在“特殊年”中填纪年名称，例如启航。时间推演是另一个默认关闭的功能，用于推算身体状态、周期和约定期限；需要时再开启，具体区别见下面“设置”。",
+			"故事有特殊纪年或一年只有四个月时，先到“设置 → 记忆设置”确认历法。“特殊年”只填年份前的完整纪年名称，例如“启航387年”填“启航”，不填数字或“年”。时间推演是另一个默认关闭的功能，用于推算身体状态、周期和约定期限；需要时再开启，具体区别见下面“设置”。",
 			"到“千人”选择重要人物。摘要自动完成后，会根据相关新材料更新人物资料；人工修订后需要自行点人物菜单里的“整理当前资料”。"
 		]
 	},
@@ -19847,8 +19847,8 @@ var Yh = "千千结使用说明", Xh = [
 			"“世界书排除”用于搜索并勾选不让千千结读取的世界书，只改变千千结的资料来源，不会删除世界书。召回会在内部总预算内选材；“最近召回”可查看本次实际投入。",
 			"“自动隐藏”在“设置 → 记忆设置”中开启，并可设置后续保留的最近 AI 楼数；它不会删除正文或记忆。",
 			"“时间推演”在“设置 → 记忆设置”中开启，默认关闭，只处理身体状态、周期与约定期限，心理和关系仍交给 CSE。开启后使用摘要 API，每批最多一次请求；关闭后不调用、不注入，已有时间记录保留。与【构画】的【刻度】用途重叠，建议只保留一方注入；检测到构画注入开启时会先确认。事项与“补查历史”位于“千结 → 近期事项”。完全重构会另行授权历史正文分批补查。",
-			"“历法选择”位于时间推演和自动隐藏下方，4 和 12 只能选一个，确认后仅当前聊天生效。4 月制一年四个月，每月30天；12 月制沿用普通大小月，二月固定28天，不计算闰年。不同聊天需分别设置；特殊年留空可用于没有纪年前缀的日期。",
-			"“特殊年”只填日期开头的纪年名称，不填年份或整段日期。例如故事写“启航387年1月2日”，这里填“启航”，再按故事实际月制选择 4 或 12；“开元5年”同理。插件保留原日期文字，只按所选规则计算时间间隔。年份明确时可跨月、跨年；缺少年份时不猜跨年，其他未确认历法仍保留原文。",
+			"“历法选择”位于时间推演和自动隐藏下方，4 和 12 只能选一个，确认后仅当前聊天生效。4 月制一年四个月，每月30天，春、夏、秋、冬依次对应1至4月，可写“春1日”“夏10日”，也兼容“春月1日”。12 月制沿用普通大小月，二月固定28天，不计算闰年。不同聊天需分别设置；特殊年留空可用于没有纪年前缀的日期。",
+			"“特殊年”只填紧挨年份数字前的完整纪年名称，不填数字、年份后的“年”或整段日期。例如故事写“启航387年1月2日”，这里填“启航”；“开元5年”填“开元”，“启航历387年”填“启航历”，不要只填最后一个字。再按故事实际月制选择 4 或 12。插件保留原日期文字，只按所选规则计算时间间隔。年份明确时可跨月、跨年；缺少年份时不猜跨年，其他未确认历法仍保留原文。",
 			"历法用于千事时间轴排序与时间间隔计算，不需要开启时间推演；开启时间推演后，也用于周期、期限与年度日期的计算。保存历法不会调用模型、重新提取旧楼或改写已有摘要和事件。时间推演开关控制是否追踪与推算事项，历法选择控制日期怎样计算，两者可分别设置。",
 			"“保留包裹符”默认是 content：它会去掉匹配的成对标签外壳并留下内部内容；其他完整成对标签里的普通文字可能被排除。“清洗包裹符”里的普通标签名不会覆盖保留名单；其中形如 [[...]] 的字面规则会删除配对符号之间的内容。比如正文都在 <story>…</story> 中，而保留名单仍是 content，清洗后可能没有正文。排查摘要缺内容时，到“设置 → 通用设置 → 提示词与包裹符 → 包裹符”核对实际标签及保留名单；未闭合标签不会一概导致正文丢失。改规则后回到千结或记忆管理刷新状态，再按页面提示确认是否补齐；不要先盲目完全重构。故事时间默认读取千千结时间戳，也能兼容构画和旧千千结的既有时间信息。",
 			"如目标楼带有已保存的 MVU / EJS 信息，千千结会将其作为只读辅助参考，不会改写这些变量。"
@@ -19887,7 +19887,7 @@ var Yh = "千千结使用说明", Xh = [
 			"若提示“准备中”或“待核对”，查看健康条和“记忆管理 → 详细诊断”当前停在哪一步。刷新状态会读取、核对当前记录，不会替你继续已暂停的历史任务；刷新后仍待核对时先保留诊断和操作顺序，按提示确认，不要重复启动或删除记录。",
 			"长时间等待也要分开看：后端记录读取超时看失败请求路径、状态码和详细诊断；模型 API 失败则看所选预设及模型端错误。缓存读取、冷读取和酒馆整页卡顿是不同情况；有时页面恢复后可再试一次，但不能仅凭一次成功就认定超时或卡顿已根治。",
 			"召回看起来为空时，先打开对应楼的“最近召回”或召回回执，确认本轮实际选入了什么。召回可以正常选出 0 条，不等于旧摘要为空；楼里已有很多千事或人物状态，也不代表它们每轮都会全部注入。模型空回则另查模型请求和提示。",
-			"清理旧版本前，在“设置 → 记忆设置 → 存储管理”点“刷新统计”，确认可清理数量和大小。清理只针对当前聊天中已不再引用的后台旧文件；不会删除摘要、人物状态、人物资料、刻度或聊天正文。需要诊断时，“刷新统计”只读检查；复制完整诊断前先检查是否含有聊天正文。",
+			"清理旧版本前，在“设置 → 记忆设置 → 存储管理”点“刷新统计”，确认可清理数量和大小。清理只针对当前聊天中已不再引用的后台旧文件；不会删除摘要、人物状态、人物资料、时间事项或聊天正文。需要诊断时，“刷新统计”只读检查；复制完整诊断前先检查是否含有聊天正文。",
 			"求助可提供插件版本、原生酒馆或 Luker、操作步骤、完整提示、诊断 JSON 和失败请求路径 / 状态码，启动日志按需补充。诊断可能含正文，先检查和打码；路径与文件名可打码但保留结构。不要发送 API key、Authorization、Cookie、整份配置或整段聊天，也不需要人物隐私截图。完整手册见项目文档：https://github.com/atonal519/ST-MyriadKnots/blob/main/docs/troubleshooting.md"
 		]
 	}
@@ -20459,9 +20459,9 @@ function xg({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 					ue.textContent = "设置已保存；重新启用千千结后生效。", ue.className = "settings-result success";
 					return;
 				}
-				ue.textContent = n.autoHideEnabled ? `已开启；后续按最近 ${n.autoHideKeepAiCount} 个 AI 楼保留，已隐藏楼保持隐藏。` : "已关闭；千千结拥有的隐藏楼已恢复。", ue.className = "settings-result success";
+				ue.textContent = n.autoHideEnabled ? `已开启；后续按最近 ${n.autoHideKeepAiCount} 个 AI 楼保留，已隐藏楼保持隐藏。` : "已关闭；由千千结隐藏的消息已恢复。", ue.className = "settings-result success";
 			} catch (e) {
-				ue.textContent = `设置已保存，但当前聊天整理未完成：${Oe(e, { fallback: "自动隐藏操作失败。" })} 请再次调整设置重试。`, ue.className = "settings-result error";
+				ue.textContent = `设置已保存，自动隐藏未完成：${Oe(e, { fallback: "操作失败。" })}`, ue.className = "settings-result error";
 			} finally {
 				oe.disabled = !1, ce.disabled = !1;
 			}
@@ -20486,7 +20486,7 @@ function xg({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 		let ge = G("label", "qqj-calendar-row");
 		ge.append(G("span", "", "特殊年"));
 		let _e = G("input", "settings-input qqj-calendar-prefix");
-		_e.type = "text", _e.maxLength = 40, _e.placeholder = "例如启航", _e.value = fe.calendar?.prefix ?? "", _e.disabled = !fe.chatId, _e.setAttribute("aria-label", "特殊纪年名称"), ge.append(_e);
+		_e.type = "text", _e.maxLength = 40, _e.placeholder = "如：启航", _e.value = fe.calendar?.prefix ?? "", _e.disabled = !fe.chatId, _e.setAttribute("aria-label", "特殊纪年名称"), ge.append(_e);
 		let ve = G("p", "settings-result");
 		ve.hidden = !0;
 		let ye = () => {
@@ -20509,7 +20509,7 @@ function xg({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 			try {
 				if (!await h?.confirm?.({
 					title: "确认历法",
-					body: `仅用于当前聊天的时间间隔计算。${e === 4 ? "一年4个月，每月30天。" : "一年12个月，使用固定大小月，二月28天，不计闰年。"}${t ? `纪年名称：${t}。` : "特殊年留空。"}`,
+					body: "仅当前聊天生效，仅影响间隔计算。",
 					confirmText: "确认",
 					cancelText: "取消"
 				}) || r !== M || d().chatId !== fe.chatId) return;
@@ -20543,7 +20543,7 @@ function xg({ settings: e, apiTools: t, v3FoundationView: n, peopleProfilesView:
 				N.set("storage", e), W();
 			}
 		});
-		H = Se.drawer, a.mount(Se.body), Y.append(ae, se, ue, pe, ge, G("p", "settings-hint", "历法用于推算时间间隔，仅当前聊天生效。"), ve, H), i.append(ne), i.append(S, R);
+		H = Se.drawer, a.mount(Se.body), Y.append(ae, se, ue, pe, ge, G("p", "settings-hint", "历法用于推算时间间隔，仅当前聊天生效。特殊年只填年份前的完整纪年名称，不填数字或“年”。"), G("p", "settings-hint", "例：启航387年，填启航。"), ve, H), i.append(ne), i.append(S, R);
 		let { drawer: Ce, body: we } = C("documentation", "教程与配置文件"), Te = G("div", "settings-document-row"), Ee = G("button", "secondary-action", "教程文档");
 		Ee.type = "button", Ee.addEventListener("click", () => {
 			$h({
@@ -21026,7 +21026,7 @@ var Fg = (e) => e.status === "idle" ? e.foundationStatus : e.status, Ig = (e) =>
 })[e] ?? "尚待确认", Kg = (e) => ({
 	waitingNextUser: "尚未摘要，发送下一条用户消息后检查。",
 	waitingEarlierFloor: "尚未摘要，先确认前面的 AI 楼。",
-	consecutiveAssistant: "尚未摘要，请在记忆页确认连续 AI 回复。",
+	consecutiveAssistant: "尚未摘要，请在记忆管理确认连续 AI 回复。",
 	registrationNeedsReview: "尚未摘要，需核对楼层与记忆的对应关系。"
 })[e] ?? "这一楼尚未摘要，正在等待确认。", qg = (e) => {
 	if (!e?.code) return "无";
@@ -22850,7 +22850,7 @@ function A_({ runtime: e, recallRuntime: t = null, peopleRuntime: n = null, time
 			s.type = "button", s.disabled = r || A?.blockedByOtherChat === !0 || !o && (A?.workBusy === !0 || !n), s.addEventListener("click", async () => {
 				if (!await Promise.resolve(d({
 					title: "删除当前聊天记忆",
-					body: "删除本聊天的摘要、双丝网、人物资料、召回及历史版本，下次需重新建档。正文、手动前情和全局设置保留；前情可另行清空。",
+					body: "删除本聊天的摘要、双丝网、人物资料、时间事项、召回及历史版本，下次需重新建档。正文、手动前情和全局设置保留；前情可另行清空。",
 					note: "后台记录移入回收站，并非永久擦除。",
 					confirmText: o ? "继续删除" : "删除记忆",
 					cancelText: "取消"
@@ -24534,7 +24534,7 @@ function tv({ manager: e, documentRef: t = globalThis.document, confirmImpl: n =
 	function d(t = e.getState()) {
 		if (!i || !r) return;
 		let o = c("div", "qqj-storage-management");
-		o.append(c("p", "settings-hint", "仅清理本聊天已失效的后台旧版本；有效摘要历史、双丝网、人物资料、刻度和正文保留。"));
+		o.append(c("p", "settings-hint", "仅清理本聊天已失效的后台旧版本；有效摘要历史、双丝网、人物资料、时间事项和正文保留。"));
 		let f = c("p", `settings-result${t.error ? " error" : ""}`, u(t));
 		if (f.setAttribute?.("role", "status"), o.append(f), t.stats) {
 			let e = c("div", "qqj-storage-grid");
@@ -24570,7 +24570,7 @@ function tv({ manager: e, documentRef: t = globalThis.document, confirmImpl: n =
 		}), _.addEventListener("click", async () => {
 			let t = a, r = await Promise.resolve(n({
 				title: "清理当前聊天的后台旧版本",
-				body: "删除已失效的后台旧版本，不可恢复。有效摘要、双丝网、人物资料、刻度和聊天正文保留。",
+				body: "删除已失效的后台旧版本，不可恢复。有效摘要、双丝网、人物资料、时间事项和聊天正文保留。",
 				confirmText: "确认清理",
 				cancelText: "取消"
 			}));
@@ -32278,7 +32278,7 @@ function Ax({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			let e = await t.readRoot();
 			Yt(n, e) && (r = n);
 		}
-		if (r ??= await t.readReachable({ mode: "runtime" }), r.status !== "ready") throw $("V3_MEMORY_PREFIX_CHANGED", "当前记忆图尚未收敛，目标楼依赖前缀无法复核。");
+		if (r ??= await t.readReachable({ mode: "runtime" }), r.status !== "ready") throw $("V3_MEMORY_PREFIX_CHANGED", "记忆尚未完成核对，请刷新状态后重试。");
 		if (e.epoch !== j || e.controller?.signal?.aborted) throw $("V3_MEMORY_CANCELLED", "操作已取消。");
 		return r;
 	}
@@ -32363,7 +32363,7 @@ function Ax({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			let t = r.get(e.floorId)?.qianshiDelta ?? {};
 			for (let e of t.manualMatterStatusOverrides ?? []) {
 				let t = c.matters.find((t) => t.matterId === e.matterId), n = t && p.get(t.origin.eventId);
-				if (!n || n.matterId !== e.matterId) throw $("QIANSHI_REJUDGE_MANUAL_LINE_CONFLICT", "重判会移动人工整线状态所锚定的原事项；请先人工解除或改判后再试，整组未提交。");
+				if (!n || n.matterId !== e.matterId) throw $("QIANSHI_REJUDGE_MANUAL_LINE_CONFLICT", "整组未保存：人工状态与整理结果冲突。可恢复自动判断后重试。");
 			}
 		}
 		let m = new Set(i.flatMap((e) => e.qianshiDelta.relations.map((e) => e.id)));
@@ -32561,7 +32561,7 @@ function Ax({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 					}
 				}
 			}
-			if (r.qianshiTextEdit && o && !r.qianshiTextEdit.manualAction) throw $("QIANSHI_TEXT_EDIT_RELATION_CONFLICT", "这条事件带有旧审核关系；修改文字会使关系失去对应依据，首版暂不能编辑。原记录保持不变。");
+			if (r.qianshiTextEdit && o && !r.qianshiTextEdit.manualAction) throw $("QIANSHI_TEXT_EDIT_RELATION_CONFLICT", "旧版待核对事件暂不能编辑，原记录保留。");
 			r.qianshiRejudge || (x = [S]);
 			for (let e of x) C.set(e.floorId, e);
 			let T = m.floors.map((e) => C.get(e.id)).filter(Boolean), E = new Map(m.entities.map((e) => [e.id, e]));
@@ -34639,7 +34639,7 @@ function Ax({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 			let C = N.floors.find((e) => e.id === p.sourceFloorId), w = C ? _x(n, C) : null, T = w ? `sha256:${await b(w.rawContent)}` : null;
 			if (!C || !T || !Ar(l).includes(p.sourceFloorId)) throw $("QIANSHI_TEXT_EDIT_SOURCE_CHANGED", "事件来源楼或当前分支已变化；没有保存文字，请刷新后确认原文楼层仍有效。");
 			let E = (l.qianshiDelta.historyReview?.candidates ?? []).some((e) => ["pending", "new"].includes(e.decision) && e.event?.id === p.id && rx(e.event) === rx(p) && e.relations?.length > 0);
-			if (!u && E) throw $("QIANSHI_TEXT_EDIT_RELATION_CONFLICT", "这条事件带有旧审核关系；修改文字会使关系失去对应依据，首版暂不能编辑。原记录保持不变。");
+			if (!u && E) throw $("QIANSHI_TEXT_EDIT_RELATION_CONFLICT", "旧版待核对事件暂不能编辑，原记录保留。");
 			let k = Zb(D), A = hx(N)[l.floorId] ?? {}, M = tx(l.qianshiDelta), P = M.events.findIndex((e) => e.id === t);
 			if (P < 0) throw $("QIANSHI_TEXT_EDIT_UNAVAILABLE", "这条正式事件已变化；请刷新后再编辑。");
 			if (u?.type === "deleteEvent") {
@@ -39190,7 +39190,7 @@ function Mw(e, t, n = null) {
 		let n = e?.memorySnapshotStatus, r = n === "error", o = ["syncing", "unavailable"].includes(n), s = i ?? (e?.pending?.messageIndex === t ? { reason: "waitingNextUser" } : null), c = {
 			waitingNextUser: ["等待下一条用户消息", "这一楼尚未摘要。发送下一条用户消息后会重新检查。"],
 			waitingEarlierFloor: ["等待前面楼层处理", "这一楼尚未摘要。前面的 AI 楼尚未确认，当前不会进入摘要处理。"],
-			consecutiveAssistant: ["连续 AI，尚待确认", "这一楼尚未摘要。可在记忆页确认后，将连续 AI 回复分别登记并按顺序摘要。"],
+			consecutiveAssistant: ["连续 AI，尚待确认", "这一楼尚未摘要。可在记忆管理确认后，将连续 AI 回复分别登记并按顺序摘要。"],
 			registrationNeedsReview: ["消息对应关系待核对", "这一楼尚未摘要。消息与已有记忆的对应关系需要先核对。"]
 		}[s?.reason] ?? ["尚待确认", "这一楼尚未摘要，正在等待确认。"];
 		return Object.freeze({
@@ -40064,37 +40064,51 @@ var gT = () => ({
 	contextProvider: oT,
 	isEnabled: sT.isEnabled,
 	identityCoordinator: wT
-}), ET = () => sT.get().storyCalendars[TT.identity()?.chatId] ?? null, DT = jy({
+}), ET = () => {
+	let e;
+	try {
+		e = TT.identity();
+	} catch {
+		return {
+			chatId: null,
+			calendar: null
+		};
+	}
+	return {
+		chatId: e.chatId,
+		calendar: sT.get().storyCalendars[e.chatId] ?? null
+	};
+}, DT = () => ET().calendar, OT = jy({
 	settings: sT,
 	contextProvider: oT
-}), OT = () => sT.get().summaryPrompt, kT = () => sT.get().csePrompt, AT = () => sT.get().profilePrompt, jT = () => sT.get().processingPrompt, MT = Yv({
+}), kT = () => sT.get().summaryPrompt, AT = () => sT.get().csePrompt, jT = () => sT.get().profilePrompt, MT = () => sT.get().processingPrompt, NT = Yv({
 	client: _T,
 	contextProvider: () => TT.identity(),
 	isEnabled: sT.isEnabled
-}), NT = eb({
+}), PT = eb({
 	hostAdapter: rT,
-	store: MT,
+	store: NT,
 	contextProvider: oT,
 	prepareSession: () => TT.prepare(),
 	deferChatChangeRefreshUntilPrepared: !0,
 	isEnabled: sT.isEnabled,
 	sanitizerOptions: gT,
 	newUuid: aT
-}), PT = _h({ client: _T }), FT, IT = async () => {
+}), FT = _h({ client: _T }), IT, LT = async () => {
 	let e = TT.identity();
-	return FT?.getState?.()?.chatId === e.chatId ? FT.getIdentityProjection() : (await PT.read(e)).data ?? {};
-}, LT, RT = ub({
-	storyCalendarProvider: ET,
+	return IT?.getState?.()?.chatId === e.chatId ? IT.getIdentityProjection() : (await FT.read(e)).data ?? {};
+}, RT, zT = ub({
+	storyCalendarProvider: DT,
 	newUuid: aT,
 	store: cb({ client: _T }),
-	foundationStore: MT,
+	foundationStore: NT,
 	hostAdapter: rT,
 	session: TT,
-	getReachable: () => NT.getReachable(),
-	getMemoryState: () => zT.getState(),
+	getReachable: () => PT.getReachable(),
+	getMemoryState: () => BT.getState(),
 	generateTimeTask: ST.generateUtilityTask,
 	annualSettingsProvider: () => {
-		let e = NT.getReachable(), n = FT?.getState?.();
+		let e = PT.getReachable(), n = IT?.getState?.();
 		return !e?.baseline?.userPersona?.entityId || n?.status !== "ready" || n.chatId !== TT.identity().chatId ? { ready: !1 } : {
 			ready: !0,
 			people: yh(e, n),
@@ -40108,10 +40122,10 @@ var gT = () => ({
 	sanitizerOptions: gT,
 	storyClockReferenceTags: () => sT.get().storyClockReferenceTags,
 	isEnabled: () => sT.isEnabled() && sT.get().timeEvolutionEnabled === !0
-}), zT = Ax({
-	storyCalendarProvider: ET,
-	foundationRuntime: NT,
-	store: MT,
+}), BT = Ax({
+	storyCalendarProvider: DT,
+	foundationRuntime: PT,
+	store: NT,
 	hostAdapter: rT,
 	generateAnalysisTask: ST.generateAnalysisTask,
 	generateUtilityTask: ST.generateUtilityTask,
@@ -40122,137 +40136,134 @@ var gT = () => ({
 	}),
 	notifyUser: (e) => globalThis.toastr?.[e?.kind]?.(e?.text),
 	isMainGenerationActive: nT,
-	extractorPromptGuidance: OT,
-	csePromptGuidance: kT,
-	processingPrompt: jT,
+	extractorPromptGuidance: kT,
+	csePromptGuidance: AT,
+	processingPrompt: MT,
 	storyClockReferenceTags: () => sT.get().storyClockReferenceTags,
-	filterWorldInfoSources: DT.filterWorldInfoSources,
+	filterWorldInfoSources: OT.filterWorldInfoSources,
 	sanitizerOptions: gT,
 	persistAnchors: an,
-	identityProjectionProvider: IT,
-	onQianshiEventDeleted: () => LT?.invalidate("qianshiManuallyDeleted"),
-	qianshiExternalReferenceProvider: () => sT.get().timeEvolutionEnabled ? RT.getQianshiReferences() : [],
+	identityProjectionProvider: LT,
+	onQianshiEventDeleted: () => RT?.invalidate("qianshiManuallyDeleted"),
+	qianshiExternalReferenceProvider: () => sT.get().timeEvolutionEnabled ? zT.getQianshiReferences() : [],
 	newUuid: aT
 });
-LT = nC({
-	store: MT,
+RT = nC({
+	store: NT,
 	hostAdapter: rT,
 	generateUtilityTask: ST.generateRecallTask,
 	isEnabled: sT.isEnabled,
-	memoryStatus: () => zT.getState(),
-	prepareMemory: (e) => zT.prepareCurrent(e),
-	realtimeOrigin: () => zT.allowsRealtimeTailFromEmpty(),
+	memoryStatus: () => BT.getState(),
+	prepareMemory: (e) => BT.prepareCurrent(e),
+	realtimeOrigin: () => BT.allowsRealtimeTailFromEmpty(),
 	recentBodyFloorLimit: () => sT.get().autoHideKeepAiCount,
 	notifyUser: (e) => globalThis.toastr?.[e?.kind]?.(e?.text),
 	sanitizerOptions: gT,
-	identityProjectionProvider: IT,
-	timeProjectionProvider: (e) => RT.recallProjection(e),
-	qianshiProgressProvider: async (e, t) => zT.getQianshiRecall({
+	identityProjectionProvider: LT,
+	timeProjectionProvider: (e) => zT.recallProjection(e),
+	qianshiProgressProvider: async (e, t) => BT.getQianshiRecall({
 		...t,
-		...await RT.currentStoryContext(e) ?? {}
+		...await zT.currentStoryContext(e) ?? {}
 	}),
-	qianshiDeletionProvider: () => zT.getQianshiDeletions(),
+	qianshiDeletionProvider: () => BT.getQianshiDeletions(),
 	pluginVersion: m
-}), FT = Bh({
-	store: PT,
+}), IT = Bh({
+	store: FT,
 	session: TT,
-	foundationRuntime: NT,
-	foundationStore: MT,
+	foundationRuntime: PT,
+	foundationStore: NT,
 	hostAdapter: rT,
-	memoryRuntime: zT,
+	memoryRuntime: BT,
 	generateUtilityTask: ST.generateUtilityTask,
-	sourcePermissions: DT,
+	sourcePermissions: OT,
 	contextProvider: oT,
-	profilePromptGuidance: AT,
-	processingPrompt: jT,
+	profilePromptGuidance: jT,
+	processingPrompt: MT,
 	isEnabled: sT.isEnabled
-}), FT.subscribe?.((e) => {
-	e?.status === "ready" && e.chatId === TT.identity().chatId && RT.runBatch({ chatId: e.chatId });
+}), IT.subscribe?.((e) => {
+	e?.status === "ready" && e.chatId === TT.identity().chatId && zT.runBatch({ chatId: e.chatId });
 });
-var BT = gC({
+var VT = gC({
 	hostAdapter: rT,
-	memoryRuntime: zT,
+	memoryRuntime: BT,
 	settings: sT,
 	notifyUser: (e) => globalThis.toastr?.[e?.kind]?.(e?.text)
-}), VT = tT({
-	memoryRuntime: zT,
-	recallRuntime: LT,
+}), HT = tT({
+	memoryRuntime: BT,
+	recallRuntime: RT,
 	hostAdapter: rT
-}), HT = ny({
+}), UT = ny({
 	contextProvider: oT,
 	client: _T,
 	session: TT,
 	hostAdapter: rT,
-	foundationRuntime: NT,
-	memoryRuntime: zT,
-	recallRuntime: LT,
-	peopleRuntime: FT,
-	timeRuntime: RT,
-	autoHideController: BT,
+	foundationRuntime: PT,
+	memoryRuntime: BT,
+	recallRuntime: RT,
+	peopleRuntime: IT,
+	timeRuntime: zT,
+	autoHideController: VT,
 	isMainGenerationActive: nT
-}), UT = vy({
+}), WT = vy({
 	client: _T,
-	store: MT,
+	store: NT,
 	session: TT,
 	hostAdapter: rT,
 	settings: sT,
-	memoryRuntime: zT,
-	foundationRuntime: NT,
+	memoryRuntime: BT,
+	foundationRuntime: PT,
 	activitySources: [
-		NT,
-		LT,
-		FT,
+		PT,
 		RT,
-		HT
+		IT,
+		zT,
+		UT
 	],
 	isBusy: () => {
-		let e = zT.getState(), t = HT.getState();
-		return !!(t.workBusy || t.status === "deleting" || RT.getState().active || e.qianshiHistoryActive);
+		let e = BT.getState(), t = UT.getState();
+		return !!(t.workBusy || t.status === "deleting" || zT.getState().active || e.qianshiHistoryActive);
 	}
-}), WT = XC({
+}), GT = XC({
 	session: TT,
-	store: MT,
+	store: NT,
 	hostAdapter: rT,
-	foundationRuntime: NT,
-	memoryRuntime: zT,
-	peopleRuntime: FT,
-	recallRuntime: LT,
+	foundationRuntime: PT,
+	memoryRuntime: BT,
+	peopleRuntime: IT,
+	recallRuntime: RT,
 	isEnabled: sT.isEnabled,
 	sanitizerOptions: gT,
-	identityProjectionProvider: IT
-}), GT = tw({ memoryRuntime: zT });
-globalThis.addEventListener?.("beforeunload", WT.cleanup, { once: !0 }), globalThis.addEventListener?.("beforeunload", GT.cleanup, { once: !0 }), globalThis.addEventListener?.("beforeunload", BT.dispose, { once: !0 }), globalThis.addEventListener?.("beforeunload", VT.destroy, { once: !0 }), globalThis.addEventListener?.("beforeunload", UT.dispose, { once: !0 }), globalThis.qqj_v3_recall_interceptor = (e, t, n, r) => LT.intercept(e, t, n, r), vT = lv({
+	identityProjectionProvider: LT
+}), KT = tw({ memoryRuntime: BT });
+globalThis.addEventListener?.("beforeunload", GT.cleanup, { once: !0 }), globalThis.addEventListener?.("beforeunload", KT.cleanup, { once: !0 }), globalThis.addEventListener?.("beforeunload", VT.dispose, { once: !0 }), globalThis.addEventListener?.("beforeunload", HT.destroy, { once: !0 }), globalThis.addEventListener?.("beforeunload", WT.dispose, { once: !0 }), globalThis.qqj_v3_recall_interceptor = (e, t, n, r) => RT.intercept(e, t, n, r), vT = lv({
 	settings: sT,
 	apiTools: CT,
 	onPluginEnabledChange: async (e) => {
 		if (hT({ announce: !0 }), !e) {
-			VT.setEnabled(!1), BT.stop(), await RT.stop(), await FT.setEnabled(!1), await LT.setEnabled(!1);
-			let e = await zT.setEnabled(!1), t = await yT?.setEnabled(!1);
+			HT.setEnabled(!1), VT.stop(), await zT.stop(), await IT.setEnabled(!1), await RT.setEnabled(!1);
+			let e = await BT.setEnabled(!1), t = await yT?.setEnabled(!1);
 			return e ?? t;
 		}
-		VT.setEnabled(!0);
+		HT.setEnabled(!0);
 		let t = await yT?.setEnabled(e);
-		return await LT.setEnabled(e), t;
+		return await RT.setEnabled(e), t;
 	},
 	onStoryClockChange: (e) => hT({
 		...e,
 		announce: e?.readOnly !== !0
 	}),
-	onAutoHideChange: (e) => BT.applySettings(e),
+	onAutoHideChange: (e) => VT.applySettings(e),
 	onTimeEvolutionChange: async () => {
-		await RT.stop(), await RT.runBatch();
+		await zT.stop(), await zT.runBatch();
 	},
-	calendarContextProvider: () => ({
-		chatId: TT.identity()?.chatId ?? null,
-		calendar: ET()
-	}),
+	calendarContextProvider: ET,
 	onCalendarChange: async ({ chatId: e, calendar: t }) => {
 		let n = Ne(t);
 		if (!n) throw Error("特殊年请填写不含数字的纪年名称，例如启航。");
 		let r = TT.identity();
 		if (!e || r?.chatId !== e || r.hostChatId && r.hostChatId !== rT.snapshot().chatId) throw Error("当前聊天已变化，请重新设置历法。");
-		let i = zT.getState();
-		if (i.memoryWorkBusy || i.activeExtraction || i.activeCse || i.qianshiHistoryActive || RT.getState().active) throw Error("请等当前记忆任务完成后再设置历法。");
+		let i = BT.getState();
+		if (i.memoryWorkBusy || i.activeExtraction || i.activeCse || i.qianshiHistoryActive || zT.getState().active) throw Error("请等当前记忆任务完成后再设置历法。");
 		let a = sT.get().storyCalendars;
 		try {
 			sT.update({ storyCalendars: {
@@ -40262,60 +40273,60 @@ globalThis.addEventListener?.("beforeunload", WT.cleanup, { once: !0 }), globalT
 		} catch (e) {
 			throw sT.update({ storyCalendars: a }), e;
 		}
-		RT.invalidate(), await RT.refreshStatus({ force: !0 });
+		zT.invalidate(), await zT.refreshStatus({ force: !0 });
 	},
-	timeRuntime: RT,
+	timeRuntime: zT,
 	subscribeDialogContextChange: (e) => {
 		let t = iT(), n = t?.eventTypes?.CHAT_CHANGED;
 		return !n || !t?.eventSource?.on ? () => {} : (t.eventSource.on(n, e), () => t.eventSource.removeListener?.(n, e));
 	},
 	isSevenDaysAvailable: lT,
 	isSevenDaysLedgerInjectionEnabled: uT,
-	sourcePermissions: DT,
-	v3FoundationRuntime: zT,
-	v3RecallRuntime: LT,
-	peopleWorkspaceRuntime: FT,
-	chatMemoryManagement: HT,
-	storageManagement: UT,
+	sourcePermissions: OT,
+	v3FoundationRuntime: BT,
+	v3RecallRuntime: RT,
+	peopleWorkspaceRuntime: IT,
+	chatMemoryManagement: UT,
+	storageManagement: WT,
 	sessionStateProvider: () => TT.getState(),
 	prepareSession: () => TT.prepare(),
 	backendDiagnosticProvider: () => _T.getDiagnosticSnapshot(),
 	pluginVersion: m,
-	inlineRenderer: VT,
+	inlineRenderer: HT,
 	enableFab: !0
 }), yT = by({
 	session: TT,
 	aborters: [
 		ST,
 		CT,
-		FT
+		IT
 	],
 	isEnabled: sT.isEnabled,
 	getUi: () => vT,
 	onPrepared: async ({ isCurrent: e }) => {
-		e() && (await zT.start(), e() && await FT.refresh({ refreshMemory: !1 }));
+		e() && (await BT.start(), e() && await IT.refresh({ refreshMemory: !1 }));
 	}
 });
-var KT = iT();
+var qT = iT();
 hT({ announce: !0 }), yT.bind({
-	eventSource: KT?.eventSource,
-	eventTypes: KT?.eventTypes
-}), zT.bind({
-	eventSource: KT?.eventSource,
-	eventTypes: KT?.eventTypes
-}), LT.bind({
-	eventSource: KT?.eventSource,
-	eventTypes: KT?.eventTypes
+	eventSource: qT?.eventSource,
+	eventTypes: qT?.eventTypes
+}), BT.bind({
+	eventSource: qT?.eventSource,
+	eventTypes: qT?.eventTypes
 }), RT.bind({
-	eventSource: KT?.eventSource,
-	eventTypes: KT?.eventTypes,
-	foundationRuntime: NT
+	eventSource: qT?.eventSource,
+	eventTypes: qT?.eventTypes
+}), zT.bind({
+	eventSource: qT?.eventSource,
+	eventTypes: qT?.eventTypes,
+	foundationRuntime: PT
 });
 for (let e of ["CHAT_CHANGED", "GENERATION_STARTED"]) {
-	let t = KT?.eventTypes?.[e];
-	t && KT?.eventSource?.on?.(t, () => hT());
+	let t = qT?.eventTypes?.[e];
+	t && qT?.eventSource?.on?.(t, () => hT());
 }
 (async () => {
-	VT.setEnabled(sT.isEnabled()), await yT.start();
+	HT.setEnabled(sT.isEnabled()), await yT.start();
 })().catch((e) => console.warn("[qianqianjie] 身份或后端数据准备失败", e));
 //#endregion

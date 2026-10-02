@@ -49,7 +49,7 @@ test('存储面板渲染约数、刷新、自动开关和危险清理确认；�
   nodes = flatten(container); let clean = nodes.find(node => node.tag === 'button' && node.textContent === '清理旧版本');
   assert.equal(clean.disabled, false);
   await clean.fire('click'); assert.equal(f.calls.includes('cleanup'), false); assert.match(container.textContent, /已取消清理/);
-  assert.match(confirmOptions.body, /不可恢复.*有效摘要.*双丝网.*人物资料.*刻度.*聊天正文保留/);
+  assert.match(confirmOptions.body, /不可恢复.*有效摘要.*双丝网.*人物资料.*时间事项.*聊天正文保留/);
   nodes = flatten(container); const auto = nodes.find(node => node.tag === 'input'); auto.checked = true; auto.fire('change');
   assert.deepEqual(f.calls.at(-1), ['auto', true]); assert.match(container.textContent, /自动清理已开启/);
   confirm = true; clean = flatten(container).find(node => node.tag === 'button' && node.textContent === '清理旧版本'); await clean.fire('click');

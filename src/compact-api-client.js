@@ -36,7 +36,7 @@ const safeError = (code, status = 0, details = {}) => {
     config: 'API 配置不完整，请检查 URL 和 Key',
     timeout: 'API 请求超时，请检查网络或调高超时时间',
     auth: 'API 认证失败，请检查 Key 和模型权限',
-    'not-found': 'API 地址不存在，请检查 Base URL',
+    'not-found': 'API 404，请检查地址和模型名。',
     'rate-limit': 'API 请求过于频繁，请稍后再试',
     server: 'API 服务暂时异常，请稍后再试',
     network: '无法连接 API，请检查地址和网络',

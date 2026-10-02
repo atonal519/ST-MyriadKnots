@@ -1018,7 +1018,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if (samePreparedRoot(preparedReachable, rootResult)) current = preparedReachable;
     }
     current ??= await store.readReachable({ mode: 'runtime' });
-    if (current.status !== 'ready') throw errorWith('V3_MEMORY_PREFIX_CHANGED', '当前记忆图尚未收敛，目标楼依赖前缀无法复核。');
+    if (current.status !== 'ready') throw errorWith('V3_MEMORY_PREFIX_CHANGED', '记忆尚未完成核对，请刷新状态后重试。');
     if (operation.epoch !== epoch || operation.controller?.signal?.aborted) throw errorWith('V3_MEMORY_CANCELLED', '操作已取消。');
     return current;
   }
@@ -1119,7 +1119,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         const priorMatter = before.matters.find(matter => matter.matterId === override.matterId);
         const finalOrigin = priorMatter && finalEventById.get(priorMatter.origin.eventId);
         if (!finalOrigin || finalOrigin.matterId !== override.matterId) {
-          throw errorWith('QIANSHI_REJUDGE_MANUAL_LINE_CONFLICT', '重判会移动人工整线状态所锚定的原事项；请先人工解除或改判后再试，整组未提交。');
+          throw errorWith('QIANSHI_REJUDGE_MANUAL_LINE_CONFLICT', '整组未保存：人工状态与整理结果冲突。可恢复自动判断后重试。');
         }
       }
     }
@@ -1328,7 +1328,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }
     }
     if (operation.qianshiTextEdit && qianshiRejected && !operation.qianshiTextEdit.manualAction) {
-      throw errorWith('QIANSHI_TEXT_EDIT_RELATION_CONFLICT', '这条事件带有旧审核关系；修改文字会使关系失去对应依据，首版暂不能编辑。原记录保持不变。');
+      throw errorWith('QIANSHI_TEXT_EDIT_RELATION_CONFLICT', '旧版待核对事件暂不能编辑，原记录保留。');
     }
     if (!operation.qianshiRejudge) revisionReplacements = [revisionReplacement];
     for (const value of revisionReplacements) memoryByFloor.set(value.floorId, value);
@@ -3026,7 +3026,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         ['pending', 'new'].includes(candidate.decision) && candidate.event?.id === event.id
         && qianshiTextEventSignature(candidate.event) === qianshiTextEventSignature(event)
         && candidate.relations?.length > 0);
-      if (!manualAction && sameReviewCandidate) throw errorWith('QIANSHI_TEXT_EDIT_RELATION_CONFLICT', '这条事件带有旧审核关系；修改文字会使关系失去对应依据，首版暂不能编辑。原记录保持不变。');
+      if (!manualAction && sameReviewCandidate) throw errorWith('QIANSHI_TEXT_EDIT_RELATION_CONFLICT', '旧版待核对事件暂不能编辑，原记录保留。');
       const nowValue = nowIso(now), priorAudit = floorProvenance(reachable)[old.floorId] ?? {};
       const qianshiDelta = clone(old.qianshiDelta);
       const eventIndex = qianshiDelta.events.findIndex(item => item.id === eventId);
