@@ -9,8 +9,8 @@ export const DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT = [
   '日期与时间的表达方式应与当前故事背景及正文保持一致。沿用正文已有的时间写法，不因示例而改变格式。',
   '格式示例（仅示意字段结构，不构成剧情事实；请替换为本楼实际内容）：',
   '  已知故事年份：<!-- QQJ-start | date=大陆历1686年10月4日 | weekday=周二 | time=15:30 -->正文<!-- QQJ-end | date=大陆历1686年10月4日 | weekday=周二 | time=16:00 -->',
-  'start 与 end 都必须同时填写 date、weekday、time；weekday 只能使用周一至周日。正文或可靠故事时间依据明确给出年份时，start 与 end 沿用该年份和正文时间写法；跨年或倒叙按本楼正文及可靠时间依据记录。没有可靠年份时不要补写年份或猜算跨年日期；没有可靠日期时保留不确定表达，不用系统或服务器现实年份填补。世界书中的日期和时间要求仍须完整执行，QQJ 不替代、不合并、不改写它们。',
-  '通常以上一楼 end 为参考推进本楼时间；若本楼没有可用参考，按当前剧情设定合理填写。除这两个注释外，不要在正文中讨论 QQJ。',
+  'start 与 end 都必须同时填写 date、weekday、time；有可靠故事依据时 weekday 使用周一至周日，没有依据时写“未知”，不凭日期或现实时间猜星期。正文或可靠故事时间依据明确给出年份时，start 与 end 沿用该年份和正文时间写法；跨年或倒叙按本楼正文及可靠时间依据记录。没有可靠年份时不要补写年份或猜算跨年日期；没有可靠日期时保留不确定表达，不用系统或服务器现实年份填补。世界书中的日期和时间要求仍须完整执行，QQJ 不替代、不合并、不改写它们。',
+  '通常以上一楼 end 为参考推进本楼时间；无可用参考时保留当前剧情能确认的时间，不能确认的字段写“未知”。除这两个注释外，不要在正文中讨论 QQJ。',
 ].join('\n');
 
 const text = value => typeof value === 'string' ? value : '';
@@ -31,7 +31,10 @@ export function normalizeStoryClockReferenceTags(value) {
 export function parseClockFields(raw, calendar = null) {
   const value = text(raw).trim();
   const date = field(value, 'date');
-  const weekday = field(value, 'weekday|星期');
+  const weekdayText = field(value, 'weekday|星期');
+  // 显式未知不否定已知日期与钟点；缺字段或非法星期仍是残缺戳。
+  const weekdayUnknown = /^(?:未知|未明确|未明|不详)$/u.test(weekdayText ?? '');
+  const weekday = weekdayUnknown ? null : weekdayText;
   const time = field(value, 'time');
   const weekdayValid = /^(?:周|週|星期|礼拜|禮拜)[一二三四五六日天]$/u.test(weekday ?? '');
   const normalizedTime = String(time ?? '').replace(/[０-９]/gu, char => String(char.charCodeAt(0) - 0xFF10)).replace(/：/gu, ':');
@@ -50,7 +53,7 @@ export function parseClockFields(raw, calendar = null) {
       : gregorianYear ? new Date(Date.UTC(Number(gregorianYear), month, 0)).getUTCDate() : 31
     : 0;
   const dateValid = Boolean(date) && (!numericDate || month >= 1 && month <= 12 && day >= 1 && day <= maxDay);
-  return Object.freeze({ raw: value, date, weekday, time, complete: Boolean(dateValid && weekdayValid && timeValid) });
+  return Object.freeze({ raw: value, date, weekday, time, complete: Boolean(dateValid && (weekdayValid || weekdayUnknown) && timeValid) });
 }
 
 function namespaceCandidate(source, namespace, calendar) {

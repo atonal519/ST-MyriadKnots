@@ -1,5 +1,6 @@
 import { parseJsonOutput } from '../compact-api-client.js';
 import { calendarKey, fixedCalendarDate } from './calendar-rules.js';
+import { projectTime } from './time-engine.js';
 
 const clean = (value, maximum = 4000) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, maximum);
 const ANNUAL_WORDS = /生日|诞辰|誕辰|忌日|周年|週年|纪念日|紀念日|每年|每逢|年年/u;
@@ -46,18 +47,18 @@ export function buildAnnualSettingSources({ people = [], userPersona = null } = 
 
 const validMonthDay = (month, day) => Number.isInteger(month) && month >= 1 && month <= 12 && Number.isInteger(day) && day >= 1 && day <= DAYS[month - 1];
 function ordinaryMonthDay(value, calendar = null) {
-  let raw = clean(value, 300).normalize('NFKC').replace(/^每年\s*/u, '').trim();
-  if (calendar?.prefix && raw.startsWith(calendar.prefix)) raw = raw.slice(calendar.prefix.length).trim();
+  const raw = clean(value, 300).normalize('NFKC').replace(/^每年\s*/u, '').trim();
+  if (calendar) {
+    // 已确认历法与正文共用日期解析，保留原文；不借当前锚点把相对词当年度日期。
+    const parsed = projectTime(raw, null, { calendar });
+    return calendarKey(parsed.calendar) === calendarKey(calendar) && Number.isInteger(parsed.month) && Number.isInteger(parsed.monthDay)
+      ? { month: parsed.month, day: parsed.monthDay } : null;
+  }
   if (/[历曆紀纪闰閏]/u.test(raw.replace(/^(?:公元|公历|公曆|西历|西曆)\s*/u, ''))) return null;
-  const full = calendar
-    ? raw.match(/^(?:(?:公元|公历|公曆|西历|西曆)\s*)?(?:[\d〇零一二三四五六七八九十百千万]+[-/.年])?(\d{1,2}|春|夏|秋|冬)[-/.月](\d{1,2})(?:日|号)?$/u)
-      // 年度日期也接受四月制常用的“每年春1日”，不擅自用于十二月制。
-      ?? (calendar.months === 4 ? raw.match(/^(?:(?:公元|公历|公曆|西历|西曆)\s*)?(?:[\d〇零一二三四五六七八九十百千万]+年\s*)?(春|夏|秋|冬)\s*(\d{1,2})(?:日|号|號)?$/u) : null)
-    : raw.match(/^(?:(?:公元|公历|公曆|西历|西曆)\s*)?(?:\d{1,4}[-/.年])?(\d{1,2})[-/.月](\d{1,2})(?:日|号)?$/u);
+  const full = raw.match(/^(?:(?:公元|公历|公曆|西历|西曆)\s*)?(?:\d{1,4}[-/.年])?(\d{1,2})[-/.月](\d{1,2})(?:日|号)?$/u);
   if (!full) return null;
-  if (calendar?.months === 12 && /春|夏|秋|冬/u.test(full[1])) return null;
-  const month = ({ 春: 1, 夏: 2, 秋: 3, 冬: 4 })[full[1]] ?? Number(full[1]), day = Number(full[2]);
-  return calendar ? fixedCalendarDate(null, month, day, calendar) ? { month, day } : null : validMonthDay(month, day) ? { month, day } : null;
+  const month = Number(full[1]), day = Number(full[2]);
+  return validMonthDay(month, day) ? { month, day } : null;
 }
 
 export function compileAnnualSettingResponse(response, prepared) {

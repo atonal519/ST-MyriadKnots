@@ -36,6 +36,39 @@ test('每来源恰好一个结果才留痕，合法空结果可保存且坏来�
   assert.deepEqual(partial.succeeded.map(row => row.sourceKey), ['one']); assert.equal(partial.errors[0].sourceKey, 'two');
 });
 
+test('确认历法后年度中文日期与正文共用解析，原文、去重和未知跨年保持', () => {
+  const cases = [
+    { calendar: { months: 4, prefix: '' }, current: '夏八日', originalDate: '每年夏十日', distance: 2 },
+    { calendar: { months: 4, prefix: '启航' }, current: '启航387年夏八日', originalDate: '启航五年夏初十日', distance: 2 },
+    { calendar: { months: 12, prefix: '开元' }, current: '开元387年一月二日', originalDate: '开元五年二月十六日', distance: 45 },
+    { calendar: { months: 4, prefix: '' }, current: '夏八日', originalDate: '每年夏三十一日', distance: null },
+    { calendar: { months: 12, prefix: '' }, current: '2月8日', originalDate: '每年夏十日', distance: null },
+    { calendar: { months: 4, prefix: '' }, current: '冬三十日', originalDate: '每年春一日', distance: null },
+    { calendar: { months: 4, prefix: '' }, current: '夏八日', originalDate: '每年明天', distance: null },
+    { calendar: { months: 4, prefix: '' }, current: '夏八日', originalDate: '每年夏十日左右', distance: null },
+    { calendar: { months: 4, prefix: '启航' }, current: '启航夏八日', originalDate: '公元2026年2月10日', distance: null },
+  ];
+  for (const { calendar, current, originalDate, distance } of cases) {
+    const records = [{ sourceKey: 'birthday', fingerprint: 'fp', subjectEntityId: PERSON, subjectName: '阿岚', items: [
+      { category: 'birthday', label: '生日', originalDate, note: '' },
+    ] }];
+    const before = structuredClone(records);
+    const currentTime = projectTime(current, null, { calendar });
+    const result = projectAnnualSettings(records, currentTime);
+    assert.equal(result.items[0].distance, distance, originalDate);
+    assert.equal(result.items[0].originalDate, originalDate);
+    assert.deepEqual(records, before, '只重新投影，不修改已保存原日期');
+    if (distance === 2) {
+      const dueTime = projectTime(`${calendar.prefix}${currentTime.year === null ? '' : `${currentTime.year}年`}夏十日`, null, { calendar });
+      assert.equal(projectAnnualSettings(records, currentTime, [{ type: 'deadline', subjectEntityId: PERSON, label: '生日', dueTime }]).reminders.length, 0);
+    }
+  }
+  const unconfirmed = projectAnnualSettings([{ sourceKey: 'birthday', subjectName: '阿岚', items: [
+    { category: 'birthday', label: '生日', originalDate: '每年夏十日' },
+  ] }], projectTime('夏八日'));
+  assert.equal(unconfirmed.items[0].distance, null, '没有确认四月制时不猜季节的月长');
+});
+
 test('年度设定接受唯一 JSON 前导说明与单一代码栅栏', () => {
   const prepared = { sources: [{ id: 'S1', sourceKey: 'one', fingerprint: 'fp1', subjectEntityId: PERSON, subjectName: '阿岚', field: 'birthday' }] };
   const response = { textData: 'Here is the JSON:\n```json\n{"sources":[{"sourceId":"S1","items":[]}]}\n```' };

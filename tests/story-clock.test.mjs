@@ -39,6 +39,22 @@ test('默认 QQJ，且 QQJ、SDC、旧 myknots 与星期别名均能读成完整
   assert.equal(parseClockFields('date=10月4日 | 星期=星期三 | time=辰时').complete, true);
 });
 
+test('显式未知星期保留完整日期钟点，不猜星期且不接受缺字段或非法值', () => {
+  const stamped = pair('QQJ', '春20日 | weekday=未知 | time=10:00', '春20日 | weekday=未知 | time=10:30');
+  const calendar = { months: 4, prefix: '' };
+  const parsed = parseSharedStoryClock(stamped, calendar);
+  assert.equal(parsed.complete, true);
+  assert.equal(parsed.endMeta.weekday, null);
+  assert.equal(resolveStoryClock(stamped, '', calendar).text, '春20日 10:30');
+  assert.equal(parseClockFields('date=春20日 | time=10:30', calendar).complete, false);
+  assert.equal(parseClockFields('date=春20日 | weekday=周八 | time=10:30', calendar).complete, false);
+  assert.equal(parseClockFields('date=2月31日 | weekday=未知 | time=10:30', calendar).complete, false);
+  assert.equal(parseClockFields('date=春20日 | weekday=未知 | time=99:99', calendar).complete, false);
+  const conflict = parseSharedStoryClock(`${stamped}${pair('SDC', '春20日 | weekday=周一 | time=10:00', '春20日 | weekday=周一 | time=10:30')}`, calendar);
+  assert.equal(conflict.ambiguous, true, '未知与有值并存仍保留冲突边界，不静默选一个星期');
+  assert.equal(conflict.endMeta.weekday, null);
+});
+
 test('生产 peer 状态只在已发现、未被宿主禁用且两级开关开启时生效', () => {
   const id = 'third-party/ST-SevenDaysCal', base = { extensionNames: [id], disabledExtensions: [], extensionSuffix: '/ST-SevenDaysCal', peerSettings: { pluginEnabled: true, storyClockEnabled: true, storyClockPrompt: '残留自定义' } };
   assert.deepEqual(extensionStoryClockState(base), { active: true, custom: true });

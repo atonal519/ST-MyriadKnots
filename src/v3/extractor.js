@@ -12,7 +12,7 @@ import { readMemoryTagBlocks, stripMemoryTagBlocks } from '../memory-content-san
 import { projectTime } from './time-engine.js';
 
 export const EXTRACTOR_SCHEMA_VERSION = 3;
-export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-24';
+export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-25';
 export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-3/semantic-compiler-10`;
 const ENTITY_TYPES = ['person', 'group', 'organization', 'place', 'object', 'creature', 'concept', 'unknown'];
 const MENTION_KEY = Object.freeze({ type: 'string' });
@@ -92,7 +92,7 @@ export const EXTRACTOR_OUTPUT_CONTRACT = JSON.stringify(EXTRACTOR_RESPONSE_SCHEM
 
 export const DEFAULT_EXTRACTOR_GUIDANCE = `你是“千千结”的剧情语义记录员。完整阅读 canonicalContent 和 precedingUserInput，用浅层 JSON 说清这一轮发生了什么。
 
-summary 应按本楼实际信息量完整记录，不强迫压成一句。可以分段，并按发生顺序说明人物做了什么、对象是谁、事情怎样经过以及结果如何；原因只在正文明确时写。保留会改变剧情走向或人物理解的关键对话含义、约定与条件、数字、物品或信息的归属、承诺、伏笔和未决事项。明确区分意图、尝试与完成，传闻与事实，以及只属于特定人物的私密思想。简短楼可以简短，复杂楼不要为了短而漏掉事件；在完整保留关键事实的前提下去掉重复与无助于记忆的叙述修饰。事实、人物和事件不得补造；本楼没有明确时间时，可结合 previousFloorContext 与本楼叙事合理推定具体或相对时间，没有足够线索仍可写“时间未明确”。不要为了填满字段而编造。`;
+summary 应按本楼实际信息量完整记录，不强迫压成一句。可以分段，并按发生顺序说明人物做了什么、对象是谁、事情怎样经过以及结果如何；原因只在正文明确时写。保留会改变剧情走向或人物理解的关键对话含义、约定与条件、数字、物品或信息的归属、承诺、伏笔和未决事项。明确区分意图、尝试与完成，传闻与事实，以及只属于特定人物的私密思想。简短楼可以简短，复杂楼不要为了短而漏掉事件；在完整保留关键事实的前提下去掉重复与无助于记忆的叙述修饰。`;
 
 export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
 1. canonicalContent 是目标 AI 楼正文；precedingUserInput 是该 AI 楼紧邻前方、按时间正序冻结的连续用户输入，也是本轮剧情事实来源。用户输入中实际写出的动作、台词、已经发生的剧情和承诺即使未被 AI 复述，也要纳入 summary 与对应结构字段。作者纠正仍按作者纠正理解；未来要求、写作指令或计划不能写成已经发生；括号内容按语义判断，不机械删除。payload.storyClock 若存在，是同一楼原始正文中的隐藏时间线索；标准 start/end 与 canonicalContent 中的明确时间是本楼最高时间锚。referenceText 来自目标楼原文的时间参考标签，可包含架空纪年、范围或不确定表达，必须保留原语义，不能擅自拆成精确 start/end。payload.previousStoryClock 是目标楼之前最近一楼的正文时间参照；它的 referenceText 也只属于前楼。payload.previousFloorContext 是最近一份已保存前楼记忆的时间与摘要末段。两种前楼信息都只是衔接参照，不能直接冒充本楼事实。已知人物和用户身份只用于判断“这个称谓是谁”，不能证明本楼发生过任何事。
@@ -102,7 +102,7 @@ export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
 5. summary 必须是有信息的本楼总结，最多 4000 字符。people、time、locations 也要分别检查并提取：正文有依据时写出，没有依据时可留空；不要为了填字段猜人、猜地点或拿现实日期补故事日期。正文或可靠故事时间锚已有故事年份或纪年时，summary、time，以及 qianshi 的 storyTime 与 scheduledTime 中相关的时间表达都必须保留该年份或纪年；跨年只按故事依据记录。回忆、约定日期和年份未知的时间不得无依据套用当前故事年或现实年份，只有月日或相对时间时原样保留。时间是唯一允许合理推定的例外：本楼没有明确时间锚时，可结合 previousFloorContext、previousStoryClock 与本楼叙事，推定“同日稍后”“次日清晨”等相对时间，或在线索足够时推定合理的具体故事时间；必须标明合适的 kind 与 precision。但遇到特殊命名月份跨月，或只有月日且先后需要跨年才能成立时，只保留原文与明确先后语义，不推算或补写具体日期。没有足够线索时可留空或写“时间未明确”。推定时间不能附带正文没有的事件、人物、因果或结果。
 
 【固定输出边界】
-1. 只输出语义，不输出 UUID、记录 ID、楼层指针、哈希、create/update/delete 操作、mentionKey、普通 entityKey 或证据坐标。例外只有三类本次请求局部键：people.sameAsEntityKey 只可逐字复制 payload.knownPeople 中确认同一身份的 catalog-N；qianshi.events[].key 必须按当前 events 数组顺序填写 event-1、event-2 等局部编号，不能填写标题；qianshi.events[].links[].candidateKey 只可逐字复制 payload.qianshiCandidates 中可用的 candidate-N。不得自造、猜测或输出其他内部键。
+1. 只输出语义，不输出 UUID、记录 ID、楼层指针、哈希、create/update/delete 操作、mentionKey、普通 entityKey 或证据坐标。允许以下本次请求局部键：people.sameAsEntityKey 只可逐字复制 payload.knownPeople 中确认同一身份的 catalog-N；qianshi.events[].key 必须按当前 events 数组顺序填写 event-1、event-2 等局部编号，不能填写标题；qianshi.events[].links[].candidateKey 只可逐字复制 payload.qianshiCandidates 中可用的 candidate-N。聚合请求还须在 evidence、exactQuotes 和 qianshi.events 中填写 sourceFloorKey，逐字复制 payload.sourceFloors 中对应成员的 floorKey；这只是来源标记，不是数据库楼层 ID。不得自造、猜测或输出其他内部键。
 2. payload.userIdentity.displayName 非空时，summary 及其他语义描述必须使用这个实际显示名；{{user}} 只可作为 canonicalContent、precedingUserInput 或 aliases 中的输入别名，不得原样写入生成的语义文本。exactQuotes.exactText、承诺原话及证据引文必须逐字照抄相应来源，不得因这条规则改写。原句来自用户输入时，可在相应条目或 exactQuotes 对象中写 source:"precedingUserInput"；来自 AI 正文时可写 source:"canonicalContent"。只提示来源类别，不要输出消息序号或证据坐标。
 3. people 只写人能读懂的姓名、别名和角色。entityKind=individual 表示单人，entityKind=group 表示正文暂时只能整体辨认的多人集合；缺省按 individual 兼容。已知同一身份时优先填写 sameAsEntityKey；否则只可依据同类型的完整姓名或有效别名唯一精确对应，不得用相似、包含或模糊匹配。群体 aliases 只收整体称谓，不能把成员姓名塞成群体别名；成员能分别辨认时分别列 individual，无法辨认时不要编造个体。“别人”“客户”等泛称通常不是稳定人物别名。当正文中的“你”、{{user}} 或用户姓名指向宿主用户时，role 写 user。被 actions、knowledge、informationTransfers、privateThoughts、commitments、exactQuotes、openLoops 或 cseSignals 引用的人物也要列入 people，人物字段使用 people 中的姓名或别名。
 4. people.presence 区分本人在场 present、远程参与 remote、仅被提及 mentioned、只有其私密认知 privateCognitionOnly；提及或推断不等于本人在场或知情，不确定时写 mentioned。
@@ -111,9 +111,9 @@ export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
 7. knowledge 用于正文明确呈现的观察或事实：subject 是事实关联的人物（无明确人物可留空），kind 区分身体、伤势、物品、环境、情境或其他；某人得知了什么应写 informationTransfers，只属于人物内心的内容应写 privateThoughts。cseSignals 只记录正文支持的人物情绪、边界、冲突/和解、脆弱、信任/背叛、重复模式、关系定义或持续状况等状态信号，不要把普通剧情事实都改写成状态信号。
 8. exactQuotes 只在措辞确有长期保留价值且原句实际出现在 canonicalContent 或 precedingUserInput 时填写；可直接写原句字符串，也可写含 exactText、kind、speaker、whyPreserve、source 的对象。能确认说话人时应写 speaker，以保留原句归属；不能确认时不要猜。若相同原句同时出现在不同来源，必须写 source，程序会在实际原文中定位。openLoops 的每项包含 description 和可选 owners，用于确实尚未解决的目标、疑问或风险；已经完成的事项不要继续列为未决。
 9. summary 中可供后续记忆使用的关键事实若对应 events、actions、knowledge、informationTransfers、privateThoughts、commitments、openLoops、exactQuotes 或 cseSignals，也必须进入相应结构字段，不能因为 summary 已写过就省略。有正文依据的相关字段应充分记录；无内容的字段可以留空，不要为了满足数据库 Schema 凑数或编造。
-10. qianshi 是可选的剧情事件增量，按对后续叙事有用的事件单位整理，不按每个动作逐条拆分。同一 sourceFloorKey（来源楼）的同一场景中，属于同一事项的一串连续动作合并成一件完整事件；不得跨 sourceFloorKey 合并不同来源楼的事件。没有新增事实、关系变化或事项进展的重复日常不另立事件。新计划、事项的实质推进、完成、取消和其他关键变化仍须记录。只有计划、持续推进或需要跟踪状态的事项实例才把 matter 写为 true；带来新事实或变化的一次性事件可记录为 matter=false。object 只填写对后续叙事有用的具体物品，多个物品用“、”分隔；人物写入 people，地点或建筑及事件主题应在相应正文事件信息中表达，不要混入 object，也不要凭空补物品；没有合适物品时 object 写 null。相同物品或相似标题不代表同一事项。candidateType=matter 且指向真实持续事项的候选才可用于 progress；candidateType=event 是一次性事件，只能用于 context 或先后关系端点。正文明确推进旧事项时，在 links 中复制对应 candidate-N 并写 kind=progress；倒叙补充、回忆或只补充背景写 kind=context。无效 progress 必须留作部分错误，不能默默降级为 context 或新事项。storyTime 是事件在故事中发生的时间，scheduledTime 是约定、预计或到期时间，两者不可混写。events 为空数组表示已检查且本楼没有事件增量。order 必须使用对象数组，例如 [{"before":"event-1","after":"event-2","certainty":"explicit"}]；before 与 after 只能逐字复制本次 qianshi.events[].key 的 event-N，或在确实指向单一明确旧事件时复制 payload.qianshiCandidates 的 candidate-N；不能填写事件标题或描述。order 只写正文或可靠时间锚明确支持的先后关系；未知、同日但先后不明或不可比较时不输出。不要输出因果、矛盾等未授权知识图谱关系。
+10. qianshi 是可选的剧情事件增量，按对后续叙事有用的事件单位整理，不按每个动作逐条拆分。同一 sourceFloorKey（来源楼）的同一场景中，属于同一事项的一串连续动作合并成一件完整事件；不得跨 sourceFloorKey 合并不同来源楼的事件。没有新增事实、关系变化或事项进展的重复日常不另立事件。新计划、事项的实质推进、完成、取消和其他关键变化仍须记录。只有计划、持续推进或需要跟踪状态的事项实例才把 matter 写为 true；带来新事实或变化的一次性事件可记录为 matter=false。object 只填写对后续叙事有用的具体物品，多个物品用“、”分隔；人物写入 people，地点或建筑及事件主题应在相应正文事件信息中表达，不要混入 object，也不要凭空补物品；没有合适物品时 object 写 null。相同物品或相似标题不代表同一事项。candidateType=matter 且指向真实持续事项的候选才可用于 progress；candidateType=event 是一次性事件，只能用于 context 或先后关系端点。正文明确推进旧事项时，在 links 中复制对应 candidate-N 并写 kind=progress；倒叙补充、回忆或只补充背景写 kind=context。每个事件最多关联一个旧事项候选（links 中最多一个 candidateKey）；同一叙事影响多个旧事项时，按事项分别写成独立事件，每个事件只链接对应的一个候选。无效 progress 必须留作部分错误，不能默默降级为 context 或新事项。storyTime 是事件在故事中发生的时间，scheduledTime 是约定、预计或到期时间，两者不可混写。events 为空数组表示已检查且本楼没有事件增量。order 必须使用对象数组，例如 [{"before":"event-1","after":"event-2","certainty":"explicit"}]；before 与 after 只能逐字复制本次 qianshi.events[].key 的 event-N，或在确实指向单一明确旧事件时复制 payload.qianshiCandidates 的 candidate-N；不能填写事件标题或描述。order 只写正文或可靠时间锚明确支持的先后关系；未知、同日但先后不明或不可比较时不输出。不要输出因果、矛盾等未授权知识图谱关系。
 
-千事状态分两层：优先用 status 表示本条进展后的整线状态、actionStatus 表示局部动作状态；局部 actionStatus=completed 不必然结束事项，整线可仍为 status=inProgress。兼容 lineStatus + status 时，lineStatus 是整线状态、status 是局部动作状态。后续独立活动只有在正文明确且未接续已有线时才另开新事项，不按人物、物品或标题相似度猜测接续。用户明确修订过的状态属于权威材料，必须据此记录，不要被模型旧状态覆盖。
+千事状态分两层：优先用 status 表示本条进展后的整线状态、actionStatus 表示局部动作状态；局部 actionStatus=completed 不必然结束事项，整线可仍为 status=inProgress。后续独立活动只有在正文明确且未接续已有线时才另开新事项，不按人物、物品或标题相似度猜测接续。用户明确修订过的状态属于权威材料，必须据此记录，不要被模型旧状态覆盖。
 
 参考结构：
 ${EXTRACTOR_OUTPUT_CONTRACT}
@@ -1169,7 +1169,8 @@ export async function normalizeExtractorResponse(options) {
   const memoryWithQianshi = validateFloorMemory({ ...normalized.memory, qianshiDelta }, { expectedChatId: options.floor.chatId });
   const withQianshi = Object.freeze({ ...normalized, memory: memoryWithQianshi });
   const clock = options.envelope?.request?.payload?.storyClock;
-  const complete = clock?.complete && clock.start?.date && clock.start?.weekday && clock.start?.time && clock.end?.date && clock.end?.weekday && clock.end?.time;
+  // 时间戳已校验星期字段；显式未知不降低已确认日期和钟点的精度。
+  const complete = clock?.complete && clock.start?.date && clock.start?.time && clock.end?.date && clock.end?.time;
   const pairs = Array.isArray(clock?.pairs) && clock.pairs.length ? clock.pairs : complete ? [{ start: clock.start, end: clock.end }] : [];
   if (!pairs.length && withQianshi.memory.chronology.length) return withQianshi;
   const clockPart = value => [value?.date, value?.weekday, value?.time].filter(Boolean).join(' ');

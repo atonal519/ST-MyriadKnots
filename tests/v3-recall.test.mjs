@@ -5427,6 +5427,25 @@ test('runtime prompt 已 commit 后唯一一次完成态保存失败仍保留注
   assert.equal(harness.saves, 1, '复用不应再次保存');
 });
 
+test('runtime 诊断区分核验与宿主保存计时，不改变保存次数或历史回执格式', async t => {
+  let tick = Date.now();
+  t.mock.method(Date, 'now', () => tick);
+  const harness = createRuntimeHarness({
+    fingerprint: async value => { tick += 7; return fingerprintText(value); },
+    selector: input => { tick += 13; return selectRecall(input); },
+    saveChat: async () => { tick += 120000; },
+  });
+  const result = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  assert.equal(result.lastRecall.status, 'ready'); assert.equal(harness.saves, 1);
+  assert.equal(result.lastRecall.timings.receiptMs, 120000);
+  assert.ok(result.lastRecall.timings.commitMs >= 7);
+  assert.equal(result.lastRecall.timings.selectorMs, 13);
+  const stored = harness.userMessage.extra[RECALL_RECEIPT_KEY];
+  assert.equal(stored.timings.commitMs, undefined); assert.equal(stored.timings.receiptMs, undefined);
+  assert.equal(stored.requestDiagnosticId, undefined, '页面请求记录不进入历史回执');
+  assert.equal(stored.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
+});
+
 test('runtime 首次 completed save 挂起时同 user 新 interceptor 复用 session，迟到失败只回滚持久候选', async () => {
   let saveCalls = 0, rejectOldSave;
   const harness = createRuntimeHarness({
@@ -5437,6 +5456,8 @@ test('runtime 首次 completed save 挂起时同 user 新 interceptor 复用 ses
   });
   const oldRun = harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   while (!rejectOldSave) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(harness.runtime.getState().activeRecall.phase, 'receipt', '只补计时，仍按原合同等待宿主保存');
+  assert.equal(harness.runtime.getState().lastRecall, null);
   const newResult = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   assert.equal(newResult.lastRecall.status, 'ready');
   assert.equal(newResult.lastRecall.reusedReceipt, true);

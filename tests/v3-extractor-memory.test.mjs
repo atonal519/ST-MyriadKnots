@@ -992,7 +992,7 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assert.equal(call.parseMode, 'semantic');
   assert.equal(Object.hasOwn(call, 'jsonSchema'), false);
   assert.match(EXTRACTOR_SYSTEM_PROMPT, /people、time、locations 也要分别检查并提取/);
-  assert.match(DEFAULT_EXTRACTOR_GUIDANCE, /本楼没有明确时间时.*previousFloorContext.*合理推定具体或相对时间/);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /本楼没有明确时间锚时.*previousFloorContext.*推定/);
   assert.match(call.systemPrompt, /object 只填写对后续叙事有用的具体物品，多个物品用“、”分隔/u);
   assert.match(call.systemPrompt, /人物写入 people，地点或建筑及事件主题应在相应正文事件信息中表达/u);
   assert.match(call.systemPrompt, /不要混入 object，也不要凭空补物品；没有合适物品时 object 写 null/u);
@@ -3255,6 +3255,23 @@ test('同楼多段故事时间逐段生成稳定 chronology，完整区间不被
   const first = await direct(response, { storyClock: payload.storyClock });
   const second = await direct(response, { storyClock: payload.storyClock });
   assert.deepEqual(first.memory.chronology.map(item => item.itemId), second.memory.chronology.map(item => item.itemId));
+});
+
+test('未知星期时间戳沿提取保存保留准确区间，模型时间不能替换可靠日期钟点', async () => {
+  const h = harness({ initialChat: [user('继续'), assistant('<!-- QQJ-start | date=10月30日 | weekday=未知 | time=12:45 -->原楼正文。<!-- QQJ-end | date=10月30日 | weekday=未知 | time=13:10 -->'), assistant('确认稳定。')],
+    utility: () => ({ jsonData: { summary: '原楼摘要。', time: [{ sourceText: '错误时间', description: '不应保留' }] } }) });
+  await h.runtime.start();
+  await h.runtime.extractFloor(h.runtime.getState().floors[0].floorId, { analyzeState: false });
+  const payload = JSON.parse(h.calls.find(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).taskMessages[0].content).payload;
+  assert.equal(payload.storyClock.complete, true);
+  assert.equal(payload.storyClock.end.weekday, null);
+  const memory = h.runtime.getState().floors[0].memory;
+  assert.equal(memory.chronology[0].time.precision, 'exact');
+  assert.equal(memory.chronology[0].time.sourceText, '10月30日 12:45 → 10月30日 13:10');
+  const legacyShape = structuredClone(payload.storyClock);
+  delete legacyShape.pairs;
+  const normalized = await direct({ summary: '摘要。' }, { storyClock: legacyShape });
+  assert.equal(normalized.memory.chronology[0].time.precision, 'exact', '没有 pairs 的完整旧结构也接受显式未知星期');
 });
 
 test('CSE 分析期间 pending-only 刷新不推进正式 root，假模型结果仍按原守卫提交', async () => {

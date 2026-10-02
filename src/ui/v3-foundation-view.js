@@ -1353,6 +1353,10 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       : record.restoredReceipt
         ? `历史原始耗时：${Number.isFinite(timings?.totalMs) ? `总等待 ${Number(timings.totalMs).toFixed(1)} ms · ` : ''}${Number.isFinite(timings?.selectorMs) ? `选材总等待 ${Number(timings.selectorMs).toFixed(1)} ms · ` : ''}${selectorBreakdown}${Number.isFinite(timings?.sourceMs) ? ` · 读取 ${Number(timings.sourceMs).toFixed(1)} ms` : ''}`
         : timings ? `${Number.isFinite(timings.totalMs) ? `本轮召回等待 ${Number(timings.totalMs).toFixed(1)} ms · ` : ''}${Number.isFinite(timings.selectorMs) ? `选材总等待 ${Number(timings.selectorMs).toFixed(1)} ms · ` : ''}${selectorBreakdown}${Number.isFinite(timings.sourceMs) ? ` · 读取 ${Number(timings.sourceMs).toFixed(1)} ms` : ''}` : '未记录';
+    if (!record.restoredReceipt) {
+      if (Number.isFinite(timings?.commitMs)) timingCopy += ` · 核验 ${Number(timings.commitMs).toFixed(1)} ms`;
+      if (Number.isFinite(timings?.receiptMs)) timingCopy += ` · 保存 ${Number(timings.receiptMs).toFixed(1)} ms`;
+    }
     if (uncommitted && record.diagnosticAttempt) timingCopy = `选材与读取耗时来自第 ${record.diagnosticAttempt} 次尝试 · ${timingCopy}`;
     const filterReasons = (record.skipReasons ?? []).filter(value => value !== 'historySelectionFallback').map(skipReasonCopy);
     const selectorMetadataCopy = selector?.code ? `${selectorFailureCopy(selector.code)}${selector.httpStatus ? ` · HTTP ${selector.httpStatus}` : ''}${selector.formatStage ? ` · 格式阶段 ${selector.formatStage}` : ''}${selector.sourceStage ? ` · 阶段 ${selector.sourceStage}` : ''}${selector.finishReason ? ` · 结束原因 ${selector.finishReason}` : ''}${selector.sourceLabel && selector.sourceLabel !== '未命名 API' ? ` · 来源 ${selector.sourceLabel}` : ''}${selector.model && selector.model !== 'unknown' ? ` · 模型 ${selector.model}` : ''}${Number.isSafeInteger(selector.transportAttempts) ? ` · 网络尝试 ${selector.transportAttempts}` : ''}${Number.isSafeInteger(selector.requestCharacters) ? ` · 请求约 ${selector.requestCharacters} 字符 / ${selector.requestEstimatedTokens} token` : ''}` : '';
@@ -1375,8 +1379,19 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       event.preventDefault(); event.stopPropagation();
       const excluded = new Set(['召回旧楼', '当前人物状态', '人物状态历史变化']);
       const nodeCopy = node => node.children?.length ? Array.from(node.children).map(nodeCopy).filter(Boolean).join(' ') : node.textContent || '';
+      // 复制时读最新时间记录，才能包含回执显示之后发出的主楼请求；不附别轮或刷新前的记录。
+      const latest = recallRuntime?.getState?.();
+      const requests = Number.isSafeInteger(record.requestDiagnosticId) && latest?.lastRecall?.requestDiagnosticId === record.requestDiagnosticId
+        ? latest.requestDiagnostic : null;
+      const stamp = value => Number.isFinite(value) ? new Date(value).toISOString() : '未记录';
+      const requestCopy = !requests || requests.status === 'unavailable' ? ['请求计时：未记录（刷新后不可恢复）。']
+        : requests.status === 'unsupported' ? ['请求计时：浏览器不支持。']
+        : ['请求计时（UTC，仅 HTTP，可能含后台请求；首响应不代表模型首字）：',
+          ...(requests.requests ?? []).map((item, index) => `${index + 1}. ${item.label}：发起 ${stamp(item.startedAt)} · 发送 ${stamp(item.requestStartedAt)} · 首响应 ${stamp(item.responseStartedAt)} · 完成 ${stamp(item.finishedAt)}`),
+          ...(requests.droppedCount ? [`仅保留最近 64 条；较早 ${requests.droppedCount} 条已略去。`] : [])];
       const value = [`召回回执：${recallStatus}`, ...Array.from(details.children).filter(node => !excluded.has(node.children[0]?.textContent)).map(node => nodeCopy(node)),
         `实际注入：${record.restoredReceipt || record.legacyReadOnly ? '历史展示，不代表本轮' : record.injectionText && !uncommitted ? '有' : '无'}；旧楼 ${record.selectedFloors?.length ?? 0}，状态 ${record.selectedStates?.length ?? 0}，变化 ${record.selectedCseChanges?.length ?? 0}`,
+        ...requestCopy,
         ...(errorCode ? [`错误代码：${errorCode}`, `错误：${publicErrorMessage({ code: errorCode }, { fallback: '召回未完成，请按错误代码检查。' })}`] : []), ...(errorMetadataCopy ? [`安全错误诊断：${errorMetadataCopy}`] : [])].join('\n');
       copyFeedback.textContent = await copy(value, { local: true }); copyFallback.replaceChildren();
       if (copyFeedback.textContent !== '已复制。') { const input = element('textarea', 'v3-diagnostic-fallback qqj-recall-copy-fallback'); input.value = value; input.readOnly = true; input.setAttribute('aria-label', '召回回执诊断复制文本'); copyFallback.append(input); }

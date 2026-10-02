@@ -18,23 +18,19 @@ export const PEOPLE_WORKSPACE_RECORD_ID = 'v3-people-workspace';
 export const PEOPLE_WORKSPACE_SCHEMA_VERSION = 3;
 export const PEOPLE_PROFILE_INPUT_CHAR_BUDGET = 24000;
 
-export const DEFAULT_PROFILE_GUIDANCE = `你是“千千结”的人物基础资料整理员。只整理输入材料中有明确依据、适合长期建档的目标人物资料，不推测或续写剧情。
-
-人物卡和世界书属于明确设定；逐楼 history 中，普通单楼的 storyContent 是与该楼有效 summary 同次保存、按用户包裹符设置清洗后的正文；聚合多楼 history 可省略 storyContent，此时 summary、facts 及其中的 exactAnchors 原句是该范围提供的材料，不得猜测未提供的正文。facts 是按目标人物归属筛出的结构事实；CSE Core 是已有的人物分析，不自动等同作者明确设定。自动粗扫以 recentFloors 中按楼标记的清洗原文为材料，结合旧 AI 档案和人工资料判断是否有明确新增；主动重新整理只参考本次已选材料。长材料可能通过 sourceFragments 连续片段提供；单人主动重整会在一次请求中发送全部已选片段，分批整理路径则按批次累计，未出现的来源或字段不代表它们不存在。按目标人物和来源归属整理信息，不要把正文里其他人物的描写、不同人物、不同来源或彼此冲突的说法擅自拼成目标人物事实。遇到来源差异时不要输出核验说明或替作者裁决，只整理能够明确归属的稳定资料。
-
-priorContext 若存在，是用户导入的过去经历资料。只把其中明确属于目标人物、适合长期建档的信息作为参考；过去的短期状态不等于现在仍持续，existingProfile、当前 history 与 CSE 中明确出现的新变化优先。
-
-按基础信息、外貌、身份、性格与 NSFW 五类整理稳定资料。性别、年龄、生日没有明确依据时不要输出对应字段，外观年龄不能当作实际年龄。短期情绪、当前关系变化和一时应对不应写成固定人格。appearance 只填写无法归入细分外貌字段的必要补充，不重复五官、发型、体态、着装等已有内容；notes 只填写无法归入其他字段、仍值得长期保存的人物信息，不写来源说明、整理过程、核验过程、解释或模型想法。主动重新整理时，把原始人物卡、允许的世界书、当前有效历史摘要与结构事实及 CSE 作为资料来源，不使用上次 AI 档案；分批时只延续本轮已生成的 existingProfile。自动粗扫根据 recentFloors 中的原文补充稳定基础资料，旧 AI 档案与人工字段仅供对照；没有新增资料时省略字段。自动粗扫中的空字符串或空 aliases 一律表示无更新，不得清除现有档案；主动重新整理仅在材料明确要求删除旧资料且没有替代值时，才可返回空值。人工字段按当前存档原值及标记保留，不改写或迁移。`;
+export const DEFAULT_PROFILE_GUIDANCE = `你是“千千结”的人物基础资料整理员，只整理有明确依据、适合长期建档的目标人物资料。
+人物卡和世界书属于明确设定；CSE Core 是人物分析，不自动等同作者设定。来源冲突时不拼凑或替作者裁决，只整理能明确归属的稳定资料。
+按基础信息、外貌、身份、性格与 NSFW 五类整理。性别、年龄、生日无依据时省略，外观年龄不当实际年龄；短期情绪、当前关系变化和一时应对不固化为人格。appearance 只填写无法归入细分外貌字段的必要补充；notes 只填写其他字段容纳不了的长期资料，不写来源说明、整理过程、核验过程、解释或模型想法。`;
 
 const PROFILE_FIELD_GUIDE = PEOPLE_PROFILE_FIELDS
   .map(field => `${field}（${PEOPLE_PROFILE_LABELS[field]}）：${PEOPLE_PROFILE_DEFINITIONS[field]}`)
   .join('\n');
 
 export const PROFILE_FIXED_CONTRACT = `【固定人物资料合同】
-1. 只处理输入 people 中的目标人物。recentFloors、characterCard、allowedWorldInfo、history、cseCoreTraits、priorContext、existingProfile 与 manualProfile 是分开的来源；recentFloors 是最近稳定AI楼按楼标记的清洗原文，楼内注明片段的内容并非完整楼。普通单楼的 history.storyContent 是与对应楼有效 summary 同次保存的清洗正文。聚合多楼 history 可省略 storyContent，此时只根据 summary、目标相关 facts 及其中的 exactAnchors 原句整理，不得猜测未提供的正文。必须按目标相关事实判断归属，不得把正文中其他人物的描写写给目标人物，也不得把他人的私密认知当成目标人物资料。priorContext 标记为导入前情，只能作为过去经历背景，不是当前楼或当前状态。
+1. 只处理输入 people 中的目标人物。recentFloors、characterCard、allowedWorldInfo、history、cseCoreTraits、priorContext、existingProfile 与 manualProfile 是分开的来源；recentFloors 是最近稳定AI楼按楼标记的清洗原文，楼内注明片段的内容并非完整楼。普通单楼的 history.storyContent 是与对应楼有效 summary 同次保存的清洗正文。聚合多楼 history 可省略 storyContent，此时只根据 summary、目标相关 facts 及其中的 exactAnchors 原句整理，不得猜测未提供的正文。必须按目标相关事实判断归属，不得把正文中其他人物的描写写给目标人物，也不得把他人的私密认知当成目标人物资料。priorContext 标记为导入前情，只能作为过去经历背景，不是当前楼或当前状态；与现行资料冲突时，以当前 history、CSE 中明确的新变化及 existingProfile 为准。
 2. history.auxiliaryStateSnapshot 若存在，是对应楼当前分支当时已保存的只读变量快照，只作人物整理辅助。它可能同时包含多个人物、不完整或过时信息，不能整份归给目标人物，也不能当作人工字段或权威证据；与正文或用户明确事实冲突时以正文和用户明确事实为准。
 3. 只返回一个 JSON 对象，根对象必须包含 profiles 数组；profiles 每个输入人物恰好一项，且每项内部的 personKey 必须逐字使用输入中的键，不得新增、遗漏或合并人物。合法形状示例：{"profiles":[{"personKey":"person-1","name":"示例姓名"}]}。
-4. 每项除 personKey 外只返回需要新增或纠正的字段。有明确新值时返回正确的新值；没有新信息时省略字段，表示保留输入 existingProfile 的值。自动粗扫不得用空字符串或空 aliases 表示清除，空值表示无更新。单人主动重整的 existingProfile 为空且本次请求包含全部已选材料；分批整理时后批只包含本轮累计资料，上次 AI 档案中本轮未生成的字段不保留。只有材料明确要求删除旧资料且没有替代值时才返回空值。aliases 可返回字符串或字符串数组。不要返回 null、对象或其他错误类型。
+4. 每项除 personKey 外只返回需要新增或纠正的字段。有明确新值时返回正确的新值；没有新信息时省略字段，表示保留输入 existingProfile 的值。自动粗扫不得用空字符串或空 aliases 表示清除，空值表示无更新。单人主动重整的 existingProfile 为空且本次请求包含全部已选材料；分批整理时后批只包含本轮累计资料，上次 AI 档案中本轮未生成的字段不保留。只有材料明确要求删除旧资料且没有替代值时才返回空值。文本字段最多 20000 字符；aliases 可返回字符串或字符串数组，数组每项最多 500 字符、合并后最多 20000 字符。不要返回 null、对象或其他错误类型。
 5. sourceFragments 是长资料按顺序切出的连续来源片段；part/total 表示同一来源的连续位置。单人主动重整的一次请求包含本轮全部已选片段，应综合完整输入整理；分批整理时当前批可能只包含该来源的一部分，以 existingProfile 作为前批累计结果继续整理。不要把当前请求未出现的来源或字段当成不存在，也不要把局部片段当成完整人物档。
 6. manualProfile 和 manualFields 由保存层保护，不需要模型复制；不输出解释、剧情续写、数据库 ID 或 JSON 之外的内容。
 7. 自动粗扫每约十个新增稳定AI楼运行一次，输入为楼层标记的清洗原文；仅提取明确新增或重大变化的长期基础资料，例如稳定外貌、职业和身份。短期处境、换装和剧情状态不固化；无变化时该人物只返回 personKey。原文按最新楼优先提供，人工资料和旧档案仅作边界参考。

@@ -10,15 +10,28 @@ import { prepareQianshiCandidates, projectQianshiGraph } from './qianshi-domain.
 
 export function createTimeStore({ client }) {
   const BATCH_READ_CONCURRENCY = 16;
+  let cachedSnapshot = null, readEpoch = 0;
+  const pendingReads = new Map();
   const collection = chatId => `chat-${chatId}`;
   const readRecord = async (chatId, id) => {
     try { return await client.get(collection(chatId), id); }
     catch (error) { if (error?.status === 404) return { data: null, revision: 0 }; throw error; }
   };
-  async function read(chatId) {
+  async function readSnapshot(chatId) {
+    const token = readEpoch;
     const head = await readRecord(chatId, TIME_HEAD_ID);
-    if (!head.data) return { head: null, revision: 0, batches: [] };
+    if (!head.data) {
+      if (cachedSnapshot?.chatId === chatId && token === readEpoch) cachedSnapshot = null;
+      return { head: null, revision: 0, batches: [] };
+    }
     if (head.data.schemaVersion !== 1 || head.data.chatId !== chatId || !Array.isArray(head.data.batchIds)) throw new Error('时间记录头无效。');
+    // Every read confirms the mutable head. Supported edits append new batches,
+    // and permanent deletion publishes replacement IDs before deleting old ones;
+    // an unchanged head revision therefore owns the same confirmed batch snapshot.
+    if (cachedSnapshot?.chatId === chatId && cachedSnapshot.value.revision === head.revision && token === readEpoch
+      && JSON.stringify(cachedSnapshot.value.head.batchIds) === JSON.stringify(head.data.batchIds)) {
+      return { ...cachedSnapshot.value, head: head.data };
+    }
     const batches = [], batchRecords = [];
     const envelopes = new Array(head.data.batchIds.length);
     let cursor = 0, firstError = null;
@@ -36,10 +49,33 @@ export function createTimeStore({ client }) {
       if (!envelope.data || envelope.data.chatId !== chatId || envelope.data.schemaVersion !== 1) throw new Error('时间增量记录无效。');
       batches.push(envelope.data); batchRecords.push({ id: head.data.batchIds[index], revision: envelope.revision, data: envelope.data });
     }
-    return { head: head.data, revision: head.revision, batches, batchRecords };
+    const value = { head: head.data, revision: head.revision, batches, batchRecords };
+    if (token === readEpoch) cachedSnapshot = { chatId, value: structuredClone(value) };
+    return value;
   }
-  const putHead = (chatId, data, revision, signal) => client.put(collection(chatId), TIME_HEAD_ID, data, revision, { signal });
-  const putBatch = (chatId, data, signal) => client.put(collection(chatId), data.id, data, 0, { signal });
+  async function read(chatId) {
+    let pending = pendingReads.get(chatId);
+    if (!pending) {
+      pending = readSnapshot(chatId);
+      pendingReads.set(chatId, pending);
+    }
+    try { return structuredClone(await pending); }
+    finally { if (pendingReads.get(chatId) === pending) pendingReads.delete(chatId); }
+  }
+  function invalidate(chatId) {
+    readEpoch += 1;
+    if (!chatId || cachedSnapshot?.chatId === chatId) cachedSnapshot = null;
+    if (chatId) pendingReads.delete(chatId); else pendingReads.clear();
+  }
+  async function write(chatId, operation) {
+    // Invalidate on both sides, including failed/aborted writes. A late pre-write
+    // reader must neither refill the cache nor be shared by post-write consumers.
+    invalidate(chatId);
+    try { return await operation(); }
+    finally { invalidate(chatId); }
+  }
+  const putHead = (chatId, data, revision, signal) => write(chatId, () => client.put(collection(chatId), TIME_HEAD_ID, data, revision, { signal }));
+  const putBatch = (chatId, data, signal) => write(chatId, () => client.put(collection(chatId), data.id, data, 0, { signal }));
   async function requirePermanentDelete() {
     let health;
     try { health = await client.health?.(); }
@@ -53,7 +89,7 @@ export function createTimeStore({ client }) {
       error.code = 'QQJ_TIME_PERMANENT_DELETE_UNAVAILABLE'; throw error;
     }
   }
-  const removePermanent = (chatId, id, revision, signal) => client.removePermanent(collection(chatId), id, revision, { signal });
+  const removePermanent = (chatId, id, revision, signal) => write(chatId, () => client.removePermanent(collection(chatId), id, revision, { signal }));
   async function copyPrefix(sourceChatId, targetChatId, retainedFloors, signal) {
     const target = await read(targetChatId);
     if (target.head) return;
@@ -79,7 +115,7 @@ export function createTimeStore({ client }) {
       ...(source.head.currentReviewAttempt && floors.has(source.head.currentReviewAttempt.cutoffFloorId) && batches.some(batch => batch.currentReview) ? { currentReviewAttempt: source.head.currentReviewAttempt } : {}),
       ...(partial ? { lastRun: { status: 'partial', cutoffFloorId: partial.cutoffFloorId, cutoffAssistantSeq: partial.cutoffAssistantSeq, itemErrors: partial.itemErrors, message: '已保留部分成功事项；失败项可在后续新正文或手动补查时再试。' } } : {}) }, 0, signal);
   }
-  return Object.freeze({ read, putHead, putBatch, requirePermanentDelete, removePermanent, copyPrefix });
+  return Object.freeze({ read, putHead, putBatch, requirePermanentDelete, removePermanent, copyPrefix, invalidate });
 }
 
 export async function prepareTimeRequest(reachable, batches = [], options = {}) {
@@ -252,6 +288,9 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   };
   const notify = () => { const state = getState(); for (const listener of subscribers) try { listener(state); } catch { /* UI isolation */ } return state; };
   function invalidate() {
+    // Stopping or switching chats starts a new runtime epoch: do not join a
+    // pending store read from the old chat/session, even when its UUID is reused.
+    store?.invalidate?.();
     epoch += 1; active?.controller.abort(); startingController?.abort(); startingController = null; automatic = null; last = null; pendingDeletionCount = 0; projectionCache = null; pendingReceipt = null; statusKey = null; statusRead = null; trackedItems = null; stoppedItems = null; annualItems = null; qianshiReferences = null; itemsKey = null; coverage = null; clockContentChanged = false; historyAuthorization = null; onInvalidate(); notify();
   }
   async function stop() {

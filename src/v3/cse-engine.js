@@ -9,13 +9,13 @@ import { CSE_ISOLATION_CODES, CSE_VISIBILITIES, LATEST_CSE_CALIBRATION_VERSION, 
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey } from './entity-identity.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-24';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-25';
 export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-13';
 export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
 export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。完整阅读本楼正文，并结合结构化楼层记忆、人物此前状态与相关初始设定，分析人物在本楼结束时的状态。
 
-优先识别正文真正造成的变化，也保留有连续性价值的稳定状态；不要为了显得有变化而改写人物。关注人物的核心倾向、可长期演化的应对方式或关系状态、当前短期情境，以及人物面对不同对象时采取的不同态度和行为模式。长期核心、逐渐形成的适应模式与一时情绪要分层表达。处理短期信息时，不要仅按句中是否出现他人机械决定 toward；先判断这条主要说明人物现在怎样、处境如何，还是人物此刻怎样对待某人。关系反应可以由有明确指向的言语和行为表现，不要求正文直接说出态度。
+优先识别正文真正造成的变化，也保留有连续性价值的稳定状态；不要为了显得有变化而改写人物。关注人物的核心倾向、可长期演化的应对方式或关系状态、当前短期情境，以及人物面对不同对象时采取的不同态度和行为模式。长期核心、逐渐形成的适应模式与一时情绪要分层表达。
 
 按正文信息量决定详略。用清楚、具体、便于后续连续理解的短句说明状态，避免空泛形容、同义反复、好感度分数和无证据的心理诊断。新增或更新状态时，推荐用简短 reason 说明本次材料中支持判断的事实，不要为了补 reason 编造依据。`;
 
@@ -30,11 +30,11 @@ subjectRelevantEvidence 按 tracked subject 汇集角色相关条目，relationT
 
 previousState 按 subject 分列各人的 ownState，只说明对应人物自身的前态；这里展示的是合并身份后同一个人的有效状态，不要把合并前的旧名称或旧身份另算作另一人。authorialOtherStateContext 不重复 previousState 已提供的人物，并已按 visibility 排除 private 和 authorial 状态项，是其余人物的作者侧连续性参考。某条状态出现在这些材料中，不代表其他人物已经知道它。作者态推断与人物本人已知必须分开：observable 只用于正文中实际可观察的状态，private 只属于该人物的内心或明确知情，authorial 只作作者塑造参考。
 
-只可为输入中的 trackedSubjects 输出状态；trackedSubjects 是候选范围，不要求逐人补写，也不要求每个分类凑数。若本楼没有足够新依据，可省略该人物；若只支持某些分类，可省略其他分类，让编译器沿用旧状态。不要用“本楼未出现”“状态无变化”之类空话替换旧状态，也不要因为缺少证据而反推“不知道”。knownPeople 仅用于 toward 对象绑定，不代表他们本楼也要输出状态。
+只可为输入中的 trackedSubjects 输出状态；trackedSubjects 是候选范围，不要求逐人补写，也不要求每个分类凑数。不要用“本楼未出现”“状态无变化”之类空话替换旧状态，也不要因为缺少证据而反推“不知道”。knownPeople 仅用于 toward 对象绑定，不代表他们本楼也要输出状态。
 
 判断每条候选信息时，在内部依次问三个问题：第一，这条主要回答人物现在怎样、处境如何，还是此刻怎样对待某人？第二，另一人只是背景、原因或事件参与者，还是这项态度或相处反应的明确对象？第三，这里有两条独立且分别有正文依据的信息，需要拆开表达，还是同一信息的重复描述？只输出判断后的状态，不要输出思考过程、问题答案或分类解释。
 
-主要说明人物自身现状时不填写 toward；文本中心是人物针对某个明确已知人物的看法、态度或相处反应时，Adaptive 或 Situational 应填写 toward。关系反应可以通过明确指向对方的言语和行为表现，不需要直接说出态度；但不能只因一个行为有受事者就自动判为关系态度，也不能把行为一律排除出关系反应。物品摆放、自身身体状态等信息即使提到他人，也不能仅凭该提及变成关系态度。对各方使用同一判断标准。混合信息只在确有独立依据时拆分，不强制双栏填满，不重复同一事实，也不编造态度。private 只表示可见性，明确的私密态度仍可填写 toward，不能因私密而留空。previousState 中旧 toward 也必须按本楼证据审视，不得盲从；旧 toward 为空不妨碍本轮为有明确对象的状态填写 toward。本楼不足以更新相应分类时应省略该分类以保留旧状态，不要把旧状态改写成“未知”。自身状态或无法唯一判断对象时留空，不要求每项都有对象。单方 A→B 不得自动镜像成 B→A，也不能把某人的单方声称写成双方态度。Core 不使用 toward；一次关系反应也不能被拔高为 Core 或长期 Adaptive。Situational 只有在正文给出明确时间流逝时才可写 reasonableProgression，不能补造新事件。reason 是可选的简短解释；直接状态数组中的条目省略 reason 时，会标记为“未提供依据”。这不免除持续校准合同对 evidence 的要求，reason 也不能代替 evidence。不要输出数据库 ID。
+主要说明人物自身现状时不填写 toward；文本中心是人物针对某个明确已知人物的看法、态度或相处反应时，Adaptive 或 Situational 应填写 toward。关系反应可以通过明确指向对方的言语和行为表现，不需要直接说出态度；但不能只因一个行为有受事者就自动判为关系态度，也不能把行为一律排除出关系反应。物品摆放、自身身体状态等信息即使提到他人，也不能仅凭该提及变成关系态度。对各方使用同一判断标准。混合信息只在确有独立依据时拆分，不强制双栏填满，不重复同一事实，也不编造态度。private 只表示可见性，明确的私密态度仍可填写 toward，不能因私密而留空。previousState 中旧 toward 也必须按本楼证据审视，不得盲从；旧 toward 为空不妨碍本轮为有明确对象的状态填写 toward。没有新依据时不把旧状态改写成“未知”。自身状态或无法唯一判断对象时留空，不要求每项都有对象。单方 A→B 不得自动镜像成 B→A，也不能把某人的单方声称写成双方态度。Core 不使用 toward；一次关系反应也不能被拔高为 Core 或长期 Adaptive。Situational 只有在正文给出明确时间流逝时才可写 reasonableProgression，不能补造新事件。reason 是可选的简短解释；直接状态数组中的条目省略 reason 时，会标记为“未提供依据”。这不免除持续校准合同对 evidence 的要求，reason 也不能代替 evidence。不要输出数据库 ID。
 
 仅针对填写了 toward 的 Adaptive，text 直接写具体长期倾向，省略“在和某人相处过程中”“面对某人时”等仅重复 toward 对象、没有新增语义的套话开头。例如同一含义应写成“更愿意主动解释误会”，不要写成“在和人物乙相处过程中，更愿意主动解释误会”。必要的适用条件、第三人，以及本身有实际语义的对象名称仍应保留；不要为调整措辞增加证据、扩大长期程度、放宽 refine/evidence 合同，也不要把应 keep 的旧项强制改成 refine。
 
@@ -54,9 +54,9 @@ Core 以明确作者设定为锚，普通单楼情绪、动作或台词不足以
 currentUserInput 只在生成该 FloorMemory 时捕获到目标 AI 楼前方连续 user 输入时提供，可能包含一条或多条按时间正序冻结的原文。它可能是普通角色台词、动作、插件参考，也可能是作者明确校正；必须按语义区分，不能把整组输入一律当可信设定。evidence.source 必须逐字使用 evidenceSourceCatalog 中的 source；世界书使用其中的具体键，例如 worldbook:1，不填写书名或泛称 worldbook。quote 必须逐字存在于对应实际材料。userPersona 只支持用户本人，characterCard 只支持对应角色；worldbook 需判断人物归属。引用可定位不等于语义必然成立，仍须判断其是否真的支持操作。
 authorNote 是作者侧持续参考，其中的未来要求、写作风格或塑造方向不等于已经发生的事实、所有人物已经知情或人物的永久性格。它不能单独作为新增或改写 Core 的证据。
 
-Core/Adaptive 每类采用 review/additions 新协议，或沿用旧的直接 after-state 数组，不能同时使用两套。review 以 previousText（Adaptive 同名时再用 toward）精确指向旧项，action 只能是 keep、refine、remove；refine 还需 text。未提到项保留。新增项放 additions。review 中的 refine、remove，以及 additions 中的每个新增项，都必须给 evidence:[{source,quote}]；reason 可省略，keep 可不带 evidence。不要把 previousState、旧 reason 或 authorialOtherStateContext 写成 evidence source。
+Core/Adaptive 只用 review/additions 输出，不直接返回 core 或 adaptive 完整状态数组。review 以 previousText（Adaptive 同名时再用 toward）精确指向旧项，action 只能是 keep、refine、remove；refine 还需 text。未提到项保留。新增项放 additions。refine、remove 及每个新增项都必须给 evidence:[{source,quote}]；reason 可省略，keep 可不带 evidence。不要把 previousState、旧 reason 或 authorialOtherStateContext 写成 evidence source。
 
-省略人物或分类表示保留已有状态。直接输出的 adaptive、situational 数组表示该类在本楼结束时的完整结果；situational 中仍需持续关注者保留，已结束或仅剩历史流水者按上述规则移除或提炼。空数组表示明确清空该类，不要用它表示“没有新变化”；无足够依据更新整个类别时省略该类别。review 或 additions 中某类的空数组只表示没有相应操作。adaptive review 的 previousText 与 toward 必须按上文规则精确指向旧项。
+省略人物或分类表示保留已有状态。situational 是本楼结束时的完整列表：保留仍有当下影响的条目，清理已结束、被替代或只剩历史意义者；[] 表示有依据清空，没有足够依据更新时省略。review 或 additions 中某类的空数组只表示没有相应操作，不清空旧项；清除旧 Core/Adaptive 须逐项 remove 并给证据。
 
 返回一个实际分析结果的 JSON 对象。确无需要输出的状态变化时，返回 {"subjects":[]}；不要返回 JSON Schema、空对象、null 或格式说明。所有 JSON 字符串都必须使用标准 JSON 转义：字符串内容中的英文双引号写成 \\", 反斜杠写成 \\\\, 实际换行写成 \\n；evidence.quote 引用正文原句时也必须遵守同一转义规则。JSON 解码后的 quote 必须保留原文字面，不得换成其他引号、删去字符或改写内容。
 英文 JSON 字段名保持示例写法；状态 text、reason 使用中文。变化说明由程序按实际前后状态生成，无需填写 changeSummary。根级 changeSummary/summary 不会被当作人物状态，也不得用来代替 subjects。
@@ -64,6 +64,7 @@ Core/Adaptive 每类采用 review/additions 新协议，或沿用旧的直接 af
 {"subjects":[{"subject":"人物甲","review":{"core":[{"previousText":"旧核心","action":"keep"}],"adaptive":[{"previousText":"旧模式","toward":"人物乙","action":"refine","text":"收窄后的模式","reason":"为何调整","evidence":[{"source":"canonicalContent","quote":"正文原句"}]}]},"additions":{"core":[],"adaptive":[]},"situational":[{"reason":"正文写出人物甲困倦并闭眼入睡","text":"困倦放松，正在入睡","visibility":"private","origin":"floor"},{"reason":"人物甲推开人物乙的手并明确拒绝触碰","text":"拒绝人物乙触碰","toward":"人物乙","visibility":"observable","origin":"floor"}]}]}
 不确定的可选人物或分类宁可省略。只输出 JSON，不要解释。`;
 
+// 新生成统一走证据校准协议；编译器仍可读取旧 after-state 格式。
 export function buildCseSystemPrompt(guidance = '', processingPrompt = '') {
   const custom = typeof guidance === 'string' ? guidance : '';
   const businessGuidance = custom.trim() ? custom : DEFAULT_CSE_GUIDANCE;
