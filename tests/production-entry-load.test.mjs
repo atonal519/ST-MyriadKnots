@@ -192,7 +192,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.6.7');
+  assert.equal(manifest.version, '0.6.8');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -300,6 +300,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const analysisTask = async () => ({ jsonData: 'analysis' });
   const recallTask = async () => ({ jsonData: 'recall' });
 
+  let vectorOptions;
+  const vectorRuntime = { getState: () => ({ status: 'idle' }), query: async value => value, abortAll() {}, subscribe: () => () => {} };
+  const vectorApi = { embed: async () => [], abortAll() {} };
   let v3MemoryOptions;
   let v3MemoryRuntime;
   let v3RecallOptions;
@@ -395,6 +398,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
       };
     },
   });
+  define('./src/vector-api.js', { createVectorApiClient: () => vectorApi, resolveVectorConfig: () => null });
+  define('./src/v3/vector-index.js', { createVectorIndex: options => { vectorOptions = options; return vectorRuntime; } });
+  define('./src/v3/recall-source.js', { readRecallSource: async options => options });
   define('./src/source-permission.js', { createSourcePermissionController: () => ({}) });
   const productionHostContext = { eventSource: productionEventSource, eventTypes: productionEventTypes, uuidv4, getRequestHeaders: () => ({ 'X-CSRF-Token': 'token' }), groupId: null, characterId: 0, characters: [{ avatar: 'char.png' }] };
   define('./src/v3/host-adapter.js', { createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => productionHostContext, snapshot: () => ({}) }; } });
@@ -452,6 +458,13 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   await entry.evaluate();
   await new Promise(resolvePromise => setImmediate(resolvePromise));
 
+  assert.equal(memoryManagementOptions.vectorRuntime, vectorRuntime);
+  assert.equal(vectorOptions.api, vectorApi);
+  assert.equal(bootstrapOptions.vectorApi, vectorApi);
+  assert.equal(bootstrapOptions.vectorIndex, vectorRuntime);
+  assert.ok(lifecycleOptions.aborters.includes(vectorRuntime));
+  assert.ok(lifecycleOptions.aborters.includes(vectorApi));
+  assert.equal(await v3RecallOptions.semanticProvider('vector-input'), 'vector-input');
   assert.equal(v3MemoryOptions.generateAnalysisTask, analysisTask);
   assert.equal(timeOptions.generateTimeTask, utilityTask);
   assert.equal(Object.hasOwn(timeOptions, 'generateAnalysisTask'), false);
@@ -545,7 +558,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(typeof sessionOptions.contextProvider, 'function');
   assert.ok(sessionOptions.identityCoordinator);
   assert.ok(lifecycleOptions.session);
-  assert.equal(lifecycleOptions.aborters.length, 3);
+  assert.equal(lifecycleOptions.aborters.length, 5);
   assert.ok(lifecycleOptions.aborters.includes(peopleWorkspaceRuntime));
   assert.equal(typeof lifecycleOptions.onPrepared, 'function', '生产入口必须把身份成功后的后台续接注入 lifecycle');
   assert.deepEqual(backgroundStarts, [], '插件初始关闭时不得绕过 lifecycle 单独启动 memory/people');

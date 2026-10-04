@@ -302,7 +302,7 @@ test('只双向共享 schedule-planner 预设池；千千结主配置与两边�
     .replace("import { extension_settings } from '../../../../extensions.js';", 'const extension_settings = globalThis.__QQJ_SEVEN_TEST_SETTINGS__;')
     .replace("import { saveSettingsDebounced } from '../../../../../script.js';", 'const saveSettingsDebounced = () => { globalThis.__QQJ_SEVEN_TEST_SAVES__ += 1; };');
   const seven = await import(`data:text/javascript;base64,${Buffer.from(executable).toString('base64')}`);
-  assert.deepEqual(seven.loadCfg(), { url: 'https://main.old/v1', key: 'OLD', model: 'old', excludeParams: [], timeoutSec: 180, stream: false });
+  assert.deepEqual(seven.loadCfg(), { url: 'https://main.old/v1', key: 'OLD', model: 'old', excludeParams: [], timeoutSec: 180, stream: false, spAdditionalParams: '' });
   assert.deepEqual(seven.loadApiPresets().find(item => item.id === 'target'), extensionSettings['schedule-planner'].apiPresets[1]);
   seven.upsertApiPreset('构画侧已改', { url: 'https://seven.changed/v1', key: 'SEVEN_KEY', model: 'seven-model', excludeParams: ['top_p'], timeoutSec: 88, stream: false }, 'target');
   assert.deepEqual(settings.sharedPresets().find(item => item.id === 'target'), { id: 'target', name: '构画侧已改', url: 'https://seven.changed/v1', key: 'SEVEN_KEY', model: 'seven-model', excludeParams: ['top_p'], timeoutSec: 88, stream: false, targetUnknown: 'KEEP_ME' });

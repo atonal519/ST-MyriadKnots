@@ -5,6 +5,7 @@ import {
   projectFloorMemoryIdentityReferences, resolveIdentityEntityId,
 } from './entity-identity.js';
 import { memorySourceFloorIds } from './memory-schema.js';
+import { projectVectorSources } from './vector-source.js';
 
 const safeText = (value, maximum = 4000) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
 const aliasText = alias => safeText(typeof alias === 'string' ? alias : alias?.name, 500);
@@ -214,6 +215,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
       const floor = floorById.get(memory.floorId);
       return memoryDto(projectFloorMemoryIdentityReferences(memory, identityProjection), floor, { floorSeqById: floorSeq });
     })),
+    rawSources: await projectVectorSources(activeMemories, floors),
     currentState: stateDto(projectCseStateIdentityReferences(replayed, identityProjection), entities, floorSeq, personaCoreIds),
     cseChanges: cseChangesDto(cseTimeline, entities, floorSeq, identityProjection, personaCoreIds),
     identityProjection,

@@ -355,6 +355,23 @@ test('已有资料无改动在 view 层零保存，失败则保留用户草稿�
   assert.equal(fieldControl(failedContainer, '补充资料').value, '失败也要保留'); assert.match(visible(failedContainer), /保存失败：CAS失败/);
 });
 
+test('长人物资料只在阅读视图按句分行，编辑与保存仍保留原文', async () => {
+  const rawNotes = '候选甲；候选乙;候选丙。丁”接续\n已有换行，网址 https://example.test/a.b、小数 1.25 不拆、顿号不拆；他说“可以。”下一句；他说“可以。”';
+  const profile = { entityId: A, name: '甲', aliases: '', gender: '女性；无需换行', age: '30', birthday: '', species: '', notes: rawNotes, source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
+  const h = runtimeHarness({ profile }), container = new Node('main'); createPeopleProfilesView({ runtime: h.runtime, documentRef }).mount(container);
+  const readRow = field => flatten(container).find(node => node.className === `qqj-profile-read-row qqj-profile-read-${field}`);
+  assert.equal(readRow('notes').children[1].textContent, '候选甲；\n候选乙;\n候选丙。\n丁”接续\n已有换行，网址 https://example.test/a.b、小数 1.25 不拆、顿号不拆；\n他说“可以。”\n下一句；\n他说“可以。”');
+  assert.equal(readRow('gender').children[1].textContent, '女性；无需换行', '短 input 字段保持原样');
+
+  flatten(container).find(node => node.textContent === '编辑资料').click();
+  assert.equal(fieldControl(container, '补充资料').value, rawNotes, 'textarea 编辑值仍为原始资料');
+  const age = fieldControl(container, '年龄'); age.value = '31'; age.fire('input');
+  flatten(container).find(node => node.textContent === '保存资料').click();
+  await waitFor(() => h.calls.save.length === 1 && visible(container).includes('已保存'));
+  assert.equal(h.calls.save[0][1].notes, rawNotes, '保存 payload 不包含展示用换行');
+  assert.equal(readRow('notes').children[1].textContent, '候选甲；\n候选乙;\n候选丙。\n丁”接续\n已有换行，网址 https://example.test/a.b、小数 1.25 不拆、顿号不拆；\n他说“可以。”\n下一句；\n他说“可以。”');
+});
+
 test('人物资料保存栏属于完整编辑器，成功回到当前人物卡而失败保持位置', async () => {
   const profile = { entityId: A, name: '甲', aliases: '', gender: '', age: '', birthday: '', species: '', notes: '', appearance: '', background: '', personality: '', nsfw: '', manualFields: [], source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
   const runCase = async failSave => {

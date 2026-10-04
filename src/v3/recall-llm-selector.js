@@ -1,3 +1,4 @@
+import { addSemanticHistory, mergeSemanticHistoryPool, semanticHistoryCharacters } from './recall-selector.js';
 import { parseJsonOutput } from '../compact-api-client.js';
 import { buildRecallAnnualCandidatePool, buildRecallCseCandidatePool, buildRecallHistoryCandidatePool, cseSelectionContext, estimateRecallTokens, historySelectionContext, recallBudget, selectRecall } from './recall-selector.js';
 import { formatChronologyAnchor } from './recall-source.js';
@@ -84,10 +85,11 @@ export function removeExactQianshiDuplicates(progress, selection) {
   return Object.freeze({ ...progress, text, characterCount: text.length, eventIds: Object.freeze(keptEventIds) });
 }
 
-const diagnostic = ({ mode, metadata = null, error = null, durationMs = 0, utilityRoundTripMs = null, localSelectionMs = null, historyCandidateCount = null, stateCandidateCount = null, historyExcludedCount = null, stateExcludedCount = null, historyRetainedCount = null, stateRetainedCount = null, requestCharacters = null, requestEstimatedTokens = null } = {}) => {
+const diagnostic = ({ semantic = null, mode, metadata = null, error = null, durationMs = 0, utilityRoundTripMs = null, localSelectionMs = null, historyCandidateCount = null, stateCandidateCount = null, historyExcludedCount = null, stateExcludedCount = null, historyRetainedCount = null, stateRetainedCount = null, requestCharacters = null, requestEstimatedTokens = null, progressState = null } = {}) => {
   const api = sanitizeTaskMetadata(metadata);
   return Object.freeze({
     mode,
+    ...(semantic ? { semantic } : {}),
     code: typeof error?.code === 'string' ? error.code.slice(0, 120) : null,
     httpStatus: Number.isSafeInteger(error?.httpStatus ?? error?.status) ? (error.httpStatus ?? error.status) : null,
     formatStage: typeof error?.formatStage === 'string' ? error.formatStage.slice(0, 80) : null,
@@ -110,6 +112,9 @@ const diagnostic = ({ mode, metadata = null, error = null, durationMs = 0, utili
     stateExcludedCount: Number.isSafeInteger(stateExcludedCount) && stateExcludedCount >= 0 ? stateExcludedCount : null,
     historyRetainedCount: Number.isSafeInteger(historyRetainedCount) && historyRetainedCount >= 0 ? historyRetainedCount : null,
     stateRetainedCount: Number.isSafeInteger(stateRetainedCount) && stateRetainedCount >= 0 ? stateRetainedCount : null,
+    pendingStep: ['semanticQuery', 'candidateBuild', 'utilityTask', 'responseParse', 'localSelection'].includes(progressState?.pendingStep) ? progressState.pendingStep : null,
+    lastCompletedStep: ['semanticQuery', 'candidateBuild', 'utilityTask', 'responseParse', 'localSelection'].includes(progressState?.lastCompletedStep) ? progressState.lastCompletedStep : null,
+    stageTimings: Object.fromEntries(['semanticQuery', 'candidateBuild', 'utilityTask', 'responseParse', 'localSelection'].map(key => [key, Number.isFinite(progressState?.stageTimings?.[key]) ? Math.max(0, progressState.stageTimings[key]) : null])),
   });
 };
 
@@ -123,12 +128,38 @@ export async function selectRecallWithLlm({
   reservedCharacters = 0,
   generateUtilityTask,
   signal,
+  semanticProvider = null,
+  onProgress = null,
 } = {}) {
   const selectorStarted = Date.now();
-  const historyContext = historySelectionContext(source, queryContext);
+  const progressState = { pendingStep: null, lastCompletedStep: null, stageTimings: {} };
+  let stepStarted = null;
+  const updateStep = pendingStep => {
+    if (stepStarted !== null && progressState.pendingStep) {
+      const key = progressState.pendingStep;
+      progressState.stageTimings[key] = (progressState.stageTimings[key] ?? 0) + Math.max(0, Date.now() - stepStarted);
+      progressState.lastCompletedStep = key;
+    }
+    progressState.pendingStep = pendingStep;
+    stepStarted = pendingStep ? Date.now() : null;
+    if (typeof onProgress === 'function') try { onProgress(Object.freeze({ pendingStep, lastCompletedStep: progressState.lastCompletedStep, stageTimings: Object.freeze({ ...progressState.stageTimings }) })); } catch {}
+  };
+  updateStep('semanticQuery');
+  let historyContext = historySelectionContext(source, queryContext);
+  let semantic = { candidates: [], diagnostic: { status: 'disabled', candidateCount: 0, durationMs: 0 } };
+  if (historyContext && typeof semanticProvider === 'function') {
+    try { semantic = await semanticProvider({ source, queryContext, signal, eligibleFloorMemoryIds: historyContext.oldMemories.map(value => value.floorMemoryId) }); }
+    catch { semantic = { candidates: [], diagnostic: { status: 'unavailable', candidateCount: 0, durationMs: 0 } }; }
+    if (signal?.aborted) throw abortError(signal.reason);
+  }
+  updateStep('candidateBuild');
+  const nativeHistoryContext = historyContext;
+  if (semantic.candidates?.length) historyContext = addSemanticHistory(historyContext, semantic.candidates);
   const cseContext = cseSelectionContext(source, queryContext);
   const baseInput = { source, queryContext, historyContext, cseContext, contextSize, maxFloors, maxItems, reservedTokens, reservedCharacters };
-  const historyPool = buildRecallHistoryCandidatePool({ source, queryContext, historyContext });
+  // 只有取得有效语义片段才留出 12 个位置；失败仍使用原来的 48 条候选。
+  const nativeHistoryPool = buildRecallHistoryCandidatePool({ source, queryContext, historyContext: nativeHistoryContext, maxCandidates: semantic.candidates?.length ? 36 : 48, maxCharacters: 24000 - semanticHistoryCharacters(historyContext) });
+  const historyPool = semantic.candidates?.length ? mergeSemanticHistoryPool(nativeHistoryPool, historyContext) : nativeHistoryPool;
   const csePool = buildRecallCseCandidatePool({ source, queryContext, cseContext });
   const annualCandidates = buildRecallAnnualCandidatePool({ source, queryContext, historyContext });
   const qianshiCandidates = Array.isArray(source?.qianshiCandidates) ? source.qianshiCandidates : [];
@@ -150,6 +181,7 @@ export async function selectRecallWithLlm({
   const allCandidates = [...historyPool.candidates, ...csePool.candidates];
   const candidateCounts = { historyCandidateCount: historyPool.candidates.length, stateCandidateCount: csePool.candidates.length };
   if (!allCandidates.length && !annualCandidates.length) {
+    updateStep('localSelection');
     const projectedQianshi = qianshiCandidates.length ? projectCandidates([]) : source?.qianshiProgress ?? null;
     const qianshiProgress = projectedQianshi;
     const selection = selectRecall({ ...baseInput,
@@ -157,8 +189,9 @@ export async function selectRecallWithLlm({
       reservedCharacters: externalReservedCharacters + qianshiCharacters(qianshiProgress),
       selectedHistoryCandidates: [], selectedCseCandidates: [], selectedAnnualReminderIds: [] });
     const durationMs = Date.now() - selectorStarted;
+    updateStep(null);
     return Object.freeze({ ...selection, qianshiProgress: removeExactQianshiDuplicates(qianshiProgress, selection),
-      selectorDiagnostic: diagnostic({ mode: 'local', durationMs, utilityRoundTripMs: 0, localSelectionMs: durationMs, ...candidateCounts, historyRetainedCount: 0, stateRetainedCount: 0 }) });
+      selectorDiagnostic: diagnostic({ mode: 'local', durationMs, utilityRoundTripMs: 0, localSelectionMs: durationMs, ...candidateCounts, historyRetainedCount: 0, stateRetainedCount: 0, progressState }) });
   }
   if (typeof generateUtilityTask !== 'function') throw Object.assign(new Error('历史智能选材服务不可用。'), { code: 'V3_RECALL_LLM_UNAVAILABLE' });
   const plannedQianshi = qianshiCandidates.length ? maximumCandidateQianshi
@@ -204,6 +237,7 @@ export async function selectRecallWithLlm({
     // This selector makes one transport attempt; the runtime owns the single full recall retry with fresh sources.
     const transportBudget = { remaining: 1, used: 0 };
     const taskMessages = [{ role: 'user', content: serializedTaskInput }];
+    updateStep('utilityTask');
     result = await generateUtilityTask({
       systemPrompt: RECALL_LLM_SYSTEM_PROMPT,
       taskMessages,
@@ -217,6 +251,7 @@ export async function selectRecallWithLlm({
     });
     const utilityCompleted = Date.now();
     if (signal?.aborted) throw abortError(signal.reason);
+    updateStep('responseParse');
     const raw = result?.jsonData ?? result?.textData ?? result;
     const parsed = parseJsonOutput(raw, { finishReason: result?.taskMetadata?.finishReason });
     const historyAllowed = new Set(historyPool.candidates.map(candidate => candidate.key));
@@ -241,6 +276,7 @@ export async function selectRecallWithLlm({
       ? projectCandidates(qianshiKeys)
       : source?.qianshiProgress ?? null;
     const qianshiProgress = projectedQianshi;
+    updateStep('localSelection');
     const finalInput = { ...baseInput,
       reservedTokens: externalReservedTokens + qianshiTokens(qianshiProgress),
       reservedCharacters: externalReservedCharacters + qianshiCharacters(qianshiProgress) };
@@ -253,19 +289,21 @@ export async function selectRecallWithLlm({
         excludedCseCandidates: excludedCse,
       });
     const selectorCompleted = Date.now();
-    // 本地选材包含请求前的候选准备，以及回包后的解析与最终材料选择。
+    updateStep(null);
+    // 向量阶段单独计时；本地选材只包含候选准备、回包解析与最终材料选择。
     return Object.freeze({
       ...selection,
       qianshiProgress: removeExactQianshiDuplicates(qianshiProgress, selection),
       selectorDiagnostic: diagnostic({
-        mode: 'llm', metadata: result?.taskMetadata,
+        semantic: semantic.diagnostic, mode: 'llm', metadata: result?.taskMetadata,
         durationMs: selectorCompleted - selectorStarted,
         utilityRoundTripMs: utilityCompleted - utilityStarted,
-        localSelectionMs: (utilityStarted - selectorStarted) + (selectorCompleted - utilityCompleted),
+        localSelectionMs: Math.max(0, (utilityStarted - selectorStarted) + (selectorCompleted - utilityCompleted) - (Number(semantic.diagnostic?.durationMs) || 0)),
         ...candidateCounts,
         requestCharacters, requestEstimatedTokens,
         historyExcludedCount: historyKeys.length, stateExcludedCount: stateKeys.length,
         historyRetainedCount: retainedHistory.length, stateRetainedCount: retainedCse.length,
+        progressState,
       }),
     });
   } catch (error) {
@@ -273,10 +311,10 @@ export async function selectRecallWithLlm({
     const metadata = result?.taskMetadata ?? error?.taskMetadata ?? null;
     const utilityCompleted = Date.now();
     const failureMetadata = result && metadata ? { ...metadata, sourceStage: 'selector-parse' } : metadata;
-    const failureDiagnostic = diagnostic({ mode: 'llm', metadata: failureMetadata, error, durationMs: utilityCompleted - selectorStarted,
+    const failureDiagnostic = diagnostic({ semantic: semantic.diagnostic, mode: 'llm', metadata: failureMetadata, error, durationMs: utilityCompleted - selectorStarted,
       utilityRoundTripMs: utilityCompleted - utilityStarted,
-      localSelectionMs: Math.max(0, utilityStarted - selectorStarted),
-      ...candidateCounts, requestCharacters, requestEstimatedTokens });
+      localSelectionMs: Math.max(0, utilityStarted - selectorStarted - (Number(semantic.diagnostic?.durationMs) || 0)),
+      ...candidateCounts, requestCharacters, requestEstimatedTokens, progressState });
     if (error && (typeof error === 'object' || typeof error === 'function')) {
       error.selectorDiagnostic = failureDiagnostic;
       if (metadata) error.taskMetadata = metadata;

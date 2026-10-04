@@ -144,6 +144,7 @@ button:focus-visible,summary:focus-visible{outline:2px solid var(--knot);outline
 
 .qqj-qianshi-segment::before{content:none}.qqj-qianshi-day-summary::after{display:none;content:none}@media(max-width:340px){.qqj-qianshi-segment{--qqj-date-width:46px}}
 .qqj-time-clock-reminder{display:block;flex:0 0 100%;margin-top:2px;color:var(--soft);font-size:9px;line-height:1.4}.qqj-time-clock-reminder[hidden]{display:none}
+.qqj-vector-enable{justify-content:space-between}.qqj-vector-api-settings .qqj-vector-actions{display:flex;flex-wrap:wrap}.qqj-vector-api-settings .qqj-vector-actions>button{width:auto}
 .qqj-qianshi-day-last.qqj-qianshi-day-has-card-axis{padding-bottom:0}.qqj-qianshi-day-last.qqj-qianshi-day-has-card-axis::before{bottom:0}.qqj-qianshi-day-single.qqj-qianshi-day-has-card-axis::before{content:"";top:11px;bottom:0}
 
 .qqj-qianshi-time-clear{margin:0;padding:3px 0;border:0;background:transparent;color:var(--soft);font:inherit;font-size:10px;cursor:pointer}.qqj-qianshi-time-clear:hover{color:var(--knot)}.qqj-qianshi-time-clear:disabled{color:var(--faint);cursor:not-allowed}

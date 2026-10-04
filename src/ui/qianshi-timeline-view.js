@@ -368,7 +368,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     });
   }
 
-  function eventOperationMenu(event, { cardId = event.id, nestedRowKey = null } = {}) {
+  function eventOperationMenu(event, { cardId = event.id, nestedRowKey = null, currentMatter = () => false } = {}) {
     if (!canEditEvent(event.id) || textEditors.get(event.id)?.editing) return null;
     const menu = operationMenus.register(element('details', 'qqj-profile-menu qqj-qianshi-event-menu'));
     menu.dataset.qianshiEventId = event.id;
@@ -395,9 +395,15 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     if (otherWorkBusy() || historyBusy()) remove.title = '后台记忆任务进行中，请结束后再删除。';
     remove.addEventListener('click', () => { menu.open = false; runEventDialog(menu, () => deleteEvent(event)); });
     const change = element('button', 'qqj-profile-menu-action', '修改状态'); change.type = 'button';
-    change.disabled = otherWorkBusy() || historyBusy() || typeof dialog?.custom !== 'function'
-      || Boolean(event.updatesMatter && matter && typeof runtime.setQianshiMatterStatus !== 'function');
-    change.addEventListener('click', () => { menu.open = false; runEventDialog(menu, () => changeEventStatus(event, matter)); });
+    // 菜单修改当前位置徽标所示状态；代表菜单移入当天过程后也只修改本条动作。
+    const statusMatter = () => currentMatter() && event.updatesMatter && matter && !matter.synthetic ? matter : null;
+    const updateStatusAvailability = () => {
+      change.disabled = otherWorkBusy() || historyBusy() || typeof dialog?.custom !== 'function'
+        || Boolean(statusMatter() && typeof runtime.setQianshiMatterStatus !== 'function');
+    };
+    updateStatusAvailability();
+    menu.addEventListener('toggle', updateStatusAvailability);
+    change.addEventListener('click', () => { menu.open = false; runEventDialog(menu, () => changeEventStatus(event, statusMatter())); });
     menuBody.append(edit, remove, change); menu.append(toggle, menuBody);
     return menu;
   }
@@ -458,7 +464,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     summary.append(element('p', 'qqj-qianshi-preview', event.description));
     details.append(summary);
     const nestedRowKey = dayEvents.length > 1 ? `day:${event.id}:${event.id}` : null;
-    const menu = eventOperationMenu(event, { cardId, nestedRowKey });
+    const menu = eventOperationMenu(event, { cardId, nestedRowKey, currentMatter: () => dayEvents.length === 1 || !details.open });
     let representativeRow = null;
     const placeRepresentativeMenu = expanded => {
       if (!menu || !representativeRow) return;

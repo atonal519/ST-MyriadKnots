@@ -34,6 +34,8 @@ const shellCss = ':host{position:fixed;inset:0;z-index:4000;width:100dvw;height:
 export function createPanel({
   settings,
   apiTools,
+  vectorApi,
+  vectorIndex,
   v3FoundationView,
   peopleProfilesView,
   qianshiTimelineView,
@@ -90,6 +92,7 @@ export function createPanel({
   let activationEpoch = 0;
   const settingsDrawerState = createSettingsDrawerState();
   let apiEditingRole = 'analysis';
+  let apiSettingsView = null;
   const scrollPositions = new Map();
   const themeButton = root.querySelector('.theme-btn');
   const fabToggleButton = root.querySelector('.fab-toggle-btn');
@@ -159,6 +162,7 @@ export function createPanel({
     }
   };
   const unmountContent = () => {
+    apiSettingsView?.dispose(); apiSettingsView = null;
     v3FoundationView.deactivate();
     peopleProfilesView.deactivate();
     qianshiTimelineView.deactivate();
@@ -280,15 +284,17 @@ export function createPanel({
     // 通用设置：世界书排除、提示词和外观即时保存；API 角色选择即时生效，配置编辑需点“保存设置”。
     const { drawer: general, body: generalBody } = groupOf('general', '通用设置');
     const api = createApiSettings({
-      settings, apiTools, documentRef,
+      settings, apiTools, vectorApi, vectorIndex, documentRef,
       initialEditingRole: apiEditingRole, onEditingRoleChange: role => { apiEditingRole = role; },
       open: subOpen('api'), onToggle: subToggle('api'),
       advancedOpen: subOpen('api-advanced'), onAdvancedToggle: subToggle('api-advanced'),
+      vectorOpen: subOpen('api-vector'), onVectorToggle: subToggle('api-vector'),
       rerender: () => renderSettings(),
       isSevenDaysAvailable,
       confirmImpl: options => dialog?.confirm?.(options) ?? false,
       promptImpl: options => dialog?.prompt?.(options) ?? null,
     });
+    apiSettingsView = api;
     const worldbook = sourcePermissionView?.renderSettings?.({
       open: subOpen('worldbook'), onDrawerToggle: subToggle('worldbook'),
     });
@@ -473,6 +479,7 @@ export function createPanel({
   function close() {
     rememberScroll();
     activationEpoch += 1;
+    apiSettingsView?.dispose(); apiSettingsView = null;
     v3FoundationView.deactivate();
     peopleProfilesView.deactivate();
     qianshiTimelineView.deactivate();

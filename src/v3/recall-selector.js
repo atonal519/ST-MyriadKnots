@@ -332,7 +332,7 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, entity
     const timelineSeqs = [...new Set([...lineFloors.map(value => value.assistantSeq), ...lineChanges.map(value => value.assistantSeq)])].sort((a, b) => a - b);
     for (const assistantSeq of timelineSeqs) {
       const floor = lineFloors.find(value => value.assistantSeq === assistantSeq);
-      const time = formatChronologyAnchor(floor?.chronology ?? []);
+      const time = floor?.items.some(value => value.rawWitness) ? '' : formatChronologyAnchor(floor?.chronology ?? []);
       lines.push(`[来源 AI #${assistantSeq}${time ? `（${time}）` : ''}]`);
       floor?.items.forEach(value => lines.push(`- [旧事] ${historyText(value)}`));
       for (const value of lineChanges.filter(item => item.assistantSeq === assistantSeq)) {
@@ -394,7 +394,7 @@ function formatBaseRecallInjection({ coverage, floors, states, cseChanges = [], 
     lines.push('', heading);
     const narrative = [], objective = [], shared = [], privateByOwner = new Map();
     for (const floor of selectedFloors) for (const value of floor.items) {
-      const time = formatChronologyAnchor(floor.chronology);
+      const time = value.rawWitness ? '' : formatChronologyAnchor(floor.chronology);
       const prefix = `AI #${floor.assistantSeq}${time ? `（${time}）` : ''}`;
       const relation = value.relationEvidence === 'nearby' ? '邻近背景；仅因时序相邻，不表示因果：'
         : value.relationEvidence === 'topic' ? '同人物与具体主题词关联，不表示因果：'
@@ -587,7 +587,7 @@ export function cseSelectionContext(source, queryContext) {
 }
 
 const duplicateKey = value => [compact(value._coreText), value._subjectKey, value._visibilityKey, value._statusKey ?? ''].join('|');
-const historyStableKey = value => [value.floorId, value.floorMemoryId, value.assistantSeq, value._sourceOrder, duplicateKey(value)].join('|');
+export const historyStableKey = value => [value.floorId, value.floorMemoryId, value.assistantSeq, value._sourceOrder, duplicateKey(value)].join('|');
 const cseStableKey = value => value._recallCseKind === 'change'
   ? ['change', value.deltaId, value.floorId, value.assistantSeq, value.subjectEntityId, value.layer, value.action, stateSourceKey(value.before), stateSourceKey(value.after)].join('|')
   : ['current', value.subjectEntityId, value.layer, stateSourceKey(value), duplicateKey(value)].join('|');
@@ -756,8 +756,8 @@ function expandLinkedHistory({ context, selectedHistory, selectedCse, excludedHi
   for (const value of allHistory) valuesByFloor.set(value.floorId, [...(valuesByFloor.get(value.floorId) ?? []), value]);
   const memoryByFloor = new Map(context.oldMemories.map(memory => [memory.floorId, memory]));
   const itemRecords = allHistory.map(value => {
-    const memory = memoryByFloor.get(value.floorId);
-    const participants = new Set((memory.participants ?? []).map(value => value.entityId).filter(Boolean));
+    const memory = memoryByFloor.get(value.rawWitness?.memoryFloorId ?? value.floorId);
+    const participants = new Set((memory?.participants ?? []).map(value => value.entityId).filter(Boolean));
     for (const entityId of String(value._subjectKey ?? '').split(',').filter(Boolean)) participants.add(entityId);
     return { value, memory, participants, tokens: relationTokens(value._rankText, entityTokens) };
   });
@@ -807,7 +807,7 @@ function expandLinkedCse({ source, historyContext, selectedHistory, linkedHistor
   const involvedIds = new Set();
   for (const value of history) {
     for (const id of String(value._subjectKey ?? '').split(',').filter(Boolean)) involvedIds.add(id);
-    for (const participant of memoryByFloor.get(value.floorId)?.participants ?? []) if (participant.entityId) involvedIds.add(participant.entityId);
+    for (const participant of memoryByFloor.get(value.rawWitness?.memoryFloorId ?? value.floorId)?.participants ?? []) if (participant.entityId) involvedIds.add(participant.entityId);
   }
   if (!involvedIds.size) return [];
   const candidates = scoreCandidates(cseChangeCandidates(source, involvedIds), historyContext.queries, { keepUnmatched: true });
@@ -847,7 +847,7 @@ function buildStorylinePlan({ context, history, states, changes }) {
   const entityTokens = new Set([...context.entityById.values()].flatMap(entity => entityLabels(entity).flatMap(tokenizeRecallText)));
   const memoryByFloor = new Map(context.oldMemories.map(memory => [memory.floorId, memory]));
   const recordFor = value => {
-    const memory = memoryByFloor.get(value.floorId ?? value.sourceFloorId ?? value.before?.sourceFloorId ?? value.after?.sourceFloorId);
+    const memory = memoryByFloor.get(value.rawWitness?.memoryFloorId ?? value.floorId ?? value.sourceFloorId ?? value.before?.sourceFloorId ?? value.after?.sourceFloorId);
     const participants = new Set((memory?.participants ?? []).map(itemValue => itemValue.entityId).filter(Boolean));
     for (const entityId of String(value._subjectKey ?? '').split(',').filter(Boolean)) participants.add(entityId);
     for (const entityId of [value.subjectEntityId, value.towardEntityId, value.before?.towardEntityId, value.after?.towardEntityId].filter(Boolean)) participants.add(entityId);
@@ -1285,6 +1285,7 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
     const floorMap = new Map();
     for (const value of history) {
       const floor = floorMap.get(value.floorId) ?? { floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq, chronology: value._chronology ?? [], score: 0, reasons: new Set(), items: [] };
+      if (!value.rawWitness && value._chronology?.length) floor.chronology = value._chronology;
       floor.score = Math.max(floor.score, value.score);
       floor.reasons.add(value.recallSection === 'recent' ? 'recentSummary' : value.kind);
       if (value._relationEvidence === 'source') floor.reasons.add('linkedSource');
@@ -1474,3 +1475,33 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
     limits: Object.freeze({ maxFloors: requestedFloorLimit, maxItems: requestedItemLimit, maxCharacters: charLimit, actualCharacters: injectionText.length, estimatedTokenBudget: tokenLimit, estimatedTokenCount: estimateRecallTokens(injectionText), tokenEstimateMethod: 'cjk1-latin4-punctuation2' }),
   });
 }
+
+// 原文只是叙事材料，不推导共享知识、当前 CSE 或归档摘要的故事时间。
+export function addSemanticHistory(context, semanticCandidates) {
+  if (!context) return context;
+  const values = semanticCandidates.slice(0, 12).map(({ text, witness }, index) => ({
+    category: 'narrative', kind: 'sourceFragment', text: `[历史原文；时间未标注] ${clean(text, 400)}`,
+    priority: 130, floorId: witness.floorId, floorMemoryId: witness.floorMemoryId, assistantSeq: witness.assistantSeq,
+    rawWitness: witness, sourceAssistantSeqs: [witness.assistantSeq], _chronology: [], _poolGroup: 'fact',
+    _rankText: text, _coreText: text, _entityText: '', _subjectKey: '', _visibilityKey: 'narrative',
+    _statusKey: `${witness.floorId}:${witness.offset}`, _sourceOrder: 1000000 + index,
+  }));
+  const ranked = scoreCandidates(values, context.queries, { keepUnmatched: true });
+  return { ...context, semantic: ranked, facts: [...context.facts, ...ranked], direct: [...context.direct, ...ranked] };
+}
+
+export function mergeSemanticHistoryPool(nativePool, context, maxCharacters = MAX_LLM_HISTORY_CHARACTERS) {
+  const candidates = [...nativePool.candidates];
+  let characters = nativePool.text.length;
+  for (const value of context.semantic ?? []) {
+    const key = `R${candidates.length + 1}`, text = historyCandidateText(value, context.entityById);
+    const added = `${key}｜${text}`.length + (candidates.length ? 1 : 0);
+    if (characters + added > maxCharacters || candidates.length >= 48) continue;
+    characters += added;
+    candidates.push(Object.freeze({ key, stableKey: historyStableKey(value), source: 'fact', sourceKind: 'semantic', text, value }));
+  }
+  return Object.freeze({ candidates: Object.freeze(candidates), text: candidates.map(value => `${value.key}｜${value.text}`).join('\n'),
+    limits: Object.freeze({ ...nativePool.limits, maxCandidates: 48, actualCandidates: candidates.length, actualCharacters: characters }) });
+}
+
+export const semanticHistoryCharacters = context => (context?.semantic ?? []).reduce((sum, value) => sum + `R48｜${historyCandidateText(value, context.entityById)}`.length + 1, 0);

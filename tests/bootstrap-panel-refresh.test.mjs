@@ -76,9 +76,11 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   const prepareSession = async () => ({ status: 'ready' });
   const isSevenDaysLedgerInjectionEnabled = () => true;
   const timeRuntime = { refreshStatus() {}, organize() {} }, memoryRuntime = { getState() {}, subscribe() {} };
+  const vectorApi = { embed() {} }, vectorIndex = { getState() {} };
   let backendReads = 0; const backendDiagnosticProvider = () => { backendReads += 1; return { sinceClientCreatedRequestCounts: { get: 2, put: 1, delete: 0 } }; };
   const instance = bootstrap({
     settings: { isEnabled: () => true, get: () => current }, enableFab: true,
+    vectorApi, vectorIndex,
     sessionStateProvider, prepareSession, backendDiagnosticProvider, isSevenDaysLedgerInjectionEnabled, timeRuntime, v3FoundationRuntime: memoryRuntime, pluginVersion: '0.1.9-test',
     v3FoundationViewFactory: options => { foundationOptions = options; return stubView(); }, peopleProfilesViewFactory: options => { peopleOptions = options; return stubView(); }, qianshiTimelineViewFactory: options => { qianshiOptions = options; return stubView(); }, peopleWorkspaceRuntime: { getState: () => ({}) },
     documentRef: { activeElement: null, defaultView: {}, getElementById: () => null, createElement: () => ({}), documentElement: { append: node => appended.push(node) }, body: { append: node => bodyAppended.push(node) } },
@@ -88,6 +90,7 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
     panelFactory: options => { panelOptions = options; return panel; }, dialogFactory: () => ({ host: dialogHost, confirm() {}, choose: () => 'chosen', info() {}, setAppearance() {} }), wandInstaller() {},
   });
   assert.deepEqual(appended, [dialogHost], '弹窗 host 应挂在 documentElement，避免手机宿主 body 布局裁切');
+  assert.equal(panelOptions.vectorApi, vectorApi); assert.equal(panelOptions.vectorIndex, vectorIndex);
   assert.equal(peopleOptions.dialog.host, dialogHost, '千人头像裁剪应复用 QQJ 弹窗管理器');
   assert.equal(peopleOptions.sessionStateProvider, sessionStateProvider);
   assert.equal(peopleOptions.prepareSession, prepareSession);

@@ -48,13 +48,14 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
     return { drawer: node, body: drawerBody, summary };
   };
   const diagnostics = { starts: 0, stops: 0, marks: 0, records: [{ page: 'settings', defaultPrevented: false }] };
+  let apiSettingsMounts = 0, apiSettingsDisposals = 0;
   const modules = {
     './panel.html?raw': { default: '' }, './panel.css?inline': { default: '' },
     './layout.js': { createPanelGeometryController: () => ({ restore() {}, cancelGesture() {} }) },
     './appearance.js': { createAppearanceController: ({ onChange }) => { const state = { mode: 'auto', effectiveTheme: 'day', palette: {} }; onChange?.(state); return { apply() { onChange?.(state); return state; }, getState: () => state, destroy() {} }; } },
     './font-scale.js': { scaleCssFontSizes: css => css },
     './settings-drawer.js': { createSettingsDrawer: drawer, createSettingsDrawerState: () => ({ open(key) { drawerState.set(key, true); }, set(key, value) { drawerState.set(key, value); }, isOpen: (key, fallback) => drawerState.has(key) ? drawerState.get(key) : fallback }) },
-    './settings/api-settings.js': { createApiSettings: () => ({ node: new Node() }) },
+    './settings/api-settings.js': { createApiSettings: () => { apiSettingsMounts++; return { node: new Node(), dispose() { apiSettingsDisposals++; } }; } },
     './settings/prompts-settings.js': { createPromptsSettings: () => ({ node: new Node() }) },
     './settings/appearance-settings.js': { createAppearanceSettings: () => ({ node: new Node() }) },
     './scroll-diagnostics.js': { createScrollDiagnostics: () => ({ start() { diagnostics.starts += 1; }, stop() { diagnostics.stops += 1; }, markQqjSwipeIntercepted() { diagnostics.marks += 1; }, snapshot: () => ({ schemaVersion: 1, records: diagnostics.records }) }) },
@@ -126,6 +127,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   body.scrollTop = 39; settingsTab.fire('click');
   assert.ok(calls.some(([kind, value]) => kind === 'page' && value === 'management'));
   assert.equal(view.children[0]?.className, 'settings-page', '设置页应真实占据面板内容容器');
+  assert.equal(apiSettingsDisposals, apiSettingsMounts - 1, '当前设置页保留唯一 API 进度订阅');
   assert.equal(view.children[0]?.children.some(node => node.className === 'master-switch'), true, '设置首开不得被真实 setPage 重绘清掉总开关');
   const settingsGroups = view.children[0]?.children.filter(node => node.tag === 'details');
   assert.deepEqual(settingsGroups.map(node => node.drawerTitle), ['通用设置', '记忆设置', '教程与配置文件'], '存储管理应收进记忆设置，不再占用顶层抽屉');
@@ -259,6 +261,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   body.scrollTop = 18; peopleTab.fire('click');
   assert.equal(body.scrollTop, 39, '从设置返回双丝网时恢复其滚动位置');
   assert.deepEqual(calls.filter(([kind]) => kind === 'mount').at(-1), ['mount', view], '返回内容页应重新挂载到主视图容器');
+  assert.equal(apiSettingsDisposals, apiSettingsMounts, '离开设置页必须释放 API 进度订阅');
   assert.equal(view.children[0]?.className, 'qqj-page qqj-people-page', '返回内容页应移除设置 DOM 并呈现真实内容视图');
   eventTab.fire('click');
   assert.equal(body.scrollTop, 71, '回到千结时恢复千结滚动位置');
@@ -418,6 +421,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   const closedTimeInput = flatten(view).find(node => node.id === 'qqj-settings-time').children.find(node => node.tag === 'input');
   closedTimeInput.checked = true; const closedTime = closedTimeInput.fire('change');
   panel.close(); await closedTime;
+  assert.equal(apiSettingsDisposals, apiSettingsMounts, '关闭面板释放最后一个 API 进度订阅');
   assert.equal(values.timeEvolutionEnabled, false); assert.equal(timeChanges, 4, '关面板取消确认，不开启时间推演');
   assert.equal(timeListeners.size, 0); assert.equal(memoryListeners.size, 0, '关面板解除时间与记忆订阅');
   panel.showStatus('保留模块错误空态');

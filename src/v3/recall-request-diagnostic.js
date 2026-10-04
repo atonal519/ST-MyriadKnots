@@ -29,6 +29,7 @@ export function createRecallRequestDiagnostic({ performanceRef = globalThis.perf
       const stamp = value => Number.isFinite(value) && value > 0 ? performanceRef.timeOrigin + value : null;
       // start→requestStart 的等待可能包含连接或 worker；分段保留，不能全部归为宿主保存队列。
       current.requests.push({ label, startedAt: start, requestStartedAt: stamp(entry.requestStart), responseStartedAt: stamp(entry.responseStart), finishedAt: stamp(entry.responseEnd),
+        responseStatus: Number.isSafeInteger(entry.responseStatus) && entry.responseStatus >= 100 && entry.responseStatus <= 599 ? entry.responseStatus : null,
         ...Object.fromEntries(Object.entries(REQUEST_CONNECTION_FIELDS).map(([field, name]) => [name, stamp(entry[field])])),
         ...Object.fromEntries(REQUEST_SIZE_FIELDS.map(field => [field, Number.isFinite(entry[field]) && entry[field] >= 0 ? entry[field] : null])),
         protocol: requestProtocol(entry.nextHopProtocol),

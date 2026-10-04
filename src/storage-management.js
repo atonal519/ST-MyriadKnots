@@ -1,3 +1,4 @@
+import { VECTOR_INDEX_ID, vectorRecordOwned } from './v3/vector-index.js';
 import {
   validateFoundationCheckpoint,
   validateFoundationFloorContent,
@@ -91,6 +92,8 @@ function emptyBreakdown() {
 
 export async function classifyStorageRecords(records, reachable, chatId) {
   const activeIds = reachableRecordIds(reachable);
+  const manifest = records.find(record => record.recordId === VECTOR_INDEX_ID && vectorRecordOwned(record) && record.data.chatId === chatId && record.data.narrativeGeneration === reachable?.root?.narrativeGeneration);
+  if (manifest) { activeIds.add(VECTOR_INDEX_ID); for (const id of manifest.data.shardIds) activeIds.add(id); }
   const breakdown = { active: emptyBreakdown(), cleanup: emptyBreakdown() };
   const candidates = [];
   const totals = { count: 0, bytes: 0 };
@@ -101,15 +104,17 @@ export async function classifyStorageRecords(records, reachable, chatId) {
     const envelope = records[index];
     const bytes = textBytes(envelope);
     totals.count += 1; totals.bytes += bytes;
+    const vectorOwned = vectorRecordOwned(envelope) && envelope.data.chatId === chatId;
+    const classified = vectorOwned ? { type: 'vectorCache', category: 'runtime' } : await safeFoundationEnvelope(envelope, chatId);
     if (activeIds.has(envelope?.recordId)) {
       active.count += 1; active.bytes += bytes;
-      const safe = await safeFoundationEnvelope(envelope, chatId);
+      const safe = classified;
       if (safe) {
         breakdown.active[safe.category].count += 1;
         breakdown.active[safe.category].bytes += bytes;
       }
     } else {
-      const safe = await safeFoundationEnvelope(envelope, chatId);
+      const safe = classified;
       if (safe) {
         cleanup.count += 1; cleanup.bytes += bytes;
         breakdown.cleanup[safe.category].count += 1;

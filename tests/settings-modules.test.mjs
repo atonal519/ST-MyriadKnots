@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPromptsSettings } from '../src/ui/settings/prompts-settings.js';
 import { createAppearanceSettings } from '../src/ui/settings/appearance-settings.js';
+import { resolveVectorConfig, VECTOR_DEFAULT_URL, VECTOR_DEFAULT_MODEL } from '../src/vector-api.js';
 import { createApiSettings } from '../src/ui/settings/api-settings.js';
+import { createVectorApiSettings } from '../src/ui/settings/vector-api-settings.js';
 import { createSettingsStore } from '../src/settings.js';
 import { createApiResolver, createTaskRouter } from '../src/api-routing.js';
 import { DEFAULT_EXTRACTOR_GUIDANCE } from '../src/v3/extractor.js';
@@ -211,7 +213,7 @@ test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调�
   const { node } = createApiSettings({ settings, apiTools, documentRef, promptImpl: options => { promptCalls.push(options); return promptResponse; }, rerender: () => { rerenders += 1; } });
   const scroller = new Node('div'); scroller.className = 'body'; scroller.scrollTop = 30; scroller.rect = { top: 10, bottom: 410, height: 400 }; node.rect = { top: 100, bottom: 500, height: 400 }; scroller.append(node);
   const editorBody = node.find(n => n.className.includes('settings-sub-body') && n.className.includes('qqj-manual-editor'));
-  assert.ok(editorBody); assert.ok(editorBody.children.at(-1).className.includes('qqj-manual-save-bar'), 'API 操作栏应位于完整编辑器末尾');
+  assert.ok(editorBody); assert.ok(editorBody.children.at(-2).className.includes('qqj-manual-save-bar'), '聊天 API 操作栏在独立向量区之前');
   assert.equal(node.find(n => n.tagName === 'button' && n.textContent === '清除 Key'), undefined);
   const analysis = fieldControl(node, '分析API（建议高质模型）');
   const summary = fieldControl(node, '摘要API（建议快速模型）');
@@ -513,4 +515,141 @@ test('模型内联列表搜索、空匹配与点击回填生效，旧目标迟�
   await focusInline(fieldControl(third, '摘要API（建议快速模型）'));
   rejectOld(Object.assign(new Error('旧目标失败'), { code: 'QQJ_TIMEOUT' })); await staleFailure;
   assert.equal(third.find(n => n.className === 'settings-result').textContent, '');
+});
+
+
+test('独立向量区开关靠右，默认地址模型直接回填，只保存向量配置且仅手动建立', async () => {
+  const settings = createSettingsStore({ extensionSettings: {}, save: () => {} });
+  settings.saveMainConfig({ url: 'https://analysis.invalid/v1', key: 'analysis-key', model: 'analysis' });
+  let builds = 0, aborts = 0;
+  const vectorIndex = { getState: () => ({ status: 'idle' }), subscribe: () => () => {}, build: async () => { builds++; return { status: 'ready' }; }, abortAll: () => { aborts++; } };
+  const calls = [];
+  const apiTools = { fetchModels: async () => { calls.push(['models']); return []; }, testConnection: async () => { calls.push(['chat']); } };
+  const vectorApi = { embed: async (config, input) => { calls.push(['embedding', config, input]); return [new Float32Array([1, 0])]; } };
+  const { node, dispose } = createApiSettings({ settings, apiTools, vectorApi, vectorIndex, documentRef, vectorOpen: true });
+  const vector = node.find(n => n.id === 'qqj-settings-vector-api');
+  assert.equal(vector.open, true);
+  const editor = node.find(n => n.className.includes('qqj-manual-editor'));
+  assert.equal(editor.children.at(-1), vector, '向量区放在聊天 API 编辑区之后');
+  assert.equal(fieldControl(node, '向量API'), undefined, '向量不再混入聊天 API 的角色预设');
+  assert.equal(vector.find(n => n.className.includes('qqj-inline-select')), undefined);
+  assert.equal(vector.find(n => n.tagName === 'button' && n.textContent === '另存为预设'), undefined);
+  const enabled = vector.find(n => n.attributes['aria-label'] === '开启向量召回');
+  assert.equal(enabled.checked, false);
+  assert.deepEqual(enabled.parentNode.children.map(n => n.tagName), ['span', 'input']);
+  assert.match(enabled.parentNode.className, /setting-switch qqj-vector-enable/);
+  assert.equal(enabled.parentNode.className.includes('settings-field'), false, '开关不套用输入框宽度与内边距');
+  assert.equal(fieldControl(vector, 'URL').value, VECTOR_DEFAULT_URL);
+  assert.equal(fieldControl(vector, '模型').value, VECTOR_DEFAULT_MODEL);
+  const build = vector.find(n => n.tagName === 'button' && n.textContent === '建立索引');
+  const testConnection = vector.find(n => n.tagName === 'button' && n.textContent === '测试连接');
+  assert.equal(build.disabled, true); assert.equal(testConnection.disabled, true);
+  await build.fire('click'); await testConnection.fire('click'); assert.deepEqual(calls, []); assert.equal(builds, 0);
+  enabled.checked = true; await enabled.fire('change');
+  assert.equal(settings.get().vectorEnabled, true); assert.equal(build.disabled, false); assert.equal(builds, 0);
+  fieldControl(vector, 'Key').value = 'vector-key';
+  await vector.find(n => n.tagName === 'button' && n.textContent === '保存').fire('click');
+  assert.equal(builds, 0); assert.equal(settings.get().apiKey, 'analysis-key');
+  assert.equal(settings.get().vectorPresetId, '');
+  assert.deepEqual(resolveVectorConfig(settings), { url: VECTOR_DEFAULT_URL, model: VECTOR_DEFAULT_MODEL, key: 'vector-key', dimensions: 1024 });
+  await testConnection.fire('click');
+  assert.deepEqual(calls, [['embedding', resolveVectorConfig(settings), ['连接测试']]], '向量测试不调用聊天接口');
+  const abortsBeforeBuild = aborts;
+  await build.fire('click'); assert.equal(builds, 1); assert.equal(aborts, abortsBeforeBuild, '相同配置重建不能清空可复用向量');
+  assert.equal(settings.get().apiModel, 'analysis');
+  enabled.checked = false; await enabled.fire('change');
+  assert.equal(settings.get().vectorEnabled, false); assert.equal(settings.get().vectorKey, 'vector-key');
+  assert.equal(fieldControl(node, 'URL').value, 'https://analysis.invalid/v1');
+  assert.equal(fieldControl(node, '模型').find(n => n.tagName === 'input').value, 'analysis');
+  dispose();
+});
+
+test('已选向量预设回填但不自动改设置；保存复制凭证解除共享引用，不改其他 API 或原预设', async () => {
+  let writes = 0;
+  const settings = createSettingsStore({ extensionSettings: {}, save: () => { writes++; } });
+  settings.saveMainConfig({ url: 'https://main.invalid/v1', key: 'main-key', model: 'chat-model' });
+  const sharedId = settings.upsertSharedPreset('旧向量预设', { url: 'https://vector.invalid/v1', key: 'vector-key', model: 'embed', excludeParams: ['seed'], timeoutSec: 73, stream: true, qqjTemperature: 0.42 });
+  settings.update({ vectorEnabled: true, vectorPresetId: sharedId });
+  const initialWrites = writes;
+  const { node, dispose } = createVectorApiSettings({ settings, documentRef });
+  assert.equal(writes, initialWrites, '打开设置不自动迁移或保存');
+  assert.equal(settings.get().vectorPresetId, sharedId);
+  assert.equal(fieldControl(node, 'URL').value, 'https://vector.invalid/v1');
+  assert.equal(fieldControl(node, '模型').value, 'embed');
+  assert.equal(fieldControl(node, 'Key').value, ''); assert.match(fieldControl(node, 'Key').placeholder, /已保存/);
+  fieldControl(node, '模型').value = 'embed-v2';
+  await node.find(n => n.tagName === 'button' && n.textContent === '保存').fire('click');
+  assert.equal(settings.get().vectorPresetId, ''); assert.equal(settings.get().vectorKey, 'vector-key');
+  assert.equal(settings.get().vectorModel, 'embed-v2');
+  const shared = settings.sharedPresets().find(item => item.id === sharedId);
+  assert.equal(shared.model, 'embed'); assert.equal(shared.key, 'vector-key');
+  assert.deepEqual(shared.excludeParams, ['seed']); assert.equal(shared.timeoutSec, 73); assert.equal(shared.stream, true); assert.equal(shared.qqjTemperature, 0.42);
+  settings.deleteSharedPreset(sharedId);
+  assert.equal(settings.get().vectorEnabled, true, '删除已脱离的共享预设不影响独立向量');
+  assert.equal(resolveVectorConfig(settings).model, 'embed-v2');
+  assert.equal(settings.get().apiMode, 'auto'); assert.equal(settings.summaryPresetId(), ''); assert.equal(settings.get().recallPresetId, '');
+  assert.equal(settings.mainConfig().model, 'chat-model'); dispose();
+});
+
+test('向量区显示小字进度与取消，编辑其他 API 时进度保留，连接结果互不覆盖', async () => {
+  const settings = createSettingsStore({ extensionSettings: {}, save: () => {} });
+  settings.update({ vectorEnabled: true, vectorKey: 'vector-key' });
+  let state = { status: 'idle' }, listener, endBuild, endTest;
+  const vectorIndex = {
+    getState: () => state,
+    subscribe: fn => { listener = fn; return () => { listener = null; }; },
+    build: () => { state = { status: 'building', active: true, completed: 3, total: 7 }; listener?.(); return new Promise(resolve => { endBuild = resolve; }); },
+    abortAll: () => { state = { status: 'idle', active: false }; listener?.(); endBuild?.(); },
+  };
+  const vectorApi = { embed: () => new Promise(resolve => { endTest = resolve; }) };
+  const apiTools = { testConnection: async () => ({ model: 'chat-model' }) };
+  const { node, dispose } = createApiSettings({ settings, apiTools, vectorIndex, vectorApi, documentRef });
+  const vector = node.find(n => n.id === 'qqj-settings-vector-api');
+  const build = vector.find(n => n.tagName === 'button' && n.textContent === '建立索引');
+  const cancel = vector.find(n => n.tagName === 'button' && n.textContent === '取消');
+  const building = build.fire('click'); await flush();
+  assert.equal(build.disabled, true); assert.equal(cancel.hidden, false);
+  const progress = vector.find(n => n.className.includes('qqj-vector-progress'));
+  assert.equal(progress.textContent, '建立中 3/7');
+  await focusInline(fieldControl(node, '分析API（建议高质模型）'));
+  assert.equal(cancel.hidden, false); assert.equal(progress.hidden, false); listener?.();
+  assert.equal(node.find(n => n.className === 'settings-result').textContent, '');
+  await cancel.fire('click'); await building;
+  assert.equal(build.disabled, false); assert.equal(cancel.hidden, true); assert.equal(typeof listener, 'function');
+  const testing = vector.find(n => n.tagName === 'button' && n.textContent === '测试连接').fire('click'); await flush();
+  await focusInline(fieldControl(node, '摘要API（建议快速模型）'));
+  await node.find(n => n.tagName === 'button' && n.textContent === '测试连接').fire('click');
+  const mainResult = node.find(n => n.className === 'settings-result success');
+  assert.equal(mainResult.textContent, '连接成功 · chat-model');
+  endTest([]); await testing;
+  assert.equal(mainResult.textContent, '连接成功 · chat-model');
+  assert.equal(vector.find(n => n.className === 'settings-result success').textContent, '连接成功');
+  dispose(); assert.equal(listener, null);
+});
+
+test('索引切页后重新订阅进行中的任务，恢复完成/失败结果，不重复建索引或中止任务', async () => {
+  const settings = createSettingsStore({ extensionSettings: {}, save: () => {} });
+  settings.update({ vectorEnabled: true, vectorKey: 'vector-key' });
+  let state = { status: 'building', active: true, completed: 3, total: 7 }, builds = 0, aborts = 0;
+  const listeners = new Set();
+  const publish = next => { state = next; for (const listener of listeners) listener(state); };
+  const vectorIndex = { getState: () => state, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); }, build: async () => { builds++; }, abortAll: () => { aborts++; } };
+  const mount = () => createVectorApiSettings({ settings, vectorIndex, documentRef });
+  const first = mount(); assert.match(first.node.textContent, /3\/7/);
+  publish({ ...state, completed: 5 }); assert.match(first.node.textContent, /5\/7/);
+  assert.equal(listeners.size, 1);
+  first.dispose(); assert.equal(listeners.size, 0); assert.equal(aborts, 0);
+  const second = mount(); assert.match(second.node.textContent, /5\/7/);
+  publish({ status: 'ready', active: false, completed: 7, total: 7 });
+  assert.match(second.node.textContent, /已索引 7 个片段/);
+  assert.doesNotMatch(first.node.textContent, /已索引 7/);
+  second.dispose();
+  const complete = mount(); assert.match(complete.node.textContent, /已索引 7 个片段/); complete.dispose();
+  publish({ status: 'error', active: false, completed: 5, total: 7, error: '向量请求超时。' });
+  const failed = mount(); assert.match(failed.node.textContent, /向量请求超时/); failed.dispose();
+  publish({ status: 'building', active: true, completed: 0, total: 0 });
+  const preparing = mount(); assert.match(preparing.node.textContent, /正在读取原文/); assert.doesNotMatch(preparing.node.textContent, /0\/0/); preparing.dispose();
+  publish({ status: 'ready', active: false, completed: 0, total: 0 });
+  const empty = mount(); assert.match(empty.node.textContent, /当前没有可索引的原文/); empty.dispose();
+  assert.equal(builds, 0); assert.equal(aborts, 0); assert.equal(listeners.size, 0);
 });

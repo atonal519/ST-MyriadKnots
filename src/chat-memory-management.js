@@ -23,6 +23,7 @@ export function createChatMemoryManagement({
   memoryRuntime,
   recallRuntime,
   peopleRuntime,
+  vectorRuntime,
   timeRuntime,
   autoHideController,
   isMainGenerationActive = () => false,
@@ -72,7 +73,7 @@ export function createChatMemoryManagement({
     const recall = recallRuntime?.getState?.() ?? {};
     const people = peopleRuntime?.getState?.() ?? {};
     return Boolean(isMainGenerationActive?.() || memory.memoryWorkBusy || memory.activeAutoMemory || memory.activeExtraction || memory.activeCse
-      || foundation.activeRun || recall.activeRecall || people.active);
+      || foundation.activeRun || recall.activeRecall || people.active || vectorRuntime?.getState?.().active);
   }
   const invalidateRuntimes = deletedChatId => {
     // 一个投影清理失败仍继续清理其余投影，避免删除后保留旧材料。
@@ -81,6 +82,8 @@ export function createChatMemoryManagement({
     try { recallRuntime?.invalidate?.('memoryDeleted'); } catch {}
     try { recallRuntime?.clearCurrent?.(); } catch {}
     try { peopleRuntime?.invalidate?.(); } catch {}
+    // 整档删除同时撤销派生向量任务，避免删除后的页面继续使用旧索引。
+    try { vectorRuntime?.abortAll?.(); } catch {}
   };
 
   async function readPersistedChat(identity, { requireMetadata = true } = {}) {

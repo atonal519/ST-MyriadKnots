@@ -1,5 +1,6 @@
 import { createSettingsKit } from './kit.js';
 import { createInlineSelect } from '../inline-select.js';
+import { createVectorApiSettings } from './vector-api-settings.js';
 import { publicErrorMessage } from '../../public-error.js';
 import { scrollManualEditorToTop } from '../manual-editor-scroll.js';
 import { parseAdditionalParams } from '../../settings.js';
@@ -8,6 +9,10 @@ import { parseAdditionalParams } from '../../settings.js';
 export function createApiSettings({
   settings,
   apiTools,
+  vectorApi,
+  vectorIndex,
+  vectorOpen = false,
+  onVectorToggle,
   initialEditingRole = 'analysis',
   onEditingRoleChange,
   documentRef = globalThis.document,
@@ -206,12 +211,16 @@ export function createApiSettings({
       return false;
     }
     const config = draft();
+    const vectorChanged = target.presetId && settings.get().vectorPresetId === target.presetId
+      && ['url', 'key', 'model'].some(name => String(config[name] ?? '') !== String(target.config?.[name] ?? ''));
     if (target.presetId) {
       settings.upsertSharedPreset(target.config.name, config, target.presetId);
     } else {
       settings.saveMainConfig(config);
     }
     if (target.sourceRole === 'analysis') settings.update({ apiMode: target.presetId ? 'seven-preset' : 'auto', selectedSevenDaysPresetId: target.presetId });
+    // 旧显式共享向量预设仍可被编辑；仅相关连接变更撤销缓存和运行中任务。
+    if (vectorChanged) vectorIndex?.abortAll();
     return true;
   };
   const save = button('保存设置', 'primary-action', () => {
@@ -256,6 +265,7 @@ export function createApiSettings({
     else if (analysisUsesTarget && summaryFollowsAnalysis) effects.push('摘要 API 当前跟随分析，也将随分析回退到主配置。');
     if (recallUsesTarget) effects.push('召回 API 将改为跟随摘要。');
     else if (recallFollowsSummary && (summaryUsesTarget || analysisUsesTarget && summaryFollowsAnalysis)) effects.push('召回 API 当前跟随摘要，也将随摘要使用回退后的配置。');
+    if (currentSelection.vectorPresetId === target.presetId) effects.push('向量召回将关闭，需重新配置。');
     if (!effects.length) effects.push('当前分析、摘要和召回 API 不会切换。');
     const sevenDaysAvailable = typeof isSevenDaysAvailable === 'function' ? isSevenDaysAvailable() : isSevenDaysAvailable === true;
     if (sevenDaysAvailable) effects.push('构画中也会移除这个共享预设。');
@@ -268,6 +278,7 @@ export function createApiSettings({
       result.textContent = '这个预设已不存在，未更改当前选择。'; result.className = 'settings-result error';
       return;
     }
+    if (currentSelection.vectorPresetId === target.presetId) vectorIndex?.abortAll();
     const latest = settings.get();
     if (latest.apiMode === 'seven-preset' && latest.selectedSevenDaysPresetId === target.presetId) {
       settings.update({ apiMode: 'auto', selectedSevenDaysPresetId: '' });
@@ -307,6 +318,7 @@ export function createApiSettings({
   advanced.classList.add('sub-advanced');
   const streamLabel = element('label', 'setting-switch'); streamLabel.append(stream, element('span', '', '流式请求'));
   advancedBody.append(field('排除参数', exclude), field('附加参数（JSON）', additional), additionalHint, streamLabel, field('超时秒数', timeout), field('千千结温度（0–2）', temperature), temperatureHint);
+  const vectorSettings = createVectorApiSettings({ settings, vectorApi, vectorIndex, documentRef, open: vectorOpen, onToggle: onVectorToggle });
 
   body.append(
     field('分析API（建议高质模型）', analysisSelect),
@@ -322,7 +334,8 @@ export function createApiSettings({
     result,
     advanced,
     actions,
+    vectorSettings.node,
   );
   fill();
-  return { node: drawer };
+  return { node: drawer, dispose: vectorSettings.dispose };
 }

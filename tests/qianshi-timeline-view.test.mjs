@@ -436,6 +436,77 @@ test('同日代表菜单随主卡开合移位，每条事件始终只有一个�
   assert.equal(flatten(editedRepresentativeRow).find(node => node.className === 'qqj-qianshi-text-form')?.querySelector('.qqj-qianshi-title-input').value, '旧信进展 3', '展开态代表子行菜单也打开原事件编辑表单');
 });
 
+test('当天过程完成本条动作后徽标与再次打开的选项一致，不改整件事或其他记录', async () => {
+  const grouped = fixture();
+  grouped.timeline.segments[0].groups[0].eventIds = ['event-1', 'event-2', 'event-3'];
+  grouped.matters[0].status = 'completed'; grouped.matters[0].manualStatusOverride = 'completed';
+  for (const index of [0, 2]) { grouped.events[index].status = 'inProgress'; grouped.events[index].actionStatus = 'inProgress'; }
+  let expectedCurrent = 'inProgress', matterWrites = 0;
+  const writes = [];
+  const h = harness({ initialSnapshot: grouped, manualActions: true, editText: async input => {
+    writes.push(input);
+    const saved = h.runtime.getQianshiSnapshot();
+    saved.events.find(event => event.id === input.eventId).actionStatus = input.actionStatus;
+    h.emit(saved); return { status: 'saved' };
+  }, custom: async options => {
+    assert.match(copy(options.content), /本条记录：/u);
+    assert.match(copy(options.content), expectedCurrent === 'completed' ? /当前：已完成/u : /当前：进行中/u);
+    const choices = flatten(options.content).filter(node => node.tag === 'input');
+    assert.deepEqual(choices.map(node => node.value), ['planned', 'inProgress', 'completed', 'occurred']);
+    assert.equal(choices.find(node => node.value === expectedCurrent).checked, true);
+    choices.find(node => node.value === 'completed').fire('change');
+    return options.submit();
+  } });
+  h.runtime.setQianshiMatterStatus = async () => { matterWrites += 1; return { status: 'saved' }; };
+  const card = () => flatten(h.container).find(node => node.dataset.cardId === 'day-1:matter-1');
+  card().open = true; card().fire('toggle');
+  const row = id => flatten(card()).find(node => node.className.includes('qqj-qianshi-matter-event') && node.dataset.qianshiEventId === id);
+  const menu = id => flatten(row(id).parent).find(node => node.className.includes('qqj-qianshi-event-menu') && node.dataset.qianshiEventId === id);
+  for (const id of ['event-1', 'event-3']) {
+    expectedCurrent = 'inProgress';
+    byText(menu(id), '修改状态').fire('click'); await tick(); await tick();
+    const badge = flatten(row(id).children[0]).find(node => node.className.includes('qqj-qianshi-state'));
+    assert.equal(badge.textContent, '已完成'); assert.equal(badge.title, '本条动作状态：已完成');
+    assert.doesNotMatch(copy(h.container), /正在保存|保存失败/u);
+    const saved = h.runtime.getQianshiSnapshot();
+    assert.equal(saved.events.find(event => event.id === id).status, 'inProgress', '动作覆盖不重写原整线状态');
+    assert.deepEqual(saved.matters, grouped.matters, '整件事人工状态保持原样');
+    assert.deepEqual(saved.events[1], grouped.events[1], '其他过程记录保持原样');
+    expectedCurrent = 'completed';
+    byText(menu(id), '修改状态').fire('click'); await tick(); await tick();
+  }
+  assert.equal(matterWrites, 0);
+  assert.deepEqual(writes.map(input => [input.eventId, input.actionStatus, input.expected.actionStatus]),
+    [['event-1', 'completed', 'inProgress'], ['event-3', 'completed', 'inProgress']]);
+});
+
+test('代表菜单移入过程或返回主卡时，状态范围与所需保存接口同步切换', async () => {
+  for (const manualActions of [true, false]) {
+    const grouped = fixture();
+    grouped.timeline.segments[0].groups[0].eventIds = ['event-1', 'event-2', 'event-3'];
+    grouped.matters[0].status = 'completed'; grouped.matters[0].manualStatusOverride = 'completed';
+    grouped.events[2].actionStatus = 'inProgress';
+    const scopes = [];
+    const h = harness({ initialSnapshot: grouped, manualActions, custom: async options => {
+      const whole = copy(options.content).includes('整件事：'); scopes.push(whole ? 'matter' : 'action');
+      const choices = flatten(options.content).filter(node => node.tag === 'input');
+      assert.equal(choices.find(node => node.checked)?.value, whole ? 'completed' : 'inProgress');
+      assert.equal(choices.some(node => node.value === 'automatic'), whole);
+      return null;
+    } });
+    const card = flatten(h.container).find(node => node.dataset.cardId === 'day-1:matter-1');
+    const menu = flatten(card.parent).find(node => node.className.includes('qqj-qianshi-event-menu'));
+    const change = byText(menu, '修改状态');
+    for (const expanded of [false, true, false]) {
+      card.open = expanded; card.fire('toggle'); menu.open = true; menu.fire('toggle');
+      assert.equal(change.disabled, !expanded && !manualActions);
+      if (!change.disabled) { change.fire('click'); await tick(); }
+      assert.equal(flatten(card.parent).filter(node => node.className.includes('qqj-qianshi-event-menu') && node.dataset.qianshiEventId === 'event-3').length, 1);
+    }
+    assert.deepEqual(scopes, manualActions ? ['matter', 'action', 'matter'] : ['action']);
+  }
+});
+
 test('事件菜单支持外点关闭并在离开页面时清除文档监听', () => {
   const h = harness();
   const event = flatten(h.container).find(node => node.dataset.eventId === 'event-1');

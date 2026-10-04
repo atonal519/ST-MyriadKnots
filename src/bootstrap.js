@@ -11,6 +11,8 @@ import { createDialogManager } from './ui/dialog.js';
 export function bootstrap({
   settings,
   apiTools,
+  vectorApi,
+  vectorIndex,
   onPluginEnabledChange,
   onStoryClockChange,
   onAutoHideChange,
@@ -79,6 +81,8 @@ export function bootstrap({
   panel = panelFactory({
     settings,
     apiTools,
+    vectorApi,
+    vectorIndex,
     v3FoundationView: foundationView,
     peopleProfilesView,
     qianshiTimelineView,

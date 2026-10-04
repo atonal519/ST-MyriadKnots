@@ -1,3 +1,6 @@
+import { createVectorApiClient, resolveVectorConfig } from './src/vector-api.js';
+import { createVectorIndex } from './src/v3/vector-index.js';
+import { readRecallSource } from './src/v3/recall-source.js';
 import { user_avatar } from '/scripts/personas.js';
 import { power_user } from '/scripts/power-user.js';
 import { extension_settings, extensionNames } from '/scripts/extensions.js';
@@ -135,6 +138,12 @@ const identityProjectionProvider = async () => {
   if (state?.chatId === identity.chatId) return peopleWorkspaceRuntime.getIdentityProjection();
   return (await peopleWorkspaceStore.read(identity)).data ?? {};
 };
+const vectorApi = createVectorApiClient();
+const vectorIndex = createVectorIndex({
+  client: backendClient, api: vectorApi, configProvider: () => resolveVectorConfig(settings),
+  identityProvider: () => session.identity(), isEnabled: settings.isEnabled,
+  sourceProvider: () => readRecallSource({ store: foundationStore, hostSnapshot: hostAdapter.snapshot(), sanitizerOptions: sanitizerOptions(), realtimeOrigin: v3MemoryRuntime.allowsRealtimeTailFromEmpty(), identityProjectionProvider }),
+});
 let v3RecallRuntime;
 const timeRuntime = createTimeRuntime({
   storyCalendarProvider,
@@ -186,6 +195,7 @@ v3RecallRuntime = createV3RecallRuntime({
   store: foundationStore,
   hostAdapter,
   generateUtilityTask: taskRouter.generateRecallTask,
+  semanticProvider: options => vectorIndex.query(options),
   isEnabled: settings.isEnabled,
   memoryStatus: () => v3MemoryRuntime.getState(),
   prepareMemory: options => v3MemoryRuntime.prepareCurrent(options),
@@ -202,7 +212,7 @@ v3RecallRuntime = createV3RecallRuntime({
 // 本机私有开关启用后独立留存临时诊断；专用客户端不混入记忆存储计数，也不等待诊断写入。
 const privateRecallDiagnostics = createPrivateRecallDiagnostics({
   client: createBackendClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {}, timeoutMs: 5000 }),
-  recallRuntime: v3RecallRuntime, isEnabled: settings.isEnabled,
+  recallRuntime: v3RecallRuntime, vectorRuntime: vectorIndex, isEnabled: settings.isEnabled,
 });
 if (globalThis.location?.origin) void privateRecallDiagnostics.start();
 globalThis.addEventListener?.('beforeunload', privateRecallDiagnostics.dispose, { once: true });
@@ -237,6 +247,7 @@ const chatMemoryManagement = createChatMemoryManagement({
   memoryRuntime: v3MemoryRuntime,
   recallRuntime: v3RecallRuntime,
   peopleRuntime: peopleWorkspaceRuntime,
+  vectorRuntime: vectorIndex,
   timeRuntime,
   autoHideController,
   isMainGenerationActive: isGenerating,
@@ -249,10 +260,10 @@ const storageManagement = createStorageManagement({
   settings,
   memoryRuntime: v3MemoryRuntime,
   foundationRuntime,
-  activitySources: [foundationRuntime, v3RecallRuntime, peopleWorkspaceRuntime, timeRuntime, chatMemoryManagement],
+  activitySources: [vectorIndex, foundationRuntime, v3RecallRuntime, peopleWorkspaceRuntime, timeRuntime, chatMemoryManagement],
   isBusy: () => {
     const memory = v3MemoryRuntime.getState(), management = chatMemoryManagement.getState();
-    return Boolean(management.workBusy || management.status === 'deleting' || timeRuntime.getState().active || memory.qianshiHistoryActive);
+    return Boolean(vectorIndex.getState().active || management.workBusy || management.status === 'deleting' || timeRuntime.getState().active || memory.qianshiHistoryActive);
   },
 });
 const publicMemoryBridgeMount = installPublicMemoryBridge({
@@ -295,6 +306,8 @@ const setAllEnabled = async enabled => {
 ui = bootstrap({
   settings,
   apiTools,
+  vectorApi,
+  vectorIndex,
   onPluginEnabledChange: setAllEnabled,
   onStoryClockChange: options => refreshStoryClock({ ...options, announce: options?.readOnly !== true }),
   onAutoHideChange: options => autoHideController.applySettings(options),
@@ -339,7 +352,7 @@ ui = bootstrap({
 });
 lifecycle = createPluginLifecycle({
   session,
-  aborters: [taskRouter, apiTools, peopleWorkspaceRuntime],
+  aborters: [taskRouter, apiTools, peopleWorkspaceRuntime, vectorIndex, vectorApi],
   isEnabled: settings.isEnabled,
   getUi: () => ui,
   onPrepared: async ({ isCurrent }) => {

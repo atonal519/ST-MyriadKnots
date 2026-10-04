@@ -13,6 +13,8 @@ import { rankRecallDocuments, tokenizeRecallText } from '../src/v3/recall-rankin
 import { projectInlineRecallReceipt } from '../src/ui/inline-projection.js';
 import { createCompactApiClient } from '../src/compact-api-client.js';
 import { createTaskRouter } from '../src/api-routing.js';
+import { createPrivateRecallDiagnostics, projectPrivateRecallDiagnostic } from '../src/private-recall-diagnostics.js';
+import { createVectorIndex } from '../src/v3/vector-index.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GEN = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -2385,7 +2387,7 @@ function cseLaggingReachable(removeDeltaId = 'delta-remove') {
   };
 }
 
-function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaultSelector = false, generateUtilityTask, queryBuilder = buildRecallQueryContext, saveChat = true, reachableReader, rootReader, prepareMemory, preparationTimeoutMs, snapshotHook, fingerprint, memoryStatus, realtimeOrigin, notifyUser, identityProjectionProvider, timeProjectionProvider, qianshiProgressProvider, qianshiDeletionProvider, pluginVersion = TEST_PLUGIN_VERSION, prequel = null } = {}) {
+function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaultSelector = false, generateUtilityTask, semanticProvider, queryBuilder = buildRecallQueryContext, saveChat = true, reachableReader, rootReader, prepareMemory, preparationTimeoutMs, snapshotHook, fingerprint, memoryStatus, realtimeOrigin, notifyUser, identityProjectionProvider, timeProjectionProvider, qianshiProgressProvider, qianshiDeletionProvider, pluginVersion = TEST_PLUGIN_VERSION, prequel = null } = {}) {
   const prompts = [];
   const handlers = new Map();
   const userMessage = { is_user: true, is_system: false, mes: '阿裴，我们回钟楼赴约。' };
@@ -2414,6 +2416,7 @@ function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaul
     sourceReader: sourceReader ?? (async () => structuredClone(source)),
     ...(useDefaultSelector ? {} : { selector }),
     ...(generateUtilityTask ? { generateUtilityTask } : {}),
+    ...(semanticProvider ? { semanticProvider } : {}),
     queryBuilder,
     ...(memoryStatus ? { memoryStatus } : {}),
     ...(realtimeOrigin ? { realtimeOrigin } : {}),
@@ -3282,9 +3285,11 @@ test('只有实时尾状态名时仍使用已保存部分召回且正文继续�
   assert.equal(result.lastRecall.skipReasons.includes('memoryNotReady'), true);
 });
 
-test('runtime normal 先完成一次 prompt commit，再后台保存一次 schema16 completed user 收据', async () => {
+test('runtime normal 先完成一次 prompt commit，再后台保存一次 schema17 completed user 收据', async () => {
   let selectorCalls = 0;
-  const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); } });
+  let completeSave;
+  const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); },
+    saveChat: () => new Promise(resolve => { completeSave = resolve; }) });
   let abortCalls = 0;
   const result = await harness.runtime.intercept(harness.chat, 12000, () => { abortCalls += 1; }, 'normal');
   assert.equal(selectorCalls, 1);
@@ -3297,7 +3302,7 @@ test('runtime normal 先完成一次 prompt commit，再后台保存一次 schem
   assert.match(injection[1], /<qqj_recalled_context>/);
   assert.equal(harness.saves, 1, '正常路径只在 prompt commit 后保存一次完成态回执');
   const receipt = harness.userMessage.extra?.[RECALL_RECEIPT_KEY];
-  assert.equal(RECALL_RECEIPT_SCHEMA_VERSION, 16);
+  assert.equal(RECALL_RECEIPT_SCHEMA_VERSION, 17);
   assert.equal(receipt.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
   assert.equal(receipt.strategyVersion, RECALL_STRATEGY_VERSION);
   assert.equal(receipt.chatId, CHAT);
@@ -3317,8 +3322,12 @@ test('runtime normal 先完成一次 prompt commit，再后台保存一次 schem
   assert.equal(result.lastRecall.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
   assert.equal(result.lastRecall.reusedReceipt, false);
   assert.equal(result.lastRecall.receiptPersistence, 'saving');
+  assert.equal(harness.runtime.getState().lastRecall.receiptSaveDiagnostic.step, 'receiptSaveWait');
+  assert.equal(projectPrivateRecallDiagnostic(harness.runtime.getState(), null).receiptSaveDiagnostic.step, 'receiptSaveWait');
+  completeSave();
   await flushReceiptSave();
   assert.equal(harness.runtime.getState().lastRecall.receiptPersistence, 'saveUnconfirmed');
+  assert.equal(harness.runtime.getState().lastRecall.receiptSaveDiagnostic.step, 'receiptSaveReturned');
   assert.equal(result.lastRecall.stages.selected, 5);
   assert.equal(typeof result.lastRecall.timings.totalMs, 'number');
 });
@@ -4285,7 +4294,7 @@ test('最终提交前readRoot第一次技术失败会走同一整体重试，第
   });
   const boundPhases = [];
   const unsubscribe = harness.runtime.subscribe(state => {
-    if (state.activeRecall?.chatId === CHAT && state.activeRecall.userMessageIndex === 1) boundPhases.push(state.activeRecall.phase);
+    if (state.activeRecall?.chatId === CHAT && state.activeRecall.userMessageIndex === 1 && boundPhases.at(-1) !== state.activeRecall.phase) boundPhases.push(state.activeRecall.phase);
   });
   const result = await harness.runtime.intercept(harness.chat, 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
   unsubscribe();
@@ -4424,22 +4433,128 @@ test('root 变化后的 fresh 严格准备失败时可用同一次容错来源�
   assert.equal(result.lastRecall.status, 'empty', JSON.stringify(result.lastRecall));
 });
 
-test('runtime 在LLM选材等待中停止 generation 会丢弃结果，不以fallback复活旧BM25', async () => {
-  let entered;
-  const started = new Promise(resolve => { entered = resolve; });
-  const harness = createRuntimeHarness({
-    useDefaultSelector: true,
-    generateUtilityTask: async ({ signal }) => { entered(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })); },
+test('runtime 在LLM选材等待中STOP/ENDED/切聊会留最后步骤且不以fallback复活旧BM25', async () => {
+  for (const [event, sourceEvent] of [['generation-stopped', 'GENERATION_STOPPED'], ['generation-ended', 'GENERATION_ENDED'], ['chat-changed', 'CHAT_CHANGED']]) {
+    let entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    const harness = createRuntimeHarness({ useDefaultSelector: true,
+      generateUtilityTask: async ({ signal }) => { entered(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })); },
+    });
+    harness.handlers.get('generation-started')('normal', null, false);
+    const pending = harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+    await started;
+    if (event === 'chat-changed') harness.context.chatMetadata.qianqianjie.chatId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    harness.handlers.get(event)();
+    const result = await pending;
+    if (event === 'chat-changed') assert.equal(result.recallStatus, 'idle', event);
+    else { assert.equal(result.lastRecall.status, 'stale', event); assert.deepEqual(result.lastRecall.skipReasons, ['stopped']); }
+    assert.ok(harness.prompts.every(call => call[1] === ''), event);
+    assert.equal(harness.runtime.getState().lastTerminated.sourceEvent, sourceEvent, event);
+    assert.equal(harness.runtime.getState().lastTerminated.pendingStep, 'utilityTask', event);
+    assert.equal(harness.runtime.getState().lastTerminated.lastCompletedStep, 'candidateBuild', event);
+    assert.equal(harness.saves, 0, event);
+  }
+});
+
+test('真实runtime与私有记录器在LLM挂起时保留向量阶段，STOP后留下细步且不留prompt', async t => {
+  const source = runtimeFixture(), rawText = '钟楼旧约的现场正文。';
+  source.rawSources = [{ floorId: source.floorMemories[0].floorId, assistantSeq: source.floorMemories[0].assistantSeq,
+    floorMemoryId: source.floorMemories[0].floorMemoryId, memoryFloorId: source.floorMemories[0].floorId,
+    memoryAssistantSeq: source.floorMemories[0].assistantSeq, canonicalContent: rawText, fingerprint: await fingerprintText(rawText) }];
+  const records = new Map(); let resolveUtility, utilityStarted;
+  const enteredUtility = new Promise(resolve => { utilityStarted = resolve; });
+  const vectorConfig = { url: 'https://vector.invalid/v1', model: 'mock', key: 'sentinel-vector-key', dimensions: 2 };
+  const vectorRuntime = createVectorIndex({ client: {
+    async get(_collection, id) { if (!records.has(id)) throw Object.assign(new Error('missing'), { status: 404 }); return structuredClone(records.get(id)); },
+    async put(_collection, id, data, revision) { const previous = records.get(id); assert.equal(revision, previous?.revision ?? 0);
+      const result = { revision: revision + 1, data: structuredClone(data) }; records.set(id, result); return result; },
+  }, configProvider: () => vectorConfig, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source,
+  api: { async embed(_config, texts, options = {}) {
+    if (typeof options.onProgress === 'function') options.onProgress({ requestId: 'integration-vector-request', startedAt: new Date(NOW).toISOString(), inputCharacters: texts[0]?.length ?? 0,
+      inputSha256: `sha256:${'a'.repeat(64)}`, deadlineMs: 15000, timeoutMs: 15000, phase: 'request', pendingStage: 'response_headers', lastSuccessfulStage: 'response_headers',
+      responseHeadersMs: 23, httpStatus: 200 });
+    return texts.map(() => [1, 0]);
+  } } });
+  await vectorRuntime.build();
+  const store = new Map();
+  const privateDiagnostics = createPrivateRecallDiagnostics({
+    client: { async get(_collection, id) { if (!store.has(id)) throw { status: 404 }; return structuredClone(store.get(id)); },
+      async put(_collection, id, data, revision) { const value = { revision: revision + 1, data: structuredClone(data) }; store.set(id, value); return value; } },
+    recallRuntime: { getState: () => harness.runtime.getState(), subscribe: fn => harness.runtime.subscribe(fn) }, vectorRuntime,
+    fetchImpl: async () => ({ ok: true, json: async () => ({ enabled: true }) }), isEnabled: () => true, random: () => 0, pollMs: 1000000, flushMs: 1000000,
   });
-  harness.handlers.get('generation-started')('normal', null, false);
+  t.after(privateDiagnostics.dispose);
+  let harness;
+  harness = createRuntimeHarness({ useDefaultSelector: true, sourceReader: async () => structuredClone(source),
+    semanticProvider: input => vectorRuntime.query({ source: input.source, queryContext: input.queryContext, signal: input.signal }),
+    generateUtilityTask: ({ signal }) => { utilityStarted(); return new Promise((resolve, reject) => {
+      resolveUtility = resolve; signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+    }); } });
+  await privateDiagnostics.start();
+  harness.handlers.get('generation-started')('normal');
   const pending = harness.runtime.intercept(harness.chat, 12000, null, 'normal');
-  await started;
+  await enteredUtility;
+  assert.equal(harness.runtime.getState().activeRecall.pendingStep, 'utilityTask');
+  await privateDiagnostics.flush();
+  const waiting = [...store.values()][0].data.events.at(-1).data;
+  assert.equal(waiting.active.selectorProgress.pendingStep, 'utilityTask');
+  assert.equal(waiting.vector.query.status, 'ready');
+  assert.equal(waiting.vector.query.request.requestId, 'integration-vector-request');
+  assert.equal(waiting.vector.query.request.httpStatus, 200);
+  assert.doesNotMatch(JSON.stringify(waiting), /sentinel-vector-key|现场正文|requestBody|responseText/u);
   harness.handlers.get('generation-stopped')();
-  const result = await pending;
-  assert.equal(result.lastRecall.status, 'stale');
-  assert.deepEqual(result.lastRecall.skipReasons, ['stopped']);
-  assert.ok(harness.prompts.every(call => call[1] === ''));
-  assert.equal(harness.saves, 0);
+  const stopped = await pending;
+  assert.equal(stopped.lastRecall.status, 'stale'); assert.ok(harness.prompts.every(call => call[1] === ''));
+  await privateDiagnostics.flush();
+  const final = [...store.values()][0].data.events.at(-1).data;
+  assert.equal(final.lastTerminated.sourceEvent, 'GENERATION_STOPPED');
+  assert.equal(final.lastTerminated.pendingStep, 'utilityTask');
+  assert.equal(final.lastTerminated.lastCompletedStep, 'candidateBuild');
+  resolveUtility?.({ jsonData: { history_exclude_keys: [], state_exclude_keys: [] } });
+});
+
+test('向量两次超时预算跨真实runtime外层重算，保留本地候选与双请求安全记录', async () => {
+  const source = runtimeFixture(), text = '钟楼旧约的现场正文。', raw = source.floorMemories[0];
+  source.rawSources = [{ floorId: raw.floorId, assistantSeq: raw.assistantSeq, floorMemoryId: raw.floorMemoryId,
+    memoryFloorId: raw.floorId, memoryAssistantSeq: raw.assistantSeq, canonicalContent: text, fingerprint: await fingerprintText(text) }];
+  const records = new Map(); let building = true, vectorCalls = 0, rootCalls = 0, utilityCalls = 0, localCandidateCounts = [];
+  const vectorConfig = { url: 'https://vector.invalid/v1', model: 'mock', key: 'secret-vector-key', dimensions: 2 };
+  const vectorRuntime = createVectorIndex({ client: {
+    async get(_collection, id) { if (!records.has(id)) throw Object.assign(new Error('missing'), { status: 404 }); return structuredClone(records.get(id)); },
+    async put(_collection, id, data, revision) { const previous = records.get(id); assert.equal(revision, previous?.revision ?? 0);
+      const result = { revision: revision + 1, data: structuredClone(data) }; records.set(id, result); return result; },
+  }, configProvider: () => vectorConfig, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source,
+  api: { async embed(_config, texts, options = {}) {
+    if (building) return texts.map(() => [1, 0]);
+    const index = ++vectorCalls, request = { requestId: `retry-request-${index}`, startedAt: new Date(NOW).toISOString(), inputCharacters: texts[0].length,
+      inputSha256: `sha256:${'c'.repeat(64)}`, timeoutMs: 15000, deadlineMs: 15000, phase: 'aborted', pendingStage: 'aborted',
+      lastSuccessfulStage: 'fetch_called', timeoutOrigin: 'vector_api_deadline', abortOrigin: 'vector_api_deadline', abortReason: 'timeout' };
+    options.onProgress?.(request); options.onDiagnostic?.(request);
+    throw Object.assign(new Error('safe timeout'), { code: 'VECTOR_TIMEOUT' });
+  } } });
+  await vectorRuntime.build(); building = false;
+  const harness = createRuntimeHarness({ useDefaultSelector: true, sourceReader: async () => structuredClone(source),
+    rootReader: async () => ++rootCalls === 1 ? { status: 'unavailable' }
+      : { status: 'ready', revision: source.rootRevision, data: { chatId: source.chatId, narrativeGeneration: source.narrativeGeneration, headCheckpointId: source.headCheckpointId } },
+    semanticProvider: input => vectorRuntime.query({ source: input.source, queryContext: input.queryContext, signal: input.signal }),
+    generateUtilityTask: async ({ taskMessages }) => {
+      utilityCalls++; const payload = JSON.parse(taskMessages[0].content); localCandidateCounts.push(payload.candidates.length);
+      return { jsonData: { history_exclude_keys: [], state_exclude_keys: [] } };
+    } });
+  const result = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  assert.equal(result.lastRecall.status, 'ready'); assert.equal(result.lastRecall.diagnosticAttempt, 2);
+  assert.equal(rootCalls, 2); assert.equal(utilityCalls, 2); assert.equal(vectorCalls, 2, '第二个runtime attempt未重置向量请求预算');
+  assert.ok(localCandidateCounts.every(count => count > 0), '语义失败仍把本地候选送入既有LLM选材');
+  const attempts = result.lastRecall.selectorDiagnostic.semantic.requestAttempts;
+  assert.equal(attempts.length, 2); assert.deepEqual(attempts.map(item => item.requestId), ['retry-request-1', 'retry-request-2']);
+  assert.ok(attempts.every(item => item.timeoutMs === 15000 && item.errorCode === 'VECTOR_TIMEOUT' && item.result === 'timeout' && item.lastSuccessfulStage === 'fetch_called'));
+  assert.equal(result.lastRecall.selectorDiagnostic.semantic.requestCount, 2);
+  assert.equal(result.lastRecall.selectorDiagnostic.semantic.retryOutcome, 'retry_failed');
+  const safe = projectPrivateRecallDiagnostic(harness.runtime.getState(), vectorRuntime.getState());
+  assert.equal(safe.last.selector.semantic.requestAttempts.length, 2); assert.equal(safe.vector.query.requestCount, 2);
+  assert.equal(safe.vector.query.retryOutcome, 'retry_failed');
+  assert.doesNotMatch(JSON.stringify(safe), /secret-vector-key|钟楼旧约的现场正文|canonicalContent|requestBody/u);
+  assert.ok(harness.prompts.some(call => call[1]), '本地候选由既有LLM流程正常注入');
 });
 
 test('runtime completed-empty 是可持久化、可恢复的完成态，且不写非空 prompt', async () => {
@@ -4569,6 +4684,28 @@ test('历史楼只读 projector 按每楼正文、chat、index 与自签回执�
   assert.equal(changedPluginInCurrentCodeDoesNotMatter?.injectionText, receipt.injectionText);
   const tampered = structuredClone(message); tampered.extra[RECALL_RECEIPT_KEY].injectionText += '篡改';
   assert.equal(await projectHistoricalRecallReceipt(tampered, { chatId: CHAT, userMessageIndex: index }), null);
+});
+
+test('历史签名回执 schema16 与旧17仍可只读恢复，读取不重签或改写封签', async () => {
+  const harness = createRuntimeHarness();
+  await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  const current = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
+  for (const schemaVersion of [16, 17]) {
+    const historical = structuredClone(current);
+    historical.schemaVersion = schemaVersion;
+    for (const key of ['pendingStep', 'lastCompletedStep', 'stageTimings']) delete historical.selectorDiagnostic?.[key];
+    if (historical.selectorDiagnostic?.semantic?.request) for (const key of ['requestId', 'inputSha256', 'deadlineMs', 'elapsedMs', 'deadlineOverrunMs', 'timeoutOrigin', 'abortOrigin', 'abortReason', 'networkCode', 'providerRequestId', 'pendingStage', 'lastSuccessfulStage']) delete historical.selectorDiagnostic.semantic.request[key];
+    historical.receiptFingerprint = await receiptFingerprint(historical);
+    const saved = structuredClone(historical);
+    const projected = await projectHistoricalRecallReceipt({ ...harness.userMessage, extra: { [RECALL_RECEIPT_KEY]: historical } }, { chatId: CHAT, userMessageIndex: 1 });
+    assert.equal(projected.schemaVersion, schemaVersion);
+    assert.equal(projected.injectionText, historical.injectionText);
+    harness.userMessage.extra[RECALL_RECEIPT_KEY] = historical;
+    harness.runtime.invalidate(`schema${schemaVersion}Restore`);
+    const restored = await harness.runtime.restorePersistedReceipt();
+    assert.equal(restored.lastRecall.schemaVersion, schemaVersion);
+    assert.deepEqual(harness.userMessage.extra[RECALL_RECEIPT_KEY], saved, '只读恢复不重签或改写历史封签');
+  }
 });
 
 test('历史楼 projector 对旧 schema6/7/8/9 保持原签名展示和真实落盘恢复，但当前生成不能复用', async () => {
@@ -4951,7 +5088,8 @@ test('runtime 绑定当前用户楼后立即通知 input 阶段，异步输入�
   const states = [];
   const unsubscribe = harness.runtime.subscribe(state => states.push(state));
   const running = harness.runtime.intercept(harness.chat, 12000, null, 'normal');
-  assert.deepEqual(states.at(-1)?.activeRecall, { token: 1, generationType: 'normal', phase: 'input', chatId: CHAT, userMessageIndex: 1 });
+  assert.deepEqual(Object.fromEntries(['token', 'generationType', 'phase', 'chatId', 'userMessageIndex', 'pendingStep'].map(key => [key, states.at(-1)?.activeRecall?.[key]])),
+    { token: 1, generationType: 'normal', phase: 'input', chatId: CHAT, userMessageIndex: 1, pendingStep: 'prequelSelection' });
   assert.deepEqual([sourceCalls, selectorCalls], [0, 0], '绑定通知不得提前开始来源读取或选择');
   releaseFingerprint();
   await running; unsubscribe();
@@ -5488,6 +5626,8 @@ test('runtime prompt 已 commit 后唯一一次完成态保存失败仍保留注
   const readyWait = result.lastRecall.timings.totalMs;
   await flushReceiptSave();
   assert.equal(harness.runtime.getState().lastRecall.receiptPersistence, 'sessionOnly');
+  assert.equal(harness.runtime.getState().lastRecall.receiptSaveDiagnostic.status, 'failed');
+  assert.equal(projectPrivateRecallDiagnostic(harness.runtime.getState(), null).receiptSaveDiagnostic.status, 'failed');
   assert.equal(harness.runtime.getState().lastRecall.timings.totalMs, readyWait);
   assert.ok(harness.prompts.at(-1)[1], '最终回执保存失败不得反向清除已经 commit 的 prompt');
   assert.equal(harness.userMessage.extra.concurrentField, 'must-survive');
@@ -5780,6 +5920,64 @@ test('runtime 最终同步复核返回后若微任务使历史失效，事件先
 });
 
 
+test('真实成员原文经 runtime/签名/冷读按成员楼展示；同 user 冻结不重查向量，人工撤来源后不复活', async () => {
+  const source = runtimeFixture();
+  source.floorMemories = source.floorMemories.filter(memory => memory.floorId !== 'floor-1');
+  const anchor = source.floorMemories.find(memory => memory.floorId === 'floor-2');
+  anchor.sourceFloorIds = ['floor-1', 'floor-2']; anchor.sourceAssistantSeqs = [1, 2];
+  anchor.chronology = [{ time: { kind: 'explicit', sourceText: '启航387年夏10日', normalized: null, precision: 'exact', relativeToAssistantSeq: null }, description: '归档楼时间' }];
+  const text = '当年在钟楼交换了那把蓝色钥匙，这是尚未告知阿裴的打算。';
+  const raw = { floorId: 'floor-1', assistantSeq: 1, floorMemoryId: anchor.floorMemoryId, memoryFloorId: anchor.floorId, memoryAssistantSeq: anchor.assistantSeq, canonicalContent: text, fingerprint: await fingerprintText(text) };
+  source.rawSources = [raw];
+  const witness = { ...raw, offset: 0, length: text.length, textFingerprint: await fingerprintText(text) }; delete witness.canonicalContent;
+  let selections = 0, vectors = 0, manual = false;
+  const reachableReader = async () => {
+    const reachable = rawReachableFromSource(source);
+    reachable.floors.push({ id: 'floor-1', assistantSeq: 1 });
+    const memory = reachable.floorMemories.find(memory => memory.id === anchor.floorMemoryId);
+    memory.sourceFloorIds = ['floor-1', 'floor-2'];
+    memory.sourceFloorSnapshots = [{ floorId: 'floor-1', canonicalContent: text }, { floorId: 'floor-2', canonicalContent: '' }];
+    if (manual) memory.summary = { effectiveSource: 'user', userText: '用户删除了钥匙相关回顾' };
+    return reachable;
+  };
+  const sourceReader = async () => ({ ...structuredClone(source), rawSources: manual ? [] : [raw] });
+  const harness = createRuntimeHarness({ sourceReader, reachableReader, useDefaultSelector: true,
+    semanticProvider: async () => { vectors++; return { candidates: [{ text, witness }], diagnostic: { status: 'ready', candidateCount: 1,
+      requestCount: 0, retryOutcome: 'cancelled', requestAttempts: [{ requestId: 'cancelled-before-fetch', phase: 'request', pendingStage: 'aborted',
+        lastSuccessfulStage: 'request_prepared', result: 'cancelled', errorCode: 'VECTOR_ABORTED' }], request: {
+      phase: 'complete', startedAt: '2026-10-03T13:00:00.000Z', inputCharacters: 100, timeoutMs: 8000,
+      fetchCallMs: 1, responseHeadersMs: 500, responseBodyMs: 510, durationMs: 511, httpStatus: 200,
+      url: 'https://vector-private.invalid', key: 'vector-private-key', text: '向量查询私密正文',
+    } } }; },
+    generateUtilityTask: async request => { selections++; const payload = JSON.parse(request.taskMessages[0].content); return { jsonData: {
+      history_exclude_keys: payload.candidates.filter(value => !value.fact.includes('蓝色钥匙')).map(value => value.key), state_exclude_keys: [],
+    } }; },
+  });
+  const first = await harness.runtime.intercept(harness.chat, 20000, null, 'normal');
+  assert.equal(first.lastRecall.status, 'ready');
+  const receipt = harness.userMessage.extra[RECALL_RECEIPT_KEY];
+  const actual = receipt.selectedFloors.find(value => value.rawWitnesses?.length);
+  assert.equal(actual.floorId, 'floor-1'); assert.equal(actual.assistantSeq, 1); assert.equal(actual.floorMemoryId, 'memory-2');
+  assert.equal(actual.rawWitnesses[0].memoryFloorId, 'floor-2'); assert.equal(actual.rawWitnesses[0].memoryAssistantSeq, 2);
+  assert.equal(receipt.selectorDiagnostic.semantic.candidateCount, 1);
+  assert.equal(receipt.selectorDiagnostic.semantic.requestCount, 0, '发出请求前取消的runtime回执不从attempt数组推造HTTP调用');
+  assert.equal(receipt.selectorDiagnostic.semantic.requestAttempts[0].lastSuccessfulStage, 'request_prepared');
+  assert.equal(receipt.selectorDiagnostic.semantic.request.phase, 'complete');
+  assert.equal(receipt.selectorDiagnostic.semantic.request.inputCharacters, 100);
+  assert.doesNotMatch(JSON.stringify(receipt.selectorDiagnostic.semantic), /vector-private|向量查询私密正文/u);
+  const projected = await projectHistoricalRecallReceipt(harness.userMessage, { chatId: CHAT, userMessageIndex: 1 });
+  assert.equal(projected.status, 'ready');
+  const inline = projectInlineRecallReceipt(projected);
+  assert.deepEqual(projected.selectorDiagnostic.semantic.request, receipt.selectorDiagnostic.semantic.request);
+  assert.ok(inline.historyGroups.some(group => group.assistantSeq === 1));
+  assert.match(receipt.injectionText, /时间未标注/);
+  const second = await harness.runtime.intercept(harness.chat, 20000, null, 'regenerate');
+  assert.equal(second.lastRecall.reusedReceipt, true); assert.equal(vectors, 1); assert.equal(selections, 1);
+  manual = true;
+  const revoked = await harness.runtime.intercept(harness.chat, 20000, null, 'swipe');
+  assert.notEqual(revoked.lastRecall.status, 'ready'); assert.equal(vectors, 1); assert.equal(selections, 1);
+});
+
 test('准备期限覆盖身份、独立来源和提交root，诊断分attempt且迟到分支不继续读取', async t => {
   for (const kind of ['identity', 'read', 'commitRoot']) await t.test(kind, async () => {
     const releases = []; let prepares = 0, reads = 0, selects = 0, aborts = 0;
@@ -5797,6 +5995,8 @@ test('准备期限覆盖身份、独立来源和提交root，诊断分attempt且
     for (const attempt of attempts) {
       const record = attempt.timings.preparationAttempts.at(-1);
       assert.equal(record.status, 'timeout'); assert.equal(record.stage, { identity: 'identity', read: 'read', commitRoot: 'root' }[kind]);
+      assert.equal(attempt.pendingStep, record.stage);
+      assert.notEqual(attempt.lastCompletedStep, record.stage, '准备失败步骤不能伪装成已完成');
       assert.ok(record.totalMs >= record.budgetMs - 2); assert.ok(record[`${record.stage}Ms`] >= record.budgetMs - 2);
       assert.ok(attempt.timings.preparationAttempts.length <= 2);
     }

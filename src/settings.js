@@ -20,6 +20,11 @@ export const DEFAULT_SETTINGS = Object.freeze({
   selectedSevenDaysPresetId: '',
   summaryPresetId: '',
   recallPresetId: '',
+  vectorEnabled: false,
+  vectorPresetId: '',
+  vectorUrl: '',
+  vectorKey: '',
+  vectorModel: '',
   apiUrl: '',
   apiKey: '',
   apiModel: '',
@@ -210,6 +215,8 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'selectedSevenDaysPresetId')) settings.selectedSevenDaysPresetId = text(patch.selectedSevenDaysPresetId).trim();
     if (own(patch, 'summaryPresetId')) settings.summaryPresetId = text(patch.summaryPresetId).trim();
     if (own(patch, 'recallPresetId')) settings.recallPresetId = text(patch.recallPresetId).trim();
+    if (own(patch, 'vectorEnabled')) settings.vectorEnabled = patch.vectorEnabled === true;
+    for (const field of ['vectorPresetId', 'vectorUrl', 'vectorKey', 'vectorModel']) if (own(patch, field)) settings[field] = text(patch[field]).trim();
     if (own(patch, 'apiUrl')) settings.apiUrl = text(patch.apiUrl).trim();
     if (own(patch, 'apiKey')) settings.apiKey = text(patch.apiKey).trim();
     if (own(patch, 'apiModel')) settings.apiModel = text(patch.apiModel).trim();
@@ -409,6 +416,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     }
     if (text(current.summaryPresetId).trim() === presetId) current.summaryPresetId = '';
     if (text(current.recallPresetId).trim() === presetId) current.recallPresetId = '';
+    if (text(current.vectorPresetId).trim() === presetId) current.vectorEnabled = false;
     notify();
     return true;
   };
