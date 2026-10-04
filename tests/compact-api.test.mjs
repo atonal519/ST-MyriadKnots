@@ -7,6 +7,39 @@ import { buildExtractorSystemPrompt } from '../src/v3/extractor.js';
 import { BASE_PROCESSING_PROMPT, resolveProcessingPrompt, withBaseProcessingPrompt } from '../src/internal-processing-prompt.js';
 
 const config = overrides => ({ url: 'https://api.example.test', key: 'TEST_KEY', model: 'compact-model', excludeParams: [], timeoutSec: 5, stream: false, ...overrides });
+
+test('附加参数走宿主自定义通道，保留独立凭证、材料与 schema；排除参数最后生效', async () => {
+  const bodies = [];
+  const client = createCompactApiClient({ fetchImpl: async (_path, options) => { bodies.push(JSON.parse(options.body)); return jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] }); } });
+  const additional = '{"thinking":{"type":"disabled"},"seed":42,"temperature":0.1}';
+  await client.generateTask({ config: config({ model: 'glm-5.2', qqjAdditionalParams: additional, excludeParams: ['seed', 'custom_include_headers', 'custom_url', 'custom_include_body'] }),
+    taskMessages: [{ role: 'user', content: 'only supplied evidence' }], jsonSchema: { name: 'memory', value: { type: 'object' }, strict: true } });
+  const body = bodies[0];
+  assert.equal(body.chat_completion_source, 'custom');
+  assert.equal(body.custom_url, 'https://api.example.test/v1');
+  assert.deepEqual(JSON.parse(body.custom_include_headers), { Authorization: 'Bearer TEST_KEY' });
+  assert.deepEqual(JSON.parse(body.custom_include_body), { thinking: { type: 'disabled' }, temperature: 0.1 });
+  assert.equal(body.messages[1].content, 'only supplied evidence');
+  assert.deepEqual(body.json_schema, { name: 'memory', value: { type: 'object' }, strict: true });
+  assert.equal(body.model, 'glm-5.2');
+  assert.equal(Object.hasOwn(body, 'proxy_password'), false);
+  await client.generateTask({ config: config({ qqjAdditionalParams: '{"thinking":{"type":"disabled"}}', excludeParams: ['thinking'] }), taskMessages: [] });
+  await client.generateTask({ config: config({ qqjAdditionalParams: ' {} ' }), taskMessages: [] });
+  for (const unchanged of bodies.slice(1)) {
+    assert.equal(unchanged.chat_completion_source, 'openai');
+    assert.equal(unchanged.proxy_password, 'TEST_KEY');
+    assert.equal(Object.hasOwn(unchanged, 'custom_include_body'), false);
+  }
+});
+
+test('非法附加 JSON、危险对象键或试图改任务归属时在请求前拒绝，不调用模型', async () => {
+  let calls = 0;
+  const client = createCompactApiClient({ fetchImpl: async () => { calls++; throw new Error('must not send'); } });
+  for (const qqjAdditionalParams of ['{bad}', '[]', 'false', 'null', '{"model":"another"}', '{"messages":[]}', '{"stream":true}', '{"response_format":{}}', '{"custom_url":"https://other.test"}', '{"thinking":{"__proto__":{}}}', '{"temperature":1e999}']) {
+    await assert.rejects(client.generateTask({ config: config({ qqjAdditionalParams }), taskMessages: [] }), TypeError);
+  }
+  assert.equal(calls, 0);
+});
 const jsonResponse = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
 const sseResponse = (chunks, contentType = 'text/event-stream') => {
   const encoder = new TextEncoder(); let index = 0;

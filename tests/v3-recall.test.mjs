@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { formatChronologyAnchor, projectRecallSource, readRecallSource } from '../src/v3/recall-source.js';
 import { buildRecallCseCandidatePool, buildRecallHistoryCandidatePool, buildRecallQueryContext, cseSelectionContext, estimateRecallTokens, formatRecallInjection, historySelectionContext, recallBudget, selectRecall } from '../src/v3/recall-selector.js';
 import { RECALL_LLM_SYSTEM_PROMPT, removeExactQianshiDuplicates, selectRecallWithLlm } from '../src/v3/recall-llm-selector.js';
-import { captureCoreBodyWitness, createV3RecallRuntime, projectHistoricalRecallReceipt, renderedQianshiProgressText, RECALL_PROMPT_SLOT, RECALL_RECEIPT_KEY, RECALL_RECEIPT_SCHEMA_VERSION } from '../src/v3/recall-runtime.js';
+import { captureCoreBodyWitness, createV3RecallRuntime, projectHistoricalRecallReceipt, renderedQianshiProgressText, RECALL_PROMPT_SLOT, RECALL_RECEIPT_KEY, RECALL_RECEIPT_SCHEMA_VERSION, RECALL_STRATEGY_VERSION } from '../src/v3/recall-runtime.js';
 import { PREQUEL_PROMPT_SLOT } from '../src/v3/recall-prequel.js';
 import { sha256 } from '../src/identity.js';
 import { assessMemoryCoverageFromHost } from '../src/v3/memory-coverage.js';
@@ -2440,6 +2440,7 @@ function createRuntimeHarness({ sourceReader, selector = selectRecall, useDefaul
 }
 
 const latestPromptValue = (prompts, slot) => prompts.filter(call => call[0] === slot).at(-1)?.[1];
+const flushReceiptSave = () => new Promise(resolve => setImmediate(resolve));
 
 test('时间投影await后长正文尾部/默认swipe改变只撤时间；USER或聊天改变仍阻断', async () => {
   for (const change of ['raw', 'swipe', 'user', 'chat']) {
@@ -2862,7 +2863,7 @@ test('同 user 的 core 去重集合变化不改写首次冻结回执', async ()
   const harness = createRuntimeHarness({ sourceReader: async () => structuredClone(source), reachableReader: async () => rawReachableFromSource(source), selector: input => { selectorCalls += 1; return selectRecall(input); } });
   await harness.runtime.intercept(structuredClone(harness.chat), 12000, null, 'normal');
   const first = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
-  assert.equal(first.schemaVersion, 16);
+  assert.equal(first.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
   assert.equal(first.completionStatus, 'ready');
   await harness.runtime.intercept([structuredClone(harness.userMessage)], 12000, null, 'regenerate');
   const second = harness.userMessage.extra[RECALL_RECEIPT_KEY];
@@ -3281,7 +3282,7 @@ test('只有实时尾状态名时仍使用已保存部分召回且正文继续�
   assert.equal(result.lastRecall.skipReasons.includes('memoryNotReady'), true);
 });
 
-test('runtime normal 先完成一次 prompt commit，再最多保存一次 schema15 completed user 收据且不产生 pending', async () => {
+test('runtime normal 先完成一次 prompt commit，再后台保存一次 schema16 completed user 收据', async () => {
   let selectorCalls = 0;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); } });
   let abortCalls = 0;
@@ -3297,8 +3298,8 @@ test('runtime normal 先完成一次 prompt commit，再最多保存一次 schem
   assert.equal(harness.saves, 1, '正常路径只在 prompt commit 后保存一次完成态回执');
   const receipt = harness.userMessage.extra?.[RECALL_RECEIPT_KEY];
   assert.equal(RECALL_RECEIPT_SCHEMA_VERSION, 16);
-  assert.equal(receipt.schemaVersion, 16);
-  assert.equal(receipt.strategyVersion, 'continuity-v16');
+  assert.equal(receipt.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
+  assert.equal(receipt.strategyVersion, RECALL_STRATEGY_VERSION);
   assert.equal(receipt.chatId, CHAT);
   assert.equal(receipt.headCheckpointId, harness.source.headCheckpointId);
   assert.equal(receipt.rootRevision, harness.source.rootRevision);
@@ -3313,9 +3314,11 @@ test('runtime normal 先完成一次 prompt commit，再最多保存一次 schem
   assert.equal(Number.isFinite(receipt.timings.selectorMs), true);
   assert.equal(Object.hasOwn(receipt, 'promptCommitted'), false);
   assert.deepEqual(receipt.selectedFloors.map(value => value.assistantSeq), [2, 5, 6, 7, 8]);
-  assert.equal(result.lastRecall.schemaVersion, 16);
+  assert.equal(result.lastRecall.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
   assert.equal(result.lastRecall.reusedReceipt, false);
-  assert.equal(result.lastRecall.receiptPersistence, 'saveUnconfirmed');
+  assert.equal(result.lastRecall.receiptPersistence, 'saving');
+  await flushReceiptSave();
+  assert.equal(harness.runtime.getState().lastRecall.receiptPersistence, 'saveUnconfirmed');
   assert.equal(result.lastRecall.stages.selected, 5);
   assert.equal(typeof result.lastRecall.timings.totalMs, 'number');
 });
@@ -3336,8 +3339,9 @@ test('实时回执保留时间去重依据，重叠千事不再让楼内旧事�
 });
 
 test('人工删除只撤冻结千事对应行与关联刻度，普通召回保留且不重选；新回执不被旧标记反复撤', async () => {
-  let deletions = [], selections = 0, sourceReads = 0;
+  let deletions = [], selections = 0, sourceReads = 0, completeSave, saveCalls = 0;
   const h = createRuntimeHarness({ selector: input => { selections += 1; return selectRecall(input); },
+    saveChat: () => ++saveCalls === 1 ? new Promise(resolve => { completeSave = resolve; }) : Promise.resolve(),
     sourceReader: async () => { sourceReads += 1; return structuredClone(h.source); },
     qianshiDeletionProvider: () => ({ chatId: CHAT, events: deletions }),
     qianshiProgressProvider: () => ({ anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion: 1,
@@ -3360,6 +3364,14 @@ test('人工删除只撤冻结千事对应行与关联刻度，普通召回保�
   assert.deepEqual(h.userMessage.extra[RECALL_RECEIPT_KEY], original, '保留历史签名回执，只改变本次可用注入');
   const again = await h.runtime.intercept(h.chat, 12000, null, 'continue');
   assert.equal(again.lastRecall.injectionText, reused.lastRecall.injectionText); assert.equal(selections, 1);
+  assert.equal(again.lastRecall.receiptPersistence, 'saving');
+  const reuseWait = again.lastRecall.timings.totalMs;
+  completeSave(); await flushReceiptSave();
+  const settled = h.runtime.getState().lastRecall;
+  assert.equal(settled.receiptPersistence, 'saveUnconfirmed');
+  assert.equal(settled.timings.totalMs, reuseWait);
+  assert.equal(settled.injectionText, again.lastRecall.injectionText, '旧保存只补状态，不能复活人工删除材料');
+  assert.equal(h.saves, 1);
   // 新 user 首次选材已看到删除标记，后续冻结不把同一事项的新有效进展撤掉。
   h.userMessage.mes += ' 新输入'; h.source.qianshiDeletedEvents = deletions;
   await h.runtime.intercept(h.chat, 12000, null, 'normal');
@@ -3381,7 +3393,7 @@ test('千事当前进度计入普通召回预算并写入同一 schema15 回执�
   assert.equal(result.lastRecall.status, 'ready');
   assert.match(result.lastRecall.injectionText, /<qqj_qianshi_progress>[\s\S]*归还旧书/u);
   const receipt = harness.userMessage.extra[RECALL_RECEIPT_KEY];
-  assert.equal(receipt.schemaVersion, 16);
+  assert.equal(receipt.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
   assert.equal(receipt.qianshiProgress.projectionVersion, 1);
   assert.equal(providerContext.queryContext.latestUserText, '阿裴,我们回钟楼赴约。');
   assert.deepEqual(receipt.qianshiProgress.eventIds, ['event-qianshi-1']);
@@ -3620,7 +3632,7 @@ test('摘要已齐但CSE欠尾时真实delta的私密移除跨 source/selector/s
   assert.equal(first.lastRecall.status, 'ready', JSON.stringify({ recall: first.lastRecall, selected: selectedSnapshot?.cseChanges, source: sourceSnapshot?.cseChanges }));
   const receipt = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
   assert.deepEqual(receipt.coverage, { stableAiFloors: 3, stableThroughAssistantSeq: 3, rememberedAiFloors: 3, missingAssistantSeq: [], cseThroughAssistantSeq: 2, memoryComplete: true, cseCurrent: true });
-  assert.equal(receipt.schemaVersion, 16);
+  assert.equal(receipt.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
   assert.equal(receipt.selectedStates.length, 0, '第二楼固定移除后，现存楼汇总确实为空');
   const removed = receipt.selectedCseChanges.find(value => value.action === 'remove');
   assert.ok(removed);
@@ -3665,8 +3677,8 @@ test('runtime 默认异步入口调用摘要路由，成功排除写入 schema15
   assert.equal(calls, 1);
   assert.equal(first.lastRecall.status, 'ready');
   const receipt = harness.userMessage.extra[RECALL_RECEIPT_KEY];
-  assert.equal(receipt.schemaVersion, 16);
-  assert.equal(receipt.strategyVersion, 'continuity-v16');
+  assert.equal(receipt.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
+  assert.equal(receipt.strategyVersion, RECALL_STRATEGY_VERSION);
   assert.equal(receipt.selectorDiagnostic.historyCandidateCount > 0, true);
   assert.equal(receipt.selectorDiagnostic.stateCandidateCount, 0);
   assert.equal(receipt.selectorDiagnostic.historyExcludedCount, 0);
@@ -3703,7 +3715,7 @@ test('旧 state_progressions 不写入schema15；schema14仍可冷读但下一�
   const first = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   const receipt = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
   assert.equal(calls, 1);
-  assert.equal(receipt.schemaVersion, 16);
+  assert.equal(receipt.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
   assert.equal(Object.hasOwn(receipt, 'stateProgressions'), false);
   assert.equal(Object.hasOwn(first.lastRecall, 'stateProgressions'), false);
   assert.doesNotMatch(receipt.injectionText, /过了一阵；具体时长未知|保存时仍记得承诺→/);
@@ -3730,11 +3742,11 @@ test('旧 state_progressions 不写入schema15；schema14仍可冷读但下一�
   assert.equal(restored.lastRecall.restoredReceipt, true);
   const rerolled = await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(rerolled.lastRecall.reusedReceipt, false);
-  assert.equal(rerolled.lastRecall.schemaVersion, 16);
+  assert.equal(rerolled.lastRecall.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
   assert.equal(calls, 2);
 });
 
-test('schema16 剧情线回执经 runtime 新算/复用/恢复及历史 projector 后仍完整渲染', async () => {
+test('当前剧情线回执经 runtime 新算/复用/恢复及历史 projector 后仍完整渲染', async () => {
   const source = changingCseSource({ withHistory: true });
   const queryContext = { ...llmQuery, text: '左佐辛夷旧门锁', latestUserText: '左佐辛夷旧门锁' };
   const selection = selectRecall({ source, queryContext, contextSize: 12000 });
@@ -3750,9 +3762,9 @@ test('schema16 剧情线回执经 runtime 新算/复用/恢复及历史 projecto
   const first = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   const receipt = harness.userMessage.extra[RECALL_RECEIPT_KEY];
   assert.equal(first.lastRecall.status, 'ready');
-  assert.equal(first.lastRecall.schemaVersion, 16);
-  assert.equal(first.lastRecall.strategyVersion, 'continuity-v16');
-  assert.equal(receipt.strategyVersion, 'continuity-v16');
+  assert.equal(first.lastRecall.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
+  assert.equal(first.lastRecall.strategyVersion, RECALL_STRATEGY_VERSION);
+  assert.equal(receipt.strategyVersion, RECALL_STRATEGY_VERSION);
   assert.deepEqual(receipt.storylines, selection.storylines);
   assert.equal(receipt.injectionText, selection.injectionText);
   const freshInline = projectInlineRecallReceipt(first.lastRecall);
@@ -3762,7 +3774,7 @@ test('schema16 剧情线回执经 runtime 新算/复用/恢复及历史 projecto
   assert.equal(freshInline.cseChangeItems.length, selection.cseChanges.length);
 
   const historical = await projectHistoricalRecallReceipt({ ...harness.userMessage, extra: { [RECALL_RECEIPT_KEY]: structuredClone(receipt) } }, { chatId: CHAT, userMessageIndex: 1 });
-  assert.equal(historical.schemaVersion, 16);
+  assert.equal(historical.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
   assert.equal(projectInlineRecallReceipt(historical).protocolRecognized, true);
   assert.deepEqual(projectInlineRecallReceipt(historical).storylines, freshInline.storylines);
 
@@ -3801,8 +3813,8 @@ test('schema16 剧情线回执经 runtime 新算/复用/恢复及历史 projecto
   harness.userMessage.extra[RECALL_RECEIPT_KEY] = expanded;
   harness.runtime.invalidate('simulateReload');
   const restored = await harness.runtime.restorePersistedReceipt();
-  assert.equal(restored.lastRecall.schemaVersion, 16);
-  assert.equal(restored.lastRecall.strategyVersion, 'continuity-v16');
+  assert.equal(restored.lastRecall.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
+  assert.equal(restored.lastRecall.strategyVersion, RECALL_STRATEGY_VERSION);
   assert.equal(projectInlineRecallReceipt(restored.lastRecall).protocolRecognized, true);
   assert.equal(projectInlineRecallReceipt(restored.lastRecall).storylineGroups.length, 9);
 
@@ -3811,8 +3823,8 @@ test('schema16 剧情线回执经 runtime 新算/复用/恢复及历史 projecto
   await harness.runtime.restorePersistedReceipt();
   const reused = await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(selectorCalls, 1);
-  assert.equal(reused.lastRecall.schemaVersion, 16);
-  assert.equal(reused.lastRecall.strategyVersion, 'continuity-v16');
+  assert.equal(reused.lastRecall.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
+  assert.equal(reused.lastRecall.strategyVersion, RECALL_STRATEGY_VERSION);
   assert.equal(reused.lastRecall.reusedReceipt, true);
   assert.equal(reused.lastRecall.injectionText, selection.injectionText);
   assert.equal(projectInlineRecallReceipt(reused.lastRecall).protocolRecognized, true);
@@ -3837,7 +3849,7 @@ test('schema15 continuity-v14 仍可只读恢复，但当前生成按 v15 重新
   assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v14');
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(selectorCalls, 2);
-  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v16');
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, RECALL_STRATEGY_VERSION);
 });
 
 test('首次 fallback 回执可历史查看，且同 user regenerate 完整复用', async () => {
@@ -4098,7 +4110,7 @@ test('首次准备超时或失败会 fresh 重试后成功，未初始化新聊�
         if (prepareCalls === 1) return kind === 'timeout' ? new Promise(() => {}) : { status: 'error' };
         return { status: 'ready', reachable: structuredClone(raw) };
       },
-      preparationTimeoutMs: 5,
+      preparationTimeoutMs: 50,
       sourceReader: async () => ({ status: 'unavailable' }),
       rootReader: async () => ({ status: 'ready', revision: raw.rootRevision, data: structuredClone(raw.root) }),
       notifyUser: value => notifications.push(value),
@@ -4168,7 +4180,7 @@ test('重试读取root的技术失败与5秒超时都不降级为旧快照成功
     const harness = createRuntimeHarness({
       useDefaultSelector: true,
       prepareMemory: async () => { prepareCalls += 1; return { status: 'ready', reachable: structuredClone(raw) }; },
-      preparationTimeoutMs: 5,
+      preparationTimeoutMs: 50,
       rootReader: kind === 'timeout'
         ? async () => new Promise(() => {})
         : async () => ({ status: 'unavailable', error: { code: 'ROOT_READ_FAILED', message: 'root读取失败' } }),
@@ -4192,7 +4204,7 @@ test('准备连续超时后停止正文，迟到失败不得再启动召回降�
   let sourceReads = 0;
   const harness = createRuntimeHarness({
     prepareMemory: () => preparation,
-    preparationTimeoutMs: 5,
+    preparationTimeoutMs: 50,
     sourceReader: async () => { sourceReads += 1; return { status: 'unavailable' }; },
   });
   let abortCalls = 0;
@@ -4331,6 +4343,52 @@ test('root 变化后 fresh winner 已删除选中楼时拒绝旧选择，正常�
   }
 });
 
+test('提交前fresh准备遇到并发根推进：核对准备后的当前根；旧快照、再变化和来源删除仍拒绝', async () => {
+  for (const kind of ['advanced', 'oldSnapshot', 'changedAgain', 'removed']) {
+    const initial = await singleFloorReachable({ revision: 1, head: 'head-before' });
+    const captured = await singleFloorReachable({ revision: 2, head: 'head-after' });
+    const prepared = structuredClone(captured); prepared.rootRevision = kind === 'oldSnapshot' ? 2 : 3;
+    const current = structuredClone(prepared); current.rootRevision = kind === 'changedAgain' ? 4 : 3;
+    if (kind === 'removed') { prepared.floors = []; prepared.floorMemories = []; }
+    let prepareCalls = 0, rootCalls = 0, selectorCalls = 0;
+    const harness = createRuntimeHarness({
+      prepareMemory: async () => ({ status: 'ready', reachable: structuredClone(++prepareCalls === 1 ? initial : prepared) }),
+      rootReader: async () => {
+        const value = ++rootCalls === 1 ? (kind === 'oldSnapshot' ? current : captured) : current;
+        return { status: 'ready', revision: value.rootRevision, data: structuredClone(value.root) };
+      },
+      selector: input => { selectorCalls++; return selectRecall(input); },
+    });
+    harness.chat[0].is_hidden = true;
+    const result = await harness.runtime.intercept([structuredClone(harness.userMessage)], 12000, null, 'normal');
+    assert.equal(selectorCalls, 1, '复核不能重新调用选材'); assert.equal(prepareCalls, 2); assert.equal(rootCalls, 2);
+    assert.equal(result.lastRecall.status, kind === 'advanced' ? 'ready' : 'stale', kind);
+    if (kind === 'advanced') {
+      assert.ok(result.lastRecall.injectionText); assert.equal(harness.saves, 1);
+    } else {
+      assert.deepEqual(result.lastRecall.skipReasons, [kind === 'removed' ? 'selectedRefsChanged' : 'sourceUnavailable']);
+      assert.ok(harness.prompts.every(call => !call[1])); assert.equal(harness.saves, 0);
+    }
+  }
+});
+
+test('fresh准备后的补充root读取失败不能提交已选材料，也不重新调用选材', async () => {
+  const initial = await singleFloorReachable({ revision: 1, head: 'head-before' });
+  const captured = await singleFloorReachable({ revision: 2, head: 'head-after' });
+  const prepared = structuredClone(captured); prepared.rootRevision = 3;
+  let prepareCalls = 0, rootCalls = 0, selectorCalls = 0, aborted = false;
+  const harness = createRuntimeHarness({
+    prepareMemory: async () => ({ status: 'ready', reachable: structuredClone(++prepareCalls === 1 ? initial : prepared) }),
+    rootReader: async () => ++rootCalls === 1 ? { status: 'ready', revision: captured.rootRevision, data: structuredClone(captured.root) }
+      : { status: 'unavailable', error: { code: 'ROOT_READ_FAILED', message: '根记录读取失败' } },
+    selector: input => { selectorCalls++; return selectRecall(input); },
+  });
+  harness.chat[0].is_hidden = true;
+  const result = await harness.runtime.intercept([structuredClone(harness.userMessage)], 12000, value => { aborted = value === true; }, 'normal');
+  assert.equal(result.lastRecall.status, 'error'); assert.equal(result.lastRecall.error.code, 'ROOT_READ_FAILED');
+  assert.equal(selectorCalls, 1); assert.equal(harness.saves, 0); assert.ok(harness.prompts.every(call => !call[1])); assert.equal(aborted, true);
+});
+
 test('root 变化后的 fresh 准备失败会丢弃旧注入但正文继续', async () => {
   const initial = await singleFloorReachable();
   let prepareCalls = 0, abortCalls = 0;
@@ -4392,7 +4450,9 @@ test('runtime completed-empty 是可持久化、可恢复的完成态，且不�
   }) });
   const result = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   assert.equal(result.lastRecall.status, 'empty');
-  assert.equal(result.lastRecall.receiptPersistence, 'saveUnconfirmed');
+  assert.equal(result.lastRecall.receiptPersistence, 'saving');
+  await flushReceiptSave();
+  assert.equal(harness.runtime.getState().lastRecall.receiptPersistence, 'saveUnconfirmed');
   assert.equal(harness.saves, 1);
   assert.ok(harness.prompts.every(call => call[1] === ''));
   assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].completionStatus, 'empty');
@@ -4559,7 +4619,7 @@ test('旧 continuity-v1/v2 schema9 回执只读展示和恢复，但新生成必
   assert.equal(restored.lastRecall?.legacyReadOnly, true);
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(selectorCalls, 2, '旧策略回执不得作为新生成复用结果');
-  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v16');
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, RECALL_STRATEGY_VERSION);
   }
 });
 
@@ -4598,7 +4658,7 @@ test('旧 continuity-v10/v11 回执保留20000字符只读投影与冷恢复，�
   assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, strategy, '只读恢复不得改写旧回执');
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(selectorCalls, 2, '旧 v10 回执不得被当前生成直接复用');
-  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v16');
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, RECALL_STRATEGY_VERSION);
   }
 });
 
@@ -4622,7 +4682,7 @@ test('旧 schema10 continuity-v5 回执保留只读展示，当前生成不复�
   assert.equal(restored.lastRecall?.schemaVersion, 10);
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(selectorCalls, 2);
-  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v16');
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, RECALL_STRATEGY_VERSION);
 });
 
 test('真实签名 schema11 continuity-v7 可历史投影与冷恢复，但 regenerate 必须重算 schema15 v14', async () => {
@@ -4658,8 +4718,8 @@ test('真实签名 schema11 continuity-v7 可历史投影与冷恢复，但 rege
 
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(selectorCalls, 2, 'schema11/v7只读回执不得被当前生成复用');
-  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].schemaVersion, 16);
-  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v16');
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
+  assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, RECALL_STRATEGY_VERSION);
 });
 
 test('历史楼 projector 对 schema4 仅沿用既有 chat/index 只读边界，不迁移或伪造签名', async () => {
@@ -5079,10 +5139,11 @@ test('runtime 已有同 user 回执时 source 后续异常不再进入读取链'
 test('runtime 旧异步请求迟到不得覆盖或清除新 generation 的 prompt', async () => {
   let resolveFirst;
   const first = new Promise(resolve => { resolveFirst = resolve; });
+  let markEntered; const entered = new Promise(resolve => { markEntered = resolve; });
   let calls = 0;
-  const harness = createRuntimeHarness({ sourceReader: async () => (++calls === 1 ? first : runtimeFixture()) });
+  const harness = createRuntimeHarness({ sourceReader: async () => { if (++calls === 1) { markEntered(); return first; } return runtimeFixture(); } });
   const oldRun = harness.runtime.intercept(harness.chat, 12000, null, 'normal');
-  await new Promise(resolve => setImmediate(resolve));
+  await entered;
   const newRun = harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   await newRun;
   const newestPrompt = harness.prompts.at(-1)[1];
@@ -5296,7 +5357,9 @@ test('runtime 宿主保存正常返回后保留未确认 session 回执，消息
   let selectorCalls = 0;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); } });
   const fresh = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
-  assert.equal(fresh.lastRecall.receiptPersistence, 'saveUnconfirmed');
+  assert.equal(fresh.lastRecall.receiptPersistence, 'saving');
+  await flushReceiptSave();
+  assert.equal(harness.runtime.getState().lastRecall.receiptPersistence, 'saveUnconfirmed');
   delete harness.userMessage.extra[RECALL_RECEIPT_KEY];
   const result = await harness.runtime.intercept(harness.chat, 12000, null, 'continue');
   assert.equal(result.lastRecall.reusedReceipt, true);
@@ -5309,7 +5372,9 @@ test('宿主保存同样返回 undefined 时，只有聊天副本实际包含回
   const swallowed = createRuntimeHarness({ saveChat: async () => undefined });
   const originalOfflineChat = structuredClone(swallowed.chat);
   const swallowedResult = await swallowed.runtime.intercept(swallowed.chat, 12000, null, 'normal');
-  assert.equal(swallowedResult.lastRecall.receiptPersistence, 'saveUnconfirmed');
+  assert.equal(swallowedResult.lastRecall.receiptPersistence, 'saving');
+  await flushReceiptSave();
+  assert.equal(swallowed.runtime.getState().lastRecall.receiptPersistence, 'saveUnconfirmed');
   assert.equal(swallowed.saves, 1);
 
   let missingSourceReads = 0;
@@ -5324,7 +5389,9 @@ test('宿主保存同样返回 undefined 时，只有聊天副本实际包含回
   let persistedChat = null;
   const copied = createRuntimeHarness({ saveChat: async ({ chat }) => { persistedChat = structuredClone(chat); } });
   const copiedResult = await copied.runtime.intercept(copied.chat, 12000, null, 'normal');
-  assert.equal(copiedResult.lastRecall.receiptPersistence, 'saveUnconfirmed');
+  assert.equal(copiedResult.lastRecall.receiptPersistence, 'saving');
+  await flushReceiptSave();
+  assert.equal(copied.runtime.getState().lastRecall.receiptPersistence, 'saveUnconfirmed');
   assert.ok(persistedChat?.[1]?.extra?.[RECALL_RECEIPT_KEY]);
 
   let restoredSourceReads = 0;
@@ -5417,7 +5484,11 @@ test('runtime prompt 已 commit 后唯一一次完成态保存失败仍保留注
   const result = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   assert.equal(harness.saves, 1);
   assert.equal(result.lastRecall.status, 'ready');
-  assert.equal(result.lastRecall.receiptPersistence, 'sessionOnly');
+  assert.equal(result.lastRecall.receiptPersistence, 'saving');
+  const readyWait = result.lastRecall.timings.totalMs;
+  await flushReceiptSave();
+  assert.equal(harness.runtime.getState().lastRecall.receiptPersistence, 'sessionOnly');
+  assert.equal(harness.runtime.getState().lastRecall.timings.totalMs, readyWait);
   assert.ok(harness.prompts.at(-1)[1], '最终回执保存失败不得反向清除已经 commit 的 prompt');
   assert.equal(harness.userMessage.extra.concurrentField, 'must-survive');
   assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY], undefined, '保存失败不得在聊天中留下半成品回执');
@@ -5433,11 +5504,17 @@ test('runtime 诊断区分核验与宿主保存计时，不改变保存次数或
   const harness = createRuntimeHarness({
     fingerprint: async value => { tick += 7; return fingerprintText(value); },
     selector: input => { tick += 13; return selectRecall(input); },
-    saveChat: async () => { tick += 120000; },
+    saveChat: async () => { await flushReceiptSave(); tick += 120000; },
   });
   const result = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   assert.equal(result.lastRecall.status, 'ready'); assert.equal(harness.saves, 1);
-  assert.equal(result.lastRecall.timings.receiptMs, 120000);
+  assert.equal(result.lastRecall.receiptPersistence, 'saving');
+  assert.equal(result.lastRecall.timings.receiptMs, undefined);
+  await flushReceiptSave();
+  const settled = harness.runtime.getState().lastRecall;
+  assert.equal(settled.timings.receiptMs, 120000);
+  assert.equal(settled.timings.totalMs, result.lastRecall.timings.totalMs);
+  assert.ok(settled.timings.totalMs < 120000);
   assert.ok(result.lastRecall.timings.commitMs >= 7);
   assert.equal(result.lastRecall.timings.selectorMs, 13);
   const stored = harness.userMessage.extra[RECALL_RECEIPT_KEY];
@@ -5446,26 +5523,35 @@ test('runtime 诊断区分核验与宿主保存计时，不改变保存次数或
   assert.equal(stored.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
 });
 
-test('runtime 首次 completed save 挂起时同 user 新 interceptor 复用 session，迟到失败只回滚持久候选', async () => {
-  let saveCalls = 0, rejectOldSave;
+test('runtime 首次 completed save 挂起立即 ready，同 user 复用后迟到失败只更新保存状态并回滚候选', async () => {
+  let saveCalls = 0, selectorCalls = 0, rejectOldSave;
   const harness = createRuntimeHarness({
+    selector: input => { selectorCalls += 1; return selectRecall(input); },
     saveChat: async () => {
       saveCalls += 1;
       if (saveCalls === 1) await new Promise((resolve, reject) => { rejectOldSave = reject; });
     },
   });
-  const oldRun = harness.runtime.intercept(harness.chat, 12000, null, 'normal');
-  while (!rejectOldSave) await new Promise(resolve => setImmediate(resolve));
-  assert.equal(harness.runtime.getState().activeRecall.phase, 'receipt', '只补计时，仍按原合同等待宿主保存');
-  assert.equal(harness.runtime.getState().lastRecall, null);
+  const oldRun = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  assert.equal(typeof rejectOldSave, 'function');
+  assert.equal(oldRun.activeRecall, null, '正文放行不等待悬挂的宿主保存');
+  assert.equal(oldRun.lastRecall.status, 'ready');
+  assert.equal(oldRun.lastRecall.receiptPersistence, 'saving');
   const newResult = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   assert.equal(newResult.lastRecall.status, 'ready');
   assert.equal(newResult.lastRecall.reusedReceipt, true);
   assert.equal(saveCalls, 1, '同 user 新 interceptor 不重复保存冻结回执');
+  assert.equal(selectorCalls, 1, '同 user 冻结复用不再次选材');
   const originalFingerprint = harness.userMessage.extra[RECALL_RECEIPT_KEY].receiptFingerprint;
   harness.userMessage.extra.concurrentField = 'newer-extra';
   rejectOldSave(new Error('old save failed late'));
-  await oldRun;
+  await flushReceiptSave();
+  const failed = harness.runtime.getState().lastRecall;
+  assert.equal(failed.receiptPersistence, 'sessionOnly');
+  assert.equal(failed.reusedReceipt, true);
+  assert.equal(failed.timings.totalMs, newResult.lastRecall.timings.totalMs);
+  assert.equal(failed.injectionText, newResult.lastRecall.injectionText);
+  assert.equal(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT), newResult.lastRecall.injectionText);
   assert.equal(harness.userMessage.extra.concurrentField, 'newer-extra');
   assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY], undefined, '唯一持久化失败后不得留下未确认回执');
   const session = await harness.runtime.intercept(harness.chat, 12000, null, 'continue');
@@ -5476,6 +5562,205 @@ test('runtime 首次 completed save 挂起时同 user 新 interceptor 复用 ses
   harness.runtime.invalidate('simulateReload');
   await harness.runtime.restorePersistedReceipt();
   assert.equal(harness.runtime.getState().lastRecall, null, 'session-only 回执刷新后不伪装成已落盘');
+});
+
+test('runtime 后台保存 resolve 可更新同 user 冻结复用，结束或停止后仍保留独立保存诊断', async () => {
+  for (const ending of ['generation-ended', 'generation-stopped']) {
+    let resolveSave, selections = 0;
+    const h = createRuntimeHarness({ selector: input => { selections += 1; return selectRecall(input); },
+      saveChat: () => new Promise(resolve => { resolveSave = resolve; }) });
+    h.handlers.get('generation-started')('normal');
+    const first = await h.runtime.intercept(h.chat, 12000, null, 'normal');
+    assert.equal(first.lastRecall.receiptPersistence, 'saving');
+    h.handlers.get(ending)();
+    assert.equal(h.runtime.getState().lastRecall.status, 'ready', ending);
+    assert.equal(h.runtime.getState().activeRecall, null, ending);
+    resolveSave(); await flushReceiptSave();
+    const settled = h.runtime.getState();
+    assert.equal(settled.lastRecall.receiptPersistence, 'saveUnconfirmed', ending);
+    assert.equal(typeof settled.lastRecall.timings.receiptMs, 'number', ending);
+    assert.equal(settled.lastRecall.timings.totalMs, first.lastRecall.timings.totalMs, ending);
+    assert.equal(settled.activeRecall, null, ending);
+    assert.equal(latestPromptValue(h.prompts, RECALL_PROMPT_SLOT), '', '保存完成不得在生成收尾后重新注入');
+    const reuse = await h.runtime.intercept(h.chat, 12000, null, 'continue');
+    assert.equal(reuse.lastRecall.reusedReceipt, true);
+    assert.equal(reuse.lastRecall.receiptPersistence, 'saveUnconfirmed');
+    assert.equal(reuse.lastRecall.timings.receiptMs, settled.lastRecall.timings.receiptMs);
+    assert.equal(reuse.lastRecall.timings.selectorMs, undefined, '复用不冒认旧选材计时');
+    assert.equal(h.saves, 1); assert.equal(selections, 1);
+  }
+});
+
+test('runtime 后台保存 resolve/reject 遇切聊、user 编辑或删除不得复活旧展示', async () => {
+  for (const outcome of ['resolve', 'reject']) for (const change of ['chat', 'edit', 'delete', 'silentChat', 'silentUser']) {
+    let resolveSave, rejectSave;
+    const h = createRuntimeHarness({ saveChat: () => new Promise((resolve, reject) => { resolveSave = resolve; rejectSave = reject; }) });
+    await h.runtime.intercept(h.chat, 12000, null, 'normal');
+    if (change === 'chat' || change === 'silentChat') {
+      h.context.chatMetadata.qianqianjie.chatId = GEN;
+      if (change === 'chat') h.handlers.get('chat-changed')();
+    } else if (change === 'delete') {
+      h.chat.splice(1, 1); h.handlers.get('message-deleted')(1);
+    } else {
+      h.userMessage.mes += ' 已编辑';
+      if (change === 'edit') h.handlers.get('message-edited')(1);
+    }
+    const state = h.runtime.getState(), prompt = latestPromptValue(h.prompts, RECALL_PROMPT_SLOT);
+    if (outcome === 'resolve') resolveSave(); else rejectSave(new Error('stale save rejected'));
+    await flushReceiptSave();
+    assert.equal(h.runtime.getState().lastRecall, state.lastRecall, `${outcome}/${change}`);
+    assert.equal(h.runtime.getState().activeRecall, null, `${outcome}/${change}`);
+    assert.equal(latestPromptValue(h.prompts, RECALL_PROMPT_SLOT), prompt, `${outcome}/${change}`);
+    if (!change.startsWith('silent')) assert.equal(state.lastRecall, null, `${outcome}/${change}`);
+  }
+});
+
+test('runtime 后台保存恰在同 user 冻结复用核验期间完成，放行状态读取最新结果', async () => {
+  let resolveSave, duringReuse = false, selections = 0;
+  const h = createRuntimeHarness({ selector: input => { selections += 1; return selectRecall(input); },
+    saveChat: () => new Promise(resolve => { resolveSave = resolve; }),
+    fingerprint: async value => {
+      if (duringReuse && value.startsWith('[')) {
+        duringReuse = false; resolveSave(); await flushReceiptSave();
+      }
+      return fingerprintText(value);
+    } });
+  const first = await h.runtime.intercept(h.chat, 12000, null, 'normal');
+  assert.equal(first.lastRecall.receiptPersistence, 'saving');
+  duringReuse = true;
+  const reuse = await h.runtime.intercept(h.chat, 12000, null, 'regenerate');
+  assert.equal(reuse.lastRecall.reusedReceipt, true);
+  assert.equal(reuse.lastRecall.receiptPersistence, 'saveUnconfirmed');
+  assert.equal(typeof reuse.lastRecall.timings.receiptMs, 'number');
+  assert.equal(reuse.lastRecall.timings.selectorMs, undefined);
+  assert.equal(h.runtime.getState().lastRecall, reuse.lastRecall);
+  assert.equal(h.saves, 1); assert.equal(selections, 1);
+});
+
+test('runtime 旧保存迟到不得覆盖新 user 的状态或同指纹新封签 owner，并保留新 extra', async t => {
+  t.mock.method(Date, 'now', () => 1000);
+  for (const outcome of ['resolve', 'reject']) for (const change of ['newUser', 'editBack']) {
+    const saves = []; let selections = 0;
+    const h = createRuntimeHarness({ selector: input => { selections += 1; return selectRecall(input); },
+      saveChat: () => new Promise((resolve, reject) => saves.push({ resolve, reject })) });
+    await h.runtime.intercept(h.chat, 12000, null, 'normal');
+    const previousReceipt = h.userMessage.extra[RECALL_RECEIPT_KEY];
+    if (change === 'newUser') h.chat[1] = { is_user: true, is_system: false, mes: h.userMessage.mes };
+    else {
+      const text = h.userMessage.mes;
+      h.userMessage.mes += ' 已编辑'; h.handlers.get('message-edited')(1);
+      h.userMessage.mes = text; delete h.userMessage.extra[RECALL_RECEIPT_KEY];
+    }
+    const next = await h.runtime.intercept(h.chat, 12000, null, 'normal');
+    const user = h.chat[1], nextReceipt = user.extra[RECALL_RECEIPT_KEY];
+    assert.equal(nextReceipt.receiptFingerprint, previousReceipt.receiptFingerprint, '不同选材保存也可能有相同签名');
+    assert.equal(selections, 2); assert.equal(h.saves, 2);
+    user.extra.concurrentField = 'new-field';
+    if (outcome === 'resolve') saves[0].resolve(); else saves[0].reject(new Error('old save rejected'));
+    await flushReceiptSave();
+    assert.equal(h.runtime.getState().lastRecall, next.lastRecall, `${outcome}/${change}`);
+    assert.equal(user.extra[RECALL_RECEIPT_KEY], nextReceipt, '旧失败 CAS 不回滚新候选');
+    assert.equal(user.extra.concurrentField, 'new-field');
+    assert.equal(latestPromptValue(h.prompts, RECALL_PROMPT_SLOT), next.lastRecall.injectionText);
+    saves[1].resolve(); await flushReceiptSave();
+    assert.equal(h.runtime.getState().lastRecall.receiptPersistence, 'saveUnconfirmed');
+    assert.equal(h.runtime.getState().lastRecall.timings.totalMs, next.lastRecall.timings.totalMs);
+  }
+});
+
+test('runtime 保存失败只回滚自己仍拥有的原 candidate，保留并发替换的回执与 extra', async () => {
+  let rejectSave;
+  const h = createRuntimeHarness({ saveChat: () => new Promise((resolve, reject) => { rejectSave = reject; }) });
+  const first = await h.runtime.intercept(h.chat, 12000, null, 'normal');
+  const replacement = { externallyOwned: true };
+  h.userMessage.extra = { ...h.userMessage.extra, [RECALL_RECEIPT_KEY]: replacement, otherPlugin: 'keep' };
+  rejectSave(new Error('save rejected')); await flushReceiptSave();
+  assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY], replacement);
+  assert.equal(h.userMessage.extra.otherPlugin, 'keep');
+  assert.equal(h.runtime.getState().lastRecall.receiptPersistence, 'sessionOnly');
+  assert.equal(h.runtime.getState().lastRecall.timings.totalMs, first.lastRecall.timings.totalMs);
+  assert.equal(latestPromptValue(h.prompts, RECALL_PROMPT_SLOT), first.lastRecall.injectionText);
+  const reuse = await h.runtime.intercept(h.chat, 12000, null, 'continue');
+  assert.equal(reuse.lastRecall.reusedReceipt, true); assert.equal(h.saves, 1);
+});
+
+test('runtime 同 user 编辑后两次后台保存均失败，正反交错跳过失败候选并还原原历史 extra', async () => {
+  for (const history of [false, true]) for (const order of ['A-B', 'B-A']) {
+    const pending = []; let saveCalls = 0, selections = 0;
+    const h = createRuntimeHarness({ selector: input => { selections += 1; return selectRecall(input); },
+      saveChat: () => {
+        saveCalls += 1;
+        if (history && saveCalls === 1) return;
+        return new Promise((resolve, reject) => pending.push({ resolve, reject }));
+      } });
+    let historicalReceipt;
+    if (history) {
+      await h.runtime.intercept(h.chat, 12000, null, 'normal'); await flushReceiptSave();
+      historicalReceipt = h.userMessage.extra[RECALL_RECEIPT_KEY];
+      h.userMessage.mes += ' 第一轮编辑'; h.handlers.get('message-edited')(1);
+    }
+    h.userMessage.extra = { ...h.userMessage.extra, anotherPlugin: 'initial' };
+    await h.runtime.intercept(h.chat, 12000, null, 'normal');
+    const candidateA = h.userMessage.extra[RECALL_RECEIPT_KEY];
+    h.userMessage.mes += ' 第二轮编辑'; h.handlers.get('message-edited')(1);
+    const second = await h.runtime.intercept(h.chat, 12000, null, 'normal');
+    const candidateB = h.userMessage.extra[RECALL_RECEIPT_KEY];
+    assert.notEqual(candidateA, candidateB); assert.equal(pending.length, 2);
+    assert.equal(selections, history ? 3 : 2);
+    const prompt = latestPromptValue(h.prompts, RECALL_PROMPT_SLOT);
+    h.userMessage.extra.anotherPlugin = 'concurrent-first';
+    const firstIndex = order === 'A-B' ? 0 : 1, secondIndex = 1 - firstIndex;
+    pending[firstIndex].reject(new Error('first completed save failed')); await flushReceiptSave();
+    assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY], order === 'A-B' ? candidateB : candidateA,
+      `${history}/${order}: 不回滚新候选，尚在途的前驱仍可暂时还原`);
+    assert.equal(h.userMessage.extra.anotherPlugin, 'concurrent-first');
+    const beforeLastFailure = h.runtime.getState().lastRecall;
+    if (order === 'A-B') assert.equal(beforeLastFailure, second.lastRecall, '旧 A 失败不改 B owner 展示');
+    else assert.equal(beforeLastFailure.receiptPersistence, 'sessionOnly');
+    h.userMessage.extra.anotherPlugin = 'concurrent-second';
+    pending[secondIndex].reject(new Error('second completed save failed')); await flushReceiptSave();
+    assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY], historicalReceipt,
+      `${history}/${order}: 双失败不能留下 A，已有历史 H 也不能丢失`);
+    assert.equal(Object.hasOwn(h.userMessage.extra, RECALL_RECEIPT_KEY), history);
+    assert.equal(h.userMessage.extra.anotherPlugin, 'concurrent-second');
+    const settled = h.runtime.getState().lastRecall;
+    assert.equal(settled.receiptPersistence, 'sessionOnly');
+    assert.equal(settled.timings.totalMs, second.lastRecall.timings.totalMs);
+    assert.equal(settled.injectionText, second.lastRecall.injectionText);
+    assert.equal(latestPromptValue(h.prompts, RECALL_PROMPT_SLOT), prompt);
+    if (order === 'B-A') assert.equal(settled, beforeLastFailure, '旧 A 最后失败也不能改 B 状态');
+  }
+});
+
+test('runtime 前轮 A 保存正常返回而编辑后 B 失败时仍还原 A，pending 前驱后来成功也不改 B 状态', async () => {
+  for (const order of ['A-B', 'B-A']) {
+    const pending = [];
+    const h = createRuntimeHarness({ saveChat: () => new Promise((resolve, reject) => pending.push({ resolve, reject })) });
+    await h.runtime.intercept(h.chat, 12000, null, 'normal');
+    const candidateA = h.userMessage.extra[RECALL_RECEIPT_KEY];
+    h.userMessage.mes += ' 编辑后新输入'; h.handlers.get('message-edited')(1);
+    const second = await h.runtime.intercept(h.chat, 12000, null, 'normal');
+    const candidateB = h.userMessage.extra[RECALL_RECEIPT_KEY];
+    const prompt = latestPromptValue(h.prompts, RECALL_PROMPT_SLOT);
+    h.userMessage.extra.anotherPlugin = 'must-survive';
+    if (order === 'A-B') {
+      pending[0].resolve(); await flushReceiptSave();
+      assert.equal(h.runtime.getState().lastRecall, second.lastRecall);
+      assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY], candidateB);
+      pending[1].reject(new Error('B failed')); await flushReceiptSave();
+    } else {
+      pending[1].reject(new Error('B failed')); await flushReceiptSave();
+      const failedB = h.runtime.getState().lastRecall;
+      assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY], candidateA);
+      pending[0].resolve(); await flushReceiptSave();
+      assert.equal(h.runtime.getState().lastRecall, failedB);
+    }
+    assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY], candidateA);
+    assert.equal(h.userMessage.extra.anotherPlugin, 'must-survive');
+    assert.equal(h.runtime.getState().lastRecall.receiptPersistence, 'sessionOnly');
+    assert.equal(h.runtime.getState().lastRecall.timings.totalMs, second.lastRecall.timings.totalMs);
+    assert.equal(latestPromptValue(h.prompts, RECALL_PROMPT_SLOT), prompt);
+  }
 });
 
 test('runtime 最终同步复核返回后若微任务使历史失效，事件先清槽，旧调用层不得再写 prompt', async () => {
@@ -5492,4 +5777,98 @@ test('runtime 最终同步复核返回后若微任务使历史失效，事件先
   assert.equal(result.recallStatus, 'idle');
   assert.equal(harness.prompts.at(-1)[1], '', '宿主 await interceptor 恢复前，失效事件必须留下空槽');
   assert.equal(harness.prompts.filter(call => call[1]).length, 1, '最终同步 commit 可发生，但调用层不得在失效后第二次补写');
+});
+
+
+test('准备期限覆盖身份、独立来源和提交root，诊断分attempt且迟到分支不继续读取', async t => {
+  for (const kind of ['identity', 'read', 'commitRoot']) await t.test(kind, async () => {
+    const releases = []; let prepares = 0, reads = 0, selects = 0, aborts = 0;
+    const pending = () => new Promise(resolve => releases.push(resolve));
+    const harness = createRuntimeHarness({ preparationTimeoutMs: 10,
+      ...(kind === 'identity' ? { identityProjectionProvider: pending, prepareMemory: () => { prepares += 1; return { status: 'unavailable' }; } } : {}),
+      ...(kind === 'commitRoot' ? { rootReader: pending, prepareMemory: () => { prepares += 1; return { status: 'unavailable' }; } } : {}),
+      sourceReader: () => { reads += 1; return kind === 'read' ? pending() : runtimeFixture(); },
+      selector: options => { selects += 1; return selectRecall(options); } });
+    const result = await harness.runtime.intercept(harness.chat, 12000, value => { if (value === true) aborts += 1; }, 'normal');
+    assert.equal(result.lastRecall.status, 'error'); assert.equal(result.lastRecall.error.code, 'V3_RECALL_MEMORY_PREPARATION_TIMEOUT');
+    assert.equal(aborts, 1); assert.equal(selects, kind === 'commitRoot' ? 1 : 0); assert.equal(harness.saves, 0);
+    const attempts = result.lastRecall.attemptDiagnostics;
+    assert.equal(attempts.length, 2);
+    for (const attempt of attempts) {
+      const record = attempt.timings.preparationAttempts.at(-1);
+      assert.equal(record.status, 'timeout'); assert.equal(record.stage, { identity: 'identity', read: 'read', commitRoot: 'root' }[kind]);
+      assert.ok(record.totalMs >= record.budgetMs - 2); assert.ok(record[`${record.stage}Ms`] >= record.budgetMs - 2);
+      assert.ok(attempt.timings.preparationAttempts.length <= 2);
+    }
+    assert.deepEqual(attempts.map(attempt => attempt.phase), kind === 'commitRoot' ? ['commit', 'source'] : ['source', 'source']);
+    const frozen = JSON.stringify(attempts), beforeReads = reads;
+    for (const release of releases) release(kind === 'read' ? runtimeFixture() : null);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(prepares, kind === 'commitRoot' ? 1 : 0); assert.equal(reads, beforeReads); assert.equal(JSON.stringify(result.lastRecall.attemptDiagnostics), frozen);
+    assert.equal(harness.prompts.some(call => call[1]?.includes('<qqj_recalled_context>')), false);
+  });
+});
+
+test('准备取消立即结束且迟到identity不得启动缓存或来源读取', async () => {
+  let releaseIdentity, enteredIdentity; const entered = new Promise(resolve => { enteredIdentity = resolve; });
+  let prepares = 0, reads = 0;
+  const harness = createRuntimeHarness({ preparationTimeoutMs: 1000,
+    identityProjectionProvider: () => { enteredIdentity(); return new Promise(resolve => { releaseIdentity = resolve; }); },
+    prepareMemory: () => { prepares += 1; return { status: 'unavailable' }; }, sourceReader: () => { reads += 1; return runtimeFixture(); } });
+  harness.handlers.get('generation-started')('normal');
+  const pending = harness.runtime.intercept(harness.chat, 12000, null, 'normal'); await entered;
+  harness.handlers.get('generation-stopped')(); const result = await pending;
+  assert.equal(result.lastRecall.status, 'stale'); assert.deepEqual(result.lastRecall.skipReasons, ['stopped']);
+  releaseIdentity(null); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(prepares, 0); assert.equal(reads, 0); assert.equal(harness.saves, 0);
+  assert.equal(harness.prompts.some(call => call[1]?.includes('<qqj_recalled_context>')), false);
+});
+
+test('fresh只读来源仍拒绝成员删除、可见正文变化、再更新root与用户变化', async t => {
+  for (const kind of ['member', 'body', 'rootAgain', 'user', 'chat', 'technical']) await t.test(kind, async () => {
+    const old = await singleFloorReachable({ revision: 1, head: 'head-old' });
+    const current = structuredClone(old); current.rootRevision = 2; current.root.headCheckpointId = 'head-new';
+    if (kind === 'member') current.floorMemories = [];
+    let prepares = 0, reads = 0, selects = 0, roots = 0;
+    const harness = createRuntimeHarness({
+      prepareMemory: options => { prepares += 1; if (prepares === 1) return { status: 'ready', reachable: structuredClone(old) };
+        assert.equal(options.allowRefresh, false); return { status: 'unavailable' }; },
+      rootReader: () => {
+        roots += 1;
+        return { status: 'ready', revision: kind === 'rootAgain' && roots > 1 ? 4 : 2,
+          data: { ...current.root, ...(kind === 'rootAgain' && roots > 1 ? { headCheckpointId: 'head-four' } : {}) } };
+      },
+      reachableReader: () => {
+        reads += 1;
+        if (kind === 'technical') throw Object.assign(new Error('私密底层失败信息'), { code: 'BACKEND_TIMEOUT' });
+        if (kind === 'body') harness.chat[1].mes = '被修改的当前可见正文';
+        if (kind === 'user') harness.userMessage.mes = '用户已改变输入';
+        if (kind === 'chat') harness.context.chatMetadata.qianqianjie.chatId = 'another-chat';
+        if (kind === 'rootAgain') return { ...structuredClone(current), rootRevision: 3, root: { ...current.root, headCheckpointId: 'head-three' } };
+        return structuredClone(current);
+      }, sourceReader: options => readRecallSource(options), selector: options => { selects += 1; return selectRecall(options); } });
+    harness.chat[0].is_hidden = true;
+    if (kind === 'body') harness.chat.splice(1, 0, { is_user: false, is_system: false, mes: '当前可见场景正文' });
+    const core = kind === 'body' ? [structuredClone(harness.chat[1]), structuredClone(harness.userMessage)] : [structuredClone(harness.userMessage)];
+    const result = await harness.runtime.intercept(core, 12000, null, 'normal');
+    assert.notEqual(result.lastRecall.status, 'ready'); assert.equal(harness.saves, 0);
+    assert.equal(harness.prompts.some(call => call[1]?.includes('<qqj_recalled_context>')), false);
+    assert.ok(reads >= 1);
+    if (kind === 'rootAgain') assert.equal(result.lastRecall.attemptDiagnostics[0].timings.preparationAttempts.at(-1).status, 'stale');
+    if (kind !== 'technical') assert.equal(selects, 1);
+    else { assert.equal(result.lastRecall.error.code, 'BACKEND_TIMEOUT'); assert.equal(result.lastRecall.attemptDiagnostics.length, 2); }
+  });
+});
+
+test('准备可选计时随新回执封签并历史恢复，复用不重读来源', async () => {
+  let reads = 0;
+  const harness = createRuntimeHarness({ sourceReader: () => { reads += 1; return runtimeFixture(); } });
+  const first = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  assert.equal(first.lastRecall.status, 'ready'); await flushReceiptSave();
+  const receipt = harness.userMessage.extra[RECALL_RECEIPT_KEY];
+  assert.deepEqual(receipt.timings.preparationAttempts.map(record => record.phase), ['source', 'commit']);
+  const historical = await projectHistoricalRecallReceipt(harness.userMessage, { chatId: CHAT, userMessageIndex: 1 });
+  assert.equal(historical.status, 'ready'); assert.deepEqual(historical.timings.preparationAttempts, receipt.timings.preparationAttempts);
+  const count = reads; const reused = await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
+  assert.equal(reused.lastRecall.reusedReceipt, true); assert.equal(reads, count);
 });

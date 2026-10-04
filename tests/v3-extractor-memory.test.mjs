@@ -8631,3 +8631,59 @@ test('已有断链楼照常展示且可人工删除异常记录，不因旧坏�
   assert.equal(cold.runtime.getQianshiSnapshot().events.length, 0); assert.equal(cold.runtime.getQianshiSnapshot().coverage.degradedFloors, 0);
   assert.equal(cold.calls.length, 0, '删除与异常定位不调用模型');
 });
+
+test('只读准备：真实memory与recall在后台inspect挂起时复用同根缓存或独立读取新checkpoint', async t => {
+  for (const useMatchingCache of [true, false]) await t.test(useMatchingCache ? '同根缓存零整图读' : '新根独立只读', async () => {
+    const seed = harness({ initialChat: [user('继续'), assistant('裴晚生提醒带伞。'), assistant('钟楼仍在等待。'), assistant('确认上一楼稳定。')] });
+    await seed.runtime.start(); const floors = seed.runtime.getState().floors;
+    await seed.runtime.extractFloor(floors[0].floorId, { analyzeState: false });
+    let held = false, inspectCalls = 0, releaseInspect, markHeld;
+    const heldStarted = new Promise(resolve => { markHeld = resolve; });
+    const foundationRuntime = { ...seed.foundationRuntime, inspect: async () => {
+      inspectCalls += 1;
+      if (held) { markHeld(); await new Promise(resolve => { releaseInspect = resolve; }); }
+      return seed.foundationRuntime.getState();
+    } };
+    const task = async () => { throw new Error('准备不能请求模型'); };
+    const memory = createV3MemoryRuntime({ foundationRuntime, store: seed.store, hostAdapter: seed.hostAdapter, generateAnalysisTask: task, generateUtilityTask: task,
+      now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+    await memory.start(); await waitFor(() => memory.getState().memorySyncStatus === 'idle');
+    seed.context.chat[1].is_hidden = true;
+    seed.context.chat.push(user('带伞')); seed.context.constants = { promptTypes: { IN_CHAT: 1 }, promptRoles: { SYSTEM: 0 } };
+    const prompts = []; seed.context.setExtensionPrompt = (...args) => prompts.push(args);
+    let pendingRefresh, selects = 0, directReads = 0, beforeInspects, beforeReads;
+    const prepareOptions = [];
+    const recall = createV3RecallRuntime({ store: seed.store, hostAdapter: seed.hostAdapter,
+      prepareMemory: options => { prepareOptions.push(options); return memory.prepareCurrent(options); },
+      sourceReader: options => { directReads += 1; return readRecallSource(options); },
+      selector: async options => {
+        selects += 1;
+        if (useMatchingCache) {
+          await seed.runtime.extractFloor(floors[1].floorId, { analyzeState: false });
+          await memory.refreshStatus({ preferCached: false }); await waitFor(() => memory.getState().memorySyncStatus === 'idle');
+        }
+        held = true; pendingRefresh = memory.refreshStatus({ preferCached: false }); await heldStarted;
+        if (!useMatchingCache) await seed.runtime.extractFloor(floors[1].floorId, { analyzeState: false });
+        const rootResult = await seed.store.readRoot(); beforeInspects = inspectCalls; beforeReads = seed.readReachableModes.length;
+        const readonly = await memory.prepareCurrent({ rootResult, allowRefresh: false });
+        assert.equal(readonly.status, useMatchingCache ? 'ready' : 'unavailable');
+        assert.equal(inspectCalls, beforeInspects); assert.equal(seed.readReachableModes.length, beforeReads);
+        return selectRecall(options);
+      }, pluginVersion: 'test-readonly-prepare', now: () => new Date(NOW), logger: { warn() {} } });
+    let timer;
+    try {
+      const result = await Promise.race([recall.intercept([structuredClone(seed.context.chat.at(-1))], 12000, null, 'normal'),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('只读准备不能等待维护队列')), 1500); })]);
+      assert.equal(result.lastRecall.status, 'ready'); assert.equal(selects, 1); assert.equal(directReads, useMatchingCache ? 0 : 1);
+      assert.equal(inspectCalls, beforeInspects); assert.equal(seed.readReachableModes.length, beforeReads + (useMatchingCache ? 0 : 1));
+      assert.equal(prepareOptions[0].allowRefresh, true); assert.equal(prepareOptions.at(-1).allowRefresh, false);
+      assert.ok(prompts.some(args => args[1]?.includes('带伞')));
+      const records = result.lastRecall.timings.preparationAttempts;
+      assert.deepEqual(records.map(record => record.phase), ['source', 'commit']); assert.equal(records[1].status, 'ready');
+      assert.equal(records[1].stage, useMatchingCache ? 'projection' : 'read');
+    } finally { clearTimeout(timer); held = false; releaseInspect?.(); await pendingRefresh; }
+    const rootResult = await seed.store.readRoot(); const before = inspectCalls;
+    await memory.prepareCurrent({ preferCached: false, rootResult: { ...rootResult, revision: rootResult.revision + 1 } });
+    assert.equal(inspectCalls, before + 1, '默认prepare仍完整刷新');
+  });
+});

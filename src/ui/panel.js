@@ -89,6 +89,7 @@ export function createPanel({
   let trigger = null;
   let activationEpoch = 0;
   const settingsDrawerState = createSettingsDrawerState();
+  let apiEditingRole = 'analysis';
   const scrollPositions = new Map();
   const themeButton = root.querySelector('.theme-btn');
   const fabToggleButton = root.querySelector('.fab-toggle-btn');
@@ -280,6 +281,7 @@ export function createPanel({
     const { drawer: general, body: generalBody } = groupOf('general', '通用设置');
     const api = createApiSettings({
       settings, apiTools, documentRef,
+      initialEditingRole: apiEditingRole, onEditingRoleChange: role => { apiEditingRole = role; },
       open: subOpen('api'), onToggle: subToggle('api'),
       advancedOpen: subOpen('api-advanced'), onAdvancedToggle: subToggle('api-advanced'),
       rerender: () => renderSettings(),

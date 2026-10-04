@@ -6,6 +6,7 @@ import { is_group_generating } from '/scripts/group-chats.js';
 import { loadWorldInfo, selected_world_info, world_info, world_info_case_sensitive, world_info_match_whole_words, world_names } from '/scripts/world-info.js';
 import { version as pluginVersion } from './manifest.json';
 import { createBackendClient } from './src/backend-client.js';
+import { createPrivateRecallDiagnostics } from './src/private-recall-diagnostics.js';
 import { bootstrap } from './src/bootstrap.js';
 import { createSettingsStore } from './src/settings.js';
 import { createApiResolver, createApiTools, createTaskRouter } from './src/api-routing.js';
@@ -198,6 +199,13 @@ v3RecallRuntime = createV3RecallRuntime({
   qianshiDeletionProvider: () => v3MemoryRuntime.getQianshiDeletions(),
   pluginVersion,
 });
+// 本机私有开关启用后独立留存临时诊断；专用客户端不混入记忆存储计数，也不等待诊断写入。
+const privateRecallDiagnostics = createPrivateRecallDiagnostics({
+  client: createBackendClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {}, timeoutMs: 5000 }),
+  recallRuntime: v3RecallRuntime, isEnabled: settings.isEnabled,
+});
+if (globalThis.location?.origin) void privateRecallDiagnostics.start();
+globalThis.addEventListener?.('beforeunload', privateRecallDiagnostics.dispose, { once: true });
 peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
   store: peopleWorkspaceStore,
   session,
@@ -279,6 +287,7 @@ const setAllEnabled = async enabled => {
     return v3Result ?? lifecycleResult;
   }
   inlineRenderer.setEnabled(true);
+  if (globalThis.location?.origin) void privateRecallDiagnostics.start();
   const lifecycleResult = await lifecycle?.setEnabled(enabled);
   await v3RecallRuntime.setEnabled(enabled);
   return lifecycleResult;

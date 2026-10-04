@@ -381,8 +381,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     return execute(async current => {
       const safe = validateFoundationRoot(root, { expectedChatId: current.chatId });
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) fail('V3_STORE_REVISION_INVALID');
-      // Backing records are content-addressed and create-if-absent. The backend must keep them immutable
-      // throughout this final read/validate/root-CAS sequence; the records API has no multi-record transaction.
+      // 根入口提交前先读取并校验图记录，再执行根 CAS；两步没有跨记录事务，后端须保证这段期间图记录不可改写。
       const validatedGraph = await validateCommitGraph(current, safe);
       try {
         const envelope = await client.put(collection(current), V3_ROOT_RECORD_ID, safe, expectedRevision, { signal });

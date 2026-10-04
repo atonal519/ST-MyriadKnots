@@ -89,7 +89,7 @@ export function applyAppearance({ host, root, settings, documentRef = globalThis
     const link = documentRef.createElement('link'); link.rel = 'stylesheet'; link.href = url; link.setAttribute?.('data-qqj-custom-font', 'true'); root?.append?.(link);
   }
 
-  // 字体 family 不再由用户填写：URL 存在时从该 CSS 自动解析并缓存，跨域读不到时回退系统字体。
+  // 自定义字体从 CSS URL 解析并缓存；读取失败时使用系统字体。
   let fontReady = Promise.resolve();
   if (!url) {
     setFont('');

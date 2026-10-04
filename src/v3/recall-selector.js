@@ -504,8 +504,7 @@ function scoreCandidates(candidates, queries, { summaryAssist = false, keepUnmat
       summaryScores[query.key] = auxiliary;
       summaryScore += auxiliary * query.normalizedWeight;
     }
-    // A floor summary may break ties between facts that already match, but it
-    // must never turn another fact from that floor into prompt material.
+    // 楼层摘要只辅助已匹配事实的排序，不能把同楼其他未匹配事实变为注入材料。
     const finalScore = score > 0 ? score * (summaryAssist ? 1 + summaryScore * 0.12 : 1) : 0;
     return { ...value, score: finalScore, _summaryScore: summaryScore, branchScores: Object.freeze(branchScores), entityBranchScores: Object.freeze(entityBranchScores), summaryScores: Object.freeze(summaryScores) };
   }).filter(value => keepUnmatched || value.score > 0);
@@ -1363,7 +1362,9 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
   evidenceFiltered += [...historyContext.facts, ...historyContext.summaries].filter(value => value.score <= 0).length;
   const relationRank = value => value._relationEvidence === 'source' ? 1 : value._relationEvidence === 'topic' ? 2 : value._relationEvidence === 'nearby' ? 3 : 0;
   const competitionPrimary = entry => (Number(entry.value.branchScores?.latestUser) || 0) + (entry.kind === 'time' ? timeUrgencyBoost(entry.value) : 0);
-  const competitionOrder = (a, b) => competitionPrimary(b) - competitionPrimary(a)
+  // LLM 保留的直接证据先于自动关联材料竞争；仍共用原有时间、分数和预算约束。
+  const competitionOrder = (a, b) => Number(Boolean(a.value._relationEvidence)) - Number(Boolean(b.value._relationEvidence))
+    || competitionPrimary(b) - competitionPrimary(a)
     || (Number(b.value.score) || 0) - (Number(a.value.score) || 0)
     || relationRank(a.value) - relationRank(b.value)
     || (Number(b.value.priority) || 0) - (Number(a.value.priority) || 0)

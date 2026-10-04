@@ -24,6 +24,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   apiKey: '',
   apiModel: '',
   apiExcludeParams: [],
+  apiAdditionalParams: '',
   apiQianqianjieTemperature: null,
   apiTimeoutSec: 180,
   apiStream: false,
@@ -83,6 +84,29 @@ export function parseExcludeParams(value) {
   return [...new Set(values.map(item => String(item).trim()).filter(Boolean))];
 }
 
+// 附加字段只控制模型参数；连接、认证、材料与结构化输出仍由千千结的任务合同决定。
+const ADDITIONAL_RESERVED_KEYS = new Set(['chat_completion_source', 'reverse_proxy', 'proxy_password', 'custom_url', 'custom_include_body', 'custom_include_headers', 'custom_exclude_body', 'base_url', 'api_key', 'apiKey', 'key', 'headers', 'secret_id', 'secretId', 'model', 'messages', 'prompt', 'json_schema', 'response_format', 'stream']);
+export function parseAdditionalParams(value) {
+  if (value == null || typeof value === 'string' && !value.trim()) return {};
+  if (typeof value !== 'string') throw new TypeError('附加参数须为 JSON 对象。');
+  let parsed;
+  try { parsed = JSON.parse(value); }
+  catch { throw new TypeError('附加参数须为 JSON 对象。'); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new TypeError('附加参数须为 JSON 对象。');
+  const validate = item => {
+    if (item === null || ['string', 'boolean'].includes(typeof item)) return;
+    if (typeof item === 'number' && Number.isFinite(item)) return;
+    if (typeof item !== 'object') throw new TypeError('附加参数须为 JSON 对象。');
+    for (const [key, child] of Object.entries(item)) {
+      if (['__proto__', 'constructor', 'prototype'].includes(key)) throw new TypeError('附加参数包含不支持的字段。');
+      validate(child);
+    }
+  };
+  validate(parsed);
+  if (Object.keys(parsed).some(key => ADDITIONAL_RESERVED_KEYS.has(key))) throw new TypeError('附加参数不能覆盖连接、模型、消息或输出格式。');
+  return parsed;
+}
+
 export function normalizePreset(value = {}) {
   const normalized = {
     id: text(value.id).trim(),
@@ -96,6 +120,7 @@ export function normalizePreset(value = {}) {
   };
   const qqjTemperature = normalizeTemperature(value.qqjTemperature);
   if (qqjTemperature !== null) normalized.qqjTemperature = qqjTemperature;
+  if (text(value.qqjAdditionalParams).trim()) normalized.qqjAdditionalParams = text(value.qqjAdditionalParams).trim();
   return normalized;
 }
 
@@ -168,6 +193,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     catch (error) { if (observeSaveFailure) throw error; }
   };
   const update = (patch, { observeSaveFailure = false } = {}) => {
+    if (own(patch, 'apiAdditionalParams')) parseAdditionalParams(patch.apiAdditionalParams);
     const settings = get();
     if (own(patch, 'pluginEnabled')) settings.pluginEnabled = patch.pluginEnabled !== false;
     if (own(patch, 'timeEvolutionEnabled')) settings.timeEvolutionEnabled = patch.timeEvolutionEnabled === true;
@@ -188,6 +214,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'apiKey')) settings.apiKey = text(patch.apiKey).trim();
     if (own(patch, 'apiModel')) settings.apiModel = text(patch.apiModel).trim();
     if (own(patch, 'apiExcludeParams')) settings.apiExcludeParams = parseExcludeParams(patch.apiExcludeParams);
+    if (own(patch, 'apiAdditionalParams')) settings.apiAdditionalParams = text(patch.apiAdditionalParams).trim();
     if (own(patch, 'apiQianqianjieTemperature')) settings.apiQianqianjieTemperature = normalizeTemperature(patch.apiQianqianjieTemperature);
     if (own(patch, 'apiTimeoutSec')) settings.apiTimeoutSec = normalizeTimeout(patch.apiTimeoutSec);
     if (own(patch, 'apiStream')) settings.apiStream = patch.apiStream === true;
@@ -216,6 +243,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
       key: settings.apiKey,
       model: settings.apiModel,
       excludeParams: settings.apiExcludeParams,
+      qqjAdditionalParams: settings.apiAdditionalParams,
       timeoutSec: settings.apiTimeoutSec,
       stream: settings.apiStream,
       qqjTemperature: settings.apiQianqianjieTemperature,
@@ -224,6 +252,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
   const mainConfig = () => ({ ...localConfig(), name: '主配置' });
   const presets = () => get().apiPresets.map(normalizePreset).filter(item => item.id);
   const upsertPreset = (name, config, id = '') => {
+    parseAdditionalParams(config?.qqjAdditionalParams);
     const settings = get();
     const list = presets();
     const existingId = text(id).trim();
@@ -306,11 +335,13 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     }).filter(value => value?.id);
   };
   const saveMainConfig = config => {
+    parseAdditionalParams(config?.qqjAdditionalParams);
     const current = get(), normalized = normalizePreset(config);
     current.apiUrl = normalized.url;
     current.apiKey = normalized.key;
     current.apiModel = normalized.model;
     current.apiExcludeParams = normalized.excludeParams;
+    current.apiAdditionalParams = normalized.qqjAdditionalParams ?? '';
     current.apiTimeoutSec = normalized.timeoutSec;
     current.apiStream = normalized.stream;
     current.apiQianqianjieTemperature = normalized.qqjTemperature ?? null;
@@ -318,6 +349,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     return mainConfig();
   };
   const upsertSharedPreset = (name, config, id = '') => {
+    parseAdditionalParams(config?.qqjAdditionalParams);
     // Every mutation re-reads the shared source so a concurrently changed preset pool is never replaced from a stale UI snapshot.
     const shared = ensureSevenDaysSettings();
     const list = Array.isArray(shared.apiPresets) ? [...shared.apiPresets] : [];
@@ -338,6 +370,11 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     else if (index >= 0 && list[index] && typeof list[index] === 'object') {
       list[index] = { ...list[index] };
       delete list[index].qqjTemperature;
+    }
+    if (normalized.qqjAdditionalParams !== undefined) snapshot.qqjAdditionalParams = normalized.qqjAdditionalParams;
+    else if (index >= 0 && list[index] && typeof list[index] === 'object') {
+      list[index] = { ...list[index] };
+      delete list[index].qqjAdditionalParams;
     }
     if (index >= 0) list[index] = { ...list[index], ...snapshot, id: presetId };
     else list.push({ ...snapshot, id: presetId });

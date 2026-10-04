@@ -1,4 +1,5 @@
 import { parseJsonWithSymbolRepair, repairJsonWithUniqueMissingObjectClose } from './json-symbol-repair.js';
+import { parseAdditionalParams } from './settings.js';
 
 const PROTECTED_BODY_KEYS = new Set(['chat_completion_source', 'reverse_proxy', 'proxy_password', 'model', 'messages', 'json_schema']);
 const DEFAULT_MODEL = 'gpt-4o-mini';
@@ -101,6 +102,7 @@ const providerMessageTemplate = value => {
 };
 
 async function readLimitedErrorText(response, maximum = HTTP_ERROR_BODY_LIMIT) {
+  // 错误正文仅用于诊断；正文读取和取消异常尽量忽略。
   const reader = response?.body?.getReader?.();
   if (reader) {
     const decoder = new TextDecoder(); let text = '';
@@ -112,16 +114,16 @@ async function readLimitedErrorText(response, maximum = HTTP_ERROR_BODY_LIMIT) {
         const remaining = maximum - text.length;
         const chunk = typeof value.subarray === 'function' ? value.subarray(0, remaining) : value;
         text += decoder.decode(chunk, { stream: true });
-        if (text.length >= maximum || chunk.length < value.length) { try { await reader.cancel?.(); } catch { /* best effort */ } break; }
+        if (text.length >= maximum || chunk.length < value.length) { try { await reader.cancel?.(); } catch {} break; }
       }
       return text.slice(0, maximum);
     } catch { return text.slice(0, maximum); }
   }
   if (typeof response?.text === 'function') {
-    try { return String(await response.text()).slice(0, maximum); } catch { /* fall through */ }
+    try { return String(await response.text()).slice(0, maximum); } catch {}
   }
   if (typeof response?.json === 'function') {
-    try { return JSON.stringify(await response.json()).slice(0, maximum); } catch { /* no safe body */ }
+    try { return JSON.stringify(await response.json()).slice(0, maximum); } catch {}
   }
   return '';
 }
@@ -288,7 +290,7 @@ async function readSseResponse(response, { requireSse = false, signal } = {}) {
     }
   } finally {
     // Host readers may ignore AbortSignal, and some proxies leave the socket open after [DONE].
-    if (!eof) try { Promise.resolve(reader.cancel?.()).catch(() => {}); } catch { /* best effort */ }
+    if (!eof) try { Promise.resolve(reader.cancel?.()).catch(() => {}); } catch {}
     try { reader.releaseLock?.(); } catch { /* a native read may still be pending */ }
   }
   if (requireSse && !sawDataLine) throw safeError('stream-protocol');
@@ -397,8 +399,19 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
       temperature: requestTemperature, max_tokens: maxTokens,
     };
     if (jsonSchema) body.json_schema = { name: jsonSchema.name || 'qianqianjie_task', value: jsonSchema.value || jsonSchema.schema, strict: jsonSchema.strict !== false };
+    const additional = parseAdditionalParams(config?.qqjAdditionalParams);
     for (const item of config?.excludeParams || []) {
-      const key = String(item).trim(); if (key && !PROTECTED_BODY_KEYS.has(key)) delete body[key];
+      const key = String(item).trim();
+      if (key && !PROTECTED_BODY_KEYS.has(key)) { delete body[key]; delete additional[key]; }
+    }
+    if (Object.keys(additional).length) {
+      // OpenAI 宿主通道只转发白名单；自定义通道的 JSON/YAML 扩展才会真正传给上游。
+      // 凭证明确覆盖宿主自定义 Key，任务材料与 schema 保持原样，空配置仍走原通道。
+      body.chat_completion_source = 'custom';
+      body.custom_url = normalizeApiUrl(config?.url);
+      body.custom_include_headers = JSON.stringify({ Authorization: `Bearer ${config?.key}` });
+      body.custom_include_body = JSON.stringify(additional);
+      delete body.reverse_proxy; delete body.proxy_password;
     }
     let response;
     try {

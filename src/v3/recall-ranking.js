@@ -31,9 +31,7 @@ const termFrequency = tokens => {
 const finiteWeight = value => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : 0;
 
 /**
- * Rank a fixed document corpus against independent query branches. Each branch
- * is normalized by its own best BM25 score before the available branch weights
- * are re-normalized, so a long background query cannot drown the latest user.
+ * 查询分支分别计分，再按有效分支权重合并；弱重合不放大为满分。
  */
 export function rankRecallDocuments({ documents = [], queries = [], k1 = BM25_DEFAULTS.k1, b = BM25_DEFAULTS.b } = {}) {
   const corpus = (Array.isArray(documents) ? documents : []).map((document, index) => {

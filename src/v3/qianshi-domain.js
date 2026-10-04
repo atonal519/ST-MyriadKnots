@@ -449,7 +449,7 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
   for (const [matterId, values] of matterEvents) {
     const advancing = values.filter(event => event.updatesMatter);
     const { records, current } = deriveQianshiLine(values, sourceIndex);
-    // Historical progress edges remain evidence; only a line's ordered occurred records determine its current state.
+    // 历史进展边只作证据；事项状态取最后一条有效接续记录（无接续时取最后记录），人工整线状态优先。
     const representative = current ?? records.at(-1);
     const origin = [...(advancing.length ? advancing : records)].sort((left, right) => left.assistantSeq - right.assistantSeq || left.id.localeCompare(right.id))[0];
     const synthetic = values.every(event => event.matterId === null);

@@ -75,11 +75,12 @@ export function createChatMemoryManagement({
       || foundation.activeRun || recall.activeRecall || people.active);
   }
   const invalidateRuntimes = deletedChatId => {
-    try { memoryRuntime?.invalidate?.(deletedChatId ? { deletedChatId } : undefined); } catch { /* continue clearing other projections */ }
-    try { foundationRuntime?.invalidate?.(); } catch { /* continue */ }
-    try { recallRuntime?.invalidate?.('memoryDeleted'); } catch { /* continue */ }
-    try { recallRuntime?.clearCurrent?.(); } catch { /* continue */ }
-    try { peopleRuntime?.invalidate?.(); } catch { /* continue */ }
+    // 一个投影清理失败仍继续清理其余投影，避免删除后保留旧材料。
+    try { memoryRuntime?.invalidate?.(deletedChatId ? { deletedChatId } : undefined); } catch {}
+    try { foundationRuntime?.invalidate?.(); } catch {}
+    try { recallRuntime?.invalidate?.('memoryDeleted'); } catch {}
+    try { recallRuntime?.clearCurrent?.(); } catch {}
+    try { peopleRuntime?.invalidate?.(); } catch {}
   };
 
   async function readPersistedChat(identity, { requireMetadata = true } = {}) {

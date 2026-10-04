@@ -12,7 +12,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const nativeJson = value => Array.isArray(value) ? value.map(nativeJson) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, nativeJson(value[key])])) : value;
 
-async function isolateBundle(hostGlobalName, { enabled = false, withExistingPanel = false, mainApi = 'openai', invokeTypes = [], initializeWithoutSubtle = false, tauri = false } = {}) {
+async function isolateBundle(hostGlobalName, { enabled = false, withExistingPanel = false, mainApi = 'openai', invokeTypes = [], initializeWithoutSubtle = false, tauri = false, privateDiagnostics = false } = {}) {
   const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
   const bundlePath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : resolve(root, manifest.js.split('?')[0]);
   const eventRegistrations = new Map();
@@ -55,6 +55,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
   let observerInstances = 0;
   let abortCalls = 0;
   const promptCalls = [];
+  const unloads = [], privateRecords = new Map();
   host.constants = { promptTypes: { IN_CHAT: 17 }, promptRoles: { SYSTEM: 29 } };
   host.setExtensionPrompt = (...args) => { promptCalls.push(args); };
   const message = {
@@ -72,9 +73,20 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
   } : undefined;
   const context = createContext({
     ...(tauri ? { __TAURITAVERN__: { ready: Promise.resolve(), api: { extension: { store: ttStore } } } } : {}),
-    console, crypto: initializeWithoutSubtle ? {} : globalThis.crypto, TextEncoder, TextDecoder, URL, URLSearchParams, AbortController, DOMException, structuredClone, setTimeout, clearTimeout,
+    console, crypto: initializeWithoutSubtle ? {} : globalThis.crypto, TextEncoder, TextDecoder, URL, URLSearchParams, AbortController, DOMException, structuredClone, setTimeout, clearTimeout, setInterval, clearInterval,
+    ...(privateDiagnostics ? { location: { origin: 'https://tavern.invalid' }, addEventListener(name, callback) { if (name === 'beforeunload') unloads.push(callback); } } : {}),
     fetch: async (url, options = {}) => {
       backendCalls += 1;
+      if (privateDiagnostics && String(url).endsWith('/diagnostics.local.json')) return { ok: true, json: async () => ({ enabled: true }) };
+      if (privateDiagnostics && String(url).includes('/private-diagnostics/')) {
+        if (options.method === 'PUT') {
+          const body = JSON.parse(options.body), previous = privateRecords.get(String(url));
+          assert.equal(body.expectedRevision, previous?.revision ?? 0);
+          privateRecords.set(String(url), { revision: body.expectedRevision + 1, data: body.data });
+        }
+        const value = privateRecords.get(String(url));
+        return value ? { ok: true, json: async () => structuredClone(value) } : { ok: false, status: 404 };
+      }
       if (initializeWithoutSubtle) {
         const record = backendRecords.get(String(url));
         return record
@@ -131,13 +143,30 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
     }
   }
   for (const type of invokeTypes) await context.qqj_v3_recall_interceptor([], 8192, () => { abortCalls += 1; }, type);
+  if (privateDiagnostics) {
+    try {
+      for (let attempt = 0; attempt < 100 && privateRecords.size === 0; attempt++) await new Promise(resolvePromise => setTimeout(resolvePromise, 20));
+      assert.ok(privateRecords.size > 0, '实际包必须自动留存未保存的本轮状态');
+    } finally { for (const cleanup of unloads) cleanup(); }
+  }
   const publicBridgeReadStatus = enabled ? null : (await context.qqj_v3_public_bridge_v1?.readMemory?.())?.status;
   const publicBridgeSnapshotType = typeof context.qqj_v3_public_bridge_v1?.getSnapshot;
   const publicBridgeSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getSnapshot?.()?.status;
   const publicBridgePromptSnapshotType = typeof context.qqj_v3_public_bridge_v1?.getPromptSnapshot;
   const publicBridgePromptSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getPromptSnapshot?.()?.status;
-  return { status: entry.status, backendCalls, backendRecords, hostShaCalls, hostShaInputs, eventRegistrations, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, abortCalls };
+  return { status: entry.status, backendCalls, backendRecords, privateRecords, hostShaCalls, hostShaInputs, eventRegistrations, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, abortCalls };
 }
+
+test('实际生产包无需打开面板或保存聊天，私有通道自动记录本轮结果', async () => {
+  const result = await isolateBundle('SillyTavern', { enabled: true, privateDiagnostics: true, invokeTypes: ['normal'] });
+  const records = [...result.privateRecords.values()];
+  assert.equal(records.length, 1);
+  const latest = records[0].data.events.at(-1).data;
+  assert.equal(latest.status, 'skipped');
+  assert.equal(latest.last.receiptPersistence, 'none');
+  assert.deepEqual(latest.last.skipReasons, ['emptyUserInput']);
+  assert.doesNotMatch(JSON.stringify(records), /host-chat|char\.png|injectionText|apiKey/u);
+});
 
 test('TT production bundle boots and persists chat identity through native store without BaiNiao HTTP', async () => {
   const result = await isolateBundle('SillyTavern', { enabled: true, tauri: true });
@@ -163,7 +192,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.6.6');
+  assert.equal(manifest.version, '0.6.7');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -331,6 +360,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const backendSnapshot = { sinceClientCreatedRequestCounts: { get: 3, put: 1, delete: 0 }, latestRead: null, latestWrite: null, lastFailure: null };
   const backendClient = { getDiagnosticSnapshot: () => backendSnapshot };
   define('./src/backend-client.js', { createBackendClient: () => backendClient });
+  define('./src/private-recall-diagnostics.js', { createPrivateRecallDiagnostics: () => ({ start: async () => false, dispose() {} }) });
   define('./src/bootstrap.js', { bootstrap: options => { bootstrapOptions = options; return { refresh() {}, setEnabled() {} }; } });
   const productionSettings = { generalPrompt: '旧通用附加残留', processingPrompt: '  破限接线\n', summaryPrompt: '摘要指导', csePrompt: 'CSE 指导', profilePrompt: '人物资料指导', storyClockReferenceTags: 'Ti,时标', storyCalendars: {} };
   define('./src/settings.js', { createSettingsStore: () => ({ migrateLegacyApiSettings() {}, isEnabled: () => false, get: () => productionSettings, update: patch => Object.assign(productionSettings, patch) }) });

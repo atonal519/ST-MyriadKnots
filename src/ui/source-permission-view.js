@@ -19,7 +19,7 @@ export function createSourcePermissionView({ permissions, documentRef = globalTh
       try {
         const overflowY = typeof getStyle === 'function' ? getStyle(parent)?.overflowY : '';
         if (overflowY === 'auto' || overflowY === 'scroll') return parent;
-      } catch { /* detached test/document nodes fall back to the list itself */ }
+      } catch { /* 容器样式无法读取时继续向上寻找，找不到则使用列表节点。 */ }
     }
     return node;
   };

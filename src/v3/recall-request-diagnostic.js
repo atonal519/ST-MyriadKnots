@@ -5,6 +5,13 @@ const REQUEST_LABELS = new Map([
   ['/api/backends/chat-completions/generate', '生成请求'],
 ]);
 const MAX_REQUESTS = 64;
+export const REQUEST_CONNECTION_FIELDS = Object.freeze({
+  fetchStart: 'fetchStartedAt', workerStart: 'workerStartedAt',
+  domainLookupStart: 'domainLookupStartedAt', domainLookupEnd: 'domainLookupFinishedAt',
+  connectStart: 'connectStartedAt', secureConnectionStart: 'secureConnectionStartedAt', connectEnd: 'connectFinishedAt',
+});
+export const REQUEST_SIZE_FIELDS = Object.freeze(['transferSize', 'encodedBodySize', 'decodedBodySize']);
+export const requestProtocol = value => typeof value === 'string' && /^(?:http\/1\.[01]|h2c?|h3(?:-\d{1,3})?)$/u.test(value) ? value : null;
 
 // 只保存最近一轮的同源请求时间；不读请求体、响应体、查询参数或模型地址。
 // Resource Timing 在请求结束时交付，页面自己的资源缓存满后仍可由 observer 接收。
@@ -20,7 +27,12 @@ export function createRecallRequestDiagnostic({ performanceRef = globalThis.perf
       const start = performanceRef.timeOrigin + entry.startTime;
       if (!label || !Number.isFinite(start) || start < current.startedAt) continue;
       const stamp = value => Number.isFinite(value) && value > 0 ? performanceRef.timeOrigin + value : null;
-      current.requests.push({ label, startedAt: start, requestStartedAt: stamp(entry.requestStart), responseStartedAt: stamp(entry.responseStart), finishedAt: stamp(entry.responseEnd) });
+      // start→requestStart 的等待可能包含连接或 worker；分段保留，不能全部归为宿主保存队列。
+      current.requests.push({ label, startedAt: start, requestStartedAt: stamp(entry.requestStart), responseStartedAt: stamp(entry.responseStart), finishedAt: stamp(entry.responseEnd),
+        ...Object.fromEntries(Object.entries(REQUEST_CONNECTION_FIELDS).map(([field, name]) => [name, stamp(entry[field])])),
+        ...Object.fromEntries(REQUEST_SIZE_FIELDS.map(field => [field, Number.isFinite(entry[field]) && entry[field] >= 0 ? entry[field] : null])),
+        protocol: requestProtocol(entry.nextHopProtocol),
+      });
       if (current.requests.length > MAX_REQUESTS) { current.requests.shift(); current.droppedCount += 1; }
     }
   };

@@ -277,7 +277,7 @@ export function parseJsonWithSafeTrailingCommas(value) {
   const text = String(value ?? '').trim();
   try {
     return Object.freeze({ value: JSON.parse(text), text, repaired: false, operations: Object.freeze([]) });
-  } catch { /* retain the existing trailing-comma compatibility with lexical boundaries */ }
+  } catch { /* 只在字符串外修复尾逗号，其他符号不补。 */ }
   return scanner(text, { trailingCommasOnly: true });
 }
 

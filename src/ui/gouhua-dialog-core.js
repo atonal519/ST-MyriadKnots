@@ -1,5 +1,6 @@
 // Copied from ST-SevenDaysCal/modal.js @ fb93e5466c14fa28158004454790100a0f284f53.
-// Source: prepareDialog/mountDialog/choose/confirm/prompt. QQJ-only seams: focus hooks, scheduler, hasActive.
+// Source: prepareDialog/mountDialog/choose/confirm/prompt.
+// 本地适配包括焦点、调度、上下文关闭、自定义表单与公开错误提示。
 import { publicErrorMessage } from '../public-error.js';
 
 const OVERLAY_ID = 'sp-addon-dialog';

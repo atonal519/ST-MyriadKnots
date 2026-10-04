@@ -1343,6 +1343,43 @@ test('复制回执附核验保存计时及最新本轮请求，不混入新轮�
   assert.match(copied[1], /请求计时：未记录/u); assert.doesNotMatch(copied[1], /另一轮请求/u);
 });
 
+test('后台保存更新现有回执小字，等待与保存耗时分列，失败仍保留可用材料', async () => {
+  const foundation = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 0, rememberedCount: 0, memorySyncStatus: 'idle', floors: [] };
+  const record = { status: 'ready', requestDiagnosticId: 7, userMessageIndex: 4, createdAt: '2026-10-02T11:46:51Z', generationType: 'normal', receiptPersistence: 'saving',
+    selectedFloors: [], selectedStates: [], coverage: null, stages: null, timings: { totalMs: 15000, selectorMs: 14000, commitMs: 500 }, skipReasons: [], injectionText: 'PRIVATE_BODY', error: null };
+  let state = { recallStatus: 'ready', activeRecall: null, lastRecall: record };
+  const listeners = new Set(), copied = [], container = new Node('main');
+  const view = createV3FoundationView({ runtime: { getState: () => foundation, refreshStatus: async () => foundation, confirmLatest: async () => foundation },
+    recallRuntime: { getState: () => state, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } }, documentRef,
+    navigatorRef: { clipboard: { writeText: async text => copied.push(text) } } });
+  view.mount(container);
+  const pageText = () => flatten(container).map(node => node.textContent).join('|');
+  const copy = () => flatten(container).find(node => node.textContent === '复制回执').click();
+  assert.match(pageText(), /后台保存中；刷新可能丢失本轮回执/u);
+  assert.match(pageText(), /本轮召回等待 15000\.0 ms.*核验 500\.0 ms · 后台保存中/u);
+  await copy();
+  assert.match(copied[0], /召回回执：可用.*后台保存中/su);
+  assert.doesNotMatch(copied[0], /PRIVATE_BODY|后台保存 \d/u);
+
+  state = { ...state, lastRecall: { ...record, receiptPersistence: 'saveUnconfirmed', timings: { ...record.timings, receiptMs: 12000 } } };
+  for (const listener of listeners) listener(state);
+  assert.match(pageText(), /已请求宿主保存，结果未确认/u);
+  assert.match(pageText(), /本轮召回等待 15000\.0 ms.*后台保存 12000\.0 ms/u);
+  assert.doesNotMatch(pageText(), /后台保存中|本轮召回等待 27000/u);
+  await copy();
+  assert.match(copied[1], /本轮召回等待 15000\.0 ms.*后台保存 12000\.0 ms/su);
+  assert.doesNotMatch(copied[1], /PRIVATE_BODY/u);
+
+  state = { ...state, lastRecall: { ...state.lastRecall, receiptPersistence: 'sessionOnly' } };
+  for (const listener of listeners) listener(state);
+  assert.match(pageText(), /未保存；仅当前页面可复用/u);
+  assert.match(pageText(), /PRIVATE_BODY/u, '保存失败不撤回已核验的召回材料');
+  await copy();
+  assert.match(copied[2], /召回回执：可用.*未保存；仅当前页面可复用/su);
+  view.deactivate();
+  assert.equal(listeners.size, 0);
+});
+
 test('召回归属旧字段缺失自然降级，候选回复使用中文标签且不拒绝正文', () => {
   const foundation = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 2, rememberedCount: 2, unprocessedCount: 0, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'head', activeRun: null, activeExtraction: null, activeCse: null, lastRun: null, lastError: null, lastExtractorError: null, lastCseError: null, unreachableCount: 0, metrics: {}, floors: [] };
   const runtime = { getState: () => foundation, refreshStatus: async () => foundation, confirmLatest: async () => foundation };
@@ -2328,4 +2365,22 @@ test('停止项复用批量控件永久删除，取消零写，失败后同入�
   assert.ok(flatten(body).filter(node=>node.className==='qqj-recent-item-select').every(node=>node.disabled&&!node.checked),'续清期间不能把新勾选混进旧删除');
   assert.equal(flatten(body).find(node=>node.textContent==='选择当前列表').disabled,true);
   await remove.click();assert.deepEqual(calls[1],[]);assert.equal(flatten(body).some(node=>node.textContent==='继续永久删除'),false);view.deactivate();
+});
+
+test('准备子阶段在回执及复制诊断中按attempt展示，不复制来源材料', async () => {
+  const foundation = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, memorySyncStatus: 'idle', floors: [] };
+  const runtime = { getState: () => foundation, refreshStatus: async () => foundation, confirmLatest: async () => foundation };
+  const preparation = { phase: 'commit', mode: 'fresh', stage: 'prepare', status: 'timeout', totalMs: 5100, budgetMs: 5000,
+    identityMs: 1, rootMs: 2, prepareMs: 5097, readMs: 0, projectionMs: 0, source: 'SECRET_SOURCE' };
+  const record = { status: 'error', userMessageIndex: 4, generationType: 'normal', receiptPersistence: 'none', selectedFloors: [], selectedStates: [], selectedCseChanges: [], injectionText: '', skipReasons: [],
+    attemptDiagnostics: [{ attempt: 1, phase: 'commit', selectionStatus: 'completed', timings: { preparationAttempts: [preparation] } },
+      { attempt: 2, phase: 'source', selectionStatus: 'notStarted', timings: { preparationAttempts: [{ ...preparation, phase: 'source', stage: 'read', prepareMs: 0, readMs: 5097 }] } }] };
+  const recallRuntime = { getState: () => ({ recallStatus: 'error', lastRecall: record }) };
+  const copied = [], navigatorRef = { clipboard: { writeText: async value => copied.push(value) } };
+  const container = new Node('main'); const view = createV3FoundationView({ runtime, recallRuntime, documentRef, navigatorRef }); view.mount(container);
+  for (const node of flatten(container).filter(node => node.children.length)) Object.defineProperty(node, 'textContent', { configurable: true, get: () => node.children.map(child => child.textContent).join('') });
+  await flatten(container).find(node => node.textContent === '复制回执').click();
+  assert.match(copied[0], /第 1 次准备.*只读核验.*超时于准备缓存.*期限 5000 ms/su);
+  assert.match(copied[0], /第 2 次准备.*超时于独立来源读取.*独立来源读取 5097 ms/su);
+  assert.doesNotMatch(copied[0], /SECRET_SOURCE/u); view.deactivate();
 });

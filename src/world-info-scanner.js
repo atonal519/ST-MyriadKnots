@@ -60,7 +60,7 @@ async function allWorldNames(ctx, bindings, known, options = {}) {
     const fn = helper?.getWorldbookNames ?? helper?.getLorebooks;
     const names = typeof fn === 'function' ? await fn.call(helper) : null;
     if (Array.isArray(names) && names.length) return uniqueNames([...fallback, ...names], options);
-  } catch { /* use linked names */ }
+  } catch { /* 助手目录读取失败仍继续尝试宿主目录。 */ }
   if (typeof ctx?.updateWorldInfoList === 'function') {
     try {
       await ctx.updateWorldInfoList();

@@ -880,7 +880,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     refreshInFlight = entry;
     return entry.promise;
   }
-  async function prepareCurrent({ preferCached = true, rootResult = null } = {}) {
+  async function prepareCurrent({ preferCached = true, rootResult = null, allowRefresh = true } = {}) {
     const hostChatId = currentHostChatId();
     const foundation = foundationRuntime.getState();
     const matchesRoot = value => rootResult?.status === 'ready' && value?.status === 'ready' && value.root?.chatId === hostChatId
@@ -888,6 +888,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       && value.root.narrativeGeneration === rootResult.data.narrativeGeneration && value.root.headCheckpointId === rootResult.data.headCheckpointId;
     if (enabled() && hostChatId && memorySnapshotStatus === 'ready' && foundation?.status === 'ready' && foundation.chatId === hostChatId
       && matchesRoot(reachable) && matchesRoot(foundationRuntime.getReachable?.())) return Object.freeze({ status: 'ready', reachable, memorySyncStatus });
+    // 提交前核验只借用精确匹配当前根的已校验快照；缺失时由召回独立只读来源，不排队等待后台维护。
+    if (!allowRefresh) return Object.freeze({ status: enabled() ? 'unavailable' : 'disabled', reachable: null, memorySyncStatus });
     if (preferCached && hostChatId && reachable?.root?.chatId === hostChatId && memorySnapshotStatus === 'ready') {
       return Object.freeze({ status: 'ready', reachable, memorySyncStatus });
     }

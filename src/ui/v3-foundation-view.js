@@ -373,7 +373,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       try {
         await navigatorRef.clipboard.writeText(value); if (!local) fallbackText = '';
         // 剪贴板写入成功才提示；通知失败不应误报复制失败或切到手动复制。
-        try { globalThis.toastr?.success?.('已复制。'); } catch { /* 复制结果以剪贴板为准。 */ }
+        try { globalThis.toastr?.success?.('已复制。'); } catch {}
         return '已复制。';
       }
       catch { /* 浏览器或壳层拒绝剪贴板权限时改用只读文本框。 */ }
@@ -1323,6 +1323,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const coverage = record.coverage, stages = record.stages, timings = record.timings, sourceReads = timings?.sourceReadAttempts;
     const uncommitted = ['error', 'stale'].includes(record.status);
     const phaseCopy = value => ({ input: '输入准备', source: '来源读取', selecting: '选材', commit: '提交前核验', receipt: '回执保存' })[value] ?? '未记录阶段';
+    const preparationCopy = values => (Array.isArray(values) ? values : []).slice(0, 2).map(value => {
+      const stages = { identity: '身份读取', root: '根版本读取', prepare: '准备缓存', read: '独立来源读取', projection: '来源投影' };
+      const status = { ready: '完成', timeout: '超时', stale: '已失效', unavailable: '不可用', disabled: '已关闭' };
+      return `${phaseCopy(value.phase)} · ${value.mode === 'fresh' ? '只读核验' : '常规准备'} · ${status[value.status] ?? '未记录'}于${stages[value.stage] ?? '未知阶段'}${Number.isFinite(value.totalMs) ? ` · ${value.totalMs} ms` : ''}${Number.isFinite(value.budgetMs) ? ` / 期限 ${value.budgetMs} ms` : ''} · ${Object.entries(stages).filter(([stage]) => Number.isFinite(value[`${stage}Ms`])).map(([stage, label]) => `${label} ${value[`${stage}Ms`]} ms`).join(' · ')}`;
+    }).join('；');
     const selectionCopy = value => ({ notStarted: '未执行选材', incomplete: '选材未完成', completed: '选材已完成', receiptCandidate: '回执复用候选，未提交', reused: '已复用回执' })[value] ?? (record.reusedReceipt ? '复用回执，未发起新选材' : record.restoredReceipt ? '历史回执未记录阶段' : stages ? '选材已完成' : '未执行选材');
     const sourceExitCopy = { ready: '读取成功', validatedSnapshot: '已使用完成校验的快照', memoryPreparation: '记忆准备未完成', memoryPreparationTimeout: '记忆准备超时', memoryPreparationFailed: '记忆准备失败', stale: '读取时已失效', unavailable: '来源不可用' };
     const sourceReadCopy = sourceReads ? `完整快照 ${sourceReads.reachableReads} 次 · 退出 ${sourceExitCopy[sourceReads.exitPoint] ?? '未知'}` : record.restoredReceipt ? '历史回执不重新读取来源' : '未记录';
@@ -1342,7 +1347,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       ? `历史候选 ${selectorCount(selector?.historyCandidateCount)} → 模型排除 ${selectorCount(selector?.historyExcludedCount)} → 保留 ${selectorCount(selector?.historyRetainedCount)} → 关联补入 ${selectorCount(stages?.linkedHistoryItemCount)} → 最终远期 ${selectorCount(stages?.distantHistoryItemCount)} · 人物候选 ${selectorCount(selector?.stateCandidateCount)} → 模型排除 ${selectorCount(selector?.stateExcludedCount)} → 保留 ${selectorCount(selector?.stateRetainedCount)} → 关联补入 ${selectorCount(stages?.linkedCseChangeCount)} → 最终注入 ${Number.isSafeInteger(stages?.currentStateCount) && Number.isSafeInteger(stages?.cseChangeCount) ? stages.currentStateCount + stages.cseChangeCount : '未知'}`
       : `历史候选 ${selectorCount(selector?.historyCandidateCount)} → 模型选择 ${selectorCount(selector?.historyModelSelectedCount)} → 最终远期 ${selectorCount(stages?.distantHistoryItemCount)} · 人物候选 ${selectorCount(selector?.stateCandidateCount)} → 模型选择 ${selectorCount(selector?.stateModelSelectedCount)} → 最终注入 ${Number.isSafeInteger(stages?.currentStateCount) && Number.isSafeInteger(stages?.cseChangeCount) ? stages.currentStateCount + stages.cseChangeCount : '未知'}`;
     if (uncommitted) selectorCountCopy = selectorCountCopy.replace('最终注入', '候选材料');
-    const persistenceCopy = { sessionOnly: '仅当前页面可复用', saveUnconfirmed: '已请求宿主保存，结果未确认', chatRecord: '从聊天记录读取', none: '未保存' };
+    const persistenceCopy = { saving: '后台保存中；刷新可能丢失本轮回执', sessionOnly: '未保存；仅当前页面可复用', saveUnconfirmed: '已请求宿主保存，结果未确认', chatRecord: '从聊天记录读取', none: '未保存' };
     const selectorBreakdown = selector?.mode === 'local' && Number.isFinite(selector?.localSelectionMs)
       ? `未发起选材接口 · 本地选材 ${Number(selector.localSelectionMs).toFixed(1)} ms`
       : Number.isFinite(selector?.utilityRoundTripMs) && Number.isFinite(selector?.localSelectionMs)
@@ -1355,7 +1360,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         : timings ? `${Number.isFinite(timings.totalMs) ? `本轮召回等待 ${Number(timings.totalMs).toFixed(1)} ms · ` : ''}${Number.isFinite(timings.selectorMs) ? `选材总等待 ${Number(timings.selectorMs).toFixed(1)} ms · ` : ''}${selectorBreakdown}${Number.isFinite(timings.sourceMs) ? ` · 读取 ${Number(timings.sourceMs).toFixed(1)} ms` : ''}` : '未记录';
     if (!record.restoredReceipt) {
       if (Number.isFinite(timings?.commitMs)) timingCopy += ` · 核验 ${Number(timings.commitMs).toFixed(1)} ms`;
-      if (Number.isFinite(timings?.receiptMs)) timingCopy += ` · 保存 ${Number(timings.receiptMs).toFixed(1)} ms`;
+      // 保存耗时单列，不计入放行正文前的召回等待，也不表示落盘已确认。
+      if (Number.isFinite(timings?.receiptMs)) timingCopy += ` · 后台保存 ${Number(timings.receiptMs).toFixed(1)} ms`;
+      else if (record.receiptPersistence === 'saving') timingCopy += ' · 后台保存中';
     }
     if (uncommitted && record.diagnosticAttempt) timingCopy = `选材与读取耗时来自第 ${record.diagnosticAttempt} 次尝试 · ${timingCopy}`;
     const filterReasons = (record.skipReasons ?? []).filter(value => value !== 'historySelectionFallback').map(skipReasonCopy);
@@ -1363,11 +1370,14 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const errorMetadataCopy = record.error ? `${record.error.code}${record.error.httpStatus ? ` · HTTP ${record.error.httpStatus}` : ''}${record.error.formatStage ? ` · 格式阶段 ${record.error.formatStage}` : ''}${record.error.sourceStage ? ` · 阶段 ${record.error.sourceStage}` : ''}${record.error.finishReason ? ` · 结束原因 ${record.error.finishReason}` : ''}${record.error.sourceLabel && record.error.sourceLabel !== '未命名 API' ? ` · 来源 ${record.error.sourceLabel}` : ''}${record.error.model && record.error.model !== 'unknown' ? ` · 模型 ${record.error.model}` : ''}${Number.isSafeInteger(record.error.transportAttempts) ? ` · 网络尝试 ${record.error.transportAttempts}` : ''}` : '';
     const details = element('dl', 'v3-foundation-grid'); details.append(row('触发用户楼', userFloorCopy(record.userMessageIndex)), row('生成时间', localTimeCopy(record.createdAt)), row('生成类型', generationTypeCopy(record.generationType)), row('收据', record.legacyReadOnly ? '旧版只读记录' : record.restoredReceipt ? '从聊天记录读取 · 仅恢复历史展示，不会再次注入' : `${record.reusedReceipt ? '复用' : '新算'} · ${persistenceCopy[record.receiptPersistence] ?? record.receiptPersistence ?? '未知'}`), row('召回旧楼', floors), row('当前人物状态', states), row('人物状态历史变化', changes), row('覆盖范围', coverage ? `记忆 ${coverage.rememberedAiFloors}/${coverage.stableAiFloors} · ${coverage.cseThroughAssistantSeq ? `CSE 到${floorCopy(foundationState, { assistantSeq: coverage.cseThroughAssistantSeq }, '终点楼号未提供')}` : 'CSE 尚未覆盖'}` : '本轮未读取'), stageRow('筛选阶段', stageCopy), row('选材方式', selector?.code ? '智能选材失败' : selectorModeCopy(selector?.mode)), row('智能选材计数', selectorCountCopy), ...(selectorMetadataCopy ? [row('选材失败诊断', selectorMetadataCopy)] : []), ...(errorMetadataCopy ? [row('失败诊断', errorMetadataCopy)] : []), row('耗时', timingCopy), row('来源读取', sourceReadCopy), row('普通过滤说明', filterReasons.join('、') || '无'));
     if (record.diagnosticPhase) details.append(row('所示诊断阶段', `${record.diagnosticAttempt ? `第 ${record.diagnosticAttempt} 次尝试 · ` : ''}${phaseCopy(record.diagnosticPhase)} · ${selectionCopy(record.selectionStatus)}${uncommitted ? ' · 本轮未注入' : ''}`));
+    // 准备子阶段只展示枚举与计时；历史回执没有尝试列表时沿已封签的可选计时恢复。
+    if (!record.attemptDiagnostics?.length && timings?.preparationAttempts?.length) details.append(row('准备等待', preparationCopy(timings.preparationAttempts)));
     for (const attempt of record.attemptDiagnostics ?? []) {
       const attemptError = attempt.error;
       const attemptSelector = attempt.selectorDiagnostic;
       const attemptMetadata = attemptError ? `${attemptError.code}${attemptError.httpStatus ? ` · HTTP ${attemptError.httpStatus}` : ''}${attemptError.formatStage ? ` · 格式阶段 ${attemptError.formatStage}` : ''}${attemptError.sourceStage ? ` · 阶段 ${attemptError.sourceStage}` : ''}${attemptError.finishReason ? ` · 结束原因 ${attemptError.finishReason}` : ''}${attemptError.sourceLabel && attemptError.sourceLabel !== '未命名 API' ? ` · 来源 ${attemptError.sourceLabel}` : ''}${attemptError.model && attemptError.model !== 'unknown' ? ` · 模型 ${attemptError.model}` : ''}${Number.isSafeInteger(attemptError.transportAttempts) ? ` · 网络尝试 ${attemptError.transportAttempts}` : ''}${Number.isSafeInteger(attemptSelector?.requestCharacters) ? ` · 请求约 ${attemptSelector.requestCharacters} 字符 / ${attemptSelector.requestEstimatedTokens} token` : ''}` : '';
       details.append(row(`第 ${attempt.attempt} 次尝试`, `${phaseCopy(attempt.phase)} · ${selectionCopy(attempt.selectionStatus)}${attemptMetadata ? ` · ${attemptMetadata}` : ''}${Number.isFinite(attempt.timings?.totalMs) ? ` · ${Number(attempt.timings.totalMs).toFixed(1)} ms` : ''}`));
+      if (attempt.timings?.preparationAttempts?.length) details.append(row(`第 ${attempt.attempt} 次准备`, preparationCopy(attempt.timings.preparationAttempts)));
     }
     body.append(details); const safeError = errorMessage(state?.lastRecallError) || errorMessage(record.error); if (safeError) body.append(element('p', 'v3-foundation-feedback error', safeError));
     const errorCode = state?.lastRecallError?.code ?? record.error?.code;

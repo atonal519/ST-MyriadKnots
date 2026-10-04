@@ -11,6 +11,35 @@ const setup = extensionSettings => {
   return { settings, saves: () => saves };
 };
 
+test('附加参数按主配置或共享预设保存，角色跟随与在途快照保持；清空恢复默认', async () => {
+  const extensionSettings = {}, { settings, saves } = setup(extensionSettings);
+  const disabled = '{"thinking":{"type":"disabled"}}';
+  settings.saveMainConfig({ ...configured('主', 'main'), qqjAdditionalParams: disabled });
+  assert.equal(settings.mainConfig().qqjAdditionalParams, disabled);
+  const id = settings.upsertSharedPreset('召回', { ...configured('召回', 'recall'), qqjAdditionalParams: disabled }, 'recall');
+  extensionSettings['schedule-planner'].apiPresets[0].otherPluginField = 'preserve';
+  settings.setSummaryPresetId(id);
+  const resolver = createApiResolver({ settings }), seen = [];
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  const router = createTaskRouter({ resolver, compactClient: { generateTask: async ({ config }) => { seen.push(config); if (seen.length === 1) await gate; return { jsonData: {} }; } } });
+  const pending = router.generateRecallTask({});
+  settings.upsertSharedPreset('召回', { ...configured('召回', id), qqjAdditionalParams: '' }, id);
+  release(); await pending;
+  assert.equal(seen[0].qqjAdditionalParams, disabled);
+  await router.generateRecallTask({});
+  assert.equal(seen[1].qqjAdditionalParams, undefined);
+  assert.equal(extensionSettings['schedule-planner'].apiPresets[0].otherPluginField, 'preserve');
+  settings.setSummaryPresetId('');
+  await router.generateAnalysisTask({});
+  assert.equal(seen.at(-1).qqjAdditionalParams, disabled);
+  const before = saves();
+  assert.throws(() => settings.upsertSharedPreset('坏参数', { ...configured('坏', id), qqjAdditionalParams: '[]' }, id), TypeError);
+  assert.equal(saves(), before);
+  settings.saveMainConfig({ ...configured('主', 'main'), qqjAdditionalParams: '' });
+  assert.equal(settings.mainConfig().qqjAdditionalParams, undefined);
+  assert.equal(settings.get().apiAdditionalParams, '');
+});
+
 test('召回默认随摘要与分析链，独立选择冻结在途而下一次取新配置', async () => {
   const extensionSettings = { qianqianjie: { apiUrl: 'https://main.test/v1', apiKey: 'M', summaryPresetId: 'summary' }, 'schedule-planner': { apiPresets: [configured('摘要', 'summary'), configured('召回', 'recall')] } };
   const { settings } = setup(extensionSettings), resolver = createApiResolver({ settings });

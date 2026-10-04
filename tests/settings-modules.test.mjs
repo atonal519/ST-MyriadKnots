@@ -44,6 +44,35 @@ const chooseInline = async (control, value) => {
 };
 const focusInline = control => inlineTrigger(control).fire('focus');
 
+test('附加参数随 API 角色回填，非法 JSON 阻止保存、另存和测试，清空恢复默认', async () => {
+  let saves = 0, calls = 0, prompts = 0;
+  const settings = createSettingsStore({ extensionSettings: {}, save() { saves++; } });
+  settings.saveMainConfig({ url: 'https://main.test/v1', key: 'KEY', model: 'glm-5.2' });
+  const disabled = '{"thinking":{"type":"disabled"}}';
+  settings.upsertSharedPreset('召回', { url: 'https://recall.test/v1', key: 'RECALL_KEY', model: 'glm-5.2', qqjAdditionalParams: disabled }, 'recall');
+  settings.update({ recallPresetId: 'recall' });
+  const { node } = createApiSettings({ settings, documentRef, apiTools: { testConnection: async () => { calls++; return {}; } }, promptImpl: async () => { prompts++; return 'new'; } });
+  const field = fieldControl(node, '附加参数（JSON）');
+  assert.equal(field.value, '');
+  field.value = '{bad}';
+  const before = saves;
+  for (const text of ['保存设置', '另存为预设', '测试连接']) await node.find(n => n.tagName === 'button' && n.textContent === text).fire('click');
+  assert.equal(saves, before); assert.equal(calls, 0); assert.equal(prompts, 0);
+  assert.match(node.find(n => n.className.includes('settings-result')).textContent, /JSON 对象/u);
+  field.value = disabled;
+  await node.find(n => n.tagName === 'button' && n.textContent === '保存设置').fire('click');
+  assert.equal(settings.mainConfig().qqjAdditionalParams, disabled);
+  assert.equal(field.value, disabled);
+  await focusInline(fieldControl(node, '召回API（默认跟随摘要）'));
+  assert.equal(field.value, disabled);
+  field.value = '';
+  await node.find(n => n.tagName === 'button' && n.textContent === '保存设置').fire('click');
+  assert.equal(settings.sharedPresets()[0].qqjAdditionalParams, undefined);
+  assert.equal(settings.mainConfig().qqjAdditionalParams, disabled, '独立召回保存不影响主配置');
+  await focusInline(fieldControl(node, '分析API（建议高质模型）'));
+  assert.equal(field.value, disabled);
+});
+
 test('提示词模块字段 change 即持久化', () => {
   const patches = [];
   const settings = { get: () => ({ sourceKeepTags: 'content', sourceExtraTags: '' }), update: patch => { patches.push(patch); return patch; } };

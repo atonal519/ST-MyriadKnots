@@ -225,7 +225,7 @@ export async function selectRecallWithLlm({
     const stateKeys = validateExcludedKeys(parsed, 'state_exclude_keys', stateAllowed);
     // 未返回保留键时不默认塞回所有生日；外来键与其他候选池一样拒绝。
     const annualKeys = validateExcludedKeys(parsed, 'annual_retain_keys', new Set(annualCandidates.map(candidate => candidate.key)));
-    // A valid answer for either nonempty pool is enough; each supplied field is fully checked first, so any foreign key still fails the whole selection.
+    // 历史、状态或周年候选池中，任一非空池有有效答复即可；返回的选材键仍须全部通过对应候选池校验。
     const answeredNonemptyPool = (historyAllowed.size > 0 && Object.hasOwn(parsed, 'history_exclude_keys'))
       || (stateAllowed.size > 0 && Object.hasOwn(parsed, 'state_exclude_keys'))
       || (annualCandidates.length > 0 && Object.hasOwn(parsed, 'annual_retain_keys'));

@@ -27,7 +27,7 @@ const withTaskMetadata = (result, route) => {
 
 export function createApiResolver({ settings } = {}) {
   if (!settings?.get || !settings?.sevenDaysSettings) throw new Error('API 配置解析器依赖不可用');
-  const describeSevenDaysPresets = () => sevenDaysPresets(settings.sevenDaysSettings()).map(({ id, name, url, key, model, excludeParams, timeoutSec, stream }) => ({ id, name, url, key, model, excludeParams, timeoutSec, stream }));
+  const describeSevenDaysPresets = () => sevenDaysPresets(settings.sevenDaysSettings()).map(({ id, name, url, key, model, excludeParams, timeoutSec, stream, qqjAdditionalParams }) => ({ id, name, url, key, model, excludeParams, timeoutSec, stream, ...(qqjAdditionalParams ? { qqjAdditionalParams } : {}) }));
   const resolveAuto = () => {
     const main = settings.mainConfig();
     if (validConfig(main)) return { kind: 'independent', source: 'qqj-main', sourceLabel: '主配置', config: main };
@@ -98,7 +98,7 @@ export function createTaskRouter({ resolver, compactClient, isEnabled = () => tr
         try { error.taskMetadata = { ...taskMetadata(route, error?.finishReason || error?.taskMetadata?.finishReason, error?.transportAttempts ?? error?.taskMetadata?.transportAttempts),
           ...(Number.isSafeInteger(error?.httpStatus ?? error?.status) ? { httpStatus: error.httpStatus ?? error.status } : {}),
           ...(typeof error?.formatStage === 'string' ? { formatStage: bounded(error.formatStage, 80) } : {}) };
-        } catch { /* a frozen foreign error remains safe but cannot be annotated */ }
+        } catch { /* 外部冻结错误无法附加诊断，仍原样抛出。 */ }
       }
       throw error;
     }

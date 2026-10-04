@@ -349,7 +349,14 @@ const receiptTimingSnapshot = timings => Object.freeze({
   sourceMs: Math.max(0, Number(timings.sourceMs) || 0),
   selectorMs: Math.max(0, Number(timings.selectorMs) || 0),
   ...(timings.sourceReadAttempts ? { sourceReadAttempts: clone(timings.sourceReadAttempts) } : {}),
+  ...(timings.preparationAttempts ? { preparationAttempts: clone(timings.preparationAttempts) } : {}),
 });
+const PREPARATION_STAGES = ['identity', 'root', 'prepare', 'read', 'projection'];
+const PREPARATION_DURATIONS = ['totalMs', 'budgetMs', ...PREPARATION_STAGES.map(stage => `${stage}Ms`)];
+const preparationTimingsValid = value => value === undefined || (Array.isArray(value) && value.length <= 2 && value.every(item => item
+  && ['source', 'commit'].includes(item.phase) && ['cached', 'fresh'].includes(item.mode)
+  && PREPARATION_STAGES.includes(item.stage) && ['ready', 'timeout', 'stale', 'unavailable', 'disabled'].includes(item.status)
+  && PREPARATION_DURATIONS.every(key => finiteDuration(item[key]))));
 const stateChangeSideValid = (value, { identifiersRequired = false } = {}) => value === null || (value && typeof value === 'object' && !Array.isArray(value)
   && (!identifiersRequired || boundedString(value.stateId, 500))
   && (value.stateId === undefined || optionalBoundedString(value.stateId, 500))
@@ -448,6 +455,7 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     const timings = receipt.timings;
     if (!timings || typeof timings !== 'object' || Array.isArray(timings)
       || !['inputMs', 'sourceMs', 'selectorMs'].every(key => finiteDuration(timings[key]))
+      || !preparationTimingsValid(timings.preparationAttempts)
       || (timings.sourceReadAttempts !== null && timings.sourceReadAttempts !== undefined
         && (typeof timings.sourceReadAttempts !== 'object' || Array.isArray(timings.sourceReadAttempts)
           || !nonNegativeInteger(timings.sourceReadAttempts.reachableReads) || !boundedString(timings.sourceReadAttempts.exitPoint, 120)))) return false;
@@ -758,7 +766,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
   let epoch = 0, generationSerial = 0, stoppedEndDebt = 0, active = null, slotOwner = null, prequelSlotActive = false, promptSnapshot = null, lastRecall = null, lastPrequel = null, lastError = null, lastRecallBinding = null, enabledOverride = null;
   const subscribers = new Set(), generationQueue = [];
   const requestDiagnostic = createRecallRequestDiagnostic();
-  let sessionReceipt = null;
+  const receiptSaveCandidates = new WeakMap();
+  let sessionReceipt = null, lastRecallReceiptOwner = null;
   const enabled = () => { try { return enabledOverride ?? ((typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true); } catch { return false; } };
   const currentSanitizerOptions = () => { try { return typeof sanitizerOptions === 'function' ? sanitizerOptions() : sanitizerOptions; } catch { return {}; } };
   const hasRealtimeOrigin = () => { try { return (typeof realtimeOrigin === 'function' ? realtimeOrigin() : realtimeOrigin) === true; } catch { return false; } };
@@ -783,49 +792,82 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (!['timeout', 'unavailable', 'error', 'loading'].includes(status)) return null;
     const detail = typeof source?.error === 'string' ? source.error : source?.error?.message;
     const code = source?.error?.code ?? (status === 'timeout' ? 'V3_RECALL_MEMORY_PREPARATION_TIMEOUT' : 'V3_RECALL_SOURCE_UNAVAILABLE');
-    return Object.assign(new Error(detail || (status === 'timeout' ? '当前聊天记忆在 5 秒内未准备完成。' : '当前聊天记忆暂时无法读取。')), { code });
+    return Object.assign(new Error(detail || (status === 'timeout' ? '当前聊天记忆准备超时。' : '当前聊天记忆暂时无法读取。')), { code });
   };
-  async function basePreparedSource(snapshot, sanitizerSnapshot, { fresh = false, operation = null, rootResult = null } = {}) {
-    const identityProjection = typeof identityProjectionProvider === 'function' ? await identityProjectionProvider() : null;
-    if (typeof prepareMemory === 'function') {
-      let timer = null;
-      let expired = false;
-      const timeout = Symbol('memoryPreparationTimeout');
-      let outcome;
-      try {
-        outcome = await Promise.race([
-          Promise.resolve().then(async () => {
-            let latestRoot = rootResult;
-            if (fresh && latestRoot === null && typeof store.readRoot === 'function') {
-              latestRoot = await store.readRoot();
-              const rootError = technicalSourceError(latestRoot);
-              if (rootError) throw rootError;
-              if (expired || (operation && (operation.token !== epoch || operation.controller.signal.aborted))) return { prepared: { status: 'stale' }, fallback: null };
-            }
-            const prepared = await prepareMemory({ preferCached: !fresh, rootResult: latestRoot });
-            if (prepared?.status === 'ready' && prepared.reachable?.root) return { prepared, fallback: null };
-            if (['disabled', 'stale'].includes(prepared?.status)) return { prepared, fallback: null };
-            if (expired || (operation && (operation.token !== epoch || operation.controller.signal.aborted))) return { prepared, fallback: null };
-            const fallback = await sourceReader({ store, now, hostSnapshot: snapshot, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin(), identityProjection: identityProjection?.data ?? identityProjection });
-            return { prepared, fallback };
-          }),
-          new Promise(resolve => { timer = setTimeout(() => { expired = true; resolve(timeout); }, Math.max(1, Number(preparationTimeoutMs) || 5000)); }),
-        ]);
-      } catch (error) {
-        return Object.freeze({ status: 'unavailable', error: Object.freeze({ code: clean(error?.code ?? error?.name ?? 'V3_RECALL_SOURCE_UNAVAILABLE', 120), message: clean(error?.message ?? '记忆准备失败。') }), sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: 'memoryPreparationFailed' }) });
-      } finally {
-        if (timer !== null) clearTimeout(timer);
+  const matchesSourceRoot = (value, root) => root?.status === 'ready'
+    && root.revision === value.rootRevision && root.data?.chatId === value.chatId
+    && root.data?.narrativeGeneration === value.narrativeGeneration && root.data?.headCheckpointId === value.headCheckpointId;
+  async function basePreparedSource(snapshot, sanitizerSnapshot, { fresh = false, operation = null, rootResult = null, sourceToVerify = null } = {}) {
+    const started = Date.now(), budgetMs = Math.max(1, Number(preparationTimeoutMs) || 5000);
+    const timing = { phase: sourceToVerify ? 'commit' : 'source', mode: fresh ? 'fresh' : 'cached', stage: 'identity', status: 'unavailable', totalMs: 0, budgetMs,
+      identityMs: 0, rootMs: 0, prepareMs: 0, readMs: 0, projectionMs: 0 };
+    const timeout = Symbol('memoryPreparationTimeout'), stale = Symbol('memoryPreparationStale');
+    let timer = null, closed = false, stepStarted = null, abortListener;
+    const check = () => {
+      if (operation && (operation.token !== epoch || operation.controller.signal.aborted)) throw stale;
+      if (closed || Date.now() - started >= budgetMs) throw timeout;
+    };
+    const step = async (stage, read) => {
+      check(); timing.stage = stage; stepStarted = Date.now();
+      try { const value = await read(); check(); return value; }
+      finally {
+        if (!closed && stepStarted !== null) timing[`${stage}Ms`] += Date.now() - stepStarted;
+        stepStarted = null;
       }
-      if (outcome === timeout) return Object.freeze({ status: 'timeout', sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: 'memoryPreparationTimeout' }) });
-      const { prepared, fallback } = outcome;
-      if (prepared?.status === 'ready' && prepared.reachable?.root) {
-        return projectRecallSource(prepared.reachable, now, Object.freeze({ reachableReads: 0, exitPoint: 'validatedSnapshot' }), snapshot, sanitizerSnapshot, hasRealtimeOrigin(), identityProjection?.data ?? identityProjection);
+    };
+    const run = async () => {
+      let latestRoot = rootResult;
+      const canReadRoot = typeof store.readRoot === 'function';
+      if (canReadRoot && (sourceToVerify || fresh && latestRoot === null && typeof prepareMemory === 'function')) {
+        latestRoot = await step('root', () => store.readRoot());
+        const rootError = technicalSourceError(latestRoot);
+        if (rootError) throw rootError;
       }
-      if (fallback?.status === 'ready' || fallback?.status === 'stale') return fallback;
-      const status = prepared?.status === 'error' ? 'unavailable' : prepared?.status ?? 'unavailable';
-      return Object.freeze({ status, sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: 'memoryPreparation' }) });
+      if (sourceToVerify && matchesSourceRoot(sourceToVerify, latestRoot)) return sourceToVerify;
+      const identityProjection = typeof identityProjectionProvider === 'function' ? await step('identity', () => identityProjectionProvider()) : null;
+      let result, prepared;
+      if (typeof prepareMemory === 'function') {
+        // fresh 校验不拥有后台维护：只借匹配根的缓存，否则独立读取已完成 checkpoint。
+        prepared = await step('prepare', () => prepareMemory({ preferCached: !fresh, rootResult: latestRoot, allowRefresh: !fresh }));
+        if (prepared?.status === 'ready' && prepared.reachable?.root) {
+          result = await step('projection', () => projectRecallSource(prepared.reachable, now, Object.freeze({ reachableReads: 0, exitPoint: 'validatedSnapshot' }), snapshot, sanitizerSnapshot, hasRealtimeOrigin(), identityProjection?.data ?? identityProjection));
+        } else if (['disabled', 'stale'].includes(prepared?.status)) return prepared;
+      }
+      if (!result) {
+        result = await step('read', () => sourceReader({ store, now, hostSnapshot: snapshot, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin(), identityProjection: identityProjection?.data ?? identityProjection }));
+        if (typeof prepareMemory === 'function' && !['ready', 'stale'].includes(result?.status) && !result?.error) {
+          result = Object.freeze({ status: prepared?.status === 'error' ? 'unavailable' : prepared?.status ?? 'unavailable', sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: 'memoryPreparation' }) });
+        }
+      }
+      if (sourceToVerify && canReadRoot && result?.status === 'ready' && !matchesSourceRoot(result, latestRoot)) {
+        // 后台可能在只读准备期间发布新根；仅补一次轻量读，仍拒绝旧快照或再次变化。
+        const afterPreparation = await step('root', () => store.readRoot());
+        const rootError = technicalSourceError(afterPreparation);
+        if (rootError) throw rootError;
+        if (!matchesSourceRoot(result, afterPreparation)) return Object.freeze({ ...result, rootVerified: false });
+      }
+      return result;
+    };
+    let result;
+    try {
+      // 全部准备等待共用期限；同步执行仍可能延后计时器。超时/取消后每个 await 边界阻止迟到分支启动后续读取。
+      result = await Promise.race([Promise.resolve().then(run), new Promise(resolve => { timer = setTimeout(() => resolve(timeout), budgetMs); }),
+        ...(operation ? [new Promise(resolve => { abortListener = () => resolve(stale); operation.controller.signal.addEventListener('abort', abortListener, { once: true }); })] : [])]);
+      if (result === timeout || result === stale) result = Object.freeze({ status: result === timeout ? 'timeout' : 'stale', sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: result === timeout ? 'memoryPreparationTimeout' : 'stale' }) });
+    } catch (error) {
+      result = error === timeout || error === stale
+        ? Object.freeze({ status: error === timeout ? 'timeout' : 'stale', sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: error === timeout ? 'memoryPreparationTimeout' : 'stale' }) })
+        : Object.freeze({ status: 'unavailable', error: Object.freeze({ code: clean(error?.code ?? error?.name ?? 'V3_RECALL_SOURCE_UNAVAILABLE', 120), message: clean(error?.message ?? '记忆准备失败。') }), sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: 'memoryPreparationFailed' }) });
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+      if (abortListener) operation.controller.signal.removeEventListener('abort', abortListener);
+      if (stepStarted !== null) timing[`${timing.stage}Ms`] += Date.now() - stepStarted;
+      closed = true;
+      timing.totalMs = Date.now() - started;
+      timing.status = result?.rootVerified === false ? 'stale' : ['ready', 'timeout', 'stale', 'disabled'].includes(result?.status) ? result.status : 'unavailable';
+      if (operation?.timings) (operation.timings.preparationAttempts ??= []).push(Object.freeze(timing));
     }
-    return sourceReader({ store, now, hostSnapshot: snapshot, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin(), identityProjection: identityProjection?.data ?? identityProjection });
+    return result;
   }
   async function sealQianshiProgress(value) {
     if (typeof value?.text !== 'string' || !value.text.trim()) return null;
@@ -1003,13 +1045,29 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const hadPrevious = Object.hasOwn(currentExtra, RECALL_RECEIPT_KEY);
     const previousReceipt = currentExtra[RECALL_RECEIPT_KEY];
     const candidate = clone(receipt);
+    const saveCandidate = { status: 'saving', hadPrevious, previousReceipt };
+    receiptSaveCandidates.set(candidate, saveCandidate);
     user.message.extra = { ...currentExtra, [RECALL_RECEIPT_KEY]: candidate };
-    try { await context.saveChat(); return 'saveUnconfirmed'; }
+    try {
+      await context.saveChat();
+      // 后继回滚遇正常返回候选即停止；释放其更早历史，避免反复编辑把旧大回执串留在页面内。
+      saveCandidate.status = 'returned'; saveCandidate.hadPrevious = false; saveCandidate.previousReceipt = null;
+      return 'saveUnconfirmed';
+    }
     catch (error) {
+      saveCandidate.status = 'failed';
       const latestExtra = user.message.extra;
       if (latestExtra && typeof latestExtra === 'object' && !Array.isArray(latestExtra) && latestExtra[RECALL_RECEIPT_KEY] === candidate) {
         const rolledBack = { ...latestExtra };
-        if (hadPrevious) rolledBack[RECALL_RECEIPT_KEY] = previousReceipt;
+        // 编辑后的保存可覆盖仍在途的前轮候选；回滚跳过已失败前驱，避免双失败交错复活未保存回执。
+        // 前驱仍在途或正常返回时保留原候选，继续失败则由其自身 CAS 回到更早历史；记录只留页面内。
+        let rollback = saveCandidate;
+        while (rollback.hadPrevious) {
+          const predecessor = receiptSaveCandidates.get(rollback.previousReceipt);
+          if (predecessor?.status !== 'failed') break;
+          rollback = predecessor;
+        }
+        if (rollback.hadPrevious) rolledBack[RECALL_RECEIPT_KEY] = rollback.previousReceipt;
         else delete rolledBack[RECALL_RECEIPT_KEY];
         user.message.extra = rolledBack;
       }
@@ -1022,6 +1080,22 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const stored = user.message.extra?.[RECALL_RECEIPT_KEY];
     const session = sessionReceipt?.userMessage === user.message ? sessionReceipt.receipt : null;
     return [session, stored].filter((value, index, values) => value && typeof value === 'object' && values.indexOf(value) === index);
+  }
+
+  function finishReceiptPersistence(owner, receiptPersistence, receiptMs) {
+    // 保存属于首次封签的 user，而非生成 epoch；同 user 冻结复用仍能接收结果，切聊／编辑／新选材则失效。
+    if (sessionReceipt?.owner !== owner) return;
+    const snapshot = hostAdapter.snapshot(), user = latestUser(snapshot);
+    if (currentChatId(snapshot) !== owner.chatId || currentHostChatId(snapshot) !== owner.hostChatId
+      || user?.message !== owner.userMessage || user.message.mes !== owner.userText) return;
+    sessionReceipt = Object.freeze({ ...sessionReceipt, receiptMs,
+      receipt: Object.freeze({ ...sessionReceipt.receipt, receiptPersistence }) });
+    if (lastRecallReceiptOwner !== owner || !lastRecall || active
+      || lastRecallBinding?.message !== user.message || lastRecallBinding.text !== owner.userText) return;
+    // 只补保存诊断，不重建冻结材料；人工删除后的过滤、放行计时及结束／停止后的展示均保持。
+    lastRecall = Object.freeze({ ...lastRecall, receiptPersistence,
+      timings: Object.freeze({ ...lastRecall.timings, receiptMs }) });
+    notify();
   }
 
   async function withoutDeletedQianshi(receipt) {
@@ -1116,36 +1190,14 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (currentUserFingerprint !== userFingerprint) return { ok: false, reason: 'userChanged' };
     if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };
     const verifyHostCoverage = source.readiness !== null && source.readiness !== undefined;
-    const canReadRoot = typeof store.readRoot === 'function';
-    const rootResult = canReadRoot ? await store.readRoot() : null;
-    const rootError = canReadRoot ? technicalSourceError(rootResult) : null;
-    if (rootError) throw rootError;
-    let currentSource = source;
-    const sameRoot = rootResult?.status === 'ready'
-      && rootResult.revision === source.rootRevision
-      && rootResult.data?.chatId === source.chatId
-      && rootResult.data?.narrativeGeneration === source.narrativeGeneration
-      && rootResult.data?.headCheckpointId === source.headCheckpointId;
-    if (!sameRoot) {
-      if (canReadRoot) currentSource = await basePreparedSource(verifyHostCoverage ? before : null, currentSanitizerOptions(), { fresh: true, operation, rootResult });
-      else {
-        currentSource = await sourceReader({
-          store,
-          now,
-          hostSnapshot: verifyHostCoverage ? before : null,
-          sanitizerOptions: currentSanitizerOptions(),
-          realtimeOrigin: hasRealtimeOrigin(),
-        });
-      }
+    let currentSource = await basePreparedSource(verifyHostCoverage ? before : null, currentSanitizerOptions(), { fresh: true, operation, sourceToVerify: source });
+    if (currentSource !== source) {
       if (currentSource?.status !== 'ready') {
         const sourceError = technicalSourceError(currentSource);
         if (sourceError) throw sourceError;
         return { ok: false, reason: currentSource?.status === 'stale' ? 'sourceStale' : 'sourceUnavailable' };
       }
-      if (canReadRoot && (currentSource.rootRevision !== rootResult.revision
-        || currentSource.chatId !== rootResult.data?.chatId
-        || currentSource.narrativeGeneration !== rootResult.data?.narrativeGeneration
-        || currentSource.headCheckpointId !== rootResult.data?.headCheckpointId)) return { ok: false, reason: 'sourceUnavailable' };
+      if (currentSource.rootVerified === false) return { ok: false, reason: 'sourceUnavailable' };
       if (currentSource.chatId !== source.chatId) return { ok: false, reason: 'chatChanged' };
       if (currentSource.narrativeGeneration !== source.narrativeGeneration) return { ok: false, reason: 'narrativeChanged' };
       currentSource = Object.freeze({ ...currentSource, bodyMatch: await attachCoreBodyMatch(currentSource, operation.coreBodyWitness, before, operation.sanitizerOptions, fingerprint, recentBodyFloorLimit()) });
@@ -1242,9 +1294,10 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (lifecycle) lifecycle.token = token;
     const operation = { token, type, phase: 'input', controller: new AbortController(), started: Date.now(), diagnostics: [],
       requestDiagnosticId: enabled() && SUPPORTED_TYPES.has(type) ? lifecycle?.requestDiagnosticId ?? requestDiagnostic.start() : null };
-    lastRecall = null; lastPrequel = null; lastRecallBinding = null;
+    lastRecall = null; lastPrequel = null; lastRecallBinding = null; lastRecallReceiptOwner = null;
     active = operation; lastError = null; notify();
     const timings = {};
+    operation.timings = timings;
     const stopForFinalSafety = reason => {
       if (!['chatChanged', 'userChanged', 'stopped', 'superseded', 'disabled'].includes(reason)) {
         try { notifyUser?.({ kind: 'warning', text: '生成前记忆来源发生变化，本轮已放弃旧记忆注入，正文继续生成。' }); } catch { /* notification must not affect recall */ }
@@ -1280,10 +1333,11 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       const inputStarted = Date.now();
       const userFingerprint = await fingerprint(user.message.mes);
       timings.inputMs = Date.now() - inputStarted;
-      let candidate = null;
+      let candidate = null, candidateOwner = null;
       for (const value of receiptCandidates(user)) {
+        const owner = value === sessionReceipt?.receipt ? sessionReceipt.owner : null;
         const snapshot = await persistedReceiptValid(value, { chatId: operation.chatId, userIndex: user.index, userFingerprint, pluginVersion }, fingerprint);
-        if (snapshot) { candidate = snapshot; break; }
+        if (snapshot) { candidate = snapshot; candidateOwner = owner; break; }
       }
       if (candidate) {
         const commitStarted = Date.now();
@@ -1294,8 +1348,14 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         if (!committed.ok) return stopForFinalSafety(committed.reason);
         timings.commitMs = Date.now() - commitStarted;
         timings.totalMs = Date.now() - operation.started;
+        // 保存可能在复用核验的 await 中完成；读取同一 owner 的最新保存状态，避免重新显示 saving。
+        if (candidateOwner && sessionReceipt?.owner === candidateOwner) {
+          candidate = { ...candidate, receiptPersistence: sessionReceipt.receipt.receiptPersistence };
+          if (sessionReceipt.receiptMs !== undefined) timings.receiptMs = sessionReceipt.receiptMs;
+        }
         diagnostic.selectionStatus = 'reused'; diagnostic.timings = clone(timings);
         lastRecall = Object.freeze({ ...stateFromReceipt(candidate, { generationType: type, timings }), ...runtimeDiagnostic(operation, timings) });
+        lastRecallReceiptOwner = candidateOwner;
         if (operation.prequelCommitted) lastPrequel = prequelState(operation);
         bindLastRecall(committed.snapshot, committed.user); lastError = null; active = null; notify(); return getState();
       }
@@ -1439,9 +1499,11 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       diagnostic.selectionStatus = 'completed'; diagnostic.coverage = clone(receiptBase.coverage); diagnostic.stages = clone(receiptBase.stages); diagnostic.selectorDiagnostic = clone(receiptBase.selectorDiagnostic);
       const commitStarted = Date.now();
       operation.phase = diagnostic.phase = 'commit';
-      const committed = await commitPromptIfCurrent({ operation, source, receipt: receiptBase, selectedFloors: receiptBase.selectedFloors, selectedStates: receiptBase.selectedStates, selectedCseChanges: receiptBase.selectedCseChanges, timeDependencies: receiptBase.timeDependencies, userIndex: user.index, userFingerprint, hostGuard, injectionText: receiptBase.injectionText });
+      let committed;
+      try { committed = await commitPromptIfCurrent({ operation, source, receipt: receiptBase, selectedFloors: receiptBase.selectedFloors, selectedStates: receiptBase.selectedStates, selectedCseChanges: receiptBase.selectedCseChanges, timeDependencies: receiptBase.timeDependencies, userIndex: user.index, userFingerprint, hostGuard, injectionText: receiptBase.injectionText }); }
+      finally { timings.commitMs = Date.now() - commitStarted; }
       if (!committed.ok) return stopForFinalSafety(committed.reason);
-      receiptBase = committed.receipt;
+      receiptBase = { ...committed.receipt, timings: receiptTimingSnapshot(timings) };
       if (typeof qianshiDeletionProvider === 'function') receiptBase.qianshiDeletionWitness = await qianshiDeletionWitness(receiptBase, source.qianshiDeletedEvents ?? [], fingerprint);
       diagnostic.stages = clone(receiptBase.stages);
       diagnostic.selectorDiagnostic = clone(receiptBase.selectorDiagnostic);
@@ -1453,25 +1515,29 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       const sealedReceipt = Object.freeze({ ...receiptBase, receiptFingerprint: await fingerprint(JSON.stringify(receiptMaterial(receiptBase))) });
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
-      // 核验包括来源复核、删除见证和封签；宿主保存另用已有 receiptMs 计时。
+      // 核验包括来源复核、删除见证和封签。准备完成立即放行，宿主原 saveChat 在后台完成。
       timings.commitMs = Date.now() - commitStarted;
-      operation.phase = diagnostic.phase = 'receipt'; notify();
-      const sessionCandidate = Object.freeze({ userMessage: committed.user.message, receipt: Object.freeze({ ...sealedReceipt, receiptPersistence: 'sessionOnly' }) });
-      sessionReceipt = sessionCandidate;
-      const receiptStarted = Date.now();
-      const receiptPersistence = await persistReceipt(committed.snapshot, committed.user, sealedReceipt);
-      timings.receiptMs = Date.now() - receiptStarted;
+      operation.phase = diagnostic.phase = 'receipt';
+      const receiptPersistence = typeof committed.snapshot.context?.saveChat === 'function' ? 'saving' : 'sessionOnly';
+      const owner = Object.freeze({ chatId: operation.chatId, hostChatId: operation.hostChatId,
+        userMessage: committed.user.message, userText: operation.userText });
       const receipt = Object.freeze({ ...sealedReceipt, receiptPersistence });
-      if (sessionReceipt === sessionCandidate) {
-        sessionReceipt = Object.freeze({ userMessage: committed.user.message, receipt });
-      }
-      if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
+      sessionReceipt = Object.freeze({ userMessage: committed.user.message, owner, receipt });
       timings.totalMs = Date.now() - operation.started;
       diagnostic.timings = clone(timings);
       lastRecall = Object.freeze({ ...stateFromReceipt(receipt, { generationType: type, reusedReceipt: false, timings }), ...runtimeDiagnostic(operation, timings) });
       if (operation.prequelCommitted) lastPrequel = prequelState(operation);
       bindLastRecall(committed.snapshot, committed.user);
-      lastError = null; active = null; notify(); return getState();
+      lastRecallReceiptOwner = owner;
+      lastError = null; active = null;
+      if (receiptPersistence === 'saving') {
+        const receiptStarted = Date.now();
+        // 保留原候选 extra 与失败 CAS 回滚；不等待宿主 Promise、不重试，也不反向撤已提交 prompt。
+        void persistReceipt(committed.snapshot, committed.user, sealedReceipt).then(persistence => {
+          finishReceiptPersistence(owner, persistence, Date.now() - receiptStarted);
+        }).catch(error => logger?.warn?.('[qianqianjie] V3 recall receipt status update failed', { code: error?.code ?? error?.name ?? 'V3_RECALL_RECEIPT_STATUS_FAILED' }));
+      }
+      notify(); return getState();
       } catch (error) {
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
       clearSlot(token);
@@ -1528,7 +1594,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     // 人工删除撤在途注入，但保留首次选材回执；下一次重生只剔除明确删除材料。
     if (reason !== 'qianshiManuallyDeleted') sessionReceipt = null;
     generationQueue.length = 0; stoppedEndDebt = 0; clearSlot();
-    lastRecall = null; lastPrequel = null; lastRecallBinding = null; lastError = null; notify();
+    lastRecall = null; lastPrequel = null; lastRecallBinding = null; lastRecallReceiptOwner = null; lastError = null; notify();
   }
 
   function onGenerationStarted(type, _params, dryRun) {
@@ -1609,7 +1675,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         sessionReceipt = null;
       }
       clearSlot();
-      if (parentChanged) { sessionReceipt = null; lastRecall = null; lastRecallBinding = null; lastError = null; }
+      if (parentChanged) { sessionReceipt = null; lastRecall = null; lastRecallBinding = null; lastRecallReceiptOwner = null; lastError = null; }
       notify();
     });
   }
@@ -1654,6 +1720,6 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
   }
 
   async function setEnabled(value) { enabledOverride = value === true; if (!enabledOverride) invalidate('disabled'); return getState(); }
-  function clearCurrent() { clearSlot(); lastRecall = null; lastPrequel = null; lastRecallBinding = null; lastError = null; notify(); return getState(); }
+  function clearCurrent() { clearSlot(); lastRecall = null; lastPrequel = null; lastRecallBinding = null; lastRecallReceiptOwner = null; lastError = null; notify(); return getState(); }
   return Object.freeze({ intercept, bind, setEnabled, clearCurrent, restorePersistedReceipt, getPrequel, savePrequel, getState, getPromptSnapshot, invalidate, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

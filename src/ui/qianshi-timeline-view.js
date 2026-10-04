@@ -41,7 +41,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   let snapshot = runtime.getQianshiSnapshot(), runtimeState = runtime.getState(), chatId = snapshot?.identity?.qqjChatId ?? null;
   let query = '', reverse = true, feedback = '';
   let runtimeRenderKey = null;
-  // 只比较界面消费的后台状态。投影不变的通知不清空菜单权限，也不重建整页。
+  // 只比较界面消费的投影、任务与忙态；无关通知不重建整页，权限缓存随投影变化失效。
   const renderKey = (nextSnapshot, nextState) => Number.isSafeInteger(nextSnapshot?.projectionRevision)
     ? JSON.stringify([nextSnapshot.projectionRevision, nextSnapshot.status, nextSnapshot.history,
       nextState?.memoryWorkBusy === true || Boolean(nextState?.activeExtraction || nextState?.activeCse), nextState?.qianshiHistoryActive === true])
@@ -817,7 +817,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   }
   function mount(target) { unsubscribe?.(); unsubscribe = null; operationMenus.deactivate(); container = target; active = true; snapshot = runtime.getQianshiSnapshot(); runtimeState = runtime.getState(); runtimeRenderKey = renderKey(snapshot, runtimeState); editableEvents.clear(); render(); operationMenus.activate(); subscribe(); return target; }
   async function activate() {
-    // mount 已完成首次渲染和订阅；面板紧接着 activate 不再重复生成同一页。
+    // mount 已完成首次渲染和订阅；处于激活状态时直接复用当前页面。
     if (active) return { status: snapshot?.status ?? 'unavailable' };
     active = true; operationMenus.activate(); snapshot = runtime.getQianshiSnapshot(); runtimeState = runtime.getState(); runtimeRenderKey = renderKey(snapshot, runtimeState); editableEvents.clear(); render(); subscribe(); return { status: snapshot?.status ?? 'unavailable' };
   }

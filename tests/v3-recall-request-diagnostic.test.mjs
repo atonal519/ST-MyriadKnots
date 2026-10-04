@@ -61,3 +61,20 @@ test('不支持资源计时的宿主正常返回未支持状态，不阻止召�
     diagnostic.clear();
   }
 });
+
+test('连接分段与协议帮助定位发送前长等待，零字节合法，不保留异常协议文本', () => {
+  const { diagnostic, instances, entry, performanceRef } = harness(), id = diagnostic.start();
+  const e = entry(id);
+  instances[0].emit([entry(id, { fetchStart: e.startTime, workerStart: 0, domainLookupStart: e.startTime + 5,
+    domainLookupEnd: e.startTime + 10, connectStart: e.startTime + 10, secureConnectionStart: e.startTime + 20,
+    connectEnd: e.startTime + 220000, requestStart: e.startTime + 220010, nextHopProtocol: 'h2', transferSize: 302, encodedBodySize: 2, decodedBodySize: 2 }),
+    entry(id, { nextHopProtocol: 'SECRET', transferSize: 0, encodedBodySize: -1, decodedBodySize: NaN })]);
+  const [connected, unavailable] = diagnostic.snapshot(id).requests;
+  assert.equal(connected.connectFinishedAt - connected.connectStartedAt, 219990);
+  assert.equal(connected.requestStartedAt - connected.connectFinishedAt, 10);
+  assert.equal(connected.fetchStartedAt, performanceRef.timeOrigin + e.startTime);
+  assert.equal(connected.workerStartedAt, null); assert.equal(connected.protocol, 'h2');
+  assert.equal(unavailable.protocol, null); assert.equal(unavailable.transferSize, 0); assert.equal(unavailable.encodedBodySize, null);
+  assert.doesNotMatch(JSON.stringify(diagnostic.snapshot(id)), /SECRET/u);
+  diagnostic.clear();
+});
