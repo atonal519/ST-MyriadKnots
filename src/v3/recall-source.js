@@ -215,7 +215,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
       const floor = floorById.get(memory.floorId);
       return memoryDto(projectFloorMemoryIdentityReferences(memory, identityProjection), floor, { floorSeqById: floorSeq });
     })),
-    rawSources: await projectVectorSources(activeMemories, floors),
+    ...(await projectVectorSources(activeMemories, floors)),
     currentState: stateDto(projectCseStateIdentityReferences(replayed, identityProjection), entities, floorSeq, personaCoreIds),
     cseChanges: cseChangesDto(cseTimeline, entities, floorSeq, identityProjection, personaCoreIds),
     identityProjection,

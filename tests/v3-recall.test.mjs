@@ -42,6 +42,10 @@ const receiptFingerprint = async receipt => fingerprintText(JSON.stringify([
   ...(receipt.schemaVersion >= 14 ? [receipt.timeDependencies] : []),
   ...(receipt.schemaVersion >= 15 && receipt.qianshiProgress ? [receipt.qianshiProgress] : []),
 ]));
+const stripSummaryWitnessesForLegacyReceipt = receipt => {
+  for (const floor of receipt.selectedFloors ?? []) delete floor.summaryWitnesses;
+  return receipt;
+};
 
 const emptyMemory = {
   participants: [], locations: [], commitments: [], openLoops: [], exactAnchors: [], eventFragments: [], actions: [], observations: [], privateCognition: [], informationTransfers: [],
@@ -2726,7 +2730,7 @@ test('同 user 冻结回执保留首次选中时间原文；旧schema13仍只作
     await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
     const receipt = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
     assert.equal(receipt.timeDependencies.corrections.length, 1); assert.equal(receipt.timeDependencies.reminders.length, 1);
-    const old = structuredClone(receipt); old.schemaVersion = 13; delete old.timeDependencies; old.stateProgressions = []; old.stages.stateProgressionCount = 0; old.receiptFingerprint = await receiptFingerprint(old);
+    const old = stripSummaryWitnessesForLegacyReceipt(structuredClone(receipt)); old.schemaVersion = 13; delete old.timeDependencies; old.stateProgressions = []; old.stages.stateProgressionCount = 0; old.receiptFingerprint = await receiptFingerprint(old);
     const historical = await projectHistoricalRecallReceipt({ ...harness.userMessage, extra: { [RECALL_RECEIPT_KEY]: old } }, { chatId: CHAT, userMessageIndex: 1 });
     assert.equal(historical.schemaVersion, 13); assert.equal(projectInlineRecallReceipt(historical).protocolRecognized, true);
     armed = true;
@@ -3841,7 +3845,7 @@ test('旧 state_progressions 不写入schema15；schema14仍可冷读但下一�
   assert.doesNotMatch(receipt.injectionText, /过了一阵；具体时长未知|保存时仍记得承诺→/);
   assert.deepEqual(graph, beforeGraph, '召回只写回执，不修改FloorMemory/CSE图');
 
-  const old = structuredClone(receipt);
+  const old = stripSummaryWitnessesForLegacyReceipt(structuredClone(receipt));
   old.schemaVersion = 14;
   old.strategyVersion = 'continuity-v13';
   old.stateProgressions = [];
@@ -3920,7 +3924,7 @@ test('当前剧情线回执经 runtime 新算/复用/恢复及历史 projector �
   assert.equal(expandedHistoricalInline.storylineGroups.length, 9);
   assert.equal(projectInlineRecallReceipt({ ...expandedHistorical, strategyVersion:'continuity-v14' }).storylineGroups.length, 0, 'v14 旧策略仍保持四线边界');
 
-  const oldSchema12 = structuredClone(receipt);
+  const oldSchema12 = stripSummaryWitnessesForLegacyReceipt(structuredClone(receipt));
   oldSchema12.schemaVersion = 12;
   delete oldSchema12.stateProgressions;
   delete oldSchema12.stages.stateProgressionCount;
@@ -4903,7 +4907,7 @@ test('历史签名回执 schema16 与旧17仍可只读恢复，读取不重签�
   await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   const current = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
   for (const schemaVersion of [16, 17]) {
-    const historical = structuredClone(current);
+    const historical = stripSummaryWitnessesForLegacyReceipt(structuredClone(current));
     historical.schemaVersion = schemaVersion;
     for (const key of ['pendingStep', 'lastCompletedStep', 'stageTimings']) delete historical.selectorDiagnostic?.[key];
     if (historical.selectorDiagnostic?.semantic?.request) for (const key of ['requestId', 'inputSha256', 'deadlineMs', 'elapsedMs', 'deadlineOverrunMs', 'timeoutOrigin', 'abortOrigin', 'abortReason', 'networkCode', 'providerRequestId', 'pendingStage', 'lastSuccessfulStage']) delete historical.selectorDiagnostic.semantic.request[key];
@@ -4925,7 +4929,7 @@ test('历史楼 projector 对旧 schema6/7/8/9 保持原签名展示和真实落
     let selectorCalls = 0;
     const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); } });
     await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
-    const old = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
+    const old = stripSummaryWitnessesForLegacyReceipt(structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]));
     old.schemaVersion = schemaVersion;
     if (schemaVersion < 8) delete old.bodyMatchFingerprint;
     if (schemaVersion === 9) old.strategyVersion = 'continuity-v3';
@@ -4952,7 +4956,7 @@ test('旧 continuity-v1/v2 schema9 回执只读展示和恢复，但新生成必
   let selectorCalls = 0;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); } });
   await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
-  const old = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
+  const old = stripSummaryWitnessesForLegacyReceipt(structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]));
   old.schemaVersion = 9;
   old.strategyVersion = oldStrategy;
   delete old.selectedCseChanges;
@@ -4977,7 +4981,7 @@ test('旧 continuity-v10/v11 回执保留20000字符只读投影与冷恢复，�
   let selectorCalls = 0;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); } });
   await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
-  const old = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
+  const old = stripSummaryWitnessesForLegacyReceipt(structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]));
   old.schemaVersion = 13;
   delete old.timeDependencies;
   old.stateProgressions = [];
@@ -5015,7 +5019,7 @@ test('旧 schema10 continuity-v5 回执保留只读展示，当前生成不复�
   let selectorCalls = 0;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); } });
   await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
-  const old = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
+  const old = stripSummaryWitnessesForLegacyReceipt(structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]));
   old.schemaVersion = 10;
   old.strategyVersion = 'continuity-v5';
   for (const key of ['historyCandidateCount', 'stateCandidateCount', 'historyModelSelectedCount', 'stateModelSelectedCount']) delete old.selectorDiagnostic[key];
@@ -5038,7 +5042,7 @@ test('真实签名 schema11 continuity-v7 可历史投影与冷恢复，但 rege
   let selectorCalls = 0, selectedSnapshot = null;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; selectedSnapshot = selectRecall(input); return selectedSnapshot; } });
   await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
-  const old = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
+  const old = stripSummaryWitnessesForLegacyReceipt(structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]));
   old.schemaVersion = 11;
   old.strategyVersion = 'continuity-v7';
   old.injectionText = formatRecallInjection({

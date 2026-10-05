@@ -1248,6 +1248,7 @@ test('轻量召回运行结果自动显示实际注入、收据、阶段与覆�
   const copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /触发用户楼|第 67 楼|生成时间|生成类型|继续生成（continue）|复用 · 已请求宿主保存，结果未确认|来源楼号未提供|终点楼号未提供|裴晚生 \/ core|裴晚生 \/ situational \/ 移除/);
   assert.match(copy, /本轮复用耗时 12\.0 ms · 未发起新选材请求 · 原回执接口往返（含传输） 8\.0 ms · 本地选材 3\.0 ms/);
+  assert.match(copy, /复用耗时 0\.0 秒/u, '复用摘要采用秒级格式且不把原始选材请求当作本轮请求');
   assert.match(copy, /输入 3 → 记忆楼 8 → 近期摘要 1 → 远期旧事 3（关联补入 2） → 当前态 1 → 历史变化 2（关联补入 1） → 未选入 4（含预算、条数或剧情线限制） → 最终材料 5/);
   const stage = flatten(container).find(node => node.className === 'v3-foundation-row' && node.children[0]?.textContent === '筛选阶段');
   assert.equal(stage.children[1].children.length, 2, 'Token估算须在筛选阶段原位置使用独立DOM行');
@@ -1265,6 +1266,75 @@ test('轻量召回运行结果自动显示实际注入、收据、阶段与覆�
   recall.lastRecall.stages.timeReminderCount = 2;
   for (const listener of listeners) listener(recall);
   assert.match(flatten(container).map(node => node.textContent).join('|'), /历史变化 2（关联补入 1） → 时间参考 3/u);
+  view.deactivate();
+  assert.equal(listeners.size, 0);
+});
+
+test('召回常用摘要区分向量候选与实际原文段，诊断默认折叠且复制仍保留完整回执', async () => {
+  const foundation = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 4, rememberedCount: 4, floors: [] };
+  const runtime = { getState: () => foundation, refreshStatus: async () => foundation, confirmLatest: async () => foundation };
+  const listeners = new Set(), copied = [], container = new Node('main');
+  let record = { schemaVersion: 17, status: 'ready', requestDiagnosticId: 3, userMessageIndex: 12, generationType: 'continue', receiptPersistence: 'chatRecord',
+    selectedFloors: [{ assistantSeq: 2 }], selectedStates: [{ subject: '甲', layer: 'core' }], selectedCseChanges: [{ subject: '甲', layer: 'situational', action: 'update', assistantSeq: 2 }],
+    stages: { input: 4, candidates: 9, recentSummaryCount: 2, distantHistoryItemCount: 3, stateCount: 1, currentStateCount: 1, cseChangeCount: 1, finalInjectionItemCount: 7, estimatedTokenCount: 1234, estimatedTokenBudget: 4000 },
+    selectorDiagnostic: { mode: 'llm', historyCandidateCount: 8, stateCandidateCount: 2, historyModelSelectedCount: 3, stateModelSelectedCount: 1, semantic: { status: 'ready', candidateCount: 12, durationMs: 200 } },
+    timings: { totalMs: 27300 }, skipReasons: [], injectionText: '<qqj_recalled_context>已注入材料</qqj_recalled_context>', error: null };
+  let state = { recallStatus: 'ready', lastRecall: record, requestDiagnostic: { status: 'recording', requests: [{ label: '生成请求', startedAt: 1, requestStartedAt: 2, responseStartedAt: 3, finishedAt: 4 }] } };
+  const view = createV3FoundationView({ runtime, recallRuntime: { getState: () => state, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } }, documentRef,
+    navigatorRef: { clipboard: { writeText: async value => copied.push(value) } } });
+  view.mount(container);
+  const text = () => flatten(container).map(node => node.textContent).join('|');
+  const diagnostic = () => flatten(container).find(node => node.className.includes('qqj-recall-diagnostics'));
+  assert.equal(diagnostic().open, false, '完整诊断默认关闭');
+  assert.match(text(), /本轮选入：旧楼 1 · 当前状态 1 · 历史变化 1/u);
+  assert.match(text(), /向量 可用 · 候选 12 · 选入原文段 0 · 人工摘要未记录/u, '候选数不能冒充实际选入段数');
+  assert.match(text(), /本轮召回等待 27\.3 秒/u);
+  assert.match(text(), /1234\/4000（保守估算）/u);
+  assert.match(text(), /历史候选 8 → 模型选择 3/u, '完整筛选细节保留在可展开诊断中');
+  diagnostic().open = true; diagnostic().fire('toggle');
+  record = { ...record, selectedFloors: [{ assistantSeq: 2, rawWitnesses: [{ floorId: 'floor', floorMemoryId: 'memory', assistantSeq: 2, text: 'witness' }], summaryWitnesses: [] }] };
+  state = { ...state, lastRecall: record };
+  for (const listener of listeners) listener(state);
+  assert.equal(diagnostic().open, true, '重绘后沿用诊断开合状态');
+  assert.match(text(), /向量 可用 · 候选 12 · 选入原文段 1 · 人工摘要 0条/u);
+  record = { ...record, selectedFloors: [{ assistantSeq: 2, summaryWitnesses: [
+    { sourceKind: 'userSummary', floorId: 'floor', floorMemoryId: 'memory', assistantSeq: 2, fingerprint: 'one' },
+    { sourceKind: 'userSummary', floorId: 'floor-2', floorMemoryId: 'memory-2', assistantSeq: 3, fingerprint: 'two' },
+  ] }] };
+  state = { ...state, lastRecall: record };
+  for (const listener of listeners) listener(state);
+  assert.match(text(), /向量 可用 · 候选 12 · 选入原文段 0 · 人工摘要 2条/u, '人工摘要选入数与原文片段分开统计');
+  record = { ...record, selectedFloors: [{ assistantSeq: 2, rawWitnesses: [{ floorId: 'floor', floorMemoryId: 'memory', assistantSeq: 2, text: 'witness' }], summaryWitnesses: [] }] };
+  state = { ...state, lastRecall: record };
+  for (const listener of listeners) listener(state);
+  diagnostic().open = false; diagnostic().fire('toggle');
+  await flatten(container).find(node => node.textContent === '复制回执').click();
+  assert.equal(diagnostic().open, false, '复制不要求展开诊断');
+  assert.match(copied[0], /智能选材计数.*历史候选 8 → 模型选择 3/su);
+  assert.match(copied[0], /实际注入：有；旧楼 1，状态 1，变化 1/u);
+  assert.match(copied[0], /生成请求：发起/u, '折叠时仍复制最新请求计时');
+
+  record = { ...record, status: 'stale', injectionText: '', skipReasons: ['sourceStale'], timings: { totalMs: 900 } };
+  state = { ...state, recallStatus: 'stale', lastRecall: record };
+  for (const listener of listeners) listener(state);
+  assert.match(text(), /候选材料（本轮未注入）/u);
+  assert.match(text(), /候选原文段 1/u, '未提交材料只标为候选');
+  assert.match(text(), /记忆来源正在更新，本轮已安全跳过召回注入/u);
+
+  record = { ...record, status: 'error', skipReasons: ['error'], error: null, selectorDiagnostic: { ...record.selectorDiagnostic, semantic: { status: 'VECTOR_TIMEOUT', candidateCount: 12 } } };
+  state = { ...state, recallStatus: 'error', lastRecallError: { code: 'V3_RECALL_SOURCE_UNAVAILABLE' }, lastRecall: record };
+  for (const listener of listeners) listener(state);
+  assert.match(text(), /当前聊天记忆暂时无法读取/u, '短失败原因在折叠诊断外仍可见');
+  const safeErrorNode = flatten(container).find(node => node.className === 'v3-foundation-feedback error');
+  for (let node = safeErrorNode; node; node = node.parentNode) assert.notEqual(node, diagnostic(), '短失败原因不得藏在折叠诊断中');
+  const vectorRow = () => flatten(container).find(node => node.className === 'v3-foundation-row' && node.children[0]?.textContent === '向量');
+  assert.match(vectorRow().children[1].textContent, /查询超时/u);
+  for (const [status, label] of [['VECTOR_INDEX_LOAD_TIMEOUT', '索引读取超时'], ['VECTOR_ABORTED', '查询已取消'], ['VECTOR_QUERY_BUDGET_EXHAUSTED', '本轮次数已用尽'], ['VECTOR_OTHER_FAILURE', '不可用']]) {
+    record = { ...record, selectorDiagnostic: { ...record.selectorDiagnostic, semantic: { status, candidateCount: 0 } } };
+    state = { ...state, lastRecall: record };
+    for (const listener of listeners) listener(state);
+    assert.match(vectorRow().children[1].textContent, new RegExp(label));
+  }
   view.deactivate();
   assert.equal(listeners.size, 0);
 });
@@ -1362,6 +1432,8 @@ test('后台保存更新现有回执小字，等待与保存耗时分列，失�
   const copy = () => flatten(container).find(node => node.textContent === '复制回执').click();
   assert.match(pageText(), /后台保存中；刷新可能丢失本轮回执/u);
   assert.match(pageText(), /本轮召回等待 15000\.0 ms.*核验 500\.0 ms · 后台保存中/u);
+  assert.match(pageText(), /本轮召回等待 15\.0 秒/u);
+  assert.doesNotMatch(pageText(), /本轮召回等待 135\.0 秒/u, '后台回执保存时间不加入召回等待');
   await copy();
   assert.match(copied[0], /召回回执：可用.*后台保存中/su);
   assert.doesNotMatch(copied[0], /PRIVATE_BODY|后台保存 \d/u);
@@ -1370,6 +1442,7 @@ test('后台保存更新现有回执小字，等待与保存耗时分列，失�
   for (const listener of listeners) listener(state);
   assert.match(pageText(), /已请求宿主保存，结果未确认/u);
   assert.match(pageText(), /本轮召回等待 15000\.0 ms.*后台保存 12000\.0 ms/u);
+  assert.match(pageText(), /本轮召回等待 15\.0 秒/u);
   assert.doesNotMatch(pageText(), /后台保存中|本轮召回等待 27000/u);
   await copy();
   assert.match(copied[1], /本轮召回等待 15000\.0 ms.*后台保存 12000\.0 ms/su);
@@ -1418,9 +1491,10 @@ test('activate 请求恢复聊天记录回执，并明确标注历史展示、�
   const recallState = {
     recallStatus: 'ready', activeRecall: null, lastRecallError: null,
     lastRecall: {
-      status: 'ready', generationType: 'normal', reusedReceipt: false, restoredReceipt: true, receiptPersistence: 'chatRecord',
-      selectedFloors: [{ assistantSeq: 2 }], selectedStates: [], coverage: { rememberedAiFloors: 6, stableAiFloors: 6, cseThroughAssistantSeq: 6 },
-      stages: { input: 3, candidates: 6, dropRecent: 3, dropPersistent: 0, dropVisibility: 0, selected: 1 }, timings: null, skipReasons: [],
+      schemaVersion: 17, status: 'ready', generationType: 'normal', reusedReceipt: false, restoredReceipt: true, receiptPersistence: 'chatRecord',
+      selectedFloors: [{ assistantSeq: 2, rawWitnesses: [{ floorId: 'floor', floorMemoryId: 'memory', assistantSeq: 2, text: '历史段' }] }], selectedStates: [], coverage: { rememberedAiFloors: 6, stableAiFloors: 6, cseThroughAssistantSeq: 6 },
+      stages: { input: 3, candidates: 6, dropRecent: 3, dropPersistent: 0, dropVisibility: 0, selected: 1 }, timings: { totalMs: 3600 }, skipReasons: [],
+      selectorDiagnostic: { semantic: { status: 'ready', candidateCount: 1 } },
       injectionText: '<qqj_recalled_context>历史实际注入</qqj_recalled_context>', error: null,
     },
   };
@@ -1433,6 +1507,8 @@ test('activate 请求恢复聊天记录回执，并明确标注历史展示、�
   assert.equal(restores, 1);
   assert.match(copy, /最近一次召回结果|聊天记录中的回执 · 恢复显示/);
   assert.match(copy, /从聊天记录读取 · 仅恢复历史展示，不会再次注入|历史回执不重新读取来源|历史实际注入/);
+  assert.match(copy, /历史耗时 3\.6 秒/u, '恢复回执明确标注历史耗时');
+  assert.match(copy, /历史选入原文段 1/u, '历史段落不标成本轮候选或注入');
 });
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';

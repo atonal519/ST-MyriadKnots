@@ -1,5 +1,5 @@
 import { sha256 } from '../identity.js';
-import { rawWitnessShape, rawWitnessValid } from './vector-source.js';
+import { rawWitnessShape, rawWitnessValid, summaryWitnessShape, summaryWitnessValid } from './vector-source.js';
 import { sanitizeSensitiveText, sanitizeTaskMetadata } from './safe-metadata.js';
 import { projectRecallSource, readRecallSource } from './recall-source.js';
 import { buildRecallQueryContext, buildRecallQueryFrame, formatRecallInjection, estimateRecallTokens } from './recall-selector.js';
@@ -78,6 +78,13 @@ async function sourceRefsValid(receipt, source, onInvalid = () => {}) {
         }
       }
     } else if (!memories.has(`${value.floorId}|${value.floorMemoryId}|${value.assistantSeq}`)) return fail({ step: 'selectedReference', kind: 'floor', index, floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq });
+    for (let witnessIndex = 0; witnessIndex < (value.summaryWitnesses ?? []).length; witnessIndex += 1) {
+      const witness = value.summaryWitnesses[witnessIndex];
+      if (!summaryWitnessShape(witness) || witness.floorId !== value.floorId || witness.assistantSeq !== value.assistantSeq
+        || witness.floorMemoryId !== value.floorMemoryId || !memories.has(`${witness.memoryFloorId}|${witness.floorMemoryId}|${witness.memoryAssistantSeq}`)
+        || !await summaryWitnessValid(witness, source)) return fail({ step: 'selectedReference', kind: 'summaryWitness', index, witnessIndex,
+          floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq, memoryFloorId: witness?.memoryFloorId });
+    }
   }
   const subjects = new Map(source.currentState.map(subject => [subject.subjectEntityId, subject]));
   for (let index = 0; index < receipt.selectedStates.length; index += 1) {
@@ -199,7 +206,10 @@ function selectedSourceGuardsCurrent(guards, chatId, snapshot) {
 
 const receiptFloorRef = ({ floorId, floorMemoryId, assistantSeq, reasons, items = [] }) => {
   const rawWitnesses = items.map(item => item.rawWitness).filter(Boolean);
-  return { floorId, floorMemoryId, assistantSeq, reasons: [...reasons], ...(rawWitnesses.length ? { rawWitnesses: clone(rawWitnesses) } : {}) };
+  const summaryWitnesses = [...new Map(items.map(item => item.summaryWitness).filter(Boolean)
+    .map(value => [`${value.floorMemoryId}|${value.floorId}|${value.fingerprint}`, value])).values()];
+  return { floorId, floorMemoryId, assistantSeq, reasons: [...reasons], ...(rawWitnesses.length ? { rawWitnesses: clone(rawWitnesses) } : {}),
+    summaryWitnesses: clone(summaryWitnesses) };
 };
 
 const legacyReceiptMaterial = receipt => [
@@ -499,6 +509,8 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     && Number.isSafeInteger(value.assistantSeq) && value.assistantSeq > 0
     && (value.rawWitnesses === undefined || receipt.schemaVersion >= 17 && Array.isArray(value.rawWitnesses) && value.rawWitnesses.length > 0 && value.rawWitnesses.length <= 12
       && value.rawWitnesses.every(witness => rawWitnessShape(witness) && witness.floorId === value.floorId && witness.floorMemoryId === value.floorMemoryId && witness.assistantSeq === value.assistantSeq))
+    && (value.summaryWitnesses === undefined || receipt.schemaVersion >= 17 && Array.isArray(value.summaryWitnesses) && value.summaryWitnesses.length <= 12
+      && value.summaryWitnesses.every(witness => summaryWitnessShape(witness) && witness.floorId === value.floorId && witness.floorMemoryId === value.floorMemoryId && witness.assistantSeq === value.assistantSeq))
     && Array.isArray(value.reasons) && value.reasons.length <= 32
     && value.reasons.every(reason => boundedString(reason, 500)))) return false;
   if (!receipt.selectedStates.every(value => value && typeof value === 'object' && !Array.isArray(value)
@@ -1538,12 +1550,13 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         const snapshot = await persistedReceiptValid(value, { chatId: operation.chatId, userIndex: user.index, userFingerprint, pluginVersion }, fingerprint);
         if (snapshot) { candidate = snapshot; candidateOwner = owner; break; }
       }
-      if (candidate?.selectedFloors.some(value => value.rawWitnesses?.length)) {
-        // 冻结复用不查询向量；原文来源已被人工修订或撤销时也不复活旧片段。
+      if (candidate?.selectedFloors.some(value => value.rawWitnesses?.length || value.summaryWitnesses?.length)) {
+        // 冻结复用不查询向量；原文或人工摘要来源已变化时不复活旧语义材料。
         advanceOperation(operation, 'receiptSourceVerification');
         const fresh = await sourceReader({ store, now, hostSnapshot: before, sanitizerOptions: currentSanitizerOptions(), realtimeOrigin: hasRealtimeOrigin() });
-        for (const value of candidate.selectedFloors) for (const witness of value.rawWitnesses ?? []) {
-          if (!await rawWitnessValid(witness, fresh)) return stopForFinalSafety('selectedRefsChanged');
+        for (const value of candidate.selectedFloors) {
+          for (const witness of value.rawWitnesses ?? []) if (!await rawWitnessValid(witness, fresh)) return stopForFinalSafety('selectedRefsChanged');
+          for (const witness of value.summaryWitnesses ?? []) if (!await summaryWitnessValid(witness, fresh)) return stopForFinalSafety('selectedRefsChanged');
         }
       }
       if (candidate) {

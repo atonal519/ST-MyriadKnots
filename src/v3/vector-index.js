@@ -1,6 +1,6 @@
 import { sha256 } from '../identity.js';
 import { normalizeVector } from '../vector-api.js';
-import { rawWitnessShape } from './vector-source.js';
+import { summaryWitnessShape, vectorWitnessShape } from './vector-source.js';
 
 export const VECTOR_INDEX_ID = 'qqj-vector-index';
 export const VECTOR_SHARD_PREFIX = 'qqj-vector-shard-';
@@ -8,7 +8,7 @@ const SCHEMA = 1, BATCH = 16, INDEX_LOAD_TIMEOUT_MS = 15000, VECTOR_QUERY_TIMEOU
 const hash = async value => `sha256:${await sha256(value)}`;
 const configKey = config => JSON.stringify([config.url, config.model, config.dimensions]);
 const ownerKey = (source, modelKey) => JSON.stringify([source.chatId, source.narrativeGeneration, modelKey]);
-const sourceKey = value => `${value.floorMemoryId}|${value.floorId}|${value.fingerprint}`;
+const sourceKey = value => `${value.sourceKind ?? 'raw'}|${value.floorMemoryId}|${value.floorId}|${value.fingerprint}`;
 const witnessKey = value => JSON.stringify([sourceKey(value), value.assistantSeq, value.memoryFloorId, value.memoryAssistantSeq, value.offset, value.length]);
 const errorWith = (code, message) => Object.assign(new Error(message), { code });
 
@@ -20,7 +20,7 @@ export function vectorRecordOwned(record) {
   if (record.recordId === VECTOR_INDEX_ID) return Number.isSafeInteger(data.dimensions) && data.dimensions > 0 && data.dimensions <= 8192
     && Number.isSafeInteger(data.chunkCount) && data.chunkCount >= 0 && Array.isArray(data.shardIds) && data.shardIds.every(shardId) && new Set(data.shardIds).size === data.shardIds.length;
   return shardId(record.recordId) && Array.isArray(data.rows) && data.rows.length > 0 && data.rows.length <= BATCH
-    && data.rows.every(row => rawWitnessShape(row?.witness) && typeof row.vector === 'string' && row.vector.length > 0 && row.vector.length <= 44000 && /^[A-Za-z0-9+/]+={0,2}$/u.test(row.vector));
+    && data.rows.every(row => vectorWitnessShape(row?.witness) && typeof row.vector === 'string' && row.vector.length > 0 && row.vector.length <= 44000 && /^[A-Za-z0-9+/]+={0,2}$/u.test(row.vector));
 }
 
 export function rawSourceChunks(source) {
@@ -38,6 +38,24 @@ export function rawSourceChunks(source) {
     return chunks;
   });
 }
+
+export function summarySourceChunks(source) {
+  return (source.summarySources ?? []).flatMap(summary => {
+    const chunks = [];
+    for (let offset = 0; offset < summary.canonicalContent.length; offset += 320) {
+      const text = summary.canonicalContent.slice(offset, offset + 400);
+      if (text.trim()) chunks.push({ text, witness: {
+        sourceKind: summary.sourceKind, floorId: summary.floorId, assistantSeq: summary.assistantSeq, floorMemoryId: summary.floorMemoryId,
+        memoryFloorId: summary.memoryFloorId, memoryAssistantSeq: summary.memoryAssistantSeq,
+        fingerprint: summary.fingerprint, offset, length: text.length,
+      } });
+      if (offset + 400 >= summary.canonicalContent.length) break;
+    }
+    return chunks;
+  });
+}
+
+const vectorSourceChunks = source => [...rawSourceChunks(source), ...summarySourceChunks(source)];
 
 function encodeVector(vector) {
   const bytes = new Uint8Array(new Float32Array(vector).buffer);
@@ -140,7 +158,7 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
       const source = await sourceProvider();
       if (source?.status !== 'ready') throw errorWith('VECTOR_SOURCE_UNAVAILABLE', '当前聊天记忆尚未准备好。');
       guard(source);
-      const chunks = rawSourceChunks(source), modelKey = await hash(configKey(config)), collection = `chat-${source.chatId}`;
+      const chunks = vectorSourceChunks(source), modelKey = await hash(configKey(config)), collection = `chat-${source.chatId}`;
       const reusable = cached?.key === ownerKey(source, modelKey) ? new Map(cached.rows.map(row => [witnessKey(row.witness), row])) : new Map();
       notify({ total: chunks.length });
       phase = 'cache';
@@ -173,7 +191,7 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
       // 构建期间允许新增独立楼，但旧来源的删除、人工修订或切换世代会撤销提交。
       phase = 'verification';
       const fresh = await sourceProvider(); guard(source);
-      const valid = new Set((fresh?.rawSources ?? []).map(sourceKey));
+      const valid = new Set([...(fresh?.rawSources ?? []), ...(fresh?.summarySources ?? [])].map(sourceKey));
       if (fresh?.narrativeGeneration !== source.narrativeGeneration || rows.some(row => !valid.has(sourceKey(row.witness)))) throw errorWith('VECTOR_SOURCE_CHANGED', '来源已变化，请重新建立索引。');
       phase = 'save';
       await client.put(collection, VECTOR_INDEX_ID, { schemaVersion: SCHEMA, recordType: 'vectorCache', chatId: source.chatId, narrativeGeneration: source.narrativeGeneration, modelKey, dimensions: dimensions ?? config.dimensions ?? 1024, shardIds, chunkCount: rows.length }, previous?.revision ?? 0, { signal: operation.controller.signal });
@@ -353,9 +371,13 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
       operation.totalIndexRows = cached.rows.length;
       step('eligibility');
       const raws = new Map((source.rawSources ?? []).map(raw => [sourceKey(raw), raw]));
+      const summaries = new Map((source.summarySources ?? []).map(summary => [sourceKey(summary), summary]));
+      const indexedSources = new Map([...raws, ...summaries]);
       const covered = new Set(source.bodyMatch?.recentBodyFloorIds ?? source.bodyMatch?.coveredFloorIds ?? []);
       const eligible = eligibleFloorMemoryIds ? new Set(eligibleFloorMemoryIds) : null;
-      const rows = cached.rows.filter(row => rawWitnessShape(row.witness) && raws.has(sourceKey(row.witness)) && !covered.has(row.witness.floorId) && (!eligible || eligible.has(row.witness.floorMemoryId)));
+      const rows = cached.rows.filter(row => vectorWitnessShape(row.witness) && indexedSources.has(sourceKey(row.witness))
+        && (summaryWitnessShape(row.witness) ? (eligible ? eligible.has(row.witness.floorMemoryId) : !covered.has(row.witness.floorId))
+          : !covered.has(row.witness.floorId) && (!eligible || eligible.has(row.witness.floorMemoryId))));
       operation.eligibleRows = rows.length;
       if (changed(signature)) return complete('changed');
       if (!rows.length) return complete('unindexed');
@@ -428,9 +450,11 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
       step('witnessVerification');
       const candidates = [];
       for (const row of scored.slice(0, 12)) {
-        const raw = raws.get(sourceKey(row.witness)), text = raw.canonicalContent.slice(row.witness.offset, row.witness.offset + row.witness.length);
+        const summarySource = summaryWitnessShape(row.witness), raw = indexedSources.get(sourceKey(row.witness));
+        const text = raw.canonicalContent.slice(row.witness.offset, row.witness.offset + row.witness.length);
         if (await hash(text) !== row.witness.textFingerprint) continue;
-        candidates.push({ text, witness: row.witness, similarity: row.score });
+        candidates.push(summarySource ? { text: raw.canonicalContent, summaryWitness: row.witness, similarity: row.score }
+          : { text, witness: row.witness, similarity: row.score });
       }
       if (changed(signature)) return complete('changed');
       operation.candidateCount = candidates.length;

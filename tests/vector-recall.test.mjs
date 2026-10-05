@@ -2,8 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createVectorApiClient, normalizeVectorConfig, resolveVectorConfig, VECTOR_DEFAULT_URL, VECTOR_DEFAULT_MODEL } from '../src/vector-api.js';
 import { createVectorIndex, VECTOR_INDEX_ID, VECTOR_SHARD_PREFIX } from '../src/v3/vector-index.js';
-import { projectVectorSources, rawWitnessValid } from '../src/v3/vector-source.js';
+import { projectVectorSources, rawWitnessValid, summaryCandidateText, summaryWitnessValid } from '../src/v3/vector-source.js';
 import { selectRecallWithLlm } from '../src/v3/recall-llm-selector.js';
+import { addSemanticHistory, buildRecallHistoryCandidatePool, historySelectionContext, mergeSemanticHistoryPool } from '../src/v3/recall-selector.js';
 import { createSettingsStore } from '../src/settings.js';
 import { classifyStorageRecords } from '../src/storage-management.js';
 import { sha256 } from '../src/identity.js';
@@ -187,14 +188,50 @@ test('错误/重复 index/非数值向量拒绝，供应商正文和 Key 不进�
   await assert.rejects(api.embed(config, ['苹果']), error => error.code === 'VECTOR_CONNECTION_FAILED' && !error.message.includes('test-key'));
 });
 
-test('真实源投影区分归档锚和实际成员；人工摘要、删除楼及不一致来源不进入索引', async () => {
+test('真实源投影区分原文成员与人工摘要锚；人工摘要只以保存摘要进入索引', async () => {
   const floors = [{ id: 'old', assistantSeq: 1 }, { id: 'anchor', assistantSeq: 4 }];
-  const memories = [{ id: 'memory', floorId: 'anchor', sourceFloorIds: ['old', 'anchor'], sourceFloorSnapshots: [{ floorId: 'old', canonicalContent: '老楼原文' }, { floorId: 'anchor', canonicalContent: '归档楼原文' }], summary: { effectiveSource: 'ai' } }];
-  const raws = await projectVectorSources(memories, floors);
-  assert.equal(raws[0].assistantSeq, 1); assert.equal(raws[0].memoryAssistantSeq, 4); assert.equal(raws[0].memoryFloorId, 'anchor');
-  memories[0].summary.effectiveSource = 'user'; assert.deepEqual(await projectVectorSources(memories, floors), []);
-  memories[0].summary.effectiveSource = 'ai'; assert.equal((await projectVectorSources(memories, floors.slice(1))).length, 1);
-  floors[0].content = { canonicalContent: '被编辑的新正文' }; assert.equal((await projectVectorSources(memories, floors)).length, 1);
+  const memories = [{ id: 'memory', floorId: 'anchor', sourceFloorIds: ['old', 'anchor'], sourceFloorSnapshots: [{ floorId: 'old', canonicalContent: '老楼原文' }, { floorId: 'anchor', canonicalContent: '归档楼原文' }], summary: { effectiveSource: 'ai', aiText: '旧AI摘要' } }];
+  const projection = await projectVectorSources(memories, floors);
+  assert.deepEqual(projection.rawSources.map(value => value.canonicalContent), ['老楼原文', '归档楼原文'], '聚合AI来源继续只读取各成员的专用快照');
+  assert.equal(projection.rawSources[0].assistantSeq, 1); assert.equal(projection.rawSources[0].memoryAssistantSeq, 4); assert.equal(projection.rawSources[0].memoryFloorId, 'anchor');
+  assert.deepEqual(projection.summarySources, []);
+  memories[0].summary = { effectiveSource: 'user', userText: '用户只留下的钟楼线索', aiText: '旧AI摘要不能回捞' };
+  const manual = await projectVectorSources(memories, floors);
+  assert.deepEqual(manual.rawSources, [], '人工聚合摘要不再索引旧正文切片');
+  assert.equal(manual.summarySources.length, 1, '一条聚合人工摘要仅形成一份向量文本');
+  assert.equal(manual.summarySources[0].floorId, 'anchor'); assert.equal(manual.summarySources[0].assistantSeq, 4);
+  assert.equal(manual.summarySources[0].floorMemoryId, 'memory'); assert.equal(manual.summarySources[0].memoryFloorId, 'anchor');
+  assert.equal(manual.summarySources[0].canonicalContent, '用户只留下的钟楼线索');
+  assert.doesNotMatch(manual.summarySources[0].canonicalContent, /老楼原文|归档楼原文|旧AI摘要/u);
+  memories[0].summary = { effectiveSource: 'user', userText: '' };
+  assert.deepEqual((await projectVectorSources(memories, floors)).summarySources, [], '空人工摘要不借旧正文回退');
+  memories[0].summary = { effectiveSource: 'ai' };
+  assert.equal((await projectVectorSources(memories, floors.slice(1))).rawSources.length, 1);
+  floors[0].content = { canonicalContent: '被编辑的新正文' };
+  assert.equal((await projectVectorSources(memories, floors)).rawSources.length, 1);
+});
+
+test('旧单楼缺专用来源快照时回退已保存楼正文，并继续尊重人工、空值和矛盾', async () => {
+  const floor = { id: 'legacy-floor', assistantSeq: 1, content: { canonicalContent: '旧档保留的完整正文。' } };
+  const memory = { id: 'legacy-memory', floorId: floor.id, summary: { effectiveSource: 'ai' } };
+  const fallback = await projectVectorSources([memory], [floor]);
+  assert.equal(fallback.rawSources.length, 1);
+  assert.equal(fallback.rawSources[0].canonicalContent, floor.content.canonicalContent);
+  assert.equal(fallback.rawSources[0].floorMemoryId, memory.id);
+
+  assert.deepEqual((await projectVectorSources([memory], [{ id: floor.id, assistantSeq: 1 }])).rawSources, [], '缺归档楼原文时不猜来源');
+  assert.deepEqual((await projectVectorSources([{ ...memory, summary: { effectiveSource: 'user' } }], [floor])).rawSources, [], '人工摘要不从归档正文补回');
+  assert.deepEqual((await projectVectorSources([{ ...memory, sourceCanonicalContent: '' }], [floor])).rawSources, [], '明确空的专用原文不被回退覆盖');
+  assert.deepEqual((await projectVectorSources([{ ...memory, sourceCanonicalContent: '矛盾的专用原文。' }], [floor])).rawSources, [], '专用来源与归档原文矛盾时不以归档正文覆盖');
+
+  const snapshot = await projectVectorSources([{ ...memory, sourceFloorSnapshots: [{ floorId: floor.id, canonicalContent: floor.content.canonicalContent }] }], [floor]);
+  assert.equal(snapshot.rawSources.length, 1); assert.equal(snapshot.rawSources[0].canonicalContent, floor.content.canonicalContent, '专用快照仍按原优先级使用');
+  assert.deepEqual((await projectVectorSources([{ ...memory, sourceFloorSnapshots: [{ floorId: floor.id, canonicalContent: '' }] }], [floor])).rawSources, [], '明确空的楼快照继续排除');
+  assert.deepEqual((await projectVectorSources([{ ...memory, sourceFloorSnapshots: [{ floorId: floor.id, canonicalContent: '旧的不同正文。' }] }], [floor])).rawSources, [], '明确不一致的楼快照继续排除');
+
+  const aggregate = await projectVectorSources([{ ...memory, floorId: 'aggregate-anchor', sourceFloorIds: ['legacy-floor', 'aggregate-anchor'] }], [floor,
+    { id: 'aggregate-anchor', assistantSeq: 2, content: { canonicalContent: '聚合锚点正文。' } }]);
+  assert.deepEqual(aggregate.rawSources, [], '聚合楼缺成员专用快照时不跨楼回退');
 });
 
 test('手动建索引：缓存不复制正文/Key；一次批量 API，查询验证见证并只返回旧楼', async () => {
@@ -212,6 +249,95 @@ test('手动建索引：缓存不复制正文/Key；一次批量 API，查询验
   const covered = { ...source, bodyMatch: { recentBodyFloorIds: ['floor-1'] } };
   assert.equal((await index.query({ source: covered, queryContext: { text: '苹果配方' } })).candidates.length, 0);
   assert.equal(calls, 2, '没有合格片段不发送查询向量');
+});
+
+test('全人工来源可非零建索引并召回保存摘要；不要求任何原文向量源', async () => {
+  const source = await sourceFixture();
+  const summary = summaryCandidateText('小岚与闻溪在钟楼约定保留苹果配方，次日由闻溪带来黄油；当前仍未烘焙。');
+  source.rawSources = [];
+  source.floorMemories[1] = { ...source.floorMemories[1], summary,
+    chronology: [{ normalized: '2047-10-25T10:30', sourceText: '2047年10月25日10:30' }],
+    participants: [{ entityId: 'person-xiaolan', name: '小岚' }, { entityId: 'person-wenxi', name: '闻溪' }],
+    locations: [{ entityId: 'tower-id', participantEntityIds: ['person-xiaolan', 'person-wenxi'], name: '钟楼', change: '曾约定会合' }] };
+  source.summarySources = [{ sourceKind: 'userSummary', floorId: 'floor-2', assistantSeq: 2, floorMemoryId: 'memory-2',
+    memoryFloorId: 'floor-2', memoryAssistantSeq: 2, canonicalContent: summary, fingerprint: await hash(summary) }];
+  const h = harness(source); let embedCalls = 0;
+  const index = createVectorIndex({ client: h.client, api: { embed: async (_config, texts) => { embedCalls++; return vectors(texts); } },
+    configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  const built = await index.build();
+  assert.ok(built.chunkCount > 0, '只含人工摘要仍生成有效索引片');
+  assert.equal(embedCalls, 1);
+  const result = await index.query({ source, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-2'] });
+  assert.ok(result.candidates.length > 0);
+  assert.ok(result.candidates.every(value => value.summaryWitness && !value.witness && value.text === summary));
+  const context = historySelectionContext(source, { text: '不存在的词', latestUserText: '不存在的词' });
+  const enriched = addSemanticHistory(context, result.candidates);
+  const candidate = [...enriched.summaries, ...enriched.recentSummaries].find(value => value.floorMemoryId === 'memory-2');
+  assert.ok(candidate?._semanticSummary);
+  assert.match(candidate.text, /小岚.*闻溪.*钟楼/u, '保存摘要中的人物与地点文字原样进入候选');
+  assert.equal(candidate._chronology[0].normalized, '2047-10-25T10:30', '时间元数据保留');
+  assert.equal(candidate._subjectKey, 'person-wenxi,person-xiaolan', '主体身份元数据保留');
+});
+
+test('人工摘要多片沿同一向量缓存命中完整既有摘要，partial-body保留且改写/恢复AI后旧片失效', async () => {
+  const source = await sourceFixture();
+  const userText = '手写苹果线索，用户明确删除旧正文里的钥匙去向。'.repeat(55);
+  const canonicalContent = summaryCandidateText(userText), memory = source.floorMemories[1];
+  memory.summary = canonicalContent; memory.sourceFloorIds = ['floor-2', 'floor-9'];
+  source.summarySources = [{ sourceKind: 'userSummary', floorId: 'floor-2', assistantSeq: 2, floorMemoryId: 'memory-2',
+    memoryFloorId: 'floor-2', memoryAssistantSeq: 2, canonicalContent, fingerprint: await hash(canonicalContent) }];
+  const h = harness(source); let embedCalls = 0;
+  const api = { embed: async (_config, texts) => { embedCalls++; return vectors(texts); } };
+  const index = createVectorIndex({ client: h.client, api, configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  await index.build();
+  const storedRows = [...h.records.values()].flatMap(record => record.data.rows ?? []);
+  assert.ok(storedRows.some(row => row.witness.sourceKind === 'userSummary'));
+  assert.equal(JSON.stringify([...h.records.values()]).includes(canonicalContent), false, '缓存只存摘要片段见证与向量，不复制摘要正文');
+  const partial = { ...source, bodyMatch: { coveredFloorIds: ['floor-2'] } };
+  const matched = await index.query({ source: partial, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-2'] });
+  assert.ok(matched.candidates.length > 1, '超过400字摘要会有多个检索分片');
+  assert.ok(matched.candidates.every(value => value.summaryWitness && !value.witness));
+  assert.ok(matched.candidates.every(value => value.text === canonicalContent), '命中分片只指向整条既有摘要，绝不把400字片段当正文');
+  assert.equal(await summaryWitnessValid(matched.candidates[0].summaryWitness, source), true);
+  assert.equal(embedCalls, 2, '建索引与查询各用一次现有向量入口');
+
+  const rewritten = structuredClone(source), newText = '用户后来改写的苹果摘要，明确不再保留钥匙去向。';
+  rewritten.floorMemories[1].summary = summaryCandidateText(newText);
+  rewritten.summarySources[0].canonicalContent = rewritten.floorMemories[1].summary;
+  rewritten.summarySources[0].fingerprint = await hash(rewritten.summarySources[0].canonicalContent);
+  assert.equal(await summaryWitnessValid(matched.candidates[0].summaryWitness, rewritten), false);
+  assert.deepEqual((await index.query({ source: rewritten, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-2'] })).candidates, [], '改写摘要后旧向量片不再命中');
+  const coldIndex = createVectorIndex({ client: h.client, api, configProvider: () => config,
+    identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => rewritten });
+  assert.deepEqual((await coldIndex.query({ source: rewritten, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-2'] })).candidates, [],
+    '冷读旧缓存也按当前摘要见证过滤，不回捞旧片');
+  const restoredAi = { ...source, summarySources: [], floorMemories: source.floorMemories.map((value, index) => index === 1 ? { ...value, summary: '旧AI摘要' } : value) };
+  assert.deepEqual((await index.query({ source: restoredAi, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-2'] })).candidates, [], '恢复AI来源后不回捞旧人工摘要向量或旧原文');
+});
+
+test('人工摘要语义命中复用同一楼的完整summary候选，不另造原文片段', async () => {
+  const source = await sourceFixture(), summary = '人工只保留了与小狐狸有关的完整摘要。';
+  source.floorMemories[1] = { ...source.floorMemories[1], summary,
+    chronology: [{ normalized: '2047-10-25', sourceText: '2047年10月25日' }],
+    participants: [{ entityId: 'fox-id', name: '小狐狸' }], locations: [{ entityId: 'tower-id', participantEntityIds: ['fox-id'], name: '钟楼', change: '曾经到访' }] };
+  const context = historySelectionContext(source, { text: '星际灯塔', latestUserText: '星际灯塔' });
+  const summaryCandidate = context.summaries.find(value => value.floorMemoryId === 'memory-2');
+  assert.ok(summaryCandidate); assert.equal(summaryCandidate.score, 0, '这个摘要不靠BM25命中');
+  const summaryWitness = { sourceKind: 'userSummary', floorId: 'floor-2', assistantSeq: 2, floorMemoryId: 'memory-2', memoryFloorId: 'floor-2',
+    memoryAssistantSeq: 2, fingerprint: await hash(summary), offset: 0, length: summary.length, textFingerprint: await hash(summary) };
+  const enriched = addSemanticHistory(context, [{ text: summary, summaryWitness, similarity: 0.92 }]);
+  const semanticSummary = enriched.semantic.find(value => value._semanticSummary);
+  assert.ok(semanticSummary); assert.equal(semanticSummary.kind, 'summary'); assert.equal(semanticSummary.text, summary);
+  assert.equal(semanticSummary.rawWitness, undefined); assert.equal(semanticSummary.summaryWitness, summaryWitness);
+  assert.equal(enriched.semantic.some(value => value.kind === 'sourceFragment'), false);
+  const native = buildRecallHistoryCandidatePool({ source, queryContext: { text: '星际灯塔', latestUserText: '星际灯塔' }, historyContext: context });
+  const pool = mergeSemanticHistoryPool(native, enriched);
+  const candidate = pool.candidates.find(value => value.value.summaryWitness);
+  assert.ok(candidate); assert.equal(candidate.sourceKind, 'semanticSummary'); assert.equal(candidate.value.kind, 'summary');
+  assert.equal(candidate.value.text, summary); assert.equal(pool.candidates.filter(value => value.value.floorMemoryId === 'memory-2').length, 1, '同楼摘要只出现一条候选');
+  assert.equal(candidate.value._chronology[0].normalized, '2047-10-25');
+  assert.equal(candidate.value._subjectKey, 'fox-id');
+  assert.match(candidate.value.text, /小狐狸/u);
 });
 
 test('首轮召回等待读完现成索引后查询；不重建，不重复查询', async () => {

@@ -8,6 +8,7 @@ export const MAX_LLM_CSE_CANDIDATES = 24;
 export const MAX_LLM_CSE_CHARACTERS = 12000;
 import { rankRecallDocuments, tokenizeRecallText } from './recall-ranking.js';
 import { formatChronologyAnchor } from './recall-source.js';
+import { summaryCandidateText } from './vector-source.js';
 
 const clean = (value, maximum = 4000) => String(value ?? '').normalize('NFKC').replace(/<[^>]*>/g, ' ').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
 const cleanLiteral = (value, maximum = 4000) => String(value ?? '').replace(/<[^>]*>/g, ' ').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
@@ -189,8 +190,8 @@ function historyFacts(memory, entityById) {
 
 function historySummary(memory, entityById) {
   const fullText = clean(memory.summary, 12000);
+  const text = summaryCandidateText(fullText);
   const truncated = fullText.length > 2000;
-  const text = truncated ? `${fullText.slice(0, 1988)}…（摘要已截断）` : fullText;
   if (!text) return null;
   const involvedEntityIds = (memory.participants ?? []).map(item => item.entityId).filter(Boolean);
   return {
@@ -1502,7 +1503,8 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
 // 原文只是叙事材料，不推导共享知识、当前 CSE 或归档摘要的故事时间。
 export function addSemanticHistory(context, semanticCandidates) {
   if (!context) return context;
-  const values = semanticCandidates.slice(0, 12).map(({ text, witness }, index) => ({
+  const rawCandidates = semanticCandidates.filter(value => value?.witness).slice(0, 12);
+  const values = rawCandidates.map(({ text, witness }, index) => ({
     category: 'narrative', kind: 'sourceFragment', text: `[历史原文；时间未标注] ${clean(text, 400)}`,
     priority: 130, floorId: witness.floorId, floorMemoryId: witness.floorMemoryId, assistantSeq: witness.assistantSeq,
     rawWitness: witness, sourceAssistantSeqs: [witness.assistantSeq], _chronology: [], _poolGroup: 'fact',
@@ -1510,18 +1512,50 @@ export function addSemanticHistory(context, semanticCandidates) {
     _statusKey: `${witness.floorId}:${witness.offset}`, _sourceOrder: 1000000 + index,
   }));
   const ranked = scoreCandidates(values, context.queries, { keepUnmatched: true });
-  return { ...context, semantic: ranked, facts: [...context.facts, ...ranked], direct: [...context.direct, ...ranked] };
+  const summariesByRef = new Map();
+  for (const candidate of semanticCandidates.filter(value => value?.summaryWitness)) {
+    const witness = candidate.summaryWitness, key = `${witness.floorId}|${witness.floorMemoryId}|${witness.assistantSeq}`;
+    const previous = summariesByRef.get(key);
+    if (!previous || candidate.similarity > previous.similarity) summariesByRef.set(key, candidate);
+  }
+  const allSummaries = [...context.summaries, ...(context.recentSummaries ?? [])];
+  const matchedSummaries = allSummaries.flatMap(value => {
+    const candidate = summariesByRef.get(`${value.floorId}|${value.floorMemoryId}|${value.assistantSeq}`);
+    if (!candidate) return [];
+    const text = candidate.text;
+    const score = Number(candidate.similarity);
+    if (text !== value._coreText || !Number.isFinite(score) || score <= 0) return [];
+    return [{ ...value, score: Math.max(value.score, score), summaryWitness: candidate.summaryWitness, _semanticSummary: true }];
+  });
+  const matchedKeys = new Set(matchedSummaries.map(historyStableKey));
+  const direct = [...context.direct.filter(value => !matchedKeys.has(historyStableKey(value))), ...ranked, ...matchedSummaries];
+  const summaryByKey = new Map(matchedSummaries.map(value => [historyStableKey(value), value]));
+  return { ...context, semantic: [...ranked, ...matchedSummaries],
+    summaries: context.summaries.map(value => summaryByKey.get(historyStableKey(value)) ?? value),
+    recentSummaries: (context.recentSummaries ?? []).map(value => summaryByKey.get(historyStableKey(value)) ?? value),
+    facts: [...context.facts, ...ranked], direct };
 }
 
 export function mergeSemanticHistoryPool(nativePool, context, maxCharacters = MAX_LLM_HISTORY_CHARACTERS) {
   const candidates = [...nativePool.candidates];
   let characters = nativePool.text.length;
+  const semanticKeys = new Set();
   for (const value of context.semantic ?? []) {
+    const stableKey = historyStableKey(value), existing = candidates.findIndex(candidate => candidate.stableKey === stableKey);
+    if (existing >= 0) {
+      const candidate = candidates[existing];
+      candidates[existing] = Object.freeze({ ...candidate, sourceKind: value._semanticSummary ? 'semanticSummary' : candidate.sourceKind, value });
+      semanticKeys.add(stableKey);
+      continue;
+    }
+    if (semanticKeys.size >= 12) continue;
     const key = `R${candidates.length + 1}`, text = historyCandidateText(value, context.entityById);
     const added = `${key}｜${text}`.length + (candidates.length ? 1 : 0);
     if (characters + added > maxCharacters || candidates.length >= 48) continue;
     characters += added;
-    candidates.push(Object.freeze({ key, stableKey: historyStableKey(value), source: 'fact', sourceKind: 'semantic', text, value }));
+    candidates.push(Object.freeze({ key, stableKey, source: value._semanticSummary ? 'summary' : 'fact',
+      sourceKind: value._semanticSummary ? 'semanticSummary' : 'semantic', text, value }));
+    semanticKeys.add(stableKey);
   }
   return Object.freeze({ candidates: Object.freeze(candidates), text: candidates.map(value => `${value.key}｜${value.text}`).join('\n'),
     limits: Object.freeze({ ...nativePool.limits, maxCandidates: 48, actualCandidates: candidates.length, actualCharacters: characters }) });

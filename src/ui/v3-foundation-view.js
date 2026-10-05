@@ -1389,9 +1389,41 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const vectorPhase = { request: '等待响应', response: '读取结果', validation: '校验结果', complete: '完成' };
       details.append(row('向量请求', `${vectorPhase[vectorRequest.phase] ?? '未记录'} · ${vectorRequest.inputCharacters ?? '未知'} 字符 · 上限 ${vectorRequest.timeoutMs ?? '未知'} ms${Number.isSafeInteger(vectorRequest.httpStatus) ? ` · HTTP ${vectorRequest.httpStatus}` : ''}${Number.isFinite(vectorRequest.responseHeadersMs) ? ` · 响应可读 ${vectorRequest.responseHeadersMs} ms` : ' · 响应尚未可读'}${Number.isFinite(vectorRequest.responseBodyMs) ? ` · 结果读取 ${vectorRequest.responseBodyMs} ms` : ''}`));
     }
-    body.append(details); const safeError = errorMessage(state?.lastRecallError) || errorMessage(record.error); if (safeError) body.append(element('p', 'v3-foundation-feedback error', safeError));
+    const countCopy = values => values.length ? String(values.length) : '0';
+    const materialLabel = record.restoredReceipt || record.legacyReadOnly ? '历史展示' : uncommitted ? '候选材料（本轮未注入）' : '本轮选入';
+    const selectedCountCopy = `${materialLabel}：旧楼 ${countCopy(record.selectedFloors ?? [])} · 当前状态 ${countCopy(record.selectedStates ?? [])} · 历史变化 ${countCopy(record.selectedCseChanges ?? [])}${[stages?.timeCorrectionCount, stages?.timeReminderCount].every(Number.isSafeInteger) ? ` · 时间参考 ${stages.timeCorrectionCount + stages.timeReminderCount}` : ''}`;
+    const tokenSummary = Number.isSafeInteger(stages?.estimatedTokenCount) && Number.isSafeInteger(stages?.estimatedTokenBudget)
+      ? `${stages.estimatedTokenCount}/${stages.estimatedTokenBudget}（保守估算）` : '未记录';
+    const totalWaitCopy = Number.isFinite(timings?.totalMs)
+      ? `${record.restoredReceipt ? '历史耗时' : record.reusedReceipt ? '复用耗时' : '本轮召回等待'} ${ (Number(timings.totalMs) / 1000).toFixed(1) } 秒`
+      : record.restoredReceipt ? '历史耗时未记录' : record.reusedReceipt ? '复用耗时未记录' : '召回等待未记录';
+    const semantic = selector?.semantic;
+    const semanticStatusCopy = { ready: '可用', cached: '缓存命中', disabled: '已关闭', busy: '忙碌', unindexed: '未建索引', changed: '来源已变化', dimensionMismatch: '维度不匹配', unavailable: '不可用',
+      VECTOR_TIMEOUT: '查询超时', VECTOR_INDEX_LOAD_TIMEOUT: '索引读取超时', VECTOR_ABORTED: '查询已取消', VECTOR_QUERY_BUDGET_EXHAUSTED: '本轮次数已用尽' };
+    let vectorSummary = '向量未记录';
+    if (semantic) {
+      const schemaHasWitnesses = Number(record.schemaVersion) >= 17 || (record.selectedFloors ?? []).some(value => Array.isArray(value?.rawWitnesses));
+      const rawWitnessCount = schemaHasWitnesses
+        ? (record.selectedFloors ?? []).reduce((sum, value) => sum + (Array.isArray(value?.rawWitnesses) ? value.rawWitnesses.length : 0), 0)
+        : null;
+      const schemaHasSummaryWitnesses = (record.selectedFloors ?? []).some(value => Array.isArray(value?.summaryWitnesses));
+      const summaryWitnessCount = schemaHasSummaryWitnesses
+        ? (record.selectedFloors ?? []).reduce((sum, value) => sum + (Array.isArray(value?.summaryWitnesses) ? value.summaryWitnesses.length : 0), 0)
+        : null;
+      const semanticStatus = semanticStatusCopy[semantic.status] ?? (String(semantic.status ?? '').startsWith('VECTOR_') ? '不可用' : '状态未记录');
+      const witnessLabel = uncommitted ? '候选原文段' : record.restoredReceipt || record.legacyReadOnly ? '历史选入原文段' : '选入原文段';
+      vectorSummary = `向量 ${semanticStatus} · 候选 ${Number.isSafeInteger(semantic.candidateCount) ? semantic.candidateCount : '未记录'} · ${rawWitnessCount === null ? '原文段未记录' : `${witnessLabel} ${rawWitnessCount}`} · ${summaryWitnessCount === null ? '人工摘要未记录' : `人工摘要 ${summaryWitnessCount}条`}`;
+    }
+    // 候选与历史材料不得伪装成本轮注入；将诊断折叠也不应影响复制完整回执。
+    const overview = element('div', 'v3-foundation-grid qqj-recall-overview');
+    overview.append(row('本轮材料', selectedCountCopy), row('来源楼号', floors), row('召回等待', totalWaitCopy), row('向量', vectorSummary), row('Token', tokenSummary));
+    body.append(overview);
+    const diagnosticDrawer = setDetailsState(element('details', 'qqj-management-drawer qqj-recall-diagnostics'), 'recall-diagnostics', false);
+    const diagnosticSummary = element('summary', 'qqj-section-summary'); diagnosticSummary.append(element('strong', '', '诊断'), element('span', 'v3-memory-status', '按需展开')); diagnosticDrawer.append(diagnosticSummary);
+    const diagnosticBody = element('div', 'qqj-management-drawer-body'); diagnosticBody.append(details); diagnosticDrawer.append(diagnosticBody); body.append(diagnosticDrawer);
+    const safeError = errorMessage(state?.lastRecallError) || errorMessage(record.error); if (safeError) body.append(element('p', 'v3-foundation-feedback error', safeError));
     const errorCode = state?.lastRecallError?.code ?? record.error?.code;
-    if (errorCode) body.append(element('p', 'settings-hint', `错误代码：${errorCode}`));
+    if (errorCode) diagnosticBody.append(element('p', 'settings-hint', `错误代码：${errorCode}`));
     const copyButton = element('button', 'secondary-action qqj-recall-copy', '复制回执'); copyButton.type = 'button'; copyButton.setAttribute('aria-label', '复制召回回执诊断');
     summary.append(copyButton);
     const copyFeedback = element('p', 'settings-result'), copyFallback = element('div'); body.append(copyFeedback, copyFallback);

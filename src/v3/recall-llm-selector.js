@@ -179,9 +179,10 @@ export async function selectRecallWithLlm({
   if (semantic.candidates?.length) historyContext = addSemanticHistory(historyContext, semantic.candidates);
   const cseContext = cseSelectionContext(source, queryContext);
   const baseInput = { source, queryContext, historyContext, cseContext, contextSize, maxFloors, maxItems, reservedTokens, reservedCharacters };
-  // 只有取得有效语义片段才留出 12 个位置；失败仍使用原来的 48 条候选。
-  const nativeHistoryPool = buildRecallHistoryCandidatePool({ source, queryContext, historyContext: nativeHistoryContext, maxCandidates: semantic.candidates?.length ? 36 : 48, maxCharacters: 24000 - semanticHistoryCharacters(historyContext) });
-  const historyPool = semantic.candidates?.length ? mergeSemanticHistoryPool(nativeHistoryPool, historyContext) : nativeHistoryPool;
+  // 原文片段与人工摘要共用最多12个语义位置；命中已有摘要时只替换该候选，不另加重复项。
+  const hasSemantic = historyContext.semantic?.length > 0;
+  const nativeHistoryPool = buildRecallHistoryCandidatePool({ source, queryContext, historyContext: nativeHistoryContext, maxCandidates: hasSemantic ? 36 : 48, maxCharacters: 24000 - semanticHistoryCharacters(historyContext) });
+  const historyPool = hasSemantic ? mergeSemanticHistoryPool(nativeHistoryPool, historyContext) : nativeHistoryPool;
   const csePool = buildRecallCseCandidatePool({ source, queryContext, cseContext });
   const annualCandidates = buildRecallAnnualCandidatePool({ source, queryContext, historyContext });
   const qianshiCandidates = Array.isArray(source?.qianshiCandidates) ? source.qianshiCandidates : [];
