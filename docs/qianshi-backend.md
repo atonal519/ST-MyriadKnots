@@ -124,11 +124,14 @@ const bridge = globalThis.qqj_qianshi_backend_v1;
 ```js
 await bridge.prepareHistory({
   maxInputTokens: 70000,
-  maxOutputTokens: 30000
+  maxOutputTokens: 30000,
+  includeEmptyFloors: false
 });
 ```
 
 `maxInputTokens` 是可调批次容量，当前默认 70000；`maxOutputTokens` 当前默认 30000。结果包含可处理楼、因缺 FloorMemory 而不可处理楼、预计批次、预计 API 调用数和保守的输入 token 上界。规划时每批只预留一次共享候选池容量；执行时同一旧事项候选在批内去重，并用实际请求重新核对容量。完整楼正文不会仅为凑固定楼数而截断；若单楼正文自身已经超过容量，该楼仍作为一个完整批次处理。
+
+默认只补未处理楼及现有的部分结果。只有用户在“补齐旧楼”中明确选择时，`includeEmptyFloors: true` 才会把真实 `qianshiDelta.status === 'empty'` 且无事件的单楼重新纳入计划；已存在事件、人工删除、审核候选、ready 结果及聚合来源仍跳过。重查仍经过原预览、预算、批次、来源校验与逐楼提交，只替换该楼的千事增量；取消不调用模型，模型再次返回空数组也只保存这次判定，不自动重试。
 
 ### `startHistory(planId)`
 

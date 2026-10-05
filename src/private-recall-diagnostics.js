@@ -26,9 +26,22 @@ function timingDiagnostic(value) {
   } : {}) };
 }
 const selectorKeys = ['durationMs', 'utilityRoundTripMs', 'localSelectionMs', 'historyCandidateCount', 'stateCandidateCount', 'historyExcludedCount', 'stateExcludedCount', 'historyRetainedCount', 'stateRetainedCount', 'requestCharacters', 'requestEstimatedTokens'];
+const priorityStatus = value => choose(value?.status, ['missing', 'empty', 'invalid', 'applied', 'timeGuard']);
+function priorityDiagnostic(value) {
+  const status = priorityStatus(value), validKeys = keys => Array.isArray(keys) && keys.length <= 8
+    && keys.every(key => typeof key === 'string' && /^[RC]\d{1,4}$/u.test(key)) && new Set(keys).size === keys.length;
+  if (!status || !validKeys(value?.keys) || !validKeys(value?.selectedKeys)
+    || !value.selectedKeys.every(key => value.keys.includes(key))
+    || !Number.isSafeInteger(value.ignoredCount) || value.ignoredCount < 0) return null;
+  if (['missing', 'empty', 'invalid'].includes(status) ? value.keys.length !== 0 : value.keys.length === 0) return null;
+  return { status, keys: value.keys.slice(), selectedKeys: value.selectedKeys.slice(), ignoredCount: Math.min(10000, value.ignoredCount) };
+}
 const selectorSteps = ['semanticQuery', 'candidateBuild', 'utilityTask', 'responseParse', 'localSelection'];
 const activeSteps = ['input', 'source', 'identity', 'root', 'prepare', 'read', 'projection', 'timeProjection', 'bodyWitness', 'qianshiProgress', 'queryContext', 'prequelSelection', 'receiptValidation', 'receiptSourceVerification', ...selectorSteps,
   'qianshiSeal', 'commitVerification', 'deletionWitness', 'receiptSeal', 'receiptSaveCall', 'receiptSaveWait', 'receiptSaveReturned', 'receiptSaveFailed', 'complete'];
+const verificationSteps = ['root', 'identity', 'prepare', 'read', 'projection', 'sourcePreparation', 'rootVerification', 'timeDependencies', 'selectedReference', 'sourceBodyGuard', 'coveredBodyGuard', 'finalSync', 'timeBodyWitness', 'shape'];
+const verificationReasons = ['invalid', 'changed', 'sourceUnavailable', 'sourceStale', 'selectedSourceChanged', 'narrativeChanged'];
+const verificationKinds = ['floor', 'rawWitness', 'state', 'cseChange'];
 const querySteps = ['configIdentity', 'indexLoad', 'eligibility', 'queryCache', 'queryRequest', 'scoring', 'witnessVerification', 'complete'];
 const queryStatuses = ['running', 'complete', 'ready', 'cached', 'timeout', 'cancelled', 'changed', 'disabled', 'busy', 'unavailable', 'unindexed', 'dimensionMismatch', 'error', 'VECTOR_TIMEOUT', 'VECTOR_QUERY_BUDGET_EXHAUSTED'];
 const requestPhases = ['request', 'response', 'validation', 'complete', 'request_prepared', 'fetch_call_start', 'fetch_called', 'response_headers', 'response_body', 'aborted'];
@@ -83,12 +96,37 @@ function safeActive(value) {
     selectorProgress: progress ? { pendingStep: choose(progress.pendingStep, selectorSteps), lastCompletedStep: choose(progress.lastCompletedStep, selectorSteps),
       stageTimings: counts(progress.stageTimings, selectorSteps) } : null };
 }
+function sourceVersion(value) {
+  if (!value || typeof value !== 'object') return null;
+  return { chatId: uuid(value.chatId), narrativeGeneration: uuid(value.narrativeGeneration), revision: number(value.revision), headCheckpointId: uuid(value.headCheckpointId) };
+}
+function verification(value) {
+  if (!value || typeof value !== 'object') return null;
+  const result = { phase: choose(value.phase, ['commit']), mode: choose(value.mode, ['cached', 'fresh']),
+    step: choose(value.step, verificationSteps), sourceStatus: choose(value.sourceStatus, ['ready', 'timeout', 'stale', 'unavailable', 'disabled']),
+    preparationStatus: choose(value.preparationStatus, ['ready', 'timeout', 'stale', 'unavailable', 'disabled', 'error']),
+    rootStatus: choose(value.rootStatus, ['ready', 'timeout', 'stale', 'unavailable', 'disabled']),
+    rootVerified: typeof value.rootVerified === 'boolean' ? value.rootVerified : null,
+    selectedSource: sourceVersion(value.selectedSource), checkedRoot: sourceVersion(value.checkedRoot) };
+  if (value.failure && typeof value.failure === 'object') {
+    const raw = value.failure, reference = raw.reference && typeof raw.reference === 'object' ? raw.reference : null;
+    result.failure = { step: choose(raw.step, verificationSteps), reason: choose(raw.reason, verificationReasons),
+      ...(reference ? { reference: { kind: choose(reference.kind, verificationKinds), index: number(reference.index), witnessIndex: number(reference.witnessIndex),
+        floorId: uuid(reference.floorId), floorMemoryId: uuid(reference.floorMemoryId), assistantSeq: number(reference.assistantSeq), memoryFloorId: uuid(reference.memoryFloorId),
+        subjectEntityId: uuid(reference.subjectEntityId), layer: choose(reference.layer, ['core', 'adaptive', 'situational']), stateId: uuid(reference.stateId),
+        sourceFloorId: uuid(reference.sourceFloorId), sourceDeltaId: uuid(reference.sourceDeltaId), sourceAssistantSeq: number(reference.sourceAssistantSeq),
+        deltaId: uuid(reference.deltaId), action: choose(reference.action, ['add', 'update', 'refine', 'remove']) } } : {}) };
+  }
+  return result;
+}
 function safeTerminated(value) {
   if (!value) return null;
-  return { status: choose(value.status, ['terminated']), chatId: uuid(value.chatId), reason: choose(value.reason, ['stopped', 'superseded', 'chatChanged', 'userChanged', 'narrativeChanged', 'disabled', 'invalidated', 'selectedRefsChanged']),
+  return { status: choose(value.status, ['terminated']), chatId: uuid(value.chatId), reason: choose(value.reason, ['stopped', 'superseded', 'chatChanged', 'userChanged', 'narrativeChanged', 'disabled', 'invalidated', 'selectedRefsChanged', 'sourceStale', 'sourceUnavailable']),
     sourceEvent: choose(value.sourceEvent, ['GENERATION_STOPPED', 'GENERATION_ENDED', 'interceptorSuperseded', 'CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'runtimeDisabled', 'runtimeInvalidate', 'finalSafetyGuard']),
+    roundStartedAt: stamp(value.roundStartedAt),
     terminatedAt: stamp(value.terminatedAt), phase: phase(value.phase), pendingStep: choose(value.pendingStep, activeSteps), lastCompletedStep: choose(value.lastCompletedStep, activeSteps),
-    generationType: generationType(value.generationType), userMessageIndex: number(value.userMessageIndex), timings: timingDiagnostic(value.timings),
+    generationType: generationType(value.generationType), userMessageIndex: number(value.userMessageIndex), sourceVerification: verification(value.sourceVerification),
+    finalVerification: verification(value.finalVerification), timings: timingDiagnostic(value.timings),
     attempts: (Array.isArray(value.attempts) ? value.attempts : []).slice(-2).map(attempt => ({ attempt: number(attempt.attempt), phase: phase(attempt.phase),
       selectionStatus: choose(attempt.selectionStatus, ['notStarted', 'incomplete', 'receiptCandidate', 'reused', 'completed']),
       pendingStep: choose(attempt.pendingStep, activeSteps), lastCompletedStep: choose(attempt.lastCompletedStep, activeSteps),
@@ -100,7 +138,9 @@ function selector(value) {
   const semantic = value.semantic, request = semantic?.request;
   const requestAttempts = Array.isArray(semantic?.requestAttempts) ? semantic.requestAttempts.slice(0, 2).map(vectorRequest).filter(Boolean) : null;
   const safeSemanticRequestCount = requestCount(semantic?.requestCount);
+  const priority = priorityDiagnostic(value.priority);
   return { mode: choose(value.mode, ['llm', 'fallback', 'local']), code: code(value.code), ...counts(value, selectorKeys),
+    ...(priority ? { priority } : {}),
     pendingStep: choose(value.pendingStep, selectorSteps), lastCompletedStep: choose(value.lastCompletedStep, selectorSteps), stageTimings: counts(value.stageTimings, selectorSteps),
     semantic: semantic ? { status: code(semantic.status) ?? choose(semantic.status, ['ready', 'cached', 'disabled', 'busy', 'unindexed', 'changed', 'dimensionMismatch', 'unavailable']),
       ...counts(semantic, ['candidateCount', 'durationMs']),
@@ -118,6 +158,7 @@ export function projectPrivateRecallDiagnostic(state, vectorState, { visibilityS
     lastTerminated: safeTerminated(state?.lastTerminated),
     last: last ? { status: choose(last.status, ['ready', 'empty', 'skipped', 'stale', 'error']), createdAt: stamp(last.createdAt),
       userMessageIndex: number(last.userMessageIndex), generationType: generationType(last.generationType), diagnosticPhase: phase(last.diagnosticPhase), diagnosticAttempt: number(last.diagnosticAttempt),
+      roundStartedAt: stamp(last.roundStartedAt),
       receiptPersistence: choose(last.receiptPersistence, ['none', 'saving', 'saveUnconfirmed', 'sessionOnly', 'chatRecord', 'legacyReadOnly']),
       injected: typeof last.injectionText === 'string' && last.injectionText.length > 0,
       selected: { floors: Array.isArray(last.selectedFloors) ? last.selectedFloors.length : 0, states: Array.isArray(last.selectedStates) ? last.selectedStates.length : 0, changes: Array.isArray(last.selectedCseChanges) ? last.selectedCseChanges.length : 0,
@@ -125,6 +166,7 @@ export function projectPrivateRecallDiagnostic(state, vectorState, { visibilityS
       coverage: counts(last.coverage, ['stableAiFloors', 'stableThroughAssistantSeq', 'rememberedAiFloors', 'cseThroughAssistantSeq']),
       sourceRead: { reachableReads: number(last.timings?.sourceReadAttempts?.reachableReads), exitPoint: choose(last.timings?.sourceReadAttempts?.exitPoint, ['ready', 'validatedSnapshot', 'memoryPreparationFailed', 'memoryPreparationTimeout', 'memoryPreparation', 'stale', 'unavailable']) },
       pendingStep: choose(last.pendingStep, activeSteps), lastCompletedStep: choose(last.lastCompletedStep, activeSteps),
+      sourceVerification: verification(last.sourceVerification), finalVerification: verification(last.finalVerification),
       receiptSaveDiagnostic: receiptSaveDiagnostic(last.receiptSaveDiagnostic),
       stages: counts(last.stages, stageKeys), timings: timingDiagnostic(last.timings), selector: selector(last.selectorDiagnostic),
       skipReasons: (Array.isArray(last.skipReasons) ? last.skipReasons : []).filter(value => reasons.includes(value)).slice(0, 16), error: safeError(last.error),
@@ -143,14 +185,45 @@ export function projectPrivateRecallDiagnostic(state, vectorState, { visibilityS
 export function createPrivateRecallDiagnostics({ client, recallRuntime, vectorRuntime, fetchImpl = globalThis.fetch, documentRef = globalThis.document, isEnabled = () => true, policyUrl = PRIVATE_DIAGNOSTIC_POLICY,
   bundleUrl = import.meta.url, random = Math.random, now = Date.now, pollMs = 5000, flushMs = 1000 } = {}) {
   let enabled = false, disposed = false, starting = null, revision = null, sequence = 0, sent = 0, previous = null, pending = null, timer = null, poll = null;
-  const events = [], cleanups = [];
+  const events = [], failureSnapshots = [], cleanups = [];
   const recordId = `recall-live-${Math.min(SLOT_COUNT - 1, Math.max(0, Math.floor(random() * SLOT_COUNT)))}`;
   let bundleVersion = null;
   try { const value = new URL(bundleUrl).searchParams.get('v'); if (/^[a-z0-9._-]{1,100}$/iu.test(value ?? '')) bundleVersion = value; } catch { /* 本地测试没有浏览器包地址。 */ }
   const schedule = () => { if (!disposed && !timer && !pending && sent < sequence) timer = setTimeout(() => { timer = null; void flush(); }, flushMs); };
+  const rememberFailure = (data, capturedAt) => {
+    const last = data.last, terminated = data.lastTerminated;
+    const lastReason = last?.skipReasons?.find(value => reasons.includes(value))
+      ?? (last?.status === 'error' || last?.status === 'stale' ? last.status : null);
+    const isSourceSkip = last?.status === 'skipped' && last.skipReasons?.some(value => ['sourceStale', 'sourceUnavailable'].includes(value));
+    const primary = last && (['stale', 'error'].includes(last.status) || isSourceSkip)
+      ? { kind: 'last', chatId: data.chatId, roundStartedAt: last.roundStartedAt ?? last.createdAt,
+        reason: lastReason ?? last.skipReasons?.find(value => ['sourceStale', 'sourceUnavailable'].includes(value)) ?? last.status,
+        capturedAt, last }
+      : null;
+    const terminal = terminated ? { kind: 'terminated', chatId: terminated.chatId, roundStartedAt: terminated.roundStartedAt ?? terminated.terminatedAt,
+      reason: terminated.reason, capturedAt, lastTerminated: terminated } : null;
+    const candidates = primary && terminal && primary.chatId === terminal.chatId && primary.roundStartedAt === terminal.roundStartedAt && primary.reason === terminal.reason
+      ? [{ ...terminal, ...primary, lastTerminated: terminal.lastTerminated }]
+      : [primary, terminal].filter(Boolean);
+    for (const value of candidates) {
+      const key = JSON.stringify([value.chatId, value.roundStartedAt, value.reason]);
+      const index = failureSnapshots.findIndex(item => item.key === key);
+      if (index >= 0) {
+        // 同一回合补到终止帧时合并白名单投影；旧 lastTerminated 不覆盖新回合快照。
+        const previousValue = failureSnapshots[index].value;
+        const enriched = { ...previousValue };
+        if (!enriched.last && value.last) { enriched.last = value.last; enriched.kind = 'last'; }
+        if (!enriched.lastTerminated && value.lastTerminated) enriched.lastTerminated = value.lastTerminated;
+        failureSnapshots[index] = { key, value: enriched };
+      } else failureSnapshots.push({ key, value });
+    }
+    failureSnapshots.sort((left, right) => Date.parse(right.value.roundStartedAt ?? right.value.capturedAt) - Date.parse(left.value.roundStartedAt ?? left.value.capturedAt));
+    if (failureSnapshots.length > 4) failureSnapshots.splice(4);
+  };
   const capture = () => {
     if (!enabled || disposed || !isEnabled()) return;
     const data = projectPrivateRecallDiagnostic(recallRuntime.getState(), vectorRuntime?.getState?.(), { visibilityState: documentRef?.visibilityState });
+    rememberFailure(data, new Date(now()).toISOString());
     const signature = JSON.stringify(data);
     if (signature === previous) return;
     previous = signature;
@@ -163,7 +236,8 @@ export function createPrivateRecallDiagnostics({ client, recallRuntime, vectorRu
     if (!enabled || disposed || !isEnabled() || sent === sequence) return Promise.resolve(false);
     if (pending) return pending;
     const target = sequence;
-    const data = { schemaVersion: 1, kind: 'qqj-private-recall-diagnostic', bundleVersion, updatedAt: new Date(now()).toISOString(), events: structuredClone(events) };
+    const data = { schemaVersion: 1, kind: 'qqj-private-recall-diagnostic', bundleVersion, updatedAt: new Date(now()).toISOString(),
+      events: structuredClone(events), failures: failureSnapshots.map(item => structuredClone(item.value)) };
     pending = (async () => {
       try {
         if (revision === null) {

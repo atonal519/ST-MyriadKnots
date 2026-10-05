@@ -1346,6 +1346,10 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     let selectorCountCopy = hasExclusionCounts
       ? `历史候选 ${selectorCount(selector?.historyCandidateCount)} → 模型排除 ${selectorCount(selector?.historyExcludedCount)} → 保留 ${selectorCount(selector?.historyRetainedCount)} → 关联补入 ${selectorCount(stages?.linkedHistoryItemCount)} → 最终远期 ${selectorCount(stages?.distantHistoryItemCount)} · 人物候选 ${selectorCount(selector?.stateCandidateCount)} → 模型排除 ${selectorCount(selector?.stateExcludedCount)} → 保留 ${selectorCount(selector?.stateRetainedCount)} → 关联补入 ${selectorCount(stages?.linkedCseChangeCount)} → 最终注入 ${Number.isSafeInteger(stages?.currentStateCount) && Number.isSafeInteger(stages?.cseChangeCount) ? stages.currentStateCount + stages.cseChangeCount : '未知'}`
       : `历史候选 ${selectorCount(selector?.historyCandidateCount)} → 模型选择 ${selectorCount(selector?.historyModelSelectedCount)} → 最终远期 ${selectorCount(stages?.distantHistoryItemCount)} · 人物候选 ${selectorCount(selector?.stateCandidateCount)} → 模型选择 ${selectorCount(selector?.stateModelSelectedCount)} → 最终注入 ${Number.isSafeInteger(stages?.currentStateCount) && Number.isSafeInteger(stages?.cseChangeCount) ? stages.currentStateCount + stages.cseChangeCount : '未知'}`;
+    if (selector?.priority && selector.priority.status !== 'missing') {
+      const priority = selector.priority;
+      selectorCountCopy += ` · 优先证据 保留 ${priority.selectedKeys.length}/${priority.keys.length}${priority.status === 'timeGuard' ? ' · 时间材料参与，本轮原序' : priority.status === 'invalid' ? ' · 提示无效' : ''}`;
+    }
     if (uncommitted) selectorCountCopy = selectorCountCopy.replace('最终注入', '候选材料');
     const persistenceCopy = { saving: '后台保存中；刷新可能丢失本轮回执', sessionOnly: '未保存；仅当前页面可复用', saveUnconfirmed: '已请求宿主保存，结果未确认', chatRecord: '从聊天记录读取', none: '未保存' };
     const selectorBreakdown = selector?.mode === 'local' && Number.isFinite(selector?.localSelectionMs)

@@ -286,6 +286,51 @@ test('千事时间轴保留时间原文，只按明确可比的普通日期或�
   assert.equal(eraMonth.full, '纪元年10月4日', '具名纪年的完整原文仍保留');
 });
 
+test('召回时间线沿用单楼已确认日期中的纯钟点且不推定月日或手工时间', () => {
+  const events = [
+    { id: 'anchored-clock', storyTime: '10:30', parsedStoryTime: projectTime('2047年10月25日 10:30') },
+    { id: 'anchored-clock-with-floor-range', storyTime: '10:30', parsedStoryTime: {
+      ...projectTime('10:30', projectTime('2047年10月25日')),
+      rangeText: '2047年10月25日 周五10:30→2047年10月25日 周五11:15',
+    } },
+    { id: 'explicit-old-date', storyTime: '2047年10月24日 23:00', parsedStoryTime: projectTime('2047年10月24日 23:00') },
+    { id: 'month-day', storyTime: '10月25日 12:00', parsedStoryTime: projectTime('10月25日 12:00') },
+    { id: 'manual-clock-only', storyTime: '10:30', parsedStoryTime: projectTime('10:30') },
+    { id: 'aggregate-clock-only', storyTime: '10:30', parsedStoryTime: projectTime('10:30') },
+  ];
+  const timeline = projectQianshiTimeline({ events, relations: [] });
+  const segmentFor = id => timeline.segments.find(segment => segment.groups.some(group => group.eventIds.includes(id)));
+  assert.equal(segmentFor('anchored-clock')?.id, 'dated', '普通楼的事件纯钟点沿用已锚定的楼日期');
+  assert.equal(segmentFor('anchored-clock-with-floor-range')?.id, 'dated', '继承楼层范围的事件纯钟点仍沿用同一已锚定日期');
+  const anchoredGroup = segmentFor('anchored-clock')?.groups.find(group => group.eventIds.includes('anchored-clock'));
+  assert.equal(anchoredGroup?.period, '2047年10月', '归组日期是已确认的 2047-10-25');
+  assert.equal(anchoredGroup?.day, '25日');
+  const inheritedRangeGroup = segmentFor('anchored-clock-with-floor-range')?.groups.find(group => group.eventIds.includes('anchored-clock-with-floor-range'));
+  assert.equal(inheritedRangeGroup?.period, anchoredGroup?.period, '是否携带楼层 rangeText 不改变钟点归组');
+  assert.equal(inheritedRangeGroup?.day, anchoredGroup?.day);
+  assert.equal(segmentFor('explicit-old-date')?.groups[0]?.day, '24日', '事件原文明确旧日期优先');
+  assert.equal(segmentFor('month-day')?.id, 'month-day', '只有月日仍不猜年份');
+  assert.ok(timeline.undatedEventIds.includes('manual-clock-only'), '仅手工填写钟点不继承旧日期');
+  assert.ok(timeline.undatedEventIds.includes('aggregate-clock-only'), '聚合来源只有钟点仍未定');
+});
+
+test('正式图投影中纯钟点事件在有无楼层范围时都沿用该楼确认日期', async () => {
+  const source = floor('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01', 1);
+  const range = '2047年10月25日 周五10:30→2047年10月25日 周五11:15';
+  const delta = await compileQianshiDelta({ floor: source, now: NOW, packet: { qianshi: { events: [
+    { key: 'clock', title: '收到旧笛', description: '本楼纯钟点事件。', status: 'occurred', matter: false, storyTime: '10:30' },
+  ], order: [] } } });
+  const timelineFor = chronology => projectQianshiTimeline(projectQianshiGraph({ floors: [source], floorMemories: [
+    { ...memory('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', source, delta), chronology },
+  ], entities: [] }));
+  const dated = timelineFor([{ time: { sourceText: '2047年10月25日', normalized: '2047年10月25日', kind: 'explicit' } }]);
+  const ranged = timelineFor([{ time: { sourceText: range, normalized: null, kind: 'explicit' } }]);
+  const groupFor = timeline => timeline.segments.flatMap(segment => segment.groups).find(group => group.eventIds.length)?.day;
+  assert.equal(groupFor(dated), '25日', '不带楼层范围时纯钟点沿用已确认日期');
+  assert.equal(groupFor(ranged), groupFor(dated), '楼层 rangeText 不应盖过事件原文纯钟点');
+  assert.equal(ranged.undatedEventIds.length, 0);
+});
+
 test('千事时间轴可按末尾说明括注归组，括注时间不伪装成精确钟点', () => {
   const rawTimes = [
     ['described-clock', '1年夏1日 周一 18:00(匿名说明)'],

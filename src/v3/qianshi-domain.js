@@ -552,6 +552,7 @@ function representativeEventIds(ids, eventById, maximum = 5) {
 }
 
 const DAY_PERIOD_SUFFIX = /[\s，,]*(?:凌晨|清晨|拂晓|黎明|早晨|早上|上午|中午|正午|下午|傍晚|黄昏|晚上|夜晚|夜间|夜里|午夜|深夜)$/u;
+const CLOCK_ONLY = /^(?:(?:凌晨|清晨|拂晓|黎明|早晨|早上|上午|中午|正午|下午|傍晚|黄昏|晚上|夜晚|夜间|夜里|午夜|深夜)\s*)?(?:[01]?\d|2[0-3])[:：][0-5]\d(?:[:：][0-5]\d)?(?:Z)?$/u;
 const STORY_TIME_RANGE = /(?:→|->|⟶|至|到|～|~|—|–|\s+-\s+|(?<=日)\s*-\s*(?=\d)|(?<=:\d{2})\s*-\s*(?=\d{1,2}:[0-5]\d))/u;
 const STORY_SECONDS = /(?<!\d)(?:[01]?\d|2[0-3]):[0-5]\d[:：]([0-5]\d)(?:Z)?(?=$|[\s，])/u;
 
@@ -560,12 +561,15 @@ function recallTimelineTime(event) {
   const sortableRaw = raw.replace(DAY_PERIOD_SUFFIX, '').trim();
   const rangeSeparator = STORY_TIME_RANGE.exec(sortableRaw);
   const rangeStart = rangeSeparator ? sortableRaw.slice(0, rangeSeparator.index).trim() : sortableRaw;
-  const ranged = Boolean(event.parsedStoryTime?.rangeText) || Boolean(rangeSeparator);
+  // rangeText 可能继承自楼层锚点；是否为事件范围只看本条原文，避免它盖过事件自己的纯钟点。
+  const ranged = Boolean(rangeSeparator);
   const relative = isRelativeStoryTime(rangeStart);
   const calendar = event.parsedStoryTime?.calendar ?? null;
+  // 楼内已确认日期的纯钟点沿用解析结果；继承来的楼层范围不能覆盖事件原文的纯钟点。
+  const anchoredClock = !rangeSeparator && CLOCK_ONLY.test(sortableRaw) && event.parsedStoryTime?.date ? event.parsedStoryTime : null;
   const time = ranged ? rangeSeparator && rangeStart ? projectQianshiTime(rangeStart, null, calendar) : null
       : relative && !event.parsedStoryTime?.date ? null
-      : relative ? event.parsedStoryTime : sortableRaw ? projectQianshiTime(sortableRaw, null, calendar) : event.parsedStoryTime;
+      : relative ? event.parsedStoryTime : anchoredClock ?? (sortableRaw ? projectQianshiTime(sortableRaw, null, calendar) : event.parsedStoryTime);
   const kind = time?.calendar ? `calendar:${calendarKey(time.calendar)}:${time.year === null ? 'yearless' : 'dated'}` : time?.monthIdentity ? `special:${time.monthIdentity}`
     : Number.isInteger(time?.day) ? 'dated' : Number.isInteger(time?.month) && Number.isInteger(time?.monthDay) ? 'month-day' : 'unknown';
   const standardMonth = !time?.monthIdentity && Number.isInteger(time?.month) && Number.isInteger(time?.monthDay);

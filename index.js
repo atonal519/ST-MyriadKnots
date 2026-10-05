@@ -138,7 +138,7 @@ const identityProjectionProvider = async () => {
   if (state?.chatId === identity.chatId) return peopleWorkspaceRuntime.getIdentityProjection();
   return (await peopleWorkspaceStore.read(identity)).data ?? {};
 };
-const vectorApi = createVectorApiClient();
+const vectorApi = createVectorApiClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
 const vectorIndex = createVectorIndex({
   client: backendClient, api: vectorApi, configProvider: () => resolveVectorConfig(settings),
   identityProvider: () => session.identity(), isEnabled: settings.isEnabled,

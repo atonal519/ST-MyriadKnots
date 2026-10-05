@@ -1,5 +1,5 @@
 import { createSettingsKit } from './kit.js';
-import { normalizeVectorConfig, VECTOR_DEFAULT_MODEL, VECTOR_DEFAULT_URL } from '../../vector-api.js';
+import { normalizeVectorConfig, usesNativeXfyunProxy, VECTOR_DEFAULT_MODEL, VECTOR_DEFAULT_URL } from '../../vector-api.js';
 import { publicErrorMessage } from '../../public-error.js';
 
 // 向量配置独立保存；旧显式预设只用于回填，用户保存后复制配置并解除共享引用。
@@ -22,17 +22,20 @@ export function createVectorApiSettings({ settings, vectorApi, vectorIndex, docu
   const url = element('input', 'settings-input'); url.value = current.url; url.placeholder = VECTOR_DEFAULT_URL;
   const key = element('input', 'settings-input'); key.type = 'password';
   const model = element('input', 'settings-input'); model.value = current.model; model.placeholder = VECTOR_DEFAULT_MODEL;
+  const xfyunHint = element('p', 'settings-hint qqj-vector-xfyun-hint', '讯飞 MaaS 需开启酒馆 CORS 代理并重启；模型名请手动填写。');
+  const syncXfyunHint = () => { xfyunHint.hidden = !usesNativeXfyunProxy(url.value); };
+  url.addEventListener('input', syncXfyunHint);
   const result = element('p', 'settings-result');
   const progress = element('p', 'settings-result qqj-vector-progress');
   let testing = false;
   const draft = () => ({ url: url.value.trim() || VECTOR_DEFAULT_URL, key: key.value.trim() || savedConfig().key, model: model.value.trim() || VECTOR_DEFAULT_MODEL });
-  const updateKeyHint = () => { key.placeholder = savedConfig().key ? '已保存，留空保持不变' : '输入硅基 API Key'; };
+  const updateKeyHint = () => { key.placeholder = savedConfig().key ? '已保存，留空保持不变' : '输入向量 API Key'; };
   const saveConfig = () => {
     const previous = savedConfig(), config = draft();
     settings.update({ vectorEnabled: enabled.checked, vectorPresetId: '', vectorUrl: config.url, vectorKey: config.key, vectorModel: config.model });
     // 相同配置保留已加载向量，重复建立仍可复用未变片段。
     if (['url', 'key', 'model'].some(name => config[name] !== previous[name])) vectorIndex?.abortAll();
-    url.value = config.url; model.value = config.model; key.value = ''; updateKeyHint();
+    url.value = config.url; model.value = config.model; key.value = ''; updateKeyHint(); syncXfyunHint();
   };
   enabled.addEventListener('change', () => {
     settings.update({ vectorEnabled: enabled.checked }); vectorIndex?.abortAll(); sync();
@@ -67,9 +70,9 @@ export function createVectorApiSettings({ settings, vectorApi, vectorIndex, docu
     progress.className = `settings-result qqj-vector-progress${state?.error ? ' error' : state?.status === 'ready' && !busy ? ' success' : ''}`;
     progress.hidden = !progress.textContent;
   }
-  body.append(enabledRow, field('URL', url), field('Key', key), field('模型', model),
+  body.append(enabledRow, field('URL', url), field('Key', key), field('模型', model), xfyunHint,
     element('p', 'settings-hint', '索引仅当前聊天；更新原文后可重新建立。'), actions, result, progress);
-  updateKeyHint(); sync();
+  updateKeyHint(); syncXfyunHint(); sync();
   // 订阅属于设置界面；切页只释放监听，返回恢复运行时进度，不取消后台任务。
   const releaseProgress = vectorIndex?.subscribe(() => sync());
   return { node, dispose: () => releaseProgress?.() };

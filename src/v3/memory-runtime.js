@@ -27,9 +27,9 @@ const EVENTS = Object.freeze(['CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'M
 const HISTORY_MUTATION_EVENTS = new Set(['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
 const MANUAL_HISTORY_REASON = 'manualHistoricalRebuild';
 const MANUAL_CSE_REBUILD_REASON = 'manualCseRebuild';
-const QIANSHI_HISTORY_SYSTEM_PROMPT = `你是“千千结”的千事历史提取器。只输出 JSON：{"floors":[{"floorKey":"floor-N","qianshi":{"events":[],"order":[]}}]}。每个输入 floorKey 恰好返回一次，无事件也返回空 events 和 order。每个 qianshi.order 必须是对象数组，例如 [{"before":"event-1","after":"event-2","certainty":"explicit"}]；只写材料明确支持的先后关系，引用键沿用本楼和候选键合同。顶层 qianshiCandidates 是本批共享候选池，每楼只能使用其 qianshiCandidateKeys 列出的键。候选 candidateType=event 表示一次性事件，只能用于 context 或先后关系端点；只有持续事项候选才能用于 progress。每个事件正文必须放在 description 字段，事件对象示例：{"key":"event-1","title":"事件标题","description":"事件正文","status":"occurred","matter":false}；不得用 chatSummary 等自造字段替代 description。每个事件最多关联一个旧事项候选（links 中最多一个 candidateKey）；同一叙事影响多个旧事项时，按事项分别写成独立事件，每个事件只链接对应的一个候选。逐楼提取，但每楼按对后续叙事有用的事件单位整理，不按每个动作逐条拆分；同一场景同一事项的连续动作合成一件完整事件，没有新增事实、关系变化或事项进展的重复日常不另立事件。新计划、事项实质推进、完成、取消和关键变化仍须记录。只有计划、持续事项 matter=true；带来新事实或变化的一次性事件可为 matter=false。object 只填写对后续叙事有用的具体物品，多个物品用“、”分隔；人物写入 people，地点或建筑及事件主题应在相应事件正文信息中表达，不要混入 object，也不要凭空补物品；没有合适物品时 object 写 null。links 使用 candidateKey 和 kind=progress|context，倒叙补证必须用 context；禁止把无效 progress 默默降级为 context。可让后楼引用同批更早楼事件，candidateKey 写“更早floorKey:该事件key”，不得跨 floorKey 合并事件来源。storyTime 是发生时间，scheduledTime 是预计时间；材料已有故事年份或纪年时必须保留，只有月日或相对时间时不得猜当前故事年或现实年份。不得改写摘要，不得输出人物资料。`;
+const QIANSHI_HISTORY_SYSTEM_PROMPT = `你是“千千结”的千事历史提取器。只输出 JSON：{"floors":[{"floorKey":"floor-N","qianshi":{"events":[],"order":[]}}]}。每个输入 floorKey 恰好返回一次；每楼必须检查并返回 qianshi，确无事件增量时返回空 events 和 order。qianshi 独立于 summary、普通 events、eventFragments 等字段，不因其他字段已记录材料而省略应记事件；matter=false 不表示没有事件增量。每个 qianshi.order 必须是对象数组，例如 [{"before":"event-1","after":"event-2","certainty":"explicit"}]；只写材料明确支持的先后关系，引用键沿用本楼和候选键合同。顶层 qianshiCandidates 是本批共享候选池，每楼只能使用其 qianshiCandidateKeys 列出的键。候选 candidateType=event 表示一次性事件，只能用于 context 或先后关系端点；只有持续事项候选才能用于 progress。每个事件正文必须放在 description 字段，事件对象示例：{"key":"event-1","title":"事件标题","description":"事件正文","status":"occurred","matter":false}；不得用 chatSummary 等自造字段替代 description。每个事件最多关联一个旧事项候选（links 中最多一个 candidateKey）；同一叙事影响多个旧事项时，按事项分别写成独立事件，每个事件只链接对应的一个候选。按对后续叙事有用的事件单位整理，不按每个动作逐条拆分；同一场景同一事项的连续动作合成一件完整事件。新计划、事项实质推进、完成、取消和关键变化仍须记录。只有计划、持续事项 matter=true；带来新事实或变化的一次性事件可为 matter=false。object 只填写对后续叙事有用的具体物品，多个物品用“、”分隔；人物写入 people，地点或建筑及事件主题应在相应事件正文信息中表达，不要混入 object，也不要凭空补物品；没有合适物品时 object 写 null。links 使用 candidateKey 和 kind=progress|context，倒叙补证必须用 context；禁止把无效 progress 默默降级为 context。可让后楼引用同批更早楼事件，candidateKey 写“更早floorKey:该事件key”，不得跨 floorKey 合并事件来源。storyTime 是发生时间，scheduledTime 是预计时间；材料已有故事年份或纪年时必须保留，只有月日或相对时间时不得猜当前故事年或现实年份。不得改写摘要，不得输出人物资料。`;
 // 新请求只说明规范输出；等价旧字段仍由既有编译器兼容，不迁移旧存档。
-const QIANSHI_REJUDGE_SYSTEM_PROMPT = `你是“千千结”的已存千事重判器。重判现有事件的归线关系、整线状态与动作状态；仅可补充原楼材料明确发生但旧记录漏记的事件，不改写原事件事实，不因重新措辞新增重复记录。
+const QIANSHI_REJUDGE_SYSTEM_PROMPT = `你是“千千结”的已存千事重判器。重判现有事件的归线关系、整线状态与动作状态；仅可补充原楼材料明确发生但旧记录漏记的事件，不改写原事件事实，不因重新措辞新增重复记录。逐楼检查原文，不因摘要、普通事件或片段已记录材料而省略应记千事；一次性新事实或互动变化可记为 matter=false，计划与持续事项仍按 matter/progress 合同记录，不把实质进展当成一次性事件；无新增事实或进展的重复日常不另立事件。
 只输出 JSON：{"qianshi":{"events":[],"order":[]}}。输入 records 每条旧记录恰好返回一次，key 逐字使用对应 record-N；严禁换号、猜配、按标题或描述生成身份，不得删除或冒充旧记录。旧事件的 title、description、object、people、storyTime、scheduledTime 可省略，程序保留存档原值。新增漏记事件使用 event-N，并写明 title、description 与有依据的发生时间；不补造材料没有的事实。
 每条记录必须输出 status（本条进展后的整线状态）、actionStatus（局部动作状态）、matter 与 links。links 使用 [{"candidateKey":"candidate-1","kind":"progress"}]；每个事件最多关联一个旧事项候选（links 中最多一个 candidateKey）。同一叙事影响多个旧事项时，新增漏记事件按事项分别记录，不能把一个 record-N 复制成多条。只有明确延续持续事项才用有效 candidate-N 的 progress；context 仅是回忆/背景，不能把记录归入该线。candidateType=event 只可 context 或作为先后关系端点。无链接且 matter=true 表示独立持续事项，matter=false 表示一次性事件。
 order 必须使用对象数组，例如 [{"before":"record-1","after":"event-1","certainty":"explicit"}]；引用只用本次 record-N/event-N 或明确指向单一旧事件的 candidate-N。certainty 只用 explicit（材料明示）或 strong（可靠时间锚支持）；先后未知、同日不明或不可比较时不输出。不生成因果等其他关系。
@@ -3136,7 +3136,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     manualAction: { type: 'deleteEvent' } });
   }
 
-  async function prepareQianshiHistory({ maxInputTokens = QIANSHI_HISTORY_INPUT_TOKENS, maxOutputTokens = QIANSHI_HISTORY_OUTPUT_TOKENS } = {}) {
+  async function prepareQianshiHistory({ maxInputTokens = QIANSHI_HISTORY_INPUT_TOKENS, maxOutputTokens = QIANSHI_HISTORY_OUTPUT_TOKENS, includeEmptyFloors = false } = {}) {
     if (qianshiHistoryRun) throw errorWith('QIANSHI_HISTORY_RUNNING', '千事历史补齐正在运行。');
     if (typeof foundationRuntime.inspect !== 'function' || typeof foundationRuntime.getReachable !== 'function') {
       throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '当前后端不支持只读预览，请稍后重试。');
@@ -3152,17 +3152,23 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     for (const floor of previewReachable.floors) {
       const memory = memoryByFloor.get(floor.id);
       if (!memory) { unavailable.push({ floorId: floor.id, assistantSeq: floor.assistantSeq }); continue; }
-      if (effectiveQianshiDelta(memory).events.length) continue;
-      const aggregate = memorySourceFloorIds(memory).length > 1;
-      if (['ready', 'empty'].includes(memory.qianshiDelta?.status)) continue;
+      const delta = memory.qianshiDelta;
+      const effectiveDelta = effectiveQianshiDelta(memory);
+      if (effectiveDelta.events.length) continue;
+      const aggregate = memorySourceFloorIds(memory).length !== 1 || memorySourceFloorIds(memory)[0] !== floor.id;
+      // 只允许显式重查真正的空结果；历史候选、人工删除和聚合来源继续受原保护。
+      const recheckEmpty = includeEmptyFloors === true && delta?.status === 'empty'
+        && Array.isArray(delta.events) && delta.events.length === 0 && !(delta.deletedEventIds?.length)
+        && !effectiveDelta.reviewEvents.length && !effectiveDelta.reviewRelations.length;
+      if (delta?.status === 'ready' || delta?.status === 'empty' && !recheckEmpty) continue;
       if (aggregate) aggregateSkippedFloors.push({ floorId: floor.id, assistantSeq: floor.assistantSeq });
       if (aggregate) continue;
       const sourceCanonicalContent = memory.sourceCanonicalContent || floor.content.canonicalContent;
       const input = { floorKey: `floor-${floor.assistantSeq}`, assistantSeq: floor.assistantSeq, sourceCanonicalContent,
         sourceUserInputSnapshot: memory.sourceUserInputSnapshot ?? null,
-        effectiveSummary: effectiveSummary(memory) || '', existingStatus: memory.qianshiDelta?.status ?? 'unprocessed' };
+        effectiveSummary: effectiveSummary(memory) || '', existingStatus: delta?.status ?? 'unprocessed' };
       items.push({ floorId: floor.id, assistantSeq: floor.assistantSeq, rawFingerprint: floor.content.rawFingerprint,
-        memoryId: memory.id, input });
+        memoryId: memory.id, recheckEmpty, input });
     }
     const batches = [], budgetSkippedFloors = [];
     const estimateBatch = batchItems => qianshiHistoryInputTokens(qianshiHistoryBudgetRequest(batchItems.map(item => item.input)));
@@ -3174,13 +3180,14 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       else { last.items.push(item); last.tokenEstimate = proposedEstimate; }
     }
       const planId = await deterministicUuid(['qianshi-history-plan-v1', previewReachable.root.chatId, previewReachable.root.narrativeGeneration,
-      items.map(item => [item.floorId, item.memoryId, item.rawFingerprint]), safeInput, safeOutput]);
+      includeEmptyFloors === true, items.map(item => [item.floorId, item.memoryId, item.rawFingerprint, item.recheckEmpty]), safeInput, safeOutput]);
     qianshiHistoryPlan = { planId, chatId: previewReachable.root.chatId, narrativeGeneration: previewReachable.root.narrativeGeneration,
-      maxInputTokens: safeInput, maxOutputTokens: safeOutput,
+      maxInputTokens: safeInput, maxOutputTokens: safeOutput, includeEmptyFloors: includeEmptyFloors === true,
       items, batches, unavailable, aggregateSkippedFloors, budgetSkippedFloors };
     const modelFloors = batches.reduce((sum, batch) => sum + batch.items.length, 0);
     return structuredClone({ status: items.length ? 'ready' : 'empty', planId, totalFloors: items.length, batchCount: batches.length, apiCalls: batches.length,
-      modelFloors,
+      includeEmptyFloors: includeEmptyFloors === true,
+      recheckedEmptyFloors: batches.flatMap(batch => batch.items).filter(item => item.recheckEmpty).length, modelFloors,
       estimatedInputTokens: batches.reduce((sum, batch) => sum + batch.tokenEstimate, 0), maxInputTokens: safeInput, maxOutputTokens: safeOutput,
       unavailableFloors: unavailable, budgetSkippedFloors, aggregateSkippedFloors, batches: batches.map((batch, index) => ({ index, floorCount: batch.items.length,
         assistantSeqs: batch.items.map(item => item.assistantSeq), estimatedInputTokens: batch.tokenEstimate })) });

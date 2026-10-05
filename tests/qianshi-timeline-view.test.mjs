@@ -39,7 +39,7 @@ function fixture() {
 }
 
 function harness({ confirm = false, choose = null, custom = null, initialSnapshot = fixture(), plan = null, startResult = { status: 'completed', message: '' }, rejudgeStartResult = { status: 'running' }, canEdit = true, editText = null, manualActions = false, promptValues = ['12~18'] } = {}) {
-  let snapshot = structuredClone(initialSnapshot), state = { status: 'ready', memoryWorkBusy: false, qianshiHistoryActive: false }, prepareCalls = 0, startCalls = 0, rejudgePrepareCalls = 0, rejudgeStartCalls = 0, rejudgeRange = null, promptIndex = 0;
+  let snapshot = structuredClone(initialSnapshot), state = { status: 'ready', memoryWorkBusy: false, qianshiHistoryActive: false }, prepareCalls = 0, prepareOptions = null, startCalls = 0, rejudgePrepareCalls = 0, rejudgeStartCalls = 0, rejudgeRange = null, promptIndex = 0;
   const listeners = new Set(), confirms = [];
   const runtime = { getState: () => state, getQianshiSnapshot: () => structuredClone(snapshot), subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     canEditQianshiEventText(id) { return typeof canEdit === 'function' ? canEdit(id) : canEdit; },
@@ -49,7 +49,7 @@ function harness({ confirm = false, choose = null, custom = null, initialSnapsho
       async setQianshiMatterFollowing(input) { snapshot.matters.find(item => item.matterId === input.matterId).following = input.following; for (const listener of listeners) listener(state); return { status: 'saved' }; },
       async setQianshiMatterStatus(input) { const matter = snapshot.matters.find(item => item.matterId === input.matterId); matter.manualStatusOverride = input.status; if (input.status !== null) matter.status = input.status; for (const listener of listeners) listener(state); return { status: 'saved' }; },
     } : {}),
-    async prepareQianshiHistory() { prepareCalls += 1; return { status: 'ready', planId: 'plan', totalFloors: 2, batchCount: 1, apiCalls: 1, modelFloors: 2, estimatedInputTokens: 900, unavailableFloors: [], ...(plan ?? {}) }; },
+    async prepareQianshiHistory(options) { prepareCalls += 1; prepareOptions = options; return { status: 'ready', planId: 'plan', totalFloors: 2, batchCount: 1, apiCalls: 1, modelFloors: 2, estimatedInputTokens: 900, unavailableFloors: [], ...(plan ?? {}) }; },
     async startQianshiHistory() { startCalls += 1; if (typeof startResult === 'function') return startResult({ setHistory(history) { snapshot.history = history; for (const listener of listeners) listener(state); } }); snapshot.history = { ...snapshot.history, ...startResult }; for (const listener of listeners) listener(state); return startResult; },
     async stopQianshiHistory() { return { status: 'stopped' }; },
     async prepareQianshiRejudge(range) { rejudgePrepareCalls += 1; rejudgeRange = range; return { status: 'ready', planId: 'rejudge-plan', totalFloors: 2, apiCalls: 2,
@@ -63,7 +63,7 @@ function harness({ confirm = false, choose = null, custom = null, initialSnapsho
     async custom(options) { confirms.push(options); return typeof custom === 'function' ? custom(options) : null; },
     async prompt(options) { confirms.push(options); return promptValues[promptIndex++] ?? null; } } });
   const container = new Node('main'); view.mount(container);
-  return { view, container, runtime, documentRef, confirms, calls: () => ({ prepareCalls, startCalls }),
+  return { view, container, runtime, documentRef, confirms, calls: () => ({ prepareCalls, startCalls }), prepareOptions: () => prepareOptions,
     rejudgeCalls: () => ({ prepareCalls: rejudgePrepareCalls, startCalls: rejudgeStartCalls, range: rejudgeRange }),
     emit(nextSnapshot = snapshot, nextState = state) { snapshot = nextSnapshot; state = nextState; for (const listener of listeners) listener(state); } };
 }
@@ -1558,4 +1558,45 @@ test('整理与处理异常短按钮并排，异常弹窗按楼展开并复用�
   assert.match(copy(content), /人工校正标题/u);
   const clean = fixture(); h.emit(clean);
   assert.equal(byText(h.container, '处理异常'), undefined); assert.match(copy(content), /当前没有异常楼/u);
+});
+
+
+test('补齐旧楼可显式重查真实空结果，混合范围默认只补未处理楼', async () => {
+  const emptyOnlySnapshot = fixture();
+  emptyOnlySnapshot.coverage.pendingFloors = 0;
+  emptyOnlySnapshot.coverage.partialFloors = 0;
+  emptyOnlySnapshot.coverage.emptyFloors = 2;
+  const emptyOnly = harness({ initialSnapshot: emptyOnlySnapshot, confirm: true,
+    plan: { includeEmptyFloors: true, recheckedEmptyFloors: 2 } });
+  assert.ok(byText(emptyOnly.container, '补齐旧楼'), '只有空结果楼时仍显示补齐入口');
+  byText(emptyOnly.container, '补齐旧楼').fire('click');
+  await tick(); await tick(); await tick(); await tick();
+  assert.deepEqual(emptyOnly.prepareOptions(), { includeEmptyFloors: true }, '只有空结果楼时直接生成重查计划');
+  assert.match(emptyOnly.confirms.find(value => value.title === '补齐旧楼千事').body, /重查已判空楼 2 楼/u);
+  assert.match(emptyOnly.confirms.find(value => value.title === '补齐旧楼千事').note, /只替换千事增量/u);
+  assert.equal(emptyOnly.calls().startCalls, 1, '经单独确认后才开始原历史任务');
+
+  const mixedSnapshot = fixture();
+  mixedSnapshot.coverage.emptyFloors = 3;
+  const mixed = harness({ initialSnapshot: mixedSnapshot, choose: 'pendingOnly', confirm: true });
+  byText(mixed.container, '补齐旧楼').fire('click');
+  await tick(); await tick(); await tick(); await tick();
+  const chooser = mixed.confirms.find(value => value.title === '选择补齐范围');
+  assert.ok(chooser, '未处理楼与空结果楼并存时先选择范围');
+  assert.deepEqual(chooser.choices.map(value => [value.value, value.label, Boolean(value.primary)]), [
+    ['cancel', '取消', false], ['pendingOnly', '仅补未处理', true], ['includeEmpty', '含无事件楼', false],
+  ], '扩大到空结果楼不是默认项');
+  assert.deepEqual(mixed.prepareOptions(), { includeEmptyFloors: false });
+
+  const includeEmpty = harness({ initialSnapshot: mixedSnapshot, choose: 'includeEmpty', confirm: true,
+    plan: { includeEmptyFloors: true, recheckedEmptyFloors: 1 } });
+  byText(includeEmpty.container, '补齐旧楼').fire('click');
+  await tick(); await tick(); await tick(); await tick();
+  assert.deepEqual(includeEmpty.prepareOptions(), { includeEmptyFloors: true });
+
+  const cancelled = harness({ initialSnapshot: mixedSnapshot, choose: 'cancel', confirm: true });
+  byText(cancelled.container, '补齐旧楼').fire('click');
+  await tick(); await tick(); await tick();
+  assert.equal(cancelled.calls().prepareCalls, 0, '取消范围选择不产生计划或模型请求');
+  assert.equal(cancelled.calls().startCalls, 0);
 });

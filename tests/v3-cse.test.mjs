@@ -383,6 +383,25 @@ test('摘要与 CSE 复用目标楼冻结变量快照，宿主后续改值不倒
   assert.ok(requests.every(request => !Object.hasOwn(request.payload, 'auxiliaryStateSnapshot')), '无变量时保持原有 payload 形状');
 });
 
+test('CSE 请求仅省略可识别的顶层辅助变量 schema，不改原快照或业务字段', () => {
+  const structuralSchema = { type: 'object', properties: { stat_data: { type: 'object', properties: { 甲: { type: 'object' } } } } };
+  const original = { stat_data: { 甲: { 心情: '担忧', nested: { schema: { type: 'business' } } } }, schema: structuralSchema,
+    initialized_lorebooks: ['当前书'], ejsSaved: { weather: '雨' }, applicationField: { schema: '业务值' } };
+  const sourceVariableReference = structuredClone(original);
+  const project = snapshot => createCseEnvelope({ floor: floor(FLOOR1, '甲担心天气。'),
+    floorMemory: { ...memory(MEMORY1), sourceVariableReference: snapshot }, baseline, currentState: null, trackedSubjects: [entities[1]], entities }).request.payload.auxiliaryStateSnapshot;
+  const projected = project(sourceVariableReference);
+  assert.deepEqual(projected, { stat_data: original.stat_data, initialized_lorebooks: original.initialized_lorebooks, ejsSaved: original.ejsSaved, applicationField: original.applicationField });
+  assert.deepEqual(sourceVariableReference, original, '构造请求不得改写已冻结源变量');
+
+  const unknownSchema = { stat_data: { 甲: '保留' }, schema: { type: 'object', properties: [] }, ejsSaved: { schema: '保留' } };
+  assert.deepEqual(project(unknownSchema), unknownSchema, '无法识别 properties 结构时原样保留 schema');
+  const businessSchema = { profile: { mood: '担忧' }, schema: structuralSchema };
+  assert.deepEqual(project(businessSchema), businessSchema, '没有 stat_data 的 schema 可能是业务字段');
+  const arraySnapshot = { stat_data: [], schema: structuralSchema };
+  assert.deepEqual(project(arraySnapshot), arraySnapshot, 'stat_data 非对象时不省略顶层 schema');
+});
+
 test('人工纠正以末 delta 为锚不可变替换，支持增删清空 core、连续多人、冷读与后续 CSE 前态', async () => {
   const h = runtimeHarness({
     cse: options => {
@@ -1107,41 +1126,51 @@ test('CSE 按主体整理角色相关证据，不把提及、指令对象、计�
     commitments: [{ speakerEntityId: USER, targetEntityIds: [A], kind: 'command', content: '让甲转告乙明早运货', status: 'made' }],
   };
   const instructionEnvelope = createCseEnvelope({ floor: floor(FLOOR1, '林岚让甲转告乙明早运货。'), floorMemory: instructionMemory, baseline, currentState: null, trackedSubjects: entities, entities });
-  const evidenceBySubject = new Map(instructionEnvelope.request.payload.subjectRelevantEvidence.map(item => [item.subject, item]));
-  assert.deepEqual(evidenceBySubject.get('乙').participants, [{ person: '乙', presence: 'mentioned', relationToSubject: ['participant'] }]);
+  const instructionPayload = instructionEnvelope.request.payload;
+  const evidenceBySubject = new Map(instructionPayload.subjectRelevantEvidence.map(item => [item.subject, item]));
+  assert.deepEqual(evidenceBySubject.get('乙').participants, [{ index: 0, relationToSubject: ['participant'] }]);
+  assert.deepEqual(instructionPayload.floorMemory.participants[0], { person: '乙', presence: 'mentioned' }, '索引仍可取回完整角色证据');
   assert.equal(evidenceBySubject.get('乙').commitments, undefined, '正文字符串里的乙不会被正则猜成承诺对象或已知者');
   assert.equal(evidenceBySubject.get('乙').informationTransfers, undefined, '待转告没有伪造成实际送达');
-  assert.deepEqual(evidenceBySubject.get('甲').commitments[0], {
-    speaker: '林岚', targets: ['甲'], kind: 'command', content: '让甲转告乙明早运货', status: 'made', relationToSubject: ['target'],
-  });
+  assert.deepEqual(evidenceBySubject.get('甲').commitments[0], { index: 0, relationToSubject: ['target'] });
+  assert.deepEqual(instructionPayload.floorMemory.commitments[0], { speaker: '林岚', targets: ['甲'], kind: 'command', content: '让甲转告乙明早运货', status: 'made' });
 
   const deliveredMemory = {
     ...memory(MEMORY2),
     informationTransfers: [{ fromEntityId: A, toEntityIds: [B], claimText: '明早运货', channel: 'told' }],
   };
   const deliveredEnvelope = createCseEnvelope({ floor: floor(FLOOR2, '甲随后当面告诉乙明早运货。'), floorMemory: deliveredMemory, baseline, currentState: null, trackedSubjects: entities.slice(1), entities });
-  const deliveredBySubject = new Map(deliveredEnvelope.request.payload.subjectRelevantEvidence.map(item => [item.subject, item]));
-  assert.deepEqual(deliveredBySubject.get('甲').informationTransfers[0].relationToSubject, ['sender']);
-  assert.deepEqual(deliveredBySubject.get('乙').informationTransfers[0], { from: '甲', to: ['乙'], claim: '明早运货', channel: 'told', relationToSubject: ['recipient'] });
+  const deliveredPayload = deliveredEnvelope.request.payload;
+  const deliveredBySubject = new Map(deliveredPayload.subjectRelevantEvidence.map(item => [item.subject, item]));
+  assert.deepEqual(deliveredBySubject.get('甲').informationTransfers[0], { index: 0, relationToSubject: ['sender'] });
+  assert.deepEqual(deliveredBySubject.get('乙').informationTransfers[0], { index: 0, relationToSubject: ['recipient'] });
+  assert.deepEqual(deliveredPayload.floorMemory.informationTransfers[0], { from: '甲', to: ['乙'], claim: '明早运货', channel: 'told' });
 
   const ownedMemory = {
     ...memory(MEMORY1),
-    actions: [{ actorEntityId: A, targetEntityIds: [B], action: '计划次日运货', completion: 'intended', result: null }],
-    observations: [{ subjectEntityId: A, kind: 'physical', description: '甲攥紧纸条' }],
-    privateCognition: [{ ownerEntityId: A, kind: 'suspicion', content: '怀疑消息有误' }],
-    commitments: [{ speakerEntityId: A, targetEntityIds: [], kind: 'plan', content: '次日再核对', status: 'made' }],
-    cseSignals: [{ subjectEntityId: A, objectEntityId: B, signalType: 'trust', description: '甲暂时相信乙' }],
+    participants: [{ entityId: USER, presence: 'mentioned' }, { entityId: B, presence: 'remote' }],
+    actions: [{ actorEntityId: USER, targetEntityIds: [], action: '旁人动作', completion: 'completed', result: null }, { actorEntityId: A, targetEntityIds: [B, USER], action: '计划次日运货', completion: 'intended', result: null }],
+    observations: [{ subjectEntityId: USER, kind: 'physical', description: '旁人观察' }, { subjectEntityId: A, kind: 'physical', description: '甲攥紧纸条' }],
+    privateCognition: [{ ownerEntityId: USER, kind: 'suspicion', content: '旁人想法' }, { ownerEntityId: A, kind: 'suspicion', content: '怀疑消息有误' }],
+    commitments: [{ speakerEntityId: USER, targetEntityIds: [], kind: 'plan', content: '旁人计划', status: 'made' }, { speakerEntityId: A, targetEntityIds: [], kind: 'plan', content: '次日再核对', status: 'made' }],
+    cseSignals: [{ subjectEntityId: USER, objectEntityId: null, signalType: 'trust', description: '旁人信号' }, { subjectEntityId: A, objectEntityId: B, signalType: 'trust', description: '甲暂时相信乙' }],
   };
   const owned = createCseEnvelope({ floor: floor(FLOOR1, '甲心里存疑，打算明日核对。'), floorMemory: ownedMemory, baseline, currentState: null, trackedSubjects: entities.slice(1), entities }).request.payload.subjectRelevantEvidence;
   const ownedBySubject = new Map(owned.map(item => [item.subject, item]));
-  assert.deepEqual(ownedBySubject.get('甲').actions[0].relationToSubject, ['actor']);
-  assert.equal(ownedBySubject.get('甲').actions[0].completion, 'intended');
-  assert.deepEqual(ownedBySubject.get('乙').actions[0].relationToSubject, ['target']);
-  assert.deepEqual(ownedBySubject.get('甲').privateCognition[0].relationToSubject, ['owner']);
-  assert.equal(ownedBySubject.get('甲').privateCognition[0].visibility, 'private');
-  assert.deepEqual(ownedBySubject.get('甲').commitments[0].relationToSubject, ['speaker']);
-  assert.equal(ownedBySubject.get('甲').commitments[0].kind, 'plan');
-  assert.deepEqual(ownedBySubject.get('乙').cseSignals[0].relationToSubject, ['object']);
+  assert.deepEqual(ownedBySubject.get('乙').participants[0], { index: 1, relationToSubject: ['participant'] }, '稀疏非零索引必须仍定位原数组条目');
+  assert.deepEqual(ownedBySubject.get('甲').actions[0], { index: 1, relationToSubject: ['actor'] });
+  assert.deepEqual(ownedBySubject.get('乙').actions[0], { index: 1, relationToSubject: ['target'] });
+  assert.deepEqual(ownedBySubject.get('甲').privateCognition[0], { index: 1, relationToSubject: ['owner'] });
+  assert.deepEqual(ownedBySubject.get('甲').commitments[0], { index: 1, relationToSubject: ['speaker'] });
+  assert.deepEqual(ownedBySubject.get('乙').cseSignals[0], { index: 1, relationToSubject: ['object'] });
+  const ownedPayload = createCseEnvelope({ floor: floor(FLOOR1, '甲心里存疑，打算明日核对。'), floorMemory: ownedMemory, baseline, currentState: null, trackedSubjects: entities.slice(1), entities }).request.payload;
+  const fullActions = ownedPayload.floorMemory.actions;
+  assert.deepEqual(fullActions[1], { actor: '甲', targets: ['乙', '林岚'], action: '计划次日运货', completion: 'intended', result: null }, '多个目标保持在共享完整条目上，按各主体索引读取不复制内容');
+  assert.deepEqual(ownedPayload.floorMemory.participants[1], { person: '乙', presence: 'remote' });
+  assert.deepEqual(ownedPayload.floorMemory.observations[1], { subject: '甲', kind: 'physical', description: '甲攥紧纸条' });
+  assert.deepEqual(ownedPayload.floorMemory.privateCognition[1], { owner: '甲', kind: 'suspicion', content: '怀疑消息有误', visibility: 'private' });
+  assert.deepEqual(ownedPayload.floorMemory.commitments[1], { speaker: '甲', targets: [], kind: 'plan', content: '次日再核对', status: 'made' });
+  assert.deepEqual(ownedPayload.floorMemory.cseSignals[1], { subject: '甲', object: '乙', type: 'trust', description: '甲暂时相信乙' });
 });
 
 test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示词与编译器版本同步升级', async () => {
@@ -1160,7 +1189,7 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.equal(compiled.delta.subjectSnapshots[0].situational[0].reason, '正文明确写出甲亲耳听见并记住');
   assert.equal(compiled.delta.source.promptVersion, CSE_PROMPT_VERSION);
   assert.equal(compiled.delta.source.compilerVersion, CSE_COMPILER_VERSION);
-  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-25');
+  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-26');
   assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-13');
   assert.match(CSE_SYSTEM_PROMPT, /单次事件造成的即时情绪、动作或台词若有值得保留的当下影响，只可进入 Situational/);
   assert.match(CSE_SYSTEM_PROMPT, /人物被提及不等于本人在场/);
@@ -1172,6 +1201,8 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.match(CSE_SYSTEM_PROMPT, /private 只表示可见性，明确的私密态度仍可填写 toward/);
   assert.match(CSE_SYSTEM_PROMPT, /previousState 中旧 toward 也必须按本楼证据审视，不得盲从/);
   assert.match(CSE_SYSTEM_PROMPT, /authorialOtherStateContext 不重复 previousState 已提供的人物/);
+  assert.match(CSE_SYSTEM_PROMPT, /每项只给 floorMemory 同名数组中从 0 开始的 index 和 relationToSubject.*按 index 读取 floorMemory 中的完整条目/s);
+  assert.match(CSE_SYSTEM_PROMPT, /Core\/Adaptive 前态不重复传输旧 reason.*旧状态仍不是本楼新 evidence.*Situational 前态保留原 reason/s);
   assert.match(CSE_SYSTEM_PROMPT, /仅针对填写了 toward 的 Adaptive，text 直接写具体长期倾向/);
   assert.match(CSE_SYSTEM_PROMPT, /同一含义应写成“更愿意主动解释误会”.*不要写成“在和人物乙相处过程中，更愿意主动解释误会”/s);
   assert.match(buildCseSystemPrompt('仅保留我的自定义指导'), /必要的适用条件、第三人，以及本身有实际语义的对象名称仍应保留/);
@@ -2203,6 +2234,15 @@ test('模型省略已有主体或分类时，compile 与 replay 都保留相应�
     deltaId: '19191919-1919-4191-8191-191919191919',
   });
   const previous = { id: '20202020-2020-4202-8202-202020202020', subjects: first.delta.subjectSnapshots };
+  const firstUserSituational = previous.subjects.find(subject => subject.subjectEntityId === USER).situational;
+  const unchangedEnvelope = createCseEnvelope({ floor: floor(FLOOR2, '第二楼'), floorMemory: memory(MEMORY2), baseline, currentState: previous, trackedSubjects: [entities[0]], entities });
+  assert.equal(unchangedEnvelope.request.payload.previousState[0].ownState.situational[0].reason, '第一楼', '完整 Situational 前态保留旧理由');
+  const unchanged = await compileCseResponse({
+    response: { subjects: [{ subject: '林岚', situational: firstUserSituational.map(item => ({ text: item.text, reason: item.reason, visibility: item.visibility })) }] },
+    envelope: unchangedEnvelope, previousCurrentState: previous, now: NOW, deltaId: '23232323-2323-4232-8232-232323232323',
+  });
+  assert.equal(unchanged.delta.noMaterialChange, true, '模型回传完整且未变化的 Situational 列表时不制造变化');
+  assert.equal(unchanged.delta.subjectSnapshots.find(subject => subject.subjectEntityId === USER).situational[0].reason, '第一楼');
   const secondEnvelope = createCseEnvelope({ floor: floor(FLOOR2, '第二楼'), floorMemory: memory(MEMORY2), baseline, currentState: previous, trackedSubjects: tracked, entities });
   const second = await compileCseResponse({
     response: { subjects: [{ subject: '林岚', situational: [{ reason: '第二楼', text: '已经放松', visibility: 'private' }] }] },
@@ -2214,6 +2254,8 @@ test('模型省略已有主体或分类时，compile 与 replay 都保留相应�
   const userSnapshot = second.delta.subjectSnapshots.find(item => item.subjectEntityId === USER);
   assert.deepEqual(userSnapshot.core.map(item => item.text), ['谨慎'], '省略 core 时沿用前态');
   assert.deepEqual(userSnapshot.adaptive.map(item => item.text), ['戒备甲'], '省略 adaptive 时沿用前态');
+  assert.equal(userSnapshot.core[0].reason, '第一楼', 'Core 前态未发送旧 reason 时，省略字段仍沿用原理由');
+  assert.equal(userSnapshot.adaptive[0].reason, '第一楼', 'Adaptive 前态未发送旧 reason 时，省略字段仍沿用原理由');
   assert.equal(second.delta.subjectSnapshots.some(item => item.subjectEntityId === A), false, '省略已有主体时不生成空状态覆盖前态');
 
   const replay = await replayCurrentState({
@@ -2381,7 +2423,7 @@ test('作者态上下文按 entityId 排除 previousState 已提供人物，并�
     { subjectEntityId: USER, core: [], adaptive: [], situational: [{ text: '用户私心', visibility: 'private', reason: '私密', origin: 'floor', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: null }] },
     { subjectEntityId: A, core: [{ text: '作者设定', visibility: 'authorial', reason: '卡', origin: 'baseline', towardEntityId: null, sourceFloorId: null, sourceDeltaId: null }], adaptive: [{ text: '甲的私下判断', visibility: 'private', reason: '内心', origin: 'floor', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: null }], situational: [{ text: '甲的公开动作', visibility: 'observable', reason: '看见', origin: 'floor', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: null }] },
     { subjectEntityId: B, core: [{ text: '乙的作者设定', visibility: 'authorial', reason: '卡', origin: 'baseline', towardEntityId: null, sourceFloorId: null, sourceDeltaId: null }], adaptive: [{ text: '乙的私下判断', visibility: 'private', reason: '内心', origin: 'floor', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: null }], situational: [{ text: '乙的公开动作', visibility: 'observable', reason: '看见', origin: 'floor', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: null }] },
-    { subjectEntityId: sameNameId, core: [], adaptive: [], situational: [{ text: '同名人物公开动作', visibility: 'observable', reason: '看见', origin: 'floor', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: null }] },
+    { subjectEntityId: sameNameId, core: [{ text: '同名共享特质', visibility: 'shared', reason: '长期观察', origin: 'floor', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: null }], adaptive: [{ text: '同名公开适应', visibility: 'shared', reason: '多次相处', origin: 'floor', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: null }], situational: [{ text: '同名人物公开动作', visibility: 'observable', reason: '看见', origin: 'floor', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: null }] },
   ] };
   const envelope = createCseEnvelope({ floor: floor(FLOOR1, '正文'), floorMemory: memory(MEMORY1), baseline, currentState: current, trackedSubjects: entities.slice(0, 2), entities: allEntities });
   const forUser = envelope.request.payload.previousState.find(item => item.subject === '林岚');
@@ -2392,10 +2434,17 @@ test('作者态上下文按 entityId 排除 previousState 已提供人物，并�
   assert.deepEqual(forA.ownState.core.map(item => item.text), ['作者设定']);
   assert.deepEqual(forA.ownState.adaptive.map(item => item.text), ['甲的私下判断']);
   assert.deepEqual(forA.ownState.situational.map(item => item.text), ['甲的公开动作']);
+  assert.equal('reason' in forA.ownState.core[0], false, 'Core 前态只省旧解释');
+  assert.equal('reason' in forA.ownState.adaptive[0], false, 'Adaptive 前态只省旧解释');
+  assert.equal(forA.ownState.situational[0].reason, '看见', 'Situational 的旧理由必须完整保留供 full-list 对比');
   const authorial = envelope.request.payload.authorialOtherStateContext;
   assert.equal(authorial.some(item => item.subject === '林岚'), false);
   assert.deepEqual(authorial.map(item => item.subject), ['乙', '甲'], '同名不同 entityId 不能随 tracked 甲误删');
-  assert.deepEqual(authorial.flatMap(item => [...item.core, ...item.adaptive, ...item.situational].map(value => value.text)), ['乙的公开动作', '同名人物公开动作']);
+  assert.deepEqual(authorial.flatMap(item => [...item.core, ...item.adaptive, ...item.situational].map(value => value.text)), ['乙的公开动作', '同名共享特质', '同名公开适应', '同名人物公开动作']);
+  assert.equal(authorial.some(item => [...item.core, ...item.adaptive, ...item.situational].some(value => ['乙的作者设定', '乙的私下判断'].includes(value.text))), false, '其他人物上下文不得泄露原有 authorial/private 内容');
+  assert.equal('reason' in authorial[1].core[0], false, '其他人物 Core 旧解释也按请求规则省略');
+  assert.equal('reason' in authorial[1].adaptive[0], false, '其他人物 Adaptive 旧解释也按请求规则省略');
+  assert.equal(authorial[0].situational[0].reason, '看见');
 
   const noPrevious = createCseEnvelope({ floor: floor(FLOOR1, '正文'), floorMemory: memory(MEMORY1), baseline, currentState: { subjects: [current.subjects[1]] }, trackedSubjects: [entities[2]], entities: allEntities });
   assert.deepEqual(noPrevious.request.payload.previousState, [], 'tracked 人物没有前态时不得伪造 previousState');

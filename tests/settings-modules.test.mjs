@@ -541,6 +541,16 @@ test('独立向量区开关靠右，默认地址模型直接回填，只保存�
   assert.equal(enabled.parentNode.className.includes('settings-field'), false, '开关不套用输入框宽度与内边距');
   assert.equal(fieldControl(vector, 'URL').value, VECTOR_DEFAULT_URL);
   assert.equal(fieldControl(vector, '模型').value, VECTOR_DEFAULT_MODEL);
+  assert.equal(vector.find(n => n.className.includes('qqj-vector-xfyun-hint')).hidden, true);
+  fieldControl(vector, 'URL').value = 'https://maas-api.cn-huabei-1.xf-yun.com/v2/embeddings';
+  await fieldControl(vector, 'URL').fire('input');
+  assert.equal(vector.find(n => n.className.includes('qqj-vector-xfyun-hint')).hidden, false);
+  fieldControl(vector, 'URL').value = 'https://maas-api.cn-huabei-1.xf-yun.com.evil.test/v2';
+  await fieldControl(vector, 'URL').fire('input');
+  assert.equal(vector.find(n => n.className.includes('qqj-vector-xfyun-hint')).hidden, true);
+  assert.equal(fieldControl(vector, 'Key').placeholder, '输入向量 API Key');
+  fieldControl(vector, 'URL').value = VECTOR_DEFAULT_URL;
+  await fieldControl(vector, 'URL').fire('input');
   const build = vector.find(n => n.tagName === 'button' && n.textContent === '建立索引');
   const testConnection = vector.find(n => n.tagName === 'button' && n.textContent === '测试连接');
   assert.equal(build.disabled, true); assert.equal(testConnection.disabled, true);

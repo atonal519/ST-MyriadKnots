@@ -1238,7 +1238,8 @@ test('轻量召回运行结果自动显示实际注入、收据、阶段与覆�
       selectedFloors: [{ assistantSeq: 2 }], selectedStates: [{ subject: '裴晚生', layer: 'core' }], selectedCseChanges: [{ subject: '裴晚生', layer: 'situational', action: 'remove', assistantSeq: 2 }],
       coverage: { rememberedAiFloors: 8, stableAiFloors: 8, cseThroughAssistantSeq: 8 },
       stages: { input: 3, candidates: 8, dropRecent: 3, dropPersistent: 0, dropVisibility: 0, selected: 1, recentSummaryCount: 1, distantHistoryItemCount: 3, linkedHistoryItemCount: 2, stateCount: 1, currentStateCount: 1, cseChangeCount: 2, linkedCseChangeCount: 1, budgetDroppedCount: 4, finalInjectionItemCount: 5, estimatedTokenCount:1234, estimatedTokenBudget:4000 },
-      selectorDiagnostic: { mode: 'llm', historyCandidateCount: 12, stateCandidateCount: 7, historyExcludedCount: 2, stateExcludedCount: 1, historyRetainedCount: 10, stateRetainedCount: 6, utilityRoundTripMs: 8, localSelectionMs: 3 },
+      selectorDiagnostic: { mode: 'llm', historyCandidateCount: 12, stateCandidateCount: 7, historyExcludedCount: 2, stateExcludedCount: 1, historyRetainedCount: 10, stateRetainedCount: 6, utilityRoundTripMs: 8, localSelectionMs: 3,
+        priority: { status: 'timeGuard', keys: ['R1', 'C2'], selectedKeys: ['R1'], ignoredCount: 3 } },
       timings: { totalMs: 12, sourceReadAttempts: { reachableReads: 1, exitPoint: 'ready' } }, skipReasons: ['recentRawWindow'],
       injectionText: '<qqj_recalled_context>\n旧约仍然有效\n</qqj_recalled_context>', error: null,
     },
@@ -1253,9 +1254,13 @@ test('轻量召回运行结果自动显示实际注入、收据、阶段与覆�
   assert.match(stage.children[1].children[0].textContent, /最终材料 5$/);
   assert.equal(stage.children[1].children[1].textContent, 'Token 保守估算 1234/4000');
   assert.match(copy, /智能选材计数.*历史候选 12 → 模型排除 2 → 保留 10 → 关联补入 2 → 最终远期 3 · 人物候选 7 → 模型排除 1 → 保留 6 → 关联补入 1 → 最终注入 3/);
+  assert.match(copy, /优先证据 保留 1\/2 · 时间材料参与，本轮原序/);
   assert.match(copy, /完整快照 1 次 · 退出 读取成功/);
   assert.match(copy, /旧约仍然有效/);
   assert.doesNotMatch(copy, /时间参考 \d/u, '旧回执缺新字段时不冒报时间参考');
+  delete recall.lastRecall.selectorDiagnostic.priority;
+  for (const listener of listeners) listener(recall);
+  assert.doesNotMatch(flatten(container).map(node => node.textContent).join('|'), /优先证据/u, '旧回执缺字段时不编造优先诊断');
   recall.lastRecall.stages.timeCorrectionCount = 1;
   recall.lastRecall.stages.timeReminderCount = 2;
   for (const listener of listeners) listener(recall);

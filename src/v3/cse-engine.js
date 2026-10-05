@@ -9,7 +9,7 @@ import { CSE_ISOLATION_CODES, CSE_VISIBILITIES, LATEST_CSE_CALIBRATION_VERSION, 
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey } from './entity-identity.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-25';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-26';
 export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-13';
 export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
@@ -26,9 +26,9 @@ auxiliaryStateSnapshot 若存在，是目标楼当前分支当时已保存的只
 
 relevantPriorContext 若存在，是用户导入的过去经历资料，仅用于理解人物过去经历和关系背景。它不是本楼证据，不能写入 evidence，也不能仅凭它新增或改写当前 Core/Adaptive，或把过去的短期情绪、伤势、位置照抄成本楼结束状态。当前 canonicalContent、已保存本楼摘要与 previousState 中的明确进展优先；其中的私密信息仍是作者侧资料，不自动变成任何角色已知。
 
-subjectRelevantEvidence 按 tracked subject 汇集角色相关条目，relationToSubject 只说明该人物在既有 FloorMemory 条目里的结构角色，不是“此人已知证据”。participant 的 mentioned/privateCognitionOnly 不表示本人在场；行动 target 不表示本人知情，completion 为 intended/attempted/interrupted/uncertain 时尤其不能写成已完成；信息发送者只证明其说出或发出了相应内容，不证明消息内容客观为真，只有正文或实际送达证据才能支持接收者知情；承诺或指令的 target 不自动表示收到、同意或执行，plan 也不能写成已执行；cseSignal 的 object 只表示相关对象。远程行为与通信要按正文中的行为主体、对象、消息来源、接收者、渠道和完成状态分别理解，待转告不等于已经转告。不得把正文明确写出的人物认知反写为不知；人物被提及、被计划涉及或从叙述中推断出相关性，也不等于本人在场、参与或知情。
+subjectRelevantEvidence 按 tracked subject 汇集角色相关条目；每项只给 floorMemory 同名数组中从 0 开始的 index 和 relationToSubject，请按 index 读取 floorMemory 中的完整条目。这个索引只用于定位结构化背景，不是可填入 evidence.source 的来源标识。relationToSubject 只说明该人物在既有 FloorMemory 条目里的结构角色，不是“此人已知证据”。participant 的 mentioned/privateCognitionOnly 不表示本人在场；行动 target 不表示本人知情，completion 为 intended/attempted/interrupted/uncertain 时尤其不能写成已完成；信息发送者只证明其说出或发出了相应内容，不证明消息内容客观为真，只有正文或实际送达证据才能支持接收者知情；承诺或指令的 target 不自动表示收到、同意或执行，plan 也不能写成已执行；cseSignal 的 object 只表示相关对象。远程行为与通信要按正文中的行为主体、对象、消息来源、接收者、渠道和完成状态分别理解，待转告不等于已经转告。不得把正文明确写出的人物认知反写为不知；人物被提及、被计划涉及或从叙述中推断出相关性，也不等于本人在场、参与或知情。
 
-previousState 按 subject 分列各人的 ownState，只说明对应人物自身的前态；这里展示的是合并身份后同一个人的有效状态，不要把合并前的旧名称或旧身份另算作另一人。authorialOtherStateContext 不重复 previousState 已提供的人物，并已按 visibility 排除 private 和 authorial 状态项，是其余人物的作者侧连续性参考。某条状态出现在这些材料中，不代表其他人物已经知道它。作者态推断与人物本人已知必须分开：observable 只用于正文中实际可观察的状态，private 只属于该人物的内心或明确知情，authorial 只作作者塑造参考。
+previousState 按 subject 分列各人的 ownState，只说明对应人物自身的前态；这里展示的是合并身份后同一个人的有效状态，不要把合并前的旧名称或旧身份另算作另一人。authorialOtherStateContext 不重复 previousState 已提供的人物，并已按 visibility 排除 private 和 authorial 状态项，是其余人物的作者侧连续性参考。为精简请求，Core/Adaptive 前态不重复传输旧 reason；这不表示原状态没有依据，旧状态仍不是本楼新 evidence。Situational 前态保留原 reason，因为完整情境列表需要用它核对是否发生变化。某条状态出现在这些材料中，不代表其他人物已经知道它。作者态推断与人物本人已知必须分开：observable 只用于正文中实际可观察的状态，private 只属于该人物的内心或明确知情，authorial 只作作者塑造参考。
 
 只可为输入中的 trackedSubjects 输出状态；trackedSubjects 是候选范围，不要求逐人补写，也不要求每个分类凑数。不要用“本楼未出现”“状态无变化”之类空话替换旧状态，也不要因为缺少证据而反推“不知道”。knownPeople 仅用于 toward 对象绑定，不代表他们本楼也要输出状态。
 
@@ -206,9 +206,10 @@ function semanticMemory(memory, entities) {
 
 function subjectRelevantEvidence(memory, tracked, entities) {
   const semantic = semanticMemory(memory, entities);
-  const related = (items, relationFor) => (items ?? []).flatMap((item, index) => {
+  // 同一条楼层事实按主体保留各自关系，这里只省去重复内容，不改原 FloorMemory。
+  const related = (items, relationFor) => (items ?? []).flatMap((_item, index) => {
     const relationToSubject = relationFor(index);
-    return relationToSubject.length ? [{ ...item, relationToSubject }] : [];
+    return relationToSubject.length ? [{ index, relationToSubject }] : [];
   });
   return tracked.map(entity => {
     const sections = {
@@ -236,9 +237,9 @@ function subjectRelevantEvidence(memory, tracked, entities) {
   });
 }
 
-function semanticItems(items, entities) {
+function semanticItems(items, entities, { includeReason = true } = {}) {
   const byId = new Map(entities.map(entity => [entity.id, entity.displayName]));
-  return items.map(item => ({ text: item.text, visibility: item.visibility, reason: item.reason, origin: item.origin, ...(item.towardEntityId ? { toward: byId.get(item.towardEntityId) ?? null } : {}) }));
+  return items.map(item => ({ text: item.text, visibility: item.visibility, ...(includeReason ? { reason: item.reason } : {}), origin: item.origin, ...(item.towardEntityId ? { toward: byId.get(item.towardEntityId) ?? null } : {}) }));
 }
 
 function previousSubjectsForPrompt(currentState, tracked) {
@@ -249,7 +250,10 @@ function previousSubjectsForPrompt(currentState, tracked) {
 function previousForPrompt(subjects, entities, coreUserEditedSubjectEntityIds) {
   return subjects.map(subject => {
     const owner = entities.find(entity => entity.id === subject.subjectEntityId);
-    return { subject: owner?.displayName ?? '未知人物', coreUserEdited: coreUserEditedSubjectEntityIds.has(subject.subjectEntityId), ownState: { core: semanticItems(subject.core, entities), adaptive: semanticItems(subject.adaptive, entities), situational: semanticItems(subject.situational, entities) } };
+    // 完整 Situational 列表按 text/reason 比较变化，Core/Adaptive 旧 reason 仅是前次解释，不再重复发送。
+    return { subject: owner?.displayName ?? '未知人物', coreUserEdited: coreUserEditedSubjectEntityIds.has(subject.subjectEntityId), ownState: {
+      core: semanticItems(subject.core, entities, { includeReason: false }), adaptive: semanticItems(subject.adaptive, entities, { includeReason: false }), situational: semanticItems(subject.situational, entities),
+    } };
   });
 }
 
@@ -282,10 +286,21 @@ function authorialOtherStateContext(currentState, entities, previousSubjectIds) 
   const visible = items => items.filter(item => item.visibility !== 'private' && item.visibility !== 'authorial');
   return (currentState?.subjects ?? []).filter(subject => !previousSubjectIds.has(subject.subjectEntityId)).map(subject => ({
     subject: entities.find(entity => entity.id === subject.subjectEntityId)?.displayName ?? '未知人物',
-    core: semanticItems(visible(subject.core), entities),
-    adaptive: semanticItems(visible(subject.adaptive), entities),
+    core: semanticItems(visible(subject.core), entities, { includeReason: false }),
+    adaptive: semanticItems(visible(subject.adaptive), entities, { includeReason: false }),
     situational: semanticItems(visible(subject.situational), entities),
   }));
+}
+
+function auxiliaryStateSnapshotForPrompt(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return snapshot;
+  const schema = snapshot.schema, statData = snapshot.stat_data;
+  const structuralSchema = schema && typeof schema === 'object' && !Array.isArray(schema)
+    && schema.type === 'object' && schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties);
+  if (!statData || typeof statData !== 'object' || Array.isArray(statData) || !structuralSchema) return snapshot;
+  // 仅将识别出的顶层 MVU schema 作为请求元数据省略；原变量快照和嵌套业务字段保持不变。
+  const { schema: _schema, ...snapshotWithoutSchema } = snapshot;
+  return snapshotWithoutSchema;
 }
 
 export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, requestSources = null, worldInfoSources = null, currentUserInput = null, coreUserEditedSubjectEntityIds = [], identityMemberEntityIdsBySubject = {}, relevantPriorContext = '', userCoreExtraction = null }) {
@@ -318,7 +333,7 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       } } : {}),
       canonicalContent: floor.content.canonicalContent,
       floorMemory: semanticMemory(floorMemory, entities),
-      ...(floorMemory.sourceVariableReference ? { auxiliaryStateSnapshot: floorMemory.sourceVariableReference } : {}),
+      ...(floorMemory.sourceVariableReference ? { auxiliaryStateSnapshot: auxiliaryStateSnapshotForPrompt(floorMemory.sourceVariableReference) } : {}),
       previousState: previousForPrompt(previousSubjects, entities, coreUserEdited),
       relevantBaseline: {
         userPersona: { name: effectiveUserPersona.name, description: effectiveUserPersona.description, visibility: 'authorial' },

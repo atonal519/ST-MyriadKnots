@@ -589,18 +589,41 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     if (historyBusy() || otherWorkBusy()) return;
     const operationEpoch = ++epoch, operationChatId = chatId; feedback = '正在准备补齐计划…'; render();
     try {
-      const plan = await runtime.prepareQianshiHistory();
+      const coverage = snapshot?.coverage ?? {};
+      const hasUnprocessed = (Number(coverage.pendingFloors) || 0) + (Number(coverage.partialFloors) || 0) > 0;
+      const hasEmpty = (Number(coverage.emptyFloors) || 0) > 0;
+      let includeEmptyFloors = false;
+      if (hasUnprocessed && hasEmpty && typeof dialog?.choose === 'function') {
+        const unprocessedCount = (Number(coverage.pendingFloors) || 0) + (Number(coverage.partialFloors) || 0);
+        // 混合范围默认只处理未完成楼，重查已判空楼由用户主动选择。
+        const choice = await dialog.choose({ title: '选择补齐范围',
+          body: `当前有 ${unprocessedCount} 楼未完成，另有 ${Number(coverage.emptyFloors) || 0} 楼已判定为空。`,
+          note: '可仅补未处理楼，或把无事件楼加入计划；后者可能增加模型调用，最终次数以预览为准。',
+          choices: [
+            { value: 'cancel', label: '取消' },
+            { value: 'pendingOnly', label: '仅补未处理', primary: true },
+            { value: 'includeEmpty', label: '含无事件楼' },
+          ] });
+        if (!active || operationEpoch !== epoch || runtime.getQianshiSnapshot()?.identity?.qqjChatId !== operationChatId) return;
+        if (!['pendingOnly', 'includeEmpty'].includes(choice)) { feedback = '已取消；没有调用模型。'; render(); return; }
+        includeEmptyFloors = choice === 'includeEmpty';
+      } else {
+        includeEmptyFloors = !hasUnprocessed && hasEmpty;
+      }
+      const plan = await runtime.prepareQianshiHistory({ includeEmptyFloors });
       if (!active || operationEpoch !== epoch || runtime.getQianshiSnapshot()?.identity?.qqjChatId !== operationChatId) return;
       if (plan.status === 'empty') { feedback = plan.aggregateSkippedFloors?.length
         ? `${plan.aggregateSkippedFloors.length} 楼由多个正文楼聚合；为保留成员事件来源，当前跳过模型替换。`
+        : includeEmptyFloors ? '没有符合条件的空结果楼可重查；现有记录未改动。'
         : plan.unavailableFloors?.length ? `当前没有可补齐的摘要楼；${plan.unavailableFloors.length} 楼缺少摘要来源。` : '现有可处理楼都已完成千事整理。'; render(); return; }
       const unavailable = plan.unavailableFloors?.length ?? 0;
       const modelFloors = Number(plan.modelFloors) || 0;
       const aggregateSkipped = plan.aggregateSkippedFloors?.length ?? 0;
       const budgetSkipped = plan.budgetSkippedFloors?.length ?? 0;
+      const recheckedEmpty = Number(plan.recheckedEmptyFloors) || 0;
       const confirmed = await dialog?.confirm?.({ title: '补齐旧楼千事',
-        body: `${modelFloors} 楼进入模型补齐，分 ${plan.batchCount} 批；预计 API ${plan.apiCalls} 次，输入约 ${plan.estimatedInputTokens} token。${budgetSkipped ? `跳过超预算 ${budgetSkipped} 楼。` : ''}${aggregateSkipped ? `跳过聚合记忆 ${aggregateSkipped} 楼。` : ''}`,
-        note: `${unavailable ? `另有 ${unavailable} 楼缺少有效摘要。` : ''}确认后才调用 API；取消不调用模型或写入。${modelFloors ? '成功批次立即保存，可停止后继续。' : '暂无可发给模型的楼。'}`,
+        body: `${modelFloors} 楼进入模型补齐，分 ${plan.batchCount} 批；预计 API ${plan.apiCalls} 次，输入约 ${plan.estimatedInputTokens} token。${recheckedEmpty ? `其中重查已判空楼 ${recheckedEmpty} 楼。` : ''}${budgetSkipped ? `跳过超预算 ${budgetSkipped} 楼。` : ''}${aggregateSkipped ? `跳过聚合记忆 ${aggregateSkipped} 楼。` : ''}`,
+        note: `${includeEmptyFloors ? '本次包含符合条件的无事件楼重查；重查结果只替换千事增量。' : ''}${unavailable ? `另有 ${unavailable} 楼缺少有效摘要。` : ''}确认后才调用 API；取消不调用模型或写入。${modelFloors ? '成功批次立即保存，可停止后继续。' : '暂无可发给模型的楼。'}`,
         confirmText: '开始补齐', cancelText: '取消' });
       if (!active || operationEpoch !== epoch || runtime.getQianshiSnapshot()?.identity?.qqjChatId !== operationChatId) return;
       if (!confirmed) { feedback = '已取消；没有调用模型。'; render(); return; }
@@ -722,7 +745,8 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     const history = snapshot?.history ?? {}, historyRunning = historyBusy();
     const coverageCounts = snapshot?.coverage ?? {};
     const hasHistoryToComplete = snapshot?.status === 'ready'
-      && (Number(coverageCounts.pendingFloors) || 0) + (Number(coverageCounts.partialFloors) || 0) > 0;
+      && ((Number(coverageCounts.pendingFloors) || 0) + (Number(coverageCounts.partialFloors) || 0) > 0
+        || (Number(coverageCounts.emptyFloors) || 0) > 0);
     const coverageActions = element('div', 'qqj-qianshi-coverage-actions');
     coverageBox.append(coverageText);
     if (historyRunning || hasHistoryToComplete) {

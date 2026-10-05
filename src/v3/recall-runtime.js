@@ -31,6 +31,15 @@ const LEGACY_MAX_RECEIPT_CSE_CHANGES = 24;
 const LEGACY_MAX_RECEIPT_STORYLINES = 4;
 const MAX_RECEIPT_STATE_PROGRESSIONS = 8;
 const MAX_RECEIPT_SKIP_REASONS = 32;
+const RECALL_PRIORITY_STATUSES = new Set(['missing', 'empty', 'invalid', 'applied', 'timeGuard']);
+const safePriorityKeys = values => Array.isArray(values) && values.length <= 8
+  && values.every(key => typeof key === 'string' && /^[RC]\d{1,4}$/u.test(key))
+  && new Set(values).size === values.length;
+const priorityDiagnosticValid = value => value === undefined || (value && typeof value === 'object' && !Array.isArray(value)
+  && RECALL_PRIORITY_STATUSES.has(value.status) && safePriorityKeys(value.keys) && safePriorityKeys(value.selectedKeys)
+  && value.selectedKeys.every(key => value.keys.includes(key))
+  && Number.isSafeInteger(value.ignoredCount) && value.ignoredCount >= 0 && value.ignoredCount <= 10000
+  && (['missing', 'empty', 'invalid'].includes(value.status) ? value.keys.length === 0 : value.keys.length > 0));
 const nowIso = now => { const value = now()?.toISOString?.() ?? String(now()); if (!Number.isFinite(Date.parse(value))) throw new TypeError('V3_RECALL_TIME_INVALID'); return value; };
 const clean = (value, maximum = 500) => sanitizeSensitiveText(String(value ?? '')).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
 const clone = value => structuredClone(value);
@@ -49,40 +58,55 @@ function latestUser(snapshot) {
 
 const liveRecallFrameKey = snapshot => JSON.stringify(buildRecallQueryFrame({ coreChat: snapshot?.chat, assistantTurns: 1 }).messages.map(message => [message.role, message.text]));
 
-async function sourceRefsValid(receipt, source) {
-  if (!Array.isArray(source?.floorMemories) || !Array.isArray(source?.currentState) || !Array.isArray(receipt?.selectedFloors) || !Array.isArray(receipt?.selectedStates) || !Array.isArray(receipt?.selectedCseChanges)) return false;
+async function sourceRefsValid(receipt, source, onInvalid = () => {}) {
+  // 失败回调只附带首个可定位引用，不参与下面的布尔判定或读取链。
+  const fail = reference => { try { onInvalid(reference); } catch { /* 诊断不能改变来源校验结果。 */ } return false; };
+  if (!Array.isArray(source?.floorMemories) || !Array.isArray(source?.currentState) || !Array.isArray(receipt?.selectedFloors) || !Array.isArray(receipt?.selectedStates) || !Array.isArray(receipt?.selectedCseChanges)) return fail({ step: 'shape' });
   const sourceChanges = Array.isArray(source.cseChanges) ? source.cseChanges : [];
   const memories = new Map(source.floorMemories.map(memory => [`${memory.floorId}|${memory.floorMemoryId}|${memory.assistantSeq}`, memory]));
-  for (const value of receipt.selectedFloors) {
-    if (!value || typeof value !== 'object') return false;
+  for (let index = 0; index < receipt.selectedFloors.length; index += 1) {
+    const value = receipt.selectedFloors[index];
+    if (!value || typeof value !== 'object') return fail({ step: 'selectedReference', kind: 'floor', index });
     if (value.rawWitnesses?.length) {
       // 原文成员楼以实际楼号展示，所有权仍核对归档记忆；见证随回执签名并重新核验。
-      for (const witness of value.rawWitnesses) {
+      for (let witnessIndex = 0; witnessIndex < value.rawWitnesses.length; witnessIndex += 1) {
+        const witness = value.rawWitnesses[witnessIndex];
         if (witness.floorId !== value.floorId || witness.assistantSeq !== value.assistantSeq || witness.floorMemoryId !== value.floorMemoryId
-          || !memories.has(`${witness.memoryFloorId}|${witness.floorMemoryId}|${witness.memoryAssistantSeq}`) || !await rawWitnessValid(witness, source)) return false;
+          || !memories.has(`${witness.memoryFloorId}|${witness.floorMemoryId}|${witness.memoryAssistantSeq}`) || !await rawWitnessValid(witness, source)) {
+          return fail({ step: 'selectedReference', kind: 'rawWitness', index, witnessIndex, floorId: value.floorId, floorMemoryId: value.floorMemoryId,
+            assistantSeq: value.assistantSeq, memoryFloorId: witness?.memoryFloorId });
+        }
       }
-    } else if (!memories.has(`${value.floorId}|${value.floorMemoryId}|${value.assistantSeq}`)) return false;
+    } else if (!memories.has(`${value.floorId}|${value.floorMemoryId}|${value.assistantSeq}`)) return fail({ step: 'selectedReference', kind: 'floor', index, floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq });
   }
   const subjects = new Map(source.currentState.map(subject => [subject.subjectEntityId, subject]));
-  if (!receipt.selectedStates.every(value => {
-    if (!value || typeof value !== 'object' || !['core', 'adaptive', 'situational'].includes(value.layer)) return false;
-    const subject = subjects.get(value.subjectEntityId);
-    return Array.isArray(subject?.[value.layer]) && subject[value.layer].some(item => (
+  for (let index = 0; index < receipt.selectedStates.length; index += 1) {
+    const value = receipt.selectedStates[index];
+    let valid = Boolean(value && typeof value === 'object' && ['core', 'adaptive', 'situational'].includes(value.layer));
+    const subject = value && typeof value === 'object' ? subjects.get(value.subjectEntityId) : null;
+    valid = valid && Array.isArray(subject?.[value.layer]) && subject[value.layer].some(item => (
       item.text === value.text && item.visibility === value.visibility && item.reason === value.reason
       && item.towardEntityId === (value.towardEntityId ?? null) && item.sourceAssistantSeq === (value.sourceAssistantSeq ?? null)
       && (!value.stateId || (item.stateId === value.stateId && (item.sourceFloorId ?? null) === (value.sourceFloorId ?? null) && (item.sourceDeltaId ?? null) === (value.sourceDeltaId ?? null)))
     ));
-  })) return false;
+    if (!valid) return fail({ step: 'selectedReference', kind: 'state', index, subjectEntityId: value?.subjectEntityId, layer: value?.layer,
+      stateId: value?.stateId, sourceFloorId: value?.sourceFloorId, sourceDeltaId: value?.sourceDeltaId, sourceAssistantSeq: value?.sourceAssistantSeq });
+  }
   const stateEqual = (left, right) => left === null ? right === null : Boolean(right
     && left.text === right.text && left.visibility === right.visibility && left.reason === right.reason
     && left.origin === right.origin && (left.towardEntityId ?? null) === (right.towardEntityId ?? null)
     && (left.sourceAssistantSeq ?? null) === (right.sourceAssistantSeq ?? null)
     && (!left.stateId || (left.stateId === right.stateId && (left.sourceFloorId ?? null) === (right.sourceFloorId ?? null) && (left.sourceDeltaId ?? null) === (right.sourceDeltaId ?? null))));
   const entityNames = new Map((source.entities ?? []).map(entity => [entity.entityId, entity.displayName]));
-  return receipt.selectedCseChanges.every(value => value.subject === entityNames.get(value.subjectEntityId) && sourceChanges.some(change => change.deltaId === value.deltaId
+  for (let index = 0; index < receipt.selectedCseChanges.length; index += 1) {
+    const value = receipt.selectedCseChanges[index];
+    if (!(value.subject === entityNames.get(value.subjectEntityId) && sourceChanges.some(change => change.deltaId === value.deltaId
     && change.floorId === value.floorId && change.assistantSeq === value.assistantSeq
     && change.subjectEntityId === value.subjectEntityId && change.layer === value.layer && change.action === value.action
-    && stateEqual(value.before, change.before) && stateEqual(value.after, change.after)));
+    && stateEqual(value.before, change.before) && stateEqual(value.after, change.after)))) return fail({ step: 'selectedReference', kind: 'cseChange', index,
+      deltaId: value?.deltaId, floorId: value?.floorId, assistantSeq: value?.assistantSeq, subjectEntityId: value?.subjectEntityId, layer: value?.layer, action: value?.action });
+  }
+  return true;
 }
 
 function selectedSourceFloorIds({ selectedFloors = [], selectedStates = [], selectedCseChanges = [] }, source) {
@@ -383,6 +407,11 @@ const selectorDiagnosticSnapshot = value => {
     sourceStage: clean(value?.sourceStage ?? api.sourceStage, 80),
     requestCharacters: nonNegativeInteger(value?.requestCharacters) ? value.requestCharacters : null,
     requestEstimatedTokens: nonNegativeInteger(value?.requestEstimatedTokens) ? value.requestEstimatedTokens : null,
+    // Keep this absent on older receipts; adding a default would change their sealed digest.
+    ...(priorityDiagnosticValid(value?.priority) && value?.priority !== undefined ? { priority: Object.freeze({
+      status: value.priority.status, keys: Object.freeze([...value.priority.keys]), selectedKeys: Object.freeze([...value.priority.selectedKeys]),
+      ignoredCount: Math.min(10000, value.priority.ignoredCount),
+    }) } : {}),
     durationMs: Math.max(0, Math.floor(Number(value?.durationMs) || 0)),
     utilityRoundTripMs: finiteDuration(value?.utilityRoundTripMs) ? Math.floor(value.utilityRoundTripMs) : null,
     localSelectionMs: finiteDuration(value?.localSelectionMs) ? Math.floor(value.localSelectionMs) : null,
@@ -505,6 +534,7 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
       || (IDENTIFIED_RECALL_STRATEGIES.includes(receipt.strategyVersion) && !['historyCandidateCount', 'stateCandidateCount', 'historyExcludedCount', 'stateExcludedCount', 'historyRetainedCount', 'stateRetainedCount'].every(key => diagnostic[key] === null || nonNegativeInteger(diagnostic[key])))
       || !(diagnostic.requestCharacters === null || diagnostic.requestCharacters === undefined || nonNegativeInteger(diagnostic.requestCharacters))
       || !(diagnostic.requestEstimatedTokens === null || diagnostic.requestEstimatedTokens === undefined || nonNegativeInteger(diagnostic.requestEstimatedTokens))
+      || !priorityDiagnosticValid(diagnostic.priority)
       || !(diagnostic.sourceStage === undefined || boundedString(diagnostic.sourceStage, 80, { empty: true }))) return false;
     const timings = receipt.timings;
     if (!timings || typeof timings !== 'object' || Array.isArray(timings)
@@ -851,20 +881,37 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
   const matchesSourceRoot = (value, root) => root?.status === 'ready'
     && root.revision === value.rootRevision && root.data?.chatId === value.chatId
     && root.data?.narrativeGeneration === value.narrativeGeneration && root.data?.headCheckpointId === value.headCheckpointId;
+  const sourceVersion = value => value && typeof value === 'object' ? { chatId: value.chatId ?? value.data?.chatId ?? null,
+    narrativeGeneration: value.narrativeGeneration ?? value.data?.narrativeGeneration ?? null,
+    revision: value.rootRevision ?? value.revision ?? null, headCheckpointId: value.headCheckpointId ?? value.data?.headCheckpointId ?? null } : null;
   async function basePreparedSource(snapshot, sanitizerSnapshot, { fresh = false, operation = null, rootResult = null, sourceToVerify = null } = {}) {
     const started = Date.now(), budgetMs = Math.max(1, Number(preparationTimeoutMs) || 5000);
     const timing = { phase: sourceToVerify ? 'commit' : 'source', mode: fresh ? 'fresh' : 'cached', stage: 'identity', status: 'unavailable', totalMs: 0, budgetMs,
       identityMs: 0, rootMs: 0, prepareMs: 0, readMs: 0, projectionMs: 0 };
     const timeout = Symbol('memoryPreparationTimeout'), stale = Symbol('memoryPreparationStale');
     let timer = null, closed = false, stepStarted = null, abortListener;
+    // 最终fresh核验只留来源版本与阶段，不复制材料；这份诊断不参与来源比较。
+    const sourceVerification = sourceToVerify ? { phase: 'commit', mode: fresh ? 'fresh' : 'cached', step: 'root', sourceStatus: sourceToVerify.status,
+      preparationStatus: null, rootStatus: null, rootVerified: null, selectedSource: sourceVersion(sourceToVerify), checkedRoot: null } : null;
+    const updateSourceVerification = patch => {
+      if (!sourceVerification || !operation) return;
+      Object.assign(sourceVerification, patch);
+      operation.sourceVerification = { ...sourceVerification };
+    };
     const check = () => {
       if (operation && (operation.token !== epoch || operation.controller.signal.aborted)) throw stale;
       if (closed || Date.now() - started >= budgetMs) throw timeout;
     };
     const step = async (stage, read) => {
       check(); timing.stage = stage; stepStarted = Date.now();
+      updateSourceVerification({ step: stage });
       if (operation) { operation.currentPreparation = timing; advanceOperation(operation, stage); }
-      try { const value = await read(); check(); return value; }
+      try {
+        const value = await read(); check();
+        if (stage === 'root') updateSourceVerification({ rootStatus: value?.status ?? 'unavailable', checkedRoot: sourceVersion(value) });
+        if (stage === 'prepare') updateSourceVerification({ preparationStatus: value?.status ?? 'unavailable' });
+        return value;
+      }
       finally {
         if (!closed && stepStarted !== null) timing[`${stage}Ms`] += Date.now() - stepStarted;
         stepStarted = null;
@@ -878,7 +925,10 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         const rootError = technicalSourceError(latestRoot);
         if (rootError) throw rootError;
       }
-      if (sourceToVerify && matchesSourceRoot(sourceToVerify, latestRoot)) return sourceToVerify;
+      if (sourceToVerify && matchesSourceRoot(sourceToVerify, latestRoot)) {
+        updateSourceVerification({ sourceStatus: sourceToVerify.status, rootVerified: true, step: 'root' });
+        return sourceToVerify;
+      }
       const identityProjection = typeof identityProjectionProvider === 'function' ? await step('identity', () => identityProjectionProvider()) : null;
       let result, prepared;
       if (typeof prepareMemory === 'function') {
@@ -899,8 +949,13 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         const afterPreparation = await step('root', () => store.readRoot());
         const rootError = technicalSourceError(afterPreparation);
         if (rootError) throw rootError;
-        if (!matchesSourceRoot(result, afterPreparation)) return Object.freeze({ ...result, rootVerified: false });
+        if (!matchesSourceRoot(result, afterPreparation)) {
+          updateSourceVerification({ sourceStatus: result.status, rootStatus: afterPreparation?.status ?? 'unavailable', checkedRoot: sourceVersion(afterPreparation), rootVerified: false, step: 'root' });
+          return Object.freeze({ ...result, rootVerified: false });
+        }
+        updateSourceVerification({ sourceStatus: result.status, rootStatus: afterPreparation?.status ?? 'unavailable', checkedRoot: sourceVersion(afterPreparation), rootVerified: true, step: 'root' });
       }
+      if (sourceToVerify) updateSourceVerification({ sourceStatus: result?.status ?? 'unavailable', rootVerified: canReadRoot ? (matchesSourceRoot(result, latestRoot) ? true : false) : null });
       return result;
     };
     let result;
@@ -919,6 +974,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (stepStarted !== null) timing[`${timing.stage}Ms`] += Date.now() - stepStarted;
       closed = true;
       timing.totalMs = Date.now() - started;
+      if (sourceToVerify) updateSourceVerification({ sourceStatus: result?.status ?? 'unavailable', rootVerified: result?.rootVerified === false ? false : sourceVerification.rootVerified });
       timing.status = result?.rootVerified === false ? 'stale' : ['ready', 'timeout', 'stale', 'disabled'].includes(result?.status) ? result.status : 'unavailable';
       if (operation?.timings) (operation.timings.preparationAttempts ??= []).push(Object.freeze(timing));
       if (operation) { operation.currentPreparation = null; notify(); }
@@ -1019,7 +1075,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (diagnostic) { diagnostic.pendingStep = step; diagnostic.lastCompletedStep = operation.lastCompletedStep; }
     notify();
   }
-  const safeTerminationReason = value => ['stopped', 'superseded', 'chatChanged', 'userChanged', 'narrativeChanged', 'disabled', 'invalidated', 'selectedRefsChanged'].includes(value) ? value : 'invalidated';
+  const safeTerminationReason = value => ['stopped', 'superseded', 'chatChanged', 'userChanged', 'narrativeChanged', 'disabled', 'invalidated', 'selectedRefsChanged', 'sourceStale', 'sourceUnavailable'].includes(value) ? value : 'invalidated';
   const safeTerminationEvent = value => ['GENERATION_STOPPED', 'GENERATION_ENDED', 'interceptorSuperseded', 'CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'runtimeDisabled', 'runtimeInvalidate', 'finalSafetyGuard'].includes(value) ? value : 'runtimeInvalidate';
   function retainTerminated(operation, reason, sourceEvent) {
     if (!operation) return;
@@ -1038,7 +1094,10 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       terminatedAt: nowIso(now), phase: ['input', 'source', 'selecting', 'commit', 'receipt'].includes(operation.phase) ? operation.phase : null,
       pendingStep: diagnosticSteps.includes(operation.step) ? operation.step : null,
       lastCompletedStep: diagnosticSteps.includes(operation.lastCompletedStep) ? operation.lastCompletedStep : null,
-      requestDiagnosticId: operation.requestDiagnosticId ?? null, timings: clone(operation.timings ?? {}), attempts: Object.freeze(attempts) });
+      requestDiagnosticId: operation.requestDiagnosticId ?? null, roundStartedAt: new Date(operation.started).toISOString(),
+      sourceVerification: operation.sourceVerification ? clone(operation.sourceVerification) : null,
+      finalVerification: operation.finalVerification ? clone(operation.finalVerification) : null,
+      timings: clone(operation.timings ?? {}), attempts: Object.freeze(attempts) });
   }
 
   function getState() {
@@ -1298,6 +1357,9 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
 
   async function commitPromptIfCurrent({ operation, source, receipt, selectedFloors, selectedStates, selectedCseChanges = [], timeDependencies, userIndex, userFingerprint, hostGuard, injectionText }) {
     let finalReceipt = receipt, liveTime;
+    const markVerificationFailure = (step, reason, reference = null) => {
+      operation.finalVerification = { ...(operation.sourceVerification ?? {}), step, failure: { step, reason, ...(reference ? { reference } : {}) } };
+    };
     if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };
     const before = hostAdapter.snapshot();
     const beforeUser = latestUser(before);
@@ -1312,16 +1374,18 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     let currentSource = await basePreparedSource(verifyHostCoverage ? before : null, currentSanitizerOptions(), { fresh: true, operation, sourceToVerify: source });
     if (currentSource !== source) {
       if (currentSource?.status !== 'ready') {
+        const reason = currentSource?.status === 'stale' ? 'sourceStale' : 'sourceUnavailable';
+        markVerificationFailure('sourcePreparation', reason);
         const sourceError = technicalSourceError(currentSource);
         if (sourceError) throw sourceError;
-        return { ok: false, reason: currentSource?.status === 'stale' ? 'sourceStale' : 'sourceUnavailable' };
+        return { ok: false, reason };
       }
-      if (currentSource.rootVerified === false) return { ok: false, reason: 'sourceUnavailable' };
+      if (currentSource.rootVerified === false) { markVerificationFailure('rootVerification', 'sourceUnavailable'); return { ok: false, reason: 'sourceUnavailable' }; }
       if (currentSource.chatId !== source.chatId) return { ok: false, reason: 'chatChanged' };
       if (currentSource.narrativeGeneration !== source.narrativeGeneration) return { ok: false, reason: 'narrativeChanged' };
       currentSource = Object.freeze({ ...currentSource, bodyMatch: await attachCoreBodyMatch(currentSource, operation.coreBodyWitness, before, operation.sanitizerOptions, fingerprint, recentBodyFloorLimit()) });
     }
-    if (!timeDependenciesValid(timeDependencies)) return { ok: false, reason: 'selectedRefsChanged' };
+    if (!timeDependenciesValid(timeDependencies)) { markVerificationFailure('timeDependencies', 'invalid'); return { ok: false, reason: 'selectedRefsChanged' }; }
     if (timeDependencies.mode === 'projection' || timeDependencies.corrections.length || timeDependencies.reminders.length) {
       liveTime = currentSource.timeProjection;
       if (typeof timeProjectionProvider === 'function') {
@@ -1330,7 +1394,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       }
       if (!timeDependenciesCurrent(timeDependencies, liveTime)) {
         finalReceipt = withoutStaleTime(receipt, currentSource, liveTime);
-        if (!finalReceipt) return { ok: false, reason: 'selectedRefsChanged' };
+        if (!finalReceipt) { markVerificationFailure('timeDependencies', 'changed'); return { ok: false, reason: 'selectedRefsChanged' }; }
         injectionText = finalReceipt.injectionText;
       }
     }
@@ -1344,12 +1408,16 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         completionStatus: injectionText ? 'ready' : 'empty',
         skipReasons: [...new Set([...(finalReceipt.skipReasons ?? []), 'optionalQianshiChanged'])] };
     }
-    if (!await sourceRefsValid({ selectedFloors, selectedStates, selectedCseChanges }, currentSource)) return { ok: false, reason: 'selectedRefsChanged' };
+    let failedReference = null;
+    if (!await sourceRefsValid({ selectedFloors, selectedStates, selectedCseChanges }, currentSource, reference => { failedReference = reference; })) {
+      markVerificationFailure(failedReference?.step ?? 'selectedReference', 'changed', failedReference);
+      return { ok: false, reason: 'selectedRefsChanged' };
+    }
     const selectedSourceGuards = captureSelectedSourceGuards({ selectedFloors, selectedStates, selectedCseChanges }, currentSource, before);
-    if (selectedSourceGuards === null) return { ok: false, reason: 'selectedRefsChanged' };
+    if (selectedSourceGuards === null) { markVerificationFailure('sourceBodyGuard', 'changed'); return { ok: false, reason: 'selectedRefsChanged' }; }
     const bodyGuardSanitizer = currentSanitizerOptions();
     const coveredBodyGuards = await captureCoveredBodyGuards(source, currentSource, before, bodyGuardSanitizer, fingerprint);
-    if (coveredBodyGuards === null) return { ok: false, reason: 'narrativeChanged' };
+    if (coveredBodyGuards === null) { markVerificationFailure('coveredBodyGuard', 'changed'); return { ok: false, reason: 'narrativeChanged' }; }
     if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };
     // This is the final synchronous commit point. No promise/microtask boundary may be
     // inserted between the host-visible snapshot checks and setExtensionPrompt.
@@ -1371,7 +1439,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };
       if (currentChatId(after) !== source.chatId) return { ok: false, reason: 'chatChanged' };
       if (afterUser?.index !== userIndex || afterUser?.message !== hostGuard.userMessage || afterUser?.message?.mes !== hostGuard.userText) return { ok: false, reason: 'userChanged' };
-      if (!selectedSourcesCurrent) return { ok: false, reason: 'selectedRefsChanged' };
+      if (!selectedSourcesCurrent) { markVerificationFailure('finalSync', 'selectedSourceChanged'); return { ok: false, reason: 'selectedRefsChanged' }; }
+      markVerificationFailure('finalSync', 'narrativeChanged');
       return { ok: false, reason: 'narrativeChanged' };
     }
     if (liveTime?.currentBodyWitness) {
@@ -1380,7 +1449,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (!message || message.is_system === true || message.is_hidden === true || message.hidden === true
         || !coveredBodyGuardsCurrent([witness], after, bodyGuardSanitizer)) {
         finalReceipt = withoutStaleTime(finalReceipt, currentSource, null);
-        if (!finalReceipt) return { ok: false, reason: 'selectedRefsChanged' };
+        if (!finalReceipt) { markVerificationFailure('timeBodyWitness', 'changed'); return { ok: false, reason: 'selectedRefsChanged' }; }
         injectionText = finalReceipt.injectionText;
       }
     }
@@ -1402,7 +1471,9 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       pendingStep: diagnosticSteps.includes(operation.step) ? operation.step : null,
       lastCompletedStep: diagnosticSteps.includes(operation.lastCompletedStep) ? operation.lastCompletedStep : null,
       selectorProgress: operation.selectorProgress ? clone(operation.selectorProgress) : null,
-      requestDiagnosticId: operation.requestDiagnosticId,
+      requestDiagnosticId: operation.requestDiagnosticId, roundStartedAt: new Date(operation.started).toISOString(),
+      sourceVerification: operation.sourceVerification ? clone(operation.sourceVerification) : null,
+      finalVerification: operation.finalVerification ? clone(operation.finalVerification) : null,
       attemptDiagnostics: Object.freeze(attempts.map(value => Object.freeze({ attempt: value.attempt, phase: value.phase, selectionStatus: value.selectionStatus,
         pendingStep: diagnosticSteps.includes(value.pendingStep) ? value.pendingStep : null,
         lastCompletedStep: diagnosticSteps.includes(value.lastCompletedStep) ? value.lastCompletedStep : null,
@@ -1737,7 +1808,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
   }
 
   function finishStale(operation, timings, reason = abortReason(operation)) {
-    if (active === operation && ['chatChanged', 'userChanged', 'narrativeChanged', 'selectedRefsChanged', 'stopped', 'superseded', 'disabled'].includes(reason)) retainTerminated(operation, reason, 'finalSafetyGuard');
+    if (active === operation && ['chatChanged', 'userChanged', 'narrativeChanged', 'selectedRefsChanged', 'sourceStale', 'sourceUnavailable', 'stopped', 'superseded', 'disabled'].includes(reason)) retainTerminated(operation, reason, 'finalSafetyGuard');
     if (active === operation) active = null;
     if (operation.token === epoch) {
       clearSlot(operation.token);
@@ -1774,7 +1845,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     active.controller.abort(reason);
     active = null;
     if (slotOwner === generation.token) clearSlot(generation.token);
-    lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, requestDiagnosticId: operation.requestDiagnosticId, timings: Object.freeze({ totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([reason]), error: null, createdAt: nowIso(now) }); lastPrequel = null;
+    lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, requestDiagnosticId: operation.requestDiagnosticId,
+      roundStartedAt: new Date(operation.started).toISOString(), timings: Object.freeze({ totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([reason]), error: null, createdAt: nowIso(now) }); lastPrequel = null;
     bindOperationRecall(operation);
     notify();
     return true;

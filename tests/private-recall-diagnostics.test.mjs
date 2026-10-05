@@ -44,6 +44,26 @@ test('自动留存未写聊天的失效结果、向量阶段与HTTP时间，严�
   assert.doesNotMatch(JSON.stringify(safe), /SECRET/u);
 });
 
+test('私有诊断仅投影合法priority身份与计数，忽略未知状态、键和秘密字段', () => {
+  const state = fixture();
+  state.lastRecall.selectorDiagnostic.priority = { status: 'timeGuard', keys: ['R26', 'C4'], selectedKeys: ['R26'], ignoredCount: 3,
+    rawAnswer: 'SECRET', apiKey: 'SECRET', unknown: 'SECRET' };
+  const safe = projectPrivateRecallDiagnostic(state, null);
+  assert.deepEqual(safe.last.selector.priority, { status: 'timeGuard', keys: ['R26', 'C4'], selectedKeys: ['R26'], ignoredCount: 3 });
+  assert.doesNotMatch(JSON.stringify(safe), /SECRET|rawAnswer|apiKey|unknown/u);
+
+  for (const priority of [
+    { status: 'future', keys: ['R26'], selectedKeys: ['R26'], ignoredCount: 0 },
+    { status: 'applied', keys: ['R26'], selectedKeys: ['C4'], ignoredCount: 0 },
+    { status: 'applied', keys: ['R99999'], selectedKeys: [], ignoredCount: 0 },
+  ]) {
+    state.lastRecall.selectorDiagnostic.priority = priority;
+    assert.equal(projectPrivateRecallDiagnostic(state, null).last.selector.priority, undefined);
+  }
+  state.lastRecall.selectorDiagnostic.priority = { status: 'applied', keys: ['R26'], selectedKeys: [], ignoredCount: 10001 };
+  assert.equal(projectPrivateRecallDiagnostic(state, null).last.selector.priority.ignoredCount, 10000, '生产端和运行时共用同一上限');
+});
+
 test('私有投影保留运行步、index reset终止、网络码与保存状态的有限字段', () => {
   const state = fixture();
   const vectorRequest = (requestId, result, errorCode, timeoutOrigin = null) => ({ requestId, phase: result === 'succeeded' ? 'complete' : 'aborted', pendingStage: result === 'succeeded' ? 'complete' : 'aborted',
@@ -78,6 +98,94 @@ test('私有投影保留运行步、index reset终止、网络码与保存状态
   assert.equal(beforeFetch.vector.query.requestCount, 0, 'fetch未调用时私有query投影保留真实0请求计数');
   assert.equal(beforeFetch.last.selector.semantic.requestCount, 0, 'fetch未调用时回执selector投影保留真实0请求计数');
   assert.equal(beforeFetch.vector.query.requestAttempts[0].lastSuccessfulStage, 'request_prepared');
+});
+
+test('失败来源核验只投影版本、固定失败引用，排除文本、URL与异常原文', () => {
+  const state = fixture();
+  state.lastTerminated = { status: 'terminated', chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', reason: 'sourceUnavailable', sourceEvent: 'finalSafetyGuard',
+    roundStartedAt: '2026-10-03T14:23:31.000Z', terminatedAt: '2026-10-03T14:23:49.000Z',
+    sourceVerification: { phase: 'commit', mode: 'fresh', step: 'root', sourceStatus: 'ready', rootStatus: 'ready', rootVerified: true,
+      selectedSource: { chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', narrativeGeneration: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', revision: 12, headCheckpointId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' },
+      checkedRoot: { chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', narrativeGeneration: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', revision: 13, headCheckpointId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' }, url: 'https://SECRET' },
+    finalVerification: { step: 'selectedReference', failure: { step: 'selectedReference', reason: 'changed',
+      reference: { kind: 'state', index: 2, subjectEntityId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', layer: 'adaptive',
+        stateId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', sourceFloorId: '11111111-1111-4111-8111-111111111111',
+        sourceDeltaId: '22222222-2222-4222-8222-222222222222', text: 'PRIVATE BODY', reasonText: 'PRIVATE REASON' } }, error: 'SECRET' } };
+  const safe = projectPrivateRecallDiagnostic(state, null);
+  assert.equal(safe.lastTerminated.reason, 'sourceUnavailable');
+  assert.equal(safe.lastTerminated.sourceVerification.checkedRoot.revision, 13);
+  assert.deepEqual(safe.lastTerminated.finalVerification.failure.reference, {
+    kind: 'state', index: 2, witnessIndex: null, floorId: null, floorMemoryId: null, assistantSeq: null, memoryFloorId: null,
+    subjectEntityId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', layer: 'adaptive', stateId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+    sourceFloorId: '11111111-1111-4111-8111-111111111111', sourceDeltaId: '22222222-2222-4222-8222-222222222222',
+    sourceAssistantSeq: null, deltaId: null, action: null,
+  });
+  assert.doesNotMatch(JSON.stringify(safe), /PRIVATE BODY|PRIVATE REASON|SECRET|https:\/\//u);
+  state.lastTerminated.finalVerification.failure.reference = { kind: 'cseChange', index: 1, deltaId: '11111111-2222-4222-8222-111111111111',
+    floorId: '22222222-3333-4333-8333-222222222222', assistantSeq: 7, subjectEntityId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', layer: 'situational', action: 'update' };
+  assert.equal(projectPrivateRecallDiagnostic(state, null).lastTerminated.finalVerification.failure.reference.action, 'update', '历史 CSE update action 不被投影白名单误删');
+});
+
+test('recent failure snapshots survive later success and event overflow, dedupe by chat/round/reason and cap at four', async t => {
+  const h = harness(); t.after(h.channel.dispose);
+  await h.channel.start(); await h.channel.flush();
+  assert.equal(h.writes.at(-1).data.failures.length, 1);
+  const first = h.writes.at(-1).data.failures[0];
+  assert.equal(first.reason, 'sourceUnavailable');
+  assert.equal(first.kind, 'last');
+  assert.doesNotMatch(JSON.stringify(h.writes.at(-1).data.failures), /SECRET|private\.invalid|injectionText|responseText/u);
+
+  const succeeded = fixture();
+  succeeded.lastRecall = { ...succeeded.lastRecall, status: 'ready', createdAt: '2026-10-03T14:25:00.000Z', skipReasons: [], injectionText: 'PRIVATE BODY' };
+  succeeded.lastTerminated = { status: 'terminated', chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', reason: 'sourceUnavailable', sourceEvent: 'finalSafetyGuard',
+    roundStartedAt: '2026-10-03T14:23:49.000Z', terminatedAt: '2026-10-03T14:23:49.000Z' };
+  h.change(succeeded); await h.channel.flush();
+  assert.equal(h.writes.at(-1).data.failures.length, 1, '同回合后续lastTerminated不得重复登记或覆盖失败帧');
+  for (let index = 0; index < 40; index += 1) {
+    const next = structuredClone(succeeded); next.lastRecall.userMessageIndex = index; h.change(next);
+  }
+  await h.channel.flush();
+  assert.equal(h.writes.at(-1).data.events.length, 32);
+  assert.equal(h.writes.at(-1).data.failures[0].last.userMessageIndex, first.last.userMessageIndex, '超过32条进度事件后旧失败帧仍独立保留');
+  assert.equal(h.writes.at(-1).data.failures[0].roundStartedAt, first.roundStartedAt);
+
+  for (let index = 0; index < 5; index += 1) {
+    const next = fixture();
+    next.lastRecall = { ...next.lastRecall, createdAt: `2026-10-03T14:3${index}:00.000Z`, roundStartedAt: `2026-10-03T14:3${index}:00.000Z` };
+    next.lastRecallBinding = { chatId: index % 2 ? 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' : 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' };
+    h.change(next); await h.channel.flush();
+  }
+  const failures = h.writes.at(-1).data.failures;
+  assert.equal(failures.length, 4);
+  assert.equal(new Set(failures.map(value => `${value.chatId}|${value.roundStartedAt}|${value.reason}`)).size, 4);
+  assert.doesNotMatch(JSON.stringify(failures), /SECRET|private\.invalid|PRIVATE BODY/u);
+});
+
+test('旧终止帧不冒充相同楼索引的新失败，失败环按回合时间保留最近四条', async t => {
+  const h = harness(); t.after(h.channel.dispose);
+  const initial = fixture();
+  initial.lastRecall.roundStartedAt = '2026-10-03T14:25:00.000Z';
+  initial.lastTerminated = { status: 'terminated', chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', reason: 'sourceUnavailable', sourceEvent: 'finalSafetyGuard',
+    userMessageIndex: 103, roundStartedAt: '2026-10-03T14:20:00.000Z', terminatedAt: '2026-10-03T14:20:30.000Z' };
+  h.change(initial); await h.channel.start(); await h.channel.flush();
+  let failures = h.writes.at(-1).data.failures;
+  assert.equal(failures.length, 2, '同一聊天、同一消息索引但不同回合时间保留为两次');
+  assert.equal(failures[0].roundStartedAt, '2026-10-03T14:25:00.000Z');
+  assert.equal(failures[1].roundStartedAt, '2026-10-03T14:20:00.000Z');
+  assert.equal(failures[1].lastTerminated.userMessageIndex, 103);
+
+  for (let index = 0; index < 5; index += 1) {
+    const next = fixture();
+    next.lastRecall.roundStartedAt = `2026-10-03T14:3${index}:00.000Z`;
+    next.lastRecall.createdAt = next.lastRecall.roundStartedAt;
+    next.lastRecall.userMessageIndex = 103;
+    next.lastRecallBinding = { chatId: index % 2 ? 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' : 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' };
+    h.change(next); await h.channel.flush();
+  }
+  failures = h.writes.at(-1).data.failures;
+  assert.equal(failures.length, 4);
+  assert.equal(failures[0].roundStartedAt, '2026-10-03T14:34:00.000Z');
+  assert.equal(failures.some(item => item.roundStartedAt === '2026-10-03T14:20:00.000Z'), false, '超过四条时淘汰最旧回合');
 });
 
 test('停用及无私有开关时不采集；启用后定长留存、相同状态零重复写入，关闭后不再写', async t => {

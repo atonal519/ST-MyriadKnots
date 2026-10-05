@@ -1204,7 +1204,7 @@ export function buildRecallCseCandidatePool({ source, queryContext, cseContext =
   });
 }
 
-export function selectRecall({ source, queryContext, historyContext: providedHistoryContext = null, cseContext: providedCseContext = null, contextSize = 8192, maxFloors = null, maxItems = null, selectedHistoryCandidates, selectedCseCandidates, selectedAnnualReminderIds, excludedHistoryCandidates = [], excludedCseCandidates = [], reservedTokens = 0, reservedCharacters = 0 } = {}) {
+export function selectRecall({ source, queryContext, historyContext: providedHistoryContext = null, cseContext: providedCseContext = null, contextSize = 8192, maxFloors = null, maxItems = null, selectedHistoryCandidates, selectedCseCandidates, selectedAnnualReminderIds, excludedHistoryCandidates = [], excludedCseCandidates = [], priorityCandidates = [], reservedTokens = 0, reservedCharacters = 0 } = {}) {
   const emptyStages = input => Object.freeze({ input, candidates: 0, dropRecent: 0, dropPersistent: 0, dropVisibility: 0, selected: 0, recentSummaryCount: 0, distantHistoryItemCount: 0, linkedHistoryItemCount: 0, stateCount: 0, currentStateCount: 0, cseChangeCount: 0, linkedCseChangeCount: 0, budgetDroppedCount: 0, finalInjectionItemCount: 0 });
   if (source?.status !== 'ready') return Object.freeze({ status: 'empty', injectionText: '', floors: Object.freeze([]), states: Object.freeze([]), cseChanges: Object.freeze([]), timeDependencies: Object.freeze({ mode: 'selected', corrections: Object.freeze([]), reminders: Object.freeze([]) }), stages: emptyStages(0), skipReasons: Object.freeze(['sourceUnavailable']) });
   const query = clean(queryContext?.text, MAX_QUERY_CHARACTERS);
@@ -1364,7 +1364,21 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
   const relationRank = value => value._relationEvidence === 'source' ? 1 : value._relationEvidence === 'topic' ? 2 : value._relationEvidence === 'nearby' ? 3 : 0;
   const competitionPrimary = entry => (Number(entry.value.branchScores?.latestUser) || 0) + (entry.kind === 'time' ? timeUrgencyBoost(entry.value) : 0);
   // LLM 保留的直接证据先于自动关联材料竞争；仍共用原有时间、分数和预算约束。
+  // A relevant time candidate disables priority for this round so its original time ordering remains intact.
+  const priorityRanks = new Map((Array.isArray(priorityCandidates) ? priorityCandidates : [])
+    .filter(candidate => typeof candidate?.stableKey === 'string').map((candidate, index) => [candidate.stableKey, index]));
+  const timeGuard = priorityRanks.size > 0 && timeRanked.some(value => value.score > 0);
+  const priorityRankCache = new WeakMap();
+  const priorityRank = entry => {
+    if (!priorityRanks.size || timeGuard || !['history', 'state', 'change'].includes(entry.kind)) return undefined;
+    if (priorityRankCache.has(entry.value)) return priorityRankCache.get(entry.value);
+    const stableKey = entry.kind === 'history' ? historyStableKey(entry.value) : cseStableKey(entry.value);
+    const rank = priorityRanks.get(stableKey);
+    priorityRankCache.set(entry.value, rank);
+    return rank;
+  };
   const competitionOrder = (a, b) => Number(Boolean(a.value._relationEvidence)) - Number(Boolean(b.value._relationEvidence))
+    || (!priorityRanks.size || timeGuard ? 0 : (priorityRank(a) ?? Number.MAX_SAFE_INTEGER) - (priorityRank(b) ?? Number.MAX_SAFE_INTEGER))
     || competitionPrimary(b) - competitionPrimary(a)
     || (Number(b.value.score) || 0) - (Number(a.value.score) || 0)
     || relationRank(a.value) - relationRank(b.value)
@@ -1454,6 +1468,14 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
   const timeReminderCount = rendered.timeDependencies.reminders.length;
   const timeBudgetDropped = timeRanked.filter(value => value.score > 0 && !rendered.timeDependencies.reminders.some(item => item.itemId === value.itemId) && !correctedTimeIds.has(value.itemId)).length;
   const floors = rendered.floors, states = rendered.states, cseChanges = rendered.cseChanges, storylines = rendered.storylines, injectionText = rendered.text;
+  const selectedPriorityStableKeys = new Set([
+    ...chosenHistory.map(historyStableKey),
+    ...chosenStates.map(cseStableKey),
+    ...chosenChanges.map(cseStableKey),
+  ]);
+  const prioritySelection = Array.isArray(priorityCandidates) && priorityCandidates.length
+    ? Object.freeze({ timeGuard, selectedKeys: Object.freeze(priorityCandidates.filter(candidate => selectedPriorityStableKeys.has(candidate.stableKey)).map(candidate => candidate.key)) })
+    : null;
   const skipReasons = [...(source.degradedReasons ?? [])];
   if (historyContext.fullyCoveredMemoryCount) skipReasons.push('coreBodyDuplicate');
   if (historyContext.partialAggregateBodyOverlap) skipReasons.push('partialAggregateBodyOverlap');
@@ -1469,6 +1491,7 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
     floors: Object.freeze(floors.map(floor => Object.freeze({ ...floor, reasons: Object.freeze(floor.reasons), items: Object.freeze(floor.items.map(value => Object.freeze(value))) }))),
     states: Object.freeze(states.map(value => Object.freeze(value))),
     cseChanges: Object.freeze(cseChanges.map(value => Object.freeze(value))),
+    ...(prioritySelection ? { prioritySelection } : {}),
     storylines: Object.freeze(storylines.map(value => Object.freeze({ ...value }))),
     stages: Object.freeze({ input: queryContext?.messageCount ?? 0, candidates: source.floorMemories.length, dropRecent: source.floorMemories.length - oldMemories.length, dropPersistent, dropVisibility: source.coverage.cseCurrent ? 0 : source.currentState.reduce((sum, subject) => sum + subject.core.length + subject.adaptive.length + subject.situational.length, 0), selected: floors.length, recentSummaryCount: chosenRecent.length, distantHistoryItemCount: chosenDistant.length, linkedHistoryItemCount: chosenDistant.filter(value => value._relationEvidence === 'source' || value._relationEvidence === 'topic').length, stateCount: states.length, currentStateCount: states.length, cseChangeCount: cseChanges.length, linkedCseChangeCount: chosenChanges.filter(value => value._relationEvidence === 'source').length, timeReminderCount, timeCorrectionCount: rendered.timeDependencies.corrections.length, timeBudgetDropped, storylineCount: storylines.length, semanticDuplicateCount: dropSemanticDuplicate, relevanceFilteredCount: evidenceFiltered, recentSummaryDroppedByBudget: recentHistory.length - chosenRecent.length, distantHistoryDroppedByBudget: uniqueHistory.length - chosenDistant.length, budgetDroppedCount: budgetDropped, finalInjectionItemCount: chosenHistory.length + states.length + cseChanges.length + timeReminderCount, estimatedTokenCount: estimateRecallTokens(injectionText), estimatedTokenBudget: tokenLimit }),
     skipReasons: Object.freeze(skipReasons),

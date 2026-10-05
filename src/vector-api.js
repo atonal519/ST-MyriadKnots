@@ -2,6 +2,7 @@ import { newIdentityUuid, sha256 } from './identity.js';
 
 export const VECTOR_DEFAULT_URL = 'https://api.siliconflow.cn/v1';
 export const VECTOR_DEFAULT_MODEL = 'Qwen/Qwen3-Embedding-8B';
+const XFYUN_MAAS_HOST = 'maas-api.cn-huabei-1.xf-yun.com';
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const safeNetworkCode = value => typeof value === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/u.test(value) ? value : null;
 const safeAbortReason = value => ['stopped', 'superseded', 'chatChanged', 'userChanged', 'narrativeChanged', 'disabled', 'invalidated', 'indexReset'].includes(value) ? value : 'external';
@@ -32,6 +33,21 @@ export function normalizeVectorConfig(value = {}) {
   return Object.freeze({ url: endpoint.href.replace(/\/+$/u, ''), key, model, dimensions: /^Qwen\/Qwen3-Embedding-/u.test(model) ? 1024 : null });
 }
 
+export function usesNativeXfyunProxy(url) {
+  try {
+    const endpoint = new URL(String(url ?? '').trim().replace(/\/+$/u, '').replace(/\/embeddings$/u, ''));
+    return endpoint.protocol === 'https:' && endpoint.hostname === XFYUN_MAAS_HOST && !endpoint.port
+      && !endpoint.username && !endpoint.password && !endpoint.search && !endpoint.hash
+      && (endpoint.pathname === '/v1' || endpoint.pathname === '/v2');
+  } catch { return false; }
+}
+
+function vectorRequestUrl(config) {
+  if (!usesNativeXfyunProxy(config.url)) return `${config.url}/embeddings`;
+  // 避免 MaaS 浏览器跨域限制，只把这一服务送到宿主既有代理。
+  return `/proxy/${encodeURIComponent(`${config.url}/embeddings`)}`;
+}
+
 export function normalizeVector(values) {
   if (!Array.isArray(values) || !values.length || values.length > 8192 || !values.every(value => typeof value === 'number' && Number.isFinite(value))) throw fail('VECTOR_RESPONSE_INVALID', '向量接口返回无效。');
   const norm = Math.hypot(...values);
@@ -39,7 +55,7 @@ export function normalizeVector(values) {
   return Float32Array.from(values, value => value / norm);
 }
 
-export function createVectorApiClient({ fetchImpl = globalThis.fetch } = {}) {
+export function createVectorApiClient({ fetchImpl = globalThis.fetch, headers: requestHeadersProvider = () => ({}) } = {}) {
   const controllers = new Set();
   return Object.freeze({
     // 单次 embed 只发一次请求；正常召回的限次超时补试由查询方负责，不占宿主生成锁。
@@ -96,8 +112,16 @@ export function createVectorApiClient({ fetchImpl = globalThis.fetch } = {}) {
         return await Promise.race([interrupted, (async () => {
           if (controller.signal.aborted) throw fail('VECTOR_ABORTED', '向量请求已取消。');
           progress('fetch_call_start');
-          const pending = fetchImpl(`${config.url}/embeddings`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.key}` },
+          const requestHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${config.key}` };
+          if (usesNativeXfyunProxy(config.url)) {
+            try {
+              const hostHeaders = requestHeadersProvider?.() ?? {};
+              const csrf = Object.entries(hostHeaders).find(([name]) => name.toLowerCase() === 'x-csrf-token')?.[1];
+              if (typeof csrf === 'string' && csrf) requestHeaders['X-CSRF-Token'] = csrf;
+            } catch { /* 宿主头只为原生代理服务；读取失败不改供应商凭证或请求体。 */ }
+          }
+          const pending = fetchImpl(vectorRequestUrl(config), {
+            method: 'POST', headers: requestHeaders,
             body: JSON.stringify({ model: config.model, input, encoding_format: 'float', ...(config.dimensions ? { dimensions: config.dimensions } : {}) }), signal: controller.signal,
           });
           diagnostic.fetchCallMs = Math.max(0, Date.now() - started);
@@ -110,8 +134,25 @@ export function createVectorApiClient({ fetchImpl = globalThis.fetch } = {}) {
           diagnostic.phase = 'response';
           diagnostic.lastSuccessfulStage = 'response_headers';
           progress('response_headers');
-          if (!response.ok) throw fail('VECTOR_HTTP_ERROR', `向量请求失败（HTTP ${response.status}）。`);
-          const body = await response.json();
+          if (!response.ok) {
+            if (usesNativeXfyunProxy(config.url) && response.status === 401 && /^Basic(?:\s|$)/iu.test(response.headers?.get?.('www-authenticate') ?? '')) {
+              throw fail('VECTOR_BASIC_AUTH_CONFLICT', '酒馆密码认证阻止了向量转发。');
+            }
+            if (usesNativeXfyunProxy(config.url) && response.status === 404) {
+              let proxyMessage = '';
+              try { proxyMessage = await response.text(); } catch {}
+              if (proxyMessage.trim() === 'CORS proxy is disabled. Enable it in config.yaml or use the --corsProxy flag.') {
+                throw fail('VECTOR_PROXY_DISABLED', '请开启酒馆 CORS 代理并重启。');
+              }
+            }
+            throw fail('VECTOR_HTTP_ERROR', `向量请求失败（HTTP ${response.status}）。`);
+          }
+          let body;
+          try { body = await response.json(); }
+          catch (error) {
+            if (error?.name === 'SyntaxError') throw fail('VECTOR_RESPONSE_JSON_INVALID', '向量接口返回的不是合法 JSON。');
+            throw fail('VECTOR_RESPONSE_READ_FAILED', '读取向量接口响应失败。');
+          }
           if (finalized) throw fail('VECTOR_ABORTED', '向量请求已取消。');
           diagnostic.responseBodyMs = Math.max(0, Date.now() - started); diagnostic.phase = 'validation'; diagnostic.lastSuccessfulStage = 'response_body';
           progress('response_body');

@@ -133,6 +133,51 @@ test('标准 embeddings 请求批量、乱序回应、维度与归一化；不�
   assert.equal(requests[0].options.headers.Authorization, 'Bearer test-key');
 });
 
+test('正规讯飞 MaaS v1/v2 走宿主代理并透传手填模型、输入和凭证；硅基及相似域名仍直连', async () => {
+  const requests = []; let hostHeaderReads = 0;
+  const api = createVectorApiClient({ fetchImpl: async (url, options) => {
+    requests.push({ url, options });
+    const payload = JSON.parse(options.body), input = payload.input, dimensions = payload.dimensions ?? 3;
+    return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ data: input.map((_, index) => ({ index,
+      embedding: Array.from({ length: dimensions }, (_value, axis) => axis === index ? 1 : 0) })) }) };
+  }, headers: () => { hostHeaderReads++; return { 'X-CSRF-Token': 'host-token', Authorization: 'do-not-forward', Cookie: 'do-not-forward' }; } });
+  const xfyun = normalizeVectorConfig({ url: 'https://maas-api.cn-huabei-1.xf-yun.com/v2/embeddings', key: 'one-http-key', model: 'xop3qwen8bembedding' });
+  assert.deepEqual((await api.embed(xfyun, ['测试输入', '第二项'])).map(vector => [...vector]), [[1, 0, 0], [0, 1, 0]]);
+  assert.equal(requests[0].url, '/proxy/https%3A%2F%2Fmaas-api.cn-huabei-1.xf-yun.com%2Fv2%2Fembeddings');
+  assert.equal(requests[0].options.headers.Authorization, 'Bearer one-http-key');
+  assert.equal(requests[0].options.headers['X-CSRF-Token'], 'host-token');
+  assert.equal(requests[0].options.headers.Cookie, undefined);
+  assert.deepEqual(JSON.parse(requests[0].options.body), { model: 'xop3qwen8bembedding', input: ['测试输入', '第二项'], encoding_format: 'float' });
+  assert.equal(requests[0].options.signal instanceof AbortSignal, true);
+  await api.embed(normalizeVectorConfig({ url: VECTOR_DEFAULT_URL, key: 'silicon-key' }), ['硅基直连']);
+  await api.embed(normalizeVectorConfig({ url: 'https://maas-api.cn-huabei-1.xf-yun.com.evil.test/v2', key: 'other-key', model: 'custom' }), ['相似域名']);
+  assert.equal(requests[1].url, `${VECTOR_DEFAULT_URL}/embeddings`);
+  assert.equal(requests[1].options.headers['X-CSRF-Token'], undefined);
+  assert.equal(hostHeaderReads, 1, '硅基直连不读取或发送宿主请求头');
+  assert.equal(requests[2].url, 'https://maas-api.cn-huabei-1.xf-yun.com.evil.test/v2/embeddings');
+});
+
+test('讯飞代理关闭和 Basic 登录有专门提示；供应商 HTTP 与 JSON 错误不泄露正文', async () => {
+  const xfyun = normalizeVectorConfig({ url: 'https://maas-api.cn-huabei-1.xf-yun.com/v1', key: 'test-key', model: 'xop3qwen8bembedding' });
+  const response = (status, { body = '', challenge = null } = {}) => ({ ok: false, status,
+    headers: { get: name => name.toLowerCase() === 'www-authenticate' ? challenge : null }, text: async () => body });
+  const proxyOff = createVectorApiClient({ fetchImpl: async () => response(404, { body: 'CORS proxy is disabled. Enable it in config.yaml or use the --corsProxy flag.' }) });
+  await assert.rejects(proxyOff.embed(xfyun, ['测试']), error => error.code === 'VECTOR_PROXY_DISABLED' && error.message === '请开启酒馆 CORS 代理并重启。');
+  const basic = createVectorApiClient({ fetchImpl: async () => response(401, { challenge: 'Basic realm="SillyTavern"' }) });
+  await assert.rejects(basic.embed(xfyun, ['测试']), { code: 'VECTOR_BASIC_AUTH_CONFLICT' });
+  for (const status of [401, 403, 404]) {
+    const provider = createVectorApiClient({ fetchImpl: async () => response(status, { body: 'private provider payload test-key' }) });
+    await assert.rejects(provider.embed(xfyun, ['测试']), error => error.code === 'VECTOR_HTTP_ERROR'
+      && error.message.includes(`HTTP ${status}`) && !error.message.includes('private provider') && !error.message.includes('test-key'));
+  }
+  const invalidJson = createVectorApiClient({ fetchImpl: async () => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => { throw new SyntaxError('invalid JSON test-key'); } }) });
+  await assert.rejects(invalidJson.embed(xfyun, ['测试']), { code: 'VECTOR_RESPONSE_JSON_INVALID', message: '向量接口返回的不是合法 JSON。' });
+  const failedRead = createVectorApiClient({ fetchImpl: async () => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => { throw new TypeError('private network failure'); } }) });
+  await assert.rejects(failedRead.embed(xfyun, ['测试']), { code: 'VECTOR_RESPONSE_READ_FAILED', message: '读取向量接口响应失败。' });
+  const directProvider = createVectorApiClient({ fetchImpl: async () => response(404, { body: 'CORS proxy is disabled. Enable it in config.yaml or use the --corsProxy flag.' }) });
+  await assert.rejects(directProvider.embed(normalizeVectorConfig({ url: VECTOR_DEFAULT_URL, key: 'test-key' }), ['测试']), { code: 'VECTOR_HTTP_ERROR' });
+});
+
 test('错误/重复 index/非数值向量拒绝，供应商正文和 Key 不进入提示', async () => {
   for (const body of [ { data: [{ index: 0, embedding: [0, 0] }] }, { data: [{ index: 0, embedding: [NaN, 1] }] }, { data: [{ index: 7, embedding: [1, 0] }] } ]) {
     const api = createVectorApiClient({ fetchImpl: async () => ({ ok: true, json: async () => body }) });

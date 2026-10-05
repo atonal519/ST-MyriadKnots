@@ -11,7 +11,7 @@ import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
 import { createQianshiTimelineView } from '../src/ui/qianshi-timeline-view.js';
 import { readRecallSource } from '../src/v3/recall-source.js';
 import { historySelectionContext, selectRecall } from '../src/v3/recall-selector.js';
-import { buildExtractorSystemPrompt, buildHighFloorExtractorSystemPrompt, createExtractorEnvelope, DEFAULT_EXTRACTOR_GUIDANCE, EXTRACTOR_FIXED_CONTRACT, EXTRACTOR_OUTPUT_CONTRACT, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_SYSTEM_PROMPT, inferCanonicalCurrentTime, normalizeExtractorResponse, runExtractorRequest } from '../src/v3/extractor.js';
+import { buildExtractorSystemPrompt, buildHighFloorExtractorSystemPrompt, createExtractorEnvelope, DEFAULT_EXTRACTOR_GUIDANCE, EXTRACTOR_FIXED_CONTRACT, EXTRACTOR_OUTPUT_CONTRACT, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_RESPONSE_SCHEMA, EXTRACTOR_SYSTEM_PROMPT, inferCanonicalCurrentTime, normalizeExtractorResponse, runExtractorRequest } from '../src/v3/extractor.js';
 import { buildCseSystemPrompt, CSE_FIXED_CONTRACT, CSE_SYSTEM_PROMPT, createCseEnvelope, DEFAULT_CSE_GUIDANCE } from '../src/v3/cse-engine.js';
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
 import { buildEntityIdentityDirectory } from '../src/v3/entity-identity.js';
@@ -992,6 +992,13 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assert.equal(call.parseMode, 'semantic');
   assert.equal(Object.hasOwn(call, 'jsonSchema'), false);
   assert.match(EXTRACTOR_SYSTEM_PROMPT, /people、time、locations 也要分别检查并提取/);
+  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-26');
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /每楼必须检查并返回 qianshi；确无事件增量时返回 events:\[\]/u);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /qianshi 独立于 summary、普通 events、eventFragments/u);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /一次性新事实.*matter=false；计划、持续推进或需要跟踪的事项按 matter=true/u);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /也不要求每楼至少有一条/u);
+  assert.deepEqual(EXTRACTOR_RESPONSE_SCHEMA.required, ['summary', 'qianshi']);
+  assert.deepEqual(EXTRACTOR_RESPONSE_SCHEMA.properties.qianshi.required, ['events', 'order']);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /本楼没有明确时间锚时.*previousFloorContext.*推定/);
   assert.match(call.systemPrompt, /object 只填写对后续叙事有用的具体物品，多个物品用“、”分隔/u);
   assert.match(call.systemPrompt, /人物写入 people，地点或建筑及事件主题应在相应正文事件信息中表达/u);
@@ -6823,6 +6830,7 @@ test('千事历史计划只读，显式开始后每批一次请求并逐楼替�
   const result = await h.runtime.startQianshiHistory(plan.planId);
   assert.equal(h.calls.length, beforePlanCalls + 1, '同一批只调用一次模型');
   assert.match(h.calls.at(-1).systemPrompt, /同一场景同一事项的连续动作合成一件完整事件/u);
+  assert.match(h.calls.at(-1).systemPrompt, /每楼必须检查并返回 qianshi.*qianshi 独立于 summary/u);
   assert.match(h.calls.at(-1).systemPrompt, /事件正文必须放在 description 字段.*不得用 chatSummary 等自造字段替代 description/u);
   assert.match(h.calls.at(-1).systemPrompt, /links 中最多一个 candidateKey.*同一叙事影响多个旧事项时，按事项分别写成独立事件/u);
   assert.match(h.calls.at(-1).systemPrompt, /不得跨 floorKey 合并事件来源/u);
@@ -6854,6 +6862,7 @@ test('已存千事重判按record-N保文字和ID、读取前楼暂存候选并�
         status: 'planned', matter: true, object: index ? '第二楼原物' : '第一楼原物', people: ['原人物'], storyTime: `2026-08-0${index + 1} 10:00`, scheduledTime: '明日' },
     ], order: [] } })) } };
     assert.match(options.systemPrompt, /已存千事重判器/u);
+    assert.match(options.systemPrompt, /一次性新事实或互动变化可记为 matter=false，计划与持续事项仍按 matter\/progress 合同记录/u);
     assert.match(options.systemPrompt, /planned.*inProgress.*completed.*cancelled.*occurred.*unknown/u);
     assert.equal(request.records[0].key, 'record-1');
     if (request.floor === 'floor-2') assert.ok(request.qianshiCandidates.some(item => item.title === '第一楼原题'), '后楼候选来自已暂存的前楼新图');
@@ -7420,6 +7429,113 @@ test('千事历史校验顶层响应、逐楼重复漏回和单楼完整输入�
     assert.equal(result.status, 'partial');
     assert.equal(result.outcomes[0].reasonCode, 'QIANSHI_HISTORY_INPUT_BUDGET');
   });
+});
+
+test('用户显式重查千事空结果楼沿用历史补齐事务且只替换千事增量', async () => {
+  let mode = 'summary';
+  const h = harness({ initialChat: [user('开始'), assistant('第一楼已判空事实。'), user('确认第一楼'),
+    assistant('第二楼已判空事实。'), user('确认第二楼'), assistant('第三楼稍后删除事件。'), user('确认第三楼'),
+    assistant('第四楼已有千事事件。'), user('稳定')],
+    utility: options => {
+      const request = JSON.parse(options.taskMessages[0].content);
+      if (mode === 'summary') {
+        if (request.task === 'extractFloorSemantics') {
+          const body = request.payload.canonicalContent;
+          const qianshi = body.includes('已判空') ? { events: [], order: [] } : { events: [
+            { key: 'existing', title: body.includes('第三楼') ? '待删除事件' : '已有事件',
+              description: body.includes('第三楼') ? '第三楼的事件之后会被人工删除。' : '第四楼已有事件仍须保留。',
+              status: 'occurred', matter: false },
+          ], order: [] };
+          return { jsonData: { summary: `逐字保留的摘要：${body}`, qianshi,
+            ...(body.includes('第一楼') ? { time: [{ sourceText: '2047年10月25日 周五10:30→2047年10月25日 周五11:15', description: '本楼确认日期范围',
+              kind: 'explicit', normalized: null, precision: 'exact' }] } : {}) } };
+        }
+        return { jsonData: { noMaterialChange: true } };
+      }
+      assert.equal(request.task, 'extractQianshiHistoryV1');
+      assert.deepEqual(request.floors.map(value => value.assistantSeq), [1, 2], '仅两个空结果楼进入显式重查批次');
+      return { jsonData: { floors: request.floors.map(value => ({ floorKey: value.floorKey,
+        qianshi: value.assistantSeq === 1 ? { events: [
+          { key: 'recovered', title: '第一楼旧事实', description: '原楼材料明确记载的一次性事实。',
+            status: 'occurred', matter: false, storyTime: '10:30' },
+        ], order: [] } : { events: [], order: [] } })) } };
+    } });
+  await h.runtime.start();
+  for (const floor of h.runtime.getState().floors) await h.runtime.extractFloor(floor.floorId);
+  const beforeDelete = await h.store.readReachable({ mode: 'runtime' });
+  assert.ok(beforeDelete.stateDeltas.length > 0, '夹具确有已落盘 CSE，用来证明恢复不改人物状态');
+  const sourceBySeq = new Map(beforeDelete.floors.map(floor => [floor.assistantSeq, floor.id]));
+  const deletedEvent = projectQianshiGraph(beforeDelete).events.find(event => event.assistantSeq === 3);
+  assert.ok(deletedEvent);
+  await h.runtime.deleteQianshiEvent({ eventId: deletedEvent.id });
+  const before = await h.store.readReachable({ mode: 'runtime' });
+  const oldMemories = new Map(before.floorMemories.map(memory => [memory.floorId, structuredClone(memory)]));
+  const callsBefore = h.calls.length;
+  const defaultPlan = await h.runtime.prepareQianshiHistory();
+  assert.equal(defaultPlan.status, 'empty', '普通补齐默认继续跳过空楼；ready 与人工删除楼也不重提');
+  const plan = await h.runtime.prepareQianshiHistory({ includeEmptyFloors: true });
+  assert.equal(h.calls.length, callsBefore, '计划预览不调用模型');
+  assert.equal(plan.totalFloors, 2);
+  assert.equal(plan.recheckedEmptyFloors, 2);
+  assert.equal(plan.apiCalls, 1);
+  assert.deepEqual(plan.batches[0].assistantSeqs, [1, 2]);
+
+  mode = 'history';
+  const result = await h.runtime.startQianshiHistory(plan.planId);
+  assert.equal(result.status, 'completed');
+  assert.equal(h.calls.length, callsBefore + 1, '整个批次只发出一次 mock 请求，不走摘要或 analysis');
+  const after = await h.store.readReachable({ mode: 'runtime' });
+  const afterByFloor = new Map(after.floorMemories.map(memory => [memory.floorId, memory]));
+  for (const seq of [1, 2]) {
+    const oldMemory = oldMemories.get(sourceBySeq.get(seq)), newMemory = afterByFloor.get(sourceBySeq.get(seq));
+    assert.deepEqual(newMemory.summary, oldMemory.summary, `第 ${seq} 楼摘要逐字保留`);
+    assert.deepEqual(newMemory.chronology, oldMemory.chronology, `第 ${seq} 楼 chronology 保留`);
+    const stable = value => { const { id, updatedAt, supersedes, qianshiDelta, ...rest } = value; return rest; };
+    assert.deepEqual(stable(newMemory), stable(oldMemory), `第 ${seq} 楼只改变千事修订本的身份/增量字段`);
+  }
+  assert.deepEqual(after.stateDeltas, before.stateDeltas, '历史重查不改 CSE');
+  assert.equal(afterByFloor.get(sourceBySeq.get(1)).qianshiDelta.events[0].description, '原楼材料明确记载的一次性事实。');
+  assert.equal(afterByFloor.get(sourceBySeq.get(2)).qianshiDelta.status, 'empty', '模型再次合法判空可保存');
+  assert.deepEqual(afterByFloor.get(sourceBySeq.get(2)).qianshiDelta.events, []);
+  for (const seq of [3, 4]) assert.deepEqual(afterByFloor.get(sourceBySeq.get(seq)).qianshiDelta,
+    oldMemories.get(sourceBySeq.get(seq)).qianshiDelta, `第 ${seq} 楼已有或人工删除事件保持不变`);
+  const snapshot = h.runtime.getQianshiSnapshot();
+  const recovered = snapshot.events.find(event => event.title === '第一楼旧事实');
+  assert.ok(recovered);
+  assert.equal(recovered.storyTime, '10:30', '保存原始钟点');
+  assert.ok(!snapshot.timeline.undatedEventIds.includes(recovered.id), '仅钟点沿第一楼已确认日期归入年表');
+  const recoveredGroup = snapshot.timeline.segments.flatMap(segment => segment.groups).find(group => group.eventIds.includes(recovered.id));
+  assert.equal(recoveredGroup?.period, '2047年10月');
+  assert.equal(recoveredGroup?.day, '25日');
+  const nextDefaultPlan = await h.runtime.prepareQianshiHistory();
+  assert.equal(nextDefaultPlan.status, 'empty', '不会自动循环重查再次判空的楼');
+  const nextExplicitPlan = await h.runtime.prepareQianshiHistory({ includeEmptyFloors: true });
+  assert.deepEqual(nextExplicitPlan.batches.flatMap(batch => batch.assistantSeqs), [2], '再次重查必须由新的显式计划触发');
+});
+
+test('显式重查空结果仍跳过聚合来源楼', async () => {
+  const h = harness({ modernAnchors: true,
+    initialChat: Array.from({ length: 10 }, (_, index) => [assistant(`聚合来源楼 ${index + 1}`),
+      { ...user(`确认聚合来源楼 ${index + 1}`), send_date: `empty-aggregate-${index + 1}` }]).flat(),
+    automation: { enabled: false, batchSize: 1 },
+    utility: options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
+      ? { jsonData: { summary: '十楼聚合摘要。', qianshi: { events: [], order: [] } } }
+      : { jsonData: { noMaterialChange: true } } });
+  await h.runtime.start();
+  await h.runtime.startHistoricalRebuild({ aggregate: true });
+  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().activeAutoMemory,
+    () => JSON.stringify(h.runtime.getState()));
+  const graph = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(graph.floorMemories.length, 1);
+  assert.equal(graph.floorMemories[0].sourceFloorIds.length, 10);
+  assert.equal(graph.floorMemories[0].qianshiDelta.status, 'empty');
+  const callsBefore = h.calls.length;
+  const plan = await h.runtime.prepareQianshiHistory({ includeEmptyFloors: true });
+  assert.equal(plan.status, 'empty');
+  assert.equal(plan.totalFloors, 0);
+  assert.equal(plan.apiCalls, 0);
+  assert.equal(plan.aggregateSkippedFloors.length, 1, '锚点能识别到聚合空记录，但不会纳入重查');
+  assert.equal(h.calls.length, callsBefore, '聚合保护只影响只读计划，不触发模型请求');
 });
 
 test('千事历史计划跳过已经 ready 的楼', async () => {
