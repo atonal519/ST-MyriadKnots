@@ -82,12 +82,23 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
   const ready = async () => {
     await (globalRef.__TAURITAVERN__?.ready ?? globalRef.__TAURITAVERN_MAIN_READY__);
     const store = globalRef.__TAURITAVERN__?.api?.extension?.store;
-    for (const method of ['tryGetJson', 'setJson', 'deleteJson', 'listKeys', 'listTables']) {
+    const readMethod = typeof store?.tryGetJson === 'function' ? 'tryGetJson' : 'getJson';
+    for (const method of [readMethod, 'setJson', 'deleteJson', 'listKeys', 'listTables']) {
       if (typeof store?.[method] !== 'function') throw new Error('TT 本地存储接口不可用，请确认 TauriTavern 版本并重启应用');
     }
     return store;
   };
   const options = (table, key) => ({ namespace: STORAGE_NAMESPACE, table, key });
+  const tryRead = async (store, table, key, signal) => {
+    if (typeof store.tryGetJson === 'function') return store.tryGetJson(options(table, key));
+    // TT 1.6.5 has getJson, but throws for missing keys. Check existence first;
+    // never turn an IO/JSON error into an absent record that a write can replace.
+    const keys = await store.listKeys({ namespace: STORAGE_NAMESPACE, table });
+    abort(signal);
+    if (!Array.isArray(keys) || !keys.every(value => typeof value === 'string')) throw error(500, 'Invalid storage listing');
+    if (!keys.includes(key)) return { found: false };
+    return { found: true, value: await store.getJson(options(table, key)) };
+  };
   const tableFor = async (namespace, collection) => `r-${await sha256(JSON.stringify([namespace, collection]))}`;
   const keyFor = async recordId => `r-${await sha256(recordId)}`;
   const validateSlot = (value, namespace, collection, recordId) => {
@@ -113,8 +124,8 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
     }
     return slot;
   };
-  const read = async (store, table, key, namespace, collection, recordId) => {
-    const result = await store.tryGetJson(options(table, key));
+  const read = async (store, table, key, namespace, collection, recordId, signal) => {
+    const result = await tryRead(store, table, key, signal);
     if (result?.found === false) return null;
     if (result?.found !== true) throw error(500, 'Invalid storage response');
     return unpack(result.value, namespace, collection, recordId);
@@ -126,7 +137,7 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
     for (const key of keys) {
       // Native reads cannot be cancelled once submitted, but cancellation must stop the next read.
       abort(signal);
-      const slot = await read(store, table, key, namespace, collection);
+      const slot = await read(store, table, key, namespace, collection, undefined, signal);
       abort(signal);
       if (!slot || key !== await keyFor(slot.recordId) || table !== await tableFor(namespace, slot.collection)) throw error(500, 'Stored record identity mismatch');
       slots.push({ table, key, slot });
@@ -169,7 +180,7 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
         }
         const recordId = segment(parts[3]);
         const key = await keyFor(recordId);
-        const slot = await read(store, table, key, namespace, collection, recordId)
+        const slot = await read(store, table, key, namespace, collection, recordId, signal)
           ?? { format: 'qqj-tt-record-v1', namespace, collection, recordId, current: null, trash: [] };
         if (method === 'GET') {
           if (!slot.current) throw error(404, 'Record not found');
@@ -230,7 +241,7 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
             for (const key of keys) {
               // Keep large trash scans sequential and stop between native reads after cancellation.
               abort(signal);
-              const found = await store.tryGetJson(options(table, key));
+              const found = await tryRead(store, table, key, signal);
               abort(signal);
             if (found?.found !== true) throw error(500, 'Missing stored record');
             if (decodeSlot(found.value).slot?.namespace !== namespace) continue;
