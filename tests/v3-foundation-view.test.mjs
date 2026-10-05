@@ -1287,7 +1287,8 @@ test('召回常用摘要区分向量候选与实际原文段，诊断默认折�
   const diagnostic = () => flatten(container).find(node => node.className.includes('qqj-recall-diagnostics'));
   assert.equal(diagnostic().open, false, '完整诊断默认关闭');
   assert.match(text(), /本轮选入：旧楼 1 · 当前状态 1 · 历史变化 1/u);
-  assert.match(text(), /向量 可用 · 候选 12 · 选入原文段 0 · 人工摘要未记录/u, '候选数不能冒充实际选入段数');
+  assert.match(text(), /向量 可用 · 候选 12 · 选入原文段 0/u, '候选数不能冒充实际选入段数');
+  assert.doesNotMatch(text(), /人工摘要未记录/u, '新回执不显示已取消的摘要向量字段');
   assert.match(text(), /本轮召回等待 27\.3 秒/u);
   assert.match(text(), /1234\/4000（保守估算）/u);
   assert.match(text(), /历史候选 8 → 模型选择 3/u, '完整筛选细节保留在可展开诊断中');
@@ -1296,14 +1297,15 @@ test('召回常用摘要区分向量候选与实际原文段，诊断默认折�
   state = { ...state, lastRecall: record };
   for (const listener of listeners) listener(state);
   assert.equal(diagnostic().open, true, '重绘后沿用诊断开合状态');
-  assert.match(text(), /向量 可用 · 候选 12 · 选入原文段 1 · 人工摘要 0条/u);
+  assert.match(text(), /向量 可用 · 候选 12 · 选入原文段 1/u);
+  assert.doesNotMatch(text(), /人工摘要 0条/u, '新回执不显示没有意义的人工摘要0条');
   record = { ...record, selectedFloors: [{ assistantSeq: 2, summaryWitnesses: [
     { sourceKind: 'userSummary', floorId: 'floor', floorMemoryId: 'memory', assistantSeq: 2, fingerprint: 'one' },
     { sourceKind: 'userSummary', floorId: 'floor-2', floorMemoryId: 'memory-2', assistantSeq: 3, fingerprint: 'two' },
   ] }] };
   state = { ...state, lastRecall: record };
   for (const listener of listeners) listener(state);
-  assert.match(text(), /向量 可用 · 候选 12 · 选入原文段 0 · 人工摘要 2条/u, '人工摘要选入数与原文片段分开统计');
+  assert.match(text(), /向量 可用 · 候选 12 · 选入原文段 0 · 历史人工摘要 2条/u, '旧回执的人工摘要见证仍如实显示');
   record = { ...record, selectedFloors: [{ assistantSeq: 2, rawWitnesses: [{ floorId: 'floor', floorMemoryId: 'memory', assistantSeq: 2, text: 'witness' }], summaryWitnesses: [] }] };
   state = { ...state, lastRecall: record };
   for (const listener of listeners) listener(state);

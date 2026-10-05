@@ -4924,6 +4924,27 @@ test('历史签名回执 schema16 与旧17仍可只读恢复，读取不重签�
   }
 });
 
+test('已发布 schema17 人工摘要见证回执保留真实结构并可只读恢复，不重签或改写落盘', async () => {
+  const harness = createRuntimeHarness();
+  await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  const receipt = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
+  assert.ok(receipt.selectedFloors.length);
+  const floor = receipt.selectedFloors[0];
+  floor.summaryWitnesses = [{ sourceKind: 'userSummary', floorId: floor.floorId, assistantSeq: floor.assistantSeq,
+    floorMemoryId: floor.floorMemoryId, memoryFloorId: floor.floorId, memoryAssistantSeq: floor.assistantSeq,
+    fingerprint: await fingerprintText('旧人工摘要完整内容'), offset: 0, length: 1, textFingerprint: await fingerprintText('旧') }];
+  receipt.receiptFingerprint = await receiptFingerprint(receipt);
+  const saved = structuredClone(receipt);
+  harness.userMessage.extra[RECALL_RECEIPT_KEY] = receipt;
+  const projected = await projectHistoricalRecallReceipt(harness.userMessage, { chatId: CHAT, userMessageIndex: 1 });
+  assert.equal(projected?.schemaVersion, 17);
+  assert.deepEqual(projected.selectedFloors[0].summaryWitnesses, floor.summaryWitnesses, '旧字段按真实结构保留供历史展示');
+  harness.runtime.invalidate('restoreSchema17SummaryWitness');
+  const restored = await harness.runtime.restorePersistedReceipt();
+  assert.equal(restored.lastRecall.schemaVersion, 17);
+  assert.deepEqual(harness.userMessage.extra[RECALL_RECEIPT_KEY], saved, '恢复不改写或重新签名原回执');
+});
+
 test('历史楼 projector 对旧 schema6/7/8/9 保持原签名展示和真实落盘恢复，但当前生成不能复用', async () => {
   for (const schemaVersion of [6, 7, 8, 9]) {
     let selectorCalls = 0;
@@ -6136,7 +6157,7 @@ test('runtime 最终同步复核返回后若微任务使历史失效，事件先
 });
 
 
-test('真实成员原文经 runtime/签名/冷读按成员楼展示；同 user 冻结不重查向量，人工撤来源后不复活', async () => {
+test('真实成员原文经 runtime/签名/冷读按成员楼展示；摘要revision新ID保持冻结回执，改原文后失效', async () => {
   const source = runtimeFixture();
   source.floorMemories = source.floorMemories.filter(memory => memory.floorId !== 'floor-1');
   const anchor = source.floorMemories.find(memory => memory.floorId === 'floor-2');
@@ -6146,17 +6167,34 @@ test('真实成员原文经 runtime/签名/冷读按成员楼展示；同 user �
   const raw = { floorId: 'floor-1', assistantSeq: 1, floorMemoryId: anchor.floorMemoryId, memoryFloorId: anchor.floorId, memoryAssistantSeq: anchor.assistantSeq, canonicalContent: text, fingerprint: await fingerprintText(text) };
   source.rawSources = [raw];
   const witness = { ...raw, offset: 0, length: text.length, textFingerprint: await fingerprintText(text) }; delete witness.canonicalContent;
-  let selections = 0, vectors = 0, manual = false, semanticPriorityKey = null;
+  let selections = 0, vectors = 0, manual = false, bodyChanged = false, semanticPriorityKey = null;
+  const revisedMemoryId = 'memory-2-after-summary-revision';
   const reachableReader = async () => {
-    const reachable = rawReachableFromSource(source);
+    const currentSource = structuredClone(source);
+    if (manual) {
+      currentSource.floorMemories.find(memory => memory.floorId === 'floor-2').floorMemoryId = revisedMemoryId;
+      currentSource.rawSources = currentSource.rawSources.map(value => ({ ...value, floorMemoryId: revisedMemoryId }));
+    }
+    const reachable = rawReachableFromSource(currentSource);
     reachable.floors.push({ id: 'floor-1', assistantSeq: 1 });
     const memory = reachable.floorMemories.find(memory => memory.id === anchor.floorMemoryId);
     memory.sourceFloorIds = ['floor-1', 'floor-2'];
     memory.sourceFloorSnapshots = [{ floorId: 'floor-1', canonicalContent: text }, { floorId: 'floor-2', canonicalContent: '' }];
-    if (manual) memory.summary = { effectiveSource: 'user', userText: '用户删除了钥匙相关回顾' };
+    if (manual) memory.summary = { effectiveSource: 'user', userText: '用户重新校准了钥匙相关摘要' };
     return reachable;
   };
-  const sourceReader = async () => ({ ...structuredClone(source), rawSources: manual ? [] : [raw] });
+  const sourceReader = async () => {
+    const current = structuredClone(source);
+    if (manual) {
+      current.floorMemories.find(memory => memory.floorId === 'floor-2').floorMemoryId = revisedMemoryId;
+      current.rawSources = [{ ...raw, floorMemoryId: revisedMemoryId }];
+    } else current.rawSources = [raw];
+    if (bodyChanged) {
+      const content = `${text} 正文确实发生变化。`;
+      current.rawSources[0] = { ...current.rawSources[0], canonicalContent: content, fingerprint: await fingerprintText(content) };
+    }
+    return current;
+  };
   const harness = createRuntimeHarness({ sourceReader, reachableReader, useDefaultSelector: true,
     semanticProvider: async () => { vectors++; return { candidates: [{ text, witness }], diagnostic: { status: 'ready', candidateCount: 1,
       requestCount: 0, retryOutcome: 'cancelled', requestAttempts: [{ requestId: 'cancelled-before-fetch', phase: 'request', pendingStage: 'aborted',
@@ -6195,8 +6233,13 @@ test('真实成员原文经 runtime/签名/冷读按成员楼展示；同 user �
   const second = await harness.runtime.intercept(harness.chat, 20000, null, 'regenerate');
   assert.equal(second.lastRecall.reusedReceipt, true); assert.equal(vectors, 1); assert.equal(selections, 1);
   manual = true;
-  const revoked = await harness.runtime.intercept(harness.chat, 20000, null, 'swipe');
-  assert.notEqual(revoked.lastRecall.status, 'ready'); assert.equal(vectors, 1); assert.equal(selections, 1);
+  const revised = await harness.runtime.intercept(harness.chat, 20000, null, 'swipe');
+  assert.equal(revised.lastRecall.reusedReceipt, true, '摘要revision换FloorMemory ID不撤销原文冻结回执');
+  assert.equal(vectors, 1); assert.equal(selections, 1);
+  bodyChanged = true;
+  const invalidated = await harness.runtime.intercept(harness.chat, 20000, null, 'swipe');
+  assert.notEqual(invalidated.lastRecall.status, 'ready', '真实原文变更仍撤销旧冻结回执');
+  assert.equal(vectors, 1); assert.equal(selections, 1);
 });
 
 test('准备期限覆盖身份、独立来源和提交root，诊断分attempt且迟到分支不继续读取', async t => {

@@ -1503,6 +1503,7 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
 // 原文只是叙事材料，不推导共享知识、当前 CSE 或归档摘要的故事时间。
 export function addSemanticHistory(context, semanticCandidates) {
   if (!context) return context;
+  // 只消费带原文见证的候选；旧回执保留人工摘要见证，但不再映射新摘要候选。
   const rawCandidates = semanticCandidates.filter(value => value?.witness).slice(0, 12);
   const values = rawCandidates.map(({ text, witness }, index) => ({
     category: 'narrative', kind: 'sourceFragment', text: `[历史原文；时间未标注] ${clean(text, 400)}`,
@@ -1512,28 +1513,7 @@ export function addSemanticHistory(context, semanticCandidates) {
     _statusKey: `${witness.floorId}:${witness.offset}`, _sourceOrder: 1000000 + index,
   }));
   const ranked = scoreCandidates(values, context.queries, { keepUnmatched: true });
-  const summariesByRef = new Map();
-  for (const candidate of semanticCandidates.filter(value => value?.summaryWitness)) {
-    const witness = candidate.summaryWitness, key = `${witness.floorId}|${witness.floorMemoryId}|${witness.assistantSeq}`;
-    const previous = summariesByRef.get(key);
-    if (!previous || candidate.similarity > previous.similarity) summariesByRef.set(key, candidate);
-  }
-  const allSummaries = [...context.summaries, ...(context.recentSummaries ?? [])];
-  const matchedSummaries = allSummaries.flatMap(value => {
-    const candidate = summariesByRef.get(`${value.floorId}|${value.floorMemoryId}|${value.assistantSeq}`);
-    if (!candidate) return [];
-    const text = candidate.text;
-    const score = Number(candidate.similarity);
-    if (text !== value._coreText || !Number.isFinite(score) || score <= 0) return [];
-    return [{ ...value, score: Math.max(value.score, score), summaryWitness: candidate.summaryWitness, _semanticSummary: true }];
-  });
-  const matchedKeys = new Set(matchedSummaries.map(historyStableKey));
-  const direct = [...context.direct.filter(value => !matchedKeys.has(historyStableKey(value))), ...ranked, ...matchedSummaries];
-  const summaryByKey = new Map(matchedSummaries.map(value => [historyStableKey(value), value]));
-  return { ...context, semantic: [...ranked, ...matchedSummaries],
-    summaries: context.summaries.map(value => summaryByKey.get(historyStableKey(value)) ?? value),
-    recentSummaries: (context.recentSummaries ?? []).map(value => summaryByKey.get(historyStableKey(value)) ?? value),
-    facts: [...context.facts, ...ranked], direct };
+  return { ...context, semantic: ranked, facts: [...context.facts, ...ranked], direct: [...context.direct, ...ranked] };
 }
 
 export function mergeSemanticHistoryPool(nativePool, context, maxCharacters = MAX_LLM_HISTORY_CHARACTERS) {
@@ -1544,7 +1524,7 @@ export function mergeSemanticHistoryPool(nativePool, context, maxCharacters = MA
     const stableKey = historyStableKey(value), existing = candidates.findIndex(candidate => candidate.stableKey === stableKey);
     if (existing >= 0) {
       const candidate = candidates[existing];
-      candidates[existing] = Object.freeze({ ...candidate, sourceKind: value._semanticSummary ? 'semanticSummary' : candidate.sourceKind, value });
+      candidates[existing] = Object.freeze({ ...candidate, value });
       semanticKeys.add(stableKey);
       continue;
     }
@@ -1553,8 +1533,7 @@ export function mergeSemanticHistoryPool(nativePool, context, maxCharacters = MA
     const added = `${key}｜${text}`.length + (candidates.length ? 1 : 0);
     if (characters + added > maxCharacters || candidates.length >= 48) continue;
     characters += added;
-    candidates.push(Object.freeze({ key, stableKey, source: value._semanticSummary ? 'summary' : 'fact',
-      sourceKind: value._semanticSummary ? 'semanticSummary' : 'semantic', text, value }));
+    candidates.push(Object.freeze({ key, stableKey, source: 'fact', sourceKind: 'semantic', text, value }));
     semanticKeys.add(stableKey);
   }
   return Object.freeze({ candidates: Object.freeze(candidates), text: candidates.map(value => `${value.key}｜${value.text}`).join('\n'),

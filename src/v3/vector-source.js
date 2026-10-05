@@ -1,7 +1,7 @@
 import { sha256 } from '../identity.js';
 import { memorySourceFloorIds } from './memory-schema.js';
 
-// 合并摘要的归档锚点与片段实际来源分开保存；人工摘要不从旧原文补回用户删去的内容。
+// 原文向量资格独立于摘要来源；summarySources 只供旧回执核验历史摘要见证。
 export async function projectVectorSources(memories, floors) {
   const floorById = new Map(floors.map(floor => [floor.id, floor]));
   const sources = [], summarySources = [];
@@ -16,7 +16,6 @@ export async function projectVectorSources(memories, floors) {
         memoryFloorId: anchor.id, memoryAssistantSeq: anchor.assistantSeq, canonicalContent,
         fingerprint: `sha256:${await sha256(canonicalContent)}`,
       }));
-      continue;
     }
     const sourceFloorIds = memorySourceFloorIds(memory);
     for (const floorId of sourceFloorIds) {
@@ -44,7 +43,8 @@ export function summaryCandidateText(value) {
 }
 
 export function rawWitnessShape(value) {
-  return Boolean(value && ['floorId', 'floorMemoryId', 'memoryFloorId'].every(key => typeof value[key] === 'string' && value[key].length > 0 && value[key].length <= 500)
+  return Boolean(value && value.sourceKind === undefined
+    && ['floorId', 'floorMemoryId', 'memoryFloorId'].every(key => typeof value[key] === 'string' && value[key].length > 0 && value[key].length <= 500)
     && Number.isSafeInteger(value.assistantSeq) && value.assistantSeq > 0
     && Number.isSafeInteger(value.memoryAssistantSeq) && value.memoryAssistantSeq > 0
     && Number.isSafeInteger(value.offset) && value.offset >= 0
@@ -67,7 +67,8 @@ export const vectorWitnessShape = value => rawWitnessShape(value) || summaryWitn
 export async function rawWitnessValid(value, source) {
   if (!rawWitnessShape(value)) return false;
   const raw = (source?.rawSources ?? []).find(raw => raw.floorId === value.floorId && raw.assistantSeq === value.assistantSeq
-    && raw.floorMemoryId === value.floorMemoryId && raw.memoryFloorId === value.memoryFloorId && raw.memoryAssistantSeq === value.memoryAssistantSeq && raw.fingerprint === value.fingerprint);
+    && raw.memoryFloorId === value.memoryFloorId && raw.memoryAssistantSeq === value.memoryAssistantSeq && raw.fingerprint === value.fingerprint);
+  // 摘要修订会替换归档记录 ID；同一源楼与原文指纹仍能验证旧冻结回执。
   if (!raw || value.offset + value.length > raw.canonicalContent.length) return false;
   return value.textFingerprint === `sha256:${await sha256(raw.canonicalContent.slice(value.offset, value.offset + value.length))}`;
 }

@@ -72,12 +72,13 @@ async function sourceRefsValid(receipt, source, onInvalid = () => {}) {
       for (let witnessIndex = 0; witnessIndex < value.rawWitnesses.length; witnessIndex += 1) {
         const witness = value.rawWitnesses[witnessIndex];
         if (witness.floorId !== value.floorId || witness.assistantSeq !== value.assistantSeq || witness.floorMemoryId !== value.floorMemoryId
-          || !memories.has(`${witness.memoryFloorId}|${witness.floorMemoryId}|${witness.memoryAssistantSeq}`) || !await rawWitnessValid(witness, source)) {
+          || !await rawWitnessValid(witness, source)) {
           return fail({ step: 'selectedReference', kind: 'rawWitness', index, witnessIndex, floorId: value.floorId, floorMemoryId: value.floorMemoryId,
             assistantSeq: value.assistantSeq, memoryFloorId: witness?.memoryFloorId });
         }
       }
     } else if (!memories.has(`${value.floorId}|${value.floorMemoryId}|${value.assistantSeq}`)) return fail({ step: 'selectedReference', kind: 'floor', index, floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq });
+    // schema17旧回执可能含摘要向量见证；只按当前摘要校验其历史可恢复性。
     for (let witnessIndex = 0; witnessIndex < (value.summaryWitnesses ?? []).length; witnessIndex += 1) {
       const witness = value.summaryWitnesses[witnessIndex];
       if (!summaryWitnessShape(witness) || witness.floorId !== value.floorId || witness.assistantSeq !== value.assistantSeq
@@ -206,10 +207,7 @@ function selectedSourceGuardsCurrent(guards, chatId, snapshot) {
 
 const receiptFloorRef = ({ floorId, floorMemoryId, assistantSeq, reasons, items = [] }) => {
   const rawWitnesses = items.map(item => item.rawWitness).filter(Boolean);
-  const summaryWitnesses = [...new Map(items.map(item => item.summaryWitness).filter(Boolean)
-    .map(value => [`${value.floorMemoryId}|${value.floorId}|${value.fingerprint}`, value])).values()];
-  return { floorId, floorMemoryId, assistantSeq, reasons: [...reasons], ...(rawWitnesses.length ? { rawWitnesses: clone(rawWitnesses) } : {}),
-    summaryWitnesses: clone(summaryWitnesses) };
+  return { floorId, floorMemoryId, assistantSeq, reasons: [...reasons], ...(rawWitnesses.length ? { rawWitnesses: clone(rawWitnesses) } : {}) };
 };
 
 const legacyReceiptMaterial = receipt => [
@@ -509,6 +507,7 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     && Number.isSafeInteger(value.assistantSeq) && value.assistantSeq > 0
     && (value.rawWitnesses === undefined || receipt.schemaVersion >= 17 && Array.isArray(value.rawWitnesses) && value.rawWitnesses.length > 0 && value.rawWitnesses.length <= 12
       && value.rawWitnesses.every(witness => rawWitnessShape(witness) && witness.floorId === value.floorId && witness.floorMemoryId === value.floorMemoryId && witness.assistantSeq === value.assistantSeq))
+    // schema17旧回执继续按原形状读取；新 receiptFloorRef 不再写入该历史字段。
     && (value.summaryWitnesses === undefined || receipt.schemaVersion >= 17 && Array.isArray(value.summaryWitnesses) && value.summaryWitnesses.length <= 12
       && value.summaryWitnesses.every(witness => summaryWitnessShape(witness) && witness.floorId === value.floorId && witness.floorMemoryId === value.floorMemoryId && witness.assistantSeq === value.assistantSeq))
     && Array.isArray(value.reasons) && value.reasons.length <= 32
@@ -1551,7 +1550,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         if (snapshot) { candidate = snapshot; candidateOwner = owner; break; }
       }
       if (candidate?.selectedFloors.some(value => value.rawWitnesses?.length || value.summaryWitnesses?.length)) {
-        // 冻结复用不查询向量；原文或人工摘要来源已变化时不复活旧语义材料。
+        // 冻结复用不查询向量；原文见证及旧摘要回执仍按各自来源重新核验。
         advanceOperation(operation, 'receiptSourceVerification');
         const fresh = await sourceReader({ store, now, hostSnapshot: before, sanitizerOptions: currentSanitizerOptions(), realtimeOrigin: hasRealtimeOrigin() });
         for (const value of candidate.selectedFloors) {

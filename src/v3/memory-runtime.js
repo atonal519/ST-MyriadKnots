@@ -1161,6 +1161,16 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     delete operation.qianshiRejected;
     delete operation.qianshiRejectReason;
   for (let attempt = 0; attempt < MEMORY_REBASE_ATTEMPTS; attempt += 1) {
+    // Candidate IDs are scoped by head/generation/source; metadata-only root revisions must keep their immutable payload stable.
+    const commitVersionKey = JSON.stringify([current.root.headCheckpointId,
+      current.root.narrativeGeneration, current.root.sourceSnapshotFingerprint]);
+    if (operation.commitTimestampVersionKey !== commitVersionKey) {
+      const observedNow = Date.parse(nowIso(now));
+      const parentTime = Math.max(Date.parse(current.root.createdAt), Date.parse(current.root.updatedAt));
+      // Pending model output can outlive its parent root; bind each immutable candidate set to this parent version.
+      operation.commitTimestamp = new Date(Math.max(observedNow, parentTime)).toISOString();
+      operation.commitTimestampVersionKey = commitVersionKey;
+    }
     if (operation.qianshiRejudge) assertQianshiRejudgeSnapshot(current, operation);
     let qianshiRejected = false, qianshiRejectReason = null;
     const expectedTargetMemory = operation.qianshiHistory || operation.qianshiTextEdit ? currentMemoryMap(current).get(operation.floorId) : null;
@@ -1370,7 +1380,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const cseReady = memoryReady && floorMemories.filter(memory => memory.recordStatus === 'active').every(memory => provisionalDeltas.some(delta => delta.floorId === memory.floorId));
     const capabilities = { foundationReady: true, memoryReady, cseReady, recallReady: false };
     const checkpoint = validateFoundationCheckpoint({ schemaVersion: 3, recordType: 'checkpoint', id: checkpointId, chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, parentCheckpointId: current.root.headCheckpointId, runId, sourceSnapshotFingerprint: current.root.sourceSnapshotFingerprint, indexLayout: V3_INDEX_LAYOUT_FLOOR_ORDER, capabilities, floorRange: { fromAssistantSeq: current.floors.length ? 1 : 0, toAssistantSeq: current.floors.length, floorIds: current.floors.map(item => item.id) }, inputFingerprints: createCheckpointInputFingerprints(current.floors, { previous: current.checkpoint?.inputFingerprints }), producedRefs: { floors: current.floors.map(item => item.id), floorMemories: floorMemories.map(item => item.id), entities: entities.map(item => item.id), events: [], claims: [], knowledge: [], stateDeltas: provisionalDeltas.map(item => item.id), currentStates: currentState ? [currentState.id] : [], stateProjections: [], episodes: [], threads: [], indexes: indexKeys }, validation: { schemaValid: true, referencesValid: true, orderedReplayValid: true, stateFingerprint }, sealedAt: nowValue, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: current.root.chatId });
-    const root = validateFoundationRoot({ ...current.root, capabilities, headCheckpointId: checkpointId, activeStateRefs: currentState ? [currentState.id] : [], indexManifest: { ...emptyManifest(), floor: indexKeys.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-')), entity: indexKeys.filter(key => key.includes('-entity-')), reverseRef: indexKeys.filter(key => key.includes('-reverseRef-')) }, updatedAt: nowValue }, { expectedChatId: current.root.chatId });
+    // Root metadata can advance without changing its head; keep the mutable root timestamp monotonic independently of sealed candidate time.
+    const rootUpdatedAt = new Date(Math.max(Date.parse(nowIso(now)), Date.parse(current.root.createdAt), Date.parse(current.root.updatedAt))).toISOString();
+    const root = validateFoundationRoot({ ...current.root, capabilities, headCheckpointId: checkpointId, activeStateRefs: currentState ? [currentState.id] : [], indexManifest: { ...emptyManifest(), floor: indexKeys.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-')), entity: indexKeys.filter(key => key.includes('-entity-')), reverseRef: indexKeys.filter(key => key.includes('-reverseRef-')) }, updatedAt: rootUpdatedAt }, { expectedChatId: current.root.chatId });
     await validateCseGraph({ root, checkpoint, run, floors: current.floors, floorMemories, entities, indexes, indexKeys, baseline: current.baseline, stateDeltas: provisionalDeltas, currentStates: currentState ? [currentState] : [] });
     await persistRecords([...newEntities, ...revisionReplacements, ...(currentState ? [currentState] : []), ...indexes], operation.controller.signal);
     await persistRecords([run, checkpoint], operation.controller.signal, { concurrency: 1 });
@@ -1468,7 +1480,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     rememberFloorFailure(oldReachable, lastFailure);
     try {
       const nowValue = nowIso(now);
-      const run = validateFoundationRun({ schemaVersion: 3, recordType: 'run', id: operation.runId, chatId: oldReachable.root.chatId, narrativeGeneration: oldReachable.root.narrativeGeneration, parentCheckpointId: oldReachable.root.headCheckpointId, inputSnapshotFingerprint: oldReachable.root.sourceSnapshotFingerprint, mode: 'localReextract', sessionEpoch: operation.epoch, inputFloorIds: [operation.floorId], phase: 'retryableError', completedFloorIds: [], failedItems: [{ floorId: operation.floorId, stage: 'extractor', code: lastFailure.code, retryCount: Math.max(0, lastFailure.attempts - 1) }], preparedRecordRefs: [], diagnostics: { kind: 'extractor', promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION, floorId: operation.floorId, responseFingerprint: details.responseFingerprint ?? null, api: lastFailure.api, attempts: lastFailure.attempts, transportAttempts: lastFailure.transportAttempts, httpStatus: lastFailure.httpStatus, providerError: lastFailure.providerError, formatStage: lastFailure.formatStage, validationErrors: lastFailure.validationErrors, preflightTiming: operation.preflightTiming ?? null }, startedAt: operation.startedAt, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'staged', supersedes: null }, { expectedChatId: oldReachable.root.chatId });
+      const stage = ['extracting', 'validating', 'committing'].includes(operation.phase) ? operation.phase : 'extracting';
+      // Retry audits use independent immutable run IDs, preserving each failure while linking it to the logical extractor run.
+      const run = validateFoundationRun({ schemaVersion: 3, recordType: 'run', id: newUuid(), chatId: oldReachable.root.chatId, narrativeGeneration: oldReachable.root.narrativeGeneration, parentCheckpointId: oldReachable.root.headCheckpointId, inputSnapshotFingerprint: oldReachable.root.sourceSnapshotFingerprint, mode: 'localReextract', sessionEpoch: operation.epoch, inputFloorIds: [operation.floorId], phase: 'retryableError', completedFloorIds: [], failedItems: [{ floorId: operation.floorId, stage, code: lastFailure.code, retryCount: Math.max(0, lastFailure.attempts - 1) }], preparedRecordRefs: [], diagnostics: { kind: 'extractor', operationRunId: operation.runId, stage, code: lastFailure.code, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION, floorId: operation.floorId, responseFingerprint: details.responseFingerprint ?? null, api: lastFailure.api, attempts: lastFailure.attempts, transportAttempts: lastFailure.transportAttempts, httpStatus: lastFailure.httpStatus, providerError: lastFailure.providerError, formatStage: lastFailure.formatStage, validationErrors: lastFailure.validationErrors, preflightTiming: operation.preflightTiming ?? null }, startedAt: operation.startedAt, createdAt: nowValue, updatedAt: nowValue, recordStatus: 'staged', supersedes: null }, { expectedChatId: oldReachable.root.chatId });
       await store.putRecord(run, { signal: operation.controller.signal });
     } catch { /* failure audit is best effort; it must never move root */ }
     notify();
@@ -1630,7 +1644,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const intent = preparedInput?.intent ?? { epoch, chatId: currentHostChatId() };
     const prepared = preparedInput ?? await prepareExtractorInput({ floorId, floorIds, intent, manualWork: timingWork });
     if (!prepared) return getState();
-    const { source, floor, oldMemory, sourceRawFingerprint, sourceClock, userIdentity, promptGuidanceSnapshot, processingPromptSnapshot, dependencySnapshot, expectedScope, scopedEntities, envelope, semanticInputFingerprint, qianshiDependency } = prepared;
+    const { source, floor, oldMemory, sourceRawFingerprint, sourceClock, userIdentity, promptGuidanceSnapshot, processingPromptSnapshot, dependencySnapshot, expectedScope, scopedEntities, envelope, semanticInputFingerprint: preparedSemanticInputFingerprint, qianshiDependency } = prepared;
     aggregate ||= prepared.aggregate === true;
     let pending = pendingResults.get(floor.id) ?? null;
     if (pending && (!sameExtractorDependency(pending.dependencySnapshot, dependencySnapshot)
@@ -1641,12 +1655,13 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       pending = null;
     }
     const runId = pending?.runId ?? prepared.runId;
+    const semanticInputFingerprint = pending?.semanticInputFingerprint ?? preparedSemanticInputFingerprint;
     const preparedStillCurrent = () => extractionIntentCurrent(intent)
       && source.root.chatId === intent.chatId
       && prepared.sourceSelections.every(item => currentRawSelection(hostAdapter, source.floors.find(candidate => candidate.id === item.floorId))?.rawContent === item.rawContent)
       && JSON.stringify(currentUserIdentity() ?? null) === JSON.stringify(userIdentity ?? null);
     if (!preparedStillCurrent()) throw errorWith('V3_MEMORY_PREFIX_CHANGED', '聊天、目标楼或身份在请求前已经变化，本次请求未发送。');
-    const operation = { floorId: floor.id, floorIds: [...prepared.sourceFloorIds], aggregate, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature, epoch: intent.epoch, controller: new AbortController(), runId, startedAt: pending?.startedAt ?? timingWork.startedAt, commitTimestamp: pending?.commitTimestamp ?? null, phase: pending ? 'committing' : 'extracting', dependencySnapshot, qianshiDependency, preflightTiming: Object.freeze({ ...prepared.preflightTiming, requestDispatchMs: elapsedMs(timingWork.startedMonotonic) }) };
+    const operation = { floorId: floor.id, floorIds: [...prepared.sourceFloorIds], aggregate, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature, epoch: intent.epoch, controller: new AbortController(), runId, startedAt: pending?.startedAt ?? timingWork.startedAt, commitTimestamp: pending?.commitTimestamp ?? null, commitTimestampVersionKey: pending?.commitTimestampVersionKey ?? null, phase: pending ? 'committing' : 'extracting', dependencySnapshot, qianshiDependency, semanticInputFingerprint, preflightTiming: pending?.preflightTiming ?? Object.freeze({ ...prepared.preflightTiming, requestDispatchMs: elapsedMs(timingWork.startedMonotonic) }) };
     const releaseConfirmation = foundationRuntime.holdExtractionConfirmation?.(floor.id, runId) ?? null;
     active = operation; handedToExtractor = true; notify();
     let result = null;
@@ -1673,7 +1688,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }
     } catch (error) {
       if (result && !summaryCommitted && error?.name !== 'AbortError' && !STALE_MEMORY_CODES.has(error?.code)) {
-        rememberPendingResult(floor.id, { chatId: source.root.chatId, narrativeGeneration: source.root.narrativeGeneration, sourceRawFingerprint, processingPrompt: String(processingPromptSnapshot ?? ''), dependencySnapshot, runId: operation.runId, startedAt: operation.startedAt, commitTimestamp: operation.commitTimestamp, result });
+        rememberPendingResult(floor.id, { chatId: source.root.chatId, narrativeGeneration: source.root.narrativeGeneration, sourceRawFingerprint, processingPrompt: String(processingPromptSnapshot ?? ''), dependencySnapshot, runId: operation.runId, startedAt: operation.startedAt, commitTimestamp: operation.commitTimestamp, commitTimestampVersionKey: operation.commitTimestampVersionKey, preflightTiming: operation.preflightTiming, semanticInputFingerprint: operation.semanticInputFingerprint, result });
       } else if (error?.name === 'AbortError' || STALE_MEMORY_CODES.has(error?.code)) pendingResults.delete(floor.id);
       if (error?.name !== 'AbortError' && !STALE_MEMORY_CODES.has(error?.code)) await persistFailure(operation, error, source);
       else lastFailure = Object.freeze({ floorId: operation.floorId, runId: operation.runId, phase: 'stale', code: error?.code === 'V3_MEMORY_PREFIX_CHANGED' ? 'V3_MEMORY_PREFIX_CHANGED' : 'V3_MEMORY_STALE', attempts: 0, validationErrors: [], api: null, message: safeErrorMessage(error?.message ?? '聊天、插件状态或正文分支已变化，迟到结果没有写入。') });

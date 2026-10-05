@@ -1,5 +1,6 @@
 import { createVectorApiClient, resolveVectorConfig } from './src/vector-api.js';
 import { createVectorIndex } from './src/v3/vector-index.js';
+import { createVectorAutoUpdater } from './src/v3/vector-auto-update.js';
 import { readRecallSource } from './src/v3/recall-source.js';
 import { user_avatar } from '/scripts/personas.js';
 import { power_user } from '/scripts/power-user.js';
@@ -141,7 +142,8 @@ const identityProjectionProvider = async () => {
 const vectorApi = createVectorApiClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
 const vectorIndex = createVectorIndex({
   client: backendClient, api: vectorApi, configProvider: () => resolveVectorConfig(settings),
-  identityProvider: () => session.identity(), isEnabled: settings.isEnabled,
+  identityProvider: () => session.identity(), generationProvider: () => foundationRuntime.getReachable()?.root?.narrativeGeneration,
+  isEnabled: settings.isEnabled,
   sourceProvider: () => readRecallSource({ store: foundationStore, hostSnapshot: hostAdapter.snapshot(), sanitizerOptions: sanitizerOptions(), realtimeOrigin: v3MemoryRuntime.allowsRealtimeTailFromEmpty(), identityProjectionProvider }),
 });
 let v3RecallRuntime;
@@ -191,6 +193,37 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   },
   newUuid,
 });
+const vectorAutoUpdater = createVectorAutoUpdater({ memoryRuntime: v3MemoryRuntime, vectorRuntime: vectorIndex,
+  identityProvider: () => session.identity(), generationProvider: () => foundationRuntime.getReachable()?.root?.narrativeGeneration,
+  configProvider: () => resolveVectorConfig(settings), isEnabled: settings.isEnabled, isMainGenerationActive: isGenerating });
+const vectorWakeListeners = [];
+const vectorWakeHost = hostContext();
+let vectorWakeTimer = null, vectorWakeDisposed = false;
+for (const name of ['GENERATION_STOPPED', 'GENERATION_ENDED', 'GROUP_WRAPPER_FINISHED']) {
+  const eventName = vectorWakeHost?.eventTypes?.[name];
+  const eventSource = vectorWakeHost?.eventSource;
+  if (!eventName || !eventSource?.on) continue;
+  // Some host paths unblock generation after awaiting STOPPED handlers; defer one tick and coalesce both terminal events.
+  const handler = () => {
+    if (vectorWakeDisposed || vectorWakeTimer !== null) return;
+    vectorWakeTimer = globalThis.setTimeout(() => {
+      vectorWakeTimer = null;
+      if (!vectorWakeDisposed) vectorAutoUpdater.refresh();
+    }, 0);
+  };
+  eventSource.on(eventName, handler);
+  vectorWakeListeners.push({ eventSource, eventName, handler });
+}
+globalThis.addEventListener?.('beforeunload', () => {
+  vectorWakeDisposed = true;
+  if (vectorWakeTimer !== null) globalThis.clearTimeout(vectorWakeTimer);
+  vectorWakeTimer = null;
+  for (const { eventSource, eventName, handler } of vectorWakeListeners) {
+    if (eventSource.removeListener) eventSource.removeListener(eventName, handler);
+    else eventSource.off?.(eventName, handler);
+  }
+  vectorAutoUpdater.dispose();
+}, { once: true });
 v3RecallRuntime = createV3RecallRuntime({
   store: foundationStore,
   hostAdapter,

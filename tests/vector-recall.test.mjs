@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createVectorApiClient, normalizeVectorConfig, resolveVectorConfig, VECTOR_DEFAULT_URL, VECTOR_DEFAULT_MODEL } from '../src/vector-api.js';
 import { createVectorIndex, VECTOR_INDEX_ID, VECTOR_SHARD_PREFIX } from '../src/v3/vector-index.js';
+import { createVectorAutoUpdater } from '../src/v3/vector-auto-update.js';
 import { projectVectorSources, rawWitnessValid, summaryCandidateText, summaryWitnessValid } from '../src/v3/vector-source.js';
 import { selectRecallWithLlm } from '../src/v3/recall-llm-selector.js';
 import { addSemanticHistory, buildRecallHistoryCandidatePool, historySelectionContext, mergeSemanticHistoryPool } from '../src/v3/recall-selector.js';
@@ -40,6 +41,362 @@ function harness(source, { api = { embed: async (_config, texts) => vectors(text
   const index = createVectorIndex({ client, api, configProvider: () => route, identityProvider: () => identity, sourceProvider: async () => current });
   return { index, records, calls, client, setSource: value => { current = value; }, setIdentity: value => { identity = value; }, setConfig: value => { route = value; } };
 }
+
+async function rawFloor(source, seq, content = `第${seq}楼的原文苹果内容。`) {
+  return { floorId: `floor-${seq}`, assistantSeq: seq, floorMemoryId: `memory-${seq}`, memoryFloorId: `floor-${seq}`,
+    memoryAssistantSeq: seq, canonicalContent: content, fingerprint: await hash(content) };
+}
+
+function committedMemoryState(source, floors = source.rawSources) {
+  return { status: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: false,
+    activeExtraction: false, qianshiHistoryActive: false,
+    floors: floors.map(raw => ({ floorId: raw.floorId, assistantSeq: raw.assistantSeq, canonicalFingerprint: raw.fingerprint,
+      rawFingerprint: raw.fingerprint, memoryId: raw.floorMemoryId, status: 'ready' })) };
+}
+async function waitFor(predicate) { for (let index = 0; index < 30; index += 1) { if (predicate()) return; await flush(); } assert.ok(predicate(), '异步索引状态按时收敛'); }
+
+test('不可用的自动更新器仍提供安全的空生命周期接口', () => {
+  const updater = createVectorAutoUpdater();
+  assert.equal(typeof updater.refresh, 'function');
+  assert.doesNotThrow(() => updater.refresh());
+  assert.doesNotThrow(() => updater.dispose());
+});
+
+test('后台增量复用完整旧shard：16变17只为新片请求embedding并写新shard与manifest', async () => {
+  const source = await sourceFixture();
+  source.rawSources = [];
+  for (let seq = 1; seq <= 16; seq += 1) source.rawSources.push(await rawFloor(source, seq));
+  let modelCalls = 0;
+  const h = harness(source, { api: { embed: async (_config, texts) => { modelCalls += 1; return vectors(texts); } } });
+  await h.index.build();
+  assert.equal(modelCalls, 1);
+  assert.equal(h.calls.length, 2, '首次建立一份shard和manifest');
+  const initialShard = h.records.get(VECTOR_INDEX_ID).data.shardIds[0];
+
+  const shardReads = [];
+  const originalGet = h.client.get;
+  h.client.get = async (collection, id) => { if (id.startsWith(VECTOR_SHARD_PREFIX)) shardReads.push(id); return originalGet(collection, id); };
+  h.setSource({ ...source, rawSources: [...source.rawSources, await rawFloor(source, 17)] });
+  const writesBefore = h.calls.length;
+  const result = await h.index.updateIncrementally();
+  assert.equal(result.status, 'ready');
+  assert.equal(modelCalls, 2, '只为新片追加一次embedding请求');
+  assert.equal(shardReads.includes(initialShard), false, '热缓存不读取未变旧shard；新shard的存在性检查可读');
+  assert.equal(h.calls.length - writesBefore, 2, '只保存新增shard和一次manifest');
+  assert.equal(h.records.get(VECTOR_INDEX_ID).data.shardIds[0], initialShard, '未变shard id仍由新manifest引用');
+
+  const coldBase = harness(source); await coldBase.index.build();
+  const coldOldShard = coldBase.records.get(VECTOR_INDEX_ID).data.shardIds[0];
+  const coldReads = [], coldWrites = [];
+  const originalColdGet = coldBase.client.get;
+  const coldClient = { ...coldBase.client,
+    get: async (collection, id) => { if (id.startsWith(VECTOR_SHARD_PREFIX)) coldReads.push(id); return originalColdGet(collection, id); },
+    put: async (...args) => { coldWrites.push(args[1]); return coldBase.client.put(...args); } };
+  let coldModelCalls = 0;
+  const latest = { ...source, rawSources: [...source.rawSources, await rawFloor(source, 17)] };
+  const cold = createVectorIndex({ client: coldClient, api: { embed: async (_config, texts) => { coldModelCalls += 1; return vectors(texts); } },
+    configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => latest });
+  assert.equal((await cold.updateIncrementally()).status, 'ready');
+  assert.equal(coldModelCalls, 1, '冷状态只对缺少的新原文片段请求embedding');
+  assert.equal(coldReads.filter(id => id === coldOldShard).length, 1, '冷状态恢复一次已提交旧shard');
+  assert.equal(coldReads.length, 2, '另一次读取仅是新增shard的存在性检查');
+  assert.equal(coldWrites.length, 2, '冷增量只PUT新增shard和manifest，不重写未变shard');
+});
+
+test('自动增量只跟随正式记忆快照；无需首次触发，无落盘前缀、重复通知或摘要ID重试', async t => {
+  const source = await sourceFixture();
+  const h = harness(source); let state = committedMemoryState(source), listeners = new Set();
+  const memoryRuntime = { getState: () => state, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
+  const emit = () => { for (const fn of listeners) fn(state); };
+  let calls = 0;
+  let sourceReads = 0;
+  const index = createVectorIndex({ client: h.client, configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }),
+    sourceProvider: async () => { sourceReads += 1; return h.latest ?? source; }, api: { embed: async (_config, texts) => { calls += 1; return vectors(texts); } } });
+  h.latest = source;
+  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: index, identityProvider: () => ({ chatId: source.chatId }),
+    generationProvider: () => source.narrativeGeneration, configProvider: () => config });
+  t.after(() => auto.dispose());
+  // updating is intentionally not exposed as busy before the manifest-eligibility GET;
+  // await that first real attempt so the manual build below cannot race startup.
+  await waitFor(() => sourceReads > 0);
+  await waitFor(() => !index.getState().updating);
+  assert.equal(calls, 0, '没有manifest时后台不得自动首次建索引');
+  assert.notEqual(index.getState().status, 'building', '无首次建索引资格时不伪装为后台工作');
+  assert.equal(index.getState().active, false, '设置页的建立按钮保持可用');
+  await index.build();
+  const initialCalls = calls;
+
+  const second = await rawFloor(source, 2);
+  h.latest = { ...source, rawSources: [...source.rawSources, second] };
+  state = committedMemoryState(h.latest); emit();
+  await waitFor(() => calls === initialCalls + 1);
+  assert.equal(calls, initialCalls + 1, '新记忆落盘后补充一次');
+  await waitFor(() => h.records.get(VECTOR_INDEX_ID).data.chunkCount === 2);
+  emit(); await flush(); assert.equal(calls, initialCalls + 1, '重复通知合并');
+  const putsBeforeSummaryRevision = h.calls.length;
+  h.latest = { ...h.latest, rawSources: h.latest.rawSources.map(raw => ({ ...raw, floorMemoryId: `revised-${raw.floorMemoryId}` })) };
+  state = { ...state, cseRevision: 9, floors: state.floors.map(floor => ({ ...floor, memoryId: `revised-${floor.memoryId}` })) };
+  emit(); await waitFor(() => index.getState().updating); await waitFor(() => !index.getState().updating);
+  assert.equal(calls, initialCalls + 1, '摘要/CSE和FloorMemory ID变化只做原文差集核验，不重算');
+  assert.equal(h.calls.length, putsBeforeSummaryRevision, '纯摘要修订不重写shard或manifest');
+
+  const third = await rawFloor(source, 3);
+  h.latest = { ...h.latest, rawSources: [...h.latest.rawSources, third] };
+  state = { ...state, floors: [...state.floors, { floorId: third.floorId, assistantSeq: third.assistantSeq, canonicalFingerprint: third.fingerprint, status: 'pending' }] };
+  emit(); await flush(); assert.equal(calls, initialCalls + 1, '摘要尚未落盘的新楼不进入正式索引来源');
+  state = committedMemoryState(h.latest); emit();
+  await waitFor(() => calls === initialCalls + 2);
+  assert.equal(calls, initialCalls + 2, '同一楼后续正式落盘仍会补索引');
+
+  h.latest = { ...h.latest, rawSources: [] }; state = committedMemoryState(h.latest, []); emit();
+  await waitFor(() => h.records.get(VECTOR_INDEX_ID).data.chunkCount === 0);
+  assert.equal(h.records.get(VECTOR_INDEX_ID).data.chunkCount, 0, '刪除到无原文时提交空索引');
+  const fourth = await rawFloor(source, 4); h.latest = { ...h.latest, rawSources: [fourth] };
+  state = committedMemoryState(h.latest); emit();
+  await waitFor(() => h.records.get(VECTOR_INDEX_ID).data.chunkCount === 1);
+  assert.equal(h.records.get(VECTOR_INDEX_ID).data.chunkCount, 1, '空manifest仍可自动补回后续稳定楼');
+  assert.equal(calls, initialCalls + 3);
+});
+
+test('主楼生成门控后由结束/停止单次唤醒；同快照折叠且生成期间不启动', async () => {
+  const source = await sourceFixture(), h = harness(source);
+  let state = committedMemoryState(source), listeners = new Set(), generationActive = true, apiCalls = 0;
+  const memoryRuntime = { getState: () => state, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
+  const emit = () => { for (const fn of listeners) fn(state); };
+  const index = createVectorIndex({ client: h.client, configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }),
+    sourceProvider: async () => h.latest ?? source, api: { embed: async (_config, texts) => { apiCalls += 1; return vectors(texts); } } });
+  h.latest = source; await index.build();
+  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: index, identityProvider: () => ({ chatId: source.chatId }),
+    generationProvider: () => source.narrativeGeneration, configProvider: () => config, isMainGenerationActive: () => generationActive });
+  const second = await rawFloor(source, 2); h.latest = { ...source, rawSources: [...source.rawSources, second] };
+  state = committedMemoryState(h.latest); emit(); await flush();
+  auto.refresh(); await flush();
+  assert.equal(apiCalls, 1, '生成中收到的新稳定快照及过早结束通知均不发请求');
+  generationActive = false;
+  auto.refresh();
+  await waitFor(() => h.records.get(VECTOR_INDEX_ID).data.chunkCount === 2);
+  auto.refresh(); auto.refresh(); await flush();
+  assert.equal(apiCalls, 2, '结束/停止唤醒只补一次，新楼期间没有漏掉');
+  assert.equal(h.records.get(VECTOR_INDEX_ID).data.chunkCount, 2);
+  auto.dispose();
+});
+
+test('源读取暂未ready不锁住同源快照；真实API失败仍不会循环重试', async () => {
+  const source = await sourceFixture(), h = harness(source); await h.index.build();
+  let state = committedMemoryState(source), listeners = new Set(), sourceReady = false, sourceReads = 0;
+  const memoryRuntime = { getState: () => state, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
+  const emit = () => { for (const fn of listeners) fn(state); };
+  const outcomes = [];
+  const index = createVectorIndex({ client: h.client, configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }),
+    sourceProvider: async () => { sourceReads += 1; return sourceReady ? source : { status: 'loading' }; },
+    api: { embed: async (_config, texts) => vectors(texts) } });
+  const vectorRuntime = { getState: () => index.getState(), subscribe: fn => index.subscribe(fn), updateIncrementally: async () => {
+    const result = await index.updateIncrementally(); outcomes.push(result); return result;
+  } };
+  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime, identityProvider: () => ({ chatId: source.chatId }),
+    generationProvider: () => source.narrativeGeneration, configProvider: () => config });
+  await waitFor(() => outcomes.length === 1);
+  assert.equal(outcomes[0].status, 'notReady');
+  assert.equal(sourceReads, 1, '未ready不会在同一轮自动重试');
+  sourceReady = true; emit();
+  await waitFor(() => outcomes.length === 2);
+  assert.equal(outcomes[1].status, 'unchanged', '相同正式快照在后续真实ready通知后恢复核对');
+  emit(); await flush();
+  assert.equal(outcomes.length, 2, 'ready后的unchanged快照仍只检查一次');
+  auto.dispose();
+});
+
+test('自动更新遇到挂起的新楼会串行合并，释放后继续处理最新稳定快照', async () => {
+  const source = await sourceFixture(), h = harness(source); let state = committedMemoryState(source), listeners = new Set();
+  const memoryRuntime = { getState: () => state, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
+  const emit = () => { for (const fn of listeners) fn(state); };
+  let calls = 0, active = 0, maximumActive = 0, release, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const index = createVectorIndex({ client: h.client, configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }),
+    sourceProvider: async () => h.latest, api: { embed: async (_config, texts) => {
+      calls += 1; active += 1; maximumActive = Math.max(maximumActive, active);
+      try { if (texts.some(text => text.includes('第2楼'))) { entered(); await new Promise(resolve => { release = resolve; }); } return vectors(texts); }
+      finally { active -= 1; }
+    } } });
+  h.latest = source; await index.build();
+  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: index, identityProvider: () => ({ chatId: source.chatId }),
+    generationProvider: () => source.narrativeGeneration, configProvider: () => config });
+  const second = await rawFloor(source, 2); h.latest = { ...source, rawSources: [...source.rawSources, second] };
+  state = committedMemoryState(h.latest); emit(); await started;
+  const third = await rawFloor(source, 3); h.latest = { ...h.latest, rawSources: [...h.latest.rawSources, third] };
+  state = committedMemoryState(h.latest); emit(); await flush();
+  assert.equal(calls, 2, '新楼到达时不会并行发第二个embedding请求');
+  assert.equal(maximumActive, 1);
+  release();
+  await waitFor(() => h.records.get(VECTOR_INDEX_ID).data.chunkCount === 3);
+  assert.equal(calls, 3, '释放首项后处理最新快照中仍缺少的楼');
+  assert.equal(maximumActive, 1, '同一索引始终单writer');
+  auto.dispose();
+});
+
+test('聊天或世代切换会中止待处理增量，迟到向量不替换旧manifest', async () => {
+  const source = await sourceFixture(), h = harness(source); let identity = { chatId: source.chatId }, generation = source.narrativeGeneration;
+  let state = committedMemoryState(source), listeners = new Set();
+  const memoryRuntime = { getState: () => state, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
+  const emit = () => { for (const fn of listeners) fn(state); };
+  let entered; const started = new Promise(resolve => { entered = resolve; });
+  const api = { embed: async (_config, texts, { signal } = {}) => {
+    if (!texts.some(text => text.includes('第2楼'))) return vectors(texts);
+    entered(); return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError')), { once: true }));
+  } };
+  const index = createVectorIndex({ client: h.client, api, configProvider: () => config, identityProvider: () => identity,
+    sourceProvider: async () => h.latest });
+  h.latest = source; await index.build(); const oldManifest = structuredClone(h.records.get(VECTOR_INDEX_ID));
+  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: index, identityProvider: () => identity,
+    generationProvider: () => generation, configProvider: () => config });
+  const second = await rawFloor(source, 2); h.latest = { ...source, rawSources: [...source.rawSources, second] };
+  state = committedMemoryState(h.latest); emit(); await started;
+  generation = 'new-generation'; emit();
+  await waitFor(() => index.getState().status !== 'building');
+  assert.equal(h.records.get(VECTOR_INDEX_ID).data.chunkCount, oldManifest.data.chunkCount, '取消不会提交迟到的新来源');
+  assert.deepEqual(h.records.get(VECTOR_INDEX_ID), oldManifest);
+  auto.dispose();
+});
+
+test('显式手动取消锁住同快照；内部重置与后续真实新来源都可继续', async t => {
+  const source = await sourceFixture(), h = harness(source); let state = committedMemoryState(source), listeners = new Set();
+  const memoryRuntime = { getState: () => state, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
+  const emit = () => { for (const fn of listeners) fn(state); };
+  let entered; const started = new Promise(resolve => { entered = resolve; }); let apiCalls = 0;
+  let sourceReads = 0;
+  const index = createVectorIndex({ client: h.client, configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }),
+    sourceProvider: async () => { sourceReads += 1; return h.latest; }, api: { embed: async (_config, _texts, { signal } = {}) => {
+      apiCalls += 1; entered(); return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError')), { once: true }));
+    } } });
+  h.latest = source;
+  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: index, identityProvider: () => ({ chatId: source.chatId }),
+    generationProvider: () => source.narrativeGeneration, configProvider: () => config });
+  t.after(() => auto.dispose());
+  await waitFor(() => sourceReads > 0);
+  await waitFor(() => !index.getState().updating);
+  const manualBuild = index.build(); await started;
+  const second = await rawFloor(source, 2); h.latest = { ...source, rawSources: [...source.rawSources, second] };
+  state = committedMemoryState(h.latest); emit(); await flush();
+  index.abortAll({ userInitiated: true }); await assert.rejects(manualBuild, { code: 'VECTOR_ABORTED' });
+  emit(); await flush(); await flush();
+  assert.equal(apiCalls, 1, '同批待处理通知不会在手动取消后重新发起后台API');
+  assert.equal(h.records.has(VECTOR_INDEX_ID), false);
+});
+
+test('取消标记只通知一次；用户取消不吞新楼，普通配置/生命周期重置不冒充人工取消', async () => {
+  for (const userInitiated of [true, false]) {
+    const source = await sourceFixture(), h = harness(source); let state = committedMemoryState(source), listeners = new Set();
+    const memoryRuntime = { getState: () => state, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
+    const emit = () => { for (const fn of listeners) fn(state); };
+    let calls = 0, firstPending = true, entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    const index = createVectorIndex({ client: h.client, configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }),
+      sourceProvider: async () => h.latest, api: { embed: async (_config, texts, { signal } = {}) => {
+        calls += 1;
+        if (firstPending && texts.some(text => text.includes('第2楼'))) {
+          firstPending = false; entered();
+          return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError')), { once: true }));
+        }
+        return vectors(texts);
+      } } });
+    h.latest = source; await index.build();
+    const autoOutcomes = [];
+    const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: { getState: () => index.getState(), subscribe: fn => index.subscribe(fn), updateIncrementally: async () => {
+      const outcome = await index.updateIncrementally(); autoOutcomes.push(outcome); return outcome;
+    } }, identityProvider: () => ({ chatId: source.chatId }),
+      generationProvider: () => source.narrativeGeneration, configProvider: () => config });
+    const second = await rawFloor(source, 2); h.latest = { ...source, rawSources: [...source.rawSources, second] };
+    state = committedMemoryState(h.latest); emit(); await started;
+    index.abortAll({ userInitiated });
+    await waitFor(() => !index.getState().updating);
+    assert.equal(index.getState().cancelled, false, '取消标记不会粘在后续索引状态');
+    assert.equal(index.getState().userCancelled, false, '人工意图只存在于取消通知');
+    emit();
+    if (userInitiated) {
+      await flush();
+      assert.equal(autoOutcomes.length, 2, '人工取消锁住同一快照');
+      assert.equal(calls, 2);
+    } else {
+      await waitFor(() => autoOutcomes.length === 3);
+      assert.notEqual(autoOutcomes[2].status, 'suppressed', '普通生命周期取消不在索引runtime留下同源取消锁');
+      await waitFor(() => h.records.get(VECTOR_INDEX_ID).data.chunkCount === 2);
+      assert.equal(calls, 3, '普通重置后的同源恢复仅补算尚未提交的新原文');
+    }
+    assert.equal(calls, userInitiated ? 2 : 3, userInitiated ? '同一来源不会被人工取消后立刻重试' : '普通重置会在后续通知重新核验同源');
+    const third = await rawFloor(source, 3); h.latest = { ...h.latest, rawSources: [...h.latest.rawSources, third] };
+    state = committedMemoryState(h.latest); emit();
+    const deadline = Date.now() + 2000;
+    while (h.records.get(VECTOR_INDEX_ID).data.chunkCount !== 3 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(h.records.get(VECTOR_INDEX_ID).data.chunkCount, 3,
+      `新稳定来源应越过旧取消记录继续增量：${JSON.stringify({ userInitiated, calls, outcomes: autoOutcomes, status: index.getState().status, updating: index.getState().updating })}`);
+    assert.equal(calls, userInitiated ? 3 : 4, '新稳定来源可越过旧取消/重置记录继续增量');
+    auto.dispose();
+  }
+});
+
+test('增量失败或manifest CAS冲突保留旧提交；同源不重试，来源真变后可继续', async () => {
+  for (const failure of ['embedding', 'manifest']) {
+    const source = await sourceFixture(), h = harness(source); await h.index.build();
+    const oldManifest = structuredClone(h.records.get(VECTOR_INDEX_ID));
+    const next = { ...source, rawSources: [...source.rawSources, await rawFloor(source, 2)] };
+    let requests = 0, failOnce = true;
+    const client = { ...h.client, put: async (collection, id, data, revision, options) => {
+      if (failure === 'manifest' && id === VECTOR_INDEX_ID && failOnce) { failOnce = false; throw Object.assign(new Error('conflict'), { status: 409 }); }
+      return h.client.put(collection, id, data, revision, options);
+    } };
+    const index = createVectorIndex({ client, configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => h.latest,
+      api: { embed: async (_config, texts) => { requests += 1; if (failure === 'embedding' && failOnce) { failOnce = false; throw Object.assign(new Error('offline'), { status: 503 }); } return vectors(texts); } } });
+    h.latest = next;
+    const failed = await index.updateIncrementally();
+    assert.equal(failed.status, 'error'); assert.deepEqual(h.records.get(VECTOR_INDEX_ID), oldManifest, '失败不替换旧manifest');
+    assert.equal((await index.updateIncrementally()).status, 'suppressed', '相同原文集合失败后不循环请求');
+    assert.equal(requests, 1);
+    h.latest = { ...next, rawSources: [...next.rawSources, await rawFloor(source, 3)] };
+    assert.equal((await index.updateIncrementally()).status, 'ready', '真实来源变化后可重新处理');
+    assert.equal(h.records.get(VECTOR_INDEX_ID).data.chunkCount, 3);
+  }
+});
+
+test('同一原文改向量认证配置后会按新配置键核验，不被取消状态吞掉', async () => {
+  const source = await sourceFixture(), h = harness(source); let state = committedMemoryState(source), listeners = new Set(), route = config;
+  const memoryRuntime = { getState: () => state, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
+  const emit = () => { for (const fn of listeners) fn(state); };
+  const outcomes = [];
+  const index = createVectorIndex({ client: h.client, configProvider: () => route, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source,
+    api: { embed: async (_config, texts) => vectors(texts) } });
+  await index.build();
+  const vectorRuntime = { getState: () => index.getState(), subscribe: fn => index.subscribe(fn), updateIncrementally: async () => {
+    const result = await index.updateIncrementally(); outcomes.push(result); return result;
+  } };
+  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime, identityProvider: () => ({ chatId: source.chatId }),
+    generationProvider: () => source.narrativeGeneration, configProvider: () => route });
+  await waitFor(() => outcomes.length === 1);
+  assert.equal(outcomes[0].status, 'unchanged');
+  route = { ...config, key: 'rotated-test-key' };
+  index.abortAll();
+  await waitFor(() => outcomes.length === 2);
+  assert.equal(outcomes[1].status, 'unchanged', '认证配置变化可读取并复用同一模型的原文索引');
+  emit(); await flush();
+  assert.equal(outcomes.length, 2, '配置核验完成后不重复请求');
+  auto.dispose();
+});
+
+test('后台embedding挂起期间旧manifest仍可召回，增量未提交且查询不等待', async () => {
+  const source = await sourceFixture(), h = harness(source); await h.index.build();
+  let entered, release; const started = new Promise(resolve => { entered = resolve; });
+  const pendingVector = new Promise(resolve => { release = resolve; }); let calls = 0;
+  const index = createVectorIndex({ client: h.client, api: { embed: async (_config, texts) => { calls += 1; if (texts.some(text => text.includes('第2楼'))) { entered(); return pendingVector; } return vectors(texts); } },
+    configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => h.latest });
+  h.latest = { ...source, rawSources: [...source.rawSources, await rawFloor(source, 2)] };
+  const oldManifest = structuredClone(h.records.get(VECTOR_INDEX_ID));
+  const update = index.updateIncrementally(); await started;
+  assert.deepEqual(h.records.get(VECTOR_INDEX_ID), oldManifest, 'embedding期间不提前切manifest');
+  const query = await index.query({ source: h.latest, queryContext: { text: '苹果' } });
+  assert.ok(query.candidates.length, '查询继续使用已提交旧索引');
+  assert.equal(query.candidates[0].witness.floorId, 'floor-1');
+  assert.equal(calls, 2, '旧索引查询一次，新楼更新一次；没有额外等待更新');
+  release([[0, 1]]); assert.equal((await update).status, 'ready');
+});
 
 test('白鳥 HTTP 合同：首次不存在返回404可建立，读取不带recordId的信封可恢复缓存', async () => {
   const records = new Map();
@@ -188,7 +545,7 @@ test('错误/重复 index/非数值向量拒绝，供应商正文和 Key 不进�
   await assert.rejects(api.embed(config, ['苹果']), error => error.code === 'VECTOR_CONNECTION_FAILED' && !error.message.includes('test-key'));
 });
 
-test('真实源投影区分原文成员与人工摘要锚；人工摘要只以保存摘要进入索引', async () => {
+test('真实源投影始终保留合格原文；旧人工摘要仅留给历史回执见证校验', async () => {
   const floors = [{ id: 'old', assistantSeq: 1 }, { id: 'anchor', assistantSeq: 4 }];
   const memories = [{ id: 'memory', floorId: 'anchor', sourceFloorIds: ['old', 'anchor'], sourceFloorSnapshots: [{ floorId: 'old', canonicalContent: '老楼原文' }, { floorId: 'anchor', canonicalContent: '归档楼原文' }], summary: { effectiveSource: 'ai', aiText: '旧AI摘要' } }];
   const projection = await projectVectorSources(memories, floors);
@@ -197,21 +554,30 @@ test('真实源投影区分原文成员与人工摘要锚；人工摘要只以�
   assert.deepEqual(projection.summarySources, []);
   memories[0].summary = { effectiveSource: 'user', userText: '用户只留下的钟楼线索', aiText: '旧AI摘要不能回捞' };
   const manual = await projectVectorSources(memories, floors);
-  assert.deepEqual(manual.rawSources, [], '人工聚合摘要不再索引旧正文切片');
-  assert.equal(manual.summarySources.length, 1, '一条聚合人工摘要仅形成一份向量文本');
+  assert.equal(manual.rawSources.length, 2, '摘要来源变化不撤销各成员的合格原文');
+  assert.deepEqual(manual.rawSources.map(value => value.canonicalContent), ['老楼原文', '归档楼原文']);
+  assert.equal(manual.summarySources.length, 1, '旧回执仍能核对当时使用的人工摘要');
   assert.equal(manual.summarySources[0].floorId, 'anchor'); assert.equal(manual.summarySources[0].assistantSeq, 4);
   assert.equal(manual.summarySources[0].floorMemoryId, 'memory'); assert.equal(manual.summarySources[0].memoryFloorId, 'anchor');
   assert.equal(manual.summarySources[0].canonicalContent, '用户只留下的钟楼线索');
   assert.doesNotMatch(manual.summarySources[0].canonicalContent, /老楼原文|归档楼原文|旧AI摘要/u);
+  const oldReceiptWitness = { sourceKind: 'userSummary', floorId: 'anchor', assistantSeq: 4, floorMemoryId: 'memory', memoryFloorId: 'anchor',
+    memoryAssistantSeq: 4, fingerprint: manual.summarySources[0].fingerprint, offset: 0, length: 3, textFingerprint: await hash('用户只') };
+  assert.equal(await summaryWitnessValid(oldReceiptWitness, manual), true, '旧摘要回执见证仍能按当前摘要校验');
+  memories[0].summary.userText = '摘要后来再次校准';
+  const editedProjection = await projectVectorSources(memories, floors);
+  assert.equal(await summaryWitnessValid(oldReceiptWitness, editedProjection), false, '再次改摘要后旧摘要见证不再有效');
   memories[0].summary = { effectiveSource: 'user', userText: '' };
-  assert.deepEqual((await projectVectorSources(memories, floors)).summarySources, [], '空人工摘要不借旧正文回退');
+  const emptyManual = await projectVectorSources(memories, floors);
+  assert.equal(emptyManual.rawSources.length, 2, '清空摘要仍保留原文资格');
+  assert.deepEqual(emptyManual.summarySources, [], '空摘要不会制造历史摘要见证');
   memories[0].summary = { effectiveSource: 'ai' };
   assert.equal((await projectVectorSources(memories, floors.slice(1))).rawSources.length, 1);
   floors[0].content = { canonicalContent: '被编辑的新正文' };
   assert.equal((await projectVectorSources(memories, floors)).rawSources.length, 1);
 });
 
-test('旧单楼缺专用来源快照时回退已保存楼正文，并继续尊重人工、空值和矛盾', async () => {
+test('旧单楼缺专用来源快照时回退已保存楼正文，并继续尊重空值和矛盾', async () => {
   const floor = { id: 'legacy-floor', assistantSeq: 1, content: { canonicalContent: '旧档保留的完整正文。' } };
   const memory = { id: 'legacy-memory', floorId: floor.id, summary: { effectiveSource: 'ai' } };
   const fallback = await projectVectorSources([memory], [floor]);
@@ -220,7 +586,7 @@ test('旧单楼缺专用来源快照时回退已保存楼正文，并继续尊�
   assert.equal(fallback.rawSources[0].floorMemoryId, memory.id);
 
   assert.deepEqual((await projectVectorSources([memory], [{ id: floor.id, assistantSeq: 1 }])).rawSources, [], '缺归档楼原文时不猜来源');
-  assert.deepEqual((await projectVectorSources([{ ...memory, summary: { effectiveSource: 'user' } }], [floor])).rawSources, [], '人工摘要不从归档正文补回');
+  assert.equal((await projectVectorSources([{ ...memory, summary: { effectiveSource: 'user', userText: '人工校准' } }], [floor])).rawSources.length, 1, '人工摘要仍使用既有原文来源资格');
   assert.deepEqual((await projectVectorSources([{ ...memory, sourceCanonicalContent: '' }], [floor])).rawSources, [], '明确空的专用原文不被回退覆盖');
   assert.deepEqual((await projectVectorSources([{ ...memory, sourceCanonicalContent: '矛盾的专用原文。' }], [floor])).rawSources, [], '专用来源与归档原文矛盾时不以归档正文覆盖');
 
@@ -251,71 +617,88 @@ test('手动建索引：缓存不复制正文/Key；一次批量 API，查询验
   assert.equal(calls, 2, '没有合格片段不发送查询向量');
 });
 
-test('全人工来源可非零建索引并召回保存摘要；不要求任何原文向量源', async () => {
+test('全人工摘要楼按原文建立索引；摘要正文不进入 embedding 或新摘要候选路径', async () => {
   const source = await sourceFixture();
-  const summary = summaryCandidateText('小岚与闻溪在钟楼约定保留苹果配方，次日由闻溪带来黄油；当前仍未烘焙。');
-  source.rawSources = [];
+  const summary = summaryCandidateText('用户手工摘要只保留了钟楼与黄油信息。');
+  const original = '小岚与闻溪原文谈到苹果配方，次日闻溪带来黄油，当前仍未烘焙。'.repeat(12);
+  const raw = async (floorId, assistantSeq, floorMemoryId, canonicalContent) => ({ floorId, assistantSeq, floorMemoryId, memoryFloorId: floorId,
+    memoryAssistantSeq: assistantSeq, canonicalContent, fingerprint: await hash(canonicalContent) });
+  const original3 = '第三楼的原文保留了苹果派后续。';
+  source.rawSources = [await raw('floor-1', 1, 'memory-1', '第一楼原始苹果线索。'), await raw('floor-2', 2, 'memory-2', original),
+    await raw('floor-3', 3, 'memory-3', original3)];
+  source.floorMemories[0].summary = '第一楼人工摘要与原文不同。';
   source.floorMemories[1] = { ...source.floorMemories[1], summary,
     chronology: [{ normalized: '2047-10-25T10:30', sourceText: '2047年10月25日10:30' }],
     participants: [{ entityId: 'person-xiaolan', name: '小岚' }, { entityId: 'person-wenxi', name: '闻溪' }],
     locations: [{ entityId: 'tower-id', participantEntityIds: ['person-xiaolan', 'person-wenxi'], name: '钟楼', change: '曾约定会合' }] };
+  source.floorMemories[2].summary = '';
   source.summarySources = [{ sourceKind: 'userSummary', floorId: 'floor-2', assistantSeq: 2, floorMemoryId: 'memory-2',
     memoryFloorId: 'floor-2', memoryAssistantSeq: 2, canonicalContent: summary, fingerprint: await hash(summary) }];
-  const h = harness(source); let embedCalls = 0;
-  const index = createVectorIndex({ client: h.client, api: { embed: async (_config, texts) => { embedCalls++; return vectors(texts); } },
+  source.summarySources = [{ sourceKind: 'userSummary', floorId: 'floor-2', assistantSeq: 2, floorMemoryId: 'memory-2',
+    memoryFloorId: 'floor-2', memoryAssistantSeq: 2, canonicalContent: summary, fingerprint: await hash(summary) }];
+  const h = harness(source); let embedCalls = 0; const embedded = [];
+  const index = createVectorIndex({ client: h.client, api: { embed: async (_config, texts) => { embedCalls++; embedded.push(...texts); return vectors(texts); } },
     configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
   const built = await index.build();
-  assert.ok(built.chunkCount > 0, '只含人工摘要仍生成有效索引片');
+  assert.ok(built.chunkCount > 0, '人工摘要来源楼仍按其原文建立索引');
   assert.equal(embedCalls, 1);
   const result = await index.query({ source, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-2'] });
   assert.ok(result.candidates.length > 0);
-  assert.ok(result.candidates.every(value => value.summaryWitness && !value.witness && value.text === summary));
+  assert.ok(result.candidates.every(value => value.witness && !value.summaryWitness && original.includes(value.text)));
+  assert.ok(embedded.every(text => source.rawSources.some(value => value.canonicalContent.includes(text))), '只将多个人工摘要楼的当前合格原文发送给embedding模拟API');
+  assert.ok(embedded.some(text => text.includes(original.slice(0, 20))) && embedded.some(text => text.includes(original3)));
+  assert.equal(embedded.some(text => text.includes('钟楼与黄油信息')), false);
   const context = historySelectionContext(source, { text: '不存在的词', latestUserText: '不存在的词' });
   const enriched = addSemanticHistory(context, result.candidates);
-  const candidate = [...enriched.summaries, ...enriched.recentSummaries].find(value => value.floorMemoryId === 'memory-2');
-  assert.ok(candidate?._semanticSummary);
-  assert.match(candidate.text, /小岚.*闻溪.*钟楼/u, '保存摘要中的人物与地点文字原样进入候选');
-  assert.equal(candidate._chronology[0].normalized, '2047-10-25T10:30', '时间元数据保留');
-  assert.equal(candidate._subjectKey, 'person-wenxi,person-xiaolan', '主体身份元数据保留');
+  assert.ok(enriched.semantic.every(value => value.kind === 'sourceFragment'));
+  assert.equal(enriched.semantic.some(value => value._semanticSummary), false);
+  const ordinary = [...context.summaries, ...(context.recentSummaries ?? [])].find(value => value.floorMemoryId === 'memory-2');
+  assert.ok(ordinary && ordinary.text.includes(summary), '普通摘要召回仍以人工保存摘要为权威');
 });
 
-test('人工摘要多片沿同一向量缓存命中完整既有摘要，partial-body保留且改写/恢复AI后旧片失效', async () => {
+test('人工摘要改写产生新FloorMemory ID时复用原文向量；原文变化或删源楼仍失效', async () => {
   const source = await sourceFixture();
-  const userText = '手写苹果线索，用户明确删除旧正文里的钥匙去向。'.repeat(55);
-  const canonicalContent = summaryCandidateText(userText), memory = source.floorMemories[1];
-  memory.summary = canonicalContent; memory.sourceFloorIds = ['floor-2', 'floor-9'];
-  source.summarySources = [{ sourceKind: 'userSummary', floorId: 'floor-2', assistantSeq: 2, floorMemoryId: 'memory-2',
-    memoryFloorId: 'floor-2', memoryAssistantSeq: 2, canonicalContent, fingerprint: await hash(canonicalContent) }];
+  source.rawSources[0].canonicalContent = `${source.rawSources[0].canonicalContent} 原始证词仍在。`;
+  source.rawSources[0].fingerprint = await hash(source.rawSources[0].canonicalContent);
   const h = harness(source); let embedCalls = 0;
   const api = { embed: async (_config, texts) => { embedCalls++; return vectors(texts); } };
   const index = createVectorIndex({ client: h.client, api, configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
   await index.build();
-  const storedRows = [...h.records.values()].flatMap(record => record.data.rows ?? []);
-  assert.ok(storedRows.some(row => row.witness.sourceKind === 'userSummary'));
-  assert.equal(JSON.stringify([...h.records.values()]).includes(canonicalContent), false, '缓存只存摘要片段见证与向量，不复制摘要正文');
-  const partial = { ...source, bodyMatch: { coveredFloorIds: ['floor-2'] } };
-  const matched = await index.query({ source: partial, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-2'] });
-  assert.ok(matched.candidates.length > 1, '超过400字摘要会有多个检索分片');
-  assert.ok(matched.candidates.every(value => value.summaryWitness && !value.witness));
-  assert.ok(matched.candidates.every(value => value.text === canonicalContent), '命中分片只指向整条既有摘要，绝不把400字片段当正文');
-  assert.equal(await summaryWitnessValid(matched.candidates[0].summaryWitness, source), true);
-  assert.equal(embedCalls, 2, '建索引与查询各用一次现有向量入口');
+  const first = await index.query({ source, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-1'] });
+  assert.ok(first.candidates.length);
+  const revised = structuredClone(source), oldId = revised.floorMemories[0].floorMemoryId;
+  revised.floorMemories[0].floorMemoryId = 'memory-1-after-summary-edit';
+  revised.floorMemories[0].summary = '用户把摘要改得更清楚';
+  revised.rawSources[0].floorMemoryId = 'memory-1-after-summary-edit';
+  const matched = await index.query({ source: revised, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-1-after-summary-edit'] });
+  assert.ok(matched.candidates.length, '摘要revision换ID后旧向量仍能找到同一原文楼');
+  assert.ok(matched.candidates.every(value => value.witness.floorMemoryId === 'memory-1-after-summary-edit'));
+  assert.equal(await rawWitnessValid(matched.candidates[0].witness, revised), true, '新候选见证绑定当前FloorMemory ID');
+  const cold = createVectorIndex({ client: h.client, api, configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }) });
+  const coldMatch = await cold.query({ source: revised, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-1-after-summary-edit'] });
+  assert.ok(coldMatch.candidates.length && coldMatch.candidates.every(value => value.witness.floorMemoryId === 'memory-1-after-summary-edit'),
+    '冷加载旧落盘向量也绑定当前有效记忆ID');
+  const beforeRebuild = embedCalls;
+  h.setSource(revised);
+  const rebuilt = await index.build();
+  assert.equal(rebuilt.chunkCount, first.candidates.length || rebuilt.chunkCount);
+  assert.equal(embedCalls, beforeRebuild, '手动重建从热缓存复用原文向量，不重新嵌入摘要');
 
-  const rewritten = structuredClone(source), newText = '用户后来改写的苹果摘要，明确不再保留钥匙去向。';
-  rewritten.floorMemories[1].summary = summaryCandidateText(newText);
-  rewritten.summarySources[0].canonicalContent = rewritten.floorMemories[1].summary;
-  rewritten.summarySources[0].fingerprint = await hash(rewritten.summarySources[0].canonicalContent);
-  assert.equal(await summaryWitnessValid(matched.candidates[0].summaryWitness, rewritten), false);
-  assert.deepEqual((await index.query({ source: rewritten, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-2'] })).candidates, [], '改写摘要后旧向量片不再命中');
-  const coldIndex = createVectorIndex({ client: h.client, api, configProvider: () => config,
-    identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => rewritten });
-  assert.deepEqual((await coldIndex.query({ source: rewritten, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-2'] })).candidates, [],
-    '冷读旧缓存也按当前摘要见证过滤，不回捞旧片');
-  const restoredAi = { ...source, summarySources: [], floorMemories: source.floorMemories.map((value, index) => index === 1 ? { ...value, summary: '旧AI摘要' } : value) };
-  assert.deepEqual((await index.query({ source: restoredAi, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-2'] })).candidates, [], '恢复AI来源后不回捞旧人工摘要向量或旧原文');
+  const restored = structuredClone(revised);
+  restored.floorMemories[0].floorMemoryId = 'memory-1-restored-ai';
+  restored.floorMemories[0].summary = '恢复AI摘要';
+  restored.rawSources[0].floorMemoryId = 'memory-1-restored-ai';
+  assert.ok((await index.query({ source: restored, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-1-restored-ai'] })).candidates.length,
+    '恢复AI摘要后原文来源继续有效');
+  const editedBody = structuredClone(restored);
+  editedBody.rawSources[0].canonicalContent += '真实正文新增证据。';
+  editedBody.rawSources[0].fingerprint = await hash(editedBody.rawSources[0].canonicalContent);
+  assert.deepEqual((await index.query({ source: editedBody, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-1-restored-ai'] })).candidates, [], '真实原文变化撤销旧片');
+  const deletedFloor = { ...restored, rawSources: [] };
+  assert.deepEqual((await index.query({ source: deletedFloor, queryContext: { text: '苹果' } })).candidates, [], '删除来源楼后不保留旧片');
 });
 
-test('人工摘要语义命中复用同一楼的完整summary候选，不另造原文片段', async () => {
+test('旧summaryWitness回执读取有效，但不会进入新的语义候选池', async () => {
   const source = await sourceFixture(), summary = '人工只保留了与小狐狸有关的完整摘要。';
   source.floorMemories[1] = { ...source.floorMemories[1], summary,
     chronology: [{ normalized: '2047-10-25', sourceText: '2047年10月25日' }],
@@ -326,18 +709,53 @@ test('人工摘要语义命中复用同一楼的完整summary候选，不另造�
   const summaryWitness = { sourceKind: 'userSummary', floorId: 'floor-2', assistantSeq: 2, floorMemoryId: 'memory-2', memoryFloorId: 'floor-2',
     memoryAssistantSeq: 2, fingerprint: await hash(summary), offset: 0, length: summary.length, textFingerprint: await hash(summary) };
   const enriched = addSemanticHistory(context, [{ text: summary, summaryWitness, similarity: 0.92 }]);
-  const semanticSummary = enriched.semantic.find(value => value._semanticSummary);
-  assert.ok(semanticSummary); assert.equal(semanticSummary.kind, 'summary'); assert.equal(semanticSummary.text, summary);
-  assert.equal(semanticSummary.rawWitness, undefined); assert.equal(semanticSummary.summaryWitness, summaryWitness);
-  assert.equal(enriched.semantic.some(value => value.kind === 'sourceFragment'), false);
+  assert.deepEqual(enriched.semantic, [], '历史摘要候选不作为新候选消费');
   const native = buildRecallHistoryCandidatePool({ source, queryContext: { text: '星际灯塔', latestUserText: '星际灯塔' }, historyContext: context });
   const pool = mergeSemanticHistoryPool(native, enriched);
-  const candidate = pool.candidates.find(value => value.value.summaryWitness);
-  assert.ok(candidate); assert.equal(candidate.sourceKind, 'semanticSummary'); assert.equal(candidate.value.kind, 'summary');
-  assert.equal(candidate.value.text, summary); assert.equal(pool.candidates.filter(value => value.value.floorMemoryId === 'memory-2').length, 1, '同楼摘要只出现一条候选');
-  assert.equal(candidate.value._chronology[0].normalized, '2047-10-25');
-  assert.equal(candidate.value._subjectKey, 'fox-id');
-  assert.match(candidate.value.text, /小狐狸/u);
+  assert.equal(pool.candidates.some(value => value.value.summaryWitness), false);
+  assert.ok(context.summaries.some(value => value.floorMemoryId === 'memory-2' && value.text === summary), '普通摘要仍由现有路径提供');
+});
+
+test('旧人工摘要only索引可读取但零候选/零查询API；同文混合缓存只用原文行', async () => {
+  const summary = '苹果派的配方是六百克苹果和一百克黄油。这是当时的计划，尚未烤制。';
+  const summarySource = { sourceKind: 'userSummary', floorId: 'floor-1', assistantSeq: 1, floorMemoryId: 'memory-1', memoryFloorId: 'floor-1',
+    memoryAssistantSeq: 1, canonicalContent: summary, fingerprint: await hash(summary) };
+  const oldWitness = { ...summarySource, offset: 0, length: summary.length, textFingerprint: await hash(summary) };
+  const vector = Buffer.from(new Float32Array([1, 0]).buffer).toString('base64');
+  const shardId = `${VECTOR_SHARD_PREFIX}${'a'.repeat(40)}`;
+  const modelKey = await hash(JSON.stringify([config.url, config.model, config.dimensions]));
+  const seedOldIndex = async (h, includeSameRawRow = false) => {
+    const rawWitness = { floorId: 'floor-1', assistantSeq: 1, floorMemoryId: 'memory-1', memoryFloorId: 'floor-1', memoryAssistantSeq: 1,
+      fingerprint: await hash(summary), offset: 0, length: summary.length, textFingerprint: await hash(summary) };
+    h.records.set(VECTOR_INDEX_ID, { recordId: VECTOR_INDEX_ID, revision: 1, data: { schemaVersion: 1, recordType: 'vectorCache',
+      chatId: 'chat', narrativeGeneration: 'generation', modelKey, dimensions: 2, shardIds: [shardId], chunkCount: 1 } });
+    h.records.set(shardId, { recordId: shardId, revision: 1, data: { schemaVersion: 1, recordType: 'vectorCache',
+      chatId: 'chat', narrativeGeneration: 'generation', modelKey, rows: [{ witness: oldWitness, vector }, ...(includeSameRawRow ? [{ witness: rawWitness, vector }] : [])] } });
+  };
+
+  const manualOnly = await sourceFixture(); manualOnly.rawSources = []; manualOnly.summarySources = [summarySource];
+  const oldOnly = harness(manualOnly); await seedOldIndex(oldOnly); let oldOnlyCalls = 0;
+  const oldOnlyReader = createVectorIndex({ client: oldOnly.client, api: { embed: async (_config, texts) => { oldOnlyCalls++; return vectors(texts); } },
+    configProvider: () => config, identityProvider: () => ({ chatId: 'chat' }) });
+  const empty = await oldOnlyReader.query({ source: manualOnly, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-2'] });
+  assert.deepEqual(empty.candidates, []); assert.equal(empty.diagnostic.status, 'unindexed'); assert.equal(oldOnlyCalls, 0);
+
+  const mixed = await sourceFixture(); mixed.summarySources = [summarySource];
+  const mixedCache = harness(mixed); await seedOldIndex(mixedCache, true); let mixedCalls = 0;
+  const mixedReader = createVectorIndex({ client: mixedCache.client, api: { embed: async (_config, texts) => { mixedCalls++; return vectors(texts); } },
+    configProvider: () => config, identityProvider: () => ({ chatId: 'chat' }) });
+  const result = await mixedReader.query({ source: mixed, queryContext: { text: '苹果' }, eligibleFloorMemoryIds: ['memory-1', 'memory-2'] });
+  assert.ok(result.candidates.length); assert.ok(result.candidates.every(value => value.witness && !value.summaryWitness));
+  assert.ok(result.candidates.every(value => value.witness.floorId === 'floor-1'), '混合旧缓存只使用原文来源行');
+  assert.equal(mixedCalls, 1, '混合旧缓存仍只按一次原文查询请求');
+
+  const rebuildCache = harness(mixed); await seedOldIndex(rebuildCache); let rebuildCalls = 0;
+  const rebuilder = createVectorIndex({ client: rebuildCache.client, api: { embed: async (_config, texts) => { rebuildCalls++; return vectors(texts); } },
+    configProvider: () => config, identityProvider: () => ({ chatId: 'chat' }), sourceProvider: async () => mixed });
+  await rebuilder.build();
+  assert.ok(rebuildCalls > 0, '即使旧人工摘要与原文完全同文，也不复用其摘要向量行');
+  const rewrittenRows = rebuildCache.records.get(VECTOR_INDEX_ID).data.shardIds.flatMap(id => rebuildCache.records.get(id).data.rows);
+  assert.ok(rewrittenRows.length && rewrittenRows.every(row => row.witness.sourceKind === undefined));
 });
 
 test('首轮召回等待读完现成索引后查询；不重建，不重复查询', async () => {

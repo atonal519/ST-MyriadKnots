@@ -640,11 +640,17 @@ test('向量区显示小字进度与取消，编辑其他 API 时进度保留，
 test('索引切页后重新订阅进行中的任务，恢复完成/失败结果，不重复建索引或中止任务', async () => {
   const settings = createSettingsStore({ extensionSettings: {}, save: () => {} });
   settings.update({ vectorEnabled: true, vectorKey: 'vector-key' });
-  let state = { status: 'building', active: true, completed: 3, total: 7 }, builds = 0, aborts = 0;
+  let state = { status: 'idle', active: false, completed: 0, total: 0 }, builds = 0, aborts = 0;
   const listeners = new Set();
   const publish = next => { state = next; for (const listener of listeners) listener(state); };
   const vectorIndex = { getState: () => state, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); }, build: async () => { builds++; }, abortAll: () => { aborts++; } };
   const mount = () => createVectorApiSettings({ settings, vectorIndex, documentRef });
+  const idle = mount();
+  const idleBuild = idle.node.find(n => n.tagName === 'button' && n.textContent === '建立索引');
+  assert.equal(idleBuild.disabled, false, '无已建索引时首次手动建立入口保持可用');
+  assert.doesNotMatch(idle.node.textContent, /正在读取|建立中/);
+  idle.dispose();
+  publish({ status: 'building', active: true, completed: 3, total: 7 });
   const first = mount(); assert.match(first.node.textContent, /3\/7/);
   publish({ ...state, completed: 5 }); assert.match(first.node.textContent, /5\/7/);
   assert.equal(listeners.size, 1);

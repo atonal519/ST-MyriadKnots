@@ -56,14 +56,14 @@ export function createVectorApiSettings({ settings, vectorApi, vectorIndex, docu
     try { await vectorIndex.build(); }
     catch (error) { if (!vectorIndex.getState().error) { result.textContent = publicErrorMessage(error, { fallback: '索引建立失败，请重试。' }); result.className = 'settings-result error'; } }
   });
-  const cancel = button('取消', 'secondary-action', () => vectorIndex?.abortAll());
+  const cancel = button('取消', 'secondary-action', () => vectorIndex?.abortAll({ userInitiated: true }));
   const actions = element('div', 'settings-actions qqj-vector-actions'); actions.append(save, test, build, cancel);
   function sync() {
     const state = vectorIndex?.getState(), busy = state?.active === true || state?.status === 'building';
     build.disabled = !enabled.checked || busy || !vectorIndex;
     test.disabled = !enabled.checked || testing || !vectorApi;
     cancel.hidden = !busy;
-    progress.textContent = busy ? state.total > 0 ? `建立中 ${state.completed}/${state.total}` : '正在读取原文…'
+    progress.textContent = busy ? state.total > 0 ? `${state.background ? '后台补齐' : '建立中'} ${state.completed}/${state.total}` : state.background ? '正在读取已建索引…' : '正在读取原文…'
       : state?.error ? state.error
       : state?.status === 'ready' ? state.total > 0 ? `已索引 ${state.total} 个片段` : '当前没有可索引的原文。'
       : '';
@@ -71,7 +71,7 @@ export function createVectorApiSettings({ settings, vectorApi, vectorIndex, docu
     progress.hidden = !progress.textContent;
   }
   body.append(enabledRow, field('URL', url), field('Key', key), field('模型', model), xfyunHint,
-    element('p', 'settings-hint', '索引仅当前聊天；更新原文后可重新建立。'), actions, result, progress);
+    element('p', 'settings-hint', '索引仅当前聊天；首次手动建立后，稳定新楼会自动补齐，删除的来源会自动退出索引。'), actions, result, progress);
   updateKeyHint(); syncXfyunHint(); sync();
   // 订阅属于设置界面；切页只释放监听，返回恢复运行时进度，不取消后台任务。
   const releaseProgress = vectorIndex?.subscribe(() => sync());

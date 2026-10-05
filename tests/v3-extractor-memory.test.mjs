@@ -168,7 +168,7 @@ function browserStorage(initial = {}) {
   };
 }
 
-function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, extractorPromptGuidance, csePromptGuidance, processingPrompt, storyClockReferenceTags = '', sanitizerOptions = () => ({}), foundationRefresh, foundationFetch = undefined, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null, qianshiExternalReferenceProvider = () => [], qianshiCandidatePreparer = undefined, qianshiCandidateIndexFactory = undefined, failureStorage = undefined, now = () => new Date(NOW) } = {}) {
+function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, extractorPromptGuidance, csePromptGuidance, processingPrompt, storyClockReferenceTags = '', sanitizerOptions = () => ({}), foundationRefresh, foundationFetch = undefined, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null, qianshiExternalReferenceProvider = () => [], qianshiCandidatePreparer = undefined, qianshiCandidateIndexFactory = undefined, failureStorage = undefined, now = () => new Date(NOW), foundationNow = () => new Date(NOW) } = {}) {
   let enabled = true;
   const handlers = new Map();
   const warnings = [];
@@ -196,7 +196,7 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
     },
   });
   const currentSanitizerOptions = () => typeof sanitizerOptions === 'function' ? sanitizerOptions() : sanitizerOptions;
-  const foundationBase = createFoundationRuntime({ hostAdapter, store, fetchImpl: foundationFetch, contextProvider: () => context, isEnabled: () => enabled, sanitizerOptions: currentSanitizerOptions, scanCandidates: modernAnchors ? scanAssistantCandidates : legacyScanner, newUuid: uuidFactory(), now: () => new Date(NOW), logger: { warn() {} } });
+  const foundationBase = createFoundationRuntime({ hostAdapter, store, fetchImpl: foundationFetch, contextProvider: () => context, isEnabled: () => enabled, sanitizerOptions: currentSanitizerOptions, scanCandidates: modernAnchors ? scanAssistantCandidates : legacyScanner, newUuid: uuidFactory(), now: foundationNow, logger: { warn() {} } });
   const foundationRuntime = {
     ...foundationBase,
     ...(!readOnlyLifecycle ? { inspect: reason => foundationBase.reconcile(`testSetup:${reason}`) } : {}),
@@ -2901,6 +2901,100 @@ test('有效摘要在 index 保存失败后由手动重试复用，成功后立�
   await h.runtime.extractFloor(floorId, { analyzeState: false });
   assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 2,
     '正式提交成功后不得继续复用已经消费的待保存结果');
+});
+
+test('保存重试按父版本冻结候选与模型准备信息，root推进后刷新提交时间且每次失败审计独立', async () => {
+  let clock = Date.parse(NOW);
+  const clockNow = () => new Date(clock);
+  const h = harness({
+    now: clockNow,
+    foundationNow: clockNow,
+    initialChat: [assistant('待保存摘要的目标楼。'), user('确认目标楼稳定。')],
+  });
+  await h.runtime.start();
+  const target = h.runtime.getState().floors[0];
+  const checkpointErrors = [
+    Object.assign(new Error('首次 checkpoint 写入超时'), { code: 'TEST_CHECKPOINT_TIMEOUT' }),
+    Object.assign(new Error('第二次 checkpoint 写入失败'), { code: 'TEST_CHECKPOINT_RETRY_FAILED' }),
+  ];
+  const candidateRuns = [];
+  h.backend.setBeforePut(({ key, data }) => {
+    if (key.startsWith('v3-run-') && data.phase === 'completed' && data.inputFloorIds.includes(target.floorId)) {
+      candidateRuns.push(structuredClone(data));
+    }
+    if (key.startsWith('v3-checkpoint-') && checkpointErrors.length) throw checkpointErrors.shift();
+  });
+
+  let state = await h.runtime.extractFloor(target.floorId, { analyzeState: false });
+  assert.equal(state.rememberedCount, 0);
+  const operationRunId = state.lastExtractorError.runId;
+  const rootBeforeMetadataUpdate = await h.store.readRoot();
+  clock += 30_000;
+  const metadataTime = clockNow().toISOString();
+  const metadataUpdate = await h.store.replaceRecord({ ...rootBeforeMetadataUpdate.data,
+    createdAt: metadataTime, updatedAt: metadataTime }, rootBeforeMetadataUpdate.revision);
+  assert.equal(metadataUpdate.status, 'saved');
+  assert.equal(metadataUpdate.data.headCheckpointId, rootBeforeMetadataUpdate.data.headCheckpointId,
+    'root只推进元数据revision，candidate父checkpoint保持不变');
+  await h.foundationRuntime.refreshStatus();
+  await h.runtime.refreshStatus();
+  state = await h.runtime.extractFloor(target.floorId, { analyzeState: false });
+  assert.equal(state.rememberedCount, 0);
+  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 1,
+    '保存重试复用成功的摘要结果，不再请求模型');
+  assert.equal(candidateRuns.length, 2);
+  assert.equal(candidateRuns[0].id, candidateRuns[1].id, '同一父版本使用相同不可变candidate run ID');
+  assert.deepEqual(candidateRuns[1], candidateRuns[0], '同一父版本的preflightTiming和candidate run内容保持稳定');
+  assert.equal(candidateRuns[1].diagnostics.floorProvenance[target.floorId].semanticInputFingerprint,
+    candidateRuns[0].diagnostics.floorProvenance[target.floorId].semanticInputFingerprint,
+    'pending重用保留真实发给模型的语义输入指纹');
+
+  const auditRuns = () => [...h.backend.records.values()].map(record => record.data)
+    .filter(record => record.recordType === 'run' && record.phase === 'retryableError'
+      && record.diagnostics?.operationRunId === operationRunId);
+  let audits = auditRuns();
+  assert.equal(audits.length, 2, '同一逻辑操作的两次失败分别落入独立audit');
+  assert.notEqual(audits[0].id, audits[1].id);
+  assert.ok(audits.every(record => /^[0-9a-f]{8}-0000-4000-8000-000000000000$/u.test(record.id)),
+    'audit身份使用runtime注入的宿主UUID生成器');
+  assert.deepEqual(new Set(audits.map(record => record.diagnostics.code)), new Set(['TEST_CHECKPOINT_TIMEOUT', 'TEST_CHECKPOINT_RETRY_FAILED']));
+  assert.ok(audits.every(record => record.diagnostics.stage === 'committing'
+    && record.failedItems[0].stage === 'committing'
+    && record.failedItems[0].code === record.diagnostics.code));
+
+  h.backend.setBeforePut(null);
+  const previousRoot = await h.store.readRoot();
+  clock += 60_000;
+  h.context.chat.push(assistant('后来新增的稳定楼。'), user('确认新增楼稳定。'));
+  await h.foundationRuntime.inspect('retryRootAdvance');
+  await h.runtime.refreshStatus();
+  const advancedRoot = await h.store.readRoot();
+  assert.ok(advancedRoot.data.headCheckpointId !== previousRoot.data.headCheckpointId, '夹具确实推进了正式foundation root');
+  assert.ok(Date.parse(advancedRoot.data.createdAt) > Date.parse(candidateRuns[0].createdAt), '新父版本时间晚于原candidate commit时间');
+
+  h.backend.setBeforePut(({ key, data }) => {
+    if (key.startsWith('v3-run-') && data.phase === 'completed' && data.inputFloorIds.includes(target.floorId)) {
+      candidateRuns.push(structuredClone(data));
+    }
+  });
+  state = await h.runtime.extractFloor(target.floorId, { analyzeState: false });
+  assert.equal(state.rememberedCount, 1, JSON.stringify(state.lastExtractorError));
+  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 1,
+    'root推进后的保存重试仍只消费同一份模型结果');
+  assert.equal(candidateRuns.length, 3);
+  assert.notEqual(candidateRuns[2].id, candidateRuns[1].id, 'rebase后的候选按新parent生成新run ID');
+  assert.deepEqual(candidateRuns[2].diagnostics.floorProvenance[target.floorId].preflightTiming,
+    candidateRuns[0].diagnostics.floorProvenance[target.floorId].preflightTiming,
+    '重试继续保留实际模型请求的原始preflightTiming');
+  assert.equal(candidateRuns[2].diagnostics.floorProvenance[target.floorId].semanticInputFingerprint,
+    candidateRuns[0].diagnostics.floorProvenance[target.floorId].semanticInputFingerprint,
+    '跨父版本pending重用不报告从未发送的新prepare输入');
+  assert.ok(Date.parse(candidateRuns[2].createdAt) >= Date.parse(advancedRoot.data.createdAt));
+  const committed = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(committed.status, 'ready');
+  assert.ok(committed.floorMemories.some(memory => memory.floorId === target.floorId));
+  audits = auditRuns();
+  assert.equal(audits.length, 2, '成功提交清除当前UI失败状态，但不改写独立历史失败审计');
 });
 
 test('root 保存失败的待保存结果可跨过另一楼成功提交后继续复用', async () => {

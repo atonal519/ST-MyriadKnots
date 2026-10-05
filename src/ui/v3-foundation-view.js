@@ -1406,13 +1406,10 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const rawWitnessCount = schemaHasWitnesses
         ? (record.selectedFloors ?? []).reduce((sum, value) => sum + (Array.isArray(value?.rawWitnesses) ? value.rawWitnesses.length : 0), 0)
         : null;
-      const schemaHasSummaryWitnesses = (record.selectedFloors ?? []).some(value => Array.isArray(value?.summaryWitnesses));
-      const summaryWitnessCount = schemaHasSummaryWitnesses
-        ? (record.selectedFloors ?? []).reduce((sum, value) => sum + (Array.isArray(value?.summaryWitnesses) ? value.summaryWitnesses.length : 0), 0)
-        : null;
+      const summaryWitnessCount = (record.selectedFloors ?? []).reduce((sum, value) => sum + (Array.isArray(value?.summaryWitnesses) ? value.summaryWitnesses.length : 0), 0);
       const semanticStatus = semanticStatusCopy[semantic.status] ?? (String(semantic.status ?? '').startsWith('VECTOR_') ? '不可用' : '状态未记录');
       const witnessLabel = uncommitted ? '候选原文段' : record.restoredReceipt || record.legacyReadOnly ? '历史选入原文段' : '选入原文段';
-      vectorSummary = `向量 ${semanticStatus} · 候选 ${Number.isSafeInteger(semantic.candidateCount) ? semantic.candidateCount : '未记录'} · ${rawWitnessCount === null ? '原文段未记录' : `${witnessLabel} ${rawWitnessCount}`} · ${summaryWitnessCount === null ? '人工摘要未记录' : `人工摘要 ${summaryWitnessCount}条`}`;
+      vectorSummary = `向量 ${semanticStatus} · 候选 ${Number.isSafeInteger(semantic.candidateCount) ? semantic.candidateCount : '未记录'} · ${rawWitnessCount === null ? '原文段未记录' : `${witnessLabel} ${rawWitnessCount}`}${summaryWitnessCount ? ` · 历史人工摘要 ${summaryWitnessCount}条` : ''}`;
     }
     // 候选与历史材料不得伪装成本轮注入；将诊断折叠也不应影响复制完整回执。
     const overview = element('div', 'v3-foundation-grid qqj-recall-overview');

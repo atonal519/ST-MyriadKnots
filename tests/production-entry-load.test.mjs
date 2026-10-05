@@ -192,7 +192,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.6.10');
+  assert.equal(manifest.version, '0.6.11');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -294,13 +294,14 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
 });
 
 test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/lifecycle 与 recall 保持装配', async () => {
-  const context = createContext({ console });
+  const unloadCallbacks = [];
+  const context = createContext({ console, setTimeout, clearTimeout, addEventListener: (name, callback) => { if (name === 'beforeunload') unloadCallbacks.push(callback); } });
   const entrySource = await readFile(resolve(root, 'index.js'), 'utf8');
   const utilityTask = async () => ({ jsonData: 'utility' });
   const analysisTask = async () => ({ jsonData: 'analysis' });
   const recallTask = async () => ({ jsonData: 'recall' });
 
-  let vectorOptions, vectorClientOptions;
+  let vectorOptions, vectorClientOptions, vectorAutoOptions;
   const vectorRuntime = { getState: () => ({ status: 'idle' }), query: async value => value, abortAll() {}, subscribe: () => () => {} };
   const vectorApi = { embed: async () => [], abortAll() {} };
   let v3MemoryOptions;
@@ -335,8 +336,12 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let sessionIdentityError = null;
   const anchorCalls = [];
   const persistAnchors = async options => { anchorCalls.push(options); return { status: 'persisted' }; };
-  const productionEventSource = { on() {}, removeListener() {} };
-  const productionEventTypes = { CHAT_CHANGED: 'chat', GENERATION_STARTED: 'generation-started', MESSAGE_SENT: 'sent' };
+  const productionEventHandlers = new Map();
+  const productionEventSource = {
+    on(name, handler) { const handlers = productionEventHandlers.get(name) ?? new Set(); handlers.add(handler); productionEventHandlers.set(name, handlers); },
+    removeListener(name, handler) { productionEventHandlers.get(name)?.delete(handler); },
+  };
+  const productionEventTypes = { CHAT_CHANGED: 'chat', GENERATION_STARTED: 'generation-started', MESSAGE_SENT: 'sent', GENERATION_STOPPED: 'generation-stopped', GENERATION_ENDED: 'generation-ended', GROUP_WRAPPER_FINISHED: 'group-wrapper-finished' };
   const hostUuid = '123e4567-e89b-42d3-a456-426614174000';
   let hostUuidCalls = 0;
   const uuidv4 = () => { hostUuidCalls += 1; return hostUuid; };
@@ -400,6 +405,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   });
   define('./src/vector-api.js', { createVectorApiClient: options => { vectorClientOptions = options; return vectorApi; }, resolveVectorConfig: () => null });
   define('./src/v3/vector-index.js', { createVectorIndex: options => { vectorOptions = options; return vectorRuntime; } });
+  let vectorWakeCount = 0;
+  define('./src/v3/vector-auto-update.js', { createVectorAutoUpdater: options => { vectorAutoOptions = options; return { dispose() {}, refresh() { vectorWakeCount += 1; } }; } });
   define('./src/v3/recall-source.js', { readRecallSource: async options => options });
   define('./src/source-permission.js', { createSourcePermissionController: () => ({}) });
   const productionHostContext = { eventSource: productionEventSource, eventTypes: productionEventTypes, uuidv4, getRequestHeaders: () => ({ 'X-CSRF-Token': 'token' }), groupId: null, characterId: 0, characters: [{ avatar: 'char.png' }] };
@@ -461,6 +468,24 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(memoryManagementOptions.vectorRuntime, vectorRuntime);
   assert.deepEqual(vectorClientOptions.headers(), { 'X-CSRF-Token': 'token' }, '向量客户端从当前宿主上下文读取 CSRF 头');
   assert.equal(vectorOptions.api, vectorApi);
+  assert.equal(typeof vectorOptions.generationProvider, 'function');
+  assert.equal(vectorAutoOptions.vectorRuntime, vectorRuntime);
+  assert.equal(typeof vectorAutoOptions.generationProvider, 'function');
+  scriptModule.setExport('is_send_press', true);
+  for (const eventName of ['generation-stopped', 'generation-ended', 'group-wrapper-finished']) {
+    assert.equal(productionEventHandlers.get(eventName)?.size, 1, `${eventName} 唤醒接线必须注册一次`);
+    for (const handler of productionEventHandlers.get(eventName)) handler();
+  }
+  assert.equal(vectorWakeCount, 0, '终止事件同步回调仍不抢在宿主释放生成门控前唤醒');
+  scriptModule.setExport('is_send_press', false);
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 0));
+  assert.equal(vectorWakeCount, 1, '相邻停止、结束和群生成结束事件合并为一次稳定来源检查');
+  for (const handler of productionEventHandlers.get('generation-stopped')) handler();
+  for (const callback of unloadCallbacks) callback();
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 0));
+  assert.equal(vectorWakeCount, 1, '卸载清除待执行唤醒，避免页面关闭后触碰运行时');
+  assert.equal(['generation-stopped', 'generation-ended', 'group-wrapper-finished']
+    .reduce((count, eventName) => count + (productionEventHandlers.get(eventName)?.size ?? 0), 0), 0, '卸载解除向量唤醒事件监听');
   assert.equal(bootstrapOptions.vectorApi, vectorApi);
   assert.equal(bootstrapOptions.vectorIndex, vectorRuntime);
   assert.ok(lifecycleOptions.aborters.includes(vectorRuntime));
