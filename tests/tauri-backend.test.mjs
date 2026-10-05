@@ -17,7 +17,7 @@ const nativeJson = value => Array.isArray(value) ? value.map(nativeJson) : value
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, nativeJson(value[key])])) : value;
 
 // File-backed double of TT 2.2.0's public API. No real user files or model calls.
-async function fixture(t) {
+async function fixture(t, { legacy = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'qqj-tt-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   let failWrite = false, failRead = false, writeCount = 0;
@@ -30,6 +30,10 @@ async function fixture(t) {
   };
   const names = async path => { try { return await readdir(path); } catch (e) { if (e.code === 'ENOENT') return []; throw e; } };
   const store = {
+    async getJson(opts) {
+      if (failRead) throw new Error('read failure');
+      return JSON.parse(await readFile(location(opts), 'utf8'));
+    },
     async tryGetJson(opts) {
       if (failRead) throw new Error('read failure');
       try { return { found: true, value: JSON.parse(await readFile(location(opts), 'utf8')) }; }
@@ -48,9 +52,10 @@ async function fixture(t) {
       await rm(location(opts));
       writeCount++;
     },
-    async listKeys(opts) { return (await names(location(opts))).filter(n => n.endsWith('.json')).map(n => n.slice(0, -5)); },
+    async listKeys(opts) { if (failRead) throw new Error('read failure'); return (await names(location(opts))).filter(n => n.endsWith('.json')).map(n => n.slice(0, -5)); },
     async listTables({ namespace }) { if (failRead) throw new Error('read failure'); return names(join(root, namespace)); },
   };
+  if (legacy) delete store.tryGetJson;
   const globalRef = { crypto: globalThis.crypto, __TAURITAVERN__: { ready: Promise.resolve(), api: { extension: { store } } } };
   const fetchImpl = createTauriBackendFetch({ globalRef });
   const client = createBackendClient({ fetchImpl });
@@ -58,6 +63,113 @@ async function fixture(t) {
   return { client, request, store, globalRef, root, fetchImpl, writes: () => writeCount,
     failWrite: value => { failWrite = value; }, failRead: value => { failRead = value; } };
 }
+
+test('TT 1.6.5 supports initialization, cold reads, revisions, trash and upgrade without migration', async t => {
+  const f = await fixture(t, { legacy: true });
+  assert.equal((await f.client.health()).ok, true);
+  const { context } = await failedInitFixture();
+  assert.equal((await foundationFor(f.client, context).runtime.start()).status, 'ready');
+  const value = { z: 1, a: [{ second: 2, first: 1 }] };
+  const saved = await f.client.put('legacy', 'r', value, 0);
+  const cold = createBackendClient({ fetchImpl: createTauriBackendFetch({ globalRef: f.globalRef }) });
+  assert.equal(JSON.stringify((await cold.get('legacy', 'r')).data), JSON.stringify(value));
+  assert.deepEqual(await cold.list('legacy'), [{ recordId: 'r', ...saved }]);
+  await assert.rejects(cold.put('legacy', 'r', {}, 0), e => e.status === 409);
+  const updated = await cold.put('legacy', 'r', value, saved.revision);
+  const deleted = await cold.remove('legacy', 'r', updated.revision);
+  const trash = await (await f.request('trash/qianqianjie')).json();
+  assert.ok(trash.some(entry => entry.trashId === deleted.trashId));
+  const restored = await f.request(`trash/qianqianjie/${deleted.trashId}/restore`, 'POST');
+  assert.equal(restored.status, 200);
+  assert.equal(JSON.stringify((await cold.get('legacy', 'r')).data), JSON.stringify(value));
+  // Installing the newer API keeps the same namespace, serialized slots and revisions.
+  f.store.tryGetJson = async opts => (await f.store.listKeys({ namespace: opts.namespace, table: opts.table })).includes(opts.key)
+    ? { found: true, value: await f.store.getJson(opts) } : { found: false };
+  assert.equal((await cold.get('legacy', 'r')).revision, updated.revision);
+  const upgraded = await cold.put('legacy', 'r', { newer: true }, updated.revision);
+  delete f.store.tryGetJson;
+  assert.deepEqual((await cold.get('legacy', 'r')).data, { newer: true });
+  const removed = await f.request(`records/qianqianjie/legacy/r/permanent`, 'DELETE', { expectedRevision: upgraded.revision });
+  assert.equal(removed.status, 200);
+  await assert.rejects(cold.get('legacy', 'r'), e => e.status === 404);
+});
+
+test('TT 1.6.5 missing keys do not invoke the throwing getJson API', async t => {
+  const f = await fixture(t, { legacy: true });
+  f.store.getJson = () => { throw new Error('must not read an absent key'); };
+  await assert.rejects(f.client.get('empty', 'missing'), e => e.status === 404);
+  assert.deepEqual(await f.client.list('empty'), []);
+  assert.equal((await f.client.put('empty', 'new', { ok: true }, 0)).revision, 1);
+});
+
+test('TT 1.6.5 listing failures and malformed listings never allow a write', async t => {
+  const f = await fixture(t, { legacy: true });
+  for (const value of [null, {}, [123]]) {
+    f.store.listKeys = async () => value;
+    await assert.rejects(f.client.put('c', 'r', {}, 0), e => e.status === 500);
+  }
+  f.store.listKeys = async () => { throw new Error('listing unavailable'); };
+  await assert.rejects(f.client.put('c', 'r', {}, 0), /listing unavailable/);
+  assert.equal(f.writes(), 0);
+});
+
+test('TT 1.6.5 read errors, disappearing files and corrupt data cannot be overwritten', async t => {
+  const f = await fixture(t, { legacy: true });
+  const saved = await f.client.put('c', 'r', { keep: true }, 0);
+  const original = f.store.getJson;
+  for (const failure of [new Error('read failure'), Object.assign(new Error('file disappeared'), { code: 'ENOENT' }), new SyntaxError('invalid JSON')]) {
+    f.store.getJson = async () => { throw failure; };
+    await assert.rejects(f.client.put('c', 'r', { lose: true }, 0), e => e.message.includes(failure.message));
+    await assert.rejects(f.client.remove('c', 'r', saved.revision));
+  }
+  f.store.getJson = async () => null;
+  await assert.rejects(f.client.put('c', 'r', {}, 0), e => e.status === 500);
+  assert.equal(f.writes(), 1);
+  f.store.getJson = original;
+  assert.deepEqual(await f.client.get('c', 'r'), saved);
+});
+
+test('TT 1.6.5 cancellation between existence check and read prevents further IO', async t => {
+  const f = await fixture(t, { legacy: true });
+  await f.client.put('c', 'r', {}, 0);
+  let release, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const list = f.store.listKeys;
+  f.store.listKeys = async opts => { entered(); await new Promise(resolve => { release = resolve; }); return list(opts); };
+  let reads = 0;
+  f.store.getJson = async () => { reads++; throw new Error('unexpected read'); };
+  const controller = new AbortController();
+  const pending = f.client.put('c', 'r', { lose: true }, 1, { signal: controller.signal });
+  await started;
+  controller.abort();
+  await assert.rejects(pending, e => e.name === 'AbortError');
+  release();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reads, 0);
+  assert.equal(f.writes(), 1);
+});
+
+test('TT newer API stays preferred and its errors never trigger the legacy fallback', async t => {
+  const f = await fixture(t);
+  const originalRead = f.store.tryGetJson;
+  let calls = 0;
+  f.store.tryGetJson = async function (opts) { assert.equal(this, f.store); calls++; return originalRead(opts); };
+  f.store.getJson = () => { throw new Error('legacy getJson must not run'); };
+  f.store.listKeys = () => { throw new Error('legacy existence check must not run'); };
+  const saved = await f.client.put('modern', 'r', { keep: true }, 0);
+  assert.deepEqual(await f.client.get('modern', 'r'), saved);
+  assert.equal(calls, 2);
+  f.store.tryGetJson = async () => { throw new Error('native read failure'); };
+  await assert.rejects(f.client.put('modern', 'r', {}, 0), /native read failure/);
+  assert.equal(f.writes(), 1);
+});
+
+test('TT without either read API remains explicitly unsupported', async t => {
+  const f = await fixture(t, { legacy: true });
+  delete f.store.getJson;
+  await assert.rejects(f.client.health(), /TT 本地存储接口不可用/);
+  assert.equal(f.writes(), 0);
+});
 
 test('TT health checks native IO; read/put/list survive a new client/runtime', async t => {
   const f = await fixture(t);
