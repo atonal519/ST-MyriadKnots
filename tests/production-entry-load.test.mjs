@@ -192,7 +192,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.6.11');
+  assert.equal(manifest.version, '0.6.12');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -599,6 +599,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(peopleWorkspaceOptions.generateUtilityTask, utilityTask);
   assert.equal(peopleWorkspaceOptions.profilePromptGuidance(), '人物资料指导');
   assert.equal(peopleWorkspaceOptions.processingPrompt(), '  破限接线\n');
+  assert.equal(typeof peopleWorkspaceOptions.isMainGenerationActive, 'function', '首次人物整理需让过宿主主楼生成');
   assert.ok(peopleWorkspaceOptions.session); assert.ok(peopleWorkspaceOptions.foundationRuntime); assert.ok(peopleWorkspaceOptions.memoryRuntime);
   assert.equal(bootstrapOptions.peopleWorkspaceRuntime, peopleWorkspaceRuntime);
   assert.equal(bootstrapOptions.chatMemoryManagement, chatMemoryManagement);

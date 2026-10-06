@@ -208,7 +208,10 @@ for (const name of ['GENERATION_STOPPED', 'GENERATION_ENDED', 'GROUP_WRAPPER_FIN
     if (vectorWakeDisposed || vectorWakeTimer !== null) return;
     vectorWakeTimer = globalThis.setTimeout(() => {
       vectorWakeTimer = null;
-      if (!vectorWakeDisposed) vectorAutoUpdater.refresh();
+      if (!vectorWakeDisposed) {
+        vectorAutoUpdater.refresh();
+        peopleWorkspaceRuntime?.wakeAutomaticMaintenance?.();
+      }
     }, 0);
   };
   eventSource.on(eventName, handler);
@@ -262,6 +265,7 @@ peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
   profilePromptGuidance: profilePrompt,
   processingPrompt,
   isEnabled: settings.isEnabled,
+  isMainGenerationActive: isGenerating,
 });
 peopleWorkspaceRuntime.subscribe?.(state => { if (state?.status === 'ready' && state.chatId === session.identity().chatId) void timeRuntime.runBatch({ chatId: state.chatId }); });
 const autoHideController = createAutoHideController({

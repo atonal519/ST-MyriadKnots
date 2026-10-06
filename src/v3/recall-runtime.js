@@ -31,6 +31,8 @@ const LEGACY_MAX_RECEIPT_CSE_CHANGES = 24;
 const LEGACY_MAX_RECEIPT_STORYLINES = 4;
 const MAX_RECEIPT_STATE_PROGRESSIONS = 8;
 const MAX_RECEIPT_SKIP_REASONS = 32;
+// 单次来源准备共用一个期限覆盖身份、root、读取与投影；期限内结束仍须完成后续来源版本核验。
+const DEFAULT_PREPARATION_TIMEOUT_MS = 8000;
 const RECALL_PRIORITY_STATUSES = new Set(['missing', 'empty', 'invalid', 'applied', 'timeGuard']);
 const safePriorityKeys = values => Array.isArray(values) && values.length <= 8
   && values.every(key => typeof key === 'string' && /^[RC]\d{1,4}$/u.test(key))
@@ -58,7 +60,7 @@ function latestUser(snapshot) {
 
 const liveRecallFrameKey = snapshot => JSON.stringify(buildRecallQueryFrame({ coreChat: snapshot?.chat, assistantTurns: 1 }).messages.map(message => [message.role, message.text]));
 
-async function sourceRefsValid(receipt, source, onInvalid = () => {}) {
+async function sourceRefsValid(receipt, source, onInvalid = () => {}, selectedFloorsForValidation = null) {
   // 失败回调只附带首个可定位引用，不参与下面的布尔判定或读取链。
   const fail = reference => { try { onInvalid(reference); } catch { /* 诊断不能改变来源校验结果。 */ } return false; };
   if (!Array.isArray(source?.floorMemories) || !Array.isArray(source?.currentState) || !Array.isArray(receipt?.selectedFloors) || !Array.isArray(receipt?.selectedStates) || !Array.isArray(receipt?.selectedCseChanges)) return fail({ step: 'shape' });
@@ -76,6 +78,11 @@ async function sourceRefsValid(receipt, source, onInvalid = () => {}) {
           return fail({ step: 'selectedReference', kind: 'rawWitness', index, witnessIndex, floorId: value.floorId, floorMemoryId: value.floorMemoryId,
             assistantSeq: value.assistantSeq, memoryFloorId: witness?.memoryFloorId });
         }
+      }
+      // 首次提交中的混合楼还依赖摘要/事实；原文见证不能替它们沿用已替换的归档版本。
+      const selectedItems = selectedFloorsForValidation?.find(floor => floor?.floorId === value.floorId)?.items ?? [];
+      if (selectedItems.some(item => !item.rawWitness) && !memories.has(`${value.floorId}|${value.floorMemoryId}|${value.assistantSeq}`)) {
+        return fail({ step: 'selectedReference', kind: 'floor', index, floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq });
       }
     } else if (!memories.has(`${value.floorId}|${value.floorMemoryId}|${value.assistantSeq}`)) return fail({ step: 'selectedReference', kind: 'floor', index, floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq });
     // schema17旧回执可能含摘要向量见证；只按当前摘要校验其历史可恢复性。
@@ -854,7 +861,7 @@ function coveredBodyGuardsCurrent(guards, snapshot, sanitizerOptions) {
   });
 }
 
-export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = 5000, realtimeOrigin = () => false, recentBodyFloorLimit = () => 3, notifyUser = null, sourceReader = readRecallSource, selector = null, semanticProvider = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, timeProjectionProvider = null, qianshiProgressProvider = null, qianshiDeletionProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
+export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = DEFAULT_PREPARATION_TIMEOUT_MS, realtimeOrigin = () => false, recentBodyFloorLimit = () => 3, notifyUser = null, sourceReader = readRecallSource, selector = null, semanticProvider = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, timeProjectionProvider = null, qianshiProgressProvider = null, qianshiDeletionProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 recall host adapter 无效');
   if (typeof fingerprint !== 'function') throw new TypeError('V3 recall fingerprint 无效');
@@ -896,7 +903,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     narrativeGeneration: value.narrativeGeneration ?? value.data?.narrativeGeneration ?? null,
     revision: value.rootRevision ?? value.revision ?? null, headCheckpointId: value.headCheckpointId ?? value.data?.headCheckpointId ?? null } : null;
   async function basePreparedSource(snapshot, sanitizerSnapshot, { fresh = false, operation = null, rootResult = null, sourceToVerify = null } = {}) {
-    const started = Date.now(), budgetMs = Math.max(1, Number(preparationTimeoutMs) || 5000);
+    const started = Date.now(), budgetMs = Math.max(1, Number(preparationTimeoutMs) || DEFAULT_PREPARATION_TIMEOUT_MS);
     const timing = { phase: sourceToVerify ? 'commit' : 'source', mode: fresh ? 'fresh' : 'cached', stage: 'identity', status: 'unavailable', totalMs: 0, budgetMs,
       identityMs: 0, rootMs: 0, prepareMs: 0, readMs: 0, projectionMs: 0 };
     const timeout = Symbol('memoryPreparationTimeout'), stale = Symbol('memoryPreparationStale');
@@ -1366,7 +1373,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     return { ok: true, snapshot, user };
   }
 
-  async function commitPromptIfCurrent({ operation, source, receipt, selectedFloors, selectedStates, selectedCseChanges = [], timeDependencies, userIndex, userFingerprint, hostGuard, injectionText }) {
+  async function commitPromptIfCurrent({ operation, source, receipt, selectedFloors, selectedFloorsForValidation, selectedStates, selectedCseChanges = [], timeDependencies, userIndex, userFingerprint, hostGuard, injectionText }) {
     let finalReceipt = receipt, liveTime;
     const markVerificationFailure = (step, reason, reference = null) => {
       operation.finalVerification = { ...(operation.sourceVerification ?? {}), step, failure: { step, reason, ...(reference ? { reference } : {}) } };
@@ -1420,7 +1427,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         skipReasons: [...new Set([...(finalReceipt.skipReasons ?? []), 'optionalQianshiChanged'])] };
     }
     let failedReference = null;
-    if (!await sourceRefsValid({ selectedFloors, selectedStates, selectedCseChanges }, currentSource, reference => { failedReference = reference; })) {
+    if (!await sourceRefsValid({ selectedFloors, selectedStates, selectedCseChanges }, currentSource, reference => { failedReference = reference; }, selectedFloorsForValidation)) {
       markVerificationFailure(failedReference?.step ?? 'selectedReference', 'changed', failedReference);
       return { ok: false, reason: 'selectedRefsChanged' };
     }
@@ -1613,7 +1620,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         operation.prequelCommitted = prequelCommit.committed;
         if (source.status !== 'uninitialized') {
           const detail = publicErrorMessage(source.error, { fallback: source.error ? '记忆来源读取失败。' : '' });
-          try { notifyUser?.({ kind: 'warning', text: `${source.status === 'timeout' ? '当前聊天记忆在 5 秒内未准备完成' : '当前聊天记忆暂时无法读取'}，本轮不注入普通记忆，正文继续生成。${detail ? ` ${detail}` : ''}` }); } catch { /* notification must not affect recall */ }
+          try { notifyUser?.({ kind: 'warning', text: `${source.status === 'timeout' ? '当前聊天记忆在准备期限内未准备完成' : '当前聊天记忆暂时无法读取'}，本轮不注入普通记忆，正文继续生成。${detail ? ` ${detail}` : ''}` }); } catch { /* notification must not affect recall */ }
         }
         return finishSkipped(operation, reason, timings);
       }
@@ -1733,7 +1740,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       operation.phase = diagnostic.phase = 'commit';
       advanceOperation(operation, 'commitVerification');
       let committed;
-      try { committed = await commitPromptIfCurrent({ operation, source, receipt: receiptBase, selectedFloors: receiptBase.selectedFloors, selectedStates: receiptBase.selectedStates, selectedCseChanges: receiptBase.selectedCseChanges, timeDependencies: receiptBase.timeDependencies, userIndex: user.index, userFingerprint, hostGuard, injectionText: receiptBase.injectionText }); }
+      try { committed = await commitPromptIfCurrent({ operation, source, receipt: receiptBase, selectedFloors: receiptBase.selectedFloors, selectedFloorsForValidation: selection.floors, selectedStates: receiptBase.selectedStates, selectedCseChanges: receiptBase.selectedCseChanges, timeDependencies: receiptBase.timeDependencies, userIndex: user.index, userFingerprint, hostGuard, injectionText: receiptBase.injectionText }); }
       finally { timings.commitMs = Date.now() - commitStarted; }
       if (!committed.ok) return stopForFinalSafety(committed.reason);
       receiptBase = { ...committed.receipt, timings: receiptTimingSnapshot(timings) };

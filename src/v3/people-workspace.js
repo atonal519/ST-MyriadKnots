@@ -17,6 +17,7 @@ import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 export const PEOPLE_WORKSPACE_RECORD_ID = 'v3-people-workspace';
 export const PEOPLE_WORKSPACE_SCHEMA_VERSION = 3;
 export const PEOPLE_PROFILE_INPUT_CHAR_BUDGET = 24000;
+const PEOPLE_PROFILE_MATERIAL_FIELDS = PEOPLE_PROFILE_FIELDS.filter(field => field !== 'name' && field !== 'aliases');
 
 export const DEFAULT_PROFILE_GUIDANCE = `你是“千千结”的人物基础资料整理员，只整理有明确依据、适合长期建档的目标人物资料。
 人物卡和世界书属于明确设定；CSE Core 是人物分析，不自动等同作者设定。来源冲突时不拼凑或替作者裁决，只整理能明确归属的稳定资料。
@@ -68,6 +69,9 @@ function profileFields(value = {}) {
   const result = emptyPeopleProfileFields();
   for (const field of PEOPLE_PROFILE_FIELDS) result[field] = field === 'aliases' ? aliasesText(value[field]) : clean(value[field]);
   return Object.freeze(result);
+}
+function hasProfileMaterial(profile) {
+  return PEOPLE_PROFILE_MATERIAL_FIELDS.some(field => String(profile?.[field] ?? '').trim().length > 0);
 }
 function macrosFor(reachable) {
   return Object.freeze({ user: clean(reachable?.baseline?.userPersona?.name, 500), char: clean(reachable?.baseline?.characterCard?.name, 500) });
@@ -535,7 +539,7 @@ function incompleteProfileResult(result) {
 
 export function createPeopleWorkspaceRuntime({
   store, session, foundationRuntime, foundationStore, hostAdapter, memoryRuntime, generateUtilityTask, sourcePermissions,
-  contextProvider, scanner = scanWorldInfo,
+  contextProvider, scanner = scanWorldInfo, isMainGenerationActive = () => false,
   sourceCandidateFactory = createWorldInfoSourceCandidates, profilePromptGuidance = () => '', processingPrompt = () => '', isEnabled = true, now = () => new Date(), logger = console,
 } = {}) {
   if (!store || typeof store.read !== 'function' || typeof store.put !== 'function') throw new TypeError('人物工作区 store 无效');
@@ -545,7 +549,8 @@ export function createPeopleWorkspaceRuntime({
   if (typeof generateUtilityTask !== 'function' || typeof contextProvider !== 'function') throw new TypeError('人物资料生成依赖无效');
   if (!sourcePermissions || typeof sourcePermissions.filterCandidates !== 'function') throw new TypeError('人物资料来源许可依赖无效');
   let epoch = 0, active = null, workspace = null, revision = 0, chatId = null, people = Object.freeze([]), lastError = null, lastGenerationReport = null;
-  let autoDrainQueued = false, pendingAutomaticScan = false, destroyed = false, automaticFloorCount = null, automaticChatId = null;
+  let autoDrainQueued = false, autoDrainTimer = null, pendingAutomaticScan = false, destroyed = false, automaticFloorCount = null, automaticChatId = null;
+  const pendingInitialProfiles = new Set();
   const concurrentWrites = new Set();
   const subscribers = new Set();
   const enabled = () => { try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; } catch { return false; } };
@@ -674,12 +679,13 @@ export function createPeopleWorkspaceRuntime({
     });
   }
   function scheduleAutomaticMaintenance() {
-    if (destroyed || !enabled() || !workspace || !pendingAutomaticScan || autoDrainQueued) return;
+    if (destroyed || !enabled() || !workspace || (!pendingInitialProfiles.size && !pendingAutomaticScan) || autoDrainQueued) return;
     const scheduledEpoch = epoch;
     autoDrainQueued = true;
-    setTimeout(() => {
+    autoDrainTimer = setTimeout(() => {
+      autoDrainTimer = null;
       autoDrainQueued = false;
-      if (scheduledEpoch !== epoch) return;
+      if (scheduledEpoch !== epoch) { scheduleAutomaticMaintenance(); return; }
       void drainAutomaticMaintenance();
     }, 0);
   }
@@ -703,7 +709,30 @@ export function createPeopleWorkspaceRuntime({
     scheduleAutomaticMaintenance();
   }
   async function drainAutomaticMaintenance() {
-    if (destroyed || !pendingAutomaticScan || !workspace || active || memoryIsBusy()) return;
+    if (destroyed || (!pendingInitialProfiles.size && !pendingAutomaticScan) || !workspace || active || memoryIsBusy()
+      || (() => { try { return isMainGenerationActive() === true; } catch { return true; } })()) return;
+    if (pendingInitialProfiles.size) {
+      const entityId = pendingInitialProfiles.values().next().value;
+      pendingInitialProfiles.delete(entityId);
+      try {
+        const candidate = candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace).find(person => person.entityId === entityId);
+        if (candidate?.selected && !workspace.profileMaterialProgressByEntityId?.[entityId]
+          && !hasProfileMaterial(candidate.profile)) {
+          await generateProfiles(items => items.filter(person => person.entityId === entityId && person.selected), {
+            replaceExisting: true, firstInitialization: true,
+          });
+        }
+      } catch (error) {
+        // Failed first passes leave the queue; the user can retry explicitly or select the person again.
+        if (error?.name !== 'AbortError' && error?.code !== 'QQJ_PEOPLE_STALE') {
+          try { logger?.warn?.('[QQJ people] automatic first profile initialization failed', error); } catch { /* diagnostics only */ }
+        }
+      } finally {
+        scheduleAutomaticMaintenance();
+      }
+      return;
+    }
+    if (!pendingAutomaticScan) return;
     pendingAutomaticScan = false;
     try {
       await generateProfiles(candidates => candidates.filter(candidate => candidate.selected), {
@@ -788,10 +817,10 @@ export function createPeopleWorkspaceRuntime({
     const operation = begin('savingSelection');
     return settle(operation, async () => {
       const startingSelection = JSON.stringify(workspace?.selectedEntityIds ?? []);
+      const previouslySelected = new Set(workspace?.selectedEntityIds ?? []);
       const requested = [...new Set((Array.isArray(entityIds) ? entityIds : []).map(String))];
       const result = await mutate(operation, current => {
         if (JSON.stringify(current.selectedEntityIds) !== startingSelection) throw errorWith('QQJ_PEOPLE_SELECTION_CONFLICT', '重要人物选择已在其他页面更新，本次没有覆盖新选择，请重试。');
-        const previouslySelected = new Set(current.selectedEntityIds);
         const allowed = new Set(candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), current).map(person => person.entityId));
         // Temporary roster gaps may keep a choice editable; confirmed checkpoint refresh removes IDs no longer canonical.
         if (requested.some(id => !isUuid(id) || (!allowed.has(id) && !previouslySelected.has(id)))) {
@@ -800,7 +829,17 @@ export function createPeopleWorkspaceRuntime({
         if (JSON.stringify(current.selectedEntityIds) === JSON.stringify(requested)) return null;
         return { ...clone(current), selectedEntityIds: requested, updatedAt: nowIso(now) };
       });
-      lastError = null; return result.state;
+      lastError = null;
+      const selectedNow = new Set(result.state.selectedEntityIds);
+      // Only a newly added, actually empty profile starts first-time work; opening an old chat never backfills legacy profiles.
+      for (const id of result.state.selectedEntityIds) {
+        if (!previouslySelected.has(id) && !result.state.profileMaterialProgressByEntityId?.[id]
+          && !hasProfileMaterial(result.state.profilesByEntityId?.[id])) pendingInitialProfiles.add(id);
+      }
+      for (const id of [...pendingInitialProfiles]) if (!selectedNow.has(id)) pendingInitialProfiles.delete(id);
+      if (active?.firstInitializationEntityId && !selectedNow.has(active.firstInitializationEntityId)) active.controller.abort();
+      scheduleAutomaticMaintenance();
+      return result.state;
     });
   }
   async function setPersonOrderEntityIds(entityIds) {
@@ -923,6 +962,7 @@ export function createPeopleWorkspaceRuntime({
           profileMaterialProgressByEntityId: progress,
           identityRedirectsByEntityId: redirects, deletedEntityIds: deleted, updatedAt: timestamp };
       });
+      pendingInitialProfiles.delete(sourceEntityId); pendingInitialProfiles.delete(targetEntityId);
       lastError = null; return result.state;
     });
   }
@@ -947,6 +987,8 @@ export function createPeopleWorkspaceRuntime({
           profileMaterialProgressByEntityId: progress,
           deletedEntityIds: [...new Set([...current.deletedEntityIds, canonical])], updatedAt: timestamp };
       });
+      for (const id of identityProjectionMembers(entityId, identityProjection(workspace))) pendingInitialProfiles.delete(id);
+      pendingInitialProfiles.delete(entityId);
       lastError = null; return result.state;
     });
   }
@@ -1076,20 +1118,23 @@ export function createPeopleWorkspaceRuntime({
     }
     return Object.freeze({ generated, requested: keys.size, missing, conflicts, invalid, unknown });
   }
-  async function generateProfiles(targetResolver, { replaceExisting = false, automatic = false, materialPlans = null, includeWorldInfo = true } = {}) {
+  async function generateProfiles(targetResolver, { replaceExisting = false, automatic = false, firstInitialization = false, materialPlans = null, includeWorldInfo = true } = {}) {
     const operation = begin('generating');
     operation.automatic = automatic;
     const rebuilding = replaceExisting && !automatic;
+    operation.firstInitializationEntityId = firstInitialization ? null : undefined;
     operation.macros = macrosFor(foundationRuntime.getReachable?.());
     const guidanceSnapshot = typeof profilePromptGuidance === 'function' ? profilePromptGuidance() : profilePromptGuidance;
     const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
     const systemPrompt = buildPeopleProfileSystemPrompt(guidanceSnapshot, processingPromptSnapshot);
     return settle(operation, async () => {
       let targets = targetResolver(candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace));
+      if (automatic) targets = targets.filter(target => hasProfileMaterial(target.profile));
       if (!targets.length) {
         if (automatic) return getState();
         throw errorWith('QQJ_PEOPLE_NOTHING_TO_GENERATE', replaceExisting ? '当前人物不可重新整理。' : '选中的人物都已有基础资料。');
       }
+      if (firstInitialization) operation.firstInitializationEntityId = targets[0].entityId;
       const plans = automatic ? new Map() : (materialPlans ?? new Map(targets.map(target => [target.entityId, fullMaterialPlanFor(target)])));
       const preparedTargets = targets.map(target => ({ ...target, materialPlan: target.materialPlan ?? plans.get(target.entityId) }));
       const envelope = automatic
@@ -1161,6 +1206,9 @@ export function createPeopleWorkspaceRuntime({
           || operation.automaticSelectedSignature !== materialSignature([...current.selectedEntityIds].sort()))) {
           throw errorWith('QQJ_PEOPLE_STALE', '原文或重要人物选择已变化，迟到的人物粗扫结果未写入。');
         }
+        const firstEntityId = firstInitialization ? envelope.keys.values().next().value : null;
+        // First initialization is conditional on an empty dossier; check the latest CAS value before any patch or completion witness is written.
+        if (firstInitialization && hasProfileMaterial(current.profilesByEntityId?.[firstEntityId])) { skipped = 1; return null; }
         const profiles = { ...clone(current.profilesByEntityId) };
         const progress = { ...clone(current.profileMaterialProgressByEntityId ?? {}) };
         let changed = false; const timestamp = nowIso(now);
@@ -1184,6 +1232,9 @@ export function createPeopleWorkspaceRuntime({
             if (!selected.has(entityId)) { skipped += 1; continue; }
           }
           const existing = profiles[entityId];
+          // Ten-floor scans supplement existing material; only first initialization may create an empty dossier.
+          if (automatic && !hasProfileMaterial(existing)) { skipped += 1; continue; }
+          if (firstInitialization && hasProfileMaterial(existing)) { skipped += 1; continue; }
           if (!automatic && existing && !replaceExisting && !saved.has(entityId)) { skipped += 1; continue; }
           const manual = existing?.manualFields ?? [];
           if (!Object.keys(patch).length) { skipped += 1; continue; }
@@ -1209,6 +1260,16 @@ export function createPeopleWorkspaceRuntime({
             const next = { processedHistoryCount: history.length, materialSignature: material, contextSignature: contextValue, updatedAt: timestamp };
             if (JSON.stringify(progress[entityId] ?? null) !== JSON.stringify(next)) { progress[entityId] = next; changed = true; }
           }
+        }
+        if (firstInitialization) {
+          const entityId = firstEntityId;
+          const plan = plans.get(entityId);
+          if (!plan) throw errorWith('QQJ_PEOPLE_MATERIAL_PLAN_INVALID', '首次人物整理材料计划无效，本次未保存。');
+          // Keep the completed request's own source window as its witness even if new floors arrived while it ran.
+          const previous = progress[entityId];
+          const next = { processedHistoryCount: plan.processedHistoryCount, materialSignature: plan.materialSignature,
+            contextSignature: plan.contextSignature, updatedAt: timestamp };
+          if (JSON.stringify(previous ?? null) !== JSON.stringify(next)) { progress[entityId] = next; changed = true; }
         }
         return changed ? { ...clone(current), profilesByEntityId: profiles, profileMaterialProgressByEntityId: progress, updatedAt: timestamp } : null;
         });
@@ -1236,7 +1297,8 @@ export function createPeopleWorkspaceRuntime({
   function invalidate() {
     epoch += 1; active?.controller.abort(); for (const operation of concurrentWrites) operation.controller.abort();
     active = null; concurrentWrites.clear(); workspace = null; revision = 0; chatId = null; people = Object.freeze([]); lastError = null; lastGenerationReport = null;
-    pendingAutomaticScan = false; automaticFloorCount = null; automaticChatId = null; syncIdentityProjection(); notify();
+    if (autoDrainTimer !== null) clearTimeout(autoDrainTimer);
+    autoDrainTimer = null; autoDrainQueued = false; pendingAutomaticScan = false; pendingInitialProfiles.clear(); automaticFloorCount = null; automaticChatId = null; syncIdentityProjection(); notify();
   }
   async function setEnabled(value) { if (value !== true) { invalidate(); return getState(); } return refresh(); }
   const unsubscribeMemory = typeof memoryRuntime.subscribe === 'function' ? memoryRuntime.subscribe(() => {
@@ -1247,6 +1309,7 @@ export function createPeopleWorkspaceRuntime({
   return Object.freeze({ refresh, start: () => enabled() ? refresh() : Promise.resolve(getState()), setSelectedEntityIds, setPersonOrderEntityIds, saveProfile, saveAvatar, mergePeople, deletePerson, generateMissingProfiles, regenerateProfile, invalidate, abortAll: invalidate, setEnabled,
     getIdentityProjection: () => identityProjection(workspace),
     getState, subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('人物工作区 listener 无效'); subscribers.add(listener); return () => subscribers.delete(listener); },
+    wakeAutomaticMaintenance: scheduleAutomaticMaintenance,
     destroy() { destroyed = true; unsubscribeMemory?.(); unsubscribeFoundation?.(); invalidate(); },
   });
 }

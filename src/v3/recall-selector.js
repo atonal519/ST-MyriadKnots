@@ -588,6 +588,15 @@ export function cseSelectionContext(source, queryContext) {
 }
 
 const duplicateKey = value => [compact(value._coreText), value._subjectKey, value._visibilityKey, value._statusKey ?? ''].join('|');
+// 历史材料继续使用原有键；CSE另保留单向对象边界，避免同文状态互相吞并。
+const cseDuplicateKey = value => [duplicateKey(value), value.towardEntityId ?? '', value.before?.towardEntityId ?? '', value.after?.towardEntityId ?? ''].join('|');
+const isCseValue = value => Boolean(value && ['core', 'adaptive', 'situational'].includes(value.layer) && typeof value.subjectEntityId === 'string');
+const targetedCse = value => Boolean(isCseValue(value) && [value.towardEntityId, value.before?.towardEntityId, value.after?.towardEntityId].some(Boolean));
+const sameSelectionDuplicate = (left, right) => {
+  if (isCseValue(left) && isCseValue(right)) return cseDuplicateKey(left) === cseDuplicateKey(right);
+  if (targetedCse(left) || targetedCse(right)) return false;
+  return duplicateKey(left) === duplicateKey(right);
+};
 export const historyStableKey = value => [value.floorId, value.floorMemoryId, value.assistantSeq, value._sourceOrder, duplicateKey(value)].join('|');
 const cseStableKey = value => value._recallCseKind === 'change'
   ? ['change', value.deltaId, value.floorId, value.assistantSeq, value.subjectEntityId, value.layer, value.action, stateSourceKey(value.before), stateSourceKey(value.after)].join('|')
@@ -1251,13 +1260,13 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
     return value.score > 0;
   });
   const uniqueStates = eligibleStates.filter(value => {
-    const key = duplicateKey(value);
+    const key = cseDuplicateKey(value);
     if (cseKeys.has(key)) { dropPersistent += 1; return false; }
     cseKeys.add(key);
     return true;
   });
   const uniqueChanges = changeRanked.filter(value => {
-    const key = duplicateKey(value);
+    const key = cseDuplicateKey(value);
     if (cseKeys.has(key)) { dropPersistent += 1; return false; }
     cseKeys.add(key);
     return true;
@@ -1321,15 +1330,29 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
   };
   let dropSemanticDuplicate = 0, budgetDropped = 0, evidenceFiltered = 0;
   const fitsBudget = text => text.length <= charLimit && estimateRecallTokens(text) <= tokenLimit;
+  const sideCoveredByHistory = (sideText, oppositeSideText, historyItem) => {
+    const side = compact(sideText), opposite = compact(oppositeSideText);
+    let history = compact(materialText(historyItem));
+    if (!side || !history) return false;
+    // 仅屏蔽包含目标短语的相反完整状态；分隔标记防止删后拼接造出新短语。
+    if (opposite && opposite !== side && opposite.includes(side)) history = history.split(opposite).join('|');
+    return history.includes(side);
+  };
   const historyCoversCse = value => {
     const sourceFloors = new Set([value.floorId, value.sourceFloorId, value.before?.sourceFloorId, value.after?.sourceFloorId].filter(Boolean));
     const parts = value._recallCseKind === 'change' ? [value.before?.text, value.after?.text].filter(Boolean) : [value.text].filter(Boolean);
     if (!sourceFloors.size || !parts.length) return false;
     const sameFloorHistory = chosenHistory.filter(itemValue => sourceFloors.has(itemValue.floorId));
+    if (value._recallCseKind === 'change' && value.before?.text && value.after?.text && compact(value.before.text) !== compact(value.after.text)) {
+      return [
+        [value.before.text, value.after.text],
+        [value.after.text, value.before.text],
+      ].every(([side, opposite]) => sameFloorHistory.some(itemValue => sideCoveredByHistory(side, opposite, itemValue)));
+    }
     return parts.every(part => sameFloorHistory.some(itemValue => materiallySame({ text: part }, itemValue)));
   };
   const tryAddCse = (value, kind) => {
-    if (chosenHistory.some(selected => duplicateKey(selected) === duplicateKey(value))) { dropPersistent += 1; return false; }
+    if (chosenHistory.some(selected => sameSelectionDuplicate(selected, value))) { dropPersistent += 1; return false; }
     if (historyCoversCse(value)) { dropSemanticDuplicate += 1; return false; }
     const states = kind === 'state' ? [...chosenStates, value] : chosenStates;
     const changes = kind === 'change' ? [...chosenChanges, value] : chosenChanges;
@@ -1340,7 +1363,7 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
   };
   const tryAddHistory = value => {
     if (chosenHistory.includes(value) || chosenHistory.length >= allowedItems) return false;
-    if ([...chosenStates, ...chosenChanges].some(selected => duplicateKey(selected) === duplicateKey(value))) return false;
+    if ([...chosenStates, ...chosenChanges].some(selected => sameSelectionDuplicate(selected, value))) return false;
     const newFloor = !chosenFloorIds.has(value.floorId);
     if (newFloor && chosenFloorIds.size >= floorLimit) return false;
     const text = render(chosenStates, chosenChanges, [...chosenHistory, value]).text;

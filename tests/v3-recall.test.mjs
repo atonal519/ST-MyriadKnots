@@ -4269,7 +4269,7 @@ async function retrySelectorReachable() {
   return { raw, messages };
 }
 
-test('选材截断重试在同一5秒边界内读取root，并把一致版本交给准备快路径', async () => {
+test('选材截断重试在同一准备期限内读取root，并把一致版本交给准备快路径', async () => {
   const { raw, messages } = await retrySelectorReachable();
   let prepareCalls = 0, rootCalls = 0, utilityCalls = 0;
   const harness = createRuntimeHarness({
@@ -4297,7 +4297,7 @@ test('选材截断重试在同一5秒边界内读取root，并把一致版本交
   assert.equal(result.lastRecall.status, 'ready');
 });
 
-test('重试读取root的技术失败与5秒超时都不降级为旧快照成功', async () => {
+test('重试读取root的技术失败与准备期限超时都不降级为旧快照成功', async () => {
   for (const kind of ['technical', 'timeout']) {
     const { raw, messages } = await retrySelectorReachable();
     let prepareCalls = 0, utilityCalls = 0, abortCalls = 0;
@@ -6273,6 +6273,61 @@ test('准备期限覆盖身份、独立来源和提交root，诊断分attempt且
   });
 });
 
+test('默认准备期限允许首轮与fresh提交来源各耗时6500ms并仍核验后注入', async t => {
+  let tick = Date.now();
+  t.mock.method(Date, 'now', () => tick);
+  const { raw: initial, messages } = await retrySelectorReachable();
+  const current = structuredClone(initial);
+  current.rootRevision += 1; current.root.headCheckpointId = 'head-after'; current.checkpoint = { id: 'head-after' };
+  let prepareCalls = 0, rootCalls = 0, reachableReads = 0, sourceReads = 0;
+  const harness = createRuntimeHarness({
+    prepareMemory: async options => {
+      prepareCalls += 1;
+      if (prepareCalls === 1) assert.equal(options.preferCached, true);
+      else { assert.equal(options.allowRefresh, false, 'fresh提交核验只读，不能触发后台刷新'); assert.equal(options.preferCached, false); }
+      return { status: 'unavailable' };
+    },
+    rootReader: async () => { rootCalls += 1; return { status: 'ready', revision: current.rootRevision, data: structuredClone(current.root) }; },
+    reachableReader: async () => { reachableReads += 1; return structuredClone(reachableReads === 1 ? initial : current); },
+    sourceReader: async options => { sourceReads += 1; tick += 6500; return readRecallSource(options); },
+  });
+  harness.chat.splice(0, harness.chat.length, ...messages, harness.userMessage);
+  const result = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  assert.equal(prepareCalls, 2, '首轮与新root fresh核验分别完成准备');
+  assert.equal(sourceReads, 2); assert.equal(reachableReads, 2, 'fresh核验必须在缓存未命中后独立读取新来源');
+  assert.equal(rootCalls, 1, 'fresh提交核验会先读取新的当前root');
+  assert.equal(result.lastRecall.status, 'ready', JSON.stringify(result.lastRecall));
+  assert.match(result.lastRecall.injectionText, /在钟楼等到天亮/u, '准备按时完成后仍需通过来源版本核验并实际注入已选事实');
+  const attempts = result.lastRecall.timings.preparationAttempts;
+  assert.deepEqual(attempts.map(record => record.phase), ['source', 'commit']);
+  assert.ok(attempts.every(record => record.status === 'ready' && record.budgetMs === 8000 && record.readMs === 6500));
+});
+
+test('默认准备期限超时仍只进行两次来源尝试，迟到结果不被注入', async t => {
+  let tick = Date.now(), reachableReads = 0, sourceReads = 0, selectorCalls = 0;
+  t.mock.method(Date, 'now', () => tick);
+  const { raw } = await retrySelectorReachable();
+  const harness = createRuntimeHarness({
+    reachableReader: async () => { reachableReads += 1; return structuredClone(raw); },
+    sourceReader: async options => { sourceReads += 1; tick += 8001; return readRecallSource(options); },
+    selector: options => { selectorCalls += 1; return selectRecall(options); },
+  });
+  let abortCalls = 0;
+  const result = await harness.runtime.intercept(harness.chat, 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
+  assert.equal(sourceReads, 2, '默认准备超时后最多保留既有的一次重试');
+  assert.equal(reachableReads, 2);
+  assert.equal(selectorCalls, 0);
+  assert.equal(abortCalls, 1, '两次准备超时后停止当前正文生成');
+  assert.equal(result.lastRecall.status, 'error');
+  assert.equal(result.lastRecall.error.code, 'V3_RECALL_MEMORY_PREPARATION_TIMEOUT');
+  assert.equal(result.lastRecall.attemptDiagnostics.length, 2);
+  assert.ok(result.lastRecall.attemptDiagnostics.every(attempt => {
+    const record = attempt.timings.preparationAttempts.at(-1);
+    return record.budgetMs === 8000 && record.stage === 'read' && record.status === 'timeout';
+  }));
+  assert.ok(harness.prompts.every(call => call[1] === ''));
+});
+
 test('准备取消立即结束且迟到identity不得启动缓存或来源读取', async () => {
   let releaseIdentity, enteredIdentity; const entered = new Promise(resolve => { enteredIdentity = resolve; });
   let prepares = 0, reads = 0;
@@ -6335,4 +6390,163 @@ test('准备可选计时随新回执封签并历史恢复，复用不重读来�
   assert.equal(historical.status, 'ready'); assert.deepEqual(historical.timings.preparationAttempts, receipt.timings.preparationAttempts);
   const count = reads; const reused = await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(reused.lastRecall.reusedReceipt, true); assert.equal(reads, count);
+});
+
+test('mixed原文与摘要首次提交按新root校验非raw归档，纯摘要失效而纯raw仍可用', async () => {
+  const summaryOld = '旧摘要记载：阿裴把蓝色钥匙藏在钟楼北墙。';
+  const summaryNew = '新摘要记载：蓝色钥匙已交给守门人。';
+  const rawText = '钟楼北墙有一块松动的砖，阿裴把蓝色钥匙塞在砖后，准备等夜深再取。';
+  const initial = runtimeFixture();
+  const memory = initial.floorMemories.find(value => value.floorId === 'floor-2');
+  memory.summary = summaryOld;
+  const raw = { floorId: 'floor-2', assistantSeq: 2, floorMemoryId: memory.floorMemoryId, memoryFloorId: 'floor-2', memoryAssistantSeq: 2, canonicalContent: rawText, fingerprint: await fingerprintText(rawText) };
+  initial.rawSources = [raw];
+  let latest = structuredClone(initial), releaseSelection, selectedFloor;
+  const selectedGate = new Promise(resolve => { releaseSelection = resolve; });
+  const witness = { floorId: raw.floorId, assistantSeq: raw.assistantSeq, floorMemoryId: raw.floorMemoryId, memoryFloorId: raw.memoryFloorId,
+    memoryAssistantSeq: raw.memoryAssistantSeq, offset: 0, length: rawText.length, fingerprint: raw.fingerprint, textFingerprint: await fingerprintText(rawText) };
+  const makeSelector = mode => async input => {
+    const result = await selectRecallWithLlm({ ...input,
+      semanticProvider: async () => ({ candidates: [{ text: rawText, witness }] }),
+      generateUtilityTask: async request => {
+        const payload = JSON.parse(request.taskMessages[0].content);
+        const rawKeys = payload.candidates.filter(value => value.fact.includes('[历史原文')).map(value => value.key);
+        const keep = mode === 'raw-only' ? rawKeys : mode === 'summary-only' ? payload.candidates.filter(value => !rawKeys.includes(value.key)).map(value => value.key) : payload.candidates.map(value => value.key);
+        return { jsonData: { history_exclude_keys: payload.candidates.filter(value => !keep.includes(value.key)).map(value => value.key), state_exclude_keys: [], priority_keys: keep } };
+      },
+    });
+    const row = result.floors.find(value => value.floorId === 'floor-2');
+    selectedFloor = row ? { floorId: row.floorId, floorMemoryId: row.floorMemoryId, items: row.items.map(value => ({ kind: value.kind, text: value.text, rawWitness: Boolean(value.rawWitness) })) } : null;
+    await selectedGate;
+    return result;
+  };
+  const harness = createRuntimeHarness({
+    sourceReader: async () => structuredClone(latest),
+    rootReader: async () => ({ status: 'ready', revision: latest.rootRevision, data: { chatId: latest.chatId, narrativeGeneration: latest.narrativeGeneration, headCheckpointId: latest.headCheckpointId } }),
+    selector: makeSelector('mixed'),
+  });
+  harness.chat[0].mes = '在钟楼北墙找蓝色钥匙'; harness.userMessage.mes = '阿裴以前把蓝色钥匙藏在哪里？';
+  const pending = harness.runtime.intercept(harness.chat, 20000, null, 'normal');
+  for (let i = 0; i < 100 && !selectedFloor; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.ok(selectedFloor?.items.some(value => value.rawWitness) && selectedFloor.items.some(value => !value.rawWitness), `正式 selector 必须同时选择同楼原文和摘要/事实: ${JSON.stringify(selectedFloor)}`);
+  latest = structuredClone(latest);
+  const revised = latest.floorMemories.find(value => value.floorId === 'floor-2');
+  revised.floorMemoryId = 'memory-2-revised-summary'; revised.summary = summaryNew;
+  latest.rawSources[0].floorMemoryId = revised.floorMemoryId;
+  latest.rootRevision += 1; latest.headCheckpointId = 'head-after-summary-revision';
+  releaseSelection();
+  const result = await pending;
+  const prompt = latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT) ?? '';
+  assert.notEqual(result.lastRecall.status, 'ready');
+  assert.equal(prompt.includes('旧摘要记载:阿裴把蓝色钥匙藏在钟楼北墙'), false, '新 root 后不注入旧摘要');
+  assert.ok(result.lastRecall.skipReasons.includes('selectedRefsChanged'));
+  assert.deepEqual(result.lastRecall.finalVerification.failure.reference, {
+    step: 'selectedReference', kind: 'floor', index: 0, floorId: 'floor-2', floorMemoryId: 'memory-2', assistantSeq: 2,
+  }, '混合楼摘要版本失效沿用已有 floor 诊断类型和定位字段');
+
+  const control = async mode => {
+    const base = runtimeFixture(); const baseMemory = base.floorMemories.find(value => value.floorId === 'floor-2');
+    baseMemory.summary = summaryOld; if (mode === 'raw-only') baseMemory.commitments = [];
+    base.rawSources = [{ ...raw, floorMemoryId: baseMemory.floorMemoryId }];
+    let current = structuredClone(base), controlSelected = null, release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const controlWitness = { ...witness, floorMemoryId: base.rawSources[0].floorMemoryId };
+    const controlHarness = createRuntimeHarness({
+      sourceReader: async () => structuredClone(current),
+      rootReader: async () => ({ status: 'ready', revision: current.rootRevision, data: { chatId: current.chatId, narrativeGeneration: current.narrativeGeneration, headCheckpointId: current.headCheckpointId } }),
+      selector: async input => {
+        const selected = await selectRecallWithLlm({ ...input,
+          semanticProvider: async () => ({ candidates: [{ text: rawText, witness: controlWitness }] }),
+          generateUtilityTask: async request => {
+            const payload = JSON.parse(request.taskMessages[0].content);
+            const rawKeys = payload.candidates.filter(value => value.fact.includes('[历史原文')).map(value => value.key);
+            const keep = mode === 'raw-only' ? rawKeys : payload.candidates.filter(value => !rawKeys.includes(value.key)).map(value => value.key);
+            return { jsonData: { history_exclude_keys: payload.candidates.filter(value => !keep.includes(value.key)).map(value => value.key), state_exclude_keys: [], priority_keys: keep } };
+          },
+        });
+        controlSelected = selected.floors.find(value => value.floorId === 'floor-2')?.items.map(value => ({ text: value.text, rawWitness: Boolean(value.rawWitness) })) ?? [];
+        await gate; return selected;
+      },
+    });
+    controlHarness.chat[0].mes = '在钟楼北墙找蓝色钥匙'; controlHarness.userMessage.mes = '阿裴以前把蓝色钥匙藏在哪里？';
+    const running = controlHarness.runtime.intercept(controlHarness.chat, 20000, null, 'normal');
+    for (let i = 0; i < 100 && !controlSelected; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    current = structuredClone(current); const newMemory = current.floorMemories.find(value => value.floorId === 'floor-2');
+    newMemory.floorMemoryId = `memory-2-${mode}-revised`; newMemory.summary = summaryNew;
+    current.rawSources[0].floorMemoryId = newMemory.floorMemoryId; current.rootRevision += 1; current.headCheckpointId = `head-${mode}-revised`;
+    release();
+    const outcome = await running; const controlPrompt = latestPromptValue(controlHarness.prompts, RECALL_PROMPT_SLOT) ?? '';
+    return { outcome, controlPrompt, controlSelected };
+  };
+  const summaryOnly = await control('summary-only');
+  assert.notEqual(summaryOnly.outcome.lastRecall.status, 'ready');
+  assert.equal(summaryOnly.controlPrompt.includes('旧摘要记载:阿裴把蓝色钥匙藏在钟楼北墙'), false);
+  const rawOnly = await control('raw-only');
+  assert.equal(rawOnly.outcome.lastRecall.status, 'ready');
+  assert.equal(rawOnly.controlPrompt.includes('钟楼北墙有一块松动的砖'), true);
+  assert.equal(rawOnly.controlPrompt.includes('旧摘要记载:阿裴把蓝色钥匙藏在钟楼北墙'), false);
+});
+
+test('同文同可见性CSE按toward保留不同对象，同一对象仍折叠且变化对象同样隔离', () => {
+  const targetA = '88888888-7777-4777-8777-777777777777', targetB = '99999999-7777-4777-8777-777777777777';
+  const queryContext = { text: '阿裴 林岚 乙 蓝色信封', latestUserText: '阿裴 林岚 乙 蓝色信封', recentAssistantText: '', previousUserText: '', messageCount: 1 };
+  const state = (id, target, seq) => recallState(id, '把蓝色信封交给对方', seq, { visibility: 'private', towardEntityId: target });
+  const memories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
+  memories[1] = recallMemory(2, { privateCognition: [{ ownerEntityId: PERSON, kind: 'thought', content: '把蓝色信封交给对方' }] });
+  const base = selectorSource({ memories, currentState: [{ subjectEntityId: PERSON, core: [], adaptive: [state('toward-a', targetA, 7), state('toward-b', targetB, 8)], situational: [] }] });
+  const pool = buildRecallCseCandidatePool({ source: base, queryContext });
+  const selected = selectRecall({ source: base, queryContext, selectedCseCandidates: pool.candidates, contextSize: 16000 });
+  assert.equal(pool.candidates.length, 2);
+  assert.deepEqual(new Set(selected.states.map(value => value.towardEntityId)), new Set([targetA, targetB]));
+  assert.equal(selected.stages.budgetDroppedCount, 0);
+
+  const sameSource = structuredClone(base);
+  sameSource.currentState[0].adaptive = [state('same-a', targetA, 7), state('same-b', targetA, 8)];
+  const samePool = buildRecallCseCandidatePool({ source: sameSource, queryContext });
+  const same = selectRecall({ source: sameSource, queryContext, selectedCseCandidates: samePool.candidates, contextSize: 16000 });
+  assert.equal(same.states.length, 1, '同对象同文状态仍按原合同折叠');
+
+  const changes = structuredClone(base); changes.currentState = [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [] }];
+  const after = (id, target, seq) => recallState(id, '保留蓝色信封', seq, { visibility: 'shared', towardEntityId: target });
+  const before = (id, target, seq) => recallState(id, '暂不交出蓝色信封', seq, { visibility: 'shared', towardEntityId: target });
+  changes.cseChanges = [targetA, targetB].map(target => ({ deltaId: 'shared-delta', floorId: 'floor-8', assistantSeq: 8, subjectEntityId: PERSON, layer: 'adaptive', action: 'refine', before: before(`before-${target}`, target, 7), after: after(`after-${target}`, target, 8) }));
+  const changePool = buildRecallCseCandidatePool({ source: changes, queryContext });
+  const changeSelection = selectRecall({ source: changes, queryContext, selectedCseCandidates: changePool.candidates, contextSize: 16000 });
+  assert.equal(changePool.candidates.filter(value => value.source === 'change').length, 2);
+  assert.deepEqual(new Set(changeSelection.cseChanges.map(value => value.after.towardEntityId)), new Set([targetA, targetB]));
+  assert.equal(changeSelection.stages.budgetDroppedCount, 0);
+});
+
+test('前后变化只被after子串摘要覆盖时保留转折，完整摘要可去重', () => {
+  const queryContext = { text: '阿裴对此态度后来发生了什么变化', latestUserText: '阿裴对此态度后来发生了什么变化', recentAssistantText: '', previousUserText: '', messageCount: 1 };
+  const run = (summary, beforeText = '愿意解释', afterText = '不愿意解释') => {
+    const source = selectorSource({ memories: Array.from({ length: 8 }, (_, index) => recallMemory(index + 1, { summary: index === 5 ? summary : '' })) });
+    source.cseChanges = [{ deltaId: 'delta-attitude', floorId: 'floor-6', assistantSeq: 6, subjectEntityId: PERSON, layer: 'situational', action: 'refine',
+      before: recallState('state-before', beforeText, 5, { sourceFloorId: 'floor-5', sourceDeltaId: 'delta-before' }),
+      after: recallState('state-after', afterText, 6, { sourceFloorId: 'floor-6', sourceDeltaId: 'delta-attitude' }) }];
+    const pool = buildRecallCseCandidatePool({ source, queryContext });
+    const changes = pool.candidates.filter(value => value.source === 'change');
+    return selectRecall({ source, queryContext, selectedCseCandidates: changes, contextSize: 16000 });
+  };
+  const partial = run('本楼后续：不愿意解释。');
+  assert.equal(partial.stages.semanticDuplicateCount, 0);
+  assert.equal(partial.cseChanges.length, 1);
+  assert.match(partial.injectionText, /之前[^\n]*愿意解释[\s\S]*之后[^\n]*不愿意解释/u);
+  const full = run('此前愿意解释，后来转为不愿意解释。');
+  assert.equal(full.stages.semanticDuplicateCount, 1);
+  assert.equal(full.cseChanges.length, 0, '摘要逐字覆盖两侧仍可去重');
+  const noOverlap = run('最近明确拒绝录音。', '愿意接受录音访谈', '后来拒绝录音');
+  assert.equal(noOverlap.cseChanges.length, 1, '仅有 after 的无重叠摘要不能抹去变化');
+
+  const splitMemories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
+  splitMemories[4] = recallMemory(5, { summary: '愿意接受录音访谈。' });
+  splitMemories[5] = recallMemory(6, { summary: '后来拒绝录音。' });
+  const splitSource = selectorSource({ memories: splitMemories });
+  splitSource.cseChanges = [{ deltaId: 'delta-split', floorId: 'floor-6', assistantSeq: 6, subjectEntityId: PERSON, layer: 'situational', action: 'refine',
+    before: recallState('state-before-split', '愿意接受录音访谈', 5, { sourceFloorId: 'floor-5', sourceDeltaId: 'delta-split-before' }),
+    after: recallState('state-after-split', '后来拒绝录音', 6, { sourceFloorId: 'floor-6', sourceDeltaId: 'delta-split' }) }];
+  const splitPool = buildRecallCseCandidatePool({ source: splitSource, queryContext });
+  const splitSelection = selectRecall({ source: splitSource, queryContext, selectedCseCandidates: splitPool.candidates.filter(value => value.source === 'change'), contextSize: 16000 });
+  assert.equal(splitSelection.cseChanges.length, 0, '同源不同楼分别覆盖两侧时仍可去重');
+  assert.equal(splitSelection.stages.semanticDuplicateCount, 1);
 });

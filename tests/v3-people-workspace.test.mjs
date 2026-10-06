@@ -33,7 +33,7 @@ function entity(id, name, extra = {}) {
   return { id, entityType: 'person', displayName: name, aliases: [{ name: `${name}别名` }], specialRole: 'none', firstSeenFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', lastSeenFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', status: 'established', recordStatus: 'active', ...extra };
 }
 function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many = false, permissionSettings = null, sourceCandidates = null, scanner = null, profilePromptGuidance = () => '', processingPrompt = () => '', prequel = '', foundationState = null } = {}) {
-  const db = backend(), foundationRecords = new Map(); let hostChat = [], foundationReadHook = null, identity = { chatId: CHAT_A, hostChatId: 'host-a', characterLocator: 'char.png', personaLocator: 'persona.png' }, currentPrequel = prequel;
+  const db = backend(), foundationRecords = new Map(); let hostChat = [], foundationReadHook = null, mainGenerationActive = true, identity = { chatId: CHAT_A, hostChatId: 'host-a', characterLocator: 'char.png', personaLocator: 'persona.png' }, currentPrequel = prequel;
   const peopleEntities = ids.slice(0, many ? 12 : 4).map((id, index) => entity(id, `人物${index + 1}`));
   let reachable = {
     entities: [...peopleEntities, entity(USER, '用户', { specialRole: 'user' }), entity(SYNTHETIC_CHAR, '剧情标题', { specialRole: 'char', firstSeenFloorId: null, lastSeenFloorId: null })],
@@ -55,12 +55,38 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
       filterWorldInfoSources(sources) { return filterWorldInfoSourcesByPermission({ sources, settings: permissionSettings ?? {} }); },
     },
     contextProvider: () => ({ chat: [], marker: identity.chatId, chatMetadata: currentPrequel ? { qianqianjiePrequel: currentPrequel } : {} }),
+    isMainGenerationActive: () => mainGenerationActive,
     scanner: scanner ?? (async (context, options) => { sourceTrace.push(['scan', context.marker, options]); return { entries: [{ content: '<secret>DROP</secret><content>ALLOWED</content>' }, { content: 'EXCLUDED' }] }; }),
     sourceCandidateFactory: async catalog => { sourceTrace.push(['candidates', catalog.entries.length]); return sourceCandidates ?? [{ id: 'worldbook:allowed', kind: 'worldbook', world: '允许书', label: '允许条目', content: catalog.entries[0].content }, { id: 'worldbook:excluded', kind: 'worldbook', world: '排除书', label: '排除条目', content: catalog.entries[1].content }]; },
     now: () => new Date('2026-09-06T00:00:00.000Z'),
     logger: { warn() {} },
   });
-  return { db, runtime, peopleEntities, sourceTrace, foundationRecords, setFoundationReadHook(value) { foundationReadHook = value; }, setHostChat(value) { hostChat = value; }, get identity() { return identity; }, setIdentity(value) { identity = value; }, get reachable() { return reachable; }, setReachable(value) { reachable = value; }, setFoundationState(value) { foundationState = value; },
+  return { db, runtime, peopleEntities, sourceTrace, foundationRecords, setFoundationReadHook(value) { foundationReadHook = value; }, setHostChat(value) { hostChat = value; }, setMainGenerationActive(value) { mainGenerationActive = value; if (!value) runtime.wakeAutomaticMaintenance(); }, async seedSelectedWithoutProgress(entityIds) {
+      const timestamp = '2026-09-06T00:00:00.000Z';
+      db.records.set(`chat-${identity.chatId}/${PEOPLE_WORKSPACE_RECORD_ID}`, { revision: 1, data: {
+        schemaVersion: 3, kind: 'qqj-v3-people-workspace', chatId: identity.chatId, selectedEntityIds: Array.isArray(entityIds) ? entityIds : [entityIds],
+        personOrderEntityIds: [], profilesByEntityId: {}, avatarsByEntityId: {}, identityRedirectsByEntityId: {}, deletedEntityIds: [],
+        profileMaterialProgressByEntityId: {}, createdAt: timestamp, updatedAt: timestamp,
+      } });
+      await runtime.refresh({ refreshMemory: false });
+    }, async markProfileInitialized(entityIds, { material = true, profileExists = true } = {}) {
+      const record = db.records.get(`chat-${identity.chatId}/${PEOPLE_WORKSPACE_RECORD_ID}`);
+      for (const entityId of Array.isArray(entityIds) ? entityIds : [entityIds]) {
+        record.data.profileMaterialProgressByEntityId[entityId] = {
+          processedHistoryCount: 0, materialSignature: 'people-material-v1:2:0000000000000000',
+          contextSignature: 'people-material-v1:2:0000000000000000', updatedAt: '2026-09-06T00:00:00.000Z',
+        };
+        if (!profileExists) { delete record.data.profilesByEntityId[entityId]; continue; }
+        const previous = record.data.profilesByEntityId[entityId] ?? {};
+        const profile = Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, previous[field] ?? '']));
+        profile.entityId = entityId; profile.name ||= '仅有姓名'; profile.aliases ||= '仅有别名';
+        if (material && !PEOPLE_PROFILE_FIELDS.slice(2).some(field => String(profile[field]).trim())) profile.notes = '已有基础资料';
+        if (!material) for (const field of PEOPLE_PROFILE_FIELDS.slice(2)) profile[field] = '';
+        record.data.profilesByEntityId[entityId] = { ...profile, manualFields: previous.manualFields ?? [], source: previous.source ?? 'generated',
+          createdAt: previous.createdAt ?? '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
+      }
+      record.revision += 1; runtime.invalidate(); await runtime.refresh({ refreshMemory: false });
+    }, get identity() { return identity; }, setIdentity(value) { identity = value; }, get reachable() { return reachable; }, setReachable(value) { reachable = value; }, setFoundationState(value) { foundationState = value; },
     notifyFoundation() { for (const listener of foundationListeners) listener({ status: 'ready', chatId: identity.chatId }); },
     get memoryState() { return memoryState; }, setMemoryState(value, notify = true) { memoryState = value; if (notify) for (const listener of listeners) listener(memoryState); },
     notifyMemory() { for (const listener of listeners) listener(memoryState); }, setPrequel(value) { currentPrequel = value; }, get memoryRefreshes() { return memoryRefreshes; } };
@@ -72,7 +98,7 @@ async function waitFor(check, message = '等待后台人物整理超时') {
     if (check()) return;
     await new Promise(resolve => setTimeout(resolve, 5));
   }
-  assert.fail(message);
+  assert.fail(typeof message === 'function' ? message() : message);
 }
 
 test('人物资料业务指导可替换，固定合同与基础处理层始终恰好一次', () => {
@@ -1152,7 +1178,8 @@ test('每十个稳定AI楼触发一次共享原文粗扫，摘要不参与筛楼
   await h.runtime.refresh({ refreshMemory: false });
   const [first, second] = h.peopleEntities;
   await h.runtime.setSelectedEntityIds([first.id, second.id]);
-  for (const target of [first, second]) await h.runtime.saveProfile(target.id, { name: target.displayName, aliases: '', background: '', appearance: '', personality: '', notes: '' });
+  await h.markProfileInitialized([first.id, second.id]); h.setMainGenerationActive(false);
+  for (const target of [first, second]) await h.runtime.saveProfile(target.id, { name: target.displayName, aliases: '', background: '既有基础资料', appearance: '', personality: '', notes: '' });
   const floors = Array.from({ length: 9 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `第${index + 1}楼正文外貌` } }));
   h.setReachable({ ...h.reachable, floors, floorMemories: [] });
   h.notifyFoundation(); await new Promise(resolve => setTimeout(resolve, 20));
@@ -1168,13 +1195,259 @@ test('每十个稳定AI楼触发一次共享原文粗扫，摘要不参与筛楼
   assert.equal(Object.hasOwn(requests[0], 'allowedWorldInfo'), false);
 });
 
+test('新增选择只为真实空档自动首次整理，并排除宿主关闭世界书条目', async () => {
+  const requests = [];
+  const h = harness({ generate: async options => {
+    const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
+    return { jsonData: { profiles: [{ personKey: 'person-1' }] } };
+  }, sourceCandidates: [
+    { id: 'worldbook:open', kind: 'worldbook', world: '人物设定', label: '人物1经历', primaryKeys: ['人物1'], hostEnabled: true, availability: 'enabled', content: '允许的设定片段' },
+    { id: 'worldbook:closed', kind: 'worldbook', world: '人物设定', label: '人物1隐藏', primaryKeys: ['人物1'], hostEnabled: false, availability: 'disabled', content: '宿主已关闭的秘密' },
+  ], permissionSettings: {} });
+  const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([target.id]); h.setMainGenerationActive(false);
+  await waitFor(() => Boolean(h.runtime.getState().profileMaterialProgressByEntityId[target.id]) && h.runtime.getState().active === null);
+  assert.equal(requests.length, 1); assert.match(JSON.stringify(requests[0]), /允许的设定片段/);
+  assert.doesNotMatch(JSON.stringify(requests[0]), /宿主已关闭的秘密/);
+  assert.equal(h.runtime.getState().profilesByEntityId[target.id], undefined, '合法空结果只留下完成见证，不创建空壳档案');
+  await h.runtime.setSelectedEntityIds([]); await h.runtime.setSelectedEntityIds([target.id]);
+  h.runtime.invalidate(); await h.runtime.refresh({ refreshMemory: false });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(requests.length, 1, '取消再选与普通重载不重复首次整理');
+});
+
+test('新增选择遇到非空档案时不自动首次整理，即使没有完成见证', async () => {
+  let calls = 0;
+  const h = harness({ generate: async () => { calls++; return { jsonData: { profiles: [{ personKey: 'person-1', notes: '不应覆盖' }] } }; } });
+  const [alreadyNonempty, filledWhileQueued] = h.peopleEntities; await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.saveProfile(alreadyNonempty.id, { notes: '已有基础资料' });
+  h.setMainGenerationActive(true); await h.runtime.setSelectedEntityIds([alreadyNonempty.id, filledWhileQueued.id]);
+  await h.runtime.saveProfile(filledWhileQueued.id, { notes: '排队期间人工建档' });
+  h.setMainGenerationActive(false); await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(calls, 0);
+  assert.equal(h.runtime.getState().profilesByEntityId[alreadyNonempty.id].notes, '已有基础资料');
+  assert.equal(h.runtime.getState().profilesByEntityId[filledWhileQueued.id].notes, '排队期间人工建档');
+  assert.equal(h.runtime.getState().profileMaterialProgressByEntityId[alreadyNonempty.id], undefined);
+  assert.equal(h.runtime.getState().profileMaterialProgressByEntityId[filledWhileQueued.id], undefined);
+});
+
+test('首次自动请求等待期间人工建成非空档时，跳过迟到 patch 和完成见证', async () => {
+  let release; const gate = new Promise(resolve => { release = resolve; }); let calls = 0;
+  const h = harness({ generate: async () => {
+    calls++; await gate;
+    return { jsonData: { profiles: [{ personKey: 'person-1', notes: '迟到自动资料' }] } };
+  } });
+  const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([target.id]); h.setMainGenerationActive(false);
+  await waitFor(() => h.runtime.getState().active?.kind === 'generating');
+  await h.runtime.saveProfile(target.id, { notes: '请求期间人工建档' }, { manualFields: ['notes'] });
+  release(); await waitFor(() => h.runtime.getState().active === null);
+  assert.equal(calls, 1);
+  assert.equal(h.runtime.getState().profilesByEntityId[target.id].notes, '请求期间人工建档');
+  assert.equal(h.runtime.getState().profileMaterialProgressByEntityId[target.id], undefined);
+});
+
+test('十楼粗扫跳过无档、全空和仅姓名别名头像档，空档窗口不重试也不写入', async () => {
+  let calls = 0;
+  const h = harness({ generate: async () => { calls++; return { jsonData: { profiles: [{ personKey: 'person-1', notes: '不应收到请求' }] } }; } });
+  const [missing, empty, avatarOnly] = h.peopleEntities; await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([missing.id, empty.id, avatarOnly.id]);
+  await h.markProfileInitialized(missing.id, { profileExists: false });
+  await h.markProfileInitialized(empty.id, { material: false });
+  await h.markProfileInitialized(avatarOnly.id, { material: false });
+  await h.runtime.saveAvatar(avatarOnly.id, 'data:image/png;base64,AAAA');
+  h.setMainGenerationActive(false);
+  const floors = Array.from({ length: 10 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `稳定原文${index}` } }));
+  h.setReachable({ ...h.reachable, floors, floorMemories: [] });
+  const putsBefore = h.db.calls.filter(call => call[0] === 'put').length;
+  h.notifyFoundation(); h.notifyFoundation(); await new Promise(resolve => setTimeout(resolve, 25));
+  h.notifyFoundation(); h.notifyFoundation(); await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(calls, 0, '无基础资料目标不得发起粗扫');
+  assert.equal(h.runtime.getState().profilesByEntityId[missing.id], undefined, '只有完成进度但无档案仍为空档');
+  for (const person of [empty, avatarOnly]) {
+    const profile = h.runtime.getState().profilesByEntityId[person.id];
+    assert.ok(profile.name.trim() && profile.aliases.trim());
+    assert.ok(PEOPLE_PROFILE_FIELDS.slice(2).every(field => !profile[field].trim()), '姓名和别名不能代替基础资料');
+  }
+  assert.ok(h.runtime.getState().avatarsByEntityId[avatarOnly.id]);
+  assert.equal(h.db.calls.filter(call => call[0] === 'put').length, putsBefore, '空档粗扫不做存档写入');
+});
+
+test('十楼粗扫混合池只发送有实际基础资料的人物', async () => {
+  let request, calls = 0;
+  const h = harness({ generate: async options => {
+    calls++; request = JSON.parse(options.taskMessages[0].content);
+    return { jsonData: { profiles: [{ personKey: 'person-1', notes: '补充现有资料' }] } };
+  } });
+  const [hasMaterial, identityOnly, missing] = h.peopleEntities; await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([hasMaterial.id, identityOnly.id, missing.id]);
+  await h.markProfileInitialized(hasMaterial.id);
+  await h.markProfileInitialized(identityOnly.id, { material: false });
+  await h.markProfileInitialized(missing.id, { profileExists: false });
+  h.setMainGenerationActive(false);
+  h.setReachable({ ...h.reachable, floors: Array.from({ length: 10 }, (_, index) => ({
+    id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `稳定原文${index}` },
+  })), floorMemories: [] });
+  h.notifyFoundation(); h.notifyFoundation(); await waitFor(() => calls === 1 && h.runtime.getState().active === null);
+  assert.equal(request.people.length, 1);
+  assert.equal(request.people[0].currentName, hasMaterial.displayName);
+  assert.equal(calls, 1);
+  assert.equal(h.runtime.getState().profilesByEntityId[identityOnly.id].notes, '');
+  assert.equal(h.runtime.getState().profilesByEntityId[missing.id], undefined);
+  assert.equal(h.runtime.getState().profilesByEntityId[hasMaterial.id].notes, '补充现有资料');
+});
+
+test('粗扫等待期间基础资料被人工清空时，迟到回复不得重新建档', async () => {
+  let release; const gate = new Promise(resolve => { release = resolve; }); let calls = 0;
+  const h = harness({ generate: async () => {
+    calls++; await gate;
+    return { jsonData: { profiles: [{ personKey: 'person-1', background: '迟到补建' }] } };
+  } });
+  const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([target.id]); await h.markProfileInitialized(target.id); h.setMainGenerationActive(false);
+  h.setReachable({ ...h.reachable, floors: Array.from({ length: 10 }, (_, index) => ({
+    id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `稳定原文${index}` },
+  })), floorMemories: [] });
+  h.notifyFoundation(); h.notifyFoundation(); await waitFor(() => h.runtime.getState().active?.kind === 'generating');
+  await h.runtime.saveProfile(target.id, { notes: '' }, { manualFields: ['notes'] });
+  release(); await waitFor(() => h.runtime.getState().active === null);
+  const profile = h.runtime.getState().profilesByEntityId[target.id];
+  assert.equal(calls, 1); assert.equal(profile.notes, ''); assert.equal(profile.background, '');
+  assert.equal(h.runtime.getState().lastGenerationReport.saved, 0);
+});
+
+test('首次自动和手动完整整理仍能从空档建立人物资料', async () => {
+  const automatic = harness({ generate: async () => ({ jsonData: { profiles: [{ personKey: 'person-1', notes: '首次完整整理' }] } }) });
+  const target = automatic.peopleEntities[0]; await automatic.runtime.refresh({ refreshMemory: false });
+  await automatic.runtime.setSelectedEntityIds([target.id]); automatic.setMainGenerationActive(false);
+  await waitFor(() => automatic.runtime.getState().active === null && Boolean(automatic.runtime.getState().profileMaterialProgressByEntityId[target.id]));
+  assert.equal(automatic.runtime.getState().profilesByEntityId[target.id].notes, '首次完整整理');
+
+  const manual = harness({ generate: async () => ({ jsonData: { profiles: [{ personKey: 'person-1', notes: '手动完整整理' }] } }) });
+  const manualTarget = manual.peopleEntities[0]; await manual.runtime.refresh({ refreshMemory: false });
+  await manual.runtime.setSelectedEntityIds([manualTarget.id]); await manual.markProfileInitialized(manualTarget.id, { material: false });
+  await manual.runtime.regenerateProfile(manualTarget.id);
+  assert.equal(manual.runtime.getState().profilesByEntityId[manualTarget.id].notes, '手动完整整理');
+});
+
+test('多人首次整理排队串行执行，并在 memoryWorkBusy 解除时接续', async () => {
+  let releaseFirst, active = 0, maximumActive = 0;
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  const requests = [];
+  const h = harness({ generate: async options => {
+    active++; maximumActive = Math.max(maximumActive, active);
+    const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
+    if (requests.length === 1) await firstGate;
+    active--;
+    return { jsonData: { profiles: [{ personKey: request.people[0].personKey, notes: '首档完成' }] } };
+  } });
+  const [first, second] = h.peopleEntities;
+  h.setMemoryState({ memoryWorkBusy: true }, false); await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([first.id, second.id]); h.setMainGenerationActive(false);
+  await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(requests.length, 0, '记忆整理忙时保持待办');
+  h.setMemoryState({ memoryWorkBusy: false });
+  await waitFor(() => requests.length === 1);
+  assert.equal(requests[0].people.length, 1);
+  releaseFirst();
+  await waitFor(() => requests.length === 2 && h.runtime.getState().active === null);
+  assert.equal(maximumActive, 1, '多个新人物逐个调用模型');
+  assert.deepEqual(new Set(requests.map(request => request.people[0].currentName)), new Set([first.displayName, second.displayName]));
+  assert.ok(h.runtime.getState().profileMaterialProgressByEntityId[first.id]);
+  assert.ok(h.runtime.getState().profileMaterialProgressByEntityId[second.id]);
+});
+
+test('旧聊天已有选择但没有首次整理见证时，刷新与空闲都不补扫', async () => {
+  let calls = 0;
+  const h = harness({ generate: async () => { calls++; return { jsonData: { profiles: [{ personKey: 'person-1' }] } }; } });
+  const target = h.peopleEntities[0]; await h.seedSelectedWithoutProgress(target.id); h.setMainGenerationActive(false);
+  await new Promise(resolve => setTimeout(resolve, 25));
+  await h.runtime.setSelectedEntityIds([target.id]); await h.runtime.refresh({ refreshMemory: false });
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(calls, 0, '仅新增选择触发首次自动整理，旧选择不后台补扫');
+});
+
+test('首次整理期间正文增长仍保存本次成功见证，取消再选不重复请求', async () => {
+  let release; const gate = new Promise(resolve => { release = resolve; }); let calls = 0;
+  const h = harness({ generate: async options => {
+    calls++; await gate;
+    return { jsonData: { profiles: [{ personKey: 'person-1', background: '首次整理结果' }] } };
+  } });
+  const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([target.id]); h.setMainGenerationActive(false);
+  await waitFor(() => h.runtime.getState().active?.kind === 'generating');
+  h.setReachable({ ...h.reachable, floors: [{ id: ids[10], assistantSeq: 11, content: { canonicalContent: '首次请求开始后新增正文' } }] });
+  release(); await waitFor(() => h.runtime.getState().active === null && Boolean(h.runtime.getState().profileMaterialProgressByEntityId[target.id]));
+  await h.runtime.setSelectedEntityIds([]); await h.runtime.setSelectedEntityIds([target.id]);
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(calls, 1); assert.equal(h.runtime.getState().profilesByEntityId[target.id].background, '首次整理结果');
+});
+
+test('取消选择会阻止首次整理迟到结果与完成进度落档', async () => {
+  let release; const gate = new Promise(resolve => { release = resolve; }); let calls = 0;
+  const h = harness({ generate: async () => { calls++; await gate; return { jsonData: { profiles: [{ personKey: 'person-1', name: '迟到结果' }] } }; } });
+  const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([target.id]); h.setMainGenerationActive(false);
+  await waitFor(() => h.runtime.getState().active?.kind === 'generating');
+  await h.runtime.setSelectedEntityIds([]); release(); await waitFor(() => h.runtime.getState().active === null);
+  assert.equal(calls, 1); assert.equal(h.runtime.getState().profilesByEntityId[target.id], undefined);
+  assert.equal(h.runtime.getState().profileMaterialProgressByEntityId[target.id], undefined);
+});
+
+test('首次整理切聊天或关闭时丢弃迟到结果与完成进度', async () => {
+  for (const lifecycle of ['chat-change', 'disable']) {
+    let release; const gate = new Promise(resolve => { release = resolve; });
+    const h = harness({ generate: async () => { await gate; return { jsonData: { profiles: [{ personKey: 'person-1', name: '迟到资料' }] } }; } });
+    const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false });
+    await h.runtime.setSelectedEntityIds([target.id]); h.setMainGenerationActive(false);
+    await waitFor(() => h.runtime.getState().active?.kind === 'generating');
+    if (lifecycle === 'chat-change') {
+      h.setIdentity({ ...h.identity, chatId: CHAT_B, hostChatId: 'host-b' }); h.runtime.invalidate();
+    } else await h.runtime.setEnabled(false);
+    release(); await new Promise(resolve => setImmediate(resolve));
+    const record = h.db.records.get(`chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`);
+    assert.equal(record.data.profilesByEntityId[target.id], undefined, `${lifecycle} 后不保存迟到资料`);
+    assert.equal(record.data.profileMaterialProgressByEntityId[target.id], undefined, `${lifecycle} 后不记录完成见证`);
+  }
+});
+
+test('排队中的首次整理随合并或删除取消', async () => {
+  const requests = [];
+  const h = harness({ generate: async options => { requests.push(options); return { jsonData: { profiles: [{ personKey: 'person-1', name: '不应保存' }] } }; } });
+  await h.runtime.refresh({ refreshMemory: false }); const [source, target, removed] = h.peopleEntities;
+  await h.runtime.setSelectedEntityIds([source.id, target.id, removed.id]);
+  await h.runtime.mergePeople(source.id, target.id, 'target');
+  await h.runtime.deletePerson(removed.id);
+  h.setMainGenerationActive(false); await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(requests.length, 0, '合并双方与删除人物的待办都被清除');
+  assert.equal(h.runtime.getState().profilesByEntityId[target.id], undefined);
+});
+
+test('首次整理失败只提示一次，用户仍可手动重整恢复', async () => {
+  let calls = 0;
+  const h = harness({ generate: async () => {
+    calls++;
+    if (calls === 1) throw new Error('模拟首次整理失败');
+    return { jsonData: { profiles: [{ personKey: 'person-1', background: '手动恢复成功' }] } };
+  } });
+  const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([target.id]); h.setMainGenerationActive(false);
+  await waitFor(() => calls === 1 && h.runtime.getState().active === null);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(calls, 1); assert.match(h.runtime.getState().lastError?.message ?? '', /模拟首次整理失败/);
+  await h.runtime.regenerateProfile(target.id);
+  assert.equal(calls, 2); assert.equal(h.runtime.getState().profilesByEntityId[target.id].background, '手动恢复成功');
+  assert.ok(h.runtime.getState().profileMaterialProgressByEntityId[target.id]);
+});
+
 test('轻量原文预算优先保留最新楼，单楼超限时明确标记截取', async () => {
   let request;
   const h = harness({ generate: async options => { request = JSON.parse(options.taskMessages[0].content); return { jsonData: { profiles: [{ personKey: 'person-1' }] } }; } });
   const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
+  await h.markProfileInitialized(target.id); h.setMainGenerationActive(false);
+  const before = structuredClone(h.runtime.getState().profilesByEntityId[target.id]);
   const floors = Array.from({ length: 10 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `${index === 9 ? '最新楼' : '旧楼'}${'甲'.repeat(index === 9 ? 25000 : 100)}` } }));
-  h.setReachable({ ...h.reachable, floors, floorMemories: [] }); h.notifyFoundation();
-  await waitFor(() => Boolean(request) && h.runtime.getState().active === null);
+  h.setReachable({ ...h.reachable, floors, floorMemories: [] }); h.notifyFoundation(); h.notifyFoundation();
+  await waitFor(() => Boolean(request) && h.runtime.getState().active === null, () => JSON.stringify(h.runtime.getState()));
   assert.equal(request.recentFloors.length, 1); assert.equal(request.recentFloors[0].sourceFloor, 10);
   assert.match(request.recentFloors[0].excerpt, /后文省略/); assert.ok(request.recentFloors[0].content.length <= 19000);
 });
@@ -1183,7 +1456,8 @@ test('自动原文请求失败不因同一通知重试，新增十楼后再尝�
   let calls = 0;
   const h = harness({ generate: async () => { calls++; if (calls === 1) throw new Error('模拟失败'); return { jsonData: { profiles: [{ personKey: 'person-1' }] } }; } });
   const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
-  const publish = count => { h.setReachable({ ...h.reachable, floors: Array.from({ length: count }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `稳定原文${index}` } })), floorMemories: [] }); h.notifyFoundation(); };
+  await h.markProfileInitialized(target.id); h.setMainGenerationActive(false);
+  const publish = count => { h.setReachable({ ...h.reachable, floors: Array.from({ length: count }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `稳定原文${index}` } })), floorMemories: [] }); h.notifyFoundation(); h.notifyFoundation(); };
   publish(10); await waitFor(() => calls === 1 && h.runtime.getState().active === null);
   h.notifyFoundation(); h.notifyFoundation(); await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(calls, 1);
   publish(20); await waitFor(() => calls === 2 && h.runtime.getState().active === null);
@@ -1193,13 +1467,15 @@ test('粗扫请求期间原文变化时丢弃迟到结果', async () => {
   let release; const gate = new Promise(resolve => { release = resolve; });
   const h = harness({ generate: async () => { await gate; return { jsonData: { profiles: [{ personKey: 'person-1', name: '基于旧正文的迟到名' }] } }; } });
   const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
+  await h.markProfileInitialized(target.id); h.setMainGenerationActive(false);
+  const before = structuredClone(h.runtime.getState().profilesByEntityId[target.id]);
   const floors = Array.from({ length: 10 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `稳定原文${index}` } }));
   h.setReachable({ ...h.reachable, floors, floorMemories: [] }); h.notifyFoundation();
   await waitFor(() => h.runtime.getState().active?.kind === 'generating');
   h.setReachable({ ...h.reachable, floors: floors.map((floor, index) => index === 9
     ? { ...floor, content: { canonicalContent: '请求期间被用户修改的新正文' } } : floor), floorMemories: [] });
   release(); await waitFor(() => h.runtime.getState().active === null);
-  assert.equal(h.runtime.getState().profilesByEntityId[target.id], undefined);
+  assert.deepEqual(h.runtime.getState().profilesByEntityId[target.id], before, '资料档案保持原样，迟到姓名未写入');
 });
 
 test('未选择人物不自动建档，已选人物的人工填写与人工清空优先', async () => {
@@ -1212,15 +1488,16 @@ test('未选择人物不自动建档，已选人物的人工填写与人工清�
   const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false });
   const publish = count => { h.setReachable({ ...h.reachable, floors: Array.from({ length: count }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `稳定原文${index}` } })), floorMemories: [] }); h.notifyFoundation(); };
   publish(10); await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(calls, 0, '未选人物不请求');
-  await h.runtime.setSelectedEntityIds([target.id]);
+  await h.runtime.saveProfile(target.id, { background: '稳定基础资料' });
   await h.runtime.saveProfile(target.id, { name: '旧AI名', notes: '人工笔记' }, { manualFields: ['notes'] });
+  await h.runtime.setSelectedEntityIds([target.id]); h.setMainGenerationActive(false);
   publish(20); await waitFor(() => calls === 1 && h.runtime.getState().active === null);
   let profile = h.runtime.getState().profilesByEntityId[target.id];
-  assert.equal(profile.name, '模型名1'); assert.equal(profile.notes, '人工笔记'); assert.deepEqual(profile.manualFields, ['notes']);
+  assert.equal(profile.name, '模型名1'); assert.equal(profile.notes, '人工笔记'); assert.equal(profile.background, '稳定基础资料'); assert.deepEqual(profile.manualFields, ['background', 'notes']);
   await h.runtime.saveProfile(target.id, { notes: '' }, { manualFields: ['notes'] });
   publish(30); await waitFor(() => calls === 2 && h.runtime.getState().active === null);
   profile = h.runtime.getState().profilesByEntityId[target.id];
-  assert.equal(profile.name, '模型名2'); assert.equal(profile.notes, ''); assert.deepEqual(profile.manualFields, ['notes']);
+  assert.equal(profile.name, '模型名2'); assert.equal(profile.notes, ''); assert.equal(profile.background, '稳定基础资料'); assert.deepEqual(profile.manualFields, ['background', 'notes']);
 });
 
 test('自动粗扫把空字符串和空 aliases 当作无更新，且纯空结果不写存档', async () => {
@@ -1234,13 +1511,14 @@ test('自动粗扫把空字符串和空 aliases 当作无更新，且纯空结�
     return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, ...values })) } };
   } });
   const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
+  await h.markProfileInitialized(target.id); h.setMainGenerationActive(false);
   await h.runtime.saveProfile(target.id, { name: '旧姓名', aliases: '旧别名', background: '旧背景' }, { manualFields: [] });
   const publish = count => {
     h.setReachable({ ...h.reachable, floors: Array.from({ length: count }, (_, index) => ({
       id: `${String(index + 1).padStart(8, '0')}-5555-4555-8555-${String(index + 1).padStart(12, '0')}`,
       assistantSeq: index + 1, content: { canonicalContent: `稳定原文${index}` },
     })), floorMemories: [] });
-    h.notifyFoundation();
+    h.notifyFoundation(); h.notifyFoundation();
   };
   publish(10); await waitFor(() => calls === 1 && h.runtime.getState().active === null);
   publish(20); await waitFor(() => calls === 2 && h.runtime.getState().active === null);
@@ -1260,6 +1538,7 @@ test('原文在人物存档 read 等待期间变化时，CAS updater 拒绝迟�
   const h = harness({ generate: async () => ({ jsonData: { profiles: [{ personKey: 'person-1', name: '迟到旧名' }] } }) });
   const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
   await h.runtime.saveProfile(target.id, { name: '保留旧名' }, { manualFields: [] });
+  await h.markProfileInitialized(target.id); h.setMainGenerationActive(false);
   const floors = Array.from({ length: 10 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `稳定原文${index}` } }));
   h.setReachable({ ...h.reachable, floors, floorMemories: [] });
   let waitForRead = true;
@@ -1279,6 +1558,7 @@ test('人物选择在 CAS 冲突期间变化后，重试 updater 不写已取消
   const h = harness({ generate: async () => ({ jsonData: { profiles: [{ personKey: 'person-1', name: '取消后的迟到名' }] } }) });
   const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([target.id]);
   await h.runtime.saveProfile(target.id, { name: '保留旧名' }, { manualFields: [] });
+  await h.markProfileInitialized(target.id); h.setMainGenerationActive(false);
   const floors = Array.from({ length: 10 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `稳定原文${index}` } }));
   h.setReachable({ ...h.reachable, floors, floorMemories: [] });
   let waitForPut = true;
