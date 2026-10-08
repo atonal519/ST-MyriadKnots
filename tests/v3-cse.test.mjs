@@ -1945,8 +1945,146 @@ test('CSE 真实请求链只在 finish_reason=stop 且唯一缺人物右花括�
     error => error.code === 'V3_CSE_FORMAT_INVALID',
   );
   await rejects('{"subjects":[{"subject":"林岚","situational":[{"text":"未写完');
-  await rejects('{"subjects":{"subject":"林岚"}');
   await rejects('{"subjects":[{"subject":"林岚"');
+  const prior = await compileCseResponse({
+    response: { subjects: [{ subject: trackedEntities[0].displayName, core: ['已有核心'], adaptive: [{ text: '已有倾向' }] }] },
+    envelope,
+    previousCurrentState: null,
+    now: NOW,
+    deltaId: '37373737-1111-4111-8111-373737373737',
+  });
+  const priorState = await replayCurrentState({
+    chatId: CHAT,
+    narrativeGeneration: GEN,
+    baselineId: baseline.id,
+    floors: [floor(FLOOR1, '此前中性正文')],
+    floorMemories: [{ ...memory(MEMORY1), floorId: FLOOR1, recordStatus: 'active' }],
+    stateDeltas: [prior.delta],
+    now: NOW,
+  });
+  const continuationFloor = floor(FLOOR2, '后续中性正文');
+  const continuationMemory = { ...memory(MEMORY2), floorId: FLOOR2, recordStatus: 'active' };
+  const continuationEnvelope = createCseEnvelope({ floor: continuationFloor, floorMemory: continuationMemory, baseline, currentState: priorState, trackedSubjects: trackedEntities, entities: trackedEntities });
+  const singletonRecovered = await compileCseResponse({
+    response: `{"subjects":{"subject":"${trackedEntities[0].displayName}"}`,
+    finishReason: 'stop',
+    envelope: continuationEnvelope,
+    previousCurrentState: priorState,
+    now: NOW,
+    deltaId: '38383838-1111-4111-8111-383838383838',
+  });
+  const recoveredSingleton = singletonRecovered.delta.subjectSnapshots.find(subject => subject.subjectEntityId === trackedEntities[0].id);
+  assert.deepEqual(recoveredSingleton.core.map(item => item.text), ['已有核心']);
+  assert.deepEqual(recoveredSingleton.adaptive.map(item => item.text), ['已有倾向']);
+});
+
+test('CSE 中段缺失人物右花括号时只归一同人物情境并保留已有状态', async () => {
+  const firstFloor = floor(FLOOR1, '前一楼中性正文');
+  const firstMemory = memory(MEMORY1);
+  const seedEnvelope = createCseEnvelope({ floor: firstFloor, floorMemory: firstMemory, baseline, currentState: null, trackedSubjects: [entities[1], entities[2]], entities });
+  const seed = await compileCseResponse({
+    response: { subjects: [{ subject: '甲', core: ['重视边界'], adaptive: [{ text: '先观察再回应', toward: '乙', visibility: 'observable' }] }] },
+    envelope: seedEnvelope,
+    previousCurrentState: null,
+    now: NOW,
+    deltaId: '31313131-1111-4111-8111-313131313131',
+  });
+  const previous = await replayCurrentState({
+    chatId: CHAT,
+    narrativeGeneration: GEN,
+    baselineId: baseline.id,
+    floors: [firstFloor],
+    floorMemories: [firstMemory],
+    stateDeltas: [seed.delta],
+    now: NOW,
+  });
+  const quote = '正文中可定位的中性原句';
+  const nextFloor = floor(FLOOR2, quote);
+  const nextMemory = memory(MEMORY2);
+  const envelope = createCseEnvelope({ floor: nextFloor, floorMemory: nextMemory, baseline, currentState: previous, trackedSubjects: [entities[1], entities[2]], entities });
+  const packet = {
+    subjects: [
+      {
+        subject: '甲',
+        review: { situational: [{ text: '暂时保持警觉', toward: '乙', visibility: 'private', reason: '仍在核实情况', origin: 'floor' }] },
+        additions: { adaptive: [{ text: '会逐字记录约定', toward: '乙', visibility: 'observable', reason: '正文中的明确做法', evidence: [{ source: 'canonicalContent', quote }] }] },
+      },
+      { subject: '乙', situational: [] },
+    ],
+    padding: '中性填充'.repeat(30),
+  };
+  const complete = JSON.stringify(packet);
+  const boundary = complete.indexOf('},{"subject":"乙"');
+  assert.ok(boundary > 0);
+  const malformed = `${complete.slice(0, boundary)}${complete.slice(boundary + 1)}`;
+  let calls = 0;
+  const result = await runCseRequest({
+    generateAnalysisTask: async () => { calls += 1; return { textData: malformed, taskMetadata: { finishReason: 'stop' } }; },
+    envelope,
+    previousCurrentState: previous,
+    now: NOW,
+    deltaId: '32323232-1111-4111-8111-323232323232',
+  });
+  assert.equal(calls, 1);
+  const recovered = result.delta.subjectSnapshots.find(subject => subject.subjectEntityId === A);
+  assert.deepEqual(recovered.core.map(item => item.text), ['重视边界']);
+  assert.deepEqual(recovered.adaptive.map(item => [item.text, item.towardEntityId]), [['先观察再回应', B], ['会逐字记录约定', B]]);
+  assert.deepEqual(recovered.situational.map(item => [item.text, item.visibility, item.towardEntityId]), [['暂时保持警觉', 'private', B]]);
+  assert.equal(result.delta.source.calibrationAudit.find(item => item.action === 'add')?.evidence?.[0]?.quote, quote);
+  assert.deepEqual(result.delta.subjectSnapshots.find(subject => subject.subjectEntityId === B).situational, []);
+  const replayed = await replayCurrentState({
+    chatId: CHAT,
+    narrativeGeneration: GEN,
+    baselineId: baseline.id,
+    floors: [firstFloor, nextFloor],
+    floorMemories: [firstMemory, nextMemory],
+    stateDeltas: [seed.delta, result.delta],
+    now: NOW,
+  });
+  const replayedA = replayed.subjects.find(subject => subject.subjectEntityId === A);
+  assert.deepEqual(replayedA.core.map(item => item.text), ['重视边界']);
+  assert.deepEqual(replayedA.adaptive.map(item => [item.text, item.towardEntityId]), [['先观察再回应', B], ['会逐字记录约定', B]]);
+  assert.deepEqual(replayedA.situational.map(item => [item.text, item.visibility]), [['暂时保持警觉', 'private']]);
+
+  const shortPacket = JSON.stringify({ subjects: [
+    { subject: '甲', review: { situational: [{ text: '短回复情境', visibility: 'observable' }] } },
+    { subject: '乙', situational: [] },
+  ] });
+  const shortBoundary = shortPacket.indexOf('},{"subject":"乙"');
+  assert.ok(shortBoundary > 0);
+  const shortMalformed = `${shortPacket.slice(0, shortBoundary)}${shortPacket.slice(shortBoundary + 1)}`;
+  assert.ok(shortMalformed.length < 256, '短回放不依赖填充字段');
+  let shortCalls = 0;
+  const shortResult = await runCseRequest({
+    generateAnalysisTask: async () => { shortCalls += 1; return { textData: shortMalformed, taskMetadata: { finishReason: 'stop' } }; },
+    envelope: seedEnvelope,
+    previousCurrentState: null,
+    now: NOW,
+    deltaId: '36363636-1111-4111-8111-363636363636',
+  });
+  assert.equal(shortCalls, 1);
+  assert.deepEqual(shortResult.delta.subjectSnapshots.find(subject => subject.subjectEntityId === A).situational.map(item => item.text), ['短回复情境']);
+
+  const validNested = { subjects: [{ subject: '甲', review: { situational: [{ text: '合法嵌套情境', visibility: 'observable' }] } }] };
+  const validNestedBefore = structuredClone(validNested);
+  const nestedResult = await compileCseResponse({ response: validNested, envelope: seedEnvelope, previousCurrentState: null, now: NOW, deltaId: '33333333-1111-4111-8111-333333333333' });
+  assert.deepEqual(nestedResult.delta.subjectSnapshots[0].situational.map(item => item.text), ['合法嵌套情境']);
+  assert.deepEqual(validNested, validNestedBefore, '归一不得修改调用方对象');
+
+  const topLevelWins = { subjects: [{ subject: '甲', situational: [], review: { situational: [{ text: '被顶层空列表覆盖' }] } }] };
+  const topLevelBefore = structuredClone(topLevelWins);
+  const topLevelResult = await compileCseResponse({ response: topLevelWins, envelope: seedEnvelope, previousCurrentState: null, now: NOW, deltaId: '34343434-1111-4111-8111-343434343434' });
+  assert.deepEqual(topLevelResult.delta.subjectSnapshots[0].situational, [], '已存在的顶层空列表仍是规范值');
+  assert.deepEqual(topLevelWins, topLevelBefore, '顶层优先时也不得修改调用方对象');
+
+  const conflictPacket = JSON.stringify({ subjects: [{ subject: '甲', situational: [{ text: '顶层值' }], review: { situational: [{ text: '嵌套冲突值' }] } }, { subject: '乙' }], padding: '中性填充'.repeat(30) });
+  const conflictBoundary = conflictPacket.indexOf('},{"subject":"乙"');
+  const malformedConflict = `${conflictPacket.slice(0, conflictBoundary)}${conflictPacket.slice(conflictBoundary + 1)}`;
+  await assert.rejects(
+    compileCseResponse({ response: malformedConflict, finishReason: 'stop', envelope: seedEnvelope, previousCurrentState: null, now: NOW, deltaId: '35353535-1111-4111-8111-353535353535' }),
+    error => error.code === 'V3_CSE_FORMAT_INVALID',
+    '中段恢复遇到同人物顶层与嵌套情境冲突时继续拒绝猜选',
+  );
 });
 
 test('CSE 最终机器合同明确 JSON 字符转义，合法引用解码后保持原文字面且歧义坏串仍拒绝', async () => {

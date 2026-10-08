@@ -362,22 +362,67 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
   });
 }
 
+const SITUATIONAL_FIELDS = Object.freeze(['situational', 'situation', '短期状态', '情境']);
+
+function normalizeCsePacket(value, { rejectSituationalConflict = false } = {}) {
+  const packet = Array.isArray(value) ? { subjects: value } : value;
+  if (!packet || typeof packet !== 'object' || Array.isArray(packet)) return packet;
+  let updates = null;
+  for (const candidate of subjectResultCandidates(packet)) {
+    const source = candidate.value;
+    const entries = Array.isArray(source) ? source : [source];
+    let changed = false;
+    let conflict = false;
+    const normalizedEntries = entries.map(subject => {
+      if (!subject || typeof subject !== 'object' || Array.isArray(subject)) return subject;
+      const review = field(subject, ['review']);
+      if (!review || typeof review !== 'object' || Array.isArray(review)) return subject;
+      const reviewSituationalKey = Object.keys(review).find(key => normalized(key) === 'situational');
+      if (!reviewSituationalKey) return subject;
+      const reviewSituational = review[reviewSituationalKey];
+      const topSituational = field(subject, SITUATIONAL_FIELDS);
+      if (topSituational !== undefined) {
+        if (rejectSituationalConflict && stableCandidate(topSituational) !== stableCandidate(reviewSituational)) conflict = true;
+        return subject;
+      }
+      const nextReview = Object.fromEntries(Object.entries(review).filter(([key]) => key !== reviewSituationalKey));
+      changed = true;
+      return { ...subject, review: nextReview, situational: reviewSituational };
+    });
+    if (conflict) return null;
+    if (changed) {
+      updates ??= { ...packet };
+      updates[candidate.key] = Array.isArray(source) ? normalizedEntries : normalizedEntries[0];
+    }
+  }
+  return updates ?? packet;
+}
+
 function parsePacket(value, { finishReason } = {}) {
-  if (Array.isArray(value)) return { subjects: value };
-  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (Array.isArray(value)) return normalizeCsePacket(value);
+  if (value && typeof value === 'object' && !Array.isArray(value)) return normalizeCsePacket(value);
   let raw = String(value ?? '').trim();
   const fences = [...raw.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/giu)];
   if (fences.length) raw = fences[0][1].trim();
-  try { const parsed = JSON.parse(raw); return Array.isArray(parsed) ? { subjects: parsed } : parsed; } catch { /* limited wrapper recovery */ }
+  try { return normalizeCsePacket(JSON.parse(raw)); } catch { /* limited wrapper recovery */ }
   const symbolRepaired = fences.length <= 1 ? parseJsonWithSymbolRepair(raw, { finishReason })?.value : null;
-  if (symbolRepaired) return Array.isArray(symbolRepaired) ? { subjects: symbolRepaired } : symbolRepaired;
+  if (symbolRepaired) return normalizeCsePacket(symbolRepaired);
   const start = raw.indexOf('{'), end = raw.lastIndexOf('}');
   if (start >= 0 && end > start) {
     const bounded = raw.slice(start, end + 1);
-    try { return JSON.parse(bounded); } catch { /* fail below */ }
+    try { return normalizeCsePacket(JSON.parse(bounded)); } catch { /* fail below */ }
   }
-  const repaired = repairJsonWithUniqueMissingObjectClose(raw, { finishReason, allowArray: true });
-  if (repaired) return Array.isArray(repaired) ? { subjects: repaired } : repaired;
+  const repairedSuffix = repairJsonWithUniqueMissingObjectClose(raw, { finishReason, allowArray: true });
+  if (repairedSuffix) return normalizeCsePacket(repairedSuffix);
+  const repairedMiddle = repairJsonWithUniqueMissingObjectClose(raw, {
+    finishReason,
+    allowArray: true,
+    scanMiddle: true,
+    normalizeCandidate: parsed => normalizeCsePacket(parsed, { rejectSituationalConflict: true }),
+    stableKey: stableCandidate,
+    rejectOnNullNormalization: true,
+  });
+  if (repairedMiddle) return repairedMiddle;
   const error = new TypeError('CSE 返回不是可识别的 JSON。'); error.code = 'V3_CSE_FORMAT_INVALID'; throw error;
 }
 
@@ -391,7 +436,7 @@ function subjectResultCandidates(packet) {
     const found = entries.find(([key]) => normalized(key) === normalized(name));
     if (!found) continue;
     const value = found[1];
-    if (Array.isArray(value) || (value && typeof value === 'object')) candidates.push({ name, value });
+    if (Array.isArray(value) || (value && typeof value === 'object')) candidates.push({ name, key: found[0], value });
   }
   return candidates;
 }

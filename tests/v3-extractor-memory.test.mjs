@@ -92,7 +92,7 @@ test('已存空间事实严格冷读且状态投影用一次floor索引解析来
     const projected = h.runtime.getState();
     assert.equal(projected.floors.find(item => item.floorId === floor.floorId).sourceMessageIndexes[0], floor.messageIndex);
     assert.equal(findCalls, 1, `只应包含现有rebuild顺序查询；来源楼解析使用floorId Map\n${findStacks.join('\n')}`);
-    assert.ok(findStacks[0].includes('memory-runtime.js:667'), '唯一生产find仍是rebuildNextAssistantSeq的独立有序查询');
+    assert.match(findStacks[0], /src\/v3\/memory-runtime\.js:/u, '唯一生产find来自memory runtime已有的有序查询');
   } finally {
     if (originalFind) Object.defineProperty(reachable.floors, 'find', originalFind); else delete reachable.floors.find;
   }
@@ -355,6 +355,107 @@ test('连续 AI 显式确认后按楼顺序接入现有摘要流水，确认前�
   assert.equal(resumedState.rememberedCount, 2, '刷新重载后已确认各楼保持可达，不再反复卡住同一连续段');
   assert.deepEqual(resumedState.unregisteredCandidates.map(item => [item.messageIndex, item.reason]), [[4, 'waitingNextUser']]);
   assert.equal(resumed.calls.length, 0, '刷新重载只读取已保存结果，不重复调用模型');
+});
+
+test('启动与正文投影只提醒最早未确认连续 AI 卡点，尾部增长不重复且新卡点可再提醒', async () => {
+  const notices = [];
+  const h = harness({
+    modernAnchors: true,
+    initialChat: [user('开始'), assistant('连续第一楼'), assistant('连续第二楼'), user('确认连续段')],
+    automation: { enabled: true, batchSize: 1 },
+    notifyUser: value => notices.push(value),
+    utility: options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
+      ? { jsonData: { summary: '已确认摘要' } }
+      : { jsonData: { noMaterialChange: true } },
+  });
+
+  await h.runtime.start();
+  const scope = structuredClone(h.runtime.getState().consecutiveAssistantConfirmation);
+  assert.equal(h.calls.length, 0, '提醒未确认楼不调用模型');
+  assert.equal(notices.filter(item => item.action === 'openMemory').length, 1);
+  assert.match(notices[0].text, /第 1 楼起.*这些楼及之后的摘要会等待确认/u);
+  await h.runtime.start();
+  await h.runtime.refreshAutomation();
+  assert.equal(notices.filter(item => item.action === 'openMemory').length, 1, '刷新和其他通知入口不得重发同一卡点');
+
+  h.context.chat.push(assistant('之后的普通尾楼'));
+  h.emit('MESSAGE_RECEIVED', h.context.chat.length - 1);
+  await waitFor(() => h.foundationRuntime.getState().unregisteredCandidates?.some(item => item.messageIndex === 4 && item.reason === 'waitingNextUser'));
+  assert.equal(notices.filter(item => item.action === 'openMemory').length, 1, '尾部增长保留同一提醒标识');
+  assert.equal(h.calls.length, 0, '普通末尾 AI 与提醒都不启动摘要请求');
+
+  await h.runtime.confirmConsecutiveAssistants(scope);
+  await h.runtime.start();
+  assert.equal(notices.filter(item => item.action === 'openMemory').length, 1, '权威投影解决旧卡点后不再提醒它');
+  const callsAfterConfirmation = h.calls.length;
+  h.context.chat.push(assistant('新连续第一楼'), assistant('新连续第二楼'), user('确认新连续段'));
+  h.emit('MESSAGE_RECEIVED', h.context.chat.length - 1);
+  await waitFor(() => notices.filter(item => item.action === 'openMemory').length === 2);
+  assert.match(notices.filter(item => item.action === 'openMemory')[1].text, /第 4 楼起/u);
+  assert.equal(h.calls.length, callsAfterConfirmation, '提醒新卡点仍不触发模型');
+});
+
+test('普通尾楼、关闭的自动记忆不提醒，通知异常不影响连续 AI 状态', async () => {
+  const normalNotices = [];
+  const normalTail = harness({ initialChat: [user('开始'), assistant('普通末尾楼')],
+    automation: { enabled: true, batchSize: 1 }, notifyUser: value => normalNotices.push(value) });
+  await normalTail.runtime.start();
+  assert.equal(normalNotices.length, 0, '普通等待下一条用户消息的末尾楼不提醒');
+
+  const automationOffNotices = [];
+  const automationOff = harness({ modernAnchors: true,
+    initialChat: [user('开始'), assistant('连续一'), assistant('连续二'), user('确认')],
+    automation: { enabled: false, batchSize: 1 }, notifyUser: value => automationOffNotices.push(value) });
+  await automationOff.runtime.start();
+  assert.equal(automationOffNotices.length, 0, '自动记忆关闭时不提醒');
+
+  const enabledNotices = [];
+  const enabledAfterStartup = harness({ modernAnchors: true,
+    initialChat: [user('开始'), assistant('连续一'), assistant('连续二'), user('确认')],
+    automation: { enabled: false, batchSize: 1 }, notifyUser: value => enabledNotices.push(value) });
+  await enabledAfterStartup.runtime.start();
+  enabledAfterStartup.setAutomation({ enabled: true, batchSize: 1 });
+  await enabledAfterStartup.runtime.refreshAutomation();
+  await enabledAfterStartup.runtime.refreshAutomation();
+  assert.equal(enabledNotices.filter(item => item.action === 'openMemory').length, 1,
+    '启动后开启自动记忆时复用现有foundation投影提醒一次');
+  assert.equal(enabledAfterStartup.calls.length, 0, '开启自动记忆的提醒不调用模型');
+
+  const throwing = harness({ modernAnchors: true,
+    initialChat: [user('开始'), assistant('连续一'), assistant('连续二'), user('确认')],
+    automation: { enabled: true, batchSize: 1 }, notifyUser() { throw new Error('toast unavailable'); } });
+  await throwing.runtime.start();
+  assert.equal(throwing.runtime.getState().consecutiveAssistantConfirmation.candidates.length, 2,
+    '通知回调失败不影响连续 AI 确认投影');
+  assert.equal(throwing.calls.length, 0, '通知回调失败不触发模型');
+  const scope = structuredClone(throwing.runtime.getState().consecutiveAssistantConfirmation);
+  const confirmed = await throwing.runtime.confirmConsecutiveAssistants(scope);
+  assert.equal(confirmed.rememberedCount, 2, '通知失败后显式确认和摘要保存仍能完成');
+
+  const disabledNotices = [];
+  const disabled = harness({ modernAnchors: true,
+    initialChat: [user('开始'), assistant('连续一'), assistant('连续二'), user('确认')],
+    automation: { enabled: true, batchSize: 1 }, notifyUser: value => disabledNotices.push(value) });
+  disabled.setEnabled(false);
+  await disabled.runtime.start();
+  assert.equal(disabledNotices.length, 0, '插件关闭时不提醒');
+});
+
+test('SillyTavern 与 Luker 的正文事件投影新发现连续 AI 后提醒且不启动模型', async t => {
+  for (const host of ['official', 'luker']) await t.test(host, async () => {
+    const notices = [];
+    const h = harness({ host, modernAnchors: true,
+      initialChat: [user('开始'), assistant('普通尾楼')],
+      automation: { enabled: true, batchSize: 1 }, notifyUser: value => notices.push(value) });
+    await h.runtime.start();
+    assert.equal(notices.length, 0, '普通末尾 AI 尚无连续确认范围');
+    h.context.chat.push(assistant('连续一楼'), assistant('连续二楼'), user('确认连续段'));
+    h.emit('MESSAGE_RECEIVED', h.context.chat.length - 1);
+    await waitFor(() => notices.some(item => item.action === 'openMemory'), `${host}正文事件完成foundation投影后应提醒`);
+    assert.equal(notices.filter(item => item.action === 'openMemory').length, 1);
+    assert.match(notices[0].text, /连续 AI 回复等待你确认/u);
+    assert.equal(h.calls.length, 0, '新发现连续楼仍等待用户确认，不调用模型');
+  });
 });
 
 test('正常逐楼摘要准备复用增量千事索引，连续新增楼只做一次完整投影', async () => {

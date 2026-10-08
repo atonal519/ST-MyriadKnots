@@ -274,6 +274,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   let coverage = unknownCoverage(0);
   let lastAutomaticInputKey = null;
   let lastNoticeKey = null;
+  let lastConsecutiveAssistantNoticeKey = null;
   let identityProjection = normalizeIdentityProjection();
   let timeFallbackByFloor = new Map();
   let failureScope = null;
@@ -534,6 +535,27 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       kind: 'warning',
       text: `千千结发现需要用户确认的历史摘要缺口：${summaryDebtCopy({ floor: firstPending, count: unfinished, retry: '这是历史缺口，不会自动补，请在记忆管理中点击继续。' })}`,
     });
+  };
+  const notifyConsecutiveAssistantBlock = foundationState => {
+    const config = automation();
+    if (!enabled() || !config.enabled || !['ready', 'uninitialized'].includes(foundationState?.status)) return false;
+    const pendingCandidate = (foundationState.unregisteredCandidates ?? []).find(candidate => candidate.reason === 'consecutiveAssistant');
+    if (!pendingCandidate) {
+      lastConsecutiveAssistantNoticeKey = null;
+      return false;
+    }
+    const scope = foundationState.consecutiveAssistantConfirmation;
+    if (!scope || !Array.isArray(scope.candidates)) return false;
+    const first = scope.candidates.find(item => item?.confirmationRequired === true && item.messageIndex === pendingCandidate.messageIndex);
+    if (!first) return false;
+    const key = `${scope.chatId ?? ''}:${first.messageIndex}:${first.rawFingerprint ?? ''}:${first.canonicalFingerprint ?? ''}`;
+    if (key === lastConsecutiveAssistantNoticeKey) return false;
+    lastConsecutiveAssistantNoticeKey = key;
+    const floorLabel = Number.isSafeInteger(first.messageIndex) ? `第 ${first.messageIndex} 楼` : `AI 记录 ${first.assistantSeq ?? '未明'}`;
+    try {
+      notifyUser?.({ kind: 'warning', action: 'openMemory', text: `千千结：${floorLabel}起有连续 AI 回复等待你确认并分别记录；这些楼及之后的摘要会等待确认。打开「千结 → 确认连续 AI 并分别记录」处理。` });
+    } catch { /* notification must not affect memory work */ }
+    return true;
   };
   const cancelAutomation = (reason = 'automationCancelled') => {
     autoEpoch += 1;
@@ -2287,6 +2309,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }
     } else {
       notifyConfirmedSummaryBlock();
+      notifyConsecutiveAssistantBlock(foundationRuntime.getState());
     }
     return Promise.resolve(notify());
   }
@@ -2494,6 +2517,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             await load(reloadEpoch, foundationStatus === 'uninitialized' ? null : foundationReachable, { readOnlyReview });
             const settlement = backgroundSync;
             if (settlement) await settlement;
+            notifyConsecutiveAssistantBlock(foundationRuntime.getState());
             if (reloadEpoch === epoch && autoTriggerReason && scheduleAllowed(autoTriggerReason)) {
               const reason = autoTriggerReason;
               autoTriggerReason = null;
@@ -2745,6 +2769,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (initialSettlement) await initialSettlement;
     const state = getState();
     notifyConfirmedSummaryBlock(state);
+    notifyConsecutiveAssistantBlock(foundationRuntime.getState());
     return state;
   }
   async function setEnabled(value) {

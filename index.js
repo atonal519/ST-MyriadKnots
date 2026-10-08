@@ -179,7 +179,9 @@ const v3MemoryRuntime = createV3MemoryRuntime({
     enabled: settings.isEnabled(),
     batchSize: 1,
   }),
-  notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
+  notifyUser: notification => notification?.action === 'openMemory'
+    ? globalThis.toastr?.warning?.(notification.text, undefined, { timeOut: 12000, closeButton: true, onclick: () => ui?.openMemory?.() })
+    : globalThis.toastr?.[notification?.kind]?.(notification?.text),
   isMainGenerationActive: isGenerating,
   extractorPromptGuidance: summaryPrompt,
   csePromptGuidance: csePrompt,

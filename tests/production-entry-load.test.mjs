@@ -192,7 +192,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.6.12');
+  assert.equal(manifest.version, '0.7.0');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -296,6 +296,10 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
 test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/lifecycle 与 recall 保持装配', async () => {
   const unloadCallbacks = [];
   const context = createContext({ console, setTimeout, clearTimeout, addEventListener: (name, callback) => { if (name === 'beforeunload') unloadCallbacks.push(callback); } });
+  const toastCalls = [];
+  let openMemoryCalls = 0;
+  let confirmationCalls = 0;
+  context.toastr = { warning: (...args) => { toastCalls.push(args); } };
   const entrySource = await readFile(resolve(root, 'index.js'), 'utf8');
   const utilityTask = async () => ({ jsonData: 'utility' });
   const analysisTask = async () => ({ jsonData: 'analysis' });
@@ -369,7 +373,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const backendClient = { getDiagnosticSnapshot: () => backendSnapshot };
   define('./src/backend-client.js', { createBackendClient: () => backendClient });
   define('./src/private-recall-diagnostics.js', { createPrivateRecallDiagnostics: () => ({ start: async () => false, dispose() {} }) });
-  define('./src/bootstrap.js', { bootstrap: options => { bootstrapOptions = options; return { refresh() {}, setEnabled() {} }; } });
+  define('./src/bootstrap.js', { bootstrap: options => { bootstrapOptions = options; return { refresh() {}, setEnabled() {}, openMemory() { openMemoryCalls += 1; } }; } });
   const productionSettings = { generalPrompt: '旧通用附加残留', processingPrompt: '  破限接线\n', summaryPrompt: '摘要指导', csePrompt: 'CSE 指导', profilePrompt: '人物资料指导', storyClockReferenceTags: 'Ti,时标', storyCalendars: {} };
   define('./src/settings.js', { createSettingsStore: () => ({ migrateLegacyApiSettings() {}, isEnabled: () => false, get: () => productionSettings, update: patch => Object.assign(productionSettings, patch) }) });
   define('./src/v3/calendar-rules.js', { normalizeStoryCalendar });
@@ -429,7 +433,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let calendarInvalidations = 0, calendarRefreshes = 0;
   const timeRuntime = { runBatch: receipt => { timeBatches.push(receipt); }, getState: () => ({}), invalidate() { calendarInvalidations += 1; }, async refreshStatus() { calendarRefreshes += 1; }, completeStoredUpdate() { timeOptions.onInvalidate?.(); }, recallProjection: async () => null, currentStoryContext: async () => { currentStoryContextReads += 1; return { currentTime: { raw: '5月3日' } }; }, stop: async () => {}, bind(options) { timeBindOptions = options; } };
   define('./src/v3/time-runtime.js', { createTimeStore: () => ({}), createTimeRuntime: options => { timeOptions = options; return timeRuntime; } });
-  define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() { backgroundStarts.push('memory'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, getState: () => ({}), getQianshiRecall: input => { qianshiRecallInputs.push(input); return { text: '' }; }, shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
+  define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() { backgroundStarts.push('memory'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, async confirmConsecutiveAssistants() { confirmationCalls += 1; }, getState: () => ({}), getQianshiRecall: input => { qianshiRecallInputs.push(input); return { text: '' }; }, shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
   define('./src/v3/message-floor-anchor.js', { persistMessageFloorAnchors: persistAnchors });
   define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; v3RecallRuntime = { bind() {}, async setEnabled(value) { runtimeEnables.push(`recall:${value}`); }, async intercept() {}, invalidate(reason) { recallInvalidations.push(reason); }, getState: () => ({}), getPromptSnapshot: () => null }; return v3RecallRuntime; } });
   define('./src/v3/auto-hide.js', { createAutoHideController: options => { autoHideOptions = options; return { applySettings() {}, stop() {}, dispose() {} }; } });
@@ -649,6 +653,14 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(Object.hasOwn(v3RecallOptions, 'historicalMaintenance'), false);
   assert.equal(typeof v3RecallOptions.realtimeOrigin, 'function');
   assert.equal(typeof context.qqj_v3_recall_interceptor, 'function');
+  v3MemoryOptions.notifyUser({ kind: 'warning', action: 'openMemory', text: '千千结：第 383 楼起等待确认。' });
+  assert.equal(toastCalls.length, 1);
+  assert.deepEqual(toastCalls[0].slice(0, 2), ['千千结：第 383 楼起等待确认。', undefined]);
+  assert.deepEqual({ timeOut: toastCalls[0][2].timeOut, closeButton: toastCalls[0][2].closeButton }, { timeOut: 12000, closeButton: true });
+  assert.equal(openMemoryCalls, 0);
+  toastCalls[0][2].onclick();
+  assert.equal(openMemoryCalls, 1, '提醒点击导航到既有千结入口');
+  assert.equal(confirmationCalls, 0, '点击只导航，不直接确认连续 AI');
 });
 
 test('生产 bundle 在 Luker-only 兼容全局下也可隔离加载，关闭时零后端请求', async () => {

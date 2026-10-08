@@ -281,18 +281,41 @@ export function parseJsonWithSafeTrailingCommas(value) {
   return scanner(text, { trailingCommasOnly: true });
 }
 
-export function repairJsonWithUniqueMissingObjectClose(value, { finishReason, allowArray = false } = {}) {
+export function repairJsonWithUniqueMissingObjectClose(value, {
+  finishReason,
+  allowArray = false,
+  scanMiddle = false,
+  normalizeCandidate,
+  stableKey,
+  rejectOnNullNormalization = false,
+} = {}) {
   if (normalizeFinishReason(finishReason) !== 'stop') return null;
   const text = String(value ?? '').trim();
   const repairs = [];
-  for (let index = Math.max(0, text.length - 64); index <= text.length; index += 1) {
+  const equivalentRepairs = new Map();
+  let rejectedCandidate = false;
+  const start = scanMiddle ? 0 : Math.max(0, text.length - 64);
+  const end = text.length;
+  for (let index = start; index <= end; index += 1) {
     if (index < text.length && !/[}\]]/u.test(text[index])) continue;
     try {
       const candidate = `${text.slice(0, index)}}${text.slice(index)}`;
       const parsed = JSON.parse(candidate);
       const inspected = scanner(candidate, { requireOperations: false });
-      if (inspected && parsed && typeof parsed === 'object' && (allowArray || !Array.isArray(parsed))) repairs.push(parsed);
-    } catch { /* try the next mechanically possible suffix position */ }
+      if (!inspected || !parsed || typeof parsed !== 'object' || (!allowArray && Array.isArray(parsed))) continue;
+      const normalized = normalizeCandidate ? normalizeCandidate(parsed) : parsed;
+      if (!normalized || typeof normalized !== 'object') {
+        if (normalizeCandidate && rejectOnNullNormalization) rejectedCandidate = true;
+        continue;
+      }
+      if (normalizeCandidate) {
+        const key = stableKey ? stableKey(normalized) : JSON.stringify(normalized);
+        if (!equivalentRepairs.has(key)) equivalentRepairs.set(key, normalized);
+      } else {
+        repairs.push(normalized);
+      }
+    } catch { /* try the next mechanically possible insertion point */ }
   }
+  if (normalizeCandidate) return !rejectedCandidate && equivalentRepairs.size === 1 ? equivalentRepairs.values().next().value : null;
   return repairs.length === 1 ? repairs[0] : null;
 }
