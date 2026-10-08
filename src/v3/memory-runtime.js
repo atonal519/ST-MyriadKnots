@@ -27,11 +27,11 @@ const EVENTS = Object.freeze(['CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'M
 const HISTORY_MUTATION_EVENTS = new Set(['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
 const MANUAL_HISTORY_REASON = 'manualHistoricalRebuild';
 const MANUAL_CSE_REBUILD_REASON = 'manualCseRebuild';
-const QIANSHI_HISTORY_SYSTEM_PROMPT = `你是“千千结”的千事历史提取器。只输出 JSON：{"floors":[{"floorKey":"floor-N","qianshi":{"events":[],"order":[]}}]}。每个输入 floorKey 恰好返回一次；每楼必须检查并返回 qianshi，确无事件增量时返回空 events 和 order。qianshi 独立于 summary、普通 events、eventFragments 等字段，不因其他字段已记录材料而省略应记事件；matter=false 不表示没有事件增量。每个 qianshi.order 必须是对象数组，例如 [{"before":"event-1","after":"event-2","certainty":"explicit"}]；只写材料明确支持的先后关系，引用键沿用本楼和候选键合同。顶层 qianshiCandidates 是本批共享候选池，每楼只能使用其 qianshiCandidateKeys 列出的键。候选 candidateType=event 表示一次性事件，只能用于 context 或先后关系端点；只有持续事项候选才能用于 progress。每个事件正文必须放在 description 字段，事件对象示例：{"key":"event-1","title":"事件标题","description":"事件正文","status":"occurred","matter":false}；不得用 chatSummary 等自造字段替代 description。每个事件最多关联一个旧事项候选（links 中最多一个 candidateKey）；同一叙事影响多个旧事项时，按事项分别写成独立事件，每个事件只链接对应的一个候选。按对后续叙事有用的事件单位整理，不按每个动作逐条拆分；同一场景同一事项的连续动作合成一件完整事件。新计划、事项实质推进、完成、取消和关键变化仍须记录。只有计划、持续事项 matter=true；带来新事实或变化的一次性事件可为 matter=false。object 只填写对后续叙事有用的具体物品，多个物品用“、”分隔；人物写入 people，地点或建筑及事件主题应在相应事件正文信息中表达，不要混入 object，也不要凭空补物品；没有合适物品时 object 写 null。links 使用 candidateKey 和 kind=progress|context，倒叙补证必须用 context；禁止把无效 progress 默默降级为 context。可让后楼引用同批更早楼事件，candidateKey 写“更早floorKey:该事件key”，不得跨 floorKey 合并事件来源。storyTime 是发生时间，scheduledTime 是预计时间；材料已有故事年份或纪年时必须保留，只有月日或相对时间时不得猜当前故事年或现实年份。不得改写摘要，不得输出人物资料。`;
+const QIANSHI_HISTORY_SYSTEM_PROMPT = `你是“千千结”的千事历史提取器。只输出 JSON：{"floors":[{"floorKey":"floor-N","qianshi":{"events":[],"order":[]}}]}。每个输入 floorKey 恰好返回一次；每楼必须检查并返回 qianshi，确无事件增量时返回空 events 和 order。qianshi 独立于 summary、普通 events、eventFragments 等字段，不因其他字段已记录材料而省略应记事件；matter=false 不表示没有事件增量。每个 qianshi.order 必须是对象数组，例如 [{"before":"event-1","after":"event-2","certainty":"explicit"}]；只写材料明确支持的先后关系，引用键沿用本楼和候选键合同。顶层 qianshiCandidates 是本批共享候选池，每楼只能使用其 qianshiCandidateKeys 列出的键。候选 candidateType=event 表示一次性事件，只能用于 context 或先后关系端点；只有持续事项候选才能用于 progress。每个事件正文必须放在 description 字段，事件对象示例：{"key":"event-1","title":"事件标题","description":"事件正文","status":"occurred","matter":false}；不得用 chatSummary 等自造字段替代 description。每个事件最多关联一个旧事项候选（links 中最多一个 candidateKey）；同一叙事影响多个旧事项时，按事项分别写成独立事件，每个事件只链接对应的一个候选。按对后续叙事有用的事件单位整理，不按每个动作逐条拆分；同一场景同一事项的连续动作合成一件完整事件。新计划、事项实质推进、完成、取消和关键变化仍须记录。只有计划、持续事项 matter=true；带来新事实或变化的一次性事件可为 matter=false。object 只填写对后续叙事有用的具体物品，多个物品用“、”分隔；人物写入 people，地点或建筑及事件主题应在相应事件正文信息中表达，不要混入 object，也不要凭空补物品；没有合适物品时 object 写 null。links 使用 candidateKey 和 kind=progress|context，倒叙补证必须用 context。跨来源楼判断是否推进同一具体目标或承诺，必须有明确进展证据；同一人物、同一天或相似主题不足以认定接续。没有真实关联证据时独立记录；仅当正文明确相关但不推进旧事项时才用 context。禁止把无效 progress 默默降级为 context。可让后楼引用同批更早楼事件，candidateKey 写“更早floorKey:该事件key”，不得跨 floorKey 合并事件来源。storyTime 是发生时间，scheduledTime 是预计时间；材料已有故事年份或纪年时必须保留，只有月日或相对时间时不得猜当前故事年或现实年份。不得改写摘要，不得输出人物资料。`;
 // 新请求只说明规范输出；等价旧字段仍由既有编译器兼容，不迁移旧存档。
 const QIANSHI_REJUDGE_SYSTEM_PROMPT = `你是“千千结”的已存千事重判器。重判现有事件的归线关系、整线状态与动作状态；仅可补充原楼材料明确发生但旧记录漏记的事件，不改写原事件事实，不因重新措辞新增重复记录。逐楼检查原文，不因摘要、普通事件或片段已记录材料而省略应记千事；一次性新事实或互动变化可记为 matter=false，计划与持续事项仍按 matter/progress 合同记录，不把实质进展当成一次性事件；无新增事实或进展的重复日常不另立事件。
 只输出 JSON：{"qianshi":{"events":[],"order":[]}}。输入 records 每条旧记录恰好返回一次，key 逐字使用对应 record-N；严禁换号、猜配、按标题或描述生成身份，不得删除或冒充旧记录。旧事件的 title、description、object、people、storyTime、scheduledTime 可省略，程序保留存档原值。新增漏记事件使用 event-N，并写明 title、description 与有依据的发生时间；不补造材料没有的事实。
-每条记录必须输出 status（本条进展后的整线状态）、actionStatus（局部动作状态）、matter 与 links。links 使用 [{"candidateKey":"candidate-1","kind":"progress"}]；每个事件最多关联一个旧事项候选（links 中最多一个 candidateKey）。同一叙事影响多个旧事项时，新增漏记事件按事项分别记录，不能把一个 record-N 复制成多条。只有明确延续持续事项才用有效 candidate-N 的 progress；context 仅是回忆/背景，不能把记录归入该线。candidateType=event 只可 context 或作为先后关系端点。无链接且 matter=true 表示独立持续事项，matter=false 表示一次性事件。
+每条记录必须输出 status（本条进展后的整线状态）、actionStatus（局部动作状态）、matter 与 links。links 使用 [{"candidateKey":"candidate-1","kind":"progress"}]；每个事件最多关联一个旧事项候选（links 中最多一个 candidateKey）。同一叙事影响多个旧事项时，新增漏记事件按事项分别记录，不能把一个 record-N 复制成多条。只有正文明确表明这条记录推进同一具体目标、承诺或持续事项时才用有效 candidate-N 的 progress；同一人物、同一天或相似主题不足以认定接续。没有真实关联证据时独立记录；仅当正文明确相关但不推进旧事项时才用 context，不能借 context 把记录归入该线。candidateType=event 只可 context 或作为先后关系端点。无链接且 matter=true 表示独立持续事项，matter=false 表示一次性事件。
 order 必须使用对象数组，例如 [{"before":"record-1","after":"event-1","certainty":"explicit"}]；引用只用本次 record-N/event-N 或明确指向单一旧事件的 candidate-N。certainty 只用 explicit（材料明示）或 strong（可靠时间锚支持）；先后未知、同日不明或不可比较时不输出。不生成因果等其他关系。
 人工修订是权威材料，保留人工保护；不得输出或创建人工覆盖标记。不要输出摘要、CSE、人物资料或非千事字段。`;
 // 历史补齐和已存重判都明确要求规范状态；共用编译器另行兼容模型的等价表达。
@@ -486,7 +486,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       return Object.freeze({ enabled: false, batchSize: 1 });
     }
   };
-  const notify = () => { const snapshot = getState(); for (const listener of subscribers) { try { listener(snapshot); } catch { /* UI listener isolation */ } } return snapshot; };
+  const notify = cseSnapshot => { const snapshot = getState(cseSnapshot); for (const listener of subscribers) { try { listener(snapshot); } catch { /* UI listener isolation */ } } return snapshot; };
   const markMemorySyncing = () => {
     memorySyncStatus = 'syncing';
     memorySyncError = null;
@@ -549,7 +549,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   };
   const cancelEarlyStabilization = reason => { try { foundationRuntime.cancelEarlyStabilization?.(reason); } catch { /* foundation cancellation is best-effort */ } };
   const invalidate = ({ deletedChatId = null } = {}) => { if (deletedChatId) clearChatFailures(deletedChatId); cancelEarlyStabilization('memoryInvalidated'); cancelAutomation('memoryInvalidated'); qianshiHistoryRun?.controller.abort('memoryInvalidated'); qianshiHistoryRun = null; qianshiHistoryPlan = null; qianshiRejudgePlan = null; qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '' }); qianshiCandidateIndex?.invalidate(); epoch += 1; active?.controller.abort('memoryInvalidated'); active = null; workRun = null; cseRebuildPlan = null; reachable = null; memorySnapshotStatus = 'unavailable'; memorySyncStatus = 'idle'; memorySyncError = null; backgroundSync = null; backgroundSyncKey = null; timeFallbackByFloor = new Map(); failureScope = null; coverage = unknownCoverage(0); emptyRealtimeOrigin = null; formalGenerationActive = false; generationArm = null; generationLifecycle = null; stoppedGenerationFinal = null; observedHostChatLength = 0; establishedMemoryChatId = null; grantedEventKeys.clear(); suffixGenerationContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; historicalAggregate = false; sessionCandidates.clear(); pendingResults.clear(); cseRuntime.invalidate(); notify(); };
-  cseRuntime.subscribe(() => notify());
+  cseRuntime.subscribe(state => notify(state));
   function runManualWork(reason, task) {
     if (workRun) return Promise.resolve(getState());
     const operation = { kind: 'manual', reason, phase: reason, floorIds: [], promise: null, startedAt: nowIso(now), startedMonotonic: monotonicNow() };
@@ -579,7 +579,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     pendingResults.set(floorId, clone(value));
   };
 
-  function floorState(floor, memoryMap, provenance) {
+  function floorState(floor, memoryMap, provenance, floorById) {
     const memory = memoryMap.get(floor.id) ?? null;
     const meta = provenance[floor.id] ?? null;
     const running = active?.floorId === floor.id && active.phase !== 'analyzingCse';
@@ -593,7 +593,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const savedError = savedFailureMessage(savedFailure);
     const failureError = transientFailure && transientFailure.phase !== 'retryableError' ? transientFailure.message : savedError ?? transientFailure?.message;
     const sourceFloorIds = memory ? memorySourceFloorIds(memory) : [floor.id];
-    const sourceFloors = sourceFloorIds.map(id => reachable?.floors?.find(item => item.id === id)).filter(Boolean);
+    const sourceFloors = sourceFloorIds.map(id => floorById.get(id)).filter(Boolean);
     return Object.freeze({ floorId: floor.id, assistantSeq: floor.assistantSeq, messageIndex: floor.hostLocator.messageIndex,
       sourceFloorIds: Object.freeze([...sourceFloorIds]), sourceAssistantSeqs: Object.freeze(sourceFloors.map(item => item.assistantSeq)),
       sourceMessageIndexes: Object.freeze(sourceFloors.map(item => item.hostLocator.messageIndex)),
@@ -635,17 +635,18 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     completedFloorIds: plan.targets.slice(0, completedCount).map(target => target.floorId),
     status: completedCount >= plan.targets.length ? 'completed' : 'active',
   });
-  function getState() {
+  function getState(cseSnapshot = null) {
     const foundation = foundationRuntime.getState();
     const memoryMap = currentMemoryMap(reachable);
     const coverageMap = coveredMemoryMap(reachable);
     const provenance = floorProvenance(reachable);
+    const floorById = new Map((reachable?.floors ?? []).map(floor => [floor.id, floor]));
     const floors = (reachable?.floors ?? [])
       .filter(floor => !coverageMap.has(floor.id) || coverageMap.get(floor.id)?.floorId === floor.id)
-      .map(floor => floorState(floor, memoryMap, provenance));
+      .map(floor => floorState(floor, memoryMap, provenance, floorById));
     const stableCount = reachable?.floors?.length ?? 0;
     const rememberedCount = coverageMap.size;
-    const rawCse = cseRuntime.getState();
+    const rawCse = cseSnapshot ?? cseRuntime.getState();
     const savedCseFailures = failureScopeMatches(reachable?.root) ? failureScope.cseFailures : {};
     const visibleFloorIds = new Set(floors.map(item => item.floorId));
     const cseFloors = (rawCse.cseFloors ?? []).filter(item => visibleFloorIds.has(item.floorId)).map(item => {
@@ -881,6 +882,17 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     return entry.promise;
   }
   async function prepareCurrent({ preferCached = true, rootResult = null, allowRefresh = true } = {}) {
+    if (!allowRefresh) {
+      if (!enabled()) return Object.freeze({ status: 'disabled', reachable: null, memorySyncStatus });
+      const foundationReachable = foundationRuntime.getReachable?.() ?? null;
+      if (foundationReachable?.status === 'ready'
+        && foundationReachable.checkpoint?.id === rootResult?.data?.headCheckpointId
+        && samePreparedRoot(foundationReachable, rootResult)) {
+        // Fresh receipt checks may borrow the foundation's committed graph while memory UI catches up.
+        return Object.freeze({ status: 'ready', reachable: foundationReachable, memorySyncStatus });
+      }
+      return Object.freeze({ status: 'unavailable', reachable: null, memorySyncStatus });
+    }
     const hostChatId = currentHostChatId();
     const foundation = foundationRuntime.getState();
     const matchesRoot = value => rootResult?.status === 'ready' && value?.status === 'ready' && value.root?.chatId === hostChatId
@@ -888,8 +900,6 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       && value.root.narrativeGeneration === rootResult.data.narrativeGeneration && value.root.headCheckpointId === rootResult.data.headCheckpointId;
     if (enabled() && hostChatId && memorySnapshotStatus === 'ready' && foundation?.status === 'ready' && foundation.chatId === hostChatId
       && matchesRoot(reachable) && matchesRoot(foundationRuntime.getReachable?.())) return Object.freeze({ status: 'ready', reachable, memorySyncStatus });
-    // 提交前核验只借用精确匹配当前根的已校验快照；缺失时由召回独立只读来源，不排队等待后台维护。
-    if (!allowRefresh) return Object.freeze({ status: enabled() ? 'unavailable' : 'disabled', reachable: null, memorySyncStatus });
     if (preferCached && hostChatId && reachable?.root?.chatId === hostChatId && memorySnapshotStatus === 'ready') {
       return Object.freeze({ status: 'ready', reachable, memorySyncStatus });
     }
@@ -2959,6 +2969,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (!reachable?.root) return Object.freeze({ status: 'not-ready', message: '千事后端尚未准备好当前聊天。' });
     return qianshiSnapshotMemo(reachable, identityProjection, qianshiHistoryState, storyCalendarProvider());
   }
+  function qianshiSnapshotVersion() {
+    const value = qianshiSnapshot();
+    return Object.freeze({ status: value.status, projectionRevision: value.projectionRevision ?? null, history: value.history ?? null });
+  }
 
   function formalQianshiEvent(eventId, source = reachable) {
     if (!source?.root || source.status !== 'ready' || source.root.chatId !== currentHostChatId()) return null;
@@ -3756,7 +3770,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
 
   return Object.freeze({ bind, start, setEnabled, refreshAutomation, startHistoricalRebuild, pauseHistoricalRebuild, retryAutomation, rebuildCse, resumeCseRebuild, pauseCseRebuild, invalidate, refreshStatus, prepareCurrent, confirmLatest, confirmConsecutiveAssistants, extractNext, extractFloor, analyzeNextState, retryStateAnalysis, correctSubjectState, editSummary, editMemory, restoreAi, markError, copySafeDiagnostic, copyFullDiagnostic, shouldBlockMainGeneration, allowsRealtimeTailFromEmpty, setIdentityProjection,
-    getQianshiSnapshot: () => structuredClone(qianshiSnapshot()), canEditQianshiEventText, editQianshiEventText, deleteQianshiEvent,
+    getQianshiSnapshot: () => structuredClone(qianshiSnapshot()), getQianshiSnapshotVersion: qianshiSnapshotVersion, canEditQianshiEventText, editQianshiEventText, deleteQianshiEvent,
     // 冻结召回只检查人工删除身份，不重选材；冷启动复用现有只读准备链。
     getQianshiDeletions: async () => {
       const prepared = await prepareCurrent();
@@ -3779,6 +3793,6 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       return structuredClone({ ...recall, deletedEvents: qianshiDeletedEvents(reachable), candidates: prepared.candidates, candidateStats: prepared.stats,
         currentStoryTime: [storyDate, storyClock].filter(Boolean).join(' ') || null, anchor });
     },
-    prepareQianshiHistory, startQianshiHistory, stopQianshiHistory, prepareQianshiRejudge, startQianshiRejudge, getState,
+    prepareQianshiHistory, startQianshiHistory, stopQianshiHistory, prepareQianshiRejudge, startQianshiRejudge, getState: () => getState(),
     subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

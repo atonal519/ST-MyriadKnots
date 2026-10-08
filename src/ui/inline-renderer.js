@@ -134,6 +134,8 @@ function patchView(view, projection, documentRef, sourceIndex, groupExpanded) {
     view.projection = projection;
     view.labelTitle = '千千结 · 本轮召回'; setText(view.title, view.labelTitle); view.title.title = view.labelTitle;
     setText(view.status, projection.statusText); view.status.className = 'status';
+    view.status.title = projection.statusDetail ?? '';
+    view.status.setAttribute?.('aria-label', projection.statusDetail ? `${projection.statusText}：${projection.statusDetail}` : projection.statusText);
     view.extract.hidden = true; view.extract.disabled = true;
     patchRecallTabs(view, projection, documentRef, sourceIndex, groupExpanded);
     patchExpanded(view); return;
@@ -174,6 +176,10 @@ export function createInlineRenderer({
   let fontScale = 1;
   const receiptCache = new WeakMap();
   const owner = {};
+  let historicalBatch = null;
+  const clearHistoricalPending = batch => {
+    for (const item of batch) if (item.view.receiptPending === item.pendingReceipt) item.view.receiptPending = null;
+  };
 
   const applyPalette = host => {
     setStyleProperty(host?.style, '--qqj-inline-knot', palette.knot);
@@ -228,9 +234,12 @@ export function createInlineRenderer({
   const liveRecallFor = (state, chatId, messageIndex) => {
     if (state?.activeRecall?.chatId === chatId && state.activeRecall.userMessageIndex === messageIndex) {
       const phase = state.activeRecall.phase;
+      // 冻结复用的来源核验只核对既有回执，不代表重新选材。
+      const verifyingExisting = state.activeRecall.pendingStep === 'receiptSourceVerification';
       const preparing = phase === 'input' || phase === 'source', selecting = phase === 'selecting';
-      return Object.freeze({ status: 'running', statusText: preparing ? '准备召回中' : selecting ? '召回中' : '寻回中',
-        summary: preparing ? '正在准备本轮召回。' : selecting ? '正在生成本轮召回。' : '正在生成本轮召回回执。',
+      return Object.freeze({ status: 'running', statusText: verifyingExisting ? '核验已有召回' : preparing ? '准备召回中' : selecting ? '召回中' : '寻回中',
+        summary: verifyingExisting ? '正在核验已有召回的来源；通过后复用已存回执。' : preparing ? '正在准备本轮召回。' : selecting ? '正在生成本轮召回。' : '正在生成本轮召回回执。',
+        statusDetail: verifyingExisting ? '正在核验已有召回的来源；通过后复用已存回执。' : null,
         injectionText: '', selectedFloors: Object.freeze([]), historyGroups: Object.freeze([]), kind: 'user' });
     }
     if (state?.lastRecallBinding?.chatId === chatId && state.lastRecallBinding.userMessageIndex === messageIndex
@@ -248,27 +257,81 @@ export function createInlineRenderer({
     return promise;
   };
 
-  const updateUser = (view, message, messageIndex, chatId, sourceIndex, recallState, currentSession) => {
+  // 同一微任务里完成的旧回执共用flush时的新快照与来源索引，避免逐楼重读并防止沿用等待前的位置。
+  const flushHistoricalBatch = batch => {
+    if (historicalBatch === batch) historicalBatch = null;
+    if (!batch.length) return;
+    if (!active || destroyed) { clearHistoricalPending(batch); return; }
+    const validBatch = [];
+    for (const item of batch) {
+      const { message, messageIndex, messageText, receipt, stamp, view, pendingReceipt } = item;
+      if (message.mes === messageText && message.extra?.[RECALL_RECEIPT_KEY] === receipt && receiptStamp(receipt) === stamp
+        && cards.get(messageIndex) === view && view.host?.isConnected !== false && view.receiptPending === pendingReceipt) validBatch.push(item);
+      else if (view.receiptPending === pendingReceipt) view.receiptPending = null;
+    }
+    if (!validBatch.length) return;
+    let memoryState, recallState;
+    try { memoryState = memoryRuntime.getState(); recallState = recallRuntime.getState(); }
+    catch { clearHistoricalPending(validBatch); return; }
+    const sourceIndexes = new Map();
+    for (const item of validBatch) {
+      const { result, message, messageIndex, messageText, receipt, stamp, chatId, sourceChat, view, pendingReceipt } = item;
+      if (view.receiptPending !== pendingReceipt) continue;
+      view.receiptPending = null;
+      const settledProjection = result ? projectInlineRecallReceipt(result) : projectInlineRecallReceipt(null);
+      view.receiptIdentity = receipt; view.receiptMessageText = messageText; view.receiptStamp = stamp; view.receiptChatId = chatId;
+      // A live projection may temporarily replace the visible card; keep the verified historical receipt as its own view cache.
+      view.receiptProjection = settledProjection; view.receiptSettled = true;
+      const latestLive = liveRecallFor(recallState, chatId, messageIndex);
+      const projection = latestLive ?? settledProjection;
+      let byChatId = sourceIndexes.get(sourceChat);
+      if (!byChatId) { byChatId = new Map(); sourceIndexes.set(sourceChat, byChatId); }
+      let sourceIndex = byChatId.get(chatId);
+      // sourceChat 是开始核验时的宿主数组引用；用其flush时的现行marker对应原回执目标。
+      if (!sourceIndex) { sourceIndex = createSourceIndex(sourceChat, chatId, memoryState); byChatId.set(chatId, sourceIndex); }
+      patchView(view, projection, documentRef, sourceIndex, groupExpanded);
+    }
+  };
+
+  const queueHistoricalResult = item => {
+    if (!historicalBatch) {
+      const batch = [];
+      historicalBatch = batch;
+      Promise.resolve().then(() => flushHistoricalBatch(batch));
+    }
+    historicalBatch.push(item);
+  };
+
+  const updateUser = (view, message, messageIndex, chatId, sourceIndex, recallState, sourceChat) => {
     const live = liveRecallFor(recallState, chatId, messageIndex);
     const receipt = message.extra?.[RECALL_RECEIPT_KEY];
-    if (!receipt || typeof receipt !== 'object') { patchView(view, live ?? projectInlineRecallReceipt(null), documentRef, sourceIndex, groupExpanded); return; }
+    if (!receipt || typeof receipt !== 'object') {
+      view.receiptIdentity = null; view.receiptMessageText = null; view.receiptStamp = null; view.receiptChatId = null;
+      view.receiptProjection = null; view.receiptSettled = false;
+      patchView(view, live ?? projectInlineRecallReceipt(null), documentRef, sourceIndex, groupExpanded); return;
+    }
     const messageText = message.mes, stamp = receiptStamp(receipt);
+    const hasSameReceiptIdentity = view.receiptIdentity === receipt && view.receiptMessageText === messageText && view.receiptStamp === stamp && view.receiptChatId === chatId;
+    if (!hasSameReceiptIdentity) {
+      view.receiptIdentity = null; view.receiptMessageText = null; view.receiptStamp = null; view.receiptChatId = null;
+      view.receiptProjection = null; view.receiptSettled = false;
+    }
     const sameSettledReceipt = view.receiptIdentity === receipt && view.receiptMessageText === messageText && view.receiptStamp === stamp && view.receiptChatId === chatId && view.receiptSettled === true;
+    const samePendingReceipt = view.receiptPending?.receipt === receipt && view.receiptPending.messageText === messageText && view.receiptPending.stamp === stamp && view.receiptPending.chatId === chatId;
     if (live) patchView(view, live, documentRef, sourceIndex, groupExpanded);
-    else if (sameSettledReceipt) { patchView(view, view.projection, documentRef, sourceIndex, groupExpanded); return; }
+    else if (sameSettledReceipt) { patchView(view, view.receiptProjection, documentRef, sourceIndex, groupExpanded); return; }
     else patchView(view, Object.freeze({ status: 'running', statusText: '正在核验历史回执', summary: '正在核验这一楼保存的召回记录。', injectionText: '', selectedFloors: Object.freeze([]), historyGroups: Object.freeze([]), kind: 'user' }), documentRef, sourceIndex, groupExpanded);
+    if (samePendingReceipt) return;
+    const pendingReceipt = { receipt, messageText, stamp, chatId };
+    view.receiptPending = pendingReceipt;
     void historicalProjection(message, chatId, messageIndex, stamp).then(result => {
-      if (!active || currentSession !== session || message.mes !== messageText || message.extra?.[RECALL_RECEIPT_KEY] !== receipt || receiptStamp(receipt) !== stamp || cards.get(messageIndex) !== view) return;
-      let latestSnapshot;
-      try { latestSnapshot = hostAdapter.snapshot(); } catch { return; }
-      const latestChat = Array.isArray(latestSnapshot?.chat) ? latestSnapshot.chat : [];
-      const latestChatId = String(latestSnapshot?.context?.chatMetadata?.qianqianjie?.chatId ?? '').trim();
-      const latestChatKey = `${latestChatId || latestSnapshot?.chatId || 'no-chat'}|${latestSnapshot?.chatId || ''}`;
-      if (latestChatKey !== activeChatKey || latestChatId !== chatId || latestChat[messageIndex] !== message) return;
-      view.receiptIdentity = receipt; view.receiptMessageText = messageText; view.receiptStamp = stamp; view.receiptChatId = chatId; view.receiptSettled = true;
-      const latestLive = liveRecallFor(recallRuntime.getState(), chatId, messageIndex);
-      const projection = latestLive?.status === 'running' ? latestLive : result ? projectInlineRecallReceipt(result) : (latestLive ?? projectInlineRecallReceipt(null));
-      patchView(view, projection, documentRef, createSourceIndex(latestChat, latestChatId, memoryRuntime.getState()), groupExpanded);
+      if (!active || destroyed || message.mes !== messageText || message.extra?.[RECALL_RECEIPT_KEY] !== receipt || receiptStamp(receipt) !== stamp
+        || cards.get(messageIndex) !== view || view.host?.isConnected === false) {
+        if (view.receiptPending === pendingReceipt) view.receiptPending = null;
+        return;
+      }
+      if (view.receiptPending !== pendingReceipt) return;
+      queueHistoricalResult({ result, message, messageIndex, messageText, receipt, stamp, chatId, sourceChat, view, pendingReceipt });
     });
   };
 
@@ -286,7 +349,6 @@ export function createInlineRenderer({
       observer?.disconnect?.(); observer = null;
       expectedIndices.clear(); removeAll(); activeChatKey = chatKey;
     }
-    const currentSession = session;
     const chatRoot = documentRef.querySelector('#chat');
     if (!chatRoot?.querySelectorAll) return false;
     const chosen = new Map();
@@ -307,7 +369,7 @@ export function createInlineRenderer({
       const view = ensureView(candidate.element, messageIndex, candidate.role, chatKey);
       if (!view) { complete = false; continue; }
       if (candidate.role === 'assistant') patchView(view, projectInlineMemoryFloor(memoryState, messageIndex, assistantSequence.get(messageIndex)), documentRef, sourceIndex, groupExpanded);
-      else updateUser(view, chat[messageIndex], messageIndex, chatId, sourceIndex, recallState, currentSession);
+      else updateUser(view, chat[messageIndex], messageIndex, chatId, sourceIndex, recallState, chat);
     }
     for (const [messageIndex, view] of [...cards]) if (!chosen.has(messageIndex)) { remove(view.host); cards.delete(messageIndex); }
     for (const host of documentRef.querySelectorAll(HOST_SELECTOR)) {

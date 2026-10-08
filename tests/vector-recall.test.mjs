@@ -4,6 +4,8 @@ import { createVectorApiClient, normalizeVectorConfig, resolveVectorConfig, VECT
 import { createVectorIndex, VECTOR_INDEX_ID, VECTOR_SHARD_PREFIX } from '../src/v3/vector-index.js';
 import { createVectorAutoUpdater } from '../src/v3/vector-auto-update.js';
 import { projectVectorSources, rawWitnessValid, summaryCandidateText, summaryWitnessValid } from '../src/v3/vector-source.js';
+import { readVectorSource } from '../src/v3/vector-source-reader.js';
+import { projectRecallSource, selectRecallMemories } from '../src/v3/recall-source.js';
 import { selectRecallWithLlm } from '../src/v3/recall-llm-selector.js';
 import { addSemanticHistory, buildRecallHistoryCandidatePool, historySelectionContext, mergeSemanticHistoryPool } from '../src/v3/recall-selector.js';
 import { createSettingsStore } from '../src/settings.js';
@@ -28,7 +30,7 @@ async function sourceFixture() {
   };
 }
 function harness(source, { api = { embed: async (_config, texts) => vectors(texts) } } = {}) {
-  const records = new Map(), calls = []; let identity = { chatId: source.chatId }, current = source, route = config;
+  const records = new Map(), calls = []; let current = source, route = config;
   const client = { get: async (_collection, id) => {
     if (!records.has(id)) throw Object.assign(new Error('not_found'), { status: 404 });
     const { recordId: _recordId, ...envelope } = records.get(id);
@@ -38,8 +40,8 @@ function harness(source, { api = { embed: async (_config, texts) => vectors(text
       assert.equal(revision, records.get(id)?.revision ?? 0);
       const record = { recordId: id, revision: revision + 1, data: structuredClone(data) }; records.set(id, record); calls.push({ collection, id }); return record;
     } };
-  const index = createVectorIndex({ client, api, configProvider: () => route, identityProvider: () => identity, sourceProvider: async () => current });
-  return { index, records, calls, client, setSource: value => { current = value; }, setIdentity: value => { identity = value; }, setConfig: value => { route = value; } };
+  const index = createVectorIndex({ client, api, configProvider: () => route, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => current });
+  return { index, records, calls, client, setSource: value => { current = value; }, setConfig: value => { route = value; } };
 }
 
 async function rawFloor(source, seq, content = `第${seq}楼的原文苹果内容。`) {
@@ -47,8 +49,24 @@ async function rawFloor(source, seq, content = `第${seq}楼的原文苹果内�
     memoryAssistantSeq: seq, canonicalContent: content, fingerprint: await hash(content) };
 }
 
+async function vectorReachableFixture() {
+  const content1 = '林在第一楼说苹果烘焙计划。';
+  const content2 = '第二楼继续记录配方和实际准备。';
+  const root = { chatId: 'chat', narrativeGeneration: 'generation', headCheckpointId: 'head-1', sourceSnapshotFingerprint: 'sha256:source-v1' };
+  const floors = [
+    { id: 'floor-1', assistantSeq: 1, content: { canonicalContent: content1 } },
+    { id: 'floor-2', assistantSeq: 2, content: { canonicalContent: content2 } },
+  ];
+  const floorMemories = [{ id: 'memory-2', floorId: 'floor-2', recordStatus: 'active', sourceFloorIds: ['floor-1', 'floor-2'],
+    sourceFloorSnapshots: [{ floorId: 'floor-1', canonicalContent: content1 }, { floorId: 'floor-2', canonicalContent: content2 }],
+    summary: { effectiveSource: 'user', userText: '人工整理摘要供旧回执核验。' } }];
+  return { status: 'ready', root, rootRevision: 1, checkpoint: { id: 'head-1' }, floors, floorMemories,
+    entities: [], stateDeltas: [], currentStates: [], baseline: null };
+}
+
 function committedMemoryState(source, floors = source.rawSources) {
-  return { status: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: false,
+  return { status: 'ready', chatId: source.chatId, narrativeGeneration: source.narrativeGeneration,
+    headCheckpointId: source.headCheckpointId ?? 'head', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: false,
     activeExtraction: false, qianshiHistoryActive: false,
     floors: floors.map(raw => ({ floorId: raw.floorId, assistantSeq: raw.assistantSeq, canonicalFingerprint: raw.fingerprint,
       rawFingerprint: raw.fingerprint, memoryId: raw.floorMemoryId, status: 'ready' })) };
@@ -60,6 +78,135 @@ test('不可用的自动更新器仍提供安全的空生命周期接口', () =>
   assert.equal(typeof updater.refresh, 'function');
   assert.doesNotThrow(() => updater.refresh());
   assert.doesNotThrow(() => updater.dispose());
+});
+
+test('向量原文reader逐次轻读root并仅借用完全匹配的已验证来源图', async () => {
+  const reachable = await vectorReachableFixture(); reachable.cseUnavailable = true;
+  let rootReads = 0, reachableReads = 0;
+  const store = {
+    readRoot: async () => { rootReads++; return { status: 'ready', data: reachable.root, revision: reachable.rootRevision }; },
+    readReachable: async () => { rootReads++; reachableReads++; return reachable; },
+  };
+  const selected = selectRecallMemories(reachable);
+  const expected = await projectVectorSources(selected.activeMemories, selected.floors, { includeSummaries: false });
+  const fullRecall = await projectRecallSource(reachable, () => new Date('2026-10-08T00:00:00.000Z'));
+  const warm = await readVectorSource({ store, targetIdentity: { chatId: 'chat' }, cachedReachable: reachable });
+  assert.equal(warm.status, 'ready');
+  assert.deepEqual(warm.rawSources, expected.rawSources);
+  assert.deepEqual(warm.rawSources, fullRecall.rawSources, '薄读复用正式召回投影选出的同一原文、包括CSE不可用时的既有降级');
+  assert.equal('summarySources' in warm, false, '索引reader不构造旧摘要见证材料');
+  assert.deepEqual(warm.sourceReadAttempts, { lightweightRootReads: 1, reachableReads: 0, exitPoint: 'validatedSnapshot' });
+  assert.equal(rootReads, 1); assert.equal(reachableReads, 0);
+
+  const next = structuredClone(reachable);
+  next.rootRevision = 2; next.root = { ...next.root, headCheckpointId: 'head-2', sourceSnapshotFingerprint: 'sha256:source-v2' };
+  next.checkpoint = { id: 'head-2' };
+  const missStore = { ...store,
+    readRoot: async () => { rootReads++; return { status: 'ready', data: next.root, revision: next.rootRevision }; },
+    readReachable: async () => { rootReads++; reachableReads++; return next; }, };
+  const cold = await readVectorSource({ store: missStore, targetIdentity: { chatId: 'chat' }, cachedReachable: reachable });
+  assert.equal(cold.status, 'ready');
+  assert.deepEqual(cold.sourceReadAttempts, { lightweightRootReads: 1, reachableReads: 1, exitPoint: 'ready' });
+  assert.equal(rootReads, 3, '冷fallback计入显式root读和原readReachable内部root读');
+  assert.equal(reachableReads, 1, 'root版本不匹配只触发既有完整校验回退');
+});
+
+test('正式vector build两阶段都复用命中快照，不读完整图或完整召回DTO', async () => {
+  const reachable = await vectorReachableFixture(), records = new Map();
+  let rootReads = 0, reachableReads = 0, embeds = 0;
+  const store = {
+    readRoot: async () => { rootReads++; return { status: 'ready', data: reachable.root, revision: reachable.rootRevision }; },
+    readReachable: async () => { reachableReads++; return reachable; },
+  };
+  const stages = [];
+  const sourceProvider = async task => {
+    stages.push(task.stage);
+    return readVectorSource({ store, targetIdentity: task.targetIdentity, cachedReachable: reachable });
+  };
+  const client = { get: async (_collection, id) => {
+    if (!records.has(id)) throw Object.assign(new Error('missing'), { status: 404 });
+    const { recordId: _id, ...value } = records.get(id); return structuredClone(value);
+  }, put: async (_collection, id, data, revision) => {
+    const record = { recordId: id, revision: revision + 1, data: structuredClone(data) }; records.set(id, record); return record;
+  } };
+  const index = createVectorIndex({ client, configProvider: () => config, identityProvider: () => ({ chatId: 'chat' }),
+    sourceProvider, api: { embed: async (_config, texts) => { embeds++; return vectors(texts); } } });
+  assert.equal((await index.build()).status, 'ready');
+  assert.deepEqual(stages, ['source', 'verification']);
+  assert.equal(rootReads, 2, '每个阶段仍核对当前目标的轻量root');
+  assert.equal(reachableReads, 0, '两阶段都借用与root revision/checkpoint/generation/fingerprint匹配的已验证图');
+  assert.equal(embeds, 1, '原文仍按一个既有embedding批次处理');
+  assert.equal(records.get(VECTOR_INDEX_ID).data.chunkCount > 0, true);
+});
+
+test('updater按目标保留一个最新轻量待处理项，不复制memory state', async t => {
+  const source = await sourceFixture();
+  let state = committedMemoryState(source), listeners = new Set(), releaseFirst, firstStarted;
+  const started = new Promise(resolve => { firstStarted = resolve; });
+  const memoryRuntime = { getState: () => state, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
+  const received = [];
+  const vectorRuntime = { getState: () => ({}), updateIncrementally: async task => {
+    received.push(task);
+    if (received.length === 1) { firstStarted(); await new Promise(resolve => { releaseFirst = resolve; }); }
+    return { status: 'unchanged' };
+  } };
+  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime, configProvider: () => config });
+  t.after(() => auto.dispose());
+  await started;
+  const other = { ...source, chatId: 'other-chat', rawSources: [...source.rawSources, await rawFloor(source, 2)] };
+  state = committedMemoryState(other); for (const fn of listeners) fn(state);
+  const newest = { ...other, rawSources: [...other.rawSources, await rawFloor(source, 3)] };
+  state = committedMemoryState(newest); for (const fn of listeners) fn(state);
+  releaseFirst();
+  await waitFor(() => received.length === 2);
+  assert.equal(received[0].targetIdentity.chatId, 'chat');
+  assert.equal(received[1].targetIdentity.chatId, 'other-chat');
+  assert.equal(received[1].sourceKey.includes('floor-3'), true, '同一待处理目标合并到最新原文签名');
+  assert.equal('floors' in received[1], false, '队列项不保存完整楼状态');
+});
+
+test('插件停用时即便配置仍存在也不读取索引或发送向量请求', async () => {
+  const source = await sourceFixture(); let enabled = false, reads = 0, embeds = 0;
+  const index = createVectorIndex({ client: { get: async () => { reads++; throw Object.assign(new Error('missing'), { status: 404 }); },
+    put: async () => { throw new Error('disabled path must not save'); } }, configProvider: () => config,
+    identityProvider: () => ({ chatId: source.chatId }), isEnabled: () => enabled,
+    sourceProvider: async () => source, api: { embed: async () => { embeds++; return [[1, 0]]; } } });
+  const result = await index.query({ source, queryContext: { text: '苹果' } });
+  assert.equal(result.diagnostic.status, 'disabled');
+  assert.equal(reads, 0); assert.equal(embeds, 0);
+});
+
+test('查询保留已加载索引快照，不受另一目标增量替换warm slot影响', async () => {
+  const sourceA = await sourceFixture();
+  const sourceB = { ...await sourceFixture(), chatId: 'other-chat', narrativeGeneration: 'other-generation',
+    rawSources: [{ ...(await rawFloor({ chatId: 'other-chat' }, 1, 'B来源原文。')), floorId: 'other-floor', floorMemoryId: 'other-memory', memoryFloorId: 'other-floor' }] };
+  const records = new Map(), key = (collection, id) => `${collection}/${id}`;
+  const client = { get: async (collection, id) => {
+    const record = records.get(key(collection, id));
+    if (!record) throw Object.assign(new Error('missing'), { status: 404 });
+    const { recordId: _id, ...value } = record; return structuredClone(value);
+  }, put: async (collection, id, data, revision) => {
+    const record = { recordId: id, revision: revision + 1, data: structuredClone(data) };
+    records.set(key(collection, id), record); return record;
+  } };
+  let resolveQuery, queryStarted; const started = new Promise(resolve => { queryStarted = resolve; });
+  const api = { embed: async (_config, texts) => {
+    if (texts[0] === 'QUERY') { queryStarted(); return new Promise(resolve => { resolveQuery = resolve; }); }
+    return texts.map(text => text.startsWith('B来源') ? [1, 0, 0] : [1, 0]);
+  } };
+  const indexB = createVectorIndex({ client, api, configProvider: () => config, identityProvider: () => ({ chatId: sourceB.chatId }),
+    sourceProvider: async () => sourceB });
+  assert.equal((await indexB.build()).status, 'ready');
+  const indexA = createVectorIndex({ client, api, configProvider: () => config, identityProvider: () => ({ chatId: sourceA.chatId }),
+    sourceProvider: async ({ targetIdentity }) => targetIdentity.chatId === sourceB.chatId ? sourceB : sourceA });
+  assert.equal((await indexA.build()).status, 'ready');
+  const query = indexA.query({ source: sourceA, queryContext: { text: 'QUERY' } }); await started;
+  assert.equal((await indexA.updateIncrementally({ targetIdentity: { chatId: sourceB.chatId } })).status, 'unchanged');
+  resolveQuery([[1, 0]]);
+  const result = await query;
+  assert.equal(result.diagnostic.status, 'ready');
+  assert.equal(result.candidates.length, 1, '查询按开始时加载的原目标2维索引完成');
+  assert.equal(result.candidates[0].witness.floorId, 'floor-1');
 });
 
 test('后台增量复用完整旧shard：16变17只为新片请求embedding并写新shard与manifest', async () => {
@@ -78,8 +225,12 @@ test('后台增量复用完整旧shard：16变17只为新片请求embedding并�
   h.client.get = async (collection, id) => { if (id.startsWith(VECTOR_SHARD_PREFIX)) shardReads.push(id); return originalGet(collection, id); };
   h.setSource({ ...source, rawSources: [...source.rawSources, await rawFloor(source, 17)] });
   const writesBefore = h.calls.length;
-  const result = await h.index.updateIncrementally();
+  const originalBtoa = globalThis.btoa; let encodedRows = 0;
+  globalThis.btoa = (...args) => { encodedRows += 1; return originalBtoa(...args); };
+  let result;
+  try { result = await h.index.updateIncrementally(); } finally { globalThis.btoa = originalBtoa; }
   assert.equal(result.status, 'ready');
+  assert.equal(encodedRows, 1, '只有新分片的1行进入实际 Float32 编码；既有16行复用旧shard');
   assert.equal(modelCalls, 2, '只为新片追加一次embedding请求');
   assert.equal(shardReads.includes(initialShard), false, '热缓存不读取未变旧shard；新shard的存在性检查可读');
   assert.equal(h.calls.length - writesBefore, 2, '只保存新增shard和一次manifest');
@@ -113,8 +264,7 @@ test('自动增量只跟随正式记忆快照；无需首次触发，无落盘�
   const index = createVectorIndex({ client: h.client, configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }),
     sourceProvider: async () => { sourceReads += 1; return h.latest ?? source; }, api: { embed: async (_config, texts) => { calls += 1; return vectors(texts); } } });
   h.latest = source;
-  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: index, identityProvider: () => ({ chatId: source.chatId }),
-    generationProvider: () => source.narrativeGeneration, configProvider: () => config });
+  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: index, configProvider: () => config });
   t.after(() => auto.dispose());
   // updating is intentionally not exposed as busy before the manifest-eligibility GET;
   // await that first real attempt so the manual build below cannot race startup.
@@ -125,6 +275,9 @@ test('自动增量只跟随正式记忆快照；无需首次触发，无落盘�
   assert.equal(index.getState().active, false, '设置页的建立按钮保持可用');
   await index.build();
   const initialCalls = calls;
+  const readsBeforeCseOnly = sourceReads;
+  state = { ...state, headCheckpointId: 'cse-only-checkpoint' }; emit(); await flush();
+  assert.equal(sourceReads, readsBeforeCseOnly, '仅CSE checkpoint变化不排入原文索引更新');
 
   const second = await rawFloor(source, 2);
   h.latest = { ...source, rawSources: [...source.rawSources, second] };
@@ -166,8 +319,8 @@ test('主楼生成门控后由结束/停止单次唤醒；同快照折叠且生�
   const index = createVectorIndex({ client: h.client, configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }),
     sourceProvider: async () => h.latest ?? source, api: { embed: async (_config, texts) => { apiCalls += 1; return vectors(texts); } } });
   h.latest = source; await index.build();
-  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: index, identityProvider: () => ({ chatId: source.chatId }),
-    generationProvider: () => source.narrativeGeneration, configProvider: () => config, isMainGenerationActive: () => generationActive });
+  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: index,
+    configProvider: () => config, isMainGenerationActive: () => generationActive });
   const second = await rawFloor(source, 2); h.latest = { ...source, rawSources: [...source.rawSources, second] };
   state = committedMemoryState(h.latest); emit(); await flush();
   auto.refresh(); await flush();
@@ -190,11 +343,10 @@ test('源读取暂未ready不锁住同源快照；真实API失败仍不会循环
   const index = createVectorIndex({ client: h.client, configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }),
     sourceProvider: async () => { sourceReads += 1; return sourceReady ? source : { status: 'loading' }; },
     api: { embed: async (_config, texts) => vectors(texts) } });
-  const vectorRuntime = { getState: () => index.getState(), subscribe: fn => index.subscribe(fn), updateIncrementally: async () => {
-    const result = await index.updateIncrementally(); outcomes.push(result); return result;
+  const vectorRuntime = { getState: () => index.getState(), subscribe: fn => index.subscribe(fn), updateIncrementally: async task => {
+    const result = await index.updateIncrementally(task); outcomes.push(result); return result;
   } };
-  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime, identityProvider: () => ({ chatId: source.chatId }),
-    generationProvider: () => source.narrativeGeneration, configProvider: () => config });
+  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime, configProvider: () => config });
   await waitFor(() => outcomes.length === 1);
   assert.equal(outcomes[0].status, 'notReady');
   assert.equal(sourceReads, 1, '未ready不会在同一轮自动重试');
@@ -219,8 +371,7 @@ test('自动更新遇到挂起的新楼会串行合并，释放后继续处理�
       finally { active -= 1; }
     } } });
   h.latest = source; await index.build();
-  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: index, identityProvider: () => ({ chatId: source.chatId }),
-    generationProvider: () => source.narrativeGeneration, configProvider: () => config });
+  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: index, configProvider: () => config });
   const second = await rawFloor(source, 2); h.latest = { ...source, rawSources: [...source.rawSources, second] };
   state = committedMemoryState(h.latest); emit(); await started;
   const third = await rawFloor(source, 3); h.latest = { ...h.latest, rawSources: [...h.latest.rawSources, third] };
@@ -231,30 +382,6 @@ test('自动更新遇到挂起的新楼会串行合并，释放后继续处理�
   await waitFor(() => h.records.get(VECTOR_INDEX_ID).data.chunkCount === 3);
   assert.equal(calls, 3, '释放首项后处理最新快照中仍缺少的楼');
   assert.equal(maximumActive, 1, '同一索引始终单writer');
-  auto.dispose();
-});
-
-test('聊天或世代切换会中止待处理增量，迟到向量不替换旧manifest', async () => {
-  const source = await sourceFixture(), h = harness(source); let identity = { chatId: source.chatId }, generation = source.narrativeGeneration;
-  let state = committedMemoryState(source), listeners = new Set();
-  const memoryRuntime = { getState: () => state, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
-  const emit = () => { for (const fn of listeners) fn(state); };
-  let entered; const started = new Promise(resolve => { entered = resolve; });
-  const api = { embed: async (_config, texts, { signal } = {}) => {
-    if (!texts.some(text => text.includes('第2楼'))) return vectors(texts);
-    entered(); return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError')), { once: true }));
-  } };
-  const index = createVectorIndex({ client: h.client, api, configProvider: () => config, identityProvider: () => identity,
-    sourceProvider: async () => h.latest });
-  h.latest = source; await index.build(); const oldManifest = structuredClone(h.records.get(VECTOR_INDEX_ID));
-  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: index, identityProvider: () => identity,
-    generationProvider: () => generation, configProvider: () => config });
-  const second = await rawFloor(source, 2); h.latest = { ...source, rawSources: [...source.rawSources, second] };
-  state = committedMemoryState(h.latest); emit(); await started;
-  generation = 'new-generation'; emit();
-  await waitFor(() => index.getState().status !== 'building');
-  assert.equal(h.records.get(VECTOR_INDEX_ID).data.chunkCount, oldManifest.data.chunkCount, '取消不会提交迟到的新来源');
-  assert.deepEqual(h.records.get(VECTOR_INDEX_ID), oldManifest);
   auto.dispose();
 });
 
@@ -269,8 +396,7 @@ test('显式手动取消锁住同快照；内部重置与后续真实新来源�
       apiCalls += 1; entered(); return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError')), { once: true }));
     } } });
   h.latest = source;
-  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: index, identityProvider: () => ({ chatId: source.chatId }),
-    generationProvider: () => source.narrativeGeneration, configProvider: () => config });
+  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: index, configProvider: () => config });
   t.after(() => auto.dispose());
   await waitFor(() => sourceReads > 0);
   await waitFor(() => !index.getState().updating);
@@ -301,10 +427,9 @@ test('取消标记只通知一次；用户取消不吞新楼，普通配置/生�
       } } });
     h.latest = source; await index.build();
     const autoOutcomes = [];
-    const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: { getState: () => index.getState(), subscribe: fn => index.subscribe(fn), updateIncrementally: async () => {
-      const outcome = await index.updateIncrementally(); autoOutcomes.push(outcome); return outcome;
-    } }, identityProvider: () => ({ chatId: source.chatId }),
-      generationProvider: () => source.narrativeGeneration, configProvider: () => config });
+    const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime: { getState: () => index.getState(), subscribe: fn => index.subscribe(fn), updateIncrementally: async task => {
+      const outcome = await index.updateIncrementally(task); autoOutcomes.push(outcome); return outcome;
+    } }, configProvider: () => config });
     const second = await rawFloor(source, 2); h.latest = { ...source, rawSources: [...source.rawSources, second] };
     state = committedMemoryState(h.latest); emit(); await started;
     index.abortAll({ userInitiated });
@@ -362,19 +487,24 @@ test('同一原文改向量认证配置后会按新配置键核验，不被取�
   const memoryRuntime = { getState: () => state, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
   const emit = () => { for (const fn of listeners) fn(state); };
   const outcomes = [];
+  let resolveFirstOutcome, resolveSecondOutcome;
+  const firstOutcome = new Promise(resolve => { resolveFirstOutcome = resolve; });
+  const secondOutcome = new Promise(resolve => { resolveSecondOutcome = resolve; });
   const index = createVectorIndex({ client: h.client, configProvider: () => route, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source,
     api: { embed: async (_config, texts) => vectors(texts) } });
   await index.build();
-  const vectorRuntime = { getState: () => index.getState(), subscribe: fn => index.subscribe(fn), updateIncrementally: async () => {
-    const result = await index.updateIncrementally(); outcomes.push(result); return result;
+  const vectorRuntime = { getState: () => index.getState(), subscribe: fn => index.subscribe(fn), updateIncrementally: async task => {
+    const result = await index.updateIncrementally(task); outcomes.push(result);
+    if (outcomes.length === 1) resolveFirstOutcome(result);
+    else if (outcomes.length === 2) resolveSecondOutcome(result);
+    return result;
   } };
-  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime, identityProvider: () => ({ chatId: source.chatId }),
-    generationProvider: () => source.narrativeGeneration, configProvider: () => route });
-  await waitFor(() => outcomes.length === 1);
+  const auto = createVectorAutoUpdater({ memoryRuntime, vectorRuntime, configProvider: () => route });
+  await firstOutcome;
   assert.equal(outcomes[0].status, 'unchanged');
   route = { ...config, key: 'rotated-test-key' };
   index.abortAll();
-  await waitFor(() => outcomes.length === 2);
+  await secondOutcome;
   assert.equal(outcomes[1].status, 'unchanged', '认证配置变化可读取并复用同一模型的原文索引');
   emit(); await flush();
   assert.equal(outcomes.length, 2, '配置核验完成后不重复请求');
@@ -833,19 +963,18 @@ test('索引读取有独立期限；超时诊断不冒充接口超时，迟到�
   assert.equal((await index.query({ source, queryContext: { text: '苹果' } })).diagnostic.status, 'ready'); assert.equal(calls, 1);
 });
 
-test('冷读期间聊天、模型或生命周期变更，旧读取不参与查询', async () => {
-  for (const action of ['chat', 'model', 'epoch']) {
+test('冷读期间模型或生命周期变更，旧读取按配置或显式重置处理', async () => {
+  for (const action of ['model', 'epoch']) {
     const source = await sourceFixture(), h = harness(source); await h.index.build();
-    let finish, entered, calls = 0, route = config, identity = { chatId: source.chatId };
+    let finish, entered, calls = 0, route = config;
     const started = new Promise(resolve => { entered = resolve; });
     const index = createVectorIndex({ client: { ...h.client, get: async (...args) => {
       if (args[1] === VECTOR_INDEX_ID) await new Promise(resolve => { finish = resolve; entered(); });
       return h.client.get(...args);
     } }, api: { embed: async (_config, texts) => { calls++; return vectors(texts); } },
-      configProvider: () => route, identityProvider: () => identity });
+      configProvider: () => route, identityProvider: () => ({ chatId: source.chatId }) });
     const pending = index.query({ source, queryContext: { text: '苹果' } }); await started;
-    if (action === 'chat') identity = { chatId: 'other' };
-    else if (action === 'model') route = { ...config, model: 'other' };
+    if (action === 'model') route = { ...config, model: 'other' };
     else {
       index.abortAll();
       const terminal = index.getState().query;
@@ -872,7 +1001,7 @@ test('索引读取失败保留安全阶段与后端码，并继续既有 unavail
   assert.equal(JSON.stringify(index.getState()).includes('private body'), false);
 });
 
-test('模型/聊天/世代切换、人工摘要撤来源后不使用旧缓存', async () => {
+test('不同聊天或纪元的来源不复用其他来源缓存；人工摘要撤来源后无旧命中', async () => {
   const source = await sourceFixture(), h = harness(source); await h.index.build();
   for (const changed of [ { ...source, chatId: 'other' }, { ...source, narrativeGeneration: 'other' }, { ...source, rawSources: [] } ]) {
     assert.equal((await h.index.query({ source: changed, queryContext: { text: '苹果' } })).candidates.length, 0);
@@ -891,18 +1020,16 @@ test('建索引进行中，召回立即走回退；取消后迟到结果不写 m
   await assert.rejects(build, { code: 'VECTOR_ABORTED' }); assert.equal(h.records.has(VECTOR_INDEX_ID), false);
 });
 
-test('构建期间源被人工改掉或切聊天，不提交到当前聊天', async () => {
-  for (const action of ['manual', 'chat']) {
-    const source = await sourceFixture(), h = harness(source);
-    let finish, entered; const started = new Promise(resolve => { entered = resolve; });
-    const api = { embed: async () => new Promise(resolve => { finish = resolve; entered(); }) };
-    const index = createVectorIndex({ client: h.client, api, configProvider: () => config, identityProvider: () => action === 'chat' ? identity : ({ chatId: 'chat' }), sourceProvider: async () => current });
-    let current = source, identity = { chatId: 'chat' };
-    const build = index.build(); await started;
-    if (action === 'manual') current = { ...source, rawSources: [] }; else identity = { chatId: 'other' };
-    finish([[1, 0]]); await assert.rejects(build);
-    assert.equal(h.records.has(VECTOR_INDEX_ID), false);
-  }
+test('构建期间来源被人工改掉时不提交旧索引', async () => {
+  const source = await sourceFixture(), h = harness(source);
+  let finish, entered, current = source; const started = new Promise(resolve => { entered = resolve; });
+  const api = { embed: async () => new Promise(resolve => { finish = resolve; entered(); }) };
+  const index = createVectorIndex({ client: h.client, api, configProvider: () => config,
+    identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => current });
+  const build = index.build(); await started;
+  current = { ...source, rawSources: [] };
+  finish([[1, 0]]); await assert.rejects(build);
+  assert.equal(h.records.has(VECTOR_INDEX_ID), false);
 });
 
 test('向量缓存由现有存储管理回收旧 shard，保留当前 manifest 引用', async () => {
@@ -1146,9 +1273,9 @@ test('fetch调用前取消保留0次真实请求计数并安全投影attempt', a
   assert.doesNotMatch(JSON.stringify(privateView), /test-key|苹果|https:\/\//u);
 });
 
-test('首个deadline边界遇到配置或聊天变更时不补发', async t => {
+test('首个deadline边界遇到真实配置变更时不补发', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
-  for (const change of ['config', 'identity']) {
+  for (const change of ['config']) {
     const source = await sourceFixture(); let calls = 0, hold = false, entered;
     const started = new Promise(resolve => { entered = resolve; });
     const api = createVectorApiClient({ fetchImpl: (_url, options) => {
@@ -1158,7 +1285,7 @@ test('首个deadline边界遇到配置或聊天变更时不补发', async t => {
     } });
     const h = harness(source, { api }); await h.index.build(); hold = true;
     const pending = h.index.query({ source, queryContext: { text: '苹果' }, signal: new AbortController().signal }); await started;
-    if (change === 'config') h.setConfig({ ...config, model: 'changed-model' }); else h.setIdentity({ chatId: 'different-chat' });
+    h.setConfig({ ...config, model: 'changed-model' });
     t.mock.timers.tick(15000); const result = await pending;
     assert.equal(result.diagnostic.status, 'changed', change); assert.equal(result.diagnostic.requestCount, 1, change); assert.equal(calls, 2, change);
   }

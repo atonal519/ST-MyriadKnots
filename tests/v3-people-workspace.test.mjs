@@ -42,8 +42,8 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
   };
   let memoryState = { cseSubjects: peopleEntities.map((person, index) => ({ subjectEntityId: person.id, displayName: person.displayName, core: index === 0 ? [{ text: '谨慎', origin: 'delta', sourceFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }] : [], adaptive: [], situational: [] })) };
   const listeners = new Set(), foundationListeners = new Set();
-  let memoryRefreshes = 0;
-  const memoryRuntime = { getState: () => memoryState, refreshStatus: async () => { memoryRefreshes += 1; return memoryState; }, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); } };
+  let memoryRefreshes = 0, memoryStateReads = 0;
+  const memoryRuntime = { getState: () => { memoryStateReads += 1; return memoryState; }, refreshStatus: async () => { memoryRefreshes += 1; return memoryState; }, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); } };
   const sourceTrace = [];
   const runtime = createPeopleWorkspaceRuntime({
     store: createPeopleWorkspaceStore({ client: db.client }), session: { identity: () => structuredClone(identity) },
@@ -61,7 +61,9 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
     now: () => new Date('2026-09-06T00:00:00.000Z'),
     logger: { warn() {} },
   });
-  return { db, runtime, peopleEntities, sourceTrace, foundationRecords, setFoundationReadHook(value) { foundationReadHook = value; }, setHostChat(value) { hostChat = value; }, setMainGenerationActive(value) { mainGenerationActive = value; if (!value) runtime.wakeAutomaticMaintenance(); }, async seedSelectedWithoutProgress(entityIds) {
+  return { db, runtime, peopleEntities, sourceTrace, foundationRecords, memoryStateReads: () => memoryStateReads,
+    emitMemory(value) { memoryState = value; for (const listener of listeners) listener(value); },
+    setFoundationReadHook(value) { foundationReadHook = value; }, setHostChat(value) { hostChat = value; }, setMainGenerationActive(value) { mainGenerationActive = value; if (!value) runtime.wakeAutomaticMaintenance(); }, async seedSelectedWithoutProgress(entityIds) {
       const timestamp = '2026-09-06T00:00:00.000Z';
       db.records.set(`chat-${identity.chatId}/${PEOPLE_WORKSPACE_RECORD_ID}`, { revision: 1, data: {
         schemaVersion: 3, kind: 'qqj-v3-people-workspace', chatId: identity.chatId, selectedEntityIds: Array.isArray(entityIds) ? entityIds : [entityIds],
@@ -150,6 +152,15 @@ test('身份成功续接可复用已准备的记忆，只读加载一次人物 w
   assert.equal(h.memoryRefreshes, 0, '人物续接不得重复刷新刚准备完成的记忆');
   assert.equal(h.db.calls.filter(call => call[0] === 'get' && call[2] === PEOPLE_WORKSPACE_RECORD_ID).length, 1);
   assert.equal(h.runtime.getState().status, 'ready');
+});
+
+test('人物工作区复用 memory 通知携带的同次状态，不在订阅回调重复读取完整状态', async () => {
+  const h = harness();
+  await h.runtime.refresh({ refreshMemory: false });
+  const beforeReads = h.memoryStateReads();
+  h.emitMemory({ cseSubjects: [{ subjectEntityId: ids[0], core: [{ text: '通知中的新状态', origin: 'delta', sourceFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }], adaptive: [], situational: [] }] });
+  assert.equal(h.memoryStateReads(), beforeReads, 'subscriber 直接消费 memoryRuntime 提供的 snapshot');
+  assert.equal(h.runtime.getState().people.find(person => person.entityId === ids[0]).cse.core[0].text, '通知中的新状态');
 });
 
 test('ready checkpoint 刷新只移出失联旧 ID，保留同名新人物选择与旧档案', async () => {

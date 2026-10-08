@@ -1,92 +1,76 @@
-const stableSnapshotKey = (state, identity, generation) => {
+const stableSnapshotKey = (state, config) => {
   if (!state || state.status !== 'ready' || state.memorySnapshotStatus !== 'ready' || state.memorySyncStatus !== 'idle'
-    || state.memoryWorkBusy || state.activeExtraction || state.qianshiHistoryActive || !identity?.chatId || !generation) return null;
+    || state.memoryWorkBusy || state.activeExtraction || state.qianshiHistoryActive || typeof state.chatId !== 'string' || !state.chatId || !config) return null;
   const floors = (state.floors ?? []).filter(floor => floor?.status === 'ready' && typeof floor.floorId === 'string'
     && typeof floor.canonicalFingerprint === 'string').map(floor => [floor.floorId, floor.assistantSeq,
     floor.canonicalFingerprint, floor.rawFingerprint ?? null,
     floor.memoryId ?? null, Array.isArray(floor.memory?.sourceFloorIds) ? floor.memory.sourceFloorIds : null]);
-  return JSON.stringify([identity.chatId, generation, floors]);
+  const targetKey = state.chatId;
+  const sourceKey = JSON.stringify([state.chatId, floors]);
+  return { targetKey, signature: JSON.stringify([targetKey, sourceKey, config]), sourceKey,
+    targetIdentity: Object.freeze({ chatId: state.chatId }),
+    config: structuredClone(config) };
 };
 
-// 只在記忆 runtime 已完成正式落盘后通知索引；普通摘要/CSE通知会被同一原文快照折叠。
-export function createVectorAutoUpdater({ memoryRuntime, vectorRuntime, identityProvider, generationProvider,
+// Keep only the committed target identity and source signature; the reader rechecks that target before use.
+export function createVectorAutoUpdater({ memoryRuntime, vectorRuntime,
   configProvider, isEnabled = () => true, isMainGenerationActive = () => false } = {}) {
   if (typeof memoryRuntime?.subscribe !== 'function' || typeof vectorRuntime?.updateIncrementally !== 'function') return Object.freeze({ dispose() {}, refresh() {} });
-  let pendingKey = null, lastAttemptedKey = null, runningKey = null, runningScope = null, lastScope = null, draining = false, disposed = false;
-  const scopeKey = () => {
-    if (!isEnabled() || isMainGenerationActive()) return null;
-    try {
-      const identity = identityProvider(), generation = generationProvider(), config = configProvider();
-      if (!identity?.chatId || !generation || !config) return null;
-      return JSON.stringify([identity.chatId, generation, config]);
-    } catch { return null; }
-  };
-  const currentKey = state => {
-    if (!isEnabled() || isMainGenerationActive()) return null;
-    try {
-      const config = configProvider();
-      if (!config) return null;
-      const snapshot = stableSnapshotKey(state, identityProvider(), generationProvider());
-      return snapshot ? JSON.stringify([snapshot, config]) : null;
-    } catch { return null; }
-  };
+  const pending = new Map();
+  let lastAttemptedKey = null, runningTask = null, draining = false, disposed = false;
+  const configSignature = () => { try { return JSON.stringify(configProvider()); } catch { return null; } };
+  let observedConfig = configSignature();
+  const nextTask = () => pending.values().next().value ?? null;
   const drain = async () => {
-    if (draining || disposed) return;
+    if (draining || disposed || isMainGenerationActive()) return;
     draining = true;
     try {
-      while (pendingKey && !disposed) {
-        const state = memoryRuntime.getState?.(), key = currentKey(state);
-        if (!key) { pendingKey = null; return; }
-        if (key !== pendingKey) pendingKey = key;
-        if (key === lastAttemptedKey) { pendingKey = null; continue; }
+      while (pending.size && !disposed && !isMainGenerationActive()) {
+        const [targetKey, task] = pending.entries().next().value;
+        pending.delete(targetKey);
+        if (task.signature === lastAttemptedKey || task.signature === runningTask?.signature) continue;
         const vectorState = vectorRuntime.getState?.();
-        if (vectorState?.active || vectorState?.updating) return;
-        pendingKey = null;
-        runningKey = key;
-        runningScope = scopeKey();
-        const result = await vectorRuntime.updateIncrementally();
-        const finishedScope = runningScope;
-        runningKey = null;
-        runningScope = null;
-        if (result?.status === 'busy') { pendingKey = key; return; }
-        // A failed or suppressed operation is remembered to avoid same-source loops.
-        // Readiness and cancellation are temporary gates; their next real wake can retry.
-        if (!['notReady', 'disabled', 'cancelled'].includes(result?.status)) lastAttemptedKey = key;
-        if (finishedScope && finishedScope !== scopeKey()) schedule(memoryRuntime.getState?.());
+        if (vectorState?.active || vectorState?.updating) { pending.set(targetKey, task); return; }
+        runningTask = task;
+        const result = await vectorRuntime.updateIncrementally(task);
+        runningTask = null;
+        if (result?.status === 'busy') { pending.set(targetKey, task); return; }
+        // Readiness gates can clear on a later committed notification; real failures stay deduplicated.
+        if (!['notReady', 'disabled', 'cancelled'].includes(result?.status)) lastAttemptedKey = task.signature;
       }
-    } finally { runningScope = null; draining = false; }
+    } finally { runningTask = null; draining = false; }
   };
   const schedule = state => {
-    const scope = scopeKey();
-    if (runningScope && runningScope !== scope) vectorRuntime.cancelIncrementally?.('scopeChanged');
-    if (scope) lastScope = scope;
-    const key = currentKey(state);
-    if (!key) return;
-    if (key !== lastAttemptedKey) pendingKey = key;
+    if (disposed || !isEnabled()) return;
+    let config;
+    try { config = configProvider(); } catch { return; }
+    const task = stableSnapshotKey(state, config);
+    if (!task || task.signature === lastAttemptedKey || task.signature === runningTask?.signature) return;
+    pending.set(task.targetKey, task);
     void drain();
   };
   const releaseMemory = memoryRuntime.subscribe(schedule);
   const releaseVector = vectorRuntime.subscribe?.(state => {
-    if (state?.cancelled === true) {
-      const scope = scopeKey();
-      if (state.userCancelled === true) {
-        const cancelledKey = runningKey ?? pendingKey ?? currentKey(memoryRuntime.getState?.());
-        pendingKey = null;
-        if (cancelledKey) lastAttemptedKey = cancelledKey;
-        return;
+    if (state?.cancelled === true && state.userCancelled === true) {
+      const task = runningTask ?? nextTask();
+      if (task) {
+        if (pending.get(task.targetKey)?.signature === task.signature) pending.delete(task.targetKey);
+        lastAttemptedKey = task.signature;
       }
-      // Config/model changes may reuse the current source. Ordinary lifecycle resets
-      // must not masquerade as a user cancel, while chat changes wait for fresh memory.
-      const scopeChanged = runningScope ? runningScope !== scope : lastScope !== null && lastScope !== scope;
-      if (scopeChanged && scope) schedule(memoryRuntime.getState?.());
       return;
     }
-    if (pendingKey) void drain();
+    const nextConfig = configSignature();
+    if (nextConfig !== observedConfig) {
+      observedConfig = nextConfig;
+      schedule(memoryRuntime.getState?.());
+      return;
+    }
+    if (pending.size) void drain();
   });
   schedule(memoryRuntime.getState?.());
   return Object.freeze({ dispose() {
-    disposed = true; pendingKey = null;
-    try { releaseMemory?.(); } catch { /* lifecycle teardown must not interrupt unload */ }
-    try { releaseVector?.(); } catch { /* lifecycle teardown must not interrupt unload */ }
+    disposed = true; pending.clear();
+    try { releaseMemory?.(); } catch { /* teardown must not interrupt plugin shutdown */ }
+    try { releaseVector?.(); } catch { /* teardown must not interrupt plugin shutdown */ }
   }, refresh() { schedule(memoryRuntime.getState?.()); } });
 }

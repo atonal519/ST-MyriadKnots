@@ -556,7 +556,7 @@ const CLOCK_ONLY = /^(?:(?:凌晨|清晨|拂晓|黎明|早晨|早上|上午|中�
 const STORY_TIME_RANGE = /(?:→|->|⟶|至|到|～|~|—|–|\s+-\s+|(?<=日)\s*-\s*(?=\d)|(?<=:\d{2})\s*-\s*(?=\d{1,2}:[0-5]\d))/u;
 const STORY_SECONDS = /(?<!\d)(?:[01]?\d|2[0-3]):[0-5]\d[:：]([0-5]\d)(?:Z)?(?=$|[\s，])/u;
 
-function recallTimelineTime(event) {
+function recallTimelineTime(event, calendarOverride = null) {
   const raw = String(event.storyTime || event.parsedStoryTime?.rangeText || event.parsedStoryTime?.raw || '').normalize('NFKC').trim();
   const sortableRaw = raw.replace(DAY_PERIOD_SUFFIX, '').trim();
   const rangeSeparator = STORY_TIME_RANGE.exec(sortableRaw);
@@ -564,7 +564,7 @@ function recallTimelineTime(event) {
   // rangeText 可能继承自楼层锚点；是否为事件范围只看本条原文，避免它盖过事件自己的纯钟点。
   const ranged = Boolean(rangeSeparator);
   const relative = isRelativeStoryTime(rangeStart);
-  const calendar = event.parsedStoryTime?.calendar ?? null;
+  const calendar = event.parsedStoryTime?.calendar ?? calendarOverride;
   // 楼内已确认日期的纯钟点沿用解析结果；继承来的楼层范围不能覆盖事件原文的纯钟点。
   const anchoredClock = !rangeSeparator && CLOCK_ONLY.test(sortableRaw) && event.parsedStoryTime?.date ? event.parsedStoryTime : null;
   const time = ranged ? rangeSeparator && rangeStart ? projectQianshiTime(rangeStart, null, calendar) : null
@@ -665,21 +665,38 @@ function timelineDateCopy(view, raw) {
 }
 
 function timelineSegmentLabel(segment, groups) {
+  if (segment.eraPrefix !== undefined) return `${segment.eraPrefix}纪年`;
   if (segment.id === 'dated') return '完整日期';
   if (segment.id === 'month-day') return '仅月日';
   if (segment.id.startsWith('calendar:')) return segment.yearless ? '仅月日' : '完整日期';
   return clean(groups[0]?.period, 120) || '时间未明确';
 }
 
+// 完整年表可将同一具名纪年的数字年月日放在同一排序域；召回仍保留原时间身份分组。
+function fullPageTimelineTime(event, calendar = null) {
+  const view = recallTimelineTime(event, calendar), identity = view.time?.monthIdentity;
+  if (!identity || view.time?.calendar) return view;
+  try {
+    const [era, year, monthName] = JSON.parse(identity);
+    const month = /^(?:0?[1-9]|1[0-2])月$/u.test(monthName) ? Number.parseInt(monthName, 10) : null;
+    if (typeof era === 'string' && era && Number.isSafeInteger(year) && year > 0
+      && month !== null && view.time.month === month && Number.isSafeInteger(view.time.monthDay)) {
+      return { ...view, time: { ...view.time, monthIdentity: null }, kind: `era-numeric:${era}`, standardMonth: true, fullPageEra: era };
+    }
+  } catch { /* Invalid persisted identities keep their existing separate group. */ }
+  return view;
+}
+
 /** Full-page projection: one parsed key per event, with no pairwise event comparison. */
-export function projectQianshiTimeline(projection) {
+export function projectQianshiTimeline(projection, calendar = null) {
   const events = Array.isArray(projection?.events) ? projection.events : [];
-  const views = new Map(events.map(event => [event.id, recallTimelineTime(event)]));
+  const views = new Map(events.map(event => [event.id, fullPageTimelineTime(event, calendar)]));
   const segmentFor = view => {
     const tuple = timelineDateTuple(view);
     if (!tuple) return null;
     // 固定历法的年序不能与未经用户确认的其他纪年/公历混为同一时间轴。
     if (view.time?.calendar) return view.kind;
+    if (view.fullPageEra !== undefined) return view.kind;
     if (view.time?.monthIdentity) return `special:${view.time.monthIdentity}`;
     if (Number.isInteger(view.time?.day)) return 'dated';
     if (view.standardMonth && view.time?.year === null) return 'month-day';
@@ -692,10 +709,11 @@ export function projectQianshiTimeline(projection) {
     const view = views.get(event.id), segmentId = segmentFor(view);
     if (!segmentId) { undatedEventIds.push(event.id); continue; }
     const copy = timelineDateCopy(view, event.storyTime || event.parsedStoryTime?.rangeText), tuple = timelineDateTuple(view);
+    if (view.fullPageEra !== undefined) copy.period = `${view.fullPageEra}${view.time.year}年${view.time.month}月`;
     const groupKey = JSON.stringify(tuple);
     let segment = segments.get(segmentId);
     if (!segment) {
-      segment = { id: segmentId, firstIndex: eventIndex.get(event.id), hasKnownYear: Number.isInteger(view.time?.year),
+      segment = { id: segmentId, ...(view.fullPageEra !== undefined ? { eraPrefix: view.fullPageEra } : {}), firstIndex: eventIndex.get(event.id), hasKnownYear: Number.isInteger(view.time?.year),
         yearless: view.time?.year === null && !view.time?.monthIdentity,
         hasFirstMonth: false, hasLastMonth: false, groups: new Map() };
       segments.set(segmentId, segment);
@@ -1323,6 +1341,6 @@ export function publicQianshiSnapshot(reachable, history = null, identityProject
   });
   return structuredClone({ status: 'ready', identity: { qqjChatId: reachable.root.chatId }, anchor: { narrativeGeneration: reachable.root.narrativeGeneration, headCheckpointId: reachable.root.headCheckpointId, rootRevision: reachable.rootRevision },
     coverage: projection.coverage, events: projection.events.map(publicEvent), matters: projection.matters, relations: projection.relations,
-    timeline: projectQianshiTimeline(projection), currentProgress: projection.currentProgress,
+    timeline: projectQianshiTimeline(projection, calendar), currentProgress: projection.currentProgress,
     history: history ?? { status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '' }, diagnostics: { ...projection.diagnostics, anomalyFloors } });
 }

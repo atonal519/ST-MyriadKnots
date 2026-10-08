@@ -1,6 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { gunzipSync } from 'node:zlib';
+import { API_BASE } from '../src/constants.js';
 import { createBackendClient } from '../src/backend-client.js';
+
+function withGlobals(values, callback) {
+  const previous = new Map();
+  for (const [key, value] of Object.entries({ fetch: globalThis.fetch, ...values })) {
+    previous.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  }
+  return Promise.resolve().then(callback).finally(() => {
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  });
+}
+
+const asBytes = body => typeof body === 'string' ? Buffer.from(body) : Buffer.from(body);
 
 test('backend GET 超时会退出且不自动重试', async () => {
   let calls = 0;
@@ -281,4 +299,195 @@ test('backend 外部取消保留原错误对象且诊断不复制错误内容', 
   assert.equal(snapshot.latestRead.recordType, 'collection');
   assert.equal(snapshot.lastFailure.sequence, snapshot.latestRead.sequence);
   assert.doesNotMatch(JSON.stringify(snapshot), /PRIVATE_ABORT/);
+});
+
+test('默认 HTTP 大 PUT gzip 后无损往返，GET/DELETE/小 PUT 保持原请求体且记录安全字节诊断', async () => {
+  await withGlobals({ __TAURITAVERN__: undefined, __TAURITAVERN_MAIN_READY__: undefined }, async () => {
+    const calls = [];
+    globalThis.fetch = async (url, options) => {
+      calls.push({ url, options });
+      return { ok: true, status: 200, json: async () => ({ ok: true, revision: options.method === 'PUT' ? 3 : undefined }) };
+    };
+    const client = createBackendClient();
+    const data = {
+      floorProvenance: Array.from({ length: 80 }, (_, index) => ({
+        floorId: `楼层-${index}`, kind: 'source', text: '阿裴把蓝色钥匙塞在砖后。摘要仍保留完整诊断与时间来源。'.repeat(70),
+        diagnostics: { selected: true, verification: '完整复核', elapsedMs: 1234 },
+      })),
+      summary: '关系记录🙂',
+    };
+    const expected = { data, expectedRevision: 7 };
+    await client.put('chat-x', 'v3-root', data, 7);
+    const put = calls[0];
+    assert.equal(put.url, `${API_BASE}/v1/records/qianqianjie/chat-x/v3-root`);
+    assert.equal(put.options.method, 'PUT');
+    assert.equal(put.options.headers['Content-Type'], 'application/json');
+    assert.equal(put.options.headers['Content-Encoding'], 'gzip');
+    assert.ok(put.options.body instanceof Uint8Array);
+    assert.deepEqual(JSON.parse(gunzipSync(asBytes(put.options.body)).toString('utf8')), expected);
+    const write = client.getDiagnosticSnapshot().latestWrite;
+    assert.equal(write.bodyBytes, Buffer.byteLength(JSON.stringify(expected)));
+    assert.equal(write.encodedBodyBytes, put.options.body.byteLength);
+    assert.equal(write.contentEncoding, 'gzip');
+    assert.ok(write.encodedBodyBytes < write.bodyBytes);
+    assert.doesNotMatch(JSON.stringify(client.getDiagnosticSnapshot()), /蓝色钥匙|v3-root|chat-x/);
+
+    await client.put('chat-x', 'small', { value: '短记录' }, 0);
+    const small = calls[1];
+    assert.equal(typeof small.options.body, 'string');
+    assert.equal(small.options.headers['Content-Encoding'], undefined);
+    assert.equal(client.getDiagnosticSnapshot().latestWrite.contentEncoding, 'identity');
+    assert.equal(client.getDiagnosticSnapshot().latestWrite.bodyBytes, Buffer.byteLength(small.options.body));
+    assert.equal(client.getDiagnosticSnapshot().latestWrite.encodedBodyBytes, Buffer.byteLength(small.options.body));
+
+    await client.get('chat-x', 'v3-root');
+    await client.remove('chat-x', 'v3-root', 8);
+    assert.equal(calls[2].options.headers['Content-Encoding'], undefined);
+    assert.equal(calls[3].options.headers['Content-Encoding'], undefined);
+    assert.equal(typeof calls[3].options.body, 'string');
+    assert.deepEqual(client.getDiagnosticSnapshot().sinceClientCreatedRequestCounts, { get: 1, put: 2, delete: 1 });
+  });
+});
+
+test('默认 HTTP 压缩准备不支持或失败时只发送一次原 JSON；显式自定义 baseUrl 仍不压缩', async () => {
+  const large = { text: '保留完整存档🙂'.repeat(12000) };
+  for (const Compression of [undefined, class { constructor() { throw new Error('compression unavailable'); } }]) {
+    await withGlobals({ __TAURITAVERN__: undefined, __TAURITAVERN_MAIN_READY__: undefined, CompressionStream: Compression }, async () => {
+      const calls = [];
+      globalThis.fetch = async (_url, options) => { calls.push(options); return { ok: true, status: 200, json: async () => ({ ok: true }) }; };
+      const client = createBackendClient();
+      await client.put('chat-x', 'v3-root', large, 4);
+      assert.equal(calls.length, 1);
+      assert.equal(typeof calls[0].body, 'string');
+      assert.equal(calls[0].headers['Content-Encoding'], undefined);
+      assert.equal(client.getDiagnosticSnapshot().sinceClientCreatedRequestCounts.put, 1);
+      assert.equal(client.getDiagnosticSnapshot().latestWrite.contentEncoding, 'identity');
+    });
+  }
+
+  await withGlobals({ __TAURITAVERN__: undefined, __TAURITAVERN_MAIN_READY__: undefined }, async () => {
+    const calls = [];
+    globalThis.fetch = async (_url, options) => { calls.push(options); return { ok: true, status: 200, json: async () => ({ ok: true }) }; };
+    const client = createBackendClient({ baseUrl: '/custom-backend' });
+    await client.put('chat-x', 'v3-root', large, 4);
+    assert.equal(calls.length, 1);
+    assert.equal(typeof calls[0].body, 'string');
+    assert.equal(calls[0].headers['Content-Encoding'], undefined);
+    assert.equal(client.getDiagnosticSnapshot().latestWrite.contentEncoding, 'identity');
+  });
+
+  const injectedCalls = [];
+  const injectedClient = createBackendClient({ fetchImpl: async (_url, options) => {
+    injectedCalls.push(options);
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  } });
+  await injectedClient.put('chat-x', 'v3-root', large, 4);
+  assert.equal(injectedCalls.length, 1);
+  assert.equal(typeof injectedCalls[0].body, 'string');
+  assert.equal(injectedCalls[0].headers['Content-Encoding'], undefined);
+  assert.equal(injectedClient.getDiagnosticSnapshot().latestWrite.contentEncoding, 'identity');
+});
+
+test('默认 HTTP gzip 准备计入原请求时限和外部取消，取消后不启动迟到 fetch', async () => {
+  let startedResolve;
+  const started = new Promise(resolve => { startedResolve = resolve; });
+  class WaitingCompressionStream {
+    constructor() {
+      startedResolve();
+      this.readable = new ReadableStream({ start() {} });
+      this.writable = new WritableStream({ write() {} });
+    }
+  }
+  await withGlobals({ __TAURITAVERN__: undefined, __TAURITAVERN_MAIN_READY__: undefined, CompressionStream: WaitingCompressionStream }, async () => {
+    let fetchCalls = 0;
+    globalThis.fetch = async () => { fetchCalls += 1; return { ok: true, status: 200, json: async () => ({}) }; };
+    const timeoutClient = createBackendClient({ timeoutMs: 12 });
+    await assert.rejects(timeoutClient.put('chat-x', 'v3-root', { text: 'x'.repeat(40000) }, 0), error => error.code === 'BACKEND_TIMEOUT');
+    assert.equal(fetchCalls, 0, '压缩阶段耗尽期限时不能迟到发出 PUT');
+    assert.equal(timeoutClient.getDiagnosticSnapshot().latestWrite.outcome, 'timeout');
+    assert.equal(timeoutClient.getDiagnosticSnapshot().latestWrite.encodedBodyBytes, undefined, '压缩尚未完成时不记录未准备好的传输体大小');
+    assert.equal(timeoutClient.getDiagnosticSnapshot().sinceClientCreatedRequestCounts.put, 1);
+  });
+
+  const externalStarted = (() => { let resolve; return { promise: new Promise(done => { resolve = done; }), resolve }; })();
+  class ExternalWaitingCompressionStream {
+    constructor() {
+      externalStarted.resolve();
+      this.readable = new ReadableStream({ start() {} });
+      this.writable = new WritableStream({ write() {} });
+    }
+  }
+  await withGlobals({ __TAURITAVERN__: undefined, __TAURITAVERN_MAIN_READY__: undefined, CompressionStream: ExternalWaitingCompressionStream }, async () => {
+    let fetchCalls = 0;
+    globalThis.fetch = async () => { fetchCalls += 1; return { ok: true, status: 200, json: async () => ({}) }; };
+    const client = createBackendClient({ timeoutMs: 1000 });
+    const controller = new AbortController();
+    const pending = client.put('chat-x', 'v3-root', { text: 'y'.repeat(40000) }, 0, { signal: controller.signal });
+    await externalStarted.promise;
+    controller.abort();
+    await assert.rejects(pending, error => error.name === 'AbortError');
+    assert.equal(fetchCalls, 0, '外部取消后不能再发出 PUT');
+    assert.equal(client.getDiagnosticSnapshot().latestWrite.outcome, 'aborted');
+    assert.equal(client.getDiagnosticSnapshot().sinceClientCreatedRequestCounts.put, 1);
+  });
+  await started;
+});
+
+test('同一模拟限速下默认 HTTP gzip 可在期限内上传，未压缩的大请求会超时且不重试', async () => {
+  const data = { text: '压缩传输保留中文、完整历史诊断和来源。'.repeat(10000) };
+  const requestBody = JSON.stringify({ data, expectedRevision: 12 });
+  const limitRateFetch = async (_url, options) => {
+    const bytes = asBytes(options.body);
+    const duration = bytes.byteLength / 500_000 * 1000;
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, duration);
+      const abort = () => { clearTimeout(timer); reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); };
+      options.signal.addEventListener('abort', abort, { once: true });
+    });
+    const received = options.headers['Content-Encoding'] === 'gzip' ? gunzipSync(bytes) : bytes;
+    assert.deepEqual(JSON.parse(received.toString('utf8')), { data, expectedRevision: 12 });
+    return { ok: true, status: 200, json: async () => ({ revision: 13 }) };
+  };
+  const identityCalls = [];
+  const identityClient = createBackendClient({ timeoutMs: 50, fetchImpl: async (url, options) => { identityCalls.push(options); return limitRateFetch(url, options); } });
+  await assert.rejects(identityClient.put('chat-x', 'v3-root', data, 12), error => error.code === 'BACKEND_TIMEOUT');
+  assert.equal(identityCalls.length, 1);
+
+  await withGlobals({ __TAURITAVERN__: undefined, __TAURITAVERN_MAIN_READY__: undefined }, async () => {
+    const compressedCalls = [];
+    globalThis.fetch = async (url, options) => { compressedCalls.push(options); return limitRateFetch(url, options); };
+    const compressedClient = createBackendClient({ timeoutMs: 50 });
+    assert.deepEqual(await compressedClient.put('chat-x', 'v3-root', data, 12), { revision: 13 });
+    assert.equal(compressedCalls.length, 1);
+    assert.equal(compressedCalls[0].headers['Content-Encoding'], 'gzip');
+    const snapshot = compressedClient.getDiagnosticSnapshot();
+    assert.equal(snapshot.latestWrite.contentEncoding, 'gzip');
+    assert.equal(snapshot.latestWrite.bodyBytes, Buffer.byteLength(requestBody));
+    assert.ok(snapshot.latestWrite.encodedBodyBytes < snapshot.latestWrite.bodyBytes);
+    assert.equal(snapshot.sinceClientCreatedRequestCounts.put, 1);
+  });
+});
+
+test('默认 HTTP 压缩 PUT 对 409/400 保持原状态诊断且不明文重发', async () => {
+  await withGlobals({ __TAURITAVERN__: undefined, __TAURITAVERN_MAIN_READY__: undefined }, async () => {
+    const calls = [];
+    let bodyReads = 0;
+    globalThis.fetch = async (_url, options) => {
+      calls.push(options);
+      return calls.length === 1
+        ? { ok: false, status: 409, json: async () => { bodyReads++; return {}; } }
+        : { ok: false, status: 400, json: async () => { bodyReads++; return { error: 'VALIDATION_ERROR', message: '记录无效' }; } };
+    };
+    const client = createBackendClient();
+    const large = { text: '完整存档与诊断'.repeat(6000) };
+    await assert.rejects(client.put('chat-x', 'v3-root', large, 9), error => error.status === 409);
+    assert.equal(client.getDiagnosticSnapshot().latestWrite.httpStatus, 409);
+    assert.equal(client.getDiagnosticSnapshot().latestWrite.contentEncoding, 'gzip');
+    await assert.rejects(client.put('chat-x', 'v3-root', large, 9), error => error.status === 400);
+    assert.equal(client.getDiagnosticSnapshot().latestWrite.backendError, 'VALIDATION_ERROR');
+    assert.equal(calls.length, 2, '每个失败 PUT 恰好发一次，不降级补发');
+    assert.ok(calls.every(call => call.headers['Content-Encoding'] === 'gzip'));
+    assert.equal(bodyReads, 1, '409保持不读取body，400仅读取一次原有短诊断');
+    assert.deepEqual(client.getDiagnosticSnapshot().sinceClientCreatedRequestCounts, { get: 0, put: 2, delete: 0 });
+  });
 });

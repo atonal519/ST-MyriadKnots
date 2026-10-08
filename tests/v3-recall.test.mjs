@@ -15,6 +15,7 @@ import { createCompactApiClient } from '../src/compact-api-client.js';
 import { createTaskRouter } from '../src/api-routing.js';
 import { createPrivateRecallDiagnostics, projectPrivateRecallDiagnostic } from '../src/private-recall-diagnostics.js';
 import { createVectorIndex } from '../src/v3/vector-index.js';
+import { summaryCandidateText, summaryWitnessValid } from '../src/v3/vector-source.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GEN = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -3711,7 +3712,7 @@ test('千事 projection 版本变化时同 user 仍逐字复用首次大清单',
   version = 1;
   const reused = await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(selections, 1);
-  assert.equal(reused.lastRecall.reusedReceipt, true);
+  assert.equal(reused.lastRecall.reusedReceipt, true, JSON.stringify(reused.lastRecall));
   assert.equal(reused.lastRecall.injectionText, original);
   assert.equal(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT), original);
   assert.match(reused.lastRecall.injectionText, /旧大清单|qqj_qianshi_progress/u);
@@ -6168,34 +6169,51 @@ test('真实成员原文经 runtime/签名/冷读按成员楼展示；摘要revi
   source.rawSources = [raw];
   const witness = { ...raw, offset: 0, length: text.length, textFingerprint: await fingerprintText(text) }; delete witness.canonicalContent;
   let selections = 0, vectors = 0, manual = false, bodyChanged = false, semanticPriorityKey = null;
+  let cacheEnabled = false, rootMismatch = false, cachedReachable = null, sourceReads = 0, rootReads = 0, prepareCalls = 0, reachableReads = 0;
   const revisedMemoryId = 'memory-2-after-summary-revision';
-  const reachableReader = async () => {
+  const makeReachable = async () => {
     const currentSource = structuredClone(source);
     if (manual) {
       currentSource.floorMemories.find(memory => memory.floorId === 'floor-2').floorMemoryId = revisedMemoryId;
       currentSource.rawSources = currentSource.rawSources.map(value => ({ ...value, floorMemoryId: revisedMemoryId }));
+      currentSource.rootRevision += 1; currentSource.headCheckpointId = 'head-after-summary-revision';
     }
     const reachable = rawReachableFromSource(currentSource);
     reachable.floors.push({ id: 'floor-1', assistantSeq: 1 });
-    const memory = reachable.floorMemories.find(memory => memory.id === anchor.floorMemoryId);
+    const memory = reachable.floorMemories.find(memory => memory.floorId === 'floor-2');
     memory.sourceFloorIds = ['floor-1', 'floor-2'];
     memory.sourceFloorSnapshots = [{ floorId: 'floor-1', canonicalContent: text }, { floorId: 'floor-2', canonicalContent: '' }];
     if (manual) memory.summary = { effectiveSource: 'user', userText: '用户重新校准了钥匙相关摘要' };
     return reachable;
   };
+  const reachableReader = async () => { reachableReads += 1; return makeReachable(); };
   const sourceReader = async () => {
+    sourceReads += 1;
     const current = structuredClone(source);
     if (manual) {
       current.floorMemories.find(memory => memory.floorId === 'floor-2').floorMemoryId = revisedMemoryId;
       current.rawSources = [{ ...raw, floorMemoryId: revisedMemoryId }];
+      current.rootRevision += 1; current.headCheckpointId = 'head-after-summary-revision';
     } else current.rawSources = [raw];
     if (bodyChanged) {
       const content = `${text} 正文确实发生变化。`;
       current.rawSources[0] = { ...current.rawSources[0], canonicalContent: content, fingerprint: await fingerprintText(content) };
     }
+    current.sourceReadAttempts = { reachableReads: 1, exitPoint: 'ready' };
     return current;
   };
   const harness = createRuntimeHarness({ sourceReader, reachableReader, useDefaultSelector: true,
+    rootReader: async () => {
+      rootReads += 1;
+      const current = cachedReachable ?? await makeReachable();
+      return { status: 'ready', revision: current.rootRevision + (rootMismatch ? 1 : 0), data: structuredClone(current.root) };
+    },
+    prepareMemory: async options => {
+      prepareCalls += 1;
+      if (!cacheEnabled) return { status: 'unavailable' };
+      assert.equal(options.allowRefresh, false, '冻结见证只借既有快照，不启动刷新');
+      return { status: 'ready', reachable: cachedReachable };
+    },
     semanticProvider: async () => { vectors++; return { candidates: [{ text, witness }], diagnostic: { status: 'ready', candidateCount: 1,
       requestCount: 0, retryOutcome: 'cancelled', requestAttempts: [{ requestId: 'cancelled-before-fetch', phase: 'request', pendingStage: 'aborted',
         lastSuccessfulStage: 'request_prepared', result: 'cancelled', errorCode: 'VECTOR_ABORTED' }], request: {
@@ -6230,15 +6248,44 @@ test('真实成员原文经 runtime/签名/冷读按成员楼展示；摘要revi
   assert.deepEqual(projected.selectorDiagnostic.semantic.request, receipt.selectorDiagnostic.semantic.request);
   assert.ok(inline.historyGroups.some(group => group.assistantSeq === 1));
   assert.match(receipt.injectionText, /时间未标注/);
+  cachedReachable = await makeReachable(); cacheEnabled = true;
+  const beforeReuseReads = { sourceReads, rootReads, prepareCalls, reachableReads };
   const second = await harness.runtime.intercept(harness.chat, 20000, null, 'regenerate');
   assert.equal(second.lastRecall.reusedReceipt, true); assert.equal(vectors, 1); assert.equal(selections, 1);
+  assert.equal(sourceReads, beforeReuseReads.sourceReads, '根版本匹配的快照投影不调用完整sourceReader');
+  assert.equal(rootReads, beforeReuseReads.rootReads + 1, '快照复用仅增加一次轻量root读取');
+  assert.equal(prepareCalls, beforeReuseReads.prepareCalls + 1);
+  assert.equal(reachableReads, beforeReuseReads.reachableReads, '已准备快照不会再读取完整reachable图');
+  assert.ok(Number.isFinite(second.lastRecall.timings.sourceMs), '来源阶段计时继续落在现有sourceMs字段');
+  assert.deepEqual(second.lastRecall.timings.sourceReadAttempts, { reachableReads: 0, exitPoint: 'validatedSnapshot' });
   manual = true;
+  cachedReachable = await makeReachable();
+  const beforeSummaryEditReads = { sourceReads, rootReads, prepareCalls, reachableReads };
   const revised = await harness.runtime.intercept(harness.chat, 20000, null, 'swipe');
   assert.equal(revised.lastRecall.reusedReceipt, true, '摘要revision换FloorMemory ID不撤销原文冻结回执');
+  assert.equal(sourceReads, beforeSummaryEditReads.sourceReads, '匹配的聚合原文快照允许摘要revision后的raw-only回执复用');
+  assert.equal(rootReads, beforeSummaryEditReads.rootReads + 1); assert.equal(prepareCalls, beforeSummaryEditReads.prepareCalls + 1);
+  assert.equal(reachableReads, beforeSummaryEditReads.reachableReads);
+  rootMismatch = true;
+  const beforeMismatchReads = { sourceReads, rootReads, prepareCalls, reachableReads };
+  const rootMiss = await harness.runtime.intercept(harness.chat, 20000, null, 'swipe');
+  assert.equal(rootMiss.lastRecall.reusedReceipt, true, 'root失配只跳过优化，不改变原冻结回执核验结果');
+  assert.equal(sourceReads, beforeMismatchReads.sourceReads + 1, 'root与快照不一致时回退原sourceReader，合法旧原文回执仍可复用');
+  assert.equal(rootReads, beforeMismatchReads.rootReads + 1); assert.equal(prepareCalls, beforeMismatchReads.prepareCalls + 1);
+  assert.equal(reachableReads, beforeMismatchReads.reachableReads);
+  assert.deepEqual(rootMiss.lastRecall.timings.sourceReadAttempts, { reachableReads: 1, exitPoint: 'ready' });
+  rootMismatch = false;
   assert.equal(vectors, 1); assert.equal(selections, 1);
   bodyChanged = true;
+  cacheEnabled = false;
+  const beforeMissReads = { sourceReads, rootReads, prepareCalls, reachableReads };
   const invalidated = await harness.runtime.intercept(harness.chat, 20000, null, 'swipe');
   assert.notEqual(invalidated.lastRecall.status, 'ready', '真实原文变更仍撤销旧冻结回执');
+  assert.equal(sourceReads, beforeMissReads.sourceReads + 1, '快照不可用后仍执行原完整来源读取');
+  assert.equal(rootReads, beforeMissReads.rootReads + 1);
+  assert.equal(prepareCalls, beforeMissReads.prepareCalls + 1);
+  assert.equal(reachableReads, beforeMissReads.reachableReads);
+  assert.deepEqual(invalidated.lastRecall.timings.sourceReadAttempts, { reachableReads: 1, exitPoint: 'ready' });
   assert.equal(vectors, 1); assert.equal(selections, 1);
 });
 
@@ -6380,16 +6427,75 @@ test('fresh只读来源仍拒绝成员删除、可见正文变化、再更新roo
 });
 
 test('准备可选计时随新回执封签并历史恢复，复用不重读来源', async () => {
-  let reads = 0;
-  const harness = createRuntimeHarness({ sourceReader: () => { reads += 1; return runtimeFixture(); } });
+  let reads = 0, rootReads = 0, prepareCalls = 0;
+  const source = runtimeFixture();
+  const harness = createRuntimeHarness({ sourceReader: () => { reads += 1; return structuredClone(source); },
+    rootReader: async () => { rootReads += 1; return { status: 'ready', revision: source.rootRevision, data: structuredClone({ chatId: source.chatId,
+      narrativeGeneration: source.narrativeGeneration, headCheckpointId: source.headCheckpointId }) }; },
+    prepareMemory: async () => { prepareCalls += 1; return { status: 'unavailable' }; } });
   const first = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   assert.equal(first.lastRecall.status, 'ready'); await flushReceiptSave();
   const receipt = harness.userMessage.extra[RECALL_RECEIPT_KEY];
   assert.deepEqual(receipt.timings.preparationAttempts.map(record => record.phase), ['source', 'commit']);
   const historical = await projectHistoricalRecallReceipt(harness.userMessage, { chatId: CHAT, userMessageIndex: 1 });
   assert.equal(historical.status, 'ready'); assert.deepEqual(historical.timings.preparationAttempts, receipt.timings.preparationAttempts);
-  const count = reads; const reused = await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
-  assert.equal(reused.lastRecall.reusedReceipt, true); assert.equal(reads, count);
+  const count = { reads, rootReads, prepareCalls }; const reused = await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
+  assert.equal(reused.lastRecall.reusedReceipt, true); assert.equal(reads, count.reads);
+  assert.equal(rootReads, count.rootReads, '无raw/summary witness的冻结回执不读取root');
+  assert.equal(prepareCalls, count.prepareCalls, '无见证时不尝试借用prepared snapshot');
+});
+
+test('冻结旧摘要见证使用生产快照投影核验，摘要真实修订后仍失效', async () => {
+  const source = runtimeFixture();
+  const summary = '人工摘要记载：阿裴把蓝色钥匙放在钟楼。';
+  let summaryText = summary, cachedReachable = null, sourceReads = 0, rootReads = 0, prepareCalls = 0;
+  const sourceReader = async () => {
+    sourceReads += 1;
+    const value = structuredClone(source);
+    const canonicalContent = summaryCandidateText(summaryText);
+    value.summarySources = [{ sourceKind: 'userSummary', floorId: 'floor-2', assistantSeq: 2, floorMemoryId: 'memory-2',
+      memoryFloorId: 'floor-2', memoryAssistantSeq: 2, canonicalContent, fingerprint: await fingerprintText(canonicalContent) }];
+    return value;
+  };
+  const makeReachable = async revision => {
+    const value = rawReachableFromSource(source);
+    value.rootRevision = revision; value.root.headCheckpointId = `head-${revision}`; value.checkpoint.id = `head-${revision}`;
+    const memory = value.floorMemories.find(item => item.floorId === 'floor-2');
+    memory.summary = { effectiveSource: 'user', userText: summaryText };
+    return value;
+  };
+  cachedReachable = await makeReachable(1);
+  const harness = createRuntimeHarness({ sourceReader,
+    rootReader: async () => { rootReads += 1; return { status: 'ready', revision: cachedReachable.rootRevision, data: structuredClone(cachedReachable.root) }; },
+    reachableReader: async () => structuredClone(cachedReachable),
+    prepareMemory: async options => { prepareCalls += 1; return options.allowRefresh === false ? { status: 'ready', reachable: cachedReachable } : { status: 'unavailable' }; } });
+  const first = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  assert.equal(first.lastRecall.status, 'ready');
+  await flushReceiptSave();
+  const receipt = harness.userMessage.extra[RECALL_RECEIPT_KEY];
+  const floor = receipt.selectedFloors.find(item => item.floorId === 'floor-2');
+  assert.ok(floor, '准备摘要见证的目标楼实际存在于冻结回执');
+  floor.summaryWitnesses = [{ sourceKind: 'userSummary', floorId: 'floor-2', assistantSeq: 2, floorMemoryId: floor.floorMemoryId,
+    memoryFloorId: 'floor-2', memoryAssistantSeq: 2, fingerprint: await fingerprintText(summaryCandidateText(summary)), offset: 0, length: summaryCandidateText(summary).length,
+    textFingerprint: await fingerprintText(summaryCandidateText(summary)) }];
+  receipt.receiptFingerprint = await receiptFingerprint(receipt);
+  const projectedSummary = await projectRecallSource(cachedReachable, () => new Date(NOW));
+  assert.ok(await summaryWitnessValid(floor.summaryWitnesses[0], projectedSummary), JSON.stringify(projectedSummary.summarySources));
+  harness.runtime.invalidate('installLegacySummaryWitnessFixture');
+  const before = { sourceReads, rootReads, prepareCalls };
+  const reused = await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
+  assert.equal(reused.lastRecall.reusedReceipt, true, JSON.stringify(reused.lastRecall));
+  assert.equal(sourceReads, before.sourceReads, '匹配快照通过生产projectRecallSource重建summarySources');
+  assert.equal(rootReads, before.rootReads + 1); assert.equal(prepareCalls, before.prepareCalls + 1);
+  assert.deepEqual(reused.lastRecall.timings.sourceReadAttempts, { reachableReads: 0, exitPoint: 'validatedSnapshot' });
+  summaryText = '人工摘要已修订：钥匙交给守门人。';
+  cachedReachable = await makeReachable(2);
+  const beforeRevision = { sourceReads, rootReads, prepareCalls };
+  const invalidated = await harness.runtime.intercept(harness.chat, 12000, null, 'swipe');
+  assert.notEqual(invalidated.lastRecall.status, 'ready', '旧summaryWitness不得越过真实摘要修订');
+  assert.ok(invalidated.lastRecall.skipReasons.includes('selectedRefsChanged'));
+  assert.equal(sourceReads, beforeRevision.sourceReads, '匹配新root的投影能直接发现摘要见证失效');
+  assert.equal(rootReads, beforeRevision.rootReads + 1); assert.equal(prepareCalls, beforeRevision.prepareCalls + 1);
 });
 
 test('mixed原文与摘要首次提交按新root校验非raw归档，纯摘要失效而纯raw仍可用', async () => {

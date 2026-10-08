@@ -408,6 +408,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let vectorWakeCount = 0;
   define('./src/v3/vector-auto-update.js', { createVectorAutoUpdater: options => { vectorAutoOptions = options; return { dispose() {}, refresh() { vectorWakeCount += 1; } }; } });
   define('./src/v3/recall-source.js', { readRecallSource: async options => options });
+  define('./src/v3/vector-source-reader.js', { readVectorSource: async options => options });
   define('./src/source-permission.js', { createSourcePermissionController: () => ({}) });
   const productionHostContext = { eventSource: productionEventSource, eventTypes: productionEventTypes, uuidv4, getRequestHeaders: () => ({ 'X-CSRF-Token': 'token' }), groupId: null, characterId: 0, characters: [{ avatar: 'char.png' }] };
   define('./src/v3/host-adapter.js', { createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => productionHostContext, snapshot: () => ({}) }; } });
@@ -422,12 +423,13 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   });
   const branchInitializer = async () => ({ status: 'inherited' });
   define('./src/v3/chat-branch-inheritance.js', { createChatBranchInitializer: options => { branchInitializerOptions = options; return branchInitializer; } });
-  let timeOptions, timeBindOptions;
+  let timeOptions, timeBindOptions, currentStoryContextReads = 0;
+  const qianshiRecallInputs = [];
   const timeBatches = [];
   let calendarInvalidations = 0, calendarRefreshes = 0;
-  const timeRuntime = { runBatch: receipt => { timeBatches.push(receipt); }, getState: () => ({}), invalidate() { calendarInvalidations += 1; }, async refreshStatus() { calendarRefreshes += 1; }, completeStoredUpdate() { timeOptions.onInvalidate?.(); }, recallProjection: async () => null, currentStoryContext: async () => null, stop: async () => {}, bind(options) { timeBindOptions = options; } };
+  const timeRuntime = { runBatch: receipt => { timeBatches.push(receipt); }, getState: () => ({}), invalidate() { calendarInvalidations += 1; }, async refreshStatus() { calendarRefreshes += 1; }, completeStoredUpdate() { timeOptions.onInvalidate?.(); }, recallProjection: async () => null, currentStoryContext: async () => { currentStoryContextReads += 1; return { currentTime: { raw: '5月3日' } }; }, stop: async () => {}, bind(options) { timeBindOptions = options; } };
   define('./src/v3/time-runtime.js', { createTimeStore: () => ({}), createTimeRuntime: options => { timeOptions = options; return timeRuntime; } });
-  define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() { backgroundStarts.push('memory'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, getState: () => ({}), getQianshiRecall: () => ({ text: '' }), shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
+  define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() { backgroundStarts.push('memory'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, getState: () => ({}), getQianshiRecall: input => { qianshiRecallInputs.push(input); return { text: '' }; }, shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
   define('./src/v3/message-floor-anchor.js', { persistMessageFloorAnchors: persistAnchors });
   define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; v3RecallRuntime = { bind() {}, async setEnabled(value) { runtimeEnables.push(`recall:${value}`); }, async intercept() {}, invalidate(reason) { recallInvalidations.push(reason); }, getState: () => ({}), getPromptSnapshot: () => null }; return v3RecallRuntime; } });
   define('./src/v3/auto-hide.js', { createAutoHideController: options => { autoHideOptions = options; return { applySettings() {}, stop() {}, dispose() {} }; } });
@@ -468,9 +470,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(memoryManagementOptions.vectorRuntime, vectorRuntime);
   assert.deepEqual(vectorClientOptions.headers(), { 'X-CSRF-Token': 'token' }, '向量客户端从当前宿主上下文读取 CSRF 头');
   assert.equal(vectorOptions.api, vectorApi);
-  assert.equal(typeof vectorOptions.generationProvider, 'function');
+  assert.equal(typeof vectorOptions.identityProvider, 'function');
+  assert.equal(typeof vectorOptions.sourceProvider, 'function');
   assert.equal(vectorAutoOptions.vectorRuntime, vectorRuntime);
-  assert.equal(typeof vectorAutoOptions.generationProvider, 'function');
   scriptModule.setExport('is_send_press', true);
   for (const eventName of ['generation-stopped', 'generation-ended', 'group-wrapper-finished']) {
     assert.equal(productionEventHandlers.get(eventName)?.size, 1, `${eventName} 唤醒接线必须注册一次`);
@@ -629,7 +631,14 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.ok(v3RecallOptions.store);
   assert.ok(v3RecallOptions.hostAdapter);
   assert.equal(v3RecallOptions.generateUtilityTask, recallTask);
-  assert.deepEqual(await v3RecallOptions.qianshiProgressProvider(), { text: '' }, '召回必须从同一 memory runtime 读取千事进度');
+  assert.deepEqual(await v3RecallOptions.qianshiProgressProvider(), { text: '' }, '初始候选仍从同一 memory runtime 读取千事进度');
+  assert.equal(currentStoryContextReads, 1, '普通候选召回应保留当前故事时刻提取');
+  assert.deepEqual(qianshiRecallInputs[0].currentTime, { raw: '5月3日' });
+  const selectedContext = { selectedEventIds: ['saved-event'], selectedMatterIds: [] };
+  assert.deepEqual(await v3RecallOptions.qianshiProgressProvider({ status: 'ready' }, selectedContext), { text: '' }, 'selected-only回执沿原保存ID投影');
+  assert.equal(currentStoryContextReads, 1, 'selected-only回执不读取其投影不会消费的当前故事时刻');
+  assert.equal(qianshiRecallInputs[1].selectedEventIds[0], 'saved-event');
+  assert.equal(qianshiRecallInputs[1].selectedMatterIds.length, 0);
   assert.equal(Object.hasOwn(v3RecallOptions, 'processingPrompt'), false, '召回链不得接入破限提示词');
   assert.equal(v3RecallOptions.pluginVersion, '0.1.9-test', '生产回执版本必须由 manifest.version 单一注入');
   assert.ok(autoHideOptions.hostAdapter); assert.equal(autoHideOptions.memoryRuntime, v3MemoryRuntime);

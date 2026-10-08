@@ -516,6 +516,10 @@ test('旧 CSE load 的重放迟到时不得覆盖已经成功提交的人工长�
   const initial = cseRuntime.getState();
   const subject = initial.cseSubjects.find(item => item.subjectEntityId === oldGraph.baseline.userPersona.entityId);
   assert.deepEqual(subject.adaptive.map(item => item.text), ['旧长期倾向']);
+  const historicalRecord = initial.cseFloors.find(item => item.deltaId)?.record;
+  assert.ok(historicalRecord);
+  assert.strictEqual(cseRuntime.getState().cseFloors.find(item => item.deltaId)?.record, historicalRecord,
+    '同一reachable与身份投影复用不可变历史记录对象');
 
   const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
   const realCrypto = globalThis.crypto;
@@ -540,6 +544,8 @@ test('旧 CSE load 的重放迟到时不得覆盖已经成功提交的人工长�
       adaptive: subject.adaptive.map(item => ({ itemId: item.id, text: '新长期倾向', visibility: item.visibility, towardEntityId: item.towardEntityId ?? null })),
       situational: subject.situational.map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: item.towardEntityId ?? null })),
     });
+    assert.notStrictEqual(saved.cseFloors.find(item => item.deltaId)?.record, historicalRecord,
+      '图身份变化后历史投影按新reachable重建');
     assert.deepEqual(saved.cseSubjects.find(item => item.subjectEntityId === subject.subjectEntityId).adaptive.map(item => item.text), ['新长期倾向']);
     releaseReplay();
     await staleLoad;

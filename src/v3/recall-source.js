@@ -136,18 +136,31 @@ function cseChangesDto(timeline, entities, floorSeq, identityProjection, persona
   }));
 }
 
-export async function projectRecallSource(first, now, sourceReadAttempts = null, hostSnapshot = null, sanitizerOptions = {}, realtimeOrigin = false, identityProjectionValue = null) {
-  const identityProjection = normalizeIdentityProjection(identityProjectionValue ?? {});
+// 向量索引与完整召回投影共享同一有效记忆选择，避免两条资格规则漂移。
+export function selectRecallMemories(first) {
   const floors = first.floors ?? [];
   const floorById = new Map(floors.map(floor => [floor.id, floor]));
   const memoryGroups = new Map();
-  for (const memory of first.floorMemories ?? []) if (floorById.has(memory.floorId)) for (const floorId of memorySourceFloorIds(memory)) if (floorById.has(floorId)) memoryGroups.set(floorId, [...(memoryGroups.get(floorId) ?? []), memory]);
+  for (const memory of first.floorMemories ?? []) if (floorById.has(memory.floorId)) {
+    for (const floorId of memorySourceFloorIds(memory)) if (floorById.has(floorId)) {
+      memoryGroups.set(floorId, [...(memoryGroups.get(floorId) ?? []), memory]);
+    }
+  }
   const activeMemories = [];
   const activeMemoryIds = new Set();
   for (const floor of floors) {
     const active = (memoryGroups.get(floor.id) ?? []).filter(memory => memory.recordStatus === 'active');
-    if (active.length === 1 && !activeMemoryIds.has(active[0].id)) { activeMemories.push(active[0]); activeMemoryIds.add(active[0].id); }
+    if (active.length === 1 && !activeMemoryIds.has(active[0].id)) {
+      activeMemories.push(active[0]);
+      activeMemoryIds.add(active[0].id);
+    }
   }
+  return { floors, floorById, memoryGroups, activeMemories, activeMemoryIds };
+}
+
+export async function projectRecallSource(first, now, sourceReadAttempts = null, hostSnapshot = null, sanitizerOptions = {}, realtimeOrigin = false, identityProjectionValue = null) {
+  const identityProjection = normalizeIdentityProjection(identityProjectionValue ?? {});
+  const { floors, floorById, memoryGroups, activeMemories, activeMemoryIds } = selectRecallMemories(first);
   const degradedReasons = first.cseUnavailable === true ? ['cseReplayUnavailable'] : [];
   let trustedDeltas = [], replayed = null, cseTimeline = [];
   try {

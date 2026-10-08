@@ -13,6 +13,32 @@ function shortDiagnosticText(value, limit) {
   return text || undefined;
 }
 function timeoutError() { const error = new Error('后端请求超时'); error.name = 'TimeoutError'; error.code = 'BACKEND_TIMEOUT'; return error; }
+// Fetch receives one complete body (without streaming-duplex); the shared abort also cancels preparation.
+async function gzipRequestBody(bytes, signal) {
+  if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'));
+  const reader = stream.getReader(), chunks = [];
+  const cancel = () => { reader.cancel(signal.reason).catch(() => {}); };
+  signal.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal.aborted) cancel();
+    let size = 0;
+    while (true) {
+      if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value); size += value.byteLength;
+    }
+    if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+    const compressed = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { compressed.set(chunk, offset); offset += chunk.byteLength; }
+    return compressed;
+  } finally {
+    signal.removeEventListener('abort', cancel);
+    reader.releaseLock();
+  }
+}
 function recordTypeFromId(recordId) {
   const value = String(recordId);
   if (value === 'v3-root') return 'root';
@@ -23,11 +49,15 @@ function recordTypeFromId(recordId) {
 }
 export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl = API_BASE, timeoutMs = 15000, listTimeoutMs = 120000 } = {}) {
   // TT routing is limited to the default transport so injected and custom HTTP clients retain ownership.
-  fetchImpl ??= isTauriTavern() && baseUrl === API_BASE ? createTauriBackendFetch() : globalThis.fetch;
+  const defaultTransport = !fetchImpl && baseUrl === API_BASE;
+  const useTauri = defaultTransport && isTauriTavern();
+  fetchImpl ??= useTauri ? createTauriBackendFetch() : globalThis.fetch;
   if (typeof fetchImpl !== 'function') throw new Error('fetch 不可用');
+  // The native TT bridge, injected fetch clients, and custom endpoints keep their JSON transport contract.
+  const allowGzipPut = defaultTransport && !useTauri;
   const diagnostic = { sinceClientCreatedRequestCounts: { get: 0, put: 0, delete: 0 }, latestRead: null, latestWrite: null, lastFailure: null };
   let diagnosticSequence = 0;
-  const finishDiagnostic = (requestDiagnostic, startedAt, outcome, { httpStatus, code, backendError, backendMessage } = {}) => {
+  const finishDiagnostic = (requestDiagnostic, startedAt, outcome, { httpStatus, code, backendError, backendMessage, transport } = {}) => {
     if (!requestDiagnostic) return;
     const record = {
       sequence: ++diagnosticSequence,
@@ -40,6 +70,11 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
       ...(code === 'BACKEND_TIMEOUT' ? { code } : {}),
       ...(backendError ? { backendError } : {}),
       ...(backendMessage ? { backendMessage } : {}),
+      ...(requestDiagnostic.method === 'PUT' && transport ? {
+        bodyBytes: transport.bodyBytes,
+        ...(Number.isSafeInteger(transport.encodedBodyBytes) ? { encodedBodyBytes: transport.encodedBodyBytes } : {}),
+        ...(transport.contentEncoding ? { contentEncoding: transport.contentEncoding } : {}),
+      } : {}),
     };
     diagnostic[requestDiagnostic.method === 'GET' ? 'latestRead' : 'latestWrite'] = record;
     if (outcome !== 'success') diagnostic.lastFailure = record;
@@ -52,8 +87,31 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
     const abortFromOuter = () => controller.abort(outerSignal?.reason);
     if (outerSignal?.aborted) abortFromOuter(); else outerSignal?.addEventListener?.('abort', abortFromOuter, { once: true });
     const timer = setTimeout(() => { timedOut = true; controller.abort(); }, Math.max(1, Number(requestTimeoutMs) || 15000));
+    let transport = null;
     try {
-      const response = await fetchImpl(`${baseUrl}${path}`, { ...options, signal: controller.signal, headers: { Accept: 'application/json', ...headers(), ...(options.body ? { 'Content-Type': 'application/json' } : {}) } });
+      const requestOptions = { ...options };
+      const requestHeaders = { Accept: 'application/json', ...headers(), ...(options.body ? { 'Content-Type': 'application/json' } : {}) };
+      if (requestDiagnostic?.method === 'PUT' && typeof options.body === 'string') {
+        const bytes = new TextEncoder().encode(options.body);
+        transport = { bodyBytes: bytes.byteLength };
+        if (allowGzipPut && bytes.byteLength >= 32 * 1024 && typeof CompressionStream === 'function') {
+          try {
+            const compressed = await gzipRequestBody(bytes, controller.signal);
+            if (controller.signal.aborted) throw controller.signal.reason ?? new DOMException('Aborted', 'AbortError');
+            if (compressed.byteLength < bytes.byteLength) {
+              requestOptions.body = compressed;
+              requestHeaders['Content-Encoding'] = 'gzip';
+              transport = { bodyBytes: bytes.byteLength, encodedBodyBytes: compressed.byteLength, contentEncoding: 'gzip' };
+            }
+          } catch (error) {
+            // Only compression preparation may fall back; cancellation keeps the shared request deadline authoritative.
+            if (controller.signal.aborted) throw error;
+          }
+        }
+        if (!transport.contentEncoding) transport = { bodyBytes: bytes.byteLength, encodedBodyBytes: bytes.byteLength, contentEncoding: 'identity' };
+      }
+      if (controller.signal.aborted) throw controller.signal.reason ?? new DOMException('Aborted', 'AbortError');
+      const response = await fetchImpl(`${baseUrl}${path}`, { ...requestOptions, signal: controller.signal, headers: requestHeaders });
       if (!response.ok) {
         if (response.status === 400 && requestDiagnostic) {
           try {
@@ -69,16 +127,16 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
         const error = safeError(response.status); error.status = response.status; throw error;
       }
       const body = await response.json();
-      finishDiagnostic(requestDiagnostic, startedAt, 'success');
+      finishDiagnostic(requestDiagnostic, startedAt, 'success', { transport });
       return body;
     } catch (error) {
       if (timedOut) {
         const timeout = timeoutError();
-        finishDiagnostic(requestDiagnostic, startedAt, 'timeout', { code: timeout.code });
+        finishDiagnostic(requestDiagnostic, startedAt, 'timeout', { code: timeout.code, transport });
         throw timeout;
       }
-      if (Number.isSafeInteger(error?.status)) finishDiagnostic(requestDiagnostic, startedAt, 'httpError', { httpStatus: error.status, ...(error.status === 400 ? http400Diagnostic : {}) });
-      else finishDiagnostic(requestDiagnostic, startedAt, outerSignal?.aborted ? 'aborted' : 'failure');
+      if (Number.isSafeInteger(error?.status)) finishDiagnostic(requestDiagnostic, startedAt, 'httpError', { httpStatus: error.status, ...(error.status === 400 ? http400Diagnostic : {}), transport });
+      else finishDiagnostic(requestDiagnostic, startedAt, outerSignal?.aborted ? 'aborted' : 'failure', { transport });
       throw error;
     }
     finally { clearTimeout(timer); outerSignal?.removeEventListener?.('abort', abortFromOuter); }

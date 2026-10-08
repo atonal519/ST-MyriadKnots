@@ -274,16 +274,88 @@ test('千事时间轴保留时间原文，只按明确可比的普通日期或�
   const timeline = projectQianshiTimeline({ events, relations: [{ type: 'progress', fromEventId: 'aug', toEventId: 'july-late' }] });
   const segmentFor = id => timeline.segments.find(segment => segment.groups.some(group => group.eventIds.includes(id)));
   assert.deepEqual(segmentFor('july-late').groups.flatMap(group => group.eventIds), ['july-late', 'bare-year-source'], '普通明确年月日跨年按真实公历日期顺序');
-  assert.notEqual(segmentFor('aug').id, segmentFor('july-early').id, '特殊命名纪年跨月不套普通月长');
+  assert.equal(segmentFor('aug').id, segmentFor('july-early').id, '同一具名纪年的数字年月进入同一完整年表排序域');
   assert.equal(segmentFor('july-early').groups[0].day, '28日', '同一特殊月份内仍按明确日号排序');
-  assert.match(segmentFor('july-early').groups[0].period, /大陆历1686年7月/u, '特殊月份标题保留原文时间线索');
-  assert.equal(timeline.segments.length, 6, '普通完整日期、各特殊月份与各自月份身份分别成组');
+  assert.match(segmentFor('july-early').groups[0].period, /大陆历1686年7月/u, '完整年表标题保留原文纪年月线索');
+  assert.deepEqual(segmentFor('july-early').groups.map(group => group.period), ['大陆历1686年7月', '大陆历1686年7月', '大陆历1686年8月']);
+  assert.equal(timeline.segments.length, 5, '普通完整日期、具名纪年数字域及其他特殊时间身份分别成组');
   assert.equal(timeline.hasGlobalLatest, false, '存在不可比时间组时不伪造全局最近');
   assert.deepEqual(timeline.undatedEventIds, ['unknown']);
   const eraMonth = segmentFor('era-source').groups.find(group => group.eventIds.includes('era-source'));
   assert.deepEqual(segmentFor('era-source').groups.flatMap(group => group.eventIds), ['era-source', 'era-source-next'], '同一特殊纪年月份按日号排序');
   assert.equal(eraMonth.day, '4日', '具名历法沿用投影得到的月日');
   assert.equal(eraMonth.full, '纪元年10月4日', '具名纪年的完整原文仍保留');
+});
+
+test('完整年表用显式配置历法解析范围起点并合并同纪年数字月份', async () => {
+  const source = floor('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa21', 21);
+  const delta = await compileQianshiDelta({ floor: source, now: NOW, packet: { qianshi: { events: [
+    { key: 'range', title: '跨月范围', description: '范围保留原文', status: 'occurred', matter: false, storyTime: '启航387年4月30日 23:00→启航387年5月1日 01:00' },
+    { key: 'may', title: '五月单日', description: '同一纪年', status: 'occurred', matter: false, storyTime: '启航387年5月3日 17:30' },
+    { key: 'april', title: '四月单日', description: '更早日期', status: 'occurred', matter: false, storyTime: '启航387年4月12日' },
+    { key: 'clock', title: '纯钟点', description: '没有日期锚点', status: 'occurred', matter: false, storyTime: '18:30' },
+    { key: 'other-prefix', title: '另一纪年', description: '不同前缀保持隔离', status: 'occurred', matter: false, storyTime: '异历387年5月2日' },
+    { key: 'season', title: '具名季节', description: '季节月不并入数字月', status: 'occurred', matter: false, storyTime: '星历1年夏1日' },
+  ], order: [] } } });
+  const reachable = { root: { chatId: CHAT, narrativeGeneration: GENERATION, headCheckpointId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }, rootRevision: 1,
+    floors: [source], floorMemories: [memory('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', source, delta)], entities: [] };
+  const calendar = { months: 12, prefix: '启航' };
+  const configured = publicQianshiSnapshot(reachable, null, null, calendar);
+  assert.equal(configured.timeline.segments.length, 3, '范围/单点在配置域排序，不同纪年前缀与季节月保持独立');
+  const configuredSegment = configured.timeline.segments.find(segment => segment.id.startsWith('calendar:'));
+  assert.equal(configuredSegment.label, '完整日期');
+  assert.deepEqual(configuredSegment.groups.map(group => [group.period, group.day]), [
+    ['启航387年4月', '12日'], ['启航387年4月', '30日'], ['启航387年5月', '3日'],
+  ], '历法日期按实际年月日排序，范围按左端点归入四月30日');
+  const aprilRange = configuredSegment.groups[1];
+  assert.ok(aprilRange.eventIds.includes(configured.events.find(event => event.title === '跨月范围').id));
+  assert.equal(configured.events.find(event => event.title === '跨月范围').storyTime, '启航387年4月30日 23:00→启航387年5月1日 01:00', '投影保留原始范围文本');
+  assert.ok(configured.timeline.undatedEventIds.includes(delta.events.find(event => event.title === '纯钟点').id), '没有日期锚点的纯钟点不推测日期');
+  assert.equal(configuredSegment.latestGroupId, configuredSegment.groups[2].id);
+  assert.equal(configured.timeline.hasGlobalLatest, false, '存在未定日期的纯钟点时不宣称全局最近');
+  const configuredIds = new Set(configuredSegment.groups.flatMap(group => group.eventIds));
+  assert.equal(configuredIds.has(configured.events.find(event => event.title === '另一纪年').id), false);
+  assert.equal(configuredIds.has(configured.events.find(event => event.title === '具名季节').id), false);
+
+  const unconfigured = publicQianshiSnapshot(reachable);
+  assert.match(configuredSegment.id, /^calendar:/u, '当前显式历法进入其已配置排序域');
+  assert.match(unconfigured.timeline.segments[0].id, /^era-numeric:启航/u, '无配置时只按原有文本纪年身份排序，不冒充已配置历法');
+});
+
+test('四月制显式历法解析季节范围与单点，不把另一纪年前缀并入配置域', async () => {
+  const source = floor('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa22', 22);
+  const makeDelta = packet => compileQianshiDelta({ floor: source, now: NOW, packet: { qianshi: { events: packet, order: [] } } });
+  const calendar = { months: 4, prefix: '启航' };
+  const events = [
+    { key: 'season-single', title: '夏月单点', description: '四月制单点', status: 'occurred', matter: false, storyTime: '启航1年夏1日 08:00' },
+    { key: 'season-range', title: '夏月范围', description: '四月制范围', status: 'occurred', matter: false, storyTime: '启航1年夏2日 10:00-10:30' },
+    { key: 'season-same-day', title: '夏月同日单点', description: '与范围起点同日', status: 'occurred', matter: false, storyTime: '启航1年夏2日 10:15' },
+  ];
+  const delta = await makeDelta(events);
+  const reachable = { root: { chatId: CHAT, narrativeGeneration: GENERATION, headCheckpointId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }, rootRevision: 1,
+    floors: [source], floorMemories: [memory('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2', source, delta)], entities: [] };
+  const configured = publicQianshiSnapshot(reachable, null, null, calendar);
+  assert.equal(configured.timeline.segments.length, 1);
+  assert.equal(configured.timeline.segments[0].id, 'calendar:[4,"启航"]:dated');
+  assert.deepEqual(configured.timeline.segments[0].groups.map(group => [group.period, group.day]), [['启航1年2月', '1日'], ['启航1年2月', '2日']]);
+  assert.equal(configured.timeline.hasGlobalLatest, true);
+  assert.equal(configured.timeline.globalLatestGroupId, configured.timeline.segments[0].groups[1].id);
+  assert.equal(configured.events.find(event => event.title === '夏月范围').storyTime, '启航1年夏2日 10:00-10:30');
+  assert.equal(configured.timeline.segments[0].groups[1].eventIds.length, 2, '同日单点与范围起点进入同一日期组');
+  assert.equal(new Set(configured.timeline.segments.flatMap(segment => segment.groups.flatMap(group => group.eventIds))).size, 3,
+    '每条正式事件只进入一个日期组');
+
+  const withOtherEra = await makeDelta([...events,
+    { key: 'different-era', title: '不同纪年', description: '保持独立时间身份', status: 'occurred', matter: false, storyTime: '异历1年夏2日' },
+  ]);
+  reachable.floorMemories = [memory('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3', source, withOtherEra)];
+  const separated = publicQianshiSnapshot(reachable, null, null, calendar);
+  assert.equal(separated.timeline.segments.length, 2, '不匹配配置前缀的具名季节日期保留独立时间域');
+  const configuredSegment = separated.timeline.segments.find(segment => segment.id.startsWith('calendar:'));
+  const otherEraSegment = separated.timeline.segments.find(segment => segment.id.startsWith('special:'));
+  assert.equal(configuredSegment.groups.flatMap(group => group.eventIds).length, 3);
+  assert.deepEqual(otherEraSegment.groups.flatMap(group => group.eventIds), [withOtherEra.events[3].id]);
+  assert.equal(separated.timeline.hasGlobalLatest, false, '两个不相容时间域不推断全局最近');
 });
 
 test('召回时间线沿用单楼已确认日期中的纯钟点且不推定月日或手工时间', () => {
@@ -1296,6 +1368,8 @@ test('按保存 ID 顺序实时投影不受未选节点变化影响，选中事�
   const base = { root: { chatId: CHAT, narrativeGeneration: GENERATION, headCheckpointId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }, rootRevision: 1,
     floors: [first], floorMemories: [memory('dddddddd-dddd-4ddd-8ddd-dddddddddddd', first, d1)], entities: [] };
   const selected = projectQianshiRecall(base, { selectedEventIds: [d1.events[1].id, book.id], selectedMatterIds: [book.matterId] });
+  assert.deepEqual(projectQianshiRecall(base, { selectedEventIds: [d1.events[1].id, book.id], selectedMatterIds: [book.matterId],
+    currentTime: { raw: 'unconsumed-current-time' } }), selected, 'selected-ID投影不读取currentTime，provider可省略该来源准备');
   assert.match(selected.text, /钟楼敲响三声[\s\S]*答应归还旧书/u, '显式 eventIds 顺序必须原样保留');
   assert.match(selected.text, /\[当前待接续\][\s\S]*答应归还旧书；尚未记录完成/u);
 

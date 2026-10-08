@@ -107,22 +107,6 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     badge.setAttribute('aria-label', badge.title);
     return badge;
   };
-  const groupedDayCards = (groupId, eventIds, eventById) => {
-    const cards = [], byMatter = new Map();
-    for (const [index, id] of eventIds.entries()) {
-      const event = eventById.get(id);
-      if (!event) continue;
-      if (!event.matterId) { cards.push({ id: event.id, representative: event, events: [event], order: index }); continue; }
-      let card = byMatter.get(event.matterId);
-      if (!card) {
-        card = { id: `${groupId}:${event.matterId}`, representative: event, events: [], order: index };
-        byMatter.set(event.matterId, card); cards.push(card);
-      }
-      card.events.push(event); card.representative = event; card.order = index;
-    }
-    return cards.sort((left, right) => left.order - right.order);
-  };
-
   function matterHistory(event, matterEvents) {
     if (!event.matterId) return null;
     const events = matterEvents.get(event.matterId) ?? [];
@@ -395,7 +379,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     if (otherWorkBusy() || historyBusy()) remove.title = '后台记忆任务进行中，请结束后再删除。';
     remove.addEventListener('click', () => { menu.open = false; runEventDialog(menu, () => deleteEvent(event)); });
     const change = element('button', 'qqj-profile-menu-action', '修改状态'); change.type = 'button';
-    // 菜单修改当前位置徽标所示状态；代表菜单移入当天过程后也只修改本条动作。
+    // 每条正式事件卡沿用原事件菜单合同；事项更新与单条动作仍由原保存接口区分。
     const statusMatter = () => currentMatter() && event.updatesMatter && matter && !matter.synthetic ? matter : null;
     const updateStatusAvailability = () => {
       change.disabled = otherWorkBusy() || historyBusy() || typeof dialog?.custom !== 'function'
@@ -408,82 +392,35 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     return menu;
   }
 
-  function sameDayHistory(events, representativeId, cardId, representativeMenu, setRepresentativeRow) {
-    const section = element('section', 'qqj-qianshi-day-progress');
-    section.append(element('p', 'qqj-qianshi-day-progress-title', `当天过程 · ${events.length} 条`));
-    const list = element('div', 'qqj-qianshi-matter-list');
-    for (const item of events) {
-      const itemRow = element('div', 'qqj-qianshi-day-event-row');
-      const rowKey = `day:${representativeId}:${item.id}`, row = element('details', `qqj-qianshi-matter-event${item.id === representativeId ? ' current' : ''}`);
-      row.dataset.qianshiEventId = item.id;
-      row.open = nestedOpenIds.has(rowKey);
-      const summary = element('summary');
-      summary.append(element('span', '', `${item.storyTime || '时间未明'} · ${item.title}`));
-      if (item.updatesMatter === false) summary.append(element('small', 'qqj-qianshi-event-role', '背景 / 补充'));
-      summary.append(statusBadge(item));
-      row.append(summary);
-      if (item.id === representativeId) {
-        setRepresentativeRow(itemRow);
-        if (representativeMenu) itemRow.append(representativeMenu);
-      } else {
-        const menu = eventOperationMenu(item, { cardId, nestedRowKey: rowKey });
-        if (menu) itemRow.append(menu);
-      }
-      let built = false;
-      row.addEventListener('toggle', () => {
-        if (row.open) nestedOpenIds.add(rowKey); else nestedOpenIds.delete(rowKey);
-        if (!row.open || built) return;
-        row.append(eventDetails(item, 'qqj-qianshi-day-event-detail')); built = true;
-      });
-      if (row.open) { row.append(eventDetails(item, 'qqj-qianshi-day-event-detail')); built = true; }
-      itemRow.append(row); list.append(itemRow);
-      if (item.id !== representativeId) { const note = statusSaveNote(item.id); if (note) itemRow.append(note); }
-    }
-    section.append(list);
-    return section;
-  }
-
-  function expandedContent(event, matterEvents, dayEvents, cardId, representativeMenu, setRepresentativeRow) {
+  function expandedContent(event, matterEvents) {
     const body = element('div', 'qqj-qianshi-expanded');
-    if (dayEvents.length > 1) body.append(sameDayHistory(dayEvents, event.id, cardId, representativeMenu, setRepresentativeRow));
-    else body.append(eventDetails(event, 'qqj-qianshi-event-detail'));
+    body.append(eventDetails(event, 'qqj-qianshi-event-detail'));
     const history = matterHistory(event, matterEvents); if (history) body.append(history);
     return body;
   }
 
-  function eventNode(event, matterEvents, { cardId = event.id, dayEvents = [event] } = {}) {
+  function eventNode(event, matterEvents) {
     const itemRow = element('div', 'qqj-qianshi-event-row');
-    const details = element('details', 'qqj-qianshi-event'); details.dataset.eventId = event.id; details.dataset.cardId = cardId;
-    details.open = openIds.has(cardId);
+    const details = element('details', 'qqj-qianshi-event'); details.dataset.eventId = event.id; details.dataset.cardId = event.id;
+    details.open = openIds.has(event.id);
     const summary = element('summary', 'qqj-qianshi-event-summary');
     if (event.storyTime) summary.append(element('span', 'qqj-qianshi-event-time', event.storyTime));
     const title = element('span', 'qqj-qianshi-event-title', event.title);
-    if (dayEvents.length > 1) title.append(element('small', 'qqj-qianshi-event-status', `当天 ${dayEvents.length} 条`));
     title.append(statusBadge(event, { currentMatter: true }));
     summary.append(title);
     summary.append(element('p', 'qqj-qianshi-preview', event.description));
     details.append(summary);
-    const nestedRowKey = dayEvents.length > 1 ? `day:${event.id}:${event.id}` : null;
-    const menu = eventOperationMenu(event, { cardId, nestedRowKey, currentMatter: () => dayEvents.length === 1 || !details.open });
-    let representativeRow = null;
-    const placeRepresentativeMenu = expanded => {
-      if (!menu || !representativeRow) return;
-      const activeInsideMenu = menu.contains?.(documentRef.activeElement);
-      menu.open = false;
-      if (expanded) representativeRow.append(menu);
-      else itemRow.append(menu);
-      if (!expanded && activeInsideMenu) menu.querySelector?.('.qqj-profile-menu-toggle')?.focus?.({ preventScroll: true });
-    };
+    const menu = eventOperationMenu(event, { cardId: event.id, currentMatter: () => true });
     const ensureBody = () => {
       if (!details.children || [...details.children].some(node => String(node.className).includes('qqj-qianshi-expanded'))) return;
-      details.append(expandedContent(event, matterEvents, dayEvents, cardId, menu, row => { representativeRow = row; }));
+      details.append(expandedContent(event, matterEvents));
     };
     details.addEventListener('toggle', () => {
-      if (details.open) { openIds.add(cardId); ensureBody(); placeRepresentativeMenu(true); }
-      else { openIds.delete(cardId); placeRepresentativeMenu(false); }
+      if (details.open) { openIds.add(event.id); ensureBody(); }
+      else openIds.delete(event.id);
     });
     itemRow.append(details); if (menu) itemRow.append(menu);
-    if (details.open) { ensureBody(); placeRepresentativeMenu(true); }
+    if (details.open) ensureBody();
     const note = statusSaveNote(event.id); if (note) itemRow.append(note);
     return itemRow;
   }
@@ -497,7 +434,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     }
     const visibleIds = new Set(events.map(event => event.id)), timeline = snapshot.timeline ?? { segments: [], undatedEventIds: [] };
     const wrapper = element('div', 'qqj-qianshi-timeline');
-    let groupCount = 0;
+    let displayedEventCount = 0;
     const orderedVisibleGroups = (timeline.segments ?? []).flatMap(segment => {
       let groups = (segment.groups ?? []).filter(group => group.eventIds.some(id => visibleIds.has(id)));
       const ambiguous = segment.id === 'month-day' && groups.some(group => group.period === '1月') && groups.some(group => group.period === '12月');
@@ -515,7 +452,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       const block = element('section', 'qqj-qianshi-segment');
       if ((timeline.segments ?? []).length > 1) block.append(element('p', 'qqj-qianshi-segment-label', `${segment.label || (segmentIndex ? '另一组时间' : '时间')} · 不依据其他组推断先后`));
       for (const [groupIndex, group] of groups.entries()) {
-        const latest = !yearBoundaryAmbiguous && group.id === segment.latestGroupId;
+        const latest = timeline.hasGlobalLatest === true && group.id === timeline.globalLatestGroupId;
         const stateId = dayStateId(segment, group);
         const axisPosition = groups.length === 1 ? 'single' : groupIndex === 0 ? 'first' : groupIndex === groups.length - 1 ? 'last' : 'middle';
         const day = element('div', `qqj-qianshi-day qqj-qianshi-day-${axisPosition}${latest ? ' latest' : ''}`); day.id = group.id; day.dataset.dayStateId = stateId;
@@ -525,7 +462,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         const visibleEventCount = group.eventIds.filter(id => visibleIds.has(id)).length;
         const date = element('div', 'qqj-qianshi-date'); date.title = group.full;
         date.append(element('span', 'qqj-qianshi-day-name', group.day), element('span', 'qqj-qianshi-period', group.period), element('span', 'qqj-qianshi-day-count', `${visibleEventCount} 件`));
-        if (latest) date.append(element('span', 'qqj-qianshi-latest-tag', timeline.hasGlobalLatest ? '最近' : '该段最近'));
+        if (latest) date.append(element('span', 'qqj-qianshi-latest-tag', '最近'));
         const disclosure = element('details', 'qqj-qianshi-day-disclosure'); disclosure.open = dayOpen;
         const summary = element('summary', 'qqj-qianshi-day-summary'); summary.dataset.dayStateId = stateId; summary.setAttribute('aria-label', `${group.full || `${group.period ?? ''}${group.day ?? ''}`}，${visibleEventCount} 件，${dayOpen ? '收起' : '展开'}`);
         summary.append(date);
@@ -535,9 +472,9 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         const updateDayLabel = () => {
           summary?.setAttribute('aria-label', `${group.full || `${group.period ?? ''}${group.day ?? ''}`}，${visibleEventCount} 件，${disclosure.open ? '收起' : '展开'}`);
         };
-        let cards = groupedDayCards(group.id, group.eventIds, eventById).filter(card => card.events.some(event => visibleIds.has(event.id)));
-        if (reverse) cards = cards.reverse();
-        if (dayOpen && cards.length > 1) day.className += ' qqj-qianshi-day-has-card-axis';
+        let dayEvents = group.eventIds.filter(id => visibleIds.has(id)).map(id => eventById.get(id)).filter(Boolean);
+        if (reverse) dayEvents = dayEvents.reverse();
+        if (dayOpen && dayEvents.length > 1) day.className += ' qqj-qianshi-day-has-card-axis';
         const lastEvent = [...group.eventIds].reverse().map(id => eventById.get(id)).find(event => event && visibleIds.has(event.id));
         const preview = element('button', 'qqj-qianshi-day-preview'); preview.type = 'button'; preview.hidden = dayOpen;
         preview.setAttribute('aria-label', `展开 ${group.full || `${group.period ?? ''}${group.day ?? ''}`} 的 ${visibleEventCount} 件千事`);
@@ -555,13 +492,26 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         }
         const eventList = element('div', 'qqj-qianshi-events');
         eventList.hidden = !dayOpen;
-        groupCount += cards.length;
-        for (const card of cards) eventList.append(eventNode(card.representative, matterEvents, { cardId: card.id, dayEvents: card.events }));
+        displayedEventCount += dayEvents.length;
+        let dayCardsBuilt = false;
+        const buildDayCards = () => {
+          if (dayCardsBuilt) return;
+          for (const event of dayEvents) eventList.append(eventNode(event, matterEvents));
+          dayCardsBuilt = true;
+        };
+        const clearDayCards = () => {
+          if (!dayCardsBuilt) return;
+          if (eventList.contains?.(documentRef.activeElement)) summary.focus?.({ preventScroll: true });
+          eventList.replaceChildren();
+          dayCardsBuilt = false;
+        };
+        if (dayOpen) buildDayCards();
         disclosure.addEventListener('toggle', () => {
           preview.hidden = disclosure.open;
           eventList.hidden = !disclosure.open;
           day.className = day.className.replace(/\s+qqj-qianshi-day-has-card-axis/u, '')
-            + (disclosure.open && cards.length > 1 ? ' qqj-qianshi-day-has-card-axis' : '');
+            + (disclosure.open && dayEvents.length > 1 ? ' qqj-qianshi-day-has-card-axis' : '');
+          if (disclosure.open) buildDayCards(); else clearDayCards();
           updateDayLabel();
         });
         disclosure.append(summary);
@@ -578,11 +528,11 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         if (event.isTrusted === true && !query.trim()) undatedOpenState = !details.open;
       });
       for (const event of undated) list.append(eventNode(event, matterEvents));
-      groupCount += undated.length;
+      displayedEventCount += undated.length;
       details.append(summary, element('p', 'qqj-qianshi-undated-hint', '缺少可靠日期、属于相对时间或时间范围的事项，不参与精确排序；此处保留原顺序与原文时间。'), list); wrapper.append(details);
     }
     if (!wrapper.children?.length) wrapper.append(element('div', 'qqj-qianshi-empty', query ? '没有找到对应事件。' : '当前没有可显示的千事记录。'));
-    return { node: wrapper, groupCount };
+    return { node: wrapper, visibleEventCount: displayedEventCount };
   }
 
   async function prepareHistory() {
@@ -798,7 +748,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     if (snapshot?.status === 'ready') {
       const visible = visibleEvents(), renderedTimeline = timelineContent(visible);
       const toolbar = element('div', 'qqj-qianshi-toolbar');
-      toolbar.append(element('span', '', query ? `匹配 ${visible.length} 件事件 · 显示 ${renderedTimeline.groupCount} 组` : '沿着时间，回看故事'));
+      toolbar.append(element('span', '', query ? `匹配 ${visible.length} 件事件 · 显示 ${renderedTimeline.visibleEventCount} 条` : '沿着时间，回看故事'));
       const tools = element('div');
       const order = element('button', '', reverse ? '由晚到早' : '由早到晚'); order.type = 'button'; order.dataset.focusKey = 'timeline-order'; order.addEventListener('click', () => { reverse = !reverse; render(); });
       tools.append(order); toolbar.append(tools); page.append(toolbar, renderedTimeline.node);
@@ -832,10 +782,13 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   function subscribe() {
     unsubscribe?.();
     unsubscribe = runtime.subscribe(next => {
-      const nextSnapshot = runtime.getQianshiSnapshot(), nextKey = renderKey(nextSnapshot, next);
-      const unchanged = nextKey !== null && nextKey === runtimeRenderKey;
+      const header = typeof runtime.getQianshiSnapshotVersion === 'function' ? runtime.getQianshiSnapshotVersion() : null;
+      const headerKey = header ? renderKey(header, next) : null;
+      const unchanged = headerKey !== null && headerKey === runtimeRenderKey;
+      const nextSnapshot = unchanged ? snapshot : runtime.getQianshiSnapshot();
+      const nextKey = unchanged ? headerKey : renderKey(nextSnapshot, next);
       const previousFeedback = feedback;
-      if (nextSnapshot?.projectionRevision === undefined || nextSnapshot.projectionRevision !== snapshot?.projectionRevision) editableEvents.clear();
+      if (header?.projectionRevision === undefined || header.projectionRevision !== snapshot?.projectionRevision) editableEvents.clear();
       runtimeState = next; snapshot = nextSnapshot; runtimeRenderKey = nextKey;
       // 启动提示只覆盖任务尚未接管进度的间隙；运行或最终状态到达后移除，避免保存成功仍显示“将暂存”。
       const history = snapshot?.history;

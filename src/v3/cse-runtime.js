@@ -24,6 +24,7 @@ const errorWith = (code, message) => { const error = new Error(message ?? code);
 
 const coreMeaning = items => JSON.stringify((items ?? []).map(item => [item.text, item.visibility, item.towardEntityId ?? null]));
 const effectiveMemorySummary = memory => memory?.summary?.effectiveSource === 'user' ? memory.summary.userText : memory?.summary?.aiText;
+
 function currentUserInputFromMemory(memory) {
   const messages = Array.isArray(memory?.sourceFloorSnapshots)
     ? memory.sourceFloorSnapshots.flatMap(snapshot => snapshot?.sourceUserInputSnapshot?.messages ?? [])
@@ -73,6 +74,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
   if (typeof filterWorldInfoSources !== 'function') throw new TypeError('V3 CSE 世界书过滤器无效');
   let epoch = 0, active = null, reachable = null, replayed = null, lastFailure = null, replayDiagnostic = null;
   let identityProjection = normalizeIdentityProjection();
+  let historyProjectionCache = null;
   const subscribers = new Set();
   const enabled = () => { try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; } catch { return false; } };
   const notify = () => { const state = getState(); for (const listener of subscribers) { try { listener(state); } catch { /* listener isolation */ } } return state; };
@@ -159,59 +161,69 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const entities = new Map(buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], identityProjection })
       .map(entry => [entry.entityId, entry.entity]));
     const memoryByFloor = new Map((reachable?.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => [memory.floorId, memory]));
-    const reachableDeltas = filterReachableDeltas({ floors, floorMemories: reachable?.floorMemories ?? [], stateDeltas: reachable?.stateDeltas ?? [] });
-    const deltaByFloor = new Map(reachableDeltas.map(delta => [delta.floorId, delta]));
-    const timelineByFloor = new Map(deriveCseTimeline(reachableDeltas).map(item => [item.floorId, item]));
-    const floorSeq = new Map(floors.map(floor => [floor.id, floor.assistantSeq]));
-    const historyItem = item => item ? Object.freeze({
-      text: item.text,
-      visibility: item.visibility,
-      reason: item.reason,
-      origin: item.origin,
-      towardEntityId: item.towardEntityId ? resolveIdentityEntityId(item.towardEntityId, identityProjection) : null,
-      towardDisplayName: entities.get(resolveIdentityEntityId(item.towardEntityId, identityProjection))?.displayName ?? null,
-      sourceFloorId: item.sourceFloorId ?? null,
-      sourceAssistantSeq: floorSeq.get(item.sourceFloorId) ?? null,
-    }) : null;
-    const groupedTimelineSubjects = subjects => {
-      const grouped = new Map();
-      for (const subject of subjects ?? []) {
-        const subjectEntityId = resolveIdentityEntityId(subject.subjectEntityId, identityProjection);
-        const current = grouped.get(subjectEntityId) ?? { subjectEntityId, items: [] };
-        current.items.push(...(subject.items ?? [])); grouped.set(subjectEntityId, current);
+    if (historyProjectionCache?.reachable !== reachable || historyProjectionCache?.identityProjection !== identityProjection) {
+      const reachableDeltas = filterReachableDeltas({ floors, floorMemories: reachable?.floorMemories ?? [], stateDeltas: reachable?.stateDeltas ?? [] });
+      const deltaByFloor = new Map(reachableDeltas.map(delta => [delta.floorId, delta]));
+      const timelineByFloor = new Map(deriveCseTimeline(reachableDeltas).map(item => [item.floorId, item]));
+      const floorSeq = new Map(floors.map(floor => [floor.id, floor.assistantSeq]));
+      const historyItem = item => item ? Object.freeze({
+        text: item.text,
+        visibility: item.visibility,
+        reason: item.reason,
+        origin: item.origin,
+        towardEntityId: item.towardEntityId ? resolveIdentityEntityId(item.towardEntityId, identityProjection) : null,
+        towardDisplayName: entities.get(resolveIdentityEntityId(item.towardEntityId, identityProjection))?.displayName ?? null,
+        sourceFloorId: item.sourceFloorId ?? null,
+        sourceAssistantSeq: floorSeq.get(item.sourceFloorId) ?? null,
+      }) : null;
+      const groupedTimelineSubjects = subjects => {
+        const grouped = new Map();
+        for (const subject of subjects ?? []) {
+          const subjectEntityId = resolveIdentityEntityId(subject.subjectEntityId, identityProjection);
+          const current = grouped.get(subjectEntityId) ?? { subjectEntityId, items: [] };
+          current.items.push(...(subject.items ?? [])); grouped.set(subjectEntityId, current);
+        }
+        return [...grouped.values()];
+      };
+      const recordByFloor = new Map();
+      for (const floor of floors) {
+        const delta = deltaByFloor.get(floor.id), timeline = timelineByFloor.get(floor.id);
+        if (!delta) continue;
+        recordByFloor.set(floor.id, Object.freeze({
+          fixedChangesAvailable: Object.hasOwn(delta, 'fixedChanges'),
+          noMaterialChange: timeline?.noMaterialChange ?? true,
+          isolationSummary: timeline?.isolationSummary ?? null,
+          subjects: Object.freeze(groupedTimelineSubjects(timeline?.changes).map(subject => Object.freeze({
+            subjectEntityId: subject.subjectEntityId,
+            displayName: entities.get(subject.subjectEntityId)?.displayName ?? '未知人物',
+            changes: Object.freeze(subject.items.map(item => Object.freeze({
+              category: item.category,
+              action: item.action,
+              beforeText: item.before?.text ?? null,
+              afterText: item.after?.text ?? null,
+              before: historyItem(item.before),
+              after: historyItem(item.after),
+            }))),
+          }))),
+          endStateSubjects: Object.freeze((projectCseStateIdentityReferences({ subjects: timeline?.endStateSubjects ?? [] }, identityProjection)?.subjects ?? []).filter(subject => ['core', 'adaptive', 'situational'].some(category => subject[category]?.length)).map(subject => Object.freeze({
+            subjectEntityId: subject.subjectEntityId,
+            displayName: entities.get(subject.subjectEntityId)?.displayName ?? '未知人物',
+            core: Object.freeze((subject.core ?? []).map(historyItem)),
+            adaptive: Object.freeze((subject.adaptive ?? []).map(historyItem)),
+            situational: Object.freeze((subject.situational ?? []).map(historyItem)),
+          }))),
+        }));
       }
-      return [...grouped.values()];
-    };
+      // Cache only immutable historical records; live status and the mutable current-state projection stay fresh per read.
+      historyProjectionCache = { reachable, identityProjection, deltaByFloor, recordByFloor, reachableDeltas, floorSeq };
+    }
+    const { deltaByFloor, recordByFloor, reachableDeltas, floorSeq } = historyProjectionCache;
     const cseFloors = floors.map(floor => {
-      const memory = memoryByFloor.get(floor.id), delta = deltaByFloor.get(floor.id), timeline = timelineByFloor.get(floor.id);
+      const memory = memoryByFloor.get(floor.id), delta = deltaByFloor.get(floor.id), record = recordByFloor.get(floor.id) ?? null;
       const running = active?.floorId === floor.id;
       const failure = lastFailure?.floorId === floor.id ? lastFailure : null;
-      const status = running ? 'running' : delta ? (timeline?.noMaterialChange ? 'noChange' : 'ready') : !memory ? 'notApplicable' : failure ? 'failed' : 'pending';
-      const record = delta ? Object.freeze({
-        fixedChangesAvailable: Object.hasOwn(delta, 'fixedChanges'),
-        noMaterialChange: timeline?.noMaterialChange ?? true,
-        isolationSummary: timeline?.isolationSummary ?? null,
-        subjects: Object.freeze(groupedTimelineSubjects(timeline?.changes).map(subject => Object.freeze({
-          subjectEntityId: subject.subjectEntityId,
-          displayName: entities.get(subject.subjectEntityId)?.displayName ?? '未知人物',
-          changes: Object.freeze(subject.items.map(item => Object.freeze({
-            category: item.category,
-            action: item.action,
-            beforeText: item.before?.text ?? null,
-            afterText: item.after?.text ?? null,
-            before: historyItem(item.before),
-            after: historyItem(item.after),
-          }))),
-        }))),
-        endStateSubjects: Object.freeze((projectCseStateIdentityReferences({ subjects: timeline?.endStateSubjects ?? [] }, identityProjection)?.subjects ?? []).filter(subject => ['core', 'adaptive', 'situational'].some(category => subject[category]?.length)).map(subject => Object.freeze({
-          subjectEntityId: subject.subjectEntityId,
-          displayName: entities.get(subject.subjectEntityId)?.displayName ?? '未知人物',
-          core: Object.freeze((subject.core ?? []).map(historyItem)),
-          adaptive: Object.freeze((subject.adaptive ?? []).map(historyItem)),
-          situational: Object.freeze((subject.situational ?? []).map(historyItem)),
-        }))),
-      }) : null;
-      return Object.freeze({ floorId: floor.id, floorMemoryId: delta?.floorMemoryId ?? memory?.id ?? null, status, deltaId: delta?.id ?? null, noMaterialChange: timeline?.noMaterialChange ?? false, record, error: failure?.message ?? null });
+      const status = running ? 'running' : delta ? ((record?.noMaterialChange ?? true) ? 'noChange' : 'ready') : !memory ? 'notApplicable' : failure ? 'failed' : 'pending';
+      return Object.freeze({ floorId: floor.id, floorMemoryId: delta?.floorMemoryId ?? memory?.id ?? null, status, deltaId: delta?.id ?? null, noMaterialChange: record?.noMaterialChange ?? false, record, error: failure?.message ?? null });
     });
     const subjects = (projectedState?.subjects ?? []).map(subject => ({
       subjectEntityId: subject.subjectEntityId,
@@ -542,6 +554,6 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     notify();
     return true;
   }
-  function invalidate() { epoch += 1; active?.controller.abort(); active = null; reachable = null; replayed = null; lastFailure = null; replayDiagnostic = null; notify(); }
+  function invalidate() { epoch += 1; active?.controller.abort(); active = null; reachable = null; replayed = null; historyProjectionCache = null; lastFailure = null; replayDiagnostic = null; notify(); }
   return Object.freeze({ load, analyzeFloor, analyzeNext, correctSubjectState, cancelActive, invalidate, setIdentityProjection, getState, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

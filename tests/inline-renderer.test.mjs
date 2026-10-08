@@ -219,6 +219,7 @@ async function actualCseReceipt() {
 function createHarness({ chat, memoryState, recallState = { recallStatus: 'idle', activeRecall: null, lastRecall: null }, projectReceipt, chatId = 'chat-a' } = {}) {
   const documentRef = new FakeDocument(), chatRoot = new FakeNode('main'); chatRoot.id = 'chat'; chatRoot.setAttribute('id', 'chat'); documentRef.body.append(chatRoot);
   const handlers = new Map(), memorySubscribers = new Set(), recallSubscribers = new Set(), extractionCalls = [];
+  let memoryStateReads = 0;
   const eventTypes = Object.fromEntries(['CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_RECEIVED', 'MESSAGE_UPDATED', 'USER_MESSAGE_RENDERED', 'CHARACTER_MESSAGE_RENDERED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'MORE_MESSAGES_LOADED', 'GENERATION_ENDED'].map(name => [name, name]));
   const eventSource = {
     on(name, handler) { const values = handlers.get(name) ?? []; values.push(handler); handlers.set(name, values); },
@@ -240,7 +241,7 @@ function createHarness({ chat, memoryState, recallState = { recallStatus: 'idle'
   const context = { chatMetadata: { qianqianjie: { chatId } } };
   const snapshot = { chat, chatId: 'host-chat-a', context, eventSource, eventTypes };
   const memoryRuntime = {
-    getState: () => memoryState,
+    getState: () => { memoryStateReads += 1; return memoryState; },
     extractFloor: async (...args) => { extractionCalls.push(args); return memoryState; },
     subscribe(handler) { memorySubscribers.add(handler); return () => memorySubscribers.delete(handler); },
   };
@@ -251,7 +252,7 @@ function createHarness({ chat, memoryState, recallState = { recallStatus: 'idle'
   const emit = (name, ...args) => { for (const handler of handlers.get(name) ?? []) handler(...args); };
   const flushMicrotasks = async () => { await Promise.resolve(); await Promise.resolve(); await new Promise(resolve => setImmediate(resolve)); };
   const runNextTimer = () => { const next = [...timers].sort((a, b) => a[0] - b[0])[0]; if (!next) return false; timers.delete(next[0]); next[1].handler(); return true; };
-  return { documentRef, chatRoot, context, snapshot, memoryRuntime, recallRuntime, renderer, handlers, observers, timers, extractionCalls, memorySubscribers, recallSubscribers, emit, flushMicrotasks, runNextTimer, get snapshotCalls() { return snapshotCalls; }, setMemory(value) { memoryState = value; }, setRecall(value) { recallState = value; } };
+  return { documentRef, chatRoot, context, snapshot, memoryRuntime, recallRuntime, renderer, handlers, observers, timers, extractionCalls, memorySubscribers, recallSubscribers, emit, flushMicrotasks, runNextTimer, get snapshotCalls() { return snapshotCalls; }, get memoryStateReads() { return memoryStateReads; }, setMemory(value) { memoryState = value; }, setRecall(value) { recallState = value; } };
 }
 
 const readyState = () => ({
@@ -884,6 +885,28 @@ test('marker位置随宿主移动并优先于旧memory，异步回执完成和�
   assert.equal(view.recallUi.pills.children[0].textContent, '来源结号未提供', '切聊后旧聊天marker必须视为foreign');
 });
 
+test('同一微任务完成的多个旧回执共享一次最新状态与来源索引读取', async () => {
+  const receipts = Array.from({ length: 4 }, () => ({ schemaVersion: 11 }));
+  const chat = receipts.map((receipt, index) => ({ is_user: true, is_system: false, mes: `用户楼${index + 1}`, extra: { [RECALL_RECEIPT_KEY]: receipt } }));
+  const resolveReceipts = [], pending = receipts.map(() => new Promise(resolve => resolveReceipts.push(resolve)));
+  const floors = receipts.map((_, index) => ({ floorId: `source-${index + 1}`, assistantSeq: index + 1, messageIndex: index }));
+  const h = createHarness({ chat, memoryState: { chatId: 'chat-a', floors, memoryEntities: [] }, projectReceipt: message => pending[chat.indexOf(message)] });
+  for (let index = 0; index < chat.length; index += 1) h.chatRoot.append(messageElement(index, { user: true }));
+  h.renderer.start(); await h.flushMicrotasks();
+  const readsBeforeSettle = h.memoryStateReads, snapshotsBeforeSettle = h.snapshotCalls;
+  for (let index = 0; index < receipts.length; index += 1) resolveReceipts[index]({ schemaVersion: 11, status: 'ready',
+    injectionText: recallInjection(`AI #${index + 1}：批量回执${index + 1}`),
+    selectedFloors: [{ floorId: `source-${index + 1}`, assistantSeq: index + 1, reasons: [] }], selectedStates: [] });
+  await h.flushMicrotasks();
+  assert.equal(h.memoryStateReads - readsBeforeSettle, 1, '同批只读取一次memory state并建立共享来源索引');
+  assert.equal(h.snapshotCalls - snapshotsBeforeSettle, 0, 'flush复用任务开始时的原目标消息数组');
+  for (let index = 0; index < chat.length; index += 1) {
+    const view = h.chatRoot.querySelectorAll('[data-qqj-inline-host="true"]')[index].__qqjInlineCard;
+    assert.equal(view.recallUi.pills.children[0]?.textContent, `第 ${index} 个结`);
+  }
+  h.renderer.destroy();
+});
+
 test('无marker只按同chat唯一floorId回退，CSE不再用assistantSeq猜宿主楼号', async () => {
   const receiptMarker = { schemaVersion: 11 };
   const chat = [{ is_user: true, is_system: false, mes: '当前用户楼', extra: { [RECALL_RECEIPT_KEY]: receiptMarker } }];
@@ -1036,6 +1059,18 @@ test('楼内召回按已绑定阶段区分准备与模型选择，其他运行�
   for (const listener of h.recallSubscribers) listener(recallState);
   await h.flushMicrotasks();
   assert.equal(view.status.textContent, '寻回中');
+  recallState.activeRecall.phase = 'input'; recallState.activeRecall.pendingStep = 'receiptSourceVerification';
+  for (const listener of h.recallSubscribers) listener(recallState);
+  await h.flushMicrotasks();
+  assert.equal(view.status.textContent, '核验已有召回');
+  assert.equal(view.status.title, '正在核验已有召回的来源；通过后复用已存回执。');
+  assert.equal(view.status.attributes['aria-label'], '核验已有召回：正在核验已有召回的来源；通过后复用已存回执。');
+  recallState.activeRecall.pendingStep = 'receiptValidation';
+  for (const listener of h.recallSubscribers) listener(recallState);
+  await h.flushMicrotasks();
+  assert.equal(view.status.textContent, '准备召回中', '无现成回执的receiptValidation仍显示准备');
+  assert.equal(view.status.title, '');
+  assert.equal(view.status.attributes['aria-label'], '准备召回中');
 });
 
 test('即时lastRecall必须同时匹配当前chat与用户楼索引', async () => {

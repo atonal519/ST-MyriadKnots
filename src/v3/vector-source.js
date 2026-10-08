@@ -2,13 +2,13 @@ import { sha256 } from '../identity.js';
 import { memorySourceFloorIds } from './memory-schema.js';
 
 // 原文向量资格独立于摘要来源；summarySources 只供旧回执核验历史摘要见证。
-export async function projectVectorSources(memories, floors) {
+export async function projectVectorSources(memories, floors, { includeSummaries = true } = {}) {
   const floorById = new Map(floors.map(floor => [floor.id, floor]));
   const sources = [], summarySources = [];
   for (const memory of memories) {
     const anchor = floorById.get(memory.floorId);
     if (!anchor) continue;
-    if (memory.summary?.effectiveSource === 'user') {
+    if (includeSummaries && memory.summary?.effectiveSource === 'user') {
       const userText = String(memory.summary.userText ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
       const canonicalContent = summaryCandidateText(userText);
       if (canonicalContent) summarySources.push(Object.freeze({

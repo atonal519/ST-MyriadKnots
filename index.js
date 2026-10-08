@@ -1,7 +1,7 @@
 import { createVectorApiClient, resolveVectorConfig } from './src/vector-api.js';
 import { createVectorIndex } from './src/v3/vector-index.js';
 import { createVectorAutoUpdater } from './src/v3/vector-auto-update.js';
-import { readRecallSource } from './src/v3/recall-source.js';
+import { readVectorSource } from './src/v3/vector-source-reader.js';
 import { user_avatar } from '/scripts/personas.js';
 import { power_user } from '/scripts/power-user.js';
 import { extension_settings, extensionNames } from '/scripts/extensions.js';
@@ -142,9 +142,12 @@ const identityProjectionProvider = async () => {
 const vectorApi = createVectorApiClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
 const vectorIndex = createVectorIndex({
   client: backendClient, api: vectorApi, configProvider: () => resolveVectorConfig(settings),
-  identityProvider: () => session.identity(), generationProvider: () => foundationRuntime.getReachable()?.root?.narrativeGeneration,
+  identityProvider: () => session.identity(),
   isEnabled: settings.isEnabled,
-  sourceProvider: () => readRecallSource({ store: foundationStore, hostSnapshot: hostAdapter.snapshot(), sanitizerOptions: sanitizerOptions(), realtimeOrigin: v3MemoryRuntime.allowsRealtimeTailFromEmpty(), identityProjectionProvider }),
+  sourceProvider: ({ targetIdentity }) => readVectorSource({
+    store: createFoundationStore({ client: backendClient, contextProvider: () => targetIdentity, isEnabled: settings.isEnabled }),
+    targetIdentity, cachedReachable: foundationRuntime.getReachable(),
+  }),
 });
 let v3RecallRuntime;
 const timeRuntime = createTimeRuntime({
@@ -194,7 +197,6 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   newUuid,
 });
 const vectorAutoUpdater = createVectorAutoUpdater({ memoryRuntime: v3MemoryRuntime, vectorRuntime: vectorIndex,
-  identityProvider: () => session.identity(), generationProvider: () => foundationRuntime.getReachable()?.root?.narrativeGeneration,
   configProvider: () => resolveVectorConfig(settings), isEnabled: settings.isEnabled, isMainGenerationActive: isGenerating });
 const vectorWakeListeners = [];
 const vectorWakeHost = hostContext();
@@ -241,7 +243,12 @@ v3RecallRuntime = createV3RecallRuntime({
   sanitizerOptions,
   identityProjectionProvider,
   timeProjectionProvider: source => timeRuntime.recallProjection(source),
-  qianshiProgressProvider: async (source, context) => v3MemoryRuntime.getQianshiRecall({ ...context, ...(await timeRuntime.currentStoryContext(source) ?? {}) }),
+  qianshiProgressProvider: async (source, context) => {
+    // Selected Qianshi receipts replay saved IDs and do not consume current story time.
+    const selectedOnly = Array.isArray(context?.selectedEventIds) || Array.isArray(context?.selectedMatterIds);
+    const storyContext = selectedOnly ? null : await timeRuntime.currentStoryContext(source);
+    return v3MemoryRuntime.getQianshiRecall({ ...context, ...(storyContext ?? {}) });
+  },
   qianshiDeletionProvider: () => v3MemoryRuntime.getQianshiDeletions(),
   pluginVersion,
 });

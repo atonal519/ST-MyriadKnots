@@ -1559,7 +1559,41 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (candidate?.selectedFloors.some(value => value.rawWitnesses?.length || value.summaryWitnesses?.length)) {
         // 冻结复用不查询向量；原文见证及旧摘要回执仍按各自来源重新核验。
         advanceOperation(operation, 'receiptSourceVerification');
-        const fresh = await sourceReader({ store, now, hostSnapshot: before, sanitizerOptions: currentSanitizerOptions(), realtimeOrigin: hasRealtimeOrigin() });
+        const sourceStarted = Date.now();
+        const sanitizerSnapshot = currentSanitizerOptions();
+        const realtime = hasRealtimeOrigin();
+        let fresh = null;
+        // 仅借用根版本完全匹配的既有快照；未命中时继续原来源读取，不等待后台准备。
+        if (typeof store.readRoot === 'function' && typeof prepareMemory === 'function') {
+          try {
+            const rootResult = await store.readRoot();
+            if (rootResult?.status === 'ready') {
+              const prepared = await prepareMemory({ rootResult, allowRefresh: false });
+              const reachable = prepared?.status === 'ready' ? prepared.reachable : null;
+              const root = reachable?.root;
+              const rootMatches = Boolean(root && reachable.status === 'ready'
+                && candidate.chatId === operation.chatId
+                && rootResult.data?.chatId === operation.chatId
+                && rootResult.revision === reachable.rootRevision
+                && rootResult.data?.chatId === root.chatId
+                && rootResult.data?.narrativeGeneration === root.narrativeGeneration
+                && rootResult.data?.headCheckpointId === root.headCheckpointId
+                && rootResult.data?.sourceSnapshotFingerprint === root.sourceSnapshotFingerprint);
+              if (rootMatches) {
+                const projected = await projectRecallSource(reachable, now,
+                  Object.freeze({ reachableReads: 0, exitPoint: 'validatedSnapshot' }), before, sanitizerSnapshot, realtime);
+                if (projected?.status === 'ready'
+                  && projected.chatId === rootResult.data.chatId
+                  && projected.narrativeGeneration === rootResult.data.narrativeGeneration
+                  && projected.rootRevision === rootResult.revision
+                  && projected.headCheckpointId === rootResult.data.headCheckpointId) fresh = projected;
+              }
+            }
+          } catch { /* 快照读取仅为加速；任何未命中都保留原来源读取合同。 */ }
+        }
+        if (!fresh) fresh = await sourceReader({ store, now, hostSnapshot: before, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: realtime });
+        timings.sourceMs = Date.now() - sourceStarted;
+        if (fresh?.sourceReadAttempts) timings.sourceReadAttempts = clone(fresh.sourceReadAttempts);
         for (const value of candidate.selectedFloors) {
           for (const witness of value.rawWitnesses ?? []) if (!await rawWitnessValid(witness, fresh)) return stopForFinalSafety('selectedRefsChanged');
           for (const witness of value.summaryWitnesses ?? []) if (!await summaryWitnessValid(witness, fresh)) return stopForFinalSafety('selectedRefsChanged');

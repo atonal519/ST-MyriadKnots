@@ -561,7 +561,7 @@ export function createPeopleWorkspaceRuntime({
     try { return sameIdentity(operation.identity, capture()); } catch { return false; }
   };
   const assertCurrent = operation => { if (!isCurrent(operation)) throw errorWith('QQJ_PEOPLE_STALE', '聊天已变化，迟到的人物资料结果没有写入。'); };
-  const project = () => { people = displayPeopleProjection(candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace), workspace); };
+  const project = (memoryState = memoryRuntime.getState()) => { people = displayPeopleProjection(candidateProjection(foundationRuntime.getReachable?.(), memoryState, workspace), workspace); };
   const syncIdentityProjection = () => { try { memoryRuntime.setIdentityProjection?.(identityProjection(workspace)); } catch { /* memory projection remains readable */ } };
   function fullMaterialPlanFor(candidate) {
     const reachable = foundationRuntime.getReachable?.();
@@ -1301,9 +1301,9 @@ export function createPeopleWorkspaceRuntime({
     autoDrainTimer = null; autoDrainQueued = false; pendingAutomaticScan = false; pendingInitialProfiles.clear(); automaticFloorCount = null; automaticChatId = null; syncIdentityProjection(); notify();
   }
   async function setEnabled(value) { if (value !== true) { invalidate(); return getState(); } return refresh(); }
-  const unsubscribeMemory = typeof memoryRuntime.subscribe === 'function' ? memoryRuntime.subscribe(() => {
+  const unsubscribeMemory = typeof memoryRuntime.subscribe === 'function' ? memoryRuntime.subscribe(memoryState => {
     if (!workspace) return;
-    try { if (capture().chatId !== chatId) return; project(); notify(); scheduleAutomaticMaintenance(); } catch { /* lifecycle owns identity transition */ }
+    try { project(memoryState); notify(); scheduleAutomaticMaintenance(); } catch { /* projection can be refreshed by the next runtime notification */ }
   }) : null;
   const unsubscribeFoundation = typeof foundationRuntime.subscribe === 'function' ? foundationRuntime.subscribe(() => observeStableFloors()) : null;
   return Object.freeze({ refresh, start: () => enabled() ? refresh() : Promise.resolve(getState()), setSelectedEntityIds, setPersonOrderEntityIds, saveProfile, saveAvatar, mergePeople, deletePerson, generateMissingProfiles, regenerateProfile, invalidate, abortAll: invalidate, setEnabled,

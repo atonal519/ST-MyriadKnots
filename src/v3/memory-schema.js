@@ -117,7 +117,8 @@ export function validateFloorMemory(input, { expectedChatId } = {}) {
   const hasSourceFloorIds = Object.hasOwn(value, 'sourceFloorIds');
   const hasSourceFloorSnapshots = Object.hasOwn(value, 'sourceFloorSnapshots');
   const hasQianshiDelta = Object.hasOwn(value, 'qianshiDelta');
-  exact(value, ['schemaVersion', 'recordType', 'id', 'chatId', 'narrativeGeneration', 'floorId', 'extractorVersion', ...(hasSourceSnapshot ? ['sourceCanonicalContent'] : []), ...(hasSourceUserInputSnapshot ? ['sourceUserInputSnapshot'] : []), ...(hasSourceVariableReference ? ['sourceVariableReference'] : []), ...(hasSourceRawFingerprint ? ['sourceRawFingerprint'] : []), ...(hasSourceStoryClockSignature ? ['sourceStoryClockSignature'] : []), ...(hasSourceFloorIds ? ['sourceFloorIds'] : []), ...(hasSourceFloorSnapshots ? ['sourceFloorSnapshots'] : []), ...(hasQianshiDelta ? ['qianshiDelta'] : []), 'summary', 'summaryEvidenceRefs', ...ARRAY_FIELDS, 'createdAt', 'updatedAt', 'recordStatus', 'supersedes'], 'V3_FLOORMEMORY_INVALID');
+  const hasSpatialFacts = Object.hasOwn(value, 'spatialFacts');
+  exact(value, ['schemaVersion', 'recordType', 'id', 'chatId', 'narrativeGeneration', 'floorId', 'extractorVersion', ...(hasSourceSnapshot ? ['sourceCanonicalContent'] : []), ...(hasSourceUserInputSnapshot ? ['sourceUserInputSnapshot'] : []), ...(hasSourceVariableReference ? ['sourceVariableReference'] : []), ...(hasSourceRawFingerprint ? ['sourceRawFingerprint'] : []), ...(hasSourceStoryClockSignature ? ['sourceStoryClockSignature'] : []), ...(hasSourceFloorIds ? ['sourceFloorIds'] : []), ...(hasSourceFloorSnapshots ? ['sourceFloorSnapshots'] : []), ...(hasQianshiDelta ? ['qianshiDelta'] : []), ...(hasSpatialFacts ? ['spatialFacts'] : []), 'summary', 'summaryEvidenceRefs', ...ARRAY_FIELDS, 'createdAt', 'updatedAt', 'recordStatus', 'supersedes'], 'V3_FLOORMEMORY_INVALID');
   common(value, 'floorMemory', expectedChatId);
   uuid(value.floorId, 'V3_FLOORMEMORY_INVALID', 'floorId');
   text(value.extractorVersion, 'V3_FLOORMEMORY_INVALID', 'extractorVersion', { max: 160 });
@@ -143,6 +144,51 @@ export function validateFloorMemory(input, { expectedChatId } = {}) {
     });
   } else if (sourceFloorIds.length > 1) fail('V3_FLOORMEMORY_INVALID', 'sourceFloorSnapshots');
   if (hasQianshiDelta) value.qianshiDelta = validateQianshiDelta(value.qianshiDelta, { floorIds: sourceFloorIds });
+  if (hasSpatialFacts) {
+    const spatial = value.spatialFacts;
+    exact(spatial, ['schemaVersion', 'containments', 'positions'], 'V3_FLOORMEMORY_INVALID', 'spatialFacts');
+    if (spatial.schemaVersion !== 1) fail('V3_FLOORMEMORY_INVALID', 'spatialFacts.schemaVersion');
+    const containments = boundedArray(spatial.containments, 'V3_FLOORMEMORY_INVALID', 'spatialFacts.containments', 40);
+    const positions = boundedArray(spatial.positions, 'V3_FLOORMEMORY_INVALID', 'spatialFacts.positions', 40);
+    const parentBySource = new Map();
+    for (const [index, item] of containments.entries()) {
+      const path = `spatialFacts.containments[${index}]`;
+      exact(item, ['itemId', 'placeEntityId', 'parentEntityId', 'evidenceRefs'], 'V3_FLOORMEMORY_INVALID', path);
+      uuid(item.itemId, 'V3_FLOORMEMORY_INVALID', `${path}.itemId`);
+      const placeId = uuid(item.placeEntityId, 'V3_FLOORMEMORY_INVALID', `${path}.placeEntityId`);
+      const parentId = uuid(item.parentEntityId, 'V3_FLOORMEMORY_INVALID', `${path}.parentEntityId`);
+      if (placeId === parentId) fail('V3_FLOORMEMORY_INVALID', `${path}.parentEntityId`);
+      const refs = evidenceList(item.evidenceRefs, sourceFloorIds, `${path}.evidenceRefs`, { required: true });
+      for (const sourceFloorId of new Set(refs.map(ref => ref.floorId))) {
+        const parents = parentBySource.get(sourceFloorId) ?? new Map();
+        const priorParent = parents.get(placeId);
+        if (priorParent && priorParent !== parentId) fail('V3_FLOORMEMORY_INVALID', `${path}.parentEntityId`);
+        parents.set(placeId, parentId); parentBySource.set(sourceFloorId, parents);
+      }
+    }
+    for (const parentByPlace of parentBySource.values()) for (const placeId of parentByPlace.keys()) {
+      const seen = new Set([placeId]); let current = placeId;
+      while (parentByPlace.has(current)) { current = parentByPlace.get(current); if (seen.has(current)) fail('V3_FLOORMEMORY_INVALID', 'spatialFacts.containments'); seen.add(current); }
+    }
+    const positionsBySource = new Map();
+    for (const [index, item] of positions.entries()) {
+      const path = `spatialFacts.positions[${index}]`;
+      exact(item, ['itemId', 'subjectEntityId', 'placeEntityId', 'status', 'evidenceRefs'], 'V3_FLOORMEMORY_INVALID', path);
+      uuid(item.itemId, 'V3_FLOORMEMORY_INVALID', `${path}.itemId`);
+      const subjectId = uuid(item.subjectEntityId, 'V3_FLOORMEMORY_INVALID', `${path}.subjectEntityId`);
+      uuid(item.placeEntityId, 'V3_FLOORMEMORY_INVALID', `${path}.placeEntityId`, { nullable: true });
+      enumValue(item.status, ['confirmed', 'lastSeen', 'leftUnknown'], 'V3_FLOORMEMORY_INVALID', `${path}.status`);
+      if (item.status !== 'leftUnknown' && item.placeEntityId === null) fail('V3_FLOORMEMORY_INVALID', `${path}.placeEntityId`);
+      const refs = evidenceList(item.evidenceRefs, sourceFloorIds, `${path}.evidenceRefs`, { required: true });
+      const signature = JSON.stringify([item.placeEntityId, item.status]);
+      for (const sourceFloorId of new Set(refs.map(ref => ref.floorId))) {
+        const positions = positionsBySource.get(sourceFloorId) ?? new Map();
+        const prior = positions.get(subjectId);
+        if (prior && prior !== signature) fail('V3_FLOORMEMORY_INVALID', `${path}.subjectEntityId`);
+        positions.set(subjectId, signature); positionsBySource.set(sourceFloorId, positions);
+      }
+    }
+  }
   exact(value.summary, ['aiText', 'userText', 'effectiveSource', 'revisionNote'], 'V3_FLOORMEMORY_INVALID', 'summary');
   text(value.summary.aiText, 'V3_FLOORMEMORY_INVALID', 'summary.aiText', { max: 4000 });
   if (value.summary.userText !== null) text(value.summary.userText, 'V3_FLOORMEMORY_INVALID', 'summary.userText', { max: 4000 });
@@ -279,6 +325,8 @@ export function collectFloorMemoryEntityIds(memory, { includeReviewCandidates = 
     memory[field].forEach(item => (item.evidenceRefs ?? []).forEach(evidence => add(evidence.sourceEntityId)));
   }
   for (const event of memory.qianshiDelta?.events ?? []) for (const person of event.people ?? []) add(person.entityId);
+  for (const item of memory.spatialFacts?.containments ?? []) { add(item.placeEntityId); add(item.parentEntityId); item.evidenceRefs.forEach(evidence => add(evidence.sourceEntityId)); }
+  for (const item of memory.spatialFacts?.positions ?? []) { add(item.subjectEntityId); add(item.placeEntityId); item.evidenceRefs.forEach(evidence => add(evidence.sourceEntityId)); }
   if (includeReviewCandidates) for (const candidate of memory.qianshiDelta?.historyReview?.candidates ?? []) {
     for (const person of candidate.event?.people ?? []) add(person.entityId);
   }
@@ -398,7 +446,19 @@ export async function validateMemoryGraph({ root = null, checkpoint, run = null,
     };
     const evidence = [...memory.summaryEvidenceRefs];
     for (const field of ['chronology', 'locations', 'participants', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'openLoops', 'ambiguities', 'cseSignals']) memory[field].forEach(item => evidence.push(...(item.evidenceRefs ?? [])));
+    for (const item of memory.spatialFacts?.containments ?? []) evidence.push(...item.evidenceRefs);
+    for (const item of memory.spatialFacts?.positions ?? []) evidence.push(...item.evidenceRefs);
     if (evidence.some(item => !checkQuote(item))) fail('V3_MEMORY_GRAPH_EVIDENCE_INVALID');
+    if (memory.spatialFacts) {
+      const graphEntities = new Map(safeEntities.map(entity => [entity.id, entity]));
+      for (const item of memory.spatialFacts.containments) {
+        if (graphEntities.get(item.placeEntityId)?.entityType !== 'place' || graphEntities.get(item.parentEntityId)?.entityType !== 'place') fail('V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID');
+      }
+      for (const item of memory.spatialFacts.positions) {
+        if (!['person', 'group'].includes(graphEntities.get(item.subjectEntityId)?.entityType)
+          || (item.placeEntityId && graphEntities.get(item.placeEntityId)?.entityType !== 'place')) fail('V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID');
+      }
+    }
     for (const anchor of memory.exactAnchors) {
       const sourceContent = sourceContentFor(anchor);
       if (typeof sourceContent !== 'string') fail('V3_MEMORY_GRAPH_ANCHOR_INVALID');

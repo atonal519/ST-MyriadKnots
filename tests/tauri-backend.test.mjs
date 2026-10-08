@@ -386,6 +386,31 @@ test('TT default routing selects local storage while explicit fetch injection is
   assert.equal(count, 1);
 });
 
+test('TT 默认客户端的大 PUT 继续走 JSON 原生存储，完全不触发 gzip 准备', async t => {
+  const f = await fixture(t);
+  const previousTt = globalThis.__TAURITAVERN__;
+  const previousReady = globalThis.__TAURITAVERN_MAIN_READY__;
+  const previousCompression = Object.getOwnPropertyDescriptor(globalThis, 'CompressionStream');
+  let compressionAttempts = 0;
+  globalThis.__TAURITAVERN__ = f.globalRef.__TAURITAVERN__;
+  globalThis.__TAURITAVERN_MAIN_READY__ = undefined;
+  Object.defineProperty(globalThis, 'CompressionStream', { configurable: true, writable: true, value: class { constructor() { compressionAttempts += 1; throw new Error('TT should not gzip'); } } });
+  t.after(() => {
+    if (previousTt === undefined) delete globalThis.__TAURITAVERN__;
+    else globalThis.__TAURITAVERN__ = previousTt;
+    if (previousReady === undefined) delete globalThis.__TAURITAVERN_MAIN_READY__;
+    else globalThis.__TAURITAVERN_MAIN_READY__ = previousReady;
+    if (previousCompression) Object.defineProperty(globalThis, 'CompressionStream', previousCompression);
+    else delete globalThis.CompressionStream;
+  });
+  const client = createBackendClient();
+  const data = { text: 'TT 原生 JSON 传输合同🙂'.repeat(4000), diagnostics: { kept: true } };
+  const saved = await client.put('large-chat', 'v3-root', data, 0);
+  assert.deepEqual(saved.data, data);
+  assert.equal(compressionAttempts, 0);
+  assert.equal(client.getDiagnosticSnapshot().latestWrite.contentEncoding, 'identity');
+});
+
 test('TT custom baseUrl and ordinary SillyTavern stay on HTTP', async t => {
   const f = await fixture(t);
   const previousTt = globalThis.__TAURITAVERN__;
