@@ -208,3 +208,23 @@ test('删除暂停只拦目标 UUID，切到其他聊天可用且回原聊天仍
   assert.equal(session.resume(UUID), true);
   assert.equal((await session.prepare()).identity.chatId, UUID);
 });
+
+test('A删除结束恢复时保留已完成准备的B session owner', async () => {
+  const original = chatContext('原聊天', UUID);
+  const otherId = '223e4567-e89b-42d3-a456-426614174000';
+  const other = chatContext('其他聊天', otherId);
+  let current = original;
+  const session = createChatSession({ contextProvider: () => current });
+  assert.equal((await session.prepare()).identity.chatId, UUID);
+  session.suspend(UUID);
+
+  current = other;
+  session.invalidate();
+  assert.equal((await session.prepare()).identity.chatId, otherId);
+  assert.equal(session.getState().status, 'ready');
+  assert.equal(session.resume(UUID), true);
+
+  assert.equal(session.getState().status, 'ready');
+  assert.equal(session.getState().identity.chatId, otherId);
+  assert.equal(session.identity().chatId, otherId);
+});

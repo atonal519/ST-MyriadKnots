@@ -28,7 +28,7 @@ export function messageFloorAnchorCandidateSnapshot(value) {
   });
 }
 
-export async function readTargetChat(target, { signal, fetchImpl = globalThis.fetch } = {}) {
+export async function readTargetChat(target, { signal, fetchImpl = globalThis.fetch, allowMissingIdentity = false } = {}) {
   if (!target?.hostChatId || !target?.characterName || !target?.avatarUrl || !isUuid(target.chatId)) {
     throw fail('V3_MESSAGE_ANCHOR_TARGET_INVALID', '原聊天存档定位信息无效。');
   }
@@ -39,8 +39,9 @@ export async function readTargetChat(target, { signal, fetchImpl = globalThis.fe
   });
   if (!response?.ok) throw fail('V3_MESSAGE_ANCHOR_READ_FAILED', '无法读取原聊天存档。');
   const payload = await response.json();
+  const persistedChatId = payload?.[0]?.chat_metadata?.qianqianjie?.chatId;
   if (!Array.isArray(payload) || !payload[0] || !payload[0].chat_metadata
-    || payload[0]?.chat_metadata?.qianqianjie?.chatId !== target.chatId) {
+    || (allowMissingIdentity ? persistedChatId && persistedChatId !== target.chatId : persistedChatId !== target.chatId)) {
     throw fail('V3_MESSAGE_ANCHOR_READ_SCOPE_MISMATCH', '读取到的聊天身份与原目标不一致。');
   }
   return Object.freeze({ header: payload[0], chat: payload.slice(1) });

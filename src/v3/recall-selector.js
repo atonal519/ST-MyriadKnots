@@ -174,7 +174,32 @@ function historyFacts(memory, entityById) {
     add(item(isShared ? 'shared' : 'private', decorate(commitmentDisplay(value), value), 120, { kind: 'commitment', commitmentKind: value.kind, speakerEntityId: value.speakerEntityId, ownerEntityId: value.speakerEntityId, targetEntityIds: value.targetEntityIds, status: value.status, preserveForm: true }), `${value.content} ${(anchorAssignments.get(value) ?? []).map(anchor => anchor.exactText).join(' ')}`, [value.speakerEntityId, ...value.targetEntityIds], value.status);
   }
   for (const value of memory.openLoops) add(item('objective', `来源楼当时未结（后文可能已推进，以后文为准）：${value.description}`, 110, { kind: 'openLoop' }), value.description, value.ownerEntityIds);
-  for (const value of memory.locations) add(item('objective', `地点：${value.name}（${value.change}）`, 100, { kind: 'location' }), value.name, [value.entityId, ...value.participantEntityIds], value.change);
+  const spatialPairs = new Set();
+  for (const value of memory.spatialFacts?.positions ?? []) for (const ref of value.sourceRefs ?? []) {
+    if (value.placeEntityId && value.status === 'confirmed') spatialPairs.add(`${ref.floorId}|${value.subjectEntityId}|${value.placeEntityId}|present`);
+  }
+  for (const value of memory.locations) {
+    const participants = [...new Set((value.participantEntityIds ?? []).filter(Boolean))];
+    const duplicate = value.change === 'present' && value.entityId && participants.length > 0
+      && (value.sourceRefs ?? []).some(ref => participants.every(subjectId => spatialPairs.has(`${ref.floorId}|${subjectId}|${value.entityId}|present`)));
+    if (!duplicate) add(item('objective', `地点：${value.name}（${value.change}）`, 100, { kind: 'location' }), value.name, [value.entityId, ...value.participantEntityIds], value.change);
+  }
+  const placeName = id => entityLabels(entityById.get(id) ?? {}).find(label => !genericAlias(label)) ?? '地点未知';
+  const sourceTag = ref => `来源楼当时${Number.isSafeInteger(ref.assistantSeq) ? `（AI #${ref.assistantSeq}）` : ''}`;
+  for (const value of memory.spatialFacts?.containments ?? []) for (const ref of value.sourceRefs ?? []) {
+    const child = placeName(value.placeEntityId), parent = placeName(value.parentEntityId);
+    const quote = ref.quotedText ? `；原句「${ref.quotedText}」` : '';
+    add(item('objective', `${sourceTag(ref)}地点包含：${child} 属于 ${parent}${quote}`, 100, { kind: 'spatialContainment', placeEntityId: value.placeEntityId, parentEntityId: value.parentEntityId, sourceFloorId: ref.floorId, sourceAssistantSeq: ref.assistantSeq }), `${child} ${parent} ${ref.quotedText ?? ''}`, [value.placeEntityId, value.parentEntityId], `${ref.floorId}|containment`);
+  }
+  for (const value of memory.spatialFacts?.positions ?? []) for (const ref of value.sourceRefs ?? []) {
+    const subject = entityName(value.subjectEntityId, entityById), place = value.placeEntityId ? placeName(value.placeEntityId) : null;
+    let text;
+    if (value.status === 'confirmed') text = `${sourceTag(ref)}确认${subject}当时位于${place}；这是该来源楼位置，不代表之后仍在此处`;
+    else if (value.status === 'lastSeen') text = `${sourceTag(ref)}最后见到${subject}在${place}；未确认楼末仍在此处`;
+    else text = `${sourceTag(ref)}记录${subject}已离开${place ? `原地点${place}` : '原处'}，去向未知；${place ? `${place}不是当前位置` : '不能推定当前位置'}`;
+    if (ref.quotedText) text += `；原句「${ref.quotedText}」`;
+    add(item('objective', text, 105, { kind: 'spatialPosition', subjectEntityId: value.subjectEntityId, placeEntityId: value.placeEntityId, sourceFloorId: ref.floorId, sourceAssistantSeq: ref.assistantSeq, status: value.status }), `${subject} ${place ?? ''} ${ref.quotedText ?? ''}`, [value.subjectEntityId, value.placeEntityId], `${ref.floorId}|${value.status}`);
+  }
   for (const value of memory.events) add(item('objective', `${value.title}：${value.description}`, 90, { kind: 'event' }), `${value.title} ${value.description}`, [], value.candidateStatus);
   for (const value of memory.actions) add(item('objective', actionDisplay(value), 75, { kind: 'action', actorEntityId: value.actorEntityId, targetEntityIds: value.targetEntityIds, completion: value.completion, preserveForm: true }), `${value.action} ${value.result ?? ''}`, [value.actorEntityId, ...value.targetEntityIds], value.completion);
   for (const value of memory.observations) add(item('objective', value.description, 70, { kind: 'observation', subjectEntityId: value.subjectEntityId }), value.description, [value.subjectEntityId]);
@@ -806,6 +831,31 @@ function expandLinkedHistory({ context, selectedHistory, selectedCse, excludedHi
     const anchorRecord = itemRecords.find(value => stableKeyFor(value.value) === stableKeyFor(anchor));
     const terms = anchorRecord ? setIntersection(anchorRecord.tokens, record.tokens).filter(token => (documentFrequency.get(token) ?? Number.MAX_SAFE_INTEGER) <= rareLimit) : [];
     add(record.value, 'topic', anchor, terms.slice(0, 4));
+  }
+  const containmentByChild = new Map();
+  for (const edge of allHistory.filter(value => value.kind === 'spatialContainment' && value.placeEntityId && value.parentEntityId)) {
+    const edges = containmentByChild.get(edge.placeEntityId) ?? []; edges.push(edge); containmentByChild.set(edge.placeEntityId, edges);
+  }
+  const ancestorQueue = [];
+  for (const anchor of selectedHistory) {
+    const seq = Number(anchor.sourceAssistantSeq ?? anchor.assistantSeq);
+    if (!Number.isSafeInteger(seq)) continue;
+    if (anchor.kind === 'spatialPosition' && anchor.placeEntityId) ancestorQueue.push({ placeId: anchor.placeEntityId, anchor, anchorSeq: seq, path: new Set([anchor.placeEntityId]) });
+    if (anchor.kind === 'spatialContainment' && anchor.parentEntityId) ancestorQueue.push({ placeId: anchor.parentEntityId, anchor, anchorSeq: seq, path: new Set([anchor.placeEntityId, anchor.parentEntityId]) });
+  }
+  const visitedAncestors = new Set();
+  while (ancestorQueue.length) {
+    const { placeId, anchor, anchorSeq, path } = ancestorQueue.shift();
+    const visitKey = `${placeId}|${anchor.floorId}|${anchor.sourceFloorId ?? ''}|${anchorSeq}`;
+    if (visitedAncestors.has(visitKey)) continue;
+    visitedAncestors.add(visitKey);
+    const eligible = (containmentByChild.get(placeId) ?? []).filter(edge => Number.isSafeInteger(edge.sourceAssistantSeq) && edge.sourceAssistantSeq <= anchorSeq)
+      .sort((a, b) => b.sourceAssistantSeq - a.sourceAssistantSeq || b.assistantSeq - a.assistantSeq || b._sourceOrder - a._sourceOrder);
+    const latest = eligible[0];
+    if (!latest || path.has(latest.parentEntityId)) continue;
+    const alreadySelected = selectedStableKeys.has(stableKeyFor(latest)) || result.some(value => stableKeyFor(value) === stableKeyFor(latest));
+    if (!alreadySelected && !add(latest, 'source', anchor)) continue;
+    ancestorQueue.push({ placeId: latest.parentEntityId, anchor, anchorSeq, path: new Set([...path, latest.parentEntityId]) });
   }
   return result.sort((a, b) => a.assistantSeq - b.assistantSeq || a.floorId.localeCompare(b.floorId) || a._sourceOrder - b._sourceOrder);
 }

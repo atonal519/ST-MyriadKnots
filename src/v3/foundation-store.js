@@ -27,6 +27,7 @@ const RECORD_PREFIX = Object.freeze({
   index: 'v3-index-',
 });
 const CONFIRMED_CONTENT_TYPES = new Set(['floor', 'floorMemory', 'entity', 'baseline', 'stateDelta', 'currentState']);
+const CACHED_CONTENT_TYPES = new Set(['floor', 'floorMemory', 'entity', 'stateDelta', 'index']);
 const READ_CONCURRENCY = 16;
 
 function fail(code) { throw Object.assign(new TypeError(code), { code }); }
@@ -48,7 +49,10 @@ function sameIdentity(left, right) {
 function validateEnvelope(envelope, validator, chatId) {
   if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)
     || !Number.isSafeInteger(envelope.revision) || envelope.revision < 1) fail('V3_STORE_ENVELOPE_INVALID');
-  return Object.freeze({ data: validator(envelope.data, { expectedChatId: chatId }), revision: envelope.revision });
+  const value = { data: validator(envelope.data, { expectedChatId: chatId }), revision: envelope.revision,
+    generationId: typeof envelope.generationId === 'string' ? envelope.generationId : null };
+  Object.defineProperty(value, 'rawEnvelope', { value: envelope, enumerable: false });
+  return Object.freeze(value);
 }
 function validatorFor(type) {
   const validator = { root: validateFoundationRoot, floor: validateFoundationFloor, floorMemory: validateFloorMemory, entity: validateEntityRecord, baseline: validateBaselineRecord, stateDelta: validateStateDeltaRecord, currentState: validateCurrentStateRecord, run: validateFoundationRun, checkpoint: validateFoundationCheckpoint, index: validateFoundationIndex }[type];
@@ -63,6 +67,22 @@ function recordKey(record) {
   return `${prefix}${record.id}`;
 }
 function sameJson(left, right) { return JSON.stringify(left) === JSON.stringify(right); }
+function cacheWitness(root, rootEnvelope) {
+  if (typeof rootEnvelope?.generationId !== 'string' || !root.headCheckpointId) return null;
+  return Object.freeze({ formatVersion: 1, generationId: rootEnvelope.generationId, revision: rootEnvelope.revision,
+    headCheckpointId: root.headCheckpointId, narrativeGeneration: root.narrativeGeneration,
+    sourceSnapshotFingerprint: root.sourceSnapshotFingerprint });
+}
+function cacheRecordRefs(checkpoint, selectedIndexIds = checkpoint.producedRefs.indexes) {
+  const refs = checkpoint.producedRefs;
+  return {
+    floor: refs.floors.map(id => `${RECORD_PREFIX.floor}${id}`),
+    floorMemory: refs.floorMemories.map(id => `${RECORD_PREFIX.floorMemory}${id}`),
+    entity: refs.entities.map(id => `${RECORD_PREFIX.entity}${id}`),
+    stateDelta: refs.stateDeltas.map(id => `${RECORD_PREFIX.stateDelta}${id}`),
+    index: refs.indexes.filter(id => selectedIndexIds.includes(id)),
+  };
+}
 
 function manifestMatchesIndexes(root, indexes, indexKeys) {
   const expected = Object.fromEntries(Object.keys(root.indexManifest).map(kind => [kind, []]));
@@ -164,11 +184,11 @@ export async function reverseRefCandidateKeys(indexManifest, targetRecordId) {
     });
 }
 
-export function createFoundationStore({ client, contextProvider, isEnabled = true } = {}) {
+export function createFoundationStore({ client, contextProvider, isEnabled = true, coreRecordCache = null } = {}) {
   if (typeof client?.get !== 'function' || typeof client?.put !== 'function') throw new TypeError('V3 store client 必须提供 get/put');
   if (typeof contextProvider !== 'function') throw new TypeError('V3 store contextProvider 必须是函数');
-  let epoch = 0;
   const confirmedContent = new Map();
+  const stagedCoreRecords = new Map();
   const identityViewBorrowers = new Map();
   const enabled = () => {
     try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; }
@@ -177,7 +197,11 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
   const capture = () => identity(contextProvider());
   const collection = current => `chat-${current.chatId}`;
   const confirmedKey = (current, key) => `${collection(current)}\u0000${key}`;
-  const confirmedCopy = value => ({ status: 'ready', data: structuredClone(value.data), revision: value.revision, recordId: value.recordId });
+  const stageCoreRecord = (current, key, recordType, envelope, cacheScope) => {
+    if (!cacheScope || !CACHED_CONTENT_TYPES.has(recordType) || !envelope || typeof envelope.generationId !== 'string' || !Number.isSafeInteger(envelope.revision)) return;
+    stagedCoreRecords.set(confirmedKey(current, key), { recordId: key, envelope });
+  };
+  const confirmedCopy = value => ({ status: 'ready', data: structuredClone(value.data), revision: value.revision, generationId: value.generationId ?? null, recordId: value.recordId });
   const rememberConfirmed = (current, value) => {
     if (value?.status !== 'ready' || !CONFIRMED_CONTENT_TYPES.has(value.data?.recordType)) return value;
     confirmedContent.set(confirmedKey(current, value.recordId), confirmedCopy(value));
@@ -203,17 +227,17 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     const prefix = `${collection(current)}\u0000`;
     for (const key of confirmedContent.keys()) if (key.startsWith(prefix)) confirmedContent.delete(key);
   };
-  const operationState = operation => {
-    if (!operation.fixedIdentity && operation.epoch !== epoch) return 'stale';
-    if (!enabled()) return 'disabled';
-    if (operation.fixedIdentity) return 'current';
-    try { return sameIdentity(operation.identity, capture()) ? 'current' : 'stale'; }
-    catch { return 'stale'; }
+  const clearStagedIdentity = current => {
+    const prefix = `${collection(current)}\u0000`;
+    for (const key of stagedCoreRecords.keys()) if (key.startsWith(prefix)) stagedCoreRecords.delete(key);
   };
+  const operationState = () => enabled() ? 'current' : 'disabled';
   function execute(task, fixedIdentity = null) {
     if (!enabled()) return Promise.resolve({ status: 'disabled' });
-    const operation = { epoch, identity: fixedIdentity ?? capture(), fixedIdentity: fixedIdentity !== null };
+    const operation = { identity: fixedIdentity ?? capture(), fixedIdentity: fixedIdentity !== null, cacheScope: null, cacheVersion: null, cacheWitness: null, cacheManifest: null, cacheObserved: null, cacheHits: 0 };
+    try { operation.cacheVersion = coreRecordCache?.captureIdentityVersion?.(operation.identity) ?? null; } catch { operation.cacheVersion = null; }
     return (async () => {
+      try { operation.cacheScope = await coreRecordCache?.scopeFor?.(operation.identity) ?? null; } catch { operation.cacheScope = null; }
       const before = operationState(operation);
       if (before !== 'current') return { status: before };
       try {
@@ -254,14 +278,47 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     if (firstError) throw firstError;
     return results;
   }
-  async function read(identityValue, key, validator, missingStatus = 'missing') {
+  async function read(identityValue, key, validator, missingStatus = 'missing', cacheRead = null) {
+    if (cacheRead?.manifest && cacheRead.recordType && operationState(cacheRead.operation) === 'current') {
+      try {
+        const cachedEnvelope = await coreRecordCache.readRecord(cacheRead.operation.cacheScope, cacheRead.witness, cacheRead.recordType, key, cacheRead.operation.cacheManifest);
+        if (cachedEnvelope) {
+          try {
+            const safe = validateEnvelope(cachedEnvelope, validator, identityValue.chatId);
+            if (validator === validateFoundationFloor) await validateFoundationFloorContent(safe.data, { expectedChatId: identityValue.chatId });
+            cacheRead.operation.cacheHits += 1;
+            const result = { status: 'ready', ...safe, recordId: key };
+            Object.defineProperty(result, 'rawEnvelope', { value: cachedEnvelope, enumerable: false });
+            return rememberConfirmed(identityValue, result);
+        } catch {
+            await coreRecordCache.removeRecord?.(cacheRead.operation.cacheScope, cacheRead.witness, cacheRead.recordType, key);
+          }
+        }
+      } catch { /* IDB errors are misses; the formal store remains authoritative. */ }
+    }
     try {
       const envelope = await client.get(collection(identityValue), key);
       const safe = validateEnvelope(envelope, validator, identityValue.chatId);
       if (validator === validateFoundationFloor) await validateFoundationFloorContent(safe.data, { expectedChatId: identityValue.chatId });
-      return rememberConfirmed(identityValue, { status: 'ready', ...safe, recordId: key });
+      if (cacheRead?.operation?.cacheScope && cacheRead.witness && cacheRead.recordType && safe.rawEnvelope) {
+        cacheRead.operation.cacheObserved ??= new Map();
+        cacheRead.operation.cacheObserved.set(`${cacheRead.recordType}\u0000${key}`, { recordId: key, envelope: safe.rawEnvelope });
+      }
+      const result = { status: 'ready', ...safe, recordId: key };
+      Object.defineProperty(result, 'rawEnvelope', { value: envelope, enumerable: false });
+      return rememberConfirmed(identityValue, result);
     } catch (error) {
       if (error?.status === 404) return { status: missingStatus };
+      throw error;
+    }
+  }
+  async function verifyCacheRootGeneration(current) {
+    try {
+      const envelope = await client.get(collection(current), V3_ROOT_RECORD_ID);
+      const root = validateEnvelope(envelope, validateFoundationRoot, current.chatId);
+      return { generationId: root.generationId, revision: root.revision };
+    } catch (error) {
+      if (error?.status === 404) return { generationId: null, revision: null };
       throw error;
     }
   }
@@ -275,7 +332,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     }, identityOverride);
   }
   function putRecord(record, { signal } = {}, identityOverride = null) {
-    return execute(async current => {
+    return execute(async (current, operation) => {
       const validator = validatorFor(record?.recordType);
       const safe = validator(record, { expectedChatId: current.chatId });
       if (safe.recordType === 'floor') await validateFoundationFloorContent(safe, { expectedChatId: current.chatId });
@@ -286,11 +343,15 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
         if (!sameJson(saved.data, safe)) fail('V3_STORE_RESPONSE_MISMATCH');
         const result = { status: 'saved', ...saved, recordId: key };
         rememberConfirmed(current, { ...result, status: 'ready' });
+        stageCoreRecord(current, key, safe.recordType, saved.rawEnvelope, operation.cacheScope);
         return result;
       } catch (error) {
         if (error?.status !== 409) throw error;
         const winner = await read(current, key, validator);
-        if (winner.status === 'ready' && sameFoundationRecordContent(winner.data, safe)) return { ...winner, status: 'reused', recordId: key };
+        if (winner.status === 'ready' && sameFoundationRecordContent(winner.data, safe)) {
+          stageCoreRecord(current, key, safe.recordType, winner.rawEnvelope, operation.cacheScope);
+          return { ...winner, status: 'reused', recordId: key };
+        }
         return { status: 'conflict', recordId: key };
       }
     }, identityOverride);
@@ -384,16 +445,34 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     };
   }
   function commitRoot(root, expectedRevision, { signal } = {}, identityOverride = null) {
-    return execute(async current => {
+    return execute(async (current, operation) => {
       const safe = validateFoundationRoot(root, { expectedChatId: current.chatId });
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) fail('V3_STORE_REVISION_INVALID');
       // 根入口提交前先读取并校验图记录，再执行根 CAS；两步没有跨记录事务，后端须保证这段期间图记录不可改写。
-      const validatedGraph = await validateCommitGraph(current, safe);
+      let validatedGraph;
+      try { validatedGraph = await validateCommitGraph(current, safe); }
+      catch (error) { clearStagedIdentity(current); throw error; }
       try {
         const envelope = await client.put(collection(current), V3_ROOT_RECORD_ID, safe, expectedRevision, { signal });
         const saved = validateEnvelope(envelope, validateFoundationRoot, current.chatId);
         if (!sameJson(saved.data, safe)) fail('V3_STORE_RESPONSE_MISMATCH');
         pruneConfirmed(current, saved.data, validatedGraph.checkpoint);
+        const reachableCore = [
+          ...validatedGraph.floorResults, ...validatedGraph.memoryResults, ...validatedGraph.entityResults,
+          ...validatedGraph.deltaResults, ...validatedGraph.indexResults,
+        ];
+        const stagePrefix = `${collection(current)}\u0000`;
+        const staged = [];
+        for (const record of reachableCore) {
+          const item = stagedCoreRecords.get(confirmedKey(current, record.recordId));
+          if (item?.envelope && item.envelope.revision === record.revision && item.envelope.generationId === record.generationId) staged.push(item);
+        }
+        if (operation.cacheScope && saved.generationId) {
+          const witness = cacheWitness(saved.data, saved);
+          void Promise.resolve(coreRecordCache?.publish?.(operation.cacheScope, witness, staged, cacheRecordRefs(validatedGraph.checkpoint), operation.cacheVersion,
+            () => verifyCacheRootGeneration(current))).catch(() => {});
+        }
+        for (const key of stagedCoreRecords.keys()) if (key.startsWith(stagePrefix)) stagedCoreRecords.delete(key);
         return {
           status: 'saved',
           ...saved,
@@ -407,6 +486,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
           }),
         };
       } catch (error) {
+        clearStagedIdentity(current);
         if (error?.status === 409) return { status: 'conflict' };
         throw error;
       }
@@ -428,12 +508,15 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       throw error;
     }
   }
-  async function readReachable({ mode = V3_READ_MODES.full, allowRecallCseFallback = false, identity: identityOverride = null } = {}) {
+  async function readReachable({ mode = V3_READ_MODES.full, allowRecallCseFallback = false, identity: identityOverride = null, bypassCache = false } = {}) {
     if (!Object.values(V3_READ_MODES).includes(mode)) fail('V3_STORE_READ_MODE_INVALID');
     return execute(async (current, operation) => {
     const readType = (recordType, idOrKey) => {
       const key = String(idOrKey).startsWith('v3-') ? String(idOrKey) : `${RECORD_PREFIX[recordType] ?? ''}${idOrKey}`;
-      return read(current, key, validatorFor(recordType));
+      const cachedType = ['floor', 'floorMemory', 'entity', 'stateDelta', 'index'].includes(recordType) ? recordType : null;
+      return read(current, key, validatorFor(recordType), 'missing', cachedType && !bypassCache
+        ? { operation, witness: operation.cacheWitness, manifest: operation.cacheManifest, recordType: cachedType }
+        : null);
     };
     const rootResult = await read(current, V3_ROOT_RECORD_ID, validateFoundationRoot, 'uninitialized');
     if (rootResult.status !== 'ready') return rootResult;
@@ -445,6 +528,21 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     if (checkpoint.narrativeGeneration !== root.narrativeGeneration || !checkpoint.capabilities.foundationReady) fail('V3_STORE_CHECKPOINT_MISMATCH');
     const runResult = await readType('run', checkpoint.runId);
     if (runResult.status !== 'ready') fail('V3_STORE_RUN_MISSING');
+    if (operation.cacheScope && rootResult.generationId) {
+      operation.cacheWitness = Object.freeze({
+        formatVersion: 1,
+        generationId: rootResult.generationId,
+        revision: rootResult.revision,
+        headCheckpointId: root.headCheckpointId,
+        narrativeGeneration: root.narrativeGeneration,
+        sourceSnapshotFingerprint: root.sourceSnapshotFingerprint,
+      });
+      if (coreRecordCache) operation.cacheObserved = new Map();
+      if (!bypassCache) {
+        try { operation.cacheManifest = await coreRecordCache?.readManifest?.(operation.cacheScope, operation.cacheWitness) ?? null; }
+        catch { operation.cacheManifest = null; }
+      }
+    }
     const legacySnapshot = root.sourceSnapshotFingerprint === null
       || checkpoint.sourceSnapshotFingerprint === null
       || runResult.data.inputSnapshotFingerprint === null;
@@ -503,7 +601,12 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     const activeFloors = activeFloorViews(floorResults.map(result => result.data), indexes);
     const activeMemories = memoryResults.map(result => result.data);
     const activeDeltas = baselineFailed || deltaFailed ? [] : deltaResults.map(result => result.data);
-    const activeEntities = projectEntityFloorBounds(entityResults.map(result => result.data), activeFloors, activeMemories, activeDeltas);
+    let activeEntities;
+    try { activeEntities = projectEntityFloorBounds(entityResults.map(result => result.data), activeFloors, activeMemories, activeDeltas); }
+    catch (error) {
+      if (operation.cacheHits > 0 && !bypassCache) return readReachable({ mode, allowRecallCseFallback, identity: current, bypassCache: true });
+      throw error;
+    }
     const graphInput = {
       root,
       checkpoint,
@@ -517,7 +620,12 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     };
     let cseUnavailable = false;
     if (!allowRecallCseFallback) {
-      await validateCseGraph({ ...graphInput, baseline: baselineResult?.data ?? null, stateDeltas: activeDeltas, currentStates: currentStateResults.map(result => result.data) });
+      try {
+        await validateCseGraph({ ...graphInput, baseline: baselineResult?.data ?? null, stateDeltas: activeDeltas, currentStates: currentStateResults.map(result => result.data) });
+      } catch (error) {
+        if (operation.cacheHits > 0 && !bypassCache) return readReachable({ mode, allowRecallCseFallback, identity: current, bypassCache: true });
+        throw error;
+      }
     } else {
       try {
         if (baselineFailed || deltaFailed) throw new TypeError('V3_RECALL_CSE_RECORD_UNAVAILABLE');
@@ -530,6 +638,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
           currentStateResults = [];
         }
       } catch {
+        if (operation.cacheHits > 0 && !bypassCache) return readReachable({ mode, allowRecallCseFallback, identity: current, bypassCache: true });
         await validateMemoryGraph(graphInput);
         baselineResult = null;
         deltaResults = [];
@@ -537,7 +646,8 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
         cseUnavailable = true;
       }
     }
-    return buildReachableResult({
+    let reachable;
+    try { reachable = buildReachableResult({
       root,
       rootRevision: rootResult.revision,
       checkpoint,
@@ -554,7 +664,20 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       indexesComplete,
       readMode: effectiveMode,
       cseUnavailable,
-    });
+    }); } catch (error) {
+      if (operation.cacheHits > 0 && !bypassCache) return readReachable({ mode, allowRecallCseFallback, identity: current, bypassCache: true });
+      throw error;
+    }
+    if (operation.cacheScope && operation.cacheWitness && reachable.status === 'ready' && !manifestNeedsReseal && !cseUnavailable) {
+      const recordRefs = cacheRecordRefs(checkpoint, indexKeys);
+      const missingManifestRefs = Object.entries(recordRefs).some(([type, ids]) => ids.some(id => !operation.cacheManifest?.recordRefs?.[type]?.includes(id)));
+      void Promise.resolve(coreRecordCache?.maintain?.(operation.cacheScope)).catch(() => {});
+      if (!operation.cacheManifest || (operation.cacheObserved?.size ?? 0) || missingManifestRefs) {
+        void Promise.resolve(coreRecordCache?.publish?.(operation.cacheScope, operation.cacheWitness, [...(operation.cacheObserved?.values() ?? [])], recordRefs, operation.cacheVersion,
+          () => verifyCacheRootGeneration(current))).catch(() => {});
+      }
+    }
+    return reachable;
     }, identityOverride);
   }
   const forIdentity = identityValue => {
@@ -568,6 +691,8 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       const remaining = Math.max(0, (identityViewBorrowers.get(leaseKey) ?? 1) - 1);
       if (remaining) { identityViewBorrowers.set(leaseKey, remaining); return; }
       identityViewBorrowers.delete(leaseKey);
+      const stagedPrefix = `${leaseKey}\u0000`;
+      for (const key of stagedCoreRecords.keys()) if (key.startsWith(stagedPrefix)) stagedCoreRecords.delete(key);
       try { if (!sameIdentity(fixedIdentity, capture())) clearConfirmedIdentity(fixedIdentity); }
       catch { clearConfirmedIdentity(fixedIdentity); }
     };
@@ -592,7 +717,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     settleRun,
     commitRoot,
     forIdentity,
-    invalidate() { epoch += 1; confirmedContent.clear(); },
+    invalidate() { confirmedContent.clear(); },
     recordKey,
   });
 }

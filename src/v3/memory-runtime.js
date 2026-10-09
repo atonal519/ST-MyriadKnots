@@ -75,6 +75,15 @@ export function projectMemoryPersonEntities(entities = []) {
     .filter(entity => entity?.entityType === 'person' && entity.recordStatus === 'active' && entity.status !== 'merged' && entity.status !== 'invalidated')
     .map(entity => Object.freeze({ entityId: entity.id, displayName: entity.displayName, specialRole: entity.specialRole })));
 }
+function projectMemorySpatialEntities(entities = [], identityProjection = null) {
+  const directory = buildEntityIdentityDirectory({ entities, identityProjection });
+  const project = types => Object.freeze(directory.filter(entry => types.includes(entry.entityType))
+    .map(entry => Object.freeze({ entityId: entry.entityId, displayName: entry.displayName, aliases: entry.aliases })));
+  return Object.freeze({ places: project(['place']), groups: project(['group']) });
+}
+export function projectMemoryPlaceEntities(entities = [], identityProjection = null) {
+  return projectMemorySpatialEntities(entities, identityProjection).places;
+}
 const safeApi = value => sanitizeTaskMetadata(value);
 const safeErrorMessage = value => {
   const sanitized = sanitizeSensitiveText(value ?? '提取失败，可重试。').slice(0, 500);
@@ -279,6 +288,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   let lastNoticeKey = null;
   let lastConsecutiveAssistantNoticeKey = null;
   let identityProjection = normalizeIdentityProjection();
+  const memoryPlaceEntitiesCache = new WeakMap();
   let timeFallbackByFloor = new Map();
   let failureScope = null;
   const sessionCandidates = new Map();
@@ -707,6 +717,15 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const cseByFloor = new Map(cseFloors.map(item => [item.floorId, item]));
     const combinedFloors = floors.map(item => Object.freeze({ ...item, cse: cseByFloor.get(item.floorId) ?? null }));
     const memoryEntities = projectMemoryPersonEntities(reachable?.entities ?? []);
+    const hasSpatialFacts = (reachable?.floorMemories ?? []).some(memory => memory.recordStatus === 'active' && memory.spatialFacts);
+    let memoryPlaceEntities = Object.freeze([]), memoryGroupEntities = Object.freeze([]);
+    if (hasSpatialFacts && Array.isArray(reachable?.entities)) {
+      let byProjection = memoryPlaceEntitiesCache.get(reachable.entities);
+      if (!byProjection) { byProjection = new WeakMap(); memoryPlaceEntitiesCache.set(reachable.entities, byProjection); }
+      let spatialEntities = byProjection.get(identityProjection);
+      if (!spatialEntities) { spatialEntities = projectMemorySpatialEntities(reachable.entities, identityProjection); byProjection.set(identityProjection, spatialEntities); }
+      memoryPlaceEntities = spatialEntities.places; memoryGroupEntities = spatialEntities.groups;
+    }
     const cseByMemoryFloor = new Map(cseFloors.map(item => [item.floorId, item]));
     const rebuildCompletedCount = (reachable?.floors ?? []).filter(floor => {
       const memory = coverageMap.get(floor.id);
@@ -733,7 +752,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     // The batch lock remains active while CSE drains; expose its child phase without changing scheduling.
     const workPhase = workRun?.kind === 'auto' && !active
       ? (cse.activeCse ? 'analyzingCse' : workRun.phase === 'extracting' ? 'syncing' : workRun.phase) : workRun?.phase;
-    return Object.freeze({ ...foundation, ...cse, status: workRun || active || cse.activeCse ? 'running' : foundation.status, memorySnapshotStatus, memorySyncStatus, memorySyncError, stableCount, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: Math.max(0, stableCount - rememberedCount), failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, floors: Object.freeze(combinedFloors), memoryEntities, memoryWorkBusy: workRun !== null, activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workPhase, floorIds: Object.freeze([...workRun.floorIds]) }) : null, activeExtraction: active ? { floorId: active.floorId, floorIds: Object.freeze([...(active.floorIds ?? [active.floorId])].filter(Boolean)), runId: active.runId, phase: active.phase } : null, qianshiHistoryActive: qianshiHistoryRun !== null, lastExtractorError: lastFailure, lastAutomationError, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: stableCount, rebuildNextAssistantSeq, rebuildHasActionableWork, highFloorHistoricalActive: workRun?.aggregateHistorical === true, cseRebuildStatus: cseRebuildPlan?.status ?? 'idle', cseRebuildCompletedCount: cseRebuildPlan?.nextIndex ?? 0, cseRebuildTotalCount: cseRebuildPlan?.targets.length ?? rememberedCount, cseRebuildNextAssistantSeq: cseRebuildPlan?.targets[cseRebuildPlan.nextIndex]?.assistantSeq ?? null, cseRebuildError: cseRebuildPlan?.error ?? null, activeAutoMemory: workRun?.kind === 'auto' ? Object.freeze({ reason: workRun.reason, phase: workPhase, mode: workRun.mode ?? 'realtime', aggregateHistorical: workRun.aggregateHistorical === true, cseBlocked: workRun.cseBlocked === true, floorIds: Object.freeze([...workRun.floorIds]) }) : null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
+    return Object.freeze({ ...foundation, ...cse, status: workRun || active || cse.activeCse ? 'running' : foundation.status, memorySnapshotStatus, memorySyncStatus, memorySyncError, stableCount, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: Math.max(0, stableCount - rememberedCount), failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, floors: Object.freeze(combinedFloors), memoryEntities, memoryPlaceEntities, memoryGroupEntities, memoryWorkBusy: workRun !== null, activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workPhase, floorIds: Object.freeze([...workRun.floorIds]) }) : null, activeExtraction: active ? { floorId: active.floorId, floorIds: Object.freeze([...(active.floorIds ?? [active.floorId])].filter(Boolean)), runId: active.runId, phase: active.phase } : null, qianshiHistoryActive: qianshiHistoryRun !== null, lastExtractorError: lastFailure, lastAutomationError, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: stableCount, rebuildNextAssistantSeq, rebuildHasActionableWork, highFloorHistoricalActive: workRun?.aggregateHistorical === true, cseRebuildStatus: cseRebuildPlan?.status ?? 'idle', cseRebuildCompletedCount: cseRebuildPlan?.nextIndex ?? 0, cseRebuildTotalCount: cseRebuildPlan?.targets.length ?? rememberedCount, cseRebuildNextAssistantSeq: cseRebuildPlan?.targets[cseRebuildPlan.nextIndex]?.assistantSeq ?? null, cseRebuildError: cseRebuildPlan?.error ?? null, activeAutoMemory: workRun?.kind === 'auto' ? Object.freeze({ reason: workRun.reason, phase: workPhase, mode: workRun.mode ?? 'realtime', aggregateHistorical: workRun.aggregateHistorical === true, cseBlocked: workRun.cseBlocked === true, floorIds: Object.freeze([...workRun.floorIds]) }) : null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
   }
 
   async function refreshCoverage(expectedEpoch = epoch) {
@@ -1127,7 +1146,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
 
   async function latestCompatibleReachable(operation, preparedReachable = null) {
     const current = await latestReachableForCommit(operation, preparedReachable);
-    if (operation.qianshiHistory || operation.qianshiTextEdit || operation.qianshiRejudge) return current;
+    if (operation.pinnedTarget || operation.qianshiHistory || operation.qianshiTextEdit || operation.qianshiRejudge) return current;
     const dependency = await extractorDependencySnapshot(current, operation.floorId, {
       userIdentity: currentUserIdentity(),
       promptGuidance: operation.dependencySnapshot?.promptGuidance,
@@ -1281,6 +1300,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (operation.qianshiRejudge) await assertQianshiRejudgeSnapshot(current, operation);
     let qianshiRejected = false, qianshiRejectReason = null;
     const expectedTargetMemory = operation.qianshiHistory || operation.qianshiTextEdit ? currentMemoryMap(current).get(operation.floorId) : null;
+    if (operation.manualRevision && currentMemoryMap(current).get(operation.floorId)?.id !== operation.manualRevisionTargetMemoryId) {
+      throw errorWith('V3_MEMORY_STALE', '原目标楼记忆在修订期间已由其他操作更新，本次没有覆盖。');
+    }
     if (operation.qianshiHistory && (expectedTargetMemory?.id !== operation.qianshiHistoryTargetMemoryId
       || JSON.stringify(expectedTargetMemory) !== operation.qianshiHistoryTargetMemorySignature)) {
       const targetFloor = current.floors.find(item => item.id === operation.floorId);
@@ -1291,11 +1313,20 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       throw errorWith('QIANSHI_TEXT_EDIT_TARGET_CHANGED', '事件所属档案在保存期间已变化；当前记录保持不变，请刷新后重新编辑。');
     }
     const floor = current.floors.find(item => item.id === replacement.floorId);
-    const selected = !operation.qianshiHistory && !operation.qianshiRejudge && floor ? currentRawSelection(hostAdapter, floor) : null;
+    const liveTarget = operation.manualRevision && sameTargetIdentity(operation.targetIdentity, captureTargetIdentity());
+    const selected = !operation.qianshiHistory && !operation.qianshiRejudge && floor
+      && (!operation.manualRevision || liveTarget) ? currentRawSelection(hostAdapter, floor) : null;
     const liveRawFingerprint = selected ? `sha256:${await sha256(selected.rawContent)}` : null;
     // Historical completion is based on the archived floor snapshot. Live edits/swipes do not invalidate that evidence.
-    if (!floor || floor.narrativeGeneration !== replacement.narrativeGeneration
-      || (!operation.qianshiHistory && operation.floorRawFingerprint && liveRawFingerprint !== operation.floorRawFingerprint)) {
+    const revisionSourceChanged = operation.manualRevision
+      ? floor?.content?.rawFingerprint !== operation.archiveRawFingerprint
+        || floor?.content?.canonicalFingerprint !== operation.archiveCanonicalFingerprint
+        || floor?.narrativeGeneration !== operation.archiveNarrativeGeneration
+        || JSON.stringify(floor?.hostLocator) !== operation.archiveHostLocator
+        || liveTarget && (!selected || liveRawFingerprint !== operation.floorRawFingerprint
+          || selected.swipeId !== operation.startedSwipeId || selected.selectedSwipeIndex !== operation.startedSelectedSwipeIndex)
+      : !operation.qianshiHistory && operation.floorRawFingerprint && liveRawFingerprint !== operation.floorRawFingerprint;
+    if (!floor || floor.narrativeGeneration !== replacement.narrativeGeneration || revisionSourceChanged) {
       throw operation.qianshiHistory
         ? errorWith('QIANSHI_HISTORY_SOURCE_CHANGED', `第 ${replacement.assistantSeq ?? floor?.assistantSeq ?? '?'} 楼身份已变化；本次历史结果未保存，旧档案保持不变。`)
         : operation.qianshiTextEdit
@@ -1552,7 +1583,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       throw errorWith('V3_MEMORY_COLD_READ_FAILED', '记忆已提交，但提交结果缺少一致的冷读取校验。');
     }
     operation.committedReachable = committedReachable;
-    const targetVisible = !operation.pinnedTarget || reachable?.root?.chatId === committedReachable.root.chatId;
+    const targetVisible = !operation.pinnedTarget || (operation.targetIdentity
+      ? sameTargetIdentity(captureTargetIdentity(), operation.targetIdentity) : reachable?.root?.chatId === committedReachable.root.chatId)
+      && reachable?.root?.chatId === committedReachable.root.chatId;
     if (targetVisible) {
       reachable = committedReachable;
       foundationRuntime.adoptReachable?.(committedReachable);
@@ -1818,14 +1851,51 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
   async function reviseInternal(floorId, action, { userText = null, revisionNote = null, metadata = null } = {}) {
     if (active) return getState();
-    const foundation = await foundationRuntime.refreshStatus();
-    if (foundation.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '后端数据尚未与当前正文完成同步，当前不能修订。');
-    await loadCurrent(epoch);
-    const floor = reachable?.floors?.find(item => item.id === floorId), old = currentMemoryMap(reachable).get(floorId);
+    const targetIdentity = captureTargetIdentity();
+    const targetStore = storeForTargetIdentity(targetIdentity);
+    try {
+    const hostSnapshotAtStart = hostAdapter.snapshot();
+    const targetSnapshotGraph = targetIdentity
+      ? reachable?.root?.chatId === targetIdentity.chatId ? reachable : foundationRuntime.getReachable?.()
+      : null;
+    const targetFloorAtStart = targetIdentity && targetSnapshotGraph?.root?.chatId === targetIdentity.chatId
+      ? targetSnapshotGraph.floors.find(item => item.id === floorId) ?? null : null;
+    if (targetIdentity && !targetFloorAtStart) throw errorWith('V3_MEMORY_REVISION_UNAVAILABLE', '原目标没有可用的楼档快照。');
+    const selectedAtStart = targetFloorAtStart ? rawSelectionFromSnapshot(hostSnapshotAtStart, targetFloorAtStart) : null;
+    if (targetIdentity && !selectedAtStart) throw errorWith('V3_MEMORY_REVISION_UNAVAILABLE', '原目标正文当前无法对应到这楼。');
+    const startRawContent = typeof selectedAtStart?.rawContent === 'string' ? selectedAtStart.rawContent : null;
+    const startRawFingerprint = startRawContent === null ? null : `sha256:${await sha256(startRawContent)}`;
+    const startClockSignature = targetFloorAtStart
+      ? clockEvidence(selectedAtStart, currentReferenceTags()).signature : null;
+    const archiveWitnessAtStart = targetFloorAtStart ? Object.freeze({
+      rawFingerprint: targetFloorAtStart.content.rawFingerprint,
+      canonicalFingerprint: targetFloorAtStart.content.canonicalFingerprint,
+      narrativeGeneration: targetFloorAtStart.narrativeGeneration,
+      hostLocator: JSON.stringify(targetFloorAtStart.hostLocator),
+    }) : null;
+    let source;
+    if (targetIdentity) {
+      const cached = reachable?.root?.chatId === targetIdentity.chatId ? reachable : null;
+      source = await latestReachableForCommit({ epoch, store: targetStore, pinnedTarget: true, targetIdentity }, cached);
+      if (source.root.chatId !== targetIdentity.chatId) throw errorWith('V3_MEMORY_REVISION_UNAVAILABLE', '原目标没有可用的后端快照。');
+    } else {
+      const foundation = await foundationRuntime.refreshStatus();
+      if (foundation.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '后端数据尚未与当前正文完成同步，当前不能修订。');
+      await loadCurrent(epoch);
+      source = reachable;
+    }
+    const floor = source?.floors?.find(item => item.id === floorId), old = currentMemoryMap(source).get(floorId);
     if (!floor || !old) throw errorWith('V3_MEMORY_REVISION_UNAVAILABLE', '该楼还没有可修订的正式记忆。');
-    const selectedAtRevision = currentRawSelection(hostAdapter, floor);
-    const revisionRawContent = selectedAtRevision?.rawContent;
-    const revisionRawFingerprint = typeof revisionRawContent === 'string' ? `sha256:${await sha256(revisionRawContent)}` : floor.content.rawFingerprint;
+    if (targetIdentity && (floor.content.rawFingerprint !== archiveWitnessAtStart?.rawFingerprint
+      || floor.content.canonicalFingerprint !== archiveWitnessAtStart?.canonicalFingerprint
+      || floor.narrativeGeneration !== archiveWitnessAtStart?.narrativeGeneration
+      || JSON.stringify(floor.hostLocator) !== archiveWitnessAtStart?.hostLocator)) {
+      throw errorWith('V3_MEMORY_STALE', '原目标楼档在修订开始时已变化，请刷新后再确认。');
+    }
+    const selectedAtRevision = targetIdentity ? selectedAtStart : rawSelectionFromSnapshot(hostSnapshotAtStart, floor);
+    const revisionRawFingerprint = targetIdentity ? startRawFingerprint ?? floor.content.rawFingerprint
+      : typeof selectedAtRevision?.rawContent === 'string' ? `sha256:${await sha256(selectedAtRevision.rawContent)}` : floor.content.rawFingerprint;
+    const revisionClockSignature = targetIdentity ? startClockSignature ?? '' : clockEvidence(selectedAtRevision, currentReferenceTags()).signature;
     const nowValue = nowIso(now);
     const revisionRunId = await deterministicUuid(['v3-memory-revision-run', old.id, action, nowValue, newUuid()]);
     const requestedSummary = String(metadata?.summary ?? userText ?? '').trim();
@@ -1836,7 +1906,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         : action === 'editMetadata' ? old.summary
           : { ...old.summary, revisionNote: requestedRevisionNote || '用户标记错误' };
     if ((action === 'edit' || summaryChanged) && !summary.userText) throw errorWith('V3_MEMORY_SUMMARY_EMPTY', '摘要不能为空。');
-    let chronology = old.chronology, locations = old.locations, participants = old.participants, newEntities = [], effectiveTimeChanged = false;
+    let chronology = old.chronology, locations = old.locations, participants = old.participants, spatialFacts = old.spatialFacts, newEntities = [], effectiveTimeChanged = false;
+    const effectiveSummaryChanged = String(summary.effectiveSource === 'user' ? summary.userText : summary.aiText).trim() !== String(effectiveSummary(old) ?? '').trim();
     if (action === 'editMetadata') {
       const priorTimeText = [...new Set(old.chronology.map(item => item.time?.sourceText || item.time?.normalized || item.description).map(value => String(value ?? '').trim()).filter(Boolean))].join('；');
       const requestedTimeText = String(metadata?.timeText ?? priorTimeText).trim().slice(0, 500);
@@ -1851,14 +1922,14 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         locations.push({
           ...(prior ?? {}),
           itemId: prior?.itemId ?? await deterministicUuid(['v3-user-location', old.id, nowValue, index, name]),
-          entityId: prior?.entityId ?? null,
+          entityId: prior && normalizedName(prior.name) === normalizedName(name) ? prior.entityId ?? null : null,
           name,
           change: prior?.change ?? 'present',
           participantEntityIds: prior?.participantEntityIds ?? [],
           evidenceRefs: prior?.evidenceRefs ?? [],
         });
       }
-      const activePeople = reachable.entities.filter(entity => entity.entityType === 'person' && entity.recordStatus === 'active' && entity.status !== 'merged' && entity.status !== 'invalidated');
+      const activePeople = source.entities.filter(entity => entity.entityType === 'person' && entity.recordStatus === 'active' && entity.status !== 'merged' && entity.status !== 'invalidated');
       const existingParticipants = new Map(old.participants.map(item => [item.entityId, item]));
       const floorPeople = activePeople.filter(entity => existingParticipants.has(entity.id));
       const match = name => [...floorPeople, ...activePeople].find(entity => [entity.displayName, ...(entity.aliases ?? []).map(alias => alias.name)].some(label => normalizedName(label) === normalizedName(name)));
@@ -1877,25 +1948,39 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         const unchanged = selected.length === old.participants.length && selected.every((entity, index) => entity.id === old.participants[index].entityId);
         if (!unchanged) participants = selected.map(entity => existingParticipants.get(entity.id) ?? { entityId: entity.id, presence: 'mentioned', evidenceRefs: [] });
       }
+      const locationOrParticipantChanged = JSON.stringify(locations) !== JSON.stringify(old.locations)
+        || JSON.stringify(participants) !== JSON.stringify(old.participants);
+      if (summaryChanged || locationOrParticipantChanged) spatialFacts = undefined;
       const noteChanged = Boolean(requestedRevisionNote) && requestedRevisionNote !== String(old.summary.revisionNote ?? '').trim();
-      const metadataChanged = summaryChanged || effectiveTimeChanged || newEntities.length > 0 || noteChanged || JSON.stringify(locations) !== JSON.stringify(old.locations) || JSON.stringify(participants) !== JSON.stringify(old.participants);
+      const metadataChanged = summaryChanged || effectiveTimeChanged || newEntities.length > 0 || noteChanged || locationOrParticipantChanged;
       if (!metadataChanged) return notify();
       if (!summaryChanged) summary = { ...old.summary, revisionNote: requestedRevisionNote || old.summary.revisionNote || '用户修订时间、地点或人物' };
     }
-    const id = await deterministicUuid(['v3-memory-revision', old.id, action, summary, chronology, locations, participants, nowValue]);
-    const replacement = validateFloorMemory({ ...old, id, summary, chronology, locations, participants, createdAt: nowValue, updatedAt: nowValue, recordStatus: action === 'markError' ? 'invalidated' : 'active', supersedes: old.id }, { expectedChatId: old.chatId });
-    const operation = { floorId, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: revisionRawFingerprint, epoch, controller: new AbortController(), runId: revisionRunId, startedAt: nowValue, phase: 'committing' };
-    operation.dependencySnapshot = await extractorDependencySnapshot(reachable, floorId, { userIdentity: currentUserIdentity(), promptGuidance: '' });
+    if (effectiveSummaryChanged) spatialFacts = undefined;
+    const id = await deterministicUuid(['v3-memory-revision', old.id, action, summary, chronology, locations, participants, spatialFacts ?? null, nowValue]);
+    const replacementData = { ...old, id, summary, chronology, locations, participants, createdAt: nowValue, updatedAt: nowValue, recordStatus: action === 'markError' ? 'invalidated' : 'active', supersedes: old.id };
+    if (spatialFacts) replacementData.spatialFacts = spatialFacts; else delete replacementData.spatialFacts;
+    const replacement = validateFloorMemory(replacementData, { expectedChatId: old.chatId });
+    const operation = { floorId, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: revisionRawFingerprint, epoch,
+      ...(targetIdentity ? { targetIdentity, store: targetStore, pinnedTarget: true, manualRevision: true,
+        manualRevisionTargetMemoryId: old.id,
+        archiveRawFingerprint: archiveWitnessAtStart.rawFingerprint, archiveCanonicalFingerprint: archiveWitnessAtStart.canonicalFingerprint,
+        archiveNarrativeGeneration: archiveWitnessAtStart.narrativeGeneration, archiveHostLocator: archiveWitnessAtStart.hostLocator,
+        startedSwipeId: selectedAtStart.swipeId, startedSelectedSwipeIndex: selectedAtStart.selectedSwipeIndex } : {}),
+      controller: new AbortController(), runId: revisionRunId, startedAt: nowValue, phase: 'committing' };
+    if (!targetIdentity) operation.dependencySnapshot = await extractorDependencySnapshot(source, floorId, { userIdentity: currentUserIdentity(), promptGuidance: '' });
     operation.dependencyBoundaryMessageIndex = Math.max(...(operation.dependencySnapshot?.floorDependencies ?? []).map(item => {
-      const sourceFloor = reachable.floors.find(candidate => candidate.id === item.id);
+      const sourceFloor = source.floors.find(candidate => candidate.id === item.id);
       return sourceFloor?.stability?.proof?.messageIndex ?? item.hostLocator.messageIndex;
     }));
-    operation.hostIdentity = generationIdentity(hostAdapter.snapshot());
-    active = operation; notify();
-    const priorAudit = floorProvenance(reachable)[floorId] ?? {};
-    try { await commitRevision(operation, { oldReachable: reachable, replacement, newEntities, provenanceEntry: { api: priorAudit.api ?? null, attempts: priorAudit.attempts ?? 0, transportAttempts: priorAudit.transportAttempts ?? null, responseFingerprint: priorAudit.responseFingerprint ?? null, extractorVersion: priorAudit.extractorVersion ?? old.extractorVersion, needsReview: priorAudit.needsReview ?? false, rawFingerprint: priorAudit.rawFingerprint ?? floor.content.rawFingerprint, storyClockSignature: priorAudit.storyClockSignature ?? currentClockSignature(floor), timeEdited: priorAudit.timeEdited === true || (action === 'editMetadata' && effectiveTimeChanged) }, action }); }
-    finally { active = null; }
+    operation.hostIdentity = generationIdentity(hostSnapshotAtStart);
+    if (!operation.pinnedTarget) active = operation;
+    notify();
+    const priorAudit = floorProvenance(source)[floorId] ?? {};
+    try { await commitRevision(operation, { oldReachable: source, replacement, newEntities, provenanceEntry: { api: priorAudit.api ?? null, attempts: priorAudit.attempts ?? 0, transportAttempts: priorAudit.transportAttempts ?? null, responseFingerprint: priorAudit.responseFingerprint ?? null, extractorVersion: priorAudit.extractorVersion ?? old.extractorVersion, needsReview: priorAudit.needsReview ?? false, rawFingerprint: priorAudit.rawFingerprint ?? floor.content.rawFingerprint, storyClockSignature: priorAudit.storyClockSignature ?? revisionClockSignature, timeEdited: priorAudit.timeEdited === true || (action === 'editMetadata' && effectiveTimeChanged) }, action }); }
+    finally { if (active === operation) active = null; }
     return notify();
+    } finally { if (targetIdentity) releaseIdentityStore(targetStore); }
   }
   const extractFloor = (floorId, options) => runManualWork('extracting', manualWork => {
     const memory = currentMemoryMap(reachable).get(floorId);
@@ -1923,6 +2008,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       delete memoryCopy.sourceVariableReference;
       memoryCopy.summaryEvidenceRefs = memoryCopy.summaryEvidenceRefs.map(evidenceSafe);
       for (const field of ['chronology', 'locations', 'participants', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'openLoops', 'ambiguities', 'cseSignals']) memoryCopy[field].forEach(item => { item.evidenceRefs = (item.evidenceRefs ?? []).map(evidenceSafe); });
+      for (const field of ['containments', 'positions']) memoryCopy.spatialFacts?.[field]?.forEach(item => { item.evidenceRefs = (item.evidenceRefs ?? []).map(evidenceSafe); });
       memoryCopy.exactAnchors = memoryCopy.exactAnchors.map(anchor => ({ ...anchor, exactText: `[已隐藏原文 · ${anchor.exactText.length} 字]` }));
     }
     const payload = { plugin: 'ST-QianQianJie', schemaVersion: 3, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: provenanceEntry.extractorVersion ?? memory?.extractorVersion ?? EXTRACTOR_VERSION, chatId: reachable.root.chatId, narrativeGeneration: reachable.root.narrativeGeneration, floorId, runId: view.runId ?? lastFailure?.runId ?? null, checkpointId: reachable.root.headCheckpointId, memoryId: view.memoryId, status: view.status, stage: active?.floorId === floorId ? active.phase : (lastFailure?.floorId === floorId ? lastFailure.phase : 'settled'), api: view.api ?? lastFailure?.api ?? null, attempts: view.attempts || lastFailure?.attempts || 0, transportAttempts: provenanceEntry.transportAttempts ?? lastFailure?.transportAttempts ?? null, responseFingerprint: provenanceEntry.responseFingerprint ?? null, error: lastFailure?.floorId === floorId ? { code: lastFailure.code, httpStatus: lastFailure.httpStatus ?? null, providerError: lastFailure.providerError ?? null, formatStage: lastFailure.formatStage, validationErrors: lastFailure.validationErrors, message: lastFailure.message } : null, structuredCounts: view.counts, floorMemory: memoryCopy, ...(full ? { canonicalContent: floor.content.canonicalContent, sessionCandidate: sessionCandidates.get(floorId) ?? null } : {}) };

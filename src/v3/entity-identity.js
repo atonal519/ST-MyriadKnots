@@ -65,6 +65,63 @@ const resolvedParticipants = (values, projection) => {
 
 export function projectFloorMemoryIdentityReferences(memory, projection = {}) {
   const resolve = id => resolveIdentityEntityId(id, projection);
+  const spatialFacts = memory?.spatialFacts ? (() => {
+    const edges = (memory.spatialFacts.containments ?? []).flatMap(item => {
+      const placeEntityId = resolve(item.placeEntityId), parentEntityId = resolve(item.parentEntityId);
+      return !placeEntityId || !parentEntityId || isIdentityDeleted(placeEntityId, projection) || isIdentityDeleted(parentEntityId, projection)
+        ? [] : [{ item, placeEntityId, parentEntityId }];
+    });
+    const edgesBySource = new Map(), invalidChildrenBySource = new Map();
+    for (const edge of edges) for (const sourceFloorId of new Set((edge.item.evidenceRefs ?? []).map(ref => ref.floorId))) {
+      const current = invalidChildrenBySource.get(sourceFloorId) ?? new Set();
+      if (edge.placeEntityId === edge.parentEntityId) { current.add(edge.placeEntityId); invalidChildrenBySource.set(sourceFloorId, current); continue; }
+      const sourceEdges = edgesBySource.get(sourceFloorId) ?? [];
+      sourceEdges.push(edge); edgesBySource.set(sourceFloorId, sourceEdges);
+    }
+    for (const [sourceFloorId, sourceEdges] of edgesBySource) {
+      const parentSets = new Map();
+      for (const edge of sourceEdges) {
+        const parents = parentSets.get(edge.placeEntityId) ?? new Set();
+        parents.add(edge.parentEntityId); parentSets.set(edge.placeEntityId, parents);
+      }
+      const invalidChildren = invalidChildrenBySource.get(sourceFloorId) ?? new Set();
+      for (const [placeId, parents] of parentSets) if (parents.size > 1) invalidChildren.add(placeId);
+      const singleParent = new Map([...parentSets].filter(([placeId, parents]) => parents.size === 1 && !invalidChildren.has(placeId)).map(([placeId, parents]) => [placeId, [...parents][0]]));
+      for (const start of singleParent.keys()) {
+        const path = [], offsetByPlace = new Map(); let current = start;
+        while (singleParent.has(current)) {
+          if (offsetByPlace.has(current)) { for (const placeId of path.slice(offsetByPlace.get(current))) invalidChildren.add(placeId); break; }
+          offsetByPlace.set(current, path.length); path.push(current); current = singleParent.get(current);
+        }
+      }
+      if (invalidChildren.size) invalidChildrenBySource.set(sourceFloorId, invalidChildren);
+    }
+    const containments = edges.flatMap(({ item, placeEntityId, parentEntityId }) => {
+      const evidenceRefs = (item.evidenceRefs ?? []).filter(ref => !invalidChildrenBySource.get(ref.floorId)?.has(placeEntityId));
+      return evidenceRefs.length ? [Object.freeze({ ...item, placeEntityId, parentEntityId, evidenceRefs: Object.freeze(evidenceRefs) })] : [];
+    });
+    const positionRows = [];
+    for (const item of memory.spatialFacts.positions ?? []) {
+      const subjectEntityId = resolve(item.subjectEntityId);
+      let placeEntityId = item.placeEntityId ? resolve(item.placeEntityId) : null;
+      if (!subjectEntityId || isIdentityDeleted(subjectEntityId, projection)) continue;
+      if (placeEntityId && isIdentityDeleted(placeEntityId, projection)) placeEntityId = null;
+      if (item.status !== 'leftUnknown' && !placeEntityId) continue;
+      positionRows.push({ item, subjectEntityId, placeEntityId });
+    }
+    const invalidPositionSubjects = new Set(), signatureBySourceSubject = new Map();
+    for (const row of positionRows) for (const sourceFloorId of new Set((row.item.evidenceRefs ?? []).map(ref => ref.floorId))) {
+      const key = `${sourceFloorId}|${row.subjectEntityId}`, signature = JSON.stringify([row.placeEntityId, row.item.status]);
+      const previous = signatureBySourceSubject.get(key);
+      if (previous && previous !== signature) invalidPositionSubjects.add(key);
+      else signatureBySourceSubject.set(key, signature);
+    }
+    const positions = positionRows.flatMap(({ item, subjectEntityId, placeEntityId }) => {
+      const evidenceRefs = (item.evidenceRefs ?? []).filter(ref => !invalidPositionSubjects.has(`${ref.floorId}|${subjectEntityId}`));
+      return evidenceRefs.length ? [Object.freeze({ ...item, subjectEntityId, placeEntityId, evidenceRefs: Object.freeze(evidenceRefs) })] : [];
+    });
+    return Object.freeze({ ...memory.spatialFacts, containments: Object.freeze(containments), positions: Object.freeze(positions) });
+  })() : undefined;
   return Object.freeze({ ...memory,
     participants: resolvedParticipants(memory?.participants, projection),
     locations: Object.freeze((memory?.locations ?? []).map(item => Object.freeze({ ...item, entityId: item.entityId ? resolve(item.entityId) : null, participantEntityIds: resolvedIds(item.participantEntityIds, projection) }))),
@@ -76,6 +133,7 @@ export function projectFloorMemoryIdentityReferences(memory, projection = {}) {
     openLoops: Object.freeze((memory?.openLoops ?? []).map(item => Object.freeze({ ...item, ownerEntityIds: resolvedIds(item.ownerEntityIds, projection) }))),
     exactAnchors: Object.freeze((memory?.exactAnchors ?? []).map(item => Object.freeze({ ...item, speakerEntityId: item.speakerEntityId ? resolve(item.speakerEntityId) : null }))),
     cseSignals: Object.freeze((memory?.cseSignals ?? []).map(item => Object.freeze({ ...item, subjectEntityId: resolve(item.subjectEntityId), objectEntityId: item.objectEntityId ? resolve(item.objectEntityId) : null }))),
+    ...(spatialFacts ? { spatialFacts } : {}),
   });
 }
 

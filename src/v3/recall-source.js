@@ -46,6 +46,11 @@ function chronologyDto(memory, floorSeqById) {
 
 function memoryDto(memory, floor, { chronologyAllowed = true, floorSeqById = new Map() } = {}) {
   const sourceFloorIds = memorySourceFloorIds(memory);
+  const sourceRefs = refs => Object.freeze((refs ?? []).map(ref => Object.freeze({
+    floorId: ref.floorId,
+    assistantSeq: floorSeqById.get(ref.floorId) ?? null,
+    quotedText: safeText(ref.quotedText, 500),
+  })));
   return Object.freeze({
     floorId: floor.id,
     floorMemoryId: memory.id,
@@ -55,7 +60,11 @@ function memoryDto(memory, floor, { chronologyAllowed = true, floorSeqById = new
     summary: summaryText(memory),
     chronology: chronologyAllowed ? chronologyDto(memory, floorSeqById) : Object.freeze([]),
     participants: Object.freeze((memory.participants ?? []).map(item => ({ entityId: item.entityId, presence: item.presence }))),
-    locations: Object.freeze((memory.locations ?? []).map(item => ({ name: safeText(item.name, 500), change: item.change, entityId: item.entityId ?? null, participantEntityIds: Object.freeze([...(item.participantEntityIds ?? [])]) }))),
+    locations: Object.freeze((memory.locations ?? []).map(item => ({ name: safeText(item.name, 500), change: item.change, entityId: item.entityId ?? null, participantEntityIds: Object.freeze([...(item.participantEntityIds ?? [])]), sourceRefs: sourceRefs(item.evidenceRefs) }))),
+    spatialFacts: memory.spatialFacts ? Object.freeze({
+      containments: Object.freeze((memory.spatialFacts.containments ?? []).map(item => Object.freeze({ placeEntityId: item.placeEntityId, parentEntityId: item.parentEntityId, sourceRefs: sourceRefs(item.evidenceRefs) }))),
+      positions: Object.freeze((memory.spatialFacts.positions ?? []).map(item => Object.freeze({ subjectEntityId: item.subjectEntityId, placeEntityId: item.placeEntityId, status: item.status, sourceRefs: sourceRefs(item.evidenceRefs) }))),
+    }) : null,
     commitments: Object.freeze((memory.commitments ?? []).map(item => ({ speakerEntityId: item.speakerEntityId, targetEntityIds: Object.freeze([...(item.targetEntityIds ?? [])]), kind: item.kind, content: safeText(item.content), status: item.status, exactAnchorId: item.exactAnchorId ?? null }))),
     openLoops: Object.freeze((memory.openLoops ?? []).map(item => ({ description: safeText(item.description), ownerEntityIds: Object.freeze([...(item.ownerEntityIds ?? [])]) }))),
     exactAnchors: Object.freeze((memory.exactAnchors ?? []).map(item => ({ anchorId: item.anchorId, kind: item.kind, exactText: safeText(item.exactText, 2000), speakerEntityId: item.speakerEntityId ?? null, whyPreserve: safeText(item.whyPreserve, 1000) }))),

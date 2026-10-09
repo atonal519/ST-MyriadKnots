@@ -113,6 +113,8 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
     const hostPath = new URL(identifier).pathname.replace(new RegExp('^/[A-Za-z]:'), '');
     let module;
     if (hostPath === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'me.png' });
+    else if (hostPath === '/scripts/user.js') module = synthetic(identifier, { getCurrentUserHandle: () => 'isolated-test-user' });
+    else if (hostPath === '/lib.js') module = synthetic(identifier, { localforage: { INDEXEDDB: 'INDEXEDDB', createInstance: () => ({ async ready() {}, async getItem() { return null; }, async setItem() {}, async removeItem() {}, async keys() { return []; } }) } });
     else if (hostPath === '/scripts/power-user.js') module = synthetic(identifier, { power_user: { persona_description: '' } });
     else if (hostPath === '/scripts/extensions.js') module = synthetic(identifier, { extension_settings: { qianqianjie: { pluginEnabled: enabled }, 'schedule-planner': {} }, extensionNames: [] });
     else if (hostPath === '/script.js') module = synthetic(identifier, { is_send_press: false, saveSettingsDebounced() {} });
@@ -192,7 +194,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.7.1');
+  assert.equal(manifest.version, '0.7.2');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -259,6 +261,8 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
     const hostPath = new URL(identifier).pathname.replace(new RegExp('^/[A-Za-z]:'), '');
     let module;
     if (hostPath === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'me.png' });
+    else if (hostPath === '/scripts/user.js') module = synthetic(identifier, { getCurrentUserHandle: () => 'isolated-test-user' });
+    else if (hostPath === '/lib.js') module = synthetic(identifier, { localforage: { INDEXEDDB: 'INDEXEDDB', createInstance: () => ({ async ready() {}, async getItem() { return null; }, async setItem() {}, async removeItem() {}, async keys() { return []; } }) } });
     else if (hostPath === '/scripts/power-user.js') module = synthetic(identifier, { power_user: { persona_description: '' } });
     else if (hostPath === '/scripts/extensions.js') module = synthetic(identifier, { extension_settings: { qianqianjie: { pluginEnabled: false }, 'schedule-planner': {} }, extensionNames: [] });
     else if (hostPath === '/script.js') module = synthetic(identifier, { is_send_press: false, saveSettingsDebounced() {} });
@@ -271,7 +275,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const entryPath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : bundlePath;
   const entry = await load(pathToFileURL(entryPath).href);
   await entry.link((specifier, referencing) => load(new URL(specifier, referencing.identifier).href));
-  assert.deepEqual((entry.moduleRequests || []).map(item => item.specifier).filter(specifier => specifier !== '/scripts/power-user.js'), ['/scripts/personas.js', '/scripts/extensions.js', '/script.js', '/scripts/group-chats.js', '/scripts/world-info.js']);
+  assert.deepEqual((entry.moduleRequests || []).map(item => item.specifier).filter(specifier => specifier !== '/scripts/power-user.js'), ['/scripts/personas.js', '/scripts/extensions.js', '/script.js', '/scripts/group-chats.js', '/scripts/world-info.js', '/lib.js', '/scripts/user.js']);
   await entry.evaluate();
   await new Promise(resolvePromise => setImmediate(resolvePromise));
   assert.equal(entry.status, 'evaluated');
@@ -334,6 +338,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let bootstrapOptions;
   let compactOptions;
   let foundationOptions;
+  let coreCacheOptions;
+  const foundationStoreOptions = [];
   let branchInitializerOptions;
   let v3MemoryBindOptions;
   const sessionState = { status: 'preparing' };
@@ -359,6 +365,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
     return module;
   };
   define('/scripts/personas.js', { user_avatar: 'me.png' });
+  define('/scripts/user.js', { getCurrentUserHandle: () => 'isolated-test-user' });
+  const hostLocalForage = { INDEXEDDB: 'INDEXEDDB', createInstance: () => ({ async ready() {}, async getItem() { return null; }, async setItem() {}, async removeItem() {}, async keys() { return []; } }) };
+  define('/lib.js', { localforage: hostLocalForage });
   define('/scripts/power-user.js', { power_user: { persona_description: '' } });
   const peerExtensionSettings = { disabledExtensions: [], 'schedule-planner': {} };
   const peerExtensionNames = ['third-party/ST-SevenDaysCal'];
@@ -372,6 +381,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const backendSnapshot = { sinceClientCreatedRequestCounts: { get: 3, put: 1, delete: 0 }, latestRead: null, latestWrite: null, lastFailure: null };
   const backendClient = { getDiagnosticSnapshot: () => backendSnapshot };
   define('./src/backend-client.js', { createBackendClient: () => backendClient });
+  define('./src/tauri-backend.js', { isTauriTavern: () => false });
   define('./src/private-recall-diagnostics.js', { createPrivateRecallDiagnostics: () => ({ start: async () => false, dispose() {} }) });
   define('./src/bootstrap.js', { bootstrap: options => { bootstrapOptions = options; return { refresh() {}, setEnabled() {}, openMemory() { openMemoryCalls += 1; } }; } });
   const productionSettings = { generalPrompt: '旧通用附加残留', processingPrompt: '  破限接线\n', summaryPrompt: '摘要指导', csePrompt: 'CSE 指导', profilePrompt: '人物资料指导', storyClockReferenceTags: 'Ti,时标', storyCalendars: {} };
@@ -416,7 +426,12 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/source-permission.js', { createSourcePermissionController: () => ({}) });
   const productionHostContext = { eventSource: productionEventSource, eventTypes: productionEventTypes, uuidv4, getRequestHeaders: () => ({ 'X-CSRF-Token': 'token' }), groupId: null, characterId: 0, characters: [{ avatar: 'char.png' }] };
   define('./src/v3/host-adapter.js', { createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => productionHostContext, snapshot: () => ({}) }; } });
-  define('./src/v3/foundation-store.js', { createFoundationStore: () => ({}) });
+  define('./src/v3/foundation-store.js', { createFoundationStore: options => { foundationStoreOptions.push(options); return {}; } });
+  define('./src/v3/historical-rebuild-task.js', { runHistoricalRebuildTask: async () => ({ status: 'complete' }) });
+  define('./src/v3/historical-rebuild-sources.js', { captureHistoricalRebuildSources: async () => ({}) });
+  let coreStats = { available: false };
+  const coreRecordCache = { getStats: () => coreStats };
+  define('./src/v3/indexeddb-core-cache.js', { createIndexedDbCoreRecordCache: options => { coreCacheOptions = options; return coreRecordCache; } });
   const productionReachable = { baseline: { userPersona: { entityId: 'user-id', name: '用户' } }, entities: [
     { id: 'awake-id', entityType: 'person', displayName: '在场人物' }, { id: 'sleep-id', entityType: 'person', displayName: '休眠人物' },
   ] };
@@ -471,7 +486,12 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   await entry.evaluate();
   await new Promise(resolvePromise => setImmediate(resolvePromise));
 
+  await vectorOptions.sourceProvider({ targetIdentity: { hostChatId: 'host-chat', chatId: 'test', characterLocator: 'char.png', personaLocator: 'me.png' } });
   assert.equal(memoryManagementOptions.vectorRuntime, vectorRuntime);
+  assert.equal(coreCacheOptions.localForage, hostLocalForage);
+  assert.equal(coreCacheOptions.accountHandleProvider(), 'isolated-test-user');
+  assert.equal(foundationStoreOptions[0].coreRecordCache, coreRecordCache);
+  assert.equal(foundationStoreOptions[1].coreRecordCache, coreRecordCache, '生产向量读取复用同一派生缓存实例');
   assert.deepEqual(vectorClientOptions.headers(), { 'X-CSRF-Token': 'token' }, '向量客户端从当前宿主上下文读取 CSRF 头');
   assert.equal(vectorOptions.api, vectorApi);
   assert.equal(typeof vectorOptions.identityProvider, 'function');
@@ -616,7 +636,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const claimsBeforeUiWait = hostUuidCalls;
   assert.equal(await bootstrapOptions.prepareSession(), hostUuid);
   assert.equal(hostUuidCalls, claimsBeforeUiWait + 1, '人物页等待入口必须调用现有 session.prepare');
-  assert.deepEqual(bootstrapOptions.backendDiagnosticProvider(), backendSnapshot);
+  assert.deepEqual(nativeJson(bootstrapOptions.backendDiagnosticProvider()), { ...backendSnapshot, coreCache: { available: false } });
+  coreStats = { available: false, firstFailure: { phase: 'record-read', code: 'IDB_CACHE_TIMEOUT', name: 'Error', elapsedMs: 900, deadlineLatenessMs: 12, lateResult: 'pending', lateElapsedMs: null, lateAt: null, at: 123 } };
+  assert.deepEqual(nativeJson(bootstrapOptions.backendDiagnosticProvider()).coreCache, coreStats, '复制诊断的数据源保留安全core cache failure字段');
   assert.equal(bootstrapOptions.pluginVersion, '0.1.9-test');
   assert.equal(bootstrapOptions.enableFab, true);
   assert.equal(typeof bootstrapOptions.subscribeDialogContextChange, 'function');

@@ -534,8 +534,9 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
   };
   let identityState = { status: 'preparing', identity: { chatId: rawChatId, hostChatId: privateText }, error: Object.assign(new Error(privateText), { code: 'QQJ_CHAT_BINDING_CONFLICT', httpStatus: 409 }) };
   let recallState = { recallStatus: 'running', activeRecall: { phase: 'selecting', token: privateText, chatId: rawChatId }, lastRecallError: Object.assign(new Error(privateText), { code: 'QQJ_TIMEOUT', httpStatus: 504 }) };
-  let managementState = { status: 'deleting', phase: 'deletingRecords', workBusy: true, blockedByOtherChat: true, error: privateText, targetChatId: rawChatId };
-  let backendState = { sinceClientCreatedRequestCounts: { get: 2, put: 1, delete: 0 }, latestRead: null, latestWrite: null, lastFailure: null };
+  let managementState = { status: 'deleting', phase: 'deletingRecords', workBusy: true, error: privateText, targetChatId: rawChatId };
+  let backendState = { sinceClientCreatedRequestCounts: { get: 2, put: 1, delete: 0 }, latestRead: null, latestWrite: null, lastFailure: null,
+    coreCache: { available: true, hits: 271, misses: 0, corruptions: 0, writes: 4, writeFailures: 0, evictedRecords: 0, estimatedBytes: 123456 } };
   const listeners = new Set(); let refreshes = 0, sessionReads = 0, backendReads = 0, recallReads = 0, managementReads = 0;
   const runtime = {
     getState: () => memoryState,
@@ -579,7 +580,7 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
   assert.deepEqual(diagnostic.memory.lastExtractorError, { present: true, name: 'TypeError', code: 'V3_EXTRACTOR_FAILED', httpStatus: 429 });
   assert.deepEqual(diagnostic.memory.lastAutomationError, { present: true, name: 'Error', code: 'V3_AUTO_MEMORY_FAILED', prepareStep: null, detail: null, location: null, lastFailedAt: null });
   assert.equal(diagnostic.cse.active.phase, 'committing'); assert.equal(diagnostic.recall.active.phase, 'selecting');
-  assert.deepEqual(diagnostic.management, { status: 'deleting', phase: 'deletingRecords', workBusy: true, blockedByOtherChat: true, error: { present: true } });
+  assert.deepEqual(diagnostic.management, { status: 'deleting', phase: 'deletingRecords', workBusy: true, error: { present: true } });
   assert.deepEqual(diagnostic.ui, { syncingOverlayActive: true, workBusy: true, deleting: true, deletePending: false });
   const serialized = JSON.stringify(diagnostic);
   assert.doesNotMatch(serialized, new RegExp(`${privateText}|${rawChatId}|${rawHeadId}|private-floor|private-run|private-memory`));
@@ -754,11 +755,11 @@ test('A删除失败后切到B重绘不会沿用A失败文案或禁用B的普通�
   const memoryManagement = { getState: () => currentManagement, deleteCurrent: async () => ({ status: 'completed' }) };
   const container = new Node('main'), view = createV3FoundationView({ runtime, memoryManagement, documentRef }); view.mount(container);
   assert.match(flatten(container).map(node => node.textContent).join('|'), /继续删除当前聊天记忆|A版本冲突/);
-  current = stateB; currentManagement = { status: 'idle', blockedByOtherChat: true }; view.render(current);
+  current = stateB; currentManagement = { status: 'idle' }; view.render(current);
   const copy = flatten(container).map(node => node.textContent).join('|');
   assert.doesNotMatch(copy, /继续删除当前聊天记忆|A版本冲突|已保留原聊天身份/);
   assert.equal(flatten(container).find(node => node.textContent === '补齐缺失').disabled, false, 'B普通记忆管理不应被A删除失败阻塞');
-  assert.equal(flatten(container).find(node => node.textContent === '删除当前聊天记忆').disabled, true, '单一删除流程未收口前B不能另起删除');
+  assert.equal(flatten(container).find(node => node.textContent === '删除当前聊天记忆').disabled, false, 'A失败状态不会限制B删除当前聊天');
 });
 
 test('Extractor 失败且尚无 FloorMemory 时仍可复制诊断并直接提取摘要', async () => {
@@ -1100,6 +1101,30 @@ test('历史欠账与人物状态重构按钮各自开始暂停继续，CSE 进�
   assert.equal(pauses, 1);
 });
 
+test('完全重构进度与暂停/续跑控制从管理页转发到同一目标任务', async () => {
+  const state = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 4, rememberedCount: 4, unprocessedCount: 0, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'head', activeRun: null, activeExtraction: null, activeCse: null, memoryWorkBusy: false, activeAutoMemory: null, lastRun: null, lastError: null, lastExtractorError: null, lastCseError: null, unreachableCount: 0, metrics: {}, autoMemoryEnabled: true, autoMemoryBatchSize: 1, rebuildStatus: 'caughtUp', rebuildCompletedCount: 4, rebuildTotalCount: 4, rebuildHasActionableWork: false, cseRebuildStatus: 'idle', cseRebuildCompletedCount: 0, cseRebuildTotalCount: 0, cseReady: true, csePendingCount: 0, cseFailedCount: 0, baselineId: null, cseSubjects: [], floors: [] };
+  let taskState = { ...state, rebuildStatus: 'rebuilding', rebuildCompletedCount: 2, rebuildTotalCount: 4, activeAutoMemory: { mode: 'historical', phase: 'extracting', floorIds: ['floor-a'] } };
+  let listener, paused = 0, resumed = 0;
+  const management = {
+    getState: () => ({ rebuildState: taskState, pauseHistoricalRebuild: async () => { paused += 1; taskState = { ...taskState, rebuildStatus: 'paused', activeAutoMemory: null }; listener?.(management.getState()); } }),
+    subscribe(callback) { listener = callback; return () => { listener = null; }; },
+    deleteCurrent: async () => ({}),
+    fullRebuild: async chatId => { assert.equal(chatId, CHAT); resumed += 1; taskState = { ...taskState, rebuildStatus: 'caughtUp' }; return taskState; },
+  };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, memoryManagement: management, documentRef });
+  view.mount(container); view.setPage('management');
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /历史重建\|正在重建 · 2\/4/);
+  const pause = flatten(container).find(node => node.textContent === '暂停重构');
+  assert.ok(pause); pause.click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(paused, 1);
+  assert.equal(flatten(container).some(node => node.textContent === '继续完全重构'), true);
+  assert.equal(flatten(container).some(node => node.textContent === '继续补齐'), false);
+  flatten(container).find(node => node.textContent === '继续完全重构').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(resumed, 1);
+});
+
 test('地基视图固定显示每楼更新，旧批次 20 不再生效', () => {
   const base = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: null, activeRun: null, activeExtraction: null, activeCse: null, memoryWorkBusy: false, activeAutoMemory: null, lastAutoMemory: null, lastRun: null, lastError: null, lastExtractorError: null, lastCseError: null, unreachableCount: 0, metrics: {}, autoMemoryEnabled: true, rebuildStatus: 'caughtUp', rebuildCompletedCount: 0, rebuildTotalCount: 0, rebuildNextAssistantSeq: null, cseReady: false, csePendingCount: 0, cseFailedCount: 0, baselineId: null, cseSubjects: [], floors: [] };
   const runtime = { getState: () => base, refreshStatus: async () => base, confirmLatest: async () => base };
@@ -1337,6 +1362,13 @@ test('召回常用摘要区分向量候选与实际原文段，诊断默认折�
     for (const listener of listeners) listener(state);
     assert.match(vectorRow().children[1].textContent, new RegExp(label));
   }
+  record = { ...record, status: 'ready', skipReasons: [], selectorDiagnostic: { ...record.selectorDiagnostic, semantic: { status: 'unindexed', candidateCount: 0, durationMs: 12 } } };
+  state = { ...state, recallStatus: 'ready', lastRecallError: null, lastRecall: record };
+  for (const listener of listeners) listener(state);
+  assert.match(vectorRow().children[1].textContent, /本轮无可用向量片段 · 候选 0/u);
+  assert.doesNotMatch(vectorRow().children[1].textContent, /未建索引|unindexed/u, '内部状态名不直接展示给用户');
+  await flatten(container).find(node => node.textContent === '复制回执').click();
+  assert.match(copied.at(-1), /向量 本轮无可用向量片段 · 候选 0 · 12\.0 ms/u, '复制回执复用用户可见状态文案');
   view.deactivate();
   assert.equal(listeners.size, 0);
 });

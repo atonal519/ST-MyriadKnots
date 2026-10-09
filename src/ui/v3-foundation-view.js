@@ -5,6 +5,14 @@ import { scrollManualEditorToTop } from './manual-editor-scroll.js';
 import { publicErrorMessage } from '../public-error.js';
 import { formatStoryTime } from '../v3/time-engine.js';
 
+const placeNameCache = new WeakMap();
+function placeNamesFor(entities) {
+  if (!Array.isArray(entities)) return new Map();
+  let names = placeNameCache.get(entities);
+  if (!names) { names = new Map(entities.map(entity => [entity.entityId, entity.displayName])); placeNameCache.set(entities, names); }
+  return names;
+}
+
 function text(value, fallback = '—') { return value === null || value === undefined || value === '' ? fallback : String(value); }
 
 const cseReadingPairs = new Map([['（', '）'], ['(', ')'], ['［', '］'], ['[', ']'], ['【', '】'], ['〔', '〕'], ['｛', '｝'], ['{', '}'], ['“', '”'], ['‘', '’'], ['「', '」'], ['『', '』'], ['《', '》'], ['〈', '〉']]);
@@ -297,7 +305,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     if (nextChatId === chatId) return false;
     showStoppedItems = false; recentItemDraft = null; recentBatchMode = false; selectedRecentItems.clear();
     if (chatId !== null) { prequelDraft = null; prequelFeedback = ''; }
-    chatId = nextChatId; drafts.clear(); cseDrafts.clear(); openState.clear(); recentItemsOpen = false; recentItemsUi = null; memorySearchQuery = ''; cseSearchQuery = ''; peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; feedback = ''; refreshFeedback = null;
+    chatId = nextChatId;
+    for (const [key, draft] of drafts) if (!draft.saving) drafts.delete(key);
+    cseDrafts.clear(); openState.clear(); recentItemsOpen = false; recentItemsUi = null; memorySearchQuery = ''; cseSearchQuery = ''; peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; feedback = ''; refreshFeedback = null;
     return true;
   };
   const sourceChanged = (previous, next) => (previous?.chatId ?? null) !== (next?.chatId ?? null);
@@ -469,7 +479,6 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         status: managementKnown ? enumDiagnostic(management.status, DIAGNOSTIC_STATUS) : 'unknown',
         phase: managementKnown && management.phase !== null ? enumDiagnostic(management.phase, DIAGNOSTIC_PHASE) : managementKnown ? null : 'unknown',
         workBusy: managementKnown ? booleanDiagnostic(management.workBusy) : 'unknown',
-        blockedByOtherChat: managementKnown ? booleanDiagnostic(management.blockedByOtherChat) : 'unknown',
         error: errorDiagnostic(management?.error, managementKnown),
       },
       ui: {
@@ -631,9 +640,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         const saveIdentity = {}; draft.saveIdentity = saveIdentity; draft.saving = true; draft.saveError = '';
         save.textContent = '保存中…'; save.disabled = true; cancel.disabled = true;
         const currentDraft = () => {
-          const latest = runtime.getState?.() ?? foundationState;
-          const latestFloor = latest?.floors?.find(item => item.floorId === floor.floorId);
-          return drafts.get(key) === draft && draft.saveIdentity === saveIdentity && latest?.chatId === state.chatId && latestFloor?.floorId === draft.floorId;
+          return drafts.get(key) === draft && draft.saveIdentity === saveIdentity;
         };
         const task = typeof runtime.editMemory === 'function' ? () => runtime.editMemory(floor.floorId, payload) : () => runtime.editSummary(floor.floorId, payload.summary, payload.revisionNote);
         let saved = false;
@@ -654,6 +661,28 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         const meta = element('div', 'qqj-memory-meta');
         const metaItem = (label, value) => { const item = element('span', 'qqj-memory-meta-item'); item.append(element('strong', '', label), element('span', '', value)); return item; };
         meta.append(metaItem('人物', people), metaItem('地点', locations)); body.append(meta);
+        const spatial = memory.spatialFacts;
+        if (spatial && ((spatial.containments?.length ?? 0) || (spatial.positions?.length ?? 0))) {
+          const placeNames = placeNamesFor(state.memoryPlaceEntities);
+          const groupNames = placeNamesFor(state.memoryGroupEntities);
+          const placeName = entityId => floor.memoryEntityNames?.[entityId] ?? placeNames.get(entityId) ?? '未知地点';
+          const seqByFloorId = new Map((floor.sourceFloorIds ?? []).map((id, index) => [id, floor.sourceAssistantSeqs?.[index] ?? null]));
+          const spatialSection = element('section', 'qqj-memory-spatial');
+          spatialSection.append(element('strong', 'qqj-memory-spatial-title', '空间记录'));
+          const sourceLabel = ref => `来源楼当时${Number.isSafeInteger(seqByFloorId.get(ref.floorId)) ? `（AI #${seqByFloorId.get(ref.floorId)}）` : ''}`;
+          for (const item of spatial.containments ?? []) {
+            const child = placeName(item.placeEntityId), parent = placeName(item.parentEntityId);
+            for (const ref of item.evidenceRefs ?? []) spatialSection.append(element('p', 'qqj-memory-spatial-item', `${sourceLabel(ref)}：${child} 属于 ${parent}${ref.quotedText ? `；原句「${ref.quotedText}」` : ''}`));
+          }
+          for (const item of spatial.positions ?? []) {
+            const subject = names.get(item.subjectEntityId) ?? floor.memoryEntityNames?.[item.subjectEntityId] ?? groupNames.get(item.subjectEntityId) ?? '未知人物或群体', place = item.placeEntityId ? placeName(item.placeEntityId) : null;
+            const description = item.status === 'confirmed' ? `确认${subject}当时位于${place}；这是来源楼位置，不代表之后仍在此处`
+              : item.status === 'lastSeen' ? `最后见到${subject}在${place}；未确认楼末仍在此处`
+                : `记录${subject}已离开${place ? `原地点${place}` : '原处'}，去向未知；${place ? `${place}不是当前位置` : '不能推定当前位置'}`;
+            for (const ref of item.evidenceRefs ?? []) spatialSection.append(element('p', 'qqj-memory-spatial-item', `${sourceLabel(ref)}：${description}${ref.quotedText ? `；原句「${ref.quotedText}」` : ''}`));
+          }
+          body.append(spatialSection);
+        }
       } else body.append(element('p', 'qqj-memory-main is-empty', floor.summary || (floor.status === 'unprocessed' ? '这一楼尚未生成摘要。' : '暂无摘要。')));
       const actions = operationMenus.register(element('details', 'qqj-memory-menu'));
       const menuToggle = element('summary', 'qqj-memory-menu-toggle', '⋮');
@@ -1392,6 +1421,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     if (uncommitted) stageCopy.main = `${record.diagnosticAttempt ? `第 ${record.diagnosticAttempt} 次尝试的` : ''}候选选材结果（本轮未注入） · ${stageCopy.main.replace('最终材料', '候选材料')}`;
     const selector = record.selectorDiagnostic;
     const selectorCount = value => Number.isSafeInteger(value) ? String(value) : '未知';
+    const semanticStatusCopy = { ready: '可用', cached: '缓存命中', disabled: '已关闭', busy: '忙碌', unindexed: '本轮无可用向量片段', changed: '来源已变化', dimensionMismatch: '维度不匹配', unavailable: '不可用',
+      VECTOR_TIMEOUT: '查询超时', VECTOR_INDEX_LOAD_TIMEOUT: '索引读取超时', VECTOR_ABORTED: '查询已取消', VECTOR_QUERY_BUDGET_EXHAUSTED: '本轮次数已用尽' };
+    const semanticStatus = status => semanticStatusCopy[status] ?? (String(status ?? '').startsWith('VECTOR_') ? '不可用' : '状态未记录');
     const hasExclusionCounts = ['historyExcludedCount', 'stateExcludedCount', 'historyRetainedCount', 'stateRetainedCount'].some(key => Number.isSafeInteger(selector?.[key]));
     let selectorCountCopy = hasExclusionCounts
       ? `历史候选 ${selectorCount(selector?.historyCandidateCount)} → 模型排除 ${selectorCount(selector?.historyExcludedCount)} → 保留 ${selectorCount(selector?.historyRetainedCount)} → 关联补入 ${selectorCount(stages?.linkedHistoryItemCount)} → 最终远期 ${selectorCount(stages?.distantHistoryItemCount)} · 人物候选 ${selectorCount(selector?.stateCandidateCount)} → 模型排除 ${selectorCount(selector?.stateExcludedCount)} → 保留 ${selectorCount(selector?.stateRetainedCount)} → 关联补入 ${selectorCount(stages?.linkedCseChangeCount)} → 最终注入 ${Number.isSafeInteger(stages?.currentStateCount) && Number.isSafeInteger(stages?.cseChangeCount) ? stages.currentStateCount + stages.cseChangeCount : '未知'}`
@@ -1419,7 +1451,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       else if (record.receiptPersistence === 'saving') timingCopy += ' · 后台保存中';
     }
     if (uncommitted && record.diagnosticAttempt) timingCopy = `选材与读取耗时来自第 ${record.diagnosticAttempt} 次尝试 · ${timingCopy}`;
-    if (selector?.semantic) timingCopy += ` · 向量 ${selector.semantic.status} · 候选 ${selector.semantic.candidateCount} · ${Number(selector.semantic.durationMs).toFixed(1)} ms`;
+    if (selector?.semantic) timingCopy += ` · 向量 ${semanticStatus(selector.semantic.status)} · 候选 ${selector.semantic.candidateCount} · ${Number(selector.semantic.durationMs).toFixed(1)} ms`;
     const filterReasons = (record.skipReasons ?? []).filter(value => value !== 'historySelectionFallback').map(skipReasonCopy);
     const selectorMetadataCopy = selector?.code ? `${selectorFailureCopy(selector.code)}${selector.httpStatus ? ` · HTTP ${selector.httpStatus}` : ''}${selector.formatStage ? ` · 格式阶段 ${selector.formatStage}` : ''}${selector.sourceStage ? ` · 阶段 ${selector.sourceStage}` : ''}${selector.finishReason ? ` · 结束原因 ${selector.finishReason}` : ''}${selector.sourceLabel && selector.sourceLabel !== '未命名 API' ? ` · 来源 ${selector.sourceLabel}` : ''}${selector.model && selector.model !== 'unknown' ? ` · 模型 ${selector.model}` : ''}${Number.isSafeInteger(selector.transportAttempts) ? ` · 网络尝试 ${selector.transportAttempts}` : ''}${Number.isSafeInteger(selector.requestCharacters) ? ` · 请求约 ${selector.requestCharacters} 字符 / ${selector.requestEstimatedTokens} token` : ''}` : '';
     const errorMetadataCopy = record.error ? `${record.error.code}${record.error.httpStatus ? ` · HTTP ${record.error.httpStatus}` : ''}${record.error.formatStage ? ` · 格式阶段 ${record.error.formatStage}` : ''}${record.error.sourceStage ? ` · 阶段 ${record.error.sourceStage}` : ''}${record.error.finishReason ? ` · 结束原因 ${record.error.finishReason}` : ''}${record.error.sourceLabel && record.error.sourceLabel !== '未命名 API' ? ` · 来源 ${record.error.sourceLabel}` : ''}${record.error.model && record.error.model !== 'unknown' ? ` · 模型 ${record.error.model}` : ''}${Number.isSafeInteger(record.error.transportAttempts) ? ` · 网络尝试 ${record.error.transportAttempts}` : ''}` : '';
@@ -1448,8 +1480,6 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       ? `${record.restoredReceipt ? '历史耗时' : record.reusedReceipt ? '复用耗时' : '本轮召回等待'} ${ (Number(timings.totalMs) / 1000).toFixed(1) } 秒`
       : record.restoredReceipt ? '历史耗时未记录' : record.reusedReceipt ? '复用耗时未记录' : '召回等待未记录';
     const semantic = selector?.semantic;
-    const semanticStatusCopy = { ready: '可用', cached: '缓存命中', disabled: '已关闭', busy: '忙碌', unindexed: '未建索引', changed: '来源已变化', dimensionMismatch: '维度不匹配', unavailable: '不可用',
-      VECTOR_TIMEOUT: '查询超时', VECTOR_INDEX_LOAD_TIMEOUT: '索引读取超时', VECTOR_ABORTED: '查询已取消', VECTOR_QUERY_BUDGET_EXHAUSTED: '本轮次数已用尽' };
     let vectorSummary = '向量未记录';
     if (semantic) {
       const schemaHasWitnesses = Number(record.schemaVersion) >= 17 || (record.selectedFloors ?? []).some(value => Array.isArray(value?.rawWitnesses));
@@ -1457,9 +1487,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         ? (record.selectedFloors ?? []).reduce((sum, value) => sum + (Array.isArray(value?.rawWitnesses) ? value.rawWitnesses.length : 0), 0)
         : null;
       const summaryWitnessCount = (record.selectedFloors ?? []).reduce((sum, value) => sum + (Array.isArray(value?.summaryWitnesses) ? value.summaryWitnesses.length : 0), 0);
-      const semanticStatus = semanticStatusCopy[semantic.status] ?? (String(semantic.status ?? '').startsWith('VECTOR_') ? '不可用' : '状态未记录');
+      const statusCopy = semanticStatus(semantic.status);
       const witnessLabel = uncommitted ? '候选原文段' : record.restoredReceipt || record.legacyReadOnly ? '历史选入原文段' : '选入原文段';
-      vectorSummary = `向量 ${semanticStatus} · 候选 ${Number.isSafeInteger(semantic.candidateCount) ? semantic.candidateCount : '未记录'} · ${rawWitnessCount === null ? '原文段未记录' : `${witnessLabel} ${rawWitnessCount}`}${summaryWitnessCount ? ` · 历史人工摘要 ${summaryWitnessCount}条` : ''}`;
+      vectorSummary = `向量 ${statusCopy} · 候选 ${Number.isSafeInteger(semantic.candidateCount) ? semantic.candidateCount : '未记录'} · ${rawWitnessCount === null ? '原文段未记录' : `${witnessLabel} ${rawWitnessCount}`}${summaryWitnessCount ? ` · 历史人工摘要 ${summaryWitnessCount}条` : ''}`;
     }
     // 候选与历史材料不得伪装成本轮注入；将诊断折叠也不应影响复制完整回执。
     const overview = element('div', 'v3-foundation-grid qqj-recall-overview');
@@ -1600,6 +1630,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     managementFeedbackNode.textContent = copy;
   }
   function renderManagement(state) {
+    const taskState = managementState?.rebuildState;
+    if (taskState) state = { ...state, ...taskState };
     const pageNode = element('section', 'qqj-page qqj-management-page'); pageNode.append(heading('记忆管理', '管理当前聊天的现有记忆任务。', state));
     if (['pendingRebuild', 'paused', 'failed', 'partial'].includes(state.rebuildStatus) || (state.rebuildStatus === 'waitingRealtime' && state.rebuildHasActionableWork)) pageNode.append(element('p', 'qqj-management-notice', '记忆尚未完整。“补齐缺失”会保留已有结果，只处理摘要或人物状态缺口；刷新页面不会自动续跑旧档。'));
     const deleting = managementState?.status === 'deleting', deletePending = managementState?.status === 'failed';
@@ -1608,9 +1640,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     refresh.addEventListener('click', () => { void run('正在刷新状态', () => runtime.refreshStatus({ preferCached: false, recoverTailDeletion: true, reconcileFoundation: true }), { resultCopy: refreshResult, followState: true }); });
     actions.append(refresh);
     const rebuildActionable = state.rebuildHasActionableWork ?? !['caughtUp', 'waitingRealtime'].includes(state.rebuildStatus);
-    if (state.rebuildStatus === 'rebuilding' && typeof runtime.pauseHistoricalRebuild === 'function') { const pause = element('button', 'primary-action', '暂停补齐'); pause.type = 'button'; pause.disabled = !state.activeAutoMemory; pause.addEventListener('click', () => { void run('暂停补齐', () => runtime.pauseHistoricalRebuild(), { resultCopy: automaticResult('补齐缺失') }); }); actions.append(pause); }
-    else if (!['paused', 'failed'].includes(state.cseRebuildStatus)) { const begin = runtime.startHistoricalRebuild ?? runtime.retryAutomation; const proceedLabel = ['paused', 'failed', 'partial'].includes(state.rebuildStatus) ? '继续补齐' : '补齐缺失'; const proceed = element('button', 'primary-action', busy ? workPhaseCopy(state) : proceedLabel); proceed.type = 'button'; proceed.disabled = busy || typeof begin !== 'function' || !rebuildActionable; proceed.addEventListener('click', async () => { const mode = await confirmHistoricalMode(); if (!mode) { feedback = `已取消${proceedLabel}。`; render(foundationState); return; } void run(proceedLabel, () => begin === runtime.startHistoricalRebuild ? begin.call(runtime, mode) : begin.call(runtime), { resultCopy: automaticResult(proceedLabel) }); }); actions.append(proceed); }
-    const reset = element('button', 'secondary-action', '完全重构'); reset.type = 'button'; reset.disabled = busy || typeof memoryManagement?.fullRebuild !== 'function'; reset.addEventListener('click', async () => { const mode = await confirmHistoricalMode({ fullRebuild: true }); if (!mode) { feedback = '已取消完全重构。'; render(foundationState); return; } const resetDraft = prequelDraft; void run('完全重构', () => memoryManagement.fullRebuild(state.chatId, mode), { after: () => { if (prequelDraft === resetDraft) { prequelDraft = null; prequelFeedback = ''; } }, resultCopy: automaticResult('完全重构') }); }); actions.append(reset);
+    const hasRebuildTask = Boolean(managementState?.rebuildState), pausedRebuildTask = hasRebuildTask && ['paused', 'failed', 'partial'].includes(state.rebuildStatus);
+    const pauseHistoricalRebuild = managementState?.pauseHistoricalRebuild ?? runtime.pauseHistoricalRebuild;
+    if (state.rebuildStatus === 'rebuilding' && typeof pauseHistoricalRebuild === 'function') { const isTaskRebuild = typeof managementState?.pauseHistoricalRebuild === 'function'; const label = isTaskRebuild ? '暂停重构' : '暂停补齐'; const pause = element('button', 'primary-action', label); pause.type = 'button'; pause.disabled = !state.activeAutoMemory; pause.addEventListener('click', () => { void run(label, () => pauseHistoricalRebuild(), { resultCopy: automaticResult(isTaskRebuild ? '完全重构' : '补齐缺失') }); }); actions.append(pause); }
+    else if (!hasRebuildTask && !['paused', 'failed'].includes(state.cseRebuildStatus)) { const begin = runtime.startHistoricalRebuild ?? runtime.retryAutomation; const proceedLabel = ['paused', 'failed', 'partial'].includes(state.rebuildStatus) ? '继续补齐' : '补齐缺失'; const proceed = element('button', 'primary-action', busy ? workPhaseCopy(state) : proceedLabel); proceed.type = 'button'; proceed.disabled = busy || typeof begin !== 'function' || !rebuildActionable; proceed.addEventListener('click', async () => { const mode = await confirmHistoricalMode(); if (!mode) { feedback = `已取消${proceedLabel}。`; render(foundationState); return; } void run(proceedLabel, () => begin === runtime.startHistoricalRebuild ? begin.call(runtime, mode) : begin.call(runtime), { resultCopy: automaticResult(proceedLabel) }); }); actions.append(proceed); }
+    const reset = element('button', 'secondary-action', pausedRebuildTask ? '继续完全重构' : '完全重构'); reset.type = 'button'; reset.disabled = (busy && !pausedRebuildTask) || typeof memoryManagement?.fullRebuild !== 'function'; reset.addEventListener('click', async () => { const mode = pausedRebuildTask ? {} : await confirmHistoricalMode({ fullRebuild: true }); if (!mode) { feedback = '已取消完全重构。'; render(foundationState); return; } const resetDraft = prequelDraft; void run(pausedRebuildTask ? '继续完全重构' : '完全重构', () => memoryManagement.fullRebuild(state.chatId, mode), { after: () => { if (prequelDraft === resetDraft) { prequelDraft = null; prequelFeedback = ''; } }, resultCopy: automaticResult('完全重构') }); }); actions.append(reset);
     const cseRunning = state.cseRebuildStatus === 'running' && state.activeAutoMemory?.mode === 'cseRebuild';
     const cseResume = ['paused', 'failed'].includes(state.cseRebuildStatus);
     const cseAction = element('button', 'secondary-action', cseRunning ? '暂停人物状态重构' : cseResume ? '继续人物状态重构' : '人物状态重构'); cseAction.type = 'button';
@@ -1637,7 +1671,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const sessionState = readDiagnosticState(sessionStateProvider);
       const hasCurrentIdentity = Boolean(state.chatId || (sessionState?.status === 'ready' && sessionState.identity?.chatId));
       const remove = element('button', 'primary-action', deleting ? '删除中…' : deletePending ? '继续删除当前聊天记忆' : '删除当前聊天记忆');
-      remove.type = 'button'; remove.disabled = deleting || managementState?.blockedByOtherChat === true || (!deletePending && (managementState?.workBusy === true || !hasCurrentIdentity));
+      remove.type = 'button'; remove.disabled = deleting || (!deletePending && (managementState?.workBusy === true || !hasCurrentIdentity));
       remove.addEventListener('click', async () => {
         if (!await Promise.resolve(confirmImpl({ title: '删除当前聊天记忆', body: '删除本聊天的摘要、双丝网、人物资料、时间事项、召回及历史版本，下次需重新建档。正文、手动前情和全局设置保留；前情可另行清空。', note: '后台记录移入回收站，并非永久擦除。', confirmText: deletePending ? '继续删除' : '删除记忆', cancelText: '取消' }))) { feedback = '已取消删除当前聊天记忆。'; render(foundationState); return; }
         void run(deletePending ? '继续删除当前聊天记忆' : '删除当前聊天记忆', () => memoryManagement.deleteCurrent(), { after: () => { managementState = memoryManagement.getState(); feedback = '当前聊天记忆已删除；聊天正文、手动前情与全局设置均已保留。手动前情可在“前情”中清空。'; return true; }, failed: () => { managementState = memoryManagement.getState(); return true; } });

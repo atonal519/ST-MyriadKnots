@@ -12,9 +12,10 @@ import { readMemoryTagBlocks, stripMemoryTagBlocks } from '../memory-content-san
 import { projectTime } from './time-engine.js';
 
 export const EXTRACTOR_SCHEMA_VERSION = 3;
-export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-28';
-export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-3/semantic-compiler-10`;
+export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-29';
+export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-3/semantic-compiler-12`;
 const ENTITY_TYPES = ['person', 'group', 'organization', 'place', 'object', 'creature', 'concept', 'unknown'];
+const SPATIAL_FACT_LIMIT = 40;
 const MENTION_KEY = Object.freeze({ type: 'string' });
 const NULLABLE_MENTION_KEY = Object.freeze({ type: ['string', 'null'] });
 const EVIDENCE_SEGMENT_LIMIT = 8;
@@ -23,6 +24,7 @@ const EVIDENCE_REF_LIMIT = 40;
 const EVIDENCE = Object.freeze({ type: 'object', additionalProperties: false, required: ['quoteSegments', 'supports', 'evidenceMode', 'sourceMentionKey'], properties: { quoteSegments: { type: 'array', minItems: 1, maxItems: EVIDENCE_SEGMENT_LIMIT, items: { type: 'string', minLength: 1, maxLength: 2000 } }, supports: { type: 'string' }, evidenceMode: { type: 'string', enum: ['explicit', 'witnessed', 'reported', 'privateCognition'] }, sourceMentionKey: NULLABLE_MENTION_KEY, sourceFloorKey: { type: 'string' }, sourceType: { type: 'string', enum: ['assistant', 'precedingUser'] }, sourceSnapshotIndex: { type: 'integer' } } });
 const strictObject = (required, properties) => ({ type: 'object', additionalProperties: false, required, properties });
 const itemArray = (properties, maxItems = FLOOR_MEMORY_ITEM_LIMIT) => ({ type: 'array', maxItems, items: strictObject(Object.keys(properties), properties) });
+const responseItemArray = (required, properties, maxItems = SPATIAL_FACT_LIMIT) => ({ type: 'array', maxItems, items: strictObject(required, properties) });
 const mentionKeyArray = { type: 'array', maxItems: 40, items: MENTION_KEY };
 const evidenceArray = { type: 'array', minItems: 1, maxItems: 40, items: EVIDENCE };
 
@@ -53,6 +55,11 @@ export const EXTRACTOR_RESPONSE_SCHEMA = Object.freeze({
     people: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, aliases: { type: 'array', items: { type: 'string' } }, role: { type: 'string' }, presence: { type: 'string', enum: ['present', 'remote', 'mentioned', 'privateCognitionOnly'] }, entityKind: { type: 'string', enum: ['individual', 'group'] }, sameAsEntityKey: { type: 'string', description: '仅可复制 payload.knownPeople 中本次提供的 catalog-N' } } } },
     time: { type: 'array', items: { type: 'object', properties: { sourceText: { type: 'string' }, description: { type: 'string' }, kind: { type: 'string', enum: ['explicit', 'relative', 'sequenceOnly', 'unknown'] }, normalized: { type: ['string', 'null'] }, precision: { type: 'string', enum: ['exact', 'approximate', 'unresolved'] } } } },
     locations: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, change: { type: 'string', enum: ['present', 'entered', 'left', 'movedThrough', 'mentioned'] }, people: { type: 'array', items: { type: 'string' } } } } },
+    spatialFacts: { type: 'object', required: ['places', 'containments', 'positions'], properties: {
+      places: responseItemArray(['key', 'name', 'identity', 'exactQuote', 'source', 'sourceFloorKey'], { key: { type: 'string' }, name: { type: 'string' }, aliases: { type: 'array', maxItems: 20, items: { type: 'string' } }, identity: { type: 'string', enum: ['existing', 'new', 'uncertain'] }, sameAsPlaceKey: { type: 'string' }, exactQuote: { type: 'string' }, source: { type: 'string', enum: ['canonicalContent', 'precedingUserInput'] }, sourceFloorKey: { type: 'string' } }),
+      containments: responseItemArray(['placeKey', 'parentPlaceKey', 'exactQuote', 'source', 'sourceFloorKey'], { placeKey: { type: 'string' }, parentPlaceKey: { type: 'string' }, exactQuote: { type: 'string' }, source: { type: 'string', enum: ['canonicalContent', 'precedingUserInput'] }, sourceFloorKey: { type: 'string' } }),
+      positions: responseItemArray(['subject', 'placeKey', 'status', 'exactQuote', 'source', 'sourceFloorKey'], { subject: { type: 'string' }, placeKey: { type: ['string', 'null'] }, status: { type: 'string', enum: ['confirmed', 'lastSeen', 'leftUnknown'] }, exactQuote: { type: 'string' }, source: { type: 'string', enum: ['canonicalContent', 'precedingUserInput'] }, sourceFloorKey: { type: 'string' } }),
+    } },
     events: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' } } } },
     actions: { type: 'array', items: { type: 'object', properties: { actor: { type: 'string' }, targets: { type: 'array', items: { type: 'string' } }, action: { type: 'string' }, completion: { type: 'string', enum: ['intended', 'attempted', 'completed', 'interrupted', 'uncertain'] }, result: { type: ['string', 'null'] } } } },
     knowledge: { type: 'array', items: { type: 'object', properties: { subject: { type: ['string', 'null'] }, kind: { type: 'string', enum: ['physical', 'injury', 'object', 'environment', 'situational', 'other'] }, description: { type: 'string' } } } },
@@ -102,7 +109,7 @@ export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
 5. summary 必须是有信息的本楼总结，最多 4000 字符。people、time、locations 也要分别检查并提取：正文有依据时写出，没有依据时可留空；不要为了填字段猜人、猜地点或拿现实日期补故事日期。正文或可靠故事时间锚已有故事年份或纪年时，summary、time，以及 qianshi 的 storyTime 与 scheduledTime 中相关的时间表达都必须保留该年份或纪年；跨年只按故事依据记录。回忆、约定日期和年份未知的时间不得无依据套用当前故事年或现实年份，只有月日或相对时间时原样保留。时间是唯一允许合理推定的例外：本楼没有明确时间锚时，可结合 previousFloorContext、previousStoryClock 与本楼叙事，推定“同日稍后”“次日清晨”等相对时间，或在线索足够时推定合理的具体故事时间；必须标明合适的 kind 与 precision。但遇到特殊命名月份跨月，或只有月日且先后需要跨年才能成立时，只保留原文与明确先后语义，不推算或补写具体日期。没有足够线索时可留空或写“时间未明确”。推定时间不能附带正文没有的事件、人物、因果或结果。
 
 【固定输出边界】
-1. 只输出语义，不输出 UUID、记录 ID、楼层指针、哈希、create/update/delete 操作、mentionKey、普通 entityKey 或证据坐标。允许以下本次请求局部键：people.sameAsEntityKey 只可逐字复制 payload.knownPeople 中确认同一身份的 catalog-N；qianshi.events[].key 必须按当前 events 数组顺序填写 event-1、event-2 等局部编号，不能填写标题；qianshi.events[].links[].candidateKey 只可逐字复制 payload.qianshiCandidates 中可用的 candidate-N。聚合请求还须在 evidence、exactQuotes 和 qianshi.events 中填写 sourceFloorKey，逐字复制 payload.sourceFloors 中对应成员的 floorKey；这只是来源标记，不是数据库楼层 ID。不得自造、猜测或输出其他内部键。
+1. 只输出语义，不输出 UUID、记录 ID、楼层指针、哈希、create/update/delete 操作、mentionKey、普通 entityKey 或证据坐标。允许以下本次请求局部键：people.sameAsEntityKey 只可逐字复制 payload.knownPeople 中确认同一身份的 catalog-N；spatialFacts.places[].sameAsPlaceKey 只可逐字复制 payload.knownPlaces 中确认同一地点的 place-N，spatialFacts.places[].key 使用本次 place-mention-N；qianshi.events[].key 必须按当前 events 数组顺序填写 event-1、event-2 等局部编号，不能填写标题；qianshi.events[].links[].candidateKey 只可逐字复制 payload.qianshiCandidates 中可用的 candidate-N。聚合请求还须在 evidence、exactQuotes、spatialFacts 和 qianshi.events 中填写 sourceFloorKey，逐字复制 payload.sourceFloors 中对应成员的 floorKey；这只是来源标记，不是数据库楼层 ID。不得自造、猜测或输出其他内部键。
 2. payload.userIdentity.displayName 非空时，summary 及其他语义描述必须使用这个实际显示名；{{user}} 只可作为 canonicalContent、precedingUserInput 或 aliases 中的输入别名，不得原样写入生成的语义文本。exactQuotes.exactText、承诺原话及证据引文必须逐字照抄相应来源，不得因这条规则改写。原句来自用户输入时，可在相应条目或 exactQuotes 对象中写 source:"precedingUserInput"；来自 AI 正文时可写 source:"canonicalContent"。只提示来源类别，不要输出消息序号或证据坐标。
 3. people 只写人能读懂的姓名、别名和角色。entityKind=individual 表示单人，entityKind=group 表示正文暂时只能整体辨认的多人集合；缺省按 individual 兼容。已知同一身份时优先填写 sameAsEntityKey；否则只可依据同类型的完整姓名或有效别名唯一精确对应，不得用相似、包含或模糊匹配。群体 aliases 只收整体称谓，不能把成员姓名塞成群体别名；成员能分别辨认时分别列 individual，无法辨认时不要编造个体。“别人”“客户”等泛称通常不是稳定人物别名。当正文中的“你”、{{user}} 或用户姓名指向宿主用户时，role 写 user。被 actions、knowledge、informationTransfers、privateThoughts、commitments、exactQuotes、openLoops 或 cseSignals 引用的人物也要列入 people，人物字段使用 people 中的姓名或别名。
 4. people.presence 区分本人在场 present、远程参与 remote、仅被提及 mentioned、只有其私密认知 privateCognitionOnly；提及或推断不等于本人在场或知情，不确定时写 mentioned。
@@ -114,6 +121,8 @@ export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
 10. 每楼必须检查并返回 qianshi；确无事件增量时返回 events:[] 与合法 order:[]。qianshi 独立于 summary、普通 events、eventFragments 等字段，不能因其他字段已记录材料而省略应记的千事。一次性新事实、具体互动引起的明确关系反应或边界可记为 matter=false；计划、持续推进或需要跟踪的事项按 matter=true 和有效 progress 合同记录。新计划、事项的实质推进、完成、取消和其他关键变化仍须记录。按对后续叙事有用的事件单位整理，不逐动作拆分；同一 sourceFloorKey（来源楼）的同一场景中，同一事项的连续动作合并；不得跨 sourceFloorKey 合并不同来源楼的事件；没有新增事实、关系变化或事项进展的重复日常不另立事件，也不要求每楼至少有一条。object 只填写对后续叙事有用的具体物品，多个物品用“、”分隔；人物写入 people，地点或建筑及事件主题应在相应正文事件信息中表达，不要混入 object，也不要凭空补物品；没有合适物品时 object 写 null。相同物品或相似标题不代表同一事项。candidateType=matter 且指向真实持续事项的候选才可用于 progress；candidateType=event 是一次性事件，只能用于 context 或先后关系端点。正文明确推进旧事项时，在 links 中复制对应 candidate-N 并写 kind=progress；倒叙补充、回忆或只补充背景写 kind=context。每个事件最多关联一个旧事项候选（links 中最多一个 candidateKey）；同一叙事影响多个旧事项时，按事项分别写成独立事件，每个事件只链接对应的一个候选。无效 progress 必须留作部分错误，不能默默降级为 context 或新事项。跨来源楼判断是否接续同一事项时，必须有明确目标、承诺或进展关系等具体证据；同一人物、同一天或相似主题不足以认定接续。没有任何真实关联证据时独立记录；只有正文明确相关但不推进旧事项时才用 context，不要猜测续接。storyTime 是事件在故事中发生的时间，scheduledTime 是约定、预计或到期时间，两者不可混写。order 必须使用对象数组，例如 [{"before":"event-1","after":"event-2","certainty":"explicit"}]；before 与 after 只能逐字复制本次 qianshi.events[].key 的 event-N，或在确实指向单一明确旧事件时复制 payload.qianshiCandidates 的 candidate-N；不能填写事件标题或描述。order 只写正文或可靠时间锚明确支持的先后关系；未知、同日但先后不明或不可比较时不输出。不要输出因果、矛盾等未授权知识图谱关系。
 
 千事状态分两层：优先用 status 表示本条进展后的整线状态、actionStatus 表示局部动作状态；局部 actionStatus=completed 不必然结束事项，整线可仍为 status=inProgress。后续独立活动只有在正文明确且未接续已有线时才另开新事项，不按人物、物品或标题相似度猜测接续。用户明确修订过的状态属于权威材料，必须据此记录，不要被模型旧状态覆盖。
+
+11. 每次检查空间事实：有明确原句才输出对应条目，没证据的places、containments或positions用空数组。每项填exactQuote、source（canonicalContent或precedingUserInput）和sourceFloorKey（单楼复制输入键；聚合复制对应成员键）。places填key=place-mention-N、name、identity=existing/new/uncertain；确认同一地点才填knownPlaces的sameAsPlaceKey，同名异地标new，歧义标uncertain。containments填placeKey与parentPlaceKey。positions填人物/群体subject、placeKey和status：confirmed=楼末确认位于该地，lastSeen=最后见于该地但楼末未确认，leftUnknown=已离开且去向未知；此时placeKey若有值只表示离开前地点，不能当当前位置。计划、回忆、假设和仅提及不算楼末位置；同地不表示人物互相知情，道路/路径不表示永久包含。只隔离无法定位、身份不明或冲突的空间项，保留合法summary与旧locations；缺少空间字段仍兼容旧响应。
 
 参考结构：
 ${EXTRACTOR_OUTPUT_CONTRACT}
@@ -248,14 +257,32 @@ function compileEvidenceSegments(content, value, path) {
   }
   return chain;
 }
-function catalogEntries(entities, identityProjection) {
-  return buildEntityIdentityDirectory({ entities, identityProjection })
+function catalogEntries(directory) {
+  return directory
     .filter(entry => entry.entityType === 'person' || entry.entityType === 'group' || entry.specialRole !== 'none')
     .map((entry, index) => ({
       entityKey: `catalog-${index + 1}`,
       entity: entry.entity,
       labels: entry.labels,
       semantic: { entityKey: `catalog-${index + 1}`, displayName: entry.displayName, aliases: entry.aliases, entityKind: entry.entityType === 'group' ? 'group' : 'individual', specialRole: entry.specialRole },
+    }));
+}
+function placeCatalogEntries(directory, sourceTexts = []) {
+  const texts = sourceTexts.flatMap(value => {
+    if (typeof value === 'string') return value ? [value] : [];
+    if (!value || typeof value !== 'object') return [];
+    return [value.summaryTail, ...(value.messages ?? []).map(message => message?.content)]
+      .filter(text => typeof text === 'string' && text);
+  });
+  return directory
+    .filter(entry => entry.entityType === 'place'
+      && entry.labels.some(label => label.length > 0 && texts.some(source => source.includes(label))))
+    .slice(0, SPATIAL_FACT_LIMIT)
+    .map((entry, index) => ({
+      entityKey: `place-${index + 1}`,
+      entity: entry.entity,
+      labels: entry.labels,
+      semantic: { entityKey: `place-${index + 1}`, displayName: entry.displayName, aliases: entry.aliases, entityType: 'place' },
     }));
 }
 function safeIdentity(value) {
@@ -317,9 +344,14 @@ function sourceContentFor({ floor, envelope, value, path }) {
 
 export async function createExtractorEnvelope({ batchId, chatId, narrativeGeneration, checkpointId, floor, sourceFloors = null, entities = [], identityProjection = null, userIdentity = null, identityHints = [], storyClock = null, previousStoryClock = null, previousFloorContext = null, sourceUserInputSnapshot = null, sourceVariableReference = null, qianshiCandidates = null }) {
   const normalizedIdentityProjection = normalizeIdentityProjection(identityProjection ?? {});
-  const catalogSnapshot = catalogEntries(entities, normalizedIdentityProjection);
+  const directory = buildEntityIdentityDirectory({ entities, identityProjection: normalizedIdentityProjection });
+  const catalogSnapshot = catalogEntries(directory);
   const normalizedUserIdentity = safeIdentity(userIdentity);
   const normalizedUserInputSnapshot = safeUserInputSnapshot(sourceUserInputSnapshot);
+  const placeCatalogSnapshot = placeCatalogEntries(directory, [
+    floor.content.canonicalContent, previousFloorContext, ...(normalizedUserInputSnapshot?.messages ?? []).map(message => message.content),
+    ...(Array.isArray(sourceFloors) ? sourceFloors.flatMap(entry => [entry.floor?.content?.canonicalContent, entry.sourceUserInputSnapshot]) : []),
+  ]);
   const normalizedVariableReference = copyFloorVariableReference(sourceVariableReference);
   const sourceFloorBindings = (Array.isArray(sourceFloors) && sourceFloors.length ? sourceFloors : [{ floor, sourceUserInputSnapshot, storyClock }]).map((entry, index) => Object.freeze({
     floorKey: `floor-${index + 1}`,
@@ -343,6 +375,8 @@ export async function createExtractorEnvelope({ batchId, chatId, narrativeGenera
       ...(normalizedVariableReference ? { auxiliaryStateSnapshot: normalizedVariableReference } : {}),
       userIdentity: normalizedUserIdentity,
       knownPeople: catalogSnapshot.map(entry => entry.semantic),
+      sourceFloorKey: sourceFloorBindings[0].floorKey,
+      knownPlaces: placeCatalogSnapshot.map(entry => entry.semantic),
       identityHints: identityHints.filter(hint => typeof hint === 'string').slice(0, 20).map(hint => hint.slice(0, 500)),
       qianshiCandidates: Array.isArray(qianshiCandidates?.request) ? qianshiCandidates.request : [],
       ...(sourceFloorBindings.length > 1 ? { sourceFloors: sourceFloorBindings.map(binding => ({ floorKey: binding.floorKey, assistantSeq: binding.assistantSeq, messageIndex: binding.messageIndex, canonicalContent: binding.canonicalContent, precedingUserInput: binding.sourceUserInputSnapshot?.messages?.map((message, sourceSnapshotIndex) => ({ sourceSnapshotIndex, content: message.content })) ?? [], storyClock: binding.storyClock })) } : {}),
@@ -353,6 +387,7 @@ export async function createExtractorEnvelope({ batchId, chatId, narrativeGenera
     canonicalContentFingerprint: await sha256(String(floor.content.canonicalContent ?? '')),
     rawContentFingerprint: floor.content.rawFingerprint ?? null,
     catalogBindings: Object.freeze(catalogSnapshot.map(entry => Object.freeze({ entityKey: entry.entityKey, entityId: entry.entity.id, entityType: entry.entity.entityType, specialRole: entry.entity.specialRole, labels: entry.labels }))),
+    placeCatalogBindings: Object.freeze(placeCatalogSnapshot.map(entry => Object.freeze({ entityKey: entry.entityKey, entityId: entry.entity.id, entityType: entry.entity.entityType, specialRole: entry.entity.specialRole, labels: entry.labels }))),
     identityProjection: normalizedIdentityProjection,
     userIdentity: normalizedUserIdentity,
     sourceUserInputSnapshot: normalizedUserInputSnapshot,
@@ -387,6 +422,9 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
   const sourceVariableReference = copyFloorVariableReference(scope.sourceVariableReference);
   const semanticCatalog = envelope?.request?.payload?.knownPeople;
   if (!Array.isArray(semanticCatalog) || semanticCatalog.length !== scope.catalogBindings.length) throw extractorError('V3_EXTRACTOR_LOCAL_CATALOG_INVALID', 'localScope.catalogBindings');
+  const semanticPlaces = envelope?.request?.payload?.knownPlaces ?? [];
+  const placeBindings = Array.isArray(scope.placeCatalogBindings) ? scope.placeCatalogBindings : [];
+  if (!Array.isArray(semanticPlaces) || semanticPlaces.length !== placeBindings.length) throw extractorError('V3_EXTRACTOR_LOCAL_CATALOG_INVALID', 'localScope.placeCatalogBindings');
   const identityProjection = normalizeIdentityProjection(scope.identityProjection ?? {});
   const currentDirectory = buildEntityIdentityDirectory({ entities: existingEntities, identityProjection });
   const currentEntityById = new Map(currentDirectory.map(entry => [entry.entityId, entry]));
@@ -395,6 +433,13 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
     const current = currentEntityById.get(binding?.entityId);
     if (!binding || typeof binding.entityKey !== 'string' || !isUuid(binding.entityId) || catalog.has(binding.entityKey) || !current
       || binding.entityType !== current.entityType || binding.specialRole !== current.specialRole) throw extractorError('V3_EXTRACTOR_LOCAL_CATALOG_INVALID', `localScope.catalogBindings[${index}]`);
+    catalog.set(binding.entityKey, current);
+  }
+  for (const [index, binding] of placeBindings.entries()) {
+    const current = currentEntityById.get(binding?.entityId);
+    if (!binding || typeof binding.entityKey !== 'string' || !binding.entityKey.startsWith('place-') || !isUuid(binding.entityId)
+      || catalog.has(binding.entityKey) || !current || binding.entityType !== 'place' || current.entityType !== 'place'
+      || binding.specialRole !== current.specialRole) throw extractorError('V3_EXTRACTOR_LOCAL_CATALOG_INVALID', `localScope.placeCatalogBindings[${index}]`);
     catalog.set(binding.entityKey, current);
   }
   const catalogKeyByEntityId = new Map([...catalog].map(([entityKey, entry]) => [entry.entityId, entityKey]));
@@ -448,6 +493,15 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
     return value.slice(0, maximum);
   };
   if (!['ok', 'needsReview'].includes(raw.status)) isolate('status', -1, extractorError('V3_EXTRACTOR_ENUM_INVALID', 'floors[0].status'));
+  const rawSpatialFacts = raw.spatialFacts && typeof raw.spatialFacts === 'object' && !Array.isArray(raw.spatialFacts) ? raw.spatialFacts : null;
+  const spatialPlaceMentionKeys = new Set();
+  for (const item of Array.isArray(rawSpatialFacts?.places) ? rawSpatialFacts.places : []) if (typeof item?.placeMentionKey === 'string') spatialPlaceMentionKeys.add(item.placeMentionKey);
+  for (const item of Array.isArray(rawSpatialFacts?.containments) ? rawSpatialFacts.containments : []) {
+    if (typeof item?.placeMentionKey === 'string') spatialPlaceMentionKeys.add(item.placeMentionKey);
+    if (typeof item?.parentMentionKey === 'string') spatialPlaceMentionKeys.add(item.parentMentionKey);
+  }
+  for (const item of Array.isArray(rawSpatialFacts?.positions) ? rawSpatialFacts.positions : []) if (typeof item?.placeMentionKey === 'string') spatialPlaceMentionKeys.add(item.placeMentionKey);
+  const invalidSpatialPlaceMentionKeys = new Set();
   const mentions = new Map();
   for (const [index, item] of sourceArray('entityMentions').entries()) {
     try {
@@ -456,7 +510,7 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
       const mentionEvidence = Array.isArray(item.evidence) ? item.evidence : [];
       if (!Array.isArray(item.evidence) && Object.hasOwn(item, 'evidence')) isolate('entityMentions', index, extractorError('V3_EXTRACTOR_EVIDENCE_INVALID', `${path}.evidence`));
       if (mentionEvidence.length > 40) isolate('entityMentions', index, extractorError('V3_EXTRACTOR_EVIDENCE_TRUNCATED', `${path}.evidence`));
-      const evidenceSources = [];
+      const evidenceSources = []; let hasLocatedEvidence = false;
       for (const [evidenceIndex, evidenceItem] of mentionEvidence.slice(0, 40).entries()) {
         try {
           assertObject(evidenceItem, `${path}.evidence[${evidenceIndex}]`);
@@ -466,10 +520,15 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
           if (!['explicit', 'witnessed', 'reported', 'privateCognition'].includes(evidenceItem.evidenceMode)) throw extractorError('V3_EXTRACTOR_SCHEMA_INVALID', `${path}.evidence[${evidenceIndex}].evidenceMode`);
           validateItemSchema(evidenceItem.sourceMentionKey, NULLABLE_MENTION_KEY, `${path}.evidence[${evidenceIndex}].sourceMentionKey`);
           if (evidenceItem.sourceMentionKey !== null) evidenceSources.push({ mentionKey: evidenceItem.sourceMentionKey, evidenceIndex });
+          hasLocatedEvidence = true;
         } catch (error) { isolate('entityMentions', index, error, `${path}.evidence[${evidenceIndex}]`); }
       }
+      if (item.entityType === 'place' && spatialPlaceMentionKeys.has(item.mentionKey) && !hasLocatedEvidence) {
+        invalidSpatialPlaceMentionKeys.add(item.mentionKey);
+        isolate('entityMentions', index, extractorError('V3_EXTRACTOR_SPATIAL_EVIDENCE_REQUIRED', `${path}.evidence`)); continue;
+      }
       const mention = normalizeMention(item, catalog);
-      if (mention.identity !== 'existing') {
+      if (mention.identity !== 'existing' && mention.entityType !== 'place') {
         const mapped = manualMappedTarget(mention);
         const entityKey = mapped ? catalogKeyByEntityId.get(mapped.entityId) : null;
         if (mapped && entityKey) {
@@ -540,6 +599,8 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
     if (!mention.resolvedEntityId) throw extractorError('V3_EXTRACTOR_ENTITY_UNRESOLVED', path);
     return mention.resolvedEntityId;
   };
+  const locationEntityPointer = (value, path) => value !== null && invalidSpatialPlaceMentionKeys.has(value)
+    ? null : pointer(value, path, { nullable: true });
   const evidence = (value, path, { required = true, issueField = path, ownerIndex = null } = {}) => {
     const result = [];
     if (!Array.isArray(value)) {
@@ -577,7 +638,69 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
   };
   const optionalEvidence = (item, path) => evidence(item.evidence, path, { required: false });
   const chronology = await convert('chronology', async item => ({ itemId: await itemId('chronology', item), time: { ...item.time, relativeToFloorId: null }, description: generatedText(item.description, 'chronology.description', 2000), evidenceRefs: optionalEvidence(item, 'chronology.evidence') }));
-  const locations = await convert('locations', async item => ({ itemId: await itemId('locations', item), entityId: pointer(item.entityMentionKey, 'locations.entityMentionKey', { nullable: true }), name: boundedText(item.name, 'locations.name', 500), change: item.change, participantEntityIds: array(item.participantMentionKeys, 'locations.participantMentionKeys', 40).map((key, i) => pointer(key, `locations.participantMentionKeys[${i}]`)), evidenceRefs: optionalEvidence(item, 'locations.evidence') }));
+  const locations = await convert('locations', async item => ({ itemId: await itemId('locations', item), entityId: locationEntityPointer(item.entityMentionKey, 'locations.entityMentionKey'), name: boundedText(item.name, 'locations.name', 500), change: item.change, participantEntityIds: array(item.participantMentionKeys, 'locations.participantMentionKeys', 40).map((key, i) => pointer(key, `locations.participantMentionKeys[${i}]`)), evidenceRefs: optionalEvidence(item, 'locations.evidence') }));
+  let spatialFacts;
+  if (raw.spatialFacts !== undefined) {
+    try {
+      assertObject(raw.spatialFacts, 'spatialFacts');
+      const spatialInput = raw.spatialFacts;
+      const readSpatialArray = field => {
+        if (!Array.isArray(spatialInput[field])) { isolate(`spatialFacts.${field}`, -1, extractorError('V3_EXTRACTOR_ARRAY_INVALID', `spatialFacts.${field}`)); return []; }
+        if (spatialInput[field].length > SPATIAL_FACT_LIMIT) isolate(`spatialFacts.${field}`, SPATIAL_FACT_LIMIT, extractorError('V3_EXTRACTOR_ARRAY_TRUNCATED', `spatialFacts.${field}`));
+        return spatialInput[field].slice(0, SPATIAL_FACT_LIMIT);
+      };
+      const facts = { schemaVersion: 1, containments: [], positions: [] };
+      const placePointer = (key, path) => {
+        const mention = mentions.get(boundedText(key, path, 160));
+        if (!mention || mention.entityType !== 'place' || !mention.resolvedEntityId) throw extractorError('V3_EXTRACTOR_SPATIAL_PLACE_POINTER_INVALID', path);
+        return mention.resolvedEntityId;
+      };
+      for (const [index, item] of readSpatialArray('containments').entries()) {
+        try {
+          validateItemSchema(item, { type: 'object', required: ['placeMentionKey', 'parentMentionKey', 'evidence'], properties: { placeMentionKey: MENTION_KEY, parentMentionKey: MENTION_KEY, evidence: evidenceArray }, additionalProperties: false }, `spatialFacts.containments[${index}]`);
+          const placeEntityId = placePointer(item.placeMentionKey, `spatialFacts.containments[${index}].placeMentionKey`);
+          const parentEntityId = placePointer(item.parentMentionKey, `spatialFacts.containments[${index}].parentMentionKey`);
+          if (placeEntityId === parentEntityId) throw extractorError('V3_EXTRACTOR_SPATIAL_CYCLE', `spatialFacts.containments[${index}]`);
+          const evidenceRefs = evidence(item.evidence, `spatialFacts.containments[${index}].evidence`, { required: true, issueField: 'spatialFacts.containments', ownerIndex: index });
+          if (!evidenceRefs.length || evidenceRefs.some(ref => ref.evidenceMode === 'privateCognition')) throw extractorError('V3_EXTRACTOR_SPATIAL_EVIDENCE_INVALID', `spatialFacts.containments[${index}].evidence`);
+          facts.containments.push({ itemId: await itemId('spatialFacts.containments', item), placeEntityId, parentEntityId, evidenceRefs });
+        } catch (error) { isolate('spatialFacts.containments', index, error, `spatialFacts.containments[${index}]`); }
+      }
+      const edgesByFloor = new Map();
+      for (const item of facts.containments) for (const sourceFloorId of new Set(item.evidenceRefs.map(ref => ref.floorId))) {
+        const edges = edgesByFloor.get(sourceFloorId) ?? []; edges.push(item); edgesByFloor.set(sourceFloorId, edges);
+      }
+      const invalidParentsByFloor = new Map();
+      for (const [sourceFloorId, edges] of edgesByFloor) {
+        const parentSets = new Map();
+        for (const edge of edges) { const parents = parentSets.get(edge.placeEntityId) ?? new Set(); parents.add(edge.parentEntityId); parentSets.set(edge.placeEntityId, parents); }
+        const invalid = new Set([...parentSets].filter(([, parents]) => parents.size > 1).map(([placeId]) => placeId));
+        const singleParent = new Map([...parentSets].filter(([placeId, parents]) => parents.size === 1 && !invalid.has(placeId)).map(([placeId, parents]) => [placeId, [...parents][0]]));
+        for (const start of singleParent.keys()) { const path = [], offsets = new Map(); let current = start; while (singleParent.has(current)) { if (offsets.has(current)) { for (const id of path.slice(offsets.get(current))) invalid.add(id); break; } offsets.set(current, path.length); path.push(current); current = singleParent.get(current); } }
+        if (invalid.size) { invalidParentsByFloor.set(sourceFloorId, invalid); isolate('spatialFacts.containments', -1, extractorError('V3_EXTRACTOR_SPATIAL_CONFLICT', 'spatialFacts.containments')); }
+      }
+      facts.containments = facts.containments.flatMap(item => { const evidenceRefs = item.evidenceRefs.filter(ref => !invalidParentsByFloor.get(ref.floorId)?.has(item.placeEntityId)); return evidenceRefs.length ? [{ ...item, evidenceRefs }] : []; });
+      const positions = [];
+      for (const [index, item] of readSpatialArray('positions').entries()) {
+        try {
+          validateItemSchema(item, { type: 'object', required: ['subjectMentionKey', 'placeMentionKey', 'status', 'evidence'], properties: { subjectMentionKey: MENTION_KEY, placeMentionKey: NULLABLE_MENTION_KEY, status: { type: 'string', enum: ['confirmed', 'lastSeen', 'leftUnknown'] }, evidence: evidenceArray }, additionalProperties: false }, `spatialFacts.positions[${index}]`);
+          const subjectEntityId = pointer(item.subjectMentionKey, `spatialFacts.positions[${index}].subjectMentionKey`);
+          if (!['person', 'group'].includes(mentions.get(item.subjectMentionKey)?.entityType)) throw extractorError('V3_EXTRACTOR_SPATIAL_SUBJECT_TYPE_INVALID', `spatialFacts.positions[${index}].subjectMentionKey`);
+          const placeEntityId = item.placeMentionKey === null ? null : placePointer(item.placeMentionKey, `spatialFacts.positions[${index}].placeMentionKey`);
+          if (item.status !== 'leftUnknown' && !placeEntityId) throw extractorError('V3_EXTRACTOR_SPATIAL_PLACE_POINTER_INVALID', `spatialFacts.positions[${index}].placeMentionKey`);
+          const evidenceRefs = evidence(item.evidence, `spatialFacts.positions[${index}].evidence`, { required: true, issueField: 'spatialFacts.positions', ownerIndex: index });
+          if (!evidenceRefs.length || evidenceRefs.some(ref => ref.evidenceMode === 'privateCognition')) throw extractorError('V3_EXTRACTOR_SPATIAL_EVIDENCE_INVALID', `spatialFacts.positions[${index}].evidence`);
+          positions.push({ itemId: await itemId('spatialFacts.positions', item), subjectEntityId, placeEntityId, status: item.status, evidenceRefs });
+        } catch (error) { isolate('spatialFacts.positions', index, error, `spatialFacts.positions[${index}]`); }
+      }
+      const positionsByFloorSubject = new Map();
+      for (const item of positions) for (const sourceFloorId of new Set(item.evidenceRefs.map(ref => ref.floorId))) { const key = `${sourceFloorId}|${item.subjectEntityId}`, rows = positionsByFloorSubject.get(key) ?? []; rows.push(item); positionsByFloorSubject.set(key, rows); }
+      const invalidPositions = new Set([...positionsByFloorSubject].filter(([, rows]) => new Set(rows.map(row => JSON.stringify([row.placeEntityId, row.status]))).size > 1).map(([key]) => key));
+      if (invalidPositions.size) isolate('spatialFacts.positions', -1, extractorError('V3_EXTRACTOR_SPATIAL_POSITION_CONFLICT', 'spatialFacts.positions'));
+      facts.positions = positions.flatMap(item => { const evidenceRefs = item.evidenceRefs.filter(ref => !invalidPositions.has(`${ref.floorId}|${item.subjectEntityId}`)); return evidenceRefs.length ? [{ ...item, evidenceRefs }] : []; });
+      if (facts.containments.length || facts.positions.length) spatialFacts = facts;
+    } catch (error) { isolate('spatialFacts', -1, error, 'spatialFacts'); }
+  }
   const participants = await convert('participants', async item => ({ entityId: pointer(item.mentionKey, 'participants.mentionKey'), presence: item.presence, evidenceRefs: optionalEvidence(item, 'participants.evidence') }));
   const actions = await convert('actions', async item => ({ itemId: await itemId('actions', item), actorEntityId: pointer(item.actorMentionKey, 'actions.actorMentionKey'), targetEntityIds: array(item.targetMentionKeys, 'actions.targetMentionKeys', 40).map((key, i) => pointer(key, `actions.targetMentionKeys[${i}]`)), action: generatedText(item.action, 'actions.action', 2000), completion: item.completion, result: item.result === null ? null : generatedText(item.result, 'actions.result', 2000), evidenceRefs: optionalEvidence(item, 'actions.evidence') }));
   const observations = await convert('observations', async item => ({ itemId: await itemId('observations', item), subjectEntityId: pointer(item.subjectMentionKey, 'observations.subjectMentionKey', { nullable: true }), kind: item.kind, description: generatedText(item.description, 'observations.description', 2000), evidenceRefs: optionalEvidence(item, 'observations.evidence') }));
@@ -637,6 +760,7 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
     ...(sourceRawFingerprint ? { sourceRawFingerprint } : {}),
     summary: { aiText: summary, userText: preservedSummary?.userText ?? null, effectiveSource: preservedSummary?.effectiveSource === 'user' && preservedSummary.userText ? 'user' : 'ai', revisionNote: preservedSummary?.effectiveSource === 'user' ? '重新提取后保留用户摘要' : null }, summaryEvidenceRefs,
     chronology, locations, participants, actions, observations, informationTransfers, privateCognition, commitments, eventFragments, exactAnchors, openLoops, ambiguities, cseSignals,
+    ...(spatialFacts ? { spatialFacts } : {}),
     createdAt: now, updatedAt: now, recordStatus: 'active', supersedes,
   }, { expectedChatId: floor.chatId });
   return Object.freeze({ memory, newEntities: Object.freeze(newEntities), isolated: Object.freeze(isolated), needsReview: false });
@@ -925,9 +1049,14 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
   const directory = buildEntityIdentityDirectory({ entities: existingEntities, identityProjection: envelope?.scope?.identityProjection });
   const activeEntities = directory.map(entry => entry.entity);
   const bindings = envelope?.scope?.catalogBindings ?? [];
+  const placeBindings = envelope?.scope?.placeCatalogBindings ?? [];
   const catalogKeyById = new Map(bindings.map(binding => [binding.entityId, binding.entityKey]));
   const directoryById = new Map(directory.map(entry => [entry.entityId, entry]));
   const catalogByKey = new Map(bindings.map(binding => [binding.entityKey, directoryById.get(binding.entityId)]));
+  for (const binding of placeBindings) {
+    const entry = directoryById.get(binding.entityId);
+    if (entry?.entityType === 'place') { catalogKeyById.set(binding.entityId, binding.entityKey); catalogByKey.set(binding.entityKey, entry); }
+  }
   const entityByLabel = new Map();
   for (const entry of directory) for (const label of entry.labels.map(identityLabelKey)) entityByLabel.set(label, [...(entityByLabel.get(label) ?? []), entry.entity]);
   const existingUser = activeEntities.find(entity => entity.specialRole === 'user') ?? null;
@@ -1051,6 +1180,83 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
     const change = enumOr(semanticText(item, ['change', 'state', 'action']), { entered: 'entered', enter: 'entered', left: 'left', leave: 'left', movedthrough: 'movedThrough', mentioned: 'mentioned', '进入': 'entered', '离开': 'left', '路过': 'movedThrough', '提及': 'mentioned' }, 'present');
     target.locations.push({ entityMentionKey: null, name, change, participantMentionKeys: list(field(item, ['people', 'participants', 'persons'])).map(mentionFor).filter(Boolean), evidence: evidence(item) });
   }
+  const spatialInputValue = field(packet, ['spatialFacts', '空间事实']);
+  const spatialInput = spatialInputValue && typeof spatialInputValue === 'object' && !Array.isArray(spatialInputValue) ? spatialInputValue : null;
+  const spatialPlaces = new Map();
+  const knownPlaces = new Map((envelope?.request?.payload?.knownPlaces ?? []).map(value => [value.entityKey, value]));
+  if (spatialInputValue !== undefined && !spatialInput) issue('spatialFacts', -1, 'V3_EXTRACTOR_OBJECT_INVALID', 'spatialFacts');
+  const spatialArray = key => {
+    const value = field(spatialInput, [key]);
+    if (value === undefined && !spatialInput) return [];
+    if (!Array.isArray(value)) { issue(`spatialFacts.${key}`, -1, 'V3_EXTRACTOR_ARRAY_INVALID', `spatialFacts.${key}`); return []; }
+    if (value.length > SPATIAL_FACT_LIMIT) issue(`spatialFacts.${key}`, SPATIAL_FACT_LIMIT, 'V3_EXTRACTOR_ARRAY_TRUNCATED', `spatialFacts.${key}`);
+    return value.slice(0, SPATIAL_FACT_LIMIT);
+  };
+  const spatialEvidence = item => {
+    const sourceFloorKey = semanticText(item, ['sourceFloorKey'], 80);
+    if (!sourceFloorKey) return [];
+    return evidence(item);
+  };
+  for (const [index, item] of spatialArray('places').entries()) {
+    const key = semanticText(item, ['key', 'placeKey'], 80), name = semanticText(item, ['name', 'displayName', '地点'], 500);
+    const aliases = [...new Set(list(field(item, ['aliases', '别名'])).map(value => semanticText(value, [], 500)).filter(Boolean))];
+    const identityMode = semanticText(item, ['identity'], 40);
+    const sameAsPlaceKey = semanticText(item, ['sameAsPlaceKey'], 80);
+    if (!/^place-mention-[1-9]\d*$/u.test(key) || !name || spatialPlaces.has(key)) {
+      issue('spatialFacts.places', index, 'V3_EXTRACTOR_SPATIAL_PLACE_INVALID', `spatialFacts.places[${index}]`); continue;
+    }
+    if (!['existing', 'new', 'uncertain'].includes(identityMode) || identityMode === 'uncertain' || (identityMode === 'new' && sameAsPlaceKey)) {
+      issue('spatialFacts.places', index, 'V3_EXTRACTOR_SPATIAL_PLACE_IDENTITY_UNRESOLVED', `spatialFacts.places[${index}].identity`); continue;
+    }
+    const evidenceRefs = spatialEvidence(item);
+    if (!evidenceRefs.length) { issue('spatialFacts.places', index, 'V3_EXTRACTOR_SPATIAL_EVIDENCE_INVALID', `spatialFacts.places[${index}]`); continue; }
+    let identity = identityMode, entityKey = null;
+    if (identity === 'existing') {
+      if (sameAsPlaceKey) {
+        if (!knownPlaces.has(sameAsPlaceKey)) { issue('spatialFacts.places', index, 'V3_EXTRACTOR_SPATIAL_PLACE_KEY_INVALID', `spatialFacts.places[${index}].sameAsPlaceKey`); continue; }
+        entityKey = sameAsPlaceKey;
+      } else {
+        const labels = new Set([name, ...aliases].map(identityLabelKey).filter(Boolean));
+        const matches = new Map();
+        for (const candidate of knownPlaces.values()) {
+          if ([candidate.displayName, ...(candidate.aliases ?? [])].some(label => labels.has(identityLabelKey(label)))) matches.set(candidate.entityKey, candidate);
+        }
+        if (matches.size !== 1) {
+          issue('spatialFacts.places', index, matches.size ? 'V3_EXTRACTOR_SPATIAL_PLACE_AMBIGUOUS' : 'V3_EXTRACTOR_SPATIAL_PLACE_UNRESOLVED', `spatialFacts.places[${index}].name`); continue;
+        }
+        entityKey = matches.keys().next().value;
+      }
+    }
+    const mention = { mentionKey: key, surface: name, aliases, entityType: 'place', identity, entityKey, specialRole: 'none', evidence: evidenceRefs };
+    spatialPlaces.set(key, mention);
+    target.entityMentions.push(mention);
+  }
+  for (const location of target.locations) {
+    const label = identityLabelKey(location.name);
+    const matches = [...spatialPlaces.values()].filter(mention => [mention.surface, ...mention.aliases].some(value => identityLabelKey(value) === label));
+    if (matches.length === 1) location.entityMentionKey = matches[0].mentionKey;
+  }
+  const normalizedSpatialFacts = { schemaVersion: 1, places: [...spatialPlaces.keys()].map(placeMentionKey => ({ placeMentionKey })), containments: [], positions: [] };
+  for (const [index, item] of spatialArray('containments').entries()) {
+    const placeMentionKey = semanticText(item, ['placeKey'], 80), parentMentionKey = semanticText(item, ['parentPlaceKey'], 80);
+    const evidenceRefs = spatialEvidence(item);
+    if (!spatialPlaces.has(placeMentionKey) || !spatialPlaces.has(parentMentionKey) || placeMentionKey === parentMentionKey || !evidenceRefs.length) {
+      issue('spatialFacts.containments', index, 'V3_EXTRACTOR_SPATIAL_FACT_INVALID', `spatialFacts.containments[${index}]`); continue;
+    }
+    normalizedSpatialFacts.containments.push({ placeMentionKey, parentMentionKey, evidence: evidenceRefs });
+  }
+  for (const [index, item] of spatialArray('positions').entries()) {
+    const subjectMentionKey = mentionFor(field(item, ['subject', 'person', 'name', '人物']));
+    const subject = people.find(person => person.mentionKey === subjectMentionKey);
+    const placeMentionKey = semanticText(item, ['placeKey'], 80) || null;
+    const evidenceRefs = spatialEvidence(item), status = semanticText(item, ['status'], 40);
+    if (!subject || !['person', 'group'].includes(subject.entityType) || (placeMentionKey && !spatialPlaces.has(placeMentionKey))
+      || !['confirmed', 'lastSeen', 'leftUnknown'].includes(status) || (status !== 'leftUnknown' && !placeMentionKey) || !evidenceRefs.length) {
+      issue('spatialFacts.positions', index, 'V3_EXTRACTOR_SPATIAL_POSITION_INVALID', `spatialFacts.positions[${index}]`); continue;
+    }
+    normalizedSpatialFacts.positions.push({ subjectMentionKey, placeMentionKey, status, evidence: evidenceRefs });
+  }
+  if (normalizedSpatialFacts.containments.length || normalizedSpatialFacts.positions.length) target.spatialFacts = normalizedSpatialFacts;
   for (const [index, item] of boundedItems(['events', 'event', 'eventFragments', '事件'], 'events').entries()) {
     const description = semanticText(item, ['description', 'summary', 'event', 'action', 'text', '描述', '事件']);
     if (!description) { issue('events', index, 'V3_EXTRACTOR_OPTIONAL_ITEM_INVALID', `events[${index}]`); continue; }

@@ -8,8 +8,11 @@ import { extension_settings, extensionNames } from '/scripts/extensions.js';
 import { is_send_press, saveSettingsDebounced } from '/script.js';
 import { is_group_generating } from '/scripts/group-chats.js';
 import { loadWorldInfo, selected_world_info, world_info, world_info_case_sensitive, world_info_match_whole_words, world_names } from '/scripts/world-info.js';
+import { localforage } from '/lib.js';
+import { getCurrentUserHandle } from '/scripts/user.js';
 import { version as pluginVersion } from './manifest.json';
 import { createBackendClient } from './src/backend-client.js';
+import { isTauriTavern } from './src/tauri-backend.js';
 import { createPrivateRecallDiagnostics } from './src/private-recall-diagnostics.js';
 import { bootstrap } from './src/bootstrap.js';
 import { createSettingsStore } from './src/settings.js';
@@ -24,9 +27,12 @@ import { createPluginLifecycle } from './src/plugin-lifecycle.js';
 import { createSourcePermissionController } from './src/source-permission.js';
 import { createHostAdapter } from './src/v3/host-adapter.js';
 import { createFoundationStore } from './src/v3/foundation-store.js';
+import { createIndexedDbCoreRecordCache } from './src/v3/indexeddb-core-cache.js';
 import { createFoundationRuntime } from './src/v3/foundation-runtime.js';
 import { createTimeStore, createTimeRuntime } from './src/v3/time-runtime.js';
 import { createV3MemoryRuntime } from './src/v3/memory-runtime.js';
+import { runHistoricalRebuildTask } from './src/v3/historical-rebuild-task.js';
+import { captureHistoricalRebuildSources as captureRebuildSources } from './src/v3/historical-rebuild-sources.js';
 import { persistMessageFloorAnchors } from './src/v3/message-floor-anchor.js';
 import { createV3RecallRuntime } from './src/v3/recall-runtime.js';
 import { createAutoHideController } from './src/v3/auto-hide.js';
@@ -120,7 +126,8 @@ const summaryPrompt = () => settings.get().summaryPrompt;
 const csePrompt = () => settings.get().csePrompt;
 const profilePrompt = () => settings.get().profilePrompt;
 const processingPrompt = () => settings.get().processingPrompt;
-const foundationStore = createFoundationStore({ client: backendClient, contextProvider: () => session.identity(), isEnabled: settings.isEnabled });
+const coreRecordCache = isTauriTavern() ? null : createIndexedDbCoreRecordCache({ localForage: localforage, accountHandleProvider: getCurrentUserHandle });
+const foundationStore = createFoundationStore({ client: backendClient, contextProvider: () => session.identity(), isEnabled: settings.isEnabled, coreRecordCache });
 const targetFoundationStore = identity => foundationStore.forIdentity(identity);
 const foundationRuntime = createFoundationRuntime({
   hostAdapter,
@@ -146,7 +153,7 @@ const vectorIndex = createVectorIndex({
   identityProvider: () => session.identity(),
   isEnabled: settings.isEnabled,
   sourceProvider: ({ targetIdentity }) => readVectorSource({
-    store: createFoundationStore({ client: backendClient, contextProvider: () => targetIdentity, isEnabled: settings.isEnabled }),
+    store: createFoundationStore({ client: backendClient, contextProvider: () => targetIdentity, isEnabled: settings.isEnabled, coreRecordCache }),
     targetIdentity, cachedReachable: foundationRuntime.getReachable(),
   }),
 });
@@ -287,6 +294,36 @@ const autoHideController = createAutoHideController({
   settings,
   notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
 });
+const captureHistoricalRebuildSources = snapshot => captureRebuildSources(snapshot, {
+  worldInfoBindings: hostAdapter.getWorldInfoBindings(),
+  getCharacterLorebooks: () => globalThis.TavernHelper?.getCharLorebooks?.(),
+  getGlobalSelection: () => globalThis.TavernHelper?.getLorebookSettings?.()?.selected_global_lorebooks,
+  loadWorldInfo,
+  calendarForChat: chatId => settings.get().storyCalendars?.[chatId] ?? null,
+});
+const createHistoricalRebuild = options => runHistoricalRebuildTask({
+  ...options,
+  client: backendClient,
+  coreRecordCache,
+  isEnabled: settings.isEnabled,
+  newUuid,
+  sanitizerOptions,
+  generateAnalysisTask: taskRouter.generateAnalysisTask,
+  generateUtilityTask: taskRouter.generateUtilityTask,
+  automationSettings: () => ({ enabled: false, batchSize: 1 }),
+  extractorPromptGuidance: summaryPrompt,
+  csePromptGuidance: csePrompt,
+  processingPrompt,
+  storyClockReferenceTags: () => settings.get().storyClockReferenceTags,
+  storyCalendarForChat: chatId => settings.get().storyCalendars?.[chatId] ?? null,
+  generateTimeTask: taskRouter.generateTimeTask,
+  isTimeEvolutionEnabled: () => settings.isEnabled() && settings.get().timeEvolutionEnabled === true,
+  filterWorldInfoSources: sourcePermissions.filterWorldInfoSources,
+  identityProjectionProvider,
+  qianshiExternalReferenceProvider: (chatId, reachable) => settings.get().timeEvolutionEnabled ? timeRuntime.getQianshiReferencesForChat(chatId, reachable) : [],
+  persistAnchors: persistMessageFloorAnchors,
+  fetchImpl: globalThis.fetch,
+});
 const inlineRenderer = createInlineRenderer({ memoryRuntime: v3MemoryRuntime, recallRuntime: v3RecallRuntime, hostAdapter });
 const chatMemoryManagement = createChatMemoryManagement({
   contextProvider,
@@ -300,6 +337,10 @@ const chatMemoryManagement = createChatMemoryManagement({
   vectorRuntime: vectorIndex,
   timeRuntime,
   autoHideController,
+  coreRecordCache,
+  captureHistoricalRebuildSources,
+  freshUuid: newUuid,
+  createHistoricalRebuild,
   isMainGenerationActive: isGenerating,
 });
 const storageManagement = createStorageManagement({
@@ -395,7 +436,7 @@ ui = bootstrap({
   storageManagement,
   sessionStateProvider: () => session.getState(),
   prepareSession: () => session.prepare(),
-  backendDiagnosticProvider: () => backendClient.getDiagnosticSnapshot(),
+  backendDiagnosticProvider: () => ({ ...backendClient.getDiagnosticSnapshot(), coreCache: coreRecordCache?.getStats?.() ?? { available: false } }),
   pluginVersion,
   inlineRenderer,
   enableFab: true,

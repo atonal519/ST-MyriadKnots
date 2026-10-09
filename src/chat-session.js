@@ -196,11 +196,22 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
 
   function resume(chatId) {
     if (!suspension || suspension.identity.chatId !== chatId) return false;
-    epoch += 1;
-    active?.controller?.abort('sessionResumed');
-    active = null;
+    const suspendedIdentity = suspension.identity;
+    const suspendedHost = suspension.host;
+    const activeBelongsToSuspendedHost = active && sameHost(active.host, suspendedHost);
+    if (activeBelongsToSuspendedHost) {
+      epoch += 1;
+      active.controller?.abort('sessionResumed');
+      active = null;
+    }
     suspension = null;
-    state = Object.freeze({ status: enabled() ? 'idle' : 'disabled' });
+    const readyBelongsToSuspendedHost = state.status === 'ready'
+      && state.identity?.chatId === suspendedIdentity.chatId
+      && state.identity?.hostChatId === suspendedHost.hostChatId
+      && state.identity?.characterLocator === suspendedHost.characterAvatar
+      && state.identity?.personaLocator === suspendedHost.personaAvatar;
+    if (active || (state.status === 'ready' && !readyBelongsToSuspendedHost)) return true;
+    state = Object.freeze(enabled() ? { status: 'idle' } : { status: 'disabled' });
     return true;
   }
 

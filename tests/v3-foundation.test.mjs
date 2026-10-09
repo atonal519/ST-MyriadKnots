@@ -2066,7 +2066,7 @@ test('lifecycle 接管刷新时身份准备失败仍发布真实 foundation erro
   assert.deepEqual(backend.calls, [], '身份失败不得尝试读取聊天记忆');
 });
 
-test('高楼 readReachable 最多并发 16 条，并在切聊后停止派发且不混读新聊天', async () => {
+test('高楼 readReachable 最多并发 16 条，并在页面身份变化期间完成起始目标读取', async () => {
   const h = harness([...Array.from({ length: 40 }, (_, index) => assistant(`高楼正文 ${index + 1}`)), user('稳定全部高楼')]);
   await h.runtime.start();
   assert.equal(h.runtime.getReachable().floors.length, 40);
@@ -2091,12 +2091,13 @@ test('高楼 readReachable 最多并发 16 条，并在切聊后停止派发且�
   const floorGate = new Promise(resolve => { releaseFloors = resolve; });
   let firstWaveResolve;
   const firstWave = new Promise(resolve => { firstWaveResolve = resolve; });
-  const collections = [];
+  const collections = [], floorReads = [];
   const switchingClient = {
     ...h.backend.client,
     async get(collection, key) {
       collections.push(collection);
       if (key.startsWith('v3-floor-')) {
+        floorReads.push(key);
         floorActive += 1;
         if (floorActive === 16) firstWaveResolve();
         await floorGate;
@@ -2109,10 +2110,11 @@ test('高楼 readReachable 最多并发 16 条，并在切聊后停止派发且�
   await firstWave;
   currentIdentity = { hostChatId: `host-${OTHER_CHAT}`, chatId: OTHER_CHAT, characterLocator: 'other.png', personaLocator: 'other.png' };
   releaseFloors();
-  const stale = await pending;
-  assert.equal(stale.status, 'stale');
-  assert.deepEqual([...new Set(collections)], [`chat-${CHAT}`], '整次读取只能访问起始聊天 collection');
-  assert.equal(collections.filter((_, index) => index >= 3).length, 16, '切聊后不得继续派发剩余楼层读取');
+  const completed = await pending;
+  assert.equal(completed.status, 'ready');
+  assert.equal(completed.floors.length, 40);
+  assert.deepEqual([...new Set(collections)], [`chat-${CHAT}`], '整次任务始终按起始身份读取原 collection');
+  assert.equal(floorReads.length, 40, '原目标所有楼层均完成派发');
 
   let storeEnabled = true;
   let disabledFloorActive = 0, releaseDisabledFloors;

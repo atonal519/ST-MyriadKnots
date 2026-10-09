@@ -271,6 +271,7 @@ const recallMemory = (assistantSeq, patch = {}) => ({
   floorId: `floor-${assistantSeq}`, floorMemoryId: `memory-${assistantSeq}`, assistantSeq, summary: Object.hasOwn(patch, 'summary') ? patch.summary : '',
   chronology: patch.chronology ?? [],
   participants: patch.participants ?? [], locations: patch.locations ?? [], commitments: patch.commitments ?? [], openLoops: patch.openLoops ?? [], exactAnchors: patch.exactAnchors ?? [], events: patch.events ?? [], actions: patch.actions ?? [], observations: patch.observations ?? [], privateCognition: patch.privateCognition ?? [], informationTransfers: patch.informationTransfers ?? [],
+  ...(patch.spatialFacts ? { spatialFacts: patch.spatialFacts } : {}),
 });
 
 test('选中旧事才附带本楼时间，不参与候选匹配且计入最终字符预算', () => {
@@ -302,6 +303,45 @@ function selectorSource({ complete = true, memories = null, currentState = null 
     currentState: currentState ?? [],
   };
 }
+
+test('空间事实保留来源楼锚点，并只沿锚点时点最新包含边补祖先', () => {
+  const room = '99999999-7777-4777-8777-777777777771', east = '99999999-7777-4777-8777-777777777772', west = '99999999-7777-4777-8777-777777777773', campus = '99999999-7777-4777-8777-777777777774';
+  const userId = '88888888-7777-4777-8777-777777777777';
+  const memories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
+  const ref = (seq, quotedText) => ({ floorId: `floor-${seq}`, assistantSeq: seq, quotedText });
+  memories[0] = recallMemory(1, { summary: '', spatialFacts: {
+    positions: [{ subjectEntityId: userId, placeEntityId: room, status: 'confirmed', sourceRefs: [ref(1, '林岚在房间')] }],
+    containments: [
+      { placeEntityId: room, parentEntityId: east, sourceRefs: [ref(1, '房间位于东馆')] },
+      { placeEntityId: east, parentEntityId: campus, sourceRefs: [ref(1, '东馆属于校园')] },
+    ],
+  } });
+  memories[1] = recallMemory(2, { summary: '', spatialFacts: { positions: [
+    { subjectEntityId: userId, placeEntityId: room, status: 'confirmed', sourceRefs: [ref(2, '林岚继续在房间')] },
+  ], containments: [
+    { placeEntityId: room, parentEntityId: west, sourceRefs: [ref(2, '房间改属西馆')] },
+  ] } });
+  const source = selectorSource({ memories });
+  source.entities.push(...[
+    [room, '房间'], [east, '东馆'], [west, '西馆'], [campus, '校园'],
+  ].map(([entityId, displayName]) => ({ entityId, displayName, aliases: [], entityType: 'place', specialRole: 'none' })));
+  const queryContext = { text: '林岚在房间', latestUserText: '林岚在房间', messageCount: 1 };
+  const context = historySelectionContext(source, queryContext);
+  const position = context.direct.find(value => value.kind === 'spatialPosition' && value.sourceAssistantSeq === 1);
+  assert.ok(position, JSON.stringify(context.facts.map(value => [value.kind, value.text, value.sourceAssistantSeq])));
+  const selected = selectRecall({ source, queryContext, historyContext: context, selectedHistoryCandidates: [position], contextSize: 12000 });
+  assert.match(selected.injectionText, /林岚当时位于房间/u);
+  assert.match(selected.injectionText, /房间 属于 东馆/u);
+  assert.match(selected.injectionText, /东馆 属于 校园/u);
+  assert.doesNotMatch(selected.injectionText, /房间 属于 西馆/u, '较新的关系不应覆盖较早位置锚点');
+
+  const newerPosition = context.direct.find(value => value.kind === 'spatialPosition' && value.sourceAssistantSeq === 2);
+  const latest = context.direct.find(value => value.kind === 'spatialContainment' && value.sourceAssistantSeq === 2);
+  assert.ok(newerPosition, '较新来源楼也有可用位置锚点');
+  assert.ok(latest, '锚点时最新的西馆边确实进入候选');
+  const excluded = selectRecall({ source, queryContext, historyContext: context, selectedHistoryCandidates: [newerPosition], excludedHistoryCandidates: [latest], contextSize: 12000 });
+  assert.doesNotMatch(excluded.injectionText, /房间 属于 (?:西馆|东馆)/u, '锚点时最新边被排除后不能回退到旧边');
+});
 
 test('32 楼睡觉续写在 LLM 无明确排除时保留近期摘要与相关远期材料', async () => {
   const recent = ['准备周末出门旅行', '确认次日复诊预约', '工作冲突需要协调', '临睡前决定清晨出发'];

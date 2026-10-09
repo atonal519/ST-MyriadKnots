@@ -19,7 +19,8 @@ function characterFilename(ctx, character) {
 
 function linkedWorldNames(ctx, bindings = {}, options = {}) {
   const names = [];
-  const helperBooks = safeValue(() => globalThis.TavernHelper?.getCharLorebooks?.(), null);
+  const helperBooks = safeValue(() => bindings.getCharLorebooks?.(), null)
+    ?? safeValue(() => globalThis.TavernHelper?.getCharLorebooks?.(), null);
   if (helperBooks?.primary) names.push(helperBooks.primary);
   if (Array.isArray(helperBooks?.additional)) names.push(...helperBooks.additional);
   const character = currentCharacter(ctx) ?? {};
@@ -42,7 +43,8 @@ function chatWorldNames(ctx, options = {}) {
 }
 
 function globalWorldNames(ctx, bindings = {}, options = {}) {
-  const helperNames = safeValue(() => globalThis.TavernHelper?.getLorebookSettings?.()?.selected_global_lorebooks, null);
+  const helperNames = safeValue(() => bindings.getGlobalWorldInfoSelection?.(), null)
+    ?? safeValue(() => globalThis.TavernHelper?.getLorebookSettings?.()?.selected_global_lorebooks, null);
   if (Array.isArray(helperNames)) return uniqueNames(helperNames, options);
   if (Array.isArray(ctx?.chatWorldInfo?.globalSelection)) return uniqueNames(ctx.chatWorldInfo.globalSelection, options);
   const moduleNames = safeValue(() => bindings.getSelectedWorldInfo?.(), null);
