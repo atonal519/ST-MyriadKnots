@@ -7,6 +7,39 @@ import { formatStoryTime } from '../v3/time-engine.js';
 
 function text(value, fallback = '—') { return value === null || value === undefined || value === '' ? fallback : String(value); }
 
+const cseReadingPairs = new Map([['（', '）'], ['(', ')'], ['［', '］'], ['[', ']'], ['【', '】'], ['〔', '〕'], ['｛', '｝'], ['{', '}'], ['“', '”'], ['‘', '’'], ['「', '」'], ['『', '』'], ['《', '》'], ['〈', '〉']]);
+const cseReadingClosers = new Set(cseReadingPairs.values());
+function cseReadingText(value) {
+  const source = String(value ?? '');
+  if (!/[。？！]/u.test(source)) return source;
+  const stack = [];
+  const output = [];
+  let pendingBreak = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    const previous = source[index - 1] ?? '';
+    const next = source[index + 1] ?? '';
+    if (pendingBreak) {
+      if (character === '\n' || character === '\r') pendingBreak = false;
+      else if (/\s/u.test(character) || cseReadingClosers.has(character) || /[。？！,，、]/u.test(character)) {
+        // Keep original spacing, closing punctuation, and existing punctuation runs with this sentence.
+      } else if (stack.length) pendingBreak = false;
+      else {
+        output.push('\n');
+        pendingBreak = false;
+      }
+    }
+    output.push(character);
+    if ((character === '"' || character === "'") && !(character === "'" && /[\p{L}\p{N}]/u.test(previous) && /[\p{L}\p{N}]/u.test(next))) {
+      if (stack.at(-1) === character) stack.pop();
+      else stack.push(character);
+    } else if (cseReadingPairs.has(character)) stack.push(cseReadingPairs.get(character));
+    else if (cseReadingClosers.has(character) && stack.at(-1) === character) stack.pop();
+    if (!stack.length && /[。？！]/u.test(character)) pendingBreak = true;
+  }
+  return output.join('');
+}
+
 function statusCopy(value) {
   return ({
     uninitialized: '尚未开始记录', ready: '可用', running: '正在处理', empty: '完成 · 无需注入',
@@ -204,7 +237,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   if (uiDiagnosticProvider !== null && typeof uiDiagnosticProvider !== 'function') throw new TypeError('界面诊断 provider 无效');
   if (!documentRef?.createElement) throw new TypeError('V3 foundation view documentRef 无效');
 
-  let container = null, active = false, epoch = 0, feedback = '', receiptFeedback = '', prequelFeedback = '', fallbackText = '', unsubscribe = null;
+  let container = null, active = false, epoch = 0, feedback = '', refreshFeedback = null, receiptFeedback = '', prequelFeedback = '', fallbackText = '', unsubscribe = null;
   let page = 'management';
   let peopleMode = 'current', selectedCsePersonId = null, showMoreCsePeople = false;
   let foundationState = runtime.getState(), recallState = recallRuntime?.getState?.() ?? null, peopleState = peopleRuntime?.getState?.() ?? null, managementState = memoryManagement?.getState?.() ?? null, chatId = foundationState?.chatId ?? null, healthNode = null, managementFeedbackNode = null;
@@ -264,7 +297,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     if (nextChatId === chatId) return false;
     showStoppedItems = false; recentItemDraft = null; recentBatchMode = false; selectedRecentItems.clear();
     if (chatId !== null) { prequelDraft = null; prequelFeedback = ''; }
-    chatId = nextChatId; drafts.clear(); cseDrafts.clear(); openState.clear(); recentItemsOpen = false; recentItemsUi = null; memorySearchQuery = ''; cseSearchQuery = ''; peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; feedback = '';
+    chatId = nextChatId; drafts.clear(); cseDrafts.clear(); openState.clear(); recentItemsOpen = false; recentItemsUi = null; memorySearchQuery = ''; cseSearchQuery = ''; peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; feedback = ''; refreshFeedback = null;
     return true;
   };
   const sourceChanged = (previous, next) => (previous?.chatId ?? null) !== (next?.chatId ?? null);
@@ -449,11 +482,13 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   };
   const copyStateDiagnostic = async () => {
     const value = JSON.stringify(stateDiagnostic(), null, 2);
+    refreshFeedback = null;
     feedback = await copy(value);
     if (active && container) render(runtime.getState());
   };
-  async function run(label, task, { after, failed, resultCopy } = {}) {
-    const mine = ++epoch; feedback = `${label}…`; updateManagementFeedback(foundationState); updateHealth(foundationState);
+  const refreshSyncing = state => state?.memorySnapshotStatus === 'syncing' || state?.memorySyncStatus === 'syncing';
+  async function run(label, task, { after, failed, resultCopy, followState = false } = {}) {
+    const mine = ++epoch, progressFeedback = `${label}…`; feedback = progressFeedback; refreshFeedback = null; updateManagementFeedback(foundationState); updateHealth(foundationState);
     const beforeState = runtime.getState?.() ?? foundationState;
     try {
       const next = await task();
@@ -461,12 +496,19 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const settledRender = after?.(nextState) === true;
       if (!active) return next;
       if (mine !== epoch) { if (settledRender) { feedback = `${label}完成。`; render(nextState); } return next; }
-      if (!feedback || feedback.endsWith('…')) feedback = resultCopy?.(nextState, beforeState) || (nextState?.status === 'ready' ? `${label}完成。` : `${label}结束：${statusCopy(nextState?.status)}`);
+      if (followState && feedback === progressFeedback && refreshSyncing(nextState)) {
+        feedback = resultCopy?.(nextState, beforeState) || `${label}结束：${statusCopy(nextState?.status)}`;
+        refreshFeedback = feedback;
+      } else {
+        if (followState) refreshFeedback = null;
+        if (!feedback || feedback.endsWith('…')) feedback = resultCopy?.(nextState, beforeState) || (nextState?.status === 'ready' ? `${label}完成。` : `${label}结束：${statusCopy(nextState?.status)}`);
+      }
       render(nextState); return next;
     } catch (error) {
       const settledRender = failed?.(error) === true;
       if (!active) return { status: 'stale' };
       if (mine !== epoch && !settledRender) return { status: 'stale' };
+      if (followState) refreshFeedback = null;
       feedback = `${label}失败：${publicErrorMessage(error, { fallback: '操作没有完成，请重试。' })}`; render(runtime.getState());
       return { status: 'error', error };
     }
@@ -512,10 +554,18 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     if (state?.memorySnapshotStatus === 'error' || state?.memorySyncStatus === 'error' || state?.status === 'error') {
       return `刷新状态未完成：${errorMessage(state?.memorySyncError) || errorCopy(state) || '当前聊天读取失败，请重试。'}`;
     }
-    if (state?.memorySnapshotStatus === 'ready') return state.memorySyncStatus === 'syncing'
+    if (refreshSyncing(state)) return state?.memorySnapshotStatus === 'ready'
       ? '当前聊天已读取完成；后台校验仍在进行。'
-      : '当前聊天已读取完成。';
+      : '正在读取当前聊天记忆。';
+    if (effectiveStatus(state) === 'needsReview' || state?.foundationStatus === 'needsReview' || state?.memorySyncStatus === 'needsReview') {
+      const count = Number.isSafeInteger(state?.rememberedCount) && state.rememberedCount >= 0 ? `已保留 ${state.rememberedCount} 楼记忆。` : '';
+      const reason = state?.reviewReason;
+      const markerConflict = reason?.code === 'markerMismatch' && reason?.bindingIssue === 'markerConflict';
+      const floor = markerConflict ? floorCopy(state, { messageIndex: reason.messageIndex }, '') : '';
+      return `核验已结束；${floor ? `${floor}记忆标记需核对。` : '记忆仍需核对。'}${count}`;
+    }
     if (effectiveStatus(state) === 'uninitialized') return '当前聊天尚未建立记忆，状态已读取完成。';
+    if (state?.memorySnapshotStatus === 'ready') return '当前聊天已读取完成。';
     return `刷新状态结束：${statusCopy(effectiveStatus(state))}`;
   };
   function validateDrafts(state) {
@@ -946,7 +996,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   }
 
   const appendSubjectGroups = (card, subject, state, { core = subject.core ?? [], adaptive = subject.adaptive ?? [], situational = subject.situational ?? [], empty = true, showMeta = true, groupAdaptiveByTarget = true } = {}) => {
-    const item = value => { const node = element('li', 'v3-cse-item'); node.append(element('span', 'v3-cse-item-text', value.text)); if (showMeta) { const source = value.sourceFloorId || value.sourceAssistantSeq ? sourceFloorCopy(state, value) : value.origin === 'baseline' ? '来源：聊天基线' : '来源：本地重放'; node.append(element('small', 'v3-cse-item-meta', [...new Set([value.reason, originCopy(value.origin), source, visibilityCopy(value.visibility)])].join(' · '))); } return node; };
+    const item = value => { const node = element('li', 'v3-cse-item'); node.append(element('span', 'v3-cse-item-text', cseReadingText(value.text))); if (showMeta) { const source = value.sourceFloorId || value.sourceAssistantSeq ? sourceFloorCopy(state, value) : value.origin === 'baseline' ? '来源：聊天基线' : '来源：本地重放'; node.append(element('small', 'v3-cse-item-meta', [...new Set([value.reason, originCopy(value.origin), source, visibilityCopy(value.visibility)])].join(' · '))); } return node; };
     const addGroup = (label, values, groupByTarget = false) => {
       const block = element('div', 'v3-cse-group'); block.append(element('h5', '', label));
       if (!values.length) { if (empty) { block.append(element('p', 'settings-hint', '暂无')); card.append(block); } return; }
@@ -1109,7 +1159,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
             const subjectNode = element('section', 'qqj-cse-record-subject'), listNode = element('ul', 'v3-cse-items'); subjectNode.append(element('strong', '', subject.displayName));
             for (const change of subjectChanges) {
               const after = change.after ?? { text: change.afterText }, item = element('li', `v3-cse-item qqj-cse-change is-${change.action ?? 'add'}`);
-              item.append(element('span', 'v3-cse-item-text', `${categoryCopy[change.category] ?? '人物状态'}：${after?.text ?? '状态内容未提供'}`));
+              item.append(element('span', 'v3-cse-item-text', cseReadingText(`${categoryCopy[change.category] ?? '人物状态'}：${after?.text ?? '状态内容未提供'}`)));
               listNode.append(item);
             }
             subjectNode.append(listNode); resultBody.append(subjectNode);
@@ -1124,7 +1174,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
             const subjectNode = element('section', 'qqj-cse-record-subject'); subjectNode.append(element('strong', '', subject.displayName));
             if (subject.changes?.length) {
               const listNode = element('ul', 'v3-cse-items');
-              for (const value of subject.changes) { const copy = changeCopy(value), item = element('li', `v3-cse-item qqj-cse-change is-${value.action ?? 'add'}`); item.append(element('span', 'v3-cse-item-text', copy.main)); if (copy.details.length) item.append(element('small', 'v3-cse-item-meta', copy.details.join(' · '))); listNode.append(item); }
+              for (const value of subject.changes) { const copy = changeCopy(value), item = element('li', `v3-cse-item qqj-cse-change is-${value.action ?? 'add'}`); item.append(element('span', 'v3-cse-item-text', cseReadingText(copy.main))); if (copy.details.length) item.append(element('small', 'v3-cse-item-meta', copy.details.join(' · '))); listNode.append(item); }
               subjectNode.append(listNode);
             } else subjectNode.append(element('p', 'settings-hint', '这个人物本楼没有记录到变化。'));
             changesBody.append(subjectNode);
@@ -1206,7 +1256,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   }
   const relationItem = (value, state, { showMeta = false } = {}) => {
     const item = element('li', 'qqj-relation-item');
-    item.append(element('span', 'v3-cse-item-text', value.text));
+    item.append(element('span', 'v3-cse-item-text', cseReadingText(value.text)));
     if (showMeta) { const source = value.sourceFloorId || value.sourceAssistantSeq ? sourceFloorCopy(state, value) : value.origin === 'baseline' ? '来源：聊天基线' : '来源：本地重放'; item.append(element('small', 'v3-cse-item-meta', [...new Set([value.reason, originCopy(value.origin), source, visibilityCopy(value.visibility)])].join(' · '))); } return item;
   };
   function appendRelationLayers(container, { situational = [], adaptive = [] }, state, { situationalLabel = '当前态度' } = {}) {
@@ -1555,7 +1605,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const deleting = managementState?.status === 'deleting', deletePending = managementState?.status === 'failed';
     const actions = element('div', 'v3-foundation-actions qqj-management-actions'), busy = workBusy(state) || managementState?.workBusy || deleting || deletePending;
     const refresh = element('button', 'secondary-action', '刷新状态'); refresh.type = 'button'; refresh.disabled = busy;
-    refresh.addEventListener('click', () => { void run('正在刷新状态', () => runtime.refreshStatus({ preferCached: false, recoverTailDeletion: true, reconcileFoundation: true }), { resultCopy: refreshResult }); });
+    refresh.addEventListener('click', () => { void run('正在刷新状态', () => runtime.refreshStatus({ preferCached: false, recoverTailDeletion: true, reconcileFoundation: true }), { resultCopy: refreshResult, followState: true }); });
     actions.append(refresh);
     const rebuildActionable = state.rebuildHasActionableWork ?? !['caughtUp', 'waitingRealtime'].includes(state.rebuildStatus);
     if (state.rebuildStatus === 'rebuilding' && typeof runtime.pauseHistoricalRebuild === 'function') { const pause = element('button', 'primary-action', '暂停补齐'); pause.type = 'button'; pause.disabled = !state.activeAutoMemory; pause.addEventListener('click', () => { void run('暂停补齐', () => runtime.pauseHistoricalRebuild(), { resultCopy: automaticResult('补齐缺失') }); }); actions.append(pause); }
@@ -1671,7 +1721,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
   function subscribe() {
     if (!active || !container || unsubscribe) return;
     const releases = [];
-    if (typeof runtime.subscribe === 'function') { const release = runtime.subscribe(snapshot => { if (snapshot?.status === 'ready' && feedback === statusCopy('stale')) feedback = '记忆状态已刷新。'; if (feedback === '正在读取当前聊天…' && snapshot?.memorySnapshotStatus !== 'syncing' && snapshot?.memorySyncStatus !== 'syncing') feedback = snapshot?.status === 'ready' ? '记忆状态已刷新。' : ''; if (active && container) receiveFoundation(snapshot); }); if (typeof release === 'function') releases.push(release); }
+    if (typeof runtime.subscribe === 'function') { const release = runtime.subscribe(snapshot => { if (refreshFeedback !== null) { if (feedback !== refreshFeedback) refreshFeedback = null; else { feedback = refreshResult(snapshot); refreshFeedback = refreshSyncing(snapshot) ? feedback : null; } } if (snapshot?.status === 'ready' && feedback === statusCopy('stale')) feedback = '记忆状态已刷新。'; if (feedback === '正在读取当前聊天…' && snapshot?.memorySnapshotStatus !== 'syncing' && snapshot?.memorySyncStatus !== 'syncing') feedback = snapshot?.status === 'ready' ? '记忆状态已刷新。' : ''; if (active && container) receiveFoundation(snapshot); }); if (typeof release === 'function') releases.push(release); }
     if (typeof recallRuntime?.subscribe === 'function') { const release = recallRuntime.subscribe(snapshot => { recallState = snapshot; if (active && container && page === 'management') render(foundationState); }); if (typeof release === 'function') releases.push(release); }
     if (typeof peopleRuntime?.subscribe === 'function') { const release = peopleRuntime.subscribe(snapshot => { peopleState = snapshot; if (active && container && page === 'people') render(foundationState); }); if (typeof release === 'function') releases.push(release); }
     if (typeof timeRuntime?.subscribe === 'function') { const release = timeRuntime.subscribe(() => { if (active && container) { updateHealth(foundationState); updateRecentItems(); } }); if (typeof release === 'function') releases.push(release); }

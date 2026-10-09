@@ -537,7 +537,8 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
 
   async function prepareHistory() {
     if (historyBusy() || otherWorkBusy()) return;
-    const operationEpoch = ++epoch, operationChatId = chatId; feedback = '正在准备补齐计划…'; render();
+    const operationEpoch = ++epoch, targetIdentity = runtime.captureBusinessIdentity?.() ?? null;
+    feedback = '正在准备补齐计划…'; render();
     try {
       const coverage = snapshot?.coverage ?? {};
       const hasUnprocessed = (Number(coverage.pendingFloors) || 0) + (Number(coverage.partialFloors) || 0) > 0;
@@ -554,14 +555,14 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
             { value: 'pendingOnly', label: '仅补未处理', primary: true },
             { value: 'includeEmpty', label: '含无事件楼' },
           ] });
-        if (!active || operationEpoch !== epoch || runtime.getQianshiSnapshot()?.identity?.qqjChatId !== operationChatId) return;
+        if (!active) return;
         if (!['pendingOnly', 'includeEmpty'].includes(choice)) { feedback = '已取消；没有调用模型。'; render(); return; }
         includeEmptyFloors = choice === 'includeEmpty';
       } else {
         includeEmptyFloors = !hasUnprocessed && hasEmpty;
       }
-      const plan = await runtime.prepareQianshiHistory({ includeEmptyFloors });
-      if (!active || operationEpoch !== epoch || runtime.getQianshiSnapshot()?.identity?.qqjChatId !== operationChatId) return;
+      const plan = await runtime.prepareQianshiHistory({ includeEmptyFloors, ...(targetIdentity ? { targetIdentity } : {}) });
+      if (!active) return;
       if (plan.status === 'empty') { feedback = plan.aggregateSkippedFloors?.length
         ? `${plan.aggregateSkippedFloors.length} 楼由多个正文楼聚合；为保留成员事件来源，当前跳过模型替换。`
         : includeEmptyFloors ? '没有符合条件的空结果楼可重查；现有记录未改动。'
@@ -575,7 +576,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         body: `${modelFloors} 楼进入模型补齐，分 ${plan.batchCount} 批；预计 API ${plan.apiCalls} 次，输入约 ${plan.estimatedInputTokens} token。${recheckedEmpty ? `其中重查已判空楼 ${recheckedEmpty} 楼。` : ''}${budgetSkipped ? `跳过超预算 ${budgetSkipped} 楼。` : ''}${aggregateSkipped ? `跳过聚合记忆 ${aggregateSkipped} 楼。` : ''}`,
         note: `${includeEmptyFloors ? '本次包含符合条件的无事件楼重查；重查结果只替换千事增量。' : ''}${unavailable ? `另有 ${unavailable} 楼缺少有效摘要。` : ''}确认后才调用 API；取消不调用模型或写入。${modelFloors ? '成功批次立即保存，可停止后继续。' : '暂无可发给模型的楼。'}`,
         confirmText: '开始补齐', cancelText: '取消' });
-      if (!active || operationEpoch !== epoch || runtime.getQianshiSnapshot()?.identity?.qqjChatId !== operationChatId) return;
+      if (!active) return;
       if (!confirmed) { feedback = '已取消；没有调用模型。'; render(); return; }
       runtimeState = runtime.getState();
       if (otherWorkBusy() || historyBusy()) { feedback = '后台任务状态已经变化，请等待当前任务结束后重新准备补齐计划。'; render(); return; }
@@ -597,19 +598,19 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   async function prepareRejudge() {
     if (historyBusy() || otherWorkBusy() || typeof runtime.prepareQianshiRejudge !== 'function'
       || typeof runtime.startQianshiRejudge !== 'function' || typeof dialog?.prompt !== 'function') return;
-    const operationEpoch = ++epoch, operationChatId = chatId;
+    const operationEpoch = ++epoch, targetIdentity = runtime.captureBusinessIdentity?.() ?? null;
     try {
       const latestMessageIndex = (snapshot?.events ?? []).reduce((latest, event) => Number.isSafeInteger(event.sourceMessageIndex)
         ? Math.max(latest, event.sourceMessageIndex) : latest, -1);
       const input = await dialog.prompt({ title: '重新整理已存千事', body: `留空或填 0，从第 0 楼整理到最新；也可填 12~30 指定范围（按酒馆显示的楼号）。${latestMessageIndex >= 0 ? `当前最新为第 ${latestMessageIndex} 楼。` : ''}`,
         placeholder: '留空整理全部，或填 12~30', maxLength: 32, confirmText: '预览范围' });
-      if (!active || operationEpoch !== epoch || input === null || runtime.getQianshiSnapshot()?.identity?.qqjChatId !== operationChatId) return;
+      if (!active || input === null) return;
       // 一次输入同时选择两端；省略终点保留开放边界，由实际存档解析，不能转成第 0 楼。
       const value = String(input).trim(), range = value.match(/^(\d+)(?:\s*[~～-]\s*(\d*))?$/u);
       if (value && !range) { feedback = '请输入楼号范围，例如 12~30；留空或填 0 可整理全部。'; render(); return; }
-      const plan = await runtime.prepareQianshiRejudge({ fromMessageIndex: range ? Number(range[1]) : 0,
+      const plan = await runtime.prepareQianshiRejudge({ ...(targetIdentity ? { targetIdentity } : {}), fromMessageIndex: range ? Number(range[1]) : 0,
         toMessageIndex: range?.[2] ? Number(range[2]) : null });
-      if (!active || operationEpoch !== epoch || runtime.getQianshiSnapshot()?.identity?.qqjChatId !== operationChatId) return;
+      if (!active) return;
       if (plan.status !== 'ready') { feedback = '所选范围没有可重判的单楼千事存档。'; render(); return; }
       // 大范围确认只概括首尾与数量；逐楼结果仍在任务列表中显示，不能让弹窗随楼数增长。
       const firstFloor = plan.floors?.[0], lastFloor = plan.floors?.at(-1);
@@ -621,7 +622,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         body: `${rangeCopy}：${plan.totalFloors} 个 AI 楼、${recordCount} 条旧记录；预计 API ${plan.apiCalls} 次。`,
         note: '只重判千事的归线和状态，保留原文字、人物、物品、时间、摘要、双丝网及人工修订。确认后才调用 API，全部处理后统一保存；提交前取消或失败不改原档，关联冲突则不保存。',
         confirmText: '开始重判', cancelText: '取消' });
-      if (!active || operationEpoch !== epoch || runtime.getQianshiSnapshot()?.identity?.qqjChatId !== operationChatId) return;
+      if (!active) return;
       if (!confirmed) { feedback = '已取消；没有调用模型或写入。'; render(); return; }
       runtimeState = runtime.getState();
       if (otherWorkBusy() || historyBusy()) { feedback = '后台任务状态已经变化，请等待后重新准备范围。'; render(); return; }
@@ -721,15 +722,19 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       const statusCopy = isRejudge ? REJUDGE_STATUS_COPY : HISTORY_STATUS_COPY;
       const progress = history.status === 'running'
         ? `${history.committing ? '整组正在提交' : `${isRejudge ? '已暂存' : '已处理'} ${history.processedFloors ?? 0}/${history.totalFloors ?? 0} 楼`}${history.committing ? '；此阶段不能取消' : `；失败 ${history.failedFloors ?? 0} 楼；跳过 ${history.skippedFloors ?? 0} 楼 · 模型任务 ${history.calls ?? 0} 次`}${history.message ? ` · ${history.message}` : ''}`
-        : `${history.message || statusCopy[history.status] || '历史补齐状态待核对。'}${history.attemptedFloors !== undefined
-          ? ` 已处理 ${history.processedFloors} 楼；失败 ${history.failedFloors ?? 0} 楼；跳过 ${history.skippedFloors ?? 0} 楼。` : ''}`;
+        : `${history.message || statusCopy[history.status] || '历史补齐状态待核对。'}${isRejudge
+          ? history.commitStatus === 'saved' ? ` 已确认保存 ${history.savedFloors ?? 0}/${history.totalFloors ?? 0} 楼（完整 ${history.savedCompleteFloors ?? 0}、部分 ${history.savedPartialFloors ?? 0}）。`
+            : history.commitStatus === 'unknown' ? ` 已暂存 ${history.processedFloors ?? 0} 楼；提交状态待核对。`
+              : ` 已暂存 ${history.processedFloors ?? 0} 楼；整组未提交。`
+          : history.attemptedFloors !== undefined ? ` 已处理 ${history.processedFloors} 楼；失败 ${history.failedFloors ?? 0} 楼；跳过 ${history.skippedFloors ?? 0} 楼。` : ''}`;
       coverageBox.append(element('p', 'qqj-qianshi-history-status', progress));
       const results = element('div', 'qqj-qianshi-history-results');
       results.setAttribute('role', 'region'); results.setAttribute('aria-label', '历史补齐逐楼结果'); results.setAttribute('tabindex', '0');
       for (const outcome of outcomes.filter(item => item.status !== 'saved-complete' && (item.reasonCode || item.message))) {
         const reason = String(outcome.message ?? '').trim() || HISTORY_OUTCOME_COPY[outcome.status] || '本楼暂未完成，原记录已保留。';
-        const floorCopy = Number.isSafeInteger(outcome.assistantSeq) && outcome.assistantSeq > 0
-          ? `第 ${outcome.assistantSeq} 楼：${reason}` : `目标楼已不存在或楼层已变化：${reason}`;
+        const floorLabel = validMessageIndex(outcome.messageIndex) ? `第 ${outcome.messageIndex} 楼`
+          : Number.isSafeInteger(outcome.assistantSeq) ? `AI 记录 ${outcome.assistantSeq}` : '目标楼';
+        const floorCopy = `${floorLabel}：${reason}`;
         results.append(element('p', 'qqj-qianshi-history-status', floorCopy));
       }
       if (results.children.length) coverageBox.append(results);

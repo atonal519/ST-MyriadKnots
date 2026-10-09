@@ -121,6 +121,7 @@ const csePrompt = () => settings.get().csePrompt;
 const profilePrompt = () => settings.get().profilePrompt;
 const processingPrompt = () => settings.get().processingPrompt;
 const foundationStore = createFoundationStore({ client: backendClient, contextProvider: () => session.identity(), isEnabled: settings.isEnabled });
+const targetFoundationStore = identity => foundationStore.forIdentity(identity);
 const foundationRuntime = createFoundationRuntime({
   hostAdapter,
   store: foundationStore,
@@ -133,8 +134,8 @@ const foundationRuntime = createFoundationRuntime({
 });
 const peopleWorkspaceStore = createPeopleWorkspaceStore({ client: backendClient });
 let peopleWorkspaceRuntime;
-const identityProjectionProvider = async () => {
-  const identity = session.identity();
+const identityProjectionProvider = async identityValue => {
+  const identity = identityValue ?? session.identity();
   const state = peopleWorkspaceRuntime?.getState?.();
   if (state?.chatId === identity.chatId) return peopleWorkspaceRuntime.getIdentityProjection();
   return (await peopleWorkspaceStore.read(identity)).data ?? {};
@@ -150,10 +151,11 @@ const vectorIndex = createVectorIndex({
   }),
 });
 let v3RecallRuntime;
+const timeStore = createTimeStore({ client: backendClient });
 const timeRuntime = createTimeRuntime({
   storyCalendarProvider,
   newUuid,
-  store: createTimeStore({ client: backendClient }), foundationStore, hostAdapter, session,
+  store: timeStore, foundationStore, hostAdapter, session,
   getReachable: () => foundationRuntime.getReachable(),
   getMemoryState: () => v3MemoryRuntime.getState(),
   generateTimeTask: taskRouter.generateUtilityTask,
@@ -191,10 +193,12 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   sanitizerOptions,
   persistAnchors: persistMessageFloorAnchors,
   identityProjectionProvider,
+  captureBusinessIdentity: () => session.identity(),
+  storeForIdentity: targetFoundationStore,
   onQianshiEventDeleted: () => v3RecallRuntime?.invalidate('qianshiManuallyDeleted'),
-  qianshiExternalReferenceProvider: () => {
+  qianshiExternalReferenceProvider: (targetChatId, targetReachable) => {
     if (!settings.get().timeEvolutionEnabled) return [];
-    return timeRuntime.getQianshiReferences();
+    return targetChatId ? timeRuntime.getQianshiReferencesForChat(targetChatId, targetReachable) : timeRuntime.getQianshiReferences();
   },
   newUuid,
 });

@@ -950,8 +950,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       const identityProjection = typeof identityProjectionProvider === 'function' ? await step('identity', () => identityProjectionProvider()) : null;
       let result, prepared;
       if (typeof prepareMemory === 'function') {
-        // fresh 校验不拥有后台维护：只借匹配根的缓存，否则独立读取已完成 checkpoint。
-        prepared = await step('prepare', () => prepareMemory({ preferCached: !fresh, rootResult: latestRoot, allowRefresh: !fresh }));
+        // fresh 校验不启动后台维护；可借同目标的已在途准备，否则独立核验已完成 checkpoint。
+        prepared = await step('prepare', () => prepareMemory({ preferCached: !fresh, rootResult: latestRoot, allowRefresh: !fresh, reuseInFlight: fresh && !sourceToVerify }));
         if (prepared?.status === 'ready' && prepared.reachable?.root) {
           result = await step('projection', () => projectRecallSource(prepared.reachable, now, Object.freeze({ reachableReads: 0, exitPoint: 'validatedSnapshot' }), snapshot, sanitizerSnapshot, hasRealtimeOrigin(), identityProjection?.data ?? identityProjection));
         } else if (['disabled', 'stale'].includes(prepared?.status)) return prepared;

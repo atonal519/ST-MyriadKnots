@@ -218,7 +218,7 @@ function browserStorage(initial = {}) {
   };
 }
 
-function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, extractorPromptGuidance, csePromptGuidance, processingPrompt, storyClockReferenceTags = '', sanitizerOptions = () => ({}), foundationRefresh, foundationFetch = undefined, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null, qianshiExternalReferenceProvider = () => [], qianshiCandidatePreparer = undefined, qianshiCandidateIndexFactory = undefined, failureStorage = undefined, now = () => new Date(NOW), foundationNow = () => new Date(NOW) } = {}) {
+function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, extractorPromptGuidance, csePromptGuidance, processingPrompt, storyClockReferenceTags = '', sanitizerOptions = () => ({}), foundationRefresh, foundationFetch = undefined, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null, captureBusinessIdentity = null, qianshiExternalReferenceProvider = () => [], qianshiCandidatePreparer = undefined, qianshiCandidateIndexFactory = undefined, failureStorage = undefined, now = () => new Date(NOW), foundationNow = () => new Date(NOW) } = {}) {
   let enabled = true;
   const handlers = new Map();
   const warnings = [];
@@ -261,7 +261,7 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
     }
     return { jsonData: { summary: '裴晚生提醒用户带伞。', people: [{ name: '裴晚生' }, { name: '你', role: 'user' }], events: [{ title: '带伞提醒', description: '裴晚生提醒用户带伞。' }] }, taskMetadata: { source: 'shared-utility', sourceLabel: '机械副 API', model: 'mock-model', finishReason: 'stop' } };
   };
-  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted, onMemoryBatchCommitted, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), storyClockReferenceTags: () => typeof storyClockReferenceTags === 'function' ? storyClockReferenceTags() : storyClockReferenceTags, sanitizerOptions: currentSanitizerOptions, persistAnchors, identityProjectionProvider, qianshiExternalReferenceProvider, ...(qianshiCandidatePreparer ? { qianshiCandidatePreparer } : {}), ...(qianshiCandidateIndexFactory ? { qianshiCandidateIndexFactory } : {}), failureStorage, now, newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
+  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted, onMemoryBatchCommitted, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), storyClockReferenceTags: () => typeof storyClockReferenceTags === 'function' ? storyClockReferenceTags() : storyClockReferenceTags, sanitizerOptions: currentSanitizerOptions, persistAnchors, identityProjectionProvider, captureBusinessIdentity, qianshiExternalReferenceProvider, ...(qianshiCandidatePreparer ? { qianshiCandidatePreparer } : {}), ...(qianshiCandidateIndexFactory ? { qianshiCandidateIndexFactory } : {}), failureStorage, now, newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
   const emit = (name, ...args) => (handlers.get(name) ?? []).forEach(listener => listener(...args));
   return { runtime, foundationRuntime, store, backend, context, hostAdapter, calls, warnings, emit, readReachableModes, snapshotCount: () => snapshotCalls,
@@ -323,6 +323,58 @@ async function primeRealtimeTail(h) {
   await h.runtime.refreshAutomation();
   assert.equal(h.calls.length, 0, '开启新楼维护不得回头调用历史记忆 API');
 }
+
+test('实时自动 CSE 提交后只核验root，不重复读取整图', async () => {
+  let cseCalls = 0, readsAtCse = null;
+  const h = harness({ initialChat: [user('开始'), assistant('已归档的旧楼。'), assistant('等待下一位用户确认的回复。')],
+    automation: { enabled: true, batchSize: 1 },
+    utility: options => {
+      if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { summary: '已保存一段中性摘要。' } };
+      cseCalls += 1;
+      readsAtCse = h.readReachableModes.length;
+      return { jsonData: { noMaterialChange: true } };
+    } });
+  await primeRealtimeTail(h);
+  h.context.chat.push(user('确认上一条回复'));
+  h.emit('MESSAGE_SENT', h.context.chat.length - 1);
+  await waitFor(() => cseCalls === 1 && !h.runtime.getState().memoryWorkBusy, '实时摘要后的CSE没有完成');
+  assert.equal(h.runtime.getState().floors.at(-1).cse.status, 'noChange');
+  assert.equal(h.readReachableModes.length, readsAtCse, '提交图已采用；后处理只读root并复用匹配图');
+});
+
+test('271楼图的手动 CSE 提交后复用已验证提交图', async () => {
+  const h = await seedContinuousSummaryTail(270);
+  const floors = h.runtime.getState().floors;
+  assert.equal(floors.length, 271);
+  const readsBeforeCse = h.readReachableModes.length;
+  await h.runtime.retryStateAnalysis(floors[0].floorId);
+  assert.equal(h.runtime.getState().floors.length, 271);
+  assert.equal(h.readReachableModes.length, readsBeforeCse, '同root提交后只做小root核验，没有重复投影271楼图');
+});
+
+test('CSE提交后root版本再次推进时重新读取实际图', async () => {
+  const complete = async advanceRoot => {
+    let readsAtCse = null;
+    const h = harness({ initialChat: [user('开始'), assistant('已保存的事实。'), user('确认上一楼'), assistant('当前尾楼。')],
+      utility: options => {
+        if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { summary: '已保存的中性摘要。' } };
+        readsAtCse = h.readReachableModes.length;
+        return { jsonData: { noMaterialChange: true } };
+      } });
+    await h.runtime.start();
+    const floor = h.runtime.getState().floors[0];
+    await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+    if (advanceRoot) h.backend.setAfterPut(({ collection, key, revision, data, records }) => {
+      if (collection === `chat-${CHAT}` && key === 'v3-root') {
+        records.set(`${collection}/${key}`, { revision: revision + 1, data: structuredClone(data) });
+      }
+    });
+    await h.runtime.retryStateAnalysis(floor.floorId);
+    return h.readReachableModes.length - readsAtCse;
+  };
+  assert.equal(await complete(false), 0, '同版本提交后的处理仅核验root');
+  assert.ok(await complete(true) > 0, 'root版本变化后必须重新读取实际图');
+});
 
 test('连续 AI 显式确认后按楼顺序接入现有摘要流水，确认前与普通尾楼均不调用模型', async () => {
   const h = harness({
@@ -2382,6 +2434,92 @@ test('召回选材中root推进，精确ready快照绕过另一次挂起刷新�
   }
 });
 
+test('recall fresh重试等待同目标已在途prepare，超时后不重复启动整图读取', async () => {
+  const seed = harness({ initialChat: [user('开始'), assistant('林岚记得先核对账本。'), user('确认上一楼'), assistant('当前对话有一段可回忆的经历。')] });
+  await seed.runtime.start();
+  const floor = seed.runtime.getState().floors[0];
+  await seed.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  seed.context.chat.push(user('账本放在哪里？'));
+
+  let releaseGraph, markGraphStarted, markFreshPrepare;
+  const graphStarted = new Promise(resolve => { markGraphStarted = resolve; });
+  const freshPrepareStarted = new Promise(resolve => { markFreshPrepare = resolve; });
+  let graphHeld = false;
+  seed.setReadReachableGate(async () => {
+    if (graphHeld) {
+      graphHeld = false;
+      markGraphStarted();
+      await new Promise(resolve => { releaseGraph = resolve; });
+    }
+  });
+  const foundationRuntime = createFoundationRuntime({ hostAdapter: seed.hostAdapter, store: seed.store,
+    contextProvider: () => seed.context, isEnabled: () => true, scanCandidates: legacyScanner,
+    now: () => new Date(NOW), logger: { warn() {} } });
+  const task = async () => { throw new Error('只读召回准备不得请求模型'); };
+  const memory = createV3MemoryRuntime({ foundationRuntime, store: seed.store, hostAdapter: seed.hostAdapter,
+    generateAnalysisTask: task, generateUtilityTask: task, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  const prepareOptions = [];
+  const prepareMemory = options => {
+    prepareOptions.push(options);
+    if (options.reuseInFlight === true) markFreshPrepare();
+    return memory.prepareCurrent(options);
+  };
+  let sourceReads = 0;
+  const recall = createV3RecallRuntime({ store: seed.store, hostAdapter: seed.hostAdapter, prepareMemory,
+    sourceReader: options => { sourceReads += 1; return readRecallSource(options); },
+    selector: options => selectRecall(options), preparationTimeoutMs: 35,
+    pluginVersion: 'test-reuse-inflight-prepare', now: () => new Date(NOW), logger: { warn() {} } });
+  const beforeReads = seed.readReachableModes.length;
+  graphHeld = true;
+  let timer;
+  try {
+    const resultPromise = recall.intercept(structuredClone(seed.context.chat), 12000, null, 'normal');
+    await graphStarted;
+    await freshPrepareStarted;
+    assert.equal(seed.readReachableModes.length, beforeReads + 1, 'fresh尝试必须等现有promise，不能并发再读一次图');
+    releaseGraph();
+    const result = await Promise.race([resultPromise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('复用在途prepare未收敛')), 2000); })]);
+    assert.ok(['ready', 'empty'].includes(result.lastRecall.status), JSON.stringify(result.lastRecall));
+    assert.equal(prepareOptions.length, 2, '一次首轮准备加一次fresh只读核验');
+    assert.equal(prepareOptions[0].allowRefresh, true);
+    assert.equal(prepareOptions[1].allowRefresh, false);
+    assert.equal(prepareOptions[1].reuseInFlight, true);
+    assert.equal(seed.readReachableModes.length, beforeReads + 1, '同一次后端全图读取完成后没有sourceReader重复回读');
+    assert.equal(sourceReads, 0, '严格图成功仍使用正常ready快照，不走降级召回读取');
+    assert.deepEqual(result.lastRecall.attemptDiagnostics.map(attempt => attempt.timings.preparationAttempts.at(-1).status), ['timeout', 'ready']);
+  } finally { clearTimeout(timer); releaseGraph?.(); }
+});
+
+test('recall fresh root命中已验证图时不等待无关的同目标刷新', async () => {
+  const seed = harness({ initialChat: [user('开始'), assistant('林岚记得先核对账本。'), user('确认上一楼'), assistant('已有稳定记录。')] });
+  await seed.runtime.start();
+  const floor = seed.runtime.getState().floors[0];
+  await seed.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  let holdInspect = false, releaseInspect, markInspectStarted;
+  const inspectStarted = new Promise(resolve => { markInspectStarted = resolve; });
+  const foundationRuntime = { ...seed.foundationRuntime, inspect: async (...args) => {
+    if (holdInspect) { holdInspect = false; markInspectStarted(); await new Promise(resolve => { releaseInspect = resolve; }); }
+    return seed.foundationRuntime.inspect(...args);
+  } };
+  const task = async () => { throw new Error('只读召回准备不得请求模型'); };
+  const memory = createV3MemoryRuntime({ foundationRuntime, store: seed.store, hostAdapter: seed.hostAdapter,
+    generateAnalysisTask: task, generateUtilityTask: task, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  await memory.start();
+  await waitFor(() => memory.getState().memorySyncStatus === 'idle');
+  const rootResult = await seed.store.readRoot();
+  const beforeReads = seed.readReachableModes.length;
+  holdInspect = true;
+  const pending = memory.refreshStatus({ preferCached: false });
+  await inspectStarted;
+  let timer;
+  try {
+    const prepared = await Promise.race([memory.prepareCurrent({ allowRefresh: false, reuseInFlight: true, rootResult }),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('warm root hit should not wait for pending maintenance')), 100); })]);
+    assert.equal(prepared.status, 'ready');
+    assert.equal(seed.readReachableModes.length, beforeReads, 'warm verified graph hit must not start another full read');
+  } finally { clearTimeout(timer); releaseInspect?.(); await pending; }
+});
+
 test('CHAT_CHANGED 与 start 并发发布同版本 foundation 快照时共用后台同步并收敛 coverage', async () => {
   const graph = {
     status: 'ready', rootRevision: 1,
@@ -3472,7 +3610,9 @@ test('同楼隐藏时间戳变化不撤销已存时间，摘要与 CSE 分别显
   assert.match(floor.memory.chronology[0].time.sourceText, /18:10.*18:40/);
   assert.doesNotMatch(floor.memory.chronology[0].time.sourceText, /15:30/);
   assert.equal(cseInputs.length, cseCallsBeforeRetry, '摘要重提不得自动重算已存 CSE');
+  const reachableReadsBeforeRetry = h.readReachableModes.length;
   await h.runtime.retryStateAnalysis(floor.floorId);
+  assert.equal(h.readReachableModes.length, reachableReadsBeforeRetry, 'CSE commit返回的已校验图经root核对后复用');
   state = h.runtime.getState(); floor = state.floors[0];
   assert.equal(cseInputs.length, cseCallsBeforeRetry + 1, '显式人物状态重分析才调用一次 CSE');
   assert.match(JSON.stringify(cseInputs.at(-1)), /18:10.*18:40/);
@@ -4802,6 +4942,127 @@ test('失败提示存储损坏或不可写不阻断摘要流程，内存提示�
   assert.equal(h.runtime.getState().floors[0].status, 'ready');
   assert.equal(h.runtime.getState().floors[0].error, null);
   assert.deepEqual(calls, ['get', 'set', 'remove']);
+});
+
+test('原目标CSE在浏览器失败槽已切到另一聊天后仍落账或清理自己的楼', async () => {
+  const otherChat = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  for (const outcome of ['success', 'failure']) {
+    const storage = browserStorage();
+    let mode = 'summary', h, releaseTask, markTaskStarted;
+    const taskGate = new Promise(resolve => { releaseTask = resolve; });
+    const taskStarted = new Promise(resolve => { markTaskStarted = resolve; });
+    const utility = async options => {
+      const content = JSON.parse(options.taskMessages[0].content).payload.canonicalContent;
+      if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { summary: `摘要-${content}` } };
+      if (mode === 'initialFailure') throw Object.assign(new Error('原目标CSE失败'), { code: 'TEST_CSE_FAILURE' });
+      markTaskStarted();
+      await taskGate;
+      if (outcome === 'failure') throw Object.assign(new Error('原目标CSE失败'), { code: 'TEST_CSE_FAILURE' });
+      return { jsonData: { noMaterialChange: true } };
+    };
+    h = harness({ initialChat: [user('开始'), assistant('原目标楼内容。'), user('确认')], automation: { enabled: false, batchSize: 1 }, utility,
+      failureStorage: storage, captureBusinessIdentity: () => ({ hostChatId: h.context.chatId,
+        chatId: h.context.chatMetadata.qianqianjie.chatId, characterLocator: 'character.png', personaLocator: 'persona.png' }) });
+    await h.runtime.start();
+    const floorId = h.runtime.getState().floors[0].floorId;
+    await h.runtime.extractFloor(floorId, { analyzeState: false });
+    if (outcome === 'success') {
+      mode = 'initialFailure';
+      await h.runtime.retryStateAnalysis(floorId);
+      assert.ok(JSON.parse(storage.values.get(`qqj_v3_floor_failures:${CHAT}`))?.cseFailures?.[floorId]);
+    }
+
+    const otherContext = { name1: '林岚', personaId: 'persona-linlan', characterId: 0, groupId: null, chatId: 'host-chat-b',
+      characters: [{ avatar: 'character.png' }], userAvatar: 'persona.png', chatMetadata: { qianqianjie: { schemaVersion: 1, chatId: otherChat } },
+      chat: [user('开始'), assistant('另一目标楼。'), user('确认')] };
+    const other = harness({ sharedBackend: h.backend, sharedContext: otherContext, automation: { enabled: false, batchSize: 1 },
+      utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? { jsonData: { summary: '另一目标摘要。' } } : { jsonData: { noMaterialChange: true } },
+      failureStorage: storage });
+    await other.runtime.start();
+    const otherFloorId = other.runtime.getState().floors[0].floorId;
+    await other.runtime.extractFloor(otherFloorId, { analyzeState: false });
+    const otherFailureKey = `qqj_v3_floor_failures:${otherChat}`;
+    storage.values.set(otherFailureKey, JSON.stringify({ narrativeGeneration: GENERATION,
+      cseFailures: { [otherFloorId]: { count: 9, lastReason: '保留另一目标', code: 'TEST_OTHER', lastFailedAt: NOW } } }));
+    const otherSavedValue = storage.values.get(otherFailureKey);
+
+    mode = 'pending';
+    const pending = h.runtime.retryStateAnalysis(floorId);
+    await taskStarted;
+    h.context.chatId = otherContext.chatId;
+    h.context.chatMetadata.qianqianjie = structuredClone(otherContext.chatMetadata.qianqianjie);
+    h.context.chat = structuredClone(otherContext.chat);
+    await h.runtime.refreshStatus({ reconcileFoundation: true });
+    assert.equal(h.runtime.getState().chatId, otherChat, '界面失败槽已切到另一目标');
+    releaseTask();
+    await pending;
+
+    const originalFailures = JSON.parse(storage.values.get(`qqj_v3_floor_failures:${CHAT}`) || 'null');
+    if (outcome === 'success') assert.equal(originalFailures?.cseFailures?.[floorId], undefined, '成功回调清理原目标的失败楼');
+    else assert.equal(originalFailures?.cseFailures?.[floorId]?.code, 'TEST_CSE_FAILURE', '失败回调将原目标失败写回原目标槽');
+    assert.equal(storage.values.get(otherFailureKey), otherSavedValue, '另一个目标的已存失败内容不受影响');
+  }
+});
+
+test('切换单槽浏览器失败范围后原目标CSE成功清理与失败记账均按聊天隔离', async () => {
+  const otherChat = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  for (const outcome of ['success', 'failure']) {
+    const storage = browserStorage();
+    let mode = 'summary', h, releaseTask, markTaskStarted;
+    const taskGate = new Promise(resolve => { releaseTask = resolve; });
+    const taskStarted = new Promise(resolve => { markTaskStarted = resolve; });
+    const utility = async options => {
+      const content = JSON.parse(options.taskMessages[0].content).payload.canonicalContent;
+      if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { summary: `摘要-${content}` } };
+      if (mode === 'initialFailure') throw Object.assign(new Error('原目标CSE失败'), { code: 'TEST_CSE_FAILURE' });
+      markTaskStarted();
+      await taskGate;
+      if (mode === 'pendingFailure') throw Object.assign(new Error('原目标CSE失败'), { code: 'TEST_CSE_FAILURE' });
+      return { jsonData: { noMaterialChange: true } };
+    };
+    h = harness({ initialChat: [user('开始'), assistant('原目标楼内容。'), user('确认')], automation: { enabled: false, batchSize: 1 }, utility,
+      failureStorage: storage, captureBusinessIdentity: () => ({ hostChatId: h.context.chatId,
+        chatId: h.context.chatMetadata.qianqianjie.chatId, characterLocator: 'character.png', personaLocator: 'persona.png' }) });
+    await h.runtime.start();
+    const floorId = h.runtime.getState().floors[0].floorId;
+    await h.runtime.extractFloor(floorId, { analyzeState: false });
+    if (outcome === 'success') {
+      mode = 'initialFailure';
+      await h.runtime.retryStateAnalysis(floorId);
+      assert.ok(JSON.parse(storage.values.get(`qqj_v3_floor_failures:${CHAT}`))?.cseFailures?.[floorId]);
+    }
+
+    const otherContext = { name1: '林岚', personaId: 'persona-linlan', characterId: 0, groupId: null, chatId: 'host-chat-b',
+      characters: [{ avatar: 'character.png' }], userAvatar: 'persona.png',
+      chatMetadata: { qianqianjie: { schemaVersion: 1, chatId: otherChat } },
+      chat: [user('开始'), assistant('另一目标楼。'), user('确认')] };
+    const other = harness({ sharedBackend: h.backend, sharedContext: otherContext, automation: { enabled: false, batchSize: 1 },
+      utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? { jsonData: { summary: '另一目标摘要。' } } : { jsonData: { noMaterialChange: true } },
+      failureStorage: storage });
+    await other.runtime.start();
+    const otherFloorId = other.runtime.getState().floors[0].floorId;
+    await other.runtime.extractFloor(otherFloorId, { analyzeState: false });
+    const otherFailureKey = `qqj_v3_floor_failures:${otherChat}`;
+    storage.values.set(otherFailureKey, JSON.stringify({ narrativeGeneration: GENERATION,
+      cseFailures: { [otherFloorId]: { count: 9, lastReason: '保留另一目标', code: 'TEST_OTHER', lastFailedAt: NOW } } }));
+    const otherSavedValue = storage.values.get(otherFailureKey);
+
+    mode = outcome === 'success' ? 'pendingSuccess' : 'pendingFailure';
+    const pending = h.runtime.retryStateAnalysis(floorId);
+    await taskStarted;
+    h.context.chatId = otherContext.chatId;
+    h.context.chatMetadata.qianqianjie = structuredClone(otherContext.chatMetadata.qianqianjie);
+    h.context.chat = structuredClone(otherContext.chat);
+    await h.runtime.refreshStatus({ reconcileFoundation: true });
+    assert.equal(h.runtime.getState().chatId, otherChat, '浏览器失败槽当前指向另一聊天');
+    releaseTask();
+    await pending;
+
+    const originalFailures = JSON.parse(storage.values.get(`qqj_v3_floor_failures:${CHAT}`) || 'null');
+    if (outcome === 'success') assert.equal(originalFailures?.cseFailures?.[floorId], undefined, '成功回调清理原目标的失败楼');
+    else assert.equal(originalFailures?.cseFailures?.[floorId]?.count, 1, '失败回调把原目标失败写回原目标槽');
+    assert.equal(storage.values.get(otherFailureKey), otherSavedValue, '另一个目标的已存失败内容不受影响');
+  }
 });
 
 test('CSE 楼级失败跨刷新累计并按楼清除，旧有效 delta 重析失败仍保持可用', async () => {
@@ -7280,14 +7541,17 @@ test('重判第二楼读root超时明确计失败楼，原档保留且不重试'
 
 test('重判复用存档时仍拒绝请求期间改正文或改root版本', async () => {
   for (const mutation of ['source', 'root']) {
-    let mode = 'summary';
-    const h = harness({ initialChat: [user('起点'), assistant('原始正文。'), user('稳定')], utility: options => {
+    let mode = 'summary', h;
+    h = harness({ initialChat: [user('起点'), assistant('原始正文。'), user('稳定')], captureBusinessIdentity: () => ({
+      hostChatId: h.context.chatId, chatId: h.context.chatMetadata.qianqianjie.chatId,
+      characterLocator: 'character.png', personaLocator: 'persona.png',
+    }), utility: async options => {
       if (mode === 'summary') return options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
         ? { jsonData: { summary: '原摘要。' } } : { jsonData: { noMaterialChange: true } };
       const request = JSON.parse(options.taskMessages[0].content);
       if (mode === 'history') return { jsonData: { floors: request.floors.map(item => ({ floorKey: item.floorKey,
         qianshi: { events: [{ key: 'event-1', title: '原事件', description: '原事实。', status: 'occurred', matter: false }], order: [] } })) } };
-      if (mutation === 'source') { h.context.chat[1].mes = '请求期间已编辑'; h.context.chat[1].swipes[0] = h.context.chat[1].mes; }
+      if (mutation === 'source') { h.context.chat[1].mes = '请求期间已编辑'; h.context.chat[1].swipes[0] = h.context.chat[1].mes; await h.foundationRuntime.inspect('testHumanSourceEdit'); }
       else {
         const [key, root] = [...h.backend.records].find(([key]) => key.endsWith('/v3-root'));
         h.backend.records.set(key, { ...root, revision: root.revision + 1 });
@@ -7458,7 +7722,7 @@ test('千事历史计划后、开始前删除楼并通知宿主会使旧计划�
   assert.deepEqual(after.floorMemories.find(value => value.floorId === target.floorId), memoryBefore);
 });
 
-test('复制同千事 UUID 的 CHAT_CHANGED 仍取消历史任务并清除待开始计划', async () => {
+test('CHAT_CHANGED 不取消千事历史任务；计划和在途结果仍提交到开始时的目标', async () => {
   for (const phase of ['prepared', 'running']) {
     let mode = 'summary', releaseHistory, markHistoryStarted, historySignal;
     const historyStarted = new Promise(resolve => { markHistoryStarted = resolve; });
@@ -7476,10 +7740,10 @@ test('复制同千事 UUID 的 CHAT_CHANGED 仍取消历史任务并清除待开
     await h.runtime.start();
     const [target] = h.runtime.getState().floors;
     await h.runtime.extractFloor(target.floorId, { analyzeState: false });
-    const plan = await h.runtime.prepareQianshiHistory();
+    const targetIdentity = { hostChatId: 'host-chat', chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' };
+    const targetStore = h.store.forIdentity(targetIdentity);
+    const plan = await h.runtime.prepareQianshiHistory({ targetIdentity });
     assert.equal(plan.totalFloors, 1);
-    const before = await h.store.readReachable({ mode: 'runtime' });
-    const memoryBefore = before.floorMemories.find(value => value.floorId === target.floorId);
     const rootWrites = () => h.backend.calls.filter(call => call[0] === 'put' && call[2] === 'v3-root').length;
     const rootWritesBefore = rootWrites();
     let running;
@@ -7493,17 +7757,20 @@ test('复制同千事 UUID 的 CHAT_CHANGED 仍取消历史任务并清除待开
     h.context.chat = [user('复制分支的新输入'), assistant('复制分支的新正文。'), user('复制分支稳定楼')];
     h.emit('CHAT_CHANGED');
     if (phase === 'prepared') {
-      await assert.rejects(h.runtime.startQianshiHistory(plan.planId), error => error?.code === 'QIANSHI_HISTORY_PLAN_STALE');
-    } else {
-      assert.equal(historySignal.aborted, true, '同一千事 UUID 不得让旧聊天的在途历史请求继续');
+      mode = 'history';
+      running = h.runtime.startQianshiHistory(plan.planId);
+      await historyStarted;
       releaseHistory();
-      const result = await running;
-      assert.equal(result.status, 'stopped');
-      assert.equal(result.processedFloors, 0);
+    } else {
+      assert.equal(historySignal.aborted, false, '切换聊天不撤销仍合法的原目标请求');
+      releaseHistory();
     }
-    assert.equal(rootWrites(), rootWritesBefore, '复制分支后旧聊天历史结果没有提交');
-    const after = await h.store.readReachable({ mode: 'runtime' });
-    assert.deepEqual(after.floorMemories.find(value => value.floorId === target.floorId), memoryBefore);
+    const result = await running;
+    assert.equal(result.status, 'completed');
+    assert.equal(rootWrites(), rootWritesBefore + 1, '一次整组提交写回原目标根');
+    const after = await targetStore.readReachable({ mode: 'runtime' });
+    assert.equal(after.root.chatId, targetIdentity.chatId);
+    assert.equal(after.floorMemories.find(value => value.floorId === target.floorId).qianshiDelta.events[0].title, '旧聊迟到事件');
   }
 });
 
@@ -7524,15 +7791,15 @@ test('千事历史启动先发布读档与候选阶段，再进入模型任务�
   const floor = h.runtime.getState().floors[0]; await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
   const plan = await h.runtime.prepareQianshiHistory(); mode = 'history';
   const callsBeforeHistory = h.calls.length;
-  h.setReadReachableGate(async options => {
-    if (!heldRead && options?.mode === 'projection') { heldRead = true; markRead(); await readWait; }
+  h.backend.setBeforeGet(async ({ key }) => {
+    if (!heldRead && key === 'v3-root') { heldRead = true; markRead(); await readWait; }
   });
   const running = h.runtime.startQianshiHistory(plan.planId);
   await readStarted;
   const checking = h.runtime.getQianshiSnapshot().history;
   assert.equal(checking.status, 'running');
   assert.equal(checking.calls, 0, '阻塞在复核读档时还没有进入模型任务');
-  assert.match(checking.message, /正在读取当前聊天并准备补齐/u);
+  assert.match(checking.message, /正在读取原目标并准备补齐/u);
   assert.equal(h.calls.length, callsBeforeHistory, '模型 fake 尚未被调用');
 
   releaseRead(); await modelStarted;
@@ -8113,11 +8380,15 @@ test('千事历史显式停止后只重新规划未完成楼，不重发已成�
   assert.equal(h.runtime.getQianshiSnapshot().events.filter(value => firstCompleted.includes(value.sourceFloorId)).length, 1, '已成功楼没有重复提取');
 });
 
-test('千事历史请求切换聊天后立即失去发布资格，迟到返回不写旧聊也不污染新聊状态', async () => {
+test('千事历史请求切换聊天后仍提交到原目标，当前页面不接收旧目标快照', async () => {
   let mode = 'summary', releaseHistory, markStarted;
   const started = new Promise(resolve => { markStarted = resolve; });
   const wait = new Promise(resolve => { releaseHistory = resolve; });
-  const h = harness({ initialChat: [user('开始'), assistant('顾舟答应归还旧书。'), user('稳定')], utility: async options => {
+  let h;
+  h = harness({ initialChat: [user('开始'), assistant('顾舟答应归还旧书。'), user('稳定')], captureBusinessIdentity: () => ({
+    hostChatId: h.context.chatId, chatId: h.context.chatMetadata.qianqianjie.chatId,
+    characterLocator: 'character.png', personaLocator: 'persona.png',
+  }), utility: async options => {
     if (mode === 'summary') return { jsonData: { summary: '顾舟答应归还旧书。' } };
     markStarted(); await wait;
     const request = JSON.parse(options.taskMessages[0].content);
@@ -8126,18 +8397,26 @@ test('千事历史请求切换聊天后立即失去发布资格，迟到返回�
   await h.runtime.start();
   const target = h.runtime.getState().floors[0];
   await h.runtime.extractFloor(target.floorId, { analyzeState: false });
+  const targetIdentity = h.runtime.captureBusinessIdentity();
+  const originalStore = h.store.forIdentity(targetIdentity);
   const beforeMemoryId = h.foundationRuntime.getReachable().floorMemories.find(value => value.floorId === target.floorId).id;
   const plan = await h.runtime.prepareQianshiHistory(); mode = 'history';
   const run = h.runtime.startQianshiHistory(plan.planId); await started;
+  h.context.chatId = 'new-host-chat';
   h.context.chatMetadata.qianqianjie.chatId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
   h.emit('CHAT_CHANGED');
   await waitFor(() => h.runtime.getQianshiSnapshot().status === 'not-ready');
   releaseHistory();
   const result = await run;
-  assert.equal(result.status, 'idle', '切聊天后会话失效并清空历史运行状态');
-  h.context.chatMetadata.qianqianjie.chatId = CHAT;
-  const stored = await h.store.readReachable({ mode: 'runtime' });
-  assert.equal(stored.floorMemories.find(value => value.floorId === target.floorId).id, beforeMemoryId);
+  assert.equal(result.status, 'completed', '切换浏览目标不取消原目标历史任务');
+  assert.equal(h.runtime.getQianshiSnapshot().status, 'not-ready', '旧目标结果不投影到新页面');
+  const stored = await originalStore.readReachable({ mode: 'runtime' });
+  const updated = stored.floorMemories.find(value => value.floorId === target.floorId);
+  assert.notEqual(updated.id, beforeMemoryId);
+  assert.equal(updated.qianshiDelta.events[0].title, '归还旧书', '保存仍写回任务开始时的目标');
+  const current = await h.store.readReachable({ mode: 'runtime' });
+  assert.notEqual(current.root?.chatId, CHAT, '当前页面store仍指向新目标');
+  originalStore.release();
 });
 
 

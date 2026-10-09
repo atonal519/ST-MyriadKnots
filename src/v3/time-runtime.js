@@ -865,7 +865,13 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     foundationRuntime?.subscribe?.(state => { if (['ready', 'needsReseal'].includes(state?.status)) void runBatch(); });
     void runBatch();
   }
+  async function getQianshiReferencesForChat(chatId, reachable) {
+    if (!chatId || reachable?.root?.chatId !== chatId) return null;
+    const stored = await store.read(chatId);
+    return replayTimeBatches(stored.batches, reachable).filter(item => item.qianshiRef?.matterId && item.qianshiRef?.originEventId)
+      .map(item => ({ id: item.id, qianshiRef: { ...item.qianshiRef } }));
+  }
   return Object.freeze({ runBatch, prepareHistoryPlan, organize, authorizeHistory, editItem, editItems, deleteItems, refreshStatus, recallProjection, currentStoryContext,
-    getQianshiReferences: () => qianshiReferences === null ? null : structuredClone(qianshiReferences), getState, invalidate, stop, bind,
+    getQianshiReferences: () => qianshiReferences === null ? null : structuredClone(qianshiReferences), getQianshiReferencesForChat, getState, invalidate, stop, bind,
     subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

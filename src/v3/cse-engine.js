@@ -9,13 +9,13 @@ import { CSE_ISOLATION_CODES, CSE_VISIBILITIES, LATEST_CSE_CALIBRATION_VERSION, 
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey } from './entity-identity.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-26';
-export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-13';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-33';
+export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-14';
 export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
 export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。完整阅读本楼正文，并结合结构化楼层记忆、人物此前状态与相关初始设定，分析人物在本楼结束时的状态。
 
-优先识别正文真正造成的变化，也保留有连续性价值的稳定状态；不要为了显得有变化而改写人物。关注人物的核心倾向、可长期演化的应对方式或关系状态、当前短期情境，以及人物面对不同对象时采取的不同态度和行为模式。长期核心、逐渐形成的适应模式与一时情绪要分层表达。
+优先识别正文真正造成的变化，也保留有连续性价值的稳定状态；不要为了显得有变化而改写人物。关注人物的核心倾向、可长期演化的应对方式或关系状态、当前短期情境，以及人物面对不同对象时采取的不同态度和行为模式。长期核心、逐渐形成的适应模式与一时情绪要分层表达。Adaptive 以可复用的当前长期模式表达，不逐楼累积动作流水，并保留有依据的适用条件与例外。
 
 按正文信息量决定详略。用清楚、具体、便于后续连续理解的短句说明状态，避免空泛形容、同义反复、好感度分数和无证据的心理诊断。新增或更新状态时，推荐用简短 reason 说明本次材料中支持判断的事实，不要为了补 reason 编造依据。`;
 
@@ -45,7 +45,16 @@ Situational 记录本楼结束时仍在进行或仍限制人物的当前情境�
 
 每次都审视本楼相关人物的已有 Core 与 Adaptive，并把它们同最新作者设定、明确用户纠正和本楼正文一起判断。旧结论本身及其旧 reason 不能自证；相容且没有新依据时保持原项，出现可定位反证或明确的新适用条件时才 refine/remove。剧情允许人物改变，但不强制每楼改写；单个戏剧性场景不能覆盖明确作者锚点，普通角色扮演中的用户台词、动作或心理也不自动等于作者纠正。
 
-单次事件造成的即时情绪、动作或台词若有值得保留的当下影响，只可进入 Situational；不要求每个动作都写成情境，也不得把它改写成“当 X 时总会/会……”之类长期条件模式，不能据此概括人物“总是”“习惯”“一贯如此”。新增 Adaptive 只能由明确作者设定、明确作者纠正，或正文明确回顾并证实多个彼此独立的既往事件形成重复模式。同一楼、同一连续事件链中的多个动作、台词或多个 quote 始终只算一次事件证据，不能据此新增或扩大 Adaptive；不得拿 previousState、旧状态的 reason 或自行假设的未提供历史补足独立证据。单个反例也不自动证明旧模式完全反转；若证据只说明适用条件变窄，用 refine 写清条件。
+单次事件造成的即时情绪、动作或台词若有值得保留的当下影响，只可进入 Situational；不要求每个动作都写成情境，也不得把它改写成“当 X 时总会/会……”之类长期条件模式，不能据此概括人物“总是”“习惯”“一贯如此”。新增 Adaptive 只能由明确作者设定、明确作者纠正，或正文明确回顾并证实多个彼此独立的既往事件形成重复模式；唯一例外是用户自身的独立历史检查任务，可按该任务用所附历史事件判断独立模式，新增时仍须引用本楼确认其当前适用的原句。其他新增 Adaptive 仍遵守正文证据合同。同一楼、同一连续事件链中的多个动作、台词或多个 quote 始终只算一次事件证据，不能据此新增或扩大 Adaptive；不得拿 previousState、旧状态的 reason 或自行假设的未提供历史补足独立证据。单个反例也不自动证明旧模式完全反转；若证据只说明适用条件变窄，用 refine 写清条件。
+
+【Adaptive 更新步骤】
+人物自身的长期应对模式与针对每个明确对象（toward）的模式，分别按同一证据标准判断；各方向独立，不自动镜像。先依据上面的条件判断是否可改变长期状态；同一连续事件的多次动作、程度变化或多条 quote 不构成彼此独立的经历，楼数本身也不能证明独立。证据不足或模式未变时省略旧项，由现有状态沿用；明确作者设定和纠正仍按原合同处理。
+
+有依据 refine 时，将整项写成当前仍有效的模式，保留相互独立的含义、适用条件、关键例外，以及理解当前模式所需的形成原因或已证实转折；用短句归纳，不逐楼续写动作。只写证据支持的变化；证据仅支持适用范围收窄时，明确写出条件，不得改成整体反转。同一模式的动作流水交给摘要，仍影响当下的后果才进入 Situational。reason 只解释本次变化；quote 用足以支持判断的最短完整原句。
+
+例如，同一场活动里持续搬运物品或递工具仍属一个连续事件，不能据此新增“一贯照料”的长期模式。若明确设定只在紧急救援时允许必要接触，refine 时应保留该条件和其他仍有效的例外，不能为缩短文本而删掉。
+
+【稀疏输出】只返回实际变化操作：未变人物、分类和旧项省略，不逐项回写 keep；省略分类仍按原合同保留，但不得跳过输入明确要求的独立检查。若输出某人物的 Situational，仍须提供本楼结束时的完整有效列表。确认没有状态变化时返回 {"subjects":[]}。
 
 人物被提及不等于本人在场；第三方声称某人的处境、行动或心理，不等于该内容已被客观证实。证据只支持时，可以记录说话者作出该声称，或有实际送达证据时记录接收者得知该说法；不得据此给被提及者新增 observable 状态或把传闻写成事实。
 
@@ -60,8 +69,8 @@ Core/Adaptive 只用 review/additions 输出，不直接返回 core 或 adaptive
 
 返回一个实际分析结果的 JSON 对象。确无需要输出的状态变化时，返回 {"subjects":[]}；不要返回 JSON Schema、空对象、null 或格式说明。所有 JSON 字符串都必须使用标准 JSON 转义：字符串内容中的英文双引号写成 \\", 反斜杠写成 \\\\, 实际换行写成 \\n；evidence.quote 引用正文原句时也必须遵守同一转义规则。JSON 解码后的 quote 必须保留原文字面，不得换成其他引号、删去字符或改写内容。
 英文 JSON 字段名保持示例写法；状态 text、reason 使用中文。变化说明由程序按实际前后状态生成，无需填写 changeSummary。根级 changeSummary/summary 不会被当作人物状态，也不得用来代替 subjects。
-推荐结构：
-{"subjects":[{"subject":"人物甲","review":{"core":[{"previousText":"旧核心","action":"keep"}],"adaptive":[{"previousText":"旧模式","toward":"人物乙","action":"refine","text":"收窄后的模式","reason":"为何调整","evidence":[{"source":"canonicalContent","quote":"正文原句"}]}]},"additions":{"core":[],"adaptive":[]},"situational":[{"reason":"正文写出人物甲困倦并闭眼入睡","text":"困倦放松，正在入睡","visibility":"private","origin":"floor"},{"reason":"人物甲推开人物乙的手并明确拒绝触碰","text":"拒绝人物乙触碰","toward":"人物乙","visibility":"observable","origin":"floor"}]}]}
+推荐结构（仅展示有变化项；未列出的旧项和分类由程序按原合同保留）：
+{"subjects":[{"subject":"主体甲","review":{"adaptive":[{"previousText":"旧模式","toward":"对象乙","action":"refine","text":"保留有效条件与例外的当前模式","reason":"本楼支持调整的原因","evidence":[{"source":"canonicalContent","quote":"正文原句"}]}]},"situational":[{"reason":"本楼结束时仍生效的后果","text":"当前情境","visibility":"private","origin":"floor"}]}]}
 不确定的可选人物或分类宁可省略。只输出 JSON，不要解释。`;
 
 // 新生成统一走证据校准协议；编译器仍可读取旧 after-state 格式。
@@ -303,7 +312,7 @@ function auxiliaryStateSnapshotForPrompt(snapshot) {
   return snapshotWithoutSchema;
 }
 
-export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, requestSources = null, worldInfoSources = null, currentUserInput = null, coreUserEditedSubjectEntityIds = [], identityMemberEntityIdsBySubject = {}, relevantPriorContext = '', userCoreExtraction = null }) {
+export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, requestSources = null, worldInfoSources = null, currentUserInput = null, coreUserEditedSubjectEntityIds = [], identityMemberEntityIdsBySubject = {}, relevantPriorContext = '', userCoreExtraction = null, userAdaptiveHistory = [] }) {
   const directory = buildEntityIdentityDirectory({ entities });
   const directoryById = new Map(directory.map(entry => [entry.entityId, entry]));
   const labelsFor = entity => directoryById.get(entity.id)?.labels ?? entityLabels(entity);
@@ -325,12 +334,28 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
   const previousSubjectIds = new Set(previousSubjects.map(subject => subject.subjectEntityId));
   const nameForSubjectId = entityId => directoryById.get(entityId)?.displayName
     ?? (entityId === baseline.userPersona.entityId ? baseline.userPersona.name : entityId === baseline.characterCard.entityId ? baseline.characterCard.name : null);
+  const userEntityId = baseline.userPersona.entityId;
+  const userBindings = trackedSubjects.filter(entity => entity.id === userEntityId || identityMemberEntityIdsBySubject?.[entity.id]?.includes(userEntityId));
+  const userBinding = userBindings.length === 1 ? userBindings[0] : null;
+  const previousUser = userBinding && previousSubjects.find(subject => subject.subjectEntityId === userBinding.id);
+  const userAdaptiveReview = userBinding && !(previousUser?.adaptive?.length)
+    ? {
+      subject: nameForSubjectId(userBinding.id) ?? effectiveUserPersona.name,
+      task: '独立检查用户自己的长期 Adaptive；自身与明确对象分开判断，不镜像。只用请求材料，符合既有证据合同才更新，否则留空。历史最多含3个完整楼、合计6000字符；从历史归纳新增时，须判断至少两个彼此独立的事件，并在同一新增项引用 canonicalContent 或 currentUserInput 中能确认该模式当前仍适用的原句。不同楼号或多个 quote 不代表独立事件，同一连续事件链只算一个；不得补猜未提供的历史。明确作者设定或纠正仍按原合同处理。历史只供该用户 Adaptive，不用于 Core、Situational、他人状态或角色知识；不复制 Core，不强迫填满。此独立任务只检查该用户 Adaptive；本楼对所有 trackedSubjects 的常规分析照常进行。',
+    }
+    : null;
+  const userAdaptiveSources = userAdaptiveReview ? userAdaptiveHistory.map(entry => ({
+    source: `userAdaptiveHistory:${entry.floorId}`, kind: 'userAdaptiveHistory',
+    subjectEntityId: baseline.userPersona.entityId, contents: [entry.content],
+  })) : [];
+  evidenceSources.push(...userAdaptiveSources);
   return Object.freeze({
     request: Object.freeze({ task: 'understandCharacterStateAfterFloor', locale: 'zh-CN', payload: {
       ...(userCoreExtraction?.hasDescription ? { userCoreExtraction: {
         subject: nameForSubjectId(userCoreExtraction.userEntityId) ?? effectiveUserPersona.name,
         task: '独立核验 relevantBaseline.userPersona.description 中用户本人的稳定长期核心特质，不把短期情绪、一次行为、角色扮演表现或推测当作事实。此任务不依赖本楼是否有变化，也不依赖 previousState 是否已有 Core；不得以“本楼无变化”或“旧 Core 为空”为由跳过。有明确长期特质且可由 Persona 原句支持时，在 subjects 中仅将内容放入该用户的 additions.core，并同时返回 userCoreExtraction:{status:"traits"}；依据不足时不要新增 Core，并返回 userCoreExtraction:{status:"insufficient"}。新增项 evidence 必须使用 userPersona 和逐字原句。不得仅凭 Persona 改动其他人物或其他分类；本楼对其他 trackedSubjects 的常规状态分析仍照常进行。',
       } } : {}),
+      ...(userAdaptiveReview ? { userAdaptiveReview } : {}),
       canonicalContent: floor.content.canonicalContent,
       floorMemory: semanticMemory(floorMemory, entities),
       ...(floorMemory.sourceVariableReference ? { auxiliaryStateSnapshot: auxiliaryStateSnapshotForPrompt(floorMemory.sourceVariableReference) } : {}),
@@ -342,6 +367,10 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
         authorNote: effectiveSources.authorNote?.content ? { evidenceSource: 'authorNote', content: effectiveSources.authorNote.content, visibility: 'authorialReference' } : null,
       },
       currentUserInput: currentUserInputPayload(currentUserInput),
+      ...(userAdaptiveReview ? { userAdaptiveHistory: userAdaptiveHistory.map(entry => ({
+        source: `userAdaptiveHistory:${entry.floorId}`, floorId: entry.floorId,
+        assistantSeq: entry.assistantSeq, content: entry.content,
+      })) } : {}),
       evidenceSourceCatalog: evidenceSources.map(source => ({ source: source.source, kind: source.kind, ...(source.subjectEntityId ? { subject: nameForSubjectId(source.subjectEntityId) } : {}) })),
       subjectRelevantEvidence: subjectRelevantEvidence(floorMemory, trackedSubjects, entities),
       authorialOtherStateContext: authorialOtherStateContext(currentState, entities, previousSubjectIds),
@@ -356,6 +385,7 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       evidenceSources,
       sourceSnapshotFingerprint: typeof effectiveSources.fingerprint === 'string' ? effectiveSources.fingerprint : null,
       coreUserEditedSubjectEntityIds: [...coreUserEdited],
+      userAdaptiveReview: Boolean(userAdaptiveReview),
       ...(userCoreExtraction ? { userCoreExtraction } : {}),
       identityMemberEntityIdsBySubject: Object.freeze(Object.fromEntries(trackedSubjects.map(entity => [entity.id, Object.freeze([...new Set([entity.id, ...(identityMemberEntityIdsBySubject?.[entity.id] ?? [])].filter(id => typeof id === 'string' && id))])]))),
     }),
@@ -658,6 +688,12 @@ async function compileCalibratedCategory({ rawSubject, category, binding, previo
   for (const [index, addition] of list(additionsRaw).slice(0, 120).entries()) {
     if (!addition || typeof addition !== 'object' || Array.isArray(addition)) { isolated.push({ field: `${category}.additions`, index, code: 'V3_CSE_OPTIONAL_ITEM_INVALID' }); continue; }
     const evidence = calibratedEvidence(addition, { envelope, binding, category, index, isolated });
+    if (category === 'adaptive' && envelope.scope.userAdaptiveReview
+      && evidence.some(item => item.kind === 'userAdaptiveHistory')
+      && !evidence.some(item => ['story', 'userInput'].includes(item.kind))) {
+      isolated.push({ field: `${category}.additions`, index, code: 'V3_CSE_USER_HISTORY_CURRENT_CONFIRMATION_MISSING' });
+      continue;
+    }
     if (!calibratedMutationAllowed({ category, evidence, manualCore })) { isolated.push({ field: `${category}.additions`, index, code: 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT' }); continue; }
     const item = await calibratedStateItem({ raw: addition, category, binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, index: original.length + index, isolated, evidence });
     if (item) acceptedIntents.count += 1;

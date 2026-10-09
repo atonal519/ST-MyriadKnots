@@ -169,6 +169,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
   if (typeof contextProvider !== 'function') throw new TypeError('V3 store contextProvider 必须是函数');
   let epoch = 0;
   const confirmedContent = new Map();
+  const identityViewBorrowers = new Map();
   const enabled = () => {
     try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; }
     catch { return false; }
@@ -198,15 +199,20 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     const prefix = `${collection(current)}\u0000`;
     for (const key of confirmedContent.keys()) if (key.startsWith(prefix) && !keep.has(key)) confirmedContent.delete(key);
   };
+  const clearConfirmedIdentity = current => {
+    const prefix = `${collection(current)}\u0000`;
+    for (const key of confirmedContent.keys()) if (key.startsWith(prefix)) confirmedContent.delete(key);
+  };
   const operationState = operation => {
-    if (operation.epoch !== epoch) return 'stale';
+    if (!operation.fixedIdentity && operation.epoch !== epoch) return 'stale';
     if (!enabled()) return 'disabled';
+    if (operation.fixedIdentity) return 'current';
     try { return sameIdentity(operation.identity, capture()) ? 'current' : 'stale'; }
     catch { return 'stale'; }
   };
-  function execute(task) {
+  function execute(task, fixedIdentity = null) {
     if (!enabled()) return Promise.resolve({ status: 'disabled' });
-    const operation = { epoch, identity: capture() };
+    const operation = { epoch, identity: fixedIdentity ?? capture(), fixedIdentity: fixedIdentity !== null };
     return (async () => {
       const before = operationState(operation);
       if (before !== 'current') return { status: before };
@@ -259,16 +265,16 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       throw error;
     }
   }
-  function readRoot() {
-    return execute(current => read(current, V3_ROOT_RECORD_ID, validateFoundationRoot, 'uninitialized'));
+  function readRoot(identityOverride = null) {
+    return execute(current => read(current, V3_ROOT_RECORD_ID, validateFoundationRoot, 'uninitialized'), identityOverride);
   }
-  function readRecord(recordType, idOrKey) {
+  function readRecord(recordType, idOrKey, identityOverride = null) {
     return execute(current => {
       const key = String(idOrKey).startsWith('v3-') ? String(idOrKey) : `${RECORD_PREFIX[recordType] ?? ''}${idOrKey}`;
       return read(current, key, validatorFor(recordType));
-    });
+    }, identityOverride);
   }
-  function putRecord(record, { signal } = {}) {
+  function putRecord(record, { signal } = {}, identityOverride = null) {
     return execute(async current => {
       const validator = validatorFor(record?.recordType);
       const safe = validator(record, { expectedChatId: current.chatId });
@@ -287,9 +293,9 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
         if (winner.status === 'ready' && sameFoundationRecordContent(winner.data, safe)) return { ...winner, status: 'reused', recordId: key };
         return { status: 'conflict', recordId: key };
       }
-    });
+    }, identityOverride);
   }
-  function replaceRecord(record, expectedRevision, { signal } = {}) {
+  function replaceRecord(record, expectedRevision, { signal } = {}, identityOverride = null) {
     return execute(async current => {
       const validator = validatorFor(record?.recordType);
       const safe = validator(record, { expectedChatId: current.chatId });
@@ -305,7 +311,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
         if (error?.status === 409) return { status: 'conflict', recordId: key };
         throw error;
       }
-    });
+    }, identityOverride);
   }
   async function validateCommitGraph(current, root) {
     if (!root.headCheckpointId) fail('V3_STORE_CHECKPOINT_MISSING');
@@ -377,7 +383,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       indexResults,
     };
   }
-  function commitRoot(root, expectedRevision, { signal } = {}) {
+  function commitRoot(root, expectedRevision, { signal } = {}, identityOverride = null) {
     return execute(async current => {
       const safe = validateFoundationRoot(root, { expectedChatId: current.chatId });
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) fail('V3_STORE_REVISION_INVALID');
@@ -404,7 +410,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
         if (error?.status === 409) return { status: 'conflict' };
         throw error;
       }
-    });
+    }, identityOverride);
   }
   async function settleRun(record, expectedRevision, identityValue) {
     if (!enabled()) return { status: 'disabled' };
@@ -422,7 +428,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       throw error;
     }
   }
-  async function readReachable({ mode = V3_READ_MODES.full, allowRecallCseFallback = false } = {}) {
+  async function readReachable({ mode = V3_READ_MODES.full, allowRecallCseFallback = false, identity: identityOverride = null } = {}) {
     if (!Object.values(V3_READ_MODES).includes(mode)) fail('V3_STORE_READ_MODE_INVALID');
     return execute(async (current, operation) => {
     const readType = (recordType, idOrKey) => {
@@ -549,8 +555,34 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       readMode: effectiveMode,
       cseUnavailable,
     });
-    });
+    }, identityOverride);
   }
+  const forIdentity = identityValue => {
+    const fixedIdentity = identity(identityValue);
+    const leaseKey = collection(fixedIdentity);
+    identityViewBorrowers.set(leaseKey, (identityViewBorrowers.get(leaseKey) ?? 0) + 1);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      const remaining = Math.max(0, (identityViewBorrowers.get(leaseKey) ?? 1) - 1);
+      if (remaining) { identityViewBorrowers.set(leaseKey, remaining); return; }
+      identityViewBorrowers.delete(leaseKey);
+      try { if (!sameIdentity(fixedIdentity, capture())) clearConfirmedIdentity(fixedIdentity); }
+      catch { clearConfirmedIdentity(fixedIdentity); }
+    };
+    return Object.freeze({
+      readRoot: () => readRoot(fixedIdentity),
+      readRecord: (recordType, idOrKey) => readRecord(recordType, idOrKey, fixedIdentity),
+      readReachable: (options = {}) => readReachable({ ...options, identity: fixedIdentity }),
+      putRecord: (record, options = {}) => putRecord(record, options, fixedIdentity),
+      replaceRecord: (record, revision, options = {}) => replaceRecord(record, revision, options, fixedIdentity),
+      settleRun: (record, revision) => settleRun(record, revision, fixedIdentity),
+      commitRoot: (root, revision, options = {}) => commitRoot(root, revision, options, fixedIdentity),
+      release,
+      recordKey,
+    });
+  };
   return Object.freeze({
     readRoot,
     readRecord,
@@ -559,6 +591,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     replaceRecord,
     settleRun,
     commitRoot,
+    forIdentity,
     invalidate() { epoch += 1; confirmedContent.clear(); },
     recordKey,
   });

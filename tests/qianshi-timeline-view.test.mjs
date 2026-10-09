@@ -1181,10 +1181,12 @@ test('重判进度和保存结果接管启动提示，不同时显示未来暂�
   h.emit(snapshot);
   assert.match(copy(h.container), /整组正在提交/u);
   assert.doesNotMatch(copy(h.container), /正在启动|结果将先暂存/u);
-  snapshot.history = { ...snapshot.history, status: 'completed', committing: false, message: '千事重判完成；整组已一次提交。' };
+  snapshot.history = { ...snapshot.history, status: 'partial', committing: false, message: '千事重判完成；整组已一次提交。', commitStatus: 'saved', savedFloors: 1, savedCompleteFloors: 0, savedPartialFloors: 1, totalFloors: 1, processedFloors: 1, outcomes: [{ status: 'saved-partial', reasonCode: 'QIANSHI_REJUDGE_PARTIAL', messageIndex: 0, assistantSeq: 9, message: '本楼部分记录已保存。' }] };
   h.emit(snapshot);
   assert.match(copy(h.container), /千事重判完成；整组已一次提交/u);
   assert.doesNotMatch(copy(h.container), /整组正在提交|正在启动|结果将先暂存/u);
+  assert.match(copy(h.container), /已确认保存 1\/1 楼/u);
+  assert.match(copy(h.container), /第 0 楼：本楼部分记录已保存/u, 'display messageIndex 0 takes precedence over assistantSeq');
 });
 
 test('直接收到重判终态也清除启动提示，并保留成功、失败或取消的实际结果', async () => {
@@ -1272,11 +1274,11 @@ test('聚合楼从模型计划中跳过并说明原因，空计划与执行失�
   assert.equal(empty.calls().startCalls, 0);
 });
 
-test('历史确认等待期间切聊或后台转忙，不执行旧计划', async () => {
+test('历史确认期间切聊不取消已确认的原目标计划；其他后台任务仍保持串行', async () => {
   let resolveFirst; const switched = harness({ confirm: () => new Promise(resolve => { resolveFirst = resolve; }) });
   byText(switched.container, '补齐旧楼').fire('click'); await tick();
   switched.emit({ ...fixture(), identity: { qqjChatId: 'chat-b' } }); resolveFirst(true); await tick();
-  assert.equal(switched.calls().startCalls, 0, '切聊使等待中的旧计划失效');
+  assert.equal(switched.calls().startCalls, 1, '确认完成后仍启动开始时捕获的业务目标');
 
   let resolveSecond; const busy = harness({ confirm: () => new Promise(resolve => { resolveSecond = resolve; }) });
   byText(busy.container, '补齐旧楼').fire('click'); await tick();
@@ -1293,7 +1295,7 @@ test('历史批次部分失败时，在时间线中显示楼号和失败原因',
       reasonCode: 'QIANSHI_HISTORY_COMPILE_FAILED', message: '事件 1 的关系无法验证，本楼原档案保持不变。' }], pendingReviews: [] };
   const h = harness({ initialSnapshot: snapshot });
   assert.match(copy(h.container), /1 楼补齐失败/u);
-  assert.match(copy(h.container), /第 74 楼：事件 1 的关系无法验证，本楼原档案保持不变/u);
+  assert.match(copy(h.container), /AI 记录 74：事件 1 的关系无法验证，本楼原档案保持不变/u);
   assert.doesNotMatch(copy(h.container), /QIANSHI_|qianshi_|events\[|\bprogress\b|\bcontext\b|\bpartial\b|\bfloors\b|\btokens\b/u);
 });
 
@@ -1359,9 +1361,9 @@ test('历史逐楼反馈保留中文原因与楼号，不显示内部错误码�
   const h = harness({ initialSnapshot: snapshot });
   const rendered = copy(h.container);
   assert.match(rendered, /历史补齐部分完成/u, '空状态消息使用中文状态说明');
-  for (const seq of [56, 67, 82, 104, 134, 140, 141, 142, 143, 144]) assert.match(rendered, new RegExp(`第 ${seq} 楼：`));
-  assert.match(rendered, /第 134 楼：.*部分结果状态未能保存：后端请求超时/u);
-  assert.match(rendered, /第 144 楼：完整请求估算 71000 token，超过 70000；未调用模型/u);
+  for (const seq of [56, 67, 82, 104, 134, 140, 141, 142, 143, 144]) assert.match(rendered, new RegExp(`AI 记录 ${seq}：`));
+  assert.match(rendered, /AI 记录 134：.*部分结果状态未能保存：后端请求超时/u);
+  assert.match(rendered, /AI 记录 144：完整请求估算 71000 token，超过 70000；未调用模型/u);
   assert.doesNotMatch(rendered, /QIANSHI_|qianshi_|BACKEND_TIMEOUT|events\[|\bprogress\b|\bcontext\b|\bpartial\b|\bfloors\b|\btokens\b/u);
 });
 
@@ -1373,7 +1375,7 @@ test('恢复的历史结果缺少楼号时说明目标楼已变化，不伪造�
       message: '目标楼已变化，原记录保留。' }], pendingReviews: [] };
   const h = harness({ initialSnapshot: snapshot });
   const resultText = copy(h.container.querySelector('.qqj-qianshi-history-results'));
-  assert.match(resultText, /目标楼已不存在或楼层已变化：目标楼已变化，原记录保留。/u);
+  assert.match(resultText, /目标楼：目标楼已变化，原记录保留。/u);
   assert.doesNotMatch(resultText, /第 undefined 楼|第 NaN 楼/u);
 });
 

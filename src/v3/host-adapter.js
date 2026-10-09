@@ -93,3 +93,22 @@ export function createHostAdapter({ globalRef = globalThis, mutationMetadataCapa
 export function getPreferredHostContext(globalRef = globalThis) {
   return createHostAdapter({ globalRef }).getContext();
 }
+
+export function captureTargetChatDescriptor(snapshot, identity) {
+  const context = snapshot?.context;
+  if (!context || !identity?.hostChatId || !identity?.chatId) throw new TypeError('V3 target chat identity 无效');
+  if (context.groupId !== null && context.groupId !== undefined) throw Object.assign(new Error('暂不支持群聊标记修复。'), { code: 'V3_MESSAGE_ANCHOR_TARGET_UNSUPPORTED' });
+  const character = Array.isArray(context.characters) ? context.characters[context.characterId] : context.characters?.[context.characterId];
+  const characterName = String(character?.name ?? context.name2 ?? '').trim();
+  const avatarUrl = String(character?.avatar ?? context.characterAvatar ?? '').trim();
+  if (!characterName || !avatarUrl) throw Object.assign(new Error('原聊天存档定位信息不可用。'), { code: 'V3_MESSAGE_ANCHOR_TARGET_INVALID' });
+  const requestHeaders = typeof context.getRequestHeaders === 'function' ? context.getRequestHeaders() : {};
+  return Object.freeze({
+    chatId: identity.chatId,
+    hostChatId: identity.hostChatId,
+    characterName,
+    avatarUrl,
+    requestHeaders,
+    source: snapshot.source,
+  });
+}

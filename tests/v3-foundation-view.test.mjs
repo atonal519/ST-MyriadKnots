@@ -1573,6 +1573,97 @@ test('管理页刷新状态按钮发起 fresh 读取并显式核对 foundation',
   assert.equal(flatten(container).find(node => node.className.includes('qqj-management-feedback')).textContent, '当前聊天已读取完成。');
 });
 
+test('管理页刷新反馈跟随真实终态并保留后续操作反馈', async () => {
+  const initial = { status: 'ready', foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'ready', pluginEnabled: true,
+    chatId: CHAT, stableCount: 247, rememberedCount: 247, unprocessedCount: 0, floors: [], memoryWorkBusy: false,
+    lastError: null, lastExtractorError: null, lastCseError: null };
+  const mixed = { ...initial, memorySyncStatus: 'syncing' };
+  const reviewed = { ...initial, status: 'needsReview', foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'needsReview',
+    reviewReason: { code: 'markerMismatch', messageIndex: 495, expectedCount: 247, actualCount: 248, markerStatus: 'valid', bindingIssue: 'markerConflict' },
+    floors: [{ floorId: 'floor-247', assistantSeq: 247, messageIndex: 493, status: 'ready', memoryId: 'memory-247' }] };
+  let state = initial, listener, releaseRefresh, copied;
+  const pending = new Promise(resolve => { releaseRefresh = () => { state = mixed; resolve(mixed); }; });
+  const calls = [];
+  const runtime = { getState: () => state, refreshStatus: options => { calls.push(options); return pending; }, confirmLatest: async () => state,
+    subscribe(callback) { listener = callback; return () => { listener = null; }; }, copySafeDiagnostic: () => ({ status: state.status }) };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef,
+    navigatorRef: { clipboard: { writeText: async value => { copied = value; } } } });
+  view.setPage('management'); view.mount(container);
+  flatten(container).find(node => node.textContent === '刷新状态').click();
+  state = { ...initial, memorySyncStatus: 'idle' }; listener(state);
+  assert.equal(flatten(container).find(node => node.className.includes('qqj-management-feedback')).textContent, '正在刷新状态…', '本次刷新开始前排队的旧 ready/idle 通知不能结算新提示');
+  releaseRefresh();
+  await new Promise(resolve => setImmediate(resolve));
+  listener(state);
+  let feedback = flatten(container).find(node => node.className.includes('qqj-management-feedback'));
+  assert.match(feedback.textContent, /后台校验仍在进行/u);
+  assert.doesNotMatch(feedback.textContent, /已记忆|已保留/u);
+
+  state = reviewed; listener(state);
+  feedback = flatten(container).find(node => node.className.includes('qqj-management-feedback'));
+  assert.equal(feedback.textContent, '核验已结束；第 495 楼记忆标记需核对。已保留 247 楼记忆。');
+  assert.doesNotMatch(feedback.textContent, /后台校验仍在进行/u);
+  assert.deepEqual(calls, [{ preferCached: false, recoverTailDeletion: true, reconcileFoundation: true }]);
+
+  flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(copied);
+  assert.equal(flatten(container).find(node => node.className.includes('qqj-management-feedback')).textContent, '已复制。');
+  state = { ...initial, status: 'ready', foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'ready' };
+  listener(state);
+  assert.equal(flatten(container).find(node => node.className.includes('qqj-management-feedback')).textContent, '已复制。', '后续runtime订阅不得覆盖复制等较新的操作反馈');
+});
+
+test('管理页刷新订阅对 ready idle 与真实错误显示各自终态', async () => {
+  for (const terminal of [
+    { status: 'idle', foundationStatus: 'uninitialized', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', rememberedCount: 0 },
+    { status: 'error', foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'error', memorySyncError: { code: 'V3_MEMORY_LOAD_FAILED' } },
+  ]) {
+    const initial = { status: 'ready', foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'ready', pluginEnabled: true,
+      chatId: CHAT, stableCount: 0, rememberedCount: 0, floors: [], memoryWorkBusy: false, lastError: null, lastExtractorError: null, lastCseError: null };
+    let state = initial, listener, releaseRefresh;
+    const pending = new Promise(resolve => { releaseRefresh = () => { state = { ...initial, memorySyncStatus: 'syncing' }; resolve(state); }; });
+    const runtime = { getState: () => state, refreshStatus: async () => pending, confirmLatest: async () => state,
+      subscribe(callback) { listener = callback; return () => { listener = null; }; } };
+    const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef });
+    view.setPage('management'); view.mount(container);
+    flatten(container).find(node => node.textContent === '刷新状态').click();
+    releaseRefresh(); await new Promise(resolve => setImmediate(resolve));
+    state = { ...initial, ...terminal }; listener(state);
+    const feedback = flatten(container).find(node => node.className.includes('qqj-management-feedback'));
+    if (terminal.status === 'idle') {
+      assert.match(feedback.textContent, /尚未建立记忆/u);
+      assert.doesNotMatch(feedback.textContent, /校验仍在进行/u);
+    } else {
+      assert.match(feedback.textContent, /刷新状态未完成/u);
+      assert.match(feedback.textContent, /记忆数据读取失败/u);
+      assert.equal(feedback.className.includes('error'), true);
+      assert.doesNotMatch(feedback.textContent, /校验仍在进行/u);
+    }
+  }
+});
+
+test('旧刷新失败不清理较新刷新的反馈所有权', async () => {
+  const initial = { status: 'ready', foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'ready', pluginEnabled: true,
+    chatId: CHAT, rememberedCount: 0, floors: [], memoryWorkBusy: false, lastError: null, lastExtractorError: null, lastCseError: null };
+  let state = initial, listener;
+  const pending = [];
+  const runtime = { getState: () => state, refreshStatus: () => new Promise((resolve, reject) => pending.push({ resolve, reject })),
+    confirmLatest: async () => state, subscribe(callback) { listener = callback; return () => { listener = null; }; } };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef });
+  view.setPage('management'); view.mount(container);
+  const refresh = () => flatten(container).find(node => node.textContent === '刷新状态').click();
+  refresh(); refresh();
+  state = { ...initial, memorySyncStatus: 'syncing' }; pending[1].resolve(state);
+  await new Promise(resolve => setImmediate(resolve));
+  pending[0].reject(new Error('older refresh failed'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(flatten(container).find(node => node.className.includes('qqj-management-feedback')).textContent, '当前聊天已读取完成；后台校验仍在进行。');
+  state = { ...initial, status: 'needsReview', memorySyncStatus: 'needsReview', reviewReason: { code: 'markerMismatch', messageIndex: 495 }, rememberedCount: 247 };
+  listener(state);
+  assert.equal(flatten(container).find(node => node.className.includes('qqj-management-feedback')).textContent, '核验已结束；记忆仍需核对。已保留 247 楼记忆。');
+});
+
 test('同聊天记忆同步保留千结与双丝网已确认文字，确认结果或切聊后再替换', () => {
   const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
   const floor = { floorId: 'floor', assistantSeq: 1, messageIndex: 4, canonicalFingerprint: 'sha256:same', status: 'ready', memoryId: 'memory', summary: '同步期间必须保留的摘要', summarySource: 'ai', memory, cse: { status: 'ready', deltaId: 'delta' } };

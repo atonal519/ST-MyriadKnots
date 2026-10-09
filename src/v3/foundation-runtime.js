@@ -27,7 +27,8 @@ import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
 import { validateCseGraph } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 import { matchFloorCandidates } from './floor-binding.js';
-import { clearExactMessageFloorAnchor } from './message-floor-anchor.js';
+import { clearExactMessageFloorAnchor, inspectMessageFloorAnchor, messageFloorAnchorCandidateSnapshot, MESSAGE_FLOOR_ANCHOR_KEY, readTargetChat } from './message-floor-anchor.js';
+import { captureTargetChatDescriptor } from './host-adapter.js';
 
 const EVENTS = Object.freeze([
   'CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED',
@@ -68,7 +69,7 @@ function orphanTailAnchorRepair(value, candidates, bindings) {
       && match.candidate.messageAnchor.anchor.floorId === match.floor?.id;
     const fingerprintsMatch = match?.rawFingerprintMatches && match?.canonicalFingerprintMatches;
     if (!match || match.floorIndex !== index || match.candidateIndex !== index || !match.locatorMatches
-      || !match.sanitizerFingerprintMatches || (!fingerprintsMatch && !exactMarker)) return null;
+      || (!exactMarker && (!match.sanitizerFingerprintMatches || !fingerprintsMatch))) return null;
   }
   if ([...repaired.candidateMatches.keys()].some(index => index >= floors.length)) return null;
   return Object.freeze({ chatId: anchor.chatId, floorId: anchor.floorId, messageIndex: candidate.hostLocator.messageIndex });
@@ -190,6 +191,8 @@ export function createFoundationRuntime({
   newUuid = newIdentityUuid,
   logger = console,
   fetchImpl = globalThis.fetch,
+  targetChatIo = null,
+  targetRecoveryLeaf = false,
 } = {}) {
   if (typeof hostAdapter?.snapshot !== 'function') throw new TypeError('V3 runtime HostAdapter 无效');
   if (!store || ['readReachable', 'readRecord', 'putRecord', 'replaceRecord', 'settleRun', 'commitRoot', 'invalidate', 'recordKey'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 runtime store 无效');
@@ -255,6 +258,38 @@ export function createFoundationRuntime({
     const host = hostAdapter.snapshot();
     if (host.chatId && identity.hostChatId && host.chatId !== identity.hostChatId) throw new Error('宿主聊天身份正在切换');
     return { identity, host };
+  }
+  function captureRecoveryTarget() {
+    const captured = capture();
+    const target = captureTargetChatDescriptor(captured.host, captured.identity);
+    const currentMetadata = captured.host.context?.chatMetadata ?? {};
+    const chatMetadata = {};
+    if (currentMetadata.integrity !== undefined) chatMetadata.integrity = currentMetadata.integrity;
+    if (currentMetadata.qianqianjie !== undefined) chatMetadata.qianqianjie = structuredClone(currentMetadata.qianqianjie);
+    const context = Object.freeze({
+      chatMetadata,
+      groupId: null,
+      characterId: 0,
+      characters: [{ name: target.characterName, avatar: target.avatarUrl }],
+      name2: target.characterName,
+      characterAvatar: target.avatarUrl,
+      getRequestHeaders: () => target.requestHeaders,
+    });
+    const host = Object.freeze({
+      chatId: captured.host.chatId,
+      chat: Array.isArray(captured.host.chat) ? captured.host.chat.slice() : captured.host.chat,
+      context,
+      source: captured.host.source,
+      mode: captured.host.mode,
+      capabilities: captured.host.capabilities,
+    });
+    return Object.freeze({
+      identity: captured.identity,
+      host,
+      target,
+      sanitizerOptions: Object.freeze({ ...sanitizerOptions() }),
+      source: host.source,
+    });
   }
   function current(operation) {
     if (!enabled()) return 'disabled';
@@ -665,6 +700,7 @@ export function createFoundationRuntime({
 
   async function scanCurrentSnapshot(operation, { confirmLatest = false, stableThrough = operation?.stableThrough ?? null, manualConfirmation = operation?.manualConfirmation ?? null } = {}) {
     if (current(operation) !== 'current') throw statusError('stale');
+    if (targetRecoveryLeaf && targetChatIo?.requireSourceValidation === true) await targetChatIo.readLatest();
     const captured = capture();
     const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions(), chatId: captured.identity.chatId });
     if (current(operation) !== 'current') throw statusError('stale');
@@ -742,11 +778,189 @@ export function createFoundationRuntime({
     } catch { return publicState; }
   }
 
-  async function recoverOrphanTailAnchor() {
-    const inspected = await inspect('orphanTailRecovery', { allowCached: false });
-    if (inspected.status !== 'needsReview' || inspected.reviewReason?.code !== 'markerMismatch'
-      || inspected.reviewReason?.bindingIssue !== 'markerConflict' || activeOperation) return publicState;
-    return reconcile('orphanTailRecovery');
+  async function runOrphanTargetRecovery(captured) {
+    if (!captured?.identity || !captured?.target || typeof store.forIdentity !== 'function') return publicState;
+    const targetStoreView = store.forIdentity(captured.identity);
+    let release = targetStoreView.release;
+    try {
+      let targetChat = captured.host.chat;
+      let targetHeader = null;
+      let requireSourceValidation = false;
+      let serverSnapshotInstalled = false;
+      const makeTargetContext = metadata => {
+        const chatMetadata = {};
+        if (metadata?.integrity !== undefined) chatMetadata.integrity = metadata.integrity;
+        if (metadata?.qianqianjie !== undefined) chatMetadata.qianqianjie = structuredClone(metadata.qianqianjie);
+        return ({
+        chatId: captured.identity.hostChatId,
+        getCurrentChatId: () => captured.identity.hostChatId,
+        groupId: null,
+        characterId: 0,
+        characters: [{ name: captured.target.characterName, avatar: captured.target.avatarUrl }],
+        name2: captured.target.characterName,
+        characterAvatar: captured.target.avatarUrl,
+        userAvatar: captured.identity.personaLocator,
+        chatMetadata,
+        getRequestHeaders: () => captured.target.requestHeaders,
+      });
+      };
+      let targetContext = makeTargetContext(captured.host.context.chatMetadata);
+      let targetSnapshot = Object.freeze({ ...captured.host, context: targetContext });
+      const installServerSnapshot = source => {
+        targetChat = source.chat;
+        targetHeader = source.header;
+        targetContext = makeTargetContext(source.header.chat_metadata);
+        serverSnapshotInstalled = true;
+        targetSnapshot = Object.freeze({
+          context: targetContext, chat: targetChat, chatId: captured.identity.hostChatId,
+          source: captured.source, mode: 'standard', userIdentity: captured.host.userIdentity,
+          capabilities: Object.freeze({ mutationMetadata: false, chatComplete: true }),
+        });
+      };
+      const targetHost = {
+        snapshot: () => {
+          if (serverSnapshotInstalled) return targetSnapshot;
+          try {
+            const live = capture();
+            if (JSON.stringify(live.identity) === JSON.stringify(captured.identity)) {
+              return Object.freeze({ ...captured.host, chat: live.host.chat, context: targetContext });
+            }
+          } catch { /* the captured original source remains available */ }
+          return targetSnapshot;
+        },
+        getContext: () => targetContext,
+        getUserIdentity: () => null,
+        getWorldInfoBindings: () => hostAdapter.getWorldInfoBindings?.() ?? {},
+        mutationMetadata: () => null,
+      };
+      const sameCapturedTarget = () => {
+        try { return JSON.stringify(capture().identity) === JSON.stringify(captured.identity); }
+        catch { return false; }
+      };
+      const targetIo = Object.freeze({
+        ...captured.target,
+        chatId: captured.identity.chatId,
+        get header() { return targetHeader; },
+        get requireSourceValidation() { return requireSourceValidation; },
+        readLatest: async () => {
+          const latest = await readTargetChat(captured.target, { fetchImpl });
+          if (latest.header.chat_metadata?.qianqianjie?.chatId !== captured.identity.chatId) {
+            throw Object.assign(new Error('原聊天身份已变化。'), { code: 'V3_MESSAGE_ANCHOR_READ_SCOPE_MISMATCH' });
+          }
+          installServerSnapshot(latest);
+          requireSourceValidation = true;
+          return latest;
+        },
+        onPersisted: (persisted, cleared) => {
+          const oldIntegrity = targetContext.chatMetadata?.integrity;
+          installServerSnapshot(persisted);
+          if (!sameCapturedTarget()) return;
+          const live = hostAdapter.snapshot();
+          const message = live.chat?.[cleared?.messageIndex];
+          const liveCandidate = messageFloorAnchorCandidateSnapshot(message);
+          if (message && liveCandidate === cleared?.candidateFingerprint
+            && inspectMessageFloorAnchor(message, captured.identity.chatId).anchor?.floorId === cleared?.floorId) {
+            const extra = message.extra && typeof message.extra === 'object' && !Array.isArray(message.extra) ? { ...message.extra } : {};
+            delete extra[MESSAGE_FLOOR_ANCHOR_KEY];
+            message.extra = extra;
+            if (Array.isArray(message.swipe_info)) message.swipe_info = message.swipe_info.map(swipe => {
+              const inspected = inspectMessageFloorAnchor({ extra: swipe?.extra }, captured.identity.chatId);
+              if (inspected.status !== 'valid' || inspected.anchor.floorId !== cleared.floorId) return swipe;
+              const swipeExtra = swipe.extra && typeof swipe.extra === 'object' && !Array.isArray(swipe.extra) ? { ...swipe.extra } : {};
+              delete swipeExtra[MESSAGE_FLOOR_ANCHOR_KEY];
+              return { ...swipe, extra: swipeExtra };
+            });
+          }
+          if (live.context?.chatMetadata && live.context.chatMetadata.integrity === oldIntegrity) {
+            live.context.chatMetadata.integrity = persisted.header.chat_metadata?.integrity;
+          }
+        },
+      });
+      const fixedStore = Object.freeze({ ...targetStoreView, invalidate() {} });
+      const fixedRuntime = createFoundationRuntime({
+        hostAdapter: targetHost,
+        store: fixedStore,
+        contextProvider: () => targetContext,
+        isEnabled,
+        sanitizerOptions: () => captured.sanitizerOptions,
+        scanCandidates,
+        now,
+        newUuid,
+        logger,
+        fetchImpl,
+        targetChatIo: targetIo,
+        targetRecoveryLeaf: true,
+      });
+      try {
+        if (cache?.root?.chatId === captured.identity.chatId
+          && JSON.stringify(capture().identity) === JSON.stringify(captured.identity)) fixedRuntime.adoptReachable(cache);
+      } catch { /* a cache from another active target is simply not reusable */ }
+      const publishTargetResult = result => {
+        if (!sameCapturedTarget()) return result;
+        const targetState = fixedRuntime.getState();
+        const reachable = fixedRuntime.getReachable?.();
+        if (reachable?.root && (cache?.rootRevision ?? 0) <= reachable.rootRevision) cache = reachable;
+        inspectedStableCount = targetState.inspectedStableCount ?? inspectedStableCount;
+        reviewReason = targetState.reviewReason ?? null;
+        lastError = targetState.lastError ?? null;
+        lastRun = targetState.lastRun ?? lastRun;
+        publish(targetState.status);
+        return result;
+      };
+      const inspected = await fixedRuntime.inspect('orphanTailRecovery', { allowCached: false });
+      if (inspected.status !== 'needsReview' || inspected.reviewReason?.code !== 'markerMismatch'
+        || inspected.reviewReason?.bindingIssue !== 'markerConflict') {
+        if (['error', 'disabled', 'stale', 'conflict'].includes(inspected.status)) return publishTargetResult(inspected);
+        return publishTargetResult(await fixedRuntime.reconcile('manualRefresh'));
+      }
+      let retryRepair = null;
+      let retryCandidateFingerprint = null;
+      const inspectedSnapshot = targetHost.snapshot();
+      const inspectedReachable = fixedRuntime.getReachable?.();
+      if (inspectedReachable?.root
+        && inspected.reviewReason.actualCount === inspected.reviewReason.expectedCount + 1
+        && inspected.reviewReason.assistantSeq === inspected.reviewReason.expectedCount + 1) {
+        const candidates = await scanCandidates(inspectedSnapshot.chat, {
+          sanitizerOptions: captured.sanitizerOptions, chatId: captured.identity.chatId,
+        });
+        const bindings = matchFloorCandidates(inspectedReachable.floors, candidates);
+        retryRepair = orphanTailAnchorRepair(inspectedReachable, candidates, bindings);
+        if (retryRepair && retryRepair.messageIndex === inspected.reviewReason.messageIndex) {
+          retryCandidateFingerprint = messageFloorAnchorCandidateSnapshot(inspectedSnapshot.chat[retryRepair.messageIndex]);
+        } else retryRepair = null;
+      }
+      await targetIo.readLatest();
+      const persistedAtCandidate = retryRepair ? targetSnapshot.chat?.[retryRepair.messageIndex] : null;
+      const serverAlreadyCleared = Boolean(retryRepair
+        && inspectMessageFloorAnchor(persistedAtCandidate, captured.identity.chatId).status === 'none'
+        && messageFloorAnchorCandidateSnapshot(persistedAtCandidate) === retryCandidateFingerprint);
+      const result = await fixedRuntime.reconcile('orphanTailRecovery');
+      if (serverAlreadyCleared && result.status === 'ready') {
+        const reachable = fixedRuntime.getReachable?.();
+        const registeredFloor = reachable?.floors?.find(floor => floor.assistantSeq === inspected.reviewReason.expectedCount + 1
+          && floor.hostLocator?.messageIndex === retryRepair.messageIndex);
+        const pendingTail = fixedRuntime.getState().unregisteredCandidates?.some(candidate =>
+          candidate.assistantSeq === inspected.reviewReason.expectedCount + 1
+          && candidate.messageIndex === retryRepair.messageIndex && candidate.reason === 'waitingNextUser');
+        const latestCandidate = targetSnapshot.chat?.[retryRepair.messageIndex];
+        if ((registeredFloor || pendingTail)
+          && inspectMessageFloorAnchor(latestCandidate, captured.identity.chatId).status === 'none'
+          && messageFloorAnchorCandidateSnapshot(latestCandidate) === retryCandidateFingerprint) {
+          targetIo.onPersisted({ header: targetHeader, chat: targetChat }, {
+            ...retryRepair, candidateFingerprint: retryCandidateFingerprint,
+          });
+        }
+      }
+      return publishTargetResult(result);
+    } finally {
+      release?.();
+    }
+  }
+
+  async function recoverOrphanTailAnchor(captured = null) {
+    let target = captured;
+    try { target ??= captureRecoveryTarget(); } catch { return publicState; }
+    return runOrphanTargetRecovery(target);
   }
 
   async function seal(operation, { candidates, stableCount, confirmLatest = false, stableThrough = operation?.stableThrough ?? null, manualConfirmation = operation?.manualConfirmation ?? null, sourceSnapshot = null, rebaseAttempt = 0 }) {
@@ -958,9 +1172,12 @@ export function createFoundationRuntime({
       if (tailDeletion) dirtyTailDeletion = tailDeletion;
       return activeOperation.promise;
     }
+    let recoveryTarget = null;
+    try { recoveryTarget = captureRecoveryTarget(); } catch { /* identity may finish preparing before ordinary work starts */ }
     const operation = {
       id: newUuid(), chatId: null, epoch: sessionEpoch, controller: new AbortController(), reason, phase: 'capturing',
       startedAt: timestamp(now()), promise: null, runBase: null, runRecord: null, runRevision: 0, stableThrough, tailDeletion,
+      recoveryTarget,
       manualConfirmation: Array.isArray(manualConfirmation) ? Object.freeze(manualConfirmation.map(item => Object.freeze({ ...item }))) : null,
     };
     activeOperation = operation;
@@ -973,7 +1190,7 @@ export function createFoundationRuntime({
           if (prepared?.status && prepared.status !== 'ready') throw statusError(prepared.status, '当前聊天身份尚未准备完成。');
         }
         if (operation.epoch !== sessionEpoch || operation.controller.signal.aborted) return publishOperation(operation, enabled() ? 'stale' : 'disabled');
-        const captured = capture();
+        const captured = recoveryTarget ? { identity: recoveryTarget.identity, host: recoveryTarget.host } : capture();
         operation.chatId = captured.identity.chatId;
         projectedChatId = operation.chatId;
         operation.identity = captured.identity;
@@ -988,9 +1205,13 @@ export function createFoundationRuntime({
         metrics = Object.freeze({ assistantFloors: candidates.length, canonicalCharacters: candidates.reduce((sum, item) => sum + item.canonicalContent.length, 0), scanMs: elapsed, maximumChunkMs: scanMetrics.maximumChunkMs ?? elapsed, algorithm: 'ordered-O(n)' });
         let candidateBindings = matchFloorCandidates(loaded.floors, candidates);
         const orphanRepair = orphanTailAnchorRepair(loaded, candidates, candidateBindings);
-        if (orphanRepair && operation.orphanRepairAttempted !== true) {
+        if (orphanRepair && operation.orphanRepairAttempted !== true && !targetRecoveryLeaf) {
           operation.orphanRepairAttempted = true;
-          await clearExactMessageFloorAnchor({ hostAdapter, ...orphanRepair, signal: operation.controller.signal, fetchImpl });
+          if (operation.recoveryTarget) return runOrphanTargetRecovery(operation.recoveryTarget);
+        }
+        if (orphanRepair && operation.orphanRepairAttempted !== true && targetRecoveryLeaf && targetChatIo) {
+          operation.orphanRepairAttempted = true;
+          await clearExactMessageFloorAnchor({ hostAdapter, targetChat: targetChatIo, ...orphanRepair, signal: operation.controller.signal, fetchImpl });
           if (current(operation) !== 'current') return publishOperation(operation, 'stale');
           const repairedHost = capture();
           candidates = await scanCandidates(repairedHost.host.chat, { sanitizerOptions: sanitizerOptions(), chatId: repairedHost.identity.chatId });
@@ -1194,6 +1415,7 @@ export function createFoundationRuntime({
     bind,
     start: () => enabled() ? reconcile('start') : Promise.resolve(publish('disabled')),
     inspect,
+    captureOrphanRecoveryTarget: captureRecoveryTarget,
     recoverOrphanTailAnchor,
     recoverTailDeletion,
     reconcile,

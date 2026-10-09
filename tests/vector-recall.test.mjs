@@ -71,7 +71,11 @@ function committedMemoryState(source, floors = source.rawSources) {
     floors: floors.map(raw => ({ floorId: raw.floorId, assistantSeq: raw.assistantSeq, canonicalFingerprint: raw.fingerprint,
       rawFingerprint: raw.fingerprint, memoryId: raw.floorMemoryId, status: 'ready' })) };
 }
-async function waitFor(predicate) { for (let index = 0; index < 30; index += 1) { if (predicate()) return; await flush(); } assert.ok(predicate(), '异步索引状态按时收敛'); }
+async function waitFor(predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.ok(predicate(), '异步索引状态按时收敛');
+}
 
 test('不可用的自动更新器仍提供安全的空生命周期接口', () => {
   const updater = createVectorAutoUpdater();

@@ -50,13 +50,50 @@ function hostContext(chat = [assistant('A'), assistant('B'), assistant('C')], ch
     characterId: 0,
     groupId: null,
     chatId: `host-${chatUuid}`,
-    characters: [{ avatar: 'character.png' }],
+    characters: [{ name: 'Test Character', avatar: 'character.png' }],
     userAvatar: 'persona.png',
     chatMetadata: { integrity: 'complete', qianqianjie: { schemaVersion: 1, chatId: chatUuid } },
     chat,
     eventTypes: {},
     eventSource: { on() {} },
   };
+}
+
+function targetChatApi(h, { beforeSave = null, beforeGet = null, saveStatus = 200, responseIntegrity = null, persistedIntegrity = null, persistOnSave = true } = {}) {
+  const saved = new Map();
+  const calls = [];
+  const keyFor = body => `${body.avatar_url}/${body.file_name}`;
+  const seed = body => {
+    if (body.file_name !== h.context.chatId || body.avatar_url !== h.context.characters?.[h.context.characterId]?.avatar) return null;
+    return [{ chat_metadata: structuredClone(h.context.chatMetadata), user_name: 'unused', character_name: 'unused' }, ...structuredClone(h.context.chat)];
+  };
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, method: init.method });
+    const body = JSON.parse(init.body);
+    if (url === '/api/chats/get') {
+      beforeGet?.({ body, saved, calls });
+      const key = keyFor(body);
+      if (!saved.has(key)) saved.set(key, seed(body));
+      const value = saved.get(key);
+      return { ok: Array.isArray(value), status: Array.isArray(value) ? 200 : 404, json: async () => structuredClone(value ?? {}) };
+    }
+    if (url === '/api/chats/save') {
+      beforeSave?.(body);
+      if (persistOnSave && saveStatus >= 200 && saveStatus < 300) {
+        const chat = structuredClone(body.chat);
+        if (persistedIntegrity && chat[0]?.chat_metadata) chat[0].chat_metadata.integrity = persistedIntegrity;
+        saved.set(keyFor(body), chat);
+      }
+      return { ok: saveStatus >= 200 && saveStatus < 300, status: saveStatus,
+        json: async () => ({ ok: saveStatus < 300, ...(responseIntegrity ? { integrity: responseIntegrity } : {}) }) };
+    }
+    throw new Error(`Unexpected target chat API: ${url}`);
+  };
+  const persistLive = () => saved.set(keyFor({ avatar_url: h.context.characters?.[h.context.characterId]?.avatar, file_name: h.context.chatId }), [
+    { chat_metadata: structuredClone(h.context.chatMetadata), user_name: 'unused', character_name: 'unused' },
+    ...structuredClone(h.context.chat),
+  ]);
+  return { fetchImpl, saved, calls, persistLive };
 }
 
 function backendHarness() {
@@ -2146,19 +2183,16 @@ test('生产 scanner 的连续 AI 尾部全部进入只读待摘要投影，正�
   assert.deepEqual(state.unregisteredCandidates, []);
 });
 
-test('memory 实际打开路径只清完整47楼前缀后的首个孤儿锚并正常登记49候选', async () => {
+test('memory 实际打开路径只清完整247楼前缀后的首个孤儿锚并正常登记249候选', async () => {
   const orphanFloorId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
-  const initialChat = Array.from({ length: 47 }, (_, index) => [assistant(`已存正文 ${index + 1}`), user(`确认 ${index + 1}`)]).flat();
-  let h, saveCalls = 0;
-  const fetchImpl = async (url, init) => {
-    assert.equal(url, '/api/chats/get');
-    assert.equal(JSON.parse(init.body).file_name, h.context.chatId);
-    return { ok: true, json: async () => [{ chat_metadata: structuredClone(h.context.chatMetadata) }, ...structuredClone(h.context.chat)] };
-  };
-  h = harness(initialChat, { modernAnchors: true, fetchImpl });
+  const initialChat = Array.from({ length: 247 }, (_, index) => [assistant(`已存正文 ${index + 1}`), user(`确认 ${index + 1}`)]).flat();
+  let h, saveCalls = 0, api, sanitizerChanged = false;
+  const fetchImpl = (...args) => api.fetchImpl(...args);
+  h = harness(initialChat, { modernAnchors: true, fetchImpl,
+    sanitizerOptions: () => ({ keepTags: 'content', extraTags: sanitizerChanged ? 'changed-tag' : '' }) });
+  api = targetChatApi(h, { beforeSave: () => { saveCalls += 1; }, responseIntegrity: 'recovered-integrity', persistedIntegrity: 'recovered-integrity' });
   h.context.name1 = '林岚'; h.context.name2 = '裴晚生';
   h.context.characters[0] = { name: '裴晚生', avatar: 'character.png', description: '角色资料' };
-  h.context.saveChat = async () => { saveCalls += 1; return true; };
   await h.runtime.start();
   const originalFloorIds = h.runtime.getReachable().floors.map(floor => floor.id);
   const task = async options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
@@ -2175,33 +2209,41 @@ test('memory 实际打开路径只清完整47楼前缀后的首个孤儿锚并�
     entities: graphBefore.entities, baseline: graphBefore.baseline,
   });
   const preservedFloorsBefore = structuredClone(graphBefore.floors.map(floor => ({ id: floor.id, content: floor.content, hostLocator: floor.hostLocator })));
-  for (let index = 0; index < 47; index += 1) {
+  for (let index = 0; index < 247; index += 1) {
     h.context.chat[index * 2].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: originalFloorIds[index] };
   }
   h.context.chat[20].mes = h.context.chat[20].swipes[0] = '已存正文 11<!--人工包装-->';
-  h.context.chat[92].mes = h.context.chat[92].swipes[0] = '已存正文 47（人工修订）';
-  const orphan = assistant('新尾楼 48', { pluginKept: { value: 1 }, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } });
-  orphan.swipes = ['新尾楼 48', '备用候选', '新尾楼 48']; orphan.swipe_id = 0;
+  h.context.chat[492].mes = h.context.chat[492].swipes[0] = '已存正文 247（人工修订）';
+  sanitizerChanged = true;
+  h.context.chat.push(user('前缀继续'));
+  const orphan = assistant('新尾楼 248', { pluginKept: { value: 1 }, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } });
+  orphan.swipes = ['新尾楼 248', '备用候选', '新尾楼 248']; orphan.swipe_id = 0;
   orphan.swipe_info = [
     { extra: { firstKept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } } },
     { extra: { middleKept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: originalFloorIds[0] } } },
     { extra: { lastKept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } } },
   ];
-  h.context.chat.push(orphan, user('确认新尾楼 48'), assistant('新尾楼 49'));
-  const editedCandidates = await scanAssistantCandidates(h.context.chat, { sanitizerOptions: {}, chatId: CHAT });
+  h.context.chat.push(orphan, user('确认新尾楼 248'), assistant('新尾楼 249'));
+  api.persistLive();
+  const editedCandidates = await scanAssistantCandidates(h.context.chat, { sanitizerOptions: { keepTags: 'content', extraTags: 'changed-tag' }, chatId: CHAT });
+  assert.equal(editedCandidates[247].hostLocator.messageIndex, 495, '恢复覆盖实际第248楼候选与目标楼号');
   assert.notEqual(editedCandidates[10].rawFingerprint, graphBefore.floors[10].content.rawFingerprint, '包装编辑应改变 raw 指纹');
   assert.equal(editedCandidates[10].canonicalFingerprint, graphBefore.floors[10].content.canonicalFingerprint, '包装编辑清洗后正文应保持一致');
-  assert.notEqual(editedCandidates[46].rawFingerprint, graphBefore.floors[46].content.rawFingerprint, '普通正文修订应改变 raw 指纹');
-  assert.notEqual(editedCandidates[46].canonicalFingerprint, graphBefore.floors[46].content.canonicalFingerprint, '普通正文修订应改变 canonical 指纹');
+  assert.notEqual(editedCandidates[246].rawFingerprint, graphBefore.floors[246].content.rawFingerprint, '普通正文修订应改变 raw 指纹');
+  assert.notEqual(editedCandidates[246].canonicalFingerprint, graphBefore.floors[246].content.canonicalFingerprint, '普通正文修订应改变 canonical 指纹');
+  assert.notEqual(editedCandidates[0].sanitizerFingerprint, graphBefore.floors[0].content.sanitizerFingerprint, '正式marker允许沿可靠身份绑定跨清洗指纹变化');
   const untouchedBody = structuredClone({ mes: orphan.mes, swipes: orphan.swipes, swipe_id: orphan.swipe_id });
+  const targetReadsBeforeRecovery = api.calls.filter(call => call.url === '/api/chats/get').length;
   h.runtime.invalidate();
   const reopenedMemory = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
     generateAnalysisTask: task, generateUtilityTask: task, now: () => new Date('2026-09-02T00:00:00.000Z'), newUuid: uuidFactory(31000), logger: { warn() {} } });
   const reopened = await reopenedMemory.start();
   assert.equal(reopened.foundationStatus, 'ready');
   assert.equal(saveCalls, 1, '实际打开路径应只保存一次精确清理');
-  assert.deepEqual(h.runtime.getReachable().floors.slice(0, 47).map(floor => floor.id), originalFloorIds);
-  assert.equal(h.runtime.getReachable().floors.length, 48, '清理后首个已稳定新楼走既有登记');
+  assert.equal(api.calls.filter(call => call.url === '/api/chats/get').length - targetReadsBeforeRecovery, 4,
+    '尾孤儿恢复读取原目标、保存读回和提交前后源核验；普通刷新不再全档读取');
+  assert.deepEqual(h.runtime.getReachable().floors.slice(0, 247).map(floor => floor.id), originalFloorIds);
+  assert.equal(h.runtime.getReachable().floors.length, 248, '清理后第248楼走既有登记');
   assert.deepEqual({ mes: orphan.mes, swipes: orphan.swipes, swipe_id: orphan.swipe_id }, untouchedBody);
   assert.deepEqual(orphan.extra, { pluginKept: { value: 1 } });
   assert.deepEqual(orphan.swipe_info.map(item => item.extra), [
@@ -2212,17 +2254,20 @@ test('memory 实际打开路径只清完整47楼前缀后的首个孤儿锚并�
   let graphAfter = await h.store.readReachable({ mode: 'runtime' });
   assert.deepEqual({ floorMemories: graphAfter.floorMemories, stateDeltas: graphAfter.stateDeltas, entities: graphAfter.entities, baseline: graphAfter.baseline }, preservedBefore,
     '已有摘要、CSE、实体和基线必须逐字节语义不变');
-  assert.deepEqual(graphAfter.floors.slice(0, 47).map(floor => ({ id: floor.id, content: floor.content, hostLocator: floor.hostLocator })), preservedFloorsBefore,
+  assert.deepEqual(graphAfter.floors.slice(0, 247).map(floor => ({ id: floor.id, content: floor.content, hostLocator: floor.hostLocator })), preservedFloorsBefore,
     '普通编辑只作为精确 marker 的恢复证据，不得改写既有 floor 正文或身份');
-  h.context.chat.push(user('确认新尾楼 49'));
+  const targetReadsBeforeOrdinaryRefresh = api.calls.filter(call => call.url === '/api/chats/get').length;
+  h.context.chat.push(user('确认新尾楼 249'));
   await h.runtime.refreshStatus();
-  assert.equal(h.runtime.getReachable().floors.length, 49, '后续新尾楼继续走普通登记');
+  assert.equal(api.calls.filter(call => call.url === '/api/chats/get').length, targetReadsBeforeOrdinaryRefresh,
+    '普通大聊天刷新不增加完整宿主档GET');
+  assert.equal(h.runtime.getReachable().floors.length, 249, '后续新尾楼继续走普通登记');
   orphan.swipe_id = 2; orphan.mes = orphan.swipes[2];
   await h.runtime.refreshStatus();
   assert.equal(h.runtime.getState().status, 'ready');
   assert.equal(orphan.swipe_info[2].extra.qianqianjie_floor, undefined, '切回同孤儿 swipe 不得复活旧标识');
   graphAfter = await h.store.readReachable({ mode: 'runtime' });
-  assert.deepEqual(graphAfter.floors.slice(0, 47).map(floor => floor.id), originalFloorIds);
+  assert.deepEqual(graphAfter.floors.slice(0, 247).map(floor => floor.id), originalFloorIds);
 });
 
 test('尾部孤儿修复拒绝无锚编辑、定位或清洗变化、错序、中段、foreign、invalid、duplicate 与重复孤儿', async () => {
@@ -2250,6 +2295,7 @@ test('尾部孤儿修复拒绝无锚编辑、定位或清洗变化、错序、�
       next.extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId };
     } else if (mode === 'sanitizerMismatch') {
       sanitizerChanged = true;
+      delete h.context.chat[0].extra.qianqianjie_floor;
       next.extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId };
     } else if (mode === 'wrongOrder') {
       [h.context.chat[0].extra.qianqianjie_floor, h.context.chat[2].extra.qianqianjie_floor]
@@ -2285,12 +2331,12 @@ test('尾部孤儿修复拒绝无锚编辑、定位或清洗变化、错序、�
 
 test('memory 管理刷新路径在 tail recovery 前自愈首个尾部孤儿', async () => {
   const orphanFloorId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
-  let h, saveCalls = 0;
+  let h, saveCalls = 0, api;
   h = harness([assistant('刷新既有 1'), user('确认 1'), assistant('刷新既有 2'), user('确认 2')], {
     modernAnchors: true,
-    fetchImpl: async () => ({ ok: true, json: async () => [{ chat_metadata: structuredClone(h.context.chatMetadata) }, ...structuredClone(h.context.chat)] }),
+    fetchImpl: (...args) => api.fetchImpl(...args),
   });
-  h.context.saveChat = async () => { saveCalls += 1; return true; };
+  api = targetChatApi(h, { beforeSave: () => { saveCalls += 1; } });
   await h.runtime.start();
   const floorIds = h.runtime.getReachable().floors.map(floor => floor.id);
   h.context.chat[0].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: floorIds[0] };
@@ -2301,12 +2347,118 @@ test('memory 管理刷新路径在 tail recovery 前自愈首个尾部孤儿', a
   await memory.start();
   const orphan = assistant('刷新新尾楼', { qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } });
   h.context.chat.push(orphan, user('确认刷新新尾楼'));
+  api.persistLive();
   const refreshed = await memory.refreshStatus({ preferCached: false, recoverTailDeletion: true });
   assert.equal(refreshed.foundationStatus, 'ready');
   assert.equal(saveCalls, 1);
   assert.equal(orphan.extra.qianqianjie_floor, undefined);
   assert.equal(h.runtime.getReachable().floors.length, 3);
   assert.deepEqual(h.runtime.getReachable().floors.slice(0, 2).map(floor => floor.id), floorIds);
+});
+
+test('尾孤儿精确保存成功但保存读回失败后，同页手动重试能收敛 live marker 与存档', async () => {
+  const orphanFloorId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  for (const stable of [true, false]) {
+    let h, api, saveCalls = 0, failedReadback = false;
+    h = harness([assistant('重试既有 1'), user('确认 1'), assistant('重试既有 2'), user('确认 2')], {
+      modernAnchors: true,
+      fetchImpl: (...args) => api.fetchImpl(...args),
+    });
+    api = targetChatApi(h, {
+      beforeSave: () => { saveCalls += 1; },
+      beforeGet: () => {
+        if (saveCalls > 0 && !failedReadback) { failedReadback = true; throw Object.assign(new Error('模拟保存后读回失败'), { code: 'READBACK_FAILED' }); }
+      },
+    });
+    await h.runtime.start();
+    const floorIds = h.runtime.getReachable().floors.map(floor => floor.id);
+    h.context.chat[0].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: floorIds[0] };
+    h.context.chat[2].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: floorIds[1] };
+    const rejectModel = async () => { throw new Error('marker retry must not call a model'); };
+    const memory = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
+      generateAnalysisTask: rejectModel, generateUtilityTask: rejectModel, logger: { warn() {} } });
+    await memory.start();
+    const orphan = assistant('读回失败的待恢复尾楼', { qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } });
+    h.context.chat.push(orphan, ...(stable ? [user('确认待恢复尾楼')] : []));
+    api.persistLive();
+    await memory.refreshStatus({ preferCached: false, recoverTailDeletion: true, reconcileFoundation: true });
+    const saved = api.saved.get('character.png/host-' + CHAT);
+    assert.equal(failedReadback, true);
+    assert.equal(saveCalls, 1);
+    assert.equal(saved[5].extra.qianqianjie_floor, undefined, '成功保存后服务器档已清标记');
+    assert.deepEqual(orphan.extra.qianqianjie_floor, { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId }, '读回失败要回滚live标记');
+    const retried = await memory.refreshStatus({ preferCached: false, recoverTailDeletion: true, reconcileFoundation: true });
+    assert.equal(retried.foundationStatus, 'ready');
+    assert.equal(saveCalls, 1, 'markerless persisted retry only projects the confirmed clear; it does not save again');
+    assert.equal(orphan.extra.qianqianjie_floor, undefined, '重试需同步清理live marker');
+    const graph = await h.store.readReachable({ mode: 'runtime' });
+    assert.equal(graph.floors.length, stable ? 3 : 2, 'pending tail remains unregistered until its next user');
+    const ordinary = await h.runtime.refreshStatus();
+    assert.equal(ordinary.status, 'ready', '后续普通刷新仍须保持ready');
+    if (!stable) assert.deepEqual({ assistantSeq: ordinary.pending.assistantSeq, messageIndex: ordinary.pending.messageIndex }, { assistantSeq: 3, messageIndex: 4 });
+  }
+});
+
+test('同聊天普通手动刷新在提交前真实删除尾消息时不提交旧成员快照', async () => {
+  const h = harness([assistant('已有楼一'), user('确认楼一'), assistant('已有楼二'), user('确认楼二')], { modernAnchors: true });
+  await h.runtime.start();
+  const rootBefore = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`));
+  const floorIds = h.runtime.getReachable().floors.map(floor => floor.id);
+  h.context.chat.push(assistant('提交期间删除的临时尾楼'), user('确认临时尾楼'));
+  let deleted = false;
+  h.backend.setBeforePut(({ key, data }) => {
+    if (!deleted && key.startsWith('v3-run-') && data.phase === 'committing') {
+      deleted = true;
+      h.context.chat.splice(4, 1);
+    }
+  });
+  const rejectModel = async () => { throw new Error('普通刷新不得调用模型'); };
+  const memory = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
+    generateAnalysisTask: rejectModel, generateUtilityTask: rejectModel, logger: { warn() {} } });
+  await memory.start();
+  await memory.refreshStatus({ preferCached: false, recoverTailDeletion: true, reconcileFoundation: true });
+  h.backend.setBeforePut(null);
+  assert.equal(deleted, true, 'fixture must delete the original live tail at the staging boundary');
+  assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), rootBefore, 'deleted live tail must not be committed from a copied member array');
+  assert.deepEqual(h.runtime.getReachable().floors.map(floor => floor.id), floorIds);
+  assert.notEqual(memory.getState().memorySyncStatus, 'syncing', 'refresh must settle after the source changed');
+});
+
+test('尾孤儿保存后提交前重新读取原档；正文、标记或消息并发变化不封存旧快照', async () => {
+  const orphanFloorId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  for (const change of ['body', 'marker', 'deleted']) {
+    let h, api, saving = false, postSaveReads = 0, changed = false;
+    h = harness([assistant('原有楼'), user('确认原有楼')], {
+      modernAnchors: true,
+      fetchImpl: (...args) => api.fetchImpl(...args),
+    });
+    api = targetChatApi(h, {
+      beforeSave: () => { saving = true; },
+      beforeGet: ({ body, saved }) => {
+        if (!saving || changed || ++postSaveReads !== 2) return;
+        const chat = saved.get(`${body.avatar_url}/${body.file_name}`);
+        const candidate = chat?.[3];
+        if (!candidate) return;
+        if (change === 'body') candidate.mes = candidate.swipes[0] = '原档在保存后被人工编辑';
+        else if (change === 'marker') candidate.extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId };
+        else chat.splice(3, 2);
+        changed = true;
+      },
+    });
+    await h.runtime.start();
+    const floorId = h.runtime.getReachable().floors[0].id;
+    h.context.chat[0].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId };
+    h.context.chat.push(assistant('待恢复新尾楼', { qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } }), user('确认待恢复新尾楼'));
+    api.persistLive();
+    const rootBefore = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`));
+    const memory = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
+      generateAnalysisTask: async () => { throw new Error('目标源变化不得调用模型'); },
+      generateUtilityTask: async () => { throw new Error('目标源变化不得调用模型'); }, logger: { warn() {} } });
+    await memory.refreshStatus({ preferCached: false, recoverTailDeletion: true, reconcileFoundation: true });
+    assert.equal(changed, true, `${change}: mutation must occur at actual-target precommit read`);
+    assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), rootBefore, `${change}: outdated staged snapshot must not commit`);
+    assert.notEqual(memory.getState().memorySyncStatus, 'syncing', `${change}: source changes must settle to a reviewable state`);
+  }
 });
 
 test('管理刷新首轮inspect失败立即显示错误，不在同次点击重读或写入', async () => {
@@ -2376,17 +2528,26 @@ test('memory 人工刷新登记未经过事件的新稳定尾楼，普通 fresh 
   releaseInspect();
   await ordinary; refreshed = await manual;
   assert.equal(refreshed.foundationStatus, 'ready'); assert.equal(refreshed.floors.length, 3);
-  assert.equal(h.runtime.getReachable().floors.length, 3); assert.equal(foundationRefreshes, 2, '并发人工刷新必须升级并实际 reconcile 一次');
+  assert.equal(h.runtime.getReachable().floors.length, 3); assert.equal(foundationRefreshes, 0, '固定目标runtime完成管理刷新，无需重新进入全局refresh入口');
   assert.equal(modelCalls, 0);
 });
 
-test('尾部孤儿保存失败或切聊时恢复标识，不写旧 root', async () => {
+test('尾部孤儿目标保存失败保留旧图；页面切换不取消已绑定原目标的清理与封口', async () => {
   const orphanFloorId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
-  for (const mode of ['saveFailed', 'chatChanged']) {
-    let h, saveCalls = 0;
+  for (const mode of ['saveFailed', 'integrityMismatch', 'switchDuringSave']) {
+    let h, saveCalls = 0, api;
     h = harness([assistant('既有正文'), user('确认既有正文')], {
       modernAnchors: true,
-      fetchImpl: async () => ({ ok: true, json: async () => [{ chat_metadata: structuredClone(h.context.chatMetadata) }, ...structuredClone(h.context.chat)] }),
+      fetchImpl: (...args) => api.fetchImpl(...args),
+    });
+    api = targetChatApi(h, {
+      saveStatus: mode === 'saveFailed' ? 409 : 200,
+      responseIntegrity: mode === 'integrityMismatch' ? 'announced-integrity' : null,
+      persistOnSave: mode !== 'integrityMismatch',
+      beforeSave: () => {
+        saveCalls += 1;
+        if (mode === 'switchDuringSave') h.setChat([assistant('后来打开的聊天')], OTHER_CHAT);
+      },
     });
     await h.runtime.start();
     const floorId = h.runtime.getReachable().floors[0].id;
@@ -2394,25 +2555,29 @@ test('尾部孤儿保存失败或切聊时恢复标识，不写旧 root', async 
     const orphan = assistant('待恢复孤儿', { kept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } });
     orphan.swipe_info = [{ extra: { swipeKept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } } }];
     h.context.chat.push(orphan, user('确认待恢复孤儿'));
-    h.context.saveChat = async () => {
-      saveCalls += 1;
-      if (mode === 'chatChanged') {
-        h.context.chatMetadata.qianqianjie.chatId = OTHER_CHAT;
-        h.context.chatId = `host-${OTHER_CHAT}`;
-        return true;
-      }
-      return false;
-    };
+    api.persistLive();
     const rootBefore = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`));
     h.runtime.invalidate();
     const rejectModel = async () => { throw new Error('失败恢复不得调用模型'); };
     const memory = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
       generateAnalysisTask: rejectModel, generateUtilityTask: rejectModel, logger: { warn() {} } });
-    await memory.start();
+    const completed = await memory.start();
     assert.equal(saveCalls, 1, mode);
-    assert.deepEqual(orphan.extra, { kept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } }, mode);
-    assert.deepEqual(orphan.swipe_info[0].extra, { swipeKept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } }, mode);
-    assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), rootBefore, mode);
+    if (mode === 'saveFailed' || mode === 'integrityMismatch') {
+      assert.deepEqual(orphan.extra, { kept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } }, mode);
+      assert.deepEqual(orphan.swipe_info[0].extra, { swipeKept: true, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: orphanFloorId } }, mode);
+      assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), rootBefore, mode);
+      assert.equal(api.saved.get('character.png/host-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa').at(3).extra.qianqianjie_floor.floorId, orphanFloorId, mode);
+    } else {
+      const saved = api.saved.get('character.png/host-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+      assert.ok(saved, '定向保存原聊天');
+      assert.equal(saved.at(3).extra.qianqianjie_floor, undefined, '原聊天marker已持久化清除');
+      assert.equal(saved.at(3).swipe_info[0].extra.qianqianjie_floor, undefined, '原聊天swipe marker同步清除');
+      assert.deepEqual(h.context.chat, [assistant('后来打开的聊天')], '后来打开的聊天不被修改');
+      assert.equal(h.backend.records.get(`chat-${CHAT}/v3-root`).data.stableBoundary.assistantSeq, 2, '原目标的新稳定尾楼仍走原封口路径');
+      assert.notDeepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), rootBefore);
+      assert.ok(completed, '任务完成并返回其结果；当前页面状态不决定原目标业务结果');
+    }
   }
 });
 
@@ -2522,6 +2687,55 @@ test('没有事件证据、错误长度、中间缺口、正文替换或切聊�
     else await h.runtime.refreshStatus();
     assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), root, mode);
   }
+});
+
+test('固定业务身份的 store 在宿主切换与全局缓存失效后仍读写原聊天 CAS 目标', async () => {
+  const h = harness([assistant('原目标正文'), user('原目标锚')], { modernAnchors: true });
+  await h.runtime.start();
+  const pinned = h.store.forIdentity({ hostChatId: 'host-chat', chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' });
+  const original = await pinned.readReachable({ mode: 'runtime' });
+  assert.equal(original.status, 'ready');
+  const originalRevision = original.rootRevision;
+
+  h.context.chatMetadata.qianqianjie.chatId = OTHER_CHAT;
+  h.handlers.get('CHAT_CHANGED')();
+  const current = await h.store.readReachable({ mode: 'runtime' });
+  assert.notEqual(current.root?.chatId, CHAT, '普通 store 仍跟随当前宿主身份');
+  const pinnedAfterSwitch = await pinned.readReachable({ mode: 'runtime' });
+  assert.equal(pinnedAfterSwitch.status, 'ready');
+  assert.equal(pinnedAfterSwitch.root.chatId, CHAT);
+  assert.equal(pinnedAfterSwitch.rootRevision, originalRevision, '固定身份复用原目标已确认内容/版本');
+  pinned.release();
+});
+
+test('固定身份视图在最后借用释放后回收旧目标缓存，当前页面与并发借用保留热缓存', async () => {
+  const h = harness();
+  await h.runtime.start();
+  const identity = { hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' };
+  const floorId = h.runtime.getReachable().floors[0].id;
+  const floorGets = () => h.backend.calls.filter(call => call[0] === 'get' && call[2] === `v3-floor-${floorId}`).length;
+
+  const currentView = h.store.forIdentity(identity);
+  const currentGraph = await currentView.readReachable({ mode: 'runtime' });
+  const warmGets = floorGets();
+  await currentView.commitRoot(currentGraph.root, currentGraph.rootRevision);
+  assert.equal(floorGets(), warmGets, '目标仍是当前页面时释放视图保留提交校验热缓存');
+  currentView.release();
+
+  h.context.chatId = 'another-host-chat';
+  h.context.chatMetadata.qianqianjie.chatId = OTHER_CHAT;
+  const first = h.store.forIdentity(identity), second = h.store.forIdentity(identity);
+  const sharedGraph = await first.readReachable({ mode: 'runtime' });
+  const sharedGets = floorGets();
+  first.release();
+  await second.commitRoot(sharedGraph.root, sharedGraph.rootRevision);
+  assert.equal(floorGets(), sharedGets, '还有计划/任务借用时不清共享确认内容');
+  second.release();
+
+  const finalView = h.store.forIdentity(identity);
+  await finalView.commitRoot(sharedGraph.root, sharedGraph.rootRevision + 1);
+  assert.equal(floorGets(), sharedGets + 1, '最后借用结束且目标已离开页面后，后续读取重新核验后端');
+  finalView.release();
 });
 
 test('既成尾删档只有手动刷新完整读回同正文同标识后恢复；打开只读', async () => {
