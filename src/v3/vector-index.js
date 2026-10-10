@@ -417,38 +417,82 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
     return true;
   }
 
-  async function copyPrefix(sourceIdentity, targetIdentity, targetNarrativeGeneration, sourceReachable) {
+  async function copyPrefix(sourceIdentity, targetIdentity, targetNarrativeGeneration, sourceReachable, options = null) {
     const config = configProvider();
     if (!config || !sourceIdentity?.chatId || !targetIdentity?.chatId || sourceIdentity.chatId === targetIdentity.chatId
       || typeof targetNarrativeGeneration !== 'string' || sourceReachable?.root?.chatId !== sourceIdentity.chatId
       || sourceReachable.status !== 'ready') return Object.freeze([]);
-    const selected = selectRecallMemories(sourceReachable);
-    const { rawSources } = await projectVectorSources(selected.activeMemories, selected.floors, { includeSummaries: false });
-    const source = { status: 'ready', chatId: sourceReachable.root.chatId, narrativeGeneration: sourceReachable.root.narrativeGeneration, rawSources };
+    const branchPrefix = Array.isArray(options?.retainedFloorIds);
+    if (branchPrefix && (!options.retainedFloorIds.length || options.targetReachable?.status !== 'ready'
+      || options.targetReachable.root?.chatId !== targetIdentity.chatId
+      || options.targetReachable.root?.narrativeGeneration !== targetNarrativeGeneration)) return Object.freeze([]);
+    const sourceCollection = `chat-${sourceIdentity.chatId}`, targetCollection = `chat-${targetIdentity.chatId}`;
+    // Preserve B's own index; initialization never merges or updates an existing target directory.
+    if (await readRecord(targetCollection, VECTOR_INDEX_ID)) return Object.freeze([]);
     const modelKey = await hash(configKey(config));
-    const manifest = await readRecord(`chat-${source.chatId}`, VECTOR_INDEX_ID);
-    if (!manifest || !vectorRecordOwned(manifest) || ownerKey(manifest.data, modelKey) !== ownerKey(source, modelKey)) return Object.freeze([]);
-    const rows = [];
-    for (const id of manifest.data.shardIds) {
-      const shard = await readRecord(`chat-${source.chatId}`, id);
-      if (!shard || !vectorRecordOwned(shard) || ownerKey(shard.data, modelKey) !== ownerKey(source, modelKey)) return Object.freeze([]);
+    const sourceManifest = await readRecord(sourceCollection, VECTOR_INDEX_ID);
+    if (!sourceManifest || !vectorRecordOwned(sourceManifest) || sourceManifest.data.modelKey !== modelKey
+      || ownerKey(sourceManifest.data, modelKey) !== ownerKey(sourceReachable.root, modelKey)) return Object.freeze([]);
+    let rawSources;
+    if (branchPrefix) {
+      const retained = new Set(options.retainedFloorIds);
+      const targetSelected = selectRecallMemories(options.targetReachable);
+      const targetProjection = await projectVectorSources(targetSelected.activeMemories, targetSelected.floors, { includeSummaries: false });
+      rawSources = targetProjection.rawSources.filter(raw => retained.has(raw.floorId) && retained.has(raw.memoryFloorId));
+    } else {
+      const selected = selectRecallMemories(sourceReachable);
+      const projection = await projectVectorSources(selected.activeMemories, selected.floors, { includeSummaries: false });
+      rawSources = projection.rawSources;
+    }
+    const source = { status: 'ready', chatId: sourceReachable.root.chatId,
+      narrativeGeneration: sourceReachable.root.narrativeGeneration, rawSources };
+    const target = branchPrefix
+      ? { status: 'ready', chatId: targetIdentity.chatId, narrativeGeneration: targetNarrativeGeneration, rawSources }
+      : { ...source, chatId: targetIdentity.chatId, narrativeGeneration: targetNarrativeGeneration };
+    const witnessSource = branchPrefix ? target : source;
+    const rows = [], seen = new Set();
+    for (const id of sourceManifest.data.shardIds) {
+      const shard = await readRecord(sourceCollection, id);
+      if (!shard || !vectorRecordOwned(shard) || shard.data.modelKey !== modelKey
+        || ownerKey(shard.data, modelKey) !== ownerKey(source, modelKey)) return Object.freeze([]);
       for (const row of shard.data.rows) {
-        if (!rawWitnessShape(row.witness) || !await rawWitnessValid(row.witness, source)) continue;
-        decodeVector(row.vector, manifest.data.dimensions);
+        if (!rawWitnessShape(row.witness) || !await rawWitnessValid(row.witness, witnessSource)
+          || seen.has(rawChunkKey(row.witness))) continue;
+        try { decodeVector(row.vector, sourceManifest.data.dimensions); } catch { continue; }
+        seen.add(rawChunkKey(row.witness));
         rows.push(row);
       }
     }
+    if (!rows.length) return Object.freeze([]);
     const shardIds = [];
     for (let start = 0; start < rows.length; start += BATCH) {
       const batch = rows.slice(start, start + BATCH);
-      const id = `${VECTOR_SHARD_PREFIX}${(await sha256(JSON.stringify([targetNarrativeGeneration, modelKey, batch.map(row => row.witness)]))).slice(0, 40)}`;
-      await client.put(`chat-${targetIdentity.chatId}`, id, { schemaVersion: SCHEMA, recordType: 'vectorCache',
-        chatId: targetIdentity.chatId, narrativeGeneration: targetNarrativeGeneration, modelKey, rows: batch }, 0);
+      const copiedRows = batch.map(row => ({ ...row, witness: orderedRawWitness(row.witness) }));
+      const witnesses = copiedRows.map(row => row.witness);
+      const id = `${VECTOR_SHARD_PREFIX}${(await sha256(JSON.stringify([targetNarrativeGeneration, modelKey, witnesses]))).slice(0, 40)}`;
+      const savedShard = await readRecord(targetCollection, id);
+      if (!await validSavedBatch(savedShard, target, modelKey, copiedRows, witnesses, id, sourceManifest.data.dimensions)) {
+        if (savedShard) return Object.freeze([]);
+        try { await client.put(targetCollection, id, { schemaVersion: SCHEMA, recordType: 'vectorCache',
+          chatId: targetIdentity.chatId, narrativeGeneration: targetNarrativeGeneration, modelKey, rows: copiedRows }, 0); }
+        catch {
+          const persisted = await readRecord(targetCollection, id);
+          if (!await validSavedBatch(persisted, target, modelKey, copiedRows, witnesses, id, sourceManifest.data.dimensions)) return Object.freeze([]);
+        }
+      }
       shardIds.push(id);
     }
-    await client.put(`chat-${targetIdentity.chatId}`, VECTOR_INDEX_ID, { schemaVersion: SCHEMA, recordType: 'vectorCache',
+    const manifest = { schemaVersion: SCHEMA, recordType: 'vectorCache',
       chatId: targetIdentity.chatId, narrativeGeneration: targetNarrativeGeneration, modelKey,
-      dimensions: manifest.data.dimensions, shardIds, chunkCount: rows.length }, 0);
+      dimensions: sourceManifest.data.dimensions, shardIds, chunkCount: rows.length };
+    try { await client.put(targetCollection, VECTOR_INDEX_ID, manifest, 0); }
+    catch {
+      const saved = await readRecord(targetCollection, VECTOR_INDEX_ID);
+      if (!saved || !vectorRecordOwned(saved) || saved.data.chatId !== manifest.chatId
+        || saved.data.narrativeGeneration !== manifest.narrativeGeneration || saved.data.modelKey !== manifest.modelKey
+        || saved.data.dimensions !== manifest.dimensions || saved.data.chunkCount !== manifest.chunkCount
+        || saved.data.shardIds.length !== shardIds.length || saved.data.shardIds.some((id, index) => id !== shardIds[index])) return Object.freeze([]);
+    }
     return Object.freeze(shardIds);
   }
 

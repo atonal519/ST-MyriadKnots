@@ -6746,48 +6746,95 @@ function io({ client: e, api: t, configProvider: n, sourceProvider: r, identityP
 	function N(e = "external") {
 		return u ? (u.controller.abort(e), !0) : !1;
 	}
-	async function P(t, r, i, a) {
-		let o = n();
-		if (!o || !t?.chatId || !r?.chatId || t.chatId === r.chatId || typeof i != "string" || a?.root?.chatId !== t.chatId || a.status !== "ready") return Object.freeze([]);
-		let s = ja(a), { rawSources: c } = await Ht(s.activeMemories, s.floors, { includeSummaries: !1 }), l = {
+	async function P(t, r, i, a, o = null) {
+		let s = n();
+		if (!s || !t?.chatId || !r?.chatId || t.chatId === r.chatId || typeof i != "string" || a?.root?.chatId !== t.chatId || a.status !== "ready") return Object.freeze([]);
+		let c = Array.isArray(o?.retainedFloorIds);
+		if (c && (!o.retainedFloorIds.length || o.targetReachable?.status !== "ready" || o.targetReachable.root?.chatId !== r.chatId || o.targetReachable.root?.narrativeGeneration !== i)) return Object.freeze([]);
+		let l = `chat-${t.chatId}`, u = `chat-${r.chatId}`;
+		if (await E(u, "qqj-vector-index")) return Object.freeze([]);
+		let d = await Ba(Va(s)), f = await E(l, Pa);
+		if (!f || !Ya(f) || f.data.modelKey !== d || Ha(f.data, d) !== Ha(a.root, d)) return Object.freeze([]);
+		let p;
+		if (c) {
+			let e = new Set(o.retainedFloorIds), t = ja(o.targetReachable);
+			p = (await Ht(t.activeMemories, t.floors, { includeSummaries: !1 })).rawSources.filter((t) => e.has(t.floorId) && e.has(t.memoryFloorId));
+		} else {
+			let e = ja(a);
+			p = (await Ht(e.activeMemories, e.floors, { includeSummaries: !1 })).rawSources;
+		}
+		let m = {
 			status: "ready",
 			chatId: a.root.chatId,
 			narrativeGeneration: a.root.narrativeGeneration,
-			rawSources: c
-		}, u = await Ba(Va(o)), d = await E(`chat-${l.chatId}`, Pa);
-		if (!d || !Ya(d) || Ha(d.data, u) !== Ha(l, u)) return Object.freeze([]);
-		let f = [];
-		for (let e of d.data.shardIds) {
-			let t = await E(`chat-${l.chatId}`, e);
-			if (!t || !Ya(t) || Ha(t.data, u) !== Ha(l, u)) return Object.freeze([]);
-			for (let e of t.data.rows) !Wt(e.witness) || !await qt(e.witness, l) || ($a(e.vector, d.data.dimensions), f.push(e));
+			rawSources: p
+		}, h = c ? {
+			status: "ready",
+			chatId: r.chatId,
+			narrativeGeneration: i,
+			rawSources: p
+		} : {
+			...m,
+			chatId: r.chatId,
+			narrativeGeneration: i
+		}, g = c ? h : m, _ = [], v = /* @__PURE__ */ new Set();
+		for (let e of f.data.shardIds) {
+			let t = await E(l, e);
+			if (!t || !Ya(t) || t.data.modelKey !== d || Ha(t.data, d) !== Ha(m, d)) return Object.freeze([]);
+			for (let e of t.data.rows) if (!(!Wt(e.witness) || !await qt(e.witness, g) || v.has(Wa(e.witness)))) {
+				try {
+					$a(e.vector, f.data.dimensions);
+				} catch {
+					continue;
+				}
+				v.add(Wa(e.witness)), _.push(e);
+			}
 		}
-		let p = [];
-		for (let t = 0; t < f.length; t += La) {
-			let n = f.slice(t, t + La), a = `${Fa}${(await y(JSON.stringify([
+		if (!_.length) return Object.freeze([]);
+		let b = [];
+		for (let t = 0; t < _.length; t += La) {
+			let n = _.slice(t, t + La).map((e) => ({
+				...e,
+				witness: Ka(e.witness)
+			})), a = n.map((e) => e.witness), o = `${Fa}${(await y(JSON.stringify([
 				i,
-				u,
-				n.map((e) => e.witness)
-			]))).slice(0, 40)}`;
-			await e.put(`chat-${r.chatId}`, a, {
-				schemaVersion: Ia,
-				recordType: "vectorCache",
-				chatId: r.chatId,
-				narrativeGeneration: i,
-				modelKey: u,
-				rows: n
-			}, 0), p.push(a);
+				d,
+				a
+			]))).slice(0, 40)}`, s = await E(u, o);
+			if (!await O(s, h, d, n, a, o, f.data.dimensions)) {
+				if (s) return Object.freeze([]);
+				try {
+					await e.put(u, o, {
+						schemaVersion: Ia,
+						recordType: "vectorCache",
+						chatId: r.chatId,
+						narrativeGeneration: i,
+						modelKey: d,
+						rows: n
+					}, 0);
+				} catch {
+					if (!await O(await E(u, o), h, d, n, a, o, f.data.dimensions)) return Object.freeze([]);
+				}
+			}
+			b.push(o);
 		}
-		return await e.put(`chat-${r.chatId}`, Pa, {
+		let x = {
 			schemaVersion: Ia,
 			recordType: "vectorCache",
 			chatId: r.chatId,
 			narrativeGeneration: i,
-			modelKey: u,
-			dimensions: d.data.dimensions,
-			shardIds: p,
-			chunkCount: f.length
-		}, 0), Object.freeze(p);
+			modelKey: d,
+			dimensions: f.data.dimensions,
+			shardIds: b,
+			chunkCount: _.length
+		};
+		try {
+			await e.put(u, Pa, x, 0);
+		} catch {
+			let e = await E(u, Pa);
+			if (!e || !Ya(e) || e.data.chatId !== x.chatId || e.data.narrativeGeneration !== x.narrativeGeneration || e.data.modelKey !== x.modelKey || e.data.dimensions !== x.dimensions || e.data.chunkCount !== x.chunkCount || e.data.shardIds.length !== b.length || e.data.shardIds.some((e, t) => e !== b[t])) return Object.freeze([]);
+		}
+		return Object.freeze(b);
 	}
 	async function F(e, t) {
 		let r = n(), i = e?.root;
@@ -7317,7 +7364,7 @@ async function co({ store: e, targetIdentity: t, cachedReachable: n = null } = {
 }
 //#endregion
 //#region manifest.json
-var lo = "0.7.5", uo = "qianqianjie", fo = "/api/plugins/st-bainiaodata", po = "qqj-bainiao-v1", mo = Symbol.for("qqj.bainiao.tt.locks.v1"), ho = (e, t) => Object.assign(Error(t), { status: e }), go = (e) => JSON.parse(JSON.stringify(e)), _o = (e) => {
+var lo = "0.7.6", uo = "qianqianjie", fo = "/api/plugins/st-bainiaodata", po = "qqj-bainiao-v1", mo = Symbol.for("qqj.bainiao.tt.locks.v1"), ho = (e, t) => Object.assign(Error(t), { status: e }), go = (e) => JSON.parse(JSON.stringify(e)), _o = (e) => {
 	if (e?.aborted) throw e.reason ?? new DOMException("Aborted", "AbortError");
 }, vo = new TextEncoder(), yo = (e) => ({
 	format: "qqj-tt-json-v2",
@@ -46056,123 +46103,123 @@ async function pD(e, t, n) {
 	}
 	if (await Promise.all(Array.from({ length: Math.min(nD, t.length) }, () => a())), i) throw i;
 }
-function mD({ client: e, hostAdapter: t, sanitizerOptions: n = () => ({}), now: r = () => /* @__PURE__ */ new Date(), fetchImpl: i = globalThis.fetch } = {}) {
+function mD({ client: e, hostAdapter: t, vectorRuntimeProvider: n = () => null, sanitizerOptions: r = () => ({}), now: i = () => /* @__PURE__ */ new Date(), fetchImpl: a = globalThis.fetch } = {}) {
 	if (!e?.get || !e?.put || !t?.snapshot) throw TypeError("聊天分支初始化依赖无效");
-	return async function({ raw: a, host: o, sourceChatId: s, targetChatId: c, createdAt: l, signal: u, taskInputs: d = null } = {}) {
-		if (u?.aborted) throw new DOMException("Aborted", "AbortError");
-		let f = aD(o, s), p = aD(o, c), m = d ? null : t.snapshot(), h = d ?? {
-			chat: structuredClone(Array.isArray(m.chat) ? m.chat : []),
-			chatMetadata: structuredClone(m.context?.chatMetadata ?? {}),
-			target: Sx(m, {
-				...f,
-				hostChatId: o.hostChatId
+	return async function({ raw: o, host: s, sourceChatId: c, targetChatId: l, createdAt: u, signal: d, taskInputs: f = null } = {}) {
+		if (d?.aborted) throw new DOMException("Aborted", "AbortError");
+		let p = aD(s, c), m = aD(s, l), h = f ? null : t.snapshot(), g = f ?? {
+			chat: structuredClone(Array.isArray(h.chat) ? h.chat : []),
+			chatMetadata: structuredClone(h.context?.chatMetadata ?? {}),
+			target: Sx(h, {
+				...p,
+				hostChatId: s.hostChatId
 			}),
-			sanitizerOptions: { ...n() }
+			sanitizerOptions: { ...r() }
 		};
-		if (!Array.isArray(h.chat) || !h.target?.hostChatId || h.target.hostChatId !== f.hostChatId) throw tD("V3_BRANCH_TARGET_INVALID", "分支目标快照无效。");
-		let g = {
-			...h.target,
-			chatId: c
-		}, _ = await le(g, {
-			signal: u,
-			fetchImpl: i,
-			allowedChatIds: [s, c]
+		if (!Array.isArray(g.chat) || !g.target?.hostChatId || g.target.hostChatId !== p.hostChatId) throw tD("V3_BRANCH_TARGET_INVALID", "分支目标快照无效。");
+		let _ = {
+			...g.target,
+			chatId: l
+		}, v = await le(_, {
+			signal: d,
+			fetchImpl: a,
+			allowedChatIds: [c, l]
 		});
-		dD(h, _, s, c);
-		let v = eS({
-			client: e,
-			contextProvider: () => f
-		}), b = eS({
+		dD(g, v, c, l);
+		let b = eS({
 			client: e,
 			contextProvider: () => p
-		}), x = bv({ client: e }), S = await b.readReachable(), C = [], w = [];
-		if (["ready", "needsReseal"].includes(S.status)) {
-			let e = sD(await Ee(h.chat, {
-				sanitizerOptions: h.sanitizerOptions,
-				chatId: s
-			}), s, c), t = cD(S, e);
-			if (t.count !== S.floors.length) throw tD("V3_BRANCH_TARGET_MISMATCH", "已准备的分支记忆与当前消息不一致。");
-			C = t.floors.map((e, n) => ({
+		}), x = eS({
+			client: e,
+			contextProvider: () => m
+		}), S = bv({ client: e }), C = await x.readReachable(), w = null, T = [], E = [];
+		if (["ready", "needsReseal"].includes(C.status)) {
+			let e = sD(await Ee(g.chat, {
+				sanitizerOptions: g.sanitizerOptions,
+				chatId: c
+			}), c, l), t = cD(C, e);
+			if (t.count !== C.floors.length) throw tD("V3_BRANCH_TARGET_MISMATCH", "已准备的分支记忆与当前消息不一致。");
+			T = t.floors.map((e, n) => ({
 				messageIndex: t.candidates[n].hostLocator.messageIndex,
 				floorId: e.id
-			})), w = t.floors.map((e) => e.id), await fD({
-				peopleStore: x,
-				sourceIdentity: f,
-				targetIdentity: p,
-				entities: S.entities,
-				now: l ?? iD(r),
-				signal: u
+			})), E = t.floors.map((e) => e.id), await fD({
+				peopleStore: S,
+				sourceIdentity: p,
+				targetIdentity: m,
+				entities: C.entities,
+				now: u ?? iD(i),
+				signal: d
 			});
-		} else if (S.status === "uninitialized") {
-			let e = await v.readReachable();
-			if (["ready", "needsReseal"].includes(e.status)) {
-				let t = sD(await Ee(h.chat, {
-					sanitizerOptions: h.sanitizerOptions,
-					chatId: s
-				}), s, c), n = cD(e, t);
+		} else if (C.status === "uninitialized") {
+			let e = await b.readReachable();
+			if (w = e, ["ready", "needsReseal"].includes(e.status)) {
+				let t = sD(await Ee(g.chat, {
+					sanitizerOptions: g.sanitizerOptions,
+					chatId: c
+				}), c, l), n = cD(e, t);
 				if (n.count > 0) {
-					let i = l ?? iD(r), a = await ye(t, n.count), o = await ve([
+					let r = u ?? iD(i), a = await ye(t, n.count), o = await ve([
 						"generation",
-						c,
+						l,
 						n.floors.map((e) => e.content.canonicalFingerprint)
-					]), d = await ve([
+					]), s = await ve([
 						"foundation-branch-run-v1",
+						l,
 						c,
-						s,
 						a.fingerprint
-					]), m = await ve([
+					]), f = await ve([
 						"foundation-branch-checkpoint-v1",
+						l,
 						c,
-						s,
 						a.fingerprint
 					]), h = n.floors.map((e, t) => Je({
-						...oD(e, c, o),
+						...oD(e, l, o),
 						assistantSeq: t + 1,
 						predecessorFloorId: n.floors[t - 1]?.id ?? null,
 						hostLocator: { ...n.candidates[t].hostLocator },
 						processing: {
 							...e.processing,
-							runId: d,
-							checkpointId: m
+							runId: s,
+							checkpointId: f
 						},
-						updatedAt: Date.parse(e.updatedAt) > Date.parse(i) ? e.updatedAt : i
-					}, { expectedChatId: c })), g = await dC({
+						updatedAt: Date.parse(e.updatedAt) > Date.parse(r) ? e.updatedAt : r
+					}, { expectedChatId: l })), g = await dC({
 						source: {
 							...e,
-							floorMemories: e.floorMemories.map((e) => oD(e, c, o)),
-							stateDeltas: e.stateDeltas.map((e) => oD(e, c, o)),
-							entities: e.entities.map((e) => oD(e, c, o)),
-							baseline: oD(e.baseline, c, o)
+							floorMemories: e.floorMemories.map((e) => oD(e, l, o)),
+							stateDeltas: e.stateDeltas.map((e) => oD(e, l, o)),
+							entities: e.entities.map((e) => oD(e, l, o)),
+							baseline: oD(e.baseline, l, o)
 						},
 						floors: h,
-						chatId: c,
+						chatId: l,
 						narrativeGeneration: o,
-						now: i,
-						currentStateId: await ve(["v3-cse-current-state", m])
+						now: r,
+						currentStateId: await ve(["v3-cse-current-state", f])
 					}), _ = await fC({
-						chatId: c,
+						chatId: l,
 						narrativeGeneration: o,
-						checkpointId: m,
+						checkpointId: f,
 						floors: h,
 						candidates: n.candidates,
-						now: i
-					}), v = _.map((e) => b.recordKey(e)), T = h.map((e) => e.id), E = `sha256:${await y(JSON.stringify([
+						now: r
+					}), v = _.map((e) => x.recordKey(e)), b = h.map((e) => e.id), w = `sha256:${await y(JSON.stringify([
 						o,
-						T,
+						b,
 						h.map((e) => e.content.canonicalFingerprint)
 					]))}`, D = Xe({
 						schemaVersion: 3,
 						recordType: "run",
-						id: d,
-						chatId: c,
+						id: s,
+						chatId: l,
 						narrativeGeneration: o,
 						parentCheckpointId: null,
 						inputSnapshotFingerprint: a.fingerprint,
 						mode: "branchReplay",
 						sessionEpoch: 0,
-						inputFloorIds: T,
+						inputFloorIds: b,
 						phase: "completed",
-						completedFloorIds: T,
+						completedFloorIds: b,
 						failedItems: [],
 						preparedRecordRefs: [
 							...h,
@@ -46182,35 +46229,35 @@ function mD({ client: e, hostAdapter: t, sanitizerOptions: n = () => ({}), now: 
 							...g.stateDeltas,
 							...g.currentState ? [g.currentState] : [],
 							..._
-						].map((e) => b.recordKey(e)),
+						].map((e) => x.recordKey(e)),
 						diagnostics: null,
-						startedAt: i,
-						createdAt: i,
-						updatedAt: i,
+						startedAt: r,
+						createdAt: r,
+						updatedAt: r,
 						recordStatus: "staged",
 						supersedes: null
-					}, { expectedChatId: c }), O = Ze({
+					}, { expectedChatId: l }), O = Ze({
 						schemaVersion: 3,
 						recordType: "checkpoint",
-						id: m,
-						chatId: c,
+						id: f,
+						chatId: l,
 						narrativeGeneration: o,
 						parentCheckpointId: null,
-						runId: d,
+						runId: s,
 						sourceSnapshotFingerprint: a.fingerprint,
 						indexLayout: Me,
 						capabilities: structuredClone(g.capabilities),
 						floorRange: {
 							fromAssistantSeq: 1,
 							toAssistantSeq: h.length,
-							floorIds: T
+							floorIds: b
 						},
 						inputFingerprints: be(h, {
 							candidates: n.candidates,
 							previous: e.checkpoint?.inputFingerprints
 						}),
 						producedRefs: {
-							floors: T,
+							floors: b,
 							floorMemories: g.floorMemories.map((e) => e.id),
 							entities: g.entities.map((e) => e.id),
 							events: [],
@@ -46227,22 +46274,22 @@ function mD({ client: e, hostAdapter: t, sanitizerOptions: n = () => ({}), now: 
 							schemaValid: !0,
 							referencesValid: !0,
 							orderedReplayValid: !0,
-							stateFingerprint: E
+							stateFingerprint: w
 						},
-						sealedAt: i,
-						createdAt: i,
-						updatedAt: i,
+						sealedAt: r,
+						createdAt: r,
+						updatedAt: r,
 						recordStatus: "active",
 						supersedes: null
-					}, { expectedChatId: c }), k = h.at(-1), A = qe({
+					}, { expectedChatId: l }), k = h.at(-1), A = qe({
 						schemaVersion: 3,
 						recordType: "root",
 						id: "root",
-						chatId: c,
+						chatId: l,
 						narrativeGeneration: o,
 						status: "ready",
 						capabilities: structuredClone(g.capabilities),
-						headCheckpointId: m,
+						headCheckpointId: f,
 						sourceSnapshotFingerprint: a.fingerprint,
 						stableBoundary: {
 							assistantSeq: h.length,
@@ -46257,11 +46304,11 @@ function mD({ client: e, hostAdapter: t, sanitizerOptions: n = () => ({}), now: 
 						},
 						activeStateRefs: g.currentState ? [g.currentState.id] : [],
 						activeThreadRefs: [],
-						createdAt: i,
-						updatedAt: i,
+						createdAt: r,
+						updatedAt: r,
 						recordStatus: "active",
 						supersedes: null
-					}, { expectedChatId: c });
+					}, { expectedChatId: l });
 					await pC({
 						checkpoint: O,
 						run: D,
@@ -46282,7 +46329,7 @@ function mD({ client: e, hostAdapter: t, sanitizerOptions: n = () => ({}), now: 
 						baseline: g.baseline,
 						stateDeltas: g.stateDeltas,
 						currentStates: g.currentState ? [g.currentState] : []
-					}), await pD(b, [
+					}), await pD(x, [
 						D,
 						...h,
 						...g.floorMemories,
@@ -46291,42 +46338,55 @@ function mD({ client: e, hostAdapter: t, sanitizerOptions: n = () => ({}), now: 
 						...g.stateDeltas,
 						...g.currentState ? [g.currentState] : [],
 						..._
-					], u);
-					let j = await b.putRecord(O, { signal: u });
+					], d);
+					let j = await x.putRecord(O, { signal: d });
 					if (!["saved", "reused"].includes(j.status)) throw tD("V3_BRANCH_RECORD_CONFLICT", "分支记忆记录发生冲突，未提交目标根。");
-					let M = await b.commitRoot(A, 0, { signal: u });
-					if (["saved"].includes(M.status)) S = M.reachable;
-					else if (S = await b.readReachable(), !["ready", "needsReseal"].includes(S.status) || S.root.headCheckpointId !== m) throw tD("V3_BRANCH_ROOT_CONFLICT", "分支目标根发生冲突，未覆盖已有数据。");
-					C = h.map((e, t) => ({
+					let M = await x.commitRoot(A, 0, { signal: d });
+					if (["saved"].includes(M.status)) C = M.reachable;
+					else if (C = await x.readReachable(), !["ready", "needsReseal"].includes(C.status) || C.root.headCheckpointId !== f) throw tD("V3_BRANCH_ROOT_CONFLICT", "分支目标根发生冲突，未覆盖已有数据。");
+					T = h.map((e, t) => ({
 						messageIndex: n.candidates[t].hostLocator.messageIndex,
 						floorId: e.id
-					})), w = T, await fD({
-						peopleStore: x,
-						sourceIdentity: f,
-						targetIdentity: p,
+					})), E = b, await fD({
+						peopleStore: S,
+						sourceIdentity: p,
+						targetIdentity: m,
 						entities: g.entities,
-						now: i,
-						signal: u
+						now: r,
+						signal: d
 					});
 				}
 			} else if (e.status !== "uninitialized") throw tD("V3_BRANCH_SOURCE_UNAVAILABLE", "源聊天记忆暂时无法读取，未把错误当成空档。");
 		} else throw tD("V3_BRANCH_TARGET_UNAVAILABLE", "分支目标记忆暂时无法读取。");
-		if (await EC({ client: e }).copyPrefix(s, c, S.floors ?? [], u), u?.aborted) throw new DOMException("Aborted", "AbortError");
-		let T = await Q({
-			target: g,
-			chat: h.chat,
-			initialSnapshot: _,
-			sourceChatId: s,
-			targetChatId: c,
-			bindings: C,
-			retainedFloorIds: w,
-			signal: u,
-			fetchImpl: i
+		if (await EC({ client: e }).copyPrefix(c, l, C.floors ?? [], d), d?.aborted) throw new DOMException("Aborted", "AbortError");
+		let D = await Q({
+			target: _,
+			chat: g.chat,
+			initialSnapshot: v,
+			sourceChatId: c,
+			targetChatId: l,
+			bindings: T,
+			retainedFloorIds: E,
+			signal: d,
+			fetchImpl: a
 		});
-		return lD(a, t, o.hostChatId, h.chat, T, c), Object.freeze({
-			status: w.length ? "inherited" : "empty",
-			inheritedFloors: w.length,
-			persistedIdentity: c
+		if (lD(o, t, s.hostChatId, g.chat, D, l), E.length && C.status === "ready") try {
+			if (!w) {
+				let e = await b.readRoot();
+				e?.status === "ready" && e.data?.chatId === c && (w = {
+					...C,
+					root: e.data
+				});
+			}
+			w?.status === "ready" && await n()?.copyPrefix?.(p, m, C.root.narrativeGeneration, w, {
+				retainedFloorIds: E,
+				targetReachable: C
+			});
+		} catch {}
+		return Object.freeze({
+			status: E.length ? "inherited" : "empty",
+			inheritedFloors: E.length,
+			persistedIdentity: l
 		});
 	};
 }
@@ -48647,6 +48707,7 @@ var Sk = () => ({
 	initializeBranch: mD({
 		client: Ck,
 		hostAdapter: lk,
+		vectorRuntimeProvider: () => Yk,
 		sanitizerOptions: Sk
 	}),
 	persist: (e, t, n, r) => {

@@ -222,6 +222,7 @@ async function saveRecords(store, records, signal) {
 export function createChatBranchInitializer({
   client,
   hostAdapter,
+  vectorRuntimeProvider = () => null,
   sanitizerOptions = () => ({}),
   now = () => new Date(),
   fetchImpl = globalThis.fetch,
@@ -249,6 +250,7 @@ export function createChatBranchInitializer({
     const peopleStore = createPeopleWorkspaceStore({ client });
 
     let target = await targetStore.readReachable();
+    let sourceReachable = null;
     let bindings = [];
     let retainedFloorIds = [];
     if (['ready', 'needsReseal'].includes(target.status)) {
@@ -261,6 +263,7 @@ export function createChatBranchInitializer({
       await copyLatestPeople({ peopleStore, sourceIdentity, targetIdentity, entities: target.entities, now: initializationTime ?? nowIso(now), signal });
     } else if (target.status === 'uninitialized') {
       const source = await sourceStore.readReachable();
+      sourceReachable = source;
       if (['ready', 'needsReseal'].includes(source.status)) {
         const scanned = await scanAssistantCandidates(snapshot.chat, { sanitizerOptions: snapshot.sanitizerOptions, chatId: sourceChatId });
         const candidates = normalizeBranchCandidates(scanned, sourceChatId, targetChatId);
@@ -344,6 +347,21 @@ export function createChatBranchInitializer({
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     const savedMessages = await persistBranchedMessageMetadata({ target: fixedTarget, chat: snapshot.chat, initialSnapshot: targetFile, sourceChatId, targetChatId, bindings, retainedFloorIds, signal, fetchImpl });
     projectSavedBranchMetadata(raw, hostAdapter, host.hostChatId, snapshot.chat, savedMessages, targetChatId);
+    if (retainedFloorIds.length && target.status === 'ready') {
+      try {
+        if (!sourceReachable) {
+          const sourceRoot = await sourceStore.readRoot();
+          if (sourceRoot?.status === 'ready' && sourceRoot.data?.chatId === sourceChatId) {
+            // A resumed target already supplies the validated copied prefix; only the source root is needed for cache ownership.
+            sourceReachable = { ...target, root: sourceRoot.data };
+          }
+        }
+        if (sourceReachable?.status === 'ready') {
+          await vectorRuntimeProvider()?.copyPrefix?.(sourceIdentity, targetIdentity, target.root.narrativeGeneration,
+            sourceReachable, { retainedFloorIds, targetReachable: target });
+        }
+      } catch { /* Vector indexes are derived caches; their failure must not block branch readiness. */ }
+    }
     return Object.freeze({ status: retainedFloorIds.length ? 'inherited' : 'empty', inheritedFloors: retainedFloorIds.length, persistedIdentity: targetChatId });
   };
 }

@@ -64,6 +64,39 @@ async function vectorReachableFixture() {
     entities: [], stateDeltas: [], currentStates: [], baseline: null };
 }
 
+async function branchVectorFixture(chatId = 'vector-source', generation = 'vector-source-generation', count = 2) {
+  const floors = [], floorMemories = [];
+  for (let index = 1; index <= count; index += 1) {
+    const floorId = `branch-floor-${index}`, memoryId = `branch-memory-${index}`;
+    const canonicalContent = index === 1 ? '苹果前缀楼的有效原文。' : `分支截止后的未来楼 ${index}。`;
+    floors.push({ id: floorId, assistantSeq: index, content: { canonicalContent } });
+    floorMemories.push({ id: memoryId, floorId, recordStatus: 'active', sourceFloorIds: [floorId],
+      sourceFloorSnapshots: [{ floorId, canonicalContent }] });
+  }
+  return { status: 'ready', root: { chatId, narrativeGeneration: generation, headCheckpointId: 'branch-head' },
+    floors, floorMemories, entities: [], stateDeltas: [], currentStates: [], baseline: null };
+}
+
+function vectorBackend() {
+  const records = new Map(), calls = [], gets = [];
+  const client = {
+    async get(collection, id) {
+      const key = `${collection}/${id}`, value = records.get(key);
+      gets.push({ collection, id });
+      if (!value) throw Object.assign(new Error('not_found'), { status: 404 });
+      return { ...structuredClone(value), recordId: id };
+    },
+    async put(collection, id, data, revision) {
+      const key = `${collection}/${id}`, current = records.get(key);
+      if ((current?.revision ?? 0) !== revision) throw Object.assign(new Error('conflict'), { status: 409 });
+      const value = { revision: revision + 1, data: structuredClone(data) };
+      records.set(key, value); calls.push({ collection, id, revision });
+      return structuredClone(value);
+    },
+  };
+  return { records, calls, gets, client };
+}
+
 function committedMemoryState(source, floors = source.rawSources) {
   return { status: 'ready', chatId: source.chatId, narrativeGeneration: source.narrativeGeneration,
     headCheckpointId: source.headCheckpointId ?? 'head', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: false,
@@ -1140,6 +1173,240 @@ test('搬家复用已验证的A向量分片并以B身份查询，正文见证仍
   assert.equal(await rawWitnessValid(result.candidates[0].witness, targetSource), true);
   assert.equal(records.get(`chat-${targetId}/${VECTOR_INDEX_ID}`).data.narrativeGeneration, targetGeneration);
   assert.equal(records.get(`chat-${targetId}/${VECTOR_INDEX_ID}`).data.chatId, targetId);
+});
+
+test('普通分支仅复制有效前缀向量且B查询不泄漏截止楼后内容', async () => {
+  const sourceGraph = await branchVectorFixture();
+  const sourceSelected = selectRecallMemories(sourceGraph);
+  const sourceProjection = await projectVectorSources(sourceSelected.activeMemories, sourceSelected.floors, { includeSummaries: false });
+  const source = { status: 'ready', chatId: sourceGraph.root.chatId, narrativeGeneration: sourceGraph.root.narrativeGeneration,
+    rawSources: sourceProjection.rawSources };
+  const targetId = 'branch-target', targetGeneration = 'branch-generation';
+  const targetGraph = await branchVectorFixture(targetId, targetGeneration, 1);
+  const targetSelected = selectRecallMemories(targetGraph);
+  const targetProjection = await projectVectorSources(targetSelected.activeMemories, targetSelected.floors, { includeSummaries: false });
+  const targetSource = { status: 'ready', chatId: targetId, narrativeGeneration: targetGeneration, rawSources: targetProjection.rawSources };
+  const backend = vectorBackend(); let embedCalls = 0;
+  const api = { embed: async (_config, texts) => { embedCalls++; return vectors(texts); } };
+  const makeIndex = sourceValue => createVectorIndex({ client: backend.client, api, configProvider: () => config,
+    identityProvider: () => ({ chatId: sourceValue.chatId }), sourceProvider: async () => sourceValue });
+  await makeIndex(source).build();
+  const sourceIndex = makeIndex(source);
+  const copied = await sourceIndex.copyPrefix({ chatId: source.chatId }, { chatId: targetId }, targetGeneration, sourceGraph,
+    { retainedFloorIds: ['branch-floor-1'], targetReachable: targetGraph });
+  assert.equal(copied.length, 1);
+  assert.equal(embedCalls, 1, '建A索引一次；分支复制不调用embedding');
+  const savedManifest = backend.records.get(`chat-${targetId}/${VECTOR_INDEX_ID}`);
+  assert.equal(savedManifest.data.chatId, targetId);
+  assert.equal(savedManifest.data.narrativeGeneration, targetGeneration);
+  assert.equal(savedManifest.data.chunkCount, 1);
+  const newRows = savedManifest.data.shardIds.flatMap(id => backend.records.get(`chat-${targetId}/${id}`).data.rows);
+  assert.equal(newRows.some(row => row.witness.floorId === 'branch-floor-2'), false, '截止楼后的源材料不复制');
+  assert.deepEqual(newRows.map(row => row.witness.floorId), ['branch-floor-1']);
+  const reader = makeIndex(targetSource);
+  const selected = await reader.query({ source: targetSource, queryContext: { text: '苹果配方' } });
+  assert.deepEqual(selected.candidates.map(candidate => candidate.witness.floorId), ['branch-floor-1']);
+  assert.equal(embedCalls, 2, '实际B查询单独调用一次查询embedding');
+});
+
+test('普通分支发现B已有索引后直接保留，不读改写目标目录', async () => {
+  const sourceGraph = await branchVectorFixture();
+  const sourceSelected = selectRecallMemories(sourceGraph);
+  const sourceProjection = await projectVectorSources(sourceSelected.activeMemories, sourceSelected.floors, { includeSummaries: false });
+  const source = { status: 'ready', chatId: sourceGraph.root.chatId, narrativeGeneration: sourceGraph.root.narrativeGeneration,
+    rawSources: sourceProjection.rawSources };
+  const targetId = 'already-indexed-target', targetGeneration = 'already-indexed-generation';
+  const backend = vectorBackend(); let embedCalls = 0;
+  const api = { embed: async (_config, texts) => { embedCalls++; return vectors(texts); } };
+  const sourceIndex = createVectorIndex({ client: backend.client, api, configProvider: () => config,
+    identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  await sourceIndex.build();
+  const existing = { schemaVersion: 1, recordType: 'vectorCache', chatId: targetId, narrativeGeneration: targetGeneration,
+    modelKey: await hash(JSON.stringify([config.url, config.model, config.dimensions])), dimensions: 2, shardIds: [], chunkCount: 0 };
+  backend.records.set(`chat-${targetId}/${VECTOR_INDEX_ID}`, { revision: 7, data: structuredClone(existing) });
+  const beforeCalls = backend.calls.filter(call => call.collection === `chat-${targetId}`).length;
+  const beforeGets = backend.gets.length;
+  const targetGraph = await branchVectorFixture(targetId, targetGeneration, 1);
+  assert.deepEqual(await sourceIndex.copyPrefix({ chatId: source.chatId }, { chatId: targetId }, targetGeneration, sourceGraph,
+    { retainedFloorIds: ['branch-floor-1'], targetReachable: targetGraph }), []);
+  assert.deepEqual(backend.records.get(`chat-${targetId}/${VECTOR_INDEX_ID}`), { revision: 7, data: existing });
+  assert.equal(backend.calls.filter(call => call.collection === `chat-${targetId}`).length, beforeCalls);
+  assert.deepEqual(backend.gets.slice(beforeGets), [{ collection: `chat-${targetId}`, id: VECTOR_INDEX_ID }], '已有B目录后立即结束，无额外shard/源读取');
+  assert.equal(embedCalls, 1, '目标已有目录时不再读取源向量或发embedding');
+});
+
+test('无源索引、不兼容模型或坏向量缓存时普通分支复制安全跳过', async () => {
+  const sourceGraph = await branchVectorFixture(), targetId = 'skipped-cache-target', targetGeneration = 'skipped-cache-generation';
+  const targetGraph = await branchVectorFixture(targetId, targetGeneration, 1);
+  const selected = selectRecallMemories(sourceGraph);
+  const projection = await projectVectorSources(selected.activeMemories, selected.floors, { includeSummaries: false });
+  const source = { status: 'ready', chatId: sourceGraph.root.chatId, narrativeGeneration: sourceGraph.root.narrativeGeneration,
+    rawSources: projection.rawSources };
+  const options = { retainedFloorIds: ['branch-floor-1'], targetReachable: targetGraph };
+  const backend = vectorBackend();
+  const makeIndex = (configValue = config) => createVectorIndex({ client: backend.client,
+    api: { embed: async (_config, texts) => vectors(texts) }, configProvider: () => configValue,
+    identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  assert.deepEqual(await makeIndex().copyPrefix({ chatId: source.chatId }, { chatId: targetId }, targetGeneration, sourceGraph, options), [], '无源manifest跳过');
+  const oldModel = { ...config, model: 'old-incompatible-model' };
+  await makeIndex(oldModel).build();
+  const sourceManifestKey = `chat-${source.chatId}/${VECTOR_INDEX_ID}`;
+  const savedManifest = structuredClone(backend.records.get(sourceManifestKey));
+  backend.records.get(sourceManifestKey).data.modelKey = `sha256:${'f'.repeat(64)}`;
+  assert.deepEqual(await makeIndex().copyPrefix({ chatId: source.chatId }, { chatId: targetId }, targetGeneration, sourceGraph, options), [], '模型键不兼容跳过');
+  assert.deepEqual(await makeIndex().copyPrefix({ chatId: source.chatId }, { chatId: targetId }, targetGeneration, sourceGraph), [], '搬家四参数合同也跳过模型不兼容索引');
+  backend.records.set(sourceManifestKey, savedManifest);
+  const sourceManifest = backend.records.get(sourceManifestKey);
+  for (const id of sourceManifest.data.shardIds) backend.records.get(`chat-${source.chatId}/${id}`).data.rows[0].vector = 'AAAA';
+  assert.deepEqual(await makeIndex(oldModel).copyPrefix({ chatId: source.chatId }, { chatId: targetId }, targetGeneration, sourceGraph, options), [], '损坏维度缓存跳过');
+  assert.equal(backend.records.has(`chat-${targetId}/${VECTOR_INDEX_ID}`), false, '失败的派生复制不发布B目录');
+});
+
+test('普通分支第二分片写入失败后，fresh runtime 重试复用首片并发布目录', async () => {
+  const sourceGraph = await branchVectorFixture('vector-source', 'vector-source-generation', 17);
+  const sourceSelected = selectRecallMemories(sourceGraph);
+  const sourceProjection = await projectVectorSources(sourceSelected.activeMemories, sourceSelected.floors, { includeSummaries: false });
+  const source = { status: 'ready', chatId: sourceGraph.root.chatId, narrativeGeneration: sourceGraph.root.narrativeGeneration,
+    rawSources: sourceProjection.rawSources };
+  const targetId = 'retry-target', targetGeneration = 'retry-generation';
+  const targetGraph = await branchVectorFixture(targetId, targetGeneration, 17);
+  const backend = vectorBackend(); let embedCalls = 0, targetShardAttempts = 0;
+  const client = { ...backend.client, async put(collection, id, data, revision) {
+    if (collection === `chat-${targetId}` && id.startsWith(VECTOR_SHARD_PREFIX)) {
+      targetShardAttempts++;
+      if (targetShardAttempts === 2) throw Object.assign(new Error('second shard write failed'), { status: 503 });
+    }
+    return backend.client.put(collection, id, data, revision);
+  } };
+  const makeIndex = () => createVectorIndex({ client, api: { embed: async (_config, texts) => { embedCalls++; return vectors(texts); } },
+    configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  await makeIndex().build();
+  const branchOptions = { retainedFloorIds: targetGraph.floors.map(floor => floor.id), targetReachable: targetGraph };
+  assert.deepEqual(await makeIndex().copyPrefix({ chatId: source.chatId }, { chatId: targetId }, targetGeneration, sourceGraph, branchOptions), []);
+  const firstShard = [...backend.records.keys()].find(key => key.startsWith(`chat-${targetId}/${VECTOR_SHARD_PREFIX}`));
+  assert.ok(firstShard, '第二片失败前第一片已成功保存');
+  assert.equal([...backend.records.keys()].filter(key => key.startsWith(`chat-${targetId}/${VECTOR_SHARD_PREFIX}`)).length, 1);
+  assert.equal(backend.records.has(`chat-${targetId}/${VECTOR_INDEX_ID}`), false, '分片未全部持久化时不发布目录');
+  const writesBeforeRetry = backend.calls.filter(call => call.collection === `chat-${targetId}`).length;
+  const resumed = await makeIndex().copyPrefix({ chatId: source.chatId }, { chatId: targetId }, targetGeneration, sourceGraph, branchOptions);
+  assert.equal(resumed.length, 2);
+  assert.equal(backend.records.has(`chat-${targetId}/${VECTOR_INDEX_ID}`), true);
+  assert.equal(backend.calls.filter(call => call.collection === `chat-${targetId}`).length, writesBeforeRetry + 2,
+    'fresh runtime 重用第一片，只新增第二片和目录写入');
+  assert.equal(embedCalls, 2, 'A建17楼索引分两次批量embedding；复制和重试阶段不调用embedding');
+});
+
+test('普通分支目录发布失败后fresh runtime只补目录；409胜出目录按原值保留', async () => {
+  const sourceGraph = await branchVectorFixture('vector-source', 'vector-source-generation', 17);
+  const sourceSelected = selectRecallMemories(sourceGraph);
+  const sourceProjection = await projectVectorSources(sourceSelected.activeMemories, sourceSelected.floors, { includeSummaries: false });
+  const source = { status: 'ready', chatId: sourceGraph.root.chatId, narrativeGeneration: sourceGraph.root.narrativeGeneration,
+    rawSources: sourceProjection.rawSources };
+  const targetId = 'manifest-retry-target', targetGeneration = 'manifest-retry-generation';
+  const targetGraph = await branchVectorFixture(targetId, targetGeneration, 17);
+  const backend = vectorBackend(); let embedCalls = 0, failManifestOnce = true;
+  const client = { ...backend.client, async put(collection, id, data, revision) {
+    if (collection === `chat-${targetId}` && id === VECTOR_INDEX_ID && failManifestOnce) {
+      failManifestOnce = false;
+      throw Object.assign(new Error('manifest write unavailable'), { status: 503 });
+    }
+    return backend.client.put(collection, id, data, revision);
+  } };
+  const makeIndex = () => createVectorIndex({ client, api: { embed: async (_config, texts) => { embedCalls++; return vectors(texts); } },
+    configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  await makeIndex().build();
+  const options = { retainedFloorIds: targetGraph.floors.map(floor => floor.id), targetReachable: targetGraph };
+  assert.deepEqual(await makeIndex().copyPrefix({ chatId: source.chatId }, { chatId: targetId }, targetGeneration, sourceGraph, options), []);
+  const targetShards = [...backend.records.keys()].filter(key => key.startsWith(`chat-${targetId}/${VECTOR_SHARD_PREFIX}`));
+  assert.equal(targetShards.length, 2, '目录提交失败前两片均已持久化');
+  assert.equal(backend.records.has(`chat-${targetId}/${VECTOR_INDEX_ID}`), false, '503后不留下目录');
+  const writesBeforeRetry = backend.calls.filter(call => call.collection === `chat-${targetId}`).length;
+  const resumed = await makeIndex().copyPrefix({ chatId: source.chatId }, { chatId: targetId }, targetGeneration, sourceGraph, options);
+  assert.equal(resumed.length, 2);
+  assert.equal(backend.calls.filter(call => call.collection === `chat-${targetId}`).length, writesBeforeRetry + 1,
+    'fresh runtime只补写manifest，两个分片均复用');
+  assert.equal(embedCalls, 2, 'A建17楼索引的两次embedding之外，复制/重试均为0 embedding');
+
+  const conflictTargetId = 'manifest-conflict-target', conflictGeneration = 'manifest-conflict-generation';
+  const conflictGraph = await branchVectorFixture(conflictTargetId, conflictGeneration, 17);
+  let conflictOnce = true;
+  const conflictClient = { ...backend.client, async put(collection, id, data, revision) {
+    if (collection === `chat-${conflictTargetId}` && id === VECTOR_INDEX_ID && conflictOnce) {
+      conflictOnce = false;
+      const winner = await backend.client.put(collection, id, data, revision);
+      throw Object.assign(new Error('manifest CAS lost to valid winner'), { status: 409, winner });
+    }
+    return backend.client.put(collection, id, data, revision);
+  } };
+  const conflictIndex = createVectorIndex({ client: conflictClient,
+    api: { embed: async (_config, texts) => { embedCalls++; return vectors(texts); } }, configProvider: () => config,
+    identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  const conflictOptions = { retainedFloorIds: conflictGraph.floors.map(floor => floor.id), targetReachable: conflictGraph };
+  const conflictResult = await conflictIndex.copyPrefix({ chatId: source.chatId }, { chatId: conflictTargetId }, conflictGeneration,
+    sourceGraph, conflictOptions);
+  assert.equal(conflictResult.length, 2, '409后验证合法胜出目录并返回已发布分片');
+  const winner = backend.records.get(`chat-${conflictTargetId}/${VECTOR_INDEX_ID}`);
+  assert.equal(winner.revision, 1, '胜出目录未被覆盖');
+  assert.equal(winner.data.chatId, conflictTargetId);
+  assert.equal(winner.data.narrativeGeneration, conflictGeneration);
+  assert.equal(winner.data.chunkCount, 17);
+  assert.equal(embedCalls, 2, '处理合法409胜出目录也不重新embedding');
+});
+
+test('分支后B新增楼走既有增量入口，只embedding新楼材料', async () => {
+  const sourceGraph = await branchVectorFixture();
+  const sourceSelected = selectRecallMemories(sourceGraph);
+  const sourceProjection = await projectVectorSources(sourceSelected.activeMemories, sourceSelected.floors, { includeSummaries: false });
+  const source = { status: 'ready', chatId: sourceGraph.root.chatId, narrativeGeneration: sourceGraph.root.narrativeGeneration,
+    rawSources: sourceProjection.rawSources };
+  const targetId = 'incremental-target', targetGeneration = 'incremental-generation';
+  const targetGraph = await branchVectorFixture(targetId, targetGeneration, 1);
+  const targetSelected = selectRecallMemories(targetGraph);
+  const targetProjection = await projectVectorSources(targetSelected.activeMemories, targetSelected.floors, { includeSummaries: false });
+  let targetSource = { status: 'ready', chatId: targetId, narrativeGeneration: targetGeneration, rawSources: targetProjection.rawSources };
+  const backend = vectorBackend(), embedded = [];
+  const api = { embed: async (_config, texts) => { embedded.push([...texts]); return vectors(texts); } };
+  const sourceIndex = createVectorIndex({ client: backend.client, api, configProvider: () => config,
+    identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  await sourceIndex.build();
+  await sourceIndex.copyPrefix({ chatId: source.chatId }, { chatId: targetId }, targetGeneration, sourceGraph,
+    { retainedFloorIds: ['branch-floor-1'], targetReachable: targetGraph });
+  const targetIndex = createVectorIndex({ client: backend.client, api, configProvider: () => config,
+    identityProvider: () => ({ chatId: targetId }), sourceProvider: async () => targetSource });
+  const newContent = 'B新增楼的唯一材料：加入蓝莓后重新烘焙。';
+  const newRaw = { ...await rawFloor('new-floor', 2, newContent), floorId: 'branch-floor-b-new', memoryFloorId: 'branch-floor-b-new' };
+  targetSource = { ...targetSource, rawSources: [...targetSource.rawSources, newRaw] };
+  const result = await targetIndex.updateIncrementally({ targetIdentity: { chatId: targetId }, config });
+  assert.equal(result.status, 'ready');
+  assert.deepEqual(embedded[0], source.rawSources.map(raw => raw.canonicalContent), '首次建立A向量时使用两楼材料');
+  assert.deepEqual(embedded[1], [newContent], 'B增量仅请求新增楼正文');
+  const manifest = backend.records.get(`chat-${targetId}/${VECTOR_INDEX_ID}`).data;
+  assert.equal(manifest.chunkCount, 2);
+  const rows = manifest.shardIds.flatMap(id => backend.records.get(`chat-${targetId}/${id}`).data.rows);
+  assert.deepEqual(new Set(rows.map(row => row.witness.floorId)), new Set(['branch-floor-1', 'branch-floor-b-new']));
+});
+
+test('跨截止楼聚合来源不外带；失效或不兼容的源索引跳过派生复制', async () => {
+  const sourceGraph = await branchVectorFixture();
+  sourceGraph.floorMemories = [{ id: 'aggregate-memory', floorId: 'branch-floor-2', recordStatus: 'active',
+    sourceFloorIds: ['branch-floor-1', 'branch-floor-2'], sourceFloorSnapshots: sourceGraph.floors.map(floor => ({
+      floorId: floor.id, canonicalContent: floor.content.canonicalContent,
+    })) }];
+  const targetId = 'aggregate-target', targetGraph = await branchVectorFixture(targetId, 'aggregate-generation', 1);
+  const selected = selectRecallMemories(sourceGraph);
+  const projection = await projectVectorSources(selected.activeMemories, selected.floors, { includeSummaries: false });
+  assert.equal(projection.rawSources.length, 2, 'A聚合来源确实包含截止前后两楼');
+  const source = { status: 'ready', chatId: sourceGraph.root.chatId, narrativeGeneration: sourceGraph.root.narrativeGeneration,
+    rawSources: projection.rawSources };
+  const backend = vectorBackend(); let embeds = 0;
+  const index = createVectorIndex({ client: backend.client, api: { embed: async (_config, texts) => { embeds++; return vectors(texts); } },
+    configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  await index.build();
+  assert.equal(embeds, 1, 'A的聚合原文向量已实际建立');
+  assert.deepEqual(await index.copyPrefix({ chatId: sourceGraph.root.chatId }, { chatId: targetId }, 'aggregate-generation', sourceGraph,
+    { retainedFloorIds: ['branch-floor-1'], targetReachable: targetGraph }), []);
+  assert.equal(backend.records.has(`chat-${targetId}/${VECTOR_INDEX_ID}`), false, '聚合锚点位于截止楼后时不复制前楼片段');
+  assert.equal(embeds, 1, '资格过滤不重新embedding');
 });
 
 test('全人工摘要楼按原文建立索引；摘要正文不进入 embedding 或新摘要候选路径', async () => {

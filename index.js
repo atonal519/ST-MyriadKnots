@@ -111,7 +111,7 @@ const taskRouter = createTaskRouter({
 });
 const apiTools = createApiTools({ resolver: apiResolver, compactClient, isEnabled: settings.isEnabled });
 const listHostChats = createHostChatList({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
-const initializeChatBranch = createChatBranchInitializer({ client: backendClient, hostAdapter, sanitizerOptions });
+const initializeChatBranch = createChatBranchInitializer({ client: backendClient, hostAdapter, vectorRuntimeProvider: () => vectorIndex, sanitizerOptions });
 const identityCoordinator = createChatIdentityCoordinator({ client: backendClient, freshUuid: newUuid, listHostChats, initializeBranch: initializeChatBranch,
   persist: (raw, chatId, taskInputs, signal) => {
     if (!taskInputs?.target) throw Object.assign(new Error('固定聊天保存坐标不可用。'), { code: 'QQJ_TARGET_CHAT_DESCRIPTOR_REQUIRED' });

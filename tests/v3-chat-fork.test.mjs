@@ -15,6 +15,9 @@ import { createChatIdentityCoordinator, CHAT_IDENTITY_COLLECTION } from '../src/
 import { createChatSession } from '../src/chat-session.js';
 import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
 import { deterministicUuid } from '../src/v3/foundation-domain.js';
+import { createVectorIndex, VECTOR_INDEX_ID } from '../src/v3/vector-index.js';
+import { projectVectorSources } from '../src/v3/vector-source.js';
+import { selectRecallMemories } from '../src/v3/recall-source.js';
 
 const SOURCE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NOW = '2026-09-05T00:00:00.000Z';
@@ -375,6 +378,109 @@ test('输入快照后、固定目标首次读取前发生的人工作文修改�
   assert.equal(targetApi.saves, 0, '人工作文冲突发生在固定目标写入之前');
   assert.equal(backend.records.has(`chat-${targetChatId}/v3-root`), false);
   assert.equal((await createFoundationStore({ client: backend.client, contextProvider: () => sourceIdentity }).readReachable()).floors.length, source.floors.length);
+});
+
+test('普通分支 prepare经native/Luker正式入口保存后继承前缀向量并可查询', async () => {
+  for (const hostKind of ['SillyTavern', 'Luker']) {
+    const backend = backendHarness();
+    const sourceChat = [user('开场'), assistant('前缀楼记录苹果饼的配方。'), user('继续前缀'), assistant('未来楼记录烘焙后的结果。'), user('未来楼之后')];
+    const sourceContext = context(`vector-source-${hostKind}`, SOURCE, sourceChat);
+    const sourceIdentity = identity(sourceContext.chatId, SOURCE);
+    const sourceAdapter = createHostAdapter({ globalRef: { [hostKind]: { getContext: () => sourceContext } } });
+    const sourceStore = createFoundationStore({ client: backend.client, contextProvider: () => sourceIdentity });
+    const sourceFoundation = createFoundationRuntime({ hostAdapter: sourceAdapter, store: sourceStore, contextProvider: () => sourceContext,
+      now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+    assert.equal((await sourceFoundation.start()).status, 'ready');
+    const sourceMemory = createV3MemoryRuntime({ foundationRuntime: sourceFoundation, store: sourceStore, hostAdapter: sourceAdapter,
+      automationSettings: () => ({ enabled: false, batchSize: 1 }),
+      generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
+      generateUtilityTask: async options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+        ? { jsonData: { summary: '前缀楼记载苹果饼配方。' } } : { jsonData: { noMaterialChange: true } },
+      now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+    await sourceMemory.start();
+    const sourceMemoryFloors = sourceMemory.getState().floors;
+    for (const floor of sourceMemoryFloors) assert.ok(['running', 'complete'].includes(
+      (await sourceMemory.extractFloor(floor.floorId, { analyzeState: false })).status));
+    const sourceReachable = await sourceStore.readReachable({ mode: 'full' });
+    assert.equal(sourceReachable.floors.length, 2);
+    const selected = selectRecallMemories(sourceReachable);
+    const projection = await projectVectorSources(selected.activeMemories, selected.floors, { includeSummaries: false });
+    const sourceVectorSource = { status: 'ready', chatId: SOURCE, narrativeGeneration: sourceReachable.root.narrativeGeneration,
+      rawSources: projection.rawSources };
+    assert.equal(sourceVectorSource.rawSources.length, 2, '前后楼均有正式摘要/原文资格，分支只应选前缀');
+    let embedCalls = 0;
+    const api = { embed: async (_config, texts) => { embedCalls++; return texts.map(() => [1, 0]); } };
+    const vectorConfig = { url: 'https://vector.invalid/v1', model: 'neutral-test-embedding', key: 'test-only', dimensions: null };
+    const vectorIndex = createVectorIndex({ client: backend.client, api, configProvider: () => vectorConfig,
+      identityProvider: () => sourceIdentity, sourceProvider: async () => sourceVectorSource });
+    assert.equal((await vectorIndex.build()).status, 'ready');
+    assert.equal(embedCalls, 1);
+    const sourceBefore = chatRecords(backend.records, SOURCE);
+
+    const targetHostChatId = `vector-target-${hostKind}`;
+    const targetChatId = await deterministicUuid(['qqj-chat-independent-v2', SOURCE, targetHostChatId, 'character.png']);
+    const targetChat = structuredClone(sourceChat.slice(0, 3));
+    const targetContext = context(targetHostChatId, targetChatId, targetChat);
+    const targetOwner = { hostChatId: targetHostChatId, characterLocator: 'character.png', personaLocator: 'persona.png' };
+    backend.records.set(`${CHAT_IDENTITY_COLLECTION}/binding-${targetChatId}`, { revision: 1,
+      data: { schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId: targetChatId, owner: targetOwner,
+        state: 'preparing', sourceChatId: SOURCE, createdAt: NOW, updatedAt: NOW } });
+    let activeContext = targetContext;
+    const hostAdapter = createHostAdapter({ globalRef: { [hostKind]: { getContext: () => activeContext } } });
+    const targetApi = targetChatApi(targetContext);
+    const initializer = createChatBranchInitializer({ client: backend.client, hostAdapter, vectorRuntimeProvider: () => vectorIndex,
+      now: () => new Date(NOW), fetchImpl: targetApi.fetch });
+    const coordinator = createChatIdentityCoordinator({ client: backend.client, now: () => new Date(NOW), initializeBranch: initializer });
+    const session = createChatSession({ contextProvider: () => activeContext, identityCoordinator: coordinator,
+      captureTaskInputs: ({ raw, host }) => ({ chat: structuredClone(raw.chat), chatMetadata: structuredClone(raw.chatMetadata),
+        target: captureTargetChatDescriptor({ context: raw, chat: raw.chat, chatId: host.hostChatId, source: hostKind }, {
+          hostChatId: host.hostChatId, chatId: host.chatId, characterLocator: host.characterAvatar, personaLocator: host.personaAvatar,
+        }), sanitizerOptions: {} }) });
+    const prepared = await session.prepare();
+    assert.equal(prepared.status, 'ready');
+    const targetStore = createFoundationStore({ client: backend.client, contextProvider: () => identity(targetHostChatId, targetChatId) });
+    const targetReachable = await targetStore.readReachable({ mode: 'full' });
+    assert.equal(targetReachable.status, 'ready');
+    assert.equal(targetReachable.floors.length, 1);
+    assert.equal(targetApi.saves, 1, 'branch metadata通过实际目标保存合同持久化');
+    assert.equal(embedCalls, 1, '分支复制没有重新embedding');
+    const manifest = backend.records.get(`chat-${targetChatId}/${VECTOR_INDEX_ID}`)?.data;
+    assert.equal(manifest?.chatId, targetChatId);
+    assert.equal(manifest?.narrativeGeneration, targetReachable.root.narrativeGeneration);
+    const targetSelected = selectRecallMemories(targetReachable);
+    const targetProjection = await projectVectorSources(targetSelected.activeMemories, targetSelected.floors, { includeSummaries: false });
+    const targetVectorSource = { status: 'ready', chatId: targetChatId, narrativeGeneration: targetReachable.root.narrativeGeneration,
+      rawSources: targetProjection.rawSources };
+    const targetIndex = createVectorIndex({ client: backend.client, api, configProvider: () => vectorConfig,
+      identityProvider: () => identity(targetHostChatId, targetChatId), sourceProvider: async () => targetVectorSource });
+    const result = await targetIndex.query({ source: targetVectorSource, queryContext: { text: '苹果饼配方' } });
+    assert.deepEqual(result.candidates.map(candidate => candidate.witness.floorId), [targetReachable.floors[0].id]);
+    assert.equal(embedCalls, 2, 'B查询单独发送一次查询向量');
+    assert.equal(chatRecords(backend.records, SOURCE), sourceBefore, '复制和查询不改写源聊天索引/记忆');
+
+    const failedTargetHostId = `vector-copy-failure-${hostKind}`;
+    const failedTargetChatId = await deterministicUuid(['qqj-chat-independent-v2', SOURCE, failedTargetHostId, 'character.png']);
+    const failedTargetContext = context(failedTargetHostId, failedTargetChatId, structuredClone(sourceChat.slice(0, 3)));
+    const failedOwner = { hostChatId: failedTargetHostId, characterLocator: 'character.png', personaLocator: 'persona.png' };
+    backend.records.set(`${CHAT_IDENTITY_COLLECTION}/binding-${failedTargetChatId}`, { revision: 1,
+      data: { schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId: failedTargetChatId, owner: failedOwner,
+        state: 'preparing', sourceChatId: SOURCE, createdAt: NOW, updatedAt: NOW } });
+    const failedAdapter = createHostAdapter({ globalRef: { [hostKind]: { getContext: () => failedTargetContext } } });
+    const failedApi = targetChatApi(failedTargetContext);
+    const failedInitializer = createChatBranchInitializer({ client: backend.client, hostAdapter: failedAdapter,
+      vectorRuntimeProvider: () => ({ copyPrefix: async () => { throw new Error('simulated derived-cache failure'); } }),
+      now: () => new Date(NOW), fetchImpl: failedApi.fetch });
+    const failedSession = createChatSession({ contextProvider: () => failedTargetContext,
+      identityCoordinator: createChatIdentityCoordinator({ client: backend.client, now: () => new Date(NOW), initializeBranch: failedInitializer }),
+      captureTaskInputs: ({ raw, host }) => ({ chat: structuredClone(raw.chat), chatMetadata: structuredClone(raw.chatMetadata),
+        target: captureTargetChatDescriptor({ context: raw, chat: raw.chat, chatId: host.hostChatId, source: hostKind }, {
+          hostChatId: host.hostChatId, chatId: host.chatId, characterLocator: host.characterAvatar, personaLocator: host.personaAvatar,
+        }), sanitizerOptions: {} }) });
+    assert.equal((await failedSession.prepare()).status, 'ready', '派生缓存异常不阻断身份/分支完成');
+    assert.equal(backend.records.get(`${CHAT_IDENTITY_COLLECTION}/binding-${failedTargetChatId}`).data.state, 'ready');
+    assert.equal(backend.records.has(`chat-${failedTargetChatId}/${VECTOR_INDEX_ID}`), false);
+    session.dispose?.();
+  }
 });
 
 test('260楼旧 preparing 在第248楼时间倒退场景下经 native/Luker 正式初始化、保存并继续宿主写入', async () => {
