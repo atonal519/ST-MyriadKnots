@@ -13,7 +13,7 @@ import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
 import { createQianshiTimelineView } from '../src/ui/qianshi-timeline-view.js';
 import { readRecallSource } from '../src/v3/recall-source.js';
 import { historySelectionContext, selectRecall } from '../src/v3/recall-selector.js';
-import { buildExtractorSystemPrompt, buildHighFloorExtractorSystemPrompt, createExtractorEnvelope, DEFAULT_EXTRACTOR_GUIDANCE, EXTRACTOR_FIXED_CONTRACT, EXTRACTOR_OUTPUT_CONTRACT, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_RESPONSE_SCHEMA, EXTRACTOR_SYSTEM_PROMPT, inferCanonicalCurrentTime, normalizeExtractorResponse, runExtractorRequest } from '../src/v3/extractor.js';
+import { buildExtractorSystemPrompt, buildHighFloorExtractorSystemPrompt, createExtractorEnvelope, DEFAULT_EXTRACTOR_GUIDANCE, EXTRACTOR_FIXED_CONTRACT, EXTRACTOR_OUTPUT_CONTRACT, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_RESPONSE_SCHEMA, EXTRACTOR_SYSTEM_PROMPT, EXTRACTOR_VERSION, inferCanonicalCurrentTime, normalizeExtractorResponse, runExtractorRequest } from '../src/v3/extractor.js';
 import { buildCseSystemPrompt, CSE_FIXED_CONTRACT, CSE_SYSTEM_PROMPT, compileCseResponse, createCseEnvelope, DEFAULT_CSE_GUIDANCE, replayCurrentState } from '../src/v3/cse-engine.js';
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, projectFloorMemoryIdentityReferences } from '../src/v3/entity-identity.js';
@@ -1325,9 +1325,9 @@ async function seedMiddleSummaryGap() {
   return seed;
 }
 
-async function direct(response, { content = '裴晚生提醒你带伞。', entities = [], userIdentity = { displayName: '林岚', aliases: ['林岚', '你', '{{user}}'] }, batchId = '33333333-3333-4333-8333-333333333333', preservedSummary = null, sourceUserInputSnapshot = null, storyClock = null, finishReason } = {}) {
+async function direct(response, { content = '裴晚生提醒你带伞。', entities = [], userIdentity = { displayName: '林岚', aliases: ['林岚', '你', '{{user}}'] }, batchId = '33333333-3333-4333-8333-333333333333', preservedSummary = null, sourceUserInputSnapshot = null, storyClock = null, previousFloorContext = null, finishReason } = {}) {
   const floor = { id: '11111111-1111-4111-8111-111111111111', chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq: 1, content: { canonicalContent: content } };
-  const envelope = await createExtractorEnvelope({ batchId, chatId: CHAT, narrativeGeneration: GENERATION, checkpointId: null, floor, entities, userIdentity, sourceUserInputSnapshot, storyClock });
+  const envelope = await createExtractorEnvelope({ batchId, chatId: CHAT, narrativeGeneration: GENERATION, checkpointId: null, floor, entities, userIdentity, sourceUserInputSnapshot, storyClock, previousFloorContext });
   return normalizeExtractorResponse({ response, finishReason, envelope, floor, existingEntities: entities, now: NOW, preservedSummary, expectedScope: envelope.scope });
 }
 
@@ -1375,7 +1375,7 @@ test('空间语义按明确地点身份和逐项来源证据编译；坏空间�
   assert.equal(outputSchema.places.maxItems, 40);
   assert.deepEqual(outputSchema.positions.items.properties.status.enum, ['confirmed', 'lastSeen', 'leftUnknown']);
   assert.ok(outputSchema.containments.items.required.includes('sourceFloorKey'));
-  assert.match(EXTRACTOR_SYSTEM_PROMPT, /leftUnknown=已离开且去向未知/u);
+  assert.match(EXTRACTOR_SYSTEM_PROMPT, /leftUnknown=该人物明确离开且终点未知/u);
   const envelope = await createExtractorEnvelope({ batchId: '33333333-3333-4333-8333-333333333333', chatId: CHAT, narrativeGeneration: GENERATION,
     checkpointId: null, floor: { id: '11111111-1111-4111-8111-111111111111', chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq: 1,
       content: { canonicalContent: '林来到东馆阅览室。' } }, entities: [existingPlace] });
@@ -1407,6 +1407,95 @@ test('空间语义按明确地点身份和逐项来源证据编译；坏空间�
   assert.equal(legacy.memory.summary.aiText, '旧 extractor 没有空间字段，摘要仍可使用。');
   assert.equal(legacy.memory.locations.length, 1);
   assert.equal(legacy.memory.spatialFacts, undefined);
+});
+
+test('地点目录不以房间、厨房等泛称别名绑定旧地点，前楼实际地点名可在摘要尾段之外续接', async () => {
+  const oldPlaceId = '99999999-9999-4999-8999-999999999812';
+  const apartmentId = '99999999-9999-4999-8999-999999999813';
+  const entity = (id, displayName, aliases = []) => validateEntityRecord({
+    schemaVersion: 3, recordType: 'entity', id, chatId: CHAT, narrativeGeneration: GENERATION,
+    entityType: 'place', displayName, aliases: aliases.map(name => ({ name, normalized: name, kind: 'uncertain', evidenceRefs: [], baselineClaimIds: [] })),
+    specialRole: 'none', firstSeenFloorId: '11111111-1111-4111-8111-111111111111', lastSeenFloorId: '11111111-1111-4111-8111-111111111111',
+    status: 'established', mergedIntoEntityId: null, mergeEvidenceRefs: [], baselineClaimIds: [], createdAt: NOW, updatedAt: NOW,
+    recordStatus: 'active', supersedes: null,
+  }, { expectedChatId: CHAT });
+  const oldRoom = entity(oldPlaceId, '林岚的房间', ['房间', '厨房']);
+  const apartment = entity(apartmentId, '西区新公寓');
+  const entities = [oldRoom, apartment];
+  const content = '她在厨房里整理物品。';
+  const prior = { time: null, summaryTail: '前楼记录了搬入和整理。', placeNames: ['西区新公寓'] };
+  const genericResponse = { summary: '她在厨房里整理物品。', spatialFacts: {
+    places: [{ key: 'place-mention-1', name: '厨房', identity: 'existing', exactQuote: '在厨房里', source: 'canonicalContent', sourceFloorKey: 'floor-1' }],
+    containments: [], positions: [],
+  } };
+  const floor = { id: '11111111-1111-4111-8111-111111111111', chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq: 1, content: { canonicalContent: content } };
+  const envelope = await createExtractorEnvelope({ batchId: '33333333-3333-4333-8333-333333333333', chatId: CHAT, narrativeGeneration: GENERATION,
+    checkpointId: null, floor, entities, previousFloorContext: prior });
+  const generic = await normalizeExtractorResponse({ response: genericResponse, envelope, floor, existingEntities: entities, now: NOW, expectedScope: envelope.scope });
+  assert.equal(envelope.request.payload.knownPlaces.length, 1, '前楼完整地点名提供有限身份参照，旧房间不因厨房泛称进入候选');
+  assert.equal(envelope.request.payload.knownPlaces[0].displayName, '西区新公寓');
+  assert.equal(envelope.request.payload.knownPlaces[0].entityKey, 'place-1');
+  assert.deepEqual(envelope.request.payload.knownPlaces[0].aliases, [], '泛称alias不进入本次地点身份目录');
+  assert.equal(generic.memory.summary.aiText, '她在厨房里整理物品。', '无法定位的空间条目不影响合法摘要');
+  assert.equal(generic.memory.spatialFacts, undefined, '只有“厨房”不足以把正文绑定到旧房间或新公寓');
+  assert.ok(generic.isolated.some(item => item.path === 'spatialFacts.places[0].name'));
+
+  const explicit = await direct({ summary: '林岚回到厨房。', people: [{ name: '林岚' }], spatialFacts: {
+    places: [{ key: 'place-mention-1', name: '厨房', identity: 'existing', sameAsPlaceKey: 'place-1', exactQuote: '回到厨房', source: 'canonicalContent', sourceFloorKey: 'floor-1' }],
+    containments: [], positions: [{ subject: '林岚', placeKey: 'place-mention-1', status: 'confirmed', exactQuote: '林岚回到厨房', source: 'canonicalContent', sourceFloorKey: 'floor-1' }],
+  } }, { content: '林岚回到厨房。', entities, previousFloorContext: prior });
+  assert.equal(explicit.memory.spatialFacts.positions[0].placeEntityId, apartmentId, '模型明确给出有效地点键时沿正式绑定合同保留');
+
+  const newIdentity = await direct({ summary: '她搬进北区新公寓。', spatialFacts: {
+    places: [{ key: 'place-mention-1', name: '北区新公寓', identity: 'new', exactQuote: '北区新公寓', source: 'canonicalContent', sourceFloorKey: 'floor-1' }],
+    containments: [], positions: [],
+  } }, { content: '她搬进北区新公寓，未说它是旧房间。', entities, previousFloorContext: prior });
+  assert.notEqual(newIdentity.newEntities.find(entity => entity.entityType === 'place')?.id, oldPlaceId, '明确的新地点不因旧地点的泛称别名沿用旧实体');
+  assert.notEqual(newIdentity.newEntities.find(entity => entity.entityType === 'place')?.id, apartmentId, '身份标为new的新地点不复用现有公寓实体');
+});
+
+test('实际顺序提取从前楼 locations 提供地点名参照，但不把泛称房间绑定给旧地点', async () => {
+  const extractorRequests = [];
+  const oldLocation = '林岚在自己的房间里整理物品。';
+  const currentContent = '林岚在厨房里整理物品。';
+  const h = harness({ initialChat: [user('先安排住处'), assistant(oldLocation), user('继续整理'), assistant(currentContent), user('确认完成'), assistant('会话继续。')],
+    utility: options => {
+      if (options.systemPrompt !== EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { noMaterialChange: true } };
+      const request = JSON.parse(options.taskMessages[0].content);
+      extractorRequests.push(request);
+      if (request.payload.canonicalContent === oldLocation) return { jsonData: {
+        summary: `前楼已记录房间内活动。${'日常整理仍在继续。'.repeat(30)}`,
+        locations: [{ name: '西区新公寓', change: 'entered', people: ['林岚'] }],
+        spatialFacts: { places: [{ key: 'place-mention-1', name: '林岚的房间', aliases: ['房间', '厨房'], identity: 'new',
+          exactQuote: '自己的房间', source: 'canonicalContent', sourceFloorKey: request.payload.sourceFloorKey }], containments: [], positions: [] },
+      } };
+      return { jsonData: { summary: '林岚在厨房里整理物品。',
+        locations: [{ name: '厨房', change: 'present', people: ['林岚'] }],
+        spatialFacts: { places: [{ key: 'place-mention-1', name: '厨房', identity: 'existing', exactQuote: '在厨房里',
+          source: 'canonicalContent', sourceFloorKey: request.payload.sourceFloorKey }], containments: [], positions: [] },
+      } };
+    } });
+  await h.runtime.start();
+  const [first, second] = h.runtime.getState().floors;
+  assert.ok(first && second);
+  await h.runtime.extractFloor(first.floorId, { analyzeState: false });
+  await h.runtime.extractFloor(second.floorId, { analyzeState: false });
+  assert.equal(extractorRequests.length, 2);
+  assert.equal(extractorRequests[1].payload.previousFloorContext.placeNames.includes('西区新公寓'), true,
+    '前楼明确登记的地点即使不在摘要末段也作为有限参照');
+  assert.equal(extractorRequests[1].payload.previousFloorContext.summaryTail.includes('西区新公寓'), false,
+    '前楼摘要尾段未包含地点名，地点参照来自已保存location');
+  assert.equal(extractorRequests[1].payload.knownPlaces.length, 0,
+    '第二楼只有厨房泛称，旧“林岚的房间”不会因厨房alias进入候选');
+  const current = h.runtime.getState().floors.find(item => item.floorId === second.floorId);
+  assert.equal(current.memory.summary.aiText, '林岚在厨房里整理物品。');
+  assert.equal(current.memory.spatialFacts, undefined, '泛称漏key时保留summary，不把第二楼绑定到旧实体');
+  const saved = await h.store.readReachable({ mode: 'runtime' });
+  const firstMemory = saved.floorMemories.find(item => item.floorId === first.floorId);
+  assert.equal(firstMemory.locations[0].name, '西区新公寓');
+  assert.equal(firstMemory.locations[0].entityId, null, '前楼旧location保留无entityId格式供后楼作名称参照');
+  assert.ok(saved.entities.some(item => item.displayName === '林岚的房间'), '实际生产保存图保留独立旧地点实体');
+  assert.equal(saved.floorMemories.find(item => item.floorId === second.floorId).spatialFacts, undefined);
 });
 
 test('空间位置经运行时提交、冷读来源、选择回执与摘要详情保留地点身份和来源楼', async () => {
@@ -1478,21 +1567,72 @@ test('空间位置经运行时提交、冷读来源、选择回执与摘要详�
     '空间详情能通过 group 名称投影显示群体主体');
 });
 
+test('楼末位置按实际离开者保存，送别对象保留最后所见状态', async () => {
+  const content = '林岚向裴晚生告别。裴晚生停在分岔口；林岚离开并到达新公寓。';
+  const h = harness({ initialChat: [user('继续一'), assistant(content), user('继续二'), assistant('第二楼继续。'),
+    user('继续三'), assistant('第三楼继续。'), user('继续四'), assistant('第四楼继续。'), assistant('用于确认上一楼稳定。')],
+  utility: async options => {
+    if (options.systemPrompt !== EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { noMaterialChange: true } };
+    const payload = JSON.parse(options.taskMessages[0].content).payload;
+    if (payload.canonicalContent !== content) return { jsonData: { summary: payload.canonicalContent } };
+    const sourceFloorKey = payload.sourceFloorKey;
+    return { jsonData: { summary: '林岚向裴晚生告别后离开分岔口，到达新公寓；裴晚生仍停在分岔口。',
+      people: [{ name: '林岚', role: 'user' }, { name: '裴晚生' }],
+      spatialFacts: {
+        places: [
+          { key: 'place-mention-1', name: '分岔口', identity: 'new', exactQuote: '停在分岔口', source: 'canonicalContent', sourceFloorKey },
+          { key: 'place-mention-2', name: '新公寓', identity: 'new', exactQuote: '到达新公寓', source: 'canonicalContent', sourceFloorKey },
+        ],
+        containments: [],
+        positions: [
+          { subject: '裴晚生', placeKey: 'place-mention-1', status: 'lastSeen', exactQuote: '裴晚生停在分岔口', source: 'canonicalContent', sourceFloorKey },
+          { subject: '林岚', placeKey: 'place-mention-2', status: 'confirmed', exactQuote: '林岚离开并到达新公寓', source: 'canonicalContent', sourceFloorKey },
+        ],
+      },
+    } };
+  } });
+  await h.runtime.start();
+  const floor = h.runtime.getState().floors[0];
+  await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  const saved = await h.store.readReachable({ mode: 'runtime' });
+  const memory = saved.floorMemories.find(item => item.floorId === floor.floorId);
+  const places = new Map(saved.entities.filter(entity => entity.entityType === 'place').map(entity => [entity.displayName, entity.id]));
+  const people = new Map(saved.entities.filter(entity => entity.entityType === 'person').map(entity => [entity.displayName, entity.id]));
+  const statuses = new Map(memory.spatialFacts.positions.map(item => [people.get(saved.entities.find(entity => entity.id === item.subjectEntityId)?.displayName), item]));
+  const goodbyePerson = memory.spatialFacts.positions.find(item => item.subjectEntityId === people.get('裴晚生'));
+  const departingPerson = memory.spatialFacts.positions.find(item => item.subjectEntityId === people.get('林岚'));
+  assert.equal(goodbyePerson.status, 'lastSeen');
+  assert.equal(goodbyePerson.placeEntityId, places.get('分岔口'));
+  assert.equal(departingPerson.status, 'confirmed');
+  assert.equal(departingPerson.placeEntityId, places.get('新公寓'));
+  assert.equal(memory.spatialFacts.positions.length, 2);
+  const source = await readRecallSource({ store: h.store, now: () => new Date(NOW) });
+  const recalled = source.floorMemories.find(item => item.floorId === floor.floorId).spatialFacts.positions;
+  assert.deepEqual(new Set(recalled.map(item => item.status)), new Set(['lastSeen', 'confirmed']));
+  assert.ok(recalled.every(item => item.sourceRefs.some(ref => ref.floorId === floor.floorId)), '召回来源仍指向本楼事实');
+  assert.equal(statuses.size, 2);
+});
+
 test('聚合空间引文保留成员楼序号并在详情标注来源成员', async () => {
+  const sourceText = '独立卧室属于新公寓，新公寓位于西区。';
   const initialChat = Array.from({ length: 10 }, (_, index) => [
-    assistant(index === 1 ? '阅览室位于东馆。' : `连续楼 ${index + 1}。`), user(`确认 ${index + 1}`),
+    assistant(index === 1 ? sourceText : `连续楼 ${index + 1}。`), user(`确认 ${index + 1}`),
   ]).flat();
   const h = harness({ modernAnchors: true, initialChat, utility: options => {
     const request = JSON.parse(options.taskMessages[0].content);
     if (request.task !== 'extractFloorSemantics') return { jsonData: { noMaterialChange: true } };
-    const target = request.payload.sourceFloors?.find(item => item.canonicalContent.includes('阅览室位于东馆'));
+    const target = request.payload.sourceFloors?.find(item => item.canonicalContent.includes(sourceText));
     if (!target) return { jsonData: { summary: '连续楼被安全压缩。' } };
-    return { jsonData: { summary: '阅览室位于东馆。', spatialFacts: {
+    return { jsonData: { summary: sourceText, spatialFacts: {
       places: [
-        { key: 'place-mention-1', name: '阅览室', identity: 'new', exactQuote: '阅览室位于东馆', source: 'canonicalContent', sourceFloorKey: target.floorKey },
-        { key: 'place-mention-2', name: '东馆', identity: 'new', exactQuote: '阅览室位于东馆', source: 'canonicalContent', sourceFloorKey: target.floorKey },
+        { key: 'place-mention-1', name: '独立卧室', identity: 'new', exactQuote: '独立卧室属于新公寓', source: 'canonicalContent', sourceFloorKey: target.floorKey },
+        { key: 'place-mention-2', name: '新公寓', identity: 'new', exactQuote: '独立卧室属于新公寓', source: 'canonicalContent', sourceFloorKey: target.floorKey },
+        { key: 'place-mention-3', name: '西区', identity: 'new', exactQuote: '新公寓位于西区', source: 'canonicalContent', sourceFloorKey: target.floorKey },
       ],
-      containments: [{ placeKey: 'place-mention-1', parentPlaceKey: 'place-mention-2', exactQuote: '阅览室位于东馆', source: 'canonicalContent', sourceFloorKey: target.floorKey }], positions: [],
+      containments: [
+        { placeKey: 'place-mention-1', parentPlaceKey: 'place-mention-2', exactQuote: '独立卧室属于新公寓', source: 'canonicalContent', sourceFloorKey: target.floorKey },
+        { placeKey: 'place-mention-2', parentPlaceKey: 'place-mention-3', exactQuote: '新公寓位于西区', source: 'canonicalContent', sourceFloorKey: target.floorKey },
+      ], positions: [],
     } } };
   } });
   await h.runtime.start();
@@ -1501,13 +1641,14 @@ test('聚合空间引文保留成员楼序号并在详情标注来源成员', as
     () => JSON.stringify(h.runtime.getState()));
   const floor = h.runtime.getState().floors[0];
   assert.equal(floor.sourceFloorIds.length, 10);
+  assert.equal(floor.memory.spatialFacts.containments.length, 2, '两条有正文依据的包含边均保留');
   assert.equal(floor.memory.spatialFacts.containments[0].evidenceRefs[0].floorId, floor.sourceFloorIds[1]);
   const source = await readRecallSource({ store: h.store, now: () => new Date(NOW) });
   const memory = source.floorMemories.find(item => item.floorId === floor.floorId);
-  assert.equal(memory.spatialFacts.containments[0].sourceRefs[0].assistantSeq, 2);
+  assert.ok(memory.spatialFacts.containments.every(item => item.sourceRefs[0].assistantSeq === 2));
   const ui = viewHarness(h.runtime); await ui.view.activate();
   const line = ui.flatten(ui.container).find(node => node.className === 'qqj-memory-spatial-item');
-  assert.match(line.textContent, /AI #2.*阅览室 属于 东馆/u);
+  assert.match(line.textContent, /AI #2.*独立卧室 属于 新公寓/u);
 });
 
 test('人工编辑仅在摘要、地点或人物实质变化时降级本楼空间证据', async t => {
@@ -1723,7 +1864,8 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assert.equal(call.parseMode, 'semantic');
   assert.equal(Object.hasOwn(call, 'jsonSchema'), false);
   assert.match(EXTRACTOR_SYSTEM_PROMPT, /people、time、locations 也要分别检查并提取/);
-  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-29');
+  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-30');
+  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-30/schema-3/semantic-compiler-14');
   assert.match(EXTRACTOR_FIXED_CONTRACT, /每楼必须检查并返回 qianshi；确无事件增量时返回 events:\[\]/u);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /qianshi 独立于 summary、普通 events、eventFragments/u);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /一次性新事实.*matter=false；计划、持续推进或需要跟踪的事项按 matter=true/u);
@@ -1735,6 +1877,13 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assert.match(call.systemPrompt, /人物写入 people，地点或建筑及事件主题应在相应正文事件信息中表达/u);
   assert.match(call.systemPrompt, /不要混入 object，也不要凭空补物品；没有合适物品时 object 写 null/u);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /时间是唯一允许合理推定的例外/);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /每次依次检查地点身份、明确包含关系、每个人物楼末位置/u);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /向某人告别不表示被告别者离开/u);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /“房间”“卧室”“厨房”等泛称本身不能证明/u);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /前楼地点名仅作身份参照，不是本楼引文或当前位置/u);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /source（canonicalContent 或 precedingUserInput）/u);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /同地不表示人物彼此知情/u);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /林向周告别后，林离开并到达新公寓/u);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /不能附带正文没有的事件、人物、因果或结果/);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /order 必须使用对象数组.*before.*after.*certainty/u);
   assert.match(EXTRACTOR_SYSTEM_PROMPT, /不输出 UUID/);

@@ -59,7 +59,7 @@ const qianshiText = (value, maximum) => String(value ?? '').normalize('NFKC').re
 const qianshiTextEventSignature = event => { const value = clone(event); delete value.important; return JSON.stringify(value); };
 const counts = memory => Object.fromEntries(['chronology', 'locations', 'participants', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'exactAnchors', 'openLoops', 'ambiguities', 'cseSignals'].map(field => [field, memory?.[field]?.length ?? 0]));
 const effectiveSummary = memory => memory?.summary?.effectiveSource === 'user' ? memory.summary.userText : memory?.summary?.aiText;
-function previousFloorContext(source, floorIndex, memoryMap) {
+function previousFloorContext(source, floorIndex, memoryMap, entities = source.entities) {
   for (let index = floorIndex - 1; index >= 0; index -= 1) {
     const memory = memoryMap.get(source.floors[index].id);
     if (memory?.recordStatus !== 'active') continue;
@@ -67,7 +67,27 @@ function previousFloorContext(source, floorIndex, memoryMap) {
     const sourceText = typeof lastTime?.sourceText === 'string' ? lastTime.sourceText.trim() : '';
     const normalized = typeof lastTime?.normalized === 'string' ? lastTime.normalized.trim() : '';
     const summary = typeof effectiveSummary(memory) === 'string' ? effectiveSummary(memory).trim() : '';
-    return Object.freeze({ time: sourceText || normalized || null, summaryTail: summary ? summary.slice(-300) : null });
+    const placeIds = new Set([
+      ...(memory.locations ?? []).map(item => item?.entityId),
+      ...(memory.spatialFacts?.positions ?? []).map(item => item?.placeEntityId),
+      ...(memory.spatialFacts?.containments ?? []).flatMap(item => [item?.placeEntityId, item?.parentEntityId]),
+    ].filter(Boolean));
+    const placeNames = [];
+    for (const location of memory.locations ?? []) {
+      if (!['present', 'entered', 'movedThrough'].includes(location?.change) || typeof location.name !== 'string') continue;
+      const name = location.name.trim();
+      if (name && !placeNames.includes(name)) placeNames.push(name.slice(0, 200));
+      if (placeNames.length >= 8) break;
+    }
+    for (const entity of entities ?? []) {
+      if (placeIds.has(entity?.id) && entity.entityType === 'place' && typeof entity.displayName === 'string') {
+        const name = entity.displayName.trim();
+        if (name && !placeNames.includes(name)) placeNames.push(name.slice(0, 200));
+      }
+      if (placeNames.length >= 8) break;
+    }
+    return Object.freeze({ time: sourceText || normalized || null, summaryTail: summary ? summary.slice(-300) : null,
+      ...(placeNames.length ? { placeNames: Object.freeze(placeNames.slice(0, 8)) } : {}) });
   }
   return null;
 }
@@ -1743,7 +1763,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         previousStoryClock = clockEvidence(rawSelectionFromSnapshot(hostSnapshot, source.floors[index]), referenceTagsSnapshot).clock;
       }
       prepareStep = 'sourceSelection';
-      const previousMemoryContext = previousFloorContext(source, floorIndex, memoryMap);
+      const previousMemoryContext = previousFloorContext(source, floorIndex, memoryMap, scopedEntities);
       const firstFloorIndex = source.floors.findIndex(item => item.id === aggregateFloors[0].id);
       const qianshiPrefixFloorIds = new Set(source.floors.slice(0, firstFloorIndex).map(item => item.id));
       prepareStep = 'qianshiCandidates';

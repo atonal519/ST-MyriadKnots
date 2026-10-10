@@ -4,6 +4,7 @@ import { createChatIdentityCoordinator, CHAT_IDENTITY_COLLECTION } from '../src/
 import { createChatSession } from '../src/chat-session.js';
 import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
 import { createHostChatList } from '../src/host-context.js';
+import { persistTargetChatIdentity } from '../src/v3/message-floor-anchor.js';
 
 const OLD = '11111111-1111-4111-8111-111111111111';
 const NOW = '2026-09-07T03:00:00.000Z';
@@ -62,7 +63,7 @@ function readyBinding(chatId, hostChatId, { sourceChatId = null, revision = 1, c
 function hostContext(hostChatId = '旧聊天') {
   const context = {
     characterId: 0, groupId: null, chatId: hostChatId,
-    characters: [{ avatar: 'char.png' }], userAvatar: 'me.png',
+    characters: [{ avatar: 'char.png', name: '角色' }], userAvatar: 'me.png',
     chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: OLD } },
     saves: 0, saveBlock: null,
     async saveChatMetadata() {
@@ -83,12 +84,12 @@ function eventHarness() {
   };
 }
 
-async function renameHarness({ onPrepared = null, listHostChats = null, initializeBranch = async () => {}, isEnabled = true, ...backendOptions } = {}) {
+async function renameHarness({ onPrepared = null, listHostChats = null, initializeBranch = async () => {}, persist = null, isEnabled = true, ...backendOptions } = {}) {
   const backend = backendHarness(backendOptions);
   backend.records.set(bindingKey(OLD), readyBinding(OLD, '旧聊天'));
   backend.records.set(`chat-${OLD}/v3-root`, { revision: 14, data: { marker: '原有完整 root' } });
   const context = hostContext();
-  const coordinator = createChatIdentityCoordinator({ client: backend.client, listHostChats, initializeBranch, now: () => new Date(NOW) });
+  const coordinator = createChatIdentityCoordinator({ client: backend.client, listHostChats, initializeBranch, ...(persist ? { persist } : {}), now: () => new Date(NOW) });
   const session = createChatSession({ contextProvider: () => context, isEnabled, identityCoordinator: coordinator });
   assert.equal((await session.prepare()).identity.chatId, OLD);
   const events = eventHarness();
@@ -384,7 +385,7 @@ test('当前副本 B 收到旧档 A→C 的迟到改名事件时保持 B 独立�
   });
   h.context.chatId = '副本 B';
   h.events.handlers.get('changed')[0]();
-  await waitFor(() => h.session.getState().status === 'ready' && h.context.chatMetadata.qianqianjie.chatId !== OLD, '副本 B 身份未建立');
+  await waitFor(() => h.session.getState().status === 'ready' && h.context.chatMetadata.qianqianjie.chatId !== OLD, `副本 B 身份未建立 ${h.session.getState().status} ${h.session.getState().error?.code ?? ''}`);
   await waitFor(() => prepared.length === 1, '副本 B 后台续接未启动');
 
   const copyId = h.context.chatMetadata.qianqianjie.chatId;
@@ -419,14 +420,36 @@ test('列表失败不改 binding/metadata，也不回落创建 TEMP', async () =
   assert.equal([...h.backend.records.values()].filter(row => row.data?.sourceChatId === OLD).length, 0);
 });
 
-test('列表在途切聊天后旧结果返回 stale，不改旧 binding 或新聊天 metadata', async () => {
+test('列表在途切聊天后完成原目标 metadata 保存，不改写后来打开的聊天', async () => {
   const OTHER = '22222222-2222-4222-8222-222222222222';
   const hold = deferred();
   let listed = false;
-  const h = await renameHarness({ listHostChats: async (_avatar, { signal }) => {
+  const hostFiles = new Map();
+  const clone = value => structuredClone(value);
+  const fetchImpl = async (url, options = {}) => {
+    const body = JSON.parse(options.body);
+    if (url === '/api/chats/get') {
+      const file = hostFiles.get(body.file_name);
+      return file ? { ok: true, async json() { return [clone(file.header), ...clone(file.chat)]; } } : { ok: false, status: 404 };
+    }
+    assert.equal(url, '/api/chats/save');
+    assert.equal(body.force, false);
+    const [header, ...chat] = body.chat;
+    header.chat_metadata.integrity = 'host-integrity';
+    hostFiles.set(body.file_name, { header: clone(header), chat: clone(chat) });
+    return { ok: true, async json() { return { ok: true, integrity: 'host-integrity' }; } };
+  };
+  const persist = async (raw, chatId, taskInputs, signal) => {
+    const targetName = taskInputs.target.hostChatId;
+    if (!hostFiles.has(targetName)) hostFiles.set(targetName, {
+      header: { chat_metadata: clone(taskInputs.chatMetadata) }, chat: clone(taskInputs.chat),
+    });
+    return persistTargetChatIdentity({ coordinates: taskInputs.target, raw, snapshot: taskInputs, chatId,
+      listHostChats: async () => [], signal, fetchImpl });
+  };
+  const h = await renameHarness({ persist, listHostChats: async () => {
     listed = true;
     await hold.promise;
-    assert.equal(signal.aborted, true);
     return ['新聊天'];
   } });
   h.backend.records.set(bindingKey(OTHER), readyBinding(OTHER, '其它聊天'));
@@ -434,15 +457,23 @@ test('列表在途切聊天后旧结果返回 stale，不改旧 binding 或新�
   h.session.invalidate();
   const pending = h.session.prepare();
   await waitFor(() => listed, '宿主列表请求未开始');
+  hostFiles.set('新聊天', {
+    header: { chat_metadata: clone(h.context.chatMetadata) }, chat: clone(h.context.chat),
+  });
   h.context.chatId = '其它聊天';
   h.context.chatMetadata.qianqianjie.chatId = OTHER;
   h.session.invalidate();
   hold.resolve();
 
-  assert.equal((await pending).status, 'stale');
+  const result = await pending;
+  assert.equal(result.status, 'ready');
+  assert.equal(result.identity.hostChatId, '新聊天');
+  assert.equal(result.identity.chatId, OLD);
   assert.equal(h.context.chatMetadata.qianqianjie.chatId, OTHER);
-  assert.equal(h.backend.records.get(bindingKey(OLD)).revision, 1);
-  assert.equal(h.backend.records.get(bindingKey(OLD)).data.owner.hostChatId, '旧聊天');
+  assert.equal(hostFiles.get('新聊天').header.chat_metadata.qianqianjie.chatId, OLD);
+  assert.equal(hostFiles.get('其它聊天'), undefined, '固定目标保存不应新建或改写后来打开的聊天');
+  assert.equal(h.backend.records.get(bindingKey(OLD)).revision, 2);
+  assert.equal(h.backend.records.get(bindingKey(OLD)).data.owner.hostChatId, '新聊天');
   assert.equal([...h.backend.records.values()].filter(row => row.data?.sourceChatId === OLD).length, 0);
 });
 
@@ -464,7 +495,7 @@ test('列表在途禁用后旧结果返回 disabled，不改 binding 或 metadat
   const pending = h.session.prepare();
   await waitFor(() => listed, '宿主列表请求未开始');
   enabled = false;
-  h.session.invalidate();
+  h.session.invalidate({ cancelTask: true });
   hold.resolve();
 
   assert.equal((await pending).status, 'disabled');

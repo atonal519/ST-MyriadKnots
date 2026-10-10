@@ -77,6 +77,7 @@ function cseReply(options, text, reason) {
 test('候选生产 bundle 经真实 CHAT_CHANGED 初始化同角色副本，目标 ready/root 可读且模型调用为零', async () => {
   const backend = createRecordBackend();
   let activeHost = hostChat('原聊天', SOURCE, [user('开始'), assistant('公共 A'), user('继续 A')]);
+  const hostFiles = new Map([['原聊天', { header: { chat_metadata: structuredClone(activeHost.chatMetadata) }, chat: structuredClone(activeHost.chat) }]]);
   const seedHostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => activeHost } } });
   const sourceStore = createFoundationStore({ client: backend.client, contextProvider: () => identity('原聊天', SOURCE) });
   let seedUuid = 1000;
@@ -135,7 +136,19 @@ test('候选生产 bundle 经真实 CHAT_CHANGED 初始化同角色副本，目�
   const fetchImpl = async (url, options = {}) => {
     const path = String(url);
     if (path === '/api/characters/chats') return response(200, [{ file_id: '原聊天' }, { file_id: '复制聊天' }]);
-    if (path === '/api/chats/get') return response(200, [{ chat_metadata: structuredClone(activeHost.chatMetadata) }, ...structuredClone(activeHost.chat)]);
+    if (path === '/api/chats/get') {
+      const body = JSON.parse(options.body);
+      const file = hostFiles.get(body.file_name);
+      return file ? response(200, [structuredClone(file.header), ...structuredClone(file.chat)]) : response(200, { new_chat: true });
+    }
+    if (path === '/api/chats/save') {
+      const body = JSON.parse(options.body);
+      assert.equal(body.force, false);
+      const [header, ...chat] = body.chat;
+      header.chat_metadata.integrity = 'host-integrity';
+      hostFiles.set(body.file_name, { header: structuredClone(header), chat: structuredClone(chat) });
+      return response(200, { ok: true, integrity: 'host-integrity' });
+    }
     if (path.startsWith('/api/backends/')) {
       candidateAiCalls += 1;
       throw new Error('候选分支不得调用模型');
@@ -191,6 +204,7 @@ test('候选生产 bundle 经真实 CHAT_CHANGED 初始化同角色副本，目�
   await waitFor(() => (listeners.get(eventTypes.CHAT_CHANGED)?.length ?? 0) > 0, '候选入口未注册 CHAT_CHANGED');
 
   activeHost = hostChat('复制聊天', SOURCE, [user('开始'), assistant('公共 A')]);
+  hostFiles.set('复制聊天', { header: { chat_metadata: structuredClone(activeHost.chatMetadata) }, chat: structuredClone(activeHost.chat) });
   activeHost.eventTypes = eventTypes;
   activeHost.eventSource = eventSource;
   activeHost.generateTask = async () => { hostAiCalls += 1; throw new Error('候选分支不得调用模型'); };

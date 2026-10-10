@@ -1,4 +1,5 @@
 import { ensureChatUuid, isUuid, readHostState } from './host-context.js';
+import { captureTargetChatCoordinates } from './v3/host-adapter.js';
 
 export class ChatSessionError extends Error {
   constructor(message, code = 'CHAT_SESSION_INVALID') {
@@ -12,11 +13,12 @@ const sameHost = (left, right) => left.hostChatId === right.hostChatId
   && left.characterAvatar === right.characterAvatar
   && left.personaAvatar === right.personaAvatar;
 
-export function createChatSession({ contextProvider, isEnabled = true, ensureChatId = ensureChatUuid, identityCoordinator = null } = {}) {
+export function createChatSession({ contextProvider, isEnabled = true, ensureChatId = ensureChatUuid, identityCoordinator = null, captureTaskInputs = null } = {}) {
   if (typeof contextProvider !== 'function') throw new TypeError('session contextProvider 必须是函数');
   if (typeof isEnabled !== 'boolean' && typeof isEnabled !== 'function') throw new TypeError('session isEnabled 无效');
   if (typeof ensureChatId !== 'function') throw new TypeError('session ensureChatId 必须是函数');
   if (identityCoordinator !== null && typeof identityCoordinator?.prepare !== 'function') throw new TypeError('session identityCoordinator 无效');
+  if (captureTaskInputs !== null && typeof captureTaskInputs !== 'function') throw new TypeError('session captureTaskInputs 无效');
 
   let epoch = 0;
   let active = null;
@@ -40,19 +42,20 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     }
     return { raw, host };
   };
+  const captureTaskSnapshot = ({ raw, host }) => {
+    if (captureTaskInputs) return captureTaskInputs({ raw, host });
+    const target = captureTargetChatCoordinates({ context: raw, chat: raw.chat, chatId: host.hostChatId }, {
+      hostChatId: host.hostChatId,
+      characterLocator: host.characterAvatar, personaLocator: host.personaAvatar,
+    });
+    return { chat: structuredClone(Array.isArray(raw.chat) ? raw.chat : []), chatMetadata: structuredClone(raw.chatMetadata ?? {}), target, sanitizerOptions: {} };
+  };
   const publicIdentity = host => Object.freeze({
     hostChatId: host.hostChatId,
     chatId: host.chatId,
     characterLocator: host.characterAvatar,
     personaLocator: host.personaAvatar,
   });
-  const currentFor = operation => {
-    if (!enabled()) return 'disabled';
-    if (operation.epoch !== epoch || operation.controller?.signal.aborted) return 'stale';
-    try { return sameHost(operation.host, capture().host) ? 'current' : 'stale'; }
-    catch { return 'stale'; }
-  };
-
   function prepare() {
     if (!enabled()) {
       state = Object.freeze({ status: 'disabled' });
@@ -81,25 +84,28 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
       state = Object.freeze({ status: 'ready', identity: publicIdentity(context.host) });
       return Promise.resolve(state);
     }
+    let taskInputs = null;
+    try { taskInputs = identityCoordinator ? captureTaskSnapshot(context) : null; }
+    catch (error) { return Promise.reject(error); }
     const operation = { epoch, host: context.host, controller: new AbortController() };
     state = Object.freeze({ status: 'preparing' });
     operation.promise = (async () => {
       try {
         const chatId = identityCoordinator
-          ? await identityCoordinator.prepare(context.raw, context.host, { signal: operation.controller.signal })
+          ? await identityCoordinator.prepare(context.raw, context.host, { signal: operation.controller.signal, taskInputs })
           : await ensureChatId(context.raw, context.host);
-        const current = currentFor(operation);
-        if (current !== 'current') return Object.freeze({ status: current });
-        const refreshed = capture().host;
-        if (!isUuid(refreshed.chatId) || refreshed.chatId !== chatId) {
-          throw new ChatSessionError('稳定 chatId 保存后未能读回', 'CHAT_SESSION_PERSIST_FAILED');
-        }
-        state = Object.freeze({ status: 'ready', identity: publicIdentity(refreshed) });
-        return state;
+        if (operation.controller.signal.aborted) return Object.freeze({ status: enabled() ? 'cancelled' : 'disabled' });
+        if (!isUuid(chatId)) throw new ChatSessionError('稳定 chatId 保存后未能读回', 'CHAT_SESSION_PERSIST_FAILED');
+        const readyIdentity = Object.freeze({ ...publicIdentity(operation.host), chatId });
+        const result = Object.freeze({ status: 'ready', identity: readyIdentity });
+        try {
+          const refreshed = capture().host;
+          if (sameHost(operation.host, refreshed) && refreshed.chatId === chatId) state = result;
+        } catch { /* A completed identity belongs to its captured host target, not the newly selected page. */ }
+        return result;
       } catch (error) {
-        const current = currentFor(operation);
-        if (current !== 'current') return Object.freeze({ status: current });
-        state = Object.freeze({ status: 'error', error });
+        if (operation.controller.signal.aborted) return Object.freeze({ status: enabled() ? 'cancelled' : 'disabled' });
+        try { if (sameHost(operation.host, capture().host)) state = Object.freeze({ status: 'error', error }); } catch { /* Keep the current page state independent. */ }
         throw error;
       }
     })();
@@ -116,6 +122,9 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     let context;
     try { context = capture(); }
     catch (error) { return Promise.reject(error); }
+    let taskInputs;
+    try { taskInputs = captureTaskSnapshot(context); }
+    catch (error) { return Promise.reject(error); }
     const operation = { epoch, host: context.host, controller: new AbortController() };
     state = Object.freeze({ status: 'preparing' });
     operation.promise = (async () => {
@@ -125,19 +134,16 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
           previousIdentity,
           preparedIdentity,
           signal: operation.controller.signal,
+          taskInputs,
         });
-        const current = currentFor(operation);
-        if (current !== 'current') return Object.freeze({ status: current });
-        const refreshed = capture().host;
-        if (!isUuid(refreshed.chatId) || refreshed.chatId !== chatId) {
-          throw new ChatSessionError('改名身份保存后未能读回', 'CHAT_SESSION_PERSIST_FAILED');
-        }
-        state = Object.freeze({ status: 'ready', identity: publicIdentity(refreshed) });
-        return state;
+        if (operation.controller.signal.aborted) return Object.freeze({ status: enabled() ? 'cancelled' : 'disabled' });
+        if (!isUuid(chatId)) throw new ChatSessionError('改名身份保存后未能读回', 'CHAT_SESSION_PERSIST_FAILED');
+        const result = Object.freeze({ status: 'ready', identity: Object.freeze({ ...publicIdentity(operation.host), chatId }) });
+        try { if (sameHost(operation.host, capture().host)) state = result; } catch { /* Result remains bound to its captured host. */ }
+        return result;
       } catch (error) {
-        const current = currentFor(operation);
-        if (current !== 'current') return Object.freeze({ status: current });
-        state = Object.freeze({ status: 'error', error });
+        if (operation.controller.signal.aborted) return Object.freeze({ status: enabled() ? 'cancelled' : 'disabled' });
+        try { if (sameHost(operation.host, capture().host)) state = Object.freeze({ status: 'error', error }); } catch { /* Keep current page state independent. */ }
         throw error;
       }
     })();
@@ -168,9 +174,9 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     return publicIdentity(host);
   }
 
-  function invalidate() {
+  function invalidate({ cancelTask = false } = {}) {
     epoch += 1;
-    active?.controller?.abort('sessionInvalidated');
+    if (cancelTask) active?.controller?.abort('sessionInvalidated');
     active = null;
     let suspendedHere = false;
     if (suspension) {

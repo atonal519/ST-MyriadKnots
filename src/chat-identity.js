@@ -102,10 +102,10 @@ export function createChatIdentityCoordinator({
     sequence = run.then(() => undefined, () => undefined);
     return run;
   }
-  async function claimReady(raw, owner, chatId, sourceChatId = null) {
+  async function claimReady(raw, owner, chatId, sourceChatId = null, taskInputs = null, signal = null) {
     const claimed = await create(bindingRecord({ chatId, owner, sourceChatId, createdAt: nowIso() }));
     if (!sameOwner(claimed.data.owner, owner) || claimed.data.state !== 'ready') return null;
-    await persist(raw, chatId);
+    await persist(raw, chatId, taskInputs, signal);
     return chatId;
   }
   async function updateOwnerHost(binding, owner, { signal, matches = sameExactOwner } = {}) {
@@ -132,12 +132,12 @@ export function createChatIdentityCoordinator({
     if (!matches(updated.data.owner, owner)) throw errorWith('QQJ_CHAT_RENAME_CONFLICT', '聊天身份未能安全更新，已停止恢复。');
     return updated;
   }
-  async function completePreparingBranch(raw, host, claimed, signal) {
+  async function completePreparingBranch(raw, host, claimed, signal, taskInputs) {
     const owner = ownerFrom(host);
     if (!sameExactOwner(claimed.data.owner, owner) || claimed.data.state !== 'preparing' || !isUuid(claimed.data.sourceChatId)) return null;
     if (!initializeBranch) throw errorWith('QQJ_CHAT_BRANCH_INITIALIZER_UNAVAILABLE', '聊天副本继承尚未接入，未冒报准备完成。');
     assertCurrent(signal);
-    await initializeBranch({ raw, host, sourceChatId: claimed.data.sourceChatId, targetChatId: claimed.data.chatId, createdAt: claimed.data.createdAt, signal });
+    const initialized = await initializeBranch({ raw, host, sourceChatId: claimed.data.sourceChatId, targetChatId: claimed.data.chatId, createdAt: claimed.data.createdAt, signal, taskInputs });
     assertCurrent(signal);
     const ready = Object.freeze({ ...claimed.data, state: 'ready', updatedAt: nowIso() });
     let completed;
@@ -150,20 +150,26 @@ export function createChatIdentityCoordinator({
     assertCurrent(signal);
     if (!completed || completed.data.state !== 'ready' || completed.data.sourceChatId !== claimed.data.sourceChatId
       || !sameExactOwner(completed.data.owner, owner)) throw errorWith('QQJ_CHAT_BRANCH_BINDING_CONFLICT', '聊天副本身份发生冲突，未覆盖已有认领。');
-    await persist(raw, completed.data.chatId);
+    if (initialized?.persistedIdentity !== completed.data.chatId) await persist(raw, completed.data.chatId, taskInputs, signal);
     return completed.data.chatId;
   }
-  async function independent(raw, host, carriedChatId, { inherit = false, signal, skipChatIds = [] } = {}) {
+  async function independent(raw, host, carriedChatId, { inherit = false, signal, skipChatIds = [], taskInputs = null } = {}) {
     const owner = ownerFrom(host);
     const sourceChatId = isUuid(carriedChatId) ? carriedChatId : null;
     const deterministicChatId = await deterministicUuid(['qqj-chat-independent-v2', carriedChatId, owner.hostChatId, owner.characterLocator]);
     const attempted = new Set(skipChatIds);
     const claim = async chatId => {
-      if (!inherit) return claimReady(raw, owner, chatId, sourceChatId);
+      if (!inherit) return claimReady(raw, owner, chatId, sourceChatId, taskInputs, signal);
       const claimed = await create(bindingRecord({ chatId, owner, state: 'preparing', sourceChatId, createdAt: nowIso() }));
       if (!sameExactOwner(claimed.data.owner, owner) || claimed.data.sourceChatId !== sourceChatId) return null;
-      if (claimed.data.state === 'ready') { await persist(raw, chatId); return chatId; }
-      return completePreparingBranch(raw, host, claimed, signal);
+      if (claimed.data.state === 'ready') {
+        if (!initializeBranch || !isUuid(sourceChatId)) { await persist(raw, chatId, taskInputs, signal); return chatId; }
+        const initialized = await initializeBranch({ raw, host, sourceChatId, targetChatId: chatId, createdAt: claimed.data.createdAt, signal, taskInputs });
+        assertCurrent(signal);
+        if (initialized?.persistedIdentity !== chatId) await persist(raw, chatId, taskInputs, signal);
+        return chatId;
+      }
+      return completePreparingBranch(raw, host, claimed, signal, taskInputs);
     };
     const tryClaim = async chatId => {
       if (attempted.has(chatId)) return null;
@@ -184,22 +190,22 @@ export function createChatIdentityCoordinator({
     }
     throw errorWith('QQJ_CHAT_BINDING_CONFLICT', '无法为当前聊天建立独立身份，请刷新后重试。');
   }
-  async function prepareNow(raw, host, signal) {
+  async function prepareNow(raw, host, signal, taskInputs) {
     const owner = ownerFrom(host);
     if (!isUuid(host.chatId)) {
-      const claimed = await claimReady(raw, owner, freshUuid());
+      const claimed = await claimReady(raw, owner, freshUuid(), null, taskInputs, signal);
       if (claimed) return claimed;
-      return independent(raw, host, 'new-chat');
+      return independent(raw, host, 'new-chat', { signal, taskInputs });
     }
     let claimed = await read(host.chatId);
     if (!claimed) {
-      if (await legacyRootExists(host.chatId)) return independent(raw, host, host.chatId);
+      if (await legacyRootExists(host.chatId)) return independent(raw, host, host.chatId, { signal, taskInputs });
       const wanted = bindingRecord({ chatId: host.chatId, owner, createdAt: nowIso() });
       claimed = await create(wanted);
     }
     if (sameOwner(claimed.data.owner, owner) && claimed.data.state === 'ready') {
       assertCurrent(signal);
-      await persist(raw, claimed.data.chatId);
+      await persist(raw, claimed.data.chatId, taskInputs, signal);
       return claimed.data.chatId;
     }
     const expectedPreparingChatId = claimed.data.state === 'preparing' && isUuid(claimed.data.sourceChatId)
@@ -207,10 +213,10 @@ export function createChatIdentityCoordinator({
       : null;
     if (sameExactOwner(claimed.data.owner, owner) && claimed.data.state === 'preparing'
       && claimed.data.chatId === host.chatId && claimed.data.chatId === expectedPreparingChatId) {
-      try { return await completePreparingBranch(raw, host, claimed, signal); }
+      try { return await completePreparingBranch(raw, host, claimed, signal, taskInputs); }
       catch (error) {
         if (!await abandonedBranchTarget(error, claimed.data.chatId, signal)) throw error;
-        return independent(raw, host, claimed.data.sourceChatId, { inherit: true, signal, skipChatIds: [claimed.data.chatId] });
+        return independent(raw, host, claimed.data.sourceChatId, { inherit: true, signal, skipChatIds: [claimed.data.chatId], taskInputs });
       }
     }
     if (listHostChats && claimed.data.state === 'ready'
@@ -221,16 +227,16 @@ export function createChatIdentityCoordinator({
       if (names.includes(owner.hostChatId) && !names.includes(claimed.data.owner.hostChatId)) {
         claimed = await updateOwnerHost(claimed, owner, { signal, matches: sameOwner });
         assertCurrent(signal);
-        await persist(raw, claimed.data.chatId);
+        await persist(raw, claimed.data.chatId, taskInputs, signal);
         return claimed.data.chatId;
       }
       if (names.includes(owner.hostChatId) && names.includes(claimed.data.owner.hostChatId)) {
-        return independent(raw, host, host.chatId, { inherit: true, signal });
+        return independent(raw, host, host.chatId, { inherit: true, signal, taskInputs });
       }
     }
-    return independent(raw, host, host.chatId);
+    return independent(raw, host, host.chatId, { signal, taskInputs });
   }
-  function prepare(raw, host, { signal } = {}) { return serialized(() => prepareNow(raw, host, signal), signal); }
+  function prepare(raw, host, { signal, taskInputs = null } = {}) { return serialized(() => prepareNow(raw, host, signal, taskInputs), signal); }
 
   async function renameCharacterNow(oldValue, newValue, signal) {
     const oldLocator = String(oldValue ?? '');
@@ -326,7 +332,7 @@ export function createChatIdentityCoordinator({
       throw errorWith('QQJ_CHAT_RENAME_TEMP_HAS_MEMORY', '改名期间的新档已经产生业务记忆，请先人工确认后再恢复旧档。');
     }
   }
-  async function renameNow(raw, host, event, previousIdentity, preparedIdentity, signal) {
+  async function renameNow(raw, host, event, previousIdentity, preparedIdentity, signal, taskInputs) {
     const owner = ownerFrom(host);
     const oldChatId = previousIdentity?.chatId;
     const oldHostChatId = String(previousIdentity?.hostChatId ?? '');
@@ -368,11 +374,11 @@ export function createChatIdentityCoordinator({
     }
     await updateOwnerHost(oldBinding, owner, { signal, matches: sameExactOwner });
     assertCurrent(signal);
-    await persist(raw, oldChatId);
+    await persist(raw, oldChatId, taskInputs, signal);
     return oldChatId;
   }
-  function rename(raw, host, { event, previousIdentity, preparedIdentity, signal } = {}) {
-    return serialized(() => renameNow(raw, host, event, previousIdentity, preparedIdentity, signal), signal);
+  function rename(raw, host, { event, previousIdentity, preparedIdentity, signal, taskInputs = null } = {}) {
+    return serialized(() => renameNow(raw, host, event, previousIdentity, preparedIdentity, signal, taskInputs), signal);
   }
   return Object.freeze({ prepare, rename, renameCharacter, read });
 }

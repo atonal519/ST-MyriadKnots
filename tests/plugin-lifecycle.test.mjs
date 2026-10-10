@@ -12,7 +12,7 @@ async function waitFor(predicate, message) {
   assert.fail(message);
 }
 
-test('只绑定聊天与 Persona；消息新增零自动失效、零自动 AI', async () => {
+test('切换聊天只刷新页面身份，不取消已有业务任务；消息新增不触发自动 AI', async () => {
   const handlers = new Map();
   let prepares = 0;
   let invalidations = 0;
@@ -27,7 +27,7 @@ test('只绑定聊天与 Persona；消息新增零自动失效、零自动 AI', 
   assert.equal(handlers.has('sent'), false);
   handlers.get('chat')();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(invalidations, 2);
+  assert.equal(invalidations, 1, '切聊只让 session 准备新页面身份，不调用业务 aborter');
   assert.equal(prepares, 1);
   assert.equal(refreshes, 1);
 });
@@ -102,7 +102,7 @@ test('主页关闭后重新启用保持 idle，随后 CHAT_CHANGED 用真实 ses
 
   context.characterId = 0;
   context.chatId = 'host-chat';
-  context.characters = [{ avatar: 'char.png' }];
+  context.characters = [{ avatar: 'char.png', name: '角色' }];
   context.userAvatar = 'me.png';
   context.chatMetadata = { qianqianjie: { schemaVersion: 2, chatId: '123e4567-e89b-42d3-a456-426614174000' } };
   handlers.get('chat')();

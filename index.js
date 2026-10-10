@@ -25,7 +25,7 @@ import { createChatMemoryManagement } from './src/chat-memory-management.js';
 import { createStorageManagement } from './src/storage-management.js';
 import { createPluginLifecycle } from './src/plugin-lifecycle.js';
 import { createSourcePermissionController } from './src/source-permission.js';
-import { createHostAdapter } from './src/v3/host-adapter.js';
+import { captureTargetChatCoordinates, createHostAdapter } from './src/v3/host-adapter.js';
 import { createFoundationStore } from './src/v3/foundation-store.js';
 import { createIndexedDbCoreRecordCache } from './src/v3/indexeddb-core-cache.js';
 import { createFoundationRuntime } from './src/v3/foundation-runtime.js';
@@ -33,7 +33,7 @@ import { createTimeStore, createTimeRuntime } from './src/v3/time-runtime.js';
 import { createV3MemoryRuntime } from './src/v3/memory-runtime.js';
 import { runHistoricalRebuildTask } from './src/v3/historical-rebuild-task.js';
 import { captureHistoricalRebuildSources as captureRebuildSources } from './src/v3/historical-rebuild-sources.js';
-import { persistMessageFloorAnchors } from './src/v3/message-floor-anchor.js';
+import { persistMessageFloorAnchors, persistTargetChatIdentity } from './src/v3/message-floor-anchor.js';
 import { createV3RecallRuntime } from './src/v3/recall-runtime.js';
 import { createAutoHideController } from './src/v3/auto-hide.js';
 import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, projectAnnualPeople } from './src/v3/people-workspace.js';
@@ -112,8 +112,23 @@ const taskRouter = createTaskRouter({
 const apiTools = createApiTools({ resolver: apiResolver, compactClient, isEnabled: settings.isEnabled });
 const listHostChats = createHostChatList({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
 const initializeChatBranch = createChatBranchInitializer({ client: backendClient, hostAdapter, sanitizerOptions });
-const identityCoordinator = createChatIdentityCoordinator({ client: backendClient, freshUuid: newUuid, listHostChats, initializeBranch: initializeChatBranch });
-const session = createChatSession({ contextProvider, isEnabled: settings.isEnabled, identityCoordinator });
+const identityCoordinator = createChatIdentityCoordinator({ client: backendClient, freshUuid: newUuid, listHostChats, initializeBranch: initializeChatBranch,
+  persist: (raw, chatId, taskInputs, signal) => {
+    if (!taskInputs?.target) throw Object.assign(new Error('固定聊天保存坐标不可用。'), { code: 'QQJ_TARGET_CHAT_DESCRIPTOR_REQUIRED' });
+    return persistTargetChatIdentity({ coordinates: taskInputs.target, raw, snapshot: taskInputs, chatId, listHostChats, signal });
+  },
+});
+const session = createChatSession({ contextProvider, isEnabled: settings.isEnabled, identityCoordinator, captureTaskInputs: ({ raw, host }) => {
+  const target = captureTargetChatCoordinates({ context: raw, chat: raw.chat, chatId: host.hostChatId, source: 'captured' }, {
+    hostChatId: host.hostChatId, characterLocator: host.characterAvatar, personaLocator: host.personaAvatar,
+  });
+  return {
+    chat: structuredClone(Array.isArray(raw.chat) ? raw.chat : []),
+    chatMetadata: structuredClone(raw.chatMetadata ?? {}),
+    target,
+    sanitizerOptions: Object.freeze({ ...sanitizerOptions() }),
+  };
+} });
 // 设置页在禁用、未选聊天及身份准备期间仍须可打开；此时不读写聊天历法，保存仍走严格身份校验。
 const calendarContextProvider = () => {
   let owner;

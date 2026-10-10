@@ -35,13 +35,13 @@ export function createPluginLifecycle({
     });
   }
 
-  function invalidate() {
+  function invalidate({ cancelBusiness = true } = {}) {
     prepareEpoch += 1;
     let firstError;
-    for (const dependency of [...aborters, session]) {
+    for (const dependency of [...(cancelBusiness ? aborters : []), session]) {
       const operation = typeof dependency === 'function' ? dependency : dependency?.invalidate ?? dependency?.abortAll;
       if (typeof operation !== 'function') continue;
-      try { operation.call(dependency); } catch (error) { firstError ??= error; }
+      try { operation.call(dependency, dependency === session ? { cancelTask: !enabled() } : undefined); } catch (error) { firstError ??= error; }
     }
     if (firstError) throw firstError;
   }
@@ -50,7 +50,8 @@ export function createPluginLifecycle({
     const mine = ++prepareEpoch;
     if (!enabled()) return { status: 'disabled' };
     const result = await session.prepare();
-    if (!prepareCurrent(mine)) return { status: enabled() ? 'stale' : 'disabled' };
+    if (!enabled()) return { status: 'disabled' };
+    if (!prepareCurrent(mine)) return result;
     continuePrepared(result, mine);
     if (refresh) await getUi()?.refresh?.();
     return result;
@@ -69,7 +70,7 @@ export function createPluginLifecycle({
     const transition = previous?.status === 'ready' && previous.identity
       ? { previousIdentity: Object.freeze({ ...previous.identity }), preparePromise: null }
       : null;
-    try { invalidate(); }
+    try { invalidate({ cancelBusiness: false }); }
     catch (error) { logger?.warn?.('[qianqianjie] 插件生命周期失效失败', error); }
     const preparePromise = scheduleIdentityPrepare();
     if (transition) {

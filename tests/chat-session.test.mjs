@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createChatSession } from '../src/chat-session.js';
+import { persistTargetChatIdentity } from '../src/v3/message-floor-anchor.js';
 import { CHAT_IDENTITY_COLLECTION, createChatIdentityCoordinator } from '../src/chat-identity.js';
 
 const UUID = '123e4567-e89b-42d3-a456-426614174000';
@@ -27,6 +28,53 @@ test('新聊天只持久化稳定 chatId，不读取或写入任何 V1/后端记
     assert.deepEqual(Object.keys(context.chatMetadata), ['qianqianjie']);
 });
 
+test('首次身份保存兼容宿主 new_chat 读回，固定目标创建空聊天存档', async () => {
+  const chatId = '323e4567-e89b-42d3-a456-426614174000';
+  const target = { hostChatId: '新聊天', characterLocator: 'char.png', characterName: '角色', avatarUrl: 'char.png', requestHeaders: {} };
+  const raw = { chatId: '新聊天', chat: [], chatMetadata: {}, saveChatMetadata() { assert.fail('不得回落到动态当前聊天保存'); } };
+  const snapshot = { chat: [], chatMetadata: {} };
+  let saved = null, reads = 0, lists = 0;
+  const fetchImpl = async (url, options) => {
+    if (url === '/api/chats/get') {
+      reads += 1;
+      return saved ? { ok: true, status: 200, async json() { return [structuredClone(saved.header), ...structuredClone(saved.chat)]; } }
+        : { ok: true, status: 200, async json() { return { new_chat: true }; } };
+    }
+    assert.equal(url, '/api/chats/save');
+    const body = JSON.parse(options.body);
+    assert.equal(body.force, false);
+    const [header, ...chat] = body.chat;
+    header.chat_metadata.integrity = 'created-integrity';
+    saved = { header, chat };
+    return { ok: true, status: 200, async json() { return { ok: true, integrity: 'created-integrity' }; } };
+  };
+  const result = await persistTargetChatIdentity({ coordinates: target, raw, snapshot, chatId,
+    listHostChats: async () => { lists += 1; return []; }, fetchImpl });
+  assert.equal(result.status, 'persisted');
+  assert.equal(result.persistedIdentity, chatId);
+  assert.equal(reads, 2);
+  assert.equal(lists, 1);
+  assert.equal(saved.header.chat_metadata.qianqianjie.chatId, chatId);
+  assert.deepEqual(saved.chat, [], 'USER0/空新档创建不要求有开场消息');
+  assert.equal(raw.chatMetadata.qianqianjie.chatId, chatId);
+  assert.equal(raw.chatMetadata.integrity, 'created-integrity');
+
+  saved = null;
+  const userZeroId = '423e4567-e89b-42d3-a456-426614174000';
+  const userZero = { is_user: true, is_system: false, mes: 'USER0', send_date: '2026-10-10T00:00:00.000Z' };
+  const userZeroRaw = { chatId: 'USER0聊天', chat: [userZero], chatMetadata: {} };
+  const userZeroResult = await persistTargetChatIdentity({
+    coordinates: { ...target, hostChatId: 'USER0聊天' }, raw: userZeroRaw,
+    snapshot: { chat: [userZero], chatMetadata: {} }, chatId: userZeroId,
+    listHostChats: async () => { lists += 1; return []; }, fetchImpl,
+  });
+  assert.equal(userZeroResult.persistedIdentity, userZeroId);
+  assert.deepEqual(saved.chat, [userZero], 'USER0 首条消息须原样保留');
+  assert.equal(saved.header.chat_metadata.qianqianjie.chatId, userZeroId);
+  assert.equal(reads, 4);
+  assert.equal(lists, 2);
+});
+
 function recordBackend() {
   const records = new Map();
   const calls = { get: 0, put: 0 };
@@ -38,7 +86,7 @@ function recordBackend() {
 }
 
 function chatContext(hostChatId, chatId = UUID) {
-  return { characterId: 0, chatId: hostChatId, characters: [{ avatar: 'char.png' }], userAvatar: 'me.png', chatMetadata: { qianqianjie: { schemaVersion: 1, chatId } }, async saveMetadata() {} };
+  return { characterId: 0, chatId: hostChatId, characters: [{ avatar: 'char.png', name: '角色' }], userAvatar: 'me.png', chatMetadata: { qianqianjie: { schemaVersion: 1, chatId } }, async saveMetadata() {} };
 }
 
 test('同一 QQJ chatId 被复制到不同宿主聊天后直接获得独立 ready 身份', async () => {
@@ -138,7 +186,30 @@ test('同一宿主聊天只切换 persona 不会误判成聊天分支', async ()
   assert.equal(listCalls, 0, '只切 Persona 时宿主文件名和角色未变，不读取列表');
 });
 
-test('禁用时零元数据操作；切聊天后旧 prepare 返回 stale', async () => {
+test('同一在途 prepare 共用一次输入快照，ready 重入不再复制聊天输入', async () => {
+  const context = chatContext('固定目标');
+  let release;
+  let captures = 0;
+  const session = createChatSession({
+    contextProvider: () => context,
+    captureTaskInputs: ({ host }) => { captures += 1; return { hostChatId: host.hostChatId }; },
+    identityCoordinator: { prepare: async (_raw, host, { taskInputs }) => {
+      assert.equal(taskInputs.hostChatId, host.hostChatId);
+      await new Promise(resolve => { release = resolve; });
+      return UUID;
+    } },
+  });
+  const first = session.prepare();
+  const concurrent = session.prepare();
+  assert.equal(first, concurrent);
+  assert.equal(captures, 1);
+  release();
+  assert.equal((await first).identity.chatId, UUID);
+  assert.equal((await session.prepare()).identity.chatId, UUID);
+  assert.equal(captures, 1);
+});
+
+test('禁用时零元数据操作；在途准备完成后仍归捕获聊天身份', async () => {
   let enabled = false;
   let release;
   const firstMetadata = {};
@@ -164,7 +235,12 @@ test('禁用时零元数据操作；切聊天后旧 prepare 返回 stale', async
     context.chatMetadata = { qianqianjie: { schemaVersion: 1, chatId: '223e4567-e89b-42d3-a456-426614174000' } };
     session.invalidate();
     release();
-    assert.equal((await pending).status, 'stale');
+    const result = await pending;
+    assert.equal(result.status, 'ready');
+    assert.equal(result.identity.hostChatId, 'first');
+    assert.equal(result.identity.chatId, UUID);
+    assert.equal(firstMetadata.qianqianjie.chatId, UUID);
+    assert.equal(context.chatMetadata.qianqianjie.chatId, '223e4567-e89b-42d3-a456-426614174000');
 });
 
 test('真正没有当前聊天时保持 idle；群聊与有聊天的身份错误仍然报错', async () => {

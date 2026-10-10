@@ -29,7 +29,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
   let hostShaCalls = 0;
   const hostShaInputs = [];
   const host = {
-    characterId: 0, groupId: null, chatId: 'host-chat', characters: [{ avatar: 'char.png' }], userAvatar: 'me.png',
+    characterId: 0, groupId: null, chatId: 'host-chat', characters: [{ avatar: 'char.png', name: '角色' }], userAvatar: 'me.png',
     chatMetadata: enabled ? { qianqianjie: { schemaVersion: 1, chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' } } : {},
     chat: initializeWithoutSubtle ? [
       { is_user: false, is_system: false, mes: '产物指纹🙂', swipes: ['产物指纹🙂'], swipe_id: 0 },
@@ -41,6 +41,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
     getRequestHeaders: () => ({}), eventTypes: { CHAT_CHANGED: 'chat', PERSONA_CHANGED: 'persona' },
     eventSource: { on(name) { eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); } },
   };
+  let hostFile = { header: { chat_metadata: structuredClone(host.chatMetadata) }, chat: structuredClone(host.chat) };
   if (initializeWithoutSubtle) backendRecords.set('/api/plugins/st-bainiaodata/v1/records/qianqianjie/chat-identity-bindings/binding-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', {
     revision: 1,
     data: {
@@ -76,6 +77,15 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
     console, crypto: initializeWithoutSubtle ? {} : globalThis.crypto, TextEncoder, TextDecoder, URL, URLSearchParams, AbortController, DOMException, structuredClone, setTimeout, clearTimeout, setInterval, clearInterval,
     ...(privateDiagnostics ? { location: { origin: 'https://tavern.invalid' }, addEventListener(name, callback) { if (name === 'beforeunload') unloads.push(callback); } } : {}),
     fetch: async (url, options = {}) => {
+      if (String(url) === '/api/chats/get') return hostFile
+        ? { ok: true, status: 200, async json() { return [structuredClone(hostFile.header), ...structuredClone(hostFile.chat)]; } }
+        : { ok: true, status: 200, async json() { return { new_chat: true }; } };
+      if (String(url) === '/api/chats/save') {
+        const body = JSON.parse(options.body), [header, ...chat] = body.chat;
+        header.chat_metadata.integrity = 'host-integrity';
+        hostFile = { header, chat };
+        return { ok: true, status: 200, async json() { return { ok: true, integrity: 'host-integrity' }; } };
+      }
       backendCalls += 1;
       if (privateDiagnostics && String(url).endsWith('/diagnostics.local.json')) return { ok: true, json: async () => ({ enabled: true }) };
       if (privateDiagnostics && String(url).includes('/private-diagnostics/')) {
@@ -194,7 +204,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.7.4');
+  assert.equal(manifest.version, '0.7.5');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -223,7 +233,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
     characterId: 0,
     groupId: null,
     chatId: 'host-chat',
-    characters: [{ avatar: 'char.png' }],
+    characters: [{ avatar: 'char.png', name: '角色' }],
     userAvatar: 'me.png',
     chatMetadata: {},
     chat: [],
@@ -425,8 +435,11 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/v3/recall-source.js', { readRecallSource: async options => options });
   define('./src/v3/vector-source-reader.js', { readVectorSource: async options => options });
   define('./src/source-permission.js', { createSourcePermissionController: () => ({}) });
-  const productionHostContext = { eventSource: productionEventSource, eventTypes: productionEventTypes, uuidv4, getRequestHeaders: () => ({ 'X-CSRF-Token': 'token' }), groupId: null, characterId: 0, characters: [{ avatar: 'char.png' }] };
-  define('./src/v3/host-adapter.js', { createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => productionHostContext, snapshot: () => ({}) }; } });
+  const productionHostContext = { eventSource: productionEventSource, eventTypes: productionEventTypes, uuidv4, getRequestHeaders: () => ({ 'X-CSRF-Token': 'token' }), groupId: null, characterId: 0, characters: [{ avatar: 'char.png', name: '角色' }] };
+  define('./src/v3/host-adapter.js', {
+    captureTargetChatCoordinates: (_snapshot, identity) => ({ hostChatId: identity.hostChatId, characterLocator: identity.characterLocator, characterName: '角色', avatarUrl: 'char.png', requestHeaders: {} }),
+    createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => productionHostContext, snapshot: () => ({}) }; },
+  });
   define('./src/v3/foundation-store.js', { createFoundationStore: options => { foundationStoreOptions.push(options); return {}; } });
   define('./src/v3/historical-rebuild-task.js', { runHistoricalRebuildTask: async () => ({ status: 'complete' }) });
   define('./src/v3/historical-rebuild-sources.js', { captureHistoricalRebuildSources: async () => ({}) });
@@ -450,7 +463,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const timeRuntime = { runBatch: receipt => { timeBatches.push(receipt); }, getState: () => ({}), invalidate() { calendarInvalidations += 1; }, async refreshStatus() { calendarRefreshes += 1; }, completeStoredUpdate() { timeOptions.onInvalidate?.(); }, recallProjection: async () => null, currentStoryContext: async () => { currentStoryContextReads += 1; return { currentTime: { raw: '5月3日' } }; }, stop: async () => {}, bind(options) { timeBindOptions = options; } };
   define('./src/v3/time-runtime.js', { createTimeStore: () => ({}), createTimeRuntime: options => { timeOptions = options; return timeRuntime; } });
   define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() { backgroundStarts.push('memory'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, async confirmConsecutiveAssistants() { confirmationCalls += 1; }, getState: () => ({}), getQianshiRecall: input => { qianshiRecallInputs.push(input); return { text: '' }; }, shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
-  define('./src/v3/message-floor-anchor.js', { persistMessageFloorAnchors: persistAnchors });
+  define('./src/v3/message-floor-anchor.js', { persistMessageFloorAnchors: persistAnchors, persistTargetChatIdentity: async () => ({ status: 'persisted' }) });
   define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; v3RecallRuntime = { bind() {}, async setEnabled(value) { runtimeEnables.push(`recall:${value}`); }, async intercept() {}, invalidate(reason) { recallInvalidations.push(reason); }, getState: () => ({}), getPromptSnapshot: () => null }; return v3RecallRuntime; } });
   define('./src/v3/auto-hide.js', { createAutoHideController: options => { autoHideOptions = options; return { applySettings() {}, stop() {}, dispose() {} }; } });
   define('./src/ui/inline-renderer.js', { createInlineRenderer: options => { inlineRendererOptions = options; return { setEnabled(value) { inlineEnabled.push(value); }, destroy() {} }; } });

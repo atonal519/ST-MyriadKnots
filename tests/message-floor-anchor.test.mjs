@@ -144,15 +144,25 @@ test('已确认副本会换绑外层和可达 swipe marker/自动隐藏标记，
     { extra: { swipeKept: 1, qianqianjieAutoHide: { schemaVersion: 1, chatId: CHAT }, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: FLOOR }, qqj_v3_recall_receipt: { old: true } } },
     { extra: { swipeKept: 2, qianqianjieAutoHide: { schemaVersion: 1, chatId: CHAT }, qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: DANGLING }, qqj_v3_recall_receipt: { old: true } } },
   ];
-  const context = { chatMetadata: { qianqianjie: { chatId: CHAT } }, characters: [{ name: '角色', avatar: 'a.png' }], characterId: 0, saveChat: async () => true, getRequestHeaders: () => ({}) };
-  const snapshot = { chatId: '复制聊天', characterAvatar: 'a.png', context, chat: [message] };
+  let persistedHeader = { chat_metadata: { qianqianjie: { schemaVersion: 2, chatId: CHAT }, integrity: 'integrity-1' } };
+  let persistedChat = [structuredClone(message)];
+  const target = { chatId: TARGET, hostChatId: '复制聊天', characterName: '角色', avatarUrl: 'a.png', requestHeaders: {} };
   const result = await persistBranchedMessageMetadata({
-    hostAdapter: { snapshot: () => snapshot }, hostChatId: '复制聊天', sourceChatId: CHAT, targetChatId: TARGET,
+    target, chat: [structuredClone(message)], sourceChatId: CHAT, targetChatId: TARGET,
     bindings: [{ messageIndex: 0, floorId: FLOOR }], retainedFloorIds: [FLOOR],
-    fetchImpl: async () => ({ ok: true, async json() { return [{ chat_metadata: context.chatMetadata }, structuredClone(message)]; } }),
+    fetchImpl: async (url, request = {}) => {
+      if (url === '/api/chats/get') return { ok: true, async json() { return [structuredClone(persistedHeader), ...structuredClone(persistedChat)]; } };
+      const body = JSON.parse(request.body);
+      assert.equal(body.force, false);
+      persistedHeader = body.chat[0];
+      persistedChat = body.chat.slice(1);
+      persistedHeader.chat_metadata.integrity = 'integrity-2';
+      return { ok: true, async json() { return { ok: true, integrity: 'integrity-2' }; } };
+    },
   });
   assert.equal(result.status, 'persisted');
-  assert.deepEqual(message.extra, { kept: 1, qianqianjieAutoHide: { schemaVersion: 1, chatId: TARGET }, qianqianjie_floor: { schemaVersion: 1, chatId: TARGET, floorId: FLOOR } });
-  assert.deepEqual(message.swipe_info[0].extra, { swipeKept: 1, qianqianjieAutoHide: { schemaVersion: 1, chatId: TARGET }, qianqianjie_floor: { schemaVersion: 1, chatId: TARGET, floorId: FLOOR } });
-  assert.deepEqual(message.swipe_info[1].extra, { swipeKept: 2, qianqianjieAutoHide: { schemaVersion: 1, chatId: TARGET } });
+  assert.deepEqual(result.chat[0].extra, { kept: 1, qianqianjieAutoHide: { schemaVersion: 1, chatId: TARGET }, qianqianjie_floor: { schemaVersion: 1, chatId: TARGET, floorId: FLOOR } });
+  assert.deepEqual(result.chat[0].swipe_info[0].extra, { swipeKept: 1, qianqianjieAutoHide: { schemaVersion: 1, chatId: TARGET }, qianqianjie_floor: { schemaVersion: 1, chatId: TARGET, floorId: FLOOR } });
+  assert.deepEqual(result.chat[0].swipe_info[1].extra, { swipeKept: 2, qianqianjieAutoHide: { schemaVersion: 1, chatId: TARGET } });
+  assert.equal(result.header.chat_metadata.qianqianjie.chatId, TARGET);
 });
