@@ -63,6 +63,32 @@ export function createTimeStore({ client }) {
     try { return structuredClone(await pending); }
     finally { if (pendingReads.get(chatId) === pending) pendingReads.delete(chatId); }
   }
+  const refsFloor = (refs, floorId, fields = ['floorId']) => Array.isArray(refs)
+    && refs.some(ref => ref && fields.some(field => ref[field] === floorId));
+  const batchReferencesFloor = (batch, floorId) => batch?.cutoffFloorId === floorId
+    || refsFloor(batch?.dependencies, floorId)
+    || refsFloor(batch?.bodyReads, floorId)
+    || refsFloor(batch?.clockWitnesses, floorId)
+    || refsFloor(batch?.fragments, floorId)
+    || (batch?.changes ?? []).some(change => change?.reviewAssessment?.applicableFloorId === floorId
+      || change?.projection?.applicableFloorId === floorId
+      || refsFloor(change?.sourceRefs, floorId)
+      || refsFloor(change?.stateRefs, floorId, ['sourceFloorId']));
+  async function hasFloorReference(chatId, floorId) {
+    const snapshot = await read(chatId);
+    const head = snapshot.head;
+    if (!head) return false;
+    if (head.bodyStart?.floorId === floorId
+      || head.currentReviewAttempt?.cutoffFloorId === floorId
+      || head.lastRun?.cutoffFloorId === floorId
+      || head.lastRun?.sourceScope?.floorId === floorId
+      || refsFloor(head.lastRun?.fragments, floorId)
+      || refsFloor(head.lastRun?.bodyReads, floorId)
+      || refsFloor(head.lastRun?.clockWitnesses, floorId)
+      || (head.lastRun?.failedBodyAttempts ?? []).some(attempt => attempt?.cutoffFloorId === floorId
+        || refsFloor(attempt?.fragments, floorId))) return true;
+    return snapshot.batches.some(batch => batchReferencesFloor(batch, floorId));
+  }
   function invalidate(chatId) {
     readEpoch += 1;
     if (!chatId || cachedSnapshot?.chatId === chatId) cachedSnapshot = null;
@@ -125,7 +151,7 @@ export function createTimeStore({ client }) {
     return migration ? Object.freeze({ batchIds: Object.freeze(ids), sourceHeadSnapshot: structuredClone(source.head) })
       : Object.freeze(ids);
   }
-  return Object.freeze({ read, putHead, putBatch, requirePermanentDelete, removePermanent, copyPrefix, invalidate });
+  return Object.freeze({ read, hasFloorReference, putHead, putBatch, requirePermanentDelete, removePermanent, copyPrefix, invalidate });
 }
 
 export async function prepareTimeRequest(reachable, batches = [], options = {}) {

@@ -122,6 +122,42 @@ test('一键搬家为B独立复制完整冻结图，保留A字节并让B正常fo
   assert.notEqual(migrated.reachable.root.narrativeGeneration, source.root.narrativeGeneration);
   assert.equal(chatRecords(backend.records, SOURCE), sourceBefore, 'A 的正式图未被搬家改写');
 
+  // A frozen floor with no summary must still resist orphan-marker recovery:
+  // this uses an actual migration descriptor and B foundation read path.
+  const frozenTargetId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const frozenTargetIdentity = identity('B-frozen-file', frozenTargetId);
+  const frozenChat = structuredClone(aChat);
+  const frozenAliases = await Promise.all(source.floors.map(async floor => {
+    const aliasId = await deterministicUuid(['frozen-orphan-alias', frozenTargetId, floor.id]);
+    const message = frozenChat[floor.hostLocator.messageIndex];
+    message.extra = { ...(message.extra ?? {}), [MIGRATION_ALIAS_KEY]: aliasId };
+    delete message.extra.qianqianjie_floor;
+    return { aliasId, floorId: floor.id, targetMessageIndex: floor.hostLocator.messageIndex,
+      rawFingerprint: floor.content.rawFingerprint, canonicalFingerprint: floor.content.canonicalFingerprint };
+  }));
+  const frozenTargetStore = createFoundationStore({ client: backend.client, contextProvider: () => frozenTargetIdentity });
+  const frozenMigration = await initializeMigrationGraph({ store: frozenTargetStore, sourceIdentity, targetIdentity: frozenTargetIdentity,
+    sourceReachable: source, carriedAliases: frozenAliases, targetChat: frozenChat, now: () => new Date(NOW), newUuid: uuidFactory() });
+  const frozenContext = context(frozenTargetIdentity.hostChatId, frozenTargetId, frozenChat);
+  const frozenHost = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => frozenContext } } });
+  const frozenRuntime = createFoundationRuntime({ hostAdapter: frozenHost, store: frozenTargetStore, contextProvider: () => frozenContext,
+    hasTimeFloorReference: async () => false, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  assert.equal(frozenMigration.status, 'ready');
+  assert.ok(frozenMigration.reachable.migrationDescriptor.frozenFloorIds.includes(source.floors.at(-1).id));
+  assert.ok(!source.floorMemories.some(memory => memory.floorId === source.floors.at(-1).id && memory.recordStatus === 'active'),
+    '被测归档末楼没有摘要，保持为冻结历史');
+  assert.equal((await frozenRuntime.start()).status, 'ready');
+  const frozenTargetMessage = frozenContext.chat[source.floors.at(-1).hostLocator.messageIndex];
+  const frozenOrphanId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+  frozenTargetMessage.extra.qianqianjie_floor = { schemaVersion: 1, chatId: frozenTargetId, floorId: frozenOrphanId };
+  const frozenPutsBefore = backend.calls.filter(([method, collection]) => method === 'put' && collection === `chat-${frozenTargetId}`).length;
+  const frozenReview = await frozenRuntime.refreshStatus();
+  assert.equal(frozenReview.status, 'ready', '匹配归档alias仍作为冻结历史，不把其host marker当作B live楼重登');
+  assert.ok(frozenRuntime.getReachable().migrationDescriptor.frozenFloorIds.includes(source.floors.at(-1).id));
+  assert.equal(frozenTargetMessage.extra.qianqianjie_floor.floorId, frozenOrphanId);
+  assert.equal(backend.calls.filter(([method, collection]) => method === 'put' && collection === `chat-${frozenTargetId}`).length, frozenPutsBefore,
+    '归档alias被识别后marker与root均未改动');
+
   // A separate actual B graph without a carried alias exercises archive recall
   // without treating the copied latest reply as a current source-body witness.
   const recallTargetId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';

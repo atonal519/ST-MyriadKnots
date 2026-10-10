@@ -50,6 +50,52 @@ test('concurrent consumers share one read and receive independently owned snapsh
   assert.equal(c.head.batchIds.length, 13); assert.equal(c.batches[0].label, 'one');
 });
 
+test('floor-reference query covers time head, batches, fragments, state refs and review projections', async () => {
+  const f = fixture(1), target = 'floor-target', other = 'floor-other';
+  const head = { schemaVersion: 1, chatId: 'one', batchIds: ['batch-0'], bodyStart: { floorId: other },
+    lastRun: { cutoffFloorId: other, fragments: [{ floorId: other }], bodyReads: [{ floorId: other }],
+      clockWitnesses: [{ floorId: other }], failedBodyAttempts: [{ cutoffFloorId: other, fragments: [{ floorId: other }] }] },
+    currentReviewAttempt: { cutoffFloorId: other } };
+  const batch = { schemaVersion: 1, chatId: 'one', id: 'batch-0', cutoffFloorId: other,
+    dependencies: [{ floorId: other }], bodyReads: [{ floorId: other }], clockWitnesses: [{ floorId: other }],
+    fragments: [{ floorId: other }], changes: [{ sourceRefs: [{ floorId: other }], stateRefs: [{ sourceFloorId: other }],
+      reviewAssessment: { applicableFloorId: other }, projection: { applicableFloorId: other } }] };
+  f.records.set(f.key('one', TIME_HEAD_ID), { revision: 2, data: head });
+  f.records.set(f.key('one', 'batch-0'), { revision: 2, data: batch });
+  assert.equal(await f.store.hasFloorReference('one', target), false);
+  for (const [field, value] of [
+    ['bodyStart', { floorId: target }],
+    ['currentReviewAttempt', { cutoffFloorId: target }],
+    ['lastRun', { cutoffFloorId: target }],
+    ['lastRun-fragments', { ...head.lastRun, fragments: [{ floorId: target }] }],
+    ['lastRun-bodyReads', { ...head.lastRun, bodyReads: [{ floorId: target }] }],
+    ['lastRun-clockWitnesses', { ...head.lastRun, clockWitnesses: [{ floorId: target }] }],
+    ['lastRun-failedBodyAttempts', { ...head.lastRun, failedBodyAttempts: [{ cutoffFloorId: other, fragments: [{ floorId: target }] }] }],
+  ]) {
+    const saved = field.startsWith('lastRun-') ? { ...head, lastRun: value } : { ...head, [field]: value };
+    f.records.set(f.key('one', TIME_HEAD_ID), { revision: 3, data: saved });
+    f.store.invalidate('one');
+    assert.equal(await f.store.hasFloorReference('one', target), true, `time head ${field}`);
+  }
+  for (const mutate of [
+    value => { value.cutoffFloorId = target; },
+    value => { value.dependencies[0].floorId = target; },
+    value => { value.bodyReads[0].floorId = target; },
+    value => { value.clockWitnesses[0].floorId = target; },
+    value => { value.fragments[0].floorId = target; },
+    value => { value.changes[0].sourceRefs[0].floorId = target; },
+    value => { value.changes[0].stateRefs[0].sourceFloorId = target; },
+    value => { value.changes[0].reviewAssessment.applicableFloorId = target; },
+    value => { value.changes[0].projection.applicableFloorId = target; },
+  ]) {
+    const saved = structuredClone(batch); mutate(saved);
+    f.records.set(f.key('one', 'batch-0'), { revision: 3, data: saved });
+    f.store.invalidate('one');
+    assert.equal(await f.store.hasFloorReference('one', target), true);
+  }
+  assert.equal(await f.store.hasFloorReference('two', target), false, '另一聊天的 time head/batch 不应串用');
+});
+
 test('published edit and deletion are read fresh; identical IDs in another chat do not share data', async () => {
   const f = fixture(1);
   const original = await f.store.read('one');

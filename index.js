@@ -131,6 +131,7 @@ const processingPrompt = () => settings.get().processingPrompt;
 const coreRecordCache = isTauriTavern() ? null : createIndexedDbCoreRecordCache({ localForage: localforage, accountHandleProvider: getCurrentUserHandle });
 const foundationStore = createFoundationStore({ client: backendClient, contextProvider: () => session.identity(), isEnabled: settings.isEnabled, coreRecordCache });
 const targetFoundationStore = identity => foundationStore.forIdentity(identity);
+const timeStore = createTimeStore({ client: backendClient });
 const foundationRuntime = createFoundationRuntime({
   hostAdapter,
   store: foundationStore,
@@ -140,6 +141,7 @@ const foundationRuntime = createFoundationRuntime({
   isEnabled: settings.isEnabled,
   sanitizerOptions,
   newUuid,
+  hasTimeFloorReference: (chatId, floorId) => timeStore.hasFloorReference(chatId, floorId),
 });
 const peopleWorkspaceStore = createPeopleWorkspaceStore({ client: backendClient });
 let peopleWorkspaceRuntime;
@@ -160,7 +162,6 @@ const vectorIndex = createVectorIndex({
   }),
 });
 let v3RecallRuntime;
-const timeStore = createTimeStore({ client: backendClient });
 const timeRuntime = createTimeRuntime({
   storyCalendarProvider,
   newUuid,
