@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createVectorApiClient, normalizeVectorConfig, resolveVectorConfig, VECTOR_DEFAULT_URL, VECTOR_DEFAULT_MODEL } from '../src/vector-api.js';
-import { createVectorIndex, VECTOR_INDEX_ID, VECTOR_SHARD_PREFIX } from '../src/v3/vector-index.js';
+import { createVectorIndex, rawSourceChunks, VECTOR_INDEX_ID, VECTOR_SHARD_PREFIX } from '../src/v3/vector-index.js';
 import { createVectorAutoUpdater } from '../src/v3/vector-auto-update.js';
 import { projectVectorSources, rawWitnessValid, summaryCandidateText, summaryWitnessValid } from '../src/v3/vector-source.js';
 import { readVectorSource } from '../src/v3/vector-source-reader.js';
@@ -76,6 +76,28 @@ async function waitFor(predicate, timeoutMs = 2000) {
   while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
   assert.ok(predicate(), '异步索引状态按时收敛');
 }
+
+test('旧摘要索引增量跳过时结束复制诊断状态', async () => {
+  const source = await sourceFixture(); source.rawSources = [];
+  const h = harness(source);
+  const modelKey = await hash(JSON.stringify([config.url, config.model, config.dimensions]));
+  const shardId = `${VECTOR_SHARD_PREFIX}${'a'.repeat(40)}`;
+  const summary = '中性旧摘要';
+  const witness = { sourceKind: 'userSummary', floorId: 'floor-1', assistantSeq: 1, floorMemoryId: 'memory-1',
+    memoryFloorId: 'floor-1', memoryAssistantSeq: 1, offset: 0, length: 2,
+    fingerprint: await hash(summary), textFingerprint: await hash(summary.slice(0, 2)) };
+  h.records.set(shardId, { recordId: shardId, revision: 1, data: { schemaVersion: 1, recordType: 'vectorCache',
+    chatId: source.chatId, narrativeGeneration: source.narrativeGeneration, modelKey, rows: [{ witness, vector: 'AACAPwAAAAA=' }] } });
+  h.records.set(VECTOR_INDEX_ID, { recordId: VECTOR_INDEX_ID, revision: 1, data: { schemaVersion: 1, recordType: 'vectorCache',
+    chatId: source.chatId, narrativeGeneration: source.narrativeGeneration, modelKey, dimensions: 2, shardIds: [shardId], chunkCount: 1 } });
+
+  assert.deepEqual(await h.index.updateIncrementally(), { status: 'legacySummaryOnly' });
+  const state = h.index.getState();
+  assert.equal(state.active, false);
+  assert.equal(state.updating, false);
+  assert.equal(state.buildDiagnostic.status, 'skipped');
+  assert.equal(state.buildDiagnostic.phase, 'cache');
+});
 
 test('不可用的自动更新器仍提供安全的空生命周期接口', () => {
   const updater = createVectorAutoUpdater();
@@ -256,6 +278,25 @@ test('后台增量复用完整旧shard：16变17只为新片请求embedding并�
   assert.equal(coldReads.filter(id => id === coldOldShard).length, 1, '冷状态恢复一次已提交旧shard');
   assert.equal(coldReads.length, 2, '另一次读取仅是新增shard的存在性检查');
   assert.equal(coldWrites.length, 2, '冷增量只PUT新增shard和manifest，不重写未变shard');
+});
+
+test('摘要记录ID变化但原文锚点不变时手动重建保留旧shard见证', async () => {
+  const source = await sourceFixture(); let apiCalls = 0;
+  const h = harness(source, { api: { embed: async (_config, texts) => { apiCalls++; return vectors(texts); } } });
+  assert.equal((await h.index.build()).status, 'ready');
+  const oldShardId = h.records.get(VECTOR_INDEX_ID).data.shardIds[0];
+  assert.equal(h.calls.filter(value => value.id.startsWith(VECTOR_SHARD_PREFIX)).length, 1);
+
+  const revisedSummary = structuredClone(source);
+  revisedSummary.rawSources[0].floorMemoryId = 'memory-1-after-summary-edit';
+  h.setSource(revisedSummary);
+  assert.equal((await h.index.build()).status, 'ready');
+  assert.equal(apiCalls, 1, 'FloorMemory 身份变化不改变同一楼原文的向量资格');
+  assert.equal(h.calls.filter(value => value.id.startsWith(VECTOR_SHARD_PREFIX)).length, 1, '原shard不重写');
+  assert.deepEqual(h.records.get(VECTOR_INDEX_ID).data.shardIds, [oldShardId]);
+  assert.ok(h.records.has(oldShardId), 'manifest仍引用真实存在的原shard');
+  assert.equal(h.records.get(oldShardId).data.rows[0].witness.floorMemoryId, source.rawSources[0].floorMemoryId,
+    '见证仅规范化键顺序，保留旧FloorMemory身份值');
 });
 
 test('自动增量只跟随正式记忆快照；无需首次触发，无落盘前缀、重复通知或摘要ID重试', async t => {
@@ -559,6 +600,60 @@ test('白鳥 HTTP 合同：首次不存在返回404可建立，读取不带recor
   assert.equal(modelCalls, 2, '构建和查询各一次；恢复缓存不重建');
 });
 
+test('共享后端重排JSON键后仍按确定shard续建并发布有效manifest', async () => {
+  const sortKeys = value => Array.isArray(value) ? value.map(sortKeys) : value && typeof value === 'object'
+    ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sortKeys(value[key])])) : value;
+  const records = new Map(), batches = [];
+  const client = createBackendClient({ baseUrl: 'https://offline.invalid', fetchImpl: async (url, options) => {
+    const path = new URL(url).pathname;
+    if (options.method === 'PUT') {
+      const body = JSON.parse(options.body), previous = records.get(path);
+      assert.equal(body.expectedRevision, previous?.revision ?? 0);
+      const stored = { schemaVersion: 1, revision: body.expectedRevision + 1, generationId: 'neutral-backend', data: sortKeys(body.data) };
+      records.set(path, stored);
+      return { ok: true, json: async () => structuredClone(stored) };
+    }
+    const value = records.get(path);
+    return value ? { ok: true, json: async () => structuredClone(value) }
+      : { ok: false, status: 404, json: async () => ({ error: 'not_found' }) };
+  } });
+  const source = await sourceFixture();
+  source.rawSources[0].canonicalContent = 'N'.repeat(20800);
+  source.rawSources[0].fingerprint = await hash(source.rawSources[0].canonicalContent);
+  let failAt = 2;
+  const api = createVectorApiClient({ fetchImpl: async (_url, options) => {
+    const input = JSON.parse(options.body).input; batches.push(input);
+    if (batches.length === failAt) return new Response(JSON.stringify({ error: { code: 'neutral_backend_resume_failure' } }), { status: 400 });
+    return new Response(JSON.stringify({ data: input.map((_, index) => ({ index, embedding: [1, 0] })) }), { status: 200 });
+  } });
+  const makeIndex = () => createVectorIndex({ client, api, configProvider: () => config,
+    identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  await assert.rejects(makeIndex().build(), error => error.code === 'VECTOR_HTTP_ERROR' && error.status === 400);
+  assert.deepEqual(batches.map(input => input.length), [16, 16]);
+  const collectionPath = '/v1/records/qianqianjie/chat-chat/';
+  const storedRecords = () => [...records.entries()].filter(([path]) => path.startsWith(collectionPath)).map(([path, value]) => ({
+    recordId: decodeURIComponent(path.slice(collectionPath.length)), revision: value.revision, data: structuredClone(value.data),
+  }));
+  const orphan = storedRecords().find(record => record.recordId.startsWith(VECTOR_SHARD_PREFIX));
+  assert.ok(orphan);
+  assert.deepEqual(Object.keys(orphan.data.rows[0].witness), Object.keys(orphan.data.rows[0].witness).sort(), '模拟共享存储按键序重排嵌套JSON');
+  const reachable = { status: 'ready', root: { chatId: source.chatId, narrativeGeneration: source.narrativeGeneration },
+    floors: [{ id: 'floor-1', assistantSeq: 1, content: { canonicalContent: source.rawSources[0].canonicalContent } }],
+    floorMemories: [{ id: 'memory-1', floorId: 'floor-1', recordStatus: 'active', sourceFloorIds: ['floor-1'],
+      summary: { effectiveSource: 'ai', aiText: '中性摘要' } }] };
+  assert.deepEqual(await makeIndex().getResumableShardIds(reachable, storedRecords()), [orphan.recordId],
+    '孤立批次经共享后端键重排后仍能按字段值识别');
+
+  const beforeResume = batches.length; failAt = -1;
+  const resumed = makeIndex();
+  assert.equal((await resumed.build()).status, 'ready');
+  assert.deepEqual(batches.slice(beforeResume).map(input => input.length), [16, 16, 16, 1], '新runtime续建跳过已存首批，只请求剩余49段');
+  const manifest = storedRecords().find(record => record.recordId === VECTOR_INDEX_ID);
+  assert.ok(manifest);
+  assert.equal(manifest.data.shardIds.every(id => storedRecords().some(record => record.recordId === id)), true,
+    '最终manifest每个引用均有实际持久shard');
+});
+
 test('索引错误区分来源、缓存、向量和保存阶段；权限与冲突不视为未建立，提示不泄露正文', async () => {
   for (const phase of ['source', 'cache', 'embedding', 'verification', 'save']) {
     const source = await sourceFixture(), h = harness(source);
@@ -625,6 +720,263 @@ test('标准 embeddings 请求批量、乱序回应、维度与归一化；不�
   assert.equal(requests[0].options.headers.Authorization, 'Bearer test-key');
 });
 
+test('失败后按精确持久shard续建；同runtime和新runtime均不重嵌已保存批次', async () => {
+  async function interruptedBuild() {
+    const source = await sourceFixture();
+    source.rawSources[0].canonicalContent = Array.from({ length: 20800 }, (_, index) => String.fromCharCode(65 + index % 26)).join('');
+    source.rawSources[0].fingerprint = await hash(source.rawSources[0].canonicalContent);
+    const h = harness(source), batches = [];
+    let failAt = 2;
+    const api = createVectorApiClient({ fetchImpl: async (_url, options) => {
+      const payload = JSON.parse(options.body); batches.push(payload.input);
+      if (batches.length === failAt) return new Response(JSON.stringify({ error: { code: 'neutral_batch_failure' } }), { status: 400 });
+      return new Response(JSON.stringify({ data: payload.input.map((_, index) => ({ index, embedding: [index + 1, 1] })) }), { status: 200 });
+    } });
+    const create = () => createVectorIndex({ client: h.client, api, configProvider: () => config,
+      identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+    const first = create();
+    await assert.rejects(first.build(), error => error.code === 'VECTOR_HTTP_ERROR' && error.status === 400);
+    const buildDiagnostic = first.getState().buildDiagnostic;
+    assert.deepEqual({ status: buildDiagnostic.status, phase: buildDiagnostic.phase, batchNumber: buildDiagnostic.batchNumber,
+      completedChunks: buildDiagnostic.completedChunks, totalChunks: buildDiagnostic.totalChunks, inputCount: buildDiagnostic.inputCount,
+      inputCharacters: buildDiagnostic.inputCharacters, longestInputCharacters: buildDiagnostic.longestInputCharacters,
+      errorCode: buildDiagnostic.errorCode, httpStatus: buildDiagnostic.httpStatus },
+    { status: 'failed', phase: 'embedding', batchNumber: 2, completedChunks: 16, totalChunks: 65, inputCount: 16,
+      inputCharacters: 6400, longestInputCharacters: 400, errorCode: 'VECTOR_HTTP_ERROR', httpStatus: 400 });
+    assert.doesNotMatch(JSON.stringify(buildDiagnostic), /test-key|vector\.invalid|SECRET|苹果配方/u);
+    assert.equal(h.records.has(VECTOR_INDEX_ID), false, '部分保存不能提前发布manifest');
+    assert.equal([...h.records.keys()].filter(id => id.startsWith(VECTOR_SHARD_PREFIX)).length, 1);
+    failAt = -1;
+    const resumed = await first.build();
+    assert.equal(resumed.status, 'ready');
+    assert.deepEqual(batches.map(value => value.length), [16, 16, 16, 16, 16, 1]);
+    assert.notDeepEqual(batches[2], batches[0], '同runtime续建跳过首个已保存batch');
+    assert.ok(h.records.has(VECTOR_INDEX_ID));
+    return { source, h, batches, create };
+  }
+  await interruptedBuild();
+
+  const source = await sourceFixture();
+  source.rawSources[0].canonicalContent = Array.from({ length: 20800 }, (_, index) => String.fromCharCode(65 + index % 26)).join('');
+  source.rawSources[0].fingerprint = await hash(source.rawSources[0].canonicalContent);
+  const h = harness(source), batches = [];
+  let failAt = 2;
+  const api = createVectorApiClient({ fetchImpl: async (_url, options) => {
+    const payload = JSON.parse(options.body); batches.push(payload.input);
+    if (batches.length === failAt) return new Response(JSON.stringify({ error: { code: 'neutral_batch_failure' } }), { status: 400 });
+    return new Response(JSON.stringify({ data: payload.input.map((_, index) => ({ index, embedding: [1, index + 1] })) }), { status: 200 });
+  } });
+  const create = () => createVectorIndex({ client: h.client, api, configProvider: () => config,
+    identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  await assert.rejects(create().build(), error => error.code === 'VECTOR_HTTP_ERROR' && error.status === 400);
+  failAt = -1;
+  assert.equal((await create().build()).status, 'ready', '全新runtime从持久batch续建');
+  assert.deepEqual(batches.map(value => value.length), [16, 16, 16, 16, 16, 1]);
+  assert.notDeepEqual(batches[2], batches[0]);
+});
+
+test('可复用旧向量重新组合成批时仍先持久化新shard；manifest失败后能读回重试', async () => {
+  const source = await sourceFixture();
+  const contents = ['A', 'B', 'C'].map(letter => letter.repeat(2560));
+  source.rawSources = await Promise.all(contents.map((content, index) => rawFloor(source, index + 1, content)));
+  const h = harness(source); let embedCalls = 0, failManifest = false, current = source;
+  const client = { ...h.client, put: async (collection, id, data, revision, options) => {
+    if (id === VECTOR_INDEX_ID && failManifest) { failManifest = false; throw Object.assign(new Error('temporary save failure'), { code: 'BACKEND_UNAVAILABLE' }); }
+    return h.client.put(collection, id, data, revision, options);
+  } };
+  const index = createVectorIndex({ client, api: { embed: async (_config, texts) => { embedCalls++; return vectors(texts); } },
+    configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => current });
+  await index.build();
+  const originalEmbedCalls = embedCalls;
+  const originalManifest = h.records.get(VECTOR_INDEX_ID).data;
+  const reordered = structuredClone(source);
+  reordered.rawSources.reverse(); current = reordered; h.setSource(reordered);
+  failManifest = true;
+  await assert.rejects(index.build(), /索引保存失败/u);
+  assert.equal(embedCalls, originalEmbedCalls, '旧raw witness和向量都可复用，不重发embedding');
+  assert.equal(h.records.has(VECTOR_INDEX_ID), true);
+  assert.deepEqual(h.records.get(VECTOR_INDEX_ID).data, originalManifest, 'manifest写失败保留原已发布索引');
+  const pendingIds = [...h.records.keys()].filter(id => id.startsWith(VECTOR_SHARD_PREFIX) && !originalManifest.shardIds.includes(id));
+  assert.ok(pendingIds.length > 0, '新组合shard在manifest写失败前已落盘');
+  assert.ok(pendingIds.every(id => h.records.has(id)));
+  assert.equal((await index.build()).status, 'ready', '同runtime重试能读取已写的新组合shard，不以revision 0覆盖');
+  assert.equal(embedCalls, originalEmbedCalls);
+  assert.ok(h.records.get(VECTOR_INDEX_ID).data.shardIds.every(id => h.records.has(id)), 'manifest不引用尚未写入的记录');
+});
+
+test('shard写失败不形成断点；原文或模型变化、损坏向量都重新embedding', async () => {
+  const makeSource = async () => {
+    const value = await sourceFixture();
+    value.rawSources[0].canonicalContent = Array.from({ length: 5400 }, (_, index) => String.fromCharCode(65 + index % 26)).join('');
+    value.rawSources[0].fingerprint = await hash(value.rawSources[0].canonicalContent);
+    return value;
+  };
+
+  const writeSource = await makeSource(), writeHarness = harness(writeSource), writeBatches = [];
+  let firstShardFailure = true;
+  const failingClient = { ...writeHarness.client, put: async (collection, id, data, revision, options) => {
+    if (firstShardFailure && id.startsWith(VECTOR_SHARD_PREFIX)) { firstShardFailure = false; throw Object.assign(new Error('write failed'), { code: 'BACKEND_UNAVAILABLE' }); }
+    return writeHarness.client.put(collection, id, data, revision, options);
+  } };
+  const writeApi = { embed: async (_config, texts) => { writeBatches.push(texts); return vectors(texts); } };
+  const writeIndex = createVectorIndex({ client: failingClient, api: writeApi, configProvider: () => config,
+    identityProvider: () => ({ chatId: writeSource.chatId }), sourceProvider: async () => writeSource });
+  await assert.rejects(writeIndex.build(), { code: 'VECTOR_SAVE_FAILED' });
+  assert.equal(writeHarness.records.has(VECTOR_INDEX_ID), false);
+  assert.equal([...writeHarness.records.keys()].filter(id => id.startsWith(VECTOR_SHARD_PREFIX)).length, 0);
+  assert.equal((await writeIndex.build()).status, 'ready');
+  assert.deepEqual(writeBatches.map(value => value.length), [16, 16, 1], '确认失败的16段只会在重试时重新请求，未确认写入不会被当作断点');
+
+  async function partial() {
+    const source = await makeSource(), h = harness(source), batches = [];
+    const api = createVectorApiClient({ fetchImpl: async (_url, options) => {
+      const payload = JSON.parse(options.body); batches.push(payload.input);
+      if (batches.length === 2) return new Response(JSON.stringify({ error: { code: 'neutral_failure' } }), { status: 400 });
+      return new Response(JSON.stringify({ data: payload.input.map((_, index) => ({ index, embedding: [1, 0] })) }), { status: 200 });
+    } });
+    let route = config;
+    const index = createVectorIndex({ client: h.client, api, configProvider: () => route,
+      identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+    await assert.rejects(index.build(), { code: 'VECTOR_HTTP_ERROR' });
+    return { source, h, batches, index, setRoute(value) { route = value; } };
+  }
+  const changedBody = await partial();
+  changedBody.source.rawSources[0].canonicalContent += '真实新增正文。';
+  changedBody.source.rawSources[0].fingerprint = await hash(changedBody.source.rawSources[0].canonicalContent);
+  assert.equal((await changedBody.index.build()).status, 'ready');
+  assert.deepEqual(changedBody.batches.map(value => value.length), [16, 1, 16, 1], '原文指纹改变时不复用旧断点');
+
+  const changedModel = await partial();
+  changedModel.setRoute({ ...config, model: 'changed-neutral-model' });
+  assert.equal((await changedModel.index.build()).status, 'ready');
+  assert.deepEqual(changedModel.batches.map(value => value.length), [16, 1, 16, 1], '模型owner改变时不复用旧断点');
+
+  const corrupt = await partial();
+  const shardId = [...corrupt.h.records.keys()].find(id => id.startsWith(VECTOR_SHARD_PREFIX));
+  corrupt.h.records.get(shardId).data.rows[0].vector = 'not-base64';
+  assert.equal((await corrupt.index.build()).status, 'ready');
+  assert.deepEqual(corrupt.batches.map(value => value.length), [16, 1, 16, 1], '损坏向量批次重新embedding并修复记录');
+});
+
+test('存储清理仅保留当前模型/代际且原文见证匹配的未发布向量shard', async () => {
+  const source = await sourceFixture();
+  source.rawSources[0].canonicalContent = Array.from({ length: 18000 }, (_, index) => String.fromCharCode(65 + index % 26)).join('');
+  source.rawSources[0].fingerprint = await hash(source.rawSources[0].canonicalContent);
+  const h = harness(source); let apiCalls = 0;
+  const api = createVectorApiClient({ fetchImpl: async (_url, options) => {
+    const payload = JSON.parse(options.body); apiCalls += 1;
+    if (apiCalls === 2) return new Response(JSON.stringify({ error: { code: 'neutral_failure' } }), { status: 400 });
+    return new Response(JSON.stringify({ data: payload.input.map((_, index) => ({ index, embedding: [1, 0] })) }), { status: 200 });
+  } });
+  const create = route => createVectorIndex({ client: h.client, api, configProvider: () => route,
+    identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  await assert.rejects(create(config).build(), { code: 'VECTOR_HTTP_ERROR' });
+  const reachable = { status: 'ready', root: { chatId: source.chatId, narrativeGeneration: source.narrativeGeneration },
+    floors: [{ id: 'floor-1', assistantSeq: 1, content: { canonicalContent: source.rawSources[0].canonicalContent } }],
+    floorMemories: [{ id: 'memory-1', floorId: 'floor-1', recordStatus: 'active', sourceFloorIds: ['floor-1'],
+      summary: { effectiveSource: 'ai', aiText: '中性摘要' } }] };
+  const index = create(config), records = [...h.records.values()];
+  const resumable = await index.getResumableShardIds(reachable, records);
+  assert.equal(resumable.length, 1);
+  const classified = await classifyStorageRecords(records, reachable, source.chatId, { resumableVectorShardIds: resumable });
+  assert.equal(classified.stats.active.count, 1);
+  assert.equal(classified.candidates.length, 0, '自动清理扫描不会删掉可精确续建的当前shard');
+
+  const corrupted = structuredClone(records[0]); corrupted.data.rows[0].witness.textFingerprint = `sha256:${'0'.repeat(64)}`;
+  assert.deepEqual(await index.getResumableShardIds(reachable, [corrupted]), [], '内容见证损坏则不续用');
+  const otherModel = { ...config, model: 'other-neutral-model' };
+  assert.deepEqual(await create(otherModel).getResumableShardIds(reachable, records), [], '其他模型的孤立shard不续用');
+  const editedReachable = structuredClone(reachable);
+  editedReachable.floors[0].content.canonicalContent += '正文真实变化';
+  assert.deepEqual(await index.getResumableShardIds(editedReachable, records), [], '当前原文变化后旧孤立shard不续用');
+});
+
+test('HTTP 400仅投影短结构化字段和硅基trace id；巨大或挂起错误正文不覆盖状态/期限', async () => {
+  let diagnostic = null;
+  const traceId = 'sc_trace_20261010_12345678';
+  const structured = createVectorApiClient({ fetchImpl: async () => new Response(JSON.stringify({
+    error: { code: 'invalid_dimensions', type: 'invalid_request_error', param: 'dimensions', message: 'SECRET provider prose test-key' },
+    data: { private: 'SECRET payload' },
+  }), { status: 400, headers: { 'x-siliconcloud-trace-id': traceId } }) });
+  await assert.rejects(structured.embed(config, ['中性输入'], { onDiagnostic: value => { diagnostic = value; } }), error => {
+    assert.equal(error.code, 'VECTOR_HTTP_ERROR'); assert.equal(error.status, 400);
+    assert.deepEqual(error.providerError, { code: 'invalid_dimensions', type: 'invalid_request_error', param: 'dimensions' });
+    assert.doesNotMatch(error.message, /SECRET|test-key|provider prose/u); return true;
+  });
+  assert.equal(diagnostic.httpStatus, 400);
+  assert.equal(diagnostic.providerRequestId, traceId);
+  assert.deepEqual(diagnostic.providerError, { code: 'invalid_dimensions', type: 'invalid_request_error', param: 'dimensions' });
+  assert.doesNotMatch(JSON.stringify(diagnostic), /SECRET|test-key|provider prose|https:/u);
+
+  const oversized = createVectorApiClient({ fetchImpl: async () => new Response(JSON.stringify({
+    error: { code: 'too_large_wrapper', param: 'input' }, data: 'x'.repeat(12000),
+  }), { status: 400, headers: { 'content-length': '12080' } }) });
+  await assert.rejects(oversized.embed(config, ['中性输入']), error => error.code === 'VECTOR_HTTP_ERROR' && error.status === 400 && error.providerError === null);
+
+  let unboundedTextReads = 0;
+  const unknownLengthTextOnly = createVectorApiClient({ fetchImpl: async () => ({ ok: false, status: 400,
+    headers: { get: () => null }, text: async () => { unboundedTextReads++; return JSON.stringify({ error: { code: 'should_not_read' } }); } }) });
+  await assert.rejects(unknownLengthTextOnly.embed(config, ['中性输入']), error => error.code === 'VECTOR_HTTP_ERROR' && error.status === 400 && error.providerError === null);
+  assert.equal(unboundedTextReads, 0, 'text-only response without bounded content length is skipped');
+
+  let bodyCancelled = false;
+  const stalled = createVectorApiClient({ fetchImpl: async () => ({ ok: false, status: 400, headers: { get: () => null },
+    body: new ReadableStream({ cancel() { bodyCancelled = true; } }) }) });
+  const started = Date.now();
+  await assert.rejects(stalled.embed(config, ['中性输入'], { timeoutMs: 15 }), error => error.code === 'VECTOR_HTTP_ERROR' && error.status === 400);
+  assert.ok(Date.now() - started < 1500, '已收到HTTP状态后错误正文诊断保持有界，不等原API deadline');
+  assert.equal(bodyCancelled, true, '期限到时停止失败正文读取');
+
+  let slowCancelled = false, sent = 0;
+  const slow = createVectorApiClient({ fetchImpl: async () => ({ ok: false, status: 400, headers: { get: () => null },
+    body: new ReadableStream({
+      async pull(controller) { await new Promise(resolve => setTimeout(resolve, 100)); controller.enqueue(new TextEncoder().encode(`x${sent++}`)); },
+      cancel() { slowCancelled = true; },
+    }) }) });
+  const slowStarted = Date.now();
+  await assert.rejects(slow.embed(config, ['中性输入'], { timeoutMs: 10 }), error => error.code === 'VECTOR_HTTP_ERROR' && error.status === 400);
+  assert.ok(Date.now() - slowStarted < 1500, '分块慢流共享单个错误正文总期限');
+  assert.ok(slowCancelled);
+});
+
+test('向量原文分段不切开Unicode代理对且见证对应原文；Qwen请求保留400字符/16段合同', async () => {
+  const sources = [];
+  for (const [name, content] of [
+    ['end-boundary', `${'A'.repeat(399)}🙂${'B'.repeat(4799)}`],
+    ['start-boundary', `${'A'.repeat(319)}𠮷${'B'.repeat(4799)}`],
+  ]) sources.push({ name, floorId: `floor-${name}`, assistantSeq: 1, floorMemoryId: `memory-${name}`,
+    memoryFloorId: `floor-${name}`, memoryAssistantSeq: 1, canonicalContent: content, fingerprint: await hash(content) });
+  for (const raw of sources) {
+    const chunks = rawSourceChunks({ rawSources: [raw] });
+    assert.ok(chunks.length > 1);
+    for (const chunk of chunks) {
+      assert.ok(chunk.text.length <= 400);
+      assert.equal(raw.canonicalContent.slice(chunk.witness.offset, chunk.witness.offset + chunk.witness.length), chunk.text);
+      assert.equal(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(chunk.text), false, '每段都保留完整代理对');
+      assert.equal(await rawWitnessValid({ ...chunk.witness, textFingerprint: await hash(chunk.text) }, { rawSources: [raw] }), true);
+    }
+  }
+  const ascii = rawSourceChunks({ rawSources: [{ ...sources[0], canonicalContent: 'A'.repeat(1000) }] });
+  assert.deepEqual(ascii.map(chunk => [chunk.witness.offset, chunk.witness.length]), [[0, 400], [320, 400], [640, 360]]);
+
+  const productionChunks = rawSourceChunks({ rawSources: [sources[0]] });
+  assert.equal(productionChunks.length, 16);
+  let request;
+  const api = createVectorApiClient({ fetchImpl: async (url, options) => {
+    request = { url, method: options.method, payload: JSON.parse(options.body) };
+    return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ data: request.payload.input.map((_, index) => ({ index, embedding: Array(1024).fill(1) })) }) };
+  } });
+  const qwen = normalizeVectorConfig({ url: 'https://vector.invalid/v1', key: 'test-key', model: 'Qwen/Qwen3-Embedding-8B' });
+  const result = await api.embed(qwen, productionChunks.map(chunk => chunk.text));
+  assert.equal(request.payload.input.length, 16);
+  assert.ok(request.payload.input.every(text => text.length <= 400));
+  assert.ok(request.payload.input.every(text => !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(text)));
+  assert.equal(request.payload.encoding_format, 'float');
+  assert.equal(request.payload.dimensions, 1024);
+  assert.equal(result.length, 16);
+  assert.equal(result[0].length, 1024);
+});
+
 test('正规讯飞 MaaS v1/v2 走宿主代理并透传手填模型、输入和凭证；硅基及相似域名仍直连', async () => {
   const requests = []; let hostHeaderReads = 0;
   const api = createVectorApiClient({ fetchImpl: async (url, options) => {
@@ -652,7 +1004,7 @@ test('正规讯飞 MaaS v1/v2 走宿主代理并透传手填模型、输入和�
 test('讯飞代理关闭和 Basic 登录有专门提示；供应商 HTTP 与 JSON 错误不泄露正文', async () => {
   const xfyun = normalizeVectorConfig({ url: 'https://maas-api.cn-huabei-1.xf-yun.com/v1', key: 'test-key', model: 'xop3qwen8bembedding' });
   const response = (status, { body = '', challenge = null } = {}) => ({ ok: false, status,
-    headers: { get: name => name.toLowerCase() === 'www-authenticate' ? challenge : null }, text: async () => body });
+    headers: { get: name => name.toLowerCase() === 'www-authenticate' ? challenge : name.toLowerCase() === 'content-length' ? String(new TextEncoder().encode(body).byteLength) : null }, text: async () => body });
   const proxyOff = createVectorApiClient({ fetchImpl: async () => response(404, { body: 'CORS proxy is disabled. Enable it in config.yaml or use the --corsProxy flag.' }) });
   await assert.rejects(proxyOff.embed(xfyun, ['测试']), error => error.code === 'VECTOR_PROXY_DISABLED' && error.message === '请开启酒馆 CORS 代理并重启。');
   const basic = createVectorApiClient({ fetchImpl: async () => response(401, { challenge: 'Basic realm="SillyTavern"' }) });
@@ -1151,7 +1503,7 @@ test('向量查询在失败回退与成功时都传递请求阶段，复用查�
   const source = await sourceFixture(); let failQuery = true, queryCalls = 0;
   const request = { phase: 'request', pendingStage: 'fetch_called', lastSuccessfulStage: 'fetch_called', inputCharacters: 2, inputSha256: `sha256:${'d'.repeat(64)}`, timeoutMs: 15000, durationMs: 15000 };
   const h = harness(source, { api: { embed: async (_config, texts, options) => {
-    if (options.onDiagnostic) {
+    if (options.onDiagnostic && options.timeoutMs === 15000) {
       queryCalls++;
       options.onDiagnostic({ ...request, requestId: `test-request-${queryCalls}` });
       if (failQuery) throw Object.assign(new Error('timeout'), { code: 'VECTOR_TIMEOUT' });

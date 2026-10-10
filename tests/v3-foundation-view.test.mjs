@@ -534,6 +534,11 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
   };
   let identityState = { status: 'preparing', identity: { chatId: rawChatId, hostChatId: privateText }, error: Object.assign(new Error(privateText), { code: 'QQJ_CHAT_BINDING_CONFLICT', httpStatus: 409 }) };
   let recallState = { recallStatus: 'running', activeRecall: { phase: 'selecting', token: privateText, chatId: rawChatId }, lastRecallError: Object.assign(new Error(privateText), { code: 'QQJ_TIMEOUT', httpStatus: 504 }) };
+  const vectorState = { status: 'error', buildDiagnostic: { status: 'failed', phase: 'embedding', batchNumber: 2, completedChunks: 16, totalChunks: 57,
+    inputCount: 16, inputCharacters: 6400, longestInputCharacters: 400, errorCode: 'VECTOR_HTTP_ERROR', httpStatus: 400,
+    request: { requestId: 'b5c5f920-53b0-4c6c-9be0-2b7b', phase: 'response', pendingStage: 'response_headers', elapsedMs: 91, deadlineMs: 30000,
+      httpStatus: 400, providerRequestId: 'sc_trace_20261010_12345678', providerError: { code: 'invalid_dimensions', type: 'invalid_request_error', param: 'dimensions', message: privateText },
+      key: privateText, body: privateText, url: 'https://private.invalid' } } };
   let managementState = { status: 'deleting', phase: 'deletingRecords', workBusy: true, error: privateText, targetChatId: rawChatId };
   let backendState = { sinceClientCreatedRequestCounts: { get: 2, put: 1, delete: 0 }, latestRead: null, latestWrite: null, lastFailure: null,
     coreCache: { available: true, hits: 271, misses: 0, corruptions: 0, writes: 4, writeFailures: 0, evictedRecords: 0, estimatedBytes: 123456 } };
@@ -545,10 +550,11 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };
   const recallRuntime = { getState: () => { recallReads += 1; return recallState; } };
+  const vectorRuntime = { getState: () => vectorState };
   const memoryManagement = { getState: () => { managementReads += 1; return managementState; }, deleteCurrent: async () => managementState };
   const container = new Node('main');
   const view = createV3FoundationView({
-    runtime, recallRuntime, memoryManagement, pluginVersion: '0.1.9-test',
+    runtime, recallRuntime, vectorRuntime, memoryManagement, pluginVersion: '0.1.9-test',
     sessionStateProvider: () => { sessionReads += 1; return identityState; },
     backendDiagnosticProvider: () => { backendReads += 1; return backendState; },
     documentRef, navigatorRef: { clipboard: { writeText: async () => { throw new Error('clipboard denied'); } } },
@@ -581,9 +587,14 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
   assert.deepEqual(diagnostic.memory.lastAutomationError, { present: true, name: 'Error', code: 'V3_AUTO_MEMORY_FAILED', prepareStep: null, detail: null, location: null, lastFailedAt: null });
   assert.equal(diagnostic.cse.active.phase, 'committing'); assert.equal(diagnostic.recall.active.phase, 'selecting');
   assert.deepEqual(diagnostic.management, { status: 'deleting', phase: 'deletingRecords', workBusy: true, error: { present: true } });
+  assert.deepEqual(diagnostic.vector.build, { status: 'failed', phase: 'embedding', batchNumber: 2, completedChunks: 16, totalChunks: 57,
+    inputCount: 16, inputCharacters: 6400, longestInputCharacters: 400, errorCode: 'VECTOR_HTTP_ERROR', httpStatus: 400,
+    request: { requestId: 'b5c5f920-53b0-4c6c-9be0-2b7b', phase: 'response', pendingStage: 'response_headers', elapsedMs: 91, deadlineMs: 30000,
+      httpStatus: 400, errorCode: null, providerRequestId: 'sc_trace_20261010_12345678', providerError: { code: 'invalid_dimensions', type: 'invalid_request_error', param: 'dimensions' },
+      fetchCallMs: 'unknown', responseHeadersMs: 'unknown', responseBodyMs: 'unknown' } });
   assert.deepEqual(diagnostic.ui, { syncingOverlayActive: true, workBusy: true, deleting: true, deletePending: false });
   const serialized = JSON.stringify(diagnostic);
-  assert.doesNotMatch(serialized, new RegExp(`${privateText}|${rawChatId}|${rawHeadId}|private-floor|private-run|private-memory`));
+  assert.doesNotMatch(serialized, new RegExp(`${privateText}|${rawChatId}|${rawHeadId}|private-floor|private-run|private-memory|private\.invalid`));
   assert.equal(Object.hasOwn(diagnostic.identity, 'identity'), false); assert.equal(Object.hasOwn(diagnostic.foundation, 'chatId'), false); assert.equal(Object.hasOwn(diagnostic.foundation, 'headCheckpointId'), false);
 
   memoryState = { ...memoryState, activeMemoryWork: { ...memoryState.activeMemoryWork, phase: 'committing' }, activeAutoMemory: { ...memoryState.activeAutoMemory, phase: privateText } };

@@ -82,7 +82,7 @@ function recordsWithOld(oldCount = 3) {
 }
 
 function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId = CHAT, removeHook = null, warmCache = false,
-  cacheRootChanged = false, scanFailure = null, stableCount = 10, autoEnabled = false } = {}) {
+  cacheRootChanged = false, scanFailure = null, stableCount = 10, autoEnabled = false, vectorRuntime = null } = {}) {
   let items = recordsWithOld(oldCount), memoryState = { chatId: CHAT, stableCount }, isBusy = busy;
   const removes = [], ordinaryRemoves = [], listeners = new Set(), sessionCalls = [];
   let listCalls = 0, rootReads = 0, fullReads = 0, listFailure = null, rootReadFailure = null, maintenanceRootFailure = null;
@@ -146,6 +146,7 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
   };
   const manager = createStorageManagement({
     client, store, settings, memoryRuntime, foundationRuntime: { getReachable: () => warmCache ? reachable() : null },
+    vectorRuntime,
     session,
     hostAdapter: { snapshot: () => ({ chatId: HOST, context: { chatMetadata: { qianqianjie: { chatId: CHAT } } } }) },
     isBusy: () => isBusy,
@@ -198,6 +199,26 @@ test('统计只把通过生产完整 schema 校验且不可达的九类 foundati
   assert.equal(classified.stats.retained.count, 8);
   assert.equal(classified.candidates.length, 9);
   assert.deepEqual(new Set(classified.candidates.map(item => item.recordId)), new Set(oldRecords.map(item => item.recordId)));
+});
+
+test('存储管理扫描向量续建见证并保留精确有效的未发布shard', async () => {
+  const shardId = `qqj-vector-shard-${'a'.repeat(40)}`;
+  const shard = { recordId: shardId, revision: 1, data: { schemaVersion: 1, recordType: 'vectorCache', chatId: CHAT,
+    narrativeGeneration: GENERATION, modelKey: HASH, rows: [{ witness: { floorId: FLOOR, assistantSeq: 1, floorMemoryId: MEMORY,
+      memoryFloorId: FLOOR, memoryAssistantSeq: 1, fingerprint: HASH, offset: 0, length: 10, textFingerprint: HASH }, vector: 'AAAAAA==' }] } };
+  let calls = 0, suppliedRecords = 0;
+  const f = fixture({ vectorRuntime: { async getResumableShardIds(_reachable, records) {
+    calls += 1; suppliedRecords = records.length;
+    assert.ok(records.some(value => value.recordId === shardId));
+    return [shardId];
+  } } });
+  f.records().push(shard);
+  const snapshot = await f.manager.scan();
+  assert.equal(calls, 1);
+  assert.equal(suppliedRecords, f.records().length);
+  assert.equal(snapshot.stats.active.count, 11);
+  assert.equal(snapshot.stats.cleanup.count, 3);
+  assert.equal(snapshot.candidates.some(item => item.recordId === shardId), false);
 });
 
 test('大清单分类分批让出事件循环且分类结果与小清单规则一致', async () => {

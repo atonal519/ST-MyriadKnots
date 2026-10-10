@@ -48,8 +48,10 @@ const requestPhases = ['request', 'response', 'validation', 'complete', 'request
 const hashFingerprint = value => typeof value === 'string' && (/^sha256:[a-f0-9]{64}$/u.test(value) || /^[a-f0-9]{64}$/u.test(value)) ? (value.startsWith('sha256:') ? value : `sha256:${value}`) : null;
 function vectorRequest(value) {
   if (!value || typeof value !== 'object') return null;
-  const providerId = typeof value.providerRequestId === 'string' && (/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(value.providerRequestId)
-    || /^[a-f0-9]{16,64}$/iu.test(value.providerRequestId)) ? value.providerRequestId : null;
+  const providerId = typeof value.providerRequestId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/u.test(value.providerRequestId) ? value.providerRequestId : null;
+  const providerErrorField = item => typeof item === 'string' && item.length <= 80 && /^[A-Za-z0-9_.:\-\[\]]+$/u.test(item) ? item : null;
+  const rawProviderError = value.providerError && typeof value.providerError === 'object' ? value.providerError : null;
+  const providerError = rawProviderError ? { code: providerErrorField(rawProviderError.code), type: providerErrorField(rawProviderError.type), param: providerErrorField(rawProviderError.param) } : null;
   return { requestId: typeof value.requestId === 'string' && /^[a-z0-9-]{1,80}$/iu.test(value.requestId) ? value.requestId : null,
     phase: choose(value.phase, requestPhases), pendingStage: choose(value.pendingStage, ['request_prepared', 'fetch_call_start', 'fetch_called', 'response_headers', 'response_body', 'complete', 'aborted']),
     startedAt: stamp(value.startedAt), inputCharacters: number(value.inputCharacters), inputSha256: hashFingerprint(value.inputSha256),
@@ -60,6 +62,7 @@ function vectorRequest(value) {
     abortReason: choose(value.abortReason, ['stopped', 'superseded', 'chatChanged', 'userChanged', 'narrativeChanged', 'disabled', 'invalidated', 'timeout', 'indexReset', 'external']),
     result: choose(value.result, ['running', 'succeeded', 'timeout', 'failed', 'cancelled']), errorCode: code(value.errorCode),
     networkCode: networkCode(value.networkCode), httpStatus: httpStatus(value.httpStatus), providerRequestId: providerId,
+    providerError: providerError && Object.values(providerError).some(Boolean) ? providerError : null,
     fetchCallMs: number(value.fetchCallMs), responseHeadersMs: number(value.responseHeadersMs), responseBodyMs: number(value.responseBodyMs) };
 }
 function queryDiagnostic(value) {
@@ -78,6 +81,13 @@ function queryDiagnostic(value) {
     load: value.load ? { pending: choose(value.load.pending, ['manifest', 'shard']), shardsRead: number(value.load.shardsRead), shardCount: number(value.load.shardCount),
       exitReason: choose(value.load.exitReason, ['missing', 'invalid', 'ownerMismatch', 'readFailed', 'ready']), backendCode: code(value.load.backendCode),
       httpStatus: httpStatus(value.load.httpStatus) } : null };
+}
+function vectorBuildDiagnostic(value) {
+  if (!value || typeof value !== 'object') return null;
+  return { status: choose(value.status, ['building', 'ready', 'failed', 'cancelled', 'skipped']),
+    phase: choose(value.phase, ['source', 'cache', 'embedding', 'verification', 'save', 'complete']),
+    ...counts(value, ['batchNumber', 'completedChunks', 'totalChunks', 'inputCount', 'inputCharacters', 'longestInputCharacters']),
+    errorCode: code(value.errorCode), httpStatus: httpStatus(value.httpStatus), request: vectorRequest(value.request) };
 }
 function receiptSaveDiagnostic(value) {
   if (!value) return null;
@@ -175,7 +185,7 @@ export function projectPrivateRecallDiagnostic(state, vectorState, { visibilityS
         timings: timingDiagnostic(value.timings), stages: counts(value.stages, stageKeys), selector: selector(value.selectorDiagnostic), error: safeError(value.error) })) } : null,
     receiptSaveDiagnostic: receiptSaveDiagnostic(state?.receiptSaveDiagnostic),
     vector: { status: choose(vectorState?.status, ['idle', 'building', 'ready', 'error']), active: vectorState?.active === true,
-      ...counts(vectorState, ['completed', 'total']), query: queryDiagnostic(vectorState?.query) },
+      ...counts(vectorState, ['completed', 'total']), build: vectorBuildDiagnostic(vectorState?.buildDiagnostic), query: queryDiagnostic(vectorState?.query) },
     requests: { status: choose(request?.status, ['recording', 'complete', 'unsupported', 'unavailable']), id: number(request?.id), ...counts(request, ['startedAt', 'finishedAt', 'droppedCount']),
       entries: (Array.isArray(request?.requests) ? request.requests : []).slice(-64).filter(value => ['追加聊天', '更新聊天', '保存聊天', '保存聊天设定', '分词', '批量分词', '生成请求'].includes(value.label))
         .map(value => ({ label: value.label, protocol: requestProtocol(value.protocol), httpStatus: httpStatus(value.responseStatus),

@@ -90,8 +90,12 @@ function emptyBreakdown() {
   return { story: { count: 0, bytes: 0 }, people: { count: 0, bytes: 0 }, runtime: { count: 0, bytes: 0 } };
 }
 
-export async function classifyStorageRecords(records, reachable, chatId) {
+export async function classifyStorageRecords(records, reachable, chatId, { resumableVectorShardIds = [] } = {}) {
   const activeIds = reachableRecordIds(reachable);
+  const resumableIds = new Set(resumableVectorShardIds);
+  for (const record of records) if (resumableIds.has(record?.recordId) && vectorRecordOwned(record)
+    && record.data.chatId === chatId && record.data.narrativeGeneration === reachable?.root?.narrativeGeneration
+    && record.recordId.startsWith('qqj-vector-shard-')) activeIds.add(record.recordId);
   const manifest = records.find(record => record.recordId === VECTOR_INDEX_ID && vectorRecordOwned(record) && record.data.chatId === chatId && record.data.narrativeGeneration === reachable?.root?.narrativeGeneration);
   if (manifest) { activeIds.add(VECTOR_INDEX_ID); for (const id of manifest.data.shardIds) activeIds.add(id); }
   const breakdown = { active: emptyBreakdown(), cleanup: emptyBreakdown() };
@@ -148,6 +152,7 @@ export function createStorageManagement({
   settings,
   memoryRuntime,
   foundationRuntime,
+  vectorRuntime = null,
   activitySources = [],
   isBusy = () => false,
   logger = console,
@@ -289,7 +294,8 @@ export function createStorageManagement({
       const totals = records.reduce((sum, item) => ({ count: sum.count + 1, bytes: sum.bytes + textBytes(item) }), { count: 0, bytes: 0 });
       return Object.freeze({ status: reachable?.status === 'uninitialized' ? 'uninitialized' : 'notReady', identity, stats: Object.freeze({ total: totals, active: { count: 0, bytes: 0 }, cleanup: { count: 0, bytes: 0 }, retained: totals, breakdown: { active: emptyBreakdown(), cleanup: emptyBreakdown() } }), candidates: Object.freeze([]), anchor: null });
     }
-    const classified = await classifyStorageRecords(records, reachable, identity.chatId);
+    const resumableVectorShardIds = await vectorRuntime?.getResumableShardIds?.(reachable, records) ?? [];
+    const classified = await classifyStorageRecords(records, reachable, identity.chatId, { resumableVectorShardIds });
     return Object.freeze({
       status: 'ready', identity, stats: classified.stats, candidates: classified.candidates,
       anchor: Object.freeze({ status: 'ready', chatId: reachable.root.chatId, revision: reachable.rootRevision, headCheckpointId: reachable.root.headCheckpointId,

@@ -100,6 +100,23 @@ test('私有投影保留运行步、index reset终止、网络码与保存状态
   assert.equal(beforeFetch.vector.query.requestAttempts[0].lastSuccessfulStage, 'request_prepared');
 });
 
+test('私有诊断投影保留最新向量建索引失败批次但不携带URL、Key或正文', () => {
+  const buildDiagnostic = { status: 'failed', phase: 'embedding', batchNumber: 2, completedChunks: 16, totalChunks: 57,
+    inputCount: 16, inputCharacters: 6400, longestInputCharacters: 400, errorCode: 'VECTOR_HTTP_ERROR', httpStatus: 400,
+    request: { requestId: 'b5c5f920-53b0-4c6c-9be0-2b7b', phase: 'response', pendingStage: 'response_headers', elapsedMs: 91, deadlineMs: 30000,
+      httpStatus: 400, providerRequestId: 'sc_trace_20261010_12345678', providerError: { code: 'invalid_dimensions', type: 'invalid_request_error', param: 'dimensions', message: 'SECRET provider message' },
+      url: 'https://private.invalid', key: 'SECRET api key', input: 'SECRET body' } };
+  const projected = projectPrivateRecallDiagnostic(fixture(), { buildDiagnostic });
+  assert.deepEqual(projected.vector.build, { status: 'failed', phase: 'embedding', batchNumber: 2, completedChunks: 16, totalChunks: 57,
+    inputCount: 16, inputCharacters: 6400, longestInputCharacters: 400, errorCode: 'VECTOR_HTTP_ERROR', httpStatus: 400,
+    request: { requestId: 'b5c5f920-53b0-4c6c-9be0-2b7b', phase: 'response', pendingStage: 'response_headers', startedAt: null,
+      inputCharacters: null, inputSha256: null, deadlineMs: 30000, timeoutMs: 30000, elapsedMs: 91, durationMs: 91, deadlineOverrunMs: null,
+      lastSuccessfulStage: null, timeoutOrigin: null, abortOrigin: null, abortReason: null, result: null, errorCode: null, networkCode: null,
+      httpStatus: 400, providerRequestId: 'sc_trace_20261010_12345678', providerError: { code: 'invalid_dimensions', type: 'invalid_request_error', param: 'dimensions' },
+      fetchCallMs: null, responseHeadersMs: null, responseBodyMs: null } });
+  assert.doesNotMatch(JSON.stringify(projected.vector.build), /SECRET|private\.invalid|api key|provider message/u);
+});
+
 test('失败来源核验只投影版本、固定失败引用，排除文本、URL与异常原文', () => {
   const state = fixture();
   state.lastTerminated = { status: 'terminated', chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', reason: 'sourceUnavailable', sourceEvent: 'finalSafetyGuard',

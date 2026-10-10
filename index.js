@@ -366,6 +366,7 @@ const storageManagement = createStorageManagement({
   settings,
   memoryRuntime: v3MemoryRuntime,
   foundationRuntime,
+  vectorRuntime: vectorIndex,
   activitySources: [vectorIndex, foundationRuntime, v3RecallRuntime, peopleWorkspaceRuntime, timeRuntime, chatMemoryManagement],
   isBusy: () => {
     const memory = v3MemoryRuntime.getState(), management = chatMemoryManagement.getState();

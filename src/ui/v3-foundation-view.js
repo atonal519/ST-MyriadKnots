@@ -154,6 +154,11 @@ const DIAGNOSTIC_KIND = new Set(['manual', 'auto', 'unknown']);
 const DIAGNOSTIC_REVIEW_REASON = new Set(['missingRoot', 'indexNeedsReseal', 'stableCountMismatch', 'candidateCountMismatch', 'locatorMismatch', 'markerMismatch', 'fingerprintMismatch']);
 const DIAGNOSTIC_MARKER_STATUS = new Set(['none', 'valid', 'foreign', 'invalid']);
 const DIAGNOSTIC_BINDING_ISSUE = new Set(['markerConflict', 'duplicateMarker', 'duplicateBinding', 'markerRejected']);
+const VECTOR_RUNTIME_STATUS = new Set(['idle', 'building', 'ready', 'error']);
+const VECTOR_BUILD_STATUS = new Set(['building', 'ready', 'failed', 'cancelled', 'skipped']);
+const VECTOR_BUILD_PHASE = new Set(['source', 'cache', 'embedding', 'verification', 'save', 'complete']);
+const VECTOR_REQUEST_PHASE = new Set(['request', 'response', 'validation', 'complete']);
+const VECTOR_REQUEST_STAGE = new Set(['request_prepared', 'fetch_call_start', 'fetch_called', 'response_headers', 'response_body', 'complete', 'aborted']);
 const STANDARD_ERROR_NAMES = new Set(['Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError', 'AggregateError', 'AbortError', 'DOMException', 'TimeoutError']);
 const DIAGNOSTIC_PREPARE_STEP = new Set(['synchronizing', 'snapshotClone', 'sourceSelection', 'sourceSanitization', 'timeSources', 'identityDirectory', 'qianshiCandidates', 'extractorEnvelope', 'dependencySnapshot', 'rootCheck', 'extractorHandoff']);
 const AUTOMATION_DETAILS = new Set(['Graphology 检测到重复图边。', '结构化复制失败。', '类型检查失败。', '插件内部错误码已记录。', '未分类错误。']);
@@ -241,7 +246,7 @@ const searchSnippet = (value, query, limit = 110) => {
   return `${start > 0 ? '…' : ''}${source.slice(start, end).replace(/\s+/gu, ' ').trim()}${end < source.length ? '…' : ''}`;
 };
 
-export function createV3FoundationView({ runtime, recallRuntime = null, peopleRuntime = null, timeRuntime = null, memoryManagement = null, sessionStateProvider = null, backendDiagnosticProvider = null, pluginVersion = 'unknown', uiDiagnosticProvider = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, chooseImpl = null, infoImpl = () => Promise.resolve(true), customImpl = null } = {}) {
+export function createV3FoundationView({ runtime, recallRuntime = null, vectorRuntime = null, peopleRuntime = null, timeRuntime = null, memoryManagement = null, sessionStateProvider = null, backendDiagnosticProvider = null, pluginVersion = 'unknown', uiDiagnosticProvider = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, chooseImpl = null, infoImpl = () => Promise.resolve(true), customImpl = null } = {}) {
   if (!runtime || ['getState', 'refreshStatus', 'confirmLatest'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('V3 foundation view runtime 无效');
   if (recallRuntime && typeof recallRuntime.getState !== 'function') throw new TypeError('V3 recall view runtime 无效');
   if (peopleRuntime && typeof peopleRuntime.getState !== 'function') throw new TypeError('V3 people workspace runtime 无效');
@@ -433,6 +438,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const memory = readDiagnosticState(() => runtime.getState());
     const identity = readDiagnosticState(sessionStateProvider);
     const recall = readDiagnosticState(() => recallRuntime?.getState?.());
+    const vector = readDiagnosticState(() => vectorRuntime?.getState?.());
     const management = readDiagnosticState(() => memoryManagement?.getState?.());
     const memoryKnown = memory !== null, identityKnown = identity !== null, recallKnown = recall !== null, managementKnown = management !== null;
     const deleting = management?.status === 'deleting', deletePending = management?.status === 'failed';
@@ -480,6 +486,29 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         active: recallKnown ? operationDiagnostic(recall.activeRecall) : { present: 'unknown', phase: 'unknown' },
         lastError: errorDiagnostic(recall?.lastRecallError, recallKnown),
       },
+      vector: (() => {
+        const build = vector?.buildDiagnostic;
+        if (!build) return { status: enumDiagnostic(vector?.status, VECTOR_RUNTIME_STATUS), build: null };
+        const request = build.request;
+        const safeField = value => typeof value === 'string' && value.length <= 80 && /^[A-Za-z0-9_.:\-\[\]]+$/u.test(value) ? value : null;
+        return { status: enumDiagnostic(vector?.status, VECTOR_RUNTIME_STATUS), build: {
+          status: enumDiagnostic(build.status, VECTOR_BUILD_STATUS),
+          phase: enumDiagnostic(build.phase, VECTOR_BUILD_PHASE),
+          batchNumber: countDiagnostic(build.batchNumber), completedChunks: countDiagnostic(build.completedChunks), totalChunks: countDiagnostic(build.totalChunks),
+          inputCount: countDiagnostic(build.inputCount), inputCharacters: countDiagnostic(build.inputCharacters), longestInputCharacters: countDiagnostic(build.longestInputCharacters),
+          errorCode: typeof build.errorCode === 'string' && /^VECTOR_[A-Z0-9_]{1,80}$/u.test(build.errorCode) ? build.errorCode : null,
+          httpStatus: Number.isSafeInteger(build.httpStatus) && build.httpStatus >= 100 && build.httpStatus <= 599 ? build.httpStatus : null,
+          request: request ? { requestId: typeof request.requestId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:\-]{7,127}$/u.test(request.requestId) ? request.requestId : null,
+            phase: enumDiagnostic(request.phase, VECTOR_REQUEST_PHASE),
+            pendingStage: enumDiagnostic(request.pendingStage, VECTOR_REQUEST_STAGE),
+            elapsedMs: countDiagnostic(request.elapsedMs), deadlineMs: countDiagnostic(request.deadlineMs),
+            httpStatus: Number.isSafeInteger(request.httpStatus) && request.httpStatus >= 100 && request.httpStatus <= 599 ? request.httpStatus : null,
+            errorCode: typeof request.errorCode === 'string' && /^VECTOR_[A-Z0-9_]{1,80}$/u.test(request.errorCode) ? request.errorCode : null,
+            providerRequestId: typeof request.providerRequestId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:\-]{7,127}$/u.test(request.providerRequestId) ? request.providerRequestId : null,
+            providerError: request.providerError ? { code: safeField(request.providerError.code), type: safeField(request.providerError.type), param: safeField(request.providerError.param) } : null,
+            fetchCallMs: countDiagnostic(request.fetchCallMs), responseHeadersMs: countDiagnostic(request.responseHeadersMs), responseBodyMs: countDiagnostic(request.responseBodyMs) } : null,
+        } };
+      })(),
       management: {
         status: managementKnown ? enumDiagnostic(management.status, DIAGNOSTIC_STATUS) : 'unknown',
         phase: managementKnown && management.phase !== null ? enumDiagnostic(management.phase, DIAGNOSTIC_PHASE) : managementKnown ? null : 'unknown',

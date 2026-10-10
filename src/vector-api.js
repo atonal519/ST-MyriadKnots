@@ -3,15 +3,106 @@ import { newIdentityUuid, sha256 } from './identity.js';
 export const VECTOR_DEFAULT_URL = 'https://api.siliconflow.cn/v1';
 export const VECTOR_DEFAULT_MODEL = 'Qwen/Qwen3-Embedding-8B';
 const XFYUN_MAAS_HOST = 'maas-api.cn-huabei-1.xf-yun.com';
+const MAX_PROVIDER_ERROR_BYTES = 8192;
+const PROVIDER_ERROR_READ_MS = 250;
 const fail = (code, message) => Object.assign(new Error(message), { code });
+const cancelQuietly = value => { try { Promise.resolve(value?.cancel?.()).catch(() => {}); } catch { /* optional diagnostic stream */ } };
 const safeNetworkCode = value => typeof value === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/u.test(value) ? value : null;
 const safeAbortReason = value => ['stopped', 'superseded', 'chatChanged', 'userChanged', 'narrativeChanged', 'disabled', 'invalidated', 'indexReset'].includes(value) ? value : 'external';
 function providerRequestId(headers) {
   try {
-    const value = headers?.get?.('x-request-id') ?? headers?.get?.('x-inference-request-id');
-    return typeof value === 'string' && (/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(value)
-      || /^[a-f0-9]{16,64}$/iu.test(value)) ? value : null;
+    const value = headers?.get?.('x-siliconcloud-trace-id') ?? headers?.get?.('x-request-id') ?? headers?.get?.('x-inference-request-id');
+    return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/u.test(value) ? value : null;
   } catch { return null; }
+}
+
+function safeProviderField(value) {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) value = String(value);
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text.length > 0 && text.length <= 80 && /^[A-Za-z0-9_.:\-\[\]]+$/u.test(text) ? text : null;
+}
+
+function providerErrorFields(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const error = value.error && typeof value.error === 'object' && !Array.isArray(value.error) ? value.error : value;
+  const fields = { code: safeProviderField(error.code ?? value.code), type: safeProviderField(error.type ?? value.type), param: safeProviderField(error.param ?? value.param) };
+  return Object.values(fields).some(Boolean) ? fields : null;
+}
+
+async function readSmallErrorBody(response, signal) {
+  let timer = null;
+  let reader = null;
+  let timedOut = false;
+  const deadline = Date.now() + PROVIDER_ERROR_READ_MS;
+  try {
+    const rawLength = response.headers?.get?.('content-length');
+    const length = rawLength === null || rawLength === undefined || rawLength === '' ? NaN : Number(rawLength);
+    if (Number.isFinite(length) && length > MAX_PROVIDER_ERROR_BYTES) {
+      cancelQuietly(response.body);
+      return null;
+    }
+    reader = response.body?.getReader?.();
+    if (reader) {
+      const chunks = [];
+      let total = 0;
+      const cancel = () => cancelQuietly(reader);
+      signal?.addEventListener('abort', cancel, { once: true });
+      try {
+        while (true) {
+          const remainingMs = Math.max(0, deadline - Date.now());
+          if (remainingMs === 0) { timedOut = true; cancel(); return null; }
+          const result = await Promise.race([
+            reader.read().then(value => value, () => ({ done: true })),
+            new Promise(resolve => { timer = setTimeout(() => { timedOut = true; cancel(); resolve({ done: true }); }, remainingMs); }),
+          ]);
+          clearTimeout(timer); timer = null;
+          if (timedOut) return null;
+          const { done, value } = result;
+          if (done) break;
+          total += value?.byteLength ?? 0;
+          if (total > MAX_PROVIDER_ERROR_BYTES) {
+            cancel();
+            return null;
+          }
+          chunks.push(value);
+        }
+      } finally {
+        clearTimeout(timer); timer = null;
+        signal?.removeEventListener('abort', cancel);
+        try { reader.releaseLock(); } catch { /* optional stream reader */ }
+      }
+      const bytes = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+      return new TextDecoder().decode(bytes);
+    }
+    if (typeof response.text === 'function') {
+      // Fetch streams can be consumed incrementally above. A text-only adapter
+      // has no size bound before allocation, so inspect it only with a trusted
+      // small Content-Length; otherwise preserve the HTTP error without reading.
+      if (!Number.isFinite(length) || length < 0 || length > MAX_PROVIDER_ERROR_BYTES) {
+        cancelQuietly(response.body);
+        return null;
+      }
+      const text = await Promise.race([
+        response.text().then(value => value, () => null),
+        new Promise(resolve => { timer = setTimeout(() => { timedOut = true; resolve(null); }, PROVIDER_ERROR_READ_MS); }),
+      ]);
+      clearTimeout(timer); timer = null;
+      return typeof text === 'string' && text.length <= MAX_PROVIDER_ERROR_BYTES ? text : null;
+    }
+  } catch { /* provider detail never changes the HTTP error */ }
+  finally {
+    clearTimeout(timer);
+    if (timedOut) cancelQuietly(reader ?? response.body);
+  }
+  return null;
+}
+
+function parseProviderError(text) {
+  if (text === null) return null;
+  try { return providerErrorFields(JSON.parse(text)); } catch { return null; }
 }
 
 // 向量角色独立配置凭证；空 URL/模型才使用默认值，不跟随聊天 API。
@@ -78,7 +169,7 @@ export function createVectorApiClient({ fetchImpl = globalThis.fetch, headers: r
       const diagnostic = { requestId, startedAt: new Date(started).toISOString(), inputCharacters: input.reduce((sum, text) => sum + text.length, 0), inputSha256: null,
         deadlineMs: timeoutMs, timeoutMs, elapsedMs: 0, phase: 'request', pendingStage: 'request_prepared', lastSuccessfulStage: 'request_prepared', timeoutOrigin: null,
         deadlineOverrunMs: 0, abortOrigin: null, abortReason: null, networkCode: null, providerRequestId: null,
-        fetchCallMs: null, responseHeadersMs: null, responseBodyMs: null, httpStatus: null, durationMs: 0 };
+        providerError: null, fetchCallMs: null, responseHeadersMs: null, responseBodyMs: null, httpStatus: null, durationMs: 0 };
       const emit = (callback, value) => {
         if (finalized || typeof callback !== 'function') return;
         try { callback(Object.freeze({ ...value })); } catch { /* 诊断不能改变请求结果。 */ }
@@ -135,17 +226,21 @@ export function createVectorApiClient({ fetchImpl = globalThis.fetch, headers: r
           diagnostic.lastSuccessfulStage = 'response_headers';
           progress('response_headers');
           if (!response.ok) {
+            // Once the status is known, optional error detail must not consume the API deadline.
+            clearTimeout(timer);
             if (usesNativeXfyunProxy(config.url) && response.status === 401 && /^Basic(?:\s|$)/iu.test(response.headers?.get?.('www-authenticate') ?? '')) {
               throw fail('VECTOR_BASIC_AUTH_CONFLICT', '酒馆密码认证阻止了向量转发。');
             }
+            const errorBody = await readSmallErrorBody(response, controller.signal);
             if (usesNativeXfyunProxy(config.url) && response.status === 404) {
-              let proxyMessage = '';
-              try { proxyMessage = await response.text(); } catch {}
-              if (proxyMessage.trim() === 'CORS proxy is disabled. Enable it in config.yaml or use the --corsProxy flag.') {
+              if (errorBody?.trim() === 'CORS proxy is disabled. Enable it in config.yaml or use the --corsProxy flag.') {
                 throw fail('VECTOR_PROXY_DISABLED', '请开启酒馆 CORS 代理并重启。');
               }
             }
-            throw fail('VECTOR_HTTP_ERROR', `向量请求失败（HTTP ${response.status}）。`);
+            diagnostic.providerError = parseProviderError(errorBody);
+            throw Object.assign(fail('VECTOR_HTTP_ERROR', `向量请求失败（HTTP ${response.status}）。`), {
+              status: response.status, providerError: diagnostic.providerError,
+            });
           }
           let body;
           try { body = await response.json(); }
