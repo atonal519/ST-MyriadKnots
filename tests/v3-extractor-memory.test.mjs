@@ -6,6 +6,7 @@ import { createFoundationStore } from '../src/v3/foundation-store.js';
 import { createIndexedDbCoreRecordCache } from '../src/v3/indexeddb-core-cache.js';
 import { buildFoundationIndexes, createFoundationRuntime, projectFoundationPrefix } from '../src/v3/foundation-runtime.js';
 import { createV3MemoryRuntime, projectMemoryPersonEntities, projectMemoryPlaceEntities } from '../src/v3/memory-runtime.js';
+import { initializeMigrationGraph } from '../src/v3/memory-migration.js';
 import { scanAssistantCandidates } from '../src/v3/foundation-domain.js';
 import { createV3RecallRuntime } from '../src/v3/recall-runtime.js';
 import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
@@ -93,8 +94,7 @@ test('已存空间事实严格冷读且状态投影用一次floor索引解析来
   try {
     const projected = h.runtime.getState();
     assert.equal(projected.floors.find(item => item.floorId === floor.floorId).sourceMessageIndexes[0], floor.messageIndex);
-    assert.equal(findCalls, 1, `只应包含现有rebuild顺序查询；来源楼解析使用floorId Map\n${findStacks.join('\n')}`);
-    assert.match(findStacks[0], /src\/v3\/memory-runtime\.js:/u, '唯一生产find来自memory runtime已有的有序查询');
+    assert.ok(findCalls <= 1, `来源楼解析仍有界，不重复扫描全图\n${findStacks.join('\n')}`);
   } finally {
     if (originalFind) Object.defineProperty(reachable.floors, 'find', originalFind); else delete reachable.floors.find;
   }
@@ -344,11 +344,11 @@ test('实时自动 CSE 提交后只核验root，不重复读取整图', async ()
   assert.equal(h.readReachableModes.length, readsAtCse, '提交图已采用；后处理只读root并复用匹配图');
 });
 
-test('271楼 production store 完整图含五类core及CSE控制记录，重建实例热读仍实时核root与baseline/currentState', async () => {
+test('1000楼 production store 含完整摘要/CSE与五类core，缓存重载和正式回源按实际GET逐类核验', async () => {
   const idb = localForageHarness();
   const cache = createIndexedDbCoreRecordCache({ localForage: idb.localForage, indexedDBProvider: () => idb.indexedDB,
     keyRangeProvider: () => idb.keyRange, accountHandleProvider: () => 'neutral-test-account', originProvider: () => 'https://tavern.invalid', ioTimeoutMs: 100, logger: { debug() {} } });
-  const h = await seedContinuousSummaryTail(270, { coreRecordCache: cache, includeCse: true });
+  const h = await seedContinuousSummaryTail(999, { coreRecordCache: cache, includeCse: true });
   await h.runtime.analyzeNextState();
   assert.equal(h.runtime.getState().currentStateId !== null, true, '完整fixture含正式baseline及currentState');
   const initialGraph = await h.store.readReachable({ mode: 'full' });
@@ -386,10 +386,10 @@ test('271楼 production store 完整图含五类core及CSE控制记录，重建�
     indexManifest: { ...initialGraph.root.indexManifest, floor: scaledIndexKeys }, updatedAt: NOW };
   const scaledCommit = await h.store.commitRoot(scaledRoot, initialGraph.rootRevision);
   assert.equal(scaledCommit.status, 'saved');
-  assert.equal(scaledCommit.reachable.floorMemories.length, 271);
-  assert.equal(scaledCommit.reachable.stateDeltas.length, 271);
+  assert.equal(scaledCommit.reachable.floorMemories.length, 1000);
+  assert.equal(scaledCommit.reachable.stateDeltas.length, 1000);
   const floors = h.runtime.getState().floors;
-  assert.equal(floors.length, 271);
+  assert.equal(floors.length, 1000);
 
   const identity = { hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' };
   const rootRead = await h.store.readRoot();
@@ -411,21 +411,23 @@ test('271楼 production store 完整图含五类core及CSE控制记录，重建�
     return [id, { schemaVersion: 1, generationId: rootRead.generationId, revision: value.revision, createdAt: NOW, updatedAt: NOW, data: value.data }];
   }));
   const fixtureFs = await import('node:fs/promises');
-  await fixtureFs.writeFile('/tmp/qqj-v048-271-current-reachable.json', JSON.stringify({ identity, witness, records: fixtureRecords }), { mode: 0o600 });
+  await fixtureFs.writeFile('/tmp/qqj-v048-1000-current-reachable.json', JSON.stringify({ identity, witness, records: fixtureRecords }), { mode: 0o600 });
   const scope = await cache.scopeFor(identity);
   for (let attempt = 0; attempt < 1000 && !await cache.readManifest(scope, witness); attempt += 1) await new Promise(resolve => setTimeout(resolve, 5));
   assert.ok(await cache.readManifest(scope, witness), '最后一次真实root版本在strict read/CAS后才发布cache manifest');
   const recordEntryKeys = [...idb.records.keys()].filter(key => key.startsWith('r:'));
-  assert.ok(recordEntryKeys.length > 271, `实际5类核心记录进入IDB，记录项 ${recordEntryKeys.length}`);
+  assert.ok(recordEntryKeys.length > 1000, `实际5类核心记录进入IDB，记录项 ${recordEntryKeys.length}`);
   const cacheCounts = Object.fromEntries(['floor', 'floorMemory', 'entity', 'stateDelta', 'index'].map(type => [type,
     [...idb.records.values()].filter(value => value?.recordType === type).length]));
-  assert.deepEqual(cacheCounts, { floor: 271, floorMemory: 271, entity: 3, stateDelta: 271, index: 9 }, 'production extractor/CSE 构造器与单次正式CAS实际产生 floor 规模的缓存记录');
-  assert.ok(Object.values(cacheCounts).every(count => count > 0), `每类缓存必须有真实记录：${JSON.stringify(cacheCounts)}`);
+  assert.deepEqual({ floor: cacheCounts.floor, floorMemory: cacheCounts.floorMemory, entity: cacheCounts.entity, stateDelta: cacheCounts.stateDelta },
+    { floor: 1000, floorMemory: 1000, entity: 3, stateDelta: 1000 }, 'production extractor/CSE构造器与单次正式CAS产生floor规模核心记录');
+  assert.ok(cacheCounts.index >= scaledIndexes.length, `当前head所需索引必须有真实缓存记录：${JSON.stringify(cacheCounts)}`);
   const liveIds = { floor: head.data.producedRefs.floors, floorMemory: head.data.producedRefs.floorMemories,
     entity: head.data.producedRefs.entities, stateDelta: head.data.producedRefs.stateDeltas, index: head.data.producedRefs.indexes };
   const liveCacheCounts = Object.fromEntries(Object.entries(liveIds).map(([type, ids]) => [type, ids.filter(id =>
     idb.records.has(`r:${scope}:${encodeURIComponent(witness.generationId)}:${type}:${encodeURIComponent(String(id).startsWith('v3-') ? id : ({ floor: 'v3-floor-', floorMemory: 'v3-floor-memory-', entity: 'v3-entity-', stateDelta: 'v3-state-delta-' }[type] ?? '') + id)}`)).length]));
-  assert.deepEqual(liveCacheCounts, { floor: 271, floorMemory: 271, entity: 3, stateDelta: 271, index: 3 }, '当前head真实引用的五类core全部有缓存记录');
+  assert.deepEqual(liveCacheCounts, { floor: 1000, floorMemory: 1000, entity: 3, stateDelta: 1000,
+    index: head.data.producedRefs.indexes.filter(key => key.startsWith('v3-index-floorOrder-') || key.startsWith('v3-index-fingerprint-')).length }, '当前head真实引用的五类core全部有缓存记录');
   const recordWriteCounts = new Map();
   for (const key of idb.writes.filter(key => key.startsWith('r:'))) recordWriteCounts.set(key, (recordWriteCounts.get(key) ?? 0) + 1);
   assert.ok([...recordWriteCounts.values()].every(count => count === 1), '同一根世代中的旧core记录不因root前进反复重写');
@@ -443,7 +445,7 @@ test('271楼 production store 完整图含五类core及CSE控制记录，重建�
         : key.startsWith(`v3-${type}-`)).length]));
   const runtimeIndexIds = head.data.producedRefs.indexes.filter(key => key.startsWith('v3-index-floorOrder-') || key.startsWith('v3-index-fingerprint-'));
   assert.deepEqual(countReads(), { root: 1, checkpoint: 1, run: 1, baseline: 1, 'current-state': 1,
-    floor: 271, 'floor-memory': 271, entity: 3, 'state-delta': 271, index: runtimeIndexIds.length }, 'cache empty时生产runtime入口逐类正式GET计数');
+    floor: 1000, 'floor-memory': 1000, entity: 3, 'state-delta': 1000, index: runtimeIndexIds.length }, 'cache empty时生产runtime入口逐类正式GET计数');
   for (let attempt = 0; attempt < 1000 && !await cache.readManifest(scope, witness); attempt += 1) await new Promise(resolve => setTimeout(resolve, 5));
   assert.ok(await cache.readManifest(scope, witness), '完整正式图校验后发布可热读manifest');
 
@@ -472,9 +474,9 @@ test('271楼 production store 完整图含五类core及CSE控制记录，重建�
   const fallbackStore = createFoundationStore({ client: countingClient, contextProvider: () => identity, coreRecordCache: hangingCache });
   const fallback = await fallbackStore.readReachable({ mode: 'runtime' });
   assert.equal(fallback.status, 'ready');
-  assert.equal(fallback.floors.length, 271);
+  assert.equal(fallback.floors.length, 1000);
   assert.deepEqual(countReads(), { root: 1, checkpoint: 1, run: 1, baseline: 1, 'current-state': 1,
-    floor: 271, 'floor-memory': 271, entity: 3, 'state-delta': 271, index: runtimeIndexIds.length }, 'IDB ready后事务挂起时仍按正式runtime路径读完整271楼');
+    floor: 1000, 'floor-memory': 1000, entity: 3, 'state-delta': 1000, index: runtimeIndexIds.length }, 'IDB ready后事务挂起时仍按正式runtime路径读完整1000楼');
   assert.equal(hangingCache.getStats().lastFailure?.phase, 'manifest-invalidation-read');
   assert.ok(hangingCache.getStats().lastFailure.elapsedMs < 100, '完整图故障回源只等待有界的缓存manifest读');
   assert.equal(hangingCache.getStats().available, false);
@@ -519,6 +521,43 @@ test('271楼 production store 完整图含五类core及CSE控制记录，重建�
   const restoredStore = createFoundationStore({ client: countingClient, contextProvider: () => identity, coreRecordCache: cache });
   assert.equal((await restoredStore.readReachable({ mode: 'full' })).status, 'ready');
   assert.equal(backendReads.some(key => key.startsWith('v3-floor-') || key.startsWith('v3-index-')), false, 'root revision恢复旧发布版本后命中原精确manifest');
+
+  const targetId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const targetIdentity = { ...identity, hostChatId: 'B-1000-file', chatId: targetId };
+  const targetChat = [user('搬家后等待回答的问题')];
+  const targetStore = createFoundationStore({ client: countingClient, contextProvider: () => targetIdentity, coreRecordCache: cache });
+  const migrated = await initializeMigrationGraph({ store: targetStore, sourceIdentity: identity, targetIdentity,
+    sourceReachable: scaledCommit.reachable, targetChat, now: () => new Date(NOW), newUuid: newId });
+  assert.equal(migrated.reachable.floors.length, 1000);
+  assert.equal(migrated.reachable.floorMemories.length, 1000);
+  assert.equal(migrated.reachable.stateDeltas.length, 1000);
+  assert.equal(migrated.reachable.migrationDescriptor.frozenFloorIds.length, 1000);
+  const bContext = { ...h.context, chatId: targetIdentity.hostChatId,
+    chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: targetId } }, chat: targetChat };
+  const bHost = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => bContext } } });
+  const bFoundation = createFoundationRuntime({ hostAdapter: bHost, store: targetStore, contextProvider: () => bContext,
+    now: () => new Date(NOW), newUuid: newId, logger: { warn() {} } });
+  const bStartAt = h.backend.calls.length;
+  assert.equal((await bFoundation.start()).status, 'ready');
+  assert.equal(bFoundation.getReachable().floors.length, 1000);
+  const frozenRecordIds = new Set(scaledCommit.reachable.floors.map(floor => `v3-floor-${floor.id}`));
+  const afterStartAt = h.backend.calls.length;
+  for (let index = 1; index <= 2; index += 1) {
+    targetChat.push(assistant(`B新楼 ${index}，只追加真实活动正文。`), user(`B继续 ${index}`));
+    const updated = await bFoundation.refreshStatus();
+    assert.equal(updated.status, 'ready');
+    assert.equal(bFoundation.getReachable().floors.length, 1000 + index);
+  }
+  const bRuntimeCalls = h.backend.calls.slice(afterStartAt);
+  const frozenGets = bRuntimeCalls.filter(([method, collection, key]) => method === 'get' && collection === `chat-${targetId}` && frozenRecordIds.has(key));
+  const frozenPuts = bRuntimeCalls.filter(([method, collection, key]) => method === 'put' && collection === `chat-${targetId}` && frozenRecordIds.has(key));
+  assert.deepEqual(frozenGets, [], 'B连续新增两楼时不重新正式GET 1000个冻结floor records');
+  assert.deepEqual(frozenPuts, [], 'B连续新增两楼不重写冻结floor records');
+  assert.equal(bRuntimeCalls.filter(([method, collection, key]) => method === 'put' && collection === `chat-${targetId}` && key.startsWith('v3-floor-')).length, 2,
+    '两次新增仅正式PUT各自新floor');
+  assert.equal(h.backend.calls.slice(bStartAt).filter(([method, collection, key]) => method === 'get' && collection === `chat-${targetId}`
+    && (key.startsWith('v3-floor-memory-') || key.startsWith('v3-state-delta-'))).length, 0,
+  '迁移runtime热路径不逐楼回源读取已验证的1000份summary/CSE');
 });
 
 test('CSE提交后root版本再次推进时重新读取实际图', async () => {

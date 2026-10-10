@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { assessMemoryCoverageFromHost, coverageHostGuardCurrent } from '../src/v3/memory-coverage.js';
+import { MIGRATION_ALIAS_KEY } from '../src/v3/migration-prefix.js';
 import { projectEntityFloorBounds } from '../src/v3/memory-schema.js';
+import { validateFoundationRoot } from '../src/v3/foundation-schema.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const FLOOR = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -12,6 +14,18 @@ const GENERATION_1 = '11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GENERATION_2 = '22222222-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const anchor = floorId => ({ qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId } });
 const floor = (id, seq, narrativeGeneration = GENERATION_1) => ({ id, narrativeGeneration, assistantSeq: seq, hostLocator: { messageIndex: (seq - 1) * 2, swipeId: null, selectedSwipeIndex: null }, content: { rawFingerprint: 'sha256:old', canonicalFingerprint: 'sha256:old' } });
+
+test('普通旧root保持未迁移格式，迁移descriptor仅在实际搬家root上存在', () => {
+  const oldRoot = { schemaVersion: 3, recordType: 'root', id: 'root', chatId: CHAT, narrativeGeneration: GENERATION_1, status: 'ready',
+    capabilities: { foundationReady: true, memoryReady: false, cseReady: false, recallReady: false }, headCheckpointId: null,
+    sourceSnapshotFingerprint: null, stableBoundary: { assistantSeq: 0, floorId: null, canonicalFingerprint: null }, baselineId: null,
+    activeRunId: null, indexManifest: { floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] },
+    activeStateRefs: [], activeThreadRefs: [], createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z', recordStatus: 'active', supersedes: null };
+  const accepted = validateFoundationRoot(oldRoot);
+  assert.equal(Object.hasOwn(accepted, 'migrationDescriptorId'), false);
+  const migrated = validateFoundationRoot({ ...oldRoot, migrationDescriptorId: 'v3-migration-archive' });
+  assert.equal(migrated.migrationDescriptorId, 'v3-migration-archive');
+});
 
 test('已挂标摘要在正文变化后coverage仍确认，最终guard按marker而非正文', async () => {
   const message = { is_user: false, is_system: false, mes: '已经编辑的新正文', extra: anchor(FLOOR) };
@@ -75,6 +89,38 @@ test('重复或冲突 marker 不得取得 coverage 证明', async () => {
   assert.equal((await assessMemoryCoverageFromHost({ reachable, snapshot: duplicate })).status, 'unknown');
   duplicate.chat[1].extra = anchor('33333333-3333-4333-8333-333333333333');
   assert.equal((await assessMemoryCoverageFromHost({ reachable, snapshot: duplicate })).status, 'unknown');
+});
+
+test('迁移coverage在完整归档图上证明冻结前缀，只计算B真实活动段并沿完整assistantSeq续号', async () => {
+  const crypto = await import('../src/identity.js');
+  const carriedId = '33333333-3333-4333-8333-333333333333';
+  const carriedText = 'A里已完成并携带到B的AI';
+  const liveText = 'B里的新AI';
+  const tailText = 'B最新待处理AI';
+  const carriedFingerprint = `sha256:${await crypto.sha256(carriedText)}`;
+  const liveFingerprint = `sha256:${await crypto.sha256(liveText)}`;
+  const tailFingerprint = `sha256:${await crypto.sha256(tailText)}`;
+  const frozen = { ...floor(FLOOR, 1), hostLocator: { messageIndex: 808, swipeId: 1, selectedSwipeIndex: 1 }, content: { rawFingerprint: carriedFingerprint, canonicalFingerprint: carriedFingerprint } };
+  const live = { ...floor(MEMORY, 2), hostLocator: { messageIndex: 2, swipeId: null, selectedSwipeIndex: null }, content: { rawFingerprint: liveFingerprint, canonicalFingerprint: liveFingerprint } };
+  const reachable = {
+    root: { chatId: CHAT }, floors: [frozen, live], floorMemories: [], stateDeltas: [],
+    migrationDescriptor: { id: '44444444-4444-4444-8444-444444444444', frozenFloorIds: [FLOOR], floorOrigins: [], carriedAliases: [{ aliasId: carriedId, floorId: FLOOR, targetMessageIndex: 1, rawFingerprint: carriedFingerprint, canonicalFingerprint: carriedFingerprint }] },
+  };
+  const snapshot = { context: { chatMetadata: { qianqianjie: { chatId: CHAT } } }, chat: [
+    { is_user: true, mes: '被携带的USER', extra: {} },
+    { is_user: false, is_system: false, mes: carriedText, extra: { [MIGRATION_ALIAS_KEY]: carriedId } },
+    { is_user: false, is_system: false, mes: liveText, extra: {} },
+    { is_user: false, is_system: false, mes: tailText, extra: {} },
+  ] };
+  const coverage = await assessMemoryCoverageFromHost({ reachable, snapshot, captureGuard: true });
+  assert.equal(coverage.status, 'historicalDebt');
+  assert.equal(coverage.total, 1);
+  assert.equal(coverage.completed, 0);
+  assert.equal(coverage.nextAssistantSeq, 2, 'coverage继续当前已建floor的工作');
+  assert.deepEqual(coverage.pendingFloorIds, [MEMORY, `host-tail:3:${tailFingerprint}`]);
+  assert.equal(coverage.unregisteredSummaryRefs[0].assistantSeq, 3, '未建floor的B候选沿完整冻结前缀序号续号');
+  assert.deepEqual(coverage.summaryPendingFloorIds, [MEMORY, `host-tail:3:${tailFingerprint}`]);
+  assert.equal(coverageHostGuardCurrent(coverage, snapshot), true);
 });
 
 test('实体首末楼按全部存活memory/CSE结构化引用投影', () => {

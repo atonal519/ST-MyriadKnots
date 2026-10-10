@@ -64,11 +64,14 @@ function inheritedPrefix(source, candidates) {
   return Object.freeze({ count, candidates: candidates.slice(0, count), floors: source.floors.slice(0, count) });
 }
 
-async function copyLatestPeople({ peopleStore, sourceIdentity, targetIdentity, entities, now, signal }) {
-  const existing = await peopleStore.read(targetIdentity);
-  if (existing.data) return existing.data;
+export async function copyLatestPeople({ peopleStore, sourceIdentity, targetIdentity, entities, now, signal, snapshotSourceIds = null }) {
   const source = await peopleStore.read(sourceIdentity);
-  if (!source.data) return null;
+  const snapshotIds = Array.isArray(snapshotSourceIds)
+    ? await peopleStore.copySnapshots(sourceIdentity, targetIdentity, snapshotSourceIds, source.data ? source : null)
+    : null;
+  const existing = await peopleStore.read(targetIdentity);
+  if (existing.data) return snapshotIds ? Object.freeze({ workspace: existing.data, snapshotIds }) : existing.data;
+  if (!source.data) return snapshotIds ? Object.freeze({ workspace: null, snapshotIds }) : null;
   const allowed = new Set(entities.map(entity => entity.id));
   const pickMap = value => Object.fromEntries(Object.entries(value ?? {}).filter(([entityId]) => allowed.has(entityId)));
   const redirects = Object.fromEntries(Object.entries(source.data.identityRedirectsByEntityId ?? {})
@@ -90,13 +93,16 @@ async function copyLatestPeople({ peopleStore, sourceIdentity, targetIdentity, e
   const hasContent = workspace.selectedEntityIds.length || workspace.personOrderEntityIds.length
     || Object.keys(workspace.profilesByEntityId).length || Object.keys(workspace.avatarsByEntityId).length
     || Object.keys(workspace.identityRedirectsByEntityId).length || workspace.deletedEntityIds.length;
-  if (!hasContent) return null;
-  try { return (await peopleStore.put(targetIdentity, workspace, 0, { signal })).data; }
+  if (!hasContent) return snapshotIds ? Object.freeze({ workspace: null, snapshotIds }) : null;
+  try {
+    const saved = (await peopleStore.put(targetIdentity, workspace, 0, { signal })).data;
+    return snapshotIds ? Object.freeze({ workspace: saved, snapshotIds }) : saved;
+  }
   catch (error) {
     if (error?.status !== 409) throw error;
     const winner = await peopleStore.read(targetIdentity);
     if (!winner.data) throw error;
-    return winner.data;
+    return snapshotIds ? Object.freeze({ workspace: winner.data, snapshotIds }) : winner.data;
   }
 }
 

@@ -1085,6 +1085,19 @@ test('千事时间线不再接收 settings，也不创建任何重要操作按�
   assert.doesNotMatch(copy(container), /重要/u);
 });
 
+test('搬家前千事事件显示来源聊天且只读，B 的新进展仍保留操作', () => {
+  const initialSnapshot = fixture();
+  initialSnapshot.events[0] = { ...initialSnapshot.events[0], frozen: true,
+    sourceOrigin: { sourceMessageIndex: 1, sourceChatId: 'source-chat' } };
+  const view = harness({ initialSnapshot, canEdit: id => id !== 'event-1' });
+  const old = view.eventCard('event-1');
+  old.open = true; old.fire('toggle');
+  assert.match(copy(old), /来源聊天第 1 楼/u);
+  assert.match(copy(old), /来源于搬家前存档，只读/u);
+  assert.equal(view.eventMenu('event-1'), undefined, '冻结事件不显示编辑、删除、改状态菜单');
+  assert.ok(view.eventMenu('event-2'), 'B 的后续进展仍可按原合同操作');
+});
+
 test('重要事件颜色和按钮样式已从千事 CSS 移除', () => {
   const css = readFileSync(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
   assert.doesNotMatch(css, /qqj-qianshi-(?:important|importance)|qqj-qianshi-event\.important|qqj-qianshi-matter-event\.important/u);

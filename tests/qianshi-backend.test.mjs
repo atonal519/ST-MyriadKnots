@@ -103,6 +103,12 @@ test('一次性日常事件有自己的单记录线但不成为待接续事项�
     floors: [source], floorMemories: [memory('dddddddd-dddd-4ddd-8ddd-dddddddddddd', source, delta)], entities: [] });
   assert.equal(snapshot.events[0].sourceMessageIndex, 2, '来源楼号沿用现有 hostLocator.messageIndex 显示惯例，不自行加一');
   assert.equal(snapshot.timeline.undatedEventIds.length, 2);
+  const archived = publicQianshiSnapshot({ root: { chatId: CHAT, narrativeGeneration: GENERATION, headCheckpointId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }, rootRevision: 1,
+    floors: [source], floorMemories: [memory('dddddddd-dddd-4ddd-8ddd-dddddddddddd', source, delta)], entities: [], migrationDescriptor: {
+      frozenFloorIds: [source.id], floorOrigins: [{ floorId: source.id, sourceChatId: CHAT, sourceHostChatId: 'source-file', sourceMessageIndex: 8 }], carriedAliases: [],
+    } });
+  assert.equal(archived.events[0].frozen, true);
+  assert.equal(archived.events[0].sourceOrigin.sourceMessageIndex, 8, '千事年表明确保留来源聊天楼号');
 });
 
 test('编译分离局部动作与整线状态，倒叙进展保留事项链接且人工终态不重开', async () => {

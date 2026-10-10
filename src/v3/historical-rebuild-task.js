@@ -89,6 +89,7 @@ export async function runHistoricalRebuildTask({
   generateTimeTask = null,
   isTimeEvolutionEnabled = () => false,
   aggregate = false,
+  forceMigrationRebuild = false,
   fetchImpl = globalThis.fetch,
   logger = console,
   onTaskControl = null,
@@ -194,11 +195,16 @@ export async function runHistoricalRebuildTask({
       finish(memoryRuntime.getState());
     });
   };
+  let migrationResetComplete = false;
   const taskControl = Object.freeze({
     getState: () => memoryRuntime.getState(),
     subscribe: listener => memoryRuntime.subscribe(listener),
     pause: () => memoryRuntime.pauseHistoricalRebuild(),
     start: async options => {
+      if (forceMigrationRebuild && !migrationResetComplete) {
+        await memoryRuntime.resetLiveMigrationMemoriesForRebuild();
+        migrationResetComplete = true;
+      }
       await timeRuntime.authorizeHistory?.();
       try { return await waitForHistoricalSettlement(await memoryRuntime.startHistoricalRebuild(options)); }
       finally { timeRuntime.invalidate?.(preparedState.chatId); }

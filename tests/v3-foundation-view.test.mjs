@@ -699,6 +699,49 @@ test('删除当前聊天记忆使用自绘异步确认，取消零写且确认�
   assert.match(confirmation.note, /移入回收站.*并非永久擦除/);
 });
 
+test('搬家按钮与删除同处管理入口，未打开时如实提示从聊天列表访问', async () => {
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, activeRun: null, memoryWorkBusy: false, activeAutoMemory: null, activeExtraction: null, activeCse: null, rebuildStatus: 'caughtUp', rebuildHasActionableWork: false, floors: [] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  let calls = 0;
+  const memoryManagement = { getState: () => ({ status: 'idle', migrationState: { status: 'idle' } }),
+    deleteCurrent: async () => ({}), migrateCurrent: async () => { calls += 1; return { status: 'completed', opened: false }; } };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, memoryManagement, documentRef }); view.mount(container);
+  const pageNode = flatten(container).find(node => node.className === 'qqj-page qqj-management-page');
+  const actions = pageNode.children.at(-1);
+  assert.equal(actions.className, 'qqj-management-delete');
+  const migration = flatten(actions).find(node => node.textContent === '搬家');
+  assert.ok(migration); assert.equal(flatten(actions).find(node => node.textContent === '删除当前聊天记忆')?.parentNode, migration.parentNode);
+  migration.click();
+  for (let attempt = 0; attempt < 20 && !flatten(container).some(node => node.textContent.includes('新聊天已保存；可从当前角色的聊天列表打开')); attempt += 1) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 1);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /新聊天已保存；可从当前角色的聊天列表打开/);
+});
+
+test('搬家启动通知后显示处理中并禁用删除，完成后恢复操作', async () => {
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, activeRun: null, memoryWorkBusy: false, activeAutoMemory: null, activeExtraction: null, activeCse: null, rebuildStatus: 'caughtUp', rebuildHasActionableWork: false, floors: [] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  let current = { status: 'idle', workBusy: false, migrationState: { status: 'idle' } }, resolveMigration;
+  const listeners = new Set();
+  const memoryManagement = { getState: () => current, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    deleteCurrent: async () => ({}), migrateCurrent() {
+      current = { status: 'idle', workBusy: true, migrationState: { status: 'migrating' } };
+      for (const listener of listeners) listener(current);
+      return new Promise(resolve => { resolveMigration = resolve; });
+    } };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, memoryManagement, documentRef }); view.mount(container);
+  flatten(container).find(node => node.textContent === '搬家').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(flatten(container).some(node => node.textContent === '搬家中…'));
+  assert.equal(flatten(container).find(node => node.textContent === '删除当前聊天记忆').disabled, true);
+  current = { status: 'idle', workBusy: false, migrationState: { status: 'completed' } };
+  for (const listener of listeners) listener(current);
+  resolveMigration({ status: 'completed', opened: false });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(flatten(container).find(node => node.textContent === '删除当前聊天记忆').disabled, false);
+});
+
 test('删除按钮使用管理器统一忙碌投影', () => {
   const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, activeRun: null, memoryWorkBusy: false, activeAutoMemory: null, activeExtraction: null, activeCse: null, rebuildStatus: 'caughtUp', rebuildHasActionableWork: false, floors: [] };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
@@ -903,7 +946,7 @@ test('双丝网页会显示激活期间的共享刷新失败', async () => {
 test('所有用户可见楼号统一使用零基 messageIndex，非均匀楼层不猜 AI 序号', () => {
   const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
   const floors = [
-    { floorId: 'floor-zero', assistantSeq: 1, messageIndex: 0, status: 'ready', memoryId: 'memory-zero', summary: '零楼摘要', summarySource: 'ai', aiSummary: '零楼摘要', extractorVersion: 'v', counts: {}, api: null, memory, cse: { status: 'ready', deltaId: 'delta-zero' } },
+    { floorId: 'floor-zero', assistantSeq: 1, messageIndex: 0, frozen: true, sourceOrigin: { sourceMessageIndex: 1 }, status: 'ready', memoryId: 'memory-zero', summary: '零楼摘要', summarySource: 'ai', aiSummary: '零楼摘要', extractorVersion: 'v', counts: {}, api: null, memory, cse: { status: 'ready', deltaId: 'delta-zero' } },
     { floorId: 'floor-two', assistantSeq: 2, messageIndex: 2, status: 'ready', memoryId: 'memory-two', summary: '二楼摘要', summarySource: 'ai', aiSummary: '二楼摘要', extractorVersion: 'v', counts: {}, api: null, memory, cse: { status: 'ready', deltaId: 'delta-two' } },
     { floorId: 'floor-five', assistantSeq: 3, messageIndex: 5, status: 'ready', memoryId: 'memory-five', summary: '五楼摘要', summarySource: 'ai', aiSummary: '五楼摘要', extractorVersion: 'v', counts: {}, api: null, memory, cse: { status: 'ready', deltaId: 'delta-five' } },
   ];
@@ -920,6 +963,7 @@ test('所有用户可见楼号统一使用零基 messageIndex，非均匀楼层�
   const recallRuntime = { getState: () => ({ recallStatus: 'ready', activeRecall: null, lastRecall: {
     status: 'ready', userMessageIndex: 4, createdAt: '2026-09-05T00:00:00.000Z', generationType: 'normal', receiptPersistence: 'persisted', selectedStates: [], injectionText: '已注入', skipReasons: [],
     selectedFloors: [{ floorId: 'floor-zero', assistantSeq: 99 }, { assistantSeq: 2 }, { floorId: 'missing-floor', assistantSeq: 3 }],
+    selectedCseChanges: [{ sourceFloorId: 'floor-zero', sourceAssistantSeq: 99, subject: '裴晚生', layer: 'core', action: 'update' }],
     coverage: { rememberedAiFloors: 3, stableAiFloors: 3, cseThroughAssistantSeq: 2 }, stages: null, timings: null,
   } }) };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => state, editSummary: async () => state, restoreAi: async () => state, markError: async () => state };
@@ -928,14 +972,15 @@ test('所有用户可见楼号统一使用零基 messageIndex，非均匀楼层�
   const view = createV3FoundationView({ runtime, recallRuntime, peopleRuntime: selectedPeople, documentRef });
   view.setPage('memories'); view.mount(container);
   let visible = flatten(container).map(node => node.textContent).filter(Boolean);
-  assert.deepEqual(flatten(container).filter(node => node.className === 'qqj-floor-number').map(node => node.textContent), ['第 5 楼', '第 2 楼', '第 0 楼']);
+  assert.deepEqual(flatten(container).filter(node => node.className === 'qqj-floor-number').map(node => node.textContent), ['第 5 楼', '第 2 楼', '来源聊天第 1 楼']);
   view.setPage('people');
   visible = flatten(container).map(node => node.textContent).filter(Boolean);
   assert.ok(visible.includes('裴晚生'), '当前人物状态继续按人物实体显示');
   view.setPage('management');
   visible = flatten(container).map(node => node.textContent).filter(Boolean);
   assert.ok(visible.includes('第 4 楼'), '触发用户楼不得 +1');
-  assert.ok(visible.includes('第 0 楼、第 2 楼、来源楼号未提供'));
+  assert.ok(visible.includes('来源聊天第 1 楼、第 2 楼、来源楼号未提供'));
+  assert.ok(visible.some(value => value.includes('来源聊天第 1 楼') && value.includes('裴晚生')), `CSE回执按floorId显示冻结来源聊天楼号: ${visible.join('|')}`);
   assert.ok(visible.includes('记忆 3/3 · CSE 到第 2 楼'));
   assert.equal(visible.some(value => /AI #|宿主楼|宿主索引/.test(value)), false);
 });

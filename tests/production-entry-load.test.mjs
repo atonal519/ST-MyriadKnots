@@ -325,7 +325,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let publicMemoryBridgeOptions;
   let publicQianshiBridgeOptions;
   let autoHideOptions;
-  let memoryManagementOptions;
+  let memoryManagementOptions, memoryMigrationOptions, memoryMigrationRuntime;
   let chatMemoryManagement;
   let storageManagementOptions;
   let storageManagement;
@@ -400,6 +400,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/chat-identity.js', { createChatIdentityCoordinator: options => { identityOptions = options; return { prepare: () => options.freshUuid() }; } });
   define('./src/host-context.js', { createHostChatList: options => { hostChatListOptions = options; return productionListHostChats; } });
   define('./src/chat-memory-management.js', { createChatMemoryManagement: options => { memoryManagementOptions = options; chatMemoryManagement = { getState: () => ({ status: 'idle' }), deleteCurrent() {} }; return chatMemoryManagement; } });
+  define('./src/chat-memory-migration.js', { createChatMemoryMigration: options => { memoryMigrationOptions = options; memoryMigrationRuntime = { getState: () => ({ status: 'idle' }) }; return memoryMigrationRuntime; } });
   define('./src/storage-management.js', { createStorageManagement: options => { storageManagementOptions = options; storageManagement = { getState: () => ({ status: 'idle' }), scan() {}, cleanup() {}, setAutoEnabled() {}, subscribe() {}, dispose() {} }; return storageManagement; } });
   define('./src/plugin-lifecycle.js', {
     createPluginLifecycle: options => {
@@ -441,7 +442,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
     isIdentityDeleted: (entityId, projection = {}) => (projection.deletedEntityIds ?? []).includes(entityId),
   });
   const branchInitializer = async () => ({ status: 'inherited' });
-  define('./src/v3/chat-branch-inheritance.js', { createChatBranchInitializer: options => { branchInitializerOptions = options; return branchInitializer; } });
+  define('./src/v3/chat-branch-inheritance.js', { createChatBranchInitializer: options => { branchInitializerOptions = options; return branchInitializer; }, copyLatestPeople: async () => null });
   let timeOptions, timeBindOptions, currentStoryContextReads = 0;
   const qianshiRecallInputs = [];
   const timeBatches = [];
@@ -488,6 +489,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
 
   await vectorOptions.sourceProvider({ targetIdentity: { hostChatId: 'host-chat', chatId: 'test', characterLocator: 'char.png', personaLocator: 'me.png' } });
   assert.equal(memoryManagementOptions.vectorRuntime, vectorRuntime);
+  assert.equal(memoryManagementOptions.memoryMigration, memoryMigrationRuntime);
+  assert.equal(typeof memoryMigrationOptions.captureStoryCalendar, 'function');
+  assert.equal(typeof memoryMigrationOptions.persistStoryCalendar, 'function');
   assert.equal(coreCacheOptions.localForage, hostLocalForage);
   assert.equal(coreCacheOptions.accountHandleProvider(), 'isolated-test-user');
   assert.equal(foundationStoreOptions[0].coreRecordCache, coreRecordCache);

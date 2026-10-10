@@ -3,6 +3,7 @@ import { memorySourceFloorIds } from './memory-schema.js';
 import { isHostNarratorMessage, scanAssistantCandidates, selectAssistantMessage } from './foundation-domain.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 import { matchFloorCandidates } from './floor-binding.js';
+import { migrationPartition, partitionScannedCandidates } from './migration-prefix.js';
 
 export const RECENT_VISIBLE_AI_FLOORS = 3;
 const HOST_GUARD = Symbol('qqjCoverageHostGuard');
@@ -45,7 +46,7 @@ function captureHostGuard(snapshot, hostCandidates, hostProof = null) {
   for (const [floorId, candidate] of hostProof?.candidateByFloorId ?? []) expectedFloorByCandidate.set(candidate, floorId);
   return Object.freeze({
     chatId: currentChatId(snapshot),
-    candidates: Object.freeze(hostCandidates.map(candidate => Object.freeze({
+    candidates: Object.freeze(hostCandidates.filter(candidate => candidate.archiveCandidate !== true).map(candidate => Object.freeze({
       messageIndex: candidate.hostLocator.messageIndex,
       swipeId: candidate.hostLocator.swipeId,
       selectedSwipeIndex: candidate.hostLocator.selectedSwipeIndex,
@@ -105,20 +106,21 @@ function hostCoverageProof(reachable, snapshot, hostCandidates) {
   const matchedCandidates = new Set(bindings.matches.map(match => match.candidate));
   const candidateByFloorId = new Map();
   for (const match of bindings.matches) candidateByFloorId.set(match.floor.id, match.candidate);
-  const unregistered = hostCandidates.filter(candidate => !matchedCandidates.has(candidate));
+  const liveCandidates = hostCandidates.filter(candidate => candidate.archiveCandidate !== true);
+  const unregistered = liveCandidates.filter(candidate => !matchedCandidates.has(candidate));
   if (unregistered.some(candidate => candidate.messageAnchor?.status !== 'none')) return null;
-  const lastMatchedIndex = Math.max(-1, ...[...matchedCandidates].map(candidate => candidate.hostLocator.messageIndex));
+  const lastMatchedIndex = Math.max(-1, ...[...matchedCandidates].filter(candidate => candidate.archiveCandidate !== true).map(candidate => candidate.hostLocator.messageIndex));
   if (unregistered.some(candidate => candidate.hostLocator.messageIndex <= lastMatchedIndex)) return null;
   return Object.freeze({ unregistered: Object.freeze(unregistered), candidateByFloorId });
 }
 
 export function assessMemoryCoverage({ reachable, snapshot, hostCandidates, realtimeOrigin = false } = {}) {
   const hostProof = reachable?.root && Array.isArray(reachable.floors) ? hostCoverageProof(reachable, snapshot, hostCandidates) : null;
+  const floors = migrationPartition(reachable).liveFloors;
   if (!hostProof) {
-    return Object.freeze({ status: 'unknown', completed: 0, total: reachable?.floors?.length ?? 0, nextAssistantSeq: null, pendingFloorIds: Object.freeze([]), realtimeProtected: false, hasPartialWork: false, summaryStatus: 'unknown', summaryCompleted: 0, summaryNextAssistantSeq: null, summaryPendingFloorIds: Object.freeze([]), summaryMissingFloorIds: Object.freeze([]), visibleSummaryFloorIds: Object.freeze([]), summaryRealtimeProtected: false, summaryHasPartialWork: false });
+    return Object.freeze({ status: 'unknown', completed: 0, total: floors.length, nextAssistantSeq: null, pendingFloorIds: Object.freeze([]), realtimeProtected: false, hasPartialWork: false, summaryStatus: 'unknown', summaryCompleted: 0, summaryNextAssistantSeq: null, summaryPendingFloorIds: Object.freeze([]), summaryMissingFloorIds: Object.freeze([]), visibleSummaryFloorIds: Object.freeze([]), summaryRealtimeProtected: false, summaryHasPartialWork: false });
   }
-  const floors = reachable.floors;
-  const nextAssistantSeq = (floors.at(-1)?.assistantSeq ?? 0) + 1;
+  const nextAssistantSeq = (reachable.floors.at(-1)?.assistantSeq ?? 0) + 1;
   const unregisteredSummaryRefs = Object.freeze(hostProof.unregistered.map((candidate, offset) => Object.freeze({
     floorId: `host-tail:${candidate.hostLocator.messageIndex}:${candidate.rawFingerprint}`,
     floorMemoryId: null,
@@ -176,7 +178,8 @@ export function assessMemoryCoverage({ reachable, snapshot, hostCandidates, real
 export async function assessMemoryCoverageFromHost({ reachable, snapshot, sanitizerOptions = {}, captureGuard = false, realtimeOrigin = false } = {}) {
   try {
     const chatId = reachable?.root?.chatId ?? '';
-    const hostCandidates = await scanAssistantCandidates(snapshot?.chat, { sanitizerOptions, chatId, captureRawContent: captureGuard });
+    const scanned = await scanAssistantCandidates(snapshot?.chat, { sanitizerOptions, chatId, captureRawContent: captureGuard });
+    const hostCandidates = partitionScannedCandidates(reachable, snapshot?.chat, chatId, scanned).all;
     const coverage = assessMemoryCoverage({ reachable, snapshot, hostCandidates, realtimeOrigin });
     if (!captureGuard) return coverage;
     const guarded = { ...coverage };

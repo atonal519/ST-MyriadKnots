@@ -9,6 +9,7 @@ import { selectRecall } from '../src/v3/recall-selector.js';
 import { formatRecallInjection } from '../src/v3/recall-selector.js';
 import { compileCseResponse } from '../src/v3/cse-engine.js';
 import { MESSAGE_FLOOR_ANCHOR_KEY } from '../src/v3/message-floor-anchor.js';
+import { MIGRATION_ALIAS_KEY } from '../src/v3/migration-prefix.js';
 
 const MARKER_CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OTHER_CHAT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -852,6 +853,75 @@ test('memory冷加载时历史与CSE来源共用当前聊天的唯一marker宿�
   const view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
   assert.equal(view.recallUi.pills.children[0].textContent, '第 1 个结');
   assert.equal(view.recallUi.history.querySelector('.change-floor').children[0].textContent, '第 3 个结');
+});
+
+test('召回来源同时区分同号冻结旧楼与B新楼，点击仍按各自floorId展开', async () => {
+  const receiptMarker = { schemaVersion: 11 };
+  const chat = Array.from({ length: 570 }, (_, index) => ({ is_user: true, is_system: false, mes: `前置消息${index}` }));
+  chat.push(withFloorMarker({ is_user: false, is_system: false, mes: 'B第570楼正文' }, CHANGE_FLOOR));
+  chat.push({ is_user: true, is_system: false, mes: '当前用户楼', extra: { [RECALL_RECEIPT_KEY]: receiptMarker } });
+  const projectedReceipt = {
+    schemaVersion: 11, status: 'ready', injectionText: recallInjection('AI #1：旧楼材料', 'AI #2：B新楼材料'),
+    selectedFloors: [{ floorId: HISTORY_FLOOR, assistantSeq: 1, reasons: [] }, { floorId: CHANGE_FLOOR, assistantSeq: 2, reasons: [] }],
+    historyGroups: [
+      { floorId: HISTORY_FLOOR, assistantSeq: 1, items: [{ text: '旧楼材料' }] },
+      { floorId: CHANGE_FLOOR, assistantSeq: 2, items: [{ text: 'B新楼材料' }] },
+    ], selectedStates: [],
+    selectedCseChanges: [
+      { floorId: HISTORY_FLOOR, assistantSeq: 1, subjectEntityId: 'p1', subject: '裴晚生', layer: 'situational', action: 'add', after: { text: '旧状态', visibility: 'observable' } },
+      { floorId: CHANGE_FLOOR, assistantSeq: 2, subjectEntityId: 'p1', subject: '裴晚生', layer: 'situational', action: 'add', after: { text: 'B新状态', visibility: 'observable' } },
+    ],
+  };
+  assert.equal(projectInlineRecallReceipt(projectedReceipt).cseChangeItems.length, 2);
+  const h = createHarness({ chat, chatId: MARKER_CHAT, memoryState: { chatId: MARKER_CHAT, floors: [
+    { floorId: HISTORY_FLOOR, assistantSeq: 1, messageIndex: 570, frozen: true, sourceOrigin: { sourceChatId: 'source-chat', sourceHostChatId: 'A档', sourceMessageIndex: 570 } },
+    { floorId: CHANGE_FLOOR, assistantSeq: 2, messageIndex: 570 },
+  ], memoryEntities: [] }, projectReceipt: async () => projectedReceipt });
+  h.chatRoot.append(messageElement(571, { user: true })); h.renderer.start(); await h.flushMicrotasks();
+  const view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]')?.__qqjInlineCard;
+  const pills = view.recallUi.pills.children;
+  assert.deepEqual(pills.map(pill => pill.textContent), ['第 570 个结', '旧第 570 个结']);
+  assert.deepEqual(pills.map(pill => pill.dataset.eventKey), [CHANGE_FLOOR, HISTORY_FLOOR]);
+  pills[1].click();
+  assert.match(descendantText(view.recallUi.display), /旧第 570 个结/u);
+  assert.match(descendantText(view.recallUi.display), /旧楼材料/u);
+  pills[0].click();
+  assert.match(descendantText(view.recallUi.display), /第 570 个结/u);
+  assert.match(descendantText(view.recallUi.display), /B新楼材料/u);
+  assert.deepEqual(view.recallUi.history.querySelectorAll('.change-floor').map(item => item.children[0].textContent), ['第 570 个结', '旧第 570 个结']);
+});
+
+test('AI楼投影跳过同号冻结前缀，携带楼只显示归档说明且不可重新提取', async () => {
+  const aliasId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab';
+  const chat = [
+    { is_user: true, is_system: false, mes: '随迁用户消息' },
+    { is_user: false, is_system: false, mes: '随迁AI正文', extra: { [MIGRATION_ALIAS_KEY]: aliasId } },
+    { is_user: true, is_system: false, mes: 'B新用户消息' },
+    withFloorMarker({ is_user: false, is_system: false, mes: 'B第三楼新AI正文' }, CHANGE_FLOOR),
+  ];
+  const memoryState = { chatId: MARKER_CHAT, migrationAliases: [{ aliasId, floorId: HISTORY_FLOOR, targetMessageIndex: 1 }], floors: [
+    { floorId: HISTORY_FLOOR, assistantSeq: 1, messageIndex: 1, frozen: true, sourceOrigin: { sourceChatId: 'source-chat', sourceMessageIndex: 1 }, summary: 'A旧第一楼摘要', status: 'ready' },
+    { floorId: EXTRA_FLOOR, assistantSeq: 3, messageIndex: 3, frozen: true, inherited: true, sourceOrigin: { sourceChatId: 'source-chat', sourceMessageIndex: 3 }, summary: 'A旧第三楼摘要', status: 'ready' },
+    { floorId: 'carried-live-floor', assistantSeq: 1, messageIndex: 1, inherited: true, summary: '不应在携带楼内显示的副本', status: 'ready' },
+    { floorId: CHANGE_FLOOR, assistantSeq: 2, messageIndex: 3, summary: 'B第三楼新摘要', status: 'ready' },
+  ], memoryEntities: [] };
+  const h = createHarness({ chat, chatId: MARKER_CHAT, memoryState });
+  h.chatRoot.append(messageElement(1), messageElement(3)); h.renderer.start(); await h.flushMicrotasks();
+  const views = h.chatRoot.querySelectorAll('[data-qqj-inline-host="true"]').map(host => host.__qqjInlineCard);
+  const [carriedView, currentView] = views;
+  assert.match(carriedView.summary.textContent, /携带的正文/u);
+  assert.doesNotMatch(carriedView.summary.textContent, /旧第一楼摘要|副本/u);
+  assert.equal(carriedView.extract.hidden, true);
+  assert.equal(currentView.summary.textContent, 'B第三楼新摘要');
+  assert.equal(currentView.extract.hidden, false);
+  assert.equal(projectInlineMemoryFloor(memoryState, 3).floorId, CHANGE_FLOOR, '纯投影按当前B楼定位，不把同号冻结A楼当成活动来源');
+  h.setMemory({ ...memoryState, floors: [...memoryState.floors,
+    { floorId: 'rerolled-live-floor', assistantSeq: 2, messageIndex: 1, summary: 'B携带楼重roll后的新摘要', status: 'ready' },
+  ] });
+  h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
+  const rerolledCarryView = h.chatRoot.querySelectorAll('[data-qqj-inline-host="true"]')[0].__qqjInlineCard;
+  assert.equal(rerolledCarryView.summary.textContent, 'B携带楼重roll后的新摘要', '残留alias与继承旧楼不能遮住同位置的新live楼');
+  assert.equal(rerolledCarryView.extract.hidden, false, '新live楼恢复正常操作');
 });
 
 test('marker位置随宿主移动并优先于旧memory，异步回执完成和同投影刷新都读取最新快照', async () => {

@@ -29,6 +29,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   let currentEntityId = null, showMore = false, cropDraft = null, cropLoadId = 0, cropLoadController = null;
   let switcherNode = null, switcherSignature = null, switcherScrollLeft = 0;
   const drafts = new Map();
+  const archivedHistory = new Map();
   const operationMenus = createOperationMenuController(documentRef);
   const scrollProfileToTop = entityId => scrollManualEditorToTop(container.querySelector(`[data-qqj-person-id="${entityId}"]`));
   const releaseCrop = draft => { draft?.source?.release?.(); if (cropDraft === draft) cropDraft = null; };
@@ -65,7 +66,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   };
   function resetForChat(nextChatId) {
     if (chatId === nextChatId) return;
-    closeCrop(); chatId = nextChatId; drafts.clear(); currentEntityId = null; showMore = false; switcherNode = null; switcherSignature = null; switcherScrollLeft = 0; feedback = '人物资料状态已显示。';
+    closeCrop(); chatId = nextChatId; drafts.clear(); archivedHistory.clear(); currentEntityId = null; showMore = false; switcherNode = null; switcherSignature = null; switcherScrollLeft = 0; feedback = '人物资料状态已显示。';
   }
   async function run(label, task, { after = null, generationReport = false } = {}) {
     const mine = ++epoch, operationChatId = chatId; feedback = `${label}…`; render(state);
@@ -212,6 +213,52 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     const remove = element('button', 'qqj-profile-menu-action danger', '删除人物'); remove.type = 'button'; remove.disabled = Boolean(state.active); remove.addEventListener('click', () => { void deletePerson(person); });
     menuBody.append(merge, remove);
   }
+  function archivedProfileView(person) {
+    if (!(state.archivedPeopleSnapshotCount > 0) || typeof runtime.readArchivedProfileHistory !== 'function') return null;
+    const ownerChatId = chatId, key = `${ownerChatId}:${person.entityId}`;
+    const entry = archivedHistory.get(key) ?? { open: false, loading: false, snapshots: null, error: '' };
+    archivedHistory.set(key, entry);
+    const section = element('section', 'qqj-profile-archive');
+    const toggle = element('button', 'secondary-action qqj-profile-archive-toggle', entry.open ? '收起搬家前资料' : '查看搬家前资料（只读）');
+    toggle.type = 'button'; toggle.setAttribute?.('aria-expanded', String(entry.open));
+    toggle.addEventListener('click', () => {
+      entry.open = !entry.open;
+      if (entry.open && entry.snapshots === null && !entry.loading) {
+        entry.loading = true; entry.error = ''; render(state);
+        void runtime.readArchivedProfileHistory(person.entityId).then(values => {
+          entry.snapshots = values; entry.loading = false;
+          if (active && chatId === ownerChatId && currentEntityId === person.entityId) render(state);
+        }, error => {
+          entry.loading = false; entry.error = publicErrorMessage(error, { fallback: '搬家前资料读取失败。' });
+          if (active && chatId === ownerChatId && currentEntityId === person.entityId) render(state);
+        });
+      } else render(state);
+    });
+    section.append(toggle);
+    if (entry.open) {
+      if (entry.loading) section.append(element('p', 'settings-hint', '正在读取搬家前资料…'));
+      else if (entry.error) section.append(element('p', 'v3-foundation-feedback error', `搬家前资料读取失败：${entry.error}`));
+      else if (Array.isArray(entry.snapshots) && !entry.snapshots.length) section.append(element('p', 'settings-hint', '该人物没有已保存的搬家前资料。'));
+      else for (const [index, snapshot] of (entry.snapshots ?? []).entries()) {
+        const profile = snapshot.profile ?? {}, details = element('details', 'qqj-profile-archive-entry');
+        const summary = element('summary', '', `搬家前资料 ${index + 1}${profile.name ? ` · ${profile.name}` : ''}`);
+        details.append(summary);
+        for (const group of PEOPLE_PROFILE_GROUPS) {
+          const present = group.fields.filter(([field]) => String(profile[field] ?? '').trim());
+          if (!present.length) continue;
+          const groupNode = element('section', 'qqj-profile-section'); groupNode.append(element('h3', '', group.label));
+          for (const [field, , control] of present) {
+            const row = element('div', `qqj-profile-read-row qqj-profile-read-${field}`);
+            row.append(element('span', '', PEOPLE_PROFILE_LABELS[field]), element('p', '', control === 'textarea' ? profileReadingText(profile[field]) : String(profile[field])));
+            groupNode.append(row);
+          }
+          details.append(groupNode);
+        }
+        section.append(details);
+      }
+    }
+    return section;
+  }
   async function chooseAvatar(person, mark, file) {
     cropLoadController?.abort();
     const controller = new AbortController(); cropLoadController = controller;
@@ -327,7 +374,9 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
       body.append(reading);
       if (draft?.notice || draft?.error) { const result = saveResult(draft); result.className += ' qqj-profile-reading-result'; body.append(result); }
     }
-    panel.append(body); return panel;
+    panel.append(body);
+    const archived = archivedProfileView(person); if (archived) panel.append(archived);
+    return panel;
   }
   function saveResult(draft) {
     const result = element('p', `qqj-profile-save-result${draft.error ? ' error' : draft.notice === '已保存' ? ' success' : ''}`, draft.error || draft.notice);

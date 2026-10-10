@@ -27,6 +27,7 @@ export function createChatMemoryManagement({
   peopleRuntime,
   vectorRuntime,
   timeRuntime,
+  memoryMigration = null,
   autoHideController,
   coreRecordCache,
   captureHistoricalRebuildSources = snapshot => ({ context: snapshot.context, userIdentity: snapshot.userIdentity, worldInfo: {} }),
@@ -70,7 +71,8 @@ export function createChatMemoryManagement({
       phase: scopedActive?.phase ?? null,
       error: scopedPending?.error ?? null,
       deletedCount: scopedPending?.deletedCount ?? (scopedResult ? lastResult.deletedCount : 0),
-      workBusy: busy() || Boolean(scopedRebuild?.promise),
+      workBusy: busy() || Boolean(scopedRebuild?.promise) || memoryMigration?.getState?.().status === 'migrating',
+      migrationState: memoryMigration?.getState?.() ?? Object.freeze({ status: 'idle' }),
       rebuildState: scopedRebuild?.taskState ?? null,
       pauseHistoricalRebuild: scopedRebuild?.taskControl?.pause ?? null,
     });
@@ -320,7 +322,7 @@ export function createChatMemoryManagement({
       if (!rebuilding.taskControl || !['paused', 'failed'].includes(rebuilding.taskState?.rebuildStatus)) return Promise.resolve(rebuilding.taskState);
       return continueHistoricalRebuild(rebuilding);
     }
-    let identity, target, sources, initialSnapshot, provisionalIdentity = false;
+    let identity, target, sources, initialSnapshot, provisionalIdentity = false, preserveMigrationPrefix = false;
     try {
       initialSnapshot = hostAdapter.snapshot();
       if (pending && inCurrentHost(pending.identity)) identity = pending.identity;
@@ -338,20 +340,28 @@ export function createChatMemoryManagement({
       if (expectedChatId && identity.chatId !== expectedChatId) throw errorWith('QQJ_REBUILD_TARGET_INVALID', '重构目标身份与当前请求不一致。');
       target = pending?.identity?.chatId === identity.chatId ? pending.target : captureTargetChatDescriptor(initialSnapshot, identity);
       sources = captureHistoricalRebuildSources(initialSnapshot);
+      const reachable = foundationRuntime?.getReachable?.();
+      preserveMigrationPrefix = reachable?.root?.chatId === identity.chatId && Boolean(reachable.migrationDescriptor);
       if (busy()) throw errorWith('QQJ_REBUILD_BUSY', '当前记忆管理或生成任务仍在执行，请稍候再重构。');
-      if (!pending && !provisionalIdentity && inCurrentHost(identity)) session.suspend(identity.chatId);
+      if (!pending && !provisionalIdentity && !preserveMigrationPrefix && inCurrentHost(identity)) session.suspend(identity.chatId);
     } catch (error) { return Promise.reject(error); }
     const operation = { identity, hostChatId: identity.hostChatId, chatId: identity.chatId, taskControl: null, taskState: null, unsubscribeTask: null, promise: null };
     rebuilding = operation; notify();
     operation.promise = (async () => {
-      await deleteCurrent({ clearPrequel: true, identityOverride: identity, targetOverride: target, skipSuspend: provisionalIdentity });
-      lastResult = null; notify();
-      const cleaned = await readTargetChat(target, { fetchImpl, allowMissingIdentity: true });
+      let cleaned;
+      if (preserveMigrationPrefix) {
+        // Historical maintenance runs against the existing migration-aware graph; deleting its root would erase the archive.
+        cleaned = await readTargetChat(target, { fetchImpl });
+      } else {
+        await deleteCurrent({ clearPrequel: true, identityOverride: identity, targetOverride: target, skipSuspend: provisionalIdentity });
+        lastResult = null; notify();
+        cleaned = await readTargetChat(target, { fetchImpl, allowMissingIdentity: true });
+      }
       operation.chatBaseline = captureChatAdoptionBaseline(cleaned.chat);
       operation.target = target; operation.cleaned = cleaned; operation.aggregate = options?.aggregate === true;
       const result = await createHistoricalRebuild({ identity, target, cleanedChat: cleaned, sourceContext: sources.context,
         sourceUserIdentity: sources.userIdentity, sourceWorldInfo: sources.worldInfo,
-        provisionalIdentity, aggregate: options?.aggregate === true,
+        provisionalIdentity, aggregate: options?.aggregate === true, forceMigrationRebuild: preserveMigrationPrefix,
         onTaskControl: control => attachTaskControl(operation, control) });
       return finishHistoricalRebuild(operation, identity, target, cleaned, result);
     })().catch(error => {
@@ -361,6 +371,16 @@ export function createChatMemoryManagement({
       notify(); throw error;
     });
     return operation.promise;
+  }
+
+  function migrateCurrent() {
+    if (typeof memoryMigration?.migrateCurrent !== 'function') return Promise.reject(errorWith('QQJ_MIGRATION_UNAVAILABLE', '当前版本尚未接入一键记忆搬家。'));
+    if (busy() || rebuilding || active) return Promise.reject(errorWith('QQJ_MIGRATION_BUSY', '当前记忆任务完成后再搬家。'));
+    let task;
+    try { task = memoryMigration.migrateCurrent(); }
+    catch (error) { notify(); return Promise.reject(error); }
+    notify();
+    return Promise.resolve(task).finally(notify);
   }
 
   function attachTaskControl(operation, control) {
@@ -396,6 +416,7 @@ export function createChatMemoryManagement({
   return Object.freeze({
     deleteCurrent,
     fullRebuild,
+    migrateCurrent,
     getState,
     subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('删除状态 listener 无效'); subscribers.add(listener); return () => subscribers.delete(listener); },
   });

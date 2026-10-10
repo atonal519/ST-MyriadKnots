@@ -751,6 +751,45 @@ test('手动建索引：缓存不复制正文/Key；一次批量 API，查询验
   assert.equal(calls, 2, '没有合格片段不发送查询向量');
 });
 
+test('搬家复用已验证的A向量分片并以B身份查询，正文见证仍指向冻结楼', async () => {
+  const reachable = await vectorReachableFixture();
+  const selected = selectRecallMemories(reachable);
+  const sourceProjection = await projectVectorSources(selected.activeMemories, selected.floors, { includeSummaries: false });
+  const source = { status: 'ready', chatId: reachable.root.chatId, narrativeGeneration: reachable.root.narrativeGeneration,
+    headCheckpointId: reachable.root.headCheckpointId, rawSources: sourceProjection.rawSources };
+  const records = new Map(), client = {
+    async get(collection, id) {
+      const value = records.get(`${collection}/${id}`);
+      if (!value) throw Object.assign(new Error('not_found'), { status: 404 });
+      return structuredClone(value);
+    },
+    async put(collection, id, data, revision) {
+      const key = `${collection}/${id}`, prior = records.get(key);
+      assert.equal(prior?.revision ?? 0, revision);
+      const value = { revision: revision + 1, data: structuredClone(data) };
+      records.set(key, value); return structuredClone(value);
+    },
+  };
+  const api = { embed: async (_config, texts) => vectors(texts) };
+  const sourceIndex = createVectorIndex({ client, api, configProvider: () => config,
+    identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  await sourceIndex.build();
+  const targetId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', targetGeneration = 'generation-b';
+  const shardIds = await sourceIndex.copyPrefix({ chatId: source.chatId }, { chatId: targetId }, targetGeneration, reachable);
+  assert.ok(shardIds.length > 0);
+  const targetReachable = { ...reachable, root: { ...reachable.root, chatId: targetId, narrativeGeneration: targetGeneration } };
+  const targetSelected = selectRecallMemories(targetReachable);
+  const targetRaw = await projectVectorSources(targetSelected.activeMemories, targetSelected.floors, { includeSummaries: false });
+  const targetSource = { status: 'ready', chatId: targetId, narrativeGeneration: targetGeneration, rawSources: targetRaw.rawSources };
+  const targetIndex = createVectorIndex({ client, api, configProvider: () => config,
+    identityProvider: () => ({ chatId: targetId }), sourceProvider: async () => targetSource });
+  const result = await targetIndex.query({ source: targetSource, queryContext: { text: '苹果配方' } });
+  assert.ok(result.candidates.length > 0, 'B实际查询读取已复制的索引并命中旧原文');
+  assert.equal(await rawWitnessValid(result.candidates[0].witness, targetSource), true);
+  assert.equal(records.get(`chat-${targetId}/${VECTOR_INDEX_ID}`).data.narrativeGeneration, targetGeneration);
+  assert.equal(records.get(`chat-${targetId}/${VECTOR_INDEX_ID}`).data.chatId, targetId);
+});
+
 test('全人工摘要楼按原文建立索引；摘要正文不进入 embedding 或新摘要候选路径', async () => {
   const source = await sourceFixture();
   const summary = summaryCandidateText('用户手工摘要只保留了钟楼与黄油信息。');

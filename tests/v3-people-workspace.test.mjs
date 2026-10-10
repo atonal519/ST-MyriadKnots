@@ -1671,3 +1671,23 @@ test('单人主动重整等待期间取消人物选择时拒绝迟到结果', as
   assert.deepEqual(h.runtime.getState().profilesByEntityId[id], original);
   assert.deepEqual(h.runtime.getState().selectedEntityIds, []);
 });
+
+test('迁移人物旧资料按人物展开读取不可变snapshot且不扫描同scope其他档案', async () => {
+  const h = harness(); await h.runtime.refresh();
+  const sourceEntityId = h.peopleEntities[0].id;
+  const sourceWorkspace = { schemaVersion: 3, kind: 'qqj-v3-people-workspace', chatId: CHAT_B,
+    selectedEntityIds: [sourceEntityId], personOrderEntityIds: [], profilesByEntityId: {}, avatarsByEntityId: {},
+    identityRedirectsByEntityId: {}, deletedEntityIds: [], profileMaterialProgressByEntityId: {},
+    createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
+  sourceWorkspace.chatId = CHAT_B;
+  sourceWorkspace.profilesByEntityId[sourceEntityId] = { entityId: sourceEntityId, name: '源人物资料', notes: '冻结内容', manualFields: ['notes'], source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
+  const snapshotId = 'v3-people-snapshot-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  await createPeopleWorkspaceStore({ client: h.db.client }).putSnapshot({ chatId: CHAT_B }, { id: snapshotId, sourceChatId: CHAT_A, sourceRevision: 4, workspace: sourceWorkspace });
+  h.setIdentity({ ...h.identity, chatId: CHAT_B, hostChatId: 'host-b' });
+  h.setReachable({ ...h.reachable, root: { chatId: CHAT_B }, migrationDescriptor: { recordRefs: { peopleSnapshotIds: [snapshotId] } } });
+  const before = h.db.calls.filter(call => call[0] === 'get').length;
+  const history = await h.runtime.readArchivedProfileHistory(sourceEntityId);
+  assert.deepEqual(history.map(value => [value.sourceChatId, value.sourceRevision, value.profile.name, value.profile.notes]), [[CHAT_A, 4, '源人物资料', '冻结内容']]);
+  const reads = h.db.calls.slice().filter(call => call[0] === 'get').slice(before);
+  assert.deepEqual(reads.map(call => call[2]), [snapshotId], '仅按需读取descriptor列出的旧快照，不遍历人物/楼记录');
+});

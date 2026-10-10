@@ -62,8 +62,9 @@ const validMessageIndex = value => Number.isSafeInteger(value) && value >= 0;
 const messageIndexFor = (state, reference = {}) => {
   if (validMessageIndex(reference.messageIndex)) return reference.messageIndex;
   const floors = state?.floors ?? [];
-  if (reference.floorId !== undefined && reference.floorId !== null) {
-    const floor = floors.find(value => value.floorId === reference.floorId);
+  const floorId = reference.floorId ?? reference.sourceFloorId;
+  if (floorId !== undefined && floorId !== null) {
+    const floor = floors.find(value => value.floorId === floorId);
     return validMessageIndex(floor?.messageIndex) ? floor.messageIndex : null;
   }
   if (Number.isSafeInteger(reference.assistantSeq) && reference.assistantSeq > 0) {
@@ -73,6 +74,10 @@ const messageIndexFor = (state, reference = {}) => {
   return null;
 };
 const floorCopy = (state, reference, fallback = '楼号未提供') => {
+  const floorId = reference?.floorId ?? reference?.sourceFloorId;
+  const floor = floorId ? state?.floors?.find(value => value.floorId === floorId) : null;
+  const origin = reference?.sourceOrigin ?? floor?.sourceOrigin;
+  if ((reference?.frozen === true || floor?.frozen === true) && Number.isSafeInteger(origin?.sourceMessageIndex)) return `来源聊天第 ${origin.sourceMessageIndex} 楼`;
   const range = Array.isArray(reference?.sourceMessageIndexes) ? reference.sourceMessageIndexes.filter(validMessageIndex) : [];
   if (range.length > 1) return `第 ${range[0]}–${range.at(-1)} 楼`;
   const messageIndex = messageIndexFor(state, reference);
@@ -506,11 +511,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       if (!active) return next;
       if (mine !== epoch) { if (settledRender) { feedback = `${label}完成。`; render(nextState); } return next; }
       if (followState && feedback === progressFeedback && refreshSyncing(nextState)) {
-        feedback = resultCopy?.(nextState, beforeState) || `${label}结束：${statusCopy(nextState?.status)}`;
+        feedback = resultCopy?.(nextState, beforeState, next) || `${label}结束：${statusCopy(nextState?.status)}`;
         refreshFeedback = feedback;
       } else {
         if (followState) refreshFeedback = null;
-        if (!feedback || feedback.endsWith('…')) feedback = resultCopy?.(nextState, beforeState) || (nextState?.status === 'ready' ? `${label}完成。` : `${label}结束：${statusCopy(nextState?.status)}`);
+        if (!feedback || feedback.endsWith('…')) feedback = resultCopy?.(nextState, beforeState, next) || (nextState?.status === 'ready' ? `${label}完成。` : `${label}结束：${statusCopy(nextState?.status)}`);
       }
       render(nextState); return next;
     } catch (error) {
@@ -602,10 +607,12 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     const memory = floor.memory;
     const times = floorTimeDisplay(memory?.chronology, floor.timeFallback) || '时间未明确';
     const timeNode = element('span', 'qqj-floor-time', times); timeNode.setAttribute('title', times);
-    const floorStatus = floor.summarySource === 'user' && floor.status === 'ready' ? '人工修订' : statusCopy(floor.status);
+    const floorStatus = floor.frozen ? '来源归档 · 只读' : floor.summarySource === 'user' && floor.status === 'ready' ? '人工修订' : statusCopy(floor.status);
     const statusNode = element('span', `v3-memory-status${floor.summarySource === 'user' && floor.status === 'ready' ? ' is-user' : ''}`, floorStatus);
     const chevron = element('span', 'qqj-memory-chevron', '›'); chevron.setAttribute('aria-hidden', 'true');
-    head.append(element('strong', 'qqj-floor-number', floorCopy(state, floor)), timeNode, statusNode, chevron);
+    const floorTitle = floor.frozen && floor.sourceOrigin?.sourceHostChatId
+      ? `${floorCopy(state, floor)} · ${floor.sourceOrigin.sourceHostChatId}` : floorCopy(state, floor);
+    head.append(element('strong', 'qqj-floor-number', floorTitle), timeNode, statusNode, chevron);
     card.append(head);
     const body = element('div', 'qqj-memory-card-body');
     const draft = drafts.get(key);
@@ -688,7 +695,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
       const menuToggle = element('summary', 'qqj-memory-menu-toggle', '⋮');
       menuToggle.setAttribute('aria-label', `${floorCopy(state, floor)}操作`); menuToggle.setAttribute('title', '本楼操作');
       const menuBody = element('div', 'qqj-memory-menu-pop');
-      if (floor.memoryId) {
+      if (floor.frozen) {
+        menuBody.append(element('p', 'settings-hint', '来源聊天的已保存资料在此只读展示。'));
+      } else if (floor.memoryId) {
         const edit = element('button', 'qqj-memory-menu-action', '编辑'); edit.type = 'button'; edit.disabled = workBusy(state);
         edit.addEventListener('click', () => { const memory = floor.memory; const names = new Map((state.memoryEntities ?? []).map(entity => [entity.entityId, entity.displayName])); const originalTimeText = floorTimeDisplay(memory?.chronology, floor.timeFallback); const locations = (memory?.locations ?? []).map(item => ({ itemId: item.itemId, name: item.name ?? '' })); const participantNames = (memory?.participants ?? []).map(item => names.get(item.entityId)).filter(Boolean); drafts.set(key, { floorId: floor.floorId, canonicalFingerprint: floor.canonicalFingerprint, rawFingerprint: floor.rawFingerprint, summary: floor.summary, originalSummary: floor.summary, timeText: originalTimeText, originalTimeText, locations, originalLocations: locations.map(item => ({ ...item })), peopleText: participantNames.join('、'), originalParticipantNames: participantNames, note: '', saving: false, saveError: '' }); render(foundationState); });
         const extract = element('button', 'qqj-memory-menu-action', '重新提取'); extract.type = 'button'; extract.disabled = workBusy(state) || typeof runtime.extractFloor !== 'function';
@@ -1121,7 +1130,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
     card.append(body); return card;
   }
   function cseActionFor(floor, state) {
-    if (!floor.memoryId || typeof runtime.retryStateAnalysis !== 'function') return null;
+    if (floor.frozen || !floor.memoryId || typeof runtime.retryStateAnalysis !== 'function') return null;
     const status = floor.cse?.status; if (!['pending', 'failed', 'ready', 'noChange'].includes(status)) return null;
     const completed = ['ready', 'noChange'].includes(status); const label = completed ? '重新分析' : status === 'failed' ? '重试分析' : '分析本楼';
     const button = element('button', completed ? 'secondary-action' : 'primary-action', label); button.type = 'button'; button.disabled = workBusy(state);
@@ -1677,6 +1686,16 @@ export function createV3FoundationView({ runtime, recallRuntime = null, peopleRu
         void run(deletePending ? '继续删除当前聊天记忆' : '删除当前聊天记忆', () => memoryManagement.deleteCurrent(), { after: () => { managementState = memoryManagement.getState(); feedback = '当前聊天记忆已删除；聊天正文、手动前情与全局设置均已保留。手动前情可在“前情”中清空。'; return true; }, failed: () => { managementState = memoryManagement.getState(); return true; } });
       });
       deleteActions.append(remove);
+      if (typeof memoryManagement.migrateCurrent === 'function') {
+        const migration = element('button', 'secondary-action', managementState?.migrationState?.status === 'migrating' ? '搬家中…' : '搬家');
+        migration.type = 'button'; migration.disabled = busy || managementState?.migrationState?.status === 'migrating';
+        migration.addEventListener('click', () => { void run('正在搬家', () => memoryManagement.migrateCurrent(), {
+          resultCopy: (_state, _beforeState, result) => result?.status === 'completed'
+            ? result.opened ? '搬家完成，新聊天已打开；原聊天保持不变。' : '搬家完成，新聊天已保存；可从当前角色的聊天列表打开。'
+            : '搬家没有完成。',
+        }); });
+        deleteActions.append(migration);
+      }
     }
     if (deletePending && managementState.error) pageNode.append(element('p', 'v3-foundation-feedback error', `上次删除未完成：${managementState.error} 已保留原聊天身份，可继续删除剩余记录。`));
     else if (managementState?.status === 'completed') pageNode.append(element('p', 'v3-foundation-feedback', '当前聊天记忆已清空；聊天正文、手动前情和全局设置仍保留。手动前情可在“前情”中清空。'));

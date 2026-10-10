@@ -11,6 +11,7 @@ import { PREQUEL_METADATA_KEY, PREQUEL_PROMPT_SLOT, selectPrequel } from './reca
 import { publicErrorMessage } from '../public-error.js';
 import { normalizeAutoHideKeepAiCount } from '../settings.js';
 import { createRecallRequestDiagnostic } from './recall-request-diagnostic.js';
+import { MIGRATION_ALIAS_KEY, migrationPartition } from './migration-prefix.js';
 
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
@@ -154,15 +155,21 @@ function selectedSourceFloorIds({ selectedFloors = [], selectedStates = [], sele
   return floorIds;
 }
 
-function captureSelectedSourceGuards(receipt, source, snapshot) {
+async function captureSelectedSourceGuards(receipt, source, snapshot, sanitizerOptions, fingerprint) {
   if (source?.readiness?.hostConfirmed !== true) return Object.freeze([]);
   const expectedFloorIds = selectedSourceFloorIds(receipt, source);
   if (!expectedFloorIds.size) return Object.freeze([]);
   if (!Array.isArray(snapshot?.chat)) return null;
   const sourceRefs = new Map((source.bodyMatchRefs ?? []).map(ref => [ref.floorId, ref]));
+  const partition = migrationPartition(source);
   const guards = [];
   for (const floorId of expectedFloorIds) {
     const ref = sourceRefs.get(floorId);
+    if (partition.isFrozenFloor(floorId)) {
+      // The frozen record is verified against the immutable reachable graph;
+      // B's optional carried copy is checked separately when body matching uses it.
+      continue;
+    }
     const messageIndex = ref?.hostLocator?.messageIndex;
     const message = Number.isSafeInteger(messageIndex) ? snapshot.chat[messageIndex] : null;
     const selected = selectAssistantMessage(message);
@@ -200,6 +207,11 @@ function selectedSourceGuardsCurrent(guards, chatId, snapshot) {
     }
   }
   return guards.every(guard => {
+    if (guard.mode === 'alias') {
+      const matches = snapshot.chat.filter(message => message?.extra?.[MIGRATION_ALIAS_KEY] === guard.aliasId);
+      return matches.length === 1 && matches[0] === guard.message
+        && selectAssistantMessage(matches[0])?.rawContent === guard.rawContent;
+    }
     if (guard.mode === 'marker') {
       const values = markerMatches.get(guard.floorId) ?? [];
       return values.length === 1 && values[0] === guard.message;
@@ -740,15 +752,26 @@ export async function captureCoreBodyWitness(coreChat, sanitizerOptions, fingerp
 async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, fingerprint, maximumFloors = 3) {
   // Recent-body overlap is trusted only when message position, selected swipe, and raw/canonical fingerprints agree.
   const visibleFloorIds = [...new Set(source.readiness?.visibleSummaryFloorIds ?? [])].sort();
+  const partition = migrationPartition(source);
+  const aliasByFloor = new Map((partition.descriptor?.carriedAliases ?? []).map(alias => [alias.floorId, alias]));
+  const aliasCounts = new Map(), aliasIndexes = new Map();
+  if (aliasByFloor.size) for (const [index, message] of (snapshot?.chat ?? []).entries()) {
+    const aliasId = message?.extra?.[MIGRATION_ALIAS_KEY];
+    if (aliasId) { aliasCounts.set(aliasId, (aliasCounts.get(aliasId) ?? 0) + 1); aliasIndexes.set(aliasId, index); }
+  }
   const verified = [];
   for (const ref of source.bodyMatchRefs ?? []) {
-    const liveMessage = snapshot?.chat?.[ref.hostLocator?.messageIndex];
+    const alias = ref.frozen ? aliasByFloor.get(ref.floorId) : null;
+    const liveIndex = alias ? aliasIndexes.get(alias.aliasId) : ref.hostLocator?.messageIndex;
+    const liveMessage = snapshot?.chat?.[liveIndex];
+    if (ref.frozen && (!alias || liveMessage?.extra?.[MIGRATION_ALIAS_KEY] !== alias.aliasId || aliasCounts.get(alias.aliasId) !== 1)) continue;
     const selected = selectAssistantMessage(liveMessage);
-    if (!selected || selected.swipeId !== ref.hostLocator.swipeId || selected.selectedSwipeIndex !== ref.hostLocator.selectedSwipeIndex) continue;
+    if (!selected || !alias && (selected.swipeId !== ref.hostLocator.swipeId || selected.selectedSwipeIndex !== ref.hostLocator.selectedSwipeIndex)) continue;
     const canonical = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
     const [rawFingerprint, canonicalFingerprint] = await Promise.all([fingerprint(selected.rawContent), fingerprint(canonical)]);
     if (rawFingerprint !== ref.rawFingerprint || canonicalFingerprint !== ref.canonicalFingerprint) continue;
-    verified.push({ ...ref, liveMessage, liveIndex: ref.hostLocator.messageIndex, rawContent: selected.rawContent, canonicalContent: canonical, key: `${rawFingerprint}|${canonicalFingerprint}` });
+    verified.push({ ...ref, liveMessage, liveIndex, aliasId: alias?.aliasId ?? null,
+      rawContent: selected.rawContent, canonicalContent: canonical, key: `${rawFingerprint}|${canonicalFingerprint}` });
   }
   const recentVisibleMessageIndexes = new Set();
   let recentVisibleCount = 0;
@@ -763,7 +786,7 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
   const recentVisibleFloorIds = [...new Set(verified.filter(ref => recentVisibleMessageIndexes.has(ref.liveIndex)).map(ref => ref.floorId))].sort();
   const materialFor = (covered, recentBodyFloorIds) => ({
     version: 3,
-    covered: covered.map(item => [item.floorId, item.floorMemoryId, item.assistantSeq, item.rawFingerprint, item.canonicalFingerprint]),
+    covered: covered.map(item => [item.floorId, item.floorMemoryId, item.assistantSeq, item.rawFingerprint, item.canonicalFingerprint, item.liveIndex]),
     visibleFloorIds,
     recentBodyFloorIds,
   });
@@ -774,7 +797,8 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
     witnessCount: witness.length,
     matchedCount: covered.length,
     coveredFloorIds: Object.freeze(covered.map(item => item.floorId)),
-    coveredRefs: Object.freeze(covered.map(item => Object.freeze({ floorId: item.floorId, floorMemoryId: item.floorMemoryId, assistantSeq: item.assistantSeq }))),
+    coveredRefs: Object.freeze(covered.map(item => Object.freeze({ floorId: item.floorId, floorMemoryId: item.floorMemoryId,
+      assistantSeq: item.assistantSeq, liveIndex: item.liveIndex, aliasId: item.aliasId ?? null }))),
     visibleFloorIds: Object.freeze(visibleFloorIds),
     recentBodyFloorIds,
   });
@@ -835,6 +859,22 @@ async function captureCoveredBodyGuards(source, currentSource, snapshot, sanitiz
     const original = sourceRefs.get(key);
     const current = currentRefs.find(ref => sameBodyRef(original, ref));
     if (!sameBodyRef(original, current)) return null;
+    if (currentSource.migrationDescriptor?.frozenFloorIds?.includes(current.floorId)) {
+      const alias = currentSource.migrationDescriptor.carriedAliases?.find(value => value.floorId === current.floorId);
+      if (!alias) continue;
+      const currentCovered = currentSource.bodyMatch?.coveredRefs?.find(value => value.floorId === current.floorId && value.assistantSeq === current.assistantSeq);
+      if (!currentCovered || currentCovered.aliasId !== alias.aliasId || !Number.isSafeInteger(currentCovered.liveIndex)) return null;
+      const message = snapshot?.chat?.[currentCovered.liveIndex];
+      if (message?.extra?.[MIGRATION_ALIAS_KEY] !== alias.aliasId) return null;
+      const selected = selectAssistantMessage(message);
+      if (!selected) return null;
+      const canonicalContent = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
+      const [rawFingerprint, canonicalFingerprint] = await Promise.all([fingerprint(selected.rawContent), fingerprint(canonicalContent)]);
+      if (rawFingerprint !== current.rawFingerprint || canonicalFingerprint !== current.canonicalFingerprint) return null;
+      guards.push(Object.freeze({ hostLocator: Object.freeze({ messageIndex: currentCovered.liveIndex,
+        swipeId: selected.swipeId, selectedSwipeIndex: selected.selectedSwipeIndex }), rawContent: selected.rawContent, canonicalContent }));
+      continue;
+    }
     const message = snapshot?.chat?.[current.hostLocator.messageIndex];
     const selected = selectAssistantMessage(message);
     if (!selected || selected.swipeId !== current.hostLocator.swipeId || selected.selectedSwipeIndex !== current.hostLocator.selectedSwipeIndex) return null;
@@ -1431,9 +1471,9 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       markVerificationFailure(failedReference?.step ?? 'selectedReference', 'changed', failedReference);
       return { ok: false, reason: 'selectedRefsChanged' };
     }
-    const selectedSourceGuards = captureSelectedSourceGuards({ selectedFloors, selectedStates, selectedCseChanges }, currentSource, before);
-    if (selectedSourceGuards === null) { markVerificationFailure('sourceBodyGuard', 'changed'); return { ok: false, reason: 'selectedRefsChanged' }; }
     const bodyGuardSanitizer = currentSanitizerOptions();
+    const selectedSourceGuards = await captureSelectedSourceGuards({ selectedFloors, selectedStates, selectedCseChanges }, currentSource, before, bodyGuardSanitizer, fingerprint);
+    if (selectedSourceGuards === null) { markVerificationFailure('sourceBodyGuard', 'changed'); return { ok: false, reason: 'selectedRefsChanged' }; }
     const coveredBodyGuards = await captureCoveredBodyGuards(source, currentSource, before, bodyGuardSanitizer, fingerprint);
     if (coveredBodyGuards === null) { markVerificationFailure('coveredBodyGuard', 'changed'); return { ok: false, reason: 'narrativeChanged' }; }
     if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };

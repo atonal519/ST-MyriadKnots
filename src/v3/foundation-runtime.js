@@ -29,6 +29,7 @@ import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './me
 import { matchFloorCandidates } from './floor-binding.js';
 import { clearExactMessageFloorAnchor, inspectMessageFloorAnchor, messageFloorAnchorCandidateSnapshot, MESSAGE_FLOOR_ANCHOR_KEY, readTargetChat } from './message-floor-anchor.js';
 import { captureTargetChatDescriptor } from './host-adapter.js';
+import { migrationPartition, partitionScannedCandidates } from './migration-prefix.js';
 
 const EVENTS = Object.freeze([
   'CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED',
@@ -146,7 +147,7 @@ function activeFloorViews(floors, candidates) {
   return floors.map((floor, index) => {
     const candidate = candidates[index];
     if (!candidate) return floor;
-    return { ...floor, assistantSeq: index + 1, predecessorFloorId: floors[index - 1]?.id ?? null, hostLocator: { ...candidate.hostLocator } };
+    return { ...floor, assistantSeq: candidate.assistantSeq ?? floor.assistantSeq, predecessorFloorId: floors[index - 1]?.id ?? null, hostLocator: { ...candidate.hostLocator } };
   });
 }
 function restoreActiveFloorViews(floors, indexes) {
@@ -220,6 +221,30 @@ export function createFoundationRuntime({
   let emptyRealtimeObservation = null;
   let inspectedStableCount = 0;
   const subscribers = new Set();
+  const migrationInputWitnesses = new WeakMap();
+
+  async function scanGraphCandidates(chat, chatId, options = {}) {
+    const scanned = await scanCandidates(chat, { sanitizerOptions: sanitizerOptions(), chatId, ...options });
+    const prepared = partitionScannedCandidates(cache, chat, chatId, scanned);
+    if (prepared.all !== scanned) migrationInputWitnesses.set(prepared.all, Object.freeze({
+      descriptorId: prepared.descriptorId ?? cache?.migrationDescriptor?.id ?? null,
+      aliasWitnesses: prepared.aliasWitnesses,
+    }));
+    return prepared.all;
+  }
+
+  async function inputSnapshotForCandidates(candidates, stableCount) {
+    const migration = migrationInputWitnesses.get(candidates);
+    if (!migration) return foundationInputSnapshot(candidates, stableCount);
+    const realCandidates = candidates.filter(candidate => candidate?.archiveCandidate !== true);
+    const realStableCount = candidates.slice(0, stableCount).filter(candidate => candidate?.archiveCandidate !== true).length;
+    const base = await foundationInputSnapshot(realCandidates, realStableCount);
+    const witness = { descriptorId: migration.descriptorId, aliasWitnesses: migration.aliasWitnesses };
+    return Object.freeze({
+      payload: Object.freeze({ ...base.payload, migration: Object.freeze(witness) }),
+      fingerprint: await hash(JSON.stringify({ fingerprint: base.fingerprint, ...witness })),
+    });
+  }
 
   const enabled = () => {
     try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; }
@@ -425,7 +450,7 @@ export function createFoundationRuntime({
       const matchedFloor = match?.floor ?? null;
       const manuallySaved = matchedFloor?.stability?.stabilizedBy === 'manual'
         && match.rawFingerprintMatches && match.canonicalFingerprintMatches && match.sanitizerFingerprintMatches;
-      const permanentlySaved = Boolean(matchedFloor && (marker?.status === 'valid' || savedFloorIds.has(matchedFloor.id) || manuallySaved));
+      const permanentlySaved = Boolean(matchedFloor && (candidates[count].archiveCandidate === true || marker?.status === 'valid' || savedFloorIds.has(matchedFloor.id) || manuallySaved));
       const requestConfirmed = marker?.status === 'none' && matchedFloor
         && requestConfirmations.has(matchedFloor.id);
       const manuallyConfirmed = Array.isArray(manualConfirmation)
@@ -509,7 +534,7 @@ export function createFoundationRuntime({
     try {
       captured = capture();
       projectedChatId = captured.identity.chatId;
-      const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions(), chatId: captured.identity.chatId });
+      let candidates = await scanGraphCandidates(captured.host.chat, captured.identity.chatId);
       if (inspectEpoch !== sessionEpoch) return publicState;
       if (allowCached && !lastError && cacheMatchesCandidates(candidates)) {
         inspectedStableCount = cache.floors.length;
@@ -537,6 +562,10 @@ export function createFoundationRuntime({
       if (['ready', 'needsReseal'].includes(loaded.status)) {
         const orderedFloors = [...loaded.floors].sort((left, right) => left.assistantSeq - right.assistantSeq);
         cache = { ...loaded, floors: restoreActiveFloorViews(orderedFloors, loaded.indexes) };
+        if (loaded.migrationDescriptor) {
+          candidates = await scanGraphCandidates(captured.host.chat, captured.identity.chatId);
+          inspectedStableCount = stableCountFor(candidates, cache.floors, false, null);
+        }
         lastRun = runSummary(loaded.run, 'inspected');
       } else if (loaded.status === 'uninitialized') {
         cache = { root: null, rootRevision: 0, checkpoint: null, run: null, floors: [], floorMemories: [], entities: [], indexes: [] };
@@ -702,12 +731,12 @@ export function createFoundationRuntime({
     if (current(operation) !== 'current') throw statusError('stale');
     if (targetRecoveryLeaf && targetChatIo?.requireSourceValidation === true) await targetChatIo.readLatest();
     const captured = capture();
-    const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions(), chatId: captured.identity.chatId });
+    const candidates = await scanGraphCandidates(captured.host.chat, captured.identity.chatId);
     if (current(operation) !== 'current') throw statusError('stale');
     const bindings = matchFloorCandidates(cache?.floors ?? [], candidates);
     if (bindings.issue) throw statusError('needsReview', '当前消息记忆标识存在冲突，本次操作不再提交。');
     const stableCount = stableCountFor(candidates, cache?.floors ?? [], confirmLatest, stableThrough, manualConfirmation);
-    const snapshot = await foundationInputSnapshot(candidates, stableCount);
+    const snapshot = await inputSnapshotForCandidates(candidates, stableCount);
     return { candidates, stableCount, snapshot };
   }
 
@@ -753,7 +782,7 @@ export function createFoundationRuntime({
     try { captured = capture(); } catch { return publicState; }
     if (captured.host.context.groupId !== null && captured.host.context.groupId !== undefined) return publicState;
     const evidence = { identity: captured.identity, epoch: sessionEpoch, newLen: captured.host.chat.length };
-    const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions(), chatId: captured.identity.chatId });
+    const candidates = await scanGraphCandidates(captured.host.chat, captured.identity.chatId);
     if (!tailDeletionMatches(evidence, candidates, cache?.floors ?? [], stableCountFor(candidates, cache?.floors ?? [], false))) return publicState;
     const messageSnapshot = messages => JSON.stringify(messages.map(message => ({
       is_user: message?.is_user, is_system: message?.is_system, mes: message?.mes,
@@ -920,9 +949,7 @@ export function createFoundationRuntime({
       if (inspectedReachable?.root
         && inspected.reviewReason.actualCount === inspected.reviewReason.expectedCount + 1
         && inspected.reviewReason.assistantSeq === inspected.reviewReason.expectedCount + 1) {
-        const candidates = await scanCandidates(inspectedSnapshot.chat, {
-          sanitizerOptions: captured.sanitizerOptions, chatId: captured.identity.chatId,
-        });
+        const candidates = await scanGraphCandidates(inspectedSnapshot.chat, captured.identity.chatId, { sanitizerOptions: captured.sanitizerOptions });
         const bindings = matchFloorCandidates(inspectedReachable.floors, candidates);
         retryRepair = orphanTailAnchorRepair(inspectedReachable, candidates, bindings);
         if (retryRepair && retryRepair.messageIndex === inspected.reviewReason.messageIndex) {
@@ -964,9 +991,10 @@ export function createFoundationRuntime({
   }
 
   async function seal(operation, { candidates, stableCount, confirmLatest = false, stableThrough = operation?.stableThrough ?? null, manualConfirmation = operation?.manualConfirmation ?? null, sourceSnapshot = null, rebaseAttempt = 0 }) {
-    const snapshot = sourceSnapshot ?? await foundationInputSnapshot(candidates, stableCount);
+    const snapshot = sourceSnapshot ?? await inputSnapshotForCandidates(candidates, stableCount);
     const existing = cache.floors;
     const stableCandidates = candidates.slice(0, stableCount);
+    const frozenFloorIds = new Set(migrationPartition(cache).frozenFloorIds);
     const memoryFloorIds = new Set((cache.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').flatMap(memorySourceFloorIds));
     const bindings = matchFloorCandidates(existing, stableCandidates);
     if (bindings.issue?.code === 'markerRejected') throw statusError('needsReview', '消息记忆标识无效或来自其他聊天，未静默接管。');
@@ -1020,7 +1048,8 @@ export function createFoundationRuntime({
         });
         floors.push(created); newFloors.push(created); continue;
       }
-      const rebound = validateFoundationFloor({ ...prior, assistantSeq: index + 1,
+      if (frozenFloorIds.has(prior.id)) { floors.push(prior); continue; }
+      const rebound = validateFoundationFloor({ ...prior, assistantSeq: stableCandidates[index].assistantSeq ?? index + 1,
         predecessorFloorId: floors.at(-1)?.id ?? null, hostLocator: { ...stableCandidates[index].hostLocator }, updatedAt: nowValue }, { expectedChatId: operation.chatId });
       floors.push(rebound);
     }
@@ -1091,6 +1120,7 @@ export function createFoundationRuntime({
       sourceSnapshotFingerprint: checkpoint.sourceSnapshotFingerprint,
       stableBoundary: { assistantSeq: floors.length, floorId: boundaryFloor?.id ?? null, canonicalFingerprint: boundaryFloor?.content?.canonicalFingerprint ?? null },
       baselineId: baseline?.id ?? null, activeRunId: null,
+      ...(cache.root?.migrationDescriptorId ? { migrationDescriptorId: cache.root.migrationDescriptorId } : {}),
       indexManifest: { ...emptyIndexManifest(), floor: indexKeys.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-')), entity: indexKeys.filter(key => key.includes('-entity-')), reverseRef: indexKeys.filter(key => key.includes('-reverseRef-')) },
       activeStateRefs: currentState ? [currentState.id] : [], activeThreadRefs: [],
     }, { expectedChatId: operation.chatId });
@@ -1199,7 +1229,7 @@ export function createFoundationRuntime({
         if (!loaded || current(operation) !== 'current') return publishOperation(operation, 'stale');
         const scanMetrics = {};
         const started = globalThis.performance?.now?.() ?? Date.now();
-        let candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions(), chatId: captured.identity.chatId, metrics: scanMetrics });
+        let candidates = await scanGraphCandidates(captured.host.chat, captured.identity.chatId, { metrics: scanMetrics });
         const elapsed = (globalThis.performance?.now?.() ?? Date.now()) - started;
         if (current(operation) !== 'current') return publishOperation(operation, 'stale');
         metrics = Object.freeze({ assistantFloors: candidates.length, canonicalCharacters: candidates.reduce((sum, item) => sum + item.canonicalContent.length, 0), scanMs: elapsed, maximumChunkMs: scanMetrics.maximumChunkMs ?? elapsed, algorithm: 'ordered-O(n)' });
@@ -1214,7 +1244,7 @@ export function createFoundationRuntime({
           await clearExactMessageFloorAnchor({ hostAdapter, targetChat: targetChatIo, ...orphanRepair, signal: operation.controller.signal, fetchImpl });
           if (current(operation) !== 'current') return publishOperation(operation, 'stale');
           const repairedHost = capture();
-          candidates = await scanCandidates(repairedHost.host.chat, { sanitizerOptions: sanitizerOptions(), chatId: repairedHost.identity.chatId });
+          candidates = await scanGraphCandidates(repairedHost.host.chat, repairedHost.identity.chatId);
           if (current(operation) !== 'current') return publishOperation(operation, 'stale');
           candidateBindings = matchFloorCandidates(loaded.floors, candidates);
         }
@@ -1233,7 +1263,7 @@ export function createFoundationRuntime({
           }
         }
         const stableCount = stableCountFor(candidates, loaded.floors, confirmLatest, stableThrough, operation.manualConfirmation);
-        const sourceSnapshot = await foundationInputSnapshot(candidates, stableCount);
+    const sourceSnapshot = await inputSnapshotForCandidates(candidates, stableCount);
         if (!loaded.root && stableCount === 0) {
           emptyRealtimeObservation = Object.freeze({ chatId: operation.chatId });
           updateCandidateProjection(candidates, [], 0);
@@ -1399,7 +1429,7 @@ export function createFoundationRuntime({
     if (!cache) await inspect('manualConfirmConsecutiveInspect', { allowCached: false });
     if (!cache) return publicState;
     const captured = capture();
-    const candidates = await scanCandidates(captured.host.chat, { sanitizerOptions: sanitizerOptions(), chatId: captured.identity.chatId });
+    const candidates = await scanGraphCandidates(captured.host.chat, captured.identity.chatId);
     if (captured.identity.chatId !== projectedChatId || scope?.chatId !== captured.identity.chatId) return publish('stale');
     const bindings = matchFloorCandidates(cache.floors ?? [], candidates);
     if (bindings.issue) return reconcile('manualConfirmConsecutive');

@@ -57,15 +57,16 @@ const visible = node => flatten(node).map(item => item.textContent).filter(Boole
 function person(entityId, name, selected, profile = null, appearanceCount = 1) {
   return { entityId, displayName: profile?.name || name, entityDisplayName: name, aliases: [`${name}别名`], selected, profiled: Boolean(profile), profile, appearanceCount };
 }
-function runtimeHarness({ profile = null, profiles = null, selected = [A], failSave = false, generatedProfile = null, generateGate = null, generationReport = null } = {}) {
+function runtimeHarness({ profile = null, profiles = null, selected = [A], failSave = false, generatedProfile = null, generateGate = null, generationReport = null, archivedProfileHistory = [] } = {}) {
   const initialProfiles = profiles ?? (profile ? { [A]: profile } : {});
-  let state = { status: 'ready', chatId: CHAT, revision: 1, selectedEntityIds: [...selected], profilesByEntityId: initialProfiles,
+  let state = { status: 'ready', chatId: CHAT, revision: 1, selectedEntityIds: [...selected], profilesByEntityId: initialProfiles, archivedPeopleSnapshotCount: archivedProfileHistory.length,
     people: [person(A, '甲', selected.includes(A), initialProfiles[A] ?? null, 3), person(B, '乙', selected.includes(B), initialProfiles[B] ?? null)], active: null,
     unprofiledSelectedCount: selected.filter(id => !initialProfiles[id]).length, lastError: null };
   const listeners = new Set(), calls = { select: [], order: [], save: [], avatar: [], merge: [], delete: [], generate: 0, regenerate: [] };
   const emit = () => { for (const listener of listeners) listener(state); return state; };
   const runtime = {
     getState: () => state, refresh: async () => state,
+    async readArchivedProfileHistory(entityId) { return archivedProfileHistory.filter(item => item.entityId === entityId).map(({ entityId: _entityId, ...item }) => structuredClone(item)); },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async setSelectedEntityIds(ids) { calls.select.push(ids); state = { ...state, selectedEntityIds: ids, people: state.people.map(item => ({ ...item, selected: ids.includes(item.entityId) })) }; return emit(); },
     async setPersonOrderEntityIds(ids) { calls.order.push([...ids]); const rank = new Map(ids.map((id, index) => [id, index])); state = { ...state, personOrderEntityIds: [...ids], people: [...state.people].sort((left, right) => (rank.get(left.entityId) ?? ids.length) - (rank.get(right.entityId) ?? ids.length)) }; return emit(); },
@@ -497,4 +498,17 @@ test('真实保存跨人物及停用重开保持归属，切聊天后的迟到�
   await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
   assert.equal(fieldControl(container, '补充资料').value, '新聊天草稿');
   assert.equal(h.records.get(`chat-${CHAT_B}/${PEOPLE_WORKSPACE_RECORD_ID}`).data.profilesByEntityId[A], undefined, '迟到旧保存不得写新聊天');
+});
+
+test('搬家后人物详情按需只读显示冻结旧资料，不提供编辑入口', async () => {
+  const current = { name: '甲新名', notes: 'B当前资料' };
+  const archived = { name: '甲旧名', notes: 'A冻结资料' };
+  const h = runtimeHarness({ profile: current, archivedProfileHistory: [{ entityId: A, sourceChatId: 'source-chat', sourceRevision: 7, profile: archived }] });
+  const container = new Node('main'), view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container); await view.activate();
+  assert.match(visible(container), /甲新名/); assert.doesNotMatch(visible(container), /甲旧名/);
+  flatten(container).find(node => node.textContent === '查看搬家前资料（只读）').click();
+  await waitFor(() => visible(container).includes('A冻结资料'));
+  assert.match(visible(container), /搬家前资料 1 · 甲旧名/);
+  const archive = flatten(container).find(node => node.className === 'qqj-profile-archive-entry');
+  assert.ok(archive); assert.doesNotMatch(visible(archive), /编辑|保存资料|删除人物|整理当前资料/);
 });

@@ -5,6 +5,9 @@ import { createFoundationStore } from '../src/v3/foundation-store.js';
 import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
 import { createV3MemoryRuntime } from '../src/v3/memory-runtime.js';
 import { createChatBranchInitializer } from '../src/v3/chat-branch-inheritance.js';
+import { initializeMigrationGraph } from '../src/v3/memory-migration.js';
+import { MIGRATION_ALIAS_KEY } from '../src/v3/migration-prefix.js';
+import { createV3RecallRuntime, projectHistoricalRecallReceipt, RECALL_PROMPT_SLOT, RECALL_RECEIPT_KEY } from '../src/v3/recall-runtime.js';
 import { createPeopleWorkspaceStore } from '../src/v3/people-workspace.js';
 import { replayCurrentState } from '../src/v3/cse-engine.js';
 import { EXTRACTOR_SYSTEM_PROMPT } from '../src/v3/extractor.js';
@@ -72,6 +75,270 @@ async function waitFor(predicate, message) {
 function chatRecords(records, chatId) {
   return JSON.stringify([...records.entries()].filter(([key]) => key.startsWith(`chat-${chatId}/`)).sort(([left], [right]) => left.localeCompare(right)));
 }
+
+test('一键搬家为B独立复制完整冻结图，保留A字节并让B正常foundation读取归档前缀', async () => {
+  const backend = backendHarness();
+  const aChat = [user('旧档的开场问题。'), assistant('裴晚生把蓝铜钥匙放进东馆的旧木盒。'), user('继续。'), assistant('A最新的普通回复。'), user('蓝铜钥匙现在放在哪里？')];
+  const sourceIdentity = identity('A-file', SOURCE);
+  const sourceContext = context(sourceIdentity.hostChatId, SOURCE, aChat);
+  const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => sourceContext } } });
+  const sourceStore = createFoundationStore({ client: backend.client, contextProvider: () => sourceIdentity });
+  const sourceFoundation = createFoundationRuntime({ hostAdapter, store: sourceStore, contextProvider: () => sourceContext, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  await sourceFoundation.start();
+  const sourceMemory = createV3MemoryRuntime({ foundationRuntime: sourceFoundation, store: sourceStore, hostAdapter,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }),
+    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
+    generateUtilityTask: async options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: '裴晚生把蓝铜钥匙放进东馆的旧木盒。' } }
+      : { jsonData: { noMaterialChange: true } },
+    now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  await sourceMemory.start();
+  const sourceFloorIdForSummary = sourceMemory.getState().floors[0].floorId;
+  await sourceMemory.extractFloor(sourceFloorIdForSummary, { analyzeState: false });
+  await sourceMemory.analyzeNextState();
+  const source = await sourceStore.readReachable({ mode: 'full' });
+  assert.equal(source.status, 'ready');
+  const sourceMemoryRecord = source.floorMemories.find(memory => memory.floorId === sourceFloorIdForSummary && memory.recordStatus === 'active');
+  const sourceDeltaRecord = source.stateDeltas.find(delta => delta.floorId === sourceFloorIdForSummary && delta.recordStatus === 'active');
+  assert.ok(sourceMemoryRecord?.summary.aiText, '搬家前通过正式Extractor保存至少一份旧摘要');
+  assert.ok(sourceDeltaRecord, '搬家前通过正式CSE保存至少一条旧delta');
+  const sourceBefore = chatRecords(backend.records, SOURCE);
+  const bId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const targetIdentity = identity('B-file', bId);
+  const aliasId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const bChat = [assistant('A最新的普通回复。'), user('蓝铜钥匙现在放在哪里？')];
+  bChat[0].extra = { [MIGRATION_ALIAS_KEY]: aliasId };
+  const sourceFloor = source.floors.at(-1);
+  assert.equal(sourceFloor.assistantSeq, 2, JSON.stringify(source.floors.map(floor => [floor.id, floor.assistantSeq, floor.hostLocator])));
+  const alias = { aliasId, floorId: sourceFloor.id, targetMessageIndex: 0,
+    rawFingerprint: sourceFloor.content.rawFingerprint, canonicalFingerprint: sourceFloor.content.canonicalFingerprint };
+  const targetStore = createFoundationStore({ client: backend.client, contextProvider: () => targetIdentity });
+  const migrated = await initializeMigrationGraph({ store: targetStore, sourceIdentity, targetIdentity, sourceReachable: source,
+    carriedAliases: [alias], targetChat: bChat, now: () => new Date(NOW), newUuid: uuidFactory() });
+  assert.equal(migrated.status, 'ready');
+  assert.equal(migrated.reachable.root.chatId, bId);
+  assert.equal(migrated.reachable.migrationDescriptor.frozenFloorIds.length, source.floors.length);
+  assert.deepEqual(migrated.reachable.floors.map(floor => floor.id), source.floors.map(floor => floor.id));
+  assert.notEqual(migrated.reachable.root.narrativeGeneration, source.root.narrativeGeneration);
+  assert.equal(chatRecords(backend.records, SOURCE), sourceBefore, 'A 的正式图未被搬家改写');
+
+  // A separate actual B graph without a carried alias exercises archive recall
+  // without treating the copied latest reply as a current source-body witness.
+  const recallTargetId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const recallTargetIdentity = identity('B-recall-file', recallTargetId);
+  const recallTargetChat = [assistant('A最新的普通回复。'), user('蓝铜钥匙现在放在哪里？')];
+  const recallTargetStore = createFoundationStore({ client: backend.client, contextProvider: () => recallTargetIdentity });
+  const recallMigration = await initializeMigrationGraph({ store: recallTargetStore, sourceIdentity, targetIdentity: recallTargetIdentity,
+    sourceReachable: source, targetChat: recallTargetChat, now: () => new Date(NOW), newUuid: uuidFactory() });
+  assert.equal(recallMigration.status, 'ready');
+  assert.ok(recallMigration.reachable.floorMemories.some(memory => memory.floorId === sourceMemoryRecord.floorId && memory.recordStatus === 'active'),
+    '第二个真实初始化的B图保留源摘要记录');
+  let recallContext = context(recallTargetIdentity.hostChatId, recallTargetId, recallTargetChat);
+  const recallHost = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => recallContext } } });
+  const recallFoundation = createFoundationRuntime({ hostAdapter: recallHost, store: recallTargetStore, contextProvider: () => recallContext,
+    now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  assert.equal((await recallFoundation.start()).status, 'ready');
+  assert.equal(recallFoundation.getReachable().migrationDescriptor.id, recallMigration.descriptor.id);
+  const promptCalls = [];
+  recallContext.setExtensionPrompt = (slot, text) => promptCalls.push([slot, text]);
+  const recall = createV3RecallRuntime({ store: recallTargetStore, hostAdapter: recallHost, now: () => new Date(NOW), pluginVersion: '0.7.2', logger: { warn() {} } });
+  const recallResult = await recall.intercept(recallContext.chat, 12000, null, 'normal');
+  assert.equal(recallResult.lastRecall.status, 'ready', JSON.stringify(recallResult.lastRecall));
+  assert.ok(recallResult.lastRecall.selectedFloors.some(floor => floor.floorId === sourceMemoryRecord.floorId), '正式selector选中B图内的冻结旧summary');
+  assert.match(recallResult.lastRecall.injectionText, /蓝铜钥匙.*东馆.*旧木盒/u);
+  assert.equal(promptCalls.filter(([slot]) => slot === RECALL_PROMPT_SLOT).at(-1)?.[1], recallResult.lastRecall.injectionText,
+    '正式recall interceptor把冻结来源材料写入宿主prompt slot');
+  const recallUser = recallContext.chat.at(-1);
+  const verifiedReceipt = await projectHistoricalRecallReceipt(recallUser, { chatId: recallTargetId, userMessageIndex: 1 });
+  assert.equal(recallUser.extra[RECALL_RECEIPT_KEY].completionStatus, 'ready');
+  assert.equal(verifiedReceipt?.selectedFloors.some(floor => floor.floorId === sourceMemoryRecord.floorId), true,
+    '正式回执通过签名/归属核验并可只读恢复');
+
+  let activeContext = context(targetIdentity.hostChatId, bId, bChat);
+  const targetHost = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => activeContext } } });
+  const targetFoundation = createFoundationRuntime({ hostAdapter: targetHost, store: targetStore, contextProvider: () => activeContext, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  const loaded = await targetFoundation.start();
+  assert.equal(loaded.status, 'ready');
+  assert.equal(targetFoundation.getReachable().migrationDescriptor.id, migrated.descriptor.id);
+  assert.equal(targetFoundation.getReachable().floors.length, source.floors.length, 'alias携带AI仍只对应冻结source floor');
+  let rebuilding = false, rebuildCalls = 0, rebuildCseCalls = 0;
+  const targetMemory = createV3MemoryRuntime({ foundationRuntime: targetFoundation, store: targetStore, hostAdapter: targetHost,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }),
+    generateAnalysisTask: async () => { if (rebuilding) rebuildCseCalls += 1; return { jsonData: { noMaterialChange: true } }; },
+    generateUtilityTask: async options => {
+      if (rebuilding) rebuildCalls += 1;
+      return options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+        ? { jsonData: { summary: rebuilding ? 'B活动摘要-重构后' : 'B活动摘要-第一次' } }
+        : { jsonData: { noMaterialChange: true } };
+    }, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  await targetMemory.start();
+  const aliasUiState = targetMemory.getState();
+  assert.ok(aliasUiState.migrationAliases.some(alias => alias.aliasId === aliasId && alias.floorId === sourceFloor.id && alias.targetMessageIndex === 0),
+    '楼内投影复用正式migration descriptor中的alias来源，不重新读档或计算正文hash');
+  assert.equal(aliasUiState.floors.find(floor => floor.floorId === sourceFloor.id)?.frozen, true);
+  const aliasPromptCalls = [];
+  activeContext.setExtensionPrompt = (slot, text) => aliasPromptCalls.push([slot, text]);
+  const aliasRecall = createV3RecallRuntime({ store: targetStore, hostAdapter: targetHost, now: () => new Date(NOW), pluginVersion: '0.7.2', logger: { warn() {} } });
+  const aliasRecallResult = await aliasRecall.intercept(activeContext.chat, 12000, null, 'normal');
+  assert.equal(aliasRecallResult.lastRecall.status, 'ready', JSON.stringify(aliasRecallResult.lastRecall));
+  assert.ok(aliasRecallResult.lastRecall.selectedFloors.some(floor => floor.floorId === sourceMemoryRecord.floorId), '带alias的真实B图召回冻结旧summary');
+  assert.equal(aliasPromptCalls.filter(([slot]) => slot === RECALL_PROMPT_SLOT).at(-1)?.[1], aliasRecallResult.lastRecall.injectionText);
+  const aliasReceipt = await projectHistoricalRecallReceipt(activeContext.chat.at(-1), { chatId: bId, userMessageIndex: 1 });
+  assert.equal(aliasReceipt?.selectedFloors.some(floor => floor.floorId === sourceMemoryRecord.floorId), true,
+    '带alias的正式召回receipt已保存并通过归属核验');
+  activeContext.chat[0].mes = 'B把携带的回复编辑成了新内容。';
+  activeContext.chat[0].swipes = [activeContext.chat[0].mes];
+  const afterAliasEdit = await targetFoundation.refreshStatus();
+  assert.equal(afterAliasEdit.status, 'ready');
+  assert.ok(!targetFoundation.getReachable().migrationDescriptor.frozenFloorIds.includes(targetFoundation.getReachable().floors.at(-1).id),
+    '编辑携带正文后按B真实新楼处理');
+  const recallAfterAliasEdit = await aliasRecall.intercept(activeContext.chat, 12000, null, 'normal');
+  assert.equal(recallAfterAliasEdit.lastRecall.status, 'ready', JSON.stringify(recallAfterAliasEdit.lastRecall));
+  assert.ok(recallAfterAliasEdit.lastRecall.selectedFloors.some(floor => floor.floorId === sourceMemoryRecord.floorId),
+    'B携带正文编辑后仍可召回不可变旧摘要');
+  activeContext.chat.push(assistant('B继续后的新楼'), user('B下一位用户'));
+  const continued = await targetFoundation.refreshStatus();
+  assert.equal(continued.status, 'ready');
+  const afterNewFloor = targetFoundation.getReachable();
+  assert.equal(afterNewFloor.floors.length, source.floors.length + 2);
+  assert.equal(afterNewFloor.floors.at(-1).assistantSeq, source.floors.length + 2);
+  assert.equal(afterNewFloor.floors.at(-1).hostLocator.messageIndex, 2, '活动楼使用B真实宿主楼号');
+  assert.deepEqual(afterNewFloor.floors[0], migrated.reachable.floors[0], '新增B楼没有重绑或改写冻结旧楼');
+
+  await targetMemory.startHistoricalRebuild();
+  await waitFor(() => ['caughtUp', 'waitingRealtime'].includes(targetMemory.getState().rebuildStatus) && !targetMemory.getState().activeAutoMemory, 'B活动楼首次分析未追平');
+  const firstComplete = await targetStore.readReachable({ mode: 'runtime' });
+  const firstLive = firstComplete.floors.at(-1), firstLiveMemory = firstComplete.floorMemories.find(memory => memory.floorId === firstLive.id && memory.recordStatus === 'active');
+  const firstLiveDelta = firstComplete.stateDeltas.find(delta => delta.floorId === firstLive.id && delta.recordStatus === 'active');
+  assert.equal(firstLiveMemory?.summary.aiText, 'B活动摘要-第一次');
+  assert.ok(firstLiveDelta, 'B活动楼先具有已完成的CSE记录');
+  const frozenIds = new Set(firstComplete.migrationDescriptor.frozenFloorIds);
+  const liveFloorCountBeforeRebuild = firstComplete.floors.filter(floor => !frozenIds.has(floor.id)).length;
+  const frozenMemoriesBefore = firstComplete.floorMemories.filter(memory => frozenIds.has(memory.floorId));
+  const frozenDeltasBefore = firstComplete.stateDeltas.filter(delta => frozenIds.has(delta.floorId));
+  assert.ok(frozenMemoriesBefore.length > 0, '重构前的冻结旧summary数组非空');
+  assert.ok(frozenDeltasBefore.length > 0, '重构前的冻结旧CSE数组非空');
+  const firstMemoryId = firstLiveMemory.id, firstDeltaId = firstLiveDelta.id;
+  // The public runtime method is the same reset used by the production rebuild task.
+  rebuilding = true;
+  await targetMemory.resetLiveMigrationMemoriesForRebuild();
+  await targetMemory.startHistoricalRebuild();
+  await waitFor(() => ['caughtUp', 'waitingRealtime'].includes(targetMemory.getState().rebuildStatus) && !targetMemory.getState().activeAutoMemory, '迁移B活动楼完整重构未追平');
+  const rebuilt = await targetStore.readReachable({ mode: 'runtime' });
+  const rebuiltLiveMemory = rebuilt.floorMemories.find(memory => memory.floorId === firstLive.id && memory.recordStatus === 'active');
+  const rebuiltLiveDelta = rebuilt.stateDeltas.find(delta => delta.floorId === firstLive.id && delta.recordStatus === 'active');
+  assert.equal(rebuildCalls, liveFloorCountBeforeRebuild, '每个B真实活动楼恰好重提取一次；冻结楼不进入Extractor');
+  assert.equal(rebuildCseCalls, liveFloorCountBeforeRebuild, '每个B真实活动楼恰好重新分析一次CSE；冻结楼不进入CSE');
+  assert.equal(rebuiltLiveMemory?.summary.aiText, 'B活动摘要-重构后');
+  assert.notEqual(rebuiltLiveMemory.id, firstMemoryId);
+  assert.ok(rebuiltLiveDelta);
+  assert.notEqual(rebuiltLiveDelta.id, firstDeltaId);
+  assert.equal(rebuilt.migrationDescriptor.id, migrated.descriptor.id);
+  assert.deepEqual(rebuilt.floorMemories.filter(memory => frozenIds.has(memory.floorId)), frozenMemoriesBefore, '冻结历史FloorMemory记录及引用不变');
+  assert.deepEqual(rebuilt.stateDeltas.filter(delta => frozenIds.has(delta.floorId)), frozenDeltasBefore, '冻结历史CSE记录及引用不变');
+});
+
+test('1000楼正式foundation图搬家保留完整冻结前缀并按B身份独立读取', async () => {
+  const backend = backendHarness();
+  const chat = [];
+  for (let index = 0; index < 1000; index += 1) {
+    chat.push(assistant(`来源第${index + 1}楼正文，记录一条独特的旧经历 ${index + 1}。`), user(`继续第${index + 1}楼`));
+  }
+  const sourceIdentity = identity('A-1000-file', SOURCE), sourceContext = context(sourceIdentity.hostChatId, SOURCE, chat);
+  const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => sourceContext } } });
+  const sourceStore = createFoundationStore({ client: backend.client, contextProvider: () => sourceIdentity });
+  const sourceFoundation = createFoundationRuntime({ hostAdapter, store: sourceStore, contextProvider: () => sourceContext,
+    now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  const started = await sourceFoundation.start();
+  assert.equal(started.status, 'ready');
+  const source = await sourceStore.readReachable({ mode: 'full' });
+  assert.equal(source.floors.length, 1000);
+  const bId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', targetIdentity = identity('B-1000-file', bId);
+  const targetStore = createFoundationStore({ client: backend.client, contextProvider: () => targetIdentity });
+  const carried = [assistant('最近一次已完成回复'), user('之后继续')];
+  const migrated = await initializeMigrationGraph({ store: targetStore, sourceIdentity, targetIdentity, sourceReachable: source,
+    targetChat: carried, now: () => new Date(NOW), newUuid: uuidFactory() });
+  assert.equal(migrated.reachable.floors.length, 1000);
+  assert.equal(migrated.descriptor.frozenFloorIds.length, 1000);
+  assert.equal(migrated.reachable.floors[999].assistantSeq, 1000);
+  assert.equal(migrated.reachable.floors[999].chatId, bId);
+  assert.equal(migrated.reachable.floors[999].hostLocator.messageIndex, 1998, '存档旧locator不伪装成B的两条消息楼号');
+  assert.equal(migrated.reachable.root.chatId, bId);
+  assert.equal((await targetStore.readReachable({ mode: 'runtime' })).floors.length, 1000);
+});
+
+test('已保存摘要但CSE未齐的携带AI成为B真实活动楼并复用摘要，不回写冻结来源', async () => {
+  const backend = backendHarness();
+  const aChat = [user('原提问'), assistant('已完成摘要的旧回复'), user('等待续写')];
+  const sourceIdentity = identity('A-partial', SOURCE), sourceContext = context(sourceIdentity.hostChatId, SOURCE, aChat);
+  const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => sourceContext } } });
+  const sourceStore = createFoundationStore({ client: backend.client, contextProvider: () => sourceIdentity });
+  const sourceFoundation = createFoundationRuntime({ hostAdapter, store: sourceStore, contextProvider: () => sourceContext,
+    now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  await sourceFoundation.start();
+  const sourceMemory = createV3MemoryRuntime({ foundationRuntime: sourceFoundation, store: sourceStore, hostAdapter,
+    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
+    generateUtilityTask: async options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: '已经保存的旧楼摘要。' } }
+      : { jsonData: { noMaterialChange: true } },
+    now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  await sourceMemory.start();
+  const sourceFloorId = sourceMemory.getState().floors[0].floorId;
+  await sourceMemory.extractFloor(sourceFloorId, { analyzeState: false });
+  const source = await sourceStore.readReachable({ mode: 'full' });
+  const sourceSavedMemory = source.floorMemories.find(item => item.floorId === sourceFloorId && item.recordStatus === 'active');
+  assert.equal(source.status, 'ready'); assert.ok(sourceSavedMemory?.summary.aiText);
+  assert.equal(source.stateDeltas.some(item => item.floorId === sourceFloorId), false);
+  const enrichedSourceMemory = structuredClone(sourceSavedMemory);
+  enrichedSourceMemory.locations = [{ itemId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', entityId: null, name: '东馆', change: 'present',
+    participantEntityIds: [], evidenceRefs: [{ floorId: sourceFloorId, anchorId: null, quotedText: '已完成摘要的旧回复',
+      occurrence: 1, evidenceMode: 'witnessed', supports: '地点证据', sourceEntityId: null }] }];
+  const sourceForMigration = { ...source,
+    run: { ...(source.run ?? {}), diagnostics: { ...(source.run?.diagnostics ?? {}),
+      floorProvenance: { ...(source.run?.diagnostics?.floorProvenance ?? {}), [sourceFloorId]: {
+        timeEdited: true, storyClockSignature: 'frozen-source-clock', api: 'transient-diagnostic',
+      } } } },
+    floorMemories: source.floorMemories.map(item => item.id === enrichedSourceMemory.id ? enrichedSourceMemory : item) };
+  const bId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', targetIdentity = identity('B-partial', bId);
+  const targetChat = [user('旧问题搬家后仍按原顺序保留'), assistant('已完成摘要的旧回复')];
+  const targetStore = createFoundationStore({ client: backend.client, contextProvider: () => targetIdentity });
+  const migrated = await initializeMigrationGraph({ store: targetStore, sourceIdentity, targetIdentity, sourceReachable: sourceForMigration,
+    targetChat, carriedSummary: { sourceFloorId, sourceMemoryId: sourceSavedMemory.id, targetMessageIndex: 1 },
+    now: () => new Date(NOW), newUuid: uuidFactory() });
+  const liveFloor = migrated.reachable.floors.at(-1), liveMemory = migrated.reachable.floorMemories.find(item => item.floorId === liveFloor.id);
+  assert.equal(liveFloor.hostLocator.messageIndex, 1, '活动副本只绑定B真实消息位置');
+  assert.equal(migrated.reachable.migrationDescriptor.frozenFloorIds.includes(liveFloor.id), false);
+  assert.equal(liveMemory.summary.aiText, sourceSavedMemory.summary.aiText);
+  assert.equal(liveMemory.locations[0].name, '东馆', '已保存空间结构随单楼摘要保留');
+  assert.equal(liveMemory.locations[0].evidenceRefs[0].floorId, liveFloor.id, '活动摘要证据指向B真实楼');
+  assert.equal(migrated.reachable.stateDeltas.some(item => item.floorId === liveFloor.id), false, '缺少的CSE保持待分析');
+  assert.deepEqual(migrated.descriptor.summarySources, [{ targetFloorId: liveFloor.id, sourceFloorId, sourceChatId: SOURCE,
+    rawFingerprint: liveFloor.content.rawFingerprint }]);
+  assert.deepEqual(migrated.descriptor.sourceFloorProvenance, [{ floorId: sourceFloorId, timeEdited: true, storyClockSignature: 'frozen-source-clock' }]);
+  assert.deepEqual(migrated.reachable.floorMemories.find(item => item.floorId === sourceFloorId).summary, sourceSavedMemory.summary,
+    '冻结来源摘要保持原值');
+
+  const targetContext = context(targetIdentity.hostChatId, bId, targetChat);
+  const targetHost = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => targetContext } } });
+  const targetFoundation = createFoundationRuntime({ hostAdapter: targetHost, store: targetStore, contextProvider: () => targetContext,
+    now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  let cseCalls = 0, extractorCalls = 0;
+  const targetMemory = createV3MemoryRuntime({ foundationRuntime: targetFoundation, store: targetStore, hostAdapter: targetHost,
+    generateAnalysisTask: async () => { cseCalls += 1; return { jsonData: { noMaterialChange: true } }; },
+    generateUtilityTask: async options => { if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) extractorCalls += 1; return { jsonData: { noMaterialChange: true } }; },
+    now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  await targetMemory.start();
+  assert.equal(targetMemory.getState().floors.find(floor => floor.floorId === liveFloor.id)?.inherited, true,
+    '正式memory runtime将B携带摘要识别为继承内容，供楼内UI只读展示');
+  assert.equal(targetMemory.getState().unprocessedCount, 0, '复用的摘要不再进入Extractor队列');
+  assert.ok(targetMemory.getState().csePendingCount >= 1, '缺项进入既有CSE待分析状态');
+  assert.equal(cseCalls + extractorCalls, 0, '准备/打开B不会提前调用模型');
+  targetChat.push(user('搬家后继续对话'));
+  await targetMemory.refreshStatus();
+  await targetMemory.analyzeNextState();
+  assert.equal(extractorCalls, 0, 'USER→AI尾部已复用的摘要不重提');
+  assert.equal(cseCalls, 1, '后续B楼到达后只完成一次缺失CSE');
+});
 
 test('CHAT_CHANGED 初始化同角色副本时只继承实际前缀，保留摘要/CSE/最新版人物且后续新楼可续写', async () => {
   const backend = backendHarness();

@@ -6,6 +6,7 @@ import { calendarKey } from './calendar-rules.js';
 import { buildEntityIdentityDirectory, normalizeIdentityProjection } from './entity-identity.js';
 import { rankRecallDocuments, tokenizeRecallText } from './recall-ranking.js';
 import { QIANSHI_SCHEMA_VERSION, validateQianshiDelta } from './qianshi-schema.js';
+import { migrationPartition } from './migration-prefix.js';
 
 export const QIANSHI_CANDIDATE_CHARACTER_BUDGET = 24000;
 export const QIANSHI_PROGRESS_CHARACTER_BUDGET = 3200;
@@ -1322,11 +1323,13 @@ export function pendingQianshiDelta(previous, reason, now = new Date().toISOStri
 export function publicQianshiSnapshot(reachable, history = null, identityProjection = null, calendar = null) {
   const projection = projectQianshiGraph(reachable, { identityProjection, calendar });
   const floorById = new Map((reachable?.floors ?? []).map(floor => [floor.id, floor]));
+  const partition = migrationPartition(reachable);
   const publicEvent = event => ({ id: event.id, matterId: event.matterId, title: event.title, description: event.description, status: event.status,
     actionStatus: event.actionStatus ?? null, statusManuallyEdited: event.statusManuallyEdited === true,
     timeManuallyEdited: event.timeManuallyEdited === true,
     updatesMatter: event.updatesMatter, storyTime: event.storyTime, scheduledTime: event.scheduledTime, people: event.people.map(person => ({ ...person })), object: event.object,
     sourceFloorId: event.sourceFloorId, sourceFloorMemoryId: event.floorMemoryId, sourceAssistantSeq: event.assistantSeq,
+    ...(partition.isFrozenFloor(event.sourceFloorId) ? { frozen: true, sourceOrigin: partition.originForFloor(event.sourceFloorId) } : {}),
     sourceMessageIndex: floorById.get(event.sourceFloorId)?.hostLocator?.messageIndex ?? null });
   // 异常楼来自同一投影诊断，映射当前宿主楼号；不另存状态，也不把断链事件排除出年表。
   const anomalyFloors = projection.diagnostics.degradedFloorIds.map(floorId => {

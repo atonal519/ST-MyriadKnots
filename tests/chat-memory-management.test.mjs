@@ -18,7 +18,7 @@ import { CSE_SYSTEM_PROMPT } from '../src/v3/cse-engine.js';
 const CHAT_ID = '123e4567-e89b-42d3-a456-426614174000';
 const OTHER_ID = '223e4567-e89b-42d3-a456-426614174000';
 
-function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, silentSaveChatFailure = false, failSaveMetadata = false, busy = false, prepareHook = null, removeHook = null, rebuildHook = null } = {}) {
+function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, silentSaveChatFailure = false, failSaveMetadata = false, busy = false, prepareHook = null, removeHook = null, rebuildHook = null, migrationPrefix = false, memoryMigration = null } = {}) {
   const records = new Map([
     [`chat-${CHAT_ID}/floor-a`, { recordId: 'floor-a', revision: 2, data: { kind: 'floor' } }],
     [`chat-${CHAT_ID}/orphan-old`, { recordId: 'orphan-old', revision: 5, data: { kind: 'old-version' } }],
@@ -78,7 +78,7 @@ function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, s
     resume(chatId) { assert.equal(chatId, CHAT_ID); calls.push(['resume', chatId]); suspended = false; return true; },
   };
   const state = { memoryWorkBusy: busy };
-  const runtime = name => ({ getState: () => state, invalidate() { invalidated.push(name); } });
+  const runtime = name => ({ getState: () => state, getReachable: () => migrationPrefix ? { root: { chatId: CHAT_ID }, migrationDescriptor: { id: 'archive-prefix' } } : null, invalidate() { invalidated.push(name); } });
   const memoryRuntime = { async startHistoricalRebuild() { const chatId = context.chatMetadata.qianqianjie.chatId; calls.push(['history', chatId]); records.set(`chat-${chatId}/v3-root`, { recordId: 'v3-root', revision: 1, data: { chatId } }); return { status: 'ready', chatId }; }, getState: () => ({ ...state, chatId: CHAT_ID }), invalidate(options) { memoryInvalidations.push(options); invalidated.push('memory'); } };
   const recallRuntime = { getState: () => ({}), invalidate() { invalidated.push('recall'); }, clearCurrent() { invalidated.push('recall-clear'); } };
   const peopleRuntime = { getState: () => ({}), invalidate() { invalidated.push('people'); } };
@@ -107,11 +107,25 @@ function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, s
     calls.push(['history', chatId]);
     return { status: 'ready', chatId };
   };
-  const manager = createChatMemoryManagement({ client, session, hostAdapter, foundationRuntime: runtime('foundation'), memoryRuntime, recallRuntime, peopleRuntime, timeRuntime, autoHideController, isMainGenerationActive: () => false, fetchImpl, coreRecordCache: { async invalidateIdentity(identity) { calls.push(['invalidateCache', identity.chatId]); } }, createHistoricalRebuild, logger: { warn() {} } });
+  const manager = createChatMemoryManagement({ client, session, hostAdapter, foundationRuntime: runtime('foundation'), memoryRuntime, recallRuntime, peopleRuntime, timeRuntime, memoryMigration, autoHideController, isMainGenerationActive: () => false, fetchImpl, coreRecordCache: { async invalidateIdentity(identity) { calls.push(['invalidateCache', identity.chatId]); } }, createHistoricalRebuild, logger: { warn() {} } });
   return { manager, records, calls, invalidated, memoryInvalidations, context, user, hidden, malformedHidden, manualHidden, receipt, floorMarker, identity, releaseHeld };
 }
 
 function cloneMessages(messages) { return structuredClone(messages); }
+
+test('搬家启动立即通知管理器busy状态，结束后再通知完成', async () => {
+  let status = 'idle', release;
+  const migration = { getState: () => ({ status }), migrateCurrent() { status = 'migrating'; return new Promise(resolve => { release = resolve; }); } };
+  const f = fixture({ memoryMigration: migration });
+  const states = [];
+  f.manager.subscribe(state => states.push(state));
+  const pending = f.manager.migrateCurrent();
+  assert.equal(f.manager.getState().migrationState.status, 'migrating');
+  assert.equal(f.manager.getState().workBusy, true);
+  assert.equal(states.at(-1).migrationState.status, 'migrating', '异步搬家运行前立即通知UI重绘');
+  status = 'completed'; release({ status: 'completed' }); await pending;
+  assert.equal(states.at(-1).migrationState.status, 'completed', '搬家结束仍通知最终状态');
+});
 
 test('先CAS删除root使旧manifest失效，再并发清理普通记录，binding最后删除', async () => {
   let active = 0, maxActive = 0; const releases = [];
@@ -172,6 +186,22 @@ test('完全重构删除整collection与前情后新建身份，普通删除仍�
   assert.ok(f.calls.findIndex(call => call[0] === 'timeHistory') > f.calls.findLastIndex(call => call[0] === 'remove'));
   assert.equal(f.calls.filter(call => call[0] === 'history').length, 1);
   assert.equal(f.manager.getState().status, 'idle', '新档不沿用普通删除结果文案');
+});
+
+test('迁移档完全重构保留冻结图和宿主身份，历史任务在原目标图上继续', async () => {
+  const f = fixture({ migrationPrefix: true, rebuildHook: async options => {
+    assert.equal(options.identity.chatId, CHAT_ID);
+    assert.equal(options.cleanedChat.header.chat_metadata.qianqianjie.chatId, CHAT_ID);
+    options.onTaskControl({ getState: () => ({ rebuildStatus: 'caughtUp', chatId: CHAT_ID }), subscribe: () => () => {}, pause: async () => {}, start: async () => ({ rebuildStatus: 'caughtUp', chatId: CHAT_ID }) });
+    return { rebuildStatus: 'caughtUp', chatId: CHAT_ID };
+  } });
+  const before = [...f.records.keys()].filter(key => key.startsWith(`chat-${CHAT_ID}/`)).sort();
+  const result = await f.manager.fullRebuild(CHAT_ID);
+  const after = [...f.records.keys()].filter(key => key.startsWith(`chat-${CHAT_ID}/`)).sort();
+  assert.equal(result.chatId, CHAT_ID);
+  assert.deepEqual(after, before, '不删除迁移归档图中的root、楼或descriptor');
+  assert.equal(f.calls.some(call => call[0] === 'remove' || call[0] === 'list'), false);
+  assert.equal(f.calls.some(call => call[0] === 'suspend'), false);
 });
 
 test('完全重构删除失败不生成，续删完成后沿开始时的目标创建新身份', async () => {

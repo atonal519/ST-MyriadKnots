@@ -1,5 +1,6 @@
 import { projectHistoricalRecallReceipt, RECALL_RECEIPT_KEY } from '../v3/recall-runtime.js';
 import { inspectMessageFloorAnchor } from '../v3/message-floor-anchor.js';
+import { MIGRATION_ALIAS_KEY } from '../v3/migration-prefix.js';
 import { classifyInlineMessage, projectInlineMemoryFloor, projectInlineRecallReceipt } from './inline-projection.js';
 
 import { patchRecallTabs } from './recall-tabs.js';
@@ -103,7 +104,7 @@ function createSourceIndex(chat, chatId, state) {
   }
   const stateChatId = String(state?.chatId ?? '').trim();
   const memoryMatchesChat = !stateChatId || Boolean(chatId && stateChatId === chatId);
-  const memoryIndices = new Map(), duplicateMemoryFloorIds = new Set();
+  const memoryIndices = new Map(), duplicateMemoryFloorIds = new Set(), frozenOrigins = new Map();
   if (memoryMatchesChat) for (const floor of state?.floors ?? []) {
     const floorId = typeof floor?.floorId === 'string' ? floor.floorId.trim() : '';
     if (!floorId || !validIndex(floor.messageIndex)) continue;
@@ -111,12 +112,23 @@ function createSourceIndex(chat, chatId, state) {
       memoryIndices.delete(floorId);
       duplicateMemoryFloorIds.add(floorId);
     } else if (!duplicateMemoryFloorIds.has(floorId)) memoryIndices.set(floorId, floor.messageIndex);
+    if (floor.frozen === true && validIndex(floor.sourceOrigin?.sourceMessageIndex)) {
+      frozenOrigins.set(floorId, Object.freeze({
+        sourceMessageIndex: floor.sourceOrigin.sourceMessageIndex,
+        ...(typeof floor.sourceOrigin.sourceChatId === 'string' ? { sourceChatId: floor.sourceOrigin.sourceChatId } : {}),
+        ...(typeof floor.sourceOrigin.sourceHostChatId === 'string' ? { sourceHostChatId: floor.sourceOrigin.sourceHostChatId } : {}),
+      }));
+    }
   }
   return Object.freeze({
     messageIndexFor(floorId) {
       if (!floorId || duplicateMarkerFloorIds.has(floorId)) return null;
       if (markerIndices.has(floorId)) return markerIndices.get(floorId);
       return duplicateMemoryFloorIds.has(floorId) ? null : (memoryIndices.get(floorId) ?? null);
+    },
+    sourceFor(floorId) {
+      const sourceOrigin = duplicateMemoryFloorIds.has(floorId) ? null : (frozenOrigins.get(floorId) ?? null);
+      return sourceOrigin ? Object.freeze({ frozen: true, sourceOrigin }) : null;
     },
   });
 }
@@ -142,7 +154,7 @@ function patchView(view, projection, documentRef, sourceIndex, groupExpanded) {
   }
   const signature = JSON.stringify(projection);
   if (view.signature === signature) {
-    view.extract.hidden = false; view.extract.disabled = view.extracting || !projection.canExtract;
+    view.extract.hidden = projection.readOnly === true; view.extract.disabled = view.extracting || !projection.canExtract;
     patchExpanded(view); return;
   }
   view.signature = signature; view.projection = projection;
@@ -154,7 +166,7 @@ function patchView(view, projection, documentRef, sourceIndex, groupExpanded) {
     setText(view.fields.time, `时间 ${projection.time}`); setText(view.fields.locations, `地点 ${projection.locations}`); setText(view.fields.people, `人物 ${projection.people}`);
     setText(view.summary, projection.summary); setText(view.error, projection.error); view.error.hidden = !projection.error;
     const extractLabel = `重新提取${title}摘要；已人工处理的千事记录保留`; view.extract.title = extractLabel; view.extract.setAttribute?.('aria-label', extractLabel);
-    view.extract.hidden = false; view.extract.disabled = view.extracting || !projection.canExtract;
+    view.extract.hidden = projection.readOnly === true; view.extract.disabled = view.extracting || !projection.canExtract;
   }
   patchExpanded(view);
 }
@@ -368,7 +380,9 @@ export function createInlineRenderer({
     for (const [messageIndex, candidate] of chosen) {
       const view = ensureView(candidate.element, messageIndex, candidate.role, chatKey);
       if (!view) { complete = false; continue; }
-      if (candidate.role === 'assistant') patchView(view, projectInlineMemoryFloor(memoryState, messageIndex, assistantSequence.get(messageIndex)), documentRef, sourceIndex, groupExpanded);
+      if (candidate.role === 'assistant') patchView(view, projectInlineMemoryFloor(memoryState, messageIndex, assistantSequence.get(messageIndex), {
+        migrationAliasId: chat[messageIndex]?.extra?.[MIGRATION_ALIAS_KEY] ?? null,
+      }), documentRef, sourceIndex, groupExpanded);
       else updateUser(view, chat[messageIndex], messageIndex, chatId, sourceIndex, recallState, chat);
     }
     for (const [messageIndex, view] of [...cards]) if (!chosen.has(messageIndex)) { remove(view.host); cards.delete(messageIndex); }

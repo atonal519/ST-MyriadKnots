@@ -6,6 +6,7 @@ import {
 } from './entity-identity.js';
 import { memorySourceFloorIds } from './memory-schema.js';
 import { projectVectorSources } from './vector-source.js';
+import { migrationPartition } from './migration-prefix.js';
 
 const safeText = (value, maximum = 4000) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
 const aliasText = alias => safeText(typeof alias === 'string' ? alias : alias?.name, 500);
@@ -169,6 +170,7 @@ export function selectRecallMemories(first) {
 
 export async function projectRecallSource(first, now, sourceReadAttempts = null, hostSnapshot = null, sanitizerOptions = {}, realtimeOrigin = false, identityProjectionValue = null) {
   const identityProjection = normalizeIdentityProjection(identityProjectionValue ?? {});
+  const partition = migrationPartition(first);
   const { floors, floorById, memoryGroups, activeMemories, activeMemoryIds } = selectRecallMemories(first);
   const degradedReasons = first.cseUnavailable === true ? ['cseReplayUnavailable'] : [];
   let trustedDeltas = [], replayed = null, cseTimeline = [];
@@ -215,6 +217,11 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
   return Object.freeze({
     status: 'ready',
     chatId: first.root.chatId,
+    ...(first.migrationDescriptor ? { migrationDescriptor: Object.freeze({
+      id: first.migrationDescriptor.id,
+      frozenFloorIds: first.migrationDescriptor.frozenFloorIds,
+      carriedAliases: first.migrationDescriptor.carriedAliases,
+    }) } : {}),
     narrativeGeneration: first.root.narrativeGeneration,
     headCheckpointId: first.root.headCheckpointId,
     rootRevision: first.rootRevision,
@@ -229,6 +236,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
         || typeof floor.content?.rawFingerprint !== 'string' || typeof floor.content?.canonicalFingerprint !== 'string') return null;
       return Object.freeze({
         floorId: floor.id, floorMemoryId: memory?.id ?? null, assistantSeq: floor.assistantSeq,
+        ...(partition.isFrozenFloor(floor.id) ? { frozen: true, sourceOrigin: partition.originForFloor(floor.id) } : {}),
         hostLocator: Object.freeze({ messageIndex: floor.hostLocator.messageIndex, swipeId: floor.hostLocator.swipeId ?? null, selectedSwipeIndex: floor.hostLocator.selectedSwipeIndex ?? null }),
         rawFingerprint: floor.content.rawFingerprint, canonicalFingerprint: floor.content.canonicalFingerprint,
       });

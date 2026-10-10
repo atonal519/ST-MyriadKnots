@@ -7,6 +7,7 @@ import { createTimeRuntime, createTimeStore, prepareTimeRequest } from '../src/v
 import { compileTimeResponse, compileTimeEdit, compileTimeEdits, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, timeBodyReads, timeItemFailures, projectTime, timeFingerprint, validTimeProjection, timeRecallProjection, TIME_INPUT_TOKENS, TIME_SYSTEM_PROMPT, TIME_CURRENT_REVIEW_PROMPT } from '../src/v3/time-engine.js';
 import { estimateRecallTokens, selectRecall, buildRecallQueryContext } from '../src/v3/recall-selector.js';
 import { projectInlineRecallReceipt } from '../src/ui/inline-projection.js';
+import { MIGRATION_ALIAS_KEY } from '../src/v3/migration-prefix.js';
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', PERSON = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 function backend() {
   const records = new Map(); let permanentDelete=true,removeHook=null;
@@ -355,7 +356,10 @@ test('人工 chronology 按楼身份跟随正文重排，替换正文不继承�
   await h.seal();
   const [first, second] = h.source.floors;
   h.source.floorMemories = [{ id: 'manual-second', floorId: second.id, recordStatus: 'active', chronology: [{ time: { kind: 'explicit', sourceText: '2026-04-02 10:00', normalized: null } }] }];
-  h.source.run = { diagnostics: { floorProvenance: { [second.id]: { timeEdited: true } } } };
+  h.source.run = { diagnostics: { floorProvenance: {} } };
+  h.source.migrationDescriptor = { frozenFloorIds: [second.id], sourceFloorProvenance: [
+    { floorId: second.id, timeEdited: true, storyClockSignature: 'source-clock-signature' },
+  ] };
 
   const originalChat = h.chat.slice();
   h.chat.splice(0, h.chat.length, originalChat[2], originalChat[3], originalChat[0], originalChat[1]);
@@ -368,6 +372,30 @@ test('人工 chronology 按楼身份跟随正文重排，替换正文不继承�
   assert.equal(context.recentStoryTimes[0].date, '2026-05-03', '无法绑定到旧 floorId 的替换正文不继承旧人工 chronology');
   assert.equal(context.recentStoryTimes[1].date, '2026-05-01', '另一楼的原正文绑定保持独立');
   assert.equal(h.calls(), 0);
+});
+
+test('迁移摘要来源将已人工确认的时间见证映射到B活动楼，且B当前人工修改优先', async () => {
+  const h = await harness({ count: 1 });
+  h.chat[0].mes = raw(0, 'B携带正文仍含自动时钟。');
+  await h.seal();
+  const candidateFloor = h.source.floors[0];
+  const sourceFloor = { ...candidateFloor, id: 'source-manual-floor', hostLocator: { messageIndex: 88 } };
+  const liveFloor = { ...candidateFloor, id: 'b-carried-summary-floor', assistantSeq: 2 };
+  h.source.floors = [sourceFloor, liveFloor];
+  h.source.floorMemories = [{ id: 'b-carried-summary', floorId: liveFloor.id, recordStatus: 'active',
+    chronology: [{ time: { kind: 'explicit', sourceText: '2026-04-02 10:00', normalized: null } }] }];
+  h.source.run = { diagnostics: { floorProvenance: {} } };
+  h.source.migrationDescriptor = { frozenFloorIds: [sourceFloor.id], floorOrigins: [], carriedAliases: [], sourceFloorProvenance: [
+    { floorId: sourceFloor.id, timeEdited: true, storyClockSignature: 'source-manual-clock' },
+  ], summarySources: [{ targetFloorId: liveFloor.id, sourceFloorId: sourceFloor.id,
+    sourceChatId: CHAT, rawFingerprint: liveFloor.content.rawFingerprint }] };
+  const body = await h.body();
+  assert.equal(body.bodyFloors[0].floorId, liveFloor.id);
+  assert.equal(body.bodyFloors[0].timeSourceKind, 'manual');
+  assert.equal(body.bodyFloors[0].observationTime.date, '2026-04-02', '来源人工 chronology 优先于B正文旧自动时钟');
+  h.source.run.diagnostics.floorProvenance[liveFloor.id] = { timeEdited: false };
+  const current = await h.body();
+  assert.equal(current.bodyFloors[0].timeSourceKind, 'body', 'B自己的当前provenance优先于冻结来源快照');
 });
 
 test('隐藏楼日期不能为后续可见 BBS 钟点补日期', async () => {
@@ -1306,4 +1334,69 @@ test('时间batch冷读最多16路、保持head顺序且传播单项读取失败
     return { revision: 1, data: { schemaVersion: 1, chatId: CHAT, id } };
   } };
   await assert.rejects(createTimeStore({ client }).read(CHAT), error => error === failure);
+});
+
+test('迁移时间来源只解析B活动楼，冻结楼同号locator不重绑且历史时间依赖仍可回放', async () => {
+  const h = await harness({ count: 1 });
+  const frozen = h.source.floors[0];
+  const aliasId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const carried = { is_user: false, mes: h.chat[0].mes, extra: { [MIGRATION_ALIAS_KEY]: aliasId } };
+  const liveMessage = { is_user: false, mes: raw(9, '阿岚在新楼继续处理同一件事。') };
+  const targetChat = [carried, { is_user: true, mes: '继续' }, liveMessage, { is_user: true, mes: '回复' }];
+  const scanned = await scanAssistantCandidates(targetChat, { chatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', captureRawContent: true });
+  const liveCandidate = scanned.find(candidate => candidate.hostLocator.messageIndex === 2);
+  const targetId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const liveFloor = createFloorRecord({ candidate: liveCandidate, id: 'live-floor', chatId: targetId, narrativeGeneration: 'target-generation' });
+  const reachable = { ...h.source, root: { ...h.source.root, chatId: targetId }, floors: [frozen, liveFloor], migrationDescriptor: {
+    frozenFloorIds: [frozen.id], carriedAliases: [{ aliasId, floorId: frozen.id, targetMessageIndex: 0,
+      rawFingerprint: frozen.content.rawFingerprint, canonicalFingerprint: frozen.content.canonicalFingerprint }],
+    floorOrigins: [{ floorId: frozen.id, sourceChatId: CHAT, sourceHostChatId: 'host', sourceMessageIndex: 0, swipeId: null, selectedSwipeIndex: 0 }],
+    recordRefs: { timeBatchIds: ['source-batch-1'] },
+  } };
+  const body = await readTimeBody(reachable, { chat: targetChat, chatId: 'B-file', context: { chatMetadata: { qianqianjie: { chatId: targetId } } } });
+  assert.deepEqual(body.floors.map(floor => floor.id), [frozen.id, liveFloor.id]);
+  assert.deepEqual(body.bodyFloors.map(floor => floor.floorId), [liveFloor.id]);
+  assert.equal(body.bodyFloors[0].assistantSeq, frozen.assistantSeq + 1);
+  assert.equal(body.bodyFloors[0].hostLocator.messageIndex, 2);
+  assert.equal(body.bodyFloors[0].rawContent, liveMessage.mes);
+  assert.equal(body.floors[0].hostLocator.messageIndex, frozen.hostLocator.messageIndex, 'B同号旧楼不得替换冻结来源locator');
+});
+
+test('迁移后的正式时间runtime保留旧批次人工停止项并从B首个真实楼继续', async () => {
+  const h = await harness({ count: 1, generate: bodyModel });
+  await h.runtime.runBatch();
+  const oldItem = h.runtime.getState().trackedItems[0];
+  assert.ok(oldItem, 'A 已有正式时间事项');
+  await h.runtime.editItem(oldItem.id, { status: 'cancelled' }, oldItem.observationKey);
+  const frozen = h.source.floors[0], targetId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const aliasId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const carried = { is_user: false, mes: h.chat[0].mes, extra: { [MIGRATION_ALIAS_KEY]: aliasId } };
+  const liveMessage = { is_user: false, mes: raw(9, '阿岚在新楼继续处理同一件事。') };
+  h.chat.splice(0, h.chat.length, carried, { is_user: true, mes: '继续' }, liveMessage, { is_user: true, mes: '回复' });
+  const scanned = await scanAssistantCandidates(h.chat, { chatId: targetId, captureRawContent: true });
+  const candidate = scanned.find(value => value.hostLocator.messageIndex === 2);
+  const liveFloor = createFloorRecord({ candidate, id: 'live-floor', chatId: targetId, narrativeGeneration: 'target-generation' });
+  h.source.root = { ...h.source.root, chatId: targetId, narrativeGeneration: 'target-generation' };
+  h.source.floors = [frozen, liveFloor];
+  h.source.migrationDescriptor = { frozenFloorIds: [frozen.id], carriedAliases: [{ aliasId, floorId: frozen.id, targetMessageIndex: 0,
+    rawFingerprint: frozen.content.rawFingerprint, canonicalFingerprint: frozen.content.canonicalFingerprint }],
+    floorOrigins: [{ floorId: frozen.id, sourceChatId: CHAT, sourceHostChatId: 'host', sourceMessageIndex: 0, swipeId: null, selectedSwipeIndex: 0 }],
+    recordRefs: { timeBatchIds: [(await h.store.read(CHAT)).head.batchIds[0]] } };
+  const sourceHeadBeforeCopy = (await h.store.read(CHAT)).head;
+  const copiedTime = await h.store.copyPrefix(CHAT, targetId, h.source.floors, undefined, { migration: true });
+  assert.deepEqual(copiedTime.batchIds, sourceHeadBeforeCopy.batchIds);
+  assert.deepEqual(copiedTime.sourceHeadSnapshot, sourceHeadBeforeCopy, '迁移返回复用同次正式copy读到的A head快照');
+  const copied = await h.store.read(targetId);
+  assert.deepEqual(copied.head.bodyStart, { awaitingFirst: true });
+  assert.equal(replayTimeBatches(copied.batches, await h.body()).find(item => item.id === oldItem.id)?.status, 'cancelled', '旧人工停止状态保持在原历史批次中');
+  h.setChat(targetId); h.runtime.invalidate(); await h.runtime.refreshStatus({ force: true });
+  const callsBefore = h.calls();
+  await h.runtime.runBatch();
+  assert.equal(h.calls(), callsBefore + 1, 'B 首个真实正文楼触发一次正式时间任务');
+  const target = await h.store.read(targetId);
+  const replayed = replayTimeBatches(target.batches, await h.body());
+  assert.equal(target.batches.length, copied.batches.length + 1);
+  assert.equal(target.batches.at(-1).cutoffFloorId, liveFloor.id);
+  assert.equal(replayed.find(item => item.id === oldItem.id)?.status, 'cancelled');
+  assert.ok(replayed.some(item => item.sourceRefs?.some(ref => ref.floorId === liveFloor.id)), '新时间事项引用B真实楼');
 });

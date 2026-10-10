@@ -290,12 +290,22 @@ export function classifyInlineMessage(message) {
   return selectAssistantMessage(message) ? 'assistant' : null;
 }
 
-export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantSeq = null) {
-  const floor = (state?.floors ?? []).find(value => value?.messageIndex === messageIndex) ?? null;
+export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantSeq = null, { migrationAliasId = null } = {}) {
+  const floors = state?.floors ?? [];
+  const inheritedFloor = floors.find(value => value?.frozen !== true && value?.inherited === true && value?.messageIndex === messageIndex) ?? null;
+  const aliasHint = !state?.reviewReason && migrationAliasId && (state?.migrationAliases ?? []).some(alias =>
+    alias.aliasId === migrationAliasId && alias.targetMessageIndex === messageIndex
+      && floors.some(value => value?.frozen === true && value.floorId === alias.floorId));
+  const floor = floors.find(value => value?.frozen !== true && value?.inherited !== true && value?.messageIndex === messageIndex) ?? null;
   const waitingCandidate = (state?.unregisteredCandidates ?? []).find(value => value?.messageIndex === messageIndex) ?? null;
   const assistantSeq = Number.isSafeInteger(floor?.assistantSeq) && floor.assistantSeq > 0
     ? floor.assistantSeq
     : Number.isSafeInteger(fallbackAssistantSeq) && fallbackAssistantSeq > 0 ? fallbackAssistantSeq : null;
+  if (!floor && (inheritedFloor || aliasHint)) return Object.freeze({
+    kind: 'assistant', floorId: null, assistantSeq, messageIndex, status: 'ready', statusText: '继承正文', readOnly: true,
+    time: '来源归档', locations: '来源归档', people: '来源归档',
+    summary: '这是搬家时携带的正文；原楼摘要请在记忆管理中查看。', error: '', busy: Boolean(state?.memoryWorkBusy), canExtract: false,
+  });
   if (!floor) {
     const snapshotStatus = state?.memorySnapshotStatus;
     const failed = snapshotStatus === 'error';

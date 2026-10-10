@@ -12,6 +12,7 @@ import {
 import { reverseRefShardPrefix } from './foundation-domain.js';
 import { projectEntityFloorBounds, validateEntityRecord, validateFloorMemory, validateMemoryGraph } from './memory-schema.js';
 import { validateBaselineRecord, validateCurrentStateRecord, validateCseGraph, validateStateDeltaRecord } from './cse-schema.js';
+import { migrationDescriptorRecordKey, validateMigrationDescriptor } from './migration-prefix.js';
 
 export const V3_ROOT_RECORD_ID = 'v3-root';
 export const V3_READ_MODES = Object.freeze({ full: 'full', runtime: 'runtime', projection: 'projection' });
@@ -24,9 +25,10 @@ const RECORD_PREFIX = Object.freeze({
   baseline: 'v3-baseline-',
   stateDelta: 'v3-state-delta-',
   currentState: 'v3-current-state-',
+  migrationDescriptor: 'v3-migration-',
   index: 'v3-index-',
 });
-const CONFIRMED_CONTENT_TYPES = new Set(['floor', 'floorMemory', 'entity', 'baseline', 'stateDelta', 'currentState']);
+const CONFIRMED_CONTENT_TYPES = new Set(['floor', 'floorMemory', 'entity', 'baseline', 'stateDelta', 'currentState', 'migrationDescriptor']);
 const CACHED_CONTENT_TYPES = new Set(['floor', 'floorMemory', 'entity', 'stateDelta', 'index']);
 const READ_CONCURRENCY = 16;
 
@@ -55,13 +57,14 @@ function validateEnvelope(envelope, validator, chatId) {
   return Object.freeze(value);
 }
 function validatorFor(type) {
-  const validator = { root: validateFoundationRoot, floor: validateFoundationFloor, floorMemory: validateFloorMemory, entity: validateEntityRecord, baseline: validateBaselineRecord, stateDelta: validateStateDeltaRecord, currentState: validateCurrentStateRecord, run: validateFoundationRun, checkpoint: validateFoundationCheckpoint, index: validateFoundationIndex }[type];
+  const validator = { root: validateFoundationRoot, floor: validateFoundationFloor, floorMemory: validateFloorMemory, entity: validateEntityRecord, baseline: validateBaselineRecord, stateDelta: validateStateDeltaRecord, currentState: validateCurrentStateRecord, run: validateFoundationRun, checkpoint: validateFoundationCheckpoint, index: validateFoundationIndex, migrationDescriptor: validateMigrationDescriptor }[type];
   if (!validator) fail('V3_STORE_RECORD_TYPE_INVALID');
   return validator;
 }
 function recordKey(record) {
   if (record.recordType === 'root') return V3_ROOT_RECORD_ID;
   if (record.recordType === 'index') return `${RECORD_PREFIX.index}${record.kind}-${record.shard}-${record.id}`;
+  if (record.recordType === 'migrationDescriptor') return migrationDescriptorRecordKey(record.id);
   const prefix = RECORD_PREFIX[record.recordType];
   if (!prefix) fail('V3_STORE_RECORD_TYPE_INVALID');
   return `${prefix}${record.id}`;
@@ -141,6 +144,7 @@ function buildReachableResult({
   indexesComplete,
   readMode,
   cseUnavailable = false,
+  migrationDescriptor = undefined,
 }) {
   const indexes = indexResults.filter(result => result.status === 'ready').map(result => result.data);
   const floors = activeFloorViews(floorResults.map(result => result.data), indexes);
@@ -164,6 +168,7 @@ function buildReachableResult({
     stateDeltas,
     deltaRevisions: Object.fromEntries(deltaResults.map(result => [result.data.id, result.revision])),
     currentStates: currentStateResults.map(result => result.data),
+    ...(migrationDescriptor ? { migrationDescriptor } : {}),
     currentStateRevisions: Object.fromEntries(currentStateResults.map(result => [result.data.id, result.revision])),
     indexes,
     indexesMissing: indexesMissing || manifestNeedsReseal,
@@ -219,6 +224,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       ...(root.baselineId ? [`${RECORD_PREFIX.baseline}${root.baselineId}`] : []),
       ...checkpoint.producedRefs.stateDeltas.map(id => `${RECORD_PREFIX.stateDelta}${id}`),
       ...checkpoint.producedRefs.currentStates.map(id => `${RECORD_PREFIX.currentState}${id}`),
+      ...(root.migrationDescriptorId ? [`${RECORD_PREFIX.migrationDescriptor}${root.migrationDescriptorId}`] : []),
     ].map(key => confirmedKey(current, key)));
     const prefix = `${collection(current)}\u0000`;
     for (const key of confirmedContent.keys()) if (key.startsWith(prefix) && !keep.has(key)) confirmedContent.delete(key);
@@ -376,6 +382,11 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
   }
   async function validateCommitGraph(current, root) {
     if (!root.headCheckpointId) fail('V3_STORE_CHECKPOINT_MISSING');
+    let migrationDescriptorResult = null;
+    if (root.migrationDescriptorId) {
+      migrationDescriptorResult = await readConfirmed(current, `${RECORD_PREFIX.migrationDescriptor}${root.migrationDescriptorId}`, validateMigrationDescriptor);
+      if (migrationDescriptorResult.status !== 'ready' || migrationDescriptorResult.data.id !== root.migrationDescriptorId) fail('V3_STORE_MIGRATION_DESCRIPTOR_MISSING');
+    }
     const checkpointResult = await read(current, `${RECORD_PREFIX.checkpoint}${root.headCheckpointId}`, validateFoundationCheckpoint);
     if (checkpointResult.status !== 'ready') fail('V3_STORE_CHECKPOINT_MISSING');
     const checkpoint = checkpointResult.data;
@@ -442,9 +453,10 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       deltaResults,
       currentStateResults,
       indexResults,
+      migrationDescriptor: migrationDescriptorResult?.data ?? null,
     };
   }
-  function commitRoot(root, expectedRevision, { signal } = {}, identityOverride = null) {
+  function commitRoot(root, expectedRevision, { signal, awaitCoreCachePublish = false } = {}, identityOverride = null) {
     return execute(async (current, operation) => {
       const safe = validateFoundationRoot(root, { expectedChatId: current.chatId });
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) fail('V3_STORE_REVISION_INVALID');
@@ -469,8 +481,12 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
         }
         if (operation.cacheScope && saved.generationId) {
           const witness = cacheWitness(saved.data, saved);
-          void Promise.resolve(coreRecordCache?.publish?.(operation.cacheScope, witness, staged, cacheRecordRefs(validatedGraph.checkpoint), operation.cacheVersion,
-            () => verifyCacheRootGeneration(current))).catch(() => {});
+          let cachePublish = Promise.resolve();
+          try {
+            cachePublish = Promise.resolve(coreRecordCache?.publish?.(operation.cacheScope, witness, staged,
+              cacheRecordRefs(validatedGraph.checkpoint), operation.cacheVersion, () => verifyCacheRootGeneration(current))).catch(() => {});
+          } catch { /* A derived cache must not change a successful root save. */ }
+          if (awaitCoreCachePublish) await cachePublish;
         }
         for (const key of stagedCoreRecords.keys()) if (key.startsWith(stagePrefix)) stagedCoreRecords.delete(key);
         return {
@@ -521,7 +537,13 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     const rootResult = await read(current, V3_ROOT_RECORD_ID, validateFoundationRoot, 'uninitialized');
     if (rootResult.status !== 'ready') return rootResult;
     const root = rootResult.data;
-    if (!root.headCheckpointId) return { ...rootResult, checkpoint: null, floors: [], indexes: [] };
+    let migrationDescriptor = null;
+    if (root.migrationDescriptorId) {
+      const descriptorResult = await readConfirmed(current, `${RECORD_PREFIX.migrationDescriptor}${root.migrationDescriptorId}`, validateMigrationDescriptor);
+      if (descriptorResult.status !== 'ready' || descriptorResult.data.id !== root.migrationDescriptorId) fail('V3_STORE_MIGRATION_DESCRIPTOR_MISSING');
+      migrationDescriptor = descriptorResult.data;
+    }
+    if (!root.headCheckpointId) return { ...rootResult, checkpoint: null, floors: [], indexes: [], ...(migrationDescriptor ? { migrationDescriptor } : {}) };
     const checkpointResult = await readType('checkpoint', root.headCheckpointId);
     if (checkpointResult.status !== 'ready') fail('V3_STORE_CHECKPOINT_MISSING');
     const checkpoint = checkpointResult.data;
@@ -664,6 +686,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       indexesComplete,
       readMode: effectiveMode,
       cseUnavailable,
+      migrationDescriptor,
     }); } catch (error) {
       if (operation.cacheHits > 0 && !bypassCache) return readReachable({ mode, allowRecallCseFallback, identity: current, bypassCache: true });
       throw error;

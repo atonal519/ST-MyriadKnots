@@ -7,6 +7,7 @@ import { newIdentityUuid } from '../identity.js';
 import { readRecentBodyStoryTimes, readTimeBody, timeBodyStart, resolveTimeStart, planTimeBody } from './time-body.js';
 import { ANNUAL_SETTING_SYSTEM_PROMPT, buildAnnualSettingSources, compileAnnualSettingResponse, projectAnnualSettings } from './time-annual-setting.js';
 import { prepareQianshiCandidates, projectQianshiGraph } from './qianshi-domain.js';
+import { migrationPartition } from './migration-prefix.js';
 
 export function createTimeStore({ client }) {
   const BATCH_READ_CONCURRENCY = 16;
@@ -90,11 +91,15 @@ export function createTimeStore({ client }) {
     }
   }
   const removePermanent = (chatId, id, revision, signal) => write(chatId, () => client.removePermanent(collection(chatId), id, revision, { signal }));
-  async function copyPrefix(sourceChatId, targetChatId, retainedFloors, signal) {
+  async function copyPrefix(sourceChatId, targetChatId, retainedFloors, signal, { migration = false } = {}) {
     const target = await read(targetChatId);
-    if (target.head) return;
+    if (target.head) {
+      const source = migration ? await read(sourceChatId) : null;
+      return migration ? Object.freeze({ batchIds: Object.freeze(target.head.batchIds.slice()), sourceHeadSnapshot: source?.head ? structuredClone(source.head) : null })
+        : Object.freeze(target.head.batchIds.slice());
+    }
     const source = await read(sourceChatId);
-    if (!source.head) return;
+    if (!source.head) return migration ? Object.freeze({ batchIds: Object.freeze([]), sourceHeadSnapshot: null }) : Object.freeze([]);
     const normalized = retainedFloors.map(floor => ({ ...floor, canonicalFingerprint: floor.content?.canonicalFingerprint ?? floor.canonicalFingerprint,
       content: typeof floor.content === 'string' ? floor.content : floor.content?.canonicalContent }));
     const floors = new Set(normalized.map(floor => floor.id));
@@ -111,9 +116,14 @@ export function createTimeStore({ client }) {
     }
     // A batch is not effective for the current read until the committed head references it.
     const partial = batches.at(-1)?.status === 'partial' ? batches.at(-1) : source.head.lastRun?.status === 'partial' ? batches.findLast(batch => batch.status === 'partial') : null;
-    await putHead(targetChatId, { schemaVersion: 1, chatId: targetChatId, batchIds: ids, ...(source.head.bodyStart?.floorId && floors.has(source.head.bodyStart.floorId) ? { bodyStart: source.head.bodyStart } : {}), lastAttemptSignature: batches.at(-1)?.signature ?? null, lastAttemptTime: batches.at(-1)?.currentTime ?? null,
+    await putHead(targetChatId, { schemaVersion: 1, chatId: targetChatId, batchIds: ids,
+      ...(migration ? { bodyStart: { awaitingFirst: true } } : source.head.bodyStart?.floorId && floors.has(source.head.bodyStart.floorId) ? { bodyStart: source.head.bodyStart } : {}),
+      settingAnnualSources: structuredClone(source.head.settingAnnualSources ?? {}),
+      lastAttemptSignature: batches.at(-1)?.signature ?? null, lastAttemptTime: batches.at(-1)?.currentTime ?? null,
       ...(source.head.currentReviewAttempt && floors.has(source.head.currentReviewAttempt.cutoffFloorId) && batches.some(batch => batch.currentReview) ? { currentReviewAttempt: source.head.currentReviewAttempt } : {}),
       ...(partial ? { lastRun: { status: 'partial', cutoffFloorId: partial.cutoffFloorId, cutoffAssistantSeq: partial.cutoffAssistantSeq, itemErrors: partial.itemErrors, message: '已保留部分成功事项；失败项可在后续新正文或手动补查时再试。' } } : {}) }, 0, signal);
+    return migration ? Object.freeze({ batchIds: Object.freeze(ids), sourceHeadSnapshot: structuredClone(source.head) })
+      : Object.freeze(ids);
   }
   return Object.freeze({ read, putHead, putBatch, requirePermanentDelete, removePermanent, copyPrefix, invalidate });
 }
@@ -446,7 +456,9 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
           if (!item || item.status === 'active' || item.observationKey !== selected.observationKey) throw new Error('停止事项已变化或来源已失效，请刷新后重试。');
         }
         const deletedIds = new Set(items.map(item => item.itemId)), replacements = new Map(), preparedBatches = [];
+        const frozenBatchIds = new Set(migrationPartition(reachable).descriptor?.recordRefs?.timeBatchIds ?? []);
         for (const record of stored.batchRecords ?? []) {
+          if (frozenBatchIds.has(record.id)) continue;
           const clean = sanitizeTimeBatchForDeletion(record.data, deletedIds);
           if (JSON.stringify(clean) === JSON.stringify(record.data)) continue;
           clean.id = `v3-time-batch-${newUuid()}`;

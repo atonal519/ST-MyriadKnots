@@ -58,6 +58,13 @@ export function matchFloorCandidates(floors = [], candidates = []) {
   // Reserve every explicit marker before considering content fallback, so an
   // earlier unanchored candidate cannot consume a floor claimed later by marker.
   for (const [candidateIndex, candidate] of candidateList.entries()) {
+    if (candidate?.archiveCandidate === true) {
+      const target = floorById.get(candidate.archiveFloorId);
+      if (!target) { fail('archiveFloorMissing', candidateIndex); continue; }
+      if (floorMatches.has(target.floorIndex)) { fail('duplicateBinding', candidateIndex, target.floorIndex); continue; }
+      bind(candidateIndex, target.floorIndex, 'archive');
+      continue;
+    }
     const marker = candidate?.messageAnchor;
     if (marker?.status === 'none') continue;
     if (marker?.status !== 'valid') { fail('markerRejected', candidateIndex); continue; }
@@ -68,6 +75,7 @@ export function matchFloorCandidates(floors = [], candidates = []) {
   }
 
   for (const [candidateIndex, candidate] of candidateList.entries()) {
+    if (candidate?.archiveCandidate === true) continue;
     if (candidateMatches.has(candidateIndex) || candidate?.messageAnchor?.status !== 'none') continue;
     const matches = floorList
       .map((floor, floorIndex) => ({ floor, floorIndex }))
@@ -84,6 +92,7 @@ export function matchFloorCandidates(floors = [], candidates = []) {
   }
 
   for (const [candidateIndex, candidate] of candidateList.entries()) {
+    if (candidate?.archiveCandidate === true) continue;
     if (candidateMatches.has(candidateIndex) || candidate?.messageAnchor?.status !== 'none') continue;
     const matches = floorList
       .map((floor, floorIndex) => ({ floor, floorIndex }))

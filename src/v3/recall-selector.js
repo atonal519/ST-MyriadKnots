@@ -1152,11 +1152,14 @@ function buildStorylinePlan({ context, history, states, changes }) {
   };
 }
 
-function historyCandidateText(value, entityById) {
+function historyCandidateText(value, entityById, originByFloor = new Map()) {
   const chronology = formatChronologyAnchor(value._chronology ?? []);
   const seqs = value.sourceAssistantSeqs ?? [];
   const floorLabel = seqs.length > 1 ? `AI #${seqs[0]}–#${seqs.at(-1)}` : `AI #${value.assistantSeq}`;
-  const source = `${floorLabel}${chronology ? `（${chronology}）` : ''}`;
+  const sourceFloors = value.sourceFloorIds ?? (value.floorId ? [value.floorId] : []);
+  const origin = sourceFloors.map(id => originByFloor.get(id)).find(Boolean);
+  const originCopy = origin ? `来源聊天第 ${origin.sourceMessageIndex} 楼 · ` : '';
+  const source = `${originCopy}${floorLabel}${chronology ? `（${chronology}）` : ''}`;
   const names = ids => [...new Set((ids ?? []).filter(Boolean))].map(id => entityName(id, entityById)).join('、');
   let boundary = '客观剧情事实';
   if (value.category === 'narrative') boundary = '叙事回顾；可能含内心、计划或未完成事项，不代表所有人物知情；若与后文冲突以后文为准';
@@ -1174,6 +1177,7 @@ export function buildRecallHistoryCandidatePool({ source, queryContext, historyC
   const charLimit = Math.max(0, Math.min(MAX_LLM_HISTORY_CHARACTERS, Math.floor(Number(maxCharacters) || 0)));
   if (!context || itemLimit === 0 || charLimit === 0) return Object.freeze({ candidates: Object.freeze([]), text: '', limits: Object.freeze({ maxCandidates: itemLimit, maxCharacters: charLimit, actualCandidates: 0, actualCharacters: 0 }) });
   const seen = new Set();
+  const originByFloor = new Map((source?.bodyMatchRefs ?? []).filter(ref => ref.frozen && ref.sourceOrigin).map(ref => [ref.floorId, ref.sourceOrigin]));
   const values = [];
   for (const value of [...context.direct, ...context.adjacent]) {
     const key = duplicateKey(value);
@@ -1188,7 +1192,7 @@ export function buildRecallHistoryCandidatePool({ source, queryContext, historyC
     if (candidates.length >= itemLimit) return false;
     const group = value._poolGroup ?? 'fact';
     const key = `R${candidates.length + 1}`;
-    const text = historyCandidateText(value, context.entityById);
+    const text = historyCandidateText(value, context.entityById, originByFloor);
     const line = `${key}｜${text}`;
     const separator = lines.length ? 1 : 0;
     if (totalCharacters() + separator + line.length > charLimit) return false;

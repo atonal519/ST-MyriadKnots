@@ -6,7 +6,10 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     ...(projection.selectedFloors ?? []).map(item => item.floorId),
     ...(projection.cseChangeItems ?? []).map(item => item.floorId),
   ].filter(Boolean))];
-  const sources = new Map(floorIds.map(id => [id, sourceIndex?.messageIndexFor?.(id) ?? null]));
+  const sources = new Map(floorIds.map(id => [id, {
+    messageIndex: sourceIndex?.messageIndexFor?.(id) ?? null,
+    source: sourceIndex?.sourceFor?.(id) ?? null,
+  }]));
   const signature = JSON.stringify([projection, [...sources]]);
   if (card.recallSignature === signature) return;
   card.recallSignature = signature;
@@ -105,7 +108,9 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
   }
   tabs.append(eventTab, peopleTab); root.append(tabs, events, people); selectTab(state.tab === 'people' ? peopleTab : eventTab);
   const floorLabel = floorId => {
-    const value = sources.get(floorId);
+    const source = sources.get(floorId);
+    if (source?.source?.frozen === true && Number.isSafeInteger(source.source.sourceOrigin?.sourceMessageIndex)) return `旧第 ${source.source.sourceOrigin.sourceMessageIndex} 个结`;
+    const value = source?.messageIndex;
     return Number.isSafeInteger(value) ? `第 ${value} 个结` : '来源结号未提供';
   };
   const eventGroups = new Map();

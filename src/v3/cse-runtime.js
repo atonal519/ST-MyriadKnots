@@ -16,6 +16,7 @@ import {
 import { captureCseRequestSources } from '../cse-source-selection.js';
 import { PREQUEL_METADATA_KEY, selectPrequel } from './recall-prequel.js';
 import { memorySourceFloorIds } from './memory-schema.js';
+import { floorProvenanceForReachable, migrationPartition } from './migration-prefix.js';
 
 const emptyManifest = () => ({ floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] });
 const PHASE_A_PERSIST_CONCURRENCY = 6;
@@ -26,7 +27,7 @@ const errorWith = (code, message) => { const error = new Error(message ?? code);
 const coreMeaning = items => JSON.stringify((items ?? []).map(item => [item.text, item.visibility, item.towardEntityId ?? null]));
 const effectiveMemorySummary = memory => memory?.summary?.effectiveSource === 'user' ? memory.summary.userText : memory?.summary?.aiText;
 const archivedStoryClockSignature = (value, floorId) => value?.floorMemories?.find(item => item.floorId === floorId && item.recordStatus === 'active')?.sourceStoryClockSignature
-  ?? value?.run?.diagnostics?.floorProvenance?.[floorId]?.storyClockSignature ?? '';
+  ?? floorProvenanceForReachable(value)[floorId]?.storyClockSignature ?? '';
 
 export function selectUserAdaptiveHistory({ floors = [], floorMemories = [], targetIndex, userEntityId, identityProjection = {} }) {
   const canonicalUserId = resolveIdentityEntityId(userEntityId, identityProjection);
@@ -430,6 +431,15 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
 
   async function commitDeltaGraph({ operation, current, floor, memory, delta, deltas, entities, diagnostics }) {
     const targetStore = operation.store ?? store;
+    const partition = migrationPartition(current);
+    const deltaByFloor = new Map(deltas.map(item => [item.floorId, item]));
+    for (const frozenFloorId of partition.frozenFloorIds) {
+      const persisted = filterReachableDeltas({ floors: current.floors.filter(item => item.id === frozenFloorId),
+        floorMemories: current.floorMemories, stateDeltas: current.stateDeltas }).find(item => item.floorId === frozenFloorId);
+      if (persisted && deltaByFloor.get(frozenFloorId)?.id !== persisted.id) {
+        throw errorWith('V3_MIGRATION_PREFIX_CHANGED', '迁移来源状态属于只读历史，未覆盖归档图。');
+      }
+    }
     const nowValue = nowIso(now);
     const runId = operation.runId;
     const checkpointId = await deterministicUuid(['v3-cse-checkpoint', current.root.headCheckpointId, delta.id]);
@@ -523,6 +533,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const operationHostAdapter = capturedHostAdapter(targetIdentity, cachedFloor);
     let value = await readTargetReachable(targetStore, targetIdentity);
     if (!['ready', 'needsReseal'].includes(value.status)) throw errorWith('V3_CSE_LOAD_FAILED', `CSE 图读取失败：${value.status}`);
+    if (migrationPartition(value).isFrozenFloor(floorId)) throw errorWith('V3_MIGRATION_FLOOR_READ_ONLY', '来源聊天的已迁移楼只读，不能重新分析状态。');
     const existing = filterReachableDeltas({ floors: value?.floors ?? [], floorMemories: value?.floorMemories ?? [], stateDeltas: value?.stateDeltas ?? [] })
       .find(delta => delta.floorId === floorId);
     if (existing && !replaceExisting && !cseRebuild) return notify();
@@ -657,9 +668,10 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const targetStore = storeForTarget(targetIdentity);
     try {
       const current = await readTargetReachable(targetStore, targetIdentity);
-      const deltaByFloor = new Map(filterReachableDeltas({ floors: current?.floors ?? [], floorMemories: current?.floorMemories ?? [], stateDeltas: current?.stateDeltas ?? [] }).map(delta => [delta.floorId, delta]));
+      const liveFloors = migrationPartition(current).liveFloors;
+      const deltaByFloor = new Map(filterReachableDeltas({ floors: liveFloors, floorMemories: current?.floorMemories ?? [], stateDeltas: current?.stateDeltas ?? [] }).map(delta => [delta.floorId, delta]));
       const memoryByFloor = new Map((current?.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => [memory.floorId, memory]));
-      const floor = current?.floors?.find(item => memoryByFloor.has(item.id) && !deltaByFloor.has(item.id));
+      const floor = liveFloors.find(item => memoryByFloor.has(item.id) && !deltaByFloor.has(item.id));
       return floor ? analyzeFloor(floor.id, { targetIdentity }) : getState();
     } finally { targetStore.release?.(); }
   }
@@ -676,8 +688,9 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       || current.root.chatId !== replayed.chatId || current.root.narrativeGeneration !== replayed.narrativeGeneration) {
       throw errorWith('V3_CSE_MANUAL_STALE', '人物状态已变化，请保留当前草稿并重新打开编辑后再保存。');
     }
+    const liveDeltas = filterReachableDeltas({ floors: migrationPartition(current).liveFloors, floorMemories: current.floorMemories, stateDeltas: current.stateDeltas });
     const deltas = filterReachableDeltas({ floors: current.floors, floorMemories: current.floorMemories, stateDeltas: current.stateDeltas });
-    const anchor = deltas.at(-1);
+    const anchor = liveDeltas.at(-1);
     const anchorIndex = current.floors.findIndex(floor => floor.id === anchor?.floorId);
     const floor = anchorIndex >= 0 ? current.floors[anchorIndex] : null;
     const memory = floor ? current.floorMemories.find(item => item.floorId === floor.id && item.recordStatus === 'active') ?? { id: anchor.floorMemoryId } : null;

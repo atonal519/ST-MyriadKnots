@@ -16,6 +16,7 @@ import { createTaskRouter } from '../src/api-routing.js';
 import { createPrivateRecallDiagnostics, projectPrivateRecallDiagnostic } from '../src/private-recall-diagnostics.js';
 import { createVectorIndex } from '../src/v3/vector-index.js';
 import { summaryCandidateText, summaryWitnessValid } from '../src/v3/vector-source.js';
+import { MIGRATION_ALIAS_KEY } from '../src/v3/migration-prefix.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GEN = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -488,6 +489,13 @@ test('近期摘要混合长度时直接按总预算从最新楼向前选择，�
   assert.equal(result.floors.some(floor => floor.assistantSeq === 4), true, '最新长摘要单独可进总预算时必须保留');
   assert.ok(result.injectionText.length <= result.limits.maxCharacters);
   assert.deepEqual(result.floors.map(floor => floor.assistantSeq), [...result.floors.map(floor => floor.assistantSeq)].sort((a, b) => a - b), '选定后仍按剧情时间呈现');
+});
+
+test('搬家来源的召回候选保留来源聊天楼号，不与B楼号混淆', () => {
+  const source = runtimeFixture();
+  source.bodyMatchRefs = [{ floorId: 'floor-2', frozen: true, sourceOrigin: { sourceMessageIndex: 1 } }];
+  const pool = buildRecallHistoryCandidatePool({ source, queryContext: { text: '钟楼', latestUserText: '钟楼', messageCount: 1 } });
+  assert.match(pool.text, /来源聊天第 1 楼 · AI #2/u);
 });
 
 test('统一预算不按单线八节点裁剪，高相关同线材料只受最终总预算约束', () => {
@@ -2468,6 +2476,36 @@ async function runtimeSourceWithBodyRef(text = '街上已经安静。', locator 
   }];
   return source;
 }
+
+test('搬家 recall 正文去重只认唯一且内容匹配的 alias，不把A楼号误配到B同号正文', async () => {
+  const oldText = 'A聊天第1楼的已记内容。', aliasId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const raw = await singleFloorReachable({ text: oldText });
+  raw.floors[0].hostLocator.messageIndex = 1;
+  raw.migrationDescriptor = { frozenFloorIds: ['floor-one'],
+    floorOrigins: [{ floorId: 'floor-one', sourceChatId: CHAT, sourceHostChatId: 'host-chat-a', sourceMessageIndex: 1, swipeId: 5, selectedSwipeIndex: 5 }],
+    carriedAliases: [{ aliasId, floorId: 'floor-one', targetMessageIndex: 3, rawFingerprint: raw.floors[0].content.rawFingerprint,
+      canonicalFingerprint: raw.floors[0].content.canonicalFingerprint }] };
+  for (const includeAlias of [true, false]) {
+    let bodyMatch = null;
+    const harness = createRuntimeHarness({ sourceReader: options => readRecallSource(options), reachableReader: async () => structuredClone(raw),
+      selector: input => { bodyMatch = input.source.bodyMatch; return selectRecall(input); } });
+    harness.chat.splice(0, harness.chat.length,
+      { is_user: true, mes: '开始' },
+      { is_user: false, mes: 'B聊天第1楼的不同内容。' },
+      { is_user: true, mes: '继续' },
+      ...(includeAlias ? [{ is_user: false, mes: oldText, extra: { [MIGRATION_ALIAS_KEY]: aliasId } }] : [{ is_user: false, mes: oldText }]),
+      harness.userMessage);
+    if (includeAlias) {
+      harness.chat.splice(2, 1); // B 中删去前置 USER 后，alias从原位置3移到2；descriptor index仅是初始hint。
+      const projected = await readRecallSource({ store: { readReachable: async () => structuredClone(raw) }, hostSnapshot: { chat: harness.chat, context: harness.context } });
+      assert.equal(projected.bodyMatchRefs.find(ref => ref.floorId === 'floor-one')?.frozen, true);
+    }
+    await harness.runtime.intercept(structuredClone(harness.chat), 12000, null, 'normal');
+    assert.equal(bodyMatch.recentBodyFloorIds.includes('floor-one'), includeAlias,
+      includeAlias ? '原内容通过B唯一alias进入近期正文去重' : 'A source locator=1不得匹配B自己的不同index=1消息');
+    assert.equal(bodyMatch.coveredFloorIds.includes('floor-one'), false, '只有近期正文alias不伪造本次history witness覆盖');
+  }
+});
 
 function rawReachableFromSource(source) {
   const bodyRefByFloor = new Map((source.bodyMatchRefs ?? []).map(ref => [ref.floorId, ref]));

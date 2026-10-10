@@ -1,6 +1,8 @@
 import { sha256 } from '../identity.js';
 import { normalizeVector } from '../vector-api.js';
-import { rawWitnessShape, vectorWitnessShape } from './vector-source.js';
+import { rawWitnessShape, rawWitnessValid, vectorWitnessShape } from './vector-source.js';
+import { projectVectorSources } from './vector-source.js';
+import { selectRecallMemories } from './recall-source.js';
 
 export const VECTOR_INDEX_ID = 'qqj-vector-index';
 export const VECTOR_SHARD_PREFIX = 'qqj-vector-shard-';
@@ -266,6 +268,41 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
     if (!updating) return false;
     updating.controller.abort(reason);
     return true;
+  }
+
+  async function copyPrefix(sourceIdentity, targetIdentity, targetNarrativeGeneration, sourceReachable) {
+    const config = configProvider();
+    if (!config || !sourceIdentity?.chatId || !targetIdentity?.chatId || sourceIdentity.chatId === targetIdentity.chatId
+      || typeof targetNarrativeGeneration !== 'string' || sourceReachable?.root?.chatId !== sourceIdentity.chatId
+      || sourceReachable.status !== 'ready') return Object.freeze([]);
+    const selected = selectRecallMemories(sourceReachable);
+    const { rawSources } = await projectVectorSources(selected.activeMemories, selected.floors, { includeSummaries: false });
+    const source = { status: 'ready', chatId: sourceReachable.root.chatId, narrativeGeneration: sourceReachable.root.narrativeGeneration, rawSources };
+    const modelKey = await hash(configKey(config));
+    const manifest = await readRecord(`chat-${source.chatId}`, VECTOR_INDEX_ID);
+    if (!manifest || !vectorRecordOwned(manifest) || ownerKey(manifest.data, modelKey) !== ownerKey(source, modelKey)) return Object.freeze([]);
+    const rows = [];
+    for (const id of manifest.data.shardIds) {
+      const shard = await readRecord(`chat-${source.chatId}`, id);
+      if (!shard || !vectorRecordOwned(shard) || ownerKey(shard.data, modelKey) !== ownerKey(source, modelKey)) return Object.freeze([]);
+      for (const row of shard.data.rows) {
+        if (!rawWitnessShape(row.witness) || !await rawWitnessValid(row.witness, source)) continue;
+        decodeVector(row.vector, manifest.data.dimensions);
+        rows.push(row);
+      }
+    }
+    const shardIds = [];
+    for (let start = 0; start < rows.length; start += BATCH) {
+      const batch = rows.slice(start, start + BATCH);
+      const id = `${VECTOR_SHARD_PREFIX}${(await sha256(JSON.stringify([targetNarrativeGeneration, modelKey, batch.map(row => row.witness)]))).slice(0, 40)}`;
+      await client.put(`chat-${targetIdentity.chatId}`, id, { schemaVersion: SCHEMA, recordType: 'vectorCache',
+        chatId: targetIdentity.chatId, narrativeGeneration: targetNarrativeGeneration, modelKey, rows: batch }, 0);
+      shardIds.push(id);
+    }
+    await client.put(`chat-${targetIdentity.chatId}`, VECTOR_INDEX_ID, { schemaVersion: SCHEMA, recordType: 'vectorCache',
+      chatId: targetIdentity.chatId, narrativeGeneration: targetNarrativeGeneration, modelKey,
+      dimensions: manifest.data.dimensions, shardIds, chunkCount: rows.length }, 0);
+    return Object.freeze(shardIds);
   }
 
   async function query({ source, queryContext, signal, eligibleFloorMemoryIds = null } = {}) {
@@ -539,6 +576,7 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
   return Object.freeze({
     build, updateIncrementally, query, getState: () => ({ ...state, active: Boolean(active || updating && state.status === 'building'), updating: Boolean(updating), background: Boolean(updating && state.status === 'building'), query: querySnapshot }), subscribe(fn) { subscribers.add(fn); return () => subscribers.delete(fn); },
     cancelIncrementally,
+    copyPrefix,
     abortAll({ userInitiated = false } = {}) {
       const pending = queryOperation;
       if (pending) {

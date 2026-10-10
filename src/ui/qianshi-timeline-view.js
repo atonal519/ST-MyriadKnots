@@ -94,7 +94,9 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     note.setAttribute('role', saving.error ? 'alert' : 'status');
     return note;
   };
-  const sourceCopy = event => validMessageIndex(event.sourceMessageIndex) ? `第 ${event.sourceMessageIndex} 楼` : `AI 记录 ${event.sourceAssistantSeq ?? '未明'}`;
+  const sourceCopy = event => event.frozen === true && validMessageIndex(event.sourceOrigin?.sourceMessageIndex)
+    ? `来源聊天第 ${event.sourceOrigin.sourceMessageIndex} 楼`
+    : validMessageIndex(event.sourceMessageIndex) ? `第 ${event.sourceMessageIndex} 楼` : `AI 记录 ${event.sourceAssistantSeq ?? '未明'}`;
   const statusBadge = (event, { currentMatter = false } = {}) => {
     const matter = currentMatter && event.updatesMatter && event.matterId
       ? snapshot?.matters?.find(item => item.matterId === event.matterId && !item.synthetic) : null;
@@ -142,6 +144,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
 
   function eventDetails(event, className = 'qqj-qianshi-expanded', allowEdit = true) {
     const body = element('div', className);
+    if (event.frozen === true) body.append(element('p', 'qqj-qianshi-readonly-note', '来源于搬家前存档，只读'));
     // 与千结行内编辑一致：编辑表单替代阅读正文，避免原文、元信息与表单同时堆成长框。
     if (allowEdit && canEditEvent(event.id) && textEditors.get(event.id)?.editing) {
       body.append(eventTextEditor(event)); return body;

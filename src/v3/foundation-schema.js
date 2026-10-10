@@ -100,7 +100,8 @@ function validateCommon(value, type) {
 export function validateFoundationRoot(input, { expectedChatId } = {}) {
   const value = jsonClone(input);
   if (!Object.hasOwn(value, 'sourceSnapshotFingerprint')) value.sourceSnapshotFingerprint = null;
-  exact(value, ['schemaVersion', 'recordType', 'id', 'chatId', 'narrativeGeneration', 'status', 'capabilities', 'headCheckpointId', 'sourceSnapshotFingerprint', 'stableBoundary', 'baselineId', 'activeRunId', 'indexManifest', 'activeStateRefs', 'activeThreadRefs', 'createdAt', 'updatedAt', 'recordStatus', 'supersedes'], 'V3_ROOT_INVALID');
+  const hasMigrationDescriptor = Object.hasOwn(value, 'migrationDescriptorId');
+  exact(value, ['schemaVersion', 'recordType', 'id', 'chatId', 'narrativeGeneration', 'status', 'capabilities', 'headCheckpointId', 'sourceSnapshotFingerprint', 'stableBoundary', 'baselineId', 'activeRunId', 'indexManifest', 'activeStateRefs', 'activeThreadRefs', ...(hasMigrationDescriptor ? ['migrationDescriptorId'] : []), 'createdAt', 'updatedAt', 'recordStatus', 'supersedes'], 'V3_ROOT_INVALID');
   validateCommon(value, 'root');
   if (value.id !== 'root' || (expectedChatId && value.chatId !== expectedChatId)) fail('V3_ROOT_INVALID');
   if (!['uninitialized', 'initializing', 'ready', 'rebuilding', 'error'].includes(value.status)) fail('V3_ROOT_INVALID');
@@ -113,6 +114,7 @@ export function validateFoundationRoot(input, { expectedChatId } = {}) {
   fingerprint(value.stableBoundary.canonicalFingerprint, 'V3_ROOT_INVALID', { nullable: true });
   if ((value.stableBoundary.assistantSeq === 0) !== (value.stableBoundary.floorId === null)) fail('V3_ROOT_INVALID');
   if (value.baselineId !== null) text(value.baselineId, 'V3_ROOT_INVALID');
+  if (hasMigrationDescriptor && value.migrationDescriptorId !== null) text(value.migrationDescriptorId, 'V3_ROOT_INVALID');
   uuid(value.activeRunId, 'V3_ROOT_INVALID', { nullable: true });
   exact(value.indexManifest, ['floor', 'entity', 'event', 'claim', 'knowledge', 'episode', 'thread', 'state', 'anchor', 'reverseRef'], 'V3_ROOT_INVALID');
   for (const refs of Object.values(value.indexManifest)) array(refs, 'V3_ROOT_INVALID').forEach(ref => text(ref, 'V3_ROOT_INVALID'));

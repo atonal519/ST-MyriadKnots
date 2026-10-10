@@ -42,7 +42,7 @@
 .qqj-management-progress{display:grid;gap:2px;margin:0;line-height:1.6}
 .qqj-management-feedback{margin:0;color:var(--soft);font-size:11px;line-height:1.6;overflow-wrap:anywhere}
 .qqj-management-feedback.error{padding:7px 9px;border-left:3px solid var(--crimson);border-radius:0 6px 6px 0;background:color-mix(in srgb,var(--crimson) 7%,var(--panel));color:var(--crimson)}
-.qqj-management-delete{display:flex;justify-content:flex-start;padding-top:10px;border-top:1px solid var(--line)}
+.qqj-management-delete{display:flex;justify-content:flex-start;gap:8px;flex-wrap:wrap;padding-top:10px;border-top:1px solid var(--line)}
 .qqj-floor-diagnostics-list{display:grid;gap:0;padding:0 8px;border-top:1px solid var(--line)}
 .qqj-floor-diagnostics-list>.qqj-diagnostic-row{grid-template-columns:minmax(0,1fr) auto auto;gap:5px;padding:4px 0;font-size:11px}
 .qqj-floor-diagnostics-list>.qqj-diagnostic-row>button{grid-column:auto;width:auto;min-height:28px;padding:4px 7px;font-size:11px;line-height:1.4}
