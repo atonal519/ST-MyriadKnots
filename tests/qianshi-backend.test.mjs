@@ -1880,3 +1880,63 @@ test('删首中尾与整线沿统一线性投影，人工整线状态优先且�
   hot.prepare(prefix, { canonicalContent: '旧书' });
   assert.deepEqual(hot.prepare(deletedSuffix, { canonicalContent: '旧书' }), cold.prepare(deletedSuffix, { canonicalContent: '旧书' }));
 });
+
+test('91事件稠密多路径时间线完整投影并供召回排序，保留事项进展与周期边界', () => {
+  const uuid = value => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
+  const floors = Array.from({ length: 12 }, (_, index) => floor(uuid(index + 1), index + 1));
+  const matterId = uuid(1000), eventIds = Array.from({ length: 91 }, (_, index) => uuid(index + 2000));
+  const events = eventIds.map((id, index) => ({ id, matterId: index >= 89 ? matterId : null,
+    updatesMatter: index === 89, title: index === 89 ? '通用事项进展' : index === 90 ? '通用事项起点' : '通用事项', description: '通用记录',
+    status: index >= 89 ? 'inProgress' : 'occurred', storyTime: index < 89 ? `${2100 - index}-01-01` : '2020-02-01',
+    scheduledTime: null, people: [], object: null, sourceFloorId: floors[0].id, continuesFromEventIds: [] }));
+
+  // 3,615 acyclic before edges create many alternate paths while omitting the
+  // direct endpoint edge, so reverse-time checks must traverse the shared DAG.
+  const beforePairs = [];
+  for (let from = 0; from < 89; from += 1) for (let to = from + 1; to < 89; to += 1) {
+    if (from !== 0 || to !== 88) beforePairs.push([from, to]);
+  }
+  const selectedPairs = [...beforePairs.filter(([from]) => from === 0 || from === 88),
+    ...beforePairs.filter(([from]) => from !== 0 && from !== 88)];
+  const relations = selectedPairs.slice(0, 3615).map(([from, to], index) => ({ id: uuid(10000 + index), type: 'before',
+    fromEventId: eventIds[from], toEventId: eventIds[to], certainty: 'explicit' }));
+  const progress = { id: uuid(20000), type: 'progress', fromEventId: eventIds[90], toEventId: eventIds[89], certainty: 'explicit' };
+  relations.push(progress);
+
+  const deltas = [];
+  for (let index = 0; index < floors.length; index += 1) {
+    const floorValue = floors[index];
+    const ownedEvents = index === 0 ? events : [{ ...events[90], id: uuid(30000 + index), matterId: null,
+      updatesMatter: false, title: '载体事件', description: '结构载体', storyTime: null, sourceFloorId: floorValue.id }];
+    const checked = validateQianshiDelta({ schemaVersion: 1, status: 'ready', reason: null, compiledAt: NOW,
+      candidateStats: { count: 0, characters: 0 }, events: ownedEvents, relations: relations.slice(index * 320, (index + 1) * 320) }, { floorId: floorValue.id });
+    deltas.push(checked);
+  }
+  const reachable = { root: { chatId: CHAT, narrativeGeneration: GENERATION, headCheckpointId: uuid(40000) }, rootRevision: 12,
+    floors, floorMemories: deltas.map((delta, index) => memory(uuid(50000 + index), floors[index], delta)), entities: [] };
+
+  const projection = projectQianshiGraph(reachable);
+  assert.equal(projection.events.length, 102, '公共生产投影保留91个目标事件和11个关系载体');
+  assert.ok(eventIds.every(id => projection.events.some(event => event.id === id)));
+  assert.equal(projection.graph.filterEdges((_edge, attributes) => attributes.type === 'before').length, 3615);
+  assert.ok(projection.orderGraph.hasDirectedEdge(`event:${eventIds[0]}`, `event:${eventIds[87]}`));
+  assert.ok(!projection.orderGraph.hasDirectedEdge(`event:${eventIds[87]}`, `event:${eventIds[0]}`), '与反向明确日期冲突的推断边被环检查拒绝');
+  assert.ok(projection.relations.some(relation => relation.fromEventId === eventIds[0] && relation.toEventId === eventIds[87]));
+
+  const queryContext = { text: '通用事项', latestUserText: '通用事项' };
+  const recall = projectQianshiRecall(reachable, { queryContext });
+  assert.equal(recall.eventIds.length, 91, `直接召回保留全部匹配事件；缺少 ${eventIds.filter(id => !recall.eventIds.includes(id)).join(',')}`);
+  assert.equal(new Set(recall.eventIds).size, 91);
+  assert.deepEqual([...recall.eventIds].sort(), [...eventIds].sort());
+  const recallPositions = new Map(recall.eventIds.map((id, index) => [id, index]));
+  assert.ok(recallPositions.get(eventIds[88]) < recallPositions.get(eventIds[0]), '召回专用时间边按明确日期排序');
+  assert.ok(recallPositions.get(eventIds[90]) < recallPositions.get(eventIds[89]), '事项进展关系继续约束召回顺序');
+
+  const candidates = prepareQianshiRecallCandidates(reachable, { queryContext });
+  const candidateRows = candidates.candidates.flatMap(candidate => candidate.eventRows);
+  assert.equal(new Set(candidateRows.map(row => row.eventId)).size, 91, '候选召回也保留全部目标事件');
+  assert.deepEqual([...new Set(candidateRows.map(row => row.eventId))].sort(), [...eventIds].sort());
+  const candidatePositions = new Map(candidateRows.map(row => [row.eventId, row.order]));
+  assert.ok(candidatePositions.get(eventIds[88]) < candidatePositions.get(eventIds[0]), '候选召回的稠密时间图仍可排序');
+  assert.ok(candidatePositions.get(eventIds[90]) < candidatePositions.get(eventIds[89]), '候选召回继续保留事项进展顺序');
+});

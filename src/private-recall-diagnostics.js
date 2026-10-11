@@ -21,7 +21,7 @@ const preparationStages = ['identity', 'root', 'prepare', 'read', 'projection'];
 function timingDiagnostic(value) {
   return { ...counts(value, timingKeys), ...(Array.isArray(value?.preparationAttempts) ? {
     preparationAttempts: value.preparationAttempts.slice(0, 2).map(item => ({ phase: choose(item?.phase, ['source', 'commit']),
-      mode: choose(item?.mode, ['cached', 'fresh']), stage: choose(item?.stage, preparationStages), status: choose(item?.status, ['ready', 'timeout', 'stale', 'unavailable', 'disabled']),
+      mode: choose(item?.mode, ['cached', 'fresh']), stage: choose(item?.stage, preparationStages), status: choose(item?.status, ['ready', 'inProgress', 'timeout', 'stale', 'unavailable', 'disabled']),
       ...counts(item, ['totalMs', 'budgetMs', ...preparationStages.map(stage => `${stage}Ms`)]) })),
   } : {}) };
 }
@@ -101,7 +101,7 @@ function safeActive(value) {
     lastCompletedStep: choose(value.lastCompletedStep, activeSteps), pendingStepMs: number(value.pendingStepMs), generationType: generationType(value.generationType), userMessageIndex: number(value.userMessageIndex),
     timings: timingDiagnostic(value.timings),
     currentPreparation: value.currentPreparation ? { phase: choose(value.currentPreparation.phase, ['source', 'commit']), mode: choose(value.currentPreparation.mode, ['cached', 'fresh']),
-      stage: choose(value.currentPreparation.stage, preparationStages), status: choose(value.currentPreparation.status, ['ready', 'timeout', 'stale', 'unavailable', 'disabled']),
+      stage: choose(value.currentPreparation.stage, preparationStages), status: choose(value.currentPreparation.status, ['ready', 'inProgress', 'timeout', 'stale', 'unavailable', 'disabled']),
       ...counts(value.currentPreparation, ['totalMs', 'budgetMs', ...preparationStages.map(stage => `${stage}Ms`)]) } : null,
     selectorProgress: progress ? { pendingStep: choose(progress.pendingStep, selectorSteps), lastCompletedStep: choose(progress.lastCompletedStep, selectorSteps),
       stageTimings: counts(progress.stageTimings, selectorSteps) } : null };

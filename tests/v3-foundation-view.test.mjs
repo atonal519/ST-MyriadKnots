@@ -1425,6 +1425,21 @@ test('召回常用摘要区分向量候选与实际原文段，诊断默认折�
   assert.doesNotMatch(vectorRow().children[1].textContent, /未建索引|unindexed/u, '内部状态名不直接展示给用户');
   await flatten(container).find(node => node.textContent === '复制回执').click();
   assert.match(copied.at(-1), /向量 本轮无可用向量片段 · 候选 0 · 12\.0 ms/u, '复制回执复用用户可见状态文案');
+
+  record = { ...record, status: 'stale', terminationEvent: 'GENERATION_ENDED', diagnosticPhase: 'selecting', selectionStatus: 'incomplete',
+    pendingStep: 'utilityTask', lastCompletedStep: 'candidateBuild', attemptDiagnostics: [{ attempt: 1, phase: 'selecting', selectionStatus: 'incomplete', pendingStep: 'utilityTask', lastCompletedStep: 'candidateBuild', timings: { totalMs: 27300, sourceMs: 400, selectorMs: 26000 } }],
+    timings: { totalMs: 27300, sourceMs: 400, selectorMs: 26000 }, skipReasons: ['stopped'], injectionText: '' };
+  state = { ...state, recallStatus: 'stale', lastRecall: record };
+  for (const listener of listeners) listener(state);
+  assert.match(text(), /生成已结束，召回未完成/u);
+  assert.match(text(), /候选材料（本轮未注入）/u);
+  assert.match(text(), /终止时步骤 模型选材/u);
+  assert.match(text(), /本轮未注入/u);
+  assert.doesNotMatch(text(), /正在等待最新结果/u);
+  await flatten(container).find(node => node.textContent === '复制回执').click();
+  assert.match(copied.at(-1), /召回回执：生成已结束，召回未完成/u);
+  assert.match(copied.at(-1), /实际注入：无/u);
+  assert.match(copied.at(-1), /上一步 候选构建/u);
   view.deactivate();
   assert.equal(listeners.size, 0);
 });

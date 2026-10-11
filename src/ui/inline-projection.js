@@ -452,20 +452,28 @@ export function projectInlineRecallReceipt(receipt) {
   const protocolRecognized = parsedHistory !== null;
   const qianshiProgressText = qianshiProtocol.matched ? renderedQianshiProgressText(signedQianshiProgress, receipt.timeDependencies) : '';
   const status = receipt.status ?? (receipt.injectionText ? 'ready' : 'empty');
+  const terminated = receipt.status === 'stale' && (receipt.terminationEvent === 'GENERATION_STOPPED' || receipt.terminationEvent === 'GENERATION_ENDED'
+    || (!receipt.terminationEvent && Array.isArray(receipt.skipReasons) && receipt.skipReasons.includes('stopped')));
+  const terminationText = receipt.terminationEvent === 'GENERATION_ENDED' ? '生成已结束，召回未完成' : terminated ? '召回已停止' : null;
   const statusText = receipt.legacyReadOnly ? '旧版只读记录'
     : status === 'ready' || status === 'empty' ? `寻回 ${floorCount} 个结`
-        : status === 'stale' ? '本轮结果已失效'
+        : status === 'stale' ? terminationText ?? '本轮结果已失效'
           : status === 'error' ? '本轮召回失败' : '本轮已跳过';
-  const summary = hasExactStageCounts
+  const phaseCopy = { input: '输入准备', source: '来源读取', selecting: '选材', commit: '提交前核验', receipt: '回执保存' };
+  const stepCopy = { input: '输入准备', source: '来源读取', identity: '身份读取', root: '根版本读取', prepare: '准备缓存', read: '独立来源读取', projection: '来源投影', timeProjection: '时间投影', bodyWitness: '正文关联核验', qianshiProgress: '千事进度准备', queryContext: '查询上下文', prequelSelection: '前情选择', receiptValidation: '已有回执校验', receiptSourceVerification: '回执来源核验', semanticQuery: '语义查询', candidateBuild: '候选构建', utilityTask: '模型选材', responseParse: '结果解析', localSelection: '本地选材', qianshiSeal: '千事结果校验', commitVerification: '提交前核验', deletionWitness: '删除状态核验', receiptSeal: '回执封签', receiptSaveCall: '回执保存请求', receiptSaveWait: '等待回执保存', receiptSaveReturned: '回执保存返回', receiptSaveFailed: '回执保存失败', complete: '完成' };
+  const terminationSummary = terminated
+    ? `${receipt.diagnosticPhase ? `终止于${phaseCopy[receipt.diagnosticPhase] ?? '未知阶段'}${receipt.pendingStep ? ` · 终止步骤：${stepCopy[receipt.pendingStep] ?? '未记录'}` : ''}${receipt.lastCompletedStep ? ` · 上一步：${stepCopy[receipt.lastCompletedStep] ?? '未记录'}` : ''}` : '终止阶段未记录'} · ${Number.isFinite(receipt.timings?.totalMs) ? `召回等待 ${Number(receipt.timings.totalMs).toFixed(1)} ms` : '召回等待未记录'}${Number.isFinite(receipt.timings?.sourceMs) ? ` · 读取 ${Number(receipt.timings.sourceMs).toFixed(1)} ms` : ''}${Number.isFinite(receipt.timings?.selectorMs) ? ` · 选材 ${Number(receipt.timings.selectorMs).toFixed(1)} ms` : ''} · 本轮未注入`
+    : null;
+  const summary = terminationSummary ?? (hasExactStageCounts
     ? `近期摘要 ${recentSummaryCount} 条 · 远期旧事 ${distantHistoryItemCount} 条 · 当前人物状态 ${exactStateCount} 条${Number.isSafeInteger(receipt.stages?.cseChangeCount) ? ` · 历史变化 ${receipt.stages.cseChangeCount} 条` : ''}`
     : historyItems.length
     ? `已召回 ${historyItems.length} 条旧事${stateCount ? ` · ${stateCount} 条当前人物状态` : ''}${cseChangeCount ? ` · ${cseChangeCount} 条历史变化` : ''}`
     : stateCount || cseChangeCount ? `已记录${stateCount ? ` ${stateCount} 条当前人物状态` : ''}${stateCount && cseChangeCount ? ' ·' : ''}${cseChangeCount ? ` ${cseChangeCount} 条历史变化` : ''}`
       : floorCount || !safeShape || (receipt.legacyReadOnly && !protocolRecognized) ? '召回内容请在详细回执中查看。'
     : qianshiProgressText ? '本轮已注入千事进度。'
-    : status === 'empty' ? '本轮没有需要注入的记忆。' : '本轮没有已注入的记忆。';
+      : status === 'empty' ? '本轮没有需要注入的记忆。' : '本轮没有已注入的记忆。');
   return Object.freeze({
-    kind: 'user', status, statusText, summary,
+    kind: 'user', status, statusText, summary, ...(terminationSummary ? { statusDetail: terminationSummary } : {}),
     injectionText, qianshiProgressText, floorCount, stateCount, cseChangeCount, recentSummaryCount, distantHistoryItemCount, selectedFloors, historyItems, historyGroups, storylines, storylineGroups, stateItems, cseChangeItems, timeReferenceItems, timeReferenceDisplayItems, timeReferenceCount, protocolRecognized,
   });
 }

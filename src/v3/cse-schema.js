@@ -214,7 +214,8 @@ export function validateCurrentStateRecord(input, { expectedChatId } = {}) {
   const value = clone(input);
   common(value, 'currentState', expectedChatId);
   uuid(value.baselineId, 'V3_CURRENTSTATE_INVALID', 'baselineId');
-  array(value.subjects, 'V3_CURRENTSTATE_INVALID', 'subjects', 80).forEach((subject, index) => validateSubject(subject, `subjects[${index}]`, { current: true }));
+  if (!Array.isArray(value.subjects)) fail('V3_CURRENTSTATE_INVALID', 'subjects');
+  value.subjects.forEach((subject, index) => validateSubject(subject, `subjects[${index}]`, { current: true }));
   array(value.appliedDeltaIds, 'V3_CURRENTSTATE_INVALID', 'appliedDeltaIds', 10000).forEach((id, index) => uuid(id, 'V3_CURRENTSTATE_INVALID', `appliedDeltaIds[${index}]`));
   uuid(value.headFloorId, 'V3_CURRENTSTATE_INVALID', 'headFloorId', { nullable: true });
   fingerprint(value.fingerprint, 'V3_CURRENTSTATE_INVALID', 'fingerprint');

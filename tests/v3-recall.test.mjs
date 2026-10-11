@@ -4742,13 +4742,49 @@ test('runtime 在LLM选材等待中STOP/ENDED/切聊会留最后步骤且不以f
     harness.handlers.get(event)();
     const result = await pending;
     if (event === 'chat-changed') assert.equal(result.recallStatus, 'idle', event);
-    else { assert.equal(result.lastRecall.status, 'stale', event); assert.deepEqual(result.lastRecall.skipReasons, ['stopped']); }
+    else {
+      assert.equal(result.lastRecall.status, 'stale', event); assert.deepEqual(result.lastRecall.skipReasons, ['stopped']);
+      assert.equal(result.lastRecall.terminationEvent, sourceEvent);
+      assert.equal(result.lastRecall.diagnosticPhase, 'selecting');
+      assert.equal(result.lastRecall.selectionStatus, 'incomplete');
+      assert.equal(result.lastRecall.pendingStep, 'utilityTask');
+      assert.equal(result.lastRecall.lastCompletedStep, 'candidateBuild');
+      assert.ok(Number.isFinite(result.lastRecall.timings.totalMs));
+      assert.equal(result.lastRecall.injectionText, '');
+      assert.equal(result.lastRecall.receiptPersistence, 'none');
+    }
     assert.ok(harness.prompts.every(call => call[1] === ''), event);
     assert.equal(harness.runtime.getState().lastTerminated.sourceEvent, sourceEvent, event);
     assert.equal(harness.runtime.getState().lastTerminated.pendingStep, 'utilityTask', event);
     assert.equal(harness.runtime.getState().lastTerminated.lastCompletedStep, 'candidateBuild', event);
     assert.equal(harness.saves, 0, event);
   }
+});
+
+test('来源准备途中停止会冻结在途阶段与计时，迟到准备不改终止回执', async () => {
+  let enterPrepare, releasePrepare;
+  const preparing = new Promise(resolve => { enterPrepare = resolve; });
+  const latePreparation = new Promise(resolve => { releasePrepare = resolve; });
+  const harness = createRuntimeHarness({ prepareMemory: () => { enterPrepare(); return latePreparation; } });
+  harness.handlers.get('generation-started')('normal');
+  const pending = harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+  await preparing;
+  harness.handlers.get('generation-stopped')();
+  const result = await pending;
+  const receipt = result.lastRecall;
+  const preparation = receipt.timings.preparationAttempts?.at(-1);
+  assert.equal(receipt.terminationEvent, 'GENERATION_STOPPED');
+  assert.equal(receipt.diagnosticPhase, 'source');
+  assert.equal(receipt.pendingStep, 'prepare');
+  assert.equal(preparation?.stage, 'prepare');
+  assert.equal(preparation?.status, 'inProgress');
+  assert.ok(Number.isFinite(preparation?.prepareMs));
+  assert.equal(preparation?.totalMs, undefined, '缺少准备起点时不把阶段和伪装成准备总耗时');
+  assert.equal(receipt.injectionText, '');
+  releasePrepare({ status: 'unavailable' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(harness.runtime.getState().lastRecall, receipt);
+  assert.equal(receipt.timings.preparationAttempts.at(-1).status, 'inProgress');
 });
 
 test('真实runtime与私有记录器在LLM挂起时保留向量阶段，STOP后留下细步且不留prompt', async t => {

@@ -2432,6 +2432,92 @@ test('冷启动发现 CurrentState 与 delta 重放不一致时，以重放为�
   assert.equal(state.cseReplayDiagnostic.code, 'V3_CSE_REPLAY_MISMATCH');
 });
 
+test('CurrentState 跨楼累计超过 160 人仍完整回放并经 store 写入读回', async () => {
+  const id = value => `${(0x90000000 + value).toString(16)}-0000-4000-8000-${value.toString(16).padStart(12, '0')}`;
+  const entries = Array.from({ length: 161 }, (_, index) => ({ index, subjectIndex: index, revision: '初始' }));
+  entries.push({ index: 161, subjectIndex: 0, revision: '更新' });
+  const records = entries.map(({ index, subjectIndex, revision }) => {
+    const floorId = id(100000 + index);
+    const deltaId = id(200000 + index);
+    const subjectEntityId = id(300000 + subjectIndex);
+    const stateItem = (categoryIndex, category) => ({
+      id: id(400000 + index * 4 + categoryIndex),
+      text: `${category}-${subjectIndex}-${revision}`,
+      visibility: 'observable',
+      reason: '跨楼累计回归状态',
+      origin: 'floor',
+      towardEntityId: null,
+      sourceFloorId: floorId,
+      sourceDeltaId: deltaId,
+    });
+    const delta = {
+      schemaVersion: 3,
+      recordType: 'stateDelta',
+      id: deltaId,
+      chatId: CHAT,
+      narrativeGeneration: GEN,
+      floorId,
+      floorMemoryId: id(500000 + index),
+      baselineId: baseline.id,
+      previousCurrentStateId: null,
+      subjectSnapshots: [{
+        subjectEntityId,
+        core: [stateItem(0, 'core')],
+        adaptive: [stateItem(1, 'adaptive')],
+        situational: [stateItem(2, 'situational')],
+        changeSummary: [],
+        coreChallenges: [],
+      }],
+      fixedChanges: [],
+      noMaterialChange: true,
+      fingerprint: `sha256:${'a'.repeat(64)}`,
+      source: { promptVersion: 'test', compilerVersion: 'test', calibrationVersion: CSE_CALIBRATION_VERSION },
+      createdAt: NOW,
+      updatedAt: NOW,
+      recordStatus: 'active',
+      supersedes: null,
+    };
+    return { floor: { id: floorId }, delta: validateStateDeltaRecord(delta, { expectedChatId: CHAT }) };
+  });
+  const replay = async count => replayCurrentState({
+    chatId: CHAT,
+    narrativeGeneration: GEN,
+    baselineId: baseline.id,
+    floors: records.slice(0, count).map(item => item.floor),
+    floorMemories: [],
+    stateDeltas: records.slice(0, count).map(item => item.delta),
+    now: NOW,
+  });
+
+  assert.equal((await replay(80)).subjects.length, 80);
+  assert.equal((await replay(81)).subjects.length, 81);
+  const current = await replay(162);
+  assert.equal(current.subjects.length, 161, '更新已有主体不增加人数');
+  const firstSubject = current.subjects.find(subject => subject.subjectEntityId === id(300000));
+  assert.deepEqual(firstSubject.core.map(item => item.text), ['core-0-更新']);
+  assert.deepEqual(firstSubject.adaptive.map(item => item.text), ['adaptive-0-更新']);
+  assert.deepEqual(firstSubject.situational.map(item => item.text), ['situational-0-更新']);
+  const retainedSubject = current.subjects.find(subject => subject.subjectEntityId === id(300160));
+  assert.deepEqual(retainedSubject.core.map(item => item.text), ['core-160-初始']);
+  assert.deepEqual(retainedSubject.adaptive.map(item => item.text), ['adaptive-160-初始']);
+  assert.deepEqual(retainedSubject.situational.map(item => item.text), ['situational-160-初始']);
+
+  const invalidOwner = structuredClone(records[0].delta);
+  invalidOwner.subjectSnapshots[0].subjectEntityId = 'not-a-uuid';
+  assert.throws(() => validateStateDeltaRecord(invalidOwner, { expectedChatId: CHAT }), { code: 'V3_CSE_SUBJECT_INVALID' });
+  const oversizedFloorDelta = structuredClone(records[0].delta);
+  oversizedFloorDelta.subjectSnapshots = Array.from({ length: 81 }, (_, index) => ({
+    ...structuredClone(records[0].delta.subjectSnapshots[0]), subjectEntityId: id(600000 + index),
+  }));
+  assert.throws(() => validateStateDeltaRecord(oversizedFloorDelta, { expectedChatId: CHAT }), { code: 'V3_STATEDELTA_INVALID' }, '单楼 delta 的 80 人边界保持不变');
+
+  const h = runtimeHarness();
+  assert.equal((await h.store.putRecord(current)).status, 'saved');
+  const readBack = await h.store.readRecord('currentState', current.id);
+  assert.equal(readBack.status, 'ready');
+  assert.deepEqual(readBack.data.subjects, current.subjects, '正式 store 独立读回完整保留 161 人及所有状态');
+});
+
 test('浅层双语编译绑定唯一 user，A→B 分开，Core 后续冻结并记录 challenge', async () => {
   const tracked = entities.slice(0, 2);
   const envelope1 = createCseEnvelope({ floor: floor(FLOOR1, '第一楼'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: tracked, entities });

@@ -1,5 +1,5 @@
 import { MultiDirectedGraph, DirectedGraph } from 'graphology';
-import { topologicalSort, willCreateCycle } from 'graphology-dag';
+import { topologicalSort } from 'graphology-dag';
 import { deterministicUuid } from './foundation-domain.js';
 import { formatStoryTime, isRelativeStoryTime, projectTime, storyTimes, timeDistance } from './time-engine.js';
 import { calendarKey } from './calendar-rules.js';
@@ -105,6 +105,29 @@ const nodeId = (kind, id) => `${kind}:${id}`;
 const eventNode = id => nodeId('event', id);
 const matterNode = id => nodeId('matter', id);
 const personNode = id => nodeId('person', id);
+
+function willCreateCycle(graph, source, target) {
+  source = String(source);
+  target = String(target);
+  if (source === target) return true;
+  if (!graph.hasNode(source) || !graph.hasNode(target)) return false;
+  if (graph.hasDirectedEdge(source, target)) return false;
+  if (graph.hasDirectedEdge(target, source)) return true;
+
+  // 时间图允许多条路径汇合，首次发现节点即去重，避免按路径反复展开。
+  const visited = new Set([target]);
+  const stack = [target];
+  while (stack.length) {
+    const node = stack.pop();
+    if (node === source) return true;
+    graph.forEachOutNeighbor(node, neighbor => {
+      if (visited.has(neighbor)) return;
+      visited.add(neighbor);
+      stack.push(neighbor);
+    });
+  }
+  return false;
+}
 
 const projectQianshiTime = (value, anchor = null, calendar = anchor?.calendar ?? null) => projectTime(value, anchor, { allowShortGregorianYear: true, calendar });
 const GREGORIAN_MONTH_DAYS = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];

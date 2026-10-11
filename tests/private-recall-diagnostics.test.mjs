@@ -272,5 +272,13 @@ test('准备诊断只保有限子阶段枚举和数字，每attempt最多两条�
   assert.equal(result.last.attempts[0].timings.preparationAttempts.length, 2);
   assert.equal(result.last.attempts[0].timings.preparationAttempts[1].stage, null);
   assert.equal(result.last.attempts[0].timings.preparationAttempts[1].rootMs, null);
+  const pending = { phase: 'source', mode: 'cached', stage: 'prepare', status: 'inProgress', budgetMs: 8000, identityMs: 3, rootMs: 5, prepareMs: 12, readMs: 0, projectionMs: 0 };
+  state.lastRecall.timings.preparationAttempts = [pending];
+  state.activeRecall = {};
+  state.activeRecall.currentPreparation = pending;
+  const waiting = projectPrivateRecallDiagnostic(state, null);
+  assert.equal(waiting.last.timings.preparationAttempts[0].status, 'inProgress');
+  assert.equal(waiting.last.timings.preparationAttempts[0].totalMs, null, '未测得准备起点时不合成总时长');
+  assert.equal(waiting.active.currentPreparation.status, 'inProgress');
   assert.doesNotMatch(JSON.stringify(result), /SECRET|"url":|"source":|"error":"/u);
 });

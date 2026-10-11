@@ -463,8 +463,8 @@ const PREPARATION_STAGES = ['identity', 'root', 'prepare', 'read', 'projection']
 const PREPARATION_DURATIONS = ['totalMs', 'budgetMs', ...PREPARATION_STAGES.map(stage => `${stage}Ms`)];
 const preparationTimingsValid = value => value === undefined || (Array.isArray(value) && value.length <= 2 && value.every(item => item
   && ['source', 'commit'].includes(item.phase) && ['cached', 'fresh'].includes(item.mode)
-  && PREPARATION_STAGES.includes(item.stage) && ['ready', 'timeout', 'stale', 'unavailable', 'disabled'].includes(item.status)
-  && PREPARATION_DURATIONS.every(key => finiteDuration(item[key]))));
+  && PREPARATION_STAGES.includes(item.stage) && ['ready', 'inProgress', 'timeout', 'stale', 'unavailable', 'disabled'].includes(item.status)
+  && PREPARATION_DURATIONS.filter(key => !(item.status === 'inProgress' && key === 'totalMs')).every(key => finiteDuration(item[key]))));
 const stateChangeSideValid = (value, { identifiersRequired = false } = {}) => value === null || (value && typeof value === 'object' && !Array.isArray(value)
   && (!identifiersRequired || boundedString(value.stateId, 500))
   && (value.stateId === undefined || optionalBoundedString(value.stateId, 500))
@@ -1135,7 +1135,19 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
   }
   const safeTerminationReason = value => ['stopped', 'superseded', 'chatChanged', 'userChanged', 'narrativeChanged', 'disabled', 'invalidated', 'selectedRefsChanged', 'sourceStale', 'sourceUnavailable'].includes(value) ? value : 'invalidated';
   const safeTerminationEvent = value => ['GENERATION_STOPPED', 'GENERATION_ENDED', 'interceptorSuperseded', 'CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED', 'runtimeDisabled', 'runtimeInvalidate', 'finalSafetyGuard'].includes(value) ? value : 'runtimeInvalidate';
-  function retainTerminated(operation, reason, sourceEvent) {
+  function terminatedTimings(operation) {
+    const timings = clone(operation.timings ?? {});
+    if (operation.currentPreparation) {
+      const preparation = clone(operation.currentPreparation), pendingMs = operation.stepStarted ? Math.max(0, Date.now() - operation.stepStarted) : 0;
+      const stageKey = `${preparation.stage}Ms`;
+      preparation.status = 'inProgress';
+      preparation[stageKey] = (Number(preparation[stageKey]) || 0) + pendingMs;
+      delete preparation.totalMs;
+      (timings.preparationAttempts ??= []).push(Object.freeze(preparation));
+    }
+    return timings;
+  }
+  function retainTerminated(operation, reason, sourceEvent, timings = terminatedTimings(operation)) {
     if (!operation) return;
     const attempts = (operation.diagnostics ?? []).map(value => ({ attempt: Number.isSafeInteger(value.attempt) ? value.attempt : null,
       phase: ['input', 'source', 'selecting', 'commit', 'receipt'].includes(value.phase) ? value.phase : null,
@@ -1146,7 +1158,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       pendingStep: diagnosticSteps.includes(value.pendingStep) ? value.pendingStep : null,
       lastCompletedStep: diagnosticSteps.includes(value.lastCompletedStep) ? value.lastCompletedStep : null,
       error: value.error ? { code: clean(value.error.code, 120), httpStatus: Number.isSafeInteger(value.error.httpStatus) ? value.error.httpStatus : null } : null,
-      timings: clone(value.timings ?? operation.timings ?? {}) }));
+      timings: clone(value.timings ?? timings) }));
     lastTerminated = Object.freeze({ status: 'terminated', chatId: operation.chatId ?? null, generationType: operation.type,
       userMessageIndex: operation.user?.index ?? null, reason: safeTerminationReason(reason), sourceEvent: safeTerminationEvent(sourceEvent),
       terminatedAt: nowIso(now), phase: ['input', 'source', 'selecting', 'commit', 'receipt'].includes(operation.phase) ? operation.phase : null,
@@ -1155,7 +1167,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       requestDiagnosticId: operation.requestDiagnosticId ?? null, roundStartedAt: new Date(operation.started).toISOString(),
       sourceVerification: operation.sourceVerification ? clone(operation.sourceVerification) : null,
       finalVerification: operation.finalVerification ? clone(operation.finalVerification) : null,
-      timings: clone(operation.timings ?? {}), attempts: Object.freeze(attempts) });
+      timings, attempts: Object.freeze(attempts) });
   }
 
   function getState() {
@@ -1535,7 +1547,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       attemptDiagnostics: Object.freeze(attempts.map(value => Object.freeze({ attempt: value.attempt, phase: value.phase, selectionStatus: value.selectionStatus,
         pendingStep: diagnosticSteps.includes(value.pendingStep) ? value.pendingStep : null,
         lastCompletedStep: diagnosticSteps.includes(value.lastCompletedStep) ? value.lastCompletedStep : null,
-        coverage: value.coverage, stages: value.stages, selectorDiagnostic: value.selectorDiagnostic, error: value.error ?? null, timings: clone(value.timings ?? timings) }))),
+        coverage: value.coverage, stages: value.stages, selectorDiagnostic: value.selectorDiagnostic, error: value.error ?? null,
+        timings: clone(value.timings ?? timings) }))),
       timings: Object.freeze({ ...(chosen?.timings ?? timings), totalMs: Date.now() - operation.started }) };
   }
 
@@ -1933,13 +1946,18 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
   function cancelGenerationOperation(generation, reason = 'stopped') {
     if (!generation || active?.token !== generation.token) return false;
     const operation = active;
-    retainTerminated(operation, reason, generation.sourceEvent ?? 'GENERATION_STOPPED');
+    const terminationEvent = safeTerminationEvent(generation.sourceEvent ?? 'GENERATION_STOPPED');
+    const terminationTimings = terminatedTimings(operation);
+    retainTerminated(operation, reason, terminationEvent, terminationTimings);
+    const diagnostic = clone(runtimeDiagnostic(operation, terminationTimings));
     epoch += 1;
     active.controller.abort(reason);
     active = null;
     if (slotOwner === generation.token) clearSlot(generation.token);
-    lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), selectorDiagnostic: null, injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none', stages: null, requestDiagnosticId: operation.requestDiagnosticId,
-      roundStartedAt: new Date(operation.started).toISOString(), timings: Object.freeze({ totalMs: Date.now() - operation.started }), skipReasons: Object.freeze([reason]), error: null, createdAt: nowIso(now) }); lastPrequel = null;
+    lastRecall = Object.freeze({ status: 'stale', userMessageIndex: operation.user?.index ?? null, generationType: operation.type, coverage: null, selectedFloors: Object.freeze([]), selectedStates: Object.freeze([]), selectedCseChanges: Object.freeze([]), injectionText: '', reusedReceipt: false, restoredReceipt: false, receiptPersistence: 'none',
+      ...diagnostic, timings: Object.freeze({ ...clone(diagnostic.timings), ...terminationTimings, totalMs: Date.now() - operation.started }),
+      terminationEvent, requestDiagnosticId: operation.requestDiagnosticId,
+      roundStartedAt: new Date(operation.started).toISOString(), skipReasons: Object.freeze([reason]), error: null, createdAt: nowIso(now) }); lastPrequel = null;
     bindOperationRecall(operation);
     notify();
     return true;

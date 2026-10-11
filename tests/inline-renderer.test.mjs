@@ -119,6 +119,14 @@ test('独立时间签名文本兼容纯时间及覆盖说明后的两种历史�
   assert.deepEqual(projectInlineRecallReceipt(only).timeReferenceItems, [reminder]);
   assert.deepEqual(projectInlineRecallReceipt({ ...only, status: 'stale' }).timeReferenceItems, []);
   assert.deepEqual(projectInlineRecallReceipt({ ...only, injectionText: '' }).timeReferenceItems, []);
+  for (const [terminationEvent, statusText] of [['GENERATION_STOPPED', '召回已停止'], ['GENERATION_ENDED', '生成已结束，召回未完成']]) {
+    const stopped = projectInlineRecallReceipt({ ...only, status: 'stale', terminationEvent, injectionText: '', skipReasons: ['stopped'],
+      diagnosticPhase: 'selecting', pendingStep: 'utilityTask', lastCompletedStep: 'candidateBuild', timings: { totalMs: 27300, selectorMs: 26000 } });
+    assert.equal(stopped.statusText, statusText);
+    assert.match(stopped.summary, /终止于选材 · 终止步骤：模型选材 · 上一步：候选构建 · 召回等待 27300\.0 ms · 选材 26000\.0 ms · 本轮未注入/u);
+    assert.equal(stopped.injectionText, '');
+    assert.deepEqual(stopped.historyItems, []);
+  }
   const old = { ...only, schemaVersion: 11, injectionText: recallInjection('AI #1：原观察这个词不应猜成校正'), selectedFloors: [{ floorId: HISTORY_FLOOR, assistantSeq: 1 }] };
   assert.deepEqual(projectInlineRecallReceipt(old).timeReferenceItems, []);
 });
@@ -1141,6 +1149,22 @@ test('楼内召回按已绑定阶段区分准备与模型选择，其他运行�
   assert.equal(view.status.textContent, '准备召回中', '无现成回执的receiptValidation仍显示准备');
   assert.equal(view.status.title, '');
   assert.equal(view.status.attributes['aria-label'], '准备召回中');
+});
+
+test('楼内终止回执生产 renderer 显示宿主终止原因与阶段耗时提示', async () => {
+  const chat = [{ is_user: true, is_system: false, mes: '当前用户楼' }];
+  const record = { status: 'stale', userMessageIndex: 0, terminationEvent: 'GENERATION_ENDED', diagnosticPhase: 'selecting', pendingStep: 'utilityTask',
+    lastCompletedStep: 'candidateBuild', timings: { totalMs: 27300, selectorMs: 26000 }, skipReasons: ['stopped'], injectionText: '',
+    selectedFloors: [], selectedStates: [], selectedCseChanges: [] };
+  const recallState = { recallStatus: 'stale', activeRecall: null, lastRecallBinding: { chatId: 'chat-a', userMessageIndex: 0 }, lastRecall: record };
+  const h = createHarness({ chat, memoryState: { floors: [], memoryEntities: [] }, recallState });
+  h.chatRoot.append(messageElement(0, { user: true })); h.renderer.start(); await h.flushMicrotasks();
+  const view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  assert.equal(view.status.textContent, '生成已结束，召回未完成');
+  assert.match(view.status.title, /终止于选材 · 终止步骤：模型选材 · .*本轮未注入/u);
+  assert.match(view.status.attributes['aria-label'], /生成已结束，召回未完成：终止于选材/u);
+  assert.equal(record.injectionText, '');
+  h.renderer.stop();
 });
 
 test('即时lastRecall必须同时匹配当前chat与用户楼索引', async () => {
