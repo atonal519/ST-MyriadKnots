@@ -1,5 +1,6 @@
 import { ensureChatUuid, isUuid, readHostState } from './host-context.js';
 import { captureTargetChatCoordinates } from './v3/host-adapter.js';
+import { markPreparationFailure, preparationFailureDiagnostic } from './v3/preparation-diagnostic.js';
 
 export class ChatSessionError extends Error {
   constructor(message, code = 'CHAT_SESSION_INVALID') {
@@ -24,6 +25,11 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
   let active = null;
   let suspension = null;
   let state = Object.freeze({ status: 'idle' });
+  const failPreparation = (error, step) => {
+    markPreparationFailure(error, step);
+    state = Object.freeze({ status: 'error', error, preparationFailure: preparationFailureDiagnostic(error, step) });
+    return error;
+  };
   const enabled = () => {
     try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; }
     catch { return false; }
@@ -34,8 +40,10 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     try {
       raw = contextProvider();
       host = readHostState(raw);
-    } catch {
-      throw new ChatSessionError('当前聊天身份不可用', 'CHAT_SESSION_CONTEXT_INVALID');
+    } catch (cause) {
+      const error = new ChatSessionError('当前聊天身份不可用', 'CHAT_SESSION_CONTEXT_INVALID');
+      error.cause = cause;
+      throw error;
     }
     if (host?.ok !== true && !(allowNoChat && host?.noChat === true)) {
       throw new ChatSessionError(host?.reason || '当前聊天身份不可用', 'CHAT_SESSION_CONTEXT_INVALID');
@@ -63,7 +71,12 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     }
     let context;
     try { context = capture({ allowNoChat: true }); }
-    catch (error) { return Promise.reject(error); }
+    catch (error) {
+      const cause = error?.cause ?? error;
+      markPreparationFailure(error, 'synchronizing');
+      state = Object.freeze({ status: 'error', error, preparationFailure: preparationFailureDiagnostic(cause, 'synchronizing') });
+      return Promise.reject(error);
+    }
     if (context.host.noChat === true) {
       state = Object.freeze({ status: 'idle' });
       return Promise.resolve(state);
@@ -86,7 +99,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     }
     let taskInputs = null;
     try { taskInputs = identityCoordinator ? captureTaskSnapshot(context) : null; }
-    catch (error) { return Promise.reject(error); }
+    catch (error) { return Promise.reject(failPreparation(error, 'snapshotClone')); }
     const operation = { epoch, host: context.host, controller: new AbortController() };
     state = Object.freeze({ status: 'preparing' });
     operation.promise = (async () => {
@@ -105,7 +118,8 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
         return result;
       } catch (error) {
         if (operation.controller.signal.aborted) return Object.freeze({ status: enabled() ? 'cancelled' : 'disabled' });
-        try { if (sameHost(operation.host, capture().host)) state = Object.freeze({ status: 'error', error }); } catch { /* Keep the current page state independent. */ }
+        markPreparationFailure(error, 'identityDirectory');
+        try { if (sameHost(operation.host, capture().host)) state = Object.freeze({ status: 'error', error, preparationFailure: preparationFailureDiagnostic(error, 'identityDirectory') }); } catch { /* Keep the current page state independent. */ }
         throw error;
       }
     })();

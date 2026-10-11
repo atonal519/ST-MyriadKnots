@@ -12,10 +12,12 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const nativeJson = value => Array.isArray(value) ? value.map(nativeJson) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, nativeJson(value[key])])) : value;
 
-async function isolateBundle(hostGlobalName, { enabled = false, withExistingPanel = false, mainApi = 'openai', invokeTypes = [], initializeWithoutSubtle = false, tauri = false, privateDiagnostics = false } = {}) {
+async function isolateBundle(hostGlobalName, { enabled = false, withExistingPanel = false, mainApi = 'openai', invokeTypes = [], initializeWithoutSubtle = false, tauri = false, privateDiagnostics = false, startupBindFailure = false } = {}) {
   const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
   const bundlePath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : resolve(root, manifest.js.split('?')[0]);
   const eventRegistrations = new Map();
+  const startupWarnings = [];
+  const testConsole = { ...console, warn(...args) { startupWarnings.push(args); } };
   const backendRecords = new Map();
   const ttRecords = new Map();
   const ttKey = ({ namespace, table = 'main', key }) => `${namespace}/${table}/${key}`;
@@ -39,7 +41,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
     uuidv4: () => '11111111-1111-4111-8111-111111111111',
     async saveMetadata() {},
     getRequestHeaders: () => ({}), eventTypes: { CHAT_CHANGED: 'chat', PERSONA_CHANGED: 'persona' },
-    eventSource: { on(name) { eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); } },
+    eventSource: { on(name) { if (startupBindFailure && name === 'chat') throw new TypeError('PRIVATE startup binding detail'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); } },
   };
   let hostFile = { header: { chat_metadata: structuredClone(host.chatMetadata) }, chat: structuredClone(host.chat) };
   if (initializeWithoutSubtle) backendRecords.set('/api/plugins/st-bainiaodata/v1/records/qianqianjie/chat-identity-bindings/binding-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', {
@@ -74,7 +76,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
   } : undefined;
   const context = createContext({
     ...(tauri ? { __TAURITAVERN__: { ready: Promise.resolve(), api: { extension: { store: ttStore } } } } : {}),
-    console, crypto: initializeWithoutSubtle ? {} : globalThis.crypto, TextEncoder, TextDecoder, URL, URLSearchParams, AbortController, DOMException, structuredClone, setTimeout, clearTimeout, setInterval, clearInterval,
+    console: testConsole, crypto: initializeWithoutSubtle ? {} : globalThis.crypto, TextEncoder, TextDecoder, URL, URLSearchParams, AbortController, DOMException, structuredClone, setTimeout, clearTimeout, setInterval, clearInterval,
     ...(privateDiagnostics ? { location: { origin: 'https://tavern.invalid' }, addEventListener(name, callback) { if (name === 'beforeunload') unloads.push(callback); } } : {}),
     fetch: async (url, options = {}) => {
       if (String(url) === '/api/chats/get') return hostFile
@@ -166,8 +168,16 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
   const publicBridgeSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getSnapshot?.()?.status;
   const publicBridgePromptSnapshotType = typeof context.qqj_v3_public_bridge_v1?.getPromptSnapshot;
   const publicBridgePromptSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getPromptSnapshot?.()?.status;
-  return { status: entry.status, backendCalls, backendRecords, privateRecords, hostShaCalls, hostShaInputs, eventRegistrations, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, abortCalls };
+  return { status: entry.status, backendCalls, backendRecords, privateRecords, hostShaCalls, hostShaInputs, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, abortCalls };
 }
+
+test('实际生产启动入口捕获首次 host event bind 异常并继续完成模块求值', async () => {
+  const result = await isolateBundle('SillyTavern', { startupBindFailure: true });
+  assert.equal(result.status, 'evaluated');
+  assert.equal(result.startupWarnings.length, 1, 'startup catch 应记录一次原始入口失败');
+  assert.equal(result.startupWarnings[0][0], '[qianqianjie] 身份或后端数据准备失败');
+  assert.match(result.startupWarnings[0][1]?.stack ?? '', /dist\/qqj-app\.js/u);
+});
 
 test('实际生产包无需打开面板或保存聊天，私有通道自动记录本轮结果', async () => {
   const result = await isolateBundle('SillyTavern', { enabled: true, privateDiagnostics: true, invokeTypes: ['normal'] });
@@ -204,7 +214,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.7.7');
+  assert.equal(manifest.version, '0.7.8');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -417,12 +427,13 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
       lifecycleOptions = options;
       return {
         bind() {},
-        async start() {},
+        async start() { if (failStartupLifecycleStart) { failStartupLifecycleStart = false; throw startupBindingError; } },
         async setEnabled(value) {
           runtimeEnables.push(`lifecycle:${value}`);
           if (value === true) {
             await options.session.prepare();
-            await options.onPrepared?.({ result: { status: 'ready', identity: { chatId: 'test' } }, isCurrent: () => true });
+            void Promise.resolve(options.onPrepared?.({ result: { status: 'ready', identity: { chatId: 'test' } }, isCurrent: () => true, explicitEnable: true }))
+              .catch(error => options.onDiagnostic?.(error, 'pluginEnable'));
           }
         },
       };
@@ -457,12 +468,17 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const branchInitializer = async () => ({ status: 'inherited' });
   define('./src/v3/chat-branch-inheritance.js', { createChatBranchInitializer: options => { branchInitializerOptions = options; return branchInitializer; }, copyLatestPeople: async () => null });
   let timeOptions, timeBindOptions, currentStoryContextReads = 0;
+  let failStartupLifecycleStart = true;
+  const startupBindingError = new TypeError('PRIVATE source startup binding detail');
   const qianshiRecallInputs = [];
   const timeBatches = [];
   let calendarInvalidations = 0, calendarRefreshes = 0;
   const timeRuntime = { runBatch: receipt => { timeBatches.push(receipt); }, getState: () => ({}), invalidate() { calendarInvalidations += 1; }, async refreshStatus() { calendarRefreshes += 1; }, completeStoredUpdate() { timeOptions.onInvalidate?.(); }, recallProjection: async () => null, currentStoryContext: async () => { currentStoryContextReads += 1; return { currentTime: { raw: '5月3日' } }; }, stop: async () => {}, bind(options) { timeBindOptions = options; } };
   define('./src/v3/time-runtime.js', { createTimeStore: () => ({}), createTimeRuntime: options => { timeOptions = options; return timeRuntime; } });
-  define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start() { backgroundStarts.push('memory'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, async confirmConsecutiveAssistants() { confirmationCalls += 1; }, getState: () => ({}), getQianshiRecall: input => { qianshiRecallInputs.push(input); return { text: '' }; }, shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
+  const memoryStartOptions = [];
+  let failMemoryStart = false;
+  define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start(startOptions) { memoryStartOptions.push(startOptions); backgroundStarts.push('memory'); if (failMemoryStart) throw new TypeError('PRIVATE late memory failure'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, async confirmConsecutiveAssistants() { confirmationCalls += 1; }, getState: () => ({}), getQianshiRecall: input => { qianshiRecallInputs.push(input); return { text: '' }; }, shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
+  define('./src/v3/preparation-diagnostic.js', { preparationFailureDiagnostic: error => ({ prepareStep: null, name: error?.name ?? null, code: error?.code ?? null, detail: null, location: null }) });
   define('./src/v3/message-floor-anchor.js', { persistMessageFloorAnchors: persistAnchors, persistTargetChatIdentity: async () => ({ status: 'persisted' }) });
   define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; v3RecallRuntime = { bind() {}, async setEnabled(value) { runtimeEnables.push(`recall:${value}`); }, async intercept() {}, invalidate(reason) { recallInvalidations.push(reason); }, getState: () => ({}), getPromptSnapshot: () => null }; return v3RecallRuntime; } });
   define('./src/v3/auto-hide.js', { createAutoHideController: options => { autoHideOptions = options; return { applySettings() {}, stop() {}, dispose() {} }; } });
@@ -499,6 +515,11 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   });
   await entry.evaluate();
   await new Promise(resolvePromise => setImmediate(resolvePromise));
+
+  const startupDiagnostic = nativeJson(bootstrapOptions.pluginDiagnosticProvider());
+  assert.equal(startupDiagnostic.phase, 'startup');
+  assert.equal(startupDiagnostic.failure.name, 'TypeError');
+  assert.doesNotMatch(JSON.stringify(startupDiagnostic), /PRIVATE source startup binding detail/u, '真实 index startup provider 只给安全诊断字段');
 
   await vectorOptions.sourceProvider({ targetIdentity: { hostChatId: 'host-chat', chatId: 'test', characterLocator: 'char.png', personaLocator: 'me.png' } });
   assert.equal(memoryManagementOptions.vectorRuntime, vectorRuntime);
@@ -634,6 +655,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   await bootstrapOptions.onPluginEnabledChange(true);
   assert.equal(hostUuidCalls, 3, '关闭后打开插件的身份准备必须调用宿主 uuidv4 且不依赖浏览器 crypto.randomUUID');
   assert.equal(backgroundStarts[0], 'memory');
+  assert.equal(memoryStartOptions[0].explicitEnable, true, '真实总开关路径必须把一次性初始化意图传到 memory.start');
+  assert.equal(memoryStartOptions[0].targetIdentity.chatId, 'test', '首次启用必须沿准备时身份固定目标');
   assert.equal(backgroundStarts[1]?.[0], 'people');
   assert.equal(backgroundStarts[1]?.[1]?.refreshMemory, false, '人物 workspace 应复用刚完成的记忆快照');
   assert.equal(backgroundStarts.length, 2, '同一身份成功链只准备一次记忆和一次人物 workspace');
@@ -700,6 +723,14 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   toastCalls[0][2].onclick();
   assert.equal(openMemoryCalls, 1, '提醒点击导航到既有千结入口');
   assert.equal(confirmationCalls, 0, '点击只导航，不直接确认连续 AI');
+  failMemoryStart = true;
+  await bootstrapOptions.onPluginEnabledChange(true);
+  const asyncFailure = nativeJson(bootstrapOptions.pluginDiagnosticProvider());
+  assert.equal(asyncFailure.phase, 'pluginEnable');
+  assert.equal(asyncFailure.failure.name, 'TypeError', '后台 memory start 快速失败必须保留原异常类型');
+  assert.doesNotMatch(JSON.stringify(asyncFailure), /PRIVATE late memory failure/u, '诊断不复制原始错误文本');
+  await bootstrapOptions.onPluginEnabledChange(false);
+  assert.equal(bootstrapOptions.pluginDiagnosticProvider(), null, '成功的后续总开关操作清除已知旧失败');
 });
 
 test('生产 bundle 在 Luker-only 兼容全局下也可隔离加载，关闭时零后端请求', async () => {

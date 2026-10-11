@@ -31,6 +31,7 @@ import { createIndexedDbCoreRecordCache } from './src/v3/indexeddb-core-cache.js
 import { createFoundationRuntime } from './src/v3/foundation-runtime.js';
 import { createTimeStore, createTimeRuntime } from './src/v3/time-runtime.js';
 import { createV3MemoryRuntime } from './src/v3/memory-runtime.js';
+import { preparationFailureDiagnostic } from './src/v3/preparation-diagnostic.js';
 import { runHistoricalRebuildTask } from './src/v3/historical-rebuild-task.js';
 import { captureHistoricalRebuildSources as captureRebuildSources } from './src/v3/historical-rebuild-sources.js';
 import { persistMessageFloorAnchors, persistTargetChatIdentity } from './src/v3/message-floor-anchor.js';
@@ -99,6 +100,16 @@ const sanitizerOptions = () => ({ keepTags: settings.get().sourceKeepTags, extra
 const backendClient = createBackendClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
 let ui;
 let lifecycle;
+let pluginLifecycleFailure = null;
+let pluginLifecycleFailureRevision = 0;
+const recordPluginLifecycleFailure = (error, phase = 'pluginEnable') => {
+  pluginLifecycleFailureRevision += 1;
+  pluginLifecycleFailure = Object.freeze({ phase, failure: preparationFailureDiagnostic(error?.cause ?? error, 'synchronizing') });
+};
+const clearPluginLifecycleFailure = () => { pluginLifecycleFailureRevision += 1; pluginLifecycleFailure = null; };
+const clearPluginLifecycleFailureIfUnchanged = revision => {
+  if (pluginLifecycleFailureRevision === revision) clearPluginLifecycleFailure();
+};
 const compactClient = createCompactApiClient({
   headers: () => hostContext()?.getRequestHeaders?.() ?? {},
   onBusyChange: busy => ui?.fab?.setBusy?.(busy),
@@ -409,7 +420,9 @@ globalThis.addEventListener?.('beforeunload', inlineRenderer.destroy, { once: tr
 globalThis.addEventListener?.('beforeunload', storageManagement.dispose, { once: true });
 globalThis.qqj_v3_recall_interceptor = (coreChat, contextSize, abort, type) => v3RecallRuntime.intercept(coreChat, contextSize, abort, type);
 const setAllEnabled = async enabled => {
-  refreshStoryClock({ announce: true });
+  const diagnosticRevisionAtStart = pluginLifecycleFailureRevision;
+  try { refreshStoryClock({ announce: true }); }
+  catch (error) { try { error.qqjDiagnosticPhase = 'pluginEnable'; } catch {} throw error; }
   if (!enabled) {
     inlineRenderer.setEnabled(false);
     autoHideController.stop();
@@ -418,12 +431,14 @@ const setAllEnabled = async enabled => {
     await v3RecallRuntime.setEnabled(false);
     const v3Result = await v3MemoryRuntime.setEnabled(false);
     const lifecycleResult = await lifecycle?.setEnabled(false);
+    clearPluginLifecycleFailureIfUnchanged(diagnosticRevisionAtStart);
     return v3Result ?? lifecycleResult;
   }
   inlineRenderer.setEnabled(true);
   if (globalThis.location?.origin) void privateRecallDiagnostics.start();
   const lifecycleResult = await lifecycle?.setEnabled(enabled);
   await v3RecallRuntime.setEnabled(enabled);
+  clearPluginLifecycleFailureIfUnchanged(diagnosticRevisionAtStart);
   return lifecycleResult;
 };
 ui = bootstrap({
@@ -432,6 +447,7 @@ ui = bootstrap({
   vectorApi,
   vectorIndex,
   onPluginEnabledChange: setAllEnabled,
+  onPluginEnableFailure: (error, phase) => recordPluginLifecycleFailure(error, error?.qqjDiagnosticPhase ?? phase),
   onStoryClockChange: options => refreshStoryClock({ ...options, announce: options?.readOnly !== true }),
   onAutoHideChange: options => autoHideController.applySettings(options),
   onTimeEvolutionChange: async () => { await timeRuntime.stop(); await timeRuntime.runBatch(); },
@@ -467,6 +483,7 @@ ui = bootstrap({
   chatMemoryManagement,
   storageManagement,
   sessionStateProvider: () => session.getState(),
+  pluginDiagnosticProvider: () => pluginLifecycleFailure,
   prepareSession: () => session.prepare(),
   backendDiagnosticProvider: () => ({ ...backendClient.getDiagnosticSnapshot(), coreCache: coreRecordCache?.getStats?.() ?? { available: false } }),
   pluginVersion,
@@ -478,24 +495,35 @@ lifecycle = createPluginLifecycle({
   aborters: [taskRouter, apiTools, peopleWorkspaceRuntime, vectorIndex, vectorApi],
   isEnabled: settings.isEnabled,
   getUi: () => ui,
-  onPrepared: async ({ isCurrent }) => {
-    if (!isCurrent()) return;
-    await v3MemoryRuntime.start();
+  onPrepared: async ({ result, isCurrent, explicitEnable }) => {
+    if (!isCurrent() && !explicitEnable) return;
+    await v3MemoryRuntime.start({ explicitEnable, targetIdentity: explicitEnable ? result.identity : null });
     if (!isCurrent()) return;
     await peopleWorkspaceRuntime.refresh({ refreshMemory: false });
   },
+  onDiagnostic: (error, phase) => {
+    if (error) recordPluginLifecycleFailure(error, phase);
+    else if (phase === 'identityPrepare' && pluginLifecycleFailure?.phase === 'identityPrepare') clearPluginLifecycleFailure();
+  },
 });
-const host = hostContext();
-refreshStoryClock({ announce: true });
-lifecycle.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes });
-v3MemoryRuntime.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes });
-v3RecallRuntime.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes });
-timeRuntime.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes, foundationRuntime });
-for (const name of ['CHAT_CHANGED', 'GENERATION_STARTED']) {
-  const eventName = host?.eventTypes?.[name];
-  if (eventName) host?.eventSource?.on?.(eventName, () => refreshStoryClock());
-}
 void (async () => {
-  inlineRenderer.setEnabled(settings.isEnabled());
-  await lifecycle.start();
-})().catch(error => console.warn('[qianqianjie] 身份或后端数据准备失败', error));
+  const diagnosticRevisionAtStart = pluginLifecycleFailureRevision;
+  try {
+    const host = hostContext();
+    lifecycle.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes });
+    v3MemoryRuntime.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes });
+    v3RecallRuntime.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes });
+    timeRuntime.bind({ eventSource: host?.eventSource, eventTypes: host?.eventTypes, foundationRuntime });
+    for (const name of ['CHAT_CHANGED', 'GENERATION_STARTED']) {
+      const eventName = host?.eventTypes?.[name];
+      if (eventName) host?.eventSource?.on?.(eventName, () => refreshStoryClock());
+    }
+    refreshStoryClock({ announce: true });
+    inlineRenderer.setEnabled(settings.isEnabled());
+    await lifecycle.start();
+    clearPluginLifecycleFailureIfUnchanged(diagnosticRevisionAtStart);
+  } catch (error) {
+    recordPluginLifecycleFailure(error, 'startup');
+    console.warn('[qianqianjie] 身份或后端数据准备失败', error);
+  }
+})();

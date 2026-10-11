@@ -199,6 +199,13 @@ function errorDiagnostic(value, sourceKnown = true) {
   }
   return result;
 }
+function preparationErrorFields(value) {
+  if (!value || typeof value !== 'object') return {};
+  const fields = {};
+  if (typeof value.name === 'string' && /^[A-Za-z][A-Za-z0-9]{0,79}$/u.test(value.name)) fields.name = value.name;
+  if (Number.isSafeInteger(value.code) || typeof value.code === 'string' && /^(?:(?:QQJ|V3|CHAT_SESSION|QIANQIANJIE|QIANSHI)_[A-Z0-9_]{1,80}|BACKEND_TIMEOUT)$/u.test(value.code)) fields.code = value.code;
+  return fields;
+}
 function automationErrorDiagnostic(value, sourceKnown = true) {
   const result = errorDiagnostic(value, sourceKnown);
   if (result.present !== true) return result;
@@ -246,7 +253,7 @@ const searchSnippet = (value, query, limit = 110) => {
   return `${start > 0 ? '…' : ''}${source.slice(start, end).replace(/\s+/gu, ' ').trim()}${end < source.length ? '…' : ''}`;
 };
 
-export function createV3FoundationView({ runtime, recallRuntime = null, vectorRuntime = null, peopleRuntime = null, timeRuntime = null, memoryManagement = null, sessionStateProvider = null, backendDiagnosticProvider = null, pluginVersion = 'unknown', uiDiagnosticProvider = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, chooseImpl = null, infoImpl = () => Promise.resolve(true), customImpl = null } = {}) {
+export function createV3FoundationView({ runtime, recallRuntime = null, vectorRuntime = null, peopleRuntime = null, timeRuntime = null, memoryManagement = null, sessionStateProvider = null, backendDiagnosticProvider = null, pluginDiagnosticProvider = null, pluginVersion = 'unknown', uiDiagnosticProvider = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, chooseImpl = null, infoImpl = () => Promise.resolve(true), customImpl = null } = {}) {
   if (!runtime || ['getState', 'refreshStatus', 'confirmLatest'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('V3 foundation view runtime 无效');
   if (recallRuntime && typeof recallRuntime.getState !== 'function') throw new TypeError('V3 recall view runtime 无效');
   if (peopleRuntime && typeof peopleRuntime.getState !== 'function') throw new TypeError('V3 people workspace runtime 无效');
@@ -437,6 +444,12 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   const stateDiagnostic = () => {
     const memory = readDiagnosticState(() => runtime.getState());
     const identity = readDiagnosticState(sessionStateProvider);
+    const hasPluginDiagnosticProvider = typeof pluginDiagnosticProvider === 'function';
+    let pluginDiagnostic = null, pluginDiagnosticReadFailed = false;
+    if (hasPluginDiagnosticProvider) {
+      try { pluginDiagnostic = pluginDiagnosticProvider(); }
+      catch { pluginDiagnosticReadFailed = true; }
+    }
     const recall = readDiagnosticState(() => recallRuntime?.getState?.());
     const vector = readDiagnosticState(() => vectorRuntime?.getState?.());
     const management = readDiagnosticState(() => memoryManagement?.getState?.());
@@ -451,7 +464,19 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         status: identityKnown ? enumDiagnostic(identity.status, DIAGNOSTIC_STATUS) : 'unknown',
         identityPresent: identityKnown ? Boolean(identity.identity) : 'unknown',
         error: errorDiagnostic(identity?.error, identityKnown),
+        preparationFailure: (() => {
+          const failure = identity?.preparationFailure;
+          if (!failure) return { present: identityKnown ? false : 'unknown' };
+          return { present: true, ...errorDiagnostic(failure, true), ...preparationErrorFields(failure), prepareStep: enumDiagnostic(failure.prepareStep, DIAGNOSTIC_PREPARE_STEP), detail: AUTOMATION_DETAILS.has(failure.detail) ? failure.detail : null, location: typeof failure.location === 'string' && /^(?:src\/[A-Za-z0-9_./-]+\.js|index\.js|dist\/qqj-app\.js):[1-9]\d{0,6}:[1-9]\d{0,6}$/u.test(failure.location) ? failure.location : null };
+        })(),
       },
+      pluginLifecycle: (() => {
+        if (!hasPluginDiagnosticProvider || pluginDiagnosticReadFailed) return { phase: 'unknown', failure: { present: 'unknown' } };
+        if (!pluginDiagnostic) return { phase: 'unknown', failure: { present: false } };
+        const failure = pluginDiagnostic.failure;
+        if (!failure) return { phase: enumDiagnostic(pluginDiagnostic.phase, new Set(['settingsSave', 'pluginEnable', 'startup', 'identityPrepare'])), failure: { present: false } };
+        return { phase: enumDiagnostic(pluginDiagnostic.phase, new Set(['settingsSave', 'pluginEnable', 'startup', 'identityPrepare'])), failure: { present: true, ...errorDiagnostic(failure, true), ...preparationErrorFields(failure), prepareStep: enumDiagnostic(failure.prepareStep, DIAGNOSTIC_PREPARE_STEP), detail: AUTOMATION_DETAILS.has(failure.detail) ? failure.detail : null, location: typeof failure.location === 'string' && /^(?:src\/[A-Za-z0-9_./-]+\.js|index\.js|dist\/qqj-app\.js):[1-9]\d{0,6}:[1-9]\d{0,6}$/u.test(failure.location) ? failure.location : null } };
+      })(),
       foundation: {
         status: enumDiagnostic(memory?.status, DIAGNOSTIC_STATUS),
         foundationStatus: enumDiagnostic(memory?.foundationStatus, DIAGNOSTIC_STATUS),

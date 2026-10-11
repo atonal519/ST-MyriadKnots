@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createContext, SourceTextModule, SyntheticModule } from 'node:vm';
 import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
+import { applyPluginEnabledImmediately } from '../src/settings.js';
 import { openHelpGuide } from '../src/ui/help-guide.js';
 import { publicErrorMessage } from '../src/public-error.js';
 
@@ -48,6 +49,8 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
     return { drawer: node, body: drawerBody, summary };
   };
   const diagnostics = { starts: 0, stops: 0, marks: 0, records: [{ page: 'settings', defaultPrevented: false }] };
+  let rejectSaveSchedule = false;
+  const saveScheduleError = new Error('private settings scheduler detail');
   let apiSettingsMounts = 0, apiSettingsDisposals = 0;
   const modules = {
     './panel.html?raw': { default: '' }, './panel.css?inline': { default: '' },
@@ -60,7 +63,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
     './settings/appearance-settings.js': { createAppearanceSettings: () => ({ node: new Node() }) },
     './scroll-diagnostics.js': { createScrollDiagnostics: () => ({ start() { diagnostics.starts += 1; }, stop() { diagnostics.stops += 1; }, markQqjSwipeIntercepted() { diagnostics.marks += 1; }, snapshot: () => ({ schemaVersion: 1, records: diagnostics.records }) }) },
     './help-guide.js': { openHelpGuide },
-    '../settings.js': { applyPluginEnabledImmediately: async ({ enabled }) => ({ enabled, stale: false }) },
+    '../settings.js': { applyPluginEnabledImmediately },
     '../public-error.js': { publicErrorMessage },
   };
   const context = createContext({ console });
@@ -100,7 +103,10 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   };
   const values = { pluginEnabled: true, appearanceTheme: 'auto', fabShow: true, autoHideEnabled: false, autoHideKeepAiCount: 3 };
   const updates = [];
-  const settings = { isEnabled: () => true, get: () => values, update(value) { Object.assign(values, value); updates.push(value); return value; } };
+  const settings = { isEnabled: () => values.pluginEnabled !== false, get: () => values, update(value, options = {}) { Object.assign(values, value); updates.push(value); if (rejectSaveSchedule && options.observeSaveFailure) throw saveScheduleError; return value; } };
+  let rejectPluginDisable = false;
+  const pluginDisableError = new TypeError('private plugin start detail');
+  const pluginFailures = [];
   let fabVisible = true, dialogActive = false, dialogCancels = 0, helpDialog = null, clipboardFail = false;
   const clipboardWrites = [];
   let ledgerInjectionEnabled = false, timeChanges = 0, resolveTimeConfirm;
@@ -114,7 +120,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   let autoHideApplyStatus = null;
   let calendarChatId = foundationState.chatId, savedCalendar = null; const calendarChanges = [];
   const calendarContextProvider = () => ({ chatId: calendarChatId, calendar: savedCalendar });
-  const panel = entry.namespace.createPanel({ calendarContextProvider, onCalendarChange: async value => { calendarChanges.push(value); savedCalendar = value.calendar; }, settings, v3FoundationView, timeRuntime, memoryRuntime, peopleProfilesView, qianshiTimelineView, storageManagementView, documentRef, isSevenDaysLedgerInjectionEnabled: () => ledgerInjectionEnabled, onTimeEvolutionChange: () => { timeChanges += 1; }, navigatorRef: { clipboard: { async writeText(value) { clipboardWrites.push(value); if (clipboardFail) throw new Error('clipboard denied'); } } }, dialog: { setAppearance() {}, confirm(options) { timeConfirms.push(options); dialogActive = true; return new Promise(resolve => { resolveTimeConfirm = result => { dialogActive = false; resolve(result); }; }); }, custom(options) { helpDialog = options; dialogActive = true; return Promise.resolve(true); }, closeAll() { resolveTimeConfirm?.(false); dialogActive = false; }, hasActive: () => dialogActive, cancelTop() { dialogCancels += 1; dialogActive = false; } }, onFabShowChange: value => { fabVisible = value; }, onAutoHideChange: async value => { autoHideApplies.push(value); return autoHideApplyStatus ? { status: autoHideApplyStatus } : undefined; } });
+  const panel = entry.namespace.createPanel({ calendarContextProvider, onCalendarChange: async value => { calendarChanges.push(value); savedCalendar = value.calendar; }, settings, v3FoundationView, timeRuntime, memoryRuntime, peopleProfilesView, qianshiTimelineView, storageManagementView, documentRef, isSevenDaysLedgerInjectionEnabled: () => ledgerInjectionEnabled, onPluginEnabledChange: async value => { if (rejectPluginDisable && value === false) throw pluginDisableError; }, onPluginEnableFailure: (error, phase) => pluginFailures.push({ error, phase, settingsEnabled: settings.isEnabled() }), onTimeEvolutionChange: () => { timeChanges += 1; }, navigatorRef: { clipboard: { async writeText(value) { clipboardWrites.push(value); if (clipboardFail) throw new Error('clipboard denied'); } } }, dialog: { setAppearance() {}, confirm(options) { timeConfirms.push(options); dialogActive = true; return new Promise(resolve => { resolveTimeConfirm = result => { dialogActive = false; resolve(result); }; }); }, custom(options) { helpDialog = options; dialogActive = true; return Promise.resolve(true); }, closeAll() { resolveTimeConfirm?.(false); dialogActive = false; }, hasActive: () => dialogActive, cancelTop() { dialogCancels += 1; dialogActive = false; } }, onFabShowChange: value => { fabVisible = value; }, onAutoHideChange: async value => { autoHideApplies.push(value); return autoHideApplyStatus ? { status: autoHideApplyStatus } : undefined; } });
 
   await panel.show();
   assert.equal(diagnostics.starts, 1); assert.match(root.innerHTML, /\.body\{[^}]*touch-action:pan-y/);
@@ -127,6 +133,22 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   body.scrollTop = 39; settingsTab.fire('click');
   assert.ok(calls.some(([kind, value]) => kind === 'page' && value === 'management'));
   assert.equal(view.children[0]?.className, 'settings-page', '设置页应真实占据面板内容容器');
+  const masterInput = flatten(view).find(node => node.tag === 'input');
+  assert.ok(masterInput, '设置首开应存在总开关输入');
+  rejectPluginDisable = true; masterInput.checked = false;
+  await masterInput.fire('change');
+  assert.equal(pluginFailures.at(-1)?.error, pluginDisableError, '真实设置面板应在恢复后保留启用入口的原异常');
+  assert.equal(pluginFailures.at(-1)?.phase, 'pluginEnable');
+  assert.equal(pluginFailures.at(-1)?.settingsEnabled, true, '诊断回调只能在总开关回滚后运行');
+  assert.equal(masterInput.checked, true, '失败后面板总开关应恢复原值');
+  rejectPluginDisable = false;
+  rejectSaveSchedule = true; masterInput.checked = false;
+  await masterInput.fire('change');
+  assert.equal(pluginFailures.at(-1)?.error, saveScheduleError, '同步设置调度失败应保留真实异常');
+  assert.equal(pluginFailures.at(-1)?.phase, 'settingsSave', '同步设置调度失败应标记 settingsSave');
+  assert.equal(pluginFailures.at(-1)?.settingsEnabled, true);
+  assert.equal(masterInput.checked, true);
+  rejectSaveSchedule = false;
   assert.equal(apiSettingsDisposals, apiSettingsMounts - 1, '当前设置页保留唯一 API 进度订阅');
   assert.equal(view.children[0]?.children.some(node => node.className === 'master-switch'), true, '设置首开不得被真实 setPage 重绘清掉总开关');
   const settingsGroups = view.children[0]?.children.filter(node => node.tag === 'details');

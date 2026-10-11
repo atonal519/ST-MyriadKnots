@@ -25,6 +25,7 @@ import { createTaskRouter } from '../src/api-routing.js';
 import { createChatIdentityCoordinator, CHAT_IDENTITY_COLLECTION } from '../src/chat-identity.js';
 import { createChatSession } from '../src/chat-session.js';
 import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
+import { applyPluginEnabledImmediately } from '../src/settings.js';
 import { createTimeRuntime, createTimeStore } from '../src/v3/time-runtime.js';
 import { createPeopleWorkspaceStore, PEOPLE_WORKSPACE_RECORD_ID } from '../src/v3/people-workspace.js';
 import { memorySourceFloorIds } from '../src/v3/memory-schema.js';
@@ -5232,6 +5233,36 @@ test('已初始化聊天关闭自动维护后，新增稳定楼保持等待且�
   assert.equal(h.runtime.shouldBlockMainGeneration(), false);
 });
 
+test('已有记忆关闭并重新开启只复用已保存摘要与CSE，不重新提取', async () => {
+  const h = harness({ modernAnchors: true,
+    captureBusinessIdentity: () => ({ chatId: CHAT, hostChatId: 'host-chat', characterLocator: 'character.png', personaLocator: 'persona.png' }),
+    initialChat: [user('开始'), assistant('已有摘要楼。'), user('确认既有摘要楼。')],
+    automation: { enabled: true, batchSize: 1 },
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: '已保存的旧摘要。' } }
+      : { jsonData: { noMaterialChange: true } },
+  });
+  await h.runtime.start();
+  await h.runtime.startHistoricalRebuild();
+  await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()));
+  const before = h.runtime.getState();
+  const callsBefore = h.calls.length;
+  assert.equal(before.rememberedCount, 1);
+  assert.equal(before.floors[0].summary, '已保存的旧摘要。');
+  assert.equal(before.cseReady, true);
+
+  h.setEnabled(false);
+  await h.runtime.setEnabled(false);
+  h.setEnabled(true);
+  await h.runtime.setEnabled(true);
+  await h.runtime.start({ explicitEnable: true, targetIdentity: h.runtime.captureBusinessIdentity() });
+  const reopened = h.runtime.getState();
+  assert.equal(h.calls.length, callsBefore, '重新启用仅冷读既有 root，不重提取摘要或CSE');
+  assert.equal(reopened.rememberedCount, 1);
+  assert.equal(reopened.floors[0].summary, '已保存的旧摘要。');
+  assert.equal(reopened.cseReady, true);
+});
+
 test('runtime 的缺失或非法批次兜底为 1，首个稳定楼即可正常完成', async () => {
   for (const batchSize of [undefined, 0, 21, 1.5, 'bad']) {
     const h = harness({
@@ -7125,6 +7156,105 @@ test('新档 0 楼在首条 user 锚后初始化，并在 2 楼到达时只摘�
   assert.deepEqual(state.unregisteredCandidates, [
     { assistantSeq: 2, messageIndex: 2, reason: 'waitingNextUser' },
   ], '2 楼仍须等待下一条 user 消息，不得抢跑摘要');
+});
+
+test('真实 lifecycle 总开关启用后，唯一首个稳定楼可起步并沿实时路径续接后续新楼', async () => {
+  for (const initialChat of [
+    [assistant('AI0 已在插件关闭时出现。'), user('USER1 已在插件关闭时出现。')],
+    [user('USER0 已在插件关闭时出现。'), assistant('AI1 已在插件关闭时出现。'), user('USER2 已在插件关闭时出现。')],
+  ]) {
+    const h = harness({ initialChat, modernAnchors: true, readOnlyLifecycle: true,
+      captureBusinessIdentity: () => ({ chatId: CHAT, hostChatId: 'host-chat', characterLocator: 'character.png', personaLocator: 'persona.png' }),
+      automation: { enabled: true, batchSize: 1 },
+      utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+        ? { jsonData: { summary: '首楼自动摘要。' } }
+        : { jsonData: { noMaterialChange: true } } });
+    let enabled = false, startPromise = null;
+    const settings = { isEnabled: () => enabled, update: patch => { enabled = patch.pluginEnabled; } };
+    h.setEnabled(false);
+    await h.runtime.setEnabled(false);
+    const lifecycle = createPluginLifecycle({
+      session: { prepare: async () => ({ status: 'ready', identity: h.runtime.captureBusinessIdentity() }), invalidate() {} },
+      isEnabled: () => enabled,
+      onPrepared: ({ explicitEnable }) => { startPromise = h.runtime.start({ explicitEnable }); },
+      logger: { warn() {} },
+    });
+    assert.equal((await lifecycle.start()).status, 'disabled', '普通启动不带显式启用意图');
+    await applyPluginEnabledImmediately({ settings, enabled: true, onChange: value => { enabled = value; h.setEnabled(value); return lifecycle.setEnabled(value); } });
+    await startPromise;
+    assert.equal(h.runtime.allowsRealtimeTailFromEmpty(), true, '唯一首个稳定楼的显式启用留下实时来源证明');
+    assert.equal(h.foundationRuntime.getState().inspectedStableCount, 1, 'foundation 只确认一份稳定首候选');
+    assert.equal(h.calls.length, 0, '启用只建立实时起步授权，不回放或提取既有楼');
+
+    const nextAssistantIndex = h.context.chat.length;
+    h.context.chat.push(assistant('下一条正常回复。'));
+    h.emit('MESSAGE_RECEIVED', nextAssistantIndex);
+    await waitFor(() => h.runtime.getState().rememberedCount === 1 && h.runtime.getState().cseReady, '后开启后首个正常 AI 回复未完成首楼摘要与 CSE');
+    const reachable = await h.store.readReachable({ mode: 'projection' });
+    assert.equal(reachable.run.diagnostics.realtimeOriginV1.chatId, CHAT, 'foundation run 持久保存既有 realtimeOriginV1 合同');
+
+    h.context.chat.push(user('继续下一轮对话。'));
+    h.emit('MESSAGE_SENT', h.context.chat.length - 1);
+    await waitFor(() => h.runtime.getState().rememberedCount === 2 && h.runtime.getState().cseReady, '启用后的下一条正常 user 消息没有自动维护已稳定楼');
+    assert.equal(h.runtime.getState().floors[0].summary, '首楼自动摘要。');
+    assert.equal(h.runtime.getState().floors[1].summary, '首楼自动摘要。', 'USER3 稳定的后续 AI 楼也进入原有自动维护流水');
+
+    const followingAssistantIndex = h.context.chat.length;
+    h.context.chat.push(assistant('再下一条正常回复。'));
+    h.emit('MESSAGE_RECEIVED', followingAssistantIndex);
+    h.context.chat.push(user('确认再下一条回复。'));
+    h.emit('MESSAGE_SENT', h.context.chat.length - 1);
+    await waitFor(() => h.runtime.getState().rememberedCount === 3 && h.runtime.getState().cseReady, '启用后新稳定楼没有沿已有实时维护路径续接');
+    const calls = h.calls.length;
+    h.emit('MESSAGE_SENT', h.context.chat.length - 1); h.emit('USER_MESSAGE_RENDERED', h.context.chat.length - 1);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(h.calls.length, calls, '重复事件不得重复摘要或CSE');
+  }
+});
+
+test('首次显式启用不把多楼历史或自动维护关闭转换成模型调用授权', async () => {
+  for (const fixture of [
+    { label: '长历史', initialChat: [user('U0'), assistant('AI1'), user('U2'), assistant('AI3'), user('U4')], automation: { enabled: true, batchSize: 1 } },
+    { label: '自动维护关闭', initialChat: [assistant('AI0'), user('U1')], automation: { enabled: false, batchSize: 1 } },
+  ]) {
+    const h = harness({ ...fixture, modernAnchors: true, readOnlyLifecycle: true,
+      captureBusinessIdentity: () => ({ chatId: CHAT, hostChatId: 'host-chat', characterLocator: 'character.png', personaLocator: 'persona.png' }),
+      utility: async () => { throw new Error(`${fixture.label} 不应自动调用模型`); } });
+    await h.runtime.start({ explicitEnable: true });
+    assert.equal(h.calls.length, 0, `${fixture.label} 启用时不自动回放模型`);
+    assert.equal(h.runtime.allowsRealtimeTailFromEmpty(), false, `${fixture.label} 不得获得首楼实时起步证明`);
+    if (fixture.label === '长历史') assert.ok(h.foundationRuntime.getState().inspectedStableCount > 1);
+    h.context.chat.push(assistant('后续正常 AI 回复'));
+    h.emit('MESSAGE_RECEIVED', h.context.chat.length - 1);
+    h.context.chat.push(user('后续正常 user 锚'));
+    h.emit('MESSAGE_SENT', h.context.chat.length - 1);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(h.calls.length, 0, `${fixture.label} 普通后续消息不触发自动模型`);
+    assert.equal([...h.backend.records.keys()].some(key => key.endsWith('/v3-root')), false, `${fixture.label} 不因启用意图自动新建图`);
+  }
+});
+
+test('启用准备期间切到另一目标时保留原目标待办，返回后续接且不投到后来聊天', async () => {
+  const h = harness({ initialChat: [assistant('目标A首楼。'), user('目标A确认。')], modernAnchors: true,
+    captureBusinessIdentity: () => ({ chatId: h.context.chatMetadata.qianqianjie.chatId, hostChatId: h.context.chatId, characterLocator: 'character.png', personaLocator: 'persona.png' }),
+    readOnlyLifecycle: true, automation: { enabled: true, batchSize: 1 } });
+  const targetA = h.runtime.captureBusinessIdentity();
+  const originalChat = h.context.chat;
+  const originalMetadata = h.context.chatMetadata;
+  h.context.chatId = 'host-chat-b';
+  h.context.chatMetadata = { qianqianjie: { schemaVersion: 1, chatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' } };
+  h.context.chat = [user('B U0'), assistant('B AI1'), user('B U2'), assistant('B AI3'), user('B U4')];
+  await h.runtime.start({ explicitEnable: true, targetIdentity: targetA });
+  assert.equal(h.runtime.allowsRealtimeTailFromEmpty(), false, 'A 的启用意图不得改投到 B');
+  assert.equal([...h.backend.records.keys()].some(key => key.startsWith('chat-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/')), false, '切到 B 时不为 A 的启用请求创建 B 记录');
+
+  await h.runtime.start();
+  assert.equal(h.calls.length, 0, '普通打开 B 只读已有历史');
+  h.context.chatId = 'host-chat';
+  h.context.chatMetadata = originalMetadata;
+  h.context.chat = originalChat;
+  await h.runtime.start();
+  assert.equal(h.runtime.allowsRealtimeTailFromEmpty(), true, '回到原目标后正常准备可恢复待处理的一次启用意图');
 });
 
 test('有稳定历史的未初始化聊天只暴露继续入口；显式建档后新 user 锚自动补齐且重复事件去重', async () => {

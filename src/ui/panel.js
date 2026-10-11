@@ -42,6 +42,7 @@ export function createPanel({
   storageManagementView,
   sourcePermissionView,
   onPluginEnabledChange,
+  onPluginEnableFailure,
   onStoryClockChange,
   onAutoHideChange,
   onTimeEvolutionChange,
@@ -249,18 +250,21 @@ export function createPanel({
       enabledInput.disabled = true;
       enabledResult.textContent = desired ? '正在开启并保存…' : '正在关闭并保存…';
       enabledResult.className = 'settings-result';
+      let failurePhase = 'settingsSave';
       try {
-        const applied = await applyPluginEnabledImmediately({ settings, enabled: desired, onChange: onPluginEnabledChange });
+        const applied = await applyPluginEnabledImmediately({ settings, enabled: desired, onChange: value => { failurePhase = 'pluginEnable'; return onPluginEnabledChange?.(value); } });
         if (applied.stale) return;
         enabled = applied.enabled;
         setEnabled(desired);
         enabledResult.textContent = desired ? '千千结已开启；酒馆正在后台保存设置。' : '千千结已关闭，后台读取、AI 与召回注入均已停止；已有档案保留，酒馆正在后台保存设置。';
         enabledResult.className = 'settings-result success';
       } catch (error) {
+        onPluginEnableFailure?.(error, failurePhase);
         enabled = previous;
         enabledInput.checked = previous;
         setEnabled(previous);
-        enabledResult.textContent = `切换失败，已恢复原状态：${publicErrorMessage(error, { fallback: '设置没有保存，请重试。' })}`;
+        const fallback = failurePhase === 'settingsSave' ? '设置保存失败，请重试。' : `${desired ? '启用' : '关闭'}千千结失败，请复制状态诊断。`;
+        enabledResult.textContent = `${desired ? '启用' : '关闭'}失败，已恢复原状态：${publicErrorMessage(error, { fallback })}`;
         enabledResult.className = 'settings-result error';
       } finally {
         enabledInput.disabled = false;

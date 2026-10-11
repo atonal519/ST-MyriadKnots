@@ -478,6 +478,32 @@ test('无正文分支冲突在待核对文案与状态诊断中区分标识指�
   assert.equal(diagnostic.bindingIssue, 'duplicateMarker');
 });
 
+test('状态诊断复制按钮包含安全的身份准备与总开关原始失败，并在恢复后清除', async () => {
+  const state = { status: 'idle', pluginEnabled: false, floors: [] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  let sessionState = { status: 'error', preparationFailure: { prepareStep: 'snapshotClone', name: 'DataCloneError', code: 25, detail: 'contextCapture', location: 'src/chat-session.js:88:7', message: 'SECRET_BODY https://private.invalid/id' } };
+  let pluginDiagnostic = { phase: 'pluginEnable', failure: { name: 'TypeError', code: 'CHAT_SESSION_NOT_READY', httpStatus: 503, prepareStep: 'identityDirectory', detail: 'contextCapture', location: 'index.js:92:4', message: 'SECRET_TOKEN' } };
+  let copied = '';
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, documentRef, sessionStateProvider: () => sessionState,
+    pluginDiagnosticProvider: () => pluginDiagnostic,
+    navigatorRef: { clipboard: { writeText: async value => { copied = value; } } } });
+  view.mount(container);
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  await new Promise(resolve => setImmediate(resolve));
+  let diagnostic = JSON.parse(copied);
+  assert.deepEqual(diagnostic.identity.preparationFailure, { present: true, name: 'DataCloneError', code: 25, prepareStep: 'snapshotClone', detail: null, location: 'src/chat-session.js:88:7' });
+  assert.deepEqual(diagnostic.pluginLifecycle, { phase: 'pluginEnable', failure: { present: true, name: 'TypeError', code: 'CHAT_SESSION_NOT_READY', httpStatus: 503, prepareStep: 'identityDirectory', detail: null, location: 'index.js:92:4' } });
+  assert.doesNotMatch(copied, /SECRET_BODY|SECRET_TOKEN|private\.invalid/u);
+  sessionState = { status: 'ready' }; pluginDiagnostic = null;
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  await new Promise(resolve => setImmediate(resolve));
+  diagnostic = JSON.parse(copied);
+  assert.deepEqual(diagnostic.identity.preparationFailure, { present: false });
+  assert.deepEqual(diagnostic.pluginLifecycle, { phase: 'unknown', failure: { present: false } });
+  view.deactivate();
+});
+
 test('完整诊断必须显式确认，clipboard 不可用时显示可选择文本框', async () => {
   let confirmed = false;
   const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
@@ -577,7 +603,7 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
   let diagnostic = JSON.parse(fallback.value);
   assert.equal(diagnostic.formatVersion, 2); assert.equal(diagnostic.pluginVersion, '0.1.9-test'); assert.match(diagnostic.capturedAt, /^\d{4}-/);
   assert.deepEqual(diagnostic.backend, backendState);
-  assert.deepEqual(diagnostic.identity, { status: 'preparing', identityPresent: true, error: { present: true, name: 'Error', code: 'QQJ_CHAT_BINDING_CONFLICT', httpStatus: 409 } });
+  assert.deepEqual(diagnostic.identity, { status: 'preparing', identityPresent: true, error: { present: true, name: 'Error', code: 'QQJ_CHAT_BINDING_CONFLICT', httpStatus: 409 }, preparationFailure: { present: false } });
   assert.equal(diagnostic.foundation.chatIdPresent, true); assert.equal(diagnostic.foundation.headCheckpointPresent, true); assert.equal(diagnostic.foundation.activeRun.phase, 'capturing');
   assert.deepEqual(diagnostic.foundation.lastError, { present: true });
   assert.equal(diagnostic.memory.activeMemoryWork.kind, 'auto'); assert.equal(diagnostic.memory.activeMemoryWork.phase, 'reconciling');

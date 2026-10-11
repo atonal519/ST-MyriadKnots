@@ -51,6 +51,74 @@ test('禁用立即 invalidate 全链；重新启用只准备身份与刷新 UI',
   assert.deepEqual(calls, ['api:abort', 'session:invalidate', 'ui:true', 'prepare', 'refresh']);
 });
 
+test('总开关启用意图绑定准备返回的目标，页面准备更新不能丢掉该意图', async () => {
+  const handlers = new Map();
+  let enabled = false, prepareCount = 0, enableContinuation = null;
+  const first = deferred(), second = deferred();
+  const lifecycle = createPluginLifecycle({
+    session: { prepare: () => (++prepareCount === 1 ? first.promise : second.promise), invalidate() {} },
+    isEnabled: () => enabled,
+    onPrepared: input => { if (input.explicitEnable) enableContinuation = input; },
+    logger: { warn() {} },
+  });
+  lifecycle.bind({ eventSource: { on: (name, handler) => handlers.set(name, handler) }, eventTypes: { CHAT_CHANGED: 'chat' } });
+  enabled = true;
+  const enabling = lifecycle.setEnabled(true);
+  await new Promise(resolve => setImmediate(resolve));
+  handlers.get('chat')();
+  await new Promise(resolve => setImmediate(resolve));
+  const originalIdentity = { chatId: 'target-a', hostChatId: 'host-a', characterLocator: 'char-a', personaLocator: 'persona-a' };
+  first.resolve({ status: 'ready', identity: originalIdentity });
+  await enabling;
+  assert.equal(enableContinuation?.result.identity, originalIdentity, '启用继续使用准备时已捕获的目标身份');
+  assert.equal(enableContinuation.explicitEnable, true, '页面变化不能抹去显式总开关意图');
+  second.resolve({ status: 'ready', identity: { chatId: 'target-b', hostChatId: 'host-b' } });
+  await waitFor(() => prepareCount === 2, '切页后的普通准备未启动');
+});
+
+test('启用界面刷新失败并回滚后，迟到的显式准备成功不会清除主启用错误', async () => {
+  const continuation = deferred(), diagnostics = [];
+  let enabled = false;
+  const lifecycle = createPluginLifecycle({
+    session: { prepare: async () => ({ status: 'ready', identity: { chatId: 'target-a' } }), invalidate() {} },
+    isEnabled: () => enabled,
+    getUi: () => ({ refresh: async () => { throw new TypeError('mobile refresh failed'); } }),
+    onPrepared: () => continuation.promise,
+    onDiagnostic: (error, phase) => diagnostics.push({ error, phase }),
+  });
+  enabled = true;
+  await assert.rejects(lifecycle.setEnabled(true), /mobile refresh failed/u);
+  enabled = false;
+  await lifecycle.setEnabled(false);
+  continuation.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(diagnostics.some(value => value.error === null), false, '迟到的显式成功不清除 panel 记录的主启用失败');
+});
+
+test('身份 snapshot 前置复制失败保留原始错误类型、步骤与安全插件位置', async () => {
+  const context = { characterId: 0, groupId: null, chatId: 'host-chat', characters: [{ avatar: 'char.png' }], userAvatar: 'persona.png',
+    chatMetadata: { qianqianjie: { schemaVersion: 1, chatId: '123e4567-e89b-42d3-a456-426614174000' } }, chat: [() => 'cannot clone'] };
+  const session = createChatSession({ contextProvider: () => context,
+    identityCoordinator: { prepare: async () => context.chatMetadata.qianqianjie.chatId },
+    captureTaskInputs: ({ raw }) => structuredClone(raw.chat) });
+  await assert.rejects(session.prepare(), error => error.name === 'DataCloneError');
+  const state = session.getState();
+  assert.equal(state.status, 'error', 'preparing 前的拒绝也进入可复制诊断状态');
+  assert.equal(state.preparationFailure.prepareStep, 'snapshotClone');
+  assert.equal(state.preparationFailure.name, 'DataCloneError');
+  assert.equal(state.preparationFailure.code, 25);
+  assert.match(state.preparationFailure.location, /^src\/chat-session\.js:/u);
+  assert.doesNotMatch(JSON.stringify(state), /cannot clone|host-chat|123e4567|https?:/u);
+
+  const cause = Object.assign(new TypeError('PRIVATE_CHAT https://example.test/?token=secret'), { code: 'CHAT_SESSION_NOT_READY' });
+  const brokenContext = createChatSession({ contextProvider: () => { throw cause; } });
+  await assert.rejects(brokenContext.prepare());
+  const broken = brokenContext.getState();
+  assert.equal(broken.preparationFailure.name, 'TypeError', '包装器不能覆盖原始 contextProvider 错误类型');
+  assert.equal(broken.preparationFailure.code, 'CHAT_SESSION_NOT_READY');
+  assert.doesNotMatch(JSON.stringify(broken), /PRIVATE_CHAT|secret|https?:/u);
+});
+
 test('关闭功能时角色改名仍只迁移身份绑定，不启动准备或后台续接', async () => {
   const handlers = new Map();
   const calls = [];

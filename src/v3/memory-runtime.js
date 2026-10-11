@@ -304,6 +304,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   const grantedEventKeys = new Set();
   let suffixGenerationContext = null;
   let emptyRealtimeOrigin = null;
+  const pendingExplicitInitializations = new Map();
+  const explicitInitializationKey = identity => JSON.stringify(['chatId', 'hostChatId', 'characterLocator', 'personaLocator'].map(key => String(identity?.[key] ?? '')));
   let coverage = unknownCoverage(0);
   let lastAutomaticInputKey = null;
   let lastNoticeKey = null;
@@ -631,7 +633,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
   };
   const cancelEarlyStabilization = reason => { try { foundationRuntime.cancelEarlyStabilization?.(reason); } catch { /* foundation cancellation is best-effort */ } };
-  const invalidate = ({ deletedChatId = null } = {}) => { if (deletedChatId) clearChatFailures(deletedChatId); releaseUnstartedQianshiPlans(); cancelEarlyStabilization('memoryInvalidated'); cancelAutomation('memoryInvalidated'); qianshiHistoryRun?.controller.abort('memoryInvalidated'); qianshiHistoryRun = null; qianshiHistoryPlan = null; qianshiRejudgePlan = null; qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '' }); qianshiCandidateIndex?.invalidate(); epoch += 1; active?.controller.abort('memoryInvalidated'); active = null; workRun = null; cseRebuildPlan = null; reachable = null; memorySnapshotStatus = 'unavailable'; memorySyncStatus = 'idle'; memorySyncError = null; backgroundSync = null; backgroundSyncKey = null; timeFallbackByFloor = new Map(); failureScope = null; coverage = unknownCoverage(0); emptyRealtimeOrigin = null; formalGenerationActive = false; generationArm = null; generationLifecycle = null; stoppedGenerationFinal = null; observedHostChatLength = 0; establishedMemoryChatId = null; grantedEventKeys.clear(); suffixGenerationContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; historicalAggregate = false; sessionCandidates.clear(); pendingResults.clear(); cseRuntime.invalidate(); notify(); };
+  const invalidate = ({ deletedChatId = null } = {}) => { if (deletedChatId) clearChatFailures(deletedChatId); releaseUnstartedQianshiPlans(); cancelEarlyStabilization('memoryInvalidated'); cancelAutomation('memoryInvalidated'); qianshiHistoryRun?.controller.abort('memoryInvalidated'); qianshiHistoryRun = null; qianshiHistoryPlan = null; qianshiRejudgePlan = null; qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '' }); qianshiCandidateIndex?.invalidate(); epoch += 1; active?.controller.abort('memoryInvalidated'); active = null; workRun = null; cseRebuildPlan = null; reachable = null; memorySnapshotStatus = 'unavailable'; memorySyncStatus = 'idle'; memorySyncError = null; backgroundSync = null; backgroundSyncKey = null; timeFallbackByFloor = new Map(); failureScope = null; coverage = unknownCoverage(0); emptyRealtimeOrigin = null; pendingExplicitInitializations.clear(); formalGenerationActive = false; generationArm = null; generationLifecycle = null; stoppedGenerationFinal = null; observedHostChatLength = 0; establishedMemoryChatId = null; grantedEventKeys.clear(); suffixGenerationContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; historicalAggregate = false; sessionCandidates.clear(); pendingResults.clear(); cseRuntime.invalidate(); notify(); };
   cseRuntime.subscribe(state => notify(state));
   function runManualWork(reason, task) {
     if (workRun) return Promise.resolve(getState());
@@ -2578,9 +2580,13 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       || selected.selectedSwipeIndex !== lifecycle.startSelectedSwipeIndex;
     return changed ? Object.freeze({ messageIndex: index }) : null;
   }
-  function grantEventCatchup(reason, eventId) {
+  function grantEventCatchup(reason, eventId, eventIdentity = null) {
     if (!eventId || grantedEventKeys.has(eventId) || !enabled() || !automation().enabled || !hasExplicitInitializationIntent() || lastAutoRun?.status === 'paused') return false;
-    const chatId = reachable?.root?.chatId ?? establishedMemoryChatId;
+    const pendingOrigin = !reachable?.root && emptyRealtimeOrigin?.explicitEnable
+      && eventIdentity?.chatId === emptyRealtimeOrigin.chatId
+      && eventIdentity?.hostChatId === emptyRealtimeOrigin.hostChatId
+      ? emptyRealtimeOrigin : null;
+    const chatId = reachable?.root?.chatId ?? establishedMemoryChatId ?? pendingOrigin?.chatId;
     if (!chatId) return false;
     grantedEventKeys.add(eventId);
     while (grantedEventKeys.size > 24) grantedEventKeys.delete(grantedEventKeys.values().next().value);
@@ -2599,7 +2605,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const slot = completedGenerationSlot(lifecycle, snapshot, messageIndex);
     if (!slot) return false;
     generationLifecycle = Object.freeze({ ...lifecycle, completed: true, messageIndex: slot.messageIndex });
-    return grantEventCatchup(reason, lifecycle.id);
+    return grantEventCatchup(reason, lifecycle.id, generationIdentity(snapshot));
   }
   const eventMessageIndex = (name, args) => {
     if (['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED'].includes(name)) return Number.isSafeInteger(args[0]) ? args[0] : null;
@@ -2860,7 +2866,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           if (name === 'MESSAGE_SWIPED') suffixGenerationContext = Object.freeze({ ...preservedSuffix, kind: 'swipe', stopped: false });
           else if (name === 'MESSAGE_SENT') {
             suffixGenerationContext = Object.freeze({ ...preservedSuffix, kind: 'normal', stopped: false });
-            grantEventCatchup('newUserAnchor', `user:${preservedSuffix.chatId}:${messageIndex}:${eventSnapshot?.chat?.[messageIndex]?.send_date ?? ''}`);
+            grantEventCatchup('newUserAnchor', `user:${preservedSuffix.chatId}:${messageIndex}:${eventSnapshot?.chat?.[messageIndex]?.send_date ?? ''}`, generationIdentity(eventSnapshot));
           } else if (name === 'MESSAGE_RECEIVED') {
             suffixGenerationContext = null;
             completeGeneration('generationCompleted', messageIndex);
@@ -2881,15 +2887,16 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         })();
         if (sameEarlyFinal) {
           generationArm = null;
+          const eventIdentity = generationIdentity(hostAdapter.snapshot());
           if (!completeGeneration('generationCompleted', messageIndex)) {
-            grantEventCatchup('newAssistant', `assistant:${generationIdentity(hostAdapter.snapshot()).chatId}:${messageIndex}:${observedHostChatLength}`);
+            grantEventCatchup('newAssistant', `assistant:${eventIdentity.chatId}:${messageIndex}:${observedHostChatLength}`, eventIdentity);
           }
           return;
         }
         if (name === 'MESSAGE_SENT') {
           stoppedGenerationFinal = null;
           const key = `user:${generationIdentity(eventSnapshot).chatId}:${messageIndex}:${eventSnapshot?.chat?.[messageIndex]?.send_date ?? ''}`;
-          grantEventCatchup('newUserAnchor', key);
+          grantEventCatchup('newUserAnchor', key, generationIdentity(eventSnapshot));
           observedHostChatLength = Math.max(observedHostChatLength, eventSnapshot?.chat?.length ?? 0);
           awaitingFoundation = true;
           markMemorySyncing();
@@ -2915,10 +2922,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             && isAssistantSlot(eventSnapshot.chat?.[appendedIndex])
             && meaningfulText(selectAssistantMessage(eventSnapshot.chat?.[appendedIndex])?.rawContent);
           if (!lifecycleCompleted && appended) {
-            grantEventCatchup('newAssistant', `assistant:${generationIdentity(eventSnapshot).chatId}:${appendedIndex}:${observedHostChatLength}`);
+            grantEventCatchup('newAssistant', `assistant:${generationIdentity(eventSnapshot).chatId}:${appendedIndex}:${observedHostChatLength}`, generationIdentity(eventSnapshot));
           } else if (!lifecycleCompleted && ['swipe', 'regenerate'].includes(finalType)) {
             const selected = Number.isSafeInteger(appendedIndex) ? selectAssistantMessage(eventSnapshot.chat?.[appendedIndex]) : null;
-            if (selected && meaningfulText(selected.rawContent)) grantEventCatchup('trustedGenerationFinal', `final:${finalType}:${appendedIndex}:${selected.swipeId ?? ''}:${selected.selectedSwipeIndex ?? ''}:${selected.rawContent}`);
+            if (selected && meaningfulText(selected.rawContent)) grantEventCatchup('trustedGenerationFinal', `final:${finalType}:${appendedIndex}:${selected.swipeId ?? ''}:${selected.selectedSwipeIndex ?? ''}:${selected.rawContent}`, generationIdentity(eventSnapshot));
           }
           observedHostChatLength = Math.max(observedHostChatLength, eventSnapshot.chat?.length ?? 0);
           awaitingFoundation = true;
@@ -2970,9 +2977,29 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
     bound = true; return true;
   }
-  async function start() {
+  async function start({ explicitEnable = false, targetIdentity = null } = {}) {
     if (!enabled()) return notify();
+    if (explicitEnable) {
+      const target = targetIdentity ?? captureTargetIdentity();
+      if (target?.chatId && target?.hostChatId) pendingExplicitInitializations.set(explicitInitializationKey(target), target);
+    }
+    const currentIdentity = captureTargetIdentity();
+    const explicitTarget = [...pendingExplicitInitializations.values()].find(target => sameTargetIdentity(target, currentIdentity));
+    if (pendingExplicitInitializations.size && !explicitTarget && explicitEnable) return notify();
     await refreshStatus({ preferCached: false });
+    if (explicitTarget && !sameTargetIdentity(explicitTarget, captureTargetIdentity())) return notify();
+    if (explicitTarget && automation().enabled && !reachable?.root) {
+      const foundation = foundationRuntime.getState();
+      const firstFloor = foundation?.unregisteredCandidates?.some(candidate => candidate.assistantSeq === 1);
+      if (foundation?.status === 'uninitialized' && foundation.inspectedStableCount === 1 && firstFloor
+        && foundationRuntime.authorizeRealtimeOrigin?.() === true) {
+        if (explicitTarget.chatId) {
+          emptyRealtimeOrigin = Object.freeze({ chatId: explicitTarget.chatId, hostChatId: explicitTarget.hostChatId, explicitEnable: true, narrativeGeneration: null });
+          coverage = emptyCaughtUpCoverage();
+        }
+      }
+    }
+    if (explicitTarget) pendingExplicitInitializations.delete(explicitInitializationKey(explicitTarget));
     const initialSettlement = backgroundSync;
     if (initialSettlement) await initialSettlement;
     const state = getState();

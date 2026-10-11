@@ -6,6 +6,7 @@ export function createPluginLifecycle({
   isEnabled = true,
   getUi = () => null,
   onPrepared = null,
+  onDiagnostic = null,
   logger = console,
 } = {}) {
   if (typeof session?.prepare !== 'function' || typeof session?.invalidate !== 'function') {
@@ -21,16 +22,20 @@ export function createPluginLifecycle({
 
   const prepareCurrent = mine => mine === prepareEpoch && enabled();
 
-  function continuePrepared(result, mine) {
-    if (result?.status !== 'ready' || !result.identity || !prepareCurrent(mine) || typeof onPrepared !== 'function') return;
+  function continuePrepared(result, mine, explicitEnable = false) {
+    if (result?.status !== 'ready' || !result.identity || !(explicitEnable ? enabled() : prepareCurrent(mine)) || typeof onPrepared !== 'function') return;
     const isCurrent = () => prepareCurrent(mine);
     let continuation;
-    try { continuation = onPrepared({ result, isCurrent }); }
+    try { continuation = onPrepared({ result, isCurrent, explicitEnable }); }
     catch (error) {
+      try { onDiagnostic?.(error, explicitEnable ? 'pluginEnable' : 'identityPrepare'); } catch {}
       if (isCurrent()) logger?.warn?.('[qianqianjie] 身份成功后的后台加载失败', error);
       return;
     }
-    void Promise.resolve(continuation).catch(error => {
+    void Promise.resolve(continuation).then(() => {
+      if (isCurrent() && !explicitEnable) { try { onDiagnostic?.(null, 'identityPrepare'); } catch {} }
+    }).catch(error => {
+      try { onDiagnostic?.(error, explicitEnable ? 'pluginEnable' : 'identityPrepare'); } catch {}
       if (isCurrent()) logger?.warn?.('[qianqianjie] 身份成功后的后台加载失败', error);
     });
   }
@@ -46,13 +51,18 @@ export function createPluginLifecycle({
     if (firstError) throw firstError;
   }
 
-  async function prepare({ refresh = true } = {}) {
+  async function prepare({ refresh = true, explicitEnable = false } = {}) {
     const mine = ++prepareEpoch;
     if (!enabled()) return { status: 'disabled' };
-    const result = await session.prepare();
+    let result;
+    try { result = await session.prepare(); }
+    catch (error) {
+      try { onDiagnostic?.(error, explicitEnable ? 'pluginEnable' : 'identityPrepare'); } catch {}
+      throw error;
+    }
     if (!enabled()) return { status: 'disabled' };
-    if (!prepareCurrent(mine)) return result;
-    continuePrepared(result, mine);
+    if (!enabled() || (!explicitEnable && !prepareCurrent(mine))) return result;
+    continuePrepared(result, mine, explicitEnable);
     if (refresh) await getUi()?.refresh?.();
     return result;
   }
@@ -154,7 +164,7 @@ export function createPluginLifecycle({
   const gate = createPluginGate({
     initiallyEnabled: enabled(),
     invalidate,
-    run: () => prepare(),
+    run: () => prepare({ explicitEnable: true }),
     setUiEnabled: value => getUi()?.setEnabled?.(value),
     disabledState: () => ({ status: 'disabled' }),
   });

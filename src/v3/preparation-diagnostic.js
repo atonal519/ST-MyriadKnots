@@ -24,7 +24,7 @@ export function normalizePreparationStep(value) {
 
 export function markPreparationFailure(error, step) {
   if ((typeof error === 'object' && error !== null) || typeof error === 'function') {
-    failureSteps.set(error, normalizePreparationStep(step) ?? 'extractorHandoff');
+    if (!failureSteps.has(error)) failureSteps.set(error, normalizePreparationStep(step) ?? 'extractorHandoff');
   }
   return error;
 }
@@ -69,10 +69,12 @@ function technicalDetail(error, name, code) {
 export function preparationFailureDiagnostic(error, fallbackStep = null) {
   const name = safeErrorName(error?.name);
   const code = safeErrorCode(error?.code);
+  const status = error?.httpStatus ?? error?.status;
   return Object.freeze({
     prepareStep: preparationStepFor(error) ?? normalizePreparationStep(fallbackStep),
     name,
     code,
+    httpStatus: Number.isSafeInteger(status) && status >= 100 && status <= 599 ? status : null,
     detail: technicalDetail(error, name, code),
     location: safeErrorLocation(error?.stack),
   });
@@ -85,6 +87,7 @@ export function storedPreparationDiagnostic(value) {
   const name = safeErrorName(value?.name) ?? legacyName;
   const numericCode = typeof value?.code === 'string' && /^-?\d{1,16}$/u.test(value.code) && Number.isSafeInteger(Number(value.code)) ? Number(value.code) : value?.code;
   const code = legacyName ? null : safeErrorCode(numericCode);
+  const status = value?.httpStatus ?? value?.status;
   const detail = typeof value?.detail === 'string' && [
     'Graphology 检测到重复图边。',
     '结构化复制失败。',
@@ -96,5 +99,6 @@ export function storedPreparationDiagnostic(value) {
     && /^(?:src\/[A-Za-z0-9_./-]+\.js|index\.js|dist\/qqj-app\.js):[1-9]\d{0,6}:[1-9]\d{0,6}$/u.test(value.location)
     ? value.location
     : null;
-  return Object.freeze({ prepareStep: normalizePreparationStep(value?.prepareStep), name, code, detail, location });
+  return Object.freeze({ prepareStep: normalizePreparationStep(value?.prepareStep), name, code,
+    httpStatus: Number.isSafeInteger(status) && status >= 100 && status <= 599 ? status : null, detail, location });
 }

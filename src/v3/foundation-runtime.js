@@ -1144,7 +1144,7 @@ export function createFoundationRuntime({
     const indexKeys = indexes.map(index => store.recordKey(index));
     const floorIds = floors.map(floor => floor.id);
     const priorRealtimeOrigin = realtimeOriginFromReachable(cache);
-    const carriesRealtimeOrigin = ['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'earlyAssistantStarted'].includes(operation.reason) && !identityChanged
+    const carriesRealtimeOrigin = ['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'earlyAssistantStarted'].includes(operation.reason)
       && (emptyRealtimeObservation?.chatId === operation.chatId || priorRealtimeOrigin !== null);
     const realtimeOrigin = carriesRealtimeOrigin ? {
       chatId: operation.chatId,
@@ -1502,6 +1502,14 @@ export function createFoundationRuntime({
       return true;
     };
   }
+  function authorizeRealtimeOrigin() {
+    if (cache?.root || inspectedStableCount !== 1) return false;
+    try {
+      const captured = capture();
+      emptyRealtimeObservation = Object.freeze({ chatId: captured.identity.chatId });
+      return true;
+    } catch { return false; }
+  }
   async function confirmConsecutiveAssistants(scope) {
     if (!enabled()) return publish('disabled');
     if (activeOperation) { await activeOperation.promise; return confirmConsecutiveAssistants(scope); }
@@ -1533,7 +1541,7 @@ export function createFoundationRuntime({
     cancelEarlyStabilization,
     confirmLatest: () => pending ? reconcile('manualConfirm', { confirmLatest: true }) : Promise.resolve(publish('ready')),
     confirmConsecutiveAssistants,
-    invalidate, setEnabled, adoptReachable, holdExtractionConfirmation, getState: () => publicState,
+    invalidate, setEnabled, adoptReachable, holdExtractionConfirmation, authorizeRealtimeOrigin, getState: () => publicState,
     getPendingCandidate: () => pending,
     getReachable: () => cache,
     subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('V3 foundation listener 必须是函数'); subscribers.add(listener); return () => subscribers.delete(listener); },

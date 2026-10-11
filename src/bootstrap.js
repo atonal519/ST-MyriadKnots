@@ -32,6 +32,8 @@ export function bootstrap({
   sessionStateProvider,
   prepareSession,
   backendDiagnosticProvider,
+  pluginDiagnosticProvider,
+  onPluginEnableFailure,
   pluginVersion,
   inlineRenderer,
   sourcePermissionViewFactory = createSourcePermissionView,
@@ -55,7 +57,7 @@ export function bootstrap({
   let panel, fab;
   const dialog = dialogFactory({ documentRef, $: globalThis.jQuery ?? globalThis.$, subscribeContextChange: subscribeDialogContextChange });
   if (dialog?.host) (documentRef.documentElement ?? documentRef.body).append(dialog.host);
-  const foundationView = v3FoundationViewFactory({ runtime: v3FoundationRuntime, recallRuntime: v3RecallRuntime, vectorRuntime: vectorIndex, peopleRuntime: peopleWorkspaceRuntime, timeRuntime, memoryManagement: chatMemoryManagement, sessionStateProvider, backendDiagnosticProvider, pluginVersion, uiDiagnosticProvider: () => panel?.getUiDiagnostic?.() ?? '{}', documentRef, confirmImpl: options => dialog.confirm(options), chooseImpl: options => dialog.choose?.(options) ?? null, infoImpl: options => dialog.info(options), customImpl: options => dialog.custom(options) });
+  const foundationView = v3FoundationViewFactory({ runtime: v3FoundationRuntime, recallRuntime: v3RecallRuntime, vectorRuntime: vectorIndex, peopleRuntime: peopleWorkspaceRuntime, timeRuntime, memoryManagement: chatMemoryManagement, sessionStateProvider, backendDiagnosticProvider, pluginDiagnosticProvider, pluginVersion, uiDiagnosticProvider: () => panel?.getUiDiagnostic?.() ?? '{}', documentRef, confirmImpl: options => dialog.confirm(options), chooseImpl: options => dialog.choose?.(options) ?? null, infoImpl: options => dialog.info(options), customImpl: options => dialog.custom(options) });
   const peopleProfilesView = peopleProfilesViewFactory({ runtime: peopleWorkspaceRuntime, sessionStateProvider, prepareSession, documentRef, dialog });
   const qianshiTimelineView = qianshiTimelineViewFactory({ runtime: v3FoundationRuntime, documentRef, dialog });
   const storageManagementView = storageManagementViewFactory({ manager: storageManagement, documentRef, confirmImpl: options => dialog.confirm(options) });
@@ -89,6 +91,7 @@ export function bootstrap({
     storageManagementView,
     sourcePermissionView,
     onPluginEnabledChange,
+    onPluginEnableFailure,
     onStoryClockChange,
     onAutoHideChange,
     onTimeEvolutionChange,
