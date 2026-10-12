@@ -343,7 +343,6 @@ export function createChatMemoryManagement({
       const reachable = foundationRuntime?.getReachable?.();
       preserveMigrationPrefix = reachable?.root?.chatId === identity.chatId && Boolean(reachable.migrationDescriptor);
       if (busy()) throw errorWith('QQJ_REBUILD_BUSY', '当前记忆管理或生成任务仍在执行，请稍候再重构。');
-      if (!pending && !provisionalIdentity && !preserveMigrationPrefix && inCurrentHost(identity)) session.suspend(identity.chatId);
     } catch (error) { return Promise.reject(error); }
     const operation = { identity, hostChatId: identity.hostChatId, chatId: identity.chatId, taskControl: null, taskState: null, unsubscribeTask: null, promise: null };
     rebuilding = operation; notify();

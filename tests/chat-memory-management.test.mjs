@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createChatMemoryManagement, CHAT_RECALL_RECEIPT_KEY } from '../src/chat-memory-management.js';
 import { createChatSession } from '../src/chat-session.js';
+import { createChatIdentityCoordinator } from '../src/chat-identity.js';
 import { MESSAGE_FLOOR_ANCHOR_KEY } from '../src/v3/message-floor-anchor.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
 import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
@@ -202,6 +203,105 @@ test('迁移档完全重构保留冻结图和宿主身份，历史任务在原�
   assert.deepEqual(after, before, '不删除迁移归档图中的root、楼或descriptor');
   assert.equal(f.calls.some(call => call[0] === 'remove' || call[0] === 'list'), false);
   assert.equal(f.calls.some(call => call[0] === 'suspend'), false);
+});
+
+test('原生与Luker真实session重构只暂停一次并完成删除、历史任务和身份恢复', async () => {
+  for (const hostName of ['SillyTavern', 'Luker']) {
+    const oldChatId = hostName === 'SillyTavern' ? CHAT_ID : OTHER_ID;
+    const rebuiltChatId = hostName === 'SillyTavern' ? '423e4567-e89b-42d3-a456-426614174001' : '523e4567-e89b-42d3-a456-426614174002';
+    const context = {
+      chatId: `synthetic-${hostName}-chat`, characterId: 0, characterAvatar: 'synthetic-character.png', userAvatar: 'synthetic-persona.png',
+      name1: '虚构用户', name2: '虚构角色', characters: [{ name: '虚构角色', avatar: 'synthetic-character.png', data: {} }],
+      chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: oldChatId }, otherPlugin: { retained: true } },
+      chat: [{ is_user: true, is_system: false, mes: '中性测试用户消息' }, { is_user: false, is_system: false, mes: '中性测试回复' }],
+      getRequestHeaders: () => ({ 'x-test-host': hostName }),
+      async saveChatMetadata() { return true; },
+    };
+    let persisted = [{ chat_metadata: structuredClone(context.chatMetadata) }, ...structuredClone(context.chat)];
+    const records = new Map();
+    const backendCalls = [], sessionCalls = [], taskCalls = [], hostCalls = [];
+    const missing = () => Object.assign(new Error('synthetic record missing'), { status: 404 });
+    const client = {
+      async get(collection, recordId) {
+        backendCalls.push(['get', collection, recordId]);
+        const value = records.get(`${collection}/${recordId}`);
+        if (!value) throw missing();
+        return structuredClone(value);
+      },
+      async put(collection, recordId, data, expectedRevision) {
+        const key = `${collection}/${recordId}`, previous = records.get(key);
+        if ((previous?.revision ?? 0) !== expectedRevision) throw Object.assign(new Error('synthetic CAS conflict'), { status: 409 });
+        const envelope = { recordId, revision: expectedRevision + 1, data: structuredClone(data) };
+        records.set(key, envelope); return structuredClone(envelope);
+      },
+      async list(collection) {
+        backendCalls.push(['list', collection]);
+        return [...records.entries()].filter(([key]) => key.startsWith(`${collection}/`)).map(([, value]) => structuredClone(value));
+      },
+      async remove(collection, recordId, revision) {
+        backendCalls.push(['remove', collection, recordId, revision]);
+        const key = `${collection}/${recordId}`, value = records.get(key);
+        if (!value) throw missing();
+        assert.equal(value.revision, revision);
+        records.delete(key);
+      },
+    };
+    const globalRef = { [hostName]: { getContext: () => context } };
+    const hostAdapter = createHostAdapter({ globalRef });
+    assert.equal(hostAdapter.snapshot().source, hostName);
+    const coordinator = createChatIdentityCoordinator({ client, now: () => new Date('2026-10-12T00:00:00.000Z') });
+    const realSession = createChatSession({ contextProvider: () => context, identityCoordinator: coordinator });
+    const session = {
+      async prepare(...args) { const value = await realSession.prepare(...args); sessionCalls.push(['prepare', realSession.getState().status]); return value; },
+      identity(...args) { return realSession.identity(...args); },
+      suspend(...args) { sessionCalls.push(['suspend', realSession.getState().status]); return realSession.suspend(...args); },
+      resume(...args) { const value = realSession.resume(...args); sessionCalls.push(['resume', realSession.getState().status]); return value; },
+      getState: realSession.getState,
+    };
+    const initial = await session.prepare();
+    assert.equal(initial.status, 'ready');
+    assert.equal(initial.identity.chatId, oldChatId);
+    records.set(`chat-${oldChatId}/v3-root`, { recordId: 'v3-root', revision: 1, data: { chatId: oldChatId } });
+    records.set(`chat-${oldChatId}/v3-people-workspace`, { recordId: 'v3-people-workspace', revision: 1, data: { chatId: oldChatId } });
+    const fetchImpl = async (url, request) => {
+      const body = JSON.parse(request.body); hostCalls.push([url, body.file_name]);
+      if (url.endsWith('/save')) {
+        persisted = structuredClone(body.chat);
+        return { ok: true, json: async () => ({}) };
+      }
+      return { ok: true, json: async () => structuredClone(persisted) };
+    };
+    const inertRuntime = { getState: () => ({}), getReachable: () => null, invalidate() {} };
+    const manager = createChatMemoryManagement({
+      client, session, hostAdapter, foundationRuntime: inertRuntime,
+      memoryRuntime: { ...inertRuntime, async startHistoricalRebuild() {} },
+      recallRuntime: { ...inertRuntime, clearCurrent() {} }, peopleRuntime: inertRuntime,
+      timeRuntime: { async stop() {}, async authorizeHistory() {} }, autoHideController: { async stop() {} },
+      fetchImpl, isMainGenerationActive: () => false, logger: { warn() {} },
+      freshUuid: () => rebuiltChatId,
+      createHistoricalRebuild: async options => {
+        taskCalls.push({ chatId: options.identity.chatId, host: hostName, sourceCount: options.sourceContext ? 1 : 0 });
+        persisted[0].chat_metadata.qianqianjie = { schemaVersion: 2, chatId: rebuiltChatId };
+        return { rebuildStatus: 'caughtUp', chatId: rebuiltChatId };
+      },
+    });
+    const result = await manager.fullRebuild(oldChatId);
+    assert.equal(result.chatId, rebuiltChatId);
+    assert.equal(result.rebuildStatus, 'caughtUp');
+    assert.deepEqual(sessionCalls.filter(([method]) => method === 'suspend'), [['suspend', 'ready']], `${hostName}只从ready状态暂停一次`);
+    assert.equal(sessionCalls.filter(([method]) => method === 'resume').length, 1, `${hostName}清理成功后恢复原身份生命周期`);
+    assert.equal(taskCalls.length, 1, `${hostName}删除成功后进入历史任务`);
+    assert.ok(backendCalls.some(([method, collection]) => method === 'list' && collection === `chat-${oldChatId}`));
+    assert.ok(backendCalls.some(([method, collection, recordId]) => method === 'remove' && collection === `chat-${oldChatId}` && recordId === 'v3-root'));
+    assert.equal(records.has(`chat-${oldChatId}/v3-root`), false);
+    assert.equal(persisted[0].chat_metadata.qianqianjie.chatId, rebuiltChatId);
+    assert.equal(context.chatMetadata.qianqianjie.chatId, rebuiltChatId);
+    assert.equal(realSession.getState().status, 'ready');
+    assert.equal(session.identity().chatId, rebuiltChatId);
+    assert.equal(manager.getState().status, 'idle');
+    assert.equal(manager.getState().error, null);
+    assert.ok(hostCalls.length >= 4, `${hostName}通过固定宿主读写入口完成清理和身份读回`);
+  }
 });
 
 test('完全重构删除失败不生成，续删完成后沿开始时的目标创建新身份', async () => {

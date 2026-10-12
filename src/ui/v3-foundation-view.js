@@ -5,14 +5,6 @@ import { scrollManualEditorToTop } from './manual-editor-scroll.js';
 import { publicErrorMessage } from '../public-error.js';
 import { formatStoryTime } from '../v3/time-engine.js';
 
-const placeNameCache = new WeakMap();
-function placeNamesFor(entities) {
-  if (!Array.isArray(entities)) return new Map();
-  let names = placeNameCache.get(entities);
-  if (!names) { names = new Map(entities.map(entity => [entity.entityId, entity.displayName])); placeNameCache.set(entities, names); }
-  return names;
-}
-
 function text(value, fallback = '—') { return value === null || value === undefined || value === '' ? fallback : String(value); }
 
 const cseReadingPairs = new Map([['（', '）'], ['(', ')'], ['［', '］'], ['[', ']'], ['【', '】'], ['〔', '〕'], ['｛', '｝'], ['{', '}'], ['“', '”'], ['‘', '’'], ['「', '」'], ['『', '』'], ['《', '》'], ['〈', '〉']]);
@@ -722,28 +714,6 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         const meta = element('div', 'qqj-memory-meta');
         const metaItem = (label, value) => { const item = element('span', 'qqj-memory-meta-item'); item.append(element('strong', '', label), element('span', '', value)); return item; };
         meta.append(metaItem('人物', people), metaItem('地点', locations)); body.append(meta);
-        const spatial = memory.spatialFacts;
-        if (spatial && ((spatial.containments?.length ?? 0) || (spatial.positions?.length ?? 0))) {
-          const placeNames = placeNamesFor(state.memoryPlaceEntities);
-          const groupNames = placeNamesFor(state.memoryGroupEntities);
-          const placeName = entityId => floor.memoryEntityNames?.[entityId] ?? placeNames.get(entityId) ?? '未知地点';
-          const seqByFloorId = new Map((floor.sourceFloorIds ?? []).map((id, index) => [id, floor.sourceAssistantSeqs?.[index] ?? null]));
-          const spatialSection = element('section', 'qqj-memory-spatial');
-          spatialSection.append(element('strong', 'qqj-memory-spatial-title', '空间记录'));
-          const sourceLabel = ref => `来源楼当时${Number.isSafeInteger(seqByFloorId.get(ref.floorId)) ? `（AI #${seqByFloorId.get(ref.floorId)}）` : ''}`;
-          for (const item of spatial.containments ?? []) {
-            const child = placeName(item.placeEntityId), parent = placeName(item.parentEntityId);
-            for (const ref of item.evidenceRefs ?? []) spatialSection.append(element('p', 'qqj-memory-spatial-item', `${sourceLabel(ref)}：${child} 属于 ${parent}${ref.quotedText ? `；原句「${ref.quotedText}」` : ''}`));
-          }
-          for (const item of spatial.positions ?? []) {
-            const subject = names.get(item.subjectEntityId) ?? floor.memoryEntityNames?.[item.subjectEntityId] ?? groupNames.get(item.subjectEntityId) ?? '未知人物或群体', place = item.placeEntityId ? placeName(item.placeEntityId) : null;
-            const description = item.status === 'confirmed' ? `确认${subject}当时位于${place}；这是来源楼位置，不代表之后仍在此处`
-              : item.status === 'lastSeen' ? `最后见到${subject}在${place}；未确认楼末仍在此处`
-                : `记录${subject}已离开${place ? `原地点${place}` : '原处'}，去向未知；${place ? `${place}不是当前位置` : '不能推定当前位置'}`;
-            for (const ref of item.evidenceRefs ?? []) spatialSection.append(element('p', 'qqj-memory-spatial-item', `${sourceLabel(ref)}：${description}${ref.quotedText ? `；原句「${ref.quotedText}」` : ''}`));
-          }
-          body.append(spatialSection);
-        }
       } else body.append(element('p', 'qqj-memory-main is-empty', floor.summary || (floor.status === 'unprocessed' ? '这一楼尚未生成摘要。' : '暂无摘要。')));
       const actions = operationMenus.register(element('details', 'qqj-memory-menu'));
       const menuToggle = element('summary', 'qqj-memory-menu-toggle', '⋮');

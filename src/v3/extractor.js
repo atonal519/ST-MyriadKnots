@@ -12,7 +12,7 @@ import { readMemoryTagBlocks, stripMemoryTagBlocks } from '../memory-content-san
 import { projectTime } from './time-engine.js';
 
 export const EXTRACTOR_SCHEMA_VERSION = 3;
-export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-30';
+export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-31';
 export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-3/semantic-compiler-14`;
 const ENTITY_TYPES = ['person', 'group', 'organization', 'place', 'object', 'creature', 'concept', 'unknown'];
 const SPATIAL_FACT_LIMIT = 40;
@@ -124,7 +124,7 @@ export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
 
 千事状态分两层：优先用 status 表示本条进展后的整线状态、actionStatus 表示局部动作状态；局部 actionStatus=completed 不必然结束事项，整线可仍为 status=inProgress。后续独立活动只有在正文明确且未接续已有线时才另开新事项，不按人物、物品或标题相似度猜测接续。用户明确修订过的状态属于权威材料，必须据此记录，不要被模型旧状态覆盖。
 
-11. 每次依次检查地点身份、明确包含关系、每个人物楼末位置；有据填写，无据用空数组，不能因 summary 或 locations 已写就跳过。每项填 exactQuote、source（canonicalContent 或 precedingUserInput）和 sourceFloorKey。同地不表示人物彼此知情。地点身份：完整名称或具体别名才支持旧地点；“房间”“卧室”“厨房”等泛称本身不能证明是 knownPlaces 中的某个地点。前楼地点名仅作身份参照，不是本楼引文或当前位置。places 用本次 key=place-mention-N；确认同一地点才复制 knownPlaces 的 sameAsPlaceKey；新地点或同名异地标 new，身份不确定时不绑定旧地点。containments 仅在正文明确说明一处位于、属于或分配在另一处之内时填写，不从相邻、路径或同地推断。positions 逐人判断楼末位置并先辨认实际行动者：向某人告别不表示被告别者离开。confirmed=有依据确认楼末在该地，lastSeen=最后见于该地但楼末位置未确认，leftUnknown=该人物明确离开且终点未知；此时 placeKey 若填写只表示离开前地点，不能当当前位置。只提及、计划、回忆或未离开的人物不标 leftUnknown；无法确定时可用 lastSeen 或省略。例：林向周告别后，林离开并到达新公寓，应记录林到新公寓；周未离开，不记为离开。只隔离无法定位、身份不明或冲突的空间项，保留合法 summary 与旧 locations；缺少空间字段仍兼容旧响应。
+11. 每次依次检查地点身份、明确包含关系、每个人物楼末位置；有据填写，无据用空数组，不能因 summary 或 locations 已写就跳过。每项填 exactQuote、source（canonicalContent 或 precedingUserInput）和 sourceFloorKey。同地不表示人物彼此知情。locations 与 spatialFacts 中需单独追踪的地点默认按房间或有独立意义的区域为粒度；房间内的窗边、沙发旁、桌边等落点通常保留在 summary，不单独建地点或强迫 positions 细化，室外独立区域照常记录；不要把没有依据的房内落点绑定到 knownPlaces。地点身份：完整名称或具体别名才支持旧地点；“房间”“卧室”“厨房”等泛称本身不能证明是 knownPlaces 中的某个地点。前楼地点名仅作身份参照，不是本楼引文或当前位置。places 用本次 key=place-mention-N；确认同一地点才复制 knownPlaces 的 sameAsPlaceKey；新地点或同名异地标 new，身份不确定时不绑定旧地点。containments 只在正文明确说明一处位于、属于或分配在另一处之内时填写；引文必须同时覆盖子地点、父地点和明确的包含关系，不能只用室内摆设或行走路线作依据，也不从相邻或同地推断。positions 逐人判断楼末位置并先辨认实际行动者：向某人告别不表示被告别者离开。confirmed=有依据确认楼末在该地，lastSeen=最后见于该地但楼末位置未确认，leftUnknown=该人物明确离开且终点未知；楼末已明确处于离开原房间后的行动中时，不得沿用原房间的 confirmed；正在前往目的地但尚未到达时，不得 confirmed 在目的地。leftUnknown 的 placeKey 若填写只表示离开前的地点，不代表当前位置。只提及、计划、回忆或未离开的人物不标 leftUnknown；无法确定时可用 lastSeen 或省略。例：林向周告别后，林离开并到达新公寓，应记录林到新公寓；周未离开，不记为离开。只隔离无法定位、身份不明或冲突的空间项，保留合法 summary 与旧 locations；缺少空间字段仍兼容旧响应。
 
 参考结构：
 ${EXTRACTOR_OUTPUT_CONTRACT}

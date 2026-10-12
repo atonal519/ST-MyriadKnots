@@ -1499,7 +1499,7 @@ test('实际顺序提取从前楼 locations 提供地点名参照，但不把泛
   assert.equal(saved.floorMemories.find(item => item.floorId === second.floorId).spatialFacts, undefined);
 });
 
-test('空间位置经运行时提交、冷读来源、选择回执与摘要详情保留地点身份和来源楼', async () => {
+test('空间事实与召回来源保留内部地点身份和来源楼，用户界面隐藏空间块', async () => {
   const content = '林岚走进钟楼。随后林岚离开钟楼，去向未知。';
   const initialChat = [user('继续一'), assistant(content), user('继续二'), assistant('第二楼继续赶路。'),
     user('继续三'), assistant('第三楼抵达街口。'), user('继续四'), assistant('第四楼停下来。'),
@@ -1508,7 +1508,7 @@ test('空间位置经运行时提交、冷读来源、选择回执与摘要详�
     if (options.systemPrompt !== EXTRACTOR_SYSTEM_PROMPT) return { jsonData: { noMaterialChange: true } };
     const payload = JSON.parse(options.taskMessages[0].content).payload;
     if (payload.canonicalContent !== content) return { jsonData: { summary: payload.canonicalContent } };
-    return { jsonData: { summary: '林岚先进入钟楼，之后离开且去向未知。', people: [{ name: '林岚', role: 'user' }], spatialFacts: {
+    return { jsonData: { summary: '林岚先进入钟楼，之后离开且去向未知。', people: [{ name: '林岚', role: 'user' }], locations: [{ name: '钟楼', change: 'left', people: ['林岚'] }], spatialFacts: {
       places: [{ key: 'place-mention-1', name: '钟楼', identity: 'new', exactQuote: '林岚走进钟楼', source: 'canonicalContent', sourceFloorKey: payload.sourceFloorKey }],
       containments: [], positions: [{ subject: '林岚', placeKey: 'place-mention-1', status: 'leftUnknown', exactQuote: '林岚离开钟楼，去向未知', source: 'canonicalContent', sourceFloorKey: payload.sourceFloorKey }],
     } } };
@@ -1550,12 +1550,14 @@ test('空间位置经运行时提交、冷读来源、选择回执与摘要详�
   const intercepted = await recall.intercept(structuredClone(h.context.chat), 12000, () => {}, 'normal');
   assert.equal(intercepted.lastRecall.status, 'ready');
   assert.match(intercepted.lastRecall.injectionText, /来源楼当时\(AI #1\)记录林岚已离开原地点钟楼/u);
+  assert.deepEqual(floor.memory.locations.map(item => item.name), ['钟楼'], '既有地点 meta 字段保留');
   const ui = viewHarness(h.runtime);
   await ui.view.activate();
-  const spatial = ui.flatten(ui.container).find(node => node.className === 'qqj-memory-spatial');
-  assert.ok(spatial);
-  const spatialText = ui.flatten(spatial).filter(node => node.className === 'qqj-memory-spatial-item').map(node => node.textContent).join('\n');
-  assert.match(spatialText, /林岚已离开原地点钟楼，去向未知；钟楼不是当前位置/u);
+  assert.equal(ui.flatten(ui.container).some(node => node.className === 'qqj-memory-spatial'), false, '整块空间记录不向用户呈现');
+  const metas = ui.flatten(ui.container).filter(node => node.className === 'qqj-memory-meta');
+  assert.ok(metas.some(meta => ui.flatten(meta).some(node => node.textContent === '地点')
+    && ui.flatten(meta).some(node => node.textContent === '钟楼')), '原地点 meta 保留');
+  assert.equal(ui.flatten(ui.container).some(node => node.className === 'qqj-memory-main' && node.textContent.includes('空间记录')), false);
 
   const groupId = '99999999-9999-4999-8999-999999999819';
   const baseState = h.runtime.getState();
@@ -1564,8 +1566,8 @@ test('空间位置经运行时提交、冷读来源、选择回执与摘要详�
       { ...item.memory.spatialFacts.positions[0], itemId: '99999999-9999-4999-8999-999999999818', subjectEntityId: groupId }] } },
   }) };
   const groupUi = viewHarness({ ...h.runtime, getState: () => detailState }); await groupUi.view.activate();
-  assert.ok(groupUi.flatten(groupUi.container).some(node => node.className === 'qqj-memory-spatial-item' && node.textContent.includes('守夜组')),
-    '空间详情能通过 group 名称投影显示群体主体');
+  assert.equal(groupUi.flatten(groupUi.container).some(node => node.className === 'qqj-memory-spatial-item'), false,
+    '群体空间细节同样不在用户界面呈现');
 });
 
 test('楼末位置按实际离开者保存，送别对象保留最后所见状态', async () => {
@@ -1614,7 +1616,7 @@ test('楼末位置按实际离开者保存，送别对象保留最后所见状�
   assert.equal(statuses.size, 2);
 });
 
-test('聚合空间引文保留成员楼序号并在详情标注来源成员', async () => {
+test('聚合空间引文保留成员楼序号且用户界面隐藏空间细节', async () => {
   const sourceText = '独立卧室属于新公寓，新公寓位于西区。';
   const initialChat = Array.from({ length: 10 }, (_, index) => [
     assistant(index === 1 ? sourceText : `连续楼 ${index + 1}。`), user(`确认 ${index + 1}`),
@@ -1648,8 +1650,8 @@ test('聚合空间引文保留成员楼序号并在详情标注来源成员', as
   const memory = source.floorMemories.find(item => item.floorId === floor.floorId);
   assert.ok(memory.spatialFacts.containments.every(item => item.sourceRefs[0].assistantSeq === 2));
   const ui = viewHarness(h.runtime); await ui.view.activate();
-  const line = ui.flatten(ui.container).find(node => node.className === 'qqj-memory-spatial-item');
-  assert.match(line.textContent, /AI #2.*独立卧室 属于 新公寓/u);
+  assert.equal(ui.flatten(ui.container).some(node => node.className === 'qqj-memory-spatial'), false,
+    '聚合空间事实仍保存并保留来源楼，用户界面隐藏空间块');
 });
 
 test('人工编辑仅在摘要、地点或人物实质变化时降级本楼空间证据', async t => {
@@ -1865,8 +1867,8 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assert.equal(call.parseMode, 'semantic');
   assert.equal(Object.hasOwn(call, 'jsonSchema'), false);
   assert.match(EXTRACTOR_SYSTEM_PROMPT, /people、time、locations 也要分别检查并提取/);
-  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-30');
-  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-30/schema-3/semantic-compiler-14');
+  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-31');
+  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-31/schema-3/semantic-compiler-14');
   assert.match(EXTRACTOR_FIXED_CONTRACT, /每楼必须检查并返回 qianshi；确无事件增量时返回 events:\[\]/u);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /qianshi 独立于 summary、普通 events、eventFragments/u);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /一次性新事实.*matter=false；计划、持续推进或需要跟踪的事项按 matter=true/u);
@@ -1879,12 +1881,14 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assert.match(call.systemPrompt, /不要混入 object，也不要凭空补物品；没有合适物品时 object 写 null/u);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /时间是唯一允许合理推定的例外/);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /每次依次检查地点身份、明确包含关系、每个人物楼末位置/u);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /locations 与 spatialFacts 中需单独追踪的地点默认按房间或有独立意义的区域为粒度/u);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /向某人告别不表示被告别者离开/u);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /“房间”“卧室”“厨房”等泛称本身不能证明/u);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /前楼地点名仅作身份参照，不是本楼引文或当前位置/u);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /source（canonicalContent 或 precedingUserInput）/u);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /同地不表示人物彼此知情/u);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /林向周告别后，林离开并到达新公寓/u);
+  assert.ok(call.systemPrompt.includes(EXTRACTOR_FIXED_CONTRACT), '普通提取入口接收共同固定合同');
   assert.match(EXTRACTOR_FIXED_CONTRACT, /不能附带正文没有的事件、人物、因果或结果/);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /order 必须使用对象数组.*before.*after.*certainty/u);
   assert.match(EXTRACTOR_SYSTEM_PROMPT, /不输出 UUID/);
