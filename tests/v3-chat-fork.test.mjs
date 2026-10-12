@@ -66,7 +66,7 @@ function identity(hostChatId, chatId, characterLocator = 'character.png') {
   return { hostChatId, chatId, characterLocator, personaLocator: 'persona.png' };
 }
 
-function targetChatApi(context, { afterSave = null, beforeGet = null, hasIntegrity = true } = {}) {
+function targetChatApi(context, { afterSave = null, beforeGet = null, hasIntegrity = true, saveOnlyHeader = false } = {}) {
   let header = { chat_metadata: structuredClone(context.chatMetadata) };
   if (!hasIntegrity) delete header.chat_metadata.integrity;
   let messages = structuredClone(context.chat);
@@ -90,7 +90,7 @@ function targetChatApi(context, { afterSave = null, beforeGet = null, hasIntegri
       const currentIntegrity = header.chat_metadata?.integrity;
       if (currentIntegrity !== undefined) assert.equal(body.chat[0]?.chat_metadata?.integrity, currentIntegrity, '宿主保存必须携带当前 integrity');
       header = structuredClone(body.chat[0]);
-      messages = structuredClone(body.chat.slice(1));
+      if (!saveOnlyHeader) messages = structuredClone(body.chat.slice(1));
       saves += 1;
       if (hasIntegrity) header.chat_metadata.integrity = `test-integrity-${saves}`;
       else delete header.chat_metadata.integrity;
@@ -378,6 +378,138 @@ test('输入快照后、固定目标首次读取前发生的人工作文修改�
   assert.equal(targetApi.saves, 0, '人工作文冲突发生在固定目标写入之前');
   assert.equal(backend.records.has(`chat-${targetChatId}/v3-root`), false);
   assert.equal((await createFoundationStore({ client: backend.client, contextProvider: () => sourceIdentity }).readReachable()).floors.length, source.floors.length);
+});
+
+test('native/Luker分支忽略并保留插件显示快照更新，同时仍拦截业务与楼归属变化', async () => {
+  async function makeBranch(hostKind, { mutation = null, saveOnlyHeader = false, anchorReplay = null } = {}) {
+    const backend = backendHarness();
+    const sourceChat = [user('开场'), { ...assistant('稳定来源楼'), swipes: ['稳定来源楼', '另一回复'] }, user('继续')];
+    const sourceContext = context(`metadata-source-${hostKind}`, SOURCE, sourceChat);
+    const sourceAdapter = createHostAdapter({ globalRef: { [hostKind]: { getContext: () => sourceContext } } });
+    const sourceStore = createFoundationStore({ client: backend.client, contextProvider: () => identity(sourceContext.chatId, SOURCE) });
+    const sourceRuntime = createFoundationRuntime({ hostAdapter: sourceAdapter, store: sourceStore,
+      contextProvider: () => sourceContext, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+    assert.equal((await sourceRuntime.start()).status, 'ready');
+    const sourceFloor = (await sourceStore.readReachable()).floors[0];
+    backend.records.set(`${CHAT_IDENTITY_COLLECTION}/binding-${SOURCE}`, { revision: 1,
+      data: { schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId: SOURCE,
+        owner: { hostChatId: sourceContext.chatId, characterLocator: 'character.png', personaLocator: 'persona.png' },
+        state: 'ready', sourceChatId: null, createdAt: NOW, updatedAt: NOW } });
+
+    const targetHostChatId = `metadata-target-${hostKind}-${mutation ?? 'preserve'}`;
+    const targetChatId = await deterministicUuid(['qqj-chat-independent-v2', SOURCE, targetHostChatId, 'character.png']);
+    const targetContext = context(targetHostChatId, SOURCE, structuredClone(sourceContext.chat));
+    targetContext.chatMetadata.displayPlugin = { panel: { open: true, revision: 'captured' } };
+    targetContext.chat[1].extra = { ...(targetContext.chat[1].extra ?? {}),
+      gouhua_snapshot: { ts: 'captured', anchor: { month: 1, day: 2 } }, companionPlugin: { badge: 'captured' },
+      qqj_v3_recall_receipt: { chatId: SOURCE, floorId: '22222222-2222-4222-8222-222222222222' },
+      qianqianjieAutoHide: { schemaVersion: 1, chatId: SOURCE } };
+    if (anchorReplay) delete targetContext.chat[1].extra.qianqianjie_floor;
+    targetContext.chat[1].swipe_info = [
+      { extra: { gouhua_snapshot: { ts: 'captured-active' }, companionPlugin: { label: 'active' },
+        qqj_v3_recall_receipt: { chatId: SOURCE, floorId: '22222222-2222-4222-8222-222222222222' },
+        qianqianjieAutoHide: { schemaVersion: 1, chatId: SOURCE } } },
+      { extra: { gouhua_snapshot: { ts: 'captured-inactive' }, companionPlugin: { label: 'inactive' },
+        qianqianjieAutoHide: { schemaVersion: 1, chatId: SOURCE } } },
+    ];
+    let preflightMutationApplied = false;
+    let latestMetadataApplied = false;
+    const targetApi = targetChatApi(targetContext, { saveOnlyHeader, beforeGet({ header, messages }) {
+      if (preflightMutationApplied) return;
+      preflightMutationApplied = true;
+      if (mutation === 'selectedReply') {
+        messages[1].swipe_id = 1;
+        messages[1].mes = messages[1].swipes[1];
+      } else if (mutation === 'role') {
+        messages[1].is_user = true;
+      } else if (mutation === 'narrator') {
+        messages[1].extra.type = 'narrator';
+      } else if (mutation === 'ownership') {
+        messages[1].extra.qianqianjie_floor = { schemaVersion: 1, chatId: SOURCE,
+          floorId: 'ffffffff-ffff-4fff-8fff-ffffffffffff' };
+      } else if (mutation === 'identity') {
+        header.chat_metadata.qianqianjie.chatId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+      } else if (anchorReplay) {
+        messages[1].extra.qianqianjie_floor = { schemaVersion: 1, chatId: targetChatId,
+          floorId: anchorReplay === 'expected' ? sourceFloor.id : 'ffffffff-ffff-4fff-8fff-ffffffffffff' };
+      } else {
+        header.chat_metadata.displayPlugin.panel.revision = 'first-read';
+        messages[1].extra.gouhua_snapshot = { ts: 'first-read', anchor: { month: 2, day: 3 } };
+        messages[1].swipe_info[0].extra.gouhua_snapshot = { ts: 'first-read-active' };
+        messages[1].swipe_info[1].extra.gouhua_snapshot = { ts: 'first-read-inactive' };
+      }
+    } });
+    const client = {
+      async get(collection, key) {
+        const result = await backend.client.get(collection, key);
+        if (!latestMetadataApplied && collection === `chat-${SOURCE}` && key === 'v3-root') {
+          latestMetadataApplied = true;
+          targetContext.chatMetadata.displayPlugin.panel.revision = 'latest';
+          targetContext.chat[1].extra.gouhua_snapshot = { ts: 'latest', anchor: { month: 12, day: 31 } };
+          targetContext.chat[1].extra.companionPlugin = { badge: 'latest' };
+          targetContext.chat[1].swipe_info[0].extra.gouhua_snapshot = { ts: 'latest-active' };
+          targetContext.chat[1].swipe_info[0].extra.companionPlugin = { label: 'latest-active' };
+          targetContext.chat[1].swipe_info[1].extra.gouhua_snapshot = { ts: 'latest-inactive' };
+          targetContext.chat[1].swipe_info[1].extra.companionPlugin = { label: 'latest-inactive' };
+          targetApi.reloadFromContext();
+        }
+        return result;
+      },
+      put: (...args) => backend.client.put(...args),
+    };
+    const hostAdapter = createHostAdapter({ globalRef: { [hostKind]: { getContext: () => targetContext } } });
+    const initializer = createChatBranchInitializer({ client, hostAdapter, now: () => new Date(NOW), fetchImpl: targetApi.fetch });
+    const coordinator = createChatIdentityCoordinator({ client, listHostChats: async () => [sourceContext.chatId, targetHostChatId],
+      now: () => new Date(NOW), initializeBranch: initializer });
+    const session = createChatSession({ contextProvider: () => targetContext, identityCoordinator: coordinator,
+      captureTaskInputs: ({ raw, host }) => ({ chat: structuredClone(raw.chat), chatMetadata: structuredClone(raw.chatMetadata),
+        target: captureTargetChatDescriptor({ context: raw, chat: raw.chat, chatId: host.hostChatId, source: hostKind }, {
+          hostChatId: host.hostChatId, chatId: host.chatId, characterLocator: host.characterAvatar, personaLocator: host.personaAvatar,
+        }), sanitizerOptions: {} }) });
+    return { backend, targetContext, targetApi, targetChatId, sourceFloorId: sourceFloor.id, session };
+  }
+
+  for (const hostKind of ['SillyTavern', 'Luker']) {
+    const result = await makeBranch(hostKind);
+    const prepared = await result.session.prepare();
+    assert.equal(prepared.status, 'ready');
+    assert.equal(result.targetApi.saves, 1);
+    assert.equal(result.targetApi.persistedHeader.chat_metadata.displayPlugin.panel.revision, 'latest');
+    assert.equal(result.targetApi.persistedHeader.chat_metadata.qianqianjie.chatId, result.targetChatId);
+    const payload = await (await result.targetApi.fetch('/api/chats/get')).json();
+    assert.deepEqual(payload[2].extra.gouhua_snapshot, { ts: 'latest', anchor: { month: 12, day: 31 } });
+    assert.deepEqual(payload[2].extra.companionPlugin, { badge: 'latest' });
+    assert.deepEqual(payload[2].swipe_info[0].extra.gouhua_snapshot, { ts: 'latest-active' });
+    assert.deepEqual(payload[2].swipe_info[1].extra.gouhua_snapshot, { ts: 'latest-inactive' });
+    assert.deepEqual(payload[2].swipe_info[1].extra.companionPlugin, { label: 'latest-inactive' });
+    assert.equal(payload[2].extra.qianqianjie_floor.chatId, result.targetChatId);
+    assert.deepEqual(result.targetContext.chat[1].extra.gouhua_snapshot, { ts: 'latest', anchor: { month: 12, day: 31 } });
+    assert.deepEqual(result.targetContext.chat[1].extra.companionPlugin, { badge: 'latest' });
+    assert.deepEqual(result.targetContext.chat[1].swipe_info[1].extra.gouhua_snapshot, { ts: 'latest-inactive' });
+    assert.equal(result.targetContext.chatMetadata.displayPlugin.panel.revision, 'latest');
+    assert.equal(payload[2].extra.qqj_v3_recall_receipt, undefined);
+    assert.deepEqual(payload[2].extra.qianqianjieAutoHide, { schemaVersion: 1, chatId: result.targetChatId });
+    assert.equal(payload[2].swipe_info[0].extra.qqj_v3_recall_receipt, undefined);
+    assert.deepEqual(payload[2].swipe_info[0].extra.qianqianjieAutoHide, { schemaVersion: 1, chatId: result.targetChatId });
+    assert.deepEqual(payload[2].swipe_info[1].extra.qianqianjieAutoHide, { schemaVersion: 1, chatId: result.targetChatId });
+
+    for (const mutation of ['selectedReply', 'role', 'narrator', 'ownership', 'identity']) {
+      const changed = await makeBranch(hostKind, { mutation });
+      await assert.rejects(changed.session.prepare(), error => ['V3_BRANCH_TARGET_CHANGED', 'V3_MESSAGE_ANCHOR_READ_SCOPE_MISMATCH'].includes(error?.code));
+      assert.equal(changed.targetApi.saves, 0, `${hostKind} ${mutation} conflict must be detected before save`);
+      assert.equal(changed.backend.records.has(`chat-${changed.targetChatId}/v3-root`), false,
+        `${hostKind} ${mutation} conflict must not commit inherited target root`);
+    }
+  }
+  const incompleteSave = await makeBranch('SillyTavern', { saveOnlyHeader: true });
+  await assert.rejects(incompleteSave.session.prepare(), error => error?.code === 'V3_BRANCH_MESSAGE_VERIFY_FAILED');
+  assert.equal(incompleteSave.targetApi.saves, 1, '保存只写入header时必须读回拒绝成功');
+  const legalAnchorReplay = await makeBranch('SillyTavern', { anchorReplay: 'expected' });
+  assert.equal((await legalAnchorReplay.session.prepare()).status, 'ready', '已捕获目标缺少锚时允许已验证图中相同floor的目标锚重入');
+  const wrongAnchorReplay = await makeBranch('Luker', { anchorReplay: 'wrong' });
+  await assert.rejects(wrongAnchorReplay.session.prepare(), error => error?.code === 'V3_BRANCH_TARGET_CHANGED');
+  assert.equal(wrongAnchorReplay.backend.records.has(`chat-${wrongAnchorReplay.targetChatId}/v3-root`), false,
+    '目标新增的不同floor锚必须在继承写入前冲突');
 });
 
 test('普通分支 prepare经native/Luker正式入口保存后继承前缀向量并可查询', async () => {

@@ -5,12 +5,112 @@ export const MESSAGE_FLOOR_ANCHOR_KEY = 'qianqianjie_floor';
 export const MESSAGE_FLOOR_ANCHOR_SCHEMA_VERSION = 1;
 const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
 const AUTO_HIDE_MARKER_KEY = 'qianqianjieAutoHide';
+const BRANCH_QQJ_MESSAGE_KEYS = Object.freeze([MESSAGE_FLOOR_ANCHOR_KEY, RECALL_RECEIPT_KEY, AUTO_HIDE_MARKER_KEY]);
 
 const chatIdFrom = snapshot => String(snapshot?.context?.chatMetadata?.qianqianjie?.chatId ?? '').trim();
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const assistantMessage = message => Boolean(message && typeof message === 'object' && message.is_user === false
   && !(message.extra?.type === 'narrator') && !(message.is_system === true && message.extra?.type)
   && (typeof message.mes === 'string' || (Array.isArray(message.swipes) && typeof message.swipes[Number.isSafeInteger(message.swipe_id) ? message.swipe_id : 0] === 'string')));
+
+function normalizeJsonOrder(value) {
+  if (Array.isArray(value)) return value.map(normalizeJsonOrder);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, normalizeJsonOrder(value[key])]));
+}
+const stableJson = value => JSON.stringify(normalizeJsonOrder(value));
+const ownValue = (object, key) => Object.hasOwn(object ?? {}, key)
+  ? Object.freeze({ present: true, value: object[key] }) : Object.freeze({ present: false });
+const qqjMessageMetadataProjection = extra => Object.freeze(Object.fromEntries(BRANCH_QQJ_MESSAGE_KEYS
+  .filter(key => Object.hasOwn(extra ?? {}, key)).map(key => [key, extra[key]])));
+
+function branchQqjMessageProjection(chat) {
+  return chat.map(message => ({
+    extra: qqjMessageMetadataProjection(message?.extra),
+    swipeInfo: Array.isArray(message?.swipe_info) ? message.swipe_info.map(swipe => qqjMessageMetadataProjection(swipe?.extra)) : null,
+  }));
+}
+
+export function branchMessageCoreProjection(message) {
+  const hasSwipes = Array.isArray(message?.swipes);
+  const selectedIndex = hasSwipes ? (Number.isSafeInteger(message.swipe_id) ? message.swipe_id : 0) : null;
+  return Object.freeze({
+    isUser: ownValue(message, 'is_user'),
+    isSystem: ownValue(message, 'is_system'),
+    name: ownValue(message, 'name'),
+    mes: ownValue(message, 'mes'),
+    messageType: ownValue(message?.extra, 'type'),
+    selectedReply: Object.freeze({
+      hasSwipes,
+      selectedIndex,
+      value: hasSwipes ? ownValue(message.swipes, String(selectedIndex)) : ownValue(message, 'mes'),
+    }),
+  });
+}
+
+export function branchMessageBusinessProjection(message) {
+  return Object.freeze({
+    core: branchMessageCoreProjection(message),
+    ownership: Object.freeze({
+      outer: ownValue(message?.extra, MESSAGE_FLOOR_ANCHOR_KEY),
+      swipes: Array.isArray(message?.swipe_info)
+        ? message.swipe_info.map(swipe => ownValue(swipe?.extra, MESSAGE_FLOOR_ANCHOR_KEY)) : [],
+    }),
+  });
+}
+
+export function sameBranchMessageCore(left, right) {
+  return stableJson(branchMessageCoreProjection(left)) === stableJson(branchMessageCoreProjection(right));
+}
+
+export function assertCapturedBranchTargetMatches(snapshot, targetFile, sourceChatId, targetChatId, { expectedBindings = [], deferNewTargetAnchors = false } = {}) {
+  const capturedChat = snapshot?.chat, persistedChat = targetFile?.chat;
+  if (!Array.isArray(capturedChat) || !Array.isArray(persistedChat)) {
+    throw fail('V3_BRANCH_TARGET_CHANGED', '分支目标消息无法核对。');
+  }
+  const length = Math.min(capturedChat.length, persistedChat.length);
+  const normalizeAnchor = value => value?.chatId === sourceChatId ? { ...value, chatId: targetChatId } : value;
+  const expectedFloorByMessage = new Map(expectedBindings.map(binding => [binding.messageIndex, binding.floorId]));
+  const sameAnchor = (expected, actual, messageIndex) => {
+    if (!expected?.present && actual?.present
+      && inspectMessageFloorAnchor({ extra: { [MESSAGE_FLOOR_ANCHOR_KEY]: actual.value } }, targetChatId).status === 'valid') {
+      return deferNewTargetAnchors || expectedFloorByMessage.get(messageIndex) === actual.value.floorId;
+    }
+    if (expected?.present !== actual?.present) return false;
+    return !expected?.present || stableJson(normalizeAnchor(expected.value)) === stableJson(normalizeAnchor(actual.value));
+  };
+  for (let index = 0; index < length; index += 1) {
+    const captured = branchMessageBusinessProjection(capturedChat[index]);
+    const persisted = branchMessageBusinessProjection(persistedChat[index]);
+    const coreMatches = stableJson(captured.core) === stableJson(persisted.core);
+    const swipeCount = Math.max(captured.ownership.swipes.length, persisted.ownership.swipes.length);
+    const ownershipMatches = sameAnchor(captured.ownership.outer, persisted.ownership.outer, index)
+      && Array.from({ length: swipeCount }, (_, swipeIndex) => sameAnchor(
+        captured.ownership.swipes[swipeIndex], persisted.ownership.swipes[swipeIndex], index,
+      )).every(Boolean);
+    if (coreMatches && ownershipMatches) continue;
+    const fields = [];
+    if (!coreMatches) fields.push('core');
+    if (!ownershipMatches) fields.push('ownership');
+    throw fail('V3_BRANCH_TARGET_CHANGED', `分支输入捕获后，固定目标消息的业务内容或记忆归属已改变（${index}:${fields.join(',')}）。`);
+  }
+  if (capturedChat.length !== persistedChat.length) {
+    throw fail('V3_BRANCH_TARGET_CHANGED', `分支输入捕获后，固定目标消息数量已改变（${length}:messageCount）。`);
+  }
+  const persistedQqj = targetFile.header?.chat_metadata?.qianqianjie ?? {};
+  if (![sourceChatId, targetChatId].includes(persistedQqj.chatId)) {
+    throw fail('V3_BRANCH_TARGET_CHANGED', '分支固定目标身份已被修改。');
+  }
+  const capturedQqj = snapshot.chatMetadata?.qianqianjie;
+  if (capturedQqj) {
+    const expected = structuredClone(capturedQqj);
+    expected.chatId = persistedQqj.chatId;
+    expected.schemaVersion = persistedQqj.schemaVersion;
+    if (stableJson(expected) !== stableJson(persistedQqj)) {
+      throw fail('V3_BRANCH_TARGET_CHANGED', '分支固定目标身份元数据已被修改。');
+    }
+  }
+}
 
 export function inspectMessageFloorAnchor(message, expectedChatId = '') {
   const value = message?.extra?.[MESSAGE_FLOOR_ANCHOR_KEY];
@@ -220,6 +320,7 @@ export async function persistMessageFloorAnchors({ hostAdapter, chatId, bindings
 export async function persistBranchedMessageMetadata({
   target,
   chat,
+  chatMetadata = null,
   initialSnapshot,
   sourceChatId,
   targetChatId,
@@ -241,11 +342,11 @@ export async function persistBranchedMessageMetadata({
   }
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   const allowedChatIds = [sourceChatId, targetChatId];
-  const before = initialSnapshot ?? await readTargetChat(target, { signal, fetchImpl, allowedChatIds });
-  if (!allowedChatIds.includes(before.header?.chat_metadata?.qianqianjie?.chatId)) {
-    throw fail('V3_BRANCH_MESSAGE_CHAT_CHANGED', '分支目标聊天身份已被修改。');
-  }
-  const targetChat = structuredClone(chat);
+  const before = await readTargetChat(target, { signal, fetchImpl, allowedChatIds });
+  const capturedSnapshot = { chat, chatMetadata: chatMetadata ?? initialSnapshot?.header?.chat_metadata ?? before.header?.chat_metadata ?? {} };
+  assertCapturedBranchTargetMatches(capturedSnapshot, before, sourceChatId, targetChatId, { expectedBindings: bindings });
+  // Rebase the QQJ edits onto the latest saved file so other plugins' metadata survives.
+  const targetChat = structuredClone(before.chat);
 
   // Branch copies invalidate recall receipts and rehome only retained floor anchors and this plugin's hide markers.
   const rewriteExtra = (extra, forcedFloorId = null) => {
@@ -282,8 +383,9 @@ export async function persistBranchedMessageMetadata({
     }) : message.swipe_info;
     if (!nextExtra && !swipeChanged) continue;
     const effectiveExtra = nextExtra ?? message.extra;
-    const extrasEqual = JSON.stringify(effectiveExtra) === JSON.stringify(message.extra);
-    const swipesEqual = JSON.stringify(nextSwipeInfo) === JSON.stringify(message.swipe_info);
+    const extrasEqual = stableJson(qqjMessageMetadataProjection(effectiveExtra)) === stableJson(qqjMessageMetadataProjection(message.extra));
+    const swipesEqual = stableJson(Array.isArray(nextSwipeInfo) ? nextSwipeInfo.map(swipe => qqjMessageMetadataProjection(swipe?.extra)) : null)
+      === stableJson(Array.isArray(message.swipe_info) ? message.swipe_info.map(swipe => qqjMessageMetadataProjection(swipe?.extra)) : null);
     if (extrasEqual && swipesEqual) continue;
     changed.push({ message, extra: message.extra, swipeInfo: message.swipe_info });
     if (nextExtra) message.extra = nextExtra;
@@ -296,16 +398,9 @@ export async function persistBranchedMessageMetadata({
     chatId: targetChatId,
   };
   if (!changed.length && before.header.chat_metadata?.qianqianjie?.chatId === targetChatId) {
-    if (JSON.stringify(before.header) !== JSON.stringify(header) || JSON.stringify(before.chat) !== JSON.stringify(targetChat)) {
-      throw fail('V3_BRANCH_MESSAGE_VERIFY_FAILED', '固定分支目标的消息标识与捕获状态不一致。');
-    }
     return Object.freeze({ status: 'unchanged', persisted: 0, header: before.header, chat: before.chat });
   }
   if (typeof fetchImpl !== 'function') throw fail('V3_BRANCH_MESSAGE_SAVE_UNAVAILABLE', '宿主不支持保存分支消息标识。');
-  const latest = await readTargetChat(target, { signal, fetchImpl, allowedChatIds });
-  if (JSON.stringify(latest.header) !== JSON.stringify(before.header) || JSON.stringify(latest.chat) !== JSON.stringify(before.chat)) {
-    throw fail('V3_BRANCH_MESSAGE_SAVE_CONFLICT', '分支目标聊天在初始化期间被修改。');
-  }
   const response = await fetchImpl('/api/chats/save', {
     method: 'POST', cache: 'no-cache', headers: target.requestHeaders ?? {},
     body: JSON.stringify({ ch_name: target.characterName, file_name: target.hostChatId, avatar_url: target.avatarUrl, chat: [header, ...targetChat], force: false }),
@@ -313,15 +408,19 @@ export async function persistBranchedMessageMetadata({
   });
   if (!response?.ok) throw fail([400, 409].includes(response?.status) ? 'V3_BRANCH_MESSAGE_SAVE_CONFLICT' : 'V3_BRANCH_MESSAGE_SAVE_FAILED', '分支消息标识未能保存到固定目标。');
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-  const persisted = await readTargetChat(target, { signal, fetchImpl });
-  const withoutIntegrity = value => {
-    const next = structuredClone(value);
-    if (next?.chat_metadata && typeof next.chat_metadata === 'object') delete next.chat_metadata.integrity;
-    return next;
-  };
-  if (JSON.stringify(withoutIntegrity(persisted.header)) !== JSON.stringify(withoutIntegrity(header))
-    || JSON.stringify(persisted.chat) !== JSON.stringify(targetChat)) {
+  const persisted = await readTargetChat(target, { signal, fetchImpl, allowedChatIds });
+  const persistedQqj = persisted.header?.chat_metadata?.qianqianjie;
+  const expectedQqj = header.chat_metadata?.qianqianjie;
+  try {
+    assertCapturedBranchTargetMatches({ chat: targetChat, chatMetadata: header.chat_metadata }, persisted, sourceChatId, targetChatId);
+  } catch {
+    throw fail('V3_BRANCH_MESSAGE_VERIFY_FAILED', '固定分支目标保存后业务内容或消息归属不一致，可重试。');
+  }
+  if (stableJson(persistedQqj) !== stableJson(expectedQqj)) {
     throw fail('V3_BRANCH_MESSAGE_VERIFY_FAILED', '固定分支目标保存后读回不一致，可重试。');
+  }
+  if (stableJson(branchQqjMessageProjection(persisted.chat)) !== stableJson(branchQqjMessageProjection(targetChat))) {
+    throw fail('V3_BRANCH_MESSAGE_VERIFY_FAILED', '固定分支目标保存后QQJ消息标识不一致，可重试。');
   }
   return Object.freeze({ status: 'persisted', persisted: changed.length, header: persisted.header, chat: persisted.chat });
 }
