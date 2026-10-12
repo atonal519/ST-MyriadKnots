@@ -4,6 +4,11 @@ export function getHostContext() {
   return ctx;
 }
 
+// Host chat metadata is persisted as JSON; capture that boundary without cloning transient live values.
+export function cloneHostJsonMetadata(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 export function readHostState(ctx = getHostContext()) {
   const characterId = ctx.characterId;
   if (ctx.groupId) return { ok: false, reason: '仅支持单人聊天' };

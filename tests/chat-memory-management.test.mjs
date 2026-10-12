@@ -212,12 +212,12 @@ test('原生与Luker真实session重构只暂停一次并完成删除、历史�
     const context = {
       chatId: `synthetic-${hostName}-chat`, characterId: 0, characterAvatar: 'synthetic-character.png', userAvatar: 'synthetic-persona.png',
       name1: '虚构用户', name2: '虚构角色', characters: [{ name: '虚构角色', avatar: 'synthetic-character.png', data: {} }],
-      chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: oldChatId }, otherPlugin: { retained: true } },
+      chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: oldChatId }, otherPlugin: { retained: true, transient: () => 'not stored' } },
       chat: [{ is_user: true, is_system: false, mes: '中性测试用户消息' }, { is_user: false, is_system: false, mes: '中性测试回复' }],
       getRequestHeaders: () => ({ 'x-test-host': hostName }),
       async saveChatMetadata() { return true; },
     };
-    let persisted = [{ chat_metadata: structuredClone(context.chatMetadata) }, ...structuredClone(context.chat)];
+    let persisted = [{ chat_metadata: JSON.parse(JSON.stringify(context.chatMetadata)) }, ...structuredClone(context.chat)];
     const records = new Map();
     const backendCalls = [], sessionCalls = [], taskCalls = [], hostCalls = [];
     const missing = () => Object.assign(new Error('synthetic record missing'), { status: 404 });
@@ -296,6 +296,7 @@ test('原生与Luker真实session重构只暂停一次并完成删除、历史�
     assert.equal(records.has(`chat-${oldChatId}/v3-root`), false);
     assert.equal(persisted[0].chat_metadata.qianqianjie.chatId, rebuiltChatId);
     assert.equal(context.chatMetadata.qianqianjie.chatId, rebuiltChatId);
+    assert.equal(context.chatMetadata.otherPlugin.retained, true, `${hostName}重构接管保留可持久化的其他插件metadata`);
     assert.equal(realSession.getState().status, 'ready');
     assert.equal(session.identity().chatId, rebuiltChatId);
     assert.equal(manager.getState().status, 'idle');

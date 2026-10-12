@@ -20,7 +20,7 @@ import { createApiResolver, createApiTools, createTaskRouter } from './src/api-r
 import { createCompactApiClient } from './src/compact-api-client.js';
 import { createChatSession } from './src/chat-session.js';
 import { createChatIdentityCoordinator } from './src/chat-identity.js';
-import { createHostChatList } from './src/host-context.js';
+import { cloneHostJsonMetadata, createHostChatList } from './src/host-context.js';
 import { createChatMemoryManagement } from './src/chat-memory-management.js';
 import { createStorageManagement } from './src/storage-management.js';
 import { createPluginLifecycle } from './src/plugin-lifecycle.js';
@@ -135,7 +135,7 @@ const session = createChatSession({ contextProvider, isEnabled: settings.isEnabl
   });
   return {
     chat: structuredClone(Array.isArray(raw.chat) ? raw.chat : []),
-    chatMetadata: structuredClone(raw.chatMetadata ?? {}),
+    chatMetadata: cloneHostJsonMetadata(raw.chatMetadata ?? {}),
     target,
     sanitizerOptions: Object.freeze({ ...sanitizerOptions() }),
   };

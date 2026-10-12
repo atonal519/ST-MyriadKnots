@@ -1,4 +1,4 @@
-import { ensureChatUuid, isUuid, readHostState } from './host-context.js';
+import { cloneHostJsonMetadata, ensureChatUuid, isUuid, readHostState } from './host-context.js';
 import { captureTargetChatCoordinates } from './v3/host-adapter.js';
 import { markPreparationFailure, preparationFailureDiagnostic } from './v3/preparation-diagnostic.js';
 
@@ -56,7 +56,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
       hostChatId: host.hostChatId,
       characterLocator: host.characterAvatar, personaLocator: host.personaAvatar,
     });
-    return { chat: structuredClone(Array.isArray(raw.chat) ? raw.chat : []), chatMetadata: structuredClone(raw.chatMetadata ?? {}), target, sanitizerOptions: {} };
+    return { chat: structuredClone(Array.isArray(raw.chat) ? raw.chat : []), chatMetadata: cloneHostJsonMetadata(raw.chatMetadata ?? {}), target, sanitizerOptions: {} };
   };
   const publicIdentity = host => Object.freeze({
     hostChatId: host.hostChatId,

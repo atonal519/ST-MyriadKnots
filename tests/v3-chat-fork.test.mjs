@@ -1017,6 +1017,24 @@ test('分支半成品无 root 且精确 marker 前缀已编辑时改用新目标
   assert.equal(chatRecords(backend.records, SOURCE), sourceBefore, '恢复不得修改源聊天记录');
 });
 
+test('分支 live metadata fallback 遵循宿主 JSON 保存边界', async () => {
+  const liveContext = context('branch-host', SOURCE, []);
+  liveContext.chatMetadata.otherPlugin = { retained: true, transient: () => 'not stored' };
+  const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => liveContext } } });
+  const initializer = createChatBranchInitializer({
+    client: backendHarness().client,
+    hostAdapter,
+    fetchImpl: async () => ({ ok: false, status: 503 }),
+  });
+  await assert.rejects(initializer({
+    raw: liveContext,
+    host: { hostChatId: 'branch-host', characterAvatar: 'character.png', personaAvatar: 'persona.png' },
+    sourceChatId: SOURCE,
+    targetChatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+  }), error => error?.code === 'V3_MESSAGE_ANCHOR_READ_FAILED');
+  assert.equal(typeof liveContext.chatMetadata.otherPlugin.transient, 'function', 'live metadata只读捕获不得清洗宿主对象');
+});
+
 test('直接打开 preparing 分支也沿原 source 换新目标，root存在或非目标错误不回退', async () => {
   const freshTarget = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
   const owner = { hostChatId: '复制聊天', characterLocator: 'character.png', personaLocator: 'persona.png' };

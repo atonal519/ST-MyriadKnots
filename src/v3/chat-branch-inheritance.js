@@ -1,4 +1,5 @@
 import { sha256 } from '../identity.js';
+import { cloneHostJsonMetadata } from '../host-context.js';
 import { createFoundationStore } from './foundation-store.js';
 import {
   buildFoundationIndexes,
@@ -235,7 +236,7 @@ export function createChatBranchInitializer({
     const liveSnapshot = taskInputs ? null : hostAdapter.snapshot();
     const snapshot = taskInputs ?? {
       chat: structuredClone(Array.isArray(liveSnapshot.chat) ? liveSnapshot.chat : []),
-      chatMetadata: structuredClone(liveSnapshot.context?.chatMetadata ?? {}),
+      chatMetadata: cloneHostJsonMetadata(liveSnapshot.context?.chatMetadata ?? {}),
       target: captureTargetChatDescriptor(liveSnapshot, { ...sourceIdentity, hostChatId: host.hostChatId }),
       sanitizerOptions: { ...sanitizerOptions() },
     };

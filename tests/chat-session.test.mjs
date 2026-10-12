@@ -31,8 +31,9 @@ test('新聊天只持久化稳定 chatId，不读取或写入任何 V1/后端记
 test('首次身份保存兼容宿主 new_chat 读回，固定目标创建空聊天存档', async () => {
   const chatId = '323e4567-e89b-42d3-a456-426614174000';
   const target = { hostChatId: '新聊天', characterLocator: 'char.png', characterName: '角色', avatarUrl: 'char.png', requestHeaders: {} };
-  const raw = { chatId: '新聊天', chat: [], chatMetadata: {}, saveChatMetadata() { assert.fail('不得回落到动态当前聊天保存'); } };
-  const snapshot = { chat: [], chatMetadata: {} };
+  const rawMetadata = { otherPlugin: { label: '保留', transient: () => 'not stored' } };
+  const raw = { chatId: '新聊天', chat: [], chatMetadata: rawMetadata, saveChatMetadata() { assert.fail('不得回落到动态当前聊天保存'); } };
+  const snapshot = { chat: [], chatMetadata: { otherPlugin: { label: '保留' } } };
   let saved = null, reads = 0, lists = 0;
   const fetchImpl = async (url, options) => {
     if (url === '/api/chats/get') {
@@ -55,8 +56,10 @@ test('首次身份保存兼容宿主 new_chat 读回，固定目标创建空聊�
   assert.equal(reads, 2);
   assert.equal(lists, 1);
   assert.equal(saved.header.chat_metadata.qianqianjie.chatId, chatId);
+  assert.deepEqual(saved.header.chat_metadata.otherPlugin, { label: '保留' });
   assert.deepEqual(saved.chat, [], 'USER0/空新档创建不要求有开场消息');
   assert.equal(raw.chatMetadata.qianqianjie.chatId, chatId);
+  assert.equal(typeof raw.chatMetadata.otherPlugin.transient, 'function', '宿主 live metadata 不得被快照清洗');
   assert.equal(raw.chatMetadata.integrity, 'created-integrity');
 
   saved = null;
@@ -207,6 +210,30 @@ test('同一在途 prepare 共用一次输入快照，ready 重入不再复制�
   assert.equal((await first).identity.chatId, UUID);
   assert.equal((await session.prepare()).identity.chatId, UUID);
   assert.equal(captures, 1);
+});
+
+test('默认身份快照只序列化可持久化聊天元数据，不阻断其他插件字段', async () => {
+  const metadata = { otherPlugin: { label: 'keep', transient: () => 'not persisted' } };
+  const context = { ...chatContext('元数据快照'), chat: [], chatMetadata: metadata };
+  let captured;
+  const session = createChatSession({
+    contextProvider: () => context,
+    identityCoordinator: { async prepare(_raw, _host, { taskInputs }) { captured = taskInputs; return UUID; } },
+  });
+  const result = await session.prepare();
+  assert.equal(result.status, 'ready');
+  assert.deepEqual(captured.chatMetadata, { otherPlugin: { label: 'keep' } });
+  assert.equal(metadata.otherPlugin.label, 'keep');
+  assert.equal(typeof metadata.otherPlugin.transient, 'function', '捕获不得改写宿主实时元数据');
+
+  let identityCalls = 0;
+  const invalid = { ...chatContext('不可保存元数据'), chat: [], chatMetadata: { otherPlugin: { value: 1n } } };
+  const invalidSession = createChatSession({
+    contextProvider: () => invalid,
+    identityCoordinator: { async prepare() { identityCalls += 1; return UUID; } },
+  });
+  await assert.rejects(invalidSession.prepare(), TypeError, 'JSON合同无法保存的BigInt仍要报告');
+  assert.equal(identityCalls, 0, '失败的元数据快照不得创建或持久化身份');
 });
 
 test('禁用时零元数据操作；在途准备完成后仍归捕获聊天身份', async () => {

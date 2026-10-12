@@ -1,4 +1,5 @@
 import { isUuid } from '../identity.js';
+import { cloneHostJsonMetadata } from '../host-context.js';
 
 export const MESSAGE_FLOOR_ANCHOR_KEY = 'qianqianjie_floor';
 export const MESSAGE_FLOOR_ANCHOR_SCHEMA_VERSION = 1;
@@ -391,7 +392,7 @@ export async function persistTargetChatIdentity({ coordinates, raw, snapshot, ch
     throw fail('V3_TARGET_CHAT_VERIFY_FAILED', '固定聊天身份保存后读回不一致。');
   }
   if (raw?.chatId === coordinates.hostChatId && raw?.chatMetadata
-    && JSON.stringify(withoutIntegrity({ chat_metadata: raw.chatMetadata })) === JSON.stringify(withoutIntegrity({ chat_metadata: snapshot.chatMetadata }))) {
+    && JSON.stringify(withoutIntegrity({ chat_metadata: cloneHostJsonMetadata(raw.chatMetadata) })) === JSON.stringify(withoutIntegrity({ chat_metadata: snapshot.chatMetadata }))) {
     raw.chatMetadata.qianqianjie = { ...(raw.chatMetadata.qianqianjie ?? {}), schemaVersion: 2, chatId };
     if (Object.hasOwn(persisted.header.chat_metadata, 'integrity')) raw.chatMetadata.integrity = persisted.header.chat_metadata.integrity;
     else delete raw.chatMetadata.integrity;

@@ -4,6 +4,7 @@ import { V3_ROOT_RECORD_ID } from './v3/foundation-store.js';
 import { captureTargetChatDescriptor } from './v3/host-adapter.js';
 import { readTargetChat } from './v3/message-floor-anchor.js';
 import { MESSAGE_FLOOR_ANCHOR_KEY } from './v3/message-floor-anchor.js';
+import { cloneHostJsonMetadata } from './host-context.js';
 import { publicErrorMessage } from './public-error.js';
 
 const RECEIPT_KEY = 'qqj_v3_recall_receipt';
@@ -170,7 +171,7 @@ export function createChatMemoryManagement({
       const rebuiltTarget = { ...target, chatId: rebuilt.chatId };
       const persisted = await readTargetChat(rebuiltTarget, { fetchImpl });
       const current = hostAdapter.snapshot();
-      const currentMetadata = clone(current.context.chatMetadata ?? {});
+      const currentMetadata = cloneHostJsonMetadata(current.context.chatMetadata ?? {});
       if (currentMetadata.qianqianjie?.schemaVersion === 2 && currentMetadata.qianqianjie.chatId === rebuilt.chatId) delete currentMetadata.qianqianjie;
       if (current.chatId !== identity.hostChatId || JSON.stringify(current.chat) !== JSON.stringify(chatBaseline)
         || JSON.stringify(currentMetadata) !== JSON.stringify(cleaned.header.chat_metadata ?? {})) return false;
