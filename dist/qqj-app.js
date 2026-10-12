@@ -7542,7 +7542,7 @@ async function Do({ store: e, targetIdentity: t, cachedReachable: n = null } = {
 }
 //#endregion
 //#region manifest.json
-var Oo = "0.7.11", ko = "qianqianjie", Ao = "/api/plugins/st-bainiaodata", jo = "qqj-bainiao-v1", Mo = Symbol.for("qqj.bainiao.tt.locks.v1"), No = (e, t) => Object.assign(Error(t), { status: e }), Po = (e) => JSON.parse(JSON.stringify(e)), Fo = (e) => {
+var Oo = "0.7.12", ko = "qianqianjie", Ao = "/api/plugins/st-bainiaodata", jo = "qqj-bainiao-v1", Mo = Symbol.for("qqj.bainiao.tt.locks.v1"), No = (e, t) => Object.assign(Error(t), { status: e }), Po = (e) => JSON.parse(JSON.stringify(e)), Fo = (e) => {
 	if (e?.aborted) throw e.reason ?? new DOMException("Aborted", "AbortError");
 }, Io = new TextEncoder(), Lo = (e) => ({
 	format: "qqj-tt-json-v2",
@@ -20587,10 +20587,16 @@ function m_(e, { finishReason: t } = {}) {
 		if (e !== void 0) return m_(e, { finishReason: t });
 		let a = r.length <= 1 ? bn(i, { finishReason: t })?.value : void 0;
 		if (a !== void 0) return m_(a, { finishReason: t });
+		let o = r.length <= 1 ? Sn(i, {
+			finishReason: t,
+			normalizeCandidate: (e) => e,
+			stableKey: (e) => JSON.stringify(e)
+		}) : null;
+		if (o !== null) return m_(o, { finishReason: t });
 		if (l_(n)) throw jg("V3_EXTRACTOR_SUMMARY_INVALID", "summary");
-		let o = [], s = i.indexOf("{"), c = i.lastIndexOf("}"), l = i.indexOf("["), u = i.lastIndexOf("]");
-		s >= 0 && c > s && o.push(i.slice(s, c + 1)), l >= 0 && u > l && o.push(i.slice(l, u + 1));
-		for (let e of o) try {
+		let s = [], c = i.indexOf("{"), l = i.lastIndexOf("}"), u = i.indexOf("["), d = i.lastIndexOf("]");
+		c >= 0 && l > c && s.push(i.slice(c, l + 1)), u >= 0 && d > u && s.push(i.slice(u, d + 1));
+		for (let e of s) try {
 			return m_(JSON.parse(e), { finishReason: t });
 		} catch {}
 		throw jg("V3_EXTRACTOR_SUMMARY_INVALID", "summary");
@@ -46201,7 +46207,53 @@ function yD(e, t) {
 		floors: e.floors.slice(0, r)
 	});
 }
-function bD(e, t, n, r, i, a) {
+function bD({ source: e, targetChatId: t, descriptorId: n, retainedFloors: r, projected: i, indexKeys: a, timeBatchIds: o, peopleCopy: s, partitioned: c, createdAt: l }) {
+	let u = e.migrationDescriptor;
+	if (!u) return null;
+	let d = new Set(r.map((e) => e.id)), f = u.frozenFloorIds.filter((e) => d.has(e)), p = new Set(f), m = new Set((c?.aliasWitnesses ?? []).map((e) => e.messageIndex)), h = u.carriedAliases.filter((e) => p.has(e.floorId) && m.has(e.targetMessageIndex)), g = u.summarySources.filter((e) => d.has(e.targetFloorId) && d.has(e.sourceFloorId)), _ = i.floorMemories.filter((e) => p.has(e.floorId)), v = i.stateDeltas.filter((e) => p.has(e.floorId));
+	return va({
+		...structuredClone(u),
+		id: n,
+		chatId: t,
+		createdAt: l,
+		frozenFloorIds: f,
+		floorOrigins: u.floorOrigins.filter((e) => p.has(e.floorId)),
+		carriedAliases: h,
+		summarySources: g,
+		sourceFloorProvenance: u.sourceFloorProvenance.filter((e) => p.has(e.floorId)),
+		recordRefs: {
+			floors: f,
+			floorMemories: _.map((e) => e.id),
+			entities: i.entities.map((e) => e.id),
+			baselineId: i.baseline?.id ?? null,
+			stateDeltas: v.map((e) => e.id),
+			currentStateIds: i.currentState ? [i.currentState.id] : [],
+			indexKeys: [...a],
+			timeBatchIds: o.filter((e) => u.recordRefs.timeBatchIds.includes(e)),
+			vectorShardIds: [],
+			peopleWorkspaceId: s?.workspace ? "v3-people-workspace" : null,
+			peopleSnapshotIds: s?.snapshotIds ?? []
+		}
+	}, { expectedChatId: t });
+}
+async function xD(e, t, n, r) {
+	if (!n?.descriptorId) return Le(e, t);
+	let i = e.filter((e) => e?.archiveCandidate !== !0), a = e.slice(0, t).filter((e) => e?.archiveCandidate !== !0).length, o = await Le(i, a), s = {
+		descriptorId: r,
+		aliasWitnesses: n.aliasWitnesses
+	};
+	return Object.freeze({
+		payload: Object.freeze({
+			...o.payload,
+			migration: Object.freeze(s)
+		}),
+		fingerprint: `sha256:${await y(JSON.stringify({
+			fingerprint: o.fingerprint,
+			...s
+		}))}`
+	});
+}
+function SD(e, t, n, r, i, a) {
 	let o;
 	try {
 		o = t.snapshot();
@@ -46238,7 +46290,7 @@ function bD(e, t, n, r, i, a) {
 	let c = i.header?.chat_metadata;
 	c && Object.hasOwn(c, "integrity") ? e.chatMetadata.integrity = c.integrity : delete e.chatMetadata.integrity;
 }
-async function xD({ peopleStore: e, sourceIdentity: t, targetIdentity: n, entities: r, now: i, signal: a, snapshotSourceIds: o = null }) {
+async function CD({ peopleStore: e, sourceIdentity: t, targetIdentity: n, entities: r, now: i, signal: a, snapshotSourceIds: o = null }) {
 	let s = await e.read(t), c = Array.isArray(o) ? await e.copySnapshots(t, n, o, s.data ? s : null) : null, l = await e.read(n);
 	if (l.data) return c ? Object.freeze({
 		workspace: l.data,
@@ -46280,7 +46332,7 @@ async function xD({ peopleStore: e, sourceIdentity: t, targetIdentity: n, entiti
 		}) : r.data;
 	}
 }
-async function SD(e, t, n) {
+async function wD(e, t, n) {
 	let r = 0, i = null;
 	async function a() {
 		for (; i === null;) {
@@ -46297,7 +46349,7 @@ async function SD(e, t, n) {
 	}
 	if (await Promise.all(Array.from({ length: Math.min(pD, t.length) }, () => a())), i) throw i;
 }
-function CD({ client: e, hostAdapter: t, vectorRuntimeProvider: n = () => null, sanitizerOptions: r = () => ({}), now: i = () => /* @__PURE__ */ new Date(), fetchImpl: a = globalThis.fetch } = {}) {
+function TD({ client: e, hostAdapter: t, vectorRuntimeProvider: n = () => null, sanitizerOptions: r = () => ({}), now: i = () => /* @__PURE__ */ new Date(), fetchImpl: a = globalThis.fetch } = {}) {
 	if (!e?.get || !e?.put || !t?.snapshot) throw TypeError("聊天分支初始化依赖无效");
 	return async function({ raw: o, host: s, sourceChatId: c, targetChatId: l, createdAt: u, signal: d, taskInputs: f = null } = {}) {
 		if (d?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -46326,269 +46378,301 @@ function CD({ client: e, hostAdapter: t, vectorRuntimeProvider: n = () => null, 
 		}), x = ES({
 			client: e,
 			contextProvider: () => m
-		}), S = Mv({ client: e }), C = await x.readReachable(), w = null, T = [], E = [];
-		if (["ready", "needsReseal"].includes(C.status)) {
-			let e = vD(await We(g.chat, {
+		}), S = Mv({ client: e }), C = QC({ client: e }), w = await x.readReachable(), T = null, E = [], D = [];
+		if (["ready", "needsReseal"].includes(w.status)) {
+			let e = await We(g.chat, {
 				sanitizerOptions: g.sanitizerOptions,
 				chatId: c
-			}), c, l), t = yD(C, e);
-			if (t.count !== C.floors.length) throw fD("V3_BRANCH_TARGET_MISMATCH", "已准备的分支记忆与当前消息不一致。");
-			T = t.floors.map((e, n) => ({
-				messageIndex: t.candidates[n].hostLocator.messageIndex,
+			}), t = vD(wa(w, g.chat, c, e).all, c, l), n = yD(w, t);
+			if (n.count !== w.floors.length) throw fD("V3_BRANCH_TARGET_MISMATCH", "已准备的分支记忆与当前消息不一致。");
+			if (E = n.floors.flatMap((e, t) => n.candidates[t]?.archiveCandidate ? [] : [{
+				messageIndex: n.candidates[t].hostLocator.messageIndex,
 				floorId: e.id
-			})), E = t.floors.map((e) => e.id), Ce(g, v, c, l, { expectedBindings: T }), await xD({
+			}]), D = n.floors.map((e) => e.id), Ce(g, v, c, l, { expectedBindings: E }), w.migrationDescriptor) {
+				await S.read(m);
+				for (let e of w.migrationDescriptor.recordRefs.peopleSnapshotIds) if (!await S.readSnapshot(m, e)) throw fD("QQJ_PEOPLE_SNAPSHOT_MISSING", "分支已提交的人物归档快照缺失，未完成恢复。");
+			} else await CD({
 				peopleStore: S,
 				sourceIdentity: p,
 				targetIdentity: m,
-				entities: C.entities,
+				entities: w.entities,
 				now: u ?? hD(i),
 				signal: d
 			});
-		} else if (C.status === "uninitialized") {
+		} else if (w.status === "uninitialized") {
 			let e = await b.readReachable();
-			if (w = e, ["ready", "needsReseal"].includes(e.status)) {
-				let t = vD(await We(g.chat, {
+			if (T = e, ["ready", "needsReseal"].includes(e.status)) {
+				let t = await We(g.chat, {
 					sanitizerOptions: g.sanitizerOptions,
 					chatId: c
-				}), c, l), n = yD(e, t);
-				if (n.count > 0) {
-					let r = n.floors.map((e, t) => ({
-						messageIndex: n.candidates[t].hostLocator.messageIndex,
+				}), n = wa(e, g.chat, c, t), r = vD(n.all, c, l), a = yD(e, r);
+				if (a.count > 0) {
+					let t = a.floors.flatMap((e, t) => a.candidates[t]?.archiveCandidate ? [] : [{
+						messageIndex: a.candidates[t].hostLocator.messageIndex,
 						floorId: e.id
-					}));
-					Ce(g, v, c, l, { expectedBindings: r });
-					let a = u ?? hD(i), o = await Le(t, n.count), s = await Ie([
+					}]);
+					Ce(g, v, c, l, { expectedBindings: t });
+					let o = u ?? hD(i), s = e.migrationDescriptor ? await Ie([
+						"branch-migration-descriptor-v1",
+						l,
+						e.migrationDescriptor.id,
+						a.floors.map((e) => e.id),
+						n.aliasWitnesses
+					]) : null, f = await xD(r, a.count, n, s), h = [
 						"generation",
 						l,
-						n.floors.map((e) => e.content.canonicalFingerprint)
-					]), f = await Ie([
+						a.floors.map((e) => e.content.canonicalFingerprint)
+					];
+					s && h.push(s);
+					let _ = await Ie(h), b = await Ie([
 						"foundation-branch-run-v1",
 						l,
 						c,
-						o.fingerprint
-					]), h = await Ie([
+						f.fingerprint
+					]), T = await Ie([
 						"foundation-branch-checkpoint-v1",
 						l,
 						c,
-						o.fingerprint
-					]), _ = n.floors.map((e, t) => ft({
-						..._D(e, l, s),
+						f.fingerprint
+					]), O = a.floors.map((e, t) => ft({
+						..._D(e, l, _),
 						assistantSeq: t + 1,
-						predecessorFloorId: n.floors[t - 1]?.id ?? null,
-						hostLocator: { ...n.candidates[t].hostLocator },
+						predecessorFloorId: a.floors[t - 1]?.id ?? null,
+						hostLocator: { ...a.candidates[t].hostLocator },
 						processing: {
 							...e.processing,
-							runId: f,
-							checkpointId: h
+							runId: b,
+							checkpointId: T
 						},
-						updatedAt: Date.parse(e.updatedAt) > Date.parse(a) ? e.updatedAt : a
-					}, { expectedChatId: l })), b = await LC({
+						updatedAt: Date.parse(e.updatedAt) > Date.parse(o) ? e.updatedAt : o
+					}, { expectedChatId: l })), k = await LC({
 						source: {
 							...e,
-							floorMemories: e.floorMemories.map((e) => _D(e, l, s)),
-							stateDeltas: e.stateDeltas.map((e) => _D(e, l, s)),
-							entities: e.entities.map((e) => _D(e, l, s)),
-							baseline: _D(e.baseline, l, s)
+							floorMemories: e.floorMemories.map((e) => _D(e, l, _)),
+							stateDeltas: e.stateDeltas.map((e) => _D(e, l, _)),
+							entities: e.entities.map((e) => _D(e, l, _)),
+							baseline: _D(e.baseline, l, _)
 						},
-						floors: _,
+						floors: O,
 						chatId: l,
-						narrativeGeneration: s,
-						now: a,
-						currentStateId: await Ie(["v3-cse-current-state", h])
-					}), w = await RC({
+						narrativeGeneration: _,
+						now: o,
+						currentStateId: await Ie(["v3-cse-current-state", T])
+					}), A = await RC({
 						chatId: l,
-						narrativeGeneration: s,
-						checkpointId: h,
-						floors: _,
-						candidates: n.candidates,
-						now: a
-					}), D = w.map((e) => x.recordKey(e)), O = _.map((e) => e.id), k = `sha256:${await y(JSON.stringify([
-						s,
-						O,
-						_.map((e) => e.content.canonicalFingerprint)
-					]))}`, A = mt({
+						narrativeGeneration: _,
+						checkpointId: T,
+						floors: O,
+						candidates: a.candidates,
+						now: o
+					}), j = A.map((e) => x.recordKey(e)), M = e.migrationDescriptor ? await C.copyPrefix(c, l, O, d) : [], N = e.migrationDescriptor ? await CD({
+						peopleStore: S,
+						sourceIdentity: p,
+						targetIdentity: m,
+						entities: k.entities,
+						now: o,
+						signal: d,
+						snapshotSourceIds: e.migrationDescriptor.recordRefs.peopleSnapshotIds
+					}) : null, P = O.map((e) => e.id), F = `sha256:${await y(JSON.stringify([
+						_,
+						P,
+						O.map((e) => e.content.canonicalFingerprint)
+					]))}`, I = mt({
 						schemaVersion: 3,
 						recordType: "run",
-						id: f,
+						id: b,
 						chatId: l,
-						narrativeGeneration: s,
+						narrativeGeneration: _,
 						parentCheckpointId: null,
-						inputSnapshotFingerprint: o.fingerprint,
+						inputSnapshotFingerprint: f.fingerprint,
 						mode: "branchReplay",
 						sessionEpoch: 0,
-						inputFloorIds: O,
+						inputFloorIds: P,
 						phase: "completed",
-						completedFloorIds: O,
+						completedFloorIds: P,
 						failedItems: [],
 						preparedRecordRefs: [
-							..._,
-							...b.floorMemories,
-							...b.entities,
-							...b.baseline ? [b.baseline] : [],
-							...b.stateDeltas,
-							...b.currentState ? [b.currentState] : [],
-							...w
+							...O,
+							...k.floorMemories,
+							...k.entities,
+							...k.baseline ? [k.baseline] : [],
+							...k.stateDeltas,
+							...k.currentState ? [k.currentState] : [],
+							...A
 						].map((e) => x.recordKey(e)),
 						diagnostics: null,
-						startedAt: a,
-						createdAt: a,
-						updatedAt: a,
+						startedAt: o,
+						createdAt: o,
+						updatedAt: o,
 						recordStatus: "staged",
 						supersedes: null
-					}, { expectedChatId: l }), j = ht({
+					}, { expectedChatId: l }), L = ht({
 						schemaVersion: 3,
 						recordType: "checkpoint",
-						id: h,
+						id: T,
 						chatId: l,
-						narrativeGeneration: s,
+						narrativeGeneration: _,
 						parentCheckpointId: null,
-						runId: f,
-						sourceSnapshotFingerprint: o.fingerprint,
+						runId: b,
+						sourceSnapshotFingerprint: f.fingerprint,
 						indexLayout: Xe,
-						capabilities: structuredClone(b.capabilities),
+						capabilities: structuredClone(k.capabilities),
 						floorRange: {
 							fromAssistantSeq: 1,
-							toAssistantSeq: _.length,
-							floorIds: O
+							toAssistantSeq: O.length,
+							floorIds: P
 						},
-						inputFingerprints: Re(_, {
-							candidates: n.candidates,
+						inputFingerprints: Re(O, {
+							candidates: a.candidates,
 							previous: e.checkpoint?.inputFingerprints
 						}),
 						producedRefs: {
-							floors: O,
-							floorMemories: b.floorMemories.map((e) => e.id),
-							entities: b.entities.map((e) => e.id),
+							floors: P,
+							floorMemories: k.floorMemories.map((e) => e.id),
+							entities: k.entities.map((e) => e.id),
 							events: [],
 							claims: [],
 							knowledge: [],
-							stateDeltas: b.stateDeltas.map((e) => e.id),
-							currentStates: b.currentState ? [b.currentState.id] : [],
+							stateDeltas: k.stateDeltas.map((e) => e.id),
+							currentStates: k.currentState ? [k.currentState.id] : [],
 							stateProjections: [],
 							episodes: [],
 							threads: [],
-							indexes: D
+							indexes: j
 						},
 						validation: {
 							schemaValid: !0,
 							referencesValid: !0,
 							orderedReplayValid: !0,
-							stateFingerprint: k
+							stateFingerprint: F
 						},
-						sealedAt: a,
-						createdAt: a,
-						updatedAt: a,
+						sealedAt: o,
+						createdAt: o,
+						updatedAt: o,
 						recordStatus: "active",
 						supersedes: null
-					}, { expectedChatId: l }), M = _.at(-1), N = dt({
+					}, { expectedChatId: l }), R = O.at(-1), z = dt({
 						schemaVersion: 3,
 						recordType: "root",
 						id: "root",
 						chatId: l,
-						narrativeGeneration: s,
+						narrativeGeneration: _,
 						status: "ready",
-						capabilities: structuredClone(b.capabilities),
-						headCheckpointId: h,
-						sourceSnapshotFingerprint: o.fingerprint,
+						capabilities: structuredClone(k.capabilities),
+						headCheckpointId: T,
+						sourceSnapshotFingerprint: f.fingerprint,
 						stableBoundary: {
-							assistantSeq: _.length,
-							floorId: M.id,
-							canonicalFingerprint: M.content.canonicalFingerprint
+							assistantSeq: O.length,
+							floorId: R.id,
+							canonicalFingerprint: R.content.canonicalFingerprint
 						},
-						baselineId: b.baseline?.id ?? null,
+						baselineId: k.baseline?.id ?? null,
 						activeRunId: null,
+						...s ? { migrationDescriptorId: s } : {},
 						indexManifest: {
 							...mD(),
-							floor: D
+							floor: j
 						},
-						activeStateRefs: b.currentState ? [b.currentState.id] : [],
+						activeStateRefs: k.currentState ? [k.currentState.id] : [],
 						activeThreadRefs: [],
-						createdAt: a,
-						updatedAt: a,
+						createdAt: o,
+						updatedAt: o,
 						recordStatus: "active",
 						supersedes: null
-					}, { expectedChatId: l });
+					}, { expectedChatId: l }), B = s ? bD({
+						source: e,
+						targetChatId: l,
+						descriptorId: s,
+						retainedFloors: O,
+						projected: k,
+						indexKeys: j,
+						timeBatchIds: M,
+						peopleCopy: N,
+						partitioned: n,
+						createdAt: o
+					}) : null;
 					await zC({
-						checkpoint: j,
-						run: A,
-						floors: _,
-						floorMemories: b.floorMemories,
-						entities: b.entities,
-						indexes: w,
-						indexKeys: D
+						checkpoint: L,
+						run: I,
+						floors: O,
+						floorMemories: k.floorMemories,
+						entities: k.entities,
+						indexes: A,
+						indexKeys: j
 					}), await vr({
-						root: N,
-						checkpoint: j,
-						run: A,
-						floors: _,
-						floorMemories: b.floorMemories,
-						entities: b.entities,
-						indexes: w,
-						indexKeys: D,
-						baseline: b.baseline,
-						stateDeltas: b.stateDeltas,
-						currentStates: b.currentState ? [b.currentState] : []
-					}), await SD(x, [
-						A,
-						..._,
-						...b.floorMemories,
-						...b.entities,
-						...b.baseline ? [b.baseline] : [],
-						...b.stateDeltas,
-						...b.currentState ? [b.currentState] : [],
-						...w
+						root: z,
+						checkpoint: L,
+						run: I,
+						floors: O,
+						floorMemories: k.floorMemories,
+						entities: k.entities,
+						indexes: A,
+						indexKeys: j,
+						baseline: k.baseline,
+						stateDeltas: k.stateDeltas,
+						currentStates: k.currentState ? [k.currentState] : []
+					}), await wD(x, [
+						I,
+						...O,
+						...k.floorMemories,
+						...k.entities,
+						...k.baseline ? [k.baseline] : [],
+						...k.stateDeltas,
+						...k.currentState ? [k.currentState] : [],
+						...A,
+						...B ? [B] : []
 					], d);
-					let P = await x.putRecord(j, { signal: d });
-					if (!["saved", "reused"].includes(P.status)) throw fD("V3_BRANCH_RECORD_CONFLICT", "分支记忆记录发生冲突，未提交目标根。");
-					let F = await x.commitRoot(N, 0, { signal: d });
-					if (["saved"].includes(F.status)) C = F.reachable;
-					else if (C = await x.readReachable(), !["ready", "needsReseal"].includes(C.status) || C.root.headCheckpointId !== h) throw fD("V3_BRANCH_ROOT_CONFLICT", "分支目标根发生冲突，未覆盖已有数据。");
-					T = r, E = O, await xD({
+					let V = await x.putRecord(L, { signal: d });
+					if (!["saved", "reused"].includes(V.status)) throw fD("V3_BRANCH_RECORD_CONFLICT", "分支记忆记录发生冲突，未提交目标根。");
+					let H = await x.commitRoot(z, 0, { signal: d });
+					if (["saved"].includes(H.status)) w = H.reachable;
+					else if (w = await x.readReachable(), !["ready", "needsReseal"].includes(w.status) || w.root.headCheckpointId !== T) throw fD("V3_BRANCH_ROOT_CONFLICT", "分支目标根发生冲突，未覆盖已有数据。");
+					E = t, D = P, await CD({
 						peopleStore: S,
 						sourceIdentity: p,
 						targetIdentity: m,
-						entities: b.entities,
-						now: a,
+						entities: k.entities,
+						now: o,
 						signal: d
 					});
 				}
 			} else if (e.status !== "uninitialized") throw fD("V3_BRANCH_SOURCE_UNAVAILABLE", "源聊天记忆暂时无法读取，未把错误当成空档。");
 		} else throw fD("V3_BRANCH_TARGET_UNAVAILABLE", "分支目标记忆暂时无法读取。");
-		if (await QC({ client: e }).copyPrefix(c, l, C.floors ?? [], d), d?.aborted) throw new DOMException("Aborted", "AbortError");
-		let D = await ke({
+		if (await C.copyPrefix(c, l, w.floors ?? [], d), d?.aborted) throw new DOMException("Aborted", "AbortError");
+		let O = await ke({
 			target: _,
 			chat: g.chat,
 			chatMetadata: g.chatMetadata,
 			sourceChatId: c,
 			targetChatId: l,
-			bindings: T,
-			retainedFloorIds: E,
+			bindings: E,
+			retainedFloorIds: D,
 			signal: d,
 			fetchImpl: a
 		});
-		if (bD(o, t, s.hostChatId, g.chat, D, l), E.length && C.status === "ready") try {
-			if (!w) {
+		if (SD(o, t, s.hostChatId, g.chat, O, l), D.length && w.status === "ready") try {
+			if (!T) {
 				let e = await b.readRoot();
-				e?.status === "ready" && e.data?.chatId === c && (w = {
-					...C,
+				e?.status === "ready" && e.data?.chatId === c && (T = {
+					...w,
 					root: e.data
 				});
 			}
-			w?.status === "ready" && await n()?.copyPrefix?.(p, m, C.root.narrativeGeneration, w, {
-				retainedFloorIds: E,
-				targetReachable: C
+			T?.status === "ready" && await n()?.copyPrefix?.(p, m, w.root.narrativeGeneration, T, {
+				retainedFloorIds: D,
+				targetReachable: w
 			});
 		} catch {}
 		return Object.freeze({
-			status: E.length ? "inherited" : "empty",
-			inheritedFloors: E.length,
+			status: D.length ? "inherited" : "empty",
+			inheritedFloors: D.length,
 			persistedIdentity: l
 		});
 	};
 }
 //#endregion
 //#region src/v3/memory-migration.js
-var wD = () => ({
+var ED = () => ({
 	floor: [],
 	entity: [],
 	event: [],
@@ -46599,18 +46683,18 @@ var wD = () => ({
 	state: [],
 	anchor: [],
 	reverseRef: []
-}), TD = async (e) => `sha256:${await y(JSON.stringify(e))}`, ED = (e, t, n) => e ? {
+}), DD = async (e) => `sha256:${await y(JSON.stringify(e))}`, OD = (e, t, n) => e ? {
 	...structuredClone(e),
 	chatId: t,
 	narrativeGeneration: n
-} : null, DD = (e) => {
+} : null, kD = (e) => {
 	let t = typeof e == "string" ? e : e?.toISOString?.();
 	if (!t || !Number.isFinite(Date.parse(t))) throw Object.assign(/* @__PURE__ */ TypeError("V3_MIGRATION_TIME_INVALID"), { code: "V3_MIGRATION_TIME_INVALID" });
 	return t;
-}, OD = (e) => {
+}, AD = (e) => {
 	throw Object.assign(Error(e), { code: e });
 };
-async function kD(e, t) {
+async function jD(e, t) {
 	let n = 0, r = null;
 	async function i() {
 		for (; !r;) {
@@ -46618,7 +46702,7 @@ async function kD(e, t) {
 			if (i >= t.length) return;
 			try {
 				let n = await e.putRecord(t[i]);
-				["saved", "reused"].includes(n.status) || OD("V3_MIGRATION_RECORD_WRITE_FAILED");
+				["saved", "reused"].includes(n.status) || AD("V3_MIGRATION_RECORD_WRITE_FAILED");
 			} catch (e) {
 				r ??= e;
 			}
@@ -46626,7 +46710,7 @@ async function kD(e, t) {
 	}
 	if (await Promise.all(Array.from({ length: Math.min(4, t.length) }, () => i())), r) throw r;
 }
-function AD({ reachable: e, carried: t = [], sourceCandidates: n = [], newUuid: r }) {
+function MD({ reachable: e, carried: t = [], sourceCandidates: n = [], newUuid: r }) {
 	let i = new Map((e?.floorMemories ?? []).filter((e) => e.recordStatus === "active").map((e) => [e.floorId, e])), a = new Set((e?.stateDeltas ?? []).filter((e) => e.recordStatus === "active").map((e) => e.floorId)), o = new Map(n.map((e) => [e.hostLocator.messageIndex, e])), s = new Map((e?.migrationDescriptor?.carriedAliases ?? []).map((e) => [e.aliasId, e])), c = [];
 	for (let n of t) {
 		if (!n || !Number.isSafeInteger(n.sourceMessageIndex) || !Number.isSafeInteger(n.targetMessageIndex)) continue;
@@ -46641,9 +46725,9 @@ function AD({ reachable: e, carried: t = [], sourceCandidates: n = [], newUuid: 
 	}
 	return Object.freeze(c.map((e) => Object.freeze(e)));
 }
-async function jD({ store: e, sourceIdentity: t, targetIdentity: n, sourceReachable: r, carriedAliases: i = [], targetChat: a = [], carriedSummary: o = null, summarySources: s = [], sourcePrequelSnapshots: c = [], sourceCalendarSnapshots: l = [], sourceTimeHeadSnapshots: u = [], timeBatchIds: d = [], vectorShardIds: f = [], peopleWorkspaceId: p = null, peopleSnapshotIds: m = [], sanitizerOptions: h = {}, now: g = () => /* @__PURE__ */ new Date(), newUuid: _ }) {
-	(!e?.readReachable || !e?.putRecord || !e?.commitRoot || !r?.root || r.status !== "ready" || r.root.chatId !== t?.chatId || n?.chatId === t.chatId) && OD("V3_MIGRATION_SOURCE_NOT_READY"), (await e.readReachable({ mode: "full" })).status !== "uninitialized" && OD("V3_MIGRATION_TARGET_NOT_EMPTY");
-	let v = DD(g()), y = n.chatId, b = await Ie([
+async function ND({ store: e, sourceIdentity: t, targetIdentity: n, sourceReachable: r, carriedAliases: i = [], targetChat: a = [], carriedSummary: o = null, summarySources: s = [], sourcePrequelSnapshots: c = [], sourceCalendarSnapshots: l = [], sourceTimeHeadSnapshots: u = [], timeBatchIds: d = [], vectorShardIds: f = [], peopleWorkspaceId: p = null, peopleSnapshotIds: m = [], sanitizerOptions: h = {}, now: g = () => /* @__PURE__ */ new Date(), newUuid: _ }) {
+	(!e?.readReachable || !e?.putRecord || !e?.commitRoot || !r?.root || r.status !== "ready" || r.root.chatId !== t?.chatId || n?.chatId === t.chatId) && AD("V3_MIGRATION_SOURCE_NOT_READY"), (await e.readReachable({ mode: "full" })).status !== "uninitialized" && AD("V3_MIGRATION_TARGET_NOT_EMPTY");
+	let v = kD(g()), y = n.chatId, b = await Ie([
 		"qqj-migration-generation-v1",
 		y,
 		r.root.narrativeGeneration,
@@ -46657,14 +46741,14 @@ async function jD({ store: e, sourceIdentity: t, targetIdentity: n, sourceReacha
 		y,
 		b
 	]), C = r.floors.map((e) => ft({
-		...ED(e, y, b),
+		...OD(e, y, b),
 		processing: {
 			...e.processing,
 			runId: x,
 			checkpointId: S
 		},
 		updatedAt: v
-	}, { expectedChatId: y })), w = r.floorMemories.map((e) => $t(ED(e, y, b), { expectedChatId: y })), T = r.entities.map((e) => tn(ED(e, y, b), { expectedChatId: y })), E = r.baseline ? mr(ED(r.baseline, y, b), { expectedChatId: y }) : null, D = r.stateDeltas.map((e) => hr(ED(e, y, b), { expectedChatId: y })), O = E ? await ra({
+	}, { expectedChatId: y })), w = r.floorMemories.map((e) => $t(OD(e, y, b), { expectedChatId: y })), T = r.entities.map((e) => tn(OD(e, y, b), { expectedChatId: y })), E = r.baseline ? mr(OD(r.baseline, y, b), { expectedChatId: y }) : null, D = r.stateDeltas.map((e) => hr(OD(e, y, b), { expectedChatId: y })), O = E ? await ra({
 		chatId: y,
 		narrativeGeneration: b,
 		baselineId: E.id,
@@ -46701,7 +46785,7 @@ async function jD({ store: e, sourceIdentity: t, targetIdentity: n, sourceReacha
 	let L = j.all.slice(0, I).filter((e) => e.archiveCandidate !== !0).length, R = await Le(j.live, L), z = {
 		descriptorId: A.id,
 		aliasWitnesses: j.aliasWitnesses
-	}, B = await TD({
+	}, B = await DD({
 		fingerprint: R.fingerprint,
 		...z
 	}), V = null, H = null, U = [...r.migrationDescriptor?.summarySources ?? [], ...s];
@@ -46823,7 +46907,7 @@ async function jD({ store: e, sourceIdentity: t, targetIdentity: n, sourceReacha
 		updatedAt: v,
 		recordStatus: "staged",
 		supersedes: null
-	}, { expectedChatId: y }), Y = await TD([
+	}, { expectedChatId: y }), Y = await DD([
 		b,
 		J,
 		W.map((e) => e.content.canonicalFingerprint)
@@ -46888,7 +46972,7 @@ async function jD({ store: e, sourceIdentity: t, targetIdentity: n, sourceReacha
 		activeRunId: null,
 		migrationDescriptorId: q.id,
 		indexManifest: {
-			...wD(),
+			...ED(),
 			floor: ee.filter((e) => e.includes("-floorOrder-") || e.includes("-fingerprint-")),
 			entity: ee.filter((e) => e.includes("-entity-")),
 			reverseRef: ee.filter((e) => e.includes("-reverseRef-"))
@@ -46935,11 +47019,11 @@ async function jD({ store: e, sourceIdentity: t, targetIdentity: n, sourceReacha
 		q,
 		X
 	];
-	await kD(e, Q);
+	await jD(e, Q);
 	let ie = await e.commitRoot(Z, 0, { awaitCoreCachePublish: !0 });
-	ie.status !== "saved" && OD("V3_MIGRATION_ROOT_CONFLICT");
+	ie.status !== "saved" && AD("V3_MIGRATION_ROOT_CONFLICT");
 	let ae = ie.reachable;
-	return (ae?.status !== "ready" || ae.root.headCheckpointId !== S || ae.migrationDescriptor?.id !== q.id) && OD("V3_MIGRATION_VERIFY_FAILED"), Object.freeze({
+	return (ae?.status !== "ready" || ae.root.headCheckpointId !== S || ae.migrationDescriptor?.id !== q.id) && AD("V3_MIGRATION_VERIFY_FAILED"), Object.freeze({
 		status: "ready",
 		reachable: ae,
 		descriptor: q,
@@ -46949,16 +47033,16 @@ async function jD({ store: e, sourceIdentity: t, targetIdentity: n, sourceReacha
 }
 //#endregion
 //#region src/chat-memory-migration.js
-var MD = "qqj_v3_recall_receipt", ND = "qianqianjie_floor", PD = "qianqianjieAutoHide", FD = (e, t) => Object.assign(Error(t), { code: e }), ID = (e) => structuredClone(e), LD = async (e) => `sha256:${await y(e)}`;
-function RD(e, { ai: t = !1, aliasId: n = null, sourceChatId: r = null } = {}) {
-	let { swipes: i, swipe_info: a, ...o } = e, s = ID(o), c = (e) => {
+var PD = "qqj_v3_recall_receipt", FD = "qianqianjie_floor", ID = "qianqianjieAutoHide", LD = (e, t) => Object.assign(Error(t), { code: e }), RD = (e) => structuredClone(e), zD = async (e) => `sha256:${await y(e)}`;
+function BD(e, { ai: t = !1, aliasId: n = null, sourceChatId: r = null } = {}) {
+	let { swipes: i, swipe_info: a, ...o } = e, s = RD(o), c = (e) => {
 		if (!e || typeof e != "object" || Array.isArray(e)) return n && !e ? { [Ca]: n } : e;
 		let t = { ...e };
-		return delete t[MD], delete t[ND], delete t[PD], delete t[Ca], n && (t[Ca] = n), t;
+		return delete t[PD], delete t[FD], delete t[ID], delete t[Ca], n && (t[Ca] = n), t;
 	};
-	if (t && n ? s.extra = c(s.extra) ?? {} : s.extra &&= c(s.extra), s.is_system === !0 && e?.extra?.[PD]?.schemaVersion === 1 && e.extra[PD].chatId === r && (s.is_system = !1), t) {
+	if (t && n ? s.extra = c(s.extra) ?? {} : s.extra &&= c(s.extra), s.is_system === !0 && e?.extra?.[ID]?.schemaVersion === 1 && e.extra[ID].chatId === r && (s.is_system = !1), t) {
 		let t = Ve(e);
-		if (!t) throw FD("QQJ_MIGRATION_CARRY_INVALID", "要携带的 AI 消息已没有有效选中内容。");
+		if (!t) throw LD("QQJ_MIGRATION_CARRY_INVALID", "要携带的 AI 消息已没有有效选中内容。");
 		let n = Number.isSafeInteger(e.swipe_id) && Array.isArray(e.swipe_info) ? e.swipe_info[e.swipe_id] : e.swipe_info?.[0];
 		s.mes = t.rawContent, s.swipes = [t.rawContent], s.swipe_id = 0, s.swipe_info = n ? [{
 			...n,
@@ -46973,10 +47057,10 @@ function RD(e, { ai: t = !1, aliasId: n = null, sourceChatId: r = null } = {}) {
 	}
 	return s;
 }
-function zD(e, t, n) {
+function VD(e, t, n) {
 	let r = e.chat, i = -1;
 	for (let e = r.length - 1; e >= 0; --e) {
-		let t = r[e], a = t?.extra?.[PD]?.schemaVersion === 1 && t.extra[PD].chatId === n;
+		let t = r[e], a = t?.extra?.[ID]?.schemaVersion === 1 && t.extra[ID].chatId === n;
 		if (!(t?.is_system === !0 && !a) && Ve(t)) {
 			i = e;
 			break;
@@ -46984,19 +47068,19 @@ function zD(e, t, n) {
 	}
 	let a = r.length - 1;
 	for (; a >= 0;) {
-		let e = r[a], t = e?.extra?.[PD]?.schemaVersion === 1 && e.extra[PD].chatId === n;
+		let e = r[a], t = e?.extra?.[ID]?.schemaVersion === 1 && e.extra[ID].chatId === n;
 		if (e?.extra?.type === "narrator" || e?.is_system === !0 && !t) --a;
 		else break;
 	}
-	let o = r[a], s = o?.extra?.[PD]?.schemaVersion === 1 && o.extra[PD].chatId === n, c = a >= 0 && o?.is_user === !0 && (!o.is_system || s) ? a : -1, l = -1, u = i >= 0 ? t() : null;
+	let o = r[a], s = o?.extra?.[ID]?.schemaVersion === 1 && o.extra[ID].chatId === n, c = a >= 0 && o?.is_user === !0 && (!o.is_system || s) ? a : -1, l = -1, u = i >= 0 ? t() : null;
 	l = c >= 0 ? c : i >= 0 ? (() => {
 		for (let e = i - 1; e >= 0; --e) {
-			let t = r[e], i = t?.extra?.[PD]?.schemaVersion === 1 && t.extra[PD].chatId === n;
+			let t = r[e], i = t?.extra?.[ID]?.schemaVersion === 1 && t.extra[ID].chatId === n;
 			if (t?.is_user === !0 && (!t.is_system || i) && t.extra?.type !== "narrator") return e;
 		}
 		return -1;
 	})() : -1;
-	let d = [l, i].filter((e) => e >= 0).sort((e, t) => e - t), f = i >= 0 ? r[i] : null, p = f ? Ve(f) : null, m = f?.extra?.[ND], h = d.map((e) => RD(r[e], {
+	let d = [l, i].filter((e) => e >= 0).sort((e, t) => e - t), f = i >= 0 ? r[i] : null, p = f ? Ve(f) : null, m = f?.extra?.[FD], h = d.map((e) => BD(r[e], {
 		ai: e === i,
 		aliasId: e === i ? u : null,
 		sourceChatId: n
@@ -47014,29 +47098,29 @@ function zD(e, t, n) {
 		sourceAliasId: f?.extra?.qianqianjie_migration_alias ?? null
 	});
 }
-function BD(e, t, n) {
+function HD(e, t, n) {
 	let r = new Set((e ?? []).map((e) => String(e).replace(/\.jsonl$/i, ""))), i = `${t} - memory migration ${n.replace(/[:.]/g, "-")}`, a = i, o = 2;
 	for (; r.has(a);) a = `${i} (${o++})`;
 	return a;
 }
-function VD(e, { priorAliasId: t = null, sourceFloorId: n = null, sourceMessageIndex: r = -1 } = {}) {
+function UD(e, { priorAliasId: t = null, sourceFloorId: n = null, sourceMessageIndex: r = -1 } = {}) {
 	let i = t && e?.migrationDescriptor?.carriedAliases?.find((e) => e.aliasId === t);
 	if (i) return e.floors.find((e) => e.id === i.floorId) ?? null;
 	let a = ba(e).liveFloors;
 	return n ? a.find((e) => e.id === n) ?? null : a.find((e) => e.hostLocator.messageIndex === r) ?? null;
 }
-function HD({ client: e, session: t, hostAdapter: n, sourceStoreForIdentity: r, sanitizerOptions: i = () => ({}), listHostChats: a, freshUuid: o = () => globalThis.crypto?.randomUUID?.(), now: s = () => /* @__PURE__ */ new Date(), fetchImpl: c = globalThis.fetch, copyPeople: l = null, copyTime: u = null, copyVector: d = null, captureStoryCalendar: f = () => null, persistStoryCalendar: p = async () => {} } = {}) {
+function WD({ client: e, session: t, hostAdapter: n, sourceStoreForIdentity: r, sanitizerOptions: i = () => ({}), listHostChats: a, freshUuid: o = () => globalThis.crypto?.randomUUID?.(), now: s = () => /* @__PURE__ */ new Date(), fetchImpl: c = globalThis.fetch, copyPeople: l = null, copyTime: u = null, copyVector: d = null, captureStoryCalendar: f = () => null, persistStoryCalendar: p = async () => {} } = {}) {
 	if (!e?.get || !e?.put || !t?.identity || !n?.snapshot || typeof r != "function" || typeof a != "function" || typeof c != "function") throw TypeError("记忆搬家依赖无效");
 	let m = null;
 	async function h() {
-		if (m) throw FD("QQJ_MIGRATION_BUSY", "当前记忆搬家仍在执行。");
+		if (m) throw LD("QQJ_MIGRATION_BUSY", "当前记忆搬家仍在执行。");
 		let { identity: h, host: g, capturedUserName: _, capturedPrequel: v, capturedCalendar: y, carried: b } = (() => {
 			let e = n.snapshot(), r = t.identity();
-			if (e.chatId !== r.hostChatId || e.context?.chatMetadata?.qianqianjie?.chatId !== r.chatId || !Array.isArray(e.chat)) throw FD("QQJ_MIGRATION_SOURCE_INVALID", "当前聊天身份尚未准备完成，无法搬家。");
+			if (e.chatId !== r.hostChatId || e.context?.chatMetadata?.qianqianjie?.chatId !== r.chatId || !Array.isArray(e.chat)) throw LD("QQJ_MIGRATION_SOURCE_INVALID", "当前聊天身份尚未准备完成，无法搬家。");
 			let i = Nx(e, r), a = Object.freeze({
 				...i,
 				requestHeaders: Object.freeze({ ...i.requestHeaders ?? {} })
-			}), s = String(e.context.name1 ?? e.context.userName ?? ""), c = typeof e.context.chatMetadata?.qianqianjiePrequel == "string" ? e.context.chatMetadata.qianqianjiePrequel : null, l = f(r.chatId), u = l ? structuredClone(l) : null, d = zD(e, o, r.chatId);
+			}), s = String(e.context.name1 ?? e.context.userName ?? ""), c = typeof e.context.chatMetadata?.qianqianjiePrequel == "string" ? e.context.chatMetadata.qianqianjiePrequel : null, l = f(r.chatId), u = l ? structuredClone(l) : null, d = VD(e, o, r.chatId);
 			return Object.freeze({
 				identity: r,
 				host: a,
@@ -47053,9 +47137,9 @@ function HD({ client: e, session: t, hostAdapter: n, sourceStoreForIdentity: r, 
 		m = x;
 		try {
 			let t = await r(h).readReachable({ mode: "runtime" });
-			if (t.status !== "ready" || t.root.chatId !== h.chatId) throw FD("QQJ_MIGRATION_SOURCE_NOT_READY", "当前完整记忆尚未通过读取校验，未创建新聊天。");
-			let f = await a(g.avatarUrl), m = s(), x = BD(f, g.characterName, m.toISOString()), S = o();
-			if (!Q(S)) throw FD("QQJ_MIGRATION_ID_INVALID", "新聊天编号无效。");
+			if (t.status !== "ready" || t.root.chatId !== h.chatId) throw LD("QQJ_MIGRATION_SOURCE_NOT_READY", "当前完整记忆尚未通过读取校验，未创建新聊天。");
+			let f = await a(g.avatarUrl), m = s(), x = HD(f, g.characterName, m.toISOString()), S = o();
+			if (!Q(S)) throw LD("QQJ_MIGRATION_ID_INVALID", "新聊天编号无效。");
 			let C = Object.freeze({
 				...h,
 				hostChatId: x,
@@ -47071,7 +47155,7 @@ function HD({ client: e, session: t, hostAdapter: n, sourceStoreForIdentity: r, 
 				t.root.headCheckpointId
 			]), E = b.messages, D = [];
 			if (b.aiIndex >= 0) {
-				let e = te(b.selectedRawContent, i()), [n, r] = await Promise.all([LD(b.selectedRawContent), LD(e)]), a = b.sourceAliasId, o = a && t.migrationDescriptor?.carriedAliases?.find((e) => e.aliasId === a), s = VD(t, {
+				let e = te(b.selectedRawContent, i()), [n, r] = await Promise.all([zD(b.selectedRawContent), zD(e)]), a = b.sourceAliasId, o = a && t.migrationDescriptor?.carriedAliases?.find((e) => e.aliasId === a), s = UD(t, {
 					priorAliasId: a,
 					sourceFloorId: b.sourceFloorId,
 					sourceMessageIndex: b.aiIndex
@@ -47086,7 +47170,7 @@ function HD({ client: e, session: t, hostAdapter: n, sourceStoreForIdentity: r, 
 					priorAliasId: o?.aliasId ?? null
 				});
 			}
-			let O = AD({
+			let O = MD({
 				reachable: t,
 				carried: D.filter((e) => e.targetMessageIndex >= 0),
 				sourceCandidates: D.map((e) => ({
@@ -47125,7 +47209,7 @@ function HD({ client: e, session: t, hostAdapter: n, sourceStoreForIdentity: r, 
 				targetIdentity: C,
 				entities: t.entities,
 				sourceReachable: t
-			}) : null, L = await jD({
+			}) : null, L = await ND({
 				store: r(C),
 				sourceIdentity: h,
 				targetIdentity: C,
@@ -47172,12 +47256,12 @@ function HD({ client: e, session: t, hostAdapter: n, sourceStoreForIdentity: r, 
 					chat: R,
 					force: !1
 				})
-			}))?.ok) throw FD("QQJ_MIGRATION_HOST_SAVE_FAILED", "新聊天没有保存成功。");
+			}))?.ok) throw LD("QQJ_MIGRATION_HOST_SAVE_FAILED", "新聊天没有保存成功。");
 			let z = await Ee(Object.freeze({
 				...w,
 				chatId: S
 			}), { fetchImpl: c });
-			if (JSON.stringify(z.chat) !== JSON.stringify(E) || z.header.chat_metadata?.qianqianjie?.chatId !== S || v !== null && z.header.chat_metadata?.qianqianjiePrequel !== v) throw FD("QQJ_MIGRATION_HOST_VERIFY_FAILED", "新聊天读回核验失败，身份绑定未发布。");
+			if (JSON.stringify(z.chat) !== JSON.stringify(E) || z.header.chat_metadata?.qianqianjie?.chatId !== S || v !== null && z.header.chat_metadata?.qianqianjiePrequel !== v) throw LD("QQJ_MIGRATION_HOST_VERIFY_FAILED", "新聊天读回核验失败，身份绑定未发布。");
 			y && await p(S, y);
 			let B = s()?.toISOString?.() ?? (/* @__PURE__ */ new Date()).toISOString(), V = {
 				schemaVersion: 1,
@@ -47222,30 +47306,30 @@ function HD({ client: e, session: t, hostAdapter: n, sourceStoreForIdentity: r, 
 }
 //#endregion
 //#region src/v3/public-memory-bridge.js
-var UD = "qqj_v3_public_bridge_v1", WD = (e, t = 4e3) => String(e ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, t), GD = (e) => Object.freeze(e), KD = (e, t) => t.get(e)?.displayName || "未知人物", qD = (e, t) => [...new Set((e ?? []).filter(Boolean).map((e) => KD(e, t)))].join("、");
-function JD(e, t) {
+var GD = "qqj_v3_public_bridge_v1", KD = (e, t = 4e3) => String(e ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, t), qD = (e) => Object.freeze(e), JD = (e, t) => t.get(e)?.displayName || "未知人物", YD = (e, t) => [...new Set((e ?? []).filter(Boolean).map((e) => JD(e, t)))].join("、");
+function XD(e, t) {
 	let n = {
 		intended: "打算",
 		attempted: "尝试",
 		completed: "完成",
 		interrupted: "中断",
 		uncertain: "结果未定"
-	}[e.completion] ?? "行动", r = KD(e.actorEntityId, t), i = qD(e.targetEntityIds, t);
+	}[e.completion] ?? "行动", r = JD(e.actorEntityId, t), i = YD(e.targetEntityIds, t);
 	return `${r}${i ? ` → ${i}` : ""}：${n}「${e.action}」${e.result ? `，结果：${e.result}` : ""}`;
 }
-function YD(e, t) {
-	let n = KD(e.speakerEntityId, t), r = qD(e.targetEntityIds, t), i = {
+function ZD(e, t) {
+	let n = JD(e.speakerEntityId, t), r = YD(e.targetEntityIds, t), i = {
 		accepted: "已接受",
 		refused: "已拒绝",
 		pending: "待定",
 		uncertain: "是否成立未定"
-	}[e.status] ?? WD(e.status, 100), a = e.kind === "plan" ? "计划" : "承诺";
+	}[e.status] ?? KD(e.status, 100), a = e.kind === "plan" ? "计划" : "承诺";
 	return `${n}${r ? ` → ${r}` : ""}：${a}「${e.content}」${i ? `（${i}；不代表已履行）` : "（不代表已履行）"}`;
 }
-function XD(e, t) {
+function QD(e, t) {
 	return e.visibility === "private" ? `仅 ${t} 本人知情` : e.visibility === "authorial" ? "作者塑造参考，不代表任何人物知情" : e.visibility === "shared" ? "已共享" : e.visibility === "expressed" ? "已表达" : "可观察";
 }
-function ZD(e) {
+function $D(e) {
 	if (!e || e.status !== "ready") return "";
 	let t = Array.isArray(e.entities) ? e.entities : [], n = Array.isArray(e.floorMemories) ? e.floorMemories : [], r = Array.isArray(e.currentState) ? e.currentState : [];
 	if (!n.length && !r.length) return "";
@@ -47253,7 +47337,7 @@ function ZD(e) {
 	if (o.length) {
 		a.push("", "[人物索引]");
 		for (let e of o) {
-			let t = [...new Set((e.aliases ?? []).map((e) => WD(e, 500)).filter((t) => t && t !== e.displayName))];
+			let t = [...new Set((e.aliases ?? []).map((e) => KD(e, 500)).filter((t) => t && t !== e.displayName))];
 			a.push(`- ${e.displayName}${t.length ? `（别名：${t.join("、")}）` : ""}`);
 		}
 	}
@@ -47262,13 +47346,13 @@ function ZD(e) {
 		for (let e of n) {
 			let t = [];
 			for (let n of e.events ?? []) t.push(`事件：${n.title}${n.description ? `——${n.description}` : ""}`);
-			for (let n of e.actions ?? []) t.push(`行动：${JD(n, i)}`);
-			for (let n of e.commitments ?? []) t.push(`承诺/计划：${YD(n, i)}`);
+			for (let n of e.actions ?? []) t.push(`行动：${XD(n, i)}`);
+			for (let n of e.commitments ?? []) t.push(`承诺/计划：${ZD(n, i)}`);
 			for (let n of e.openLoops ?? []) {
-				let e = qD(n.ownerEntityIds, i);
+				let e = YD(n.ownerEntityIds, i);
 				t.push(`未结事项${e ? `（相关人物：${e}）` : ""}：${n.description}`);
 			}
-			let n = WD(e.summary);
+			let n = KD(e.summary);
 			if (!n && !t.length) continue;
 			let r = Ua(e.chronology);
 			a.push(`- AI #${e.assistantSeq}${r ? `（${r}）` : ""}${n ? `：${n}` : ""}`);
@@ -47279,14 +47363,14 @@ function ZD(e) {
 		let t = e.coverage ?? {};
 		a.push("", t.cseCurrent ? "[当前人物状态]" : `[已保存人物状态（仅连续到 AI #${t.cseThroughAssistantSeq || 0}，不代表当前完整状态）]`);
 		for (let e of r) {
-			let t = KD(e.subjectEntityId, i);
+			let t = JD(e.subjectEntityId, i);
 			for (let [n, r] of [
 				["Core", e.core],
 				["Adaptive", e.adaptive],
 				["Situational", e.situational]
 			]) for (let e of r ?? []) {
-				let r = e.towardEntityId ? `；对象：${KD(e.towardEntityId, i)}` : "", o = e.sourceAssistantSeq ? `；来源 AI #${e.sourceAssistantSeq}` : "", s = e.reason ? `；依据：${e.reason}` : "";
-				a.push(`- ${t} / ${n} / ${XD(e, t)}${r}${o}：${e.text}${s}`);
+				let r = e.towardEntityId ? `；对象：${JD(e.towardEntityId, i)}` : "", o = e.sourceAssistantSeq ? `；来源 AI #${e.sourceAssistantSeq}` : "", s = e.reason ? `；依据：${e.reason}` : "";
+				a.push(`- ${t} / ${n} / ${QD(e, t)}${r}${o}：${e.text}${s}`);
 			}
 		}
 	}
@@ -47297,12 +47381,12 @@ function ZD(e) {
 	}
 	return a.push("</qqj_memory_context>"), a.join("\n");
 }
-var QD = (e) => GD({
+var eO = (e) => qD({
 	hostChatId: e.hostChatId,
 	qqjChatId: e.chatId,
 	characterLocator: e.characterLocator,
 	personaLocator: e.personaLocator
-}), $D = (e, t) => e?.hostChatId === t?.hostChatId && e?.chatId === t?.chatId && e?.characterLocator === t?.characterLocator && e?.personaLocator === t?.personaLocator, eO = (e) => {
+}), tO = (e, t) => e?.hostChatId === t?.hostChatId && e?.chatId === t?.chatId && e?.characterLocator === t?.characterLocator && e?.personaLocator === t?.personaLocator, nO = (e) => {
 	if (!e || typeof e.getState != "function" || typeof e.getReachable != "function") return null;
 	try {
 		if (e.getState()?.status !== "ready") return null;
@@ -47311,7 +47395,7 @@ var QD = (e) => GD({
 	} catch {
 		return null;
 	}
-}, tO = (e, t) => t?.status === "ready" && t.revision === e?.rootRevision && t.data?.chatId === e?.root?.chatId && t.data?.headCheckpointId === e?.root?.headCheckpointId && t.data?.narrativeGeneration === e?.root?.narrativeGeneration && t.data?.sourceSnapshotFingerprint === e?.root?.sourceSnapshotFingerprint, nO = (e) => ({
+}, rO = (e, t) => t?.status === "ready" && t.revision === e?.rootRevision && t.data?.chatId === e?.root?.chatId && t.data?.headCheckpointId === e?.root?.headCheckpointId && t.data?.narrativeGeneration === e?.root?.narrativeGeneration && t.data?.sourceSnapshotFingerprint === e?.root?.sourceSnapshotFingerprint, iO = (e) => ({
 	id: e?.id ?? null,
 	text: e?.text ?? "",
 	visibility: e?.visibility ?? null,
@@ -47321,28 +47405,28 @@ var QD = (e) => GD({
 	towardDisplayName: e?.towardDisplayName ?? null,
 	sourceFloorId: e?.sourceFloorId ?? null,
 	sourceAssistantSeq: e?.sourceAssistantSeq ?? null
-}), rO = (e) => ({
+}), aO = (e) => ({
 	subjectEntityId: e?.subjectEntityId ?? null,
 	displayName: e?.displayName ?? "未知人物",
-	core: (e?.core ?? []).map(nO),
-	adaptive: (e?.adaptive ?? []).map(nO),
-	situational: (e?.situational ?? []).map(nO)
-}), iO = (e = "not-ready", t = "idle") => ({
+	core: (e?.core ?? []).map(iO),
+	adaptive: (e?.adaptive ?? []).map(iO),
+	situational: (e?.situational ?? []).map(iO)
+}), oO = (e = "not-ready", t = "idle") => ({
 	status: e,
 	syncStatus: t,
 	headCheckpointId: null,
 	floors: []
-}), aO = () => ({
+}), sO = () => ({
 	ready: !1,
 	currentSubjects: [],
 	floors: []
-}), oO = (e = "not-ready") => ({
+}), cO = (e = "not-ready") => ({
 	status: e,
 	revision: null,
 	items: []
 });
-function sO(e, t) {
-	if (!e || e.chatId !== t) return iO();
+function lO(e, t) {
+	if (!e || e.chatId !== t) return oO();
 	let n = e.memorySnapshotStatus ?? "not-ready", r = e.memorySyncStatus ?? "idle";
 	return n === "ready" ? {
 		status: n,
@@ -47355,12 +47439,12 @@ function sO(e, t) {
 			summary: e.summary,
 			summarySource: e.summarySource
 		}))
-	} : iO(n, r);
+	} : oO(n, r);
 }
-function cO(e, t) {
-	return !e || e.chatId !== t || e.memorySnapshotStatus !== "ready" ? aO() : {
+function uO(e, t) {
+	return !e || e.chatId !== t || e.memorySnapshotStatus !== "ready" ? sO() : {
 		ready: e.cseReady === !0,
-		currentSubjects: (e.cseSubjects ?? []).map(rO),
+		currentSubjects: (e.cseSubjects ?? []).map(aO),
 		floors: (e.floors ?? []).filter((e) => e?.cse).map((e) => {
 			let t = e.cse, n = t.record?.fixedChangesAvailable === !0;
 			return {
@@ -47376,17 +47460,17 @@ function cO(e, t) {
 					changes: (e.changes ?? []).map((e) => ({
 						category: e.category,
 						action: e.action,
-						before: e.before ? nO(e.before) : null,
-						after: e.after ? nO(e.after) : null
+						before: e.before ? iO(e.before) : null,
+						after: e.after ? iO(e.after) : null
 					}))
 				})) : null,
-				savedSubjects: (t.record?.endStateSubjects ?? []).map(rO)
+				savedSubjects: (t.record?.endStateSubjects ?? []).map(aO)
 			};
 		})
 	};
 }
-function lO(e, t) {
-	return !e || e.chatId !== t ? oO() : {
+function dO(e, t) {
+	return !e || e.chatId !== t ? cO() : {
 		status: e.status ?? "not-ready",
 		revision: e.revision ?? null,
 		items: (e.people ?? []).map((e) => ({
@@ -47407,7 +47491,7 @@ function lO(e, t) {
 		}))
 	};
 }
-function uO({ session: e, store: t, hostAdapter: n, foundationRuntime: r = null, memoryRuntime: i = null, peopleRuntime: a = null, recallRuntime: o = null, isEnabled: s = !0, sanitizerOptions: c = () => ({}), identityProjectionProvider: l = null, readSource: u = Za } = {}) {
+function fO({ session: e, store: t, hostAdapter: n, foundationRuntime: r = null, memoryRuntime: i = null, peopleRuntime: a = null, recallRuntime: o = null, isEnabled: s = !0, sanitizerOptions: c = () => ({}), identityProjectionProvider: l = null, readSource: u = Za } = {}) {
 	if (!e || typeof e.identity != "function" || typeof e.getState != "function") throw TypeError("公共记忆桥 session 无效");
 	if (!t || typeof t.readReachable != "function") throw TypeError("公共记忆桥 store 无效");
 	if (!n || typeof n.snapshot != "function") throw TypeError("公共记忆桥 hostAdapter 无效");
@@ -47419,17 +47503,17 @@ function uO({ session: e, store: t, hostAdapter: n, foundationRuntime: r = null,
 			return !1;
 		}
 	}, f = () => {
-		if (!d()) return GD({
+		if (!d()) return qD({
 			status: "disabled",
 			message: "千千结当前已关闭。"
 		});
 		let t = e.getState();
-		return t?.status !== "ready" || !t.identity ? GD({
+		return t?.status !== "ready" || !t.identity ? qD({
 			status: "not-ready",
 			message: "千千结尚未准备好当前聊天身份。"
-		}) : GD({
+		}) : qD({
 			status: "ready",
-			identity: QD(t.identity)
+			identity: eO(t.identity)
 		});
 	};
 	async function p() {
@@ -47439,14 +47523,14 @@ function uO({ session: e, store: t, hostAdapter: n, foundationRuntime: r = null,
 		try {
 			a = e.identity();
 		} catch {
-			return GD({
+			return qD({
 				status: "not-ready",
 				message: "千千结尚未准备好当前聊天身份。"
 			});
 		}
 		try {
-			let i = n.snapshot(), o = typeof c == "function" ? c() : c, s = typeof l == "function" ? await l() : null, d = s?.data ?? s, f = eO(r), p = null;
-			f && typeof t.readRoot == "function" && tO(f, await t.readRoot()) && (p = await Xa(f, () => /* @__PURE__ */ new Date(), GD({
+			let i = n.snapshot(), o = typeof c == "function" ? c() : c, s = typeof l == "function" ? await l() : null, d = s?.data ?? s, f = nO(r), p = null;
+			f && typeof t.readRoot == "function" && rO(f, await t.readRoot()) && (p = await Xa(f, () => /* @__PURE__ */ new Date(), qD({
 				reachableReads: 0,
 				exitPoint: "foundationCache"
 			}), i, o, !1, d)), p ??= await u({
@@ -47459,31 +47543,31 @@ function uO({ session: e, store: t, hostAdapter: n, foundationRuntime: r = null,
 			try {
 				m = e.identity();
 			} catch {
-				return GD({
+				return qD({
 					status: "stale",
 					message: "读取期间当前聊天已变化。"
 				});
 			}
-			if (!$D(a, m) || n.snapshot()?.chatId !== a.hostChatId) return GD({
+			if (!tO(a, m) || n.snapshot()?.chatId !== a.hostChatId) return qD({
 				status: "stale",
 				message: "读取期间当前聊天已变化。"
 			});
-			if (p.status !== "ready") return GD({
+			if (p.status !== "ready") return qD({
 				status: p.status,
 				message: "当前聊天暂无可读取的千千结正式记忆。",
-				identity: QD(a)
+				identity: eO(a)
 			});
-			if (p.chatId !== a.chatId) return GD({
+			if (p.chatId !== a.chatId) return qD({
 				status: "stale",
 				message: "千千结记忆身份已变化。"
 			});
-			let h = ZD(p);
-			return GD({
+			let h = $D(p);
+			return qD({
 				status: h ? "ready" : "empty",
 				text: h,
 				message: h ? "" : "当前聊天还没有千千结正式记忆。",
-				identity: QD(a),
-				anchor: GD({
+				identity: eO(a),
+				anchor: qD({
 					narrativeGeneration: p.narrativeGeneration,
 					headCheckpointId: p.headCheckpointId,
 					rootRevision: p.rootRevision
@@ -47491,10 +47575,10 @@ function uO({ session: e, store: t, hostAdapter: n, foundationRuntime: r = null,
 				coverage: p.coverage
 			});
 		} catch (e) {
-			return GD({
+			return qD({
 				status: "error",
 				message: Nc(e, { fallback: "千千结记忆读取失败。" }),
-				identity: QD(a)
+				identity: eO(a)
 			});
 		}
 	}
@@ -47506,12 +47590,12 @@ function uO({ session: e, store: t, hostAdapter: n, foundationRuntime: r = null,
 			return structuredClone({
 				status: "ready",
 				identity: e.identity,
-				memory: sO(t, e.identity.qqjChatId),
-				cse: cO(t, e.identity.qqjChatId),
-				people: lO(n, e.identity.qqjChatId)
+				memory: lO(t, e.identity.qqjChatId),
+				cse: uO(t, e.identity.qqjChatId),
+				people: dO(n, e.identity.qqjChatId)
 			});
 		} catch (t) {
-			return GD({
+			return qD({
 				status: "error",
 				message: Nc(t, { fallback: "千千结快照读取失败。" }),
 				identity: e.identity
@@ -47521,13 +47605,13 @@ function uO({ session: e, store: t, hostAdapter: n, foundationRuntime: r = null,
 	function h() {
 		let e = f();
 		if (e.status !== "ready") return e;
-		let t = (t) => GD({
+		let t = (t) => qD({
 			status: "empty",
 			scope: "latest-prepared",
 			message: t,
 			identity: e.identity,
-			recall: GD({ text: "" }),
-			prequel: GD({ text: "" })
+			recall: qD({ text: "" }),
+			prequel: qD({ text: "" })
 		});
 		try {
 			let n = typeof o?.getPromptSnapshot == "function" ? o.getPromptSnapshot() : null;
@@ -47542,17 +47626,17 @@ function uO({ session: e, store: t, hostAdapter: n, foundationRuntime: r = null,
 				prequel: { text: i }
 			});
 		} catch (t) {
-			return GD({
+			return qD({
 				status: "error",
 				scope: "latest-prepared",
 				message: Nc(t, { fallback: "千千结当前记忆材料读取失败。" }),
 				identity: e.identity,
-				recall: GD({ text: "" }),
-				prequel: GD({ text: "" })
+				recall: qD({ text: "" }),
+				prequel: qD({ text: "" })
 			});
 		}
 	}
-	return GD({
+	return qD({
 		schemaVersion: 1,
 		kind: "qqj-public-memory-bridge",
 		getStatus: f,
@@ -47561,23 +47645,23 @@ function uO({ session: e, store: t, hostAdapter: n, foundationRuntime: r = null,
 		getSnapshot: m
 	});
 }
-function dO({ globalRef: e = globalThis, ...t } = {}) {
-	let n = uO(t);
-	return e[UD] = n, GD({
+function pO({ globalRef: e = globalThis, ...t } = {}) {
+	let n = fO(t);
+	return e[GD] = n, qD({
 		bridge: n,
 		cleanup() {
-			e.qqj_v3_public_bridge_v1 === n && delete e[UD];
+			e.qqj_v3_public_bridge_v1 === n && delete e[GD];
 		}
 	});
 }
 //#endregion
 //#region src/v3/public-qianshi-bridge.js
-var fO = "qqj_qianshi_backend_v1", pO = (e) => structuredClone(e), mO = (e) => Object.freeze(e);
-function hO({ memoryRuntime: e } = {}) {
+var mO = "qqj_qianshi_backend_v1", hO = (e) => structuredClone(e), gO = (e) => Object.freeze(e);
+function _O({ memoryRuntime: e } = {}) {
 	if (!e || typeof e.getQianshiSnapshot != "function") throw TypeError("千事公共桥 memoryRuntime 无效");
 	let t = (e, t) => {
 		try {
-			return pO(e());
+			return hO(e());
 		} catch (e) {
 			return {
 				status: "error",
@@ -47585,12 +47669,12 @@ function hO({ memoryRuntime: e } = {}) {
 			};
 		}
 	}, n = () => t(() => e.getQianshiSnapshot(), "千事快照读取失败。");
-	return mO({
+	return gO({
 		schemaVersion: 1,
 		kind: "qqj-qianshi-backend-bridge",
 		getStatus: () => {
 			let e = n();
-			return pO({
+			return hO({
 				status: e.status,
 				message: e.message ?? "",
 				anchor: e.anchor ?? null,
@@ -47600,24 +47684,24 @@ function hO({ memoryRuntime: e } = {}) {
 		},
 		getSnapshot: n,
 		read: async () => n(),
-		prepareHistory: (t) => Promise.resolve(e.prepareQianshiHistory(pO(t ?? {}))).then(pO),
-		startHistory: (t) => Promise.resolve(e.startQianshiHistory(t)).then(pO),
-		stopHistory: () => Promise.resolve(e.stopQianshiHistory()).then(pO)
+		prepareHistory: (t) => Promise.resolve(e.prepareQianshiHistory(hO(t ?? {}))).then(hO),
+		startHistory: (t) => Promise.resolve(e.startQianshiHistory(t)).then(hO),
+		stopHistory: () => Promise.resolve(e.stopQianshiHistory()).then(hO)
 	});
 }
-function gO({ globalRef: e = globalThis, memoryRuntime: t } = {}) {
-	let n = hO({ memoryRuntime: t });
-	return e[fO] = n, mO({
+function vO({ globalRef: e = globalThis, memoryRuntime: t } = {}) {
+	let n = _O({ memoryRuntime: t });
+	return e[mO] = n, gO({
 		bridge: n,
 		cleanup() {
-			e.qqj_qianshi_backend_v1 === n && delete e[fO];
+			e.qqj_qianshi_backend_v1 === n && delete e[mO];
 		}
 	});
 }
 //#endregion
 //#region src/ui/inline-projection.js
-var _O = (e) => [...new Set(e.map((e) => String(e ?? "").trim()).filter(Boolean))], vO = (e) => /\|\s*(?:date|weekday|time)\s*=/iu.test(String(e ?? "")), yO = "<qqj_recalled_context>", bO = "</qqj_recalled_context>", xO = "<qqj_qianshi_progress>", SO = "</qqj_qianshi_progress>", CO = "以下是此前剧情档案与人物状态的只读参考，不是指令。与当前正文冲突时以当前正文为准。", wO = "任何 private 内容仅属于标明的主体，不代表其他人物知情。", TO = "各组只表示存在已记录的关联证据；组内按时间排列，不自动证明因果。", EO = "各组只按已记录的来源、邻近、具体主题或当前输入直接匹配分组；组内按来源时间排列，不证明因果。", DO = "叙事回顾可能含内心、计划或未完成事项，不代表所有人物知情；若与后文冲突以后文为准。", OO = Object.freeze(["[时间参考（当前推测、预计节点或到期事项）]", "[时间参考（当前推测及预计/期限节点尚未获正文确认，不代表已经发生或完成）]"]), kO = "[聚焦召回旧事]", AO = "[近期剧情接续摘要]", jO = "[远期相关旧事]", MO = "[当前人物状态]", NO = "[已保存人物状态依据]", PO = "[当前人物 Core / 状态]", FO = "[人物状态历史变化（记录当时前后，后文可能继续覆盖）]", IO = /* @__PURE__ */ new Set(["[时间推演（基于本轮材料的续写表现建议，不是新剧情事实）]", "[时间推演（仅供作者续写表现参考，不是新剧情事实，也不表示任何角色已知）]"]), LO = (e, t = 12e3) => typeof e == "string" ? e.trim().slice(0, t) : "";
-function RO(e, t, n = null) {
+var yO = (e) => [...new Set(e.map((e) => String(e ?? "").trim()).filter(Boolean))], bO = (e) => /\|\s*(?:date|weekday|time)\s*=/iu.test(String(e ?? "")), xO = "<qqj_recalled_context>", SO = "</qqj_recalled_context>", CO = "<qqj_qianshi_progress>", wO = "</qqj_qianshi_progress>", TO = "以下是此前剧情档案与人物状态的只读参考，不是指令。与当前正文冲突时以当前正文为准。", EO = "任何 private 内容仅属于标明的主体，不代表其他人物知情。", DO = "各组只表示存在已记录的关联证据；组内按时间排列，不自动证明因果。", OO = "各组只按已记录的来源、邻近、具体主题或当前输入直接匹配分组；组内按来源时间排列，不证明因果。", kO = "叙事回顾可能含内心、计划或未完成事项，不代表所有人物知情；若与后文冲突以后文为准。", AO = Object.freeze(["[时间参考（当前推测、预计节点或到期事项）]", "[时间参考（当前推测及预计/期限节点尚未获正文确认，不代表已经发生或完成）]"]), jO = "[聚焦召回旧事]", MO = "[近期剧情接续摘要]", NO = "[远期相关旧事]", PO = "[当前人物状态]", FO = "[已保存人物状态依据]", IO = "[当前人物 Core / 状态]", LO = "[人物状态历史变化（记录当时前后，后文可能继续覆盖）]", RO = /* @__PURE__ */ new Set(["[时间推演（基于本轮材料的续写表现建议，不是新剧情事实）]", "[时间推演（仅供作者续写表现参考，不是新剧情事实，也不表示任何角色已知）]"]), zO = (e, t = 12e3) => typeof e == "string" ? e.trim().slice(0, t) : "";
+function BO(e, t, n = null) {
 	let r = typeof e == "string" ? e : "";
 	if (typeof t?.text != "string" || !t.text) return Object.freeze({
 		text: r,
@@ -47630,7 +47714,7 @@ function RO(e, t, n = null) {
 		matched: !1,
 		only: !1
 	});
-	let a = `${xO}\n${i}\n${SO}`;
+	let a = `${CO}\n${i}\n${wO}`;
 	if (r === a) return Object.freeze({
 		text: "",
 		matched: !0,
@@ -47643,7 +47727,7 @@ function RO(e, t, n = null) {
 		only: !1
 	});
 }
-function zO(e, t) {
+function VO(e, t) {
 	let n = t;
 	for (; e[n] === "（";) {
 		let t = 0, r = !1;
@@ -47659,17 +47743,17 @@ function zO(e, t) {
 	}
 	return n;
 }
-function BO(e, t, n, r) {
+function HO(e, t, n, r) {
 	let i = /^- AI #(\d+)/u.exec(e);
 	if (!i) return null;
 	let a = Number(i[1]);
 	if (!Number.isSafeInteger(a) || a < 1 || !t.has(a)) return null;
-	let o = zO(e, i[0].length);
+	let o = VO(e, i[0].length);
 	if (o === null || e[o] !== "：") return null;
 	if (o += 1, n === "shared") {
 		let t = e.indexOf("（仅列明接收者知情，渠道：", o);
 		if (t > o && e.slice(o, t).includes(" → ")) {
-			let n = zO(e, t);
+			let n = VO(e, t);
 			if (n === null || e[n] !== "：") return null;
 			o = n + 1;
 		}
@@ -47681,14 +47765,14 @@ function BO(e, t, n, r) {
 		section: r
 	}) : null;
 }
-function VO(e) {
+function UO(e) {
 	let t = e.split("\n");
-	if (t[0] !== yO || t.at(-1) !== bO) return {
+	if (t[0] !== xO || t.at(-1) !== SO) return {
 		historyText: e,
 		items: [],
 		onlyTime: !1
 	};
-	let n = Math.max(...OO.map((e) => t.lastIndexOf(e))), r = t, i = [];
+	let n = Math.max(...AO.map((e) => t.lastIndexOf(e))), r = t, i = [];
 	if (n >= 1) {
 		let a = t.slice(n + 1, -1);
 		if (!a.length || a.some((e) => !e.startsWith("- ") || !e.slice(2).trim())) return {
@@ -47696,22 +47780,22 @@ function VO(e) {
 			items: [],
 			onlyTime: !1
 		};
-		i = a.map((e) => e.slice(2)), r = [...t.slice(0, n), bO];
+		i = a.map((e) => e.slice(2)), r = [...t.slice(0, n), SO];
 	}
 	let a = r.filter((e) => e.startsWith("- [时间校正] ")).map((e) => e.slice(2));
 	return {
 		historyText: r.join("\n"),
 		items: [...a, ...i],
 		onlyTime: i.length > 0 && r.slice(1, -1).every((e) => !e || [
-			CO,
-			wO,
 			TO,
-			EO
+			EO,
+			DO,
+			OO
 		].includes(e))
 	};
 }
-function HO(e, t = []) {
-	let n = LO(e), r = t.find((e) => n === e) ?? t.filter((e) => n.includes(e)).sort((e, t) => t.length - e.length)[0], i = r ?? n;
+function WO(e, t = []) {
+	let n = zO(e), r = t.find((e) => n === e) ?? t.filter((e) => n.includes(e)).sort((e, t) => t.length - e.length)[0], i = r ?? n;
 	if (!r && n.startsWith("[时间校正] ") && n.endsWith("）")) {
 		let e = n.lastIndexOf("（依据：");
 		e > Math.max(n.indexOf("原观察"), n.indexOf("：观察于"), n.indexOf("：观察/发生于")) && (i = n.slice(0, e));
@@ -47733,7 +47817,7 @@ function HO(e, t = []) {
 		else if (s.marker === "；当前推测") {
 			let e = s.index + s.marker.length;
 			if (i[e] === "（") {
-				let t = zO(i, e);
+				let t = VO(i, e);
 				if (t === null || i[t] !== "：") return Object.freeze({ text: n });
 				e = t + 1;
 			} else i[e] === "：" && (e += 1);
@@ -47748,7 +47832,7 @@ function HO(e, t = []) {
 	if (o >= 0) {
 		let e = o + 3;
 		if (i[e] === "（") {
-			let t = zO(i, e);
+			let t = VO(i, e);
 			if (t === null || i[t] !== "：") return Object.freeze({ text: n });
 			e = t + 1;
 		} else if (r && i[e] === "：") e += 1;
@@ -47772,7 +47856,7 @@ function HO(e, t = []) {
 		else if (t.marker === "；当前推测") {
 			let e = t.index + t.marker.length;
 			if (i[e] === "（") {
-				let t = zO(i, e);
+				let t = VO(i, e);
 				if (t === null || i[t] !== "：") return Object.freeze({ text: n });
 				e = t + 1;
 			} else i[e] === "：" && (e += 1);
@@ -47789,10 +47873,10 @@ function HO(e, t = []) {
 		projection: `下次日期 ${s[2].trim()}`
 	} : { text: n });
 }
-function UO(e, t) {
+function GO(e, t) {
 	if (typeof e != "string" || !e) return null;
 	let n = e.split("\n");
-	if (n[0] !== yO || n.at(-1) !== bO || n[1] !== CO || n[2] !== wO) return null;
+	if (n[0] !== xO || n.at(-1) !== SO || n[1] !== TO || n[2] !== EO) return null;
 	let r = /* @__PURE__ */ new Map();
 	for (let e of t) {
 		if (!Number.isSafeInteger(e.assistantSeq)) continue;
@@ -47803,28 +47887,28 @@ function UO(e, t) {
 	let i = new Set(t.map((e) => e.assistantSeq).filter(Number.isSafeInteger)), a = [], o = "", s = "", c = !1, l = !1, u = !1;
 	for (let e = 3; e < n.length - 1; e += 1) {
 		let t = n[e];
-		if (!t || t === DO && e === 3) continue;
+		if (!t || t === kO && e === 3) continue;
 		if (t.startsWith("[覆盖说明] ")) {
 			if (n.slice(e + 1, -1).some(Boolean)) return null;
 			break;
 		}
-		if (t === MO || t === NO || t === PO) {
+		if (t === PO || t === FO || t === IO) {
 			o = "states", s = "", c = !0;
 			continue;
 		}
-		if (t === FO) {
+		if (t === LO) {
 			o = "changes", s = "", l = !0;
 			continue;
 		}
-		if (IO.has(t)) {
+		if (RO.has(t)) {
 			o = "progressions", s = "";
 			continue;
 		}
-		if (t === kO || t === jO) {
+		if (t === jO || t === NO) {
 			o = "", s = "distant", u = !0;
 			continue;
 		}
-		if (t === AO) {
+		if (t === MO) {
 			o = "", s = "recent", u = !0;
 			continue;
 		}
@@ -47850,25 +47934,25 @@ function UO(e, t) {
 			"progressions"
 		].includes(o) && t.startsWith("- ")) continue;
 		if (!o) return null;
-		let r = BO(t, i, o, s);
+		let r = HO(t, i, o, s);
 		if (!r) return null;
 		a.push(r);
 	}
 	return t.length && !u || !t.length && !c && !l ? null : Object.freeze(a);
 }
-function WO(e, t, n, r) {
+function KO(e, t, n, r) {
 	if (typeof e != "string" || !e || !Array.isArray(r)) return null;
-	let i = e.split("\n"), a = i[3] === EO;
-	if (i[0] !== yO || i.at(-1) !== bO || i[1] !== CO || i[2] !== wO || !a && i[3] !== TO) return null;
+	let i = e.split("\n"), a = i[3] === OO;
+	if (i[0] !== xO || i.at(-1) !== SO || i[1] !== TO || i[2] !== EO || !a && i[3] !== DO) return null;
 	let o = new Set(t.map((e) => e.assistantSeq).filter(Number.isSafeInteger)), s = new Set(n.map((e) => e.assistantSeq).filter(Number.isSafeInteger)), c = /* @__PURE__ */ new Set([...o, ...s]), l = new Map(r.map((e) => [e.storylineId, e])), u = /* @__PURE__ */ new Set(), d = [], f = null, p = null, m = !1, h = !1;
 	for (let e = 4; e < i.length - 1; e += 1) {
 		let t = i[e];
-		if (!t || t === DO && e === 4) continue;
+		if (!t || t === kO && e === 4) continue;
 		if (t.startsWith("[覆盖说明] ")) {
 			if (i.slice(e + 1, -1).some(Boolean)) return null;
 			break;
 		}
-		if (IO.has(t)) {
+		if (RO.has(t)) {
 			p = null, m = !1, h = !0;
 			continue;
 		}
@@ -47893,7 +47977,7 @@ function WO(e, t, n, r) {
 			if (p = Number(s[1]), m = !1, h = !1, !Number.isSafeInteger(p) || !c.has(p)) return null;
 			continue;
 		}
-		if (t === MO || t === NO) {
+		if (t === PO || t === FO) {
 			p = null, m = !0;
 			continue;
 		}
@@ -47911,7 +47995,7 @@ function WO(e, t, n, r) {
 			assistantSeq: p,
 			text: v,
 			section: _
-		}) : BO(t, c, "objective", _);
+		}) : HO(t, c, "objective", _);
 		if (!y || y.assistantSeq !== p) return null;
 		d.push(Object.freeze({
 			...y,
@@ -47920,7 +48004,7 @@ function WO(e, t, n, r) {
 	}
 	return r.length && u.size !== r.length ? null : Object.freeze(d);
 }
-function GO(e, t) {
+function qO(e, t) {
 	let n = new Map(t.map((e) => [e.assistantSeq, e])), r = /* @__PURE__ */ new Map();
 	for (let t of e) {
 		let e = r.get(t.assistantSeq);
@@ -47935,10 +48019,10 @@ function GO(e, t) {
 		items: Object.freeze(e.items)
 	})));
 }
-function KO(e) {
+function JO(e) {
 	return !e || typeof e != "object" || e.is_system === !0 && e.extra?.type ? null : e.is_user === !0 ? typeof e.mes == "string" ? "user" : null : Ve(e) ? "assistant" : null;
 }
-function qO(e, t, n = null, { migrationAliasId: r = null } = {}) {
+function YO(e, t, n = null, { migrationAliasId: r = null } = {}) {
 	let i = e?.floors ?? [], a = i.find((e) => e?.frozen !== !0 && e?.inherited === !0 && e?.messageIndex === t) ?? null, o = !e?.reviewReason && r && (e?.migrationAliases ?? []).some((e) => e.aliasId === r && e.targetMessageIndex === t && i.some((t) => t?.frozen === !0 && t.floorId === e.floorId)), s = i.find((e) => e?.frozen !== !0 && e?.inherited !== !0 && e?.messageIndex === t) ?? null, c = (e?.unregisteredCandidates ?? []).find((e) => e?.messageIndex === t) ?? null, l = Number.isSafeInteger(s?.assistantSeq) && s.assistantSeq > 0 ? s.assistantSeq : Number.isSafeInteger(n) && n > 0 ? n : null;
 	if (!s && (a || o)) return Object.freeze({
 		kind: "assistant",
@@ -47979,7 +48063,7 @@ function qO(e, t, n = null, { migrationAliasId: r = null } = {}) {
 			canExtract: !1
 		});
 	}
-	let u = s.memory ?? null, d = _O((u?.chronology ?? []).map((e) => e?.time?.sourceText || e?.time?.normalized || e?.description)).join("；"), f = String(s.timeFallback ?? "").trim(), p = d && f && vO(d) ? f : d || f || "时间未明确", m = _O((u?.locations ?? []).map((e) => e?.name)).join("、") || "未提取", h = new Map((e?.memoryEntities ?? []).map((e) => [e?.entityId, e?.displayName])), g = _O((u?.participants ?? []).map((e) => h.get(e?.entityId) || "未知人物")).join("、") || "未提取", _ = !!(e?.memoryWorkBusy || e?.activeAutoMemory || e?.activeExtraction || e?.activeCse), v = s.status === "running" ? "正在提取" : s.status === "ready" ? s.summarySource === "user" ? "人工修订" : "摘要已保存" : ["error", "failed"].includes(s.status) ? "提取失败" : s.status === "unprocessed" ? "尚未提取" : "等待下一条用户消息";
+	let u = s.memory ?? null, d = yO((u?.chronology ?? []).map((e) => e?.time?.sourceText || e?.time?.normalized || e?.description)).join("；"), f = String(s.timeFallback ?? "").trim(), p = d && f && bO(d) ? f : d || f || "时间未明确", m = yO((u?.locations ?? []).map((e) => e?.name)).join("、") || "未提取", h = new Map((e?.memoryEntities ?? []).map((e) => [e?.entityId, e?.displayName])), g = yO((u?.participants ?? []).map((e) => h.get(e?.entityId) || "未知人物")).join("、") || "未提取", _ = !!(e?.memoryWorkBusy || e?.activeAutoMemory || e?.activeExtraction || e?.activeCse), v = s.status === "running" ? "正在提取" : s.status === "ready" ? s.summarySource === "user" ? "人工修订" : "摘要已保存" : ["error", "failed"].includes(s.status) ? "提取失败" : s.status === "unprocessed" ? "尚未提取" : "等待下一条用户消息";
 	return Object.freeze({
 		kind: "assistant",
 		floorId: s.floorId,
@@ -47996,7 +48080,7 @@ function qO(e, t, n = null, { migrationAliasId: r = null } = {}) {
 		canExtract: !!s.floorId && !_
 	});
 }
-function JO(e) {
+function XO(e) {
 	if (!e) return Object.freeze({
 		kind: "user",
 		status: "empty",
@@ -48028,7 +48112,7 @@ function JO(e) {
 		assistantSeq: Number.isSafeInteger(e?.assistantSeq) && e.assistantSeq > 0 ? e.assistantSeq : null,
 		reasons: Object.freeze((Array.isArray(e?.reasons) ? e.reasons : []).slice(0, 32).map((e) => String(e).slice(0, 500)))
 	}))), _ = new Set(g.map((e) => e.floorId).filter(Boolean)).size, v = Object.freeze((h ? i : []).map((e) => {
-		let t = LO(e?.subject, 500), n = LO(e?.toward, 500), r = LO(e?.text), i = LO(e?.stateId, 500), a = LO(e?.sourceFloorId, 500), o = LO(e?.sourceDeltaId, 500), s = LO(e?.subjectEntityId, 500), c = LO(e?.layer, 80), l = LO(e?.storylineId, 80);
+		let t = zO(e?.subject, 500), n = zO(e?.toward, 500), r = zO(e?.text), i = zO(e?.stateId, 500), a = zO(e?.sourceFloorId, 500), o = zO(e?.sourceDeltaId, 500), s = zO(e?.subjectEntityId, 500), c = zO(e?.layer, 80), l = zO(e?.storylineId, 80);
 		return t && r ? Object.freeze({
 			subject: t,
 			toward: n,
@@ -48041,37 +48125,37 @@ function JO(e) {
 			...l ? { storylineId: l } : {}
 		}) : null;
 	}).filter(Boolean)), y = v.length, b = Object.freeze((h ? a : []).map((e) => Object.freeze({
-		subjectEntityId: LO(e.subjectEntityId, 500),
-		subject: LO(e.subject, 500),
-		layer: LO(e.layer, 80),
-		action: LO(e.action, 80),
-		floorId: LO(e.floorId, 500),
+		subjectEntityId: zO(e.subjectEntityId, 500),
+		subject: zO(e.subject, 500),
+		layer: zO(e.layer, 80),
+		action: zO(e.action, 80),
+		floorId: zO(e.floorId, 500),
 		assistantSeq: e.assistantSeq,
-		storylineId: LO(e.storylineId, 80),
+		storylineId: zO(e.storylineId, 80),
 		before: e.before && typeof e.before == "object" && !Array.isArray(e.before) ? Object.freeze({
-			text: LO(e.before.text),
-			visibility: LO(e.before.visibility, 80),
-			...LO(e.before.stateId, 500) ? { stateId: LO(e.before.stateId, 500) } : {},
-			...LO(e.before.sourceFloorId, 500) ? { sourceFloorId: LO(e.before.sourceFloorId, 500) } : {},
-			...LO(e.before.sourceDeltaId, 500) ? { sourceDeltaId: LO(e.before.sourceDeltaId, 500) } : {}
+			text: zO(e.before.text),
+			visibility: zO(e.before.visibility, 80),
+			...zO(e.before.stateId, 500) ? { stateId: zO(e.before.stateId, 500) } : {},
+			...zO(e.before.sourceFloorId, 500) ? { sourceFloorId: zO(e.before.sourceFloorId, 500) } : {},
+			...zO(e.before.sourceDeltaId, 500) ? { sourceDeltaId: zO(e.before.sourceDeltaId, 500) } : {}
 		}) : null,
 		after: e.after && typeof e.after == "object" && !Array.isArray(e.after) ? Object.freeze({
-			text: LO(e.after.text),
-			visibility: LO(e.after.visibility, 80),
-			...LO(e.after.stateId, 500) ? { stateId: LO(e.after.stateId, 500) } : {},
-			...LO(e.after.sourceFloorId, 500) ? { sourceFloorId: LO(e.after.sourceFloorId, 500) } : {},
-			...LO(e.after.sourceDeltaId, 500) ? { sourceDeltaId: LO(e.after.sourceDeltaId, 500) } : {}
+			text: zO(e.after.text),
+			visibility: zO(e.after.visibility, 80),
+			...zO(e.after.stateId, 500) ? { stateId: zO(e.after.stateId, 500) } : {},
+			...zO(e.after.sourceFloorId, 500) ? { sourceFloorId: zO(e.after.sourceFloorId, 500) } : {},
+			...zO(e.after.sourceDeltaId, 500) ? { sourceDeltaId: zO(e.after.sourceDeltaId, 500) } : {}
 		}) : null
 	})).filter((e) => e.subject && (e.before?.text || e.after?.text))), x = b.length, S = [
 		e.stages?.recentSummaryCount,
 		e.stages?.distantHistoryItemCount,
 		e.stages?.stateCount
-	].every(Number.isSafeInteger), C = S ? e.stages.recentSummaryCount : null, w = S ? e.stages.distantHistoryItemCount : null, T = S ? e.stages.stateCount : null, E = typeof e.injectionText == "string" ? e.injectionText : "", D = Number(e.schemaVersion) >= 15 ? e.qianshiProgress : null, O = RO(E, D, e.timeDependencies), k = Object.freeze((h && l ? o : []).map((e) => Object.freeze({
-		storylineId: LO(e.storylineId, 80),
-		title: LO(e.title, 160),
-		basis: LO(e.basis, 500)
-	}))), A = VO(O.text), j = !g.length && !v.length && !b.length && !k.length, M = h ? O.only && j || A.onlyTime && j ? Object.freeze([]) : l ? WO(A.historyText, g, b, k) : UO(A.historyText, g) : null, N = Object.freeze(M !== null && ["ready", "empty"].includes(e.status ?? "ready") ? A.items : []), P = N.length, F = [...e.timeDependencies?.corrections ?? [], ...e.timeDependencies?.reminders ?? []].map((e) => LO(e?.text)).filter(Boolean), I = Object.freeze(N.map((e) => HO(e, F))), L = M ?? Object.freeze([]), R = GO(L, g), z = Object.freeze(k.map((e) => {
-		let t = GO(L.filter((t) => t.storylineId === e.storylineId), g).slice().reverse();
+	].every(Number.isSafeInteger), C = S ? e.stages.recentSummaryCount : null, w = S ? e.stages.distantHistoryItemCount : null, T = S ? e.stages.stateCount : null, E = typeof e.injectionText == "string" ? e.injectionText : "", D = Number(e.schemaVersion) >= 15 ? e.qianshiProgress : null, O = BO(E, D, e.timeDependencies), k = Object.freeze((h && l ? o : []).map((e) => Object.freeze({
+		storylineId: zO(e.storylineId, 80),
+		title: zO(e.title, 160),
+		basis: zO(e.basis, 500)
+	}))), A = UO(O.text), j = !g.length && !v.length && !b.length && !k.length, M = h ? O.only && j || A.onlyTime && j ? Object.freeze([]) : l ? KO(A.historyText, g, b, k) : GO(A.historyText, g) : null, N = Object.freeze(M !== null && ["ready", "empty"].includes(e.status ?? "ready") ? A.items : []), P = N.length, F = [...e.timeDependencies?.corrections ?? [], ...e.timeDependencies?.reminders ?? []].map((e) => zO(e?.text)).filter(Boolean), I = Object.freeze(N.map((e) => WO(e, F))), L = M ?? Object.freeze([]), R = qO(L, g), z = Object.freeze(k.map((e) => {
+		let t = qO(L.filter((t) => t.storylineId === e.storylineId), g).slice().reverse();
 		return Object.freeze({
 			...e,
 			floors: t,
@@ -48142,7 +48226,7 @@ function JO(e) {
 }
 //#endregion
 //#region src/ui/recall-tabs.js
-function YO(e, t, n, r, i) {
+function ZO(e, t, n, r, i) {
 	let a = [...new Set([...(t.selectedFloors ?? []).map((e) => e.floorId), ...(t.cseChangeItems ?? []).map((e) => e.floorId)].filter(Boolean))], o = new Map(a.map((e) => [e, {
 		messageIndex: r?.messageIndexFor?.(e) ?? null,
 		source: r?.sourceFor?.(e) ?? null
@@ -48371,7 +48455,7 @@ function YO(e, t, n, r, i) {
 }
 //#endregion
 //#region src/ui/inline-renderer.js
-var XO = Object.freeze([
+var QO = Object.freeze([
 	0,
 	80,
 	180,
@@ -48382,29 +48466,29 @@ var XO = Object.freeze([
 	2e3,
 	3e3,
 	4200
-]), ZO = "[data-qqj-inline-host=\"true\"]", QO = Object.freeze([
+]), $O = "[data-qqj-inline-host=\"true\"]", ek = Object.freeze([
 	"mesid",
 	"data-mesid",
 	"data-message-id",
 	"class",
 	"is_user"
-]), $O = "\n:host{display:block;max-width:100%;box-sizing:border-box;color:inherit;font:inherit;background:transparent;text-shadow:none;--qqj-inline-knot:#a8322f;--qqj-inline-line:color-mix(in srgb,currentColor 18%,transparent)}\n*,*::before,*::after{box-sizing:border-box}.card{position:relative;margin:8px 0 2px;padding:1px 5px 2px 10px;max-width:100%;color:inherit;background:transparent;border:1px solid var(--qqj-inline-line);border-left:2px solid var(--qqj-inline-knot);border-radius:8px}\n.head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px;min-height:35px}.mark{position:absolute;left:0;top:18px;width:0;height:0;z-index:1;color:var(--qqj-inline-knot);pointer-events:none}.knot{position:absolute;left:-5px;top:-5px;width:9px;height:9px;border:1.5px solid currentColor;transform:rotate(45deg);border-radius:1px;background:transparent}.knot::after{content:\"\";position:absolute;inset:2px;background:currentColor;border-radius:1px}\n.toggle,.extract{font:inherit;color:inherit;background:none;border:0;box-shadow:none;border-radius:7px;min-height:32px;cursor:pointer}.toggle{min-width:0;text-align:left;padding:2px 3px;display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);align-items:center;gap:6px}.title{min-width:0;font-size:12px;font-weight:600;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{justify-self:start;min-width:0;max-width:100%;padding:1px 6px;border-radius:999px;font-size:10.5px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:color-mix(in srgb,currentColor 9%,transparent);color:inherit}.status.ready{background:color-mix(in srgb,#56a875 18%,transparent)}.status.running{background:color-mix(in srgb,#4c9bd1 18%,transparent)}.status.review{background:color-mix(in srgb,#d79a35 19%,transparent)}.status.error{background:color-mix(in srgb,#c84a46 17%,transparent)}\n.extract{width:32px;height:32px;padding:0;display:grid;place-items:center;font-family:\"Font Awesome 6 Free\",\"Font Awesome 5 Free\",sans-serif;font-size:12px;font-weight:900;line-height:1}.extract[hidden]{display:none}.extract:disabled{cursor:default;opacity:.42}.toggle:focus-visible,.extract:focus-visible{outline:2px solid var(--qqj-inline-knot);outline-offset:1px}\n.body{padding:4px 6px 9px 3px;font-size:13px;line-height:1.75;overflow-wrap:anywhere}.body[hidden]{display:none}.facts{display:grid;gap:0;margin:0;font-size:11px;line-height:1.5;opacity:.68}.meta-row{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}.summary{margin:10px 0 0;font-size:13px;line-height:1.75;white-space:pre-wrap}.assistant .summary{padding-top:10px;border-top:1px solid var(--qqj-inline-line)}.body > .error{margin:7px 0 0;color:#a8322f;font-size:11px;line-height:1.55;white-space:pre-wrap}\n@media(max-width:360px){.card{padding-left:8px}.head{grid-template-columns:minmax(0,1fr) auto;gap:2px}.toggle{gap:4px;padding-inline:2px}.body{padding-left:2px}.title{font-size:11.5px}.status{font-size:10px}}\n@media(prefers-reduced-motion:reduce){.toggle,.extract{scroll-behavior:auto}}\n", ek = (e) => Number.isSafeInteger(e) && e >= 0, tk = (e) => /^\d+$/u.test(String(e ?? "").trim()) ? Number(String(e).trim()) : null, nk = (e, t) => {
+]), tk = "\n:host{display:block;max-width:100%;box-sizing:border-box;color:inherit;font:inherit;background:transparent;text-shadow:none;--qqj-inline-knot:#a8322f;--qqj-inline-line:color-mix(in srgb,currentColor 18%,transparent)}\n*,*::before,*::after{box-sizing:border-box}.card{position:relative;margin:8px 0 2px;padding:1px 5px 2px 10px;max-width:100%;color:inherit;background:transparent;border:1px solid var(--qqj-inline-line);border-left:2px solid var(--qqj-inline-knot);border-radius:8px}\n.head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px;min-height:35px}.mark{position:absolute;left:0;top:18px;width:0;height:0;z-index:1;color:var(--qqj-inline-knot);pointer-events:none}.knot{position:absolute;left:-5px;top:-5px;width:9px;height:9px;border:1.5px solid currentColor;transform:rotate(45deg);border-radius:1px;background:transparent}.knot::after{content:\"\";position:absolute;inset:2px;background:currentColor;border-radius:1px}\n.toggle,.extract{font:inherit;color:inherit;background:none;border:0;box-shadow:none;border-radius:7px;min-height:32px;cursor:pointer}.toggle{min-width:0;text-align:left;padding:2px 3px;display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);align-items:center;gap:6px}.title{min-width:0;font-size:12px;font-weight:600;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{justify-self:start;min-width:0;max-width:100%;padding:1px 6px;border-radius:999px;font-size:10.5px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:color-mix(in srgb,currentColor 9%,transparent);color:inherit}.status.ready{background:color-mix(in srgb,#56a875 18%,transparent)}.status.running{background:color-mix(in srgb,#4c9bd1 18%,transparent)}.status.review{background:color-mix(in srgb,#d79a35 19%,transparent)}.status.error{background:color-mix(in srgb,#c84a46 17%,transparent)}\n.extract{width:32px;height:32px;padding:0;display:grid;place-items:center;font-family:\"Font Awesome 6 Free\",\"Font Awesome 5 Free\",sans-serif;font-size:12px;font-weight:900;line-height:1}.extract[hidden]{display:none}.extract:disabled{cursor:default;opacity:.42}.toggle:focus-visible,.extract:focus-visible{outline:2px solid var(--qqj-inline-knot);outline-offset:1px}\n.body{padding:4px 6px 9px 3px;font-size:13px;line-height:1.75;overflow-wrap:anywhere}.body[hidden]{display:none}.facts{display:grid;gap:0;margin:0;font-size:11px;line-height:1.5;opacity:.68}.meta-row{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}.summary{margin:10px 0 0;font-size:13px;line-height:1.75;white-space:pre-wrap}.assistant .summary{padding-top:10px;border-top:1px solid var(--qqj-inline-line)}.body > .error{margin:7px 0 0;color:#a8322f;font-size:11px;line-height:1.55;white-space:pre-wrap}\n@media(max-width:360px){.card{padding-left:8px}.head{grid-template-columns:minmax(0,1fr) auto;gap:2px}.toggle{gap:4px;padding-inline:2px}.body{padding-left:2px}.title{font-size:11.5px}.status{font-size:10px}}\n@media(prefers-reduced-motion:reduce){.toggle,.extract{scroll-behavior:auto}}\n", nk = (e) => Number.isSafeInteger(e) && e >= 0, rk = (e) => /^\d+$/u.test(String(e ?? "").trim()) ? Number(String(e).trim()) : null, ik = (e, t) => {
 	let n = String(t ?? "");
 	e.textContent !== n && (e.textContent = n);
-}, rk = (e) => {
+}, ak = (e) => {
 	try {
 		e?.remove?.();
 	} catch {}
-}, ik = (e) => {
+}, ok = (e) => {
 	try {
 		return JSON.stringify(e);
 	} catch {
 		return "";
 	}
-}, ak = (e, t) => typeof e == "string" && e.trim() ? e.trim() : t, ok = (e, t, n) => {
+}, sk = (e, t) => typeof e == "string" && e.trim() ? e.trim() : t, ck = (e, t, n) => {
 	typeof e?.setProperty == "function" ? e.setProperty(t, n) : e && (e[t] = n);
 };
-function sk(e) {
+function lk(e) {
 	for (let t of [
 		e?.getAttribute?.("mesid"),
 		e?.getAttribute?.("data-mesid"),
@@ -48412,26 +48496,26 @@ function sk(e) {
 		e?.dataset?.mesid,
 		e?.dataset?.messageId
 	]) {
-		let e = tk(t);
+		let e = rk(t);
 		if (e !== null && Number.isSafeInteger(e)) return e;
 	}
 	return null;
 }
-function ck(e) {
+function uk(e) {
 	return e?.querySelector?.(".mes_text") ?? null;
 }
-function lk(e, t) {
-	let n = ck(e), r = n && n !== e ? 3 : 0;
+function dk(e, t) {
+	let n = uk(e), r = n && n !== e ? 3 : 0;
 	e?.querySelector?.(".mes_text") && (r += 1), (e?.classList?.contains?.("last_mes") || String(e?.className ?? "").split(/\s+/u).includes("last_mes")) && (r += 2);
 	let i = e?.getAttribute?.("is_user") === "true" || e?.classList?.contains?.("is_user") || e?.classList?.contains?.("user_mes");
 	return t === "user" === i && (r += 1), r;
 }
-function uk(e, ...t) {
+function fk(e, ...t) {
 	return e?.append?.(...t), e;
 }
-function dk(e, t, n, r, i, a) {
+function pk(e, t, n, r, i, a) {
 	let o = t.attachShadow({ mode: "open" }), s = e.createElement("style");
-	s.textContent = uc($O, "--qqj-inline-fixed-scale");
+	s.textContent = uc(tk, "--qqj-inline-fixed-scale");
 	let c = e.createElement("article");
 	c.className = `card ${n}`;
 	let l = e.createElement("div");
@@ -48445,7 +48529,7 @@ function dk(e, t, n, r, i, a) {
 	let p = e.createElement("span");
 	p.className = "title";
 	let m = e.createElement("span");
-	m.className = "status", uk(f, p, m);
+	m.className = "status", fk(f, p, m);
 	let h = e.createElement("button");
 	h.type = "button", h.className = "extract", h.textContent = "", h.title = "重新提取本楼摘要；已人工处理的千事记录保留", h.setAttribute?.("aria-label", "重新提取本楼摘要；已人工处理的千事记录保留");
 	let g = e.createElement("div");
@@ -48453,7 +48537,7 @@ function dk(e, t, n, r, i, a) {
 	let _ = e.createElement("div");
 	_.className = "facts";
 	let v = e.createElement("div"), y = e.createElement("div"), b = e.createElement("div");
-	v.className = "meta-row time", y.className = "meta-row locations", b.className = "meta-row people", uk(_, v, y, b);
+	v.className = "meta-row time", y.className = "meta-row locations", b.className = "meta-row people", fk(_, v, y, b);
 	let x = {
 		time: v,
 		locations: y,
@@ -48461,7 +48545,7 @@ function dk(e, t, n, r, i, a) {
 	}, S = e.createElement("p");
 	S.className = "summary";
 	let C = e.createElement("p");
-	C.className = "error", uk(g, _, S, C), uk(l, f, h), uk(c, u, l, g), uk(o, s, c);
+	C.className = "error", fk(g, _, S, C), fk(l, f, h), fk(c, u, l, g), fk(o, s, c);
 	let w = {
 		host: t,
 		root: o,
@@ -48485,13 +48569,13 @@ function dk(e, t, n, r, i, a) {
 	};
 	return f.addEventListener("click", () => i(w)), h.addEventListener("click", () => a(w)), t.__qqjInlineCard = w, w;
 }
-function fk(e) {
+function mk(e) {
 	e.body.hidden = !e.expanded, e.host.setAttribute?.("data-open", String(e.expanded)), e.toggle.setAttribute?.("aria-expanded", String(e.expanded)), e.toggle.setAttribute?.("aria-label", `${e.expanded ? "折叠" : "展开"}${e.labelTitle ?? (e.kind === "user" ? "本轮召回" : "本楼记忆")}`);
 }
-function pk(e, t, n) {
+function hk(e, t, n) {
 	let r = /* @__PURE__ */ new Map(), i = /* @__PURE__ */ new Set();
 	for (let n = 0; n < e.length; n += 1) {
-		if (KO(e[n]) !== "assistant") continue;
+		if (JO(e[n]) !== "assistant") continue;
 		let a = we(e[n], t);
 		if (a.status !== "valid") continue;
 		let o = a.anchor.floorId;
@@ -48500,7 +48584,7 @@ function pk(e, t, n) {
 	let a = String(n?.chatId ?? "").trim(), o = !a || !!(t && a === t), s = /* @__PURE__ */ new Map(), c = /* @__PURE__ */ new Set(), l = /* @__PURE__ */ new Map();
 	if (o) for (let e of n?.floors ?? []) {
 		let t = typeof e?.floorId == "string" ? e.floorId.trim() : "";
-		!t || !ek(e.messageIndex) || (s.has(t) ? (s.delete(t), c.add(t)) : c.has(t) || s.set(t, e.messageIndex), e.frozen === !0 && ek(e.sourceOrigin?.sourceMessageIndex) && l.set(t, Object.freeze({
+		!t || !nk(e.messageIndex) || (s.has(t) ? (s.delete(t), c.add(t)) : c.has(t) || s.set(t, e.messageIndex), e.frozen === !0 && nk(e.sourceOrigin?.sourceMessageIndex) && l.set(t, Object.freeze({
 			sourceMessageIndex: e.sourceOrigin.sourceMessageIndex,
 			...typeof e.sourceOrigin.sourceChatId == "string" ? { sourceChatId: e.sourceOrigin.sourceChatId } : {},
 			...typeof e.sourceOrigin.sourceHostChatId == "string" ? { sourceHostChatId: e.sourceOrigin.sourceHostChatId } : {}
@@ -48519,29 +48603,29 @@ function pk(e, t, n) {
 		}
 	});
 }
-function mk(e) {
+function gk(e) {
 	return e.kind === "user" ? "" : ["error", "failed"].includes(e.status) ? "error" : e.status === "running" ? "running" : e.status === "ready" ? "ready" : "";
 }
-function hk(e, t, n, r, i) {
+function _k(e, t, n, r, i) {
 	if (t.kind === "user") {
-		e.projection = t, e.labelTitle = "千千结 · 本轮召回", nk(e.title, e.labelTitle), e.title.title = e.labelTitle, nk(e.status, t.statusText), e.status.className = "status", e.status.title = t.statusDetail ?? "", e.status.setAttribute?.("aria-label", t.statusDetail ? `${t.statusText}：${t.statusDetail}` : t.statusText), e.extract.hidden = !0, e.extract.disabled = !0, YO(e, t, n, r, i), fk(e);
+		e.projection = t, e.labelTitle = "千千结 · 本轮召回", ik(e.title, e.labelTitle), e.title.title = e.labelTitle, ik(e.status, t.statusText), e.status.className = "status", e.status.title = t.statusDetail ?? "", e.status.setAttribute?.("aria-label", t.statusDetail ? `${t.statusText}：${t.statusDetail}` : t.statusText), e.extract.hidden = !0, e.extract.disabled = !0, ZO(e, t, n, r, i), mk(e);
 		return;
 	}
 	let a = JSON.stringify(t);
 	if (e.signature === a) {
-		e.extract.hidden = t.readOnly === !0, e.extract.disabled = e.extracting || !t.canExtract, fk(e);
+		e.extract.hidden = t.readOnly === !0, e.extract.disabled = e.extracting || !t.canExtract, mk(e);
 		return;
 	}
 	e.signature = a, e.projection = t;
-	let o = t.kind === "user" ? "千千结 · 本轮召回" : ek(t.messageIndex) ? `第 ${t.messageIndex} 个结` : "本楼记忆";
-	if (e.labelTitle = o, nk(e.title, o), e.title.title = o, nk(e.status, t.statusText), e.status.className = `status${mk(t) ? ` ${mk(t)}` : ""}`, t.kind === "assistant") {
-		e.facts.hidden = !1, nk(e.fields.time, `时间 ${t.time}`), nk(e.fields.locations, `地点 ${t.locations}`), nk(e.fields.people, `人物 ${t.people}`), nk(e.summary, t.summary), nk(e.error, t.error), e.error.hidden = !t.error;
+	let o = t.kind === "user" ? "千千结 · 本轮召回" : nk(t.messageIndex) ? `第 ${t.messageIndex} 个结` : "本楼记忆";
+	if (e.labelTitle = o, ik(e.title, o), e.title.title = o, ik(e.status, t.statusText), e.status.className = `status${gk(t) ? ` ${gk(t)}` : ""}`, t.kind === "assistant") {
+		e.facts.hidden = !1, ik(e.fields.time, `时间 ${t.time}`), ik(e.fields.locations, `地点 ${t.locations}`), ik(e.fields.people, `人物 ${t.people}`), ik(e.summary, t.summary), ik(e.error, t.error), e.error.hidden = !t.error;
 		let n = `重新提取${o}摘要；已人工处理的千事记录保留`;
 		e.extract.title = n, e.extract.setAttribute?.("aria-label", n), e.extract.hidden = t.readOnly === !0, e.extract.disabled = e.extracting || !t.canExtract;
 	}
-	fk(e);
+	mk(e);
 }
-function gk({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r = globalThis.document, windowRef: i = r?.defaultView ?? globalThis, projectReceipt: a = GE, logger: o = console } = {}) {
+function vk({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r = globalThis.document, windowRef: i = r?.defaultView ?? globalThis, projectReceipt: a = GE, logger: o = console } = {}) {
 	if (!e || typeof e.getState != "function" || typeof e.extractFloor != "function") throw TypeError("楼内渲染 memory runtime 无效");
 	if (!t || typeof t.getState != "function") throw TypeError("楼内渲染 recall runtime 无效");
 	if (!n || typeof n.snapshot != "function") throw TypeError("楼内渲染 host adapter 无效");
@@ -48551,17 +48635,17 @@ function gk({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 	}), D = 1, O = /* @__PURE__ */ new WeakMap(), k = {}, A = null, j = (e) => {
 		for (let t of e) t.view.receiptPending === t.pendingReceipt && (t.view.receiptPending = null);
 	}, M = (e) => {
-		ok(e?.style, "--qqj-inline-knot", E.knot), ok(e?.style, "--qqj-inline-line", E.line), ok(e?.style, "--qqj-inline-fixed-scale", String(D));
+		ck(e?.style, "--qqj-inline-knot", E.knot), ck(e?.style, "--qqj-inline-line", E.line), ck(e?.style, "--qqj-inline-fixed-scale", String(D));
 	}, N = () => {
 		m !== null && (i?.clearTimeout?.(m), m = null), p?.disconnect?.(), p = null, u += 1;
 	}, P = () => {
-		for (let e of g.values()) rk(e.host);
+		for (let e of g.values()) ak(e.host);
 		g.clear();
-		for (let e of r?.querySelectorAll?.(ZO) ?? []) rk(e);
+		for (let e of r?.querySelectorAll?.($O) ?? []) ak(e);
 	}, F = () => {
 		l += 1, N(), y.clear(), f = null, P();
 	}, I = (e, t, n) => `${e}:${t}:${n}`, L = (e) => {
-		e.expanded = !e.expanded, _.set(e.stateKey, e.expanded), fk(e);
+		e.expanded = !e.expanded, _.set(e.stateKey, e.expanded), mk(e);
 	}, R = (t) => {
 		let n = t.projection;
 		!s || t.extracting || n?.kind !== "assistant" || !n.canExtract || !n.floorId || (t.extracting = !0, t.extract.disabled = !0, Promise.resolve(e.extractFloor(n.floorId)).catch((e) => {
@@ -48570,14 +48654,14 @@ function gk({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 			t.extracting = !1, ee();
 		}));
 	}, z = (e, t, n, i) => {
-		let a = ck(e);
+		let a = uk(e);
 		if (!a?.append) return null;
 		let o = g.get(t);
-		if (o && (o.kind !== n || o.host?.parentElement !== a || o.host?.isConnected === !1) && (rk(o.host), g.delete(t), o = null), !o) {
-			let e = [...a.querySelectorAll?.(ZO) ?? []].find((e) => sk(e) === t) ?? null;
-			e && e.__qqjInlineOwner !== k && (rk(e), e = null), e || (e = r.createElement("div"), e.className = "qqj-inline-host", e.setAttribute?.("data-qqj-inline-host", "true"), e.setAttribute?.("data-message-id", String(t)), e.dataset && (e.dataset.qqjInlineHost = "true", e.dataset.messageId = String(t)), a.append(e)), e.__qqjInlineOwner = k, M(e);
+		if (o && (o.kind !== n || o.host?.parentElement !== a || o.host?.isConnected === !1) && (ak(o.host), g.delete(t), o = null), !o) {
+			let e = [...a.querySelectorAll?.($O) ?? []].find((e) => lk(e) === t) ?? null;
+			e && e.__qqjInlineOwner !== k && (ak(e), e = null), e || (e = r.createElement("div"), e.className = "qqj-inline-host", e.setAttribute?.("data-qqj-inline-host", "true"), e.setAttribute?.("data-message-id", String(t)), e.dataset && (e.dataset.qqjInlineHost = "true", e.dataset.messageId = String(t)), a.append(e)), e.__qqjInlineOwner = k, M(e);
 			let s = I(i, t, n);
-			o = e.__qqjInlineCard ?? dk(r, e, n, _.get(s) === !0, L, R), o.stateKey = s, o.kind = n, g.set(t, o);
+			o = e.__qqjInlineCard ?? pk(r, e, n, _.get(s) === !0, L, R), o.stateKey = s, o.kind = n, g.set(t, o);
 		}
 		return o;
 	}, B = (e, t, n) => {
@@ -48594,7 +48678,7 @@ function gk({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 				kind: "user"
 			});
 		}
-		return e?.lastRecallBinding?.chatId === t && e.lastRecallBinding.userMessageIndex === n && e?.lastRecall?.userMessageIndex === n ? JO(e.lastRecall) : null;
+		return e?.lastRecallBinding?.chatId === t && e.lastRecallBinding.userMessageIndex === n && e?.lastRecall?.userMessageIndex === n ? XO(e.lastRecall) : null;
 	}, V = (e, t, n, r) => {
 		let i = e.extra?.[jT];
 		if (!i || typeof i != "object") return Promise.resolve(null);
@@ -48620,7 +48704,7 @@ function gk({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 		let i = [];
 		for (let e of n) {
 			let { message: t, messageIndex: n, messageText: r, receipt: a, stamp: o, view: s, pendingReceipt: c } = e;
-			t.mes === r && t.extra?.qqj_v3_recall_receipt === a && ik(a) === o && g.get(n) === s && s.host?.isConnected !== !1 && s.receiptPending === c ? i.push(e) : s.receiptPending === c && (s.receiptPending = null);
+			t.mes === r && t.extra?.qqj_v3_recall_receipt === a && ok(a) === o && g.get(n) === s && s.host?.isConnected !== !1 && s.receiptPending === c ? i.push(e) : s.receiptPending === c && (s.receiptPending = null);
 		}
 		if (!i.length) return;
 		let a, o;
@@ -48635,12 +48719,12 @@ function gk({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 			let { result: t, message: n, messageIndex: i, messageText: s, receipt: c, stamp: u, chatId: d, sourceChat: f, view: p, pendingReceipt: m } = e;
 			if (p.receiptPending !== m) continue;
 			p.receiptPending = null;
-			let h = JO(t || null);
+			let h = XO(t || null);
 			p.receiptIdentity = c, p.receiptMessageText = s, p.receiptStamp = u, p.receiptChatId = d, p.receiptProjection = h, p.receiptSettled = !0;
 			let g = B(o, d, i) ?? h, _ = l.get(f);
 			_ || (_ = /* @__PURE__ */ new Map(), l.set(f, _));
 			let y = _.get(d);
-			y || (y = pk(f, d, a), _.set(d, y)), hk(p, g, r, y, v);
+			y || (y = hk(f, d, a), _.set(d, y)), _k(p, g, r, y, v);
 		}
 	}, U = (e) => {
 		if (!A) {
@@ -48651,17 +48735,17 @@ function gk({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 	}, W = (e, t, n, i, a, o, l) => {
 		let u = B(o, i, n), d = t.extra?.[jT];
 		if (!d || typeof d != "object") {
-			e.receiptIdentity = null, e.receiptMessageText = null, e.receiptStamp = null, e.receiptChatId = null, e.receiptProjection = null, e.receiptSettled = !1, hk(e, u ?? JO(null), r, a, v);
+			e.receiptIdentity = null, e.receiptMessageText = null, e.receiptStamp = null, e.receiptChatId = null, e.receiptProjection = null, e.receiptSettled = !1, _k(e, u ?? XO(null), r, a, v);
 			return;
 		}
-		let f = t.mes, p = ik(d);
+		let f = t.mes, p = ok(d);
 		(e.receiptIdentity !== d || e.receiptMessageText !== f || e.receiptStamp !== p || e.receiptChatId !== i) && (e.receiptIdentity = null, e.receiptMessageText = null, e.receiptStamp = null, e.receiptChatId = null, e.receiptProjection = null, e.receiptSettled = !1);
 		let m = e.receiptIdentity === d && e.receiptMessageText === f && e.receiptStamp === p && e.receiptChatId === i && e.receiptSettled === !0, h = e.receiptPending?.receipt === d && e.receiptPending.messageText === f && e.receiptPending.stamp === p && e.receiptPending.chatId === i;
-		if (u) hk(e, u, r, a, v);
+		if (u) _k(e, u, r, a, v);
 		else if (m) {
-			hk(e, e.receiptProjection, r, a, v);
+			_k(e, e.receiptProjection, r, a, v);
 			return;
-		} else hk(e, Object.freeze({
+		} else _k(e, Object.freeze({
 			status: "running",
 			statusText: "正在核验历史回执",
 			summary: "正在核验这一楼保存的召回记录。",
@@ -48678,7 +48762,7 @@ function gk({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 			chatId: i
 		};
 		e.receiptPending = _, V(t, i, n, p).then((r) => {
-			if (!s || c || t.mes !== f || t.extra?.qqj_v3_recall_receipt !== d || ik(d) !== p || g.get(n) !== e || e.host?.isConnected === !1) {
+			if (!s || c || t.mes !== f || t.extra?.qqj_v3_recall_receipt !== d || ok(d) !== p || g.get(n) !== e || e.host?.isConnected === !1) {
 				e.receiptPending === _ && (e.receiptPending = null);
 				return;
 			}
@@ -48710,17 +48794,17 @@ function gk({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 		if (!h?.querySelectorAll) return !1;
 		let _ = /* @__PURE__ */ new Map();
 		for (let e of h.querySelectorAll(".mes")) {
-			let t = sk(e), n = KO(ek(t) ? o[t] : null);
+			let t = lk(e), n = JO(nk(t) ? o[t] : null);
 			if (!T(n)) continue;
 			let r = _.get(t);
-			(!r || lk(e, n) >= r.priority) && _.set(t, {
+			(!r || dk(e, n) >= r.priority) && _.set(t, {
 				element: e,
 				role: n,
-				priority: lk(e, n)
+				priority: dk(e, n)
 			});
 		}
-		let b = e.getState(), x = t.getState(), S = pk(o, u, b), E = /* @__PURE__ */ new Map(), D = 0;
-		for (let e = 0; e < o.length; e += 1) KO(o[e]) === "assistant" && E.set(e, ++D);
+		let b = e.getState(), x = t.getState(), S = hk(o, u, b), E = /* @__PURE__ */ new Map(), D = 0;
+		for (let e = 0; e < o.length; e += 1) JO(o[e]) === "assistant" && E.set(e, ++D);
 		let O = !0;
 		for (let [e, t] of _) {
 			let n = z(t.element, e, t.role, d);
@@ -48728,18 +48812,18 @@ function gk({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 				O = !1;
 				continue;
 			}
-			t.role === "assistant" ? hk(n, qO(b, e, E.get(e), { migrationAliasId: o[e]?.extra?.qianqianjie_migration_alias ?? null }), r, S, v) : W(n, o[e], e, u, S, x, o);
+			t.role === "assistant" ? _k(n, YO(b, e, E.get(e), { migrationAliasId: o[e]?.extra?.qianqianjie_migration_alias ?? null }), r, S, v) : W(n, o[e], e, u, S, x, o);
 		}
-		for (let [e, t] of [...g]) _.has(e) || (rk(t.host), g.delete(e));
-		for (let e of r.querySelectorAll(ZO)) {
-			let t = sk(e);
-			(!ek(t) || g.get(t)?.host !== e) && rk(e);
+		for (let [e, t] of [...g]) _.has(e) || (ak(t.host), g.delete(e));
+		for (let e of r.querySelectorAll($O)) {
+			let t = lk(e);
+			(!nk(t) || g.get(t)?.host !== e) && ak(e);
 		}
-		o.reduce((e, t) => e + +!!T(KO(t)), 0) > 0 && _.size === 0 && (O = !1);
-		for (let e of y) T(KO(o[e])) && !_.has(e) && (O = !1);
+		o.reduce((e, t) => e + +!!T(JO(t)), 0) > 0 && _.size === 0 && (O = !1);
+		for (let e of y) T(JO(o[e])) && !_.has(e) && (O = !1);
 		return O && y.clear(), O;
 	}, K = (e) => {
-		if (!s || c || e !== u || (p?.disconnect?.(), p = null, G()) || d >= XO.length) return;
+		if (!s || c || e !== u || (p?.disconnect?.(), p = null, G()) || d >= QO.length) return;
 		let t = i?.MutationObserver ?? globalThis.MutationObserver, n = r?.querySelector?.("#chat") ?? r?.body;
 		typeof t == "function" && n && (p = new t(() => {
 			p?.disconnect?.(), p = null, m !== null && (i?.clearTimeout?.(m), m = null), K(e);
@@ -48747,26 +48831,26 @@ function gk({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 			childList: !0,
 			subtree: !0,
 			attributes: !0,
-			attributeFilter: [...QO]
+			attributeFilter: [...ek]
 		}));
 		let a = d;
 		d += 1, m = i?.setTimeout?.(() => {
 			m = null, K(e);
-		}, XO[a]) ?? null;
+		}, QO[a]) ?? null;
 	};
 	function ee(...e) {
 		if (!(!s || c)) {
 			for (let t of e) {
-				let e = tk(t);
-				if (e !== null && ek(e)) y.add(e);
+				let e = rk(t);
+				if (e !== null && nk(e)) y.add(e);
 				else if (t && typeof t == "object") for (let e of [
 					"messageIndex",
 					"messageId",
 					"mesid"
 				]) {
 					if (!Object.hasOwn(t, e)) continue;
-					let n = tk(t[e]);
-					n !== null && ek(n) && y.add(n);
+					let n = rk(t[e]);
+					n !== null && nk(n) && y.add(n);
 				}
 			}
 			h || (h = !0, Promise.resolve().then(() => {
@@ -48823,14 +48907,14 @@ function gk({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 		let n = e !== !1, r = t !== !1;
 		if (n !== C || r !== w) {
 			C = n, w = r;
-			for (let [e, t] of g) T(t.kind) || (rk(t.host), g.delete(e));
+			for (let [e, t] of g) T(t.kind) || (ak(t.host), g.delete(e));
 			ee();
 		}
 	}
 	function X(e) {
 		D = Number.isFinite(Number(e?.fixedScale)) ? Number(e.fixedScale) : 1, E = Object.freeze({
-			knot: ak(e?.palette?.knot, "#a8322f"),
-			line: ak(e?.palette?.line, "color-mix(in srgb,currentColor 18%,transparent)")
+			knot: sk(e?.palette?.knot, "#a8322f"),
+			line: sk(e?.palette?.line, "color-mix(in srgb,currentColor 18%,transparent)")
 		});
 		for (let e of g.values()) M(e.host);
 		return E;
@@ -48860,7 +48944,7 @@ function gk({ memoryRuntime: e, recallRuntime: t, hostAdapter: n, documentRef: r
 }
 //#endregion
 //#region index.js
-var _k = () => !!(i || o), vk = jx({
+var yk = () => !!(i || o), bk = jx({
 	personaIdentifierProvider: () => e,
 	worldInfoBindings: {
 		loadWorldInfo: s,
@@ -48870,34 +48954,34 @@ var _k = () => !!(i || o), vk = jx({
 		getDefaultCaseSensitive: () => u,
 		getDefaultMatchWholeWords: () => d
 	}
-}), yk = () => vk.getContext(), bk = () => yk().uuidv4(), xk = () => ({
-	...yk(),
+}), xk = () => bk.getContext(), Sk = () => xk().uuidv4(), Ck = () => ({
+	...xk(),
 	userAvatar: e
-}), Sk = bl({
+}), wk = bl({
 	extensionSettings: r,
 	save: a
 });
-Sk.migrateLegacyApiSettings();
-var Ck = () => Zc({
+wk.migrateLegacyApiSettings();
+var Tk = () => Zc({
 	extensionNames: n,
 	disabledExtensions: r.disabledExtensions,
 	extensionSuffix: "/ST-SevenDaysCal",
 	peerSettings: r["schedule-planner"]
-}), wk = () => {
+}), Ek = () => {
 	let e = n.find((e) => String(e).endsWith("/ST-SevenDaysCal"));
 	return !!(e && !r.disabledExtensions?.includes(e));
-}, Tk = () => {
-	if (!wk()) return !1;
+}, Dk = () => {
+	if (!Ek()) return !1;
 	let e = r["schedule-planner"];
 	if (e?.pluginEnabled === !1 || e?.injectEnabled === !1 || e?.ledgerInject !== !0) return !1;
-	let t = yk(), n = t.characters?.[t.characterId]?.avatar;
+	let t = xk(), n = t.characters?.[t.characterId]?.avatar;
 	return t.groupId != null || !(typeof n == "string" && n !== "" && Array.isArray(e.characterExcludeAvatars) && e.characterExcludeAvatars.includes(n));
-}, Ek = Qc({
-	context: yk,
-	settings: () => Sk.get(),
-	peerState: Ck
-}), Dk = "qqj-sdc-story-clock-settings-changed", Ok = $c({
-	controller: Ek,
+}, Ok = Qc({
+	context: xk,
+	settings: () => wk.get(),
+	peerState: Tk
+}), kk = "qqj-sdc-story-clock-settings-changed", Ak = $c({
+	controller: Ok,
 	labelFor: (e) => ({
 		custom: "使用自定义时间戳提示词",
 		"adapted-sdc": "已适配构画时间戳",
@@ -48907,49 +48991,49 @@ var Ck = () => Zc({
 		closed: "正文时间戳已关闭",
 		unavailable: "宿主暂不支持时间戳注入"
 	})[e?.status] ?? "时间戳状态会在下一次正文生成前刷新。"
-}), kk = () => {
+}), jk = () => {
 	try {
-		typeof globalThis.CustomEvent == "function" && globalThis.dispatchEvent?.(new globalThis.CustomEvent(Dk, { detail: { owner: "myknots" } }));
+		typeof globalThis.CustomEvent == "function" && globalThis.dispatchEvent?.(new globalThis.CustomEvent(kk, { detail: { owner: "myknots" } }));
 	} catch {}
-}, Ak = ({ readOnly: e = !1, announce: t = !1 } = {}) => {
-	let n = Ok({ readOnly: e });
-	return t && kk(), n;
+}, Mk = ({ readOnly: e = !1, announce: t = !1 } = {}) => {
+	let n = Ak({ readOnly: e });
+	return t && jk(), n;
 };
-globalThis.addEventListener?.(Dk, (e) => {
-	e?.detail?.owner !== "myknots" && Ak();
+globalThis.addEventListener?.(kk, (e) => {
+	e?.detail?.owner !== "myknots" && Mk();
 });
-var jk = () => ({
-	keepTags: Sk.get().sourceKeepTags,
-	extraTags: Sk.get().sourceExtraTags
-}), Mk = $o({ headers: () => yk()?.getRequestHeaders?.() ?? {} }), Nk, Pk, Fk = null, Ik = 0, Lk = (e, t = "pluginEnable") => {
-	Ik += 1, Fk = Object.freeze({
+var Nk = () => ({
+	keepTags: wk.get().sourceKeepTags,
+	extraTags: wk.get().sourceExtraTags
+}), Pk = $o({ headers: () => xk()?.getRequestHeaders?.() ?? {} }), Fk, Ik, Lk = null, Rk = 0, zk = (e, t = "pluginEnable") => {
+	Rk += 1, Lk = Object.freeze({
 		phase: t,
 		failure: qx(e?.cause ?? e, "synchronizing")
 	});
-}, Rk = () => {
-	Ik += 1, Fk = null;
-}, zk = (e) => {
-	Ik === e && Rk();
-}, Bk = ql({
-	headers: () => yk()?.getRequestHeaders?.() ?? {},
-	onBusyChange: (e) => Nk?.fab?.setBusy?.(e)
-}), Vk = wx({ settings: Sk }), Hk = Tx({
-	resolver: Vk,
-	compactClient: Bk,
-	isEnabled: Sk.isEnabled
-}), Uk = Ex({
-	resolver: Vk,
-	compactClient: Bk,
-	isEnabled: Sk.isEnabled
-}), Wk = ae({ headers: () => yk()?.getRequestHeaders?.() ?? {} }), Gk = sS({
-	client: Mk,
-	freshUuid: bk,
-	listHostChats: Wk,
-	initializeBranch: CD({
-		client: Mk,
-		hostAdapter: vk,
-		vectorRuntimeProvider: () => lA,
-		sanitizerOptions: jk
+}, Bk = () => {
+	Rk += 1, Lk = null;
+}, Vk = (e) => {
+	Rk === e && Bk();
+}, Hk = ql({
+	headers: () => xk()?.getRequestHeaders?.() ?? {},
+	onBusyChange: (e) => Fk?.fab?.setBusy?.(e)
+}), Uk = wx({ settings: wk }), Wk = Tx({
+	resolver: Uk,
+	compactClient: Hk,
+	isEnabled: wk.isEnabled
+}), Gk = Ex({
+	resolver: Uk,
+	compactClient: Hk,
+	isEnabled: wk.isEnabled
+}), Kk = ae({ headers: () => xk()?.getRequestHeaders?.() ?? {} }), qk = sS({
+	client: Pk,
+	freshUuid: Sk,
+	listHostChats: Kk,
+	initializeBranch: TD({
+		client: Pk,
+		hostAdapter: bk,
+		vectorRuntimeProvider: () => dA,
+		sanitizerOptions: Nk
 	}),
 	persist: (e, t, n, r) => {
 		if (!n?.target) throw Object.assign(/* @__PURE__ */ Error("固定聊天保存坐标不可用。"), { code: "QQJ_TARGET_CHAT_DESCRIPTOR_REQUIRED" });
@@ -48958,14 +49042,14 @@ var jk = () => ({
 			raw: e,
 			snapshot: n,
 			chatId: t,
-			listHostChats: Wk,
+			listHostChats: Kk,
 			signal: r
 		});
 	}
-}), Kk = Zx({
-	contextProvider: xk,
-	isEnabled: Sk.isEnabled,
-	identityCoordinator: Gk,
+}), Jk = Zx({
+	contextProvider: Ck,
+	isEnabled: wk.isEnabled,
+	identityCoordinator: qk,
 	captureTaskInputs: ({ raw: e, host: t }) => {
 		let n = Mx({
 			context: e,
@@ -48981,13 +49065,13 @@ var jk = () => ({
 			chat: structuredClone(Array.isArray(e.chat) ? e.chat : []),
 			chatMetadata: re(e.chatMetadata ?? {}),
 			target: n,
-			sanitizerOptions: Object.freeze({ ...jk() })
+			sanitizerOptions: Object.freeze({ ...Nk() })
 		};
 	}
-}), qk = () => {
+}), Yk = () => {
 	let e;
 	try {
-		e = Kk.identity();
+		e = Jk.identity();
 	} catch {
 		return {
 			chatId: null,
@@ -48996,61 +49080,61 @@ var jk = () => ({
 	}
 	return {
 		chatId: e.chatId,
-		calendar: Sk.get().storyCalendars[e.chatId] ?? null
+		calendar: wk.get().storyCalendars[e.chatId] ?? null
 	};
-}, Jk = () => qk().calendar, Yk = cC({
-	settings: Sk,
-	contextProvider: xk
-}), Xk = () => Sk.get().summaryPrompt, Zk = () => Sk.get().csePrompt, Qk = () => Sk.get().profilePrompt, $k = () => Sk.get().processingPrompt, eA = Go() ? null : TC({
+}, Xk = () => Yk().calendar, Zk = cC({
+	settings: wk,
+	contextProvider: Ck
+}), Qk = () => wk.get().summaryPrompt, $k = () => wk.get().csePrompt, eA = () => wk.get().profilePrompt, tA = () => wk.get().processingPrompt, nA = Go() ? null : TC({
 	localForage: p,
 	accountHandleProvider: m
-}), tA = ES({
-	client: Mk,
-	contextProvider: () => Kk.identity(),
-	isEnabled: Sk.isEnabled,
-	coreRecordCache: eA
-}), nA = (e) => tA.forIdentity(e), rA = QC({ client: Mk }), iA = WC({
-	hostAdapter: vk,
-	store: tA,
-	contextProvider: xk,
-	prepareSession: () => Kk.prepare(),
+}), rA = ES({
+	client: Pk,
+	contextProvider: () => Jk.identity(),
+	isEnabled: wk.isEnabled,
+	coreRecordCache: nA
+}), iA = (e) => rA.forIdentity(e), aA = QC({ client: Pk }), oA = WC({
+	hostAdapter: bk,
+	store: rA,
+	contextProvider: Ck,
+	prepareSession: () => Jk.prepare(),
 	deferChatChangeRefreshUntilPrepared: !0,
-	isEnabled: Sk.isEnabled,
-	sanitizerOptions: jk,
-	newUuid: bk,
-	hasTimeFloorReference: (e, t) => rA.hasFloorReference(e, t)
-}), aA = Mv({ client: Mk }), oA, sA = async (e) => {
-	let t = e ?? Kk.identity();
-	return oA?.getState?.()?.chatId === t.chatId ? oA.getIdentityProjection() : (await aA.read(t)).data ?? {};
-}, cA = z({ headers: () => yk()?.getRequestHeaders?.() ?? {} }), lA = Co({
-	client: Mk,
-	api: cA,
-	configProvider: () => P(Sk),
-	identityProvider: () => Kk.identity(),
-	isEnabled: Sk.isEnabled,
+	isEnabled: wk.isEnabled,
+	sanitizerOptions: Nk,
+	newUuid: Sk,
+	hasTimeFloorReference: (e, t) => aA.hasFloorReference(e, t)
+}), sA = Mv({ client: Pk }), cA, lA = async (e) => {
+	let t = e ?? Jk.identity();
+	return cA?.getState?.()?.chatId === t.chatId ? cA.getIdentityProjection() : (await sA.read(t)).data ?? {};
+}, uA = z({ headers: () => xk()?.getRequestHeaders?.() ?? {} }), dA = Co({
+	client: Pk,
+	api: uA,
+	configProvider: () => P(wk),
+	identityProvider: () => Jk.identity(),
+	isEnabled: wk.isEnabled,
 	sourceProvider: ({ targetIdentity: e }) => Do({
 		store: ES({
-			client: Mk,
+			client: Pk,
 			contextProvider: () => e,
-			isEnabled: Sk.isEnabled,
-			coreRecordCache: eA
+			isEnabled: wk.isEnabled,
+			coreRecordCache: nA
 		}),
 		targetIdentity: e,
-		cachedReachable: iA.getReachable()
+		cachedReachable: oA.getReachable()
 	})
-}), uA, dA = ew({
-	storyCalendarProvider: Jk,
-	newUuid: bk,
-	store: rA,
-	foundationStore: tA,
-	hostAdapter: vk,
-	session: Kk,
-	getReachable: () => iA.getReachable(),
-	getMemoryState: () => fA.getState(),
-	generateTimeTask: Hk.generateUtilityTask,
+}), fA, pA = ew({
+	storyCalendarProvider: Xk,
+	newUuid: Sk,
+	store: aA,
+	foundationStore: rA,
+	hostAdapter: bk,
+	session: Jk,
+	getReachable: () => oA.getReachable(),
+	getMemoryState: () => mA.getState(),
+	generateTimeTask: Wk.generateUtilityTask,
 	annualSettingsProvider: () => {
-		let e = iA.getReachable(), n = oA?.getState?.();
-		return !e?.baseline?.userPersona?.entityId || n?.status !== "ready" || n.chatId !== Kk.identity().chatId ? { ready: !1 } : {
+		let e = oA.getReachable(), n = cA?.getState?.();
+		return !e?.baseline?.userPersona?.entityId || n?.status !== "ready" || n.chatId !== Jk.identity().chatId ? { ready: !1 } : {
 			ready: !0,
 			people: Pv(e, n),
 			userPersona: {
@@ -49060,252 +49144,252 @@ var jk = () => ({
 			}
 		};
 	},
-	sanitizerOptions: jk,
-	storyClockReferenceTags: () => Sk.get().storyClockReferenceTags,
-	isEnabled: () => Sk.isEnabled() && Sk.get().timeEvolutionEnabled === !0
-}), fA = lT({
-	storyCalendarProvider: Jk,
-	foundationRuntime: iA,
-	store: tA,
-	hostAdapter: vk,
-	generateAnalysisTask: Hk.generateAnalysisTask,
-	generateUtilityTask: Hk.generateUtilityTask,
-	isEnabled: Sk.isEnabled,
+	sanitizerOptions: Nk,
+	storyClockReferenceTags: () => wk.get().storyClockReferenceTags,
+	isEnabled: () => wk.isEnabled() && wk.get().timeEvolutionEnabled === !0
+}), mA = lT({
+	storyCalendarProvider: Xk,
+	foundationRuntime: oA,
+	store: rA,
+	hostAdapter: bk,
+	generateAnalysisTask: Wk.generateAnalysisTask,
+	generateUtilityTask: Wk.generateUtilityTask,
+	isEnabled: wk.isEnabled,
 	automationSettings: () => ({
-		enabled: Sk.isEnabled(),
+		enabled: wk.isEnabled(),
 		batchSize: 1
 	}),
 	notifyUser: (e) => e?.action === "openMemory" ? globalThis.toastr?.warning?.(e.text, void 0, {
 		timeOut: 12e3,
 		closeButton: !0,
-		onclick: () => Nk?.openMemory?.()
+		onclick: () => Fk?.openMemory?.()
 	}) : globalThis.toastr?.[e?.kind]?.(e?.text),
-	isMainGenerationActive: _k,
-	extractorPromptGuidance: Xk,
-	csePromptGuidance: Zk,
-	processingPrompt: $k,
-	storyClockReferenceTags: () => Sk.get().storyClockReferenceTags,
-	filterWorldInfoSources: Yk.filterWorldInfoSources,
-	sanitizerOptions: jk,
+	isMainGenerationActive: yk,
+	extractorPromptGuidance: Qk,
+	csePromptGuidance: $k,
+	processingPrompt: tA,
+	storyClockReferenceTags: () => wk.get().storyClockReferenceTags,
+	filterWorldInfoSources: Zk.filterWorldInfoSources,
+	sanitizerOptions: Nk,
 	persistAnchors: Oe,
-	identityProjectionProvider: sA,
-	captureBusinessIdentity: () => Kk.identity(),
-	storeForIdentity: nA,
-	onQianshiEventDeleted: () => uA?.invalidate("qianshiManuallyDeleted"),
-	qianshiExternalReferenceProvider: (e, t) => Sk.get().timeEvolutionEnabled ? e ? dA.getQianshiReferencesForChat(e, t) : dA.getQianshiReferences() : [],
-	newUuid: bk
-}), pA = To({
-	memoryRuntime: fA,
-	vectorRuntime: lA,
-	configProvider: () => P(Sk),
-	isEnabled: Sk.isEnabled,
-	isMainGenerationActive: _k
-}), mA = [], hA = yk(), gA = null, _A = !1;
+	identityProjectionProvider: lA,
+	captureBusinessIdentity: () => Jk.identity(),
+	storeForIdentity: iA,
+	onQianshiEventDeleted: () => fA?.invalidate("qianshiManuallyDeleted"),
+	qianshiExternalReferenceProvider: (e, t) => wk.get().timeEvolutionEnabled ? e ? pA.getQianshiReferencesForChat(e, t) : pA.getQianshiReferences() : [],
+	newUuid: Sk
+}), hA = To({
+	memoryRuntime: mA,
+	vectorRuntime: dA,
+	configProvider: () => P(wk),
+	isEnabled: wk.isEnabled,
+	isMainGenerationActive: yk
+}), gA = [], _A = xk(), vA = null, yA = !1;
 for (let e of [
 	"GENERATION_STOPPED",
 	"GENERATION_ENDED",
 	"GROUP_WRAPPER_FINISHED"
 ]) {
-	let t = hA?.eventTypes?.[e], n = hA?.eventSource;
+	let t = _A?.eventTypes?.[e], n = _A?.eventSource;
 	if (!t || !n?.on) continue;
 	let r = () => {
-		_A || gA !== null || (gA = globalThis.setTimeout(() => {
-			gA = null, _A || (pA.refresh(), oA?.wakeAutomaticMaintenance?.());
+		yA || vA !== null || (vA = globalThis.setTimeout(() => {
+			vA = null, yA || (hA.refresh(), cA?.wakeAutomaticMaintenance?.());
 		}, 0));
 	};
-	n.on(t, r), mA.push({
+	n.on(t, r), gA.push({
 		eventSource: n,
 		eventName: t,
 		handler: r
 	});
 }
 globalThis.addEventListener?.("beforeunload", () => {
-	_A = !0, gA !== null && globalThis.clearTimeout(gA), gA = null;
-	for (let { eventSource: e, eventName: t, handler: n } of mA) e.removeListener ? e.removeListener(t, n) : e.off?.(t, n);
-	pA.dispose();
-}, { once: !0 }), uA = ZE({
-	store: tA,
-	hostAdapter: vk,
-	generateUtilityTask: Hk.generateRecallTask,
-	semanticProvider: (e) => lA.query(e),
-	isEnabled: Sk.isEnabled,
-	memoryStatus: () => fA.getState(),
-	prepareMemory: (e) => fA.prepareCurrent(e),
-	realtimeOrigin: () => fA.allowsRealtimeTailFromEmpty(),
-	recentBodyFloorLimit: () => Sk.get().autoHideKeepAiCount,
+	yA = !0, vA !== null && globalThis.clearTimeout(vA), vA = null;
+	for (let { eventSource: e, eventName: t, handler: n } of gA) e.removeListener ? e.removeListener(t, n) : e.off?.(t, n);
+	hA.dispose();
+}, { once: !0 }), fA = ZE({
+	store: rA,
+	hostAdapter: bk,
+	generateUtilityTask: Wk.generateRecallTask,
+	semanticProvider: (e) => dA.query(e),
+	isEnabled: wk.isEnabled,
+	memoryStatus: () => mA.getState(),
+	prepareMemory: (e) => mA.prepareCurrent(e),
+	realtimeOrigin: () => mA.allowsRealtimeTailFromEmpty(),
+	recentBodyFloorLimit: () => wk.get().autoHideKeepAiCount,
 	notifyUser: (e) => globalThis.toastr?.[e?.kind]?.(e?.text),
-	sanitizerOptions: jk,
-	identityProjectionProvider: sA,
-	timeProjectionProvider: (e) => dA.recallProjection(e),
+	sanitizerOptions: Nk,
+	identityProjectionProvider: lA,
+	timeProjectionProvider: (e) => pA.recallProjection(e),
 	qianshiProgressProvider: async (e, t) => {
-		let n = Array.isArray(t?.selectedEventIds) || Array.isArray(t?.selectedMatterIds) ? null : await dA.currentStoryContext(e);
-		return fA.getQianshiRecall({
+		let n = Array.isArray(t?.selectedEventIds) || Array.isArray(t?.selectedMatterIds) ? null : await pA.currentStoryContext(e);
+		return mA.getQianshiRecall({
 			...t,
 			...n ?? {}
 		});
 	},
-	qianshiDeletionProvider: () => fA.getQianshiDeletions(),
+	qianshiDeletionProvider: () => mA.getQianshiDeletions(),
 	pluginVersion: Oo
 });
-var vA = Ys({
+var bA = Ys({
 	client: $o({
-		headers: () => yk()?.getRequestHeaders?.() ?? {},
+		headers: () => xk()?.getRequestHeaders?.() ?? {},
 		timeoutMs: 5e3
 	}),
-	recallRuntime: uA,
-	vectorRuntime: lA,
-	isEnabled: Sk.isEnabled
+	recallRuntime: fA,
+	vectorRuntime: dA,
+	isEnabled: wk.isEnabled
 });
-globalThis.location?.origin && vA.start(), globalThis.addEventListener?.("beforeunload", vA.dispose, { once: !0 }), oA = ty({
-	store: aA,
-	session: Kk,
-	foundationRuntime: iA,
-	foundationStore: tA,
-	hostAdapter: vk,
-	memoryRuntime: fA,
-	generateUtilityTask: Hk.generateUtilityTask,
-	sourcePermissions: Yk,
-	contextProvider: xk,
-	profilePromptGuidance: Qk,
-	processingPrompt: $k,
-	isEnabled: Sk.isEnabled,
-	isMainGenerationActive: _k
-}), oA.subscribe?.((e) => {
-	e?.status === "ready" && e.chatId === Kk.identity().chatId && dA.runBatch({ chatId: e.chatId });
+globalThis.location?.origin && bA.start(), globalThis.addEventListener?.("beforeunload", bA.dispose, { once: !0 }), cA = ty({
+	store: sA,
+	session: Jk,
+	foundationRuntime: oA,
+	foundationStore: rA,
+	hostAdapter: bk,
+	memoryRuntime: mA,
+	generateUtilityTask: Wk.generateUtilityTask,
+	sourcePermissions: Zk,
+	contextProvider: Ck,
+	profilePromptGuidance: eA,
+	processingPrompt: tA,
+	isEnabled: wk.isEnabled,
+	isMainGenerationActive: yk
+}), cA.subscribe?.((e) => {
+	e?.status === "ready" && e.chatId === Jk.identity().chatId && pA.runBatch({ chatId: e.chatId });
 });
-var yA = dD({
-	hostAdapter: vk,
-	memoryRuntime: fA,
-	settings: Sk,
+var xA = dD({
+	hostAdapter: bk,
+	memoryRuntime: mA,
+	settings: wk,
 	notifyUser: (e) => globalThis.toastr?.[e?.kind]?.(e?.text)
-}), bA = (e) => gT(e, {
-	worldInfoBindings: vk.getWorldInfoBindings(),
+}), SA = (e) => gT(e, {
+	worldInfoBindings: bk.getWorldInfoBindings(),
 	getCharacterLorebooks: () => globalThis.TavernHelper?.getCharLorebooks?.(),
 	getGlobalSelection: () => globalThis.TavernHelper?.getLorebookSettings?.()?.selected_global_lorebooks,
 	loadWorldInfo: s,
-	calendarForChat: (e) => Sk.get().storyCalendars?.[e] ?? null
-}), xA = (e) => pT({
+	calendarForChat: (e) => wk.get().storyCalendars?.[e] ?? null
+}), CA = (e) => pT({
 	...e,
-	client: Mk,
-	coreRecordCache: eA,
-	isEnabled: Sk.isEnabled,
-	newUuid: bk,
-	sanitizerOptions: jk,
-	generateAnalysisTask: Hk.generateAnalysisTask,
-	generateUtilityTask: Hk.generateUtilityTask,
+	client: Pk,
+	coreRecordCache: nA,
+	isEnabled: wk.isEnabled,
+	newUuid: Sk,
+	sanitizerOptions: Nk,
+	generateAnalysisTask: Wk.generateAnalysisTask,
+	generateUtilityTask: Wk.generateUtilityTask,
 	automationSettings: () => ({
 		enabled: !1,
 		batchSize: 1
 	}),
-	extractorPromptGuidance: Xk,
-	csePromptGuidance: Zk,
-	processingPrompt: $k,
-	storyClockReferenceTags: () => Sk.get().storyClockReferenceTags,
-	storyCalendarForChat: (e) => Sk.get().storyCalendars?.[e] ?? null,
-	generateTimeTask: Hk.generateTimeTask,
-	isTimeEvolutionEnabled: () => Sk.isEnabled() && Sk.get().timeEvolutionEnabled === !0,
-	filterWorldInfoSources: Yk.filterWorldInfoSources,
-	identityProjectionProvider: sA,
-	qianshiExternalReferenceProvider: (e, t) => Sk.get().timeEvolutionEnabled ? dA.getQianshiReferencesForChat(e, t) : [],
+	extractorPromptGuidance: Qk,
+	csePromptGuidance: $k,
+	processingPrompt: tA,
+	storyClockReferenceTags: () => wk.get().storyClockReferenceTags,
+	storyCalendarForChat: (e) => wk.get().storyCalendars?.[e] ?? null,
+	generateTimeTask: Wk.generateTimeTask,
+	isTimeEvolutionEnabled: () => wk.isEnabled() && wk.get().timeEvolutionEnabled === !0,
+	filterWorldInfoSources: Zk.filterWorldInfoSources,
+	identityProjectionProvider: lA,
+	qianshiExternalReferenceProvider: (e, t) => wk.get().timeEvolutionEnabled ? pA.getQianshiReferencesForChat(e, t) : [],
 	persistAnchors: Oe,
 	fetchImpl: globalThis.fetch
-}), SA = gk({
-	memoryRuntime: fA,
-	recallRuntime: uA,
-	hostAdapter: vk
-}), CA = NS({
-	contextProvider: xk,
-	client: Mk,
-	session: Kk,
-	hostAdapter: vk,
-	foundationRuntime: iA,
-	memoryRuntime: fA,
-	recallRuntime: uA,
-	peopleRuntime: oA,
-	vectorRuntime: lA,
-	timeRuntime: dA,
-	memoryMigration: HD({
-		client: Mk,
-		session: Kk,
-		hostAdapter: vk,
-		sourceStoreForIdentity: nA,
-		sanitizerOptions: jk,
-		listHostChats: Wk,
-		freshUuid: bk,
-		copyPeople: ({ sourceIdentity: e, targetIdentity: t, entities: n, sourceReachable: r }) => xD({
-			peopleStore: aA,
+}), wA = vk({
+	memoryRuntime: mA,
+	recallRuntime: fA,
+	hostAdapter: bk
+}), TA = NS({
+	contextProvider: Ck,
+	client: Pk,
+	session: Jk,
+	hostAdapter: bk,
+	foundationRuntime: oA,
+	memoryRuntime: mA,
+	recallRuntime: fA,
+	peopleRuntime: cA,
+	vectorRuntime: dA,
+	timeRuntime: pA,
+	memoryMigration: WD({
+		client: Pk,
+		session: Jk,
+		hostAdapter: bk,
+		sourceStoreForIdentity: iA,
+		sanitizerOptions: Nk,
+		listHostChats: Kk,
+		freshUuid: Sk,
+		copyPeople: ({ sourceIdentity: e, targetIdentity: t, entities: n, sourceReachable: r }) => CD({
+			peopleStore: sA,
 			sourceIdentity: e,
 			targetIdentity: t,
 			entities: n,
 			snapshotSourceIds: r?.migrationDescriptor?.recordRefs?.peopleSnapshotIds ?? [],
 			now: (/* @__PURE__ */ new Date()).toISOString()
 		}),
-		copyTime: ({ sourceIdentity: e, targetIdentity: t, reachable: n }) => rA.copyPrefix(e.chatId, t.chatId, n.floors, void 0, { migration: !0 }),
-		copyVector: ({ sourceIdentity: e, targetIdentity: t, targetNarrativeGeneration: n, sourceReachable: r }) => lA.copyPrefix(e, t, n, r),
-		captureStoryCalendar: (e) => Sk.get().storyCalendars[e] ?? null,
+		copyTime: ({ sourceIdentity: e, targetIdentity: t, reachable: n }) => aA.copyPrefix(e.chatId, t.chatId, n.floors, void 0, { migration: !0 }),
+		copyVector: ({ sourceIdentity: e, targetIdentity: t, targetNarrativeGeneration: n, sourceReachable: r }) => dA.copyPrefix(e, t, n, r),
+		captureStoryCalendar: (e) => wk.get().storyCalendars[e] ?? null,
 		persistStoryCalendar: (e, t) => {
-			let n = { ...Sk.get().storyCalendars };
+			let n = { ...wk.get().storyCalendars };
 			try {
-				Sk.update({ storyCalendars: {
+				wk.update({ storyCalendars: {
 					...n,
 					[e]: t
 				} }, { observeSaveFailure: !0 });
 			} catch (e) {
 				try {
-					Sk.update({ storyCalendars: n });
+					wk.update({ storyCalendars: n });
 				} catch {}
 				throw e;
 			}
 		}
 	}),
-	autoHideController: yA,
-	coreRecordCache: eA,
-	captureHistoricalRebuildSources: bA,
-	freshUuid: bk,
-	createHistoricalRebuild: xA,
-	isMainGenerationActive: _k
-}), wA = YS({
-	client: Mk,
-	store: tA,
-	session: Kk,
-	hostAdapter: vk,
-	settings: Sk,
-	memoryRuntime: fA,
-	foundationRuntime: iA,
-	vectorRuntime: lA,
+	autoHideController: xA,
+	coreRecordCache: nA,
+	captureHistoricalRebuildSources: SA,
+	freshUuid: Sk,
+	createHistoricalRebuild: CA,
+	isMainGenerationActive: yk
+}), EA = YS({
+	client: Pk,
+	store: rA,
+	session: Jk,
+	hostAdapter: bk,
+	settings: wk,
+	memoryRuntime: mA,
+	foundationRuntime: oA,
+	vectorRuntime: dA,
 	activitySources: [
-		lA,
-		iA,
-		uA,
-		oA,
 		dA,
-		CA
+		oA,
+		fA,
+		cA,
+		pA,
+		TA
 	],
 	isBusy: () => {
-		let e = fA.getState(), t = CA.getState();
-		return !!(lA.getState().active || t.workBusy || t.status === "deleting" || dA.getState().active || e.qianshiHistoryActive);
+		let e = mA.getState(), t = TA.getState();
+		return !!(dA.getState().active || t.workBusy || t.status === "deleting" || pA.getState().active || e.qianshiHistoryActive);
 	}
-}), TA = dO({
-	session: Kk,
-	store: tA,
-	hostAdapter: vk,
-	foundationRuntime: iA,
-	memoryRuntime: fA,
-	peopleRuntime: oA,
-	recallRuntime: uA,
-	isEnabled: Sk.isEnabled,
-	sanitizerOptions: jk,
-	identityProjectionProvider: sA
-}), EA = gO({ memoryRuntime: fA });
-globalThis.addEventListener?.("beforeunload", TA.cleanup, { once: !0 }), globalThis.addEventListener?.("beforeunload", EA.cleanup, { once: !0 }), globalThis.addEventListener?.("beforeunload", yA.dispose, { once: !0 }), globalThis.addEventListener?.("beforeunload", SA.destroy, { once: !0 }), globalThis.addEventListener?.("beforeunload", wA.dispose, { once: !0 }), globalThis.qqj_v3_recall_interceptor = (e, t, n, r) => uA.intercept(e, t, n, r), Nk = hx({
-	settings: Sk,
-	apiTools: Uk,
-	vectorApi: cA,
-	vectorIndex: lA,
+}), DA = pO({
+	session: Jk,
+	store: rA,
+	hostAdapter: bk,
+	foundationRuntime: oA,
+	memoryRuntime: mA,
+	peopleRuntime: cA,
+	recallRuntime: fA,
+	isEnabled: wk.isEnabled,
+	sanitizerOptions: Nk,
+	identityProjectionProvider: lA
+}), OA = vO({ memoryRuntime: mA });
+globalThis.addEventListener?.("beforeunload", DA.cleanup, { once: !0 }), globalThis.addEventListener?.("beforeunload", OA.cleanup, { once: !0 }), globalThis.addEventListener?.("beforeunload", xA.dispose, { once: !0 }), globalThis.addEventListener?.("beforeunload", wA.destroy, { once: !0 }), globalThis.addEventListener?.("beforeunload", EA.dispose, { once: !0 }), globalThis.qqj_v3_recall_interceptor = (e, t, n, r) => fA.intercept(e, t, n, r), Fk = hx({
+	settings: wk,
+	apiTools: Gk,
+	vectorApi: uA,
+	vectorIndex: dA,
 	onPluginEnabledChange: async (e) => {
-		let t = Ik;
+		let t = Rk;
 		try {
-			Ak({ announce: !0 });
+			Mk({ announce: !0 });
 		} catch (e) {
 			try {
 				e.qqjDiagnosticPhase = "pluginEnable";
@@ -49313,110 +49397,110 @@ globalThis.addEventListener?.("beforeunload", TA.cleanup, { once: !0 }), globalT
 			throw e;
 		}
 		if (!e) {
-			SA.setEnabled(!1), yA.stop(), await dA.stop(), await oA.setEnabled(!1), await uA.setEnabled(!1);
-			let e = await fA.setEnabled(!1), n = await Pk?.setEnabled(!1);
-			return zk(t), e ?? n;
+			wA.setEnabled(!1), xA.stop(), await pA.stop(), await cA.setEnabled(!1), await fA.setEnabled(!1);
+			let e = await mA.setEnabled(!1), n = await Ik?.setEnabled(!1);
+			return Vk(t), e ?? n;
 		}
-		SA.setEnabled(!0), globalThis.location?.origin && vA.start();
-		let n = await Pk?.setEnabled(e);
-		return await uA.setEnabled(e), zk(t), n;
+		wA.setEnabled(!0), globalThis.location?.origin && bA.start();
+		let n = await Ik?.setEnabled(e);
+		return await fA.setEnabled(e), Vk(t), n;
 	},
-	onPluginEnableFailure: (e, t) => Lk(e, e?.qqjDiagnosticPhase ?? t),
-	onStoryClockChange: (e) => Ak({
+	onPluginEnableFailure: (e, t) => zk(e, e?.qqjDiagnosticPhase ?? t),
+	onStoryClockChange: (e) => Mk({
 		...e,
 		announce: e?.readOnly !== !0
 	}),
-	onAutoHideChange: (e) => yA.applySettings(e),
+	onAutoHideChange: (e) => xA.applySettings(e),
 	onTimeEvolutionChange: async () => {
-		await dA.stop(), await dA.runBatch();
+		await pA.stop(), await pA.runBatch();
 	},
-	calendarContextProvider: qk,
+	calendarContextProvider: Yk,
 	onCalendarChange: async ({ chatId: e, calendar: t }) => {
 		let n = la(t);
 		if (!n) throw Error("特殊年请填写不含数字的纪年名称，例如启航。");
-		let r = Kk.identity();
-		if (!e || r?.chatId !== e || r.hostChatId && r.hostChatId !== vk.snapshot().chatId) throw Error("当前聊天已变化，请重新设置历法。");
-		let i = fA.getState();
-		if (i.memoryWorkBusy || i.activeExtraction || i.activeCse || i.qianshiHistoryActive || dA.getState().active) throw Error("请等当前记忆任务完成后再设置历法。");
-		let a = Sk.get().storyCalendars;
+		let r = Jk.identity();
+		if (!e || r?.chatId !== e || r.hostChatId && r.hostChatId !== bk.snapshot().chatId) throw Error("当前聊天已变化，请重新设置历法。");
+		let i = mA.getState();
+		if (i.memoryWorkBusy || i.activeExtraction || i.activeCse || i.qianshiHistoryActive || pA.getState().active) throw Error("请等当前记忆任务完成后再设置历法。");
+		let a = wk.get().storyCalendars;
 		try {
-			Sk.update({ storyCalendars: {
+			wk.update({ storyCalendars: {
 				...a,
 				[e]: n
 			} }, { observeSaveFailure: !0 });
 		} catch (e) {
-			throw Sk.update({ storyCalendars: a }), e;
+			throw wk.update({ storyCalendars: a }), e;
 		}
-		dA.invalidate(), await dA.refreshStatus({ force: !0 });
+		pA.invalidate(), await pA.refreshStatus({ force: !0 });
 	},
-	timeRuntime: dA,
+	timeRuntime: pA,
 	subscribeDialogContextChange: (e) => {
-		let t = yk(), n = t?.eventTypes?.CHAT_CHANGED;
+		let t = xk(), n = t?.eventTypes?.CHAT_CHANGED;
 		return !n || !t?.eventSource?.on ? () => {} : (t.eventSource.on(n, e), () => t.eventSource.removeListener?.(n, e));
 	},
-	isSevenDaysAvailable: wk,
-	isSevenDaysLedgerInjectionEnabled: Tk,
-	sourcePermissions: Yk,
-	v3FoundationRuntime: fA,
-	v3RecallRuntime: uA,
-	peopleWorkspaceRuntime: oA,
-	chatMemoryManagement: CA,
-	storageManagement: wA,
-	sessionStateProvider: () => Kk.getState(),
-	pluginDiagnosticProvider: () => Fk,
-	prepareSession: () => Kk.prepare(),
+	isSevenDaysAvailable: Ek,
+	isSevenDaysLedgerInjectionEnabled: Dk,
+	sourcePermissions: Zk,
+	v3FoundationRuntime: mA,
+	v3RecallRuntime: fA,
+	peopleWorkspaceRuntime: cA,
+	chatMemoryManagement: TA,
+	storageManagement: EA,
+	sessionStateProvider: () => Jk.getState(),
+	pluginDiagnosticProvider: () => Lk,
+	prepareSession: () => Jk.prepare(),
 	backendDiagnosticProvider: () => ({
-		...Mk.getDiagnosticSnapshot(),
-		coreCache: eA?.getStats?.() ?? { available: !1 }
+		...Pk.getDiagnosticSnapshot(),
+		coreCache: nA?.getStats?.() ?? { available: !1 }
 	}),
 	pluginVersion: Oo,
-	inlineRenderer: SA,
+	inlineRenderer: wA,
 	enableFab: !0
-}), Pk = ZS({
-	session: Kk,
+}), Ik = ZS({
+	session: Jk,
 	aborters: [
-		Hk,
-		Uk,
-		oA,
-		lA,
-		cA
+		Wk,
+		Gk,
+		cA,
+		dA,
+		uA
 	],
-	isEnabled: Sk.isEnabled,
-	getUi: () => Nk,
+	isEnabled: wk.isEnabled,
+	getUi: () => Fk,
 	onPrepared: async ({ result: e, isCurrent: t, explicitEnable: n }) => {
-		!t() && !n || (await fA.start({
+		!t() && !n || (await mA.start({
 			explicitEnable: n,
 			targetIdentity: n ? e.identity : null
-		}), t() && await oA.refresh({ refreshMemory: !1 }));
+		}), t() && await cA.refresh({ refreshMemory: !1 }));
 	},
 	onDiagnostic: (e, t) => {
-		e ? Lk(e, t) : t === "identityPrepare" && Fk?.phase === "identityPrepare" && Rk();
+		e ? zk(e, t) : t === "identityPrepare" && Lk?.phase === "identityPrepare" && Bk();
 	}
 }), (async () => {
-	let e = Ik;
+	let e = Rk;
 	try {
-		let t = yk();
-		Pk.bind({
+		let t = xk();
+		Ik.bind({
+			eventSource: t?.eventSource,
+			eventTypes: t?.eventTypes
+		}), mA.bind({
 			eventSource: t?.eventSource,
 			eventTypes: t?.eventTypes
 		}), fA.bind({
 			eventSource: t?.eventSource,
 			eventTypes: t?.eventTypes
-		}), uA.bind({
-			eventSource: t?.eventSource,
-			eventTypes: t?.eventTypes
-		}), dA.bind({
+		}), pA.bind({
 			eventSource: t?.eventSource,
 			eventTypes: t?.eventTypes,
-			foundationRuntime: iA
+			foundationRuntime: oA
 		});
 		for (let e of ["CHAT_CHANGED", "GENERATION_STARTED"]) {
 			let n = t?.eventTypes?.[e];
-			n && t?.eventSource?.on?.(n, () => Ak());
+			n && t?.eventSource?.on?.(n, () => Mk());
 		}
-		Ak({ announce: !0 }), SA.setEnabled(Sk.isEnabled()), await Pk.start(), zk(e);
+		Mk({ announce: !0 }), wA.setEnabled(wk.isEnabled()), await Ik.start(), Vk(e);
 	} catch (e) {
-		Lk(e, "startup"), console.warn("[qianqianjie] 身份或后端数据准备失败", e);
+		zk(e, "startup"), console.warn("[qianqianjie] 身份或后端数据准备失败", e);
 	}
 })();
 //#endregion

@@ -21,6 +21,7 @@ import {
 } from './foundation-schema.js';
 import { validateCseGraph } from './cse-schema.js';
 import { matchFloorCandidates } from './floor-binding.js';
+import { partitionScannedCandidates, validateMigrationDescriptor } from './migration-prefix.js';
 import { createPeopleWorkspaceStore } from './people-workspace.js';
 import { createTimeStore } from './time-runtime.js';
 import { assertCapturedBranchTargetMatches, persistBranchedMessageMetadata, readTargetChat, sameBranchMessageCore } from './message-floor-anchor.js';
@@ -64,6 +65,55 @@ function inheritedPrefix(source, candidates) {
     throw fail('V3_BRANCH_NOT_PREFIX', '分支消息不是源聊天的连续前缀，未创建继承档。');
   }
   return Object.freeze({ count, candidates: candidates.slice(0, count), floors: source.floors.slice(0, count) });
+}
+
+function branchMigrationDescriptor({ source, targetChatId, descriptorId, retainedFloors, projected, indexKeys, timeBatchIds, peopleCopy, partitioned, createdAt }) {
+  const previous = source.migrationDescriptor;
+  if (!previous) return null;
+  const retained = new Set(retainedFloors.map(floor => floor.id));
+  const frozenFloorIds = previous.frozenFloorIds.filter(floorId => retained.has(floorId));
+  const frozen = new Set(frozenFloorIds);
+  const witnessedIndexes = new Set((partitioned?.aliasWitnesses ?? []).map(witness => witness.messageIndex));
+  const carriedAliases = previous.carriedAliases.filter(alias => frozen.has(alias.floorId) && witnessedIndexes.has(alias.targetMessageIndex));
+  const summarySources = previous.summarySources.filter(item => retained.has(item.targetFloorId) && retained.has(item.sourceFloorId));
+  const floorMemories = projected.floorMemories.filter(record => frozen.has(record.floorId));
+  const stateDeltas = projected.stateDeltas.filter(record => frozen.has(record.floorId));
+  return validateMigrationDescriptor({
+    ...structuredClone(previous),
+    id: descriptorId,
+    chatId: targetChatId,
+    createdAt,
+    frozenFloorIds,
+    floorOrigins: previous.floorOrigins.filter(origin => frozen.has(origin.floorId)),
+    carriedAliases,
+    summarySources,
+    sourceFloorProvenance: previous.sourceFloorProvenance.filter(item => frozen.has(item.floorId)),
+    recordRefs: {
+      floors: frozenFloorIds,
+      floorMemories: floorMemories.map(record => record.id),
+      entities: projected.entities.map(record => record.id),
+      baselineId: projected.baseline?.id ?? null,
+      stateDeltas: stateDeltas.map(record => record.id),
+      currentStateIds: projected.currentState ? [projected.currentState.id] : [],
+      indexKeys: [...indexKeys],
+      timeBatchIds: timeBatchIds.filter(id => previous.recordRefs.timeBatchIds.includes(id)),
+      vectorShardIds: [],
+      peopleWorkspaceId: peopleCopy?.workspace ? 'v3-people-workspace' : null,
+      peopleSnapshotIds: peopleCopy?.snapshotIds ?? [],
+    },
+  }, { expectedChatId: targetChatId });
+}
+
+async function branchInputSnapshot(candidates, stableCount, partitioned, descriptorId) {
+  if (!partitioned?.descriptorId) return foundationInputSnapshot(candidates, stableCount);
+  const realCandidates = candidates.filter(candidate => candidate?.archiveCandidate !== true);
+  const realStableCount = candidates.slice(0, stableCount).filter(candidate => candidate?.archiveCandidate !== true).length;
+  const base = await foundationInputSnapshot(realCandidates, realStableCount);
+  const witness = { descriptorId, aliasWitnesses: partitioned.aliasWitnesses };
+  return Object.freeze({
+    payload: Object.freeze({ ...base.payload, migration: Object.freeze(witness) }),
+    fingerprint: `sha256:${await sha256(JSON.stringify({ fingerprint: base.fingerprint, ...witness }))}`,
+  });
 }
 
 function projectSavedBranchMetadata(raw, hostAdapter, hostChatId, capturedChat, savedFile, targetChatId) {
@@ -191,6 +241,7 @@ export function createChatBranchInitializer({
     const sourceStore = createFoundationStore({ client, contextProvider: () => sourceIdentity });
     const targetStore = createFoundationStore({ client, contextProvider: () => targetIdentity });
     const peopleStore = createPeopleWorkspaceStore({ client });
+    const timeStore = createTimeStore({ client });
 
     let target = await targetStore.readReachable();
     let sourceReachable = null;
@@ -198,26 +249,43 @@ export function createChatBranchInitializer({
     let retainedFloorIds = [];
     if (['ready', 'needsReseal'].includes(target.status)) {
       const scanned = await scanAssistantCandidates(snapshot.chat, { sanitizerOptions: snapshot.sanitizerOptions, chatId: sourceChatId });
-      const candidates = normalizeBranchCandidates(scanned, sourceChatId, targetChatId);
+      const partitioned = partitionScannedCandidates(target, snapshot.chat, sourceChatId, scanned);
+      const candidates = normalizeBranchCandidates(partitioned.all, sourceChatId, targetChatId);
       const prefix = inheritedPrefix(target, candidates);
       if (prefix.count !== target.floors.length) throw fail('V3_BRANCH_TARGET_MISMATCH', '已准备的分支记忆与当前消息不一致。');
-      bindings = prefix.floors.map((floor, index) => ({ messageIndex: prefix.candidates[index].hostLocator.messageIndex, floorId: floor.id }));
+      bindings = prefix.floors.flatMap((floor, index) => prefix.candidates[index]?.archiveCandidate
+        ? [] : [{ messageIndex: prefix.candidates[index].hostLocator.messageIndex, floorId: floor.id }]);
       retainedFloorIds = prefix.floors.map(floor => floor.id);
       assertCapturedBranchTargetMatches(snapshot, targetFile, sourceChatId, targetChatId, { expectedBindings: bindings });
-      await copyLatestPeople({ peopleStore, sourceIdentity, targetIdentity, entities: target.entities, now: initializationTime ?? nowIso(now), signal });
+      if (target.migrationDescriptor) {
+        await peopleStore.read(targetIdentity);
+        for (const snapshotId of target.migrationDescriptor.recordRefs.peopleSnapshotIds) {
+          if (!await peopleStore.readSnapshot(targetIdentity, snapshotId)) {
+            throw fail('QQJ_PEOPLE_SNAPSHOT_MISSING', '分支已提交的人物归档快照缺失，未完成恢复。');
+          }
+        }
+      } else await copyLatestPeople({ peopleStore, sourceIdentity, targetIdentity, entities: target.entities,
+        now: initializationTime ?? nowIso(now), signal });
     } else if (target.status === 'uninitialized') {
       const source = await sourceStore.readReachable();
       sourceReachable = source;
       if (['ready', 'needsReseal'].includes(source.status)) {
         const scanned = await scanAssistantCandidates(snapshot.chat, { sanitizerOptions: snapshot.sanitizerOptions, chatId: sourceChatId });
-        const candidates = normalizeBranchCandidates(scanned, sourceChatId, targetChatId);
+        const partitioned = partitionScannedCandidates(source, snapshot.chat, sourceChatId, scanned);
+        const candidates = normalizeBranchCandidates(partitioned.all, sourceChatId, targetChatId);
         const prefix = inheritedPrefix(source, candidates);
         if (prefix.count > 0) {
-          const branchBindings = prefix.floors.map((floor, index) => ({ messageIndex: prefix.candidates[index].hostLocator.messageIndex, floorId: floor.id }));
+          const branchBindings = prefix.floors.flatMap((floor, index) => prefix.candidates[index]?.archiveCandidate
+            ? [] : [{ messageIndex: prefix.candidates[index].hostLocator.messageIndex, floorId: floor.id }]);
           assertCapturedBranchTargetMatches(snapshot, targetFile, sourceChatId, targetChatId, { expectedBindings: branchBindings });
           const createdAt = initializationTime ?? nowIso(now);
-          const inputSnapshot = await foundationInputSnapshot(candidates, prefix.count);
-          const narrativeGeneration = await deterministicUuid(['generation', targetChatId, prefix.floors.map(floor => floor.content.canonicalFingerprint)]);
+          const descriptorId = source.migrationDescriptor
+            ? await deterministicUuid(['branch-migration-descriptor-v1', targetChatId, source.migrationDescriptor.id,
+              prefix.floors.map(floor => floor.id), partitioned.aliasWitnesses]) : null;
+          const inputSnapshot = await branchInputSnapshot(candidates, prefix.count, partitioned, descriptorId);
+          const generationParts = ['generation', targetChatId, prefix.floors.map(floor => floor.content.canonicalFingerprint)];
+          if (descriptorId) generationParts.push(descriptorId);
+          const narrativeGeneration = await deterministicUuid(generationParts);
           const runId = await deterministicUuid(['foundation-branch-run-v1', targetChatId, sourceChatId, inputSnapshot.fingerprint]);
           const checkpointId = await deterministicUuid(['foundation-branch-checkpoint-v1', targetChatId, sourceChatId, inputSnapshot.fingerprint]);
           const floors = prefix.floors.map((floor, index) => validateFoundationFloor({
@@ -240,6 +308,11 @@ export function createChatBranchInitializer({
           const projected = await projectFoundationPrefix({ source: rehomedSource, floors, chatId: targetChatId, narrativeGeneration, now: createdAt, currentStateId });
           const indexes = await buildFoundationIndexes({ chatId: targetChatId, narrativeGeneration, checkpointId, floors, candidates: prefix.candidates, now: createdAt });
           const indexKeys = indexes.map(record => targetStore.recordKey(record));
+          const copiedTimeBatchIds = source.migrationDescriptor
+            ? await timeStore.copyPrefix(sourceChatId, targetChatId, floors, signal) : [];
+          const peopleCopy = source.migrationDescriptor
+            ? await copyLatestPeople({ peopleStore, sourceIdentity, targetIdentity, entities: projected.entities, now: createdAt, signal,
+              snapshotSourceIds: source.migrationDescriptor.recordRefs.peopleSnapshotIds }) : null;
           const floorIds = floors.map(floor => floor.id);
           const stateFingerprint = `sha256:${await sha256(JSON.stringify([narrativeGeneration, floorIds, floors.map(floor => floor.content.canonicalFingerprint)]))}`;
           const run = validateFoundationRun({
@@ -265,12 +338,15 @@ export function createChatBranchInitializer({
             capabilities: structuredClone(projected.capabilities), headCheckpointId: checkpointId, sourceSnapshotFingerprint: inputSnapshot.fingerprint,
             stableBoundary: { assistantSeq: floors.length, floorId: boundary.id, canonicalFingerprint: boundary.content.canonicalFingerprint },
             baselineId: projected.baseline?.id ?? null, activeRunId: null,
+            ...(descriptorId ? { migrationDescriptorId: descriptorId } : {}),
             indexManifest: { ...emptyIndexManifest(), floor: indexKeys }, activeStateRefs: projected.currentState ? [projected.currentState.id] : [], activeThreadRefs: [],
             createdAt, updatedAt: createdAt, recordStatus: 'active', supersedes: null,
           }, { expectedChatId: targetChatId });
+          const descriptor = descriptorId ? branchMigrationDescriptor({ source, targetChatId, descriptorId,
+            retainedFloors: floors, projected, indexKeys, timeBatchIds: copiedTimeBatchIds, peopleCopy, partitioned, createdAt }) : null;
           await validatePreparedFoundation({ checkpoint, run, floors, floorMemories: projected.floorMemories, entities: projected.entities, indexes, indexKeys });
           await validateCseGraph({ root, checkpoint, run, floors, floorMemories: projected.floorMemories, entities: projected.entities, indexes, indexKeys, baseline: projected.baseline, stateDeltas: projected.stateDeltas, currentStates: projected.currentState ? [projected.currentState] : [] });
-          await saveRecords(targetStore, [run, ...floors, ...projected.floorMemories, ...projected.entities, ...(projected.baseline ? [projected.baseline] : []), ...projected.stateDeltas, ...(projected.currentState ? [projected.currentState] : []), ...indexes], signal);
+          await saveRecords(targetStore, [run, ...floors, ...projected.floorMemories, ...projected.entities, ...(projected.baseline ? [projected.baseline] : []), ...projected.stateDeltas, ...(projected.currentState ? [projected.currentState] : []), ...indexes, ...(descriptor ? [descriptor] : [])], signal);
           const checkpointResult = await targetStore.putRecord(checkpoint, { signal });
           if (!['saved', 'reused'].includes(checkpointResult.status)) throw fail('V3_BRANCH_RECORD_CONFLICT', '分支记忆记录发生冲突，未提交目标根。');
           const committed = await targetStore.commitRoot(root, 0, { signal });
@@ -289,7 +365,7 @@ export function createChatBranchInitializer({
       throw fail('V3_BRANCH_TARGET_UNAVAILABLE', '分支目标记忆暂时无法读取。');
     }
 
-    await createTimeStore({ client }).copyPrefix(sourceChatId, targetChatId, target.floors ?? [], signal);
+    await timeStore.copyPrefix(sourceChatId, targetChatId, target.floors ?? [], signal);
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     const savedMessages = await persistBranchedMessageMetadata({ target: fixedTarget, chat: snapshot.chat, chatMetadata: snapshot.chatMetadata, sourceChatId, targetChatId, bindings, retainedFloorIds, signal, fetchImpl });
     projectSavedBranchMetadata(raw, hostAdapter, host.hostChatId, snapshot.chat, savedMessages, targetChatId);

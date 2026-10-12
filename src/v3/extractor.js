@@ -907,6 +907,14 @@ function parseSemanticCandidate(value, { finishReason } = {}) {
     if (safeTrailing !== undefined) return parseSemanticCandidate(safeTrailing, { finishReason });
     const primaryRepair = fences.length <= 1 ? parseJsonWithSymbolRepair(fenced, { finishReason })?.value : undefined;
     if (primaryRepair !== undefined) return parseSemanticCandidate(primaryRepair, { finishReason });
+    const singleMissingObjectClose = fences.length <= 1
+      ? repairJsonWithUniqueMissingObjectClose(fenced, {
+        finishReason,
+        normalizeCandidate: candidate => candidate,
+        stableKey: candidate => JSON.stringify(candidate),
+      })
+      : null;
+    if (singleMissingObjectClose !== null) return parseSemanticCandidate(singleMissingObjectClose, { finishReason });
     if (hasUnbalancedStructure(text)) throw extractorError('V3_EXTRACTOR_SUMMARY_INVALID', 'summary');
     const candidates = [];
     const firstObject = fenced.indexOf('{'), lastObject = fenced.lastIndexOf('}');
