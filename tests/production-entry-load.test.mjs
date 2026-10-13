@@ -13,7 +13,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const nativeJson = value => Array.isArray(value) ? value.map(nativeJson) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, nativeJson(value[key])])) : value;
 
-async function isolateBundle(hostGlobalName, { enabled = false, withExistingPanel = false, mainApi = 'openai', invokeTypes = [], initializeWithoutSubtle = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false } = {}) {
+async function isolateBundle(hostGlobalName, { enabled = false, coreCacheEnabled, withExistingPanel = false, mainApi = 'openai', invokeTypes = [], initializeWithoutSubtle = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false } = {}) {
   const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
   const bundlePath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : resolve(root, manifest.js.split('?')[0]);
   const eventRegistrations = new Map();
@@ -58,6 +58,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
     },
   });
   let backendCalls = 0;
+  let localForageCreateCalls = 0;
   let mesAppendCalls = 0;
   let styleAppendCalls = 0;
   let observerInstances = 0;
@@ -131,9 +132,13 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
     let module;
     if (hostPath === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'me.png' });
     else if (hostPath === '/scripts/user.js') module = synthetic(identifier, { getCurrentUserHandle: () => 'isolated-test-user' });
-    else if (hostPath === '/lib.js') module = synthetic(identifier, { localforage: { INDEXEDDB: 'INDEXEDDB', createInstance: () => ({ async ready() {}, async getItem() { return null; }, async setItem() {}, async removeItem() {}, async keys() { return []; } }) } });
+    else if (hostPath === '/lib.js') module = synthetic(identifier, { localforage: { INDEXEDDB: 'INDEXEDDB', createInstance: () => { localForageCreateCalls += 1; return { async ready() {}, async getItem() { return null; }, async setItem() {}, async removeItem() {}, async keys() { return []; } }; } } });
     else if (hostPath === '/scripts/power-user.js') module = synthetic(identifier, { power_user: { persona_description: '' } });
-    else if (hostPath === '/scripts/extensions.js') module = synthetic(identifier, { extension_settings: { qianqianjie: { pluginEnabled: enabled }, 'schedule-planner': {} }, extensionNames: [] });
+    else if (hostPath === '/scripts/extensions.js') {
+      const qqjSettings = { pluginEnabled: enabled };
+      if (coreCacheEnabled !== undefined) qqjSettings.coreCacheEnabled = coreCacheEnabled;
+      module = synthetic(identifier, { extension_settings: { qianqianjie: qqjSettings, 'schedule-planner': {} }, extensionNames: [] });
+    }
     else if (hostPath === '/script.js') module = synthetic(identifier, { is_send_press: false, saveSettingsDebounced() {} });
     else if (hostPath === '/scripts/group-chats.js') module = synthetic(identifier, { is_group_generating: false });
     else if (hostPath === '/scripts/world-info.js') module = synthetic(identifier, { loadWorldInfo: async () => null, selected_world_info: [], world_info: {}, world_info_case_sensitive: false, world_info_match_whole_words: false, world_names: [] });
@@ -173,7 +178,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, withExistingPane
   const publicBridgeSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getSnapshot?.()?.status;
   const publicBridgePromptSnapshotType = typeof context.qqj_v3_public_bridge_v1?.getPromptSnapshot;
   const publicBridgePromptSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getPromptSnapshot?.()?.status;
-  return { status: entry.status, backendCalls, backendRecords, privateRecords, hostShaCalls, hostShaInputs, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, abortCalls };
+  return { status: entry.status, backendCalls, localForageCreateCalls, backendRecords, privateRecords, hostShaCalls, hostShaInputs, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, abortCalls };
 }
 
 test('实际生产启动入口捕获首次 host event bind 异常并继续完成模块求值', async () => {
@@ -199,6 +204,7 @@ test('TT production bundle boots and persists chat identity through native store
   const result = await isolateBundle('SillyTavern', { enabled: true, tauri: true });
   assert.equal(result.status, 'evaluated');
   assert.equal(result.backendCalls, 0);
+  assert.equal(result.localForageCreateCalls, 0, 'TT生产入口始终不创建浏览器cache实例');
   assert.equal(result.interceptorType, 'function');
 });
 
@@ -376,6 +382,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let compactOptions;
   let foundationOptions;
   let coreCacheOptions;
+  let coreCacheFactoryCalls = 0;
+  let historicalRebuildOptions;
   const foundationStoreOptions = [];
   let branchInitializerOptions;
   let v3MemoryBindOptions;
@@ -469,11 +477,11 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
     createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => productionHostContext, snapshot: () => ({}) }; },
   });
   define('./src/v3/foundation-store.js', { createFoundationStore: options => { foundationStoreOptions.push(options); return {}; } });
-  define('./src/v3/historical-rebuild-task.js', { runHistoricalRebuildTask: async () => ({ status: 'complete' }) });
+  define('./src/v3/historical-rebuild-task.js', { runHistoricalRebuildTask: async options => { historicalRebuildOptions = options; return { status: 'complete' }; } });
   define('./src/v3/historical-rebuild-sources.js', { captureHistoricalRebuildSources: async () => ({}) });
   let coreStats = { available: false };
   const coreRecordCache = { getStats: () => coreStats };
-  define('./src/v3/indexeddb-core-cache.js', { createIndexedDbCoreRecordCache: options => { coreCacheOptions = options; return coreRecordCache; } });
+  define('./src/v3/indexeddb-core-cache.js', { createIndexedDbCoreRecordCache: options => { coreCacheFactoryCalls += 1; coreCacheOptions = options; return coreRecordCache; } });
   const productionReachable = { baseline: { userPersona: { entityId: 'user-id', name: '用户' } }, entities: [
     { id: 'awake-id', entityType: 'person', displayName: '在场人物' }, { id: 'sleep-id', entityType: 'person', displayName: '休眠人物' },
   ] };
@@ -544,6 +552,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(typeof memoryMigrationOptions.captureStoryCalendar, 'function');
   assert.equal(typeof memoryMigrationOptions.persistStoryCalendar, 'function');
   assert.equal(coreCacheOptions.localForage, hostLocalForage);
+  assert.equal(coreCacheFactoryCalls, 1, '旧设置缺少新字段时仍沿默认开启路径创建单个cache实例');
   assert.equal(coreCacheOptions.accountHandleProvider(), 'isolated-test-user');
   assert.equal(foundationStoreOptions[0].coreRecordCache, coreRecordCache);
   assert.equal(foundationStoreOptions[1].coreRecordCache, coreRecordCache, '生产向量读取复用同一派生缓存实例');
@@ -693,9 +702,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const claimsBeforeUiWait = hostUuidCalls;
   assert.equal(await bootstrapOptions.prepareSession(), hostUuid);
   assert.equal(hostUuidCalls, claimsBeforeUiWait + 1, '人物页等待入口必须调用现有 session.prepare');
-  assert.deepEqual(nativeJson(bootstrapOptions.backendDiagnosticProvider()), { ...backendSnapshot, coreCache: { available: false } });
+  assert.deepEqual(nativeJson(bootstrapOptions.backendDiagnosticProvider()), { ...backendSnapshot, coreCache: { available: false, enabled: true } });
   coreStats = { available: false, firstFailure: { phase: 'record-read', code: 'IDB_CACHE_TIMEOUT', name: 'Error', elapsedMs: 900, deadlineLatenessMs: 12, lateResult: 'pending', lateElapsedMs: null, lateAt: null, at: 123 } };
-  assert.deepEqual(nativeJson(bootstrapOptions.backendDiagnosticProvider()).coreCache, coreStats, '复制诊断的数据源保留安全core cache failure字段');
+  assert.deepEqual(nativeJson(bootstrapOptions.backendDiagnosticProvider()).coreCache, { ...coreStats, enabled: true }, '复制诊断区分cache实例启用与当前不可用状态，并保留安全failure字段');
   assert.equal(bootstrapOptions.pluginVersion, '0.1.9-test');
   assert.equal(bootstrapOptions.enableFab, true);
   assert.equal(typeof bootstrapOptions.subscribeDialogContextChange, 'function');
@@ -748,6 +757,35 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.doesNotMatch(JSON.stringify(asyncFailure), /PRIVATE late memory failure/u, '诊断不复制原始错误文本');
   await bootstrapOptions.onPluginEnabledChange(false);
   assert.equal(bootstrapOptions.pluginDiagnosticProvider(), null, '成功的后续总开关操作清除已知旧失败');
+
+  productionSettings.coreCacheEnabled = false;
+  const previousStoreCount = foundationStoreOptions.length;
+  const disabledEntry = new SourceTextModule(entrySource, { context, identifier: pathToFileURL(resolve(root, 'index.js')).href });
+  await disabledEntry.link(specifier => {
+    const dependency = modules.get(specifier);
+    assert.ok(dependency, `关闭cache的生产入口依赖未声明：${specifier}`);
+    return dependency;
+  });
+  await disabledEntry.evaluate();
+  await new Promise(resolvePromise => setImmediate(resolvePromise));
+  assert.equal(coreCacheFactoryCalls, 1, '设置关闭后生产入口不创建第二个cache实例');
+  await vectorOptions.sourceProvider({ targetIdentity: { hostChatId: 'host-chat', chatId: 'test', characterLocator: 'char.png', personaLocator: 'me.png' } });
+  assert.equal(foundationStoreOptions.length, previousStoreCount + 2);
+  assert.equal(foundationStoreOptions.at(-2).coreRecordCache, null, '关闭后主要Store接收null');
+  assert.equal(foundationStoreOptions.at(-1).coreRecordCache, null, '关闭后向量来源Store接收null');
+  assert.equal(memoryManagementOptions.coreRecordCache, null, '关闭后记忆管理失效消费者接收null');
+  await memoryManagementOptions.createHistoricalRebuild({});
+  assert.equal(historicalRebuildOptions.coreRecordCache, null, '关闭后历史重建消费者接收null');
+  assert.deepEqual(nativeJson(bootstrapOptions.backendDiagnosticProvider()).coreCache, { available: false, enabled: false });
+});
+
+test('生产dist在原生SillyTavern与Luker关闭缓存后不创建IndexedDB实例，正式身份存储入口仍运行', async () => {
+  for (const host of ['SillyTavern', 'Luker']) {
+    const result = await isolateBundle(host, { enabled: true, coreCacheEnabled: false });
+    assert.equal(result.status, 'evaluated', `${host}生产包应正常启动`);
+    assert.equal(result.localForageCreateCalls, 0, `${host}关闭设置不得创建localForage实例`);
+    assert.equal(result.backendCalls, 3, `${host}正式身份/地基存储请求仍沿后端执行`);
+  }
 });
 
 test('生产 bundle 在 Luker-only 兼容全局下也可隔离加载，关闭时零后端请求', async () => {

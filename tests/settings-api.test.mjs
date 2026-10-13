@@ -106,6 +106,21 @@ test('自动隐藏默认关闭并保留最近 3 个 AI 楼，数量只接受合�
   assert.equal(settings.get().autoHideKeepAiCount, 3);
 });
 
+test('浏览器记忆缓存默认开启并通过现有设置持久化，旧配置读取保持开启', () => {
+  const extensionSettings = { qianqianjie: { pluginEnabled: false } };
+  const { settings, saves } = setup(extensionSettings);
+  assert.equal(settings.get().coreCacheEnabled, true);
+  settings.update({ coreCacheEnabled: false });
+  assert.equal(extensionSettings.qianqianjie.coreCacheEnabled, false);
+  assert.equal(settings.get().coreCacheEnabled, false);
+  assert.equal(saves(), 1);
+  const reloaded = createSettingsStore({ extensionSettings, save() {} });
+  assert.equal(reloaded.get().coreCacheEnabled, false, '重建设置store仍读到已修改值');
+  reloaded.update({ coreCacheEnabled: true });
+  assert.equal(extensionSettings.qianqianjie.coreCacheEnabled, true);
+  assert.equal(reloaded.get().coreCacheEnabled, true);
+});
+
 test('楼层召回与记忆卡片默认显示，分别持久化且旧设置继续按默认显示', () => {
   const extensionSettings = { qianqianjie: { apiUrl: 'https://main.test/v1' } };
   const { settings, saves } = setup(extensionSettings);

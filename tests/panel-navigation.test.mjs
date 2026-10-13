@@ -50,6 +50,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   };
   const diagnostics = { starts: 0, stops: 0, marks: 0, records: [{ page: 'settings', defaultPrevented: false }] };
   let rejectSaveSchedule = false;
+  let tauriTavern = false;
   const saveScheduleError = new Error('private settings scheduler detail');
   let apiSettingsMounts = 0, apiSettingsDisposals = 0;
   const modules = {
@@ -64,6 +65,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
     './scroll-diagnostics.js': { createScrollDiagnostics: () => ({ start() { diagnostics.starts += 1; }, stop() { diagnostics.stops += 1; }, markQqjSwipeIntercepted() { diagnostics.marks += 1; }, snapshot: () => ({ schemaVersion: 1, records: diagnostics.records }) }) },
     './help-guide.js': { openHelpGuide },
     '../settings.js': { applyPluginEnabledImmediately },
+    '../tauri-backend.js': { isTauriTavern: () => tauriTavern },
     '../public-error.js': { publicErrorMessage },
   };
   const context = createContext({ console });
@@ -101,7 +103,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
     async activate() { calls.push(['storage-activate']); return { status: 'ready' }; },
     deactivate() { calls.push(['storage-deactivate']); },
   };
-  const values = { pluginEnabled: true, appearanceTheme: 'auto', fabShow: true, autoHideEnabled: false, autoHideKeepAiCount: 3 };
+  const values = { pluginEnabled: true, appearanceTheme: 'auto', fabShow: true, autoHideEnabled: false, autoHideKeepAiCount: 3, coreCacheEnabled: true };
   const updates = [];
   const settings = { isEnabled: () => values.pluginEnabled !== false, get: () => values, update(value, options = {}) { Object.assign(values, value); updates.push(value); if (rejectSaveSchedule && options.observeSaveFailure) throw saveScheduleError; return value; } };
   let rejectPluginDisable = false;
@@ -153,6 +155,18 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.equal(view.children[0]?.children.some(node => node.className === 'master-switch'), true, '设置首开不得被真实 setPage 重绘清掉总开关');
   const settingsGroups = view.children[0]?.children.filter(node => node.tag === 'details');
   assert.deepEqual(settingsGroups.map(node => node.drawerTitle), ['通用设置', '记忆设置', '教程与配置文件'], '存储管理应收进记忆设置，不再占用顶层抽屉');
+  const coreCacheToggle = flatten(settingsGroups[1]).find(node => node.id === 'qqj-settings-core-cache');
+  assert.ok(coreCacheToggle, 'native记忆设置提供独立的浏览器缓存开关');
+  const coreCacheInput = coreCacheToggle.children.find(node => node.tag === 'input');
+  assert.equal(coreCacheInput.checked, true);
+  assert.match(flatten(settingsGroups[1]).map(node => node.textContent).join('|'), /关闭不会删除记忆.*正式存储.*整页刷新酒馆生效/u);
+  coreCacheInput.checked = false; coreCacheInput.fire('change');
+  assert.equal(values.coreCacheEnabled, false, '开关修改写入正式设置store');
+  assert.equal(updates.at(-1).coreCacheEnabled, false);
+  assert.match(flatten(settingsGroups[1]).find(node => node.id === 'qqj-settings-core-cache-result').textContent, /整页刷新酒馆后生效/u);
+  values.pluginEnabled = false;
+  assert.equal(coreCacheInput.disabled, undefined, '总开关关闭时仍可操作缓存设置');
+  values.pluginEnabled = true;
   const documentation = settingsGroups[2];
   assert.equal(documentation.open, false); assert.equal(view.children[0].children.at(-1), documentation, '教程与配置文件必须是设置页最后一项');
   const documentationCopy = flatten(documentation).map(node => node.textContent).join('|');
@@ -217,7 +231,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.match(panelCss, /#qqj-settings-time,#qqj-settings-auto-hide\{justify-content:space-between\}/u);
   const memoryHints = memoryControls.filter(node => node.className === 'settings-hint');
   assert.match(memoryHints[0]?.textContent ?? '', /身体状态、周期与期限.*AI 正文.*摘要 API.*当前楼.*近期事项/u);
-  assert.match(memoryHints[1]?.textContent ?? '', /推算时间间隔.*当前聊天/u);
+  assert.match(memoryHints.find(node => /推算时间间隔/u.test(node.textContent))?.textContent ?? '', /推算时间间隔.*当前聊天/u);
   const timeInput = timeToggle.children.find(node => node.tag === 'input');
   let stoppedToggleClick = 0;
   timeToggle.fire('click', { stopPropagation() { stoppedToggleClick += 1; } });
@@ -273,11 +287,11 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.doesNotMatch(panelCss, /\.qqj-storage-management\{[^}]*(?:padding|border-top)/);
   autoHideInput.checked = true; autoHideInput.fire('change'); await new Promise(resolve => setImmediate(resolve));
   assert.equal(autoHideApplies.at(-1).enabled, true); assert.equal(autoHideApplies.at(-1).keepAiCount, 3);
-  assert.equal(memoryControls.find(node => node.className?.split?.(' ').includes('settings-result'))?.textContent, '已开启；后续按最近 3 个 AI 楼保留，已隐藏楼保持隐藏。');
+  assert.equal(memoryControls.find(node => node.className?.split?.(' ').includes('settings-result') && /已开启/u.test(node.textContent))?.textContent, '已开启；后续按最近 3 个 AI 楼保留，已隐藏楼保持隐藏。');
   keepInput.value = '6'; keepInput.fire('change'); await new Promise(resolve => setImmediate(resolve));
   assert.equal(autoHideApplies.at(-1).enabled, true); assert.equal(autoHideApplies.at(-1).keepAiCount, 6);
   autoHideApplyStatus = 'disabled'; values.pluginEnabled = false; keepInput.value = '7'; keepInput.fire('change'); await new Promise(resolve => setImmediate(resolve));
-  assert.match(memoryControls.find(node => node.className?.split?.(' ').includes('settings-result'))?.textContent ?? '', /重新启用千千结后生效/);
+  assert.match(memoryControls.find(node => node.className?.split?.(' ').includes('settings-result') && /重新启用千千结后生效/u.test(node.textContent))?.textContent ?? '', /重新启用千千结后生效/);
   autoHideApplyStatus = null; values.pluginEnabled = true;
   assert.equal(managementMount?.children[0]?.className, 'qqj-page qqj-management-page', '真实管理视图应挂载在设置页内部');
   body.scrollTop = 18; peopleTab.fire('click');
@@ -448,4 +462,8 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.equal(timeListeners.size, 0); assert.equal(memoryListeners.size, 0, '关面板解除时间与记忆订阅');
   panel.showStatus('保留模块错误空态');
   assert.equal(view.children[0]?.className, 'empty-state'); assert.equal(view.children[0]?.children[1]?.textContent, '保留模块错误空态', '删除小行后 showStatus 错误空态仍须保留');
+  await panel.show(); settingsTab.fire('click');
+  assert.ok(flatten(view.children[0]).some(node => node.id === 'qqj-settings-core-cache'), 'SillyTavern设置页显示缓存开关');
+  eventTab.fire('click'); tauriTavern = true; settingsTab.fire('click');
+  assert.equal(flatten(view.children[0]).some(node => node.id === 'qqj-settings-core-cache'), false, 'TT继续使用原生存储，不展示无效开关');
 });

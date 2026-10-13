@@ -11,6 +11,7 @@ import { createScrollDiagnostics } from './scroll-diagnostics.js';
 import { openHelpGuide } from './help-guide.js';
 import { applyPluginEnabledImmediately } from '../settings.js';
 import { scaleCssFontSizes } from './font-scale.js';
+import { isTauriTavern } from '../tauri-backend.js';
 
 const PUBLIC_API_EXAMPLE = `const bridge = globalThis.qqj_v3_public_bridge_v1;
 const status = bridge.getStatus();
@@ -421,6 +422,23 @@ export function createPanel({
       return changeCalendar(months);
     });
     prefixInput.addEventListener('change', () => changeCalendar(calendarInputs.find(({ input }) => input.checked)?.months ?? 12));
+    if (!isTauriTavern()) {
+      const coreCacheToggle = element('label', 'setting-switch');
+      coreCacheToggle.id = 'qqj-settings-core-cache';
+      const coreCacheInput = element('input'); coreCacheInput.type = 'checkbox'; coreCacheInput.checked = settings.get().coreCacheEnabled !== false;
+      coreCacheInput.setAttribute('aria-label', '浏览器缓存（IndexedDB）');
+      coreCacheToggle.append(element('span', '', '浏览器缓存（IndexedDB）'), coreCacheInput);
+      coreCacheToggle.addEventListener('click', event => event.stopPropagation());
+      const coreCacheHint = element('p', 'settings-hint', '关闭不会删除记忆，之后直接从正式存储读取，打开长聊天可能更慢。更改后整页刷新酒馆生效。');
+      const coreCacheResult = element('p', 'settings-result');
+      coreCacheResult.id = 'qqj-settings-core-cache-result';
+      coreCacheInput.addEventListener('change', () => {
+        settings.update({ coreCacheEnabled: coreCacheInput.checked });
+        coreCacheResult.textContent = '设置已修改；整页刷新酒馆后生效。';
+        coreCacheResult.className = 'settings-result success';
+      });
+      memoryBody.append(coreCacheToggle, coreCacheHint, coreCacheResult);
+    }
     const storageDrawer = createSettingsDrawer({
       documentRef, title: '存储管理', level: 'sub', id: 'qqj-settings-sub-storage', open: storageOpen,
       onToggle: open => { settingsDrawerState.set('storage', open); syncStorageActivation(); },

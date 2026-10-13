@@ -154,7 +154,8 @@ const summaryPrompt = () => settings.get().summaryPrompt;
 const csePrompt = () => settings.get().csePrompt;
 const profilePrompt = () => settings.get().profilePrompt;
 const processingPrompt = () => settings.get().processingPrompt;
-const coreRecordCache = isTauriTavern() ? null : createIndexedDbCoreRecordCache({ localForage: localforage, accountHandleProvider: getCurrentUserHandle });
+const coreRecordCache = isTauriTavern() || settings.get().coreCacheEnabled === false
+  ? null : createIndexedDbCoreRecordCache({ localForage: localforage, accountHandleProvider: getCurrentUserHandle });
 const foundationStore = createFoundationStore({ client: backendClient, contextProvider: () => session.identity(), isEnabled: settings.isEnabled, coreRecordCache });
 const targetFoundationStore = identity => foundationStore.forIdentity(identity);
 const timeStore = createTimeStore({ client: backendClient });
@@ -485,7 +486,9 @@ ui = bootstrap({
   sessionStateProvider: () => session.getState(),
   pluginDiagnosticProvider: () => pluginLifecycleFailure,
   prepareSession: () => session.prepare(),
-  backendDiagnosticProvider: () => ({ ...backendClient.getDiagnosticSnapshot(), coreCache: coreRecordCache?.getStats?.() ?? { available: false } }),
+  backendDiagnosticProvider: () => ({ ...backendClient.getDiagnosticSnapshot(), coreCache: {
+    ...(coreRecordCache?.getStats?.() ?? { available: false }), enabled: Boolean(coreRecordCache),
+  } }),
   pluginVersion,
   inlineRenderer,
   enableFab: true,

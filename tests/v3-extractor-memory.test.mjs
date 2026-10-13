@@ -469,6 +469,18 @@ test('1000楼 production store 含完整摘要/CSE与五类core，缓存重载�
   assert.deepEqual(countReads(), { root: 1, checkpoint: 1, run: 1, baseline: 1, 'current-state': 1,
     floor: 0, 'floor-memory': 0, entity: 0, 'state-delta': 0, index: 0 });
 
+  const cacheStatsBeforeDisabledRead = cache.getStats();
+  backendReads.length = 0;
+  const disabledCacheStore = createFoundationStore({ client: countingClient, contextProvider: () => identity, coreRecordCache: null });
+  const uncached = await disabledCacheStore.readReachable({ mode: 'runtime' });
+  assert.equal(uncached.status, 'ready');
+  assert.deepEqual(uncached.floors, formal.floors);
+  assert.deepEqual(uncached.floorMemories, formal.floorMemories);
+  assert.deepEqual(uncached.currentStates, formal.currentStates);
+  assert.deepEqual(countReads(), { root: 1, checkpoint: 1, run: 1, baseline: 1, 'current-state': 1,
+    floor: 1000, 'floor-memory': 1000, entity: 3, 'state-delta': 1000, index: runtimeIndexIds.length }, '缓存关闭时真实production Store仍从正式存储读完整1000楼runtime图');
+  assert.deepEqual(cache.getStats(), cacheStatsBeforeDisabledRead, '传入null的Store不读取、发布或维护原缓存实例');
+
   const hangingForage = { INDEXEDDB: 'INDEXEDDB', createInstance: () => ({ ready: async () => {}, getItem: () => new Promise(() => {}), setItem: () => new Promise(() => {}), removeItem: async () => {}, keys: async () => [] }) };
   const hangingCache = createIndexedDbCoreRecordCache({ localForage: hangingForage, indexedDBProvider: () => idb.indexedDB,
     keyRangeProvider: () => idb.keyRange, accountHandleProvider: () => 'neutral-test-account', originProvider: () => 'https://tavern.invalid', ioTimeoutMs: 8, logger: { debug() {} } });
