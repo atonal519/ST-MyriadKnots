@@ -72,6 +72,27 @@ test('TT health checks native IO; read/put/list survive a new client/runtime', a
   await assert.rejects(f.client.health(), /read failure/);
 });
 
+test('TT默认桥的getMany与iterRecords沿原生单条读取和list运行，不探测HTTP批量路由', async t => {
+  const f = await fixture(t);
+  const previous = globalThis.__TAURITAVERN__;
+  globalThis.__TAURITAVERN__ = f.globalRef.__TAURITAVERN__;
+  t.after(() => { if (previous === undefined) delete globalThis.__TAURITAVERN__; else globalThis.__TAURITAVERN__ = previous; });
+  const client = createBackendClient();
+  await client.put('chat-tt', 'record-b', { order: 2 }, 0);
+  await client.put('chat-tt', 'record-a', { order: 1 }, 0);
+  let tableHealthScans = 0;
+  const originalListTables = f.store.listTables;
+  f.store.listTables = async (...args) => { tableHealthScans += 1; return originalListTables(...args); };
+  const batch = await client.getMany('chat-tt', ['record-b', 'record-a']);
+  assert.deepEqual(batch.map(item => [item.recordId, item.status, item.envelope.data.order]), [['record-b', 200, 2], ['record-a', 200, 1]]);
+  const listed = await client.list('chat-tt');
+  const iterated = [];
+  for await (const envelope of client.iterRecords('chat-tt')) iterated.push(envelope);
+  assert.deepEqual(iterated, listed);
+  assert.equal(tableHealthScans, 0, '隐式批量API调用不得为了协商额外读取TT health');
+  assert.deepEqual(client.getDiagnosticSnapshot().sinceClientCreatedRequestCounts, { get: 4, put: 2, delete: 0 });
+});
+
 test('TT preserves JSON field order through native save, cold read, list and trash restore', async t => {
   const f = await fixture(t);
   const value = { z: 1, a: [{ recordType: 'floor', recordId: 'test', itemId: null }], nested: { second: 2, first: 1 } };

@@ -57,6 +57,8 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
   const allowGzipPut = defaultTransport && !useTauri;
   const diagnostic = { sinceClientCreatedRequestCounts: { get: 0, put: 0, delete: 0 }, latestRead: null, latestWrite: null, lastFailure: null };
   let diagnosticSequence = 0;
+  let capabilities = null;
+  let capabilityRequest = null;
   const finishDiagnostic = (requestDiagnostic, startedAt, outcome, { httpStatus, code, backendError, backendMessage, transport } = {}) => {
     if (!requestDiagnostic) return;
     const record = {
@@ -76,13 +78,17 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
         ...(transport.contentEncoding ? { contentEncoding: transport.contentEncoding } : {}),
       } : {}),
     };
-    diagnostic[requestDiagnostic.method === 'GET' ? 'latestRead' : 'latestWrite'] = record;
+    diagnostic[requestDiagnostic.method === 'GET' || requestDiagnostic.method === 'POST' ? 'latestRead' : 'latestWrite'] = record;
     if (outcome !== 'success') diagnostic.lastFailure = record;
   };
   const request = async (path, options = {}, requestDiagnostic = null, requestTimeoutMs = timeoutMs) => {
     const startedAt = Date.now();
     let http400Diagnostic = null;
-    if (requestDiagnostic) diagnostic.sinceClientCreatedRequestCounts[requestDiagnostic.method.toLowerCase()] += 1;
+    if (requestDiagnostic) {
+      const method = requestDiagnostic.method.toLowerCase();
+      diagnostic.sinceClientCreatedRequestCounts[method] ??= 0;
+      diagnostic.sinceClientCreatedRequestCounts[method] += 1;
+    }
     const controller = new AbortController(), outerSignal = options.signal; let timedOut = false;
     const abortFromOuter = () => controller.abort(outerSignal?.reason);
     if (outerSignal?.aborted) abortFromOuter(); else outerSignal?.addEventListener?.('abort', abortFromOuter, { once: true });
@@ -143,14 +149,83 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
   };
   const collectionKey = collection => `/v1/records/${encodeURIComponent(NAMESPACE)}/${encodeURIComponent(collection)}`;
   const key = (collection, recordId) => `${collectionKey(collection)}/${encodeURIComponent(recordId)}`;
-  return {
-    async health() {
-      const result = await request('/v1/health');
+  const recordIdsKey = collection => `/v1/record-ids/${encodeURIComponent(NAMESPACE)}/${encodeURIComponent(collection)}`;
+  const recordBatchKey = collection => `/v1/record-batch/${encodeURIComponent(NAMESPACE)}/${encodeURIComponent(collection)}`;
+  const negotiateCapabilities = async signal => {
+    if (capabilities) return capabilities;
+    if (useTauri) return null;
+    if (!capabilityRequest) {
+      capabilityRequest = Promise.resolve().then(async () => { await client.health({ signal }); return capabilities; })
+        .finally(() => { capabilityRequest = null; });
+    }
+    return capabilityRequest;
+  };
+  const batchResponse = (body, recordIds) => {
+    if (!Array.isArray(body) || body.length !== recordIds.length) throw new Error('后端批量读取结果无效');
+    return body.map((item, index) => {
+      const recordId = recordIds[index];
+      if (!item || item.recordId !== recordId || ![200, 404, 500].includes(item.status)) throw new Error('后端批量读取结果无效');
+      if (item.status === 200) {
+        const envelope = item.envelope;
+        if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope) || !Number.isSafeInteger(envelope.revision) || !Object.hasOwn(envelope, 'data')) throw new Error('后端批量读取结果无效');
+        return { recordId, status: 200, envelope };
+      }
+      if (typeof item.error !== 'string' || typeof item.message !== 'string') throw new Error('后端批量读取结果无效');
+      return { recordId, status: item.status, error: item.error, message: item.message };
+    });
+  };
+  const recordEnvelope = item => {
+    if (item.status === 200) return { recordId: item.recordId, ...item.envelope };
+    const error = safeError(item.status); error.status = item.status; throw error;
+  };
+  const client = {
+    async health({ signal } = {}) {
+      const result = await request('/v1/health', { signal });
       if (!result?.ok || result.api?.current !== 1 || !result.api?.supported?.includes(1) || result.capabilities?.records !== true || result.capabilities?.optimisticRevision !== true) throw new Error('后端能力不兼容');
+      capabilities = Object.freeze({ recordBatchRead: result.capabilities.recordBatchRead === true, recordIdList: result.capabilities.recordIdList === true });
       return result;
     },
     async list(collection, { signal } = {}) { return request(collectionKey(collection), { signal }, { method: 'GET', recordType: 'collection' }, listTimeoutMs); },
-    async get(collection, recordId) { return request(key(collection, recordId), {}, { method: 'GET', recordType: recordTypeFromId(recordId) }); },
+    async get(collection, recordId, { signal } = {}) { return request(key(collection, recordId), { signal }, { method: 'GET', recordType: recordTypeFromId(recordId) }); },
+    async getMany(collection, recordIds, { signal } = {}) {
+      if (!Array.isArray(recordIds) || recordIds.length < 1 || recordIds.length > 64 || recordIds.some(id => typeof id !== 'string')) throw new TypeError('recordIds must contain 1..64 strings');
+      await negotiateCapabilities(signal);
+      if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+      if (capabilities?.recordBatchRead) {
+        const body = await request(recordBatchKey(collection), { method: 'POST', body: JSON.stringify({ recordIds }), signal }, { method: 'POST', recordType: 'collection' });
+        return batchResponse(body, recordIds);
+      }
+      const results = new Array(recordIds.length); let cursor = 0, firstError = null;
+      await Promise.all(Array.from({ length: Math.min(16, recordIds.length) }, async () => {
+        while (!firstError && !signal?.aborted) {
+          const index = cursor++; if (index >= recordIds.length) return;
+          const recordId = recordIds[index];
+          try { results[index] = { recordId, status: 200, envelope: await this.get(collection, recordId, { signal }) }; }
+          catch (error) {
+            if (error?.status === 404 || error?.status === 500) results[index] = { recordId, status: error.status, error: error.status === 404 ? 'not_found' : 'storage_error', message: error.status === 404 ? 'Record not found' : 'Unable to read record' };
+            else { firstError ??= error; return; }
+          }
+        }
+      }));
+      if (firstError) throw firstError;
+      if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+      return results;
+    },
+    async *iterRecords(collection, { signal } = {}) {
+      await negotiateCapabilities(signal);
+      if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+      if (capabilities?.recordBatchRead !== true || capabilities?.recordIdList !== true) {
+        const records = await this.list(collection, { signal });
+        if (!Array.isArray(records)) throw new Error('后端没有返回有效的记录清单');
+        yield* records; return;
+      }
+      const ids = await request(recordIdsKey(collection), { signal }, { method: 'GET', recordType: 'collection' }, listTimeoutMs);
+      if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string')) throw new Error('后端没有返回有效的记录 ID 清单');
+      for (let offset = 0; offset < ids.length; offset += 64) {
+        const batch = await this.getMany(collection, ids.slice(offset, offset + 64), { signal });
+        for (const item of batch) yield recordEnvelope(item);
+      }
+    },
     async put(collection, recordId, data, expectedRevision, { signal } = {}) { return request(key(collection, recordId), { method: 'PUT', body: JSON.stringify({ data, expectedRevision }), signal }, { method: 'PUT', recordType: recordTypeFromId(recordId) }); },
     async remove(collection, recordId, expectedRevision, { signal } = {}) { return request(key(collection, recordId), { method: 'DELETE', body: JSON.stringify({ expectedRevision }), signal }, { method: 'DELETE', recordType: recordTypeFromId(recordId) }); },
     async removePermanent(collection, recordId, expectedRevision, { signal } = {}) { return request(`${key(collection, recordId)}/permanent`, { method: 'DELETE', body: JSON.stringify({ expectedRevision }), signal }, { method: 'DELETE', recordType: recordTypeFromId(recordId) }); },
@@ -164,4 +239,5 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
       };
     },
   };
+  return client;
 }

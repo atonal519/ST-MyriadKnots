@@ -90,53 +90,69 @@ function emptyBreakdown() {
   return { story: { count: 0, bytes: 0 }, people: { count: 0, bytes: 0 }, runtime: { count: 0, bytes: 0 } };
 }
 
-export async function classifyStorageRecords(records, reachable, chatId, { resumableVectorShardIds = [] } = {}) {
+function createStorageClassifier(reachable, chatId) {
   const activeIds = reachableRecordIds(reachable);
-  const resumableIds = new Set(resumableVectorShardIds);
-  for (const record of records) if (resumableIds.has(record?.recordId) && vectorRecordOwned(record)
-    && record.data.chatId === chatId && record.data.narrativeGeneration === reachable?.root?.narrativeGeneration
-    && record.recordId.startsWith('qqj-vector-shard-')) activeIds.add(record.recordId);
-  const manifest = records.find(record => record.recordId === VECTOR_INDEX_ID && vectorRecordOwned(record) && record.data.chatId === chatId && record.data.narrativeGeneration === reachable?.root?.narrativeGeneration);
-  if (manifest) { activeIds.add(VECTOR_INDEX_ID); for (const id of manifest.data.shardIds) activeIds.add(id); }
   const breakdown = { active: emptyBreakdown(), cleanup: emptyBreakdown() };
   const candidates = [];
   const totals = { count: 0, bytes: 0 };
   const active = { count: 0, bytes: 0 };
   const cleanup = { count: 0, bytes: 0 };
   const retained = { count: 0, bytes: 0 };
-  for (let index = 0; index < records.length; index += 1) {
-    const envelope = records[index];
-    const bytes = textBytes(envelope);
-    totals.count += 1; totals.bytes += bytes;
-    const vectorOwned = vectorRecordOwned(envelope) && envelope.data.chatId === chatId;
-    const classified = vectorOwned ? { type: 'vectorCache', category: 'runtime' } : await safeFoundationEnvelope(envelope, chatId);
-    if (activeIds.has(envelope?.recordId)) {
-      active.count += 1; active.bytes += bytes;
-      const safe = classified;
-      if (safe) {
-        breakdown.active[safe.category].count += 1;
-        breakdown.active[safe.category].bytes += bytes;
-      }
-    } else {
-      const safe = classified;
-      if (safe) {
-        cleanup.count += 1; cleanup.bytes += bytes;
-        breakdown.cleanup[safe.category].count += 1;
-        breakdown.cleanup[safe.category].bytes += bytes;
-        candidates.push(Object.freeze({ recordId: envelope.recordId, revision: envelope.revision }));
+  let processed = 0;
+  return {
+    protectVectorRecords(records, resumableVectorShardIds = []) {
+      const resumableIds = new Set(resumableVectorShardIds);
+      for (const record of records) if (resumableIds.has(record?.recordId) && vectorRecordOwned(record)
+        && record.data.chatId === chatId && record.data.narrativeGeneration === reachable?.root?.narrativeGeneration
+        && record.recordId.startsWith('qqj-vector-shard-')) activeIds.add(record.recordId);
+      const manifest = records.find(record => record.recordId === VECTOR_INDEX_ID && vectorRecordOwned(record)
+        && record.data.chatId === chatId && record.data.narrativeGeneration === reachable?.root?.narrativeGeneration);
+      if (manifest) { activeIds.add(VECTOR_INDEX_ID); for (const id of manifest.data.shardIds) activeIds.add(id); }
+    },
+    async add(envelope, sourceIndex = processed) {
+      processed += 1;
+      const bytes = textBytes(envelope);
+      totals.count += 1; totals.bytes += bytes;
+      const vectorOwned = vectorRecordOwned(envelope) && envelope.data.chatId === chatId;
+      const classified = vectorOwned ? { type: 'vectorCache', category: 'runtime' } : await safeFoundationEnvelope(envelope, chatId);
+      if (activeIds.has(envelope?.recordId)) {
+        active.count += 1; active.bytes += bytes;
+        const safe = classified;
+        if (safe) {
+          breakdown.active[safe.category].count += 1;
+          breakdown.active[safe.category].bytes += bytes;
+        }
       } else {
-        // Unreachable is not proof of QQJ ownership; malformed or foreign records stay out of cleanup candidates.
-        retained.count += 1; retained.bytes += bytes;
+        const safe = classified;
+        if (safe) {
+          cleanup.count += 1; cleanup.bytes += bytes;
+          breakdown.cleanup[safe.category].count += 1;
+          breakdown.cleanup[safe.category].bytes += bytes;
+          candidates.push({ sourceIndex, value: Object.freeze({ recordId: envelope.recordId, revision: envelope.revision }) });
+        } else {
+          // Unreachable is not proof of QQJ ownership; malformed or foreign records stay out of cleanup candidates.
+          retained.count += 1; retained.bytes += bytes;
+        }
       }
-    }
-    if ((index + 1) % CLASSIFICATION_BATCH_SIZE === 0 && index + 1 < records.length) {
-      await new Promise(resolve => setTimeout(resolve, 0));
-    }
-  }
-  return Object.freeze({
-    stats: Object.freeze({ total: Object.freeze(totals), active: Object.freeze(active), cleanup: Object.freeze(cleanup), retained: Object.freeze(retained), breakdown: clone(breakdown) }),
-    candidates: Object.freeze(candidates),
-  });
+      if (processed % CLASSIFICATION_BATCH_SIZE === 0) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    },
+    finish() {
+      candidates.sort((left, right) => left.sourceIndex - right.sourceIndex);
+      return Object.freeze({
+        stats: Object.freeze({ total: Object.freeze(totals), active: Object.freeze(active), cleanup: Object.freeze(cleanup), retained: Object.freeze(retained), breakdown: clone(breakdown) }),
+        candidates: Object.freeze(candidates.map(item => item.value)),
+      });
+    },
+  };
+}
+
+export async function classifyStorageRecords(records, reachable, chatId, { resumableVectorShardIds = [] } = {}) {
+  const classifier = createStorageClassifier(reachable, chatId);
+  classifier.protectVectorRecords(records, resumableVectorShardIds);
+  for (let index = 0; index < records.length; index += 1) await classifier.add(records[index], index);
+  return classifier.finish();
 }
 
 function sameIdentity(left, right) {
@@ -284,18 +300,44 @@ export function createStorageManagement({
     } else reachable = null;
     if (!reachable) reachable = await store.readReachable({ mode: 'full' });
     assertCurrent(identity);
-    const records = await client.list(`chat-${identity.chatId}`);
-    assertCurrent(identity);
-    if (!Array.isArray(records)) throw errorWith('QQJ_STORAGE_LIST_INVALID', '后端没有返回可核对的记录清单。');
     if (reachable?.status === 'ready' && reachable.root?.chatId !== identity.chatId) {
       throw errorWith('QQJ_STORAGE_ROOT_IDENTITY_MISMATCH', '当前基础数据身份无法安全核对，本次没有生成清理候选。');
     }
     if (reachable?.status !== 'ready' || !reachable.root || !reachable.root.headCheckpointId) {
-      const totals = records.reduce((sum, item) => ({ count: sum.count + 1, bytes: sum.bytes + textBytes(item) }), { count: 0, bytes: 0 });
+      const totals = { count: 0, bytes: 0 };
+      if (typeof client.iterRecords === 'function') {
+        for await (const item of client.iterRecords(`chat-${identity.chatId}`)) { totals.count += 1; totals.bytes += textBytes(item); }
+      } else {
+        const records = await client.list(`chat-${identity.chatId}`);
+        if (!Array.isArray(records)) throw errorWith('QQJ_STORAGE_LIST_INVALID', '后端没有返回可核对的记录清单。');
+        for (const item of records) { totals.count += 1; totals.bytes += textBytes(item); }
+      }
+      assertCurrent(identity);
       return Object.freeze({ status: reachable?.status === 'uninitialized' ? 'uninitialized' : 'notReady', identity, stats: Object.freeze({ total: totals, active: { count: 0, bytes: 0 }, cleanup: { count: 0, bytes: 0 }, retained: totals, breakdown: { active: emptyBreakdown(), cleanup: emptyBreakdown() } }), candidates: Object.freeze([]), anchor: null });
     }
-    const resumableVectorShardIds = await vectorRuntime?.getResumableShardIds?.(reachable, records) ?? [];
-    const classified = await classifyStorageRecords(records, reachable, identity.chatId, { resumableVectorShardIds });
+    let classified;
+    if (typeof client.iterRecords === 'function') {
+      const classifier = createStorageClassifier(reachable, identity.chatId);
+      const vectorRecords = [];
+      let sourceIndex = 0;
+      for await (const record of client.iterRecords(`chat-${identity.chatId}`)) {
+        if (record?.recordId === VECTOR_INDEX_ID || String(record?.recordId ?? '').startsWith('qqj-vector-shard-')) vectorRecords.push({ record, sourceIndex });
+        else await classifier.add(record, sourceIndex);
+        sourceIndex += 1;
+      }
+      const vectorEnvelopes = vectorRecords.map(item => item.record);
+      const resumableVectorShardIds = await vectorRuntime?.getResumableShardIds?.(reachable, vectorEnvelopes) ?? [];
+      classifier.protectVectorRecords(vectorEnvelopes, resumableVectorShardIds);
+      for (const item of vectorRecords) await classifier.add(item.record, item.sourceIndex);
+      classified = classifier.finish();
+    } else {
+      const records = await client.list(`chat-${identity.chatId}`);
+      assertCurrent(identity);
+      if (!Array.isArray(records)) throw errorWith('QQJ_STORAGE_LIST_INVALID', '后端没有返回可核对的记录清单。');
+      const resumableVectorShardIds = await vectorRuntime?.getResumableShardIds?.(reachable, records) ?? [];
+      classified = await classifyStorageRecords(records, reachable, identity.chatId, { resumableVectorShardIds });
+    }
+    assertCurrent(identity);
     return Object.freeze({
       status: 'ready', identity, stats: classified.stats, candidates: classified.candidates,
       anchor: Object.freeze({ status: 'ready', chatId: reachable.root.chatId, revision: reachable.rootRevision, headCheckpointId: reachable.root.headCheckpointId,

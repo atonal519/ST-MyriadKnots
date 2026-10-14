@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { classifyStorageRecords, createStorageManagement, STORAGE_AUTO_BYTE_THRESHOLD, STORAGE_AUTO_RECORD_THRESHOLD } from '../src/storage-management.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
+import { API_BASE } from '../src/constants.js';
+import { createBackendClient } from '../src/backend-client.js';
 
 const CHAT = '123e4567-e89b-42d3-a456-426614174000';
 const HOST = 'host-chat';
@@ -82,7 +84,7 @@ function recordsWithOld(oldCount = 3) {
 }
 
 function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId = CHAT, removeHook = null, warmCache = false,
-  cacheRootChanged = false, scanFailure = null, stableCount = 10, autoEnabled = false, vectorRuntime = null } = {}) {
+  cacheRootChanged = false, scanFailure = null, stableCount = 10, autoEnabled = false, vectorRuntime = null, streaming = false, clientOverride = null } = {}) {
   let items = recordsWithOld(oldCount), memoryState = { chatId: CHAT, stableCount }, isBusy = busy;
   const removes = [], ordinaryRemoves = [], listeners = new Set(), sessionCalls = [];
   let listCalls = 0, rootReads = 0, fullReads = 0, listFailure = null, rootReadFailure = null, maintenanceRootFailure = null;
@@ -103,7 +105,7 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
   };
   const settingsValue = { storageAutoCleanupEnabled: autoEnabled, storageAutoCleanupProgress: autoEnabled ? { [CHAT]: stableCount - 10 } : {} };
   const settings = { get: () => settingsValue, update(patch) { Object.assign(settingsValue, structuredClone(patch)); } };
-  const client = {
+  const fallbackClient = {
     async list() { listCalls += 1; if (listFailure) { const failure = listFailure; listFailure = null; throw failure; } return structuredClone(items); },
     async get(_collection, recordId) {
       assert.equal(recordId, 'v3-root');
@@ -124,6 +126,9 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
       return { trashId: recordId };
     },
   };
+  const client = clientOverride ?? fallbackClient;
+  let iteratorCalls = 0;
+  if (streaming) client.iterRecords = async function* () { iteratorCalls += 1; for (const item of items) yield structuredClone(item); };
   const store = {
     async readRoot() { rootReads += 1; if (rootReadFailure) { const failure = rootReadFailure; rootReadFailure = null; throw failure; }
       const root = cacheRootMismatch ? reachable('other-chat').root : rootData(CHAT, rootVersion === 9 ? HEAD : RUN);
@@ -154,7 +159,7 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
   });
   return {
     manager, removes, ordinaryRemoves, settingsValue, session, sessionCalls,
-    counts: () => ({ listCalls, rootReads, fullReads }),
+    counts: () => ({ listCalls, rootReads, fullReads, ...(streaming ? { iteratorCalls } : {}) }),
     failNextScan(error) { pendingScanFailure = error; },
     failNextList(error) { listFailure = error; },
     failNextRootRead(error) { rootReadFailure = error; },
@@ -219,6 +224,51 @@ test('存储管理扫描向量续建见证并保留精确有效的未发布shard
   assert.equal(snapshot.stats.active.count, 11);
   assert.equal(snapshot.stats.cleanup.count, 3);
   assert.equal(snapshot.candidates.some(item => item.recordId === shardId), false);
+});
+
+test('存储管理流式扫描与旧list分类完全一致且只暂留向量记录', async () => {
+  const shardId = `qqj-vector-shard-${'b'.repeat(40)}`;
+  const shard = { recordId: shardId, revision: 3, data: { schemaVersion: 1, recordType: 'vectorCache', chatId: CHAT, narrativeGeneration: GENERATION, rows: [] } };
+  const manifest = { recordId: 'qqj-vector-index', revision: 2, data: { schemaVersion: 1, recordType: 'vectorCache', chatId: CHAT, narrativeGeneration: GENERATION, modelKey: HASH, dimensions: 512, chunkCount: 0, shardIds: [shardId] } };
+  const expected = fixture(); expected.records().push(shard, manifest);
+  const actual = fixture({ streaming: true }); actual.records().push(shard, manifest);
+  const [legacy, streamed] = await Promise.all([expected.manager.scan(), actual.manager.scan()]);
+  assert.deepEqual(streamed.stats, legacy.stats);
+  assert.deepEqual(streamed.candidates, legacy.candidates);
+  assert.deepEqual(actual.counts(), { listCalls: 0, rootReads: 0, fullReads: 1, iteratorCalls: 1 });
+});
+
+test('3901条记录经真实BackendClient懒协商和有界批次进入生产扫描入口', async () => {
+  const ids = Array.from({ length: 3901 }, (_, index) => `v3-floor-memory-${oldId(index)}`);
+  const requests = [];
+  const client = createBackendClient({ fetchImpl: async (url, init) => {
+    const path = new URL(url, 'http://localhost').pathname;
+    const method = init.method ?? 'GET';
+    requests.push({ path, method, body: init.body ? JSON.parse(init.body) : null });
+    if (path === `${API_BASE}/v1/health`) return { ok: true, status: 200, json: async () => ({ ok: true, api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchRead: true, recordIdList: true } }) };
+    if (path === `${API_BASE}/v1/record-ids/qianqianjie/chat-${CHAT}`) return { ok: true, status: 200, json: async () => ids };
+    if (path === `${API_BASE}/v1/record-batch/qianqianjie/chat-${CHAT}`) {
+      const recordIds = JSON.parse(init.body).recordIds;
+      return { ok: true, status: 200, json: async () => recordIds.map((recordId, index) => ({
+        recordId, status: 200, envelope: { revision: 1, data: index % 3 === 0 ? null : index % 3 === 1 ? 'generic-value' : { malformed: true } },
+      })) };
+    }
+    throw new Error(`Unexpected production client route: ${method} ${path}`);
+  } });
+  const h = fixture({ clientOverride: client });
+  const snapshot = await h.manager.scan();
+  assert.equal(snapshot.stats.total.count, 3901);
+  assert.equal(snapshot.stats.retained.count, 3901);
+  assert.equal(snapshot.stats.cleanup.count, 0);
+  const batchRequests = requests.filter(item => item.method === 'POST');
+  assert.equal(batchRequests.length, 61);
+  assert.ok(batchRequests.every(item => item.body.recordIds.length <= 64));
+  assert.equal(batchRequests.reduce((sum, item) => sum + item.body.recordIds.length, 0), 3901);
+  assert.deepEqual(requests.map(item => item.path), [
+    `${API_BASE}/v1/health`, `${API_BASE}/v1/record-ids/qianqianjie/chat-${CHAT}`,
+    ...Array(61).fill(`${API_BASE}/v1/record-batch/qianqianjie/chat-${CHAT}`),
+  ]);
+  assert.deepEqual(client.getDiagnosticSnapshot().sinceClientCreatedRequestCounts, { get: 1, post: 61, put: 0, delete: 0 });
 });
 
 test('大清单分类分批让出事件循环且分类结果与小清单规则一致', async () => {

@@ -284,7 +284,48 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     if (firstError) throw firstError;
     return results;
   }
-  async function read(identityValue, key, validator, missingStatus = 'missing', cacheRead = null) {
+  async function readManyBatched(operation, values, recordType, identityValue, reader, { settled = false } = {}) {
+    const items = Array.from(values ?? []);
+    if (!items.length || operation.cacheManifest || typeof client.getMany !== 'function') return readMany(operation, items, value => reader(value, null), { settled });
+    const results = new Array(items.length);
+    for (let offset = 0; offset < items.length; offset += 64) {
+      const before = operationState(operation);
+      if (before !== 'current') throw Object.assign(new Error(`V3_${before.toUpperCase()}`), { operationStatus: before });
+      const chunk = items.slice(offset, offset + 64);
+      const keys = chunk.map(value => String(value).startsWith('v3-') ? String(value) : `${RECORD_PREFIX[recordType] ?? ''}${value}`);
+      let batch, transportFailure = null;
+      try { batch = await client.getMany(collection(identityValue), keys); }
+      catch (reason) {
+        if (!settled) throw reason;
+        transportFailure = reason;
+      }
+      if (transportFailure) {
+        for (let index = 0; index < chunk.length; index += 1) results[offset + index] = { status: 'rejected', reason: transportFailure };
+      } else {
+        if (!Array.isArray(batch) || batch.length !== keys.length) fail('V3_STORE_BATCH_RESPONSE_INVALID');
+        const loaded = new Array(batch.length); let cursor = 0;
+        await Promise.all(Array.from({ length: Math.min(READ_CONCURRENCY, batch.length) }, async () => {
+          while (true) {
+            const index = cursor++; if (index >= batch.length) return;
+            const item = batch[index];
+            if (!item || item.recordId !== keys[index] || ![200, 404, 500].includes(item.status)) { loaded[index] = { status: 'rejected', reason: Object.assign(new TypeError('V3_STORE_BATCH_RESPONSE_INVALID'), { code: 'V3_STORE_BATCH_RESPONSE_INVALID' }) }; continue; }
+            try { loaded[index] = { status: 'fulfilled', value: await reader(chunk[index], item) }; }
+            catch (reason) { loaded[index] = { status: 'rejected', reason }; }
+          }
+        }));
+        for (let index = 0; index < loaded.length; index += 1) {
+          const result = loaded[index];
+          if (settled) results[offset + index] = result;
+          else if (result.status === 'rejected') throw result.reason;
+          else results[offset + index] = result.value;
+        }
+      }
+      const state = operationState(operation);
+      if (state !== 'current') throw Object.assign(new Error(`V3_${state.toUpperCase()}`), { operationStatus: state });
+    }
+    return results;
+  }
+  async function read(identityValue, key, validator, missingStatus = 'missing', cacheRead = null, batchItem = null) {
     if (cacheRead?.manifest && cacheRead.recordType && operationState(cacheRead.operation) === 'current') {
       try {
         const cachedEnvelope = await coreRecordCache.readRecord(cacheRead.operation.cacheScope, cacheRead.witness, cacheRead.recordType, key, cacheRead.operation.cacheManifest);
@@ -303,7 +344,11 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       } catch { /* IDB errors are misses; the formal store remains authoritative. */ }
     }
     try {
-      const envelope = await client.get(collection(identityValue), key);
+      if (batchItem?.status === 404) return { status: missingStatus };
+      if (batchItem && batchItem.status !== 200) {
+        const error = new Error(batchItem.message || '后端读取记录失败'); error.status = batchItem.status; error.code = batchItem.error; throw error;
+      }
+      const envelope = batchItem ? batchItem.envelope : await client.get(collection(identityValue), key);
       const safe = validateEnvelope(envelope, validator, identityValue.chatId);
       if (validator === validateFoundationFloor) await validateFoundationFloorContent(safe.data, { expectedChatId: identityValue.chatId });
       if (cacheRead?.operation?.cacheScope && cacheRead.witness && cacheRead.recordType && safe.rawEnvelope) {
@@ -527,12 +572,12 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
   async function readReachable({ mode = V3_READ_MODES.full, allowRecallCseFallback = false, identity: identityOverride = null, bypassCache = false } = {}) {
     if (!Object.values(V3_READ_MODES).includes(mode)) fail('V3_STORE_READ_MODE_INVALID');
     return execute(async (current, operation) => {
-    const readType = (recordType, idOrKey) => {
+    const readType = (recordType, idOrKey, batchItem = null) => {
       const key = String(idOrKey).startsWith('v3-') ? String(idOrKey) : `${RECORD_PREFIX[recordType] ?? ''}${idOrKey}`;
       const cachedType = ['floor', 'floorMemory', 'entity', 'stateDelta', 'index'].includes(recordType) ? recordType : null;
       return read(current, key, validatorFor(recordType), 'missing', cachedType && !bypassCache
         ? { operation, witness: operation.cacheWitness, manifest: operation.cacheManifest, recordType: cachedType }
-        : null);
+        : null, batchItem);
     };
     const rootResult = await read(current, V3_ROOT_RECORD_ID, validateFoundationRoot, 'uninitialized');
     if (rootResult.status !== 'ready') return rootResult;
@@ -574,15 +619,15 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       : effectiveMode === V3_READ_MODES.runtime
         ? checkpoint.producedRefs.indexes.filter(key => String(key).startsWith('v3-index-floorOrder-') || String(key).startsWith('v3-index-fingerprint-'))
         : checkpoint.producedRefs.indexes.filter(key => String(key).startsWith('v3-index-floorOrder-'));
-    const floorResults = await readMany(operation, checkpoint.producedRefs.floors, id => readType('floor', id));
+    const floorResults = await readManyBatched(operation, checkpoint.producedRefs.floors, 'floor', current, (id, item) => readType('floor', id, item));
     if (floorResults.some(result => result.status !== 'ready')) fail('V3_STORE_FLOOR_MISSING');
-    const indexResults = await readMany(operation, selectedIndexKeys, key => readType('index', key));
+    const indexResults = await readManyBatched(operation, selectedIndexKeys, 'index', current, (key, item) => readType('index', key, item));
     const indexesMissing = indexResults.some(result => result.status === 'missing');
     if (indexResults.some(result => !['ready', 'missing'].includes(result.status))) fail('V3_STORE_INDEX_UNAVAILABLE');
     if (indexesMissing && !legacySnapshot) fail('V3_STORE_INDEX_MISSING');
-    const memoryResults = await readMany(operation, checkpoint.producedRefs.floorMemories, id => readType('floorMemory', id));
+    const memoryResults = await readManyBatched(operation, checkpoint.producedRefs.floorMemories, 'floorMemory', current, (id, item) => readType('floorMemory', id, item));
     if (memoryResults.some(result => result.status !== 'ready')) fail('V3_STORE_FLOOR_MEMORY_MISSING');
-    const entityResults = await readMany(operation, checkpoint.producedRefs.entities, id => readType('entity', id));
+    const entityResults = await readManyBatched(operation, checkpoint.producedRefs.entities, 'entity', current, (id, item) => readType('entity', id, item));
     if (entityResults.some(result => result.status !== 'ready')) fail('V3_STORE_ENTITY_MISSING');
     let baselineResult;
     let deltaResults;
@@ -593,14 +638,14 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     if (!allowRecallCseFallback) {
       baselineResult = root.baselineId ? await readType('baseline', root.baselineId) : null;
       if (baselineResult && baselineResult.status !== 'ready') fail('V3_STORE_BASELINE_MISSING');
-      deltaResults = await readMany(operation, checkpoint.producedRefs.stateDeltas, id => readType('stateDelta', id));
+      deltaResults = await readManyBatched(operation, checkpoint.producedRefs.stateDeltas, 'stateDelta', current, (id, item) => readType('stateDelta', id, item));
       if (deltaResults.some(result => result.status !== 'ready')) fail('V3_STORE_STATE_DELTA_MISSING');
-      currentStateResults = await readMany(operation, checkpoint.producedRefs.currentStates, id => readType('currentState', id));
+      currentStateResults = await readManyBatched(operation, checkpoint.producedRefs.currentStates, 'currentState', current, (id, item) => readType('currentState', id, item));
       if (currentStateResults.some(result => result.status !== 'ready')) fail('V3_STORE_CURRENT_STATE_MISSING');
     } else {
-      const baselineSettled = root.baselineId ? await readMany(operation, [root.baselineId], id => readType('baseline', id), { settled: true }) : [];
-      const deltaSettled = await readMany(operation, checkpoint.producedRefs.stateDeltas, id => readType('stateDelta', id), { settled: true });
-      const currentSettled = await readMany(operation, checkpoint.producedRefs.currentStates, id => readType('currentState', id), { settled: true });
+      const baselineSettled = root.baselineId ? await readManyBatched(operation, [root.baselineId], 'baseline', current, (id, item) => readType('baseline', id, item), { settled: true }) : [];
+      const deltaSettled = await readManyBatched(operation, checkpoint.producedRefs.stateDeltas, 'stateDelta', current, (id, item) => readType('stateDelta', id, item), { settled: true });
+      const currentSettled = await readManyBatched(operation, checkpoint.producedRefs.currentStates, 'currentState', current, (id, item) => readType('currentState', id, item), { settled: true });
       const interrupted = [...baselineSettled, ...deltaSettled, ...currentSettled]
         .find(result => result.status === 'fulfilled' && ['stale', 'disabled'].includes(result.value?.status));
       if (interrupted) return { status: interrupted.value.status };

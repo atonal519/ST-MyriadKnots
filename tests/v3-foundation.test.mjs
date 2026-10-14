@@ -10,6 +10,8 @@ import { entityIndexKey } from '../src/v3/memory-schema.js';
 import { createChatSession } from '../src/chat-session.js';
 import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
 import { createV3MemoryRuntime } from '../src/v3/memory-runtime.js';
+import { API_BASE } from '../src/constants.js';
+import { createBackendClient } from '../src/backend-client.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OTHER_CHAT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -926,6 +928,105 @@ test('后端恢复得到相同 stableBoundary，warm reconcile 不按楼读取�
     'get-only 后端冷恢复只读取 root + checkpoint + run + N floors + 运行时所需索引');
   assert.equal(activeCheckpoint.indexLayout, 'floorOrder-v1');
   assert.equal(runtimeIndexCount, activeCheckpoint.producedRefs.indexes.length, '新布局只有运行时真正使用的楼序索引');
+});
+
+test('无manifest冷批读发布实际记录，随后读命中现有IndexedDB缓存路径', async () => {
+  const h = harness(); await h.runtime.start();
+  const cacheRecords = new Map(); let manifest = null, published = null, batchReads = 0;
+  const coreRecordCache = {
+    captureIdentityVersion: () => 'version', scopeFor: async () => 'scope',
+    async readManifest() { return manifest; },
+    async readRecord(_scope, _witness, type, key) { return cacheRecords.get(`${type}\u0000${key}`) ?? null; },
+    async removeRecord(_scope, _witness, type, key) { cacheRecords.delete(`${type}\u0000${key}`); },
+    async publish(_scope, witness, records, recordRefs) {
+      published = { witness, records: structuredClone(records), recordRefs: structuredClone(recordRefs) };
+      for (const item of records) cacheRecords.set(`${item.envelope.data.recordType}\u0000${item.recordId}`, item.envelope);
+      manifest = { ...witness, recordRefs };
+      return true;
+    },
+  };
+  h.backend.client.getMany = async (collection, recordIds) => {
+    batchReads += 1;
+    return Promise.all(recordIds.map(async recordId => ({ recordId, status: 200, envelope: await h.backend.client.get(collection, recordId) })));
+  };
+  const store = createFoundationStore({ client: h.backend.client, coreRecordCache, contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }) });
+  assert.equal((await store.readReachable()).status, 'ready');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(published?.records.length > 0, '冷批读取的原始envelope必须进入现有publish合同');
+  const firstBatches = batchReads; assert.ok(firstBatches > 0);
+  assert.equal((await store.readReachable()).status, 'ready');
+  assert.equal(batchReads, firstBatches, '有效manifest应优先读取缓存，不先发批次请求');
+});
+
+test('真实BackendClient未预热health时由FoundationStore跨64条冷批读并继续验证floor内容', async () => {
+  const chat = Array.from({ length: 65 }, (_, index) => [assistant(`短正文${index + 1}`), user(`确认${index + 1}`)]).flat();
+  const h = harness(chat); await h.runtime.start();
+  const collection = `chat-${CHAT}`;
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    const path = new URL(url, 'http://localhost').pathname;
+    const method = init.method ?? 'GET';
+    const body = init.body ? JSON.parse(init.body) : null;
+    requests.push({ path, method, body });
+    if (path === `${API_BASE}/v1/health`) return { ok: true, status: 200, json: async () => ({ ok: true, api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchRead: true, recordIdList: true } }) };
+    if (path.startsWith(`${API_BASE}/v1/records/qianqianjie/${collection}/`)) {
+      const recordId = decodeURIComponent(path.split('/').at(-1));
+      return { ok: true, status: 200, json: async () => await h.backend.client.get(collection, recordId) };
+    }
+    if (path === `${API_BASE}/v1/record-batch/qianqianjie/${collection}`) {
+      const entries = await Promise.all(body.recordIds.map(async recordId => {
+        try { return { recordId, status: 200, envelope: await h.backend.client.get(collection, recordId) }; }
+        catch (error) { return { recordId, status: error.status === 404 ? 404 : 500, error: error.status === 404 ? 'not_found' : 'storage_error', message: error.status === 404 ? 'Record not found' : 'Unable to read record' }; }
+      }));
+      return { ok: true, status: 200, json: async () => entries };
+    }
+    throw new Error(`Unexpected Foundation API route: ${method} ${path}`);
+  };
+  const createColdStore = () => createFoundationStore({
+    client: createBackendClient({ fetchImpl }),
+    contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }),
+  });
+  const coldStore = createColdStore();
+  const graph = await coldStore.readReachable();
+  assert.equal(graph.status, 'ready');
+  assert.equal(graph.floors.length, 65);
+  assert.equal(graph.indexesComplete, true);
+  assert.equal(requests.filter(item => item.path.endsWith('/v1/health')).length, 1, '第一次正常readReachable应惰性协商一次');
+  const floorBatches = requests.filter(item => item.method === 'POST' && item.body.recordIds.some(id => id.startsWith('v3-floor-')));
+  assert.ok(floorBatches.length >= 2, '65个FloorRecord应跨越64条批次边界');
+  assert.ok(floorBatches.every(item => item.body.recordIds.length <= 64));
+  assert.equal(requests.filter(item => item.method === 'GET' && /\/v1\/records\/.*\/v3-floor-/.test(item.path)).length, 0, 'FloorRecord不得退回单条GET');
+
+  const floorId = graph.floors[0].id;
+  const persisted = h.backend.records.get(`${collection}/v3-floor-${floorId}`);
+  const originalContent = persisted.data.content.canonicalContent;
+  persisted.data.content.canonicalContent = `${originalContent}改写`;
+  await assert.rejects(createColdStore().readReachable(), /floor|Floor|正文|指纹/i,
+    '批量HTTP成功仍必须由原production floor内容校验拒绝损坏记录');
+});
+
+test('召回CSE fallback保留按组settled语义，delta批次传输失败仍返回可用memory图', async () => {
+  const h = harness(); await h.runtime.start();
+  const task = async options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
+    ? { jsonData: { summary: '用于验证批量召回fallback的摘要' } }
+    : { jsonData: { noMaterialChange: true } };
+  const memory = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
+    generateAnalysisTask: task, generateUtilityTask: task, now: () => new Date('2026-09-02T00:00:00.000Z'), newUuid: uuidFactory(10000), logger: { warn() {} } });
+  await memory.start();
+  const floorId = h.runtime.getReachable().floors[0]?.id;
+  assert.ok(floorId, 'fixture must contain a stable floor');
+  await memory.extractFloor(floorId);
+  const beforeFailure = await h.store.readReachable({ mode: 'runtime' });
+  assert.ok(beforeFailure.stateDeltas.length > 0, 'fixture must persist a CSE state delta before injecting transport failure');
+  const original = h.backend.client.get.bind(h.backend.client);
+  h.backend.client.getMany = async (collection, recordIds) => {
+    if (recordIds.some(id => id.startsWith('v3-state-delta-'))) throw Object.assign(new Error('transport failed'), { code: 'BACKEND_TIMEOUT' });
+    return Promise.all(recordIds.map(async recordId => ({ recordId, status: 200, envelope: await original(collection, recordId) })));
+  };
+  const store = createFoundationStore({ client: h.backend.client, contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }) });
+  const result = await store.readReachable({ allowRecallCseFallback: true });
+  assert.equal(result.status, 'ready'); assert.equal(result.cseUnavailable, true);
+  assert.ok(result.floors.length > 0);
 });
 
 test('明确 legacy 快照缺失可重建索引时从 root 可达 FloorRecord 重封口，不读取旧世代', async () => {
