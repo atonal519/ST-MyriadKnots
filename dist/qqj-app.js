@@ -7542,7 +7542,7 @@ async function Do({ store: e, targetIdentity: t, cachedReachable: n = null } = {
 }
 //#endregion
 //#region manifest.json
-var Oo = "0.7.14", ko = "qianqianjie", Ao = "/api/plugins/st-bainiaodata", jo = "qqj-bainiao-v1", Mo = Symbol.for("qqj.bainiao.tt.locks.v1"), No = (e, t) => Object.assign(Error(t), { status: e }), Po = (e) => JSON.parse(JSON.stringify(e)), Fo = (e) => {
+var Oo = "0.7.15", ko = "qianqianjie", Ao = "/api/plugins/st-bainiaodata", jo = "qqj-bainiao-v1", Mo = Symbol.for("qqj.bainiao.tt.locks.v1"), No = (e, t) => Object.assign(Error(t), { status: e }), Po = (e) => JSON.parse(JSON.stringify(e)), Fo = (e) => {
 	if (e?.aborted) throw e.reason ?? new DOMException("Aborted", "AbortError");
 }, Io = new TextEncoder(), Lo = (e) => ({
 	format: "qqj-tt-json-v2",
@@ -24986,7 +24986,7 @@ function _y({ settings: e, apiTools: t, vectorApi: n, vectorIndex: r, v3Foundati
 		};
 		je.addEventListener("click", async () => {
 			await te(), Pe();
-		}), Ae.append(J("span", "", "API 接口"), je), Me.setAttribute("role", "status"), De.append(Oe, Ae, Me, Ne), Pe(), o.append(Ee), i.mount(T), M = "foundation-settings", i.setPage?.("management"), D.append(o), N && ne(), Q(), Z("settings"), a && V?.scrollIntoView?.({ block: "start" });
+		}), Ae.append(J("span", "", "API 接口"), je), Me.setAttribute("role", "status"), De.append(Oe, Ae, Me, Ne), Pe(), o.append(Ee), i.setPage?.("management"), i.mount(T), M = "foundation-settings", D.append(o), N && ne(), Q(), Z("settings"), a && V?.scrollIntoView?.({ block: "start" });
 	}
 	function se(e) {
 		P = e ?? P, C.hidden = !1, C.setAttribute("aria-hidden", "false"), K.start(), k.restore();
@@ -25448,13 +25448,13 @@ var Py = (e) => e.status === "idle" ? e.foundationStatus : e.status, Fy = (e) =>
 		return Fy(e?.messageIndex) ? e.messageIndex : null;
 	}
 	return null;
-}, Ly = (e, t, n = "楼号未提供") => {
-	let r = t?.floorId ?? t?.sourceFloorId, i = r ? e?.floors?.find((e) => e.floorId === r) : null, a = t?.sourceOrigin ?? i?.sourceOrigin;
-	if ((t?.frozen === !0 || i?.frozen === !0) && Number.isSafeInteger(a?.sourceMessageIndex)) return `来源聊天第 ${a.sourceMessageIndex} 楼`;
-	let o = Array.isArray(t?.sourceMessageIndexes) ? t.sourceMessageIndexes.filter(Fy) : [];
-	if (o.length > 1) return `第 ${o[0]}–${o.at(-1)} 楼`;
-	let s = Iy(e, t);
-	return s === null ? n : `第 ${s} 楼`;
+}, Ly = (e, t, n = "楼号未提供", { knownFloor: r = !1 } = {}) => {
+	let i = t?.floorId ?? t?.sourceFloorId, a = r ? t : i ? e?.floors?.find((e) => e.floorId === i) : null, o = t?.sourceOrigin ?? a?.sourceOrigin;
+	if ((t?.frozen === !0 || a?.frozen === !0) && Number.isSafeInteger(o?.sourceMessageIndex)) return `来源聊天第 ${o.sourceMessageIndex} 楼`;
+	let s = Array.isArray(t?.sourceMessageIndexes) ? t.sourceMessageIndexes.filter(Fy) : [];
+	if (s.length > 1) return `第 ${s[0]}–${s.at(-1)} 楼`;
+	let c = Iy(e, t);
+	return c === null ? n : `第 ${c} 楼`;
 }, Ry = (e, t) => {
 	let n = Ly(e, t.sourceFloorId ? { floorId: t.sourceFloorId } : { assistantSeq: t.sourceAssistantSeq }, "");
 	return n ? `来源：${n}` : "来源楼号未提供";
@@ -27415,27 +27415,31 @@ function Fb({ runtime: e, recallRuntime: t = null, vectorRuntime: n = null, peop
 			}), t.append(n, Q("span", "settings-hint", "只含界面滚动状态，不含聊天正文或输入内容。")), i.append(t);
 		}
 		if (typeof e.copySafeDiagnostic == "function" && typeof e.copyFullDiagnostic == "function" && t.floors?.length) {
-			let n = ce(Q("details", "qqj-management-drawer qqj-floor-diagnostics"), "floor-diagnostics", !1), r = Q("summary", "qqj-section-summary");
-			r.append(Q("strong", "", "楼层诊断"), Q("span", "v3-memory-status", `${t.floors.length} 楼`));
-			let a = Q("div", "qqj-floor-diagnostics-list");
-			for (let n of [...t.floors ?? []].reverse()) {
-				let r = Q("div", "qqj-diagnostic-row");
-				r.append(Q("span", "", Ly(t, n)));
-				let i = Q("button", "secondary-action", "复制安全诊断");
-				i.type = "button", i.addEventListener("click", () => {
-					Oe("复制安全诊断", async () => (b = await Ce(e.copySafeDiagnostic(n.floorId)), e.getState()));
-				});
-				let o = Q("button", "secondary-action", "复制完整诊断");
-				o.type = "button", o.addEventListener("click", () => {
-					Oe("复制完整诊断", async () => await Promise.resolve(p({
-						title: "复制完整诊断",
-						body: "完整诊断包含本楼正文与证据原文。确认复制吗？",
-						confirmText: "复制",
-						cancelText: "取消"
-					})) ? (b = await Ce(e.copyFullDiagnostic(n.floorId)), e.getState()) : (b = "已取消完整诊断复制。", e.getState()));
-				}), r.append(i, o), a.append(r);
-			}
-			n.append(r, a), i.append(n);
+			let r = ce(Q("details", "qqj-management-drawer qqj-floor-diagnostics"), "floor-diagnostics", !1), a = Q("summary", "qqj-section-summary");
+			a.append(Q("strong", "", "楼层诊断"), Q("span", "v3-memory-status", `${t.floors.length} 楼`));
+			let o = Q("div", "qqj-floor-diagnostics-list"), s = !1, c = () => {
+				if (s || !n.open || !r.open) return;
+				s = !0;
+				let i = t.floors ?? [];
+				for (let n = i.length - 1; n >= 0; --n) {
+					let r = i[n], a = Q("div", "qqj-diagnostic-row");
+					a.append(Q("span", "", Ly(t, r, void 0, { knownFloor: !0 })));
+					let s = Q("button", "secondary-action", "复制安全诊断");
+					s.type = "button", s.addEventListener("click", () => {
+						Oe("复制安全诊断", async () => (b = await Ce(e.copySafeDiagnostic(r.floorId)), e.getState()));
+					});
+					let c = Q("button", "secondary-action", "复制完整诊断");
+					c.type = "button", c.addEventListener("click", () => {
+						Oe("复制完整诊断", async () => await Promise.resolve(p({
+							title: "复制完整诊断",
+							body: "完整诊断包含本楼正文与证据原文。确认复制吗？",
+							confirmText: "复制",
+							cancelText: "取消"
+						})) ? (b = await Ce(e.copyFullDiagnostic(r.floorId)), e.getState()) : (b = "已取消完整诊断复制。", e.getState()));
+					}), a.append(s, c), o.append(a);
+				}
+			};
+			n.addEventListener("toggle", c), r.addEventListener("toggle", c), c(), r.append(a, o), i.append(r);
 		}
 		if (w) {
 			let e = Q("textarea", "v3-diagnostic-fallback");
@@ -27716,7 +27720,7 @@ function Fb({ runtime: e, recallRuntime: t = null, vectorRuntime: n = null, peop
 			"people",
 			"management"
 		].includes(e)) throw TypeError("V3 view page 无效");
-		E = e, _ && dt(A);
+		E = e, v && _ && dt(A);
 	}
 	return Object.freeze({
 		mount: ht,

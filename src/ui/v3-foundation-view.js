@@ -65,9 +65,9 @@ const messageIndexFor = (state, reference = {}) => {
   }
   return null;
 };
-const floorCopy = (state, reference, fallback = '楼号未提供') => {
+const floorCopy = (state, reference, fallback = '楼号未提供', { knownFloor = false } = {}) => {
   const floorId = reference?.floorId ?? reference?.sourceFloorId;
-  const floor = floorId ? state?.floors?.find(value => value.floorId === floorId) : null;
+  const floor = knownFloor ? reference : floorId ? state?.floors?.find(value => value.floorId === floorId) : null;
   const origin = reference?.sourceOrigin ?? floor?.sourceOrigin;
   if ((reference?.frozen === true || floor?.frozen === true) && Number.isSafeInteger(origin?.sourceMessageIndex)) return `来源聊天第 ${origin.sourceMessageIndex} 楼`;
   const range = Array.isArray(reference?.sourceMessageIndexes) ? reference.sourceMessageIndexes.filter(validMessageIndex) : [];
@@ -1650,12 +1650,22 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       const floorSummary = element('summary', 'qqj-section-summary');
       floorSummary.append(element('strong', '', '楼层诊断'), element('span', 'v3-memory-status', `${state.floors.length} 楼`));
       const floorList = element('div', 'qqj-floor-diagnostics-list');
-      for (const floor of [...(state.floors ?? [])].reverse()) {
-        const diagnostic = element('div', 'qqj-diagnostic-row'); diagnostic.append(element('span', '', floorCopy(state, floor)));
-        const safe = element('button', 'secondary-action', '复制安全诊断'); safe.type = 'button'; safe.addEventListener('click', () => { void run('复制安全诊断', async () => { feedback = await copy(runtime.copySafeDiagnostic(floor.floorId)); return runtime.getState(); }); });
-        const full = element('button', 'secondary-action', '复制完整诊断'); full.type = 'button'; full.addEventListener('click', () => { void run('复制完整诊断', async () => { if (!await Promise.resolve(confirmImpl({ title: '复制完整诊断', body: '完整诊断包含本楼正文与证据原文。确认复制吗？', confirmText: '复制', cancelText: '取消' }))) { feedback = '已取消完整诊断复制。'; return runtime.getState(); } feedback = await copy(runtime.copyFullDiagnostic(floor.floorId)); return runtime.getState(); }); });
-        diagnostic.append(safe, full); floorList.append(diagnostic);
-      }
+      let floorListBuilt = false;
+      const buildFloorList = () => {
+        if (floorListBuilt || !drawer.open || !floorDrawer.open) return;
+        floorListBuilt = true;
+        const floors = state.floors ?? [];
+        for (let index = floors.length - 1; index >= 0; index -= 1) {
+          const floor = floors[index];
+          const diagnostic = element('div', 'qqj-diagnostic-row'); diagnostic.append(element('span', '', floorCopy(state, floor, undefined, { knownFloor: true })));
+          const safe = element('button', 'secondary-action', '复制安全诊断'); safe.type = 'button'; safe.addEventListener('click', () => { void run('复制安全诊断', async () => { feedback = await copy(runtime.copySafeDiagnostic(floor.floorId)); return runtime.getState(); }); });
+          const full = element('button', 'secondary-action', '复制完整诊断'); full.type = 'button'; full.addEventListener('click', () => { void run('复制完整诊断', async () => { if (!await Promise.resolve(confirmImpl({ title: '复制完整诊断', body: '完整诊断包含本楼正文与证据原文。确认复制吗？', confirmText: '复制', cancelText: '取消' }))) { feedback = '已取消完整诊断复制。'; return runtime.getState(); } feedback = await copy(runtime.copyFullDiagnostic(floor.floorId)); return runtime.getState(); }); });
+          diagnostic.append(safe, full); floorList.append(diagnostic);
+        }
+      };
+      drawer.addEventListener('toggle', buildFloorList);
+      floorDrawer.addEventListener('toggle', buildFloorList);
+      buildFloorList();
       floorDrawer.append(floorSummary, floorList); body.append(floorDrawer);
     }
     if (fallbackText) { const fallback = element('textarea', 'v3-diagnostic-fallback'); fallback.value = fallbackText; fallback.textContent = fallbackText; fallback.readOnly = true; body.append(element('p', 'settings-hint', '诊断文本（长按全选复制）'), fallback); }
@@ -1840,6 +1850,6 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const result = foundationOutcome.value; feedback = peopleFeedback || (result?.status === 'ready' ? '记忆状态已刷新。' : statusCopy(result?.status)); render(result); return result;
   }
   function deactivate() { active = false; epoch += 1; operationMenus.deactivate(); stopSubscription(); }
-  function setPage(next) { if (!['memories', 'people', 'management'].includes(next)) throw new TypeError('V3 view page 无效'); page = next; if (container) render(foundationState); }
+  function setPage(next) { if (!['memories', 'people', 'management'].includes(next)) throw new TypeError('V3 view page 无效'); page = next; if (active && container) render(foundationState); }
   return Object.freeze({ mount, activate, deactivate, render, setPage, getPage: () => page });
 }

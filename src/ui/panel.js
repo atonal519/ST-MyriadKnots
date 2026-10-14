@@ -475,9 +475,9 @@ export function createPanel({
     updateCopyResult();
     page.append(documentationGroup);
 
+    v3FoundationView.setPage?.('management');
     v3FoundationView.mount(managementMount);
     mountedContentView = 'foundation-settings';
-    v3FoundationView.setPage?.('management');
     view.append(page);
     if (enabled) void activateManagement();
     syncStorageActivation();

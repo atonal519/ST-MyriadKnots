@@ -7,16 +7,18 @@ import { applyPluginEnabledImmediately } from '../src/settings.js';
 import { openHelpGuide } from '../src/ui/help-guide.js';
 import { publicErrorMessage } from '../src/public-error.js';
 
+let createdNodes = 0;
 class Node {
   constructor(tag = 'div') {
+    createdNodes += 1;
     this.tag = tag; this.children = []; this.listeners = {}; this.hidden = false; this.scrollTop = 0; this.dataset = {}; this.className = ''; this.textContent = '';
     this.attributes = {}; this.style = { setProperty() {} };
     this.classList = { toggle: (name, enabled) => { this.dataset[`class_${name}`] = Boolean(enabled); } };
   }
   append(...nodes) { this.children.push(...nodes); }
   replaceChildren(...nodes) { this.children = [...nodes]; }
-  addEventListener(name, handler) { this.listeners[name] = handler; }
-  fire(name, event = {}) { return this.listeners[name]?.(event); }
+  addEventListener(name, handler) { (this.listeners[name] ??= []).push(handler); }
+  fire(name, event = {}) { let result; for (const handler of this.listeners[name] ?? []) result = handler(event); return result; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
   querySelector() { return null; }
   focus() {}
@@ -79,8 +81,9 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
     lastExtractorError: null, lastCseError: null, unreachableCount: 0, metrics: {}, cseReady: false, csePendingCount: 0,
     cseFailedCount: 0, baselineId: null, cseSubjects: [], floors: [], rebuildStatus: 'caughtUp',
   };
-  const foundationRuntime = { getState: () => foundationState, refreshStatus: async () => foundationState, confirmLatest: async () => foundationState };
-  const actualFoundationView = createV3FoundationView({ runtime: foundationRuntime, documentRef });
+  const foundationRuntime = { getState: () => foundationState, refreshStatus: async () => foundationState, confirmLatest: async () => foundationState, copySafeDiagnostic: floorId => JSON.stringify({ floorId }), copyFullDiagnostic: floorId => JSON.stringify({ floorId }) };
+  let v3TimeStateReads = 0;
+  const actualFoundationView = createV3FoundationView({ runtime: foundationRuntime, timeRuntime: { getState() { v3TimeStateReads += 1; return { status: 'idle', active: false, canOrganize: true }; } }, documentRef });
   let rejectFoundationActivation = false;
   const v3FoundationView = {
     setPage(value) { calls.push(['page', value]); actualFoundationView.setPage(value); },
@@ -113,10 +116,10 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   const clipboardWrites = [];
   let ledgerInjectionEnabled = false, timeChanges = 0, resolveTimeConfirm;
   const timeConfirms = [];
-  const timeListeners = new Set(), memoryListeners = new Set(); let timeReads = 0, timeOrganizes = 0;
+  const timeListeners = new Set(), memoryListeners = new Set(); let timeReads = 0, timeStateReads = 0, timeOrganizes = 0;
   let timeState = { status: 'idle', active: false, last: null, canOrganize: true, disabledReason: '' };
   const publishTime = () => { for (const listener of timeListeners) listener(timeState); };
-  const timeRuntime = { getState: () => timeState, async refreshStatus() { timeReads += 1; publishTime(); return timeState; }, async organize() { timeOrganizes += 1; publishTime(); return timeState; }, subscribe(listener) { timeListeners.add(listener); return () => timeListeners.delete(listener); } };
+  const timeRuntime = { getState() { timeStateReads += 1; return timeState; }, async refreshStatus() { timeReads += 1; publishTime(); return timeState; }, async organize() { timeOrganizes += 1; publishTime(); return timeState; }, subscribe(listener) { timeListeners.add(listener); return () => timeListeners.delete(listener); } };
   const memoryRuntime = { subscribe(listener) { memoryListeners.add(listener); return () => memoryListeners.delete(listener); } };
   const autoHideApplies = [];
   let autoHideApplyStatus = null;
@@ -132,9 +135,39 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.equal(body.scrollTop, 0); assert.deepEqual(calls.filter(([kind]) => kind === 'page').at(-1), ['page', 'memories']);
   body.scrollTop = 71; peopleTab.fire('click');
   assert.equal(body.scrollTop, 0); assert.deepEqual(calls.at(-1), ['page', 'people']);
-  body.scrollTop = 39; settingsTab.fire('click');
+  let floorFindCalls = 0;
+  const floorRecords = Array.from({ length: 3901 }, (_, index) => ({ floorId: `floor-${index + 1}`, assistantSeq: index + 1, messageIndex: index * 2 + 2, status: 'ready' }));
+  foundationState.floors = new Proxy(floorRecords, { get(target, property, receiver) { if (property !== 'find') return Reflect.get(target, property, receiver); return (...args) => { floorFindCalls += 1; return Array.prototype.find.apply(target, args); }; } });
+  const settingsEntryStart = calls.length;
+  const settingsNodesBefore = createdNodes;
+  const timeStateReadsBefore = v3TimeStateReads;
+  body.scrollTop = 39; settingsTab.fire('click'); await new Promise(resolve => setImmediate(resolve));
   assert.ok(calls.some(([kind, value]) => kind === 'page' && value === 'management'));
+  const settingsViewCalls = calls.slice(settingsEntryStart).filter(([kind]) => kind === 'page' || kind === 'mount');
+  assert.deepEqual(settingsViewCalls.slice(0, 2).map(([kind, value]) => [kind, value === 'management' ? value : 'mount']), [['page', 'management'], ['mount', 'mount']], '完整面板入口必须先选择管理页，再首次挂载生产视图');
   assert.equal(view.children[0]?.className, 'settings-page', '设置页应真实占据面板内容容器');
+  const floorRows = flatten(view).filter(node => node.className === 'qqj-diagnostic-row');
+  assert.equal(floorRows.length, 0, '设置页默认折叠时不构建3901个诊断行');
+  const closedFloorButtons = flatten(view).filter(node => node.tag === 'button' && /复制(?:安全|完整)诊断/u.test(node.textContent)).length;
+  const closedCreatedNodes = createdNodes - settingsNodesBefore;
+  const timeStateReadsClosed = v3TimeStateReads - timeStateReadsBefore;
+  const diagnosticsDrawer = flatten(view).find(node => node.className === 'qqj-management-drawer' && flatten(node).some(child => child.textContent === '详细诊断'));
+  const floorDrawer = flatten(diagnosticsDrawer).find(node => node.className.includes('qqj-floor-diagnostics'));
+  floorDrawer.open = true; floorDrawer.fire('toggle');
+  assert.equal(flatten(floorDrawer).filter(node => node.className === 'qqj-diagnostic-row').length, 0, '子详情展开但外层仍闭合时仍不构建列表');
+  diagnosticsDrawer.open = true; diagnosticsDrawer.fire('toggle');
+  const openedDiagnosticStats = (() => {
+    const rows = flatten(floorDrawer).filter(node => node.className === 'qqj-diagnostic-row');
+    const buttons = rows.reduce((count, row) => count + flatten(row).filter(node => node.tag === 'button').length, 0);
+    return { rows: rows.length, buttons };
+  })();
+  assert.equal(openedDiagnosticStats.rows, 3901);
+  assert.equal(openedDiagnosticStats.buttons, 7802);
+  const openedCreatedNodes = createdNodes - settingsNodesBefore - closedCreatedNodes;
+  const timeStateReadsOpened = v3TimeStateReads - timeStateReadsBefore - timeStateReadsClosed;
+  console.log(JSON.stringify({ scenario: 'createPanel → 设置首开，生产 createPanel + createV3FoundationView，fake host DOM', floors: foundationState.floors.length, closedCreatedNodes, closedDiagnosticRows: floorRows.length, closedPerFloorCopyButtons: closedFloorButtons, closedTimeRuntimeGetStateCalls: timeStateReadsClosed, openedCreatedNodes, openedDiagnosticRows: openedDiagnosticStats.rows, openedPerFloorCopyButtons: openedDiagnosticStats.buttons, floorFindCalls, openedTimeRuntimeGetStateCalls: timeStateReadsOpened, callOrder: settingsViewCalls.slice(0, 2).map(([kind, value]) => [kind, value === 'management' ? value : 'mount']) }));
+  foundationState.floors = [];
+  actualFoundationView.render(foundationState);
   const masterInput = flatten(view).find(node => node.tag === 'input');
   assert.ok(masterInput, '设置首开应存在总开关输入');
   rejectPluginDisable = true; masterInput.checked = false;

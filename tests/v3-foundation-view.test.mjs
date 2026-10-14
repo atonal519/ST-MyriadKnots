@@ -8,10 +8,10 @@ class Node {
   constructor(tag) { this.tag = tag; this.children = []; this.listeners = {}; this.textContent = ''; this.className = ''; this.disabled = false; this.replaceCount = 0; this.value = ''; this.open = false; this.selectionStart = 0; this.selectionEnd = 0; this.scrollLeft = 0; this.attributes = {}; }
   append(...nodes) { for (const node of nodes) { this.children.push(node); if (node instanceof Node) node.parentNode = this; } }
   replaceChildren(...nodes) { this.replaceCount += 1; this.children = []; this.append(...nodes); }
-  addEventListener(name, handler) { this.listeners[name] = handler; }
+  addEventListener(name, handler) { (this.listeners[name] ??= []).push(handler); }
   setAttribute(name, value) { this.attributes[name] = String(value); }
-  click() { return this.listeners.click?.({ target: this, currentTarget: this, stopPropagation() {}, preventDefault() {} }); }
-  fire(name, event = {}) { return this.listeners[name]?.({ target: this, currentTarget: this, stopPropagation() {}, preventDefault() {}, ...event }); }
+  click() { return this.fire('click'); }
+  fire(name, event = {}) { let result; for (const handler of this.listeners[name] ?? []) result = handler({ target: this, currentTarget: this, stopPropagation() {}, preventDefault() {}, ...event }); return result; }
   focus(options) { documentRef.activeElement = this; this.focusOptions = options; }
   contains(target) { return target === this || flatten(this).includes(target); }
   querySelector(selector) { return flatten(this).find(node => selector.startsWith('.') ? node.className.split(' ').includes(selector.slice(1)) : selector.startsWith('[data-') && node.attributes[selector.slice(1, selector.indexOf('='))] === selector.match(/"([^"]+)"/)?.[1]) ?? null; }
@@ -514,13 +514,65 @@ test('完整诊断必须显式确认，clipboard 不可用时显示可选择文�
   const floorDrawer = flatten(container).find(node => node.className.includes('qqj-floor-diagnostics'));
   assert.ok(floorDrawer); assert.equal(floorDrawer.open, false, '楼层诊断默认折叠');
   assert.ok(flatten(floorDrawer).some(node => node.textContent === '楼层诊断'));
-  assert.equal(flatten(floorDrawer).filter(node => node.className === 'qqj-diagnostic-row').length, 1);
+  assert.equal(flatten(floorDrawer).filter(node => node.className === 'qqj-diagnostic-row').length, 0);
+  const diagnosticsDrawer = flatten(container).find(node => node.className === 'qqj-management-drawer' && flatten(node).some(child => child.textContent === '详细诊断'));
+  diagnosticsDrawer.open = true; diagnosticsDrawer.fire('toggle');
   floorDrawer.open = true; floorDrawer.fire('toggle'); view.render(state);
+  assert.equal(flatten(floorDrawer).filter(node => node.className === 'qqj-diagnostic-row').length, 1);
   assert.equal(flatten(container).find(node => node.className.includes('qqj-floor-diagnostics')).open, true, '刷新状态保留展开选择');
   let full = flatten(container).find(node => node.textContent === '复制完整诊断'); full.click(); await new Promise(resolve => setImmediate(resolve));
   assert.equal(flatten(container).some(node => node.className === 'v3-diagnostic-fallback'), false);
   confirmed = true; full = flatten(container).find(node => node.textContent === '复制完整诊断'); full.click(); await new Promise(resolve => setImmediate(resolve));
   const fallback = flatten(container).find(node => node.className === 'v3-diagnostic-fallback'); assert.match(fallback.value, /canonicalContent/);
+});
+
+test('楼层诊断在两层详情实际展开后才创建，并复用完整楼层的楼号资料', async () => {
+  let floorFinds = 0;
+  const floors = Array.from({ length: 3901 }, (_, index) => ({
+    floorId: `floor-${index + 1}`,
+    assistantSeq: index + 1,
+    messageIndex: index * 2 + 2,
+    status: 'ready',
+    ...(index === 1 ? { sourceMessageIndexes: [3, 5] } : {}),
+    frozen: index === 0,
+    sourceOrigin: index === 0 ? { sourceMessageIndex: 17 } : null,
+  }));
+  const nativeFind = floors.find.bind(floors);
+  floors.find = (...args) => { floorFinds += 1; return nativeFind(...args); };
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', floors };
+  let copiedFloorId = null;
+  const runtime = {
+    getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    copySafeDiagnostic: floorId => { copiedFloorId = floorId; return JSON.stringify({ floorId }); }, copyFullDiagnostic: floorId => JSON.stringify({ floorId }),
+  };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, documentRef });
+  view.mount(container);
+
+  const diagnosticDrawer = flatten(container).find(node => node.className === 'qqj-management-drawer' && flatten(node).some(child => child.textContent === '详细诊断'));
+  const floorDrawer = flatten(diagnosticDrawer).find(node => node.className.includes('qqj-floor-diagnostics'));
+  assert.equal(floorDrawer.open, false);
+  assert.equal(flatten(floorDrawer).filter(node => node.className === 'qqj-diagnostic-row').length, 0);
+  assert.equal(floorFinds, 0, '闭合诊断不扫描 floor 表');
+
+  floorDrawer.open = true; floorDrawer.fire('toggle');
+  assert.equal(flatten(floorDrawer).filter(node => node.className === 'qqj-diagnostic-row').length, 0, '父级仍闭合时子级状态不能提前创建列表');
+  diagnosticDrawer.open = true; diagnosticDrawer.fire('toggle');
+  assert.equal(flatten(floorDrawer).filter(node => node.className === 'qqj-diagnostic-row').length, floors.length);
+  assert.equal(floorFinds, 0, '完整解析楼层对象自带 messageIndex/sourceOrigin，无需逐条查找');
+  const rowLabels = flatten(floorDrawer).filter(node => node.className === 'qqj-diagnostic-row').map(row => row.children[0]?.textContent);
+  assert.equal(rowLabels[0], '第 7802 楼');
+  assert.equal(rowLabels.at(-2), '第 3–5 楼', '聚合楼保留来源区间');
+  assert.equal(rowLabels.at(-1), '来源聊天第 17 楼');
+
+  const copyButton = flatten(floorDrawer).find(node => node.textContent === '复制安全诊断');
+  copyButton.click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(copiedFloorId, 'floor-3901');
+  assert.equal(floorFinds, 0);
+  view.render(state);
+  const refreshedDrawer = flatten(container).find(node => node.className.includes('qqj-floor-diagnostics'));
+  assert.equal(flatten(refreshedDrawer).filter(node => node.className === 'qqj-diagnostic-row').length, floors.length, '打开状态下重绘仍只创建当前一份列表');
 });
 
 test('没有摘要楼时仍可复制界面滚动诊断，并复用只读文本框fallback', async () => {
@@ -675,6 +727,9 @@ test('四项破坏性记忆操作等待异步确认，取消时零业务动作',
   view.setPage('memories'); flatten(container).find(node => node.textContent === '重新提取').click(); await new Promise(resolve => setImmediate(resolve));
   view.setPage('people'); flatten(container).find(node => node.textContent === '分析记录').click(); flatten(container).find(node => node.textContent === '重新分析').click(); await new Promise(resolve => setImmediate(resolve));
   view.setPage('management'); flatten(container).find(node => node.textContent === '完全重构').click(); await new Promise(resolve => setImmediate(resolve));
+  const diagnosticsDrawer = flatten(container).find(node => node.className === 'qqj-management-drawer' && flatten(node).some(child => child.textContent === '详细诊断'));
+  const floorDrawer = flatten(diagnosticsDrawer).find(node => node.className.includes('qqj-floor-diagnostics'));
+  diagnosticsDrawer.open = true; diagnosticsDrawer.fire('toggle'); floorDrawer.open = true; floorDrawer.fire('toggle');
   flatten(container).find(node => node.textContent === '复制完整诊断').click(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(calls, []);
 });
@@ -848,6 +903,9 @@ test('Extractor 失败且尚无 FloorMemory 时仍可复制诊断并直接提取
   const state = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 1, rememberedCount: 0, unprocessedCount: 1, failedCount: 1, reviewCount: 0, pending: null, headCheckpointId: 'checkpoint', activeRun: null, lastRun: null, lastError: null, lastExtractorError: { message: '失败' }, unreachableCount: 0, metrics: {}, floors: [{ floorId: 'floor', assistantSeq: 1, messageIndex: 2, status: 'failed', memoryId: null, summary: '', counts: {}, error: '失败', memory: null }] };
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async floorId => { extractedFloorId = floorId; return state; }, copySafeDiagnostic: () => '{"safe":true}', copyFullDiagnostic: () => '{"sessionCandidate":{}}' };
   const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef, navigatorRef: {}, confirmImpl: () => { confirmations += 1; return true; } }); view.mount(container);
+  const diagnosticsDrawer = flatten(container).find(node => node.className === 'qqj-management-drawer' && flatten(node).some(child => child.textContent === '详细诊断'));
+  const floorDrawer = flatten(diagnosticsDrawer).find(node => node.className.includes('qqj-floor-diagnostics'));
+  diagnosticsDrawer.open = true; diagnosticsDrawer.fire('toggle'); floorDrawer.open = true; floorDrawer.fire('toggle');
   const copy = flatten(container).map(node => node.textContent); assert.ok(copy.includes('复制安全诊断')); assert.ok(copy.includes('复制完整诊断'));
   view.setPage('memories');
   const card = flatten(container).find(node => String(node.className).includes('qqj-memory-card'));
