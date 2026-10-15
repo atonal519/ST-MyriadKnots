@@ -1067,7 +1067,7 @@ test('所有用户可见楼号统一使用零基 messageIndex，非均匀楼层�
   const view = createV3FoundationView({ runtime, recallRuntime, peopleRuntime: selectedPeople, documentRef });
   view.setPage('memories'); view.mount(container);
   let visible = flatten(container).map(node => node.textContent).filter(Boolean);
-  assert.deepEqual(flatten(container).filter(node => node.className === 'qqj-floor-number').map(node => node.textContent), ['第 5 楼', '第 2 楼', '来源聊天第 1 楼']);
+  assert.deepEqual(flatten(container).filter(node => node.className === 'qqj-floor-number').map(node => node.textContent), ['第 5 楼', '第 2 楼', '第 1 楼']);
   view.setPage('people');
   visible = flatten(container).map(node => node.textContent).filter(Boolean);
   assert.ok(visible.includes('裴晚生'), '当前人物状态继续按人物实体显示');
@@ -2096,6 +2096,71 @@ test('摘要搜索遍历全部已存楼，清空恢复列表且切聊天不保�
   state = { ...state, chatId: 'new-chat', stableCount: 1, rememberedCount: 1, floors: [floor('other', 4, '新聊天摘要')] }; for (const listener of listeners) listener(state);
   const switchedSearch = flatten(container).find(node => node.attributes['aria-label'] === '搜索当前聊天的全部摘要');
   assert.equal(switchedSearch.value, ''); assert.match(flatten(container).map(node => node.textContent).join('|'), /新聊天摘要/u); view.deactivate();
+});
+
+test('记忆列表和摘要搜索按全局剧情顺序区分同号归档来源并打开对应原卡', async () => {
+  const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [] };
+  const floor = ({ floorId, assistantSeq, messageIndex, summary, frozen = false, sourceHostChatId = null }) => ({
+    floorId, assistantSeq, messageIndex, frozen, sourceOrigin: frozen ? { sourceMessageIndex: messageIndex, sourceHostChatId } : undefined,
+    memoryId: `memory-${floorId}`, status: 'ready', summary, summarySource: 'ai', memory, cse: { status: 'pending', deltaId: null },
+  });
+  const floors = [
+    floor({ floorId: 'archive-a511', assistantSeq: 256, messageIndex: 511, summary: 'A 的 needle 摘要', frozen: true, sourceHostChatId: 'A.jsonl' }),
+    floor({ floorId: 'current-c511', assistantSeq: 3603, messageIndex: 511, summary: 'C 的 needle 摘要' }),
+    floor({ floorId: 'archive-b511', assistantSeq: 2704, messageIndex: 511, summary: 'B 的 needle 摘要', frozen: true, sourceHostChatId: 'B.jsonl' }),
+    floor({ floorId: 'archive-long', assistantSeq: 255, messageIndex: 490, summary: '长来源 needle 摘要', frozen: true, sourceHostChatId: 'Archived-session-name-that-is-unusually-long.jsonl' }),
+  ];
+  let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 4, rememberedCount: 4, csePendingCount: 4, cseFailedCount: 0, floors };
+  const listeners = new Set();
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef }); view.setPage('memories'); view.mount(container);
+  const cardIds = () => flatten(container).filter(node => node.attributes['data-qqj-floor-id']).map(node => node.attributes['data-qqj-floor-id']);
+  assert.deepEqual(cardIds(), ['current-c511', 'archive-b511', 'archive-a511', 'archive-long']);
+  const archiveA = flatten(container).find(node => node.attributes['data-qqj-floor-id'] === 'archive-a511');
+  assert.equal(flatten(archiveA).find(node => node.className === 'qqj-floor-number').textContent, '第 511 楼 · A');
+  assert.match(flatten(archiveA).map(node => node.textContent).join('|'), /来源归档 · 只读/u);
+  const longArchive = flatten(container).find(node => node.attributes['data-qqj-floor-id'] === 'archive-long');
+  assert.match(flatten(longArchive).find(node => node.className === 'qqj-floor-number').textContent, /Archived-session-name-that-is-unusually-long/u);
+  assert.match(flatten(longArchive).map(node => node.textContent).join('|'), /Archived-session-name-that-is-unusually-long\.jsonl/u);
+
+  const search = flatten(container).find(node => node.attributes['aria-label'] === '搜索当前聊天的全部摘要');
+  search.value = 'needle'; search.fire('input');
+  const results = flatten(container).filter(node => node.className === 'qqj-history-search-result');
+  const resultTitles = results.map(result => flatten(result).find(node => node.tag === 'strong')?.textContent);
+  assert.deepEqual(resultTitles, ['第 511 楼', '第 511 楼 · B', '第 511 楼 · A', '第 490 楼 · Archived-session-name-that-is-unusually-long']);
+  results[1].click();
+  const openedB = flatten(container).find(node => node.attributes['data-qqj-floor-id'] === 'archive-b511');
+  assert.equal(openedB.open, true, '搜索结果 B 精确打开 B.floorId 原卡');
+  assert.match(flatten(openedB).map(node => node.textContent).join('|'), /B\.jsonl/u, '展开卡片可读完整来源文件名');
+  view.deactivate();
+});
+
+test('尾楼及连续 AI 等待项不被旧归档楼号遮住，普通聊天列表仍按当前楼顺序', () => {
+  const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [] };
+  const archived = { floorId: 'archive-511', assistantSeq: 256, messageIndex: 511, frozen: true,
+    sourceOrigin: { sourceMessageIndex: 511, sourceHostChatId: 'A.jsonl' }, memoryId: 'archive-memory', status: 'ready', summary: '归档摘要', memory };
+  const current = { floorId: 'live-509', assistantSeq: 3603, messageIndex: 509, memoryId: 'live-memory', status: 'ready', summary: '当前摘要', memory };
+  let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 2, rememberedCount: 2, floors: [archived, current],
+    unregisteredCandidates: [{ messageIndex: 515, assistantSeq: 90, reason: 'waitingNextUser' },
+      { messageIndex: 511, assistantSeq: 88, reason: 'consecutiveAssistant' }, { messageIndex: 513, assistantSeq: 89, reason: 'consecutiveAssistant' }],
+    consecutiveAssistantConfirmation: { candidates: [{ messageIndex: 511 }, { messageIndex: 513 }] } };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, confirmConsecutiveAssistants: async () => state };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef }); view.setPage('memories'); view.mount(container);
+  const rows = flatten(container).filter(node => node.tag === 'details' && String(node.className).split(' ').includes('qqj-memory-card'));
+  assert.deepEqual(rows.map(card => flatten(card).find(node => node.className === 'qqj-floor-number')?.textContent),
+    ['第 515 楼', '第 513 楼', '第 511 楼', '第 509 楼', '第 511 楼 · A']);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /最新 AI 楼仍等待下一条用户消息/u);
+  view.deactivate();
+
+  const ordinaryFloors = [
+    { floorId: 'ordinary-old', assistantSeq: 1, messageIndex: 2, memoryId: 'old-memory', status: 'ready', summary: '旧摘要', memory },
+    { floorId: 'ordinary-new', assistantSeq: 2, messageIndex: 80, memoryId: 'new-memory', status: 'ready', summary: '新摘要', memory },
+  ];
+  state = { status: 'ready', pluginEnabled: true, chatId: 'ordinary', foundationStatus: 'ready', stableCount: 2, rememberedCount: 2, floors: ordinaryFloors };
+  const ordinaryContainer = new Node('main'), ordinaryView = createV3FoundationView({ runtime, documentRef }); ordinaryView.setPage('memories'); ordinaryView.mount(ordinaryContainer);
+  assert.deepEqual(flatten(ordinaryContainer).filter(node => node.attributes['data-qqj-floor-id']).map(node => node.attributes['data-qqj-floor-id']), ['ordinary-new', 'ordinary-old']);
+  ordinaryView.deactivate();
 });
 
 test('CSE 搜索覆盖不同人物的变更前旧值与历史快照', () => {

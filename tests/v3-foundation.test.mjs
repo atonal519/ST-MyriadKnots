@@ -12,6 +12,7 @@ import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
 import { createV3MemoryRuntime } from '../src/v3/memory-runtime.js';
 import { API_BASE } from '../src/constants.js';
 import { createBackendClient } from '../src/backend-client.js';
+import { createMigrationDescriptor } from '../src/v3/migration-prefix.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OTHER_CHAT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -640,6 +641,35 @@ test('成功 fresh read 与 adopt 清除旧读取错误，失败 adopt 不洗绿
   state = await h.runtime.inspect('cacheAfterAdopt', { allowCached: true });
   assert.equal(state.status, 'ready');
   assert.equal(state.lastError, null);
+});
+
+test('接纳迁移图时冻结楼的旧物理楼号不吞掉当前尾楼候选', async () => {
+  const h = harness([assistant('已登记'), user('确认已登记'), assistant('当前待登记')], { modernAnchors: true });
+  await h.runtime.start();
+  const current = structuredClone(h.runtime.getReachable());
+  const pending = h.runtime.getState().unregisteredCandidates.find(item => item.messageIndex === 2);
+  assert.deepEqual(pending, { assistantSeq: 2, messageIndex: 2, reason: 'waitingNextUser' });
+
+  const archivedFloor = {
+    ...structuredClone(current.floors[0]),
+    id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    hostLocator: { ...current.floors[0].hostLocator, messageIndex: 2 },
+  };
+  const descriptor = createMigrationDescriptor({
+    id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    chatId: CHAT,
+    source: {
+      chatId: OTHER_CHAT, hostChatId: 'host-previous-chat',
+      characterLocator: 'character.png', personaLocator: 'persona.png',
+    },
+    reachable: { ...current, floors: [archivedFloor], migrationDescriptor: null },
+    createdAt: '2026-09-02T00:00:00.000Z',
+  });
+  const migrated = { ...current, floors: [...current.floors, archivedFloor], migrationDescriptor: descriptor };
+
+  assert.equal(h.runtime.adoptReachable(migrated), true);
+  assert.deepEqual(h.runtime.getState().unregisteredCandidates.find(item => item.messageIndex === 2), pending);
+  assert.equal(h.runtime.getState().pending?.messageIndex, 2);
 });
 
 test('健康缓存打开与连续 fresh 刷新只核 root，版本变化才重新读取整图', async () => {

@@ -856,8 +856,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (nextReachable && typeof hostAdapter?.snapshot === 'function') {
       const snapshot = hostAdapter.snapshot();
       observedHostChatLength = snapshot?.chat?.length ?? observedHostChatLength;
+      const frozenFloorIds = migrationPartition(nextReachable).frozenFloorIds;
       for (const floor of nextReachable.floors ?? []) {
-        const sameFloorClock = clockEvidence(rawSelectionFromSnapshot(snapshot, floor), currentReferenceTags()).displayText;
+        // Frozen floor locators belong to their source chat, not the current chat.
+        const sameFloorClock = frozenFloorIds.has(floor.id) ? ''
+          : clockEvidence(rawSelectionFromSnapshot(snapshot, floor), currentReferenceTags()).displayText;
         timeFallbackByFloor.set(floor.id, sameFloorClock || inferCanonicalCurrentTime(floor.content?.canonicalContent)?.text || '');
       }
     } else {
@@ -1109,8 +1112,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (targetIndex < 0 || !value?.root || !value?.checkpoint) return null;
     const prefix = value.floors.slice(0, targetIndex + 1);
     const floorDependencies = [];
+    // Reuse the frozen-source map only within this dependency snapshot.
+    let frozenProvenance = null;
     for (const floor of prefix) {
       const frozen = isFrozenFloor(floor.id, value);
+      if (frozen && !frozenProvenance) frozenProvenance = floorProvenance(value);
       const selected = frozen ? null : hostSnapshot ? rawSelectionFromSnapshot(hostSnapshot, floor) : currentRawSelection(hostAdapter, floor);
       if (!frozen && !selected) return null;
       floorDependencies.push({
@@ -1123,7 +1129,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         rawFingerprint: floor.content.rawFingerprint,
         canonicalFingerprint: floor.content.canonicalFingerprint,
         liveRawFingerprint: frozen ? floor.content.rawFingerprint : `sha256:${await sha256(selected.rawContent)}`,
-        storyClockSignature: frozen ? floorProvenance(value)[floor.id]?.storyClockSignature ?? null : clockEvidence(selected, frozenReferenceTags).signature,
+        storyClockSignature: frozen ? frozenProvenance[floor.id]?.storyClockSignature ?? null : clockEvidence(selected, frozenReferenceTags).signature,
       });
     }
     const floorIds = new Set(prefix.map(floor => floor.id));

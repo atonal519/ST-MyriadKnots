@@ -75,6 +75,14 @@ const floorCopy = (state, reference, fallback = '楼号未提供', { knownFloor 
   const messageIndex = messageIndexFor(state, reference);
   return messageIndex === null ? fallback : `第 ${messageIndex} 楼`;
 };
+const memoryFloorTitle = (state, floor) => {
+  if (floor?.frozen !== true) return floorCopy(state, floor, '楼号未提供', { knownFloor: true });
+  const origin = floor.sourceOrigin;
+  const number = validMessageIndex(origin?.sourceMessageIndex) ? `第 ${origin.sourceMessageIndex} 楼` : floorCopy(state, floor, '归档楼', { knownFloor: true });
+  const source = typeof origin?.sourceHostChatId === 'string' ? origin.sourceHostChatId.trim() : '';
+  const shortSource = source.replace(/\.jsonl$/iu, '');
+  return shortSource ? `${number} · ${shortSource}` : number;
+};
 const sourceFloorCopy = (state, reference) => {
   const value = floorCopy(state, reference.sourceFloorId
     ? { floorId: reference.sourceFloorId }
@@ -647,20 +655,25 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
 
   function renderMemoryFloor(floor, state) {
     const key = `${state.chatId ?? 'no-chat'}:${floor.floorId}`;
+    const title = memoryFloorTitle(state, floor);
     const card = setDetailsState(element('details', `qqj-memory-card status-${floor.status}`), `memory:${key}`, false);
     card.setAttribute('data-qqj-floor-id', floor.floorId);
-    const head = element('summary', 'qqj-memory-card-head');
+    const head = element('summary', `qqj-memory-card-head${floor.frozen ? ' is-archived' : ''}`);
     const memory = floor.memory;
     const times = floorTimeDisplay(memory?.chronology, floor.timeFallback) || '时间未明确';
     const timeNode = element('span', 'qqj-floor-time', times); timeNode.setAttribute('title', times);
     const floorStatus = floor.frozen ? '来源归档 · 只读' : floor.summarySource === 'user' && floor.status === 'ready' ? '人工修订' : statusCopy(floor.status);
     const statusNode = element('span', `v3-memory-status${floor.summarySource === 'user' && floor.status === 'ready' ? ' is-user' : ''}`, floorStatus);
     const chevron = element('span', 'qqj-memory-chevron', '›'); chevron.setAttribute('aria-hidden', 'true');
-    const floorTitle = floor.frozen && floor.sourceOrigin?.sourceHostChatId
-      ? `${floorCopy(state, floor)} · ${floor.sourceOrigin.sourceHostChatId}` : floorCopy(state, floor);
-    head.append(element('strong', 'qqj-floor-number', floorTitle), timeNode, statusNode, chevron);
+    const numberNode = element('strong', 'qqj-floor-number', title);
+    if (floor.frozen && floor.sourceOrigin?.sourceHostChatId) numberNode.setAttribute('title', floor.sourceOrigin.sourceHostChatId);
+    head.append(numberNode, timeNode, statusNode, chevron);
     card.append(head);
     const body = element('div', 'qqj-memory-card-body');
+    if (floor.frozen) {
+      const sourceName = typeof floor.sourceOrigin?.sourceHostChatId === 'string' ? floor.sourceOrigin.sourceHostChatId : '';
+      body.append(element('p', 'settings-hint qqj-memory-source', `来源：${sourceName || '未记录'}`));
+    }
     const draft = drafts.get(key);
     if (draft) {
       const editBox = element('div', 'v3-memory-edit qqj-manual-editor');
@@ -717,7 +730,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       } else body.append(element('p', 'qqj-memory-main is-empty', floor.summary || (floor.status === 'unprocessed' ? '这一楼尚未生成摘要。' : '暂无摘要。')));
       const actions = operationMenus.register(element('details', 'qqj-memory-menu'));
       const menuToggle = element('summary', 'qqj-memory-menu-toggle', '⋮');
-      menuToggle.setAttribute('aria-label', `${floorCopy(state, floor)}操作`); menuToggle.setAttribute('title', '本楼操作');
+      menuToggle.setAttribute('aria-label', `${title}操作`); menuToggle.setAttribute('title', '本楼操作');
       const menuBody = element('div', 'qqj-memory-menu-pop');
       if (floor.frozen) {
         menuBody.append(element('p', 'settings-hint', '来源聊天的已保存资料在此只读展示。'));
@@ -1005,7 +1018,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     pageNode.append(pageStatus(state));
     const list = element('div', 'v3-memory-list');
     const floors = [...(state.floors ?? [])];
-    const registeredMessageIndexes = new Set(floors.map(floor => floor.messageIndex).filter(validMessageIndex));
+    const registeredMessageIndexes = new Set(floors.filter(floor => floor.frozen !== true).map(floor => floor.messageIndex).filter(validMessageIndex));
     const waiting = (state.unregisteredCandidates ?? []).filter(candidate => validMessageIndex(candidate?.messageIndex) && !registeredMessageIndexes.has(candidate.messageIndex));
     const consecutive = waiting.filter(candidate => candidate.reason === 'consecutiveAssistant');
     const hasWaitingTail = waiting.some(candidate => candidate.reason === 'waitingNextUser');
@@ -1028,18 +1041,30 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const rows = [
       ...floors.map(value => ({ kind: 'registered', value })),
       ...waiting.map(value => ({ kind: 'waiting', value })),
-    ].sort((left, right) => (right.value.messageIndex ?? right.value.assistantSeq ?? 0) - (left.value.messageIndex ?? left.value.assistantSeq ?? 0));
+    ].sort((left, right) => {
+      if (left.kind === 'registered' && right.kind === 'registered') return (right.value.assistantSeq ?? right.value.messageIndex ?? 0) - (left.value.assistantSeq ?? left.value.messageIndex ?? 0);
+      if (left.kind === 'waiting' && right.kind === 'waiting') return (right.value.messageIndex ?? 0) - (left.value.messageIndex ?? 0);
+      const waitingRow = left.kind === 'waiting' ? left : right;
+      const floorRow = left.kind === 'registered' ? left : right;
+      let order;
+      if (floorRow.value.frozen === true) order = -1;
+      else order = (floorRow.value.messageIndex ?? 0) - (waitingRow.value.messageIndex ?? 0);
+      return left.kind === 'waiting' ? order : -order;
+    });
     const fillList = () => {
       list.replaceChildren();
       const query = memorySearchQuery.trim();
       if (query) {
         const matches = floors.filter(floor => floor.memoryId && plainSearchIncludes(floor.summary, query))
-          .sort((left, right) => (right.messageIndex ?? right.assistantSeq ?? 0) - (left.messageIndex ?? left.assistantSeq ?? 0));
+          .sort((left, right) => (right.assistantSeq ?? right.messageIndex ?? 0) - (left.assistantSeq ?? left.messageIndex ?? 0));
         list.append(element('p', 'qqj-search-count', `在全部摘要中找到 ${matches.length} 条结果`));
         for (const floor of matches) {
           const result = element('article', 'qqj-history-search-result');
-          result.append(element('strong', 'qqj-history-search-title', floorCopy(state, floor)), element('p', 'qqj-history-search-snippet', searchSnippet(floor.summary, query)));
-          result.setAttribute('role', 'button'); result.setAttribute('tabindex', '0'); result.setAttribute('aria-label', `打开${floorCopy(state, floor)}完整摘要`);
+          const titleCopy = memoryFloorTitle(state, floor), title = element('div', 'qqj-history-search-title qqj-memory-search-title');
+          const titleNode = element('strong', '', titleCopy); titleNode.setAttribute('title', titleCopy); title.append(titleNode);
+          if (floor.frozen) title.append(element('span', 'v3-memory-status', '来源归档 · 只读'));
+          result.append(title, element('p', 'qqj-history-search-snippet', searchSnippet(floor.summary, query)));
+          result.setAttribute('role', 'button'); result.setAttribute('tabindex', '0'); result.setAttribute('aria-label', `打开${titleCopy}${floor.frozen ? '（来源归档，只读）' : ''}完整摘要`);
           const openResult = () => { memorySearchQuery = ''; memorySearch.children[0].value = ''; memorySearch.children[1].hidden = true; openState.set(`memory:${state.chatId ?? 'no-chat'}:${floor.floorId}`, true); fillList(); list.querySelector?.(`[data-qqj-floor-id="${floor.floorId}"]`)?.scrollIntoView?.({ block: 'nearest' }); };
           result.addEventListener('click', openResult); result.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openResult(); } });
           list.append(result);

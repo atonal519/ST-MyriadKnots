@@ -1471,7 +1471,7 @@ export function createFoundationRuntime({
     try { identity = capture().identity; } catch { return false; }
     if (value.root.chatId !== identity.chatId || (cache?.rootRevision ?? 0) > value.rootRevision) return false;
     cache = value;
-    const registeredMessageIndexes = new Set((cache.floors ?? []).map(floor => floor.hostLocator?.messageIndex));
+    const registeredMessageIndexes = new Set(migrationPartition(cache).liveFloors.map(floor => floor.hostLocator?.messageIndex));
     unregisteredCandidates = Object.freeze(unregisteredCandidates.filter(candidate => !registeredMessageIndexes.has(candidate.messageIndex)));
     if (consecutiveAssistantConfirmation) {
       const candidates = consecutiveAssistantConfirmation.candidates.filter(candidate => !registeredMessageIndexes.has(candidate.messageIndex));
