@@ -156,10 +156,26 @@ test('身份成功续接可复用已准备的记忆，只读加载一次人物 w
 
 test('人物工作区复用 memory 通知携带的同次状态，不在订阅回调重复读取完整状态', async () => {
   const h = harness();
+  const initialState = { baselineId: 'baseline-1', currentStateId: 'current-1', currentStateFingerprint: 'fingerprint-1',
+    cseSubjects: [{ subjectEntityId: ids[0], core: [{ text: '原状态', origin: 'delta', sourceFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }], adaptive: [], situational: [] }] };
+  h.setMemoryState(initialState, false);
   await h.runtime.refresh({ refreshMemory: false });
   const beforeReads = h.memoryStateReads();
-  h.emitMemory({ cseSubjects: [{ subjectEntityId: ids[0], core: [{ text: '通知中的新状态', origin: 'delta', sourceFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }], adaptive: [], situational: [] }] });
+  let traversals = 0;
+  const track = values => new Proxy(values, { get(target, property, receiver) {
+    if (property === Symbol.iterator) return function* () { traversals += 1; yield* target; };
+    return Reflect.get(target, property, receiver);
+  } });
+  h.setReachable({ ...h.reachable, floorMemories: track(h.reachable.floorMemories), entities: track(h.reachable.entities) });
+  h.notifyMemory();
+  assert.ok(traversals > 0, 'fixture确认完整人物投影会遍历当前记忆和实体数组');
+  traversals = 0;
+  h.notifyMemory(); h.notifyMemory();
+  assert.equal(traversals, 0, '相同权威快照的重复通知不重建人物投影');
   assert.equal(h.memoryStateReads(), beforeReads, 'subscriber 直接消费 memoryRuntime 提供的 snapshot');
+  h.setMemoryState({ ...initialState, currentStateId: 'current-2', currentStateFingerprint: 'fingerprint-2',
+    cseSubjects: [{ ...initialState.cseSubjects[0], core: [{ ...initialState.cseSubjects[0].core[0], text: '通知中的新状态' }] }] });
+  assert.ok(traversals > 0, '真实CSE身份见证变化仍重新计算人物投影');
   assert.equal(h.runtime.getState().people.find(person => person.entityId === ids[0]).cse.core[0].text, '通知中的新状态');
 });
 

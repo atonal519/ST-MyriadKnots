@@ -169,6 +169,27 @@ test('千人复用后台读取时不提前报成功，完成或失败后更新�
   }
 });
 
+test('千人纯进度通知保留人物页节点并原位更新状态与生成按钮', () => {
+  const h = runtimeHarness();
+  const container = new Node('main');
+  const view = createPeopleProfilesView({ runtime: h.runtime, documentRef });
+  view.mount(container);
+  const page = container.children[0];
+  const menuToggle = flatten(page).find(node => node.className === 'qqj-profile-menu-toggle');
+  const generate = flatten(page).find(node => node.textContent === '整理当前资料');
+  assert.ok(menuToggle);
+  assert.ok(generate);
+  menuToggle.focus();
+
+  h.emitState({ ...h.state, active: { kind: 'generating', batchIndex: 1, batchTotal: 2 } });
+
+  assert.strictEqual(container.children[0], page, '纯进度通知不替换人物页');
+  assert.strictEqual(documentRef.activeElement, menuToggle, '原位更新保留当前焦点');
+  assert.match(visible(page), /正在整理人物资料 · 第 1\/2 批/);
+  assert.equal(generate.disabled, true);
+  assert.equal(generate.textContent, '正在整理…');
+});
+
 const fieldControl = (container, label) => flatten(container).find(node => node.className === 'qqj-profile-field' && node.children[0]?.textContent === label)?.children.at(-1);
 function trueRuntimeHarness() {
   const records = new Map(), calls = [], control = { gate: null, failNextPut: false };

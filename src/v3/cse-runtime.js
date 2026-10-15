@@ -10,7 +10,7 @@ import {
 } from './cse-engine.js';
 import { sanitizeDiagnosticValue, sanitizeSensitiveText } from './safe-metadata.js';
 import {
-  buildEntityIdentityDirectory, entitiesThroughFloorIds, identityLabelKey, normalizeIdentityProjection,
+  buildEntityIdentityDirectory, entitiesThroughFloorIds, identityLabelKey, normalizeIdentityProjection, reuseIdentityProjection,
   projectCseStateIdentityReferences, projectFloorMemoryIdentityReferences, resolveIdentityEntityId,
 } from './entity-identity.js';
 import { captureCseRequestSources } from '../cse-source-selection.js';
@@ -139,7 +139,12 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
   const subscribers = new Set();
   const enabled = () => { try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; } catch { return false; } };
   const notify = () => { const state = getState(); for (const listener of subscribers) { try { listener(state); } catch { /* listener isolation */ } } return state; };
-  const setIdentityProjection = value => { identityProjection = normalizeIdentityProjection(value); return notify(); };
+  const setIdentityProjection = value => {
+    const next = reuseIdentityProjection(identityProjection, value);
+    if (next === identityProjection) return getState();
+    identityProjection = next;
+    return notify();
+  };
   const storeForTarget = identityValue => identityValue && typeof storeForIdentity === 'function' ? storeForIdentity(identityValue)
     : identityValue && typeof store?.forIdentity === 'function' ? store.forIdentity(identityValue) : store;
   const captureTargetIdentity = () => { try { return typeof captureBusinessIdentity === 'function' ? captureBusinessIdentity() : null; } catch { return null; } };
@@ -382,7 +387,11 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const cseTowardCandidates = buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], floorIds: anchorFloorIds, identityProjection })
       .filter(entry => entry.entityType === 'person')
       .map(entry => Object.freeze({ entityId: entry.entityId, displayName: entry.displayName }));
-    return Object.freeze({ cseReady: reachable?.root?.capabilities?.cseReady === true, baselineId: reachable?.baseline?.id ?? null, mainCharacterEntityId, mainCharacterDisplayName, currentStateId: replayed?.id ?? null, currentStateFingerprint: replayed?.fingerprint ?? null, replayedCurrentState: projectedState, cseTowardCandidates: Object.freeze(cseTowardCandidates), cseSubjects: Object.freeze(subjects), cseFloors: Object.freeze(cseFloors), csePendingCount: pendingCount, cseFailedCount: cseFloors.filter(item => item.status === 'failed').length, activeCse: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, lastCseError: lastFailure, cseReplayDiagnostic: replayDiagnostic, csePromptVersion: CSE_PROMPT_VERSION, cseCompilerVersion: CSE_COMPILER_VERSION });
+    return Object.freeze({ cseReady: reachable?.root?.capabilities?.cseReady === true, baselineId: reachable?.baseline?.id ?? null, mainCharacterEntityId, mainCharacterDisplayName, currentStateId: replayed?.id ?? null, currentStateFingerprint: replayed?.fingerprint ?? null, replayedCurrentState: projectedState, cseTowardCandidates: Object.freeze(cseTowardCandidates), cseSubjects: Object.freeze(subjects), cseFloors: Object.freeze(cseFloors), csePendingCount: pendingCount, cseFailedCount: cseFloors.filter(item => item.status === 'failed').length, ...getActivityState(), lastCseError: lastFailure, cseReplayDiagnostic: replayDiagnostic, csePromptVersion: CSE_PROMPT_VERSION, cseCompilerVersion: CSE_COMPILER_VERSION });
+  }
+
+  function getActivityState() {
+    return Object.freeze({ activeCse: active ? Object.freeze({ floorId: active.floorId, runId: active.runId, phase: active.phase }) : null });
   }
 
   async function persist(records, signal, targetStore = store) {
@@ -447,11 +456,14 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const targetStore = operation.store ?? store;
     const partition = migrationPartition(current);
     const deltaByFloor = new Map(deltas.map(item => [item.floorId, item]));
-    for (const frozenFloorId of partition.frozenFloorIds) {
-      const persisted = filterReachableDeltas({ floors: current.floors.filter(item => item.id === frozenFloorId),
-        floorMemories: current.floorMemories, stateDeltas: current.stateDeltas }).find(item => item.floorId === frozenFloorId);
-      if (persisted && deltaByFloor.get(frozenFloorId)?.id !== persisted.id) {
-        throw errorWith('V3_MIGRATION_PREFIX_CHANGED', '迁移来源状态属于只读历史，未覆盖归档图。');
+    if (partition.frozenFloorIds.size) {
+      const persistedDeltaByFloor = new Map(filterReachableDeltas({ floors: current.floors,
+        floorMemories: current.floorMemories, stateDeltas: current.stateDeltas }).map(item => [item.floorId, item]));
+      for (const frozenFloorId of partition.frozenFloorIds) {
+        const persisted = persistedDeltaByFloor.get(frozenFloorId);
+        if (persisted && deltaByFloor.get(frozenFloorId)?.id !== persisted.id) {
+          throw errorWith('V3_MIGRATION_PREFIX_CHANGED', '迁移来源状态属于只读历史，未覆盖归档图。');
+        }
       }
     }
     const nowValue = nowIso(now);
@@ -743,5 +755,5 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
   }
   function clearView() { reachable = null; replayed = null; historyProjectionCache = null; lastFailure = null; replayDiagnostic = null; notify(); }
   function invalidate() { epoch += 1; active?.controller.abort(); active = null; reachable = null; replayed = null; historyProjectionCache = null; lastFailure = null; replayDiagnostic = null; notify(); }
-  return Object.freeze({ load, analyzeFloor, analyzeNext, correctSubjectState, cancelActive, clearView, invalidate, setIdentityProjection, getState, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
+  return Object.freeze({ load, analyzeFloor, analyzeNext, correctSubjectState, cancelActive, clearView, invalidate, setIdentityProjection, getActivityState, getState, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

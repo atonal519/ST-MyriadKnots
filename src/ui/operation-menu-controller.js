@@ -13,6 +13,7 @@ export function createOperationMenuController(documentRef) {
   return Object.freeze({
     reset() { menus.clear(); },
     register(menu) { menus.add(menu); return menu; },
+    unregister(menu) { menus.delete(menu); },
     activate() {
       if (listening || typeof documentRef?.addEventListener !== 'function') return;
       documentRef.addEventListener('click', handleDocumentClick);

@@ -588,7 +588,7 @@ export function createPeopleWorkspaceRuntime({
   if (!memoryRuntime || typeof memoryRuntime.getState !== 'function') throw new TypeError('人物工作区 memoryRuntime 无效');
   if (typeof generateUtilityTask !== 'function' || typeof contextProvider !== 'function') throw new TypeError('人物资料生成依赖无效');
   if (!sourcePermissions || typeof sourcePermissions.filterCandidates !== 'function') throw new TypeError('人物资料来源许可依赖无效');
-  let epoch = 0, active = null, workspace = null, revision = 0, chatId = null, people = Object.freeze([]), lastError = null, lastGenerationReport = null;
+  let epoch = 0, active = null, workspace = null, revision = 0, chatId = null, people = Object.freeze([]), lastError = null, lastGenerationReport = null, projectedInputs = null;
   let autoDrainQueued = false, autoDrainTimer = null, pendingAutomaticScan = false, destroyed = false, automaticFloorCount = null, automaticChatId = null;
   const pendingInitialProfiles = new Set();
   const concurrentWrites = new Set();
@@ -601,7 +601,14 @@ export function createPeopleWorkspaceRuntime({
     try { return sameIdentity(operation.identity, capture()); } catch { return false; }
   };
   const assertCurrent = operation => { if (!isCurrent(operation)) throw errorWith('QQJ_PEOPLE_STALE', '聊天已变化，迟到的人物资料结果没有写入。'); };
-  const project = (memoryState = memoryRuntime.getState()) => { people = displayPeopleProjection(candidateProjection(foundationRuntime.getReachable?.(), memoryState, workspace), workspace); };
+  const projectionInputs = (reachable, memoryState) => [chatId, revision, reachable, reachable?.floorMemories, reachable?.entities,
+    reachable?.rootRevision, reachable?.root?.headCheckpointId, reachable?.baseline?.id,
+    memoryState?.baselineId, memoryState?.currentStateId, memoryState?.currentStateFingerprint];
+  const sameProjectionInputs = (left, right) => Boolean(left && right && left.length === right.length && left.every((value, index) => value === right[index]));
+  const project = (memoryState = memoryRuntime.getState(), reachable = foundationRuntime.getReachable?.()) => {
+    people = displayPeopleProjection(candidateProjection(reachable, memoryState, workspace), workspace);
+    projectedInputs = projectionInputs(reachable, memoryState);
+  };
   const syncIdentityProjection = () => { try { memoryRuntime.setIdentityProjection?.(identityProjection(workspace)); } catch { /* memory projection remains readable */ } };
   function fullMaterialPlanFor(candidate) {
     const reachable = foundationRuntime.getReachable?.();
@@ -829,7 +836,9 @@ export function createPeopleWorkspaceRuntime({
   }
   function adopt(operation, result) {
     assertCurrent(operation); workspace = result.data ?? emptyWorkspace(operation.identity.chatId, nowIso(now));
-    revision = result.revision; chatId = operation.identity.chatId; syncIdentityProjection(); project();
+    revision = result.revision; chatId = operation.identity.chatId; syncIdentityProjection();
+    const memoryState = memoryRuntime.getState(), reachable = foundationRuntime.getReachable?.();
+    if (!sameProjectionInputs(projectedInputs, projectionInputs(reachable, memoryState))) project(memoryState, reachable);
   }
   async function latest(operation) { const result = await store.read(operation.identity); assertCurrent(operation); return result; }
   async function mutate(operation, updater) {
@@ -1353,14 +1362,18 @@ export function createPeopleWorkspaceRuntime({
   }
   function invalidate() {
     epoch += 1; active?.controller.abort(); for (const operation of concurrentWrites) operation.controller.abort();
-    active = null; concurrentWrites.clear(); workspace = null; revision = 0; chatId = null; people = Object.freeze([]); lastError = null; lastGenerationReport = null;
+    active = null; concurrentWrites.clear(); workspace = null; revision = 0; chatId = null; people = Object.freeze([]); lastError = null; lastGenerationReport = null; projectedInputs = null;
     if (autoDrainTimer !== null) clearTimeout(autoDrainTimer);
     autoDrainTimer = null; autoDrainQueued = false; pendingAutomaticScan = false; pendingInitialProfiles.clear(); automaticFloorCount = null; automaticChatId = null; syncIdentityProjection(); notify();
   }
   async function setEnabled(value) { if (value !== true) { invalidate(); return getState(); } return refresh(); }
   const unsubscribeMemory = typeof memoryRuntime.subscribe === 'function' ? memoryRuntime.subscribe(memoryState => {
     if (!workspace) return;
-    try { project(memoryState); notify(); scheduleAutomaticMaintenance(); } catch { /* projection can be refreshed by the next runtime notification */ }
+    try {
+      const reachable = foundationRuntime.getReachable?.(), nextInputs = projectionInputs(reachable, memoryState);
+      if (!sameProjectionInputs(projectedInputs, nextInputs)) { project(memoryState, reachable); notify(); }
+    } catch { /* projection can be refreshed by the next runtime notification */ }
+    scheduleAutomaticMaintenance();
   }) : null;
   const unsubscribeFoundation = typeof foundationRuntime.subscribe === 'function' ? foundationRuntime.subscribe(() => observeStableFloors()) : null;
   return Object.freeze({ refresh, start: () => enabled() ? refresh() : Promise.resolve(getState()), setSelectedEntityIds, setPersonOrderEntityIds, saveProfile, saveAvatar, mergePeople, deletePerson, generateMissingProfiles, regenerateProfile, readArchivedProfileHistory, invalidate, abortAll: invalidate, setEnabled,

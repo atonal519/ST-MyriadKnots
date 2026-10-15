@@ -852,6 +852,86 @@ test('CSE dependency snapshot 每次只克隆一次缺省 provenance，保存前
   }
 });
 
+test('CSE 提交只扫描一次冻结前缀和既有 delta 集合', async () => {
+  const frozenCount = 8;
+  const chat = [];
+  for (let index = 0; index < frozenCount + 1; index += 1) chat.push(user(`用户发言 ${index + 1}`), assistant(`待核对回复 ${index + 1}`));
+  chat.push(user('确认最后一楼'));
+  const h = runtimeHarness({ chat, cse: () => ({ jsonData: { noMaterialChange: true } }) });
+  await h.runtime.start();
+  for (let index = 0; index < frozenCount + 1; index += 1) await h.runtime.extractNext();
+  const savedBefore = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(savedBefore.floors.length, frozenCount + 1);
+  assert.equal(savedBefore.stateDeltas.length, frozenCount + 1);
+  const targetFloor = savedBefore.floors.at(-1);
+  const oldFrozenDeltaIds = savedBefore.stateDeltas.filter(delta => savedBefore.floors.slice(0, frozenCount).some(floor => floor.id === delta.floorId))
+    .map(delta => delta.id);
+  const descriptor = createMigrationDescriptor({
+    id: '99999999-2222-4222-8222-222222222222', chatId: CHAT,
+    source: { chatId: '88888888-2222-4222-8222-222222222222', hostChatId: 'prior-host-chat', characterLocator: 'character.png', personaLocator: 'persona.png' },
+    reachable: { ...savedBefore, floors: savedBefore.floors.slice(0, frozenCount) }, createdAt: NOW,
+  });
+  assert.equal(descriptor.frozenFloorIds.length, frozenCount);
+
+  const scanCounts = { frozenFloorFilterCalls: 0, frozenFloorVisits: 0, frozenDeltaPasses: 0, frozenDeltaVisits: 0 };
+  const decorate = graph => {
+    const floors = new Proxy(graph.floors, {
+      get(target, property, receiver) {
+        if (property !== 'filter') return Reflect.get(target, property, receiver);
+        return (callback, thisArg) => {
+          const caller = new Error().stack?.split('\n').slice(2, 3).join('\n') ?? '';
+          if (!/at commitDeltaGraph\b/.test(caller)) return Array.prototype.filter.call(target, callback, thisArg);
+          scanCounts.frozenFloorFilterCalls += 1;
+          return Array.prototype.filter.call(target, (value, index, array) => {
+            scanCounts.frozenFloorVisits += 1;
+            return Reflect.apply(callback, thisArg, [value, index, array]);
+          });
+        };
+      },
+    });
+    const stateDeltas = new Proxy(graph.stateDeltas, {
+      get(target, property, receiver) {
+        if (property !== Symbol.iterator) return Reflect.get(target, property, receiver);
+        return () => {
+          const frames = (new Error().stack ?? '').split('\n').slice(2, 4).join('\n');
+          const tracksCommitScan = /at filterReachableDeltas\b/.test(frames) && /at commitDeltaGraph\b/.test(frames);
+          if (tracksCommitScan) scanCounts.frozenDeltaPasses += 1;
+          const iterator = Array.prototype[Symbol.iterator].call(target);
+          return {
+            [Symbol.iterator]() { return this; },
+            next() {
+              const result = iterator.next();
+              if (tracksCommitScan && !result.done) scanCounts.frozenDeltaVisits += 1;
+              return result;
+            },
+            return(value) { return iterator.return ? iterator.return(value) : { done: true, value }; },
+          };
+        };
+      },
+    });
+    return { ...graph, floors, stateDeltas, migrationDescriptor: descriptor };
+  };
+  const cseStore = {
+    async readReachable(options) { return decorate(await h.store.readReachable(options)); },
+    putRecord: (...args) => h.store.putRecord(...args),
+    commitRoot: (...args) => h.store.commitRoot(...args),
+    recordKey: (...args) => h.store.recordKey(...args),
+  };
+  const cseRuntime = createCseRuntime({ store: cseStore, hostAdapter: h.hostAdapter,
+    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
+    now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  await cseRuntime.load(decorate(savedBefore));
+  const state = await cseRuntime.analyzeFloor(targetFloor.id, { replaceExisting: true });
+  assert.deepEqual(scanCounts, { frozenFloorFilterCalls: 0, frozenFloorVisits: 0, frozenDeltaPasses: 1, frozenDeltaVisits: frozenCount + 1 },
+    '一次提交用一个全图 delta 索引核验冻结前缀，不逐个冻结楼重扫数组');
+  const cold = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(cold.stateDeltas.filter(delta => savedBefore.floors.slice(0, frozenCount).some(floor => floor.id === delta.floorId))
+    .map(delta => delta.id).join(','), oldFrozenDeltaIds.join(','), '冻结事件保留原 delta 身份');
+  assert.notEqual(cold.stateDeltas.find(delta => delta.floorId === targetFloor.id)?.id,
+    savedBefore.stateDeltas.find(delta => delta.floorId === targetFloor.id)?.id, '活动楼正常提交新 delta');
+  assert.equal(state.cseFloors.find(item => item.floorId === targetFloor.id).status, 'noChange');
+});
+
 test('人工纠正可追加末 delta 未携带主体，并识别情境对象的无变、改向与清空', async () => {
   const envelope = createCseEnvelope({ floor: floor(FLOOR1, '甲在场。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [entities[1]], entities });
   const compiled = await compileCseResponse({

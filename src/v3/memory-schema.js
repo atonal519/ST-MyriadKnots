@@ -416,21 +416,21 @@ export async function validateMemoryGraph({ root = null, checkpoint, run = null,
   await validateFoundationGraph({ root, checkpoint, run, floors, indexes, indexKeys, entityIds, allowMissingIndexes, allowLegacySnapshot });
   if (checkpoint.producedRefs.floorMemories.length !== safeMemories.length || checkpoint.producedRefs.floorMemories.some((id, index) => id !== safeMemories[index]?.id)) fail('V3_MEMORY_GRAPH_MEMORY_LIST_INVALID');
   if (checkpoint.producedRefs.entities.length !== safeEntities.length || checkpoint.producedRefs.entities.some((id, index) => id !== safeEntities[index]?.id)) fail('V3_MEMORY_GRAPH_ENTITY_LIST_INVALID');
-  const floorIds = new Set(floors.map(floor => floor.id));
+  const floorsById = new Map(floors.map(floor => [floor.id, floor]));
   const floorOrder = new Map(floors.map((floor, index) => [floor.id, index]));
-  const entityIdSet = new Set(entityIds);
+  const entitiesById = new Map(safeEntities.map(entity => [entity.id, entity]));
   const seenFloors = new Set();
   for (const memory of safeMemories) {
-    const memoryFloor = floors.find(item => item.id === memory.floorId);
+    const memoryFloor = floorsById.get(memory.floorId);
     if (!memoryFloor || memory.narrativeGeneration !== memoryFloor.narrativeGeneration || seenFloors.has(memory.floorId)) fail('V3_MEMORY_GRAPH_FLOOR_REF_INVALID');
     const sourceFloorIds = memorySourceFloorIds(memory);
-    if (sourceFloorIds.some(floorId => !floorIds.has(floorId))
+    if (sourceFloorIds.some(floorId => !floorsById.has(floorId))
       || sourceFloorIds.some((floorId, index) => index > 0 && floorOrder.get(floorId) !== floorOrder.get(sourceFloorIds[index - 1]) + 1)) fail('V3_MEMORY_GRAPH_FLOOR_REF_INVALID');
     seenFloors.add(memory.floorId);
-    for (const entityId of collectFloorMemoryEntityIds(memory, { includeReviewCandidates: false })) if (!entityIdSet.has(entityId)) fail('V3_MEMORY_GRAPH_ENTITY_REF_INVALID');
+    for (const entityId of collectFloorMemoryEntityIds(memory, { includeReviewCandidates: false })) if (!entitiesById.has(entityId)) fail('V3_MEMORY_GRAPH_ENTITY_REF_INVALID');
     const sourceContentFor = source => {
       const sourceFloorId = source?.floorId ?? source?.sourceFloorId ?? memory.floorId;
-      const sourceFloor = floors.find(item => item.id === sourceFloorId);
+      const sourceFloor = floorsById.get(sourceFloorId);
       const sourceSnapshot = memory.sourceFloorSnapshots?.find(item => item.floorId === sourceFloorId);
       return source?.sourceType === 'precedingUser'
         ? sourceSnapshot?.sourceUserInputSnapshot?.messages?.[source.sourceSnapshotIndex]?.content
@@ -450,13 +450,12 @@ export async function validateMemoryGraph({ root = null, checkpoint, run = null,
     for (const item of memory.spatialFacts?.positions ?? []) evidence.push(...item.evidenceRefs);
     if (evidence.some(item => !checkQuote(item))) fail('V3_MEMORY_GRAPH_EVIDENCE_INVALID');
     if (memory.spatialFacts) {
-      const graphEntities = new Map(safeEntities.map(entity => [entity.id, entity]));
       for (const item of memory.spatialFacts.containments) {
-        if (graphEntities.get(item.placeEntityId)?.entityType !== 'place' || graphEntities.get(item.parentEntityId)?.entityType !== 'place') fail('V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID');
+        if (entitiesById.get(item.placeEntityId)?.entityType !== 'place' || entitiesById.get(item.parentEntityId)?.entityType !== 'place') fail('V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID');
       }
       for (const item of memory.spatialFacts.positions) {
-        if (!['person', 'group'].includes(graphEntities.get(item.subjectEntityId)?.entityType)
-          || (item.placeEntityId && graphEntities.get(item.placeEntityId)?.entityType !== 'place')) fail('V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID');
+        if (!['person', 'group'].includes(entitiesById.get(item.subjectEntityId)?.entityType)
+          || (item.placeEntityId && entitiesById.get(item.placeEntityId)?.entityType !== 'place')) fail('V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID');
       }
     }
     for (const anchor of memory.exactAnchors) {
@@ -467,12 +466,12 @@ export async function validateMemoryGraph({ root = null, checkpoint, run = null,
       if (!found) fail('V3_MEMORY_GRAPH_ANCHOR_INVALID');
     }
     if (memory.qianshiDelta) for (const event of memory.qianshiDelta.events) {
-      if (event.people.some(person => person.entityId !== null && !entityIdSet.has(person.entityId))) fail('V3_MEMORY_GRAPH_ENTITY_REF_INVALID');
+      if (event.people.some(person => person.entityId !== null && !entitiesById.has(person.entityId))) fail('V3_MEMORY_GRAPH_ENTITY_REF_INVALID');
     }
   }
   for (const entity of safeEntities) {
-    if (entity.firstSeenFloorId && !floorIds.has(entity.firstSeenFloorId)) fail('V3_MEMORY_GRAPH_ENTITY_FLOOR_INVALID');
-    const firstFloor = entity.firstSeenFloorId ? floors.find(item => item.id === entity.firstSeenFloorId) : null;
+    if (entity.firstSeenFloorId && !floorsById.has(entity.firstSeenFloorId)) fail('V3_MEMORY_GRAPH_ENTITY_FLOOR_INVALID');
+    const firstFloor = entity.firstSeenFloorId ? floorsById.get(entity.firstSeenFloorId) : null;
     if (firstFloor && entity.narrativeGeneration !== firstFloor.narrativeGeneration) fail('V3_MEMORY_GRAPH_ENTITY_GENERATION_INVALID');
   }
   const activeCount = safeMemories.filter(memory => memory.recordStatus === 'active').length;

@@ -103,6 +103,55 @@ test('已存空间事实严格冷读且状态投影用一次floor索引解析来
   }
 });
 
+test('同内容人物身份映射不重建CSE与千事投影，映射变化仍更新', async () => {
+  const h = harness({ text: '人物身份映射测试楼。' });
+  await h.runtime.start();
+  const floor = h.runtime.getState().floors[0];
+  await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  const reachable = h.foundationRuntime.getReachable();
+  const people = reachable.entities.filter(item => item.entityType === 'person');
+  assert.ok(people.length >= 2, '真实runtime图提供可用的人物身份');
+  h.runtime.getQianshiSnapshot();
+  const before = h.runtime.getQianshiSnapshotVersion().projectionRevision;
+  const tracked = new Set([reachable.floorMemories, reachable.stateDeltas, reachable.entities].filter(Array.isArray));
+  const methods = ['map', 'filter', 'find', 'some', 'forEach', 'reduce'];
+  const originals = new Map(methods.map(name => [name, Array.prototype[name]]));
+  let traversals = 0;
+  try {
+    for (const name of methods) {
+      const original = originals.get(name);
+      Array.prototype[name] = function (...args) {
+        if (tracked.has(this)) traversals += 1;
+        return original.apply(this, args);
+      };
+    }
+    const first = h.runtime.setIdentityProjection({ identityRedirectsByEntityId: {}, deletedEntityIds: [] });
+    const firstVersion = h.runtime.getQianshiSnapshotVersion().projectionRevision;
+    traversals = 0;
+    const same = h.runtime.setIdentityProjection({ identityRedirectsByEntityId: {}, deletedEntityIds: [] });
+    assert.strictEqual(same, first, '语义相同的映射复用原对象');
+    assert.equal(traversals, 0, '同内容通知不遍历CSE记忆、delta或实体数组');
+    assert.equal(h.runtime.getQianshiSnapshotVersion().projectionRevision, firstVersion, '千事投影版本不因同内容通知变化');
+    assert.ok(firstVersion >= before);
+
+    h.runtime.setIdentityProjection({ identityRedirectsByEntityId: { [people[0].id]: people[1].id }, deletedEntityIds: [] });
+    assert.ok(traversals > 0, '真实人物身份映射变化重新投影');
+    const mergedVersion = h.runtime.getQianshiSnapshotVersion().projectionRevision;
+    assert.ok(mergedVersion > firstVersion, '千事投影随真实人物合并映射变化推进');
+    traversals = 0;
+    const deleted = h.runtime.setIdentityProjection({ identityRedirectsByEntityId: { [people[0].id]: people[1].id }, deletedEntityIds: [people[1].id] });
+    const deletedVersion = h.runtime.getQianshiSnapshotVersion().projectionRevision;
+    assert.ok(traversals > 0, '真实人物删除映射重新投影');
+    assert.ok(deletedVersion > mergedVersion, '千事投影随真实删除映射推进');
+    traversals = 0;
+    assert.strictEqual(h.runtime.setIdentityProjection({ identityRedirectsByEntityId: { [people[0].id]: people[1].id }, deletedEntityIds: [people[1].id] }), deleted);
+    assert.equal(traversals, 0, '同一删除映射通知不再次遍历');
+    assert.equal(h.runtime.getQianshiSnapshotVersion().projectionRevision, deletedVersion);
+  } finally {
+    for (const [name, original] of originals) Array.prototype[name] = original;
+  }
+});
+
 test('时间状态字段按同一容器局部配对，兼容分隔的 Time 行与 date/time 子项', () => {
   assert.deepEqual(inferCanonicalCurrentTime('<Ruan_Status><span>[Time: 2026-09-29 | Tuesday | 19:30 | cloudy]</span></Ruan_Status>'), { text: '2026-09-29 19:30', kind: 'explicit' });
   assert.deepEqual(inferCanonicalCurrentTime('<Status>[Time: 2026-09-29 | Tuesday]</Status>'), { text: '2026-09-29', kind: 'explicit' }, '日期-only 保留精度');
@@ -273,6 +322,81 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
     setReadReachableGate(value) { readReachableGate = value; }, setEnabled(value) { enabled = value; }, setAutomation(value) { automation = value; } };
 }
 
+test('有效 memory graph 校验按 floor 索引解析记忆与证据来源，不逐项查找楼层', async () => {
+  const bodies = Array.from({ length: 8 }, (_, index) => `有效图正文 ${index + 1}。`);
+  const initialChat = [];
+  bodies.forEach((body, index) => initialChat.push(user(`确认 ${index + 1}`), assistant(body)));
+  initialChat.push(user('确认最后一楼'));
+  const h = harness({ initialChat, utility: () => ({ jsonData: { summary: '有效摘要' } }) });
+  h.context.chatMetadata.integrity = 'complete';
+  await h.runtime.start();
+  const floors = h.runtime.getState().floors;
+  assert.equal(floors.length, bodies.length);
+  for (const floor of floors) await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+
+  const graph = await h.store.readReachable({ mode: 'full' });
+  const floorMemories = graph.floorMemories.map((memory, index) => {
+    const copy = structuredClone(memory);
+    for (const field of ['chronology', 'locations', 'participants', 'actions', 'observations', 'informationTransfers',
+      'privateCognition', 'commitments', 'exactAnchors', 'openLoops', 'ambiguities', 'cseSignals']) copy[field] = [];
+    copy.summaryEvidenceRefs = [{ floorId: memory.floorId, anchorId: null, quotedText: bodies[index], occurrence: 1,
+      evidenceMode: 'reported', supports: '楼层摘要来源', sourceEntityId: null }];
+    return copy;
+  });
+  assert.equal(floorMemories.length, 8);
+  let floorFindCalls = 0;
+  const measuredFloors = new Proxy(graph.floors, {
+    get(target, property, receiver) {
+      if (property === 'find') return (callback, thisArg) => {
+        floorFindCalls += 1;
+        return Array.prototype.find.call(target, callback, thisArg);
+      };
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  await validateMemoryGraph({ ...graph, floors: measuredFloors, floorMemories,
+    indexKeys: graph.checkpoint.producedRefs.indexes });
+  assert.equal(floorFindCalls, 0, 'memory 自身楼层、证据来源楼层与实体首现楼均由同一 floor 索引解析');
+
+  const invalidEvidence = structuredClone(floorMemories);
+  invalidEvidence[3].summaryEvidenceRefs[0].quotedText = '不在来源楼中的文字';
+  await assert.rejects(validateMemoryGraph({ ...graph, floors: measuredFloors, floorMemories: invalidEvidence,
+    indexKeys: graph.checkpoint.producedRefs.indexes }), error => error.code === 'V3_MEMORY_GRAPH_EVIDENCE_INVALID');
+});
+
+test('memory活动状态与完整投影共享忙态、同步状态和当前可处理楼数', async () => {
+  const h = harness({ text: '活动状态中性楼。' });
+  await h.runtime.start();
+  const floor = h.runtime.getState().floors[0];
+  await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  const full = h.runtime.getState(), activity = h.runtime.getActivityState();
+  for (const key of ['status', 'chatId', 'memorySnapshotStatus', 'memorySyncStatus', 'memoryWorkBusy', 'activeExtraction', 'activeCse', 'activeAutoMemory', 'qianshiHistoryActive', 'stableCount']) {
+    assert.deepEqual(activity[key], full[key], `轻量活动状态与完整投影的 ${key} 一致`);
+  }
+  assert.equal(Object.hasOwn(activity, 'floors'), false, '活动状态不投影楼层列表');
+  const reachable = h.foundationRuntime.getReachable();
+  const heavyArrays = new Set([reachable.floorMemories, reachable.stateDeltas, reachable.entities].filter(Array.isArray));
+  const methods = ['map', 'filter', 'find', 'some', 'forEach', 'reduce'];
+  const originals = new Map(methods.map(name => [name, Array.prototype[name]]));
+  let heavyArrayTraversals = 0;
+  try {
+    for (const name of methods) {
+      const original = originals.get(name);
+      Array.prototype[name] = function (...args) {
+        if (heavyArrays.has(this)) heavyArrayTraversals += 1;
+        return original.apply(this, args);
+      };
+    }
+    h.runtime.getState();
+    assert.ok(heavyArrayTraversals > 0, '完整投影确实遍历这份运行时图数组');
+    heavyArrayTraversals = 0;
+    h.runtime.getActivityState();
+  } finally {
+    for (const [name, original] of originals) Array.prototype[name] = original;
+  }
+  assert.equal(heavyArrayTraversals, 0, '轻量入口不遍历已加载的 memory、delta 或 entity 投影');
+});
+
 async function waitFor(predicate, message = '等待异步状态超时') {
   for (let attempt = 0; attempt < 5000; attempt += 1) {
     if (predicate()) return;
@@ -298,9 +422,11 @@ test('人工摘要保存后等待 CSE 时保持摘要可用并展示 CSE 阶段'
     const pending = h.runtime.extractFloor(floorId);
     await waitFor(() => typeof finishCse === 'function');
     const during = h.runtime.getState();
+    const activity = h.runtime.getActivityState();
     assert.equal(during.floors.find(floor => floor.floorId === floorId).status, 'ready');
     assert.equal(during.floors.find(floor => floor.floorId === floorId).summary, '已保存的摘要');
     assert.equal(during.activeExtraction.phase, 'analyzingCse');
+    assert.equal(activity.activeExtraction.phase, during.activeExtraction.phase, '轻量状态保留手动提取中的真实阶段');
     assert.equal(during.activeMemoryWork.phase, 'analyzingCse');
     assert.equal(during.memoryWorkBusy, true, 'CSE is still active; conflicting work remains blocked');
     finishCse(); await pending;
@@ -2054,6 +2180,40 @@ test('破限、摘要与 CSE 指导按任务取最新快照，设置变化不追
     assert.doesNotMatch(call.systemPrompt, /sanctuary_override_directive/, '机械任务不得携带创作链强化层');
     assert.equal(Object.hasOwn(JSON.parse(call.taskMessages[0].content), 'customGuidance'), false, '旧通用附加残留不得发送');
   }
+});
+
+test('真实memory快照重建楼层与人物投影时摘要页仍按root版本原位更新阶段', async () => {
+  const h = harness({ text: '真实运行时阶段投影楼。' });
+  await h.runtime.start();
+  const floorId = h.runtime.getState().floors[0].floorId;
+  await h.runtime.extractFloor(floorId, { analyzeState: false });
+  const first = h.runtime.getState(), second = h.runtime.getState();
+  assert.notStrictEqual(first.floors, second.floors, '生产getState每次重建楼层投影');
+  assert.notStrictEqual(first.memoryEntities, second.memoryEntities, '生产getState每次重建人物投影');
+  assert.equal(first.rootRevision, second.rootRevision);
+  assert.equal(first.headCheckpointId, second.headCheckpointId);
+
+  let notify;
+  const viewRuntime = { getState: () => first, refreshStatus: async () => first, confirmLatest: async () => first,
+    extractFloor: async () => first, subscribe(listener) { notify = listener; return () => { notify = null; }; } };
+  const { view, container, flatten } = viewHarness(viewRuntime);
+  const page = container.children[0], card = flatten(container).find(node => node.attributes?.['data-qqj-floor-id'] === floorId);
+  notify(second);
+  assert.strictEqual(container.children[0], page, '真实连续snapshot不因派生数组新引用重绘');
+  assert.strictEqual(flatten(container).find(node => node.attributes?.['data-qqj-floor-id'] === floorId), card);
+
+  const runningFloor = { ...second.floors.find(item => item.floorId === floorId), status: 'running' };
+  notify({ ...second, status: 'running', memoryWorkBusy: true,
+    activeMemoryWork: { kind: 'auto', phase: 'extracting' }, activeAutoMemory: { phase: 'extracting' },
+    activeExtraction: { floorId, phase: 'extracting' }, floors: second.floors.map(item => item.floorId === floorId ? runningFloor : item) });
+  assert.strictEqual(container.children[0], page);
+  assert.equal(flatten(card).find(node => node.className.includes('v3-memory-status')).textContent, '正在提取摘要');
+
+  const settled = h.runtime.getState();
+  notify(settled);
+  assert.strictEqual(container.children[0], page);
+  assert.equal(flatten(card).find(node => node.className.includes('v3-memory-status')).textContent, '可用');
+  view.deactivate();
 });
 
 test('仅 {summary} 时形成有效 FloorMemory，并明确记录时间未明确', async () => {

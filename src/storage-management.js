@@ -175,7 +175,7 @@ export function createStorageManagement({
 } = {}) {
   if (!client?.list || !client?.get || !client?.remove || !store?.readReachable
     || !session?.identity || !session?.suspend || !session?.resume || !session?.prepare || !session?.getState
-    || !hostAdapter?.snapshot || !settings?.get || !settings?.update || !memoryRuntime?.getState) {
+    || !hostAdapter?.snapshot || !settings?.get || !settings?.update || !memoryRuntime?.getActivityState) {
     throw new TypeError('当前聊天存储管理依赖无效');
   }
   let operation = null;
@@ -242,7 +242,7 @@ export function createStorageManagement({
   };
 
   const currentStableCount = identity => {
-    const state = memoryRuntime.getState();
+    const state = memoryRuntime.getActivityState();
     return state?.chatId === identity.chatId && Number.isSafeInteger(state.stableCount) ? state.stableCount : null;
   };
   const warmReachable = identity => {
@@ -489,7 +489,7 @@ export function createStorageManagement({
   };
   async function checkAutomatic() {
     if (disposed || !autoEnabled() || automaticCheck) return;
-    const memory = memoryRuntime.getState();
+    const memory = memoryRuntime.getActivityState();
     if (!memory?.chatId || !Number.isSafeInteger(memory.stableCount) || memory.stableCount < 0) return;
     const identity = (() => { try { return capture(); } catch { return null; } })();
     if (!identity || identity.chatId !== memory.chatId) return;
@@ -565,7 +565,7 @@ export function createStorageManagement({
       throw errorWith('QQJ_STORAGE_AUTO_SCAN_REQUIRED', '请先刷新并查看当前聊天的存储统计，再开启自动清理。');
     }
     settings.update({ storageAutoCleanupEnabled: enabled === true });
-    if (enabled === true) updateProgress(identity.chatId, memoryRuntime.getState()?.stableCount ?? 0);
+    if (enabled === true) updateProgress(identity.chatId, memoryRuntime.getActivityState()?.stableCount ?? 0);
     setResult(identity, { autoPending: false });
     return scopedState();
   }

@@ -28,6 +28,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   let container = null, active = false, epoch = 0, unsubscribe = null, state = runtime.getState(), chatId = state.chatId ?? null, feedback = '人物资料状态已显示。';
   let currentEntityId = null, showMore = false, cropDraft = null, cropLoadId = 0, cropLoadController = null;
   let switcherNode = null, switcherSignature = null, switcherScrollLeft = 0;
+  let renderedState = null, renderedNodes = null, busyControls = [], generationButtons = [];
   const drafts = new Map();
   const archivedHistory = new Map();
   const operationMenus = createOperationMenuController(documentRef);
@@ -40,6 +41,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     releaseCrop(draft);
   };
   const element = (tag, className = '', text = '') => { const node = documentRef.createElement(tag); if (className) node.className = className; if (text !== '') node.textContent = text; return node; };
+  const busyControl = (node, isDisabled) => { busyControls.push({ node, isDisabled }); return node; };
   const busyExceptGeneration = value => Boolean(value.active && value.active.kind !== 'generating');
   const readFeedback = value => value.active?.kind === 'loading' ? '正在读取当前聊天…'
     : value.lastError ? `读取失败：${publicErrorMessage(value.lastError, { fallback: '人物资料暂时无法读取，请重试。' })}` : '人物资料读取完成。';
@@ -91,7 +93,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   function selectionButton(person, selectedIds) {
     const selected = new Set(selectedIds);
     const button = element('button', person.selected ? 'secondary-action' : 'primary-action', person.selected ? '移出关注' : '设为重要');
-    button.type = 'button'; button.disabled = busyExceptGeneration(state);
+    button.type = 'button'; button.disabled = busyExceptGeneration(state); busyControl(button, () => busyExceptGeneration(state));
     button.addEventListener('click', () => {
       const operationChatId = chatId, before = state.people.filter(item => item.selected).map(item => item.entityId), removingCurrent = person.selected && currentEntityId === person.entityId;
       let nextCurrent = currentEntityId;
@@ -144,7 +146,8 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   function personGenerationButton(person, className = 'secondary-action') {
     const label = person.profiled ? '重新整理资料' : '整理当前资料';
     const button = element('button', className, state.active?.kind === 'generating' ? '正在整理…' : label);
-    button.type = 'button'; button.disabled = Boolean(state.active);
+    button.type = 'button'; button.disabled = Boolean(state.active); busyControl(button, () => Boolean(state.active));
+    generationButtons.push({ node: button, label });
     button.addEventListener('click', () => { void run(label, () => runtime.regenerateProfile(person.entityId), { generationReport: true }); });
     return button;
   }
@@ -209,8 +212,8 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     } });
   }
   function managementButtons(person, menuBody) {
-    const merge = element('button', 'qqj-profile-menu-action', '合并到其他人物'); merge.type = 'button'; merge.disabled = Boolean(state.active) || state.people.length < 2; merge.addEventListener('click', () => mergePerson(person));
-    const remove = element('button', 'qqj-profile-menu-action danger', '删除人物'); remove.type = 'button'; remove.disabled = Boolean(state.active); remove.addEventListener('click', () => { void deletePerson(person); });
+    const merge = element('button', 'qqj-profile-menu-action', '合并到其他人物'); merge.type = 'button'; merge.disabled = Boolean(state.active) || state.people.length < 2; busyControl(merge, () => Boolean(state.active) || state.people.length < 2); merge.addEventListener('click', () => mergePerson(person));
+    const remove = element('button', 'qqj-profile-menu-action danger', '删除人物'); remove.type = 'button'; remove.disabled = Boolean(state.active); busyControl(remove, () => Boolean(state.active)); remove.addEventListener('click', () => { void deletePerson(person); });
     menuBody.append(merge, remove);
   }
   function archivedProfileView(person) {
@@ -331,7 +334,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
       const menu = operationMenus.register(element('details', 'qqj-profile-menu')), toggle = element('summary', 'qqj-profile-menu-toggle', '⋮');
       toggle.setAttribute?.('aria-label', '人物操作'); toggle.setAttribute?.('title', '人物操作');
       const menuBody = element('div', 'qqj-profile-menu-pop');
-      const edit = element('button', 'qqj-profile-menu-action', '编辑资料'); edit.type = 'button'; edit.disabled = busyExceptGeneration(state);
+      const edit = element('button', 'qqj-profile-menu-action', '编辑资料'); edit.type = 'button'; edit.disabled = busyExceptGeneration(state); busyControl(edit, () => busyExceptGeneration(state));
       edit.addEventListener('click', () => { profileDraft(person, true); render(state); });
       const avatarAction = element('button', 'qqj-profile-menu-action', person.avatar ? '替换头像' : '上传头像'); avatarAction.type = 'button'; avatarAction.addEventListener('click', () => file.click?.());
       const avatarRemove = person.avatar ? element('button', 'qqj-profile-menu-action danger', '移除头像') : null;
@@ -349,16 +352,16 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
         const section = element('section', 'qqj-profile-form-group'); section.append(element('h3', '', group.label));
         for (const [field, labelText, control] of group.fields) {
           const label = element('label', 'qqj-profile-field'); label.append(element('span', '', labelText));
-          const input = element(control === 'input' ? 'input' : 'textarea', 'settings-input'); input.value = draft[field]; input.placeholder = PLACEHOLDERS[field] ?? `填写${labelText}`; input.disabled = draft.saving || busyExceptGeneration(state);
+          const input = element(control === 'input' ? 'input' : 'textarea', 'settings-input'); input.value = draft[field]; input.placeholder = PLACEHOLDERS[field] ?? `填写${labelText}`; input.disabled = draft.saving || busyExceptGeneration(state); busyControl(input, () => draft.saving || busyExceptGeneration(state));
           input.addEventListener('input', () => { draft[field] = input.value; if (String(draft[field]) === String(draft.original[field])) draft.dirtyFields.delete(field); else draft.dirtyFields.add(field); draft.dirty = !sameFields(draft, draft.original); draft.notice = ''; draft.error = ''; });
           label.append(input); section.append(label);
         }
         form.append(section);
       }
       const actions = element('div', 'qqj-profile-save-row qqj-manual-save-bar');
-      const save = element('button', 'primary-action', draft.saving ? '保存中…' : '保存资料'); save.type = 'button'; save.disabled = draft.saving || busyExceptGeneration(state);
+      const save = element('button', 'primary-action', draft.saving ? '保存中…' : '保存资料'); save.type = 'button'; save.disabled = draft.saving || busyExceptGeneration(state); busyControl(save, () => draft.saving || busyExceptGeneration(state));
       save.addEventListener('click', () => saveProfile(person, draft)); actions.append(save);
-      const cancel = element('button', 'secondary-action', '取消'); cancel.type = 'button'; cancel.disabled = draft.saving || busyExceptGeneration(state);
+      const cancel = element('button', 'secondary-action', '取消'); cancel.type = 'button'; cancel.disabled = draft.saving || busyExceptGeneration(state); busyControl(cancel, () => draft.saving || busyExceptGeneration(state));
       cancel.addEventListener('click', () => { drafts.delete(person.entityId); render(state); }); actions.append(cancel);
       if (draft.notice || draft.error) actions.append(saveResult(draft));
       form.append(actions); body.append(form);
@@ -410,7 +413,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   }
   function peoplePicker(people) {
     const picker = element('section', 'qqj-profile-picker'), heading = element('header', 'qqj-profile-picker-heading');
-    const order = element('button', 'secondary-action qqj-people-order-open', '排序'); order.type = 'button'; order.disabled = Boolean(state.active) || people.length < 2; order.addEventListener('click', openOrderDialog);
+    const order = element('button', 'secondary-action qqj-people-order-open', '排序'); order.type = 'button'; order.disabled = Boolean(state.active) || people.length < 2; busyControl(order, () => Boolean(state.active) || people.length < 2); order.addEventListener('click', openOrderDialog);
     heading.append(element('strong', '', '更多人物'), element('span', 'v3-memory-status', `${people.length} 位已识别人物`), order); picker.append(heading);
     const list = element('div', 'qqj-more-people-list');
     for (const person of people) {
@@ -428,10 +431,38 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     picker.append(list); return picker;
   }
   function render(next = runtime.getState()) {
+    state = next; resetForChat(state.chatId ?? null); if (!container) return;
+    const activeState = state.active;
+    const draft = currentEntityId ? drafts.get(currentEntityId) : null;
+    const draftStamp = draft ? `${draft.editing}:${draft.saving}:${draft.error}:${draft.notice}` : '';
+    const archive = currentEntityId ? archivedHistory.get(`${chatId}:${currentEntityId}`) : null;
+    const archiveStamp = archive ? [archive.open, archive.loading, archive.error, archive.snapshots] : [false, false, '', null];
+    const sameActive = (left, right) => left?.kind === right?.kind && left?.batchIndex === right?.batchIndex && left?.batchTotal === right?.batchTotal;
+    const sameContent = renderedState && renderedNodes && renderedState.chatId === chatId && renderedState.people === state.people
+      && renderedState.revision === state.revision && renderedState.archivedPeopleSnapshotCount === state.archivedPeopleSnapshotCount
+      && renderedState.showMore === showMore && renderedState.currentEntityId === currentEntityId
+      && renderedState.draftStamp === draftStamp && renderedState.archiveStamp[0] === archiveStamp[0]
+      && renderedState.archiveStamp[1] === archiveStamp[1] && renderedState.archiveStamp[2] === archiveStamp[2]
+      && renderedState.archiveStamp[3] === archiveStamp[3];
+    if (sameContent) {
+      const statusChanged = renderedState.status !== state.status || !sameActive(renderedState.active, activeState)
+        || renderedState.lastError !== state.lastError || renderedState.lastGenerationReport !== state.lastGenerationReport
+        || renderedState.unprofiledSelectedCount !== state.unprofiledSelectedCount || renderedState.feedback !== feedback;
+      if (!statusChanged) return;
+      renderedNodes.health.className = healthClass(state);
+      renderedNodes.health.textContent = statusCopy(state);
+      renderedNodes.feedback.className = `v3-foundation-feedback${feedback.includes('失败') ? ' error' : ''}`;
+      renderedNodes.feedback.textContent = feedback;
+      for (const control of busyControls) control.node.disabled = control.isDisabled();
+      for (const button of generationButtons) button.node.textContent = activeState?.kind === 'generating' ? '正在整理…' : button.label;
+      renderedState = { ...renderedState, status: state.status, active: activeState,
+        lastError: state.lastError, lastGenerationReport: state.lastGenerationReport,
+        unprofiledSelectedCount: state.unprofiledSelectedCount, feedback };
+      return;
+    }
     if (switcherNode) switcherScrollLeft = Number(switcherNode.scrollLeft) || 0;
     const previousChatId = chatId, previousSignature = switcherSignature;
-    state = next; resetForChat(state.chatId ?? null); if (!container) return;
-    operationMenus.reset();
+    operationMenus.reset(); busyControls = []; generationButtons = [];
     const page = element('section', 'qqj-page qqj-profiles-page'), status = element('div', 'qqj-page-status');
     const health = element('p', healthClass(state), statusCopy(state));
     health.setAttribute?.('role', 'status'); status.append(health, element('p', `v3-foundation-feedback${feedback.includes('失败') ? ' error' : ''}`, feedback)); page.append(status);
@@ -457,6 +488,11 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     container.replaceChildren(page);
     nextSwitcher.scrollLeft = preserveSwitcherScroll ? switcherScrollLeft : 0;
     switcherNode = nextSwitcher; switcherSignature = nextSignature; switcherScrollLeft = nextSwitcher.scrollLeft;
+    renderedNodes = { health, feedback: status.children[1] };
+    renderedState = { chatId, people: state.people, revision: state.revision, status: state.status, active: activeState,
+      lastError: state.lastError, lastGenerationReport: state.lastGenerationReport,
+      unprofiledSelectedCount: state.unprofiledSelectedCount, archivedPeopleSnapshotCount: state.archivedPeopleSnapshotCount,
+      feedback, showMore, currentEntityId, draftStamp, archiveStamp };
   }
   function subscribe() {
     if (!active || unsubscribe || typeof runtime.subscribe !== 'function') return;
@@ -468,7 +504,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     });
     if (typeof release === 'function') unsubscribe = release;
   }
-  function mount(target) { unsubscribe?.(); unsubscribe = null; operationMenus.deactivate(); container = target; active = true; render(runtime.getState()); operationMenus.activate(); subscribe(); }
+  function mount(target) { unsubscribe?.(); unsubscribe = null; operationMenus.deactivate(); renderedState = null; renderedNodes = null; busyControls = []; generationButtons = []; switcherNode = null; container = target; active = true; render(runtime.getState()); operationMenus.activate(); subscribe(); }
   async function activate() {
     if (!container) throw new Error('千人人物资料 view 尚未挂载');
     active = true; operationMenus.activate(); subscribe(); const mine = ++epoch; feedback = '正在读取当前聊天…'; render(runtime.getState());
@@ -484,6 +520,6 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     }
     catch (error) { if (!active || mine !== epoch) return { status: 'stale' }; state = runtime.getState(); resetForChat(state.chatId ?? null); feedback = `读取失败：${publicErrorMessage(error, { fallback: '人物资料暂时无法读取，请重试。' })}`; render(state); return { status: 'error', error }; }
   }
-  function deactivate() { active = false; epoch += 1; closeCrop(); operationMenus.deactivate(); unsubscribe?.(); unsubscribe = null; }
+  function deactivate() { active = false; epoch += 1; closeCrop(); operationMenus.deactivate(); renderedState = null; renderedNodes = null; busyControls = []; generationButtons = []; switcherNode = null; unsubscribe?.(); unsubscribe = null; }
   return Object.freeze({ mount, activate, deactivate, render });
 }

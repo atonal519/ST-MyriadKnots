@@ -26,6 +26,19 @@ export function normalizeIdentityProjection(value = {}) {
   return Object.freeze({ identityRedirectsByEntityId: Object.freeze(redirects), deletedEntityIds: Object.freeze(deleted) });
 }
 
+export function reuseIdentityProjection(previous, value) {
+  const normalized = normalizeIdentityProjection(value);
+  if (!previous) return normalized;
+  const previousRedirects = previous.identityRedirectsByEntityId ?? {};
+  const nextRedirects = normalized.identityRedirectsByEntityId;
+  const previousSources = Object.keys(previousRedirects), nextSources = Object.keys(nextRedirects);
+  if (previousSources.length !== nextSources.length || nextSources.some(source => !Object.hasOwn(previousRedirects, source) || previousRedirects[source] !== nextRedirects[source])) return normalized;
+  const previousDeleted = previous.deletedEntityIds ?? [], nextDeleted = normalized.deletedEntityIds;
+  if (previousDeleted.length !== nextDeleted.length) return normalized;
+  const previousDeletedSet = new Set(previousDeleted);
+  return nextDeleted.every(id => previousDeletedSet.has(id)) ? previous : normalized;
+}
+
 export function resolveIdentityEntityId(entityId, projection = {}) {
   if (typeof entityId !== 'string' || !entityId) return entityId ?? null;
   const redirects = projection?.identityRedirectsByEntityId ?? {};

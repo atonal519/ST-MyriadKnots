@@ -205,10 +205,10 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   const sameBodyAttempt = (attempt, fragments, prepared = null) => Array.isArray(attempt?.fragments)
     ? JSON.stringify(attempt.fragments) === JSON.stringify(bodyAttempt(fragments).fragments)
     : prepared && prepared.cutoffFloorId === attempt?.cutoffFloorId && JSON.stringify(prepared.sourceKeys) === JSON.stringify(attempt?.sourceKeys);
-  const manualBlock = (ignoreActive = false) => {
+  const manualBlock = (ignoreActive = false, memory = null, source = null, snapshotProvided = false) => {
     if (!enabled()) return '时间推演已关闭。';
     if (active && !ignoreActive) return active.phase === 'saving' ? '正在保存时间事项。' : '正在整理时间事项。';
-    const source = getReachable(), memory = getMemoryState();
+    if (!snapshotProvided) { memory = getMemoryState(); source = getReachable(); }
     if (['needsReview', 'error'].includes(memory?.memorySyncStatus) || ['needsReview', 'error'].includes(memory?.status)) return '请先同步当前聊天记忆，再整理时间事项。';
     if (!source?.root || !['ready', 'needsReseal'].includes(source.status ?? 'ready') || source.root.chatId !== identity().chatId) return '请等待当前聊天记忆读取就绪。';
     return '';
@@ -253,8 +253,8 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     return { ready: true, removed, sources, pending: changed.length - sources.length, shouldRequest: sources.length > 0,
       request: { task: 'annual-settings', sources: sources.map(({ id, subjectName, field, content }) => ({ sourceId: id, person: subjectName, field, content })) } };
   }
-  const memoryNeedsSync = () => ['syncing', 'needsReview', 'error'].includes(getMemoryState()?.memorySyncStatus)
-    || ['needsReview', 'error'].includes(getMemoryState()?.status);
+  const memoryNeedsSync = memory => ['syncing', 'needsReview', 'error'].includes(memory?.memorySyncStatus)
+    || ['needsReview', 'error'].includes(memory?.status);
   const clearAutomaticFailure = () => {
     if (!last?.automaticFailure) return;
     if (last.reason === 'automatic') { last = null; return; }
@@ -317,10 +317,14 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     statusKey = sourceKey(getReachable()) === itemsKey ? itemsKey : null;
     return trackedItems.length;
   }
+  const getActivityState = (memory = getMemoryState(), source = getReachable()) => {
+    const disabledReason = manualBlock(false, memory, source, true);
+    return Object.freeze({ status: active ? 'running' : enabled() ? memoryNeedsSync(memory) ? 'waiting' : last?.status ?? 'idle' : 'disabled', phase: active?.phase ?? null, active: Boolean(active), last, coverage, clockContentChanged: enabled() && clockContentChanged, progress: active?.progress ?? null, canOrganize: !disabledReason, disabledReason, pendingDeletionCount });
+  };
   const getState = () => {
-    const disabledReason = manualBlock();
-    const canDisplay = enabled() && !memoryNeedsSync() && itemsKey === sourceKey(getReachable());
-    return { status: active ? 'running' : enabled() ? memoryNeedsSync() ? 'waiting' : last?.status ?? 'idle' : 'disabled', phase: active?.phase ?? null, active: Boolean(active), last, coverage, clockContentChanged: enabled() && clockContentChanged, progress: active?.progress ?? null, canOrganize: !disabledReason, disabledReason, pendingDeletionCount, trackedItems: canDisplay ? structuredClone(trackedItems) : null, stoppedItems: canDisplay ? structuredClone(stoppedItems) : null, annualItems: canDisplay ? structuredClone(annualItems) : null };
+    const memory = getMemoryState(), source = getReachable(), activity = getActivityState(memory, source);
+    const canDisplay = enabled() && !memoryNeedsSync(memory) && itemsKey !== null && itemsKey === sourceKey(source);
+    return { ...activity, trackedItems: canDisplay ? structuredClone(trackedItems) : null, stoppedItems: canDisplay ? structuredClone(stoppedItems) : null, annualItems: canDisplay ? structuredClone(annualItems) : null };
   };
   const notify = () => { const state = getState(); for (const listener of subscribers) try { listener(state); } catch { /* UI isolation */ } return state; };
   function invalidate() {
@@ -344,8 +348,9 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; last = { status: 'waiting', message: '等待当前聊天记忆读取。' }; return notify();
     }
     const bodyKey = sourceKey(source);
-    if (['needsReview', 'error'].includes(getMemoryState()?.memorySyncStatus) || ['needsReview', 'error'].includes(getMemoryState()?.status)) { trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; last = { status: 'waiting', message: '请先同步当前聊天记忆。' }; return notify(); }
-    if (getMemoryState()?.memorySyncStatus === 'syncing') {
+    const memory = getMemoryState();
+    if (['needsReview', 'error'].includes(memory?.memorySyncStatus) || ['needsReview', 'error'].includes(memory?.status)) { trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; last = { status: 'waiting', message: '请先同步当前聊天记忆。' }; return notify(); }
+    if (memory?.memorySyncStatus === 'syncing') {
       if (itemsKey !== bodyKey) { trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; }
       return notify();
     }
@@ -358,7 +363,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     read.promise = (async () => {
       try {
         const stored = await store.read(chatId);
-        if (token !== epoch || !enabled() || active || identity().chatId !== chatId || sourceKey(getReachable()) !== bodyKey || memoryNeedsSync()) return getState();
+        if (token !== epoch || !enabled() || active || identity().chatId !== chatId || sourceKey(getReachable()) !== bodyKey || memoryNeedsSync(getMemoryState())) return getState();
         pendingDeletionCount = stored.head?.pendingDeletionRecords?.length ?? 0;
         const projected = await bodySource(source), freshAnnual = await annualSnapshot();
         if (token !== epoch || sourceKey(getReachable()) !== bodyKey || freshAnnual.ready !== annual.ready || freshAnnual.fingerprint !== annual.fingerprint) return getState();
@@ -910,6 +915,6 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       .map(item => ({ id: item.id, qianshiRef: { ...item.qianshiRef } }));
   }
   return Object.freeze({ runBatch, prepareHistoryPlan, organize, authorizeHistory, editItem, editItems, deleteItems, refreshStatus, recallProjection, currentStoryContext,
-    getQianshiReferences: () => qianshiReferences === null ? null : structuredClone(qianshiReferences), getQianshiReferencesForChat, getState, invalidate, stop, bind,
+    getQianshiReferences: () => qianshiReferences === null ? null : structuredClone(qianshiReferences), getQianshiReferencesForChat, getActivityState, getState, invalidate, stop, bind,
     subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

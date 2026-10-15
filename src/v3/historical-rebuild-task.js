@@ -170,7 +170,7 @@ export async function runHistoricalRebuildTask({
     store: createTimeStore({ client }), foundationStore: store, hostAdapter, session: targetSession,
     generateTimeTask, storyCalendarProvider: () => storyCalendar, sanitizerOptions,
     storyClockReferenceTags, newUuid, getReachable: () => foundationRuntime.getReachable(),
-    getMemoryState: () => memoryRuntime?.getState?.(), isEnabled: isTimeEvolutionEnabled,
+    getMemoryState: () => memoryRuntime?.getActivityState?.(), isEnabled: isTimeEvolutionEnabled,
   });
   const memoryRuntime = createV3MemoryRuntime({
     storyCalendarProvider: () => storyCalendar, foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask,

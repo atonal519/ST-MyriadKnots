@@ -14,7 +14,7 @@ import { isHostNarratorMessage, selectAssistantMessage, selectUserStabilityAncho
 import { normalizeStoryClockReferenceTags, resolveStoryClock } from '../story-clock.js';
 import { parseJsonOutput } from '../compact-api-client.js';
 import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
-import { buildEntityIdentityDirectory, entitiesThroughFloorIds, normalizeIdentityProjection } from './entity-identity.js';
+import { buildEntityIdentityDirectory, entitiesThroughFloorIds, normalizeIdentityProjection, reuseIdentityProjection } from './entity-identity.js';
 import { matchFloorCandidates } from './floor-binding.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 import { captureFloorVariableReference } from './floor-variable-reference.js';
@@ -338,7 +338,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     foundationRuntime.adoptReachable?.(value);
   }, onFailureHint: (value, floorId, failure) => failure ? rememberCseFloorFailure(value, failure) : clearCseFloorFailure(floorId, value), now, newUuid, logger });
   const setIdentityProjection = value => {
-    identityProjection = normalizeIdentityProjection(value);
+    const next = reuseIdentityProjection(identityProjection, value);
+    if (next === identityProjection) return identityProjection;
+    identityProjection = next;
     cseRuntime.setIdentityProjection?.(identityProjection);
     return identityProjection;
   };
@@ -724,6 +726,28 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     completedFloorIds: plan.targets.slice(0, completedCount).map(target => target.floorId),
     status: completedCount >= plan.targets.length ? 'completed' : 'active',
   });
+  const projectActivityState = (foundation, cse, stableCount) => {
+    // Keep the auto batch lock visible while its child extraction or CSE phase drains.
+    const workPhase = workRun?.kind === 'auto' && !active
+      ? (cse.activeCse ? 'analyzingCse' : workRun.phase === 'extracting' ? 'syncing' : workRun.phase) : workRun?.phase;
+    return Object.freeze({
+      status: workRun || active || cse.activeCse ? 'running' : foundation.status,
+      chatId: foundation.chatId,
+      memorySnapshotStatus,
+      memorySyncStatus,
+      memorySyncError,
+      stableCount,
+      memoryWorkBusy: workRun !== null,
+      activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workPhase, floorIds: Object.freeze([...workRun.floorIds]) }) : null,
+      activeExtraction: active ? Object.freeze({ floorId: active.floorId, floorIds: Object.freeze([...(active.floorIds ?? [active.floorId])].filter(Boolean)), runId: active.runId, phase: active.phase }) : null,
+      activeCse: cse.activeCse ?? null,
+      activeAutoMemory: workRun?.kind === 'auto' ? Object.freeze({ reason: workRun.reason, phase: workPhase, mode: workRun.mode ?? 'realtime', aggregateHistorical: workRun.aggregateHistorical === true, cseBlocked: workRun.cseBlocked === true, floorIds: Object.freeze([...workRun.floorIds]) }) : null,
+      qianshiHistoryActive: qianshiHistoryRun !== null,
+    });
+  };
+  function getActivityState() {
+    return projectActivityState(foundationRuntime.getState(), cseRuntime.getActivityState(), migrationPartition(reachable).liveFloors.length);
+  }
   function getState(cseSnapshot = null) {
     const foundation = foundationRuntime.getState();
     const memoryMap = currentMemoryMap(reachable);
@@ -788,10 +812,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               : coverage.status === 'historicalDebt' ? 'pendingRebuild' : 'notReady';
     const savedAutomation = failureScopeMatches(reachable?.root) ? failureScope.automationFailure : null;
     const lastAutomationError = savedAutomation ? Object.freeze({ code: savedAutomation.code, name: savedAutomation.name, message: savedFailureMessage(savedAutomation), phase: savedAutomation.phase, prepareStep: savedAutomation.prepareStep, detail: savedAutomation.detail, location: savedAutomation.location, count: savedAutomation.count, lastFailedAt: savedAutomation.lastFailedAt }) : null;
-    // The batch lock remains active while CSE drains; expose its child phase without changing scheduling.
-    const workPhase = workRun?.kind === 'auto' && !active
-      ? (cse.activeCse ? 'analyzingCse' : workRun.phase === 'extracting' ? 'syncing' : workRun.phase) : workRun?.phase;
-    return Object.freeze({ ...foundation, ...cse, ...(migrationAliases ? { migrationAliases } : {}), status: workRun || active || cse.activeCse ? 'running' : foundation.status, memorySnapshotStatus, memorySyncStatus, memorySyncError, stableCount, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: Math.max(0, stableCount - rememberedCount), failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, floors: Object.freeze(combinedFloors), memoryEntities, memoryPlaceEntities, memoryGroupEntities, memoryWorkBusy: workRun !== null, activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workPhase, floorIds: Object.freeze([...workRun.floorIds]) }) : null, activeExtraction: active ? { floorId: active.floorId, floorIds: Object.freeze([...(active.floorIds ?? [active.floorId])].filter(Boolean)), runId: active.runId, phase: active.phase } : null, qianshiHistoryActive: qianshiHistoryRun !== null, lastExtractorError: lastFailure, lastAutomationError, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: stableCount, rebuildNextAssistantSeq, rebuildHasActionableWork, highFloorHistoricalActive: workRun?.aggregateHistorical === true, cseRebuildStatus: cseRebuildPlan?.status ?? 'idle', cseRebuildCompletedCount: cseRebuildPlan?.nextIndex ?? 0, cseRebuildTotalCount: cseRebuildPlan?.targets.length ?? rememberedCount, cseRebuildNextAssistantSeq: cseRebuildPlan?.targets[cseRebuildPlan.nextIndex]?.assistantSeq ?? null, cseRebuildError: cseRebuildPlan?.error ?? null, activeAutoMemory: workRun?.kind === 'auto' ? Object.freeze({ reason: workRun.reason, phase: workPhase, mode: workRun.mode ?? 'realtime', aggregateHistorical: workRun.aggregateHistorical === true, cseBlocked: workRun.cseBlocked === true, floorIds: Object.freeze([...workRun.floorIds]) }) : null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
+    const activity = projectActivityState(foundation, cse, stableCount);
+    return Object.freeze({ ...foundation, ...cse, ...activity, ...(migrationAliases ? { migrationAliases } : {}), rootRevision: reachable?.rootRevision ?? null, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: Math.max(0, stableCount - rememberedCount), failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, floors: Object.freeze(combinedFloors), memoryEntities, memoryPlaceEntities, memoryGroupEntities, lastExtractorError: lastFailure, lastAutomationError, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: stableCount, rebuildNextAssistantSeq, rebuildHasActionableWork, highFloorHistoricalActive: workRun?.aggregateHistorical === true, cseRebuildStatus: cseRebuildPlan?.status ?? 'idle', cseRebuildCompletedCount: cseRebuildPlan?.nextIndex ?? 0, cseRebuildTotalCount: cseRebuildPlan?.targets.length ?? rememberedCount, cseRebuildNextAssistantSeq: cseRebuildPlan?.targets[cseRebuildPlan.nextIndex]?.assistantSeq ?? null, cseRebuildError: cseRebuildPlan?.error ?? null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
   }
 
   async function refreshCoverage(expectedEpoch = epoch) {
@@ -4141,6 +4163,6 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       return structuredClone({ ...recall, deletedEvents: qianshiDeletedEvents(reachable), candidates: prepared.candidates, candidateStats: prepared.stats,
         currentStoryTime: [storyDate, storyClock].filter(Boolean).join(' ') || null, anchor });
     },
-    prepareQianshiHistory, startQianshiHistory, stopQianshiHistory, prepareQianshiRejudge, startQianshiRejudge, getState: () => getState(),
+    prepareQianshiHistory, startQianshiHistory, stopQianshiHistory, prepareQianshiRejudge, startQianshiRejudge, getActivityState, getState: () => getState(),
     subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

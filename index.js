@@ -194,7 +194,7 @@ const timeRuntime = createTimeRuntime({
   newUuid,
   store: timeStore, foundationStore, hostAdapter, session,
   getReachable: () => foundationRuntime.getReachable(),
-  getMemoryState: () => v3MemoryRuntime.getState(),
+  getMemoryState: () => v3MemoryRuntime.getActivityState(),
   generateTimeTask: taskRouter.generateUtilityTask,
   annualSettingsProvider: () => {
     const reachable = foundationRuntime.getReachable(), state = peopleWorkspaceRuntime?.getState?.();
@@ -317,7 +317,18 @@ peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
   isEnabled: settings.isEnabled,
   isMainGenerationActive: isGenerating,
 });
-peopleWorkspaceRuntime.subscribe?.(state => { if (state?.status === 'ready' && state.chatId === session.identity().chatId) void timeRuntime.runBatch({ chatId: state.chatId }); });
+let previousPeopleTimeState = (() => {
+  const state = peopleWorkspaceRuntime.getState?.();
+  return state ? { chatId: state.chatId, revision: state.revision, people: state.people } : null;
+})();
+peopleWorkspaceRuntime.subscribe?.(state => {
+  if (previousPeopleTimeState && state?.chatId !== previousPeopleTimeState.chatId) previousPeopleTimeState = null;
+  if (state?.status !== 'ready' || state.chatId !== session.identity().chatId) return;
+  if (previousPeopleTimeState?.chatId === state.chatId && previousPeopleTimeState.revision === state.revision
+    && previousPeopleTimeState.people === state.people) return;
+  previousPeopleTimeState = { chatId: state.chatId, revision: state.revision, people: state.people };
+  void timeRuntime.runBatch({ chatId: state.chatId });
+});
 const autoHideController = createAutoHideController({
   hostAdapter,
   memoryRuntime: v3MemoryRuntime,
@@ -397,8 +408,8 @@ const storageManagement = createStorageManagement({
   vectorRuntime: vectorIndex,
   activitySources: [vectorIndex, foundationRuntime, v3RecallRuntime, peopleWorkspaceRuntime, timeRuntime, chatMemoryManagement],
   isBusy: () => {
-    const memory = v3MemoryRuntime.getState(), management = chatMemoryManagement.getState();
-    return Boolean(vectorIndex.getState().active || management.workBusy || management.status === 'deleting' || timeRuntime.getState().active || memory.qianshiHistoryActive);
+    const memory = v3MemoryRuntime.getActivityState(), management = chatMemoryManagement.getState();
+    return Boolean(vectorIndex.getState().active || management.workBusy || management.status === 'deleting' || timeRuntime.getActivityState().active || memory.qianshiHistoryActive);
   },
 });
 const publicMemoryBridgeMount = installPublicMemoryBridge({
@@ -458,8 +469,8 @@ ui = bootstrap({
     if (!normalized) throw new Error('特殊年请填写不含数字的纪年名称，例如启航。');
     const owner = session.identity();
     if (!chatId || owner?.chatId !== chatId || owner.hostChatId && owner.hostChatId !== hostAdapter.snapshot().chatId) throw new Error('当前聊天已变化，请重新设置历法。');
-    const state = v3MemoryRuntime.getState();
-    if (state.memoryWorkBusy || state.activeExtraction || state.activeCse || state.qianshiHistoryActive || timeRuntime.getState().active) throw new Error('请等当前记忆任务完成后再设置历法。');
+    const state = v3MemoryRuntime.getActivityState();
+    if (state.memoryWorkBusy || state.activeExtraction || state.activeCse || state.qianshiHistoryActive || timeRuntime.getActivityState().active) throw new Error('请等当前记忆任务完成后再设置历法。');
     const previous = settings.get().storyCalendars;
     try { settings.update({ storyCalendars: { ...previous, [chatId]: normalized } }, { observeSaveFailure: true }); }
     catch (error) { settings.update({ storyCalendars: previous }); throw error; }

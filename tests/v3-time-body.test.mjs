@@ -19,16 +19,16 @@ function backend() {
 }
 const raw = (i, body='陌生人阿岚的手腕擦伤仍疼痛。') => `<!-- QQJ-start | date=2026-05-${String(i+1).padStart(2,'0')} | weekday=周一 | time=08:00 -->${body}<!-- QQJ-end | date=2026-05-${String(i+1).padStart(2,'0')} | weekday=周一 | time=09:00 -->`;
 async function harness({ count=2, unstable=false, generate=()=>({changes:[]}), sanitizer={}, tags='', annualSettingsProvider=()=>({ready:false}) }={}) {
-  let chatId=CHAT,on=true,calls=0,busy=true,cse=false,sync='idle', counter=0;
+  let chatId=CHAT,on=true,calls=0,busy=true,cse=false,sync='idle', counter=0,memoryReads=0,hostMessageReads=0;
   const chat=[]; for(let i=0;i<count;i++) { chat.push({is_user:false,mes:raw(i)}); if(!unstable||i<count-1) chat.push({is_user:true,mes:'继续'}); }
   const source={status:'ready',root:{chatId:CHAT,narrativeGeneration:'gen',headCheckpointId:'head'},rootRevision:1,floors:[],floorMemories:[],stateDeltas:[],entities:[],capabilities:{}};
   async function seal() { const candidates=await scanAssistantCandidates(chat,{sanitizerOptions:sanitizer,chatId:CHAT}); source.floors=candidates.filter(candidate=>candidate.stabilityProof).map((candidate,i)=>createFloorRecord({candidate,id:`floor-${i+1}`,chatId:CHAT,narrativeGeneration:'gen'})); }
-  await seal(); const back=backend(),store=createTimeStore(back),hostAdapter={snapshot:()=>({chat,chatId:'host',context:{chatMetadata:{qianqianjie:{chatId}}}})};
+  await seal(); const back=backend(),store=createTimeStore(back),hostAdapter={snapshot:()=>({chat:chat.map(message=>new Proxy(message,{get(target,key,receiver){if(key==='mes')hostMessageReads++;return Reflect.get(target,key,receiver);}})),chatId:'host',context:{chatMetadata:{qianqianjie:{chatId}}}})};
   const options={store,hostAdapter,newUuid:()=>`test-${++counter}`,foundationStore:{readRoot:async()=>({data:source.root})},session:{identity:()=>({chatId,hostChatId:'host'})},
-    getReachable:()=>source,getMemoryState:()=>({memoryWorkBusy:busy,activeCse:cse?{}:null,memorySyncStatus:sync}),sanitizerOptions:()=>sanitizer,storyClockReferenceTags:()=>tags,isEnabled:()=>on,annualSettingsProvider,logger:{warn(){}},
+    getReachable:()=>source,getMemoryState:()=>{memoryReads++;return {memoryWorkBusy:busy,activeCse:cse?{}:null,memorySyncStatus:sync};},sanitizerOptions:()=>sanitizer,storyClockReferenceTags:()=>tags,isEnabled:()=>on,annualSettingsProvider,logger:{warn(){}},
     generateTimeTask:async task=>{calls++;assert.equal(task.transportBudget.remaining,1);assert.equal(task.transportRetries,0);assert.ok(estimateRecallTokens(task.systemPrompt+task.taskMessages[0].content)<=TIME_INPUT_TOKENS);return generate(JSON.parse(task.taskMessages[0].content),calls,task);}};
   let runtime=createTimeRuntime(options);
-  return {source,chat,store,back,seal,hostAdapter,get runtime(){return runtime;},reload(){runtime=createTimeRuntime(options);return runtime;},calls:()=>calls,setChat:value=>chatId=value,setEnabled:value=>on=value,setSync:value=>sync=value,body:()=>readTimeBody(source,hostAdapter.snapshot(),{sanitizerOptions:sanitizer,storyClockReferenceTags:tags})};
+  return {source,chat,store,back,seal,hostAdapter,get runtime(){return runtime;},reload(){runtime=createTimeRuntime(options);return runtime;},calls:()=>calls,readCounts:()=>({memoryReads,hostMessageReads}),resetReadCounts(){memoryReads=0;hostMessageReads=0;},setChat:value=>chatId=value,setEnabled:value=>on=value,setSync:value=>sync=value,body:()=>readTimeBody(source,hostAdapter.snapshot(),{sanitizerOptions:sanitizer,storyClockReferenceTags:tags})};
 }
 const reviewModel = (request,patch={}) => ({changes:request.trackedItems.map(item=>({itemId:item.id,progression:'截至当前可能仍有轻微不适，未确认恢复。',assessmentReason:'',...patch}))});
 const bodyModel = (request,patch={}) => request.currentReview ? reviewModel(request,patch) : ({changes:[{itemId:null,subjectEntityId:null,subjectName:'阿岚',type:'body',label:'手腕擦伤',observation:'手腕擦伤仍疼痛',occurrenceTime:'昨天',dueTime:'',periodDays:null,status:'active',stateRefs:[],progression:'疼痛可能逐渐减轻，仍待新观察确认',sourceKeys:[request.observations[0].sourceKey],...patch}]});
@@ -38,6 +38,13 @@ const rankedItem = (id,{type='deadline',label=id,observation=label,dueTime='',st
 });
 const rankedSeed = (source,changes,{id='rank-seed',cutoff=source.bodyFloors[0]}={}) => ({schemaVersion:1,chatId:CHAT,id,signature:id,currentTime:cutoff.observationTime,
   cutoffFloorId:cutoff.floorId,cutoffAssistantSeq:cutoff.assistantSeq,sourceKeys:[],dependencies:[],bodyReads:[],changes});
+
+test('时间状态读取只取一次记忆活动状态，未建立事项清单时不扫描宿主正文', async () => {
+  const h = await harness({ count: 2 });
+  h.resetReadCounts();
+  h.runtime.getState();
+  assert.deepEqual(h.readCounts(), { memoryReads: 1, hostMessageReads: 0 }, '状态只需一次活动字段读取，不应枚举聊天正文');
+});
 
 test('刻度关联只接受本次千事候选，省略与坏key保留旧关联，null解链且人工操作不改剧情语义', async () => {
   const observation = { sourceKey:'S1', floorId:'floor-1', assistantSeq:1, canonicalFingerprint:'body-1', timeSourceFingerprint:'time-1',

@@ -147,6 +147,7 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
   };
   const memoryRuntime = {
     getState: () => memoryState,
+    getActivityState: () => memoryState,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };
   const manager = createStorageManagement({

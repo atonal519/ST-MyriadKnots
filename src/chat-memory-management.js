@@ -87,7 +87,7 @@ export function createChatMemoryManagement({
     return snapshot;
   };
   function busy() {
-    const memory = memoryRuntime?.getState?.() ?? {};
+    const memory = memoryRuntime?.getActivityState?.() ?? {};
     const foundation = foundationRuntime?.getState?.() ?? {};
     const recall = recallRuntime?.getState?.() ?? {};
     const people = peopleRuntime?.getState?.() ?? {};
