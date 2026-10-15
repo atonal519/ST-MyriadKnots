@@ -16,6 +16,7 @@ import { createCompactApiClient } from '../src/compact-api-client.js';
 import { createTaskRouter } from '../src/api-routing.js';
 import { projectCseStateIdentityReferences } from '../src/v3/entity-identity.js';
 import { createCseRuntime, selectUserAdaptiveHistory } from '../src/v3/cse-runtime.js';
+import { createMigrationDescriptor } from '../src/v3/migration-prefix.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GEN = '22222222-2222-4222-8222-222222222222';
@@ -733,6 +734,121 @@ test('原目标CSE在当前视图切换后仍向失败记录回调原图成功�
     assert.equal(callbacks[0].chatId, CHAT, `${outcome} 回调使用原目标图`);
     assert.equal(callbacks[0].floorId, floor.id);
     assert.equal(callbacks[0].failure?.phase ?? null, outcome === 'failure' ? 'retryableError' : null);
+  }
+});
+
+test('CSE dependency snapshot 每次只克隆一次缺省 provenance，保存前重新读取来源', async () => {
+  const cases = [
+    { frozenCount: 8 },
+    { frozenCount: 16 },
+    { frozenCount: 1, emptyMemorySignature: true },
+    { frozenCount: 1, changeSourceBeforeSave: true },
+  ];
+  for (const { frozenCount, emptyMemorySignature = false, changeSourceBeforeSave = false } of cases) {
+    const chat = [];
+    for (let index = 0; index < frozenCount + 1; index += 1) {
+      chat.push(user(`用户发言 ${index + 1}`), assistant(`角色回应 ${index + 1}`));
+    }
+    chat.push(user('下一段对话'));
+    const h = runtimeHarness({ chat, cse: () => ({ jsonData: { noMaterialChange: true } }) });
+    await h.runtime.start();
+    for (let index = 0; index < frozenCount + 1; index += 1) await h.runtime.extractNext();
+    const savedBefore = await h.store.readReachable({ mode: 'runtime' });
+    assert.equal(savedBefore.floors.length, frozenCount + 1);
+    assert.equal(savedBefore.floorMemories.filter(item => item.recordStatus === 'active').length, frozenCount + 1);
+    const targetFloorId = savedBefore.floors.at(-1).id;
+    const previousTargetDelta = savedBefore.stateDeltas.find(item => item.floorId === targetFloorId);
+    assert.ok(previousTargetDelta, '目标楼已有可替换的 CSE delta');
+    const frozenIds = new Set(savedBefore.floors.slice(0, frozenCount).map(floor => floor.id));
+    const migrationDescriptor = createMigrationDescriptor({
+      id: '99999999-2222-4222-8222-222222222222', chatId: CHAT,
+      source: { chatId: '88888888-2222-4222-8222-222222222222', hostChatId: 'prior-host-chat', characterLocator: 'character.png', personaLocator: 'persona.png' },
+      reachable: { ...savedBefore, floors: savedBefore.floors.slice(0, frozenCount) },
+      createdAt: NOW,
+    });
+    assert.equal(migrationDescriptor.frozenFloorIds.length, frozenCount);
+    const descriptor = { ...migrationDescriptor, sourceFloorProvenance: [], summarySources: [] };
+    const provenance = {};
+    for (let index = 0; index < 14; index += 1) {
+      const floorId = savedBefore.floors[index]?.id ?? `77777777-${String(index + 1).padStart(4, '0')}-4222-8222-222222222222`;
+      provenance[floorId] = { timeEdited: false, storyClockSignature: `synthetic-clock-${index + 1}` };
+    }
+    assert.equal(Object.keys(provenance).length, 14);
+
+    const provenanceObjects = new WeakSet();
+    let snapshotPhase = 'request', requestCount = 0;
+    const cloneCounts = { request: 0, saveRecheck: 0, otherTracked: 0 };
+    const originalStructuredClone = globalThis.structuredClone;
+    const decoratedGraph = async options => {
+      const graph = await h.store.readReachable(options);
+      const floorMemories = graph.floorMemories.map(memory => {
+        if (!frozenIds.has(memory.floorId)) return memory;
+        const copy = { ...memory };
+        if (emptyMemorySignature) copy.sourceStoryClockSignature = '';
+        else delete copy.sourceStoryClockSignature;
+        return copy;
+      });
+      const currentProvenance = { ...provenance };
+      provenanceObjects.add(currentProvenance);
+      return {
+        ...graph,
+        floorMemories,
+        migrationDescriptor: descriptor,
+        run: { ...graph.run, diagnostics: { ...graph.run.diagnostics, floorProvenance: currentProvenance } },
+      };
+    };
+    const cseStore = {
+      async readReachable(options) { return decoratedGraph(options); },
+      putRecord: (...args) => h.store.putRecord(...args),
+      commitRoot: (...args) => h.store.commitRoot(...args),
+      recordKey: (...args) => h.store.recordKey(...args),
+    };
+    const cseRuntime = createCseRuntime({
+      store: cseStore, hostAdapter: h.hostAdapter,
+      generateAnalysisTask: async () => {
+        requestCount += 1;
+        snapshotPhase = 'saveRecheck';
+        if (changeSourceBeforeSave) provenance[savedBefore.floors[0].id].storyClockSignature = 'latest-source-before-save';
+        return { jsonData: { noMaterialChange: true } };
+      },
+      now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} },
+    });
+    await cseRuntime.load(await decoratedGraph({ mode: 'runtime' }));
+    globalThis.structuredClone = function countTrackedProvenance(value, ...args) {
+      if (value && typeof value === 'object' && provenanceObjects.has(value)) {
+        const stack = new Error().stack ?? '';
+        if (stack.includes('floorProvenanceForReachable') && stack.includes('dependencySnapshot')) cloneCounts[snapshotPhase === 'request' ? 'request' : 'saveRecheck'] += 1;
+        else cloneCounts.otherTracked += 1;
+      }
+      return originalStructuredClone(value, ...args);
+    };
+    let state;
+    try {
+      state = await cseRuntime.analyzeFloor(targetFloorId, { replaceExisting: true });
+    } finally {
+      globalThis.structuredClone = originalStructuredClone;
+    }
+    assert.equal(requestCount, 1);
+    const expectedCloneCount = emptyMemorySignature ? 0 : 1;
+    assert.deepEqual(cloneCounts, { request: expectedCloneCount, saveRecheck: expectedCloneCount, otherTracked: 0 },
+      `冻结楼数 ${frozenCount}：每个快照只整理一次缺省来源字典，空字符串签名有效`);
+    const coldRead = await h.store.readReachable({ mode: 'runtime' });
+    assert.equal(coldRead.stateDeltas.length, frozenCount + 1, '分析结果经真实 FoundationStore 保存并冷读');
+    const updatedTargetDelta = coldRead.stateDeltas.find(item => item.floorId === targetFloorId);
+    assert.ok(updatedTargetDelta, '冷读包含更新后的目标楼 delta');
+    if (changeSourceBeforeSave) {
+      assert.equal(state.lastCseError?.phase, 'stale', '保存前来源变化仍使旧请求失效');
+      assert.equal(updatedTargetDelta.id, previousTargetDelta.id, '来源变化后不得替换目标 delta');
+      assert.equal(coldRead.rootRevision, savedBefore.rootRevision, '来源变化后不得提交新 root');
+      assert.equal(coldRead.root.headCheckpointId, savedBefore.root.headCheckpointId, '来源变化后不得提交新 checkpoint');
+    } else {
+      assert.equal(state.cseFloors.find(item => item.floorId === targetFloorId).status, 'noChange');
+      assert.notEqual(updatedTargetDelta.id, previousTargetDelta.id, 'replaceExisting 必须持久化一个新的目标楼 delta');
+      assert.ok(coldRead.rootRevision > savedBefore.rootRevision, '目标楼替换必须推进 root revision');
+      assert.notEqual(coldRead.root.headCheckpointId, savedBefore.root.headCheckpointId, '目标楼替换必须提交新的 checkpoint');
+      assert.equal(state.cseFloors.find(item => item.floorId === targetFloorId).deltaId, updatedTargetDelta.id,
+        '运行时状态与独立冷读的目标楼 delta 身份一致');
+    }
   }
 });
 

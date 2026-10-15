@@ -7542,7 +7542,7 @@ async function Do({ store: e, targetIdentity: t, cachedReachable: n = null } = {
 }
 //#endregion
 //#region manifest.json
-var Oo = "0.7.16", ko = "qianqianjie", Ao = "/api/plugins/st-bainiaodata", jo = "qqj-bainiao-v1", Mo = Symbol.for("qqj.bainiao.tt.locks.v1"), No = (e, t) => Object.assign(Error(t), { status: e }), Po = (e) => JSON.parse(JSON.stringify(e)), Fo = (e) => {
+var Oo = "0.7.17", ko = "qianqianjie", Ao = "/api/plugins/st-bainiaodata", jo = "qqj-bainiao-v1", Mo = Symbol.for("qqj.bainiao.tt.locks.v1"), No = (e, t) => Object.assign(Error(t), { status: e }), Po = (e) => JSON.parse(JSON.stringify(e)), Fo = (e) => {
 	if (e?.aborted) throw e.reason ?? new DOMException("Aborted", "AbortError");
 }, Io = new TextEncoder(), Lo = (e) => ({
 	format: "qqj-tt-json-v2",
@@ -37019,17 +37019,23 @@ function fw(e) {
 		content: e.content
 	}))) });
 }
-async function pw(e, t, n, r, i, a = [], o, s = {}) {
-	let c = e?.floors?.findIndex((e) => e.id === t) ?? -1;
-	if (c < 0 || !e?.baseline) return null;
-	let l = e.floors.slice(0, c + 1), u = new Set(l.map((e) => e.id)), d = l.map((t) => (e.floorMemories ?? []).filter((e) => e.floorId === t.id && e.recordStatus === "active").map((e) => e.id).sort()), f = qi({
+async function pw(e, t, n, r, i = [], a, o = {}) {
+	let s = e?.floors?.findIndex((e) => e.id === t) ?? -1;
+	if (s < 0 || !e?.baseline) return null;
+	let c = e.floors.slice(0, s + 1), l = new Set(c.map((e) => e.id)), u = /* @__PURE__ */ new Map(), d = /* @__PURE__ */ new Map();
+	for (let t of e.floorMemories ?? []) {
+		if (t.recordStatus !== "active") continue;
+		let e = u.get(t.floorId) ?? [];
+		e.push(t.id), u.set(t.floorId, e), d.has(t.floorId) || d.set(t.floorId, t);
+	}
+	let f = c.map((e) => [...u.get(e.id) ?? []].sort()), p = null, m = (t) => d.get(t.id)?.sourceStoryClockSignature ?? (p ??= xa(e), p[t.id]?.storyClockSignature ?? ""), h = qi({
 		floors: e.floors,
 		floorMemories: e.floorMemories ?? [],
 		stateDeltas: e.stateDeltas ?? []
-	}), p = new Map(f.map((e) => [e.floorId, e.id])), m = Fr({
+	}), g = new Map(h.map((e) => [e.floorId, e.id])), _ = Fr({
 		entities: n,
-		floorIds: u,
-		identityProjection: s
+		floorIds: l,
+		identityProjection: o
 	}).map((e) => ({
 		entityId: e.entityId,
 		entityType: e.entityType,
@@ -37044,19 +37050,19 @@ async function pw(e, t, n, r, i, a = [], o, s = {}) {
 			id: e.baseline.id,
 			fingerprint: e.baseline.fingerprint
 		},
-		floors: l.map((e) => ({
+		floors: c.map((e) => ({
 			id: e.id,
 			rawFingerprint: e.content.rawFingerprint,
 			canonicalFingerprint: e.content.canonicalFingerprint,
-			storyClockSignature: i(e)
+			storyClockSignature: m(e)
 		})),
-		activeMemoryIds: d,
-		precedingDeltaIds: l.slice(0, -1).map((e) => p.get(e.id) ?? null),
-		targetDeltaId: p.get(t) ?? null,
+		activeMemoryIds: f,
+		precedingDeltaIds: c.slice(0, -1).map((e) => g.get(e.id) ?? null),
+		targetDeltaId: g.get(t) ?? null,
 		previousStateFingerprint: r?.fingerprint ?? null,
-		identityDirectory: m,
-		identityProjection: s,
-		coreUserEditedSubjectEntityIds: [...a].sort()
+		identityDirectory: _,
+		identityProjection: o,
+		coreUserEditedSubjectEntityIds: [...i].sort()
 	};
 }
 var mw = (e, t) => !!(e && t && JSON.stringify(e) === JSON.stringify(t));
@@ -37620,7 +37626,7 @@ function hw({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 			floorMemories: g,
 			stateDeltas: _,
 			now: aw(h)
-		}) : null, y = await R(_, i), x = await pw(a, t.floorId, [...d.values()], v, (e) => uw(a, e.id), y, t.hostAdapter, t.identityProjection);
+		}) : null, y = await R(_, i), x = await pw(a, t.floorId, [...d.values()], v, y, t.hostAdapter, t.identityProjection);
 		if (!mw(t.dependencySnapshot, x)) throw sw("V3_CSE_STALE", "人物状态所依赖的楼层前缀、摘要、前态或身份目录已变化，迟到状态不会写入。");
 		let C = new Map(a.floors.map((e, t) => [e.id, t])), w = qi({
 			floors: a.floors,
@@ -37791,7 +37797,7 @@ function hw({ store: e, hostAdapter: t, generateAnalysisTask: n, isEnabled: r = 
 				descriptionFingerprint: `sha256:${await y(te.userPersona.description)}`,
 				hasDescription: Q
 			} : null;
-			if (D.userCoreExtraction = le, D.dependencySnapshot = await pw(f, v.id, u, M, (e) => uw(f, e.id), Y, D.hostAdapter, D.identityProjection), !D.dependencySnapshot) throw sw("V3_CSE_STALE", "人物状态分析依赖的楼层前缀不可用。");
+			if (D.userCoreExtraction = le, D.dependencySnapshot = await pw(f, v.id, u, M, Y, D.hostAdapter, D.identityProjection), !D.dependencySnapshot) throw sw("V3_CSE_STALE", "人物状态分析依赖的楼层前缀不可用。");
 			let ue = Object.fromEntries(z.map((t) => [t.id, (M?.subjects ?? []).filter((n) => Or(n.subjectEntityId, e) === t.id).filter((e) => [
 				"core",
 				"adaptive",

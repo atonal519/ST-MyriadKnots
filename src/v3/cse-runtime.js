@@ -80,14 +80,28 @@ function currentUserInputFromMemory(memory) {
   return Object.freeze({ messages: Object.freeze(messages.map((message, sourceSnapshotIndex) => Object.freeze({ sourceSnapshotIndex, messageIndex: message.messageIndex, content: message.content }))) });
 }
 
-async function dependencySnapshot(value, floorId, entities, previousState, storyClockSignatureForFloor, coreUserEditedSubjectEntityIds = [], hostAdapter, identityProjection = {}) {
+async function dependencySnapshot(value, floorId, entities, previousState, coreUserEditedSubjectEntityIds = [], hostAdapter, identityProjection = {}) {
   const targetIndex = value?.floors?.findIndex(floor => floor.id === floorId) ?? -1;
   if (targetIndex < 0 || !value?.baseline) return null;
   const floors = value.floors.slice(0, targetIndex + 1);
   const floorIds = new Set(floors.map(floor => floor.id));
-  const activeMemoryIds = floors.map(floor => (value.floorMemories ?? [])
-    .filter(memory => memory.floorId === floor.id && memory.recordStatus === 'active')
-    .map(memory => memory.id).sort());
+  const activeMemoryIdsByFloor = new Map();
+  const firstActiveMemoryByFloor = new Map();
+  for (const memory of value.floorMemories ?? []) {
+    if (memory.recordStatus !== 'active') continue;
+    const ids = activeMemoryIdsByFloor.get(memory.floorId) ?? [];
+    ids.push(memory.id);
+    activeMemoryIdsByFloor.set(memory.floorId, ids);
+    if (!firstActiveMemoryByFloor.has(memory.floorId)) firstActiveMemoryByFloor.set(memory.floorId, memory);
+  }
+  const activeMemoryIds = floors.map(floor => [...(activeMemoryIdsByFloor.get(floor.id) ?? [])].sort());
+  let fallbackProvenance = null;
+  const storyClockSignatureForFloor = floor => {
+    const memorySignature = firstActiveMemoryByFloor.get(floor.id)?.sourceStoryClockSignature;
+    if (memorySignature !== null && memorySignature !== undefined) return memorySignature;
+    fallbackProvenance ??= floorProvenanceForReachable(value);
+    return fallbackProvenance[floor.id]?.storyClockSignature ?? '';
+  };
   const deltas = filterReachableDeltas({ floors: value.floors, floorMemories: value.floorMemories ?? [], stateDeltas: value.stateDeltas ?? [] });
   const deltaByFloor = new Map(deltas.map(delta => [delta.floorId, delta.id]));
   const identityDirectory = buildEntityIdentityDirectory({ entities, floorIds, identityProjection }).map(entry => ({
@@ -506,7 +520,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       ? await replayCurrentState({ chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, baselineId: current.baseline?.id, floors: dependencyPrecedingFloors, floorMemories: dependencyPrecedingMemories, stateDeltas: dependencyPrecedingDeltas, now: nowIso(now) })
       : null;
     const coreUserEditedSubjectEntityIds = await coreUserEditedSubjects(dependencyPrecedingDeltas, targetStore);
-    const currentDependency = await dependencySnapshot(current, operation.floorId, [...dependencyEntitiesById.values()], dependencyPreviousState, currentFloor => archivedStoryClockSignature(current, currentFloor.id), coreUserEditedSubjectEntityIds, operation.hostAdapter, operation.identityProjection);
+    const currentDependency = await dependencySnapshot(current, operation.floorId, [...dependencyEntitiesById.values()], dependencyPreviousState, coreUserEditedSubjectEntityIds, operation.hostAdapter, operation.identityProjection);
     if (!sameDependencySnapshot(operation.dependencySnapshot, currentDependency)) throw errorWith('V3_CSE_STALE', '人物状态所依赖的楼层前缀、摘要、前态或身份目录已变化，迟到状态不会写入。');
 
     const floorOrder = new Map(current.floors.map((item, index) => [item.id, index]));
@@ -632,7 +646,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
         ? { userEntityId, personaLocator, descriptionFingerprint: `sha256:${await sha256(requestSources.userPersona.description)}`, hasDescription: hasPersonaDescription }
         : null;
       operation.userCoreExtraction = userCoreExtraction;
-      operation.dependencySnapshot = await dependencySnapshot(value, floor.id, entities, previousCurrentState, currentFloor => archivedStoryClockSignature(value, currentFloor.id), coreUserEditedSubjectEntityIds, operation.hostAdapter, operation.identityProjection);
+      operation.dependencySnapshot = await dependencySnapshot(value, floor.id, entities, previousCurrentState, coreUserEditedSubjectEntityIds, operation.hostAdapter, operation.identityProjection);
       if (!operation.dependencySnapshot) throw errorWith('V3_CSE_STALE', '人物状态分析依赖的楼层前缀不可用。');
       const identityMemberEntityIdsBySubject = Object.fromEntries(tracked.map(entity => [entity.id, (previousCurrentState?.subjects ?? [])
         .filter(subject => resolveIdentityEntityId(subject.subjectEntityId, identityProjection) === entity.id)
