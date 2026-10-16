@@ -177,6 +177,44 @@ test('批量读取只在health明确声明后POST，保留读取诊断并校验�
   assert.doesNotMatch(JSON.stringify(snapshot), /recordIds|"a"|"b"/);
 });
 
+test('getMany可复用已知能力或未知时走旧GET，默认调用仍协商', async () => {
+  const make = () => {
+    const calls = [];
+    const client = createBackendClient({ baseUrl: 'http://offline.invalid', fetchImpl: async (url, options = {}) => {
+      calls.push({ url, method: options.method ?? 'GET' });
+      if (url.endsWith('/v1/health')) return { ok: true, status: 200, json: async () => ({ ok: true,
+        api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchRead: true } }) };
+      if (url.includes('/v1/record-batch/')) {
+        const { recordIds } = JSON.parse(options.body);
+        return { ok: true, status: 200, json: async () => recordIds.map(recordId => ({ recordId, status: 200,
+          envelope: { recordId, revision: 1, data: { recordId } } })) };
+      }
+      const recordId = decodeURIComponent(new URL(url).pathname.split('/').at(-1));
+      return { ok: true, status: 200, json: async () => ({ recordId, revision: 1, data: { recordId } }) };
+    } });
+    return { client, calls };
+  };
+
+  const cold = make();
+  const oldPath = await cold.client.getMany('chat', ['a', 'b'], { negotiate: false });
+  assert.deepEqual(oldPath.map(item => item.status), [200, 200]);
+  assert.equal(cold.calls.filter(call => call.url.endsWith('/v1/health')).length, 0, '冷能力未读时不额外协商');
+  assert.equal(cold.calls.filter(call => call.method === 'POST').length, 0);
+  assert.equal(cold.calls.filter(call => call.url.includes('/v1/records/')).length, 2);
+
+  const warm = make();
+  await warm.client.health();
+  const batch = await warm.client.getMany('chat', ['a', 'b'], { negotiate: false });
+  assert.deepEqual(batch.map(item => item.status), [200, 200]);
+  assert.equal(warm.calls.filter(call => call.url.endsWith('/v1/health')).length, 1, '已知能力不重复协商');
+  assert.equal(warm.calls.filter(call => call.method === 'POST').length, 1, '已知批读能力仍走原批量路由');
+
+  const ordinary = make();
+  await ordinary.client.getMany('chat', ['a', 'b']);
+  assert.equal(ordinary.calls.filter(call => call.url.endsWith('/v1/health')).length, 1, '默认调用仍按原合同协商');
+  assert.equal(ordinary.calls.filter(call => call.method === 'POST').length, 1);
+});
+
 test('未声明批量能力时迭代旧list且不请求新增路由', async () => {
   const calls = [];
   const client = createBackendClient({ fetchImpl: async (url, options) => {

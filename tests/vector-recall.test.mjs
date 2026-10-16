@@ -1209,6 +1209,87 @@ test('普通分支仅复制有效前缀向量且B查询不泄漏截止楼后内�
   assert.equal(embedCalls, 2, '实际B查询单独调用一次查询embedding');
 });
 
+test('多分片复制复用getMany并并发保存目标分片但保持顺序', async () => {
+  const sourceGraph = await branchVectorFixture('bounded-copy-source', 'bounded-copy-generation', 50);
+  const selected = selectRecallMemories(sourceGraph);
+  const projection = await projectVectorSources(selected.activeMemories, selected.floors, { includeSummaries: false });
+  const source = { status: 'ready', chatId: sourceGraph.root.chatId,
+    narrativeGeneration: sourceGraph.root.narrativeGeneration, rawSources: projection.rawSources };
+  const backend = vectorBackend(), batchCalls = [], targetWriteActive = { value: 0, maximum: 0 };
+  const client = {
+    ...backend.client,
+    async getMany(collection, ids) {
+      batchCalls.push({ collection, ids: [...ids] });
+      return ids.map(id => {
+        const value = backend.records.get(`${collection}/${id}`);
+        return value ? { recordId: id, status: 200, envelope: structuredClone(value) }
+          : { recordId: id, status: 404, error: 'not_found', message: 'Record not found' };
+      });
+    },
+    async put(collection, id, data, revision) {
+      if (collection === 'chat-bounded-copy-target' && id.startsWith(VECTOR_SHARD_PREFIX)) {
+        targetWriteActive.value += 1;
+        targetWriteActive.maximum = Math.max(targetWriteActive.maximum, targetWriteActive.value);
+        await new Promise(resolve => setImmediate(resolve));
+        try { return await backend.client.put(collection, id, data, revision); }
+        finally { targetWriteActive.value -= 1; }
+      }
+      return backend.client.put(collection, id, data, revision);
+    },
+  };
+  const makeIndex = identity => createVectorIndex({ client,
+    api: { embed: async (_config, texts) => vectors(texts) }, configProvider: () => config,
+    identityProvider: () => ({ chatId: identity }), sourceProvider: async () => source });
+  await makeIndex(source.chatId).build();
+  const sourceManifest = backend.records.get(`chat-${source.chatId}/${VECTOR_INDEX_ID}`).data;
+  assert.equal(sourceManifest.chunkCount, 50);
+  assert.equal(sourceManifest.shardIds.length, 4);
+  batchCalls.length = 0;
+  const targetId = 'bounded-copy-target', targetGeneration = 'bounded-copy-target-generation';
+  const copied = await makeIndex(source.chatId).copyPrefix({ chatId: source.chatId }, { chatId: targetId },
+    targetGeneration, sourceGraph);
+  assert.deepEqual(copied, backend.records.get(`chat-${targetId}/${VECTOR_INDEX_ID}`).data.shardIds);
+  assert.ok(batchCalls.some(call => call.collection === `chat-${source.chatId}`), 'source shard reads use existing getMany');
+  assert.ok(batchCalls.some(call => call.collection === `chat-${targetId}`), 'target shard preflight reads use existing getMany');
+  assert.ok(batchCalls.every(call => call.ids.length > 1 && call.ids.length <= 4), 'each multi-shard request is bounded to four IDs');
+  assert.ok(targetWriteActive.maximum > 1 && targetWriteActive.maximum <= 4, 'target shard writes overlap but remain capped at four');
+  const targetManifest = backend.records.get(`chat-${targetId}/${VECTOR_INDEX_ID}`).data;
+  const copiedRows = targetManifest.shardIds.flatMap(id => backend.records.get(`chat-${targetId}/${id}`).data.rows);
+  const sourceRows = sourceManifest.shardIds.flatMap(id => backend.records.get(`chat-${source.chatId}/${id}`).data.rows);
+  assert.deepEqual(copiedRows.map(row => row.witness), sourceRows.map(row => row.witness), 'batching preserves source row order');
+  assert.deepEqual(copiedRows.map(row => row.vector), sourceRows.map(row => row.vector), 'batching preserves each stored vector value');
+  assert.ok(backend.calls.findIndex(call => call.collection === `chat-${targetId}` && call.id === VECTOR_INDEX_ID)
+    > backend.calls.findLastIndex(call => call.collection === `chat-${targetId}` && call.id.startsWith(VECTOR_SHARD_PREFIX)),
+  'manifest publication remains after every target shard write');
+});
+
+test('没有getMany的client仍能复制四分片768维索引并保留见证顺序', async () => {
+  const sourceGraph = await branchVectorFixture('no-batch-copy-source', 'no-batch-copy-generation', 50);
+  const selected = selectRecallMemories(sourceGraph);
+  const projection = await projectVectorSources(selected.activeMemories, selected.floors, { includeSummaries: false });
+  const source = { status: 'ready', chatId: sourceGraph.root.chatId,
+    narrativeGeneration: sourceGraph.root.narrativeGeneration, rawSources: projection.rawSources };
+  const backend = vectorBackend();
+  assert.equal(typeof backend.client.getMany, 'undefined');
+  const api = { embed: async (_config, texts) => texts.map(() => Array(768).fill(0.125)) };
+  const makeIndex = identity => createVectorIndex({ client: backend.client, api, configProvider: () => config,
+    identityProvider: () => ({ chatId: identity }), sourceProvider: async () => source });
+  await makeIndex(source.chatId).build();
+  const sourceManifest = backend.records.get(`chat-${source.chatId}/${VECTOR_INDEX_ID}`).data;
+  assert.equal(sourceManifest.shardIds.length, 4);
+  assert.equal(sourceManifest.dimensions, 768);
+  const targetId = 'no-batch-copy-target', targetGeneration = 'no-batch-copy-target-generation';
+  const copied = await makeIndex(source.chatId).copyPrefix({ chatId: source.chatId }, { chatId: targetId },
+    targetGeneration, sourceGraph);
+  const targetManifest = backend.records.get(`chat-${targetId}/${VECTOR_INDEX_ID}`).data;
+  assert.deepEqual(copied, targetManifest.shardIds);
+  assert.equal(targetManifest.dimensions, 768);
+  const sourceRows = sourceManifest.shardIds.flatMap(id => backend.records.get(`chat-${source.chatId}/${id}`).data.rows);
+  const targetRows = targetManifest.shardIds.flatMap(id => backend.records.get(`chat-${targetId}/${id}`).data.rows);
+  assert.deepEqual(targetRows.map(row => row.witness), sourceRows.map(row => row.witness));
+  assert.deepEqual(targetRows.map(row => row.vector), sourceRows.map(row => row.vector));
+});
+
 test('普通分支发现B已有索引后直接保留，不读改写目标目录', async () => {
   const sourceGraph = await branchVectorFixture();
   const sourceSelected = selectRecallMemories(sourceGraph);

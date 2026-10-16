@@ -6,7 +6,8 @@ import { selectRecallMemories } from './recall-source.js';
 
 export const VECTOR_INDEX_ID = 'qqj-vector-index';
 export const VECTOR_SHARD_PREFIX = 'qqj-vector-shard-';
-const SCHEMA = 1, BATCH = 16, INDEX_LOAD_TIMEOUT_MS = 15000, VECTOR_QUERY_TIMEOUT_MS = 15000;
+// 固定小批次限制复制期间额外在途记录，避免大索引复制放大浏览器负担。
+const SCHEMA = 1, BATCH = 16, COPY_BATCH = 4, INDEX_LOAD_TIMEOUT_MS = 15000, VECTOR_QUERY_TIMEOUT_MS = 15000;
 const hash = async value => `sha256:${await sha256(value)}`;
 const configKey = config => JSON.stringify([config.url, config.model, config.dimensions]);
 const ownerKey = (source, modelKey) => JSON.stringify([source.chatId, source.narrativeGeneration, modelKey]);
@@ -147,6 +148,24 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
     // 新派生记录尚不存在是正常状态；白鳥 GET 的信封不带编号，由请求路径提供。
     try { return { ...await client.get(collection, recordId), recordId }; }
     catch (error) { if (error?.status === 404) return null; throw error; }
+  };
+  const readRecords = async (collection, recordIds) => {
+    if (recordIds.length > 1 && typeof client.getMany === 'function') {
+      const result = await client.getMany(collection, recordIds, { negotiate: false });
+      if (!Array.isArray(result) || result.length !== recordIds.length) throw new Error('后端批量读取结果无效');
+      return result.map((item, index) => {
+        const recordId = recordIds[index];
+        if (!item || item.recordId !== recordId) throw new Error('后端批量读取结果无效');
+        if (item.status === 404) return null;
+        if (item.status === 200 && item.envelope && typeof item.envelope === 'object') return { ...item.envelope, recordId };
+        const error = new Error('后端批量读取失败');
+        if (Number.isSafeInteger(item.status)) error.status = item.status;
+        throw error;
+      });
+    }
+    const records = [];
+    for (const recordId of recordIds) records.push(await readRecord(collection, recordId));
+    return records;
   };
   async function batchWitnesses(source, modelKey, batch, reusable = null) {
     const witnesses = [];
@@ -451,36 +470,52 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
       : { ...source, chatId: targetIdentity.chatId, narrativeGeneration: targetNarrativeGeneration };
     const witnessSource = branchPrefix ? target : source;
     const rows = [], seen = new Set();
-    for (const id of sourceManifest.data.shardIds) {
-      const shard = await readRecord(sourceCollection, id);
-      if (!shard || !vectorRecordOwned(shard) || shard.data.modelKey !== modelKey
-        || ownerKey(shard.data, modelKey) !== ownerKey(source, modelKey)) return Object.freeze([]);
-      for (const row of shard.data.rows) {
-        if (!rawWitnessShape(row.witness) || !await rawWitnessValid(row.witness, witnessSource)
-          || seen.has(rawChunkKey(row.witness))) continue;
-        try { decodeVector(row.vector, sourceManifest.data.dimensions); } catch { continue; }
-        seen.add(rawChunkKey(row.witness));
-        rows.push(row);
+    for (let start = 0; start < sourceManifest.data.shardIds.length; start += COPY_BATCH) {
+      const ids = sourceManifest.data.shardIds.slice(start, start + COPY_BATCH);
+      const shards = await readRecords(sourceCollection, ids);
+      for (const shard of shards) {
+        if (!shard || !vectorRecordOwned(shard) || shard.data.modelKey !== modelKey
+          || ownerKey(shard.data, modelKey) !== ownerKey(source, modelKey)) return Object.freeze([]);
+        for (const row of shard.data.rows) {
+          if (!rawWitnessShape(row.witness) || !await rawWitnessValid(row.witness, witnessSource)
+            || seen.has(rawChunkKey(row.witness))) continue;
+          try { decodeVector(row.vector, sourceManifest.data.dimensions); } catch { continue; }
+          seen.add(rawChunkKey(row.witness));
+          rows.push(row);
+        }
       }
     }
     if (!rows.length) return Object.freeze([]);
     const shardIds = [];
-    for (let start = 0; start < rows.length; start += BATCH) {
-      const batch = rows.slice(start, start + BATCH);
-      const copiedRows = batch.map(row => ({ ...row, witness: orderedRawWitness(row.witness) }));
-      const witnesses = copiedRows.map(row => row.witness);
-      const id = `${VECTOR_SHARD_PREFIX}${(await sha256(JSON.stringify([targetNarrativeGeneration, modelKey, witnesses]))).slice(0, 40)}`;
-      const savedShard = await readRecord(targetCollection, id);
-      if (!await validSavedBatch(savedShard, target, modelKey, copiedRows, witnesses, id, sourceManifest.data.dimensions)) {
-        if (savedShard) return Object.freeze([]);
-        try { await client.put(targetCollection, id, { schemaVersion: SCHEMA, recordType: 'vectorCache',
-          chatId: targetIdentity.chatId, narrativeGeneration: targetNarrativeGeneration, modelKey, rows: copiedRows }, 0); }
-        catch {
-          const persisted = await readRecord(targetCollection, id);
-          if (!await validSavedBatch(persisted, target, modelKey, copiedRows, witnesses, id, sourceManifest.data.dimensions)) return Object.freeze([]);
-        }
+    for (let start = 0; start < rows.length; start += BATCH * COPY_BATCH) {
+      const work = [];
+      for (let offset = start; offset < Math.min(rows.length, start + BATCH * COPY_BATCH); offset += BATCH) {
+        const copiedRows = rows.slice(offset, offset + BATCH).map(row => ({ ...row, witness: orderedRawWitness(row.witness) }));
+        const witnesses = copiedRows.map(row => row.witness);
+        const id = `${VECTOR_SHARD_PREFIX}${(await sha256(JSON.stringify([targetNarrativeGeneration, modelKey, witnesses]))).slice(0, 40)}`;
+        work.push({ id, copiedRows, witnesses });
       }
-      shardIds.push(id);
+      const saved = await readRecords(targetCollection, work.map(item => item.id));
+      const pending = [];
+      for (let index = 0; index < work.length; index += 1) {
+        const item = work[index], savedShard = saved[index];
+        if (await validSavedBatch(savedShard, target, modelKey, item.copiedRows, item.witnesses, item.id, sourceManifest.data.dimensions)) continue;
+        if (savedShard) return Object.freeze([]);
+        pending.push(item);
+      }
+      const written = await Promise.all(pending.map(async item => {
+        try {
+          await client.put(targetCollection, item.id, { schemaVersion: SCHEMA, recordType: 'vectorCache',
+            chatId: targetIdentity.chatId, narrativeGeneration: targetNarrativeGeneration, modelKey, rows: item.copiedRows }, 0);
+          return true;
+        } catch {
+          const persisted = await readRecord(targetCollection, item.id);
+          return Boolean(await validSavedBatch(persisted, target, modelKey, item.copiedRows, item.witnesses,
+            item.id, sourceManifest.data.dimensions));
+        }
+      }));
+      if (written.some(value => !value)) return Object.freeze([]);
+      shardIds.push(...work.map(item => item.id));
     }
     const manifest = { schemaVersion: SCHEMA, recordType: 'vectorCache',
       chatId: targetIdentity.chatId, narrativeGeneration: targetNarrativeGeneration, modelKey,

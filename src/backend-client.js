@@ -187,9 +187,9 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
     },
     async list(collection, { signal } = {}) { return request(collectionKey(collection), { signal }, { method: 'GET', recordType: 'collection' }, listTimeoutMs); },
     async get(collection, recordId, { signal } = {}) { return request(key(collection, recordId), { signal }, { method: 'GET', recordType: recordTypeFromId(recordId) }); },
-    async getMany(collection, recordIds, { signal } = {}) {
+    async getMany(collection, recordIds, { signal, negotiate = true } = {}) {
       if (!Array.isArray(recordIds) || recordIds.length < 1 || recordIds.length > 64 || recordIds.some(id => typeof id !== 'string')) throw new TypeError('recordIds must contain 1..64 strings');
-      await negotiateCapabilities(signal);
+      if (negotiate) await negotiateCapabilities(signal);
       if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
       if (capabilities?.recordBatchRead) {
         const body = await request(recordBatchKey(collection), { method: 'POST', body: JSON.stringify({ recordIds }), signal }, { method: 'POST', recordType: 'collection' });
