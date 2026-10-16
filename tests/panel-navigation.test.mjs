@@ -12,11 +12,11 @@ class Node {
   constructor(tag = 'div') {
     createdNodes += 1;
     this.tag = tag; this.children = []; this.listeners = {}; this.hidden = false; this.scrollTop = 0; this.dataset = {}; this.className = ''; this.textContent = '';
-    this.attributes = {}; this.style = { setProperty() {} };
+    this.attributes = {}; this.style = { setProperty() {} }; this.replaceCount = 0; this.nonEmptyReplaceCount = 0;
     this.classList = { toggle: (name, enabled) => { this.dataset[`class_${name}`] = Boolean(enabled); } };
   }
   append(...nodes) { this.children.push(...nodes); }
-  replaceChildren(...nodes) { this.children = [...nodes]; }
+  replaceChildren(...nodes) { this.replaceCount += 1; if (nodes.length) this.nonEmptyReplaceCount += 1; this.children = [...nodes]; }
   addEventListener(name, handler) { (this.listeners[name] ??= []).push(handler); }
   fire(name, event = {}) { let result; for (const handler of this.listeners[name] ?? []) result = handler(event); return result; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
@@ -131,7 +131,8 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.equal(diagnostics.starts, 1); assert.match(root.innerHTML, /\.body\{[^}]*touch-action:pan-y/);
   assert.deepEqual(JSON.parse(panel.getUiDiagnostic()).records, diagnostics.records);
   assert.ok(calls.some(([kind]) => kind === 'profiles-activate'));
-  body.scrollTop = 31; eventTab.fire('click');
+  body.scrollTop = 31; const firstMemoryRender = view.nonEmptyReplaceCount; eventTab.fire('click'); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(view.nonEmptyReplaceCount - firstMemoryRender, 1, '实际 createPanel 首次进入千结只构建一次');
   assert.equal(body.scrollTop, 0); assert.deepEqual(calls.filter(([kind]) => kind === 'page').at(-1), ['page', 'memories']);
   body.scrollTop = 71; peopleTab.fire('click');
   assert.equal(body.scrollTop, 0); assert.deepEqual(calls.at(-1), ['page', 'people']);
@@ -336,7 +337,8 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.equal(body.scrollTop, 71, '回到千结时恢复千结滚动位置');
   qianshiTab.fire('click'); body.scrollTop = 57;
   assert.ok(calls.some(([kind]) => kind === 'qianshi-activate'), '千事必须挂载独立时间线视图');
-  eventTab.fire('click');
+  const returningMemoryRender = view.nonEmptyReplaceCount; eventTab.fire('click'); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(view.nonEmptyReplaceCount - returningMemoryRender, 1, '实际 createPanel 从千事返回千结只构建一次');
   assert.equal(body.scrollTop, 71, '从千事返回千结仍恢复千结滚动位置');
   profileTab.fire('click');
   assert.equal(body.scrollTop, 31, '回到千人时恢复千人滚动位置');

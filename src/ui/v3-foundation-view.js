@@ -269,6 +269,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   let syncingChatId = null;
   let recentItemsOpen = false, recentItemsUi = null, showStoppedItems = false, recentItemDraft = null, recentBatchMode = false;
   let memorySearchQuery = '', cseSearchQuery = '';
+  let memoryListPage = 0;
   const selectedRecentItems = new Map();
   let relationSwitcherNode = null, relationSwitcherSignature = null, relationSwitcherChatId = chatId, relationSwitcherScrollLeft = 0;
   let renderedMemoryInputs = null, memoryWorkControls = [], memorySyncControls = [];
@@ -328,7 +329,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (chatId !== null) { prequelDraft = null; prequelFeedback = ''; }
     chatId = nextChatId;
     for (const [key, draft] of drafts) if (!draft.saving) drafts.delete(key);
-    cseDrafts.clear(); openState.clear(); recentItemsOpen = false; recentItemsUi = null; memorySearchQuery = ''; cseSearchQuery = ''; peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; feedback = ''; refreshFeedback = null;
+    cseDrafts.clear(); openState.clear(); recentItemsOpen = false; recentItemsUi = null; memorySearchQuery = ''; memoryListPage = 0; cseSearchQuery = ''; peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; feedback = ''; refreshFeedback = null;
     return true;
   };
   const sourceChanged = (previous, next) => (previous?.chatId ?? null) !== (next?.chatId ?? null);
@@ -1091,6 +1092,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const pageNode = element('section', 'qqj-page qqj-memories-page');
     pageNode.append(pageStatus(state));
     const list = element('div', 'v3-memory-list');
+    const pageSize = 50;
     const memoryRowsFor = currentState => {
       const floors = [...(currentState.floors ?? [])];
       const registeredMessageIndexes = new Set(floors.filter(floor => floor.frozen !== true).map(floor => floor.messageIndex).filter(validMessageIndex));
@@ -1133,29 +1135,63 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       forgetMemoryRows();
       list.replaceChildren();
       const query = memorySearchQuery.trim();
+      const appendPagination = total => {
+        const pageCount = Math.ceil(total / pageSize);
+        memoryListPage = Math.min(memoryListPage, Math.max(0, pageCount - 1));
+        if (pageCount <= 1) return;
+        const nav = element('nav', 'qqj-memory-pagination');
+        nav.setAttribute('aria-label', query ? '摘要搜索结果页码' : '摘要页码');
+        const previous = element('button', 'secondary-action qqj-memory-page-button', '上一页');
+        previous.type = 'button'; previous.disabled = memoryListPage === 0;
+        previous.addEventListener('click', () => { if (memoryListPage > 0) { memoryListPage -= 1; fillList(); } });
+        const status = element('span', 'qqj-memory-page-status', `第 ${memoryListPage + 1} / ${pageCount} 页 · 共 ${total} 条`);
+        const input = element('input', 'settings-input qqj-memory-page-input');
+        input.type = 'number'; input.min = '1'; input.max = String(pageCount); input.step = '1'; input.value = String(memoryListPage + 1);
+        input.setAttribute('aria-label', '跳转到摘要页');
+        const go = element('button', 'secondary-action qqj-memory-page-button', '跳转'); go.type = 'button';
+        const jump = () => {
+          const requested = Number(input.value);
+          if (!Number.isInteger(requested) || requested < 1 || requested > pageCount) { input.value = String(memoryListPage + 1); return; }
+          memoryListPage = requested - 1; fillList();
+        };
+        go.addEventListener('click', jump);
+        input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); jump(); } });
+        const next = element('button', 'secondary-action qqj-memory-page-button', '下一页');
+        next.type = 'button'; next.disabled = memoryListPage + 1 >= pageCount;
+        next.addEventListener('click', () => { if (memoryListPage + 1 < pageCount) { memoryListPage += 1; fillList(); } });
+        nav.append(previous, status, input, go, next); list.append(nav);
+      };
       if (query) {
         const matches = floors.filter(floor => floor.memoryId && plainSearchIncludes(floor.summary, query))
           .sort((left, right) => (right.assistantSeq ?? right.messageIndex ?? 0) - (left.assistantSeq ?? left.messageIndex ?? 0));
         list.append(element('p', 'qqj-search-count', `在全部摘要中找到 ${matches.length} 条结果`));
-        for (const floor of matches) {
+        appendPagination(matches.length);
+        for (const floor of matches.slice(memoryListPage * pageSize, (memoryListPage + 1) * pageSize)) {
           const result = element('article', 'qqj-history-search-result');
           const titleCopy = memoryFloorTitle(currentState, floor), title = element('div', 'qqj-history-search-title qqj-memory-search-title');
           const titleNode = element('strong', '', titleCopy); titleNode.setAttribute('title', titleCopy); title.append(titleNode);
           if (floor.frozen) title.append(element('span', 'v3-memory-status', '来源归档 · 只读'));
           result.append(title, element('p', 'qqj-history-search-snippet', searchSnippet(floor.summary, query)));
           result.setAttribute('role', 'button'); result.setAttribute('tabindex', '0'); result.setAttribute('aria-label', `打开${titleCopy}${floor.frozen ? '（来源归档，只读）' : ''}完整摘要`);
-          const openResult = () => { memorySearchQuery = ''; memorySearch.children[0].value = ''; memorySearch.children[1].hidden = true; openState.set(`memory:${currentState.chatId ?? 'no-chat'}:${floor.floorId}`, true); fillList(); list.querySelector?.(`[data-qqj-floor-id="${floor.floorId}"]`)?.scrollIntoView?.({ block: 'nearest' }); };
+          const openResult = () => {
+            memorySearchQuery = ''; memorySearch.children[0].value = ''; memorySearch.children[1].hidden = true;
+            const rowIndex = rows.findIndex(row => row.kind === 'registered' && row.value.floorId === floor.floorId);
+            if (rowIndex >= 0) memoryListPage = Math.floor(rowIndex / pageSize);
+            openState.set(`memory:${currentState.chatId ?? 'no-chat'}:${floor.floorId}`, true);
+            fillList(); list.querySelector?.(`[data-qqj-floor-id="${floor.floorId}"]`)?.scrollIntoView?.({ block: 'nearest' });
+          };
           result.addEventListener('click', openResult); result.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openResult(); } });
           list.append(result);
         }
         if (!matches.length) list.append(element('div', 'qqj-inline-empty', '没有包含该文字的摘要。'));
         return;
       }
-      for (const row of rows) list.append(row.kind === 'registered' ? renderMemoryFloor(row.value, currentState) : renderWaitingMemoryFloor(row.value, currentState));
+      appendPagination(rows.length);
+      for (const row of rows.slice(memoryListPage * pageSize, (memoryListPage + 1) * pageSize)) list.append(row.kind === 'registered' ? renderMemoryFloor(row.value, currentState) : renderWaitingMemoryFloor(row.value, currentState));
       if (!rows.length) list.append(element('div', 'qqj-inline-empty', '这里还没有已保存摘要。最新 AI 楼将在下一条用户消息发出后开始摘要。'));
       updateMemoryFloorStatuses(currentState);
     };
-    const memorySearch = searchControl({ value: memorySearchQuery, placeholder: '搜索全部摘要', ariaLabel: '搜索当前聊天的全部摘要', onInput: value => { memorySearchQuery = value; fillList(); }, onClear: () => { memorySearchQuery = ''; fillList(); } });
+    const memorySearch = searchControl({ value: memorySearchQuery, placeholder: '搜索全部摘要', ariaLabel: '搜索当前聊天的全部摘要', onInput: value => { memorySearchQuery = value; memoryListPage = 0; fillList(); }, onClear: () => { memorySearchQuery = ''; memoryListPage = 0; fillList(); } });
     memorySyncControls.push(memorySearch.children[0], memorySearch.children[1]);
     if (timeRuntime) pageNode.append(renderRecentItems(memorySearch));
     else { const toolbar = element('section', 'qqj-profile-toolbar'), actions = element('div', 'qqj-profile-toolbar-actions qqj-memory-toolbar'); actions.append(memorySearch); toolbar.append(actions); pageNode.append(toolbar); }
@@ -1916,7 +1952,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const finishedSyncing = Boolean(syncingChatId && syncingChatId === (snapshot?.chatId ?? null));
     syncingChatId = null;
     const { state, mustReplace } = adoptFoundationState(snapshot);
-    if (page === 'memories' && (drafts.size || recentItemDraft) && !mustReplace) {
+    const hasVisibleMemoryDraft = [...drafts.values()].some(draft => memoryCardStatusViews.has(draft.floorId));
+    if (page === 'memories' && (hasVisibleMemoryDraft || recentItemDraft) && !mustReplace) {
       const sameInputs = !finishedSyncing && sameMemoryInputs(renderedMemoryInputs, state);
       if (!sameInputs) renderedMemoryInputs = captureMemoryInputs(state);
       for (const draft of drafts.values()) for (const control of draft.controls ?? []) control.disabled = draft.saving === true || workBusy(state);
@@ -1969,7 +2006,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (receiptOutcome.status === 'rejected') receiptFeedback = `历史召回回执恢复失败：${publicErrorMessage(receiptOutcome.reason, { fallback: '回执读取失败。' })}；不影响记忆读取。`;
     const peopleFeedback = peopleOutcome.status === 'rejected' ? `重要人物选择读取失败：${publicErrorMessage(peopleOutcome.reason, { fallback: '人物选择暂时无法读取。' })}；人物状态仍可查看。` : '';
     if (foundationOutcome.status === 'rejected') { feedback = `记忆读取失败：${publicErrorMessage(foundationOutcome.reason, { fallback: '后端数据暂时无法读取。' })}；历史召回回执已独立处理。`; const result = runtime.getState(); render(result); return { status: 'error', error: foundationOutcome.reason }; }
-    const result = foundationOutcome.value; feedback = peopleFeedback || (result?.status === 'ready' ? '记忆状态已刷新。' : statusCopy(result?.status)); render(result); return result;
+    const result = foundationOutcome.value; feedback = peopleFeedback || (result?.status === 'ready' ? '记忆状态已刷新。' : statusCopy(result?.status));
+    if (page === 'memories') receiveFoundation(result); else render(result);
+    return result;
   }
   function deactivate() {
     active = false; epoch += 1; operationMenus.deactivate(); stopSubscription();
@@ -1978,6 +2017,6 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     for (const draft of drafts.values()) draft.controls = [];
     healthNode = null; pageFeedbackNode = null; managementFeedbackNode = null; relationSwitcherNode = null; recentItemsUi = null;
   }
-  function setPage(next) { if (!['memories', 'people', 'management'].includes(next)) throw new TypeError('V3 view page 无效'); page = next; if (active && container) render(foundationState); }
+  function setPage(next) { if (!['memories', 'people', 'management'].includes(next)) throw new TypeError('V3 view page 无效'); if (page === next) return; page = next; if (active && container) render(foundationState); }
   return Object.freeze({ mount, activate, deactivate, render, setPage, getPage: () => page });
 }

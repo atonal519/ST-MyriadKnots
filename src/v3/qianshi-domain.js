@@ -129,6 +129,48 @@ function willCreateCycle(graph, source, target) {
   return false;
 }
 
+function reachesAny(graph, starts, targets) {
+  const visited = new Set(starts), stack = [...starts];
+  while (stack.length) {
+    const node = stack.pop();
+    if (targets.has(node)) return true;
+    graph.forEachOutNeighbor(node, neighbor => {
+      if (visited.has(neighbor)) return;
+      visited.add(neighbor);
+      stack.push(neighbor);
+    });
+  }
+  return false;
+}
+
+function fifoOrderWithTimeBoundaries(graph) {
+  const incoming = new Map(graph.nodes().map(id => [id, graph.inDegree(id)]));
+  const ready = [];
+  const enqueue = id => {
+    if (graph.getNodeAttribute(id, 'kind') === 'time-boundary') {
+      for (const next of graph.outNeighbors(id)) {
+        const degree = incoming.get(next) - 1;
+        incoming.set(next, degree);
+        if (degree === 0) enqueue(next);
+      }
+      return;
+    }
+    ready.push(id);
+  };
+  for (const [id, degree] of incoming) if (degree === 0) enqueue(id);
+  const ordered = [];
+  for (let index = 0; index < ready.length; index += 1) {
+    const id = ready[index];
+    ordered.push(graph.getNodeAttribute(id, 'value')?.id);
+    for (const next of graph.outNeighbors(id)) {
+      const degree = incoming.get(next) - 1;
+      incoming.set(next, degree);
+      if (degree === 0) enqueue(next);
+    }
+  }
+  return ordered.filter(Boolean);
+}
+
 const projectQianshiTime = (value, anchor = null, calendar = anchor?.calendar ?? null) => projectTime(value, anchor, { allowShortGregorianYear: true, calendar });
 const GREGORIAN_MONTH_DAYS = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
@@ -422,7 +464,11 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
   const timedGroups = new Map();
   for (const event of events) {
     const key = timeGroup(event.parsedStoryTime);
-    if (key) timedGroups.set(key, [...(timedGroups.get(key) ?? []), event]);
+    if (key) {
+      const group = timedGroups.get(key);
+      if (group) group.push(event);
+      else timedGroups.set(key, [event]);
+    }
   }
   const sameTimedDate = (left, right) => {
     if (Number.isInteger(left?.day) && Number.isInteger(right?.day)) return left.day === right.day;
@@ -433,6 +479,7 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
       && left.weekOrdinal === right.weekOrdinal && left.weekday === right.weekday;
     return false;
   };
+  let timeBoundaryIndex = 0;
   for (const values of timedGroups.values()) {
     const sortableTime = value => Number.isInteger(value?.day) ? value.day : Number.isInteger(value?.calendarOrdinal) ? value.calendarOrdinal
       : Number.isInteger(value?.month) && Number.isInteger(value?.monthDay) && !value?.monthIdentity
@@ -453,6 +500,22 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
     for (let index = 1; index < timeBuckets.length; index += 1) {
       const earlier = timeBuckets[index - 1], later = timeBuckets[index];
       if (!comparableBefore(earlier[0].parsedStoryTime, later[0].parsedStoryTime)) continue;
+      const earlierNodes = earlier.map(event => eventNode(event.id)), laterNodes = later.map(event => eventNode(event.id));
+      const earlierSet = new Set(earlierNodes);
+      const laterSet = new Set(laterNodes);
+      const pairCount = earlier.length * later.length;
+      let hasExistingPair = false;
+      for (const from of earlierNodes) {
+        orderGraph.forEachOutNeighbor(from, to => { if (laterSet.has(to)) hasExistingPair = true; });
+        if (hasExistingPair) break;
+      }
+      if (pairCount > earlier.length + later.length && !hasExistingPair && !reachesAny(orderGraph, laterNodes, earlierSet)) {
+        const boundary = `time-boundary:${timeBoundaryIndex++}`;
+        orderGraph.addNode(boundary, { kind: 'time-boundary' });
+        for (const from of earlierNodes) orderGraph.addDirectedEdge(from, boundary, { relationId: null, inferredFromExplicitTime: true });
+        for (const to of laterNodes) orderGraph.addDirectedEdge(boundary, to, { relationId: null, inferredFromExplicitTime: true });
+        continue;
+      }
       for (const event of earlier) {
         const from = eventNode(event.id);
         for (const next of later) {
@@ -465,7 +528,7 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
       }
     }
   }
-  const topologicalIds = topologicalSort(orderGraph).map(id => orderGraph.getNodeAttribute(id, 'value')?.id).filter(Boolean);
+  const topologicalIds = fifoOrderWithTimeBoundaries(orderGraph);
   const topologicalRank = new Map(topologicalIds.map((id, index) => [id, index]));
   events.sort((left, right) => (topologicalRank.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (topologicalRank.get(right.id) ?? Number.MAX_SAFE_INTEGER)
     || left.assistantSeq - right.assistantSeq || left.id.localeCompare(right.id));
@@ -938,8 +1001,8 @@ export function projectQianshiCandidateSelection(candidates, { excludedKeys = []
 }
 
 export function prepareQianshiCandidates(reachable, { canonicalContent = '', precedingUserInput = null, characterBudget = QIANSHI_CANDIDATE_CHARACTER_BUDGET,
-  identityProjection = null, includeEventContextCandidates = false } = {}) {
-  const projection = projectQianshiGraph(reachable, { identityProjection });
+  identityProjection = null, includeEventContextCandidates = false, projection: preparedProjection = null } = {}) {
+  const projection = preparedProjection ?? projectQianshiGraph(reachable, { identityProjection });
   const matters = prepareQianshiCandidatesFromMatters(projection.matters.filter(matter => !matter.synthetic && matter.currentEventId), { canonicalContent, precedingUserInput, characterBudget });
   if (!includeEventContextCandidates) return matters;
   const query = clean([canonicalContent, ...(precedingUserInput?.messages ?? []).map(message => message.content)].join(' '), 24000);

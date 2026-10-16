@@ -11,6 +11,7 @@ import { scanAssistantCandidates } from '../src/v3/foundation-domain.js';
 import { createV3RecallRuntime } from '../src/v3/recall-runtime.js';
 import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
 import { createQianshiTimelineView } from '../src/ui/qianshi-timeline-view.js';
+import { createPublicQianshiBridge } from '../src/v3/public-qianshi-bridge.js';
 import { readRecallSource } from '../src/v3/recall-source.js';
 import { historySelectionContext, selectRecall } from '../src/v3/recall-selector.js';
 import { buildExtractorSystemPrompt, buildHighFloorExtractorSystemPrompt, createExtractorEnvelope, DEFAULT_EXTRACTOR_GUIDANCE, EXTRACTOR_FIXED_CONTRACT, EXTRACTOR_OUTPUT_CONTRACT, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_RESPONSE_SCHEMA, EXTRACTOR_SYSTEM_PROMPT, EXTRACTOR_VERSION, inferCanonicalCurrentTime, normalizeExtractorResponse, runExtractorRequest } from '../src/v3/extractor.js';
@@ -52,6 +53,123 @@ test('当前时间证据读取原文状态栏，避开历史区块和不明确�
   assert.equal(inferCanonicalCurrentTime('<status_history><status>当前状态：2026年5月8日 11:00</status></status_history><p>正文</p>'), null);
   assert.deepEqual(inferCanonicalCurrentTime('<StatusBar>Date：2026年5月8日 11:00；Event：旧事发生。<b>当前状态</b>：2026年5月10日 14:30</StatusBar>'), { text: '2026年5月10日 14:30', kind: 'explicit' });
   assert.equal(inferCanonicalCurrentTime('<StatusBar>Date：2026年5月8日 11:00；Event：旧事发生</StatusBar>'), null);
+});
+
+test('同版存档2/4楼重判按楼线性完整核raw正文与memory并保留结果', async () => {
+  for (const floorCount of [2, 4]) {
+    let mode = 'summary', graphProjectionCalls = 0, rejudgeCalls = 0;
+    const initialChat = [user('开始')];
+    for (let index = 0; index < floorCount; index += 1) initialChat.push(assistant(`第${index + 1}楼稳定事实。`));
+    initialChat.push(user('确认'));
+    const h = harness({ initialChat, captureBusinessIdentity: () => ({ chatId: CHAT, hostChatId: 'host-chat',
+      characterLocator: 'character.png', personaLocator: 'persona.png' }), qianshiGraphProjector: (...args) => {
+      graphProjectionCalls += 1; return projectQianshiGraph(...args);
+    }, utility: options => {
+      if (mode === 'summary') return options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+        ? { jsonData: { summary: '逐楼摘要保留。' } } : { jsonData: { noMaterialChange: true } };
+      const request = JSON.parse(options.taskMessages[0].content);
+      if (mode === 'history') return { jsonData: { floors: request.floors.map(value => ({ floorKey: value.floorKey, qianshi: { events: [
+        { key: `history-${value.floorKey}`, title: `${value.floorKey}原事项`, description: `${value.floorKey}原经过。`, status: 'occurred', matter: false },
+      ], order: [] } })) } };
+      rejudgeCalls += 1;
+      return { jsonData: { qianshi: { events: [{ key: 'record-1', title: '模型新标题会被忽略', description: '模型新经过会被忽略',
+        lineStatus: 'completed', actionStatus: 'occurred', matter: false }], order: [] } } };
+    } });
+    await h.runtime.start();
+    for (const floor of h.runtime.getState().floors) await h.runtime.extractFloor(floor.floorId);
+    mode = 'history';
+    const historyPlan = await h.runtime.prepareQianshiHistory();
+    assert.equal((await h.runtime.startQianshiHistory(historyPlan.planId)).status, 'completed');
+    const plan = await h.runtime.prepareQianshiRejudge();
+    assert.equal(plan.totalFloors, floorCount);
+    const source = await h.store.readReachable({ mode: 'runtime' });
+    const floorIds = new Set(plan.floors.map(item => source.floors.find(floor => floor.assistantSeq === item.assistantSeq)?.id).filter(Boolean));
+    const rawContents = new Set(source.floors.filter(floor => floorIds.has(floor.id))
+      .map(floor => h.context.chat[floor.hostLocator.messageIndex].mes));
+    const memoryIds = new Set(source.floorMemories.filter(memory => floorIds.has(memory.floorId)).map(memory => memory.id));
+    const subtle = globalThis.crypto.subtle, digestDescriptor = Object.getOwnPropertyDescriptor(subtle, 'digest');
+    const originalDigest = subtle.digest, stringifyDescriptor = Object.getOwnPropertyDescriptor(JSON, 'stringify');
+    const originalStringify = JSON.stringify;
+    const rawHashCalls = { rejudgeSnapshot: 0, floorValidation: 0, coverageScan: 0, other: 0 };
+    let fullMemorySerializations = 0;
+    Object.defineProperty(subtle, 'digest', { configurable: true, writable: true, value(algorithm, data) {
+      if (rawContents.has(new TextDecoder().decode(data))) {
+        const stack = new Error().stack;
+        if (stack.includes('assertQianshiRejudgeSnapshot')) rawHashCalls.rejudgeSnapshot += 1;
+        else if (stack.includes('validateFoundationFloorContent')) rawHashCalls.floorValidation += 1;
+        else if (stack.includes('scanAssistantCandidates')) rawHashCalls.coverageScan += 1;
+        else rawHashCalls.other += 1;
+      }
+      return originalDigest.call(subtle, algorithm, data);
+    } });
+    Object.defineProperty(JSON, 'stringify', { configurable: true, writable: true, value(value, ...args) {
+      if (value && typeof value === 'object' && memoryIds.has(value.id) && value.qianshiDelta) fullMemorySerializations += 1;
+      return originalStringify.call(JSON, value, ...args);
+    } });
+    graphProjectionCalls = 0; mode = 'rejudge';
+    let result;
+    try { result = await h.runtime.startQianshiRejudge(plan.planId); }
+    finally {
+      if (digestDescriptor) Object.defineProperty(subtle, 'digest', digestDescriptor); else delete subtle.digest;
+      if (stringifyDescriptor) Object.defineProperty(JSON, 'stringify', stringifyDescriptor); else delete JSON.stringify;
+    }
+    assert.equal(result.status, 'completed', JSON.stringify({ result, warnings: h.warnings }));
+    assert.equal(result.calls, floorCount);
+    assert.equal(rejudgeCalls, floorCount);
+    assert.deepEqual(rawHashCalls, { rejudgeSnapshot: floorCount * 2, floorValidation: floorCount * 2,
+      coverageScan: floorCount * 2, other: 0 });
+    assert.equal(fullMemorySerializations, floorCount * 2, '只在初始与最终完整核各序列化一次目标memory');
+    assert.equal(graphProjectionCalls, floorCount + 2, '原图、每楼候选图和替换后的图各投影一次；替换前复用同一权威图');
+    const saved = await h.store.readReachable({ mode: 'runtime' });
+    assert.equal(saved.floorMemories.filter(memory => memory.qianshiDelta?.events?.length).length, floorCount,
+      '完整核复用不影响每楼结果保存');
+  }
+});
+
+test('重判遇到同版本的新authority对象时重新完整核验并保留保存结果', async () => {
+  let mode = 'summary', h, forcedFreshAuthority = false, freshAuthorityReads = 0, freshProjectionCalls = 0;
+  const freshAuthorities = new WeakSet();
+  h = harness({ initialChat: [user('起点'), assistant('原始正文。'), user('稳定')],
+  freshAuthorityReadObserver: value => { freshAuthorityReads += 1; freshAuthorities.add(value); },
+  qianshiGraphProjector: (...args) => {
+    if (freshAuthorities.has(args[0])) freshProjectionCalls += 1;
+    return projectQianshiGraph(...args);
+  }, utility: options => {
+    if (mode === 'summary') return options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: '原摘要。' } } : { jsonData: { noMaterialChange: true } };
+    const request = JSON.parse(options.taskMessages[0].content);
+    if (mode === 'history') return { jsonData: { floors: request.floors.map(item => ({ floorKey: item.floorKey,
+      qianshi: { events: [{ key: 'event-1', title: '旧事件', description: '旧事实。', status: 'occurred', matter: false }], order: [] } })) } };
+    if (!forcedFreshAuthority) { forcedFreshAuthority = true; h.forceFreshAuthorityRead(2); }
+    return { jsonData: { qianshi: { events: [{ key: 'record-1', lineStatus: 'completed', actionStatus: 'occurred', matter: false }], order: [] } } };
+  } });
+  await h.runtime.start();
+  await h.runtime.extractFloor(h.runtime.getState().floors[0].floorId);
+  mode = 'history'; const history = await h.runtime.prepareQianshiHistory();
+  assert.equal((await h.runtime.startQianshiHistory(history.planId)).status, 'completed');
+  const plan = await h.runtime.prepareQianshiRejudge();
+  const source = await h.store.readReachable({ mode: 'runtime' });
+  const memoryIds = new Set(source.floorMemories.map(memory => memory.id));
+  const originalStringify = JSON.stringify, stringifyDescriptor = Object.getOwnPropertyDescriptor(JSON, 'stringify');
+  let fullMemorySerializations = 0;
+  Object.defineProperty(JSON, 'stringify', { configurable: true, writable: true, value(value, ...args) {
+    if (value && typeof value === 'object' && memoryIds.has(value.id) && value.qianshiDelta) fullMemorySerializations += 1;
+    return originalStringify.call(JSON, value, ...args);
+  } });
+  mode = 'rejudge';
+  let result;
+  try { result = await h.runtime.startQianshiRejudge(plan.planId); }
+  finally {
+    if (stringifyDescriptor) Object.defineProperty(JSON, 'stringify', stringifyDescriptor); else delete JSON.stringify;
+  }
+  assert.equal(forcedFreshAuthority, true);
+  assert.equal(result.status, 'completed', JSON.stringify({ result, warnings: h.warnings }));
+  assert.ok(freshAuthorityReads >= 2, JSON.stringify({ freshAuthorityReads, freshProjectionCalls, fullMemorySerializations }));
+  assert.equal(fullMemorySerializations, 4, '初始核验、API后authority重载、提交前authority重载与最终提交核验均保留完整检查');
+  assert.ok(freshProjectionCalls > 0, 'authority刷新且snapshot缺省时重新投影当前权威数据');
+  const saved = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(saved.floorMemories[0].qianshiDelta.events[0].title, '旧事件', '重判仍按原条目保存合同提交');
+  assert.equal(saved.floorMemories[0].qianshiDelta.status, 'ready');
 });
 
 test('已存空间事实严格冷读且状态投影用一次floor索引解析来源楼', async () => {
@@ -272,7 +390,7 @@ function browserStorage(initial = {}) {
   };
 }
 
-function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, extractorPromptGuidance, csePromptGuidance, processingPrompt, storyClockReferenceTags = '', sanitizerOptions = () => ({}), foundationRefresh, foundationFetch = undefined, hasTimeFloorReference = null, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null, captureBusinessIdentity = null, qianshiExternalReferenceProvider = () => [], qianshiCandidatePreparer = undefined, qianshiCandidateIndexFactory = undefined, failureStorage = undefined, coreRecordCache = null, now = () => new Date(NOW), foundationNow = () => new Date(NOW) } = {}) {
+function harness({ text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, extractorPromptGuidance, csePromptGuidance, processingPrompt, storyClockReferenceTags = '', sanitizerOptions = () => ({}), foundationRefresh, foundationFetch = undefined, hasTimeFloorReference = null, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, identityProjectionProvider = null, captureBusinessIdentity = null, qianshiExternalReferenceProvider = () => [], qianshiCandidatePreparer = undefined, qianshiCandidateIndexFactory = undefined, qianshiGraphProjector = undefined, freshAuthorityReadObserver = undefined, failureStorage = undefined, coreRecordCache = null, now = () => new Date(NOW), foundationNow = () => new Date(NOW) } = {}) {
   let enabled = true;
   const handlers = new Map();
   const warnings = [];
@@ -290,13 +408,26 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
   const identityProvider = () => ({ hostChatId: context.chatId, chatId: context.chatMetadata.qianqianjie.chatId, characterLocator: 'character.png', personaLocator: 'persona.png' });
   const baseStore = createFoundationStore({ client: backend.client, contextProvider: identityProvider, isEnabled: () => enabled, coreRecordCache });
   const readReachableModes = [];
+  let forceFreshAuthorityRead = 0, returnFreshAuthorityObject = false;
   let readReachableGate = null;
   const store = Object.freeze({
     ...baseStore,
+    async readRoot(...args) {
+      const result = await baseStore.readRoot(...args);
+      if (!forceFreshAuthorityRead) return result;
+      forceFreshAuthorityRead -= 1;
+      returnFreshAuthorityObject = true;
+      return { ...result, revision: Number(result.revision ?? 0) + 1 };
+    },
     async readReachable(options) {
       readReachableModes.push(options?.mode ?? 'full');
       await readReachableGate?.(options);
-      return baseStore.readReachable(options);
+      const result = await baseStore.readReachable(options);
+      if (!returnFreshAuthorityObject) return result;
+      returnFreshAuthorityObject = false;
+      const fresh = { ...result };
+      freshAuthorityReadObserver?.(fresh);
+      return fresh;
     },
   });
   const currentSanitizerOptions = () => typeof sanitizerOptions === 'function' ? sanitizerOptions() : sanitizerOptions;
@@ -315,11 +446,12 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
     }
     return { jsonData: { summary: '裴晚生提醒用户带伞。', people: [{ name: '裴晚生' }, { name: '你', role: 'user' }], events: [{ title: '带伞提醒', description: '裴晚生提醒用户带伞。' }] }, taskMetadata: { source: 'shared-utility', sourceLabel: '机械副 API', model: 'mock-model', finishReason: 'stop' } };
   };
-  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted, onMemoryBatchCommitted, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), storyClockReferenceTags: () => typeof storyClockReferenceTags === 'function' ? storyClockReferenceTags() : storyClockReferenceTags, sanitizerOptions: currentSanitizerOptions, persistAnchors, identityProjectionProvider, captureBusinessIdentity, qianshiExternalReferenceProvider, ...(qianshiCandidatePreparer ? { qianshiCandidatePreparer } : {}), ...(qianshiCandidateIndexFactory ? { qianshiCandidateIndexFactory } : {}), failureStorage, now, newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
+  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, onAutomaticSummaryCommitted, onMemoryBatchCommitted, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), storyClockReferenceTags: () => typeof storyClockReferenceTags === 'function' ? storyClockReferenceTags() : storyClockReferenceTags, sanitizerOptions: currentSanitizerOptions, persistAnchors, identityProjectionProvider, captureBusinessIdentity, qianshiExternalReferenceProvider, ...(qianshiCandidatePreparer ? { qianshiCandidatePreparer } : {}), ...(qianshiCandidateIndexFactory ? { qianshiCandidateIndexFactory } : {}), ...(qianshiGraphProjector ? { qianshiGraphProjector } : {}), failureStorage, now, newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
   const emit = (name, ...args) => (handlers.get(name) ?? []).forEach(listener => listener(...args));
   return { runtime, foundationRuntime, store, backend, context, hostAdapter, calls, warnings, emit, readReachableModes, snapshotCount: () => snapshotCalls,
-    setReadReachableGate(value) { readReachableGate = value; }, setEnabled(value) { enabled = value; }, setAutomation(value) { automation = value; } };
+    setReadReachableGate(value) { readReachableGate = value; }, forceFreshAuthorityRead(count = 1) { forceFreshAuthorityRead = count; },
+    setEnabled(value) { enabled = value; }, setAutomation(value) { automation = value; } };
 }
 
 test('有效 memory graph 校验按 floor 索引解析记忆与证据来源，不逐项查找楼层', async () => {
@@ -10631,4 +10763,58 @@ test('只读准备：真实memory与recall在后台inspect挂起时借用精确�
     await memory.prepareCurrent({ preferCached: false, rootResult: { ...rootResult, revision: rootResult.revision + 1 } });
     assert.equal(inspectCalls, before + 1, '默认prepare仍完整刷新');
   });
+});
+
+test('真实千事runtime桥接状态只复制紧凑头部，快照仍隔离完整事件', async () => {
+  const h = harness({ initialChat: [user('开始'), assistant('楼层记录了一次会面。'), user('确认')],
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: '已存摘要。', qianshi: { events: [{ key: 'meeting', title: '会面', description: '在钟楼会面。', status: 'occurred', matter: false }], order: [] } } }
+      : { jsonData: { noMaterialChange: true } } });
+  await h.runtime.start();
+  const [floor] = h.runtime.getState().floors;
+  await h.runtime.extractFloor(floor.floorId);
+  const first = h.runtime.getQianshiSnapshot();
+  assert.equal(first.events.length, 1);
+  const bridge = createPublicQianshiBridge({ memoryRuntime: h.runtime });
+  const originalStructuredClone = globalThis.structuredClone;
+  let fullSnapshotClones = 0;
+  globalThis.structuredClone = function(value, ...args) {
+    if (value && Array.isArray(value.events) && Array.isArray(value.matters)) fullSnapshotClones += 1;
+    return originalStructuredClone.call(this, value, ...args);
+  };
+  try {
+    const status = bridge.getStatus();
+    assert.equal(status.status, 'ready');
+    assert.equal(fullSnapshotClones, 0, '状态接口只隔离紧凑头部，不再复制完整事件投影');
+    const snapshot = bridge.getSnapshot();
+    assert.equal(fullSnapshotClones, 1, '完整快照由runtime隔离一次');
+    snapshot.events[0].title = '桥外篡改';
+  } finally {
+    globalThis.structuredClone = originalStructuredClone;
+  }
+  assert.equal(h.runtime.getQianshiSnapshot().events[0].title, '会面');
+});
+
+test('千事历史补齐复用本批权威投影并在楼提交后失效一次', async () => {
+  let mode = 'summary', graphProjectionCalls = 0;
+  const h = harness({ initialChat: [user('开始'), assistant('第一楼事实。'), user('继续'), assistant('第二楼事实。'), user('确认')],
+    qianshiGraphProjector: (...args) => { graphProjectionCalls += 1; return projectQianshiGraph(...args); },
+    utility: options => {
+      if (mode === 'summary') return options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+        ? { jsonData: { summary: '保留现有摘要。' } } : { jsonData: { noMaterialChange: true } };
+      const request = JSON.parse(options.taskMessages[0].content);
+      return { jsonData: { floors: request.floors.map(value => ({ floorKey: value.floorKey, qianshi: { events: [
+        { key: `event-${value.floorKey}`, title: `${value.floorKey}事件`, description: `${value.floorKey}经过`, status: 'occurred', matter: false },
+      ], order: [] } })) } };
+    } });
+  await h.runtime.start();
+  for (const floor of h.runtime.getState().floors) await h.runtime.extractFloor(floor.floorId);
+  const plan = await h.runtime.prepareQianshiHistory();
+  assert.equal(plan.totalFloors, 2);
+  graphProjectionCalls = 0; mode = 'history';
+  const result = await h.runtime.startQianshiHistory(plan.planId);
+  assert.equal(result.status, 'completed');
+  assert.equal(graphProjectionCalls, 4, '批次图和两个候选前缀各投影一次，首楼提交更新authority后只重投影一次');
+  const saved = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(saved.floorMemories.flatMap(memory => memory.qianshiDelta?.events ?? []).length, 2);
 });

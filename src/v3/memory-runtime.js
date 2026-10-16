@@ -262,7 +262,7 @@ export function createQianshiEventLookup(readSnapshot = createQianshiSnapshotMem
   };
 }
 
-export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, onQianshiEventDeleted = () => {}, extractorPromptGuidance = () => '', csePromptGuidance = () => '', processingPrompt = () => '', storyClockReferenceTags = () => '', storyCalendarProvider = () => null, filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), persistAnchors = null, identityProjectionProvider = null, qianshiExternalReferenceProvider = () => [], captureBusinessIdentity = null, storeForIdentity = null, qianshiCandidatePreparer = prepareQianshiCandidates, qianshiCandidateIndexFactory = createQianshiCandidateIndex, failureStorage = undefined, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
+export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask, isEnabled = true, automationSettings = () => ({ enabled: false, batchSize: 1 }), notifyUser = null, isMainGenerationActive = () => false, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, onQianshiEventDeleted = () => {}, extractorPromptGuidance = () => '', csePromptGuidance = () => '', processingPrompt = () => '', storyClockReferenceTags = () => '', storyCalendarProvider = () => null, filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), persistAnchors = null, identityProjectionProvider = null, qianshiExternalReferenceProvider = () => [], captureBusinessIdentity = null, storeForIdentity = null, qianshiCandidatePreparer = prepareQianshiCandidates, qianshiCandidateIndexFactory = createQianshiCandidateIndex, qianshiGraphProjector = projectQianshiGraph, failureStorage = undefined, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
   if (!foundationRuntime || ['start', 'refreshStatus', 'confirmLatest', 'setEnabled', 'bind', 'getState'].some(name => typeof foundationRuntime[name] !== 'function')) throw new TypeError('V3 memory foundation runtime 无效');
   if (!store || ['readReachable', 'readRecord', 'putRecord', 'commitRoot', 'recordKey', 'invalidate'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 memory store 无效');
   if (typeof generateAnalysisTask !== 'function') throw new TypeError('V3 memory analysis route 无效');
@@ -1227,7 +1227,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     return current;
   }
 
-  async function assertQianshiRejudgeSnapshot(current, operation) {
+  async function assertQianshiRejudgeSnapshot(current, operation, { reuseVerifiedMemorySnapshot = false } = {}) {
     const plan = operation.qianshiRejudge;
     if (!plan || current.root.chatId !== plan.chatId || current.root.narrativeGeneration !== plan.narrativeGeneration
       || current.rootRevision !== plan.rootRevision || current.root.headCheckpointId !== plan.headCheckpointId
@@ -1244,7 +1244,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const floor = floors.get(item.floorId), memory = memories.get(item.floorId);
       if (!floor || floor.narrativeGeneration !== plan.narrativeGeneration || floor.content.rawFingerprint !== item.rawFingerprint
         || floor.content.canonicalFingerprint !== item.canonicalFingerprint || !memory || memory.id !== item.memoryId
-        || JSON.stringify(memory) !== item.memorySignature || memorySourceFloorIds(memory).length !== 1) {
+        || !reuseVerifiedMemorySnapshot && JSON.stringify(memory) !== item.memorySignature || memorySourceFloorIds(memory).length !== 1) {
         throw errorWith('QIANSHI_REJUDGE_SOURCE_CHANGED', `${qianshiFloorLabel(item)}原文或千事档案已变化；整组未提交，旧记录保持不变。`);
       }
     }
@@ -1254,9 +1254,13 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const snapshot = hostAdapter.snapshot();
       for (const item of plan.items) {
         const floor = floors.get(item.floorId), selected = rawSelectionFromSnapshot(snapshot, floor);
-        if (!selected || `sha256:${await sha256(selected.rawContent)}` !== item.rawFingerprint) {
+        const prior = operation.qianshiRejudgeRawWitnesses?.get(item.floorId);
+        const fingerprint = reuseVerifiedMemorySnapshot && selected && prior?.rawContent === selected.rawContent
+          ? prior.fingerprint : selected ? `sha256:${await sha256(selected.rawContent)}` : null;
+        if (!selected || fingerprint !== item.rawFingerprint) {
           throw errorWith('QIANSHI_REJUDGE_SOURCE_CHANGED', `${qianshiFloorLabel(item)}原文已被人工修改；整组未提交，旧记录保持不变。`);
         }
+        operation.qianshiRejudgeRawWitnesses?.set(item.floorId, { rawContent: selected.rawContent, fingerprint });
       }
     }
   }
@@ -1269,12 +1273,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
 
   async function prepareQianshiRejudgeReplacements(current, operation, replacements) {
-    await assertQianshiRejudgeSnapshot(current, operation);
     const oldMemories = currentMemoryMap(current), rows = [];
-    const referenceSignature = refs => JSON.stringify(refs.map(item => [item.id, item.matterId, item.originEventId]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
-    if (referenceSignature(await qianshiExternalReferences(current.root.chatId, current)) !== operation.qianshiRejudge.externalReferenceSignature) {
-      throw errorWith('QIANSHI_REJUDGE_EXTERNAL_STATE_CHANGED', '重判期间千事关联提醒发生变化；整组未提交。');
-    }
     for (const replacement of replacements) {
       const old = oldMemories.get(replacement.floorId);
       if (!old || !replacement.qianshiDelta) throw errorWith('QIANSHI_REJUDGE_REPLACEMENT_INVALID', '重判批次缺少目标楼档案；整组未提交。');
@@ -1290,7 +1289,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const rowsByFloor = new Map(rows.map(memory => [memory.floorId, memory]));
     const finalMemories = current.floors.map(floor => rowsByFloor.get(floor.id) ?? oldMemories.get(floor.id)).filter(Boolean);
     const finalReachable = { ...current, floorMemories: finalMemories };
-    const before = projectQianshiGraph(current), after = projectQianshiGraph(finalReachable);
+    const before = operation.qianshiProjectionSource === current && operation.qianshiProjectionSnapshot
+      ? operation.qianshiProjectionSnapshot : qianshiGraphProjector(current);
+    const after = qianshiGraphProjector(finalReachable);
     const candidateEvents = new Map(after.events.map(event => [event.id, event]));
     for (const binding of operation.qianshiRejudge.candidateSnapshots ?? []) {
       const stale = binding.events.some(expected => {
@@ -1355,6 +1356,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     delete operation.qianshiRejected;
     delete operation.qianshiRejectReason;
   for (let attempt = 0; attempt < MEMORY_REBASE_ATTEMPTS; attempt += 1) {
+    let currentQianshiProjection = operation.qianshiProjectionSource === current ? operation.qianshiProjectionSnapshot ?? null : null;
+    const qianshiProjection = () => currentQianshiProjection ??= qianshiGraphProjector(current);
     // Candidate IDs are scoped by head/generation/source; metadata-only root revisions must keep their immutable payload stable.
     const commitVersionKey = JSON.stringify([current.root.headCheckpointId,
       current.root.narrativeGeneration, current.root.sourceSnapshotFingerprint]);
@@ -1421,7 +1424,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }
     }
     if (!operation.qianshiRejudge && operation.qianshiCandidateSnapshot?.length) {
-      const liveEvents = new Map(projectQianshiGraph(current).events.map(event => [event.id, event]));
+      const liveEvents = new Map(qianshiProjection().events.map(event => [event.id, event]));
       const stale = operation.qianshiCandidateSnapshot.some(binding => binding.events.some(expected => {
         const event = liveEvents.get(expected.id);
         return !event || !expected.signature || qianshiEventSemanticSignature(event) !== expected.signature
@@ -1491,7 +1494,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     } else if (revisionReplacement.qianshiDelta) {
       const replacedFloorIds = new Set(oldTarget ? memorySourceFloorIds(oldTarget) : [revisionReplacement.floorId]);
       const oldEventIds = new Set(oldTarget?.qianshiDelta?.events?.map(event => event.id) ?? []);
-      const preservedByOtherFloors = new Set(), currentProjection = projectQianshiGraph(current);
+      const preservedByOtherFloors = new Set(), currentProjection = qianshiProjection();
       const validRelationSignatures = new Set(currentProjection.relations.map(relation => JSON.stringify([relation.id, relation.type, relation.fromEventId, relation.toEventId])));
       for (const memory of current.floorMemories ?? []) if (memory.recordStatus === 'active' && !replacedFloorIds.has(memory.floorId)) {
         for (const relation of memory.qianshiDelta?.relations ?? []) if (validRelationSignatures.has(JSON.stringify([relation.id, relation.type, relation.fromEventId, relation.toEventId]))) {
@@ -1527,7 +1530,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         try {
           const candidateMemories = new Map(memoryByFloor);
           candidateMemories.set(revisionReplacement.floorId, revisionReplacement);
-          const candidateProjection = projectQianshiGraph({ ...current, floorMemories: current.floors.map(item => candidateMemories.get(item.id)).filter(Boolean) });
+          const candidateProjection = qianshiGraphProjector({ ...current, floorMemories: current.floors.map(item => candidateMemories.get(item.id)).filter(Boolean) });
           const remainingRelationIds = new Set(candidateProjection.relations.map(relation => relation.id));
           invalidatedExternalProgress = [...externalValidProgressIds].some(id => !remainingRelationIds.has(id));
         } catch { invalidatedExternalProgress = true; }
@@ -3274,6 +3277,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (!reachable?.root) return Object.freeze({ status: 'not-ready', message: '千事后端尚未准备好当前聊天。' });
     return qianshiSnapshotMemo(reachable, identityProjection, qianshiHistoryState, storyCalendarProvider());
   }
+  function qianshiStatus() {
+    const value = qianshiSnapshot();
+    return Object.freeze({ status: value.status, message: value.message ?? '', anchor: value.anchor ?? null,
+      coverage: value.coverage ?? null, history: value.history ?? null });
+  }
   function qianshiSnapshotVersion() {
     const value = qianshiSnapshot();
     return Object.freeze({ status: value.status, projectionRevision: value.projectionRevision ?? null, history: value.history ?? null });
@@ -3602,7 +3610,16 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         publishHistory(historyState('running', `正在准备第 ${batchIndex}/${plan.batches.length} 批候选…`));
         const identitySnapshot = await readIdentityProjection(plan.targetIdentity);
         const prepared = [];
-        const preparedEventMap = new Map(projectQianshiGraph(targetReachable).events.map(event => [event.id, event]));
+        const preparedProjection = qianshiGraphProjector(targetReachable);
+        const preparedEventMap = new Map(preparedProjection.events.map(event => [event.id, event]));
+        let liveProjectionSource = targetReachable, liveProjection = preparedProjection;
+        const currentProjection = () => {
+          if (liveProjectionSource !== targetReachable) {
+            liveProjection = qianshiGraphProjector(targetReachable);
+            liveProjectionSource = targetReachable;
+          }
+          return liveProjection;
+        };
         for (const item of batch.items) {
           const floor = targetReachable.floors.find(value => value.id === item.floorId), memory = currentMemoryMap(targetReachable).get(item.floorId);
           if (!floor || !memory || floor.content.rawFingerprint !== item.rawFingerprint || memory.id !== item.memoryId) {
@@ -3610,10 +3627,12 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           }
           const floorIndex = targetReachable.floors.findIndex(value => value.id === floor.id), prefixFloors = targetReachable.floors.slice(0, floorIndex);
           const prefixIds = new Set(prefixFloors.map(value => value.id));
-          const candidates = prepareQianshiCandidates({ ...targetReachable, floors: prefixFloors,
-            floorMemories: targetReachable.floorMemories.filter(value => prefixIds.has(value.floorId)) },
-          { canonicalContent: item.input.sourceCanonicalContent, precedingUserInput: item.input.sourceUserInputSnapshot,
-            identityProjection: identitySnapshot, includeEventContextCandidates: true });
+          const prefix = { ...targetReachable, floors: prefixFloors,
+            floorMemories: targetReachable.floorMemories.filter(value => prefixIds.has(value.floorId)) };
+          const projection = qianshiGraphProjector(prefix, { identityProjection: identitySnapshot });
+          const candidates = prepareQianshiCandidates(prefix,
+            { canonicalContent: item.input.sourceCanonicalContent, precedingUserInput: item.input.sourceUserInputSnapshot,
+              identityProjection: identitySnapshot, includeEventContextCandidates: true, projection });
           prepared.push({ item, floor, memory, candidates });
         }
         if (!prepared.length) continue;
@@ -3709,7 +3728,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             ...(Array.isArray(event?.relatedCandidates) ? event.relatedCandidates.map(String) : []),
           ]), ...(Array.isArray(returned?.qianshi?.order) ? returned.qianshi.order.flatMap(relation => typeof relation === 'string'
             ? [relation] : [relation?.before, relation?.after]) : [])].filter(Boolean));
-          const liveEvents = new Map(projectQianshiGraph(targetReachable).events.map(event => [event.id, event]));
+          const liveEvents = usedCandidateKeys.size
+            ? new Map(currentProjection().events.map(event => [event.id, event])) : preparedEventMap;
           const frozenBindingsStale = (bindingsByFloor.get(value.item.floorId) ?? []).some(binding => usedCandidateKeys.has(binding.key)
             && Object.entries(binding.semanticSignatures ?? {}).some(([id, signature]) => {
               const event = liveEvents.get(id);
@@ -3752,7 +3772,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           let replacementToCommit = replacement;
           const commitOperation = { floorId: value.floor.id, floorRawFingerprint: value.floor.content.rawFingerprint, epoch,
             store: plan.store, pinnedTarget: true,
-            controller, qianshiHistory: true,
+            controller, qianshiHistory: true, qianshiProjectionSource: targetReachable,
+            qianshiProjectionSnapshot: liveProjectionSource === targetReachable ? liveProjection : null,
             qianshiHistoryTargetMemoryId: value.memory.id, qianshiHistoryTargetMemorySignature: JSON.stringify(value.memory),
             qianshiCandidateSnapshot, runId: await deterministicUuid(['v3-qianshi-history-commit', jobId, value.floor.id]), startedAt: nowValue,
             commitTimestamp: null };
@@ -3919,6 +3940,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const plan = qianshiRejudgePlan;
     if (!plan || planId !== plan.planId) throw errorWith('QIANSHI_REJUDGE_PLAN_STALE', '请重新准备已存千事重判计划。');
     const controller = new AbortController(), jobId = await deterministicUuid(['qianshi-rejudge-job-v1', plan.planId, newUuid()]);
+    const rejudgeValidation = { qianshiRejudge: plan, qianshiRejudgeRawWitnesses: new Map() };
     const operation = { jobId, controller, store: plan.store, targetIdentity: plan.targetIdentity, pinnedTarget: true }, epochAtStart = epoch;
     let calls = 0;
     qianshiHistoryRun = operation;
@@ -3936,13 +3958,14 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       let currentItem = null, targetReachable = null;
       try {
         targetReachable = await latestReachableForCommit({ epoch: epochAtStart, controller, store: plan.store, pinnedTarget: true }, plan.sourceReachable);
-        await assertQianshiRejudgeSnapshot(targetReachable, { qianshiRejudge: plan });
+        await assertQianshiRejudgeSnapshot(targetReachable, rejudgeValidation);
         const original = targetReachable, identitySnapshot = await readIdentityProjection(plan.targetIdentity);
+        const originalProjection = qianshiGraphProjector(original, { identityProjection: identitySnapshot });
         // 整组提交前原图不变；沿用已有的精确 root 版本核对，避免每个请求前后重读整份存档。
         const verifyCurrent = async () => {
-          const current = await latestReachableForCommit({ epoch: epochAtStart, controller, store: plan.store, pinnedTarget: true }, original);
-          await assertQianshiRejudgeSnapshot(current, { qianshiRejudge: plan });
-          return current;
+          const loaded = await latestReachableForCommit({ epoch: epochAtStart, controller, store: plan.store, pinnedTarget: true }, original);
+          await assertQianshiRejudgeSnapshot(loaded, rejudgeValidation, { reuseVerifiedMemorySnapshot: loaded === original });
+          return loaded;
         };
         for (let index = 0; index < plan.items.length; index += 1) {
           if (controller.signal.aborted) break;
@@ -3955,10 +3978,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           const stagedByFloor = new Map(staged.map(value => [value.floorId, value]));
           const prefixMemories = targetReachable.floorMemories.filter(value => prefixIds.has(value.floorId)).map(value => stagedByFloor.get(value.floorId) ?? value);
           const prefix = { ...targetReachable, floors: prefixFloors, floorMemories: prefixMemories };
+          const prefixProjection = qianshiGraphProjector(prefix, { identityProjection: identitySnapshot });
           const candidates = prepareQianshiCandidates(prefix, { canonicalContent: item.input.sourceCanonicalContent,
-            precedingUserInput: item.input.sourceUserInputSnapshot, identityProjection: identitySnapshot, includeEventContextCandidates: true });
+            precedingUserInput: item.input.sourceUserInputSnapshot, identityProjection: identitySnapshot,
+            includeEventContextCandidates: true, projection: prefixProjection });
           const candidateValues = [...candidates.request], candidateBindings = candidates.bindings.map(binding => ({ ...binding }));
-          const prefixProjection = projectQianshiGraph(prefix, { identityProjection: identitySnapshot });
           for (const binding of candidateBindings) {
             const eventIds = [...new Set([binding.originEventId, ...(binding.latestEventIds ?? [])].filter(Boolean))];
             binding.semanticSignatures = Object.fromEntries(eventIds.map(id => [id,
@@ -3966,7 +3990,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
                 ? qianshiEventSemanticSignature(prefixProjection.events.find(event => event.id === id)) : null]));
           }
           const storedEvents = oldMemory.qianshiDelta.events.filter(event => !(oldMemory.qianshiDelta.deletedEventIds ?? []).includes(event.id));
-          const currentGraph = projectQianshiGraph(targetReachable), originEventIds = new Set(currentGraph.matters.map(matter => matter.origin.eventId));
+          const currentGraph = targetReachable === original ? originalProjection : qianshiGraphProjector(targetReachable);
+          const originEventIds = new Set(currentGraph.matters.map(matter => matter.origin.eventId));
           const recordBindings = storedEvents.map((event, recordIndex) => ({ key: `record-${recordIndex + 1}`, event: clone(event),
             preserveMatterIdOnNewLine: Boolean(event.matterId && originEventIds.has(event.id)) }));
           const systemPrompt = `${QIANSHI_REJUDGE_SYSTEM_PROMPT}\n\n${QIANSHI_STATUS_GUIDANCE}`;
@@ -4075,6 +4100,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         targetReachable = await verifyCurrent();
         const commitOperation = { jobId, controller, epoch: epochAtStart, store: plan.store, pinnedTarget: true, floorIds: plan.items.map(item => item.floorId),
           qianshiRejudge: { ...plan, candidateSnapshots: usedCandidateSnapshots },
+          qianshiRejudgeRawWitnesses: rejudgeValidation.qianshiRejudgeRawWitnesses,
+          qianshiProjectionSource: targetReachable, qianshiProjectionSnapshot: targetReachable === original ? originalProjection : null,
           runId: await deterministicUuid(['v3-qianshi-rejudge-commit', jobId]), startedAt: nowIso(now) };
         operation.commitOperation = commitOperation;
         const priorAudit = floorProvenance(targetReachable)[staged[0].floorId] ?? {};
@@ -4140,7 +4167,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
 
   return Object.freeze({ bind, start, setEnabled, refreshAutomation, startHistoricalRebuild, resetLiveMigrationMemoriesForRebuild, pauseHistoricalRebuild, retryAutomation, rebuildCse, resumeCseRebuild, pauseCseRebuild, invalidate, refreshStatus, prepareCurrent, confirmLatest, confirmConsecutiveAssistants, extractNext, extractFloor, analyzeNextState, retryStateAnalysis, correctSubjectState, editSummary, editMemory, restoreAi, markError, copySafeDiagnostic, copyFullDiagnostic, shouldBlockMainGeneration, allowsRealtimeTailFromEmpty, setIdentityProjection, captureBusinessIdentity: captureTargetIdentity,
-    getQianshiSnapshot: () => structuredClone(qianshiSnapshot()), getQianshiSnapshotVersion: qianshiSnapshotVersion, canEditQianshiEventText, editQianshiEventText, deleteQianshiEvent,
+    getQianshiSnapshot: () => structuredClone(qianshiSnapshot()), getQianshiStatus: qianshiStatus,
+    getQianshiSnapshotVersion: qianshiSnapshotVersion, canEditQianshiEventText, editQianshiEventText, deleteQianshiEvent,
     // 冻结召回只检查人工删除身份，不重选材；冷启动复用现有只读准备链。
     getQianshiDeletions: async () => {
       const prepared = await prepareCurrent();

@@ -2274,6 +2274,77 @@ test('摘要搜索遍历全部已存楼，清空恢复列表且切聊天不保�
   assert.equal(switchedSearch.value, ''); assert.match(flatten(container).map(node => node.textContent).join('|'), /新聊天摘要/u); view.deactivate();
 });
 
+test('摘要页与全量搜索按50项分页，搜索结果可定位并展开跨页原卡', () => {
+  const memory = { summaryEvidenceRefs: [] };
+  const floors = Array.from({ length: 51 }, (_, index) => ({
+    floorId: `floor-${index + 1}`, assistantSeq: index + 1, messageIndex: index + 1,
+    memoryId: `memory-${index + 1}`, status: 'ready', summary: `needle 摘要 ${index + 1}`, memory,
+  }));
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 51,
+    rememberedCount: 51, csePendingCount: 51, cseFailedCount: 0, floors };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef });
+  view.setPage('memories'); view.mount(container);
+  const cards = () => flatten(container).filter(node => String(node.className).split(' ').includes('qqj-memory-card'));
+  const button = label => flatten(container).find(node => node.tag === 'button' && node.textContent === label);
+  assert.equal(cards().length, 50, '首屏最多创建50张摘要卡');
+  assert.ok(button('下一页'), '多页列表提供下一页');
+  button('下一页').click();
+  assert.deepEqual(cards().map(node => node.attributes['data-qqj-floor-id']), ['floor-1']);
+  assert.ok(button('上一页'), '末页提供上一页');
+
+  const search = flatten(container).find(node => node.attributes['aria-label'] === '搜索当前聊天的全部摘要');
+  search.value = 'needle'; search.fire('input');
+  assert.equal(flatten(container).filter(node => node.className === 'qqj-history-search-result').length, 50,
+    '搜索覆盖全部51条摘要，但当前页只创建50项');
+  button('下一页').click();
+  const results = flatten(container).filter(node => node.className === 'qqj-history-search-result');
+  assert.equal(results.length, 1);
+  results[0].click();
+  const opened = flatten(container).find(node => node.attributes['data-qqj-floor-id'] === 'floor-1');
+  assert.ok(opened, '搜索打开结果后定位到普通摘要列表对应页');
+  assert.equal(opened.open, true, '跨页搜索结果打开原摘要卡');
+  assert.equal(search.value, '', '打开结果后清空搜索');
+  assert.equal(cards().length, 1, '跨页定位后只渲染该普通列表页的摘要');
+  view.deactivate();
+});
+
+test('摘要分页保留离屏编辑草稿且后台数据更新仍显示在当前页', () => {
+  const memory = { summaryEvidenceRefs: [] };
+  const makeFloors = (changed = false) => Array.from({ length: 51 }, (_, index) => ({
+    floorId: `floor-${index + 1}`, assistantSeq: index + 1, messageIndex: index + 1,
+    canonicalFingerprint: `canonical-${index + 1}`, rawFingerprint: `raw-${index + 1}`,
+    memoryId: `memory-${index + 1}`, status: changed && index === 0 ? 'running' : 'ready',
+    summary: `摘要 ${index + 1}`, summarySource: 'ai', memory, cse: { status: 'ready' },
+  }));
+  let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', rootRevision: 1,
+    stableCount: 51, rememberedCount: 51, csePendingCount: 0, cseFailedCount: 0, floors: makeFloors() };
+  let notify;
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    subscribe(listener) { notify = listener; return () => { notify = null; }; } };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef });
+  view.setPage('memories'); view.mount(container);
+  const pageButton = label => flatten(container).find(node => node.tag === 'button' && node.textContent === label);
+  const editFloor = floorId => {
+    let card = flatten(container).find(node => node.attributes['data-qqj-floor-id'] === floorId);
+    if (!card.open) { card.open = true; card.fire('toggle'); }
+    flatten(card).find(node => node.textContent === '⋮').click();
+    flatten(card).find(node => node.textContent === '编辑').click();
+    return flatten(container).find(node => node.placeholder === '输入用户修订摘要');
+  };
+  const draftInput = editFloor('floor-51');
+  draftInput.value = '仍在第1页的未保存草稿'; draftInput.fire('input');
+  pageButton('下一页').click();
+  state = { ...state, rootRevision: 2, floors: makeFloors(true) }; notify(state);
+  const updatedCard = flatten(container).find(node => node.attributes['data-qqj-floor-id'] === 'floor-1');
+  assert.match(flatten(updatedCard).map(node => node.textContent).join('|'), /正在处理/u,
+    '离屏草稿不阻止当前页接收后台更新');
+  pageButton('上一页').click();
+  const restoredDraft = flatten(container).find(node => node.placeholder === '输入用户修订摘要');
+  assert.equal(restoredDraft.value, '仍在第1页的未保存草稿', '翻回后从现有草稿状态恢复编辑内容');
+  view.deactivate();
+});
+
 test('记忆列表和摘要搜索按全局剧情顺序区分同号归档来源并打开对应原卡', async () => {
   const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [] };
   const floor = ({ floorId, assistantSeq, messageIndex, summary, frozen = false, sourceHostChatId = null }) => ({

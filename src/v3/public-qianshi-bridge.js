@@ -6,13 +6,15 @@ const frozen = value => Object.freeze(value);
 export function createPublicQianshiBridge({ memoryRuntime } = {}) {
   if (!memoryRuntime || typeof memoryRuntime.getQianshiSnapshot !== 'function') throw new TypeError('千事公共桥 memoryRuntime 无效');
   const safe = (task, fallback) => {
-    try { return clone(task()); }
+    try { return task(); }
     catch (error) { return { status: 'error', message: String(error?.message ?? fallback).slice(0, 500) }; }
   };
   const getSnapshot = () => safe(() => memoryRuntime.getQianshiSnapshot(), '千事快照读取失败。');
   const getStatus = () => {
-    const value = getSnapshot();
-    return clone({ status: value.status, message: value.message ?? '', anchor: value.anchor ?? null, coverage: value.coverage ?? null, history: value.history ?? null });
+    return safe(() => {
+      const value = typeof memoryRuntime.getQianshiStatus === 'function' ? memoryRuntime.getQianshiStatus() : getSnapshot();
+      return clone({ status: value.status, message: value.message ?? '', anchor: value.anchor ?? null, coverage: value.coverage ?? null, history: value.history ?? null });
+    }, '千事状态读取失败。');
   };
   const read = async () => getSnapshot();
   const prepareHistory = options => Promise.resolve(memoryRuntime.prepareQianshiHistory(clone(options ?? {}))).then(clone);

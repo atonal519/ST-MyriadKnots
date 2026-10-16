@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { DirectedGraph } from 'graphology';
+import { topologicalSort } from 'graphology-dag';
 import { compileQianshiDelta, createQianshiCandidateIndex, effectiveQianshiDelta, orderQianshiLineRecords, prepareQianshiCandidates, prepareQianshiRecallCandidates, projectQianshiCandidateSelection, projectQianshiGraph, projectQianshiRecall, projectQianshiTimeline, publicQianshiSnapshot } from '../src/v3/qianshi-domain.js';
 import { projectTime, timeDistance, formatStoryTimeFields, storyTimeFields } from '../src/v3/time-engine.js';
 import { createExtractorEnvelope, runExtractorRequest } from '../src/v3/extractor.js';
@@ -11,6 +13,70 @@ const GENERATION = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const NOW = '2026-09-16T00:00:00.000Z';
 const floor = (id, assistantSeq) => ({ id, chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq, hostLocator: { messageIndex: assistantSeq * 2 }, content: { canonicalContent: `第${assistantSeq}楼` } });
 const memory = (id, source, qianshiDelta) => ({ id, floorId: source.id, recordStatus: 'active', chronology: [], qianshiDelta });
+
+function expandTimeBoundariesAsPairwiseEdges(graph) {
+  const expanded = new DirectedGraph({ allowSelfLoops: false });
+  const isBoundary = id => graph.getNodeAttribute(id, 'kind') === 'time-boundary';
+  for (const id of graph.nodes()) if (!isBoundary(id)) expanded.addNode(id, { value: graph.getNodeAttribute(id, 'value') });
+  for (const edge of graph.edges()) {
+    const source = graph.source(edge), target = graph.target(edge);
+    if (isBoundary(source) || isBoundary(target)) continue;
+    if (!graph.getEdgeAttribute(edge, 'inferredFromExplicitTime')) expanded.addDirectedEdge(source, target);
+  }
+  for (const boundary of graph.nodes().filter(isBoundary)) {
+    for (const source of graph.inNeighbors(boundary)) for (const target of graph.outNeighbors(boundary)) {
+      if (!expanded.hasDirectedEdge(source, target)) expanded.addDirectedEdge(source, target);
+    }
+  }
+  return expanded;
+}
+
+test('大时间桶压边保持原 FIFO 拓扑输出，且内部边界不公开', async () => {
+  const source = floor('11111111-1111-4111-8111-111111111111', 1);
+  const events = [];
+  for (let index = 0; index < 64; index += 1) {
+    events.push({ key: `dated-${index}`, title: `日期事件${index}`, description: `日期事件${index}`, status: 'occurred', matter: false,
+      storyTime: index % 2 ? '2026-09-02' : '2026-09-01' });
+  }
+  for (let index = 0; index < 6; index += 1) {
+    events.push({ key: `yearless-${index}`, title: `无年事件${index}`, description: `无年事件${index}`, status: 'occurred', matter: false,
+      storyTime: index % 2 ? '4月2日' : '4月1日' });
+  }
+  events.splice(17, 0, { key: 'unknown', title: '无时事件', description: '保持来源出队关系', status: 'occurred', matter: false });
+  const delta = await compileQianshiDelta({ floor: source, now: NOW, packet: { qianshi: { events,
+    order: [{ before: 'unknown', after: 'dated-1', certainty: 'explicit' }] } } });
+  const reachable = { floors: [source], floorMemories: [memory('22222222-2222-4222-8222-222222222222', source, delta)], entities: [] };
+  const projection = projectQianshiGraph(reachable), graph = projection.orderGraph;
+  const boundaries = graph.nodes().filter(id => graph.getNodeAttribute(id, 'kind') === 'time-boundary');
+  assert.equal(boundaries.length, 2, '绝对日期和无年日期各自只压成一个边界');
+  assert.equal(new Set(boundaries).size, boundaries.length, '边界编号在整个图内唯一');
+  assert.equal(projection.events.length, 71, '所有业务事件都保留');
+  assert.ok(projection.diagnostics.orderEdges < 150, '边数按桶边界线性增长');
+  const pairwiseGraph = expandTimeBoundariesAsPairwiseEdges(graph);
+  const expected = topologicalSort(pairwiseGraph).map(id => pairwiseGraph.getNodeAttribute(id, 'value').id);
+  assert.deepEqual(projection.events.map(event => event.id), expected, 'FIFO 拓扑顺序与官方旧 pairwise Graphology 算法一致');
+  assert.equal(projection.events.some(event => boundaries.includes(event.id)), false, '内部边界不会进入事件 DTO');
+});
+
+test('存在显式反向可达时保留逐对边过滤，不压缩冲突日期桶', async () => {
+  const source = floor('11111111-1111-4111-8111-111111111111', 1);
+  const events = [
+    { key: 'early-a', title: '较早甲', description: '较早甲', status: 'occurred', matter: false, storyTime: '2026-09-01' },
+    { key: 'early-b', title: '较早乙', description: '较早乙', status: 'occurred', matter: false, storyTime: '2026-09-01' },
+    { key: 'early-c', title: '较早丙', description: '较早丙', status: 'occurred', matter: false, storyTime: '2026-09-01' },
+    { key: 'late-a', title: '较晚甲', description: '较晚甲', status: 'occurred', matter: false, storyTime: '2026-09-02' },
+    { key: 'late-b', title: '较晚乙', description: '较晚乙', status: 'occurred', matter: false, storyTime: '2026-09-02' },
+    { key: 'late-c', title: '较晚丙', description: '较晚丙', status: 'occurred', matter: false, storyTime: '2026-09-02' },
+  ];
+  const delta = await compileQianshiDelta({ floor: source, now: NOW, packet: { qianshi: { events,
+    order: [{ before: 'late-a', after: 'early-a', certainty: 'explicit' }] } } });
+  const projection = projectQianshiGraph({ floors: [source], floorMemories: [memory('22222222-2222-4222-8222-222222222222', source, delta)], entities: [] });
+  assert.equal(projection.orderGraph.nodes().some(id => projection.orderGraph.getNodeAttribute(id, 'kind') === 'time-boundary'), false);
+  assert.equal(projection.events.length, events.length);
+  assert.equal(projection.orderGraph.hasDirectedEdge(`event:${delta.events[3].id}`, `event:${delta.events[0].id}`), true, '明确反向边仍保留');
+  assert.equal(projection.orderGraph.hasDirectedEdge(`event:${delta.events[1].id}`, `event:${delta.events[4].id}`), true,
+    '与反向路径无关的较早→较晚事件仍保留有据时间可达性');
+});
 
 test('同一稳定人物在单个事件只建一条参与边，跨事件仍分别建边', async () => {
   const source = floor('11111111-1111-4111-8111-111111111111', 1);
@@ -1210,16 +1276,22 @@ test('千事 order 字符串列表沿用 320 条关系上限', async () => {
 });
 
 test('公共桥只返回深复制，读取和规划本身不隐式启动历史任务', async () => {
-  let starts = 0;
-  const snapshot = { status: 'ready', anchor: { headCheckpointId: 'head' }, events: [{ title: '原值' }] };
+  let starts = 0, snapshotCopies = 0, statusReads = 0;
+  const snapshot = { status: 'ready', anchor: { headCheckpointId: 'head' }, coverage: { totalFloors: 1 }, events: [{ title: '原值' }] };
   const bridge = createPublicQianshiBridge({ memoryRuntime: {
-    getQianshiSnapshot: () => snapshot,
+    getQianshiSnapshot: () => { snapshotCopies += 1; return structuredClone(snapshot); },
+    getQianshiStatus: () => { statusReads += 1; return { status: 'ready', message: '', anchor: snapshot.anchor, coverage: snapshot.coverage, history: null }; },
     prepareQianshiHistory: async () => ({ status: 'empty', totalFloors: 0 }),
     startQianshiHistory: async () => { starts += 1; return { status: 'completed' }; },
     stopQianshiHistory: async () => ({ status: 'stopped' }),
   } });
-  const copy = bridge.getSnapshot(); copy.events[0].title = '篡改';
+  const copy = bridge.getSnapshot(); copy.events[0].title = '篡改'; copy.anchor.headCheckpointId = 'changed'; copy.coverage.totalFloors = 99;
+  assert.equal(snapshotCopies, 1, '完整快照只有runtime做一次隔离副本');
   assert.equal(snapshot.events[0].title, '原值');
+  assert.equal(snapshot.anchor.headCheckpointId, 'head'); assert.equal(snapshot.coverage.totalFloors, 1);
+  const status = bridge.getStatus(); status.anchor.headCheckpointId = 'changed';
+  assert.equal(statusReads, 1); assert.equal(snapshotCopies, 1, '状态读取走紧凑接口而不再次复制完整快照');
+  assert.equal(snapshot.anchor.headCheckpointId, 'head');
   await bridge.read(); await bridge.prepareHistory();
   assert.equal(starts, 0);
   await bridge.startHistory(); assert.equal(starts, 1);
