@@ -7551,7 +7551,7 @@ async function Oo({ store: e, targetIdentity: t, cachedReachable: n = null } = {
 }
 //#endregion
 //#region manifest.json
-var ko = "0.7.19", Ao = "qianqianjie", jo = "/api/plugins/st-bainiaodata", Mo = "qqj-bainiao-v1", No = Symbol.for("qqj.bainiao.tt.locks.v1"), Po = (e, t) => Object.assign(Error(t), { status: e }), Fo = (e) => JSON.parse(JSON.stringify(e)), Io = (e) => {
+var ko = "0.7.20", Ao = "qianqianjie", jo = "/api/plugins/st-bainiaodata", Mo = "qqj-bainiao-v1", No = Symbol.for("qqj.bainiao.tt.locks.v1"), Po = (e, t) => Object.assign(Error(t), { status: e }), Fo = (e) => JSON.parse(JSON.stringify(e)), Io = (e) => {
 	if (e?.aborted) throw e.reason ?? new DOMException("Aborted", "AbortError");
 }, Lo = new TextEncoder(), Ro = (e) => ({
 	format: "qqj-tt-json-v2",
@@ -46564,13 +46564,26 @@ function dD({ chat: e = [], memoryState: t = null, keepAiCount: n = 3, restoreAl
 	if (!r && o.length > dl(n)) {
 		let e = o[o.length - dl(n) - 1];
 		l = e ? e.messageIndex + 1 : 0;
-		let r = [...t?.floors ?? []].sort((e, t) => (e.assistantSeq ?? 0) - (t.assistantSeq ?? 0)), i = -1;
-		for (let e = 0; e < r.length; e += 1) {
-			let t = r[e], n = t?.messageIndex;
-			if (t?.assistantSeq !== e + 1 || !Number.isInteger(n) || !cD(a[n]) || !t.memoryId || !aD.has(t.status) || !iD.has(t.cse?.status)) break;
-			i = n;
+		let r = [...t?.floors ?? []].sort((e, t) => (e.assistantSeq ?? 0) - (t.assistantSeq ?? 0)), i = 0;
+		if (Array.isArray(t?.migrationAliases) && t.migrationAliases.length === 0 && r[0]?.frozen === !0) {
+			let e = 0;
+			for (; r[e]?.frozen === !0;) e += 1;
+			if (e > 0 && e < r.length) {
+				let t = !1;
+				for (let n = e; n < r.length; n += 1) if (r[n]?.frozen === !0) {
+					t = !0;
+					break;
+				}
+				t || (i = e);
+			}
 		}
-		c = Math.min(l - 1, i);
+		let s = i ? r[i - 1]?.assistantSeq : 0, u = Number.isSafeInteger(s) ? s + 1 : NaN, d = -1;
+		for (let e = i; e < r.length; e += 1) {
+			let t = r[e], n = t?.messageIndex;
+			if (t?.assistantSeq !== u + e - i || !Number.isInteger(n) || !cD(a[n]) || !t.memoryId || !aD.has(t.status) || !iD.has(t.cse?.status)) break;
+			d = n;
+		}
+		c = Math.min(l - 1, d);
 	}
 	let u = /* @__PURE__ */ new Set();
 	if (c >= 0) for (let e = 0; e <= c; e += 1) {

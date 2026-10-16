@@ -9,6 +9,7 @@ import { createV3MemoryRuntime, projectMemoryPersonEntities, projectMemoryPlaceE
 import { initializeMigrationGraph } from '../src/v3/memory-migration.js';
 import { scanAssistantCandidates } from '../src/v3/foundation-domain.js';
 import { createV3RecallRuntime } from '../src/v3/recall-runtime.js';
+import { createAutoHideController } from '../src/v3/auto-hide.js';
 import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
 import { createQianshiTimelineView } from '../src/ui/qianshi-timeline-view.js';
 import { createPublicQianshiBridge } from '../src/v3/public-qianshi-bridge.js';
@@ -453,6 +454,55 @@ function harness({ text = '裴晚生提醒你带伞。', initialChat = null, uti
     setReadReachableGate(value) { readReachableGate = value; }, forceFreshAuthorityRead(count = 1) { forceFreshAuthorityRead = count; },
     setEnabled(value) { enabled = value; }, setAutomation(value) { automation = value; } };
 }
+
+test('合并迁移的真实memory runtime通过controller按live全局序号自动隐藏', async () => {
+  const source = harness({ initialChat: [user('归档问题'), assistant('已归档的旧回复。'), user('确认归档。')],
+    utility: () => ({ jsonData: { summary: '归档摘要已保存。' } }) });
+  await source.runtime.start();
+  const sourceFloor = source.runtime.getState().floors[0];
+  await source.runtime.extractFloor(sourceFloor.floorId, { analyzeState: false });
+  const sourceReachable = await source.store.readReachable({ mode: 'full' });
+  assert.equal(sourceReachable.floorMemories[0].recordStatus, 'active');
+  assert.equal(sourceReachable.stateDeltas.length, 0, '迁移来源摘要存在，但没有当前聊天正文CSE');
+
+  const targetChat = [user('合并档当前问题'), assistant('live回复一。'), user('继续'), assistant('live回复二。'), user('继续'),
+    assistant('live回复三。'), user('继续'), assistant('live回复四。'), user('确认最后一楼')];
+  const targetId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const targetContext = { ...source.context, chatId: 'merged-host-chat',
+    chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: targetId } }, chat: targetChat };
+  const target = harness({ initialChat: targetChat, sharedBackend: source.backend, sharedContext: targetContext,
+    utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: '当前楼摘要已保存。' } } : { jsonData: { noMaterialChange: true } } });
+  const sourceIdentity = { hostChatId: source.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' };
+  const targetIdentity = { ...sourceIdentity, hostChatId: targetContext.chatId, chatId: targetId };
+  await initializeMigrationGraph({ store: target.store, sourceIdentity, targetIdentity, sourceReachable, targetChat,
+    now: () => new Date(NOW), newUuid: uuidFactory() });
+  await target.runtime.start();
+  for (const floor of target.runtime.getState().floors.filter(value => !value.frozen)) await target.runtime.extractFloor(floor.floorId);
+
+  const actualState = target.runtime.getState();
+  assert.deepEqual(actualState.migrationAliases, []);
+  assert.equal(actualState.floors[0].frozen, true);
+  assert.equal(actualState.floors[0].cse?.status, 'archived', '归档楼没有当前聊天正文CSE');
+  assert.equal(actualState.floors[0].messageIndex, 1, '冻结来源坐标与当前首个live assistant位置重合');
+  assert.equal(actualState.floors[1].assistantSeq, 2, 'live序号接续冻结来源的全局序号');
+  assert.ok(actualState.floors.slice(1).every(floor => floor.status === 'ready' && ['ready', 'noChange'].includes(floor.cse?.status)));
+
+  const commands = [];
+  target.context.executeSlashCommandsWithOptions = async command => {
+    commands.push(command);
+    const [, kind, value] = command.match(/^\/(hide|unhide) (\d+(?:-\d+)?)$/) ?? [];
+    assert.ok(kind && value, command);
+    const [start, end = start] = value.split('-').map(Number);
+    for (let index = start; index <= end; index += 1) targetChat[index].is_system = kind === 'hide';
+  };
+  const controller = createAutoHideController({ hostAdapter: target.hostAdapter, memoryRuntime: target.runtime,
+    settings: { get: () => ({ pluginEnabled: true, autoHideEnabled: true, autoHideKeepAiCount: 3 }) }, logger: { warn() {} } });
+  const result = await controller.reconcile();
+  assert.equal(result.status, 'applied');
+  assert.deepEqual(commands, ['/hide 0-1'], '真实runtime的ready live楼允许隐藏越过keep3的范围');
+  controller.dispose();
+});
 
 test('有效 memory graph 校验按 floor 索引解析记忆与证据来源，不逐项查找楼层', async () => {
   const bodies = Array.from({ length: 8 }, (_, index) => `有效图正文 ${index + 1}。`);

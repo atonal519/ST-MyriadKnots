@@ -36,11 +36,26 @@ export function planAutoHide({ chat = [], memoryState = null, keepAiCount = 3, r
     const previousAssistant = assistants[earliestKeptPosition - 1];
     keepFrom = previousAssistant ? previousAssistant.messageIndex + 1 : 0;
     const floors = [...(memoryState?.floors ?? [])].sort((left, right) => (left.assistantSeq ?? 0) - (right.assistantSeq ?? 0));
+    let liveStartIndex = 0;
+    // 没有正文 alias 时，冻结楼的来源坐标和 CSE 不能证明当前聊天正文已覆盖。
+    if (Array.isArray(memoryState?.migrationAliases) && memoryState.migrationAliases.length === 0 && floors[0]?.frozen === true) {
+      let prefixEnd = 0;
+      while (floors[prefixEnd]?.frozen === true) prefixEnd += 1;
+      if (prefixEnd > 0 && prefixEnd < floors.length) {
+        let hasLaterFrozenFloor = false;
+        for (let index = prefixEnd; index < floors.length; index += 1) {
+          if (floors[index]?.frozen === true) { hasLaterFrozenFloor = true; break; }
+        }
+        if (!hasLaterFrozenFloor) liveStartIndex = prefixEnd;
+      }
+    }
+    const previousAssistantSeq = liveStartIndex ? floors[liveStartIndex - 1]?.assistantSeq : 0;
+    const expectedFirstSeq = Number.isSafeInteger(previousAssistantSeq) ? previousAssistantSeq + 1 : NaN;
     let reliableThrough = -1;
-    for (let index = 0; index < floors.length; index += 1) {
+    for (let index = liveStartIndex; index < floors.length; index += 1) {
       const floor = floors[index];
       const messageIndex = floor?.messageIndex;
-      if (floor?.assistantSeq !== index + 1 || !Number.isInteger(messageIndex) || !isAssistantMessage(source[messageIndex])) break;
+      if (floor?.assistantSeq !== expectedFirstSeq + index - liveStartIndex || !Number.isInteger(messageIndex) || !isAssistantMessage(source[messageIndex])) break;
       if (!floor.memoryId || !READY_MEMORY.has(floor.status) || !READY_CSE.has(floor.cse?.status)) break;
       reliableThrough = messageIndex;
     }
